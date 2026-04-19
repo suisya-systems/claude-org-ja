@@ -48,9 +48,9 @@ if [[ -z "$COMMAND" ]]; then
   exit 0
 fi
 
-# wezterm cli コマンドは除外する
+# ccmux / wezterm cli コマンドは除外する
 # ワーカー起動時に --cwd workers/... と -p "...rm..." が共存し偽陽性を起こすため
-if echo "$COMMAND" | grep -qE '(^|[|&;[:space:]])wezterm[[:space:]]'; then
+if echo "$COMMAND" | grep -qE '(^|[|&;[:space:]])(ccmux|wezterm)[[:space:]]'; then
   exit 0
 fi
 

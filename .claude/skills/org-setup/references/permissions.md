@@ -10,6 +10,7 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
 {
   "permissions": {
     "allow": [
+      "Bash(ccmux:*)",
       "Bash(wezterm cli:*)",
       "mcp__claude-peers__set_summary",
       "mcp__claude-peers__list_peers",
@@ -63,7 +64,7 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
 }
 ```
 
-**hooks の説明**: `block-workers-delete.sh` は workers ディレクトリへの再帰的削除（`rm -r`/`rm -rf`/`rm --recursive`）をブロックする。個別ファイルの `rm` は許可する。`wezterm cli` コマンドは除外する（ワーカー起動時の偽陽性防止）。
+**hooks の説明**: `block-workers-delete.sh` は workers ディレクトリへの再帰的削除（`rm -r`/`rm -rf`/`rm --recursive`）をブロックする。個別ファイルの `rm` は許可する。`ccmux` / `wezterm cli` コマンドは除外する（ワーカー起動時の偽陽性防止）。
 
 ## フォアマン (`<repo>/.foreman/.claude/settings.local.json`)
 

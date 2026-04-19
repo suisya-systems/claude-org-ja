@@ -239,35 +239,49 @@ DELEGATE: 以下のワーカーを派遣してください。
   - Plan承認後モード切替: 要 / 不要（Planモード要の場合は「要」。Plan承認後に Shift+Tab で acceptEdits に切り替える）
   - 指示内容: {instruction-template に基づく指示の要約}
 
-窓口ペインID: {自分のペインID}（最初のワーカー作成時に split-right の対象として使用）
+窓口ペイン名: `secretary`（ccmux layout で登録済み。新規タブ作成時の基準となる）
 ```
 
 **窓口はこの送信後すぐにユーザーとの対話に戻れる。**
 ユーザーには「フォアマンに派遣を依頼しました。準備ができ次第報告します。」と伝える。
 
-**窓口ペインIDの取得方法**: `wezterm cli list --format json` を実行し、自分の cwd に該当するペインの `pane_id` を取得する。
+> ccmux では窓口・フォアマン・キュレーター等の「長寿命ペイン」は安定名 (`--id`) で addressable。
+> 窓口 (`secretary`) / フォアマン (`foreman`) / キュレーター (`curator`) は `/org-start` で命名済み。
 
 ## Step 3: ワーカー起動と指示送信（フォアマンが実行）
 
 フォアマンが以下を実行する:
 
-1. ペイン配置ルール（references/pane-layout.md）に従い、`wezterm cli split-pane` でペインを作成する。
-   `--cwd` には `{workers_dir}/{task_id}/` のフルパスを指定する（ワーカーがCLAUDE.mdを読めるように）。
-   起動コマンドは `.claude/skills/org-start/SKILL.md` の「ClaudeCode 起動コマンド（役割別）」セクションを参照。
-   Planモード要の場合は `--permission-mode plan` を使用する（org-config の値を上書き）。
-   ※ 開発チャネルの確認プロンプトが表示されるので、`wezterm cli send-text --pane-id {id} --no-paste $'\r'` で Enter を送信する
+1. ワーカーごとに `ccmux new-tab` で新しいタブを作成し、ワーカーディレクトリに `cd` してから Claude を起動する:
+   ```bash
+   ccmux new-tab \
+     --role worker \
+     --id worker-{task_id} \
+     --label {task_id} \
+     --command "cd '{workers_dir}/{task_id}' && claude --dangerously-load-development-channels server:claude-peers --permission-mode {default_permission_mode}"
+   ```
+   - ペイン配置ルールは references/pane-layout.md (ccmux 版) を参照
+   - `--id worker-{task_id}`: 後続の `ccmux send --name worker-{task_id} ...` で addressable にする安定名
+   - `--role worker`: `ccmux list` の JSON で役割識別
+   - `--label {task_id}`: タブ名を task_id に設定（UI 上で識別しやすく）
+   - 起動コマンドは `.claude/skills/org-start/SKILL.md` の「ClaudeCode 起動コマンド（役割別）」セクションを参照
+   - Planモード要の場合は `--permission-mode plan` を使用する（org-config の値を上書き）
+   - 開発チャネルの確認プロンプトが表示されるので、`ccmux send --name worker-{task_id} --enter ""` で Enter を送信する
 2. claude-peers の `list_peers` で新しいピアが現れるのを待つ
 3. claude-peers の `send_message` でワーカーに指示を送る（references/instruction-template.md のフォーマット）
 4. 複数ワーカーがある場合は順次実行する
 5. **Planモード要の場合 — Plan承認前のモード切替（重要: 順序厳守）**:
    Plan承認待ち（APPROVAL_BLOCKED）を検知したら、**Plan を承認する前に**モード切替を完了させる:
-   (a) `wezterm cli send-text --pane-id {id} --no-paste $'\x1b[Z'` で Shift+Tab を送信する
-   (b) `wezterm cli get-text --pane-id {id}` でステータスバーを確認し、「accept edits」が含まれるまで (a) を繰り返す（最大5回）
-   (c) モード切替完了を確認してから、Plan を承認する（yes 送信）
-   
+   (a) `ccmux send --name worker-{task_id} $'\x1b[Z'` で Shift+Tab を送信する（`--enter` を付けない）
+   (b) 目視または claude-peers 側のサインでモード切替完了（「accept edits」表示）を確認する — 最大5回リトライ
+   (c) モード切替完了を確認してから、Plan を承認する（`ccmux send --name worker-{task_id} --enter "yes"`）
+
    **理由**: Plan承認後にモード切替しようとすると、planモードのままワーカーが動き出し、
    コマンド実行のたびに承認プロンプトが連続発生する。承認プロンプト表示中は Shift+Tab が
    効かないため、手動介入が必要になる。先にモード切替することでこの問題を回避する。
+
+   **TODO (Phase 2)**: `ccmux events` によるライフサイクル購読が入れば、ステータスバー
+   テキスト取得に頼らず「mode change」イベントで確認できる。それまでは目視 or リトライで運用。
 
 ## Step 4: 状態記録（フォアマンが実行）
 
@@ -353,10 +367,18 @@ DELEGATE: 以下のワーカーを派遣してください。
 
 Planモード要のワーカーがPlan作成を完了し承認待ちになった場合:
 
-1. **先にモード切替**: ワーカーペインに Shift+Tab (`$'\x1b[Z'`) を送信する
-2. `wezterm cli get-text --pane-id {id}` で「accept edits on」が表示されるまで繰り返す（最大5回）
+1. **先にモード切替**: ワーカーペインに Shift+Tab を送信する
+   ```bash
+   ccmux send --name worker-{task_id} $'\x1b[Z'
+   ```
+2. 目視 or claude-peers 側のメッセージで「accept edits on」表示を確認する（最大5回）
 3. **モード切替完了後に承認**: ワーカーペインに `yes` + Enter を送信してPlanを承認する
+   ```bash
+   ccmux send --name worker-{task_id} --enter "yes"
+   ```
 4. フォアマンにモード切替完了を通知する
+
+**TODO (Phase 2)**: `ccmux events` がサブスクライブできれば、mode change イベントで確認できる。
 
 **順序を間違えない**: 先に承認するとplanモードのままワーカーが動き出し、コマンド実行のたびに承認プロンプトが連続発生して作業が止まる。
 
