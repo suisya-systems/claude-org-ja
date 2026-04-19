@@ -55,17 +55,23 @@ fi
 
 - メッセージ本文は human-facing。リワードなしで変更される可能性がある
   (e.g. "pane not found: Id(3)" → "pane 3 does not exist")
-- ccmux 側は `err_code` module で code 値を wire ABI として扱う。
-  rename は deprecation window 付き (詳細は ccmux `src/ipc/mod.rs::err_code`
-  の doc コメント参照)
+- ccmux 側の契約については、以下を正本として参照する (このリポジトリ
+  内では検証不能な前提なので **外部依存** として扱うこと):
+  - `ccmux/src/ipc/mod.rs::err_code` の doc コメント — 公開 code の一覧
+    と ABI 安定性 (rename は deprecation window 付き) の明文
+  - ccmux `Response::Err { message, code }` の wire schema — `code`
+    は `Option<String>` で、`skip_serializing_if = "Option::is_none"`
 - 未知の code は必ず非致命扱いにする — 将来 ccmux が新 code を追加しても
   フォアマンが落ちないようにデフォルトブランチ必須
 
 ## 後方互換
 
-- pre-0.5.7 の ccmux では code が省略される (wire Response に `code`
-  フィールドなし)。その場合は従来通り substring match にフォールバック。
-- aainc-ops 側で code を扱う新しいコードは **両方** をサポートすべき
+- **想定**: pre-0.5.7 の ccmux では wire Response に `code` フィールド
+  が載らず、CLI 側も `[code]` prefix なしでメッセージだけを stderr に
+  吐く。この想定はこのリポジトリでは検証できないので ccmux 本体の
+  リリースノート (v0.5.7) で裏取りしてから運用する。
+- code 無しで受けた場合は従来 substring match にフォールバック。
+  aainc-ops 側で code を扱う新しいコードは **両方** をサポートすべき
   (最低でも unknown code を無視しないロジック)。
 
 ## Event stream 側

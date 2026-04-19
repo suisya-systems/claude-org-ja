@@ -43,9 +43,12 @@
 1. **`ccmux events` で直近のペイン lifecycle を drain** (タイムアウト付きで 1 回だけ):
    ```bash
    ccmux events --timeout 5s \
-     | jq -c 'select(.type == "pane_exited" and .role == "worker")'
+     | jq -c 'select(
+         (.type == "pane_exited" and .role == "worker")
+         or .type == "events_dropped"
+       )'
    ```
-   - `jq` で **ワーカーペイン (`role == "worker"`) に限定**してフィルタ。フォアマン/キュレーター/窓口の終了を誤ってワーカー終了として扱わないこと
+   - `jq` で **ワーカーペインの `pane_exited` と `events_dropped` のみ**を通す。フォアマン/キュレーター/窓口の終了や heartbeat を誤ってワーカー終了として扱わないこと。`type` で出力先を分岐する (`pane_exited` → 窓口通知、`events_dropped` → journal)
    - 絞り込んだ `pane_exited` 行の `name` (例: `worker-foo`) を拾い、窓口に claude-peers で **ペインが閉じた** という事実だけを通知する:
      ```
      WORKER_PANE_EXITED: {name} (id={id}) のペインが閉じました。リコンサイル要。
@@ -135,7 +138,7 @@
       - **de-dup チェック**: 直近 30 秒以内の journal に **`event == "notify_sent"`** かつ `(worker, kind)` 一致のエントリが存在しない
         - `anomaly_observed` エントリは de-dup キーに **含めない** (低 confidence や observation-only record が将来の通知を抑制しないため)
         - 今サイクルの step (1) で書いた `anomaly_observed` も de-dup 対象にならない
-   3. **通知送信** (step 2 を通過した場合): claude-peers で窓口に通知 (フォーマットは (g) 参照)
+   3. **通知送信** (step 2 を通過した場合): claude-peers で窓口に通知 (フォーマットは (f) 参照)
    4. **notify_sent 記録** (通知送信成功時): `confidence` は kind と source に一致させる (APPROVAL_BLOCKED かつ source=inspect のみ `"high"`、それ以外は `"n/a"`):
       ```json
       // APPROVAL_BLOCKED + source=inspect
@@ -157,7 +160,7 @@
    ERROR は cursor 補強を使わないため confidence は便宜上 `n/a`。
 
    #### (g) worker 自己申告 (Step 2) と inspect (Step 4) の併用設計
-   両チャネルが同じ anomaly を通知しても de-dup (f) が 30 秒窓で合算するので、窓口は重複通知を受け取らない。self-report は先に届けば inspect を抑制、inspect は worker が通知を忘れていれば self-report を補完する。両方独立稼働で OK。
+   両チャネルが同じ anomaly を通知しても de-dup ((e) の step 2) が 30 秒窓で合算するので、窓口は重複通知を受け取らない。self-report は先に届けば inspect を抑制、inspect は worker が通知を忘れていれば self-report を補完する。両方独立稼働で OK。
 
 5. **重要**: フォアマンが自動で承認・拒否することはしない (ユーザー判断が必要)
    - **例外**: Plan モードワーカーの Plan 承認後、permission mode がまだ plan のままの場合、Shift+Tab を送信して acceptEdits に切り替える (下記「Plan 承認後のモード切替」参照)
