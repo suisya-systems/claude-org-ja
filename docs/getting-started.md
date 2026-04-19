@@ -11,19 +11,22 @@ aainc組織の使い方ガイド。
 以下が全てインストール・設定済みであること。詳細は [README.md](../README.md#前提条件) を参照。
 
 - **Claude Code** — AIエージェント本体
-- **WezTerm** — ターミナル
-- **wezterm-panes プラグイン** — https://github.com/happy-ryo/wezterm-panes-plugin
+- **ccmux** — ターミナルマルチプレクサ (組織のペイン管理に使用)
 - **claude-peers MCP** — インスタンス間通信
 - **GitHub CLI (`gh`)** — 認証済み（`gh auth status` で確認）
 
 ### インストール
 
+本リポジトリをクローンし、そのディレクトリで ccmux を起動する。
+
 ```bash
-git clone https://github.com/happy-ryo/aainc-wezterm.git
-cd aainc
+git clone <このリポジトリの URL>
+cd <クローン先>
+ccmux --layout ops
 ```
 
-これだけ。あとは `aainc/` ディレクトリで Claude Code を起動すればいい。
+`ccmux-layouts/ops.toml` の定義に従って窓口 (Secretary) ペインが立ち上がる。
+あとは窓口の Claude Code で `/org-start` を叩けばフォアマン・キュレーターが派生する。
 
 ---
 
@@ -96,7 +99,7 @@ Claude Code を起動したら、最初に `/org-start` を実行する。
 
 ### 再開する
 
-次に `aainc/` で Claude Code を起動すると、自動的に前回の状態を報告する。
+次に本リポジトリのディレクトリで `ccmux --layout ops` を起動して窓口の Claude Code に入ると、自動的に前回の状態を報告する。
 
 ```
 窓口:   前回の状態（4/5 18:30に中断）:

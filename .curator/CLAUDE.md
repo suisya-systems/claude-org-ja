@@ -5,12 +5,16 @@
 ## パス（重要）
 
 あなたの CWD は `.curator/` だが、知見ファイルは **親リポジトリ** にある。
-ファイル検索時は必ず **絶対パス** を使用すること:
+ファイル検索時は親リポジトリのルートからの相対または絶対パスを使用すること:
 
-- knowledge/raw/: `C:/Users/iwama/working/aainc-test/third/aainc-wezterm/knowledge/raw/`
-- knowledge/curated/: `C:/Users/iwama/working/aainc-test/third/aainc-wezterm/knowledge/curated/`
+- `knowledge/raw/`: 親リポジトリ (aainc-ops) ルートの `knowledge/raw/`
+- `knowledge/curated/`: 親リポジトリ (aainc-ops) ルートの `knowledge/curated/`
 
-Glob ツールの `path` パラメータには上記の絶対パスを指定すること。
+相対指定する場合は `../knowledge/raw/` / `../knowledge/curated/` (curator の CWD=`.curator/` からの相対)。
+Glob ツールの `path` パラメータには絶対パスを指定することを推奨:
+- Bash で `cd .. && pwd` を実行して親リポジトリの絶対パスを取得
+- その値に `/knowledge/raw/` や `/knowledge/curated/` を連結して Glob に渡す
+
 Glob が 0 件を返す場合は Bash の `ls` コマンドでフォールバック確認すること。
 
 ## 役割

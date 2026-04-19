@@ -9,9 +9,9 @@
 **目的**: clone先でClaudeCodeを起動し、CLAUDE.mdとスキルが正しく読み込まれるか確認。
 
 **手順**:
-1. 任意の場所に `git clone https://github.com/happy-ryo/aainc-wezterm.git`
-2. clone先でClaudeCodeを起動
-3. `/org-start` を実行
+1. 任意の場所に本リポジトリを `git clone`
+2. clone先で `ccmux --layout ops` を実行 (窓口ペインが立ち上がる)
+3. 窓口の Claude Code で `/org-start` を実行
 
 **期待結果**:
 - `.state/org-state.md` が存在しないので、初回起動と判断される
@@ -30,7 +30,7 @@
 
 **目的**: ワーカーが正しく派遣され、作業を完了し、結果が報告されるか確認。
 
-**前提**: WezTermで起動していること、claude-peers MCPが有効なこと。テスト1で `/org-start` 済み。
+**前提**: `ccmux --layout ops` で起動していること、claude-peers MCPが有効なこと。テスト1で `/org-start` 済み。
 
 **手順**:
 1. 窓口Claudeにタスクを依頼する（例:「ブログに新しい記事を追加して」）
@@ -40,7 +40,7 @@
 **期待結果**:
 - プロジェクトが `registry/projects.md` に自動登録される
 - 窓口がフォアマンに DELEGATE メッセージを送信し、すぐにユーザーとの対話に戻る
-- フォアマンが新しいWezTermペインを開く（右側、pane-layout.md に従う）
+- フォアマンが `ccmux new-tab` で新しいタブを開く（`worker-{task_id}` ラベル、pane-layout.md に従う）
 - フォアマンがclaude-peers経由でワーカーに作業指示を送信する
 - フォアマンが `.state/workers/worker-{id}.md` を作成する
 - `.state/org-state.md` が作成/更新される
@@ -58,7 +58,7 @@ cat registry/projects.md
 ```
 
 **失敗パターンと対処**:
-- ペインが開かない → `wezterm cli` コマンドの動作確認、WezTermのCLI有効化確認
+- ペインが開かない → `ccmux list` で現在のペイン状態を確認、`ccmux split --help` が実行できるか確認
 - claude-peersで通信できない → MCPサーバーの起動確認、peer IDの確認
 - 状態ファイルが作成されない → org-delegateスキルの手順を見直し
 - ワーカーが指示を理解しない → instruction-template.md の記述を改善
@@ -78,7 +78,7 @@ cat registry/projects.md
 
 **期待結果**:
 - claude-peers経由でワーカーに SUSPEND メッセージが送信される
-- ワーカーが状態を報告する（または未応答時に `wezterm cli get-text` でスクレイプされる）
+- ワーカーが claude-peers 経由で状態を報告する (ccmux には pane text スクレイプ API が未実装なので、未応答ワーカーは git 状態ベースで推定する)
 - `.state/org-state.md` の Status が `SUSPENDED` になる
 - `.state/org-state.prev.md` にバックアップが作成される
 - claude-peers経由で全ピアに SHUTDOWN が送信される
@@ -93,7 +93,7 @@ cat .state/journal.jsonl | tail -1  # suspend イベントを確認
 
 **失敗パターンと対処**:
 - ワーカーがSUSPENDに応答しない → Phase 2のスクレイプが機能するか確認
-- ペインが閉じない → `wezterm cli kill-pane` の動作を確認
+- ペインが閉じない → `ccmux send --name X --enter "exit"` でシェル終了経由クローズになっているか確認
 - 状態ファイルが不完全 → org-suspendの手順を見直し
 
 ---
