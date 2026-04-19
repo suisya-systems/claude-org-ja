@@ -1,5 +1,5 @@
 Task: task-1
-Pane ID: %3
+Pane ID: worker-task-1
 Started: 2026-04-10T10:00:00Z
 
 ## Progress Log

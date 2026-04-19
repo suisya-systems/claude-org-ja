@@ -181,6 +181,10 @@ def _parse_workers(workers_dir):
                 m = re.match(r"^Task:\s*(.+)", line)
                 if m:
                     task = m.group(1).strip()
+                # `Pane ID:` is the header name kept for backwards compat
+                # with existing worker state files. The value is the ccmux
+                # pane name (e.g. `worker-<task_id>`) since the migration
+                # from WezTerm; the dashboard treats it as an opaque string.
                 m = re.match(r"^Pane ID:\s*(.+)", line)
                 if m:
                     pane_id = m.group(1).strip()
