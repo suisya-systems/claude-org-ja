@@ -17,6 +17,15 @@
 # pushes from Foreman / Curator / workers never surface, and the
 # Secretary looks "alive but deaf"). Matches the same flag already
 # passed to Foreman / Curator / workers in org-start / org-delegate.
+#
+# With the flag on first launch Claude Code shows a one-off
+# "Load development channel: claude-peers?" prompt. Foreman /
+# Curator / workers bypass it via `ccmux send --name <id> --enter ""`
+# in org-start, but the Secretary is the initial pane that bootstraps
+# everything else, so that automated Enter isn't available yet —
+# the human operator has to press Enter manually the first time the
+# layout launches (and subsequently when Claude Code's session cache
+# gets invalidated).
 
 version = 1
 name = "ops"
