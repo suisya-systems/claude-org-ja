@@ -1,0 +1,23 @@
+# Session state (machine-local, not shared)
+.state/*
+!.state/.gitkeep
+!.state/workers/
+.state/workers/*
+!.state/workers/.gitkeep
+
+# Raw knowledge (curated versions are tracked)
+knowledge/raw/*
+!knowledge/raw/.gitkeep
+
+# Dashboard generated data (replaced by live server)
+dashboard/data.json
+.state/dashboard.pid
+
+# Foreman state (machine-local, not shared)
+.foreman/.state/
+
+# Curator local config
+.curator/.claude/
+
+# Claude Code local config
+.claude/settings.local.json

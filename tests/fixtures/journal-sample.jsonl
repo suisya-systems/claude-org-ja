@@ -1,0 +1,5 @@
+{"ts":"2026-04-10T10:00:00Z","event":"worker_spawned","task":"task-1","worker":"abc12345-long-id"}
+{"ts":"2026-04-10T11:00:00Z","event":"worker_closed","task":"task-1","worker":"abc12345-long-id"}
+not-valid-json
+{"ts":"2026-04-10T12:00:00Z","event":"resume"}
+
