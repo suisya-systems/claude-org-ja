@@ -48,14 +48,14 @@ if [[ -z "$COMMAND" ]]; then
   exit 0
 fi
 
-# ccmux / wezterm cli コマンドは除外する
+# ccmux コマンドは除外する
 # ワーカー起動時に --cwd workers/... と -p "...rm..." が共存し偽陽性を起こすため
-if echo "$COMMAND" | grep -qE '(^|[|&;[:space:]])(ccmux|wezterm)[[:space:]]'; then
+if echo "$COMMAND" | grep -qE '(^|[|&;[:space:]])ccmux[[:space:]]'; then
   exit 0
 fi
 
 # workers ディレクトリのパスを org-config.md から読み取って解決する
-# Hook はプロジェクトルート（aainc-wezterm/）から実行される前提
+# Hook はプロジェクトルート (aainc-ops/) から実行される前提
 WORKERS_REL=$(grep 'workers_dir:' registry/org-config.md 2>/dev/null | sed 's/.*workers_dir:[[:space:]]*//' | tr -d '[:space:]')
 if [[ -z "$WORKERS_REL" ]]; then
   # org-config.md が読めない場合はスキップ（Hook の責務外）

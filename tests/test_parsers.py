@@ -107,7 +107,7 @@ class TestParseWorkers(unittest.TestCase):
         self.assertEqual(w["id"], "abc12345")
         self.assertEqual(w["shortId"], "abc12345"[:8])
         self.assertEqual(w["task"], "task-1")
-        self.assertEqual(w["paneId"], "%3")
+        self.assertEqual(w["paneId"], "worker-task-1")
         self.assertEqual(w["started"], "2026-04-10T10:00:00Z")
         self.assertEqual(w["lastProgress"], "実装完了、テスト中")
         self.assertEqual(w["lastProgressTs"], "2026-04-10T10:30:00Z")

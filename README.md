@@ -21,26 +21,14 @@ Allied Architects, Inc. 向けの自己成長する Claude Code 組織。
 
 ## クイックスタート
 
-### ccmux 経由 (推奨)
-
 ```bash
 cd ~/path/to/aainc-ops
 ccmux --layout ops
 ```
 
-`ccmux-layouts/ops.toml` で定義された窓口ペインが立ち上がります。
+`ccmux-layouts/ops.toml` で定義された窓口 (Secretary) ペインが立ち上がります。
 フォアマン・キュレーター・ワーカーは `/org-start` などのスキル内で
 `ccmux split` / `ccmux new-tab` を介して動的に派生します。
-
-### 従来の WezTerm 経由 (残置中)
-
-```bash
-cd ~/path/to/aainc-ops
-# Claude Code を起動して /org-start を実行 (現状はまだ wezterm cli に依存)
-```
-
-`.claude/skills/org-*` は当面 WezTerm 前提の記述が残るため、
-当面は従来手順も動作する。段階的に ccmux ベースへ置き換えていく。
 
 詳しくは [docs/getting-started.md](docs/getting-started.md) を参照。
 
@@ -51,18 +39,12 @@ cd ~/path/to/aainc-ops
 | 名前 | 用途 | 入手先 |
 |---|---|---|
 | Claude Code | AIエージェント本体 | https://claude.ai/code |
-| WezTerm | ターミナル（ペイン分割でマルチエージェント管理） | https://wezfurlong.org/wezterm/ |
+| ccmux | ターミナルマルチプレクサ (ペイン管理) | ローカルビルド または npm (prerelease タグ) |
 | Git | バージョン管理 | https://git-scm.com/ |
 | GitHub CLI (`gh`) | GitHub操作（PR作成等） | https://cli.github.com/ |
 | Node.js (v18+) | Claude Code CLI の実行環境 | https://nodejs.org/ |
 | Python 3.8+ | ダッシュボードサーバー、スクリプト実行 | https://www.python.org/ |
 | jq | Hooks スクリプトのJSON解析（ワーカー境界チェック等） | https://jqlang.github.io/jq/ |
-
-### Claude Code プラグイン
-
-| 名前 | 用途 | インストール |
-|---|---|---|
-| wezterm-panes | WezTermのペイン開閉・管理 | https://github.com/happy-ryo/wezterm-panes-plugin |
 
 ### MCP サーバー
 
@@ -76,7 +58,7 @@ cd ~/path/to/aainc-ops
 
 ```bash
 claude --version          # Claude Code がインストールされている
-wezterm --version         # WezTerm がインストールされている
+ccmux --version           # ccmux がインストールされている
 gh auth status            # GitHub CLI が認証済み
 node --version            # Node.js v18 以上
 python3 --version         # Python 3.8 以上
@@ -84,7 +66,6 @@ jq --version              # jq がインストールされている
 ```
 
 Claude Code 起動後、以下が利用可能であること:
-- `/wezterm-panes` スキルが認識される
 - `claude-peers` MCP の `list_peers` が実行できる
 
 ## ドキュメント
