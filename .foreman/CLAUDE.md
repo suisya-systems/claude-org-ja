@@ -60,13 +60,14 @@
    - 5 秒以内に 1 件も来なければ次の Step へ進む (Phase 2.1 の `--timeout` で勝手に exit する)
 
 2. **`claude-peers` の `check_messages` でワーカーからの自己報告を受信**:
-   - `APPROVAL_BLOCKED` → 窓口に転送
+   - 受信種別ごとに Step 4 と同じ de-dup (30 秒窓、同一 worker+kind を抑制) を適用してから窓口へ転送する。通知した場合は journal に `notify_sent` を記録 (Step 4 の (e)(f) と同じ仕様)
+   - `APPROVAL_BLOCKED` → 窓口に転送 (`source=self_report`)
      ```
-     APPROVAL_BLOCKED: {task_id} のワーカー (ペイン名 worker-{task_id}) が承認待ちで停止しています。
+     APPROVAL_BLOCKED: {task_id} のワーカー (ペイン名 worker-{task_id}) が承認待ちで停止しています。 (source=self_report)
      ```
-   - `ERROR` / 停止メッセージ → 窓口に転送
+   - `ERROR` / 停止メッセージ → 窓口に転送 (`source=self_report`)
      ```
-     ERROR_DETECTED: {task_id} のワーカー (ペイン名 worker-{task_id}) がエラーまたは停止しています。
+     ERROR_DETECTED: {task_id} のワーカー (ペイン名 worker-{task_id}) がエラーまたは停止しています。 (source=self_report)
      ```
    - 通常進捗は `.state/workers/worker-*.md` に追記のみ
 
@@ -82,30 +83,60 @@
      ccmux inspect --name worker-{task_id} --lines 10 --cursor
      ```
      を順次実行 (16 ワーカー並列でも合計 1 秒未満)
-   - **返却 JSON** を次のパターンで検査:
 
-     **APPROVAL_BLOCKED 検出** — bottom rows の non-empty 行を anchored regex で完全一致:
-     - `^Allow this tool use\? \(y/n\)$`
-     - `^Do you want to proceed\? \(y/n\)$`
-     - `^Press .+ to continue`
-     - 一致した場合、cursor.visible が true でカーソル行が一致行かその直下にあれば confidence 高
-     - 誤検出回避: 本文中の READMEやログ出力に "Allow this tool use" が偶然出ているケースを弾くため、**bottom rows の末尾空でない行に限定**して match
+   #### (a) マッチ対象の定義
+   返却された `lines` 配列 (各要素 `{row, text}`) の中で、**`text != ""` を満たす最後の 1 要素** だけを APPROVAL_BLOCKED パターンの match 対象とする (複数行を対象にしない)。
+   この 1 行を以降 **target line** と呼ぶ。ERROR パターンは bottom 10 行すべてが対象で良い (プロンプト位置と無関係なため)。
 
-     **ERROR 検出** — 以下のいずれかの substring を含む行がある:
-     - `API Error`, `api error`
-     - `rate limit`, `429`, `500`
-     - `^Error: `, `^ERROR: `
+   #### (b) APPROVAL_BLOCKED 検出 — target line の anchored regex 完全一致
+   以下のいずれか:
+   - `^Allow this tool use\? \(y/n\)$`
+   - `^Do you want to proceed\? \(y/n\)$`
+   - `^Press .+ to continue`
 
-   - **検出時のアクション** — claude-peers への通知より先に、**observed fact として `.state/journal.jsonl` に構造化記録**:
-     ```json
-     {"ts":"<ISO timestamp>","event":"anomaly_observed","source":"inspect","worker":"worker-{task_id}","kind":"approval_blocked|error","matched":"<該当行>"}
-     ```
-   - ジャーナル記録後、窓口に claude-peers で通知 (既存の `APPROVAL_BLOCKED` / `ERROR_DETECTED` フォーマットを流用、ただし `source=inspect` を明記):
-     ```
-     APPROVAL_BLOCKED: worker-{task_id} の承認プロンプトを検出 (source=inspect): {該当行}
-     ERROR_DETECTED: worker-{task_id} にエラーを検出 (source=inspect): {該当行}
-     ```
-   - **worker 自己申告 (Step 2) と inspect 検出 (Step 4) の両立**: source フィールドで出所を区別、同じ anomaly を重複して通知してしまってもジャーナル上で de-dup 判定可能
+   **新しいプロンプト形が観測されたら、この regex リストに追記**。Claude Code の version 更新で形が変わる可能性があるため、網羅は前提にしない。
+
+   #### (c) cursor 補強による confidence 分岐
+   regex に一致した target line について:
+   - **high-confidence**: `cursor.visible == true` かつ `cursor.row == target_line.row` または `cursor.row == target_line.row + 1`
+   - **low-confidence**: 上記以外 (cursor が離れた位置にある、または非表示)
+
+   **high-confidence のみ journal 記録 + claude-peers 通知の両方を発行**。low-confidence は journal のみに記録し、窓口通知はスキップする (誤検出による窓口への偽通知を抑えるため)。
+
+   #### (d) ERROR 検出 — substring match
+   bottom 10 行のいずれかが以下を含む:
+   - `API Error`, `api error`
+   - `rate limit`, `429`, `500`
+   - `^Error: `, `^ERROR: `
+
+   ERROR は cursor 補強なしで journal + 通知の両方を発行する (error banner は cursor 位置と相関しないため)。
+
+   #### (e) Journal 記録 (通知より先、high-confidence の場合)
+   ```json
+   {"ts":"<ISO timestamp>","event":"anomaly_observed","source":"inspect","worker":"worker-{task_id}","kind":"approval_blocked|error","confidence":"high|low","matched":"<該当行>","cursor":{"row":...,"col":...,"visible":...}}
+   ```
+   Journal 書き込み失敗時は通知もスキップする (journal が正本のため)。
+   通知失敗時は journal のみ残る — 次サイクルで同じ anomaly が再検出されれば、de-dup 判定後に再通知される。
+
+   #### (f) de-dup (重複抑制)
+   通知発行前に以下をチェック:
+   - `.state/journal.jsonl` の直近 **30 秒以内** のエントリから `(worker, kind) == (worker-{task_id}, approval_blocked/error)` の `anomaly_observed` または `claude-peers notify_sent` を探す
+   - 該当があれば **新規通知をスキップ** (journal 記録は継続し、検出された事実は毎サイクル残す)
+
+   通知送信したら続けて journal に記録:
+   ```json
+   {"ts":"<ISO timestamp>","event":"notify_sent","source":"inspect","worker":"worker-{task_id}","kind":"approval_blocked|error"}
+   ```
+
+   #### (g) 通知フォーマット
+   (de-dup 通過時のみ) 窓口に claude-peers で通知。既存 `APPROVAL_BLOCKED` / `ERROR_DETECTED` フォーマットに `source=inspect` を付与:
+   ```
+   APPROVAL_BLOCKED: worker-{task_id} の承認プロンプトを検出 (source=inspect, confidence=high): {該当行}
+   ERROR_DETECTED: worker-{task_id} にエラーを検出 (source=inspect): {該当行}
+   ```
+
+   #### (h) worker 自己申告 (Step 2) と inspect (Step 4) の併用設計
+   両チャネルが同じ anomaly を通知しても de-dup (f) が 30 秒窓で合算するので、窓口は重複通知を受け取らない。self-report は先に届けば inspect を抑制、inspect は worker が通知を忘れていれば self-report を補完する。両方独立稼働で OK。
 
 5. **重要**: フォアマンが自動で承認・拒否することはしない (ユーザー判断が必要)
    - **例外**: Plan モードワーカーの Plan 承認後、permission mode がまだ plan のままの場合、Shift+Tab を送信して acceptEdits に切り替える (下記「Plan 承認後のモード切替」参照)
