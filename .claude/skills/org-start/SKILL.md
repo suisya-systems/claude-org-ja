@@ -10,6 +10,9 @@ description: >
 
 ClaudeCode起動後に最初に実行するスキル。前回の状態復元、フォアマン起動、キュレーター起動を行う。
 
+> **前提**: この Claude は `ccmux --layout ops` で起動された窓口ペイン内で動作している。
+> `CCMUX_SOCKET` 環境変数が継承されているので `ccmux` サブコマンドで他ペインを制御できる。
+
 ## Step 0: 初期化
 
 1. `set_summary` で自分のサマリーを設定する: 「Secretary: 窓口」
@@ -75,33 +78,50 @@ claude --dangerously-load-development-channels server:claude-peers --permission-
 
 ## Step 2: フォアマンペイン起動
 
-ペイン配置は org-delegate/references/pane-layout.md に従う。
+ペイン配置は org-delegate/references/pane-layout.md に従う (ccmux 版)。
 
-1. `wezterm cli split-pane` の `--cwd` と `-- PROG` オプションを使い、ディレクトリ指定とClaudeCode起動を一発で行う:
+1. `ccmux split` で窓口ペインを上下分割し、下半分にフォアマン用の Claude を起動する:
+   ```bash
+   ccmux split \
+     --target-focused \
+     --direction horizontal \
+     --role foreman \
+     --id foreman \
+     --command "cd .foreman && claude --dangerously-load-development-channels server:claude-peers --permission-mode {default_permission_mode} --model opus"
    ```
-   wezterm cli split-pane --bottom --percent 20 --cwd '<リポジトリルート>\.foreman' -- claude --dangerously-load-development-channels server:claude-peers --permission-mode {default_permission_mode}
-   ```
+   - `--target-focused` で現在フォーカスされている窓口ペインを分割
+   - `--direction horizontal` = 上下分割（窓口=上 / フォアマン=下）
+   - `--role foreman`: `ccmux list` で役割識別できるようにラベル付与
+   - `--id foreman`: 後続の `ccmux send --name foreman …` で宛先指定するための安定名
+   - `--command` は新しいペインでシェルプロンプトが立ち上がった直後に注入される
    - `.foreman/CLAUDE.md` にフォアマン用の役割指示がある（Secretary の CLAUDE.md とは別）
-   - **注意**: 開発チャネルの確認プロンプトが表示されるので、`wezterm cli send-text --pane-id {id} --no-paste $'\r'` で Enter を送信する
+   - 開発チャネルの確認プロンプトが表示されるので、`ccmux send --name foreman --enter ""` で Enter を送信する
 2. claude-peers の `list_peers` で新しいピアが現れるのを待つ
 3. claude-peers の `send_message` でフォアマンに以下を送信する:
    「あなたはフォアマンです。窓口からの DELEGATE メッセージを受け取り、ワーカーのペイン起動・指示送信・状態記録を代行してください。CLOSE_PANE メッセージを受けたらペインを閉じてください。」
-4. フォアマンのピアIDとペインIDを記録する（org-state.md の Foreman セクション）
+4. フォアマンのピアIDと ccmux ペイン名（`foreman`）を記録する（org-state.md の Foreman セクション）
 5. JSON スナップショットを再生成する:
    `py -3 dashboard/org_state_converter.py`
 
 ## Step 3: キュレーターペイン起動
 
-1. `wezterm cli split-pane` の `--cwd` と `-- PROG` オプションを使い、ディレクトリ指定とClaudeCode起動を一発で行う:
+1. `ccmux split` でフォアマンペインの右半分をキュレーター用に立ち上げる:
+   ```bash
+   ccmux split \
+     --target-name foreman \
+     --direction vertical \
+     --role curator \
+     --id curator \
+     --command "cd .curator && claude --dangerously-load-development-channels server:claude-peers --permission-mode {default_permission_mode}"
    ```
-   wezterm cli split-pane --pane-id {フォアマンペインID} --right --percent 50 --cwd '<リポジトリルート>\.curator' -- claude --dangerously-load-development-channels server:claude-peers --permission-mode {default_permission_mode}
-   ```
+   - `--target-name foreman`: フォアマンペインを分割対象に指定
+   - `--direction vertical` = 左右分割（フォアマン=左 / キュレーター=右）
    - `.curator/CLAUDE.md` にキュレーター用の役割指示がある
-   - **注意**: 開発チャネルの確認プロンプトが表示されるので、Enter を送信する
+   - 開発チャネルの確認プロンプトが表示されるので、`ccmux send --name curator --enter ""` で Enter を送信する
 2. claude-peers の `list_peers` で新しいピアが現れるのを待つ
 3. claude-peers の `send_message` でキュレーターに以下を送信する:
    「あなたはキュレーターです。 /loop 30m /org-curate を実行してください。知見整理を30分ごとに行います。」
-4. キュレーターのピアIDとペインIDを記録する（org-state.md の Curator セクション）
+4. キュレーターのピアIDと ccmux ペイン名（`curator`）を記録する（org-state.md の Curator セクション）
 5. JSON スナップショットを再生成する:
    `py -3 dashboard/org_state_converter.py`
 

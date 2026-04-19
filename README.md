@@ -21,11 +21,26 @@ Allied Architects, Inc. 向けの自己成長する Claude Code 組織。
 
 ## クイックスタート
 
+### ccmux 経由 (推奨)
+
 ```bash
-git clone https://github.com/happy-ryo/aainc-wezterm.git
-cd aainc
-# Claude Code を起動して /org-start を実行
+cd ~/path/to/aainc-ops
+ccmux --layout ops
 ```
+
+`ccmux-layouts/ops.toml` で定義された窓口ペインが立ち上がります。
+フォアマン・キュレーター・ワーカーは `/org-start` などのスキル内で
+`ccmux split` / `ccmux new-tab` を介して動的に派生します。
+
+### 従来の WezTerm 経由 (残置中)
+
+```bash
+cd ~/path/to/aainc-ops
+# Claude Code を起動して /org-start を実行 (現状はまだ wezterm cli に依存)
+```
+
+`.claude/skills/org-*` は当面 WezTerm 前提の記述が残るため、
+当面は従来手順も動作する。段階的に ccmux ベースへ置き換えていく。
 
 詳しくは [docs/getting-started.md](docs/getting-started.md) を参照。
 

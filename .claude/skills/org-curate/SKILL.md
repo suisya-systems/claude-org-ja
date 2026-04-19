@@ -22,7 +22,7 @@ knowledge/raw/ に蓄積された生の学びを読み、分類・統合して k
 1. 未整理ファイルを全て読む
 2. テーマ別に分類する。テーマの粒度は以下を目安にする:
    - 技術領域（例: authentication, database, frontend）
-   - ツール・サービス（例: wezterm, github-api, aws）
+   - ツール・サービス（例: ccmux, github-api, aws）
    - プロセス（例: code-review, testing, deployment）
 3. 既存の `knowledge/curated/` ファイルも読み、重複がないか確認する
 

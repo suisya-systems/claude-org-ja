@@ -27,8 +27,9 @@ description: >
 
 応答がなかったワーカーについて:
 
-1. `.state/workers/` から該当ワーカーの状態ファイルを読み、Pane ID と Directory を取得
-2. `wezterm cli get-text --pane-id {pane_id}` でペインの表示内容を取得する（可能な範囲で）
+1. `.state/workers/` から該当ワーカーの状態ファイルを読み、Pane Name と Directory を取得
+2. (ccmux にはペイン表示内容スクレイプの API が未実装。Phase 2 の `ccmux events` 実装待ち)
+   当面は git 情報のみで状態を推定する
 3. ワーカーの作業ディレクトリで以下を実行:
    - `git status`
    - `git diff --stat`
@@ -71,12 +72,18 @@ kill $(cat .state/dashboard.pid 2>/dev/null) 2>/dev/null || true
 1. claude-peers の `list_peers` で稼働中のピアを列挙
 2. **ワーカーを先に停止**: 全ワーカーピアに `send_message` で終了を指示:
    「SHUTDOWN: 作業を終了してください。」
-3. ワーカーのペインが閉じたことを確認（フォアマンに `CLOSE_PANE` を依頼、またはフォールバックとして `wezterm cli kill-pane --pane-id {pane_id}` で直接クローズ）
+3. ワーカーのペインが閉じたことを確認（フォアマンに `CLOSE_PANE` を依頼）。
+   フォールバックとして `ccmux send --name worker-{task_id} --enter "exit"` を送信してシェルを終了
+   させることで PTY → ペインクローズさせる。
 4. **フォアマンを停止**: フォアマンに `send_message` で終了を指示:
    「SHUTDOWN: 作業を終了してください。」
 5. **キュレーターを停止**: キュレーターに `send_message` で終了を指示:
    「SHUTDOWN: 作業を終了してください。」
-6. フォアマン・キュレーターのペインが閉じない場合は `wezterm cli kill-pane --pane-id {pane_id}` で強制クローズ
+6. フォアマン・キュレーターのペインが閉じない場合は `ccmux send --name foreman --enter "exit"` /
+   `ccmux send --name curator --enter "exit"` でシェルを終了させる。
+
+**TODO (Phase 2)**: `ccmux events` or explicit `ccmux close --name X` API が入れば、
+pane のクローズをより直接的に制御できるようになる。それまでは上記シェル終了経由で運用。
 7. 人間に報告:
    ```
    組織を中断しました。
