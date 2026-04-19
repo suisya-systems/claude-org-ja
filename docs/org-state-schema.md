@@ -63,11 +63,11 @@ python3 dashboard/org_state_converter.py     # Mac/Linux
   ],
   "foreman": {
     "peerId": "<peer ID>",
-    "paneId": "<WezTerm pane ID>"
+    "paneId": "<ccmux pane name>"
   },
   "curator": {
     "peerId": "<peer ID>",
-    "paneId": "<WezTerm pane ID>"
+    "paneId": "<ccmux pane name>"
   },
   "resumeInstructions": "<free text | null>"
 }
@@ -127,7 +127,7 @@ python3 dashboard/org_state_converter.py     # Mac/Linux
 | フィールド | 型 | 説明 |
 |---|---|---|
 | `peerId` | `string` | claude-peers のピア ID |
-| `paneId` | `string` | WezTerm のペイン ID |
+| `paneId` | `string` | ccmux のペイン名 (`--id` で命名したもの、例: `foreman`, `curator`)。旧 WezTerm 時代は数値の pane-id を格納していたが、ccmux 移行に伴い安定名ベースに変更 |
 
 ---
 
