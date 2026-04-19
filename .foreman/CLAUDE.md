@@ -129,9 +129,14 @@
         - `anomaly_observed` エントリは de-dup キーに **含めない** (低 confidence や observation-only record が将来の通知を抑制しないため)
         - 今サイクルの step (1) で書いた `anomaly_observed` も de-dup 対象にならない
    3. **通知送信** (step 2 を通過した場合): claude-peers で窓口に通知 (フォーマットは (g) 参照)
-   4. **notify_sent 記録** (通知送信成功時):
+   4. **notify_sent 記録** (通知送信成功時): `confidence` は kind と source に一致させる (APPROVAL_BLOCKED かつ source=inspect のみ `"high"`、それ以外は `"n/a"`):
       ```json
-      {"ts":"<ISO timestamp>","event":"notify_sent","source":"inspect","worker":"worker-{task_id}","kind":"approval_blocked|error","confidence":"high"}
+      // APPROVAL_BLOCKED + source=inspect
+      {"ts":"<ISO timestamp>","event":"notify_sent","source":"inspect","worker":"worker-{task_id}","kind":"approval_blocked","confidence":"high"}
+      // ERROR + source=inspect
+      {"ts":"<ISO timestamp>","event":"notify_sent","source":"inspect","worker":"worker-{task_id}","kind":"error","confidence":"n/a"}
+      // APPROVAL_BLOCKED / ERROR + source=self_report (Step 2 から発行)
+      {"ts":"<ISO timestamp>","event":"notify_sent","source":"self_report","worker":"worker-{task_id}","kind":"approval_blocked|error","confidence":"n/a"}
       ```
    通知失敗時は `notify_sent` を書かない。次サイクルで再検出されれば de-dup が抜けて再通知が試行される (at-least-once)。
    Journal 書き込み自体が失敗した場合はそのサイクルの通知を断念、次サイクルで再試行。
