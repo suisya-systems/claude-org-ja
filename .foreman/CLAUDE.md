@@ -60,25 +60,102 @@
    - 5 秒以内に 1 件も来なければ次の Step へ進む (Phase 2.1 の `--timeout` で勝手に exit する)
 
 2. **`claude-peers` の `check_messages` でワーカーからの自己報告を受信**:
+   - 受信種別ごとに Step 4 (e) と同じシーケンスを適用してから窓口へ転送する:
+     1. 観測記録: `anomaly_observed` を journal に追記 (`source=self_report`、confidence は `n/a`。worker が自発的に報告したので cursor 補強不要)
+     2. 通知判定: 直近 30 秒以内の journal に `event=notify_sent` かつ `(worker, kind)` 一致のエントリがあればスキップ (Step 4 の inspect 通知と合算で de-dup)
+     3. 通知送信
+     4. `notify_sent` を journal に追記 (`source=self_report`, `confidence=n/a`)
    - `APPROVAL_BLOCKED` → 窓口に転送
      ```
-     APPROVAL_BLOCKED: {task_id} のワーカー (ペイン名 worker-{task_id}) が承認待ちで停止しています。
+     APPROVAL_BLOCKED: {task_id} のワーカー (ペイン名 worker-{task_id}) が承認待ちで停止しています。 (source=self_report, confidence=n/a)
      ```
    - `ERROR` / 停止メッセージ → 窓口に転送
      ```
-     ERROR_DETECTED: {task_id} のワーカー (ペイン名 worker-{task_id}) がエラーまたは停止しています。
+     ERROR_DETECTED: {task_id} のワーカー (ペイン名 worker-{task_id}) がエラーまたは停止しています。 (source=self_report, confidence=n/a)
      ```
-   - 通常進捗は `.state/workers/worker-*.md` に追記のみ
+   - 通常進捗は `.state/workers/worker-*.md` に追記のみ (journal / de-dup スキーマには乗せない)
 
 3. **`ccmux list` を JSON で取得して突き合わせ**:
    - `ccmux events` を見逃した場合の保険 (`events_dropped` 発生時や events 未受信で pane 状態がズレた時)
    - events 経由で exit を把握していないのに `list` で pane が消えているワーカーがあれば、**ペインが閉じた事実**として `.state/workers/worker-*.md` の status を `pane_closed` に遷移させ、Step 1 と同じく窓口に `WORKER_PANE_EXITED` を転送 (task 完了判定は同じ手順で窓口側が実施)
    - `--count` による hard cap は不要 (16 ペイン上限なので list は小さい)
 
-4. **重要**: フォアマンが自動で承認・拒否することはしない (ユーザー判断が必要)
+4. **`ccmux inspect` でワーカーペインの画面内容を走査し異常検出**:
+   - **目的**: ワーカー自己申告に依存せず、フォアマン自身が画面内容から APPROVAL_BLOCKED / ERROR を検出する独立した観測チャネル
+   - **実行**: Step 3 で得た `ccmux list` の active worker (`role == "worker"` かつ `exited == false`) それぞれに対し:
+     ```bash
+     ccmux inspect --name worker-{task_id} --lines 10 --cursor
+     ```
+     を順次実行 (16 ワーカー並列でも合計 1 秒未満)
+
+   #### (a) マッチ対象の定義
+   返却された `lines` 配列 (各要素 `{row, text}`) の中で、**`text != ""` を満たす最後の 1 要素** だけを APPROVAL_BLOCKED パターンの match 対象とする (複数行を対象にしない)。
+   この 1 行を以降 **target line** と呼ぶ。ERROR パターンは bottom 10 行すべてが対象で良い (プロンプト位置と無関係なため)。
+
+   #### (b) APPROVAL_BLOCKED 検出 — target line の anchored regex 完全一致
+   以下のいずれか:
+   - `^Allow this tool use\? \(y/n\)$`
+   - `^Do you want to proceed\? \(y/n\)$`
+   - `^Press .+ to continue`
+
+   **新しいプロンプト形が観測されたら、この regex リストに追記**。Claude Code の version 更新で形が変わる可能性があるため、網羅は前提にしない。
+
+   #### (c) cursor 補強による confidence 分岐
+   regex に一致した target line について:
+   - **high-confidence**: `cursor.visible == true` かつ `cursor.row == target_line.row` または `cursor.row == target_line.row + 1`
+   - **low-confidence**: 上記以外 (cursor が離れた位置にある、または非表示)
+
+   **high-confidence のみ journal 記録 + claude-peers 通知の両方を発行**。low-confidence は journal のみに記録し、窓口通知はスキップする (誤検出による窓口への偽通知を抑えるため)。
+
+   #### (d) ERROR 検出 — substring match
+   bottom 10 行のいずれかが以下を含む:
+   - `API Error`, `api error`
+   - `rate limit`, `429`, `500`
+   - `^Error: `, `^ERROR: `
+
+   ERROR は cursor 補強なしで journal + 通知の両方を発行する (error banner は cursor 位置と相関しないため)。
+
+   #### (e) 実行シーケンス (journal + de-dup + notify)
+   以下の順番で厳密に実行する:
+
+   1. **観測記録** (confidence に関わらず常に): `.state/journal.jsonl` に追記
+      ```json
+      {"ts":"<ISO timestamp>","event":"anomaly_observed","source":"inspect","worker":"worker-{task_id}","kind":"approval_blocked|error","confidence":"high|low","matched":"<該当行>","cursor":{"row":...,"col":...,"visible":...}}
+      ```
+   2. **通知するかの判定** — 以下を **すべて** 満たす場合のみ通知に進む:
+      - APPROVAL_BLOCKED なら confidence == high (low-confidence は journal のみで終了)
+      - ERROR は常に通知対象 (cursor 補強なし)
+      - **de-dup チェック**: 直近 30 秒以内の journal に **`event == "notify_sent"`** かつ `(worker, kind)` 一致のエントリが存在しない
+        - `anomaly_observed` エントリは de-dup キーに **含めない** (低 confidence や observation-only record が将来の通知を抑制しないため)
+        - 今サイクルの step (1) で書いた `anomaly_observed` も de-dup 対象にならない
+   3. **通知送信** (step 2 を通過した場合): claude-peers で窓口に通知 (フォーマットは (g) 参照)
+   4. **notify_sent 記録** (通知送信成功時): `confidence` は kind と source に一致させる (APPROVAL_BLOCKED かつ source=inspect のみ `"high"`、それ以外は `"n/a"`):
+      ```json
+      // APPROVAL_BLOCKED + source=inspect
+      {"ts":"<ISO timestamp>","event":"notify_sent","source":"inspect","worker":"worker-{task_id}","kind":"approval_blocked","confidence":"high"}
+      // ERROR + source=inspect
+      {"ts":"<ISO timestamp>","event":"notify_sent","source":"inspect","worker":"worker-{task_id}","kind":"error","confidence":"n/a"}
+      // APPROVAL_BLOCKED / ERROR + source=self_report (Step 2 から発行)
+      {"ts":"<ISO timestamp>","event":"notify_sent","source":"self_report","worker":"worker-{task_id}","kind":"approval_blocked|error","confidence":"n/a"}
+      ```
+   通知失敗時は `notify_sent` を書かない。次サイクルで再検出されれば de-dup が抜けて再通知が試行される (at-least-once)。
+   Journal 書き込み自体が失敗した場合はそのサイクルの通知を断念、次サイクルで再試行。
+
+   #### (f) 通知フォーマット
+   (e) の step 3 に到達した場合のみ、窓口に claude-peers で通知。既存 `APPROVAL_BLOCKED` / `ERROR_DETECTED` フォーマットに `source=inspect` + `confidence=<high|n/a>` を付与:
+   ```
+   APPROVAL_BLOCKED: worker-{task_id} の承認プロンプトを検出 (source=inspect, confidence=high): {該当行}
+   ERROR_DETECTED: worker-{task_id} にエラーを検出 (source=inspect, confidence=n/a): {該当行}
+   ```
+   ERROR は cursor 補強を使わないため confidence は便宜上 `n/a`。
+
+   #### (g) worker 自己申告 (Step 2) と inspect (Step 4) の併用設計
+   両チャネルが同じ anomaly を通知しても de-dup (f) が 30 秒窓で合算するので、窓口は重複通知を受け取らない。self-report は先に届けば inspect を抑制、inspect は worker が通知を忘れていれば self-report を補完する。両方独立稼働で OK。
+
+5. **重要**: フォアマンが自動で承認・拒否することはしない (ユーザー判断が必要)
    - **例外**: Plan モードワーカーの Plan 承認後、permission mode がまだ plan のままの場合、Shift+Tab を送信して acceptEdits に切り替える (下記「Plan 承認後のモード切替」参照)
 
-5. ワーカーペインがない場合は `ccmux events` も `check_messages` もスキップし、監視ループを停止する
+6. ワーカーペインがない場合は `ccmux events` / `check_messages` / `ccmux inspect` をすべてスキップし、監視ループを停止する
 
 監視対象のペイン名は `.state/workers/worker-{peer_id}.md` の Pane Name (`worker-{task_id}`) から取得する。
 
@@ -87,6 +164,8 @@
 - **なぜ `ccmux events --timeout 5s` か**: 1 分のポーリング待ち時間を短縮するため、各サイクルで 5 秒分は live subscribe する。5 秒経過で exit して残りの 55 秒は check_messages + list で補完。これにより pane 終了検知の平均遅延が 30 秒 → 2.5 秒程度になる
 - **なぜ `--count` を指定しないか**: ワーカー 10 人並列で大量 event が出るケースでも 5 秒の timeout が安全弁になる。count 固定だと上限に達したあと timeout までブロックしてしまう
 - **events と list の二重カバー**: events は best-effort (EventsDropped あり得る) なので、list による突き合わせを保険として併用
+- **inspect を独立した観測チャネルにする理由**: ワーカーが承認待ちで止まった時、worker 自己申告 (claude-peers) だけに頼ると worker が通知を送る前に停止してしまう。inspect は fore man 側から能動的に観測するので、worker 側の通知忘れ/遅延を補完する。自己申告と inspect は「同じ事象を 2 チャネルで観測できれば確度が上がる」という冗長性設計
+- **anchored regex の意図**: 本文中に "Allow this tool use" が偶然出てもプロンプト自体の行フォーマット (末尾に `(y/n)`) まで揃うことは稀。末尾 non-empty 行に絞ることで誤検出をさらに減らす
 
 ## Plan承認後のモード切替
 
