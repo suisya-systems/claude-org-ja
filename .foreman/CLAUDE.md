@@ -75,10 +75,42 @@
    - events 経由で exit を把握していないのに `list` で pane が消えているワーカーがあれば、**ペインが閉じた事実**として `.state/workers/worker-*.md` の status を `pane_closed` に遷移させ、Step 1 と同じく窓口に `WORKER_PANE_EXITED` を転送 (task 完了判定は同じ手順で窓口側が実施)
    - `--count` による hard cap は不要 (16 ペイン上限なので list は小さい)
 
-4. **重要**: フォアマンが自動で承認・拒否することはしない (ユーザー判断が必要)
+4. **`ccmux inspect` でワーカーペインの画面内容を走査し異常検出**:
+   - **目的**: ワーカー自己申告に依存せず、フォアマン自身が画面内容から APPROVAL_BLOCKED / ERROR を検出する独立した観測チャネル
+   - **実行**: Step 3 で得た `ccmux list` の active worker (`role == "worker"` かつ `exited == false`) それぞれに対し:
+     ```bash
+     ccmux inspect --name worker-{task_id} --lines 10 --cursor
+     ```
+     を順次実行 (16 ワーカー並列でも合計 1 秒未満)
+   - **返却 JSON** を次のパターンで検査:
+
+     **APPROVAL_BLOCKED 検出** — bottom rows の non-empty 行を anchored regex で完全一致:
+     - `^Allow this tool use\? \(y/n\)$`
+     - `^Do you want to proceed\? \(y/n\)$`
+     - `^Press .+ to continue`
+     - 一致した場合、cursor.visible が true でカーソル行が一致行かその直下にあれば confidence 高
+     - 誤検出回避: 本文中の READMEやログ出力に "Allow this tool use" が偶然出ているケースを弾くため、**bottom rows の末尾空でない行に限定**して match
+
+     **ERROR 検出** — 以下のいずれかの substring を含む行がある:
+     - `API Error`, `api error`
+     - `rate limit`, `429`, `500`
+     - `^Error: `, `^ERROR: `
+
+   - **検出時のアクション** — claude-peers への通知より先に、**observed fact として `.state/journal.jsonl` に構造化記録**:
+     ```json
+     {"ts":"<ISO timestamp>","event":"anomaly_observed","source":"inspect","worker":"worker-{task_id}","kind":"approval_blocked|error","matched":"<該当行>"}
+     ```
+   - ジャーナル記録後、窓口に claude-peers で通知 (既存の `APPROVAL_BLOCKED` / `ERROR_DETECTED` フォーマットを流用、ただし `source=inspect` を明記):
+     ```
+     APPROVAL_BLOCKED: worker-{task_id} の承認プロンプトを検出 (source=inspect): {該当行}
+     ERROR_DETECTED: worker-{task_id} にエラーを検出 (source=inspect): {該当行}
+     ```
+   - **worker 自己申告 (Step 2) と inspect 検出 (Step 4) の両立**: source フィールドで出所を区別、同じ anomaly を重複して通知してしまってもジャーナル上で de-dup 判定可能
+
+5. **重要**: フォアマンが自動で承認・拒否することはしない (ユーザー判断が必要)
    - **例外**: Plan モードワーカーの Plan 承認後、permission mode がまだ plan のままの場合、Shift+Tab を送信して acceptEdits に切り替える (下記「Plan 承認後のモード切替」参照)
 
-5. ワーカーペインがない場合は `ccmux events` も `check_messages` もスキップし、監視ループを停止する
+6. ワーカーペインがない場合は `ccmux events` / `check_messages` / `ccmux inspect` をすべてスキップし、監視ループを停止する
 
 監視対象のペイン名は `.state/workers/worker-{peer_id}.md` の Pane Name (`worker-{task_id}`) から取得する。
 
@@ -87,6 +119,8 @@
 - **なぜ `ccmux events --timeout 5s` か**: 1 分のポーリング待ち時間を短縮するため、各サイクルで 5 秒分は live subscribe する。5 秒経過で exit して残りの 55 秒は check_messages + list で補完。これにより pane 終了検知の平均遅延が 30 秒 → 2.5 秒程度になる
 - **なぜ `--count` を指定しないか**: ワーカー 10 人並列で大量 event が出るケースでも 5 秒の timeout が安全弁になる。count 固定だと上限に達したあと timeout までブロックしてしまう
 - **events と list の二重カバー**: events は best-effort (EventsDropped あり得る) なので、list による突き合わせを保険として併用
+- **inspect を独立した観測チャネルにする理由**: ワーカーが承認待ちで止まった時、worker 自己申告 (claude-peers) だけに頼ると worker が通知を送る前に停止してしまう。inspect は fore man 側から能動的に観測するので、worker 側の通知忘れ/遅延を補完する。自己申告と inspect は「同じ事象を 2 チャネルで観測できれば確度が上がる」という冗長性設計
+- **anchored regex の意図**: 本文中に "Allow this tool use" が偶然出てもプロンプト自体の行フォーマット (末尾に `(y/n)`) まで揃うことは稀。末尾 non-empty 行に絞ることで誤検出をさらに減らす
 
 ## Plan承認後のモード切替
 
