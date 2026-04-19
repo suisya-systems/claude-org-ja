@@ -72,16 +72,37 @@ kill $(cat .state/dashboard.pid 2>/dev/null) 2>/dev/null || true
 1. claude-peers の `list_peers` で稼働中のピアを列挙
 2. **ワーカーを先に停止**: 全ワーカーピアに `send_message` で終了を指示:
    「SHUTDOWN: 作業を終了してください。」
-3. ワーカーのペインが閉じたことを確認:
-   - バックグラウンドで `ccmux events --timeout 10s` を起動して `pane_exited` を待つ
-     (JSON Lines から `type == "pane_exited"` かつ `role == "worker"` のエントリを収集)
-   - 10 秒以内に閉じないワーカーには `ccmux send --name worker-{task_id} --enter "exit"` で
-     シェル終了をフォールバックとして送り、その後の `pane_exited` で消滅を確認する
+3. **ワーカーペインが閉じたことを確認** — 2-pass 構造で実施:
+
+   **Pass 1 (polite shutdown の観察、最大 10 秒)**:
+   ```bash
+   ccmux events --timeout 10s \
+     | jq -c 'select(.type == "pane_exited" and .role == "worker")'
+   ```
+   - 出力された各行の `name` を `worker-{task_id}` と対応付けて、完了リストを作る
+   - 10 秒経過で `ccmux events` が自動 exit
+
+   **Pass 2 (残留ワーカーへのフォールバック + 再確認、最大 5 秒)**:
+   - Pass 1 で `pane_exited` を確認できなかったワーカーそれぞれに対して:
+     ```bash
+     ccmux send --name worker-{task_id} --enter "exit"
+     ```
+     でシェル終了を促す
+   - その後、再度:
+     ```bash
+     ccmux events --timeout 5s \
+       | jq -c 'select(.type == "pane_exited" and .role == "worker")'
+     ```
+     で残りの `pane_exited` を収集
+   - Pass 2 後もまだ閉じていないワーカーは `ccmux list` で生存確認し、残存なら人間に報告 (強制終了は現状未サポート)
+
 4. **フォアマンを停止**: フォアマンに `send_message` で終了を指示:
    「SHUTDOWN: 作業を終了してください。」
 5. **キュレーターを停止**: キュレーターに `send_message` で終了を指示:
    「SHUTDOWN: 作業を終了してください。」
-6. フォアマン・キュレーターのペインが閉じない場合も (3) と同じく `ccmux send ... --enter "exit"` でシェル終了を促し、`ccmux events` で `pane_exited` の確認を取る
+6. フォアマン・キュレーターも (3) と同じ 2-pass 構造で確認:
+   - Pass 1: `ccmux events --timeout 10s | jq 'select(.type=="pane_exited" and (.role=="foreman" or .role=="curator"))'`
+   - Pass 2: 残った pane に `ccmux send --name foreman --enter "exit"` / `--name curator --enter "exit"` を送り、`ccmux events --timeout 5s` で再確認
 
 **TODO (Phase 3)**: 明示的な `ccmux close --name X` API が入れば、シェル終了を経由せずに pane を
 直接破棄できるようになる。それまではシェル exit + `pane_exited` イベント確認の組み合わせで運用。

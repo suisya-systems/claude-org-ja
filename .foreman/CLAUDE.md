@@ -44,11 +44,16 @@
    ccmux events --timeout 5s
    ```
    - JSON Lines を 1 行ずつ parse する
-   - `type == "pane_exited"` を受信したら、その pane の `name` (例: `worker-foo`) を拾い、窓口に claude-peers で即時通知する:
+   - `type == "pane_exited"` を受信したら、その pane の `name` (例: `worker-foo`) を拾い、窓口に claude-peers で **ペインが閉じた** という事実だけを通知する:
      ```
-     WORKER_PANE_EXITED: {name} (id={id}) が終了しました。
+     WORKER_PANE_EXITED: {name} (id={id}) のペインが閉じました。リコンサイル要。
      ```
-     窓口側はこの通知を見て `.state/workers/worker-*.md` を完了扱いに更新する
+     **重要**: これは「ペインが消えた」というライフサイクル事実のみ。タスクの完了判定ではない。
+     窓口側は `.state/workers/worker-*.md` を `status=pane_closed` に遷移させ、タスクの完了/未完了は:
+       - 直近の claude-peers メッセージ履歴 (進捗ログ) を確認
+       - `COMPLETED` 報告が届いていれば task 完了扱い
+       - 届いていなければ、未完了終了 (ワーカー事故) として扱い、再派遣 or 放棄をユーザーに確認
+     のプロセスで判定する
    - `type == "pane_started"` は現状 use case なしなので無視して良い (将来必要になれば追加)
    - `type == "events_dropped"` は drop 件数を `.state/journal.jsonl` に記録 (監視が追いついていないシグナル)
    - 5 秒以内に 1 件も来なければ次の Step へ進む (Phase 2.1 の `--timeout` で勝手に exit する)
@@ -65,7 +70,8 @@
    - 通常進捗は `.state/workers/worker-*.md` に追記のみ
 
 3. **`ccmux list` を JSON で取得して突き合わせ**:
-   - `ccmux events` を見逃した場合の保険。events 経由で exit を把握していないのに `list` で pane が消えているワーカーがあれば、そのワーカーも完了扱いにして窓口に通知
+   - `ccmux events` を見逃した場合の保険 (`events_dropped` 発生時や events 未受信で pane 状態がズレた時)
+   - events 経由で exit を把握していないのに `list` で pane が消えているワーカーがあれば、**ペインが閉じた事実**として `.state/workers/worker-*.md` の status を `pane_closed` に遷移させ、Step 1 と同じく窓口に `WORKER_PANE_EXITED` を転送 (task 完了判定は同じ手順で窓口側が実施)
    - `--count` による hard cap は不要 (16 ペイン上限なので list は小さい)
 
 4. **重要**: フォアマンが自動で承認・拒否することはしない (ユーザー判断が必要)

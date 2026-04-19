@@ -269,10 +269,16 @@ DELEGATE: 以下のワーカーを派遣してください。
    - 開発チャネルの確認プロンプトが表示されるので、`ccmux send --name worker-{task_id} --enter ""` で Enter を送信する
 2. **ペインが起動したことを `ccmux events` で確認** (推奨):
    ```bash
-   ccmux events --timeout 3s --count 1
+   ccmux events --timeout 3s \
+     | jq -c --arg want "worker-{task_id}" \
+       'select(.type == "pane_started" and .name == $want)' \
+     | head -n 1
    ```
-   `type == "pane_started"` かつ `name == "worker-{task_id}"` が届けば pane は live。
-   3 秒以内に来なければ ccmux 側で何か失敗している可能性が高いので、`ccmux list` で状態を確認して窓口にエスカレーションする。
+   - `ccmux events` は 3 秒経過で勝手に exit するので全体で最大 3 秒待機
+   - `jq` で `pane_started` かつ `name == "worker-{task_id}"` の行だけに絞る (別タスクの同時 spawn 由来イベントを取りこぼさない、誤マッチしない)
+   - `head -n 1` で最初の該当行で pipeline を終了させる
+   - 出力が 1 行あれば OK。空なら 3 秒以内に起動イベントが来なかったということなので、`ccmux list` で状態を確認して窓口にエスカレーションする
+   - **注意**: 直接 `--count 1` にすると、別ワーカーの起動イベント等の無関係な 1 件で exit してしまい、target ワーカーの起動確認ができない
 3. claude-peers の `list_peers` で新しいピアが現れるのを待つ (pane は live でも Claude がまだ起動中の場合があるため二重確認)
 4. claude-peers の `send_message` でワーカーに指示を送る（references/instruction-template.md のフォーマット）
 5. 複数ワーカーがある場合は順次実行する
@@ -384,7 +390,7 @@ Planモード要のワーカーがPlan作成を完了し承認待ちになった
    ```
 4. フォアマンにモード切替完了を通知する
 
-**TODO (Phase 2)**: `ccmux events` がサブスクライブできれば、mode change イベントで確認できる。
+**TODO (Phase 3)**: ccmux に pane 内容スクレイプ API または "mode change" 相当のイベントが追加されれば、ステータスバー確認を自動化できる。Phase 2 の \`ccmux events\` は現状 pane lifecycle (起動/終了) のみで mode 変更は含まれない。
 
 **順序を間違えない**: 先に承認するとplanモードのままワーカーが動き出し、コマンド実行のたびに承認プロンプトが連続発生して作業が止まる。
 
