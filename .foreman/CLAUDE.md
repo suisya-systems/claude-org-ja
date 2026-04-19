@@ -60,16 +60,20 @@
    - 5 秒以内に 1 件も来なければ次の Step へ進む (Phase 2.1 の `--timeout` で勝手に exit する)
 
 2. **`claude-peers` の `check_messages` でワーカーからの自己報告を受信**:
-   - 受信種別ごとに Step 4 と同じ de-dup (30 秒窓、同一 worker+kind を抑制) を適用してから窓口へ転送する。通知した場合は journal に `notify_sent` を記録 (Step 4 の (e)(f) と同じ仕様)
-   - `APPROVAL_BLOCKED` → 窓口に転送 (`source=self_report`)
+   - 受信種別ごとに Step 4 (e) と同じシーケンスを適用してから窓口へ転送する:
+     1. 観測記録: `anomaly_observed` を journal に追記 (`source=self_report`、confidence は `n/a`。worker が自発的に報告したので cursor 補強不要)
+     2. 通知判定: 直近 30 秒以内の journal に `event=notify_sent` かつ `(worker, kind)` 一致のエントリがあればスキップ (Step 4 の inspect 通知と合算で de-dup)
+     3. 通知送信
+     4. `notify_sent` を journal に追記 (`source=self_report`, `confidence=n/a`)
+   - `APPROVAL_BLOCKED` → 窓口に転送
      ```
-     APPROVAL_BLOCKED: {task_id} のワーカー (ペイン名 worker-{task_id}) が承認待ちで停止しています。 (source=self_report)
+     APPROVAL_BLOCKED: {task_id} のワーカー (ペイン名 worker-{task_id}) が承認待ちで停止しています。 (source=self_report, confidence=n/a)
      ```
-   - `ERROR` / 停止メッセージ → 窓口に転送 (`source=self_report`)
+   - `ERROR` / 停止メッセージ → 窓口に転送
      ```
-     ERROR_DETECTED: {task_id} のワーカー (ペイン名 worker-{task_id}) がエラーまたは停止しています。 (source=self_report)
+     ERROR_DETECTED: {task_id} のワーカー (ペイン名 worker-{task_id}) がエラーまたは停止しています。 (source=self_report, confidence=n/a)
      ```
-   - 通常進捗は `.state/workers/worker-*.md` に追記のみ
+   - 通常進捗は `.state/workers/worker-*.md` に追記のみ (journal / de-dup スキーマには乗せない)
 
 3. **`ccmux list` を JSON で取得して突き合わせ**:
    - `ccmux events` を見逃した場合の保険 (`events_dropped` 発生時や events 未受信で pane 状態がズレた時)
@@ -111,31 +115,36 @@
 
    ERROR は cursor 補強なしで journal + 通知の両方を発行する (error banner は cursor 位置と相関しないため)。
 
-   #### (e) Journal 記録 (通知より先、high-confidence の場合)
-   ```json
-   {"ts":"<ISO timestamp>","event":"anomaly_observed","source":"inspect","worker":"worker-{task_id}","kind":"approval_blocked|error","confidence":"high|low","matched":"<該当行>","cursor":{"row":...,"col":...,"visible":...}}
-   ```
-   Journal 書き込み失敗時は通知もスキップする (journal が正本のため)。
-   通知失敗時は journal のみ残る — 次サイクルで同じ anomaly が再検出されれば、de-dup 判定後に再通知される。
+   #### (e) 実行シーケンス (journal + de-dup + notify)
+   以下の順番で厳密に実行する:
 
-   #### (f) de-dup (重複抑制)
-   通知発行前に以下をチェック:
-   - `.state/journal.jsonl` の直近 **30 秒以内** のエントリから `(worker, kind) == (worker-{task_id}, approval_blocked/error)` の `anomaly_observed` または `claude-peers notify_sent` を探す
-   - 該当があれば **新規通知をスキップ** (journal 記録は継続し、検出された事実は毎サイクル残す)
+   1. **観測記録** (confidence に関わらず常に): `.state/journal.jsonl` に追記
+      ```json
+      {"ts":"<ISO timestamp>","event":"anomaly_observed","source":"inspect","worker":"worker-{task_id}","kind":"approval_blocked|error","confidence":"high|low","matched":"<該当行>","cursor":{"row":...,"col":...,"visible":...}}
+      ```
+   2. **通知するかの判定** — 以下を **すべて** 満たす場合のみ通知に進む:
+      - APPROVAL_BLOCKED なら confidence == high (low-confidence は journal のみで終了)
+      - ERROR は常に通知対象 (cursor 補強なし)
+      - **de-dup チェック**: 直近 30 秒以内の journal に **`event == "notify_sent"`** かつ `(worker, kind)` 一致のエントリが存在しない
+        - `anomaly_observed` エントリは de-dup キーに **含めない** (低 confidence や observation-only record が将来の通知を抑制しないため)
+        - 今サイクルの step (1) で書いた `anomaly_observed` も de-dup 対象にならない
+   3. **通知送信** (step 2 を通過した場合): claude-peers で窓口に通知 (フォーマットは (g) 参照)
+   4. **notify_sent 記録** (通知送信成功時):
+      ```json
+      {"ts":"<ISO timestamp>","event":"notify_sent","source":"inspect","worker":"worker-{task_id}","kind":"approval_blocked|error","confidence":"high"}
+      ```
+   通知失敗時は `notify_sent` を書かない。次サイクルで再検出されれば de-dup が抜けて再通知が試行される (at-least-once)。
+   Journal 書き込み自体が失敗した場合はそのサイクルの通知を断念、次サイクルで再試行。
 
-   通知送信したら続けて journal に記録:
-   ```json
-   {"ts":"<ISO timestamp>","event":"notify_sent","source":"inspect","worker":"worker-{task_id}","kind":"approval_blocked|error"}
-   ```
-
-   #### (g) 通知フォーマット
-   (de-dup 通過時のみ) 窓口に claude-peers で通知。既存 `APPROVAL_BLOCKED` / `ERROR_DETECTED` フォーマットに `source=inspect` を付与:
+   #### (f) 通知フォーマット
+   (e) の step 3 に到達した場合のみ、窓口に claude-peers で通知。既存 `APPROVAL_BLOCKED` / `ERROR_DETECTED` フォーマットに `source=inspect` + `confidence=<high|n/a>` を付与:
    ```
    APPROVAL_BLOCKED: worker-{task_id} の承認プロンプトを検出 (source=inspect, confidence=high): {該当行}
-   ERROR_DETECTED: worker-{task_id} にエラーを検出 (source=inspect): {該当行}
+   ERROR_DETECTED: worker-{task_id} にエラーを検出 (source=inspect, confidence=n/a): {該当行}
    ```
+   ERROR は cursor 補強を使わないため confidence は便宜上 `n/a`。
 
-   #### (h) worker 自己申告 (Step 2) と inspect (Step 4) の併用設計
+   #### (g) worker 自己申告 (Step 2) と inspect (Step 4) の併用設計
    両チャネルが同じ anomaly を通知しても de-dup (f) が 30 秒窓で合算するので、窓口は重複通知を受け取らない。self-report は先に届けば inspect を抑制、inspect は worker が通知を忘れていれば self-report を補完する。両方独立稼働で OK。
 
 5. **重要**: フォアマンが自動で承認・拒否することはしない (ユーザー判断が必要)
