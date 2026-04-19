@@ -31,7 +31,7 @@ python3 dashboard/org_state_converter.py     # Mac/Linux
 | ステータス変更 | org-delegate Step 5 | Work Item のステータス（REVIEW/COMPLETED/IN_PROGRESS） |
 | 組織中断 | org-suspend Phase 3 | Status=SUSPENDED, Updated, Work Items, Resume Instructions |
 | 組織再開 | org-resume Phase 4 | Status=ACTIVE |
-| 起動（Foreman/Curator 記録） | org-start Steps 2-3 | Foreman/Curator のピア・ペイン ID |
+| 起動（Foreman/Curator 記録） | org-start Steps 2-3 | Foreman/Curator のピア ID とペイン名 |
 
 ---
 
