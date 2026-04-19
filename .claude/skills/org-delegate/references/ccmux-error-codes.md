@@ -1,0 +1,93 @@
+# ccmux IPC error codes — Foreman / Secretary reference
+
+ccmux 0.5.7+ は IPC エラー応答に `[code] human message` 形式で安定した
+machine-readable コードを載せる。フォアマン / キュレーター / 窓口は
+message の substring match ではなく **code で分岐する**のを推奨する。
+
+Wire format (実挙動):
+
+```
+$ ccmux send --name worker-nonexistent hi
+Error: [pane_not_found] pane not found: Name("worker-nonexistent")
+```
+
+stderr に上記 1 行、exit status は非ゼロ。
+
+## Known codes
+
+| Code | 意味 | Foreman の推奨挙動 |
+|---|---|---|
+| `pane_not_found` | 指定した pane 名 / id / Focused が存在しない | そのワーカーは既に閉じた扱い。`.state/workers/worker-*.md` の status を `pane_closed` に遷移、`WORKER_PANE_EXITED` を窓口に通知。リトライしない |
+| `pane_vanished` | resolve 成功後に消えたレース | `pane_not_found` と同等扱い |
+| `split_refused` | `ccmux split` が MAX_PANES / too small で拒否 | `org-delegate` では `new-tab` を優先しているので実際には出にくい。出た場合はキュレーターに escalate |
+| `io_error` | PTY write / spawn / OS レベル失敗 | 1 サイクル spin して再試行。2 連続で同じ worker に出たら窓口に `IO_ERROR_DETECTED` で escalate |
+| `shutting_down` | ccmux 本体がシャットダウン中 | 監視ループを **即停止** する。claude-peers に `FOREMAN_STOPPING` を通知 |
+| `app_timeout` | ccmux 内部 App スレッドが応答しなかった | 1 サイクル spin (ccmux 再起動は管理者判断)。連続発生なら窓口にログ |
+| `parse` / `protocol` | 通常出ない (ccmux CLI が正しく組み立てる前提) | 発生時はバグ。stderr を journal に記録して窓口に `IPC_PROTOCOL_ERROR` で報告 |
+| `internal` | ccmux 内部不変条件違反 (parser lock poison 等) | `app_timeout` と同じ扱い |
+
+## シェル側のハンドリング例
+
+```bash
+out=$(ccmux send --name worker-foo --enter "ping" 2>&1)
+status=$?
+if [ $status -ne 0 ]; then
+  case "$out" in
+    *"[pane_not_found]"*|*"[pane_vanished]"*)
+      # worker 既に閉じた — lifecycle 処理に回す
+      mark_worker_pane_closed worker-foo
+      ;;
+    *"[shutting_down]"*)
+      echo "ccmux halting — foreman stopping"
+      exit 0
+      ;;
+    *"[io_error]"*|*"[app_timeout]"*|*"[internal]"*)
+      log_journal "transient ccmux error: $out"
+      ;;
+    *)
+      log_journal "unexpected ccmux error: $out"
+      ;;
+  esac
+fi
+```
+
+## なぜ code か、substring ではなく
+
+- メッセージ本文は human-facing。リワードなしで変更される可能性がある
+  (e.g. "pane not found: Id(3)" → "pane 3 does not exist")
+- ccmux 側は `err_code` module で code 値を wire ABI として扱う。
+  rename は deprecation window 付き (詳細は ccmux `src/ipc/mod.rs::err_code`
+  の doc コメント参照)
+- 未知の code は必ず非致命扱いにする — 将来 ccmux が新 code を追加しても
+  フォアマンが落ちないようにデフォルトブランチ必須
+
+## 後方互換
+
+- pre-0.5.7 の ccmux では code が省略される (wire Response に `code`
+  フィールドなし)。その場合は従来通り substring match にフォールバック。
+- aainc-ops 側で code を扱う新しいコードは **両方** をサポートすべき
+  (最低でも unknown code を無視しないロジック)。
+
+## Event stream 側
+
+`ccmux events --timeout 5s` が返す JSON 行のうち、フォアマンが扱う `type`:
+
+| type | 扱い |
+|---|---|
+| `pane_started` | 現状 skip (将来必要になれば追加) |
+| `pane_exited` | `role == "worker"` に絞って `WORKER_PANE_EXITED` 通知 |
+| `events_dropped` | `.state/journal.jsonl` に drop 件数を記録 |
+| `heartbeat` | skip (30 秒おきの keep-alive。ccmux 0.5.7+ が emit) |
+
+`jq -c 'select(.type == "pane_exited" and .role == "worker")'` は
+heartbeat / pane_started / events_dropped を暗黙に落とすので、
+**既存のフィルタ式は 0.5.7 以降も無修正で動く**。ただし
+`events_dropped` を journal に記録したいなら select 式を拡張する:
+
+```bash
+ccmux events --timeout 5s \
+  | jq -c 'select(
+      (.type == "pane_exited" and .role == "worker")
+      or .type == "events_dropped"
+    )'
+```

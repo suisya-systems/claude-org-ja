@@ -18,6 +18,7 @@
 - **ペイン配置ルール**: `.claude/skills/org-delegate/references/pane-layout.md`
 - **ワーカーへの指示フォーマット**: `.claude/skills/org-delegate/references/instruction-template.md`
 - **ClaudeCode 起動コマンド**: `.claude/skills/org-start/SKILL.md` の「ClaudeCode 起動コマンド（役割別）」セクション
+- **ccmux IPC エラーコードと event 種別**: `.claude/skills/org-delegate/references/ccmux-error-codes.md` — `ccmux send` / `inspect` / `list` が失敗した時のハンドリング、`ccmux events` の type 分岐
 
 ## ワーカーへの報告先ルール（重要）
 
@@ -57,6 +58,7 @@
      のプロセスで判定する
    - `type == "pane_started"` は現状 use case なしなので無視して良い (将来必要になれば追加)
    - `type == "events_dropped"` は drop 件数を `.state/journal.jsonl` に記録 (監視が追いついていないシグナル)
+   - `type == "heartbeat"` は 30 秒おきの keep-alive (ccmux 0.5.7+)。既存 jq フィルタで暗黙に skip されるので何もしなくてよい
    - 5 秒以内に 1 件も来なければ次の Step へ進む (Phase 2.1 の `--timeout` で勝手に exit する)
 
 2. **`claude-peers` の `check_messages` でワーカーからの自己報告を受信**:
@@ -87,6 +89,11 @@
      ccmux inspect --name worker-{task_id} --lines 10 --cursor
      ```
      を順次実行 (16 ワーカー並列でも合計 1 秒未満)
+   - **エラー時の挙動**: stderr の先頭が `Error: [<code>] ...` のとき、code で分岐する (詳細は `references/ccmux-error-codes.md`):
+     - `[pane_not_found]` / `[pane_vanished]` — ワーカーが既に閉じた。そのワーカーの inspect を skip して Step 3 の list 結果で `WORKER_PANE_EXITED` 経路に回す (二重検出は de-dup で吸収される)
+     - `[shutting_down]` — ccmux 停止中。監視ループを即停止し、claude-peers で `FOREMAN_STOPPING` を窓口に通知
+     - `[io_error]` / `[app_timeout]` / `[internal]` — 一過性の可能性。`.state/journal.jsonl` に記録して次サイクルで再試行
+     - 未知 code (将来の ccmux が追加) — journal 記録のみで続行
 
    #### (a) マッチ対象の定義
    返却された `lines` 配列 (各要素 `{row, text}`) の中で、**`text != ""` を満たす最後の 1 要素** だけを APPROVAL_BLOCKED パターンの match 対象とする (複数行を対象にしない)。
@@ -166,6 +173,7 @@
 - **events と list の二重カバー**: events は best-effort (EventsDropped あり得る) なので、list による突き合わせを保険として併用
 - **inspect を独立した観測チャネルにする理由**: ワーカーが承認待ちで止まった時、worker 自己申告 (claude-peers) だけに頼ると worker が通知を送る前に停止してしまう。inspect は fore man 側から能動的に観測するので、worker 側の通知忘れ/遅延を補完する。自己申告と inspect は「同じ事象を 2 チャネルで観測できれば確度が上がる」という冗長性設計
 - **anchored regex の意図**: 本文中に "Allow this tool use" が偶然出てもプロンプト自体の行フォーマット (末尾に `(y/n)`) まで揃うことは稀。末尾 non-empty 行に絞ることで誤検出をさらに減らす
+- **ccmux コマンドの失敗は message ではなく code で分岐する**: `ccmux send` / `inspect` / `list` は stderr に `Error: [<code>] ...` の形でエラーを返す (ccmux 0.5.7+)。message 文字列は human-facing で将来変更あり得るので、`[pane_not_found]` / `[shutting_down]` 等の code で case 分岐する。code なしで受けた場合 (pre-0.5.7) は substring fallback。詳細は `.claude/skills/org-delegate/references/ccmux-error-codes.md`
 
 ## Plan承認後のモード切替
 
