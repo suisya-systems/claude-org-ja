@@ -9,6 +9,23 @@
 #
 # Override the Secretary startup command by editing `command` below
 # or setting a shell alias pointing at your preferred `claude` invocation.
+#
+# The `--dangerously-load-development-channels server:claude-peers`
+# flag is required: without it the Claude Code session silently
+# drops incoming claude-peers channel notifications (the peer is
+# still registered and list_peers / send_message work one-way, but
+# pushes from Foreman / Curator / workers never surface, and the
+# Secretary looks "alive but deaf"). Matches the same flag already
+# passed to Foreman / Curator / workers in org-start / org-delegate.
+#
+# With the flag on first launch Claude Code shows a one-off
+# "Load development channel: claude-peers?" prompt. Foreman /
+# Curator / workers bypass it via `ccmux send --name <id> --enter ""`
+# in org-start, but the Secretary is the initial pane that bootstraps
+# everything else, so that automated Enter isn't available yet —
+# the human operator has to press Enter manually the first time the
+# layout launches (and subsequently when Claude Code's session cache
+# gets invalidated).
 
 version = 1
 name = "ops"
@@ -17,4 +34,4 @@ name = "ops"
 type = "pane"
 id = "secretary"
 role = "secretary"
-command = "claude"
+command = "claude --dangerously-load-development-channels server:claude-peers"
