@@ -267,10 +267,16 @@ DELEGATE: 以下のワーカーを派遣してください。
    - 起動コマンドは `.claude/skills/org-start/SKILL.md` の「ClaudeCode 起動コマンド（役割別）」セクションを参照
    - Planモード要の場合は `--permission-mode plan` を使用する（org-config の値を上書き）
    - 開発チャネルの確認プロンプトが表示されるので、`ccmux send --name worker-{task_id} --enter ""` で Enter を送信する
-2. claude-peers の `list_peers` で新しいピアが現れるのを待つ
-3. claude-peers の `send_message` でワーカーに指示を送る（references/instruction-template.md のフォーマット）
-4. 複数ワーカーがある場合は順次実行する
-5. **Planモード要の場合 — Plan承認前のモード切替（重要: 順序厳守）**:
+2. **ペインが起動したことを `ccmux events` で確認** (推奨):
+   ```bash
+   ccmux events --timeout 3s --count 1
+   ```
+   `type == "pane_started"` かつ `name == "worker-{task_id}"` が届けば pane は live。
+   3 秒以内に来なければ ccmux 側で何か失敗している可能性が高いので、`ccmux list` で状態を確認して窓口にエスカレーションする。
+3. claude-peers の `list_peers` で新しいピアが現れるのを待つ (pane は live でも Claude がまだ起動中の場合があるため二重確認)
+4. claude-peers の `send_message` でワーカーに指示を送る（references/instruction-template.md のフォーマット）
+5. 複数ワーカーがある場合は順次実行する
+6. **Planモード要の場合 — Plan承認前のモード切替（重要: 順序厳守）**:
    Plan承認待ち（APPROVAL_BLOCKED）を検知したら、**Plan を承認する前に**モード切替を完了させる:
    (a) `ccmux send --name worker-{task_id} $'\x1b[Z'` で Shift+Tab を送信する（`--enter` を付けない）
    (b) 目視または claude-peers 側のサインでモード切替完了（「accept edits」表示）を確認する — 最大5回リトライ
@@ -280,8 +286,8 @@ DELEGATE: 以下のワーカーを派遣してください。
    コマンド実行のたびに承認プロンプトが連続発生する。承認プロンプト表示中は Shift+Tab が
    効かないため、手動介入が必要になる。先にモード切替することでこの問題を回避する。
 
-   **TODO (Phase 2)**: `ccmux events` によるライフサイクル購読が入れば、ステータスバー
-   テキスト取得に頼らず「mode change」イベントで確認できる。それまでは目視 or リトライで運用。
+   **TODO (Phase 3)**: pane 内容スクレイプ API が入れば、ステータスバー
+   テキスト取得で「mode change」を確認できる。それまでは目視 or リトライで運用。
 
 ## Step 4: 状態記録（フォアマンが実行）
 

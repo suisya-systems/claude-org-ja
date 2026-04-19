@@ -72,18 +72,19 @@ kill $(cat .state/dashboard.pid 2>/dev/null) 2>/dev/null || true
 1. claude-peers の `list_peers` で稼働中のピアを列挙
 2. **ワーカーを先に停止**: 全ワーカーピアに `send_message` で終了を指示:
    「SHUTDOWN: 作業を終了してください。」
-3. ワーカーのペインが閉じたことを確認（フォアマンに `CLOSE_PANE` を依頼）。
-   フォールバックとして `ccmux send --name worker-{task_id} --enter "exit"` を送信してシェルを終了
-   させることで PTY → ペインクローズさせる。
+3. ワーカーのペインが閉じたことを確認:
+   - バックグラウンドで `ccmux events --timeout 10s` を起動して `pane_exited` を待つ
+     (JSON Lines から `type == "pane_exited"` かつ `role == "worker"` のエントリを収集)
+   - 10 秒以内に閉じないワーカーには `ccmux send --name worker-{task_id} --enter "exit"` で
+     シェル終了をフォールバックとして送り、その後の `pane_exited` で消滅を確認する
 4. **フォアマンを停止**: フォアマンに `send_message` で終了を指示:
    「SHUTDOWN: 作業を終了してください。」
 5. **キュレーターを停止**: キュレーターに `send_message` で終了を指示:
    「SHUTDOWN: 作業を終了してください。」
-6. フォアマン・キュレーターのペインが閉じない場合は `ccmux send --name foreman --enter "exit"` /
-   `ccmux send --name curator --enter "exit"` でシェルを終了させる。
+6. フォアマン・キュレーターのペインが閉じない場合も (3) と同じく `ccmux send ... --enter "exit"` でシェル終了を促し、`ccmux events` で `pane_exited` の確認を取る
 
-**TODO (Phase 2)**: `ccmux events` or explicit `ccmux close --name X` API が入れば、
-pane のクローズをより直接的に制御できるようになる。それまでは上記シェル終了経由で運用。
+**TODO (Phase 3)**: 明示的な `ccmux close --name X` API が入れば、シェル終了を経由せずに pane を
+直接破棄できるようになる。それまではシェル exit + `pane_exited` イベント確認の組み合わせで運用。
 7. 人間に報告:
    ```
    組織を中断しました。

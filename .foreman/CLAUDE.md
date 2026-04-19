@@ -30,30 +30,56 @@
 アクティブなワーカーペインがある間、以下の監視を行う。
 **実現方法**: 最初のワーカー派遣完了後、`/loop 1m` で監視ループを開始する。全ワーカーペインが閉じたらループを停止する。
 
-> **Phase 2 待ち**: ccmux には `get-text` 相当の pane 内容スクレイプ API が未実装。
-> 当面は `claude-peers` の `check_messages` でワーカー自身からの report に依存する。
-> Phase 2 で `ccmux events` サブスクライブが入れば、より能動的な監視ができるようになる。
+> **役割分担** (ccmux Phase 2 導入後):
+> - **pane ライフサイクル (起動・終了)** は `ccmux events` で live 監視する
+> - **task 状態遷移 (APPROVAL_BLOCKED / ERROR / 進捗)** は引き続き `claude-peers` の `check_messages` で受信 (ワーカーの自己報告)
+> - pane 内容スクレイプ API は未実装 (Phase 3 以降)
 
-1. **監視間隔**: 1分おきに `claude-peers` の `check_messages` と `ccmux list` を確認する
-   - `ccmux list` でワーカーペインが生きているか (`exited=false`) を把握
-   - `check_messages` でワーカーからの APPROVAL_BLOCKED / ERROR / 進捗報告を受信
-2. **承認待ち検知**: ワーカーが claude-peers で APPROVAL_BLOCKED を報告してきた場合、窓口に転送する
-3. **エラー・停止検知**: ワーカーが ERROR / 停止メッセージを送ってきた場合、窓口に転送する
-4. **通知フォーマット** (窓口への転送):
-   - 承認待ち:
+### 監視ループ 1 サイクル (1 分おき)
+
+各サイクルで以下を順次実行する:
+
+1. **`ccmux events` で直近のペイン lifecycle を drain** (タイムアウト付きで 1 回だけ):
+   ```bash
+   ccmux events --timeout 5s
+   ```
+   - JSON Lines を 1 行ずつ parse する
+   - `type == "pane_exited"` を受信したら、その pane の `name` (例: `worker-foo`) を拾い、窓口に claude-peers で即時通知する:
      ```
-     APPROVAL_BLOCKED: {task_id} のワーカー（ペイン名 worker-{task_id}）が承認待ちで停止しています。
+     WORKER_PANE_EXITED: {name} (id={id}) が終了しました。
      ```
-   - エラー・停止:
+     窓口側はこの通知を見て `.state/workers/worker-*.md` を完了扱いに更新する
+   - `type == "pane_started"` は現状 use case なしなので無視して良い (将来必要になれば追加)
+   - `type == "events_dropped"` は drop 件数を `.state/journal.jsonl` に記録 (監視が追いついていないシグナル)
+   - 5 秒以内に 1 件も来なければ次の Step へ進む (Phase 2.1 の `--timeout` で勝手に exit する)
+
+2. **`claude-peers` の `check_messages` でワーカーからの自己報告を受信**:
+   - `APPROVAL_BLOCKED` → 窓口に転送
      ```
-     ERROR_DETECTED: {task_id} のワーカー（ペイン名 worker-{task_id}）がエラーまたは停止しています。
+     APPROVAL_BLOCKED: {task_id} のワーカー (ペイン名 worker-{task_id}) が承認待ちで停止しています。
      ```
-5. **重要**: フォアマンが自動で承認・拒否することはしない（ユーザー判断が必要）
-   - **例外**: Planモードワーカーの Plan 承認後、permission mode がまだ plan のままの場合、
-     Shift+Tab を送信して acceptEdits に切り替える（下記「Plan承認後のモード切替」参照）
-6. ワーカーペインがない場合は監視をスキップする
+   - `ERROR` / 停止メッセージ → 窓口に転送
+     ```
+     ERROR_DETECTED: {task_id} のワーカー (ペイン名 worker-{task_id}) がエラーまたは停止しています。
+     ```
+   - 通常進捗は `.state/workers/worker-*.md` に追記のみ
+
+3. **`ccmux list` を JSON で取得して突き合わせ**:
+   - `ccmux events` を見逃した場合の保険。events 経由で exit を把握していないのに `list` で pane が消えているワーカーがあれば、そのワーカーも完了扱いにして窓口に通知
+   - `--count` による hard cap は不要 (16 ペイン上限なので list は小さい)
+
+4. **重要**: フォアマンが自動で承認・拒否することはしない (ユーザー判断が必要)
+   - **例外**: Plan モードワーカーの Plan 承認後、permission mode がまだ plan のままの場合、Shift+Tab を送信して acceptEdits に切り替える (下記「Plan 承認後のモード切替」参照)
+
+5. ワーカーペインがない場合は `ccmux events` も `check_messages` もスキップし、監視ループを停止する
 
 監視対象のペイン名は `.state/workers/worker-{peer_id}.md` の Pane Name (`worker-{task_id}`) から取得する。
+
+### 設計メモ
+
+- **なぜ `ccmux events --timeout 5s` か**: 1 分のポーリング待ち時間を短縮するため、各サイクルで 5 秒分は live subscribe する。5 秒経過で exit して残りの 55 秒は check_messages + list で補完。これにより pane 終了検知の平均遅延が 30 秒 → 2.5 秒程度になる
+- **なぜ `--count` を指定しないか**: ワーカー 10 人並列で大量 event が出るケースでも 5 秒の timeout が安全弁になる。count 固定だと上限に達したあと timeout までブロックしてしまう
+- **events と list の二重カバー**: events は best-effort (EventsDropped あり得る) なので、list による突き合わせを保険として併用
 
 ## Plan承認後のモード切替
 
