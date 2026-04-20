@@ -106,6 +106,8 @@
    以下のいずれか:
    - `^Allow this tool use\? \(y/n\)$`
    - `^Do you want to proceed\? \(y/n\)$`
+   - `^Do you want to make this edit to .+\?$`
+   - `^❯\s*1\.\s*Yes\s*$`
    - `^Press .+ to continue`
 
    **新しいプロンプト形が観測されたら、この regex リストに追記**。Claude Code の version 更新で形が変わる可能性があるため、網羅は前提にしない。
