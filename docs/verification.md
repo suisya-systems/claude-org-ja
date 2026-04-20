@@ -78,7 +78,9 @@ cat registry/projects.md
    - c. 起動直後の `ccmux list --format json` を **別ログファイル (例: `.state/verification/balanced-split-{timestamp}.log`)** に保存するか、その場で `role == "worker"` の `name` / `id` を記録し、`.state/journal.jsonl` の `worker_spawned` イベントと事後照合する（`journal.jsonl` の schema に raw list スナップショットは含まれないので、verification 用途の一時ログとして分離する）
 3. k=4 到達時点でペイン配置を目視し、`pane-layout.md` の 4 並列 ASCII 図と一致するか確認（`foreman` 幅 ≈ W_f/2、ワーカー 4 個が 2×2 のグリッド）。
 4. k=8 到達時点で同じく 8 並列 ASCII 図（2×4 グリッド）と一致するか確認。
-5. 9 人目のダミータスクを試し、フォアマンが escalate メッセージを窓口に送信して停止することを確認（`split_refused` を返す手前で k>=9 と判定して escalate）。
+5. 9 人目のダミータスクを試し、フォアマンが claude-peers で窓口に `SPLIT_CAPACITY_EXCEEDED` を送信することを確認。**当該 9 人目のワーカーのみ派遣を中止し、フォアマン本体の監視ループは継続稼働**すること（`ccmux split` は発行されず、`exit` などでフォアマンが落ちない）。
+
+> **注**: `.state/verification/balanced-split-{timestamp}.log` 等の検証用ログは一時ファイルなのでコミット対象外。`.state/*` は既存の `.gitignore` で除外済み。
 
 **期待結果**:
 - k=1〜8 で `[split_refused]` ゼロ

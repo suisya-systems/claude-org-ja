@@ -265,7 +265,8 @@ DELEGATE: 以下のワーカーを派遣してください。
 # ccmux close で撤去されたペインは list に載らないため、role フィルタのみで live 扱い
 # (PaneInfo JSON に .exited フィールドは存在しない。ccmux/src/ipc/mod.rs:157-167 参照)
 #
-# macOS デフォルト bash 3.2 との互換のため readarray ではなく while-read ループを使う
+# bash 4+ 専用の配列展開ビルトインと非互換のため、macOS デフォルト bash 3.2 でも動く
+# while-read ループで実装する
 active_workers=()
 while IFS= read -r name; do
   active_workers+=("$name")
@@ -297,12 +298,14 @@ fi
 ```
 
 - active_workers が空 (最初のワーカー) なら k=1 に落ちて target=foreman / direction=vertical が選ばれる
-- **k >= 9 もしくは算出不能時の扱い**: `$target` / `$direction` が空のまま 3-2 に進むので、フォアマン Claude は **`ccmux split` を発行せず**、代わりに claude-peers で窓口 (Secretary) に以下のメッセージを送信する:
-  ```
-  SPLIT_CAPACITY_EXCEEDED: {task_id} は {k} 人目のワーカーで balanced split table 未定義。
-  ターミナル幅不足 or 想定外の退役順が疑われる。人間判断が必要です。
-  ```
-  フォアマン本体の監視ループは **継続**させる (該当ワーカーのみ派遣中止)。`exit` / `return` などでフォアマンを落とさないこと
+- **k >= 9 もしくは算出不能時の扱い**: `$target` / `$direction` が空のまま 3-2 に進むので、フォアマン Claude は **`ccmux split` を発行せず**、代わりに claude-peers で窓口 (Secretary) に escalate メッセージを送信する:
+  1. `mcp__claude-peers__list_peers` (scope: `machine`) を呼び、`summary` に `Secretary` を含む peer を特定して `id` を取得する (通常は 1 件だが、複数あれば最新の last_seen を選ぶ)
+  2. `mcp__claude-peers__send_message` を `to_id=<Secretary id>` で呼び、本文を以下にする:
+     ```
+     SPLIT_CAPACITY_EXCEEDED: {task_id} は {k} 人目のワーカーで balanced split table 未定義。
+     ターミナル幅不足 or 想定外の退役順が疑われる。人間判断が必要です。
+     ```
+  3. 3-3 以降（`ccmux events` 待機、`list_peers` 待ち、instruction 送信）は **skip** する。該当ワーカー 1 件だけ派遣を中止し、フォアマン本体の監視ループは **継続**させる。`exit` / `return` などでフォアマンを落とさないこと
 
 ### 3-2. ワーカーペインを起動する
 
@@ -322,6 +325,8 @@ else
     --command "cd '{workers_dir}/{task_id}' && claude --dangerously-load-development-channels server:claude-peers --permission-mode {default_permission_mode}"
 fi
 ```
+
+> **`$target` / `$direction` が空だった場合の後続フロー**: このワーカーの起動フローはここで終了。3-3 (`ccmux events` 待機)、3-4 (`list_peers` 待ち)、3-5 (instruction 送信) のいずれも **skip** する。claude-peers での escalate（3-1 の手順参照）を行ったらフォアマン本体は次のサイクルへ。次タスクが控えているなら 3-6 で次の派遣へ進む。
 
    - ペイン配置ルールは `references/pane-layout.md` (ccmux 版) を参照。`k` に対する target / direction のマッピングと 4 並列 / 8 並列の ASCII 図もそちらに集約
    - **同一タブ内 split で起動する理由**: ccmux の `list` / `focus` / `send` / `inspect` は現在フォーカス中のタブのペインしか見えない。`new-tab` で別タブに置くとフォアマンからの監視・指示送信が不能になる (2026-04-20 判明。ccmux 側 issue: happy-ryo/ccmux#71)
