@@ -85,9 +85,12 @@ kill $(cat .state/dashboard.pid 2>/dev/null) 2>/dev/null || true
    **Pass 2 (残留ワーカーへのフォールバック + 再確認、最大 5 秒)**:
    - Pass 1 で `pane_exited` を確認できなかったワーカーそれぞれに対して:
      ```bash
-     ccmux send --name worker-{task_id} --enter "exit"
+     ccmux close --name worker-{task_id}
      ```
-     でシェル終了を促す
+     でペインを明示破棄する (ccmux v0.5.8+)。成功時は `{"id": N, "closed": true}` が返り、
+     `Event::PaneExited` が 1 回 emit される。`[pane_not_found]` / `[pane_vanished]` は
+     既に閉じた扱いで skip。`[last_pane]` はワーカー停止段階では通常発生しない
+     (窓口/フォアマン/キュレーターが残っているため)
    - その後、再度:
      ```bash
      ccmux events --timeout 5s \
@@ -102,10 +105,13 @@ kill $(cat .state/dashboard.pid 2>/dev/null) 2>/dev/null || true
    「SHUTDOWN: 作業を終了してください。」
 6. フォアマン・キュレーターも (3) と同じ 2-pass 構造で確認:
    - Pass 1: `ccmux events --timeout 10s | jq 'select(.type=="pane_exited" and (.role=="foreman" or .role=="curator"))'`
-   - Pass 2: 残った pane に `ccmux send --name foreman --enter "exit"` / `--name curator --enter "exit"` を送り、`ccmux events --timeout 5s` で再確認
+   - Pass 2: 残った pane に `ccmux close --name foreman` / `ccmux close --name curator` を送り、`ccmux events --timeout 5s` で再確認
 
-**TODO (Phase 3)**: 明示的な `ccmux close --name X` API が入れば、シェル終了を経由せずに pane を
-直接破棄できるようになる。それまではシェル exit + `pane_exited` イベント確認の組み合わせで運用。
+**最後のペイン (窓口) の扱い**: フォアマン・キュレーターを閉じた時点でタブに残るのは窓口
+ペインのみになる。窓口が自分自身を `ccmux close --name secretary` で閉じようとすると
+`[last_pane]` (唯一のタブの唯一のペイン) が返るので、**窓口は自分自身で `exit` して自然終了
+させる** (人間が端末を閉じる、または `/exit` でシェルに戻る)。org-suspend は窓口ペインを
+閉じる責任を負わない。
 7. 人間に報告:
    ```
    組織を中断しました。
