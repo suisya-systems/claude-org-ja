@@ -1,7 +1,7 @@
 # Organization Config
 
 ## Permission Mode
-default_permission_mode: bypassPermissions
+default_permission_mode: auto
 
 選択肢:
 - bypassPermissions: 全許可、確認なし（デフォルト）
