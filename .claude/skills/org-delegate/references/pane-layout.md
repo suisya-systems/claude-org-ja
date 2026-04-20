@@ -39,9 +39,10 @@ Tab 1: ops
   - `ccmux list` の JSON 出力で `role` フィールドが取得でき、組織状態の集計に使える
 - **ワーカー完了時**:
   1. 窓口がフォアマンに `CLOSE_PANE` を依頼
-  2. フォアマンは `ccmux send --name worker-{task_id} --enter "exit"` でシェルを終了させる
-     (シェル終了 → PTY 終了 → ccmux が exited pane として検出 → タブも自動クローズ)
-- **org-suspend 時の停止順**: ワーカー → フォアマン → キュレーター (いずれも `ccmux send ... --enter "exit"`)
+  2. フォアマンは `ccmux close --name worker-{task_id}` でペインを明示破棄する (ccmux v0.5.8+)
+     (ccmux が pane を撤去 → `Event::PaneExited` を 1 回 emit → `ccmux list` からも消える。
+     `[pane_not_found]` / `[pane_vanished]` は「既に閉じた扱い」として skip する)
+- **org-suspend 時の停止順**: ワーカー → フォアマン → キュレーター (いずれも `ccmux close --name ...` で破棄。最後の 1 ペインを閉じるときだけ `[last_pane]` が返るので、そのペインは自分自身で `exit` させる)
 
 ## ccmux split の direction 慣習
 
@@ -53,4 +54,3 @@ ccmux の分割方向は以下の定義:
 
 - `ccmux events` によるペイン lifecycle 購読 (現在は claude-peers 経由で補完)
 - `ccmux split --ratio 0.2` 等の比率指定 (現状は 50/50 固定)
-- `ccmux close --name X` による明示的なペイン破棄 (現状は shell exit 経由)
