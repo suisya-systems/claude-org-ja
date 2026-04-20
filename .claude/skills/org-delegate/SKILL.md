@@ -254,56 +254,57 @@ DELEGATE: 以下のワーカーを派遣してください。
 
 ### 3-1. balanced split で target / direction を決める
 
-旧設計は `--target-name foreman --direction vertical` 固定だったが、これは foreman 幅を毎回半減させるため、典型的なターミナル幅 (W≈200〜300 cols) で 4 人目以降 `[split_refused]` が発生していた (`MIN_PANE_WIDTH=20` 制約、調査: `C:/Users/iwama/working/workers/ccmux-split-inv/findings.md`)。
-
-現設計では **balanced split** により、新規ワーカーの序数 `k` に応じて target と direction を動的に選ぶ。詳細ルールは `references/pane-layout.md` の「ワーカーの balanced split 戦略」セクションを参照。
+旧設計は序数 `k` ベースの lookup table で target を決めていたが、ワーカーが途中で閉じた後の再派遣や想定外の退役順でテーブル前提と実レイアウトが乖離し、`[split_refused]` を誘発しやすかった。ccmux v0.5.x から `ccmux list --format json` が各ペインの `x / y / width / height` (u16, cell 単位) を返すため、**現在のレイアウト (rect) から動的に target と direction を選ぶ方式**に差し替えた。詳細ルールは `references/pane-layout.md` の「ワーカーの balanced split 戦略」セクションを参照。
 
 フォアマンは `ccmux split` を呼ぶ前に、以下のシェルスニペットで target と direction を算出する:
 
 ```bash
-# 生きている worker ペインを作成順 (pane id 昇順) に並べた name 配列を取得
-# ccmux close で撤去されたペインは list に載らないため、role フィルタのみで live 扱い
-# (PaneInfo JSON に .exited フィールドは存在しない。ccmux/src/ipc/mod.rs:157-167 参照)
-#
-# bash 4+ 専用の配列展開ビルトインと非互換のため、macOS デフォルト bash 3.2 でも動く
-# while-read ループで実装する
-active_workers=()
-while IFS= read -r name; do
-  active_workers+=("$name")
-done < <(
-  ccmux list --format json \
-    | jq -r '.panes | map(select(.role == "worker")) | sort_by(.id) | .[].name'
+# MIN_PANE_WIDTH=20 / MIN_PANE_HEIGHT=5: ccmux 側の分割下限 (findings: ccmux-split-inv)
+# SECRETARY_MIN_WIDTH=100:               secretary を分割候補にしてよい最小幅 (保険条項、実運用ではほぼ不発動)
+layout=$(ccmux list --format json)
+read -r target direction < <(
+  jq -r '
+    # rect 隣接判定: 辺共有 + その軸に直交する方向の区間 overlap
+    def adj($a; $b):
+      ((($a.x + $a.width) == $b.x or ($b.x + $b.width) == $a.x)
+        and ([$a.y, $b.y] | max) < ([$a.y + $a.height, $b.y + $b.height] | min))
+      or ((($a.y + $a.height) == $b.y or ($b.y + $b.height) == $a.y)
+        and ([$a.x, $b.x] | max) < ([$a.x + $a.width, $b.x + $b.width] | min));
+    (.panes | map(select(.role == "curator")) | first) as $cur
+    | .panes
+      # 候補は worker / foreman / secretary のみ (curator は常に除外)
+      | map(select(.role == "worker" or .role == "foreman" or .role == "secretary"))
+      # foreman-curator 隣接維持: foreman は curator と rect 隣接しているときのみ候補
+      | map(select(.role != "foreman" or ($cur != null and adj(.; $cur))))
+      | map(
+          # ターミナルセルは縦横比 ≈ 2:1 (文字が縦長) なので、文字単位で
+          # width = 2*height のとき物理的にほぼ正方形。width > height*2 を
+          # 「物理的に横長」判定とし、横長なら vertical (左右分割)、
+          # そうでなければ horizontal (上下分割) を選ぶ。
+          (if .width > .height * 2 then "vertical" else "horizontal" end) as $d
+          | (if $d == "vertical"   then (.width  / 2 | floor) else .width  end) as $nw
+          | (if $d == "horizontal" then (.height / 2 | floor) else .height end) as $nh
+          | . + {dir:$d, nw:$nw, nh:$nh,
+                 metric: (if $d == "vertical" then $nw else $nh end)})
+      # MIN_PANE 制約 + secretary 保険条項 (secretary は new_w >= 100 のときだけ候補に残る)
+      | map(select(.nw >= 20 and .nh >= 5))
+      | map(select(.role != "secretary" or .nw >= 100))
+      # 分割軸方向の新サイズ (vertical なら new_w、horizontal なら new_h) が最大のペインを選ぶ。
+      # tie-break はその時点の pane id 昇順 (スナップショット内で再現可能)。
+      | sort_by(-.metric, .id)
+      | if length == 0 then "" else (.[0] | "\(.name) \(.dir)") end
+  ' <<<"$layout"
 )
-
-k=$(( ${#active_workers[@]} + 1 ))  # この新規ワーカーの序数 (1-indexed)
-
-target=""
-direction=""
-if [ "$k" -ge 9 ]; then
-  # k >= 9 は balanced split table 未定義。target / direction を空のまま残し、
-  # フォアマン Claude 側で ccmux split を発行せず claude-peers で escalate する
-  echo "SPLIT_CAPACITY_EXCEEDED: ${k} 人目のワーカーは balanced split table 未定義" >&2
-else
-  case "$k" in
-    1) target="foreman";                direction="vertical"   ;;
-    2) target="${active_workers[0]}";   direction="horizontal" ;;
-    3) target="${active_workers[0]}";   direction="vertical"   ;;
-    4) target="${active_workers[1]}";   direction="vertical"   ;;
-    5) target="${active_workers[0]}";   direction="horizontal" ;;
-    6) target="${active_workers[2]}";   direction="horizontal" ;;
-    7) target="${active_workers[1]}";   direction="horizontal" ;;
-    8) target="${active_workers[3]}";   direction="horizontal" ;;
-  esac
-fi
 ```
 
-- active_workers が空 (最初のワーカー) なら k=1 に落ちて target=foreman / direction=vertical が選ばれる
-- **k >= 9 もしくは算出不能時の扱い**: `$target` / `$direction` が空のまま 3-2 に進むので、フォアマン Claude は **`ccmux split` を発行せず**、代わりに claude-peers で窓口 (Secretary) に escalate メッセージを送信する:
+- 初回 (ワーカー 0 人) は foreman が唯一の候補として残り、direction は foreman の aspect ratio から決まる (典型的に横長なので vertical)
+- **候補が空だった場合の扱い**: `$target` / `$direction` が空のまま 3-2 に進むので、フォアマン Claude は **`ccmux split` を発行せず**、代わりに claude-peers で窓口 (Secretary) に escalate メッセージを送信する:
   1. `mcp__claude-peers__list_peers` (scope: `machine`) を呼び、`summary` に `Secretary` を含む peer を特定して `id` を取得する (通常は 1 件だが、複数あれば最新の last_seen を選ぶ)
   2. `mcp__claude-peers__send_message` を `to_id=<Secretary id>` で呼び、本文を以下にする:
      ```
-     SPLIT_CAPACITY_EXCEEDED: {task_id} は {k} 人目のワーカーで balanced split table 未定義。
-     ターミナル幅不足 or 想定外の退役順が疑われる。人間判断が必要です。
+     SPLIT_CAPACITY_EXCEEDED: {task_id} のワーカー分割対象が見つからない。
+     rect ベース balanced split の MIN_PANE / 隣接条件を満たす候補が 0。
+     ターミナルサイズ不足または想定外のレイアウトが疑われる。人間判断が必要です。
      ```
   3. 3-3 以降（`ccmux events` 待機、`list_peers` 待ち、instruction 送信）は **skip** する。該当ワーカー 1 件だけ派遣を中止し、フォアマン本体の監視ループは **継続**させる。`exit` / `return` などでフォアマンを落とさないこと
 
@@ -313,7 +314,7 @@ fi
 
 ```bash
 if [ -z "$target" ] || [ -z "$direction" ]; then
-  # 3-1 の k >= 9 分岐を経由。claude-peers で窓口に SPLIT_CAPACITY_EXCEEDED を送信して
+  # 3-1 で balanced split 候補が空。claude-peers で窓口に SPLIT_CAPACITY_EXCEEDED を送信して
   # このワーカーの派遣を中止する (フォアマン本体は継続)
   :  # ccmux split を発行しない
 else
@@ -328,7 +329,7 @@ fi
 
 > **`$target` / `$direction` が空だった場合の後続フロー**: このワーカーの起動フローはここで終了。3-3 (`ccmux events` 待機)、3-4 (`list_peers` 待ち)、3-5 (instruction 送信) のいずれも **skip** する。claude-peers での escalate（3-1 の手順参照）を行ったらフォアマン本体は次のサイクルへ。次タスクが控えているなら 3-6 で次の派遣へ進む。
 
-   - ペイン配置ルールは `references/pane-layout.md` (ccmux 版) を参照。`k` に対する target / direction のマッピングと 4 並列 / 8 並列の ASCII 図もそちらに集約
+   - ペイン配置ルールは `references/pane-layout.md` (ccmux 版) を参照。rect ベースの target / direction 選出ルールはそちらに集約
    - **同一タブ内 split で起動する理由**: ccmux の `list` / `focus` / `send` / `inspect` は現在フォーカス中のタブのペインしか見えない。`new-tab` で別タブに置くとフォアマンからの監視・指示送信が不能になる (2026-04-20 判明。ccmux 側 issue: happy-ryo/ccmux#71)
    - `--target-name "$target"`: balanced split で算出した既存ペイン名 (`foreman` もしくは `worker-*`) を分割対象にする
    - `--direction "$direction"`: balanced split で算出した `vertical` / `horizontal`

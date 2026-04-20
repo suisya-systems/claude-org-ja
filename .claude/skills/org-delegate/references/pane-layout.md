@@ -27,7 +27,7 @@ Tab 1: ops (ワーカー 0 人)
 |---|---|---|
 | フォアマン | 窓口ペインを水平分割して下半分 | `ccmux split --target-focused --direction horizontal --role foreman --id foreman --command "cd .foreman && claude ..."` (org-start Step 2) |
 | キュレーター | フォアマンペインを垂直分割して右半分 | `ccmux split --target-name foreman --direction vertical --role curator --id curator --command "cd .curator && claude ..."` (org-start Step 3) |
-| 各ワーカー | **balanced split**: 既存のペイン数 `k` に応じた target と direction を `ccmux list` の結果から動的に選び、同一タブ内に積む | 詳細は下記「ワーカーの balanced split 戦略」セクション。`ccmux split --target-name {target} --direction {direction} --role worker --id worker-{task_id} --command "cd {workers_dir}/{task_id} && claude ..."` (org-delegate Step 3) |
+| 各ワーカー | **balanced split**: `ccmux list` が返す現在の rect から target と direction を動的に選び、同一タブ内に積む | 詳細は下記「ワーカーの balanced split 戦略」セクション。`ccmux split --target-name {target} --direction {direction} --role worker --id worker-{task_id} --command "cd {workers_dir}/{task_id} && claude ..."` (org-delegate Step 3) |
 
 ## ワーカーの balanced split 戦略
 
@@ -35,96 +35,50 @@ Tab 1: ops (ワーカー 0 人)
 
 ccmux は各 split で対象ペインを 50/50 に分ける。`MIN_PANE_WIDTH = 20` / `MIN_PANE_HEIGHT = 5` の下限を割り込むと `[split_refused]` で拒否される (調査: `C:/Users/iwama/working/workers/ccmux-split-inv/findings.md`)。
 
-旧設計は全ワーカーを `--target-name foreman --direction vertical` で追加しており、`foreman` 幅が毎回半減するため、典型的なターミナル幅 (W≈200 cols) では **4 人目で `split_refused`** になっていた。
+固定 target (`--target-name foreman --direction vertical`) や序数 `k` ベースの lookup table では、foreman 幅の累積半減や、ワーカーが途中で閉じた後の再派遣で想定レイアウトと実レイアウトが乖離し、早期に `split_refused` を誘発していた。
 
-新設計 (balanced split) では「新規ワーカーの序数 `k` に応じて既存ワーカーを動的に target に選ぶ」ことで、ワーカー zone を準 balanced binary tree にする。これにより **W ≥ 160 cols で 8 並列**まで収まる。
+現設計は ccmux v0.5.x から `ccmux list --format json` が返す各ペインの **rect 情報 (`x / y / width / height`, u16, cell 単位)** を使い、**現状のレイアウトから動的に target と direction を選ぶ**。ワーカー退役順の揺れや途中クローズに強く、固定的な「N 並列上限」は持たず、ターミナルサイズと MIN_PANE 制約が許す限り分割し続け、限界に達したら自動 escalate する。
 
 ### アルゴリズム
 
-新規ワーカーを起動するフォアマンは、`ccmux split` を呼ぶ前に以下を計算する:
+新規ワーカーを起動するフォアマンは、`ccmux split` を呼ぶ前に以下を実行する。bash + jq 実装は `SKILL.md` Step 3-1 を参照。
 
-1. `ccmux list --format json` を実行し、`.panes | map(select(.role == "worker")) | sort_by(.id)` で **生きている worker ペインを作成順 (pane id 昇順) に並べた配列** `active_workers` を得る。要素は `{id, name, role, focused}` で、以降は `name` (例: `worker-foo-bar`) のみ使う。なお `PaneInfo` JSON schema には `.exited` フィールドは存在しない (`ccmux/src/ipc/mod.rs:157-167` 参照)。ccmux は `ccmux close` で撤去されたペインを list から外すので、`role == "worker"` を満たすものはすべて live。
-2. 序数 `k = len(active_workers) + 1` を決める。
-3. 下表から `k` に対応する `target` ペイン名と `direction` を取得する。
+1. `ccmux list --format json` で全ペインと rect を取得する
+2. **候補集合**: `role ∈ {worker, foreman, secretary}` のペイン (curator は常に除外)
+3. **候補の絞り込み**:
+   - **foreman-curator 隣接維持**: foreman は curator と rect 隣接 (後述) しているときのみ候補に入れる。組織運営上 foreman と curator の隣接配置は前提。foreman を分割すると隣接が崩れ得るので、既に非隣接な foreman は候補から外す
+   - **secretary 保護**: secretary は分割後の新ペイン幅 `new_w >= 100` を満たす場合のみ候補化 (保険条項、実運用では通常発動しない)
+4. **direction 決定** (各候補の aspect ratio から):
+   - `width > height * 2` → `vertical` (左右分割)
+   - それ以外 → `horizontal` (上下分割)
+   - ターミナルセルは縦長 (縦横比 ≈ 2:1) なので、文字単位で `width = 2 * height` のとき物理的にほぼ正方形。`width > height * 2` は「物理的に横長」判定として妥当
+5. **MIN_PANE 制約**: 分割後の新ペインサイズ `(new_w, new_h)` が `new_w >= 20` かつ `new_h >= 5` を満たさない候補は除外
+   - vertical 分割: `(new_w, new_h) = (floor(width / 2), height)`
+   - horizontal 分割: `(new_w, new_h) = (width, floor(height / 2))`
+6. **target 選出**: 残った候補から **「分割軸方向の新サイズ」** (vertical なら `new_w`、horizontal なら `new_h`) が最大のペインを target にする。tie-break はその時点の pane id 昇順 (スナップショット内で再現可能。セッション跨ぎの安定性までは保証しない)
+7. **候補が空なら escalate**: `SKILL.md` Step 3-1 末尾の `SPLIT_CAPACITY_EXCEEDED` 経路で窓口に escalate (`ccmux split` は発行せず、該当ワーカー 1 件だけ派遣中止、フォアマン本体は継続)
 
-### 序数 `k` → target / direction テーブル
+### rect 隣接判定の定義
 
-| k | target pane name | direction | 備考 |
-|---|---|---|---|
-| 1 | `foreman` | `vertical` | 唯一の foreman 分割。以降 foreman 幅は固定 |
-| 2 | `active_workers[0]` | `horizontal` | worker zone を 2 行化 |
-| 3 | `active_workers[0]` | `vertical` | 2×1 から 2×2 グリッド化 (上段) |
-| 4 | `active_workers[1]` | `vertical` | 2×2 グリッド化完了 (下段) |
-| 5 | `active_workers[0]` | `horizontal` | 2×2 各セルを 2 段化開始 (top-left セル) |
-| 6 | `active_workers[2]` | `horizontal` | (top-right セル) |
-| 7 | `active_workers[1]` | `horizontal` | (bottom-left セル) |
-| 8 | `active_workers[3]` | `horizontal` | (bottom-right セル) → 2×4 の 8 セル完成 |
-| 9+ | escalate to 窓口 | — | `ccmux` 本体の `MIN_PANE_WIDTH` を下げるか Phase 2 機能 (`--target-largest` 相当) が必要 |
+rect `A, B` が隣接するとは以下のいずれかを満たすこと:
 
-### 幅・高さ要件
+- **左右隣接**: `A.x + A.width == B.x` または `B.x + B.width == A.x`、かつ y 区間が overlap (`max(A.y, B.y) < min(A.y + A.height, B.y + B.height)`)
+- **上下隣接**: `A.y + A.height == B.y` または `B.y + B.height == A.y`、かつ x 区間が overlap (`max(A.x, B.x) < min(A.x + A.width, B.x + B.width)`)
 
-初期 foreman 領域を `W_f × H_f` とする (典型: `W_f = W/2`, `H_f = H/2`、file-tree / preview が表示中ならさらに縮む)。上表適用後の最小ペインサイズは:
+ccmux の cell 座標は整数なので tolerance なし完全一致で判定する。
 
-| 並列数 | 最小 worker 幅 | 最小 worker 高 | 必要 `W_f` | 必要 `H_f` |
-|---|---|---|---|---|
-| 4 | `W_f/4` | `H_f/2` | 80 (W ≥ 160) | 10 |
-| 8 | `W_f/4` | `H_f/4` | 80 (W ≥ 160) | 20 |
+### 初期状態と典型的な挙動
 
-各 split ステップで satisfying するのは「target の分割軸幅 ÷ 2 ≥ MIN」。上表の最悪ケースは k=3 の `W_f/2 → W_f/4` (必要 `W_f/2 ≥ 40`) と k=5〜8 の `H_f/2 → H_f/4` (必要 `H_f/2 ≥ 10`)。
+ワーカー 0 人の時点では、候補は `foreman` のみ (secretary は `new_w >= 100` 条件または隣接条件で除外されるのが通常。curator は常に除外)。foreman は典型的に横長なので vertical 分割され、最初のワーカー zone が foreman の右側に作られる。
 
-### ペイン配置図
-
-#### 4 並列時 (k=4 まで適用)
-
-foreman 領域を `2×2` のワーカー zone + 左側の foreman に分ける:
-
-```
-foreman 領域 (W_f × H_f)
-┌──────────┬─────────────────────┐
-│          │                     │
-│          │  worker-1 │ worker-3│
-│          │  (W_f/4 × H_f/2)    │
-│ foreman  │                     │
-│ (W_f/2 × ├──────────┬──────────┤
-│  H_f)    │          │          │
-│          │ worker-2 │ worker-4 │
-│          │ (W_f/4 × H_f/2)     │
-└──────────┴─────────────────────┘
-```
-
-#### 8 並列時 (k=8 まで適用)
-
-2×2 の各セルをさらに上下 2 段に割って `2×4` の 8 セルに:
-
-```
-foreman 領域 (W_f × H_f)
-┌──────────┬──────────┬──────────┐
-│          │ worker-1 │ worker-3 │
-│          │ W_f/4 ×  │ W_f/4 ×  │
-│          │ H_f/4    │ H_f/4    │
-│          ├──────────┼──────────┤
-│          │ worker-5 │ worker-6 │
-│ foreman  │ W_f/4 ×  │ W_f/4 ×  │
-│ (W_f/2 × │ H_f/4    │ H_f/4    │
-│  H_f)    ├──────────┼──────────┤
-│          │ worker-2 │ worker-4 │
-│          │ W_f/4 ×  │ W_f/4 ×  │
-│          │ H_f/4    │ H_f/4    │
-│          ├──────────┼──────────┤
-│          │ worker-7 │ worker-8 │
-│          │ W_f/4 ×  │ W_f/4 ×  │
-│          │ H_f/4    │ H_f/4    │
-└──────────┴──────────┴──────────┘
-```
-
-図中の `worker-N` は `active_workers[N-1]` の位置関係を表す (task_id kebab-case は描画上省略)。
+以降は既存ペインの中で「分割後サイズが最大」のものが選ばれ、direction が rect に応じて自然に交替することで準 balanced な配置になる。固定的な 4 並列 / 8 並列の図は意味を持たないため割愛する (動的で決まるため)。
 
 ### Edge cases / 運用時の注意
 
-- **ワーカーが途中で閉じた後の再派遣**: `active_workers` は「現在生きている」worker のリストなので、閉じた slot を詰めて上表を再適用すると、ccmux のレイアウト tree 実状と表の想定が乖離し得る。**この場合、`ccmux split` が `[split_refused]` / `[pane_not_found]` を返したら `references/ccmux-error-codes.md` の手順でキュレーター → 窓口にエスカレーション**する。balanced split は best-effort の配置ヒントであり、正確な木構造復元ではない。
-- **9 並列以上**: 上表は k=8 までしか定義しない。k=9 以降は ccmux 本体の機能拡張 (`MIN_PANE_WIDTH` 下げ、`--target-largest` フラグ等) 待ち。フォアマンは即座に窓口へエスカレーションする。
-- **レース**: `ccmux list` 実行から `ccmux split` 実行までに他ワーカーが増減した場合、target 不整合は `[pane_not_found]` として顕在化する。通常のエラーハンドリング経路で吸収する。
-- **target 選出の責務**: 計算はフォアマンが `ccmux list` ベースで行う。窓口は DELEGATE メッセージに task_id だけを渡せばよく、target は指定しない。
+- **ワーカーが途中で閉じた後の再派遣**: 旧 k-table 方式で問題になった「閉じた slot を詰めるとテーブル前提と乖離」は rect ベースでは発生しない。常に実レイアウトから target を選ぶため、ccmux のレイアウト tree と判断が一致する
+- **`ccmux split` エラー**: `[split_refused]` / `[pane_not_found]` が返った場合は `references/ccmux-error-codes.md` の手順でキュレーター → 窓口にエスカレーション (方針は旧設計と同じ)
+- **レース**: `ccmux list` 実行から `ccmux split` 実行までに他ワーカーが増減した場合、target 不整合は `[pane_not_found]` として顕在化する。既存のエラーハンドリング経路で吸収する
+- **target 選出の責務**: 計算はフォアマンが `ccmux list` の rect ベースで行う。窓口は DELEGATE メッセージに task_id だけを渡せばよく、target は指定しない
 
 ## 運用メモ
 
@@ -153,7 +107,4 @@ ccmux の分割方向は以下の定義:
 
 - `ccmux events` によるペイン lifecycle 購読 (現在は claude-peers 経由で補完)
 - `ccmux split --ratio 0.2` 等の比率指定 (現状は 50/50 固定)
-- `ccmux split --target-largest` 等の自動 target 選出 (現状は balanced split table を `k` ベースで適用)
-- `ccmux list` の JSON に `rect` 情報を含める拡張 (現状は rect 不明のため table-driven の近似)
-
-> **暫定対応の位置付け**: 本ドキュメントの balanced split 戦略は、ccmux 本体で上記の `--target-largest` / rect 情報 / `MIN_PANE_WIDTH` 調整が整うまでの **暫定運用** である。upstream 追跡 issue は別途 `happy-ryo/ccmux` に起票後 `ccmux#78` を参照する想定。issue 作成までは本ドキュメントを balanced split workaround の一次情報とする。`ccmux#78` がマージされ次第、本スキルの lookup table を撤去して `--target-largest --direction auto` 1 行に差し替える。
+- `ccmux split --target-largest` / `--direction auto` 等の ccmux 側自動 target 選出 (現状はフォアマン側で `ccmux list` rect から算出。upstream に移譲できれば lookup ロジックを ccmux CLI 1 行に畳める)
