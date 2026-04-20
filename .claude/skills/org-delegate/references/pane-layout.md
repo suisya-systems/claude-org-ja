@@ -27,7 +27,7 @@ Tab 1: ops (ワーカー 0 人)
 |---|---|---|
 | フォアマン | 窓口ペインを水平分割して下半分 | `ccmux split --target-focused --direction horizontal --role foreman --id foreman --command "cd .foreman && claude ..."` (org-start Step 2) |
 | キュレーター | フォアマンペインを垂直分割して右半分 | `ccmux split --target-name foreman --direction vertical --role curator --id curator --command "cd .curator && claude ..."` (org-start Step 3) |
-| 各ワーカー | **balanced split**: 既存のペイン数 `k` に応じた target と direction を `ccmux list` の結果から動的に選び、同一タブ内に積む | 詳細は下記「ワーカーの balanced split 戦略」セクション。`ccmux split --target-name {target} --direction {direction} --role worker --id worker-{task_id} --command "cd {workers_dir}/{task_id} && claude ..."` (org-delegate Step 3) |
+| 各ワーカー | **balanced split**: `ccmux list` が返す現在の rect から target と direction を動的に選び、同一タブ内に積む | 詳細は下記「ワーカーの balanced split 戦略」セクション。`ccmux split --target-name {target} --direction {direction} --role worker --id worker-{task_id} --command "cd {workers_dir}/{task_id} && claude ..."` (org-delegate Step 3) |
 
 ## ワーカーの balanced split 戦略
 
@@ -55,7 +55,7 @@ ccmux は各 split で対象ペインを 50/50 に分ける。`MIN_PANE_WIDTH = 
 5. **MIN_PANE 制約**: 分割後の新ペインサイズ `(new_w, new_h)` が `new_w >= 20` かつ `new_h >= 5` を満たさない候補は除外
    - vertical 分割: `(new_w, new_h) = (floor(width / 2), height)`
    - horizontal 分割: `(new_w, new_h) = (width, floor(height / 2))`
-6. **target 選出**: 残った候補から **「分割軸方向の新サイズ」** (vertical なら `new_w`、horizontal なら `new_h`) が最大のペインを target にする。tie-break は pane id 昇順で決定的に
+6. **target 選出**: 残った候補から **「分割軸方向の新サイズ」** (vertical なら `new_w`、horizontal なら `new_h`) が最大のペインを target にする。tie-break はその時点の pane id 昇順 (スナップショット内で再現可能。セッション跨ぎの安定性までは保証しない)
 7. **候補が空なら escalate**: `SKILL.md` Step 3-1 末尾の `SPLIT_CAPACITY_EXCEEDED` 経路で窓口に escalate (`ccmux split` は発行せず、該当ワーカー 1 件だけ派遣中止、フォアマン本体は継続)
 
 ### rect 隣接判定の定義

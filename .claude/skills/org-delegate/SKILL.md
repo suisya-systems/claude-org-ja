@@ -290,7 +290,7 @@ read -r target direction < <(
       | map(select(.nw >= 20 and .nh >= 5))
       | map(select(.role != "secretary" or .nw >= 100))
       # 分割軸方向の新サイズ (vertical なら new_w、horizontal なら new_h) が最大のペインを選ぶ。
-      # tie-break は pane id 昇順で決定的に。
+      # tie-break はその時点の pane id 昇順 (スナップショット内で再現可能)。
       | sort_by(-.metric, .id)
       | if length == 0 then "" else (.[0] | "\(.name) \(.dir)") end
   ' <<<"$layout"
@@ -314,7 +314,7 @@ read -r target direction < <(
 
 ```bash
 if [ -z "$target" ] || [ -z "$direction" ]; then
-  # 3-1 の k >= 9 分岐を経由。claude-peers で窓口に SPLIT_CAPACITY_EXCEEDED を送信して
+  # 3-1 で balanced split 候補が空。claude-peers で窓口に SPLIT_CAPACITY_EXCEEDED を送信して
   # このワーカーの派遣を中止する (フォアマン本体は継続)
   :  # ccmux split を発行しない
 else
@@ -329,7 +329,7 @@ fi
 
 > **`$target` / `$direction` が空だった場合の後続フロー**: このワーカーの起動フローはここで終了。3-3 (`ccmux events` 待機)、3-4 (`list_peers` 待ち)、3-5 (instruction 送信) のいずれも **skip** する。claude-peers での escalate（3-1 の手順参照）を行ったらフォアマン本体は次のサイクルへ。次タスクが控えているなら 3-6 で次の派遣へ進む。
 
-   - ペイン配置ルールは `references/pane-layout.md` (ccmux 版) を参照。`k` に対する target / direction のマッピングと 4 並列 / 8 並列の ASCII 図もそちらに集約
+   - ペイン配置ルールは `references/pane-layout.md` (ccmux 版) を参照。rect ベースの target / direction 選出ルールはそちらに集約
    - **同一タブ内 split で起動する理由**: ccmux の `list` / `focus` / `send` / `inspect` は現在フォーカス中のタブのペインしか見えない。`new-tab` で別タブに置くとフォアマンからの監視・指示送信が不能になる (2026-04-20 判明。ccmux 側 issue: happy-ryo/ccmux#71)
    - `--target-name "$target"`: balanced split で算出した既存ペイン名 (`foreman` もしくは `worker-*`) を分割対象にする
    - `--direction "$direction"`: balanced split で算出した `vertical` / `horizontal`
