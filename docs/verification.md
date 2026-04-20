@@ -93,7 +93,7 @@ cat .state/journal.jsonl | tail -1  # suspend イベントを確認
 
 **失敗パターンと対処**:
 - ワーカーがSUSPENDに応答しない → Phase 2のスクレイプが機能するか確認
-- ペインが閉じない → `ccmux send --name X --enter "exit"` でシェル終了経由クローズになっているか確認
+- ペインが閉じない → `ccmux close --name X` でペインを明示破棄しているか確認 (ccmux v0.5.8+)
 - 状態ファイルが不完全 → org-suspendの手順を見直し
 
 ---
