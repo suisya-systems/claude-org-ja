@@ -17,9 +17,9 @@ stderr に上記 1 行、exit status は非ゼロ。
 
 | Code | 意味 | Foreman の推奨挙動 |
 |---|---|---|
-| `pane_not_found` | 指定した pane 名 / id / Focused が存在しない | そのワーカーは既に閉じた扱い。`.state/workers/worker-*.md` の status を `pane_closed` に遷移、`WORKER_PANE_EXITED` を窓口に通知。リトライしない |
+| `pane_not_found` | 指定した pane 名 / id / Focused が存在しない | そのワーカーは既に閉じた扱い。`.state/workers/worker-*.md` の status を `pane_closed` に遷移、`WORKER_PANE_EXITED` を窓口に通知。リトライしない。**注意**: ccmux の `list` / `focus` / `send` / `inspect` は現在フォーカス中のタブのペインしか見えない。別タブ (`ccmux new-tab` 由来) のワーカーは本 code で返るので、org-delegate では全ワーカーを同一タブ内 `ccmux split` で起動する (happy-ryo/ccmux#71) |
 | `pane_vanished` | resolve 成功後に消えたレース | `pane_not_found` と同等扱い |
-| `split_refused` | `ccmux split` が MAX_PANES / too small で拒否 | `org-delegate` では `new-tab` を優先しているので実際には出にくい。出た場合はキュレーターに escalate |
+| `split_refused` | `ccmux split` が MAX_PANES / too small で拒否 | ワーカー起動 (`org-delegate` Step 3) で `--target-name foreman` への split が 16 ペイン上限等で拒否された場合、キュレーターに escalate。`new-tab` フォールバックは tab-scoped 制約のため不可 (happy-ryo/ccmux#71) |
 | `io_error` | PTY write / spawn / OS レベル失敗 | 1 サイクル spin して再試行。2 連続で同じ worker に出たら窓口に `IO_ERROR_DETECTED` で escalate |
 | `shutting_down` | ccmux 本体がシャットダウン中 | 監視ループを **即停止** する。claude-peers に `FOREMAN_STOPPING` を通知 |
 | `app_timeout` | ccmux 内部 App スレッドが応答しなかった | 1 サイクル spin (ccmux 再起動は管理者判断)。連続発生なら窓口にログ |

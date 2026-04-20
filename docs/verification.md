@@ -40,7 +40,7 @@
 **期待結果**:
 - プロジェクトが `registry/projects.md` に自動登録される
 - 窓口がフォアマンに DELEGATE メッセージを送信し、すぐにユーザーとの対話に戻る
-- フォアマンが `ccmux new-tab` で新しいタブを開く（`worker-{task_id}` ラベル、pane-layout.md に従う）
+- フォアマンが `ccmux split --target-name foreman` で同一タブ内にワーカーペインを派生する（`worker-{task_id}` 名、pane-layout.md に従う）
 - フォアマンがclaude-peers経由でワーカーに作業指示を送信する
 - フォアマンが `.state/workers/worker-{id}.md` を作成する
 - `.state/org-state.md` が作成/更新される

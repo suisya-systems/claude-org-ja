@@ -252,21 +252,24 @@ DELEGATE: 以下のワーカーを派遣してください。
 
 フォアマンが以下を実行する:
 
-1. ワーカーごとに `ccmux new-tab` で新しいタブを作成し、ワーカーディレクトリに `cd` してから Claude を起動する:
+1. ワーカーごとに `ccmux split` でフォアマンペインを垂直分割し、ワーカーディレクトリに `cd` してから Claude を起動する:
    ```bash
-   ccmux new-tab \
+   ccmux split \
+     --target-name foreman \
+     --direction vertical \
      --role worker \
      --id worker-{task_id} \
-     --label {task_id} \
      --command "cd '{workers_dir}/{task_id}' && claude --dangerously-load-development-channels server:claude-peers --permission-mode {default_permission_mode}"
    ```
    - ペイン配置ルールは references/pane-layout.md (ccmux 版) を参照
+   - **同一タブ内 split で起動する理由**: ccmux の `list` / `focus` / `send` / `inspect` は現在フォーカス中のタブのペインしか見えない。`new-tab` で別タブに置くとフォアマンからの監視・指示送信が不能になる (2026-04-20 判明。ccmux 側 issue: happy-ryo/ccmux#71)
+   - `--target-name foreman`: 既存のフォアマンペインを分割対象にする（同一タブ内に積む）
    - `--id worker-{task_id}`: 後続の `ccmux send --name worker-{task_id} ...` で addressable にする安定名
    - `--role worker`: `ccmux list` の JSON で役割識別
-   - `--label {task_id}`: タブ名を task_id に設定（UI 上で識別しやすく）
    - 起動コマンドは `.claude/skills/org-start/SKILL.md` の「ClaudeCode 起動コマンド（役割別）」セクションを参照
    - Planモード要の場合は `--permission-mode plan` を使用する（org-config の値を上書き）
    - 開発チャネルの確認プロンプトが表示されるので、`ccmux send --name worker-{task_id} --enter ""` で Enter を送信する
+   - `split_refused` (MAX_PANES / too small) が返った場合は `references/ccmux-error-codes.md` の手順に従いキュレーターに escalate する
 2. **ペインが起動したことを `ccmux events` で確認** (推奨):
    ```bash
    ccmux events --timeout 3s \
