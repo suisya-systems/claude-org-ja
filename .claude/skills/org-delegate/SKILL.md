@@ -252,51 +252,108 @@ DELEGATE: 以下のワーカーを派遣してください。
 
 フォアマンが以下を実行する:
 
-1. ワーカーごとに `ccmux split` でフォアマンペインを垂直分割し、ワーカーディレクトリに `cd` してから Claude を起動する:
-   ```bash
-   ccmux split \
-     --target-name foreman \
-     --direction vertical \
-     --role worker \
-     --id worker-{task_id} \
-     --command "cd '{workers_dir}/{task_id}' && claude --dangerously-load-development-channels server:claude-peers --permission-mode {default_permission_mode}"
-   ```
-   - ペイン配置ルールは references/pane-layout.md (ccmux 版) を参照
+### 3-1. balanced split で target / direction を決める
+
+旧設計は `--target-name foreman --direction vertical` 固定だったが、これは foreman 幅を毎回半減させるため、典型的なターミナル幅 (W≈200〜300 cols) で 4 人目以降 `[split_refused]` が発生していた (`MIN_PANE_WIDTH=20` 制約、調査: `C:/Users/iwama/working/workers/ccmux-split-inv/findings.md`)。
+
+現設計では **balanced split** により、新規ワーカーの序数 `k` に応じて target と direction を動的に選ぶ。詳細ルールは `references/pane-layout.md` の「ワーカーの balanced split 戦略」セクションを参照。
+
+フォアマンは `ccmux split` を呼ぶ前に、以下のシェルスニペットで target と direction を算出する:
+
+```bash
+# 生きている worker ペインを作成順 (pane id 昇順) に並べた name 配列を取得
+readarray -t active_workers < <(
+  ccmux list --format json \
+    | jq -r '.panes | map(select(.role == "worker" and .exited == false)) | sort_by(.id) | .[].name'
+)
+
+k=$(( ${#active_workers[@]} + 1 ))  # この新規ワーカーの序数 (1-indexed)
+
+case "$k" in
+  1) target="foreman";                direction="vertical"   ;;
+  2) target="${active_workers[0]}";   direction="horizontal" ;;
+  3) target="${active_workers[0]}";   direction="vertical"   ;;
+  4) target="${active_workers[1]}";   direction="vertical"   ;;
+  5) target="${active_workers[0]}";   direction="horizontal" ;;
+  6) target="${active_workers[2]}";   direction="horizontal" ;;
+  7) target="${active_workers[1]}";   direction="horizontal" ;;
+  8) target="${active_workers[3]}";   direction="horizontal" ;;
+  *)
+    # 9 人以上は balanced split table 未定義。窓口へ escalate
+    echo "ERROR: ${k} 人目のワーカーは balanced split table 未定義。窓口へエスカレーションが必要" >&2
+    exit 1
+    ;;
+esac
+```
+
+- active_workers が空 (最初のワーカー) なら k=1 に落ちて target=foreman / direction=vertical が選ばれる
+- target / direction が計算できない場合 (9 人以上、もしくは想定外の退役順で `${active_workers[i]}` が空) は、窓口に escalate して人間判断を仰ぐ
+
+### 3-2. ワーカーペインを起動する
+
+3-1 で算出した `$target` / `$direction` を使って `ccmux split` を呼ぶ:
+
+```bash
+ccmux split \
+  --target-name "$target" \
+  --direction "$direction" \
+  --role worker \
+  --id worker-{task_id} \
+  --command "cd '{workers_dir}/{task_id}' && claude --dangerously-load-development-channels server:claude-peers --permission-mode {default_permission_mode}"
+```
+
+   - ペイン配置ルールは `references/pane-layout.md` (ccmux 版) を参照。`k` に対する target / direction のマッピングと 4 並列 / 8 並列の ASCII 図もそちらに集約
    - **同一タブ内 split で起動する理由**: ccmux の `list` / `focus` / `send` / `inspect` は現在フォーカス中のタブのペインしか見えない。`new-tab` で別タブに置くとフォアマンからの監視・指示送信が不能になる (2026-04-20 判明。ccmux 側 issue: happy-ryo/ccmux#71)
-   - `--target-name foreman`: 既存のフォアマンペインを分割対象にする（同一タブ内に積む）
+   - `--target-name "$target"`: balanced split で算出した既存ペイン名 (`foreman` もしくは `worker-*`) を分割対象にする
+   - `--direction "$direction"`: balanced split で算出した `vertical` / `horizontal`
    - `--id worker-{task_id}`: 後続の `ccmux send --name worker-{task_id} ...` で addressable にする安定名
-   - `--role worker`: `ccmux list` の JSON で役割識別
+   - `--role worker`: `ccmux list` の JSON で役割識別 (balanced split の target 選出にも使われる)
    - 起動コマンドは `.claude/skills/org-start/SKILL.md` の「ClaudeCode 起動コマンド（役割別）」セクションを参照
    - Planモード要の場合は `--permission-mode plan` を使用する（org-config の値を上書き）
    - 開発チャネルの確認プロンプトが表示されるので、`ccmux send --name worker-{task_id} --enter ""` で Enter を送信する
-   - `split_refused` (MAX_PANES / too small) が返った場合は `references/ccmux-error-codes.md` の手順に従いキュレーターに escalate する
-2. **ペインが起動したことを `ccmux events` で確認** (推奨):
-   ```bash
-   ccmux events --timeout 3s \
-     | jq -c --arg want "worker-{task_id}" \
-       'select(.type == "pane_started" and .name == $want)' \
-     | head -n 1
-   ```
-   - `ccmux events` は 3 秒経過で勝手に exit するので全体で最大 3 秒待機
-   - `jq` で `pane_started` かつ `name == "worker-{task_id}"` の行だけに絞る (別タスクの同時 spawn 由来イベントを取りこぼさない、誤マッチしない)
-   - `head -n 1` で最初の該当行で pipeline を終了させる
-   - 出力が 1 行あれば OK。空なら 3 秒以内に起動イベントが来なかったということなので、`ccmux list` で状態を確認して窓口にエスカレーションする
-   - **注意**: 直接 `--count 1` にすると、別ワーカーの起動イベント等の無関係な 1 件で exit してしまい、target ワーカーの起動確認ができない
-3. claude-peers の `list_peers` で新しいピアが現れるのを待つ (pane は live でも Claude がまだ起動中の場合があるため二重確認)
-4. claude-peers の `send_message` でワーカーに指示を送る（references/instruction-template.md のフォーマット）
-5. 複数ワーカーがある場合は順次実行する
-6. **Planモード要の場合 — Plan承認前のモード切替（重要: 順序厳守）**:
-   Plan承認待ち（APPROVAL_BLOCKED）を検知したら、**Plan を承認する前に**モード切替を完了させる:
-   (a) `ccmux send --name worker-{task_id} $'\x1b[Z'` で Shift+Tab を送信する（`--enter` を付けない）
-   (b) 目視または claude-peers 側のサインでモード切替完了（「accept edits」表示）を確認する — 最大5回リトライ
-   (c) モード切替完了を確認してから、Plan を承認する（`ccmux send --name worker-{task_id} --enter "yes"`）
+   - `[split_refused]` (MAX_PANES / too small) が返った場合は `references/ccmux-error-codes.md` の手順に従いキュレーター → 窓口に escalate する。balanced split は best-effort の配置ヒントであり、想定外のレイアウト (途中でワーカーが閉じた後の再派遣など) では拒否され得る
+   - `[pane_not_found]` が返った場合は `$target` に選んだワーカーが split 発行直前に閉じたレース。同じく既存エラーコード経路で escalate
+### 3-3. ペインが起動したことを確認 (`ccmux events`、推奨)
 
-   **理由**: Plan承認後にモード切替しようとすると、planモードのままワーカーが動き出し、
-   コマンド実行のたびに承認プロンプトが連続発生する。承認プロンプト表示中は Shift+Tab が
-   効かないため、手動介入が必要になる。先にモード切替することでこの問題を回避する。
+```bash
+ccmux events --timeout 3s \
+  | jq -c --arg want "worker-{task_id}" \
+    'select(.type == "pane_started" and .name == $want)' \
+  | head -n 1
+```
 
-   **TODO (Phase 3)**: pane 内容スクレイプ API が入れば、ステータスバー
-   テキスト取得で「mode change」を確認できる。それまでは目視 or リトライで運用。
+- `ccmux events` は 3 秒経過で勝手に exit するので全体で最大 3 秒待機
+- `jq` で `pane_started` かつ `name == "worker-{task_id}"` の行だけに絞る (別タスクの同時 spawn 由来イベントを取りこぼさない、誤マッチしない)
+- `head -n 1` で最初の該当行で pipeline を終了させる
+- 出力が 1 行あれば OK。空なら 3 秒以内に起動イベントが来なかったということなので、`ccmux list` で状態を確認して窓口にエスカレーションする
+- **注意**: 直接 `--count 1` にすると、別ワーカーの起動イベント等の無関係な 1 件で exit してしまい、target ワーカーの起動確認ができない
+
+### 3-4. claude-peers の `list_peers` で新ピア出現を待機
+
+pane は live でも Claude がまだ起動中の場合があるため二重確認。
+
+### 3-5. claude-peers の `send_message` でワーカーに指示を送信
+
+`references/instruction-template.md` のフォーマットに従う。
+
+### 3-6. 複数ワーカーの順次起動
+
+複数ワーカーがある場合は 3-1〜3-5 を順次繰り返す。`ccmux list` の結果が毎回変わるので、都度 `active_workers` を再取得して `k` を計算し直す (前ワーカーの起動が完了するのを 3-3 / 3-4 で待ってから次に進むこと)。
+
+### 3-7. Planモード要の場合 — Plan承認前のモード切替（重要: 順序厳守）
+
+Plan承認待ち（APPROVAL_BLOCKED）を検知したら、**Plan を承認する前に**モード切替を完了させる:
+
+(a) `ccmux send --name worker-{task_id} $'\x1b[Z'` で Shift+Tab を送信する（`--enter` を付けない）
+(b) 目視または claude-peers 側のサインでモード切替完了（「accept edits」表示）を確認する — 最大5回リトライ
+(c) モード切替完了を確認してから、Plan を承認する（`ccmux send --name worker-{task_id} --enter "yes"`）
+
+**理由**: Plan承認後にモード切替しようとすると、planモードのままワーカーが動き出し、
+コマンド実行のたびに承認プロンプトが連続発生する。承認プロンプト表示中は Shift+Tab が
+効かないため、手動介入が必要になる。先にモード切替することでこの問題を回避する。
+
+**TODO (Phase 3)**: pane 内容スクレイプ API が入れば、ステータスバー
+テキスト取得で「mode change」を確認できる。それまでは目視 or リトライで運用。
 
 ## Step 4: 状態記録（フォアマンが実行）
 
