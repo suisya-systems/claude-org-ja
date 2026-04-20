@@ -40,7 +40,7 @@
 **期待結果**:
 - プロジェクトが `registry/projects.md` に自動登録される
 - 窓口がフォアマンに DELEGATE メッセージを送信し、すぐにユーザーとの対話に戻る
-- フォアマンが `ccmux split --target-name foreman` で同一タブ内にワーカーペインを派生する（`worker-{task_id}` 名、pane-layout.md に従う）
+- フォアマンが `ccmux split` で同一タブ内にワーカーペインを派生する（`worker-{task_id}` 名、balanced split 戦略は `pane-layout.md` に従う）
 - フォアマンがclaude-peers経由でワーカーに作業指示を送信する
 - フォアマンが `.state/workers/worker-{id}.md` を作成する
 - `.state/org-state.md` が作成/更新される
@@ -63,6 +63,43 @@ cat registry/projects.md
 - 状態ファイルが作成されない → org-delegateスキルの手順を見直し
 - ワーカーが指示を理解しない → instruction-template.md の記述を改善
 - プロジェクト名前解決が動かない → org-delegate Step 0 を見直し
+
+### 2.1 balanced split スケール検証（4 並列 / 8 並列）
+
+**目的**: org-delegate Step 3 の balanced split lookup table が、4 並列・8 並列いずれも `[split_refused]` を発生させずに配置図通りの tree を生成することを実機確認する。
+
+**前提**: テスト 2 が通っていること。ターミナル幅 `W ≥ 160 cols`（`tput cols` で確認）。`pane-layout.md` の 4 並列 / 8 並列 ASCII 図を手元で開いておく。
+
+**手順**:
+1. `tput cols` を実行し W を記録。160 未満なら検証不能としてスキップ or ターミナルを広げる。
+2. 窓口に互いに独立な 8 タスク（ダミーで良い。例: `echo-1` 〜 `echo-8` のような軽量タスク）を順次依頼。k=1〜8 それぞれが以下を満たすことを確認:
+   - a. フォアマンの `ccmux split` 呼び出しが `[split_refused]` を返さない
+   - b. Step 3-1 のシェルスニペットが返す `$target` / `$direction` が `pane-layout.md` の lookup table 通り
+   - c. 起動直後の `ccmux list --format json` を **別ログファイル (例: `.state/verification/balanced-split-{timestamp}.log`)** に保存するか、その場で `role == "worker"` の `name` / `id` を記録し、`.state/journal.jsonl` の `worker_spawned` イベントと事後照合する（`journal.jsonl` の schema に raw list スナップショットは含まれないので、verification 用途の一時ログとして分離する）
+3. k=4 到達時点でペイン配置を目視し、`pane-layout.md` の 4 並列 ASCII 図と一致するか確認（`foreman` 幅 ≈ W_f/2、ワーカー 4 個が 2×2 のグリッド）。
+4. k=8 到達時点で同じく 8 並列 ASCII 図（2×4 グリッド）と一致するか確認。
+5. 9 人目のダミータスクを試し、フォアマンが claude-peers で窓口に `SPLIT_CAPACITY_EXCEEDED` を送信することを確認。**当該 9 人目のワーカーのみ派遣を中止し、フォアマン本体の監視ループは継続稼働**すること（`ccmux split` は発行されず、`exit` などでフォアマンが落ちない）。
+
+> **注**: `.state/verification/balanced-split-{timestamp}.log` 等の検証用ログは一時ファイルなのでコミット対象外。`.state/*` は既存の `.gitignore` で除外済み。
+
+**期待結果**:
+- k=1〜8 で `[split_refused]` ゼロ
+- 8 並列時のワーカー最小幅 ≈ W_f/4、最小高 ≈ H_f/4
+- k=9 で明示的 escalate（silently fail しない）
+
+**確認コマンド**:
+```bash
+# 各 k 到達時に記録
+ccmux list --format json | jq '.panes | map(select(.role == "worker")) | sort_by(.id) | .[] | {id, name}'
+tput cols  # ターミナル幅の記録
+cat .state/journal.jsonl | grep worker_spawned
+```
+
+**失敗パターンと対処**:
+- k=4 で `split_refused` → `tput cols` の値を確認。W < 160 なら balanced split table の要件未満。ターミナル拡大で再試行
+- k=3 で既に `split_refused` → foreman 直下に file-tree / preview が居座っていないか確認（これらが表示中だと `W_f` が 20〜40 cols 目減りする）
+- 配置が ASCII 図と乖離 → 前タスクで閉じ残ったワーカーの `ccmux close` 忘れ。`ccmux list` で role=worker の active が 0 からスタートしているか確認
+- k=9 で silently 動く → Step 3-1 の case 文の `*)` ブランチが発火していない。jq スニペットが `.exited` 等存在しないフィールドで全件を抜いていないか確認
 
 ---
 
