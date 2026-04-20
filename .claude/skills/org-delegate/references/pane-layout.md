@@ -156,4 +156,4 @@ ccmux の分割方向は以下の定義:
 - `ccmux split --target-largest` 等の自動 target 選出 (現状は balanced split table を `k` ベースで適用)
 - `ccmux list` の JSON に `rect` 情報を含める拡張 (現状は rect 不明のため table-driven の近似)
 
-> **暫定対応の位置付け**: 本ドキュメントの balanced split 戦略は、ccmux 本体で上記の `--target-largest` / rect 情報 / `MIN_PANE_WIDTH` 調整が整うまでの **暫定運用** である。upstream 追跡は happy-ryo/ccmux#78（balanced split workaround の解消 tracking issue、未作成なら作成予定）を参照。#78 がマージされ次第、本スキルの lookup table を撤去して `--target-largest --direction auto` 1 行に差し替える想定。
+> **暫定対応の位置付け**: 本ドキュメントの balanced split 戦略は、ccmux 本体で上記の `--target-largest` / rect 情報 / `MIN_PANE_WIDTH` 調整が整うまでの **暫定運用** である。upstream 追跡 issue は別途 `happy-ryo/ccmux` に起票後 `ccmux#78` を参照する想定。issue 作成までは本ドキュメントを balanced split workaround の一次情報とする。`ccmux#78` がマージされ次第、本スキルの lookup table を撤去して `--target-largest --direction auto` 1 行に差し替える。

@@ -75,7 +75,7 @@ cat registry/projects.md
 2. 窓口に互いに独立な 8 タスク（ダミーで良い。例: `echo-1` 〜 `echo-8` のような軽量タスク）を順次依頼。k=1〜8 それぞれが以下を満たすことを確認:
    - a. フォアマンの `ccmux split` 呼び出しが `[split_refused]` を返さない
    - b. Step 3-1 のシェルスニペットが返す `$target` / `$direction` が `pane-layout.md` の lookup table 通り
-   - c. 起動直後の `ccmux list --format json` を `.state/journal.jsonl` に保存し、`role == "worker"` の `name` と `id` の対応を事後照合
+   - c. 起動直後の `ccmux list --format json` を **別ログファイル (例: `.state/verification/balanced-split-{timestamp}.log`)** に保存するか、その場で `role == "worker"` の `name` / `id` を記録し、`.state/journal.jsonl` の `worker_spawned` イベントと事後照合する（`journal.jsonl` の schema に raw list スナップショットは含まれないので、verification 用途の一時ログとして分離する）
 3. k=4 到達時点でペイン配置を目視し、`pane-layout.md` の 4 並列 ASCII 図と一致するか確認（`foreman` 幅 ≈ W_f/2、ワーカー 4 個が 2×2 のグリッド）。
 4. k=8 到達時点で同じく 8 並列 ASCII 図（2×4 グリッド）と一致するか確認。
 5. 9 人目のダミータスクを試し、フォアマンが escalate メッセージを窓口に送信して停止することを確認（`split_refused` を返す手前で k>=9 と判定して escalate）。

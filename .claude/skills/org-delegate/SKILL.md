@@ -276,37 +276,51 @@ done < <(
 
 k=$(( ${#active_workers[@]} + 1 ))  # この新規ワーカーの序数 (1-indexed)
 
-case "$k" in
-  1) target="foreman";                direction="vertical"   ;;
-  2) target="${active_workers[0]}";   direction="horizontal" ;;
-  3) target="${active_workers[0]}";   direction="vertical"   ;;
-  4) target="${active_workers[1]}";   direction="vertical"   ;;
-  5) target="${active_workers[0]}";   direction="horizontal" ;;
-  6) target="${active_workers[2]}";   direction="horizontal" ;;
-  7) target="${active_workers[1]}";   direction="horizontal" ;;
-  8) target="${active_workers[3]}";   direction="horizontal" ;;
-  *)
-    # 9 人以上は balanced split table 未定義。窓口へ escalate
-    echo "ERROR: ${k} 人目のワーカーは balanced split table 未定義。窓口へエスカレーションが必要" >&2
-    exit 1
-    ;;
-esac
+target=""
+direction=""
+if [ "$k" -ge 9 ]; then
+  # k >= 9 は balanced split table 未定義。target / direction を空のまま残し、
+  # フォアマン Claude 側で ccmux split を発行せず claude-peers で escalate する
+  echo "SPLIT_CAPACITY_EXCEEDED: ${k} 人目のワーカーは balanced split table 未定義" >&2
+else
+  case "$k" in
+    1) target="foreman";                direction="vertical"   ;;
+    2) target="${active_workers[0]}";   direction="horizontal" ;;
+    3) target="${active_workers[0]}";   direction="vertical"   ;;
+    4) target="${active_workers[1]}";   direction="vertical"   ;;
+    5) target="${active_workers[0]}";   direction="horizontal" ;;
+    6) target="${active_workers[2]}";   direction="horizontal" ;;
+    7) target="${active_workers[1]}";   direction="horizontal" ;;
+    8) target="${active_workers[3]}";   direction="horizontal" ;;
+  esac
+fi
 ```
 
 - active_workers が空 (最初のワーカー) なら k=1 に落ちて target=foreman / direction=vertical が選ばれる
-- target / direction が計算できない場合 (9 人以上、もしくは想定外の退役順で `${active_workers[i]}` が空) は、窓口に escalate して人間判断を仰ぐ
+- **k >= 9 もしくは算出不能時の扱い**: `$target` / `$direction` が空のまま 3-2 に進むので、フォアマン Claude は **`ccmux split` を発行せず**、代わりに claude-peers で窓口 (Secretary) に以下のメッセージを送信する:
+  ```
+  SPLIT_CAPACITY_EXCEEDED: {task_id} は {k} 人目のワーカーで balanced split table 未定義。
+  ターミナル幅不足 or 想定外の退役順が疑われる。人間判断が必要です。
+  ```
+  フォアマン本体の監視ループは **継続**させる (該当ワーカーのみ派遣中止)。`exit` / `return` などでフォアマンを落とさないこと
 
 ### 3-2. ワーカーペインを起動する
 
-3-1 で算出した `$target` / `$direction` を使って `ccmux split` を呼ぶ:
+3-1 で算出した `$target` / `$direction` を使って `ccmux split` を呼ぶ。**`$target` が空なら split を発行せず 3-1 末尾の escalate 手順に従う**:
 
 ```bash
-ccmux split \
-  --target-name "$target" \
-  --direction "$direction" \
-  --role worker \
-  --id worker-{task_id} \
-  --command "cd '{workers_dir}/{task_id}' && claude --dangerously-load-development-channels server:claude-peers --permission-mode {default_permission_mode}"
+if [ -z "$target" ] || [ -z "$direction" ]; then
+  # 3-1 の k >= 9 分岐を経由。claude-peers で窓口に SPLIT_CAPACITY_EXCEEDED を送信して
+  # このワーカーの派遣を中止する (フォアマン本体は継続)
+  :  # ccmux split を発行しない
+else
+  ccmux split \
+    --target-name "$target" \
+    --direction "$direction" \
+    --role worker \
+    --id worker-{task_id} \
+    --command "cd '{workers_dir}/{task_id}' && claude --dangerously-load-development-channels server:claude-peers --permission-mode {default_permission_mode}"
+fi
 ```
 
    - ペイン配置ルールは `references/pane-layout.md` (ccmux 版) を参照。`k` に対する target / direction のマッピングと 4 並列 / 8 並列の ASCII 図もそちらに集約
