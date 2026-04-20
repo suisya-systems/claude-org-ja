@@ -262,9 +262,16 @@ DELEGATE: 以下のワーカーを派遣してください。
 
 ```bash
 # 生きている worker ペインを作成順 (pane id 昇順) に並べた name 配列を取得
-readarray -t active_workers < <(
+# ccmux close で撤去されたペインは list に載らないため、role フィルタのみで live 扱い
+# (PaneInfo JSON に .exited フィールドは存在しない。ccmux/src/ipc/mod.rs:157-167 参照)
+#
+# macOS デフォルト bash 3.2 との互換のため readarray ではなく while-read ループを使う
+active_workers=()
+while IFS= read -r name; do
+  active_workers+=("$name")
+done < <(
   ccmux list --format json \
-    | jq -r '.panes | map(select(.role == "worker" and .exited == false)) | sort_by(.id) | .[].name'
+    | jq -r '.panes | map(select(.role == "worker")) | sort_by(.id) | .[].name'
 )
 
 k=$(( ${#active_workers[@]} + 1 ))  # この新規ワーカーの序数 (1-indexed)

@@ -43,7 +43,7 @@ ccmux は各 split で対象ペインを 50/50 に分ける。`MIN_PANE_WIDTH = 
 
 新規ワーカーを起動するフォアマンは、`ccmux split` を呼ぶ前に以下を計算する:
 
-1. `ccmux list --format json` を実行し、`.panes | map(select(.role == "worker" and .exited == false)) | sort_by(.id)` で **生きている worker ペインを作成順 (pane id 昇順) に並べた配列** `active_workers` を得る。要素は `{id, name, role, ...}` で、以降は `name` (例: `worker-foo-bar`) のみ使う。
+1. `ccmux list --format json` を実行し、`.panes | map(select(.role == "worker")) | sort_by(.id)` で **生きている worker ペインを作成順 (pane id 昇順) に並べた配列** `active_workers` を得る。要素は `{id, name, role, focused}` で、以降は `name` (例: `worker-foo-bar`) のみ使う。なお `PaneInfo` JSON schema には `.exited` フィールドは存在しない (`ccmux/src/ipc/mod.rs:157-167` 参照)。ccmux は `ccmux close` で撤去されたペインを list から外すので、`role == "worker"` を満たすものはすべて live。
 2. 序数 `k = len(active_workers) + 1` を決める。
 3. 下表から `k` に対応する `target` ペイン名と `direction` を取得する。
 
@@ -155,3 +155,5 @@ ccmux の分割方向は以下の定義:
 - `ccmux split --ratio 0.2` 等の比率指定 (現状は 50/50 固定)
 - `ccmux split --target-largest` 等の自動 target 選出 (現状は balanced split table を `k` ベースで適用)
 - `ccmux list` の JSON に `rect` 情報を含める拡張 (現状は rect 不明のため table-driven の近似)
+
+> **暫定対応の位置付け**: 本ドキュメントの balanced split 戦略は、ccmux 本体で上記の `--target-largest` / rect 情報 / `MIN_PANE_WIDTH` 調整が整うまでの **暫定運用** である。upstream 追跡は happy-ryo/ccmux#78（balanced split workaround の解消 tracking issue、未作成なら作成予定）を参照。#78 がマージされ次第、本スキルの lookup table を撤去して `--target-largest --direction auto` 1 行に差し替える想定。

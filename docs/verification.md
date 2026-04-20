@@ -64,6 +64,41 @@ cat registry/projects.md
 - ワーカーが指示を理解しない → instruction-template.md の記述を改善
 - プロジェクト名前解決が動かない → org-delegate Step 0 を見直し
 
+### 2.1 balanced split スケール検証（4 並列 / 8 並列）
+
+**目的**: org-delegate Step 3 の balanced split lookup table が、4 並列・8 並列いずれも `[split_refused]` を発生させずに配置図通りの tree を生成することを実機確認する。
+
+**前提**: テスト 2 が通っていること。ターミナル幅 `W ≥ 160 cols`（`tput cols` で確認）。`pane-layout.md` の 4 並列 / 8 並列 ASCII 図を手元で開いておく。
+
+**手順**:
+1. `tput cols` を実行し W を記録。160 未満なら検証不能としてスキップ or ターミナルを広げる。
+2. 窓口に互いに独立な 8 タスク（ダミーで良い。例: `echo-1` 〜 `echo-8` のような軽量タスク）を順次依頼。k=1〜8 それぞれが以下を満たすことを確認:
+   - a. フォアマンの `ccmux split` 呼び出しが `[split_refused]` を返さない
+   - b. Step 3-1 のシェルスニペットが返す `$target` / `$direction` が `pane-layout.md` の lookup table 通り
+   - c. 起動直後の `ccmux list --format json` を `.state/journal.jsonl` に保存し、`role == "worker"` の `name` と `id` の対応を事後照合
+3. k=4 到達時点でペイン配置を目視し、`pane-layout.md` の 4 並列 ASCII 図と一致するか確認（`foreman` 幅 ≈ W_f/2、ワーカー 4 個が 2×2 のグリッド）。
+4. k=8 到達時点で同じく 8 並列 ASCII 図（2×4 グリッド）と一致するか確認。
+5. 9 人目のダミータスクを試し、フォアマンが escalate メッセージを窓口に送信して停止することを確認（`split_refused` を返す手前で k>=9 と判定して escalate）。
+
+**期待結果**:
+- k=1〜8 で `[split_refused]` ゼロ
+- 8 並列時のワーカー最小幅 ≈ W_f/4、最小高 ≈ H_f/4
+- k=9 で明示的 escalate（silently fail しない）
+
+**確認コマンド**:
+```bash
+# 各 k 到達時に記録
+ccmux list --format json | jq '.panes | map(select(.role == "worker")) | sort_by(.id) | .[] | {id, name}'
+tput cols  # ターミナル幅の記録
+cat .state/journal.jsonl | grep worker_spawned
+```
+
+**失敗パターンと対処**:
+- k=4 で `split_refused` → `tput cols` の値を確認。W < 160 なら balanced split table の要件未満。ターミナル拡大で再試行
+- k=3 で既に `split_refused` → foreman 直下に file-tree / preview が居座っていないか確認（これらが表示中だと `W_f` が 20〜40 cols 目減りする）
+- 配置が ASCII 図と乖離 → 前タスクで閉じ残ったワーカーの `ccmux close` 忘れ。`ccmux list` で role=worker の active が 0 からスタートしているか確認
+- k=9 で silently 動く → Step 3-1 の case 文の `*)` ブランチが発火していない。jq スニペットが `.exited` 等存在しないフィールドで全件を抜いていないか確認
+
 ---
 
 ## 3. org-suspend テスト（中断）
