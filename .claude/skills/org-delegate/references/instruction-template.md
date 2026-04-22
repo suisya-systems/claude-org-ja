@@ -1,6 +1,6 @@
 # ワーカーへの指示テンプレート
 
-claude-peers の send_message で送信する、タスク固有の指示。
+ccmux-peers の send_message（`to_id="worker-{task_id}"`）で送信する、タスク固有の指示。
 権限・報告先・SUSPEND対応・知見記録の指示は worker-claude-template.md（CLAUDE.md経由）に一元化されているため、ここでは繰り返さない。
 
 ## テンプレート
