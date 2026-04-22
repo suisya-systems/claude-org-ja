@@ -11,7 +11,11 @@ description: >
 ClaudeCode起動後に最初に実行するスキル。前回の状態復元、フォアマン起動、キュレーター起動を行う。
 
 > **前提**: この Claude は `ccmux --layout ops` で起動された窓口ペイン内で動作している。
-> `CCMUX_SOCKET` 環境変数が継承されているので `ccmux` サブコマンドで他ペインを制御できる。
+> `CCMUX_SOCKET` / `CCMUX_PANE_ID` 環境変数が継承されているので、`mcp__ccmux-peers__*` MCP
+> ツール（`spawn_pane` / `close_pane` / `list_panes` / `send_message` / `focus_pane` / `new_tab` 等）
+> で同タブ内のペインを制御できる。`ccmux` CLI は raw キー入力 (`ccmux send --enter`) と画面
+> スクレイプ (`ccmux inspect`) / イベント購読 (`ccmux events`) の 3 機能のみ併用する
+> （upstream happy-ryo/ccmux#116 / #117 / #118 の MCP 対応完了まで）。
 
 ## Step 0: 初期化
 
@@ -55,7 +59,7 @@ claude --dangerously-load-development-channels server:claude-peers --permission-
 ```
 
 フォアマンは常に `bypassPermissions` 固定。`default_permission_mode` の影響を受けない。
-理由: フォアマンはワーカー起動時に `ccmux split --command "claude --dangerously-load-development-channels ..."` を実行する。auto モードの安全分類器はこのコマンド列を "Create Unsafe Agents" と判定してブロックするため、auto ではワーカー派遣が成立しない。
+理由: フォアマンはワーカー起動時に `mcp__ccmux-peers__spawn_pane` の `command` 引数へ `"claude --dangerously-load-development-channels ..."` を渡す。auto モードの安全分類器はこのコマンド列を "Create Unsafe Agents" と判定してブロックするため、auto ではワーカー派遣が成立しない（この挙動は旧 `ccmux split --command` でも同じ）。
 
 ### キュレーター
 ```
@@ -92,49 +96,57 @@ claude --dangerously-load-development-channels server:claude-peers --permission-
 
 ペイン配置は org-delegate/references/pane-layout.md に従う (ccmux 版)。
 
-1. `ccmux split` で窓口ペインを上下分割し、下半分にフォアマン用の Claude を起動する:
-   ```bash
-   ccmux split \
-     --target-focused \
-     --direction horizontal \
-     --role foreman \
-     --id foreman \
-     --command "cd .foreman && claude --dangerously-load-development-channels server:claude-peers --permission-mode bypassPermissions --model sonnet"
+1. `mcp__ccmux-peers__spawn_pane` で窓口ペインを上下分割し、下半分にフォアマン用の Claude を起動する:
    ```
-   - `--target-focused` で現在フォーカスされている窓口ペインを分割
-   - `--direction horizontal` = 上下分割（窓口=上 / フォアマン=下）
-   - `--role foreman`: `ccmux list` で役割識別できるようにラベル付与
-   - `--id foreman`: 後続の `ccmux send --name foreman …` で宛先指定するための安定名
-   - `--command` は新しいペインでシェルプロンプトが立ち上がった直後に注入される
+   mcp__ccmux-peers__spawn_pane(
+     target="focused",
+     direction="horizontal",
+     role="foreman",
+     name="foreman",
+     command="cd .foreman && claude --dangerously-load-development-channels server:claude-peers --permission-mode bypassPermissions --model sonnet"
+   )
+   ```
+   - `target="focused"`: 現在フォーカスされている窓口ペインを分割（省略可。省略時は focused）
+   - `direction="horizontal"` = 上下分割（窓口=上 / フォアマン=下）
+   - `role="foreman"`: `mcp__ccmux-peers__list_panes` で役割識別できるようにラベル付与
+   - `name="foreman"`: 後続の `mcp__ccmux-peers__send_message(to_id="foreman", ...)` や `close_pane(target="foreman")` で宛先指定するための安定名。**ccmux-peers は全桁数字の name を id として解釈するので、英字を含む名前を必ず付ける**
+   - `command` は新しいペインでシェルプロンプトが立ち上がった直後に注入される
    - `.foreman/CLAUDE.md` にフォアマン用の役割指示がある（Secretary の CLAUDE.md とは別）
-   - 開発チャネルの確認プロンプトが表示されるので、`ccmux send --name foreman --enter ""` で Enter を送信する
-2. claude-peers の `list_peers` で新しいピアが現れるのを待つ
-3. claude-peers の `send_message` でフォアマンに以下を送信する:
+   - 戻り値: `"Spawned pane id=N."` のテキスト。以降のペイン操作では `name="foreman"` で参照する
+   - エラーは `[<code>] <msg>` 形式のテキストで返却される（例: `[split_refused]` / `[pane_not_found]`）。code 一覧と分岐は `.claude/skills/org-delegate/references/ccmux-error-codes.md` を参照
+2. 開発チャネルの確認プロンプトが表示されるので、`ccmux send --name foreman --enter ""` で Enter を送信する
+   - 注: raw キー入力 (Enter) は現状 ccmux-peers MCP 未対応のため `ccmux send` CLI を併用。upstream happy-ryo/ccmux#118 の `send_keys` MCP ツール merge 後に MCP 化する（#30 の追記事項として cleanup）
+3. claude-peers の `mcp__claude-peers__list_peers` で新しいピアが現れるのを待つ
+4. claude-peers の `mcp__claude-peers__send_message` でフォアマンに以下を送信する:
    「あなたはフォアマンです。窓口からの DELEGATE メッセージを受け取り、ワーカーのペイン起動・指示送信・状態記録を代行してください。CLOSE_PANE メッセージを受けたらペインを閉じてください。」
-4. フォアマンのピアIDと ccmux ペイン名（`foreman`）を記録する（org-state.md の Foreman セクション）
-5. JSON スナップショットを再生成する:
+5. フォアマンのピアIDと ccmux ペイン名（`foreman`）を記録する（org-state.md の Foreman セクション）
+6. JSON スナップショットを再生成する:
    `py -3 dashboard/org_state_converter.py`
 
 ## Step 3: キュレーターペイン起動
 
-1. `ccmux split` でフォアマンペインの右半分をキュレーター用に立ち上げる:
-   ```bash
-   ccmux split \
-     --target-name foreman \
-     --direction vertical \
-     --role curator \
-     --id curator \
-     --command "cd .curator && claude --dangerously-load-development-channels server:claude-peers --permission-mode {default_permission_mode}"
+1. `mcp__ccmux-peers__spawn_pane` でフォアマンペインの右半分をキュレーター用に立ち上げる:
    ```
-   - `--target-name foreman`: フォアマンペインを分割対象に指定
-   - `--direction vertical` = 左右分割（フォアマン=左 / キュレーター=右）
+   mcp__ccmux-peers__spawn_pane(
+     target="foreman",
+     direction="vertical",
+     role="curator",
+     name="curator",
+     command="cd .curator && claude --dangerously-load-development-channels server:claude-peers --permission-mode {default_permission_mode}"
+   )
+   ```
+   - `target="foreman"`: Step 2 で命名したフォアマンペインを分割対象に指定
+   - `direction="vertical"` = 左右分割（フォアマン=左 / キュレーター=右）
+   - `name="curator"`: 安定名（英字を含む、全桁数字禁止）
    - `.curator/CLAUDE.md` にキュレーター用の役割指示がある
-   - 開発チャネルの確認プロンプトが表示されるので、`ccmux send --name curator --enter ""` で Enter を送信する
-2. claude-peers の `list_peers` で新しいピアが現れるのを待つ
-3. claude-peers の `send_message` でキュレーターに以下を送信する:
+   - エラーは Step 2 と同様の `[<code>] <msg>` 形式
+2. 開発チャネルの確認プロンプトが表示されるので、`ccmux send --name curator --enter ""` で Enter を送信する
+   - 注: raw キー入力は ccmux-peers MCP 未対応（upstream happy-ryo/ccmux#118 待ち）
+3. claude-peers の `mcp__claude-peers__list_peers` で新しいピアが現れるのを待つ
+4. claude-peers の `mcp__claude-peers__send_message` でキュレーターに以下を送信する:
    「あなたはキュレーターです。 /loop 30m /org-curate を実行してください。知見整理を30分ごとに行います。」
-4. キュレーターのピアIDと ccmux ペイン名（`curator`）を記録する（org-state.md の Curator セクション）
-5. JSON スナップショットを再生成する:
+5. キュレーターのピアIDと ccmux ペイン名（`curator`）を記録する（org-state.md の Curator セクション）
+6. JSON スナップショットを再生成する:
    `py -3 dashboard/org_state_converter.py`
 
 ## Step 4: 準備完了の報告
