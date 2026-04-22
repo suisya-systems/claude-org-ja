@@ -115,7 +115,7 @@ claude --dangerously-load-development-channels server:claude-peers --permission-
    - 戻り値: `"Spawned pane id=N."` のテキスト。以降のペイン操作では `name="foreman"` で参照する
    - エラーは `[<code>] <msg>` 形式のテキストで返却される（例: `[split_refused]` / `[pane_not_found]`）。code 一覧と分岐は `.claude/skills/org-delegate/references/ccmux-error-codes.md` を参照
 2. 開発チャネルの確認プロンプトが表示されるので、`ccmux send --name foreman --enter ""` で Enter を送信する
-   - 注: raw キー入力 (Enter) は現状 ccmux リリース前のため CLI 併用。upstream happy-ryo/ccmux#118 / ccmux PR #122 で `send_keys` MCP ツールは API 確定済み（`text` + `keys` + `enter` の 3 入力、語彙は Enter / Tab / Shift+Tab / Esc / Backspace / Delete / Up/Down/Left/Right / Home / End / PageUp/PageDown / Space / Ctrl+<A-Z>）。**merge + ccmux リリース後**の置換形:
+   - 注: raw キー入力 (Enter) は現状 ccmux リリース前のため CLI 併用。upstream happy-ryo/ccmux#118 / ccmux PR #122 で `send_keys` MCP ツールは API 確定済み（引数は `target` / `text` / `keys` / `enter` の 4 つ。canonical な対応キー語彙は `.claude/skills/org-delegate/references/ccmux-error-codes.md` の「raw キー入力 (`send_keys` MCP)」セクション参照）。**merge + ccmux リリース後**の置換形:
      ```
      mcp__ccmux-peers__send_keys(target="foreman", enter=true)
      ```
