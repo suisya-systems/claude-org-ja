@@ -1,6 +1,7 @@
-# Pane Layout Specification (ccmux)
+# Pane Layout Specification (ccmux-peers MCP)
 
-ccmux のペイン / タブ配置ルール。org-start と org-delegate が参照する。
+ccmux のペイン / タブ配置ルール。`org-start` と `org-delegate` が参照する。
+ペイン制御は `mcp__ccmux-peers__*` MCP ツール経由で行う（一部の raw キー入力とイベント購読のみ `ccmux` CLI 併用、upstream happy-ryo/ccmux#117 / #118 merge まで）。
 
 ## 初期レイアウト (`ccmux --layout ops` の結果 + フォアマン・キュレーター起動後)
 
@@ -25,9 +26,9 @@ Tab 1: ops (ワーカー 0 人)
 
 | 対象 | 操作 | 備考 |
 |---|---|---|
-| フォアマン | 窓口ペインを水平分割して下半分 | `ccmux split --target-focused --direction horizontal --role foreman --id foreman --command "cd .foreman && claude ..."` (org-start Step 2) |
-| キュレーター | フォアマンペインを垂直分割して右半分 | `ccmux split --target-name foreman --direction vertical --role curator --id curator --command "cd .curator && claude ..."` (org-start Step 3) |
-| 各ワーカー | **balanced split**: `ccmux list` が返す現在の rect から target と direction を動的に選び、同一タブ内に積む | 詳細は下記「ワーカーの balanced split 戦略」セクション。`ccmux split --target-name {target} --direction {direction} --role worker --id worker-{task_id} --command "cd {workers_dir}/{task_id} && claude ..."` (org-delegate Step 3) |
+| フォアマン | 窓口ペインを水平分割して下半分 | `mcp__ccmux-peers__spawn_pane(target="focused", direction="horizontal", role="foreman", name="foreman", command="cd .foreman && claude ...")` (org-start Step 2) |
+| キュレーター | フォアマンペインを垂直分割して右半分 | `mcp__ccmux-peers__spawn_pane(target="foreman", direction="vertical", role="curator", name="curator", command="cd .curator && claude ...")` (org-start Step 3) |
+| 各ワーカー | **balanced split**: `list_panes` が返す現在の rect から target と direction を動的に選び、同一タブ内に積む | 詳細は下記「ワーカーの balanced split 戦略」セクション。`mcp__ccmux-peers__spawn_pane(target={target}, direction={direction}, role="worker", name="worker-{task_id}", command="cd {workers_dir}/{task_id} && claude ...")` (org-delegate Step 3) |
 
 ## ワーカーの balanced split 戦略
 
@@ -35,15 +36,15 @@ Tab 1: ops (ワーカー 0 人)
 
 ccmux は各 split で対象ペインを 50/50 に分ける。`MIN_PANE_WIDTH = 20` / `MIN_PANE_HEIGHT = 5` の下限を割り込むと `[split_refused]` で拒否される (調査: `C:/Users/iwama/working/workers/ccmux-split-inv/findings.md`)。
 
-固定 target (`--target-name foreman --direction vertical`) や序数 `k` ベースの lookup table では、foreman 幅の累積半減や、ワーカーが途中で閉じた後の再派遣で想定レイアウトと実レイアウトが乖離し、早期に `split_refused` を誘発していた。
+固定 target や序数 `k` ベースの lookup table では、foreman 幅の累積半減や、ワーカーが途中で閉じた後の再派遣で想定レイアウトと実レイアウトが乖離し、早期に `split_refused` を誘発していた。
 
-現設計は ccmux v0.5.x から `ccmux list --format json` が返す各ペインの **rect 情報 (`x / y / width / height`, u16, cell 単位)** を使い、**現状のレイアウトから動的に target と direction を選ぶ**。ワーカー退役順の揺れや途中クローズに強く、固定的な「N 並列上限」は持たず、ターミナルサイズと MIN_PANE 制約が許す限り分割し続け、限界に達したら自動 escalate する。
+現設計は `mcp__ccmux-peers__list_panes` が返す各ペインの **rect 情報 (`x / y / width / height`, cell 単位)** を使い、**現状のレイアウトから動的に target と direction を選ぶ**。ワーカー退役順の揺れや途中クローズに強く、固定的な「N 並列上限」は持たず、ターミナルサイズと MIN_PANE 制約が許す限り分割し続け、限界に達したら自動 escalate する。
 
 ### アルゴリズム
 
-新規ワーカーを起動するフォアマンは、`ccmux split` を呼ぶ前に以下を実行する。bash + jq 実装は `SKILL.md` Step 3-1 を参照。
+新規ワーカーを起動するフォアマンは、`spawn_pane` を呼ぶ前に以下を実行する。判定ステップの詳細は `SKILL.md` Step 3-1 を参照（Claude が `list_panes` の結果テキストを解釈してロジックを実行する）。
 
-1. `ccmux list --format json` で全ペインと rect を取得する
+1. `mcp__ccmux-peers__list_panes` で全ペインと属性 (id / name / role / focused / x / y / width / height) を取得する
 2. **候補集合**: `role ∈ {worker, foreman, secretary}` のペイン (curator は常に除外)
 3. **候補の絞り込み**:
    - **foreman-curator 隣接維持**: foreman は curator と rect 隣接 (後述) しているときのみ候補に入れる。組織運営上 foreman と curator の隣接配置は前提。foreman を分割すると隣接が崩れ得るので、既に非隣接な foreman は候補から外す
@@ -56,7 +57,7 @@ ccmux は各 split で対象ペインを 50/50 に分ける。`MIN_PANE_WIDTH = 
    - vertical 分割: `(new_w, new_h) = (floor(width / 2), height)`
    - horizontal 分割: `(new_w, new_h) = (width, floor(height / 2))`
 6. **target 選出**: 残った候補から **「分割軸方向の新サイズ」** (vertical なら `new_w`、horizontal なら `new_h`) が最大のペインを target にする。tie-break はその時点の pane id 昇順 (スナップショット内で再現可能。セッション跨ぎの安定性までは保証しない)
-7. **候補が空なら escalate**: `SKILL.md` Step 3-1 末尾の `SPLIT_CAPACITY_EXCEEDED` 経路で窓口に escalate (`ccmux split` は発行せず、該当ワーカー 1 件だけ派遣中止、フォアマン本体は継続)
+7. **候補が空なら escalate**: `SKILL.md` Step 3-1c の `SPLIT_CAPACITY_EXCEEDED` 経路で窓口に escalate (`spawn_pane` は発行せず、該当ワーカー 1 件だけ派遣中止、フォアマン本体は継続)
 
 ### rect 隣接判定の定義
 
@@ -76,35 +77,38 @@ ccmux の cell 座標は整数なので tolerance なし完全一致で判定す
 ### Edge cases / 運用時の注意
 
 - **ワーカーが途中で閉じた後の再派遣**: 旧 k-table 方式で問題になった「閉じた slot を詰めるとテーブル前提と乖離」は rect ベースでは発生しない。常に実レイアウトから target を選ぶため、ccmux のレイアウト tree と判断が一致する
-- **`ccmux split` エラー**: `[split_refused]` / `[pane_not_found]` が返った場合は `references/ccmux-error-codes.md` の手順でキュレーター → 窓口にエスカレーション (方針は旧設計と同じ)
-- **レース**: `ccmux list` 実行から `ccmux split` 実行までに他ワーカーが増減した場合、target 不整合は `[pane_not_found]` として顕在化する。既存のエラーハンドリング経路で吸収する
-- **target 選出の責務**: 計算はフォアマンが `ccmux list` の rect ベースで行う。窓口は DELEGATE メッセージに task_id だけを渡せばよく、target は指定しない
+- **`spawn_pane` エラー**: `[split_refused]` / `[pane_not_found]` が MCP 結果テキストで返る。`references/ccmux-error-codes.md` の手順でキュレーター → 窓口にエスカレーション (方針は旧設計と同じ)
+- **レース**: `list_panes` 実行から `spawn_pane` 実行までに他ワーカーが増減した場合、target 不整合は `[pane_not_found]` として顕在化する。既存のエラーハンドリング経路で吸収する
+- **target 選出の責務**: 計算はフォアマンが `list_panes` の rect ベースで行う。窓口は DELEGATE メッセージに task_id だけを渡せばよく、target は指定しない
 
 ## 運用メモ
 
-- **全ペインを同一タブ内に配置する**: ccmux の `list` / `focus` / `send` / `inspect` は現在フォーカス中のタブのペインしか扱えないため、フォアマン・キュレーター・全ワーカーを同一タブ内に split で積む。`ccmux new-tab` でワーカーを別タブに置くとフォアマン側から addressable でなくなる (2026-04-20 判明。ccmux 本体での解決は happy-ryo/ccmux#71)
+- **全ペインを同一タブ内に配置する**: ccmux の `list_panes` / `focus_pane` / `send_message` / `inspect`（CLI） は現在フォーカス中のタブのペインしか扱えないため、フォアマン・キュレーター・全ワーカーを同一タブ内に split で積む。`new_tab` でワーカーを別タブに置くとフォアマン側から addressable でなくなる (2026-04-20 判明。ccmux 本体での解決は happy-ryo/ccmux#71)
 - **命名規約**:
   - 窓口 → `secretary`
   - フォアマン → `foreman`
   - キュレーター → `curator`
   - ワーカー → `worker-{task_id}` (task_id は kebab-case の一意識別子)
-- **役割ラベル (`--role`)**: `secretary` / `foreman` / `curator` / `worker` の 4 種
-  - `ccmux list` の JSON 出力で `role` フィールドが取得でき、組織状態の集計や balanced split の target 選出に使える
+  - **ccmux-peers の target 解決ルール**: 全桁数字の name は id として解釈されるため、name には英字を必ず含める (`worker-1` は OK、`1` は id 扱いになるので NG)
+- **役割ラベル (`role`)**: `secretary` / `foreman` / `curator` / `worker` の 4 種
+  - `list_panes` の出力で `role` フィールドが取得でき、組織状態の集計や balanced split の target 選出に使える
 - **ワーカー完了時**:
   1. 窓口がフォアマンに `CLOSE_PANE` を依頼
-  2. フォアマンは `ccmux close --name worker-{task_id}` でペインを明示破棄する (ccmux v0.5.8+)
-     (ccmux が pane を撤去 → `Event::PaneExited` を 1 回 emit → `ccmux list` からも消える。
+  2. フォアマンは `mcp__ccmux-peers__close_pane(target="worker-{task_id}")` でペインを明示破棄する
+     (ccmux が pane を撤去 → `Event::PaneExited` を 1 回 emit → `list_panes` からも消える。
      `[pane_not_found]` / `[pane_vanished]` は「既に閉じた扱い」として skip する)
-- **org-suspend 時の停止順**: ワーカー → フォアマン → キュレーター (いずれも `ccmux close --name ...` で破棄。最後の 1 ペインを閉じるときだけ `[last_pane]` が返るので、そのペインは自分自身で `exit` させる)
+- **org-suspend 時の停止順**: ワーカー → フォアマン → キュレーター (いずれも `mcp__ccmux-peers__close_pane` で破棄。最後の 1 ペインを閉じるときだけ `[last_pane]` が返るので、そのペインは自分自身で `exit` させる)
 
-## ccmux split の direction 慣習
+## spawn_pane の direction 慣習
 
-ccmux の分割方向は以下の定義:
-- `--direction vertical` = 左右分割 (既存ペイン=左、新ペイン=右)
-- `--direction horizontal` = 上下分割 (既存ペイン=上、新ペイン=下)
+ccmux の分割方向は以下の定義（旧 `ccmux split --direction` と同じ）:
+- `direction="vertical"` = 左右分割 (既存ペイン=左、新ペイン=右)
+- `direction="horizontal"` = 上下分割 (既存ペイン=上、新ペイン=下)
 
-## 将来機能 (Phase 2 待ち)
+## 将来機能 / upstream 追跡
 
-- `ccmux events` によるペイン lifecycle 購読 (現在は claude-peers 経由で補完)
-- `ccmux split --ratio 0.2` 等の比率指定 (現状は 50/50 固定)
-- `ccmux split --target-largest` / `--direction auto` 等の ccmux 側自動 target 選出 (現状はフォアマン側で `ccmux list` rect から算出。upstream に移譲できれば lookup ロジックを ccmux CLI 1 行に畳める)
+- **ペイン lifecycle 購読**: 現在は `ccmux events` CLI 併用（フォアマン監視ループなど）。upstream happy-ryo/ccmux#117 / ccmux PR #120 で `mcp__ccmux-peers__poll_events` が追加されたら後続 Issue で MCP に切替
+- **画面スクレイプ**: `ccmux inspect` CLI 併用。upstream happy-ryo/ccmux#116 / ccmux PR #121 で `mcp__ccmux-peers__inspect_pane` が追加されたら後続 Issue で MCP に切替
+- **raw キー送信**: `ccmux send --text` CLI 併用（開発チャネル Enter / Plan モード切替 Shift+Tab 等）。upstream happy-ryo/ccmux#118 で `send_keys` MCP が設計中。追加されたら後続 Issue で MCP に切替
+- `spawn_pane --ratio 0.2` 等の比率指定 (現状は 50/50 固定)
+- `spawn_pane --target-largest` / `--direction auto` 等の ccmux 側自動 target 選出 (現状はフォアマン側で `list_panes` rect から算出。upstream に移譲できれば balanced split ロジックを MCP 側に畳める)

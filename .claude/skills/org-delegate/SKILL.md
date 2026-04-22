@@ -254,93 +254,95 @@ DELEGATE: 以下のワーカーを派遣してください。
 
 ### 3-1. balanced split で target / direction を決める
 
-旧設計は序数 `k` ベースの lookup table で target を決めていたが、ワーカーが途中で閉じた後の再派遣や想定外の退役順でテーブル前提と実レイアウトが乖離し、`[split_refused]` を誘発しやすかった。ccmux v0.5.x から `ccmux list --format json` が各ペインの `x / y / width / height` (u16, cell 単位) を返すため、**現在のレイアウト (rect) から動的に target と direction を選ぶ方式**に差し替えた。詳細ルールは `references/pane-layout.md` の「ワーカーの balanced split 戦略」セクションを参照。
+旧設計は序数 `k` ベースの lookup table で target を決めていたが、ワーカーが途中で閉じた後の再派遣や想定外の退役順でテーブル前提と実レイアウトが乖離し、`[split_refused]` を誘発しやすかった。ccmux-peers MCP の `mcp__ccmux-peers__list_panes` が各ペインの `id / name / role / focused / x / y / width / height` (cell 単位) を返すため、**現在のレイアウト (rect) から動的に target と direction を選ぶ方式**を取る。詳細ルールは `references/pane-layout.md` の「ワーカーの balanced split 戦略」セクションを参照。
 
-フォアマンは `ccmux split` を呼ぶ前に、以下のシェルスニペットで target と direction を算出する:
+#### 3-1a. レイアウト取得
 
-```bash
-# MIN_PANE_WIDTH=20 / MIN_PANE_HEIGHT=5: ccmux 側の分割下限 (findings: ccmux-split-inv)
-# SECRETARY_MIN_WIDTH=100:               secretary を分割候補にしてよい最小幅 (保険条項、実運用ではほぼ不発動)
-layout=$(ccmux list --format json)
-read -r target direction < <(
-  jq -r '
-    # rect 隣接判定: 辺共有 + その軸に直交する方向の区間 overlap
-    def adj($a; $b):
-      ((($a.x + $a.width) == $b.x or ($b.x + $b.width) == $a.x)
-        and ([$a.y, $b.y] | max) < ([$a.y + $a.height, $b.y + $b.height] | min))
-      or ((($a.y + $a.height) == $b.y or ($b.y + $b.height) == $a.y)
-        and ([$a.x, $b.x] | max) < ([$a.x + $a.width, $b.x + $b.width] | min));
-    (.panes | map(select(.role == "curator")) | first) as $cur
-    | .panes
-      # 候補は worker / foreman / secretary のみ (curator は常に除外)
-      | map(select(.role == "worker" or .role == "foreman" or .role == "secretary"))
-      # foreman-curator 隣接維持: foreman は curator と rect 隣接しているときのみ候補
-      | map(select(.role != "foreman" or ($cur != null and adj(.; $cur))))
-      | map(
-          # ターミナルセルは縦横比 ≈ 2:1 (文字が縦長) なので、文字単位で
-          # width = 2*height のとき物理的にほぼ正方形。width > height*2 を
-          # 「物理的に横長」判定とし、横長なら vertical (左右分割)、
-          # そうでなければ horizontal (上下分割) を選ぶ。
-          (if .width > .height * 2 then "vertical" else "horizontal" end) as $d
-          | (if $d == "vertical"   then (.width  / 2 | floor) else .width  end) as $nw
-          | (if $d == "horizontal" then (.height / 2 | floor) else .height end) as $nh
-          | . + {dir:$d, nw:$nw, nh:$nh,
-                 metric: (if $d == "vertical" then $nw else $nh end)})
-      # MIN_PANE 制約 + secretary 保険条項 (secretary は new_w >= 100 のときだけ候補に残る)
-      | map(select(.nw >= 20 and .nh >= 5))
-      | map(select(.role != "secretary" or .nw >= 100))
-      # 分割軸方向の新サイズ (vertical なら new_w、horizontal なら new_h) が最大のペインを選ぶ。
-      # tie-break はその時点の pane id 昇順 (スナップショット内で再現可能)。
-      | sort_by(-.metric, .id)
-      | if length == 0 then "" else (.[0] | "\(.name) \(.dir)") end
-  ' <<<"$layout"
-)
-```
+`mcp__ccmux-peers__list_panes` を呼び、返却テキストから全ペインの属性を抽出する。各ペインは以下のフィールドを持つ:
 
-- 初回 (ワーカー 0 人) は foreman が唯一の候補として残り、direction は foreman の aspect ratio から決まる (典型的に横長なので vertical)
-- **候補が空だった場合の扱い**: `$target` / `$direction` が空のまま 3-2 に進むので、フォアマン Claude は **`ccmux split` を発行せず**、代わりに claude-peers で窓口 (Secretary) に escalate メッセージを送信する:
-  1. `mcp__claude-peers__list_peers` (scope: `machine`) を呼び、`summary` に `Secretary` を含む peer を特定して `id` を取得する (通常は 1 件だが、複数あれば最新の last_seen を選ぶ)
-  2. `mcp__claude-peers__send_message` を `to_id=<Secretary id>` で呼び、本文を以下にする:
-     ```
-     SPLIT_CAPACITY_EXCEEDED: {task_id} のワーカー分割対象が見つからない。
-     rect ベース balanced split の MIN_PANE / 隣接条件を満たす候補が 0。
-     ターミナルサイズ不足または想定外のレイアウトが疑われる。人間判断が必要です。
-     ```
-  3. 3-3 以降（`ccmux events` 待機、`list_peers` 待ち、instruction 送信）は **skip** する。該当ワーカー 1 件だけ派遣を中止し、フォアマン本体の監視ループは **継続**させる。`exit` / `return` などでフォアマンを落とさないこと
+- `id`: 整数
+- `name`: 文字列（`spawn_pane` / `new_tab` で明示指定されたペインのみ、未設定なら省略）
+- `role`: 文字列 ("secretary" / "foreman" / "curator" / "worker" のいずれか。未設定なら省略)
+- `focused`: bool（出力行に `(focused)` が付くかで判断）
+- `x / y / width / height`: cell 単位の整数
+
+#### 3-1b. balanced split アルゴリズム（Claude が判定ロジックを実行）
+
+**定数**:
+- `MIN_PANE_WIDTH = 20` / `MIN_PANE_HEIGHT = 5`: ccmux 側の分割下限（findings: ccmux-split-inv）
+- `SECRETARY_MIN_WIDTH = 100`: secretary を分割候補にしてよい最小幅（保険条項、実運用ではほぼ不発動）
+
+**Step 1. curator を特定**: `role == "curator"` のペインを 1 つ選ぶ（複数あれば先頭）。以降 `$curator` と呼ぶ。存在しなければ `$curator = null`。
+
+**Step 2. 候補を絞り込む**:
+- `role ∈ {"secretary", "foreman", "worker"}` のペインのみ候補
+- `role == "foreman"` のペインは、**`$curator` と rect 隣接している場合のみ**残す（`$curator = null` なら foreman も除外）
+  - rect 隣接の定義（どちらかを満たす）:
+    - **縦辺共有 + y 区間重なり**: `a.x + a.width == b.x` または `b.x + b.width == a.x`、かつ `max(a.y, b.y) < min(a.y + a.height, b.y + b.height)`
+    - **横辺共有 + x 区間重なり**: `a.y + a.height == b.y` または `b.y + b.height == a.y`、かつ `max(a.x, b.x) < min(a.x + a.width, b.x + b.width)`
+
+**Step 3. 各候補に direction / new_w / new_h / metric を付与**:
+- `direction = (width > height * 2) ? "vertical" : "horizontal"`
+  - ターミナル cell は縦:横 ≈ 2:1（文字が縦長）。`width > height*2` は物理的に横長 → vertical（左右分割）で綺麗に割れる
+  - それ以外は horizontal（上下分割）
+- `new_w = (direction == "vertical") ? floor(width / 2) : width`
+- `new_h = (direction == "horizontal") ? floor(height / 2) : height`
+- `metric = (direction == "vertical") ? new_w : new_h`（分割軸方向の新サイズ）
+
+**Step 4. MIN_PANE 制約**:
+- `new_w >= MIN_PANE_WIDTH` かつ `new_h >= MIN_PANE_HEIGHT` のペインのみ残す
+
+**Step 5. secretary 保険条項**:
+- `role == "secretary"` のペインは `new_w >= SECRETARY_MIN_WIDTH` のときだけ残す
+
+**Step 6. ソート & 選択**:
+- `metric` の降順、tie-break は `id` の昇順
+- 先頭要素の `name` を `$target`、`direction` を `$direction` として使用
+
+初回（ワーカー 0 人）は foreman が唯一の候補として残り、direction は foreman の aspect ratio から決まる（典型的に横長なので vertical）。
+
+#### 3-1c. 候補が空だった場合
+
+`$target` が空（候補セットが空）の場合、フォアマン Claude は **`spawn_pane` を発行せず**、代わりに claude-peers で窓口 (Secretary) に escalate メッセージを送信する:
+
+1. `mcp__claude-peers__list_peers` (scope: `machine`) を呼び、`summary` に `Secretary` を含む peer を特定して `id` を取得する（通常は 1 件、複数あれば最新の last_seen を選ぶ）
+2. `mcp__claude-peers__send_message` を `to_id=<Secretary id>` で呼び、本文を以下にする:
+   ```
+   SPLIT_CAPACITY_EXCEEDED: {task_id} のワーカー分割対象が見つからない。
+   rect ベース balanced split の MIN_PANE / 隣接条件を満たす候補が 0。
+   ターミナルサイズ不足または想定外のレイアウトが疑われる。人間判断が必要です。
+   ```
+3. 3-2 以降（`spawn_pane` / 起動確認 / `list_peers` 待ち / instruction 送信）は **skip** する。該当ワーカー 1 件だけ派遣を中止し、フォアマン本体の監視ループは **継続**させる。`exit` / `return` などでフォアマンを落とさないこと
 
 ### 3-2. ワーカーペインを起動する
 
-3-1 で算出した `$target` / `$direction` を使って `ccmux split` を呼ぶ。**`$target` が空なら split を発行せず 3-1 末尾の escalate 手順に従う**:
+3-1 で算出した `$target` / `$direction` を使って `mcp__ccmux-peers__spawn_pane` を呼ぶ。**`$target` が空なら spawn せず 3-1c の escalate 手順に従う**:
 
-```bash
-if [ -z "$target" ] || [ -z "$direction" ]; then
-  # 3-1 で balanced split 候補が空。claude-peers で窓口に SPLIT_CAPACITY_EXCEEDED を送信して
-  # このワーカーの派遣を中止する (フォアマン本体は継続)
-  :  # ccmux split を発行しない
-else
-  ccmux split \
-    --target-name "$target" \
-    --direction "$direction" \
-    --role worker \
-    --id worker-{task_id} \
-    --command "cd '{workers_dir}/{task_id}' && claude --dangerously-load-development-channels server:claude-peers --permission-mode {default_permission_mode}"
-fi
+```
+mcp__ccmux-peers__spawn_pane(
+  target=$target,                         # 3-1 で算出した既存ペイン名
+  direction=$direction,                   # "vertical" or "horizontal"
+  role="worker",
+  name="worker-{task_id}",                # 後続操作で参照する安定名。英字含む前提
+  command="cd '{workers_dir}/{task_id}' && claude --dangerously-load-development-channels server:claude-peers --permission-mode {default_permission_mode}"
+)
 ```
 
-> **`$target` / `$direction` が空だった場合の後続フロー**: このワーカーの起動フローはここで終了。3-3 (`ccmux events` 待機)、3-4 (`list_peers` 待ち)、3-5 (instruction 送信) のいずれも **skip** する。claude-peers での escalate（3-1 の手順参照）を行ったらフォアマン本体は次のサイクルへ。次タスクが控えているなら 3-6 で次の派遣へ進む。
+- ペイン配置ルールは `references/pane-layout.md` を参照。rect ベースの target / direction 選出ルールはそちらに集約
+- **同一タブ内 spawn で起動する理由**: ccmux の `list_panes` / `focus_pane` / `send_message` / `inspect`（CLI） は現在フォーカス中のタブのペインしか見えない。`new_tab` で別タブに置くとフォアマンからの監視・指示送信が不能になる（ccmux 側 issue: happy-ryo/ccmux#71）
+- `name="worker-{task_id}"`: 後続の `mcp__ccmux-peers__send_message(to_id="worker-{task_id}", ...)` や `close_pane(target="worker-{task_id}")` で addressable にする安定名。**全桁数字は id 扱いになる** ので、`worker-` プレフィックス等で英字を必ず含める
+- `role="worker"`: `list_panes` の結果で役割識別（次回以降の balanced split の target 選出にも使われる）
+- 起動コマンドは `.claude/skills/org-start/SKILL.md` の「ClaudeCode 起動コマンド（役割別）」セクションを参照
+- Planモード要の場合は `command` に `--permission-mode plan` を含める（org-config の値を上書き）
+- 開発チャネルの確認プロンプトが表示されるので、`ccmux send --name worker-{task_id} --enter ""` で Enter を送信する（raw キー入力は ccmux-peers MCP 未対応のため CLI 併用。upstream happy-ryo/ccmux#118 の `send_keys` MCP merge 後に MCP 化 — #30 の cleanup 事項）
+- **エラーハンドリング**: MCP 結果テキストに `[<code>] <msg>` 形式でエラーが埋まる。主な code:
+  - `[split_refused]` (MAX_PANES / too small): `references/ccmux-error-codes.md` の手順に従いキュレーター → 窓口に escalate。balanced split は best-effort の配置ヒントであり、想定外のレイアウト（途中でワーカーが閉じた後の再派遣など）では拒否され得る
+  - `[pane_not_found]`: `$target` に選んだ既存ペインが spawn 発行直前に閉じたレース。同じくエラーコード経路で escalate
+  - その他の code は `references/ccmux-error-codes.md` 参照
 
-   - ペイン配置ルールは `references/pane-layout.md` (ccmux 版) を参照。rect ベースの target / direction 選出ルールはそちらに集約
-   - **同一タブ内 split で起動する理由**: ccmux の `list` / `focus` / `send` / `inspect` は現在フォーカス中のタブのペインしか見えない。`new-tab` で別タブに置くとフォアマンからの監視・指示送信が不能になる (2026-04-20 判明。ccmux 側 issue: happy-ryo/ccmux#71)
-   - `--target-name "$target"`: balanced split で算出した既存ペイン名 (`foreman` もしくは `worker-*`) を分割対象にする
-   - `--direction "$direction"`: balanced split で算出した `vertical` / `horizontal`
-   - `--id worker-{task_id}`: 後続の `ccmux send --name worker-{task_id} ...` で addressable にする安定名
-   - `--role worker`: `ccmux list` の JSON で役割識別 (balanced split の target 選出にも使われる)
-   - 起動コマンドは `.claude/skills/org-start/SKILL.md` の「ClaudeCode 起動コマンド（役割別）」セクションを参照
-   - Planモード要の場合は `--permission-mode plan` を使用する（org-config の値を上書き）
-   - 開発チャネルの確認プロンプトが表示されるので、`ccmux send --name worker-{task_id} --enter ""` で Enter を送信する
-   - `[split_refused]` (MAX_PANES / too small) が返った場合は `references/ccmux-error-codes.md` の手順に従いキュレーター → 窓口に escalate する。balanced split は best-effort の配置ヒントであり、想定外のレイアウト (途中でワーカーが閉じた後の再派遣など) では拒否され得る
-   - `[pane_not_found]` が返った場合は `$target` に選んだワーカーが split 発行直前に閉じたレース。同じく既存エラーコード経路で escalate
-### 3-3. ペインが起動したことを確認 (`ccmux events`、推奨)
+### 3-3. ペインが起動したことを確認
+
+現状は `ccmux events` CLI 併用で確認（upstream happy-ryo/ccmux#117 / ccmux PR #120 の `poll_events` MCP が merge されたら後続 Issue で切り替え）:
 
 ```bash
 ccmux events --timeout 3s \
@@ -350,22 +352,22 @@ ccmux events --timeout 3s \
 ```
 
 - `ccmux events` は 3 秒経過で勝手に exit するので全体で最大 3 秒待機
-- `jq` で `pane_started` かつ `name == "worker-{task_id}"` の行だけに絞る (別タスクの同時 spawn 由来イベントを取りこぼさない、誤マッチしない)
+- `jq` で `pane_started` かつ `name == "worker-{task_id}"` の行だけに絞る（別タスクの同時 spawn 由来イベントを取りこぼさない、誤マッチしない）
 - `head -n 1` で最初の該当行で pipeline を終了させる
-- 出力が 1 行あれば OK。空なら 3 秒以内に起動イベントが来なかったということなので、`ccmux list` で状態を確認して窓口にエスカレーションする
+- 出力が 1 行あれば OK。空なら 3 秒以内に起動イベントが来なかったということなので、`mcp__ccmux-peers__list_panes` で状態を確認して窓口にエスカレーションする
 - **注意**: 直接 `--count 1` にすると、別ワーカーの起動イベント等の無関係な 1 件で exit してしまい、target ワーカーの起動確認ができない
 
-### 3-4. claude-peers の `list_peers` で新ピア出現を待機
+### 3-4. claude-peers の `mcp__claude-peers__list_peers` で新ピア出現を待機
 
-pane は live でも Claude がまだ起動中の場合があるため二重確認。
+pane は live でも Claude がまだ起動中の場合があるため二重確認。`ccmux-peers` 側の `list_peers` ではなく、必ず **`claude-peers` 側**を使う（広域 peer 空間は claude-peers が正本）。
 
-### 3-5. claude-peers の `send_message` でワーカーに指示を送信
+### 3-5. `mcp__claude-peers__send_message` でワーカーに指示を送信
 
-`references/instruction-template.md` のフォーマットに従う。
+`references/instruction-template.md` のフォーマットに従う。こちらも `claude-peers` 側を使用。
 
 ### 3-6. 複数ワーカーの順次起動
 
-複数ワーカーがある場合は 3-1〜3-5 を順次繰り返す。`ccmux list` の結果が毎回変わるので、都度 `active_workers` を再取得して `k` を計算し直す (前ワーカーの起動が完了するのを 3-3 / 3-4 で待ってから次に進むこと)。
+複数ワーカーがある場合は 3-1〜3-5 を順次繰り返す。`list_panes` の結果が毎回変わるので、**都度再取得して** balanced split 判定をし直す（前ワーカーの起動が完了するのを 3-3 / 3-4 で待ってから次に進むこと）。
 
 ### 3-7. Planモード要の場合 — Plan承認前のモード切替（重要: 順序厳守）
 
