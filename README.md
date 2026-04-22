@@ -28,7 +28,7 @@ ccmux --layout ops
 
 `ccmux-layouts/ops.toml` で定義された窓口 (Secretary) ペインが立ち上がります。
 フォアマン・キュレーター・ワーカーは `/org-start` などのスキル内で
-`ccmux split` / `ccmux new-tab` を介して動的に派生します。
+`mcp__ccmux-peers__spawn_pane` / `new_tab` を介して動的に派生します。
 
 詳しくは [docs/getting-started.md](docs/getting-started.md) を参照。
 
