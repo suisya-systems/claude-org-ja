@@ -10,7 +10,13 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
 {
   "permissions": {
     "allow": [
-      "Bash(ccmux:*)",
+      "Bash(ccmux --version)",
+      "Bash(ccmux --help)",
+      "Bash(ccmux --layout:*)",
+      "Bash(ccmux mcp install:*)",
+      "Bash(ccmux mcp uninstall:*)",
+      "Bash(ccmux mcp status:*)",
+      "Bash(ccmux mcp --help)",
       "mcp__claude-peers__set_summary",
       "mcp__claude-peers__list_peers",
       "mcp__claude-peers__send_message",
@@ -23,7 +29,10 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
       "mcp__ccmux-peers__spawn_pane",
       "mcp__ccmux-peers__close_pane",
       "mcp__ccmux-peers__focus_pane",
-      "mcp__ccmux-peers__new_tab"
+      "mcp__ccmux-peers__new_tab",
+      "mcp__ccmux-peers__inspect_pane",
+      "mcp__ccmux-peers__poll_events",
+      "mcp__ccmux-peers__send_keys"
     ]
   },
   "env": {
@@ -32,7 +41,15 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
 }
 ```
 
-**注意**: `ccmux-peers` MCP ツールは `ccmux mcp install` を一度実行して user-scope に MCP サーバーを登録した後に利用可能になる。登録手順は README「ccmux MCP サーバーの登録」を参照。旧 `Bash(ccmux:*)` は段階移行中の併用（撤去時期は Issue #30 で管理）。
+**Bash permission 方針**: 旧 `Bash(ccmux:*)` glob は撤去済み（ccmux 0.14.0+ でペイン操作・ピア通信・event 購読・スクレイプ・raw キー送信がすべて MCP 化されたため）。残している `Bash(ccmux …)` は **運用コマンド限定**:
+
+- `ccmux --version` / `ccmux --help`: 環境確認
+- `ccmux --layout ops` 相当 (`--layout:*`): 初回レイアウト起動（`ccmux-layouts/ops.toml` 参照）
+- `ccmux mcp install` / `uninstall` / `status` / `--help`: MCP サーバー登録管理（`mcp__ccmux-peers__*` を使えるようにするための bootstrap）
+
+ペイン操作（`ccmux split` / `close` / `list` / `send` / `events` / `inspect` / `new-tab` 等）は MCP ツール (`mcp__ccmux-peers__*`) 経由で実施する。該当 Bash permission は含めない。
+
+**注意**: `ccmux-peers` MCP ツール 12 種は `ccmux mcp install` を一度実行して user-scope に MCP サーバーを登録した後に利用可能になる。登録手順は README「ccmux MCP サーバーの登録」を参照。
 
 ## 窓口 (`<repo>/.claude/settings.local.json`)
 
