@@ -185,3 +185,41 @@ mcp__ccmux-peers__poll_events(
 注: `poll_events` は **filter 不一致イベントが到着しても long-poll を中断して empty 返却する**
 挙動（ccmux PR #120 のドキュメント参照）。Foreman 監視ループでは空応答時に spin せず、
 `next_since` を保持したまま次のサイクルで再呼び出しする。
+
+## raw キー入力 (`send_keys` MCP、ccmux PR #122 / リリース後に利用可能)
+
+現状 `ccmux send --text` / `ccmux send --enter` CLI で送っている raw キー送信は、
+ccmux PR #122（`send_keys` MCP、upstream CI green 待ち）で置換する。API 形状:
+
+```
+mcp__ccmux-peers__send_keys(
+  target: string,           // pane name or id (list_panes と同じ解決規則)
+  text?: string,            // 送信するテキスト（optional）
+  keys?: string[],          // 特殊キー名の配列（optional、text と併用可）
+  enter?: boolean           // 末尾に Enter (CR, 0x0D) を付ける（optional）
+)
+```
+
+**対応キー語彙**（ccmux PR #122 より）:
+
+- `Enter` / `Return` (CR, `\r` = 0x0D。`enter: true` と byte-identical)
+- `Tab`
+- `Shift+Tab` / `BackTab`
+- `Esc` / `Escape`
+- `Backspace`
+- `Delete` / `Del`
+- `Up` / `Down` / `Left` / `Right`
+- `Home` / `End`
+- `PageUp` / `PageDown`
+- `Space`
+- `Ctrl+<A-Z>`（例: `Ctrl+C`）
+
+**置換例**:
+
+| 現行 CLI | upstream merge + リリース後の MCP 置換 |
+|---|---|
+| `ccmux send --name X --enter ""` | `mcp__ccmux-peers__send_keys(target="X", enter=true)` |
+| `ccmux send --name X --enter "yes"` | `mcp__ccmux-peers__send_keys(target="X", text="yes", enter=true)` |
+| `ccmux send --name X $'\x1b[Z'` | `mcp__ccmux-peers__send_keys(target="X", keys=["Shift+Tab"])` |
+
+実際の置換は Issue #30 cleanup で ccmux リリース後に一括で実施する。現行 CLI 経路はそれまで維持。
