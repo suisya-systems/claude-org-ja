@@ -9,10 +9,9 @@ description: >
 
 全ワーカーの状態を収集し、ディスクに保存し、全ペインを停止する。
 
-ペイン操作は `mcp__ccmux-peers__*` MCP ツール経由で行う。pane_exited 相当の
-lifecycle イベントは `ccmux-peers` が現状 push/poll を提供するまで（upstream
-happy-ryo/ccmux#117 / ccmux PR #120 の `poll_events` merge 待ち）、
-`mcp__ccmux-peers__list_panes` の**短間隔ポーリング**で代替する。
+ペイン操作は `mcp__ccmux-peers__*` MCP ツール経由で行う（ccmux 0.14.0+ 前提）。pane_exited
+相当の lifecycle イベントは `mcp__ccmux-peers__poll_events` で long-poll、画面スクレイプ
+は `mcp__ccmux-peers__inspect_pane` で取得、raw キー入力は `mcp__ccmux-peers__send_keys`。
 
 ## Phase 1: ワーカー状態収集
 
@@ -33,11 +32,11 @@ happy-ryo/ccmux#117 / ccmux PR #120 の `poll_events` merge 待ち）、
 応答がなかったワーカーについて:
 
 1. `.state/workers/` から該当ワーカーの状態ファイルを読み、Pane Name と Directory を取得
-2. 画面内容スクレイプは upstream happy-ryo/ccmux#116 / ccmux PR #121 で `mcp__ccmux-peers__inspect_pane` が追加済み（ccmux リリース後に利用可能）。利用可能なら:
+2. 画面内容スクレイプで最新のコンソール出力を読む:
    ```
    mcp__ccmux-peers__inspect_pane(target="worker-{task_id}", format="text")
    ```
-   の結果テキストから最新のコンソール出力を読む。**未実装版 ccmux（リリース前）を使っている間は Step 3 の git 情報だけで推定する**
+   画面表示だけでは不十分な場合は、次の Step 3 の git 情報で補完する
 3. ワーカーの作業ディレクトリで以下を実行:
    - `git status`
    - `git diff --stat`
