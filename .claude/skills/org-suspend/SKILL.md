@@ -9,10 +9,15 @@ description: >
 
 全ワーカーの状態を収集し、ディスクに保存し、全ペインを停止する。
 
+ペイン操作は `mcp__ccmux-peers__*` MCP ツール経由で行う。pane_exited 相当の
+lifecycle イベントは `ccmux-peers` が現状 push/poll を提供するまで（upstream
+happy-ryo/ccmux#117 / ccmux PR #120 の `poll_events` merge 待ち）、
+`mcp__ccmux-peers__list_panes` の**短間隔ポーリング**で代替する。
+
 ## Phase 1: ワーカー状態収集
 
-1. claude-peers の `list_peers` で稼働中のピアを列挙する（scope: machine）
-2. 自分自身とキュレーターを除いた全ピアに以下を送信:
+1. `mcp__claude-peers__list_peers` で稼働中のピアを列挙する（scope: `machine`）
+2. 自分自身とキュレーターを除いた全ピアに `mcp__claude-peers__send_message` で以下を送信:
    ```
    SUSPEND: 現在の状態を報告してください。
    1. これまでに完了したこと
@@ -20,7 +25,7 @@ description: >
    3. 次にやろうとしていたこと
    4. ブロッカーや未解決の問題
    ```
-3. 30秒間 `check_messages` で応答を待つ（5秒間隔でポーリング）
+3. 30 秒間 `mcp__claude-peers__check_messages` で応答を待つ（5 秒間隔でポーリング）
 4. 応答があったワーカーの報告を記録する
 
 ## Phase 2: 未応答ワーカーのスクレイプ
@@ -28,8 +33,11 @@ description: >
 応答がなかったワーカーについて:
 
 1. `.state/workers/` から該当ワーカーの状態ファイルを読み、Pane Name と Directory を取得
-2. (ccmux にはペイン表示内容スクレイプの API が未実装。Phase 2 の `ccmux events` 実装待ち)
-   当面は git 情報のみで状態を推定する
+2. 画面内容スクレイプは upstream happy-ryo/ccmux#116 / ccmux PR #121 で `mcp__ccmux-peers__inspect_pane` が追加済み（ccmux リリース後に利用可能）。利用可能なら:
+   ```
+   mcp__ccmux-peers__inspect_pane(target="worker-{task_id}", format="text")
+   ```
+   の結果テキストから最新のコンソール出力を読む。**未実装版 ccmux（リリース前）を使っている間は Step 3 の git 情報だけで推定する**
 3. ワーカーの作業ディレクトリで以下を実行:
    - `git status`
    - `git diff --stat`
@@ -69,49 +77,50 @@ kill $(cat .state/dashboard.pid 2>/dev/null) 2>/dev/null || true
 
 停止順序が重要。ワーカー → フォアマン → キュレーターの順で停止する。
 
-1. claude-peers の `list_peers` で稼働中のピアを列挙
-2. **ワーカーを先に停止**: 全ワーカーピアに `send_message` で終了を指示:
+1. `mcp__claude-peers__list_peers` で稼働中のピアを列挙（scope: `machine`）
+2. **ワーカーを先に停止**: 全ワーカーピアに `mcp__claude-peers__send_message` で終了を指示:
    「SHUTDOWN: 作業を終了してください。」
 3. **ワーカーペインが閉じたことを確認** — 2-pass 構造で実施:
 
    **Pass 1 (polite shutdown の観察、最大 10 秒)**:
-   ```bash
-   ccmux events --timeout 10s \
-     | jq -c 'select(.type == "pane_exited" and .role == "worker")'
-   ```
-   - 出力された各行の `name` を `worker-{task_id}` と対応付けて、完了リストを作る
-   - 10 秒経過で `ccmux events` が自動 exit
+
+   `mcp__ccmux-peers__list_panes` を **500ms 間隔で最大 20 回** ポーリングする。各 poll で返却テキストに含まれる pane の name から、待機対象ワーカー名 (`worker-{task_id}`) が**消えていれば閉じた**と判定する。
+   - 待機対象集合 `pending_workers = {worker-{id} | 全ワーカー}` を用意
+   - 各 iteration:
+     1. `list_panes` を呼ぶ
+     2. `pending_workers` から、結果テキストに現れない name を除外し「閉じたリスト」に追加
+     3. `pending_workers` が空になったら break
+     4. そうでなければ 500ms 待機して次の iteration
+   - 最大 20 回 (合計 ~10 秒) で break せずに抜けた場合、残りは Pass 2 へ
+   - > **将来**: upstream happy-ryo/ccmux#117 / ccmux PR #120 の `poll_events` が merge されたら、この polling ループは以下 1 回の呼び出しに畳める:
+     > ```
+     > mcp__ccmux-peers__poll_events(since=<cursor>, timeout_ms=10000, types=["pane_exited"])
+     > ```
+     > `events[]` から `role == "worker"` のものを抽出する。この置換は後続 Issue で対応。
 
    **Pass 2 (残留ワーカーへのフォールバック + 再確認、最大 5 秒)**:
-   - Pass 1 で `pane_exited` を確認できなかったワーカーそれぞれに対して:
-     ```bash
-     ccmux close --name worker-{task_id}
+   - Pass 1 で閉じていないワーカーそれぞれに対して:
      ```
-     でペインを明示破棄する (ccmux v0.5.8+)。成功時は `{"id": N, "closed": true}` が返り、
-     `Event::PaneExited` が 1 回 emit される。`[pane_not_found]` / `[pane_vanished]` は
-     既に閉じた扱いで skip。`[last_pane]` はワーカー停止段階では通常発生しない
-     (窓口/フォアマン/キュレーターが残っているため)
-   - その後、再度:
-     ```bash
-     ccmux events --timeout 5s \
-       | jq -c 'select(.type == "pane_exited" and .role == "worker")'
+     mcp__ccmux-peers__close_pane(target="worker-{task_id}")
      ```
-     で残りの `pane_exited` を収集
-   - Pass 2 後もまだ閉じていないワーカーは `ccmux list` で生存確認し、残存なら人間に報告 (強制終了は現状未サポート)
+     でペインを明示破棄する。成功時は `"Closed pane id=N."` テキストが返る。`[pane_not_found]` / `[pane_vanished]` は既に閉じた扱いで skip（`references/ccmux-error-codes.md` 参照）。`[last_pane]` はワーカー停止段階では通常発生しない（窓口/フォアマン/キュレーターが残っているため）
+   - その後、再度 `list_panes` を 500ms × 最大 10 回 (合計 ~5 秒) ポーリングして、残りのワーカーが消えたかを確認する。判定ロジックは Pass 1 と同じ
+   - Pass 2 後もまだ閉じていないワーカーは `list_panes` で生存確認し、残存なら journal に記録して人間に報告（強制終了は現状未サポート）
 
-4. **フォアマンを停止**: フォアマンに `send_message` で終了を指示:
+4. **フォアマンを停止**: フォアマンに `mcp__claude-peers__send_message` で終了を指示:
    「SHUTDOWN: 作業を終了してください。」
-5. **キュレーターを停止**: キュレーターに `send_message` で終了を指示:
+5. **キュレーターを停止**: キュレーターに `mcp__claude-peers__send_message` で終了を指示:
    「SHUTDOWN: 作業を終了してください。」
 6. フォアマン・キュレーターも (3) と同じ 2-pass 構造で確認:
-   - Pass 1: `ccmux events --timeout 10s | jq 'select(.type=="pane_exited" and (.role=="foreman" or .role=="curator"))'`
-   - Pass 2: 残った pane に `ccmux close --name foreman` / `ccmux close --name curator` を送り、`ccmux events --timeout 5s` で再確認
+   - Pass 1: `list_panes` を 500ms × 最大 20 回ポーリングして、name が `foreman` / `curator` のペインが消えたかを確認
+   - Pass 2: 残った pane に `mcp__ccmux-peers__close_pane(target="foreman")` / `mcp__ccmux-peers__close_pane(target="curator")` を送り、`list_panes` ポーリング (500ms × 最大 10 回) で再確認
 
 **最後のペイン (窓口) の扱い**: フォアマン・キュレーターを閉じた時点でタブに残るのは窓口
-ペインのみになる。窓口が自分自身を `ccmux close --name secretary` で閉じようとすると
-`[last_pane]` (唯一のタブの唯一のペイン) が返るので、**窓口は自分自身で `exit` して自然終了
-させる** (人間が端末を閉じる、または `/exit` でシェルに戻る)。org-suspend は窓口ペインを
-閉じる責任を負わない。
+ペインのみになる。窓口が自分自身を `mcp__ccmux-peers__close_pane(target="secretary")` で
+閉じようとすると `[last_pane]` (唯一のタブの唯一のペイン) が返るので、**窓口は自分自身で
+`exit` して自然終了させる** (人間が端末を閉じる、または `/exit` でシェルに戻る)。
+org-suspend は窓口ペインを閉じる責任を負わない。
+
 7. 人間に報告:
    ```
    組織を中断しました。
