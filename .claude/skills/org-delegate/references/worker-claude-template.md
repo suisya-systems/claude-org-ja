@@ -60,6 +60,16 @@ org-delegate の Step 1.5 でワーカー専用ディレクトリ（`{workers_di
 - git push: 不可（`permissions.deny` + hook により技術的にブロック。窓口経由で依頼すること）
 - `rm -rf` / `rm -r`: 不可（`permissions.deny` により技術的にブロック）
 
+## Codex レビュー手順
+
+タスク指示で Codex レビューを求められた場合は、**`codex exec --skip-git-repo-check` 直打ちのみ**を使用すること。
+
+```bash
+codex exec --skip-git-repo-check "{レビュー観点の指示}"
+```
+
+**禁止事項**: `codex:rescue` スキルは使用しないこと（過去に 18 分超ハングした実害あり。`codex exec` 直打ちに切り替えると正常動作した）。
+
 ## 作業完了時（必須）
 作業が完了したら、以下を**必ず**実行すること:
 
