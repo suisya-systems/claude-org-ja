@@ -14,12 +14,17 @@
 # A bare `claude` (or `claude <args>`) is auto-upgraded by ccmux
 # to the Alt+P form, so `server:ccmux-peers` channel notifications
 # are delivered to the Secretary without an explicit
-# `--dangerously-load-development-channels` flag. The same
-# auto-upgrade applies to Foreman / Curator / Workers spawned via
-# `mcp__ccmux-peers__spawn_pane` from org-start / org-delegate;
-# none of them carry the flag any more (see #46). Because the flag
-# is gone, the one-off "Load development channel?" prompt is also
-# skipped, so no manual Enter is required on first launch.
+# `--dangerously-load-development-channels` flag — this Secretary
+# launch below qualifies because `command = "claude"` is bare.
+#
+# IMPORTANT: the auto-upgrade only fires when the first token is
+# `claude`. Foreman / Curator / Workers spawned from org-start /
+# org-delegate use `cd <subdir> && claude ...` to switch cwd, so
+# auto-upgrade does NOT fire for them. Those roles must carry
+# `--dangerously-load-development-channels server:ccmux-peers`
+# explicitly — without it, `send_message` channel push never
+# reaches them and the org becomes unable to route instructions.
+# (See the fix restoring the flag after the #46 regression.)
 
 version = 1
 name = "ops"

@@ -26,9 +26,11 @@ Tab 1: ops (ワーカー 0 人)
 
 | 対象 | 操作 | 備考 |
 |---|---|---|
-| フォアマン | 窓口ペインを水平分割して下半分 | `mcp__ccmux-peers__spawn_pane(target="focused", direction="horizontal", role="foreman", name="foreman", command="cd .foreman && claude ...")` (org-start Step 2) |
-| キュレーター | フォアマンペインを垂直分割して右半分 | `mcp__ccmux-peers__spawn_pane(target="foreman", direction="vertical", role="curator", name="curator", command="cd .curator && claude ...")` (org-start Step 3) |
-| 各ワーカー | **balanced split**: `list_panes` が返す現在の rect から target と direction を動的に選び、同一タブ内に積む | 詳細は下記「ワーカーの balanced split 戦略」セクション。`mcp__ccmux-peers__spawn_pane(target={target}, direction={direction}, role="worker", name="worker-{task_id}", command="cd {workers_dir}/{task_id} && claude ...")` (org-delegate Step 3) |
+| フォアマン | 窓口ペインを水平分割して下半分 | `mcp__ccmux-peers__spawn_pane(target="focused", direction="horizontal", role="foreman", name="foreman", command="cd .foreman && claude --dangerously-load-development-channels server:ccmux-peers ...")` (org-start Step 2) |
+| キュレーター | フォアマンペインを垂直分割して右半分 | `mcp__ccmux-peers__spawn_pane(target="foreman", direction="vertical", role="curator", name="curator", command="cd .curator && claude --dangerously-load-development-channels server:ccmux-peers ...")` (org-start Step 3) |
+| 各ワーカー | **balanced split**: `list_panes` が返す現在の rect から target と direction を動的に選び、同一タブ内に積む | 詳細は下記「ワーカーの balanced split 戦略」セクション。`mcp__ccmux-peers__spawn_pane(target={target}, direction={direction}, role="worker", name="worker-{task_id}", command="cd {workers_dir}/{task_id} && claude --dangerously-load-development-channels server:ccmux-peers ...")` (org-delegate Step 3) |
+
+> **`--dangerously-load-development-channels server:ccmux-peers` は必須**: `cd X && claude` のように cwd 変更を前置きすると ccmux の auto-upgrade が発動せず、channel push (`send_message`) が届かなくなる。窓口→フォアマン / フォアマン→ワーカー の指示が一切通らなくなるため、secretary 以外の全 role で明示する（secretary のみ `ops.toml` から bare `claude` で起動されるのでフラグ不要）。
 
 ## ワーカーの balanced split 戦略
 
