@@ -51,8 +51,7 @@ ccmux --layout ops
 
 | 名前 | 用途 | リポジトリ |
 |---|---|---|
-| claude-peers | Claude Code インスタンス間のメッセージング | https://github.com/happy-ryo/claude-peers-mcp |
-| ccmux-peers | ccmux ペイン操作 (`spawn_pane` / `close_pane` / `focus_pane` / `list_panes` / `new_tab`) と同タブ内 Claude 間双方向メッセージング | ccmux に同梱 (`ccmux mcp install` で登録) |
+| ccmux-peers | ccmux ペイン操作 (`spawn_pane` / `close_pane` / `focus_pane` / `list_panes` / `new_tab`) と同タブ内 Claude 間双方向メッセージング（組織通信の正本） | ccmux に同梱 (`ccmux mcp install` で登録) |
 
 #### ccmux MCP サーバーの登録
 
@@ -85,8 +84,8 @@ jq --version              # jq がインストールされている
 ```
 
 Claude Code 起動後、以下が利用可能であること:
-- `claude-peers` MCP の `list_peers` が実行できる
 - `ccmux-peers` MCP の `list_panes` が実行できる（空応答でも可。エラーなく返れば疎通成功）
+- `ccmux-peers` MCP の `list_peers` が実行できる（同タブ内の他 Claude Code インスタンスが検出できる）
 
 ## ドキュメント
 

@@ -126,8 +126,8 @@ python3 dashboard/org_state_converter.py     # Mac/Linux
 
 | フィールド | 型 | 説明 |
 |---|---|---|
-| `peerId` | `string` | claude-peers のピア ID |
-| `paneId` | `string` | ccmux のペイン名 (`--id` で命名したもの、例: `foreman`, `curator`)。旧 WezTerm 時代は数値の pane-id を格納していたが、ccmux 移行に伴い安定名ベースに変更 |
+| `peerId` | `string` | ccmux-peers のペイン名（`worker-{task_id}` / `foreman` / `curator` 形式）。`mcp__ccmux-peers__send_message` の `to_id` に渡す値 |
+| `paneId` | `string` | ccmux のペイン名 (`--id` で命名したもの、例: `foreman`, `curator`)。旧 WezTerm 時代は数値の pane-id を格納していたが、ccmux 移行に伴い安定名ベースに変更。現行仕様では `peerId` と同値になることが多い |
 
 ---
 
