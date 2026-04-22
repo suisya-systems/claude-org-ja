@@ -138,6 +138,8 @@ description: >
 テンプレートは references/worker-claude-template.md を使用する。
 **パターン（A/B/C）によって手順が異なる。**
 
+> **aainc-ops 自身を編集するタスクの場合**: 通常手順に加えて `references/aainc-ops-self-edit.md` の特例手順（block-aainc-structure.sh hook の除外、CLAUDE.local.md への指示記述、ルート CLAUDE.md を無視する旨の明示）を必ず適用すること。
+
 ### 共通手順（全パターン）
 
 1. `registry/org-config.md` の `workers_dir` を読み、リポジトリルートからの相対パスを絶対パスに解決する
