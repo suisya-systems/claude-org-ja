@@ -14,7 +14,16 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
       "mcp__claude-peers__set_summary",
       "mcp__claude-peers__list_peers",
       "mcp__claude-peers__send_message",
-      "mcp__claude-peers__check_messages"
+      "mcp__claude-peers__check_messages",
+      "mcp__ccmux-peers__set_summary",
+      "mcp__ccmux-peers__list_peers",
+      "mcp__ccmux-peers__send_message",
+      "mcp__ccmux-peers__check_messages",
+      "mcp__ccmux-peers__list_panes",
+      "mcp__ccmux-peers__spawn_pane",
+      "mcp__ccmux-peers__close_pane",
+      "mcp__ccmux-peers__focus_pane",
+      "mcp__ccmux-peers__new_tab"
     ]
   },
   "env": {
@@ -22,6 +31,8 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
   }
 }
 ```
+
+**注意**: `ccmux-peers` MCP ツールは `ccmux mcp install` を一度実行して user-scope に MCP サーバーを登録した後に利用可能になる。登録手順は README「ccmux MCP サーバーの登録」を参照。旧 `Bash(ccmux:*)` は段階移行中の併用（撤去時期は Issue #30 で管理）。
 
 ## 窓口 (`<repo>/.claude/settings.local.json`)
 

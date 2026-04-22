@@ -51,6 +51,24 @@ ccmux --layout ops
 | 名前 | 用途 | リポジトリ |
 |---|---|---|
 | claude-peers | Claude Code インスタンス間のメッセージング | https://github.com/happy-ryo/claude-peers-mcp |
+| ccmux-peers | ccmux ペイン操作 (`spawn_pane` / `close_pane` / `focus_pane` / `list_panes` / `new_tab`) と同タブ内 Claude 間双方向メッセージング | ccmux に同梱 (`ccmux mcp install` で登録) |
+
+#### ccmux MCP サーバーの登録
+
+ccmux 0.5.x から、旧 CLI (`ccmux split` / `close` / `send` / `list` / `focus` / `new-tab`) の大部分が `ccmux-peers` MCP サーバー経由で呼び出せるようになりました。本リポジトリの組織運用 Skill はこの MCP サーバーの利用を前提に段階移行中です（親 Epic: #20）。
+
+初回セットアップで以下を一度だけ実行してください:
+
+```bash
+ccmux mcp install
+```
+
+これにより Claude Code の user-scope 設定に `ccmux-peers` MCP サーバーが登録され、以下 9 種のツールが利用可能になります:
+
+- `mcp__ccmux-peers__spawn_pane` / `close_pane` / `focus_pane` / `list_panes` / `new_tab`
+- `mcp__ccmux-peers__send_message` / `list_peers` / `set_summary` / `check_messages`
+
+登録状態は `claude mcp list` で確認できます。
 
 ### セットアップ確認
 
@@ -67,6 +85,7 @@ jq --version              # jq がインストールされている
 
 Claude Code 起動後、以下が利用可能であること:
 - `claude-peers` MCP の `list_peers` が実行できる
+- `ccmux-peers` MCP の `list_panes` が実行できる（空応答でも可。エラーなく返れば疎通成功）
 
 ## ドキュメント
 
@@ -87,3 +106,16 @@ Claude Code 起動後、以下が利用可能であること:
 | `/org-retro` | 委譲プロセスの振り返り |
 | `/org-curate` | 知見の整理（自動実行） |
 | `/org-dashboard` | ダッシュボード表示 |
+
+## 旧 ccmux CLI 依存の撤去方針
+
+組織運用 Skill 群は歴史的に旧 ccmux CLI (`ccmux split` / `close` / `send` / `list` / `events` / `inspect`) を Bash 経由で叩いていました。現在 MCP サーバー `ccmux-peers` へ段階的に移行中です（親 Epic: #20）。
+
+| 旧 Bash permission | 撤去タイミング |
+|---|---|
+| `Bash(ccmux split *)` / `Bash(ccmux close *)` / `Bash(ccmux list *)` | 全 Skill の MCP 化完了後（Issue #30） |
+| `Bash(ccmux send *)` | upstream (happy-ryo/ccmux#118) の `send_keys` MCP 対応完了後（Issue #30 内で管理） |
+| `Bash(ccmux events *)` | upstream (happy-ryo/ccmux#117) の events MCP 露出完了後 |
+| `Bash(ccmux inspect *)` | upstream (happy-ryo/ccmux#116) の `inspect_pane` MCP 追加完了後 |
+
+それまでは CLI と MCP の併用運用になります。新しく書く Skill / ドキュメントは MCP ツールを優先して使ってください。
