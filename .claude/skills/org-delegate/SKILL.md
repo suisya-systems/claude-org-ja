@@ -323,7 +323,7 @@ mcp__ccmux-peers__spawn_pane(
   direction=$direction,                   # "vertical" or "horizontal"
   role="worker",
   name="worker-{task_id}",                # 後続操作で参照する安定名。英字含む前提
-  command="cd '{workers_dir}/{task_id}' && claude --permission-mode {default_permission_mode}"
+  command="cd '{workers_dir}/{task_id}' && claude --dangerously-load-development-channels server:ccmux-peers --permission-mode {default_permission_mode}"
 )
 ```
 
@@ -333,7 +333,7 @@ mcp__ccmux-peers__spawn_pane(
 - `role="worker"`: `list_panes` の結果で役割識別（次回以降の balanced split の target 選出にも使われる）
 - 起動コマンドは `.claude/skills/org-start/SKILL.md` の「ClaudeCode 起動コマンド（役割別）」セクションを参照
 - Planモード要の場合は `command` に `--permission-mode plan` を含める（org-config の値を上書き）
-- bare `claude` の auto-upgrade で `server:ccmux-peers` が注入されるため、起動コマンドに `--dangerously-load-development-channels` を明示しなくて良い（#46）。かつ開発チャネル確認プロンプトも表示されないので、追加の `send_keys(enter=true)` は不要
+- ccmux の auto-upgrade は先頭トークンが `claude` の場合のみ効く。`cd '{workers_dir}/{task_id}' && claude ...` のように cwd 変更プレフィックスを前置きすると auto-upgrade が発動せず、`server:ccmux-peers` チャネルが注入されない。そのため起動コマンドに `--dangerously-load-development-channels server:ccmux-peers` を **必須フラグ** として明示する（#46 revert）。フラグ無しではフォアマン → ワーカーへの `send_message` が届かずワーカーが指示を一切受信できない。当該フラグを付与した場合は `Load development channel?` 確認プロンプトが初回表示されるので、Step 3-3b で `send_keys(enter=true)` による承認が必要
 - **エラーハンドリング**: MCP 結果テキストに `[<code>] <msg>` 形式でエラーが埋まる。主な code:
   - `[split_refused]` (MAX_PANES / too small): `references/ccmux-error-codes.md` の手順に従いキュレーター → 窓口に escalate。balanced split は best-effort の配置ヒントであり、想定外のレイアウト（途中でワーカーが閉じた後の再派遣など）では拒否され得る
   - `[pane_not_found]`: `$target` に選んだ既存ペインが spawn 発行直前に閉じたレース。同じくエラーコード経路で escalate
@@ -365,6 +365,16 @@ while now < deadline:
 - `types=["pane_started"]` で他 type（`pane_exited` 等）を除外しつつ、cursor は全 type で advance（重複 scan なし）
 - **filter 不一致イベントが到着すると long-poll が早期終了し `events:[]` + 進んだ cursor が返る**ので、空応答のままループ継続（cursor 保持で重複なし）
 - `name == "worker-{task_id}"` の `pane_started` で break。deadline 超過で未検出なら `list_panes` で pane 存在を再確認
+
+### 3-3b. 「Load development channel?」プロンプトを Enter で承認
+
+`--dangerously-load-development-channels server:ccmux-peers` を付与した起動では初回に Y/n 確認プロンプトが出る。Enter で承認する:
+
+```
+mcp__ccmux-peers__send_keys(target="worker-{task_id}", enter=true)
+```
+
+承認しないと `server:ccmux-peers` チャネルが有効化されず、3-4 の `list_peers` 待ちがタイムアウトし、3-5 の `send_message` も届かない。Enter は CR (0x0D) として PTY に書き込まれる（byte-identical to ccmux `append_enter`）。
 
 ### 3-4. `mcp__ccmux-peers__list_peers` で新ピア出現を待機
 
