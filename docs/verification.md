@@ -2,6 +2,8 @@
 
 各機能の動作確認手順。問題が見つかったらスキルやCLAUDE.mdを修正し、再テストする。
 
+**前提**: ccmux 0.14.0+ （`npm install -g ccmux-fork@0.14.0` 後、`ccmux mcp install --force` で `ccmux-peers` MCP サーバを user-scope 登録済み）。
+
 ---
 
 ## 1. 基本起動テスト
@@ -11,18 +13,20 @@
 **手順**:
 1. 任意の場所に本リポジトリを `git clone`
 2. clone先で `ccmux --layout ops` を実行 (窓口ペインが立ち上がる)
-3. 窓口の Claude Code で `/org-start` を実行
+3. 窓口の Claude Code で `mcp__ccmux-peers__list_panes` が疎通するか確認（Step 0 の MCP 有効性 chk）
+4. 窓口の Claude Code で `/org-start` を実行
 
 **期待結果**:
 - `.state/org-state.md` が存在しないので、初回起動と判断される
-- フォアマンペインが窓口の下に開き、その右にキュレーターペインが開く
-- キュレーターにclaude-peers経由で `/loop 30m /org-curate` の実行が指示される
+- `mcp__ccmux-peers__spawn_pane` でフォアマンペインが窓口の下に開き、その右にキュレーターペインが開く
+- キュレーターに `mcp__claude-peers__send_message` 経由で `/loop 30m /org-curate` の実行が指示される
 - 「初回起動です。何をしましょうか？」と報告される
 
 **失敗パターンと対処**:
 - CLAUDE.mdが読み込まれない → `.claude/` ディレクトリ配置を確認
 - スキルが認識されない → `.claude/skills/*/SKILL.md` のfrontmatter形式を確認
 - `/org-start` が発動しない → スキル名の競合やdescriptionを確認
+- `mcp__ccmux-peers__list_panes` で error → `ccmux mcp install --force` を再実行、`claude mcp list` で登録確認
 
 ---
 
@@ -30,7 +34,7 @@
 
 **目的**: ワーカーが正しく派遣され、作業を完了し、結果が報告されるか確認。
 
-**前提**: `ccmux --layout ops` で起動していること、claude-peers MCPが有効なこと。テスト1で `/org-start` 済み。
+**前提**: `ccmux --layout ops` で起動していること、claude-peers / ccmux-peers 両 MCP が有効なこと。テスト1で `/org-start` 済み。
 
 **手順**:
 1. 窓口Claudeにタスクを依頼する（例:「ブログに新しい記事を追加して」）
@@ -40,14 +44,15 @@
 **期待結果**:
 - プロジェクトが `registry/projects.md` に自動登録される
 - 窓口がフォアマンに DELEGATE メッセージを送信し、すぐにユーザーとの対話に戻る
-- フォアマンが `ccmux split` で同一タブ内にワーカーペインを派生する（`worker-{task_id}` 名、balanced split 戦略は `pane-layout.md` に従う）
-- フォアマンがclaude-peers経由でワーカーに作業指示を送信する
+- フォアマンが `mcp__ccmux-peers__spawn_pane` で同一タブ内にワーカーペインを派生する（`name="worker-{task_id}"`、balanced split 戦略は `pane-layout.md` に従う）
+- フォアマンが `mcp__ccmux-peers__poll_events(types=["pane_started"])` で起動完了を確認
+- フォアマンが `mcp__claude-peers__send_message` 経由でワーカーに作業指示を送信する
 - フォアマンが `.state/workers/worker-{id}.md` を作成する
 - `.state/org-state.md` が作成/更新される
 - `.state/journal.jsonl` にイベントが記録される
 - ワーカー完了後、claude-peers経由で**窓口に**報告が届く（フォアマンではなく窓口）
 - 窓口が結果を業務言語で人間に伝える（技術用語を避ける）
-- 窓口がフォアマンにペインクローズを依頼する
+- 窓口がフォアマンにペインクローズを依頼する（フォアマンは `mcp__ccmux-peers__close_pane(target="worker-{task_id}")` で破棄）
 
 **確認コマンド**:
 ```bash
@@ -57,28 +62,33 @@ ls .state/workers/
 cat registry/projects.md
 ```
 
+ペイン状態の確認は MCP ツールで:
+```
+mcp__ccmux-peers__list_panes    # 現在のペイン一覧
+```
+
 **失敗パターンと対処**:
-- ペインが開かない → `ccmux list` で現在のペイン状態を確認、`ccmux split --help` が実行できるか確認
-- claude-peersで通信できない → MCPサーバーの起動確認、peer IDの確認
+- ペインが開かない → `mcp__ccmux-peers__list_panes` で現在のペイン状態を確認、tool result の `[split_refused]` / `[pane_not_found]` を `references/ccmux-error-codes.md` で分岐
+- claude-peersで通信できない → `claude mcp list` で claude-peers / ccmux-peers 両方が Connected か確認、peer IDの確認
 - 状態ファイルが作成されない → org-delegateスキルの手順を見直し
 - ワーカーが指示を理解しない → instruction-template.md の記述を改善
 - プロジェクト名前解決が動かない → org-delegate Step 0 を見直し
 
 ### 2.1 balanced split スケール検証（4 並列 / 8 並列）
 
-**目的**: org-delegate Step 3 の balanced split lookup table が、4 並列・8 並列いずれも `[split_refused]` を発生させずに配置図通りの tree を生成することを実機確認する。
+**目的**: org-delegate Step 3 の rect ベース balanced split が、4 並列・8 並列いずれも `[split_refused]` を発生させずに期待通りの tree を生成することを実機確認する。
 
-**前提**: テスト 2 が通っていること。ターミナル幅 `W ≥ 160 cols`（`tput cols` で確認）。`pane-layout.md` の 4 並列 / 8 並列 ASCII 図を手元で開いておく。
+**前提**: テスト 2 が通っていること。ターミナル幅 `W ≥ 160 cols`（`tput cols` で確認）。`pane-layout.md` の「ワーカーの balanced split 戦略」セクションを手元で開いておく。
 
 **手順**:
 1. `tput cols` を実行し W を記録。160 未満なら検証不能としてスキップ or ターミナルを広げる。
 2. 窓口に互いに独立な 8 タスク（ダミーで良い。例: `echo-1` 〜 `echo-8` のような軽量タスク）を順次依頼。k=1〜8 それぞれが以下を満たすことを確認:
-   - a. フォアマンの `ccmux split` 呼び出しが `[split_refused]` を返さない
-   - b. Step 3-1 のシェルスニペットが返す `$target` / `$direction` が `pane-layout.md` の lookup table 通り
-   - c. 起動直後の `ccmux list --format json` を **別ログファイル (例: `.state/verification/balanced-split-{timestamp}.log`)** に保存するか、その場で `role == "worker"` の `name` / `id` を記録し、`.state/journal.jsonl` の `worker_spawned` イベントと事後照合する（`journal.jsonl` の schema に raw list スナップショットは含まれないので、verification 用途の一時ログとして分離する）
-3. k=4 到達時点でペイン配置を目視し、`pane-layout.md` の 4 並列 ASCII 図と一致するか確認（`foreman` 幅 ≈ W_f/2、ワーカー 4 個が 2×2 のグリッド）。
-4. k=8 到達時点で同じく 8 並列 ASCII 図（2×4 グリッド）と一致するか確認。
-5. 9 人目のダミータスクを試し、フォアマンが claude-peers で窓口に `SPLIT_CAPACITY_EXCEEDED` を送信することを確認。**当該 9 人目のワーカーのみ派遣を中止し、フォアマン本体の監視ループは継続稼働**すること（`ccmux split` は発行されず、`exit` などでフォアマンが落ちない）。
+   - a. フォアマンの `mcp__ccmux-peers__spawn_pane` 呼び出し結果テキストに `[split_refused]` が含まれない
+   - b. Step 3-1b のアルゴリズムが選出した `target` / `direction` が、`list_panes` の直前スナップショットから rect ベースで再現可能
+   - c. 起動直後の `mcp__ccmux-peers__list_panes` を **別ログファイル (例: `.state/verification/balanced-split-{timestamp}.log`)** に保存するか、その場で `role == "worker"` の `name` / `id` を記録し、`.state/journal.jsonl` の `worker_spawned` イベントと事後照合する
+3. k=4 到達時点でペイン配置を目視し、`pane-layout.md` 末尾の balanced split 典型挙動と一致するか確認（`foreman` 幅 ≈ W_f/2、ワーカー 4 個が 2×2 のグリッド近傍）。
+4. k=8 到達時点で同じく 8 並列の準 balanced な tree と一致するか確認。
+5. 9 人目のダミータスクを試し、フォアマンが claude-peers で窓口に `SPLIT_CAPACITY_EXCEEDED` を送信することを確認。**当該 9 人目のワーカーのみ派遣を中止し、フォアマン本体の監視ループは継続稼働**すること（`spawn_pane` は発行されず、`exit` などでフォアマンが落ちない）。
 
 > **注**: `.state/verification/balanced-split-{timestamp}.log` 等の検証用ログは一時ファイルなのでコミット対象外。`.state/*` は既存の `.gitignore` で除外済み。
 
@@ -89,17 +99,20 @@ cat registry/projects.md
 
 **確認コマンド**:
 ```bash
-# 各 k 到達時に記録
-ccmux list --format json | jq '.panes | map(select(.role == "worker")) | sort_by(.id) | .[] | {id, name}'
-tput cols  # ターミナル幅の記録
+tput cols                                # ターミナル幅の記録
 cat .state/journal.jsonl | grep worker_spawned
 ```
 
+ペイン状態は MCP で:
+```
+mcp__ccmux-peers__list_panes             # 各 k 到達時のスナップショット
+```
+
 **失敗パターンと対処**:
-- k=4 で `split_refused` → `tput cols` の値を確認。W < 160 なら balanced split table の要件未満。ターミナル拡大で再試行
-- k=3 で既に `split_refused` → foreman 直下に file-tree / preview が居座っていないか確認（これらが表示中だと `W_f` が 20〜40 cols 目減りする）
-- 配置が ASCII 図と乖離 → 前タスクで閉じ残ったワーカーの `ccmux close` 忘れ。`ccmux list` で role=worker の active が 0 からスタートしているか確認
-- k=9 で silently 動く → Step 3-1 の case 文の `*)` ブランチが発火していない。jq スニペットが `.exited` 等存在しないフィールドで全件を抜いていないか確認
+- k=4 で `[split_refused]` → `tput cols` の値を確認。W < 160 なら balanced split の要件未満。ターミナル拡大で再試行
+- k=3 で既に `[split_refused]` → foreman 直下に file-tree / preview が居座っていないか確認（これらが表示中だと `W_f` が 20〜40 cols 目減りする）
+- 配置が期待と乖離 → 前タスクで閉じ残ったワーカーの `close_pane` 忘れ。`list_panes` で role=worker の active が 0 からスタートしているか確認
+- k=9 で silently 動く → Step 3-1c (`SPLIT_CAPACITY_EXCEEDED` escalate) の分岐が発火していない。Step 3-1b の判定ロジックが「候補空」を正しく返しているか確認
 
 ---
 
@@ -114,11 +127,13 @@ cat .state/journal.jsonl | grep worker_spawned
 2. `/org-suspend` が発動するのを確認
 
 **期待結果**:
-- claude-peers経由でワーカーに SUSPEND メッセージが送信される
-- ワーカーが claude-peers 経由で状態を報告する (ccmux には pane text スクレイプ API が未実装なので、未応答ワーカーは git 状態ベースで推定する)
+- `mcp__claude-peers__send_message` 経由でワーカーに SUSPEND メッセージが送信される
+- ワーカーが claude-peers 経由で状態を報告する。未応答ワーカーは `mcp__ccmux-peers__inspect_pane(target="worker-{task_id}", format="text")` で画面内容を読み、git 状態と組み合わせて推定する
 - `.state/org-state.md` の Status が `SUSPENDED` になる
 - `.state/org-state.prev.md` にバックアップが作成される
-- claude-peers経由で全ピアに SHUTDOWN が送信される
+- `mcp__claude-peers__send_message` で全ピアに SHUTDOWN が送信される
+- `mcp__ccmux-peers__poll_events(types=["pane_exited"], timeout_ms=10000)` で pane_exited を待機、`role == "worker"` をまとめて消化
+- 残留ワーカーは `mcp__ccmux-peers__close_pane(target="worker-{task_id}")` でフォールバッククローズ
 - 全ワーカーペインが先に閉じられ、次にフォアマン、最後にキュレーターが閉じられる
 - 窓口が中断完了を報告する
 
@@ -129,8 +144,9 @@ cat .state/journal.jsonl | tail -1  # suspend イベントを確認
 ```
 
 **失敗パターンと対処**:
-- ワーカーがSUSPENDに応答しない → Phase 2のスクレイプが機能するか確認
-- ペインが閉じない → `ccmux close --name X` でペインを明示破棄しているか確認 (ccmux v0.5.8+)
+- ワーカーがSUSPENDに応答しない → `inspect_pane` で画面内容を確認、Phase 2 のスクレイプが機能するか確認
+- ペインが閉じない → `close_pane(target="X")` の結果テキストをチェック。`[pane_not_found]` / `[pane_vanished]` は skip 扱い
+- `[last_pane]` が出た → 最後の窓口ペインは自己 exit で自然終了させる（org-suspend は閉じない）
 - 状態ファイルが不完全 → org-suspendの手順を見直し
 
 ---
@@ -143,7 +159,7 @@ cat .state/journal.jsonl | tail -1  # suspend イベントを確認
 
 **手順**:
 1. 窓口Claudeの端末を**完全に閉じる**
-2. clone先で再度ClaudeCodeを起動する
+2. clone先で再度 `ccmux --layout ops` で起動する
 3. `/org-start` を実行する
 
 **期待結果**:
@@ -152,17 +168,17 @@ cat .state/journal.jsonl | tail -1  # suspend イベントを確認
 - 各作業ディレクトリのgit状態との照合結果が報告される
 - 再開計画が提案される
 - 人間の承認を待つ（勝手にワーカーを派遣しない）
-- フォアマンとキュレーターペインが再起動される（claude-peers経由で指示）
+- フォアマンとキュレーターペインが `mcp__ccmux-peers__spawn_pane` 経由で再起動される
 
 **確認ポイント**:
 - ブリーフィング内容が `.state/org-state.md` と一致するか
 - git状態の照合が正確か
-- フォアマンとキュレーターペインが起動しているか
+- フォアマンとキュレーターペインが起動しているか（`mcp__ccmux-peers__list_panes` で確認）
 
 **失敗パターンと対処**:
 - `/org-start` が状態を読まない → org-start スキルの Step 1 を見直し
 - 状態が不正確 → org-state.md のフォーマットまたはorg-suspendの書き込みを見直し
-- キュレーターが起動しない → org-start Step 2 のclaude-peers送信を確認
+- キュレーターが起動しない → org-start Step 3 の `send_message` / `spawn_pane` を確認
 
 ---
 
@@ -172,7 +188,7 @@ cat .state/journal.jsonl | tail -1  # suspend イベントを確認
 
 **手順**:
 1. テスト2の状態（ワーカー稼働中）で、**suspendせずに**端末を閉じる
-2. 再度ClaudeCodeを起動する
+2. 再度 `ccmux --layout ops` で起動する
 3. `/org-start` を実行する
 
 **期待結果**:
@@ -185,6 +201,7 @@ cat .state/journal.jsonl | tail -1  # suspend イベントを確認
 - ワーカーの自己申告による詳細な進捗情報は失われる
 - journal.jsonl の最後のエントリ以降の情報は失われる
 - git commitされていない作業は状態が不明確になる可能性がある
+- Foreman の `poll_events` cursor (`.state/foreman-event-cursor.txt`) 消失時は過去 5 秒分のイベントを取りこぼす可能性があるが、`list_panes` 突き合わせで回復可能
 
 **失敗パターンと対処**:
 - org-state.md が古すぎる → 定期スナップショットの頻度を上げる（org-delegateの進捗管理を強化）
@@ -248,13 +265,13 @@ head -1 knowledge/raw/*.md  # <!-- curated --> マーカー確認
 
 **手順**:
 1. `/org-start` を実行し、フォアマンとキュレーターのペインが起動されるか確認
-2. フォアマンがclaude-peers経由で役割指示を受け取っているか確認
-3. キュレーターがclaude-peers経由で `/loop 30m /org-curate` を実行しているか確認
+2. フォアマンが `mcp__claude-peers__send_message` 経由で役割指示を受け取っているか確認
+3. キュレーターが `mcp__claude-peers__send_message` 経由で `/loop 30m /org-curate` を実行しているか確認
 4. `knowledge/raw/` に閾値未満のファイルを置き、キュレーターがスキップするか確認
 5. 閾値以上に増やし、次の /loop サイクルで実行されるか確認
 
 **期待結果**:
-- `/org-start` 実行後に窓口の下にフォアマンとキュレーターが横並びで開く
+- `/org-start` 実行後に窓口の下にフォアマンとキュレーターが横並びで開く（`mcp__ccmux-peers__list_panes` で確認）
 - フォアマンが DELEGATE メッセージを待ち受ける状態になる
 - キュレーターが `/loop` を開始する
 - 30分ごとに org-curate が発動する
@@ -295,7 +312,7 @@ head -1 knowledge/raw/*.md  # <!-- curated --> マーカー確認
 **目的**: 起動→作業→中断→再開→知見整理の全サイクルが機能するか確認。
 
 **手順**:
-1. clone先でClaudeCodeを起動
+1. clone先でClaudeCodeを起動（`ccmux --layout ops`）
 2. `/org-start` を実行（初回起動）
 3. タスクを3つ依頼（ワーカー派遣が発生するもの）
 4. 各タスク完了後に振り返りが記録されることを確認
@@ -312,6 +329,37 @@ head -1 knowledge/raw/*.md  # <!-- curated --> マーカー確認
 - 状態の損失がない
 - 知見が蓄積・整理される
 - ダッシュボードで全体像が確認できる
+
+---
+
+## 11. MCP 疎通テスト（環境確認）
+
+**目的**: ccmux-peers MCP の 12 ツールすべてが呼び出せるかを確認。
+
+**手順**:
+1. `claude mcp list` で `ccmux-peers` が Connected を表示することを確認
+2. 以下の MCP ツールを順次呼び出し、エラーなく応答が返るか確認:
+
+| ツール | 呼び出し例 | 期待応答 |
+|---|---|---|
+| `list_panes` | 引数なし | 現在のペイン一覧テキスト |
+| `list_peers` | 引数なし | 同タブ内 peer 一覧 or `(no peers — …)` |
+| `set_summary` | `summary="test"` | `Summary accepted (v1 stub: …)` |
+| `check_messages` | 引数なし | `No queued messages.` |
+| `send_message` | `to_id=<self>, message="ping"` | `Delivered to <self>.` or `(message dropped — …)` |
+| `poll_events` | `timeout_ms=0`（非ブロッキング drain） | `{next_since, events}` の JSON |
+| `inspect_pane` | `target="focused", lines=5, format="text"` | 画面末尾 5 行 |
+| `send_keys` | 疎通確認のため省略（副作用あり） | — |
+| `spawn_pane` / `close_pane` / `focus_pane` / `new_tab` | 疎通確認のため省略（副作用あり） | — |
+
+**期待結果**:
+- 9 ツール（副作用なし + 軽 side-effect）がすべてエラーなく応答
+- エラー時は `[<code>] <msg>` 形式のテキストが得られる（例: `list_panes` が ccmux 未起動なら `[shutting_down]` 等）
+
+**失敗パターンと対処**:
+- `claude mcp list` に `ccmux-peers` が出ない → `ccmux mcp install --force` 再実行
+- `list_panes` が error → `ccmux --version` で 0.14.0 以上か確認、古ければ `npm install -g ccmux-fork@0.14.0`
+- `poll_events` が JSON を返さない → `mcp_peer/mod.rs` の実装に不整合、ccmux バージョン確認
 
 ---
 
