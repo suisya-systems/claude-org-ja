@@ -19,6 +19,7 @@
 **期待結果**:
 - `.state/org-state.md` が存在しないので、初回起動と判断される
 - `mcp__ccmux-peers__spawn_pane` でフォアマンペインが窓口の下に開き、その右にキュレーターペインが開く
+- Foreman / Curator 起動直後の「開発チャネル確認プロンプト」を `mcp__ccmux-peers__send_keys(target=<pane>, enter=true)` で Enter 注入して通過している（`org-start` SKILL Step 2 / Step 3 の手順）
 - キュレーターに `mcp__claude-peers__send_message` 経由で `/loop 30m /org-curate` の実行が指示される
 - 「初回起動です。何をしましょうか？」と報告される
 
@@ -27,6 +28,7 @@
 - スキルが認識されない → `.claude/skills/*/SKILL.md` のfrontmatter形式を確認
 - `/org-start` が発動しない → スキル名の競合やdescriptionを確認
 - `mcp__ccmux-peers__list_panes` で error → `ccmux mcp install --force` を再実行、`claude mcp list` で登録確認
+- `send_keys(enter=true)` が Enter 注入に失敗 → Foreman / Curator ペインが「Load development channel?」プロンプトで止まっているか確認、手動で Enter
 
 ---
 
@@ -46,6 +48,8 @@
 - 窓口がフォアマンに DELEGATE メッセージを送信し、すぐにユーザーとの対話に戻る
 - フォアマンが `mcp__ccmux-peers__spawn_pane` で同一タブ内にワーカーペインを派生する（`name="worker-{task_id}"`、balanced split 戦略は `pane-layout.md` に従う）
 - フォアマンが `mcp__ccmux-peers__poll_events(types=["pane_started"])` で起動完了を確認
+- ワーカー起動直後の「開発チャネル確認プロンプト」を `mcp__ccmux-peers__send_keys(target="worker-{task_id}", enter=true)` で Enter 注入して通過（`org-delegate` SKILL Step 3-2）
+- **Plan モード要の Worker 派遣時** (DELEGATE に「Plan承認後モード切替: 要」含む場合): Worker が Plan 作成 → APPROVAL_BLOCKED 通知 → 窓口側で **Plan 承認前に** `mcp__ccmux-peers__send_keys(target="worker-{task_id}", keys=["Shift+Tab"])` でモード切替 → `mcp__ccmux-peers__inspect_pane(lines=5, format="grid")` でステータスバーに「auto mode on」表示を確認 → `mcp__ccmux-peers__send_keys(target="worker-{task_id}", text="yes", enter=true)` で Plan 承認（`org-delegate` SKILL Step 3-7 / Step 5）
 - フォアマンが `mcp__claude-peers__send_message` 経由でワーカーに作業指示を送信する
 - フォアマンが `.state/workers/worker-{id}.md` を作成する
 - `.state/org-state.md` が作成/更新される
