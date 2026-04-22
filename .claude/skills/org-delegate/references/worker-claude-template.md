@@ -63,8 +63,8 @@ org-delegate の Step 1.5 でワーカー専用ディレクトリ（`{workers_di
 ## 作業完了時（必須）
 作業が完了したら、以下を**必ず**実行すること:
 
-1. **完了報告**: claude-peers で **窓口（Secretary）** に報告する
-   - 窓口の特定方法: 窓口から挨拶メッセージが届くので、そのピアIDに返信する。届いていない場合は `list_peers` で summary に「Secretary」を含むピアを探す
+1. **完了報告**: ccmux-peers で **窓口（`secretary`）** に報告する
+   - 送信方法: `mcp__ccmux-peers__send_message(to_id="secretary", message="...")`（`secretary` は ccmux layout で固定された pane name）
    - **注意: フォアマン（指示を送ってきた相手）ではなく、窓口に送ること**
    - 何を完了したか
    - 作成したファイル、コミット、PR等の成果物

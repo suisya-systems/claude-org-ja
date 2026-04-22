@@ -22,7 +22,7 @@ mcp__ccmux-peers__send_message(to_id="worker-nonexistent", message="hi")
 | `last_pane` | `close_pane` で唯一のタブの唯一のペインを閉じようとした | 通常のワーカー停止では発生しない (窓口/フォアマン/キュレーターが同タブに同居するため)。`org-suspend` 末端で残った最後のペイン (通常は窓口) に対して発生した場合、そのペインは自分自身で `exit` して自然終了させる。強制再試行はしない |
 | `split_refused` | `spawn_pane` が MAX_PANES / too small で拒否 | ワーカー起動 (`org-delegate` Step 3) で balanced split のいずれかのステップが 16 ペイン上限 / `MIN_PANE_WIDTH` / `MIN_PANE_HEIGHT` で拒否された場合、キュレーター → 窓口に escalate。典型シナリオは (a) 9 並列以上に到達、(b) ターミナル幅が balanced split の要件 (W ≥ 160) を満たさない、(c) ワーカー退役後の再派遣でレイアウト tree が想定と乖離。`new_tab` フォールバックは tab-scoped 制約のため不可 (happy-ryo/ccmux#71) |
 | `io_error` | PTY write / spawn / OS レベル失敗 | 1 サイクル spin して再試行。2 連続で同じ worker に出たら窓口に `IO_ERROR_DETECTED` で escalate |
-| `shutting_down` | ccmux 本体がシャットダウン中 | 監視ループを **即停止** する。claude-peers に `FOREMAN_STOPPING` を通知 |
+| `shutting_down` | ccmux 本体がシャットダウン中 | 監視ループを **即停止** する。窓口 (`secretary`) に ccmux-peers で `FOREMAN_STOPPING` を通知（best-effort — ccmux 自体が落ちる場合は届かない） |
 | `app_timeout` | ccmux 内部 App スレッドが応答しなかった | 1 サイクル spin (ccmux 再起動は管理者判断)。連続発生なら窓口にログ |
 | `parse` / `protocol` | 通常出ない (MCP が正しく組み立てる前提) | 発生時はバグ。journal に記録して窓口に `IPC_PROTOCOL_ERROR` で報告 |
 | `internal` | ccmux 内部不変条件違反 (parser lock poison 等) | `app_timeout` と同じ扱い |
