@@ -86,15 +86,15 @@ mcp__ccmux-peers__list_panes    # 現在のペイン一覧
    - a. フォアマンの `mcp__ccmux-peers__spawn_pane` 呼び出し結果テキストに `[split_refused]` が含まれない
    - b. Step 3-1b のアルゴリズムが選出した `target` / `direction` が、`list_panes` の直前スナップショットから rect ベースで再現可能
    - c. 起動直後の `mcp__ccmux-peers__list_panes` を **別ログファイル (例: `.state/verification/balanced-split-{timestamp}.log`)** に保存するか、その場で `role == "worker"` の `name` / `id` を記録し、`.state/journal.jsonl` の `worker_spawned` イベントと事後照合する
-3. k=4 到達時点でペイン配置を目視し、`pane-layout.md` 末尾の balanced split 典型挙動と一致するか確認（`foreman` 幅 ≈ W_f/2、ワーカー 4 個が 2×2 のグリッド近傍）。
-4. k=8 到達時点で同じく 8 並列の準 balanced な tree と一致するか確認。
-5. 9 人目のダミータスクを試し、フォアマンが claude-peers で窓口に `SPLIT_CAPACITY_EXCEEDED` を送信することを確認。**当該 9 人目のワーカーのみ派遣を中止し、フォアマン本体の監視ループは継続稼働**すること（`spawn_pane` は発行されず、`exit` などでフォアマンが落ちない）。
+3. 各 k 到達時点でペイン配置を `list_panes` で取得し、Step 3-1b のアルゴリズム（curator 特定 → role filter → foreman-curator 隣接判定 → direction 判定 → `new_w / new_h` 計算 → MIN_PANE 制約 → SECRETARY 保険条項 → metric sort）をスナップショットに対して手計算で再現できることを確認する。`pane-layout.md` の「ワーカーの balanced split 戦略」で述べている通り、rect ベース動的配置なので 2×2 や 2×4 のような固定グリッド形状は成功基準にしない。
+4. 9 人目のダミータスクを試し、フォアマンが claude-peers で窓口に `SPLIT_CAPACITY_EXCEEDED` を送信することを確認。**当該 9 人目のワーカーのみ派遣を中止し、フォアマン本体の監視ループは継続稼働**すること（`spawn_pane` は発行されず、`exit` などでフォアマンが落ちない）。
 
 > **注**: `.state/verification/balanced-split-{timestamp}.log` 等の検証用ログは一時ファイルなのでコミット対象外。`.state/*` は既存の `.gitignore` で除外済み。
 
 **期待結果**:
 - k=1〜8 で `[split_refused]` ゼロ
-- 8 並列時のワーカー最小幅 ≈ W_f/4、最小高 ≈ H_f/4
+- 各 k の配置が Step 3-1b の判定結果と一致（固定グリッド形状は要求しない、rect 動的配置が正しく動くこと）
+- MIN_PANE 制約（`new_w ≥ 20` / `new_h ≥ 5`）に触れない範囲で候補が空にならない
 - k=9 で明示的 escalate（silently fail しない）
 
 **確認コマンド**:
@@ -334,11 +334,18 @@ head -1 knowledge/raw/*.md  # <!-- curated --> マーカー確認
 
 ## 11. MCP 疎通テスト（環境確認）
 
-**目的**: ccmux-peers MCP の 12 ツールすべてが呼び出せるかを確認。
+**目的**: `ccmux-peers` MCP サーバが Claude Code に接続済みで、12 ツール全てが tool surface として登録されていることを確認し、副作用なしで呼び出せる 7 ツールについてはサンプル呼び出しで応答を検証する。副作用の大きい 5 ツール（`send_keys` / `spawn_pane` / `close_pane` / `focus_pane` / `new_tab`）の実動作確認は Test 1-10 の E2E フローでカバーされるため、本テストでは登録確認のみに留める。
 
 **手順**:
+
+### 11-a. 登録確認（12 ツール）
 1. `claude mcp list` で `ccmux-peers` が Connected を表示することを確認
-2. 以下の MCP ツールを順次呼び出し、エラーなく応答が返るか確認:
+2. 以下 12 ツールが Claude Code の tool surface に出現するか確認（MCP サーバが tools/list で返すツール名と一致する）:
+   - 副作用なし / 軽 side-effect: `list_panes` / `list_peers` / `set_summary` / `check_messages` / `send_message` / `poll_events` / `inspect_pane`
+   - 副作用大（ペイン / PTY 操作）: `spawn_pane` / `close_pane` / `focus_pane` / `new_tab` / `send_keys`
+
+### 11-b. 副作用なしツールの応答確認（7 ツール）
+以下の 7 ツールを順次呼び出し、エラーなく応答が返るか確認:
 
 | ツール | 呼び出し例 | 期待応答 |
 |---|---|---|
@@ -346,15 +353,17 @@ head -1 knowledge/raw/*.md  # <!-- curated --> マーカー確認
 | `list_peers` | 引数なし | 同タブ内 peer 一覧 or `(no peers — …)` |
 | `set_summary` | `summary="test"` | `Summary accepted (v1 stub: …)` |
 | `check_messages` | 引数なし | `No queued messages.` |
-| `send_message` | `to_id=<self>, message="ping"` | `Delivered to <self>.` or `(message dropped — …)` |
+| `send_message` | `to_id=<self の pane id or name>, message="ping"` | `Delivered to <target>.` or `(message dropped — …)` |
 | `poll_events` | `timeout_ms=0`（非ブロッキング drain） | `{next_since, events}` の JSON |
-| `inspect_pane` | `target="focused", lines=5, format="text"` | 画面末尾 5 行 |
-| `send_keys` | 疎通確認のため省略（副作用あり） | — |
-| `spawn_pane` / `close_pane` / `focus_pane` / `new_tab` | 疎通確認のため省略（副作用あり） | — |
+| `inspect_pane` | `target="focused", lines=5, format="text"` | 画面末尾 5 行 + `structuredContent` |
+
+### 11-c. 副作用大ツールは E2E テストに委譲
+`spawn_pane` / `close_pane` / `focus_pane` / `new_tab` は Test 1 / 2 / 3 / 4 の中で実動作確認される。`send_keys` は Test 1（開発チャネル確認 Enter 注入）と Test 2（Plan モード切替時の Shift+Tab / yes 送信）で確認される。
 
 **期待結果**:
-- 9 ツール（副作用なし + 軽 side-effect）がすべてエラーなく応答
-- エラー時は `[<code>] <msg>` 形式のテキストが得られる（例: `list_panes` が ccmux 未起動なら `[shutting_down]` 等）
+- 11-a: `claude mcp list` の出力に `ccmux-peers: … ✓ Connected` があり、12 ツールすべてが Claude Code の tool list に登録されている
+- 11-b: 7 ツールがすべてエラーなく応答、エラー時は `[<code>] <msg>` 形式のテキストが得られる（例: `list_panes` が ccmux 未起動なら `[shutting_down]` 等）
+- 11-c: 副作用大ツールは本テストでは実行せず、E2E テストでのカバレッジに委ねる
 
 **失敗パターンと対処**:
 - `claude mcp list` に `ccmux-peers` が出ない → `ccmux mcp install --force` 再実行
