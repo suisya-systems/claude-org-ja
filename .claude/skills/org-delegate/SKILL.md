@@ -138,7 +138,7 @@ description: >
 テンプレートは references/worker-claude-template.md を使用する。
 **パターン（A/B/C）によって手順が異なる。**
 
-> **aainc-ops 自身を編集するタスクの場合**: 通常手順に加えて `references/aainc-ops-self-edit.md` の特例手順（block-aainc-structure.sh hook の除外、CLAUDE.local.md への指示記述、ルート CLAUDE.md を無視する旨の明示）を必ず適用すること。
+> **aainc-ops 自身を編集するタスクの場合**: 通常手順に加えて `references/aainc-ops-self-edit.md` の特例手順（block-aainc-structure.sh hook の除外、CLAUDE.local.md への指示記述、ルート CLAUDE.md を無視する旨の明示）を必ず適用すること。**本セクション以下で「CLAUDE.md を生成 / 配置 / 確認」と書かれている箇所はすべて `CLAUDE.local.md` に読み替える**（ルート CLAUDE.md は Secretary 用なので上書き禁止）。
 
 ### 共通手順（全パターン）
 
