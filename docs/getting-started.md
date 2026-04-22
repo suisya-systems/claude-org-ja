@@ -12,7 +12,7 @@ aainc組織の使い方ガイド。
 
 - **Claude Code** — AIエージェント本体
 - **ccmux** — ターミナルマルチプレクサ (組織のペイン管理に使用)
-- **claude-peers MCP** — インスタンス間通信
+- **ccmux-peers MCP** — 同タブ内インスタンス間通信とペイン操作（`ccmux mcp install` で登録）
 - **GitHub CLI (`gh`)** — 認証済み（`gh auth status` で確認）
 
 ### インストール
