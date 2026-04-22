@@ -323,7 +323,7 @@ mcp__ccmux-peers__spawn_pane(
   direction=$direction,                   # "vertical" or "horizontal"
   role="worker",
   name="worker-{task_id}",                # 後続操作で参照する安定名。英字含む前提
-  command="cd '{workers_dir}/{task_id}' && claude --dangerously-load-development-channels server:claude-peers --permission-mode {default_permission_mode}"
+  command="cd '{workers_dir}/{task_id}' && claude --permission-mode {default_permission_mode}"
 )
 ```
 
@@ -333,8 +333,7 @@ mcp__ccmux-peers__spawn_pane(
 - `role="worker"`: `list_panes` の結果で役割識別（次回以降の balanced split の target 選出にも使われる）
 - 起動コマンドは `.claude/skills/org-start/SKILL.md` の「ClaudeCode 起動コマンド（役割別）」セクションを参照
 - Planモード要の場合は `command` に `--permission-mode plan` を含める（org-config の値を上書き）
-- 開発チャネルの確認プロンプトが表示されるので、`mcp__ccmux-peers__send_keys(target="worker-{task_id}", enter=true)` で Enter を送信する
-  - Enter は CR (0x0D) として PTY に届く（ccmux 側の `append_enter` と byte-identical）
+- bare `claude` の auto-upgrade で `server:ccmux-peers` が注入されるため、起動コマンドに `--dangerously-load-development-channels` を明示しなくて良い（#46）。かつ開発チャネル確認プロンプトも表示されないので、追加の `send_keys(enter=true)` は不要
 - **エラーハンドリング**: MCP 結果テキストに `[<code>] <msg>` 形式でエラーが埋まる。主な code:
   - `[split_refused]` (MAX_PANES / too small): `references/ccmux-error-codes.md` の手順に従いキュレーター → 窓口に escalate。balanced split は best-effort の配置ヒントであり、想定外のレイアウト（途中でワーカーが閉じた後の再派遣など）では拒否され得る
   - `[pane_not_found]`: `$target` に選んだ既存ペインが spawn 発行直前に閉じたレース。同じくエラーコード経路で escalate
