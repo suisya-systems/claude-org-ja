@@ -11,35 +11,22 @@
 # Override the Secretary startup command by editing `command` below
 # or setting a shell alias pointing at your preferred `claude` invocation.
 #
-# The `--dangerously-load-development-channels server:claude-peers`
+# The `--dangerously-load-development-channels server:ccmux-peers`
 # flag is required: without it the Claude Code session silently
-# drops incoming claude-peers channel notifications (the peer is
-# still registered and list_peers / send_message work one-way, but
-# pushes from Foreman / Curator / workers never surface, and the
-# Secretary looks "alive but deaf"). Matches the same flag already
-# passed to Foreman / Curator / workers in org-start / org-delegate.
-#
-# The `ccmux-peers` MCP server (registered via `ccmux mcp install` in
-# user scope) is independent of this layout and is auto-loaded by
-# Claude Code regardless of the channel flag. MCP tool calls
-# (`mcp__ccmux-peers__*`) work from Secretary without extra config;
-# push notifications via `<channel source="ccmux-peers">` only arrive
-# if ccmux's own auto-upgrade path adds `server:ccmux-peers` to the
-# command line, which it does for `spawn_pane` / `new_tab`-started
-# claudes with a bare `claude` command. For this layout the command
-# has an explicit `--dangerously-load-development-channels` flag so
-# the auto-upgrade is skipped; if Secretary needs ccmux-peers push
-# delivery, add `server:ccmux-peers` to the channels flag below.
+# drops incoming ccmux-peers channel notifications (MCP tool calls
+# `mcp__ccmux-peers__*` still work one-way, but pushes from Foreman /
+# Curator / workers never surface and the Secretary looks "alive but
+# deaf"). Matches the same flag already passed to Foreman / Curator /
+# workers in org-start / org-delegate.
 #
 # With the flag on first launch Claude Code shows a one-off
-# "Load development channel: claude-peers?" prompt. Foreman /
-# Curator / workers bypass it via `ccmux send --name <id> --enter ""`
-# in org-start (raw-key send is CLI-only until upstream
-# happy-ryo/ccmux#118 lands `send_keys` MCP). The Secretary is the
-# initial pane that bootstraps everything else, so that automated
-# Enter isn't available yet — the human operator has to press Enter
-# manually the first time the layout launches (and subsequently when
-# Claude Code's session cache gets invalidated).
+# "Load development channel: ccmux-peers?" prompt. Foreman / Curator /
+# workers bypass it via `mcp__ccmux-peers__send_keys(enter=true)` in
+# org-start. The Secretary is the initial pane that bootstraps
+# everything else, so that automated Enter isn't available yet — the
+# human operator has to press Enter manually the first time the
+# layout launches (and subsequently when Claude Code's session cache
+# gets invalidated).
 
 version = 1
 name = "ops"
@@ -48,4 +35,4 @@ name = "ops"
 type = "pane"
 id = "secretary"
 role = "secretary"
-command = "claude --dangerously-load-development-channels server:claude-peers"
+command = "claude --dangerously-load-development-channels server:ccmux-peers"
