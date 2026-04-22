@@ -192,10 +192,11 @@
 DELEGATE メッセージに「Plan承認後モード切替: 要」が含まれるワーカーについて:
 
 1. 窓口から Plan 承認の通知を受けた後（または `mcp__claude-peers__check_messages` で Plan プロンプトが消えたことを検知した後）、
-   ワーカーペインに Shift+Tab を送信して permission mode を切り替える（raw キー送信は CLI 併用継続 — upstream happy-ryo/ccmux#118 の `send_keys` MCP merge 後に MCP 化）:
+   ワーカーペインに Shift+Tab を送信して permission mode を切り替える（raw キー送信は ccmux リリース前のため CLI 併用。upstream happy-ryo/ccmux#118 / ccmux PR #122 で `send_keys` MCP の API 確定済み）:
    ```bash
    ccmux send --name worker-{task_id} $'\x1b[Z'
    ```
+   **upstream merge + リリース後の置換形**: `mcp__ccmux-peers__send_keys(target="worker-{task_id}", keys=["Shift+Tab"])`（切替は #30 cleanup で一括）
 2. モード切替成功の確認は `ccmux inspect` CLI でステータスバー行を読む（upstream happy-ryo/ccmux#116 / ccmux PR #121 の `inspect_pane` MCP リリース後は `mcp__ccmux-peers__inspect_pane` に切替予定）。または `mcp__claude-peers__send_message` でワーカーに「accept edits に切り替わったか」を問い合わせる。未切替なら Shift+Tab を再送（最大5回）
 3. 切替完了後、`.state/workers/worker-{peer_id}.md` に記録:
    `- [{time}] Permission mode を acceptEdits に切替完了`

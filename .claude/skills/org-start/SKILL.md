@@ -115,7 +115,11 @@ claude --dangerously-load-development-channels server:claude-peers --permission-
    - 戻り値: `"Spawned pane id=N."` のテキスト。以降のペイン操作では `name="foreman"` で参照する
    - エラーは `[<code>] <msg>` 形式のテキストで返却される（例: `[split_refused]` / `[pane_not_found]`）。code 一覧と分岐は `.claude/skills/org-delegate/references/ccmux-error-codes.md` を参照
 2. 開発チャネルの確認プロンプトが表示されるので、`ccmux send --name foreman --enter ""` で Enter を送信する
-   - 注: raw キー入力 (Enter) は現状 ccmux-peers MCP 未対応のため `ccmux send` CLI を併用。upstream happy-ryo/ccmux#118 の `send_keys` MCP ツール merge 後に MCP 化する（#30 の追記事項として cleanup）
+   - 注: raw キー入力 (Enter) は現状 ccmux リリース前のため CLI 併用。upstream happy-ryo/ccmux#118 / ccmux PR #122 で `send_keys` MCP ツールは API 確定済み（`text` + `keys` + `enter` の 3 入力、語彙は Enter / Tab / Shift+Tab / Esc / Backspace / Delete / Up/Down/Left/Right / Home / End / PageUp/PageDown / Space / Ctrl+<A-Z>）。**merge + ccmux リリース後**の置換形:
+     ```
+     mcp__ccmux-peers__send_keys(target="foreman", enter=true)
+     ```
+     実際の切替は #30 cleanup で一括
 3. claude-peers の `mcp__claude-peers__list_peers` で新しいピアが現れるのを待つ
 4. claude-peers の `mcp__claude-peers__send_message` でフォアマンに以下を送信する:
    「あなたはフォアマンです。窓口からの DELEGATE メッセージを受け取り、ワーカーのペイン起動・指示送信・状態記録を代行してください。CLOSE_PANE メッセージを受けたらペインを閉じてください。」
@@ -141,7 +145,11 @@ claude --dangerously-load-development-channels server:claude-peers --permission-
    - `.curator/CLAUDE.md` にキュレーター用の役割指示がある
    - エラーは Step 2 と同様の `[<code>] <msg>` 形式
 2. 開発チャネルの確認プロンプトが表示されるので、`ccmux send --name curator --enter ""` で Enter を送信する
-   - 注: raw キー入力は ccmux-peers MCP 未対応（upstream happy-ryo/ccmux#118 待ち）
+   - 注: upstream happy-ryo/ccmux#118 / ccmux PR #122 merge + リリース後の置換形:
+     ```
+     mcp__ccmux-peers__send_keys(target="curator", enter=true)
+     ```
+     切替は #30 cleanup で一括
 3. claude-peers の `mcp__claude-peers__list_peers` で新しいピアが現れるのを待つ
 4. claude-peers の `mcp__claude-peers__send_message` でキュレーターに以下を送信する:
    「あなたはキュレーターです。 /loop 30m /org-curate を実行してください。知見整理を30分ごとに行います。」
