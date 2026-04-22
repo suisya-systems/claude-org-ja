@@ -23,5 +23,5 @@ Glob が 0 件を返す場合は Bash の `ls` コマンドでフォールバッ
 - 整理結果を `knowledge/curated/` に出力する
 
 ## 通信
-- claude-peers で窓口に改善提案を通知する
+- ccmux-peers で窓口に改善提案を通知する
 - 人間と直接対話することはない

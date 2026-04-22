@@ -65,6 +65,6 @@ knowledge/raw/ に蓄積された生の学びを読み、分類・統合して k
 
 改善提案がある場合:
 - references/knowledge-standards.md の基準に従って判断する
-- claude-peers で窓口Claudeに提案を送信する
+- ccmux-peers で窓口Claudeに提案を送信する
 - 提案フォーマット: 「[改善提案] {対象}: {変更内容}。理由: {なぜ}」
 - **窓口が人間に承認を取るまで、自分では変更しない**

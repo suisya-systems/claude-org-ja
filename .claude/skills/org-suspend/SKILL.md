@@ -15,8 +15,8 @@ description: >
 
 ## Phase 1: ワーカー状態収集
 
-1. `mcp__claude-peers__list_peers` で稼働中のピアを列挙する（scope: `machine`）
-2. 自分自身とキュレーターを除いた全ピアに `mcp__claude-peers__send_message` で以下を送信:
+1. `mcp__ccmux-peers__list_peers` で稼働中のピアを列挙する
+2. 自分自身とキュレーターを除いた全ピアに `mcp__ccmux-peers__send_message` で以下を送信:
    ```
    SUSPEND: 現在の状態を報告してください。
    1. これまでに完了したこと
@@ -24,7 +24,7 @@ description: >
    3. 次にやろうとしていたこと
    4. ブロッカーや未解決の問題
    ```
-3. 30 秒間 `mcp__claude-peers__check_messages` で応答を待つ（5 秒間隔でポーリング）
+3. 30 秒間 `mcp__ccmux-peers__check_messages` で応答を待つ（5 秒間隔でポーリング）
 4. 応答があったワーカーの報告を記録する
 
 ## Phase 2: 未応答ワーカーのスクレイプ
@@ -76,8 +76,8 @@ kill $(cat .state/dashboard.pid 2>/dev/null) 2>/dev/null || true
 
 停止順序が重要。ワーカー → フォアマン → キュレーターの順で停止する。
 
-1. `mcp__claude-peers__list_peers` で稼働中のピアを列挙（scope: `machine`）
-2. **ワーカーを先に停止**: 全ワーカーピアに `mcp__claude-peers__send_message` で終了を指示:
+1. `mcp__ccmux-peers__list_peers` で稼働中のピアを列挙
+2. **ワーカーを先に停止**: 全ワーカーピアに `mcp__ccmux-peers__send_message` で終了を指示:
    「SHUTDOWN: 作業を終了してください。」
 3. **ワーカーペインが閉じたことを確認** — 2-pass 構造で実施:
 
@@ -115,9 +115,9 @@ kill $(cat .state/dashboard.pid 2>/dev/null) 2>/dev/null || true
    - その後、同じ `poll_events` ループを `timeout_ms=5000` / deadline 5 秒で再度回し、close_pane 由来の `pane_exited` を消化する
    - Pass 2 後もまだ閉じていないワーカーは `mcp__ccmux-peers__list_panes` で生存確認し、残存なら journal に記録して人間に報告（強制終了は現状未サポート）
 
-4. **フォアマンを停止**: フォアマンに `mcp__claude-peers__send_message` で終了を指示:
+4. **フォアマンを停止**: フォアマンに `mcp__ccmux-peers__send_message` で終了を指示:
    「SHUTDOWN: 作業を終了してください。」
-5. **キュレーターを停止**: キュレーターに `mcp__claude-peers__send_message` で終了を指示:
+5. **キュレーターを停止**: キュレーターに `mcp__ccmux-peers__send_message` で終了を指示:
    「SHUTDOWN: 作業を終了してください。」
 6. フォアマン・キュレーターも (3) と同じ 2-pass 構造で確認（`pending = {"foreman", "curator"}` を集合に入れ、`role == "foreman"` または `role == "curator"` の `pane_exited` を待つ）:
    - Pass 1: `poll_events(types=["pane_exited"], timeout_ms=10000)` 相当ループ
