@@ -48,6 +48,13 @@ clone は不要です。そのまま作業を開始してください。
 
 ## 制約
 {使用言語、フレームワーク、テスト要件等があれば記載}
+
+## Codex レビュー（該当タスクのみ）
+{コード変更を伴うタスクで Codex レビューを求める場合のみ以下を含める}
+commit 完了後、PR 作成依頼前に `codex exec --skip-git-repo-check` 直打ちでレビューを実施してください。
+`codex:rescue` スキルは使用しないこと（18 分超ハング事例あり、`codex exec` 直打ちが安定）。
+レビュー指示例: `codex exec --skip-git-repo-check "このブランチの main からの差分をレビュー。Blocker/Major/Minor で分類"`
+Blocker / Major は必ず対応、Minor はワーカー判断で対応。
 ```
 
 ## 使用時の注意
