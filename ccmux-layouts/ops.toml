@@ -11,20 +11,11 @@
 # Override the Secretary startup command by editing `command` below
 # or setting a shell alias pointing at your preferred `claude` invocation.
 #
-# A bare `claude` (or `claude <args>`) is auto-upgraded by ccmux
-# to the Alt+P form, so `server:ccmux-peers` channel notifications
-# are delivered to the Secretary without an explicit
-# `--dangerously-load-development-channels` flag — this Secretary
-# launch below qualifies because `command = "claude"` is bare.
-#
-# IMPORTANT: the auto-upgrade only fires when the first token is
-# `claude`. Foreman / Curator / Workers spawned from org-start /
-# org-delegate use `cd <subdir> && claude ...` to switch cwd, so
-# auto-upgrade does NOT fire for them. Those roles must carry
-# `--dangerously-load-development-channels server:ccmux-peers`
-# explicitly — without it, `send_message` channel push never
-# reaches them and the org becomes unable to route instructions.
-# (See the fix restoring the flag after the #46 regression.)
+# The Secretary must carry `--dangerously-load-development-channels
+# server:ccmux-peers` explicitly — without it, `send_message` channel
+# push never reaches it and the org becomes unable to route
+# instructions. Foreman / Curator / Workers spawned from org-start /
+# org-delegate do the same for consistency.
 
 version = 1
 name = "ops"
@@ -33,4 +24,4 @@ name = "ops"
 type = "pane"
 id = "secretary"
 role = "secretary"
-command = "claude"
+command = "claude --dangerously-load-development-channels server:ccmux-peers"
