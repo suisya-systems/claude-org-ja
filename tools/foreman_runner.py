@@ -29,11 +29,11 @@ Usage:
       --panes-json panes.json
 
 Exit codes:
-  0 — plan emitted OK (status = ready_to_spawn or split_capacity_exceeded)
-  1 — input validation failed
+  0 — plan emitted OK (status = ready_to_spawn)
+  1 — input validation failed (status = input_invalid)
   2 — algorithm produced no candidate and escalation is required
-      (also status=split_capacity_exceeded in the JSON; exit 2 lets shell
-       callers distinguish the case without re-parsing JSON)
+      (status = split_capacity_exceeded; exit 2 lets shell callers
+       distinguish the case without re-parsing JSON)
 """
 from __future__ import annotations
 
@@ -56,6 +56,10 @@ MIN_PANE_WIDTH = 20
 MIN_PANE_HEIGHT = 5
 SECRETARY_MIN_WIDTH = 125
 SECRETARY_MIN_HEIGHT = 45
+
+# Default Claude model for worker panes. The auto-mode safety classifier
+# is unstable on sonnet — opus-only per feedback_worker_model_opus.md.
+DEFAULT_WORKER_MODEL = "opus"
 
 
 # ----------------------------------------------------------------------------
@@ -244,13 +248,14 @@ def build_plan(
         plan.errors.append("task.worker_dir (or .cwd) is required")
         return plan
     cwd_err = validate_cwd(cwd)
-    if cwd_err and "does not exist" in cwd_err:
-        # Hard fail — ccmux would return cwd_invalid anyway, fail fast in helper
+    if cwd_err:
+        # Any cwd problem (empty / missing / not-a-directory) is a hard fail.
+        # Letting ccmux catch it later is too late — the helper already wrote
+        # worker state by then, and "not a directory" was silently passing as
+        # a warning before.
         plan.status = "input_invalid"
         plan.errors.append(cwd_err)
         return plan
-    elif cwd_err:
-        plan.warnings.append(cwd_err)
 
     # Disallow duplicate worker pane name
     worker_name = f"worker-{task_id}"
@@ -261,6 +266,21 @@ def build_plan(
             "close it first or pick a different task_id"
         )
         return plan
+
+    # Disallow silent overwrite of prior worker state / instruction. Pane
+    # duplicate check above only sees live panes — a prior task that ran and
+    # exited would leave orphan files here and a re-used task_id would clobber
+    # them. Caller must clean up (or rename) to replay.
+    seed_path = state_dir / "workers" / f"{worker_name}.md"
+    instr_path = state_dir / "foreman" / "outbox" / f"{task_id}-instruction.md"
+    for existing in (seed_path, instr_path):
+        if existing.exists():
+            plan.status = "input_invalid"
+            plan.errors.append(
+                f"state file {str(existing)!r} already exists for task_id "
+                f"{task_id!r}; remove it or pick a different task_id"
+            )
+            return plan
 
     choice = choose_split(panes)
     if choice is None:
@@ -278,7 +298,7 @@ def build_plan(
         return plan
 
     permission_mode = task.get("permission_mode", "auto")
-    model = task.get("model")
+    model = task.get("model") or DEFAULT_WORKER_MODEL
     extra_args = task.get("args") or []
 
     spawn: dict[str, Any] = {
@@ -289,9 +309,8 @@ def build_plan(
         "role": "worker",
         "cwd": cwd,
         "permission_mode": permission_mode,
+        "model": model,
     }
-    if model:
-        spawn["model"] = model
     if extra_args:
         spawn["args"] = list(extra_args)
     plan.spawn = spawn

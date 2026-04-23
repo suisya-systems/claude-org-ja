@@ -134,6 +134,28 @@ class ChooseSplitTests(unittest.TestCase):
         self.assertEqual(choice.new_w, 130)
         self.assertEqual(choice.new_h, 100)
 
+    def test_secretary_accepted_at_width_boundary(self) -> None:
+        # width=250 → vertical split → new_w=125 exactly. Must be accepted (>= 125).
+        secretary = mk_pane(
+            id=1, name="secretary", role="secretary",
+            x=0, y=0, width=250, height=60,
+        )
+        choice = fr.choose_split([secretary])
+        assert choice is not None
+        self.assertEqual(choice.new_w, 125)
+        self.assertEqual(choice.direction, "vertical")
+
+    def test_secretary_accepted_at_height_boundary(self) -> None:
+        # width=130 height=90 → horizontal (130 < 90*2=180) → new_h=45 exactly. Accept.
+        secretary = mk_pane(
+            id=1, name="secretary", role="secretary",
+            x=0, y=0, width=130, height=90,
+        )
+        choice = fr.choose_split([secretary])
+        assert choice is not None
+        self.assertEqual(choice.new_h, 45)
+        self.assertEqual(choice.direction, "horizontal")
+
     def test_pane_without_name_is_skipped(self) -> None:
         foreman = mk_pane(
             id=2, name=None, role="foreman",
@@ -206,6 +228,50 @@ class BuildPlanTests(unittest.TestCase):
         self.assertEqual(plan.after_spawn[0]["tool"], "poll_events")
         self.assertEqual(plan.after_spawn[1]["tool"], "send_keys")
         self.assertTrue(plan.after_spawn[1]["enter"])
+        # model defaults to opus when omitted (auto classifier stability)
+        self.assertEqual(plan.spawn["model"], "opus")
+
+    def test_model_defaults_to_opus_when_omitted(self) -> None:
+        task = {
+            "task_id": "model-default",
+            "worker_dir": str(self.work_dir),
+        }
+        plan = fr.build_plan(task, self.panes, self.state_dir)
+        self.assertEqual(plan.status, "ready_to_spawn")
+        self.assertEqual(plan.spawn["model"], "opus")
+
+    def test_explicit_model_is_respected(self) -> None:
+        task = {
+            "task_id": "model-override",
+            "worker_dir": str(self.work_dir),
+            "model": "sonnet",
+        }
+        plan = fr.build_plan(task, self.panes, self.state_dir)
+        self.assertEqual(plan.spawn["model"], "sonnet")
+
+    def test_cwd_is_file_rejected(self) -> None:
+        # "exists but not a directory" used to silently pass as a warning.
+        file_cwd = self.work_dir / "not-a-dir.txt"
+        file_cwd.write_text("x", encoding="utf-8")
+        plan = fr.build_plan(
+            {"task_id": "login-fix", "worker_dir": str(file_cwd)},
+            self.panes, self.state_dir,
+        )
+        self.assertEqual(plan.status, "input_invalid")
+        self.assertTrue(any("not a directory" in e for e in plan.errors))
+
+    def test_duplicate_state_file_rejected(self) -> None:
+        # Simulate a prior task that left worker seed behind.
+        seed = self.state_dir / "workers" / "worker-login-fix.md"
+        seed.parent.mkdir(parents=True, exist_ok=True)
+        seed.write_text("# leftover\n", encoding="utf-8")
+        task = {
+            "task_id": "login-fix",
+            "worker_dir": str(self.work_dir),
+        }
+        plan = fr.build_plan(task, self.panes, self.state_dir)
+        self.assertEqual(plan.status, "input_invalid")
+        self.assertTrue(any("already exists" in e for e in plan.errors))
 
     def test_duplicate_worker_name_rejected(self) -> None:
         panes = list(self.panes) + [

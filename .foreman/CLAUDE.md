@@ -45,6 +45,8 @@ task JSON の最低フィールド:
 }
 ```
 
+`model` は省略可。省略時は helper が `"opus"` をデフォルトとして `spawn` に載せる（auto classifier は sonnet だと不安定なため、ワーカーは Opus 固定が原則）。別モデルを意図的に使う特殊ケースのみ `"model": "..."` を明示する。
+
 panes JSON は `mcp__ccmux-peers__list_panes` の `structuredContent.panes` をそのまま渡す。
 
 ### 出力の扱い
@@ -172,6 +174,7 @@ helper が実ファイル書き出しを行うもの (ready_to_spawn 時):
    - `^Do you want to make this edit to .+\?$`
    - `^❯\s*1\.\s*Yes\s*$`
    - `^Press .+ to continue`
+   - `^Esc to cancel`
 
    **新しいプロンプト形が観測されたら、この regex リストに追記**。Claude Code の version 更新で形が変わる可能性があるため、網羅は前提にしない。
 
