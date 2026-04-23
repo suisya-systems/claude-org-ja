@@ -136,7 +136,7 @@ claude --dangerously-load-development-channels server:ccmux-peers --permission-m
      direction="vertical",
      role="curator",
      name="curator",
-     command="cd .curator && claude --dangerously-load-development-channels server:ccmux-peers --permission-mode {default_permission_mode}"
+     command="cd .curator && claude --dangerously-load-development-channels server:ccmux-peers --permission-mode {default_permission_mode} --model opus"
    )
    ```
    - `target="foreman"`: Step 2 で命名したフォアマンペインを分割対象に指定
