@@ -111,6 +111,7 @@ description: >
   - 作業ディレクトリ（どのプロジェクトで作業するか）
   - 制約（ブランチ名、コーディング規約、依存関係等）
   - Planモードの要否（プログラミングタスクは推奨、定型作業は不要）
+  - **Codex セルフレビューの要否** — コード変更を伴うタスクは**既定で必須**。commit 完了後・完了報告前にワーカー自身が `codex exec --skip-git-repo-check` 直打ちでレビューし、Blocker/Major は修正してから報告する（別ワーカーにレビュー委譲しない）。詳細は `references/instruction-template.md` の「Codex セルフレビュー」節参照。定型作業・軽微なドキュメント修正のみ省略可（その場合は指示に明記）
   - **ディレクトリパターン（A / B / C）** — 以下の判定基準で決定する
   - **参考 work-skill**（Step 0.5 でマッチしたもの）
 - 注意: タスク説明にファイルパスを含める場合、それがワーカー作業ディレクトリからの相対パスであることを明記する。registry/projects.md の「パス」列の値をそのまま成果物パスとして指示しない（ワーカーが別の場所にパスを作成する原因になる）
@@ -272,7 +273,7 @@ DELEGATE: 以下のワーカーを派遣してください。
 
 **定数**:
 - `MIN_PANE_WIDTH = 20` / `MIN_PANE_HEIGHT = 5`: ccmux 側の分割下限（findings: ccmux-split-inv）
-- `SECRETARY_MIN_WIDTH = 100`: secretary を分割候補にしてよい最小幅（保険条項、実運用ではほぼ不発動）
+- `SECRETARY_MIN_WIDTH = 125` / `SECRETARY_MIN_HEIGHT = 45`: secretary を分割候補にしてよい最小幅・最小高さ（保険条項、実運用ではほぼ不発動）
 
 **Step 1. curator を特定**: `role == "curator"` のペインを 1 つ選ぶ（複数あれば先頭）。以降 `$curator` と呼ぶ。存在しなければ `$curator = null`。
 
@@ -295,7 +296,7 @@ DELEGATE: 以下のワーカーを派遣してください。
 - `new_w >= MIN_PANE_WIDTH` かつ `new_h >= MIN_PANE_HEIGHT` のペインのみ残す
 
 **Step 5. secretary 保険条項**:
-- `role == "secretary"` のペインは `new_w >= SECRETARY_MIN_WIDTH` のときだけ残す
+- `role == "secretary"` のペインは `new_w >= SECRETARY_MIN_WIDTH` **かつ** `new_h >= SECRETARY_MIN_HEIGHT` のときだけ残す（width だけ通っても height が足りなければ除外）
 
 **Step 6. ソート & 選択**:
 - `metric` の降順、tie-break は `id` の昇順
@@ -326,10 +327,12 @@ mcp__ccmux-peers__spawn_claude_pane(
   role="worker",
   name="worker-{task_id}",                # 後続操作で参照する安定名。英字含む前提
   cwd="{workers_dir}/{task_id}",          # 絶対パス推奨。相対は caller pane の cwd 基点
-  permission_mode="{default_permission_mode}"   # Planモード要なら "plan" で上書き
+  permission_mode="{default_permission_mode}",  # Planモード要なら "plan" で上書き
+  model="opus"                            # 必須。sonnet 禁止（auto classifier が不安定）
 )
 ```
 
+- **`model="opus"` は必須（sonnet 禁止）。** ワーカーの permission_mode `auto` の safety classifier は Opus でのみ安定動作するため、sonnet だと分類器が誤判定を多発し承認フローが崩れる。フォアマンだけは `bypassPermissions` 固定で分類器非経由のため sonnet 運用で問題ない
 - ペイン配置ルールは `references/pane-layout.md` を参照。rect ベースの target / direction 選出ルールはそちらに集約
 - **同一タブ内 spawn で起動する理由**: ccmux の `list_panes` / `focus_pane` / `send_message` / `inspect`（CLI） は現在フォーカス中のタブのペインしか見えない。`new_tab` で別タブに置くとフォアマンからの監視・指示送信が不能になる（ccmux 側 issue: happy-ryo/ccmux#71）
 - `name="worker-{task_id}"`: 後続の `mcp__ccmux-peers__send_message(to_id="worker-{task_id}", ...)` や `close_pane(target="worker-{task_id}")` で addressable にする安定名。**全桁数字は id 扱いになる** ので、`worker-` プレフィックス等で英字を必ず含める
