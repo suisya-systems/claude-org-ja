@@ -325,10 +325,11 @@ mcp__ccmux-peers__spawn_pane(
   direction=$direction,                   # "vertical" or "horizontal"
   role="worker",
   name="worker-{task_id}",                # 後続操作で参照する安定名。英字含む前提
-  command="cd '{workers_dir}/{task_id}' && claude --dangerously-load-development-channels server:ccmux-peers --permission-mode {default_permission_mode}"
+  command="cd '{workers_dir}/{task_id}' && claude --dangerously-load-development-channels server:ccmux-peers --permission-mode {default_permission_mode} --model opus"
 )
 ```
 
+- **モデルは必ず `--model opus` を指定する（sonnet 禁止）。** ワーカーの permission_mode `auto` の safety classifier は Opus でのみ安定動作するため、sonnet だと分類器が誤判定を多発し承認フローが崩れる。フォアマンだけは `bypassPermissions` 固定で分類器非経由のため sonnet 運用で問題ない
 - ペイン配置ルールは `references/pane-layout.md` を参照。rect ベースの target / direction 選出ルールはそちらに集約
 - **同一タブ内 spawn で起動する理由**: ccmux の `list_panes` / `focus_pane` / `send_message` / `inspect`（CLI） は現在フォーカス中のタブのペインしか見えない。`new_tab` で別タブに置くとフォアマンからの監視・指示送信が不能になる（ccmux 側 issue: happy-ryo/ccmux#71）
 - `name="worker-{task_id}"`: 後続の `mcp__ccmux-peers__send_message(to_id="worker-{task_id}", ...)` や `close_pane(target="worker-{task_id}")` で addressable にする安定名。**全桁数字は id 扱いになる** ので、`worker-` プレフィックス等で英字を必ず含める
