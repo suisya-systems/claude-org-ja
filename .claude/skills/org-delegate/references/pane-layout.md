@@ -1,7 +1,7 @@
 # Pane Layout Specification (ccmux-peers MCP)
 
 ccmux のペイン / タブ配置ルール。`org-start` と `org-delegate` が参照する。
-ペイン制御は `mcp__ccmux-peers__*` MCP ツール経由で行う（一部の raw キー入力とイベント購読のみ `ccmux` CLI 併用、upstream happy-ryo/ccmux#117 / #118 merge まで）。
+ペイン制御は `mcp__ccmux-peers__*` MCP ツール経由で行う（ccmux 0.18.0+ 前提。`spawn_claude_pane` / `set_pane_identity` を含む 14 ツールすべて MCP で完結）。
 
 ## 初期レイアウト (`ccmux --layout ops` の結果 + フォアマン・キュレーター起動後)
 
@@ -26,11 +26,11 @@ Tab 1: ops (ワーカー 0 人)
 
 | 対象 | 操作 | 備考 |
 |---|---|---|
-| フォアマン | 窓口ペインを水平分割して下半分 | `mcp__ccmux-peers__spawn_pane(target="focused", direction="horizontal", role="foreman", name="foreman", command="cd .foreman && claude --dangerously-load-development-channels server:ccmux-peers ...")` (org-start Step 2) |
-| キュレーター | フォアマンペインを垂直分割して右半分 | `mcp__ccmux-peers__spawn_pane(target="foreman", direction="vertical", role="curator", name="curator", command="cd .curator && claude --dangerously-load-development-channels server:ccmux-peers ...")` (org-start Step 3) |
-| 各ワーカー | **balanced split**: `list_panes` が返す現在の rect から target と direction を動的に選び、同一タブ内に積む | 詳細は下記「ワーカーの balanced split 戦略」セクション。`mcp__ccmux-peers__spawn_pane(target={target}, direction={direction}, role="worker", name="worker-{task_id}", command="cd {workers_dir}/{task_id} && claude --dangerously-load-development-channels server:ccmux-peers ...")` (org-delegate Step 3) |
+| フォアマン | 窓口ペインを水平分割して下半分 | `mcp__ccmux-peers__spawn_claude_pane(target="focused", direction="horizontal", role="foreman", name="foreman", cwd=".foreman", permission_mode="bypassPermissions", model="sonnet")` (org-start Step 2) |
+| キュレーター | フォアマンペインを垂直分割して右半分 | `mcp__ccmux-peers__spawn_claude_pane(target="foreman", direction="vertical", role="curator", name="curator", cwd=".curator", permission_mode="{default_permission_mode}")` (org-start Step 3) |
+| 各ワーカー | **balanced split**: `list_panes` が返す現在の rect から target と direction を動的に選び、同一タブ内に積む | 詳細は下記「ワーカーの balanced split 戦略」セクション。`mcp__ccmux-peers__spawn_claude_pane(target={target}, direction={direction}, role="worker", name="worker-{task_id}", cwd="{workers_dir}/{task_id}", permission_mode="{default_permission_mode}")` (org-delegate Step 3) |
 
-> **`--dangerously-load-development-channels server:ccmux-peers` は必須**: `cd X && claude` のように cwd 変更を前置きすると ccmux の auto-upgrade が発動せず、channel push (`send_message`) が届かなくなる。窓口→フォアマン / フォアマン→ワーカー の指示が一切通らなくなるため、secretary 以外の全 role で明示する（secretary のみ `ops.toml` から bare `claude` で起動されるのでフラグ不要）。
+> **`spawn_claude_pane` を使う理由**: ccmux 0.18.0+ で追加された構造化 launch ツール。`cwd` / `permission_mode` / `model` / `args[]` を構造化フィールドで渡すと、ccmux が内部で `claude --permission-mode {mode} --dangerously-load-development-channels server:ccmux-peers ...` を合成する。旧方式（`cd`-プレフィックス付き command 文字列を `spawn_pane` に流し込む）は **禁止**（cwd 変更プレフィックスがあると ccmux の bare-`claude` auto-upgrade が発動せず、`send_message` の channel push が届かなくなる。窓口→フォアマン / フォアマン→ワーカーの指示が一切通らなくなる）。Secretary のみ `ops.toml` から bare `claude` で起動され auto-upgrade に任せる。
 
 ## ワーカーの balanced split 戦略
 
