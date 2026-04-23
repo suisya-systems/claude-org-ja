@@ -317,15 +317,16 @@ DELEGATE: 以下のワーカーを派遣してください。
 
 ### 3-2. ワーカーペインを起動する
 
-3-1 で算出した `$target` / `$direction` を使って `mcp__ccmux-peers__spawn_pane` を呼ぶ。**`$target` が空なら spawn せず 3-1c の escalate 手順に従う**:
+3-1 で算出した `$target` / `$direction` を使って `mcp__ccmux-peers__spawn_claude_pane` を呼ぶ。**`$target` が空なら spawn せず 3-1c の escalate 手順に従う**:
 
 ```
-mcp__ccmux-peers__spawn_pane(
+mcp__ccmux-peers__spawn_claude_pane(
   target=$target,                         # 3-1 で算出した既存ペイン名
   direction=$direction,                   # "vertical" or "horizontal"
   role="worker",
   name="worker-{task_id}",                # 後続操作で参照する安定名。英字含む前提
-  command="cd '{workers_dir}/{task_id}' && claude --dangerously-load-development-channels server:ccmux-peers --permission-mode {default_permission_mode}"
+  cwd="{workers_dir}/{task_id}",          # 絶対パス推奨。相対は caller pane の cwd 基点
+  permission_mode="{default_permission_mode}"   # Planモード要なら "plan" で上書き
 )
 ```
 
@@ -333,12 +334,15 @@ mcp__ccmux-peers__spawn_pane(
 - **同一タブ内 spawn で起動する理由**: ccmux の `list_panes` / `focus_pane` / `send_message` / `inspect`（CLI） は現在フォーカス中のタブのペインしか見えない。`new_tab` で別タブに置くとフォアマンからの監視・指示送信が不能になる（ccmux 側 issue: happy-ryo/ccmux#71）
 - `name="worker-{task_id}"`: 後続の `mcp__ccmux-peers__send_message(to_id="worker-{task_id}", ...)` や `close_pane(target="worker-{task_id}")` で addressable にする安定名。**全桁数字は id 扱いになる** ので、`worker-` プレフィックス等で英字を必ず含める
 - `role="worker"`: `list_panes` の結果で役割識別（次回以降の balanced split の target 選出にも使われる）
-- 起動コマンドは `.claude/skills/org-start/SKILL.md` の「ClaudeCode 起動コマンド（役割別）」セクションを参照
-- Planモード要の場合は `command` に `--permission-mode plan` を含める（org-config の値を上書き）
-- ccmux の auto-upgrade は先頭トークンが `claude` の場合のみ効く。`cd '{workers_dir}/{task_id}' && claude ...` のように cwd 変更プレフィックスを前置きすると auto-upgrade が発動せず、`server:ccmux-peers` チャネルが注入されない。そのため起動コマンドに `--dangerously-load-development-channels server:ccmux-peers` を **必須フラグ** として明示する（#46 revert）。フラグ無しではフォアマン → ワーカーへの `send_message` が届かずワーカーが指示を一切受信できない。当該フラグを付与した場合は `Load development channel?` 確認プロンプトが初回表示されるので、Step 3-3b で `send_keys(enter=true)` による承認が必要
+- `cwd` / `permission_mode` / `model` / `args[]` は `spawn_claude_pane` の構造化フィールド。ccmux が `claude --permission-mode {mode} --dangerously-load-development-channels server:ccmux-peers ...` を合成する。旧方式（`cd`-プレフィックス付き command 文字列を `spawn_pane` に渡す）は **禁止** — cwd 変更プレフィックスがあると ccmux の bare-`claude` auto-upgrade が発動せず、channel push が失われる
+- 起動コマンドの仕様は `.claude/skills/org-start/SKILL.md` の「ClaudeCode 起動コマンド（役割別）」セクションを参照
+- Planモード要の場合は `permission_mode="plan"` を指定（org-config の値を上書き）
+- `spawn_claude_pane` が内部で `--dangerously-load-development-channels` を付与するため、`Load development channel?` 確認プロンプトが初回表示される。Step 3-3b で `send_keys(enter=true)` による承認が必要
 - **エラーハンドリング**: MCP 結果テキストに `[<code>] <msg>` 形式でエラーが埋まる。主な code:
   - `[split_refused]` (MAX_PANES / too small): `references/ccmux-error-codes.md` の手順に従いキュレーター → 窓口に escalate。balanced split は best-effort の配置ヒントであり、想定外のレイアウト（途中でワーカーが閉じた後の再派遣など）では拒否され得る
   - `[pane_not_found]`: `$target` に選んだ既存ペインが spawn 発行直前に閉じたレース。同じくエラーコード経路で escalate
+  - `[cwd_invalid]`: 指定した cwd が存在しない / ディレクトリでない。ペイン作成前に reject されるので half-mutated layout にはならない。窓口に escalate し、ワーカーディレクトリ準備（org-delegate Step 1.5）が完了しているか確認
+  - `[invalid-params]`: `args[]` に `--permission-mode` / `--model` / `--dangerously-load-development-channels` を含めた場合の拒否。構造化フィールドで渡す
   - その他の code は `references/ccmux-error-codes.md` 参照
 
 ### 3-3. ペインが起動したことを確認
@@ -370,7 +374,7 @@ while now < deadline:
 
 ### 3-3b. 「Load development channel?」プロンプトを Enter で承認
 
-`--dangerously-load-development-channels server:ccmux-peers` を付与した起動では初回に Y/n 確認プロンプトが出る。Enter で承認する:
+`spawn_claude_pane` は内部で `--dangerously-load-development-channels server:ccmux-peers` を付与するため、初回起動で Y/n 確認プロンプトが出る。Enter で承認する:
 
 ```
 mcp__ccmux-peers__send_keys(target="worker-{task_id}", enter=true)
