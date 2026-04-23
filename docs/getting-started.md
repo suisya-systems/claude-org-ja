@@ -28,6 +28,27 @@ ccmux --layout ops
 `ccmux-layouts/ops.toml` の定義に従って窓口 (Secretary) ペインが立ち上がる。
 あとは窓口の Claude Code で `/org-start` を叩けばフォアマン・キュレーターが派生する。
 
+### 互換性プリフライト（任意、推奨）
+
+`/org-start` を実行する前に、ccmux のバージョンと MCP ツール surface が aainc-ops の要件を満たすか検証できる:
+
+```bash
+py -3 tools/check_ccmux_compat.py            # Windows
+python3 tools/check_ccmux_compat.py          # macOS / Linux
+```
+
+- ccmux バージョン（0.18.0 以上を要求）
+- `ccmux-peers` MCP 登録 (`claude mcp list` で Connected)
+- 必須 14 ツールが tools/list に出現するか
+
+機械可読 JSON が欲しい場合は `--json`。フェイルを終了コードで扱いたいスクリプトはこちらを使う:
+
+```bash
+py -3 tools/check_ccmux_compat.py --json
+```
+
+このスクリプトは live ccmux セッションを必要としない（静的 + MCP stdio probe のみ）ので、`ccmux --layout ops` の前にも後にも実行できる。
+
 ---
 
 ## 基本的な使い方

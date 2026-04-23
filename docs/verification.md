@@ -32,6 +32,26 @@ grep -En '^[[:space:]]*command[[:space:]]*=.*dangerously-load-development-channe
 **失敗時の対処**:
 - ヒットした場合は `spawn_claude_pane` の構造化フィールド (`cwd` / `permission_mode` / `model`) に書き換える。詳細は `.claude/skills/org-start/SKILL.md`「ClaudeCode 起動コマンド（役割別）」セクションと `.claude/skills/org-delegate/references/pane-layout.md` を参照
 
+## 0. 互換性プリフライト
+
+**目的**: `/org-start` 実行前に ccmux バージョンと MCP ツール surface が aainc-ops の要件を満たすか確認する（Issue #61）。
+
+**手順**:
+```bash
+py -3 tools/check_ccmux_compat.py            # Windows
+python3 tools/check_ccmux_compat.py          # macOS / Linux
+py -3 tools/check_ccmux_compat.py --json     # 機械可読出力
+```
+
+**期待結果**: `Result: OK` で終了コード 0。ccmux バージョン・`ccmux-peers` MCP 登録・必須 14 ツールすべてが揃っていれば合格。
+
+**失敗パターン**:
+- ccmux バージョン不足 → `npm update -g ccmux-fork`
+- MCP 未登録 → `ccmux mcp install`
+- ツール欠如 → `ccmux mcp install --force` で stale 登録を更新
+
+このスクリプトは live ccmux セッションを必要としない（`ccmux mcp-peer` stdio 経由で tools/list を取得する静的 probe）。
+
 ---
 
 ## 1. 基本起動テスト
