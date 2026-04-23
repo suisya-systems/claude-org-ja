@@ -20,6 +20,51 @@
 - **ClaudeCode 起動コマンド**: `.claude/skills/org-start/SKILL.md` の「ClaudeCode 起動コマンド（役割別）」セクション
 - **ccmux-peers エラーコードと event 種別**: `.claude/skills/org-delegate/references/ccmux-error-codes.md` — MCP (`mcp__ccmux-peers__*`) 結果テキストの `[<code>] <msg>` 形式ハンドリングと `poll_events` の type 分岐
 
+## delegate-plan helper（deterministic ops を code に移譲）
+
+Issue #60 の Phase 1 として `tools/foreman_runner.py delegate-plan` が導入されている。ワーカー起動の deterministic な部分（balanced split の target/direction 選出、worker pane name 検証、worker instruction file 生成、worker seed state file 生成）を Python に寄せ、フォアマン Claude は action plan JSON を読んで MCP 呼び出しを行うだけにする。
+
+### いつ使うか
+
+DELEGATE メッセージを受信して Step 3 の「3-1 balanced split で target / direction を決める」以降に進む直前で呼ぶ:
+
+```bash
+py -3 tools/foreman_runner.py delegate-plan \
+  --task-json .state/foreman/inbox/{task_id}.json \
+  --panes-json {list_panes スナップショットの JSON}
+```
+
+task JSON の最低フィールド:
+```json
+{
+  "task_id": "login-fix",
+  "worker_dir": "C:/Users/iwama/working/workers/login-fix",
+  "permission_mode": "auto",
+  "task_description": "...",
+  "instruction": "..."
+}
+```
+
+panes JSON は `mcp__ccmux-peers__list_panes` の `structuredContent.panes` をそのまま渡す。
+
+### 出力の扱い
+
+helper は以下のいずれかを返す (exit code でも区別可):
+- **exit 0 / `status: "ready_to_spawn"`**: `spawn` フィールドを `mcp__ccmux-peers__spawn_claude_pane` へそのまま渡す。`after_spawn[]` を順に実行 (poll_events → send_keys(enter) → list_peers 待ち → send_message)。`send_message` は `message_file` の内容を読んで本文にする
+- **exit 2 / `status: "split_capacity_exceeded"`**: `escalate` フィールドを使って窓口に送信 (内容は Step 3-1c と同じ `SPLIT_CAPACITY_EXCEEDED` メッセージ)。該当ワーカー 1 件だけ派遣中止、監視ループは継続
+- **exit 1 / `status: "input_invalid"`**: `errors[]` を窓口に報告して人間判断を仰ぐ (cwd 不存在、task_id 重複、pane name 衝突など)
+
+helper が実ファイル書き出しを行うもの (ready_to_spawn 時):
+- `.state/workers/worker-{task_id}.md` (Status: planned)
+- `.state/foreman/outbox/{task_id}-instruction.md` (send_message の本文)
+
+フォアマンは MCP 呼び出し後に `.state/workers/worker-{task_id}.md` の Status を `active` に遷移させ、`.state/journal.jsonl` に `worker_spawned` を追記する。journal 追記は helper が生成するのではなく、**今まで通りフォアマン側で** `Bash` 経由で行う（JSON 書式は既存通り）。
+
+### 使わないケース
+
+- `choose_split` / balanced split を自分で再実装しようとする必要は **ない**。helper が計算済み。prose の Step 3-1b を再度たどるのは重複になる
+- task JSON が用意できない (窓口が structured な DELEGATE を送っていない) 場合は、helper を介さず従来のプロセスでフォールバックして構わない。helper はあくまで「構造化依頼が来たときのショートカット」
+
 ## ワーカーへの報告先ルール（重要）
 
 - ワーカーの報告先は **窓口（Secretary）** である。ワーカーは `mcp__ccmux-peers__list_peers` で窓口を自動発見する
