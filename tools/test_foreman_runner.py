@@ -168,6 +168,73 @@ class ChooseSplitTests(unittest.TestCase):
         # foreman has no addressable name even if adjacent — skip
         self.assertIsNone(fr.choose_split([foreman, curator]))
 
+    def test_multiple_existing_workers_picks_largest_metric(self) -> None:
+        # Steady-state layout: secretary up top, foreman+curator row, two workers
+        # already occupying bottom cells of different sizes. The next target must
+        # be whichever existing pane has the largest post-split metric.
+        secretary = mk_pane(
+            id=1, name="secretary", role="secretary",
+            x=0, y=0, width=260, height=30,       # new_w=130 ≥ 125, new_h=30 < 45 → horizontal fails height
+        )                                          # width>height*2 (260>60) → vertical → new_w=130, new_h=30
+                                                   # 30 ≥ MIN_PANE_HEIGHT(5) OK, secretary height guard 30<45 → rejected
+        foreman = mk_pane(
+            id=2, name="foreman", role="foreman",
+            x=0, y=30, width=130, height=25,       # 130 > 25*2 → vertical split, new_w=65
+        )
+        curator = mk_pane(
+            id=3, name="curator", role="curator",
+            x=130, y=30, width=130, height=25,
+        )
+        worker_a = mk_pane(
+            id=4, name="worker-a", role="worker",
+            x=0, y=55, width=80, height=25,        # 80 > 25*2 → vertical, new_w=40
+        )
+        worker_b = mk_pane(
+            id=5, name="worker-b", role="worker",
+            x=80, y=55, width=180, height=25,      # 180 > 25*2 → vertical, new_w=90
+        )
+        choice = fr.choose_split([
+            secretary, foreman, curator, worker_a, worker_b,
+        ])
+        assert choice is not None
+        # worker_b has the largest split metric (new_w=90 > foreman 65 > worker_a 40).
+        # Secretary is guard-rejected (new_h=30 < 45 on horizontal, new_w fine on
+        # vertical but guard checks BOTH dims in the chosen direction).
+        self.assertEqual(choice.target_name, "worker-b")
+        self.assertEqual(choice.direction, "vertical")
+        self.assertEqual(choice.new_w, 90)
+
+    def test_irregular_layout_after_worker_closed(self) -> None:
+        # After a worker closed, foreman and curator no longer share a rect edge
+        # (another pane sits between them). Foreman must be filtered out by the
+        # adjacency rule, otherwise it would tie with worker-left on metric and
+        # win via id asc — which would be wrong.
+        secretary = mk_pane(
+            id=1, name="secretary", role="secretary",
+            x=0, y=0, width=200, height=30,        # new_w=100 < 125 → rejected by secretary guard
+        )
+        foreman = mk_pane(
+            id=2, name="foreman", role="foreman",
+            x=0, y=30, width=60, height=40,
+        )
+        # Gap in the middle (where a worker was) — foreman no longer touches curator
+        curator = mk_pane(
+            id=3, name="curator", role="curator",
+            x=140, y=30, width=60, height=40,
+        )
+        # A surviving worker sits in the gap and keeps the tab alive as a target
+        worker_left = mk_pane(
+            id=4, name="worker-left", role="worker",
+            x=60, y=30, width=80, height=40,       # 80 < 40*2 → horizontal split → new_h=20
+        )
+        choice = fr.choose_split([secretary, foreman, curator, worker_left])
+        assert choice is not None
+        # foreman excluded by adjacency rule, secretary excluded by guard,
+        # only worker_left is a valid candidate.
+        self.assertEqual(choice.target_name, "worker-left")
+        self.assertEqual(choice.direction, "horizontal")
+        self.assertEqual(choice.new_h, 20)
+
 
 class ValidationTests(unittest.TestCase):
     def test_task_id_accepts_valid(self) -> None:
