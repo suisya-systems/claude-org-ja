@@ -67,6 +67,62 @@ class RequiredToolsContract(unittest.TestCase):
         )
 
 
+class ParseToolsListResponseTests(unittest.TestCase):
+    """Cover the stdio parse path without spawning ccmux."""
+
+    def test_extracts_tools_from_tools_list_response(self) -> None:
+        payload = (
+            '{"id":0,"jsonrpc":"2.0","result":{"capabilities":{}}}\n'
+            '{"id":1,"jsonrpc":"2.0","result":{"tools":['
+            '{"name":"list_panes"},{"name":"send_message"}'
+            ']}}\n'
+        )
+        found = mod.parse_tools_list_response(payload)
+        self.assertEqual(found, {"list_panes", "send_message"})
+
+    def test_returns_none_when_no_tools_response(self) -> None:
+        payload = (
+            '{"id":0,"jsonrpc":"2.0","result":{"capabilities":{}}}\n'
+        )
+        self.assertIsNone(mod.parse_tools_list_response(payload))
+
+    def test_skips_malformed_lines(self) -> None:
+        payload = (
+            'not json\n'
+            '\n'
+            '{"id":1,"jsonrpc":"2.0","result":{"tools":['
+            '{"name":"list_panes"}]}}\n'
+        )
+        found = mod.parse_tools_list_response(payload)
+        self.assertEqual(found, {"list_panes"})
+
+    def test_skips_tools_with_missing_name(self) -> None:
+        payload = (
+            '{"id":1,"jsonrpc":"2.0","result":{"tools":['
+            '{"name":"list_panes"},{}'
+            ']}}\n'
+        )
+        found = mod.parse_tools_list_response(payload)
+        self.assertEqual(found, {"list_panes"})
+
+    def test_empty_input(self) -> None:
+        self.assertIsNone(mod.parse_tools_list_response(""))
+
+
+class ToolMismatchTests(unittest.TestCase):
+    def test_subset_reports_missing_tools(self) -> None:
+        # Simulate check_mcp_tool_surface's mismatch branch without
+        # subprocessing: a subset-only payload should surface missing tools.
+        payload = (
+            '{"id":1,"jsonrpc":"2.0","result":{"tools":[{"name":"list_panes"}]}}'
+        )
+        found = mod.parse_tools_list_response(payload)
+        assert found is not None
+        missing = [t for t in mod.REQUIRED_MCP_TOOLS if t not in found]
+        self.assertIn("spawn_claude_pane", missing)
+        self.assertIn("set_pane_identity", missing)
+
+
 class JsonShapeTests(unittest.TestCase):
     """The JSON output is a machine contract for Foreman/Secretary."""
 

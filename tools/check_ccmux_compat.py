@@ -32,6 +32,12 @@ from typing import Any, Optional
 # When this list grows, bump MIN_REQUIRED_VERSION accordingly.
 MIN_REQUIRED_VERSION = (0, 18, 0)
 
+# Required `ccmux-peers` MCP tools. Source of truth:
+# `printf '{"jsonrpc":"2.0","id":1,"method":"tools/list"}\n' | ccmux mcp-peer`
+# on ccmux 0.18.0 returns exactly these 14 tools. The in-repo docs
+# (README.md, docs/verification.md, docs/overview-technical.md) are updated
+# to this count by PR #62 (Issue #58). Until that merges, the docs may
+# still show an older count; this list is the authoritative one.
 REQUIRED_MCP_TOOLS = [
     # peer comms
     "list_peers",
@@ -187,12 +193,64 @@ def check_mcp_registration(report: CheckReport) -> None:
 # Layer 3 ---------------------------------------------------------------------
 
 
+def parse_tools_list_response(raw_stdout: str) -> Optional[set[str]]:
+    """Extract the tools/list result tool names from ccmux mcp-peer stdout.
+
+    ccmux mcp-peer speaks newline-delimited JSON-RPC on stdio (MCP stdio
+    transport — not LSP-style Content-Length framing). We send multiple
+    requests on separate lines and the peer writes one JSON response per
+    line. Iterate lines looking for the tools/list response (method result
+    has a `tools` array).
+
+    Returns the set of tool names on success, or None if the stream
+    contained no tools/list result.
+    """
+    for line in raw_stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            msg = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        result = msg.get("result")
+        if not isinstance(result, dict):
+            continue
+        tools = result.get("tools")
+        if isinstance(tools, list):
+            return {t.get("name") for t in tools if t.get("name")}
+    return None
+
+
 def check_mcp_tool_surface(report: CheckReport) -> None:
-    """Query `ccmux mcp-peer` stdio for tools/list. No live session needed."""
-    req = json.dumps(
-        {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-    ) + "\n"
-    rc, out, err = run_cmd(["ccmux", "mcp-peer"], stdin=req, timeout=10.0)
+    """Query `ccmux mcp-peer` stdio for tools/list. No live session needed.
+
+    Sends an MCP-spec-compliant pair of requests on stdio:
+      1. `initialize` (required by some strict MCP servers; ccmux-peers
+         is lenient but we send it defensively)
+      2. `tools/list`
+
+    ccmux mcp-peer uses newline-delimited JSON-RPC over stdio (the MCP
+    stdio transport), not LSP Content-Length framing.
+    """
+    payload = (
+        json.dumps({
+            "jsonrpc": "2.0", "id": 0, "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "capabilities": {},
+                "clientInfo": {
+                    "name": "aainc-ops-preflight", "version": "1.0",
+                },
+            },
+        }) + "\n"
+        + json.dumps({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/list"
+        }) + "\n"
+    )
+    rc, out, err = run_cmd(
+        ["ccmux", "mcp-peer"], stdin=payload, timeout=10.0,
+    )
     if rc == 127:
         # Already flagged in layer 1
         return
@@ -203,16 +261,14 @@ def check_mcp_tool_surface(report: CheckReport) -> None:
             f"{err.strip()[:200]}"
         )
         return
-    try:
-        payload = json.loads(out.strip().splitlines()[-1])
-    except (json.JSONDecodeError, IndexError) as e:
+    found = parse_tools_list_response(out)
+    if found is None:
         report.ok = False
         report.failures.append(
-            f"could not parse tools/list JSON from ccmux mcp-peer: {e}"
+            "could not extract tools/list response from ccmux mcp-peer "
+            "output (no JSON-RPC message with result.tools[])"
         )
         return
-    tools = payload.get("result", {}).get("tools", [])
-    found = {t.get("name") for t in tools if t.get("name")}
     report.mcp_tools_found = sorted(found)
     missing = [t for t in REQUIRED_MCP_TOOLS if t not in found]
     report.mcp_tools_missing = missing
