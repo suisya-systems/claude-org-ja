@@ -45,11 +45,11 @@ class RectAdjacencyTests(unittest.TestCase):
 
 class ChooseSplitTests(unittest.TestCase):
     def test_zero_workers_picks_foreman_when_adjacent_to_curator(self) -> None:
-        # Initial layout: secretary narrow enough to trigger its 100-col safety
-        # clause (new_w = width/2 < 100), so foreman wins as the candidate.
+        # Initial layout: secretary narrow enough to trigger its safety clause
+        # (new_w = width/2 < 125), so foreman wins as the candidate.
         secretary = mk_pane(
             id=1, name="secretary", role="secretary",
-            x=0, y=0, width=180, height=30,  # new_w=90 < 100, excluded
+            x=0, y=0, width=180, height=30,  # new_w=90 < 125, excluded
         )
         foreman = mk_pane(
             id=2, name="foreman", role="foreman",
@@ -78,10 +78,8 @@ class ChooseSplitTests(unittest.TestCase):
             x=0, y=40, width=180, height=10,
         )
         choice = fr.choose_split([foreman, curator, secretary])
-        # foreman filtered out by adjacency. secretary fails MIN_PANE_HEIGHT
-        # after horizontal split (new_h = 5 is fine, but new_w needs >= 100).
-        # secretary width 180 → new_w 180 (horizontal) or 90 (vertical).
-        # aspect: 180 > 10*2 → vertical → new_w=90, and 90 < SECRETARY_MIN_WIDTH(100)
+        # foreman filtered out by adjacency. secretary width 180 height 10:
+        # 180 > 10*2 → vertical → new_w=90, 90 < SECRETARY_MIN_WIDTH(125)
         # so secretary also excluded. → None
         self.assertIsNone(choice)
 
@@ -103,6 +101,38 @@ class ChooseSplitTests(unittest.TestCase):
         # width 30 height 8: width>height*2 → vertical split →
         # new_w=15 < 20, excluded
         self.assertIsNone(fr.choose_split([foreman, curator]))
+
+    def test_secretary_rejected_when_split_width_below_min(self) -> None:
+        # secretary width=248 → vertical split (248 > 60*2) → new_w=124 < 125.
+        # Height 60 ≥ SECRETARY_MIN_HEIGHT(45). Only width fails.
+        secretary = mk_pane(
+            id=1, name="secretary", role="secretary",
+            x=0, y=0, width=248, height=60,
+        )
+        self.assertIsNone(fr.choose_split([secretary]))
+
+    def test_secretary_rejected_when_split_height_below_min(self) -> None:
+        # secretary width=130 height=80: 130 > 80*2? no → horizontal split
+        # new_w=130 ≥ 125 OK, new_h=40 < SECRETARY_MIN_HEIGHT(45). Only height fails.
+        secretary = mk_pane(
+            id=1, name="secretary", role="secretary",
+            x=0, y=0, width=130, height=80,
+        )
+        self.assertIsNone(fr.choose_split([secretary]))
+
+    def test_secretary_accepted_when_both_dims_ok(self) -> None:
+        # secretary width=260 height=100 → vertical (260 > 100*2? no → horizontal)
+        # Actually 260 > 200 → vertical → new_w=130 ≥ 125, new_h=100 ≥ 45. Both pass.
+        secretary = mk_pane(
+            id=1, name="secretary", role="secretary",
+            x=0, y=0, width=260, height=100,
+        )
+        choice = fr.choose_split([secretary])
+        assert choice is not None
+        self.assertEqual(choice.target_name, "secretary")
+        self.assertEqual(choice.direction, "vertical")
+        self.assertEqual(choice.new_w, 130)
+        self.assertEqual(choice.new_h, 100)
 
     def test_pane_without_name_is_skipped(self) -> None:
         foreman = mk_pane(

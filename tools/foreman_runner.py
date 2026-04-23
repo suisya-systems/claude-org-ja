@@ -54,7 +54,8 @@ _ALL_DIGITS = re.compile(r"^\d+$")
 # .claude/skills/org-delegate/references/pane-layout.md
 MIN_PANE_WIDTH = 20
 MIN_PANE_HEIGHT = 5
-SECRETARY_MIN_WIDTH = 100
+SECRETARY_MIN_WIDTH = 125
+SECRETARY_MIN_HEIGHT = 45
 
 
 # ----------------------------------------------------------------------------
@@ -149,8 +150,11 @@ def choose_split(panes: list[Pane]) -> Optional[SplitChoice]:
         if new_w < MIN_PANE_WIDTH or new_h < MIN_PANE_HEIGHT:
             continue
 
-        # secretary safety clause: only splittable if the new half would be wide enough
-        if p.role == "secretary" and new_w < SECRETARY_MIN_WIDTH:
+        # secretary safety clause: only splittable if the new half would be
+        # both wide AND tall enough to keep the secretary usable
+        if p.role == "secretary" and (
+            new_w < SECRETARY_MIN_WIDTH or new_h < SECRETARY_MIN_HEIGHT
+        ):
             continue
 
         # Need a stable name to address by — require one

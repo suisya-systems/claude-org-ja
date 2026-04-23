@@ -272,7 +272,7 @@ DELEGATE: 以下のワーカーを派遣してください。
 
 **定数**:
 - `MIN_PANE_WIDTH = 20` / `MIN_PANE_HEIGHT = 5`: ccmux 側の分割下限（findings: ccmux-split-inv）
-- `SECRETARY_MIN_WIDTH = 100`: secretary を分割候補にしてよい最小幅（保険条項、実運用ではほぼ不発動）
+- `SECRETARY_MIN_WIDTH = 125` / `SECRETARY_MIN_HEIGHT = 45`: secretary を分割候補にしてよい最小幅・最小高さ（保険条項、実運用ではほぼ不発動）
 
 **Step 1. curator を特定**: `role == "curator"` のペインを 1 つ選ぶ（複数あれば先頭）。以降 `$curator` と呼ぶ。存在しなければ `$curator = null`。
 
@@ -295,7 +295,7 @@ DELEGATE: 以下のワーカーを派遣してください。
 - `new_w >= MIN_PANE_WIDTH` かつ `new_h >= MIN_PANE_HEIGHT` のペインのみ残す
 
 **Step 5. secretary 保険条項**:
-- `role == "secretary"` のペインは `new_w >= SECRETARY_MIN_WIDTH` のときだけ残す
+- `role == "secretary"` のペインは `new_w >= SECRETARY_MIN_WIDTH` **かつ** `new_h >= SECRETARY_MIN_HEIGHT` のときだけ残す（width だけ通っても height が足りなければ除外）
 
 **Step 6. ソート & 選択**:
 - `metric` の降順、tie-break は `id` の昇順
