@@ -2,7 +2,35 @@
 
 各機能の動作確認手順。問題が見つかったらスキルやCLAUDE.mdを修正し、再テストする。
 
-**前提**: ccmux 0.14.0+ （`npm install -g ccmux-fork@0.14.0` 後、`ccmux mcp install --force` で `ccmux-peers` MCP サーバを user-scope 登録済み）。
+**前提**: ccmux 0.18.0+ （`npm install -g ccmux-fork@0.18.0` 後、`ccmux mcp install --force` で `ccmux-peers` MCP サーバを user-scope 登録済み）。structured `cwd` (0.16.0) / `set_pane_identity` (0.17.0) / `spawn_claude_pane` (0.18.0) すべてを前提とする。
+
+---
+
+## 0. リグレッションチェック（起動テンプレートの退行防止）
+
+**目的**: Issue #58 で撤去した `cd X && claude ...` auto-upgrade 迂回パターンがテンプレート / スキル / docs に再導入されていないか検出する。
+
+**手順**:
+```bash
+# (1) spawn_pane / spawn_claude_pane の command 引数に `cd X && claude` を合成している箇所
+#     (禁止: ccmux の bare-claude auto-upgrade が発動せず channel push が届かない)
+grep -rEn 'command="cd [^"]*&&[[:space:]]*claude' --include="*.md" --include="*.toml" . \
+  && { echo "FAIL: cd&&claude 合成が残っている"; exit 1; } \
+  || echo "OK: no cd&&claude synthesis"
+
+# (2) ops.toml / layout TOML の command 行に `claude --dangerously-load-development-channels` を手書き
+#     (ccmux 0.16.0+ の bare-claude auto-upgrade / spawn_claude_pane の自動付与で不要)
+grep -En '^[[:space:]]*command[[:space:]]*=.*dangerously-load-development-channels' ccmux-layouts/*.toml \
+  && { echo "FAIL: layout で dangerously フラグ手書き"; exit 1; } \
+  || echo "OK: no explicit flag in layout TOML"
+```
+
+**期待結果**:
+- (1) は 0 件（prose 内での解説的な言及は引用符／記法が異なるためヒットしない）
+- (2) は `ccmux-layouts/*.toml` で 0 件
+
+**失敗時の対処**:
+- ヒットした場合は `spawn_claude_pane` の構造化フィールド (`cwd` / `permission_mode` / `model`) に書き換える。詳細は `.claude/skills/org-start/SKILL.md`「ClaudeCode 起動コマンド（役割別）」セクションと `.claude/skills/org-delegate/references/pane-layout.md` を参照
 
 ---
 
@@ -338,15 +366,16 @@ head -1 knowledge/raw/*.md  # <!-- curated --> マーカー確認
 
 ## 11. MCP 疎通テスト（環境確認）
 
-**目的**: `ccmux-peers` MCP サーバが Claude Code に接続済みで、12 ツール全てが tool surface として登録されていることを確認し、副作用なしで呼び出せる 7 ツールについてはサンプル呼び出しで応答を検証する。副作用の大きい 5 ツール（`send_keys` / `spawn_pane` / `close_pane` / `focus_pane` / `new_tab`）の実動作確認は Test 1-10 の E2E フローでカバーされるため、本テストでは登録確認のみに留める。
+**目的**: `ccmux-peers` MCP サーバが Claude Code に接続済みで、14 ツール全てが tool surface として登録されていることを確認し、副作用なしで呼び出せるツールについてはサンプル呼び出しで応答を検証する。副作用の大きいツール（`send_keys` / `spawn_pane` / `spawn_claude_pane` / `close_pane` / `focus_pane` / `new_tab` / `set_pane_identity`）の実動作確認は Test 1-10 の E2E フローでカバーされるため、本テストでは登録確認のみに留める。
 
 **手順**:
 
-### 11-a. 登録確認（12 ツール）
+### 11-a. 登録確認（14 ツール）
 1. `claude mcp list` で `ccmux-peers` が Connected を表示することを確認
-2. 以下 12 ツールが Claude Code の tool surface に出現するか確認（MCP サーバが tools/list で返すツール名と一致する）:
+2. `ccmux --version` で 0.18.0 以上であることを確認
+3. 以下 14 ツールが Claude Code の tool surface に出現するか確認（MCP サーバが tools/list で返すツール名と一致する）:
    - 副作用なし / 軽 side-effect: `list_panes` / `list_peers` / `set_summary` / `check_messages` / `send_message` / `poll_events` / `inspect_pane`
-   - 副作用大（ペイン / PTY 操作）: `spawn_pane` / `close_pane` / `focus_pane` / `new_tab` / `send_keys`
+   - 副作用大（ペイン / PTY 操作）: `spawn_pane` / `spawn_claude_pane` / `close_pane` / `focus_pane` / `new_tab` / `send_keys` / `set_pane_identity`
 
 ### 11-b. 副作用なしツールの応答確認（7 ツール）
 以下の 7 ツールを順次呼び出し、エラーなく応答が返るか確認:

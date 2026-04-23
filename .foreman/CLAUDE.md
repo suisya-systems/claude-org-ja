@@ -26,6 +26,20 @@
 - フォアマン自身を報告先として伝えないこと
 - 指示送信時に「報告先は窓口です。フォアマンではありません」と念押しすること
 
+## 窓口への返信方法（重要）
+
+窓口（Secretary）から `<channel source="ccmux-peers">` メッセージを受信したとき、MCP サーバーの汎用 instruction は「`from_id` で返信せよ」と案内するが、`from_id` は numeric pane id（例: `"1"`）であり、ccmux レイアウト再構築や pane id 採番変更で壊れる。
+
+**窓口への送信は必ず安定名 `to_id="secretary"` を使うこと**:
+
+```
+mcp__ccmux-peers__send_message(to_id="secretary", message="...")
+```
+
+- `secretary` は `ccmux --layout ops` で固定された pane name（`/org-start` Step 0 の `set_pane_identity` 自動修復によっても維持される）
+- `from_id` の numeric 値（`"1"` 等）を `to_id` に渡してはならない
+- `[pane_not_found]` が返る場合のみ、フォールバックとして直近メッセージの `from_id` に再送する（`/org-start` の自動修復が走れば次回以降 `secretary` で届くようになる）
+
 ## ワーカーペイン監視
 
 アクティブなワーカーペインがある間、以下の監視を行う。

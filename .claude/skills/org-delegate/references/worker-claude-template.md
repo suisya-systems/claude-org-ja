@@ -76,6 +76,7 @@ codex exec --skip-git-repo-check "{レビュー観点の指示}"
 1. **完了報告**: ccmux-peers で **窓口（`secretary`）** に報告する
    - 送信方法: `mcp__ccmux-peers__send_message(to_id="secretary", message="...")`（`secretary` は ccmux layout で固定された pane name）
    - **注意: フォアマン（指示を送ってきた相手）ではなく、窓口に送ること**
+   - **フォールバック**: `to_id="secretary"` が `[pane_not_found]` で返る場合は、`ccmux --layout ops` 以外の経路で窓口ペインが起動された可能性がある。その場合は DELEGATE メッセージ本文で指定された numeric pane id（例: `to_id="1"`）を使って送信する。窓口側で `/org-start` Step 0 の `set_pane_identity` 自動修復が走れば、以降は `to_id="secretary"` が使える（Issue #59）
    - 何を完了したか
    - 作成したファイル、コミット、PR等の成果物
    - 残作業や注意点があれば

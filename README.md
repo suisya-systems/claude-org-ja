@@ -28,7 +28,7 @@ ccmux --layout ops
 
 `ccmux-layouts/ops.toml` で定義された窓口 (Secretary) ペインが立ち上がります。
 フォアマン・キュレーター・ワーカーは `/org-start` などのスキル内で
-`mcp__ccmux-peers__spawn_pane` を介して同一タブ内に動的に派生します
+`mcp__ccmux-peers__spawn_claude_pane` を介して同一タブ内に動的に派生します
 （別タブに置くと監視・指示送信が通らないため、`new_tab` は使いません。詳細は happy-ryo/ccmux#71）。
 
 詳しくは [docs/getting-started.md](docs/getting-started.md) を参照。
@@ -51,22 +51,24 @@ ccmux --layout ops
 
 | 名前 | 用途 | リポジトリ |
 |---|---|---|
-| ccmux-peers | ccmux ペイン操作 (`spawn_pane` / `close_pane` / `focus_pane` / `list_panes` / `new_tab`) と同タブ内 Claude 間双方向メッセージング（組織通信の正本） | ccmux に同梱 (`ccmux mcp install` で登録) |
+| ccmux-peers | ccmux ペイン操作 (`spawn_pane` / `spawn_claude_pane` / `close_pane` / `focus_pane` / `list_panes` / `new_tab` / `set_pane_identity` 等) と同タブ内 Claude 間双方向メッセージング（組織通信の正本） | ccmux に同梱 (`ccmux mcp install` で登録) |
 
 #### ccmux MCP サーバーの登録
 
-ccmux 0.5.x から、旧 CLI (`ccmux split` / `close` / `send` / `list` / `focus` / `new-tab`) の大部分が `ccmux-peers` MCP サーバー経由で呼び出せるようになりました。本リポジトリの組織運用 Skill はこの MCP サーバーの利用を前提に段階移行中です（親 Epic: #20）。
+**前提**: ccmux 0.18.0+ （structured `cwd` / `set_pane_identity` / `spawn_claude_pane` を使用）。旧 CLI (`ccmux split` / `close` / `send` / `list` / `focus` / `new-tab`) の大部分は `ccmux-peers` MCP サーバー経由で呼び出せるようになっており、本リポジトリの組織運用 Skill は MCP の利用を前提としています（親 Epic: #20）。
 
 初回セットアップで以下を一度だけ実行してください:
 
 ```bash
+npm install -g ccmux-fork@0.18.0    # または npm update -g ccmux-fork
 ccmux mcp install
 ```
 
-これにより Claude Code の user-scope 設定に `ccmux-peers` MCP サーバーが登録され、以下 9 種のツールが利用可能になります:
+これにより Claude Code の user-scope 設定に `ccmux-peers` MCP サーバーが登録され、以下 14 種のツールが利用可能になります:
 
-- `mcp__ccmux-peers__spawn_pane` / `close_pane` / `focus_pane` / `list_panes` / `new_tab`
-- `mcp__ccmux-peers__send_message` / `list_peers` / `set_summary` / `check_messages`
+- ペイン制御: `mcp__ccmux-peers__spawn_pane` / `spawn_claude_pane` / `close_pane` / `focus_pane` / `list_panes` / `new_tab` / `set_pane_identity`
+- PTY / 画面: `inspect_pane` / `send_keys` / `poll_events`
+- ピア通信: `send_message` / `list_peers` / `set_summary` / `check_messages`
 
 登録状態は `claude mcp list` で確認できます。
 
