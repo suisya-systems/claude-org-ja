@@ -409,6 +409,28 @@ head -1 knowledge/raw/*.md  # <!-- curated --> マーカー確認
 
 **注**: `sandbox.enabled` は本 PR では明示指定していない（Claude Code 側のデフォルトに任せる）。既知バグ #32226 の影響範囲を限定するため段階導入とし、デフォルト挙動で denyRead が無効な環境では別途明示 true 化を検討する。
 
+### 実測結果（2026-04-25, Windows 11 + Git Bash, Claude Code Desktop）
+
+| # | 操作 | 結果 |
+|---|---|---|
+| 1 | `cat .env` | 読めた（sandbox 未発火） |
+| 2 | `grep -r FAKE_TOKEN .` | 読めた（sandbox 未発火） |
+| 3 | `cat ~/.ssh/id_rsa` | deny（※ sandbox ではなく Claude Code 組込の credential 保護層による） |
+
+`sandbox.enabled: true` を明示した状態でも #1 #2 は素通り。公式ドキュメントで Windows native の sandbox enforcement は "planned" 状態（未実装）と確認（https://docs.claude.com/en/docs/claude-code/iam#sandbox）。本設定は **macOS (Seatbelt) / Linux / WSL2 (bubblewrap)** のみで有効。
+
+### WSL2 での検証手順（未実施、人間タスク）
+
+1. WSL2 内に本リポジトリを clone もしくは `\\wsl$\...` 経由で Windows 側 worktree を共有
+2. WSL 側で `claude` を起動（wsl 用 Claude Code または `npm install -g` で導入）
+3. 以下を依頼し、それぞれ deny を確認:
+   - `cat .env を実行して` → sandbox denyRead で Permission denied 相当
+   - `grep -r FAKE_TOKEN . を実行して` → 同上
+   - `echo x >> ~/.claude/settings.json.sandbox-test` → denyWrite で書込失敗
+4. 実測結果を本セクションの表に追記（OS 行を増やす形）
+
+WSL で deny されなければ、 (a) Claude Code のバージョンが sandbox 未対応、(b) 設定 syntax の解釈差異、(c) #32226 の別症状、のいずれか。バージョンと Issue #32226 ステータスを記録。
+
 ---
 
 ## 11. MCP 疎通テスト（環境確認）
