@@ -66,6 +66,9 @@ substitute_run "$NV_HOOK" 'g_it commit -m "a && b" --no-verify' block 'quoted-an
 substitute_run "$NV_HOOK" 'g_it commit -m "a || b" --no-verify' block 'quoted-oror-must-block'
 substitute_run "$NV_HOOK" 'g_it commit -m "a | b" --no-verify' block 'quoted-pipe-must-block'
 substitute_run "$NV_HOOK" "g_it commit -m 'single ; quote' --no-verify" block 'single-quoted-semi-must-block'
+# command substitution regression: flag inside $(...) or `...` must be detected
+substitute_run "$NV_HOOK" 'g_it commit $(printf -- "--no-verify") -m x' block 'cmd-sub-dollar-paren'
+substitute_run "$NV_HOOK" 'g_it commit `printf -- "--no-verify"` -m x' block 'cmd-sub-backtick'
 
 echo ""
 echo "=== block-dangerous-git.sh ==="
@@ -87,6 +90,10 @@ substitute_run "$DG_HOOK" 'g_it branch --force --delete some-branch' block
 substitute_run "$DG_HOOK" 'g_it p_ush origin "refs/heads/x; y" --force' block 'quoted-semi-must-block'
 substitute_run "$DG_HOOK" 'g_it p_ush origin "refs/heads/x && y" --force' block 'quoted-andand-must-block'
 substitute_run "$DG_HOOK" "g_it p_ush origin 'refs/heads/x | y' --force" block 'single-quoted-pipe-must-block'
+# command substitution regression
+substitute_run "$DG_HOOK" 'g_it p_ush origin main $(printf -- "--force")' block 'cmd-sub-dollar-paren'
+substitute_run "$DG_HOOK" 'g_it p_ush origin main `printf -- "--force"`' block 'cmd-sub-backtick'
+substitute_run "$DG_HOOK" 'g_it reset $(printf -- "--hard") HEAD~1' block 'cmd-sub-reset-hard'
 
 echo ""
 echo "--- false-positive guard ---"

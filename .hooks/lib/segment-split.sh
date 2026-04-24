@@ -44,3 +44,46 @@ split_segments() {
     END { if(length(seg)>0) print seg }
   '
 }
+
+# `flatten_substitutions` reads a single segment from stdin and writes the
+# segment with the bodies of $(...) and `...` substitutions appended at the
+# end (separated by spaces). This lets downstream regex matching catch
+# dangerous flags hidden behind command substitution, e.g.
+#   git commit $(printf -- '--no-verify') -m x
+# becomes
+#   git commit $(printf -- '--no-verify') -m x  printf -- '--no-verify'
+# so the `--no-verify` flag is visible to the flag-detection regex.
+#
+# 既知の制限:
+#   - 1 段ネスト ($(... $(inner) ...)) の inner は捕捉しない（外側のみ）。
+#   - $((arith)) は対象外。バッククォートと dollar-paren のみ扱う。
+#   - 純粋な変数展開 $VAR / ${VAR} は元の segment にそのまま残るため、
+#     変数経由で危険フラグを与えられた場合は依然として検知できない。
+#     これは Phase 1 のスコープ外（Phase 2 の sandbox / allowlist で対処）。
+flatten_substitutions() {
+  awk '
+    {
+      out = $0
+      # Extract $(...) bodies (non-nested)
+      s = $0
+      while (match(s, /\$\([^()]*\)/)) {
+        body = substr(s, RSTART+2, RLENGTH-3)
+        out = out " " body
+        s = substr(s, RSTART+RLENGTH)
+      }
+      # Extract `...` bodies
+      s = $0
+      while (match(s, /`[^`]*`/)) {
+        body = substr(s, RSTART+1, RLENGTH-2)
+        out = out " " body
+        s = substr(s, RSTART+RLENGTH)
+      }
+      # Replace quote characters with spaces in the appended portion so that
+      # flag tokens like --force inside printf arguments become space-delimited
+      # for downstream regex matching. We replace globally; the appended bodies
+      # are only used for flag detection, never for execution.
+      gsub(/[\047\042]/, " ", out)
+      print out
+    }
+  '
+}

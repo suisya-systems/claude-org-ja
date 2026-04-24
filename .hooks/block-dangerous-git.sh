@@ -85,34 +85,37 @@ segment_has_git_subcmd() {
 while IFS= read -r segment; do
   [[ -z "$segment" ]] && continue
 
+  # コマンド置換 $(...) / `...` 内のフラグも検査対象に含める
+  flat=$(printf '%s' "$segment" | flatten_substitutions)
+
   # 1) git push の force 系
   if segment_has_git_subcmd "$segment" "push"; then
-    if echo "$segment" | grep -qE '(^|[[:space:]])--force(-with-lease)?([[:space:]=]|$)'; then
+    if echo "$flat" | grep -qE '(^|[[:space:]])--force(-with-lease)?([[:space:]=]|$)'; then
       deny_with_reason "git push の force 系フラグは禁止です。履歴の書き換えはレビュー後に窓口経由で実施してください。"
     fi
-    if echo "$segment" | grep -qE '(^|[[:space:]])-f([[:space:]]|$)'; then
+    if echo "$flat" | grep -qE '(^|[[:space:]])-f([[:space:]]|$)'; then
       deny_with_reason "git push の短縮 force フラグは禁止です。履歴の書き換えはレビュー後に窓口経由で実施してください。"
     fi
     # バンドル短オプション (-fu / -uf 等)
-    if echo "$segment" | grep -qE '(^|[[:space:]])-[a-zA-Z]*f[a-zA-Z]*([[:space:]]|$)'; then
+    if echo "$flat" | grep -qE '(^|[[:space:]])-[a-zA-Z]*f[a-zA-Z]*([[:space:]]|$)'; then
       deny_with_reason "git push のバンドル短オプションに force フラグが含まれています。履歴の書き換えはレビュー後に窓口経由で実施してください。"
     fi
   fi
 
   # 2) git reset --hard
   if segment_has_git_subcmd "$segment" "reset"; then
-    if echo "$segment" | grep -qE '(^|[[:space:]])--hard([[:space:]=]|$)'; then
+    if echo "$flat" | grep -qE '(^|[[:space:]])--hard([[:space:]=]|$)'; then
       deny_with_reason "git reset --hard は禁止です。未コミット変更が失われます。git stash か別ブランチへの退避を検討してください。"
     fi
   fi
 
   # 3) git branch -D / git branch --delete --force
   if segment_has_git_subcmd "$segment" "branch"; then
-    if echo "$segment" | grep -qE '(^|[[:space:]])-D([[:space:]]|$)'; then
+    if echo "$flat" | grep -qE '(^|[[:space:]])-D([[:space:]]|$)'; then
       deny_with_reason "git branch -D は禁止です。未マージのブランチが消えます。-d（小文字）で安全削除を試すか、窓口に確認してください。"
     fi
-    if echo "$segment" | grep -qE '(^|[[:space:]])--delete([[:space:]]|$)' && \
-       echo "$segment" | grep -qE '(^|[[:space:]])--force([[:space:]=]|$)'; then
+    if echo "$flat" | grep -qE '(^|[[:space:]])--delete([[:space:]]|$)' && \
+       echo "$flat" | grep -qE '(^|[[:space:]])--force([[:space:]=]|$)'; then
       deny_with_reason "git branch --delete --force は禁止です（-D 相当）。-d で安全削除を試すか、窓口に確認してください。"
     fi
   fi

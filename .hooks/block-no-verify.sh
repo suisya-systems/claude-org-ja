@@ -82,8 +82,11 @@ while IFS= read -r segment; do
   fi
   [[ $has_git_commit -eq 0 && $has_git_push -eq 0 ]] && continue
 
-  # 同一セグメント内に verify-bypass フラグが独立トークンとして存在するか
-  if echo "$segment" | grep -qE '(^|[[:space:]])--no-verify([[:space:]]|$)'; then
+  # コマンド置換 $(...) / `...` 内のフラグも検査対象に含める
+  flat=$(printf '%s' "$segment" | flatten_substitutions)
+
+  # 同一セグメント（フラット化後）に verify-bypass フラグが独立トークンとして存在するか
+  if echo "$flat" | grep -qE '(^|[[:space:]])--no-verify([[:space:]]|$)'; then
     if [[ $has_git_commit -eq 1 ]]; then
       deny_with_reason "git commit の verify-bypass フラグは禁止です。pre-commit secret スキャナ（Issue #69）を必ず通してください。誤検知の場合は allow-secret マーカー、緊急時は SKIP_SECRET_SCAN=1 を使ってください。"
     else
