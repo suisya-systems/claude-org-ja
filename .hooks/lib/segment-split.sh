@@ -223,8 +223,10 @@ collect_assignments() {
 # 既知の制限:
 #   - `bash -c X` の X が unquoted 多トークンなケース（例:
 #     `bash -c git commit --no-verify`）は shell パーサ相当が無いと境界が
-#     確定できないため取り出さない。実戦上、eval / bash -c の引数は
-#     quote されるため問題は小さい。
+#     確定できないため取り出さない。unquoted 多トークンの `eval git commit
+#     --no-verify` は token が元セグメントに生で現れるため、元セグメントに
+#     対する既存の loose match 正規表現が直接拾う（`tests/test-block-*` で
+#     回帰カバー）。unwrap の責務は「quote で隠された」ケースに限定。
 #   - 3 段以上のネスト（`bash -c "eval \"eval 'X'\""`）は 2 段目までしか
 #     取り出さない。Phase 2a のスコープは「明示パース経路の確立」であり、
 #     深度無限対応ではない。

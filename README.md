@@ -140,7 +140,8 @@ PreToolUse 層と sandbox 層は **Claude Code 経由の操作にしか効かな
 | `--no-verify` 等の verify-bypass | ✓ | ✓ | - | -（`--no-verify` は pre-commit を飛ばすのが本目的） |
 | `git push --force` / 履歴破壊 | ✓ | ✓ | - | - |
 | `.env` / 認証情報の読取 | - | - | ✓ | - |
-| 構造破壊（`rm -rf` / `git reset --hard` 等） | ✓ | ✓ | - | - |
+| `git reset --hard` / `git branch -D`（git 系構造破壊） | ✓ | ✓ | - | - |
+| `rm -rf` / 汎用構造破壊 | -（本リポジトリの deny 対象外） | -（本リポジトリの hook 対象外） | 部分（sandbox の denyWrite パスのみ） | - |
 | 関数経由 bypass（`fn(){ echo --no-verify; }; git commit $(fn)`） | - | - | 部分（sandbox で読取書込を遮断。破壊系は残存リスクとして受容） | - |
 
 **残存リスク**: 関数定義経由の bypass は shell 層で完全阻止できない（Phase 2c）。sandbox は「秘密情報の OS レベル読取・書込遮断」によって部分カバーするが、「関数経由で読取らず破壊する」攻撃は PreToolUse hook の loose match に依存する。詳細は調査レポート（Phase 2 実現性判定）§4 Phase 2c を参照。

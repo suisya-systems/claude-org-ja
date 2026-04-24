@@ -86,6 +86,8 @@ substitute_run "$NV_HOOK" "eval 'g_it commit --no-verify'" block 'eval-single-qu
 substitute_run "$NV_HOOK" 'bash -c "g_it commit --no-verify"' block 'bash-c-double-quoted'
 substitute_run "$NV_HOOK" "sh -c 'g_it commit --no-verify'" block 'sh-c-single-quoted'
 substitute_run "$NV_HOOK" "bash -c \"eval 'g_it commit --no-verify'\"" block 'nested-bash-eval'
+# unquoted multi-token eval: segment-level regex already catches (tokens appear verbatim)
+substitute_run "$NV_HOOK" 'eval g_it commit --no-verify' block 'eval-unquoted-multitoken'
 
 echo ""
 echo "=== block-dangerous-git.sh ==="
@@ -125,6 +127,7 @@ substitute_run "$DG_HOOK" 'eval "g_it p_ush --force"' block 'eval-push-force'
 substitute_run "$DG_HOOK" 'bash -c "g_it reset --hard HEAD~1"' block 'bash-c-reset-hard'
 substitute_run "$DG_HOOK" "sh -c 'g_it branch -D some'" block 'sh-c-branch-D'
 substitute_run "$DG_HOOK" "bash -c \"eval 'g_it p_ush --force'\"" block 'nested-bash-eval-push-force'
+substitute_run "$DG_HOOK" 'eval g_it p_ush --force' block 'eval-unquoted-multitoken-dg'
 
 echo ""
 echo "--- false-positive guard ---"
