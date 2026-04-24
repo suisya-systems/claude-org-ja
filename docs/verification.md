@@ -419,6 +419,27 @@ head -1 knowledge/raw/*.md  # <!-- curated --> マーカー確認
 
 `sandbox.enabled: true` を明示した状態でも #1 #2 は素通り。公式ドキュメントで Windows native の sandbox enforcement は "planned" 状態（未実装）と確認（https://docs.claude.com/en/docs/claude-code/iam#sandbox）。本設定は **macOS (Seatbelt) / Linux / WSL2 (bubblewrap)** のみで有効。
 
+### WSL2 実測結果（2026-04-25）
+
+| 操作 | 結果 |
+|---|---|
+| `cat .env`（PR branch checkout 上） | 読めた（sandbox disabled） |
+| `grep -r FAKE_TOKEN .` | 読めた |
+| `claude` 起動時の警告 | `⚠ Sandbox disabled: bubblewrap (bwrap) not installed, socat not installed` |
+
+**原因**: Claude Code の sandbox は Linux / WSL2 で **`bubblewrap` と `socat`** を runtime dependency として要求するが、Ubuntu / Debian 系の WSL イメージにはデフォルトでは含まれない。
+
+**対処**: sandbox を実際に発動させたい WSL 環境では以下を実施する:
+
+```bash
+sudo apt install -y bubblewrap socat
+claude  # 警告が消えることを確認
+```
+
+これを入れた後、次節の検証手順で改めて `cat .env` 等が deny されることを確認する。
+
+**検出手順**: `claude --version` 直後 / `/sandbox` 実行で sandbox の状態を確認できる（Claude Code 側で警告表示）。CI 環境や Docker コンテナで sandbox を期待する場合は Dockerfile / workflow に `apt install bubblewrap socat` を明示すること。
+
 ### WSL2 での検証手順（未実施、人間タスク）
 
 1. WSL2 内に本リポジトリを clone もしくは `\\wsl$\...` 経由で Windows 側 worktree を共有
