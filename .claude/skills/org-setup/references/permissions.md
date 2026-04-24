@@ -28,7 +28,9 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
       "mcp__ccmux-peers__new_tab",
       "mcp__ccmux-peers__inspect_pane",
       "mcp__ccmux-peers__poll_events",
-      "mcp__ccmux-peers__send_keys"
+      "mcp__ccmux-peers__send_keys",
+      "mcp__ccmux-peers__spawn_claude_pane",
+      "mcp__ccmux-peers__set_pane_identity"
     ]
   },
   "env": {
@@ -45,7 +47,7 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
 
 ペイン操作（`ccmux split` / `close` / `list` / `send` / `events` / `inspect` / `new-tab` 等）は MCP ツール (`mcp__ccmux-peers__*`) 経由で実施する。該当 Bash permission は含めない。
 
-**注意**: `ccmux-peers` MCP ツール 12 種は `ccmux mcp install` を一度実行して user-scope に MCP サーバーを登録した後に利用可能になる。登録手順は README「ccmux MCP サーバーの登録」を参照。
+**注意**: `ccmux-peers` MCP ツール 14 種は `ccmux mcp install` を一度実行して user-scope に MCP サーバーを登録した後に利用可能になる。登録手順は README「インストール」セクションを参照。
 
 ## 窓口 (`<repo>/.claude/settings.local.json`)
 
