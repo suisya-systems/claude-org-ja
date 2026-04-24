@@ -21,3 +21,4 @@ dashboard/data.json
 
 # Claude Code local config
 .claude/settings.local.json
+CLAUDE.local.md
