@@ -50,65 +50,76 @@ description: >
 
 `.claude/skills/org-curate/references/knowledge-standards.md` の「記録フォーマット」を参照すること。
 
-## Step 4: work-skill 化の判断（新規追加）
+## Step 4: work-skill 化の判定
 
-完了したタスクの作業パターンについて、work-skill として蓄積すべきか判断する。
+完了したタスクの作業パターンについて `skill-eligibility-check` を呼び出し、
+work-skill として蓄積すべきか判定する。
 
-### 判断基準
+判断基準の実体は `.claude/skills/skill-eligibility-check/references/signals.md` に集約されており、
+org-retro と org-curate の両方が同じ基準を参照する（判定の乖離を防ぐため）。
 
-以下の **2つ以上** に該当する場合、work-skill 化を推奨する:
+### Step 4.1: skill-eligibility-check を呼ぶ
 
-| 基準 | 説明 | 例 |
-|---|---|---|
-| **再利用頻度** | 同じ種類のタスクが今後も発生する見込みがある | CEPs分析は定期的に依頼される |
-| **手順の複雑さ** | 3ステップ以上の非自明な手順がある | データ解析→統計処理→レポート生成 |
-| **判断基準の存在** | 定量的な閾値や分類ロジックがある | 調整済み残差 ±1.96 の有意水準判定 |
-| **ツール・ライブラリの選定知識** | 特定のツールの選定理由がある | pandas ではなく openpyxl を使うべき理由 |
-| **成果物のフォーマット** | 再利用可能な出力フォーマットがある | マーケター向けレポートの構成 |
+以下の入力を組み立てて呼び出す:
 
-### 判断フロー
-
+```yaml
+context: post_retro
+pattern_name: <推定される skill 名、kebab-case>
+summary: <何を再利用できるかの 1-2 文>
+task_ids: [<今回の task_id>]
+raw_files: <ワーカーが記録した knowledge/raw/ のパス配列>
+steps_outline:
+  - <主要手順 1>
+  - <主要手順 2>
+  - ...
+trigger_description: <このパターンが適用される状況>
+decision_criteria: <判断基準や閾値>
+output_format: <成果物の構造>
 ```
-完了タスクを振り返る
-  ├─ 「同じ種類の別タスクで再び使えるパターンか？」
-  │   ├─ YES → 判断基準を評価（上記テーブル）
-  │   │   ├─ 2つ以上該当 → work-skill 化を推奨（Step 4a へ）
-  │   │   └─ 1つ以下 → knowledge/raw/ への記録で十分（Step 4b へ）
-  │   └─ NO → スキップ
-  └─ 終了
-```
 
-### Step 4a: work-skill 化の推奨
+スキルは 5 シグナルで採点し、`decision` を返す:
+- `skill_recommend`（3 点以上）
+- `candidate_queue`（2 点）
+- `curated_only`（1 点以下）
 
-skill 化すべきと判断した場合:
+`skill_recommend` の場合は `knowledge/skill-candidates.md` への追記もスキル側で実施される。
+
+### Step 4.2: decision に応じて分岐
+
+#### decision == skill_recommend
 
 1. 人間に提案する:
    ```
    [work-skill 提案] このタスクの作業パターンはwork-skillとして記録すると再利用できそうです。
-   - スキル名案: {skill-name}
-   - 理由: {該当した判断基準を列挙}
+   - スキル名案: {proposed_skill_name}
+   - 理由: {matched_signals} （合計 {score}/5 点）
    - 概要: {何を再利用できるか}
-   
+
    記録しますか？
    ```
-
 2. 人間が承認した場合:
    - `.claude/skills/{skill-name}/SKILL.md` を作成する
    - テンプレート: `.claude/skills/org-retro/references/work-skill-template.md` のフォーマットに従う
    - ワーカーの成果物（コード、レポート、設定等）から手順を抽出・汎化する
    - タスク固有の値（ブランド名、ファイルパス等）はプレースホルダーに置換する
-
+   - `knowledge/skill-candidates.md` の該当エントリの status を `approved` に更新し決定日を記入
 3. 人間が却下した場合:
-   - 理由を knowledge/raw/ に記録し、次回の判断に活かす
+   - 理由を `knowledge/raw/` に記録し、次回の判断に活かす
+   - `knowledge/skill-candidates.md` の該当エントリの status を `rejected` に更新し却下理由を追記
 
-### Step 4b: knowledge/raw/ への記録で十分な場合
+#### decision == candidate_queue
 
-knowledge/raw/ に技術的知見として記録する（通常のフローと同様）。
-ワーカーが既に記録している場合はスキップ。
+候補止まり。次回同パターンが raw に再出現すれば raw_reappearance シグナルが立つため、
+この段階では skill 化しない。`knowledge/raw/` への技術的知見記録は通常どおり（ワーカー記録済みならスキップ）。
+
+#### decision == curated_only
+
+`knowledge/raw/` への技術的知見記録で十分（ワーカーが既に記録している場合はスキップ）。
+報告は不要。
 
 ## Step 5: 報告
 
 人間に簡潔に報告する:
 - 知見を記録した場合: 「委譲プロセスについて{topic}の学びを記録しました」
-- work-skill 化を提案する場合: Step 4a のフォーマットで提案
-- いずれもない場合: 報告不要（黙って次に進む）
+- work-skill 化を提案する場合: Step 4.2 の `skill_recommend` フォーマットで提案
+- `candidate_queue` / `curated_only` の場合: 報告不要（黙って次に進む）
