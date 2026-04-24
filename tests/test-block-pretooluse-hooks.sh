@@ -75,6 +75,11 @@ substitute_run "$NV_HOOK" 'flag=--no-verify; g_it commit ${flag} -m x' block 'va
 substitute_run "$NV_HOOK" 'flag="--no-verify"; g_it commit $flag -m x' block 'var-expansion-quoted-value'
 # But unrelated variable use must NOT trigger
 substitute_run "$NV_HOOK" 'msg="hello"; g_it commit -m "$msg"' pass 'var-expansion-benign'
+# var expansion class round 2: export prefix, inline multi-assign, sub in value
+substitute_run "$NV_HOOK" 'export flag=--no-verify; g_it commit "$flag" -m x' block 'var-export-prefix'
+substitute_run "$NV_HOOK" 'A=1 flag=--no-verify g_it commit "$flag" -m x' block 'var-inline-multi-assign'
+substitute_run "$NV_HOOK" 'flag=$(printf -- "--no-verify"); g_it commit "$flag" -m x' block 'var-value-cmd-sub'
+substitute_run "$NV_HOOK" 'flag=`printf -- "--no-verify"`; g_it commit "$flag" -m x' block 'var-value-backtick'
 
 echo ""
 echo "=== block-dangerous-git.sh ==="
@@ -104,6 +109,11 @@ substitute_run "$DG_HOOK" 'g_it reset $(printf -- "--hard") HEAD~1' block 'cmd-s
 substitute_run "$DG_HOOK" 'mode=--hard; g_it reset "$mode" HEAD~1' block 'var-expansion-reset-hard'
 substitute_run "$DG_HOOK" 'f=--force; g_it p_ush origin main $f' block 'var-expansion-push-force'
 substitute_run "$DG_HOOK" 'd=-D; g_it branch $d some-branch' block 'var-expansion-branch-D'
+# var expansion class round 2: export prefix, inline multi-assign, sub in value
+substitute_run "$DG_HOOK" 'export f=--force; g_it p_ush origin main "$f"' block 'var-export-prefix'
+substitute_run "$DG_HOOK" 'A=1 f=--force g_it p_ush origin main "$f"' block 'var-inline-multi-assign'
+substitute_run "$DG_HOOK" 'mode=$(printf -- "--hard"); g_it reset "$mode" HEAD~1' block 'var-value-cmd-sub'
+substitute_run "$DG_HOOK" 'd=`printf -- "-D"`; g_it branch "$d" some' block 'var-value-backtick'
 
 echo ""
 echo "--- false-positive guard ---"
