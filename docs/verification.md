@@ -97,7 +97,6 @@ py -3 tools/check_ccmux_compat.py --json     # 機械可読出力
 - フォアマンが `mcp__ccmux-peers__spawn_pane` で同一タブ内にワーカーペインを派生する（`name="worker-{task_id}"`、balanced split 戦略は `pane-layout.md` に従う）
 - フォアマンが `mcp__ccmux-peers__poll_events(types=["pane_started"])` で起動完了を確認
 - ワーカー起動直後の「開発チャネル確認プロンプト」を `mcp__ccmux-peers__send_keys(target="worker-{task_id}", enter=true)` で Enter 注入して通過（`org-delegate` SKILL Step 3-2）
-- **Plan モード要の Worker 派遣時** (DELEGATE に「Plan承認後モード切替: 要」含む場合): Worker が Plan 作成 → APPROVAL_BLOCKED 通知 → 窓口側で **Plan 承認前に** `mcp__ccmux-peers__send_keys(target="worker-{task_id}", keys=["Shift+Tab"])` でモード切替 → `mcp__ccmux-peers__inspect_pane(lines=5, format="grid")` でステータスバーに「auto mode on」表示を確認 → `mcp__ccmux-peers__send_keys(target="worker-{task_id}", text="yes", enter=true)` で Plan 承認（`org-delegate` SKILL Step 3-7 / Step 5）
 - フォアマンが `mcp__ccmux-peers__send_message` 経由でワーカーに作業指示を送信する
 - フォアマンが `.state/workers/worker-{id}.md` を作成する
 - `.state/org-state.md` が作成/更新される
@@ -411,10 +410,10 @@ head -1 knowledge/raw/*.md  # <!-- curated --> マーカー確認
 | `inspect_pane` | `target="focused", lines=5, format="text"` | 画面末尾 5 行 + `structuredContent` |
 
 ### 11-c. 副作用大ツールは E2E テストに委譲
-`spawn_pane` / `close_pane` / `focus_pane` / `new_tab` は Test 1 / 2 / 3 / 4 の中で実動作確認される。`send_keys` は Test 1（開発チャネル確認 Enter 注入）と Test 2（Plan モード切替時の Shift+Tab / yes 送信）で確認される。
+`spawn_pane` / `spawn_claude_pane` / `close_pane` / `focus_pane` / `new_tab` / `set_pane_identity` は Test 1 / 2 / 3 / 4 の中で実動作確認される。`send_keys` は Test 1（開発チャネル確認 Enter 注入）で確認される。
 
 **期待結果**:
-- 11-a: `claude mcp list` の出力に `ccmux-peers: … ✓ Connected` があり、12 ツールすべてが Claude Code の tool list に登録されている
+- 11-a: `claude mcp list` の出力に `ccmux-peers: … ✓ Connected` があり、14 ツールすべてが Claude Code の tool list に登録されている
 - 11-b: 7 ツールがすべてエラーなく応答、エラー時は `[<code>] <msg>` 形式のテキストが得られる（例: `list_panes` が ccmux 未起動なら `[shutting_down]` 等）
 - 11-c: 副作用大ツールは本テストでは実行せず、E2E テストでのカバレッジに委ねる
 
