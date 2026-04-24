@@ -4,6 +4,9 @@
 
 set -euo pipefail
 
+# shellcheck source=lib/segment-split.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/segment-split.sh"
+
 # Helper: deny decision を stderr + exit 2 で返す
 deny_with_reason() {
   local reason="$1"
@@ -29,8 +32,20 @@ fi
 # `git push` と、サブコマンド前にオプションが挿入された形を捕捉する。
 # 例: git push, git  push, echo | git push, git -C /path push
 # 一方で `git config push.default` のような別サブコマンドは誤検知しない。
-if echo "$COMMAND" | grep -qE '(^|[|&;[:space:]])git([[:space:]]+(-[^[:space:]]+([[:space:]]+[^|&;[:space:]]+)?)?)*[[:space:]]+push([[:space:]]|$)'; then
+PUSH_RE='(^|[|&;[:space:]])git([[:space:]]+(-[^[:space:]]+([[:space:]]+[^|&;[:space:]]+)?)?)*[[:space:]]+push([[:space:]]|$)'
+
+if echo "$COMMAND" | grep -qE "$PUSH_RE"; then
   deny_with_reason "git push は Worker から直接実行できません。完了報告で窓口に依頼してください。窓口が push/PR を実施します。"
 fi
+
+# eval "git push ..." / bash -c "git push ..." 経由の bypass も明示的に捕捉する
+# （Phase 2a, Issue #79）。unwrap_eval_and_bashc が引数文字列を取り出すので、
+# その文字列に対しても同じ正規表現を適用する。
+while IFS= read -r body; do
+  [[ -z "$body" ]] && continue
+  if echo "$body" | grep -qE "$PUSH_RE"; then
+    deny_with_reason "git push は Worker から直接実行できません（eval/bash -c 経由も検知）。完了報告で窓口に依頼してください。"
+  fi
+done < <(printf '%s\n' "$COMMAND" | unwrap_eval_and_bashc)
 
 exit 0

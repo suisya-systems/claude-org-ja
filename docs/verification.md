@@ -383,6 +383,34 @@ head -1 knowledge/raw/*.md  # <!-- curated --> マーカー確認
 
 ---
 
+## 10.1. sandbox.denyRead / denyWrite 実機検証（Phase 2a, Issue #79）
+
+**目的**: `.claude/settings.json` の `sandbox.filesystem.denyRead` / `denyWrite` が Windows + Git Bash 環境で期待通り機能し、Claude Code の Bash ツール経由で `.env` 等の秘密情報ファイルが読めないことを確認する。
+
+**前提**:
+- 本リポジトリを clone し Claude Code が起動できる状態
+- 検証対象リポジトリ直下にダミー `.env`（例: `FAKE_TOKEN=dummy-not-a-real-secret`）を用意（`.gitignore` 対象のため commit されない）
+- 既知バグ [anthropics/claude-code#32226](https://github.com/anthropics/claude-code/issues/32226) により denyRead が期待通り効かないケースが報告されているため、**必ず実機で挙動を確認**する
+
+**手順**:
+1. 窓口 Claude に `cat .env` を実行するよう依頼する（Bash ツール経由）
+2. `grep -r FAKE_TOKEN .` のように `.env` を読み出すコマンドを依頼する
+3. `~/.ssh/id_rsa` を読み出そうとするコマンドを依頼する（存在する場合）
+4. `~/.claude/settings.json` の書込を試みるコマンドを依頼する（例: `echo x >> ~/.claude/settings.json`）
+
+**期待結果**:
+- 手順 1〜3: sandbox により Bash サブプロセスで denied（`Permission denied` 相当のエラー）。Claude Code が結果を受け取っても内容は空 / エラーになる
+- 手順 4: denyWrite により write 失敗
+
+**失敗パターンと対処**:
+- `.env` の内容が読めてしまう → Claude Code 側のバグの可能性。バージョンと `claude --version` を記録し Issue #32226 のステータスを確認。暫定対応として `permissions.deny` の `Read(./.env)` 追加（Claude Code の Read ツール経路を塞ぐ）
+- Windows で glob (`**/credentials*`) が効かない → forward/backward slash 差異の可能性。glob パターンを `./credentials*` 等に調整して再試行
+- sandbox 自体が発動していない → Claude Code の `sandbox.enabled` デフォルトが OFF の可能性。公式 docs の現行デフォルトを確認
+
+**注**: `sandbox.enabled` は本 PR では明示指定していない（Claude Code 側のデフォルトに任せる）。既知バグ #32226 の影響範囲を限定するため段階導入とし、デフォルト挙動で denyRead が無効な環境では別途明示 true 化を検討する。
+
+---
+
 ## 11. MCP 疎通テスト（環境確認）
 
 **目的**: `ccmux-peers` MCP サーバが Claude Code に接続済みで、14 ツール全てが tool surface として登録されていることを確認し、副作用なしで呼び出せるツールについてはサンプル呼び出しで応答を検証する。副作用の大きいツール（`send_keys` / `spawn_pane` / `spawn_claude_pane` / `close_pane` / `focus_pane` / `new_tab` / `set_pane_identity`）の実動作確認は Test 1-10 の E2E フローでカバーされるため、本テストでは登録確認のみに留める。

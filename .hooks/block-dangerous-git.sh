@@ -87,6 +87,12 @@ while IFS= read -r seg; do
   SEGMENTS+=("$seg")
 done < <(printf '%s' "$COMMAND" | split_segments)
 
+# eval / bash -c / sh -c の引数文字列を追加の検査対象セグメントとして
+# 並列に取り出す（Phase 2a, Issue #79）。
+while IFS= read -r unwrapped; do
+  [[ -n "$unwrapped" ]] && SEGMENTS+=("$unwrapped")
+done < <(printf '%s\n' "${SEGMENTS[@]}" | unwrap_eval_and_bashc)
+
 ASSIGNMENTS=()
 while IFS= read -r assign; do
   [[ -n "$assign" ]] && ASSIGNMENTS+=("$assign")

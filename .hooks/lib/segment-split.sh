@@ -203,6 +203,89 @@ collect_assignments() {
   '
 }
 
+# `unwrap_eval_and_bashc` reads segments from stdin (one per line) and writes
+# the argument strings of `eval` / `bash -c` / `sh -c` invocations as
+# additional segments, one per line. 呼び出し側は結果を既存の SEGMENTS 配列
+# に追加して同じ検査経路（collect_assignments → expand_known_vars →
+# flatten_substitutions → 正規表現）に流す前提。
+#
+# マッチ対象:
+#   - eval "X" / eval 'X' / eval X（unquoted は 1 トークン限定）
+#   - bash -c "X" / bash -c 'X' / sh -c "X" / sh -c 'X'
+#
+# 背景:
+#   Phase 1 では `flatten_substitutions` の gsub 副作用で `eval "git commit
+#   --no-verify"` のような bypass が**偶発的に**検出されていた（gsub が
+#   出力全体のクォートを空白化するため）。Phase 2b で gsub 位置を「appended
+#   portion のみ」に絞ると偶発検出は壊れるため、本関数で **明示的に** eval /
+#   bash -c の引数を取り出し、独立した検査経路として機能させる。
+#
+# 既知の制限:
+#   - `bash -c X` の X が unquoted 多トークンなケース（例:
+#     `bash -c git commit --no-verify`）は shell パーサ相当が無いと境界が
+#     確定できないため取り出さない。実戦上、eval / bash -c の引数は
+#     quote されるため問題は小さい。
+#   - 3 段以上のネスト（`bash -c "eval \"eval 'X'\""`）は 2 段目までしか
+#     取り出さない。Phase 2a のスコープは「明示パース経路の確立」であり、
+#     深度無限対応ではない。
+#   - バックスラッシュエスケープされたクォート（`eval "\"x\""`）は
+#     展開しない。
+unwrap_eval_and_bashc() {
+  local current next
+  current=$(cat)
+  [[ -z "$current" ]] && return 0
+  # 最大 2 段まで取り出す。ネスト深度を超える構造は受容リスクとして README に明記。
+  local iter
+  for iter in 1 2; do
+    next=$(printf '%s\n' "$current" | _unwrap_eval_and_bashc_pass)
+    [[ -z "$next" ]] && break
+    printf '%s\n' "$next"
+    current="$next"
+  done
+}
+
+_unwrap_eval_and_bashc_pass() {
+  awk '
+    function emit_body(body) {
+      if (length(body) > 0) print body
+    }
+    {
+      line = $0
+      while (1) {
+        # eval / bash -c / sh -c with double-quoted argument
+        if (match(line, /(^|[^A-Za-z0-9_-])(eval|bash[ \t]+-c|sh[ \t]+-c)[ \t]+"[^"]*"/)) {
+          tok = substr(line, RSTART, RLENGTH)
+          q = index(tok, "\"")
+          emit_body(substr(tok, q+1, length(tok)-q-1))
+          line = substr(line, RSTART+RLENGTH)
+          continue
+        }
+        # eval / bash -c / sh -c with single-quoted argument
+        if (match(line, /(^|[^A-Za-z0-9_-])(eval|bash[ \t]+-c|sh[ \t]+-c)[ \t]+\047[^\047]*\047/)) {
+          tok = substr(line, RSTART, RLENGTH)
+          q = index(tok, "\047")
+          emit_body(substr(tok, q+1, length(tok)-q-1))
+          line = substr(line, RSTART+RLENGTH)
+          continue
+        }
+        # eval with single unquoted token (best-effort, 1 token のみ)
+        if (match(line, /(^|[^A-Za-z0-9_-])eval[ \t]+[^ \t"\047;&|`][^ \t;&|`]*/)) {
+          tok = substr(line, RSTART, RLENGTH)
+          eidx = index(tok, "eval")
+          if (eidx > 0) {
+            after = substr(tok, eidx + 4)
+            sub(/^[ \t]+/, "", after)
+            emit_body(after)
+          }
+          line = substr(line, RSTART+RLENGTH)
+          continue
+        }
+        break
+      }
+    }
+  '
+}
+
 # `expand_known_vars` reads a single segment from stdin and writes the segment
 # with `$VAR` and `${VAR}` references replaced by the values supplied as
 # arguments (each formatted as `VAR=value`). References to variables not in

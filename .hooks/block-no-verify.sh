@@ -73,6 +73,13 @@ while IFS= read -r seg; do
   SEGMENTS+=("$seg")
 done < <(printf '%s' "$COMMAND" | split_segments)
 
+# eval / bash -c / sh -c の引数文字列を追加の検査対象セグメントとして
+# 並列に取り出す。flatten_substitutions の gsub 副作用に依存せず、
+# 明示的な関数で bypass 検出を独立化する（Phase 2a, Issue #79）。
+while IFS= read -r unwrapped; do
+  [[ -n "$unwrapped" ]] && SEGMENTS+=("$unwrapped")
+done < <(printf '%s\n' "${SEGMENTS[@]}" | unwrap_eval_and_bashc)
+
 ASSIGNMENTS=()
 while IFS= read -r assign; do
   [[ -n "$assign" ]] && ASSIGNMENTS+=("$assign")
