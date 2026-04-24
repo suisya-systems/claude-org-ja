@@ -110,7 +110,7 @@ description: >
   - 成果物（何ができあがるか）
   - 作業ディレクトリ（どのプロジェクトで作業するか）
   - 制約（ブランチ名、コーディング規約、依存関係等）
-  - **Codex セルフレビューの要否** — コード変更を伴うタスクは**既定で必須**。commit 完了後・完了報告前にワーカー自身が `codex exec --skip-git-repo-check` 直打ちでレビューし、Blocker/Major は修正してから報告する（別ワーカーにレビュー委譲しない）。詳細は `references/instruction-template.md` の「Codex セルフレビュー」節参照。定型作業・軽微なドキュメント修正のみ省略可（その場合は指示に明記）
+  - **検証深度（`full` / `minimal`）** — 派遣指示には必ずどちらか 1 値を明示する。既定は `full`（コード・挙動の変更を伴うタスクはすべてこちら）で、commit 完了後に Codex セルフレビュー必須・同一指摘 3 ラウンド上限のルールが走る。trivial fix（CI 出力整形 / typo / コメント修正 / 既存テスト形式合わせ等）のみ `minimal` を選択し、ワーカーは `git add` → `git commit` → `done` 報告のみで終わる。詳細は `references/instruction-template.md` の「検証深度」節と `references/worker-claude-template.md` の「Codex セルフレビュー手順」節参照。値の決定は窓口の責任で、ワーカーには判断させない
   - **ディレクトリパターン（A / B / C）** — 以下の判定基準で決定する
   - **参考 work-skill**（Step 0.5 でマッチしたもの）
 - 注意: タスク説明にファイルパスを含める場合、それがワーカー作業ディレクトリからの相対パスであることを明記する。registry/projects.md の「パス」列の値をそのまま成果物パスとして指示しない（ワーカーが別の場所にパスを作成する原因になる）
@@ -237,7 +237,8 @@ DELEGATE: 以下のワーカーを派遣してください。
   - ディレクトリパターン: {A: プロジェクトディレクトリ / B: worktree / C: エフェメラル}
   - プロジェクト: {clone先URL or ローカルパス or 新規作成 or worktree済み or 前タスク引継ぎ}
   - Permission Mode: {org-config から読んだ default_permission_mode の値}
-  - 指示内容: {instruction-template に基づく指示の要約}
+  - 検証深度: {full | minimal}（instruction-template の同名行と同じ値を必ず記入。フォアマンはこの値をワーカーへの指示にそのまま転記する）
+  - 指示内容: {instruction-template に基づく指示の要約。「検証深度」行は必ず残したまま転送する}
 
 窓口ペイン名: `secretary`（ccmux layout で登録済み。新規タブ作成時の基準となる）
 ```
@@ -509,9 +510,28 @@ mcp__ccmux-peers__send_message(
 
 2c. 人間がフィードバック・修正指示を出した場合:
    - ワーカーに ccmux-peers で追加指示を送る (`to_id="worker-{task_id}"`)
+   - 追加指示が trivial fix（CI 出力整形 / typo / コメント修正等）なら **検証深度 `minimal`** を明示し、完了報告は `done: {commit SHA 短縮形} {変更ファイル名}` の 1 行だけで返すよう伝える（フォーマットは `references/instruction-template.md` / `references/worker-claude-template.md` に従う）
    - `org-state.md` の該当Work Itemを **IN_PROGRESS** に戻す
    - `journal.jsonl` にイベント追記
    - JSON スナップショットを再生成する: `py -3 dashboard/org_state_converter.py`
    - （ペインが生きているのでワーカーはそのまま作業続行）
+
+### ワーカー監視と介入判定（窓口が実行）
+
+派遣後、ワーカーが深掘り・過剰検証ループに入っていないか定期的に確認する:
+
+**介入トリガー**（いずれか 1 つ以上該当したら `mcp__ccmux-peers__inspect_pane` で状況確認する）:
+- 同一タスクで 30 分超経過、かつ同じフェーズ（実装 / Codex レビュー / 検証）に 3 回目以降入っている
+- 1 時間以上進捗報告なしで静穏（入力待ちでもなく、progress ログも出ない）
+- Codex セルフレビューが 4 ラウンド目以降に入っている（3 ラウンド上限はワーカー側指示だが、window 側でも確認）
+
+**介入手順**:
+1. `inspect_pane` で画面を確認（Running / Codex 実行中 / 入力待ちのいずれか判定）
+2. 深掘りと判断したら `send_keys(target="worker-{task_id}", keys=["Escape"])` で中断
+3. `send_message` で tight な修正指示を送る。例:
+   - 「検証深度 minimal に切り替えます。Codex レビュー・追加テスト禁止。いま書いた変更を commit して `done: {commit SHA 短縮形} {変更ファイル名}` の 1 行だけ返してください」
+   - 「Minor は残置で OK。README に既知制限として 1 行追記したら完了報告してください（検証深度 full のままなので通常の完了報告フォーマット）」
+
+**注意**: 窓口が自らワーカーの worktree で commit を代行することは auto-mode classifier によりブロックされる（スコープ逸脱）。介入はあくまで「指示の再送」で行うこと。
 3. ブロック報告の場合:
    - 人間に判断を仰ぐ
