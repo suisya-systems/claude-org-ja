@@ -94,8 +94,11 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
       "Bash(gh api:*)",
       "Bash(gh gist:*)",
       "Bash(gh run:*)",
+      "Bash(gh auth status)",
+      "Bash(gh auth login:*)",
 
       "Bash(python:*)",
+      "Bash(python3:*)",
       "Bash(py -3 dashboard/:*)",
       "Bash(py -3 tools/:*)",
       "Bash(py dashboard/:*)",
@@ -147,6 +150,8 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
 - user-specific absolute path（`Read(//c/Users/iwama/Documents/work/**)` のような）
 
 これらが蓄積すると drift となる。定期的に `permissions.md` と突き合わせて剪定する（Issue #84 参照）。
+
+**重要 — 剪定は手動**: 現行の `org-setup` スキルは additive-only（不足分を追加するだけで既存を削除しない）のため、上記「書いてはいけないもの」のエントリが一度 `settings.local.json` に入ると自動では消えない。`/org-setup` を再実行しても drift は解消されない点に注意。Secretary は定期（例: 月次 / Issue 起票時）に `.claude/settings.local.json` を本ドキュメントの窓口サンプルで丸ごと置き換える剪定運用を行う。自動化する場合は `org-setup` スキル側に「permissions.md サンプルを baseline とし、差分は警告ログに出した上で削除」する mode を追加する必要がある（別 Issue 化を推奨）。
 
 ## フォアマン (`<repo>/.foreman/.claude/settings.local.json`)
 
