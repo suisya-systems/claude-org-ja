@@ -30,7 +30,9 @@ MINIMAL_SCHEMA: dict = {
         "secretary": {
             "docs_section": "窓口",
             "settings_paths": [],
+            "closed_world": True,
             "required_allow": ["Bash(git add:*)"],
+            "allowed_allow_regex": [r"^Bash\(gh [a-z]+:\*\)$"],
             "required_deny": [],
             "required_hooks": [],
             "disallow_allow_regex": [r"^Bash\(\*\)$"],
@@ -38,7 +40,9 @@ MINIMAL_SCHEMA: dict = {
         "worker": {
             "docs_section": "ワーカー",
             "settings_paths": [],
+            "closed_world": False,
             "required_allow": ["Bash(git add:*)"],
+            "allowed_allow_regex": [],
             "required_deny": ["Bash(git push *)"],
             "required_hooks": [
                 {
@@ -132,6 +136,41 @@ class ValidateConfigTests(unittest.TestCase):
         config["hooks"] = {}
         findings = self._validate("worker", config)
         self.assertTrue(any("missing required hook" in f.message for f in findings))
+
+    def test_closed_world_flags_unknown_allow(self):
+        config = {
+            "permissions": {
+                "allow": ["Bash(git add:*)", "Bash(unexpected:*)"],
+            }
+        }
+        findings = self._validate("secretary", config)
+        self.assertTrue(
+            any(
+                "unknown allow entry" in f.message and "unexpected" in f.message
+                for f in findings
+            ),
+            msg=[f.message for f in findings],
+        )
+
+    def test_closed_world_allows_pattern_match(self):
+        config = {
+            "permissions": {
+                "allow": ["Bash(git add:*)", "Bash(gh pr:*)"],
+            }
+        }
+        findings = self._validate("secretary", config)
+        self.assertEqual(findings, [], msg=[f.format() for f in findings])
+
+    def test_open_world_ignores_extras(self):
+        config = {
+            "permissions": {
+                "allow": ["Bash(git add:*)", "Bash(totally new:*)"],
+                "deny": ["Bash(git push *)"],
+            },
+            "hooks": _good_worker()["hooks"],
+        }
+        findings = self._validate("worker", config)
+        self.assertEqual(findings, [], msg=[f.format() for f in findings])
 
     def test_parse_error_surfaces(self):
         findings = self._validate("secretary", {"__parse_error__": "boom"})

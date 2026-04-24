@@ -170,7 +170,8 @@ def validate_config(
 
     # Required allow
     allow_set = set(allow)
-    for req in role_schema.get("required_allow", []):
+    required_allow = role_schema.get("required_allow", [])
+    for req in required_allow:
         if req not in allow_set:
             findings.append(
                 Finding(
@@ -178,6 +179,32 @@ def validate_config(
                     role_name,
                     "ERROR",
                     f"missing required allow: {req!r}",
+                )
+            )
+
+    # Closed-world check: any allow entry must be in required_allow set or
+    # match one of ``allowed_allow_regex``. Catches unknown entries sneaking
+    # into docs / settings without a matching schema update.
+    if role_schema.get("closed_world"):
+        required_set = set(required_allow)
+        extra_patterns = [
+            re.compile(p) for p in role_schema.get("allowed_allow_regex", [])
+        ]
+        for entry in allow:
+            if entry in required_set:
+                continue
+            if any(p.search(entry) for p in extra_patterns):
+                continue
+            findings.append(
+                Finding(
+                    source_label,
+                    role_name,
+                    "ERROR",
+                    (
+                        f"unknown allow entry {entry!r} — not in schema's "
+                        "required_allow nor allowed_allow_regex; add to schema "
+                        "(with justification) or remove."
+                    ),
                 )
             )
 
@@ -292,17 +319,20 @@ def _is_git_tracked(path: Path, root: Path) -> bool:
     return result.returncode == 0
 
 
-def check_on_disk(schema: dict, root: Path) -> list[Finding]:
+def check_on_disk(
+    schema: dict, root: Path, include_untracked: bool = False
+) -> list[Finding]:
     findings: list[Finding] = []
     for role_name, role_schema in schema["roles"].items():
         for rel in role_schema.get("settings_paths", []):
             path = root / rel
             if not path.is_file():
                 continue
-            # Gitignored / untracked local configs vary per developer.
-            # Only validate files that are committed to the repo so CI
-            # and local runs see the same picture.
-            if not _is_git_tracked(path, root):
+            if not _is_git_tracked(path, root) and not include_untracked:
+                # Gitignored / untracked local configs vary per developer.
+                # Default: only validate tracked files so CI and local runs
+                # see the same picture. --include-local opts into validating
+                # the current worktree's role configs as well.
                 continue
             try:
                 config = json.loads(path.read_text(encoding="utf-8"))
@@ -333,13 +363,16 @@ def run(
     permissions_md: Path = DEFAULT_PERMISSIONS_MD,
     root: Path = REPO_ROOT,
     include_on_disk: bool = True,
+    include_untracked: bool = False,
 ) -> list[Finding]:
     schema = load_schema(schema_path)
     findings: list[Finding] = []
     findings.extend(validate_schema_integrity(schema))
     findings.extend(check_docs(schema, permissions_md))
     if include_on_disk:
-        findings.extend(check_on_disk(schema, root))
+        findings.extend(
+            check_on_disk(schema, root, include_untracked=include_untracked)
+        )
     return findings
 
 
@@ -357,6 +390,17 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Skip on-disk settings.local.json validation (default in CI).",
     )
+    parser.add_argument(
+        "--include-local",
+        action="store_true",
+        help=(
+            "Also validate gitignored / untracked on-disk settings.local.json "
+            "files in the current worktree. Off by default because role "
+            "settings.local.json files are gitignored and their content "
+            "varies per developer / worktree; turn on to audit the current "
+            "machine's configs."
+        ),
+    )
     args = parser.parse_args(argv)
 
     findings = run(
@@ -364,6 +408,7 @@ def main(argv: list[str] | None = None) -> int:
         permissions_md=args.permissions_md,
         root=args.root,
         include_on_disk=not args.docs_only,
+        include_untracked=args.include_local,
     )
 
     if not findings:
