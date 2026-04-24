@@ -158,6 +158,18 @@ PreToolUse 層と sandbox 層は **Claude Code 経由の操作にしか効かな
 
 deny / hook の優先順位は repo の `.claude/settings.json` を最低ラインとし、ローカル overlay は **追加方向** にしか働かない（緩める方向には使わない）運用を推奨します。
 
+### ロール別設定の source of truth（Issue #85）
+
+ロール別 `settings.local.json`（Secretary / Foreman / Curator / Worker）の**正典は [`tools/role_configs_schema.json`](tools/role_configs_schema.json)**。`.claude/skills/org-setup/references/permissions.md` に掲載している JSON ブロックおよび各 role の実 `settings.local.json` は、いずれも schema からの **projection**（射影）として扱う。
+
+- `tools/check_role_configs.py` が schema と `permissions.md` 内 JSON ブロックの整合、および git 管理下の設定ファイル（主に `.claude/settings.json`）を検証する。
+- CI (`.github/workflows/tests.yml` の `Check role configs integrity` ステップ) で毎回実行する。
+- 検知する drift の例: 旧 `mcp__claude-peers__*` の混入、`Bash(git *)` のような wildcard wide allow、必須 hook (`block-no-verify.sh` / `block-dangerous-git.sh` / `block-git-push.sh` / `block-workers-delete.sh` / `block-aainc-structure.sh` / `check-worker-boundary.sh`) の登録漏れ、role contract 破れ（Secretary の Bash hook 欠落、Worker の無制限 Bash、Worker の必須 deny 欠落など）、**schema に未登録の allow エントリの混入**（`closed_world: true` な role に対する closed-world チェック。schema → docs の順で反映しないと CI が fail する）。
+- ルール追加フロー: **schema → docs → 実 settings.local.json** の順で反映する（逆順にすると CI が drift を検出する）。
+- on-disk 検証の既定挙動: `.claude/settings.local.json` / `.foreman/.claude/settings.local.json` / `.curator/.claude/settings.local.json` はいずれも `.gitignore` 対象であり、default の `python tools/check_role_configs.py` は git 管理下のファイル（`.claude/settings.json` など）のみ強制する。ローカル worktree の実設定も監査したい場合:
+  - `--include-local`: schema に列挙された path（`.claude/settings.local.json` 等）を role 既定のまま検証する。secretary worktree からの一括監査向け。
+  - `--role <name>`: 現在の worktree の `.claude/settings.local.json` を指定 role スキーマで検証する。worker worktree 等、path から role を一意に特定できない場合に明示する（例: `python tools/check_role_configs.py --role worker`）。
+
 ### PreToolUse hook の検知範囲（Phase 1 時点）
 
 - **対応**: 引用符内 separator (`git commit -m "a ; b" --no-verify`)、空白入りパス (`git -C "C:/Program Files/repo" push --force`)、コマンド置換 (`git commit $(printf -- '--no-verify') -m x`、`` `...` `` 形式も含む)、バンドル短オプション (`git push -fu origin main`)、`--force-with-lease`、`git branch --delete --force`、簡易な変数展開 (`flag=--no-verify; git commit "$flag" -m x`)、**`eval "..." / bash -c "..." / sh -c "..."` 経由**（`segment-split.sh:unwrap_eval_and_bashc` による明示パース。1 段ネスト `bash -c "eval '…'"` まで取り出す）、**代入値内のコマンド置換 `f=$(echo --no-verify)`**。
