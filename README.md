@@ -104,7 +104,37 @@ bash scripts/install-hooks.sh
 - **誤検出の回避**: 該当行に `allow-secret` の文字列を含めて再 stage すると、その行は無視されます（Markdown なら HTML コメント `<!-- allow-secret -->` が読みやすい）。文字列は行頭・行中・行末のどこにあっても有効です。
 - **緊急バイパス**: `SKIP_SECRET_SCAN=1 git commit ...`（stderr に警告が出ます）。最後の手段として `git commit --no-verify` も有効ですが通常は使わないでください。
 - **ワーカー向け注記**: ワーカー Claude が commit しようとした際、secret を含むと hook がブロックします。対処は人間と同じく `allow-secret` マーカー or `SKIP_SECRET_SCAN=1` です。
-- **`.hooks/` との責任境界**: この `.githooks/pre-commit` は **git が `git commit` 直前に起動する** レイヤ。`.hooks/*.sh`（`block-git-push.sh` 等）は **Claude Code が Edit/Write/Bash ツールを呼ぶ前に起動する PreToolUse レイヤ**。対象タイミングが異なるため両者は直交し、併用を前提としています。
+- **`.hooks/` との責任境界**: この `.githooks/pre-commit` は **git が `git commit` 直前に起動する** レイヤ。`.hooks/*.sh`（`block-git-push.sh` / `block-no-verify.sh` / `block-dangerous-git.sh` 等）は **Claude Code が Bash/Edit/Write ツールを呼ぶ前に起動する PreToolUse レイヤ**。対象タイミングが異なるため両者は直交し、併用を前提としています。
+
+## PreToolUse Hooks（破壊的操作の事前ブロック）
+
+Claude Code がツールを呼び出す **直前** に発火するレイヤです。`git` だけでなく任意の Bash コマンドを検査でき、`exit 2` + stderr で拒否するとそのツール呼び出し自体がキャンセルされます。
+
+| Hook | ブロック対象 | 目的 |
+|---|---|---|
+| `.hooks/block-git-push.sh` | `git push`（ワーカー scope） | push は窓口経由に集約 |
+| `.hooks/block-no-verify.sh` | `git commit/push --no-verify` | pre-commit secret スキャナ（Issue #69）の迂回防止 |
+| `.hooks/block-dangerous-git.sh` | `git push --force` / `-f` / `--force-with-lease`、`git reset --hard`、`git branch -D` | 履歴書き換えと未コミット変更の喪失防止 |
+
+`.claude/settings.json` の `hooks.PreToolUse` で **Bash matcher** として登録されており、リポジトリをクローンした全員（窓口・フォアマン・キュレーター・ワーカー）に強制適用されます。同時に `permissions.deny` にも同等パターンを列挙し、**hook 実行前の静的拒否レイヤ** としても機能させています（多層防御）。
+
+### 三層防御の責任境界
+
+| レイヤ | 起動タイミング | 守備範囲 | 設定場所 |
+|---|---|---|---|
+| `permissions.deny` | Claude が Bash 実行リクエストを送った瞬間（hook より前） | パターンマッチで coarse に拒否 | `.claude/settings.json` |
+| PreToolUse hooks | deny を抜けた Bash 呼び出し直前 | 引数パターン解析で fine に拒否 | `.hooks/*.sh` |
+| pre-commit hook (`.githooks/pre-commit`) | `git commit` が実際に走る直前（Claude 経由か手動かを問わず） | ステージ差分の secret スキャン | `.githooks/pre-commit` |
+
+PreToolUse 層は **Claude Code 経由の操作にしか効かない**（人間が直接ターミナルで叩いた場合は素通り）一方、pre-commit 層は **どの経路でも commit 直前に必ず走る**。両者は補完関係にあるため、片方では十分ではなく両方を有効にしてください。
+
+### 設定ファイルの違い
+
+- `.claude/settings.json` — リポジトリにチェックインされる **共通ポリシー**。PreToolUse hooks と最低限の deny はここに定義し、全員に強制適用する。
+- `.claude/settings.local.json` — 個人 / ロール固有の **オーバーライド**（Git 管理外）。例えばワーカーは `WORKER_DIR` 等の環境変数や、ワーカーローカルに追加したい hook をここで足す。
+- `~/.claude/settings.json` — user scope の設定。複数リポジトリ横断のデフォルト。
+
+deny / hook の優先順位は repo の `.claude/settings.json` を最低ラインとし、ローカル overlay は **追加方向** にしか働かない（緩める方向には使わない）運用を推奨します。
 
 ## 仕組み
 
