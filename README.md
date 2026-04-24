@@ -90,6 +90,22 @@ claude mcp list                 # 一覧に ccmux-peers が含まれる
 
 互換性プリフライト（ccmux バージョンと 14 種 MCP ツール surface の一括チェック）は `tools/check_ccmux_compat.py` を参照。
 
+## Git Hooks（secret 漏洩防止）
+
+新しくクローンしたら、1 度だけ以下を実行してください:
+
+```bash
+bash scripts/install-hooks.sh
+```
+
+`core.hooksPath` が `.githooks/` に設定され、以降 `git commit` 直前に `.githooks/pre-commit` が走ります。AWS / GitHub（classic / fine-grained PAT 両対応）/ OpenAI / Anthropic / Google / GitLab / Slack 等の API キー、PEM 秘密鍵、典型的な `API_KEY=...` 代入がステージ差分に含まれると commit は拒否されます（詳細パターンは `.githooks/pre-commit` を参照）。
+
+- **既存の repo-local `core.hooksPath` がある環境**: この repo の local 設定に別パスが入っている場合、`scripts/install-hooks.sh` は黙って上書きせずエラー終了します。置き換えて良い場合は `--force` を付けて再実行してください（global / system スコープの `core.hooksPath` は触らず、この repo の local 値のみを書き換えます）。
+- **誤検出の回避**: 該当行に `allow-secret` の文字列を含めて再 stage すると、その行は無視されます（Markdown なら HTML コメント `<!-- allow-secret -->` が読みやすい）。文字列は行頭・行中・行末のどこにあっても有効です。
+- **緊急バイパス**: `SKIP_SECRET_SCAN=1 git commit ...`（stderr に警告が出ます）。最後の手段として `git commit --no-verify` も有効ですが通常は使わないでください。
+- **ワーカー向け注記**: ワーカー Claude が commit しようとした際、secret を含むと hook がブロックします。対処は人間と同じく `allow-secret` マーカー or `SKIP_SECRET_SCAN=1` です。
+- **`.hooks/` との責任境界**: この `.githooks/pre-commit` は **git が `git commit` 直前に起動する** レイヤ。`.hooks/*.sh`（`block-git-push.sh` 等）は **Claude Code が Edit/Write/Bash ツールを呼ぶ前に起動する PreToolUse レイヤ**。対象タイミングが異なるため両者は直交し、併用を前提としています。
+
 ## 仕組み
 
 ```
