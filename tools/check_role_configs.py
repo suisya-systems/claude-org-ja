@@ -346,33 +346,52 @@ def check_on_disk(
                 )
             )
             return findings
-        path = root / WORKER_LOCAL_SETTINGS
-        if not path.is_file():
-            findings.append(
-                Finding(
+        # Dynamic roles like ``worker`` have no fixed path in schema; in that
+        # case the file to audit is the current worktree's
+        # .claude/settings.local.json. For roles with schema-declared paths
+        # (foreman / curator / secretary), use those.
+        candidate_paths = role_schema.get("settings_paths") or [
+            WORKER_LOCAL_SETTINGS
+        ]
+        checked_any = False
+        for rel in candidate_paths:
+            path = root / rel
+            if not path.is_file():
+                continue
+            checked_any = True
+            try:
+                config = json.loads(path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as exc:
+                findings.append(
+                    Finding(
+                        str(path),
+                        role_override,
+                        "ERROR",
+                        f"JSON parse error: {exc}",
+                    )
+                )
+                continue
+            findings.extend(
+                validate_config(
                     str(path),
                     role_override,
-                    "ERROR",
-                    "settings.local.json not found at expected path",
+                    config,
+                    role_schema,
+                    schema.get("global", {}),
                 )
             )
-            return findings
-        try:
-            config = json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
+        if not checked_any:
             findings.append(
-                Finding(str(path), role_override, "ERROR", f"JSON parse error: {exc}")
+                Finding(
+                    str(root / candidate_paths[0]),
+                    role_override,
+                    "ERROR",
+                    (
+                        "settings.local.json not found; tried: "
+                        + ", ".join(str(root / p) for p in candidate_paths)
+                    ),
+                )
             )
-            return findings
-        findings.extend(
-            validate_config(
-                str(path),
-                role_override,
-                config,
-                role_schema,
-                schema.get("global", {}),
-            )
-        )
         return findings
 
     for role_name, role_schema in schema["roles"].items():
