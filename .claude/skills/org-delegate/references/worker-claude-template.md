@@ -60,17 +60,41 @@ org-delegate の Step 1.5 でワーカー専用ディレクトリ（`{workers_di
 - git push: 不可（`permissions.deny` + hook により技術的にブロック。窓口経由で依頼すること）
 - `rm -rf` / `rm -r`: 不可（`permissions.deny` により技術的にブロック）
 
-## Codex レビュー手順
+## Codex セルフレビュー手順
 
-タスク指示で Codex レビューを求められた場合は、**`codex exec --skip-git-repo-check` 直打ちのみ**を使用すること。
+派遣指示に**必ず含まれる「検証深度」行**（`full` または `minimal`）に従うこと。指示に値が無い・不明瞭な場合は勝手に決めず窓口（`secretary`）に確認すること。
+
+### 検証深度 `full` の場合（コード・挙動の変更を伴うタスク）
+commit 完了後・完了報告前に**必ず** `codex exec --skip-git-repo-check` 直打ちでセルフレビューを実行する。
 
 ```bash
-codex exec --skip-git-repo-check "{レビュー観点の指示}"
+codex exec --skip-git-repo-check "このブランチの main からの差分をレビュー。Blocker/Major/Minor/Nit で分類し、各指摘に対象ファイル:行番号と根拠を添えて日本語で簡潔に"
 ```
 
-**禁止事項**: `codex:rescue` スキルは使用しないこと（過去に 18 分超ハングした実害あり。`codex exec` 直打ちに切り替えると正常動作した）。
+- Blocker / Major は修正コミットを積み、再レビュー
+- **同一指摘カテゴリで 3 ラウンド消せない場合は設計問題**と判断し、即完了報告して窓口に仕様縮小の判断を仰ぐ（無限ループ防止）
+- Minor / Nit は原則残置し、README / Issue / PR 本文に既知制限として明記する
+- 別ワーカーにレビュー委譲しないこと（書いた本人が修正ループを回す方が速く、責任境界も明確）
 
-## 作業完了時（必須）
+### 検証深度 `minimal` の場合（trivial fix）
+Codex セルフレビュー・追加テスト実行・拡張された動作確認は**一切禁止**。指示された fix を反映したら `git add` → `git commit` → 窓口に以下 1 行だけ送信する:
+
+```
+done: {commit SHA 短縮形} {変更ファイル名}
+```
+
+- SHA は `git rev-parse --short HEAD`
+- ファイルが複数なら空白区切り（例: `done: be8f497 tests/test-block-pretooluse-hooks.sh`）
+- 下記「作業完了時（必須）」の 完了報告フォーマット（成果物説明・残作業・PR 草案等）は minimal では **適用されない**（窓口が push / PR 起票を実施するのに commit SHA と変更ファイルがあれば足りる）
+- 振り返り記録（`knowledge/raw/`）も minimal では **不要**（trivial fix に再利用可能な学びはない前提）。非自明な発見があれば `full` と同じ手順で 1 件作ってよい
+
+### 禁止事項（両モード共通）
+`codex:rescue` スキルは使用しないこと（過去に 18 分超ハングした実害あり。`codex exec` 直打ちに切り替えると正常動作した）。
+
+## 作業完了時（必須・検証深度 `full` のみ）
+
+検証深度 `minimal` の場合は上記「Codex セルフレビュー手順」節の minimal 用 1 行報告フォーマット（`done: {SHA} {files}`）で終了する。振り返り記録も不要。このセクションは **検証深度 `full` のタスクに限定して適用**される。
+
 作業が完了したら、以下を**必ず**実行すること:
 
 1. **完了報告**: ccmux-peers で **窓口（`secretary`）** に報告する
