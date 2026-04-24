@@ -13,14 +13,15 @@ if [[ "${SKIP_SECRET_SCAN:-0}" == "1" ]]; then
   exit 0
 fi
 
-# Directories whose files are excluded from scanning.
-# Ordered prefixes, matched with bash pattern matching below.
+# Directories whose files are excluded from scanning. Only code directories
+# whose sole purpose is to host hook implementations or secret-shaped test
+# fixtures belong here. Content areas such as knowledge/ are intentionally
+# NOT excluded — that is where accidental pastes of real secrets are most
+# likely to land.
 EXCLUDED_PREFIXES=(
   ".githooks/"
   ".hooks/"
   "tests/"
-  "knowledge/raw/"
-  "knowledge/curated/"
 )
 
 # name|ERE pattern. Names are shown in the violation report; patterns are
@@ -32,6 +33,7 @@ PATTERNS=(
   "Anthropic API key|sk-ant-[A-Za-z0-9_-]{20,}"
   "Google API key|AIza[0-9A-Za-z_-]{35}"
   "GitHub PAT|ghp_[A-Za-z0-9]{36}"
+  "GitHub fine-grained PAT|github_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{59}"
   "GitHub OAuth token|gho_[A-Za-z0-9]{36}"
   "GitHub user-to-server token|ghu_[A-Za-z0-9]{36}"
   "GitHub server-to-server token|ghs_[A-Za-z0-9]{36}"

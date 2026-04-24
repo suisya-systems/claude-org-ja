@@ -80,7 +80,11 @@ assert_stderr_contains "AWS access key ID" "$stderr" "AWS stderr names the patte
 
 repo=$(make_repo); stderr=$(mktemp); TMPDIRS+=("$stderr")
 ec=$(run_commit "$repo" 'token: ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef0123' "src/gh.txt" "$stderr")
-assert_exit 1 "$ec" "GitHub PAT is blocked"
+assert_exit 1 "$ec" "GitHub classic PAT is blocked"
+
+repo=$(make_repo); stderr=$(mktemp); TMPDIRS+=("$stderr")
+ec=$(run_commit "$repo" 'token: github_pat_11ABCDEFG0abcdefghijkl_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz012345678' "src/gh2.txt" "$stderr")
+assert_exit 1 "$ec" "GitHub fine-grained PAT is blocked"
 
 repo=$(make_repo); stderr=$(mktemp); TMPDIRS+=("$stderr")
 ec=$(run_commit "$repo" 'ANTHROPIC=sk-ant-abcdefghijklmnopqrstuvwxyz01234567' "src/an.txt" "$stderr")
@@ -119,6 +123,16 @@ assert_exit 0 "$ec" "Files under .hooks/ are excluded"
 repo=$(make_repo); stderr=$(mktemp); TMPDIRS+=("$stderr")
 ec=$(run_commit "$repo" 'API_KEY = "short"' "src/short.py" "$stderr")
 assert_exit 0 "$ec" "Short generic assignment below length threshold passes"
+
+# ---- knowledge/ is now scanned (no longer excluded) ----
+
+repo=$(make_repo); stderr=$(mktemp); TMPDIRS+=("$stderr")
+ec=$(run_commit "$repo" 'aws_key = "AKIAABCDEFGHIJKLMNOP"' "knowledge/raw/note.md" "$stderr")
+assert_exit 1 "$ec" "Secrets inside knowledge/raw/ are still blocked"
+
+repo=$(make_repo); stderr=$(mktemp); TMPDIRS+=("$stderr")
+ec=$(run_commit "$repo" 'aws_key = "AKIAABCDEFGHIJKLMNOP"' "knowledge/curated/note.md" "$stderr")
+assert_exit 1 "$ec" "Secrets inside knowledge/curated/ are still blocked"
 
 # ---- Bypass env var ----
 
