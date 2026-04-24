@@ -39,22 +39,27 @@ if [[ ! -f "$hook_file" ]]; then
   exit 1
 fi
 
-current=$(git config --get core.hooksPath || true)
-if [[ -n "$current" && "$current" != "$hook_dir" ]]; then
+# Only inspect the repo-local value. `git config --get` without a scope
+# flag also reports global/system values, which would cause this script
+# to complain about (and, with --force, silently override) an
+# organization-wide core.hooksPath. We only want to guard against a
+# conflicting repo-local value here.
+current_local=$(git config --local --get core.hooksPath 2>/dev/null || true)
+if [[ -n "$current_local" && "$current_local" != "$hook_dir" ]]; then
   if [[ "$force" != "1" ]]; then
-    echo "install-hooks: core.hooksPath is already set to '$current'." >&2
+    echo "install-hooks: repo-local core.hooksPath is already '$current_local'." >&2
     echo "install-hooks: refusing to overwrite; pass --force to replace it." >&2
     exit 1
   fi
-  echo "install-hooks: --force set; replacing core.hooksPath '$current' -> '$hook_dir'." >&2
+  echo "install-hooks: --force set; replacing repo-local core.hooksPath '$current_local' -> '$hook_dir'." >&2
 fi
 
 # chmod +x is a no-op on Windows filesystems but harmless; git-for-windows
 # tracks the executable bit via the index.
 chmod +x "$hook_file" 2>/dev/null || true
 
-git config core.hooksPath "$hook_dir"
+git config --local core.hooksPath "$hook_dir"
 
-configured=$(git config --get core.hooksPath || true)
-echo "install-hooks: core.hooksPath = ${configured:-<unset>}"
+configured=$(git config --local --get core.hooksPath 2>/dev/null || true)
+echo "install-hooks: core.hooksPath (repo-local) = ${configured:-<unset>}"
 echo "install-hooks: pre-commit secret scanner enabled."
