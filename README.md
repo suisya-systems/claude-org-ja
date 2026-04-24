@@ -2,7 +2,93 @@
 
 Allied Architects, Inc. 向けの自己成長する Claude Code 組織。
 
-人間は1つの Claude Code（窓口）と対話するだけで、裏側でワーカーが自動的に派遣・管理され、組織が知見を蓄積し改善していく。
+- **これは何か**: 1つの窓口 Claude と対話するだけで、裏でフォアマン・キュレーター・ワーカーが自動で動き、知見を蓄積しながら改善していくマルチエージェント運用基盤。
+- **対象読者**: ccmux と Claude Code でチーム作業を動かしたい開発者・オペレーター。
+- **できること**: タスクの自動分解と並列実行、状態の永続化と復元、30 分おきの知見整理、ダッシュボードでの俯瞰。
+
+## 前提条件
+
+### アプリケーション
+
+| 名前 | 用途 | 入手先 |
+|---|---|---|
+| Claude Code | AI エージェント本体 | https://claude.ai/code |
+| ccmux (**0.18.0 以上**) | ターミナルマルチプレクサ (ペイン管理) | `npm install -g ccmux-fork@0.18.0` |
+| Git | バージョン管理 | https://git-scm.com/ |
+| GitHub CLI (`gh`) | GitHub 操作（PR 作成等） | https://cli.github.com/ |
+| Node.js (v18+) | Claude Code CLI の実行環境 | https://nodejs.org/ |
+| Python 3.8+ | ダッシュボードサーバー、スクリプト実行 | https://www.python.org/ |
+| jq | Hooks スクリプトの JSON 解析 | https://jqlang.github.io/jq/ |
+
+> **OS 注記**: 以下のコマンド例は macOS / Linux (bash) 前提です。Windows では `python3` を `python` に、`~/...` を各自のパスに読み替えてください。
+
+### MCP サーバー
+
+| 名前 | 用途 | 備考 |
+|---|---|---|
+| ccmux-peers | ccmux のペイン操作・構造化 Claude ペイン起動・ピア通信・event 購読・raw キー送信・スクレイプを提供する 14 種の MCP ツール一式（組織通信の正本） | ccmux に同梱。ツール詳細は [docs/overview-technical.md](docs/overview-technical.md) |
+
+## インストール
+
+```bash
+# 1. 依存ツールを導入
+#    - Claude Code / gh / Node.js / Python / jq は各公式サイトの手順で導入
+#    - ccmux は 0.18.0 以上が必須:
+#        npm install -g ccmux-fork@0.18.0
+
+# 2. 認証
+gh auth login                   # 未認証なら
+claude                          # Claude Code の初回ログインを済ませる
+
+# 3. リポジトリを取得
+git clone <このリポジトリの URL>
+cd <クローン先>
+
+# 4. ccmux MCP サーバーを Claude Code に登録（初回のみ）
+ccmux mcp install
+```
+
+`ccmux mcp install` で `mcp__ccmux-peers__*` 系の 14 種のツール（`spawn_claude_pane` / `set_pane_identity` 等を含む）が user-scope 設定に登録され、全ロールから利用可能になります。組織運用 Skill 群はこの MCP サーバーを前提に動作するため、未登録だとフォアマン・ワーカーの起動や相互通信が行えません。
+
+## 起動
+
+窓口 (Secretary) ペインを立ち上げ、組織を起動します:
+
+```bash
+ccmux --layout ops              # ccmux-layouts/ops.toml の定義で Secretary ペインが起動
+```
+
+Secretary ペインで Claude Code が立ち上がったら、最初に以下を実行します:
+
+```
+/org-start
+```
+
+これでフォアマンとキュレーターが同一タブ内に派生し、以後は自然言語の依頼を投げるだけで、ワーカーへの派遣と知見整理が自動で回ります。
+
+詳しい使い方は [docs/getting-started.md](docs/getting-started.md) を参照。
+
+## 動作確認
+
+### コマンドライン
+
+```bash
+claude --version                # Claude Code のバージョンが出る
+ccmux --version                 # 0.18.0 以上
+gh auth status                  # "Logged in to github.com" が出る
+node --version                  # v18 以上
+python3 --version               # 3.8 以上
+jq --version                    # 任意のバージョン
+claude mcp list                 # 一覧に ccmux-peers が含まれる
+```
+
+### 窓口ペイン上の Claude Code
+
+- `mcp__ccmux-peers__list_panes` がエラーなく返る（空応答でも疎通 OK）
+- `mcp__ccmux-peers__list_peers` で同タブ内の Claude Code が検出できる
+- `/org-start` 実行後、`ccmux` 画面にフォアマンとキュレーターのペインが増えている
+
+互換性プリフライト（ccmux バージョンと 14 種 MCP ツール surface の一括チェック）は `tools/check_ccmux_compat.py` を参照。
 
 ## 仕組み
 
@@ -17,91 +103,17 @@ Allied Architects, Inc. 向けの自己成長する Claude Code 組織。
 - **窓口**: 人間との唯一の接点。タスク分解・委譲判断・結果報告を担当
 - **フォアマン**: ペイン起動・指示送信を代行し、窓口のロックを回避
 - **キュレーター**: 蓄積された知見を整理し、スキルやプロセスの改善を提案
-- **ワーカー**: 実作業を担当。自律的にcommit/PR作成が可能。完了後に知見を記録
+- **ワーカー**: 実作業を担当。自律的に commit / PR 作成が可能。完了後に知見を記録
 
-## クイックスタート
+全ペインは同一タブ内で動作します（別タブでは監視・指示送信が届かないため、`new_tab` は組織運用では使いません[^newtab]）。
 
-```bash
-cd ~/path/to/aainc-ops
-ccmux --layout ops
-```
-
-`ccmux-layouts/ops.toml` で定義された窓口 (Secretary) ペインが立ち上がります。
-フォアマン・キュレーター・ワーカーは `/org-start` などのスキル内で
-`mcp__ccmux-peers__spawn_claude_pane` を介して同一タブ内に動的に派生します
-（別タブに置くと監視・指示送信が通らないため、`new_tab` は使いません。詳細は happy-ryo/ccmux#71）。
-
-詳しくは [docs/getting-started.md](docs/getting-started.md) を参照。
-
-## 前提条件
-
-### アプリケーション
-
-| 名前 | 用途 | 入手先 |
-|---|---|---|
-| Claude Code | AIエージェント本体 | https://claude.ai/code |
-| ccmux | ターミナルマルチプレクサ (ペイン管理) | ローカルビルド または npm (prerelease タグ) |
-| Git | バージョン管理 | https://git-scm.com/ |
-| GitHub CLI (`gh`) | GitHub操作（PR作成等） | https://cli.github.com/ |
-| Node.js (v18+) | Claude Code CLI の実行環境 | https://nodejs.org/ |
-| Python 3.8+ | ダッシュボードサーバー、スクリプト実行 | https://www.python.org/ |
-| jq | Hooks スクリプトのJSON解析（ワーカー境界チェック等） | https://jqlang.github.io/jq/ |
-
-### MCP サーバー
-
-| 名前 | 用途 | リポジトリ |
-|---|---|---|
-| ccmux-peers | ccmux ペイン操作 (`spawn_pane` / `spawn_claude_pane` / `close_pane` / `focus_pane` / `list_panes` / `new_tab` / `set_pane_identity` 等) と同タブ内 Claude 間双方向メッセージング（組織通信の正本） | ccmux に同梱 (`ccmux mcp install` で登録) |
-
-#### ccmux MCP サーバーの登録
-
-**前提**: ccmux 0.18.0+ （structured `cwd` / `set_pane_identity` / `spawn_claude_pane` を使用）。旧 CLI (`ccmux split` / `close` / `send` / `list` / `focus` / `new-tab`) の大部分は `ccmux-peers` MCP サーバー経由で呼び出せるようになっており、本リポジトリの組織運用 Skill は MCP の利用を前提としています（親 Epic: #20）。
-
-初回セットアップで以下を一度だけ実行してください:
-
-```bash
-npm install -g ccmux-fork@0.18.0    # または npm update -g ccmux-fork
-ccmux mcp install
-```
-
-これにより Claude Code の user-scope 設定に `ccmux-peers` MCP サーバーが登録され、以下 14 種のツールが利用可能になります:
-
-- ペイン制御: `mcp__ccmux-peers__spawn_pane` / `spawn_claude_pane` / `close_pane` / `focus_pane` / `list_panes` / `new_tab` / `set_pane_identity`
-- PTY / 画面: `inspect_pane` / `send_keys` / `poll_events`
-- ピア通信: `send_message` / `list_peers` / `set_summary` / `check_messages`
-
-登録状態は `claude mcp list` で確認できます。
-
-### セットアップ確認
-
-全て導入後、以下で確認:
-
-```bash
-claude --version          # Claude Code がインストールされている
-ccmux --version           # ccmux がインストールされている
-gh auth status            # GitHub CLI が認証済み
-node --version            # Node.js v18 以上
-python3 --version         # Python 3.8 以上
-jq --version              # jq がインストールされている
-```
-
-Claude Code 起動後、以下が利用可能であること:
-- `ccmux-peers` MCP の `list_panes` が実行できる（空応答でも可。エラーなく返れば疎通成功）
-- `ccmux-peers` MCP の `list_peers` が実行できる（同タブ内の他 Claude Code インスタンスが検出できる）
-
-## ドキュメント
-
-| ドキュメント | 内容 |
-|---|---|
-| [getting-started.md](docs/getting-started.md) | 使い方ガイド |
-| [verification.md](docs/verification.md) | テスト手順 |
-| [design-journal.md](docs/design-journal.md) | 設計経緯と意思決定の記録 |
+[^newtab]: 背景は upstream の happy-ryo/ccmux#71 を参照。
 
 ## スキル一覧
 
 | スキル | 用途 |
 |---|---|
-| `/org-start` | 組織の起動（起動直後に1回実行） |
+| `/org-start` | 組織の起動（起動直後に 1 回実行） |
 | `/org-delegate` | 作業の割り当て（自動発動） |
 | `/org-suspend` | 作業の中断 |
 | `/org-resume` | 作業の再開 |
@@ -109,15 +121,17 @@ Claude Code 起動後、以下が利用可能であること:
 | `/org-curate` | 知見の整理（自動実行） |
 | `/org-dashboard` | ダッシュボード表示 |
 
-## 旧 ccmux CLI 依存の撤去方針
+## ドキュメント
 
-組織運用 Skill 群は歴史的に旧 ccmux CLI (`ccmux split` / `close` / `send` / `list` / `events` / `inspect`) を Bash 経由で叩いていました。現在 MCP サーバー `ccmux-peers` へ段階的に移行中です（親 Epic: #20）。
-
-| 旧 Bash permission | 撤去タイミング |
+| ドキュメント | 内容 |
 |---|---|
-| `Bash(ccmux split *)` / `Bash(ccmux close *)` / `Bash(ccmux list *)` | 全 Skill の MCP 化完了後（Issue #30） |
-| `Bash(ccmux send *)` | upstream (happy-ryo/ccmux#118) の `send_keys` MCP 対応完了後（Issue #30 内で管理） |
-| `Bash(ccmux events *)` | upstream (happy-ryo/ccmux#117) の events MCP 露出完了後 |
-| `Bash(ccmux inspect *)` | upstream (happy-ryo/ccmux#116) の `inspect_pane` MCP 追加完了後 |
+| [getting-started.md](docs/getting-started.md) | 使い方ガイド |
+| [overview-technical.md](docs/overview-technical.md) | アーキテクチャ・MCP ツール詳細 |
+| [verification.md](docs/verification.md) | テスト手順 |
+| [design-journal.md](docs/design-journal.md) | 設計経緯と意思決定の記録 |
 
-それまでは CLI と MCP の併用運用になります。新しく書く Skill / ドキュメントは MCP ツールを優先して使ってください。
+## 困ったとき
+
+- **`/org-start` しても反応しない** → Secretary ペインの Claude Code がログイン済みか確認（`claude` を叩いて初回認証）。`claude mcp list` に `ccmux-peers` が出ているかも確認。
+- **`ccmux-peers` MCP が見えない** → `ccmux mcp status` で現在の登録状態を確認し、未登録なら `ccmux mcp install` を再実行（user-scope 登録なので全ペインに即時反映）。
+- **`gh auth status` が Not logged in** → `gh auth login` で GitHub 認証を済ませる。未認証だとワーカーが PR を作れません。
