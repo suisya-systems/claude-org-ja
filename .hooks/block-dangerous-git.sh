@@ -81,36 +81,52 @@ segment_has_git_subcmd() {
   return 1
 }
 
-# 引用符対応セグメント分割
-while IFS= read -r segment; do
+# 全セグメントを 1 度収集してから既知の代入を抽出し、各セグメントで展開する。
+SEGMENTS=()
+while IFS= read -r seg; do
+  SEGMENTS+=("$seg")
+done < <(printf '%s' "$COMMAND" | split_segments)
+
+ASSIGNMENTS=()
+while IFS= read -r assign; do
+  [[ -n "$assign" ]] && ASSIGNMENTS+=("$assign")
+done < <(printf '%s\n' "${SEGMENTS[@]}" | collect_assignments)
+
+for segment in "${SEGMENTS[@]}"; do
   [[ -z "$segment" ]] && continue
 
+  # 既知の VAR=value を展開
+  if [[ ${#ASSIGNMENTS[@]} -gt 0 ]]; then
+    expanded=$(printf '%s' "$segment" | expand_known_vars "${ASSIGNMENTS[@]}")
+  else
+    expanded="$segment"
+  fi
+
   # コマンド置換 $(...) / `...` 内のフラグも検査対象に含める
-  flat=$(printf '%s' "$segment" | flatten_substitutions)
+  flat=$(printf '%s' "$expanded" | flatten_substitutions)
 
   # 1) git push の force 系
-  if segment_has_git_subcmd "$segment" "push"; then
+  if segment_has_git_subcmd "$flat" "push"; then
     if echo "$flat" | grep -qE '(^|[[:space:]])--force(-with-lease)?([[:space:]=]|$)'; then
       deny_with_reason "git push の force 系フラグは禁止です。履歴の書き換えはレビュー後に窓口経由で実施してください。"
     fi
     if echo "$flat" | grep -qE '(^|[[:space:]])-f([[:space:]]|$)'; then
       deny_with_reason "git push の短縮 force フラグは禁止です。履歴の書き換えはレビュー後に窓口経由で実施してください。"
     fi
-    # バンドル短オプション (-fu / -uf 等)
     if echo "$flat" | grep -qE '(^|[[:space:]])-[a-zA-Z]*f[a-zA-Z]*([[:space:]]|$)'; then
       deny_with_reason "git push のバンドル短オプションに force フラグが含まれています。履歴の書き換えはレビュー後に窓口経由で実施してください。"
     fi
   fi
 
   # 2) git reset --hard
-  if segment_has_git_subcmd "$segment" "reset"; then
+  if segment_has_git_subcmd "$flat" "reset"; then
     if echo "$flat" | grep -qE '(^|[[:space:]])--hard([[:space:]=]|$)'; then
       deny_with_reason "git reset --hard は禁止です。未コミット変更が失われます。git stash か別ブランチへの退避を検討してください。"
     fi
   fi
 
   # 3) git branch -D / git branch --delete --force
-  if segment_has_git_subcmd "$segment" "branch"; then
+  if segment_has_git_subcmd "$flat" "branch"; then
     if echo "$flat" | grep -qE '(^|[[:space:]])-D([[:space:]]|$)'; then
       deny_with_reason "git branch -D は禁止です。未マージのブランチが消えます。-d（小文字）で安全削除を試すか、窓口に確認してください。"
     fi
@@ -119,7 +135,6 @@ while IFS= read -r segment; do
       deny_with_reason "git branch --delete --force は禁止です（-D 相当）。-d で安全削除を試すか、窓口に確認してください。"
     fi
   fi
-
-done < <(printf '%s' "$COMMAND" | split_segments)
+done
 
 exit 0

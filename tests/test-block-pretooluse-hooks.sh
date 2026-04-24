@@ -69,6 +69,12 @@ substitute_run "$NV_HOOK" "g_it commit -m 'single ; quote' --no-verify" block 's
 # command substitution regression: flag inside $(...) or `...` must be detected
 substitute_run "$NV_HOOK" 'g_it commit $(printf -- "--no-verify") -m x' block 'cmd-sub-dollar-paren'
 substitute_run "$NV_HOOK" 'g_it commit `printf -- "--no-verify"` -m x' block 'cmd-sub-backtick'
+# variable expansion regression: simple VAR=value bypass must be detected
+substitute_run "$NV_HOOK" 'flag=--no-verify; g_it commit "$flag" -m x' block 'var-expansion-simple'
+substitute_run "$NV_HOOK" 'flag=--no-verify; g_it commit ${flag} -m x' block 'var-expansion-braces'
+substitute_run "$NV_HOOK" 'flag="--no-verify"; g_it commit $flag -m x' block 'var-expansion-quoted-value'
+# But unrelated variable use must NOT trigger
+substitute_run "$NV_HOOK" 'msg="hello"; g_it commit -m "$msg"' pass 'var-expansion-benign'
 
 echo ""
 echo "=== block-dangerous-git.sh ==="
@@ -94,6 +100,10 @@ substitute_run "$DG_HOOK" "g_it p_ush origin 'refs/heads/x | y' --force" block '
 substitute_run "$DG_HOOK" 'g_it p_ush origin main $(printf -- "--force")' block 'cmd-sub-dollar-paren'
 substitute_run "$DG_HOOK" 'g_it p_ush origin main `printf -- "--force"`' block 'cmd-sub-backtick'
 substitute_run "$DG_HOOK" 'g_it reset $(printf -- "--hard") HEAD~1' block 'cmd-sub-reset-hard'
+# variable expansion regression
+substitute_run "$DG_HOOK" 'mode=--hard; g_it reset "$mode" HEAD~1' block 'var-expansion-reset-hard'
+substitute_run "$DG_HOOK" 'f=--force; g_it p_ush origin main $f' block 'var-expansion-push-force'
+substitute_run "$DG_HOOK" 'd=-D; g_it branch $d some-branch' block 'var-expansion-branch-D'
 
 echo ""
 echo "--- false-positive guard ---"

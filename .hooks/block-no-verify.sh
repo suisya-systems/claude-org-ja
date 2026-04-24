@@ -63,29 +63,48 @@ if [[ -z "$COMMAND" ]]; then
   exit 0
 fi
 
-# 引用符対応セグメント分割
-while IFS= read -r segment; do
+# 全セグメントを 1 度収集してから:
+#   1. 単純な VAR=value 形の代入をすべて抽出
+#   2. 各セグメントで $VAR / ${VAR} を既知値に展開してから検査
+# これにより `flag=--no-verify; git commit "$flag" -m x` のような
+# 動的構築 bypass を catch する。
+SEGMENTS=()
+while IFS= read -r seg; do
+  SEGMENTS+=("$seg")
+done < <(printf '%s' "$COMMAND" | split_segments)
+
+ASSIGNMENTS=()
+while IFS= read -r assign; do
+  [[ -n "$assign" ]] && ASSIGNMENTS+=("$assign")
+done < <(printf '%s\n' "${SEGMENTS[@]}" | collect_assignments)
+
+for segment in "${SEGMENTS[@]}"; do
   [[ -z "$segment" ]] && continue
 
-  # git commit / git push の有無（loose match: `git` トークン後に subcmd
-  # トークンが同一セグメント内に存在すれば match。`git -C "C:/Program Files/repo"
-  # commit` のような空白入り引用符パスにも対応する）。
+  # 既知の VAR=value を展開
+  if [[ ${#ASSIGNMENTS[@]} -gt 0 ]]; then
+    expanded=$(printf '%s' "$segment" | expand_known_vars "${ASSIGNMENTS[@]}")
+  else
+    expanded="$segment"
+  fi
+
+  # コマンド置換 $(...) / `...` 内のフラグも検査対象に含める
+  flat=$(printf '%s' "$expanded" | flatten_substitutions)
+
+  # git commit / git push の有無（loose match）。展開後で判定する。
   has_git_commit=0
   has_git_push=0
-  if echo "$segment" | grep -qE '(^|[[:space:]])git[[:space:]]+commit([[:space:]]|$)' \
-     || echo "$segment" | grep -qE '(^|[[:space:]])git[[:space:]].*[[:space:]]commit([[:space:]]|$)'; then
+  if echo "$flat" | grep -qE '(^|[[:space:]])git[[:space:]]+commit([[:space:]]|$)' \
+     || echo "$flat" | grep -qE '(^|[[:space:]])git[[:space:]].*[[:space:]]commit([[:space:]]|$)'; then
     has_git_commit=1
   fi
-  if echo "$segment" | grep -qE '(^|[[:space:]])git[[:space:]]+push([[:space:]]|$)' \
-     || echo "$segment" | grep -qE '(^|[[:space:]])git[[:space:]].*[[:space:]]push([[:space:]]|$)'; then
+  if echo "$flat" | grep -qE '(^|[[:space:]])git[[:space:]]+push([[:space:]]|$)' \
+     || echo "$flat" | grep -qE '(^|[[:space:]])git[[:space:]].*[[:space:]]push([[:space:]]|$)'; then
     has_git_push=1
   fi
   [[ $has_git_commit -eq 0 && $has_git_push -eq 0 ]] && continue
 
-  # コマンド置換 $(...) / `...` 内のフラグも検査対象に含める
-  flat=$(printf '%s' "$segment" | flatten_substitutions)
-
-  # 同一セグメント（フラット化後）に verify-bypass フラグが独立トークンとして存在するか
+  # 同一セグメント（展開・フラット化後）に verify-bypass フラグが独立トークンとして存在するか
   if echo "$flat" | grep -qE '(^|[[:space:]])--no-verify([[:space:]]|$)'; then
     if [[ $has_git_commit -eq 1 ]]; then
       deny_with_reason "git commit の verify-bypass フラグは禁止です。pre-commit secret スキャナ（Issue #69）を必ず通してください。誤検知の場合は allow-secret マーカー、緊急時は SKIP_SECRET_SCAN=1 を使ってください。"
@@ -93,6 +112,6 @@ while IFS= read -r segment; do
       deny_with_reason "git push の verify-bypass フラグは禁止です。pre-push hook を迂回するため拒否します（現在 pre-push は未配備ですが、将来追加された hook を保護する目的で先行ブロックします）。push が必要な場合は窓口経由で実施してください。"
     fi
   fi
-done < <(printf '%s' "$COMMAND" | split_segments)
+done
 
 exit 0

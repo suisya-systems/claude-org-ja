@@ -87,3 +87,74 @@ flatten_substitutions() {
     }
   '
 }
+
+# `collect_assignments` reads multiple segments from stdin (one per line) and
+# writes one `VAR=value` line per detected assignment. Quote characters around
+# the value are stripped so downstream matching works on the literal token.
+# Only an assignment at the very start of a segment is considered (e.g.
+# `FOO=bar`, `FOO="bar"`, `FOO='bar'`). Multiple inline assignments such as
+# `A=1 B=2 cmd` are not extracted (Phase 2 territory).
+collect_assignments() {
+  awk '
+    {
+      seg = $0
+      sub(/^[ \t]+/, "", seg)
+      if (match(seg, /^[A-Za-z_][A-Za-z0-9_]*=/)) {
+        var = substr(seg, 1, RLENGTH - 1)
+        rest = substr(seg, RLENGTH + 1)
+        val = ""
+        n = length(rest); in_dq = 0; in_sq = 0
+        for (i = 1; i <= n; i++) {
+          c = substr(rest, i, 1)
+          if (in_dq == 0 && in_sq == 0) {
+            if (c == "\"") { in_dq = 1; continue }
+            if (c == "\x27") { in_sq = 1; continue }
+            if (c == " " || c == "\t") break
+          } else if (in_dq == 1) {
+            if (c == "\"") { in_dq = 0; continue }
+          } else if (in_sq == 1) {
+            if (c == "\x27") { in_sq = 0; continue }
+          }
+          val = val c
+        }
+        if (length(val) > 0) print var "=" val
+      }
+    }
+  '
+}
+
+# `expand_known_vars` reads a single segment from stdin and writes the segment
+# with `$VAR` and `${VAR}` references replaced by the values supplied as
+# arguments (each formatted as `VAR=value`). References to variables not in
+# the supplied list are left untouched. Word-boundary aware so `$FOOBAR` is
+# not replaced when only `FOO` is known.
+expand_known_vars() {
+  local segment
+  segment=$(cat)
+  local pair var val
+  for pair in "$@"; do
+    var="${pair%%=*}"
+    val="${pair#*=}"
+    segment="${segment//\$\{$var\}/$val}"
+    segment=$(printf '%s' "$segment" | awk -v v="$var" -v r="$val" '
+      {
+        out = ""; n = length($0); i = 1
+        while (i <= n) {
+          c = substr($0, i, 1)
+          if (c == "$" && i < n) {
+            rest = substr($0, i+1)
+            if (match(rest, "^" v "([^A-Za-z0-9_]|$)")) {
+              out = out r
+              i = i + 1 + length(v)
+              continue
+            }
+          }
+          out = out c
+          i = i + 1
+        }
+        print out
+      }
+    ')
+  done
+  printf '%s\n' "$segment"
+}
