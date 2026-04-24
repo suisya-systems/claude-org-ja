@@ -53,10 +53,25 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
 
 窓口固有の設定。ユーザー共通分はユーザーレベルにあるため、ここには窓口だけが必要なものを書く。
 
+**narrow 方針**: `gh:*` のような機能全体を許す wide allow は避け、`gh issue:*` `gh pr:*` のように**サブコマンドごとに narrow** にする。git も `Bash(git *)`（スペース形式 wildcard）ではなく `Bash(git add:*)` 等の `:*` コロン形式で narrow にする。
+
 ```json
 {
   "permissions": {
     "allow": [
+      "mcp__ccmux-peers__set_summary",
+      "mcp__ccmux-peers__list_peers",
+      "mcp__ccmux-peers__send_message",
+      "mcp__ccmux-peers__check_messages",
+      "mcp__ccmux-peers__list_panes",
+      "mcp__ccmux-peers__spawn_pane",
+      "mcp__ccmux-peers__spawn_claude_pane",
+      "mcp__ccmux-peers__close_pane",
+      "mcp__ccmux-peers__inspect_pane",
+      "mcp__ccmux-peers__poll_events",
+      "mcp__ccmux-peers__send_keys",
+      "mcp__ccmux-peers__set_pane_identity",
+
       "Bash(git add:*)",
       "Bash(git commit:*)",
       "Bash(git status:*)",
@@ -67,10 +82,37 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
       "Bash(git switch:*)",
       "Bash(git push:*)",
       "Bash(git worktree:*)",
-      "Bash(gh:*)",
-      "Bash(start:*)",
+      "Bash(git fetch:*)",
+      "Bash(git pull:*)",
+      "Bash(git stash:*)",
+      "Bash(git -C ../workers/aainc-ops status)",
+      "Bash(git -C ../workers/aainc-ops remote -v)",
+
+      "Bash(gh issue:*)",
+      "Bash(gh pr:*)",
+      "Bash(gh label:*)",
+      "Bash(gh api:*)",
+      "Bash(gh gist:*)",
+      "Bash(gh run:*)",
+
       "Bash(python:*)",
-      "Bash(sleep:*)"
+      "Bash(py -3 dashboard/:*)",
+      "Bash(py -3 tools/:*)",
+      "Bash(py dashboard/:*)",
+
+      "Bash(ccmux --version)",
+      "Bash(ccmux --help)",
+      "Bash(ccmux --layout:*)",
+      "Bash(ccmux mcp install:*)",
+      "Bash(ccmux mcp uninstall:*)",
+      "Bash(ccmux mcp status:*)",
+      "Bash(ccmux mcp --help)",
+
+      "Bash(sleep:*)",
+      "Bash(codex exec:*)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:8099/:*)",
+      "Bash(curl -s http://localhost:8099/ -o /dev/null -w \"%{http_code}\\\\n\")",
+      "PowerShell(Out-File *)"
     ]
   },
   "hooks": {
@@ -89,7 +131,22 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
 }
 ```
 
+**mcp__ccmux-peers__\* の重複**: ユーザー共通 settings.json と重複するが、窓口は run 直後に ccmux-peers MCP を必ず使うため、窓口スコープでも明示的に列挙して source-of-truth として固定する（user settings の drift でも窓口が動くことを保証）。
+
+**ccmux bootstrap の重複**: 同じ理由でユーザー共通と重複するが、窓口が初回レイアウト起動やペイン制御で即時使うため明示列挙。
+
+**並び順**: (1) MCP ツール、(2) git、(3) gh、(4) python/dashboard、(5) ccmux bootstrap、(6) その他（sleep / codex / curl / PowerShell）。新規エントリ追加時はこの並び順を維持する。
+
 **hooks の説明**: `block-workers-delete.sh` は workers ディレクトリへの再帰的削除（`rm -r`/`rm -rf`/`rm --recursive`）をブロックする。個別ファイルの `rm` は許可する。`ccmux` コマンドは除外する（ワーカー起動時の偽陽性防止）。
+
+**書いてはいけないもの**:
+- wide allow (`Bash(git *)`, `Bash(git push *)`, `Bash(git fetch *)`, `Bash(git branch *)`, `Bash(git pull *)`, `Bash(gh:*)`, `Bash(gh *)`)
+- 旧 `mcp__claude-peers__*`（2025 年に ccmux-peers へ移行済み）
+- 旧 `ccmux list/split/send/events/close/inspect *` の Bash allow（ccmux 0.14.0+ で MCP 化）
+- 過去の一発コマンド（特定 PR 番号・branch 名・PID を含むコマンド、`gh pr create --repo ... --head feat/xxx ...` 等）
+- user-specific absolute path（`Read(//c/Users/iwama/Documents/work/**)` のような）
+
+これらが蓄積すると drift となる。定期的に `permissions.md` と突き合わせて剪定する（Issue #84 参照）。
 
 ## フォアマン (`<repo>/.foreman/.claude/settings.local.json`)
 
