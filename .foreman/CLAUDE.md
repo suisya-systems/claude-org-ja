@@ -245,7 +245,6 @@ mcp__ccmux-peers__send_message(to_id="secretary", message="...")
    両チャネルが同じ anomaly を通知しても de-dup ((e) の step 2) が 30 秒窓で合算するので、窓口は重複通知を受け取らない。self-report は先に届けば inspect を抑制、inspect は worker が通知を忘れていれば self-report を補完する。両方独立稼働で OK。
 
 5. **重要**: フォアマンが自動で承認・拒否することはしない (ユーザー判断が必要)
-   - **例外**: Plan モードワーカーが Plan を作成して承認待ちになった場合、**Plan 承認の前に** Shift+Tab を送信して auto モードに切り替える（承認を先に送ると plan のままコマンドが動き出して承認プロンプトが連発する）。詳細は下記「Plan承認前のモード切替」参照
 
 6. ワーカーペインがない場合は `poll_events` / `check_messages` / `inspect_pane` をすべてスキップし、監視ループを停止する
 
@@ -259,30 +258,6 @@ mcp__ccmux-peers__send_message(to_id="secretary", message="...")
 - **inspect を独立した観測チャネルにする理由**: ワーカーが承認待ちで止まった時、worker 自己申告 (ccmux-peers) だけに頼ると worker が通知を送る前に停止してしまう。inspect はフォアマン側から能動的に観測するので、worker 側の通知忘れ/遅延を補完する。自己申告と inspect は「同じ事象を 2 チャネルで観測できれば確度が上がる」という冗長性設計
 - **anchored regex の意図**: 本文中に "Allow this tool use" が偶然出てもプロンプト自体の行フォーマット (末尾に `(y/n)`) まで揃うことは稀。末尾 non-empty 行に絞ることで誤検出をさらに減らす
 - **エラーは message ではなく code で分岐する**: MCP tool result テキストの `[<code>] <msg>` 形式で返る。message 文字列は human-facing で将来変更あり得るので、`[pane_not_found]` / `[shutting_down]` 等の code で case 分岐する。詳細は `.claude/skills/org-delegate/references/ccmux-error-codes.md`
-
-## Plan承認前のモード切替（順序厳守）
-
-DELEGATE メッセージに「Plan承認後モード切替: 要」が含まれるワーカーについて、
-**Plan を承認する前に** auto モードへ切り替える。承認を先に送ると plan のまま
-ワーカーが動き出し、コマンド実行のたびに承認プロンプトが連発して作業が止まる
-（承認プロンプト表示中は Shift+Tab も受け付けられないため、人間介入が必要になる）。
-
-窓口から `APPROVAL_BLOCKED` 通知（または `mcp__ccmux-peers__check_messages` で
-Plan プロンプトを検知）を受け取ったら、**承認を送らずに**以下の順番で進める:
-
-1. **先にモード切替**: ワーカーペインに Shift+Tab を送信して permission mode を auto に切り替える
-   ```
-   mcp__ccmux-peers__send_keys(target="worker-{task_id}", keys=["Shift+Tab"])
-   ```
-2. モード切替成功の確認: `mcp__ccmux-peers__inspect_pane(target="worker-{task_id}", lines=5, include_cursor=true, format="grid")` でステータスバー行を読み、「auto mode on」表示を確認する。または `mcp__ccmux-peers__send_message` でワーカーに「auto mode に切り替わったか」を問い合わせる。未切替なら Shift+Tab を再送（最大5回）
-3. **モード切替完了後に Plan 承認**: 窓口から「Plan 承認して良い」という指示が来ていれば、ワーカーペインに `yes` + Enter を送信して Plan を承認する
-   ```
-   mcp__ccmux-peers__send_keys(target="worker-{task_id}", text="yes", enter=true)
-   ```
-   窓口指示がまだなら、承認せずに待機（モード切替完了だけ窓口に通知）
-4. 切替完了後、`.state/workers/worker-{peer_id}.md` に記録:
-   `- [{time}] Permission mode を auto に切替完了`
-5. 窓口にモード切替完了を通知（窓口側 Step 5 の org-delegate 手順と対応）
 
 ## ペインクローズ（CLOSE_PANE 受信時）
 
