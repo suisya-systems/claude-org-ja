@@ -9,7 +9,7 @@ description: >
 
 全ワーカーの状態を収集し、ディスクに保存し、全ペインを停止する。
 
-ペイン操作は `mcp__ccmux-peers__*` MCP ツール経由で行う（ccmux 0.14.0+ 前提）。pane_exited
+ペイン操作は `mcp__ccmux-peers__*` MCP ツール経由で行う（ccmux 0.18.0+ 前提）。pane_exited
 相当の lifecycle イベントは `mcp__ccmux-peers__poll_events` で long-poll、画面スクレイプ
 は `mcp__ccmux-peers__inspect_pane` で取得、raw キー入力は `mcp__ccmux-peers__send_keys`。
 
