@@ -26,6 +26,37 @@ knowledge/raw/ に蓄積された生の学びを読み、分類・統合して k
    - プロセス（例: code-review, testing, deployment）
 3. 既存の `knowledge/curated/` ファイルも読み、重複がないか確認する
 
+## Step 2.5: skill 化候補の抽出
+
+Step 2 で分類したテーマ群のうち、以下のいずれかに該当するものについて
+`.claude/skills/skill-eligibility-check/SKILL.md` を呼ぶ:
+
+- 同一テーマに属する未整理 raw ファイルが **3 件以上**ある（raw_reappearance シグナルが立つ候補）
+- 既存の `knowledge/curated/` に同テーマ記事が無く、かつ手順的な知見（Step 群で記述できる内容）を含む
+
+呼び出し時の入力（`context: curation`）は以下のとおり組み立てる:
+
+```yaml
+context: curation
+pattern_name: <推定 skill 名、kebab-case。テーマ名から派生させる>
+summary: <このテーマで何が再利用できるか 1-2 文>
+task_ids: <テーマに言及している raw ファイルの task_id 群>
+raw_files: <同テーマの raw/ パス配列>
+steps_outline: <raw 群から抽出した主要手順>
+trigger_description: <このテーマが発動する場面>
+decision_criteria: <テーマ内に現れる判断基準>
+output_format: <テーマの成果物フォーマット>
+```
+
+結果の decision によって次の扱いを決める:
+
+- `skill_recommend` → skill 側が `knowledge/skill-candidates.md` に自動追記済み。本ステップでは追加作業なし。
+  該当 raw ファイルは Step 3 での curated/ 統合**対象外**にする（skill 化を待つ）
+- `candidate_queue` → 通常どおり Step 3 で curated/ に統合（次回の raw_reappearance を待つ）
+- `curated_only` → 通常どおり Step 3 で curated/ に統合
+
+人間への問い合わせは窓口 Claude の役目であり、org-curate 側では行わない。
+
 ## Step 3: 統合と書き出し
 
 各テーマについて:
@@ -68,3 +99,13 @@ knowledge/raw/ に蓄積された生の学びを読み、分類・統合して k
 - ccmux-peers で窓口Claudeに提案を送信する
 - 提案フォーマット: 「[改善提案] {対象}: {変更内容}。理由: {なぜ}」
 - **窓口が人間に承認を取るまで、自分では変更しない**
+
+## Step 6: skill 棚卸しの発火チェック
+
+以下のいずれかを満たす場合、`.claude/skills/skill-audit/SKILL.md` を起動する:
+
+- `knowledge/skill-candidates.md` 内の `status: pending` エントリが **5 件（N=5）** 以上
+- `.claude/skills/` 配下の skill ディレクトリ数が **20 件（M=20）** 以上
+
+両方を下回るなら何もしない。時間ベースの定期起動はしない（Issue #68 方針）。
+閾値は `skill-audit` 自身も発火時に再確認するので、本ステップでは粗くてよい。
