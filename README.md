@@ -102,7 +102,7 @@ bash scripts/install-hooks.sh
 
 - **既存の repo-local `core.hooksPath` がある環境**: この repo の local 設定に別パスが入っている場合、`scripts/install-hooks.sh` は黙って上書きせずエラー終了します。置き換えて良い場合は `--force` を付けて再実行してください（global / system スコープの `core.hooksPath` は触らず、この repo の local 値のみを書き換えます）。
 - **誤検出の回避**: 該当行に `allow-secret` の文字列を含めて再 stage すると、その行は無視されます（Markdown なら HTML コメント `<!-- allow-secret -->` が読みやすい）。文字列は行頭・行中・行末のどこにあっても有効です。
-- **緊急バイパス**: `SKIP_SECRET_SCAN=1 git commit ...`（stderr に警告が出ます）。`git commit --no-verify` も人間がローカルターミナルから直接叩く場合は最後の手段として使えますが、**Claude Code 経由ではこのリポジトリの `permissions.deny` と PreToolUse hook（後述）の両方で拒否されます**。Claude には `SKIP_SECRET_SCAN=1` または `allow-secret` マーカーで対応させてください。
+- **緊急バイパス**: `SKIP_SECRET_SCAN=1 git commit ...`（stderr に警告が出ます）。`git commit --no-verify` も人間がローカルターミナルから直接叩く場合は最後の手段として使えますが、**Claude Code 経由ではこのリポジトリの `permissions.deny` と PreToolUse hook（後述）の両方で拒否されます**。Claude には `SKIP_SECRET_SCAN=1` または `allow-secret` マーカーで対応させてください。なお `git push --no-verify` は本リポジトリでは pre-push hook を配備していないため現状は実害が無い操作ですが、将来 pre-push を追加する際の保護として PreToolUse 層で先行ブロックしています。push 自体が必要な場合は人間が窓口経由で実施してください。
 - **ワーカー向け注記**: ワーカー Claude が commit しようとした際、secret を含むと hook がブロックします。対処は人間と同じく `allow-secret` マーカー or `SKIP_SECRET_SCAN=1` です。
 - **`.hooks/` との責任境界**: この `.githooks/pre-commit` は **git が `git commit` 直前に起動する** レイヤ。`.hooks/*.sh`（`block-git-push.sh` / `block-no-verify.sh` / `block-dangerous-git.sh` 等）は **Claude Code が Bash/Edit/Write ツールを呼ぶ前に起動する PreToolUse レイヤ**。対象タイミングが異なるため両者は直交し、併用を前提としています。
 

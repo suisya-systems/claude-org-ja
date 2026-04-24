@@ -20,20 +20,28 @@
 #
 # 検知方針:
 #   1. Bash コマンド文字列を ; && || | 改行 でセグメントに分割する。
+#      引用符（" / '）内の区切り文字は無視する（split_segments の awk 実装）。
 #      これにより `echo --force; git push origin main` のような複合コマンド
-#      で別セグメントの文字列を拾う false positive を回避する。
+#      で別セグメントの文字列を拾う false positive と、
+#      `git push origin "refs/heads/x; y" --force` のような引用符内
+#      separator での回避（false negative）の両方を防ぐ。
 #   2. 各セグメントについて、`git` トークン経由で push/reset/branch
 #      サブコマンドが呼ばれているかを判定し、同一セグメント内に
 #      対応する破壊的フラグが独立トークンとして存在するときだけ拒否する。
 #
 # 既知の制限:
-#   - 引用符内の `;` 等を境界として誤分割する可能性がある。誤分割しても
-#     false negative ではなく解析精度低下に倒れるため安全側。
+#   - サブコマンド判定は loose match。同一セグメント内のリテラル文字列も
+#     拒否される。多層防御の最後の壁としては false positive 寄りで安全。
 #   - 同一 git invocation の引数（commit メッセージ本文等）に
 #     "--force" 等の文字列を含めると false positive で拒否される。
 #     その場合は別表現に書き換えること。
+#   - $(...) や `...` のサブシェル境界、バックスラッシュエスケープは
+#     扱わない。
 
 set -euo pipefail
+
+# shellcheck source=lib/segment-split.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/segment-split.sh"
 
 deny_with_reason() {
   local reason="$1"
@@ -43,6 +51,11 @@ deny_with_reason() {
 
 if ! command -v jq &>/dev/null; then
   echo "ブロック: jq がインストールされていません。セキュリティ Hook の実行に必要です。" >&2
+  exit 2
+fi
+
+if ! command -v awk &>/dev/null; then
+  echo "ブロック: awk がインストールされていません。セキュリティ Hook の実行に必要です。" >&2
   exit 2
 fi
 
@@ -68,9 +81,7 @@ segment_has_git_subcmd() {
   return 1
 }
 
-# セグメント分割
-SEGMENTS=$(printf '%s' "$COMMAND" | sed -E 's/(\|\||&&|;|\|)/\n/g')
-
+# 引用符対応セグメント分割
 while IFS= read -r segment; do
   [[ -z "$segment" ]] && continue
 
@@ -106,6 +117,6 @@ while IFS= read -r segment; do
     fi
   fi
 
-done <<< "$SEGMENTS"
+done < <(printf '%s' "$COMMAND" | split_segments)
 
 exit 0

@@ -60,6 +60,12 @@ substitute_run "$NV_HOOK" 'echo --no-verify && g_it commit -m ok' pass 'cross-se
 substitute_run "$NV_HOOK" 'echo --no-verify || g_it commit -m ok' pass 'cross-segment-oror'
 substitute_run "$NV_HOOK" 'cat README.md | grep no-verify' pass 'no-git-context-pipe'
 substitute_run "$NV_HOOK" 'g_it p_ush origin HEAD:refs/heads/test-nop-branch' pass
+# quoted separator regression: separator inside quotes must NOT split the segment
+substitute_run "$NV_HOOK" 'g_it commit -m "a ; b" --no-verify' block 'quoted-semicolon-must-block'
+substitute_run "$NV_HOOK" 'g_it commit -m "a && b" --no-verify' block 'quoted-andand-must-block'
+substitute_run "$NV_HOOK" 'g_it commit -m "a || b" --no-verify' block 'quoted-oror-must-block'
+substitute_run "$NV_HOOK" 'g_it commit -m "a | b" --no-verify' block 'quoted-pipe-must-block'
+substitute_run "$NV_HOOK" "g_it commit -m 'single ; quote' --no-verify" block 'single-quoted-semi-must-block'
 
 echo ""
 echo "=== block-dangerous-git.sh ==="
@@ -77,6 +83,10 @@ substitute_run "$DG_HOOK" 'g_it reset HEAD --hard' block 'flag-at-end'
 substitute_run "$DG_HOOK" 'g_it branch -D some-branch' block
 substitute_run "$DG_HOOK" 'g_it branch --delete --force some-branch' block
 substitute_run "$DG_HOOK" 'g_it branch --force --delete some-branch' block
+# quoted separator regression: separator inside quotes must NOT split the segment
+substitute_run "$DG_HOOK" 'g_it p_ush origin "refs/heads/x; y" --force' block 'quoted-semi-must-block'
+substitute_run "$DG_HOOK" 'g_it p_ush origin "refs/heads/x && y" --force' block 'quoted-andand-must-block'
+substitute_run "$DG_HOOK" "g_it p_ush origin 'refs/heads/x | y' --force" block 'single-quoted-pipe-must-block'
 
 echo ""
 echo "--- false-positive guard ---"
