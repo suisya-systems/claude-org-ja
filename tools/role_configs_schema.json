@@ -1,0 +1,165 @@
+{
+  "$comment": "Source of truth for per-role settings.local.json shape. Both tools/check_role_configs.py and docs/skills/org-setup/references/permissions.md project from this schema. See Issue #85.",
+  "version": 1,
+  "global": {
+    "forbidden_allow_exact": [
+      "Bash(git *)",
+      "Bash(git push *)",
+      "Bash(git fetch *)",
+      "Bash(git pull *)",
+      "Bash(git branch *)",
+      "Bash(git checkout *)",
+      "Bash(gh:*)",
+      "Bash(gh *)"
+    ],
+    "forbidden_allow_regex": [
+      "^mcp__claude-peers__"
+    ]
+  },
+  "required_hook_scripts": [
+    "block-no-verify.sh",
+    "block-dangerous-git.sh",
+    "block-git-push.sh",
+    "block-workers-delete.sh",
+    "block-aainc-structure.sh",
+    "check-worker-boundary.sh"
+  ],
+  "roles": {
+    "repo_shared": {
+      "description": "Repo-shared settings (.claude/settings.json) — tracked in git; hosts repo-wide safety hooks (block-no-verify, block-dangerous-git).",
+      "docs_section": null,
+      "settings_paths": [".claude/settings.json"],
+      "required_allow": [],
+      "required_deny": [],
+      "required_hooks": [
+        {
+          "event": "PreToolUse",
+          "matcher_contains": "Bash",
+          "command_contains": "block-no-verify.sh"
+        },
+        {
+          "event": "PreToolUse",
+          "matcher_contains": "Bash",
+          "command_contains": "block-dangerous-git.sh"
+        }
+      ],
+      "disallow_allow_regex": []
+    },
+    "user_common": {
+      "description": "User-level (~/.claude/settings.json) — shared across all roles.",
+      "docs_section": "ユーザー共通",
+      "settings_paths": [],
+      "required_allow": [
+        "mcp__ccmux-peers__set_summary",
+        "mcp__ccmux-peers__list_peers",
+        "mcp__ccmux-peers__send_message",
+        "mcp__ccmux-peers__check_messages"
+      ],
+      "required_deny": [],
+      "required_hooks": [],
+      "disallow_allow_regex": []
+    },
+    "secretary": {
+      "description": "Secretary (窓口) — repo .claude/settings.local.json.",
+      "docs_section": "窓口",
+      "settings_paths": [".claude/settings.local.json"],
+      "required_allow": [
+        "mcp__ccmux-peers__send_message",
+        "Bash(git add:*)",
+        "Bash(git commit:*)",
+        "Bash(git status:*)",
+        "Bash(git push:*)",
+        "Bash(gh pr:*)",
+        "Bash(gh issue:*)"
+      ],
+      "required_deny": [],
+      "required_hooks": [
+        {
+          "event": "PreToolUse",
+          "matcher_contains": "Bash",
+          "command_contains": "block-workers-delete.sh"
+        }
+      ],
+      "disallow_allow_regex": [
+        "^Bash\\(\\*\\)$",
+        "^Bash$"
+      ]
+    },
+    "foreman": {
+      "description": "Foreman — .foreman/.claude/settings.local.json.",
+      "docs_section": "フォアマン",
+      "settings_paths": [".foreman/.claude/settings.local.json"],
+      "required_allow": [
+        "Bash(claude :*)",
+        "Bash(sleep:*)"
+      ],
+      "required_deny": [],
+      "required_hooks": [],
+      "disallow_allow_regex": [
+        "^Bash\\(\\*\\)$",
+        "^Bash$",
+        "^Bash\\(git \\*\\)$"
+      ]
+    },
+    "curator": {
+      "description": "Curator — .curator/.claude/settings.local.json (narrow / empty by design).",
+      "docs_section": "キュレーター",
+      "settings_paths": [".curator/.claude/settings.local.json"],
+      "required_allow": [],
+      "required_deny": [],
+      "required_hooks": [],
+      "disallow_allow_regex": [
+        "^Bash\\(\\*\\)$",
+        "^Bash$",
+        "^Bash\\(git .*\\)$",
+        "^Bash\\(git:\\*\\)$"
+      ]
+    },
+    "worker": {
+      "description": "Worker (dynamic template) — <worker_dir>/.claude/settings.local.json.",
+      "docs_section": "ワーカー",
+      "settings_paths": [],
+      "required_allow": [
+        "Bash(git add:*)",
+        "Bash(git commit:*)",
+        "Bash(git status:*)",
+        "Bash(git diff:*)",
+        "Bash(git log:*)",
+        "Bash(sleep:*)"
+      ],
+      "required_deny": [
+        "Bash(git push *)",
+        "Bash(git push)",
+        "Bash(rm -rf *)",
+        "Bash(rm -r *)"
+      ],
+      "required_hooks": [
+        {
+          "event": "PreToolUse",
+          "matcher_contains": "Edit",
+          "command_contains": "check-worker-boundary.sh"
+        },
+        {
+          "event": "PreToolUse",
+          "matcher_contains": "Edit",
+          "command_contains": "block-aainc-structure.sh"
+        },
+        {
+          "event": "PreToolUse",
+          "matcher_contains": "Bash",
+          "command_contains": "block-git-push.sh"
+        },
+        {
+          "event": "PreToolUse",
+          "matcher_contains": "Bash",
+          "command_contains": "block-aainc-structure.sh"
+        }
+      ],
+      "disallow_allow_regex": [
+        "^Bash\\(\\*\\)$",
+        "^Bash$",
+        "^Bash\\(git push.*\\)$"
+      ]
+    }
+  }
+}
