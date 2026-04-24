@@ -6,9 +6,9 @@ Source of truth: ``tools/role_configs_schema.json``.
 Validates two projections of the schema:
 
 1. ``permissions.md`` (``.claude/skills/org-setup/references/permissions.md``)
-   — the human-readable role templates embedded as fenced ``json`` blocks.
+   -- the human-readable role templates embedded as fenced ``json`` blocks.
 2. Any on-disk ``settings.local.json`` files found at the known role paths
-   (optional; skipped silently when absent — typical in CI since these files
+   (optional; skipped silently when absent -- typical in CI since these files
    are gitignored).
 
 Exit codes: 0 = OK, non-zero = drift detected.
@@ -201,7 +201,7 @@ def validate_config(
                     role_name,
                     "ERROR",
                     (
-                        f"unknown allow entry {entry!r} — not in schema's "
+                        f"unknown allow entry {entry!r} -- not in schema's "
                         "required_allow nor allowed_allow_regex; add to schema "
                         "(with justification) or remove."
                     ),
@@ -319,10 +319,62 @@ def _is_git_tracked(path: Path, root: Path) -> bool:
     return result.returncode == 0
 
 
+WORKER_LOCAL_SETTINGS = ".claude/settings.local.json"
+
+
 def check_on_disk(
-    schema: dict, root: Path, include_untracked: bool = False
+    schema: dict,
+    root: Path,
+    include_untracked: bool = False,
+    role_override: str | None = None,
 ) -> list[Finding]:
     findings: list[Finding] = []
+    # Explicit role override: validate <root>/.claude/settings.local.json
+    # against the given role schema. This resolves the path-ambiguity between
+    # secretary and worker (both live at .claude/settings.local.json but in
+    # different worktrees); the user asserts which role applies for the
+    # current checkout.
+    if role_override is not None:
+        role_schema = schema["roles"].get(role_override)
+        if role_schema is None:
+            findings.append(
+                Finding(
+                    "<cli>",
+                    role_override,
+                    "ERROR",
+                    f"unknown --role: {role_override!r}",
+                )
+            )
+            return findings
+        path = root / WORKER_LOCAL_SETTINGS
+        if not path.is_file():
+            findings.append(
+                Finding(
+                    str(path),
+                    role_override,
+                    "ERROR",
+                    "settings.local.json not found at expected path",
+                )
+            )
+            return findings
+        try:
+            config = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            findings.append(
+                Finding(str(path), role_override, "ERROR", f"JSON parse error: {exc}")
+            )
+            return findings
+        findings.extend(
+            validate_config(
+                str(path),
+                role_override,
+                config,
+                role_schema,
+                schema.get("global", {}),
+            )
+        )
+        return findings
+
     for role_name, role_schema in schema["roles"].items():
         for rel in role_schema.get("settings_paths", []):
             path = root / rel
@@ -364,6 +416,7 @@ def run(
     root: Path = REPO_ROOT,
     include_on_disk: bool = True,
     include_untracked: bool = False,
+    role_override: str | None = None,
 ) -> list[Finding]:
     schema = load_schema(schema_path)
     findings: list[Finding] = []
@@ -371,7 +424,12 @@ def run(
     findings.extend(check_docs(schema, permissions_md))
     if include_on_disk:
         findings.extend(
-            check_on_disk(schema, root, include_untracked=include_untracked)
+            check_on_disk(
+                schema,
+                root,
+                include_untracked=include_untracked,
+                role_override=role_override,
+            )
         )
     return findings
 
@@ -388,17 +446,29 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--docs-only",
         action="store_true",
-        help="Skip on-disk settings.local.json validation (default in CI).",
+        help=(
+            "Validate only permissions.md + schema integrity; skip every "
+            "on-disk settings*.json. Default validates tracked settings files."
+        ),
     )
     parser.add_argument(
         "--include-local",
         action="store_true",
         help=(
             "Also validate gitignored / untracked on-disk settings.local.json "
-            "files in the current worktree. Off by default because role "
-            "settings.local.json files are gitignored and their content "
-            "varies per developer / worktree; turn on to audit the current "
-            "machine's configs."
+            "files at the schema-declared paths. Default checks only tracked "
+            "files (e.g. .claude/settings.json) so CI and local runs agree."
+        ),
+    )
+    parser.add_argument(
+        "--role",
+        default=None,
+        help=(
+            "Validate <root>/.claude/settings.local.json against the given "
+            "role schema (e.g. 'worker' when invoked from inside a worker "
+            "worktree). Resolves path ambiguity since .claude/settings.local.json "
+            "hosts different role configs in different worktrees. Implies "
+            "--include-local semantics."
         ),
     )
     args = parser.parse_args(argv)
@@ -408,7 +478,8 @@ def main(argv: list[str] | None = None) -> int:
         permissions_md=args.permissions_md,
         root=args.root,
         include_on_disk=not args.docs_only,
-        include_untracked=args.include_local,
+        include_untracked=args.include_local or args.role is not None,
+        role_override=args.role,
     )
 
     if not findings:
@@ -416,7 +487,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     for f in findings:
-        print(f.format())
+        try:
+            print(f.format())
+        except UnicodeEncodeError:
+            print(f.format().encode("ascii", "replace").decode("ascii"))
     errors = sum(1 for f in findings if f.severity == "ERROR")
     print(f"role_configs: {errors} error(s)", file=sys.stderr)
     return 1 if errors else 0

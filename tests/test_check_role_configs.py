@@ -247,6 +247,35 @@ class CheckDocsTests(unittest.TestCase):
         self.assertEqual(len(findings), 1)
 
 
+class CheckOnDiskTests(unittest.TestCase):
+    def test_role_override_validates_path(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_root = Path(tmp)
+            settings_dir = tmp_root / ".claude"
+            settings_dir.mkdir()
+            (settings_dir / "settings.local.json").write_text(
+                json.dumps(_good_worker()), encoding="utf-8"
+            )
+            findings = crc.check_on_disk(
+                MINIMAL_SCHEMA,
+                tmp_root,
+                include_untracked=True,
+                role_override="worker",
+            )
+            self.assertEqual(findings, [], msg=[f.format() for f in findings])
+
+    def test_role_override_unknown_role_errors(self):
+        findings = crc.check_on_disk(
+            MINIMAL_SCHEMA,
+            Path("."),
+            include_untracked=True,
+            role_override="ghost",
+        )
+        self.assertTrue(any("unknown --role" in f.message for f in findings))
+
+
 class RealRepoSmokeTests(unittest.TestCase):
     """Sanity check: the real schema + real permissions.md must pass.
 
