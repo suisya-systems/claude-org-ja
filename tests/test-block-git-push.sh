@@ -134,6 +134,38 @@ json='{"tool_name":"Bash","tool_input":{"command":"git config push.default simpl
 ec=$(run_hook "$json" "$stderr")
 assert_exit 0 "$ec" "git config push.default is allowed"
 
+# --- Phase 2a: eval / bash -c / sh -c explicit unwrap (Issue #79) ---
+
+# 15. eval "git push ..." (block via unwrap)
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json='{"tool_name":"Bash","tool_input":{"command":"eval \"git push origin main\""}}'
+ec=$(run_hook "$json" "$stderr")
+assert_exit 2 "$ec" "eval \"git push ...\" is blocked via unwrap"
+
+# 16. bash -c "git push ..." (block via unwrap)
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json='{"tool_name":"Bash","tool_input":{"command":"bash -c \"git push origin main\""}}'
+ec=$(run_hook "$json" "$stderr")
+assert_exit 2 "$ec" "bash -c \"git push ...\" is blocked via unwrap"
+
+# 17. sh -c 'git push ...' (block via unwrap, single-quoted)
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json='{"tool_name":"Bash","tool_input":{"command":"sh -c '"'"'git push origin main'"'"'"}}'
+ec=$(run_hook "$json" "$stderr")
+assert_exit 2 "$ec" "sh -c '\''git push ...'\'' is blocked via unwrap"
+
+# 18. bash -c "eval 'git push ...'" (nested, block via 2-level unwrap)
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json='{"tool_name":"Bash","tool_input":{"command":"bash -c \"eval '"'"'git push origin main'"'"'\""}}'
+ec=$(run_hook "$json" "$stderr")
+assert_exit 2 "$ec" "nested bash -c / eval git push is blocked"
+
+# 19. eval git push --force (unquoted multi-token — caught by existing segment-level regex)
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json='{"tool_name":"Bash","tool_input":{"command":"eval git push origin main"}}'
+ec=$(run_hook "$json" "$stderr")
+assert_exit 2 "$ec" "eval git push unquoted multi-token is blocked"
+
 # --- Summary ---
 echo "# $PASS passed, $FAIL failed out of $TEST_NUM tests"
 [[ $FAIL -eq 0 ]]

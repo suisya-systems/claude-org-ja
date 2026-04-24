@@ -69,5 +69,24 @@
         ]
       }
     ]
+  },
+  "sandbox": {
+    "enabled": true,
+    "failIfUnavailable": false,
+    "filesystem": {
+      "denyRead": [
+        ".env",
+        ".env.*",
+        "**/credentials*",
+        "**/*.pem",
+        "~/.ssh/**",
+        "~/.aws/**",
+        "~/.config/gh/hosts.yml"
+      ],
+      "denyWrite": [
+        "~/.claude/settings.json",
+        "~/.ssh/**"
+      ]
+    }
   }
 }

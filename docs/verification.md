@@ -383,6 +383,77 @@ head -1 knowledge/raw/*.md  # <!-- curated --> マーカー確認
 
 ---
 
+## 10.1. sandbox.denyRead / denyWrite 実機検証（Phase 2a, Issue #79）
+
+**目的**: `.claude/settings.json` の `sandbox.filesystem.denyRead` / `denyWrite` が Windows + Git Bash 環境で期待通り機能し、Claude Code の Bash ツール経由で `.env` 等の秘密情報ファイルが読めないことを確認する。
+
+**前提**:
+- 本リポジトリを clone し Claude Code が起動できる状態
+- 検証対象リポジトリ直下にダミー `.env`（例: `FAKE_TOKEN=dummy-not-a-real-secret`）を用意（`.gitignore` 対象のため commit されない）
+- 既知バグ [anthropics/claude-code#32226](https://github.com/anthropics/claude-code/issues/32226) により denyRead が期待通り効かないケースが報告されているため、**必ず実機で挙動を確認**する
+
+**手順**:
+1. 窓口 Claude に `cat .env` を実行するよう依頼する（Bash ツール経由）
+2. `grep -r FAKE_TOKEN .` のように `.env` を読み出すコマンドを依頼する
+3. `~/.ssh/id_rsa` を読み出そうとするコマンドを依頼する（存在する場合）
+4. `~/.claude/settings.json` の書込を試みるコマンドを依頼する（例: `echo x >> ~/.claude/settings.json`）
+
+**期待結果**:
+- 手順 1〜3: sandbox により Bash サブプロセスで denied（`Permission denied` 相当のエラー）。Claude Code が結果を受け取っても内容は空 / エラーになる
+- 手順 4: denyWrite により write 失敗
+
+**失敗パターンと対処**:
+- `.env` の内容が読めてしまう → Claude Code 側のバグの可能性。バージョンと `claude --version` を記録し Issue #32226 のステータスを確認。暫定対応として `permissions.deny` の `Read(./.env)` 追加（Claude Code の Read ツール経路を塞ぐ）
+- Windows で glob (`**/credentials*`) が効かない → forward/backward slash 差異の可能性。glob パターンを `./credentials*` 等に調整して再試行
+- sandbox 自体が発動していない → Claude Code の `sandbox.enabled` デフォルトが OFF の可能性。公式 docs の現行デフォルトを確認
+
+**注**: `sandbox.enabled` は本 PR では明示指定していない（Claude Code 側のデフォルトに任せる）。既知バグ #32226 の影響範囲を限定するため段階導入とし、デフォルト挙動で denyRead が無効な環境では別途明示 true 化を検討する。
+
+### 実測結果（2026-04-25, Windows 11 + Git Bash, Claude Code Desktop）
+
+| # | 操作 | 結果 |
+|---|---|---|
+| 1 | `cat .env` | 読めた（sandbox 未発火） |
+| 2 | `grep -r FAKE_TOKEN .` | 読めた（sandbox 未発火） |
+| 3 | `cat ~/.ssh/id_rsa` | deny（※ sandbox ではなく Claude Code 組込の credential 保護層による） |
+
+`sandbox.enabled: true` を明示した状態でも #1 #2 は素通り。公式ドキュメントで Windows native の sandbox enforcement は "planned" 状態（未実装）と確認（https://docs.claude.com/en/docs/claude-code/iam#sandbox）。本設定は **macOS (Seatbelt) / Linux / WSL2 (bubblewrap)** のみで有効。
+
+### WSL2 実測結果（2026-04-25）
+
+| 操作 | 結果 |
+|---|---|
+| `cat .env`（PR branch checkout 上） | 読めた（sandbox disabled） |
+| `grep -r FAKE_TOKEN .` | 読めた |
+| `claude` 起動時の警告 | `⚠ Sandbox disabled: bubblewrap (bwrap) not installed, socat not installed` |
+
+**原因**: Claude Code の sandbox は Linux / WSL2 で **`bubblewrap` と `socat`** を runtime dependency として要求するが、Ubuntu / Debian 系の WSL イメージにはデフォルトでは含まれない。
+
+**対処**: sandbox を実際に発動させたい WSL 環境では以下を実施する:
+
+```bash
+sudo apt install -y bubblewrap socat
+claude  # 警告が消えることを確認
+```
+
+これを入れた後、次節の検証手順で改めて `cat .env` 等が deny されることを確認する。
+
+**検出手順**: `claude --version` 直後 / `/sandbox` 実行で sandbox の状態を確認できる（Claude Code 側で警告表示）。CI 環境や Docker コンテナで sandbox を期待する場合は Dockerfile / workflow に `apt install bubblewrap socat` を明示すること。
+
+### WSL2 での検証手順（未実施、人間タスク）
+
+1. WSL2 内に本リポジトリを clone もしくは `\\wsl$\...` 経由で Windows 側 worktree を共有
+2. WSL 側で `claude` を起動（wsl 用 Claude Code または `npm install -g` で導入）
+3. 以下を依頼し、それぞれ deny を確認:
+   - `cat .env を実行して` → sandbox denyRead で Permission denied 相当
+   - `grep -r FAKE_TOKEN . を実行して` → 同上
+   - `echo x >> ~/.claude/settings.json.sandbox-test` → denyWrite で書込失敗
+4. 実測結果を本セクションの表に追記（OS 行を増やす形）
+
+WSL で deny されなければ、 (a) Claude Code のバージョンが sandbox 未対応、(b) 設定 syntax の解釈差異、(c) #32226 の別症状、のいずれか。バージョンと Issue #32226 ステータスを記録。
+
+---
+
 ## 11. MCP 疎通テスト（環境確認）
 
 **目的**: `ccmux-peers` MCP サーバが Claude Code に接続済みで、14 ツール全てが tool surface として登録されていることを確認し、副作用なしで呼び出せるツールについてはサンプル呼び出しで応答を検証する。副作用の大きいツール（`send_keys` / `spawn_pane` / `spawn_claude_pane` / `close_pane` / `focus_pane` / `new_tab` / `set_pane_identity`）の実動作確認は Test 1-10 の E2E フローでカバーされるため、本テストでは登録確認のみに留める。

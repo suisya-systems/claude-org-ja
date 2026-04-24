@@ -80,6 +80,14 @@ substitute_run "$NV_HOOK" 'export flag=--no-verify; g_it commit "$flag" -m x' bl
 substitute_run "$NV_HOOK" 'A=1 flag=--no-verify g_it commit "$flag" -m x' block 'var-inline-multi-assign'
 substitute_run "$NV_HOOK" 'flag=$(printf -- "--no-verify"); g_it commit "$flag" -m x' block 'var-value-cmd-sub'
 substitute_run "$NV_HOOK" 'flag=`printf -- "--no-verify"`; g_it commit "$flag" -m x' block 'var-value-backtick'
+# Phase 2a: eval / bash -c / sh -c explicit unwrap (Issue #79)
+substitute_run "$NV_HOOK" 'eval "g_it commit --no-verify"' block 'eval-double-quoted'
+substitute_run "$NV_HOOK" "eval 'g_it commit --no-verify'" block 'eval-single-quoted'
+substitute_run "$NV_HOOK" 'bash -c "g_it commit --no-verify"' block 'bash-c-double-quoted'
+substitute_run "$NV_HOOK" "sh -c 'g_it commit --no-verify'" block 'sh-c-single-quoted'
+substitute_run "$NV_HOOK" "bash -c \"eval 'g_it commit --no-verify'\"" block 'nested-bash-eval'
+# unquoted multi-token eval: segment-level regex already catches (tokens appear verbatim)
+substitute_run "$NV_HOOK" 'eval g_it commit --no-verify' block 'eval-unquoted-multitoken'
 
 echo ""
 echo "=== block-dangerous-git.sh ==="
@@ -114,6 +122,12 @@ substitute_run "$DG_HOOK" 'export f=--force; g_it p_ush origin main "$f"' block 
 substitute_run "$DG_HOOK" 'A=1 f=--force g_it p_ush origin main "$f"' block 'var-inline-multi-assign'
 substitute_run "$DG_HOOK" 'mode=$(printf -- "--hard"); g_it reset "$mode" HEAD~1' block 'var-value-cmd-sub'
 substitute_run "$DG_HOOK" 'd=`printf -- "-D"`; g_it branch "$d" some' block 'var-value-backtick'
+# Phase 2a: eval / bash -c / sh -c explicit unwrap (Issue #79)
+substitute_run "$DG_HOOK" 'eval "g_it p_ush --force"' block 'eval-push-force'
+substitute_run "$DG_HOOK" 'bash -c "g_it reset --hard HEAD~1"' block 'bash-c-reset-hard'
+substitute_run "$DG_HOOK" "sh -c 'g_it branch -D some'" block 'sh-c-branch-D'
+substitute_run "$DG_HOOK" "bash -c \"eval 'g_it p_ush --force'\"" block 'nested-bash-eval-push-force'
+substitute_run "$DG_HOOK" 'eval g_it p_ush --force' block 'eval-unquoted-multitoken-dg'
 
 echo ""
 echo "--- false-positive guard ---"
