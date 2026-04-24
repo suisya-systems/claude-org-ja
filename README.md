@@ -102,9 +102,50 @@ bash scripts/install-hooks.sh
 
 - **既存の repo-local `core.hooksPath` がある環境**: この repo の local 設定に別パスが入っている場合、`scripts/install-hooks.sh` は黙って上書きせずエラー終了します。置き換えて良い場合は `--force` を付けて再実行してください（global / system スコープの `core.hooksPath` は触らず、この repo の local 値のみを書き換えます）。
 - **誤検出の回避**: 該当行に `allow-secret` の文字列を含めて再 stage すると、その行は無視されます（Markdown なら HTML コメント `<!-- allow-secret -->` が読みやすい）。文字列は行頭・行中・行末のどこにあっても有効です。
-- **緊急バイパス**: `SKIP_SECRET_SCAN=1 git commit ...`（stderr に警告が出ます）。最後の手段として `git commit --no-verify` も有効ですが通常は使わないでください。
+- **緊急バイパス**: `SKIP_SECRET_SCAN=1 git commit ...`（stderr に警告が出ます）。`git commit --no-verify` も人間がローカルターミナルから直接叩く場合は最後の手段として使えますが、**Claude Code 経由ではこのリポジトリの `permissions.deny` と PreToolUse hook（後述）の両方で拒否されます**。Claude には `SKIP_SECRET_SCAN=1` または `allow-secret` マーカーで対応させてください。なお `git push --no-verify` は本リポジトリでは pre-push hook を配備していないため現状は実害が無い操作ですが、将来 pre-push を追加する際の保護として PreToolUse 層で先行ブロックしています。push 自体が必要な場合は人間が窓口経由で実施してください。
 - **ワーカー向け注記**: ワーカー Claude が commit しようとした際、secret を含むと hook がブロックします。対処は人間と同じく `allow-secret` マーカー or `SKIP_SECRET_SCAN=1` です。
-- **`.hooks/` との責任境界**: この `.githooks/pre-commit` は **git が `git commit` 直前に起動する** レイヤ。`.hooks/*.sh`（`block-git-push.sh` 等）は **Claude Code が Edit/Write/Bash ツールを呼ぶ前に起動する PreToolUse レイヤ**。対象タイミングが異なるため両者は直交し、併用を前提としています。
+- **`.hooks/` との責任境界**: この `.githooks/pre-commit` は **git が `git commit` 直前に起動する** レイヤ。`.hooks/*.sh`（`block-git-push.sh` / `block-no-verify.sh` / `block-dangerous-git.sh` 等）は **Claude Code が Bash/Edit/Write ツールを呼ぶ前に起動する PreToolUse レイヤ**。対象タイミングが異なるため両者は直交し、併用を前提としています。
+
+## PreToolUse Hooks（破壊的操作の事前ブロック）
+
+Claude Code がツールを呼び出す **直前** に発火するレイヤです。`git` だけでなく任意の Bash コマンドを検査でき、`exit 2` + stderr で拒否するとそのツール呼び出し自体がキャンセルされます。
+
+| Hook | ブロック対象 | 目的 |
+|---|---|---|
+| `.hooks/block-git-push.sh` | `git push`（ワーカー scope） | push は窓口経由に集約 |
+| `.hooks/block-no-verify.sh` | `git commit/push --no-verify` | pre-commit secret スキャナ（Issue #69）の迂回防止 |
+| `.hooks/block-dangerous-git.sh` | `git push --force` / `-f` / `--force-with-lease`、`git reset --hard`、`git branch -D` | 履歴書き換えと未コミット変更の喪失防止 |
+
+`.claude/settings.json` の `hooks.PreToolUse` で **Bash matcher** として登録されており、リポジトリをクローンした全員（窓口・フォアマン・キュレーター・ワーカー）に強制適用されます。同時に `permissions.deny` には主要パターン（`git commit/push --no-verify`、`git push --force` 系、`git reset --hard`、`git branch -D`、それぞれの `git -C` 形）を列挙し、**hook 実行前の静的拒否レイヤ** としても機能させています（多層防御）。
+
+ただし `permissions.deny` のパターンはグロブ（`*`）ベースで coarse な一致しかできないため、`--force-with-lease`、バンドル短オプション `-fu`、長形式の `--delete --force` 等の網羅は **PreToolUse hook 側に責任を寄せています**。deny は「目立つ典型例で確実に止める coarse 層」、hook は「引数の組み合わせを精密に解析して止める fine 層」と役割分担しています。
+
+### 三層防御の責任境界
+
+| レイヤ | 起動タイミング | 守備範囲 | 設定場所 |
+|---|---|---|---|
+| `permissions.deny` | Claude が Bash 実行リクエストを送った瞬間（hook より前） | パターンマッチで coarse に拒否 | `.claude/settings.json` |
+| PreToolUse hooks | deny を抜けた Bash 呼び出し直前 | 引数パターン解析で fine に拒否 | `.hooks/*.sh` |
+| pre-commit hook (`.githooks/pre-commit`) | `git commit` が実際に走る直前（Claude 経由か手動かを問わず） | ステージ差分の secret スキャン | `.githooks/pre-commit` |
+
+PreToolUse 層は **Claude Code 経由の操作にしか効かない**（人間が直接ターミナルで叩いた場合は素通り）一方、pre-commit 層は **どの経路でも commit 直前に必ず走る**。両者は補完関係にあるため、片方では十分ではなく両方を有効にしてください。
+
+### 設定ファイルの違い
+
+- `.claude/settings.json` — リポジトリにチェックインされる **共通ポリシー**。PreToolUse hooks と最低限の deny はここに定義し、全員に強制適用する。
+- `.claude/settings.local.json` — 個人 / ロール固有の **オーバーライド**（Git 管理外）。例えばワーカーは `WORKER_DIR` 等の環境変数や、ワーカーローカルに追加したい hook をここで足す。
+- `~/.claude/settings.json` — user scope の設定。複数リポジトリ横断のデフォルト。
+
+deny / hook の優先順位は repo の `.claude/settings.json` を最低ラインとし、ローカル overlay は **追加方向** にしか働かない（緩める方向には使わない）運用を推奨します。
+
+### PreToolUse hook の検知範囲（Phase 1 時点）
+
+- **対応**: 引用符内 separator (`git commit -m "a ; b" --no-verify`)、空白入りパス (`git -C "C:/Program Files/repo" push --force`)、コマンド置換 (`git commit $(printf -- '--no-verify') -m x`、`` `...` `` 形式も含む)、バンドル短オプション (`git push -fu origin main`)、`--force-with-lease`、`git branch --delete --force`、簡易な変数展開 (`flag=--no-verify; git commit "$flag" -m x`)。
+- **未対応（Phase 2 で対処）**: 動的構築の高度な形 — `eval "..."` 経由、`bash -c "..."` のネスト経由、関数呼び出しで返り値を組み立てる形、`f=$(echo --no-verify)` のような代入値内のコマンド置換。これらは Phase 2 の sandbox / command-allowlist で対処する想定。
+- **既知の false positive**:
+  - 同一セグメント内のリテラル文字列も loose match で拾う（例: `echo git commit --no-verify` は実際には実行されないが拒否される）。
+  - 変数の再代入の時系列を考慮しない（例: `flag=--no-verify; flag=ok; git commit "$flag"` は実際の値が `ok` でも拒否される）。最後勝ち / 同名再代入 / 後段セグメントだけの代入を区別しない単純な「全セグメントから収集 → 全セグメントへ展開」アルゴリズムのため。
+  - いずれも多層防御の最後の壁としては誤検知を許容する設計。精緻な tokenizer 化と時系列追跡は Phase 2 で再評価する。
 
 ## 仕組み
 

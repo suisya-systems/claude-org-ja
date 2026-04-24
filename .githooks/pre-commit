@@ -132,7 +132,8 @@ if (( ${#violations[@]} > 0 )); then
     echo "If this is a legitimate example (e.g. README snippet), append the"
     echo "marker 'allow-secret' to the line (HTML comment in Markdown) and"
     echo "restage. To bypass temporarily: SKIP_SECRET_SCAN=1 git commit ..."
-    echo "or as a last resort: git commit --no-verify"
+    echo "or as a last resort (humans only; Claude Code is denied at"
+    echo "permissions.deny + PreToolUse hooks): git commit --no-verify"
   } >&2
   exit 1
 fi
