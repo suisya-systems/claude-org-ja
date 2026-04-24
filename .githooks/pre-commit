@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+# pre-commit secret scanner (aainc-ops / Issue #69)
+# Scans newly-added lines in staged changes for common API key, token,
+# and PEM private key patterns and aborts the commit when one matches.
+#
+# Bypass (use sparingly): SKIP_SECRET_SCAN=1 git commit ...
+# Per-line allowlist: append the literal string "allow-secret" to the line
+# (for Markdown use an HTML comment, e.g. <!-- allow-secret -->).
+set -uo pipefail
+
+if [[ "${SKIP_SECRET_SCAN:-0}" == "1" ]]; then
+  echo "pre-commit: SKIP_SECRET_SCAN=1 set; secret scan skipped." >&2
+  exit 0
+fi
+
+# Directories whose files are excluded from scanning.
+# Ordered prefixes, matched with bash pattern matching below.
+EXCLUDED_PREFIXES=(
+  ".githooks/"
+  ".hooks/"
+  "tests/"
+  "knowledge/raw/"
+  "knowledge/curated/"
+)
+
+# name|ERE pattern. Names are shown in the violation report; patterns are
+# passed to `grep -E`. Keep patterns anchored enough to avoid common false
+# positives (short substrings of natural prose).
+PATTERNS=(
+  "OpenAI API key|sk-[A-Za-z0-9]{20,}"
+  "OpenAI project key|sk-proj-[A-Za-z0-9_-]{20,}"
+  "Anthropic API key|sk-ant-[A-Za-z0-9_-]{20,}"
+  "Google API key|AIza[0-9A-Za-z_-]{35}"
+  "GitHub PAT|ghp_[A-Za-z0-9]{36}"
+  "GitHub OAuth token|gho_[A-Za-z0-9]{36}"
+  "GitHub user-to-server token|ghu_[A-Za-z0-9]{36}"
+  "GitHub server-to-server token|ghs_[A-Za-z0-9]{36}"
+  "GitHub refresh token|ghr_[A-Za-z0-9]{36}"
+  "GitLab PAT|glpat-[A-Za-z0-9_-]{20,}"
+  "AWS access key ID|AKIA[0-9A-Z]{16}"
+  "Slack token|xox[abpr]-[A-Za-z0-9-]{10,}"
+  "PEM private key header|-----BEGIN (RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----"
+  "Generic secret assignment|(API_KEY|SECRET_KEY|PASSWORD|TOKEN)[[:space:]]*=[[:space:]]*[\"'][^\"']{12,}[\"']"
+)
+
+is_excluded() {
+  local file="$1" prefix
+  for prefix in "${EXCLUDED_PREFIXES[@]}"; do
+    if [[ "$file" == "$prefix"* ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Return 0 if $1 is a binary file according to git. git marks binary files
+# with '-' for both added and removed counts in --numstat.
+is_binary() {
+  local file="$1" numstat
+  numstat=$(git diff --cached --numstat -- "$file" 2>/dev/null | head -n 1)
+  [[ "$numstat" == "-"$'\t'"-"$'\t'* ]]
+}
+
+violations=()
+
+# Only scan Added/Copied/Modified/Renamed files (skip deletions).
+mapfile -t files < <(git diff --cached --name-only --diff-filter=ACMR -z \
+  | tr '\0' '\n' | sed '/^$/d')
+
+for file in "${files[@]}"; do
+  if is_excluded "$file"; then
+    continue
+  fi
+  if is_binary "$file"; then
+    continue
+  fi
+
+  # Walk added lines (those prefixed with '+' but not '+++') with line
+  # numbers derived from the hunk headers. -U0 keeps context out of the way.
+  diff_output=$(git diff --cached -U0 --no-color -- "$file" 2>/dev/null) || continue
+  [[ -z "$diff_output" ]] && continue
+
+  current_line=0
+  while IFS= read -r raw; do
+    if [[ "$raw" == @@* ]]; then
+      # @@ -a,b +c,d @@  -> c is the starting new-file line number
+      after=${raw#*+}
+      after=${after%% *}
+      start=${after%%,*}
+      current_line=$((start - 1))
+      continue
+    fi
+    if [[ "$raw" == +++* || "$raw" == ---* ]]; then
+      continue
+    fi
+    if [[ "$raw" == +* ]]; then
+      current_line=$((current_line + 1))
+      line_content=${raw:1}
+
+      # Per-line allowlist
+      if [[ "$line_content" == *"allow-secret"* ]]; then
+        continue
+      fi
+
+      for entry in "${PATTERNS[@]}"; do
+        name=${entry%%|*}
+        regex=${entry#*|}
+        if printf '%s\n' "$line_content" | grep -Eq -- "$regex"; then
+          # Truncate the leaked snippet so we don't re-echo the raw secret.
+          snippet=$(printf '%s' "$line_content" | cut -c1-20)
+          violations+=("$file:$current_line  [$name]  ${snippet}***")
+          break
+        fi
+      done
+    elif [[ "$raw" == " "* || "$raw" == "-"* ]]; then
+      # Context or removed lines are not counted against the new file.
+      :
+    fi
+  done <<< "$diff_output"
+done
+
+if (( ${#violations[@]} > 0 )); then
+  {
+    echo ""
+    echo "pre-commit: potential secret(s) detected in staged changes:"
+    for v in "${violations[@]}"; do
+      echo "  - $v"
+    done
+    echo ""
+    echo "If this is a legitimate example (e.g. README snippet), append the"
+    echo "marker 'allow-secret' to the line (HTML comment in Markdown) and"
+    echo "restage. To bypass temporarily: SKIP_SECRET_SCAN=1 git commit ..."
+    echo "or as a last resort: git commit --no-verify"
+  } >&2
+  exit 1
+fi
+
+exit 0

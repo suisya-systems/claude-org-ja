@@ -90,6 +90,20 @@ claude mcp list                 # 一覧に ccmux-peers が含まれる
 
 互換性プリフライト（ccmux バージョンと 14 種 MCP ツール surface の一括チェック）は `tools/check_ccmux_compat.py` を参照。
 
+## Git Hooks（secret 漏洩防止）
+
+新しくクローンしたら、1 度だけ以下を実行してください:
+
+```bash
+bash scripts/install-hooks.sh
+```
+
+`core.hooksPath` が `.githooks/` に設定され、以降 `git commit` 直前に `.githooks/pre-commit` が走ります。AWS / GitHub / OpenAI / Anthropic / Google / GitLab / Slack 等の API キー、PEM 秘密鍵、典型的な `API_KEY=...` 代入がステージ差分に含まれると commit は拒否されます（詳細パターンは `.githooks/pre-commit` を参照）。
+
+- **誤検出の回避**: 該当行の末尾に `allow-secret` マーカーを付けて再 stage すると、その行は無視されます。Markdown なら HTML コメント `<!-- allow-secret -->` を使ってください。
+- **緊急バイパス**: `SKIP_SECRET_SCAN=1 git commit ...`（stderr に警告が出ます）。最後の手段として `git commit --no-verify` も有効ですが通常は使わないでください。
+- **ワーカー向け注記**: ワーカー Claude が commit しようとした際、secret を含むと hook がブロックします。対処は人間と同じく `allow-secret` マーカー or `SKIP_SECRET_SCAN=1` です。
+
 ## 仕組み
 
 ```
