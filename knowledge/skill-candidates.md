@@ -14,12 +14,14 @@
 - **判定スコア**: {score}/5
 - **該当シグナル**: {matched_signals の配列を "[a, b, c]" 形式}
 - **根拠**: {1-2 行}
-- **関連タスク**: {task_ids}
+- **関連タスク**: {task_ids、curation 文脈では空 "[]" 可}
 - **関連 raw ファイル**: {raw_files のパス列}
 - **呼び出し元**: {post_retro | curation}
 - **提案 skill 名**: {kebab-case 名}
 - **status**: pending
 - **決定日**: 未定
+- **却下理由**: （status が `rejected` に遷移したとき記入、それ以外は省略）
+- **統合先**: （status が `merged-into-*` のとき記入、それ以外は省略）
 ```
 
 ## status の遷移

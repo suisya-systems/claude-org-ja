@@ -6,20 +6,24 @@
 
 各 skill について以下を順に確認する。
 
-### 1.1 呼び出し履歴
-- `knowledge/raw/` および `knowledge/curated/` を `{skill-name}` でフル検索
-- `.state/workers/` 配下のタスクログを `{skill-name}` で検索
-- **90 日以内に言及が 1 件も無ければ**「呼び出し履歴なし」フラグ
+### 1.1 言及検索（観測可能）
+- `knowledge/raw/` および `knowledge/curated/` を `{skill-name}` で grep
+- `.state/workers/` 配下のタスクログを `{skill-name}` で grep
+- **90 日以内の言及が 1 件も無ければ**「言及なし」フラグ
 
-履歴追跡が現時点で不完全な場合（ログが整備される前の skill）は保留扱いとし、
-「要確認」としてリストに載せる。機械的に廃止判定はしない。
+注意: `org-delegate` は work-skill 検索でマッチしたら指示に埋め込むが、
+「実際にワーカーが採用したか / 使い切ったか」は永続化していない。
+したがってここで検出できるのは「直近で検索候補にすら挙がっていない skill」までで、
+「挙がったが使われなかった skill」は観測不能。この弱さは受け入れる（観測ログを
+追加するまでは）。
 
-### 1.2 origin.task_id の再利用状況
-- SKILL.md frontmatter の `origin.task_id` を確認
-- `origin.task_id` 以降で同種のタスクが `knowledge/raw/` または `.state/workers/` にあるか
+### 1.2 origin.task_id の再利用状況（origin 付き skill のみ）
+- SKILL.md frontmatter に `origin.task_id` があるか確認
+- **無い場合はこの項目をスキップ**（既存 skill の多くに該当）
+- ある場合: `origin.task_id` 以降で類似タスクが `knowledge/raw/` または `.state/workers/` にあるか
 - **1 件も無い**なら「再利用されていない」フラグ
 
-### 1.3 description と実装の乖離
+### 1.3 description と実装の乖離（観測可能）
 - frontmatter の `description` が要約する機能と、`SKILL.md` 本文 Step 群の内容が一致するか
 - 以下のいずれかがあれば「乖離あり」フラグ:
   - description が触れている手順が本文に無い
@@ -27,7 +31,9 @@
   - 具体例・ツール・ライブラリが description と本文で矛盾している
 
 ### 廃止候補の判定
-上記 3 項目のうち **1 つ以上に該当**すれば廃止候補としてリストアップ。
+1.1 / 1.2 / 1.3 のうち **1 つ以上に該当**すれば「廃止候補」としてリストアップ。
+ただし **決定はしない**。人間が最終判断する前提で、各フラグの根拠を添えて報告する。
+1.2 が skip された skill は、1.1 / 1.3 のみの評価結果で候補化する。
 
 ## 2. 重複統合候補チェック
 
