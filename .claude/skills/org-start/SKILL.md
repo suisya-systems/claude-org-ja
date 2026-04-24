@@ -81,14 +81,9 @@ ccmux 0.18.0+ では `mcp__ccmux-peers__spawn_claude_pane` が役割別の構造
 **`model="opus"` は必須（sonnet 禁止）。**
 理由: ワーカーの既定 permission_mode は `auto`（分類器ベース）。この safety classifier は Opus でのみ安定動作する。sonnet だと分類器が誤判定を多発し、承認フローが崩れて作業が詰まる。フォアマンだけは `bypassPermissions` 固定なので分類器を経由せず、sonnet 運用で問題ない（フォアマンを sonnet にしているのはコスト最適化のため、ワーカーには適用しない）。
 
-Planモード不要の場合（通常）:
+通常:
 - `cwd="{workers_dir}/{task_id}"`（絶対パス推奨）
 - `permission_mode={default_permission_mode}`
-- `model="opus"`
-
-Planモード要の場合（org-config の値を上書き）:
-- `cwd="{workers_dir}/{task_id}"`
-- `permission_mode="plan"`
 - `model="opus"`
 
 ## Step 1.5: ダッシュボードサーバー起動

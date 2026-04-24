@@ -149,7 +149,7 @@ mcp__ccmux-peers__send_keys(
 | 用途 | 呼び出し |
 |---|---|
 | 空 Enter（プロンプトへの返答） | `send_keys(target="X", enter=true)` |
-| "yes" + Enter（Plan 承認など） | `send_keys(target="X", text="yes", enter=true)` |
+| "yes" + Enter（確認プロンプトへの応答など） | `send_keys(target="X", text="yes", enter=true)` |
 | Shift+Tab（permission mode 切替） | `send_keys(target="X", keys=["Shift+Tab"])` |
 | Esc（モーダル escape） | `send_keys(target="X", keys=["Esc"])` |
 | Ctrl+C（走行中プロセス中断） | `send_keys(target="X", keys=["Ctrl+C"])` |
