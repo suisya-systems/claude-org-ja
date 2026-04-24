@@ -1,5 +1,11 @@
 # 各ロールの必要設定
 
+> **Source of truth**: このドキュメントは人間向け説明であり、機械可読な正典は
+> [`tools/role_configs_schema.json`](../../../../tools/role_configs_schema.json)。
+> 本ファイルの JSON ブロックと schema の間に drift があれば CI
+> (`tools/check_role_configs.py`, Issue #85) が fail する。ルール追加や
+> 文面変更は schema → docs の順で反映すること。
+
 org-setup が参照する、ロールごとの permissions allow と環境変数の定義。
 
 ## ユーザー共通 (`~/.claude/settings.json`)
