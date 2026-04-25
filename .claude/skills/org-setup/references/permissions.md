@@ -3,7 +3,7 @@
 > **Source of truth**: このドキュメントは人間向け説明であり、機械可読な正典は
 > [`tools/role_configs_schema.json`](../../../../tools/role_configs_schema.json)。
 > 本ファイルの JSON ブロックと schema の間に drift があれば CI
-> (`tools/check_role_configs.py`, Issue #85) が fail する。ルール追加や
+> (`tools/check_role_configs.py`) が fail する。ルール追加や
 > 文面変更は schema → docs の順で反映すること。
 
 org-setup が参照する、ロールごとの permissions allow と環境変数の定義。
@@ -155,7 +155,7 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
 - 過去の一発コマンド（特定 PR 番号・branch 名・PID を含むコマンド、`gh pr create --repo ... --head feat/xxx ...` 等）
 - user-specific absolute path（`Read(//c/Users/<you>/Documents/work/**)` のような）
 
-これらが蓄積すると drift となる。定期的に `permissions.md` と突き合わせて剪定する（Issue #84 参照）。
+これらが蓄積すると drift となる。定期的に `permissions.md` と突き合わせて剪定する。
 
 **重要 — 剪定は手動**: 現行の `org-setup` スキルは additive-only（不足分を追加するだけで既存を削除しない）のため、上記「書いてはいけないもの」のエントリが一度 `settings.local.json` に入ると自動では消えない。`/org-setup` を再実行しても drift は解消されない点に注意。Secretary は定期（例: 月次 / Issue 起票時）に `.claude/settings.local.json` を本ドキュメントの窓口サンプルで丸ごと置き換える剪定運用を行う。自動化する場合は `org-setup` スキル側に「permissions.md サンプルを baseline とし、差分は警告ログに出した上で削除」する mode を追加する必要がある（別 Issue 化を推奨）。
 

@@ -16,7 +16,7 @@ description: >
 ## なぜ共通スキルか
 
 判定基準が org-retro と org-curate の 2 箇所に分散すると必ず乖離するため。
-Issue #68 の方針に従い、このスキルを single source of truth として双方から呼ぶ。
+このスキルを single source of truth として双方から呼ぶ。
 
 ## 入力契約
 
