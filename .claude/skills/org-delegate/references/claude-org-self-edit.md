@@ -13,8 +13,6 @@ worktree 直下の `.claude/settings.local.json` を配置する際、`hooks.Pre
 
 他の hook（例: `block-git-push.sh`, `block-workers-delete.sh`, `check-worker-boundary.sh` 等）は通常どおり残してよい。除外対象はあくまで claude-org 構造のブロック hook のみ。
 
-> Issue #11 の恒久対応（hook が claude-org worktree を自動検出して許可する）が merge されれば、この手順 1 は不要になる。手順 2・3 は恒久対応後も残す運用とする。
-
 ## 2. ワーカー指示は `CLAUDE.md` ではなく `CLAUDE.local.md` に書く
 
 ルートの `CLAUDE.md` は Secretary 用の指示なので、ワーカー用 CLAUDE.md で上書きしてはならない（他ロールが壊れる）。
