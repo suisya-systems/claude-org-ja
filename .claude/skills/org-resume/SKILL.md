@@ -61,5 +61,5 @@ description: >
 5. フォアマン・キュレーターペインの起動は /org-start が担当するため、ここでは行わない
 6. `journal.jsonl` に resume イベントを追記:
    ```json
-   {"ts":"<ISO timestamp>","event":"resume","resumed_items":["blog-redesign","ceps-analysis"]}
+   {"ts":"<ISO timestamp>","event":"resume","resumed_items":["blog-redesign","data-analysis"]}
    ```

@@ -239,7 +239,7 @@ class ChooseSplitTests(unittest.TestCase):
 class ValidationTests(unittest.TestCase):
     def test_task_id_accepts_valid(self) -> None:
         self.assertIsNone(fr.validate_task_id("login-fix"))
-        self.assertIsNone(fr.validate_task_id("ceps_analysis"))
+        self.assertIsNone(fr.validate_task_id("data_analysis"))
 
     def test_task_id_rejects_empty(self) -> None:
         self.assertIsNotNone(fr.validate_task_id(""))

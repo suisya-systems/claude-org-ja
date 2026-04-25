@@ -143,8 +143,8 @@ done: {commit SHA 短縮形} {変更ファイル名}
 |---|---|---|
 | `{project_name}` | registry/projects.md の通称 | ブログ |
 | `{project_description}` | registry/projects.md の説明 | 会社ブログサイト |
-| `{task_id}` | タスクID | ceps-analysis |
+| `{task_id}` | タスクID | data-analysis |
 | `{task_description}` | タスクの目的と成果物 | ログイン機能の実装。JWT認証を使用。 |
 | `{claude_org_path}` | claude-org リポジトリの絶対パス | /home/user/work/claude-org |
-| `{worker_dir}` | ワーカー作業ディレクトリの絶対パス | /home/user/work/workers/ceps-analysis |
+| `{worker_dir}` | ワーカー作業ディレクトリの絶対パス | /home/user/work/workers/data-analysis |
 | `{YYYY-MM-DD}` | 実行日 | 2026-04-05 |

@@ -8,7 +8,7 @@ triggers:
   - "{このスキルが適用される状況1（例: Excel形式のアンケートデータを分析する）}"
   - "{このスキルが適用される状況2}"
 origin:
-  task_id: "{初めてこのパターンが使われたタスクID（例: ceps-analysis）}"
+  task_id: "{初めてこのパターンが使われたタスクID（例: data-analysis）}"
   date: "{YYYY-MM-DD}"
 ---
 
