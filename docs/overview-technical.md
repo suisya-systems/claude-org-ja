@@ -96,7 +96,6 @@ claude-org/
 ├── registry/
 │   └── projects.md                # プロジェクト一覧（通称→パスの名前解決）
 └── docs/
-    ├── design-journal.md          # 設計判断の経緯と根拠
     ├── getting-started.md         # 使い方ガイド
     └── verification.md            # テスト手順
 ```
@@ -181,8 +180,6 @@ Curator (org-curate) → knowledge/curated/ に整理・統合
 | 指示の二重化 | CLAUDE.md + `ccmux-peers` メッセージ | 揮発的通信のみへの依存を回避 |
 | Markdown状態管理 | org-state.md はJSON ではなく Markdown | 新インスタンスが読むだけで状況把握可能 |
 | `.state/` を.gitignore | マシン固有情報（ペインID等）を含む | マシン間で状態を共有する必要なし |
-
-詳細な設計経緯は `docs/design-journal.md` を参照。
 
 ---
 

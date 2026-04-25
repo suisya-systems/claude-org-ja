@@ -15,3 +15,5 @@
 | 通称 | プロジェクト名 | パス | 説明 | よくある作業例 |
 |---|---|---|---|---|
 | 時計アプリ | clock-app | - | Webブラウザで動くデジタル時計 | デザイン変更、機能追加 |
+| ccmux | ccmux | https://github.com/happy-ryo/ccmux | Rust 製の Claude Code 用ターミナルマルチプレクサ（TUI） | 機能追加、バグ修正、Issue 対応 |
+| aainc-ops | aainc-ops | https://github.com/happy-ryo/aainc-ops | Claude Code を使った組織運営（窓口・フォアマン・キュレーター・ワーカー）の設定とスキル群 | スキル改修、Issue 対応、権限設定 |

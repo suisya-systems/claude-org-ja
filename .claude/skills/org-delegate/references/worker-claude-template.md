@@ -35,6 +35,11 @@ org-delegate の Step 1.5 でワーカー専用ディレクトリ（`{workers_di
 - Python 実行時は `python` ではなく `py -3` を使用すること（Windows では `python` がストアアプリにリダイレクトされる場合がある）
 - 日本語を含むファイルを扱う場合は `encoding="utf-8"` を明示すること
 
+### 言語・ツール固有の検証
+Rust プロジェクト（Cargo.toml が存在する）の場合:
+- 実装中は `cargo check` / `cargo clippy --all-targets -- -D warnings` / `cargo test`
+- **commit 前に `cargo fmt --all` を必ず実行**（`cargo fmt --all --check` でも可）。CI の rustfmt ジョブ対策。スコープ外の diff でも fmt は commit に含める
+
 ## プロジェクト情報
 - プロジェクト名: {project_name}
 - 説明: {project_description}
