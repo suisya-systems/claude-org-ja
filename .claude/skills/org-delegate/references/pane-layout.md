@@ -36,7 +36,7 @@ Tab 1: ops (ワーカー 0 人)
 
 ### なぜ balanced split が必要か
 
-ccmux は各 split で対象ペインを 50/50 に分ける。`MIN_PANE_WIDTH = 20` / `MIN_PANE_HEIGHT = 5` の下限を割り込むと `[split_refused]` で拒否される (調査: `C:/Users/iwama/working/workers/ccmux-split-inv/findings.md`)。
+ccmux は各 split で対象ペインを 50/50 に分ける。`MIN_PANE_WIDTH = 20` / `MIN_PANE_HEIGHT = 5` の下限を割り込むと `[split_refused]` で拒否される (調査: `<workers_dir>/ccmux-split-inv/findings.md`)。
 
 固定 target や序数 `k` ベースの lookup table では、foreman 幅の累積半減や、ワーカーが途中で閉じた後の再派遣で想定レイアウトと実レイアウトが乖離し、早期に `split_refused` を誘発していた。
 
