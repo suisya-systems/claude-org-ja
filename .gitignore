@@ -22,3 +22,18 @@ dashboard/data.json
 # Claude Code local config
 .claude/settings.local.json
 CLAUDE.local.md
+
+# Foreman local config (symmetrical with .curator/.claude/)
+.foreman/.claude/
+
+# Internal docs (not for public consumption)
+docs/internal/
+docs/github-issues/
+
+# Python build artifacts
+__pycache__/
+*.pyc
+
+# OS metadata
+.DS_Store
+Thumbs.db
