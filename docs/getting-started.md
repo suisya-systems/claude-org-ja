@@ -22,11 +22,17 @@ claude-orgの使い方ガイド。
 ```bash
 git clone <このリポジトリの URL>
 cd <クローン先>
+ccmux mcp install              # 初回のみ。ccmux-peers MCP を user-scope 登録
 ccmux --layout ops
 ```
 
 `ccmux-layouts/ops.toml` の定義に従って窓口 (Secretary) ペインが立ち上がる。
-あとは窓口の Claude Code で `/org-start` を叩けばフォアマン・キュレーターが派生する。
+窓口の Claude Code が立ち上がったら、**順に以下を実行する**:
+
+1. `/org-setup` — ロール別 `settings.local.json`（窓口・フォアマン・キュレーター・ワーカー）と必須 hook を配置。**初回のみ必須**。未実行だと ccmux-peers MCP / git / gh で大量の許可プロンプトが出る。
+2. `/org-start` — 組織を起動。フォアマンとキュレーターが同一タブ内に派生する。
+
+`/org-setup` は **additive-only**（不足分を追加するだけで既存を消さない）。drift を baseline に戻したい場合は [`.claude/skills/org-setup/references/permissions.md`](../.claude/skills/org-setup/references/permissions.md) のロール別サンプル JSON で `settings.local.json` を手動置換する。
 
 ### 互換性プリフライト（任意、推奨）
 
@@ -131,6 +137,45 @@ Claude Code を起動したら、最初に `/org-start` を実行する。
 あなた: ECサイトの続きからお願い
 窓口:   承知しました。ECサイトの作業を再開します。
 ```
+
+---
+
+## トラブルシューティング
+
+### 起動時に大量の許可プロンプトが出る
+
+**症状**: 窓口・フォアマン・ワーカーのいずれかで `mcp__ccmux-peers__*` / `git` / `gh` 系ツール呼び出しのたびに許可ダイアログが立つ。
+
+**原因**: 該当ロールの `settings.local.json` が未生成。`/org-setup` を一度も実行していないか、別ユーザー / 別マシンで生成された設定が消えている。
+
+**対処**:
+1. 窓口の Claude Code で `/org-setup` を実行する（additive-only なので既存設定は壊れない）。
+2. 自己診断で role 別の missing / unknown allow を列挙する:
+   ```bash
+   python tools/check_role_configs.py --include-local
+   ```
+   特定 role の worktree 内で実行する場合は `--role <secretary|foreman|curator|worker>` を併用する。
+
+### `tools/check_role_configs.py` が schema/permissions/settings の drift を報告する
+
+正典は `tools/role_configs_schema.json`。**ルール追加・修正は必ず schema → permissions.md → 実 settings.local.json の順で反映する** （README L168 と整合）。逆順にすると CI が drift を検出する。
+
+drift の典型例と対処:
+
+- **schema に未登録の allow が `permissions.md` または実 settings に混入している場合**: 必要なエントリなら schema に追記してから他に展開する。不要なら該当エントリを削除する。
+- **`permissions.md` のサンプル JSON が schema と乖離している場合**: schema を正と見なし、permissions.md 側を schema に合わせて書き直す。
+- **`/org-setup` 再実行後も `settings.local.json` に drift が残る場合**: additive-only なので自動では消えない。`.claude/skills/org-setup/references/permissions.md` のロール別サンプル JSON で該当ロールの `settings.local.json` を**丸ごと置換**して baseline に戻す。
+
+### schema の JSON parse エラー / 読み込み失敗
+
+`tools/role_configs_schema.json` 自体が壊れていると `check_role_configs.py` も `/org-setup` も即時 fail する。
+
+```bash
+git status tools/role_configs_schema.json
+git diff tools/role_configs_schema.json
+```
+
+直近の編集で壊しているなら `git restore tools/role_configs_schema.json` で戻すか、未コミットの変更を一旦 `git stash push tools/role_configs_schema.json` で退避してから再挑戦する。schema 構文を修正したら必ず `python tools/check_role_configs.py --include-local` を通してから commit する。
 
 ---
 

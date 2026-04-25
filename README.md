@@ -58,7 +58,15 @@ ccmux mcp install
 ccmux --layout ops              # ccmux-layouts/ops.toml の定義で Secretary ペインが起動
 ```
 
-Secretary ペインで Claude Code が立ち上がったら、最初に以下を実行します:
+Secretary ペインで Claude Code が立ち上がったら、まず**一度だけ** `/org-setup` を実行してロール別の `settings.local.json`（窓口・フォアマン・キュレーター・ワーカー）を生成します:
+
+```
+/org-setup
+```
+
+`/org-setup` は ccmux-peers MCP・git・gh 等の許可エントリと必須 hook をローカルに配置するスキルで、未実行のままだと窓口・フォアマン・ワーカーで大量の許可プロンプトが立つため、初回起動時に必須です。なお `/org-setup` は **additive-only**（不足分を追加するのみで既存エントリの剪定はしない）です。drift を検知して baseline まで戻したい場合は、[`.claude/skills/org-setup/references/permissions.md`](.claude/skills/org-setup/references/permissions.md) のロール別サンプル JSON で `settings.local.json` を手動置換してください（詳細は同ファイルおよび本 README L161 以降の「ロール別設定の source of truth」を参照）。
+
+続いて組織を起動します:
 
 ```
 /org-start
@@ -66,7 +74,7 @@ Secretary ペインで Claude Code が立ち上がったら、最初に以下を
 
 これでフォアマンとキュレーターが同一タブ内に派生し、以後は自然言語の依頼を投げるだけで、ワーカーへの派遣と知見整理が自動で回ります。
 
-詳しい使い方は [docs/getting-started.md](docs/getting-started.md) を参照。
+詳しい使い方とトラブルシューティングは [docs/getting-started.md](docs/getting-started.md) を参照。
 
 ## 動作確認
 
