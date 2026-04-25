@@ -38,7 +38,7 @@ task JSON の最低フィールド:
 ```json
 {
   "task_id": "login-fix",
-  "worker_dir": "C:/Users/iwama/working/workers/login-fix",
+  "worker_dir": "<workers_dir>/login-fix",
   "permission_mode": "auto",
   "task_description": "...",
   "instruction": "..."

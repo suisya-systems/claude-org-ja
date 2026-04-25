@@ -153,7 +153,7 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
 - 旧 `mcp__claude-peers__*`（2025 年に ccmux-peers へ移行済み）
 - 旧 `ccmux list/split/send/events/close/inspect *` の Bash allow（ccmux 0.14.0+ で MCP 化）
 - 過去の一発コマンド（特定 PR 番号・branch 名・PID を含むコマンド、`gh pr create --repo ... --head feat/xxx ...` 等）
-- user-specific absolute path（`Read(//c/Users/iwama/Documents/work/**)` のような）
+- user-specific absolute path（`Read(//c/Users/<you>/Documents/work/**)` のような）
 
 これらが蓄積すると drift となる。定期的に `permissions.md` と突き合わせて剪定する（Issue #84 参照）。
 

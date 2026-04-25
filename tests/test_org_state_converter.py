@@ -49,8 +49,8 @@ Current Objective: Issue #20 org-state JSON snapshot
 
 | Task ID | Pattern | Directory | Project | Status |
 |---|---|---|---|---|
-| org-state-json | B | C:\\Users\\iwama\\work\\sandbox\\workers\\claude-org-wezterm\\.worktrees\\org-state-json | claude-org-wezterm | in_use |
-| blog-redesign | A | C:\\Users\\iwama\\work\\sandbox\\blog | blog | available |
+| org-state-json | B | C:\\path\\to\\workers\\claude-org-wezterm\\.worktrees\\org-state-json | claude-org-wezterm | in_use |
+| blog-redesign | A | C:\\path\\to\\sandbox\\blog | blog | available |
 
 ## Foreman
 

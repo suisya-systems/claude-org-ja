@@ -66,7 +66,7 @@
 - **観測事実**:
   - SUSPEND 時: `org-state.md` Status=SUSPENDED、dashboard 停止、journal に suspend イベント記録
   - RESUME 時: 新 foreman（id=9）／curator（id=10）が spawn、`org-state.md` Status=ACTIVE、journal に resume イベント記録
-  - 抜粋（`C:/Users/iwama/Documents/work/claude-org/.state/journal.jsonl` 末尾）:
+  - 抜粋（`<repo_root>/.state/journal.jsonl` 末尾）:
     ```json
     {"ts":"2026-04-22T14:10:00Z","event":"suspend","reason":"issue_48_scenario_3_test","active_workers":[],"pending_items":["issue_48_scenario_5"]}
     {"ts":"2026-04-22T14:14:00Z","event":"resume","reason":"issue_48_scenario_3_test","foreman":"9","curator":"10"}
@@ -96,7 +96,7 @@
 レポート作成時点でのコマンドと結果（※ 本ドキュメントを生成した worktree には `.state/` が存在しないため、メインチェックアウトの絶対パスで実行）:
 
 ```
-$ grep -c "claude-peers" C:/Users/iwama/Documents/work/claude-org/.state/journal.jsonl
+$ grep -c "claude-peers" <repo_root>/.state/journal.jsonl
 0
 ```
 
