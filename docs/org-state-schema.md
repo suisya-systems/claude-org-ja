@@ -95,7 +95,7 @@ python3 dashboard/org_state_converter.py     # Mac/Linux
 
 | フィールド | 型 | 説明 |
 |---|---|---|
-| `id` | `string` | タスク ID（kebab-case 英語）。例: `blog-redesign`, `ceps-analysis` |
+| `id` | `string` | タスク ID（kebab-case 英語）。例: `blog-redesign`, `data-analysis` |
 | `title` | `string` | タスク名（日本語可）。org-state.md の `- {id}: {title} [{status}]` から取得 |
 | `status` | `string` | タスクの状態（下記参照） |
 | `progress` | `string \| null` | 最新の進捗メモ（`- 結果:` サブ項目）。なければ `null` |
