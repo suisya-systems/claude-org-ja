@@ -110,7 +110,7 @@ description: >
   - 成果物（何ができあがるか）
   - 作業ディレクトリ（どのプロジェクトで作業するか）
   - 制約（ブランチ名、コーディング規約、依存関係等）
-  - **検証深度（`full` / `minimal`）** — 派遣指示には必ずどちらか 1 値を明示する。既定は `full`（コード・挙動の変更を伴うタスクはすべてこちら）で、commit 完了後に **codex CLI がインストールされていれば** Codex セルフレビュー（任意）・同一指摘 3 ラウンド上限のルールが走る。codex 未導入環境ではセルフレビューを skip して完了報告に進む。trivial fix（CI 出力整形 / typo / コメント修正 / 既存テスト形式合わせ等）のみ `minimal` を選択し、ワーカーは `git add` → `git commit` → `done` 報告のみで終わる。詳細は `references/instruction-template.md` の「検証深度」節と `references/worker-claude-template.md` の「Codex セルフレビュー手順」節参照。値の決定は窓口の責任で、ワーカーには判断させない
+  - **検証深度（`full` / `minimal`）** — 派遣指示には必ずどちらか 1 値を明示する。既定は `full`（コード・挙動の変更を伴うタスクはすべてこちら）。`full` では **codex の有無に関わらず** リポジトリ通常検証（テスト / lint / type-check 等）を green まで実行し通常の完了報告フォーマットで報告するのが必須ゲート。**追加ゲート（任意）** として、codex CLI が available なら commit 完了後に Codex セルフレビュー・同一指摘 3 ラウンド上限のルールが走る（未導入環境では skip）。trivial fix（CI 出力整形 / typo / コメント修正 / 既存テスト形式合わせ等）のみ `minimal` を選択し、ワーカーは `git add` → `git commit` → `done` 報告のみで終わる。詳細は `references/instruction-template.md` の「検証深度」節と `references/worker-claude-template.md` の「Codex セルフレビュー手順」節参照。値の決定は窓口の責任で、ワーカーには判断させない
   - **ディレクトリパターン（A / B / C）** — 以下の判定基準で決定する
   - **参考 work-skill**（Step 0.5 でマッチしたもの）
 - 注意: タスク説明にファイルパスを含める場合、それがワーカー作業ディレクトリからの相対パスであることを明記する。registry/projects.md の「パス」列の値をそのまま成果物パスとして指示しない（ワーカーが別の場所にパスを作成する原因になる）

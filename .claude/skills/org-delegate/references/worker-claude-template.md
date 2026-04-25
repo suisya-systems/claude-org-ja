@@ -65,11 +65,21 @@ org-delegate の Step 1.5 でワーカー専用ディレクトリ（`{workers_di
 派遣指示に**必ず含まれる「検証深度」行**（`full` または `minimal`）に従うこと。指示に値が無い・不明瞭な場合は勝手に決めず窓口（`secretary`）に確認すること。
 
 ### 検証深度 `full` の場合（コード・挙動の変更を伴うタスク）
-commit 完了後・完了報告前に **`codex` CLI がインストールされていれば** `codex exec --skip-git-repo-check` 直打ちでセルフレビューを実行する（任意。codex 未導入環境では skip して完了報告に進む）。
+
+**`full` の前提（codex の有無に関わらず必ず実施）:**
+- 既存テストスイート / lint / type-check 等、リポジトリで定義された通常検証を実行し、green を確認してから完了報告する
+- 通常の完了報告フォーマット（成果物説明・残作業・PR 草案 / 振り返り記録）に従う
+
+**追加ゲートとしての Codex セルフレビュー（任意。codex CLI がインストールされていれば実行）:**
+
+commit 完了後・完了報告前に **`codex` CLI が available なら** `codex exec --skip-git-repo-check` 直打ちでセルフレビューを実行する。これは `full` の上に乗る追加ゲートであり、未導入環境では上記「`full` の前提」のみで完了報告に進んで構わない。
 
 availability check 例:
 ```bash
+# Bash / zsh
 command -v codex >/dev/null 2>&1 && echo available || echo unavailable
+# PowerShell
+Get-Command codex -ErrorAction SilentlyContinue
 ```
 
 - `unavailable` の場合: セルフレビューを skip し、commit 後そのまま完了報告に進む（このセクション以下のラウンド規律・修正ループは適用しない）
