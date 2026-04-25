@@ -43,15 +43,3 @@
 ## エントリ一覧
 
 <!-- 以下にエントリが自動追記される -->
-
-### 2026-04-24 worker-verification-depth-guardrail
-- **判定スコア**: 3/5
-- **該当シグナル**: [steps_complexity, trigger_articulable, criteria_articulable]
-- **根拠**: Codex レビュー反復過多は 2026-04-20 delegation-codex-review-diminishing-returns.md（PR #17、3 ラウンド）でも記録済の再発パターン。今回 PR #76 では 6 ラウンド + trivial CI fix の 8 分検証ループも発生し、機序が明確化。手順は full/minimal の条件分岐 + 定量閾値（3 ラウンド / 30 分）で形式化可能。raw_reappearance は独立 2 task で 3 件閾値未達なため 0 点、reusable_output は既存テンプレ改訂が主で新規スキーマを要さないため 0 点。**新規 skill 化より既存 org-delegate の instruction-template / worker-claude-template 改訂での統合が自然な可能性あり — 承認時に人間判断で `merged-into-org-delegate` にするか否かを決定**。
-- **関連タスク**: [issue-70-pretooluse-phase1]
-- **関連 raw ファイル**: [knowledge/raw/2026-04-24-delegation-worker-deep-dive-loops.md, knowledge/raw/2026-04-24-issue-70-pretooluse-phase1.md, knowledge/raw/2026-04-20-delegation-codex-review-diminishing-returns.md]
-- **呼び出し元**: post_retro
-- **提案 skill 名**: worker-verification-depth-guardrail
-- **status**: merged-into-org-delegate
-- **決定日**: 2026-04-24
-- **統合先**: `.claude/skills/org-delegate/references/instruction-template.md`（検証深度 full/minimal セクション追加）、`.claude/skills/org-delegate/references/worker-claude-template.md`（Codex ラウンド上限・minimal モード規律）、`.claude/skills/org-delegate/SKILL.md` Step 5（窓口のワーカー監視・介入判定ルール追加）
