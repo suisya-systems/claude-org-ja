@@ -15,4 +15,3 @@
 | 通称 | プロジェクト名 | パス | 説明 | よくある作業例 |
 |---|---|---|---|---|
 | 時計アプリ | clock-app | - | Webブラウザで動くデジタル時計 | デザイン変更、機能追加 |
-| creative-factory | creative-factory | https://github.com/aainc/creative-factory | aainc の画像生成ツール。Fal など複数モデルに対応し、Nano-banana エディタ等を提供 | 新規モデル追加、エディタ機能拡張 |
