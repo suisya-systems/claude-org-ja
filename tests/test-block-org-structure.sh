@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Tests for block-aainc-structure.sh
+# Tests for block-org-structure.sh
 # Validates: exit code (0=allow, 2=block) and stderr messages
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-HOOK="$REPO_ROOT/.hooks/block-aainc-structure.sh"
+HOOK="$REPO_ROOT/.hooks/block-org-structure.sh"
 
 # Portable realpath -m (matches hook fallback: GNU realpath → python3 → python)
 portable_realpath() {
@@ -23,7 +23,7 @@ portable_realpath() {
 }
 
 WORKER_DIR="$(portable_realpath "$REPO_ROOT")"
-AAINC_PATH="$(portable_realpath "$REPO_ROOT/../..")"
+CLAUDE_ORG_PATH="$(portable_realpath "$REPO_ROOT/../..")"
 
 PASS=0; FAIL=0; TEST_NUM=0
 TMPFILES=()
@@ -57,7 +57,7 @@ assert_stderr_contains() {
 run_hook() {
   local json="$1" stderr_file="$2"
   local exit_code=0
-  echo "$json" | env WORKER_DIR="$WORKER_DIR" AAINC_PATH="$AAINC_PATH" bash "$HOOK" 2>"$stderr_file" || exit_code=$?
+  echo "$json" | env WORKER_DIR="$WORKER_DIR" CLAUDE_ORG_PATH="$CLAUDE_ORG_PATH" bash "$HOOK" 2>"$stderr_file" || exit_code=$?
   echo "$exit_code"
 }
 
@@ -132,7 +132,7 @@ assert_stderr_contains "組織構造ディレクトリ" "$stderr" "Write: knowle
 
 # 11. knowledge/raw with valid name (exception, allow)
 stderr=$(mktemp); TMPFILES+=("$stderr")
-json='{"tool_name":"Write","tool_input":{"file_path":"'"$AAINC_PATH"'/knowledge/raw/2026-04-11-test.md"}}'
+json='{"tool_name":"Write","tool_input":{"file_path":"'"$CLAUDE_ORG_PATH"'/knowledge/raw/2026-04-11-test.md"}}'
 ec=$(run_hook "$json" "$stderr")
 assert_exit 0 "$ec" "Write: knowledge/raw exception is allowed"
 
@@ -152,7 +152,7 @@ assert_exit 0 "$ec" "Write: empty file_path exits 0"
 stderr=$(mktemp); TMPFILES+=("$stderr")
 json='{"tool_name":"Write","tool_input":{"file_path":"'"$WORKER_DIR"'/test.txt"}}'
 exit_code=0
-echo "$json" | env -u WORKER_DIR -u AAINC_PATH bash "$HOOK" 2>"$stderr" || exit_code=$?
+echo "$json" | env -u WORKER_DIR -u CLAUDE_ORG_PATH bash "$HOOK" 2>"$stderr" || exit_code=$?
 assert_exit 2 "$exit_code" "Write: missing env vars is blocked"
 assert_stderr_contains "WORKER_DIR" "$stderr" "Write: missing env stderr mentions WORKER_DIR"
 

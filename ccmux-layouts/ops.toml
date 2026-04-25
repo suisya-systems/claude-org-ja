@@ -1,6 +1,6 @@
-# Secretary-only initial layout for aainc-ops.
+# Secretary-only initial layout for claude-org.
 #
-# Usage (from the aainc-ops repo root):
+# Usage (from the claude-org repo root):
 #   ccmux --layout ops
 #
 # Additional panes (Foreman / Curator / Workers) are spawned

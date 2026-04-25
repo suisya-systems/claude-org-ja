@@ -1,6 +1,6 @@
 # Getting Started
 
-aainc組織の使い方ガイド。
+claude-orgの使い方ガイド。
 
 ---
 
@@ -30,7 +30,7 @@ ccmux --layout ops
 
 ### 互換性プリフライト（任意、推奨）
 
-`/org-start` を実行する前に、ccmux のバージョンと MCP ツール surface が aainc-ops の要件を満たすか検証できる:
+`/org-start` を実行する前に、ccmux のバージョンと MCP ツール surface が claude-org の要件を満たすか検証できる:
 
 ```bash
 py -3 tools/check_ccmux_compat.py            # Windows
@@ -174,7 +174,7 @@ Claude Code を起動したら、最初に `/org-start` を実行する。
 ## ディレクトリ構造
 
 ```
-aainc/
+claude-org/
   CLAUDE.md              <- 窓口Claudeの行動指針
   .claude/skills/        <- 組織のスキル群（git管理）
   .state/                <- セッション状態（git管理外）

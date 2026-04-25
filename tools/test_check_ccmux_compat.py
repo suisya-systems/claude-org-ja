@@ -2,7 +2,7 @@
 
 Run with:
   py -3 -m unittest tools.test_check_ccmux_compat
-  (from repo root, or add aainc-ops to PYTHONPATH)
+  (from repo root, or add claude-org to PYTHONPATH)
 """
 from __future__ import annotations
 

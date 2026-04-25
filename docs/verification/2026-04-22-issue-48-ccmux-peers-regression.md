@@ -66,7 +66,7 @@
 - **観測事実**:
   - SUSPEND 時: `org-state.md` Status=SUSPENDED、dashboard 停止、journal に suspend イベント記録
   - RESUME 時: 新 foreman（id=9）／curator（id=10）が spawn、`org-state.md` Status=ACTIVE、journal に resume イベント記録
-  - 抜粋（`C:/Users/iwama/Documents/work/aainc-ops/.state/journal.jsonl` 末尾）:
+  - 抜粋（`C:/Users/iwama/Documents/work/claude-org/.state/journal.jsonl` 末尾）:
     ```json
     {"ts":"2026-04-22T14:10:00Z","event":"suspend","reason":"issue_48_scenario_3_test","active_workers":[],"pending_items":["issue_48_scenario_5"]}
     {"ts":"2026-04-22T14:14:00Z","event":"resume","reason":"issue_48_scenario_3_test","foreman":"9","curator":"10"}
@@ -96,7 +96,7 @@
 レポート作成時点でのコマンドと結果（※ 本ドキュメントを生成した worktree には `.state/` が存在しないため、メインチェックアウトの絶対パスで実行）:
 
 ```
-$ grep -c "claude-peers" C:/Users/iwama/Documents/work/aainc-ops/.state/journal.jsonl
+$ grep -c "claude-peers" C:/Users/iwama/Documents/work/claude-org/.state/journal.jsonl
 0
 ```
 
@@ -133,6 +133,6 @@ journal は今回のセッション分を含む 48 行（`wc -l` 確認）が記
 
 - ワーカー指示は `CLAUDE.local.md` に集約（Secretary 誤認防止のため、ルート `CLAUDE.md` を明示無視）
 - Codex レビューは `codex:rescue` ではなく `codex exec` を直打ち
-- 自己編集（aainc-ops 自身の編集）特例として `block-aainc-structure.sh` hook を `settings.local.json` から除外
+- 自己編集（claude-org 自身の編集）特例として `block-org-structure.sh` hook を `settings.local.json` から除外
 
 を Worker 起動直後から適用した。本 PR 自体が PR #56 の運用効果を確認するドッグフード事例である。

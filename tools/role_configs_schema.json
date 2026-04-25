@@ -21,7 +21,7 @@
     "block-dangerous-git.sh",
     "block-git-push.sh",
     "block-workers-delete.sh",
-    "block-aainc-structure.sh",
+    "block-org-structure.sh",
     "check-worker-boundary.sh"
   ],
   "roles": {
@@ -111,8 +111,8 @@
         "Bash(git fetch:*)",
         "Bash(git pull:*)",
         "Bash(git stash:*)",
-        "Bash(git -C ../workers/aainc-ops status)",
-        "Bash(git -C ../workers/aainc-ops remote -v)",
+        "Bash(git -C ../workers/claude-org status)",
+        "Bash(git -C ../workers/claude-org remote -v)",
         "Bash(gh issue:*)",
         "Bash(gh pr:*)",
         "Bash(gh label:*)",
@@ -221,7 +221,7 @@
         {
           "event": "PreToolUse",
           "matcher_contains": "Edit",
-          "command_contains": "block-aainc-structure.sh"
+          "command_contains": "block-org-structure.sh"
         },
         {
           "event": "PreToolUse",
@@ -231,7 +231,7 @@
         {
           "event": "PreToolUse",
           "matcher_contains": "Bash",
-          "command_contains": "block-aainc-structure.sh"
+          "command_contains": "block-org-structure.sh"
         }
       ],
       "disallow_allow_regex": [

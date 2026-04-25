@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install git hooks for this repository (aainc-ops / Issue #69).
+# Install git hooks for this repository (claude-org / Issue #69).
 # Points git at .githooks/ so contributors share the same pre-commit
 # secret scanner. Safe to run repeatedly when no conflicting hook path
 # is configured; use --force to replace an existing non-.githooks path.

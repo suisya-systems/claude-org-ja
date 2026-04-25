@@ -7,8 +7,8 @@
 あなたの CWD は `.curator/` だが、知見ファイルは **親リポジトリ** にある。
 ファイル検索時は親リポジトリのルートからの相対または絶対パスを使用すること:
 
-- `knowledge/raw/`: 親リポジトリ (aainc-ops) ルートの `knowledge/raw/`
-- `knowledge/curated/`: 親リポジトリ (aainc-ops) ルートの `knowledge/curated/`
+- `knowledge/raw/`: 親リポジトリ (claude-org) ルートの `knowledge/raw/`
+- `knowledge/curated/`: 親リポジトリ (claude-org) ルートの `knowledge/curated/`
 
 相対指定する場合は `../knowledge/raw/` / `../knowledge/curated/` (curator の CWD=`.curator/` からの相対)。
 Glob ツールの `path` パラメータには絶対パスを指定することを推奨:

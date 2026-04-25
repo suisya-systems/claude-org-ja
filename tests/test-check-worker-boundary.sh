@@ -24,7 +24,7 @@ portable_realpath() {
 
 # Compute canonical paths (same method as hooks)
 WORKER_DIR="$(portable_realpath "$REPO_ROOT")"
-AAINC_PATH="$(portable_realpath "$REPO_ROOT/../..")"
+CLAUDE_ORG_PATH="$(portable_realpath "$REPO_ROOT/../..")"
 
 PASS=0; FAIL=0; TEST_NUM=0
 TMPFILES=()
@@ -59,14 +59,14 @@ run_hook() {
   local json="$1" stderr_file="$2"
   shift 2
   local exit_code=0
-  echo "$json" | env WORKER_DIR="$WORKER_DIR" AAINC_PATH="$AAINC_PATH" "$@" bash "$HOOK" 2>"$stderr_file" || exit_code=$?
+  echo "$json" | env WORKER_DIR="$WORKER_DIR" CLAUDE_ORG_PATH="$CLAUDE_ORG_PATH" "$@" bash "$HOOK" 2>"$stderr_file" || exit_code=$?
   echo "$exit_code"
 }
 
 run_hook_no_env() {
   local json="$1" stderr_file="$2"
   local exit_code=0
-  echo "$json" | env -u WORKER_DIR -u AAINC_PATH bash "$HOOK" 2>"$stderr_file" || exit_code=$?
+  echo "$json" | env -u WORKER_DIR -u CLAUDE_ORG_PATH bash "$HOOK" 2>"$stderr_file" || exit_code=$?
   echo "$exit_code"
 }
 
@@ -86,7 +86,7 @@ assert_exit 0 "$ec" "file in nested subdir is allowed"
 
 # 3. Valid knowledge/raw filename (allow)
 stderr=$(mktemp); TMPFILES+=("$stderr")
-json='{"tool_name":"Write","tool_input":{"file_path":"'"$AAINC_PATH"'/knowledge/raw/2026-04-11-hook-testing.md"}}'
+json='{"tool_name":"Write","tool_input":{"file_path":"'"$CLAUDE_ORG_PATH"'/knowledge/raw/2026-04-11-hook-testing.md"}}'
 ec=$(run_hook "$json" "$stderr")
 assert_exit 0 "$ec" "valid knowledge/raw filename is allowed"
 
@@ -106,21 +106,21 @@ assert_stderr_contains "許可パス外" "$stderr" "parent traversal stderr ment
 
 # 6. Knowledge file with uppercase (block)
 stderr=$(mktemp); TMPFILES+=("$stderr")
-json='{"tool_name":"Write","tool_input":{"file_path":"'"$AAINC_PATH"'/knowledge/raw/2026-04-11-BadName.md"}}'
+json='{"tool_name":"Write","tool_input":{"file_path":"'"$CLAUDE_ORG_PATH"'/knowledge/raw/2026-04-11-BadName.md"}}'
 ec=$(run_hook "$json" "$stderr")
 assert_exit 2 "$ec" "knowledge file with uppercase is blocked"
 assert_stderr_contains "ファイル名が不正" "$stderr" "uppercase filename stderr mentions ファイル名が不正"
 
 # 7. Knowledge file without date (block)
 stderr=$(mktemp); TMPFILES+=("$stderr")
-json='{"tool_name":"Write","tool_input":{"file_path":"'"$AAINC_PATH"'/knowledge/raw/notes.md"}}'
+json='{"tool_name":"Write","tool_input":{"file_path":"'"$CLAUDE_ORG_PATH"'/knowledge/raw/notes.md"}}'
 ec=$(run_hook "$json" "$stderr")
 assert_exit 2 "$ec" "knowledge file without date is blocked"
 assert_stderr_contains "ファイル名が不正" "$stderr" "no-date filename stderr mentions ファイル名が不正"
 
 # 8. Knowledge file with underscores (block)
 stderr=$(mktemp); TMPFILES+=("$stderr")
-json='{"tool_name":"Write","tool_input":{"file_path":"'"$AAINC_PATH"'/knowledge/raw/2026-04-11-bad_name.md"}}'
+json='{"tool_name":"Write","tool_input":{"file_path":"'"$CLAUDE_ORG_PATH"'/knowledge/raw/2026-04-11-bad_name.md"}}'
 ec=$(run_hook "$json" "$stderr")
 assert_exit 2 "$ec" "knowledge file with underscores is blocked"
 assert_stderr_contains "ファイル名が不正" "$stderr" "underscore filename stderr mentions ファイル名が不正"
@@ -139,17 +139,17 @@ ec=$(run_hook_no_env "$json" "$stderr")
 assert_exit 2 "$ec" "missing WORKER_DIR env is blocked"
 assert_stderr_contains "WORKER_DIR" "$stderr" "missing env stderr mentions WORKER_DIR"
 
-# 11. Missing only AAINC_PATH env var (block)
+# 11. Missing only CLAUDE_ORG_PATH env var (block)
 stderr=$(mktemp); TMPFILES+=("$stderr")
 json='{"tool_name":"Write","tool_input":{"file_path":"/tmp/test.txt"}}'
 exit_code=0
-echo "$json" | env WORKER_DIR="$WORKER_DIR" AAINC_PATH="" bash "$HOOK" 2>"$stderr" || exit_code=$?
-assert_exit 2 "$exit_code" "missing AAINC_PATH env is blocked"
-assert_stderr_contains "AAINC_PATH" "$stderr" "missing AAINC_PATH stderr mentions AAINC_PATH"
+echo "$json" | env WORKER_DIR="$WORKER_DIR" CLAUDE_ORG_PATH="" bash "$HOOK" 2>"$stderr" || exit_code=$?
+assert_exit 2 "$exit_code" "missing CLAUDE_ORG_PATH env is blocked"
+assert_stderr_contains "CLAUDE_ORG_PATH" "$stderr" "missing CLAUDE_ORG_PATH stderr mentions CLAUDE_ORG_PATH"
 
 # 12. knowledge/curated/ (not raw) is blocked
 stderr=$(mktemp); TMPFILES+=("$stderr")
-json='{"tool_name":"Write","tool_input":{"file_path":"'"$AAINC_PATH"'/knowledge/curated/foo.md"}}'
+json='{"tool_name":"Write","tool_input":{"file_path":"'"$CLAUDE_ORG_PATH"'/knowledge/curated/foo.md"}}'
 ec=$(run_hook "$json" "$stderr")
 assert_exit 2 "$ec" "knowledge/curated/ is blocked"
 assert_stderr_contains "許可パス外" "$stderr" "knowledge/curated stderr mentions 許可パス外"

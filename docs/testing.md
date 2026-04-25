@@ -12,7 +12,7 @@ Python ベースのパーサー/コンバーター回帰検知テストと、Bas
 | `_parse_workers` | worker-*.md ファイル群を解析 |
 | `_parse_knowledge` | curated/*.md の H2 セクション数をカウント |
 | `org_state_converter.py` | org-state Markdown -> JSON 変換とダッシュボード JSON 読み込み |
-| `.hooks/*.sh` | worker boundary / aainc structure / git push block の回帰検知 |
+| `.hooks/*.sh` | worker boundary / claude-org structure / git push block の回帰検知 |
 
 ## 実行方法
 
@@ -41,7 +41,7 @@ tests/
   test_org_state_converter.py
   run-all.sh               # shell hook テストランナー
   test-block-git-push.sh
-  test-block-aainc-structure.sh
+  test-block-org-structure.sh
   test-check-worker-boundary.sh
   fixtures/
     org-state-sample.md    # org-state パーサー用サンプル

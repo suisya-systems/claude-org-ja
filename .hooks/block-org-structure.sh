@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PreToolUse Hook: aainc の組織構造ディレクトリの再作成をブロックする
+# PreToolUse Hook: claude-org の組織構造ディレクトリの再作成をブロックする
 # 方式: exit 2 + stderr メッセージ でブロック
 
 set -euo pipefail
@@ -54,8 +54,8 @@ if ! command -v jq &>/dev/null; then
 fi
 
 # 環境変数チェック
-if [[ -z "${WORKER_DIR:-}" || -z "${AAINC_PATH:-}" ]]; then
-  echo "ブロック: WORKER_DIR または AAINC_PATH が設定されていません。" >&2
+if [[ -z "${WORKER_DIR:-}" || -z "${CLAUDE_ORG_PATH:-}" ]]; then
+  echo "ブロック: WORKER_DIR または CLAUDE_ORG_PATH が設定されていません。" >&2
   exit 2
 fi
 
@@ -64,13 +64,13 @@ INPUT=$(cat)
 TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty')
 
 # ブロック対象ディレクトリ名
-# - 全深度でブロック: .claude, .foreman, .curator, .state (aainc 固有)
+# - 全深度でブロック: .claude, .foreman, .curator, .state (claude-org 固有)
 # - WORKER_DIR 直下のみブロック: registry, dashboard, knowledge (一般的な名前)
 ALWAYS_BLOCKED=('.claude' '.foreman' '.curator' '.state')
 ROOT_ONLY_BLOCKED=('registry' 'dashboard' 'knowledge')
 
 CANONICAL_WORKER=$(normalize_drive_letter "$(normalize_slashes "$(portable_realpath "$WORKER_DIR")")")
-CANONICAL_AAINC=$(normalize_drive_letter "$(normalize_slashes "$(portable_realpath "$AAINC_PATH")")")
+CANONICAL_CLAUDE_ORG=$(normalize_drive_letter "$(normalize_slashes "$(portable_realpath "$CLAUDE_ORG_PATH")")")
 
 # --- Write/Edit の場合: file_path をチェック ---
 if [[ "$TOOL_NAME" == "Write" || "$TOOL_NAME" == "Edit" ]]; then
@@ -82,7 +82,7 @@ if [[ "$TOOL_NAME" == "Write" || "$TOOL_NAME" == "Edit" ]]; then
   CANONICAL_FILE=$(normalize_drive_letter "$(normalize_slashes "$(portable_realpath "$FILE_PATH")")")
 
   # knowledge/raw/ への振り返り記録は許可 (check-worker-boundary.sh と整合)
-  KNOWLEDGE_RAW="$CANONICAL_AAINC/knowledge/raw"
+  KNOWLEDGE_RAW="$CANONICAL_CLAUDE_ORG/knowledge/raw"
   if [[ "$CANONICAL_FILE" == "$KNOWLEDGE_RAW/"* ]]; then
     BASENAME=$(basename "$CANONICAL_FILE")
     if [[ "$BASENAME" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9-]+\.md$ ]]; then
@@ -103,7 +103,7 @@ if [[ "$TOOL_NAME" == "Write" || "$TOOL_NAME" == "Edit" ]]; then
       # WORKER_DIR/project/.claude/ は OK、WORKER_DIR/.claude/ は NG
       # WORKER_DIR 直下かどうか: WORKER_DIR/{dir}/ のパターンに一致するか
       if [[ "$CANONICAL_FILE" == "$CANONICAL_WORKER/$DIR/"* || "$CANONICAL_FILE" == "$CANONICAL_WORKER/$DIR" ]]; then
-        deny_with_reason "$DIR/ は aainc の組織構造ディレクトリです。Worker ディレクトリ直下に作成できません。"
+        deny_with_reason "$DIR/ は claude-org の組織構造ディレクトリです。Worker ディレクトリ直下に作成できません。"
       fi
     fi
   done
@@ -111,7 +111,7 @@ if [[ "$TOOL_NAME" == "Write" || "$TOOL_NAME" == "Edit" ]]; then
   # WORKER_DIR 直下のみブロック
   for DIR in "${ROOT_ONLY_BLOCKED[@]}"; do
     if [[ "$CANONICAL_FILE" == "$CANONICAL_WORKER/$DIR/"* || "$CANONICAL_FILE" == "$CANONICAL_WORKER/$DIR" ]]; then
-      deny_with_reason "$DIR/ は aainc の組織構造ディレクトリです。Worker ディレクトリ直下に作成できません。"
+      deny_with_reason "$DIR/ は claude-org の組織構造ディレクトリです。Worker ディレクトリ直下に作成できません。"
     fi
   done
 
@@ -129,7 +129,7 @@ if [[ "$TOOL_NAME" == "Bash" ]]; then
   # (Write/Edit 側の normalize_slashes と同じ方針。Mac では実質 no-op)
   NORMALIZED_CMD=$(echo "$COMMAND" | tr '\\' '/')
 
-  # ファイル/ディレクトリ作成コマンド + aainc 構造ディレクトリのパターン検知
+  # ファイル/ディレクトリ作成コマンド + claude-org 構造ディレクトリのパターン検知
   # ベストエフォート: 全てのパターンは捕捉できないが、典型的なものをブロック
   ALL_BLOCKED_NAMES=('.claude' '.foreman' '.curator' '.state' 'registry' 'dashboard' 'knowledge')
   for DIR in "${ALL_BLOCKED_NAMES[@]}"; do
@@ -143,7 +143,7 @@ if [[ "$TOOL_NAME" == "Bash" ]]; then
       if [[ "$DIR" == ".claude" ]] && echo "$NORMALIZED_CMD" | grep -qE "\.claude/plans(/|[[:space:]]|\"|$)"; then
         continue
       fi
-      deny_with_reason "Bash コマンドで aainc の組織構造ディレクトリ ($DIR/) を作成しようとしています。"
+      deny_with_reason "Bash コマンドで claude-org の組織構造ディレクトリ ($DIR/) を作成しようとしています。"
     fi
   done
 

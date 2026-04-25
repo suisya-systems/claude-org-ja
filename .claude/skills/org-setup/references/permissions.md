@@ -91,8 +91,8 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
       "Bash(git fetch:*)",
       "Bash(git pull:*)",
       "Bash(git stash:*)",
-      "Bash(git -C ../workers/aainc-ops status)",
-      "Bash(git -C ../workers/aainc-ops remote -v)",
+      "Bash(git -C ../workers/claude-org status)",
+      "Bash(git -C ../workers/claude-org remote -v)",
 
       "Bash(gh issue:*)",
       "Bash(gh pr:*)",
@@ -220,11 +220,11 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"{aainc_path}/.hooks/check-worker-boundary.sh\""
+            "command": "bash \"{claude_org_path}/.hooks/check-worker-boundary.sh\""
           },
           {
             "type": "command",
-            "command": "bash \"{aainc_path}/.hooks/block-aainc-structure.sh\""
+            "command": "bash \"{claude_org_path}/.hooks/block-org-structure.sh\""
           }
         ]
       },
@@ -233,11 +233,11 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"{aainc_path}/.hooks/block-git-push.sh\""
+            "command": "bash \"{claude_org_path}/.hooks/block-git-push.sh\""
           },
           {
             "type": "command",
-            "command": "bash \"{aainc_path}/.hooks/block-aainc-structure.sh\""
+            "command": "bash \"{claude_org_path}/.hooks/block-org-structure.sh\""
           }
         ]
       }
@@ -245,11 +245,11 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
   },
   "env": {
     "WORKER_DIR": "{worker_dir}",
-    "AAINC_PATH": "{aainc_path}"
+    "CLAUDE_ORG_PATH": "{claude_org_path}"
   }
 }
 ```
 
-**注意**: `{aainc_path}` と `{worker_dir}` は settings.local.json 生成時に解決済みの絶対パスに置換すること。Hook command 内のパスはスペース対策のためクォートされている。
+**注意**: `{claude_org_path}` と `{worker_dir}` は settings.local.json 生成時に解決済みの絶対パスに置換すること。Hook command 内のパスはスペース対策のためクォートされている。
 
 **deny と hooks の役割分担**: `permissions.deny` は静的パターンマッチによるブロックで、`bypassPermissions` モードでも常に有効。外部コマンド（jq, bash）に依存しないため信頼性が高い。一方 hooks はワーカーディレクトリ境界チェック等の動的検証を担う。両者を併用することで多層防御を実現する。`deny` は `echo foo && git push` のような埋め込みコマンドはカバーできないため、`block-git-push.sh` hook は副次防御として維持する。

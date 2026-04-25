@@ -55,7 +55,7 @@ if echo "$COMMAND" | grep -qE '(^|[|&;[:space:]])ccmux[[:space:]]'; then
 fi
 
 # workers ディレクトリのパスを org-config.md から読み取って解決する
-# Hook はプロジェクトルート (aainc-ops/) から実行される前提
+# Hook はプロジェクトルート (claude-org/) から実行される前提
 WORKERS_REL=$(grep 'workers_dir:' registry/org-config.md 2>/dev/null | sed 's/.*workers_dir:[[:space:]]*//' | tr -d '[:space:]')
 if [[ -z "$WORKERS_REL" ]]; then
   # org-config.md が読めない場合はスキップ（Hook の責務外）

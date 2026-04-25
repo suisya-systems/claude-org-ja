@@ -35,8 +35,8 @@ if ! command -v jq &>/dev/null; then
 fi
 
 # 環境変数チェック
-if [[ -z "${WORKER_DIR:-}" || -z "${AAINC_PATH:-}" ]]; then
-  echo "ブロック: WORKER_DIR または AAINC_PATH が設定されていません。" >&2
+if [[ -z "${WORKER_DIR:-}" || -z "${CLAUDE_ORG_PATH:-}" ]]; then
+  echo "ブロック: WORKER_DIR または CLAUDE_ORG_PATH が設定されていません。" >&2
   exit 2
 fi
 
@@ -75,7 +75,7 @@ normalize_drive_letter() {
 # パス正規化 (../traversal, symlink, C:/ vs /c/ 形式の統一, スラッシュ方向の統一)
 CANONICAL_FILE=$(normalize_drive_letter "$(normalize_slashes "$(portable_realpath "$FILE_PATH")")")
 CANONICAL_WORKER=$(normalize_drive_letter "$(normalize_slashes "$(portable_realpath "$WORKER_DIR")")")
-CANONICAL_AAINC=$(normalize_drive_letter "$(normalize_slashes "$(portable_realpath "$AAINC_PATH")")")
+CANONICAL_CLAUDE_ORG=$(normalize_drive_letter "$(normalize_slashes "$(portable_realpath "$CLAUDE_ORG_PATH")")")
 
 # 許可パス 1: Worker ディレクトリ内
 if [[ "$CANONICAL_FILE" == "$CANONICAL_WORKER/"* ]]; then
@@ -89,7 +89,7 @@ if [[ "$CANONICAL_FILE" == "$CLAUDE_PLANS/"* ]]; then
 fi
 
 # 許可パス 3: 振り返り記録 (knowledge/raw/YYYY-MM-DD-{topic}.md)
-KNOWLEDGE_RAW="$CANONICAL_AAINC/knowledge/raw"
+KNOWLEDGE_RAW="$CANONICAL_CLAUDE_ORG/knowledge/raw"
 if [[ "$CANONICAL_FILE" == "$KNOWLEDGE_RAW/"* ]]; then
   BASENAME=$(basename "$CANONICAL_FILE")
   if [[ "$BASENAME" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9-]+\.md$ ]]; then
@@ -99,4 +99,4 @@ if [[ "$CANONICAL_FILE" == "$KNOWLEDGE_RAW/"* ]]; then
 fi
 
 # それ以外はブロック
-deny_with_reason "$FILE_PATH は許可パス外です。作業は $WORKER_DIR 内で行ってください。振り返り記録は $AAINC_PATH/knowledge/raw/YYYY-MM-DD-{topic}.md に書けます。"
+deny_with_reason "$FILE_PATH は許可パス外です。作業は $WORKER_DIR 内で行ってください。振り返り記録は $CLAUDE_ORG_PATH/knowledge/raw/YYYY-MM-DD-{topic}.md に書けます。"
