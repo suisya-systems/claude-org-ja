@@ -1,6 +1,6 @@
 # claude-org
 
-Allied Architects, Inc. 向けの自己成長する Claude Code 組織。
+自己成長する Claude Code 組織。
 
 - **これは何か**: 1つの窓口 Claude と対話するだけで、裏でフォアマン・キュレーター・ワーカーが自動で動き、知見を蓄積しながら改善していくマルチエージェント運用基盤。
 - **対象読者**: ccmux と Claude Code でチーム作業を動かしたい開発者・オペレーター。
