@@ -1,4 +1,4 @@
-"""Foreman state-machine helper for aainc-ops (Issue #60).
+"""Foreman state-machine helper for claude-org (Issue #60).
 
 v1 scope: `delegate-plan` subcommand. Given a structured task description
 and a ccmux `list_panes` snapshot, this script computes the deterministic
@@ -458,7 +458,7 @@ def cmd_delegate_plan(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Foreman state-machine helper for aainc-ops"
+        description="Foreman state-machine helper for claude-org"
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 

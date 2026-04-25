@@ -34,7 +34,7 @@ grep -En '^[[:space:]]*command[[:space:]]*=.*dangerously-load-development-channe
 
 ## 0. 互換性プリフライト
 
-**目的**: `/org-start` 実行前に ccmux バージョンと MCP ツール surface が aainc-ops の要件を満たすか確認する（Issue #61）。
+**目的**: `/org-start` 実行前に ccmux バージョンと MCP ツール surface が claude-org の要件を満たすか確認する（Issue #61）。
 
 **手順**:
 ```bash

@@ -13,5 +13,5 @@ default_permission_mode: auto
 ## Workers Directory
 workers_dir: ../workers
 
-ワーカー専用ディレクトリの配置先。aainc リポジトリからの相対パス。
+ワーカー専用ディレクトリの配置先。claude-org リポジトリからの相対パス。
 リポジトリ外に配置することで、ワーカーの新規プロジェクト作成時に親リポジトリの git コンテキストが干渉しない。

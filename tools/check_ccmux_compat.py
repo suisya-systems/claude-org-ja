@@ -1,4 +1,4 @@
-"""ccmux compatibility preflight for aainc-ops (Issue #61).
+"""ccmux compatibility preflight for claude-org (Issue #61).
 
 Layered checks:
   1. ccmux binary version (static)
@@ -28,7 +28,7 @@ import sys
 from dataclasses import dataclass, field, asdict
 from typing import Any, Optional
 
-# aainc-ops' ccmux contract.
+# claude-org' ccmux contract.
 # When this list grows, bump MIN_REQUIRED_VERSION accordingly.
 MIN_REQUIRED_VERSION = (0, 18, 0)
 
@@ -240,7 +240,7 @@ def check_mcp_tool_surface(report: CheckReport) -> None:
                 "protocolVersion": "2025-03-26",
                 "capabilities": {},
                 "clientInfo": {
-                    "name": "aainc-ops-preflight", "version": "1.0",
+                    "name": "claude-org-preflight", "version": "1.0",
                 },
             },
         }) + "\n"
@@ -370,7 +370,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     _reconfigure_stdout()
 
     p = argparse.ArgumentParser(
-        description="ccmux compatibility preflight for aainc-ops"
+        description="ccmux compatibility preflight for claude-org"
     )
     p.add_argument(
         "--json", action="store_true",

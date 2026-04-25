@@ -133,6 +133,6 @@ journal は今回のセッション分を含む 48 行（`wc -l` 確認）が記
 
 - ワーカー指示は `CLAUDE.local.md` に集約（Secretary 誤認防止のため、ルート `CLAUDE.md` を明示無視）
 - Codex レビューは `codex:rescue` ではなく `codex exec` を直打ち
-- 自己編集（aainc-ops 自身の編集）特例として `block-aainc-structure.sh` hook を `settings.local.json` から除外
+- 自己編集（claude-org 自身の編集）特例として `block-org-structure.sh` hook を `settings.local.json` から除外
 
 を Worker 起動直後から適用した。本 PR 自体が PR #56 の運用効果を確認するドッグフード事例である。

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# pre-commit secret scanner (aainc-ops / Issue #69)
+# pre-commit secret scanner (claude-org / Issue #69)
 # Scans newly-added lines in staged changes for common API key, token,
 # and PEM private key patterns and aborts the commit when one matches.
 #

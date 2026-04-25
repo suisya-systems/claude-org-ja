@@ -1,5 +1,5 @@
 """
-aainc Organization Dashboard Server
+claude-org Organization Dashboard Server
 Python standard library only — no pip install required.
 
 Usage: python3 dashboard/server.py   (Mac/Linux)
@@ -25,7 +25,7 @@ from pathlib import Path
 
 PORTS = [8099, 8100, 8101]
 POLL_INTERVAL = 1.5  # seconds
-BASE_DIR = Path(__file__).parent.parent  # aainc repo root
+BASE_DIR = Path(__file__).parent.parent  # claude-org repo root
 DASHBOARD_DIR = Path(__file__).parent
 PID_FILE = BASE_DIR / ".state" / "dashboard.pid"
 
