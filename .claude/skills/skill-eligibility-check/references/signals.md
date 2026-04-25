@@ -38,7 +38,7 @@
 2. 具体物（ファイル形式、タスク種別、入力パターン）で書かれていれば 1 点
 3. `org-delegate` の work-skill 検索で他の skill の description と区別がつく語彙か確認
 
-**根拠**: 発見されない skill は無いのと同じ。Codex 指摘の「検索面ノイズ」を
+**根拠**: 発見されない skill は無いのと同じ。「検索面のノイズ」を
 増やさないためには、triggers が具体的で重ならないことが前提。
 
 ## 4. criteria_articulable（判断基準明文化）

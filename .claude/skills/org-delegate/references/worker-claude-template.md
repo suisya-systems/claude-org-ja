@@ -65,12 +65,31 @@ org-delegate の Step 1.5 でワーカー専用ディレクトリ（`{workers_di
 派遣指示に**必ず含まれる「検証深度」行**（`full` または `minimal`）に従うこと。指示に値が無い・不明瞭な場合は勝手に決めず窓口（`secretary`）に確認すること。
 
 ### 検証深度 `full` の場合（コード・挙動の変更を伴うタスク）
-commit 完了後・完了報告前に**必ず** `codex exec --skip-git-repo-check` 直打ちでセルフレビューを実行する。
+
+**`full` の前提（codex の有無に関わらず必ず実施）:**
+- 既存テストスイート / lint / type-check 等、リポジトリで定義された通常検証を実行し、green を確認してから完了報告する
+- 通常の完了報告フォーマット（成果物説明・残作業・PR 草案 / 振り返り記録）に従う
+
+**追加ゲートとしての Codex セルフレビュー（任意。codex CLI がインストールされていれば実行）:**
+
+commit 完了後・完了報告前に **`codex` CLI が available なら** `codex exec --skip-git-repo-check` 直打ちでセルフレビューを実行する。これは `full` の上に乗る追加ゲートであり、未導入環境では上記「`full` の前提」のみで完了報告に進んで構わない。
+
+availability check 例:
+```bash
+# Bash / zsh
+command -v codex >/dev/null 2>&1 && echo available || echo unavailable
+# PowerShell
+Get-Command codex -ErrorAction SilentlyContinue
+```
+
+- `unavailable` の場合: セルフレビューを skip し、commit 後そのまま完了報告に進む（このセクション以下のラウンド規律・修正ループは適用しない）
+- `available` の場合: 以下のコマンドで実行する
 
 ```bash
 codex exec --skip-git-repo-check "このブランチの main からの差分をレビュー。Blocker/Major/Minor/Nit で分類し、各指摘に対象ファイル:行番号と根拠を添えて日本語で簡潔に"
 ```
 
+`codex` を実行した場合のみ以下が適用される:
 - Blocker / Major は修正コミットを積み、再レビュー
 - **同一指摘カテゴリで 3 ラウンド消せない場合は設計問題**と判断し、即完了報告して窓口に仕様縮小の判断を仰ぐ（無限ループ防止）
 - Minor / Nit は原則残置し、README / Issue / PR 本文に既知制限として明記する
@@ -88,8 +107,8 @@ done: {commit SHA 短縮形} {変更ファイル名}
 - 下記「作業完了時（必須）」の 完了報告フォーマット（成果物説明・残作業・PR 草案等）は minimal では **適用されない**（窓口が push / PR 起票を実施するのに commit SHA と変更ファイルがあれば足りる）
 - 振り返り記録（`knowledge/raw/`）も minimal では **不要**（trivial fix に再利用可能な学びはない前提）。非自明な発見があれば `full` と同じ手順で 1 件作ってよい
 
-### 禁止事項（両モード共通）
-`codex:rescue` スキルは使用しないこと（過去に 18 分超ハングした実害あり。`codex exec` 直打ちに切り替えると正常動作した）。
+### 禁止事項（両モード共通・codex を使う場合）
+`codex:rescue` スキルは使用しないこと（過去に 18 分超ハングした実害あり。`codex exec` 直打ちに切り替えると正常動作した）。codex 未導入環境ではこの注記は無関係。
 
 ## 作業完了時（必須・検証深度 `full` のみ）
 

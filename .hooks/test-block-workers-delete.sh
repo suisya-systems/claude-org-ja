@@ -60,19 +60,19 @@ run_test "複数引数の rm -rf (workers含む)" \
   "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"rm -rf /tmp/junk ${WORKERS_DIR}/WI-016\"}}" \
   2
 
-run_test "rm -R 大文字 (P1: Codex指摘)" \
+run_test "rm -R 大文字 short flag" \
   "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"rm -R ${WORKERS_DIR}/WI-016\"}}" \
   2
 
-run_test "rm -Rf 大文字 (P1: Codex指摘)" \
+run_test "rm -Rf 大文字 short flag combined" \
   "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"rm -Rf ${WORKERS_DIR}/WI-016\"}}" \
   2
 
-run_test "rm -f -r フラグ分離 (P1: Codex再レビュー指摘)" \
+run_test "rm -f -r フラグ分離 (separate short flags)" \
   "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"rm -f -r ${WORKERS_DIR}/WI-016\"}}" \
   2
 
-run_test "rm --force -r フラグ分離 (P1: Codex再レビュー指摘)" \
+run_test "rm --force -r 長短オプション混在" \
   "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"rm --force -r ${WORKERS_DIR}/WI-016\"}}" \
   2
 
@@ -80,15 +80,15 @@ run_test "rm --force -r フラグ分離 (P1: Codex再レビュー指摘)" \
 WORKERS_WIN_PATH=$(echo "$WORKERS_DIR" | sed 's|^/\([a-zA-Z]\)/|\U\1:/|')
 WORKERS_BS_CMD="rm -rf $(echo "$WORKERS_WIN_PATH" | tr '/' '\\')\\WI-016"
 WORKERS_BS_JSON=$(jq -n --arg cmd "$WORKERS_BS_CMD" '{"tool_name":"Bash","tool_input":{"command":$cmd}}')
-run_test "rm -rf Windows バックスラッシュパス (P2: Codex再レビュー指摘)" \
+run_test "rm -rf Windows バックスラッシュパス" \
   "$WORKERS_BS_JSON" \
   2
 
-run_test "rm --recursive (長オプション) (P2: Codex4回��指摘)" \
+run_test "rm --recursive (長オプション)" \
   "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"rm --recursive ${WORKERS_DIR}/WI-016\"}}" \
   2
 
-run_test "rm --force --recursive (長オプション複数) (P2: Codex4回目指摘)" \
+run_test "rm --force --recursive (長オプション複数)" \
   "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"rm --force --recursive ${WORKERS_DIR}/WI-016\"}}" \
   2
 
@@ -105,7 +105,7 @@ run_test "rm -rf で workers 外のディレクトリ" \
   "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"rm -rf /tmp/some-dir\"}}" \
   0
 
-run_test "rm --preserve-root で長オプション内の r は無視 (P2: Codex3回目指摘)" \
+run_test "rm --preserve-root で長オプション内の r は無視 (false positive prevention)" \
   "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"rm --preserve-root ${WORKERS_DIR}/WI-016/temp.txt\"}}" \
   0
 
