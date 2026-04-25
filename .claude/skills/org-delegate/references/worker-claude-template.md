@@ -12,7 +12,7 @@ org-delegate の Step 1.5 でワーカー専用ディレクトリ（`{workers_di
 ```markdown
 # Worker
 
-あなたは aainc 組織のワーカーである。以下の指示に従って作業を遂行する。
+あなたは claude-orgのワーカーである。以下の指示に従って作業を遂行する。
 
 ## 作業ディレクトリ（最重要制約）
 
@@ -22,8 +22,8 @@ org-delegate の Step 1.5 でワーカー専用ディレクトリ（`{workers_di
 一致しない場合は作業を開始せず、窓口にエラー報告せよ。
 
 ### 禁止事項（permissions.deny + PreToolUse Hooks により技術的にブロックされる）
-1. `{worker_dir}` 内に aainc の構造（.claude/, .foreman/, .curator/, .state/, registry/, dashboard/, knowledge/ 等）を再現してはならない
-2. aainc リポジトリ（`{aainc_path}`）を別途 clone してはならない（直接編集すること）
+1. `{worker_dir}` 内に claude-org の構造（.claude/, .foreman/, .curator/, .state/, registry/, dashboard/, knowledge/ 等）を再現してはならない
+2. claude-org リポジトリ（`{claude_org_path}`）を別途 clone してはならない（直接編集すること）
 3. `git push` は実行できない（完了報告で窓口に依頼すること）
 
 ### 正しい作業手順
@@ -47,8 +47,8 @@ org-delegate の Step 1.5 でワーカー専用ディレクトリ（`{workers_di
 
 組織に蓄積された知見を活用できる。以下のディレクトリを **Read ツールで読み取り可能**（書き込みは振り返り記録のみ許可）。
 
-- `{aainc_path}/knowledge/curated/` — 整理済みの知見
-- `{aainc_path}/knowledge/raw/` — 未整理の生の学び
+- `{claude_org_path}/knowledge/curated/` — 整理済みの知見
+- `{claude_org_path}/knowledge/raw/` — 未整理の生の学び
 
 ### いつ参照するか
 1. **作業開始前**: タスクに関連しそうなファイルがないか確認する。ファイル名やタイトルから判断し、役立ちそうなものがあれば読む
@@ -106,7 +106,7 @@ done: {commit SHA 短縮形} {変更ファイル名}
    - 残作業や注意点があれば
 
 2. **振り返り記録**: 再利用可能な学びがあれば記録する
-   - パス: {aainc_path}/knowledge/raw/{YYYY-MM-DD}-{topic}.md
+   - パス: {claude_org_path}/knowledge/raw/{YYYY-MM-DD}-{topic}.md
    - topic は英語 kebab-case（例: jwt-rs256-key-rotation）
    - フォーマット:
      ```
@@ -145,6 +145,6 @@ done: {commit SHA 短縮形} {変更ファイル名}
 | `{project_description}` | registry/projects.md の説明 | 会社ブログサイト |
 | `{task_id}` | タスクID | ceps-analysis |
 | `{task_description}` | タスクの目的と成果物 | ログイン機能の実装。JWT認証を使用。 |
-| `{aainc_path}` | aainc リポジトリの絶対パス | /home/user/work/aainc |
+| `{claude_org_path}` | claude-org リポジトリの絶対パス | /home/user/work/claude-org |
 | `{worker_dir}` | ワーカー作業ディレクトリの絶対パス | /home/user/work/workers/ceps-analysis |
 | `{YYYY-MM-DD}` | 実行日 | 2026-04-05 |
