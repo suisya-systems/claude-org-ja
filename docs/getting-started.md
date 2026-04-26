@@ -11,49 +11,49 @@ claude-orgの使い方ガイド。
 以下が全てインストール・設定済みであること。詳細は [README.md](../README.md#前提条件) を参照。
 
 - **Claude Code** — AIエージェント本体
-- **ccmux** — ターミナルマルチプレクサ (組織のペイン管理に使用)
-- **ccmux-peers MCP** — 同タブ内インスタンス間通信とペイン操作（`ccmux mcp install` で登録）
+- **renga** — ターミナルマルチプレクサ (組織のペイン管理に使用)
+- **renga-peers MCP** — 同タブ内インスタンス間通信とペイン操作（`renga mcp install` で登録）
 - **GitHub CLI (`gh`)** — 認証済み（`gh auth status` で確認）
 
 ### インストール
 
-本リポジトリをクローンし、そのディレクトリで ccmux を起動する。
+本リポジトリをクローンし、そのディレクトリで renga を起動する。
 
 ```bash
 git clone <このリポジトリの URL>
 cd <クローン先>
-ccmux mcp install              # 初回のみ。ccmux-peers MCP を user-scope 登録
-ccmux --layout ops
+renga mcp install              # 初回のみ。renga-peers MCP を user-scope 登録
+renga --layout ops
 ```
 
-`ccmux-layouts/ops.toml` の定義に従って窓口 (Secretary) ペインが立ち上がる。
+`renga-layouts/ops.toml` の定義に従って窓口 (Secretary) ペインが立ち上がる。
 窓口の Claude Code が立ち上がったら、**順に以下を実行する**:
 
-1. `/org-setup` — ロール別 `settings.local.json`（窓口・フォアマン・キュレーター・ワーカー）と必須 hook を配置。**初回のみ必須**。未実行だと ccmux-peers MCP / git / gh で大量の許可プロンプトが出る。
+1. `/org-setup` — ロール別 `settings.local.json`（窓口・フォアマン・キュレーター・ワーカー）と必須 hook を配置。**初回のみ必須**。未実行だと renga-peers MCP / git / gh で大量の許可プロンプトが出る。
 2. `/org-start` — 組織を起動。フォアマンとキュレーターが同一タブ内に派生する。
 
 `/org-setup` は **additive-only**（不足分を追加するだけで既存を消さない）。drift を baseline に戻したい場合は [`.claude/skills/org-setup/references/permissions.md`](../.claude/skills/org-setup/references/permissions.md) のロール別サンプル JSON で `settings.local.json` を手動置換する。
 
 ### 互換性プリフライト（任意、推奨）
 
-`/org-start` を実行する前に、ccmux のバージョンと MCP ツール surface が claude-org の要件を満たすか検証できる:
+`/org-start` を実行する前に、renga のバージョンと MCP ツール surface が claude-org の要件を満たすか検証できる:
 
 ```bash
-py -3 tools/check_ccmux_compat.py            # Windows
-python3 tools/check_ccmux_compat.py          # macOS / Linux
+py -3 tools/check_renga_compat.py            # Windows
+python3 tools/check_renga_compat.py          # macOS / Linux
 ```
 
-- ccmux バージョン（0.18.0 以上を要求）
-- `ccmux-peers` MCP 登録 (`claude mcp list` で Connected)
+- renga バージョン（0.18.0 以上を要求）
+- `renga-peers` MCP 登録 (`claude mcp list` で Connected)
 - 必須 14 ツールが tools/list に出現するか
 
 機械可読 JSON が欲しい場合は `--json`。フェイルを終了コードで扱いたいスクリプトはこちらを使う:
 
 ```bash
-py -3 tools/check_ccmux_compat.py --json
+py -3 tools/check_renga_compat.py --json
 ```
 
-このスクリプトは live ccmux セッションを必要としない（静的 + MCP stdio probe のみ）ので、`ccmux --layout ops` の前にも後にも実行できる。
+このスクリプトは live renga セッションを必要としない（静的 + MCP stdio probe のみ）ので、`renga --layout ops` の前にも後にも実行できる。
 
 ---
 
@@ -63,7 +63,7 @@ py -3 tools/check_ccmux_compat.py --json
 
 初回 clone 後は、上の「インストール」節に従って `/org-setup` → `/org-start` の順で 1 回だけ実行する（`/org-setup` 未実行だと許可プロンプトが多発する）。
 
-2 回目以降は `ccmux --layout ops` で窓口ペインを開き、Claude Code で `/org-start` を実行するだけでよい。
+2 回目以降は `renga --layout ops` で窓口ペインを開き、Claude Code で `/org-start` を実行するだけでよい。
 前回の状態があれば報告され、フォアマン（作業割り当て担当）とキュレーター（知見整理担当）が自動で起動する。
 
 ```
@@ -128,7 +128,7 @@ py -3 tools/check_ccmux_compat.py --json
 
 ### 再開する
 
-次に本リポジトリのディレクトリで `ccmux --layout ops` を起動して窓口の Claude Code に入ると、自動的に前回の状態を報告する。
+次に本リポジトリのディレクトリで `renga --layout ops` を起動して窓口の Claude Code に入ると、自動的に前回の状態を報告する。
 
 ```
 窓口:   前回の状態（4/5 18:30に中断）:
@@ -146,7 +146,7 @@ py -3 tools/check_ccmux_compat.py --json
 
 ### 起動時に大量の許可プロンプトが出る
 
-**症状**: 窓口・フォアマン・ワーカーのいずれかで `mcp__ccmux-peers__*` / `git` / `gh` 系ツール呼び出しのたびに許可ダイアログが立つ。
+**症状**: 窓口・フォアマン・ワーカーのいずれかで `mcp__renga-peers__*` / `git` / `gh` 系ツール呼び出しのたびに許可ダイアログが立つ。
 
 **診断**: まず該当ロールの `settings.local.json` の状態を確認する。
 

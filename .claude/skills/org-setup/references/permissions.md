@@ -16,27 +16,27 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
 {
   "permissions": {
     "allow": [
-      "Bash(ccmux --version)",
-      "Bash(ccmux --help)",
-      "Bash(ccmux --layout:*)",
-      "Bash(ccmux mcp install:*)",
-      "Bash(ccmux mcp uninstall:*)",
-      "Bash(ccmux mcp status:*)",
-      "Bash(ccmux mcp --help)",
-      "mcp__ccmux-peers__set_summary",
-      "mcp__ccmux-peers__list_peers",
-      "mcp__ccmux-peers__send_message",
-      "mcp__ccmux-peers__check_messages",
-      "mcp__ccmux-peers__list_panes",
-      "mcp__ccmux-peers__spawn_pane",
-      "mcp__ccmux-peers__close_pane",
-      "mcp__ccmux-peers__focus_pane",
-      "mcp__ccmux-peers__new_tab",
-      "mcp__ccmux-peers__inspect_pane",
-      "mcp__ccmux-peers__poll_events",
-      "mcp__ccmux-peers__send_keys",
-      "mcp__ccmux-peers__spawn_claude_pane",
-      "mcp__ccmux-peers__set_pane_identity"
+      "Bash(renga --version)",
+      "Bash(renga --help)",
+      "Bash(renga --layout:*)",
+      "Bash(renga mcp install:*)",
+      "Bash(renga mcp uninstall:*)",
+      "Bash(renga mcp status:*)",
+      "Bash(renga mcp --help)",
+      "mcp__renga-peers__set_summary",
+      "mcp__renga-peers__list_peers",
+      "mcp__renga-peers__send_message",
+      "mcp__renga-peers__check_messages",
+      "mcp__renga-peers__list_panes",
+      "mcp__renga-peers__spawn_pane",
+      "mcp__renga-peers__close_pane",
+      "mcp__renga-peers__focus_pane",
+      "mcp__renga-peers__new_tab",
+      "mcp__renga-peers__inspect_pane",
+      "mcp__renga-peers__poll_events",
+      "mcp__renga-peers__send_keys",
+      "mcp__renga-peers__spawn_claude_pane",
+      "mcp__renga-peers__set_pane_identity"
     ]
   },
   "env": {
@@ -45,15 +45,15 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
 }
 ```
 
-**Bash permission 方針**: 旧 `Bash(ccmux:*)` glob は撤去済み（ccmux 0.14.0+ でペイン操作・ピア通信・event 購読・スクレイプ・raw キー送信がすべて MCP 化されたため）。残している `Bash(ccmux …)` は **運用コマンド限定**:
+**Bash permission 方針**: 旧 `Bash(renga:*)` glob は撤去済み（renga 0.14.0+ でペイン操作・ピア通信・event 購読・スクレイプ・raw キー送信がすべて MCP 化されたため）。残している `Bash(renga …)` は **運用コマンド限定**:
 
-- `ccmux --version` / `ccmux --help`: 環境確認
-- `ccmux --layout ops` 相当 (`--layout:*`): 初回レイアウト起動（`ccmux-layouts/ops.toml` 参照）
-- `ccmux mcp install` / `uninstall` / `status` / `--help`: MCP サーバー登録管理（`mcp__ccmux-peers__*` を使えるようにするための bootstrap）
+- `renga --version` / `renga --help`: 環境確認
+- `renga --layout ops` 相当 (`--layout:*`): 初回レイアウト起動（`renga-layouts/ops.toml` 参照）
+- `renga mcp install` / `uninstall` / `status` / `--help`: MCP サーバー登録管理（`mcp__renga-peers__*` を使えるようにするための bootstrap）
 
-ペイン操作（`ccmux split` / `close` / `list` / `send` / `events` / `inspect` / `new-tab` 等）は MCP ツール (`mcp__ccmux-peers__*`) 経由で実施する。該当 Bash permission は含めない。
+ペイン操作（`renga split` / `close` / `list` / `send` / `events` / `inspect` / `new-tab` 等）は MCP ツール (`mcp__renga-peers__*`) 経由で実施する。該当 Bash permission は含めない。
 
-**注意**: `ccmux-peers` MCP ツール 14 種は `ccmux mcp install` を一度実行して user-scope に MCP サーバーを登録した後に利用可能になる。登録手順は README「インストール」セクションを参照。
+**注意**: `renga-peers` MCP ツール 14 種は `renga mcp install` を一度実行して user-scope に MCP サーバーを登録した後に利用可能になる。登録手順は README「インストール」セクションを参照。
 
 ## 窓口 (`<repo>/.claude/settings.local.json`)
 
@@ -65,18 +65,18 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
 {
   "permissions": {
     "allow": [
-      "mcp__ccmux-peers__set_summary",
-      "mcp__ccmux-peers__list_peers",
-      "mcp__ccmux-peers__send_message",
-      "mcp__ccmux-peers__check_messages",
-      "mcp__ccmux-peers__list_panes",
-      "mcp__ccmux-peers__spawn_pane",
-      "mcp__ccmux-peers__spawn_claude_pane",
-      "mcp__ccmux-peers__close_pane",
-      "mcp__ccmux-peers__inspect_pane",
-      "mcp__ccmux-peers__poll_events",
-      "mcp__ccmux-peers__send_keys",
-      "mcp__ccmux-peers__set_pane_identity",
+      "mcp__renga-peers__set_summary",
+      "mcp__renga-peers__list_peers",
+      "mcp__renga-peers__send_message",
+      "mcp__renga-peers__check_messages",
+      "mcp__renga-peers__list_panes",
+      "mcp__renga-peers__spawn_pane",
+      "mcp__renga-peers__spawn_claude_pane",
+      "mcp__renga-peers__close_pane",
+      "mcp__renga-peers__inspect_pane",
+      "mcp__renga-peers__poll_events",
+      "mcp__renga-peers__send_keys",
+      "mcp__renga-peers__set_pane_identity",
 
       "Bash(git add:*)",
       "Bash(git commit:*)",
@@ -109,13 +109,13 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
       "Bash(py -3 tools/:*)",
       "Bash(py dashboard/:*)",
 
-      "Bash(ccmux --version)",
-      "Bash(ccmux --help)",
-      "Bash(ccmux --layout:*)",
-      "Bash(ccmux mcp install:*)",
-      "Bash(ccmux mcp uninstall:*)",
-      "Bash(ccmux mcp status:*)",
-      "Bash(ccmux mcp --help)",
+      "Bash(renga --version)",
+      "Bash(renga --help)",
+      "Bash(renga --layout:*)",
+      "Bash(renga mcp install:*)",
+      "Bash(renga mcp uninstall:*)",
+      "Bash(renga mcp status:*)",
+      "Bash(renga mcp --help)",
 
       "Bash(sleep:*)",
       "Bash(codex exec:*)",
@@ -140,18 +140,18 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
 }
 ```
 
-**mcp__ccmux-peers__\* の重複**: ユーザー共通 settings.json と重複するが、窓口は run 直後に ccmux-peers MCP を必ず使うため、窓口スコープでも明示的に列挙して source-of-truth として固定する（user settings の drift でも窓口が動くことを保証）。
+**mcp__renga-peers__\* の重複**: ユーザー共通 settings.json と重複するが、窓口は run 直後に renga-peers MCP を必ず使うため、窓口スコープでも明示的に列挙して source-of-truth として固定する（user settings の drift でも窓口が動くことを保証）。
 
-**ccmux bootstrap の重複**: 同じ理由でユーザー共通と重複するが、窓口が初回レイアウト起動やペイン制御で即時使うため明示列挙。
+**renga bootstrap の重複**: 同じ理由でユーザー共通と重複するが、窓口が初回レイアウト起動やペイン制御で即時使うため明示列挙。
 
-**並び順**: (1) MCP ツール、(2) git、(3) gh、(4) python/dashboard、(5) ccmux bootstrap、(6) その他（sleep / codex / curl / PowerShell）。新規エントリ追加時はこの並び順を維持する。
+**並び順**: (1) MCP ツール、(2) git、(3) gh、(4) python/dashboard、(5) renga bootstrap、(6) その他（sleep / codex / curl / PowerShell）。新規エントリ追加時はこの並び順を維持する。
 
-**hooks の説明**: `block-workers-delete.sh` は workers ディレクトリへの再帰的削除（`rm -r`/`rm -rf`/`rm --recursive`）をブロックする。個別ファイルの `rm` は許可する。`ccmux` コマンドは除外する（ワーカー起動時の偽陽性防止）。
+**hooks の説明**: `block-workers-delete.sh` は workers ディレクトリへの再帰的削除（`rm -r`/`rm -rf`/`rm --recursive`）をブロックする。個別ファイルの `rm` は許可する。`renga` コマンドは除外する（ワーカー起動時の偽陽性防止）。
 
 **書いてはいけないもの**:
 - wide allow (`Bash(git *)`, `Bash(git push *)`, `Bash(git fetch *)`, `Bash(git branch *)`, `Bash(git pull *)`, `Bash(gh:*)`, `Bash(gh *)`)
-- 旧 `mcp__claude-peers__*`（2025 年に ccmux-peers へ移行済み）
-- 旧 `ccmux list/split/send/events/close/inspect *` の Bash allow（ccmux 0.14.0+ で MCP 化）
+- 旧 `mcp__claude-peers__*`（2025 年に renga-peers へ移行済み）
+- 旧 `renga list/split/send/events/close/inspect *` の Bash allow（renga 0.14.0+ で MCP 化）
 - 過去の一発コマンド（特定 PR 番号・branch 名・PID を含むコマンド、`gh pr create --repo ... --head feat/xxx ...` 等）
 - user-specific absolute path（`Read(//c/Users/<you>/Documents/work/**)` のような）
 

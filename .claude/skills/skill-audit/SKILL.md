@@ -79,7 +79,7 @@ skill ペアを総当たりして以下を確認する:
 
 ## Step 5: 報告
 
-`ccmux-peers` の `send_message(to_id="secretary", ...)` で窓口 Claude に送る。
+`renga-peers` の `send_message(to_id="secretary", ...)` で窓口 Claude に送る。
 
 ```
 [skill-audit] 棚卸し結果

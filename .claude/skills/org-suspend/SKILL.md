@@ -9,14 +9,14 @@ description: >
 
 全ワーカーの状態を収集し、ディスクに保存し、全ペインを停止する。
 
-ペイン操作は `mcp__ccmux-peers__*` MCP ツール経由で行う（ccmux 0.18.0+ 前提）。pane_exited
-相当の lifecycle イベントは `mcp__ccmux-peers__poll_events` で long-poll、画面スクレイプ
-は `mcp__ccmux-peers__inspect_pane` で取得、raw キー入力は `mcp__ccmux-peers__send_keys`。
+ペイン操作は `mcp__renga-peers__*` MCP ツール経由で行う（renga 0.18.0+ 前提）。pane_exited
+相当の lifecycle イベントは `mcp__renga-peers__poll_events` で long-poll、画面スクレイプ
+は `mcp__renga-peers__inspect_pane` で取得、raw キー入力は `mcp__renga-peers__send_keys`。
 
 ## Phase 1: ワーカー状態収集
 
-1. `mcp__ccmux-peers__list_peers` で稼働中のピアを列挙する
-2. 自分自身とキュレーターを除いた全ピアに `mcp__ccmux-peers__send_message` で以下を送信:
+1. `mcp__renga-peers__list_peers` で稼働中のピアを列挙する
+2. 自分自身とキュレーターを除いた全ピアに `mcp__renga-peers__send_message` で以下を送信:
    ```
    SUSPEND: 現在の状態を報告してください。
    1. これまでに完了したこと
@@ -24,7 +24,7 @@ description: >
    3. 次にやろうとしていたこと
    4. ブロッカーや未解決の問題
    ```
-3. 30 秒間 `mcp__ccmux-peers__check_messages` で応答を待つ（5 秒間隔でポーリング）
+3. 30 秒間 `mcp__renga-peers__check_messages` で応答を待つ（5 秒間隔でポーリング）
 4. 応答があったワーカーの報告を記録する
 
 ## Phase 2: 未応答ワーカーのスクレイプ
@@ -34,7 +34,7 @@ description: >
 1. `.state/workers/` から該当ワーカーの状態ファイルを読み、Pane Name と Directory を取得
 2. 画面内容スクレイプで最新のコンソール出力を読む:
    ```
-   mcp__ccmux-peers__inspect_pane(target="worker-{task_id}", format="text")
+   mcp__renga-peers__inspect_pane(target="worker-{task_id}", format="text")
    ```
    画面表示だけでは不十分な場合は、次の Step 3 の git 情報で補完する
 3. ワーカーの作業ディレクトリで以下を実行:
@@ -76,21 +76,21 @@ kill $(cat .state/dashboard.pid 2>/dev/null) 2>/dev/null || true
 
 停止順序が重要。ワーカー → フォアマン → キュレーターの順で停止する。
 
-1. `mcp__ccmux-peers__list_peers` で稼働中のピアを列挙
-2. **ワーカーを先に停止**: 全ワーカーピアに `mcp__ccmux-peers__send_message` で終了を指示:
+1. `mcp__renga-peers__list_peers` で稼働中のピアを列挙
+2. **ワーカーを先に停止**: 全ワーカーピアに `mcp__renga-peers__send_message` で終了を指示:
    「SHUTDOWN: 作業を終了してください。」
 3. **ワーカーペインが閉じたことを確認** — 2-pass 構造で実施:
 
    **Pass 1 (polite shutdown の観察、最大 10 秒)**:
 
-   `mcp__ccmux-peers__poll_events` で `pane_exited` を long-poll する。`types=["pane_exited"]` フィルタで他 type を除外しつつ、deadline 内でループして待機対象が全て閉じたら break:
+   `mcp__renga-peers__poll_events` で `pane_exited` を long-poll する。`types=["pane_exited"]` フィルタで他 type を除外しつつ、deadline 内でループして待機対象が全て閉じたら break:
    ```
    pending_workers = {全ワーカーの name set}
    cursor = None                           # 初回は since 省略
    deadline = now + 10 秒
    while pending_workers not empty and now < deadline:
        remaining_ms = (deadline - now) ミリ秒
-       result = mcp__ccmux-peers__poll_events(
+       result = mcp__renga-peers__poll_events(
            since=cursor,
            timeout_ms=min(remaining_ms, 10000),
            types=["pane_exited"]
@@ -109,22 +109,22 @@ kill $(cat .state/dashboard.pid 2>/dev/null) 2>/dev/null || true
    **Pass 2 (残留ワーカーへのフォールバック + 再確認、最大 5 秒)**:
    - Pass 1 で閉じていないワーカーそれぞれに対して:
      ```
-     mcp__ccmux-peers__close_pane(target="worker-{task_id}")
+     mcp__renga-peers__close_pane(target="worker-{task_id}")
      ```
-     でペインを明示破棄する。成功時は `"Closed pane id=N."` テキストが返る。`[pane_not_found]` / `[pane_vanished]` は既に閉じた扱いで skip（`references/ccmux-error-codes.md` 参照）。`[last_pane]` はワーカー停止段階では通常発生しない（窓口/フォアマン/キュレーターが残っているため）
+     でペインを明示破棄する。成功時は `"Closed pane id=N."` テキストが返る。`[pane_not_found]` / `[pane_vanished]` は既に閉じた扱いで skip（`references/renga-error-codes.md` 参照）。`[last_pane]` はワーカー停止段階では通常発生しない（窓口/フォアマン/キュレーターが残っているため）
    - その後、同じ `poll_events` ループを `timeout_ms=5000` / deadline 5 秒で再度回し、close_pane 由来の `pane_exited` を消化する
-   - Pass 2 後もまだ閉じていないワーカーは `mcp__ccmux-peers__list_panes` で生存確認し、残存なら journal に記録して人間に報告（強制終了は現状未サポート）
+   - Pass 2 後もまだ閉じていないワーカーは `mcp__renga-peers__list_panes` で生存確認し、残存なら journal に記録して人間に報告（強制終了は現状未サポート）
 
-4. **フォアマンを停止**: フォアマンに `mcp__ccmux-peers__send_message` で終了を指示:
+4. **フォアマンを停止**: フォアマンに `mcp__renga-peers__send_message` で終了を指示:
    「SHUTDOWN: 作業を終了してください。」
-5. **キュレーターを停止**: キュレーターに `mcp__ccmux-peers__send_message` で終了を指示:
+5. **キュレーターを停止**: キュレーターに `mcp__renga-peers__send_message` で終了を指示:
    「SHUTDOWN: 作業を終了してください。」
 6. フォアマン・キュレーターも (3) と同じ 2-pass 構造で確認（`pending = {"foreman", "curator"}` を集合に入れ、`role == "foreman"` または `role == "curator"` の `pane_exited` を待つ）:
    - Pass 1: `poll_events(types=["pane_exited"], timeout_ms=10000)` 相当ループ
-   - Pass 2: 残った pane に `mcp__ccmux-peers__close_pane(target="foreman")` / `mcp__ccmux-peers__close_pane(target="curator")` を送り、`poll_events` ループ (timeout_ms=5000) で再確認
+   - Pass 2: 残った pane に `mcp__renga-peers__close_pane(target="foreman")` / `mcp__renga-peers__close_pane(target="curator")` を送り、`poll_events` ループ (timeout_ms=5000) で再確認
 
 **最後のペイン (窓口) の扱い**: フォアマン・キュレーターを閉じた時点でタブに残るのは窓口
-ペインのみになる。窓口が自分自身を `mcp__ccmux-peers__close_pane(target="secretary")` で
+ペインのみになる。窓口が自分自身を `mcp__renga-peers__close_pane(target="secretary")` で
 閉じようとすると `[last_pane]` (唯一のタブの唯一のペイン) が返るので、**窓口は自分自身で
 `exit` して自然終了させる** (人間が端末を閉じる、または `/exit` でシェルに戻る)。
 org-suspend は窓口ペインを閉じる責任を負わない。

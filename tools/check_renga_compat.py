@@ -1,17 +1,17 @@
-"""ccmux compatibility preflight for claude-org (Issue #61).
+"""renga compatibility preflight for claude-org (Issue #61).
 
 Layered checks:
-  1. ccmux binary version (static)
-  2. `ccmux-peers` MCP registration in `claude mcp list`
-  3. MCP tool surface via `ccmux mcp-peer` stdio (no live session needed)
-  4. Optional live smoke (inside a ccmux --layout ops session) — MCP tools
+  1. renga binary version (static)
+  2. `renga-peers` MCP registration in `claude mcp list`
+  3. MCP tool surface via `renga mcp-peer` stdio (no live session needed)
+  4. Optional live smoke (inside a renga --layout ops session) — MCP tools
      run by Claude; this script only *documents* them (does not shell in)
   5. Optional `--e2e` — spawn/close a throwaway pane to verify lifecycle
 
 Usage:
-  py -3 tools/check_ccmux_compat.py
-  py -3 tools/check_ccmux_compat.py --json
-  py -3 tools/check_ccmux_compat.py --e2e      # (reserved, not implemented)
+  py -3 tools/check_renga_compat.py
+  py -3 tools/check_renga_compat.py --json
+  py -3 tools/check_renga_compat.py --e2e      # (reserved, not implemented)
 
 Exit codes:
   0 — all required checks pass
@@ -28,13 +28,13 @@ import sys
 from dataclasses import dataclass, field, asdict
 from typing import Any, Optional
 
-# claude-org' ccmux contract.
+# claude-org' renga contract.
 # When this list grows, bump MIN_REQUIRED_VERSION accordingly.
 MIN_REQUIRED_VERSION = (0, 18, 0)
 
-# Required `ccmux-peers` MCP tools. Source of truth:
-# `printf '{"jsonrpc":"2.0","id":1,"method":"tools/list"}\n' | ccmux mcp-peer`
-# on ccmux 0.18.0 returns exactly these 14 tools. The in-repo docs
+# Required `renga-peers` MCP tools. Source of truth:
+# `printf '{"jsonrpc":"2.0","id":1,"method":"tools/list"}\n' | renga mcp-peer`
+# on renga 0.18.0 returns exactly these 14 tools. The in-repo docs
 # (README.md, docs/verification.md, docs/overview-technical.md) are updated
 # to this count by PR #62 (Issue #58). Until that merges, the docs may
 # still show an older count; this list is the authoritative one.
@@ -63,10 +63,10 @@ REQUIRED_MCP_TOOLS = [
 @dataclass
 class CheckReport:
     ok: bool = True
-    ccmux_version: Optional[str] = None
-    ccmux_version_tuple: Optional[list[int]] = None
-    ccmux_min_required: str = ".".join(str(x) for x in MIN_REQUIRED_VERSION)
-    ccmux_path: Optional[str] = None
+    renga_version: Optional[str] = None
+    renga_version_tuple: Optional[list[int]] = None
+    renga_min_required: str = ".".join(str(x) for x in MIN_REQUIRED_VERSION)
+    renga_path: Optional[str] = None
     mcp_registered: Optional[bool] = None
     mcp_registration_line: Optional[str] = None
     mcp_tools_found: list[str] = field(default_factory=list)
@@ -77,7 +77,7 @@ class CheckReport:
 
 
 def parse_version(s: str) -> Optional[tuple[int, int, int]]:
-    """Parse 'ccmux 0.18.0' or '0.18.0' into (0, 18, 0).
+    """Parse 'renga 0.18.0' or '0.18.0' into (0, 18, 0).
 
     Returns None if no semver-looking triple is present.
     """
@@ -121,31 +121,31 @@ def run_cmd(args: list[str], stdin: Optional[str] = None, timeout: float = 15.0
 # Layer 1 ---------------------------------------------------------------------
 
 
-def check_ccmux_version(report: CheckReport) -> None:
-    rc, out, err = run_cmd(["ccmux", "--version"])
+def check_renga_version(report: CheckReport) -> None:
+    rc, out, err = run_cmd(["renga", "--version"])
     if rc == 127:
         report.ok = False
-        report.failures.append("ccmux binary not found on PATH")
+        report.failures.append("renga binary not found on PATH")
         return
     if rc != 0:
         report.ok = False
-        report.failures.append(f"`ccmux --version` exited {rc}: {err.strip()}")
+        report.failures.append(f"`renga --version` exited {rc}: {err.strip()}")
         return
     v = parse_version(out)
     if v is None:
         report.ok = False
         report.failures.append(
-            f"could not parse ccmux version from output: {out!r}"
+            f"could not parse renga version from output: {out!r}"
         )
         return
-    report.ccmux_version = ".".join(str(x) for x in v)
-    report.ccmux_version_tuple = list(v)
+    report.renga_version = ".".join(str(x) for x in v)
+    report.renga_version_tuple = list(v)
     if cmp_version(v, MIN_REQUIRED_VERSION) < 0:
         report.ok = False
         report.failures.append(
-            f"ccmux {report.ccmux_version} is older than required "
-            f"{report.ccmux_min_required}. Run: "
-            "`npm install -g ccmux-fork@0.18.0` (or later)"
+            f"renga {report.renga_version} is older than required "
+            f"{report.renga_min_required}. Run: "
+            "`npm install -g renga-fork@0.18.0` (or later)"
         )
 
 
@@ -165,28 +165,28 @@ def check_mcp_registration(report: CheckReport) -> None:
         report.failures.append(f"`claude mcp list` exited {rc}: {err.strip()}")
         return
     for line in out.splitlines():
-        if "ccmux-peers" in line:
+        if "renga-peers" in line:
             report.mcp_registration_line = line.strip()
             # `✓ Connected` or `Connected` indicates live
             if "Connected" in line:
                 report.mcp_registered = True
-                # Extract ccmux path for display (best-effort)
-                m = re.search(r":\s*(\S+ccmux\S*)", line)
+                # Extract renga path for display (best-effort)
+                m = re.search(r":\s*(\S+renga\S*)", line)
                 if m:
-                    report.ccmux_path = m.group(1)
+                    report.renga_path = m.group(1)
             else:
                 report.mcp_registered = False
                 report.failures.append(
-                    "ccmux-peers MCP is registered but not Connected. "
-                    "Try `ccmux mcp install --force`."
+                    "renga-peers MCP is registered but not Connected. "
+                    "Try `renga mcp install --force`."
                 )
                 report.ok = False
             return
     report.mcp_registered = False
     report.ok = False
     report.failures.append(
-        "ccmux-peers MCP not registered in Claude Code. "
-        "Run: `ccmux mcp install`"
+        "renga-peers MCP not registered in Claude Code. "
+        "Run: `renga mcp install`"
     )
 
 
@@ -194,9 +194,9 @@ def check_mcp_registration(report: CheckReport) -> None:
 
 
 def parse_tools_list_response(raw_stdout: str) -> Optional[set[str]]:
-    """Extract the tools/list result tool names from ccmux mcp-peer stdout.
+    """Extract the tools/list result tool names from renga mcp-peer stdout.
 
-    ccmux mcp-peer speaks newline-delimited JSON-RPC on stdio (MCP stdio
+    renga mcp-peer speaks newline-delimited JSON-RPC on stdio (MCP stdio
     transport — not LSP-style Content-Length framing). We send multiple
     requests on separate lines and the peer writes one JSON response per
     line. Iterate lines looking for the tools/list response (method result
@@ -223,14 +223,14 @@ def parse_tools_list_response(raw_stdout: str) -> Optional[set[str]]:
 
 
 def check_mcp_tool_surface(report: CheckReport) -> None:
-    """Query `ccmux mcp-peer` stdio for tools/list. No live session needed.
+    """Query `renga mcp-peer` stdio for tools/list. No live session needed.
 
     Sends an MCP-spec-compliant pair of requests on stdio:
-      1. `initialize` (required by some strict MCP servers; ccmux-peers
+      1. `initialize` (required by some strict MCP servers; renga-peers
          is lenient but we send it defensively)
       2. `tools/list`
 
-    ccmux mcp-peer uses newline-delimited JSON-RPC over stdio (the MCP
+    renga mcp-peer uses newline-delimited JSON-RPC over stdio (the MCP
     stdio transport), not LSP Content-Length framing.
     """
     payload = (
@@ -249,7 +249,7 @@ def check_mcp_tool_surface(report: CheckReport) -> None:
         }) + "\n"
     )
     rc, out, err = run_cmd(
-        ["ccmux", "mcp-peer"], stdin=payload, timeout=10.0,
+        ["renga", "mcp-peer"], stdin=payload, timeout=10.0,
     )
     if rc == 127:
         # Already flagged in layer 1
@@ -257,7 +257,7 @@ def check_mcp_tool_surface(report: CheckReport) -> None:
     if rc != 0 and not out.strip():
         report.ok = False
         report.failures.append(
-            f"`ccmux mcp-peer` tools/list probe failed (rc={rc}): "
+            f"`renga mcp-peer` tools/list probe failed (rc={rc}): "
             f"{err.strip()[:200]}"
         )
         return
@@ -265,7 +265,7 @@ def check_mcp_tool_surface(report: CheckReport) -> None:
     if found is None:
         report.ok = False
         report.failures.append(
-            "could not extract tools/list response from ccmux mcp-peer "
+            "could not extract tools/list response from renga mcp-peer "
             "output (no JSON-RPC message with result.tools[])"
         )
         return
@@ -275,8 +275,8 @@ def check_mcp_tool_surface(report: CheckReport) -> None:
     if missing:
         report.ok = False
         report.failures.append(
-            f"ccmux-peers MCP is missing required tools: {', '.join(missing)}. "
-            "Upgrade ccmux or re-run `ccmux mcp install --force`."
+            f"renga-peers MCP is missing required tools: {', '.join(missing)}. "
+            "Upgrade renga or re-run `renga mcp install --force`."
         )
 
 
@@ -287,18 +287,18 @@ def emit_text(report: CheckReport) -> None:
     def status(cond: bool) -> str:
         return "OK  " if cond else "FAIL"
 
-    print("ccmux compatibility preflight")
+    print("renga compatibility preflight")
     print("=" * 56)
 
-    v_ok = report.ccmux_version is not None and not any(
-        "ccmux" in f and "older" in f for f in report.failures
-    ) and not any("ccmux binary not found" in f for f in report.failures)
-    print(f"[{status(v_ok)}] ccmux version: "
-          f"{report.ccmux_version or '(unknown)'} "
-          f"(need >= {report.ccmux_min_required})")
+    v_ok = report.renga_version is not None and not any(
+        "renga" in f and "older" in f for f in report.failures
+    ) and not any("renga binary not found" in f for f in report.failures)
+    print(f"[{status(v_ok)}] renga version: "
+          f"{report.renga_version or '(unknown)'} "
+          f"(need >= {report.renga_min_required})")
 
     mcp_ok = report.mcp_registered is True
-    print(f"[{status(mcp_ok)}] ccmux-peers MCP registered + connected")
+    print(f"[{status(mcp_ok)}] renga-peers MCP registered + connected")
     if report.mcp_registration_line:
         print(f"         {report.mcp_registration_line}")
 
@@ -335,11 +335,11 @@ def emit_json(report: CheckReport) -> None:
     # Produce a stable-shape JSON doc; Foreman/Secretary can consume it.
     doc = {
         "ok": report.ok,
-        "ccmux": {
-            "version": report.ccmux_version,
-            "version_tuple": report.ccmux_version_tuple,
-            "min_required": report.ccmux_min_required,
-            "path": report.ccmux_path,
+        "renga": {
+            "version": report.renga_version,
+            "version_tuple": report.renga_version_tuple,
+            "min_required": report.renga_min_required,
+            "path": report.renga_path,
         },
         "mcp": {
             "registered": report.mcp_registered,
@@ -370,7 +370,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     _reconfigure_stdout()
 
     p = argparse.ArgumentParser(
-        description="ccmux compatibility preflight for claude-org"
+        description="renga compatibility preflight for claude-org"
     )
     p.add_argument(
         "--json", action="store_true",
@@ -379,17 +379,17 @@ def main(argv: Optional[list[str]] = None) -> int:
     p.add_argument(
         "--e2e", action="store_true",
         help="(reserved) run opt-in pane spawn/close smoke test; not yet "
-             "implemented — must not mutate the user's live ccmux layout",
+             "implemented — must not mutate the user's live renga layout",
     )
     p.add_argument(
         "--skip-mcp-probe", action="store_true",
-        help="skip `ccmux mcp-peer` tool-surface probe (static checks only)",
+        help="skip `renga mcp-peer` tool-surface probe (static checks only)",
     )
     args = p.parse_args(argv)
 
     report = CheckReport()
 
-    check_ccmux_version(report)
+    check_renga_version(report)
     check_mcp_registration(report)
     if args.skip_mcp_probe:
         report.mcp_tools_probe_skipped = True

@@ -15,4 +15,6 @@
 | 通称 | プロジェクト名 | パス | 説明 | よくある作業例 |
 |---|---|---|---|---|
 | 時計アプリ | clock-app | - | Webブラウザで動くデジタル時計 | デザイン変更、機能追加 |
-| ccmux | ccmux | https://github.com/happy-ryo/ccmux | Rust 製の Claude Code 用ターミナルマルチプレクサ（TUI） | 機能追加、バグ修正、Issue 対応 |
+| renga | renga | https://github.com/happy-ryo/ccmux | Rust 製の Claude Code 用ターミナルマルチプレクサ（TUI） | 機能追加、バグ修正、Issue 対応 |
+
+- `renga` の URL は intentional に旧名 `happy-ryo/ccmux` のまま。GitHub repo transfer (happy-ryo/ccmux#103) 完了後に更新する。
