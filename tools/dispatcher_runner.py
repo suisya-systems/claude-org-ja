@@ -13,7 +13,7 @@ calls.
 Deterministic operations this helper owns:
   - balanced split target/direction selection from pane rects
   - task / worker name validation (matches renga's `[A-Za-z0-9_-]` + not all-digit)
-  - worker instruction file writing (.state/foreman/outbox/{task_id}-instruction.md)
+  - worker instruction file writing (.state/dispatcher/outbox/{task_id}-instruction.md)
   - worker state file seed (.state/workers/worker-{task_id}.md)
   - journal planned-event preparation
 
@@ -21,7 +21,7 @@ Everything that requires live MCP calls stays in the Claude side.
 
 Usage:
   py -3 tools/dispatcher_runner.py delegate-plan \
-      --task-json .state/foreman/inbox/{task_id}.json \
+      --task-json .state/dispatcher/inbox/{task_id}.json \
       --panes-json <(mcp_list_panes_output.json)
 
   # stdin form:
@@ -272,7 +272,7 @@ def build_plan(
     # exited would leave orphan files here and a re-used task_id would clobber
     # them. Caller must clean up (or rename) to replay.
     seed_path = state_dir / "workers" / f"{worker_name}.md"
-    instr_path = state_dir / "foreman" / "outbox" / f"{task_id}-instruction.md"
+    instr_path = state_dir / "dispatcher" / "outbox" / f"{task_id}-instruction.md"
     for existing in (seed_path, instr_path):
         if existing.exists():
             plan.status = "input_invalid"
@@ -340,7 +340,7 @@ def build_plan(
             "tool": "send_message",
             "to_id": worker_name,
             "message_file": str(
-                state_dir / "foreman" / "outbox"
+                state_dir / "dispatcher" / "outbox"
                 / f"{task_id}-instruction.md"
             ),
             "reason": "deliver task instruction",
@@ -351,7 +351,7 @@ def build_plan(
     # they execute the plan; we list them here so the plan is auditable)
     plan.state_writes = [
         str(state_dir / "workers" / f"{worker_name}.md"),
-        str(state_dir / "foreman" / "outbox" / f"{task_id}-instruction.md"),
+        str(state_dir / "dispatcher" / "outbox" / f"{task_id}-instruction.md"),
     ]
 
     return plan
@@ -388,7 +388,7 @@ def write_worker_seed(
 def write_instruction(
     state_dir: Path, task: dict[str, Any], task_id: str,
 ) -> Path:
-    target = state_dir / "foreman" / "outbox" / f"{task_id}-instruction.md"
+    target = state_dir / "dispatcher" / "outbox" / f"{task_id}-instruction.md"
     target.parent.mkdir(parents=True, exist_ok=True)
     instruction = task.get("instruction") or task.get("task_description") or ""
     body = (

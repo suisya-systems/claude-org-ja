@@ -159,7 +159,7 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
 
 **重要 — 剪定は手動**: 現行の `org-setup` スキルは additive-only（不足分を追加するだけで既存を削除しない）のため、上記「書いてはいけないもの」のエントリが一度 `settings.local.json` に入ると自動では消えない。`/org-setup` を再実行しても drift は解消されない点に注意。Secretary は定期（例: 月次 / Issue 起票時）に `.claude/settings.local.json` を本ドキュメントの窓口サンプルで丸ごと置き換える剪定運用を行う。自動化する場合は `org-setup` スキル側に「permissions.md サンプルを baseline とし、差分は警告ログに出した上で削除」する mode を追加する必要がある（別 Issue 化を推奨）。
 
-## フォアマン (`<repo>/.foreman/.claude/settings.local.json`)
+## フォアマン (`<repo>/.dispatcher/.claude/settings.local.json`)
 
 フォアマンはワーカーペインで claude を起動し、ペイン内容を取得する。
 
@@ -216,7 +216,7 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
 **注意**: `{claude_org_path}` は settings.local.json 生成時に解決済みの絶対パスに置換すること。Hook command 内のパスはスペース対策のためクォートされている。
 
 **hooks の役割分担**:
-- `block-dispatcher-out-of-scope.sh`: フォアマンの Edit/Write 対象パスを `.foreman/`, `.state/`, `knowledge/raw/YYYY-MM-DD-{topic}.md` に限定。アプリケーションコード（`tools/`, `dashboard/`, `tests/`, `.claude/skills/`, `docs/`, `registry/` 等）の編集はワーカーへの委譲を強制する
+- `block-dispatcher-out-of-scope.sh`: フォアマンの Edit/Write 対象パスを `.dispatcher/`, `.state/`, `knowledge/raw/YYYY-MM-DD-{topic}.md` に限定。アプリケーションコード（`tools/`, `dashboard/`, `tests/`, `.claude/skills/`, `docs/`, `registry/` 等）の編集はワーカーへの委譲を強制する
 - `block-git-push.sh`: フォアマンからの直接 push を禁止（push は窓口経由）
 - `block-dangerous-git.sh`: `git push --force` / `git reset --hard` / `git branch -D` をブロック
 - `block-workers-delete.sh`: workers ディレクトリの再帰削除をブロック（ワーカー成果物の保護）

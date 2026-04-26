@@ -252,7 +252,7 @@ cat .state/journal.jsonl | tail -1  # suspend イベントを確認
 - ワーカーの自己申告による詳細な進捗情報は失われる
 - journal.jsonl の最後のエントリ以降の情報は失われる
 - git commitされていない作業は状態が不明確になる可能性がある
-- Dispatcher の `poll_events` cursor (`.state/foreman-event-cursor.txt`) 消失時は過去 5 秒分のイベントを取りこぼす可能性があるが、`list_panes` 突き合わせで回復可能
+- Dispatcher の `poll_events` cursor (`.state/dispatcher-event-cursor.txt`) 消失時は過去 5 秒分のイベントを取りこぼす可能性があるが、`list_panes` 突き合わせで回復可能
 
 **失敗パターンと対処**:
 - org-state.md が古すぎる → 定期スナップショットの頻度を上げる（org-delegateの進捗管理を強化）

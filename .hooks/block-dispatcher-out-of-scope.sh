@@ -7,7 +7,7 @@
 #       PreToolUse フックでしか強制できない。本フックがその唯一の障壁。
 #
 # 許可パス（CLAUDE_ORG_PATH を base に解決）:
-#   1. <claude_org>/.foreman/**            — フォアマンの home（CLAUDE.md / skills 等）
+#   1. <claude_org>/.dispatcher/**            — フォアマンの home（CLAUDE.md / skills 等）
 #   2. <claude_org>/.state/**              — inbox/outbox/journal/workers/cursor 等
 #   3. <claude_org>/knowledge/raw/YYYY-MM-DD-{topic}.md  — 振り返り記録（kebab-case topic）
 #
@@ -84,8 +84,8 @@ fi
 CANONICAL_FILE=$(canonicalize "$FILE_PATH")
 CANONICAL_ORG=$(canonicalize "$CLAUDE_ORG_PATH")
 
-# 許可 1: .foreman/ 配下
-if [[ "$CANONICAL_FILE" == "$CANONICAL_ORG/.foreman/"* ]]; then
+# 許可 1: .dispatcher/ 配下
+if [[ "$CANONICAL_FILE" == "$CANONICAL_ORG/.dispatcher/"* ]]; then
   exit 0
 fi
 
@@ -105,4 +105,4 @@ if [[ "$CANONICAL_FILE" == "$KNOWLEDGE_RAW/"* ]]; then
   deny_with_reason "knowledge/raw/ へのファイル名が不正です。YYYY-MM-DD-{topic}.md 形式（topic は英語 kebab-case）にしてください。"
 fi
 
-deny_with_reason "$FILE_PATH はフォアマンの業務スコープ外です。書き込みは .foreman/, .state/, knowledge/raw/YYYY-MM-DD-{topic}.md に限定されています。アプリケーションコード（tools/, dashboard/, docs/ 等）の編集はワーカーに委譲してください。"
+deny_with_reason "$FILE_PATH はフォアマンの業務スコープ外です。書き込みは .dispatcher/, .state/, knowledge/raw/YYYY-MM-DD-{topic}.md に限定されています。アプリケーションコード（tools/, dashboard/, docs/ 等）の編集はワーカーに委譲してください。"

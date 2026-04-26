@@ -64,9 +64,9 @@ INPUT=$(cat)
 TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty')
 
 # ブロック対象ディレクトリ名
-# - 全深度でブロック: .claude, .foreman, .curator, .state (claude-org 固有)
+# - 全深度でブロック: .claude, .dispatcher, .foreman (legacy alias), .curator, .state (claude-org 固有)
 # - WORKER_DIR 直下のみブロック: registry, dashboard, knowledge (一般的な名前)
-ALWAYS_BLOCKED=('.claude' '.foreman' '.curator' '.state')
+ALWAYS_BLOCKED=('.claude' '.dispatcher' '.foreman' '.curator' '.state')
 ROOT_ONLY_BLOCKED=('registry' 'dashboard' 'knowledge')
 
 CANONICAL_WORKER=$(normalize_drive_letter "$(normalize_slashes "$(portable_realpath "$WORKER_DIR")")")
@@ -131,7 +131,7 @@ if [[ "$TOOL_NAME" == "Bash" ]]; then
 
   # ファイル/ディレクトリ作成コマンド + claude-org 構造ディレクトリのパターン検知
   # ベストエフォート: 全てのパターンは捕捉できないが、典型的なものをブロック
-  ALL_BLOCKED_NAMES=('.claude' '.foreman' '.curator' '.state' 'registry' 'dashboard' 'knowledge')
+  ALL_BLOCKED_NAMES=('.claude' '.dispatcher' '.foreman' '.curator' '.state' 'registry' 'dashboard' 'knowledge')
   for DIR in "${ALL_BLOCKED_NAMES[@]}"; do
     # mkdir, touch, cp, mv + ディレクトリ名を含むパス
     if echo "$NORMALIZED_CMD" | grep -qE "(mkdir|touch|cp|mv)[[:space:]]+.*([[:space:]]|/)${DIR}(/|[[:space:]]|\"|$)"; then
