@@ -3,12 +3,11 @@
 # Three parallel jobs:
 #   - shellcheck:        static analysis of scripts/install.sh (Linux)
 #   - psscriptanalyzer:  static analysis of scripts/install.ps1 (Windows)
-#   - smoke:             dry-run the installer on Linux/macOS/Windows
+#   - smoke:             dry-run + CLAUDE_ORG_REF cases on Linux/macOS/Windows
 #
-# Smoke runs use --dry-run --skip-mcp and stub `claude` / `renga`
-# binaries on PATH, because those tools are not available on CI runners
-# and the installer's prerequisite check would otherwise abort before
-# reaching the dry-run echo path.
+# Smoke runs stub `claude` / `renga` binaries on PATH, because those tools
+# are not available on CI runners and the installer's prerequisite check
+# would otherwise abort before reaching the clone step.
 
 name: install-scripts
 
@@ -80,13 +79,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Stub prerequisites and dry-run install.sh (Linux/macOS)
+      # ---- stub claude / renga so the installer's prerequisite check
+      # passes. Stubs are placed once and exposed via $GITHUB_PATH so
+      # every later step inherits them.
+
+      - name: Stub prerequisites (Linux/macOS)
         if: runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
-          # Stub `claude` and `renga` so the installer's prerequisite
-          # check passes. `git` and `gh` are pre-installed on runners.
           stub_dir="$RUNNER_TEMP/stub-bin"
           mkdir -p "$stub_dir"
           for tool in claude renga; do
@@ -96,8 +97,31 @@ jobs:
           STUB
             chmod +x "$stub_dir/$tool"
           done
-          export PATH="$stub_dir:$PATH"
-          target="$RUNNER_TEMP/install-test"
+          echo "$stub_dir" >> "$GITHUB_PATH"
+
+      - name: Stub prerequisites (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $stubDir = Join-Path $env:RUNNER_TEMP 'stub-bin'
+          New-Item -ItemType Directory -Force -Path $stubDir | Out-Null
+          foreach ($tool in @('claude', 'renga')) {
+            $cmdPath = Join-Path $stubDir "$tool.cmd"
+            "@echo off`r`necho stub: %~nx0 %*`r`n" | Set-Content -Path $cmdPath -Encoding ASCII
+          }
+          Add-Content -Path $env:GITHUB_PATH -Value $stubDir
+
+      # ---- Case 1: dry-run path. Validates that the installer reaches
+      # the clone echo, honors --skip-mcp, and reaches the final banner
+      # without actually touching the network.
+
+      - name: Smoke dry-run install.sh (Linux/macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="$RUNNER_TEMP/install-test-dryrun"
           out=$(bash scripts/install.sh --dry-run --skip-mcp --dir "$target" 2>&1)
           echo "$out"
           # Sanity-check the dry-run actually reached the clone step and
@@ -112,19 +136,12 @@ jobs:
           echo "$out" | grep -q "Done. Next steps:" \
             || { echo "smoke: tail marker 'Done. Next steps:' missing" >&2; exit 1; }
 
-      - name: Stub prerequisites and dry-run install.ps1 (Windows)
+      - name: Smoke dry-run install.ps1 (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $stubDir = Join-Path $env:RUNNER_TEMP 'stub-bin'
-          New-Item -ItemType Directory -Force -Path $stubDir | Out-Null
-          foreach ($tool in @('claude', 'renga')) {
-            $cmdPath = Join-Path $stubDir "$tool.cmd"
-            "@echo off`r`necho stub: %~nx0 %*`r`n" | Set-Content -Path $cmdPath -Encoding ASCII
-          }
-          $env:PATH = "$stubDir;$env:PATH"
-          $target = Join-Path $env:RUNNER_TEMP 'install-test'
+          $target = Join-Path $env:RUNNER_TEMP 'install-test-dryrun'
           $out = & pwsh -NoProfile -File scripts/install.ps1 -DryRun -SkipMcp -Dir $target 2>&1 | Out-String
           Write-Host $out
           if ($LASTEXITCODE -ne 0) {
@@ -144,3 +161,187 @@ jobs:
             Write-Error "smoke: tail marker 'Done. Next steps:' missing"
             exit 1
           }
+          # GitHub Actions' pwsh shell wrapper appends
+          # `if (Test-Path variable:\LASTEXITCODE) { exit $LASTEXITCODE }`,
+          # so a stray non-zero $LASTEXITCODE from any earlier `& pwsh`
+          # / native invocation in this step would silently fail the
+          # step even when all assertions pass. Make the success
+          # contract explicit instead of relying on the last command
+          # happening to leave 0 behind.
+          exit 0
+
+      # ---- Local-fixture setup for CLAUDE_ORG_REF cases.
+      #
+      # We need a real ref that is provably *different from the default*
+      # (`main`), otherwise a regression that ignored CLAUDE_ORG_REF and
+      # silently fell through to `main` would still pass. We also want
+      # to avoid pulling the full repo from github.com on every CI run.
+      #
+      # Solution: stand up a bare local repo with a non-default branch,
+      # then redirect the installer's hardcoded github.com URL to it
+      # via `git config --global url.<fixture>.insteadOf`. The installer
+      # still echoes the original URL (so the dry-run grep keeps
+      # working), but the real `git clone` is served locally.
+      #
+      # `actions/checkout@v4` already sets a `url.<github>.insteadOf`
+      # for token injection on `https://github.com/`; ours is more
+      # specific (the exact repo URL) and wins via longest-prefix
+      # matching.
+
+      - name: Set up local clone fixture (Linux/macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          fixture_dir="$RUNNER_TEMP/fixture-repo.git"
+          work_dir="$RUNNER_TEMP/fixture-work"
+          rm -rf "$fixture_dir" "$work_dir"
+          # Build a working tree with both `main` and the non-default
+          # ref, then snapshot it as a bare repo. Avoids needing
+          # `git push` (which some sandboxes block) and produces the
+          # same end state.
+          git init -q -b main "$work_dir"
+          git -C "$work_dir" -c user.email=ci@example.com -c user.name=CI \
+            commit --allow-empty -q -m "fixture commit"
+          git -C "$work_dir" branch test-fixture-ref-v1
+          git clone --bare -q "$work_dir" "$fixture_dir"
+          git config --global "url.${fixture_dir}.insteadOf" \
+            "https://github.com/suisya-systems/claude-org-ja.git"
+
+      - name: Set up local clone fixture (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Forward slashes so git on Windows accepts the path as a URL.
+          $fixtureDir = (Join-Path $env:RUNNER_TEMP 'fixture-repo.git') -replace '\\', '/'
+          $workDir = (Join-Path $env:RUNNER_TEMP 'fixture-work') -replace '\\', '/'
+          if (Test-Path -LiteralPath $fixtureDir) { Remove-Item -Recurse -Force -LiteralPath $fixtureDir }
+          if (Test-Path -LiteralPath $workDir)    { Remove-Item -Recurse -Force -LiteralPath $workDir }
+          # See Linux/macOS step for why we use `clone --bare` instead
+          # of `init --bare` + push.
+          & git init -q -b main $workDir
+          & git -C $workDir -c user.email=ci@example.com -c user.name=CI commit --allow-empty -q -m "fixture commit"
+          & git -C $workDir branch test-fixture-ref-v1
+          & git clone --bare -q $workDir $fixtureDir
+          & git config --global "url.${fixtureDir}.insteadOf" "https://github.com/suisya-systems/claude-org-ja.git"
+          if ($LASTEXITCODE -ne 0) { Write-Error "fixture setup failed (exit $LASTEXITCODE)"; exit 1 }
+
+      # ---- Case 2: CLAUDE_ORG_REF success path (Issue #154). Pin the
+      # clone to a non-default ref that exists only on the fixture and
+      # assert the installer threads it through to `git clone --branch
+      # <ref>`. Because `test-fixture-ref-v1` is *not* the installer's
+      # default, this catches a regression where the env var is read
+      # but ignored by the actual `git clone` invocation.
+
+      - name: Smoke CLAUDE_ORG_REF success path (Linux/macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="$RUNNER_TEMP/install-test-ref-success"
+          rm -rf "$target"
+          out=$(CLAUDE_ORG_REF=test-fixture-ref-v1 bash scripts/install.sh --skip-mcp --dir "$target" 2>&1)
+          echo "$out"
+          echo "$out" | grep -qE "git[[:space:]]+clone[[:space:]]+--branch[[:space:]]+test-fixture-ref-v1[[:space:]]+https://github\.com/suisya-systems/claude-org-ja\.git" \
+            || { echo "smoke: CLAUDE_ORG_REF success: missing 'git clone --branch test-fixture-ref-v1' echo" >&2; exit 1; }
+          echo "$out" | grep -q "Done. Next steps:" \
+            || { echo "smoke: CLAUDE_ORG_REF success: tail marker 'Done. Next steps:' missing" >&2; exit 1; }
+          # Confirm the clone actually populated the target from the fixture.
+          [[ -d "$target/.git" ]] \
+            || { echo "smoke: CLAUDE_ORG_REF success: $target/.git missing after clone" >&2; exit 1; }
+          # And that the checked-out HEAD is the fixture branch (proves the
+          # rewrite *and* the --branch flag both took effect).
+          actual=$(git -C "$target" rev-parse --abbrev-ref HEAD)
+          [[ "$actual" == "test-fixture-ref-v1" ]] \
+            || { echo "smoke: CLAUDE_ORG_REF success: HEAD is '$actual', expected 'test-fixture-ref-v1'" >&2; exit 1; }
+
+      - name: Smoke CLAUDE_ORG_REF success path (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:CLAUDE_ORG_REF = 'test-fixture-ref-v1'
+          $target = Join-Path $env:RUNNER_TEMP 'install-test-ref-success'
+          if (Test-Path -LiteralPath $target) { Remove-Item -Recurse -Force -LiteralPath $target }
+          $out = & pwsh -NoProfile -File scripts/install.ps1 -SkipMcp -Dir $target 2>&1 | Out-String
+          Write-Host $out
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "smoke: CLAUDE_ORG_REF success: install.ps1 exited with $LASTEXITCODE"
+            exit 1
+          }
+          if ($out -notmatch 'git\s+clone\s+--branch\s+test-fixture-ref-v1\s+https://github\.com/suisya-systems/claude-org-ja\.git') {
+            Write-Error "smoke: CLAUDE_ORG_REF success: missing 'git clone --branch test-fixture-ref-v1' echo"
+            exit 1
+          }
+          if ($out -notmatch 'Done\. Next steps:') {
+            Write-Error "smoke: CLAUDE_ORG_REF success: tail marker 'Done. Next steps:' missing"
+            exit 1
+          }
+          if (-not (Test-Path -LiteralPath (Join-Path $target '.git'))) {
+            Write-Error "smoke: CLAUDE_ORG_REF success: $target\.git missing after clone"
+            exit 1
+          }
+          $actual = (& git -C $target rev-parse --abbrev-ref HEAD).Trim()
+          if ($actual -ne 'test-fixture-ref-v1') {
+            Write-Error "smoke: CLAUDE_ORG_REF success: HEAD is '$actual', expected 'test-fixture-ref-v1'"
+            exit 1
+          }
+          # See dry-run step for why we exit 0 explicitly.
+          exit 0
+
+      # ---- Case 3: CLAUDE_ORG_REF failure path (Issue #154). An
+      # invalid ref must surface as a non-zero exit AND the friendly
+      # "failed to clone ref '<ref>'" abort message — i.e. the
+      # installer's wrapper, not just git's raw stderr. The fixture
+      # does not have this ref, so `git clone --branch` fails the same
+      # way it would against a real remote.
+
+      - name: Smoke CLAUDE_ORG_REF failure path (Linux/macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -uo pipefail
+          target="$RUNNER_TEMP/install-test-ref-failure"
+          rm -rf "$target"
+          set +e
+          out=$(CLAUDE_ORG_REF=nonexistent-tag-zzz-9999 bash scripts/install.sh --skip-mcp --dir "$target" 2>&1)
+          rc=$?
+          set -e
+          echo "$out"
+          if [[ "$rc" -eq 0 ]]; then
+            echo "smoke: CLAUDE_ORG_REF failure: expected non-zero exit, got 0" >&2
+            exit 1
+          fi
+          echo "$out" | grep -q "failed to clone ref 'nonexistent-tag-zzz-9999'" \
+            || { echo "smoke: CLAUDE_ORG_REF failure: missing 'failed to clone ref' wrapper message" >&2; exit 1; }
+
+      - name: Smoke CLAUDE_ORG_REF failure path (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # Don't auto-throw on $LASTEXITCODE — we expect a non-zero exit.
+          $ErrorActionPreference = 'Continue'
+          $env:CLAUDE_ORG_REF = 'nonexistent-tag-zzz-9999'
+          $target = Join-Path $env:RUNNER_TEMP 'install-test-ref-failure'
+          if (Test-Path -LiteralPath $target) { Remove-Item -Recurse -Force -LiteralPath $target }
+          $out = & pwsh -NoProfile -File scripts/install.ps1 -SkipMcp -Dir $target 2>&1 | Out-String
+          $rc = $LASTEXITCODE
+          Write-Host $out
+          if ($rc -eq 0) {
+            Write-Error "smoke: CLAUDE_ORG_REF failure: expected non-zero exit, got 0"
+            exit 1
+          }
+          if ($out -notmatch "failed to clone ref 'nonexistent-tag-zzz-9999'") {
+            Write-Error "smoke: CLAUDE_ORG_REF failure: missing 'failed to clone ref' wrapper message"
+            exit 1
+          }
+          # This step *expects* install.ps1 to exit non-zero, so $rc
+          # captures 1 above — but $LASTEXITCODE keeps that 1 too, and
+          # the GitHub Actions pwsh wrapper (`if (Test-Path
+          # variable:\LASTEXITCODE) { exit $LASTEXITCODE }`) would then
+          # exit the step with 1 even though every assertion passed.
+          # That is the actual fix for the regression that re-opened
+          # this issue after eed0b00; the verbatim-stderr change alone
+          # was not enough.
+          exit 0

@@ -154,11 +154,17 @@ if (Test-Path -LiteralPath $Dir) {
     if (-not $DryRun) {
         & git clone --branch $Ref $RepoUrl $Dir
         if ($LASTEXITCODE -ne 0) {
-            Write-Error @"
-install.ps1: failed to clone ref '$Ref' from $RepoUrl.
-install.ps1: check that `$env:CLAUDE_ORG_REF names an existing branch or tag.
-install.ps1: branches and tags are accepted; see https://github.com/suisya-systems/claude-org-ja/releases for stable tags.
-"@
+            # Use [Console]::Error.WriteLine instead of Write-Error: the
+            # latter passes the message through PowerShell's error
+            # formatter, which prefixes each line with `| ` and *column-
+            # wraps* to the host console width. On narrow CI consoles
+            # that wrap can split the literal "failed to clone ref
+            # '<ref>'" across two lines, breaking smoke-test regexes
+            # that grep for it. Writing straight to stderr keeps the
+            # message verbatim and matches install.sh's behaviour.
+            [Console]::Error.WriteLine("install.ps1: failed to clone ref '$Ref' from $RepoUrl.")
+            [Console]::Error.WriteLine("install.ps1: check that `$env:CLAUDE_ORG_REF names an existing branch or tag.")
+            [Console]::Error.WriteLine("install.ps1: branches and tags are accepted; see https://github.com/suisya-systems/claude-org-ja/releases for stable tags.")
             exit 1
         }
     }
