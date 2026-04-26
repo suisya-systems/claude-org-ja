@@ -117,8 +117,8 @@ run_test "rm -rf /tmp/workers/cache (P2: 無関係パスの偽陽性防止)" \
   "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"rm -rf /tmp/workers/cache\"}}" \
   0
 
-run_test "ccmux new-tab で workers パスを含むコマンド (偽陽性防止)" \
-  "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ccmux new-tab --command \\\"cd ${WORKERS_DIR}/dummy-test && claude -p 'rm -rf test'\\\"\"}}" \
+run_test "renga new-tab で workers パスを含むコマンド (偽陽性防止)" \
+  "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"renga new-tab --command \\\"cd ${WORKERS_DIR}/dummy-test && claude -p 'rm -rf test'\\\"\"}}" \
   0
 
 run_test "ls workers ディレクトリ (削除ではない)" \

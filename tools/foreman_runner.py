@@ -1,7 +1,7 @@
 """Foreman state-machine helper for claude-org (Issue #60).
 
 v1 scope: `delegate-plan` subcommand. Given a structured task description
-and a ccmux `list_panes` snapshot, this script computes the deterministic
+and a renga `list_panes` snapshot, this script computes the deterministic
 parts of the Foreman delegation state machine and emits a JSON action plan
 that Foreman Claude reads and executes via MCP tool calls.
 
@@ -12,7 +12,7 @@ calls.
 
 Deterministic operations this helper owns:
   - balanced split target/direction selection from pane rects
-  - task / worker name validation (matches ccmux's `[A-Za-z0-9_-]` + not all-digit)
+  - task / worker name validation (matches renga's `[A-Za-z0-9_-]` + not all-digit)
   - worker instruction file writing (.state/foreman/outbox/{task_id}-instruction.md)
   - worker state file seed (.state/workers/worker-{task_id}.md)
   - journal planned-event preparation
@@ -46,7 +46,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-# Matches ccmux's name/role validation (see `set_pane_identity` docs).
+# Matches renga's name/role validation (see `set_pane_identity` docs).
 _NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 _ALL_DIGITS = re.compile(r"^\d+$")
 
@@ -250,7 +250,7 @@ def build_plan(
     cwd_err = validate_cwd(cwd)
     if cwd_err:
         # Any cwd problem (empty / missing / not-a-directory) is a hard fail.
-        # Letting ccmux catch it later is too late — the helper already wrote
+        # Letting renga catch it later is too late — the helper already wrote
         # worker state by then, and "not a directory" was silently passing as
         # a warning before.
         plan.status = "input_invalid"
@@ -477,7 +477,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     dp.add_argument(
         "--panes-json", required=True,
-        help=("path to a JSON file with ccmux `list_panes` output "
+        help=("path to a JSON file with renga `list_panes` output "
               "(a list of pane dicts, or {panes: [...]})"),
     )
     dp.add_argument(

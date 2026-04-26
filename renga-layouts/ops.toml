@@ -1,16 +1,16 @@
 # Secretary-only initial layout for claude-org.
 #
 # Usage (from the claude-org repo root):
-#   ccmux --layout ops
+#   renga --layout ops
 #
 # Additional panes (Foreman / Curator / Workers) are spawned
-# dynamically via `mcp__ccmux-peers__spawn_claude_pane` from the
+# dynamically via `mcp__renga-peers__spawn_claude_pane` from the
 # Secretary's `/org-start` flow.
 #
-# The Secretary is launched as a bare `claude`, which ccmux 0.16.0+
+# The Secretary is launched as a bare `claude`, which renga 0.16.0+
 # auto-upgrades to the Alt+P peer-enabled form — the
-# `--dangerously-load-development-channels server:ccmux-peers` flag
-# is injected by ccmux itself, so we don't write it here.
+# `--dangerously-load-development-channels server:renga-peers` flag
+# is injected by renga itself, so we don't write it here.
 #
 # Override the Secretary startup command by editing `command` below
 # or setting a shell alias pointing at your preferred `claude` invocation.

@@ -1,7 +1,7 @@
-"""Unit tests for tools/check_ccmux_compat.py (Issue #61).
+"""Unit tests for tools/check_renga_compat.py (Issue #61).
 
 Run with:
-  py -3 -m unittest tools.test_check_ccmux_compat
+  py -3 -m unittest tools.test_check_renga_compat
   (from repo root, or add claude-org to PYTHONPATH)
 """
 from __future__ import annotations
@@ -13,18 +13,18 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import check_ccmux_compat as mod  # noqa: E402
+import check_renga_compat as mod  # noqa: E402
 
 
 class ParseVersionTests(unittest.TestCase):
-    def test_parses_ccmux_prefixed_output(self) -> None:
-        self.assertEqual(mod.parse_version("ccmux 0.18.0"), (0, 18, 0))
+    def test_parses_renga_prefixed_output(self) -> None:
+        self.assertEqual(mod.parse_version("renga 0.18.0"), (0, 18, 0))
 
     def test_parses_bare_semver(self) -> None:
         self.assertEqual(mod.parse_version("0.14.0\n"), (0, 14, 0))
 
     def test_parses_with_suffix(self) -> None:
-        self.assertEqual(mod.parse_version("ccmux 0.18.2-dev"), (0, 18, 2))
+        self.assertEqual(mod.parse_version("renga 0.18.2-dev"), (0, 18, 2))
 
     def test_returns_none_when_absent(self) -> None:
         self.assertIsNone(mod.parse_version("no version here"))
@@ -68,7 +68,7 @@ class RequiredToolsContract(unittest.TestCase):
 
 
 class ParseToolsListResponseTests(unittest.TestCase):
-    """Cover the stdio parse path without spawning ccmux."""
+    """Cover the stdio parse path without spawning renga."""
 
     def test_extracts_tools_from_tools_list_response(self) -> None:
         payload = (
@@ -128,8 +128,8 @@ class JsonShapeTests(unittest.TestCase):
 
     def test_json_has_stable_shape(self) -> None:
         report = mod.CheckReport()
-        report.ccmux_version = "0.18.0"
-        report.ccmux_version_tuple = [0, 18, 0]
+        report.renga_version = "0.18.0"
+        report.renga_version_tuple = [0, 18, 0]
         report.mcp_registered = True
         report.mcp_tools_found = list(mod.REQUIRED_MCP_TOOLS)
 
@@ -145,9 +145,9 @@ class JsonShapeTests(unittest.TestCase):
 
         doc = json.loads(buf.getvalue())
         self.assertIn("ok", doc)
-        self.assertIn("ccmux", doc)
+        self.assertIn("renga", doc)
         self.assertIn("mcp", doc)
-        self.assertIn("version", doc["ccmux"])
+        self.assertIn("version", doc["renga"])
         self.assertIn("tools_required", doc["mcp"])
         self.assertIn("tools_missing", doc["mcp"])
 

@@ -141,7 +141,7 @@ substitute_run "$DG_HOOK" 'g_it reset --soft HEAD~1' pass
 substitute_run "$DG_HOOK" 'g_it reset --mixed HEAD~1' pass
 substitute_run "$DG_HOOK" 'g_it branch -d some-branch' pass
 substitute_run "$DG_HOOK" 'g_it branch --delete some-branch' pass
-substitute_run "$DG_HOOK" 'ccmux mcp install --force' pass 'non-git-with-force'
+substitute_run "$DG_HOOK" 'renga mcp install --force' pass 'non-git-with-force'
 substitute_run "$DG_HOOK" 'bash scripts/install-hooks.sh --force' pass 'non-git-with-force'
 
 total=$((pass_count + fail_count))

@@ -48,9 +48,9 @@ if [[ -z "$COMMAND" ]]; then
   exit 0
 fi
 
-# ccmux コマンドは除外する
+# renga コマンドは除外する
 # ワーカー起動時に --cwd workers/... と -p "...rm..." が共存し偽陽性を起こすため
-if echo "$COMMAND" | grep -qE '(^|[|&;[:space:]])ccmux[[:space:]]'; then
+if echo "$COMMAND" | grep -qE '(^|[|&;[:space:]])renga[[:space:]]'; then
   exit 0
 fi
 

@@ -23,19 +23,19 @@ Glob が 0 件を返す場合は Bash の `ls` コマンドでフォールバッ
 - 整理結果を `knowledge/curated/` に出力する
 
 ## 通信
-- ccmux-peers で窓口に改善提案を通知する
+- renga-peers で窓口に改善提案を通知する
 - 人間と直接対話することはない
 
 ### 窓口への返信方法（重要）
 
-窓口（Secretary）から `<channel source="ccmux-peers">` メッセージを受信したとき、MCP サーバーの汎用 instruction は「`from_id` で返信せよ」と案内するが、`from_id` は numeric pane id（例: `"1"`）であり、ccmux レイアウト再構築や pane id 採番変更で壊れる。
+窓口（Secretary）から `<channel source="renga-peers">` メッセージを受信したとき、MCP サーバーの汎用 instruction は「`from_id` で返信せよ」と案内するが、`from_id` は numeric pane id（例: `"1"`）であり、renga レイアウト再構築や pane id 採番変更で壊れる。
 
 **窓口への送信は必ず安定名 `to_id="secretary"` を使うこと**:
 
 ```
-mcp__ccmux-peers__send_message(to_id="secretary", message="...")
+mcp__renga-peers__send_message(to_id="secretary", message="...")
 ```
 
-- `secretary` は `ccmux --layout ops` で固定された pane name（`/org-start` Step 0 の `set_pane_identity` 自動修復によっても維持される）
+- `secretary` は `renga --layout ops` で固定された pane name（`/org-start` Step 0 の `set_pane_identity` 自動修復によっても維持される）
 - `from_id` の numeric 値（`"1"` 等）を `to_id` に渡してはならない
 - `[pane_not_found]` が返る場合のみ、フォールバックとして直近メッセージの `from_id` に再送する
