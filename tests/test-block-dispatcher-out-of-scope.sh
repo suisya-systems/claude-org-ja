@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Tests for .hooks/block-foreman-out-of-scope.sh
-# Validates: Edit/Write file_path is constrained to foreman business scope
+# Tests for .hooks/block-dispatcher-out-of-scope.sh
+# Validates: Edit/Write file_path is constrained to dispatcher business scope
 #   (.foreman/, .state/, knowledge/raw/YYYY-MM-DD-{topic}.md)
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-HOOK="$REPO_ROOT/.hooks/block-foreman-out-of-scope.sh"
+HOOK="$REPO_ROOT/.hooks/block-dispatcher-out-of-scope.sh"
 
 portable_realpath() {
   local target="$1"
@@ -79,8 +79,8 @@ assert_eq 0 "$(run_hook_edit "$CLAUDE_ORG_PATH/.foreman/notebook.ipynb" "Noteboo
   "Allow: NotebookEdit tool name"
 
 # ---- Blocked paths (out-of-scope app code) ----
-assert_eq 2 "$(run_hook_edit "$CLAUDE_ORG_PATH/tools/foreman_runner.py")" \
-  "Block: tools/foreman_runner.py"
+assert_eq 2 "$(run_hook_edit "$CLAUDE_ORG_PATH/tools/dispatcher_runner.py")" \
+  "Block: tools/dispatcher_runner.py"
 assert_eq 2 "$(run_hook_edit "$CLAUDE_ORG_PATH/dashboard/app.py")" \
   "Block: dashboard/"
 assert_eq 2 "$(run_hook_edit "$CLAUDE_ORG_PATH/tests/test_parsers.py")" \

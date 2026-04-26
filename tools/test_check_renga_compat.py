@@ -124,7 +124,7 @@ class ToolMismatchTests(unittest.TestCase):
 
 
 class JsonShapeTests(unittest.TestCase):
-    """The JSON output is a machine contract for Foreman/Secretary."""
+    """The JSON output is a machine contract for Dispatcher/Secretary."""
 
     def test_json_has_stable_shape(self) -> None:
         report = mod.CheckReport()

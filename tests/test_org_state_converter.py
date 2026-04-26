@@ -52,9 +52,9 @@ Current Objective: Issue #20 org-state JSON snapshot
 | org-state-json | B | C:\\path\\to\\workers\\claude-org-wezterm\\.worktrees\\org-state-json | claude-org-wezterm | in_use |
 | blog-redesign | A | C:\\path\\to\\sandbox\\blog | blog | available |
 
-## Foreman
+## Dispatcher
 
-- Peer ID: peer-foreman-001
+- Peer ID: peer-dispatcher-001
 - Pane ID: pane-42
 
 ## Curator
@@ -114,10 +114,10 @@ class TestParseOrgStateMd(unittest.TestCase):
         self.assertEqual(reg[1]["taskId"], "blog-redesign")
         self.assertEqual(reg[1]["status"], "available")
 
-    def test_foreman(self):
-        self.assertIsNotNone(self.result["foreman"])
-        self.assertEqual(self.result["foreman"]["peerId"], "peer-foreman-001")
-        self.assertEqual(self.result["foreman"]["paneId"], "pane-42")
+    def test_dispatcher(self):
+        self.assertIsNotNone(self.result["dispatcher"])
+        self.assertEqual(self.result["dispatcher"]["peerId"], "peer-dispatcher-001")
+        self.assertEqual(self.result["dispatcher"]["paneId"], "pane-42")
 
     def test_curator(self):
         self.assertIsNotNone(self.result["curator"])
@@ -131,6 +131,23 @@ class TestParseOrgStateMd(unittest.TestCase):
         self.assertIn("テストを完了させる", ri)
 
 
+class TestLegacyForemanHeading(unittest.TestCase):
+    """Backward compat: parser still accepts legacy '## Foreman' heading
+    so pre-rename .state/org-state.md files keep parsing after the rename."""
+
+    def test_legacy_foreman_heading_maps_to_dispatcher_key(self):
+        legacy_md = (
+            "Status: ACTIVE\n\n"
+            "## Foreman\n\n"
+            "- Peer ID: peer-legacy-001\n"
+            "- Pane ID: pane-7\n"
+        )
+        result = parse_org_state_md(legacy_md)
+        self.assertIsNotNone(result["dispatcher"])
+        self.assertEqual(result["dispatcher"]["peerId"], "peer-legacy-001")
+        self.assertEqual(result["dispatcher"]["paneId"], "pane-7")
+
+
 class TestParseEmptyMd(unittest.TestCase):
     """Test parse_org_state_md() with empty/minimal input."""
 
@@ -139,7 +156,7 @@ class TestParseEmptyMd(unittest.TestCase):
         self.assertEqual(result["status"], "IDLE")
         self.assertIsNone(result["currentObjective"])
         self.assertEqual(result["workItems"], [])
-        self.assertIsNone(result["foreman"])
+        self.assertIsNone(result["dispatcher"])
         self.assertIsNone(result["curator"])
         self.assertIsNone(result["resumeInstructions"])
 

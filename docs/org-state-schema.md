@@ -31,7 +31,7 @@ python3 dashboard/org_state_converter.py     # Mac/Linux
 | ステータス変更 | org-delegate Step 5 | Work Item のステータス（REVIEW/COMPLETED/IN_PROGRESS） |
 | 組織中断 | org-suspend Phase 3 | Status=SUSPENDED, Updated, Work Items, Resume Instructions |
 | 組織再開 | org-resume Phase 4 | Status=ACTIVE |
-| 起動（Foreman/Curator 記録） | org-start Steps 2-3 | Foreman/Curator のピア ID とペイン名 |
+| 起動（Dispatcher/Curator 記録） | org-start Steps 2-3 | Dispatcher/Curator のピア ID とペイン名 |
 
 ---
 
@@ -61,7 +61,7 @@ python3 dashboard/org_state_converter.py     # Mac/Linux
       "status": "in_use | available"
     }
   ],
-  "foreman": {
+  "dispatcher": {
     "peerId": "<peer ID>",
     "paneId": "<renga pane name>"
   },
@@ -87,7 +87,7 @@ python3 dashboard/org_state_converter.py     # Mac/Linux
 | `currentObjective` | `string \| null` | 現在の目標（`Current Objective:` フィールド）。未設定なら `null` |
 | `workItems` | `array` | 作業アイテム一覧 |
 | `workerDirectoryRegistry` | `array` | ワーカーディレクトリ再利用テーブル |
-| `foreman` | `object \| null` | フォアマンのピア・ペイン情報。未記録なら `null` |
+| `dispatcher` | `object \| null` | フォアマンのピア・ペイン情報。未記録なら `null` |
 | `curator` | `object \| null` | キュレーターのピア・ペイン情報。未記録なら `null` |
 | `resumeInstructions` | `string \| null` | 再開時の注意事項（org-suspend が書く）。なければ `null` |
 
@@ -122,12 +122,12 @@ python3 dashboard/org_state_converter.py     # Mac/Linux
 | `project` | `string` | プロジェクト名。エフェメラルの場合は `-` |
 | `status` | `string` | `in_use`（作業中）/ `available`（完了済み・再利用可能） |
 
-### foreman / curator
+### dispatcher / curator
 
 | フィールド | 型 | 説明 |
 |---|---|---|
-| `peerId` | `string` | renga-peers のペイン名（`worker-{task_id}` / `foreman` / `curator` 形式）。`mcp__renga-peers__send_message` の `to_id` に渡す値 |
-| `paneId` | `string` | renga のペイン名 (`--id` で命名したもの、例: `foreman`, `curator`)。旧 WezTerm 時代は数値の pane-id を格納していたが、ccmux 移行に伴い安定名ベースに変更。現行仕様では `peerId` と同値になることが多い |
+| `peerId` | `string` | renga-peers のペイン名（`worker-{task_id}` / `dispatcher` / `curator` 形式）。`mcp__renga-peers__send_message` の `to_id` に渡す値 |
+| `paneId` | `string` | renga のペイン名 (`--id` で命名したもの、例: `dispatcher`, `curator`)。旧 WezTerm 時代は数値の pane-id を格納していたが、ccmux 移行に伴い安定名ベースに変更。現行仕様では `peerId` と同値になることが多い |
 
 ---
 

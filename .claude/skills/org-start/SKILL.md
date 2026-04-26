@@ -109,8 +109,8 @@ renga 0.18.0+ では `mcp__renga-peers__spawn_claude_pane` が役割別の構造
    mcp__renga-peers__spawn_claude_pane(
      target="focused",
      direction="horizontal",
-     role="foreman",
-     name="foreman",
+     role="dispatcher",
+     name="dispatcher",
      cwd=".foreman",
      permission_mode="bypassPermissions",
      model="sonnet"
@@ -118,23 +118,23 @@ renga 0.18.0+ では `mcp__renga-peers__spawn_claude_pane` が役割別の構造
    ```
    - `target="focused"`: 現在フォーカスされている窓口ペインを分割（省略可。省略時は focused）
    - `direction="horizontal"` = 上下分割（窓口=上 / フォアマン=下）
-   - `role="foreman"`: `mcp__renga-peers__list_panes` で役割識別できるようにラベル付与
-   - `name="foreman"`: 後続の `mcp__renga-peers__send_message(to_id="foreman", ...)` や `close_pane(target="foreman")` で宛先指定するための安定名。**renga-peers は全桁数字の name を id として解釈するので、英字を含む名前を必ず付ける**
+   - `role="dispatcher"`: `mcp__renga-peers__list_panes` で役割識別できるようにラベル付与
+   - `name="dispatcher"`: 後続の `mcp__renga-peers__send_message(to_id="dispatcher", ...)` や `close_pane(target="dispatcher")` で宛先指定するための安定名。**renga-peers は全桁数字の name を id として解釈するので、英字を含む名前を必ず付ける**
    - `cwd=".foreman"`: caller ペイン（= 窓口）の cwd を基点に `.foreman/` へ解決される。`cd X && claude ...` を `command` に埋める旧方式は禁止（auto-upgrade が発動せず channel push が失われる落とし穴）
    - `permission_mode="bypassPermissions"` / `model="sonnet"`: renga が `claude --permission-mode bypassPermissions --model sonnet --dangerously-load-development-channels server:renga-peers` を合成して実行する
    - `.foreman/CLAUDE.md` にフォアマン用の役割指示がある（Secretary の CLAUDE.md とは別）
-   - 戻り値: `"Spawned pane id=N."` のテキスト。以降のペイン操作では `name="foreman"` で参照する
+   - 戻り値: `"Spawned pane id=N."` のテキスト。以降のペイン操作では `name="dispatcher"` で参照する
    - エラーは `[<code>] <msg>` 形式のテキストで返却される（例: `[split_refused]` / `[pane_not_found]` / `[cwd_invalid]`）。code 一覧と分岐は `.claude/skills/org-delegate/references/renga-error-codes.md` を参照
 2. Claude Code 初回起動時に「Load development channel? (Y/n)」確認プロンプトが表示される。`mcp__renga-peers__send_keys` で Enter を送信して承認する:
    ```
-   mcp__renga-peers__send_keys(target="foreman", enter=true)
+   mcp__renga-peers__send_keys(target="dispatcher", enter=true)
    ```
    - Enter は CR (0x0D) として PTY に書き込まれる
    - 承認しないと `server:renga-peers` チャネルが有効化されず、`send_message` の channel push が届かない。Step 3 の `list_peers` 待ちもタイムアウトする
 3. `mcp__renga-peers__list_peers` で新しいピアが現れるのを待つ
 4. `mcp__renga-peers__send_message` でフォアマンに以下を送信する:
    「あなたはフォアマンです。窓口からの DELEGATE メッセージを受け取り、ワーカーのペイン起動・指示送信・状態記録を代行してください。CLOSE_PANE メッセージを受けたらペインを閉じてください。」
-5. フォアマンのピアIDと renga ペイン名（`foreman`）を記録する（org-state.md の Foreman セクション）
+5. フォアマンのピアIDと renga ペイン名（`dispatcher`）を記録する（org-state.md の Dispatcher セクション）
 6. JSON スナップショットを再生成する:
    `py -3 dashboard/org_state_converter.py`
 
@@ -143,7 +143,7 @@ renga 0.18.0+ では `mcp__renga-peers__spawn_claude_pane` が役割別の構造
 1. `mcp__renga-peers__spawn_claude_pane` でフォアマンペインの右半分をキュレーター用に立ち上げる:
    ```
    mcp__renga-peers__spawn_claude_pane(
-     target="foreman",
+     target="dispatcher",
      direction="vertical",
      role="curator",
      name="curator",
@@ -152,7 +152,7 @@ renga 0.18.0+ では `mcp__renga-peers__spawn_claude_pane` が役割別の構造
      model="opus"
    )
    ```
-   - `target="foreman"`: Step 2 で命名したフォアマンペインを分割対象に指定
+   - `target="dispatcher"`: Step 2 で命名したフォアマンペインを分割対象に指定
    - `direction="vertical"` = 左右分割（フォアマン=左 / キュレーター=右）
    - `name="curator"`: 安定名（英字を含む、全桁数字禁止）
    - `cwd=".curator"`: caller ペイン（= 窓口）の cwd 基点で `.curator/` 解決

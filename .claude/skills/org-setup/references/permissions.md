@@ -180,7 +180,7 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"{claude_org_path}/.hooks/block-foreman-out-of-scope.sh\""
+            "command": "bash \"{claude_org_path}/.hooks/block-dispatcher-out-of-scope.sh\""
           }
         ]
       },
@@ -216,7 +216,7 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
 **注意**: `{claude_org_path}` は settings.local.json 生成時に解決済みの絶対パスに置換すること。Hook command 内のパスはスペース対策のためクォートされている。
 
 **hooks の役割分担**:
-- `block-foreman-out-of-scope.sh`: フォアマンの Edit/Write 対象パスを `.foreman/`, `.state/`, `knowledge/raw/YYYY-MM-DD-{topic}.md` に限定。アプリケーションコード（`tools/`, `dashboard/`, `tests/`, `.claude/skills/`, `docs/`, `registry/` 等）の編集はワーカーへの委譲を強制する
+- `block-dispatcher-out-of-scope.sh`: フォアマンの Edit/Write 対象パスを `.foreman/`, `.state/`, `knowledge/raw/YYYY-MM-DD-{topic}.md` に限定。アプリケーションコード（`tools/`, `dashboard/`, `tests/`, `.claude/skills/`, `docs/`, `registry/` 等）の編集はワーカーへの委譲を強制する
 - `block-git-push.sh`: フォアマンからの直接 push を禁止（push は窓口経由）
 - `block-dangerous-git.sh`: `git push --force` / `git reset --hard` / `git branch -D` をブロック
 - `block-workers-delete.sh`: workers ディレクトリの再帰削除をブロック（ワーカー成果物の保護）

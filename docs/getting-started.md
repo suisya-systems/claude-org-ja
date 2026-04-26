@@ -190,7 +190,7 @@ py -3 tools/check_renga_compat.py --json
 python tools/check_role_configs.py --include-local
 ```
 
-特定 role の worktree 内で実行する場合は `--role <secretary|foreman|curator|worker>` を併用する。出力で role 別の missing / unknown allow と必須 hook の欠落が列挙される。
+特定 role の worktree 内で実行する場合は `--role <secretary|dispatcher|curator|worker>` を併用する。出力で role 別の missing / unknown allow と必須 hook の欠落が列挙される。
 
 **対処**:
 

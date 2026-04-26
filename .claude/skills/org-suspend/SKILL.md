@@ -119,9 +119,9 @@ kill $(cat .state/dashboard.pid 2>/dev/null) 2>/dev/null || true
    「SHUTDOWN: 作業を終了してください。」
 5. **キュレーターを停止**: キュレーターに `mcp__renga-peers__send_message` で終了を指示:
    「SHUTDOWN: 作業を終了してください。」
-6. フォアマン・キュレーターも (3) と同じ 2-pass 構造で確認（`pending = {"foreman", "curator"}` を集合に入れ、`role == "foreman"` または `role == "curator"` の `pane_exited` を待つ）:
+6. フォアマン・キュレーターも (3) と同じ 2-pass 構造で確認（`pending = {"dispatcher", "curator"}` を集合に入れ、`role == "dispatcher"` または `role == "curator"` の `pane_exited` を待つ）:
    - Pass 1: `poll_events(types=["pane_exited"], timeout_ms=10000)` 相当ループ
-   - Pass 2: 残った pane に `mcp__renga-peers__close_pane(target="foreman")` / `mcp__renga-peers__close_pane(target="curator")` を送り、`poll_events` ループ (timeout_ms=5000) で再確認
+   - Pass 2: 残った pane に `mcp__renga-peers__close_pane(target="dispatcher")` / `mcp__renga-peers__close_pane(target="curator")` を送り、`poll_events` ループ (timeout_ms=5000) で再確認
 
 **最後のペイン (窓口) の扱い**: フォアマン・キュレーターを閉じた時点でタブに残るのは窓口
 ペインのみになる。窓口が自分自身を `mcp__renga-peers__close_pane(target="secretary")` で

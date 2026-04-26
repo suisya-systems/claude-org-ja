@@ -43,7 +43,7 @@ def parse_org_state_md(text):
     - Current Objective: <value>
     - Work items: "- task-id: title [STATUS]" with sub-items
     - ## Worker Directory Registry (Markdown table)
-    - ## Foreman / ## Curator sections (Peer ID:, Pane ID: lines)
+    - ## Dispatcher / ## Curator sections (Peer ID:, Pane ID: lines)
     - ## Resume Instructions (free text until next ## heading)
     """
     status = "IDLE"
@@ -51,7 +51,7 @@ def parse_org_state_md(text):
     current_objective = None
     work_items = []
     worker_dir_registry = []
-    foreman = None
+    dispatcher = None
     curator = None
     resume_instructions = None
 
@@ -60,7 +60,7 @@ def parse_org_state_md(text):
     in_registry_table = False
     registry_header_seen = False
     current_role = None
-    foreman_data = {}
+    dispatcher_data = {}
     curator_data = {}
 
     lines = text.splitlines()
@@ -78,8 +78,8 @@ def parse_org_state_md(text):
             in_registry_table = False
             registry_header_seen = False
             current_role = None
-            if "foreman" in heading:
-                current_role = "foreman"
+            if "foreman" in heading or "dispatcher" in heading:
+                current_role = "dispatcher"
             elif "curator" in heading:
                 current_role = "curator"
             i += 1
@@ -107,20 +107,20 @@ def parse_org_state_md(text):
             i += 1
             continue
 
-        # --- Foreman / Curator sections (check BEFORE work items to avoid "- Peer ID:" clash) ---
-        if current_role in ("foreman", "curator"):
+        # --- Dispatcher / Curator sections (check BEFORE work items to avoid "- Peer ID:" clash) ---
+        if current_role in ("dispatcher", "curator"):
             m = re.match(r"^-?\s*Peer\s+ID:\s*(\S+)", line, re.IGNORECASE)
             if m:
-                if current_role == "foreman":
-                    foreman_data["peerId"] = m.group(1)
+                if current_role == "dispatcher":
+                    dispatcher_data["peerId"] = m.group(1)
                 else:
                     curator_data["peerId"] = m.group(1)
                 i += 1
                 continue
             m = re.match(r"^-?\s*Pane\s+ID:\s*(\S+)", line, re.IGNORECASE)
             if m:
-                if current_role == "foreman":
-                    foreman_data["paneId"] = m.group(1)
+                if current_role == "dispatcher":
+                    dispatcher_data["paneId"] = m.group(1)
                 else:
                     curator_data["paneId"] = m.group(1)
                 i += 1
@@ -189,9 +189,9 @@ def parse_org_state_md(text):
     if section == "resume instructions" and resume_lines:
         resume_instructions = "\n".join(resume_lines).strip() or None
 
-    # Finalize foreman/curator
-    if foreman_data:
-        foreman = foreman_data
+    # Finalize dispatcher/curator
+    if dispatcher_data:
+        dispatcher = dispatcher_data
     if curator_data:
         curator = curator_data
 
@@ -202,7 +202,7 @@ def parse_org_state_md(text):
         "currentObjective": current_objective,
         "workItems": work_items,
         "workerDirectoryRegistry": worker_dir_registry,
-        "foreman": foreman,
+        "dispatcher": dispatcher,
         "curator": curator,
         "resumeInstructions": resume_instructions,
     }

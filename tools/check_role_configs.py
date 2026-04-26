@@ -349,7 +349,7 @@ def check_on_disk(
         # Dynamic roles like ``worker`` have no fixed path in schema; in that
         # case the file to audit is the current worktree's
         # .claude/settings.local.json. For roles with schema-declared paths
-        # (foreman / curator / secretary), use those.
+        # (dispatcher / curator / secretary), use those.
         candidate_paths = role_schema.get("settings_paths") or [
             WORKER_LOCAL_SETTINGS
         ]

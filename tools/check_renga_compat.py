@@ -332,7 +332,7 @@ def emit_text(report: CheckReport) -> None:
 
 
 def emit_json(report: CheckReport) -> None:
-    # Produce a stable-shape JSON doc; Foreman/Secretary can consume it.
+    # Produce a stable-shape JSON doc; Dispatcher/Secretary can consume it.
     doc = {
         "ok": report.ok,
         "renga": {
