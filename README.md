@@ -236,6 +236,22 @@ claude-org-ja は **4 層防御**（`permissions.deny` / PreToolUse フック / 
 
 各層の責任境界・既知の残存リスク（関数定義経由の回避手段など）・PreToolUse フックの検知範囲は [docs/overview-technical.md](docs/overview-technical.md) と `.hooks/` / `.githooks/` 配下を参照。
 
+### 攻撃ベクトル × 防御層マトリクス
+
+`auto` モードロール（窓口・ワーカー・キュレーター）における主要な攻撃ベクトルと、各層がそれをどこまで止めるかの対応表（✅ ブロック / ⚠️ 部分・条件付き / — 対象外）:
+
+| 攻撃ベクトル | `permissions.deny` | PreToolUse フック | sandbox | pre-commit |
+|---|---|---|---|---|
+| `git commit --no-verify` 直書き | ✅ | ✅ | — | — |
+| `eval "git commit --no-verify"` / `bash -c "..."` | — | ✅ (Phase 2a, [#79](https://github.com/suisya-systems/claude-org-ja/issues/79): `unwrap_eval_and_bashc`) | — | — |
+| `VAR=$(printf -- '--no-verify'); git commit $VAR` | — | ✅ (assignment 収集 + flatten) | — | — |
+| `git push --force` / `--no-verify` / `git reset --hard` | ✅ | ✅ | — | — |
+| `cat .env` / 認証情報読み取り | ⚠️ Read tool 経路のみ (`Read(./.env)` 等) | — | ⚠️ macOS / Linux / WSL2 のみ。Windows native は未実装（[docs/verification.md §10.1](docs/verification.md)） | — |
+| ステージ差分への秘密情報混入 | — | — | — | ✅ ([scripts/precommit-secret-scanner.sh](scripts/precommit-secret-scanner.sh)) |
+| シェル関数経由の bypass（`f(){ git commit --no-verify; }; f`） | — | ⚠️ 関数定義の静的解析は非対応（Phase 2c は廃案）。sandbox の denyWrite による副作用抑制で部分カバー | ⚠️ (上記 OS 制約に同じ) | — |
+
+**残存リスク (residual risk)**: シェル関数定義経由のルーティングは静的検出が困難で、PreToolUse フック層では検出しません（Phase 2c で検討した shell-layer 静的解析は誤検知率と保守コストの観点から廃案）。Windows native では sandbox による副作用抑制も働かないため、フォアマンを含む `bypass` モードロールではこのベクトルがロール契約による自主規律のみで担保される状態となります。詳細と段階導入の意思決定は [Issue #79](https://github.com/suisya-systems/claude-org-ja/issues/79) と [docs/verification.md §10](docs/verification.md) を参照。
+
 新しくクローンしたら、1 度だけ以下を実行してください:
 
 ```bash
