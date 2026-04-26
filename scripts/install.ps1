@@ -101,7 +101,17 @@ Install the listed tools, then re-run this installer.
 # --- Clone ---------------------------------------------------------------
 
 if (Test-Path -LiteralPath $Dir) {
-    if (Test-Path -LiteralPath (Join-Path $Dir '.git')) {
+    # Confirm it is actually a git workspace by asking git, not by looking
+    # for a `.git` path (which can be a stray file in a non-repo directory).
+    $isGitRepo = $false
+    Push-Location -LiteralPath $Dir
+    try {
+        $null = & git rev-parse --is-inside-work-tree 2>$null
+        if ($LASTEXITCODE -eq 0) { $isGitRepo = $true }
+    } finally {
+        Pop-Location
+    }
+    if ($isGitRepo) {
         Write-Host "install.ps1: '$Dir' already exists and looks like a git repo."
         if (Read-YesNo 'Skip clone and reuse existing directory?' 'Y') {
             Write-Host "Reusing existing $Dir (no clone)."

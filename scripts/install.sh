@@ -46,16 +46,20 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Detect interactive stdin. When piped from curl, /dev/tty is the only
-# reliable way to prompt the user; fall back to non-interactive defaults.
+# Detect interactive input. When piped from curl, stdin is the pipe; the
+# only reliable prompt path is /dev/tty, and only if it can actually be
+# opened for both read and write. Probe once and cache the result so
+# `set -e` doesn't kill the script on a failed write later.
 HAS_TTY=0
-if [[ -t 0 ]] || [[ -r /dev/tty ]]; then
+if [[ -t 0 ]]; then
+  HAS_TTY=1
+elif { : > /dev/tty; } 2>/dev/null && { : < /dev/tty; } 2>/dev/null; then
   HAS_TTY=1
 fi
 
 prompt_yes_no() {
   # $1 = prompt, $2 = default (Y or N). Returns 0 for yes, 1 for no.
-  local prompt="$1" default="$2" reply
+  local prompt="$1" default="$2" reply=""
   local hint
   if [[ "$default" == "Y" ]]; then hint="[Y/n]"; else hint="[y/N]"; fi
   if [[ "$HAS_TTY" != "1" ]]; then
@@ -65,7 +69,9 @@ prompt_yes_no() {
   if [[ -t 0 ]]; then
     read -r -p "$prompt $hint " reply || reply=""
   else
-    printf "%s %s " "$prompt" "$hint" > /dev/tty
+    # Use /dev/tty for both prompt and response. Guard with `|| true` so
+    # `set -e` doesn't terminate on a transient write failure.
+    printf "%s %s " "$prompt" "$hint" > /dev/tty 2>/dev/null || true
     read -r reply < /dev/tty || reply=""
   fi
   reply="${reply:-$default}"
@@ -117,7 +123,8 @@ fi
 # --- Clone -----------------------------------------------------------------
 
 if [[ -e "$TARGET_DIR" ]]; then
-  if [[ -d "$TARGET_DIR/.git" ]]; then
+  # `.git` may be a directory (normal clone) or a file (worktree / submodule).
+  if [[ -e "$TARGET_DIR/.git" ]]; then
     echo "install.sh: '$TARGET_DIR' already exists and looks like a git repo."
     if prompt_yes_no "Skip clone and reuse existing directory?" "Y"; then
       echo "Reusing existing $TARGET_DIR (no clone)."
