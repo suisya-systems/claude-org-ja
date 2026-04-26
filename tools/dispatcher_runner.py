@@ -1,11 +1,11 @@
-"""Foreman state-machine helper for claude-org (Issue #60).
+"""Dispatcher state-machine helper for claude-org (Issue #60).
 
 v1 scope: `delegate-plan` subcommand. Given a structured task description
 and a renga `list_panes` snapshot, this script computes the deterministic
-parts of the Foreman delegation state machine and emits a JSON action plan
-that Foreman Claude reads and executes via MCP tool calls.
+parts of the Dispatcher delegation state machine and emits a JSON action plan
+that Dispatcher Claude reads and executes via MCP tool calls.
 
-The helper does NOT call MCP tools directly. Foreman remains the actor that
+The helper does NOT call MCP tools directly. Dispatcher remains the actor that
 receives Secretary's DELEGATE, invokes this helper, reads the returned plan,
 and performs the `spawn_claude_pane` / `send_keys` / `send_message` / etc.
 calls.
@@ -20,12 +20,12 @@ Deterministic operations this helper owns:
 Everything that requires live MCP calls stays in the Claude side.
 
 Usage:
-  py -3 tools/foreman_runner.py delegate-plan \
+  py -3 tools/dispatcher_runner.py delegate-plan \
       --task-json .state/foreman/inbox/{task_id}.json \
       --panes-json <(mcp_list_panes_output.json)
 
   # stdin form:
-  cat task.json | py -3 tools/foreman_runner.py delegate-plan \
+  cat task.json | py -3 tools/dispatcher_runner.py delegate-plan \
       --panes-json panes.json
 
 Exit codes:
@@ -129,11 +129,11 @@ def choose_split(panes: list[Pane]) -> Optional[SplitChoice]:
 
     candidates: list[SplitChoice] = []
     for p in panes:
-        if p.role not in ("secretary", "foreman", "worker"):
+        if p.role not in ("secretary", "dispatcher", "worker"):
             continue
 
-        # foreman: only if adjacent to curator (keeps foreman-curator pair intact)
-        if p.role == "foreman":
+        # dispatcher: only if adjacent to curator (keeps dispatcher-curator pair intact)
+        if p.role == "dispatcher":
             if curator is None or not rect_adjacent(p, curator):
                 continue
 
@@ -315,7 +315,7 @@ def build_plan(
         spawn["args"] = list(extra_args)
     plan.spawn = spawn
 
-    # after_spawn steps Foreman should perform in order
+    # after_spawn steps Dispatcher should perform in order
     plan.after_spawn = [
         {
             "tool": "poll_events",
@@ -379,7 +379,7 @@ def write_worker_seed(
         f"{task.get('task_description', '(no description provided)')}\n"
         "\n"
         "## Progress Log\n"
-        "- [planned by foreman_runner] pane not yet spawned\n"
+        "- [planned by dispatcher_runner] pane not yet spawned\n"
     )
     target.write_text(body, encoding="utf-8")
     return target
@@ -458,7 +458,7 @@ def cmd_delegate_plan(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Foreman state-machine helper for claude-org"
+        description="Dispatcher state-machine helper for claude-org"
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 

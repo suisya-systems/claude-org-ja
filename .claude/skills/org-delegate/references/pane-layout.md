@@ -15,19 +15,19 @@ Tab 1: ops (ワーカー 0 人)
 │                    │     (上半分)       │
 │                    │                    │
 │                    ├──────────┬─────────┤
-│                    │ Foreman  │ Curator │
+│                    │ Dispatcher  │ Curator │
 │                    │          │         │
 └────────────────────┴──────────┴─────────┘
 ```
 
-> ※ 実際には `secretary` が左で `foreman/curator` が下半分を占める構成もあり、初期レイアウト詳細は org-start に委ねる。本ドキュメントで重要なのは「`foreman` ペインの矩形から balanced split でワーカー zone を作っていく」という点。
+> ※ 実際には `secretary` が左で `dispatcher/curator` が下半分を占める構成もあり、初期レイアウト詳細は org-start に委ねる。本ドキュメントで重要なのは「`dispatcher` ペインの矩形から balanced split でワーカー zone を作っていく」という点。
 
 ## 配置ルール
 
 | 対象 | 操作 | 備考 |
 |---|---|---|
-| フォアマン | 窓口ペインを水平分割して下半分 | `mcp__renga-peers__spawn_claude_pane(target="focused", direction="horizontal", role="foreman", name="foreman", cwd=".foreman", permission_mode="bypassPermissions", model="sonnet")` (org-start Step 2) |
-| キュレーター | フォアマンペインを垂直分割して右半分 | `mcp__renga-peers__spawn_claude_pane(target="foreman", direction="vertical", role="curator", name="curator", cwd=".curator", permission_mode="{default_permission_mode}")` (org-start Step 3) |
+| フォアマン | 窓口ペインを水平分割して下半分 | `mcp__renga-peers__spawn_claude_pane(target="focused", direction="horizontal", role="dispatcher", name="dispatcher", cwd=".foreman", permission_mode="bypassPermissions", model="sonnet")` (org-start Step 2) |
+| キュレーター | フォアマンペインを垂直分割して右半分 | `mcp__renga-peers__spawn_claude_pane(target="dispatcher", direction="vertical", role="curator", name="curator", cwd=".curator", permission_mode="{default_permission_mode}")` (org-start Step 3) |
 | 各ワーカー | **balanced split**: `list_panes` が返す現在の rect から target と direction を動的に選び、同一タブ内に積む | 詳細は下記「ワーカーの balanced split 戦略」セクション。`mcp__renga-peers__spawn_claude_pane(target={target}, direction={direction}, role="worker", name="worker-{task_id}", cwd="{workers_dir}/{task_id}", permission_mode="{default_permission_mode}")` (org-delegate Step 3) |
 
 > **`spawn_claude_pane` を使う理由**: renga 0.18.0+ で追加された構造化 launch ツール。`cwd` / `permission_mode` / `model` / `args[]` を構造化フィールドで渡すと、renga が内部で `claude --permission-mode {mode} --dangerously-load-development-channels server:renga-peers ...` を合成する。旧方式（`cd`-プレフィックス付き command 文字列を `spawn_pane` に流し込む）は **禁止**（cwd 変更プレフィックスがあると renga の bare-`claude` auto-upgrade が発動せず、`send_message` の channel push が届かなくなる。窓口→フォアマン / フォアマン→ワーカーの指示が一切通らなくなる）。Secretary のみ `ops.toml` から bare `claude` で起動され auto-upgrade に任せる。
@@ -38,7 +38,7 @@ Tab 1: ops (ワーカー 0 人)
 
 renga は各 split で対象ペインを 50/50 に分ける。`MIN_PANE_WIDTH = 20` / `MIN_PANE_HEIGHT = 5` の下限を割り込むと `[split_refused]` で拒否される (調査: `<workers_dir>/renga-split-inv/findings.md`)。
 
-固定 target や序数 `k` ベースの lookup table では、foreman 幅の累積半減や、ワーカーが途中で閉じた後の再派遣で想定レイアウトと実レイアウトが乖離し、早期に `split_refused` を誘発していた。
+固定 target や序数 `k` ベースの lookup table では、dispatcher 幅の累積半減や、ワーカーが途中で閉じた後の再派遣で想定レイアウトと実レイアウトが乖離し、早期に `split_refused` を誘発していた。
 
 現設計は `mcp__renga-peers__list_panes` が返す各ペインの **rect 情報 (`x / y / width / height`, cell 単位)** を使い、**現状のレイアウトから動的に target と direction を選ぶ**。ワーカー退役順の揺れや途中クローズに強く、固定的な「N 並列上限」は持たず、ターミナルサイズと MIN_PANE 制約が許す限り分割し続け、限界に達したら自動 escalate する。
 
@@ -47,9 +47,9 @@ renga は各 split で対象ペインを 50/50 に分ける。`MIN_PANE_WIDTH = 
 新規ワーカーを起動するフォアマンは、`spawn_pane` を呼ぶ前に以下を実行する。判定ステップの詳細は `SKILL.md` Step 3-1 を参照（Claude が `list_panes` の結果テキストを解釈してロジックを実行する）。
 
 1. `mcp__renga-peers__list_panes` で全ペインと属性 (id / name / role / focused / x / y / width / height) を取得する
-2. **候補集合**: `role ∈ {worker, foreman, secretary}` のペイン (curator は常に除外)
+2. **候補集合**: `role ∈ {worker, dispatcher, secretary}` のペイン (curator は常に除外)
 3. **候補の絞り込み**:
-   - **foreman-curator 隣接維持**: foreman は curator と rect 隣接 (後述) しているときのみ候補に入れる。組織運営上 foreman と curator の隣接配置は前提。foreman を分割すると隣接が崩れ得るので、既に非隣接な foreman は候補から外す
+   - **dispatcher-curator 隣接維持**: dispatcher は curator と rect 隣接 (後述) しているときのみ候補に入れる。組織運営上 dispatcher と curator の隣接配置は前提。dispatcher を分割すると隣接が崩れ得るので、既に非隣接な dispatcher は候補から外す
    - **secretary 保護**: secretary は分割後の新ペイン幅 `new_w >= 125` **かつ** 新ペイン高さ `new_h >= 45` を満たす場合のみ候補化 (保険条項、実運用では通常発動しない)。width だけ通っても height が足りなければ却下する
 4. **direction 決定** (各候補の aspect ratio から):
    - `width > height * 2` → `vertical` (左右分割)
@@ -72,7 +72,7 @@ renga の cell 座標は整数なので tolerance なし完全一致で判定す
 
 ### 初期状態と典型的な挙動
 
-ワーカー 0 人の時点では、候補は `foreman` のみ (secretary は `new_w >= 125` / `new_h >= 45` 条件または隣接条件で除外されるのが通常。curator は常に除外)。foreman は典型的に横長なので vertical 分割され、最初のワーカー zone が foreman の右側に作られる。
+ワーカー 0 人の時点では、候補は `dispatcher` のみ (secretary は `new_w >= 125` / `new_h >= 45` 条件または隣接条件で除外されるのが通常。curator は常に除外)。dispatcher は典型的に横長なので vertical 分割され、最初のワーカー zone が dispatcher の右側に作られる。
 
 以降は既存ペインの中で「分割後サイズが最大」のものが選ばれ、direction が rect に応じて自然に交替することで準 balanced な配置になる。固定的な 4 並列 / 8 並列の図は意味を持たないため割愛する (動的で決まるため)。
 
@@ -88,11 +88,11 @@ renga の cell 座標は整数なので tolerance なし完全一致で判定す
 - **全ペインを同一タブ内に配置する**: renga の `list_panes` / `focus_pane` / `send_message` / `inspect`（CLI） は現在フォーカス中のタブのペインしか扱えないため、フォアマン・キュレーター・全ワーカーを同一タブ内に split で積む。`new_tab` でワーカーを別タブに置くとフォアマン側から addressable でなくなる (2026-04-20 判明。renga 本体での解決は suisya-systems/renga#71)
 - **命名規約**:
   - 窓口 → `secretary`
-  - フォアマン → `foreman`
+  - フォアマン → `dispatcher`
   - キュレーター → `curator`
   - ワーカー → `worker-{task_id}` (task_id は kebab-case の一意識別子)
   - **renga-peers の target 解決ルール**: 全桁数字の name は id として解釈されるため、name には英字を必ず含める (`worker-1` は OK、`1` は id 扱いになるので NG)
-- **役割ラベル (`role`)**: `secretary` / `foreman` / `curator` / `worker` の 4 種
+- **役割ラベル (`role`)**: `secretary` / `dispatcher` / `curator` / `worker` の 4 種
   - `list_panes` の出力で `role` フィールドが取得でき、組織状態の集計や balanced split の target 選出に使える
 - **ワーカー完了時**:
   1. 窓口がフォアマンに `CLOSE_PANE` を依頼

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PreToolUse Hook: Foreman の Edit/Write 対象パスが業務スコープ外ならブロックする。
+# PreToolUse Hook: Dispatcher の Edit/Write 対象パスが業務スコープ外ならブロックする。
 # 方式: exit 2 + stderr メッセージ でブロック
 #
 # 背景: フォアマンは Sonnet 制約により permission_mode=bypassPermissions で起動するため、
@@ -63,7 +63,7 @@ if ! command -v jq &>/dev/null; then
 fi
 
 if [[ -z "${CLAUDE_ORG_PATH:-}" ]]; then
-  echo "ブロック: CLAUDE_ORG_PATH が設定されていません。foreman settings.local.json の env を確認してください。" >&2
+  echo "ブロック: CLAUDE_ORG_PATH が設定されていません。dispatcher settings.local.json の env を確認してください。" >&2
   exit 2
 fi
 
