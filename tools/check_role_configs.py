@@ -119,7 +119,15 @@ def _load_override_allow(settings_path: Path) -> set[str]:
         data = json.loads(ov.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return set()
-    return set(((data.get("permissions") or {}).get("allow")) or [])
+    if not isinstance(data, dict):
+        return set()
+    perms = data.get("permissions")
+    if not isinstance(perms, dict):
+        return set()
+    allow = perms.get("allow")
+    if not isinstance(allow, list):
+        return set()
+    return {x for x in allow if isinstance(x, str)}
 
 
 def validate_config(

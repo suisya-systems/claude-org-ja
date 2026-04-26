@@ -274,6 +274,40 @@ class SafetyGateTests(unittest.TestCase):
         self.assertEqual(baks, [])
 
 
+class OverrideShapeValidationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.td = tempfile.TemporaryDirectory()
+        self.root = Path(self.td.name)
+        (self.root / ".curator" / ".claude").mkdir(parents=True)
+        (self.root / ".curator" / ".claude" / "settings.local.json").write_text(
+            json.dumps({"permissions": {"allow": []}}), encoding="utf-8",
+        )
+
+    def tearDown(self) -> None:
+        self.td.cleanup()
+
+    def _run_with_override(self, override_payload) -> int:
+        ov = self.root / ".curator" / ".claude" / "settings.local.override.json"
+        ov.write_text(json.dumps(override_payload), encoding="utf-8")
+        return p.main(["--role", "curator", "--root", str(self.root), "--no-backup"])
+
+    def test_top_level_array_aborts(self) -> None:
+        rc = self._run_with_override(["Bash(foo:*)"])
+        self.assertNotEqual(rc, 0)
+
+    def test_scalar_permissions_aborts(self) -> None:
+        rc = self._run_with_override({"permissions": "oops"})
+        self.assertNotEqual(rc, 0)
+
+    def test_allow_non_string_aborts(self) -> None:
+        rc = self._run_with_override({"permissions": {"allow": [123]}})
+        self.assertNotEqual(rc, 0)
+
+    def test_well_formed_override_succeeds(self) -> None:
+        rc = self._run_with_override({"permissions": {"allow": ["Bash(my-tool:*)"]}})
+        self.assertEqual(rc, 0)
+
+
 class CheckerOverrideAwarenessTests(unittest.TestCase):
     """check_role_configs.py must subtract sibling settings.local.override.json
     allows from the closed-world check, otherwise the documented prune+override

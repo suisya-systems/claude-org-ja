@@ -283,6 +283,29 @@ def _find_placeholders(node: Any) -> set[str]:
     return found
 
 
+def _validate_override_shape(data: object) -> str | None:
+    """Return None when the override file is structurally usable, else an
+    error message. Catches user mistakes (top-level array, scalar permissions,
+    non-string allow entries) before they reach deep_merge / validate_config
+    where they would crash with an opaque AttributeError."""
+    if not isinstance(data, dict):
+        return f"top level must be a JSON object, got {type(data).__name__}"
+    perms = data.get("permissions")
+    if perms is not None and not isinstance(perms, dict):
+        return f"'permissions' must be an object, got {type(perms).__name__}"
+    if isinstance(perms, dict):
+        for key in ("allow", "deny"):
+            v = perms.get(key)
+            if v is None:
+                continue
+            if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
+                return f"'permissions.{key}' must be a list of strings"
+    env = data.get("env")
+    if env is not None and not isinstance(env, dict):
+        return f"'env' must be an object, got {type(env).__name__}"
+    return None
+
+
 def _validate_target_safety(role: str, role_schema: dict, global_schema: dict, target: dict) -> list[str]:
     """Re-run the safety subset of check_role_configs against the merged target
     so an override file cannot smuggle in forbidden / role-disallowed allow
@@ -343,6 +366,10 @@ def process_role(
             override = json.loads(ov_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError as exc:
             print(f"[org_setup_prune] role={role}: override file invalid JSON: {ov_path} ({exc}); aborting.", file=sys.stderr)
+            return 2
+        shape_err = _validate_override_shape(override)
+        if shape_err is not None:
+            print(f"[org_setup_prune] role={role}: override file has invalid shape: {ov_path} ({shape_err}); aborting.", file=sys.stderr)
             return 2
 
     cop = claude_org_path_arg or detect_claude_org_path(current)
