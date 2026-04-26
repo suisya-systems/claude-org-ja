@@ -169,7 +169,7 @@ Done. Next steps:
 Inside the Secretary's Claude Code pane, run:
 
   /org-setup    # first time only: place per-role permissions and hooks
-  /org-start    # bring foreman + curator online
+  /org-start    # bring dispatcher + curator online
 
 For details see docs/getting-started.md.
 "@ | Write-Host

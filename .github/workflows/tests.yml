@@ -25,6 +25,9 @@ jobs:
       - name: Run Python tests
         run: python -m unittest discover -s tests -v
 
+      - name: Run tools/ Python tests
+        run: python -m unittest discover -s tools -p 'test_*.py' -v
+
       - name: Check role configs integrity (Issue #85)
         run: python tools/check_role_configs.py
 

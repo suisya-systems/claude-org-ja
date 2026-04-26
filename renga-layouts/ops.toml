@@ -3,7 +3,7 @@
 # Usage (from the claude-org repo root):
 #   renga --layout ops
 #
-# Additional panes (Foreman / Curator / Workers) are spawned
+# Additional panes (Dispatcher / Curator / Workers) are spawned
 # dynamically via `mcp__renga-peers__spawn_claude_pane` from the
 # Secretary's `/org-start` flow.
 #

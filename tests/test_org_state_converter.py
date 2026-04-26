@@ -131,6 +131,23 @@ class TestParseOrgStateMd(unittest.TestCase):
         self.assertIn("テストを完了させる", ri)
 
 
+class TestLegacyForemanHeading(unittest.TestCase):
+    """Backward compat: parser still accepts legacy '## Foreman' heading
+    so pre-rename .state/org-state.md files keep parsing after the rename."""
+
+    def test_legacy_foreman_heading_maps_to_dispatcher_key(self):
+        legacy_md = (
+            "Status: ACTIVE\n\n"
+            "## Foreman\n\n"
+            "- Peer ID: peer-legacy-001\n"
+            "- Pane ID: pane-7\n"
+        )
+        result = parse_org_state_md(legacy_md)
+        self.assertIsNotNone(result["dispatcher"])
+        self.assertEqual(result["dispatcher"]["peerId"], "peer-legacy-001")
+        self.assertEqual(result["dispatcher"]["paneId"], "pane-7")
+
+
 class TestParseEmptyMd(unittest.TestCase):
     """Test parse_org_state_md() with empty/minimal input."""
 
