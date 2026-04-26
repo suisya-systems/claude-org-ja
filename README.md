@@ -238,7 +238,7 @@ claude-org-ja は **4 層防御**（`permissions.deny` / PreToolUse フック / 
 
 ### 攻撃ベクトル × 防御層マトリクス
 
-本リポジトリ自身の `.claude/settings.json`（窓口・キュレーター用、`auto` モード）と `.githooks/pre-commit` を基準にした、主要な攻撃ベクトルと各層の対応表です（✅ ブロック / ⚠️ 部分・条件付き / — 対象外 / ➖ 未配備）。**ワーカーロール用テンプレート（`.claude/skills/org-setup/references/permissions.md`）は `permissions.deny` が `git push *` / `rm -rf *` のみで、PreToolUse フックも `block-git-push.sh` / `block-org-structure.sh` のみが配備されます**。`--no-verify` / `git reset --hard` 系の遮断は本リポジトリ側の窓口・キュレーターのみが該当する点に注意してください（フォアマンは `.dispatcher/` 用の独立した hook 群、ワーカーは別テンプレートで管理されます）。
+本リポジトリ自身の `.claude/settings.json`（窓口・キュレーター用、`auto` モード）と `.githooks/pre-commit` を基準にした、主要な攻撃ベクトルと各層の対応表です（✅ ブロック / ⚠️ 部分・条件付き / — 対象外 / ➖ 未配備）。**ワーカーロール用テンプレート（`.claude/skills/org-setup/references/permissions.md`）は `permissions.deny` が `git push` 系と `rm -r` / `rm -rf` のみで、PreToolUse フックは `check-worker-boundary.sh` / `block-org-structure.sh` / `block-git-push.sh` が配備されます**（`block-no-verify.sh` / `block-dangerous-git.sh` はワーカー側には未配備）。`--no-verify` / `git reset --hard` / `git branch -D` 系の直接遮断は本リポジトリ側の窓口・キュレーターのみが該当します。ワーカーは `git push` 自体を `block-git-push.sh` で全面遮断するため、`--force` を含む push 系は副次的に止まりますが、ローカルでの `git commit --no-verify` や `git reset --hard` はロール契約による自主規律で担保される設計です（フォアマンは `.dispatcher/` 用の独立した hook 群で別途管理）。
 
 | 攻撃ベクトル | `permissions.deny` | PreToolUse フック | sandbox | pre-commit |
 |---|---|---|---|---|
@@ -253,7 +253,7 @@ claude-org-ja は **4 層防御**（`permissions.deny` / PreToolUse フック / 
 **残存リスク (residual risk)**:
 - **シェル関数定義経由のルーティング**: 関数本体内に隠された禁止コマンドは PreToolUse フックの静的解析では検出できません（Phase 2c で検討した shell-layer 静的解析は誤検知率と保守コストの観点から廃案）。sandbox の `denyWrite` も対象が `~/.claude/settings.json` / `~/.ssh/**` 等の限定リストで、`git commit` などのリポジトリ副作用は止めません。本ベクトルは現状ロール契約による自主規律のみで担保されます。
 - **Windows native の sandbox 不在**: 上記表のとおり `cat .env` 等は Windows native では素通りします。ワーカー実行環境としては macOS / Linux / WSL2 を推奨し、Windows native では別経路（OS 側のファイル権限・GitHub Secret Scanning 等）で補完してください。
-- **ワーカーロールの薄い deny**: ワーカー用テンプレートの `permissions.deny` は意図的に小さく保たれており、`--no-verify` / `--force` の直接遮断はフォアマン経由の起動契約と CI 側の保護に依存します。
+- **ワーカーロールの薄い deny**: ワーカー用テンプレートの `permissions.deny` は意図的に小さく保たれており、ローカルでの `git commit --no-verify` / `git reset --hard` の直接遮断は配備されません（`git push` 自体は hook で全面遮断されるため `--force` は副次的に止まります）。残るリスクはロール契約と窓口側 CI の保護に依存します。
 
 詳細と段階導入の意思決定は [Issue #79](https://github.com/suisya-systems/claude-org-ja/issues/79) と [docs/verification.md §10](docs/verification.md) を参照。
 
