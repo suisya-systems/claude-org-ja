@@ -18,12 +18,14 @@ on:
       - 'scripts/install.sh'
       - 'scripts/install.ps1'
       - '.github/workflows/install-scripts.yml'
+      - '.gitattributes'
   push:
     branches: [main]
     paths:
       - 'scripts/install.sh'
       - 'scripts/install.ps1'
       - '.github/workflows/install-scripts.yml'
+      - '.gitattributes'
 
 jobs:
   shellcheck:
@@ -104,6 +106,11 @@ jobs:
             || { echo "smoke: missing 'git clone' echo from dry-run" >&2; exit 1; }
           echo "$out" | grep -q "Skipping 'renga mcp install'" \
             || { echo "smoke: --skip-mcp banner missing" >&2; exit 1; }
+          # Tail marker — guards against a future early `exit 0`
+          # slipping in between the skip-mcp banner and the final
+          # "Done." heredoc, which would otherwise leave smoke green.
+          echo "$out" | grep -q "Done. Next steps:" \
+            || { echo "smoke: tail marker 'Done. Next steps:' missing" >&2; exit 1; }
 
       - name: Stub prerequisites and dry-run install.ps1 (Windows)
         if: runner.os == 'Windows'
@@ -130,5 +137,10 @@ jobs:
           }
           if ($out -notmatch 'Skipping `renga mcp install`') {
             Write-Error "smoke: -SkipMcp banner missing"
+            exit 1
+          }
+          # Tail marker — see Linux/macOS step for rationale.
+          if ($out -notmatch 'Done\. Next steps:') {
+            Write-Error "smoke: tail marker 'Done. Next steps:' missing"
             exit 1
           }
