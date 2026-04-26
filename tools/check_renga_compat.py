@@ -145,7 +145,7 @@ def check_renga_version(report: CheckReport) -> None:
         report.failures.append(
             f"renga {report.renga_version} is older than required "
             f"{report.renga_min_required}. Run: "
-            "`npm install -g renga@0.18.0` (or later)"
+            "`npm install -g @suisya-systems/renga@0.18.0` (or later)"
         )
 
 
