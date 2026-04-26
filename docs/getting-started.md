@@ -8,7 +8,7 @@ claude-orgの使い方ガイド。
 
 ### 前提条件
 
-以下が全てインストール・設定済みであること。詳細は [README.md](../README.md#quickstart) を参照。
+以下が全てインストール・設定済みであること。詳細は [README.md](../README.md#クイックスタート) を参照。
 
 - **Claude Code** — AIエージェント本体
 - **renga** — ターミナルマルチプレクサ (組織のペイン管理に使用)
@@ -20,8 +20,8 @@ claude-orgの使い方ガイド。
 本リポジトリをクローンし、そのディレクトリで renga を起動する。
 
 ```bash
-git clone <このリポジトリの URL>
-cd <クローン先>
+git clone https://github.com/happy-ryo/claude-org.git
+cd claude-org
 renga mcp install              # 初回のみ。renga-peers MCP を user-scope 登録
 renga --layout ops
 ```
