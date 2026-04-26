@@ -239,6 +239,41 @@ class EndToEndTests(unittest.TestCase):
         self.assertNotEqual(rc, 0)
 
 
+class SafetyGateTests(unittest.TestCase):
+    """A malicious / mistaken settings.local.override.json must NOT be able to
+    smuggle a forbidden wide allow into settings.local.json. The prune writer
+    re-validates the merged target before persisting."""
+
+    def setUp(self) -> None:
+        self.td = tempfile.TemporaryDirectory()
+        self.root = Path(self.td.name)
+        (self.root / ".curator" / ".claude").mkdir(parents=True)
+        (self.root / ".curator" / ".claude" / "settings.local.json").write_text(
+            json.dumps({"permissions": {"allow": []}}), encoding="utf-8",
+        )
+        # Override that tries to inject a forbidden wide allow.
+        (self.root / ".curator" / ".claude" / "settings.local.override.json").write_text(
+            json.dumps({"permissions": {"allow": ["Bash(git *)"]}}), encoding="utf-8",
+        )
+
+    def tearDown(self) -> None:
+        self.td.cleanup()
+
+    def test_forbidden_override_aborts_before_write(self) -> None:
+        # Use the real schema/permissions.md so the forbidden_allow_exact list applies.
+        rc = p.main([
+            "--role", "curator",
+            "--root", str(self.root),
+            "--no-backup",
+        ])
+        self.assertNotEqual(rc, 0)
+        # Original settings untouched -- no .bak either (no write attempted).
+        cfg = json.loads((self.root / ".curator" / ".claude" / "settings.local.json").read_text(encoding="utf-8"))
+        self.assertEqual(cfg["permissions"]["allow"], [])
+        baks = list((self.root / ".curator" / ".claude").glob("settings.local.json.bak.*"))
+        self.assertEqual(baks, [])
+
+
 class CheckerOverrideAwarenessTests(unittest.TestCase):
     """check_role_configs.py must subtract sibling settings.local.override.json
     allows from the closed-world check, otherwise the documented prune+override

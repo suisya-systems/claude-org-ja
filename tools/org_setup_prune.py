@@ -33,6 +33,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import check_role_configs as _check  # noqa: E402  -- reuse validate_config
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_SCHEMA = REPO_ROOT / "tools" / "role_configs_schema.json"
 DEFAULT_PERMISSIONS_MD = (
@@ -280,6 +283,34 @@ def _find_placeholders(node: Any) -> set[str]:
     return found
 
 
+def _validate_target_safety(role: str, role_schema: dict, global_schema: dict, target: dict) -> list[str]:
+    """Re-run the safety subset of check_role_configs against the merged target
+    so an override file cannot smuggle in forbidden / role-disallowed allow
+    entries past the writer. Returns ERROR messages; empty list = safe.
+    Closed-world unknown-allow checks are intentionally skipped here -- the
+    override file IS the user-sanctioned escape hatch for those, and the
+    on-disk checker subtracts them. Forbidden / disallow patterns remain
+    enforced because the safety contract documents them as non-bypassable.
+    """
+    findings = _check.validate_config(
+        f"prune[{role}]", role, target, role_schema, global_schema,
+        extra_allowed=set((target.get("permissions") or {}).get("allow") or []),
+    )
+    # Keep only the categories that codify the safety contract; required_*
+    # missing-entry findings are not write-blocking (they would be a template
+    # bug surfaced by check_role_configs separately).
+    blockers: list[str] = []
+    for f in findings:
+        msg = f.message
+        if (
+            "forbidden wide allow entry" in msg
+            or "forbidden allow entry" in msg
+            or "role contract violation" in msg
+        ):
+            blockers.append(f.format())
+    return blockers
+
+
 def process_role(
     role: str,
     schema: dict,
@@ -315,6 +346,7 @@ def process_role(
             return 2
 
     cop = claude_org_path_arg or detect_claude_org_path(current)
+    role_schema = schema["roles"].get(role, {})
     try:
         target = build_target(
             role, template, current, override,
@@ -325,6 +357,17 @@ def process_role(
         # placeholder cannot be resolved; surface it as a non-zero rc instead
         # of bubbling up so callers (incl. tests) get a normal return.
         print(str(exc), file=sys.stderr)
+        return 2
+
+    safety_blockers = _validate_target_safety(role, role_schema, schema.get("global", {}), target)
+    if safety_blockers:
+        print(
+            f"[org_setup_prune] role={role}: refusing to write -- merged target violates the safety contract "
+            "(forbidden wide allow / role disallow). Fix the override file and retry.",
+            file=sys.stderr,
+        )
+        for line in safety_blockers:
+            print("  " + line, file=sys.stderr)
         return 2
 
     if dry_run:
