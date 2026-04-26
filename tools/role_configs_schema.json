@@ -168,7 +168,7 @@
       "required_hooks": [
         {
           "event": "PreToolUse",
-          "matcher_contains": "Edit",
+          "matcher_contains": "Edit|Write",
           "command_contains": "block-foreman-out-of-scope.sh"
         },
         {
