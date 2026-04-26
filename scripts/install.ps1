@@ -104,15 +104,33 @@ if (Test-Path -LiteralPath $Dir) {
     # Confirm it is actually a git workspace by asking git, not by looking
     # for a `.git` path (which can be a stray file in a non-repo directory).
     $isGitRepo = $false
+    $existingUrl = ''
     Push-Location -LiteralPath $Dir
     try {
         $null = & git rev-parse --is-inside-work-tree 2>$null
-        if ($LASTEXITCODE -eq 0) { $isGitRepo = $true }
+        if ($LASTEXITCODE -eq 0) {
+            $isGitRepo = $true
+            $existingUrl = (& git remote get-url origin 2>$null)
+            if ($LASTEXITCODE -ne 0) { $existingUrl = '' }
+        }
     } finally {
         Pop-Location
     }
     if ($isGitRepo) {
-        Write-Host "install.ps1: '$Dir' already exists and looks like a git repo."
+        # Verify origin matches; otherwise we'd silently run later steps
+        # against an unrelated checkout that happens to share the name.
+        if ($existingUrl -ne $RepoUrl) {
+            Write-Error "install.ps1: '$Dir' is a git repo, but its 'origin' is '$existingUrl' (expected $RepoUrl). Refusing to reuse — move/rename the directory or pass -Dir <other>."
+            exit 1
+        }
+        # Fail-closed when piped via `iwr | iex` and no real console is
+        # attached: don't silently reuse on a non-interactive run.
+        $isInteractive = ([Environment]::UserInteractive -and $null -ne $Host.UI.RawUI)
+        if (-not $isInteractive) {
+            Write-Error "install.ps1: non-interactive shell; refusing to reuse '$Dir' without confirmation. Re-run interactively or move/rename the directory."
+            exit 1
+        }
+        Write-Host "install.ps1: '$Dir' already exists and points at $RepoUrl."
         if (Read-YesNo 'Skip clone and reuse existing directory?' 'Y') {
             Write-Host "Reusing existing $Dir (no clone)."
         } else {

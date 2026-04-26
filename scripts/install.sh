@@ -125,7 +125,26 @@ fi
 if [[ -e "$TARGET_DIR" ]]; then
   # `.git` may be a directory (normal clone) or a file (worktree / submodule).
   if [[ -e "$TARGET_DIR/.git" ]]; then
-    echo "install.sh: '$TARGET_DIR' already exists and looks like a git repo."
+    # Verify it's actually our repo, not some unrelated git checkout that
+    # happens to share the directory name. Without this check, a curl|bash
+    # invocation would silently run later steps against the wrong tree.
+    existing_url=$(git -C "$TARGET_DIR" remote get-url origin 2>/dev/null || true)
+    if [[ "$existing_url" != "$REPO_URL" ]]; then
+      echo "install.sh: '$TARGET_DIR' is a git repo, but its 'origin' is:" >&2
+      echo "  ${existing_url:-<unset>}" >&2
+      echo "  expected: $REPO_URL" >&2
+      echo "install.sh: refusing to reuse. Move/rename the directory or pass --dir <other>." >&2
+      exit 1
+    fi
+    echo "install.sh: '$TARGET_DIR' already exists and points at $REPO_URL."
+    # Fail-closed in non-interactive mode: the curl|bash flow cannot get a
+    # meaningful Y/N answer, so we don't silently fall through to the
+    # later steps on a pre-existing checkout.
+    if [[ "$HAS_TTY" != "1" ]]; then
+      echo "install.sh: non-interactive shell; refusing to reuse without confirmation." >&2
+      echo "install.sh: re-run interactively, or move/rename the directory and re-run." >&2
+      exit 1
+    fi
     if prompt_yes_no "Skip clone and reuse existing directory?" "Y"; then
       echo "Reusing existing $TARGET_DIR (no clone)."
     else
