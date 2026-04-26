@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Tests for .hooks/block-dispatcher-out-of-scope.sh
 # Validates: Edit/Write file_path is constrained to dispatcher business scope
-#   (.foreman/, .state/, knowledge/raw/YYYY-MM-DD-{topic}.md)
+#   (.dispatcher/, .state/, knowledge/raw/YYYY-MM-DD-{topic}.md)
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -59,23 +59,23 @@ assert_eq() {
 }
 
 # ---- Allowed paths ----
-assert_eq 0 "$(run_hook_edit "$CLAUDE_ORG_PATH/.foreman/CLAUDE.md")" \
-  "Allow: .foreman/CLAUDE.md"
-assert_eq 0 "$(run_hook_edit "$CLAUDE_ORG_PATH/.foreman/.claude/skills/custom/SKILL.md")" \
-  "Allow: nested file under .foreman/"
+assert_eq 0 "$(run_hook_edit "$CLAUDE_ORG_PATH/.dispatcher/CLAUDE.md")" \
+  "Allow: .dispatcher/CLAUDE.md"
+assert_eq 0 "$(run_hook_edit "$CLAUDE_ORG_PATH/.dispatcher/.claude/skills/custom/SKILL.md")" \
+  "Allow: nested file under .dispatcher/"
 assert_eq 0 "$(run_hook_edit "$CLAUDE_ORG_PATH/.state/journal.jsonl")" \
   "Allow: .state/journal.jsonl"
-assert_eq 0 "$(run_hook_edit "$CLAUDE_ORG_PATH/.state/foreman/inbox/task1.json")" \
-  "Allow: .state/foreman/inbox/"
+assert_eq 0 "$(run_hook_edit "$CLAUDE_ORG_PATH/.state/dispatcher/inbox/task1.json")" \
+  "Allow: .state/dispatcher/inbox/"
 assert_eq 0 "$(run_hook_edit "$CLAUDE_ORG_PATH/.state/workers/worker-task-1.md")" \
   "Allow: .state/workers/"
-assert_eq 0 "$(run_hook_edit "$CLAUDE_ORG_PATH/.state/foreman-event-cursor.txt")" \
-  "Allow: .state/foreman-event-cursor.txt"
+assert_eq 0 "$(run_hook_edit "$CLAUDE_ORG_PATH/.state/dispatcher-event-cursor.txt")" \
+  "Allow: .state/dispatcher-event-cursor.txt"
 assert_eq 0 "$(run_hook_edit "$CLAUDE_ORG_PATH/knowledge/raw/2026-04-27-some-topic.md")" \
   "Allow: knowledge/raw/YYYY-MM-DD-{topic}.md"
-assert_eq 0 "$(run_hook_edit "$CLAUDE_ORG_PATH/.foreman/x.md" "Edit")" \
+assert_eq 0 "$(run_hook_edit "$CLAUDE_ORG_PATH/.dispatcher/x.md" "Edit")" \
   "Allow: Edit tool name"
-assert_eq 0 "$(run_hook_edit "$CLAUDE_ORG_PATH/.foreman/notebook.ipynb" "NotebookEdit")" \
+assert_eq 0 "$(run_hook_edit "$CLAUDE_ORG_PATH/.dispatcher/notebook.ipynb" "NotebookEdit")" \
   "Allow: NotebookEdit tool name"
 
 # ---- Blocked paths (out-of-scope app code) ----
@@ -99,8 +99,8 @@ assert_eq 2 "$(run_hook_edit "$CLAUDE_ORG_PATH/.hooks/block-git-push.sh")" \
   "Block: .hooks/ (security scripts)"
 
 # ---- Path-traversal escape attempts ----
-assert_eq 2 "$(run_hook_edit "$CLAUDE_ORG_PATH/.foreman/../tools/x.py")" \
-  "Block: .foreman/../tools/ traversal escapes scope"
+assert_eq 2 "$(run_hook_edit "$CLAUDE_ORG_PATH/.dispatcher/../tools/x.py")" \
+  "Block: .dispatcher/../tools/ traversal escapes scope"
 assert_eq 2 "$(run_hook_edit "$CLAUDE_ORG_PATH/.state/../README.md")" \
   "Block: .state/../README.md traversal escapes scope"
 

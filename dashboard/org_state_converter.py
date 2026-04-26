@@ -78,7 +78,7 @@ def parse_org_state_md(text):
             in_registry_table = False
             registry_header_seen = False
             current_role = None
-            if "foreman" in heading or "dispatcher" in heading:
+            if "dispatcher" in heading:
                 current_role = "dispatcher"
             elif "curator" in heading:
                 current_role = "curator"

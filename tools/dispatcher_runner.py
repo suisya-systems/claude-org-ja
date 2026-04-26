@@ -13,7 +13,7 @@ calls.
 Deterministic operations this helper owns:
   - balanced split target/direction selection from pane rects
   - task / worker name validation (matches renga's `[A-Za-z0-9_-]` + not all-digit)
-  - worker instruction file writing (.state/foreman/outbox/{task_id}-instruction.md)
+  - worker instruction file writing (.state/dispatcher/outbox/{task_id}-instruction.md)
   - worker state file seed (.state/workers/worker-{task_id}.md)
   - journal planned-event preparation
 
@@ -21,7 +21,7 @@ Everything that requires live MCP calls stays in the Claude side.
 
 Usage:
   py -3 tools/dispatcher_runner.py delegate-plan \
-      --task-json .state/foreman/inbox/{task_id}.json \
+      --task-json .state/dispatcher/inbox/{task_id}.json \
       --panes-json <(mcp_list_panes_output.json)
 
   # stdin form:

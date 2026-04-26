@@ -88,12 +88,12 @@ json='{"tool_name":"Write","tool_input":{"file_path":"'"$WORKER_DIR"'/myproj/.cl
 ec=$(run_hook "$json" "$stderr")
 assert_exit 0 "$ec" "Write: nested project .claude/ is allowed"
 
-# 5. WORKER_DIR/.foreman/foo (block)
+# 5. WORKER_DIR/.dispatcher/foo (block)
 stderr=$(mktemp); TMPFILES+=("$stderr")
-json='{"tool_name":"Write","tool_input":{"file_path":"'"$WORKER_DIR"'/.foreman/task.md"}}'
+json='{"tool_name":"Write","tool_input":{"file_path":"'"$WORKER_DIR"'/.dispatcher/task.md"}}'
 ec=$(run_hook "$json" "$stderr")
-assert_exit 2 "$ec" "Write: .foreman/ is blocked"
-assert_stderr_contains "組織構造ディレクトリ" "$stderr" "Write: .foreman/ stderr mentions 組織構造ディレクトリ"
+assert_exit 2 "$ec" "Write: .dispatcher/ is blocked"
+assert_stderr_contains "組織構造ディレクトリ" "$stderr" "Write: .dispatcher/ stderr mentions 組織構造ディレクトリ"
 
 # 6. WORKER_DIR/.curator/foo (block)
 stderr=$(mktemp); TMPFILES+=("$stderr")
@@ -165,12 +165,12 @@ ec=$(run_hook "$json" "$stderr")
 assert_exit 2 "$ec" "Bash: mkdir .claude is blocked"
 assert_stderr_contains ".claude" "$stderr" "Bash: mkdir .claude stderr mentions .claude"
 
-# 16. mkdir -p .foreman (block)
+# 16. mkdir -p .dispatcher (block)
 stderr=$(mktemp); TMPFILES+=("$stderr")
-json='{"tool_name":"Bash","tool_input":{"command":"mkdir -p .foreman"}}'
+json='{"tool_name":"Bash","tool_input":{"command":"mkdir -p .dispatcher"}}'
 ec=$(run_hook "$json" "$stderr")
-assert_exit 2 "$ec" "Bash: mkdir -p .foreman is blocked"
-assert_stderr_contains ".foreman" "$stderr" "Bash: mkdir -p .foreman stderr mentions .foreman"
+assert_exit 2 "$ec" "Bash: mkdir -p .dispatcher is blocked"
+assert_stderr_contains ".dispatcher" "$stderr" "Bash: mkdir -p .dispatcher stderr mentions .dispatcher"
 
 # 17. touch ./registry/foo (block)
 stderr=$(mktemp); TMPFILES+=("$stderr")
@@ -226,12 +226,12 @@ json='{"tool_name":"Bash","tool_input":{"command":"mkdir -p \"./.claude/plans\""
 ec=$(run_hook "$json" "$stderr")
 assert_exit 0 "$ec" "Bash: mkdir quoted .claude/plans exception is allowed"
 
-# 25. touch quoted Windows .foreman path (block)
+# 25. touch quoted Windows .dispatcher path (block)
 stderr=$(mktemp); TMPFILES+=("$stderr")
-json='{"tool_name":"Bash","tool_input":{"command":"touch \"C:\\Users\\test\\.foreman\\test\""}}'
+json='{"tool_name":"Bash","tool_input":{"command":"touch \"C:\\Users\\test\\.dispatcher\\test\""}}'
 ec=$(run_hook "$json" "$stderr")
-assert_exit 2 "$ec" "Bash: touch quoted Windows .foreman is blocked"
-assert_stderr_contains ".foreman" "$stderr" "Bash: touch quoted Windows .foreman stderr mentions .foreman"
+assert_exit 2 "$ec" "Bash: touch quoted Windows .dispatcher is blocked"
+assert_stderr_contains ".dispatcher" "$stderr" "Bash: touch quoted Windows .dispatcher stderr mentions .dispatcher"
 
 # 26. touch quoted Windows knowledge/raw/ path (exception, allow)
 stderr=$(mktemp); TMPFILES+=("$stderr")

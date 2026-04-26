@@ -26,7 +26,7 @@ Tab 1: ops (ワーカー 0 人)
 
 | 対象 | 操作 | 備考 |
 |---|---|---|
-| フォアマン | 窓口ペインを水平分割して下半分 | `mcp__renga-peers__spawn_claude_pane(target="focused", direction="horizontal", role="dispatcher", name="dispatcher", cwd=".foreman", permission_mode="bypassPermissions", model="sonnet")` (org-start Step 2) |
+| フォアマン | 窓口ペインを水平分割して下半分 | `mcp__renga-peers__spawn_claude_pane(target="focused", direction="horizontal", role="dispatcher", name="dispatcher", cwd=".dispatcher", permission_mode="bypassPermissions", model="sonnet")` (org-start Step 2) |
 | キュレーター | フォアマンペインを垂直分割して右半分 | `mcp__renga-peers__spawn_claude_pane(target="dispatcher", direction="vertical", role="curator", name="curator", cwd=".curator", permission_mode="{default_permission_mode}")` (org-start Step 3) |
 | 各ワーカー | **balanced split**: `list_panes` が返す現在の rect から target と direction を動的に選び、同一タブ内に積む | 詳細は下記「ワーカーの balanced split 戦略」セクション。`mcp__renga-peers__spawn_claude_pane(target={target}, direction={direction}, role="worker", name="worker-{task_id}", cwd="{workers_dir}/{task_id}", permission_mode="{default_permission_mode}")` (org-delegate Step 3) |
 

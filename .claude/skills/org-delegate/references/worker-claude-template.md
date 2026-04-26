@@ -22,7 +22,7 @@ org-delegate の Step 1.5 でワーカー専用ディレクトリ（`{workers_di
 一致しない場合は作業を開始せず、窓口にエラー報告せよ。
 
 ### 禁止事項（permissions.deny + PreToolUse Hooks により技術的にブロックされる）
-1. `{worker_dir}` 内に claude-org の構造（.claude/, .foreman/, .curator/, .state/, registry/, dashboard/, knowledge/ 等）を再現してはならない
+1. `{worker_dir}` 内に claude-org の構造（.claude/, .dispatcher/, .curator/, .state/, registry/, dashboard/, knowledge/ 等）を再現してはならない
 2. claude-org リポジトリ（`{claude_org_path}`）を別途 clone してはならない（直接編集すること）
 3. `git push` は実行できない（完了報告で窓口に依頼すること）
 

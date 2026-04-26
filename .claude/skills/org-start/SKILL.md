@@ -64,7 +64,7 @@ renga 0.18.0+ では `mcp__renga-peers__spawn_claude_pane` が役割別の構造
 
 ### フォアマン
 
-- `cwd=".foreman"`
+- `cwd=".dispatcher"`
 - `permission_mode="bypassPermissions"`（固定。`default_permission_mode` の影響を受けない）
 - `model="sonnet"`
 
@@ -111,7 +111,7 @@ renga 0.18.0+ では `mcp__renga-peers__spawn_claude_pane` が役割別の構造
      direction="horizontal",
      role="dispatcher",
      name="dispatcher",
-     cwd=".foreman",
+     cwd=".dispatcher",
      permission_mode="bypassPermissions",
      model="sonnet"
    )
@@ -120,9 +120,9 @@ renga 0.18.0+ では `mcp__renga-peers__spawn_claude_pane` が役割別の構造
    - `direction="horizontal"` = 上下分割（窓口=上 / フォアマン=下）
    - `role="dispatcher"`: `mcp__renga-peers__list_panes` で役割識別できるようにラベル付与
    - `name="dispatcher"`: 後続の `mcp__renga-peers__send_message(to_id="dispatcher", ...)` や `close_pane(target="dispatcher")` で宛先指定するための安定名。**renga-peers は全桁数字の name を id として解釈するので、英字を含む名前を必ず付ける**
-   - `cwd=".foreman"`: caller ペイン（= 窓口）の cwd を基点に `.foreman/` へ解決される。`cd X && claude ...` を `command` に埋める旧方式は禁止（auto-upgrade が発動せず channel push が失われる落とし穴）
+   - `cwd=".dispatcher"`: caller ペイン（= 窓口）の cwd を基点に `.dispatcher/` へ解決される。`cd X && claude ...` を `command` に埋める旧方式は禁止（auto-upgrade が発動せず channel push が失われる落とし穴）
    - `permission_mode="bypassPermissions"` / `model="sonnet"`: renga が `claude --permission-mode bypassPermissions --model sonnet --dangerously-load-development-channels server:renga-peers` を合成して実行する
-   - `.foreman/CLAUDE.md` にフォアマン用の役割指示がある（Secretary の CLAUDE.md とは別）
+   - `.dispatcher/CLAUDE.md` にフォアマン用の役割指示がある（Secretary の CLAUDE.md とは別）
    - 戻り値: `"Spawned pane id=N."` のテキスト。以降のペイン操作では `name="dispatcher"` で参照する
    - エラーは `[<code>] <msg>` 形式のテキストで返却される（例: `[split_refused]` / `[pane_not_found]` / `[cwd_invalid]`）。code 一覧と分岐は `.claude/skills/org-delegate/references/renga-error-codes.md` を参照
 2. Claude Code 初回起動時に「Load development channel? (Y/n)」確認プロンプトが表示される。`mcp__renga-peers__send_keys` で Enter を送信して承認する:

@@ -30,7 +30,7 @@ DELEGATE メッセージを受信して Step 3 の「3-1 balanced split で targ
 
 ```bash
 py -3 tools/dispatcher_runner.py delegate-plan \
-  --task-json .state/foreman/inbox/{task_id}.json \
+  --task-json .state/dispatcher/inbox/{task_id}.json \
   --panes-json {list_panes スナップショットの JSON}
 ```
 
@@ -58,7 +58,7 @@ helper は以下のいずれかを返す (exit code でも区別可):
 
 helper が実ファイル書き出しを行うもの (ready_to_spawn 時):
 - `.state/workers/worker-{task_id}.md` (Status: planned)
-- `.state/foreman/outbox/{task_id}-instruction.md` (send_message の本文)
+- `.state/dispatcher/outbox/{task_id}-instruction.md` (send_message の本文)
 
 フォアマンは MCP 呼び出し後に `.state/workers/worker-{task_id}.md` の Status を `active` に遷移させ、`.state/journal.jsonl` に `worker_spawned` を追記する。journal 追記は helper が生成するのではなく、**今まで通りフォアマン側で** `Bash` 経由で行う（JSON 書式は既存通り）。
 
@@ -110,8 +110,8 @@ mcp__renga-peers__send_message(to_id="secretary", message="...")
        timeout_ms=5000,
        types=["pane_exited", "events_dropped"]
    )
-   # cursor は .state/foreman-event-cursor.txt に保存して次サイクルで使う
-   write_file(".state/foreman-event-cursor.txt", result.next_since)
+   # cursor は .state/dispatcher-event-cursor.txt に保存して次サイクルで使う
+   write_file(".state/dispatcher-event-cursor.txt", result.next_since)
    ```
    - 初回 (cursor ファイルが無い/空) は `since` 省略で「今以降」セマンティクス（過去イベントを flood しない）
    - 2 サイクル目以降は前回の `next_since` を使って idempotent resume（重複通知なし）
@@ -253,7 +253,7 @@ mcp__renga-peers__send_message(to_id="secretary", message="...")
 ### 設計メモ
 
 - **なぜ `poll_events` を `timeout_ms=5000` で回すか**: 1 分のポーリング待ち時間を短縮するため、各サイクルで 5 秒分は long-poll する。5 秒経過で return して残りの 55 秒は check_messages + list_panes + inspect_pane で補完。これにより pane 終了検知の平均遅延が 30 秒 → 2.5 秒程度になる
-- **cursor 管理**: `.state/foreman-event-cursor.txt` に前回 `next_since` を保存する。初回 (cursor 無し) は `since` 省略で「今以降」セマンティクス。crash recovery 時は cursor 消失 = 過去 5 秒分のイベントを取りこぼす可能性があるが、list_panes 突き合わせで回復可能
+- **cursor 管理**: `.state/dispatcher-event-cursor.txt` に前回 `next_since` を保存する。初回 (cursor 無し) は `since` 省略で「今以降」セマンティクス。crash recovery 時は cursor 消失 = 過去 5 秒分のイベントを取りこぼす可能性があるが、list_panes 突き合わせで回復可能
 - **events と list_panes の二重カバー**: events は best-effort (EventsDropped あり得る) なので、`mcp__renga-peers__list_panes` による突き合わせを保険として併用
 - **inspect を独立した観測チャネルにする理由**: ワーカーが承認待ちで止まった時、worker 自己申告 (renga-peers) だけに頼ると worker が通知を送る前に停止してしまう。inspect はフォアマン側から能動的に観測するので、worker 側の通知忘れ/遅延を補完する。自己申告と inspect は「同じ事象を 2 チャネルで観測できれば確度が上がる」という冗長性設計
 - **anchored regex の意図**: 本文中に "Allow this tool use" が偶然出てもプロンプト自体の行フォーマット (末尾に `(y/n)`) まで揃うことは稀。末尾 non-empty 行に絞ることで誤検出をさらに減らす

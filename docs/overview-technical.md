@@ -75,7 +75,7 @@ claude-org/
 │       │   └── references/
 │       │       └── knowledge-standards.md   # 知見の記録・整理基準
 │       └── org-dashboard/         # ダッシュボード生成
-├── .foreman/
+├── .dispatcher/
 │   └── CLAUDE.md                  # Dispatcher 用の役割指示
 ├── .curator/
 │   └── CLAUDE.md                  # Curator 用の役割指示
