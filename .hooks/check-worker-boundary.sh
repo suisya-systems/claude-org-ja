@@ -92,7 +92,8 @@ fi
 KNOWLEDGE_RAW="$CANONICAL_CLAUDE_ORG/knowledge/raw"
 if [[ "$CANONICAL_FILE" == "$KNOWLEDGE_RAW/"* ]]; then
   BASENAME=$(basename "$CANONICAL_FILE")
-  if [[ "$BASENAME" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9-]+\.md$ ]]; then
+  # LC_ALL=C で [a-z] のロケール拡張（Git Bash で大文字を拾うことがある）を防ぐ
+  if LC_ALL=C bash -c '[[ "$1" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9-]+\.md$ ]]' _ "$BASENAME"; then
     exit 0
   fi
   deny_with_reason "knowledge/raw/ へのファイル名が不正です。YYYY-MM-DD-{topic}.md 形式（topic は英語 kebab-case）にしてください。"
