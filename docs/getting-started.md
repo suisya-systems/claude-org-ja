@@ -20,8 +20,8 @@ claude-orgの使い方ガイド。
 本リポジトリをクローンし、そのディレクトリで renga を起動する。
 
 ```bash
-git clone https://github.com/happy-ryo/claude-org.git
-cd claude-org
+git clone https://github.com/suisya-systems/claude-org-ja.git
+cd claude-org-ja
 renga mcp install              # 初回のみ。renga-peers MCP を user-scope 登録
 renga --layout ops
 ```

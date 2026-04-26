@@ -1,8 +1,8 @@
 # claude-org-ja
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![CI](https://github.com/happy-ryo/claude-org/actions/workflows/tests.yml/badge.svg)](https://github.com/happy-ryo/claude-org/actions/workflows/tests.yml)
-[![Install](https://img.shields.io/badge/install-WIP%20%28%23106%29-lightgrey.svg)](https://github.com/happy-ryo/claude-org/issues/106)
+[![CI](https://github.com/suisya-systems/claude-org-ja/actions/workflows/tests.yml/badge.svg)](https://github.com/suisya-systems/claude-org-ja/actions/workflows/tests.yml)
+[![Install](https://img.shields.io/badge/install-WIP%20%28%23106%29-lightgrey.svg)](https://github.com/suisya-systems/claude-org-ja/issues/106)
 
 > **claude-org-ja は日本語ファーストのリファレンス配布物です。**
 > 英語版の兄弟リポジトリ `claude-org` は別途並走予定（日英 2 系統構成）。
@@ -57,7 +57,7 @@ gh auth login
 claude                          # Claude Code の初回ログイン
 
 # 3. このリポジトリを取得
-git clone https://github.com/happy-ryo/claude-org.git
+git clone https://github.com/suisya-systems/claude-org-ja.git
 cd claude-org
 
 # 4. renga の MCP サーバーを Claude Code に登録（初回のみ）
@@ -184,7 +184,7 @@ bash scripts/install-hooks.sh
 - **`gh auth status` が Not logged in** → `gh auth login` で GitHub 認証を済ませる。未認証だとワーカーがプルリクエストを作れません
 - **互換性の事前確認**: `tools/check_renga_compat.py` で `renga` のバージョンと MCP ツール群を一括確認できます
 
-それでも解決しない場合は [Issues](https://github.com/happy-ryo/claude-org/issues) へ。
+それでも解決しない場合は [Issues](https://github.com/suisya-systems/claude-org-ja/issues) へ。
 
 ---
 
