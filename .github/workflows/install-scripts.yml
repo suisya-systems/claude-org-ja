@@ -1,0 +1,146 @@
+# Continuous validation for the one-liner installers (Issue #112).
+#
+# Three parallel jobs:
+#   - shellcheck:        static analysis of scripts/install.sh (Linux)
+#   - psscriptanalyzer:  static analysis of scripts/install.ps1 (Windows)
+#   - smoke:             dry-run the installer on Linux/macOS/Windows
+#
+# Smoke runs use --dry-run --skip-mcp and stub `claude` / `renga`
+# binaries on PATH, because those tools are not available on CI runners
+# and the installer's prerequisite check would otherwise abort before
+# reaching the dry-run echo path.
+
+name: install-scripts
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/install.sh'
+      - 'scripts/install.ps1'
+      - '.github/workflows/install-scripts.yml'
+      - '.gitattributes'
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/install.sh'
+      - 'scripts/install.ps1'
+      - '.github/workflows/install-scripts.yml'
+      - '.gitattributes'
+
+jobs:
+  shellcheck:
+    name: shellcheck (install.sh)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run shellcheck
+        # `shellcheck` is preinstalled on ubuntu-latest. Only fail on
+        # `error` severity; warning/info findings are surfaced in logs
+        # but do not block the build, matching the OSS-publication
+        # quality bar set in CLAUDE.local.md.
+        shell: bash
+        run: |
+          set -euo pipefail
+          shellcheck --version
+          # Show all findings for visibility.
+          shellcheck scripts/install.sh || true
+          # Gate the job on error-severity only.
+          shellcheck --severity=error scripts/install.sh
+
+  psscriptanalyzer:
+    name: PSScriptAnalyzer (install.ps1)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Invoke-ScriptAnalyzer
+        shell: pwsh
+        run: |
+          if (-not (Get-Module -ListAvailable -Name PSScriptAnalyzer)) {
+            Install-Module -Name PSScriptAnalyzer -Force -Scope CurrentUser -SkipPublisherCheck
+          }
+          $results = Invoke-ScriptAnalyzer -Path scripts/install.ps1 -Severity @('Error','Warning','Information')
+          if ($results) {
+            $results | Format-Table -AutoSize | Out-String | Write-Host
+          } else {
+            Write-Host 'No PSScriptAnalyzer findings.'
+          }
+          $errors = @($results | Where-Object { $_.Severity -eq 'Error' })
+          if ($errors.Count -gt 0) {
+            Write-Error "PSScriptAnalyzer reported $($errors.Count) error-severity finding(s)."
+            exit 1
+          }
+
+  smoke:
+    name: smoke (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Stub prerequisites and dry-run install.sh (Linux/macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Stub `claude` and `renga` so the installer's prerequisite
+          # check passes. `git` and `gh` are pre-installed on runners.
+          stub_dir="$RUNNER_TEMP/stub-bin"
+          mkdir -p "$stub_dir"
+          for tool in claude renga; do
+            cat > "$stub_dir/$tool" <<'STUB'
+          #!/usr/bin/env bash
+          echo "stub: $0 $*"
+          STUB
+            chmod +x "$stub_dir/$tool"
+          done
+          export PATH="$stub_dir:$PATH"
+          target="$RUNNER_TEMP/install-test"
+          out=$(bash scripts/install.sh --dry-run --skip-mcp --dir "$target" 2>&1)
+          echo "$out"
+          # Sanity-check the dry-run actually reached the clone step and
+          # honored --skip-mcp, so a silent early-exit can't pass.
+          echo "$out" | grep -qE "git[[:space:]]+clone[[:space:]]+https://github\.com/suisya-systems/claude-org-ja\.git" \
+            || { echo "smoke: missing 'git clone' echo from dry-run" >&2; exit 1; }
+          echo "$out" | grep -q "Skipping 'renga mcp install'" \
+            || { echo "smoke: --skip-mcp banner missing" >&2; exit 1; }
+          # Tail marker — guards against a future early `exit 0`
+          # slipping in between the skip-mcp banner and the final
+          # "Done." heredoc, which would otherwise leave smoke green.
+          echo "$out" | grep -q "Done. Next steps:" \
+            || { echo "smoke: tail marker 'Done. Next steps:' missing" >&2; exit 1; }
+
+      - name: Stub prerequisites and dry-run install.ps1 (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $stubDir = Join-Path $env:RUNNER_TEMP 'stub-bin'
+          New-Item -ItemType Directory -Force -Path $stubDir | Out-Null
+          foreach ($tool in @('claude', 'renga')) {
+            $cmdPath = Join-Path $stubDir "$tool.cmd"
+            "@echo off`r`necho stub: %~nx0 %*`r`n" | Set-Content -Path $cmdPath -Encoding ASCII
+          }
+          $env:PATH = "$stubDir;$env:PATH"
+          $target = Join-Path $env:RUNNER_TEMP 'install-test'
+          $out = & pwsh -NoProfile -File scripts/install.ps1 -DryRun -SkipMcp -Dir $target 2>&1 | Out-String
+          Write-Host $out
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "smoke: install.ps1 exited with $LASTEXITCODE"
+            exit 1
+          }
+          if ($out -notmatch 'git\s+clone\s+https://github\.com/suisya-systems/claude-org-ja\.git') {
+            Write-Error "smoke: missing 'git clone' echo from dry-run"
+            exit 1
+          }
+          if ($out -notmatch 'Skipping `renga mcp install`') {
+            Write-Error "smoke: -SkipMcp banner missing"
+            exit 1
+          }
+          # Tail marker — see Linux/macOS step for rationale.
+          if ($out -notmatch 'Done\. Next steps:') {
+            Write-Error "smoke: tail marker 'Done. Next steps:' missing"
+            exit 1
+          }
