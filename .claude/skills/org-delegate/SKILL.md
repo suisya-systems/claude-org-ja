@@ -115,6 +115,24 @@ description: >
   - **参考 work-skill**（Step 0.5 でマッチしたもの）
 - 注意: タスク説明にファイルパスを含める場合、それがワーカー作業ディレクトリからの相対パスであることを明記する。registry/projects.md の「パス」列の値をそのまま成果物パスとして指示しない（ワーカーが別の場所にパスを作成する原因になる）
 
+### 事前チェック: 対象ファイルが git tracked か
+
+判定フローに入る前に、編集対象ファイルが git で追跡されているか確認する。
+**「対象ファイル」は窓口がタスク説明から抽出する**（依頼文・Issue 本文・ユーザー発話の中で明示されたパス。機械的判定はしない）。対象ファイルが特定できないタスク（純粋な調査・新規作成など）はこのチェックをスキップして通常判定に進む。
+
+対象ファイルが特定できた場合、project_path（registry/projects.md のパス）で:
+
+```
+git -C {project_path} ls-files --error-unmatch <target>
+```
+
+- 終了コード 0 → tracked。**通常の A / B / C 判定に進む**
+- 非 0（untracked / gitignored、または存在しない） → **Pattern C 強制**
+  - 理由: `git worktree add` は untracked / gitignored ファイルを新 worktree に複製しないため、Pattern B では対象ファイルが見えない / commit できない
+  - WORKER_DIR は対象ファイルにアクセス可能な親ディレクトリ（多くは元リポジトリ root を指す `{workers_dir}/{task_id}/` のエフェメラル運用ではなく、既存リポジトリ root を WORKER_DIR にする構成）に設定する。窓口メモに「Pattern B 不可: 対象 `<target>` が gitignored」と一文残すこと
+
+**claude-org 自己編集との関係**: 通常のスキル / ドキュメント編集（`.claude/skills/...`, `references/...`）は tracked なので従来どおり Pattern B が選べる。`docs/internal/`, `notes/`, `tmp/` 等の gitignored 内部メモを編集する場合のみ本事前チェックで Pattern C 強制となる（`references/claude-org-self-edit.md` 参照）。
+
 ### ディレクトリパターン判定基準
 
 | パターン | 名称 | 条件 | ディレクトリ |
@@ -125,6 +143,7 @@ description: >
 
 **判定フロー:**
 
+0. **事前チェック（対象ファイルが特定できる場合のみ）**: 上記「事前チェック: 対象ファイルが git tracked か」を実行する。tracked なら下記 1 へ。untracked / gitignored なら **パターン C 強制**で確定し、以降の判定はスキップする
 1. プロジェクトの clone が必要な場合（registry/projects.md にパスが登録されているプロジェクト）:
    a. Worker Directory Registry で同プロジェクトに `in_use` のエントリがある場合 → **パターン B**（worktree で並行作業）
    b. 同プロジェクトに `available` のエントリがある場合 → **パターン A**（既存ディレクトリを再利用）
