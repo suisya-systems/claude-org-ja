@@ -21,6 +21,8 @@ dashboard/data.json
 
 # Claude Code local config
 .claude/settings.local.json
+.claude/settings.local.override.json
+.claude/settings.local.json.bak.*
 CLAUDE.local.md
 
 # Dispatcher local config (symmetrical with .curator/.claude/)

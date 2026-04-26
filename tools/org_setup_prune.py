@@ -185,7 +185,11 @@ def compute_diff(current: dict, target: dict) -> dict:
 def render_diff(role: str, settings_path: Path, current: dict, target: dict) -> str:
     d = compute_diff(current, target)
     lines = [f"=== {role}: {settings_path} ==="]
-    if not any(d.values()):
+    # "no changes" only when allow/deny *and* the rest of the JSON match —
+    # env / hooks differences alone (placeholder resolution, override merges)
+    # would otherwise produce a misleading "(no changes)" header followed by
+    # a non-empty unified diff below.
+    if not any(d.values()) and current == target:
         lines.append("  (no changes)")
     for label, items, sign in (
         ("permissions.allow removed", d["allow_removed"], "-"),

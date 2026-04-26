@@ -239,5 +239,53 @@ class EndToEndTests(unittest.TestCase):
         self.assertNotEqual(rc, 0)
 
 
+class CheckerOverrideAwarenessTests(unittest.TestCase):
+    """check_role_configs.py must subtract sibling settings.local.override.json
+    allows from the closed-world check, otherwise the documented prune+override
+    workflow would always fail on-disk validation."""
+
+    def setUp(self) -> None:
+        self.td = tempfile.TemporaryDirectory()
+        self.root = Path(self.td.name)
+        (self.root / ".curator" / ".claude").mkdir(parents=True)
+        # curator schema declares closed_world with required_allow=[].
+        # Any extra entry would trip "unknown allow entry" without override-awareness.
+        (self.root / ".curator" / ".claude" / "settings.local.json").write_text(
+            json.dumps({"permissions": {"allow": ["Bash(my-private-tool:*)"]}}),
+            encoding="utf-8",
+        )
+
+    def tearDown(self) -> None:
+        self.td.cleanup()
+
+    def _import_checker(self):
+        # Real schema/permissions.md from repo root.
+        import check_role_configs as c  # noqa
+        return c
+
+    def test_override_present_silences_unknown_allow_warning(self) -> None:
+        c = self._import_checker()
+        # Without override file: should fail on the unknown allow.
+        findings_no_ov = c.check_on_disk(
+            c.load_schema(c.DEFAULT_SCHEMA),
+            self.root,
+            include_untracked=True,
+        )
+        self.assertTrue(any("my-private-tool" in f.message for f in findings_no_ov))
+
+        # Add override that whitelists the entry; checker must now pass for that entry.
+        ov = self.root / ".curator" / ".claude" / "settings.local.override.json"
+        ov.write_text(json.dumps({"permissions": {"allow": ["Bash(my-private-tool:*)"]}}), encoding="utf-8")
+        findings_with_ov = c.check_on_disk(
+            c.load_schema(c.DEFAULT_SCHEMA),
+            self.root,
+            include_untracked=True,
+        )
+        self.assertFalse(
+            any("my-private-tool" in f.message for f in findings_with_ov),
+            f"override should suppress closed-world warning, got: {[x.format() for x in findings_with_ov]}",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

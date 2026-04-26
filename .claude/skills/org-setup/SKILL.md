@@ -113,8 +113,17 @@ prune ツールが読むだけで、書き換えはしない）:
 - `hooks.PreToolUse[]` 等: 等値判定で重複排除した上で append
 - それ以外のスカラー: override が勝つ
 
-`.gitignore` 対象（個人設定のため）。チームで共有したい設定は
+`.gitignore` 対象（個人設定のため。`.gitignore:23-25` で `.claude/settings.local.override.json` と
+`.claude/settings.local.json.bak.*` を ignore 済み。`.curator/.claude/` と `.dispatcher/.claude/`
+配下はディレクトリごと ignore のため自動的に対象）。チームで共有したい設定は
 `permissions.md` 側に追加し、schema (`tools/role_configs_schema.json`) も同時に更新する。
+
+`tools/check_role_configs.py` は同じ override ファイルを読み、その allow を
+closed-world 検証から除外する（`_load_override_allow`）。よって override に追加した
+個人 allow は CI / `--include-local` で `unknown allow entry` にならない。
+ただし `forbidden_allow_exact`（`Bash(git *)` 等の wide allow）と
+`disallow_allow_regex`（旧 `mcp__claude-peers__*` 等）は override 側にあっても
+従来通り ERROR となる。安全契約は override で迂回できない。
 
 #### dispatcher の `{claude_org_path}` 解決
 
