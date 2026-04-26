@@ -13,7 +13,7 @@ knowledge/raw/*
 dashboard/data.json
 .state/dashboard.pid
 
-# Foreman state (machine-local, not shared)
+# Dispatcher state (machine-local, not shared)
 .dispatcher/.state/
 
 # Curator local config
@@ -23,7 +23,7 @@ dashboard/data.json
 .claude/settings.local.json
 CLAUDE.local.md
 
-# Foreman local config (symmetrical with .curator/.claude/)
+# Dispatcher local config (symmetrical with .curator/.claude/)
 .dispatcher/.claude/
 
 # Internal docs (not for public consumption)

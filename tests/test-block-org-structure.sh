@@ -95,6 +95,12 @@ ec=$(run_hook "$json" "$stderr")
 assert_exit 2 "$ec" "Write: .dispatcher/ is blocked"
 assert_stderr_contains "組織構造ディレクトリ" "$stderr" "Write: .dispatcher/ stderr mentions 組織構造ディレクトリ"
 
+# 5b. WORKER_DIR/.foreman/foo (block — legacy alias kept after #149 rename)
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json='{"tool_name":"Write","tool_input":{"file_path":"'"$WORKER_DIR"'/.foreman/task.md"}}'
+ec=$(run_hook "$json" "$stderr")
+assert_exit 2 "$ec" "Write: .foreman/ legacy alias is still blocked"
+
 # 6. WORKER_DIR/.curator/foo (block)
 stderr=$(mktemp); TMPFILES+=("$stderr")
 json='{"tool_name":"Write","tool_input":{"file_path":"'"$WORKER_DIR"'/.curator/log.md"}}'
