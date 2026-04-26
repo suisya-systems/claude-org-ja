@@ -157,7 +157,15 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
 
 これらが蓄積すると drift となる。定期的に `permissions.md` と突き合わせて剪定する。
 
-**重要 — 剪定は手動**: 現行の `org-setup` スキルは additive-only（不足分を追加するだけで既存を削除しない）のため、上記「書いてはいけないもの」のエントリが一度 `settings.local.json` に入ると自動では消えない。`/org-setup` を再実行しても drift は解消されない点に注意。Secretary は定期（例: 月次 / Issue 起票時）に `.claude/settings.local.json` を本ドキュメントの窓口サンプルで丸ごと置き換える剪定運用を行う。自動化する場合は `org-setup` スキル側に「permissions.md サンプルを baseline とし、差分は警告ログに出した上で削除」する mode を追加する必要がある（別 Issue 化を推奨）。
+**剪定（drift 解消）は `--prune` モードで自動化済み**: 上記「書いてはいけないもの」のエントリが `settings.local.json` に蓄積した場合、`tools/org_setup_prune.py` で本ドキュメントの role 別サンプルを SOT として丸ごと書き換えられる。
+
+```bash
+python tools/org_setup_prune.py --role secretary --dry-run   # diff プレビュー
+python tools/org_setup_prune.py --role secretary             # 実行（.bak を自動生成）
+python tools/org_setup_prune.py --all                        # secretary / dispatcher / curator まとめて
+```
+
+**user 拡張の保護**: 個人で追加した allow / env / hook を残すには、各 settings ファイルと**同じディレクトリ**に `settings.local.override.json` を置く。prune 時に deep-merge され、ツールはこの override ファイルを書き換えない。詳細は `.claude/skills/org-setup/SKILL.md` の Step 5 参照。
 
 ## フォアマン (`<repo>/.dispatcher/.claude/settings.local.json`)
 

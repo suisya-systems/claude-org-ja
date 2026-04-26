@@ -102,12 +102,42 @@ def _iter_hooks(config: dict):
                 yield event, matcher, cmd
 
 
+def _load_override_allow(settings_path: Path) -> set[str]:
+    """Return the allow entries declared in sibling
+    ``settings.local.override.json`` (org-setup --prune escape hatch for user
+    extensions). Empty set when the file is absent or unreadable.
+
+    The override file is intentionally not closed-world; entries here let users
+    add bespoke allows that survive prune rewrites without forcing a schema
+    change. The on-disk validator subtracts these from the closed-world check
+    so the recommended workflow does not always fail validation.
+    """
+    ov = settings_path.with_name("settings.local.override.json")
+    if not ov.is_file():
+        return set()
+    try:
+        data = json.loads(ov.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return set()
+    if not isinstance(data, dict):
+        return set()
+    perms = data.get("permissions")
+    if not isinstance(perms, dict):
+        return set()
+    allow = perms.get("allow")
+    if not isinstance(allow, list):
+        return set()
+    return {x for x in allow if isinstance(x, str)}
+
+
 def validate_config(
     source_label: str,
     role_name: str,
     config: dict | None,
     role_schema: dict,
     global_schema: dict,
+    *,
+    extra_allowed: set[str] | None = None,
 ) -> list[Finding]:
     findings: list[Finding] = []
     if config is None:
@@ -190,8 +220,11 @@ def validate_config(
         extra_patterns = [
             re.compile(p) for p in role_schema.get("allowed_allow_regex", [])
         ]
+        override_set = extra_allowed or set()
         for entry in allow:
             if entry in required_set:
+                continue
+            if entry in override_set:
                 continue
             if any(p.search(entry) for p in extra_patterns):
                 continue
@@ -378,6 +411,7 @@ def check_on_disk(
                     config,
                     role_schema,
                     schema.get("global", {}),
+                    extra_allowed=_load_override_allow(path),
                 )
             )
         if not checked_any:
@@ -424,6 +458,7 @@ def check_on_disk(
                     config,
                     role_schema,
                     schema.get("global", {}),
+                    extra_allowed=_load_override_allow(path),
                 )
             )
     return findings
