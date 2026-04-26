@@ -161,6 +161,14 @@ jobs:
             Write-Error "smoke: tail marker 'Done. Next steps:' missing"
             exit 1
           }
+          # GitHub Actions' pwsh shell wrapper appends
+          # `if (Test-Path variable:\LASTEXITCODE) { exit $LASTEXITCODE }`,
+          # so a stray non-zero $LASTEXITCODE from any earlier `& pwsh`
+          # / native invocation in this step would silently fail the
+          # step even when all assertions pass. Make the success
+          # contract explicit instead of relying on the last command
+          # happening to leave 0 behind.
+          exit 0
 
       # ---- Local-fixture setup for CLAUDE_ORG_REF cases.
       #
@@ -279,6 +287,8 @@ jobs:
             Write-Error "smoke: CLAUDE_ORG_REF success: HEAD is '$actual', expected 'test-fixture-ref-v1'"
             exit 1
           }
+          # See dry-run step for why we exit 0 explicitly.
+          exit 0
 
       # ---- Case 3: CLAUDE_ORG_REF failure path (Issue #154). An
       # invalid ref must surface as a non-zero exit AND the friendly
@@ -326,3 +336,12 @@ jobs:
             Write-Error "smoke: CLAUDE_ORG_REF failure: missing 'failed to clone ref' wrapper message"
             exit 1
           }
+          # This step *expects* install.ps1 to exit non-zero, so $rc
+          # captures 1 above — but $LASTEXITCODE keeps that 1 too, and
+          # the GitHub Actions pwsh wrapper (`if (Test-Path
+          # variable:\LASTEXITCODE) { exit $LASTEXITCODE }`) would then
+          # exit the step with 1 even though every assertion passed.
+          # That is the actual fix for the regression that re-opened
+          # this issue after eed0b00; the verbatim-stderr change alone
+          # was not enough.
+          exit 0
