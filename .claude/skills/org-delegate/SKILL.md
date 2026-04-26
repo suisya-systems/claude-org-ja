@@ -115,6 +115,46 @@ description: >
   - **参考 work-skill**（Step 0.5 でマッチしたもの）
 - 注意: タスク説明にファイルパスを含める場合、それがワーカー作業ディレクトリからの相対パスであることを明記する。registry/projects.md の「パス」列の値をそのまま成果物パスとして指示しない（ワーカーが別の場所にパスを作成する原因になる）
 
+### 事前チェック: 対象ファイルが gitignored か
+
+判定フローに入る前に、編集対象ファイルが `.gitignore` で除外されていないか確認する。
+**「対象ファイル」は窓口がタスク説明から抽出する**（依頼文・Issue 本文・ユーザー発話の中で明示されたパス。機械的判定はしない）。対象ファイルが特定できないタスク（純粋な調査、対象パス未定の新規作成など）はこのチェックをスキップして通常判定に進む。
+
+#### 適用条件
+
+このチェックは **ローカルに git repo が既に存在するプロジェクトでのみ実行する**。具体的には:
+
+- registry/projects.md の「パス」がローカル絶対パスで、かつ `.git/` を持つディレクトリ（または worktree）として解決できる場合のみ実行
+- パスが URL（未 clone）/ `-` / 解決不能なら **チェック自体をスキップ**して通常判定へ（初回 clone 後の状態は git の通常挙動に従うため、tracked 既存ファイルが gitignored になっているレアケースは別途レビューで拾う）
+
+#### 判定コマンド
+
+ローカル repo root（=「パス」が指す絶対パス）で:
+
+```
+git -C {project_path} check-ignore -q -- <target>
+```
+
+- 終了コード 1（=ignored ではない）→ tracked または「単に未存在の新規ファイル」。**通常の A / B / C 判定に進む**
+- 終了コード 0（=ignored）→ **Pattern C 強制（gitignored サブモード）**。下記参照
+- 終了コード 128 等（コマンド失敗、repo 未初期化など）→ 適用条件外。スキップして通常判定へ
+
+> `git check-ignore` は「現在の `.gitignore` ルールにマッチするか」だけを判定し、ファイルが実在しなくても評価できる。`ls-files --error-unmatch` を使うと「単に未作成の新規ファイル」まで untracked 扱いで Pattern C に落としてしまうため、こちらを使わない。
+
+#### Pattern C 強制（gitignored サブモード）
+
+通常の Pattern C は `{workers_dir}/{task_id}/` のエフェメラル空ディレクトリだが、gitignored 対象を編集する場合はそれでは対象ファイルに届かない。次の特例運用とする:
+
+- **WORKER_DIR**: 既存ローカル clone の **repo root を直接指定**する（registry の「パス」値そのもの）
+- **CLAUDE.md / settings.local.json の配置先**: その repo root 直下。既に他用途の CLAUDE.md がある場合は `CLAUDE.local.md` に書く（`references/claude-org-self-edit.md` の特例参照）
+- **Worker Directory Registry**: Pattern を `C` として登録、Directory に repo root の絶対パス、Status を `in_use`。完了時はエントリ削除（ディレクトリ自体は元プロジェクトなので保持）
+- **並行作業との競合**: repo root を直接掴むため、同 repo に対する Pattern A / B のワーカーと同時起動はしない（窓口側で順次化する）
+- **窓口メモ**: 「Pattern B 不可: 対象 `<target>` が gitignored。WORKER_DIR=既存 repo root 運用」と一文残す
+
+#### claude-org 自己編集との関係
+
+通常のスキル / ドキュメント編集（`.claude/skills/...`, `references/...`）は tracked なので従来どおり Pattern B が選べる。`docs/internal/`, `notes/`, `tmp/` 等の gitignored 内部メモを編集する場合のみ本事前チェックで Pattern C 強制（gitignored サブモード）となる（`references/claude-org-self-edit.md` 参照）。
+
 ### ディレクトリパターン判定基準
 
 | パターン | 名称 | 条件 | ディレクトリ |
@@ -125,6 +165,7 @@ description: >
 
 **判定フロー:**
 
+0. **事前チェック（対象ファイルが特定でき、かつローカル repo が存在する場合のみ）**: 上記「事前チェック: 対象ファイルが gitignored か」を実行する。ignored でないなら下記 1 へ。ignored なら **パターン C 強制（gitignored サブモード）** で確定し、以降の判定はスキップする。適用条件外（URL のみ・対象未特定など）はチェックを skip して下記 1 から通常判定
 1. プロジェクトの clone が必要な場合（registry/projects.md にパスが登録されているプロジェクト）:
    a. Worker Directory Registry で同プロジェクトに `in_use` のエントリがある場合 → **パターン B**（worktree で並行作業）
    b. 同プロジェクトに `available` のエントリがある場合 → **パターン A**（既存ディレクトリを再利用）
