@@ -1,128 +1,128 @@
 # 意図的に持たない機能（Non-goals）
 
-claude-org-ja は **operational discipline framework** であり、Claude Code 上での組織運用に対象を絞っています。「あった方が便利そうに見えるが、design 哲学上あえて持たない」機能を以下に明示します。能動的な不在表明は、framework の境界と価値を読者に正しく伝えるための装置です。
+claude-org-ja は**運用規律フレームワーク**であり、Claude Code 上での組織運用に対象を絞っています。「あった方が便利そうに見えるが、設計哲学上あえて持たない」機能を以下に明示します。能動的な不在表明は、本フレームワークの境界と価値を読者に正しく伝えるための装置です。
 
 > README には特に強い 5 項目だけ要約しています。本ドキュメントはその詳細版で、全 12 項目を扱います。
 
 ---
 
-## 1. `--dangerously-skip-permissions` を既定 ON にしない
+## 1. `--dangerously-skip-permissions` を既定で有効にしない
 
-**やらないこと**: Claude Code の permission prompt を全面的にバイパスし、すべての Bash / Edit / Write を無制限に許可するモードを既定として配ること。
+**やらないこと**: Claude Code の許可プロンプトを全面的に回避し、すべての `Bash` / `Edit` / `Write` を無制限に許可するモードを既定として配ること。
 
-**理由**: claude-org-ja は **narrow allowlist + 多層防御**を core value として宣言しています。permission bypass を既定にすると、`git push --force` や `.env` 読取など、組織運用で最も致命的な事故クラスが事前に止まらなくなります。farm 系の fully-autonomous 思想とは方向が逆で、claude-org-ja は「window が見えないところでこっそり危険な操作が走る」状況を許容しません。
+**理由**: claude-org-ja は**許可エントリの絞り込み（narrow allowlist） + 多層防御**を中核価値として宣言しています。許可境界の全面回避を既定にすると、`git push --force` や `.env` の読み取りなど、組織運用で最も致命的な事故クラスを事前に止められなくなります。farm 系の全自動志向とは方向が逆で、claude-org-ja は「目の届かないところでこっそり危険な操作が走る」状況を許容しません。
 
-**代替手段**: 各ロール（Secretary / Foreman / Curator / Worker）ごとに `tools/role_configs_schema.json` を正典とした `settings.local.json` を `/org-setup` で配布します。allowlist は schema に登録し、CI で drift 検出します。一時的に制約を緩める必要があれば、対象スコープに限定した hook / `permissions.allow` 追記を schema 経由で行ってください。
-
----
-
-## 2. 固定 role pool（Frontend / Backend / QA agent 等）を持たない
-
-**やらないこと**: 「フロントエンド担当 agent」「バックエンド担当 agent」のような事前定義された role pool を提供すること。
-
-**理由**: claude-org-ja は **per-task** で `WORKER_DIR` と `CLAUDE.md` を都度生成する設計です。事前 role pool は「タスクが来る前に role が決まっている」前提で動くため、per-task discipline（タスクごとに環境を作り直す）と矛盾します。同じ「フロントエンド作業」でも、対象リポジトリ / ブランチ / 検証深度ごとに必要な許可と context は異なるため、テンプレート化された role を再利用することで context drift が起きやすくなります。
-
-**代替手段**: `/org-delegate` がタスクごとに worker を派生させ、その都度 `WORKER_DIR` 内に `CLAUDE.local.md`（タスク固有の指示書）を生成します。「定型タスク」を扱いたい場合は role ではなく **work-skill** として切り出してください（`/org-retro` → skill candidate キュー → `skill-creator` の流れ）。
+**代替手段**: 各ロール（窓口 / フォアマン / キュレーター / ワーカー）ごとに `tools/role_configs_schema.json` を正典とした `settings.local.json` を `/org-setup` で配布します。許可エントリはスキーマに登録し、CI で drift を検出します。一時的に制約を緩める必要があれば、対象スコープを限定したフックや `permissions.allow` の追記をスキーマ経由で行ってください。
 
 ---
 
-## 3. 大規模並列（20+ agents）をしない
+## 2. 固定ロールプール（フロントエンド / バックエンド / QA エージェント等）を持たない
 
-**やらないこと**: farm のように 20〜100 並列で agent を回し、各 agent が同一タスクを試行錯誤するスタイルを採用すること。
+**やらないこと**: 「フロントエンド担当エージェント」「バックエンド担当エージェント」のような事前定義されたロールプールを提供すること。
 
-**理由**: claude-org-ja は **3〜5 worker / quality 重視** の positioning です。大規模並列は「数で殴って 1 つでも当たれば勝ち」のアプローチで、人間レビュアーが追えない量の PR / commit を生み出します。ロールバック・再現性・知見蓄積という運用 discipline の観点では、worker 数を絞って `/org-retro` で振り返るほうが自己成長ループが回ります。
+**理由**: claude-org-ja は**タスクごとに**作業ディレクトリと `CLAUDE.md` を都度生成する設計です。事前のロールプールは「タスクが来る前にロールが決まっている」前提で動くため、タスクごとの規律（タスクごとに環境を作り直す）と矛盾します。同じ「フロントエンド作業」でも、対象リポジトリ・ブランチ・検証深度ごとに必要な許可と文脈は異なるため、定型化されたロールを再利用することで文脈のずれが起きやすくなります。
 
-**代替手段**: 現状の Foreman は同時に複数 worker を派生できますが、ピークでも 3〜5 を上限の目安としてください。「大量の similar タスクをまとめて処理したい」用途なら、worker を多重化するのではなく、タスクをバッチ化して 1 worker に渡し、進捗をジャーナルで追う方が適しています。
-
----
-
-## 4. Auto-create app（自然言語 → scaffold）をしない
-
-**やらないこと**: 「Twitter クローンを作って」のような自然言語からプロジェクト雛形を生成する機能。
-
-**理由**: claude-org-ja は operational discipline framework であり、scaffold generator ではありません。scaffold は「最初の 5 分」を短くするツールで、claude-org-ja の主戦場である「長期運用での discipline 維持」とは関心領域が異なります。両方を 1 つのツールに混ぜると、どちらの責務もぼやけます。
-
-**代替手段**: scaffold が必要なら `create-react-app` / `cargo new` / `npm init` 等の専用ツールを使い、その後 claude-org-ja で組織運用を始めてください。
+**代替手段**: `/org-delegate` がタスクごとにワーカーを派生させ、その都度作業ディレクトリの中に `CLAUDE.local.md`（タスク固有の指示書）を生成します。「定型タスク」を扱いたい場合はロールではなく**作業スキル**として切り出してください（`/org-retro` → スキル候補キュー → `skill-creator` の流れ）。
 
 ---
 
-## 5. Multi-provider（Aider / Codex / Gemini 切替）をしない
+## 3. 大規模並列（20+ エージェント）はしない
 
-**やらないこと**: Claude Code 以外の LLM（OpenAI / Gemini / DeepSeek 等）を主役 worker として切り替え可能にすること。
+**やらないこと**: いわゆる farm 系のように 20〜100 並列でエージェントを回し、各エージェントが同一タスクを試行錯誤する運用を採用すること。
 
-**理由**: claude-org-ja は **Claude-only** で position を取っています。Multi-provider 化は魅力的に見えますが、provider ごとに permission モデル / hook 機構 / MCP 互換性 / context window 形状 / tool-use 仕様が異なり、「discipline を強制する」という framework の本質が provider 数だけ薄まります。Claude Code に深く張ることで、`renga-peers` MCP / hook / settings schema / sandbox 等の Claude Code-native な discipline を最大限活用できます。
+**理由**: claude-org-ja は **3〜5 ワーカー / 品質重視**の立ち位置です。大規模並列は「数で殴って 1 つでも当たれば勝ち」のアプローチで、人間レビュアーが追えない量のプルリクエスト・コミットを生み出します。巻き戻し・再現性・知見蓄積という運用規律の観点では、ワーカー数を絞って `/org-retro` で振り返るほうが自己成長ループが回ります。
 
-**代替手段**: review / second-opinion 用途に限り、`codex:rescue` / `codex` セルフレビュー gate のような **optional な review hook** として他 provider を呼ぶことは想定範囲です（主役ではなく補助）。多様な provider を主役で使い分けたい場合は、汎用エージェントフレーム（Aider / LangGraph / CrewAI 等）の方が適合します。
-
----
-
-## 6. ai-session crate 相当の PTY / multiplexer 層を持たない
-
-**やらないこと**: PTY（pseudo terminal）操作・ペイン分割・キーストローク注入の low-level 実装をこのリポジトリに持つこと。
-
-**理由**: PTY / multiplexer 層は **Layer 3 = `renga`**（`suisya-systems/renga`）に分離されています。claude-org-ja は Layer 4 = 「Claude Code CLI を素で叩く運用層」であり、low-level な terminal 制御は依存先に責務を譲ります。同一リポジトリで両方を抱えると、運用 discipline の改修と PTY バグ修正が干渉して release tempo が落ちます。
-
-**代替手段**: ペイン操作・構造化 spawn・ピア通信は `renga-peers` MCP（Layer 3 提供）の 14 種ツールを通じて利用してください。
+**代替手段**: 現状のフォアマンは同時に複数のワーカーを派生できますが、ピークでも 3〜5 を上限の目安としてください。「大量の似たタスクをまとめて処理したい」用途なら、ワーカーを多重化するのではなく、タスクをまとめて 1 ワーカーに渡し、進捗をジャーナルで追う方が適しています。
 
 ---
 
-## 7. Benchmark suite（SWE-Bench スコア等）を持たない
+## 4. 自然言語からのプロジェクト雛形生成（Auto-create app）はしない
 
-**やらないこと**: agent 性能比較用のベンチマーク実行 / スコア公開機能。
+**やらないこと**: 「Twitter クローンを作って」のような自然言語からプロジェクトの雛形を生成する機能。
 
-**理由**: claude-org-ja は agent 性能比較フレームワークではありません。「窓口の指示が worker でどう実行されたか」「raw 知見が curated に正しく昇華したか」のような **運用ロジックの正しさ**は対象ですが、「Claude Code がベンチマークで何点取るか」は Claude Code 自体の評価であり、claude-org-ja の射程外です。
+**理由**: claude-org-ja は運用規律フレームワークであり、雛形生成器ではありません。雛形生成は「最初の 5 分」を短くするツールで、claude-org-ja の主戦場である「長期運用での規律維持」とは関心領域が異なります。両方を 1 つのツールに混ぜると、どちらの責務もぼやけます。
 
-**代替手段**: SWE-Bench / HumanEval 等の標準ベンチマークは Anthropic 側 / 専用 OSS（`swe-bench` 等）を使ってください。
-
----
-
-## 8. 34 stack × prompt template bundle を持たない
-
-**やらないこと**: 「Next.js 用」「Rails 用」「Django 用」など、フレームワーク別の prompt テンプレート集を framework 同梱で配布すること。
-
-**理由**: claude-org-ja は **per-project 文脈構築** を主役にする設計です。`CLAUDE.md` と `WORKER_DIR/CLAUDE.local.md` が project 固有の正典になり、stack 別 prompt は「最大公約数の汎用文」になりがちで、project 固有の context を希釈します。
-
-**代替手段**: stack 別 prompt が必要なら、project の `CLAUDE.md` に各自記述するか、外部の prompt 集（Awesome Prompts 系）を別途参照してください。
+**代替手段**: 雛形生成が必要なら `create-react-app` / `cargo new` / `npm init` 等の専用ツールを使い、その後 claude-org-ja で組織運用を始めてください。
 
 ---
 
-## 9. `tools` frontmatter allowlist 形式を採らない
+## 5. 複数プロバイダー切替（Aider / Codex / Gemini 等）はしない
 
-**やらないこと**: skill / agent 定義ファイルの frontmatter で `tools: [Read, Edit, Bash]` のように、ツール許可をファイル単位で宣言する公式形式。
+**やらないこと**: Claude Code 以外の言語モデル（OpenAI / Gemini / DeepSeek 等）を主役のワーカーとして切り替え可能にすること。
 
-**理由**: claude-org-ja は **`settings.local.json` + deny hook で per-task 制御**します。frontmatter ベースの allowlist は static で「いつ・どの worker が・どこの WORKER_DIR で」の動的境界を表現できません。同じ skill でも task によって許可境界が変わるため、role × task の 2 軸で動的に決定する設計を採用しています。
+**理由**: claude-org-ja は **Claude 専用**で立ち位置を取っています。複数プロバイダー対応は魅力的に見えますが、プロバイダーごとに許可モデル・フック機構・MCP サーバーとの互換性・文脈窓の形状・ツール呼び出し仕様が異なり、「規律を強制する」というフレームワークの本質がプロバイダー数だけ薄まります。Claude Code に深く張ることで、`renga-peers` MCP サーバー・フック・設定スキーマ・サンドボックス等、Claude Code 由来の規律を最大限活用できます。
 
-**代替手段**: ツール許可の追加が必要なら、`tools/role_configs_schema.json` を更新してください（ルール追加フロー: schema → docs → 実 settings.local.json の順、§README の「ロール別設定の source of truth」参照）。
-
----
-
-## 10. `--add-dir` による横断アクセスを既定許可しない
-
-**やらないこと**: worker が `WORKER_DIR` 外のディレクトリ（他 worker の作業領域、リポジトリ外のホームディレクトリ等）に自由にアクセスすること。
-
-**理由**: claude-org-ja は **`WORKER_DIR` boundary を強制境界**としています。worker 間で work-tree や状態を共有すると、並列作業時の race condition や、誤って他 worker の commit を上書きする事故が起こります。境界を緩めるたびに「どの worker が何を見たか」を追跡するコストが増えます。
-
-**代替手段**: 共有が必要な情報は `knowledge/curated/` や `registry/` 等の窓口管理領域に置き、Foreman / 窓口経由でのみ書き換えてください。
+**代替手段**: レビュー用途や別視点の確認に限り、`codex:rescue` や `codex` セルフレビューゲートのような**任意のレビュー用フック**として他プロバイダーを呼ぶことは想定範囲です（主役ではなく補助）。多様なプロバイダーを主役で使い分けたい場合は、汎用エージェントフレーム（Aider / LangGraph / CrewAI 等）の方が適合します。
 
 ---
 
-## 11. 公式 bundled skills（`/simplify` 等）を再実装しない
+## 6. PTY や端末多重化器の層を持たない
 
-**やらないこと**: Claude Code 公式に bundled されている skill 群（`simplify` / `init` / `review` / `security-review` 等）の機能を claude-org-ja 側で再実装すること。
+**やらないこと**: 疑似端末（PTY）操作・ペイン分割・キーストローク注入のような低レイヤ実装を本リポジトリに持つこと。
 
-**理由**: 公式 skill に乗っかる方針です。再実装すると公式アップデートのたびに追従コストがかかり、しかもユーザーから見ると「公式版と何が違うのか」が分かりにくくなります。claude-org-ja のスコープは公式が提供しない運用 discipline 層に絞ります。
+**理由**: PTY や端末多重化の層は **Layer 3 = `renga`**（`suisya-systems/renga`）に分離されています。claude-org-ja は Layer 4 = 「Claude Code を素で叩く運用層」であり、低レイヤの端末制御は依存先に責務を譲ります。同一リポジトリで両方を抱えると、運用規律の改修と PTY 層のバグ修正が干渉してリリース速度が落ちます。
 
-**代替手段**: 公式 skill はそのまま使ってください。組織運用文脈で公式 skill を呼び出すラッパーが必要な場合のみ、`/org-*` 系として薄く wrap します（例: `/org-retro` は振り返りの組織化 wrapper）。
+**代替手段**: ペイン操作・構造化ペイン生成・ピア通信は `renga-peers` MCP サーバー（Layer 3 が提供、14 種のツール）を通じて利用してください。
 
 ---
 
-## 12. MCP HTTP server 形式の external integration を持たない
+## 7. ベンチマークスイート（SWE-Bench スコア等）を持たない
 
-**やらないこと**: MCP を HTTP で外部公開し、ブラウザ拡張や別マシンの IDE から接続できるようにすること。
+**やらないこと**: エージェント性能比較用のベンチマーク実行・スコア公開機能。
 
-**理由**: claude-org-ja の MCP は `renga-peers`（local stdio）に集約されており、**同一タブ内 P2P** が通信モデルの正本です。HTTP 公開は認証・rate limit・TLS・ネットワーク境界という別レイヤの問題を呼び込み、「local で完結する operational discipline」というシンプルな保証が崩れます。
+**理由**: claude-org-ja はエージェント性能比較フレームワークではありません。「窓口の指示がワーカーでどう実行されたか」「生の知見が整理済み知見に正しく昇華したか」のような**運用ロジックの正しさ**は対象ですが、「Claude Code がベンチマークで何点取るか」は Claude Code 自体の評価であり、claude-org-ja の射程外です。
 
-**代替手段**: 別マシンや別タブからの監視は、状態ファイル（`.state/`）と dashboard（`/org-dashboard`）経由で行ってください。リアルタイム外部統合が必要なら、別途 MCP HTTP server を併設する設計も可能ですが、claude-org-ja 本体の責務外とします。
+**代替手段**: SWE-Bench / HumanEval 等の標準ベンチマークは Anthropic 側や専用 OSS（`swe-bench` 等）を使ってください。
+
+---
+
+## 8. スタック別プロンプトテンプレート集を持たない
+
+**やらないこと**: 「Next.js 用」「Rails 用」「Django 用」など、フレームワーク別のプロンプトテンプレート集を本フレームワーク同梱で配布すること。
+
+**理由**: claude-org-ja は**プロジェクト固有の文脈構築**を主役にする設計です。`CLAUDE.md` と作業ディレクトリの `CLAUDE.local.md` がプロジェクト固有の正典になり、スタック別プロンプトは「最大公約数の汎用文」になりがちで、プロジェクト固有の文脈を希釈します。
+
+**代替手段**: スタック別プロンプトが必要なら、プロジェクトの `CLAUDE.md` に各自記述するか、外部のプロンプト集（Awesome Prompts 系）を別途参照してください。
+
+---
+
+## 9. `tools` フロントマターによる許可宣言形式を採らない
+
+**やらないこと**: スキルやエージェントの定義ファイルのフロントマターで `tools: [Read, Edit, Bash]` のように、ツール許可をファイル単位で宣言する公式形式。
+
+**理由**: claude-org-ja は **`settings.local.json` + 拒否フックでタスクごとに制御**します。フロントマター方式の許可宣言は静的で、「いつ・どのワーカーが・どこの作業ディレクトリで」という動的境界を表現できません。同じスキルでもタスクによって許可境界が変わるため、ロール × タスクの 2 軸で動的に決定する設計を採用しています。
+
+**代替手段**: ツール許可の追加が必要なら、`tools/role_configs_schema.json` を更新してください（ルール追加フロー: スキーマ → ドキュメント → 実 `settings.local.json` の順。詳細は [docs/getting-started.md](getting-started.md) のロール別設定の節を参照）。
+
+---
+
+## 10. `--add-dir` による横断アクセスを既定で許可しない
+
+**やらないこと**: ワーカーが自分の作業ディレクトリの外（他ワーカーの作業領域、リポジトリ外のホームディレクトリ等）に自由にアクセスすること。
+
+**理由**: claude-org-ja は**作業ディレクトリの境界を強制境界**としています。ワーカー間で作業ツリーや状態を共有すると、並列作業時の競合や、誤って他ワーカーのコミットを上書きする事故が起こります。境界を緩めるたびに「どのワーカーが何を見たか」を追跡するコストが増えます。
+
+**代替手段**: 共有が必要な情報は `knowledge/curated/` や `registry/` 等の窓口管理領域に置き、フォアマン・窓口経由でのみ書き換えてください。
+
+---
+
+## 11. 公式同梱スキル（`/simplify` 等）を再実装しない
+
+**やらないこと**: Claude Code 公式に同梱されているスキル群（`simplify` / `init` / `review` / `security-review` 等）の機能を claude-org-ja 側で再実装すること。
+
+**理由**: 公式スキルに乗っかる方針です。再実装すると公式の更新のたびに追従コストがかかり、しかもユーザーから見ると「公式版と何が違うのか」が分かりにくくなります。claude-org-ja の対象範囲は公式が提供しない運用規律層に絞ります。
+
+**代替手段**: 公式スキルはそのまま使ってください。組織運用文脈で公式スキルを呼び出すラッパーが必要な場合のみ、`/org-*` 系として薄く包みます（例: `/org-retro` は振り返りの組織化ラッパー）。
+
+---
+
+## 12. MCP の HTTP 公開形式の外部統合は持たない
+
+**やらないこと**: MCP サーバーを HTTP で外部公開し、ブラウザ拡張や別マシンの IDE から接続できるようにすること。
+
+**理由**: claude-org-ja の MCP サーバーは `renga-peers`（ローカル標準入出力経由）に集約されており、**同一タブ内 P2P** が通信モデルの正本です。HTTP 公開は認証・流量制御・TLS・ネットワーク境界という別レイヤの問題を呼び込み、「ローカルで完結する運用規律」というシンプルな保証が崩れます。
+
+**代替手段**: 別マシンや別タブからの監視は、状態ファイル（`.state/`）とダッシュボード（`/org-dashboard`）経由で行ってください。リアルタイムの外部統合が必要なら、別途 MCP の HTTP サーバーを併設する設計も可能ですが、claude-org-ja 本体の責務外とします。
 
 ---
 
