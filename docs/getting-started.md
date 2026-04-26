@@ -238,7 +238,7 @@ python -c "import json; json.load(open('tools/role_configs_schema.json'))"
 ## ディレクトリ構造
 
 ```
-claude-org/
+claude-org-ja/
   CLAUDE.md              <- 窓口Claudeの行動指針
   .claude/skills/        <- 組織のスキル群（git管理）
   .state/                <- セッション状態（git管理外）

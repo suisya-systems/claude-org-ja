@@ -58,7 +58,7 @@ claude                          # Claude Code の初回ログイン
 
 # 3. このリポジトリを取得
 git clone https://github.com/suisya-systems/claude-org-ja.git
-cd claude-org
+cd claude-org-ja
 
 # 4. renga の MCP サーバーを Claude Code に登録（初回のみ）
 renga mcp install
