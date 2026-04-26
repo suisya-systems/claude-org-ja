@@ -78,20 +78,24 @@ renga --layout ops              # 窓口（Secretary）ペインを起動
 
 **再現性**を優先したい・チームで同じバージョンを揃えたい場合は、環境変数 `CLAUDE_ORG_REF` で任意の **branch / tag** を指定できます。現在の安定版 tag は [Releases ページ](https://github.com/suisya-systems/claude-org-ja/releases) を参照してください。
 
+完全な再現性のためには、**インストーラ本体も同じ ref から取得**することを推奨します（そうしないと clone 対象は固定されてもインストーラのロジック自体は `main` 追従になります）。
+
 **macOS / Linux（bash）**:
 
 ```bash
-CLAUDE_ORG_REF=v0.1.0 bash -c 'curl -fsSL https://raw.githubusercontent.com/suisya-systems/claude-org-ja/main/scripts/install.sh | bash'
+REF=v0.1.0
+curl -fsSL "https://raw.githubusercontent.com/suisya-systems/claude-org-ja/${REF}/scripts/install.sh" | CLAUDE_ORG_REF="${REF}" bash
 ```
 
 **Windows（PowerShell 7+）**:
 
 ```powershell
-$env:CLAUDE_ORG_REF = 'v0.1.0'
-iwr -useb https://raw.githubusercontent.com/suisya-systems/claude-org-ja/main/scripts/install.ps1 | iex
+$Ref = 'v0.1.0'
+$env:CLAUDE_ORG_REF = $Ref
+iwr -useb "https://raw.githubusercontent.com/suisya-systems/claude-org-ja/$Ref/scripts/install.ps1" | iex
 ```
 
-未指定時の挙動は従来通り `main` clone のままです。存在しない ref を指定した場合はインストーラが**明示的にエラーを出して中断**します（`git clone --branch` が解決に失敗した時点で abort）。
+未指定時の挙動は従来通り `main` の clone のままです。存在しない ref を指定した場合はインストーラが**明示的にエラーを出して中断**します（`git clone --branch` が解決に失敗した時点で abort）。
 
 ### 手動手順（ワンライナーを使わない場合）
 

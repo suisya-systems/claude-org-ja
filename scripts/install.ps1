@@ -157,7 +157,7 @@ if (Test-Path -LiteralPath $Dir) {
             Write-Error @"
 install.ps1: failed to clone ref '$Ref' from $RepoUrl.
 install.ps1: check that `$env:CLAUDE_ORG_REF names an existing branch or tag.
-install.ps1: see https://github.com/suisya-systems/claude-org-ja/releases for stable tags.
+install.ps1: branches and tags are accepted; see https://github.com/suisya-systems/claude-org-ja/releases for stable tags.
 "@
             exit 1
         }

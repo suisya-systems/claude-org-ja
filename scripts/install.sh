@@ -170,7 +170,7 @@ else
     if ! git clone --branch "$REF" "$REPO_URL" "$TARGET_DIR"; then
       echo "install.sh: failed to clone ref '$REF' from $REPO_URL." >&2
       echo "install.sh: check that CLAUDE_ORG_REF names an existing branch or tag." >&2
-      echo "install.sh: see https://github.com/suisya-systems/claude-org-ja/releases for stable tags." >&2
+      echo "install.sh: branches and tags are accepted; see https://github.com/suisya-systems/claude-org-ja/releases for stable tags." >&2
       exit 1
     fi
   else
