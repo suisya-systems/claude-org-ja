@@ -2,13 +2,12 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/suisya-systems/claude-org-ja/actions/workflows/tests.yml/badge.svg)](https://github.com/suisya-systems/claude-org-ja/actions/workflows/tests.yml)
-[![Install](https://img.shields.io/badge/install-WIP%20%28%23106%29-lightgrey.svg)](https://github.com/suisya-systems/claude-org-ja/issues/106)
+[![Install](https://img.shields.io/badge/install-one--liner-brightgreen.svg)](#クイックスタート)
 
 > **claude-org-ja は日本語ファーストのリファレンス配布物です。**
 > 英語版の兄弟リポジトリ `claude-org` は別途並走予定（日英 2 系統構成）。
 >
 > > **TODO**: 英語版兄弟リポジトリ (`claude-org`) へのクロスリンクは Issue #110 で当該リポジトリを作成後に追加します。
-> > **TODO**: ワンライナー導入手順（`curl | bash` 形式）は Issue #106 で実装後にこの README に反映します。
 
 ---
 
@@ -49,9 +48,31 @@ flowchart TD
 
 ## クイックスタート
 
-> **OS について**: 以下は macOS / Linux（bash）前提。Windows でも `python3` を `python` に読み替えれば動作します（PowerShell 用ワンライナーは Issue #106 で対応予定）。
->
-> **TODO**: ワンライナー導入手順（`curl -fsSL ... | bash` 形式）は Issue #106 で実装予定。現状は以下の手動手順で導入してください。
+### ワンライナー（推奨）
+
+依存ツール（`git` / `claude` / `renga` / `gh`）が導入済みなら、以下のワンライナーでクローン + `renga mcp install` までを一気に実行できます。
+
+**macOS / Linux（bash）**:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/suisya-systems/claude-org-ja/main/scripts/install.sh | bash
+```
+
+**Windows（PowerShell 7+）**:
+
+```powershell
+iwr -useb https://raw.githubusercontent.com/suisya-systems/claude-org-ja/main/scripts/install.ps1 | iex
+```
+
+スクリプトは前提コマンドの導入有無を確認し、未導入のものがあれば**導入手順を案内して終了**します（自動インストールはしません）。完了後は以下の手順で起動します:
+
+```bash
+cd claude-org-ja
+bash scripts/install-hooks.sh   # コミット直前の秘密情報スキャナを有効化
+renga --layout ops              # 窓口（Secretary）ペインを起動
+```
+
+### 手動手順（ワンライナーを使わない場合）
 
 ```bash
 # 1. 依存ツールを導入
