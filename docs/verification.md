@@ -2,7 +2,7 @@
 
 各機能の動作確認手順。問題が見つかったらスキルやCLAUDE.mdを修正し、再テストする。
 
-**前提**: renga 0.18.0+ （`npm install -g renga-fork@0.18.0` 後、`renga mcp install --force` で `renga-peers` MCP サーバを user-scope 登録済み）。structured `cwd` (0.16.0) / `set_pane_identity` (0.17.0) / `spawn_claude_pane` (0.18.0) すべてを前提とする。
+**前提**: renga 0.18.0+ （`npm install -g renga@0.18.0` 後、`renga mcp install --force` で `renga-peers` MCP サーバを user-scope 登録済み）。structured `cwd` (0.16.0) / `set_pane_identity` (0.17.0) / `spawn_claude_pane` (0.18.0) すべてを前提とする。
 
 ---
 
@@ -46,7 +46,7 @@ py -3 tools/check_renga_compat.py --json     # 機械可読出力
 **期待結果**: `Result: OK` で終了コード 0。renga バージョン・`renga-peers` MCP 登録・必須 14 ツールすべてが揃っていれば合格。
 
 **失敗パターン**:
-- renga バージョン不足 → `npm update -g renga-fork`
+- renga バージョン不足 → `npm update -g renga`
 - MCP 未登録 → `renga mcp install`
 - ツール欠如 → `renga mcp install --force` で stale 登録を更新
 
@@ -490,7 +490,7 @@ WSL で deny されなければ、 (a) Claude Code のバージョンが sandbox
 
 **失敗パターンと対処**:
 - `claude mcp list` に `renga-peers` が出ない → `renga mcp install --force` 再実行
-- `list_panes` が error → `renga --version` で 0.14.0 以上か確認、古ければ `npm install -g renga-fork@0.14.0`
+- `list_panes` が error → `renga --version` で 0.14.0 以上か確認、古ければ `npm install -g renga@0.14.0`
 - `poll_events` が JSON を返さない → `mcp_peer/mod.rs` の実装に不整合、renga バージョン確認
 
 ---

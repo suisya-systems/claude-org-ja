@@ -13,7 +13,7 @@
 | 名前 | 用途 | 入手先 |
 |---|---|---|
 | Claude Code | AI エージェント本体 | https://claude.ai/code |
-| renga (**0.18.0 以上**) | ターミナルマルチプレクサ (ペイン管理) | `npm install -g renga-fork@0.18.0` |
+| renga (**0.18.0 以上**) | ターミナルマルチプレクサ (ペイン管理) | `npm install -g renga@0.18.0` |
 | Git | バージョン管理 | https://git-scm.com/ |
 | GitHub CLI (`gh`) | GitHub 操作（PR 作成等） | https://cli.github.com/ |
 | Node.js (v18+) | Claude Code CLI の実行環境 | https://nodejs.org/ |
@@ -34,7 +34,7 @@
 # 1. 依存ツールを導入
 #    - Claude Code / gh / Node.js / Python / jq は各公式サイトの手順で導入
 #    - renga は 0.18.0 以上が必須:
-#        npm install -g renga-fork@0.18.0
+#        npm install -g renga@0.18.0
 
 # 2. 認証
 gh auth login                   # 未認証なら
