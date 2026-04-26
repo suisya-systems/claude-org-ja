@@ -52,9 +52,9 @@ Current Objective: Issue #20 org-state JSON snapshot
 | org-state-json | B | C:\\path\\to\\workers\\claude-org-wezterm\\.worktrees\\org-state-json | claude-org-wezterm | in_use |
 | blog-redesign | A | C:\\path\\to\\sandbox\\blog | blog | available |
 
-## Foreman
+## Dispatcher
 
-- Peer ID: peer-foreman-001
+- Peer ID: peer-dispatcher-001
 - Pane ID: pane-42
 
 ## Curator
@@ -114,10 +114,10 @@ class TestParseOrgStateMd(unittest.TestCase):
         self.assertEqual(reg[1]["taskId"], "blog-redesign")
         self.assertEqual(reg[1]["status"], "available")
 
-    def test_foreman(self):
-        self.assertIsNotNone(self.result["foreman"])
-        self.assertEqual(self.result["foreman"]["peerId"], "peer-foreman-001")
-        self.assertEqual(self.result["foreman"]["paneId"], "pane-42")
+    def test_dispatcher(self):
+        self.assertIsNotNone(self.result["dispatcher"])
+        self.assertEqual(self.result["dispatcher"]["peerId"], "peer-dispatcher-001")
+        self.assertEqual(self.result["dispatcher"]["paneId"], "pane-42")
 
     def test_curator(self):
         self.assertIsNotNone(self.result["curator"])
@@ -139,7 +139,7 @@ class TestParseEmptyMd(unittest.TestCase):
         self.assertEqual(result["status"], "IDLE")
         self.assertIsNone(result["currentObjective"])
         self.assertEqual(result["workItems"], [])
-        self.assertIsNone(result["foreman"])
+        self.assertIsNone(result["dispatcher"])
         self.assertIsNone(result["curator"])
         self.assertIsNone(result["resumeInstructions"])
 

@@ -1,4 +1,4 @@
-# Foreman
+# Dispatcher
 
 あなたはフォアマンである。窓口からの DELEGATE メッセージを受け取り、ワーカーのペイン起動・指示送信・状態記録を代行する。
 
@@ -22,14 +22,14 @@
 
 ## delegate-plan helper（deterministic ops を code に移譲）
 
-Issue #60 の Phase 1 として `tools/foreman_runner.py delegate-plan` が導入されている。ワーカー起動の deterministic な部分（balanced split の target/direction 選出、worker pane name 検証、worker instruction file 生成、worker seed state file 生成）を Python に寄せ、フォアマン Claude は action plan JSON を読んで MCP 呼び出しを行うだけにする。
+Issue #60 の Phase 1 として `tools/dispatcher_runner.py delegate-plan` が導入されている。ワーカー起動の deterministic な部分（balanced split の target/direction 選出、worker pane name 検証、worker instruction file 生成、worker seed state file 生成）を Python に寄せ、フォアマン Claude は action plan JSON を読んで MCP 呼び出しを行うだけにする。
 
 ### いつ使うか
 
 DELEGATE メッセージを受信して Step 3 の「3-1 balanced split で target / direction を決める」以降に進む直前で呼ぶ:
 
 ```bash
-py -3 tools/foreman_runner.py delegate-plan \
+py -3 tools/dispatcher_runner.py delegate-plan \
   --task-json .state/foreman/inbox/{task_id}.json \
   --panes-json {list_panes スナップショットの JSON}
 ```
