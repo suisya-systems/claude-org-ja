@@ -9,7 +9,6 @@
 >
 > > **TODO**: 英語版兄弟リポジトリ (`claude-org`) へのクロスリンクは Issue #110 で当該リポジトリを作成後に追加します。
 > > **TODO**: ワンライナー導入手順（`curl | bash` 形式）は Issue #106 で実装後にこの README に反映します。
-> > **TODO**: 4 層アーキテクチャ図は Issue #108 で別途追加予定です（以下の節は現状テキストのみ）。
 
 ---
 
@@ -25,18 +24,26 @@
 
 ## 4 層アーキテクチャ
 
-claude-org-ja は 4 層スタックの **Layer 4** に位置するリファレンス配布物。Layer 3（端末多重化器 + MCP サーバー = `renga`）を依存先として持つ。
+claude-org-ja は 4 層スタックの **Layer 4** に位置するリファレンス配布物。Layer 3（端末多重化器 + MCP サーバー = `renga`）と Layer 2（組織運用ランタイム抽象）を依存先として持ち、Layer 2 はさらに Layer 1（Claude Code 周辺の最小ユーティリティ）に依存します。Layer 3 は Layer 1 とは独立で、`renga` 単体でも端末多重化器として利用可能です。
 
+```mermaid
+flowchart TD
+    L4["<b>Layer 4: claude-org-ja</b><br/>運用規律フレームワーク（このリポジトリ）"]
+    L3["<b>Layer 3: renga</b><br/>端末多重化器 + peers MCP サーバー"]
+    L2["<b>Layer 2: org-runtime</b><br/>組織運用抽象（ロール / 派遣 / 状態 / 監視）"]
+    L1["<b>Layer 1: core-harness</b><br/>Claude Code 周辺ユーティリティ（hook / sandbox / settings 検証）"]
+
+    L4 --> L3
+    L4 --> L2
+    L2 --> L1
+
+    classDef shipped fill:#d4edda,stroke:#28a745,color:#000
+    classDef planned fill:#fff3cd,stroke:#856404,color:#000
+    class L4,L3 shipped
+    class L2,L1 planned
 ```
-Layer 4: claude-org-ja  ← このリポジトリ（運用規律フレームワーク）
-Layer 3: renga          ← suisya-systems/renga（ペイン管理 + MCP サーバー）
-Layer 2: org-runtime    ← 抽出予定
-Layer 1: core-harness   ← 抽出予定
-```
 
-> **TODO**: 上記の図解版（4 層アーキテクチャ図）は Issue #108 で別途追加予定です。
-
-**Layer 3 と Layer 4 は同時公開**します。`renga` は単体で AI 開発以外の用途でも使える端末多重化器 + MCP サーバーで、claude-org-ja はその上に組織運用規律を載せたリファレンス配布物です。
+緑のボックス（Layer 3 / Layer 4）は同時公開済み、黄色のボックス（Layer 1 / Layer 2）は今後 claude-org-ja 本体から段階的に抽出予定の層です。`renga` は単体で AI 開発以外の用途でも使える汎用ツールで、claude-org-ja はその上に組織運用規律を載せたリファレンス配布物として位置づけられます。各層の責務の詳細は [docs/overview-technical.md](docs/overview-technical.md) を参照。
 
 ---
 
