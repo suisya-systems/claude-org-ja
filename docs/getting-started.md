@@ -17,7 +17,29 @@ claude-orgの使い方ガイド。
 
 ### インストール
 
-本リポジトリをクローンし、そのディレクトリで renga を起動する。
+依存ツール（`git` / `claude` / `renga` / `gh`）が揃っていれば、ワンライナーでクローン + `renga mcp install` までを一括実行できる。
+
+**macOS / Linux（bash）**:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/suisya-systems/claude-org-ja/main/scripts/install.sh | bash
+cd claude-org-ja
+bash scripts/install-hooks.sh
+renga --layout ops
+```
+
+**Windows（PowerShell 7+）**:
+
+```powershell
+iwr -useb https://raw.githubusercontent.com/suisya-systems/claude-org-ja/main/scripts/install.ps1 | iex
+cd claude-org-ja
+bash scripts/install-hooks.sh   # Git Bash / WSL 上で実行
+renga --layout ops
+```
+
+スクリプトは前提コマンドの導入有無を確認し、未導入があれば導入手順を案内して終了する（自動インストールはしない）。クローン先のディレクトリ名を変えたい場合は `--dir <path>` / `-Dir <path>` を渡す。
+
+ワンライナーを使わない場合は手動で以下を実行する:
 
 ```bash
 git clone https://github.com/suisya-systems/claude-org-ja.git
