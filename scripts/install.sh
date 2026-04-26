@@ -21,6 +21,10 @@ REPO_URL="https://github.com/suisya-systems/claude-org-ja.git"
 TARGET_DIR="claude-org-ja"
 DRY_RUN=0
 SKIP_MCP=0
+# CLAUDE_ORG_REF pins the clone to a specific branch or tag for
+# reproducibility. Default `main` keeps the latest-features behaviour
+# unchanged for users who do not set it.
+REF="${CLAUDE_ORG_REF:-main}"
 
 usage() {
   cat <<'USAGE'
@@ -157,7 +161,21 @@ if [[ -e "$TARGET_DIR" ]]; then
     exit 1
   fi
 else
-  run git clone "$REPO_URL" "$TARGET_DIR"
+  # `git clone --branch` accepts either a branch or a tag; an unknown ref
+  # exits non-zero with "Remote branch <ref> not found", which `set -e`
+  # propagates. Wrap it so the user sees a friendlier abort message
+  # naming the ref they asked for.
+  if [[ "$DRY_RUN" != "1" ]]; then
+    echo "+ git clone --branch $REF $REPO_URL $TARGET_DIR"
+    if ! git clone --branch "$REF" "$REPO_URL" "$TARGET_DIR"; then
+      echo "install.sh: failed to clone ref '$REF' from $REPO_URL." >&2
+      echo "install.sh: check that CLAUDE_ORG_REF names an existing branch or tag." >&2
+      echo "install.sh: branches and tags are accepted; see https://github.com/suisya-systems/claude-org-ja/releases for stable tags." >&2
+      exit 1
+    fi
+  else
+    echo "+ git clone --branch $REF $REPO_URL $TARGET_DIR"
+  fi
 fi
 
 # --- renga mcp install -----------------------------------------------------

@@ -40,6 +40,10 @@ Options:
 }
 
 $RepoUrl = 'https://github.com/suisya-systems/claude-org-ja.git'
+# CLAUDE_ORG_REF pins the clone to a specific branch or tag for
+# reproducibility. Default `main` preserves latest-features behaviour
+# when the env var is unset.
+$Ref = if ($env:CLAUDE_ORG_REF) { $env:CLAUDE_ORG_REF } else { 'main' }
 
 function Invoke-Step {
     param([string[]]$Cmd)
@@ -142,7 +146,22 @@ if (Test-Path -LiteralPath $Dir) {
         exit 1
     }
 } else {
-    Invoke-Step @('git', 'clone', $RepoUrl, $Dir)
+    # `git clone --branch` accepts either a branch or a tag. An unknown
+    # ref exits non-zero with "Remote branch <ref> not found"; Invoke-Step
+    # would surface that as a generic throw, so wrap it in a try/catch
+    # and emit a friendlier abort message naming the ref.
+    Write-Host "+ git clone --branch $Ref $RepoUrl $Dir"
+    if (-not $DryRun) {
+        & git clone --branch $Ref $RepoUrl $Dir
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error @"
+install.ps1: failed to clone ref '$Ref' from $RepoUrl.
+install.ps1: check that `$env:CLAUDE_ORG_REF names an existing branch or tag.
+install.ps1: branches and tags are accepted; see https://github.com/suisya-systems/claude-org-ja/releases for stable tags.
+"@
+            exit 1
+        }
+    }
 }
 
 # --- renga mcp install ---------------------------------------------------

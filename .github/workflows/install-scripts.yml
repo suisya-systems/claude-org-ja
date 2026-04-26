@@ -102,8 +102,8 @@ jobs:
           echo "$out"
           # Sanity-check the dry-run actually reached the clone step and
           # honored --skip-mcp, so a silent early-exit can't pass.
-          echo "$out" | grep -qE "git[[:space:]]+clone[[:space:]]+https://github\.com/suisya-systems/claude-org-ja\.git" \
-            || { echo "smoke: missing 'git clone' echo from dry-run" >&2; exit 1; }
+          echo "$out" | grep -qE "git[[:space:]]+clone[[:space:]]+--branch[[:space:]]+main[[:space:]]+https://github\.com/suisya-systems/claude-org-ja\.git" \
+            || { echo "smoke: missing 'git clone --branch main' echo from dry-run" >&2; exit 1; }
           echo "$out" | grep -q "Skipping 'renga mcp install'" \
             || { echo "smoke: --skip-mcp banner missing" >&2; exit 1; }
           # Tail marker — guards against a future early `exit 0`
@@ -131,8 +131,8 @@ jobs:
             Write-Error "smoke: install.ps1 exited with $LASTEXITCODE"
             exit 1
           }
-          if ($out -notmatch 'git\s+clone\s+https://github\.com/suisya-systems/claude-org-ja\.git') {
-            Write-Error "smoke: missing 'git clone' echo from dry-run"
+          if ($out -notmatch 'git\s+clone\s+--branch\s+main\s+https://github\.com/suisya-systems/claude-org-ja\.git') {
+            Write-Error "smoke: missing 'git clone --branch main' echo from dry-run"
             exit 1
           }
           if ($out -notmatch 'Skipping `renga mcp install`') {
