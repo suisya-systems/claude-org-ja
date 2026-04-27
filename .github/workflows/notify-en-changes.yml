@@ -1,0 +1,30 @@
+name: Notify en repo on merge
+
+# Fires a repository_dispatch into suisya-systems/claude-org when a PR
+# merges to main here, so the en side can open a TRANSLATION-PENDING
+# tracking issue. Requires secrets.NOTIFY_EN_PAT (PAT with `repo` scope
+# on the en repo). Until the secret is configured the dispatch step
+# fails closed and the en side simply receives nothing.
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+jobs:
+  notify:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch to en repo
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.NOTIFY_EN_PAT }}
+          repository: suisya-systems/claude-org
+          event-type: ja_pr_merged
+          client-payload: |-
+            {
+              "ja_pr_number": "${{ github.event.pull_request.number }}",
+              "ja_pr_title": ${{ toJson(github.event.pull_request.title) }},
+              "ja_pr_url": "${{ github.event.pull_request.html_url }}"
+            }

@@ -5,9 +5,7 @@
 [![Install](https://img.shields.io/badge/install-one--liner-brightgreen.svg)](#クイックスタート)
 
 > **claude-org-ja は日本語ファーストのリファレンス配布物です。**
-> 英語版の兄弟リポジトリ `claude-org` は別途並走予定（日英 2 系統構成）。
->
-> > **TODO**: 英語版兄弟リポジトリ (`claude-org`) へのクロスリンクは Issue #110 で当該リポジトリを作成後に追加します。
+> 英語版: [suisya-systems/claude-org](https://github.com/suisya-systems/claude-org)（日英 2 系統構成。両リポジトリの同期ルールは [`docs/sync-policy.md`](docs/sync-policy.md) を参照）。
 
 ---
 
