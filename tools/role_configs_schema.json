@@ -156,7 +156,7 @@
     },
     "dispatcher": {
       "description": "Dispatcher — .dispatcher/.claude/settings.local.json. Runs in bypassPermissions mode (Sonnet constraint), so permissions.allow / deny are no-ops; PreToolUse hooks are the only enforcement layer.",
-      "docs_section": "フォアマン",
+      "docs_section": "ディスパッチャー",
       "settings_paths": [".dispatcher/.claude/settings.local.json"],
       "closed_world": true,
       "required_allow": [

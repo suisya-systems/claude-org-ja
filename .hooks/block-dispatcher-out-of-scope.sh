@@ -2,12 +2,12 @@
 # PreToolUse Hook: Dispatcher の Edit/Write 対象パスが業務スコープ外ならブロックする。
 # 方式: exit 2 + stderr メッセージ でブロック
 #
-# 背景: フォアマンは Sonnet 制約により permission_mode=bypassPermissions で起動するため、
+# 背景: ディスパッチャーは Sonnet 制約により permission_mode=bypassPermissions で起動するため、
 #       permissions.allow / deny は無効化される（Claude Code 公式仕様）。実効的な書き込み境界は
 #       PreToolUse フックでしか強制できない。本フックがその唯一の障壁。
 #
 # 許可パス（CLAUDE_ORG_PATH を base に解決）:
-#   1. <claude_org>/.dispatcher/**            — フォアマンの home（CLAUDE.md / skills 等）
+#   1. <claude_org>/.dispatcher/**            — ディスパッチャーの home（CLAUDE.md / skills 等）
 #   2. <claude_org>/.state/**              — inbox/outbox/journal/workers/cursor 等
 #   3. <claude_org>/knowledge/raw/YYYY-MM-DD-{topic}.md  — 振り返り記録（kebab-case topic）
 #
@@ -105,4 +105,4 @@ if [[ "$CANONICAL_FILE" == "$KNOWLEDGE_RAW/"* ]]; then
   deny_with_reason "knowledge/raw/ へのファイル名が不正です。YYYY-MM-DD-{topic}.md 形式（topic は英語 kebab-case）にしてください。"
 fi
 
-deny_with_reason "$FILE_PATH はフォアマンの業務スコープ外です。書き込みは .dispatcher/, .state/, knowledge/raw/YYYY-MM-DD-{topic}.md に限定されています。アプリケーションコード（tools/, dashboard/, docs/ 等）の編集はワーカーに委譲してください。"
+deny_with_reason "$FILE_PATH はディスパッチャーの業務スコープ外です。書き込みは .dispatcher/, .state/, knowledge/raw/YYYY-MM-DD-{topic}.md に限定されています。アプリケーションコード（tools/, dashboard/, docs/ 等）の編集はワーカーに委譲してください。"

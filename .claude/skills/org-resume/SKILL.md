@@ -58,7 +58,7 @@ description: >
    python3 dashboard/org_state_converter.py   # Mac/Linux
    ```
 
-5. フォアマン・キュレーターペインの起動は /org-start が担当するため、ここでは行わない
+5. ディスパッチャー・キュレーターペインの起動は /org-start が担当するため、ここでは行わない
 6. `journal.jsonl` に resume イベントを追記:
    ```json
    {"ts":"<ISO timestamp>","event":"resume","resumed_items":["blog-redesign","data-analysis"]}

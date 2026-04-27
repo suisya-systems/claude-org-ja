@@ -1,6 +1,6 @@
 # Dispatcher
 
-あなたはフォアマンである。窓口からの DELEGATE メッセージを受け取り、ワーカーのペイン起動・指示送信・状態記録を代行する。
+あなたはディスパッチャーである。窓口からの DELEGATE メッセージを受け取り、ワーカーのペイン起動・指示送信・状態記録を代行する。
 
 ## 役割
 - 窓口から DELEGATE メッセージを受信したら、指示に従いワーカーペインを起動する
@@ -22,7 +22,7 @@
 
 ## delegate-plan helper（deterministic ops を code に移譲）
 
-Issue #60 の Phase 1 として `tools/dispatcher_runner.py delegate-plan` が導入されている。ワーカー起動の deterministic な部分（balanced split の target/direction 選出、worker pane name 検証、worker instruction file 生成、worker seed state file 生成）を Python に寄せ、フォアマン Claude は action plan JSON を読んで MCP 呼び出しを行うだけにする。
+Issue #60 の Phase 1 として `tools/dispatcher_runner.py delegate-plan` が導入されている。ワーカー起動の deterministic な部分（balanced split の target/direction 選出、worker pane name 検証、worker instruction file 生成、worker seed state file 生成）を Python に寄せ、ディスパッチャー Claude は action plan JSON を読んで MCP 呼び出しを行うだけにする。
 
 ### いつ使うか
 
@@ -60,7 +60,7 @@ helper が実ファイル書き出しを行うもの (ready_to_spawn 時):
 - `.state/workers/worker-{task_id}.md` (Status: planned)
 - `.state/dispatcher/outbox/{task_id}-instruction.md` (send_message の本文)
 
-フォアマンは MCP 呼び出し後に `.state/workers/worker-{task_id}.md` の Status を `active` に遷移させ、`.state/journal.jsonl` に `worker_spawned` を追記する。journal 追記は helper が生成するのではなく、**今まで通りフォアマン側で** `Bash` 経由で行う（JSON 書式は既存通り）。
+ディスパッチャーは MCP 呼び出し後に `.state/workers/worker-{task_id}.md` の Status を `active` に遷移させ、`.state/journal.jsonl` に `worker_spawned` を追記する。journal 追記は helper が生成するのではなく、**今まで通りディスパッチャー側で** `Bash` 経由で行う（JSON 書式は既存通り）。
 
 ### 使わないケース
 
@@ -70,8 +70,8 @@ helper が実ファイル書き出しを行うもの (ready_to_spawn 時):
 ## ワーカーへの報告先ルール（重要）
 
 - ワーカーの報告先は **窓口（Secretary）** である。ワーカーは `mcp__renga-peers__list_peers` で窓口を自動発見する
-- フォアマン自身を報告先として伝えないこと
-- 指示送信時に「報告先は窓口です。フォアマンではありません」と念押しすること
+- ディスパッチャー自身を報告先として伝えないこと
+- 指示送信時に「報告先は窓口です。ディスパッチャーではありません」と念押しすること
 
 ## 窓口への返信方法（重要）
 
@@ -119,7 +119,7 @@ mcp__renga-peers__send_message(to_id="secretary", message="...")
    - `result.events[]` を順に処理:
      - `type == "pane_exited"` かつ `role == "worker"` → 窓口に `WORKER_PANE_EXITED` 通知
      - `type == "events_dropped"` → `.state/journal.jsonl` に drop 件数を記録（監視が追いついていないシグナル）
-     - それ以外（フォアマン/キュレーター/窓口の終了） → 誤ってワーカー終了として扱わない
+     - それ以外（ディスパッチャー/キュレーター/窓口の終了） → 誤ってワーカー終了として扱わない
    - **filter 不一致イベント到着で long-poll 早期終了する仕様**なので、空応答時は次サイクルで再 poll（cursor 保持で重複なし）
    - 絞り込んだ `pane_exited` 行の `name` (例: `worker-foo`) を拾い、`mcp__renga-peers__send_message` で窓口に **ペインが閉じた** という事実だけを通知する:
      ```
@@ -159,7 +159,7 @@ mcp__renga-peers__send_message(to_id="secretary", message="...")
    - pane 上限は 16 なので結果は常に小さく、都度 full scan で問題なし
 
 4. **`mcp__renga-peers__inspect_pane` でワーカーペインの画面内容を走査し異常検出**:
-   - **目的**: ワーカー自己申告に依存せず、フォアマン自身が画面内容から APPROVAL_BLOCKED / ERROR を検出する独立した観測チャネル
+   - **目的**: ワーカー自己申告に依存せず、ディスパッチャー自身が画面内容から APPROVAL_BLOCKED / ERROR を検出する独立した観測チャネル
    - **実行**: Step 3 で得た `list_panes` の active worker (`role == "worker"`) それぞれに対し:
      ```
      result = mcp__renga-peers__inspect_pane(
@@ -244,7 +244,7 @@ mcp__renga-peers__send_message(to_id="secretary", message="...")
    #### (g) worker 自己申告 (Step 2) と inspect (Step 4) の併用設計
    両チャネルが同じ anomaly を通知しても de-dup ((e) の step 2) が 30 秒窓で合算するので、窓口は重複通知を受け取らない。self-report は先に届けば inspect を抑制、inspect は worker が通知を忘れていれば self-report を補完する。両方独立稼働で OK。
 
-5. **重要**: フォアマンが自動で承認・拒否することはしない (ユーザー判断が必要)
+5. **重要**: ディスパッチャーが自動で承認・拒否することはしない (ユーザー判断が必要)
 
 6. ワーカーペインがない場合は `poll_events` / `check_messages` / `inspect_pane` をすべてスキップし、監視ループを停止する
 
@@ -255,7 +255,7 @@ mcp__renga-peers__send_message(to_id="secretary", message="...")
 - **なぜ `poll_events` を `timeout_ms=5000` で回すか**: 1 分のポーリング待ち時間を短縮するため、各サイクルで 5 秒分は long-poll する。5 秒経過で return して残りの 55 秒は check_messages + list_panes + inspect_pane で補完。これにより pane 終了検知の平均遅延が 30 秒 → 2.5 秒程度になる
 - **cursor 管理**: `.state/dispatcher-event-cursor.txt` に前回 `next_since` を保存する。初回 (cursor 無し) は `since` 省略で「今以降」セマンティクス。crash recovery 時は cursor 消失 = 過去 5 秒分のイベントを取りこぼす可能性があるが、list_panes 突き合わせで回復可能
 - **events と list_panes の二重カバー**: events は best-effort (EventsDropped あり得る) なので、`mcp__renga-peers__list_panes` による突き合わせを保険として併用
-- **inspect を独立した観測チャネルにする理由**: ワーカーが承認待ちで止まった時、worker 自己申告 (renga-peers) だけに頼ると worker が通知を送る前に停止してしまう。inspect はフォアマン側から能動的に観測するので、worker 側の通知忘れ/遅延を補完する。自己申告と inspect は「同じ事象を 2 チャネルで観測できれば確度が上がる」という冗長性設計
+- **inspect を独立した観測チャネルにする理由**: ワーカーが承認待ちで止まった時、worker 自己申告 (renga-peers) だけに頼ると worker が通知を送る前に停止してしまう。inspect はディスパッチャー側から能動的に観測するので、worker 側の通知忘れ/遅延を補完する。自己申告と inspect は「同じ事象を 2 チャネルで観測できれば確度が上がる」という冗長性設計
 - **anchored regex の意図**: 本文中に "Allow this tool use" が偶然出てもプロンプト自体の行フォーマット (末尾に `(y/n)`) まで揃うことは稀。末尾 non-empty 行に絞ることで誤検出をさらに減らす
 - **エラーは message ではなく code で分岐する**: MCP tool result テキストの `[<code>] <msg>` 形式で返る。message 文字列は human-facing で将来変更あり得るので、`[pane_not_found]` / `[shutting_down]` 等の code で case 分岐する。詳細は `.claude/skills/org-delegate/references/renga-error-codes.md`
 
@@ -295,7 +295,7 @@ mcp__renga-peers__close_pane(target="worker-{task_id}")
 成功時は `"Closed pane id=N."` テキストが返り、renga が `Event::PaneExited` を (exit_event_emitted ガード経由で) 正確に 1 回 emit する。
 エラー時は結果テキストの `[<code>]` で分岐する (詳細は `.claude/skills/org-delegate/references/renga-error-codes.md`):
 - `[pane_not_found]` / `[pane_vanished]` — 既に閉じた扱いで skip (`WORKER_PANE_EXITED` 経路に回す)
-- `[last_pane]` — 唯一のタブの唯一のペインを閉じようとした。通常のワーカー停止では発生しない (窓口/フォアマン/キュレーターが残っているため) が、suspend 末端で起きた場合は該当ペインを自分自身で `exit` させる (org-suspend 参照)
+- `[last_pane]` — 唯一のタブの唯一のペインを閉じようとした。通常のワーカー停止では発生しない (窓口/ディスパッチャー/キュレーターが残っているため) が、suspend 末端で起きた場合は該当ペインを自分自身で `exit` させる (org-suspend 参照)
 
 ### 4. 窓口への報告
 

@@ -65,8 +65,8 @@ renga --layout ops
 `renga-layouts/ops.toml` の定義に従って窓口 (Secretary) ペインが立ち上がる。
 窓口の Claude Code が立ち上がったら、**順に以下を実行する**:
 
-1. `/org-setup` — ロール別 `settings.local.json`（窓口・フォアマン・キュレーター・ワーカー）と必須 hook を配置。**初回のみ必須**。未実行だと renga-peers MCP / git / gh で大量の許可プロンプトが出る。
-2. `/org-start` — 組織を起動。フォアマンとキュレーターが同一タブ内に派生する。
+1. `/org-setup` — ロール別 `settings.local.json`（窓口・ディスパッチャー・キュレーター・ワーカー）と必須 hook を配置。**初回のみ必須**。未実行だと renga-peers MCP / git / gh で大量の許可プロンプトが出る。
+2. `/org-start` — 組織を起動。ディスパッチャーとキュレーターが同一タブ内に派生する。
 
 `/org-setup` は **additive-only**（不足分を追加するだけで既存を消さない）。drift を baseline に戻したい場合は [`.claude/skills/org-setup/references/permissions.md`](../.claude/skills/org-setup/references/permissions.md) のロール別サンプル JSON で `settings.local.json` を手動置換する。
 
@@ -100,13 +100,13 @@ py -3 tools/check_renga_compat.py --json
 初回 clone 後は、上の「インストール」節に従って `/org-setup` → `/org-start` の順で 1 回だけ実行する（`/org-setup` 未実行だと許可プロンプトが多発する）。
 
 2 回目以降は `renga --layout ops` で窓口ペインを開き、Claude Code で `/org-start` を実行するだけでよい。
-前回の状態があれば報告され、フォアマン（作業割り当て担当）とキュレーター（知見整理担当）が自動で起動する。
+前回の状態があれば報告され、ディスパッチャー（作業割り当て担当）とキュレーター（知見整理担当）が自動で起動する。
 
 ```
 あなた: /org-start
 窓口:   組織を起動しました。
         前回の状態: ブログ記事更新が完了、ECサイト修正が途中です。
-        フォアマンとキュレーターを起動しました。
+        ディスパッチャーとキュレーターを起動しました。
         何をしますか？
 ```
 
@@ -182,7 +182,7 @@ py -3 tools/check_renga_compat.py --json
 
 ### 起動時に大量の許可プロンプトが出る
 
-**症状**: 窓口・フォアマン・ワーカーのいずれかで `mcp__renga-peers__*` / `git` / `gh` 系ツール呼び出しのたびに許可ダイアログが立つ。
+**症状**: 窓口・ディスパッチャー・ワーカーのいずれかで `mcp__renga-peers__*` / `git` / `gh` 系ツール呼び出しのたびに許可ダイアログが立つ。
 
 **診断**: まず該当ロールの `settings.local.json` の状態を確認する。
 
