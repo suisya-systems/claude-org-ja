@@ -41,7 +41,7 @@ SAMPLE_PERMISSIONS_MD = """# perms
 }
 ```
 
-## フォアマン (`<repo>/.dispatcher/.claude/settings.local.json`)
+## ディスパッチャー (`<repo>/.dispatcher/.claude/settings.local.json`)
 
 ```json
 {
@@ -72,7 +72,7 @@ SAMPLE_SCHEMA = {
     "roles": {
         "user_common": {"docs_section": "ユーザー共通", "settings_paths": []},
         "secretary": {"docs_section": "窓口", "settings_paths": [".claude/settings.local.json"]},
-        "dispatcher": {"docs_section": "フォアマン", "settings_paths": [".dispatcher/.claude/settings.local.json"]},
+        "dispatcher": {"docs_section": "ディスパッチャー", "settings_paths": [".dispatcher/.claude/settings.local.json"]},
         "curator": {"docs_section": "キュレーター", "settings_paths": [".curator/.claude/settings.local.json"]},
     },
 }
