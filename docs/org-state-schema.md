@@ -87,7 +87,7 @@ python3 dashboard/org_state_converter.py     # Mac/Linux
 | `currentObjective` | `string \| null` | 現在の目標（`Current Objective:` フィールド）。未設定なら `null` |
 | `workItems` | `array` | 作業アイテム一覧 |
 | `workerDirectoryRegistry` | `array` | ワーカーディレクトリ再利用テーブル |
-| `dispatcher` | `object \| null` | フォアマンのピア・ペイン情報。未記録なら `null` |
+| `dispatcher` | `object \| null` | ディスパッチャーのピア・ペイン情報。未記録なら `null` |
 | `curator` | `object \| null` | キュレーターのピア・ペイン情報。未記録なら `null` |
 | `resumeInstructions` | `string \| null` | 再開時の注意事項（org-suspend が書く）。なければ `null` |
 

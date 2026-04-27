@@ -167,11 +167,11 @@ python tools/org_setup_prune.py --all                        # secretary / dispa
 
 **user 拡張の保護**: 個人で追加した allow / env / hook を残すには、各 settings ファイルと**同じディレクトリ**に `settings.local.override.json` を置く。prune 時に deep-merge され、ツールはこの override ファイルを書き換えない。詳細は `.claude/skills/org-setup/SKILL.md` の Step 5 参照。
 
-## フォアマン (`<repo>/.dispatcher/.claude/settings.local.json`)
+## ディスパッチャー (`<repo>/.dispatcher/.claude/settings.local.json`)
 
-フォアマンはワーカーペインで claude を起動し、ペイン内容を取得する。
+ディスパッチャーはワーカーペインで claude を起動し、ペイン内容を取得する。
 
-**重要**: フォアマンは Sonnet 制約により `permission_mode=bypassPermissions` で起動するため、`permissions.allow` と `permissions.deny` は **両方とも bypass される**（Claude Code 公式仕様）。実効的な書き込み境界・git 制限は **PreToolUse フックでしか強制できない**。下記 `hooks.PreToolUse` がフォアマンの唯一の障壁であり、削除・無効化してはいけない。
+**重要**: ディスパッチャーは Sonnet 制約により `permission_mode=bypassPermissions` で起動するため、`permissions.allow` と `permissions.deny` は **両方とも bypass される**（Claude Code 公式仕様）。実効的な書き込み境界・git 制限は **PreToolUse フックでしか強制できない**。下記 `hooks.PreToolUse` がディスパッチャーの唯一の障壁であり、削除・無効化してはいけない。
 
 ```json
 {
@@ -224,8 +224,8 @@ python tools/org_setup_prune.py --all                        # secretary / dispa
 **注意**: `{claude_org_path}` は settings.local.json 生成時に解決済みの絶対パスに置換すること。Hook command 内のパスはスペース対策のためクォートされている。
 
 **hooks の役割分担**:
-- `block-dispatcher-out-of-scope.sh`: フォアマンの Edit/Write 対象パスを `.dispatcher/`, `.state/`, `knowledge/raw/YYYY-MM-DD-{topic}.md` に限定。アプリケーションコード（`tools/`, `dashboard/`, `tests/`, `.claude/skills/`, `docs/`, `registry/` 等）の編集はワーカーへの委譲を強制する
-- `block-git-push.sh`: フォアマンからの直接 push を禁止（push は窓口経由）
+- `block-dispatcher-out-of-scope.sh`: ディスパッチャーの Edit/Write 対象パスを `.dispatcher/`, `.state/`, `knowledge/raw/YYYY-MM-DD-{topic}.md` に限定。アプリケーションコード（`tools/`, `dashboard/`, `tests/`, `.claude/skills/`, `docs/`, `registry/` 等）の編集はワーカーへの委譲を強制する
+- `block-git-push.sh`: ディスパッチャーからの直接 push を禁止（push は窓口経由）
 - `block-dangerous-git.sh`: `git push --force` / `git reset --hard` / `git branch -D` をブロック
 - `block-workers-delete.sh`: workers ディレクトリの再帰削除をブロック（ワーカー成果物の保護）
 - `block-no-verify.sh`: `--no-verify` 系の検証バイパスをブロック

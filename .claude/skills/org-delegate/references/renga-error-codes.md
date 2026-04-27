@@ -1,6 +1,6 @@
 # renga-peers MCP error codes — Dispatcher / Secretary reference
 
-renga 0.14.0+ の `renga-peers` MCP サーバは、エラー応答に安定した machine-readable な code を載せる。フォアマン / キュレーター / 窓口は message 文字列の substring match ではなく **code で分岐する**のを推奨する。
+renga 0.14.0+ の `renga-peers` MCP サーバは、エラー応答に安定した machine-readable な code を載せる。ディスパッチャー / キュレーター / 窓口は message 文字列の substring match ではなく **code で分岐する**のを推奨する。
 
 ## Wire format
 
@@ -19,7 +19,7 @@ mcp__renga-peers__send_message(to_id="worker-nonexistent", message="hi")
 |---|---|---|
 | `pane_not_found` | 指定した pane 名 / id / Focused が存在しない | そのワーカーは既に閉じた扱い。`.state/workers/worker-*.md` の status を `pane_closed` に遷移、`WORKER_PANE_EXITED` を窓口に通知。リトライしない。**注意**: `list_panes` / `focus_pane` / `send_message` / `inspect_pane` は現在フォーカス中のタブのペインしか見えない。別タブ (`new_tab` 由来) のワーカーは本 code で返るので、org-delegate では全ワーカーを同一タブ内 `spawn_pane` で起動する (suisya-systems/renga#71) |
 | `pane_vanished` | resolve 成功後に消えたレース | `pane_not_found` と同等扱い |
-| `last_pane` | `close_pane` で唯一のタブの唯一のペインを閉じようとした | 通常のワーカー停止では発生しない (窓口/フォアマン/キュレーターが同タブに同居するため)。`org-suspend` 末端で残った最後のペイン (通常は窓口) に対して発生した場合、そのペインは自分自身で `exit` して自然終了させる。強制再試行はしない |
+| `last_pane` | `close_pane` で唯一のタブの唯一のペインを閉じようとした | 通常のワーカー停止では発生しない (窓口/ディスパッチャー/キュレーターが同タブに同居するため)。`org-suspend` 末端で残った最後のペイン (通常は窓口) に対して発生した場合、そのペインは自分自身で `exit` して自然終了させる。強制再試行はしない |
 | `split_refused` | `spawn_pane` / `spawn_claude_pane` が MAX_PANES / too small で拒否 | ワーカー起動 (`org-delegate` Step 3) で balanced split のいずれかのステップが 16 ペイン上限 / `MIN_PANE_WIDTH` / `MIN_PANE_HEIGHT` で拒否された場合、キュレーター → 窓口に escalate。典型シナリオは (a) 9 並列以上に到達、(b) ターミナル幅が balanced split の要件 (W ≥ 160) を満たさない、(c) ワーカー退役後の再派遣でレイアウト tree が想定と乖離。`new_tab` フォールバックは tab-scoped 制約のため不可 (suisya-systems/renga#71) |
 | `cwd_invalid` | `spawn_pane` / `spawn_claude_pane` / `new_tab` の `cwd` が存在しないか、ディレクトリでない | renga 0.16.0+ で追加。ペイン作成前に reject されるので half-mutated layout にはならない。Dispatcher 側では窓口に escalate し、ワーカーディレクトリ準備（org-delegate Step 1.5）が完了しているか、相対パスの解決基準（caller pane の cwd）を取り違えていないか確認 |
 | `invalid-params` | `spawn_claude_pane` の `args[]` に conflicting flag を含めた / `send_keys` の `keys[]` に未知のキー名を含めた等、JSON-RPC レベルの input 検証失敗 | `spawn_claude_pane` では `--dangerously-load-development-channels` / `--permission-mode` / `--model` を `args[]` に入れると rejected。構造化フィールド（`permission_mode` / `model`）で渡す。発生したらコード側のバグなので journal 記録 + 窓口 escalate |
@@ -82,7 +82,7 @@ esac
   - `renga/src/ipc/mod.rs::err_code` の doc コメント — 公開 code の一覧と ABI 安定性 (rename は deprecation window 付き) の明文
   - `renga/src/mcp_peer/mod.rs::fmt_code` — MCP 経由の `[<code>] <message>` 成形ロジック
   - renga `Response::Err { message, code }` の wire schema — `code` は `Option<String>` で、`skip_serializing_if = "Option::is_none"`
-- 未知の code は必ず非致命扱いにする — 将来 renga が新 code を追加してもフォアマンが落ちないようにデフォルトブランチ必須
+- 未知の code は必ず非致命扱いにする — 将来 renga が新 code を追加してもディスパッチャーが落ちないようにデフォルトブランチ必須
 
 ## Event stream — `poll_events` MCP
 
@@ -96,7 +96,7 @@ mcp__renga-peers__poll_events(
 )
 ```
 
-戻り値の `events[]` は `type` / `role` / `name` / `id` / `ts` を含む。フォアマンは `role == "worker"` で絞り込んで `WORKER_PANE_EXITED` 通知する。`next_since` を次回 `since` に流用して idempotent resume。
+戻り値の `events[]` は `type` / `role` / `name` / `id` / `ts` を含む。ディスパッチャーは `role == "worker"` で絞り込んで `WORKER_PANE_EXITED` 通知する。`next_since` を次回 `since` に流用して idempotent resume。
 
 ### type 別の扱い
 

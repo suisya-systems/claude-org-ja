@@ -394,7 +394,7 @@ def write_instruction(
     body = (
         f"# Task: {task_id}\n"
         "\n"
-        "窓口からの指示を元にフォアマンが展開したワーカー向け作業指示。\n"
+        "窓口からの指示を元にディスパッチャーが展開したワーカー向け作業指示。\n"
         f"作業ディレクトリ: `{task.get('worker_dir') or task.get('cwd')}`\n"
         "\n"
         "## 指示内容\n"
