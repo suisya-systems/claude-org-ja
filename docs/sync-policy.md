@@ -45,3 +45,9 @@ ja 側で PR が `main` に merge されると、`.github/workflows/notify-en-ch
 逆方向（en → ja）は対称: en 側 merge で `en_pr_merged` を ja repo へ発火し、ja 側に翻訳ペンディング Issue を起票する。
 
 dispatch ステップには受信先 repo に対する `repo` スコープの PAT が必要で、ja 側は `secrets.NOTIFY_EN_PAT`、en 側は `secrets.NOTIFY_JA_PAT`（en→ja 送信側は本 PR では未実装、後続で対応）として保存する。PAT 未設定の間は workflow は休止状態で、受信側は dispatch が来ないため誤起票を起こさない（fail-closed）。
+
+## 通知 CI smoke-test ログ
+
+| 日時 (UTC) | 確認内容 |
+|---|---|
+| 2026-04-28 | `notify-en-changes.yml` 初発火・en 側 TRANSLATION-PENDING issue 起票確認用の trivial PR |
