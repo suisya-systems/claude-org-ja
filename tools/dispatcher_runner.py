@@ -80,6 +80,10 @@ _REQUIRED_VARS = (
 _OPTIONAL_VARS = {
     "constraints": "(なし)",
     "report_target": "secretary",
+    # claude-org self-edit reads CLAUDE.local.md instead of CLAUDE.md
+    # (root CLAUDE.md belongs to Secretary). Caller passes "CLAUDE.local.md"
+    # for self-edit tasks; everyone else gets the default.
+    "claude_md_filename": "CLAUDE.md",
 }
 _ALLOWED_VARS = set(_REQUIRED_VARS) | set(_OPTIONAL_VARS)
 _VERIFICATION_DEPTHS = ("full", "minimal")

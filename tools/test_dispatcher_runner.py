@@ -482,6 +482,7 @@ class InstructionTemplateRenderTests(unittest.TestCase):
             "constraints": "no JS",
             "verification_depth": "full",
             "report_target": "secretary",
+            "claude_md_filename": "CLAUDE.md",
         })
         # Spot-check that key directives survive in the output
         self.assertIn("Fix the login flow.", rendered)
@@ -497,6 +498,38 @@ class InstructionTemplateRenderTests(unittest.TestCase):
             "{constraints}", "{verification_depth}", "{report_target}",
         ):
             self.assertNotIn(tok, rendered)
+
+
+class InstructionTemplateSelfEditTests(unittest.TestCase):
+    def test_default_uses_claude_md(self) -> None:
+        rendered = fr.render_instruction({
+            "task_description": "x",
+            "dir_setup": "y",
+            "branch_strategy": "z",
+            "verification_depth": "minimal",
+            "report_target": "secretary",
+            "constraints": "(なし)",
+            "claude_md_filename": "CLAUDE.md",
+        })
+        self.assertIn("CLAUDE.md", rendered)
+        self.assertNotIn("CLAUDE.local.md", rendered)
+
+    def test_self_edit_overrides_to_claude_local_md(self) -> None:
+        # claude-org self-edit must read CLAUDE.local.md, not the root
+        # CLAUDE.md (which holds Secretary instructions).
+        norm, err = fr.validate_instruction_vars({
+            "task_description": "Edit dispatcher_runner.py",
+            "dir_setup": "worktree ready",
+            "branch_strategy": "issue-71",
+            "verification_depth": "full",
+            "claude_md_filename": "CLAUDE.local.md",
+        })
+        self.assertIsNone(err)
+        rendered = fr.render_instruction(norm)
+        self.assertIn("CLAUDE.local.md", rendered)
+        # No bare "CLAUDE.md" references should leak through
+        self.assertNotIn(" CLAUDE.md ", rendered)
+        self.assertNotIn("は CLAUDE.md", rendered)
 
 
 class BuildPlanInstructionVarsTests(unittest.TestCase):
