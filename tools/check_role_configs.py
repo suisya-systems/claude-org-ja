@@ -468,41 +468,73 @@ def _strip_meta(template: dict) -> dict:
     return {k: v for k, v in template.items() if k not in {"description", "$comment"}}
 
 
-def _matches_worker_template(config: dict, template: dict) -> bool:
-    """Return True when ``config`` matches ``template`` once placeholders in
-    the template are treated as wildcards.
+_PLACEHOLDERS = ("{worker_dir}", "{claude_org_path}")
 
-    A literal value matches itself; a string containing ``{worker_dir}`` or
-    ``{claude_org_path}`` matches any string that fits the surrounding
-    fixed segments. Comparison is structural (dict keys / list ordering must
-    match exactly) so drift in shape — added/removed allows, hook reorder —
-    is reported as a mismatch.
+
+def _matches_worker_template(
+    config: dict,
+    template: dict,
+    *,
+    expected_worker_dir: str | None = None,
+) -> bool:
+    """Return True when ``config`` matches ``template``.
+
+    Placeholders ``{worker_dir}`` / ``{claude_org_path}`` in the template act
+    as captures: every occurrence must resolve to the *same* string within
+    one match attempt. This catches drift where, e.g., one hook command
+    points at a different worker dir than the rest, or where a copy/paste
+    left a stale absolute path behind. When ``expected_worker_dir`` is given,
+    the captured ``{worker_dir}`` value must additionally equal it (modulo
+    path separator normalization), pinning the file to the worker directory
+    that hosts it.
     """
-    return _match(config, template)
+    bindings: dict[str, str] = {}
+    if not _match(config, template, bindings):
+        return False
+    if expected_worker_dir is not None and "{worker_dir}" in bindings:
+        return _norm_path(bindings["{worker_dir}"]) == _norm_path(expected_worker_dir)
+    return True
 
 
-def _match(value, template) -> bool:
+def _norm_path(s: str) -> str:
+    return s.replace("\\", "/").rstrip("/")
+
+
+def _match(value, template, bindings: dict[str, str]) -> bool:
     if isinstance(template, str):
         if not isinstance(value, str):
             return False
-        if "{worker_dir}" not in template and "{claude_org_path}" not in template:
+        if not any(p in template for p in _PLACEHOLDERS):
             return value == template
-        # Build a regex from the template's literal segments.
         import re as _re
         parts = _re.split(r"(\{worker_dir\}|\{claude_org_path\})", template)
         pattern = "".join(
-            ".*" if p in ("{worker_dir}", "{claude_org_path}") else _re.escape(p)
-            for p in parts
+            f"(?P<__ph{idx}>.*)" if p in _PLACEHOLDERS else _re.escape(p)
+            for idx, p in enumerate(parts)
         )
-        return _re.fullmatch(pattern, value) is not None
+        m = _re.fullmatch(pattern, value)
+        if m is None:
+            return False
+        # Map each placeholder occurrence to its captured value and enforce
+        # consistency with prior bindings.
+        ph_indices = [i for i, p in enumerate(parts) if p in _PLACEHOLDERS]
+        for idx in ph_indices:
+            ph = parts[idx]
+            captured = m.group(f"__ph{idx}")
+            existing = bindings.get(ph)
+            if existing is None:
+                bindings[ph] = captured
+            elif existing != captured:
+                return False
+        return True
     if isinstance(template, list):
         if not isinstance(value, list) or len(value) != len(template):
             return False
-        return all(_match(v, t) for v, t in zip(value, template))
+        return all(_match(v, t, bindings) for v, t in zip(value, template))
     if isinstance(template, dict):
         if not isinstance(value, dict) or set(value) != set(template):
             return False
-        return all(_match(value[k], template[k]) for k in template)
+        return all(_match(value[k], template[k], bindings) for k in template)
     return value == template
 
 
@@ -558,9 +590,12 @@ def check_worker_settings(schema: dict, base_dir: Path) -> list[Finding]:
                 )
             )
             continue
+        expected_wd = str(worker_dir.resolve())
         matched = [
             name for name, tmpl in templates.items()
-            if _matches_worker_template(config, tmpl)
+            if _matches_worker_template(
+                config, tmpl, expected_worker_dir=expected_wd,
+            )
         ]
         if not matched:
             findings.append(

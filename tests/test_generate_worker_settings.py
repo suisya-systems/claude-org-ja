@@ -70,6 +70,17 @@ class GenerateWorkerSettingsTest(unittest.TestCase):
         self.assertNotEqual(rc, 0)
         self.assertIn("unknown worker role", stderr)
 
+    def test_reserved_key_rejected_as_role(self):
+        # `$comment` lives under worker_roles as schema metadata; it must not
+        # be selectable as a role even though the key technically exists.
+        rc, _, stderr = _run(
+            "--role", "$comment",
+            "--worker-dir", "/tmp/wd",
+            "--claude-org-path", "/tmp/co",
+        )
+        self.assertNotEqual(rc, 0)
+        self.assertIn("unknown worker role", stderr)
+
     def test_role_claude_org_self_edit_drops_block_org_structure(self):
         rc, stdout, _ = _run(
             "--role", "claude-org-self-edit",
@@ -105,8 +116,11 @@ class GenerateWorkerSettingsTest(unittest.TestCase):
         self.assertEqual(rc, 0)
         data = json.loads(stdout)
         allow = data["permissions"]["allow"]
-        # Read-only contract: no add / commit / write-side git verbs.
-        for forbidden in ("git add", "git commit", "git push", "git checkout"):
+        # Read-only contract: no add / commit / branch / write-side git verbs.
+        for forbidden in (
+            "git add", "git commit", "git push", "git checkout",
+            "git branch", "git switch", "git worktree", "git stash",
+        ):
             self.assertFalse(
                 any(forbidden in entry for entry in allow),
                 f"doc-audit allow must not include {forbidden!r}: {allow}",

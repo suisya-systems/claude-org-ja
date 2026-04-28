@@ -50,8 +50,15 @@ def render_role(
     claude_org_path: str,
 ) -> dict:
     roles = schema.get("worker_roles") or {}
-    if role not in roles:
-        available = sorted(k for k in roles if not k.startswith("$"))
+    available = sorted(
+        k for k, v in roles.items()
+        if not k.startswith("$") and isinstance(v, dict)
+    )
+    if (
+        role not in roles
+        or role.startswith("$")
+        or not isinstance(roles[role], dict)
+    ):
         raise KeyError(
             f"unknown worker role: {role!r}. available: {available}"
         )

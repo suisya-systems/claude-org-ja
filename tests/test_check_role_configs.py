@@ -276,6 +276,123 @@ class CheckOnDiskTests(unittest.TestCase):
         self.assertTrue(any("unknown --role" in f.message for f in findings))
 
 
+class CheckWorkerSettingsTests(unittest.TestCase):
+    """Coverage for the --include-worker-settings drift path (Issue #99)."""
+
+    SCHEMA = {
+        "version": 1,
+        "global": {"forbidden_allow_exact": [], "forbidden_allow_regex": []},
+        "required_hook_scripts": [],
+        "roles": {},
+        "worker_roles": {
+            "$comment": "test fixture",
+            "default": {
+                "description": "test default",
+                "permissions": {"allow": ["Bash(sleep:*)"], "deny": []},
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "matcher": "Bash",
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": "bash \"{claude_org_path}/.hooks/x.sh\"",
+                                }
+                            ],
+                        }
+                    ]
+                },
+                "env": {
+                    "WORKER_DIR": "{worker_dir}",
+                    "CLAUDE_ORG_PATH": "{claude_org_path}",
+                },
+            },
+        },
+    }
+
+    def _emit(self, worker_dir: str, claude_org_path: str) -> dict:
+        import sys as _sys
+        _sys.path.insert(0, str(REPO_ROOT / "tools"))
+        import generate_worker_settings as gws
+        return gws.render_role(
+            self.SCHEMA,
+            role="default",
+            worker_dir=worker_dir,
+            claude_org_path=claude_org_path,
+        )
+
+    def test_generated_file_passes(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            wd = base / "w1"
+            (wd / ".claude").mkdir(parents=True)
+            cfg = self._emit(str(wd.resolve()), "/abs/co")
+            (wd / ".claude" / "settings.local.json").write_text(
+                json.dumps(cfg), encoding="utf-8"
+            )
+            findings = crc.check_worker_settings(self.SCHEMA, base)
+            self.assertEqual(findings, [], [f.format() for f in findings])
+
+    def test_drift_detected(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            wd = base / "w1"
+            (wd / ".claude").mkdir(parents=True)
+            (wd / ".claude" / "settings.local.json").write_text(
+                json.dumps({"permissions": {"allow": ["Bash(rogue)"]}}),
+                encoding="utf-8",
+            )
+            findings = crc.check_worker_settings(self.SCHEMA, base)
+            self.assertTrue(
+                any("does not match" in f.message for f in findings),
+                [f.format() for f in findings],
+            )
+
+    def test_inconsistent_path_substitution_rejected(self):
+        # Two occurrences of {claude_org_path} resolved to different values
+        # — a copy/paste class of drift the wildcard-only matcher would miss.
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            wd = base / "w1"
+            (wd / ".claude").mkdir(parents=True)
+            cfg = self._emit(str(wd.resolve()), "/abs/co")
+            cfg["env"]["CLAUDE_ORG_PATH"] = "/different/co"
+            (wd / ".claude" / "settings.local.json").write_text(
+                json.dumps(cfg), encoding="utf-8"
+            )
+            findings = crc.check_worker_settings(self.SCHEMA, base)
+            self.assertTrue(
+                any("does not match" in f.message for f in findings),
+                [f.format() for f in findings],
+            )
+
+    def test_wrong_worker_dir_rejected(self):
+        # File is under <base>/w1 but its WORKER_DIR env points at /elsewhere.
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            wd = base / "w1"
+            (wd / ".claude").mkdir(parents=True)
+            cfg = self._emit("/elsewhere", "/abs/co")
+            (wd / ".claude" / "settings.local.json").write_text(
+                json.dumps(cfg), encoding="utf-8"
+            )
+            findings = crc.check_worker_settings(self.SCHEMA, base)
+            self.assertTrue(
+                any("does not match" in f.message for f in findings),
+                [f.format() for f in findings],
+            )
+
+    def test_missing_base_dir_errors(self):
+        findings = crc.check_worker_settings(
+            self.SCHEMA, Path("/no/such/dir/__nope__")
+        )
+        self.assertTrue(any("does not exist" in f.message for f in findings))
+
+
 class RealRepoSmokeTests(unittest.TestCase):
     """Sanity check: the real schema + real permissions.md must pass.
 
