@@ -185,6 +185,18 @@ git -C {project_path} check-ignore -q -- <target>
 
 1. `registry/org-config.md` の `workers_dir` を読み、リポジトリルートからの相対パスを絶対パスに解決する
 
+### ワーカーロール (`<ROLE>`) の選び方
+
+`.claude/settings.local.json` の生成は schema-driven generator (`tools/generate_worker_settings.py`) に委ねる。窓口は **タスク特性に応じて 1 つの role を選ぶだけ** で、permission の手書き編集は禁止（schema → settings の drift は CI で fail する）。
+
+| Role | 用途 |
+|---|---|
+| `default` | 通常の実装・修正タスク（git commit / branch 操作あり、push 不可、recursive delete 不可） |
+| `claude-org-self-edit` | claude-org リポジトリ自身を編集するタスク（`tools/`, `.claude/skills/`, `docs/` 等）。`block-org-structure.sh` を外す代わりに `check-worker-boundary.sh` で境界を担保 |
+| `doc-audit` | 読み取り中心の調査・監査・レポート（Edit/Write/MultiEdit/NotebookEdit を deny。commit / branch も禁止） |
+
+各 role の具体的な allow/deny/hooks は `tools/role_configs_schema.json` の `worker_roles[<role>]` を参照（schema が SOT）。新しいパターンが必要な場合は schema に role を追加する PR を起こすこと（窓口の手書き拡張は不可）。
+
 ### パターン A: プロジェクトディレクトリ
 
 プロジェクト専用ディレクトリ（`{workers_dir}/{project_slug}/`）を使う。初回は clone、2回目以降は再利用。
@@ -193,11 +205,15 @@ git -C {project_path} check-ignore -q -- <target>
 
 1. `git clone {project_path} {workers_dir}/{project_slug}/` を実行
 2. ディレクトリ直下に CLAUDE.md を生成する（テンプレートの変数を置換）
-3. ディレクトリ直下に `.claude/settings.local.json` を配置する
-   （設定内容は org-setup/references/permissions.md の「ワーカー」セクション参照）
-   - `permissions.deny` を含めること（`git push` / `rm -rf` 等の静的ブロック。`bypassPermissions` モードでも常に有効）
-   - hooks の command パスと env の値には `{claude_org_path}` と `{worker_dir}` を解決済みの絶対パスで埋め込むこと
-   - command パス内のクォート（`"bash \"{claude_org_path}/...\""`）はそのまま維持すること（スペース対策）
+3. ディレクトリ直下に `.claude/settings.local.json` を **generator で生成する**（schema が SOT。詳細は `tools/role_configs_schema.json` の `worker_roles` を参照）:
+   ```bash
+   python tools/generate_worker_settings.py \
+     --role <ROLE> \
+     --worker-dir {worker_dir} \
+     --claude-org-path {claude_org_path} \
+     --out {worker_dir}/.claude/settings.local.json
+   ```
+   `<ROLE>` の選び方は本 Step 冒頭の「ワーカーロール (`<ROLE>`) の選び方」表を参照。手書き JSON は禁止（drift CI が fail する）。
 4. `.state/org-state.md` の Worker Directory Registry に登録する
 
 **再利用（ディレクトリが存在し、ステータスが `available` の場合）:**
@@ -219,11 +235,15 @@ git -C {project_path} check-ignore -q -- <target>
    - `{branch_name}` は Step 1 で決定したブランチ名（指定がなければ `{task_id}` をブランチ名に使う）
    - ワーカーディレクトリ: `{workers_dir}/{project_slug}/.worktrees/{task_id}/`
 3. worktree 直下に CLAUDE.md を生成する（テンプレートの変数を置換）
-4. worktree 直下に `.claude/settings.local.json` を配置する
-   （設定内容は org-setup/references/permissions.md の「ワーカー」セクション参照）
-   - `permissions.deny` を含めること（`git push` / `rm -rf` 等の静的ブロック。`bypassPermissions` モードでも常に有効）
-   - hooks の command パスと env の値には `{claude_org_path}` と `{worker_dir}` を解決済みの絶対パスで埋め込むこと
-   - command パス内のクォート（`"bash \"{claude_org_path}/...\""`）はそのまま維持すること（スペース対策）
+4. worktree 直下に `.claude/settings.local.json` を **generator で生成する**（schema-driven。詳細は `tools/role_configs_schema.json` の `worker_roles` 参照）:
+   ```bash
+   python tools/generate_worker_settings.py \
+     --role <ROLE> \
+     --worker-dir {worker_dir} \
+     --claude-org-path {claude_org_path} \
+     --out {worker_dir}/.claude/settings.local.json
+   ```
+   `<ROLE>` の選び方は本 Step 冒頭の「ワーカーロール (`<ROLE>`) の選び方」表を参照。手書き JSON は禁止。
 5. `.state/org-state.md` の Worker Directory Registry に登録する
 
 ### パターン C: エフェメラル
@@ -232,16 +252,20 @@ git -C {project_path} check-ignore -q -- <target>
 
 1. `{workers_dir}/{task_id}/` ディレクトリを作成する（例: `../workers/data-analysis/`）
 2. テンプレートから `{workers_dir}/{task_id}/CLAUDE.md` を生成する
-3. `{workers_dir}/{task_id}/.claude/settings.local.json` にワーカー用の設定を配置する
-   （設定内容は org-setup/references/permissions.md の「ワーカー」セクション参照）
-   - `permissions.deny` を含めること（`git push` / `rm -rf` 等の静的ブロック。`bypassPermissions` モードでも常に有効）
-   - hooks の command パスと env の値には `{claude_org_path}` と `{worker_dir}` を解決済みの絶対パスで埋め込むこと
-   - command パス内のクォート（`"bash \"{claude_org_path}/...\""`）はそのまま維持すること（スペース対策）
+3. `{workers_dir}/{task_id}/.claude/settings.local.json` を **generator で生成する**（schema-driven。詳細は `tools/role_configs_schema.json` の `worker_roles` 参照）:
+   ```bash
+   python tools/generate_worker_settings.py \
+     --role <ROLE> \
+     --worker-dir {worker_dir} \
+     --claude-org-path {claude_org_path} \
+     --out {worker_dir}/.claude/settings.local.json
+   ```
+   `<ROLE>` の選び方は本 Step 冒頭の「ワーカーロール (`<ROLE>`) の選び方」表を参照。手書き JSON は禁止。
 4. `.state/org-state.md` の Worker Directory Registry に登録する
 
 ### 共通手順（全パターン・配置後）
 
-テンプレートの変数を実際の値で置換する:
+CLAUDE.md テンプレートの変数を実際の値で置換する（settings.local.json の置換は generator が自動で行うため対象外）:
 - `{project_name}` → registry の通称
 - `{project_description}` → registry の説明
 - `{task_id}` → タスクID（例: `data-analysis`）

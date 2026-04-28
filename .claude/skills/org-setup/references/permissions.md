@@ -122,6 +122,12 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
       "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:8099/:*)",
       "Bash(curl -s http://localhost:8099/ -o /dev/null -w \"%{http_code}\\\\n\")",
       "PowerShell(Out-File *)"
+    ],
+    "deny": [
+      "Write(*/workers/*/.claude/settings.local.json)",
+      "Edit(*/workers/*/.claude/settings.local.json)",
+      "Write(*/workers/*/.worktrees/*/.claude/settings.local.json)",
+      "Edit(*/workers/*/.worktrees/*/.claude/settings.local.json)"
     ]
   },
   "hooks": {
@@ -141,6 +147,10 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
 ```
 
 **mcp__renga-peers__\* の重複**: ユーザー共通 settings.json と重複するが、窓口は run 直後に renga-peers MCP を必ず使うため、窓口スコープでも明示的に列挙して source-of-truth として固定する（user settings の drift でも窓口が動くことを保証）。
+
+**`permissions.deny` (Issue #99 Phase 2 で追加)**: ワーカー設定ファイル（`workers/<project>/.claude/settings.local.json` および worktree パス `workers/<project>/.worktrees/<task>/.claude/settings.local.json`）への **Claude の `Write` / `Edit` ツール経由の直接編集**を窓口に対して禁止する。窓口は通常モード起動（`bypassPermissions` ではない）なので、この `permissions.deny` は静的パターンマッチで常に効く。
+
+ただしこの deny は Claude のファイル編集ツール（Write/Edit）系のゲートに限定される。窓口は引き続き `Bash(python:*)` / `Bash(python3:*)` / `PowerShell(Out-File *)` を allow しているため、Bash/PowerShell から `cat > settings.local.json` のように書き出すことは技術的に可能。本 deny は **「窓口が手作業で `Edit` ツールを開いて settings を書き換える」** という主要な誤付与経路を塞ぐためのもので、`tools/generate_worker_settings.py` 以外の経路を完全に遮断するものではない。完全な generator-only 化（Bash 側の遮断を含む）は Phase 3 の課題（drift CI 拡張・escape hatch と併走）。
 
 **renga bootstrap の重複**: 同じ理由でユーザー共通と重複するが、窓口が初回レイアウト起動やペイン制御で即時使うため明示列挙。
 
@@ -244,7 +254,9 @@ python tools/org_setup_prune.py --all                        # secretary / dispa
 
 ## ワーカー（動的生成）
 
-ワーカーの設定は org-delegate の Step 3 で動的に作成される。
+ワーカーの設定は org-delegate の Step 1.5 で動的に作成される。
+
+> **Phase 2 以降 (Issue #99)**: ワーカーの `settings.local.json` は `tools/generate_worker_settings.py` が `tools/role_configs_schema.json` の `worker_roles[<role>]` から生成する（`default` / `claude-org-self-edit` / `doc-audit` の 3 role）。本セクションに掲載されている JSON はあくまでリファレンス用で、手書き編集は禁止（drift CI が fail する）。新しい permission パターンが必要な場合は schema に role を追加する PR を起こすこと。
 
 ```json
 {
@@ -308,4 +320,4 @@ python tools/org_setup_prune.py --all                        # secretary / dispa
 
 **注意**: `{claude_org_path}` と `{worker_dir}` は settings.local.json 生成時に解決済みの絶対パスに置換すること。Hook command 内のパスはスペース対策のためクォートされている。
 
-**deny と hooks の役割分担**: `permissions.deny` は静的パターンマッチによるブロックで、`bypassPermissions` モードでも常に有効。外部コマンド（jq, bash）に依存しないため信頼性が高い。一方 hooks はワーカーディレクトリ境界チェック等の動的検証を担う。両者を併用することで多層防御を実現する。`deny` は `echo foo && git push` のような埋め込みコマンドはカバーできないため、`block-git-push.sh` hook は副次防御として維持する。
+**deny と hooks の役割分担**: ワーカーは通常モード（`bypassPermissions` ではない）で起動するため、`permissions.deny` は静的パターンマッチで常に効く。外部コマンド（jq, bash）に依存しないので信頼性が高い。一方 hooks はワーカーディレクトリ境界チェック等の動的検証を担う。両者を併用することで多層防御を実現する。`deny` は `echo foo && git push` のような埋め込みコマンドはカバーできないため、`block-git-push.sh` hook は副次防御として維持する。なお `bypassPermissions` で起動するロール（ディスパッチャー）では `permissions.deny` は bypass されるので、そちらは hook のみが障壁になる（前述 `重要` 節参照）。

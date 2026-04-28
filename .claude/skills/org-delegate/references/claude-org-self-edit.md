@@ -9,11 +9,19 @@ claude-org リポジトリのスキル / ドキュメント / 設定を編集す
 
 このため、claude-org 自己編集タスクでは **Step 1.5 のワーカーディレクトリ準備時に以下 3 点を通常手順に追加する**。
 
-## 1. `block-org-structure.sh` hook を worktree の settings.local.json から除外する
+## 1. `claude-org-self-edit` ロールで settings.local.json を生成する
 
-worktree 直下の `.claude/settings.local.json` を配置する際、`hooks.PreToolUse` から `block-org-structure.sh` エントリを **除外**すること。`Edit|Write` matcher と `Bash` matcher の両方で除外する必要がある。
+Phase 2 (Issue #99) 以降、ワーカー `.claude/settings.local.json` は `tools/generate_worker_settings.py` で **schema-driven に生成**する（手書き編集は窓口の `permissions.deny` で禁止されている）。claude-org 自己編集タスクでは `--role claude-org-self-edit` を指定すること:
 
-他の hook（例: `block-git-push.sh`, `block-workers-delete.sh`, `check-worker-boundary.sh` 等）は通常どおり残してよい。除外対象はあくまで claude-org 構造のブロック hook のみ。
+```bash
+python tools/generate_worker_settings.py \
+  --role claude-org-self-edit \
+  --worker-dir {worker_dir} \
+  --claude-org-path {claude_org_path} \
+  --out {worker_dir}/.claude/settings.local.json
+```
+
+`claude-org-self-edit` ロールは schema 上で `block-org-structure.sh` hook が **既に除外**された状態で定義されている（`Edit|Write` / `Bash` matcher 双方）。`check-worker-boundary.sh` / `block-git-push.sh` などその他の hook は通常どおり残る。生成済み JSON を手で再編集してはならない（drift CI が fail する。新パターンが必要なら `tools/role_configs_schema.json` の `worker_roles` に role を追加する PR を起こす）。
 
 ## 2. ワーカー指示は `CLAUDE.md` ではなく `CLAUDE.local.md` に書く
 
