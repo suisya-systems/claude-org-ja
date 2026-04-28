@@ -409,6 +409,7 @@ class InstructionVarsValidationTests(unittest.TestCase):
         base = {
             "task_description": "Fix the login flow.",
             "dir_setup": "clone は不要です。",
+            "branch_strategy": "feature/login",
             "verification_depth": "full",
         }
         base.update(overrides)
@@ -420,20 +421,31 @@ class InstructionVarsValidationTests(unittest.TestCase):
         assert norm is not None
         self.assertEqual(norm["task_description"], "Fix the login flow.")
         self.assertEqual(norm["verification_depth"], "full")
-        # Defaults filled
+        self.assertEqual(norm["branch_strategy"], "feature/login")
+        # Defaults filled (only the truly-optional ones)
         self.assertEqual(norm["report_target"], "secretary")
-        self.assertIn("main", norm["branch_strategy"])
+        self.assertEqual(norm["constraints"], "(なし)")
 
     def test_rejects_non_dict(self) -> None:
         _, err = fr.validate_instruction_vars(["not", "a", "dict"])
         self.assertIsNotNone(err)
 
-    def test_rejects_missing_required(self) -> None:
+    def test_rejects_missing_verification_depth(self) -> None:
         _, err = fr.validate_instruction_vars(
-            {"task_description": "x", "dir_setup": "y"}
+            {"task_description": "x", "dir_setup": "y", "branch_strategy": "z"}
         )
         self.assertIsNotNone(err)
         self.assertIn("verification_depth", err)
+
+    def test_rejects_missing_branch_strategy(self) -> None:
+        # Defaulting branch_strategy would silently mis-instruct Pattern B
+        # (worktree) workers — keep it required.
+        _, err = fr.validate_instruction_vars(
+            {"task_description": "x", "dir_setup": "y",
+             "verification_depth": "full"}
+        )
+        self.assertIsNotNone(err)
+        self.assertIn("branch_strategy", err)
 
     def test_rejects_blank_required(self) -> None:
         _, err = fr.validate_instruction_vars(self._vars(task_description="   "))
@@ -509,6 +521,7 @@ class BuildPlanInstructionVarsTests(unittest.TestCase):
         return {
             "task_description": "Fix the login flow.",
             "dir_setup": "worktree ready, clone不要",
+            "branch_strategy": "issue-71-template-expand",
             "verification_depth": "full",
         }
 
@@ -554,8 +567,28 @@ class BuildPlanInstructionVarsTests(unittest.TestCase):
         # Template directives must NOT appear (explicit took over)
         self.assertNotIn("SUSPEND", body)
 
+    def test_blank_instruction_falls_through_to_vars(self) -> None:
+        # An empty/whitespace `instruction` must not silently produce an empty
+        # outbox file; it should fall through to instruction_vars expansion.
+        task = {
+            "task_id": "blank-instr",
+            "worker_dir": str(self.work_dir),
+            "instruction": "   ",  # whitespace
+            "instruction_vars": self._good_vars(),
+        }
+        plan = fr.build_plan(task, self.panes, self.state_dir)
+        self.assertEqual(plan.status, "ready_to_spawn")
+        self.assertEqual(plan.warnings, [])  # not "explicit wins"
+        fr.write_instruction(self.state_dir, task, plan.task_id)
+        body = ((self.state_dir / "dispatcher" / "outbox"
+                 / "blank-instr-instruction.md")
+                .read_text(encoding="utf-8"))
+        self.assertIn("Fix the login flow.", body)
+        self.assertIn("SUSPEND", body)
+
     def test_instruction_vars_missing_required_rejected(self) -> None:
-        bad = {"task_description": "x", "dir_setup": "y"}  # no verification_depth
+        bad = {"task_description": "x", "dir_setup": "y",
+               "branch_strategy": "z"}  # no verification_depth
         plan = fr.build_plan(
             {
                 "task_id": "vars-missing",

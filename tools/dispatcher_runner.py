@@ -72,9 +72,12 @@ _TEMPLATE_END_MARKER = "<!-- AUTO-EXPAND-TEMPLATE-END -->"
 
 # Variables understood by the auto-expand template. Keep in sync with
 # instruction-template.md "## 自動展開テンプレート" section.
-_REQUIRED_VARS = ("task_description", "dir_setup", "verification_depth")
+# branch_strategy is required: defaulting it would silently mis-instruct
+# Pattern B (worktree) workers to commit on main.
+_REQUIRED_VARS = (
+    "task_description", "dir_setup", "branch_strategy", "verification_depth",
+)
 _OPTIONAL_VARS = {
-    "branch_strategy": "main で直接作業してください",
     "constraints": "(なし)",
     "report_target": "secretary",
 }
@@ -348,9 +351,13 @@ def build_plan(
         return plan
 
     # Validate instruction / instruction_vars early so input errors surface
-    # before any side-effects. instruction_vars is only consulted when the
-    # caller did NOT pass an explicit `instruction` (backward-compat).
-    if "instruction" not in task and "instruction_vars" in task:
+    # before any side-effects. Truthiness (not key-presence) decides whether
+    # an explicit `instruction` wins, matching write_instruction below — so a
+    # blank `instruction=""` falls through to instruction_vars expansion
+    # instead of silently writing an empty outbox file.
+    has_explicit = bool(str(task.get("instruction") or "").strip())
+    has_vars = "instruction_vars" in task
+    if not has_explicit and has_vars:
         norm_vars, vars_err = validate_instruction_vars(task["instruction_vars"])
         if vars_err:
             plan.status = "input_invalid"
@@ -366,7 +373,7 @@ def build_plan(
                 f"failed to render instruction template: {exc}"
             )
             return plan
-    elif "instruction" in task and "instruction_vars" in task:
+    elif has_explicit and has_vars:
         plan.warnings.append(
             "both `instruction` and `instruction_vars` provided; "
             "explicit `instruction` wins, `instruction_vars` ignored"
@@ -520,11 +527,15 @@ def write_instruction(
 ) -> Path:
     target = state_dir / "dispatcher" / "outbox" / f"{task_id}-instruction.md"
     target.parent.mkdir(parents=True, exist_ok=True)
+    # Mirror build_plan's whitespace-aware check: a blank `instruction` must
+    # not crowd out a rendered template body.
+    explicit = str(task.get("instruction") or "")
     instruction = (
-        task.get("instruction")
-        or task.get("_rendered_instruction")
-        or task.get("task_description")
-        or ""
+        explicit if explicit.strip() else (
+            task.get("_rendered_instruction")
+            or task.get("task_description")
+            or ""
+        )
     )
     body = (
         f"# Task: {task_id}\n"
