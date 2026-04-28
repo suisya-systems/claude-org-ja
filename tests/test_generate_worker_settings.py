@@ -125,6 +125,14 @@ class GenerateWorkerSettingsTest(unittest.TestCase):
                 any(forbidden in entry for entry in allow),
                 f"doc-audit allow must not include {forbidden!r}: {allow}",
             )
+        # Edit/Write must be explicitly denied to honour the read-only contract
+        # (omission alone does not block the tool).
+        deny = data["permissions"]["deny"]
+        for required_deny in ("Edit", "Write"):
+            self.assertIn(
+                required_deny, deny,
+                f"doc-audit deny must include {required_deny!r}: {deny}",
+            )
 
     def test_out_writes_file(self):
         with tempfile.TemporaryDirectory() as td:

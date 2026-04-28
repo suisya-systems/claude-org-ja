@@ -397,7 +397,11 @@
           "Bash(git checkout *)",
           "Bash(git switch *)",
           "Bash(rm -rf *)",
-          "Bash(rm -r *)"
+          "Bash(rm -r *)",
+          "Edit",
+          "Write",
+          "MultiEdit",
+          "NotebookEdit"
         ]
       },
       "hooks": {
