@@ -122,6 +122,10 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
       "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:8099/:*)",
       "Bash(curl -s http://localhost:8099/ -o /dev/null -w \"%{http_code}\\\\n\")",
       "PowerShell(Out-File *)"
+    ],
+    "deny": [
+      "Write(*/workers/*/.claude/settings.local.json)",
+      "Edit(*/workers/*/.claude/settings.local.json)"
     ]
   },
   "hooks": {
@@ -141,6 +145,8 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
 ```
 
 **mcp__renga-peers__\* の重複**: ユーザー共通 settings.json と重複するが、窓口は run 直後に renga-peers MCP を必ず使うため、窓口スコープでも明示的に列挙して source-of-truth として固定する（user settings の drift でも窓口が動くことを保証）。
+
+**`permissions.deny` (Issue #99 Phase 2 で追加)**: ワーカー設定ファイル (`workers/*/.claude/settings.local.json`) への直接 Write/Edit を窓口に対して禁止する。ワーカー設定は `tools/generate_worker_settings.py` 経由でしか書き換えられないようにし、窓口の手書き編集による permission 過大付与を構造的に防ぐ。`bypassPermissions` モードでも常に有効。
 
 **renga bootstrap の重複**: 同じ理由でユーザー共通と重複するが、窓口が初回レイアウト起動やペイン制御で即時使うため明示列挙。
 
@@ -244,7 +250,9 @@ python tools/org_setup_prune.py --all                        # secretary / dispa
 
 ## ワーカー（動的生成）
 
-ワーカーの設定は org-delegate の Step 3 で動的に作成される。
+ワーカーの設定は org-delegate の Step 1.5 で動的に作成される。
+
+> **Phase 2 以降 (Issue #99)**: ワーカーの `settings.local.json` は `tools/generate_worker_settings.py` が `tools/role_configs_schema.json` の `worker_roles[<role>]` から生成する（`default` / `claude-org-self-edit` / `doc-audit` の 3 role）。本セクションに掲載されている JSON はあくまでリファレンス用で、手書き編集は禁止（drift CI が fail する）。新しい permission パターンが必要な場合は schema に role を追加する PR を起こすこと。
 
 ```json
 {

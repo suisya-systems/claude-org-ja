@@ -141,7 +141,10 @@
         "PowerShell(Out-File *)"
       ],
       "allowed_allow_regex": [],
-      "required_deny": [],
+      "required_deny": [
+        "Write(*/workers/*/.claude/settings.local.json)",
+        "Edit(*/workers/*/.claude/settings.local.json)"
+      ],
       "required_hooks": [
         {
           "event": "PreToolUse",
