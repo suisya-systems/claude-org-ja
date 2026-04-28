@@ -68,7 +68,9 @@ python tools/generate_worker_settings.py \
 
 ### 5. drift CI 拡張
 
-`tools/check_role_configs.py` に `--include-worker-settings` を追加。CI ですべてのワーカー `settings.local.json` を schema に対して検証する。drift = fail。
+`tools/check_role_configs.py` に `--include-worker-settings` を追加。`<workers_dir>/<project>/.claude/settings.local.json` 配置のワーカー（Pattern A 系）を schema に対して検証する。drift = fail。
+
+> **現状の検査スコープ (Phase 1 時点)**: `--include-worker-settings` は `<BASE_DIR>/*/.claude/settings.local.json` のみを走査するため、Pattern B の `<BASE_DIR>/<project>/.worktrees/<task>/.claude/settings.local.json` は未検査。worktree までの recurse 拡張は Phase 3 の課題（後述）。
 
 ## メリット（7 項目）
 
@@ -103,7 +105,7 @@ python tools/generate_worker_settings.py \
 
 * **Phase 1**（約 1 週間）: B 相当 — schema 拡張 + generator + drift CI（PR #169 で完了）
 * **Phase 2**: hook 強制を追加（A へアップグレード）（本 PR で完了）
-* **Phase 3**: escape hatch 設計（例: 限定的な `worker_roles.adhoc`）と運用知見の蓄積。drift CI は Phase 1 で導入済みのため、本フェーズでは alert 経路や retro 連携の整備が中心
+* **Phase 3**: escape hatch 設計（例: 限定的な `worker_roles.adhoc`）、drift CI スコープ拡張（Pattern B worktree 配下まで recurse）、運用知見の蓄積（alert 経路や retro 連携）
 
 ## Acceptance Criteria
 
@@ -111,7 +113,7 @@ python tools/generate_worker_settings.py \
 * [x] `tools/generate_worker_settings.py` を実装（unit test 込み）（Phase 1）
 * [x] `org-delegate` Step 1.5 の手書き JSON 部分を generator 呼び出しに置換（Phase 2）
 * [x] 窓口設定に `Write(*/workers/*/.claude/settings.local.json)` deny ルールを追加（Phase 2）
-* [x] `tools/check_role_configs.py` が `--include-worker-settings` でワーカー `settings.local.json` を schema 検証（Phase 1）
+* [x] `tools/check_role_configs.py` が `--include-worker-settings` でワーカー `settings.local.json` を schema 検証（Phase 1）。ただし現状は `<BASE_DIR>/*/.claude/...` のみで、Pattern B worktree 配下は Phase 3 で追加予定
 * [x] README / 内部ドキュメントに 7 メリット / 7 デメリットを明示（本ドキュメント）
 
 ## 関連
