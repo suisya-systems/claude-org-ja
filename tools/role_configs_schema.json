@@ -143,7 +143,9 @@
       "allowed_allow_regex": [],
       "required_deny": [
         "Write(*/workers/*/.claude/settings.local.json)",
-        "Edit(*/workers/*/.claude/settings.local.json)"
+        "Edit(*/workers/*/.claude/settings.local.json)",
+        "Write(*/workers/*/.worktrees/*/.claude/settings.local.json)",
+        "Edit(*/workers/*/.worktrees/*/.claude/settings.local.json)"
       ],
       "required_hooks": [
         {

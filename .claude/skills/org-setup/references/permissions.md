@@ -125,7 +125,9 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
     ],
     "deny": [
       "Write(*/workers/*/.claude/settings.local.json)",
-      "Edit(*/workers/*/.claude/settings.local.json)"
+      "Edit(*/workers/*/.claude/settings.local.json)",
+      "Write(*/workers/*/.worktrees/*/.claude/settings.local.json)",
+      "Edit(*/workers/*/.worktrees/*/.claude/settings.local.json)"
     ]
   },
   "hooks": {
@@ -146,7 +148,7 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
 
 **mcp__renga-peers__\* の重複**: ユーザー共通 settings.json と重複するが、窓口は run 直後に renga-peers MCP を必ず使うため、窓口スコープでも明示的に列挙して source-of-truth として固定する（user settings の drift でも窓口が動くことを保証）。
 
-**`permissions.deny` (Issue #99 Phase 2 で追加)**: ワーカー設定ファイル (`workers/*/.claude/settings.local.json`) への直接 Write/Edit を窓口に対して禁止する。ワーカー設定は `tools/generate_worker_settings.py` 経由でしか書き換えられないようにし、窓口の手書き編集による permission 過大付与を構造的に防ぐ。`bypassPermissions` モードでも常に有効。
+**`permissions.deny` (Issue #99 Phase 2 で追加)**: ワーカー設定ファイル（`workers/<project>/.claude/settings.local.json` および worktree パス `workers/<project>/.worktrees/<task>/.claude/settings.local.json`）への直接 Write/Edit を窓口に対して禁止する。ワーカー設定は `tools/generate_worker_settings.py` 経由でしか書き換えられないようにし、窓口の手書き編集による permission 過大付与を構造的に防ぐ。窓口は通常モード起動（`bypassPermissions` ではない）なので、この `permissions.deny` は静的パターンマッチで常に効く。
 
 **renga bootstrap の重複**: 同じ理由でユーザー共通と重複するが、窓口が初回レイアウト起動やペイン制御で即時使うため明示列挙。
 

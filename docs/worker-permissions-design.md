@@ -103,7 +103,7 @@ python tools/generate_worker_settings.py \
 
 * **Phase 1**（約 1 週間）: B 相当 — schema 拡張 + generator + drift CI（PR #169 で完了）
 * **Phase 2**: hook 強制を追加（A へアップグレード）（本 PR で完了）
-* **Phase 3**: drift CI 拡張、escape hatch 設計（例: 限定的な `worker_roles.adhoc`）
+* **Phase 3**: escape hatch 設計（例: 限定的な `worker_roles.adhoc`）と運用知見の蓄積。drift CI は Phase 1 で導入済みのため、本フェーズでは alert 経路や retro 連携の整備が中心
 
 ## Acceptance Criteria
 
