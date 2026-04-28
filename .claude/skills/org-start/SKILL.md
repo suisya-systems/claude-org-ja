@@ -62,6 +62,8 @@ renga 0.18.0+ では `mcp__renga-peers__spawn_claude_pane` が役割別の構造
 - `permission_mode`: registry/org-config.md の default_permission_mode の値を使用（ディスパッチャー除く）
 - `cwd`: 各ロール専用ディレクトリへの相対パス（caller pane の cwd 基準で解決される）
 
+> **注**: Secretary は `renga --layout ops` で起動され、`--permission-mode` 未指定のまま動作する（人間判断窓口のため）。`registry/org-config.md` の「Role別の適用範囲」節を参照。
+
 ### ディスパッチャー
 
 - `cwd=".dispatcher"`
