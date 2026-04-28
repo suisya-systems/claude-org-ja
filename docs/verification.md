@@ -452,6 +452,10 @@ claude  # 警告が消えることを確認
 
 WSL で deny されなければ、 (a) Claude Code のバージョンが sandbox 未対応、(b) 設定 syntax の解釈差異、(c) #32226 の別症状、のいずれか。バージョンと Issue #32226 ステータスを記録。
 
+### Phase 2a portability fix ([Issue #83](https://github.com/suisya-systems/claude-org-ja/issues/83))
+
+WSL2 などで `bubblewrap` 未導入時に sandbox init が silent no-op fallback して `~/.aws/**` / `~/.ssh/**` の denyRead/denyWrite が無効化される問題への対処として、**ホーム dotfile（`~/.aws` / `~/.ssh`）は sandbox の対象範囲外**とし、`permissions.deny` の `Read(~/.ssh/*)` / `Read(~/.aws/*)` で防御する。for portability, home dotfiles are out of sandbox scope。sandbox 側の `denyRead` / `denyWrite` はリポジトリローカルの `.env` / 認証情報ファイルに集中させる。
+
 ---
 
 ## 11. MCP 疎通テスト（環境確認）

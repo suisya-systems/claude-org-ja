@@ -245,11 +245,12 @@ claude-org-ja は **4 層防御**（`permissions.deny` / PreToolUse フック / 
 | `VAR=$(printf -- '--no-verify'); git commit $VAR` | — | ✅ assignment 収集 + `flatten_substitutions` | — | — |
 | `git push --force` / `git reset --hard` / `git branch -D`（窓口・キュレーター） | ✅ | ✅ (`block-dangerous-git.sh`) | — | — |
 | `cat .env` / 認証情報読み取り（Bash 経由） | — | — | ⚠️ macOS (Seatbelt) / Linux / WSL2 (`bubblewrap`+`socat`) のみ。**Windows native は Claude Code 側未実装で素通り**（[docs/verification.md §10.1](docs/verification.md)） | — |
+| `Read(~/.ssh/*)` / `Read(~/.aws/*)`（Read tool 経由のホーム dotfile 読み取り） | ✅ ([Issue #83](https://github.com/suisya-systems/claude-org-ja/issues/83)) | — | — | — |
 | ステージ差分への秘密情報混入 | — | — | — | ✅ ([.githooks/pre-commit](.githooks/pre-commit)) |
 | シェル関数経由の bypass（`f(){ git commit --no-verify; }; f`） | — | ➖ 関数定義の静的解析は非対応 | — | — |
 
 **残存リスク (residual risk)**:
-- **シェル関数定義経由のルーティング**: 関数本体内に隠された禁止コマンドは PreToolUse フックの静的解析では検出できません（Phase 2c で検討した shell-layer 静的解析は誤検知率と保守コストの観点から廃案）。sandbox の `denyWrite` も対象が `~/.claude/settings.json` / `~/.ssh/**` 等の限定リストで、`git commit` などのリポジトリ副作用は止めません。本ベクトルは現状ロール契約による自主規律のみで担保されます。
+- **シェル関数定義経由のルーティング**: 関数本体内に隠された禁止コマンドは PreToolUse フックの静的解析では検出できません（Phase 2c で検討した shell-layer 静的解析は誤検知率と保守コストの観点から廃案）。sandbox の `denyWrite` も対象が `~/.claude/settings.json` 等の限定リストで、`git commit` などのリポジトリ副作用は止めません（ホーム dotfile `~/.ssh` / `~/.aws` は WSL2 での sandbox init 失敗を避けるため `permissions.deny` の Read 側で防御する方針へ移行、[Issue #83](https://github.com/suisya-systems/claude-org-ja/issues/83)）。本ベクトルは現状ロール契約による自主規律のみで担保されます。
 - **Windows native の sandbox 不在**: 上記表のとおり `cat .env` 等は Windows native では素通りします。ワーカー実行環境としては macOS / Linux / WSL2 を推奨し、Windows native では別経路（OS 側のファイル権限・GitHub Secret Scanning 等）で補完してください。
 - **ワーカーロールの薄い deny**: ワーカー用テンプレートの `permissions.deny` は意図的に小さく保たれており、ローカルでの `git commit --no-verify` / `git reset --hard` の直接遮断は配備されません（`git push` 自体は hook で全面遮断されるため `--force` は副次的に止まります）。残るリスクはロール契約と窓口側 CI の保護に依存します。
 
