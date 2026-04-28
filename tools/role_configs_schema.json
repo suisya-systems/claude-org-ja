@@ -215,7 +215,7 @@
       ]
     },
     "worker": {
-      "description": "Worker (dynamic template) — <worker_dir>/.claude/settings.local.json.",
+      "description": "Worker (dynamic template, audit constraints) — <worker_dir>/.claude/settings.local.json. See also top-level worker_roles section for the concrete templates that generate_worker_settings.py emits.",
       "docs_section": "ワーカー",
       "settings_paths": [],
       "closed_world": true,
@@ -266,6 +266,178 @@
         "^Bash$",
         "^Bash\\(git push.*\\)$"
       ]
+    }
+  },
+  "worker_roles": {
+    "$comment": "Concrete templates emitted by tools/generate_worker_settings.py. Each entry shapes a worker's <worker_dir>/.claude/settings.local.json. Placeholders {worker_dir} and {claude_org_path} are substituted at generation time. The audit constraints in roles.worker still apply — drift tooling validates emitted files against them.",
+    "default": {
+      "description": "Standard worker template — git read/write within the worktree, no push, no recursive delete. Mirrors the historical org-delegate Step 3 inline JSON.",
+      "permissions": {
+        "allow": [
+          "Bash(git add:*)",
+          "Bash(git commit:*)",
+          "Bash(git status:*)",
+          "Bash(git diff:*)",
+          "Bash(git log:*)",
+          "Bash(git branch:*)",
+          "Bash(git checkout:*)",
+          "Bash(git switch:*)",
+          "Bash(git worktree:*)",
+          "Bash(git stash:*)",
+          "Bash(sleep:*)"
+        ],
+        "deny": [
+          "Bash(git push *)",
+          "Bash(git push)",
+          "Bash(rm -rf *)",
+          "Bash(rm -r *)"
+        ]
+      },
+      "hooks": {
+        "PreToolUse": [
+          {
+            "matcher": "Edit|Write",
+            "hooks": [
+              {
+                "type": "command",
+                "command": "bash \"{claude_org_path}/.hooks/check-worker-boundary.sh\""
+              },
+              {
+                "type": "command",
+                "command": "bash \"{claude_org_path}/.hooks/block-org-structure.sh\""
+              }
+            ]
+          },
+          {
+            "matcher": "Bash",
+            "hooks": [
+              {
+                "type": "command",
+                "command": "bash \"{claude_org_path}/.hooks/block-git-push.sh\""
+              },
+              {
+                "type": "command",
+                "command": "bash \"{claude_org_path}/.hooks/block-org-structure.sh\""
+              }
+            ]
+          }
+        ]
+      },
+      "env": {
+        "WORKER_DIR": "{worker_dir}",
+        "CLAUDE_ORG_PATH": "{claude_org_path}"
+      }
+    },
+    "claude-org-self-edit": {
+      "description": "Worker that edits the claude-org repo itself (e.g. tools/, .claude/skills/). Drops block-org-structure.sh hooks because by definition this role must touch org structure paths. check-worker-boundary.sh remains the boundary check.",
+      "permissions": {
+        "allow": [
+          "Bash(git add:*)",
+          "Bash(git commit:*)",
+          "Bash(git status:*)",
+          "Bash(git diff:*)",
+          "Bash(git log:*)",
+          "Bash(git branch:*)",
+          "Bash(git checkout:*)",
+          "Bash(git switch:*)",
+          "Bash(git worktree:*)",
+          "Bash(git stash:*)",
+          "Bash(sleep:*)"
+        ],
+        "deny": [
+          "Bash(git push *)",
+          "Bash(git push)",
+          "Bash(rm -rf *)",
+          "Bash(rm -r *)"
+        ]
+      },
+      "hooks": {
+        "PreToolUse": [
+          {
+            "matcher": "Edit|Write",
+            "hooks": [
+              {
+                "type": "command",
+                "command": "bash \"{claude_org_path}/.hooks/check-worker-boundary.sh\""
+              }
+            ]
+          },
+          {
+            "matcher": "Bash",
+            "hooks": [
+              {
+                "type": "command",
+                "command": "bash \"{claude_org_path}/.hooks/block-git-push.sh\""
+              }
+            ]
+          }
+        ]
+      },
+      "env": {
+        "WORKER_DIR": "{worker_dir}",
+        "CLAUDE_ORG_PATH": "{claude_org_path}"
+      }
+    },
+    "doc-audit": {
+      "description": "Read-only investigation worker — no Write/Edit allow, no commit/branch mutation. Suitable for survey / audit / reporting tasks where the worker should not modify the worktree.",
+      "permissions": {
+        "allow": [
+          "Bash(git status:*)",
+          "Bash(git diff:*)",
+          "Bash(git log:*)",
+          "Bash(sleep:*)"
+        ],
+        "deny": [
+          "Bash(git push *)",
+          "Bash(git push)",
+          "Bash(git commit *)",
+          "Bash(git commit)",
+          "Bash(git branch *)",
+          "Bash(git branch)",
+          "Bash(git checkout *)",
+          "Bash(git switch *)",
+          "Bash(rm -rf *)",
+          "Bash(rm -r *)",
+          "Edit",
+          "Write",
+          "MultiEdit",
+          "NotebookEdit"
+        ]
+      },
+      "hooks": {
+        "PreToolUse": [
+          {
+            "matcher": "Edit|Write",
+            "hooks": [
+              {
+                "type": "command",
+                "command": "bash \"{claude_org_path}/.hooks/check-worker-boundary.sh\""
+              },
+              {
+                "type": "command",
+                "command": "bash \"{claude_org_path}/.hooks/block-org-structure.sh\""
+              }
+            ]
+          },
+          {
+            "matcher": "Bash",
+            "hooks": [
+              {
+                "type": "command",
+                "command": "bash \"{claude_org_path}/.hooks/block-git-push.sh\""
+              },
+              {
+                "type": "command",
+                "command": "bash \"{claude_org_path}/.hooks/block-org-structure.sh\""
+              }
+            ]
+          }
+        ]
+      },
+      "env": {
+        "WORKER_DIR": "{worker_dir}",
+        "CLAUDE_ORG_PATH": "{claude_org_path}"
+      }
     }
   }
 }

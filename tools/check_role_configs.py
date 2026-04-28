@@ -464,6 +464,155 @@ def check_on_disk(
     return findings
 
 
+def _strip_meta(template: dict) -> dict:
+    return {k: v for k, v in template.items() if k not in {"description", "$comment"}}
+
+
+_PLACEHOLDERS = ("{worker_dir}", "{claude_org_path}")
+
+
+def _matches_worker_template(
+    config: dict,
+    template: dict,
+    *,
+    expected_worker_dir: str | None = None,
+) -> bool:
+    """Return True when ``config`` matches ``template``.
+
+    Placeholders ``{worker_dir}`` / ``{claude_org_path}`` in the template act
+    as captures: every occurrence must resolve to the *same* string within
+    one match attempt. This catches drift where, e.g., one hook command
+    points at a different worker dir than the rest, or where a copy/paste
+    left a stale absolute path behind. When ``expected_worker_dir`` is given,
+    the captured ``{worker_dir}`` value must additionally equal it (modulo
+    path separator normalization), pinning the file to the worker directory
+    that hosts it.
+    """
+    bindings: dict[str, str] = {}
+    if not _match(config, template, bindings):
+        return False
+    if expected_worker_dir is not None and "{worker_dir}" in bindings:
+        return _norm_path(bindings["{worker_dir}"]) == _norm_path(expected_worker_dir)
+    return True
+
+
+def _norm_path(s: str) -> str:
+    return s.replace("\\", "/").rstrip("/")
+
+
+def _match(value, template, bindings: dict[str, str]) -> bool:
+    if isinstance(template, str):
+        if not isinstance(value, str):
+            return False
+        if not any(p in template for p in _PLACEHOLDERS):
+            return value == template
+        import re as _re
+        parts = _re.split(r"(\{worker_dir\}|\{claude_org_path\})", template)
+        pattern = "".join(
+            f"(?P<__ph{idx}>.*)" if p in _PLACEHOLDERS else _re.escape(p)
+            for idx, p in enumerate(parts)
+        )
+        m = _re.fullmatch(pattern, value)
+        if m is None:
+            return False
+        # Map each placeholder occurrence to its captured value and enforce
+        # consistency with prior bindings.
+        ph_indices = [i for i, p in enumerate(parts) if p in _PLACEHOLDERS]
+        for idx in ph_indices:
+            ph = parts[idx]
+            captured = m.group(f"__ph{idx}")
+            existing = bindings.get(ph)
+            if existing is None:
+                bindings[ph] = captured
+            elif existing != captured:
+                return False
+        return True
+    if isinstance(template, list):
+        if not isinstance(value, list) or len(value) != len(template):
+            return False
+        return all(_match(v, t, bindings) for v, t in zip(value, template))
+    if isinstance(template, dict):
+        if not isinstance(value, dict) or set(value) != set(template):
+            return False
+        return all(_match(value[k], template[k], bindings) for k in template)
+    return value == template
+
+
+def check_worker_settings(schema: dict, base_dir: Path) -> list[Finding]:
+    """Walk ``<base_dir>/*/.claude/settings.local.json`` and report any file
+    that does not match one of the ``worker_roles`` templates from the schema.
+
+    Opt-in drift detection for Issue #99 -- existing call sites stay
+    unchanged when this flag is omitted.
+    """
+    findings: list[Finding] = []
+    if not base_dir.is_dir():
+        findings.append(
+            Finding(
+                str(base_dir),
+                "<worker-settings>",
+                "ERROR",
+                "base directory does not exist",
+            )
+        )
+        return findings
+
+    worker_roles_raw = schema.get("worker_roles") or {}
+    templates = {
+        name: _strip_meta(body)
+        for name, body in worker_roles_raw.items()
+        if not name.startswith("$") and isinstance(body, dict)
+    }
+    if not templates:
+        findings.append(
+            Finding(
+                "schema",
+                "<worker-settings>",
+                "ERROR",
+                "schema has no worker_roles templates",
+            )
+        )
+        return findings
+
+    for worker_dir in sorted(p for p in base_dir.iterdir() if p.is_dir()):
+        settings_path = worker_dir / ".claude" / "settings.local.json"
+        if not settings_path.is_file():
+            continue
+        try:
+            config = json.loads(settings_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            findings.append(
+                Finding(
+                    str(settings_path),
+                    "<worker-settings>",
+                    "ERROR",
+                    f"JSON parse error: {exc}",
+                )
+            )
+            continue
+        expected_wd = str(worker_dir.resolve())
+        matched = [
+            name for name, tmpl in templates.items()
+            if _matches_worker_template(
+                config, tmpl, expected_worker_dir=expected_wd,
+            )
+        ]
+        if not matched:
+            findings.append(
+                Finding(
+                    str(settings_path),
+                    "<worker-settings>",
+                    "ERROR",
+                    (
+                        "does not match any worker_roles template; "
+                        "regenerate via tools/generate_worker_settings.py "
+                        "or add a new role to the schema"
+                    ),
+                )
+            )
+    return findings
+
+
 def run(
     schema_path: Path = DEFAULT_SCHEMA,
     permissions_md: Path = DEFAULT_PERMISSIONS_MD,
@@ -471,6 +620,7 @@ def run(
     include_on_disk: bool = True,
     include_untracked: bool = False,
     role_override: str | None = None,
+    worker_settings_base: Path | None = None,
 ) -> list[Finding]:
     schema = load_schema(schema_path)
     findings: list[Finding] = []
@@ -485,6 +635,8 @@ def run(
                 role_override=role_override,
             )
         )
+    if worker_settings_base is not None:
+        findings.extend(check_worker_settings(schema, worker_settings_base))
     return findings
 
 
@@ -525,6 +677,17 @@ def main(argv: list[str] | None = None) -> int:
             "--include-local semantics."
         ),
     )
+    parser.add_argument(
+        "--include-worker-settings",
+        type=Path,
+        default=None,
+        metavar="BASE_DIR",
+        help=(
+            "Also enumerate <BASE_DIR>/*/.claude/settings.local.json and "
+            "report drift against the worker_roles templates in the schema. "
+            "Opt-in; existing invocations are unaffected."
+        ),
+    )
     args = parser.parse_args(argv)
 
     findings = run(
@@ -534,6 +697,7 @@ def main(argv: list[str] | None = None) -> int:
         include_on_disk=not args.docs_only,
         include_untracked=args.include_local or args.role is not None,
         role_override=args.role,
+        worker_settings_base=args.include_worker_settings,
     )
 
     if not findings:
