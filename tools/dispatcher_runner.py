@@ -61,6 +61,33 @@ SECRETARY_MIN_HEIGHT = 45
 # is unstable on sonnet — opus-only per feedback_worker_model_opus.md.
 DEFAULT_WORKER_MODEL = "opus"
 
+# Path of the instruction template, relative to the repo root (parent of tools/).
+# The helper extracts the strict-format code fence between the AUTO-EXPAND
+# markers and substitutes {var} placeholders from task.instruction_vars.
+INSTRUCTION_TEMPLATE_PATH = (
+    ".claude/skills/org-delegate/references/instruction-template.md"
+)
+_TEMPLATE_START_MARKER = "<!-- AUTO-EXPAND-TEMPLATE-START -->"
+_TEMPLATE_END_MARKER = "<!-- AUTO-EXPAND-TEMPLATE-END -->"
+
+# Variables understood by the auto-expand template. Keep in sync with
+# instruction-template.md "## 自動展開テンプレート" section.
+# branch_strategy is required: defaulting it would silently mis-instruct
+# Pattern B (worktree) workers to commit on main.
+_REQUIRED_VARS = (
+    "task_description", "dir_setup", "branch_strategy", "verification_depth",
+)
+_OPTIONAL_VARS = {
+    "constraints": "(なし)",
+    "report_target": "secretary",
+    # claude-org self-edit reads CLAUDE.local.md instead of CLAUDE.md
+    # (root CLAUDE.md belongs to Secretary). Caller passes "CLAUDE.local.md"
+    # for self-edit tasks; everyone else gets the default.
+    "claude_md_filename": "CLAUDE.md",
+}
+_ALLOWED_VARS = set(_REQUIRED_VARS) | set(_OPTIONAL_VARS)
+_VERIFICATION_DEPTHS = ("full", "minimal")
+
 
 # ----------------------------------------------------------------------------
 # Pane model
@@ -183,6 +210,91 @@ def choose_split(panes: list[Pane]) -> Optional[SplitChoice]:
 
 
 # ----------------------------------------------------------------------------
+# Instruction template auto-expansion (Issue #71)
+# ----------------------------------------------------------------------------
+
+
+def _repo_root() -> Path:
+    # tools/dispatcher_runner.py → repo root is this file's parent.parent.
+    return Path(__file__).resolve().parent.parent
+
+
+def load_instruction_template(repo_root: Optional[Path] = None) -> str:
+    """Read and extract the strict-format template body from instruction-template.md.
+
+    Returns the raw template string with `{var}` placeholders intact (caller
+    is expected to substitute them). Raises ValueError if the markers or
+    fenced block cannot be located.
+    """
+    root = repo_root or _repo_root()
+    src = (root / INSTRUCTION_TEMPLATE_PATH).read_text(encoding="utf-8")
+    start = src.find(_TEMPLATE_START_MARKER)
+    end = src.find(_TEMPLATE_END_MARKER)
+    if start < 0 or end < 0 or end <= start:
+        raise ValueError(
+            f"AUTO-EXPAND markers not found in {INSTRUCTION_TEMPLATE_PATH}"
+        )
+    section = src[start + len(_TEMPLATE_START_MARKER):end]
+    fence_open = section.find("```")
+    if fence_open < 0:
+        raise ValueError("opening code fence missing in auto-expand section")
+    body_start = section.find("\n", fence_open) + 1
+    fence_close = section.find("```", body_start)
+    if fence_close < 0:
+        raise ValueError("closing code fence missing in auto-expand section")
+    return section[body_start:fence_close].rstrip("\n")
+
+
+def validate_instruction_vars(
+    raw: Any,
+) -> tuple[Optional[dict[str, str]], Optional[str]]:
+    """Normalize and validate `instruction_vars`. Returns (vars, error)."""
+    if not isinstance(raw, dict):
+        return None, "instruction_vars must be a JSON object"
+    # Stringify values (numbers etc. allowed but normalized to str)
+    norm: dict[str, str] = {}
+    for k, v in raw.items():
+        if not isinstance(k, str):
+            return None, f"instruction_vars key {k!r} is not a string"
+        if v is None:
+            return None, f"instruction_vars[{k!r}] is null"
+        norm[k] = str(v)
+
+    unknown = sorted(set(norm) - _ALLOWED_VARS)
+    if unknown:
+        return None, (
+            f"instruction_vars contains unknown keys: {unknown}; "
+            f"allowed: {sorted(_ALLOWED_VARS)}"
+        )
+
+    missing = [k for k in _REQUIRED_VARS if not norm.get(k, "").strip()]
+    if missing:
+        return None, f"instruction_vars missing required keys: {missing}"
+
+    depth = norm["verification_depth"].strip()
+    if depth not in _VERIFICATION_DEPTHS:
+        return None, (
+            f"instruction_vars.verification_depth must be one of "
+            f"{list(_VERIFICATION_DEPTHS)}, got {depth!r}"
+        )
+    norm["verification_depth"] = depth
+
+    # Apply optional defaults so the template substitution always succeeds
+    for k, default in _OPTIONAL_VARS.items():
+        if not norm.get(k, "").strip():
+            norm[k] = default
+    return norm, None
+
+
+def render_instruction(
+    instruction_vars: dict[str, str],
+    repo_root: Optional[Path] = None,
+) -> str:
+    template = load_instruction_template(repo_root=repo_root)
+    return template.format_map(instruction_vars)
+
+
+# ----------------------------------------------------------------------------
 # Validation
 # ----------------------------------------------------------------------------
 
@@ -241,6 +353,35 @@ def build_plan(
         plan.status = "input_invalid"
         plan.errors.append(err)
         return plan
+
+    # Validate instruction / instruction_vars early so input errors surface
+    # before any side-effects. Truthiness (not key-presence) decides whether
+    # an explicit `instruction` wins, matching write_instruction below — so a
+    # blank `instruction=""` falls through to instruction_vars expansion
+    # instead of silently writing an empty outbox file.
+    has_explicit = bool(str(task.get("instruction") or "").strip())
+    has_vars = "instruction_vars" in task
+    if not has_explicit and has_vars:
+        norm_vars, vars_err = validate_instruction_vars(task["instruction_vars"])
+        if vars_err:
+            plan.status = "input_invalid"
+            plan.errors.append(vars_err)
+            return plan
+        try:
+            # Validate template renders cleanly. Keep result on the task dict
+            # so write_instruction doesn't have to re-render.
+            task["_rendered_instruction"] = render_instruction(norm_vars)
+        except (KeyError, ValueError, OSError) as exc:
+            plan.status = "input_invalid"
+            plan.errors.append(
+                f"failed to render instruction template: {exc}"
+            )
+            return plan
+    elif has_explicit and has_vars:
+        plan.warnings.append(
+            "both `instruction` and `instruction_vars` provided; "
+            "explicit `instruction` wins, `instruction_vars` ignored"
+        )
 
     cwd = task.get("worker_dir") or task.get("cwd")
     if not cwd:
@@ -390,7 +531,16 @@ def write_instruction(
 ) -> Path:
     target = state_dir / "dispatcher" / "outbox" / f"{task_id}-instruction.md"
     target.parent.mkdir(parents=True, exist_ok=True)
-    instruction = task.get("instruction") or task.get("task_description") or ""
+    # Mirror build_plan's whitespace-aware check: a blank `instruction` must
+    # not crowd out a rendered template body.
+    explicit = str(task.get("instruction") or "")
+    instruction = (
+        explicit if explicit.strip() else (
+            task.get("_rendered_instruction")
+            or task.get("task_description")
+            or ""
+        )
+    )
     body = (
         f"# Task: {task_id}\n"
         "\n"
