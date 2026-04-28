@@ -10,6 +10,10 @@ default_permission_mode: auto
 - acceptEdits: ファイル編集のみ自動許可
 - dontAsk: 明示許可のみ
 
+### Secretary exemption
+
+`default_permission_mode` は Foreman / Curator / Worker に適用される。Secretary は意図的に対象外で、`--permission-mode` 未指定の Claude Code デフォルト挙動（ツール実行前に確認プロンプトを表示）を維持する。Secretary は人間との接点であり、人間判断を要する操作の自動承認を避けるため。詳細は Issue #10 を参照。
+
 ## Workers Directory
 workers_dir: ../workers
 

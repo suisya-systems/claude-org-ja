@@ -18,6 +18,10 @@
 version = 1
 name = "ops"
 
+# Secretary intentionally has no --permission-mode set: it uses Claude Code defaults
+# (confirmation prompts on tool execution). As the human-facing window requiring human
+# judgment, the org-wide bypass (default_permission_mode in registry/org-config.md) does
+# not apply here. See Issue #10 for the full rationale.
 [root]
 type = "pane"
 id = "secretary"
