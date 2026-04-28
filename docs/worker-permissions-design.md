@@ -57,10 +57,11 @@ python tools/generate_worker_settings.py \
 
 ### 3. Secretary PreToolUse hook（と静的 deny）
 
-`workers/*/.claude/settings.local.json` への直接 `Write` / `Edit` を **deny** する:
+`workers/*/.claude/settings.local.json`（および worktree 配下）への Claude の `Write` / `Edit` ツール経由の直接編集を **deny** する:
 
 - 窓口の `.claude/settings.local.json` `permissions.deny` に追加
-- 書き換えは generator (Bash 起動) のみ可
+- 主たる誤付与経路（窓口が `Edit` で手書き）を塞ぐのが目的
+- Bash/PowerShell からのファイル書き出し（`Bash(python:*)` 等）は別途 allow に残るため、Bash 経由の改変は技術的には可能。完全な generator-only 化は Phase 3 で `block-secretary-write-worker-settings.sh` 相当の hook と併せて行う想定
 
 ### 4. `org-delegate` Step 1.5 移行
 
