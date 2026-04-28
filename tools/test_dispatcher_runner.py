@@ -404,5 +404,200 @@ class PaneParserTests(unittest.TestCase):
         self.assertEqual(len(panes), 1)
 
 
+class InstructionVarsValidationTests(unittest.TestCase):
+    def _vars(self, **overrides):
+        base = {
+            "task_description": "Fix the login flow.",
+            "dir_setup": "clone は不要です。",
+            "verification_depth": "full",
+        }
+        base.update(overrides)
+        return base
+
+    def test_accepts_minimum_required(self) -> None:
+        norm, err = fr.validate_instruction_vars(self._vars())
+        self.assertIsNone(err)
+        assert norm is not None
+        self.assertEqual(norm["task_description"], "Fix the login flow.")
+        self.assertEqual(norm["verification_depth"], "full")
+        # Defaults filled
+        self.assertEqual(norm["report_target"], "secretary")
+        self.assertIn("main", norm["branch_strategy"])
+
+    def test_rejects_non_dict(self) -> None:
+        _, err = fr.validate_instruction_vars(["not", "a", "dict"])
+        self.assertIsNotNone(err)
+
+    def test_rejects_missing_required(self) -> None:
+        _, err = fr.validate_instruction_vars(
+            {"task_description": "x", "dir_setup": "y"}
+        )
+        self.assertIsNotNone(err)
+        self.assertIn("verification_depth", err)
+
+    def test_rejects_blank_required(self) -> None:
+        _, err = fr.validate_instruction_vars(self._vars(task_description="   "))
+        self.assertIsNotNone(err)
+        self.assertIn("task_description", err)
+
+    def test_rejects_unknown_var(self) -> None:
+        _, err = fr.validate_instruction_vars(self._vars(rogue_field="bad"))
+        self.assertIsNotNone(err)
+        self.assertIn("rogue_field", err)
+
+    def test_rejects_invalid_verification_depth(self) -> None:
+        _, err = fr.validate_instruction_vars(
+            self._vars(verification_depth="medium")
+        )
+        self.assertIsNotNone(err)
+        self.assertIn("verification_depth", err)
+
+    def test_accepts_minimal_depth(self) -> None:
+        norm, err = fr.validate_instruction_vars(
+            self._vars(verification_depth="minimal")
+        )
+        self.assertIsNone(err)
+        assert norm is not None
+        self.assertEqual(norm["verification_depth"], "minimal")
+
+
+class InstructionTemplateRenderTests(unittest.TestCase):
+    def test_template_loads_and_renders(self) -> None:
+        rendered = fr.render_instruction({
+            "task_description": "Fix the login flow.",
+            "dir_setup": "## setup\nworktree ready",
+            "branch_strategy": "feature/login",
+            "constraints": "no JS",
+            "verification_depth": "full",
+            "report_target": "secretary",
+        })
+        # Spot-check that key directives survive in the output
+        self.assertIn("Fix the login flow.", rendered)
+        self.assertIn("worktree ready", rendered)
+        self.assertIn("feature/login", rendered)
+        self.assertIn("no JS", rendered)
+        self.assertIn('to_id="secretary"', rendered)
+        self.assertIn("SUSPEND", rendered)
+        self.assertIn("Codex", rendered)  # full-mode reviewer directive
+        # Strict-format placeholders fully consumed
+        for tok in (
+            "{task_description}", "{dir_setup}", "{branch_strategy}",
+            "{constraints}", "{verification_depth}", "{report_target}",
+        ):
+            self.assertNotIn(tok, rendered)
+
+
+class BuildPlanInstructionVarsTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.state_dir = Path(self.tmp.name) / ".state"
+        self.work_dir = Path(self.tmp.name) / "work"
+        self.work_dir.mkdir()
+        self.panes = [
+            mk_pane(id=1, name="secretary", role="secretary",
+                    x=0, y=0, width=180, height=30),
+            mk_pane(id=2, name="dispatcher", role="dispatcher",
+                    x=0, y=30, width=140, height=20),
+            mk_pane(id=3, name="curator", role="curator",
+                    x=140, y=30, width=60, height=20),
+        ]
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def _good_vars(self):
+        return {
+            "task_description": "Fix the login flow.",
+            "dir_setup": "worktree ready, clone不要",
+            "verification_depth": "full",
+        }
+
+    def test_instruction_vars_renders_into_outbox(self) -> None:
+        task = {
+            "task_id": "vars-happy",
+            "worker_dir": str(self.work_dir),
+            "instruction_vars": self._good_vars(),
+        }
+        plan = fr.build_plan(task, self.panes, self.state_dir)
+        self.assertEqual(plan.status, "ready_to_spawn")
+        # Trigger side-effect writes (build_plan does not write)
+        fr.write_instruction(self.state_dir, task, plan.task_id)
+        outbox = (self.state_dir / "dispatcher" / "outbox"
+                  / "vars-happy-instruction.md")
+        body = outbox.read_text(encoding="utf-8")
+        self.assertIn("Fix the login flow.", body)
+        self.assertIn("worktree ready", body)
+        self.assertIn('to_id="secretary"', body)
+        self.assertIn("SUSPEND", body)
+        # No dangling format placeholders leaked
+        self.assertNotIn("{task_description}", body)
+
+    def test_explicit_instruction_wins_over_vars(self) -> None:
+        task = {
+            "task_id": "explicit-wins",
+            "worker_dir": str(self.work_dir),
+            "instruction": "literal handoff text — do exactly this",
+            "instruction_vars": self._good_vars(),
+        }
+        plan = fr.build_plan(task, self.panes, self.state_dir)
+        self.assertEqual(plan.status, "ready_to_spawn")
+        # Warning surfaced, but no error
+        self.assertTrue(any(
+            "instruction_vars" in w and "ignored" in w
+            for w in plan.warnings
+        ))
+        fr.write_instruction(self.state_dir, task, plan.task_id)
+        body = ((self.state_dir / "dispatcher" / "outbox"
+                 / "explicit-wins-instruction.md")
+                .read_text(encoding="utf-8"))
+        self.assertIn("literal handoff text", body)
+        # Template directives must NOT appear (explicit took over)
+        self.assertNotIn("SUSPEND", body)
+
+    def test_instruction_vars_missing_required_rejected(self) -> None:
+        bad = {"task_description": "x", "dir_setup": "y"}  # no verification_depth
+        plan = fr.build_plan(
+            {
+                "task_id": "vars-missing",
+                "worker_dir": str(self.work_dir),
+                "instruction_vars": bad,
+            },
+            self.panes, self.state_dir,
+        )
+        self.assertEqual(plan.status, "input_invalid")
+        self.assertTrue(any(
+            "verification_depth" in e for e in plan.errors
+        ))
+
+    def test_instruction_vars_unknown_key_rejected(self) -> None:
+        bad = dict(self._good_vars(), rogue_var="oops")
+        plan = fr.build_plan(
+            {
+                "task_id": "vars-unknown",
+                "worker_dir": str(self.work_dir),
+                "instruction_vars": bad,
+            },
+            self.panes, self.state_dir,
+        )
+        self.assertEqual(plan.status, "input_invalid")
+        self.assertTrue(any("rogue_var" in e for e in plan.errors))
+
+    def test_legacy_task_description_only_still_works(self) -> None:
+        # Backward-compat: existing callers that pass neither `instruction`
+        # nor `instruction_vars` keep the old task_description fallback.
+        task = {
+            "task_id": "legacy-fallback",
+            "worker_dir": str(self.work_dir),
+            "task_description": "Old-style description.",
+        }
+        plan = fr.build_plan(task, self.panes, self.state_dir)
+        self.assertEqual(plan.status, "ready_to_spawn")
+        fr.write_instruction(self.state_dir, task, plan.task_id)
+        body = ((self.state_dir / "dispatcher" / "outbox"
+                 / "legacy-fallback-instruction.md")
+                .read_text(encoding="utf-8"))
+        self.assertIn("Old-style description.", body)
+
+
 if __name__ == "__main__":
     unittest.main()
