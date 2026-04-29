@@ -6,11 +6,9 @@ We take the security of claude-org-ja seriously. If you discover a security issu
 
 ### Preferred channel: GitHub Private Vulnerability Reporting
 
-Use [GitHub's private vulnerability reporting](https://github.com/suisya-systems/claude-org-ja/security/advisories/new) feature. This is the fastest channel and ensures the report is encrypted and only visible to maintainers.
+Use [GitHub's private vulnerability reporting](https://github.com/suisya-systems/claude-org-ja/security/advisories/new) feature. This is the only supported reporting channel and ensures the report is encrypted and only visible to maintainers. The same link is also surfaced in the issue chooser as the "Security report" contact link.
 
-### Alternative
-
-If you cannot use GitHub PVR, open a regular Issue **without** including reproduction details and we will reach out via a private channel.
+Please do **not** open a public Issue or Pull Request for security reports — the public issue templates require reproduction details and would expose sensitive information.
 
 ## Disclosure Policy
 
