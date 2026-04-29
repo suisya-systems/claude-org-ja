@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security report
+    url: https://github.com/suisya-systems/claude-org-ja/security/advisories/new
+    about: For security issues, please use private vulnerability reporting instead.
