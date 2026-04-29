@@ -121,5 +121,4 @@ python tools/generate_worker_settings.py \
 
 * 直接の引き金: 2026-04-26 `worker-strategic-memo-v5-update` の権限拡張事象（PreToolUse hook がキャッチ）
 * 関連 memory: `feedback_secretary_generation_time_is_blocking`, `feedback_no_secretary_carveouts`
-* 関連戦略ドキュメント: `docs/internal/strategic-analysis-2026-04-26.md` v5 §16（Layer 1 OSS 抽出候補）
 * 関連 Issues: #70（PreToolUse hook の段階導入）, #85（role config CI 整合）, #86（fail-closed allowlist）
