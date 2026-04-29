@@ -1,0 +1,30 @@
+# Secretary-only initial layout for claude-org.
+#
+# Usage (from the claude-org repo root):
+#   renga --layout ops
+#
+# Additional panes (Dispatcher / Curator / Workers) are spawned
+# dynamically via `mcp__renga-peers__spawn_claude_pane` from the
+# Secretary's `/org-start` flow.
+#
+# The Secretary is launched as a bare `claude`, which renga 0.16.0+
+# auto-upgrades to the Alt+P peer-enabled form — the
+# `--dangerously-load-development-channels server:renga-peers` flag
+# is injected by renga itself, so we don't write it here.
+#
+# Override the Secretary startup command by editing `command` below
+# or setting a shell alias pointing at your preferred `claude` invocation.
+
+version = 1
+name = "ops"
+
+# Secretary intentionally has no --permission-mode set: it uses Claude Code defaults
+# (confirmation prompts on tool execution). As the human-facing window requiring human
+# judgment, the org-wide default_permission_mode (registry/org-config.md, applied to
+# Curator and Workers) is intentionally not propagated here. See Issue #10 for the
+# full rationale.
+[root]
+type = "pane"
+id = "secretary"
+role = "secretary"
+command = "claude"

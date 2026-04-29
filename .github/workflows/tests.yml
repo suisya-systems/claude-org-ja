@@ -1,0 +1,35 @@
+name: tests
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install shell test dependencies
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Run Python tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Run tools/ Python tests
+        run: python -m unittest discover -s tools -p 'test_*.py' -v
+
+      - name: Check role configs integrity (Issue #85)
+        run: python tools/check_role_configs.py
+
+      - name: Run shell hook tests
+        run: bash tests/run-all.sh

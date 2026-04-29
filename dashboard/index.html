@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>claude-org — Ops Center</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="scanlines"></div>
+
+  <header>
+    <div class="header-left">
+      <div class="logo-block">
+        <span class="logo-tag">claude-org</span>
+        <span class="logo-sub">// ops center</span>
+      </div>
+    </div>
+    <div class="header-right">
+      <span id="org-status" class="status-badge">IDLE</span>
+      <div class="size-switcher">
+        <button class="size-btn" data-size="s">S</button>
+        <button class="size-btn" data-size="m">M</button>
+        <button class="size-btn" data-size="l">L</button>
+      </div>
+      <div class="live-block">
+        <span id="connection-indicator" class="live-dot"></span>
+        <span class="live-label" id="live-label">connecting</span>
+      </div>
+      <span id="last-updated" class="timestamp">--</span>
+    </div>
+  </header>
+
+  <div class="objective-bar">
+    <span class="obj-label">OBJECTIVE</span>
+    <span id="objective" class="obj-text">--</span>
+  </div>
+
+  <main>
+    <!-- Workers — full width, primary section -->
+    <section class="panel panel-workers" id="workers-section">
+      <div class="panel-header">
+        <h2>WORKERS <span id="worker-count" class="count-badge">0</span></h2>
+      </div>
+      <div id="workers-list" class="workers-grid"></div>
+    </section>
+
+    <!-- Work items + Activity — side by side -->
+    <div class="two-col">
+      <section class="panel" id="work-items-section">
+        <div class="panel-header">
+          <h2>WORK ITEMS</h2>
+        </div>
+        <div id="work-items-list"></div>
+      </section>
+
+      <section class="panel" id="activity-section">
+        <div class="panel-header">
+          <h2>ACTIVITY LOG</h2>
+        </div>
+        <div id="activity-list"></div>
+      </section>
+    </div>
+
+    <!-- Projects + Knowledge — smaller row -->
+    <div class="two-col two-col-sm">
+      <section class="panel" id="projects-section">
+        <div class="panel-header">
+          <h2>PROJECTS</h2>
+        </div>
+        <div id="projects-list"></div>
+      </section>
+
+      <section class="panel" id="knowledge-section">
+        <div class="panel-header">
+          <h2>KNOWLEDGE</h2>
+        </div>
+        <div id="knowledge-list"></div>
+      </section>
+    </div>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

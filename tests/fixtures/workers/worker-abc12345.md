@@ -1,0 +1,7 @@
+Task: task-1
+Pane ID: worker-task-1
+Started: 2026-04-10T10:00:00Z
+
+## Progress Log
+- [2026-04-10T10:05:00Z] リポジトリをクローン
+- [2026-04-10T10:30:00Z] 実装完了、テスト中
