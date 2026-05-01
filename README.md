@@ -42,6 +42,8 @@ flowchart TD
 
 緑のボックス（Layer 3 / Layer 4）は同時公開済み、黄色のボックス（Layer 1 / Layer 2）は今後 claude-org-ja 本体から段階的に抽出予定の層です。`renga` は単体で AI 開発以外の用途でも使える汎用ツールで、claude-org-ja はその上に組織運用規律を載せたリファレンス配布物として位置づけられます。各層の責務の詳細は [docs/overview-technical.md](docs/overview-technical.md) を参照。
 
+> Layer 1 (`core-harness`) の抽出設計は [docs/design/core-harness-extraction.md](docs/design/core-harness-extraction.md)（Issue [#128](https://github.com/suisya-systems/claude-org-ja/issues/128)）にて進行中。
+
 ---
 
 ## クイックスタート
