@@ -46,6 +46,58 @@ ja 側で PR が `main` に merge されると、`.github/workflows/notify-en-ch
 
 dispatch ステップには受信先 repo に対する `repo` スコープの PAT が必要で、ja 側は `secrets.NOTIFY_EN_PAT`、en 側は `secrets.NOTIFY_JA_PAT`（en→ja 送信側は本 PR では未実装、後続で対応）として保存する。PAT 未設定の間は workflow は休止状態で、受信側は dispatch が来ないため誤起票を起こさない（fail-closed）。
 
+## Auto-mirror runtime
+
+Lead は 2026-04-30 に **Option A (ja = SoT, en = auto-mirror runtime)** を確定した（Issue #171 / Issue #189）。これに基づき、ja `main` への PR merge をトリガとして en 側のランタイムコードを自動同期する CI パイプラインを段階導入する。
+
+### スコープ（mirror 対象 path globs）
+
+以下のパスは ja-canonical かつ auto-mirror 対象。en 側は en repo の `auto-mirror-runtime.yml` 経由で同期される。
+
+- `tools/**/*.py`, `tools/**/*.json`
+- `dashboard/app.js`, `dashboard/server.py`, `dashboard/index.html`
+- `.claude/settings.json`, `.claude/hooks/**`
+- `tests/**`, `tools/test_*.py`
+
+スコープ **外**（既存の翻訳 / 乖離許容ルールを継続）:
+
+- `.claude/skills/**`, `docs/**`, `README.md`, `CLAUDE.md` — 翻訳パイプライン経由
+- `knowledge/curated/**`, `registry/projects.md`, `.state/`, `.curator/`, `.dispatcher/` — 乖離許容
+
+分類の正本は en 側 `tools/sync_classifier.py`（pytest 完備）。
+
+### en 側 workflow
+
+- 実体: `suisya-systems/claude-org` の `.github/workflows/auto-mirror-runtime.yml`
+- 既存の `repository_dispatch` `ja_pr_merged`（`.github/workflows/notify-en-changes.yml` から発火）を再利用するため、ja 側で新規 PAT は不要
+- 運用ドキュメント: en repo `docs/runbook/auto-mirror-runtime.md`（一時無効化、過去 merge の手動再実行、各フェーズの定義）
+
+### 現在のフェーズ: P1 warn-only
+
+ja PR が merge されると、en 側 workflow は分類結果を ja PR にコメントするだけで、**自動 mirror PR は開かない**。観測期間として最低 1 週間 / ja merge 5 件以上の分類精度確認後に P2 へ進む。
+
+ロードマップ:
+
+| フェーズ | 振る舞い | 移行条件 |
+|---|---|---|
+| P1（現在） | 分類して ja PR にコメント。mirror PR は開かない | 1 週間 / 5 merges 以上の分類確認 |
+| P2 | en 側に mirror PR を開く（手動マージ） | 10 PR 以上のマージ実績、コンフリクト・docstring 影響の把握 |
+| P3 | runtime-only の mirror PR を auto-merge（gate は Lead 決定待ち） | P2 の安定運用 4 週間以上 |
+| P4 | reverse drift 検出（ja 親なしの en 側 runtime 編集を警告） | 追加機能、ブロッカーなし |
+
+### en 側 runtime 直接編集をしないポリシー（reverse drift 防止）
+
+ja-canonical な runtime コード（上記スコープ）を en 側で直接編集しない。en 側で気付いた修正は ja で先に PR を出し、auto-mirror 経由で en に反映する。
+
+例外（緊急 hotfix で en にしか触れない場合）: 後追いで ja に back-port PR を立て、en の runbook に missed-mirror として記録する。P4 の reverse drift detector は、こうしたケースを検出して可視化することを目的とする。
+
+### Lead 判断ポイント（P1 中はデフォルト適用）
+
+- **docstring overwrite policy**（Issue #189 §Open #1）: デフォルトは「ja の docstrings をそのまま en に乗せる」。overlay 翻訳は採用しない。Lead が覆す場合は本セクションと en `docs/canonical-ownership.md` の該当行を更新するのみで方針切替が完了する
+- **ja-only doc コミット**（#163, #168）: P1 では classifier が `translation` クラスとして既存 TRANSLATION-PENDING フローに流すため status quo 維持。新規の警告シグナルは追加しない
+
+P3 段階の gating（#2, #3）は今回スコープ外。
+
 ## 通知 CI smoke-test ログ
 
 | 日時 (UTC) | 確認内容 |
