@@ -18,11 +18,17 @@ into the payload. The second form is the same string-typed key=value
 shape as the bash helper. Both forms can be combined; explicit
 ``--json`` payload wins on key conflicts.
 
-The journal path defaults to ``<repo_root>/.state/journal.jsonl``
+The journal path is fixed at ``<repo_root>/.state/journal.jsonl``
 where ``<repo_root>`` is the directory one level above this script
-(``tools/..``); override with ``--path`` or ``JOURNAL_PATH``. This
-keeps writes anchored to the org journal regardless of caller cwd
-(e.g. the dispatcher pane runs with cwd=.dispatcher/).
+(``tools/..``). This keeps writes anchored to the org journal
+regardless of caller cwd (e.g. the dispatcher pane runs with
+cwd=.dispatcher/).
+
+Audit boundary (refs cross-review M3): the legacy ``--path`` CLI
+argument and ``JOURNAL_PATH`` environment variable are rejected at
+this ja boundary so off-canon writes can't be silently redirected. A
+stderr warning is emitted if either is set; the canonical path is
+used regardless.
 """
 
 from __future__ import annotations
@@ -66,15 +72,27 @@ def main(argv: "list[str] | None" = None) -> int:
         help="JSON object to merge into the payload (typed values).",
     )
     repo_root = Path(__file__).resolve().parent.parent
-    default_path = os.environ.get(
-        "JOURNAL_PATH", str(repo_root / ".state" / "journal.jsonl")
-    )
+    canonical_path = repo_root / ".state" / "journal.jsonl"
     parser.add_argument(
         "--path",
-        default=default_path,
-        help="journal file path (default: <repo_root>/.state/journal.jsonl).",
+        default=None,
+        help=argparse.SUPPRESS,
     )
     args = parser.parse_args(argv)
+
+    if args.path is not None:
+        sys.stderr.write(
+            "tools/journal_append.py: warning: --path override rejected at "
+            "ja boundary; writing to canonical "
+            f"{canonical_path}\n"
+        )
+    if "JOURNAL_PATH" in os.environ:
+        sys.stderr.write(
+            "tools/journal_append.py: warning: $JOURNAL_PATH override "
+            "rejected at ja boundary; writing to canonical "
+            f"{canonical_path}\n"
+        )
+    args.path = str(canonical_path)
 
     payload: "dict[str, object]" = {}
     for key, val in args.fields:

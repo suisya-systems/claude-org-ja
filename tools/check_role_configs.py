@@ -5,10 +5,9 @@ The validation engine now lives in ``core_harness.validator``. This
 module is a thin CLI shim that:
 
 * Loads the org-extension data (``tools/org_extension_schema.json``)
-  and merges it with the framework JSON Schema
-  (``tools/framework_schema.json``, a temporary local copy of
-  ``core_harness.schema.framework_schema.json`` while ja transitions
-  off it).
+  and merges it with the framework JSON Schema retrieved from the
+  pinned ``core_harness`` package via
+  ``core_harness.schema.load_framework_schema()``.
 * Re-exports the public engine symbols (``Finding``,
   ``validate_config``, ``validate_schema_integrity``,
   ``extract_role_blocks``, ``check_worker_settings``) so existing
@@ -45,7 +44,6 @@ from core_harness.validator import (
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_SCHEMA = REPO_ROOT / "tools" / "org_extension_schema.json"
-DEFAULT_FRAMEWORK_SCHEMA = REPO_ROOT / "tools" / "framework_schema.json"
 DEFAULT_PERMISSIONS_MD = (
     REPO_ROOT
     / ".claude"
@@ -59,7 +57,6 @@ __all__ = [
     "Finding",
     "REPO_ROOT",
     "DEFAULT_SCHEMA",
-    "DEFAULT_FRAMEWORK_SCHEMA",
     "DEFAULT_PERMISSIONS_MD",
     "load_schema",
     "validate_config",
@@ -79,22 +76,14 @@ def load_schema(path: Path) -> dict:
 
     ``path`` points at the org-extension JSON. The framework JSON
     Schema is fetched from the pinned ``core_harness`` package (so the
-    exact ``requirements.txt`` pin governs validator behaviour); the
-    local ``tools/framework_schema.json`` copy is only used as a
-    fallback for offline / pre-install workflows. The returned dict
-    is what every downstream engine function expects (``global``,
-    ``required_hook_scripts``, ``roles``, ``worker_roles``).
+    exact ``requirements.txt`` pin governs validator behaviour). The
+    returned dict is what every downstream engine function expects
+    (``global``, ``required_hook_scripts``, ``roles``,
+    ``worker_roles``).
     """
     with Path(path).open(encoding="utf-8") as fh:
         org_extension = json.load(fh)
-    try:
-        framework = load_framework_schema()
-    except Exception:
-        if DEFAULT_FRAMEWORK_SCHEMA.is_file():
-            with DEFAULT_FRAMEWORK_SCHEMA.open(encoding="utf-8") as fh:
-                framework = json.load(fh)
-        else:
-            raise
+    framework = load_framework_schema()
     return merge_schemas(framework, org_extension)
 
 
@@ -149,12 +138,35 @@ def check_docs(schema: dict, permissions_md: Path) -> list:
     return findings
 
 
+class _GitTrackedError(Exception):
+    """Raised when ``_is_git_tracked`` cannot reach a definite answer.
+
+    Carries a short ``reason`` so the caller can surface it as an
+    audit ``Finding``. Renamed-internal so callers must handle the
+    fail-CLOSED case explicitly (see cross-review M1).
+    """
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
 def _is_git_tracked(path: Path, root: Path) -> bool:
-    """Return True when ``path`` is tracked by git (not gitignored)."""
+    """Return True when ``path`` is tracked by git (not gitignored).
+
+    Raises ``_GitTrackedError`` when the answer cannot be determined —
+    e.g. ``git`` is not on PATH, or ``path`` lives outside ``root``.
+    The caller MUST treat this as an audit failure (Finding ERROR);
+    silently skipping such paths previously hid real drift on
+    machines where git happens to be missing (cross-review M1).
+    """
     try:
         rel = path.resolve().relative_to(root.resolve())
     except ValueError:
-        return False
+        raise _GitTrackedError(
+            f"path {str(path)!r} is not under repository root {str(root)!r}; "
+            "cannot determine git-tracked status"
+        )
     try:
         result = subprocess.run(
             ["git", "ls-files", "--error-unmatch", str(rel).replace("\\", "/")],
@@ -163,7 +175,10 @@ def _is_git_tracked(path: Path, root: Path) -> bool:
             check=False,
         )
     except FileNotFoundError:
-        return False
+        raise _GitTrackedError(
+            "git executable not found on PATH; cannot determine "
+            "git-tracked status (audit fails closed)"
+        )
     return result.returncode == 0
 
 
@@ -237,8 +252,25 @@ def check_on_disk(
             path = Path(root) / rel
             if not path.is_file():
                 continue
-            if not _is_git_tracked(path, Path(root)) and not include_untracked:
-                continue
+            if not include_untracked:
+                try:
+                    tracked = _is_git_tracked(path, Path(root))
+                except _GitTrackedError as exc:
+                    findings.append(
+                        Finding(
+                            str(path),
+                            role_name,
+                            "ERROR",
+                            (
+                                "could not determine git-tracked status "
+                                f"({exc.reason}); pass --include-local to "
+                                "audit this file regardless, or install git"
+                            ),
+                        )
+                    )
+                    continue
+                if not tracked:
+                    continue
             try:
                 config = json.loads(path.read_text(encoding="utf-8"))
             except json.JSONDecodeError as exc:
@@ -287,7 +319,16 @@ def run(
             )
         )
     if worker_settings_base is not None:
-        findings.extend(check_worker_settings(schema, worker_settings_base))
+        # include_worktrees=True (core-harness 0.3.1+) descends into
+        # ``<base>/.worktrees/<branch>/`` so worker checkouts living
+        # under a `.worktrees/` parent are audited too. Refs M4.
+        findings.extend(
+            check_worker_settings(
+                schema,
+                worker_settings_base,
+                include_worktrees=True,
+            )
+        )
     return findings
 
 

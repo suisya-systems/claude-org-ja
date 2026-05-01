@@ -22,12 +22,16 @@
 #
 #   py -3 tools/journal_append.py <event> --json '<payload>'
 #
-# The journal path can be overridden via $JOURNAL_PATH; the default
-# resolves to `<repo_root>/.state/journal.jsonl` regardless of the
-# caller's cwd, where `<repo_root>` is the directory one level above
-# this script (`tools/..`). This matters because the dispatcher pane
-# runs with cwd=.dispatcher/, where a cwd-relative default would write
-# to .dispatcher/.state/journal.jsonl by mistake.
+# The journal path is fixed at `<repo_root>/.state/journal.jsonl`
+# regardless of the caller's cwd, where `<repo_root>` is the directory
+# one level above this script (`tools/..`). This matters because the
+# dispatcher pane runs with cwd=.dispatcher/, where a cwd-relative
+# default would write to .dispatcher/.state/journal.jsonl by mistake.
+#
+# Audit boundary (refs cross-review M3): the legacy ``$JOURNAL_PATH``
+# environment variable is rejected at this ja boundary so off-canon
+# writes can't be silently redirected. If the variable is set we emit
+# a stderr warning and proceed with the canonical path.
 
 set -euo pipefail
 
@@ -38,7 +42,11 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-JOURNAL_PATH="${JOURNAL_PATH:-$REPO_ROOT/.state/journal.jsonl}"
+
+if [ -n "${JOURNAL_PATH-}" ]; then
+    printf 'tools/journal_append.sh: warning: $JOURNAL_PATH override rejected at ja boundary; writing to canonical <repo_root>/.state/journal.jsonl\n' >&2
+fi
+JOURNAL_PATH="$REPO_ROOT/.state/journal.jsonl"
 
 # Ask the installed core-harness package where its bash companion
 # lives. Going through Python keeps us robust to `pip install` layout

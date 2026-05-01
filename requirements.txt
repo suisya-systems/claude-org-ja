@@ -3,4 +3,9 @@
 # tools/generate_worker_settings.py are now thin shims). Pre-1.0 we
 # pin to an exact tag per design Q9/Q10 and §7.1: x-bumps imply
 # breaking changes that the ja side must verify before adopting.
-core-harness @ git+https://github.com/suisya-systems/core-harness@v0.3.0
+#
+# Reproducibility note (1.0 migration): consider switching to a commit
+# SHA pin alongside the tag to guard against tag re-targeting, e.g.
+#   core-harness @ git+https://github.com/suisya-systems/core-harness@<sha>  # tag v0.3.1
+# Tracked for the 0.x to 1.0 cutover; tag pin is sufficient for 0.x.
+core-harness @ git+https://github.com/suisya-systems/core-harness@v0.3.1

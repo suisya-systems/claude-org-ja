@@ -32,7 +32,10 @@ jobs:
         run: python -m unittest discover -s tools -p 'test_*.py' -v
 
       - name: Check role configs integrity (Issue #85)
-        run: python tools/check_role_configs.py
+        # --include-worker-settings . enumerates `<repo>/*/.claude/settings.local.json`
+        # and (since core-harness 0.3.1, default include_worktrees=True) also
+        # descends one level into `.worktrees/<branch>/`. Refs cross-review M4.
+        run: python tools/check_role_configs.py --include-worker-settings .
 
       - name: Run shell hook tests
         run: bash tests/run-all.sh
