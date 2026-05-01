@@ -44,6 +44,8 @@ ja 側で PR が `main` に merge されると、`.github/workflows/notify-en-ch
 
 逆方向（en → ja）は対称: en 側 merge で `en_pr_merged` を ja repo へ発火し、ja 側に翻訳ペンディング Issue を起票する。
 
+なお ja → en 方向の `notify-ja-changes.yml` は、Issue #189 の auto-mirror-runtime workflow に統合（en 側で削除）された。`ja_pr_merged` イベントを受ける en 側ワークフローは新規 `auto-mirror-runtime.yml` 1 本だけになり、translation-pending issue 起票機能はそちらが引き継いでいる。
+
 dispatch ステップには受信先 repo に対する `repo` スコープの PAT が必要で、ja 側は `secrets.NOTIFY_EN_PAT`、en 側は `secrets.NOTIFY_JA_PAT`（en→ja 送信側は本 PR では未実装、後続で対応）として保存する。PAT 未設定の間は workflow は休止状態で、受信側は dispatch が来ないため誤起票を起こさない（fail-closed）。
 
 ## Auto-mirror runtime
@@ -74,7 +76,7 @@ Lead は 2026-04-30 に **Option A (ja = SoT, en = auto-mirror runtime)** を確
 
 ### 現在のフェーズ: P1 warn-only
 
-ja PR が merge されると、en 側 workflow は分類結果を ja PR にコメントするだけで、**自動 mirror PR は開かない**。観測期間として最低 1 週間 / ja merge 5 件以上の分類精度確認後に P2 へ進む。
+ja PR が merge されると、en 側 workflow は en repo に分類結果のトラッキング issue を 1 件起票するだけで、**自動 mirror PR は開かない**（cross-repo の書き込みを避けるため、ja PR への直接コメントは行わない設計）。translation-class が含まれる場合は同じ issue に `translation-pending` ラベルを付与し、従来の `notify-ja-changes.yml` の役割もこの workflow に統合する。観測期間として最低 1 週間 / ja merge 5 件以上の分類精度確認後に P2 へ進む。
 
 ロードマップ:
 
