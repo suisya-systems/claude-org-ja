@@ -437,6 +437,22 @@ class IsGitTrackedFailClosedTests(unittest.TestCase):
         with self.assertRaises(crc._GitTrackedError):
             crc._is_git_tracked(Path("/totally/elsewhere/file"), REPO_ROOT)
 
+    def test_git_fatal_exit_raises(self):
+        # `git ls-files --error-unmatch` exits 128 on safe.directory /
+        # not-a-git-repo / corrupt index. Those must surface as
+        # _GitTrackedError, not silently fall through as "untracked".
+        # Refs codex self-review Blocker (M1 follow-up).
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            non_repo = Path(tmp)
+            target = non_repo / "file.json"
+            target.write_text("{}", encoding="utf-8")
+            with self.assertRaises(crc._GitTrackedError) as ctx:
+                crc._is_git_tracked(target, non_repo)
+            # Sanity-check the error text mentions the non-zero exit
+            # rather than masquerading as "git not found".
+            self.assertIn("git ls-files exited", ctx.exception.reason)
+
     def test_check_on_disk_records_finding_when_git_missing(self):
         # Simulate `git not on PATH` by pointing PATH at an empty dir.
         import os as _os

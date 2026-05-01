@@ -179,7 +179,23 @@ def _is_git_tracked(path: Path, root: Path) -> bool:
             "git executable not found on PATH; cannot determine "
             "git-tracked status (audit fails closed)"
         )
-    return result.returncode == 0
+    # ``git ls-files --error-unmatch`` exits 0 for tracked, 1 for not
+    # tracked, and 128 for fatal errors (``safe.directory`` /
+    # ``not a git repository`` / corrupt index / permission issues).
+    # Treating 128 as "untracked" would silently skip the audit on
+    # exactly the misconfigured machines that should fail loudest, so
+    # we surface it as ``_GitTrackedError`` (cross-review M1 follow-up).
+    if result.returncode == 0:
+        return True
+    if result.returncode == 1:
+        return False
+    stderr_tail = (result.stderr or b"").decode("utf-8", errors="replace").strip()
+    if len(stderr_tail) > 200:
+        stderr_tail = stderr_tail[:200] + "..."
+    raise _GitTrackedError(
+        f"git ls-files exited {result.returncode}"
+        + (f": {stderr_tail}" if stderr_tail else "")
+    )
 
 
 WORKER_LOCAL_SETTINGS = ".claude/settings.local.json"
