@@ -44,7 +44,7 @@ renga は各 split で対象ペインを 50/50 に分ける。`MIN_PANE_WIDTH = 
 
 ### アルゴリズム
 
-新規ワーカーを起動するディスパッチャーは、`spawn_pane` を呼ぶ前に以下を実行する。判定ステップの詳細は `SKILL.md` Step 3-1 を参照（Claude が `list_panes` の結果テキストを解釈してロジックを実行する）。
+新規ワーカーを起動するディスパッチャーは、`spawn_claude_pane` を呼ぶ前に以下を実行する。判定ステップの詳細は `SKILL.md` Step 3-1 を参照（Claude が `list_panes` の結果テキストを解釈してロジックを実行する）。
 
 1. `mcp__renga-peers__list_panes` で全ペインと属性 (id / name / role / focused / x / y / width / height) を取得する
 2. **候補集合**: `role ∈ {worker, dispatcher, secretary}` のペイン (curator は常に除外)
@@ -59,7 +59,7 @@ renga は各 split で対象ペインを 50/50 に分ける。`MIN_PANE_WIDTH = 
    - vertical 分割: `(new_w, new_h) = (floor(width / 2), height)`
    - horizontal 分割: `(new_w, new_h) = (width, floor(height / 2))`
 6. **target 選出**: 残った候補から **「分割軸方向の新サイズ」** (vertical なら `new_w`、horizontal なら `new_h`) が最大のペインを target にする。tie-break はその時点の pane id 昇順 (スナップショット内で再現可能。セッション跨ぎの安定性までは保証しない)
-7. **候補が空なら escalate**: `SKILL.md` Step 3-1c の `SPLIT_CAPACITY_EXCEEDED` 経路で窓口に escalate (`spawn_pane` は発行せず、該当ワーカー 1 件だけ派遣中止、ディスパッチャー本体は継続)
+7. **候補が空なら escalate**: `SKILL.md` Step 3-1c の `SPLIT_CAPACITY_EXCEEDED` 経路で窓口に escalate (`spawn_claude_pane` は発行せず、該当ワーカー 1 件だけ派遣中止、ディスパッチャー本体は継続)
 
 ### rect 隣接判定の定義
 
@@ -79,8 +79,8 @@ renga の cell 座標は整数なので tolerance なし完全一致で判定す
 ### Edge cases / 運用時の注意
 
 - **ワーカーが途中で閉じた後の再派遣**: 旧 k-table 方式で問題になった「閉じた slot を詰めるとテーブル前提と乖離」は rect ベースでは発生しない。常に実レイアウトから target を選ぶため、renga のレイアウト tree と判断が一致する
-- **`spawn_pane` エラー**: `[split_refused]` / `[pane_not_found]` が MCP 結果テキストで返る。`references/renga-error-codes.md` の手順でキュレーター → 窓口にエスカレーション (方針は旧設計と同じ)
-- **レース**: `list_panes` 実行から `spawn_pane` 実行までに他ワーカーが増減した場合、target 不整合は `[pane_not_found]` として顕在化する。既存のエラーハンドリング経路で吸収する
+- **`spawn_claude_pane` エラー**: `[split_refused]` / `[pane_not_found]` が MCP 結果テキストで返る。`references/renga-error-codes.md` の手順でキュレーター → 窓口にエスカレーション (方針は旧設計と同じ)
+- **レース**: `list_panes` 実行から `spawn_claude_pane` 実行までに他ワーカーが増減した場合、target 不整合は `[pane_not_found]` として顕在化する。既存のエラーハンドリング経路で吸収する
 - **target 選出の責務**: 計算はディスパッチャーが `list_panes` の rect ベースで行う。窓口は DELEGATE メッセージに task_id だけを渡せばよく、target は指定しない
 
 ## 運用メモ
@@ -101,16 +101,13 @@ renga の cell 座標は整数なので tolerance なし完全一致で判定す
      `[pane_not_found]` / `[pane_vanished]` は「既に閉じた扱い」として skip する)
 - **org-suspend 時の停止順**: ワーカー → ディスパッチャー → キュレーター (いずれも `mcp__renga-peers__close_pane` で破棄。最後の 1 ペインを閉じるときだけ `[last_pane]` が返るので、そのペインは自分自身で `exit` させる)
 
-## spawn_pane の direction 慣習
+## split direction 慣習
 
-renga の分割方向は以下の定義（旧 `renga split --direction` と同じ）:
+renga の分割方向は以下の定義（`spawn_pane` / `spawn_claude_pane` 共通）:
 - `direction="vertical"` = 左右分割 (既存ペイン=左、新ペイン=右)
 - `direction="horizontal"` = 上下分割 (既存ペイン=上、新ペイン=下)
 
 ## 将来機能 / upstream 追跡
 
-- **ペイン lifecycle 購読**: 現在は `renga events` CLI 併用（ディスパッチャー監視ループなど）。upstream suisya-systems/renga#117 / renga PR #120 で `mcp__renga-peers__poll_events` が追加されたら後続 Issue で MCP に切替
-- **画面スクレイプ**: `renga inspect` CLI 併用。upstream suisya-systems/renga#116 / renga PR #121 で `mcp__renga-peers__inspect_pane` が追加されたら後続 Issue で MCP に切替
-- **raw キー送信**: `renga send --text` CLI 併用（開発チャネル Enter / permission mode 切替 Shift+Tab 等）。upstream suisya-systems/renga#118 で `send_keys` MCP が設計中。追加されたら後続 Issue で MCP に切替
-- `spawn_pane --ratio 0.2` 等の比率指定 (現状は 50/50 固定)
-- `spawn_pane --target-largest` / `--direction auto` 等の renga 側自動 target 選出 (現状はディスパッチャー側で `list_panes` rect から算出。upstream に移譲できれば balanced split ロジックを MCP 側に畳める)
+- `spawn_pane` / `spawn_claude_pane` の `--ratio 0.2` 等の比率指定 (現状は 50/50 固定)
+- `--target-largest` / `--direction auto` 等の renga 側自動 target 選出 (現状はディスパッチャー側で `list_panes` rect から算出。upstream に移譲できれば balanced split ロジックを MCP 側に畳める)
