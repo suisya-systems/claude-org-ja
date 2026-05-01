@@ -66,7 +66,7 @@ py -3 tools/check_renga_compat.py --json     # 機械可読出力
 
 **期待結果**:
 - `.state/org-state.md` が存在しないので、初回起動と判断される
-- `mcp__renga-peers__spawn_pane` でディスパッチャーペインが窓口の下に開き、その右にキュレーターペインが開く
+- `mcp__renga-peers__spawn_claude_pane` でディスパッチャーペインが窓口の下に開き、その右にキュレーターペインが開く
 - Dispatcher / Curator 起動直後の「開発チャネル確認プロンプト」を `mcp__renga-peers__send_keys(target=<pane>, enter=true)` で Enter 注入して通過している（`org-start` SKILL Step 2 / Step 3 の手順）
 - キュレーターに `mcp__renga-peers__send_message` 経由で `/loop 30m /org-curate` の実行が指示される
 - 「初回起動です。何をしましょうか？」と報告される
@@ -94,7 +94,7 @@ py -3 tools/check_renga_compat.py --json     # 機械可読出力
 **期待結果**:
 - プロジェクトが `registry/projects.md` に自動登録される
 - 窓口がディスパッチャーに DELEGATE メッセージを送信し、すぐにユーザーとの対話に戻る
-- ディスパッチャーが `mcp__renga-peers__spawn_pane` で同一タブ内にワーカーペインを派生する（`name="worker-{task_id}"`、balanced split 戦略は `pane-layout.md` に従う）
+- ディスパッチャーが `mcp__renga-peers__spawn_claude_pane` で同一タブ内にワーカーペインを派生する（`name="worker-{task_id}"`、balanced split 戦略は `pane-layout.md` に従う）
 - ディスパッチャーが `mcp__renga-peers__poll_events(types=["pane_started"])` で起動完了を確認
 - ワーカー起動直後の「開発チャネル確認プロンプト」を `mcp__renga-peers__send_keys(target="worker-{task_id}", enter=true)` で Enter 注入して通過（`org-delegate` SKILL Step 3-2）
 - ディスパッチャーが `mcp__renga-peers__send_message` 経由でワーカーに作業指示を送信する
@@ -134,11 +134,11 @@ mcp__renga-peers__list_panes    # 現在のペイン一覧
 **手順**:
 1. `tput cols` を実行し W を記録。160 未満なら検証不能としてスキップ or ターミナルを広げる。
 2. 窓口に互いに独立な 8 タスク（ダミーで良い。例: `echo-1` 〜 `echo-8` のような軽量タスク）を順次依頼。k=1〜8 それぞれが以下を満たすことを確認:
-   - a. ディスパッチャーの `mcp__renga-peers__spawn_pane` 呼び出し結果テキストに `[split_refused]` が含まれない
+   - a. ディスパッチャーの `mcp__renga-peers__spawn_claude_pane` 呼び出し結果テキストに `[split_refused]` が含まれない
    - b. Step 3-1b のアルゴリズムが選出した `target` / `direction` が、`list_panes` の直前スナップショットから rect ベースで再現可能
    - c. 起動直後の `mcp__renga-peers__list_panes` を **別ログファイル (例: `.state/verification/balanced-split-{timestamp}.log`)** に保存するか、その場で `role == "worker"` の `name` / `id` を記録し、`.state/journal.jsonl` の `worker_spawned` イベントと事後照合する
 3. 各 k 到達時点でペイン配置を `list_panes` で取得し、Step 3-1b のアルゴリズム（curator 特定 → role filter → dispatcher-curator 隣接判定 → direction 判定 → `new_w / new_h` 計算 → MIN_PANE 制約 → SECRETARY 保険条項 → metric sort）をスナップショットに対して手計算で再現できることを確認する。`pane-layout.md` の「ワーカーの balanced split 戦略」で述べている通り、rect ベース動的配置なので 2×2 や 2×4 のような固定グリッド形状は成功基準にしない。
-4. 9 人目のダミータスクを試し、ディスパッチャーが `renga-peers` で窓口に `SPLIT_CAPACITY_EXCEEDED` を送信することを確認。**当該 9 人目のワーカーのみ派遣を中止し、ディスパッチャー本体の監視ループは継続稼働**すること（`spawn_pane` は発行されず、`exit` などでディスパッチャーが落ちない）。
+4. 9 人目のダミータスクを試し、ディスパッチャーが `renga-peers` で窓口に `SPLIT_CAPACITY_EXCEEDED` を送信することを確認。**当該 9 人目のワーカーのみ派遣を中止し、ディスパッチャー本体の監視ループは継続稼働**すること（`spawn_claude_pane` は発行されず、`exit` などでディスパッチャーが落ちない）。
 
 > **注**: `.state/verification/balanced-split-{timestamp}.log` 等の検証用ログは一時ファイルなのでコミット対象外。`.state/*` は既存の `.gitignore` で除外済み。
 
@@ -219,7 +219,7 @@ cat .state/journal.jsonl | tail -1  # suspend イベントを確認
 - 各作業ディレクトリのgit状態との照合結果が報告される
 - 再開計画が提案される
 - 人間の承認を待つ（勝手にワーカーを派遣しない）
-- ディスパッチャーとキュレーターペインが `mcp__renga-peers__spawn_pane` 経由で再起動される
+- ディスパッチャーとキュレーターペインが `mcp__renga-peers__spawn_claude_pane` 経由で再起動される
 
 **確認ポイント**:
 - ブリーフィング内容が `.state/org-state.md` と一致するか
@@ -229,7 +229,7 @@ cat .state/journal.jsonl | tail -1  # suspend イベントを確認
 **失敗パターンと対処**:
 - `/org-start` が状態を読まない → org-start スキルの Step 1 を見直し
 - 状態が不正確 → org-state.md のフォーマットまたはorg-suspendの書き込みを見直し
-- キュレーターが起動しない → org-start Step 3 の `send_message` / `spawn_pane` を確認
+- キュレーターが起動しない → org-start Step 3 の `send_message` / `spawn_claude_pane` を確認
 
 ---
 
