@@ -202,10 +202,16 @@ elif command -v python >/dev/null 2>&1; then
 else
   PY=""
 fi
-if [[ -n "$PY" ]]; then
+REQ_FILE="$TARGET_DIR/requirements.txt"
+if [[ ! -f "$REQ_FILE" ]]; then
+  # Older refs / fixtures predate Step B and ship no requirements.txt.
+  # The shim CLIs only exist on Step-B-or-later commits, so skipping
+  # here keeps the installer backward compatible.
+  echo "Skipping Python deps (no $REQ_FILE)."
+elif [[ -n "$PY" ]]; then
   echo
   echo "Installing Python deps (core-harness pin) ..."
-  run $PY -m pip install --user -r "$TARGET_DIR/requirements.txt"
+  run $PY -m pip install --user -r "$REQ_FILE"
 else
   echo "WARN: python not found; tools/check_role_configs.py will fail until you 'pip install -r requirements.txt'."
 fi

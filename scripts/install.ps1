@@ -190,10 +190,16 @@ $pyCmd = $null
 foreach ($cand in @('python', 'python3', 'py')) {
     if (Get-Command $cand -ErrorAction SilentlyContinue) { $pyCmd = $cand; break }
 }
-if ($pyCmd) {
+$reqFile = Join-Path $Dir 'requirements.txt'
+if (-not (Test-Path -LiteralPath $reqFile)) {
+    # Older refs / fixtures predate Step B and ship no requirements.txt.
+    # The shim CLIs only exist on Step-B-or-later commits, so skipping
+    # here keeps the installer backward compatible.
+    Write-Host "Skipping Python deps (no $reqFile)."
+} elseif ($pyCmd) {
     Write-Host ''
     Write-Host 'Installing Python deps (core-harness pin) ...'
-    Invoke-Step @($pyCmd, '-m', 'pip', 'install', '--user', '-r', "$Dir/requirements.txt")
+    Invoke-Step @($pyCmd, '-m', 'pip', 'install', '--user', '-r', $reqFile)
 } else {
     Write-Host 'WARN: python not found; tools/check_role_configs.py will fail until you `pip install -r requirements.txt`.'
 }
