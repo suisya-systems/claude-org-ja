@@ -61,10 +61,13 @@ description: >
 4. 各ワーカーの `.state/workers/worker-{id}.md` を更新:
    - Current State at Suspend セクションを追加/更新
    - Progress Log に中断時の状態を追記
-5. `journal.jsonl` に suspend イベントを追記:
-   ```json
-   {"ts":"<ISO timestamp>","event":"suspend","reason":"user_requested","active_workers":["worker-xxx"],"pending_items":["blog-redesign"]}
+5. `journal.jsonl` に suspend イベントを追記（helper 経由。array payload は Python wrapper の `--json` を使う。`ts` は自動付与）:
+   ```bash
+   py -3 tools/journal_append.py suspend \
+       reason=user_requested \
+       --json '{"active_workers": ["worker-xxx"], "pending_items": ["blog-redesign"]}'
    ```
+   event 名と payload key の規約は [`docs/journal-events.md`](../../../docs/journal-events.md) を参照。
 
 ## Phase 3.5: ダッシュボードサーバー停止
 

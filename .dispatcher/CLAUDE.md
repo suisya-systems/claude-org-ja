@@ -60,7 +60,16 @@ helper が実ファイル書き出しを行うもの (ready_to_spawn 時):
 - `.state/workers/worker-{task_id}.md` (Status: planned)
 - `.state/dispatcher/outbox/{task_id}-instruction.md` (send_message の本文)
 
-ディスパッチャーは MCP 呼び出し後に `.state/workers/worker-{task_id}.md` の Status を `active` に遷移させ、`.state/journal.jsonl` に `worker_spawned` を追記する。journal 追記は helper が生成するのではなく、**今まで通りディスパッチャー側で** `Bash` 経由で行う（JSON 書式は既存通り）。
+ディスパッチャーは MCP 呼び出し後に `.state/workers/worker-{task_id}.md` の Status を `active` に遷移させ、`.state/journal.jsonl` に `worker_spawned` を追記する。journal 追記は **必ず helper 経由** で行うこと（Bash で生 JSON を `>>` で append しない）:
+
+```bash
+# ディスパッチャーの cwd は .dispatcher/ なので相対パスに注意。
+# helper は自身の位置から repo root を解決し、<repo_root>/.state/journal.jsonl
+# に書く（cwd-relative ではない）。
+bash ../tools/journal_append.sh worker_spawned worker=worker-{task_id} dir={dir} task={task_id}
+```
+
+helper（`tools/journal_append.sh` / `tools/journal_append.py`）は core-harness 0.3.0 の `core_harness.audit` を呼び出し、`ts` (ISO-8601 UTC) の自動付与、JSON エスケープ、`fcntl/flock` による並行書き込みロックを担う。event 名と payload key の規約は [`docs/journal-events.md`](../docs/journal-events.md) を参照。
 
 ### 使わないケース
 
@@ -210,9 +219,12 @@ mcp__renga-peers__send_message(to_id="secretary", message="...")
    #### (e) 実行シーケンス (journal + de-dup + notify)
    以下の順番で厳密に実行する:
 
-   1. **観測記録** (confidence に関わらず常に): `.state/journal.jsonl` に追記
-      ```json
-      {"ts":"<ISO timestamp>","event":"anomaly_observed","source":"inspect","worker":"worker-{task_id}","kind":"approval_blocked|error","confidence":"high|low","matched":"<該当行>","cursor":{"row":...,"col":...,"visible":...}}
+   1. **観測記録** (confidence に関わらず常に): `tools/journal_append.py` 経由で追記（`cursor` ネスト object のため Python wrapper を使う。`ts` は helper が自動付与）:
+      ```bash
+      py -3 ../tools/journal_append.py anomaly_observed \
+          source=inspect worker=worker-{task_id} \
+          kind=approval_blocked confidence=high matched='<該当行>' \
+          --json '{"cursor": {"row": <r>, "col": <c>, "visible": <bool>}}'
       ```
    2. **通知するかの判定** — 以下を **すべて** 満たす場合のみ通知に進む:
       - APPROVAL_BLOCKED なら confidence == high (low-confidence は journal のみで終了)
@@ -221,14 +233,14 @@ mcp__renga-peers__send_message(to_id="secretary", message="...")
         - `anomaly_observed` エントリは de-dup キーに **含めない** (低 confidence や observation-only record が将来の通知を抑制しないため)
         - 今サイクルの step (1) で書いた `anomaly_observed` も de-dup 対象にならない
    3. **通知送信** (step 2 を通過した場合): `mcp__renga-peers__send_message` で窓口に通知 (フォーマットは (f) 参照)
-   4. **notify_sent 記録** (通知送信成功時): `confidence` は kind と source に一致させる (APPROVAL_BLOCKED かつ source=inspect のみ `"high"`、それ以外は `"n/a"`):
-      ```json
-      // APPROVAL_BLOCKED + source=inspect
-      {"ts":"<ISO timestamp>","event":"notify_sent","source":"inspect","worker":"worker-{task_id}","kind":"approval_blocked","confidence":"high"}
-      // ERROR + source=inspect
-      {"ts":"<ISO timestamp>","event":"notify_sent","source":"inspect","worker":"worker-{task_id}","kind":"error","confidence":"n/a"}
-      // APPROVAL_BLOCKED / ERROR + source=self_report (Step 2 から発行)
-      {"ts":"<ISO timestamp>","event":"notify_sent","source":"self_report","worker":"worker-{task_id}","kind":"approval_blocked|error","confidence":"n/a"}
+   4. **notify_sent 記録** (通知送信成功時): `confidence` は kind と source に一致させる (APPROVAL_BLOCKED かつ source=inspect のみ `"high"`、それ以外は `"n/a"`)。helper 経由で append:
+      ```bash
+      # APPROVAL_BLOCKED + source=inspect
+      bash ../tools/journal_append.sh notify_sent source=inspect worker=worker-{task_id} kind=approval_blocked confidence=high
+      # ERROR + source=inspect
+      bash ../tools/journal_append.sh notify_sent source=inspect worker=worker-{task_id} kind=error confidence=n/a
+      # APPROVAL_BLOCKED / ERROR + source=self_report (Step 2 から発行)
+      bash ../tools/journal_append.sh notify_sent source=self_report worker=worker-{task_id} kind=approval_blocked confidence=n/a
       ```
    通知失敗時は `notify_sent` を書かない。次サイクルで再検出されれば de-dup が抜けて再通知が試行される (at-least-once)。
    Journal 書き込み自体が失敗した場合はそのサイクルの通知を断念、次サイクルで再試行。
