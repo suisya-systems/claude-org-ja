@@ -58,7 +58,7 @@ Lead は 2026-04-30 に **Option A (ja = SoT, en = auto-mirror runtime)** を確
 
 - `tools/**/*.py`, `tools/**/*.json`
 - `dashboard/app.js`, `dashboard/server.py`, `dashboard/index.html`
-- `.claude/settings.json`, `.claude/hooks/**`
+- `.claude/settings.json`, `.hooks/**`（Issue #189 では `.claude/hooks/**` と表記されていたが、実体は両 repo とも `.hooks/**` に置かれているため classifier はそちらに合わせている）
 - `tests/**`, `tools/test_*.py`
 
 スコープ **外**（既存の翻訳 / 乖離許容ルールを継続）:
