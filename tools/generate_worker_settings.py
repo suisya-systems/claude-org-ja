@@ -42,14 +42,19 @@ __all__ = ["render_role", "load_schema", "main"]
 
 def load_schema(path: Path) -> dict:
     """Load the org-extension data and return the merged framework +
-    extension dict. Mirrors :func:`check_role_configs.load_schema`."""
+    extension dict. Mirrors :func:`check_role_configs.load_schema`:
+    the pinned core-harness package is the source of truth; the local
+    ``tools/framework_schema.json`` is a fallback only."""
     with Path(path).open(encoding="utf-8") as fh:
         org_extension = json.load(fh)
-    if DEFAULT_FRAMEWORK_SCHEMA.is_file():
-        with DEFAULT_FRAMEWORK_SCHEMA.open(encoding="utf-8") as fh:
-            framework = json.load(fh)
-    else:
+    try:
         framework = load_framework_schema()
+    except Exception:
+        if DEFAULT_FRAMEWORK_SCHEMA.is_file():
+            with DEFAULT_FRAMEWORK_SCHEMA.open(encoding="utf-8") as fh:
+                framework = json.load(fh)
+        else:
+            raise
     return merge_schemas(framework, org_extension)
 
 

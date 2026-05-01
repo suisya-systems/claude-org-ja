@@ -77,19 +77,24 @@ def load_schema(path: Path) -> dict:
     """Load the org-extension data and return the merged framework +
     extension dict.
 
-    ``path`` points at the org-extension JSON; the framework JSON
-    Schema is loaded from ``DEFAULT_FRAMEWORK_SCHEMA`` (or the
-    core-harness package, transparently). The returned dict is what
-    every downstream engine function expects (``global``,
+    ``path`` points at the org-extension JSON. The framework JSON
+    Schema is fetched from the pinned ``core_harness`` package (so the
+    exact ``requirements.txt`` pin governs validator behaviour); the
+    local ``tools/framework_schema.json`` copy is only used as a
+    fallback for offline / pre-install workflows. The returned dict
+    is what every downstream engine function expects (``global``,
     ``required_hook_scripts``, ``roles``, ``worker_roles``).
     """
     with Path(path).open(encoding="utf-8") as fh:
         org_extension = json.load(fh)
-    if DEFAULT_FRAMEWORK_SCHEMA.is_file():
-        with DEFAULT_FRAMEWORK_SCHEMA.open(encoding="utf-8") as fh:
-            framework = json.load(fh)
-    else:
+    try:
         framework = load_framework_schema()
+    except Exception:
+        if DEFAULT_FRAMEWORK_SCHEMA.is_file():
+            with DEFAULT_FRAMEWORK_SCHEMA.open(encoding="utf-8") as fh:
+                framework = json.load(fh)
+        else:
+            raise
     return merge_schemas(framework, org_extension)
 
 

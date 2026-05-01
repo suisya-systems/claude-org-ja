@@ -189,6 +189,27 @@ else
   run renga mcp install
 fi
 
+# --- Python deps (core-harness pin) ----------------------------------------
+
+# Step B (Issue #128): tools/check_role_configs.py and
+# tools/generate_worker_settings.py are now thin shims over the
+# core-harness package. requirements.txt pins the exact version we
+# tested against.
+if command -v python3 >/dev/null 2>&1; then
+  PY=python3
+elif command -v python >/dev/null 2>&1; then
+  PY=python
+else
+  PY=""
+fi
+if [[ -n "$PY" ]]; then
+  echo
+  echo "Installing Python deps (core-harness pin) ..."
+  run $PY -m pip install --user -r "$TARGET_DIR/requirements.txt"
+else
+  echo "WARN: python not found; tools/check_role_configs.py will fail until you 'pip install -r requirements.txt'."
+fi
+
 # --- Done ------------------------------------------------------------------
 
 cat <<MSG

@@ -181,6 +181,23 @@ if ($SkipMcp) {
     Invoke-Step @('renga', 'mcp', 'install')
 }
 
+# --- Python deps (core-harness pin) --------------------------------------
+# Step B (Issue #128): tools/check_role_configs.py and
+# tools/generate_worker_settings.py are now thin shims over the
+# core-harness package. requirements.txt pins the exact version we
+# tested against.
+$pyCmd = $null
+foreach ($cand in @('python', 'python3', 'py')) {
+    if (Get-Command $cand -ErrorAction SilentlyContinue) { $pyCmd = $cand; break }
+}
+if ($pyCmd) {
+    Write-Host ''
+    Write-Host 'Installing Python deps (core-harness pin) ...'
+    Invoke-Step @($pyCmd, '-m', 'pip', 'install', '--user', '-r', "$Dir/requirements.txt")
+} else {
+    Write-Host 'WARN: python not found; tools/check_role_configs.py will fail until you `pip install -r requirements.txt`.'
+}
+
 # --- Done ----------------------------------------------------------------
 
 @"
