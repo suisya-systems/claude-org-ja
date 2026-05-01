@@ -1,11 +1,23 @@
 #!/usr/bin/env python3
-"""Schema-driven worker ``.claude/settings.local.json`` generator.
+"""Schema-driven worker ``.claude/settings.local.json`` generator
+(Step B shim).
 
-Reads ``tools/role_configs_schema.json`` -> ``worker_roles[<role>]``,
-substitutes ``{worker_dir}`` and ``{claude_org_path}`` placeholders, and
-prints the resulting JSON. Used by org-delegate Step 3 (Phase 2 migration)
-and by the drift checker's ``--include-worker-settings`` mode to derive
-the expected template for an on-disk worker config. See Issue #99.
+The substitution engine now lives in ``core_harness.generator``. This
+module is a thin CLI shim that:
+
+* Loads ``tools/org_extension_schema.json`` (renamed from
+  ``role_configs_schema.json``) and merges it with the framework JSON
+  Schema (``tools/framework_schema.json``).
+* Re-exports :func:`render_role` with the historical kwarg signature
+  (``schema, role, worker_dir, claude_org_path``) so existing callers
+  — including ``tests/test_generate_worker_settings.py`` — continue to
+  work unchanged.
+* Forwards the ja-specific ``{claude_org_path}`` placeholder to the
+  org-neutral ``core_harness.generator.render_role`` engine through
+  its ``**placeholders`` kwargs interface.
+
+CLI compatibility (``--role / --worker-dir / --claude-org-path /
+--out / --schema``) is preserved.
 """
 
 from __future__ import annotations
@@ -14,33 +26,36 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any
 
+from core_harness.generator import (
+    UnresolvedPlaceholderError,
+    render_role as _core_render_role,
+)
+from core_harness.schema import load_framework_schema, merge_schemas
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_SCHEMA = REPO_ROOT / "tools" / "role_configs_schema.json"
+DEFAULT_SCHEMA = REPO_ROOT / "tools" / "org_extension_schema.json"
+DEFAULT_FRAMEWORK_SCHEMA = REPO_ROOT / "tools" / "framework_schema.json"
 
-# Keys under worker_roles[<role>] that are metadata, not part of the emitted
-# settings.local.json content.
-_META_KEYS = {"description", "$comment"}
+__all__ = ["render_role", "load_schema", "main"]
 
 
 def load_schema(path: Path) -> dict:
-    with path.open(encoding="utf-8") as fh:
-        return json.load(fh)
-
-
-def _substitute(value: Any, mapping: dict[str, str]) -> Any:
-    if isinstance(value, str):
-        out = value
-        for placeholder, replacement in mapping.items():
-            out = out.replace("{" + placeholder + "}", replacement)
-        return out
-    if isinstance(value, list):
-        return [_substitute(v, mapping) for v in value]
-    if isinstance(value, dict):
-        return {k: _substitute(v, mapping) for k, v in value.items()}
-    return value
+    """Load the org-extension data and return the merged framework +
+    extension dict. Mirrors :func:`check_role_configs.load_schema`:
+    the pinned core-harness package is the source of truth; the local
+    ``tools/framework_schema.json`` is a fallback only."""
+    with Path(path).open(encoding="utf-8") as fh:
+        org_extension = json.load(fh)
+    try:
+        framework = load_framework_schema()
+    except Exception:
+        if DEFAULT_FRAMEWORK_SCHEMA.is_file():
+            with DEFAULT_FRAMEWORK_SCHEMA.open(encoding="utf-8") as fh:
+                framework = json.load(fh)
+        else:
+            raise
+    return merge_schemas(framework, org_extension)
 
 
 def render_role(
@@ -49,33 +64,27 @@ def render_role(
     worker_dir: str,
     claude_org_path: str,
 ) -> dict:
-    roles = schema.get("worker_roles") or {}
-    available = sorted(
-        k for k, v in roles.items()
-        if not k.startswith("$") and isinstance(v, dict)
-    )
-    if (
-        role not in roles
-        or role.startswith("$")
-        or not isinstance(roles[role], dict)
-    ):
-        raise KeyError(
-            f"unknown worker role: {role!r}. available: {available}"
-        )
-    template = {
-        k: v for k, v in roles[role].items() if k not in _META_KEYS
-    }
-    return _substitute(
-        template,
-        {"worker_dir": worker_dir, "claude_org_path": claude_org_path},
+    """Render the worker settings for ``role`` from ``schema``.
+
+    Forwards to ``core_harness.generator.render_role`` while
+    preserving the historical ja kwarg names. ``{worker_dir}`` and
+    ``{claude_org_path}`` are passed through as placeholder
+    substitutions; the core engine fails closed if any placeholder is
+    left unresolved.
+    """
+    return _core_render_role(
+        schema,
+        role,
+        worker_dir=worker_dir,
+        claude_org_path=claude_org_path,
     )
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Generate <worker_dir>/.claude/settings.local.json from "
-            "role_configs_schema.json -> worker_roles[<role>]."
+            "the org extension schema's worker_roles[<role>]."
         ),
     )
     parser.add_argument(
@@ -125,6 +134,9 @@ def main(argv: list[str] | None = None) -> int:
         )
     except KeyError as exc:
         print(f"error: {exc.args[0]}", file=sys.stderr)
+        return 2
+    except UnresolvedPlaceholderError as exc:
+        print(f"error: {exc}", file=sys.stderr)
         return 2
 
     text = json.dumps(rendered, indent=2, ensure_ascii=False) + "\n"

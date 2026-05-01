@@ -22,6 +22,9 @@ jobs:
       - name: Install shell test dependencies
         run: sudo apt-get update && sudo apt-get install -y jq
 
+      - name: Install Python dependencies (core-harness pinned)
+        run: pip install -r requirements.txt
+
       - name: Run Python tests
         run: python -m unittest discover -s tests -v
 
