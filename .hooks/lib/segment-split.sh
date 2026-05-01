@@ -27,6 +27,13 @@ export CORE_HARNESS_BLOCK_PREFIX="${CORE_HARNESS_BLOCK_PREFIX:-ブロック: }"
 # pre-extraction "missing jq/awk" guard, so behaviour is unchanged
 # for misconfigured environments.
 __core_harness_resolve_lib() {
+  # Detection order aligned with tools/journal_append.sh (cross-review
+  # Minor 5): try the Windows `py -3` launcher first, then `python3`,
+  # then `python`, so Git-for-Windows shells without python3 on PATH
+  # still resolve the lib.
+  if command -v py >/dev/null 2>&1; then
+    py -3 -c 'import core_harness.hooks, sys; sys.stdout.write(str(core_harness.hooks.lib_path()))' 2>/dev/null && return 0
+  fi
   local py
   for py in python3 python; do
     if command -v "$py" >/dev/null 2>&1; then
