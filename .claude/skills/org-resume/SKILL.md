@@ -59,7 +59,9 @@ description: >
    ```
 
 5. ディスパッチャー・キュレーターペインの起動は /org-start が担当するため、ここでは行わない
-6. `journal.jsonl` に resume イベントを追記:
-   ```json
-   {"ts":"<ISO timestamp>","event":"resume","resumed_items":["blog-redesign","data-analysis"]}
+6. `journal.jsonl` に resume イベントを追記（helper 経由。array payload は Python wrapper を使う。`ts` は自動付与）:
+   ```bash
+   py -3 tools/journal_append.py resume \
+       --json '{"resumed_items": ["blog-redesign", "data-analysis"]}'
    ```
+   event 名と payload key の規約は [`docs/journal-events.md`](../../../docs/journal-events.md) を参照。
