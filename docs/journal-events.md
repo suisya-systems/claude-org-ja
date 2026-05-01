@@ -24,9 +24,15 @@ Every line carries the two reserved keys defined by Layer 1:
 
 | Writer                     | Mechanism                                                             |
 |----------------------------|-----------------------------------------------------------------------|
-| Dispatcher                 | `bash tools/journal_append.sh <event> ...` (Step D shim)              |
-| Secretary skills           | Same wrapper (bash) or `py -3 tools/journal_append.py` for typed payload |
+| Dispatcher (cwd=.dispatcher/) | `bash ../tools/journal_append.sh <event> ...` (Step D shim)        |
+| Secretary skills (cwd=repo root) | `bash tools/journal_append.sh <event> ...` or `py -3 tools/journal_append.py` for typed payload |
 | `org-start` identity recovery | `bash tools/journal_append.sh secretary_identity_restored ...`     |
+
+The wrappers resolve their location via `${BASH_SOURCE[0]}` /
+`__file__` and write to `<repo_root>/.state/journal.jsonl` regardless
+of caller cwd, so the same file is the canonical org journal. Only
+the script *path* in the invocation depends on cwd (relative to where
+the caller runs).
 
 Workers do **not** write the journal directly; they report via
 `send_message` and the dispatcher / secretary persists the event.

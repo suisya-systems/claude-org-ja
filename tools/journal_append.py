@@ -18,9 +18,11 @@ into the payload. The second form is the same string-typed key=value
 shape as the bash helper. Both forms can be combined; explicit
 ``--json`` payload wins on key conflicts.
 
-The journal path defaults to ``.state/journal.jsonl`` relative to the
-current working directory; override with ``--path`` or
-``JOURNAL_PATH``.
+The journal path defaults to ``<repo_root>/.state/journal.jsonl``
+where ``<repo_root>`` is the directory one level above this script
+(``tools/..``); override with ``--path`` or ``JOURNAL_PATH``. This
+keeps writes anchored to the org journal regardless of caller cwd
+(e.g. the dispatcher pane runs with cwd=.dispatcher/).
 """
 
 from __future__ import annotations
@@ -63,10 +65,14 @@ def main(argv: "list[str] | None" = None) -> int:
         default=None,
         help="JSON object to merge into the payload (typed values).",
     )
+    repo_root = Path(__file__).resolve().parent.parent
+    default_path = os.environ.get(
+        "JOURNAL_PATH", str(repo_root / ".state" / "journal.jsonl")
+    )
     parser.add_argument(
         "--path",
-        default=os.environ.get("JOURNAL_PATH", ".state/journal.jsonl"),
-        help="journal file path (default: .state/journal.jsonl).",
+        default=default_path,
+        help="journal file path (default: <repo_root>/.state/journal.jsonl).",
     )
     args = parser.parse_args(argv)
 
