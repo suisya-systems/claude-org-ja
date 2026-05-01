@@ -37,7 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import check_role_configs as _check  # noqa: E402  -- reuse validate_config
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_SCHEMA = REPO_ROOT / "tools" / "role_configs_schema.json"
+DEFAULT_SCHEMA = REPO_ROOT / "tools" / "org_extension_schema.json"
 DEFAULT_PERMISSIONS_MD = (
     REPO_ROOT
     / ".claude"
@@ -51,8 +51,9 @@ PRUNABLE_ROLES = ("secretary", "dispatcher", "curator")
 
 
 def load_schema(path: Path) -> dict:
-    with path.open(encoding="utf-8") as fh:
-        return json.load(fh)
+    """Delegate to ``check_role_configs.load_schema`` so this tool sees
+    the same framework-merged dict (Step B shim integration)."""
+    return _check.load_schema(path)
 
 
 def extract_role_blocks(md_text: str, roles: dict) -> dict[str, dict | None]:

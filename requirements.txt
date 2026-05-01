@@ -1,0 +1,6 @@
+# Step B: claude-org-ja depends on core-harness for permission/audit
+# primitives (tools/check_role_configs.py and
+# tools/generate_worker_settings.py are now thin shims). Pre-1.0 we
+# pin to an exact tag per design Q9/Q10 and §7.1: x-bumps imply
+# breaking changes that the ja side must verify before adopting.
+core-harness @ git+https://github.com/suisya-systems/core-harness@v0.1.0

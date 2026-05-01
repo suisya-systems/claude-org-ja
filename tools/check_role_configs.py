@@ -1,15 +1,24 @@
 #!/usr/bin/env python3
-"""Role-based settings.local.json integrity checker.
+"""Role-based settings.local.json integrity checker (Step B shim).
 
-Source of truth: ``tools/role_configs_schema.json``.
+The validation engine now lives in ``core_harness.validator``. This
+module is a thin CLI shim that:
 
-Validates two projections of the schema:
-
-1. ``permissions.md`` (``.claude/skills/org-setup/references/permissions.md``)
-   -- the human-readable role templates embedded as fenced ``json`` blocks.
-2. Any on-disk ``settings.local.json`` files found at the known role paths
-   (optional; skipped silently when absent -- typical in CI since these files
-   are gitignored).
+* Loads the org-extension data (``tools/org_extension_schema.json``)
+  and merges it with the framework JSON Schema
+  (``tools/framework_schema.json``, a temporary local copy of
+  ``core_harness.schema.framework_schema.json`` while ja transitions
+  off it).
+* Re-exports the public engine symbols (``Finding``,
+  ``validate_config``, ``validate_schema_integrity``,
+  ``extract_role_blocks``, ``check_worker_settings``) so existing
+  callers — including the test suite under
+  ``tests/test_check_role_configs.py`` — keep using
+  ``check_role_configs`` as the import surface unchanged.
+* Keeps the ja-specific behaviour (``check_docs``, ``check_on_disk``,
+  ``run``, the CLI argparser, exit-code contract) here, since those
+  read from the ja repo layout (permissions.md docs projection, the
+  worker-tracked settings file walk).
 
 Exit codes: 0 = OK, non-zero = drift detected.
 
@@ -20,15 +29,23 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
+
+from core_harness.schema import load_framework_schema, merge_schemas
+from core_harness.validator import (
+    Finding,
+    check_worker_settings,
+    extract_role_blocks,
+    validate_config,
+    validate_schema_integrity,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_SCHEMA = REPO_ROOT / "tools" / "role_configs_schema.json"
+DEFAULT_SCHEMA = REPO_ROOT / "tools" / "org_extension_schema.json"
+DEFAULT_FRAMEWORK_SCHEMA = REPO_ROOT / "tools" / "framework_schema.json"
 DEFAULT_PERMISSIONS_MD = (
     REPO_ROOT
     / ".claude"
@@ -38,79 +55,47 @@ DEFAULT_PERMISSIONS_MD = (
     / "permissions.md"
 )
 
-
-class Finding:
-    __slots__ = ("source", "role", "severity", "message")
-
-    def __init__(self, source: str, role: str, severity: str, message: str):
-        self.source = source
-        self.role = role
-        self.severity = severity
-        self.message = message
-
-    def format(self) -> str:
-        return f"[{self.severity}] {self.source} :: {self.role} :: {self.message}"
+__all__ = [
+    "Finding",
+    "REPO_ROOT",
+    "DEFAULT_SCHEMA",
+    "DEFAULT_FRAMEWORK_SCHEMA",
+    "DEFAULT_PERMISSIONS_MD",
+    "load_schema",
+    "validate_config",
+    "validate_schema_integrity",
+    "extract_role_blocks",
+    "check_worker_settings",
+    "check_docs",
+    "check_on_disk",
+    "run",
+    "main",
+]
 
 
 def load_schema(path: Path) -> dict:
-    with path.open(encoding="utf-8") as fh:
-        return json.load(fh)
+    """Load the org-extension data and return the merged framework +
+    extension dict.
 
-
-def extract_role_blocks(md_text: str, roles: dict) -> dict:
-    """Extract the first ```json code block under each role's heading.
-
-    Section boundaries are `## ` markdown headings. The ``docs_section`` field
-    in the schema must appear inside the heading text.
+    ``path`` points at the org-extension JSON; the framework JSON
+    Schema is loaded from ``DEFAULT_FRAMEWORK_SCHEMA`` (or the
+    core-harness package, transparently). The returned dict is what
+    every downstream engine function expects (``global``,
+    ``required_hook_scripts``, ``roles``, ``worker_roles``).
     """
-    results: dict[str, dict | None] = {}
-    sections = re.split(r"(?m)^## ", md_text)
-    # sections[0] = content before first ##
-    for role_name, role_def in roles.items():
-        marker = role_def.get("docs_section")
-        if not marker:
-            continue
-        block = None
-        for section in sections[1:]:
-            if marker in section.splitlines()[0]:
-                m = re.search(r"```json\n(.*?)\n```", section, re.DOTALL)
-                if m:
-                    try:
-                        block = json.loads(m.group(1))
-                    except json.JSONDecodeError as exc:
-                        block = {"__parse_error__": str(exc)}
-                break
-        results[role_name] = block
-    return results
+    with Path(path).open(encoding="utf-8") as fh:
+        org_extension = json.load(fh)
+    if DEFAULT_FRAMEWORK_SCHEMA.is_file():
+        with DEFAULT_FRAMEWORK_SCHEMA.open(encoding="utf-8") as fh:
+            framework = json.load(fh)
+    else:
+        framework = load_framework_schema()
+    return merge_schemas(framework, org_extension)
 
 
-def _get_allow(config: dict) -> list:
-    return ((config.get("permissions") or {}).get("allow")) or []
-
-
-def _get_deny(config: dict) -> list:
-    return ((config.get("permissions") or {}).get("deny")) or []
-
-
-def _iter_hooks(config: dict):
-    hooks = (config.get("hooks") or {})
-    for event, entries in hooks.items():
-        for entry in entries or []:
-            matcher = entry.get("matcher", "") or ""
-            for sub in (entry.get("hooks") or []):
-                cmd = sub.get("command", "") or ""
-                yield event, matcher, cmd
-
-
-def _load_override_allow(settings_path: Path) -> set[str]:
+def _load_override_allow(settings_path: Path) -> set:
     """Return the allow entries declared in sibling
-    ``settings.local.override.json`` (org-setup --prune escape hatch for user
-    extensions). Empty set when the file is absent or unreadable.
-
-    The override file is intentionally not closed-world; entries here let users
-    add bespoke allows that survive prune rewrites without forcing a schema
-    change. The on-disk validator subtracts these from the closed-world check
-    so the recommended workflow does not always fail validation.
+    ``settings.local.override.json`` (the closed-world escape hatch).
     """
     ov = settings_path.with_name("settings.local.override.json")
     if not ov.is_file():
@@ -130,183 +115,8 @@ def _load_override_allow(settings_path: Path) -> set[str]:
     return {x for x in allow if isinstance(x, str)}
 
 
-def validate_config(
-    source_label: str,
-    role_name: str,
-    config: dict | None,
-    role_schema: dict,
-    global_schema: dict,
-    *,
-    extra_allowed: set[str] | None = None,
-) -> list[Finding]:
-    findings: list[Finding] = []
-    if config is None:
-        findings.append(
-            Finding(source_label, role_name, "ERROR", "config block missing")
-        )
-        return findings
-    if "__parse_error__" in config:
-        findings.append(
-            Finding(
-                source_label,
-                role_name,
-                "ERROR",
-                f"JSON parse error: {config['__parse_error__']}",
-            )
-        )
-        return findings
-
-    allow = _get_allow(config)
-    deny = _get_deny(config)
-
-    # Global forbidden exact
-    for entry in allow:
-        if entry in global_schema.get("forbidden_allow_exact", []):
-            findings.append(
-                Finding(
-                    source_label,
-                    role_name,
-                    "ERROR",
-                    f"forbidden wide allow entry: {entry!r}",
-                )
-            )
-    # Global forbidden regex
-    for pattern in global_schema.get("forbidden_allow_regex", []):
-        rgx = re.compile(pattern)
-        for entry in allow:
-            if rgx.search(entry):
-                findings.append(
-                    Finding(
-                        source_label,
-                        role_name,
-                        "ERROR",
-                        f"forbidden allow entry {entry!r} matches /{pattern}/",
-                    )
-                )
-
-    # Per-role disallow regex
-    for pattern in role_schema.get("disallow_allow_regex", []):
-        rgx = re.compile(pattern)
-        for entry in allow:
-            if rgx.search(entry):
-                findings.append(
-                    Finding(
-                        source_label,
-                        role_name,
-                        "ERROR",
-                        f"role contract violation: {entry!r} matches /{pattern}/",
-                    )
-                )
-
-    # Required allow
-    allow_set = set(allow)
-    required_allow = role_schema.get("required_allow", [])
-    for req in required_allow:
-        if req not in allow_set:
-            findings.append(
-                Finding(
-                    source_label,
-                    role_name,
-                    "ERROR",
-                    f"missing required allow: {req!r}",
-                )
-            )
-
-    # Closed-world check: any allow entry must be in required_allow set or
-    # match one of ``allowed_allow_regex``. Catches unknown entries sneaking
-    # into docs / settings without a matching schema update.
-    if role_schema.get("closed_world"):
-        required_set = set(required_allow)
-        extra_patterns = [
-            re.compile(p) for p in role_schema.get("allowed_allow_regex", [])
-        ]
-        override_set = extra_allowed or set()
-        for entry in allow:
-            if entry in required_set:
-                continue
-            if entry in override_set:
-                continue
-            if any(p.search(entry) for p in extra_patterns):
-                continue
-            findings.append(
-                Finding(
-                    source_label,
-                    role_name,
-                    "ERROR",
-                    (
-                        f"unknown allow entry {entry!r} -- not in schema's "
-                        "required_allow nor allowed_allow_regex; add to schema "
-                        "(with justification) or remove."
-                    ),
-                )
-            )
-
-    # Required deny
-    deny_set = set(deny)
-    for req in role_schema.get("required_deny", []):
-        if req not in deny_set:
-            findings.append(
-                Finding(
-                    source_label,
-                    role_name,
-                    "ERROR",
-                    f"missing required deny: {req!r}",
-                )
-            )
-
-    # Required hooks
-    hook_tuples = list(_iter_hooks(config))
-    for req in role_schema.get("required_hooks", []):
-        ev = req["event"]
-        match_sub = req.get("matcher_contains", "")
-        cmd_sub = req.get("command_contains", "")
-        hit = any(
-            event == ev and match_sub in matcher and cmd_sub in cmd
-            for event, matcher, cmd in hook_tuples
-        )
-        if not hit:
-            findings.append(
-                Finding(
-                    source_label,
-                    role_name,
-                    "ERROR",
-                    (
-                        "missing required hook: "
-                        f"event={ev} matcher~={match_sub!r} command~={cmd_sub!r}"
-                    ),
-                )
-            )
-
-    return findings
-
-
-def validate_schema_integrity(schema: dict) -> list[Finding]:
-    findings: list[Finding] = []
-    required_scripts = set(schema.get("required_hook_scripts", []))
-    seen: set[str] = set()
-    for role_name, role in schema.get("roles", {}).items():
-        for hook in role.get("required_hooks", []):
-            cmd = hook.get("command_contains", "")
-            if cmd.endswith(".sh"):
-                seen.add(cmd)
-    missing = required_scripts - seen
-    for script in sorted(missing):
-        findings.append(
-            Finding(
-                "schema",
-                "<global>",
-                "ERROR",
-                f"required hook script {script!r} not referenced by any role",
-            )
-        )
-    return findings
-
-
-def check_docs(
-    schema: dict,
-    permissions_md: Path,
-) -> list[Finding]:
-    if not permissions_md.is_file():
+def check_docs(schema: dict, permissions_md: Path) -> list:
+    if not Path(permissions_md).is_file():
         return [
             Finding(
                 str(permissions_md),
@@ -315,9 +125,9 @@ def check_docs(
                 "permissions.md not found",
             )
         ]
-    text = permissions_md.read_text(encoding="utf-8")
+    text = Path(permissions_md).read_text(encoding="utf-8")
     blocks = extract_role_blocks(text, schema["roles"])
-    findings: list[Finding] = []
+    findings: list = []
     for role_name, role_schema in schema["roles"].items():
         if not role_schema.get("docs_section"):
             continue
@@ -360,13 +170,8 @@ def check_on_disk(
     root: Path,
     include_untracked: bool = False,
     role_override: str | None = None,
-) -> list[Finding]:
-    findings: list[Finding] = []
-    # Explicit role override: validate <root>/.claude/settings.local.json
-    # against the given role schema. This resolves the path-ambiguity between
-    # secretary and worker (both live at .claude/settings.local.json but in
-    # different worktrees); the user asserts which role applies for the
-    # current checkout.
+) -> list:
+    findings: list = []
     if role_override is not None:
         role_schema = schema["roles"].get(role_override)
         if role_schema is None:
@@ -379,16 +184,10 @@ def check_on_disk(
                 )
             )
             return findings
-        # Dynamic roles like ``worker`` have no fixed path in schema; in that
-        # case the file to audit is the current worktree's
-        # .claude/settings.local.json. For roles with schema-declared paths
-        # (dispatcher / curator / secretary), use those.
-        candidate_paths = role_schema.get("settings_paths") or [
-            WORKER_LOCAL_SETTINGS
-        ]
+        candidate_paths = role_schema.get("settings_paths") or [WORKER_LOCAL_SETTINGS]
         checked_any = False
         for rel in candidate_paths:
-            path = root / rel
+            path = Path(root) / rel
             if not path.is_file():
                 continue
             checked_any = True
@@ -417,12 +216,12 @@ def check_on_disk(
         if not checked_any:
             findings.append(
                 Finding(
-                    str(root / candidate_paths[0]),
+                    str(Path(root) / candidate_paths[0]),
                     role_override,
                     "ERROR",
                     (
                         "settings.local.json not found; tried: "
-                        + ", ".join(str(root / p) for p in candidate_paths)
+                        + ", ".join(str(Path(root) / p) for p in candidate_paths)
                     ),
                 )
             )
@@ -430,14 +229,10 @@ def check_on_disk(
 
     for role_name, role_schema in schema["roles"].items():
         for rel in role_schema.get("settings_paths", []):
-            path = root / rel
+            path = Path(root) / rel
             if not path.is_file():
                 continue
-            if not _is_git_tracked(path, root) and not include_untracked:
-                # Gitignored / untracked local configs vary per developer.
-                # Default: only validate tracked files so CI and local runs
-                # see the same picture. --include-local opts into validating
-                # the current worktree's role configs as well.
+            if not _is_git_tracked(path, Path(root)) and not include_untracked:
                 continue
             try:
                 config = json.loads(path.read_text(encoding="utf-8"))
@@ -464,155 +259,6 @@ def check_on_disk(
     return findings
 
 
-def _strip_meta(template: dict) -> dict:
-    return {k: v for k, v in template.items() if k not in {"description", "$comment"}}
-
-
-_PLACEHOLDERS = ("{worker_dir}", "{claude_org_path}")
-
-
-def _matches_worker_template(
-    config: dict,
-    template: dict,
-    *,
-    expected_worker_dir: str | None = None,
-) -> bool:
-    """Return True when ``config`` matches ``template``.
-
-    Placeholders ``{worker_dir}`` / ``{claude_org_path}`` in the template act
-    as captures: every occurrence must resolve to the *same* string within
-    one match attempt. This catches drift where, e.g., one hook command
-    points at a different worker dir than the rest, or where a copy/paste
-    left a stale absolute path behind. When ``expected_worker_dir`` is given,
-    the captured ``{worker_dir}`` value must additionally equal it (modulo
-    path separator normalization), pinning the file to the worker directory
-    that hosts it.
-    """
-    bindings: dict[str, str] = {}
-    if not _match(config, template, bindings):
-        return False
-    if expected_worker_dir is not None and "{worker_dir}" in bindings:
-        return _norm_path(bindings["{worker_dir}"]) == _norm_path(expected_worker_dir)
-    return True
-
-
-def _norm_path(s: str) -> str:
-    return s.replace("\\", "/").rstrip("/")
-
-
-def _match(value, template, bindings: dict[str, str]) -> bool:
-    if isinstance(template, str):
-        if not isinstance(value, str):
-            return False
-        if not any(p in template for p in _PLACEHOLDERS):
-            return value == template
-        import re as _re
-        parts = _re.split(r"(\{worker_dir\}|\{claude_org_path\})", template)
-        pattern = "".join(
-            f"(?P<__ph{idx}>.*)" if p in _PLACEHOLDERS else _re.escape(p)
-            for idx, p in enumerate(parts)
-        )
-        m = _re.fullmatch(pattern, value)
-        if m is None:
-            return False
-        # Map each placeholder occurrence to its captured value and enforce
-        # consistency with prior bindings.
-        ph_indices = [i for i, p in enumerate(parts) if p in _PLACEHOLDERS]
-        for idx in ph_indices:
-            ph = parts[idx]
-            captured = m.group(f"__ph{idx}")
-            existing = bindings.get(ph)
-            if existing is None:
-                bindings[ph] = captured
-            elif existing != captured:
-                return False
-        return True
-    if isinstance(template, list):
-        if not isinstance(value, list) or len(value) != len(template):
-            return False
-        return all(_match(v, t, bindings) for v, t in zip(value, template))
-    if isinstance(template, dict):
-        if not isinstance(value, dict) or set(value) != set(template):
-            return False
-        return all(_match(value[k], template[k], bindings) for k in template)
-    return value == template
-
-
-def check_worker_settings(schema: dict, base_dir: Path) -> list[Finding]:
-    """Walk ``<base_dir>/*/.claude/settings.local.json`` and report any file
-    that does not match one of the ``worker_roles`` templates from the schema.
-
-    Opt-in drift detection for Issue #99 -- existing call sites stay
-    unchanged when this flag is omitted.
-    """
-    findings: list[Finding] = []
-    if not base_dir.is_dir():
-        findings.append(
-            Finding(
-                str(base_dir),
-                "<worker-settings>",
-                "ERROR",
-                "base directory does not exist",
-            )
-        )
-        return findings
-
-    worker_roles_raw = schema.get("worker_roles") or {}
-    templates = {
-        name: _strip_meta(body)
-        for name, body in worker_roles_raw.items()
-        if not name.startswith("$") and isinstance(body, dict)
-    }
-    if not templates:
-        findings.append(
-            Finding(
-                "schema",
-                "<worker-settings>",
-                "ERROR",
-                "schema has no worker_roles templates",
-            )
-        )
-        return findings
-
-    for worker_dir in sorted(p for p in base_dir.iterdir() if p.is_dir()):
-        settings_path = worker_dir / ".claude" / "settings.local.json"
-        if not settings_path.is_file():
-            continue
-        try:
-            config = json.loads(settings_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
-            findings.append(
-                Finding(
-                    str(settings_path),
-                    "<worker-settings>",
-                    "ERROR",
-                    f"JSON parse error: {exc}",
-                )
-            )
-            continue
-        expected_wd = str(worker_dir.resolve())
-        matched = [
-            name for name, tmpl in templates.items()
-            if _matches_worker_template(
-                config, tmpl, expected_worker_dir=expected_wd,
-            )
-        ]
-        if not matched:
-            findings.append(
-                Finding(
-                    str(settings_path),
-                    "<worker-settings>",
-                    "ERROR",
-                    (
-                        "does not match any worker_roles template; "
-                        "regenerate via tools/generate_worker_settings.py "
-                        "or add a new role to the schema"
-                    ),
-                )
-            )
-    return findings
-
-
 def run(
     schema_path: Path = DEFAULT_SCHEMA,
     permissions_md: Path = DEFAULT_PERMISSIONS_MD,
@@ -621,9 +267,9 @@ def run(
     include_untracked: bool = False,
     role_override: str | None = None,
     worker_settings_base: Path | None = None,
-) -> list[Finding]:
+) -> list:
     schema = load_schema(schema_path)
-    findings: list[Finding] = []
+    findings: list = []
     findings.extend(validate_schema_integrity(schema))
     findings.extend(check_docs(schema, permissions_md))
     if include_on_disk:
@@ -640,14 +286,12 @@ def run(
     return findings
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Validate per-role settings.local.json against the schema."
     )
     parser.add_argument("--schema", type=Path, default=DEFAULT_SCHEMA)
-    parser.add_argument(
-        "--permissions-md", type=Path, default=DEFAULT_PERMISSIONS_MD
-    )
+    parser.add_argument("--permissions-md", type=Path, default=DEFAULT_PERMISSIONS_MD)
     parser.add_argument("--root", type=Path, default=REPO_ROOT)
     parser.add_argument(
         "--docs-only",
