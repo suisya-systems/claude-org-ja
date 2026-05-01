@@ -99,7 +99,7 @@ mcp__renga-peers__send_message(to_id="secretary", message="...")
 ## ワーカーペイン監視
 
 アクティブなワーカーペインがある間、以下の監視を行う。
-**実現方法**: 最初のワーカー派遣完了後、`/loop 1m` で監視ループを開始する。全ワーカーペインが閉じたらループを停止する。
+**実現方法**: 最初のワーカー派遣完了後、`/loop 3m` で監視ループを開始する。全ワーカーペインが閉じたらループを停止する。
 
 > **役割分担** (renga 0.14.0+ で全機能 MCP 化済み):
 > - **pane ライフサイクル (起動・終了)** は `mcp__renga-peers__poll_events` で cursor-based long-poll
@@ -108,7 +108,7 @@ mcp__renga-peers__send_message(to_id="secretary", message="...")
 > - **pane 列挙 / ペインクローズ** は `mcp__renga-peers__list_panes` / `close_pane`
 > - **raw キー入力** は `mcp__renga-peers__send_keys`（Shift+Tab / Enter / Esc など）
 
-### 監視ループ 1 サイクル (1 分おき)
+### 監視ループ 1 サイクル (3 分おき)
 
 各サイクルで以下を順次実行する:
 
@@ -264,12 +264,22 @@ mcp__renga-peers__send_message(to_id="secretary", message="...")
 
 ### 設計メモ
 
-- **なぜ `poll_events` を `timeout_ms=5000` で回すか**: 1 分のポーリング待ち時間を短縮するため、各サイクルで 5 秒分は long-poll する。5 秒経過で return して残りの 55 秒は check_messages + list_panes + inspect_pane で補完。これにより pane 終了検知の平均遅延が 30 秒 → 2.5 秒程度になる
+- **なぜ `poll_events` を `timeout_ms=5000` で回すか**: 3 分のサイクル間隔の中で 5 秒分は long-poll する。5 秒経過で return して残りの時間は check_messages + list_panes + inspect_pane で補完。これにより pane 終了検知の平均遅延が cadence 非依存に 2.5 秒程度になる
 - **cursor 管理**: `.state/dispatcher-event-cursor.txt` に前回 `next_since` を保存する。初回 (cursor 無し) は `since` 省略で「今以降」セマンティクス。crash recovery 時は cursor 消失 = 過去 5 秒分のイベントを取りこぼす可能性があるが、list_panes 突き合わせで回復可能
 - **events と list_panes の二重カバー**: events は best-effort (EventsDropped あり得る) なので、`mcp__renga-peers__list_panes` による突き合わせを保険として併用
 - **inspect を独立した観測チャネルにする理由**: ワーカーが承認待ちで止まった時、worker 自己申告 (renga-peers) だけに頼ると worker が通知を送る前に停止してしまう。inspect はディスパッチャー側から能動的に観測するので、worker 側の通知忘れ/遅延を補完する。自己申告と inspect は「同じ事象を 2 チャネルで観測できれば確度が上がる」という冗長性設計
 - **anchored regex の意図**: 本文中に "Allow this tool use" が偶然出てもプロンプト自体の行フォーマット (末尾に `(y/n)`) まで揃うことは稀。末尾 non-empty 行に絞ることで誤検出をさらに減らす
 - **エラーは message ではなく code で分岐する**: MCP tool result テキストの `[<code>] <msg>` 形式で返る。message 文字列は human-facing で将来変更あり得るので、`[pane_not_found]` / `[shutting_down]` 等の code で case 分岐する。詳細は `.claude/skills/org-delegate/references/renga-error-codes.md`
+
+### cadence 設定の根拠 (2026-05-02 検証)
+
+`/loop 3m` を採用する根拠:
+
+- journal.jsonl 実測 (188 events / 10.83 日, event rate 0.012/min, active session 内 gap median 224s)
+- pane lifecycle (`pane_exited` / `events_dropped`) は `poll_events(timeout_ms=5000)` の long-poll 経路で **cadence 非依存に ~2.5 s 検知** されるため、cadence 延長で reactivity は劣化しない
+- inspect / check_messages の最悪遅延 60 s → 180 s は anomaly 解消の人間判断時間スケール (数分〜十数分) より十分小さい
+- 1m → 3m で Foreman Claude のトークン消費を **約 1/3 に圧縮** (895 → 298 サイクル相当 / 10.83 日)
+- ja#6 (1m → 20s 提案) は既に CLOSED、本検証結果は close コメントと整合 (reopen 不要)
 
 ## ペインクローズ（CLOSE_PANE 受信時）
 
