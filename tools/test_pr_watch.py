@@ -7,7 +7,6 @@ CLAUDE.local.md.
 from __future__ import annotations
 
 import json
-import signal
 import sys
 import unittest
 from pathlib import Path
@@ -25,14 +24,12 @@ class ClassifyTests(unittest.TestCase):
     def test_eight_is_failed(self) -> None:
         self.assertEqual(pr_watch._classify(8), "failed")
 
-    def test_sigint_negative_is_canceled(self) -> None:
-        self.assertEqual(pr_watch._classify(-signal.SIGINT), "canceled")
-
-    def test_windows_ctrl_c_is_canceled(self) -> None:
-        self.assertEqual(pr_watch._classify(0xC000013A), "canceled")
+    def test_two_is_canceled(self) -> None:
+        self.assertEqual(pr_watch._classify(2), "canceled")
 
     def test_other_nonzero_is_failed(self) -> None:
         self.assertEqual(pr_watch._classify(1), "failed")
+        self.assertEqual(pr_watch._classify(127), "failed")
 
 
 class JournalEmitTests(unittest.TestCase):

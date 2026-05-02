@@ -36,7 +36,6 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
-import signal
 import subprocess
 import sys
 import time
@@ -91,18 +90,23 @@ def _resolve_repo() -> str:
 def _classify(exit_code: int) -> str:
     """Map a `gh pr checks --watch` exit code to a status string.
 
-    gh returns 0 on all-green, 8 when at least one check failed, and
-    other non-zero codes for transport / lookup errors. SIGINT from
-    the user surfaces as a negative code on POSIX or 0xC000013A on
-    Windows; both are treated as ``canceled``.
+    Reference: https://cli.github.com/manual/gh_help_exit-codes and
+    https://cli.github.com/manual/gh_pr_checks. With ``--watch`` gh
+    blocks until pending checks resolve and then returns 0 (all
+    checks passed) or 8 (at least one check failed). Exit code 2 is
+    gh's standard cancellation code (e.g. user interrupt). Other
+    non-zero values are treated as a generic failure so downstream
+    automation does not silently mistake an error for success.
+
+    SIGINT raised in the parent (Python ``KeyboardInterrupt``) is
+    normalized to 2 in :func:`main` before reaching this function.
     """
     if exit_code == 0:
         return "passed"
+    if exit_code == 2:
+        return "canceled"
     if exit_code == 8:
         return "failed"
-    # SIGINT on POSIX: -signal.SIGINT (-2). Windows CTRL_C_EVENT: 0xC000013A.
-    if exit_code in (-signal.SIGINT, 0xC000013A, 130):
-        return "canceled"
     return "failed"
 
 
@@ -163,7 +167,9 @@ def main(argv: "list[str] | None" = None) -> int:
         completed = subprocess.run(cmd)
         exit_code = completed.returncode
     except KeyboardInterrupt:
-        exit_code = -signal.SIGINT
+        # Normalize parent-side cancellation to gh's standard exit code 2
+        # so callers (and the journal status mapping) see a portable signal.
+        exit_code = 2
     duration = int(round(time.monotonic() - started))
     status = _classify(exit_code)
 
@@ -176,7 +182,7 @@ def main(argv: "list[str] | None" = None) -> int:
     )
 
     sys.stdout.write(f"pr_watch: PR #{args.pr} {status} ({duration}s)\n")
-    return 0 if status == "passed" else exit_code if exit_code else 1
+    return exit_code
 
 
 if __name__ == "__main__":
