@@ -32,6 +32,31 @@
 |---|---|---|---|---|---|
 | `.state/journal.jsonl` | 189 行 (実環境スナップショット) | JSONL。`{"ts","event","worker?","task?","reason?","kind?","confidence?","source?","matched?","cursor?"}` | secretary / dispatcher（worker_spawned / worker_respawned / suspend / resume / anomaly_observed / notify_sent / events_dropped / secretary_identity_restored） | dashboard/server.py（`_parse_journal`）、人間 | **public** schema、**scrub-then-public** 実データ。`docs/journal-events.md` に既に半 schema 化されている。Layer 2 の中心 contract 候補 |
 | `.state/org-state.md` | 507 (実セッション 5 のもの) | 自由 Markdown + 規約セクション (`Status:`, `Updated:`, `## Worker Directory Registry`, `## Dispatcher`, `## Curator`, `## Resume Instructions`) | secretary（人間との合意で更新）、`org-state_converter.py` は read-only | secretary（次セッション resume）、`org_state_converter.py` | **scrub-then-public**。schema は `docs/org-state-schema.md` に既存。session narrative / Lead voice TODO の混入が多く、抽出時はテンプレ化が必要 |
+
+#### 2.2.1 Worker Directory Registry スキーマ（重要 contract）
+
+Layer 2 抽出時に固める必要のある中核 contract のひとつ。Markdown と JSON の **2 表現を持つ** ため両方の field を明示しておく。
+
+**JSON 表現**（`org-state.json` `workerDirectoryRegistry[]`、`schemaVersion=1`、source: `dashboard/org_state_converter.py`）:
+
+| field | 型 | 例 | 備考 |
+|---|---|---|---|
+| `taskId` | string | `"role-config-drift-fix"` | 一意、`[A-Za-z0-9_-]+` 規約（`dispatcher_runner.py` の `_NAME_PATTERN` と同じ） |
+| `pattern` | string | `"A"` / `"B"` / `"C"` | A=ホスト直編集、B=worktree、C=clone |
+| `directory` | string (絶対パス) | `"C:/Users/iwama/.../workers/<task>/"` | OS 依存パスがそのまま入る |
+| `project` | string | `"claude-org"` / `"ccmux"` 等 | `registry/projects.md` の通称 |
+| `status` | string (自由文) | `"completed"` / `"merged (PR #93)"` / `"review (PR #94)"` | enum 化されておらず PR 番号付き自由文を許容 |
+
+**Markdown 表現**（`org-state.md` `## Worker Directory Registry` セクション）:
+- パイプ区切りテーブル。converter `parse_org_state_md` が行 → JSON に展開する。列順は JSON field と 1:1。
+- 書き手: secretary（手動更新）/ 一部 dispatcher（worker spawn 時に追記）。
+- 読み手: dashboard front-end、`/org-resume` の Phase 1 ブリーフィング、人間。
+
+**抽出上の論点**:
+- `status` を enum 化するか、PR 番号入り自由文を許容したまま JSON にするか（Q7 と連動）。
+- `directory` の OS-absolute パスは publish 時に必ず scrub が必要（`scrub-then-public` 区分）。
+- `pattern` を `A/B/C` のままにするか、`host/worktree/clone` 等の意味的名前に正規化するか。
+- Markdown を「人間 SoT」、JSON を「派生」のままにするか、**JSON を SoT** に反転させるか（converter の方向反転）は Layer 2 設計の中心論点。
 | `.state/org-state.json` | 〜 same | 派生 JSON (`schemaVersion=1`) | `dashboard/org_state_converter.py` の atomic write | dashboard front-end | **public**。converter とセットで extract 候補 |
 | `.state/workers/worker-{peer_id_or_task_id}.md` | 64 ファイル × 〜10〜30 行 | `Task: / Directory: / Pane Name: / Status: / Pane ID:` ヘッダ + `## Assignment` + `## Progress Log` | dispatcher (`dispatcher_runner.py` seed) + worker self-update | dashboard/server.py、retro、resume | **scrub-then-public**。task 記述・パスに個人 path 含む。template 化して extract |
 | `.state/dispatcher/outbox/*-instruction.md` | 可変 | 自動生成（`dispatcher_runner.py delegate-plan` の出力） | dispatcher_runner.py | dispatcher Claude（`send_message` の本文として読む） | **public**（ロジック）/ **scrub** 個別ファイル |
