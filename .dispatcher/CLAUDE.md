@@ -302,11 +302,18 @@ mcp__renga-peers__send_message(to_id="secretary", message="...")
 mcp__renga-peers__send_message(to_id="secretary", message="<task_id> の完了報告は届いていますか？")
 ```
 
-そのうえで secretary の応答を待ってから retro を続行する。
+そのうえで secretary の応答を待ってから retro を続行する。応答待ちは `mcp__renga-peers__check_messages` を 30 秒間隔で最大 10 回（合計 5 分上限）ポーリングし、`from_id == "secretary"` のメッセージが届いた時点で打ち切る。5 分経過しても応答が無い場合は下の「secretary unreachable」フローに入る。
 
 **理由**: ワーカーのレポートチャネルは secretary 直送である。dispatcher のメッセージキュー（`check_messages` の戻り）に完了報告が無いことは、「システム上に存在しない」ことを意味しない。secretary 側に既に届いていることがしばしばあり、確認を怠ると「完了報告未着」と誤った結論を retro に残してしまう（実インシデント: `knowledge/raw/2026-05-03-delegation-smoke-completion-report.md`）。
 
-**secretary unreachable 時の fallback**: 上記送信に対して secretary から応答が返らない、または `[pane_not_found]` 等で送信自体が失敗する場合は、retro に誤った結論を書かず、`.state/journal.jsonl` に「`secretary unreachable, retro deferred`」とだけログを残し、完了/未完了の判断は保留する。後続の `/org-resume` または窓口復帰時に再確認する。
+**secretary unreachable 時の fallback**: 上記送信が `[pane_not_found]` 等で失敗する、または 5 分以内に応答が返らない場合は、retro に「未着」と誤った結論を書かない。代わりに以下の手順で **CLOSE_PANE フローを中断** する:
+
+1. journal helper 経由で `retro_deferred` を追記する（生 JSON を `>>` で書かない。helper 契約は本ファイル「helper（`tools/journal_append.sh` ...）」節を参照）:
+   ```bash
+   bash ../tools/journal_append.sh retro_deferred worker=worker-{task_id} reason=secretary_unreachable
+   ```
+2. ワーカーペインは **閉じない**（Step 3 の `close_pane` をスキップする）。「振り返りが完全に終わるまで絶対にペインを閉じない」原則（本セクション冒頭）に従い、確認不能な状態でペインを破棄して最終状況の証拠を失わないようにする。
+3. 後続の `/org-resume` または窓口復帰時に、本ワーカーの完了確認と retro 続行を再試行する。それまで CLOSE_PANE は保留扱い。
 
 #### 観点
 
