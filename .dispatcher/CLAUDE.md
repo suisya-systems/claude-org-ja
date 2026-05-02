@@ -294,6 +294,22 @@ mcp__renga-peers__send_message(to_id="secretary", message="...")
 
 ### 1. 振り返り（org-retro 相当）
 
+#### ⚠️ 完了報告ゲート（結論を書く前に必ず実行）
+
+「完了報告未着」「報告が届かなかった」「ワーカーが報告しなかった」等の結論を retro に書く **前に**、必ず以下を実行すること:
+
+```
+mcp__renga-peers__send_message(to_id="secretary", message="<task_id> の完了報告は届いていますか？")
+```
+
+そのうえで secretary の応答を待ってから retro を続行する。
+
+**理由**: ワーカーのレポートチャネルは secretary 直送である。dispatcher のメッセージキュー（`check_messages` の戻り）に完了報告が無いことは、「システム上に存在しない」ことを意味しない。secretary 側に既に届いていることがしばしばあり、確認を怠ると「完了報告未着」と誤った結論を retro に残してしまう（実インシデント: `knowledge/raw/2026-05-03-delegation-smoke-completion-report.md`）。
+
+**secretary unreachable 時の fallback**: 上記送信に対して secretary から応答が返らない、または `[pane_not_found]` 等で送信自体が失敗する場合は、retro に誤った結論を書かず、`.state/journal.jsonl` に「`secretary unreachable, retro deferred`」とだけログを残し、完了/未完了の判断は保留する。後続の `/org-resume` または窓口復帰時に再確認する。
+
+#### 観点
+
 以下の観点でこのワーカーへの委譲を振り返る:
 - **指示は明確だったか**: ワーカーが迷わず作業できたか（進捗ログや renga-peers の履歴を参考にする）
 - **タスク分解は適切だったか**: 粒度が大きすぎ/小さすぎなかったか
