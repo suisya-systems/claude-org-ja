@@ -193,10 +193,20 @@ git -C {project_path} check-ignore -q -- <target>
 
 `.claude/settings.local.json` の生成は schema-driven generator (`claude-org-runtime settings generate`、Phase 4 で in-tree `tools/generate_worker_settings.py` から PyPI パッケージ `claude-org-runtime` に移行済み) に委ねる。窓口は **タスク特性に応じて 1 つの role を選ぶだけ** で、permission の手書き編集は禁止（schema → settings の drift は CI で fail する）。
 
+#### 事前判定: self-edit タスクか？（必須・最優先）
+
+下記 role 表に進む前に、まずこの判定を行う。self-edit タスクなら role は `claude-org-self-edit` に **固定** され、`default` / `doc-audit` の検討に入らない。
+
+> **Q.** これは self-edit タスクか？（`worker_dir` が claude-org リポジトリ本体、またはその worktree（例: `.worktrees/{task_id}/`）を指すか）
+> - **Yes** → role を `claude-org-self-edit` に固定する（`block-org-structure.sh` hook を外す特例が必要なため）。`settings.local.json` 生成前にこの role を確定させ、加えて `references/claude-org-self-edit.md` の特例手順（CLAUDE.local.md への指示記述、ルート CLAUDE.md を無視する旨の明示など）を併せて適用する
+> - **No** → 通常タスク。下記 role 表に従って `default` / `doc-audit` から選ぶ
+
+判定根拠: claude-org 自身を編集する場合、Pattern A / B / C いずれであっても `worker_dir` は claude-org repo（または worktree）配下となり、`block-org-structure.sh` がワーカーの編集を拒否してしまう。これを安全に外せるのは `claude-org-self-edit` role だけなので、operator が role を取り違えると Pattern 判定が正しくてもワーカーが立ち上がらない。
+
 | Role | 用途 |
 |---|---|
-| `default` | 通常の実装・修正タスク（git commit / branch 操作あり、push 不可、recursive delete 不可） |
-| `claude-org-self-edit` | claude-org リポジトリ自身を編集するタスク（`tools/`, `.claude/skills/`, `docs/` 等）。`block-org-structure.sh` を外す代わりに `check-worker-boundary.sh` で境界を担保 |
+| `default` | 通常の実装・修正タスク（git commit / branch 操作あり、push 不可、recursive delete 不可）。**self-edit タスクには使わない** |
+| `claude-org-self-edit` | **claude-org リポジトリ自身を編集するタスク（self-edit task）**。`worker_dir` が claude-org repo or its worktree（`tools/`, `.claude/skills/`, `docs/` 等の編集を含む）。`block-org-structure.sh` を外す代わりに `check-worker-boundary.sh` で境界を担保。詳細は `references/claude-org-self-edit.md` |
 | `doc-audit` | 読み取り中心の調査・監査・レポート（Edit/Write/MultiEdit/NotebookEdit を deny。commit / branch も禁止） |
 
 各 role の具体的な allow/deny/hooks は `claude-org-runtime の settings/role_configs_schema.json` の `worker_roles[<role>]` を参照（schema が SOT）。新しいパターンが必要な場合は schema に role を追加する PR を起こすこと（窓口の手書き拡張は不可）。
