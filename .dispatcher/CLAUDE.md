@@ -22,16 +22,21 @@
 
 ## delegate-plan helper（deterministic ops を code に移譲）
 
-Issue #60 の Phase 1 として `tools/dispatcher_runner.py delegate-plan` が導入されている。ワーカー起動の deterministic な部分（balanced split の target/direction 選出、worker pane name 検証、worker instruction file 生成、worker seed state file 生成）を Python に寄せ、ディスパッチャー Claude は action plan JSON を読んで MCP 呼び出しを行うだけにする。
+Issue #60 の Phase 1 として `claude-org-runtime dispatcher delegate-plan` が導入されている（Phase 4 で in-tree `tools/dispatcher_runner.py` から PyPI パッケージ `claude-org-runtime` に移行済み、`closes #129`）。ワーカー起動の deterministic な部分（balanced split の target/direction 選出、worker pane name 検証、worker instruction file 生成、worker seed state file 生成）を Python に寄せ、ディスパッチャー Claude は action plan JSON を読んで MCP 呼び出しを行うだけにする。
 
 ### いつ使うか
 
 DELEGATE メッセージを受信して Step 3 の「3-1 balanced split で target / direction を決める」以降に進む直前で呼ぶ:
 
 ```bash
-py -3 tools/dispatcher_runner.py delegate-plan \
-  --task-json .state/dispatcher/inbox/{task_id}.json \
-  --panes-json {list_panes スナップショットの JSON}
+# ディスパッチャーの cwd は .dispatcher/ なので相対パスはリポジトリルートから
+# 1 段上に解決する（journal_append.sh と同じ規約）。
+claude-org-runtime dispatcher delegate-plan \
+  --task-json ../.state/dispatcher/inbox/{task_id}.json \
+  --panes-json {list_panes スナップショットの JSON} \
+  --locale-json ../tools/ja_locale.json \
+  --template-repo .. \
+  --state-dir ../.state
 ```
 
 task JSON の最低フィールド:

@@ -311,10 +311,8 @@ class CheckWorkerSettingsTests(unittest.TestCase):
     }
 
     def _emit(self, worker_dir: str, claude_org_path: str) -> dict:
-        import sys as _sys
-        _sys.path.insert(0, str(REPO_ROOT / "tools"))
-        import generate_worker_settings as gws
-        return gws.render_role(
+        from claude_org_runtime.settings.generator import render_role
+        return render_role(
             self.SCHEMA,
             role="default",
             worker_dir=worker_dir,

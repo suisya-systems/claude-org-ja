@@ -79,8 +79,8 @@ assert_eq 0 "$(run_hook_edit "$CLAUDE_ORG_PATH/.dispatcher/notebook.ipynb" "Note
   "Allow: NotebookEdit tool name"
 
 # ---- Blocked paths (out-of-scope app code) ----
-assert_eq 2 "$(run_hook_edit "$CLAUDE_ORG_PATH/tools/dispatcher_runner.py")" \
-  "Block: tools/dispatcher_runner.py"
+assert_eq 2 "$(run_hook_edit "$CLAUDE_ORG_PATH/tools/check_role_configs.py")" \
+  "Block: tools/check_role_configs.py"
 assert_eq 2 "$(run_hook_edit "$CLAUDE_ORG_PATH/dashboard/app.py")" \
   "Block: dashboard/"
 assert_eq 2 "$(run_hook_edit "$CLAUDE_ORG_PATH/tests/test_parsers.py")" \

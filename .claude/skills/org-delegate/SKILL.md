@@ -187,7 +187,7 @@ git -C {project_path} check-ignore -q -- <target>
 
 ### ワーカーロール (`<ROLE>`) の選び方
 
-`.claude/settings.local.json` の生成は schema-driven generator (`tools/generate_worker_settings.py`) に委ねる。窓口は **タスク特性に応じて 1 つの role を選ぶだけ** で、permission の手書き編集は禁止（schema → settings の drift は CI で fail する）。
+`.claude/settings.local.json` の生成は schema-driven generator (`claude-org-runtime settings generate`、Phase 4 で in-tree `tools/generate_worker_settings.py` から PyPI パッケージ `claude-org-runtime` に移行済み) に委ねる。窓口は **タスク特性に応じて 1 つの role を選ぶだけ** で、permission の手書き編集は禁止（schema → settings の drift は CI で fail する）。
 
 | Role | 用途 |
 |---|---|
@@ -195,7 +195,7 @@ git -C {project_path} check-ignore -q -- <target>
 | `claude-org-self-edit` | claude-org リポジトリ自身を編集するタスク（`tools/`, `.claude/skills/`, `docs/` 等）。`block-org-structure.sh` を外す代わりに `check-worker-boundary.sh` で境界を担保 |
 | `doc-audit` | 読み取り中心の調査・監査・レポート（Edit/Write/MultiEdit/NotebookEdit を deny。commit / branch も禁止） |
 
-各 role の具体的な allow/deny/hooks は `tools/role_configs_schema.json` の `worker_roles[<role>]` を参照（schema が SOT）。新しいパターンが必要な場合は schema に role を追加する PR を起こすこと（窓口の手書き拡張は不可）。
+各 role の具体的な allow/deny/hooks は `claude-org-runtime の settings/role_configs_schema.json` の `worker_roles[<role>]` を参照（schema が SOT）。新しいパターンが必要な場合は schema に role を追加する PR を起こすこと（窓口の手書き拡張は不可）。
 
 ### パターン A: プロジェクトディレクトリ
 
@@ -205,9 +205,9 @@ git -C {project_path} check-ignore -q -- <target>
 
 1. `git clone {project_path} {workers_dir}/{project_slug}/` を実行
 2. ディレクトリ直下に CLAUDE.md を生成する（テンプレートの変数を置換）
-3. ディレクトリ直下に `.claude/settings.local.json` を **generator で生成する**（schema が SOT。詳細は `tools/role_configs_schema.json` の `worker_roles` を参照）:
+3. ディレクトリ直下に `.claude/settings.local.json` を **generator で生成する**（schema が SOT。詳細は `claude-org-runtime の settings/role_configs_schema.json` の `worker_roles` を参照）:
    ```bash
-   python tools/generate_worker_settings.py \
+   claude-org-runtime settings generate \
      --role <ROLE> \
      --worker-dir {worker_dir} \
      --claude-org-path {claude_org_path} \
@@ -235,9 +235,9 @@ git -C {project_path} check-ignore -q -- <target>
    - `{branch_name}` は Step 1 で決定したブランチ名（指定がなければ `{task_id}` をブランチ名に使う）
    - ワーカーディレクトリ: `{workers_dir}/{project_slug}/.worktrees/{task_id}/`
 3. worktree 直下に CLAUDE.md を生成する（テンプレートの変数を置換）
-4. worktree 直下に `.claude/settings.local.json` を **generator で生成する**（schema-driven。詳細は `tools/role_configs_schema.json` の `worker_roles` 参照）:
+4. worktree 直下に `.claude/settings.local.json` を **generator で生成する**（schema-driven。詳細は `claude-org-runtime の settings/role_configs_schema.json` の `worker_roles` 参照）:
    ```bash
-   python tools/generate_worker_settings.py \
+   claude-org-runtime settings generate \
      --role <ROLE> \
      --worker-dir {worker_dir} \
      --claude-org-path {claude_org_path} \
@@ -252,9 +252,9 @@ git -C {project_path} check-ignore -q -- <target>
 
 1. `{workers_dir}/{task_id}/` ディレクトリを作成する（例: `../workers/data-analysis/`）
 2. テンプレートから `{workers_dir}/{task_id}/CLAUDE.md` を生成する
-3. `{workers_dir}/{task_id}/.claude/settings.local.json` を **generator で生成する**（schema-driven。詳細は `tools/role_configs_schema.json` の `worker_roles` 参照）:
+3. `{workers_dir}/{task_id}/.claude/settings.local.json` を **generator で生成する**（schema-driven。詳細は `claude-org-runtime の settings/role_configs_schema.json` の `worker_roles` 参照）:
    ```bash
-   python tools/generate_worker_settings.py \
+   claude-org-runtime settings generate \
      --role <ROLE> \
      --worker-dir {worker_dir} \
      --claude-org-path {claude_org_path} \

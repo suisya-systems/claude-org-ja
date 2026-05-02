@@ -113,10 +113,13 @@ claude                          # Claude Code の初回ログイン
 git clone https://github.com/suisya-systems/claude-org-ja.git
 cd claude-org-ja
 
-# 4. renga の MCP サーバーを Claude Code に登録（初回のみ）
+# 4. Python 依存（core-harness / claude-org-runtime）を導入
+pip install -r requirements.txt
+
+# 5. renga の MCP サーバーを Claude Code に登録（初回のみ）
 renga mcp install
 
-# 5. 窓口（Secretary）ペインを起動
+# 6. 窓口（Secretary）ペインを起動
 renga --layout ops
 ```
 

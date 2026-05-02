@@ -274,7 +274,7 @@
     }
   },
   "worker_roles": {
-    "$comment": "Concrete templates emitted by tools/generate_worker_settings.py. Each entry shapes a worker's <worker_dir>/.claude/settings.local.json. Placeholders {worker_dir} and {claude_org_path} are substituted at generation time. The audit constraints in roles.worker still apply — drift tooling validates emitted files against them.",
+    "$comment": "Concrete templates historically emitted by tools/generate_worker_settings.py. Phase 4 (Issue #129) moved generation into the claude-org-runtime package (run `claude-org-runtime settings generate ...`). This section is kept here for the audit constraints in roles.worker — drift tooling (tools/check_role_configs.py) validates emitted files against them. Placeholders {worker_dir} and {claude_org_path} are substituted at generation time.",
     "default": {
       "description": "Standard worker template — git read/write within the worktree, no push, no recursive delete. Mirrors the historical org-delegate Step 3 inline JSON.",
       "permissions": {

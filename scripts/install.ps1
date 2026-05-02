@@ -182,10 +182,11 @@ if ($SkipMcp) {
 }
 
 # --- Python deps (core-harness pin) --------------------------------------
-# Step B (Issue #128): tools/check_role_configs.py and
-# tools/generate_worker_settings.py are now thin shims over the
-# core-harness package. requirements.txt pins the exact version we
-# tested against.
+# Step B (Issue #128) made tools/check_role_configs.py and
+# tools/generate_worker_settings.py thin shims over the core-harness
+# package; Phase 4 (Issue #129) then moved the dispatcher runner and
+# the worker settings generator out of tools/ into the
+# claude-org-runtime package. requirements.txt pins both versions.
 $pyCmd = $null
 foreach ($cand in @('python', 'python3', 'py')) {
     if (Get-Command $cand -ErrorAction SilentlyContinue) { $pyCmd = $cand; break }
