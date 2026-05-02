@@ -1,6 +1,6 @@
 # claude-org 自身を編集するタスクの特例
 
-> **前提（Pattern 判定）**: 対象ファイルが gitignored（例: `docs/internal/`, `notes/`, `tmp/` 配下の内部メモ）の場合は、SKILL.md Step 1 の「事前チェック: 対象ファイルが git tracked か」により **Pattern C 強制**となる。本ドキュメントの特例（hook 除外・`CLAUDE.local.md`）は Pattern B / C いずれでも適用するが、Pattern C の場合 worktree は作らないため WORKER_DIR は対象ファイルにアクセスできる既存リポジトリ root を指定する。以下は Pattern B（tracked ファイル編集）を主に想定した手順。
+> **前提（Pattern 判定）**: 対象ファイルが gitignored（例: `docs/internal/`, `notes/`, `tmp/` 配下の内部メモ）の場合は、SKILL.md **Step 0.7「ターゲットファイル gitignore 事前チェック」**により **Pattern C 強制**となる（Step 1 のディレクトリパターン判定基準には到達しない）。本ドキュメントの特例（hook 除外・`CLAUDE.local.md`）は Pattern B / C いずれでも適用するが、Pattern C の場合 worktree は作らないため WORKER_DIR は対象ファイルにアクセスできる既存リポジトリ root を指定する。以下は Pattern B（tracked ファイル編集）を主に想定した手順。
 
 claude-org リポジトリのスキル / ドキュメント / 設定を編集するワーカーを派遣するとき、通常の worktree 準備のままでは以下の事故が発生する:
 
