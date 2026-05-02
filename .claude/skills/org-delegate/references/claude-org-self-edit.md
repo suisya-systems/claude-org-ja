@@ -11,10 +11,10 @@ claude-org リポジトリのスキル / ドキュメント / 設定を編集す
 
 ## 1. `claude-org-self-edit` ロールで settings.local.json を生成する
 
-Phase 2 (Issue #99) 以降、ワーカー `.claude/settings.local.json` は `tools/generate_worker_settings.py` で **schema-driven に生成**する（手書き編集は窓口の `permissions.deny` で禁止されている）。claude-org 自己編集タスクでは `--role claude-org-self-edit` を指定すること:
+Phase 2 (Issue #99) 以降、ワーカー `.claude/settings.local.json` は `claude-org-runtime settings generate` で **schema-driven に生成**する（Phase 4 で in-tree `tools/generate_worker_settings.py` から PyPI パッケージに移行済み。手書き編集は窓口の `permissions.deny` で禁止されている）。claude-org 自己編集タスクでは `--role claude-org-self-edit` を指定すること:
 
 ```bash
-python tools/generate_worker_settings.py \
+claude-org-runtime settings generate \
   --role claude-org-self-edit \
   --worker-dir {worker_dir} \
   --claude-org-path {claude_org_path} \

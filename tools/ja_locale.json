@@ -1,0 +1,6 @@
+{
+  "constraints_default": "(なし)",
+  "report_target_default": "secretary",
+  "claude_md_filename_default": "CLAUDE.md",
+  "instruction_template": "# Task: {task_id}\n\n窓口からの指示を元にディスパッチャーが展開したワーカー向け作業指示。\n作業ディレクトリ: `{worker_dir}`\n\n## 指示内容\n{instruction}\n"
+}
