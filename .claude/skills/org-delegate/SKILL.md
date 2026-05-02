@@ -562,6 +562,7 @@ mcp__renga-peers__send_message(
    2b-i. **PR 作成段階（即時実行）**:
    - 必要に応じて窓口がプッシュ・PR作成を行う（ワーカーには権限がないため）
    - `journal.jsonl` にイベント追記（push / PR open など）
+   - PR 番号が確定したら `tools/pr-watch.ps1 <PR>` (Windows) / `tools/pr-watch.sh <PR>` (POSIX) で CI を監視する。完了時に `ci_completed` が自動で journal に記録される
    - `org-state.md` の該当Work Item は **REVIEW のまま据え置く**（GitHub 側 PR レビュー指摘が来たら同ペインで対応するため。COMPLETED への遷移は 2b-ii で行う）
    - **ペインはまだ閉じない**: PR 作成直後に `CLOSE_PANE` を送らない。worktree 除去・Worker Directory Registry 更新も 2b-ii まで遅延する
    - PR レビューで指摘が来た場合は 2c のフローで同ワーカーに `send_message` 追指示を送り、同ペインで修正コミットを積ませる（新ワーカー再派遣は避ける — Issue / diff / 判断境界の再構築コストを払うことになる）
