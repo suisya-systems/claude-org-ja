@@ -12,6 +12,8 @@
 core-harness @ git+https://github.com/suisya-systems/core-harness@v0.3.1
 
 # Phase 4 (Layer 2): claude-org-runtime hosts the dispatcher runner and
-# worker settings generator that used to live under tools/. Pinned to the
-# 0.x range per design Q2/Q9 — minor bumps are reviewed before adoption.
-claude-org-runtime>=0.1.0,<0.2
+# worker settings generator that used to live under tools/. Installed
+# straight from the GitHub release tag (the package is not on PyPI yet)
+# — same pattern as the core-harness pin above. Bump the tag explicitly
+# when adopting a new runtime release.
+claude-org-runtime @ git+https://github.com/suisya-systems/claude-org-runtime@v0.1.0
