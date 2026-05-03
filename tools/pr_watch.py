@@ -173,9 +173,16 @@ def _fetch_checks(pr: int, repo: str) -> "list[dict] | None":
     Requests ``bucket,state,name``: ``bucket`` is the only field we
     classify on (see :func:`_classify_from_checks`); ``state`` and
     ``name`` are fetched purely to aid debugging when something goes
-    sideways. ``gh pr checks --json`` exits non-zero with code 8 when
-    checks are still pending, so we tolerate that as a successful
-    probe and let :func:`_classify_from_checks` see the data.
+    sideways.
+
+    ``gh pr checks`` exits non-zero on multiple non-error conditions:
+    ``8`` for "Checks pending" and ``1`` when at least one check has
+    failed (gh treats a red PR as a CLI error too). In both cases
+    gh still writes the requested JSON to stdout. So we trust the
+    JSON whenever it parses as a list, and only fall back when the
+    output is unparseable or the binary is missing entirely — that's
+    the only condition under which downgrading to the exit-code
+    classifier is appropriate.
     """
     try:
         result = subprocess.run(
@@ -190,11 +197,8 @@ def _fetch_checks(pr: int, repo: str) -> "list[dict] | None":
         )
     except FileNotFoundError:
         return None
-    # gh exits 8 when checks pending, but still emits the JSON we want.
-    if result.returncode not in (0, 8):
-        return None
     try:
-        data = json.loads(result.stdout or "[]")
+        data = json.loads(result.stdout or "")
     except json.JSONDecodeError:
         return None
     if not isinstance(data, list):

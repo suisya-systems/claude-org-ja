@@ -48,6 +48,7 @@ def _make_fake_run(
     watch_exit: int = 0,
     checks_json: "list[dict] | None" = None,
     checks_raises: "Exception | None" = None,
+    checks_json_exit: "int | None" = None,
 ):
     """Build a `subprocess.run` stub matching the call sites in pr_watch.
 
@@ -60,6 +61,21 @@ def _make_fake_run(
     if checks_json is None:
         checks_json = [{"name": "ci", "state": "COMPLETED", "bucket": "pass"}]
 
+    # gh exits non-zero (1) when at least one check is failing, and 8
+    # when checks are still pending — but in both cases it still writes
+    # the requested JSON. Mirror that here so the tests exercise the
+    # real protocol, not an idealized one.
+    def _gh_exit_for_checks(payload):
+        if checks_json_exit is not None:
+            return checks_json_exit
+        for chk in payload:
+            b = (chk.get("bucket") or "").lower()
+            if b in ("fail", "cancel"):
+                return 1
+            if b == "pending":
+                return 8
+        return 0
+
     def fake_run(cmd, *args, **kwargs):
         if "view" in cmd and "--json" in cmd and "number" in cmd:
             return mock.Mock(returncode=0, stdout="{}", stderr="")
@@ -67,7 +83,7 @@ def _make_fake_run(
             if checks_raises is not None:
                 raise checks_raises
             return mock.Mock(
-                returncode=0,
+                returncode=_gh_exit_for_checks(checks_json),
                 stdout=json.dumps(checks_json),
                 stderr="",
             )
@@ -198,6 +214,29 @@ class JournalEmitTests(unittest.TestCase):
             self._run(journal, gh_exit=0, checks_json=[])
             rec = json.loads(journal.read_text(encoding="utf-8").splitlines()[0])
             self.assertEqual(rec["status"], "incomplete")
+
+    def test_failed_check_with_gh_json_exit_1(self) -> None:
+        """gh exits 1 when a check failed but still emits JSON.
+
+        Regression: the previous implementation only trusted the JSON
+        when gh exited 0 or 8, so a real CI failure (gh exit 1 + valid
+        JSON listing a `fail` bucket) would be discarded and fall
+        through to the exit-code classifier — defeating Issue #224(a).
+        """
+        with TempDir() as tmp:
+            journal = tmp / ".state" / "journal.jsonl"
+            self._run(
+                journal,
+                gh_exit=1,  # watch loop saw the failure too
+                checks_json=[
+                    {"name": "lint", "state": "COMPLETED", "bucket": "pass"},
+                    {"name": "test", "state": "COMPLETED", "bucket": "fail"},
+                ],
+                # `_gh_exit_for_checks` will emit 1 for this payload
+                # (failure present), matching real gh behavior.
+            )
+            rec = json.loads(journal.read_text(encoding="utf-8").splitlines()[0])
+            self.assertEqual(rec["status"], "failed")
 
     def test_gh_exit_2_is_canceled(self) -> None:
         """gh exit 2 = cancellation. Must NOT be overwritten by JSON probe.
