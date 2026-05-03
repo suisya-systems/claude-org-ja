@@ -133,7 +133,7 @@ git -C {project_path} check-ignore -q -- <target>
 - **WORKER_DIR**: 既存ローカル clone の **repo root を直接指定**する（registry の「パス」値そのもの）
 - **CLAUDE.md / settings.local.json の配置先**: その repo root 直下。既に他用途の CLAUDE.md がある場合は `CLAUDE.local.md` に書く（`references/claude-org-self-edit.md` の特例参照）
 - **Worker Directory Registry**: Pattern を `C` として登録、Directory に repo root の絶対パス、Status を `in_use`。完了時はエントリ削除（ディレクトリ自体は元プロジェクトなので保持）
-- **並行作業との競合**: repo root を直接掴むため、同 repo に対する Pattern A / B のワーカーと同時起動はしない（窓口側で順次化する）
+- **並行作業との競合**: repo root を直接掴むため、同 repo に対する Pattern A / B のワーカーと同時起動はしない（窓口側で順次化する）。**さらに Pattern C 強制ワーカー同士も同 repo で 2 本以上同時起動しない**（`CLAUDE.local.md` / `.claude/settings.local.json` はファイル名固定なので相互上書きが起きる）
 - **窓口メモ**: 「Pattern B 不可: 対象 `<target>` が gitignored。WORKER_DIR=既存 repo root 運用」と一文残す
 
 ここで Pattern C 強制が確定した場合、**Step 1 のディレクトリパターン判定基準テーブルおよび判定フローはスキップ**し、そのまま Step 1.5 のワーカーディレクトリ準備に進む（パターンは C 確定）。
@@ -210,7 +210,7 @@ git -C {project_path} check-ignore -q -- <target>
 | `claude-org-self-edit` | **claude-org リポジトリ自身を編集するタスク（self-edit task）**。`worker_dir` が claude-org repo or its worktree（`tools/`, `.claude/skills/`, `docs/` 等の編集を含む）。`block-org-structure.sh` を外す代わりに `check-worker-boundary.sh` で境界を担保。詳細は `references/claude-org-self-edit.md` |
 | `doc-audit` | 読み取り中心の調査・監査・レポート（Edit/Write/MultiEdit/NotebookEdit を deny。commit / branch も禁止） |
 
-各 role の具体的な allow/deny/hooks は `claude-org-runtime の settings/role_configs_schema.json` の `worker_roles[<role>]` を参照（schema が SOT）。新しいパターンが必要な場合は schema に role を追加する PR を起こすこと（窓口の手書き拡張は不可）。
+各 role の具体的な allow/deny/hooks は **本 ja リポジトリの `tools/org_extension_schema.json`** の `worker_roles[<role>]` を参照（drift validator `tools/check_role_configs.py` がこのファイルを正典として読む）。新しいパターンが必要な場合は **ja の `tools/org_extension_schema.json` と `claude-org-runtime` の bundled `role_configs_schema.json` の両方に role を追加する PR が必要**（窓口の手書き拡張は不可）: ja 側だけ追加しても `claude-org-runtime settings generate` が新 role を知らず生成失敗、runtime 側だけ追加しても drift CI が fail する。framework 側の schema 形（`worker_roles` の許容形状定義）のみ変える場合は `claude-org-runtime` 側のみで完結。詳細は `references/claude-org-self-edit.md` および `docs/internal/phase4-completion-2026-05-02.md:71-77` 参照。
 
 ### パターン A: プロジェクトディレクトリ
 
@@ -220,7 +220,7 @@ git -C {project_path} check-ignore -q -- <target>
 
 1. `git clone {project_path} {workers_dir}/{project_slug}/` を実行
 2. ディレクトリ直下に CLAUDE.md を生成する（テンプレートの変数を置換）
-3. ディレクトリ直下に `.claude/settings.local.json` を **generator で生成する**（schema が SOT。詳細は `claude-org-runtime の settings/role_configs_schema.json` の `worker_roles` を参照）:
+3. ディレクトリ直下に `.claude/settings.local.json` を **generator で生成する**（schema が SOT。詳細は ja `tools/org_extension_schema.json` の `worker_roles` を参照）:
    ```bash
    claude-org-runtime settings generate \
      --role <ROLE> \
@@ -250,7 +250,7 @@ git -C {project_path} check-ignore -q -- <target>
    - `{branch_name}` は Step 1 で決定したブランチ名（指定がなければ `{task_id}` をブランチ名に使う）
    - ワーカーディレクトリ: `{workers_dir}/{project_slug}/.worktrees/{task_id}/`
 3. worktree 直下に CLAUDE.md を生成する（テンプレートの変数を置換）
-4. worktree 直下に `.claude/settings.local.json` を **generator で生成する**（schema-driven。詳細は `claude-org-runtime の settings/role_configs_schema.json` の `worker_roles` 参照）:
+4. worktree 直下に `.claude/settings.local.json` を **generator で生成する**（schema-driven。詳細は ja `tools/org_extension_schema.json` の `worker_roles` 参照）:
    ```bash
    claude-org-runtime settings generate \
      --role <ROLE> \
@@ -267,7 +267,7 @@ git -C {project_path} check-ignore -q -- <target>
 
 1. `{workers_dir}/{task_id}/` ディレクトリを作成する（例: `../workers/data-analysis/`）
 2. テンプレートから `{workers_dir}/{task_id}/CLAUDE.md` を生成する
-3. `{workers_dir}/{task_id}/.claude/settings.local.json` を **generator で生成する**（schema-driven。詳細は `claude-org-runtime の settings/role_configs_schema.json` の `worker_roles` 参照）:
+3. `{workers_dir}/{task_id}/.claude/settings.local.json` を **generator で生成する**（schema-driven。詳細は ja `tools/org_extension_schema.json` の `worker_roles` 参照）:
    ```bash
    claude-org-runtime settings generate \
      --role <ROLE> \
