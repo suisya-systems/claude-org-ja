@@ -128,11 +128,23 @@ def main(argv: "list[str] | None" = None) -> int:
         prog="tools/pr_watch.py",
         description="Watch a GitHub PR's CI checks and journal the result.",
     )
+    # Accept both `--pr <n>` (preferred, unambiguous on PowerShell) and the
+    # legacy positional form `<n>` so direct python/bash invocations keep
+    # working. Exactly one of the two must be supplied.
     parser.add_argument(
         "--pr",
+        dest="pr_flag",
         type=int,
-        required=True,
+        default=None,
         help="pull request number",
+    )
+    parser.add_argument(
+        "pr_positional",
+        nargs="?",
+        type=int,
+        default=None,
+        metavar="PR",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--repo",
@@ -147,10 +159,16 @@ def main(argv: "list[str] | None" = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    if args.pr <= 0:
+    if args.pr_flag is not None and args.pr_positional is not None:
+        parser.error("specify the PR number once (either --pr or positional)")
+    pr_number = args.pr_flag if args.pr_flag is not None else args.pr_positional
+    if pr_number is None:
+        parser.error("missing PR number (use --pr <n>)")
+    if pr_number <= 0:
         parser.error("PR number must be a positive integer")
     if args.interval <= 0:
         parser.error("--interval must be a positive integer")
+    args.pr = pr_number
 
     _ensure_gh_installed()
     repo = args.repo or _resolve_repo()
