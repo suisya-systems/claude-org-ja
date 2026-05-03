@@ -21,18 +21,27 @@ import pr_watch  # noqa: E402
 
 
 class ClassifyTests(unittest.TestCase):
+    """Fallback classifier (used only when JSON probe is unavailable).
+
+    Per `gh help exit-codes`, exit 8 is "Checks pending" — NOT failure.
+    Issue #224 corrects the prior mapping.
+    """
+
     def test_zero_is_passed(self) -> None:
         self.assertEqual(pr_watch._classify(0), "passed")
 
-    def test_eight_is_failed(self) -> None:
-        self.assertEqual(pr_watch._classify(8), "failed")
+    def test_eight_is_incomplete(self) -> None:
+        # gh exit 8 = "Checks pending", per gh's help text.
+        self.assertEqual(pr_watch._classify(8), "incomplete")
 
     def test_two_is_canceled(self) -> None:
         self.assertEqual(pr_watch._classify(2), "canceled")
 
-    def test_other_nonzero_is_failed(self) -> None:
-        self.assertEqual(pr_watch._classify(1), "failed")
-        self.assertEqual(pr_watch._classify(127), "failed")
+    def test_other_nonzero_is_incomplete(self) -> None:
+        # Conservative: treat unknown gh errors as incomplete rather
+        # than libelling the PR as failed.
+        self.assertEqual(pr_watch._classify(1), "incomplete")
+        self.assertEqual(pr_watch._classify(127), "incomplete")
 
 
 def _make_fake_run(
@@ -49,7 +58,7 @@ def _make_fake_run(
     * ``gh pr checks <pr> --watch ...`` → returncode = ``watch_exit``
     """
     if checks_json is None:
-        checks_json = [{"name": "ci", "state": "COMPLETED", "conclusion": "SUCCESS"}]
+        checks_json = [{"name": "ci", "state": "COMPLETED", "bucket": "pass"}]
 
     def fake_run(cmd, *args, **kwargs):
         if "view" in cmd and "--json" in cmd and "number" in cmd:
@@ -132,23 +141,23 @@ class JournalEmitTests(unittest.TestCase):
             self.assertEqual(rec["duration_sec"], 42)
             self.assertIn("ts", rec)
 
-    def test_failed_status_from_check_conclusion(self) -> None:
-        """A FAILURE conclusion in the JSON probe → status=failed."""
+    def test_failed_status_from_check_bucket(self) -> None:
+        """A `fail` bucket in the JSON probe → status=failed."""
         with TempDir() as tmp:
             journal = tmp / ".state" / "journal.jsonl"
             self._run(
                 journal,
                 gh_exit=8,
                 checks_json=[
-                    {"name": "lint", "state": "COMPLETED", "conclusion": "SUCCESS"},
-                    {"name": "test", "state": "COMPLETED", "conclusion": "FAILURE"},
+                    {"name": "lint", "state": "COMPLETED", "bucket": "pass"},
+                    {"name": "test", "state": "COMPLETED", "bucket": "fail"},
                 ],
             )
             rec = json.loads(journal.read_text(encoding="utf-8").splitlines()[0])
             self.assertEqual(rec["status"], "failed")
 
     def test_transient_gh_error_is_not_failed(self) -> None:
-        """Issue #224: gh exit 1 with all checks SUCCESS must classify as passed.
+        """Issue #224: gh exit 1 with all checks `pass` must classify as passed.
 
         Regression: the old code conflated any non-zero exit with CI
         failure, so a transient error in `gh pr checks --watch` (e.g.
@@ -161,8 +170,8 @@ class JournalEmitTests(unittest.TestCase):
                 journal,
                 gh_exit=1,
                 checks_json=[
-                    {"name": "lint", "state": "COMPLETED", "conclusion": "SUCCESS"},
-                    {"name": "test", "state": "COMPLETED", "conclusion": "SUCCESS"},
+                    {"name": "lint", "state": "COMPLETED", "bucket": "pass"},
+                    {"name": "test", "state": "COMPLETED", "bucket": "pass"},
                 ],
             )
             rec = json.loads(journal.read_text(encoding="utf-8").splitlines()[0])
@@ -176,8 +185,8 @@ class JournalEmitTests(unittest.TestCase):
                 journal,
                 gh_exit=0,
                 checks_json=[
-                    {"name": "lint", "state": "COMPLETED", "conclusion": "SUCCESS"},
-                    {"name": "deploy", "state": "IN_PROGRESS", "conclusion": ""},
+                    {"name": "lint", "state": "COMPLETED", "bucket": "pass"},
+                    {"name": "deploy", "state": "IN_PROGRESS", "bucket": "pending"},
                 ],
             )
             rec = json.loads(journal.read_text(encoding="utf-8").splitlines()[0])
@@ -196,45 +205,51 @@ class JournalEmitTests(unittest.TestCase):
             journal = tmp / ".state" / "journal.jsonl"
             self._run(
                 journal,
-                gh_exit=8,
-                checks_raises=subprocess.CalledProcessError(1, ["gh"]),
+                gh_exit=0,
+                checks_raises=FileNotFoundError("gh missing"),
             )
             rec = json.loads(journal.read_text(encoding="utf-8").splitlines()[0])
-            # exit 8 → failed via _classify fallback.
-            self.assertEqual(rec["status"], "failed")
+            # exit 0 → passed via _classify fallback.
+            self.assertEqual(rec["status"], "passed")
 
 
 class ClassifyFromChecksTests(unittest.TestCase):
-    def test_all_success(self) -> None:
+    def test_all_pass(self) -> None:
         self.assertEqual(
             pr_watch._classify_from_checks(
-                [{"conclusion": "SUCCESS"}, {"conclusion": "SUCCESS"}]
+                [{"bucket": "pass"}, {"bucket": "pass"}]
             ),
             "passed",
         )
 
-    def test_skipped_counts_as_passed(self) -> None:
+    def test_skipping_counts_as_passed(self) -> None:
         self.assertEqual(
             pr_watch._classify_from_checks(
-                [{"conclusion": "SUCCESS"}, {"conclusion": "SKIPPED"}]
+                [{"bucket": "pass"}, {"bucket": "skipping"}]
             ),
             "passed",
         )
 
-    def test_any_failure_is_failed(self) -> None:
-        for bad in ("FAILURE", "TIMED_OUT", "CANCELLED", "STALE", "ACTION_REQUIRED"):
-            with self.subTest(bad=bad):
-                self.assertEqual(
-                    pr_watch._classify_from_checks(
-                        [{"conclusion": "SUCCESS"}, {"conclusion": bad}]
-                    ),
-                    "failed",
-                )
+    def test_fail_bucket_is_failed(self) -> None:
+        self.assertEqual(
+            pr_watch._classify_from_checks(
+                [{"bucket": "pass"}, {"bucket": "fail"}]
+            ),
+            "failed",
+        )
+
+    def test_cancel_bucket_is_failed(self) -> None:
+        self.assertEqual(
+            pr_watch._classify_from_checks(
+                [{"bucket": "pass"}, {"bucket": "cancel"}]
+            ),
+            "failed",
+        )
 
     def test_pending_is_incomplete(self) -> None:
         self.assertEqual(
             pr_watch._classify_from_checks(
-                [{"conclusion": "SUCCESS"}, {"state": "IN_PROGRESS", "conclusion": ""}]
+                [{"bucket": "pass"}, {"bucket": "pending"}]
             ),
             "incomplete",
         )
@@ -242,11 +257,18 @@ class ClassifyFromChecksTests(unittest.TestCase):
     def test_empty_is_incomplete(self) -> None:
         self.assertEqual(pr_watch._classify_from_checks([]), "incomplete")
 
-    def test_unknown_conclusion_is_incomplete(self) -> None:
-        # Conservative: unrecognized conclusion → don't claim "passed".
+    def test_unknown_bucket_is_incomplete(self) -> None:
+        # Conservative: unrecognized bucket → don't claim "passed".
         self.assertEqual(
-            pr_watch._classify_from_checks([{"conclusion": "MYSTERY_BUCKET"}]),
+            pr_watch._classify_from_checks([{"bucket": "mystery"}]),
             "incomplete",
+        )
+
+    def test_case_insensitive_bucket(self) -> None:
+        # gh emits lowercase, but be defensive.
+        self.assertEqual(
+            pr_watch._classify_from_checks([{"bucket": "PASS"}]),
+            "passed",
         )
 
 
@@ -286,12 +308,9 @@ class PowerShellInterpreterProbeTests(unittest.TestCase):
                 shim.write_text("#!/usr/bin/env bash\n" + shim_body, encoding="ascii")
                 shim.chmod(0o755)
                 exe_arg = str(shim)
-            ps_cmd = (
-                ". '" + str(self.script).replace("'", "''") + "' -PR 1 "
-                "-ErrorAction SilentlyContinue 2>$null; "
-            )
-            # The dot-source above runs the full script which we don't want.
-            # Instead, extract just the function block via regex inline:
+            # We can't dot-source pr-watch.ps1 directly (it has a mandatory
+            # -PR param that would error out), so extract just the
+            # Test-Interpreter function block via regex and Invoke-Expression.
             extract = (
                 "$src = Get-Content -Raw '" + str(self.script).replace("'", "''") + "'; "
                 "if ($src -match '(?ms)function Test-Interpreter \\{.*?^\\}') "

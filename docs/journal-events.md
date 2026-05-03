@@ -115,11 +115,14 @@ Workers do **not** write the journal directly; they report via
 | `ci_completed` | `pr`, `repo`, `status`, `duration_sec`                    | secretary |
 
 `status` ∈ `{passed, failed, incomplete, canceled}`. As of Issue #224
-the value is derived from `gh pr checks <pr> --json` (per-check
-`conclusion` / `state`) rather than the gh process' exit code, so a
-transient watch-loop error is no longer conflated with a real CI
-failure. `incomplete` is emitted when at least one check is still
-pending or has an unrecognized conclusion when the watch returns;
+the value is derived from `gh pr checks <pr> --json bucket,state,name`
+(per-check `bucket`, whose documented values are
+`{pass, fail, pending, skipping, cancel}`) rather than the gh process'
+exit code, so a transient watch-loop error is no longer conflated
+with a real CI failure. `failed` requires at least one `fail` or
+`cancel` bucket; `incomplete` is emitted when at least one check is
+still `pending` (or has an unrecognized bucket, or the JSON probe
+itself errored — see the fallback rules in `tools/pr_watch.py`);
 `canceled` is emitted only when the parent receives SIGINT.
 
 ### Session lifecycle
