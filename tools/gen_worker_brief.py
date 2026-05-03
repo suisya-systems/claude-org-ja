@@ -83,11 +83,14 @@ def validate(config: dict[str, Any]) -> None:
     task = config["task"]
     if "issue_url" in task and not isinstance(task["issue_url"], str):
         raise ConfigError("task.issue_url must be a string")
-    if "closes_issue" in task and not isinstance(task["closes_issue"], int):
-        raise ConfigError("task.closes_issue must be an integer")
+    if "closes_issue" in task:
+        v = task["closes_issue"]
+        if isinstance(v, bool) or not isinstance(v, int):
+            raise ConfigError("task.closes_issue must be an integer")
     if "refs_issues" in task:
-        if not isinstance(task["refs_issues"], list) or not all(
-            isinstance(n, int) for n in task["refs_issues"]
+        v = task["refs_issues"]
+        if not isinstance(v, list) or not all(
+            isinstance(n, int) and not isinstance(n, bool) for n in v
         ):
             raise ConfigError("task.refs_issues must be a list of integers")
 

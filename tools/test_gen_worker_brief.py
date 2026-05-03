@@ -1,7 +1,6 @@
 """Tests for tools/gen_worker_brief.py."""
 from __future__ import annotations
 
-import copy
 import tempfile
 import unittest
 from pathlib import Path
@@ -195,6 +194,18 @@ class Validation(unittest.TestCase):
     def test_closes_issue_must_be_int(self):
         cfg = _base_config(False)
         cfg["task"]["closes_issue"] = "217"
+        with self.assertRaises(gwb.ConfigError):
+            gwb.render(cfg)
+
+    def test_closes_issue_rejects_bool(self):
+        cfg = _base_config(False)
+        cfg["task"]["closes_issue"] = True
+        with self.assertRaises(gwb.ConfigError):
+            gwb.render(cfg)
+
+    def test_refs_issues_rejects_bool(self):
+        cfg = _base_config(False)
+        cfg["task"]["refs_issues"] = [True, 2]
         with self.assertRaises(gwb.ConfigError):
             gwb.render(cfg)
 
