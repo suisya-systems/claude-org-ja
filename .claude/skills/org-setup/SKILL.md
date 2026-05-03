@@ -122,7 +122,7 @@ prune ツールが読むだけで、書き換えはしない）:
 closed-world 検証から除外する（`_load_override_allow`）。よって override に追加した
 個人 allow は CI / `--include-local` で `unknown allow entry` にならない。
 ただし `forbidden_allow_exact`（`Bash(git *)` 等の wide allow）と
-`disallow_allow_regex`（旧 `mcp__claude-peers__*` 等）は override 側にあっても
+`disallow_allow_regex`（旧 `mcp__claude-peers__*`、現 `renga-peers` 等）は override 側にあっても
 従来通り ERROR となる。安全契約は override で迂回できない。
 
 #### dispatcher の `{claude_org_path}` 解決
