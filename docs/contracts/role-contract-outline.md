@@ -67,7 +67,7 @@
 ### Lifecycle / boundaries
 
 - **Spawn**: Started by the human running `renga --layout ops`. There is exactly one secretary per org session.
-- **Initialization**: First action is `/org-start`. Step 0 sets `set_summary`, validates / repairs pane identity, confirms renga-peers MCP is installed, and inventories `workers_dir`. Step 1 reads `.state/org-state.md` and resumes / brieves. Steps 2–3 spawn the dispatcher and curator panes.
+- **Initialization**: First action is `/org-start`. Step 0 sets `set_summary`, validates / repairs pane identity, confirms renga-peers MCP is installed, and inventories `workers_dir`. Step 1 reads `.state/org-state.md` and resumes / briefs. Steps 2–3 spawn the dispatcher and curator panes.
 - **Termination**: `/org-suspend` (graceful, persists state) or hard close. Must not be killed while workers are alive without going through suspend, otherwise pane-id remapping and worker reply paths break.
 - **Hard prohibitions**:
   - Must NOT silently delete worker directories during `org-start` (they may hold reusable project state — `org-start` Step 0.4 explicit ban).
@@ -122,9 +122,9 @@
 - **Permission mode**: Hard-coded `bypassPermissions` regardless of `default_permission_mode`. Reason: spawning child Claude agents is classified as "Create Unsafe Agents" by `auto`, which would block worker spawn. (`registry/org-config.md`; `org-start` SKILL "ディスパッチャー".)
 - **Model**: `sonnet` (cost optimization). Acceptable here only because the dispatcher does not run through the safety classifier.
 - **No human dialogue** — the dispatcher never talks to the human directly (`.dispatcher/CLAUDE.md` "人間と直接対話することはない").
-- **All replies to secretary use stable name `to_id="secretary"`**; numeric `from_id` is forbidden as a fallback target.
+- **All replies to secretary use stable name `to_id="secretary"`**; numeric `from_id` may be used only as a fallback when `to_id="secretary"` returns `[pane_not_found]` (per `.dispatcher/CLAUDE.md` § "窓口への返信方法").
 - **Reports are routed to secretary, not back to dispatcher** — the dispatcher must explicitly tell each worker on spawn: "報告先は窓口です。ディスパッチャーではありません".
-- **No auto-approval** — the dispatcher must not press `y` or otherwise approve worker tool prompts itself; the human decides via the secretary.
+- **No auto-approval of worker tool prompts** — the dispatcher must not press `y` or otherwise approve `Allow this tool use? (y/n)` / `Do you want to proceed?` / edit-confirmation prompts on the worker's behalf; those require human judgment routed via the secretary. (Distinct from the one-time `Load development channel?` prompt issued by Claude Code itself at worker spawn, which the dispatcher *is* expected to approve via `send_keys(enter=true)` — that prompt is infrastructure, not a worker tool call.)
 - **Helper-first determinism** — uses `claude-org-runtime dispatcher delegate-plan` to choose target / direction, validate worker pane name, generate instruction file and seed state file. Re-implementing `choose_split` or hand-writing instruction files is forbidden.
 - **Journal append discipline** — every event goes through `tools/journal_append.sh` or `tools/journal_append.py` (the latter required when payload contains nested objects such as `cursor`).
 - **CLOSE_PANE discipline** — must complete retro Steps 1–2 before `close_pane`; closing first destroys evidence. If secretary is unreachable inside 5 minutes, write `retro_deferred` and skip the close (do NOT write a "completion report missing" retro conclusion).
@@ -200,7 +200,7 @@
 
 ### Responsibilities
 
-- Performs the actual engineering work for a single task ID: `git clone` / `worktree`, code edits, builds, tests, lints, type-checks, and `git commit` inside its assigned `worker_dir`.
+- Performs the actual engineering work for a single task ID: code edits, builds, tests, lints, type-checks, and `git commit` inside its assigned `worker_dir`. **[TBD by Lead]** — Whether the worker is also responsible for the initial `git clone` / `git init` / `worktree add` of `worker_dir` is currently inconsistent across sources: `.claude/skills/org-delegate/SKILL.md` Step 1.5 puts directory preparation (clone, worktree add, CLAUDE.md placement) on the **secretary** before spawn, while `.claude/skills/org-delegate/references/instruction-template.md` (Pattern A / C sections) instructs the **worker** to perform `git clone` / `git init` itself. Lead must pick one boundary.
 - For `full` validation depth: runs the project's standard verification (tests / lint / type-check) to green before reporting completion. If `codex` CLI is available, additionally runs the Codex self-review gate (3-round cap on same-category findings).
 - For `minimal` validation depth: applies the requested fix, commits, and returns a single-line `done: {sha} {files}` report — no extra verification, no Codex.
 - Reports completion / progress / blockers / `APPROVAL_BLOCKED` / `ERROR` directly to the secretary (NOT to the dispatcher) via renga-peers.
