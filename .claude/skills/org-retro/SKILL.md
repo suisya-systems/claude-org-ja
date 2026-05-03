@@ -107,13 +107,14 @@ output_format: <成果物の構造>
      - 抽出元（ワーカーの成果物・raw 知見ファイルのパス）と、
        タスク固有の値をプレースホルダーへ置換する旨
      - skill-promotion 委譲であること（Set A worker write-surface の carve-out 対象）
-   - ディスパッチャー / 窓口は `.claude/skills/{skill-name}/` への直接書き込みを行わない。
-     実ファイルの作成・編集は委譲先ワーカーが担当する。
-   - 窓口は `knowledge/skill-candidates.md` の該当エントリの status を `approved` に更新し決定日を記入する
-     （これは委譲発行に伴うステータス管理であり、skill ファイル本体の編集ではない）。
+   - ディスパッチャー / 窓口は `.claude/skills/{skill-name}/` および `knowledge/skill-candidates.md` への
+     直接書き込みを行わない。Set E §1.4 / §2.4 に従い、`skill-candidates.md` の status transition
+     （`approved` への遷移と `決定日` の記入）も同じ委譲ワーカーの責務とし、指示にその旨を含める。
 3. 人間が却下した場合:
    - 理由を `knowledge/raw/` に記録し、次回の判断に活かす
-   - `knowledge/skill-candidates.md` の該当エントリの status を `rejected` に更新し却下理由を追記
+   - `knowledge/skill-candidates.md` の status を `rejected` に更新し却下理由を追記する作業も
+     ワーカーへの委譲（`org-delegate`）経由で行う。窓口・ディスパッチャーは直接編集しない
+     （Set E §1.4 の owner 定義に従う）。
 
 #### decision == candidate_queue
 
