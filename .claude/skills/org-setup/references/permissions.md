@@ -2,9 +2,9 @@
 
 > **Source of truth**: このドキュメントは人間向け説明であり、機械可読な正典は
 > ja の [`tools/org_extension_schema.json`](../../../../tools/org_extension_schema.json)
-> （org-extension allow / hooks）と `claude-org-runtime` パッケージにバンドルされた
-> framework schema（generator の正典）。本ファイルの JSON ブロックと schema の間に
-> drift があれば CI (`tools/check_role_configs.py`) が fail する。ルール追加や
+> （org-extension allow / hooks）と `core_harness` の framework schema（型定義）を
+> マージしたもの。drift validator `tools/check_role_configs.py` はこの merged schema
+> に対して `settings.local.json` を検証し、乖離があれば CI が fail する。ルール追加や
 > 文面変更は schema → docs の順で反映すること。
 
 org-setup が参照する、ロールごとの permissions allow と環境変数の定義。
@@ -257,7 +257,7 @@ python tools/org_setup_prune.py --all                        # secretary / dispa
 
 ワーカーの設定は org-delegate の Step 1.5 で動的に作成される。
 
-> ワーカーの `settings.local.json` は `claude-org-runtime settings generate` が同パッケージにバンドルされた framework schema の `worker_roles[<role>]` から生成する（`default` / `claude-org-self-edit` / `doc-audit` の 3 role）。本セクションに掲載されている JSON はあくまでリファレンス用で、手書き編集は禁止（drift CI が fail する）。新しい permission パターンが必要な場合は schema に role を追加する PR を起こすこと。
+> ワーカーの `settings.local.json` は `claude-org-runtime settings generate` が同パッケージにバンドルされた merged role schema の `worker_roles[<role>]` から生成する（`default` / `claude-org-self-edit` / `doc-audit` の 3 role）。本セクションに掲載されている JSON はあくまでリファレンス用で、手書き編集は禁止（drift CI が fail する）。新しい permission パターンが必要な場合は schema に role を追加する PR を起こすこと。
 
 ```json
 {
