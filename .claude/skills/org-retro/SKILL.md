@@ -115,6 +115,12 @@ output_format: <成果物の構造>
    - `knowledge/skill-candidates.md` の status を `rejected` に更新し却下理由を追記する作業も
      ワーカーへの委譲（`org-delegate`）経由で行う。窓口・ディスパッチャーは直接編集しない
      （Set E §1.4 の owner 定義に従う）。
+4. 人間が「既存 skill に統合」を選択した場合（terminal status `merged-into-{existing-skill}`）:
+   - 統合先となる既存 skill を特定し、`org-delegate` で skill-promotion ワーカーに以下を委譲する:
+     既存 `.claude/skills/{existing-skill}/SKILL.md` への取り込み編集、および
+     `knowledge/skill-candidates.md` 該当エントリの status を `merged-into-{existing-skill}` に
+     更新（`統合先` フィールドに既存 skill 名を記入）。
+   - 新規 skill ファイルは作成しない。窓口・ディスパッチャーは直接編集しない。
 
 #### decision == candidate_queue
 
