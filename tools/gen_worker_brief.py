@@ -24,14 +24,12 @@ VALID_PATTERNS = {"A", "B", "C"}
 VALID_ROLES = {"default", "claude-org-self-edit", "doc-audit"}
 VALID_DEPTHS = {"full", "minimal"}
 
-REQUIRED_KEYS = {
+REQUIRED_STRING_KEYS = {
     "task": ("id", "description", "verification_depth", "branch", "commit_prefix"),
-    "worker": ("dir", "pattern", "role", "self_edit"),
+    "worker": ("dir", "pattern", "role"),
     "project": ("name", "description"),
     "paths": ("claude_org",),
 }
-
-OPTIONAL_BLOCKS = ("issue_url", "implementation", "parallel", "references")
 
 _BLOCK_RE = re.compile(
     r"<!--BEGIN:(?P<name>[a-z_]+)-->(?P<body>.*?)<!--END:(?P=name)-->\n?",
@@ -43,17 +41,27 @@ class ConfigError(ValueError):
     """Raised when the TOML config is invalid."""
 
 
-def _require(d: dict[str, Any], section: str, keys: tuple[str, ...]) -> None:
-    if section not in d:
-        raise ConfigError(f"missing required section [{section}]")
+def _require_string(d: dict[str, Any], section: str, keys: tuple[str, ...]) -> None:
+    if not isinstance(d.get(section), dict):
+        raise ConfigError(f"missing or non-table required section [{section}]")
     for k in keys:
         if k not in d[section]:
             raise ConfigError(f"missing required key {section}.{k}")
+        if not isinstance(d[section][k], str) or not d[section][k]:
+            raise ConfigError(f"{section}.{k} must be a non-empty string")
+
+
+def _require_string_list(value: Any, label: str) -> None:
+    if not isinstance(value, list) or not all(isinstance(x, str) for x in value):
+        raise ConfigError(f"{label} must be a list of strings")
 
 
 def validate(config: dict[str, Any]) -> None:
-    for section, keys in REQUIRED_KEYS.items():
-        _require(config, section, keys)
+    if not isinstance(config, dict):
+        raise ConfigError("config root must be a TOML table")
+
+    for section, keys in REQUIRED_STRING_KEYS.items():
+        _require_string(config, section, keys)
 
     depth = config["task"]["verification_depth"]
     if depth not in VALID_DEPTHS:
@@ -67,8 +75,44 @@ def validate(config: dict[str, Any]) -> None:
     if role not in VALID_ROLES:
         raise ConfigError(f"worker.role must be one of {sorted(VALID_ROLES)}, got {role!r}")
 
+    if "self_edit" not in config["worker"]:
+        raise ConfigError("missing required key worker.self_edit")
     if not isinstance(config["worker"]["self_edit"], bool):
         raise ConfigError("worker.self_edit must be a boolean")
+
+    task = config["task"]
+    if "issue_url" in task and not isinstance(task["issue_url"], str):
+        raise ConfigError("task.issue_url must be a string")
+    if "closes_issue" in task and not isinstance(task["closes_issue"], int):
+        raise ConfigError("task.closes_issue must be an integer")
+    if "refs_issues" in task:
+        if not isinstance(task["refs_issues"], list) or not all(
+            isinstance(n, int) for n in task["refs_issues"]
+        ):
+            raise ConfigError("task.refs_issues must be a list of integers")
+
+    impl = config.get("implementation")
+    if impl is not None:
+        if not isinstance(impl, dict):
+            raise ConfigError("[implementation] must be a TOML table")
+        if "target_files" in impl:
+            _require_string_list(impl["target_files"], "implementation.target_files")
+        if "guidance" in impl and not isinstance(impl["guidance"], str):
+            raise ConfigError("implementation.guidance must be a string")
+
+    refs = config.get("references")
+    if refs is not None:
+        if not isinstance(refs, dict):
+            raise ConfigError("[references] must be a TOML table")
+        if "knowledge" in refs:
+            _require_string_list(refs["knowledge"], "references.knowledge")
+
+    parallel = config.get("parallel")
+    if parallel is not None:
+        if not isinstance(parallel, dict):
+            raise ConfigError("[parallel] must be a TOML table")
+        if "notes" in parallel and not isinstance(parallel["notes"], str):
+            raise ConfigError("parallel.notes must be a string")
 
 
 def _closes_or_refs(task: dict[str, Any]) -> str:
@@ -206,7 +250,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         config = load_config(args.config)
         output = render(config)
-    except (ConfigError, FileNotFoundError) as e:
+    except (ConfigError, FileNotFoundError, tomllib.TOMLDecodeError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
 

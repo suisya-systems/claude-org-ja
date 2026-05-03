@@ -168,6 +168,36 @@ class Validation(unittest.TestCase):
         with self.assertRaises(gwb.ConfigError):
             gwb.render(cfg)
 
+    def test_non_string_description_rejected(self):
+        cfg = _base_config(False)
+        cfg["task"]["description"] = 1
+        with self.assertRaises(gwb.ConfigError):
+            gwb.render(cfg)
+
+    def test_empty_string_rejected(self):
+        cfg = _base_config(False)
+        cfg["task"]["branch"] = ""
+        with self.assertRaises(gwb.ConfigError):
+            gwb.render(cfg)
+
+    def test_implementation_guidance_must_be_string(self):
+        cfg = _base_config(False)
+        cfg["implementation"] = {"guidance": 42}
+        with self.assertRaises(gwb.ConfigError):
+            gwb.render(cfg)
+
+    def test_target_files_must_be_string_list(self):
+        cfg = _base_config(False)
+        cfg["implementation"] = {"target_files": ["a.md", 7]}
+        with self.assertRaises(gwb.ConfigError):
+            gwb.render(cfg)
+
+    def test_closes_issue_must_be_int(self):
+        cfg = _base_config(False)
+        cfg["task"]["closes_issue"] = "217"
+        with self.assertRaises(gwb.ConfigError):
+            gwb.render(cfg)
+
 
 class ClosesOrRefs(unittest.TestCase):
     def test_closes_takes_priority(self):
@@ -232,6 +262,24 @@ class CLI(unittest.TestCase):
             )  # missing many keys
             out = Path(td) / "out.md"
             rc = gwb.main(["--config", str(bad), "--out", str(out)])
+            self.assertEqual(rc, 2)
+            self.assertFalse(out.exists())
+
+    def test_cli_malformed_toml_returns_2(self):
+        with tempfile.TemporaryDirectory() as td:
+            bad = Path(td) / "broken.toml"
+            bad.write_text("not = = valid", encoding="utf-8")
+            out = Path(td) / "out.md"
+            rc = gwb.main(["--config", str(bad), "--out", str(out)])
+            self.assertEqual(rc, 2)
+            self.assertFalse(out.exists())
+
+    def test_cli_missing_config_returns_2(self):
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td) / "out.md"
+            rc = gwb.main(
+                ["--config", str(Path(td) / "nope.toml"), "--out", str(out)]
+            )
             self.assertEqual(rc, 2)
             self.assertFalse(out.exists())
 
