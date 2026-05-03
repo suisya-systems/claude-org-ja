@@ -106,7 +106,7 @@ Each transition below names: **(a)** the event that triggers it, **(b)** which a
 - **Trigger**: Dispatcher's balanced-split filter returns zero candidates (per `org-delegate` Step 3-1c).
 - **Actor**: dispatcher.
 - **State write**: No worker pane is spawned; `.state/dispatcher/inbox/{task_id}.json` may remain on disk for re-attempt; `.state/workers/worker-{task_id}.md` is NOT written (no pane existed).
-- **Journal**: Per `docs/journal-events.md` registry; today this case is signalled via the `SPLIT_CAPACITY_EXCEEDED` peer message to secretary.
+- **Journal**: Today this case is signalled ONLY via the `SPLIT_CAPACITY_EXCEEDED` peer message to secretary; there is no corresponding journal event in `docs/journal-events.md`. The follow-up `required-for-transition` annotation work on the registry (see §1) will decide whether to introduce a `delegate_failed` (or equivalent) event for this transition; until then, the peer message is the sole record.
 - **Liveness**: Dispatcher watch loop continues; only this one delegation is aborted (`exit` / `return` of dispatcher pane is forbidden).
 
 ---
@@ -186,7 +186,7 @@ The canonical resume input is `.state/workers/worker-{task_id}.md` Progress Log 
 
 ### 4.5 SUSPEND vs `/org-suspend`
 - `/org-suspend` (org-wide shutdown) is distinct from per-worker `SUSPEND:`. `/org-suspend` flushes secretary / dispatcher / curator state and graceful-closes panes; per-worker `SUSPEND:` is a single-worker pause that keeps panes alive.
-- During `/org-suspend`, the secretary MUST issue `SUSPEND:` to every active worker and receive the corresponding SUSPEND reports BEFORE flushing org-state and graceful-closing panes. This guarantees state-flush integrity at resume time — without this ordering, in-flight worker progress could be lost or `.state/workers/*.md` Progress Logs could be desynchronized from the worker's actual checkpoint.
+- During `/org-suspend`, the secretary MUST issue `SUSPEND:` to every active worker and collect each worker's checkpoint BEFORE flushing org-state and graceful-closing panes. The checkpoint is satisfied either by (a) the worker's SUSPEND report received within the skill's response-wait window, or (b) the Phase 2 fallback (`inspect_pane` screen-scrape plus `git status` / `git diff --stat` / `git log` from the worker dir) for workers that did not respond. This guarantees state-flush integrity at resume time — without this ordering, in-flight worker progress could be lost or `.state/workers/*.md` Progress Logs could be desynchronized from the worker's actual checkpoint. The `/org-suspend` skill (`.claude/skills/org-suspend/SKILL.md`) is the operational source of truth for the wait-window length and Phase 2 fallback procedure; this contract pins only the ordering invariant.
 
 ---
 
