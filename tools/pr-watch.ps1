@@ -17,22 +17,40 @@ $ErrorActionPreference = 'Stop'
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ScriptPath = Join-Path $ScriptDir 'pr_watch.py'
 
-# Probe the available Python interpreter. Mirrors scripts/install.ps1: try
-# `py -3` (Python Launcher) first, then `python` and `python3`. The launcher
-# is preferred because PEP 397 makes its argv handling well-defined on
-# Windows, but it isn't always installed and on some systems its default
-# Python target is broken — fall back rather than fail outright.
+# Probe interpreters by actually running `--version`, not just by checking
+# Get-Command. Some Windows boxes have a stale `py.exe` whose default 3.x
+# target points at a moved python.exe — Get-Command says "yes, py is there"
+# but invoking it fails with "Unable to create process". Verifying with a
+# real exec lets us fall through to plain `python` / `python3` in that case.
+function Test-Interpreter {
+    param([string]$Exe, [string[]]$Prefix)
+    if (-not (Get-Command $Exe -ErrorAction SilentlyContinue)) { return $false }
+    try {
+        $null = & $Exe @Prefix '--version' 2>&1
+        return ($LASTEXITCODE -eq 0)
+    } catch {
+        return $false
+    }
+}
+
+$candidates = @(
+    @{ Exe = 'py';      Prefix = @('-3') },
+    @{ Exe = 'python';  Prefix = @() },
+    @{ Exe = 'python3'; Prefix = @() }
+)
+
 $pyExec = $null
 $pyArgsPrefix = @()
-if (Get-Command 'py' -ErrorAction SilentlyContinue) {
-    $pyExec = 'py'
-    $pyArgsPrefix = @('-3')
-} elseif (Get-Command 'python' -ErrorAction SilentlyContinue) {
-    $pyExec = 'python'
-} elseif (Get-Command 'python3' -ErrorAction SilentlyContinue) {
-    $pyExec = 'python3'
-} else {
-    Write-Error 'tools/pr-watch.ps1: no Python interpreter found (tried py, python, python3).'
+foreach ($cand in $candidates) {
+    if (Test-Interpreter -Exe $cand.Exe -Prefix $cand.Prefix) {
+        $pyExec = $cand.Exe
+        $pyArgsPrefix = $cand.Prefix
+        break
+    }
+}
+
+if (-not $pyExec) {
+    [Console]::Error.WriteLine('tools/pr-watch.ps1: no working Python interpreter found (tried py -3, python, python3).')
     exit 127
 }
 

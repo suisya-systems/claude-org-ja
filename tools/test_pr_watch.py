@@ -35,7 +35,7 @@ class ClassifyTests(unittest.TestCase):
 class ArgFormTests(unittest.TestCase):
     """Both `--pr <n>` and the legacy positional form must parse identically."""
 
-    def _run(self, argv: "list[str]") -> int:
+    def _run(self, argv: "list[str]") -> "tuple[int, dict]":
         completed = mock.Mock(returncode=0)
 
         def fake_run(cmd, *args, **kwargs):
