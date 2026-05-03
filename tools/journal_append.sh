@@ -61,7 +61,7 @@ CORE_HARNESS_AUDIT_LIB="$(
 )"
 
 if [ -z "$CORE_HARNESS_AUDIT_LIB" ] || [ ! -f "$CORE_HARNESS_AUDIT_LIB" ]; then
-    printf 'tools/journal_append.sh: core_harness.audit lib not resolvable; check requirements.txt pin\n' >&2
+    printf 'tools/journal_append.sh: core_harness.audit lib not resolvable; check pyproject.toml pin (or run pip install -e .)\n' >&2
     exit 1
 fi
 
