@@ -1,0 +1,47 @@
+# Example config for tools/gen_worker_brief.py
+#
+# Usage:
+#   python tools/gen_worker_brief.py --config worker_brief.toml --out path/to/CLAUDE.md
+#   (--out CLAUDE.local.md when worker.self_edit = true)
+
+[task]
+id = "issue-217-renga-decoration-doc"
+description = "Issue #217 の解決 PR。renga decoration は装飾、authoritative source は peer client_kind であることを documentation として明記"
+issue_url = "https://github.com/suisya-systems/claude-org-ja/issues/217"
+verification_depth = "full"     # "full" or "minimal"
+branch = "issue-217-renga-decoration-doc"
+commit_prefix = "docs(operations):"
+closes_issue = 217              # Closes #N (omit for Refs)
+# refs_issues = [121, 214]      # used as "Refs #121 #214" when closes_issue is unset
+
+[worker]
+dir = "C:/Users/iwama/Documents/work/workers/claude-org/.worktrees/issue-217-renga-decoration-doc"
+pattern = "B"                   # "A" / "B" / "C"
+role = "claude-org-self-edit"   # "default" / "claude-org-self-edit" / "doc-audit"
+self_edit = true                # true → CLAUDE.local.md + ignore-root note; false → CLAUDE.md
+
+[project]
+name = "claude-org-ja"
+description = "Claude Code 多役 AI 組織ハーネス（Secretary / Dispatcher / Curator / Worker）日本語版本体"
+
+[paths]
+claude_org = "C:/Users/iwama/Documents/work/claude-org"
+
+# --- optional sections (omit any to skip its block) ---
+
+[implementation]
+target_files = [
+  "docs/operations/renga-pane-conventions.md",
+]
+guidance = """
+1-2 段落で「decoration は装飾、authoritative source は peer client_kind」を明記。
+背景として renga#208/#209 (PR #210, 2026-05-02 fix) に言及。英文で書くこと。
+"""
+
+[references]
+knowledge = [
+  "C:/Users/iwama/Documents/work/claude-org/knowledge/curated/renga.md",
+]
+
+[parallel]
+notes = "本ワーカーと並列で issue-216-dispatcher-retro-gate が走っている。編集ファイル独立。"

@@ -16,3 +16,7 @@ core-harness>=0.3.2,<0.4
 # breaking per the runtime's compatibility policy, so widen this pin
 # deliberately when adopting a new minor.
 claude-org-runtime>=0.1.1,<0.2
+
+# tools/gen_worker_brief.py reads TOML config. tomllib is stdlib in 3.11+,
+# but ja still supports 3.10 (CLAUDE.local.md template recommends 3.10).
+tomli>=2.0,<3 ; python_version < "3.11"

@@ -280,15 +280,17 @@ git -C {project_path} check-ignore -q -- <target>
 
 ### 共通手順（全パターン・配置後）
 
-CLAUDE.md テンプレートの変数を実際の値で置換する（settings.local.json の置換は generator が自動で行うため対象外）:
-- `{project_name}` → registry の通称
-- `{project_description}` → registry の説明
-- `{task_id}` → タスクID（例: `data-analysis`）
-- `{task_description}` → タスクの目的と成果物
-- `{claude_org_path}` → claude-org リポジトリの絶対パス
-- `{worker_dir}` → ワーカーディレクトリの絶対パス（パターンにより異なる、上記参照）
+CLAUDE.md / CLAUDE.local.md は **`tools/gen_worker_brief.py` で自動生成する**（手書き禁止。settings.local.json の生成は generator が自動で行うため対象外）:
 
-生成した CLAUDE.md に「作業ディレクトリ（最重要制約）」セクションが含まれていることを確認する。含まれていない場合はテンプレート適用ミスのため再生成する
+```bash
+python tools/gen_worker_brief.py --config <task>.toml --out {worker_dir}/CLAUDE.md
+```
+
+self-edit task（Pattern B claude-org 自身編集）の場合は `--out` を `{worker_dir}/CLAUDE.local.md` にする（`worker.self_edit = true` を config に設定。テンプレートが自動的に「ルート CLAUDE.md は無視」注記を含める）。config TOML のフォーマットは `tools/templates/worker_brief.example.toml` を参照。
+
+config TOML が要求する主なキー: `task.{id, description, verification_depth, branch, commit_prefix, closes_issue|refs_issues}`、`worker.{dir, pattern, role, self_edit}`、`project.{name, description}`、`paths.claude_org`。任意セクション: `[implementation]` `[references]` `[parallel]` `[task].issue_url`。
+
+生成した CLAUDE.md / CLAUDE.local.md に「作業ディレクトリ」セクションが含まれていることを確認する。含まれていない場合は config 不備または generator バグのため再生成する。`tools/templates/worker_brief_normal.md` / `worker_brief_self_edit.md` が SOT であり、reference の `worker-claude-template.md` は互換性のため残置（Secretary 用 reference）。
 
 **参考 work-skill がある場合（Step 0.5 でマッチ）:**
 
