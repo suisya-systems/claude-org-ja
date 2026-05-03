@@ -46,12 +46,15 @@ The backend MUST expose primitives to spawn, enumerate, identify, and close "pan
 - **Outputs**: numeric pane id.
 - **Required behavior**: the backend MUST inject `--dangerously-load-development-channels server:<channel-name>` so the new Claude joins the peer network without the caller synthesizing the flag.
 - **Required-vs-optional**: OPTIONAL. The contract requires the *end behavior* — a Claude pane spawned with the peer-channel flag injected — but does not require a backend-side spawn-Claude convenience operation. Backends MAY provide one (renga does); harnesses driving a backend without one MUST inject `--dangerously-load-development-channels server:<channel-name>` themselves via the generic Surface 1.1 spawn `command` parameter. The same logic applies to the Codex pull-peer helper in 1.3.
+- **Implementation note**: the current harness skills (`org-start`, `org-delegate`) are written against renga and exclusively use `spawn_claude_pane` today. A backend without the helper would require the harness skills to be updated to take the generic-spawn path; that update is a harness-side change, not a contract violation.
 
 ### 1.3 spawn (Codex convenience)
 
 - **Operation**: split + launch a Codex instance pre-registered as a pull-based peer.
 - **Inputs**: `direction`, `target`, `cwd`, `name`, `role`, plus pass-through `args[]` (one logical token per array entry).
-- The harness's normal flow (`org-start`, `org-delegate`) does not spawn Codex peers. Whether Codex-style pull peers are a required category of the contract or an optional second tier is subsumed by the broader spawn-helper question in 1.2.
+- **Outputs**: numeric pane id.
+- **Required-vs-optional**: OPTIONAL, on the same basis as 1.2. Backends MAY provide a Codex-specific helper (renga does); harnesses driving a backend without one MUST drive Codex registration via the generic Surface 1.1 spawn `command` parameter, plus Surface 2.3 `check_messages`-style pull semantics. The harness's normal flow (`org-start`, `org-delegate`) does not currently spawn Codex peers; the surface is documented for completeness and for use in operator-driven workflows.
+- **Error codes**: same as 1.1 / 1.2 (`split_refused`, `cwd_invalid`, `pane_not_found`, `name_in_use`, `name_invalid`, `invalid-params`).
 
 ### 1.4 close
 
@@ -59,7 +62,7 @@ The backend MUST expose primitives to spawn, enumerate, identify, and close "pan
 - **Inputs**: `target` (id, stable name, or `"focused"`).
 - **Outputs**: confirmation text (renga: `"Closed pane id=N."`); a single lifecycle event (`pane_exited`) MUST be emitted exactly once per successful close.
 - **Error codes**: `pane_not_found`, `pane_vanished`, `last_pane`.
-- **Required-vs-optional**: OPTIONAL. Process-kill close (the current renga shape) plus pane-driven self-`exit` for graceful shutdown is sufficient. The contract does NOT require a separate "request-graceful-exit" backend operation; `org-suspend` flows MAY rely on the target pane self-`exit`-ing before the orchestrator issues `close`.
+- **Required-vs-optional**: the `close` operation itself is REQUIRED (the harness's `org-delegate` teardown and `org-suspend` flow both depend on `close_pane`). What is OPTIONAL is a *separate* "request-graceful-exit" backend operation; process-kill close (the current renga shape) plus pane-driven self-`exit` for graceful shutdown is sufficient. The contract does NOT require a dedicated graceful-exit op alongside `close`.
 
 ### 1.5 list_panes
 
@@ -223,6 +226,7 @@ The backend MUST surface failures via a machine-readable code, not by message-st
 | `shutting_down` | Backend is mid-shutdown. Caller MUST stop polling loops. | All ops. |
 | `app_timeout` | Internal backend thread did not respond. Caller MAY retry once. | All ops. |
 | `parse` / `protocol` / `internal` | Backend-internal invariant violations; treated as bugs by the harness. | All ops. |
+| `backend_unreachable` | Backend session / transport is unavailable (peer-channel server down, MCP socket gone, etc). Replaces the legacy ok-text shape on `list_peers` / `send_message` (see 6.3). | `list_peers`, `send_message`; MAY be raised by any op on transport loss. |
 
 ### 6.2 Stability requirements
 
@@ -238,7 +242,7 @@ Today renga returns ok-text (NOT a JSON-RPC error) on backend-unreachable for tw
 
 All other ops raise on unreachable.
 
-- **Decision**: NORMALIZE TO ERROR. The backend SHOULD raise a `backend_unreachable` (or equivalent dedicated code) instead of returning ok-text on `list_peers` / `send_message` unreachable. The contract surface is the normalized form. NOTE: current renga still returns ok-text; the migration to a normalized error code is tracked as a follow-up Issue ("feat(renga + harness): normalize backend-unreachable to error code instead of ok-text"). Until that migration lands, harnesses MAY continue to branch on the existing `(no peers` / `(message dropped` prefix as a transitional shim — but the contracted end state is the normalized error.
+- **Decision**: NORMALIZE TO ERROR. The backend MUST raise the standard `backend_unreachable` code (defined in 6.1) instead of returning ok-text on `list_peers` / `send_message` unreachable. NOTE: current renga still returns ok-text; the migration to the normalized error code is tracked as follow-up Issue #242 ("feat(renga + harness): normalize backend-unreachable to error code instead of ok-text"). Until that migration lands, harnesses MAY continue to branch on the existing `(no peers` / `(message dropped` prefix as a transitional shim — but the contracted end state is the `backend_unreachable` error.
 
 ---
 
