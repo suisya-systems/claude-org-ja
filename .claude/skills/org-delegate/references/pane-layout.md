@@ -50,7 +50,7 @@ renga は各 split で対象ペインを 50/50 に分ける。`MIN_PANE_WIDTH = 
 2. **候補集合**: `role ∈ {worker, dispatcher, secretary}` のペイン (curator は常に除外)
 3. **候補の絞り込み**:
    - **dispatcher-curator 隣接維持**: dispatcher は curator と rect 隣接 (後述) しているときのみ候補に入れる。組織運営上 dispatcher と curator の隣接配置は前提。dispatcher を分割すると隣接が崩れ得るので、既に非隣接な dispatcher は候補から外す
-   - **secretary 保護**: secretary は分割後の新ペイン幅 `new_w >= 125` **かつ** 新ペイン高さ `new_h >= 45` を満たす場合のみ候補化 (保険条項、実運用では通常発動しない)。width だけ通っても height が足りなければ却下する
+   - **secretary 保護**: secretary は分割後の新ペイン幅 `new_w >= 125` **かつ** 新ペイン高さ `new_h >= 30` を満たす場合のみ候補化 (保険条項、実運用では通常発動しない)。width だけ通っても height が足りなければ却下する
 4. **direction 決定** (各候補の aspect ratio から):
    - `width > height * 2` → `vertical` (左右分割)
    - それ以外 → `horizontal` (上下分割)
@@ -72,7 +72,7 @@ renga の cell 座標は整数なので tolerance なし完全一致で判定す
 
 ### 初期状態と典型的な挙動
 
-ワーカー 0 人の時点では、候補は `dispatcher` のみ (secretary は `new_w >= 125` / `new_h >= 45` 条件または隣接条件で除外されるのが通常。curator は常に除外)。dispatcher は典型的に横長なので vertical 分割され、最初のワーカー zone が dispatcher の右側に作られる。
+ワーカー 0 人の時点では、候補は `dispatcher` のみ (secretary は `new_w >= 125` / `new_h >= 30` 条件または隣接条件で除外されるのが通常。curator は常に除外)。dispatcher は典型的に横長なので vertical 分割され、最初のワーカー zone が dispatcher の右側に作られる。
 
 以降は既存ペインの中で「分割後サイズが最大」のものが選ばれ、direction が rect に応じて自然に交替することで準 balanced な配置になる。固定的な 4 並列 / 8 並列の図は意味を持たないため割愛する (動的で決まるため)。
 

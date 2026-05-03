@@ -353,7 +353,7 @@ DELEGATE: 以下のワーカーを派遣してください。
 
 **定数**:
 - `MIN_PANE_WIDTH = 20` / `MIN_PANE_HEIGHT = 5`: renga 側の分割下限（findings: renga-split-inv）
-- `SECRETARY_MIN_WIDTH = 125` / `SECRETARY_MIN_HEIGHT = 45`: secretary を分割候補にしてよい最小幅・最小高さ（保険条項、実運用ではほぼ不発動）
+- `SECRETARY_MIN_WIDTH = 125` / `SECRETARY_MIN_HEIGHT = 30`: secretary を分割候補にしてよい最小幅・最小高さ（保険条項、実運用ではほぼ不発動）
 
 **Step 1. curator を特定**: `role == "curator"` のペインを 1 つ選ぶ（複数あれば先頭）。以降 `$curator` と呼ぶ。存在しなければ `$curator = null`。
 
