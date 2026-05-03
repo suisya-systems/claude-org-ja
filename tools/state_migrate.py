@@ -131,10 +131,21 @@ def main(argv: list[str] | None = None) -> int:
         pending = find_pending_migrations(args.repo_root)
         if not pending:
             break
+        # Re-check the file's version before each apply: two migrations could
+        # both match the same path at the same from_version (overlapping glob
+        # patterns or duplicate registrations), and applying both blindly in
+        # one pass would corrupt state.
+        applied_this_pass = 0
         for migration, path in pending:
+            current = detect_json_version(path)
+            if current != migration.from_version:
+                continue
             print(f"  {migration.description} ({path})")
             migration.apply(path)
             total_applied += 1
+            applied_this_pass += 1
+        if applied_this_pass == 0:
+            break
     else:
         print(
             f"ERROR: migration loop exceeded {MAX_MIGRATION_PASSES} passes — "

@@ -167,6 +167,37 @@ def test_unsupported_version_fails(
     assert "unsupported schema versions" in capsys.readouterr().out
 
 
+def test_overlapping_migrations_do_not_double_apply(
+    repo_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two migrations matching the same file at the same from_version must not stack in one pass."""
+    p = repo_root / ".state" / "org-state.json"
+    write_json(p, {"version": 0, "applies": []})
+
+    def make_apply(label: str):
+        def _apply(path: Path) -> None:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            data["version"] = 1
+            data["applies"].append(label)
+            path.write_text(json.dumps(data), encoding="utf-8")
+
+        return _apply
+
+    state_migrate.MIGRATIONS.extend(
+        [
+            Migration(".state/org-state.json", 0, 1, make_apply("specific")),
+            Migration(".state/*.json", 0, 1, make_apply("glob")),
+        ]
+    )
+    monkeypatch.setitem(state_migrate.CURRENT_JSON_VERSIONS, ".state/org-state.json", 1)
+
+    rc = main(["--repo-root", str(repo_root)])
+    assert rc == 0
+    after = json.loads(p.read_text(encoding="utf-8"))
+    assert after["version"] == 1
+    assert len(after["applies"]) == 1
+
+
 def test_runaway_migration_loop_caught(
     repo_root: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
 ) -> None:
