@@ -4,7 +4,7 @@
 >
 > **Scope**: Phase 1 Contract Set E only. Sets A (roles), B (delegation lifecycle), C (state schema), and D (backend interface) are tracked in #121 / #122 / #124 / #123 and out of scope here. Set E is marked "optional, small" in Issue #125: the open-questions surface is intentionally narrower than the larger sets.
 >
-> **Subject**: Set E defines the knowledge artifacts under `knowledge/` (raw learnings, archived raw entries, curated notes, skill-candidate queue), the lifecycle that moves entries between them, and the role-write boundaries on each surface. Set E does NOT cover: per-role responsibilities (Set A — though it cites them for the curator / worker write-surface invariants), `.state/` files (Set C), the messaging or backend transport (Set D), or the delegation lifecycle (Set B).
+> **Subject**: Set E defines the knowledge artifacts under `knowledge/` (raw learnings, archived raw entries, curated notes, skill-candidate queue), the lifecycle that moves entries between them, and the role-write boundaries on each surface. The project-level `knowledge/` tree is the only knowledge layer Set E contracts; any operator-personal memory layer that may exist outside the repo (in the operator's Claude Code installation) is explicitly out of scope and not asserted to exist by this contract. Set E does NOT cover: per-role responsibilities (Set A — though it cites them for the curator / worker write-surface invariants), `.state/` files (Set C), the messaging or backend transport (Set D), or the delegation lifecycle (Set B).
 >
 > **Method**: Each artifact and lifecycle step is filled from empirical sources (the curation / retro / audit / eligibility-check skills, the in-tree knowledge-standards reference, and the existing `knowledge/` tree). Sentences sourced from current behavior are written as facts. Open design questions are marked inline for Lead fill-in.
 >
@@ -34,7 +34,7 @@ The harness's knowledge surface comprises the artifacts listed below. Each entry
 - **Path**: `knowledge/raw/{YYYY-MM-DD}-{topic}.md` — date prefix is the calendar date the entry is recorded; `{topic}` is English kebab-case. The dispatcher's post-retro entries use the namespaced topic prefix `delegation-{topic}` to distinguish process learnings from worker technical learnings (per `org-retro` Step 3).
 - **Format**: Markdown. Body conforms to the four-heading record format in `.claude/skills/org-curate/references/knowledge-standards.md`: `## 事実`, `## 判断`, `## 根拠`, `## 適用場面`.
 - **Schema**: Free-form Markdown bodies under the four canonical headings. After curation, the file's first line carries the marker `<!-- curated -->` so subsequent `org-curate` threshold checks skip it (per `org-curate` Step 4).
-- **Owner**: workers (full-validation mode only — minimal mode skips per Set A § Role: worker) and the dispatcher (post-retro process learnings, with the `delegation-` topic prefix per `org-retro` Step 3). Secretary, curator, and the human do not write to `knowledge/raw/` in the normal flow.
+- **Owner**: workers (full-validation mode only — minimal mode skips per Set A § Role: worker) and the dispatcher (post-retro process learnings, with the `delegation-` topic prefix per `org-retro` Step 3) author file contents. The curator additionally performs a single in-place mutation on existing entries (prepending the `<!-- curated -->` marker during R2, per `org-curate` Step 4) but does not author new raw entries. Secretary and the human do not write to `knowledge/raw/` in the normal flow.
 - **Readers**: curator (`org-curate` reads all unmarked entries), `skill-eligibility-check` (consumes `raw_files` arg as evidence), worker (read-only reference per Set A worker section), `skill-audit` (greps for skill-name mentions over a 90-day window per `skill-audit` Step 2).
 - **Lifecycle**: created at the moment of recording (worker post-task or dispatcher post-retro). After being merged into a curated note, the file gains a `<!-- curated -->` marker and (per Set A Q9) MAY be moved to `knowledge/raw/archive/`; outright deletion is forbidden.
 
@@ -63,16 +63,16 @@ The harness's knowledge surface comprises the artifacts listed below. Each entry
 - **Path**: `knowledge/skill-candidates.md` — single-file queue of `skill_recommend` outputs.
 - **Format**: Markdown. Per-candidate blocks delimited by `### {YYYY-MM-DD} {pattern-name}` H3 headings; bullet fields per the entry-format block in the file itself (`判定スコア`, `該当シグナル`, `根拠`, `関連タスク`, `関連 raw ファイル`, `呼び出し元`, `提案 skill 名`, `status`, `決定日`, `却下理由`, `統合先`).
 - **Schema**: `status` ∈ `{pending, approved, rejected, merged-into-{existing-skill}}`. Once an entry leaves `pending`, it is retained as history (not deleted) per the file's "運用メモ" section.
-- **Owner**: `skill-eligibility-check` Step 4 (auto-append on `skill_recommend` decisions); secretary (status transitions: `pending` → `approved` / `rejected` / `merged-into-*`, plus `決定日` / `却下理由` / `統合先` fields). The curator does NOT directly hand-edit this file; its writes happen through `skill-eligibility-check`.
+- **Owner**: `skill-eligibility-check` Step 4 (auto-append on `skill_recommend` decisions). Status transitions (`pending` → `approved` / `rejected` / `merged-into-*`, plus `決定日` / `却下理由` / `統合先` fields) are written by whoever runs the skill that performs the transition: `org-retro` Step 4.2 today writes the post-retro decision (i.e., the dispatcher when retro is dispatcher-driven). The curator does NOT directly hand-edit this file; its writes happen through `skill-eligibility-check`. Whether the secretary should additionally be a status-update writer (for human-relayed batch decisions) is folded into the §2.4 marker.
 - **Readers**: secretary (batch question to the human when `pending ≥ 5`, per Issue #68 batch-rationale cited in the file header), `skill-audit` Step 1 (counts `pending` entries to decide whether to fire), the curator (re-read during the next curation cycle to detect already-queued patterns).
 - **Lifecycle**: append-only at the entry level. Same `pattern_name` while still `pending`: existing entry's `関連タスク` / `関連 raw ファイル` are merged in (no new entry). Same `pattern_name` after a terminal status (`approved` / `rejected` / `merged-into-*`): a new dated entry is added so the prior decision and rationale survive as history.
 - **`[TBD by Lead]`** — Service-level expectation on the secretary for clearing the queue. Today the file says "pending エントリが 5 件以上になった時点で、人間にバッチで問い合わせる" but does not bound the time the human has to respond, nor the time the secretary has to relay the answer. Stances: (a) best-effort, no SLA; (b) the secretary MUST batch-prompt within one curator cycle of crossing N=5; (c) a calendar-time bound (e.g., within 7 days of crossing N=5). Whether the human is **contractually obligated** to decide within N cycles vs. best-effort is folded into the same marker.
 
-### 1.5 Out-of-scope: operator-personal auto-memory
+### 1.5 Out-of-scope: operator-personal memory layers
 
-The auto-memory system documented in the root `CLAUDE.md` `# auto memory` section lives at `~/.claude/projects/{project-id}/memory/` and is operator-personal: it travels with the operator, not with the repo. Set E covers the project-level `knowledge/` tree only. See §3 for the boundary statement.
+Some Claude Code operator installations may carry a personal memory layer outside the repository (e.g., a per-operator memory store maintained by the operator's Claude Code harness). Such layers are operator-personal and travel with the workstation, not with the repo. Set E covers the project-level `knowledge/` tree only and makes no factual claim about whether any such operator-personal layer exists in a given installation. See §3 for the boundary statement.
 
-- **`[TBD by Lead]`** — Whether Set E acknowledges the operator-personal memory layer as adjacent-but-out-of-scope (today's stance: this section is descriptive only and does not contract anything about `~/.claude/projects/.../memory/`), or whether the contract should additionally restrict information flow between layers (e.g., forbid copying user-private memories into `knowledge/curated/` or `knowledge/raw/`).
+- **`[TBD by Lead]`** — Whether Set E should include any clause about operator-personal memory layers (today's stance: silent — Set E contracts only the in-repo `knowledge/` tree), or whether the contract should explicitly forbid information flow from operator-personal layers into `knowledge/curated/` or `knowledge/raw/` to keep the repo free of operator-private content.
 
 ---
 
@@ -100,10 +100,10 @@ The lifecycle that moves a learning from initial capture to a reusable skill con
 
 ### 2.4 R4 — Skill promotion (secretary + human → `.claude/skills/{name}/SKILL.md`)
 
-- **Trigger**: `skill-candidates.md` `pending` count crosses N=5 (per `skill-audit` Step 1 and the Issue #68 batch-question rationale). Secretary batch-prompts the human; for each candidate the human approves, the secretary updates `status: approved` and creates `.claude/skills/{name}/SKILL.md` from `.claude/skills/org-retro/references/work-skill-template.md`.
+- **Trigger**: `skill-candidates.md` `pending` count crosses N=5 (per `skill-audit` Step 1 and the Issue #68 batch-question rationale). Secretary batch-prompts the human. The actual creation of `.claude/skills/{name}/SKILL.md` from `.claude/skills/org-retro/references/work-skill-template.md` and the corresponding `skill-candidates.md` status update are file-editing work; per Set A § Role: secretary "must not edit code … or `git commit` substantive changes itself," substantive editing is delegated to a worker. The execution path (worker-delegated vs. inline secretary edit vs. dispatcher-driven from `org-retro` Step 4.2 when the candidate originated post-retro) is not uniquely fixed today.
 - **Effect**: new skill file under `.claude/skills/{name}/`; `skill-candidates.md` entry transitions to `approved` (with `決定日`) or `rejected` (with `却下理由`). `merged-into-{existing-skill}` is used when the candidate's value is folded into an existing skill rather than creating a new one.
 - **Constraint**: terminal-status entries are retained as history, not deleted (per the file's "運用メモ").
-- **`[TBD by Lead]`** — Decision authority and approval mechanics for promotion. Today the secretary relays and the human decides. Stances: (a) human is sole authority, secretary only batches; (b) secretary may auto-approve `score: 5/5` candidates and only batches the rest; (c) an explicit second reviewer (e.g., dispatcher) is consulted for high-impact promotions. Today's behavior is (a); the contract should pin which.
+- **`[TBD by Lead]`** — Decision authority AND execution path for promotion. Decision: (a) human is sole authority, secretary only batches; (b) secretary may auto-approve `score: 5/5` candidates and only batches the rest; (c) an explicit second reviewer (e.g., dispatcher) is consulted for high-impact promotions. Execution: (i) skill creation is a delegated worker task (consistent with Set A "実作業は全てワーカーに委譲する"); (ii) secretary edits in place (treated as harness-management work, not "substantive changes"); (iii) dispatcher writes when the candidate originated from `org-retro`. The contract should pin both axes.
 
 ---
 
@@ -122,11 +122,11 @@ The lifecycle that moves a learning from initial capture to a reusable skill con
 - **MUST NOT delete**: any `knowledge/raw/{YYYY-MM-DD}-{topic}.md` entry. Archival via move into `knowledge/raw/archive/` is the only sanctioned removal from the active raw set.
 - **No human dialogue**: per Set A § Role: curator. Promotion-question relay to the human is the secretary's responsibility (§2.4).
 
-### 3.3 Operator-personal memory layer
+### 3.3 Operator-personal memory layers (out of scope)
 
-The auto-memory layer at `~/.claude/projects/{project-id}/memory/` is operator-local and travels with the operator's workstation, not with the repo. Set E does not contract its schema, lifecycle, or contents.
+Any operator-personal memory layer that may exist outside the repo (in the operator's Claude Code installation) is operator-local and travels with the workstation, not with the repo. Set E does not contract its schema, lifecycle, or contents, and does not assert it exists in any particular installation.
 
-- **Implication today**: information may flow from operator memory → harness `knowledge/` (when the operator paraphrases something they remember into a raw entry), but the reverse is not contractually required (the harness does not push curated knowledge back into operator memory).
+- **Implication today**: in installations where such a layer exists, information may flow from operator memory → harness `knowledge/` (when the operator paraphrases something they remember into a raw entry), but the reverse is not contractually required (the harness does not push curated knowledge back into operator memory).
 - See `[TBD by Lead]` in §1.5 on whether Set E should additionally constrain cross-layer flow.
 
 ### 3.4 Privacy / OSS-publication stance
