@@ -211,7 +211,8 @@ Per Issue #124's acceptance criterion, the contract must declare how state schem
 
 ### 4.4 Migration hooks
 
-- **Decision**: A dedicated `tools/state_migrate.py` is the long-term home for migrations. It runs on `/org-resume` and on first read of an old-version file when the harness encounters one. Per-reader inline parsing (today's converter approach, where `SCHEMA_VERSION` is a constant in the converter) is permitted as a transitional shim until `tools/state_migrate.py` lands. A follow-up Issue ("feat(tools): introduce `tools/state_migrate.py` as central migration entry point") tracks the introduction of that script.
+- **Decision**: A dedicated `tools/state_migrate.py` is the long-term home for migrations. It runs on `/org-resume` and on first read of an old-version file when the harness encounters one. Per-reader inline parsing (today's converter approach, where `SCHEMA_VERSION` is a constant in the converter) is permitted as a transitional shim until `tools/state_migrate.py` lands.
+- **Status**: `tools/state_migrate.py` exists (skeleton — registers zero migrations today; Set C is at version 1, the initial state). The framework is in place so future schema bumps register a `Migration` entry without scattering version logic across readers. Run `python tools/state_migrate.py --dry-run` to inspect pending migrations.
 
 ### 4.5 Migration breadth (how many versions readable simultaneously)
 
