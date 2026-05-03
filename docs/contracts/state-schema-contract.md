@@ -211,7 +211,8 @@ Per Issue #124's acceptance criterion, the contract must declare how state schem
 
 ### 4.4 Migration hooks
 
-- **Decision**: A dedicated `tools/state_migrate.py` is the long-term home for migrations. It runs on `/org-resume` and on first read of an old-version file when the harness encounters one. Per-reader inline parsing (today's converter approach, where `SCHEMA_VERSION` is a constant in the converter) is permitted as a transitional shim until `tools/state_migrate.py` lands. A follow-up Issue ("feat(tools): introduce `tools/state_migrate.py` as central migration entry point") tracks the introduction of that script.
+- **Decision**: A dedicated `tools/state_migrate.py` is the long-term home for migrations. It runs on `/org-resume` and on first read of an old-version file when the harness encounters one. Per-reader inline parsing (today's converter approach, where `SCHEMA_VERSION` is a constant in the converter) is permitted as a transitional shim until `tools/state_migrate.py` lands.
+- **Status**: `tools/state_migrate.py` exists (skeleton — registers zero migrations today; Set C is at version 1, the initial state). The framework is in place so future schema bumps register a `Migration` entry without scattering version logic across readers. Run `python tools/state_migrate.py --dry-run` to inspect pending migrations.
 
 ### 4.5 Migration breadth (how many versions readable simultaneously)
 
@@ -230,4 +231,4 @@ Lead-confirmed decisions for the 14 questions raised in the outline (2026-05-03 
 5. **Inbox lifecycle** (§1.5) — Retained as audit trail; `SPLIT_CAPACITY_EXCEEDED` retry falls out naturally.
 6. **Atomic-write requirements** (§3.5) — Enumerated: tempfile + rename for `org-state.md`, `org-state.json`, `worker-{task_id}.md`; append for `journal.jsonl`; in-place rewrite acceptable for the dispatcher event cursor.
 7. **Encoding / line endings** (§3.6) — UTF-8 universally; LF on writes; readers tolerate CRLF in legacy inputs.
-8. **Migration policy** (§4) — Hybrid versioning (per-file top-level `version` integer for JSON, preserving the `org-state.json` precedent; implicit for Markdown). Deprecation window N = 2 minor versions. Tolerant readers (ignore unknown keys, default missing keys). Centralized `tools/state_migrate.py` as the long-term migration entry point (per-reader shims permitted transitionally; tracked as a follow-up Issue). Simultaneous-readable bound: N-1 and N.
+8. **Migration policy** (§4) — Hybrid versioning (per-file top-level `version` integer for JSON, preserving the `org-state.json` precedent; implicit for Markdown). Deprecation window N = 2 minor versions. Tolerant readers (ignore unknown keys, default missing keys). Centralized `tools/state_migrate.py` as the long-term migration entry point (skeleton landed; per-reader shims permitted transitionally). Simultaneous-readable bound: N-1 and N.
