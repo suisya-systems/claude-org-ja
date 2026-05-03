@@ -206,11 +206,11 @@ python tools/check_role_configs.py --include-local
 ```bash
 python tools/check_role_configs.py --include-local        # 全 role を一括検証
 python tools/check_role_configs.py --role <role>          # 当該 role の worktree で個別検証
-git diff tools/role_configs_schema.json                   # schema 側の最近の編集を確認
+git diff tools/org_extension_schema.json                  # ja 側 org-extension schema の最近の編集を確認
 git diff .claude/skills/org-setup/references/permissions.md
 ```
 
-正典は `tools/role_configs_schema.json`。**ルール追加・修正は必ず schema → `permissions.md` → 実 `settings.local.json` の順で反映する**。逆順にすると CI が drift を検出する。
+正典の framework schema は `claude-org-runtime` パッケージが bundle (`core_harness.schema.load_framework_schema()` 経由)、ja-specific な org-extension entry は `tools/org_extension_schema.json` が SoT。**ルール追加・修正は必ず schema → `permissions.md` → 実 `settings.local.json` の順で反映する**。逆順にすると CI が drift を検出する。
 
 **対処** — 切り分け結果ごとに:
 
@@ -225,12 +225,12 @@ git diff .claude/skills/org-setup/references/permissions.md
 **診断**:
 
 ```bash
-git status tools/role_configs_schema.json
-git diff tools/role_configs_schema.json
-python -c "import json; json.load(open('tools/role_configs_schema.json'))"
+git status tools/org_extension_schema.json
+git diff tools/org_extension_schema.json
+python -c "import json; json.load(open('tools/org_extension_schema.json'))"
 ```
 
-**対処**: 直近の編集で壊しているなら `git restore tools/role_configs_schema.json` で戻すか、未コミットの変更を一旦 `git stash push tools/role_configs_schema.json` で退避してから再挑戦する。schema 構文を修正したら必ず `python tools/check_role_configs.py --include-local` を通してから commit する。
+**対処**: 直近の編集で壊しているなら `git restore tools/org_extension_schema.json` で戻すか、未コミットの変更を一旦 `git stash push tools/org_extension_schema.json` で退避してから再挑戦する。schema 構文を修正したら必ず `python tools/check_role_configs.py --include-local` を通してから commit する。
 
 ---
 

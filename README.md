@@ -21,28 +21,43 @@
 
 ## 4 層アーキテクチャ
 
-claude-org-ja は 4 層スタックの **Layer 4** に位置するリファレンス配布物。Layer 3（端末多重化器 + MCP サーバー = `renga`）と Layer 2（組織運用ランタイム抽象）を依存先として持ち、Layer 2 はさらに Layer 1（Claude Code 周辺の最小ユーティリティ）に依存します。Layer 3 は Layer 1 とは独立で、`renga` 単体でも端末多重化器として利用可能です。
+claude-org-ja は 4 層スタックの **Layer 4** に位置するリファレンス配布物。Layer 3（端末多重化器 + MCP サーバー = `renga`）と Layer 2（組織運用ランタイム = `claude-org-runtime`）を依存先として持ち、Layer 2 はさらに Layer 1（`core-harness` = Claude Code 周辺の最小ユーティリティ）に依存します。Layer 3 は Layer 1 とは独立で、`renga` 単体でも端末多重化器として利用可能です。
 
 ```mermaid
 flowchart TD
     L4["<b>Layer 4: claude-org-ja</b><br/>運用規律フレームワーク（このリポジトリ）"]
     L3["<b>Layer 3: renga</b><br/>端末多重化器 + renga-peers MCP サーバー"]
-    L2["<b>Layer 2: org-runtime</b><br/>組織運用抽象（ロール / 派遣 / 状態 / 監視）"]
-    L1["<b>Layer 1: core-harness</b><br/>Claude Code 周辺ユーティリティ（hook / sandbox / settings 検証）"]
+    L2["<b>Layer 2: claude-org-runtime</b><br/>組織運用抽象（dispatcher CLI / settings 生成 / role schema）"]
+    L1["<b>Layer 1: core-harness</b><br/>Claude Code 周辺ユーティリティ（validator / schema / journal / hooks library）"]
 
     L4 --> L3
     L4 --> L2
     L2 --> L1
 
     classDef shipped fill:#d4edda,stroke:#28a745,color:#000
-    classDef planned fill:#fff3cd,stroke:#856404,color:#000
-    class L4,L3,L1 shipped
-    class L2 planned
+    class L1,L2,L3,L4 shipped
 ```
 
-緑のボックス（Layer 1 / Layer 3 / Layer 4）は公開済み、黄色のボックス（Layer 2）は今後 claude-org-ja 本体から段階的に抽出予定の層です。`renga` は単体で AI 開発以外の用途でも使える汎用ツールで、claude-org-ja はその上に組織運用規律を載せたリファレンス配布物として位置づけられます。各層の責務の詳細は [docs/overview-technical.md](docs/overview-technical.md) を参照。
+Phase 5 完了時点で **Layer 1 / 2 / 3 はいずれも独立 OSS パッケージとして公開済み**、claude-org-ja (Layer 4) は consumer として Layer 1〜3 を取り込む thin shim です。各層の責務の詳細は [docs/overview-technical.md](docs/overview-technical.md) を参照。
 
-> Layer 1 (`core-harness`) は v0.3.1 として独立 OSS リポ ([suisya-systems/core-harness](https://github.com/suisya-systems/core-harness)) で公開済み。claude-org-ja は Step B/C/D shim を経由してこの Layer 1 を consumer として利用しています。設計の詳細は [docs/design/core-harness-extraction.md](docs/design/core-harness-extraction.md)（Issue [#128](https://github.com/suisya-systems/claude-org-ja/issues/128) closed）。
+- **Layer 1: `core-harness`** — v0.3.x として独立 OSS リポ ([suisya-systems/core-harness](https://github.com/suisya-systems/core-harness)) で公開。validator / schema / journal / hooks library を提供し、Layer 2 と claude-org-ja の双方が consumer として利用 (Phase 3 / Issue [#128](https://github.com/suisya-systems/claude-org-ja/issues/128) closed)。
+- **Layer 2: `claude-org-runtime`** — v0.1.x として PyPI 公開。dispatcher CLI、`settings.local.json` 生成、bundle 済み role schema を提供。claude-org-ja は派遣プラン生成と worker 用設定生成を本パッケージに委譲 (Phase 4 / Issue [#129](https://github.com/suisya-systems/claude-org-ja/issues/129) closed)。
+- **Layer 3: `renga`** — Rust 製 TUI + MCP サーバー。Set D backend interface contract に準拠。`renga` 自体は単体配布済みで、AI 開発以外の用途でも汎用端末多重化器として利用可能。
+- **Layer 4: `claude-org-ja` (このリポジトリ)** — Layer 1〜3 を consumer として取り込む日本語ファースト配布物。英語版 [`claude-org`](https://github.com/suisya-systems/claude-org) もこの層の peer。
+
+> 補足: orchestration glue (skill 層) を `claude-org-skills` として別 OSS に切り出すかどうかは Layer 4 内部の追加抽出案件で、現在判断保留中（[`docs/internal/phase5-decisions-2026-05-03.md`](docs/internal/phase5-decisions-2026-05-03.md) Q1=b 参照）。本決定が proceed に倒れた場合でも上記 4 層構造は変わらず、claude-org-ja 内 `.claude/skills/` の一部が外部リポへ移管される形になります。
+
+### このリポジトリに残るもの (ja-specific)
+
+Phase 5 (Layer 1/2/3 抽出後) の時点で claude-org-ja に残る ja-specific 構成要素は以下の通り（Lead 確認済み、[`docs/internal/phase5-decisions-2026-05-03.md`](docs/internal/phase5-decisions-2026-05-03.md) Q5/Q6/Q7）:
+
+- `.claude/skills/` 配下のスキル一式（`/org-*` 運用スキル + `/skill-*` メタスキル）— Layer 3 抽出 defer により全 10 skill が in-tree
+- 日本語 prose template: `.dispatcher/CLAUDE.md` / `.curator/CLAUDE.md`（Layer 2 英語 reference の consumer-side override）
+- ja locale フック群（`.hooks/` / `.githooks/` 配下、deny-message を日本語化したもの）
+- `dashboard/` — 組織状態の可視化 SPA（Phase 4 Q9=c で claude-org-ja 残置確定）
+- ja 固有の運用ツール: `tools/check_renga_compat.py` / `tools/gen_worker_brief.py` / `tools/org_setup_prune.py` / `tools/journal_*` / `tools/pr_watch.*` / `tools/state_migrate.py`
+- ja 固有のスキーマ・ロケールデータ: `tools/ja_locale.json` / `tools/org_extension_schema.json`
+- インストールスクリプト: `scripts/install.sh` / `scripts/install.ps1` / `scripts/install-hooks.sh`
 
 ---
 
@@ -101,7 +116,7 @@ iwr -useb "https://raw.githubusercontent.com/suisya-systems/claude-org-ja/$Ref/s
 
 ```bash
 # 1. 依存ツールを導入
-#    Claude Code (https://claude.ai/code), gh, Node.js v18+, Python 3.8+, jq を各公式手順で導入
+#    Claude Code (https://claude.ai/code), gh, Node.js v18+, Python 3.10+, jq を各公式手順で導入
 #    renga (Layer 3) は 0.18.0 以上が必須:
 npm install -g @suisya-systems/renga@0.18.0
 
