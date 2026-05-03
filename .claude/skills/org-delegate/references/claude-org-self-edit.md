@@ -28,7 +28,7 @@ claude-org-runtime settings generate \
 ルートの `CLAUDE.md` は Secretary 用の指示なので、ワーカー用 CLAUDE.md で上書きしてはならない（他ロールが壊れる）。
 ワーカーへの指示は `{worker_dir}` 直下の `CLAUDE.local.md` に書く（git 管理外）。Pattern B（tracked ファイル編集）なら `{worker_dir}` は worktree 直下、Pattern C 強制（gitignored サブモード）なら `{worker_dir}` は対象ファイルにアクセスできる既存リポジトリ root を指す。
 
-> **Pattern C 強制での同 repo 排他**: `CLAUDE.local.md` と `.claude/settings.local.json` はファイル名固定なので、同一 repo root に対する Pattern C 強制ワーカーは **2 本以上同時起動しない**（先行ワーカーの指示・権限を上書きするため）。窓口側で順次化すること。SKILL.md Step 1.5 の Pattern C 強制節は A/B との競合のみ言及しているが、C/C も同様に排他とする。
+> **Pattern C 強制での同 repo 排他**: `CLAUDE.local.md` と `.claude/settings.local.json` はファイル名固定なので、同一 repo root に対する Pattern C 強制ワーカーは **2 本以上同時起動しない**（先行ワーカーの指示・権限を上書きするため）。窓口側で順次化すること。SKILL.md Step 0.7「Pattern C 強制（gitignored サブモード）」節は A/B との競合のみ言及していたが、C/C も同様に排他とする（同節「並行作業との競合」項に併記済み）。
 
 Claude Code は同一ディレクトリの `CLAUDE.md` と `CLAUDE.local.md` の両方を読み込むため、ワーカーには両方が見える。
 
