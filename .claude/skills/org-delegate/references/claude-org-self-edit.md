@@ -21,7 +21,7 @@ claude-org-runtime settings generate \
   --out {worker_dir}/.claude/settings.local.json
 ```
 
-`claude-org-self-edit` ロールは schema 上で `block-org-structure.sh` hook が **既に除外**された状態で定義されている（`Edit|Write` / `Bash` matcher 双方）。`check-worker-boundary.sh` / `block-git-push.sh` などその他の hook は通常どおり残る。生成済み JSON を手で再編集してはならない（drift CI が fail する。新パターンが必要なら **本 ja リポジトリの `tools/org_extension_schema.json`** の `worker_roles` セクションに role を追加する PR を起こす。`tools/check_role_configs.py` の drift validator はこのファイルを正典として読む。framework 側の schema 形（`worker_roles` の許容形状定義そのもの）を変える場合のみ `claude-org-runtime` リポジトリへの PR となる）。
+`claude-org-self-edit` ロールは schema 上で `block-org-structure.sh` hook が **既に除外**された状態で定義されている（`Edit|Write` / `Bash` matcher 双方）。`check-worker-boundary.sh` / `block-git-push.sh` などその他の hook は通常どおり残る。生成済み JSON を手で再編集してはならない（drift CI が fail する。新しい role を追加する場合、**ja の `tools/org_extension_schema.json`（drift validator `tools/check_role_configs.py` の正典）と `claude-org-runtime` の bundled `role_configs_schema.json`（generator `claude-org-runtime settings generate` の正典）の両方に追加する PR が必要**: ja 側だけ追加しても generator が新 role を知らず生成失敗、runtime 側だけ追加しても drift CI が fail する。framework 側の schema 形（`worker_roles` の許容形状定義そのもの）を変える場合は `claude-org-runtime` 側のみで完結する。両者の同期未整備状態は `docs/internal/phase4-completion-2026-05-02.md:71-77` に follow-up として記録）。
 
 ## 2. ワーカー指示は `CLAUDE.md` ではなく `CLAUDE.local.md` に書く
 
