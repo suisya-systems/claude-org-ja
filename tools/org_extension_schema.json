@@ -12,6 +12,7 @@
       "Bash(gh:*)",
       "Bash(gh *)"
     ],
+    "$comment_forbidden_allow_regex": "claude-peers is the legacy name of renga-peers (renamed 2026-04). Old-name ban is intentionally retained: any settings.local.json that still grants mcp__claude-peers__* indicates a stale config that bypassed the rename sweep and should be re-run through /org-setup. Do NOT widen to ^mcp__.*-peers__ — renga-peers is the current allowed channel.",
     "forbidden_allow_regex": [
       "^mcp__claude-peers__"
     ]

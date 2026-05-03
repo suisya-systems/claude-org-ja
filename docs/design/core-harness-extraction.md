@@ -95,7 +95,7 @@ inventory §5.1-6 が指摘した「framework rule と org doctrine が同じ sc
 |---|---|---|
 | 役割名カタログ | `secretary`, `dispatcher`, `curator`, `worker`, `repo_shared`, `user_common` | claude-org doctrine の中核。他 org は別の役割分担を取る |
 | `secretary.required_allow` 38 entry | `Bash(gh issue:*)`, `Bash(codex exec:*)`, `mcp__renga-peers__*` 群, etc. | 「窓口」という claude-org 固有の概念に紐付く |
-| `^mcp__claude-peers__` ban list | `forbidden_allow_regex` 1 件 | claude-peers は renga の前身。claude-org が組織方針として禁止しているもので、framework default ではない |
+| `^mcp__claude-peers__` ban list | `forbidden_allow_regex` 1 件 | claude-peers (現 renga-peers) は renga の前身 MCP server。claude-org が組織方針として禁止しているもので、framework default ではない |
 | Org-structure 名 list | `.dispatcher/`, `.curator/`, `.state/`, `registry/`, `dashboard/`, `knowledge/` の 6 名 | inventory §5.1-3。`block-org-structure.sh` の `ALWAYS_BLOCKED` + `ROOT_ONLY_BLOCKED` 配列の中身 |
 | Workers dir 概念 | `registry/org-config.md` の `workers_dir:` 行 | `block-workers-delete.sh` が依存。「workers をまとめて消すな」は claude-org 固有のルール |
 | Dispatcher 許可パス | `.dispatcher/`, `.state/`, `knowledge/raw/<YYYY-MM-DD>-<kebab>.md` | `block-dispatcher-out-of-scope.sh` の policy。「dispatcher は限定 path のみ書ける」は claude-org 固有 |
@@ -349,7 +349,7 @@ strategy:
 
 ### 8.3 12 問が解いていない領域
 
-- **claude-peers ban の所属**: `^mcp__claude-peers__` regex は ja 残置と決めたが、「Anthropic Claude Code とは関係ない過去の MCP サーバー」全般を core-harness が default deny するという別の選択肢もある。今は ja 残置で確定するが、外部 org が同じ判断を再発明する可能性あり
+- **claude-peers (現 renga-peers) ban の所属**: `^mcp__claude-peers__` regex は ja 残置と決めたが、「Anthropic Claude Code とは関係ない過去の MCP サーバー」全般を core-harness が default deny するという別の選択肢もある。今は ja 残置で確定するが、外部 org が同じ判断を再発明する可能性あり
 - **`description` / `$comment` strip ロジック**: generator が schema から抜くキー名のホワイトリスト/ブラックリストの扱いが不明確。Step B サブ issue で固める
 - **bash hook の Windows 動作**: ja は Git Bash 前提。core-harness としてもこれを継承するが、明示的に CI matrix で確認する必要あり
 

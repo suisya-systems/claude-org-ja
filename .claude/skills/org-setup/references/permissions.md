@@ -160,7 +160,7 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
 
 **書いてはいけないもの**:
 - wide allow (`Bash(git *)`, `Bash(git push *)`, `Bash(git fetch *)`, `Bash(git branch *)`, `Bash(git pull *)`, `Bash(gh:*)`, `Bash(gh *)`)
-- 旧 `mcp__claude-peers__*`（2025 年に renga-peers へ移行済み）
+- 旧 `mcp__claude-peers__*`（2026 年に renga-peers へ移行済み）
 - 旧 `renga list/split/send/events/close/inspect *` の Bash allow（renga 0.14.0+ で MCP 化）
 - 過去の一発コマンド（特定 PR 番号・branch 名・PID を含むコマンド、`gh pr create --repo ... --head feat/xxx ...` 等）
 - user-specific absolute path（`Read(//c/Users/<you>/Documents/work/**)` のような）
