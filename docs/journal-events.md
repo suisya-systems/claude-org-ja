@@ -108,6 +108,20 @@ Workers do **not** write the journal directly; they report via
 | `notify_sent`      | `recipient`, `kind`, `summary`          | dispatcher |
 | `events_dropped`   | `count`, `since_ts`                     | dispatcher |
 
+### CI
+
+| Event          | Typical fields                                            | Writer    |
+|----------------|-----------------------------------------------------------|-----------|
+| `ci_completed` | `pr`, `repo`, `status`, `duration_sec`                    | secretary |
+
+`status` ∈ `{passed, failed, incomplete, canceled}`. As of Issue #224
+the value is derived from `gh pr checks <pr> --json` (per-check
+`conclusion` / `state`) rather than the gh process' exit code, so a
+transient watch-loop error is no longer conflated with a real CI
+failure. `incomplete` is emitted when at least one check is still
+pending or has an unrecognized conclusion when the watch returns;
+`canceled` is emitted only when the parent receives SIGINT.
+
 ### Session lifecycle
 
 | Event                          | Typical fields                          | Writer    |
