@@ -52,11 +52,15 @@ addition to its writer / payload shape:
   message. Source: Set A Q3 ratification, role-contract §
   Authoritative journal events.
 - **Required for** — the lifecycle transition (Set B
-  `docs/contracts/delegation-lifecycle-contract.md` §2 T1–T8, error
-  classes E1–E5, or §1.5 close-condition / §4 SUSPEND) for which
-  emission of this event is contract-mandated. `—` indicates the
-  event is informational / observability and not bound to any
-  specific transition. Source: Set B Q2 ratification.
+  `docs/contracts/delegation-lifecycle-contract.md` §2 T1–T8 *Journal*
+  line, or §3 E1–E5 detection / de-dup ledger reference) for which
+  emission of this event is contract-mandated. The scope is
+  deliberately narrow: events that merely *appear* in §1's
+  per-state "visible journal events" column, or that are referenced
+  by §1.5 / §4 prose without a mandatory-emission requirement, are
+  marked `—`. `—` therefore covers both informational /
+  observability events and lifecycle-adjacent events whose emission
+  is not contract-mandated. Source: Set B Q2 ratification.
 
 ## Event types
 
