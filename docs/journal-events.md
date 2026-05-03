@@ -71,15 +71,15 @@ addition to its writer / payload shape:
 | `worker_review`          | `worker`, `task`, `outcome`                                 | secretary    | secretary  | T4           | Review verdict on a worker's report. |
 | `worker_report_forwarded`| `worker`, `task`, `recipient`                               | secretary    | secretary  | —            | Forwarded to human / other. |
 | `worktree_removed`       | `path`, `task`                                              | dispatcher   | dispatcher | T5 (Pattern B) | Worktree cleanup. |
-| `retro_deferred`         | `worker`, `reason`                                          | dispatcher   | dispatcher | T5           | Retro Steps 1–2 could not be completed before `close_pane` (e.g., secretary unreachable within 5 minutes); pane close skipped. |
+| `retro_deferred`         | `worker`, `reason`                                          | dispatcher   | dispatcher | T7 (if retro skipped) | Retro Steps 1–2 could not be completed before `close_pane` (e.g., secretary unreachable within 5 minutes); pane close skipped. Listed alongside the `aborted` row in Set B §1 (visible journal events); not contract-mandated for normal T5 close. |
 
 ### Delegate flow
 
 | Event                | Typical fields                                              | Writer    | Emitted by | Required for |
 |----------------------|-------------------------------------------------------------|-----------|------------|--------------|
 | `delegate_sent`      | `task`, `worker`, `dir`                                     | secretary | secretary  | T1           |
-| `delegate_resume`    | `task`, `worker`                                            | secretary | secretary  | §4.4         |
-| `delegate_resume_r2` | `task`, `worker`, `round`                                   | secretary | secretary  | §4.4         |
+| `delegate_resume`    | `task`, `worker`                                            | secretary | secretary  | —            |
+| `delegate_resume_r2` | `task`, `worker`, `round`                                   | secretary | secretary  | —            |
 
 ### Plan / design
 
@@ -96,11 +96,11 @@ addition to its writer / payload shape:
 
 | Event           | Typical fields                          | Writer    | Emitted by | Required for |
 |-----------------|-----------------------------------------|-----------|------------|--------------|
-| `fix_pushed`    | `task`, `branch`, `commit`              | secretary | secretary  | T6           |
+| `fix_pushed`    | `task`, `branch`, `commit`              | secretary | secretary  | —            |
 | `pr_opened`     | `task`, `pr`, `url`                     | secretary | secretary  | —            |
 | `prs_opened`    | `count`, `prs[]`                        | secretary | secretary  | —            |
-| `pr_merged`     | `pr`, `task`                            | secretary | secretary  | §1.5         |
-| `prs_merged`    | `count`, `prs[]`                        | secretary | secretary  | §1.5         |
+| `pr_merged`     | `pr`, `task`                            | secretary | secretary  | —            |
+| `prs_merged`    | `count`, `prs[]`                        | secretary | secretary  | —            |
 | `prs_pushed`    | `count`, `branches[]`                   | secretary | secretary  | —            |
 
 ### History / phase markers
@@ -126,8 +126,8 @@ addition to its writer / payload shape:
 
 | Event              | Typical fields                          | Writer     | Emitted by | Required for |
 |--------------------|-----------------------------------------|------------|------------|--------------|
-| `anomaly_observed` | `worker`, `kind`, `confidence`, `note`  | dispatcher | dispatcher | E2, E3       |
-| `notify_sent`      | `recipient`, `kind`, `summary`          | dispatcher | dispatcher | E2, E3       |
+| `anomaly_observed` | `worker`, `kind`, `confidence`, `note`  | dispatcher | dispatcher | E2 (conditional) |
+| `notify_sent`      | `recipient`, `kind`, `summary`          | dispatcher | dispatcher | E2, E3 (de-dup ledger) |
 | `events_dropped`   | `count`, `since_ts`                     | dispatcher | dispatcher | —            |
 
 ### CI
@@ -151,9 +151,9 @@ itself errored — see the fallback rules in `tools/pr_watch.py`);
 
 | Event                          | Typical fields                          | Writer    | Emitted by | Required for |
 |--------------------------------|-----------------------------------------|-----------|------------|--------------|
-| `suspend`                      | `reason`, `active_workers[]`, `pending_items[]` | secretary | secretary  | §4           |
-| `resume`                       | `restored_workers[]`, `note`            | secretary | secretary  | §4.4         |
-| `task_completed`               | `task`                                  | secretary | secretary  | T5           |
+| `suspend`                      | `reason`, `active_workers[]`, `pending_items[]` | secretary | secretary  | —            |
+| `resume`                       | `restored_workers[]`, `note`            | secretary | secretary  | —            |
+| `task_completed`               | `task`                                  | secretary | secretary  | —            |
 | `secretary_identity_restored`  | `note`                                  | org-start | secretary  | —            |
 
 ## Adding a new event type
