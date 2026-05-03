@@ -11,7 +11,9 @@
 > - `.claude/skills/org-delegate/references/instruction-template.md` (validation depth, completion-report format, SUSPEND clause)
 > - `.claude/skills/org-delegate/references/worker-claude-template.md` (worker steady-state behavior, completion / SUSPEND obligations)
 > - `.dispatcher/CLAUDE.md` (anomaly forwarding, watch loop, completion-report retro gate, CLOSE_PANE flow)
-> - `docs/journal-events.md` (event vocabulary)
+> - `docs/journal-events.md` (event vocabulary, writer-attribution table)
+> - `docs/org-state-schema.md` (Active Work Item terminal-status vocabulary, Worker Directory Registry shape)
+> - `docs/internal/phase4-inventory-2026-05-02.md` §2.7 (worker-status state-machine inventory)
 > - `tools/journal_append.sh` / `tools/journal_append.py` (accepted event-write schema)
 > - `docs/contracts/role-contract-outline.md` — Set A (per-role lifecycle / boundary sections, for cross-reference)
 >
@@ -30,7 +32,7 @@ A single delegation moves through the following finite set of contract-level sta
 | 3 | `in_progress` | worker (begins acting on its instruction) | `.state/workers/worker-{task_id}.md` Progress Log appended on each report (Status remains `active`). | `worker_reported` (per progress message), `anomaly_observed` (if applicable) |
 | 4 | `awaiting_review` (a.k.a. `REVIEW`) | secretary (on receipt of completion report from worker) | `.state/org-state.md` Active Work Item set to `REVIEW`. Worker state file Status is NOT retitled today (remains `active`); the worker pane stays open. | `worker_completed`, `worker_review` |
 | 5 | `complete` (a.k.a. `COMPLETED`) | secretary (after close-condition met — see §1.5) | `.state/org-state.md` Active Work Item set to `COMPLETED`; Worker Directory Registry updated per pattern; `.state/workers/worker-{task_id}.md` final-update (dispatcher writes `Status: completed` or `pane_closed` per close path). | `worker_closed`, `worktree_removed` (Pattern B), pattern-specific registry updates |
-| 6 | `aborted` | dispatcher detects pane exit; secretary decides | Implementation today writes `.state/workers/worker-{task_id}.md` `Status: pane_closed` and forwards `WORKER_PANE_EXITED`; the secretary then judges whether the task is abandoned. There is no literal `Status: aborted` string written today — `aborted` is a contract-level abstract state for "delegation reached a terminal failure path". For T8 (`SPLIT_CAPACITY_EXCEEDED`) no worker state file exists at all, since the pane was never spawned. | `worker_closed` with abort reason, `retro_deferred` (if retro could not run) |
+| 6 | `aborted` (a.k.a. `ABANDONED` in `org-state.md`) | dispatcher reports lifecycle exit; secretary classifies and decides | Worker state file: dispatcher writes `Status: pane_closed` (the only literal worker-state-file label for terminal failure today). Active Work Item: secretary, after judging the delegation is abandoned, sets it to `ABANDONED` per `docs/org-state-schema.md` §50 terminal vocabulary. There is no literal worker-state-file `Status: aborted` — `aborted` is the contract-level abstract label for "delegation reached a terminal failure path". For T8 (`SPLIT_CAPACITY_EXCEEDED`) no worker state file is written, since the pane was never spawned. | `worker_closed` with reason hint, `retro_deferred` (if retro could not run) |
 
 - **[TBD by Lead]** — State granularity: whether `dispatched` and `awaiting_review` are each distinct contract states or sub-states of `in_progress`. Today the implementation half-distinguishes them (`.state/workers/*.md` flips `planned → active` at spawn but does not retitle on completion-report; `.state/org-state.md` writes `REVIEW` but the worker pane keeps running). The contract should pick one boundary per state.
 - **[TBD by Lead]** — Authoritative list of journal event names permitted (or mandatory) for each lifecycle transition. Today the helper accepts arbitrary event strings; `docs/journal-events.md` documents a vocabulary but does not pin which subset is required per transition — same shape as Set A's "allowed journal events per role" cluster.
@@ -93,9 +95,9 @@ Each transition below names: **(a)** the event that triggers it, **(b)** which a
 - **Pane discipline**: New worker MUST NOT be re-spawned for in-scope review feedback (re-spawn is rejected by the contract because Issue/diff/judgment context would be lost).
 
 ### T7 — `* → aborted` (worker pane exits without completion)
-- **Trigger**: Dispatcher's `poll_events` sees `pane_exited` for `name == "worker-{task_id}"` whose corresponding `.state/workers/worker-{task_id}.md` does not record a `worker_completed` event, OR `list_panes` reconciliation finds the pane gone.
-- **Actor**: dispatcher (forwards to secretary as `WORKER_PANE_EXITED`); secretary decides whether to re-delegate or abandon (per current `.dispatcher/CLAUDE.md` § (1) `pane_exited` handling).
-- **State write**: dispatcher writes `.state/workers/worker-{task_id}.md` `Status: pane_closed`; secretary may flip Active Work Item to `aborted` after user judgment.
+- **Trigger**: Dispatcher's `poll_events` sees `pane_exited` for `name == "worker-{task_id}"`, OR `list_panes` reconciliation finds the pane gone. The dispatcher does NOT itself decide whether the delegation was completed — it reports the lifecycle fact only (per `.dispatcher/CLAUDE.md` § (1) and § list_panes reconciliation).
+- **Actor**: dispatcher writes the pane-closed fact and notifies; secretary then determines completion vs. unexpected-exit by inspecting the renga-peers message history (last `COMPLETED` report present? if not, treat as worker accident).
+- **State write**: dispatcher writes `.state/workers/worker-{task_id}.md` `Status: pane_closed`. Secretary, after judging the task is abandoned (no completion report and user does not re-delegate), sets the Active Work Item terminal status to `ABANDONED` (per `docs/org-state-schema.md` §50 vocabulary).
 - **Journal**: `worker_closed` (with reason hint); separately, `WORKER_PANE_EXITED` is a peer-message channel only (not journaled today).
 - **[TBD by Lead]** — Maximum number of automatic re-delegation retries for an unexpectedly-exited worker before the contract requires user escalation. Today: pure secretary judgment, no retry counter contracted.
 
@@ -113,7 +115,7 @@ Each transition below names: **(a)** the event that triggers it, **(b)** which a
 Five error / anomaly classes are recognized. Each lists: who detects, who is notified, retry semantics, and abort conditions.
 
 ### E1 — Worker pane exits unexpectedly
-- **Detection**: dispatcher's `poll_events` (`pane_exited` for `role=="worker"` without prior `worker_completed`); fallback via `list_panes` reconciliation each watch-loop cycle.
+- **Detection**: dispatcher's `poll_events` (`pane_exited` for `role=="worker"`); fallback via `list_panes` reconciliation each watch-loop cycle. The dispatcher does NOT consult journal `worker_completed` (which is a secretary-written event per `docs/journal-events.md`); it forwards the raw lifecycle fact and lets the secretary classify expected-vs-unexpected exit.
 - **Notification path**: dispatcher → secretary via `mcp__renga-peers__send_message(to_id="secretary")` with body `WORKER_PANE_EXITED: {name} (id={id}) のペインが閉じました。リコンサイル要。`
 - **Retry**: Not automatic. Secretary asks user whether to re-delegate or abandon.
 - **Abort condition**: User explicitly declines re-delegation, OR secretary determines task is no longer relevant. (Retry-bound is the same open question as §2 T7.)
