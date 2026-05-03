@@ -179,7 +179,7 @@ The backend MUST expose pane lifecycle events via a long-poll API with cursor-ba
 
 ### 4.2 Tab scope
 
-- All pane-addressed operations (`list_panes`, `focus_pane`, `send_message`, `inspect_pane`, `close_pane`, `send_keys`) MUST resolve only against panes in the current tab. Cross-tab addressing returns `pane_not_found`.
+- All pane-addressed operations — including but not limited to `list_panes`, `focus_pane`, `send_message`, `inspect_pane`, `close_pane`, `send_keys`, `set_pane_identity`, and the `target` parameter of every spawn variant in §1.1–§1.3 — MUST resolve only against panes in the current tab. Cross-tab addressing returns `pane_not_found`.
 - The harness today launches every pane via single-tab `spawn_pane` to satisfy this. Per `references/renga-error-codes.md`, this is a hard constraint (suisya-systems/renga#71) — `new_tab` worker spawns would orphan dispatcher monitoring.
 - **Tab-scope decision**: SINGLE-TAB MUST. All pane-addressed operations resolve only against the current tab. Cross-tab addressing returns `pane_not_found`. Multi-tab support is NOT in this contract revision; if added later it requires a contract amendment with explicit tab-id parameters on every addressed call. Until amended, harnesses MUST launch every orchestrator-spawned pane in the same tab.
 
@@ -260,7 +260,7 @@ The backend surface MUST follow semantic versioning. Breaking changes — operat
 
 | #   | Topic                                       | Surface | Outcome             |
 | --- | ------------------------------------------- | ------- | ------------------- |
-| Q1  | Claude-spawn helper required?               | §1.2    | OPTIONAL            |
+| Q1  | Claude-spawn / Codex-spawn helpers required? | §1.2, §1.3 | OPTIONAL         |
 | Q2  | Separate graceful-exit path required?       | §1.4    | OPTIONAL            |
 | Q3  | `list_panes` geometry fields required?      | §1.5    | REQUIRED            |
 | Q4  | `inspect_pane` (grid scrape) required?      | §1.7    | REQUIRED            |
