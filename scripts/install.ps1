@@ -186,23 +186,32 @@ if ($SkipMcp) {
 # tools/generate_worker_settings.py thin shims over the core-harness
 # package; Phase 4 (Issue #129) then moved the dispatcher runner and
 # the worker settings generator out of tools/ into the
-# claude-org-runtime package. requirements.txt pins both versions.
+# claude-org-runtime package. Phase 5c (Issue #130) moved the install
+# path from `requirements.txt` to `pyproject.toml`; we prefer the
+# editable install so the dep set comes from the canonical source.
 $pyCmd = $null
 foreach ($cand in @('python', 'python3', 'py')) {
     if (Get-Command $cand -ErrorAction SilentlyContinue) { $pyCmd = $cand; break }
 }
+$pyprojectFile = Join-Path $Dir 'pyproject.toml'
 $reqFile = Join-Path $Dir 'requirements.txt'
-if (-not (Test-Path -LiteralPath $reqFile)) {
-    # Older refs / fixtures predate Step B and ship no requirements.txt.
+if ((Test-Path -LiteralPath $pyprojectFile) -and $pyCmd) {
+    Write-Host ''
+    Write-Host 'Installing Python deps via pyproject.toml (editable) ...'
+    Invoke-Step @($pyCmd, '-m', 'pip', 'install', '--user', '-e', $Dir)
+} elseif ((Test-Path -LiteralPath $reqFile) -and $pyCmd) {
+    # Backward-compat path for refs that predate Phase 5c (no
+    # pyproject.toml) but post-date Step B (have requirements.txt).
+    Write-Host ''
+    Write-Host 'Installing Python deps (core-harness pin, requirements.txt) ...'
+    Invoke-Step @($pyCmd, '-m', 'pip', 'install', '--user', '-r', $reqFile)
+} elseif (-not ((Test-Path -LiteralPath $pyprojectFile) -or (Test-Path -LiteralPath $reqFile))) {
+    # Older refs / fixtures predate Step B and ship neither file.
     # The shim CLIs only exist on Step-B-or-later commits, so skipping
     # here keeps the installer backward compatible.
-    Write-Host "Skipping Python deps (no $reqFile)."
-} elseif ($pyCmd) {
-    Write-Host ''
-    Write-Host 'Installing Python deps (core-harness pin) ...'
-    Invoke-Step @($pyCmd, '-m', 'pip', 'install', '--user', '-r', $reqFile)
+    Write-Host "Skipping Python deps (no pyproject.toml or requirements.txt)."
 } else {
-    Write-Host 'WARN: python not found; tools/check_role_configs.py will fail until you `pip install -r requirements.txt`.'
+    Write-Host 'WARN: python not found; tools/check_role_configs.py will fail until you `pip install -e .`.'
 }
 
 # --- Done ----------------------------------------------------------------

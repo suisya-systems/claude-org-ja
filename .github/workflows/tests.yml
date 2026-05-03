@@ -22,14 +22,25 @@ jobs:
       - name: Install shell test dependencies
         run: sudo apt-get update && sudo apt-get install -y jq
 
-      - name: Install Python dependencies (core-harness pinned)
-        run: pip install -r requirements.txt
+      - name: Install Python dependencies (pyproject.toml editable)
+        # Phase 5c (Issue #130): canonical install is now `pip install -e .`
+        # backed by pyproject.toml. requirements.txt is kept as a thin
+        # pointer for tooling that still references it.
+        run: pip install -e .
 
       - name: Run Python tests
         run: python -m unittest discover -s tests -v
 
       - name: Run tools/ Python tests
         run: python -m unittest discover -s tools -p 'test_*.py' -v
+
+      - name: Check runtime schema drift (Issue #130 Phase 5c)
+        # Compares ja's tools/org_extension_schema.json against the
+        # schema bundled inside the pinned claude-org-runtime. Skips
+        # with a warning when the installed runtime is outside ja's
+        # pin window, so a runtime preview release does not block ja
+        # PRs unrelated to the schema.
+        run: python tools/check_runtime_schema_drift.py
 
       - name: Check role configs integrity (Issue #85)
         # --include-worker-settings . enumerates `<repo>/*/.claude/settings.local.json`

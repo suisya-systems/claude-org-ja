@@ -35,6 +35,9 @@ docs/github-issues/
 # Python build artifacts
 __pycache__/
 *.pyc
+*.egg-info/
+build/
+dist/
 
 # OS metadata
 .DS_Store

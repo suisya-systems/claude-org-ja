@@ -1,3 +1,14 @@
+# NOTE: pyproject.toml is the canonical install path. Prefer:
+#   pip install -e .
+# This file is kept as a thin pointer so tooling that still references
+# `requirements.txt` (older external CI, docs, scripts) keeps working;
+# `-e .` re-resolves the same pins via pyproject.toml.
+#
+# The literal pins below intentionally duplicate pyproject.toml so this
+# file remains usable on its own (e.g. pip install -r requirements.txt).
+# When bumping a pin, update BOTH this file AND pyproject.toml; the
+# duplication is by design — see Phase 5c (Issue #130) PR description.
+
 # Step B: claude-org-ja depends on core-harness for permission/audit
 # primitives (tools/check_role_configs.py and the historical
 # tools/generate_worker_settings.py shim, which has since been
