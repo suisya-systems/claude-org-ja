@@ -191,7 +191,7 @@ git -C {project_path} check-ignore -q -- <target>
 
 ### ワーカーロール (`<ROLE>`) の選び方
 
-`.claude/settings.local.json` の生成は schema-driven generator (`claude-org-runtime settings generate`、Phase 4 で in-tree `tools/generate_worker_settings.py` から PyPI パッケージ `claude-org-runtime` に移行済み) に委ねる。窓口は **タスク特性に応じて 1 つの role を選ぶだけ** で、permission の手書き編集は禁止（schema → settings の drift は CI で fail する）。
+`.claude/settings.local.json` の生成は schema-driven generator (`claude-org-runtime settings generate`) に委ねる。窓口は **タスク特性に応じて 1 つの role を選ぶだけ** で、permission の手書き編集は禁止（schema → settings の drift は CI で fail する）。
 
 #### 事前判定: self-edit タスクか？（必須・最優先）
 
@@ -210,7 +210,7 @@ git -C {project_path} check-ignore -q -- <target>
 | `claude-org-self-edit` | **claude-org リポジトリ自身を編集するタスク（self-edit task）**。`worker_dir` が claude-org repo or its worktree（`tools/`, `.claude/skills/`, `docs/` 等の編集を含む）。`block-org-structure.sh` を外す代わりに `check-worker-boundary.sh` で境界を担保。詳細は `references/claude-org-self-edit.md` |
 | `doc-audit` | 読み取り中心の調査・監査・レポート（Edit/Write/MultiEdit/NotebookEdit を deny。commit / branch も禁止）。**書き出しが必要な成果物（AUDIT.md 等）がある場合は instruction-template.md の「doc-audit 成果物の chunk 転送」セクションを必ずワーカー指示に含める** |
 
-各 role の具体的な allow/deny/hooks は **本 ja リポジトリの `tools/org_extension_schema.json`** の `worker_roles[<role>]` を参照（drift validator `tools/check_role_configs.py` がこのファイルを正典として読む）。新しいパターンが必要な場合は **ja の `tools/org_extension_schema.json` と `claude-org-runtime` の bundled `role_configs_schema.json` の両方に role を追加する PR が必要**（窓口の手書き拡張は不可）: ja 側だけ追加しても `claude-org-runtime settings generate` が新 role を知らず生成失敗、runtime 側だけ追加しても drift CI が fail する。framework 側の schema 形（`worker_roles` の許容形状定義）のみ変える場合は `claude-org-runtime` 側のみで完結。詳細は `references/claude-org-self-edit.md` および `docs/internal/phase4-completion-2026-05-02.md:71-77` 参照。
+各 role の具体的な allow/deny/hooks は **本 ja リポジトリの `tools/org_extension_schema.json`** の `worker_roles[<role>]` を参照（drift validator `tools/check_role_configs.py` がこのファイルを正典として読む）。新しいパターンが必要な場合は **ja の `tools/org_extension_schema.json` と `claude-org-runtime` にバンドルされた merged role schema の両方に role を追加する PR が必要**（窓口の手書き拡張は不可）: ja 側だけ追加しても `claude-org-runtime settings generate` が新 role を知らず生成失敗、runtime 側だけ追加しても drift CI が fail する。framework 側の schema 形（`worker_roles` の許容形状定義）のみ変える場合は `claude-org-runtime` 側のみで完結。詳細は `references/claude-org-self-edit.md` および `docs/internal/phase4-completion-2026-05-02.md:71-77` 参照。
 
 ### パターン A: プロジェクトディレクトリ
 
