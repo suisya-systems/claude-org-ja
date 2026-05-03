@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Phase 5 shim audit: confirmed minimal as of 2026-05-04 (#130)
 # claude-org-ja journal append wrapper (Step D shim, refs ja#128 /
 # core-harness 0.3.0).
 #

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Phase 5 shim audit: confirmed minimal as of 2026-05-04 (#130)
 """claude-org-ja journal append wrapper (Step D shim).
 
 Thin CLI around :class:`core_harness.audit.Journal` with the org-specific

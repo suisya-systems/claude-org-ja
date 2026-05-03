@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Phase 5 shim audit: confirmed minimal as of 2026-05-04 (#130)
 # Compatibility shim — Step C / ja#128.
 #
 # The 325-line implementation that previously lived here moved up to
