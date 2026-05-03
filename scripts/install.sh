@@ -195,7 +195,9 @@ fi
 # tools/generate_worker_settings.py thin shims over the core-harness
 # package; Phase 4 (Issue #129) then moved the dispatcher runner and
 # the worker settings generator out of tools/ into the
-# claude-org-runtime package. requirements.txt pins both versions.
+# claude-org-runtime package. Phase 5c (Issue #130) moved the install
+# path from `requirements.txt` to `pyproject.toml`; we prefer the
+# editable install so the dep set comes from the canonical source.
 if command -v python3 >/dev/null 2>&1; then
   PY=python3
 elif command -v python >/dev/null 2>&1; then
@@ -203,18 +205,25 @@ elif command -v python >/dev/null 2>&1; then
 else
   PY=""
 fi
+PYPROJECT_FILE="$TARGET_DIR/pyproject.toml"
 REQ_FILE="$TARGET_DIR/requirements.txt"
-if [[ ! -f "$REQ_FILE" ]]; then
-  # Older refs / fixtures predate Step B and ship no requirements.txt.
+if [[ -f "$PYPROJECT_FILE" && -n "$PY" ]]; then
+  echo
+  echo "Installing Python deps via pyproject.toml (editable) ..."
+  run $PY -m pip install --user -e "$TARGET_DIR"
+elif [[ -f "$REQ_FILE" && -n "$PY" ]]; then
+  # Backward-compat path for refs that predate Phase 5c (no
+  # pyproject.toml) but post-date Step B (have requirements.txt).
+  echo
+  echo "Installing Python deps (core-harness pin, requirements.txt) ..."
+  run $PY -m pip install --user -r "$REQ_FILE"
+elif [[ ! -f "$PYPROJECT_FILE" && ! -f "$REQ_FILE" ]]; then
+  # Older refs / fixtures predate Step B and ship neither file.
   # The shim CLIs only exist on Step-B-or-later commits, so skipping
   # here keeps the installer backward compatible.
-  echo "Skipping Python deps (no $REQ_FILE)."
-elif [[ -n "$PY" ]]; then
-  echo
-  echo "Installing Python deps (core-harness pin) ..."
-  run $PY -m pip install --user -r "$REQ_FILE"
+  echo "Skipping Python deps (no pyproject.toml or requirements.txt)."
 else
-  echo "WARN: python not found; tools/check_role_configs.py will fail until you 'pip install -r requirements.txt'."
+  echo "WARN: python not found; tools/check_role_configs.py will fail until you 'pip install -e .'."
 fi
 
 # --- Done ------------------------------------------------------------------

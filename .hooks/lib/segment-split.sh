@@ -46,7 +46,7 @@ __core_harness_resolve_lib() {
 
 __CORE_HARNESS_LIB_DIR="$(__core_harness_resolve_lib || true)"
 if [[ -z "$__CORE_HARNESS_LIB_DIR" || ! -f "$__CORE_HARNESS_LIB_DIR/core_harness_hooks.sh" ]]; then
-  echo "ブロック: core-harness パッケージが見つかりません (pip install -r requirements.txt が必要)。" >&2
+  echo "ブロック: core-harness パッケージが見つかりません (pip install -e . が必要)。" >&2
   exit 2
 fi
 

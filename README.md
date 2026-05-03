@@ -114,7 +114,8 @@ git clone https://github.com/suisya-systems/claude-org-ja.git
 cd claude-org-ja
 
 # 4. Python 依存（core-harness / claude-org-runtime）を導入
-pip install -r requirements.txt
+#    pyproject.toml が SoT。requirements.txt は薄い互換ファイルとして残置。
+pip install -e .
 
 # 5. renga の MCP サーバーを Claude Code に登録（初回のみ）
 renga mcp install
