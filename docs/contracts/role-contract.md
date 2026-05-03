@@ -223,6 +223,7 @@
   - Code, tests, docs inside `worker_dir` (or, for Pattern C gitignored sub-mode, inside the existing repo root specified by registry).
   - `git commit`s in the worker's branch.
   - `knowledge/raw/{YYYY-MM-DD}-{topic}.md` when reusable learnings exist (full mode only).
+  - For skill-promotion delegations specifically (per Set E §2.4 / §3.1 carve-out), the worker MAY write to `.claude/skills/{skill_name}/` (creating new skill files or editing existing ones) AND apply the corresponding `knowledge/skill-candidates.md` status transition (`status` → `approved` / `rejected` / `merged-into-*`, plus the `決定日` / `却下理由` / `統合先` fields for the same entry). This is a delegated-task scope, not a general worker capability; the worker MUST NOT write to `.claude/skills/` or to `knowledge/skill-candidates.md` outside an explicitly skill-promotion-tagged delegation.
 - **renga-peers messages**:
   - To `to_id="secretary"`: completion report (full: structured with deliverables + outstanding items + draft PR text; minimal: `done: {sha} {files}`), progress updates, `APPROVAL_BLOCKED`, `ERROR`, `SUSPEND` response.
   - Fallback: numeric `to_id` from the DELEGATE message body if `secretary` returns `[pane_not_found]`.

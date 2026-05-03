@@ -98,14 +98,29 @@ output_format: <成果物の構造>
    記録しますか？
    ```
 2. 人間が承認した場合:
-   - `.claude/skills/{skill-name}/SKILL.md` を作成する
-   - テンプレート: `.claude/skills/org-retro/references/work-skill-template.md` のフォーマットに従う
-   - ワーカーの成果物（コード、レポート、設定等）から手順を抽出・汎化する
-   - タスク固有の値（ブランド名、ファイルパス等）はプレースホルダーに置換する
-   - `knowledge/skill-candidates.md` の該当エントリの status を `approved` に更新し決定日を記入
+   - **skill ファイルの作成・編集は窓口（secretary）が直接行わない**。Set E §2.4 (Q7) の批准に従い、
+     skill-promotion は委譲タスクとして `org-delegate` 経由でワーカーに渡す。
+   - 窓口は `org-delegate` を起動し、role `claude-org-self-edit` のワーカータスクを生成する。
+     指示には以下を含める:
+     - 対象 skill 名 `{skill-name}` と書き込み先 `.claude/skills/{skill-name}/SKILL.md`
+     - テンプレート参照: `.claude/skills/org-retro/references/work-skill-template.md`
+     - 抽出元（ワーカーの成果物・raw 知見ファイルのパス）と、
+       タスク固有の値をプレースホルダーへ置換する旨
+     - skill-promotion 委譲であること（Set A worker write-surface の carve-out 対象）
+   - ディスパッチャー / 窓口は `.claude/skills/{skill-name}/` および `knowledge/skill-candidates.md` への
+     直接書き込みを行わない。Set E §1.4 / §2.4 に従い、`skill-candidates.md` の status transition
+     （`approved` への遷移と `決定日` の記入）も同じ委譲ワーカーの責務とし、指示にその旨を含める。
 3. 人間が却下した場合:
    - 理由を `knowledge/raw/` に記録し、次回の判断に活かす
-   - `knowledge/skill-candidates.md` の該当エントリの status を `rejected` に更新し却下理由を追記
+   - `knowledge/skill-candidates.md` の status を `rejected` に更新し却下理由を追記する作業も
+     ワーカーへの委譲（`org-delegate`）経由で行う。窓口・ディスパッチャーは直接編集しない
+     （Set E §1.4 の owner 定義に従う）。
+4. 人間が「既存 skill に統合」を選択した場合（terminal status `merged-into-{existing-skill}`）:
+   - 統合先となる既存 skill を特定し、`org-delegate` で skill-promotion ワーカーに以下を委譲する:
+     既存 `.claude/skills/{existing-skill}/SKILL.md` への取り込み編集、および
+     `knowledge/skill-candidates.md` 該当エントリの status を `merged-into-{existing-skill}` に
+     更新（`統合先` フィールドに既存 skill 名を記入）。
+   - 新規 skill ファイルは作成しない。窓口・ディスパッチャーは直接編集しない。
 
 #### decision == candidate_queue
 
