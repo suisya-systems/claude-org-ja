@@ -27,14 +27,15 @@
 
 ## 1. Knowledge artifacts inventory
 
-The harness's knowledge surface comprises the artifacts listed below. Each entry names: **path** (repo-relative), **format**, **schema** (key sections / vocabulary), **owner** (the role authorized to write — consistent with Set A), **reader(s)** (roles that read), and **lifecycle / triggers**. Set E covers the project-level knowledge tree only; the operator-personal auto-memory under `~/.claude/projects/.../memory/` (per the root `CLAUDE.md` "auto memory" section) is treated separately in §3.
+The harness's knowledge surface comprises the artifacts listed below. Each entry names: **path** (repo-relative), **format**, **schema** (key sections / vocabulary), **owner** (the role authorized to write — consistent with Set A), **reader(s)** (roles that read), and **lifecycle / triggers**. Set E covers the project-level `knowledge/` tree only; any operator-personal memory layer maintained outside the repo by the operator's Claude Code installation is out of scope and is discussed only as an adjacent boundary in §3.
 
 ### 1.1 `knowledge/raw/{YYYY-MM-DD}-{topic}.md`
 
 - **Path**: `knowledge/raw/{YYYY-MM-DD}-{topic}.md` — date prefix is the calendar date the entry is recorded; `{topic}` is English kebab-case. The dispatcher's post-retro entries use the namespaced topic prefix `delegation-{topic}` to distinguish process learnings from worker technical learnings (per `org-retro` Step 3).
 - **Format**: Markdown. Body conforms to the four-heading record format in `.claude/skills/org-curate/references/knowledge-standards.md`: `## 事実`, `## 判断`, `## 根拠`, `## 適用場面`.
 - **Schema**: Free-form Markdown bodies under the four canonical headings. After curation, the file's first line carries the marker `<!-- curated -->` so subsequent `org-curate` threshold checks skip it (per `org-curate` Step 4).
-- **Owner**: workers (full-validation mode only — minimal mode skips per Set A § Role: worker) and the dispatcher (post-retro process learnings, with the `delegation-` topic prefix per `org-retro` Step 3) author file contents. The curator additionally performs a single in-place mutation on existing entries (prepending the `<!-- curated -->` marker during R2, per `org-curate` Step 4) but does not author new raw entries. Secretary and the human do not write to `knowledge/raw/` in the normal flow.
+- **Owner**: workers (full-validation mode only — minimal mode skips per Set A § Role: worker) and the dispatcher (post-retro process learnings, with the `delegation-` topic prefix per `org-retro` Step 3) author file contents. Secretary and the human do not write to `knowledge/raw/` in the normal flow. **Curator note**: the `org-curate` Step 4 implementation today prepends a `<!-- curated -->` marker to raw entries it has consumed; under Set A § Role: curator constraints (write surface limited to `knowledge/curated/` and the skill-candidate queue, with `knowledge/raw/archive/` move authority but no other raw-entry writes), this in-place mutation is not yet authorized. Reconciliation is folded into the `[TBD by Lead]` below.
+- **`[TBD by Lead]`** — Authorization of the curator's `<!-- curated -->` in-place marker on raw entries. Stances: (a) extend Set A's curator write surface to include this single in-place mutation; (b) replace the marker with a side-channel record (e.g., a curator-owned manifest in `knowledge/raw/archive/`) so raw entries remain immutable; (c) move-then-mark — curator moves the consumed entry into `archive/` first and marks it there, removing the in-place mutation on the active raw set. Today's behavior is (a) by implementation; the contract should pin which.
 - **Readers**: curator (`org-curate` reads all unmarked entries), `skill-eligibility-check` (consumes `raw_files` arg as evidence), worker (read-only reference per Set A worker section), `skill-audit` (greps for skill-name mentions over a 90-day window per `skill-audit` Step 2).
 - **Lifecycle**: created at the moment of recording (worker post-task or dispatcher post-retro). After being merged into a curated note, the file gains a `<!-- curated -->` marker and (per Set A Q9) MAY be moved to `knowledge/raw/archive/`; outright deletion is forbidden.
 
@@ -117,7 +118,7 @@ The lifecycle that moves a learning from initial capture to a reusable skill con
 
 ### 3.2 Curator boundary
 
-- **MAY write**: `knowledge/curated/`, `knowledge/raw/archive/` (move-target only), `knowledge/skill-candidates.md` indirectly via `skill-eligibility-check`. The `<!-- curated -->` marker prepended to a raw entry is the one in-place mutation the curator performs on `knowledge/raw/` content during R2.
+- **MAY write**: `knowledge/curated/`, `knowledge/raw/archive/` (move-target only), `knowledge/skill-candidates.md` indirectly via `skill-eligibility-check`. The `<!-- curated -->` marker that `org-curate` Step 4 prepends to a raw entry is an in-place mutation on `knowledge/raw/` not currently authorized by Set A's curator write-surface clause; whether to authorize it, replace it, or relocate it is the open question recorded in §1.1.
 - **MUST NOT write**: `.state/`, `registry/`, worker directories (per Set A § Role: curator constraints).
 - **MUST NOT delete**: any `knowledge/raw/{YYYY-MM-DD}-{topic}.md` entry. Archival via move into `knowledge/raw/archive/` is the only sanctioned removal from the active raw set.
 - **No human dialogue**: per Set A § Role: curator. Promotion-question relay to the human is the secretary's responsibility (§2.4).
@@ -147,13 +148,14 @@ The knowledge tree today carries no schema-version field on any artifact. The fo
 
 The Lead-fill-in markers above are the explicit fill-in points. They cluster as follows:
 
-1. **Retention of `knowledge/raw/archive/`** — permanent, or human-driven pruning bound (§1.2).
-2. **Append-only obligation for `knowledge/curated/`** — dedup-rewrite-only inside `org-curate`, or free in-place edit by curator (§1.3).
-3. **Curated naming convention** — per-axis split vs. permitted mixing of technical-area / tool / process axes within a single `{topic}.md` (§1.3).
-4. **Skill-candidate clearing SLA** — best-effort vs. cycle-bounded vs. calendar-bounded; whether the human is contractually obligated to decide within N cycles (§1.4).
-5. **Operator-memory boundary acknowledgment** — descriptive-only (today) vs. additional cross-layer flow restrictions (§1.5).
-6. **Skill-promotion decision authority** — sole human, secretary auto-approval for top-scoring candidates, or multi-reviewer (§2.4).
-7. **Privacy / OSS-publication stance** — shareable vs. operator-private-permitted, plus scrub ownership (§3.4).
-8. **`schema_version` on knowledge Markdown files** — adopt or refuse, alignment with Set C hybrid stance (§4).
+1. **Curator's `<!-- curated -->` in-place marker on raw entries** — authorize the in-place mutation, replace with a side-channel manifest, or move-then-mark to keep the active raw set immutable (§1.1). Reconciliation with Set A's curator write-surface clause is required.
+2. **Retention of `knowledge/raw/archive/`** — permanent, or human-driven pruning bound (§1.2).
+3. **Append-only obligation for `knowledge/curated/`** — dedup-rewrite-only inside `org-curate`, or free in-place edit by curator (§1.3).
+4. **Curated naming convention** — per-axis split vs. permitted mixing of technical-area / tool / process axes within a single `{topic}.md` (§1.3).
+5. **Skill-candidate clearing SLA** — best-effort vs. cycle-bounded vs. calendar-bounded; whether the human is contractually obligated to decide within N cycles (§1.4).
+6. **Operator-memory boundary acknowledgment** — silent (today) vs. explicit cross-layer flow restriction (§1.5).
+7. **Skill-promotion decision authority and execution path** — who decides, and who performs the SKILL.md write / status transition (§2.4).
+8. **Privacy / OSS-publication stance** — shareable vs. operator-private-permitted, plus scrub ownership (§3.4).
+9. **`schema_version` on knowledge Markdown files** — adopt or refuse, alignment with Set C hybrid stance (§4).
 
 These are the design decisions that must be settled before Contract Set E is ratified; the structural skeleton above (artifact inventory, curation flow, role-write boundaries) is fixed.
