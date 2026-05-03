@@ -7,6 +7,8 @@
 > - [core-harness inventory](https://github.com/suisya-systems/claude-org-ja-private/blob/main/core-harness-inventory.md)（測定 doc、worker dir 外）
 > - strategic-analysis §13.4 / §15.2 / §16.4.1（4 層スタックの Layer 1 位置づけ）
 > - [docs/design/phase-2b-guardrails-refactor.md](./phase-2b-guardrails-refactor.md)（bash/awk 採用継続の前提）
+>
+> **歴史的注記 (Issue [#230](https://github.com/suisya-systems/claude-org-ja/issues/230))**: 本 doc は抽出**前**の状態を出発点に書かれているため、`tools/role_configs_schema.json` および `tools/generate_worker_settings.py` を in-tree パスとして参照する箇所がある。これらは現在 [`claude-org-runtime`](https://github.com/suisya-systems/claude-org-runtime) パッケージに移管済みで、本リポジトリには存在しない（実体は `src/claude_org_runtime/settings/role_configs_schema.json` と `src/claude_org_runtime/settings/generator.py`）。以下の記述は抽出プロセスの史料として原文を保持する。
 
 本 PR は core-harness 抽出のための **Lead 決定 12 問の確定回答** + **schema 分割の具体線** + **段階的 migration** + **test/CI 戦略** + **残存リスク** を文書化する。実装は本 PR では行わない。後続の Step B〜E のワーカーが本 doc から直接コードを書き起こせる粒度を目標とする。
 
