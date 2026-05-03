@@ -11,7 +11,7 @@ claude-org リポジトリのスキル / ドキュメント / 設定を編集す
 
 ## 1. `claude-org-self-edit` ロールで settings.local.json を生成する
 
-Phase 2 (Issue #99) 以降、ワーカー `.claude/settings.local.json` は `claude-org-runtime settings generate` で **schema-driven に生成**する（Phase 4 で in-tree `tools/generate_worker_settings.py` から PyPI パッケージに移行済み。手書き編集は窓口の `permissions.deny` で禁止されている）。claude-org 自己編集タスクでは `--role claude-org-self-edit` を指定すること:
+ワーカー `.claude/settings.local.json` は `claude-org-runtime settings generate` で **schema-driven に生成**する（手書き編集は窓口の `permissions.deny` で禁止されている）。claude-org 自己編集タスクでは `--role claude-org-self-edit` を指定すること:
 
 ```bash
 claude-org-runtime settings generate \
@@ -21,7 +21,7 @@ claude-org-runtime settings generate \
   --out {worker_dir}/.claude/settings.local.json
 ```
 
-`claude-org-self-edit` ロールは schema 上で `block-org-structure.sh` hook が **既に除外**された状態で定義されている（`Edit|Write` / `Bash` matcher 双方）。`check-worker-boundary.sh` / `block-git-push.sh` などその他の hook は通常どおり残る。生成済み JSON を手で再編集してはならない（drift CI が fail する。新しい role を追加する場合、**ja の `tools/org_extension_schema.json`（drift validator `tools/check_role_configs.py` の正典）と `claude-org-runtime` の bundled `role_configs_schema.json`（generator `claude-org-runtime settings generate` の正典）の両方に追加する PR が必要**: ja 側だけ追加しても generator が新 role を知らず生成失敗、runtime 側だけ追加しても drift CI が fail する。framework 側の schema 形（`worker_roles` の許容形状定義そのもの）を変える場合は `claude-org-runtime` 側のみで完結する。両者の同期未整備状態は `docs/internal/phase4-completion-2026-05-02.md:71-77` に follow-up として記録）。
+`claude-org-self-edit` ロールは schema 上で `block-org-structure.sh` hook が **既に除外**された状態で定義されている（`Edit|Write` / `Bash` matcher 双方）。`check-worker-boundary.sh` / `block-git-push.sh` などその他の hook は通常どおり残る。生成済み JSON を手で再編集してはならない（drift CI が fail する。新しい role を追加する場合、**ja の `tools/org_extension_schema.json`（drift validator `tools/check_role_configs.py` の正典）と `claude-org-runtime` の bundled framework schema（generator `claude-org-runtime settings generate` の正典）の両方に追加する PR が必要**: ja 側だけ追加しても generator が新 role を知らず生成失敗、runtime 側だけ追加しても drift CI が fail する。framework 側の schema 形（`worker_roles` の許容形状定義そのもの）を変える場合は `claude-org-runtime` 側のみで完結する。両者の同期未整備状態は `docs/internal/phase4-completion-2026-05-02.md:71-77` に follow-up として記録）。
 
 ## 2. ワーカー指示は `CLAUDE.md` ではなく `CLAUDE.local.md` に書く
 

@@ -1,9 +1,10 @@
 # 各ロールの必要設定
 
 > **Source of truth**: このドキュメントは人間向け説明であり、機械可読な正典は
-> [`tools/role_configs_schema.json`](../../../../tools/role_configs_schema.json)。
-> 本ファイルの JSON ブロックと schema の間に drift があれば CI
-> (`tools/check_role_configs.py`) が fail する。ルール追加や
+> ja の [`tools/org_extension_schema.json`](../../../../tools/org_extension_schema.json)
+> （org-extension allow / hooks）と `claude-org-runtime` パッケージにバンドルされた
+> framework schema（generator の正典）。本ファイルの JSON ブロックと schema の間に
+> drift があれば CI (`tools/check_role_configs.py`) が fail する。ルール追加や
 > 文面変更は schema → docs の順で反映すること。
 
 org-setup が参照する、ロールごとの permissions allow と環境変数の定義。
@@ -150,7 +151,7 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
 
 **`permissions.deny` (Issue #99 Phase 2 で追加)**: ワーカー設定ファイル（`workers/<project>/.claude/settings.local.json` および worktree パス `workers/<project>/.worktrees/<task>/.claude/settings.local.json`）への **Claude の `Write` / `Edit` ツール経由の直接編集**を窓口に対して禁止する。窓口は通常モード起動（`bypassPermissions` ではない）なので、この `permissions.deny` は静的パターンマッチで常に効く。
 
-ただしこの deny は Claude のファイル編集ツール（Write/Edit）系のゲートに限定される。窓口は引き続き `Bash(python:*)` / `Bash(python3:*)` / `PowerShell(Out-File *)` を allow しているため、Bash/PowerShell から `cat > settings.local.json` のように書き出すことは技術的に可能。本 deny は **「窓口が手作業で `Edit` ツールを開いて settings を書き換える」** という主要な誤付与経路を塞ぐためのもので、`claude-org-runtime settings generate` (旧 `tools/generate_worker_settings.py`) 以外の経路を完全に遮断するものではない。完全な generator-only 化（Bash 側の遮断を含む）は Phase 3 の課題（drift CI 拡張・escape hatch と併走）。
+ただしこの deny は Claude のファイル編集ツール（Write/Edit）系のゲートに限定される。窓口は引き続き `Bash(python:*)` / `Bash(python3:*)` / `PowerShell(Out-File *)` を allow しているため、Bash/PowerShell から `cat > settings.local.json` のように書き出すことは技術的に可能。本 deny は **「窓口が手作業で `Edit` ツールを開いて settings を書き換える」** という主要な誤付与経路を塞ぐためのもので、`claude-org-runtime settings generate` 以外の経路を完全に遮断するものではない。完全な generator-only 化（Bash 側の遮断を含む）は Phase 3 の課題（drift CI 拡張・escape hatch と併走）。
 
 **renga bootstrap の重複**: 同じ理由でユーザー共通と重複するが、窓口が初回レイアウト起動やペイン制御で即時使うため明示列挙。
 
@@ -256,7 +257,7 @@ python tools/org_setup_prune.py --all                        # secretary / dispa
 
 ワーカーの設定は org-delegate の Step 1.5 で動的に作成される。
 
-> **Phase 2 以降 (Issue #99)**, **Phase 4 以降 (Issue #129)**: ワーカーの `settings.local.json` は `claude-org-runtime settings generate` が同パッケージにバンドルされた `role_configs_schema.json` の `worker_roles[<role>]` から生成する（`default` / `claude-org-self-edit` / `doc-audit` の 3 role）。本セクションに掲載されている JSON はあくまでリファレンス用で、手書き編集は禁止（drift CI が fail する）。新しい permission パターンが必要な場合は schema に role を追加する PR を起こすこと。
+> ワーカーの `settings.local.json` は `claude-org-runtime settings generate` が同パッケージにバンドルされた framework schema の `worker_roles[<role>]` から生成する（`default` / `claude-org-self-edit` / `doc-audit` の 3 role）。本セクションに掲載されている JSON はあくまでリファレンス用で、手書き編集は禁止（drift CI が fail する）。新しい permission パターンが必要な場合は schema に role を追加する PR を起こすこと。
 
 ```json
 {

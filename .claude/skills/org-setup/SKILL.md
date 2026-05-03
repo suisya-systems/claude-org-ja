@@ -116,7 +116,7 @@ prune ツールが読むだけで、書き換えはしない）:
 `.gitignore` 対象（個人設定のため。`.gitignore:23-25` で `.claude/settings.local.override.json` と
 `.claude/settings.local.json.bak.*` を ignore 済み。`.curator/.claude/` と `.dispatcher/.claude/`
 配下はディレクトリごと ignore のため自動的に対象）。チームで共有したい設定は
-`permissions.md` 側に追加し、schema (`tools/role_configs_schema.json`) も同時に更新する。
+`permissions.md` 側に追加し、schema (`tools/org_extension_schema.json`) も同時に更新する。
 
 `tools/check_role_configs.py` は同じ override ファイルを読み、その allow を
 closed-world 検証から除外する（`_load_override_allow`）。よって override に追加した
