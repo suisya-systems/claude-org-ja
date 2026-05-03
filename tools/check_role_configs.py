@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Phase 5 shim audit: confirmed minimal as of 2026-05-04 (#130)
 """Role-based settings.local.json integrity checker (Step B shim).
 
 The validation engine now lives in ``core_harness.validator``. This
