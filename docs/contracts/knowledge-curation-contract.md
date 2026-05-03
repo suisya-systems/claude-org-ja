@@ -43,10 +43,10 @@ The harness's knowledge surface comprises the artifacts listed below. Each entry
 
 - **Path**: `knowledge/raw/archive/` — destination for raw entries that have been consumed by curation.
 - **Format**: Same as 1.1 (the file is moved, not transformed); files retain their `<!-- curated -->` marker.
-- **Owner**: curator (move-only authority; per Set A § Role: curator constraints and Q9 ratified decision, the curator may archive but MUST NOT delete raw entries).
+- **Owner**: curator. The curator's authority is to move raw entries into this directory and to apply the `<!-- curated -->` marker (or other annotations) on entries already moved here, per the move-then-mark rule in §1.1. Per Set A § Role: curator constraints and Q9, the curator may archive but MUST NOT delete raw entries.
 - **Readers**: curator (occasional re-read for context when a related raw re-appears); `skill-audit` (in scope: the 90-day grep window covers archived entries too).
 - **Lifecycle**: append-only by move. Entries are never moved back out of `archive/`.
-- **Retention**: `knowledge/raw/archive/` is contractually permanent. Archived entries are NOT subject to any retention bound: storage cost is negligible and historical value is high. Pruning, if ever undertaken, is a one-shot human-driven maintenance action and is explicitly NOT automated; no skill, hook, or scheduled job in this harness is permitted to delete archived raw entries.
+- **Retention**: under the harness contract, `knowledge/raw/archive/` is permanent: no skill, hook, scheduled job, or harness role (secretary / dispatcher / curator / worker) is permitted to delete archived raw entries. The only sanctioned removal path is an out-of-band, human-operated maintenance action (e.g., a one-shot script the operator runs by hand outside the harness) — this lies outside Set E because the harness itself does not invoke it. There is no time-based retention bound.
 
 ### 1.3 `knowledge/curated/{topic}.md`
 
@@ -105,7 +105,7 @@ The lifecycle that moves a learning from initial capture to a reusable skill con
 - **Effect**: new skill file under `.claude/skills/{name}/`; `skill-candidates.md` entry transitions to `approved` (with `決定日`) or `rejected` (with `却下理由`). `merged-into-{existing-skill}` is used when the candidate's value is folded into an existing skill rather than creating a new one.
 - **Constraint**: terminal-status entries are retained as history, not deleted (per the file's "運用メモ").
 - **Decision authority**: the human is the sole decision authority for skill promotion. The secretary's contracted role is to batch-prompt the human once the `pending` count crosses N=5 (per §1.4). Auto-approval by the secretary, and second-reviewer consultation by the dispatcher, are explicitly NOT contracted.
-- **Execution path**: skill creation (writing `.claude/skills/{name}/SKILL.md` from the work-skill template, plus the corresponding `skill-candidates.md` status transition) is delegated to a worker task via `org-delegate`, consistent with Set A's principle "実作業は全てワーカーに委譲する". The secretary MUST NOT edit skill files in place, and the dispatcher MUST NOT write skill files even when the candidate originated from `org-retro` Step 4.2; in that case the dispatcher's role is limited to recording the queue transition through `skill-eligibility-check`'s normal append path.
+- **Execution path**: skill creation (writing `.claude/skills/{name}/SKILL.md` from the work-skill template, plus the corresponding `skill-candidates.md` status transition) is delegated to a worker task via `org-delegate`, consistent with Set A's principle "実作業は全てワーカーに委譲する". The worker write-surface carve-out for this task is recorded in §3.1. The secretary MUST NOT edit skill files in place, and the dispatcher MUST NOT write skill files even when the candidate originated from `org-retro` Step 4.2; in that case the dispatcher's role is limited to recording the queue transition through `skill-eligibility-check`'s normal append path. The current `.claude/skills/org-retro/SKILL.md` Step 4.2 still has the dispatcher creating the SKILL.md and updating `skill-candidates.md` status directly; this is non-conformant with the contracted execution path and is tracked as a follow-up Issue ("feat(org-retro): hand skill-promotion execution off to a delegated worker, not the dispatcher itself").
 
 ---
 
@@ -113,8 +113,10 @@ The lifecycle that moves a learning from initial capture to a reusable skill con
 
 ### 3.1 Worker boundary
 
-- **MAY write**: `knowledge/raw/{YYYY-MM-DD}-{topic}.md`, full-validation mode only. Topic prefix MUST NOT collide with the dispatcher's `delegation-` namespace.
-- **MUST NOT write**: `knowledge/curated/`, `knowledge/raw/archive/`, `knowledge/skill-candidates.md`. Workers also cannot reproduce the `knowledge/` directory inside their `worker_dir` (per Set A § Role: worker constraints).
+- **MAY write (default)**: `knowledge/raw/{YYYY-MM-DD}-{topic}.md`, full-validation mode only. Topic prefix MUST NOT collide with the dispatcher's `delegation-` namespace.
+- **MAY write (delegated promotion task only)**: `.claude/skills/{name}/SKILL.md` (and surrounding files under `.claude/skills/{name}/`) AND the corresponding `knowledge/skill-candidates.md` status transition (the entry's `status` / `決定日` / `却下理由` / `統合先` fields), but ONLY when the worker's brief explicitly delegates a §2.4 skill-promotion task. Outside such a brief, these paths remain forbidden. Set A § Role: worker today does not enumerate these as worker write surfaces; alignment is tracked as a follow-up Issue ("docs(contracts): extend Set A worker write surface to skill-promotion outputs").
+- **MAY write (delegated scrub task only)**: any path under `knowledge/` from which the worker is removing operator-private content discovered per §3.4. The scope is strictly the redaction described in the brief; no other edits.
+- **MUST NOT write (otherwise)**: `knowledge/curated/`, `knowledge/raw/archive/`, `knowledge/skill-candidates.md`, `.claude/skills/`. Workers also cannot reproduce the `knowledge/` directory inside their `worker_dir` (per Set A § Role: worker constraints).
 - **MAY read**: `knowledge/curated/` and `knowledge/raw/` as reference material (per Set A § Role: worker reads).
 
 ### 3.2 Curator boundary
@@ -136,7 +138,10 @@ Any operator-personal memory layer that may exist outside the repo (in the opera
 - **Stance**: shareable by default. Both `knowledge/raw/` and `knowledge/curated/` are committed to the OSS repository and treated as publishable artifacts.
 - **Forbidden content**: operator-private content MUST NOT appear in either directory. This includes operator names, internal-system identifiers, customer data, secrets, internal URLs, and any other content the operator would not publish to a public repository.
 - **Worker obligation**: workers MUST be informed of this no-operator-private-content rule via their delegation brief; the `org-delegate` instruction template carries the rule (tracked as a follow-up Issue: "docs(skills): add 'no operator-private content in knowledge/' guidance to org-delegate instruction template" until the template is updated).
-- **Scrub ownership**: on discovery of operator-private content in `knowledge/`, the secretary owns the scrub step — either inline (for trivial redactions) or by delegating to a worker (for substantive rewrites), per Set A's secretary-vs-worker editing boundary.
+- **Scrub ownership**: on discovery of operator-private content in `knowledge/`, the secretary owns triage and routes the scrub to the role that holds write authority for the affected path:
+  - `knowledge/raw/` or `knowledge/raw/archive/` content → delegated to a worker under the §3.1 "delegated scrub task" carve-out.
+  - `knowledge/curated/` content → delegated to the curator (the only role with write authority on `knowledge/curated/` per §1.3 / §3.2). The secretary issues the scrub request via renga-peers; the curator performs the redaction in its next cycle.
+  The secretary does NOT edit either path in place.
 
 ---
 
@@ -153,7 +158,7 @@ The knowledge tree today carries no schema-version field on any artifact. The fo
 The 9 Lead-confirmed decisions ratified on 2026-05-03 cluster as follows:
 
 1. **Curator marking on raw entries (§1.1)** — move-then-mark. Active `knowledge/raw/` is immutable from the curator; marking happens on the archived copy. Reconciles with Set A § Role: curator's archive-only authority. Implementation in `org-curate` Step 4 currently mutates in place and is tracked as a follow-up.
-2. **`knowledge/raw/archive/` retention (§1.2)** — contractually permanent, no automated pruning. Storage cost is negligible; historical value high.
+2. **`knowledge/raw/archive/` retention (§1.2)** — permanent under the harness contract; no harness role or scheduled job may delete archived entries, and there is no time-based bound. Out-of-band human maintenance (e.g., a manually-run script) is outside Set E. Storage cost is negligible; historical value high.
 3. **`knowledge/curated/` edit policy (§1.3)** — free restructure permitted in- and out-of-cycle. Append-only contradicts the curator's dedup purpose; the only invariant is no silent removal of substantive content.
 4. **Curated `{topic}` naming (§1.3)** — topic-based recommendation with explicit permission to mix the three advisory categories in a single file. Forced splitting is treated as an over-segmentation hazard.
 5. **Skill-candidate clearing SLA (§1.4)** — best-effort, no SLA. Inherits Set A's "no human-response-time contract" principle.
