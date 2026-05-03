@@ -10,15 +10,24 @@ description: >
 
 knowledge/raw/ に蓄積された生の学びを読み、分類・統合して knowledge/curated/ に書き出す。
 
+## Step 0: 移行 sweep（旧データの一掃）
+
+閾値チェックより**先に**、無条件で実施する。これは新仕様への切り替え時に旧 in-place marking で残った active raw を片付けるための、毎回走らせる移行 cleanup である:
+
+1. `mkdir -p knowledge/raw/archive/`（idempotent）
+2. `knowledge/raw/` 直下のファイルのうち、先頭に `<!-- curated -->` を含むものを `knowledge/raw/archive/` に move する。マーカー付与は不要（既に付いている）
+3. このステップは raw ファイルが 0 件でも実行する
+
+これにより、新規 raw が閾値未満（5 件未満）の環境でも、旧マーカー付きファイルは sweep され、active raw 側に残留しない。新仕様化以降は該当ファイルが恒常的にゼロになり、本 Step は no-op になる。
+
 ## Step 1: 閾値チェック
 
-1. `knowledge/raw/` 直下（`knowledge/raw/archive/` を**除く**）のファイルを列挙する
-2. **移行互換**: 旧実装の in-place marking で `<!-- curated -->` が付いたまま active raw に残っているファイルがあれば、未整理カウント対象から除外し、Step 4 の archive 移送対象（マーカー付与は不要、move のみ）に追加する。これにより旧データが再 curation されない
-3. 残ったファイル（マーカーなし）を未整理としてカウントする
-4. 未整理ファイルが5件未満なら、何もせずスキップする
-5. 5件以上なら次のステップに進む
+1. `knowledge/raw/` 直下（`knowledge/raw/archive/` を**除く**）のファイルを列挙する（Step 0 sweep 済みのため active raw にマーカー付きファイルは存在しない前提）
+2. それらをすべて未整理としてカウントする
+3. 未整理ファイルが5件未満なら、何もせずスキップする
+4. 5件以上なら次のステップに進む
 
-> Set A § Role: curator により、curator の書き込み権限は `knowledge/curated/` と `knowledge/raw/archive/`（move 権限）に限定される。`knowledge/raw/` 直下の active entry は immutable。移行互換のための旧マーカー付きファイルの archive 移送は、書き換えではなく move なのでこの制約に抵触しない。
+> Set A § Role: curator により、curator の書き込み権限は `knowledge/curated/` と `knowledge/raw/archive/`（move 権限）に限定される。`knowledge/raw/` 直下の active entry は immutable。Step 0 の移行 sweep も書き換えではなく move なので、この制約に抵触しない。
 
 ## Step 2: 読み込みと分類
 
