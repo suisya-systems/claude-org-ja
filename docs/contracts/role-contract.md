@@ -1,10 +1,10 @@
-# Contract Set A — Role Contract (Outline)
+# Contract Set A — Role Contract
 
-> **Status**: Outline / skeleton. This document is the structural extraction of the four roles (`secretary`, `dispatcher`, `curator`, `worker`) as they exist in the current `claude-org` implementation, with `[TBD by Lead]` placeholders left for design decisions that the Lead must fill in before this contract is ratified.
+> **Status**: Ratified (2026-05-03). Lead-confirmed decisions for all open questions. This document specifies the four roles (`secretary`, `dispatcher`, `curator`, `worker`) as they exist in the current `claude-org` implementation.
 >
 > **Scope**: Phase 1 Contract Set A only. Contract Sets B–E (state, messaging, lifecycle, knowledge) are tracked in #122–#125 and out of scope here.
 >
-> **Method**: Each role section below is filled from empirical sources (current `CLAUDE.md` files, `org-start` / `org-delegate` skills, `org-config.md`, the worker template). Sentences sourced from current behavior are written as facts. Open design questions are marked `[TBD by Lead]`.
+> **Method**: Each role section below is filled from empirical sources (current `CLAUDE.md` files, `org-start` / `org-delegate` skills, `org-config.md`, the worker template). Sentences sourced from current behavior are written as facts. Design decisions left open in the prior outline were ratified by the Lead in the 2026-05-03 Q&A session.
 >
 > **Empirical sources consulted**:
 > - `CLAUDE.md` (root, secretary directives)
@@ -60,9 +60,9 @@
 - **Communication discipline** — no jargon to the human (e.g., "PR #12" → "ログイン機能の変更を提出しました"). Must offer choices when a request is ambiguous.
 - **Reply addressing** — when forwarding to dispatcher / curator / workers, must use stable pane names (`dispatcher`, `curator`, `worker-{task_id}`), not numeric `from_id`s.
 - **Settings generation** — must invoke `claude-org-runtime settings generate` for worker `settings.local.json`; hand-edited JSON is rejected by drift CI.
-- **[TBD by Lead]** — Hard guarantee on response latency for human messages (e.g., must yield to user within N seconds of receiving any worker/dispatcher report)? Currently implicit ("窓口はディスパッチャーへの委託後すぐに対話に戻れる"), not specified as a contract.
-- **[TBD by Lead]** — Whether the secretary may ever bypass the dispatcher to spawn panes directly (current implementation says no for ordinary delegation, but `org-start` Step 2/3 has the secretary spawn dispatcher and curator). Should this carve-out be codified?
-- **[TBD by Lead]** — Authoritative list of the journal events the secretary is permitted to emit (today the events are de facto whatever the helper accepts; a closed-set contract is not yet defined).
+- **Human-dialogue priority (soft SLA)** — During active human dialogue, the secretary must yield to the human ahead of background worker / dispatcher reports. While idle, response is best-effort with no numeric latency guarantee.
+- **Direct-spawn carve-out** — The secretary may directly spawn long-lived infrastructure panes (dispatcher, curator) only during `/org-start`. All other pane spawns must go through the dispatcher.
+- **Authoritative journal events** — The set of journal events the secretary is permitted to emit is defined by `docs/journal-events.md`, which is the authoritative event registry. Each event there must carry an `emitted-by` role tag. (Follow-up: an Issue tracks adding `emitted-by` annotations to that registry if not already present.)
 
 ### Lifecycle / boundaries
 
@@ -74,7 +74,7 @@
   - Must NOT spawn workers directly via `spawn_claude_pane` for ordinary delegations; must go through `DELEGATE` to the dispatcher.
   - Must NOT respond to worker reports by acting locally (no in-pane code edits, no `git commit` of worker output) — auto-mode classifier blocks this anyway as scope-exceeded.
   - Must NOT write `.state/journal.jsonl` with raw `>>` append; must use the helper.
-- **[TBD by Lead]** — What is the secretary's contract during `/org-suspend`? (Today: persists `org-state.md` + worker state + journal. Should the contract enumerate the exact files that must be flushed and their schemas?)
+- **`/org-suspend` contract** — The authoritative flush list (which files must be persisted and their schemas) is defined by the `/org-suspend` skill at `.claude/skills/org-suspend/SKILL.md`. This contract does not enumerate files itself; the skill is the single source of truth.
 
 ---
 
@@ -129,9 +129,9 @@
 - **Journal append discipline** — every event goes through `tools/journal_append.sh` or `tools/journal_append.py` (the latter required when payload contains nested objects such as `cursor`).
 - **CLOSE_PANE discipline** — must complete retro Steps 1–2 before `close_pane`; closing first destroys evidence. If secretary is unreachable inside 5 minutes, write `retro_deferred` and skip the close (do NOT write a "completion report missing" retro conclusion).
 - **De-dup contract** — `notify_sent` records gate further notifications for the same `(worker, kind)` within 30 seconds; `anomaly_observed` records do NOT count toward de-dup.
-- **[TBD by Lead]** — Should the dispatcher be permitted to run without a curator present? (Current `delegate-plan` balanced split filters dispatcher as a candidate only when curator is rect-adjacent; behavior with no curator is `dispatcher excluded`.)
-- **[TBD by Lead]** — Authoritative list of inspect-detected approval-prompt regexes (currently maintained as a growing list in `.dispatcher/CLAUDE.md` § (b); should it be promoted to a contract artifact and versioned?)
-- **[TBD by Lead]** — Maximum number of concurrent workers the dispatcher contracts to monitor (today bounded only by renga's 16-pane cap and balanced-split feasibility).
+- **Curator dependency** — The dispatcher may operate without a curator present. Balanced-split logic adapts when the curator is absent. Knowledge curation is best-effort and is not a delegation prerequisite.
+- **Approval-prompt regex registry** — The dispatcher uses inspect-based detection per `.dispatcher/CLAUDE.md` § (b), which is the authoritative registry of approval-prompt regexes. The contract does not duplicate the list.
+- **Concurrency** — No contractual concurrency limit beyond renga's pane cap (16) and balanced-split feasibility.
 
 ### Lifecycle / boundaries
 
@@ -145,7 +145,7 @@
   - Never close a worker pane before the retro step finishes (data loss).
   - Never use `codex:rescue` or auto-approve human-judgment prompts.
   - Never reply to the human directly.
-- **[TBD by Lead]** — Recovery contract on dispatcher pane crash: today, `dispatcher-event-cursor.txt` may lose ≤5 s of events; reconciliation falls back to `list_panes`. Should the contract guarantee at-most-N-seconds of missed lifecycle events?
+- **Crash recovery** — Best-effort. After a dispatcher pane crash, reconciliation via `list_panes` is authoritative on restart. No numeric event-loss bound is contracted.
 
 ---
 
@@ -178,9 +178,9 @@
 - **Glob fallback** — when `Glob` returns 0 results, must verify with `Bash ls` to detect missing-directory vs. genuinely empty.
 - **No human dialogue** — `.curator/CLAUDE.md` "人間と直接対話することはない". Communication only via secretary.
 - **Reply addressing** — all messages to secretary use stable `to_id="secretary"`.
-- **[TBD by Lead]** — Whether the curator may modify or delete entries in `knowledge/raw/` after curating them, or must always treat raw as append-only. (Current skill behavior is implicit; not contracted.)
-- **[TBD by Lead]** — Frequency contract: is `/loop 30m` a hard requirement or a default the human may tune? `skill-audit` already names a state-based override; the contract should specify which is authoritative.
-- **[TBD by Lead]** — SLA for proposing skill candidates (`skill-eligibility-check` integration — when must a curated learning be promoted to a skill candidate?).
+- **`knowledge/raw/` write authority** — The curator may move processed entries from `knowledge/raw/` into `knowledge/raw/archive/` after successful curation. Outright deletion of raw entries is forbidden.
+- **Loop cadence** — `/loop 30m /org-curate` is the default cadence. The human may override it via `/org-start` configuration; that override is authoritative when present.
+- **Skill-candidate promotion** — The curator promotes a curated learning to a skill candidate when the same pattern appears in 3 or more raw entries (cf. memory `feedback_tool_after_three_repeats`). No hard time SLA applies.
 
 ### Lifecycle / boundaries
 
@@ -191,8 +191,8 @@
 - **Hard prohibitions**:
   - Must NOT write to `.state/`, `registry/`, or worker directories — its write surface is `knowledge/curated/` and the skill-candidate queue only.
   - Must NOT talk to the human directly or to workers.
-  - Must NOT delete `knowledge/raw/` entries on its own [TBD by Lead — confirm].
-- **[TBD by Lead]** — Whether the curator participates in `/org-suspend` (today it has no persisted state beyond what is already on disk in `knowledge/curated/`).
+  - Must NOT delete `knowledge/raw/` entries. Moving processed entries into `knowledge/raw/archive/` is permitted; outright deletion is forbidden.
+- **`/org-suspend` participation** — The curator does not participate in `/org-suspend`. It has no in-memory state requiring flush; its pane is closed during suspend without additional action.
 
 ---
 
@@ -200,7 +200,7 @@
 
 ### Responsibilities
 
-- Performs the actual engineering work for a single task ID: code edits, builds, tests, lints, type-checks, and `git commit` inside its assigned `worker_dir`. **[TBD by Lead]** — Whether the worker is also responsible for the initial `git clone` / `git init` / `worktree add` of `worker_dir` is currently inconsistent across sources: `.claude/skills/org-delegate/SKILL.md` Step 1.5 puts directory preparation (clone, worktree add, CLAUDE.md placement) on the **secretary** before spawn, while `.claude/skills/org-delegate/references/instruction-template.md` (Pattern A / C sections) instructs the **worker** to perform `git clone` / `git init` itself. Lead must pick one boundary.
+- Performs the actual engineering work for a single task ID: code edits, builds, tests, lints, type-checks, and `git commit` inside its assigned `worker_dir`. Directory preparation is **the secretary's responsibility**: the secretary owns `git clone` / `git init` / `git worktree add` for `worker_dir` and places `CLAUDE.md` / `.claude/settings.local.json` BEFORE spawn (per `org-delegate` Step 1.5). The worker's first action is to `pwd`-verify; it does NOT clone, init, or worktree-add. (The conflicting wording in `.claude/skills/org-delegate/references/instruction-template.md` Pattern A / C sections is to be corrected as a follow-up.)
 - For `full` validation depth: runs the project's standard verification (tests / lint / type-check) to green before reporting completion. If `codex` CLI is available, additionally runs the Codex self-review gate (3-round cap on same-category findings).
 - For `minimal` validation depth: applies the requested fix, commits, and returns a single-line `done: {sha} {files}` report — no extra verification, no Codex.
 - Reports completion / progress / blockers / `APPROVAL_BLOCKED` / `ERROR` directly to the secretary (NOT to the dispatcher) via renga-peers.
@@ -248,9 +248,8 @@
   - Do NOT delegate review to another worker.
 - **Pane retention after PR** — must NOT exit after PR creation. Wait for explicit close instruction from secretary (merged / explicitly closed / long idle).
 - **Windows specifics** — Python is `py -3` (not `python`); files containing Japanese must specify `encoding="utf-8"`.
-- **[TBD by Lead]** — Authoritative completion report schema for `full` mode (today described in prose in worker template; the contract should specify required vs. optional fields).
-- **[TBD by Lead]** — Maximum lifetime of a worker pane before the contract requires either completion or explicit extension (today bounded only by intervention triggers in `org-delegate` Step 5).
-- **[TBD by Lead]** — Whether a worker is permitted to spawn sub-workers (currently neither implemented nor explicitly forbidden in the worker template; the auto classifier would block it, but a contract statement would make it explicit).
+- **Full-mode completion-report schema** — The structure of `full`-mode completion reports follows `.claude/skills/org-delegate/references/worker-claude-template.md`. The contract does not enumerate a separate schema.
+- **Worker max lifetime** — No hard cap is contracted. The intervention triggers in `org-delegate` Step 5 (30-minute same-phase, 1-hour silent) are authoritative.
 
 ### Lifecycle / boundaries
 
@@ -267,18 +266,17 @@
   - Must NOT push to GitHub.
   - Must NOT exit autonomously after PR creation.
   - Must NOT switch validation depth on its own (depth is set by secretary; if unspecified or ambiguous, ask secretary).
-- **[TBD by Lead]** — Whether worker is contractually responsible for cleaning up its own branch on close (currently: Pattern A keeps directory, Pattern B removes worktree but keeps branch, Pattern C keeps directory; branch deletion never happens).
+  - Must NOT spawn sub-workers. If sub-tasking is required, the worker escalates to the secretary, which decides whether to delegate.
+- **Branch / worktree cleanup** — Branches are retained as PR audit trail (remote auto-deletion via `gh pr merge --delete-branch` notwithstanding; local retention is harmless). Worktree cleanup follows the pattern set in `org-delegate` Step 5 (Pattern A: directory kept; Pattern B: worktree removed; Pattern C: directory kept). The worker has no cleanup responsibility.
 
 ---
 
-## Open questions consolidated (for Lead fill-in)
+## Decision rationale digest
 
-The `[TBD by Lead]` markers above are the explicit fill-in points. They cluster into:
+A digest of the Lead-confirmed choices made during the 2026-05-03 Q&A session, by cluster:
 
-1. **Latency / SLA contracts** (secretary response time, dispatcher event-loss bound, curator cadence override authority).
-2. **Closed-set enumerations** (allowed journal events per role, approval-prompt regex set, full-mode completion-report schema, worker max lifetime).
-3. **Carve-outs to "no direct spawn"** (secretary spawning dispatcher/curator during `/org-start`).
-4. **Self-management permissions** (curator deleting raw entries, worker spawning sub-workers, worker branch cleanup at close).
-5. **Suspend participation contracts** (which files each role flushes; whether curator participates).
-
-These are the design decisions that must be settled before Contract Set A is ratified; the structural skeleton is fixed.
+1. **Latency / SLA contracts** — Soft SLA only. The secretary yields to active human dialogue; idle response is best-effort. Dispatcher crash recovery is best-effort with `list_panes` reconciliation as authority. Curator cadence is a tunable default, not a hard contract.
+2. **Closed-set enumerations** — Avoided. Authoritative registries live next to the code: `docs/journal-events.md` for journal events, `.dispatcher/CLAUDE.md` § (b) for approval-prompt regexes, `worker-claude-template.md` for the full-mode completion-report shape. The contract references these single-source-of-truth artifacts rather than duplicating their content. Worker max lifetime is left uncapped, governed by `org-delegate` Step 5 intervention triggers.
+3. **Carve-outs to "no direct spawn"** — Codified. The secretary may directly spawn dispatcher and curator only during `/org-start`; all other pane spawns route through the dispatcher.
+4. **Self-management permissions** — Curator may archive but not delete `knowledge/raw/` entries. Workers may not spawn sub-workers (must escalate to secretary). Workers have no branch / worktree cleanup responsibility — branches are kept as audit trail; worktree handling follows `org-delegate` Step 5 patterns.
+5. **Suspend participation contracts** — `/org-suspend` skill at `.claude/skills/org-suspend/SKILL.md` is the authoritative flush list (the contract does not enumerate files). The curator does not participate in `/org-suspend`.
