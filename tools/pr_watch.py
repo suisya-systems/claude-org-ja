@@ -15,9 +15,20 @@ Behavior:
   ``--repo`` is omitted.
 * Spawns ``gh pr checks <PR> --watch --interval <SEC>`` and forwards
   its stdout/stderr.
-* Maps the gh exit code to ``passed`` / ``failed`` / ``canceled`` and
-  appends one JSON-Lines record to ``<repo_root>/.state/journal.jsonl``
-  (anchored to ``tools/..`` so cwd doesn't matter).
+* After the watch loop returns, queries
+  ``gh pr checks <PR> --json bucket,state,name`` for per-check
+  ``bucket`` (gh's documented bucket values are
+  ``{pass, fail, pending, skipping, cancel}``) so the journal status
+  reflects what CI actually decided rather than just the gh process'
+  exit code (gh exits non-zero on a transient watch error too, and
+  exit 8 specifically means "Checks pending", not "failed").
+  Classifies as ``passed`` (all pass/skipping), ``failed``
+  (≥1 fail/cancel), ``incomplete`` (any pending / unknown bucket /
+  empty list), or ``canceled`` (parent SIGINT). Falls back to
+  exit-code-based classification only if the JSON probe itself
+  fails. Appends one JSON-Lines record to
+  ``<repo_root>/.state/journal.jsonl`` (anchored to ``tools/..`` so
+  cwd doesn't matter).
 * Prints the final status as a single line on stdout and exits with
   the gh process' exit code.
 
@@ -25,7 +36,8 @@ The journal payload shape is::
 
     {"ts": "<ISO8601>", "event": "ci_completed",
      "pr": <int>, "repo": "<owner/repo>",
-     "status": "passed|failed|canceled", "duration_sec": <int>}
+     "status": "passed|failed|incomplete|canceled",
+     "duration_sec": <int>}
 
 No new third-party dependencies; only the standard library plus the
 already-pinned ``core_harness.audit`` for the journal write.
@@ -87,27 +99,111 @@ def _resolve_repo() -> str:
     return repo
 
 
+# gh's `bucket` field (see `gh pr checks --help`) categorizes a check's
+# `state` into one of these buckets: "pass", "fail", "pending",
+# "skipping", "cancel". We treat fail+cancel as failure signals,
+# pass+skipping as success, and pending as still-running.
+_FAILED_BUCKETS = frozenset({"fail", "cancel"})
+_PASSED_BUCKETS = frozenset({"pass", "skipping"})
+_PENDING_BUCKETS = frozenset({"pending"})
+
+
 def _classify(exit_code: int) -> str:
-    """Map a `gh pr checks --watch` exit code to a status string.
+    """Fallback classifier used only when the JSON probe is unavailable.
 
     Reference: https://cli.github.com/manual/gh_help_exit-codes and
     https://cli.github.com/manual/gh_pr_checks. With ``--watch`` gh
     blocks until pending checks resolve and then returns 0 (all
-    checks passed) or 8 (at least one check failed). Exit code 2 is
-    gh's standard cancellation code (e.g. user interrupt). Other
-    non-zero values are treated as a generic failure so downstream
-    automation does not silently mistake an error for success.
+    checks passed). Exit code 2 is gh's standard cancellation code
+    (e.g. user interrupt). Exit code 8 means "Checks pending" per
+    gh's docs (NOT failure). Other non-zero values most likely
+    indicate an internal gh error rather than a CI verdict, so they
+    map to the conservative ``incomplete`` status — refusing to
+    silently turn a transient error into "passed" while also not
+    libelling green CI as "failed".
 
     SIGINT raised in the parent (Python ``KeyboardInterrupt``) is
     normalized to 2 in :func:`main` before reaching this function.
+
+    Note: as of Issue #224 the primary classifier is
+    :func:`_classify_from_checks`, which inspects per-check JSON. This
+    fallback is only used when the JSON probe itself is unavailable.
     """
     if exit_code == 0:
         return "passed"
     if exit_code == 2:
         return "canceled"
     if exit_code == 8:
-        return "failed"
-    return "failed"
+        return "incomplete"
+    return "incomplete"
+
+
+def _classify_from_checks(checks: "list[dict]") -> str:
+    """Classify CI status from `gh pr checks --json bucket,state,name` output.
+
+    gh's documented ``bucket`` values are
+    ``{pass, fail, pending, skipping, cancel}``.
+
+    * Empty list → ``incomplete`` (no checks reported).
+    * Any bucket in :data:`_FAILED_BUCKETS` (``fail``/``cancel``) →
+      ``failed``.
+    * Any bucket in :data:`_PENDING_BUCKETS` → ``incomplete``.
+    * All buckets in :data:`_PASSED_BUCKETS` (``pass``/``skipping``)
+      → ``passed``.
+    * Anything else (unrecognized bucket) → ``incomplete``
+      (conservative).
+    """
+    if not checks:
+        return "incomplete"
+    has_pending_or_unknown = False
+    for chk in checks:
+        bucket = (chk.get("bucket") or "").lower()
+        if bucket in _FAILED_BUCKETS:
+            return "failed"
+        if bucket in _PASSED_BUCKETS:
+            continue
+        # pending, empty, or any unrecognized bucket → conservative incomplete.
+        has_pending_or_unknown = True
+    return "incomplete" if has_pending_or_unknown else "passed"
+
+
+def _fetch_checks(pr: int, repo: str) -> "list[dict] | None":
+    """Return parsed `gh pr checks <pr> --json` results, or ``None`` on error.
+
+    Requests ``bucket,state,name``: ``bucket`` is the only field we
+    classify on (see :func:`_classify_from_checks`); ``state`` and
+    ``name`` are fetched purely to aid debugging when something goes
+    sideways.
+
+    ``gh pr checks`` exits non-zero on multiple non-error conditions:
+    ``8`` for "Checks pending" and ``1`` when at least one check has
+    failed (gh treats a red PR as a CLI error too). In both cases
+    gh still writes the requested JSON to stdout. So we trust the
+    JSON whenever it parses as a list, and only fall back when the
+    output is unparseable or the binary is missing entirely — that's
+    the only condition under which downgrading to the exit-code
+    classifier is appropriate.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "gh", "pr", "checks", str(pr),
+                "--repo", repo,
+                "--json", "bucket,state,name",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return None
+    try:
+        data = json.loads(result.stdout or "")
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, list):
+        return None
+    return [c for c in data if isinstance(c, dict)]
 
 
 def _pr_exists(pr: int, repo: str) -> bool:
@@ -186,6 +282,7 @@ def main(argv: "list[str] | None" = None) -> int:
         "--interval", str(args.interval),
     ]
     started = time.monotonic()
+    canceled = False
     try:
         completed = subprocess.run(cmd)
         exit_code = completed.returncode
@@ -193,8 +290,29 @@ def main(argv: "list[str] | None" = None) -> int:
         # Normalize parent-side cancellation to gh's standard exit code 2
         # so callers (and the journal status mapping) see a portable signal.
         exit_code = 2
+        canceled = True
     duration = int(round(time.monotonic() - started))
-    status = _classify(exit_code)
+
+    # gh's documented cancellation exit code is 2 (parent SIGINT or
+    # subprocess-side Ctrl-C). Honor it directly so we don't overwrite a
+    # genuine cancellation with whatever the JSON probe returns.
+    if canceled or exit_code == 2:
+        status = "canceled"
+    else:
+        # Issue #224: gh exit 1 from a transient watch-loop error must not
+        # be conflated with "CI failed". Re-derive the status from the
+        # per-check JSON; only fall back to the exit code if the probe
+        # itself fails.
+        checks = _fetch_checks(args.pr, repo)
+        if checks is None:
+            sys.stderr.write(
+                "tools/pr_watch.py: warning: could not query check results "
+                "via `gh pr checks --json`; falling back to exit-code "
+                "classification.\n"
+            )
+            status = _classify(exit_code)
+        else:
+            status = _classify_from_checks(checks)
 
     Journal(JOURNAL_PATH).append(
         "ci_completed",

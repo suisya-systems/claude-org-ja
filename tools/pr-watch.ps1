@@ -22,11 +22,23 @@ $ScriptPath = Join-Path $ScriptDir 'pr_watch.py'
 # target points at a moved python.exe — Get-Command says "yes, py is there"
 # but invoking it fails with "Unable to create process". Verifying with a
 # real exec lets us fall through to plain `python` / `python3` in that case.
+#
+# Issue #224: `--version` passing is necessary but not sufficient — pr_watch.py
+# does `from core_harness.audit import Journal`, so a Python whose
+# site-packages lacks core_harness will exit 1 with a confusing ImportError
+# at runtime. Probe the import too so we fall through to a sibling
+# interpreter that *does* have core_harness installed.
 function Test-Interpreter {
     param([string]$Exe, [string[]]$Prefix)
     if (-not (Get-Command $Exe -ErrorAction SilentlyContinue)) { return $false }
     try {
         $null = & $Exe @Prefix '--version' 2>&1
+        if ($LASTEXITCODE -ne 0) { return $false }
+        # Combined probe: require Python 3 AND core_harness.audit importable.
+        # Bare `python`/`python3` on some systems still aliases to Python 2,
+        # which would pass `--version` but die on pr_watch.py's f-strings.
+        $probe = 'import sys; assert sys.version_info[0] == 3; import core_harness.audit'
+        $null = & $Exe @Prefix '-c' $probe 2>&1
         return ($LASTEXITCODE -eq 0)
     } catch {
         return $false
@@ -50,7 +62,7 @@ foreach ($cand in $candidates) {
 }
 
 if (-not $pyExec) {
-    [Console]::Error.WriteLine('tools/pr-watch.ps1: no working Python interpreter found (tried py -3, python, python3).')
+    [Console]::Error.WriteLine('tools/pr-watch.ps1: no working Python interpreter found with core_harness.audit installed (tried py -3, python, python3).')
     exit 127
 }
 
