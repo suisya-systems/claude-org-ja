@@ -7,7 +7,7 @@ invoke this script to block on ``gh pr checks --watch`` and append a
 
 Usage::
 
-    py -3 tools/pr_watch.py <PR> [--repo OWNER/REPO] [--interval SEC]
+    py -3 tools/pr_watch.py --pr <PR> [--repo OWNER/REPO] [--interval SEC]
 
 Behavior:
 
@@ -128,7 +128,12 @@ def main(argv: "list[str] | None" = None) -> int:
         prog="tools/pr_watch.py",
         description="Watch a GitHub PR's CI checks and journal the result.",
     )
-    parser.add_argument("pr", type=int, help="pull request number")
+    parser.add_argument(
+        "--pr",
+        type=int,
+        required=True,
+        help="pull request number",
+    )
     parser.add_argument(
         "--repo",
         default=None,

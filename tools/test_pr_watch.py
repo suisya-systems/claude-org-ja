@@ -47,7 +47,7 @@ class JournalEmitTests(unittest.TestCase):
              mock.patch.object(pr_watch.shutil, "which", return_value="/usr/bin/gh"), \
              mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run), \
              mock.patch.object(pr_watch.time, "monotonic", side_effect=[100.0, 142.0]):
-            return pr_watch.main(["205", "--repo", "octo/repo", "--interval", "5"])
+            return pr_watch.main(["--pr", "205", "--repo", "octo/repo", "--interval", "5"])
 
     def test_passed_emits_ci_completed(self) -> None:
         with self.subTest("passed"):
