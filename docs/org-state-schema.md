@@ -31,7 +31,7 @@ python3 dashboard/org_state_converter.py     # Mac/Linux
 | ステータス変更 | org-delegate Step 5 | Work Item のステータス（REVIEW/COMPLETED/IN_PROGRESS） |
 | 組織中断 | org-suspend Phase 3 | Status=SUSPENDED, Updated, Work Items, Resume Instructions |
 | 組織再開 | org-resume Phase 4 | Status=ACTIVE |
-| 起動（Dispatcher/Curator 記録） | org-start Steps 2-3 | Dispatcher/Curator のピア ID とペイン名 |
+| 起動（Dispatcher/Curator 記録） | org-start Steps 2-3 | Dispatcher/Curator の peerId / paneId |
 
 ---
 
@@ -62,12 +62,12 @@ python3 dashboard/org_state_converter.py     # Mac/Linux
     }
   ],
   "dispatcher": {
-    "peerId": "<peer ID>",
-    "paneId": "<renga pane name>"
+    "peerId": "<renga-peers peer ID>",
+    "paneId": "<renga pane ID>"
   },
   "curator": {
-    "peerId": "<peer ID>",
-    "paneId": "<renga pane name>"
+    "peerId": "<renga-peers peer ID>",
+    "paneId": "<renga pane ID>"
   },
   "resumeInstructions": "<free text | null>"
 }
@@ -126,8 +126,8 @@ python3 dashboard/org_state_converter.py     # Mac/Linux
 
 | フィールド | 型 | 説明 |
 |---|---|---|
-| `peerId` | `string` | renga-peers のペイン名（`worker-{task_id}` / `dispatcher` / `curator` 形式）。`mcp__renga-peers__send_message` の `to_id` に渡す値 |
-| `paneId` | `string` | renga のペイン名 (`--id` で命名したもの、例: `dispatcher`, `curator`)。旧 WezTerm 時代は数値の pane-id を格納していたが、renga への移行に伴い安定名ベースに変更。現行仕様では `peerId` と同値になることが多い |
+| `peerId` | `string` | renga-peers が割り当てた安定 peer 識別子（`assigned` のとき設定）。`mcp__renga-peers__send_message` の `to_id` に渡す値。例: `peer-dispatcher-001` |
+| `paneId` | `string` | renga のペイン id。`peerId` とは独立した識別子で、ペインのライフサイクルに紐付く。例: `pane-42` |
 
 ---
 
