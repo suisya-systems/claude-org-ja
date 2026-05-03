@@ -68,10 +68,10 @@ addition to its writer / payload shape:
 | `worker_completed`       | `worker`, `task`                                            | secretary    | worker     | T4           | Worker reported done. |
 | `worker_closed`          | `worker`, `pane_id`                                         | dispatcher   | dispatcher | T5, T7       | Pane closed, registry updated. |
 | `worker_reported`        | `worker`, `task`, `summary`                                 | secretary    | worker     | T3           | Mid-task report received. |
-| `worker_review`          | `worker`, `task`, `outcome`                                 | secretary    | secretary  | T4           | Review verdict on a worker's report. |
+| `worker_review`          | `worker`, `task`, `outcome`                                 | secretary    | secretary  | —            | Review verdict on a worker's report. Visible at §1 awaiting_review row but not on T4's mandatory-Journal line. |
 | `worker_report_forwarded`| `worker`, `task`, `recipient`                               | secretary    | secretary  | —            | Forwarded to human / other. |
 | `worktree_removed`       | `path`, `task`                                              | dispatcher   | dispatcher | T5 (Pattern B) | Worktree cleanup. |
-| `retro_deferred`         | `worker`, `reason`                                          | dispatcher   | dispatcher | T7 (if retro skipped) | Retro Steps 1–2 could not be completed before `close_pane` (e.g., secretary unreachable within 5 minutes); pane close skipped. Listed alongside the `aborted` row in Set B §1 (visible journal events); not contract-mandated for normal T5 close. |
+| `retro_deferred`         | `worker`, `reason`                                          | dispatcher   | dispatcher | —            | Retro Steps 1–2 could not be completed before `close_pane` (e.g., secretary unreachable within 5 minutes); pane close skipped. Listed at Set B §1 aborted row as a visible journal event, but no §2 transition's mandatory-Journal line cites it. |
 
 ### Delegate flow
 
