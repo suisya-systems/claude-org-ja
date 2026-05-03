@@ -34,7 +34,11 @@ function Test-Interpreter {
     try {
         $null = & $Exe @Prefix '--version' 2>&1
         if ($LASTEXITCODE -ne 0) { return $false }
-        $null = & $Exe @Prefix '-c' 'import core_harness.audit' 2>&1
+        # Combined probe: require Python 3 AND core_harness.audit importable.
+        # Bare `python`/`python3` on some systems still aliases to Python 2,
+        # which would pass `--version` but die on pr_watch.py's f-strings.
+        $probe = 'import sys; assert sys.version_info[0] == 3; import core_harness.audit'
+        $null = & $Exe @Prefix '-c' $probe 2>&1
         return ($LASTEXITCODE -eq 0)
     } catch {
         return $false

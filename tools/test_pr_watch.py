@@ -199,6 +199,25 @@ class JournalEmitTests(unittest.TestCase):
             rec = json.loads(journal.read_text(encoding="utf-8").splitlines()[0])
             self.assertEqual(rec["status"], "incomplete")
 
+    def test_gh_exit_2_is_canceled(self) -> None:
+        """gh exit 2 = cancellation. Must NOT be overwritten by JSON probe.
+
+        Regression: an earlier draft only honored Python-side
+        KeyboardInterrupt, so a Ctrl-C delivered to gh itself (exit 2)
+        would have been re-classified as passed/failed/incomplete by
+        the JSON probe. The journal must reflect cancellation so the
+        secretary can distinguish "user aborted" from "CI verdict".
+        """
+        with TempDir() as tmp:
+            journal = tmp / ".state" / "journal.jsonl"
+            self._run(
+                journal,
+                gh_exit=2,
+                checks_json=[{"name": "ci", "state": "COMPLETED", "bucket": "pass"}],
+            )
+            rec = json.loads(journal.read_text(encoding="utf-8").splitlines()[0])
+            self.assertEqual(rec["status"], "canceled")
+
     def test_json_probe_failure_falls_back_to_exit_code(self) -> None:
         """If `gh pr checks --json` itself fails, use exit-code mapping."""
         with TempDir() as tmp:
@@ -343,6 +362,31 @@ class PowerShellInterpreterProbeTests(unittest.TestCase):
         self.assertFalse(
             self._run_probe(shim_body),
             "Test-Interpreter should reject a Python that fails the import check",
+        )
+
+    def test_python_2_is_rejected(self) -> None:
+        """A `--version`-passing Python 2 must not be accepted.
+
+        The combined `-c` probe asserts sys.version_info[0]==3, so a
+        shim that simulates Py2 by exiting nonzero on the `-c` call
+        should be rejected even though `--version` succeeds.
+        """
+        if os.name == "nt":
+            shim_body = (
+                "@echo off\r\n"
+                "if \"%~1\"==\"--version\" ( echo Python 2.7.18 & exit /b 0 )\r\n"
+                "if \"%~1\"==\"-c\" ( exit /b 1 )\r\n"
+                "exit /b 2\r\n"
+            )
+        else:
+            shim_body = (
+                "if [ \"$1\" = \"--version\" ]; then echo 'Python 2.7.18'; exit 0; fi\n"
+                "if [ \"$1\" = \"-c\" ]; then exit 1; fi\n"
+                "exit 2\n"
+            )
+        self.assertFalse(
+            self._run_probe(shim_body),
+            "Test-Interpreter must reject Python 2 even if --version exits 0",
         )
 
     def test_version_ok_import_ok_is_accepted(self) -> None:

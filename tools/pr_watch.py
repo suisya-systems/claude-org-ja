@@ -289,7 +289,10 @@ def main(argv: "list[str] | None" = None) -> int:
         canceled = True
     duration = int(round(time.monotonic() - started))
 
-    if canceled:
+    # gh's documented cancellation exit code is 2 (parent SIGINT or
+    # subprocess-side Ctrl-C). Honor it directly so we don't overwrite a
+    # genuine cancellation with whatever the JSON probe returns.
+    if canceled or exit_code == 2:
         status = "canceled"
     else:
         # Issue #224: gh exit 1 from a transient watch-loop error must not
