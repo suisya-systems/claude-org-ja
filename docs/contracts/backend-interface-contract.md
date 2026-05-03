@@ -77,6 +77,7 @@ The backend MUST expose primitives to spawn, enumerate, identify, and close "pan
 - **Operation**: move keyboard focus to another pane in the current tab.
 - **Inputs**: `target`.
 - **Constraints**: focus changes are user-visible and disruptive — the harness uses this sparingly. Not load-bearing for correctness; available for human-affordance flows.
+- **Required-vs-optional**: backends SHOULD provide `focus_pane` for human-affordance, but the contract does NOT make it strictly REQUIRED — no harness correctness flow depends on it. Harnesses MUST tolerate its absence by simply not invoking it.
 
 ### 1.7 inspect_pane
 
@@ -118,14 +119,14 @@ The backend MUST provide a logical peer-messaging channel separate from raw PTY 
   - For push-mode recipients (Claude Code): the message MUST appear in-band at the recipient as a channel notification carrying source, sender id, sender name, and send timestamp.
   - For pull-mode recipients (Codex): the backend MUST emit a pane-local nudge to the recipient and queue the actual body for retrieval via `check_messages` (2.3).
 - **Encoding contract**: HYBRID normativity. The semantic content — `from_id`, `from_name`, and `sent_at` attributes on the delivered channel notification — is contracted; recipients MUST receive these fields and harnesses MAY depend on them. The literal source-string label (renga uses `source="renga-peers"`) is backend-defined and is a transport tag, NOT a contract-fixed name. Harnesses MUST NOT hard-code the source string for routing decisions; they MAY reference it in human-facing logs. Renga's wire form is therefore `<channel source="renga-peers" from_id="..." from_name="..." sent_at="...">…</channel>`, but only the `from_*` / `sent_at` attributes are normative across backends.
-- **Failure modes**: returns ok-text `"(message dropped — renga not reachable: <reason>)"` when the backend is unreachable (does NOT raise a JSON-RPC error; see Surface 6.3). All other failures use the `[<code>] <message>` form (Surface 6).
+- **Failure modes**: backend MUST raise `[backend_unreachable]` when the peer-channel server / transport is unavailable (the contracted end state per Surface 6.3). All other failures use the `[<code>] <message>` form (Surface 6). Transitional renga note: current renga still returns ok-text `"(message dropped — renga not reachable: <reason>)"` for this case; that ok-text shape is a transitional shim tracked by Issue #242, NOT the contract surface.
 
 ### 2.2 list_peers
 
 - **Operation**: enumerate other peer-enabled panes in the current tab.
 - **Outputs**: per-peer records (`id`, optional `name`, optional `role`, `cwd`, optional client kind, optional receive mode (push | poll), optional `summary`).
 - **Distinction from `list_panes`**: `list_panes` includes the caller and exposes geometry; `list_peers` excludes the caller and hides geometry. The harness today uses `list_panes` for layout decisions (balanced split) and `list_peers` for "wait for Claude to register" gating in `org-delegate` Step 3-4 — both are load-bearing.
-- **Failure modes**: same ok-text exception as 2.1 (`"(no peers — renga not reachable: <reason>)"`).
+- **Failure modes**: same as 2.1 — backend MUST raise `[backend_unreachable]` (Surface 6.3). Transitional renga ok-text `"(no peers — renga not reachable: <reason>)"` is a shim tracked by Issue #242 and NOT the contract surface.
 
 ### 2.3 check_messages
 
@@ -186,7 +187,8 @@ The backend MUST expose pane lifecycle events via a long-poll API with cursor-ba
 
 - **Operation**: create a new tab with a fresh single pane and shift focus to it.
 - **Inputs**: optional `command`, `cwd`, `name`, `role`, `label`.
-- **Visibility consequence**: once focus shifts, panes in the previous tab MAY become invisible to MCP calls until focus returns (renga's per-tab limit; see 4.2). The harness uses `new_tab` only for human-driven workflows, never for orchestrator-spawned children. Required-vs-optional status of this surface is part of the broader per-surface question carried in the consolidated list.
+- **Visibility consequence**: once focus shifts, panes in the previous tab MAY become invisible to MCP calls until focus returns (renga's per-tab limit; see 4.2). The harness uses `new_tab` only for human-driven workflows, never for orchestrator-spawned children.
+- **Required-vs-optional**: backends SHOULD provide `new_tab` for human-driven workflows, but the contract does NOT make it strictly REQUIRED — no harness correctness flow depends on it (per Q10, all orchestrator panes live in a single tab). Harnesses MUST tolerate its absence.
 
 ---
 
@@ -194,10 +196,10 @@ The backend MUST expose pane lifecycle events via a long-poll API with cursor-ba
 
 ### 5.1 Dev-channel injection
 
-The dev-channel flow has two halves; whether each half is the backend's responsibility depends on the resolution of 1.2 / 1.9:
+The dev-channel flow has two halves:
 
-- **Flag injection**: IF the backend provides the Surface 1.2 spawn-Claude convenience, it MUST inject `--dangerously-load-development-channels server:<channel-name>` itself. IF Surface 1.2 collapses into the generic Surface 1.1 spawn (deferring to the harness/CLI), the harness MUST add the flag in its `command` payload. Today renga implements the former.
-- **Prompt approval**: the Claude-side approval prompt (`Load development channel? (Y/n)`) is a Claude Code feature, not a backend feature. IF the backend provides Surface 1.9 (`send_keys`), the orchestrator MAY approve the prompt via `send_keys(enter=true)`. IF Surface 1.9 is omitted, the contract requires an alternative approval path (e.g. a logical-message variant the Claude-side hook can intercept). Today the harness depends on `send_keys`.
+- **Flag injection**: IF the backend provides the Surface 1.2 spawn-Claude convenience (OPTIONAL per Q1), it MUST inject `--dangerously-load-development-channels server:<channel-name>` itself. Otherwise the harness MUST add the flag in its Surface 1.1 `command` payload. Today renga provides the helper.
+- **Prompt approval**: the Claude-side approval prompt (`Load development channel? (Y/n)`) is a Claude Code feature, not a backend feature. Per Q5, Surface 1.9 (`send_keys`) is REQUIRED, so the orchestrator MUST approve the prompt via `send_keys(enter=true)`; the contract does not provide a `send_keys`-less alternative path.
 
 ### 5.2 Channel transport
 
@@ -253,6 +255,25 @@ The backend surface MUST follow semantic versioning. Breaking changes — operat
 ---
 
 ## Decision rationale digest
+
+### Per-question traceability (12 Lead-confirmed decisions)
+
+| #   | Topic                                       | Surface | Outcome             |
+| --- | ------------------------------------------- | ------- | ------------------- |
+| Q1  | Claude-spawn helper required?               | §1.2    | OPTIONAL            |
+| Q2  | Separate graceful-exit path required?       | §1.4    | OPTIONAL            |
+| Q3  | `list_panes` geometry fields required?      | §1.5    | REQUIRED            |
+| Q4  | `inspect_pane` (grid scrape) required?      | §1.7    | REQUIRED            |
+| Q5  | `send_keys` (raw PTY input) required?       | §1.9    | REQUIRED            |
+| Q6  | Channel-encoding normativity                | §2.1    | HYBRID              |
+| Q7  | Message delivery semantics                  | §2.3    | AT-MOST-ONCE        |
+| Q8  | `poll_events` `timeout_ms` hard cap         | §3.1    | 30 s (30000 ms)     |
+| Q9  | Cursor-loss recovery contract               | §3.1    | Best-effort + reconciliation |
+| Q10 | Multi-tab vs single-tab addressing          | §4.2    | SINGLE-TAB MUST     |
+| Q11 | ok-text-on-unreachable normalization        | §6.3    | Normalize to `backend_unreachable` |
+| Q12 | Backend SemVer commitment                   | §7      | REQUIRED            |
+
+### Cluster summary
 
 The 12 Lead-confirmed decisions above cluster as follows:
 
