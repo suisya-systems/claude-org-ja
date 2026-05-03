@@ -4,7 +4,7 @@
 >
 > **Scope**: Phase 1 Contract Set A only. Contract Sets B–E (state, messaging, lifecycle, knowledge) are tracked in #122–#125 and out of scope here.
 >
-> **Method**: Each role section below is filled from empirical sources (current `CLAUDE.md` files, `org-start` / `org-delegate` skills, `org-config.md`, the worker template). Sentences sourced from current behavior are written as facts. Design decisions left open in the prior outline were ratified by the Lead in the 2026-05-03 Q&A session.
+> **Method**: Each role section below is filled from empirical sources (current `CLAUDE.md` files, `org-start` / `org-delegate` skills, `org-config.md`, the worker template). Sentences sourced from current behavior are written as facts. Design decisions left open in the prior outline were ratified by the Lead in the 2026-05-03 Q&A session; where a ratified decision selects between divergent existing artifacts (e.g., a skill SKILL.md vs. a reference template), this contract names the chosen boundary and tracks the conflicting artifact via a follow-up Issue rather than waiting for the artifact to be reconciled first.
 >
 > **Empirical sources consulted**:
 > - `CLAUDE.md` (root, secretary directives)
@@ -192,7 +192,7 @@
   - Must NOT write to `.state/`, `registry/`, or worker directories — its write surface is `knowledge/curated/` and the skill-candidate queue only.
   - Must NOT talk to the human directly or to workers.
   - Must NOT delete `knowledge/raw/` entries. Moving processed entries into `knowledge/raw/archive/` is permitted; outright deletion is forbidden.
-- **`/org-suspend` participation** — The curator does not participate in `/org-suspend`. It has no in-memory state requiring flush; its pane is closed during suspend without additional action.
+- **`/org-suspend` participation** — The curator has no in-memory state requiring flush during `/org-suspend`, so it does not contribute to the suspend state-collection step. Standard pane-shutdown handling (SHUTDOWN signal, `pane_exited` wait, `close_pane` if needed) per `.claude/skills/org-suspend/SKILL.md` still applies.
 
 ---
 
@@ -254,7 +254,7 @@
 ### Lifecycle / boundaries
 
 - **Spawn**: By the dispatcher in `org-delegate` Step 3, via `mcp__renga-peers__spawn_claude_pane(role="worker", name="worker-{task_id}", cwd={worker_dir}, permission_mode={default_permission_mode}, model="opus")` after balanced-split target/direction selection. CLAUDE.md and `settings.local.json` are placed by the secretary in Step 1.5 *before* spawn.
-- **Activation**: After spawn, the worker approves the "Load development channel?" prompt (sent by dispatcher via `send_keys(enter=true)`), is detected via `list_peers`, and receives its instruction message. It greets back when secretary sends the `DELEGATE_COMPLETE` follow-up.
+- **Activation**: After spawn, the dispatcher approves the "Load development channel?" prompt on the worker's pane via `send_keys(enter=true)`; the worker is then detected via `list_peers` and receives its instruction message. It greets back when secretary sends the `DELEGATE_COMPLETE` follow-up.
 - **Steady state**: Executes the task; reports progress to secretary; if blocked on approval, halts (dispatcher detects via inspect or self-report and notifies secretary).
 - **Completion handoff**:
   - Full: structured completion report → secretary pushes / opens PR → worker holds pane for review feedback.
