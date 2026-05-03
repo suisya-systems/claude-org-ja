@@ -98,11 +98,19 @@ output_format: <成果物の構造>
    記録しますか？
    ```
 2. 人間が承認した場合:
-   - `.claude/skills/{skill-name}/SKILL.md` を作成する
-   - テンプレート: `.claude/skills/org-retro/references/work-skill-template.md` のフォーマットに従う
-   - ワーカーの成果物（コード、レポート、設定等）から手順を抽出・汎化する
-   - タスク固有の値（ブランド名、ファイルパス等）はプレースホルダーに置換する
-   - `knowledge/skill-candidates.md` の該当エントリの status を `approved` に更新し決定日を記入
+   - **skill ファイルの作成・編集は窓口（secretary）が直接行わない**。Set E §2.4 (Q7) の批准に従い、
+     skill-promotion は委譲タスクとして `org-delegate` 経由でワーカーに渡す。
+   - 窓口は `org-delegate` を起動し、role `claude-org-self-edit` のワーカータスクを生成する。
+     指示には以下を含める:
+     - 対象 skill 名 `{skill-name}` と書き込み先 `.claude/skills/{skill-name}/SKILL.md`
+     - テンプレート参照: `.claude/skills/org-retro/references/work-skill-template.md`
+     - 抽出元（ワーカーの成果物・raw 知見ファイルのパス）と、
+       タスク固有の値をプレースホルダーへ置換する旨
+     - skill-promotion 委譲であること（Set A worker write-surface の carve-out 対象）
+   - ディスパッチャー / 窓口は `.claude/skills/{skill-name}/` への直接書き込みを行わない。
+     実ファイルの作成・編集は委譲先ワーカーが担当する。
+   - 窓口は `knowledge/skill-candidates.md` の該当エントリの status を `approved` に更新し決定日を記入する
+     （これは委譲発行に伴うステータス管理であり、skill ファイル本体の編集ではない）。
 3. 人間が却下した場合:
    - 理由を `knowledge/raw/` に記録し、次回の判断に活かす
    - `knowledge/skill-candidates.md` の該当エントリの status を `rejected` に更新し却下理由を追記
