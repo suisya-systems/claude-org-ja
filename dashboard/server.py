@@ -249,12 +249,9 @@ def build_state():
     projects_text = _read(BASE_DIR / "registry" / "projects.md")
     projects = _parse_projects(projects_text)
 
-    all_workers = _parse_workers(state_dir / "workers")
-
-    # Filter out workers whose task is completed/abandoned/review
-    done_statuses = {"COMPLETED", "ABANDONED", "REVIEW"}
-    done_tasks = {wi["id"] for wi in work_items if wi["status"] in done_statuses}
-    workers = [w for w in all_workers if w["task"] not in done_tasks]
+    # Source of truth for "live worker" is presence directly under .state/workers/;
+    # closing a worker moves its md file to .state/workers/archive/ (org-delegate Step 5).
+    workers = _parse_workers(state_dir / "workers")
 
     knowledge = _parse_knowledge(BASE_DIR / "knowledge" / "curated")
 

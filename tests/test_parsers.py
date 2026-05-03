@@ -14,6 +14,7 @@ from dashboard.server import (
     _parse_projects,
     _parse_workers,
     _parse_knowledge,
+    build_state,
 )
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -115,6 +116,62 @@ class TestParseWorkers(unittest.TestCase):
     def test_nonexistent_dir(self):
         workers = _parse_workers(FIXTURES / "nonexistent")
         self.assertEqual(workers, [])
+
+    def test_archive_subdir_excluded(self):
+        """Issue #264: workers under .state/workers/archive/ must not appear as live."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            wdir = Path(td)
+            (wdir / "worker-live.md").write_text(
+                "Task: live-task\nPane ID: pane-1\nStarted: now\n",
+                encoding="utf-8",
+            )
+            (wdir / "archive").mkdir()
+            (wdir / "archive" / "worker-old.md").write_text(
+                "Task: old-task\nPane ID: pane-9\nStarted: long ago\n",
+                encoding="utf-8",
+            )
+            workers = _parse_workers(wdir)
+            self.assertEqual([w["task"] for w in workers], ["live-task"])
+
+
+class TestBuildStateLiveWorkers(unittest.TestCase):
+    """Issue #264 regression: live worker list = files in .state/workers/ root only.
+
+    Workers in REVIEW must remain visible (pane is still open, awaiting human approval).
+    Workers whose md file has been moved to archive/ must NOT appear as live, regardless
+    of whether their task id still appears in org-state.md Active Work Items.
+    """
+
+    def test_review_workers_stay_visible_and_archived_disappear(self):
+        import tempfile
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            (base / ".state" / "workers" / "archive").mkdir(parents=True)
+            (base / ".state" / "workers" / "worker-active.md").write_text(
+                "Task: active-task\nPane ID: pane-1\nStarted: now\n", encoding="utf-8",
+            )
+            (base / ".state" / "workers" / "worker-review.md").write_text(
+                "Task: review-task\nPane ID: pane-2\nStarted: now\n", encoding="utf-8",
+            )
+            (base / ".state" / "workers" / "archive" / "worker-old.md").write_text(
+                "Task: old-task\nPane ID: pane-3\nStarted: ages ago\n", encoding="utf-8",
+            )
+            (base / ".state" / "org-state.md").write_text(
+                "## Active Work Items\n"
+                "- active-task: 作業中 [IN_PROGRESS]\n"
+                "- review-task: レビュー中 [REVIEW]\n",
+                encoding="utf-8",
+            )
+            (base / "registry").mkdir()
+            (base / "registry" / "projects.md").write_text("", encoding="utf-8")
+
+            with patch("dashboard.server.BASE_DIR", base):
+                state = build_state()
+
+            tasks = sorted(w["task"] for w in state["workers"])
+            self.assertEqual(tasks, ["active-task", "review-task"])
 
 
 class TestParseKnowledge(unittest.TestCase):

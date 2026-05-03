@@ -594,6 +594,8 @@ mcp__renga-peers__send_message(
    実施内容:
    - `org-state.md` の該当Work Itemを **COMPLETED** に更新
    - ワーカーの状態ファイルを最終更新
+   - **ワーカー状態ファイルをアーカイブへ移動**: `mv .state/workers/worker-{task_id}.md .state/workers/archive/`
+     （`archive/` ディレクトリが無ければ作成。dashboard はこのディレクトリ内のファイルを live ワーカーとして扱わない (Issue #264)。journal / retro が履歴参照する可能性に備えて削除はしない）
    - `journal.jsonl` にイベント追記
    - ディスパッチャーにペインクローズを依頼:
      `CLOSE_PANE: {pane_id} のペインを閉じてください。`
