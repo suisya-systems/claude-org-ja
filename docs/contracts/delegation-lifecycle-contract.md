@@ -105,7 +105,7 @@ Each transition below names: **(a)** the event that triggers it, **(b)** which a
 ### T8 — `* → aborted` (`SPLIT_CAPACITY_EXCEEDED`)
 - **Trigger**: Dispatcher's balanced-split filter returns zero candidates (per `org-delegate` Step 3-1c).
 - **Actor**: dispatcher.
-- **State write**: No worker pane is spawned; `.state/dispatcher/inbox/{task_id}.json` may remain on disk for re-attempt; `.state/workers/worker-{task_id}.md` is NOT written (no pane existed).
+- **State write**: No worker pane is spawned; `.state/dispatcher/inbox/{task_id}.json` may remain on disk for re-attempt; `.state/workers/worker-{task_id}.md` is NOT written (no pane existed). On receipt of `SPLIT_CAPACITY_EXCEEDED`, the secretary MUST release the Worker Directory Registry row reserved in T1 Step 1.5 (set Status back to `available` for Pattern A, or remove the row for Pattern B/C) so the `in_use` reservation does not leak; no Active Work Item row need be reverted because T2 has not yet added one.
 - **Journal**: Today this case is signalled ONLY via the `SPLIT_CAPACITY_EXCEEDED` peer message to secretary; there is no corresponding journal event in `docs/journal-events.md`. The follow-up `required-for-transition` annotation work on the registry (see §1) will decide whether to introduce a `delegate_failed` (or equivalent) event for this transition; until then, the peer message is the sole record.
 - **Liveness**: Dispatcher watch loop continues; only this one delegation is aborted (`exit` / `return` of dispatcher pane is forbidden).
 
