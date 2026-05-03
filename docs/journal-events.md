@@ -50,6 +50,7 @@ Workers do **not** write the journal directly; they report via
 | `worker_review`          | `worker`, `task`, `outcome`                                 | secretary    | Review verdict on a worker's report. |
 | `worker_report_forwarded`| `worker`, `task`, `recipient`                               | secretary    | Forwarded to human / other. |
 | `worktree_removed`       | `path`, `task`                                              | dispatcher   | Worktree cleanup. |
+| `retro_deferred`         | `worker`, `reason`                                          | dispatcher   | Retro Steps 1–2 could not be completed before `close_pane` (e.g., secretary unreachable within 5 minutes); pane close skipped. |
 
 ### Delegate flow
 
