@@ -47,7 +47,7 @@ def detect_json_version(path: Path) -> int | None:
     try:
         with path.open("r", encoding="utf-8") as f:
             data = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError):
         return None
     if not isinstance(data, dict):
         return None
@@ -108,6 +108,24 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    if args.dry_run:
+        # Dry-run is informational: report what *would* apply on the first
+        # pass plus any files stuck at an unsupported version. Always exits 0
+        # so it can be wired into status checks without becoming a blocker.
+        pending = find_pending_migrations(args.repo_root)
+        unsupported = find_unsupported_files(args.repo_root)
+        if pending:
+            print(f"Pending migrations ({len(pending)}):")
+            for migration, path in pending:
+                print(f"  {migration.description} ({path})")
+        if unsupported:
+            print("Files at unsupported schema versions (no migration registered):")
+            for path, current, expected in unsupported:
+                print(f"  {path}: version={current!r}, expected={expected}")
+        if not pending and not unsupported:
+            print(f"No pending migrations. Set C version: {CURRENT_SET_C_VERSION}")
+        return 0
+
     total_applied = 0
     for _ in range(MAX_MIGRATION_PASSES):
         pending = find_pending_migrations(args.repo_root)
@@ -115,12 +133,8 @@ def main(argv: list[str] | None = None) -> int:
             break
         for migration, path in pending:
             print(f"  {migration.description} ({path})")
-            if not args.dry_run:
-                migration.apply(path)
+            migration.apply(path)
             total_applied += 1
-        if args.dry_run:
-            # Dry-run does not mutate files, so re-scanning would loop forever.
-            break
     else:
         print(
             f"ERROR: migration loop exceeded {MAX_MIGRATION_PASSES} passes — "

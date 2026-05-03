@@ -12,6 +12,14 @@ description: >
 
 ## Phase 1: 状態読み込みとブリーフィング
 
+0. **state schema migration を実行する**（Set C §4.4 契約）。`.state/` 配下の JSON 状態を最新スキーマへ揃えてから読み込みに入る:
+
+   ```bash
+   py -3 tools/state_migrate.py    # Windows
+   python3 tools/state_migrate.py   # Mac/Linux
+   ```
+
+   exit 0 なら続行。exit 1（未対応 version 残存）/ exit 2（migration ループ異常）なら人間に報告して停止する。
 1. `.state/org-state.md` を読む
 2. 人間に簡潔なサマリーを提示する:
    - 全体の目標

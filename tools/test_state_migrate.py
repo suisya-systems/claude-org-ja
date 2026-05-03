@@ -92,7 +92,7 @@ def test_stub_migration_applied(repo_root: Path) -> None:
 
 
 def test_dry_run_does_not_modify(
-    repo_root: Path, monkeypatch: pytest.MonkeyPatch
+    repo_root: Path, capsys: pytest.CaptureFixture
 ) -> None:
     p = repo_root / ".state" / "org-state.json"
     write_json(p, {"version": 0})
@@ -108,16 +108,15 @@ def test_dry_run_does_not_modify(
             apply=bump,
         )
     )
-    # Pretend the file is at the expected version so the unsupported-version
-    # gate doesn't fire — we are only testing the dry-run no-mutation contract.
-    monkeypatch.setitem(state_migrate.CURRENT_JSON_VERSIONS, ".state/org-state.json", 0)
 
-    pending_before = find_pending_migrations(repo_root)
-    assert len(pending_before) == 1
-
-    main(["--repo-root", str(repo_root), "--dry-run"])
+    rc = main(["--repo-root", str(repo_root), "--dry-run"])
+    assert rc == 0
     after = json.loads(p.read_text(encoding="utf-8"))
     assert after == {"version": 0}
+    out = capsys.readouterr().out
+    assert "Pending migrations" in out
+    # Dry-run must never claim it applied anything.
+    assert "Applied" not in out
 
 
 def test_idempotent_with_empty_registry(repo_root: Path) -> None:
