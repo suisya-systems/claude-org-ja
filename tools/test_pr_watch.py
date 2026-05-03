@@ -32,6 +32,42 @@ class ClassifyTests(unittest.TestCase):
         self.assertEqual(pr_watch._classify(127), "failed")
 
 
+class ArgFormTests(unittest.TestCase):
+    """Both `--pr <n>` and the legacy positional form must parse identically."""
+
+    def _run(self, argv: "list[str]") -> "tuple[int, dict]":
+        completed = mock.Mock(returncode=0)
+
+        def fake_run(cmd, *args, **kwargs):
+            if "view" in cmd and "--json" in cmd and "number" in cmd:
+                return mock.Mock(returncode=0, stdout="{}", stderr="")
+            return completed
+
+        with TempDir() as tmp:
+            journal = tmp / ".state" / "journal.jsonl"
+            with mock.patch.object(pr_watch, "JOURNAL_PATH", journal), \
+                 mock.patch.object(pr_watch.shutil, "which", return_value="/usr/bin/gh"), \
+                 mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run), \
+                 mock.patch.object(pr_watch.time, "monotonic", side_effect=[0.0, 1.0]):
+                rc = pr_watch.main(argv)
+            rec = json.loads(journal.read_text(encoding="utf-8").splitlines()[0])
+            return rc, rec
+
+    def test_long_form(self) -> None:
+        rc, rec = self._run(["--pr", "42", "--repo", "octo/repo"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(rec["pr"], 42)
+
+    def test_positional_form(self) -> None:
+        rc, rec = self._run(["42", "--repo", "octo/repo"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(rec["pr"], 42)
+
+    def test_both_forms_rejected(self) -> None:
+        with self.assertRaises(SystemExit):
+            pr_watch.main(["7", "--pr", "9", "--repo", "octo/repo"])
+
+
 class JournalEmitTests(unittest.TestCase):
     def _run(self, tmp_journal: Path, gh_exit: int) -> int:
         completed = mock.Mock(returncode=gh_exit)
@@ -47,7 +83,7 @@ class JournalEmitTests(unittest.TestCase):
              mock.patch.object(pr_watch.shutil, "which", return_value="/usr/bin/gh"), \
              mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run), \
              mock.patch.object(pr_watch.time, "monotonic", side_effect=[100.0, 142.0]):
-            return pr_watch.main(["205", "--repo", "octo/repo", "--interval", "5"])
+            return pr_watch.main(["--pr", "205", "--repo", "octo/repo", "--interval", "5"])
 
     def test_passed_emits_ci_completed(self) -> None:
         with self.subTest("passed"):
