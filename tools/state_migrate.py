@@ -55,7 +55,12 @@ def detect_json_version(path: Path) -> int | None:
 
 
 def find_pending_migrations(repo_root: Path) -> list[tuple[Migration, Path]]:
-    """Walk the migration registry and return (migration, file) pairs that apply."""
+    """Walk the migration registry and return (migration, file) pairs that apply now.
+
+    Single-pass: returns only migrations whose `from_version` matches the file's
+    current version. Multi-step chains (v0->v1->v2) are handled by `main()`,
+    which re-scans after each apply pass until no further migrations apply.
+    """
     pending: list[tuple[Migration, Path]] = []
     for migration in MIGRATIONS:
         for path in repo_root.glob(migration.file_pattern):
@@ -65,6 +70,27 @@ def find_pending_migrations(repo_root: Path) -> list[tuple[Migration, Path]]:
             if current == migration.from_version:
                 pending.append((migration, path))
     return pending
+
+
+def find_unsupported_files(repo_root: Path) -> list[tuple[Path, int | None, int]]:
+    """Return JSON files whose version != the expected current version.
+
+    These represent unmigratable state (no registered migration covers the gap).
+    Treating this as success would let `/org-resume` and first-read silently
+    consume stale data, so callers should fail loudly.
+    """
+    out: list[tuple[Path, int | None, int]] = []
+    for rel, expected in CURRENT_JSON_VERSIONS.items():
+        for path in repo_root.glob(rel):
+            current = detect_json_version(path)
+            if current != expected:
+                out.append((path, current, expected))
+    return out
+
+
+# Safety bound on the migration loop to prevent infinite chains (mis-registered
+# migration that does not advance the file's version).
+MAX_MIGRATION_PASSES = 64
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -82,18 +108,38 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    pending = find_pending_migrations(args.repo_root)
+    total_applied = 0
+    for _ in range(MAX_MIGRATION_PASSES):
+        pending = find_pending_migrations(args.repo_root)
+        if not pending:
+            break
+        for migration, path in pending:
+            print(f"  {migration.description} ({path})")
+            if not args.dry_run:
+                migration.apply(path)
+            total_applied += 1
+        if args.dry_run:
+            # Dry-run does not mutate files, so re-scanning would loop forever.
+            break
+    else:
+        print(
+            f"ERROR: migration loop exceeded {MAX_MIGRATION_PASSES} passes — "
+            "a registered migration likely fails to advance its file's version."
+        )
+        return 2
 
-    if not pending:
+    if total_applied:
+        print(f"Applied {total_applied} migration step(s).")
+
+    unsupported = find_unsupported_files(args.repo_root)
+    if unsupported:
+        print("ERROR: files at unsupported schema versions remain:")
+        for path, current, expected in unsupported:
+            print(f"  {path}: version={current!r}, expected={expected}")
+        return 1
+
+    if not total_applied:
         print(f"No pending migrations. Set C version: {CURRENT_SET_C_VERSION}")
-        return 0
-
-    print(f"Found {len(pending)} pending migrations.")
-    for migration, path in pending:
-        print(f"  {migration.description} ({path})")
-        if not args.dry_run:
-            migration.apply(path)
-
     return 0
 
 

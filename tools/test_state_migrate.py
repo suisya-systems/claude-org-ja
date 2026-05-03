@@ -91,7 +91,9 @@ def test_stub_migration_applied(repo_root: Path) -> None:
     assert after["migrated"] is True
 
 
-def test_dry_run_does_not_modify(repo_root: Path) -> None:
+def test_dry_run_does_not_modify(
+    repo_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     p = repo_root / ".state" / "org-state.json"
     write_json(p, {"version": 0})
 
@@ -106,12 +108,14 @@ def test_dry_run_does_not_modify(repo_root: Path) -> None:
             apply=bump,
         )
     )
+    # Pretend the file is at the expected version so the unsupported-version
+    # gate doesn't fire — we are only testing the dry-run no-mutation contract.
+    monkeypatch.setitem(state_migrate.CURRENT_JSON_VERSIONS, ".state/org-state.json", 0)
 
     pending_before = find_pending_migrations(repo_root)
     assert len(pending_before) == 1
 
-    rc = main(["--repo-root", str(repo_root), "--dry-run"])
-    assert rc == 0
+    main(["--repo-root", str(repo_root), "--dry-run"])
     after = json.loads(p.read_text(encoding="utf-8"))
     assert after == {"version": 0}
 
@@ -123,6 +127,62 @@ def test_idempotent_with_empty_registry(repo_root: Path) -> None:
     main(["--repo-root", str(repo_root)])
     after = json.loads(p.read_text(encoding="utf-8"))
     assert after == {"version": 1}
+
+
+def test_multi_step_chain_runs_to_completion(
+    repo_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = repo_root / ".state" / "org-state.json"
+    write_json(p, {"version": 0})
+
+    def bump_to(target: int):
+        def _apply(path: Path) -> None:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            data["version"] = target
+            path.write_text(json.dumps(data), encoding="utf-8")
+
+        return _apply
+
+    state_migrate.MIGRATIONS.extend(
+        [
+            Migration(".state/org-state.json", 0, 1, bump_to(1)),
+            Migration(".state/org-state.json", 1, 2, bump_to(2)),
+        ]
+    )
+    monkeypatch.setitem(state_migrate.CURRENT_JSON_VERSIONS, ".state/org-state.json", 2)
+
+    rc = main(["--repo-root", str(repo_root)])
+    assert rc == 0
+    assert json.loads(p.read_text(encoding="utf-8"))["version"] == 2
+
+
+def test_unsupported_version_fails(
+    repo_root: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    p = repo_root / ".state" / "org-state.json"
+    write_json(p, {"version": 99})
+    monkeypatch.setitem(state_migrate.CURRENT_JSON_VERSIONS, ".state/org-state.json", 1)
+
+    rc = main(["--repo-root", str(repo_root)])
+    assert rc == 1
+    assert "unsupported schema versions" in capsys.readouterr().out
+
+
+def test_runaway_migration_loop_caught(
+    repo_root: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    """A migration that fails to advance the version must not loop forever."""
+    p = repo_root / ".state" / "org-state.json"
+    write_json(p, {"version": 0})
+
+    state_migrate.MIGRATIONS.append(
+        Migration(".state/org-state.json", 0, 1, lambda _path: None)
+    )
+    monkeypatch.setattr(state_migrate, "MAX_MIGRATION_PASSES", 3)
+
+    rc = main(["--repo-root", str(repo_root)])
+    assert rc == 2
+    assert "exceeded" in capsys.readouterr().out
 
 
 def test_find_pending_skips_already_current(repo_root: Path) -> None:
