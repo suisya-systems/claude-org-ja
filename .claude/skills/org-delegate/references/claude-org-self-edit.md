@@ -21,12 +21,12 @@ claude-org-runtime settings generate \
   --out {worker_dir}/.claude/settings.local.json
 ```
 
-`claude-org-self-edit` ロールは schema 上で `block-org-structure.sh` hook が **既に除外**された状態で定義されている（`Edit|Write` / `Bash` matcher 双方）。`check-worker-boundary.sh` / `block-git-push.sh` などその他の hook は通常どおり残る。生成済み JSON を手で再編集してはならない（drift CI が fail する。新パターンが必要なら `tools/role_configs_schema.json` の `worker_roles` に role を追加する PR を起こす）。
+`claude-org-self-edit` ロールは schema 上で `block-org-structure.sh` hook が **既に除外**された状態で定義されている（`Edit|Write` / `Bash` matcher 双方）。`check-worker-boundary.sh` / `block-git-push.sh` などその他の hook は通常どおり残る。生成済み JSON を手で再編集してはならない（drift CI が fail する。新パターンが必要なら `claude-org-runtime` リポジトリの `settings/role_configs_schema.json` の `worker_roles` に role を追加する PR を起こす）。
 
 ## 2. ワーカー指示は `CLAUDE.md` ではなく `CLAUDE.local.md` に書く
 
 ルートの `CLAUDE.md` は Secretary 用の指示なので、ワーカー用 CLAUDE.md で上書きしてはならない（他ロールが壊れる）。
-ワーカーへの指示は worktree 直下の `CLAUDE.local.md` に書く（git 管理外）。
+ワーカーへの指示は `{worker_dir}` 直下の `CLAUDE.local.md` に書く（git 管理外）。Pattern B（tracked ファイル編集）なら `{worker_dir}` は worktree 直下、Pattern C 強制（gitignored サブモード）なら `{worker_dir}` は対象ファイルにアクセスできる既存リポジトリ root を指す。
 
 Claude Code は同一ディレクトリの `CLAUDE.md` と `CLAUDE.local.md` の両方を読み込むため、ワーカーには両方が見える。
 
@@ -45,7 +45,7 @@ claude-org 自己編集タスクでは、SKILL.md Step 1.5 および `worker-cla
 
 `CLAUDE.local.md` の最初に以下の趣旨を必ず書く:
 
-> このワーカーは claude-org リポジトリ自身の worktree で作業する。`./CLAUDE.md`（ルート CLAUDE.md）の Secretary 指示は無視せよ。あなたは窓口ではなくワーカーである。
+> このワーカーは claude-org リポジトリ自身の `{worker_dir}`（Pattern B なら worktree 直下、Pattern C 強制なら repo root 直下）で作業する。`./CLAUDE.md`（ルート CLAUDE.md）の Secretary 指示は無視せよ。あなたは窓口ではなくワーカーである。
 
 この明示がないと、ワーカーがルート CLAUDE.md を先に読んで Secretary として振る舞い始める（/org-start の実行を促す等）。
 
