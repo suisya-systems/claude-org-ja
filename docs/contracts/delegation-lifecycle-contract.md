@@ -1,10 +1,10 @@
-# Contract Set B — Delegation Lifecycle (Outline)
+# Contract Set B — Delegation Lifecycle
 
-> **Status**: Outline / skeleton — pending Lead Q&A (2026-05). This document is the structural extraction of the delegation lifecycle (from secretary's `DELEGATE` decision through worker spawn, in-progress reporting, completion review, and pane teardown) as it exists in the current `claude-org-ja` implementation, with inline fill-in markers left for design decisions that the Lead must ratify before this contract is finalized. The Lead fill-in pass is a separate follow-up PR.
+> **Status**: Ratified (2026-05-03). Lead-confirmed decisions for all 14 open questions.
 >
-> **Scope**: Phase 1 Contract Set B only. Covers delegation begin / in_progress / complete / abort transitions, error propagation, and SUSPEND handling. Role-level responsibilities and boundaries are covered by Set A (`docs/contracts/role-contract-outline.md`). State-file schemas, message-channel contracts, and knowledge flow are tracked in #123–#125 and out of scope here.
+> **Scope**: Phase 1 Contract Set B only. Covers delegation begin / in_progress / complete / abort transitions, error propagation, and SUSPEND handling. Role-level responsibilities and boundaries are covered by Set A (`docs/contracts/role-contract.md`). State-file schemas, message-channel contracts, and knowledge flow are tracked in #123–#125 and out of scope here.
 >
-> **Method**: Each lifecycle state and transition below is filled from empirical sources (current `org-delegate` skill, dispatcher CLAUDE.md, worker template, journal helper). Sentences sourced from current behavior are written as facts. Open design questions are flagged inline with the standard fill-in marker (see Set A) so a Lead Q&A pass can resolve them.
+> **Method**: Each lifecycle state and transition below is filled from empirical sources (current `org-delegate` skill, dispatcher CLAUDE.md, worker template, journal helper). Sentences sourced from current behavior are written as facts. Design decisions ratified by the Lead on 2026-05-03 are stated as contract obligations.
 >
 > **Empirical sources consulted**:
 > - `.claude/skills/org-delegate/SKILL.md` (Step 1.5 worker-dir prep, Step 3 spawn / instruction send, Step 4 state record, Step 5 progress / close)
@@ -15,7 +15,7 @@
 > - `docs/org-state-schema.md` (Active Work Item terminal-status vocabulary, Worker Directory Registry shape)
 > - `docs/internal/phase4-inventory-2026-05-02.md` §2.7 (worker-status state-machine inventory)
 > - `tools/journal_append.sh` / `tools/journal_append.py` (accepted event-write schema)
-> - `docs/contracts/role-contract-outline.md` — Set A (per-role lifecycle / boundary sections, for cross-reference)
+> - `docs/contracts/role-contract.md` — Set A (per-role lifecycle / boundary sections, for cross-reference)
 >
 > **Refs**: #122 (this issue), parent epic #101.
 
@@ -23,7 +23,7 @@
 
 ## 1. Lifecycle states
 
-A single delegation moves through the following finite set of contract-level states. The state labels are this contract's vocabulary; they do not all map 1:1 to a literal `Status:` string in the implementation today. The implementation's worker-state-file vocabulary is the smaller set `planned` / `active` / `pane_closed` / `completed` (per `docs/internal/phase4-inventory-2026-05-02.md` §2.7), and `.state/org-state.md` Active Work Items uses `IN_PROGRESS` / `REVIEW` / `COMPLETED`. Some contract states (`pending`, `aborted`) have no dedicated worker-state-file Status today — see the per-row notes.
+A single delegation moves through the following finite set of contract-level states. The state labels are this contract's vocabulary; they do not all map 1:1 to a literal `Status:` string in the implementation today. The implementation's worker-state-file vocabulary is the smaller set `planned` / `active` / `pane_closed` / `completed` (per `docs/internal/phase4-inventory-2026-05-02.md` §2.7), and `.state/org-state.md` Active Work Items uses `IN_PROGRESS` / `REVIEW` / `COMPLETED` / `ABANDONED`. Some contract states (`pending`, `aborted`) have no dedicated worker-state-file Status today — see the per-row notes.
 
 | # | State | Owner of transition in | Persisted at | Visible journal events |
 |---|---|---|---|---|
@@ -32,10 +32,11 @@ A single delegation moves through the following finite set of contract-level sta
 | 3 | `in_progress` | worker (begins acting on its instruction) | `.state/workers/worker-{task_id}.md` Progress Log appended on each report (Status remains `active`). | `worker_reported` (per progress message), `anomaly_observed` (if applicable) |
 | 4 | `awaiting_review` (a.k.a. `REVIEW`) | secretary (on receipt of completion report from worker) | `.state/org-state.md` Active Work Item set to `REVIEW`. Worker state file Status is NOT retitled today (remains `active`); the worker pane stays open. | `worker_completed`, `worker_review` |
 | 5 | `complete` (a.k.a. `COMPLETED`) | secretary (after close-condition met — see §1.5) | `.state/org-state.md` Active Work Item set to `COMPLETED`; Worker Directory Registry updated per pattern; `.state/workers/worker-{task_id}.md` final-update (dispatcher writes `Status: completed` or `pane_closed` per close path). | `worker_closed`, `worktree_removed` (Pattern B), pattern-specific registry updates |
-| 6 | `aborted` (a.k.a. `ABANDONED` in `org-state.md`) | dispatcher reports lifecycle exit; secretary classifies and decides | Worker state file: dispatcher writes `Status: pane_closed` (the only literal worker-state-file label for terminal failure today). Active Work Item: secretary, after judging the delegation is abandoned, sets it to `ABANDONED` per `docs/org-state-schema.md` §50 terminal vocabulary. There is no literal worker-state-file `Status: aborted` — `aborted` is the contract-level abstract label for "delegation reached a terminal failure path". For T8 (`SPLIT_CAPACITY_EXCEEDED`) no worker state file is written, since the pane was never spawned. | `worker_closed` with reason hint, `retro_deferred` (if retro could not run) |
+| 6 | `aborted` (a.k.a. `ABANDONED` in `org-state.md`) | dispatcher reports lifecycle exit; secretary classifies and decides | Worker state file: dispatcher writes `Status: pane_closed` (the only literal worker-state-file label for terminal failure today). Active Work Item: secretary, after judging the delegation is abandoned, sets it to `ABANDONED` per `docs/org-state-schema.md` §50 terminal vocabulary. There is no literal worker-state-file `Status: aborted` — `aborted` is the contract-level abstract label for "delegation reached a terminal failure path". For T8 (`SPLIT_CAPACITY_EXCEEDED`) no worker state file is written, since the pane was never spawned. |  `worker_closed` with reason hint, `retro_deferred` (if retro could not run) |
 
-- **[TBD by Lead]** — State granularity: whether `dispatched` and `awaiting_review` are each distinct contract states or sub-states of `in_progress`. Today the implementation half-distinguishes them (`.state/workers/*.md` flips `planned → active` at spawn but does not retitle on completion-report; `.state/org-state.md` writes `REVIEW` but the worker pane keeps running). The contract should pick one boundary per state.
-- **[TBD by Lead]** — Authoritative list of journal event names permitted (or mandatory) for each lifecycle transition. Today the helper accepts arbitrary event strings; `docs/journal-events.md` documents a vocabulary but does not pin which subset is required per transition — same shape as Set A's "allowed journal events per role" cluster.
+The contract codifies a deliberate two-level state model. The `.state/org-state.md` Active Work Item view is the canonical lifecycle vocabulary — it carries the full `IN_PROGRESS` / `REVIEW` / `COMPLETED` / `ABANDONED` set, so `awaiting_review` IS a distinct contract state at the org-state.md level. The `.state/workers/*.md` Status field uses a coarser subset (`planned` / `active` / `pane_closed` / `completed`) because the worker pane stays open across `awaiting_review`; at the worker-state-file level, `dispatched` and `awaiting_review` are sub-states of `active`. The two views are intentionally not symmetric: org-state.md tracks delegation-from-the-secretary's-POV state, while the worker state file tracks pane-liveness state.
+
+The authoritative list of journal events permitted (and required) per lifecycle transition is delegated to `docs/journal-events.md`, consistent with Set A's treatment of the role event registry. Each event entry in that document MUST carry a `required-for-transition` annotation (in addition to the `emitted-by` annotation already tracked by #236), so this contract's per-transition `Journal:` lines can be evaluated mechanically against the registry. A follow-up Issue tracks adding the `required-for-transition` annotation work.
 
 ### 1.5 Close-condition (transition into `complete`)
 
@@ -45,8 +46,9 @@ The secretary moves a delegation from `awaiting_review` to `complete` when at le
 - The user has explicitly instructed close ("閉じてよい" / "クローズして" / "マージ済み").
 - The PR has been idle for 24–48 hours with no review activity (operator judgment; not automated).
 
-- **[TBD by Lead]** — Whether the 24–48h idle threshold is a hard contract (with an exact bound) or a default that the operator may tune per project. Currently it is an operator judgment range, not a contract.
-- **[TBD by Lead]** — Whether a delegation that closes without a PR (e.g., investigation-only Pattern C tasks that produce only a report message) follows the same close-condition gate, or has a separate path.
+The 24–48 hour idle window is a default operator guideline, not a hard contract bound. The secretary may close earlier upon explicit user instruction or extend in the absence of one. No automated timer enforces this bound.
+
+Delegations that do not produce a PR (e.g., investigation-only Pattern C tasks that produce only a report message) follow the same §1.5 close-condition gate. The PR-merged condition is trivially false for such delegations; the user-explicit and 24–48h-idle conditions still apply.
 
 ---
 
@@ -64,8 +66,7 @@ Each transition below names: **(a)** the event that triggers it, **(b)** which a
 - **Trigger**: Dispatcher receives `DELEGATE` from secretary and successfully completes Step 3 (balanced-split target / direction → `spawn_claude_pane` → dev-channel Enter approval → `list_peers` confirms the new peer → `send_message` delivers the worker instruction).
 - **Actor**: dispatcher.
 - **State write**: `.state/workers/worker-{task_id}.md` is created with `Status: planned` (by `delegate-plan` helper), then flipped to `active` after spawn succeeds (per `.dispatcher/CLAUDE.md` § delegate-plan helper). `.state/org-state.md` Active Work Items row added by dispatcher. (Note: `.state/dispatcher-event-cursor.txt` is the dispatcher's watch-loop cursor for `poll_events(types=["pane_exited","events_dropped"])`; the spawn-time `pane_started` confirmation in Step 3-3 uses a local in-memory cursor, not this file.)
-- **Journal**: `worker_spawned` (`worker`, `dir`, `task`). Followed by `DELEGATE_COMPLETE` `send_message` to secretary (out-of-band notification; not a journal event today).
-- **[TBD by Lead]** — Whether `DELEGATE_COMPLETE` must also be journaled (today it is only sent as a peer message; there is no journal record of dispatcher-side handoff completion).
+- **Journal**: `worker_spawned` (`worker`, `dir`, `task`). `DELEGATE_COMPLETE` is a peer-message channel only and is NOT journaled — the `worker_spawned` event written by the dispatcher in this step already records the handoff completion, so a separate `delegate_complete` event would be redundant.
 
 ### T3 — `dispatched → in_progress`
 - **Trigger**: Worker performs `pwd` / reads CLAUDE.md / starts its instruction and emits its first progress message (or first `APPROVAL_BLOCKED` / `ERROR` self-report).
@@ -99,13 +100,13 @@ Each transition below names: **(a)** the event that triggers it, **(b)** which a
 - **Actor**: dispatcher writes the pane-closed fact and notifies; secretary then determines completion vs. unexpected-exit by inspecting the renga-peers message history (last `COMPLETED` report present? if not, treat as worker accident).
 - **State write**: dispatcher writes `.state/workers/worker-{task_id}.md` `Status: pane_closed`. Secretary, after judging the task is abandoned (no completion report and user does not re-delegate), sets the Active Work Item terminal status to `ABANDONED` (per `docs/org-state-schema.md` §50 vocabulary).
 - **Journal**: `worker_closed` (with reason hint); separately, `WORKER_PANE_EXITED` is a peer-message channel only (not journaled today).
-- **[TBD by Lead]** — Maximum number of automatic re-delegation retries for an unexpectedly-exited worker before the contract requires user escalation. Today: pure secretary judgment, no retry counter contracted.
+- **Re-delegation**: Automatic re-delegation is not contracted. After an unexpected pane exit, the secretary determines per-task whether to abandon, ask the user, or re-delegate; the decision is not bounded by an automatic retry counter.
 
 ### T8 — `* → aborted` (`SPLIT_CAPACITY_EXCEEDED`)
 - **Trigger**: Dispatcher's balanced-split filter returns zero candidates (per `org-delegate` Step 3-1c).
 - **Actor**: dispatcher.
 - **State write**: No worker pane is spawned; `.state/dispatcher/inbox/{task_id}.json` may remain on disk for re-attempt; `.state/workers/worker-{task_id}.md` is NOT written (no pane existed).
-- **Journal**: `delegate_failed` or equivalent — see the §1 fill-in on event vocabulary; today this case is signalled only via the `SPLIT_CAPACITY_EXCEEDED` peer message to secretary, with no journal record.
+- **Journal**: Per `docs/journal-events.md` registry; today this case is signalled via the `SPLIT_CAPACITY_EXCEEDED` peer message to secretary.
 - **Liveness**: Dispatcher watch loop continues; only this one delegation is aborted (`exit` / `return` of dispatcher pane is forbidden).
 
 ---
@@ -118,7 +119,7 @@ Five error / anomaly classes are recognized. Each lists: who detects, who is not
 - **Detection**: dispatcher's `poll_events` (`pane_exited` for `role=="worker"`); fallback via `list_panes` reconciliation each watch-loop cycle. The dispatcher does NOT consult journal `worker_completed` (which is a secretary-written event per `docs/journal-events.md`); it forwards the raw lifecycle fact and lets the secretary classify expected-vs-unexpected exit.
 - **Notification path**: dispatcher → secretary via `mcp__renga-peers__send_message(to_id="secretary")` with body `WORKER_PANE_EXITED: {name} (id={id}) のペインが閉じました。リコンサイル要。`
 - **Retry**: Not automatic. Secretary asks user whether to re-delegate or abandon.
-- **Abort condition**: User explicitly declines re-delegation, OR secretary determines task is no longer relevant. (Retry-bound is the same open question as §2 T7.)
+- **Abort condition**: User explicitly declines re-delegation, OR secretary determines task is no longer relevant. (Per §2 T7, no automatic retry counter is contracted.)
 
 ### E2 — `APPROVAL_BLOCKED` / `ERROR_DETECTED` from dispatcher inspect
 - **Detection**: dispatcher `inspect_pane` matches one of the anchored regexes in `.dispatcher/CLAUDE.md` § (b) (approval prompt) or substring set in § (d) (error banner).
@@ -130,7 +131,7 @@ Five error / anomaly classes are recognized. Each lists: who detects, who is not
 - **Detection**: dispatcher receives via `check_messages` (and forwards), OR secretary receives directly. Both channels are independent (per `.dispatcher/CLAUDE.md` § (g) "両チャネル独立稼働で OK").
 - **Notification path**: as in E2; tagged `source=self_report`, `confidence=n/a`.
 - **De-dup**: same 30-second `(worker, kind)` window applies, so inspect (E2) and self-report (E3) are not double-notified.
-- **[TBD by Lead]** — Whether `ERROR_DETECTED` with `confidence=n/a` (self-report only, no inspect corroboration within window) is sufficient to halt the worker (e.g., automatic `Esc`-send) or requires inspect corroboration before halting. Today: notification only; halting is human-decided.
+- **Halting**: A self-report `ERROR` / `APPROVAL_BLOCKED` (`source=self_report`, `confidence=n/a`) without inspect corroboration produces a notification only. Halting the worker (e.g., via `Esc` send) is a human decision; the secretary may issue it but it is not automated by the harness.
 
 ### E4 — CI fails on PR
 - **Detection**: `tools/pr-watch.{ps1,sh}` writes a `ci_completed` event to `.state/journal.jsonl` on completion (per Secretary CLAUDE.md § PR 後の CI 監視). Failure is signalled within the event payload.
@@ -143,7 +144,7 @@ Five error / anomaly classes are recognized. Each lists: who detects, who is not
 - **Handling rule**: 3-round cap on same-category Blocker/Major findings; on 4th round the worker MUST stop and report to secretary "design issue — request scope reduction" (per `worker-claude-template.md` § Codex セルフレビュー手順).
 - **Notification path**: worker → secretary direct.
 - **Retry / abort**: Retry is bounded by the 3-round cap; abort condition is the round-4 declaration.
-- **[TBD by Lead]** — Whether the 3-round cap is a contract obligation across all `full`-mode delegations or only when `codex` is available in the worker environment (today the rule is conditional on `codex` availability — `unavailable` env skips the entire round discipline).
+- **Applicability**: The 3-round same-category Blocker/Major cap on Codex self-review is contracted only when `codex` is available in the worker environment. Workers in a `codex`-unavailable environment skip the round-discipline entirely (per `worker-claude-template.md`).
 
 ### Error-class summary table
 
@@ -155,51 +156,48 @@ Five error / anomaly classes are recognized. Each lists: who detects, who is not
 | E4 CI failure | `pr-watch` script (journal `ci_completed`) | secretary | n/a | no |
 | E5 Codex 4th-round | worker (self) | worker → secretary | n/a | yes — worker stops at 4th round |
 
-- **[TBD by Lead]** — Authoritative list of inspect-detected approval-prompt regexes (currently maintained as a growing list in `.dispatcher/CLAUDE.md` § (b); should it be promoted to a contract artifact and versioned? — same TBD as Set A dispatcher constraint).
+The authoritative list of inspect-detected approval-prompt regexes is maintained in `.dispatcher/CLAUDE.md` § (b), which is the single source of truth for this registry (consistent with Set A's treatment of dispatcher constraint surfaces). Updates to the regex set are made there; this contract refers to it rather than duplicating the list.
 
 ---
 
 ## 4. SUSPEND handling
 
-`SUSPEND:` is a peer message that triggers an in-flight delegation to halt and report. The current contract surface is small but informal.
+`SUSPEND:` is a peer message that triggers an in-flight delegation to halt and report. The contract surface is small but precisely scoped.
 
 ### 4.1 Who may issue
-- Only the secretary may issue `SUSPEND:` to a worker (per `worker-claude-template.md` § SUSPEND対応 and `instruction-template.md` § SUSPEND 対応).
-- **[TBD by Lead]** — Whether the dispatcher may relay a `SUSPEND:` originally authored by the secretary (today the secretary `send_message`s the worker directly), or whether dispatcher-originated SUSPEND is permitted under any condition.
+- Only the secretary may issue `SUSPEND:` to a worker (per `worker-claude-template.md` § SUSPEND対応 and `instruction-template.md` § SUSPEND 対応). The dispatcher MUST NOT originate or relay `SUSPEND:` messages — the secretary's identity as the SUSPEND-issuer is part of the human-judgment chain of authority, and routing SUSPEND through the dispatcher would dilute that boundary.
 
 ### 4.2 Worker obligations on receipt
-On receiving a message whose body begins with `SUSPEND:`, the worker MUST immediately (i.e., before continuing the in-flight tool call where safe) report the following four items to `to_id="secretary"`:
+On receiving a message whose body begins with `SUSPEND:`, the worker MUST immediately (i.e., before continuing the in-flight tool call where safe) report the following four-item prose schema to `to_id="secretary"`:
 1. Work completed up to this point.
 2. Modified files (committed vs. uncommitted, listed separately).
 3. Planned next step (the action the worker would have taken next).
 4. Blockers / unresolved issues.
 
-- **[TBD by Lead]** — Authoritative SUSPEND-report schema, including (a) required-vs-optional field split for the four prose items above, and (b) whether the worker MUST `git add` / `git commit` uncommitted changes before reporting (so the worktree is clean for resume), or whether reporting them as "uncommitted" is sufficient and resume re-evaluates.
+The four-item prose schema is authoritative. The worker MUST NOT auto-`git add` / `git commit` uncommitted changes before reporting; uncommitted changes are reported as-is under item 2, and resume re-evaluates them in the same pane (see §4.4). Auto-committing on SUSPEND would risk producing unreviewed commits and would conflict with same-pane resume semantics.
 
 ### 4.3 State transition under SUSPEND
-- The implementation today does NOT introduce a distinct `suspended` state in `.state/workers/worker-{task_id}.md` or `.state/org-state.md`. The Active Work Item remains `IN_PROGRESS` (or whatever its prior label was) and the worker pane stays open.
-- **[TBD by Lead]** — Whether the contract should introduce a distinct `suspended` state (sub-state of `in_progress`, or peer state alongside it) so that `org-resume` can disambiguate "worker is silently mid-work" from "worker has been told to halt and is awaiting resume instruction".
+SUSPEND does not introduce a distinct `suspended` lifecycle state. The Active Work Item remains `IN_PROGRESS`; the worker pane stays open. Discrimination between "worker is silently mid-work" and "worker has been told to halt and is awaiting resume instruction" is recovered from the worker's most recent SUSPEND report message and Progress Log, not from a state-file label. This keeps the state vocabulary compact and avoids requiring `org-resume` to reason about a fourth org-state.md status value.
 
 ### 4.4 Resume contract
-- Today, on `/org-resume`, the secretary inspects `.state/workers/worker-*.md` and decides per worker whether to send a resume instruction to the **same pane** (default) or to abandon and re-delegate to a **fresh pane**. Same-pane resume is the documented norm because re-spawn loses Issue / diff / judgment context (same rationale as T6 review-feedback path).
-- **[TBD by Lead]** — Resume contract: (a) whether SUSPEND-then-resume MUST reuse the same pane or may at secretary's discretion fall back to a fresh pane (today: same pane preferred but not contracted), and (b) which persisted artifact is the canonical resume input — today only `.state/workers/worker-{task_id}.md` Progress Log plus the most recent SUSPEND report message.
+On `/org-resume`, the secretary inspects `.state/workers/worker-*.md` and decides per worker whether to send a resume instruction. Same-pane resume is the default; fresh-pane resume is permitted only at the secretary's discretion as a documented exception. Fresh-pane resume loses Issue / diff / judgment context (same rationale as the T6 review-feedback path), so it is reserved for cases where the original pane is no longer recoverable.
+
+The canonical resume input is `.state/workers/worker-{task_id}.md` Progress Log together with the worker's most recent SUSPEND report message. No additional persisted artifact is required; the SUSPEND report and Progress Log together carry sufficient context for the worker to resume without re-reading the original Issue or task spec from scratch.
 
 ### 4.5 SUSPEND vs `/org-suspend`
 - `/org-suspend` (org-wide shutdown) is distinct from per-worker `SUSPEND:`. `/org-suspend` flushes secretary / dispatcher / curator state and graceful-closes panes; per-worker `SUSPEND:` is a single-worker pause that keeps panes alive.
-- **[TBD by Lead]** — Whether `/org-suspend` MUST first issue per-worker `SUSPEND:` to every active worker (today implicit; the contract should state whether worker reports are guaranteed before org-state is flushed).
+- During `/org-suspend`, the secretary MUST issue `SUSPEND:` to every active worker and receive the corresponding SUSPEND reports BEFORE flushing org-state and graceful-closing panes. This guarantees state-flush integrity at resume time — without this ordering, in-flight worker progress could be lost or `.state/workers/*.md` Progress Logs could be desynchronized from the worker's actual checkpoint.
 
 ---
 
-## Open questions consolidated (for Lead fill-in)
+## Decision rationale digest
 
-The inline fill-in markers above are the explicit decision points. They cluster into:
+The 14 decisions ratified on 2026-05-03 cluster as follows:
 
-1. **State granularity** — whether `dispatched` / `awaiting_review` / `suspended` are distinct contract states or sub-states (§1, §1, §4.3).
-2. **Closed-set enumerations** — allowed journal events per transition, approval-prompt regex set, SUSPEND-report schema (§1, §2, §3, §4.2).
-3. **Retry bounds** — automatic re-delegation cap on pane-exit, and Codex round-cap applicability (§2 T7, §3 E5).
-4. **Close-condition formalization** — whether the 24–48h idle threshold is a hard bound, and whether no-PR delegations follow the same close path (§1.5).
-5. **SUSPEND semantics** — same-pane vs. fresh-pane on resume, commit obligations on suspend, resume input artifact, `/org-suspend` ordering (§4.1, §4.2, §4.4, §4.5).
-6. **Notification halting** — whether self-report-only (no inspect corroboration) suffices to auto-halt a worker (§3 E3).
-7. **Handoff journaling** — whether `DELEGATE_COMPLETE` must be journaled in addition to its peer message (§2 T2).
-
-These are the design decisions that must be settled before Contract Set B is ratified; the structural skeleton is fixed.
+1. **State model (§1, §1, §4.3)** — A two-level state model is codified: the org-state.md Active Work Item view is canonical (`IN_PROGRESS` / `REVIEW` / `COMPLETED` / `ABANDONED`), and the worker-state-file view is a deliberately coarser pane-liveness subset. SUSPEND does NOT introduce a distinct `suspended` state — the SUSPEND report and Progress Log carry the discrimination.
+2. **Closed-set enumerations (§1, §3)** — Journal events and approval-prompt regexes are delegated to their existing single-source-of-truth files (`docs/journal-events.md`, `.dispatcher/CLAUDE.md` § (b)) rather than duplicated here. A follow-up Issue tracks adding the `required-for-transition` annotation to `docs/journal-events.md`.
+3. **Retry bounds (§2 T7, §3 E5)** — Neither the post-pane-exit re-delegation cap nor the Codex round-cap is broadened: re-delegation is per-task secretary judgment with no counter, and the Codex 3-round cap applies only when `codex` is available in the worker environment.
+4. **Close-condition (§1.5)** — The 24–48h idle threshold remains an operator guideline, not a hard bound. No-PR delegations follow the same close gate (PR-merged condition is trivially false for them).
+5. **SUSPEND semantics (§4.1, §4.2, §4.4, §4.5)** — Only the secretary may issue SUSPEND (the dispatcher MUST NOT relay). The four-item prose report is authoritative with no auto-commit obligation. Same-pane resume is the default; the canonical resume input is the Progress Log plus the most recent SUSPEND report. `/org-suspend` MUST first issue per-worker SUSPEND and collect reports before flushing state.
+6. **Notification halting (§3 E3)** — Self-report-only `ERROR` / `APPROVAL_BLOCKED` produces a notification only; halting the worker is a human decision, not automated.
+7. **Handoff journaling (§2 T2)** — `DELEGATE_COMPLETE` is NOT journaled; the existing `worker_spawned` event already records dispatcher-side handoff completion.
