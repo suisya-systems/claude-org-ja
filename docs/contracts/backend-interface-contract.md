@@ -1,6 +1,6 @@
-# Contract Set D — Backend Interface (Outline)
+# Contract Set D — Backend Interface
 
-> **Status**: Outline / skeleton — pending Lead Q&A (2026-05). Structural extraction of the backend surface that the `claude-org` harness depends on, with placeholders left for design decisions the Lead must fill in before this contract is ratified.
+> **Status**: Ratified (2026-05-03). Lead-confirmed decisions for all 12 open questions. This contract defines the abstract backend surface that the `claude-org` harness depends on; renga 0.18.0+ is the reference implementation, but any backend meeting the surface specified here is permitted.
 >
 > **Scope**: Phase 1 Contract Set D only. Sets A (roles), B (delegation lifecycle), C (state), and E (knowledge) are tracked in #121 / #122 / #124 / #125 and out of scope here.
 >
@@ -23,7 +23,7 @@
 
 ## Surface 1: Pane control
 
-The backend MUST expose primitives to spawn, enumerate, identify, and close "panes" (process-bearing rectangles in a tiling terminal). Additional operations — `focus_pane`, `inspect_pane`, `send_keys`, `new_tab`, and the per-runtime spawn helpers (`spawn_claude_pane`, `spawn_codex_pane`) — are surfaced today by renga but their required-vs-optional status is open (see the per-section `[TBD by Lead]` markers and the consolidated list at the end of this document). All operations are scoped to a single tab unless explicitly noted (see Surface 4 — Identity & addressing).
+The backend MUST expose primitives to spawn, enumerate, identify, and close "panes" (process-bearing rectangles in a tiling terminal). Per the Lead-ratified decisions: `inspect_pane`, `send_keys`, and `list_panes` geometry are REQUIRED; the per-runtime spawn helpers (`spawn_claude_pane`, `spawn_codex_pane`) and a graceful-exit operation are OPTIONAL (backends may provide them, but harnesses must be able to drive a generic spawn with flag injection); `focus_pane` and `new_tab` are user-affordance surfaces that backends SHOULD provide but the harness does not depend on for correctness. All operations are scoped to a single tab (see Surface 4 — Identity & addressing).
 
 ### 1.1 spawn (generic)
 
@@ -45,7 +45,7 @@ The backend MUST expose primitives to spawn, enumerate, identify, and close "pan
 - **Inputs**: `direction`, `target`, `cwd`, `name`, `role` as in 1.1, plus structured `permission_mode`, `model`, and `args[]`. The backend MUST reject `args[]` containing `--dangerously-load-development-channels`, `--permission-mode`, or `--model` with `invalid-params` (forces the structured fields).
 - **Outputs**: numeric pane id.
 - **Required behavior**: the backend MUST inject `--dangerously-load-development-channels server:<channel-name>` so the new Claude joins the peer network without the caller synthesizing the flag.
-- **`[TBD by Lead]`** — Whether the harness contract requires a Claude-specific spawn helper at all, or whether the harness is content to drive a generic spawn + flag injection itself. Today every spawn path in `org-start` Step 2/3 and `org-delegate` Step 3 uses the Claude helper, but a backend without one could theoretically be wrapped at the harness layer.
+- **Required-vs-optional**: OPTIONAL. The contract requires the *end behavior* — a Claude pane spawned with the peer-channel flag injected — but does not require a backend-side spawn-Claude convenience operation. Backends MAY provide one (renga does); harnesses driving a backend without one MUST inject `--dangerously-load-development-channels server:<channel-name>` themselves via the generic Surface 1.1 spawn `command` parameter. The same logic applies to the Codex pull-peer helper in 1.3.
 
 ### 1.3 spawn (Codex convenience)
 
@@ -59,7 +59,7 @@ The backend MUST expose primitives to spawn, enumerate, identify, and close "pan
 - **Inputs**: `target` (id, stable name, or `"focused"`).
 - **Outputs**: confirmation text (renga: `"Closed pane id=N."`); a single lifecycle event (`pane_exited`) MUST be emitted exactly once per successful close.
 - **Error codes**: `pane_not_found`, `pane_vanished`, `last_pane`.
-- **`[TBD by Lead]`** — Whether the contract requires a separate "request-graceful-exit" path in addition to process-kill close (renga today only offers process-kill; `org-suspend` flows currently rely on the closing pane to self-`exit` for graceful shutdown).
+- **Required-vs-optional**: OPTIONAL. Process-kill close (the current renga shape) plus pane-driven self-`exit` for graceful shutdown is sufficient. The contract does NOT require a separate "request-graceful-exit" backend operation; `org-suspend` flows MAY rely on the target pane self-`exit`-ing before the orchestrator issues `close`.
 
 ### 1.5 list_panes
 
@@ -67,7 +67,7 @@ The backend MUST expose primitives to spawn, enumerate, identify, and close "pan
 - **Outputs**: per-pane records containing `id`, optional `name`, optional `role`, `focused` flag, terminal geometry (`x`, `y`, `width`, `height` in cell units), `cwd`, optional `summary` (see 2.4), and when known the peer client kind / receive mode (push vs poll).
 - **Required for**: balanced-split target selection (`org-delegate` Step 3-1), reconciliation of missed lifecycle events (`.dispatcher/CLAUDE.md` watch-loop Step 3), bootstrap identity verification (`org-start` Step 0.3).
 - **Visibility scope**: current tab only. Panes in other tabs MUST NOT appear.
-- **`[TBD by Lead]`** — Whether the geometry fields (`x` / `y` / `width` / `height` in cells) are required to be exposed. The harness's balanced-split algorithm depends on them; a backend without geometry would force a different scheduling strategy.
+- **Required-vs-optional**: REQUIRED. The backend MUST expose `x` / `y` / `width` / `height` in cell units on every `list_panes` record. The harness's balanced-split scheduling depends on it; a backend without geometry would require an entirely different scheduling strategy and the harness cannot operate against such a backend without contract amendment.
 
 ### 1.6 focus
 
@@ -81,7 +81,7 @@ The backend MUST expose primitives to spawn, enumerate, identify, and close "pan
 - **Inputs**: `target`, optional `lines` (trim to bottom N rows), optional `format` (`"text"` | `"grid"`), optional `include_cursor`.
 - **Outputs**: rendered screen text and/or structured grid (`{lines: [{row, text}], cursor?: {visible, row, col}}`).
 - **Used for**: independent observation of approval prompts and error banners by the dispatcher's watch loop, completion-state read-back during retro (`.dispatcher/CLAUDE.md` Step 4 (a)–(g)).
-- **`[TBD by Lead]`** — Whether grid scrape is a REQUIRED surface or OPTIONAL. Some backends may only provide logical messaging; without `inspect_pane`, the dispatcher loses the independent approval/error-detection channel and must rely solely on worker self-reports. The harness today relies on it for confidence-graded notifications.
+- **Required-vs-optional**: REQUIRED. Independent grid-scrape observation is foundational to the dispatcher's confidence-graded notification model (cross-checking worker self-reports against observable screen state). A backend that exposes only logical messaging — forcing the harness onto self-report-only — is insufficient for the safety guarantees Set A and Set B depend on.
 
 ### 1.8 set_pane_identity
 
@@ -99,7 +99,7 @@ The backend MUST expose primitives to spawn, enumerate, identify, and close "pan
 - **Error codes**: `invalid-params` (unknown key name), `pane_not_found`.
 - **Distinction**: NOT equivalent to messaging. `send_keys` writes bytes visible to whatever process is in the pane; `send_message` (Surface 2) delivers a logical peer message.
 - **Required for**: dev-channel approval (`org-start` Step 2.2 / 3.2; `org-delegate` Step 3-3b), permission-mode toggle (`Shift+Tab`), interrupt (`Ctrl+C`), modal escape (`Esc`).
-- **`[TBD by Lead]`** — Whether `send_keys` is a REQUIRED surface or whether the contract permits a backend that exposes only logical messaging. The harness today uses `send_keys(enter=true)` to approve the dev-channel prompt at every Claude spawn, and uses `Esc` for over-validation intervention (`org-delegate` Step 5). Removing it forces an alternative dev-channel approval mechanism.
+- **Required-vs-optional**: REQUIRED. Dev-channel approval (`send_keys(enter=true)` at every Claude spawn), over-validation `Esc` intervention (`org-delegate` Step 5), and `Shift+Tab` permission-mode toggle all depend on raw PTY input. The contract requires the documented key vocabulary; backends without `send_keys` cannot drive the harness's existing approval and intervention flows.
 
 ---
 
@@ -114,7 +114,7 @@ The backend MUST provide a logical peer-messaging channel separate from raw PTY 
 - **Delivery semantics**:
   - For push-mode recipients (Claude Code): the message MUST appear in-band at the recipient as a channel notification carrying source, sender id, sender name, and send timestamp.
   - For pull-mode recipients (Codex): the backend MUST emit a pane-local nudge to the recipient and queue the actual body for retrieval via `check_messages` (2.3).
-- **Encoding contract** (renga today): Claude recipients see `<channel source="renga-peers" from_id="..." from_name="..." sent_at="...">…</channel>`. **`[TBD by Lead]`** — Channel-encoding normativity: whether the channel-source string (`renga-peers`) and the `from_id` / `from_name` / `sent_at` attributes are part of the contract or backend-defined. The harness's prompt strings reference `renga-peers` directly today, so a generic backend would force a rename or a contract-fixed name.
+- **Encoding contract**: HYBRID normativity. The semantic content — `from_id`, `from_name`, and `sent_at` attributes on the delivered channel notification — is contracted; recipients MUST receive these fields and harnesses MAY depend on them. The literal source-string label (renga uses `source="renga-peers"`) is backend-defined and is a transport tag, NOT a contract-fixed name. Harnesses MUST NOT hard-code the source string for routing decisions; they MAY reference it in human-facing logs. Renga's wire form is therefore `<channel source="renga-peers" from_id="..." from_name="..." sent_at="...">…</channel>`, but only the `from_*` / `sent_at` attributes are normative across backends.
 - **Failure modes**: returns ok-text `"(message dropped — renga not reachable: <reason>)"` when the backend is unreachable (does NOT raise a JSON-RPC error; see Surface 6.3). All other failures use the `[<code>] <message>` form (Surface 6).
 
 ### 2.2 list_peers
@@ -130,7 +130,7 @@ The backend MUST provide a logical peer-messaging channel separate from raw PTY 
 - **Outputs**: array of pending messages (sender, body, timestamp).
 - **Required for**: pull-mode peers' actual body retrieval after a nudge; push-mode clients use it to retroactively drain anything missed.
 - **Drain semantics**: each call returns the queue and clears it; messages are not redelivered.
-- **`[TBD by Lead]`** — Whether the contract requires at-least-once delivery (today renga: queued until drained, but no replay after drain) vs at-most-once vs explicit ack.
+- **Delivery semantics**: AT-MOST-ONCE. Each `check_messages` call drains the queue; messages are NOT redelivered after a successful drain. Explicit ack is NOT required. The contract codifies the current renga shape; harnesses MUST treat a drained message as gone and persist anything they need to survive a restart themselves.
 
 ### 2.4 set_summary
 
@@ -159,8 +159,8 @@ The backend MUST expose pane lifecycle events via a long-poll API with cursor-ba
 - **Optional event types** (backends MAY emit; harness behavior tolerates absence):
   - `heartbeat` — periodic keep-alive (renga: 30 s). Clients MAY rely on `poll_events` long-poll behavior for liveness rather than this event.
 - **Filter behavior**: `types[]` narrows the returned slice but the cursor MUST advance past filtered-out events (no duplicate scan on resubmit). Filter-mismatched events that arrive during a long-poll cause early return with `events: []` and an advanced cursor; callers MUST re-poll.
-- **`[TBD by Lead]`** — Maximum hard cap for `timeout_ms` (renga clamps to 30000; harness today uses 5000 in the dispatcher loop).
-- **`[TBD by Lead]`** — Recovery contract on cursor loss (today: cursor file disappears → up-to-5-seconds of events may be missed; reconciliation falls back to `list_panes`). Should the contract guarantee at-most-N-seconds of missed lifecycle events?
+- **`timeout_ms` hard cap**: 30 seconds (30000 ms). Backends MUST clamp larger values to this cap. Harnesses MUST NOT rely on longer waits; long-running listeners MUST re-poll.
+- **Cursor-loss recovery**: BEST-EFFORT + reconciliation. There is NO numeric event-loss SLA. Cursor-file disappearance during a poll cycle is permitted; the contract requires that recovery via `list_panes` reconciliation eventually restores consistent state. This is consistent with the dispatcher event-loss tolerance ratified in Set A Q8.
 
 ---
 
@@ -177,7 +177,7 @@ The backend MUST expose pane lifecycle events via a long-poll API with cursor-ba
 
 - All pane-addressed operations (`list_panes`, `focus_pane`, `send_message`, `inspect_pane`, `close_pane`, `send_keys`) MUST resolve only against panes in the current tab. Cross-tab addressing returns `pane_not_found`.
 - The harness today launches every pane via single-tab `spawn_pane` to satisfy this. Per `references/renga-error-codes.md`, this is a hard constraint (suisya-systems/renga#71) — `new_tab` worker spawns would orphan dispatcher monitoring.
-- **`[TBD by Lead]`** — Whether the contract permits multi-tab pane addressing (with a tab-id parameter on every addressed call) or REQUIRES single-tab scope. The harness today depends on single-tab; this also subsumes the question of when a tab ceases to be visible to MCP calls.
+- **Tab-scope decision**: SINGLE-TAB MUST. All pane-addressed operations resolve only against the current tab. Cross-tab addressing returns `pane_not_found`. Multi-tab support is NOT in this contract revision; if added later it requires a contract amendment with explicit tab-id parameters on every addressed call. Until amended, harnesses MUST launch every orchestrator-spawned pane in the same tab.
 
 ### 4.3 new_tab
 
@@ -238,19 +238,23 @@ Today renga returns ok-text (NOT a JSON-RPC error) on backend-unreachable for tw
 
 All other ops raise on unreachable.
 
-- **`[TBD by Lead]`** — Whether this carve-out is contracted (callers branch on the `(no peers` / `(message dropped` prefix today) or whether the contract should normalize all unreachable conditions to errors with a dedicated code (e.g. `backend_unreachable`). Until decided, the harness treats the current renga shape as authoritative.
+- **Decision**: NORMALIZE TO ERROR. The backend SHOULD raise a `backend_unreachable` (or equivalent dedicated code) instead of returning ok-text on `list_peers` / `send_message` unreachable. The contract surface is the normalized form. NOTE: current renga still returns ok-text; the migration to a normalized error code is tracked as a follow-up Issue ("feat(renga + harness): normalize backend-unreachable to error code instead of ok-text"). Until that migration lands, harnesses MAY continue to branch on the existing `(no peers` / `(message dropped` prefix as a transitional shim — but the contracted end state is the normalized error.
 
 ---
 
-## Open questions consolidated (for Lead fill-in)
+## Surface 7: Backwards-compatibility commitment
 
-The `[TBD by Lead]` markers above are the explicit fill-in points. They cluster into:
+The backend surface MUST follow semantic versioning. Breaking changes — operation removal, parameter removal, error-code rename without a deprecation window — MUST bump the major version. New operations, new parameters with safe defaults, and new error codes MAY be added in minor versions. Renames of error codes MUST go through a deprecation window with both the old and new code emitted in parallel for at least one minor version (consistent with the existing 6.2 stability requirements).
 
-1. **Required-vs-optional surface boundaries** (raw PTY `send_keys`, grid-scrape `inspect_pane`, `focus_pane`, `new_tab`, Codex-style pull peers, the Claude-spawn convenience itself).
-2. **Channel-encoding normativity** (channel-source string, `from_id` / `from_name` / `sent_at` attributes, channel name `renga-peers`, dev-channel flag injection responsibility).
-3. **Event-stream guarantees** (max `timeout_ms`, heartbeat optionality, cursor-loss recovery bound, forward-compat event-type policy).
-4. **Identity / scope rules** (single-tab vs multi-tab visibility, reserved-name handling, exact tab-visibility rule).
-5. **Failure-mode normativity** (graceful-vs-forced close, `last_pane` semantics, ok-text-on-unreachable exception, at-least-once vs at-most-once message delivery, cwd pre-validation guarantee).
-6. **Backwards-compatibility commitment** — Should the contract require semantic versioning of the surface? Today renga's `err_code` ABI promises a deprecation window for code renames, but the broader op-level surface (added params, removed ops) has no formal commitment. **`[TBD by Lead]`**.
+---
 
-These are the design decisions that must be settled before Contract Set D is ratified; the structural skeleton is fixed.
+## Decision rationale digest
+
+The 12 Lead-confirmed decisions above cluster as follows:
+
+1. **Required-vs-optional surface boundaries** — `send_keys`, `inspect_pane`, and `list_panes` geometry are REQUIRED (the harness's approval flow, observation-based safety, and balanced-split scheduling cannot be replaced). The Claude-spawn / Codex-spawn convenience helpers and a graceful-exit operation are OPTIONAL — backends MAY provide them, but harnesses MUST be able to drive a generic spawn + flag injection and rely on pane self-`exit`.
+2. **Channel-encoding normativity** — HYBRID. Semantic fields (`from_id`, `from_name`, `sent_at`) are contracted; the literal source-string label (`renga-peers`) is backend-defined and must not be hard-coded for routing.
+3. **Event-stream guarantees** — `timeout_ms` hard-capped at 30 s; cursor-loss recovery is best-effort with `list_panes` reconciliation, no numeric event-loss SLA (consistent with Set A Q8).
+4. **Identity / scope rules** — SINGLE-TAB MUST. Multi-tab addressing is deferred to a future contract amendment.
+5. **Failure-mode normativity** — Message delivery is at-most-once (drain semantics). Backend-unreachable conditions normalize to error codes; the current renga ok-text carve-out is transitional and tracked as a follow-up Issue.
+6. **Backwards-compatibility commitment** — Surface follows SemVer (Surface 7).
