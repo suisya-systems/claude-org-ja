@@ -1,0 +1,564 @@
+"""M3 migration tooling: ../workers/ flat layout → 3-tier (<project>/_runs/<workstream>/<run>/).
+
+CLI:
+    python -m tools.state_db.migrate_workers --plan --inventory <path> [--workers-root <path>]
+    python -m tools.state_db.migrate_workers --apply --confirm --inventory <path> [--workers-root <path>] [--keep-compat]
+    python -m tools.state_db.migrate_workers --rollback [--manifest <path>] [--workers-root <path>]
+
+Scope: tooling only. Live ../workers/ execution is performed separately by the
+secretary in a follow-on ops issue (Issue #267 M3 §worker-scope).
+
+Design source of truth:
+    workers/state-db-hierarchy-design/directory-layout.md
+    workers/state-db-hierarchy-design/migration-strategy.md §M3
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+from dataclasses import dataclass, field, asdict
+from datetime import datetime, timezone
+from pathlib import Path, PurePosixPath
+from typing import Any, Iterable, Optional
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+# Project slug renames keyed by current dir name → target dir name (post-M3).
+# Source: directory-layout.md §5 mapping table.
+PROJECT_RENAMES: dict[str, str] = {
+    "ccmux": "renga",
+    # claude-org ⇄ claude-org-en swap, encoded as 3-step rename via intermediate.
+    # Intermediate slug "claude-org-ja-tmp" matches migration-strategy.md §M3 step 1.
+    "claude-org": "claude-org-ja",
+    "claude-org-en": "claude-org",
+}
+
+# Intermediate slug used for the swap. Both directory-layout.md §5 and
+# migration-strategy.md §M3 step 1 use "claude-org-ja-tmp"; we match that
+# (CLAUDE.local.md mentions "claude-org-tmp1" but defers to the design SoT).
+SWAP_INTERMEDIATE: str = "claude-org-ja-tmp"
+
+ARCHIVE_QUARTER_DEFAULT = "2026-Q2"
+
+
+# ---------------------------------------------------------------------------
+# Data model
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class Operation:
+    """A single mv operation in the migration plan.
+
+    op:
+      - "rename_project": project-tier dir rename (worktree-fixup-aware)
+      - "ensure_dir": mkdir -p; no rollback (idempotent)
+      - "move_run": run / scratch / research / archive_candidate move
+    """
+
+    op: str
+    src: str
+    dst: str
+    note: str = ""
+    worktrees: list[str] = field(default_factory=list)
+    has_worktrees: bool = False
+
+
+@dataclass
+class Plan:
+    workers_root: str
+    inventory_source: str
+    archive_quarter: str
+    operations: list[Operation]
+    swap_intermediate: str = SWAP_INTERMEDIATE
+
+
+# ---------------------------------------------------------------------------
+# Inventory → target path computation
+# ---------------------------------------------------------------------------
+
+
+def _archive_quarter_for(now: Optional[datetime] = None) -> str:
+    """Return YYYY-Qx for `now` (UTC). Default arg for testability."""
+    n = now or datetime.now(timezone.utc)
+    q = (n.month - 1) // 3 + 1
+    return f"{n.year}-Q{q}"
+
+
+def compute_target_path(
+    entry: dict,
+    workers_root: PurePosixPath,
+    archive_quarter: str,
+) -> PurePosixPath:
+    """Compute the post-M3 absolute target path for an inventory entry.
+
+    Rules (CLAUDE.local.md / directory-layout.md §5):
+      - tier=project: target = <root>/<renamed_slug>/
+      - tier=run: target = <root>/<parent_project>/_runs/<workstream or _solo>/<name>/
+      - tier=scratch: target = <root>/_scratch/_runs/_solo/<name>/
+      - tier=archive_candidate: target = <root>/_archive/<YYYY-Qx>/<parent_project>/<name>/
+    """
+    name: str = entry["name"]
+    cls = entry["proposed_classification"]
+    tier: str = cls["tier"]
+
+    if tier == "project":
+        target_slug = PROJECT_RENAMES.get(name, name)
+        return workers_root / target_slug
+
+    parent_project: str = cls.get("parent_project") or ""
+    workstream: Optional[str] = cls.get("parent_workstream")
+
+    if tier == "run":
+        ws = workstream if workstream else "_solo"
+        return workers_root / parent_project / "_runs" / ws / name
+
+    if tier == "scratch":
+        # Scratches collapse into a single _solo cluster regardless of inventory parent.
+        return workers_root / "_scratch" / "_runs" / "_solo" / name
+
+    if tier == "archive_candidate":
+        return workers_root / "_archive" / archive_quarter / parent_project / name
+
+    raise ValueError(f"unknown tier {tier!r} for entry {name!r}")
+
+
+# ---------------------------------------------------------------------------
+# Plan generation
+# ---------------------------------------------------------------------------
+
+
+def _git_worktrees(repo: Path) -> list[str]:
+    """Return absolute paths of every worktree linked to `repo`. Empty if not a git repo."""
+    if not (repo / ".git").exists():
+        return []
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(repo), "worktree", "list", "--porcelain"],
+            capture_output=True, text=True, check=True, encoding="utf-8",
+        ).stdout
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return []
+    paths: list[str] = []
+    for line in out.splitlines():
+        if line.startswith("worktree "):
+            p = line[len("worktree "):].strip()
+            # Skip the main worktree itself; we record only the linked ones,
+            # because the main one moves implicitly with the project dir.
+            if Path(p).resolve() != repo.resolve():
+                paths.append(p)
+    return paths
+
+
+def build_plan(
+    inventory: list[dict],
+    workers_root: Path,
+    archive_quarter: Optional[str] = None,
+    inventory_source: str = "",
+    *,
+    detect_worktrees: bool = True,
+) -> Plan:
+    """Build an ordered migration plan from `inventory`.
+
+    Ordering (advisor §4):
+      1. ensure_dir for pseudo-project roots (_research/_runs, _scratch/_runs/_solo, _archive)
+      2. project renames (ccmux→renga, then 3-step claude-org ⇄ claude-org-en swap)
+      3. ensure_dir for each unique <project>/_runs/<workstream>/ target parent
+      4. run moves
+      5. scratch moves
+      6. archive_candidate moves
+    """
+    aq = archive_quarter or _archive_quarter_for()
+    root = PurePosixPath(workers_root.as_posix())
+    ops: list[Operation] = []
+
+    # --- pseudo-project roots ------------------------------------------------
+    ops.append(Operation("ensure_dir", "", str(root / "_research" / "_runs"),
+                         note="pseudo-project _research"))
+    ops.append(Operation("ensure_dir", "", str(root / "_scratch" / "_runs" / "_solo"),
+                         note="pseudo-project _scratch"))
+    ops.append(Operation("ensure_dir", "", str(root / "_archive" / aq),
+                         note=f"archive cold tier {aq}"))
+
+    # --- project renames -----------------------------------------------------
+    # ccmux → renga (single-step)
+    if any(e["name"] == "ccmux" for e in inventory):
+        src = workers_root / "ccmux"
+        dst = workers_root / "renga"
+        wts = _git_worktrees(src) if detect_worktrees else []
+        ops.append(Operation("rename_project", str(PurePosixPath(src.as_posix())),
+                             str(PurePosixPath(dst.as_posix())),
+                             note="ccmux → renga (rename)",
+                             worktrees=wts, has_worktrees=bool(wts)))
+
+    # claude-org ⇄ claude-org-en swap, 3 steps:
+    #   1. claude-org → claude-org-ja-tmp
+    #   2. claude-org-en → claude-org
+    #   3. claude-org-ja-tmp → claude-org-ja
+    has_co = any(e["name"] == "claude-org" for e in inventory)
+    has_coen = any(e["name"] == "claude-org-en" for e in inventory)
+    if has_co and has_coen:
+        co_path = workers_root / "claude-org"
+        co_wts = _git_worktrees(co_path) if detect_worktrees else []
+        coen_path = workers_root / "claude-org-en"
+        coen_wts = _git_worktrees(coen_path) if detect_worktrees else []
+        intermediate = workers_root / SWAP_INTERMEDIATE
+
+        ops.append(Operation(
+            "rename_project",
+            str(PurePosixPath(co_path.as_posix())),
+            str(PurePosixPath(intermediate.as_posix())),
+            note="swap step 1/3: claude-org → " + SWAP_INTERMEDIATE,
+            worktrees=co_wts, has_worktrees=bool(co_wts),
+        ))
+        ops.append(Operation(
+            "rename_project",
+            str(PurePosixPath(coen_path.as_posix())),
+            str(PurePosixPath((workers_root / "claude-org").as_posix())),
+            note="swap step 2/3: claude-org-en → claude-org",
+            worktrees=coen_wts, has_worktrees=bool(coen_wts),
+        ))
+        ops.append(Operation(
+            "rename_project",
+            str(PurePosixPath(intermediate.as_posix())),
+            str(PurePosixPath((workers_root / "claude-org-ja").as_posix())),
+            note="swap step 3/3: " + SWAP_INTERMEDIATE + " → claude-org-ja",
+            worktrees=co_wts, has_worktrees=bool(co_wts),
+        ))
+
+    # --- run / scratch / archive_candidate moves -----------------------------
+    moves: list[tuple[str, Operation]] = []  # (sort key, op)
+    seen_parents: set[str] = set()
+    for entry in inventory:
+        tier = entry["proposed_classification"]["tier"]
+        if tier == "project":
+            continue
+        name = entry["name"]
+        src = workers_root / name
+        dst = compute_target_path(entry, root, aq)
+
+        if str(PurePosixPath(src.as_posix())) == str(dst):
+            continue  # already migrated, no-op
+
+        parent = str(PurePosixPath(dst).parent)
+        if parent not in seen_parents:
+            seen_parents.add(parent)
+            moves.append((f"0:{parent}", Operation("ensure_dir", "", parent)))
+
+        wts = _git_worktrees(src) if detect_worktrees else []
+        sort_key = {"run": "1", "scratch": "2", "archive_candidate": "3"}.get(tier, "9")
+        moves.append((f"{sort_key}:{name}", Operation(
+            "move_run",
+            str(PurePosixPath(src.as_posix())),
+            str(dst),
+            note=f"tier={tier}",
+            worktrees=wts, has_worktrees=bool(wts),
+        )))
+
+    moves.sort(key=lambda kv: kv[0])
+    ops.extend(op for _, op in moves)
+
+    return Plan(
+        workers_root=str(PurePosixPath(workers_root.as_posix())),
+        inventory_source=inventory_source,
+        archive_quarter=aq,
+        operations=ops,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Plan rendering
+# ---------------------------------------------------------------------------
+
+
+def render_plan_human(plan: Plan) -> str:
+    lines = [
+        f"# M3 migration plan",
+        f"workers_root: {plan.workers_root}",
+        f"archive_quarter: {plan.archive_quarter}",
+        f"inventory: {plan.inventory_source}",
+        f"swap_intermediate: {plan.swap_intermediate}",
+        f"operations: {len(plan.operations)}",
+        "",
+    ]
+    for i, op in enumerate(plan.operations, 1):
+        if op.op == "ensure_dir":
+            lines.append(f"{i:>3}. ensure_dir   {op.dst}")
+        elif op.op == "rename_project":
+            wt = f" [worktrees={len(op.worktrees)}]" if op.has_worktrees else ""
+            lines.append(f"{i:>3}. rename_proj  {op.src}")
+            lines.append(f"     →           {op.dst}{wt}  # {op.note}")
+        elif op.op == "move_run":
+            wt = f" [worktrees={len(op.worktrees)}]" if op.has_worktrees else ""
+            lines.append(f"{i:>3}. move_run     {op.src}")
+            lines.append(f"     →           {op.dst}{wt}  # {op.note}")
+    return "\n".join(lines) + "\n"
+
+
+def render_plan_manifest(plan: Plan) -> dict[str, Any]:
+    return {
+        "version": 1,
+        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "workers_root": plan.workers_root,
+        "inventory_source": plan.inventory_source,
+        "archive_quarter": plan.archive_quarter,
+        "swap_intermediate": plan.swap_intermediate,
+        "operations": [asdict(op) for op in plan.operations],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Pre-flight checks
+# ---------------------------------------------------------------------------
+
+
+def preflight(plan: Plan, workers_root: Path) -> list[str]:
+    """Return list of human-readable warnings/errors. Empty list = OK to apply.
+
+    Simulates the plan sequentially so the 3-step swap (which transiently
+    claims `claude-org-ja-tmp`) does not raise spurious source-missing /
+    target-exists warnings.
+    """
+    issues: list[str] = []
+
+    root_drive = workers_root.resolve().drive.lower() if os.name == "nt" else ""
+
+    # Track simulated existence: start from real FS, mutate as we walk ops.
+    def _exists(p: str) -> bool:
+        return Path(p).exists()
+
+    # Snapshot which paths participate in the plan.
+    touched: dict[str, bool] = {}
+    def _is_present(p: str) -> bool:
+        if p in touched:
+            return touched[p]
+        return _exists(p)
+
+    for op in plan.operations:
+        if root_drive:
+            for path in (op.src, op.dst):
+                if not path:
+                    continue
+                d = Path(path).drive.lower()
+                if d and d != root_drive:
+                    issues.append(
+                        f"cross-drive path detected ({d} vs {root_drive}): {path} — "
+                        "junction --keep-compat will not work; use --manifest mode"
+                    )
+        if op.op == "ensure_dir":
+            touched[op.dst] = True
+            continue
+        if op.op in ("rename_project", "move_run"):
+            if not _is_present(op.src):
+                issues.append(f"source missing: {op.src} (op={op.op})")
+            if _is_present(op.dst):
+                issues.append(f"target already exists: {op.dst} (op={op.op}, src={op.src})")
+            touched[op.src] = False
+            touched[op.dst] = True
+
+    return issues
+
+
+# ---------------------------------------------------------------------------
+# Apply / Rollback
+# ---------------------------------------------------------------------------
+
+
+def _git_worktree_repair(repo: Path) -> None:
+    """Run `git worktree repair` inside `repo` — best effort, no raise on failure."""
+    if not (repo / ".git").exists():
+        return
+    try:
+        subprocess.run(
+            ["git", "-C", str(repo), "worktree", "repair"],
+            capture_output=True, text=True, check=True, encoding="utf-8",
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        # Surface but don't abort — secretary inspects manifest + worktree list afterwards.
+        pass
+
+
+def _make_junction(link: Path, target: Path) -> None:
+    """Windows junction (mklink /J). Best-effort; same-drive only."""
+    if os.name != "nt":
+        try:
+            os.symlink(target, link, target_is_directory=True)
+        except OSError:
+            pass
+        return
+    try:
+        subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+            capture_output=True, text=True, check=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
+
+
+def _remove_junction(link: Path) -> None:
+    if not link.exists() and not link.is_symlink():
+        return
+    try:
+        # On Windows, junctions are removed with rmdir.
+        if os.name == "nt":
+            subprocess.run(["cmd", "/c", "rmdir", str(link)], capture_output=True, check=True)
+        else:
+            link.unlink()
+    except (subprocess.CalledProcessError, OSError):
+        pass
+
+
+def apply_plan(
+    plan: Plan,
+    *,
+    keep_compat: bool = False,
+    manifest_path: Optional[Path] = None,
+    runner: Optional[Any] = None,
+) -> Path:
+    """Execute `plan`. Returns the path of the written manifest."""
+    rename = (runner.rename if runner else os.rename)
+    mkdir = (runner.makedirs if runner else (lambda p: os.makedirs(p, exist_ok=True)))
+    repair = (runner.repair if runner else _git_worktree_repair)
+    junction = (runner.junction if runner else _make_junction)
+
+    executed: list[dict[str, Any]] = []
+    for op in plan.operations:
+        if op.op == "ensure_dir":
+            mkdir(op.dst)
+            executed.append({"op": op.op, "dst": op.dst})
+            continue
+
+        # rename_project / move_run share the same atomic-rename body.
+        rename(op.src, op.dst)
+        if op.has_worktrees and op.op == "rename_project":
+            repair(Path(op.dst))
+        if keep_compat and op.op in ("rename_project", "move_run"):
+            junction(Path(op.src), Path(op.dst))
+        executed.append({
+            "op": op.op,
+            "src": op.src,
+            "dst": op.dst,
+            "worktrees": op.worktrees,
+            "compat_junction": bool(keep_compat),
+        })
+
+    out = manifest_path or _default_manifest_path(plan)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    payload = render_plan_manifest(plan)
+    payload["executed"] = executed
+    out.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    return out
+
+
+def _default_manifest_path(plan: Plan) -> Path:
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return Path(plan.workers_root) / f".m3-migration-manifest-{ts}.json"
+
+
+def rollback(manifest_path: Path, *, runner: Optional[Any] = None) -> None:
+    """Reverse the operations recorded in `manifest_path`."""
+    rename = (runner.rename if runner else os.rename)
+    repair = (runner.repair if runner else _git_worktree_repair)
+    remove_junction = (runner.remove_junction if runner else _remove_junction)
+
+    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    executed = data.get("executed", [])
+    for entry in reversed(executed):
+        op = entry["op"]
+        if op == "ensure_dir":
+            # Idempotent; leave dirs alone (they may now contain content).
+            continue
+        if entry.get("compat_junction"):
+            remove_junction(Path(entry["src"]))
+        rename(entry["dst"], entry["src"])
+        if op == "rename_project" and entry.get("worktrees"):
+            repair(Path(entry["src"]))
+
+
+def find_latest_manifest(workers_root: Path) -> Optional[Path]:
+    cands = sorted(workers_root.glob(".m3-migration-manifest-*.json"))
+    return cands[-1] if cands else None
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+
+def _load_inventory(path: Path) -> list[dict]:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    p = argparse.ArgumentParser(prog="migrate_workers", description=__doc__.splitlines()[0])
+    grp = p.add_mutually_exclusive_group(required=True)
+    grp.add_argument("--plan", action="store_true", help="dry-run: print plan, do not move")
+    grp.add_argument("--apply", action="store_true", help="execute (requires --confirm)")
+    grp.add_argument("--rollback", action="store_true", help="undo latest applied manifest")
+    p.add_argument("--confirm", action="store_true", help="required with --apply")
+    p.add_argument("--inventory", type=Path, help="inventory.json path (required for --plan/--apply)")
+    p.add_argument("--workers-root", type=Path, help="../workers/ root (default: parent of cwd)")
+    p.add_argument("--archive-quarter", default=None, help=f"override quarter slug (default: {ARCHIVE_QUARTER_DEFAULT})")
+    p.add_argument("--keep-compat", action="store_true",
+                   help="create old-path → new-path junction for backward compat (Windows)")
+    p.add_argument("--manifest", type=Path, help="manifest path: write target for --apply, read source for --rollback")
+    p.add_argument("--json", action="store_true", help="emit JSON manifest to stdout (with --plan)")
+    args = p.parse_args(argv)
+
+    workers_root: Path = (args.workers_root or Path.cwd().parent).resolve()
+
+    if args.rollback:
+        manifest = args.manifest or find_latest_manifest(workers_root)
+        if manifest is None or not manifest.exists():
+            print("error: no manifest found for rollback", file=sys.stderr)
+            return 2
+        rollback(manifest)
+        print(f"rollback complete from {manifest}")
+        return 0
+
+    if args.inventory is None or not args.inventory.exists():
+        print("error: --inventory <path> required and must exist", file=sys.stderr)
+        return 2
+
+    inv = _load_inventory(args.inventory)
+    plan = build_plan(
+        inv, workers_root,
+        archive_quarter=args.archive_quarter,
+        inventory_source=str(args.inventory),
+    )
+
+    if args.plan:
+        if args.json:
+            print(json.dumps(render_plan_manifest(plan), indent=2, ensure_ascii=False))
+        else:
+            print(render_plan_human(plan))
+        # surface preflight as warnings, non-fatal for plan
+        for issue in preflight(plan, workers_root):
+            print(f"warning: {issue}", file=sys.stderr)
+        return 0
+
+    if args.apply:
+        if not args.confirm:
+            print("error: --apply requires --confirm", file=sys.stderr)
+            return 2
+        issues = preflight(plan, workers_root)
+        if issues:
+            print("preflight issues:", file=sys.stderr)
+            for i in issues:
+                print(f"  - {i}", file=sys.stderr)
+            return 3
+        manifest = apply_plan(plan, keep_compat=args.keep_compat, manifest_path=args.manifest)
+        print(f"apply complete; manifest={manifest}")
+        return 0
+
+    return 1  # unreachable
+
+
+if __name__ == "__main__":  # pragma: no cover
+    sys.exit(main())
