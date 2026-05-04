@@ -55,7 +55,7 @@ Phase 5 (Layer 1/2/3 抽出後) の時点で claude-org-ja に残る ja-specific
 - 日本語 prose template: `.dispatcher/CLAUDE.md` / `.curator/CLAUDE.md`（Layer 2 英語 reference の consumer-side override）
 - ja locale フック群（`.hooks/` / `.githooks/` 配下、deny-message を日本語化したもの）
 - `dashboard/` — 組織状態の可視化 SPA（Phase 4 Q9=c で claude-org-ja 残置確定）
-- ja 固有の運用ツール: `tools/check_renga_compat.py` / `tools/gen_worker_brief.py` / `tools/org_setup_prune.py` / `tools/journal_*` / `tools/pr_watch.*` / `tools/state_migrate.py`
+- ja 固有の運用ツール: `tools/check_renga_compat.py` / `tools/gen_worker_brief.py` / `tools/org_setup_prune.py` / `tools/journal_*` / `tools/pr_watch.*` / `tools/state_migrate.py` / `tools/state_db/`（state DB writer / importer / drift_check / curator_archive、Issue [#267](https://github.com/suisya-systems/claude-org-ja/issues/267) live-migration 後 `.state/state.db` が組織状態の唯一の SoT。`.state/org-state.md` は post-commit hook で再生成される派生物、`.state/journal.jsonl` は M4 で廃止）
 - ja 固有のスキーマ・ロケールデータ: `tools/ja_locale.json` / `tools/org_extension_schema.json`
 - インストールスクリプト: `scripts/install.sh` / `scripts/install.ps1` / `scripts/install-hooks.sh`
 
