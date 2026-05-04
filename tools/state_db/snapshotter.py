@@ -50,9 +50,19 @@ _STRUCTURED_HEADINGS: frozenset[str] = frozenset({
     "dispatcher",
     "curator",
     "worker directory registry",
-    "active work items",
     "resume instructions",
 })
+# Cross-review M2.1 (Issue #272): ``Active Work Items`` was previously
+# DB-owned but the importer routes legacy free-form bullets like
+# ``- task-id: COMPLETED (PR #N merged, …)`` to ``events`` (kind
+# ``legacy_active_item``), not to ``runs``. After M2.1 wires the
+# post-commit regenerate, treating the heading as structured silently
+# erases every COMPLETED / ABANDONED entry the operator curated by hand
+# on the next call. We therefore demote the heading to passthrough so
+# the existing free-form list survives. The DB still tracks live runs
+# via the ``runs`` table — dashboards read it directly via queries.py;
+# they do not parse the markdown — so demoting this heading does not
+# change live-state visibility.
 
 
 def _is_structured_heading(heading_text: str) -> bool:
@@ -243,7 +253,10 @@ def render_structured_markdown(conn: sqlite3.Connection) -> str:
             session.get("curator_pane_id"),
         ),
         _render_worker_directory_registry(runs),
-        _render_active_work_items(runs),
+        # ``## Active Work Items`` is intentionally NOT rendered here;
+        # see the passthrough rationale next to ``_STRUCTURED_HEADINGS``.
+        # The helper ``_render_active_work_items`` is kept for callers
+        # that want a DB-only view (none in tree at the moment).
         _render_resume_instructions(session),
     ]
     return "".join(parts)

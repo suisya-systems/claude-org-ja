@@ -50,3 +50,15 @@ jobs:
 
       - name: Run shell hook tests
         run: bash tests/run-all.sh
+
+      - name: state-db drift_check fixture round-trip (Issue #272 / M2.1)
+        # M2.1 cutover gate (see tools/state_db/test_drift_fixture.py).
+        # Round-trips the hand-curated fixture under
+        # tests/fixtures/m2_1_drift_sample/ through importer →
+        # snapshotter → drift_check, asserting zero structural drift.
+        # Catches importer ↔ snapshotter divergence (a field one side
+        # parses but the other doesn't render). The earlier formulation
+        # — importer.py against the worktree's `.state/` then drift_check
+        # — was tautological because both sides went through the same
+        # snapshotter call.
+        run: python -m unittest tools.state_db.test_drift_fixture -v
