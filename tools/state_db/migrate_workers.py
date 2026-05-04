@@ -493,18 +493,125 @@ def _count_active_runs(db_path: Path) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _list_worktree_paths(repo: Path) -> list[str]:
+    """Return every worktree path linked to `repo` (incl. the main one)."""
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(repo), "worktree", "list", "--porcelain"],
+            capture_output=True, text=True, check=True, encoding="utf-8",
+        ).stdout
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return []
+    paths: list[str] = []
+    for line in out.splitlines():
+        if line.startswith("worktree "):
+            paths.append(line[len("worktree "):].strip())
+    return paths
+
+
+def _count_prunable_worktrees(repo: Path) -> int:
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(repo), "worktree", "list", "--porcelain"],
+            capture_output=True, text=True, check=True, encoding="utf-8",
+        ).stdout
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return 0
+    return sum(1 for line in out.splitlines() if line.startswith("prunable"))
+
+
+def _candidate_worktree_paths(repo: Path) -> list[Path]:
+    """Collect candidate worktree working-tree paths to repair.
+
+    Combines two sources:
+
+    1. The `<repo>/.worktrees/*/` convention used by claude-org-ja (and
+       this repo's own layout). When the main repo is renamed, the
+       `.git/worktrees/<name>/gitdir` file still points at the *old*
+       location, so `git worktree list --porcelain` reports stale paths
+       that no longer exist on disk — useless to feed back into
+       `git worktree repair`. Scanning the FS gives the *current*
+       location.
+    2. Any path from `git worktree list --porcelain` that still exists
+       on disk — this covers worktrees living outside the
+       `<repo>/.worktrees/` convention (when their gitlink is stale on
+       the worktree side rather than the main-repo side).
+    """
+    seen: set[str] = set()
+    out: list[Path] = []
+
+    wt_root = repo / ".worktrees"
+    if wt_root.is_dir():
+        for child in sorted(wt_root.iterdir()):
+            if not child.is_dir():
+                continue
+            if not (child / ".git").exists():
+                continue
+            key = str(child.resolve())
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(child)
+
+    repo_key = str(repo.resolve())
+    for p in _list_worktree_paths(repo):
+        path = Path(p)
+        if not path.exists():
+            continue
+        try:
+            key = str(path.resolve())
+        except OSError:
+            continue
+        if key == repo_key or key in seen:
+            continue
+        seen.add(key)
+        out.append(path)
+
+    return out
+
+
 def _git_worktree_repair(repo: Path) -> None:
-    """Run `git worktree repair` inside `repo` — best effort, no raise on failure."""
+    """Repair every gitlink linked to `repo` — best effort, no raise.
+
+    Issue #278: on Windows, `git worktree repair` invoked once with no
+    path argument fails to update the gitlinks of linked worktrees that
+    sit under `<repo>/.worktrees/`. The fix enumerates each worktree's
+    *current* working-tree path (FS scan + porcelain crosscheck) and
+    calls `git worktree repair <path>` per entry, then re-checks for
+    `prunable` entries and emits a stderr warning if any remain.
+    """
     if not (repo / ".git").exists():
         return
+
+    targets = _candidate_worktree_paths(repo)
+
+    # Always run the unargumented form first. It's cheap and sometimes
+    # repairs entries we'd otherwise miss (e.g. worktrees moved on
+    # their side).
     try:
         subprocess.run(
             ["git", "-C", str(repo), "worktree", "repair"],
             capture_output=True, text=True, check=True, encoding="utf-8",
         )
     except (subprocess.CalledProcessError, FileNotFoundError):
-        # Surface but don't abort — secretary inspects manifest + worktree list afterwards.
         pass
+
+    for path in targets:
+        try:
+            subprocess.run(
+                ["git", "-C", str(repo), "worktree", "repair", str(path)],
+                capture_output=True, text=True, check=True, encoding="utf-8",
+            )
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            continue
+
+    remaining = _count_prunable_worktrees(repo)
+    if remaining:
+        print(
+            f"warning: {remaining} prunable worktree(s) still reported under {repo} "
+            "after repair — gitlinks may be stale",
+            file=sys.stderr,
+        )
 
 
 def _make_junction(link: Path, target: Path) -> None:
