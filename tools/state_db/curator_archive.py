@@ -20,6 +20,7 @@ For pre-M3 flat dirs the helper degrades to a single-tier archive
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import os
 import shutil
@@ -150,12 +151,21 @@ def apply_archive(conn: sqlite3.Connection, candidates: list[Candidate]) -> int:
         dst = Path(c.target)
         if not src.exists():
             continue
+        if dst.exists():
+            # Refuse to overwrite — would silently nest under shutil.move.
+            raise FileExistsError(f"archive target already exists: {dst}")
         dst.parent.mkdir(parents=True, exist_ok=True)
+        used_copy_fallback = False
         try:
             os.rename(src, dst)
-        except OSError:
-            # cross-device fallback
-            shutil.move(str(src), str(dst))
+        except OSError as e:
+            if e.errno != errno.EXDEV:
+                raise
+            # True cross-device path: copy + remove. shutil.move(src, dst)
+            # is unsafe here because if dst already existed it would nest.
+            shutil.copytree(src, dst)
+            shutil.rmtree(src)
+            used_copy_fallback = True
         try:
             conn.execute(
                 "UPDATE worker_dirs SET abs_path = ?, lifecycle = 'archived', "
@@ -165,8 +175,12 @@ def apply_archive(conn: sqlite3.Connection, candidates: list[Candidate]) -> int:
             )
             conn.commit()
         except sqlite3.Error:
-            # rollback FS to keep DB↔FS in sync
-            os.rename(dst, src)
+            # Best-effort FS rollback so DB ↔ FS stay aligned.
+            if used_copy_fallback:
+                shutil.copytree(dst, src)
+                shutil.rmtree(dst)
+            else:
+                os.rename(dst, src)
             conn.rollback()
             raise
         moved += 1

@@ -62,7 +62,20 @@ If anything is off, **stop here** and rebuild the inventory before going further
 
 ## 3. Apply by tier (subset-at-a-time)
 
-The migrator currently applies the entire plan in one invocation. To stage tiers, edit `.state/m3-plan.json` to drop operations you want to defer, then pass the trimmed manifest to `--apply` via `--manifest <file>`. Recommended order:
+To stage the migration in tiers, take `.state/m3-plan.json`, copy it per tier, and **delete the operations you want to defer** in each copy. Then feed each trimmed file through `--from-manifest`:
+
+```bash
+cp .state/m3-plan.json .state/m3-plan-step1-scratch.json   # then edit
+python -m tools.state_db.migrate_workers \
+  --apply --confirm \
+  --from-manifest .state/m3-plan-step1-scratch.json \
+  --manifest      .state/m3-executed-step1.json \
+  --workers-root  ../workers
+```
+
+`--from-manifest` replays the supplied operations exactly; it does NOT regenerate the plan from inventory. Use `--manifest` to choose where the executed-op log is written (the migrator persists it incrementally after every successful op so a mid-batch failure still leaves a valid rollback record).
+
+Recommended tier order:
 
 1. **`_scratch` cluster** — lowest risk, no worktrees.
 2. **`_research` cluster** — read-only audit dirs.
@@ -70,14 +83,14 @@ The migrator currently applies the entire plan in one invocation. To stage tiers
 4. **Remaining run moves** under `claude-org-ja/`, `claude-org/`, `core-harness/`, `renga/`, `claude-org-runtime/`.
 5. **`archive_candidate`** — moves into `_archive/<YYYY-Qx>/...`.
 
-Each subset:
+To apply the entire plan in one shot (no staging):
 
 ```bash
 python -m tools.state_db.migrate_workers \
   --apply --confirm \
   --inventory ../workers/state-db-hierarchy-design/inventory.json \
   --workers-root ../workers \
-  --manifest .state/m3-manifest-step-N.json \
+  --manifest .state/m3-executed.json \
   --keep-compat                          # OFF by default; ON during tier 3
 ```
 
@@ -155,11 +168,13 @@ After rollback, re-run `python -m tools.state_db.importer --rebuild --no-strict`
 ## 7. After all tiers applied
 
 ```bash
-# every dir is at its target
+# every dir is at its target — re-running --plan against the same
+# inventory after a successful migration should yield only ensure_dir
+# lines: the planner's "src missing && dst present → already migrated"
+# guard skips moves whose source has been consumed.
 python -m tools.state_db.migrate_workers --plan \
   --inventory ../workers/state-db-hierarchy-design/inventory.json \
   --workers-root ../workers
-# expected: only ensure_dir lines remain (no rename_project / move_run)
 ```
 
 ```bash

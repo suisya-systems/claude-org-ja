@@ -187,23 +187,34 @@ def build_plan(
                          note=f"archive cold tier {aq}"))
 
     # --- project renames -----------------------------------------------------
-    # ccmux → renga (single-step)
+    # ccmux → renga (single-step). Skip when src is gone but dst is present
+    # (already-applied) so a re-plan after migration is clean.
     if any(e["name"] == "ccmux" for e in inventory):
         src = workers_root / "ccmux"
         dst = workers_root / "renga"
-        wts = _git_worktrees(src) if detect_worktrees else []
-        ops.append(Operation("rename_project", str(PurePosixPath(src.as_posix())),
-                             str(PurePosixPath(dst.as_posix())),
-                             note="ccmux → renga (rename)",
-                             worktrees=wts, has_worktrees=bool(wts)))
+        if src.exists() or not dst.exists():
+            wts = _git_worktrees(src) if detect_worktrees else []
+            ops.append(Operation("rename_project", str(PurePosixPath(src.as_posix())),
+                                 str(PurePosixPath(dst.as_posix())),
+                                 note="ccmux → renga (rename)",
+                                 worktrees=wts, has_worktrees=bool(wts)))
 
     # claude-org ⇄ claude-org-en swap, 3 steps:
     #   1. claude-org → claude-org-ja-tmp
     #   2. claude-org-en → claude-org
     #   3. claude-org-ja-tmp → claude-org-ja
+    # Skip the entire swap when both source dirs are gone and the post-swap
+    # dirs (claude-org-ja, claude-org) are present — already migrated.
     has_co = any(e["name"] == "claude-org" for e in inventory)
     has_coen = any(e["name"] == "claude-org-en" for e in inventory)
-    if has_co and has_coen:
+    # claude-org-en being absent + claude-org-ja being present is the
+    # post-swap signature (claude-org is intentionally still present, but
+    # now points at the former claude-org-en).
+    swap_already_done = (
+        not (workers_root / "claude-org-en").exists()
+        and (workers_root / "claude-org-ja").exists()
+    )
+    if has_co and has_coen and not swap_already_done:
         co_path = workers_root / "claude-org"
         co_wts = _git_worktrees(co_path) if detect_worktrees else []
         coen_path = workers_root / "claude-org-en"
@@ -245,6 +256,11 @@ def build_plan(
 
         if str(PurePosixPath(src.as_posix())) == str(dst):
             continue  # already migrated, no-op
+        # Already-migrated guard for re-runs: if src is gone but dst exists,
+        # an earlier apply moved this entry. Skip silently so a post-migration
+        # re-plan returns only ensure_dir ops.
+        if not src.exists() and Path(str(dst)).exists():
+            continue
 
         parent = str(PurePosixPath(dst).parent)
         if parent not in seen_parents:
@@ -421,39 +437,85 @@ def apply_plan(
     manifest_path: Optional[Path] = None,
     runner: Optional[Any] = None,
 ) -> Path:
-    """Execute `plan`. Returns the path of the written manifest."""
+    """Execute `plan` and return the path of the written manifest.
+
+    The manifest is written **incrementally** after every successful op so
+    that a mid-batch failure still leaves a usable rollback record on disk.
+    """
     rename = (runner.rename if runner else os.rename)
     mkdir = (runner.makedirs if runner else (lambda p: os.makedirs(p, exist_ok=True)))
     repair = (runner.repair if runner else _git_worktree_repair)
     junction = (runner.junction if runner else _make_junction)
 
-    executed: list[dict[str, Any]] = []
-    for op in plan.operations:
-        if op.op == "ensure_dir":
-            mkdir(op.dst)
-            executed.append({"op": op.op, "dst": op.dst})
-            continue
-
-        # rename_project / move_run share the same atomic-rename body.
-        rename(op.src, op.dst)
-        if op.has_worktrees and op.op == "rename_project":
-            repair(Path(op.dst))
-        if keep_compat and op.op in ("rename_project", "move_run"):
-            junction(Path(op.src), Path(op.dst))
-        executed.append({
-            "op": op.op,
-            "src": op.src,
-            "dst": op.dst,
-            "worktrees": op.worktrees,
-            "compat_junction": bool(keep_compat),
-        })
-
     out = manifest_path or _default_manifest_path(plan)
     out.parent.mkdir(parents=True, exist_ok=True)
     payload = render_plan_manifest(plan)
-    payload["executed"] = executed
-    out.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    payload["executed"] = []
+    executed: list[dict[str, Any]] = payload["executed"]
+
+    def _persist() -> None:
+        # Atomic-ish: write to .tmp then replace, so the manifest on disk is
+        # never half-written even if the process is killed mid-write.
+        tmp = out.with_suffix(out.suffix + ".tmp")
+        tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, out)
+
+    _persist()  # write empty-executed shell up front so a 1st-op crash leaves a manifest
+
+    try:
+        for op in plan.operations:
+            if op.op == "ensure_dir":
+                mkdir(op.dst)
+                executed.append({"op": op.op, "dst": op.dst})
+                _persist()
+                continue
+
+            rename(op.src, op.dst)
+            if op.has_worktrees and op.op == "rename_project":
+                repair(Path(op.dst))
+            if keep_compat and op.op in ("rename_project", "move_run"):
+                junction(Path(op.src), Path(op.dst))
+            executed.append({
+                "op": op.op,
+                "src": op.src,
+                "dst": op.dst,
+                "worktrees": op.worktrees,
+                "compat_junction": bool(keep_compat),
+            })
+            _persist()
+    except BaseException:
+        # Even on Ctrl-C / OSError, the manifest is already up to date.
+        _persist()
+        raise
+
     return out
+
+
+def apply_from_manifest(
+    manifest_path: Path,
+    *,
+    keep_compat: bool = False,
+    out_manifest: Optional[Path] = None,
+    runner: Optional[Any] = None,
+) -> Path:
+    """Replay a previously generated `--plan --json` manifest.
+
+    Lets the operator stage the migration tier-by-tier: edit the planned
+    JSON to drop ops, then feed it back here. The new executed-op log is
+    written to `out_manifest` (or a fresh timestamped file beside the
+    workers root) — the original input manifest is left untouched.
+    """
+    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    ops = [Operation(**op) for op in data.get("operations", [])]
+    plan = Plan(
+        workers_root=data["workers_root"],
+        inventory_source=data.get("inventory_source", str(manifest_path)),
+        archive_quarter=data.get("archive_quarter", _archive_quarter_for()),
+        operations=ops,
+        swap_intermediate=data.get("swap_intermediate", SWAP_INTERMEDIATE),
+    )
+    return apply_plan(plan, keep_compat=keep_compat,
+                      manifest_path=out_manifest, runner=runner)
 
 
 def _default_manifest_path(plan: Plan) -> Path:
@@ -508,6 +570,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     p.add_argument("--keep-compat", action="store_true",
                    help="create old-path → new-path junction for backward compat (Windows)")
     p.add_argument("--manifest", type=Path, help="manifest path: write target for --apply, read source for --rollback")
+    p.add_argument("--from-manifest", type=Path,
+                   help="--apply input: replay a previously generated --plan --json manifest "
+                        "(supports tier-by-tier staging by hand-editing the manifest)")
     p.add_argument("--json", action="store_true", help="emit JSON manifest to stdout (with --plan)")
     args = p.parse_args(argv)
 
@@ -520,6 +585,18 @@ def main(argv: Optional[list[str]] = None) -> int:
             return 2
         rollback(manifest)
         print(f"rollback complete from {manifest}")
+        return 0
+
+    if args.apply and args.from_manifest:
+        if not args.confirm:
+            print("error: --apply requires --confirm", file=sys.stderr)
+            return 2
+        out = apply_from_manifest(
+            args.from_manifest,
+            keep_compat=args.keep_compat,
+            out_manifest=args.manifest,
+        )
+        print(f"apply (from manifest) complete; manifest={out}")
         return 0
 
     if args.inventory is None or not args.inventory.exists():

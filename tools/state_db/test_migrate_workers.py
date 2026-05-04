@@ -142,6 +142,68 @@ def test_scratch_collapses_to_solo(tmp_path):
         assert moves[str(posix_root / name)] == str(posix_root / "_scratch" / "_runs" / "_solo" / name)
 
 
+def test_replan_after_migration_is_noop(tmp_path):
+    """After applying, a re-plan over the same inventory must contain no move ops."""
+    plan, root = _build(tmp_path)
+    mw.apply_plan(plan, manifest_path=tmp_path / "m.json", runner=FakeRunner())
+    plan2 = mw.build_plan(_synth_inventory(), root, archive_quarter="2026-Q2",
+                          inventory_source="synth", detect_worktrees=False)
+    move_ops = [op for op in plan2.operations if op.op in ("rename_project", "move_run")]
+    assert move_ops == [], f"expected no moves on re-plan, got {[op.note for op in move_ops]}"
+
+
+def test_incremental_manifest_survives_failure(tmp_path):
+    """A rename failure mid-apply must leave the manifest with the ops that did succeed."""
+    plan, root = _build(tmp_path)
+    runner = FakeRunner()
+    fail_after = 3  # let a few ensure_dirs + maybe one rename succeed first
+
+    real_rename = runner.rename
+    call_count = {"n": 0}
+
+    def flaky_rename(src, dst):
+        call_count["n"] += 1
+        if call_count["n"] > fail_after:
+            raise OSError("synthetic mid-batch failure")
+        real_rename(src, dst)
+
+    runner.rename = flaky_rename
+    manifest_path = tmp_path / "m.json"
+    with pytest.raises(OSError):
+        mw.apply_plan(plan, manifest_path=manifest_path, runner=runner)
+    # Manifest must still exist and contain the ops that did run.
+    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert "executed" in data
+    assert len(data["executed"]) >= 1
+
+
+def test_apply_from_manifest_replays_subset(tmp_path):
+    """Editing the planned manifest down to a subset and replaying it should
+    move only that subset (the spine of tier-by-tier staging)."""
+    plan, root = _build(tmp_path)
+    plan_manifest = tmp_path / "plan.json"
+    plan_manifest.write_text(json.dumps(mw.render_plan_manifest(plan), indent=2),
+                             encoding="utf-8")
+
+    # Trim to the scratch tier only.
+    data = json.loads(plan_manifest.read_text(encoding="utf-8"))
+    data["operations"] = [
+        op for op in data["operations"]
+        if op["op"] == "ensure_dir" and "_scratch" in op["dst"]
+        or (op["op"] == "move_run" and "tier=scratch" in op.get("note", ""))
+    ]
+    trimmed = tmp_path / "trimmed.json"
+    trimmed.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+    runner = FakeRunner()
+    out = tmp_path / "executed.json"
+    mw.apply_from_manifest(trimmed, out_manifest=out, runner=runner)
+    # Only scratch dirs moved; renga/claude-org-ja still untouched.
+    assert (root / "_scratch" / "_runs" / "_solo" / "fizzbuzz").exists()
+    assert (root / "ccmux").exists()  # rename did NOT happen
+    assert not (root / "renga").exists()
+
+
 def test_already_migrated_dir_is_noop(tmp_path):
     """An entry whose abs_path already equals its target must not appear in the plan."""
     inv = [_entry("noop", "scratch", "_scratch", None)]
