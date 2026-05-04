@@ -7,10 +7,10 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
+import unittest
 from pathlib import Path, PurePosixPath
-from typing import Any
-
-import pytest
+from unittest import mock
 
 from tools.state_db import migrate_workers as mw
 
@@ -20,8 +20,7 @@ from tools.state_db import migrate_workers as mw
 # ---------------------------------------------------------------------------
 
 
-def _entry(name: str, tier: str, parent_project: str | None = None,
-           parent_workstream: str | None = None) -> dict:
+def _entry(name, tier, parent_project=None, parent_workstream=None):
     return {
         "name": name,
         "abs_path": f"C:/synthetic/{name}",
@@ -41,7 +40,7 @@ def _entry(name: str, tier: str, parent_project: str | None = None,
     }
 
 
-def _synth_inventory() -> list[dict]:
+def _synth_inventory():
     return [
         # 5 project-tier (the real-world set, with renames)
         _entry("ccmux", "project"),
@@ -49,13 +48,13 @@ def _synth_inventory() -> list[dict]:
         _entry("claude-org-en", "project"),
         _entry("claude-org-runtime", "project"),
         _entry("core-harness", "project"),
-        # runs under each project
+        # runs
         _entry("auto-mirror-ci-p1", "run", "claude-org-ja", "auto-mirror"),
         _entry("dogfooding-smoke-053", "run", "claude-org-ja", "dogfooding-smoke"),
         _entry("layer3-design-qa", "run", "claude-org-ja", None),  # _solo
         _entry("en-branch-protect", "run", "claude-org", None),
         _entry("wave-c", "run", "claude-org", "i18n-en-bootstrap"),
-        # _research cluster
+        # _research
         _entry("ccswarm-depth-audit", "run", "_research", "ccswarm"),
         _entry("anthropic-extended-audit", "run", "_research", "anthropic"),
         _entry("discord-channel-research", "run", "_research", "_solo"),
@@ -67,181 +66,32 @@ def _synth_inventory() -> list[dict]:
     ]
 
 
-def _build(tmp_path: Path, inv: list[dict] | None = None) -> tuple[mw.Plan, Path]:
+def _build(workers_root, inv=None):
     inv = inv or _synth_inventory()
-    workers_root = tmp_path / "workers"
-    workers_root.mkdir()
-    # materialise sources
+    workers_root.mkdir(exist_ok=True)
     for e in inv:
-        (workers_root / e["name"]).mkdir()
+        (workers_root / e["name"]).mkdir(exist_ok=True)
     plan = mw.build_plan(inv, workers_root, archive_quarter="2026-Q2",
                          inventory_source="synth", detect_worktrees=False)
-    return plan, workers_root
+    return plan
 
 
 # ---------------------------------------------------------------------------
-# 1. Plan generation
-# ---------------------------------------------------------------------------
-
-
-def test_plan_targets_match_layout(tmp_path):
-    plan, root = _build(tmp_path)
-    moves = {op.src: op.dst for op in plan.operations if op.op == "move_run"}
-
-    # Sample expected target paths drawn from directory-layout.md §5.
-    posix_root = PurePosixPath(root.as_posix())
-    expected = {
-        str(posix_root / "auto-mirror-ci-p1"):
-            str(posix_root / "claude-org-ja" / "_runs" / "auto-mirror" / "auto-mirror-ci-p1"),
-        str(posix_root / "layer3-design-qa"):
-            str(posix_root / "claude-org-ja" / "_runs" / "_solo" / "layer3-design-qa"),
-        str(posix_root / "en-branch-protect"):
-            str(posix_root / "claude-org" / "_runs" / "_solo" / "en-branch-protect"),
-        str(posix_root / "ccswarm-depth-audit"):
-            str(posix_root / "_research" / "_runs" / "ccswarm" / "ccswarm-depth-audit"),
-        str(posix_root / "discord-channel-research"):
-            str(posix_root / "_research" / "_runs" / "_solo" / "discord-channel-research"),
-        str(posix_root / "fizzbuzz"):
-            str(posix_root / "_scratch" / "_runs" / "_solo" / "fizzbuzz"),
-        str(posix_root / "claude-org.old-worktrees-stale"):
-            str(posix_root / "_archive" / "2026-Q2" / "claude-org" / "claude-org.old-worktrees-stale"),
-    }
-    for src, dst in expected.items():
-        assert moves[src] == dst, f"{src} → expected {dst}, got {moves.get(src)}"
-
-
-def test_claude_org_swap_three_step(tmp_path):
-    plan, _ = _build(tmp_path)
-    proj_ops = [op for op in plan.operations if op.op == "rename_project"]
-    # ccmux→renga + 3-step swap = 4 project renames
-    notes = [op.note for op in proj_ops]
-    assert any("ccmux → renga" in n for n in notes)
-    swap = [op for op in proj_ops if "swap step" in op.note]
-    assert len(swap) == 3
-    assert swap[0].dst.endswith(mw.SWAP_INTERMEDIATE)
-    assert swap[1].dst.endswith("/claude-org")
-    assert swap[2].dst.endswith("/claude-org-ja")
-    # Step 1's dst must equal step 3's src (intermediate threading).
-    assert swap[0].dst == swap[2].src
-
-
-def test_research_cluster_workstreams(tmp_path):
-    plan, root = _build(tmp_path)
-    posix_root = PurePosixPath(root.as_posix())
-    moves = {op.src: op.dst for op in plan.operations if op.op == "move_run"}
-    assert moves[str(posix_root / "ccswarm-depth-audit")].endswith("_research/_runs/ccswarm/ccswarm-depth-audit")
-    assert moves[str(posix_root / "anthropic-extended-audit")].endswith("_research/_runs/anthropic/anthropic-extended-audit")
-    assert moves[str(posix_root / "discord-channel-research")].endswith("_research/_runs/_solo/discord-channel-research")
-
-
-def test_scratch_collapses_to_solo(tmp_path):
-    plan, root = _build(tmp_path)
-    posix_root = PurePosixPath(root.as_posix())
-    moves = {op.src: op.dst for op in plan.operations if op.op == "move_run"}
-    for name in ("fizzbuzz", "hello-world"):
-        assert moves[str(posix_root / name)] == str(posix_root / "_scratch" / "_runs" / "_solo" / name)
-
-
-def test_replan_after_migration_is_noop(tmp_path):
-    """After applying, a re-plan over the same inventory must contain no move ops."""
-    plan, root = _build(tmp_path)
-    mw.apply_plan(plan, manifest_path=tmp_path / "m.json", runner=FakeRunner())
-    plan2 = mw.build_plan(_synth_inventory(), root, archive_quarter="2026-Q2",
-                          inventory_source="synth", detect_worktrees=False)
-    move_ops = [op for op in plan2.operations if op.op in ("rename_project", "move_run")]
-    assert move_ops == [], f"expected no moves on re-plan, got {[op.note for op in move_ops]}"
-
-
-def test_incremental_manifest_survives_failure(tmp_path):
-    """A rename failure mid-apply must leave the manifest with the ops that did succeed."""
-    plan, root = _build(tmp_path)
-    runner = FakeRunner()
-    fail_after = 3  # let a few ensure_dirs + maybe one rename succeed first
-
-    real_rename = runner.rename
-    call_count = {"n": 0}
-
-    def flaky_rename(src, dst):
-        call_count["n"] += 1
-        if call_count["n"] > fail_after:
-            raise OSError("synthetic mid-batch failure")
-        real_rename(src, dst)
-
-    runner.rename = flaky_rename
-    manifest_path = tmp_path / "m.json"
-    with pytest.raises(OSError):
-        mw.apply_plan(plan, manifest_path=manifest_path, runner=runner)
-    # Manifest must still exist and contain the ops that did run.
-    data = json.loads(manifest_path.read_text(encoding="utf-8"))
-    assert "executed" in data
-    assert len(data["executed"]) >= 1
-
-
-def test_apply_from_manifest_replays_subset(tmp_path):
-    """Editing the planned manifest down to a subset and replaying it should
-    move only that subset (the spine of tier-by-tier staging)."""
-    plan, root = _build(tmp_path)
-    plan_manifest = tmp_path / "plan.json"
-    plan_manifest.write_text(json.dumps(mw.render_plan_manifest(plan), indent=2),
-                             encoding="utf-8")
-
-    # Trim to the scratch tier only.
-    data = json.loads(plan_manifest.read_text(encoding="utf-8"))
-    data["operations"] = [
-        op for op in data["operations"]
-        if op["op"] == "ensure_dir" and "_scratch" in op["dst"]
-        or (op["op"] == "move_run" and "tier=scratch" in op.get("note", ""))
-    ]
-    trimmed = tmp_path / "trimmed.json"
-    trimmed.write_text(json.dumps(data, indent=2), encoding="utf-8")
-
-    runner = FakeRunner()
-    out = tmp_path / "executed.json"
-    mw.apply_from_manifest(trimmed, out_manifest=out, runner=runner)
-    # Only scratch dirs moved; renga/claude-org-ja still untouched.
-    assert (root / "_scratch" / "_runs" / "_solo" / "fizzbuzz").exists()
-    assert (root / "ccmux").exists()  # rename did NOT happen
-    assert not (root / "renga").exists()
-
-
-def test_already_migrated_dir_is_noop(tmp_path):
-    """An entry whose abs_path already equals its target must not appear in the plan."""
-    inv = [_entry("noop", "scratch", "_scratch", None)]
-    workers_root = tmp_path / "workers"
-    target = workers_root / "_scratch" / "_runs" / "_solo" / "noop"
-    target.mkdir(parents=True)
-    # Override the entry's name so the source path *is* the target.
-    inv[0]["abs_path"] = str(target)
-    # The script's plan logic compares src=workers_root/<name> vs target.
-    # When name="noop", src=<root>/noop which differs from target, so it WILL plan a move.
-    # To exercise the no-op path, simulate name being the deepest segment with src==target:
-    # build_plan computes src as workers_root / entry["name"]; the no-op fires only when
-    # that equals target. We craft an inventory entry whose target equals src by giving it
-    # tier=project and name not in PROJECT_RENAMES (so target == workers_root / name == src).
-    inv2 = [_entry("claude-org-runtime", "project")]
-    plan = mw.build_plan(inv2, workers_root, archive_quarter="2026-Q2",
-                         inventory_source="synth", detect_worktrees=False)
-    assert not any(op.op in ("rename_project", "move_run") for op in plan.operations)
-
-
-# ---------------------------------------------------------------------------
-# 2. Apply / Rollback round-trip
+# FakeRunner
 # ---------------------------------------------------------------------------
 
 
 class FakeRunner:
-    """Stubs out OS / git operations for hermetic apply tests."""
-
     def __init__(self):
-        self.rename_calls: list[tuple[str, str]] = []
-        self.makedirs_calls: list[str] = []
-        self.repair_calls: list[str] = []
-        self.junction_calls: list[tuple[str, str]] = []
-        self.remove_junction_calls: list[str] = []
+        self.rename_calls = []
+        self.makedirs_calls = []
+        self.repair_calls = []
+        self.junction_calls = []
+        self.remove_junction_calls = []
 
     def rename(self, src, dst):
         self.rename_calls.append((str(src), str(dst)))
-        os.rename(src, dst)  # actually do it on temp fs
+        os.rename(src, dst)
 
     def makedirs(self, path):
         self.makedirs_calls.append(str(path))
@@ -257,40 +107,169 @@ class FakeRunner:
         self.remove_junction_calls.append(str(link))
 
 
-def test_apply_then_rollback_restores(tmp_path):
-    plan, root = _build(tmp_path)
-    runner = FakeRunner()
-    manifest_path = tmp_path / "manifest.json"
-
-    # Snapshot pre-state
-    pre = sorted(p.relative_to(root).as_posix() for p in root.iterdir())
-
-    mw.apply_plan(plan, manifest_path=manifest_path, runner=runner)
-    # After apply, target dirs exist
-    assert (root / "renga").exists()
-    assert (root / "claude-org-ja").exists()  # post-swap
-    assert (root / "claude-org").exists()      # post-swap (originally claude-org-en)
-    assert (root / "_scratch" / "_runs" / "_solo" / "fizzbuzz").exists()
-    assert (root / "_research" / "_runs" / "ccswarm" / "ccswarm-depth-audit").exists()
-
-    # Rollback round-trip
-    mw.rollback(manifest_path, runner=runner)
-    post = sorted(p.relative_to(root).as_posix() for p in root.iterdir() if p.is_dir())
-    # Originals back; ensure_dir leftovers (_archive, _research, _scratch shells) are tolerable
-    for original in ("ccmux", "claude-org", "claude-org-en", "fizzbuzz", "ccswarm-depth-audit"):
-        assert (root / original).exists(), f"rollback failed to restore {original}"
+# ---------------------------------------------------------------------------
+# 1. Plan generation
+# ---------------------------------------------------------------------------
 
 
-def test_manifest_round_trip_json(tmp_path):
-    plan, root = _build(tmp_path)
-    manifest_path = tmp_path / "m.json"
-    mw.apply_plan(plan, manifest_path=manifest_path, runner=FakeRunner())
-    data = json.loads(manifest_path.read_text(encoding="utf-8"))
-    assert data["version"] == 1
-    assert data["workers_root"]
-    assert data["archive_quarter"] == "2026-Q2"
-    assert any(e["op"] == "rename_project" for e in data["executed"])
-    assert any(e["op"] == "move_run" for e in data["executed"])
+class TestPlanGeneration(unittest.TestCase):
+
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._td.name)
+        self.root = self.tmp / "workers"
+        self.plan = _build(self.root)
+
+    def tearDown(self):
+        self._td.cleanup()
+
+    def test_plan_targets_match_layout(self):
+        moves = {op.src: op.dst for op in self.plan.operations if op.op == "move_run"}
+        posix_root = PurePosixPath(self.root.as_posix())
+        expected = {
+            str(posix_root / "auto-mirror-ci-p1"):
+                str(posix_root / "claude-org-ja" / "_runs" / "auto-mirror" / "auto-mirror-ci-p1"),
+            str(posix_root / "layer3-design-qa"):
+                str(posix_root / "claude-org-ja" / "_runs" / "_solo" / "layer3-design-qa"),
+            str(posix_root / "en-branch-protect"):
+                str(posix_root / "claude-org" / "_runs" / "_solo" / "en-branch-protect"),
+            str(posix_root / "ccswarm-depth-audit"):
+                str(posix_root / "_research" / "_runs" / "ccswarm" / "ccswarm-depth-audit"),
+            str(posix_root / "discord-channel-research"):
+                str(posix_root / "_research" / "_runs" / "_solo" / "discord-channel-research"),
+            str(posix_root / "fizzbuzz"):
+                str(posix_root / "_scratch" / "_runs" / "_solo" / "fizzbuzz"),
+            str(posix_root / "claude-org.old-worktrees-stale"):
+                str(posix_root / "_archive" / "2026-Q2" / "claude-org" / "claude-org.old-worktrees-stale"),
+        }
+        for src, dst in expected.items():
+            self.assertEqual(moves[src], dst)
+
+    def test_claude_org_swap_three_step(self):
+        proj_ops = [op for op in self.plan.operations if op.op == "rename_project"]
+        notes = [op.note for op in proj_ops]
+        self.assertTrue(any("ccmux → renga" in n for n in notes))
+        swap = [op for op in proj_ops if "swap step" in op.note]
+        self.assertEqual(len(swap), 3)
+        self.assertTrue(swap[0].dst.endswith(mw.SWAP_INTERMEDIATE))
+        self.assertTrue(swap[1].dst.endswith("/claude-org"))
+        self.assertTrue(swap[2].dst.endswith("/claude-org-ja"))
+        self.assertEqual(swap[0].dst, swap[2].src)
+
+    def test_research_cluster_workstreams(self):
+        posix_root = PurePosixPath(self.root.as_posix())
+        moves = {op.src: op.dst for op in self.plan.operations if op.op == "move_run"}
+        self.assertTrue(moves[str(posix_root / "ccswarm-depth-audit")].endswith(
+            "_research/_runs/ccswarm/ccswarm-depth-audit"))
+        self.assertTrue(moves[str(posix_root / "anthropic-extended-audit")].endswith(
+            "_research/_runs/anthropic/anthropic-extended-audit"))
+        self.assertTrue(moves[str(posix_root / "discord-channel-research")].endswith(
+            "_research/_runs/_solo/discord-channel-research"))
+
+    def test_scratch_collapses_to_solo(self):
+        posix_root = PurePosixPath(self.root.as_posix())
+        moves = {op.src: op.dst for op in self.plan.operations if op.op == "move_run"}
+        for name in ("fizzbuzz", "hello-world"):
+            self.assertEqual(
+                moves[str(posix_root / name)],
+                str(posix_root / "_scratch" / "_runs" / "_solo" / name),
+            )
+
+    def test_already_migrated_dir_is_noop(self):
+        inv2 = [_entry("claude-org-runtime", "project")]
+        plan = mw.build_plan(inv2, self.root, archive_quarter="2026-Q2",
+                             inventory_source="synth", detect_worktrees=False)
+        self.assertFalse(any(op.op in ("rename_project", "move_run") for op in plan.operations))
+
+
+# ---------------------------------------------------------------------------
+# 2. Apply / Rollback / Manifest
+# ---------------------------------------------------------------------------
+
+
+class TestApplyRollback(unittest.TestCase):
+
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._td.name)
+        self.root = self.tmp / "workers"
+        self.plan = _build(self.root)
+
+    def tearDown(self):
+        self._td.cleanup()
+
+    def test_apply_then_rollback_restores(self):
+        runner = FakeRunner()
+        manifest_path = self.tmp / "manifest.json"
+        mw.apply_plan(self.plan, manifest_path=manifest_path, runner=runner)
+
+        self.assertTrue((self.root / "renga").exists())
+        self.assertTrue((self.root / "claude-org-ja").exists())
+        self.assertTrue((self.root / "claude-org").exists())
+        self.assertTrue((self.root / "_scratch" / "_runs" / "_solo" / "fizzbuzz").exists())
+        self.assertTrue((self.root / "_research" / "_runs" / "ccswarm" / "ccswarm-depth-audit").exists())
+
+        mw.rollback(manifest_path, runner=runner)
+        for original in ("ccmux", "claude-org", "claude-org-en", "fizzbuzz", "ccswarm-depth-audit"):
+            self.assertTrue((self.root / original).exists(), f"missing {original}")
+
+    def test_manifest_round_trip_json(self):
+        manifest_path = self.tmp / "m.json"
+        mw.apply_plan(self.plan, manifest_path=manifest_path, runner=FakeRunner())
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual(data["version"], 1)
+        self.assertTrue(data["workers_root"])
+        self.assertEqual(data["archive_quarter"], "2026-Q2")
+        self.assertTrue(any(e["op"] == "rename_project" for e in data["executed"]))
+        self.assertTrue(any(e["op"] == "move_run" for e in data["executed"]))
+
+    def test_replan_after_migration_is_noop(self):
+        mw.apply_plan(self.plan, manifest_path=self.tmp / "m.json", runner=FakeRunner())
+        plan2 = mw.build_plan(_synth_inventory(), self.root, archive_quarter="2026-Q2",
+                              inventory_source="synth", detect_worktrees=False)
+        move_ops = [op for op in plan2.operations if op.op in ("rename_project", "move_run")]
+        self.assertEqual(move_ops, [])
+
+    def test_incremental_manifest_survives_failure(self):
+        runner = FakeRunner()
+        fail_after = 3
+        real_rename = runner.rename
+        call_count = {"n": 0}
+
+        def flaky_rename(src, dst):
+            call_count["n"] += 1
+            if call_count["n"] > fail_after:
+                raise OSError("synthetic mid-batch failure")
+            real_rename(src, dst)
+
+        runner.rename = flaky_rename
+        manifest_path = self.tmp / "m.json"
+        with self.assertRaises(OSError):
+            mw.apply_plan(self.plan, manifest_path=manifest_path, runner=runner)
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertIn("executed", data)
+        self.assertGreaterEqual(len(data["executed"]), 1)
+
+    def test_apply_from_manifest_replays_subset(self):
+        plan_manifest = self.tmp / "plan.json"
+        plan_manifest.write_text(
+            json.dumps(mw.render_plan_manifest(self.plan), indent=2),
+            encoding="utf-8",
+        )
+        data = json.loads(plan_manifest.read_text(encoding="utf-8"))
+        data["operations"] = [
+            op for op in data["operations"]
+            if op["op"] == "ensure_dir" and "_scratch" in op["dst"]
+            or (op["op"] == "move_run" and "tier=scratch" in op.get("note", ""))
+        ]
+        trimmed = self.tmp / "trimmed.json"
+        trimmed.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        runner = FakeRunner()
+        out = self.tmp / "executed.json"
+        mw.apply_from_manifest(trimmed, out_manifest=out, runner=runner)
+        self.assertTrue((self.root / "_scratch" / "_runs" / "_solo" / "fizzbuzz").exists())
+        self.assertTrue((self.root / "ccmux").exists())
+        self.assertFalse((self.root / "renga").exists())
 
 
 # ---------------------------------------------------------------------------
@@ -298,24 +277,31 @@ def test_manifest_round_trip_json(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_worktree_repair_called_on_project_rename(tmp_path, monkeypatch):
-    inv = [_entry("ccmux", "project")]
-    workers_root = tmp_path / "workers"
-    workers_root.mkdir()
-    src = workers_root / "ccmux"
-    src.mkdir()
-    (src / ".git").mkdir()  # mark as repo
-    # Inject a fake worktree so build_plan sees has_worktrees=True
-    monkeypatch.setattr(mw, "_git_worktrees", lambda repo: ["/fake/worktree-A"] if repo == src else [])
+class TestWorktreeFixup(unittest.TestCase):
 
-    plan = mw.build_plan(inv, workers_root, archive_quarter="2026-Q2",
-                         inventory_source="synth", detect_worktrees=True)
-    proj = [op for op in plan.operations if op.op == "rename_project"][0]
-    assert proj.has_worktrees and proj.worktrees == ["/fake/worktree-A"]
+    def test_worktree_repair_called_on_project_rename(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            inv = [_entry("ccmux", "project")]
+            workers_root = tmp / "workers"
+            workers_root.mkdir()
+            src = workers_root / "ccmux"
+            src.mkdir()
+            (src / ".git").mkdir()
 
-    runner = FakeRunner()
-    mw.apply_plan(plan, manifest_path=tmp_path / "m.json", runner=runner)
-    assert any(c.endswith("renga") for c in runner.repair_calls)
+            with mock.patch.object(
+                mw, "_git_worktrees",
+                side_effect=lambda repo: ["/fake/worktree-A"] if repo == src else [],
+            ):
+                plan = mw.build_plan(inv, workers_root, archive_quarter="2026-Q2",
+                                     inventory_source="synth", detect_worktrees=True)
+            proj = [op for op in plan.operations if op.op == "rename_project"][0]
+            self.assertTrue(proj.has_worktrees)
+            self.assertEqual(proj.worktrees, ["/fake/worktree-A"])
+
+            runner = FakeRunner()
+            mw.apply_plan(plan, manifest_path=tmp / "m.json", runner=runner)
+            self.assertTrue(any(c.endswith("renga") for c in runner.repair_calls))
 
 
 # ---------------------------------------------------------------------------
@@ -323,61 +309,67 @@ def test_worktree_repair_called_on_project_rename(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_preflight_conflict_when_target_exists(tmp_path):
-    inv = [_entry("solo-run", "run", "claude-org-ja", None)]
-    workers_root = tmp_path / "workers"
-    workers_root.mkdir()
-    (workers_root / "solo-run").mkdir()
-    # Conflict: target already populated.
-    (workers_root / "claude-org-ja" / "_runs" / "_solo" / "solo-run").mkdir(parents=True)
+class TestPreflight(unittest.TestCase):
 
-    plan = mw.build_plan(inv, workers_root, archive_quarter="2026-Q2",
-                         inventory_source="synth", detect_worktrees=False)
-    issues = mw.preflight(plan, workers_root)
-    assert any("target already exists" in i for i in issues)
+    def test_preflight_conflict_when_target_exists(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            inv = [_entry("solo-run", "run", "claude-org-ja", None)]
+            workers_root = tmp / "workers"
+            workers_root.mkdir()
+            (workers_root / "solo-run").mkdir()
+            (workers_root / "claude-org-ja" / "_runs" / "_solo" / "solo-run").mkdir(parents=True)
+            plan = mw.build_plan(inv, workers_root, archive_quarter="2026-Q2",
+                                 inventory_source="synth", detect_worktrees=False)
+            issues = mw.preflight(plan, workers_root)
+            self.assertTrue(any("target already exists" in i for i in issues))
 
-
-def test_preflight_source_missing(tmp_path):
-    inv = [_entry("ghost", "run", "claude-org-ja", None)]
-    workers_root = tmp_path / "workers"
-    workers_root.mkdir()
-    # Note: no source dir created.
-    plan = mw.build_plan(inv, workers_root, archive_quarter="2026-Q2",
-                         inventory_source="synth", detect_worktrees=False)
-    issues = mw.preflight(plan, workers_root)
-    assert any("source missing" in i for i in issues)
+    def test_preflight_source_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            inv = [_entry("ghost", "run", "claude-org-ja", None)]
+            workers_root = tmp / "workers"
+            workers_root.mkdir()
+            plan = mw.build_plan(inv, workers_root, archive_quarter="2026-Q2",
+                                 inventory_source="synth", detect_worktrees=False)
+            issues = mw.preflight(plan, workers_root)
+            self.assertTrue(any("source missing" in i for i in issues))
 
 
 # ---------------------------------------------------------------------------
-# 5. Real-inventory sanity check (smoke)
+# 5. Real-inventory smoke (skipped when env var not set / file absent)
 # ---------------------------------------------------------------------------
 
 
-REAL_INVENTORY = Path(
-    os.environ.get(
-        "M3_REAL_INVENTORY",
-        str(Path(__file__).resolve().parents[2].parent
-            / "state-db-hierarchy-design" / "inventory.json"),
-    )
+_DEFAULT_REAL = (
+    Path(__file__).resolve().parents[2].parent
+    / "state-db-hierarchy-design" / "inventory.json"
 )
+REAL_INVENTORY = Path(os.environ.get("M3_REAL_INVENTORY", str(_DEFAULT_REAL)))
 
 
-@pytest.mark.skipif(not REAL_INVENTORY.exists(), reason="real inventory.json not available")
-def test_real_inventory_plan_is_well_formed(tmp_path):
-    inv = json.loads(REAL_INVENTORY.read_text(encoding="utf-8"))
-    workers_root = tmp_path / "workers"
-    workers_root.mkdir()
-    plan = mw.build_plan(inv, workers_root, archive_quarter="2026-Q2",
-                         inventory_source=str(REAL_INVENTORY), detect_worktrees=False)
-    assert len(plan.operations) >= 130  # ~130 entries plus pseudo-root ensure_dirs
-    proj = [op for op in plan.operations if op.op == "rename_project"]
-    assert any(op.note.startswith("ccmux → renga") for op in proj)
-    swap = [op for op in proj if "swap step" in op.note]
-    assert len(swap) == 3
-    # Every move target must live under workers_root and use 3-tier shape.
-    posix_root = PurePosixPath(workers_root.as_posix())
-    for op in plan.operations:
-        if op.op != "move_run":
-            continue
-        assert op.dst.startswith(str(posix_root)), op.dst
-        # _archive paths get an extra YYYY-Qx tier; runs/scratch/research stay 3.
+@unittest.skipUnless(REAL_INVENTORY.exists(), "real inventory.json not available")
+class TestRealInventorySmoke(unittest.TestCase):
+
+    def test_real_inventory_plan_is_well_formed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            inv = json.loads(REAL_INVENTORY.read_text(encoding="utf-8"))
+            workers_root = Path(tmp) / "workers"
+            workers_root.mkdir()
+            plan = mw.build_plan(inv, workers_root, archive_quarter="2026-Q2",
+                                 inventory_source=str(REAL_INVENTORY),
+                                 detect_worktrees=False)
+            self.assertGreaterEqual(len(plan.operations), 130)
+            proj = [op for op in plan.operations if op.op == "rename_project"]
+            self.assertTrue(any(op.note.startswith("ccmux → renga") for op in proj))
+            swap = [op for op in proj if "swap step" in op.note]
+            self.assertEqual(len(swap), 3)
+            posix_root = PurePosixPath(workers_root.as_posix())
+            for op in plan.operations:
+                if op.op != "move_run":
+                    continue
+                self.assertTrue(op.dst.startswith(str(posix_root)))
+
+
+if __name__ == "__main__":  # pragma: no cover
+    unittest.main()
