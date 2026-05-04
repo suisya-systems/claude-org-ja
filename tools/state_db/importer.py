@@ -243,10 +243,131 @@ class _Importer:
         r"^\|\s*([^|]+?)\s*\|\s*([ABCD])\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*$"
     )
 
+    # M2: org_sessions singleton overlay fields. The importer extracts these
+    # from the markdown header / Dispatcher / Curator / Resume Instructions
+    # sections so a freshly rebuilt DB reproduces the M1 markdown overlay
+    # values without going through the markdown layer at read time.
+    def _import_org_session_from_md(self, text: str) -> None:
+        status: Optional[str] = None
+        started_at: Optional[str] = None
+        updated_at: Optional[str] = None
+        suspended_at: Optional[str] = None
+        resumed_at: Optional[str] = None
+        objective: Optional[str] = None
+        dispatcher_pane_id: Optional[str] = None
+        dispatcher_peer_id: Optional[str] = None
+        curator_pane_id: Optional[str] = None
+        curator_peer_id: Optional[str] = None
+        resume_instructions: Optional[str] = None
+
+        section: Optional[str] = None
+        current_role: Optional[str] = None
+        resume_lines: list[str] = []
+
+        for raw_line in text.splitlines():
+            line = raw_line.rstrip()
+            if line.startswith("## "):
+                heading = line[3:].strip().lower()
+                if section == "resume instructions":
+                    body = "\n".join(resume_lines).strip()
+                    if body:
+                        resume_instructions = body
+                    resume_lines = []
+                section = heading
+                current_role = None
+                if "dispatcher" in heading:
+                    current_role = "dispatcher"
+                elif "curator" in heading:
+                    current_role = "curator"
+                continue
+
+            if section == "resume instructions":
+                resume_lines.append(line)
+                continue
+
+            if line.startswith("Status:") and status is None:
+                v = line[len("Status:"):].strip()
+                if v:
+                    status = v.upper().split()[0]
+                continue
+            if line.startswith("Started:") and started_at is None:
+                v = line[len("Started:"):].strip()
+                if v:
+                    started_at = v
+                continue
+            if line.startswith("Updated:") and updated_at is None:
+                v = line[len("Updated:"):].strip()
+                if v:
+                    updated_at = v
+                continue
+            if line.startswith("Suspended:") and suspended_at is None:
+                v = line[len("Suspended:"):].strip()
+                if v:
+                    suspended_at = v
+                continue
+            if line.startswith("Resumed:") and resumed_at is None:
+                v = line[len("Resumed:"):].strip()
+                if v:
+                    resumed_at = v
+                continue
+            if line.startswith("Current Objective:") and objective is None:
+                v = line[len("Current Objective:"):].strip()
+                if v:
+                    objective = v
+                continue
+
+            if current_role:
+                m = re.match(r"^-?\s*Peer\s+ID:\s*(\S+)", line, re.IGNORECASE)
+                if m:
+                    if current_role == "dispatcher":
+                        dispatcher_peer_id = m.group(1)
+                    else:
+                        curator_peer_id = m.group(1)
+                    continue
+                m = re.match(r"^-?\s*Pane\s+ID:\s*(\S+)", line, re.IGNORECASE)
+                if m:
+                    if current_role == "dispatcher":
+                        dispatcher_pane_id = m.group(1)
+                    else:
+                        curator_pane_id = m.group(1)
+                    continue
+
+        if section == "resume instructions":
+            body = "\n".join(resume_lines).strip()
+            if body:
+                resume_instructions = body
+
+        # Always insert a singleton row so post-M2 code can rely on its
+        # existence even when the source markdown had no Status header.
+        self.conn.execute(
+            "INSERT INTO org_sessions ("
+            "id, status, started_at, updated_at, suspended_at, resumed_at, "
+            "objective, resume_instructions, dispatcher_pane_id, "
+            "dispatcher_peer_id, curator_pane_id, curator_peer_id, "
+            "last_writer_at) "
+            "VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                (status or "IDLE"),
+                started_at, updated_at, suspended_at, resumed_at,
+                objective, resume_instructions,
+                dispatcher_pane_id, dispatcher_peer_id,
+                curator_pane_id, curator_peer_id,
+                # Sentinel timestamp keeps dump_signature reproducible.
+                "2000-01-01T00:00:00.000Z",
+            ),
+        )
+
     def import_org_state_md(self, path: Path) -> None:
         if not path or not path.exists():
+            # Even with no markdown, install a default singleton so callers
+            # never have to handle a missing org_sessions row.
+            self.conn.execute(
+                "INSERT INTO org_sessions (id, status, last_writer_at) "
+                "VALUES (1, 'IDLE', '2000-01-01T00:00:00.000Z')"
+            )
             return
         text = path.read_text(encoding="utf-8")
+        self._import_org_session_from_md(text)
         section: Optional[str] = None
         for i, raw_line in enumerate(text.splitlines(), start=1):
             line = raw_line.rstrip()
@@ -361,7 +482,8 @@ class _Importer:
 
 _DROP_ORDER = (
     "tag_assignments", "tags", "events", "runs", "worker_dirs",
-    "workstreams", "projects", "unparsed_legacy", "schema_migrations",
+    "workstreams", "projects", "unparsed_legacy", "org_sessions",
+    "schema_migrations",
 )
 
 
@@ -396,6 +518,7 @@ _DUMP_TABLES: tuple[tuple[str, str], ...] = (
         "COALESCE(occurred_at,''), kind, COALESCE(actor,''), payload_json, id",
     ),
     ("unparsed_legacy", "source, COALESCE(source_line,0), raw, id"),
+    ("org_sessions", "id"),
 )
 
 
@@ -406,7 +529,7 @@ def _dump_text(conn: sqlite3.Connection) -> str:
         cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
         # Skip volatile timestamp columns that change between runs.
         volatile = {"created_at", "applied_at", "opened_at", "dispatched_at",
-                     "last_seen_at"}
+                     "last_seen_at", "last_writer_at"}
         kept = [c for c in cols if c not in volatile]
         col_list = ", ".join(kept)
         out.append(f"# {table}")

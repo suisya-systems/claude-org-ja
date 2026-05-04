@@ -5,9 +5,11 @@ Thin convenience wrappers around `sqlite3.Connection` that return plain
 short-lived dashboard / SKILL invocations can open a connection, fetch what
 they need, and close — WAL allows many concurrent readers.
 
-The DB is a derived view in M1 (markdown remains SoT); see
-migration-strategy.md §M1. Callers should keep a markdown fallback path on
-disk and treat any query failure here as a soft signal to reach for it.
+In M2 the DB is the canonical write target (migration-strategy.md §M2):
+the M1 markdown overlay is gone, ``org_sessions`` carries Status / Updated /
+Suspended / Resumed / Current Objective / Dispatcher / Curator /
+Resume Instructions, and ``.state/org-state.md`` is regenerated from this
+DB by :mod:`tools.state_db.snapshotter`.
 """
 from __future__ import annotations
 
@@ -65,6 +67,30 @@ def list_active_runs(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         LEFT JOIN worker_dirs d     ON d.id = r.worker_dir_id
         WHERE r.status IN ('in_use', 'review')
         ORDER BY r.dispatched_at DESC, r.id DESC
+        """
+    ).fetchall()
+    return _rows_to_dicts(rows)
+
+
+def list_runs_with_dirs(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Return every run that has a worker_dir attached, regardless of status.
+
+    Used by ``parse_org_state_db`` and the markdown snapshotter to render the
+    Worker Directory Registry, which historically lists *all* runs with a
+    directory (active + completed + failed + abandoned), not just the live ones.
+    """
+    rows = conn.execute(
+        """
+        SELECT
+            r.task_id, r.pattern, r.status, r.title, r.outcome_note,
+            r.dispatched_at,
+            p.slug          AS project_slug,
+            d.abs_path      AS worker_dir
+        FROM runs r
+        JOIN projects p         ON p.id = r.project_id
+        LEFT JOIN worker_dirs d ON d.id = r.worker_dir_id
+        WHERE d.abs_path IS NOT NULL
+        ORDER BY r.dispatched_at, r.id
         """
     ).fetchall()
     return _rows_to_dicts(rows)
@@ -145,11 +171,56 @@ def _run_status_counts(conn: sqlite3.Connection) -> dict[str, int]:
     return {r["status"]: r["c"] for r in rows}
 
 
+def get_session(conn: sqlite3.Connection) -> Optional[dict[str, Any]]:
+    """Return the singleton ``org_sessions`` row, or ``None`` if missing.
+
+    M2 (Issue #267) replaced the M1 markdown overlay; consumers now read
+    Status / Updated / Suspended / Resumed / Current Objective / Dispatcher
+    / Curator / Resume Instructions straight from this row.
+
+    Pre-M2 DB handling: when the ``org_sessions`` table is absent we try
+    to forward-migrate via ``ensure_m2_schema``, but only if the caller's
+    connection is **not** in an open transaction. Migrating inside a
+    caller-controlled tx would force an implicit COMMIT (executescript
+    behaviour — see N1 in cross-review), silently confirming any pending
+    writes the caller meant to roll back. So an in-tx caller gets
+    ``None`` and is expected to handle that as "session unknown" rather
+    than as a positive read result.
+
+    Returning ``None`` here doesn't trigger a markdown fallback in the
+    M2 dashboard / converter (the M1 overlay is gone); callers will see
+    Status default to IDLE and the role / objective / resume_instructions
+    fields go unset for that render. Run the importer once to install
+    the M2 table out-of-band if you need a stable read.
+    """
+    try:
+        row = conn.execute(
+            "SELECT * FROM org_sessions WHERE id = 1"
+        ).fetchone()
+    except sqlite3.OperationalError:
+        # Pre-M2 DB. Don't migrate inside an open caller tx — see docstring
+        # for the rationale. Skip silently and let the caller see a
+        # missing-row signal.
+        if getattr(conn, "in_transaction", False):
+            return None
+        try:
+            from tools.state_db import ensure_m2_schema
+            ensure_m2_schema(conn)
+            conn.commit()
+            row = conn.execute(
+                "SELECT * FROM org_sessions WHERE id = 1"
+            ).fetchone()
+        except (sqlite3.OperationalError, RuntimeError):
+            return None
+    return _row_to_dict(row)
+
+
 def get_org_state_summary(conn: sqlite3.Connection) -> dict[str, Any]:
     """Aggregate snapshot used by the dashboard.
 
     Shape:
         {
+          "session": {... org_sessions row ...} | None,
           "active_runs": [...],            # in_use / review
           "active_worker_dirs": [...],     # lifecycle='active'
           "recent_events": [...],          # 20 newest
@@ -166,6 +237,7 @@ def get_org_state_summary(conn: sqlite3.Connection) -> dict[str, Any]:
         """
     ).fetchone()
     return {
+        "session": get_session(conn),
         "active_runs": list_active_runs(conn),
         "active_worker_dirs": list_worker_dirs(conn, lifecycle="active"),
         "recent_events": list_recent_events(conn, limit=20),
@@ -194,6 +266,7 @@ def get_resume_briefing(conn: sqlite3.Connection) -> dict[str, Any]:
         "SELECT occurred_at, kind FROM events ORDER BY id DESC LIMIT 1"
     ).fetchone()
     return {
+        "session": get_session(conn),
         "active_runs": list_active_runs(conn),
         "active_worker_dirs": list_worker_dirs(conn, lifecycle="active"),
         "recent_events": list_recent_events(conn, limit=30),
@@ -210,9 +283,11 @@ def get_resume_briefing(conn: sqlite3.Connection) -> dict[str, Any]:
 
 __all__ = [
     "list_active_runs",
+    "list_runs_with_dirs",
     "get_run_by_task_id",
     "list_worker_dirs",
     "list_recent_events",
+    "get_session",
     "get_org_state_summary",
     "get_resume_briefing",
 ]

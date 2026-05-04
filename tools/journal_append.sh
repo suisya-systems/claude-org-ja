@@ -1,14 +1,11 @@
 #!/usr/bin/env bash
-# Phase 5 shim audit: confirmed minimal as of 2026-05-04 (#130)
-# claude-org-ja journal append wrapper (Step D shim, refs ja#128 /
-# core-harness 0.3.0).
+# claude-org-ja journal append wrapper (M2 DB-write switch, Issue #267).
 #
-# Wraps `core_harness.audit.journal_append` with the org-specific
-# journal path (`.state/journal.jsonl`) baked in. Locates the bash
-# companion library by asking the installed core-harness package where
-# it lives, so this script keeps working through `pip install -e .`,
-# `pip install` from the pinned git URL, and any future package
-# layout change in core-harness.
+# Pre-M2 this script sourced core_harness.audit's bash companion and
+# appended directly to journal.jsonl. M2 routes writes through SQLite
+# (`.state/state.db`) and regenerates the jsonl from the events table;
+# the Python wrapper does both. Keeping the .sh entry point because
+# CLAUDE.md / SKILL.md / hook configs still reference it by name.
 #
 # Usage:
 #   bash tools/journal_append.sh <event> [k=v ...]
@@ -18,21 +15,9 @@
 #       worker=worker-foo dir=workers/foo task=foo
 #   bash tools/journal_append.sh suspend reason=user_requested
 #
-# For arbitrary payload shapes (nested objects, typed values, keys
-# outside [A-Za-z_][A-Za-z0-9_]*), use the Python entry point:
-#
-#   py -3 tools/journal_append.py <event> --json '<payload>'
-#
-# The journal path is fixed at `<repo_root>/.state/journal.jsonl`
-# regardless of the caller's cwd, where `<repo_root>` is the directory
-# one level above this script (`tools/..`). This matters because the
-# dispatcher pane runs with cwd=.dispatcher/, where a cwd-relative
-# default would write to .dispatcher/.state/journal.jsonl by mistake.
-#
-# Audit boundary (refs cross-review M3): the legacy ``$JOURNAL_PATH``
-# environment variable is rejected at this ja boundary so off-canon
-# writes can't be silently redirected. If the variable is set we emit
-# a stderr warning and proceed with the canonical path.
+# Audit boundary: the legacy ``$JOURNAL_PATH`` env var is rejected at the
+# ja boundary (preserved from the pre-M2 wrapper) so off-canon writes
+# can't be silently redirected.
 
 set -euo pipefail
 
@@ -47,25 +32,19 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 if [ -n "${JOURNAL_PATH-}" ]; then
     printf 'tools/journal_append.sh: warning: $JOURNAL_PATH override rejected at ja boundary; writing to canonical <repo_root>/.state/journal.jsonl\n' >&2
 fi
-JOURNAL_PATH="$REPO_ROOT/.state/journal.jsonl"
 
-# Ask the installed core-harness package where its bash companion
-# lives. Going through Python keeps us robust to `pip install` layout
-# differences (site-packages vs. editable installs vs. zipped wheels).
-CORE_HARNESS_AUDIT_LIB="$(
-    py -3 -c 'import core_harness.audit, pathlib, sys; sys.stdout.write(str(pathlib.Path(core_harness.audit.__file__).parent / "lib" / "journal_append.sh"))' \
-        2>/dev/null \
-    || python3 -c 'import core_harness.audit, pathlib, sys; sys.stdout.write(str(pathlib.Path(core_harness.audit.__file__).parent / "lib" / "journal_append.sh"))' \
-        2>/dev/null \
-    || python -c 'import core_harness.audit, pathlib, sys; sys.stdout.write(str(pathlib.Path(core_harness.audit.__file__).parent / "lib" / "journal_append.sh"))'
-)"
+EVENT="$1"
+shift
 
-if [ -z "$CORE_HARNESS_AUDIT_LIB" ] || [ ! -f "$CORE_HARNESS_AUDIT_LIB" ]; then
-    printf 'tools/journal_append.sh: core_harness.audit lib not resolvable; check pyproject.toml pin (or run pip install -e .)\n' >&2
-    exit 1
+# Resolve a Python interpreter the same way the rest of the repo does:
+# `py -3` on Windows / `python3` on POSIX / `python` as last resort.
+if command -v py >/dev/null 2>&1; then
+    PY="py -3"
+elif command -v python3 >/dev/null 2>&1; then
+    PY="python3"
+else
+    PY="python"
 fi
 
-# shellcheck source=/dev/null
-source "$CORE_HARNESS_AUDIT_LIB"
-
-journal_append "$JOURNAL_PATH" "$@"
+cd "$REPO_ROOT"
+exec $PY "$SCRIPT_DIR/journal_append.py" "$EVENT" "$@"

@@ -11,20 +11,15 @@ Source of truth rule:
     org-state.md is canonical (human/AI-readable).
     org-state.json is derived (machine-readable for dashboard etc.).
 
-M1 (Issue #267) adds an optional DB read path:
-    --source markdown  : parse .state/org-state.md (default — non-lossy SoT).
-    --source db        : query .state/state.db via tools.state_db.queries.
-                         Falls back to a markdown overlay for fields the DB
-                         does not yet model (Status / Objective / Updated /
-                         Dispatcher / Curator / Resume Instructions).
-    --source auto      : try DB first; fall back to markdown if DB is missing
-                         or stale.
-
-The default stays `markdown` because the DB only models *active* runs and
-worker directories; emitting a JSON without completed/queued items or the
-full Worker Directory Registry would be lossy for downstream readers
-(dashboard JSON-first read, etc.). Use `--source db` explicitly when you
-want a DB-derived snapshot.
+M2 (Issue #267) makes the DB the canonical source:
+    --source db        : (default) query .state/state.db via
+                         tools.state_db.queries. The org_sessions table
+                         now carries Status / Objective / Updated /
+                         Dispatcher / Curator / Resume Instructions —
+                         no markdown overlay required.
+    --source markdown  : parse .state/org-state.md instead. Kept for
+                         debugging / pre-M2 DBs / disaster recovery.
+    --source auto      : DB if state.db exists, otherwise markdown.
 """
 
 import argparse
@@ -232,102 +227,103 @@ def parse_org_state_md(text):
 def parse_org_state_db(db_path, md_path=None):
     """Build the org-state.json shape from .state/state.db.
 
-    The DB does not yet model Status / Current Objective / Updated /
-    Dispatcher / Curator / Resume Instructions (M1 scope keeps markdown as
-    SoT for those). To stay non-lossy, this function ALSO parses the markdown
-    when present and merges the markdown-only fields into the output. The
-    workItems / workerDirectoryRegistry come from the DB.
+    M2 (Issue #267): all known fields come straight from the DB —
+    workItems / Worker Directory Registry from runs + worker_dirs,
+    Status / Updated / Suspended / Resumed / Current Objective /
+    Dispatcher / Curator / Resume Instructions from org_sessions.
+    The ``md_path`` parameter is accepted for backwards compatibility
+    but no longer consulted (the M1 markdown overlay is gone).
     """
+    del md_path  # M2: no markdown overlay; arg kept for caller compat.
     from tools.state_db import connect
-    from tools.state_db.queries import get_org_state_summary
+    from tools.state_db.queries import (
+        get_org_state_summary,
+        list_runs_with_dirs,
+    )
 
     conn = connect(db_path)
     try:
         summary = get_org_state_summary(conn)
+        session = summary.get("session") or {}
+        # WDR historically lists *every* run with a worker_dir
+        # (active + completed + failed + abandoned), so use the full
+        # listing rather than just the active runs from `summary`.
         registry = []
-        for r in summary["active_runs"]:
-            if not r.get("worker_dir"):
-                continue
+        for r in list_runs_with_dirs(conn):
             registry.append({
                 "taskId": r["task_id"],
                 "pattern": r["pattern"],
                 "directory": r["worker_dir"],
                 "project": r.get("project_slug") or "",
-                "status": r["status"],
+                "status": r.get("outcome_note") or r.get("status") or "",
             })
     finally:
         conn.close()
 
+    # Frontend (dashboard/app.js) renders icons keyed off IN_PROGRESS /
+    # REVIEW / PENDING / COMPLETED / BLOCKED / ABANDONED. Map the DB enum
+    # so a `_source: db` JSON renders the same as the markdown path.
+    _STATUS_MAP = {
+        "in_use": "IN_PROGRESS",
+        "review": "REVIEW",
+        "queued": "PENDING",
+        "completed": "COMPLETED",
+        "failed": "BLOCKED",
+        "suspended": "PENDING",
+        "abandoned": "ABANDONED",
+    }
     work_items = []
     for r in summary["active_runs"]:
+        raw = (r["status"] or "").lower()
+        # Mirror dashboard/server.py:_work_items_from_db_runs — leave
+        # `progress` / `worker` empty rather than surfacing the raw
+        # status string and absolute worker_dir path through the UI.
         work_items.append({
             "id": r["task_id"],
             "title": r["title"] or r["task_id"],
-            "status": (r["status"] or "").upper(),
-            "progress": r.get("outcome_note"),
-            "worker": r.get("worker_dir"),
+            "status": _STATUS_MAP.get(raw, raw.upper()),
+            "progress": None,
+            "worker": None,
         })
 
-    # Merge markdown-only fields (Status, Objective, Updated, Dispatcher,
-    # Curator, Resume Instructions). Without this, an `auto`/`db` CLI run
-    # would overwrite .state/org-state.json with a lossy snapshot and the
-    # dashboard's JSON-first reader would lose those fields.
-    md_overlay = {}
-    md_path = Path(md_path) if md_path else _MD_PATH
-    if md_path.exists():
-        try:
-            md_overlay = parse_org_state_md(md_path.read_text(encoding="utf-8"))
-        except Exception as exc:
-            print(f"[org_state_converter] markdown overlay failed: {exc}",
-                  file=sys.stderr)
-            md_overlay = {}
+    dispatcher = None
+    if session.get("dispatcher_pane_id") or session.get("dispatcher_peer_id"):
+        dispatcher = {
+            "peerId": session.get("dispatcher_peer_id"),
+            "paneId": session.get("dispatcher_pane_id"),
+        }
+    curator = None
+    if session.get("curator_pane_id") or session.get("curator_peer_id"):
+        curator = {
+            "peerId": session.get("curator_peer_id"),
+            "paneId": session.get("curator_pane_id"),
+        }
 
-    def _pick(key, default=None):
-        return md_overlay.get(key, default) if md_overlay else default
+    status = (session.get("status")
+              or ("ACTIVE" if summary["active_runs"] else "IDLE"))
 
     return {
         "version": SCHEMA_VERSION,
-        "updated": _pick("updated"),
-        "status": _pick("status",
-                        "ACTIVE" if summary["active_runs"] else "IDLE"),
-        "currentObjective": _pick("currentObjective"),
+        "updated": session.get("updated_at"),
+        "status": status,
+        "currentObjective": session.get("objective"),
         "workItems": work_items,
         "workerDirectoryRegistry": registry,
-        "dispatcher": _pick("dispatcher"),
-        "curator": _pick("curator"),
-        "resumeInstructions": _pick("resumeInstructions"),
+        "dispatcher": dispatcher,
+        "curator": curator,
+        "resumeInstructions": session.get("resume_instructions"),
         "_source": "db",
     }
 
 
-def _db_is_fresh(db_path, md_path):
-    """True if db_path is at least as new as md_path. Missing files = not fresh.
-
-    Uses max(state.db, state.db-wal) mtimes — WAL mode (tools.state_db
-    enables journal_mode=WAL) lets writes land in the -wal sidecar until
-    checkpoint, so the main file's mtime can lag.
-    """
-    db_path = Path(db_path)
-    md_path = Path(md_path)
-    if not db_path.exists():
-        return False
-    db_mtime = 0.0
-    for p in (db_path, Path(str(db_path) + "-wal")):
-        try:
-            db_mtime = max(db_mtime, p.stat().st_mtime)
-        except OSError:
-            continue
-    if db_mtime == 0.0:
-        return False
-    try:
-        md_mtime = md_path.stat().st_mtime
-    except OSError:
-        # No markdown to compare against → trust the DB.
-        return True
-    return db_mtime >= md_mtime
+def _db_available(db_path, md_path=None):
+    """True iff `.state/state.db` is on disk. M2: DB is the SoT, no
+    markdown-vs-DB freshness comparison required."""
+    del md_path  # kept for legacy call sites
+    return Path(db_path).exists()
 
 
-def convert(md_path=None, json_path=None, source="markdown", db_path=None):
+def convert(md_path=None, json_path=None, source="db", db_path=None):
     """Read state, build the org-state JSON dict, write it atomically.
 
     `source`:
@@ -348,21 +344,38 @@ def convert(md_path=None, json_path=None, source="markdown", db_path=None):
 
     chosen = source
     if chosen == "auto":
-        chosen = "db" if _db_is_fresh(db_path, md_path) else "markdown"
+        chosen = "db" if _db_available(db_path) else "markdown"
 
     if chosen == "db":
         if not db_path.exists():
             print(f"[org_state_converter] state.db not found: {db_path}",
                   file=sys.stderr)
             return False
-        data = parse_org_state_db(db_path, md_path=md_path)
-    elif chosen == "markdown":
+        try:
+            data = parse_org_state_db(db_path, md_path=md_path)
+        except Exception as exc:
+            # Match dashboard/server.py:_load_state_from_db semantics:
+            # in `auto` mode we must degrade to markdown when the DB
+            # itself is unreadable (e.g. corrupt file) rather than
+            # propagating a sqlite3 error to the caller.
+            if source != "auto":
+                raise
+            print(
+                f"[org_state_converter] DB read failed ({type(exc).__name__}: "
+                f"{exc}); falling back to markdown.",
+                file=sys.stderr,
+            )
+            chosen = "markdown"
+    if chosen == "markdown":
         if not md_path.exists():
             print(f"[org_state_converter] org-state.md not found: {md_path}",
                   file=sys.stderr)
             return False
         text = md_path.read_text(encoding="utf-8")
         data = parse_org_state_md(text)
+    elif chosen == "db":
+        # data was set in the `if chosen == "db":` block above.
+        pass
     else:
         print(f"[org_state_converter] unknown --source {source}", file=sys.stderr)
         return False
@@ -391,11 +404,10 @@ def _main(argv=None):
     p.add_argument(
         "--source",
         choices=("auto", "db", "markdown"),
-        default="markdown",
-        help="Where to read org-state from. 'markdown' (default) preserves "
-             "all fields including completed/queued items. 'db' uses the "
-             "state DB and overlays markdown for fields the DB does not "
-             "model. 'auto' picks DB if it is fresh, else markdown.",
+        default="db",
+        help="Where to read org-state from. 'db' (default, M2 SoT) reads "
+             ".state/state.db. 'markdown' parses the legacy file. 'auto' "
+             "picks DB when the file is present, else markdown.",
     )
     p.add_argument("--md", default=str(_MD_PATH),
                    help="Path to org-state.md (markdown SoT)")
