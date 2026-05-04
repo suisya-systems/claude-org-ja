@@ -45,23 +45,29 @@ description: >
 
 ## Phase 3: 状態書き込み
 
+> **state-db cutover (M2.1, Issue #272)**: `.state/state.db` が SoT。構造化セクション
+> (Status / Updated / Suspended / Dispatcher / Curator / Worker Directory Registry /
+> Active Work Items / Resume Instructions) は **必ず StateWriter 経由で書く**。
+> `transaction()` の post-commit hook が `.state/org-state.md` と
+> `.state/journal.jsonl` を自動再生成する。free-form な session notes 等は引き続き
+> markdown を直接編集してよい（snapshotter が passthrough で保持する）。
+> DB が古い場合は `python -m tools.state_db.importer --db .state/state.db --rebuild --no-strict` で再構築する。
+
 1. 既存の `org-state.md` を `org-state.prev.md` にコピー（バックアップ）
-2. `org-state.md` を更新:
-   - Status を `SUSPENDED` に変更
-   - Updated を現在時刻に更新
-   - 各 Work Item の状態を収集した情報で更新
-   - Resume Instructions に再開時の注意事項を記載
-3. JSON スナップショットを再生成する:
+2. **DB に Status / Suspended を書く** (post-commit hook が markdown / jsonl を自動再生成):
 
    ```bash
-   py -3 dashboard/org_state_converter.py    # Windows
-   python3 dashboard/org_state_converter.py   # Mac/Linux
+   python -c "from datetime import datetime, timezone; from pathlib import Path; from tools.state_db import connect; from tools.state_db.writer import StateWriter; from tools.state_db.snapshotter import post_commit_regenerate; conn=connect('.state/state.db'); w=StateWriter(conn, claude_org_root=Path('.')); ts=datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%fZ'); w.begin(); w.update_session(status='SUSPENDED', suspended_at=ts, updated_at=ts); w.commit(); post_commit_regenerate(w.conn, Path('.')); conn.close()"
    ```
 
+   - 同コマンドが `.state/org-state.md` の Status 行を `SUSPENDED` に切り替え、`.state/journal.jsonl` も再生成する
+   - 一行版は `transaction()` の rollback セマンティクスを失う代わりに cross-shell (PowerShell / bash) で動く。Python from-script で書く場合は `with w.transaction():` を使う方が安全
+   - free-form な「Resume Instructions の補足説明」「Pending Lead」等は markdown を直接 append してよい（passthrough で保持される）。`update_session(resume_instructions=...)` を使う場合は構造化セクションとして上書きされる
+3. 各 Work Item の状態を更新する場合は `upsert_run(task_id=..., status=...)` を `transaction()` 内で呼ぶ
 4. 各ワーカーの `.state/workers/worker-{id}.md` を更新:
    - Current State at Suspend セクションを追加/更新
    - Progress Log に中断時の状態を追記
-5. `journal.jsonl` に suspend イベントを追記（helper 経由。array payload は Python wrapper の `--json` を使う。`ts` は自動付与）:
+5. `journal.jsonl` に suspend イベントを追記（DB 経由。`tools/journal_append.py` は M2 で DB ルーティング済み。`ts` は自動付与）:
    ```bash
    py -3 tools/journal_append.py suspend \
        reason=user_requested \

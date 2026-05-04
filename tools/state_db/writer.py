@@ -16,9 +16,12 @@ Design boundary (per CLAUDE.local.md / migration-strategy.md §M2):
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import sqlite3
-from typing import Any, Iterable, Optional
+import sys
+from pathlib import Path
+from typing import Any, Iterable, Iterator, Optional
 
 
 class _ClearSentinel:
@@ -46,7 +49,8 @@ class StateWriter:
 
     CLEAR = _ClearSentinel()
 
-    def __init__(self, conn: sqlite3.Connection):
+    def __init__(self, conn: sqlite3.Connection,
+                 *, claude_org_root: Optional[Path] = None):
         self.conn = conn
         # Defensive: ensure project-wide PRAGMAs even when caller passed a
         # bare sqlite3.connect() handle.
@@ -58,6 +62,18 @@ class StateWriter:
         # singleton row when it's absent.
         from tools.state_db import ensure_m2_schema
         ensure_m2_schema(conn)
+        # claude_org_root is the repo root that contains `.state/`. When
+        # set, ``transaction()`` regenerates `.state/org-state.md` and
+        # `.state/journal.jsonl` from the DB after each successful commit
+        # (M2.1 post-commit hook). When None we attempt to auto-detect
+        # from the connection's file path; failure is non-fatal — the
+        # transaction still commits and the caller can still call
+        # snapshotter.post_commit_regenerate manually.
+        if claude_org_root is None:
+            claude_org_root = _detect_claude_org_root(conn)
+        self._claude_org_root: Optional[Path] = (
+            Path(claude_org_root) if claude_org_root is not None else None
+        )
 
     # ------------------------------------------------------------------
     # Transaction control
@@ -82,6 +98,42 @@ class StateWriter:
 
     def rollback(self) -> None:
         self.conn.rollback()
+
+    @contextlib.contextmanager
+    def transaction(self) -> Iterator["StateWriter"]:
+        """Context-manager wrapper: BEGIN → yield → COMMIT (+ post-commit hook).
+
+        On normal exit the transaction is committed and, when
+        ``claude_org_root`` is known, ``post_commit_regenerate`` is
+        invoked to refresh `.state/org-state.md` + `.state/journal.jsonl`
+        from the DB. Regenerate failures are logged to stderr and
+        swallowed — the DB is the SoT, so the markdown / jsonl dump is
+        best-effort. The caller's ``with`` block still completes
+        normally.
+
+        On exception the transaction is rolled back and the exception
+        propagates; no regenerate is attempted.
+        """
+        self.begin()
+        try:
+            yield self
+        except BaseException:
+            self.rollback()
+            raise
+        self.commit()
+        if self._claude_org_root is not None:
+            try:
+                # Imported lazily to keep writer ↔ snapshotter import
+                # graph cycle-free at module load time.
+                from tools.state_db.snapshotter import post_commit_regenerate
+                post_commit_regenerate(self.conn, self._claude_org_root)
+            except Exception as exc:
+                sys.stderr.write(
+                    "tools.state_db.writer: post-commit regenerate failed "
+                    f"({type(exc).__name__}: {exc}); "
+                    "DB is committed, markdown/jsonl will catch up on "
+                    "the next regenerate.\n"
+                )
 
     # ------------------------------------------------------------------
     # org session (singleton)
@@ -450,6 +502,32 @@ class StateWriter:
                 (actor, kind, run_id, workstream_id, project_id, payload_json),
             )
         return cur.lastrowid
+
+
+def _detect_claude_org_root(conn: sqlite3.Connection) -> Optional[Path]:
+    """Best-effort: derive the claude-org repo root from a sqlite Connection.
+
+    The convention is ``<root>/.state/state.db``; we walk up two levels
+    from the connection's main database file. Returns None for
+    ``:memory:`` connections, for connections opened against a path that
+    is not under a ``.state/`` directory (most test fixtures), or when
+    the PRAGMA query fails for any reason. A None return makes
+    ``transaction()`` skip the post-commit hook silently — callers that
+    care can pass ``claude_org_root`` explicitly.
+    """
+    try:
+        row = conn.execute("PRAGMA database_list").fetchone()
+    except sqlite3.Error:
+        return None
+    if row is None:
+        return None
+    file_path = row["file"] if "file" in row.keys() else None
+    if not file_path:
+        return None
+    p = Path(file_path).resolve()
+    if p.parent.name == ".state":
+        return p.parent.parent
+    return None
 
 
 __all__ = ["StateWriter"]

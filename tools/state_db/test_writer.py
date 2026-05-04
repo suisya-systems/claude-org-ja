@@ -578,5 +578,154 @@ class TestTransactionBoundary(unittest.TestCase):
             td.cleanup()
 
 
+class TestTransactionContextManager(unittest.TestCase):
+    """M2.1 (Issue #272): ``transaction()`` is the canonical write entry
+    point for skill-side callers. It must commit on normal exit, roll
+    back on exception, and best-effort regenerate the markdown/jsonl
+    dump after commit when ``claude_org_root`` is known."""
+
+    def _root_with_state_db(self):
+        td = tempfile.TemporaryDirectory()
+        root = Path(td.name)
+        (root / ".state").mkdir()
+        db = root / ".state" / "state.db"
+        conn = connect(db)
+        apply_schema(conn)
+        return td, root, db, conn
+
+    def test_commits_on_normal_exit(self):
+        td, root, db, conn = self._root_with_state_db()
+        try:
+            w = StateWriter(conn, claude_org_root=root)
+            with w.transaction() as tx:
+                tx.register_worker_dir(abs_path="/x/in-tx")
+            conn.close()
+            conn2 = connect(db)
+            try:
+                row = conn2.execute(
+                    "SELECT 1 FROM worker_dirs WHERE abs_path = '/x/in-tx'"
+                ).fetchone()
+                self.assertIsNotNone(row)
+            finally:
+                conn2.close()
+        finally:
+            td.cleanup()
+
+    def test_rolls_back_on_exception(self):
+        td, root, db, conn = self._root_with_state_db()
+        try:
+            w = StateWriter(conn, claude_org_root=root)
+            with self.assertRaises(RuntimeError):
+                with w.transaction() as tx:
+                    tx.register_worker_dir(abs_path="/x/should-rollback")
+                    raise RuntimeError("boom")
+            row = conn.execute(
+                "SELECT 1 FROM worker_dirs WHERE abs_path = '/x/should-rollback'"
+            ).fetchone()
+            self.assertIsNone(row)
+        finally:
+            conn.close()
+            td.cleanup()
+
+    def test_post_commit_regenerates_markdown_and_jsonl(self):
+        td, root, db, conn = self._root_with_state_db()
+        try:
+            w = StateWriter(conn, claude_org_root=root)
+            with w.transaction() as tx:
+                tx.update_session(status="ACTIVE", objective="ship M2.1")
+                tx.append_event(kind="dispatch", actor="dispatcher",
+                                 payload={"task": "t-x"})
+            md = (root / ".state" / "org-state.md").read_text(encoding="utf-8")
+            self.assertIn("Status: ACTIVE", md)
+            jsonl = (root / ".state" / "journal.jsonl").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn('"event": "dispatch"', jsonl)
+        finally:
+            conn.close()
+            td.cleanup()
+
+    def test_post_commit_regen_failure_does_not_rollback(self):
+        """DB is SoT; markdown/jsonl regen is best-effort. A regen
+        failure must NOT roll back the already-committed write and must
+        NOT escape the ``with`` block."""
+        td, root, db, conn = self._root_with_state_db()
+        try:
+            w = StateWriter(conn, claude_org_root=root)
+            from tools.state_db import snapshotter as _snap
+            orig = _snap.post_commit_regenerate
+            calls = {"n": 0}
+
+            def boom(*a, **kw):
+                calls["n"] += 1
+                raise RuntimeError("simulated regen failure")
+
+            _snap.post_commit_regenerate = boom
+            try:
+                with w.transaction() as tx:
+                    tx.register_worker_dir(abs_path="/x/regen-failed")
+            finally:
+                _snap.post_commit_regenerate = orig
+            self.assertEqual(calls["n"], 1)
+            row = conn.execute(
+                "SELECT 1 FROM worker_dirs WHERE abs_path = '/x/regen-failed'"
+            ).fetchone()
+            self.assertIsNotNone(row)
+        finally:
+            conn.close()
+            td.cleanup()
+
+    def test_no_root_skips_post_commit_silently(self):
+        """In-tempdir tests (no ``.state/`` ancestor) must not attempt
+        regenerate. Auto-detection returns None and ``transaction()``
+        becomes a plain BEGIN/COMMIT pair."""
+        td, conn = _fresh_db()
+        try:
+            w = StateWriter(conn)
+            self.assertIsNone(w._claude_org_root)
+            with w.transaction() as tx:
+                tx.register_worker_dir(abs_path="/x/no-root")
+            row = conn.execute(
+                "SELECT 1 FROM worker_dirs WHERE abs_path = '/x/no-root'"
+            ).fetchone()
+            self.assertIsNotNone(row)
+        finally:
+            conn.close()
+            td.cleanup()
+
+
+class TestRootAutoDetect(unittest.TestCase):
+    def test_detects_root_from_state_db_path(self):
+        """The conventional layout (``<root>/.state/state.db``) should
+        let StateWriter auto-detect ``claude_org_root``."""
+        td = tempfile.TemporaryDirectory()
+        try:
+            root = Path(td.name)
+            (root / ".state").mkdir()
+            db = root / ".state" / "state.db"
+            conn = connect(db)
+            try:
+                apply_schema(conn)
+                w = StateWriter(conn)
+                self.assertIsNotNone(w._claude_org_root)
+                self.assertEqual(
+                    w._claude_org_root.resolve(), root.resolve()
+                )
+            finally:
+                conn.close()
+        finally:
+            td.cleanup()
+
+    def test_no_root_for_memory_db(self):
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        try:
+            apply_schema(conn)
+            w = StateWriter(conn)
+            self.assertIsNone(w._claude_org_root)
+        finally:
+            conn.close()
+
+
 if __name__ == "__main__":
     unittest.main()
