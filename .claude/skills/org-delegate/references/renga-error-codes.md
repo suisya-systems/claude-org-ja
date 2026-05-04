@@ -104,7 +104,7 @@ mcp__renga-peers__poll_events(
 |---|---|
 | `pane_started` | 現状 skip (将来必要になれば追加) |
 | `pane_exited` | `role == "worker"` に絞って `WORKER_PANE_EXITED` 通知 |
-| `events_dropped` | `.state/journal.jsonl` に drop 件数を記録 (監視が追いついていないシグナル) |
+| `events_dropped` | DB の events テーブルに drop 件数を記録 (監視が追いついていないシグナル) |
 | `heartbeat` | 通常 `poll_events` のバッファに入らない (subscribe 内部で消化される) |
 
 ### `types` フィルタの挙動

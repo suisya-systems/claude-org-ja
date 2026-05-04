@@ -1,37 +1,31 @@
-"""Post-commit DB → markdown / jsonl regenerator (M2, Issue #267).
+"""Post-commit DB → markdown regenerator (M4, Issue #267).
 
-The M2 design (migration-strategy.md §M2) inverts the SoT: writes land in
-SQLite first; ``.state/org-state.md`` and ``.state/journal.jsonl`` become
-DB-derived dumps refreshed after each commit. This module is the dumper.
+The DB at ``.state/state.db`` is the SoT for org state. After every
+commit, ``post_commit_regenerate`` rewrites ``.state/org-state.md`` from
+the DB so dashboards / humans see the current truth without re-running
+the importer.
 
-Two design choices worth knowing about:
+M4 (Issue #267) finalises the markdown freeze:
 
-1. **Passthrough merge for org-state.md.** The schema only models a known
-   set of structured fields (Status / Updated / Dispatcher / Curator /
-   Worker Directory Registry / Active Work Items / Resume Instructions /
-   …). The real `.state/org-state.md` carries hundreds of lines of
-   free-form session notes that the schema deliberately doesn't model.
-   To avoid wiping that human-curated history when secretary first calls
-   the snapshotter, we render the structured prefix from the DB *and then
-   pass through unknown ``## …`` sections from the existing markdown in
-   their original order*. The notes/ split (M4) will eventually retire
-   the passthrough; M2 just protects the data.
-
-2. **Atomic-rename writes.** Each output is written to a sibling
-   ``<file>.tmp`` and ``os.replace()``-d into place after fsync. A crashed
-   regenerate run leaves the previous good copy in place; the next call
-   reproduces the same bytes from the same DB state (idempotency).
+* No passthrough merge. Every ``## …`` block in ``.state/org-state.md``
+  is rendered from the DB. Free-form sections that used to live in the
+  file are extracted to ``notes/`` by
+  :mod:`tools.state_db.extract_freetext` before this snapshotter runs
+  for the first time post-cutover. Operators must never hand-edit the
+  generated dump again — :mod:`tools.state_db.drift_check` enforces it.
+* No jsonl side-output. ``.state/journal.jsonl`` is decommissioned in
+  M4; the ``events`` table is the only SoT for events.
+* Atomic-rename writes: tmp file → fsync → ``os.replace`` so a crashed
+  regenerate run leaves the previous good copy in place.
 """
 from __future__ import annotations
 
 import io
-import json
 import os
-import re
 import sqlite3
 import tempfile
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable
 
 
 # ---------------------------------------------------------------------------
@@ -39,30 +33,17 @@ from typing import Iterable, Optional
 # ---------------------------------------------------------------------------
 
 # ``## …`` headings (lower-cased, exact-match) that the snapshotter owns.
-# Anything else is treated as free-form and passed through.
-#
-# Exact match — not substring — on purpose: substring would silently
-# absorb headings like "## Dispatcher Notes" or "## Curator メモ" into the
-# DB-owned set and the snapshotter would drop them on regenerate (and
-# drift_check would not detect the loss because the same predicate gates
-# both sides). See cross-review M1.
+# Anything else is forbidden in `.state/org-state.md` after M4 — operators
+# must move free-form content to ``notes/`` via
+# :mod:`tools.state_db.extract_freetext`. ``drift_check`` enforces the
+# rule by failing on any non-structured heading.
 _STRUCTURED_HEADINGS: frozenset[str] = frozenset({
     "dispatcher",
     "curator",
     "worker directory registry",
+    "active work items",
     "resume instructions",
 })
-# Cross-review M2.1 (Issue #272): ``Active Work Items`` was previously
-# DB-owned but the importer routes legacy free-form bullets like
-# ``- task-id: COMPLETED (PR #N merged, …)`` to ``events`` (kind
-# ``legacy_active_item``), not to ``runs``. After M2.1 wires the
-# post-commit regenerate, treating the heading as structured silently
-# erases every COMPLETED / ABANDONED entry the operator curated by hand
-# on the next call. We therefore demote the heading to passthrough so
-# the existing free-form list survives. The DB still tracks live runs
-# via the ``runs`` table — dashboards read it directly via queries.py;
-# they do not parse the markdown — so demoting this heading does not
-# change live-state visibility.
 
 
 def _is_structured_heading(heading_text: str) -> bool:
@@ -75,12 +56,6 @@ def _is_structured_heading(heading_text: str) -> bool:
 
 
 def _atomic_write_text(path: Path, body: str) -> None:
-    """Write `body` to `path` via tmp → fsync → rename.
-
-    The tmp file is created in the same directory so ``os.replace`` is a
-    same-volume rename (atomic on Windows + POSIX). A crash mid-write
-    leaves the previous good copy in place.
-    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(
@@ -200,16 +175,22 @@ _DB_STATUS_TO_MD_LABEL = {
 
 
 def _render_active_work_items(runs: Iterable[dict]) -> str:
-    active = [r for r in runs if (r.get("status") or "") in ("in_use", "review")]
+    """Render ``## Active Work Items`` from the runs table.
+
+    M4 (Issue #267): "active" = run.status in (in_use, review). The
+    legacy passthrough that surfaced operator-curated COMPLETED /
+    ABANDONED bullets is gone; those entries should live in
+    ``notes/sessions/`` (extracted by
+    :mod:`tools.state_db.extract_freetext`) or be reflected by an
+    actual run row whose ``status`` columns model the lifecycle.
+    """
+    active = [r for r in runs
+              if (r.get("status") or "") in ("in_use", "review")]
     if not active:
         return ""
     out = io.StringIO()
     out.write("## Active Work Items\n\n")
     for r in active:
-        # Match the legacy "- task-id: title [STATUS]" convention parsed by
-        # dashboard/server.py and dashboard/org_state_converter.py. Use the
-        # frontend's status vocabulary (IN_PROGRESS / REVIEW / …) so a regen
-        # → markdown-fallback cycle doesn't render as `?` in the UI.
         raw = (r.get("status") or "").lower()
         status_label = _DB_STATUS_TO_MD_LABEL.get(raw, raw.upper())
         title = r.get("title") or r["task_id"]
@@ -232,9 +213,9 @@ def _render_resume_instructions(session: dict) -> str:
 
 
 def render_structured_markdown(conn: sqlite3.Connection) -> str:
-    """Build the DB-owned portion of org-state.md.
+    """Build the full DB-derived ``.state/org-state.md`` body.
 
-    Order matches the legacy file: header keys → Dispatcher → Curator →
+    Section order (canonical): header keys → Dispatcher → Curator →
     Worker Directory Registry → Active Work Items → Resume Instructions.
     Empty sections are omitted entirely.
     """
@@ -253,46 +234,10 @@ def render_structured_markdown(conn: sqlite3.Connection) -> str:
             session.get("curator_pane_id"),
         ),
         _render_worker_directory_registry(runs),
-        # ``## Active Work Items`` is intentionally NOT rendered here;
-        # see the passthrough rationale next to ``_STRUCTURED_HEADINGS``.
-        # The helper ``_render_active_work_items`` is kept for callers
-        # that want a DB-only view (none in tree at the moment).
+        _render_active_work_items(runs),
         _render_resume_instructions(session),
     ]
     return "".join(parts)
-
-
-# ---------------------------------------------------------------------------
-# Passthrough merge
-# ---------------------------------------------------------------------------
-
-
-def extract_unknown_sections(markdown_text: str) -> str:
-    """Return the concatenated text of every ``## …`` block whose heading
-    does NOT match the structured taxonomy.
-
-    Each block runs from its ``## …`` heading line through (but not
-    including) the next ``## …`` heading or end-of-file. The leading
-    ``# Org State`` and the bare key:value lines above the first ``##`` are
-    discarded — those are owned by the structured renderer.
-    """
-    out_parts: list[str] = []
-    lines = markdown_text.splitlines(keepends=True)
-    cur_section: Optional[list[str]] = None
-    cur_keep = False
-    for line in lines:
-        if line.startswith("## "):
-            if cur_section is not None and cur_keep:
-                out_parts.append("".join(cur_section))
-            heading = line[3:].strip()
-            cur_keep = not _is_structured_heading(heading)
-            cur_section = [line]
-            continue
-        if cur_section is not None:
-            cur_section.append(line)
-    if cur_section is not None and cur_keep:
-        out_parts.append("".join(cur_section))
-    return "".join(out_parts)
 
 
 # ---------------------------------------------------------------------------
@@ -300,105 +245,40 @@ def extract_unknown_sections(markdown_text: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def render_org_state_md(
-    conn: sqlite3.Connection, *, source_md: Optional[Path] = None
-) -> str:
-    """Build the full org-state.md body (structured + passthrough merge).
+def render_org_state_md(conn: sqlite3.Connection) -> str:
+    """Render the full ``.state/org-state.md`` body from the DB.
 
-    `source_md` is read for passthrough preservation; if it's missing or
-    None, the output is structured-only.
-    """
-    body = render_structured_markdown(conn)
-    if source_md is not None:
-        try:
-            source_text = Path(source_md).read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            source_text = ""
-        passthrough = extract_unknown_sections(source_text)
-        if passthrough:
-            if not body.endswith("\n\n"):
-                if body.endswith("\n"):
-                    body += "\n"
-                else:
-                    body += "\n\n"
-            body += passthrough
-    return body
+    Equivalent to :func:`render_structured_markdown`. Kept as a public
+    name so callers don't have to know about the "structured" qualifier
+    after M4 (everything is structured now)."""
+    return render_structured_markdown(conn)
 
 
 def regenerate_org_state_md(
     conn: sqlite3.Connection, out_path: Path,
-    *, source_md: Optional[Path] = None,
 ) -> None:
-    """Write a fresh org-state.md to `out_path` (atomic rename).
-
-    Defaults to using `out_path` itself as the passthrough source — we
-    overwrite the file in place but read its old content first to capture
-    any free-form sections.
-    """
-    out_path = Path(out_path)
-    if source_md is None and out_path.exists():
-        source_md = out_path
-    body = render_org_state_md(conn, source_md=source_md)
-    _atomic_write_text(out_path, body)
-
-
-def render_journal_jsonl(conn: sqlite3.Connection) -> str:
-    """Build journal.jsonl from the events table, ts ascending."""
-    rows = conn.execute(
-        "SELECT occurred_at, kind, actor, payload_json "
-        "FROM events ORDER BY occurred_at, id"
-    ).fetchall()
-    lines: list[str] = []
-    for r in rows:
-        try:
-            payload = json.loads(r["payload_json"]) if r["payload_json"] else {}
-        except json.JSONDecodeError:
-            payload = {}
-        if not isinstance(payload, dict):
-            payload = {"_raw_payload": payload}
-        out: dict = {}
-        if r["occurred_at"]:
-            out["ts"] = r["occurred_at"]
-        out["event"] = r["kind"]
-        if r["actor"]:
-            out["actor"] = r["actor"]
-        for k, v in payload.items():
-            # Don't let payload override the canonical ts/event/actor keys.
-            if k in ("ts", "event", "actor") and k in out:
-                continue
-            out[k] = v
-        lines.append(json.dumps(out, ensure_ascii=False, sort_keys=True))
-    if not lines:
-        return ""
-    return "\n".join(lines) + "\n"
-
-
-def regenerate_journal_jsonl(
-    conn: sqlite3.Connection, out_path: Path
-) -> None:
-    body = render_journal_jsonl(conn)
-    _atomic_write_text(out_path, body)
+    """Write a fresh ``.state/org-state.md`` to `out_path` (atomic rename)."""
+    body = render_org_state_md(conn)
+    _atomic_write_text(Path(out_path), body)
 
 
 def post_commit_regenerate(
     conn: sqlite3.Connection, claude_org_root: Path
 ) -> None:
-    """Convenience wrapper: regenerate both files at the canonical paths.
+    """Convenience wrapper: regenerate ``.state/org-state.md`` from the DB.
 
-    Failures are not silently swallowed — the caller should handle them
-    (typically by logging and continuing; the DB COMMIT already happened).
+    M4 (Issue #267): ``.state/journal.jsonl`` is decommissioned — the
+    ``events`` table is the SoT. Failures are not silently swallowed;
+    the caller should handle them (typically by logging and continuing,
+    since the DB COMMIT already happened).
     """
     state_dir = Path(claude_org_root) / ".state"
     regenerate_org_state_md(conn, state_dir / "org-state.md")
-    regenerate_journal_jsonl(conn, state_dir / "journal.jsonl")
 
 
 __all__ = [
     "render_structured_markdown",
     "render_org_state_md",
-    "render_journal_jsonl",
     "regenerate_org_state_md",
-    "regenerate_journal_jsonl",
     "post_commit_regenerate",
-    "extract_unknown_sections",
 ]

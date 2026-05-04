@@ -1,23 +1,59 @@
-"""Unit tests for tools/pr_watch.py (Issue #204, Issue #224).
+"""Unit tests for tools/pr_watch.py (Issue #204, Issue #224, M4 Issue #267).
 
 Mocks the gh CLI subprocess via monkey-patching so the suite stays
-hermetic. Verifies the journal payload shape matches the contract in
-CLAUDE.local.md.
+hermetic. M4 (Issue #267) routes ``ci_completed`` to the DB events
+table; the test helper ``_read_ci_event`` reads back via sqlite3.
 """
 from __future__ import annotations
 
 import json
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 import unittest
 from pathlib import Path
 from unittest import mock
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import pr_watch  # noqa: E402
+
+
+def _read_ci_event(db_path: Path) -> dict:
+    """Return the (single) ci_completed event from the DB as a payload dict
+    flattened with the ``ts`` / ``event`` keys the tests expect."""
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            "SELECT occurred_at, kind, payload_json FROM events "
+            "WHERE kind = 'ci_completed' ORDER BY id"
+        ).fetchall()
+    finally:
+        conn.close()
+    if len(rows) != 1:
+        raise AssertionError(f"expected 1 ci_completed row, got {len(rows)}")
+    row = rows[0]
+    payload = json.loads(row["payload_json"]) if row["payload_json"] else {}
+    out = dict(payload)
+    out["event"] = row["kind"]
+    out["ts"] = row["occurred_at"]
+    return out
+
+
+def _count_ci_events(db_path: Path) -> int:
+    if not db_path.exists():
+        return 0
+    conn = sqlite3.connect(str(db_path))
+    try:
+        return int(conn.execute(
+            "SELECT COUNT(*) FROM events WHERE kind = 'ci_completed'"
+        ).fetchone()[0])
+    finally:
+        conn.close()
 
 
 class ClassifyTests(unittest.TestCase):
@@ -100,13 +136,13 @@ class ArgFormTests(unittest.TestCase):
         fake_run = _make_fake_run(watch_exit=0)
 
         with TempDir() as tmp:
-            journal = tmp / ".state" / "journal.jsonl"
+            journal = tmp / ".state" / "state.db"
             with mock.patch.object(pr_watch, "JOURNAL_PATH", journal), \
                  mock.patch.object(pr_watch.shutil, "which", return_value="/usr/bin/gh"), \
                  mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run), \
                  mock.patch.object(pr_watch.time, "monotonic", side_effect=[0.0, 1.0]):
                 rc = pr_watch.main(argv)
-            rec = json.loads(journal.read_text(encoding="utf-8").splitlines()[0])
+            rec = _read_ci_event(journal)
             return rc, rec
 
     def test_long_form(self) -> None:
@@ -145,11 +181,10 @@ class JournalEmitTests(unittest.TestCase):
 
     def test_passed_emits_ci_completed(self) -> None:
         with TempDir() as tmp:
-            journal = tmp / ".state" / "journal.jsonl"
+            journal = tmp / ".state" / "state.db"
             self._run(journal, gh_exit=0)
-            lines = journal.read_text(encoding="utf-8").splitlines()
-            self.assertEqual(len(lines), 1)
-            rec = json.loads(lines[0])
+            self.assertEqual(_count_ci_events(journal), 1)
+            rec = _read_ci_event(journal)
             self.assertEqual(rec["event"], "ci_completed")
             self.assertEqual(rec["pr"], 205)
             self.assertEqual(rec["repo"], "octo/repo")
@@ -160,7 +195,7 @@ class JournalEmitTests(unittest.TestCase):
     def test_failed_status_from_check_bucket(self) -> None:
         """A `fail` bucket in the JSON probe → status=failed."""
         with TempDir() as tmp:
-            journal = tmp / ".state" / "journal.jsonl"
+            journal = tmp / ".state" / "state.db"
             self._run(
                 journal,
                 gh_exit=8,
@@ -169,7 +204,7 @@ class JournalEmitTests(unittest.TestCase):
                     {"name": "test", "state": "COMPLETED", "bucket": "fail"},
                 ],
             )
-            rec = json.loads(journal.read_text(encoding="utf-8").splitlines()[0])
+            rec = _read_ci_event(journal)
             self.assertEqual(rec["status"], "failed")
 
     def test_transient_gh_error_is_not_failed(self) -> None:
@@ -181,7 +216,7 @@ class JournalEmitTests(unittest.TestCase):
         even when CI itself was green.
         """
         with TempDir() as tmp:
-            journal = tmp / ".state" / "journal.jsonl"
+            journal = tmp / ".state" / "state.db"
             self._run(
                 journal,
                 gh_exit=1,
@@ -190,13 +225,13 @@ class JournalEmitTests(unittest.TestCase):
                     {"name": "test", "state": "COMPLETED", "bucket": "pass"},
                 ],
             )
-            rec = json.loads(journal.read_text(encoding="utf-8").splitlines()[0])
+            rec = _read_ci_event(journal)
             self.assertEqual(rec["status"], "passed")
 
     def test_pending_check_is_incomplete(self) -> None:
         """A still-running check → status=incomplete (new in #224)."""
         with TempDir() as tmp:
-            journal = tmp / ".state" / "journal.jsonl"
+            journal = tmp / ".state" / "state.db"
             self._run(
                 journal,
                 gh_exit=0,
@@ -205,14 +240,14 @@ class JournalEmitTests(unittest.TestCase):
                     {"name": "deploy", "state": "IN_PROGRESS", "bucket": "pending"},
                 ],
             )
-            rec = json.loads(journal.read_text(encoding="utf-8").splitlines()[0])
+            rec = _read_ci_event(journal)
             self.assertEqual(rec["status"], "incomplete")
 
     def test_empty_checks_is_incomplete(self) -> None:
         with TempDir() as tmp:
-            journal = tmp / ".state" / "journal.jsonl"
+            journal = tmp / ".state" / "state.db"
             self._run(journal, gh_exit=0, checks_json=[])
-            rec = json.loads(journal.read_text(encoding="utf-8").splitlines()[0])
+            rec = _read_ci_event(journal)
             self.assertEqual(rec["status"], "incomplete")
 
     def test_failed_check_with_gh_json_exit_1(self) -> None:
@@ -224,7 +259,7 @@ class JournalEmitTests(unittest.TestCase):
         through to the exit-code classifier — defeating Issue #224(a).
         """
         with TempDir() as tmp:
-            journal = tmp / ".state" / "journal.jsonl"
+            journal = tmp / ".state" / "state.db"
             self._run(
                 journal,
                 gh_exit=1,  # watch loop saw the failure too
@@ -235,7 +270,7 @@ class JournalEmitTests(unittest.TestCase):
                 # `_gh_exit_for_checks` will emit 1 for this payload
                 # (failure present), matching real gh behavior.
             )
-            rec = json.loads(journal.read_text(encoding="utf-8").splitlines()[0])
+            rec = _read_ci_event(journal)
             self.assertEqual(rec["status"], "failed")
 
     def test_gh_exit_2_is_canceled(self) -> None:
@@ -248,25 +283,25 @@ class JournalEmitTests(unittest.TestCase):
         secretary can distinguish "user aborted" from "CI verdict".
         """
         with TempDir() as tmp:
-            journal = tmp / ".state" / "journal.jsonl"
+            journal = tmp / ".state" / "state.db"
             self._run(
                 journal,
                 gh_exit=2,
                 checks_json=[{"name": "ci", "state": "COMPLETED", "bucket": "pass"}],
             )
-            rec = json.loads(journal.read_text(encoding="utf-8").splitlines()[0])
+            rec = _read_ci_event(journal)
             self.assertEqual(rec["status"], "canceled")
 
     def test_json_probe_failure_falls_back_to_exit_code(self) -> None:
         """If `gh pr checks --json` itself fails, use exit-code mapping."""
         with TempDir() as tmp:
-            journal = tmp / ".state" / "journal.jsonl"
+            journal = tmp / ".state" / "state.db"
             self._run(
                 journal,
                 gh_exit=0,
                 checks_raises=FileNotFoundError("gh missing"),
             )
-            rec = json.loads(journal.read_text(encoding="utf-8").splitlines()[0])
+            rec = _read_ci_event(journal)
             # exit 0 → passed via _classify fallback.
             self.assertEqual(rec["status"], "passed")
 

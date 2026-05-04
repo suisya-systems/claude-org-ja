@@ -5,6 +5,15 @@ Python standard library only — no pip install required.
 Usage: python3 dashboard/server.py   (Mac/Linux)
        py -3 dashboard/server.py      (Windows)
        Then open http://localhost:8099
+
+M4 (Issue #267): the dashboard reads exclusively from
+``.state/state.db``. There is no markdown / JSON fallback — fresh
+clones must run::
+
+    python -m tools.state_db.importer \\
+        --db .state/state.db --root . --rebuild --no-strict
+
+once before ``server.py`` will return useful data.
 """
 
 import http.server
@@ -26,16 +35,11 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-try:
-    from tools.state_db import connect as _db_connect
-    from tools.state_db.queries import (
-        get_org_state_summary as _db_org_state_summary,
-        list_recent_events as _db_recent_events,
-    )
-    _DB_AVAILABLE = True
-except Exception as _exc:  # pragma: no cover — defensive against partial installs
-    print(f"[server] state_db import failed: {_exc}", file=sys.stderr)
-    _DB_AVAILABLE = False
+from tools.state_db import connect as _db_connect
+from tools.state_db.queries import (
+    get_org_state_summary as _db_org_state_summary,
+    list_recent_events as _db_recent_events,
+)
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -49,7 +53,7 @@ PID_FILE = BASE_DIR / ".state" / "dashboard.pid"
 STATE_DB_PATH = BASE_DIR / ".state" / "state.db"
 
 # ---------------------------------------------------------------------------
-# State builder — parses .state/ and registry/ files
+# State builder — DB-only after M4
 # ---------------------------------------------------------------------------
 
 def _read(path, default=""):
@@ -57,107 +61,6 @@ def _read(path, default=""):
         return path.read_text(encoding="utf-8").replace("\r\n", "\n")
     except Exception:
         return default
-
-
-def _parse_org_state(text):
-    status = "IDLE"
-    objective = None
-    work_items = []
-
-    for line in text.splitlines():
-        m = re.match(r"^Status:\s*(\S+)", line)
-        if m:
-            status = m.group(1).upper()
-
-        m = re.match(r"^Current Objective:\s*(.+)", line)
-        if m:
-            objective = m.group(1).strip()
-
-        # Work items: "- task-id: タイトル [STATUS]"
-        m = re.match(r"^- ([\w-]+):\s*(.+?)\s*\[(\w+)\]", line)
-        if m:
-            work_items.append({
-                "id": m.group(1),
-                "title": m.group(2).strip(),
-                "status": m.group(3).upper(),
-                "progress": None,
-                "worker": None,
-            })
-
-        # Sub-lines for last item
-        if work_items:
-            m = re.match(r"^\s+- 結果:\s*(.+)", line)
-            if m:
-                work_items[-1]["progress"] = m.group(1).strip()
-            m = re.match(r"^\s+- ワーカー:\s*(\S+)", line)
-            if m:
-                work_items[-1]["worker"] = m.group(1).strip()
-
-    return status, objective, work_items
-
-
-def _load_org_state_from_json(state_dir):
-    """Try to load org-state from JSON. Returns (status, objective, work_items) or None."""
-    json_path = state_dir / "org-state.json"
-    md_path = state_dir / "org-state.md"
-    try:
-        if not json_path.exists():
-            return None
-        # Only use JSON if it is at least as fresh as the Markdown
-        if md_path.exists() and json_path.stat().st_mtime < md_path.stat().st_mtime:
-            return None
-        data = json.loads(json_path.read_text(encoding="utf-8"))
-        status = data.get("status", "IDLE")
-        objective = data.get("currentObjective")
-        work_items = []
-        for wi in data.get("workItems", []):
-            work_items.append({
-                "id": wi["id"],
-                "title": wi["title"],
-                "status": wi["status"],
-                "progress": wi.get("progress"),
-                "worker": wi.get("worker"),
-            })
-        return status, objective, work_items
-    except Exception:
-        return None
-
-
-def _parse_journal(text):
-    events = []
-    for line in text.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            obj = json.loads(line)
-            events.append(obj)
-        except json.JSONDecodeError:
-            pass
-
-    EVENT_LABELS = {
-        "worker_spawned": "ワーカー派遣",
-        "worker_respawned": "ワーカー再派遣",
-        "worker_closed": "ワーカー終了",
-        "suspend": "組織を中断",
-        "resume": "組織を再開",
-    }
-
-    result = []
-    for e in reversed(events[-30:]):
-        event = e.get("event", "")
-        task = e.get("task", "")
-        worker = e.get("worker", "")
-        label = EVENT_LABELS.get(event, event)
-        if task:
-            summary = f"{label}: {task}"
-            if worker:
-                summary += f" ({worker[:8]})"
-        else:
-            summary = label
-        result.append({"ts": e.get("ts"), "event": event, "summary": summary})
-
-    return result
 
 
 def _parse_projects(text):
@@ -252,12 +155,6 @@ def _parse_knowledge(curated_dir):
     return result
 
 
-def _db_available():
-    """M2 (Issue #267): DB is the SoT — no markdown freshness comparison.
-    Just check the file exists and the imports succeeded."""
-    return _DB_AVAILABLE and STATE_DB_PATH.exists()
-
-
 _EVENT_LABELS_DB = {
     "worker_spawned": "ワーカー派遣",
     "worker_respawned": "ワーカー再派遣",
@@ -316,17 +213,7 @@ _DB_STATUS_TO_UI = {
 
 
 def _work_items_from_db_runs(active_runs):
-    """Render active runs (in_use / review) into the workItems shape.
-
-    Title/progress/worker are deliberately conservative: the M0 importer
-    seeds title=task_id and outcome_note=raw markdown status string, and
-    `worker_dir` is an absolute path (not a worker short id). Surfacing
-    those verbatim would render duplicate titles, status-as-progress noise
-    and full local paths in the worker column. Until the DB schema gains
-    proper title / progress / worker_id fields, leave the optional columns
-    as None and let the UI fall back to `id` only — matches the markdown
-    path when those sub-lines are absent.
-    """
+    """Render active runs (in_use / review) into the workItems shape."""
     items = []
     for r in active_runs:
         raw = (r.get("status") or "in_use").lower()
@@ -344,27 +231,23 @@ def _work_items_from_db_runs(active_runs):
     return items
 
 
-def _load_state_from_db(state_dir):
-    """Return (status, objective, work_items, activity) from state.db,
-    or None on failure. M2: org_sessions carries Status / Current Objective
-    so we no longer need the markdown overlay for those fields."""
+def _load_state_from_db():
+    """Return (status, objective, work_items, activity) from state.db.
+
+    M4 (Issue #267): the DB is required. Callers must check
+    ``STATE_DB_PATH.exists()`` first; this function raises on a missing
+    file rather than degrading silently.
+    """
+    conn = _db_connect(STATE_DB_PATH)
     try:
-        conn = _db_connect(STATE_DB_PATH)
-        try:
-            summary = _db_org_state_summary(conn)
-            events = _db_recent_events(conn, limit=30)
-        finally:
-            conn.close()
-    except Exception as exc:
-        print(f"[server] DB read failed, falling back to markdown: {exc}",
-              file=sys.stderr)
-        return None
+        summary = _db_org_state_summary(conn)
+        events = _db_recent_events(conn, limit=30)
+    finally:
+        conn.close()
     session = summary.get("session") or {}
-    db_status = session.get("status")
-    db_objective = session.get("objective")
     return (
-        db_status,
-        db_objective,
+        session.get("status"),
+        session.get("objective"),
         _work_items_from_db_runs(summary["active_runs"]),
         _activity_from_db_events(events),
     )
@@ -373,44 +256,27 @@ def _load_state_from_db(state_dir):
 def build_state():
     state_dir = BASE_DIR / ".state"
 
-    # M2: DB is the primary source for everything the schema models —
-    # Status / Objective via org_sessions, workItems via active runs,
-    # activity via the events table. Markdown / JSON snapshot is consulted
-    # only when the DB itself is unavailable (fresh clone, missing import,
-    # corrupt file). An *empty* DB is a legitimate state and must not
-    # resurrect ghost tasks from a stale dump.
-    status = "IDLE"
-    objective = None
-    work_items: list = []
-    activity = None
-    db_succeeded = False
-
-    if _db_available():
-        db_result = _load_state_from_db(state_dir)
-        if db_result is not None:
-            db_status, db_objective, work_items, activity = db_result
-            if db_status:
-                status = db_status
-            if db_objective:
-                objective = db_objective
-            db_succeeded = True
-
-    if not db_succeeded:
-        _json_result = _load_org_state_from_json(state_dir)
-        if _json_result is not None:
-            md_status, md_objective, md_work_items = _json_result
-        else:
-            org_state_text = _read(state_dir / "org-state.md")
-            md_status, md_objective, md_work_items = _parse_org_state(
-                org_state_text
-            )
-        work_items = md_work_items
-        if md_status:
-            status = md_status
-        if md_objective is not None:
-            objective = md_objective
-        journal_text = _read(state_dir / "journal.jsonl")
-        activity = _parse_journal(journal_text)
+    # M4: the DB is required. If it isn't on disk we still serve a
+    # minimal "IDLE / no data" payload so the dashboard renders an
+    # empty shell with a guidance message; the operator should then
+    # run the importer.
+    if not STATE_DB_PATH.exists():
+        # Codex r3 m-1: distinguish "no DB exists yet" from "DB present
+        # and idle". The pre-fix label "IDLE" looked like a normal
+        # operational state and could mask an unconfigured environment;
+        # UNINITIALIZED makes the operator action obvious.
+        status = "UNINITIALIZED"
+        objective = (
+            "state.db not found — run `python -m tools.state_db.importer "
+            "--db .state/state.db --root . --rebuild --no-strict` to seed "
+            "the dashboard."
+        )
+        work_items: list = []
+        activity: list = []
+    else:
+        status, objective, work_items, activity = _load_state_from_db()
+        if not status:
+            status = "IDLE"
 
     projects_text = _read(BASE_DIR / "registry" / "projects.md")
     projects = _parse_projects(projects_text)
@@ -443,9 +309,6 @@ _last_mtimes = {}
 
 def _get_mtimes():
     paths = [
-        BASE_DIR / ".state" / "org-state.md",
-        BASE_DIR / ".state" / "org-state.json",
-        BASE_DIR / ".state" / "journal.jsonl",
         BASE_DIR / "registry" / "projects.md",
         # Watch the state DB so importer rebuilds get pushed to SSE clients.
         # WAL files change on every commit even if state.db itself doesn't,

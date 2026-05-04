@@ -1,6 +1,14 @@
-"""Smoke tests for dashboard/server.py parser functions."""
+"""Smoke tests for dashboard/server.py parser functions.
+
+M4 (Issue #267) decommissions the markdown / jsonl parsers
+(``_parse_org_state``, ``_parse_journal``) — the dashboard reads
+state from ``.state/state.db`` only. The remaining helpers are file-
+system-only utilities (workers list, projects table, knowledge index)
+and continue to be exercised here.
+"""
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -9,8 +17,6 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from dashboard.server import (
-    _parse_org_state,
-    _parse_journal,
     _parse_projects,
     _parse_workers,
     _parse_knowledge,
@@ -18,63 +24,6 @@ from dashboard.server import (
 )
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
-
-
-class TestParseOrgState(unittest.TestCase):
-
-    def test_happy_path(self):
-        text = (FIXTURES / "org-state-sample.md").read_text(encoding="utf-8")
-        status, objective, work_items = _parse_org_state(text)
-
-        self.assertEqual(status, "ACTIVE")
-        self.assertEqual(objective, "ダッシュボードの改善")
-        self.assertEqual(len(work_items), 2)
-
-        wi0 = work_items[0]
-        self.assertEqual(wi0["id"], "task-1")
-        self.assertEqual(wi0["title"], "サンプルタスク")
-        self.assertEqual(wi0["status"], "IN_PROGRESS")
-        self.assertEqual(wi0["progress"], "50%完了")
-        self.assertEqual(wi0["worker"], "abc12345")
-
-        wi1 = work_items[1]
-        self.assertEqual(wi1["id"], "task-2")
-        self.assertEqual(wi1["status"], "COMPLETED")
-        self.assertIsNone(wi1["progress"])
-        self.assertIsNone(wi1["worker"])
-
-    def test_empty_input(self):
-        status, objective, work_items = _parse_org_state("")
-        self.assertEqual(status, "IDLE")
-        self.assertIsNone(objective)
-        self.assertEqual(work_items, [])
-
-
-class TestParseJournal(unittest.TestCase):
-
-    def test_happy_path(self):
-        text = (FIXTURES / "journal-sample.jsonl").read_text(encoding="utf-8")
-        result = _parse_journal(text)
-
-        # 3 valid JSON lines (malformed and blank skipped), reversed
-        self.assertEqual(len(result), 3)
-
-        # Reversed order: last valid event first
-        self.assertEqual(result[0]["event"], "resume")
-        self.assertEqual(result[0]["summary"], "組織を再開")
-
-        self.assertEqual(result[1]["event"], "worker_closed")
-        self.assertIn("ワーカー終了", result[1]["summary"])
-
-        self.assertEqual(result[2]["event"], "worker_spawned")
-        self.assertIn("ワーカー派遣", result[2]["summary"])
-        # Worker ID truncated to 8 chars
-        self.assertIn("abc12345", result[2]["summary"])
-        self.assertNotIn("abc12345-long-id", result[2]["summary"])
-
-    def test_empty_input(self):
-        result = _parse_journal("")
-        self.assertEqual(result, [])
 
 
 class TestParseProjects(unittest.TestCase):
@@ -119,7 +68,6 @@ class TestParseWorkers(unittest.TestCase):
 
     def test_archive_subdir_excluded(self):
         """Issue #264: workers under .state/workers/archive/ must not appear as live."""
-        import tempfile
         with tempfile.TemporaryDirectory() as td:
             wdir = Path(td)
             (wdir / "worker-live.md").write_text(
@@ -136,32 +84,26 @@ class TestParseWorkers(unittest.TestCase):
 
 
 class TestBuildStateLiveWorkers(unittest.TestCase):
-    """Issue #264 regression: live worker list = files in .state/workers/ root only.
-
-    Workers in REVIEW must remain visible (pane is still open, awaiting human approval).
-    Workers whose md file has been moved to archive/ must NOT appear as live, regardless
-    of whether their task id still appears in org-state.md Active Work Items.
-    """
+    """Issue #264 regression: live worker list = files in .state/workers/
+    root only. Workers in REVIEW must remain visible (pane is still
+    open, awaiting human approval). Workers whose md file has been moved
+    to archive/ must NOT appear as live."""
 
     def test_review_workers_stay_visible_and_archived_disappear(self):
-        import tempfile
         from unittest.mock import patch
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
             (base / ".state" / "workers" / "archive").mkdir(parents=True)
             (base / ".state" / "workers" / "worker-active.md").write_text(
-                "Task: active-task\nPane ID: pane-1\nStarted: now\n", encoding="utf-8",
+                "Task: active-task\nPane ID: pane-1\nStarted: now\n",
+                encoding="utf-8",
             )
             (base / ".state" / "workers" / "worker-review.md").write_text(
-                "Task: review-task\nPane ID: pane-2\nStarted: now\n", encoding="utf-8",
+                "Task: review-task\nPane ID: pane-2\nStarted: now\n",
+                encoding="utf-8",
             )
             (base / ".state" / "workers" / "archive" / "worker-old.md").write_text(
-                "Task: old-task\nPane ID: pane-3\nStarted: ages ago\n", encoding="utf-8",
-            )
-            (base / ".state" / "org-state.md").write_text(
-                "## Active Work Items\n"
-                "- active-task: 作業中 [IN_PROGRESS]\n"
-                "- review-task: レビュー中 [REVIEW]\n",
+                "Task: old-task\nPane ID: pane-3\nStarted: ages ago\n",
                 encoding="utf-8",
             )
             (base / "registry").mkdir()

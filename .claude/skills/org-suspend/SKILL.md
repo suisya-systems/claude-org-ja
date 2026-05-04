@@ -45,16 +45,20 @@ description: >
 
 ## Phase 3: 状態書き込み
 
-> **state-db cutover (M2.1, Issue #272)**: `.state/state.db` が SoT。構造化セクション
-> (Status / Updated / Suspended / Dispatcher / Curator / Worker Directory Registry /
-> Active Work Items / Resume Instructions) は **必ず StateWriter 経由で書く**。
-> `transaction()` の post-commit hook が `.state/org-state.md` と
-> `.state/journal.jsonl` を自動再生成する。free-form な session notes 等は引き続き
-> markdown を直接編集してよい（snapshotter が passthrough で保持する）。
-> DB が古い場合は `python -m tools.state_db.importer --db .state/state.db --rebuild --no-strict` で再構築する。
+> **state-db cutover (M4, Issue #267)**: `.state/state.db` が唯一の SoT。
+> 構造化セクション (Status / Updated / Suspended / Dispatcher / Curator /
+> Worker Directory Registry / Active Work Items / Resume Instructions) は
+> **必ず StateWriter 経由で書く**。`transaction()` の post-commit hook が
+> `.state/org-state.md` を DB から自動再生成する (markdown 直接編集禁止 —
+> drift_check で検出される)。free-form な session notes / Pending Lead /
+> 学び等は `notes/` 配下に保存する (`notes/README.md` 参照)。
+> `.state/journal.jsonl` は M4 で廃止 (events テーブルが SoT)。
+> DB が古い場合は
+> `python -m tools.state_db.importer --db .state/state.db --rebuild --no-strict`
+> で再構築する。
 
 1. 既存の `org-state.md` を `org-state.prev.md` にコピー（バックアップ）
-2. **DB に Status / Suspended を書く** (`StateWriter.transaction()` 経由。post-commit hook が markdown / jsonl を自動再生成、regen 失敗時も DB は確定済みで stderr 警告のみ):
+2. **DB に Status / Suspended を書く** (`StateWriter.transaction()` 経由。post-commit hook が `.state/org-state.md` を自動再生成、regen 失敗時も DB は確定済みで stderr 警告のみ):
 
    ```bash
    python -c "
@@ -70,13 +74,13 @@ description: >
    ```
 
    - bash / zsh / PowerShell すべて `"..."` 内の改行をそのまま透過するので multi-line でも cross-shell。Windows CMD は heredoc 不可なので `py -3 -c "ts=...; conn=...; w=...; w.begin(); w.update_session(...); w.commit()"` の単行 fallback を使う（その場合 `transaction()` の rollback / regen 自動 swallow は失われるので追加で try/except を書く）
-   - 同コマンドが `.state/org-state.md` の Status 行を `SUSPENDED` に切り替え、`.state/journal.jsonl` も再生成する
-   - free-form な「Resume Instructions の補足説明」「Pending Lead」等は markdown を直接 append してよい（passthrough で保持される）。`update_session(resume_instructions=...)` を使う場合は構造化セクションとして上書きされる
+   - 同コマンドが `.state/org-state.md` の Status 行を `SUSPENDED` に切り替える (DB 由来で再生成)
+   - free-form な「Resume Instructions の補足説明」「Pending Lead」「学び」等は **`notes/` に保存する** (`notes/README.md` 参照)。markdown 直接編集は drift_check で検出される。`update_session(resume_instructions=...)` は構造化セクションとして DB に書く
 3. 各 Work Item の状態を更新する場合は `upsert_run(task_id=..., status=...)` を `transaction()` 内で呼ぶ
 4. 各ワーカーの `.state/workers/worker-{id}.md` を更新:
    - Current State at Suspend セクションを追加/更新
    - Progress Log に中断時の状態を追記
-5. `journal.jsonl` に suspend イベントを追記（DB 経由。`tools/journal_append.py` は M2 で DB ルーティング済み。`ts` は自動付与）:
+5. suspend イベントを DB に追記 (`tools/journal_append.py` は M4 で DB-only ルーティング。`ts` は自動付与):
    ```bash
    py -3 tools/journal_append.py suspend \
        reason=user_requested \
