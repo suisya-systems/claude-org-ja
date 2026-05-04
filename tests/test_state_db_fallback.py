@@ -206,6 +206,18 @@ class TestConverterAutoFallback(unittest.TestCase):
         self.assertEqual(data["status"], "ACTIVE")
         self.assertEqual(data["currentObjective"], "M1 read switch tests")
 
+    def test_auto_corrupt_db_falls_back_to_markdown(self):
+        """Codex round-2: in `auto` mode a corrupt DB must degrade to
+        markdown rather than propagate a sqlite3 error."""
+        # Garbage bytes: makes connect succeed but any query raise.
+        self.db_path.write_bytes(b"not a sqlite database file")
+        ok = self.converter.convert(md_path=self.md_path,
+                                     json_path=self.json_path,
+                                     source="auto", db_path=self.db_path)
+        self.assertTrue(ok)
+        data = self._read_json()
+        self.assertNotEqual(data.get("_source"), "db")
+
     def test_default_source_is_db(self):
         # M2 changed the converter's default --source to 'db'.
         import_full_rebuild(self.db_path, self.root)

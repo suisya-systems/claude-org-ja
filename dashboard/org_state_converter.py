@@ -275,12 +275,15 @@ def parse_org_state_db(db_path, md_path=None):
     work_items = []
     for r in summary["active_runs"]:
         raw = (r["status"] or "").lower()
+        # Mirror dashboard/server.py:_work_items_from_db_runs — leave
+        # `progress` / `worker` empty rather than surfacing the raw
+        # status string and absolute worker_dir path through the UI.
         work_items.append({
             "id": r["task_id"],
             "title": r["title"] or r["task_id"],
             "status": _STATUS_MAP.get(raw, raw.upper()),
-            "progress": r.get("outcome_note"),
-            "worker": r.get("worker_dir"),
+            "progress": None,
+            "worker": None,
         })
 
     dispatcher = None
@@ -348,14 +351,31 @@ def convert(md_path=None, json_path=None, source="db", db_path=None):
             print(f"[org_state_converter] state.db not found: {db_path}",
                   file=sys.stderr)
             return False
-        data = parse_org_state_db(db_path, md_path=md_path)
-    elif chosen == "markdown":
+        try:
+            data = parse_org_state_db(db_path, md_path=md_path)
+        except Exception as exc:
+            # Match dashboard/server.py:_load_state_from_db semantics:
+            # in `auto` mode we must degrade to markdown when the DB
+            # itself is unreadable (e.g. corrupt file) rather than
+            # propagating a sqlite3 error to the caller.
+            if source != "auto":
+                raise
+            print(
+                f"[org_state_converter] DB read failed ({type(exc).__name__}: "
+                f"{exc}); falling back to markdown.",
+                file=sys.stderr,
+            )
+            chosen = "markdown"
+    if chosen == "markdown":
         if not md_path.exists():
             print(f"[org_state_converter] org-state.md not found: {md_path}",
                   file=sys.stderr)
             return False
         text = md_path.read_text(encoding="utf-8")
         data = parse_org_state_md(text)
+    elif chosen == "db":
+        # data was set in the `if chosen == "db":` block above.
+        pass
     else:
         print(f"[org_state_converter] unknown --source {source}", file=sys.stderr)
         return False

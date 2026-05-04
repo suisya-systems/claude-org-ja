@@ -198,48 +198,63 @@ class StateWriter:
     # runs
     # ------------------------------------------------------------------
 
+    # Sentinel — distinguishes "caller didn't pass this kwarg" from
+    # "caller explicitly passed None" in upsert_run's differential update.
+    _UNSET = object()
+
     def upsert_run(
         self,
         *,
         task_id: str,
         project_slug: str,
-        pattern: str,
+        pattern: Optional[str] = None,
         title: Optional[str] = None,
-        status: str = "in_use",
+        status: Optional[str] = None,
         branch: Optional[str] = None,
         pr_url: Optional[str] = None,
         pr_state: Optional[str] = None,
         issue_refs: Optional[Iterable[str]] = None,
-        verification: str = "standard",
+        verification: Optional[str] = None,
         worker_dir_abs_path: Optional[str] = None,
         commit_short: Optional[str] = None,
         commit_full: Optional[str] = None,
         outcome_note: Optional[str] = None,
         workstream_slug: Optional[str] = None,
     ) -> int:
-        """Insert or update a run row keyed by ``task_id``. Returns runs.id."""
+        """Insert or update a run row keyed by ``task_id``. Returns runs.id.
+
+        Update semantics: only fields the caller explicitly passes are
+        overwritten. Omitted kwargs preserve the existing row's value;
+        passing ``None`` is treated as "caller didn't supply" and also
+        preserves the existing value. (Use raw SQL if you need to
+        explicitly NULL a field — by design, this API never silently
+        clears columns.)
+        """
         project_id = self.ensure_project(project_slug)
-        workstream_id: Optional[int] = None
-        if workstream_slug:
-            ws = self.conn.execute(
-                "SELECT id FROM workstreams WHERE project_id = ? AND slug = ?",
-                (project_id, workstream_slug),
-            ).fetchone()
-            workstream_id = int(ws["id"]) if ws else None
-        worker_dir_id: Optional[int] = None
-        if worker_dir_abs_path:
+        existing = self.conn.execute(
+            "SELECT id FROM runs WHERE task_id = ?", (task_id,)
+        ).fetchone()
+
+        worker_dir_id = self._UNSET
+        if worker_dir_abs_path is not None:
             wd = self.conn.execute(
                 "SELECT id FROM worker_dirs WHERE abs_path = ?",
                 (worker_dir_abs_path,),
             ).fetchone()
             worker_dir_id = int(wd["id"]) if wd else None
 
-        issue_refs_json = json.dumps(list(issue_refs)) if issue_refs else None
-        title = title or task_id
+        workstream_id = self._UNSET
+        if workstream_slug is not None:
+            ws = self.conn.execute(
+                "SELECT id FROM workstreams WHERE project_id = ? AND slug = ?",
+                (project_id, workstream_slug),
+            ).fetchone()
+            workstream_id = int(ws["id"]) if ws else None
 
-        existing = self.conn.execute(
-            "SELECT id FROM runs WHERE task_id = ?", (task_id,)
-        ).fetchone()
+        issue_refs_json: object = self._UNSET
+        if issue_refs is not None:
+            issue_refs_json = json.dumps(list(issue_refs))
+
         if existing is None:
             cur = self.conn.execute(
                 "INSERT INTO runs ("
@@ -247,33 +262,58 @@ class StateWriter:
                 "branch, pr_url, pr_state, issue_refs, verification, "
                 "worker_dir_id, commit_short, commit_full, outcome_note) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (task_id, project_id, workstream_id, pattern, title, status,
-                 branch, pr_url, pr_state, issue_refs_json, verification,
-                 worker_dir_id, commit_short, commit_full, outcome_note),
+                (task_id, project_id,
+                 None if workstream_id is self._UNSET else workstream_id,
+                 pattern or "B",
+                 title or task_id,
+                 status or "in_use",
+                 branch, pr_url, pr_state,
+                 None if issue_refs_json is self._UNSET else issue_refs_json,
+                 verification or "standard",
+                 None if worker_dir_id is self._UNSET else worker_dir_id,
+                 commit_short, commit_full, outcome_note),
             )
             return cur.lastrowid
-        # Update path: only overwrite columns the caller explicitly passed;
-        # use COALESCE on optional fields so e.g. updating status doesn't
-        # null out a previously-set pr_url.
-        self.conn.execute(
-            "UPDATE runs SET "
-            "  project_id = ?, workstream_id = ?, pattern = ?, title = ?, "
-            "  status = ?, "
-            "  branch = COALESCE(?, branch), "
-            "  pr_url = COALESCE(?, pr_url), "
-            "  pr_state = COALESCE(?, pr_state), "
-            "  issue_refs = COALESCE(?, issue_refs), "
-            "  verification = ?, "
-            "  worker_dir_id = COALESCE(?, worker_dir_id), "
-            "  commit_short = COALESCE(?, commit_short), "
-            "  commit_full = COALESCE(?, commit_full), "
-            "  outcome_note = COALESCE(?, outcome_note) "
-            "WHERE task_id = ?",
-            (project_id, workstream_id, pattern, title, status,
-             branch, pr_url, pr_state, issue_refs_json, verification,
-             worker_dir_id, commit_short, commit_full, outcome_note,
-             task_id),
-        )
+
+        # Update path: build the SET clause from supplied kwargs only so
+        # omitted fields preserve their existing value.
+        sets: list[str] = []
+        values: list = []
+
+        def _maybe(col: str, val):
+            if val is not None and val is not self._UNSET:
+                sets.append(f"{col} = ?")
+                values.append(val)
+
+        # project_id is always known (we just resolved it from project_slug)
+        # and therefore safe to write.
+        _maybe("project_id", project_id)
+        _maybe("pattern", pattern)
+        _maybe("title", title)
+        _maybe("status", status)
+        _maybe("branch", branch)
+        _maybe("pr_url", pr_url)
+        _maybe("pr_state", pr_state)
+        _maybe("verification", verification)
+        _maybe("commit_short", commit_short)
+        _maybe("commit_full", commit_full)
+        _maybe("outcome_note", outcome_note)
+        if issue_refs_json is not self._UNSET:
+            sets.append("issue_refs = ?")
+            values.append(issue_refs_json)
+        if worker_dir_id is not self._UNSET:
+            sets.append("worker_dir_id = ?")
+            values.append(worker_dir_id)
+        if workstream_id is not self._UNSET:
+            sets.append("workstream_id = ?")
+            values.append(workstream_id)
+
+        if sets:
+            values.append(task_id)
+            self.conn.execute(
+                f"UPDATE runs SET {', '.join(sets)} WHERE task_id = ?",
+                values,
+            )
         return int(existing["id"])
 
     def update_run_status(

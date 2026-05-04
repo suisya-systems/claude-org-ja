@@ -160,6 +160,31 @@ class TestRuns(unittest.TestCase):
             conn.close()
             td.cleanup()
 
+    def test_upsert_preserves_unspecified_fields(self):
+        """Codex round-2: omitted kwargs must NOT clobber existing values
+        (title, verification, workstream_id were silently reset before)."""
+        td, conn = _fresh_db()
+        try:
+            w = StateWriter(conn)
+            w.upsert_run(task_id="t-keep", project_slug="proj-k",
+                          pattern="B", title="original title",
+                          verification="deep")
+            # Subsequent status-only update should leave title /
+            # verification / pattern intact.
+            w.upsert_run(task_id="t-keep", project_slug="proj-k",
+                          status="review")
+            row = conn.execute(
+                "SELECT title, verification, pattern, status FROM runs "
+                "WHERE task_id = 't-keep'"
+            ).fetchone()
+            self.assertEqual(row["title"], "original title")
+            self.assertEqual(row["verification"], "deep")
+            self.assertEqual(row["pattern"], "B")
+            self.assertEqual(row["status"], "review")
+        finally:
+            conn.close()
+            td.cleanup()
+
     def test_update_run_status(self):
         td, conn = _fresh_db()
         try:
