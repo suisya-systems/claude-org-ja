@@ -421,6 +421,34 @@ class TestPreflight(unittest.TestCase):
             issues = mw.preflight(plan, workers_root)
             self.assertTrue(any("escapes workers_root" in i for i in issues))
 
+    def test_force_does_not_drop_root_escape_with_active_run_in_path(self):
+        """--force must not bypass root_escape just because the path contains
+        the substring "active run" (round 2 review M1-bis)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            workers_root = tmp / "workers"
+            workers_root.mkdir()
+            (workers_root / "ok-src").mkdir()
+            adversarial = tmp / "outside-root" / "active run"
+            adversarial.mkdir(parents=True)
+            plan = mw.Plan(
+                workers_root=str(workers_root.as_posix()),
+                inventory_source="hand-built",
+                archive_quarter="2026-Q2",
+                operations=[mw.Operation(
+                    op="move_run",
+                    src=str((workers_root / "ok-src").as_posix()),
+                    dst=str((adversarial / "stolen").as_posix()),
+                    note="adversarial",
+                )],
+            )
+            issues = mw.preflight(plan, workers_root)
+            kinds = {i.kind for i in issues}
+            self.assertIn("root_escape", kinds)
+            # --force must keep root_escape (only active_runs is overridable).
+            kept = mw._filter_overridable(issues, force=True)
+            self.assertTrue(any(i.kind == "root_escape" for i in kept))
+
     def test_preflight_warns_on_active_runs_in_db(self):
         from tools.state_db import apply_schema, connect
         with tempfile.TemporaryDirectory() as tmp:
@@ -446,8 +474,8 @@ class TestPreflight(unittest.TestCase):
                 inventory_source="x", archive_quarter="2026-Q2", operations=[],
             )
             issues = mw.preflight(plan, workers_root, db_path=db_path)
-            self.assertTrue(any("active run" in i for i in issues))
-            # --force semantics: the helper drops just the active-runs warning.
+            self.assertTrue(any(i.kind == "active_runs" for i in issues))
+            # --force semantics: the helper drops just the active-runs finding.
             self.assertEqual(mw._filter_overridable(issues, force=True), [])
 
     def test_preflight_source_missing(self):

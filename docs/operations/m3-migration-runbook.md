@@ -12,10 +12,7 @@ This runbook drives the one-shot migration of the flat `<workers_root>/` (≈130
 ## 0. Prerequisites
 
 - All active worker panes suspended (`/org-suspend`).
-- Active runs in DB equal 0:
-  ```bash
-  sqlite3 .state/state.db "SELECT COUNT(*) FROM runs WHERE status IN ('in_use','review')"
-  ```
+- Active runs in DB equal 0. The migrator can enforce this for you — pass `--db .state/state.db` to `--apply` and preflight will refuse to start when `runs.status IN ('in_use','review')` is non-empty. Override only with `--force` once you've confirmed every live run is genuinely safe to leave moving (`--force` drops the active-runs finding only; cross-drive / root-escape / source-missing / target-conflict findings stay fatal).
 - All target dirs live on the same drive as the source (`C:` for the production setup); cross-drive paths fail the `--keep-compat` junction step. The migrator's preflight surfaces this automatically.
 - A current backup of `../workers/` exists (`Compress-Archive` or copy to a separate drive).
 - The repository at `state-db-hierarchy-design/inventory.json` is up to date.
@@ -89,9 +86,12 @@ python -m tools.state_db.migrate_workers \
   --apply --confirm \
   --inventory ../workers/state-db-hierarchy-design/inventory.json \
   --workers-root ../workers \
-  --manifest .state/m3-executed.json \
-  --keep-compat                          # OFF by default; ON during tier 3
+  --db          .state/state.db   # gate on active-runs finding
+  --manifest    .state/m3-executed.json \
+  --keep-compat                   # OFF by default; ON during tier 3
 ```
+
+`--db` is optional but strongly recommended: when present, preflight queries `runs.status IN ('in_use','review')` and refuses to start while any are live. `--force` drops only the active-runs finding; root-escape / cross-drive / source-missing / target-conflict findings stay fatal even with `--force`.
 
 **Per-step verification:**
 
@@ -204,3 +204,4 @@ python -m tools.state_db.curator_archive --purge   # delete_pending → physical
 | `cross-drive path detected` warning | source / target span different drives | drop `--keep-compat`; use manifest-only mode |
 | DB `drift_check` non-zero post-apply | importer not re-run, or abs_path mismatch | re-run importer; if drift persists, rollback |
 | `curator_archive --apply` errors mid-batch | one row's mv failed | the script rolls that row back automatically; inspect, fix, re-run |
+| `claude-org-ja-tmp/` left behind after a failed swap | apply died between step 1 and step 3 of the 3-step rename | run `--rollback --manifest <step-N-manifest>`; the manifest was written incrementally so the in-progress entry IS recorded. If rollback is unavailable, manually `mv ../workers/claude-org-ja-tmp ../workers/claude-org-ja` (no other dir should be claiming that name during a stalled swap), then re-run `git -C ../workers/claude-org-ja worktree repair`. |

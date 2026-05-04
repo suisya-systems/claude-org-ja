@@ -334,24 +334,51 @@ def render_plan_manifest(plan: Plan) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+@dataclass
+class Issue:
+    """Tagged preflight finding. `kind` drives override eligibility (only
+    'active_runs' is dropped by --force); the message is human-facing.
+
+    Implements __str__ and __contains__ so existing CLI plumbing and
+    `"substring" in issue` style assertions keep working unchanged.
+    """
+
+    kind: str
+    message: str
+
+    def __str__(self) -> str:
+        return self.message
+
+    def __contains__(self, sub: str) -> bool:
+        return sub in self.message
+
+
 def preflight(plan: Plan, workers_root: Path,
-              *, db_path: Optional[Path] = None) -> list[str]:
-    """Return list of human-readable warnings/errors. Empty list = OK to apply.
+              *, db_path: Optional[Path] = None) -> list[Issue]:
+    """Return list of preflight findings. Empty list = OK to apply.
 
     Simulates the plan sequentially so the 3-step swap (which transiently
     claims `claude-org-ja-tmp`) does not raise spurious source-missing /
     target-exists warnings.
 
-    Additional safety nets (round 1 review M1):
-      - workers_root containment: every src/dst must live inside the
-        `--workers-root` subtree. Reject paths that escape (e.g. a
-        hand-edited manifest pointing at C:/Windows).
-      - active-runs DB check: if `db_path` is provided, count rows in
-        worker_dirs with lifecycle='active' that correspond to live in_use
-        runs. Live runs during a mv lose their pwd. The check is reported
-        as a warning (operator can override with --force at the CLI).
+    Safety nets (round 1 / round 2 review M1):
+      - cross-drive: src/dst on a different drive than workers_root —
+        junction-based --keep-compat will not work.
+      - root containment: src/dst must resolve inside the workers_root
+        subtree; a hand-edited manifest pointing at C:/Windows is rejected.
+      - source-missing / target-conflict: simulated FS state per op.
+      - active runs (DB): when `db_path` is given, query
+        `runs.status IN ('in_use','review')`. >0 emits an `active_runs`
+        finding (operator can override with --force). The check is purely
+        on `runs`; `worker_dirs.lifecycle` is not consulted because a
+        worker_dir can be 'active' without a live run pointing at it.
+
+    Each finding carries a `kind` tag (`cross_drive` / `root_escape` /
+    `source_missing` / `target_conflict` / `active_runs`) so the --force
+    override can drop only the active-runs finding without substring
+    filtering (round 2 M1-bis).
     """
-    issues: list[str] = []
+    issues: list[Issue] = []
 
     root_drive = workers_root.resolve().drive.lower() if os.name == "nt" else ""
     root_resolved = str(workers_root.resolve()).replace("\\", "/").rstrip("/")
@@ -383,57 +410,82 @@ def preflight(plan: Plan, workers_root: Path,
             if root_drive:
                 d = Path(path).drive.lower()
                 if d and d != root_drive:
-                    issues.append(
+                    issues.append(Issue(
+                        "cross_drive",
                         f"cross-drive path detected ({d} vs {root_drive}): {path} — "
-                        "junction --keep-compat will not work; use --manifest mode"
-                    )
+                        "junction --keep-compat will not work; use --manifest mode",
+                    ))
             if _outside_root(path):
-                issues.append(
-                    f"path escapes workers_root ({root_resolved}): {path} (op={op.op})"
-                )
+                issues.append(Issue(
+                    "root_escape",
+                    f"path escapes workers_root ({root_resolved}): {path} (op={op.op})",
+                ))
         if op.op == "ensure_dir":
             touched[op.dst] = True
             continue
         if op.op in ("rename_project", "move_run"):
             if not _is_present(op.src):
-                issues.append(f"source missing: {op.src} (op={op.op})")
+                issues.append(Issue(
+                    "source_missing",
+                    f"source missing: {op.src} (op={op.op})",
+                ))
             if _is_present(op.dst):
-                issues.append(f"target already exists: {op.dst} (op={op.op}, src={op.src})")
+                issues.append(Issue(
+                    "target_conflict",
+                    f"target already exists: {op.dst} (op={op.op}, src={op.src})",
+                ))
             touched[op.src] = False
             touched[op.dst] = True
 
     if db_path is not None:
         active = _count_active_runs(db_path)
         if active > 0:
-            issues.append(
+            issues.append(Issue(
+                "active_runs",
                 f"{active} active run(s) (status in 'in_use'/'review') in {db_path} — "
-                "suspend them before migrating, or pass --force to override"
-            )
+                "suspend them before migrating, or pass --force to override",
+            ))
 
     return issues
 
 
-def _filter_overridable(issues: list[str], *, force: bool) -> list[str]:
-    """Drop the active-runs warning when --force is set; everything else stays fatal."""
+def _filter_overridable(issues: list[Issue], *, force: bool) -> list[Issue]:
+    """Drop only `kind='active_runs'` findings when --force is set.
+
+    Tag-based (round 2 M1-bis): the previous substring filter could
+    accidentally swallow a `root_escape` finding if the offending path
+    happened to contain the substring "active run".
+    """
     if not force:
         return issues
-    return [i for i in issues if "active run" not in i]
+    return [i for i in issues if i.kind != "active_runs"]
 
 
 def _count_active_runs(db_path: Path) -> int:
-    """Count runs whose status is in_use or review. 0 means safe to migrate."""
+    """Count runs whose status is in_use or review. 0 means safe to migrate.
+
+    Failures (legacy DB, missing schema, FS error) are surfaced on stderr
+    instead of being swallowed — round 2 review m2-1 caught that the
+    silent-pass shape masked real DB problems with a green preflight.
+    """
+    import sqlite3
     try:
-        import sqlite3
         conn = sqlite3.connect(str(db_path))
-        try:
-            row = conn.execute(
-                "SELECT COUNT(*) FROM runs WHERE status IN ('in_use','review')"
-            ).fetchone()
-            return int(row[0]) if row else 0
-        finally:
-            conn.close()
-    except (sqlite3.Error, OSError):
+    except (sqlite3.Error, OSError) as e:
+        print(f"warning: open {db_path} for active-runs check failed: {e}",
+              file=sys.stderr)
         return 0
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM runs WHERE status IN ('in_use','review')"
+        ).fetchone()
+        return int(row[0]) if row else 0
+    except sqlite3.Error as e:
+        print(f"warning: active-runs query on {db_path} failed: {e}",
+              file=sys.stderr)
+        return 0
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------
