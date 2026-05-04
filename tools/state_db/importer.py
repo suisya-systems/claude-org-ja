@@ -40,8 +40,8 @@ class ImportSummary:
     unparsed_inserted: int = 0
     input_lines_total: int = 0
     dump_sha256: str = ""
-    inputs_found: list = field(default_factory=list)
-    inputs_missing: list = field(default_factory=list)
+    inputs_found: list[str] = field(default_factory=list)
+    inputs_missing: list[str] = field(default_factory=list)
 
     @property
     def total_rows(self) -> int:
@@ -430,7 +430,7 @@ def dump_signature(conn: sqlite3.Connection) -> str:
 class MissingInputsError(RuntimeError):
     """Raised when strict=True and one or more expected inputs are missing."""
 
-    def __init__(self, missing: list):
+    def __init__(self, missing: list[str]):
         super().__init__(
             "expected importer inputs missing: " + ", ".join(missing)
         )
@@ -474,7 +474,9 @@ def import_full_rebuild(
 
     found, missing = [], []
     for label, path in inputs.items():
-        (found if path.exists() else missing).append(label)
+        # is_file() (not exists()) so a directory at the expected path is
+        # treated as missing — defensive against typos / botched restores.
+        (found if path.is_file() else missing).append(label)
     if strict and missing:
         raise MissingInputsError(missing)
 
