@@ -301,14 +301,23 @@ def parse_org_state_db(db_path, md_path=None):
 
 
 def _db_is_fresh(db_path, md_path):
-    """True if db_path is at least as new as md_path. Missing files = not fresh."""
+    """True if db_path is at least as new as md_path. Missing files = not fresh.
+
+    Uses max(state.db, state.db-wal) mtimes — WAL mode (tools.state_db
+    enables journal_mode=WAL) lets writes land in the -wal sidecar until
+    checkpoint, so the main file's mtime can lag.
+    """
     db_path = Path(db_path)
     md_path = Path(md_path)
     if not db_path.exists():
         return False
-    try:
-        db_mtime = db_path.stat().st_mtime
-    except OSError:
+    db_mtime = 0.0
+    for p in (db_path, Path(str(db_path) + "-wal")):
+        try:
+            db_mtime = max(db_mtime, p.stat().st_mtime)
+        except OSError:
+            continue
+    if db_mtime == 0.0:
         return False
     try:
         md_mtime = md_path.stat().st_mtime

@@ -266,9 +266,16 @@ def _db_is_fresh(state_dir):
     global _DB_STALE_WARN_LOGGED
     if not _DB_AVAILABLE or not STATE_DB_PATH.exists():
         return False
-    try:
-        db_mtime = STATE_DB_PATH.stat().st_mtime
-    except OSError:
+    # Take the max of state.db and state.db-wal mtimes. With WAL enabled
+    # (tools.state_db.__init__ sets journal_mode=WAL), in-flight writes
+    # land in -wal until checkpointed; the main file's mtime can lag.
+    db_mtime = 0.0
+    for p in (STATE_DB_PATH, Path(str(STATE_DB_PATH) + "-wal")):
+        try:
+            db_mtime = max(db_mtime, p.stat().st_mtime)
+        except OSError:
+            continue
+    if db_mtime == 0.0:
         return False
     sot_paths = [
         state_dir / "org-state.md",
