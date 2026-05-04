@@ -25,14 +25,16 @@ description: >
 
    exit 0 なら続行。exit 1（未対応 version 残存）/ exit 2（migration ループ異常）なら人間に報告して停止する。
 1. **DB primary で前回状態を取得する**:
-   - `.state/state.db` が存在し、markdown より新しい（または同等）→ DB をクエリ:
+   - `.state/state.db` が存在し、新しい (= `.state/state.db` の mtime が
+     `.state/org-state.md` / `.state/journal.jsonl` / `registry/projects.md`
+     の最新 mtime 以上。WAL 利用時は `.state/state.db-wal` の mtime も含めて max を取る) → DB をクエリ:
      ```bash
      python -c "from tools.state_db import connect; from tools.state_db.queries import get_resume_briefing; import json; \
        conn = connect('.state/state.db'); \
        print(json.dumps(get_resume_briefing(conn), ensure_ascii=False, indent=2, default=str))"
      ```
      `active_runs` / `recent_events` / `last_suspend_at` でブリーフィング素材を作る
-   - DB が markdown より古い（stale）→ 人間に rebuild を促す:
+   - DB が上記いずれかの markdown SoT ファイルの mtime より古い（stale）→ 人間に rebuild を促す:
      「state.db is stale (markdown is newer). Run: `python -m tools.state_db.importer --db .state/state.db --root . --rebuild`」
      必要なら markdown fallback で続行
    - DB が無い → markdown fallback
