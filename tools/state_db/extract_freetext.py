@@ -202,14 +202,42 @@ def _target_for_heading(heading: str, *, today_iso: str) -> Path:
 # ---------------------------------------------------------------------------
 
 
+_MANIFEST_SCHEMA_CURRENT = 2
+
+
 def _read_manifest(notes_dir: Path) -> dict:
+    """Load the on-disk manifest, migrating pre-v2 layouts forward.
+
+    Pre-v2 manifests (round 1 PR drafts) lacked ``body_sha256`` and
+    ``source_index`` on each entry, which would prevent the v2 dedup
+    key ``(heading, target, body_sha256)`` from ever matching against
+    them. Treat such manifests as empty so ``apply_extraction`` rebuilds
+    the dedup record from scratch on the next run. Production v1
+    manifests are not expected to exist (M4 is the initial cutover and
+    the manifest file is committed only after this PR), so the cheap
+    "discard and re-record" migration is sufficient.
+    """
     p = notes_dir / _MANIFEST_FILENAME
     if not p.exists():
         return {}
     try:
-        return json.loads(p.read_text(encoding="utf-8"))
+        data = json.loads(p.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
+    if not isinstance(data, dict):
+        return {}
+    schema = data.get("schema")
+    if schema != _MANIFEST_SCHEMA_CURRENT:
+        # Pre-v2 manifest: discard entries. On the next apply the
+        # dedup keys will all miss, so a re-add of headings already
+        # in notes/<target> will append a duplicate copy. That is
+        # the same recoverable failure mode as a mid-loop crash and
+        # the operator can resolve it with `git diff` — production
+        # v1 manifests don't exist (M4 is the initial cutover and
+        # the file isn't committed before this PR) so the case is
+        # purely defensive.
+        return {"schema": _MANIFEST_SCHEMA_CURRENT, "entries": []}
+    return data
 
 
 def _atomic_write(path: Path, body: str) -> None:
@@ -386,11 +414,12 @@ def apply_extraction(
             json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
         )
 
-    # 1) Write notes/<target> files, then 2) update the manifest with
-    # the entries we just persisted. The manifest commit happens
-    # *before* the org-state rewrite so a crash here is recoverable —
-    # rerun reads the manifest, sees the body_sha256 already on disk,
-    # and skips the notes/ append.
+    # Per-target write + per-target manifest commit (Codex r3 M-1'):
+    # persisting the manifest after EACH notes/ write closes the crash
+    # window between "notes/<target> on disk" and "manifest records
+    # body_sha256 for it". A SIGKILL between two iterations leaves the
+    # manifest in sync with what's on disk, so the rerun's dedup
+    # correctly skips the already-persisted targets.
     for target in order:
         target_path = notes_dir / target
         existing = ""
@@ -428,9 +457,10 @@ def apply_extraction(
             prior_keys.add(
                 (r["heading"], target, r["body_sha256"])
             )
-
-    # Commit the manifest now — before org-state.md is rewritten.
-    _persist_manifest()
+        # Manifest commit BEFORE moving on to the next target — this
+        # is the change for M-1'. Cost: one extra atomic write per
+        # target file (≤ 21 in the live dogfood).
+        _persist_manifest()
 
     # Rewrite org-state.md without the free-form blocks. Preamble +
     # structured blocks only, in source order.

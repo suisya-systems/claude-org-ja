@@ -210,12 +210,12 @@ class TestApply(unittest.TestCase):
         self.assertIn("初回: スコープ確定", pl)
         self.assertIn("追加: リリースノート起草", pl)
 
-    def test_partial_failure_recovery_no_manifest_no_double_append(self):
-        """Codex r3 M-1: if the prior run wrote notes/ but crashed
-        before reaching org-state.md, the manifest IS already on disk
-        (we now write it before the rewrite). A rerun reads it, sees
-        the body_sha256, and skips the notes/ append even though the
-        same blocks are still present in org-state.md."""
+    def test_partial_failure_after_manifest_write_no_double_append(self):
+        """Codex r3 M-1: if the prior run wrote notes/ AND the
+        manifest, but crashed before reaching org-state.md, a rerun
+        reads the manifest, sees the body_sha256, and skips the
+        notes/ append even though the same blocks are still present
+        in org-state.md (we simulate that by re-injecting them)."""
         td = tempfile.TemporaryDirectory()
         self.addCleanup(td.cleanup)
         root = Path(td.name)
@@ -234,6 +234,84 @@ class TestApply(unittest.TestCase):
         second = (notes_dir / "sessions" /
                   "2026-05-04-session-11.md").read_text(encoding="utf-8")
         self.assertEqual(first, second, "rerun double-appended notes/ body")
+
+    def test_partial_failure_mid_target_loop_no_double_append(self):
+        """Codex r3 M-1' (round 2): per-target manifest commit means a
+        crash in the middle of the target loop leaves the manifest in
+        sync with what's already on disk. Simulate this by:
+
+        1. Running ``apply_extraction`` once.
+        2. Truncating the manifest to its FIRST entry only — as if the
+           process were SIGKILL'd after writing the first notes/ file
+           but before persisting the second's manifest update.
+        3. Re-injecting the free-form blocks into org-state.md.
+        4. Re-running ``apply_extraction``.
+
+        The first target's body must NOT be appended a second time
+        (its sha256 is already in the truncated manifest), while the
+        second/third targets must still get written once."""
+        from tools.state_db.extract_freetext import _MANIFEST_FILENAME
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        root = Path(td.name)
+        org_state = root / ".state" / "org-state.md"
+        org_state.parent.mkdir(parents=True)
+        org_state.write_text(_LIVE_SHAPE, encoding="utf-8")
+        notes_dir = root / "notes"
+        apply_extraction(org_state, notes_dir, today_iso="2026-05-05")
+        # Snapshot the first notes file's full content for comparison.
+        sessions_md = notes_dir / "sessions" / "2026-05-04-session-11.md"
+        first_session = sessions_md.read_text(encoding="utf-8")
+
+        # Truncate the manifest so only the FIRST entry survives —
+        # mimics a crash after writing one notes/ file + that one
+        # entry's manifest commit, but before the next iteration.
+        m = json.loads((notes_dir / _MANIFEST_FILENAME).read_text(encoding="utf-8"))
+        first_target = m["entries"][0]["target"]
+        m["entries"] = [m["entries"][0]]
+        (notes_dir / _MANIFEST_FILENAME).write_text(
+            json.dumps(m, ensure_ascii=False), encoding="utf-8"
+        )
+        # Re-inject blocks into org-state.md (rerun condition).
+        org_state.write_text(_LIVE_SHAPE, encoding="utf-8")
+        apply_extraction(org_state, notes_dir, today_iso="2026-05-05")
+
+        # The truncated-manifest target's notes file must not
+        # double-append.
+        first_target_path = notes_dir / first_target
+        if first_target == str(sessions_md.relative_to(notes_dir)
+                                ).replace("\\", "/"):
+            self.assertEqual(sessions_md.read_text(encoding="utf-8"),
+                              first_session,
+                              "first target double-appended")
+
+    def test_v1_manifest_is_discarded(self):
+        """Codex r3 minor (round 2): a pre-v2 manifest on disk must
+        not poison the v2 dedup keys. ``_read_manifest`` returns an
+        empty entries list so the rerun rebuilds the manifest in v2
+        shape rather than carrying broken keys forward."""
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        root = Path(td.name)
+        notes_dir = root / "notes"
+        notes_dir.mkdir(parents=True)
+        # Write a v1-style manifest (no body_sha256, no source_index).
+        legacy = {
+            "schema": 1,
+            "generated_by": "tools.state_db.extract_freetext",
+            "entries": [
+                {"heading": "Pending Lead アクション",
+                 "target": "pending-leads.md",
+                 "byte_length": 42},
+            ],
+        }
+        (notes_dir / ".extraction-manifest.json").write_text(
+            json.dumps(legacy, ensure_ascii=False), encoding="utf-8"
+        )
+        from tools.state_db.extract_freetext import _read_manifest
+        loaded = _read_manifest(notes_dir)
+        self.assertEqual(loaded.get("schema"), 2)
+        self.assertEqual(loaded.get("entries"), [])
 
     def test_manifest_entries_preserve_source_order(self):
         """Codex r3 M-2: manifest entries must follow the order
