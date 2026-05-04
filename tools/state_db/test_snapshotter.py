@@ -78,26 +78,22 @@ class TestStructuredRender(unittest.TestCase):
         self.assertIn("Status: ACTIVE", md)
         self.assertIn("Started: 2026-04-22", md)
         self.assertIn("Current Objective: finish M2", md)
-        # Section headings appear in canonical order.
+        # Section headings appear in canonical order. ``## Active Work
+        # Items`` was demoted to passthrough in M2.1 (Issue #272) — see
+        # ``_STRUCTURED_HEADINGS`` for the rationale — so the structured
+        # render does not emit it any more.
         idx_disp = md.index("## Dispatcher")
         idx_cur = md.index("## Curator")
         idx_wdr = md.index("## Worker Directory Registry")
-        idx_active = md.index("## Active Work Items")
         idx_resume = md.index("## Resume Instructions")
         self.assertLess(idx_disp, idx_cur)
         self.assertLess(idx_cur, idx_wdr)
-        self.assertLess(idx_wdr, idx_active)
-        self.assertLess(idx_active, idx_resume)
-        # WDR contains both runs (active + completed); Active Work Items
-        # only the in_use one.
+        self.assertLess(idx_wdr, idx_resume)
+        self.assertNotIn("## Active Work Items", md)
+        # WDR contains both runs (active + completed) so both task ids
+        # are still rendered.
         self.assertIn("issue-267-m2-write-switch", md)
         self.assertIn("prior-completed", md)
-        # M2 Codex review fix: snapshotter emits the dashboard frontend's
-        # status vocabulary so a markdown-fallback render shows the right
-        # icon instead of `?`.
-        self.assertIn("[IN_PROGRESS]", md)
-        self.assertNotIn("[COMPLETED]", md)
-        self.assertNotIn("[IN_USE]", md)
 
 
 class TestStructuredHeadingExactMatch(unittest.TestCase):
@@ -146,6 +142,52 @@ class TestStructuredHeadingExactMatch(unittest.TestCase):
             finally:
                 conn.close()
         self.assertEqual(diff, "")
+
+
+class TestActiveWorkItemsPassthrough(unittest.TestCase):
+    """M2.1 (Issue #272): the live ``.state/org-state.md`` keeps a
+    free-form ``## Active Work Items`` list that the importer routes
+    to ``events`` (kind ``legacy_active_item``), not to ``runs``. The
+    snapshotter must therefore preserve the existing block via
+    passthrough — otherwise the first post_commit_regenerate after the
+    cutover silently erases every COMPLETED / ABANDONED entry the
+    operator curated by hand. This test reproduces the live shape and
+    asserts the regen round-trip preserves the list."""
+
+    _LIVE_SHAPE = (
+        "# Org State\n\nStatus: ACTIVE\n\n"
+        "## Dispatcher\n- Peer ID: 2\n\n"
+        "## Worker Directory Registry\n\n"
+        "## Active Work Items\n\n"
+        "- worker-brief-generator: COMPLETED (PR #228 merged)\n"
+        "- contract-set-a-outline: COMPLETED (PR #227 merged)\n"
+        "- dogfooding-smoke-rerun-session8: REVIEW 待ち\n"
+        "- session-current: IN_PROGRESS\n"
+        "\n"
+        "## Pending Lead アクション\n- 何かのフォローアップ\n"
+    )
+
+    def test_completed_items_survive_regen(self):
+        with tempfile.TemporaryDirectory() as td:
+            db = Path(td) / "s.db"
+            md = Path(td) / "org-state.md"
+            md.write_text(self._LIVE_SHAPE, encoding="utf-8")
+            conn = connect(db)
+            try:
+                apply_schema(conn)
+                _seed_session(conn)
+                regenerate_org_state_md(conn, md, source_md=md)
+                regenerated = md.read_text(encoding="utf-8")
+            finally:
+                conn.close()
+        # Operator-curated COMPLETED / REVIEW entries must survive.
+        self.assertIn("worker-brief-generator: COMPLETED", regenerated)
+        self.assertIn("contract-set-a-outline: COMPLETED", regenerated)
+        self.assertIn("dogfooding-smoke-rerun-session8: REVIEW", regenerated)
+        # Free-form follow-up section also survives.
+        self.assertIn("Pending Lead", regenerated)
+        # And the structured render still updates DB-owned blocks.
+        self.assertIn("Status: ACTIVE", regenerated)
 
 
 class TestPassthrough(unittest.TestCase):
