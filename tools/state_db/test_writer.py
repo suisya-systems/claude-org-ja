@@ -33,23 +33,45 @@ class TestDDLSync(unittest.TestCase):
             for r in rows
         ]
 
+    def _master_sql(self, conn) -> str:
+        """sqlite_master.sql is SQLite's preserved CREATE TABLE text.
+
+        Strip ``IF NOT EXISTS`` (only the M2 DDL has it), strip ``--``
+        SQL comments (only schema.sql has them), and collapse whitespace
+        so the assertion compares semantic shape (columns, types, CHECK,
+        DEFAULT) rather than formatting drift."""
+        import re
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name = 'org_sessions'"
+        ).fetchone()
+        sql = row["sql"] if row else ""
+        # Drop trailing line comments before whitespace collapse.
+        sql = re.sub(r"--[^\n]*", "", sql)
+        sql = re.sub(r"CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS",
+                      "CREATE TABLE", sql, flags=re.IGNORECASE)
+        return re.sub(r"\s+", " ", sql).strip()
+
     def test_schema_sql_and_m2_ddl_produce_identical_columns(self):
         from tools.state_db import _M2_ORG_SESSIONS_DDL
         td = tempfile.TemporaryDirectory()
         try:
-            # DB A: full schema.sql.
             db_a = Path(td.name) / "a.db"
             conn_a = connect(db_a)
             apply_schema(conn_a)
             cols_a = self._columns(conn_a, "org_sessions")
+            sql_a = self._master_sql(conn_a)
             conn_a.close()
-            # DB B: just the M2 DDL string.
             db_b = Path(td.name) / "b.db"
             conn_b = connect(db_b)
             conn_b.executescript(_M2_ORG_SESSIONS_DDL)
             cols_b = self._columns(conn_b, "org_sessions")
+            sql_b = self._master_sql(conn_b)
             conn_b.close()
             self.assertEqual(cols_a, cols_b)
+            # Cross-review m-r3-3: PRAGMA table_info doesn't surface
+            # CHECK / DEFAULT clauses, so also assert the preserved
+            # CREATE TABLE text matches (whitespace-normalised).
+            self.assertEqual(sql_a, sql_b)
         finally:
             td.cleanup()
 
@@ -162,6 +184,34 @@ class TestPreM2Migration(unittest.TestCase):
             )
             with self.assertRaises(RuntimeError):
                 StateWriter(conn)
+            conn.execute("ROLLBACK")
+            row = conn.execute(
+                "SELECT 1 FROM projects WHERE slug = 'uncommitted'"
+            ).fetchone()
+            self.assertIsNone(row)
+            conn.close()
+        finally:
+            td.cleanup()
+
+    def test_get_session_in_open_tx_returns_none_without_committing(self):
+        """Cross-review M-r3-1: get_session must not silently commit a
+        caller-controlled transaction just to satisfy a read on a
+        pre-M2 DB. It returns None and lets the caller see "session
+        unknown" instead."""
+        from tools.state_db.queries import get_session
+        td = tempfile.TemporaryDirectory()
+        try:
+            db = Path(td.name) / "m1.db"
+            conn = connect(db)
+            conn.executescript(self._M1_SCHEMA)
+            conn.commit()
+            conn.execute("BEGIN")
+            conn.execute(
+                "INSERT INTO projects (slug, display_name) "
+                "VALUES ('uncommitted', 'should-disappear')"
+            )
+            sess = get_session(conn)
+            self.assertIsNone(sess)
             conn.execute("ROLLBACK")
             row = conn.execute(
                 "SELECT 1 FROM projects WHERE slug = 'uncommitted'"

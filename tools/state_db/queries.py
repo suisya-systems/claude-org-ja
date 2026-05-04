@@ -178,25 +178,33 @@ def get_session(conn: sqlite3.Connection) -> Optional[dict[str, Any]]:
     Status / Updated / Suspended / Resumed / Current Objective / Dispatcher
     / Curator / Resume Instructions straight from this row.
 
-    Pre-M2 DBs lack the table — we forward-migrate in place via
-    ``ensure_m2_schema`` so dashboard / converter readers don't have to
-    special-case missing-table state. The migration is idempotent.
+    Pre-M2 DB handling: when the ``org_sessions`` table is absent we try
+    to forward-migrate via ``ensure_m2_schema``, but only if the caller's
+    connection is **not** in an open transaction. Migrating inside a
+    caller-controlled tx would force an implicit COMMIT (executescript
+    behaviour — see N1 in cross-review), silently confirming any pending
+    writes the caller meant to roll back. So an in-tx caller gets
+    ``None`` and is expected to handle that as "session unknown" rather
+    than as a positive read result.
+
+    Returning ``None`` here doesn't trigger a markdown fallback in the
+    M2 dashboard / converter (the M1 overlay is gone); callers will see
+    Status default to IDLE and the role / objective / resume_instructions
+    fields go unset for that render. Run the importer once to install
+    the M2 table out-of-band if you need a stable read.
     """
     try:
         row = conn.execute(
             "SELECT * FROM org_sessions WHERE id = 1"
         ).fetchone()
     except sqlite3.OperationalError:
-        # Forward-migrate then retry once. ensure_m2_schema requires no
-        # open transaction (executescript would otherwise implicit-commit
-        # caller writes); commit any pending state first. If migration
-        # fails (e.g. read-only DB, RuntimeError because we're inside a
-        # caller-controlled tx) surface None — readers should fall back
-        # to markdown in that case.
+        # Pre-M2 DB. Don't migrate inside an open caller tx — see docstring
+        # for the rationale. Skip silently and let the caller see a
+        # missing-row signal.
+        if getattr(conn, "in_transaction", False):
+            return None
         try:
             from tools.state_db import ensure_m2_schema
-            if getattr(conn, "in_transaction", False):
-                conn.commit()
             ensure_m2_schema(conn)
             conn.commit()
             row = conn.execute(
