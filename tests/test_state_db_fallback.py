@@ -73,11 +73,13 @@ class TestServerDbRead(unittest.TestCase):
         server.BASE_DIR = self.root
         server.STATE_DB_PATH = self.db_path
 
-    def test_db_missing_returns_idle_guidance(self):
-        """No .state/state.db → build_state returns IDLE with importer guidance."""
+    def test_db_missing_returns_uninitialized_guidance(self):
+        """No .state/state.db → build_state surfaces UNINITIALIZED so
+        the dashboard can render an actionable message instead of
+        masquerading as a normal IDLE org (Codex r3 m-1)."""
         self.assertFalse(self.db_path.exists())
         state = self.server.build_state()
-        self.assertEqual(state["status"], "IDLE")
+        self.assertEqual(state["status"], "UNINITIALIZED")
         obj = (state["objective"] or "")
         self.assertIn("importer", obj.lower())
         # M4: the guidance must be runnable verbatim.

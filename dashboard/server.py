@@ -261,7 +261,11 @@ def build_state():
     # empty shell with a guidance message; the operator should then
     # run the importer.
     if not STATE_DB_PATH.exists():
-        status = "IDLE"
+        # Codex r3 m-1: distinguish "no DB exists yet" from "DB present
+        # and idle". The pre-fix label "IDLE" looked like a normal
+        # operational state and could mask an unconfigured environment;
+        # UNINITIALIZED makes the operator action obvious.
+        status = "UNINITIALIZED"
         objective = (
             "state.db not found — run `python -m tools.state_db.importer "
             "--db .state/state.db --root . --rebuild --no-strict` to seed "

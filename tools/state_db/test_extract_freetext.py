@@ -175,6 +175,103 @@ class TestApply(unittest.TestCase):
         # Heading line itself is preserved.
         self.assertIn("## 2026-05-04 セッション #11 主要成果", body)
 
+    def test_same_heading_different_body_appends(self):
+        """Codex r3 B-1: a re-add of the same heading with a NEW body
+        must land in notes/, not be silently dropped by the dedup
+        check. The pre-fix code keyed dedup on (heading, target) only
+        so the second body was filtered out and then deleted by the
+        org-state rewrite — permanent data loss."""
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        root = Path(td.name)
+        org_state = root / ".state" / "org-state.md"
+        org_state.parent.mkdir(parents=True)
+        # First run: one Pending Lead bullet.
+        org_state.write_text(
+            "# Org State\n\nStatus: ACTIVE\n\n"
+            "## Dispatcher\n- Peer ID: 2\n\n"
+            "## Pending Lead アクション\n- 初回: スコープ確定\n",
+            encoding="utf-8",
+        )
+        notes_dir = root / "notes"
+        apply_extraction(org_state, notes_dir, today_iso="2026-05-05")
+        # Second run: operator added a *new* bullet under the same
+        # heading — different body, same (heading, target) key.
+        org_state.write_text(
+            org_state.read_text(encoding="utf-8")
+            + "\n## Pending Lead アクション\n- 追加: リリースノート起草\n",
+            encoding="utf-8",
+        )
+        summary = apply_extraction(org_state, notes_dir,
+                                    today_iso="2026-05-05")
+        self.assertGreaterEqual(summary["moved"], 1)
+        pl = (notes_dir / "pending-leads.md").read_text(encoding="utf-8")
+        # Both bullets must survive — no silent loss.
+        self.assertIn("初回: スコープ確定", pl)
+        self.assertIn("追加: リリースノート起草", pl)
+
+    def test_partial_failure_recovery_no_manifest_no_double_append(self):
+        """Codex r3 M-1: if the prior run wrote notes/ but crashed
+        before reaching org-state.md, the manifest IS already on disk
+        (we now write it before the rewrite). A rerun reads it, sees
+        the body_sha256, and skips the notes/ append even though the
+        same blocks are still present in org-state.md."""
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        root = Path(td.name)
+        org_state = root / ".state" / "org-state.md"
+        org_state.parent.mkdir(parents=True)
+        org_state.write_text(_LIVE_SHAPE, encoding="utf-8")
+        notes_dir = root / "notes"
+        # First run completes (manifest written).
+        apply_extraction(org_state, notes_dir, today_iso="2026-05-05")
+        first = (notes_dir / "sessions" /
+                 "2026-05-04-session-11.md").read_text(encoding="utf-8")
+        # Simulate "crash before rewrite": put the free-form blocks
+        # back into org-state.md.
+        org_state.write_text(_LIVE_SHAPE, encoding="utf-8")
+        apply_extraction(org_state, notes_dir, today_iso="2026-05-05")
+        second = (notes_dir / "sessions" /
+                  "2026-05-04-session-11.md").read_text(encoding="utf-8")
+        self.assertEqual(first, second, "rerun double-appended notes/ body")
+
+    def test_manifest_entries_preserve_source_order(self):
+        """Codex r3 M-2: manifest entries must follow the order
+        ``## …`` blocks appeared in org-state.md so a future restore
+        tool can interleave them back at their original positions."""
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        root = Path(td.name)
+        org_state = root / ".state" / "org-state.md"
+        org_state.parent.mkdir(parents=True)
+        # Interleaved free-form sections with the same target file
+        # type (Pending Lead appears twice, sandwiching a session
+        # block — the pre-fix grouping-by-target order would have
+        # listed both Pending Leads first.)
+        org_state.write_text(
+            "# Org State\n\nStatus: ACTIVE\n\n"
+            "## Dispatcher\n- Peer ID: 2\n\n"
+            "## Pending Lead 第一弾\n- A\n\n"
+            "## 2026-05-04 セッション #11 主要成果\n- M4 done\n\n"
+            "## Pending Lead 第二弾\n- B\n",
+            encoding="utf-8",
+        )
+        notes_dir = root / "notes"
+        apply_extraction(org_state, notes_dir, today_iso="2026-05-05")
+        manifest = json.loads(
+            (notes_dir / ".extraction-manifest.json").read_text(encoding="utf-8")
+        )
+        indices = [e["source_index"] for e in manifest["entries"]]
+        self.assertEqual(indices, sorted(indices),
+                          f"manifest not in source order: {indices}")
+        headings = [e["heading"] for e in manifest["entries"]]
+        # Pending Lead 第一弾 must precede the session, which must
+        # precede Pending Lead 第二弾.
+        self.assertLess(headings.index("Pending Lead 第一弾"),
+                          headings.index("2026-05-04 セッション #11 主要成果"))
+        self.assertLess(headings.index("2026-05-04 セッション #11 主要成果"),
+                          headings.index("Pending Lead 第二弾"))
+
     def test_partial_failure_recovery_no_double_append(self):
         """Codex M-r1-3: if a previous run wrote notes/ but crashed
         before rewriting org-state.md, the second run must not append

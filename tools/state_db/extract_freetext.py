@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import hashlib
 import json
 import os
 import re
@@ -248,6 +249,18 @@ def _normalize_block(body: str) -> str:
     return body + "\n"
 
 
+def _body_hash(body: str) -> str:
+    """Stable content fingerprint for dedup keys (Codex r3 B-1).
+
+    Includes the heading line itself (it's part of `body`) so two
+    blocks with the same heading but different bodies hash distinctly.
+    Newline normalisation matches `_normalize_block` so a CRLF source
+    and an LF source produce the same hash.
+    """
+    canonical = body.replace("\r\n", "\n").rstrip("\n") + "\n"
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def plan_extraction(
     org_state_text: str, *, today_iso: Optional[str] = None,
 ) -> "list[dict]":
@@ -290,16 +303,24 @@ def apply_extraction(
 
     Returns a summary dict: ``{moved: int, files: list[str], unchanged: bool}``.
 
-    Safety: the operation is split into "write notes/" then "rewrite
-    org-state.md", which means a process crash between the two leaves
-    blocks both in the notes file *and* still in the org-state dump. To
-    keep the second run idempotent in that case we consult the
-    extraction manifest before appending: any (heading, target) pair
-    already present in the manifest is treated as already-extracted
-    and skipped on the notes/ side. The org-state rewrite still strips
-    those headings on the second run, so the partial-failure recovery
-    path converges on the same end state without duplicating bytes
-    inside the notes/ file (Codex M-r1-3).
+    Safety properties (Codex r3 B-1 / M-1 / M-2):
+
+    * **Body-hash dedup**: an entry already in the manifest is skipped
+      only when ``(heading, target, body_hash)`` matches. A re-add of
+      the same heading with new body content is treated as a fresh
+      block — no silent loss of newly-curated free-text.
+    * **Manifest-before-rewrite ordering**: each notes/ file is written,
+      the manifest is updated, *then* ``org-state.md`` is rewritten. A
+      crash after notes/ but before org-state rewrite leaves the
+      manifest already pointing at the persisted blocks, so the next
+      run consults it and skips those blocks on the notes/ side while
+      finishing the rewrite. The org-state rewrite is the last step
+      so the manifest always sees what's on disk before the dump
+      drops the source headings.
+    * **Source-order manifest**: ``entries`` is recorded in the order
+      blocks appeared in ``org-state.md``. ``source_index`` (0-based
+      ``## …`` block index) is also stored so a future restore tool
+      can interleave the moved blocks back at their original positions.
     """
     org_state_path = Path(org_state_path)
     notes_dir = Path(notes_dir)
@@ -307,18 +328,32 @@ def apply_extraction(
         raise FileNotFoundError(f"org-state.md not found: {org_state_path}")
     text = org_state_path.read_text(encoding="utf-8").replace("\r\n", "\n")
     plan = plan_extraction(text, today_iso=today_iso)
+    # Stamp source_index onto every plan row so manifest preserves the
+    # interleaving of structured / free-form blocks.
+    for idx, row in enumerate(plan):
+        row["source_index"] = idx
     free = [row for row in plan if not row["structured"]]
     if not free:
         # Idempotency: nothing to do. Don't churn the manifest mtime.
         return {"moved": 0, "files": [], "unchanged": True}
 
     prior_manifest = _read_manifest(notes_dir)
-    prior_pairs: set[tuple[str, str]] = {
-        (e.get("heading", ""), e.get("target", ""))
-        for e in (prior_manifest.get("entries") or [])
+    prior_entries: list[dict] = list(prior_manifest.get("entries") or [])
+    # Body-hash-aware dedup: a re-add with a different body is a fresh
+    # block, not a duplicate. Codex r3 B-1.
+    prior_keys: set[tuple[str, str, str]] = {
+        (e.get("heading", ""), e.get("target", ""), e.get("body_sha256", ""))
+        for e in prior_entries
     }
 
-    # Group by target file in source order.
+    # Annotate each free row with its body hash up-front so dedup and
+    # manifest writes share the same value.
+    for row in free:
+        row["body_sha256"] = _body_hash(row["body"])
+
+    # Group by target file in source order (groups themselves stay in
+    # the order their first member appeared, which keeps the writes
+    # deterministic).
     grouped: "dict[str, list[dict]]" = {}
     order: list[str] = []
     for row in free:
@@ -329,16 +364,42 @@ def apply_extraction(
         grouped[key].append(row)
 
     written: list[str] = []
-    manifest_entries: list[dict] = list(prior_manifest.get("entries") or [])
+    manifest_entries: list[dict] = list(prior_entries)
+    moved_this_run = 0
+
+    def _persist_manifest() -> None:
+        # Sort the union (prior + new) by source_index so the on-disk
+        # manifest is always in source order — Codex r3 M-2. Prior
+        # entries that pre-date the source_index field land at the
+        # front via the default ``-1``.
+        sorted_entries = sorted(
+            manifest_entries,
+            key=lambda e: e.get("source_index", -1),
+        )
+        manifest = {
+            "schema": 2,
+            "generated_by": "tools.state_db.extract_freetext",
+            "entries": sorted_entries,
+        }
+        _atomic_write(
+            notes_dir / _MANIFEST_FILENAME,
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+        )
+
+    # 1) Write notes/<target> files, then 2) update the manifest with
+    # the entries we just persisted. The manifest commit happens
+    # *before* the org-state rewrite so a crash here is recoverable —
+    # rerun reads the manifest, sees the body_sha256 already on disk,
+    # and skips the notes/ append.
     for target in order:
         target_path = notes_dir / target
         existing = ""
         if target_path.exists():
             existing = target_path.read_text(encoding="utf-8")
-        # Filter out blocks the manifest already records for this target —
-        # those bytes are already in the file from a prior partial run.
-        new_blocks = [r for r in grouped[target]
-                      if (r["heading"], target) not in prior_pairs]
+        new_blocks = [
+            r for r in grouped[target]
+            if (r["heading"], target, r["body_sha256"]) not in prior_keys
+        ]
         if not new_blocks:
             written.append(target)
             continue
@@ -355,8 +416,21 @@ def apply_extraction(
             manifest_entries.append({
                 "heading": r["heading"],
                 "target": target,
+                "body_sha256": r["body_sha256"],
+                "source_index": r["source_index"],
                 "byte_length": len(r["body"].encode("utf-8")),
             })
+            moved_this_run += 1
+            # Track in-memory dedup so a duplicate heading-and-body
+            # within the same source file isn't recorded twice in the
+            # manifest output (rare but possible if the dump itself
+            # has two identical sections).
+            prior_keys.add(
+                (r["heading"], target, r["body_sha256"])
+            )
+
+    # Commit the manifest now — before org-state.md is rewritten.
+    _persist_manifest()
 
     # Rewrite org-state.md without the free-form blocks. Preamble +
     # structured blocks only, in source order.
@@ -382,17 +456,6 @@ def apply_extraction(
         new_md = "".join(lines)
     _atomic_write(org_state_path, new_md)
 
-    manifest = {
-        "schema": 1,
-        "generated_by": "tools.state_db.extract_freetext",
-        "entries": manifest_entries,
-    }
-    _atomic_write(
-        notes_dir / _MANIFEST_FILENAME,
-        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
-    )
-
-    moved_this_run = len(manifest_entries) - len(prior_manifest.get("entries") or [])
     return {
         "moved": moved_this_run,
         "files": written,
