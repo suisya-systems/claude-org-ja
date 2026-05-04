@@ -90,9 +90,6 @@ def _map_status(raw: str) -> str:
     return "in_use"
 
 
-_PR_RE = re.compile(r"\(?PR\s*([#A-Za-z0-9/_\-]+)\s*#?(\d+)?\)?", re.IGNORECASE)
-
-
 def _extract_pr_state(raw: str) -> Optional[str]:
     s = raw.lower()
     if "merged" in s:
