@@ -38,22 +38,25 @@ from typing import Iterable, Optional
 # Heading taxonomy
 # ---------------------------------------------------------------------------
 
-# ``## …`` headings (lower-cased, substring-matched) that the snapshotter
-# owns. Anything else is treated as free-form and passed through. Keep this
-# list narrow on purpose: the smaller the owned set, the smaller the
-# blast radius when the schema doesn't yet model a section.
-_STRUCTURED_HEADINGS: tuple[str, ...] = (
+# ``## …`` headings (lower-cased, exact-match) that the snapshotter owns.
+# Anything else is treated as free-form and passed through.
+#
+# Exact match — not substring — on purpose: substring would silently
+# absorb headings like "## Dispatcher Notes" or "## Curator メモ" into the
+# DB-owned set and the snapshotter would drop them on regenerate (and
+# drift_check would not detect the loss because the same predicate gates
+# both sides). See cross-review M1.
+_STRUCTURED_HEADINGS: frozenset[str] = frozenset({
     "dispatcher",
     "curator",
     "worker directory registry",
     "active work items",
     "resume instructions",
-)
+})
 
 
 def _is_structured_heading(heading_text: str) -> bool:
-    h = heading_text.strip().lower()
-    return any(key in h for key in _STRUCTURED_HEADINGS)
+    return heading_text.strip().lower() in _STRUCTURED_HEADINGS
 
 
 # ---------------------------------------------------------------------------

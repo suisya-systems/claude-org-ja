@@ -21,6 +21,20 @@ import sqlite3
 from typing import Any, Iterable, Optional
 
 
+class _ClearSentinel:
+    """Singleton marker that means "explicitly NULL this column".
+
+    Used by :meth:`StateWriter.update_session` to distinguish "caller
+    omitted this kwarg / passed None as a meaningless default" from
+    "caller really wants to clear this column".
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # pragma: no cover — debug aid only
+        return "StateWriter.CLEAR"
+
+
 class StateWriter:
     """Connection-bound writer with explicit transaction control.
 
@@ -29,6 +43,8 @@ class StateWriter:
     ``busy_timeout`` PRAGMAs are already set). The writer re-asserts those
     PRAGMAs defensively because callers sometimes hand in a bare connection.
     """
+
+    CLEAR = _ClearSentinel()
 
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
@@ -82,8 +98,14 @@ class StateWriter:
         """Patch the org_sessions singleton with the given keyword fields.
 
         Unknown keys raise ``ValueError`` to catch typos at write time.
-        Pass ``status=None`` (or any other field set to None) explicitly
-        to clear that column. Omitted fields are left untouched.
+        Cross-review m2: pass ``status=None`` is treated as "caller did
+        not supply this field" and is **skipped**, not written as NULL.
+        This protects callers that pile up Optional[…] kwargs from
+        accidentally NULL-clearing every column when none of them got
+        a real value. To explicitly clear a column, use the dedicated
+        sentinel :attr:`StateWriter.CLEAR` (``writer.update_session(
+        status=StateWriter.CLEAR)``) or write raw SQL.
+        Omitted kwargs are also untouched.
         """
         unknown = set(fields) - set(self._SESSION_FIELDS)
         if unknown:
@@ -91,7 +113,14 @@ class StateWriter:
                 f"unknown org_sessions field(s): {sorted(unknown)}; "
                 f"expected one of {list(self._SESSION_FIELDS)}"
             )
-        if not fields:
+        # Drop implicit-None entries; only explicit CLEAR or a real value
+        # results in a column write.
+        actual: dict[str, Any] = {}
+        for k, v in fields.items():
+            if v is None:
+                continue
+            actual[k] = None if v is self.CLEAR else v
+        if not actual:
             # No-op but still bump last_writer_at so dashboards see a write.
             self.conn.execute(
                 "UPDATE org_sessions SET "
@@ -99,8 +128,8 @@ class StateWriter:
                 "WHERE id = 1"
             )
             return
-        assigns = ", ".join(f"{k} = ?" for k in fields)
-        values = [fields[k] for k in fields]
+        assigns = ", ".join(f"{k} = ?" for k in actual)
+        values = [actual[k] for k in actual]
         self.conn.execute(
             f"UPDATE org_sessions SET {assigns}, "
             "last_writer_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') "

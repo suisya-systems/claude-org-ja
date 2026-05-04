@@ -100,6 +100,54 @@ class TestStructuredRender(unittest.TestCase):
         self.assertNotIn("[IN_USE]", md)
 
 
+class TestStructuredHeadingExactMatch(unittest.TestCase):
+    """Cross-review M1: substring match on heading names was eating
+    free-form headings whose name happened to *contain* a structured
+    keyword. Switched to exact match (lower-cased)."""
+
+    def test_dispatcher_notes_passes_through(self):
+        src = (
+            "## Dispatcher\n- Peer ID: 2\n\n"
+            "## Dispatcher Notes\nfree-form ops log\n\n"
+            "## Curator メモ\n人間の覚え書き\n\n"
+            "## Curator\n- Peer ID: 3\n"
+        )
+        passthrough = extract_unknown_sections(src)
+        self.assertIn("Dispatcher Notes", passthrough)
+        self.assertIn("free-form ops log", passthrough)
+        self.assertIn("Curator メモ", passthrough)
+        self.assertIn("人間の覚え書き", passthrough)
+        # The exact-match structured headings are excluded.
+        self.assertNotIn("Peer ID: 2", passthrough)
+        self.assertNotIn("Peer ID: 3", passthrough)
+
+    def test_drift_check_detects_loss_of_dispatcher_notes(self):
+        # Sanity: when the on-disk markdown has a "## Dispatcher Notes"
+        # section, drift_check must NOT report drift just because the
+        # snapshotter's structured slice doesn't render that section.
+        # The previous (substring) implementation classified it as
+        # structured, dropped it from the passthrough output, and then
+        # the strip-passthrough step in drift_check left it behind in
+        # the actual-side text — which surfaced as drift.
+        with tempfile.TemporaryDirectory() as td:
+            db = Path(td) / "s.db"
+            md = Path(td) / "org-state.md"
+            conn = connect(db)
+            try:
+                apply_schema(conn)
+                _seed_session(conn)
+                regenerate_org_state_md(conn, md)
+                with md.open("a", encoding="utf-8") as fh:
+                    fh.write(
+                        "\n## Dispatcher Notes\nfree-form note\n"
+                        "\n## Curator メモ\n別の自由記述\n"
+                    )
+                diff = compute_diff(conn, md)
+            finally:
+                conn.close()
+        self.assertEqual(diff, "")
+
+
 class TestPassthrough(unittest.TestCase):
     def test_extract_unknown_sections_keeps_freeform(self):
         src = (

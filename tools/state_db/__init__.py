@@ -76,43 +76,56 @@ def ensure_m2_schema(conn: sqlite3.Connection) -> bool:
     and on freshly-applied schema (everything is ``CREATE TABLE IF NOT
     EXISTS`` / ``INSERT OR IGNORE``).
 
-    Returns True if a migration step actually ran (table or migration row
-    or singleton was missing), False if the DB was already at M2 shape.
-    Callers can use the return value to decide whether to commit or to
-    log a one-time "migrated" message.
+    Transaction handling (cross-review m1): SQLite's DDL is transactional
+    and ``RELEASE SAVEPOINT`` inside an outer transaction does NOT commit
+    the savepoint to disk — it merges into the parent. There is therefore
+    no way to "isolate" the migration from a caller-side ROLLBACK without
+    a separate connection. Instead we emit a one-shot ``stacklevel=2``
+    warning when invoked inside an open transaction and let the caller
+    decide. The supported usage is to call this **outside** any
+    explicit ``BEGIN`` so the implicit autocommit picks it up immediately.
+
+    Returns True if a migration step actually ran, False if the DB was
+    already at M2 shape.
     """
+    if getattr(conn, "in_transaction", False):
+        import warnings
+        warnings.warn(
+            "ensure_m2_schema() invoked inside an open transaction; SQLite "
+            "cannot isolate the migration from a caller-side ROLLBACK. "
+            "Call before BEGIN (or commit first) to make the migration "
+            "durable.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+
     changed = False
     had_table = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='org_sessions'"
+        "SELECT 1 FROM sqlite_master "
+        "WHERE type='table' AND name='org_sessions'"
     ).fetchone() is not None
     if not had_table:
         conn.executescript(_M2_ORG_SESSIONS_DDL)
         changed = True
     cur = conn.execute(
-        "INSERT OR IGNORE INTO org_sessions (id, status, last_writer_at) "
+        "INSERT OR IGNORE INTO org_sessions "
+        "(id, status, last_writer_at) "
         "VALUES (1, 'IDLE', strftime('%Y-%m-%dT%H:%M:%fZ','now'))"
     )
     if cur.rowcount > 0:
         changed = True
-    # Make sure schema_migrations is consistent. The table itself shipped
-    # in M0, so it must already exist; tolerate a freshly applied schema
-    # where v2 is already in place.
     try:
         cur = conn.execute(
-            "INSERT OR IGNORE INTO schema_migrations (version, description) "
+            "INSERT OR IGNORE INTO schema_migrations "
+            "(version, description) "
             "VALUES (2, 'M2: org_sessions singleton (Issue #267)')"
         )
         if cur.rowcount > 0:
             changed = True
     except sqlite3.OperationalError:
-        # schema_migrations table absent (very old / corrupt DB) — leave it.
+        # schema_migrations table absent (very old / corrupt DB).
         pass
     return changed
-
-
-__all__ = [
-    "connect", "apply_schema", "with_db", "ensure_m2_schema", "SCHEMA_PATH",
-]
 
 
 @contextmanager
@@ -123,5 +136,17 @@ def with_db(db_path: PathLike) -> Iterator[sqlite3.Connection]:
         conn.commit()
     finally:
         conn.close()
+
+
+# Cross-review Nit 1: ``__all__`` lives at module bottom so every name it
+# references is already bound at evaluation time — easier to scan than
+# the previous "declared mid-file, with_db defined below" arrangement.
+__all__ = [
+    "SCHEMA_PATH",
+    "apply_schema",
+    "connect",
+    "ensure_m2_schema",
+    "with_db",
+]
 
 

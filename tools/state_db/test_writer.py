@@ -78,6 +78,33 @@ class TestPreM2Migration(unittest.TestCase):
         finally:
             td.cleanup()
 
+    def test_migration_warns_when_called_in_open_tx(self):
+        """Cross-review m1: SQLite cannot truly isolate DDL from a parent
+        ROLLBACK, so we warn loudly when invoked inside an open
+        transaction instead of silently mixing the migration in."""
+        import warnings
+        from tools.state_db import ensure_m2_schema
+        td = tempfile.TemporaryDirectory()
+        try:
+            db = Path(td.name) / "m1.db"
+            conn = connect(db)
+            conn.executescript(self._M1_SCHEMA)
+            conn.commit()
+            conn.execute("BEGIN")
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                ensure_m2_schema(conn)
+            conn.execute("ROLLBACK")
+            warn_msgs = [str(w.message).lower() for w in caught
+                         if issubclass(w.category, RuntimeWarning)]
+            self.assertTrue(
+                any("open transaction" in m for m in warn_msgs),
+                f"expected open-transaction warning, got {warn_msgs!r}",
+            )
+            conn.close()
+        finally:
+            td.cleanup()
+
     def test_get_session_migrates_pre_m2_db(self):
         from tools.state_db.queries import get_session
         td = tempfile.TemporaryDirectory()
@@ -130,6 +157,38 @@ class TestSessionSingleton(unittest.TestCase):
             self.assertEqual(sess["status"], "SUSPENDED")
             self.assertEqual(sess["objective"], "ship M2")  # untouched
             self.assertEqual(sess["suspended_at"], "2026-05-04")
+        finally:
+            conn.close()
+            td.cleanup()
+
+    def test_update_session_skips_implicit_none(self):
+        """Cross-review m2: passing status=None (default-arg propagation)
+        must NOT clear status. Only explicit StateWriter.CLEAR does."""
+        td, conn = _fresh_db()
+        try:
+            w = StateWriter(conn)
+            w.update_session(status="ACTIVE", objective="ship")
+            # All-None update — the wire-form many callers will accidentally
+            # produce when they propagate Optional[str] kwargs without a
+            # sentinel. Pre-fix this NULLed every column.
+            w.update_session(status=None, objective=None,
+                             dispatcher_pane_id=None)
+            sess = w.get_session()
+            self.assertEqual(sess["status"], "ACTIVE")
+            self.assertEqual(sess["objective"], "ship")
+        finally:
+            conn.close()
+            td.cleanup()
+
+    def test_update_session_clear_sentinel_nulls_column(self):
+        td, conn = _fresh_db()
+        try:
+            w = StateWriter(conn)
+            w.update_session(status="ACTIVE", objective="ship")
+            w.update_session(objective=StateWriter.CLEAR)
+            sess = w.get_session()
+            self.assertEqual(sess["status"], "ACTIVE")
+            self.assertIsNone(sess["objective"])
         finally:
             conn.close()
             td.cleanup()
