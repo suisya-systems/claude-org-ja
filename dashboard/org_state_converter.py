@@ -12,10 +12,19 @@ Source of truth rule:
     org-state.json is derived (machine-readable for dashboard etc.).
 
 M1 (Issue #267) adds an optional DB read path:
-    --source markdown  : parse .state/org-state.md (legacy, default before M1).
+    --source markdown  : parse .state/org-state.md (default — non-lossy SoT).
     --source db        : query .state/state.db via tools.state_db.queries.
+                         Falls back to a markdown overlay for fields the DB
+                         does not yet model (Status / Objective / Updated /
+                         Dispatcher / Curator / Resume Instructions).
     --source auto      : try DB first; fall back to markdown if DB is missing
-                         or stale (default).
+                         or stale.
+
+The default stays `markdown` because the DB only models *active* runs and
+worker directories; emitting a JSON without completed/queued items or the
+full Worker Directory Registry would be lossy for downstream readers
+(dashboard JSON-first read, etc.). Use `--source db` explicitly when you
+want a DB-derived snapshot.
 """
 
 import argparse
@@ -309,7 +318,7 @@ def _db_is_fresh(db_path, md_path):
     return db_mtime >= md_mtime
 
 
-def convert(md_path=None, json_path=None, source="auto", db_path=None):
+def convert(md_path=None, json_path=None, source="markdown", db_path=None):
     """Read state, build the org-state JSON dict, write it atomically.
 
     `source`:
@@ -373,9 +382,11 @@ def _main(argv=None):
     p.add_argument(
         "--source",
         choices=("auto", "db", "markdown"),
-        default="auto",
-        help="Where to read org-state from. 'auto' tries DB then falls back "
-             "to markdown if DB is missing or older than the markdown SoT.",
+        default="markdown",
+        help="Where to read org-state from. 'markdown' (default) preserves "
+             "all fields including completed/queued items. 'db' uses the "
+             "state DB and overlays markdown for fields the DB does not "
+             "model. 'auto' picks DB if it is fresh, else markdown.",
     )
     p.add_argument("--md", default=str(_MD_PATH),
                    help="Path to org-state.md (markdown SoT)")

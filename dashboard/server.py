@@ -308,11 +308,19 @@ _EVENT_LABELS_DB = {
 }
 
 
+# importer.import_org_state_md emits these synthetic events to keep the
+# "no input row dropped" invariant; they carry no real timestamp and add
+# noise to the activity feed. Skip them in DB-sourced activity.
+_LEGACY_EVENT_KINDS = {"legacy_active_item", "legacy_recent_item"}
+
+
 def _activity_from_db_events(events):
     """Render events rows (newest first) into the dashboard's activity shape."""
     out = []
     for e in events:
         kind = e.get("kind") or ""
+        if kind in _LEGACY_EVENT_KINDS:
+            continue
         label = _EVENT_LABELS_DB.get(kind, kind)
         task = None
         worker = None
@@ -349,16 +357,30 @@ _DB_STATUS_TO_UI = {
 
 
 def _work_items_from_db_runs(active_runs):
-    """Render active runs (in_use / review) into the workItems shape."""
+    """Render active runs (in_use / review) into the workItems shape.
+
+    Title/progress/worker are deliberately conservative: the M0 importer
+    seeds title=task_id and outcome_note=raw markdown status string, and
+    `worker_dir` is an absolute path (not a worker short id). Surfacing
+    those verbatim would render duplicate titles, status-as-progress noise
+    and full local paths in the worker column. Until the DB schema gains
+    proper title / progress / worker_id fields, leave the optional columns
+    as None and let the UI fall back to `id` only — matches the markdown
+    path when those sub-lines are absent.
+    """
     items = []
     for r in active_runs:
         raw = (r.get("status") or "in_use").lower()
+        task_id = r.get("task_id")
+        title = r.get("title")
+        if title == task_id:
+            title = task_id  # avoid `id - id` rendering, just keep the id
         items.append({
-            "id": r.get("task_id"),
-            "title": r.get("title") or r.get("task_id"),
+            "id": task_id,
+            "title": title or task_id,
             "status": _DB_STATUS_TO_UI.get(raw, raw.upper()),
-            "progress": r.get("outcome_note"),
-            "worker": r.get("worker_dir"),
+            "progress": None,
+            "worker": None,
         })
     return items
 
