@@ -19,6 +19,24 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Make `tools.state_db.*` importable when running this script directly
+# (e.g. `python dashboard/server.py`). Without this, the package lookup
+# fails because dashboard/ is not itself a package.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+try:
+    from tools.state_db import connect as _db_connect
+    from tools.state_db.queries import (
+        get_org_state_summary as _db_org_state_summary,
+        list_recent_events as _db_recent_events,
+    )
+    _DB_AVAILABLE = True
+except Exception as _exc:  # pragma: no cover — defensive against partial installs
+    print(f"[server] state_db import failed: {_exc}", file=sys.stderr)
+    _DB_AVAILABLE = False
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -28,6 +46,7 @@ POLL_INTERVAL = 1.5  # seconds
 BASE_DIR = Path(__file__).parent.parent  # claude-org repo root
 DASHBOARD_DIR = Path(__file__).parent
 PID_FILE = BASE_DIR / ".state" / "dashboard.pid"
+STATE_DB_PATH = BASE_DIR / ".state" / "state.db"
 
 # ---------------------------------------------------------------------------
 # State builder — parses .state/ and registry/ files
@@ -233,18 +252,189 @@ def _parse_knowledge(curated_dir):
     return result
 
 
+_DB_STALE_WARN_LOGGED = False
+
+
+def _db_is_fresh(state_dir):
+    """True if .state/state.db exists and is at least as fresh as the SoT markdown.
+
+    M1 keeps markdown as SoT; DB is a derived view rebuilt by the importer.
+    If the DB is older than its markdown source, treat it as stale and prefer
+    markdown — a one-time stderr warning nudges the operator to rerun
+    `python -m tools.state_db.importer --rebuild`.
+    """
+    global _DB_STALE_WARN_LOGGED
+    if not _DB_AVAILABLE or not STATE_DB_PATH.exists():
+        return False
+    # Take the max of state.db and state.db-wal mtimes. With WAL enabled
+    # (tools.state_db.__init__ sets journal_mode=WAL), in-flight writes
+    # land in -wal until checkpointed; the main file's mtime can lag.
+    db_mtime = 0.0
+    for p in (STATE_DB_PATH, Path(str(STATE_DB_PATH) + "-wal")):
+        try:
+            db_mtime = max(db_mtime, p.stat().st_mtime)
+        except OSError:
+            continue
+    if db_mtime == 0.0:
+        return False
+    sot_paths = [
+        state_dir / "org-state.md",
+        state_dir / "journal.jsonl",
+        BASE_DIR / "registry" / "projects.md",
+    ]
+    newest_sot = 0.0
+    for p in sot_paths:
+        try:
+            newest_sot = max(newest_sot, p.stat().st_mtime)
+        except OSError:
+            continue
+    # `>` not `>=`: equal mtimes (e.g. importer just rebuilt against current
+    # markdown) count as fresh. Matches `_db_is_fresh` in org_state_converter.
+    if newest_sot > db_mtime:
+        if not _DB_STALE_WARN_LOGGED:
+            print(
+                "[server] .state/state.db is older than markdown SoT — "
+                "falling back to markdown. Rebuild with: "
+                "python -m tools.state_db.importer "
+                f"--db {STATE_DB_PATH} --root {BASE_DIR} --rebuild",
+                file=sys.stderr,
+            )
+            _DB_STALE_WARN_LOGGED = True
+        return False
+    # Reset the warning latch so a subsequent rebuild clears the noise.
+    _DB_STALE_WARN_LOGGED = False
+    return True
+
+
+_EVENT_LABELS_DB = {
+    "worker_spawned": "ワーカー派遣",
+    "worker_respawned": "ワーカー再派遣",
+    "worker_closed": "ワーカー終了",
+    "suspend": "組織を中断",
+    "resume": "組織を再開",
+}
+
+
+# importer.import_org_state_md emits these synthetic events to keep the
+# "no input row dropped" invariant; they carry no real timestamp and add
+# noise to the activity feed. Skip them in DB-sourced activity.
+_LEGACY_EVENT_KINDS = {"legacy_active_item", "legacy_recent_item"}
+
+
+def _activity_from_db_events(events):
+    """Render events rows (newest first) into the dashboard's activity shape."""
+    out = []
+    for e in events:
+        kind = e.get("kind") or ""
+        if kind in _LEGACY_EVENT_KINDS:
+            continue
+        label = _EVENT_LABELS_DB.get(kind, kind)
+        task = None
+        worker = None
+        try:
+            payload = json.loads(e.get("payload_json") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            payload = {}
+        if isinstance(payload, dict):
+            task = payload.get("task")
+            worker = payload.get("worker")
+        if task:
+            summary = f"{label}: {task}"
+            if worker:
+                summary += f" ({worker[:8]})"
+        else:
+            summary = label
+        out.append({"ts": e.get("occurred_at"), "event": kind, "summary": summary})
+    return out
+
+
+# Map DB run.status enum → the status vocabulary the dashboard frontend
+# (dashboard/app.js) renders icons / labels for. Without this remap an
+# `in_use` run would render as a `?` because the frontend has no entry for
+# IN_USE. Keep this in sync with app.js's STATUS_* tables.
+_DB_STATUS_TO_UI = {
+    "in_use": "IN_PROGRESS",
+    "queued": "PENDING",
+    "review": "REVIEW",
+    "completed": "COMPLETED",
+    "failed": "BLOCKED",
+    "suspended": "PENDING",
+    "abandoned": "ABANDONED",
+}
+
+
+def _work_items_from_db_runs(active_runs):
+    """Render active runs (in_use / review) into the workItems shape.
+
+    Title/progress/worker are deliberately conservative: the M0 importer
+    seeds title=task_id and outcome_note=raw markdown status string, and
+    `worker_dir` is an absolute path (not a worker short id). Surfacing
+    those verbatim would render duplicate titles, status-as-progress noise
+    and full local paths in the worker column. Until the DB schema gains
+    proper title / progress / worker_id fields, leave the optional columns
+    as None and let the UI fall back to `id` only — matches the markdown
+    path when those sub-lines are absent.
+    """
+    items = []
+    for r in active_runs:
+        raw = (r.get("status") or "in_use").lower()
+        task_id = r.get("task_id")
+        title = r.get("title")
+        if title == task_id:
+            title = task_id  # avoid `id - id` rendering, just keep the id
+        items.append({
+            "id": task_id,
+            "title": title or task_id,
+            "status": _DB_STATUS_TO_UI.get(raw, raw.upper()),
+            "progress": None,
+            "worker": None,
+        })
+    return items
+
+
+def _load_state_from_db(state_dir):
+    """Return (work_items, activity) sourced from the state DB, or None on failure."""
+    try:
+        conn = _db_connect(STATE_DB_PATH)
+        try:
+            summary = _db_org_state_summary(conn)
+            events = _db_recent_events(conn, limit=30)
+        finally:
+            conn.close()
+    except Exception as exc:
+        print(f"[server] DB read failed, falling back to markdown: {exc}",
+              file=sys.stderr)
+        return None
+    return (
+        _work_items_from_db_runs(summary["active_runs"]),
+        _activity_from_db_events(events),
+    )
+
+
 def build_state():
     state_dir = BASE_DIR / ".state"
-    # JSON-first with Markdown fallback
+
+    # Status / objective still come from the markdown JSON snapshot (the DB
+    # schema does not yet cover Status / Current Objective — M1 scope).
     _json_result = _load_org_state_from_json(state_dir)
     if _json_result is not None:
-        status, objective, work_items = _json_result
+        status, objective, md_work_items = _json_result
     else:
         org_state_text = _read(state_dir / "org-state.md")
-        status, objective, work_items = _parse_org_state(org_state_text)
+        status, objective, md_work_items = _parse_org_state(org_state_text)
 
-    journal_text = _read(state_dir / "journal.jsonl")
-    activity = _parse_journal(journal_text)
+    # M1: DB is the primary source for active runs (workItems) and events
+    # (activity). Markdown remains the safety net.
+    work_items = md_work_items
+    activity = None
+    if _db_is_fresh(state_dir):
+        db_result = _load_state_from_db(state_dir)
+        if db_result is not None:
+            work_items, activity = db_result
+
+    if activity is None:
+        journal_text = _read(state_dir / "journal.jsonl")
+        activity = _parse_journal(journal_text)
 
     projects_text = _read(BASE_DIR / "registry" / "projects.md")
     projects = _parse_projects(projects_text)
@@ -281,6 +471,11 @@ def _get_mtimes():
         BASE_DIR / ".state" / "org-state.json",
         BASE_DIR / ".state" / "journal.jsonl",
         BASE_DIR / "registry" / "projects.md",
+        # Watch the state DB so importer rebuilds get pushed to SSE clients.
+        # WAL files change on every commit even if state.db itself doesn't,
+        # so include them as the writer-side change signal.
+        STATE_DB_PATH,
+        Path(str(STATE_DB_PATH) + "-wal"),
     ]
     # Glob workers and knowledge
     for p in (BASE_DIR / ".state" / "workers").glob("*.md"):
