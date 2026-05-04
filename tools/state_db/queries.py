@@ -187,17 +187,22 @@ def get_session(conn: sqlite3.Connection) -> Optional[dict[str, Any]]:
             "SELECT * FROM org_sessions WHERE id = 1"
         ).fetchone()
     except sqlite3.OperationalError:
-        # Forward-migrate then retry once. If migration fails (e.g. the DB
-        # is read-only), surface None rather than raising — readers should
-        # fall back to markdown in that case.
+        # Forward-migrate then retry once. ensure_m2_schema requires no
+        # open transaction (executescript would otherwise implicit-commit
+        # caller writes); commit any pending state first. If migration
+        # fails (e.g. read-only DB, RuntimeError because we're inside a
+        # caller-controlled tx) surface None — readers should fall back
+        # to markdown in that case.
         try:
             from tools.state_db import ensure_m2_schema
+            if getattr(conn, "in_transaction", False):
+                conn.commit()
             ensure_m2_schema(conn)
             conn.commit()
             row = conn.execute(
                 "SELECT * FROM org_sessions WHERE id = 1"
             ).fetchone()
-        except sqlite3.OperationalError:
+        except (sqlite3.OperationalError, RuntimeError):
             return None
     return _row_to_dict(row)
 

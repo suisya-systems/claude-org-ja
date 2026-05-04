@@ -45,9 +45,15 @@ def apply_schema(conn: sqlite3.Connection) -> None:
 # Forward migration for pre-M2 DBs (Issue #267)
 # ---------------------------------------------------------------------------
 
-# Standalone DDL for the M2-introduced singleton table. Must stay in sync
-# with the org_sessions block in schema.sql; on a fresh DB schema.sql wins,
-# on an existing M0/M1 DB this script is what creates the table in place.
+# Standalone DDL for the M2-introduced singleton table.
+#
+# **Must stay in sync with the org_sessions block in schema.sql.**
+# schema.sql is the SoT for fresh-DB construction; this constant is the
+# only path used to add the table to an *existing* M0 / M1 DB without
+# wiping the rest of its contents. Column list, types, CHECKs and DEFAULT
+# clauses must match exactly. ``test_writer.test_ddl_sync_with_schema_sql``
+# asserts the column shape stays in lockstep so an accidental drift
+# breaks tests instead of silently producing two divergent schemas.
 _M2_ORG_SESSIONS_DDL = """
 CREATE TABLE IF NOT EXISTS org_sessions (
   id                   INTEGER PRIMARY KEY CHECK (id = 1),
@@ -68,6 +74,10 @@ CREATE TABLE IF NOT EXISTS org_sessions (
 """
 
 
+def _conn_in_transaction(conn: sqlite3.Connection) -> bool:
+    return bool(getattr(conn, "in_transaction", False))
+
+
 def ensure_m2_schema(conn: sqlite3.Connection) -> bool:
     """Idempotently bring an M0 / M1 DB up to the M2 shape.
 
@@ -76,27 +86,26 @@ def ensure_m2_schema(conn: sqlite3.Connection) -> bool:
     and on freshly-applied schema (everything is ``CREATE TABLE IF NOT
     EXISTS`` / ``INSERT OR IGNORE``).
 
-    Transaction handling (cross-review m1): SQLite's DDL is transactional
-    and ``RELEASE SAVEPOINT`` inside an outer transaction does NOT commit
-    the savepoint to disk — it merges into the parent. There is therefore
-    no way to "isolate" the migration from a caller-side ROLLBACK without
-    a separate connection. Instead we emit a one-shot ``stacklevel=2``
-    warning when invoked inside an open transaction and let the caller
-    decide. The supported usage is to call this **outside** any
-    explicit ``BEGIN`` so the implicit autocommit picks it up immediately.
+    **Must be called outside an open transaction** (cross-review N1). The
+    Python ``sqlite3`` module's ``Connection.executescript`` issues an
+    implicit ``COMMIT`` before running its statements, which would silently
+    commit any uncommitted INSERT/UPDATE the caller is in the middle of —
+    the subsequent ROLLBACK would then be a no-op and that work would
+    survive against the caller's expectation. We fail fast with
+    ``RuntimeError`` instead of warning (warnings are easy to miss and the
+    side-effect is data-shaped, not lint-shaped).
 
     Returns True if a migration step actually ran, False if the DB was
     already at M2 shape.
     """
-    if getattr(conn, "in_transaction", False):
-        import warnings
-        warnings.warn(
-            "ensure_m2_schema() invoked inside an open transaction; SQLite "
-            "cannot isolate the migration from a caller-side ROLLBACK. "
-            "Call before BEGIN (or commit first) to make the migration "
-            "durable.",
-            RuntimeWarning,
-            stacklevel=2,
+    if _conn_in_transaction(conn):
+        raise RuntimeError(
+            "ensure_m2_schema must be called outside an active "
+            "transaction; got conn.in_transaction=True. "
+            "sqlite3.Connection.executescript() issues an implicit "
+            "COMMIT before running, which would silently commit any "
+            "pending writes from the caller. COMMIT or ROLLBACK first, "
+            "or construct the StateWriter before opening the transaction."
         )
 
     changed = False
@@ -148,5 +157,3 @@ __all__ = [
     "ensure_m2_schema",
     "with_db",
 ]
-
-

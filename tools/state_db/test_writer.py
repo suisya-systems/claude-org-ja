@@ -18,6 +18,42 @@ def _fresh_db():
     return td, conn
 
 
+class TestDDLSync(unittest.TestCase):
+    """Cross-review n2: schema.sql and __init__._M2_ORG_SESSIONS_DDL must
+    stay in lockstep — they describe the same table from two paths
+    (fresh DB vs. forward migration). A drift would silently produce
+    two divergent schemas."""
+
+    def _columns(self, conn, table):
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        # (cid, name, type, notnull, dflt_value, pk) — keep the columns
+        # that actually matter for shape comparison.
+        return [
+            (r["name"], r["type"].upper(), bool(r["notnull"]), bool(r["pk"]))
+            for r in rows
+        ]
+
+    def test_schema_sql_and_m2_ddl_produce_identical_columns(self):
+        from tools.state_db import _M2_ORG_SESSIONS_DDL
+        td = tempfile.TemporaryDirectory()
+        try:
+            # DB A: full schema.sql.
+            db_a = Path(td.name) / "a.db"
+            conn_a = connect(db_a)
+            apply_schema(conn_a)
+            cols_a = self._columns(conn_a, "org_sessions")
+            conn_a.close()
+            # DB B: just the M2 DDL string.
+            db_b = Path(td.name) / "b.db"
+            conn_b = connect(db_b)
+            conn_b.executescript(_M2_ORG_SESSIONS_DDL)
+            cols_b = self._columns(conn_b, "org_sessions")
+            conn_b.close()
+            self.assertEqual(cols_a, cols_b)
+        finally:
+            td.cleanup()
+
+
 class TestPreM2Migration(unittest.TestCase):
     """Codex round-3 Blocker fix: an existing M0/M1 DB without
     org_sessions must be migrated forward in place when read or written
@@ -78,11 +114,11 @@ class TestPreM2Migration(unittest.TestCase):
         finally:
             td.cleanup()
 
-    def test_migration_warns_when_called_in_open_tx(self):
-        """Cross-review m1: SQLite cannot truly isolate DDL from a parent
-        ROLLBACK, so we warn loudly when invoked inside an open
-        transaction instead of silently mixing the migration in."""
-        import warnings
+    def test_migration_raises_when_called_in_open_tx(self):
+        """Cross-review N1: an open transaction means a downstream
+        executescript() would implicit-COMMIT the caller's pending
+        writes. We must fail fast so the caller doesn't silently lose
+        rollback semantics."""
         from tools.state_db import ensure_m2_schema
         td = tempfile.TemporaryDirectory()
         try:
@@ -90,17 +126,47 @@ class TestPreM2Migration(unittest.TestCase):
             conn = connect(db)
             conn.executescript(self._M1_SCHEMA)
             conn.commit()
+            # Stage uncommitted work, then attempt migration.
             conn.execute("BEGIN")
-            with warnings.catch_warnings(record=True) as caught:
-                warnings.simplefilter("always")
-                ensure_m2_schema(conn)
-            conn.execute("ROLLBACK")
-            warn_msgs = [str(w.message).lower() for w in caught
-                         if issubclass(w.category, RuntimeWarning)]
-            self.assertTrue(
-                any("open transaction" in m for m in warn_msgs),
-                f"expected open-transaction warning, got {warn_msgs!r}",
+            conn.execute(
+                "INSERT INTO projects (slug, display_name) "
+                "VALUES ('uncommitted', 'should-disappear')"
             )
+            with self.assertRaises(RuntimeError) as ctx:
+                ensure_m2_schema(conn)
+            self.assertIn("active transaction", str(ctx.exception))
+            # Caller can still ROLLBACK and the staged INSERT must vanish.
+            conn.execute("ROLLBACK")
+            row = conn.execute(
+                "SELECT 1 FROM projects WHERE slug = 'uncommitted'"
+            ).fetchone()
+            self.assertIsNone(row)
+            conn.close()
+        finally:
+            td.cleanup()
+
+    def test_writer_construction_in_open_tx_does_not_silently_commit(self):
+        """Cross-review N1 (Codex check shape): constructing StateWriter
+        on a pre-M2 DB while the caller has uncommitted writes must
+        either fail fast or never silently commit those writes."""
+        td = tempfile.TemporaryDirectory()
+        try:
+            db = Path(td.name) / "m1.db"
+            conn = connect(db)
+            conn.executescript(self._M1_SCHEMA)
+            conn.commit()
+            conn.execute("BEGIN")
+            conn.execute(
+                "INSERT INTO projects (slug, display_name) "
+                "VALUES ('uncommitted', 'should-disappear')"
+            )
+            with self.assertRaises(RuntimeError):
+                StateWriter(conn)
+            conn.execute("ROLLBACK")
+            row = conn.execute(
+                "SELECT 1 FROM projects WHERE slug = 'uncommitted'"
+            ).fetchone()
+            self.assertIsNone(row)
             conn.close()
         finally:
             td.cleanup()
