@@ -138,6 +138,28 @@ CREATE TABLE unparsed_legacy (
 );
 CREATE INDEX idx_unparsed_source ON unparsed_legacy(source);
 
+-- org_sessions ─────────────────────────────────────────────
+-- M2: singleton row holding the org-wide session state that M1
+-- previously kept as a markdown overlay on top of the DB. CHECK(id=1)
+-- enforces "at most one row" — the org never has multiple concurrent
+-- sessions; suspend/resume mutates this row in place.
+CREATE TABLE org_sessions (
+  id                   INTEGER PRIMARY KEY CHECK (id = 1),
+  status               TEXT NOT NULL DEFAULT 'ACTIVE'
+                       CHECK (status IN ('ACTIVE','SUSPENDED','IDLE')),
+  started_at           TEXT,                    -- legacy "Started:" line, free-form text allowed
+  updated_at           TEXT,                    -- legacy "Updated:" line
+  suspended_at         TEXT,                    -- legacy "Suspended:" line (NULL when ACTIVE)
+  resumed_at           TEXT,                    -- legacy "Resumed:" line
+  objective            TEXT,                    -- legacy "Current Objective:"
+  resume_instructions  TEXT,                    -- legacy "## Resume Instructions" body
+  dispatcher_pane_id   TEXT,                    -- legacy "## Dispatcher" / Pane ID
+  dispatcher_peer_id   TEXT,                    -- legacy "## Dispatcher" / Peer ID
+  curator_pane_id      TEXT,                    -- legacy "## Curator" / Pane ID
+  curator_peer_id      TEXT,                    -- legacy "## Curator" / Peer ID
+  last_writer_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
 -- schema_migrations ────────────────────────────────────────
 CREATE TABLE schema_migrations (
   version         INTEGER PRIMARY KEY,
@@ -147,3 +169,5 @@ CREATE TABLE schema_migrations (
 
 INSERT INTO schema_migrations (version, description)
 VALUES (1, 'M0: initial schema (Issue #267)');
+INSERT INTO schema_migrations (version, description)
+VALUES (2, 'M2: org_sessions singleton (Issue #267)');

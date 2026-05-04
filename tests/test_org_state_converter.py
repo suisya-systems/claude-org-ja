@@ -157,7 +157,10 @@ class TestConvertFileIO(unittest.TestCase):
             json_path = Path(tmpdir) / "org-state.json"
             md_path.write_text(SAMPLE_ORG_STATE_MD, encoding="utf-8")
 
-            ok = convert(md_path=md_path, json_path=json_path)
+            # M2 changed the default source to 'db'; this test exercises the
+            # markdown path explicitly (no DB present).
+            ok = convert(md_path=md_path, json_path=json_path,
+                          source="markdown")
             self.assertTrue(ok)
             self.assertTrue(json_path.exists())
 
@@ -170,7 +173,8 @@ class TestConvertFileIO(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             md_path = Path(tmpdir) / "nonexistent.md"
             json_path = Path(tmpdir) / "org-state.json"
-            ok = convert(md_path=md_path, json_path=json_path)
+            ok = convert(md_path=md_path, json_path=json_path,
+                          source="markdown")
             self.assertFalse(ok)
             self.assertFalse(json_path.exists())
 

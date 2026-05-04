@@ -252,58 +252,10 @@ def _parse_knowledge(curated_dir):
     return result
 
 
-_DB_STALE_WARN_LOGGED = False
-
-
-def _db_is_fresh(state_dir):
-    """True if .state/state.db exists and is at least as fresh as the SoT markdown.
-
-    M1 keeps markdown as SoT; DB is a derived view rebuilt by the importer.
-    If the DB is older than its markdown source, treat it as stale and prefer
-    markdown — a one-time stderr warning nudges the operator to rerun
-    `python -m tools.state_db.importer --rebuild`.
-    """
-    global _DB_STALE_WARN_LOGGED
-    if not _DB_AVAILABLE or not STATE_DB_PATH.exists():
-        return False
-    # Take the max of state.db and state.db-wal mtimes. With WAL enabled
-    # (tools.state_db.__init__ sets journal_mode=WAL), in-flight writes
-    # land in -wal until checkpointed; the main file's mtime can lag.
-    db_mtime = 0.0
-    for p in (STATE_DB_PATH, Path(str(STATE_DB_PATH) + "-wal")):
-        try:
-            db_mtime = max(db_mtime, p.stat().st_mtime)
-        except OSError:
-            continue
-    if db_mtime == 0.0:
-        return False
-    sot_paths = [
-        state_dir / "org-state.md",
-        state_dir / "journal.jsonl",
-        BASE_DIR / "registry" / "projects.md",
-    ]
-    newest_sot = 0.0
-    for p in sot_paths:
-        try:
-            newest_sot = max(newest_sot, p.stat().st_mtime)
-        except OSError:
-            continue
-    # `>` not `>=`: equal mtimes (e.g. importer just rebuilt against current
-    # markdown) count as fresh. Matches `_db_is_fresh` in org_state_converter.
-    if newest_sot > db_mtime:
-        if not _DB_STALE_WARN_LOGGED:
-            print(
-                "[server] .state/state.db is older than markdown SoT — "
-                "falling back to markdown. Rebuild with: "
-                "python -m tools.state_db.importer "
-                f"--db {STATE_DB_PATH} --root {BASE_DIR} --rebuild",
-                file=sys.stderr,
-            )
-            _DB_STALE_WARN_LOGGED = True
-        return False
-    # Reset the warning latch so a subsequent rebuild clears the noise.
-    _DB_STALE_WARN_LOGGED = False
-    return True
+def _db_available():
+    """M2 (Issue #267): DB is the SoT — no markdown freshness comparison.
+    Just check the file exists and the imports succeeded."""
+    return _DB_AVAILABLE and STATE_DB_PATH.exists()
 
 
 _EVENT_LABELS_DB = {
@@ -393,7 +345,9 @@ def _work_items_from_db_runs(active_runs):
 
 
 def _load_state_from_db(state_dir):
-    """Return (work_items, activity) sourced from the state DB, or None on failure."""
+    """Return (status, objective, work_items, activity) from state.db,
+    or None on failure. M2: org_sessions carries Status / Current Objective
+    so we no longer need the markdown overlay for those fields."""
     try:
         conn = _db_connect(STATE_DB_PATH)
         try:
@@ -405,7 +359,12 @@ def _load_state_from_db(state_dir):
         print(f"[server] DB read failed, falling back to markdown: {exc}",
               file=sys.stderr)
         return None
+    session = summary.get("session") or {}
+    db_status = session.get("status")
+    db_objective = session.get("objective")
     return (
+        db_status,
+        db_objective,
         _work_items_from_db_runs(summary["active_runs"]),
         _activity_from_db_events(events),
     )
@@ -414,27 +373,43 @@ def _load_state_from_db(state_dir):
 def build_state():
     state_dir = BASE_DIR / ".state"
 
-    # Status / objective still come from the markdown JSON snapshot (the DB
-    # schema does not yet cover Status / Current Objective — M1 scope).
-    _json_result = _load_org_state_from_json(state_dir)
-    if _json_result is not None:
-        status, objective, md_work_items = _json_result
-    else:
-        org_state_text = _read(state_dir / "org-state.md")
-        status, objective, md_work_items = _parse_org_state(org_state_text)
-
-    # M1: DB is the primary source for active runs (workItems) and events
-    # (activity). Markdown remains the safety net.
-    work_items = md_work_items
+    # M2: DB is the primary source for everything the schema models —
+    # Status / Objective via org_sessions, workItems via active runs,
+    # activity via the events table. Markdown / JSON snapshot remain as a
+    # safety net for the very first run after a fresh clone (no DB yet).
+    status = "IDLE"
+    objective = None
+    work_items = []
     activity = None
-    if _db_is_fresh(state_dir):
+
+    if _db_available():
         db_result = _load_state_from_db(state_dir)
         if db_result is not None:
-            work_items, activity = db_result
+            db_status, db_objective, work_items, activity = db_result
+            if db_status:
+                status = db_status
+            if db_objective:
+                objective = db_objective
 
-    if activity is None:
-        journal_text = _read(state_dir / "journal.jsonl")
-        activity = _parse_journal(journal_text)
+    if not work_items or activity is None:
+        # Fall back to the legacy JSON / markdown path.
+        _json_result = _load_org_state_from_json(state_dir)
+        if _json_result is not None:
+            md_status, md_objective, md_work_items = _json_result
+        else:
+            org_state_text = _read(state_dir / "org-state.md")
+            md_status, md_objective, md_work_items = _parse_org_state(
+                org_state_text
+            )
+        if not work_items:
+            work_items = md_work_items
+            if md_status and status == "IDLE":
+                status = md_status
+            if objective is None:
+                objective = md_objective
+        if activity is None:
+            journal_text = _read(state_dir / "journal.jsonl")
+            activity = _parse_journal(journal_text)
 
     projects_text = _read(BASE_DIR / "registry" / "projects.md")
     projects = _parse_projects(projects_text)

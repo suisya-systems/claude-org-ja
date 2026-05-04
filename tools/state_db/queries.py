@@ -5,9 +5,11 @@ Thin convenience wrappers around `sqlite3.Connection` that return plain
 short-lived dashboard / SKILL invocations can open a connection, fetch what
 they need, and close — WAL allows many concurrent readers.
 
-The DB is a derived view in M1 (markdown remains SoT); see
-migration-strategy.md §M1. Callers should keep a markdown fallback path on
-disk and treat any query failure here as a soft signal to reach for it.
+In M2 the DB is the canonical write target (migration-strategy.md §M2):
+the M1 markdown overlay is gone, ``org_sessions`` carries Status / Updated /
+Suspended / Resumed / Current Objective / Dispatcher / Curator /
+Resume Instructions, and ``.state/org-state.md`` is regenerated from this
+DB by :mod:`tools.state_db.snapshotter`.
 """
 from __future__ import annotations
 
@@ -145,11 +147,29 @@ def _run_status_counts(conn: sqlite3.Connection) -> dict[str, int]:
     return {r["status"]: r["c"] for r in rows}
 
 
+def get_session(conn: sqlite3.Connection) -> Optional[dict[str, Any]]:
+    """Return the singleton ``org_sessions`` row, or ``None`` if missing.
+
+    M2 (Issue #267) replaced the M1 markdown overlay; consumers now read
+    Status / Updated / Suspended / Resumed / Current Objective / Dispatcher
+    / Curator / Resume Instructions straight from this row.
+    """
+    try:
+        row = conn.execute(
+            "SELECT * FROM org_sessions WHERE id = 1"
+        ).fetchone()
+    except sqlite3.OperationalError:
+        # DB pre-dates the M2 migration (no org_sessions table).
+        return None
+    return _row_to_dict(row)
+
+
 def get_org_state_summary(conn: sqlite3.Connection) -> dict[str, Any]:
     """Aggregate snapshot used by the dashboard.
 
     Shape:
         {
+          "session": {... org_sessions row ...} | None,
           "active_runs": [...],            # in_use / review
           "active_worker_dirs": [...],     # lifecycle='active'
           "recent_events": [...],          # 20 newest
@@ -166,6 +186,7 @@ def get_org_state_summary(conn: sqlite3.Connection) -> dict[str, Any]:
         """
     ).fetchone()
     return {
+        "session": get_session(conn),
         "active_runs": list_active_runs(conn),
         "active_worker_dirs": list_worker_dirs(conn, lifecycle="active"),
         "recent_events": list_recent_events(conn, limit=20),
@@ -194,6 +215,7 @@ def get_resume_briefing(conn: sqlite3.Connection) -> dict[str, Any]:
         "SELECT occurred_at, kind FROM events ORDER BY id DESC LIMIT 1"
     ).fetchone()
     return {
+        "session": get_session(conn),
         "active_runs": list_active_runs(conn),
         "active_worker_dirs": list_worker_dirs(conn, lifecycle="active"),
         "recent_events": list_recent_events(conn, limit=30),
@@ -213,6 +235,7 @@ __all__ = [
     "get_run_by_task_id",
     "list_worker_dirs",
     "list_recent_events",
+    "get_session",
     "get_org_state_summary",
     "get_resume_briefing",
 ]

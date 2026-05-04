@@ -1,8 +1,12 @@
-"""M1 read-path fallback tests (Issue #267 review minor #2).
+"""DB read-path fallback tests (Issue #267, updated for M2).
 
-Covers the DB-missing / DB-corrupt / DB-stale branches of:
-- dashboard/server.py:_load_state_from_db + _db_is_fresh + build_state
+Covers the DB-missing / DB-corrupt branches of:
+- dashboard/server.py:_load_state_from_db + build_state
 - dashboard/org_state_converter.py:convert(source="auto")
+
+M2 (Issue #267) removed the M1 markdown-vs-DB staleness comparison —
+the DB is now the SoT and freshness is no longer a meaningful concept.
+The tests for staleness-driven fallback have been retired accordingly.
 
 Strategy: monkey-patch the module-level paths to point at a tempdir so the
 test suite never touches the real .state/ tree, then assert that each branch
@@ -92,7 +96,6 @@ class TestServerFallback(unittest.TestCase):
         # Redirect module-level paths at the tempdir.
         server.BASE_DIR = self.root
         server.STATE_DB_PATH = self.db_path
-        server._DB_STALE_WARN_LOGGED = False
 
     def test_db_missing_falls_back_to_markdown(self):
         """No .state/state.db → build_state still returns markdown-derived items."""
@@ -119,9 +122,9 @@ class TestServerFallback(unittest.TestCase):
         self.assertGreaterEqual(len(state["workItems"]), 1)
         self.assertEqual(state["workItems"][0]["id"], "task-1")
 
-    def test_db_stale_falls_back_with_warning(self):
-        """DB older than markdown → fresh check fails, no DB read, markdown wins."""
-        # Build a real DB, then bump markdown mtime so DB is older.
+    def test_db_present_is_preferred_regardless_of_mtime(self):
+        """M2: DB is the SoT. Older mtime than markdown is no longer a
+        fallback trigger; staleness has been retired as a concept."""
         import_full_rebuild(self.db_path, self.root)
         future = time.time() + 120
         import os
@@ -135,16 +138,12 @@ class TestServerFallback(unittest.TestCase):
         buf = StringIO()
         with contextlib.redirect_stderr(buf):
             state = self.server.build_state()
+        # Status comes from org_sessions in the DB. The fixture markdown
+        # has Status: ACTIVE, but the importer loads it into the DB row
+        # so the value flows through either path.
         self.assertEqual(state["status"], "ACTIVE")
-        warn = buf.getvalue().lower()
-        # Warning must point at the rebuild path so the operator can act on it.
-        self.assertIn("older", warn)
-        self.assertIn("rebuild", warn)
-        # Second invocation should not duplicate the warning (latch).
-        buf2 = StringIO()
-        with contextlib.redirect_stderr(buf2):
-            self.server.build_state()
-        self.assertEqual(buf2.getvalue(), "")
+        # No staleness warning expected.
+        self.assertNotIn("older", buf.getvalue().lower())
 
 
 # ---------------------------------------------------------------------------
@@ -182,9 +181,9 @@ class TestConverterAutoFallback(unittest.TestCase):
         self.assertEqual(data["status"], "ACTIVE")
         self.assertEqual(data["currentObjective"], "M1 read switch tests")
 
-    def test_auto_stale_db_uses_markdown(self):
+    def test_auto_db_present_is_preferred_regardless_of_mtime(self):
+        """M2: presence is the only criterion; mtime no longer matters."""
         import_full_rebuild(self.db_path, self.root)
-        # Make markdown newer than DB.
         future = time.time() + 120
         import os
         os.utime(self.md_path, (future, future))
@@ -193,34 +192,29 @@ class TestConverterAutoFallback(unittest.TestCase):
                                      source="auto", db_path=self.db_path)
         self.assertTrue(ok)
         data = self._read_json()
-        self.assertNotEqual(data.get("_source"), "db")
+        self.assertEqual(data.get("_source"), "db")
 
     def test_auto_fresh_db_uses_db(self):
         import_full_rebuild(self.db_path, self.root)
-        # Make DB newer than markdown.
-        future = time.time() + 120
-        import os
-        os.utime(self.db_path, (future, future))
         ok = self.converter.convert(md_path=self.md_path,
                                      json_path=self.json_path,
                                      source="auto", db_path=self.db_path)
         self.assertTrue(ok)
         data = self._read_json()
         self.assertEqual(data.get("_source"), "db")
-        # Markdown overlay still preserves the markdown-only fields.
+        # M2: status / objective now flow through org_sessions inside the DB.
         self.assertEqual(data["status"], "ACTIVE")
         self.assertEqual(data["currentObjective"], "M1 read switch tests")
 
-    def test_explicit_markdown_default_does_not_consult_db(self):
-        # Even if DB is fresh, default source='markdown' must produce the
-        # markdown shape (non-lossy, includes Resume Instructions etc.).
+    def test_default_source_is_db(self):
+        # M2 changed the converter's default --source to 'db'.
         import_full_rebuild(self.db_path, self.root)
         ok = self.converter.convert(md_path=self.md_path,
                                      json_path=self.json_path,
                                      db_path=self.db_path)  # default source
         self.assertTrue(ok)
         data = self._read_json()
-        self.assertNotIn("_source", data)
+        self.assertEqual(data.get("_source"), "db")
 
 
 if __name__ == "__main__":
