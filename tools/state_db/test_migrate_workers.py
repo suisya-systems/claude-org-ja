@@ -305,6 +305,80 @@ class TestWorktreeFixup(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# 3b. SIGKILL-window rollback (round 1 review B1)
+# ---------------------------------------------------------------------------
+
+
+class TestSigkillWindow(unittest.TestCase):
+    """Manifest must persist BEFORE rename, so rollback can recover even if
+    the process is killed in the gap between rename() and the post-rename
+    persist."""
+
+    def test_rollback_handles_inprogress_after_rename(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            root = tmp / "workers"
+            plan = _build(root)
+            runner = FakeRunner()
+
+            # Real rename, but raise immediately after — simulating SIGKILL
+            # arriving between the OS rename returning and our entry-state
+            # update / persist.
+            real_rename = runner.rename
+            killed = {"once": False}
+
+            def killing_rename(src, dst):
+                if not killed["once"] and "fizzbuzz" in str(src):
+                    killed["once"] = True
+                    real_rename(src, dst)
+                    raise KeyboardInterrupt("simulated SIGKILL after rename")
+                real_rename(src, dst)
+
+            runner.rename = killing_rename
+            manifest_path = tmp / "m.json"
+            with self.assertRaises(KeyboardInterrupt):
+                mw.apply_plan(plan, manifest_path=manifest_path, runner=runner)
+
+            # Manifest must contain an entry for fizzbuzz, even though its
+            # state never reached "completed".
+            data = json.loads(manifest_path.read_text(encoding="utf-8"))
+            fb = [e for e in data["executed"]
+                  if e.get("op") == "move_run" and "fizzbuzz" in e.get("src", "")]
+            self.assertEqual(len(fb), 1, "fizzbuzz entry missing from manifest")
+            self.assertEqual(fb[0]["state"], "in_progress")
+            # FS state: rename DID succeed, so dst exists and src is gone.
+            self.assertTrue(Path(fb[0]["dst"]).exists())
+            self.assertFalse(Path(fb[0]["src"]).exists())
+
+            # Rollback must reverse the rename despite state="in_progress".
+            mw.rollback(manifest_path, runner=FakeRunner())
+            self.assertTrue(Path(fb[0]["src"]).exists())
+            self.assertFalse(Path(fb[0]["dst"]).exists())
+
+    def test_rollback_skips_inprogress_that_never_renamed(self):
+        """If SIGKILL hit BEFORE rename(), src still exists, dst doesn't —
+        rollback should be a no-op for that entry."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            manifest = tmp / "m.json"
+            (tmp / "src-only").mkdir()
+            manifest.write_text(json.dumps({
+                "version": 1, "workers_root": str(tmp),
+                "archive_quarter": "2026-Q2", "operations": [],
+                "executed": [{
+                    "op": "move_run",
+                    "src": str(tmp / "src-only"),
+                    "dst": str(tmp / "never-renamed-here"),
+                    "worktrees": [], "compat_junction": False,
+                    "state": "in_progress",
+                }],
+            }), encoding="utf-8")
+            mw.rollback(manifest, runner=FakeRunner())  # must not raise
+            self.assertTrue((tmp / "src-only").exists())
+            self.assertFalse((tmp / "never-renamed-here").exists())
+
+
+# ---------------------------------------------------------------------------
 # 4. Pre-flight conflict detection
 # ---------------------------------------------------------------------------
 
@@ -323,6 +397,58 @@ class TestPreflight(unittest.TestCase):
                                  inventory_source="synth", detect_worktrees=False)
             issues = mw.preflight(plan, workers_root)
             self.assertTrue(any("target already exists" in i for i in issues))
+
+    def test_preflight_rejects_path_outside_workers_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            workers_root = tmp / "workers"
+            workers_root.mkdir()
+            (workers_root / "ok-src").mkdir()
+            outside = tmp / "outside-root"
+            outside.mkdir()
+            # Build a synthetic plan whose dst escapes workers_root.
+            plan = mw.Plan(
+                workers_root=str(workers_root.as_posix()),
+                inventory_source="hand-built",
+                archive_quarter="2026-Q2",
+                operations=[mw.Operation(
+                    op="move_run",
+                    src=str((workers_root / "ok-src").as_posix()),
+                    dst=str((outside / "stolen").as_posix()),
+                    note="malicious",
+                )],
+            )
+            issues = mw.preflight(plan, workers_root)
+            self.assertTrue(any("escapes workers_root" in i for i in issues))
+
+    def test_preflight_warns_on_active_runs_in_db(self):
+        from tools.state_db import apply_schema, connect
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            workers_root = tmp / "workers"
+            workers_root.mkdir()
+            db_path = tmp / "state.db"
+            conn = connect(db_path)
+            apply_schema(conn)
+            # Seed a project + active in_use run.
+            conn.execute(
+                "INSERT INTO projects (slug, display_name) VALUES ('p', 'Project P')"
+            )
+            conn.execute(
+                "INSERT INTO runs (task_id, project_id, pattern, title, status) "
+                "VALUES ('t-1', 1, 'C', 'live', 'in_use')"
+            )
+            conn.commit()
+            conn.close()
+
+            plan = mw.Plan(
+                workers_root=str(workers_root.as_posix()),
+                inventory_source="x", archive_quarter="2026-Q2", operations=[],
+            )
+            issues = mw.preflight(plan, workers_root, db_path=db_path)
+            self.assertTrue(any("active run" in i for i in issues))
+            # --force semantics: the helper drops just the active-runs warning.
+            self.assertEqual(mw._filter_overridable(issues, force=True), [])
 
     def test_preflight_source_missing(self):
         with tempfile.TemporaryDirectory() as tmp:

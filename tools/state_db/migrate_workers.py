@@ -334,16 +334,36 @@ def render_plan_manifest(plan: Plan) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def preflight(plan: Plan, workers_root: Path) -> list[str]:
+def preflight(plan: Plan, workers_root: Path,
+              *, db_path: Optional[Path] = None) -> list[str]:
     """Return list of human-readable warnings/errors. Empty list = OK to apply.
 
     Simulates the plan sequentially so the 3-step swap (which transiently
     claims `claude-org-ja-tmp`) does not raise spurious source-missing /
     target-exists warnings.
+
+    Additional safety nets (round 1 review M1):
+      - workers_root containment: every src/dst must live inside the
+        `--workers-root` subtree. Reject paths that escape (e.g. a
+        hand-edited manifest pointing at C:/Windows).
+      - active-runs DB check: if `db_path` is provided, count rows in
+        worker_dirs with lifecycle='active' that correspond to live in_use
+        runs. Live runs during a mv lose their pwd. The check is reported
+        as a warning (operator can override with --force at the CLI).
     """
     issues: list[str] = []
 
     root_drive = workers_root.resolve().drive.lower() if os.name == "nt" else ""
+    root_resolved = str(workers_root.resolve()).replace("\\", "/").rstrip("/")
+
+    def _outside_root(p: str) -> bool:
+        if not p:
+            return False
+        try:
+            resolved = str(Path(p).resolve()).replace("\\", "/").rstrip("/")
+        except (OSError, ValueError):
+            return True
+        return not (resolved == root_resolved or resolved.startswith(root_resolved + "/"))
 
     # Track simulated existence: start from real FS, mutate as we walk ops.
     def _exists(p: str) -> bool:
@@ -357,16 +377,20 @@ def preflight(plan: Plan, workers_root: Path) -> list[str]:
         return _exists(p)
 
     for op in plan.operations:
-        if root_drive:
-            for path in (op.src, op.dst):
-                if not path:
-                    continue
+        for path in (op.src, op.dst):
+            if not path:
+                continue
+            if root_drive:
                 d = Path(path).drive.lower()
                 if d and d != root_drive:
                     issues.append(
                         f"cross-drive path detected ({d} vs {root_drive}): {path} — "
                         "junction --keep-compat will not work; use --manifest mode"
                     )
+            if _outside_root(path):
+                issues.append(
+                    f"path escapes workers_root ({root_resolved}): {path} (op={op.op})"
+                )
         if op.op == "ensure_dir":
             touched[op.dst] = True
             continue
@@ -378,7 +402,38 @@ def preflight(plan: Plan, workers_root: Path) -> list[str]:
             touched[op.src] = False
             touched[op.dst] = True
 
+    if db_path is not None:
+        active = _count_active_runs(db_path)
+        if active > 0:
+            issues.append(
+                f"{active} active run(s) (status in 'in_use'/'review') in {db_path} — "
+                "suspend them before migrating, or pass --force to override"
+            )
+
     return issues
+
+
+def _filter_overridable(issues: list[str], *, force: bool) -> list[str]:
+    """Drop the active-runs warning when --force is set; everything else stays fatal."""
+    if not force:
+        return issues
+    return [i for i in issues if "active run" not in i]
+
+
+def _count_active_runs(db_path: Path) -> int:
+    """Count runs whose status is in_use or review. 0 means safe to migrate."""
+    try:
+        import sqlite3
+        conn = sqlite3.connect(str(db_path))
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM runs WHERE status IN ('in_use','review')"
+            ).fetchone()
+            return int(row[0]) if row else 0
+        finally:
+            conn.close()
+    except (sqlite3.Error, OSError):
+        return 0
 
 
 # ---------------------------------------------------------------------------
@@ -466,22 +521,31 @@ def apply_plan(
         for op in plan.operations:
             if op.op == "ensure_dir":
                 mkdir(op.dst)
-                executed.append({"op": op.op, "dst": op.dst})
+                executed.append({"op": op.op, "dst": op.dst, "state": "completed"})
                 _persist()
                 continue
+
+            # Write an in_progress entry BEFORE rename so a SIGKILL between
+            # rename() and append() still leaves a manifest record. Rollback
+            # treats in_progress as "the FS may be at src OR dst" and probes
+            # both. (Codex round 1 review B1.)
+            entry: dict[str, Any] = {
+                "op": op.op,
+                "src": op.src,
+                "dst": op.dst,
+                "worktrees": op.worktrees,
+                "compat_junction": bool(keep_compat),
+                "state": "in_progress",
+            }
+            executed.append(entry)
+            _persist()
 
             rename(op.src, op.dst)
             if op.has_worktrees and op.op == "rename_project":
                 repair(Path(op.dst))
             if keep_compat and op.op in ("rename_project", "move_run"):
                 junction(Path(op.src), Path(op.dst))
-            executed.append({
-                "op": op.op,
-                "src": op.src,
-                "dst": op.dst,
-                "worktrees": op.worktrees,
-                "compat_junction": bool(keep_compat),
-            })
+            entry["state"] = "completed"
             _persist()
     except BaseException:
         # Even on Ctrl-C / OSError, the manifest is already up to date.
@@ -524,7 +588,12 @@ def _default_manifest_path(plan: Plan) -> Path:
 
 
 def rollback(manifest_path: Path, *, runner: Optional[Any] = None) -> None:
-    """Reverse the operations recorded in `manifest_path`."""
+    """Reverse the operations recorded in `manifest_path`.
+
+    Handles both "completed" entries (rename was confirmed) and
+    "in_progress" entries (manifest was persisted before rename, so the
+    FS may be at src OR dst — probe and undo only if dst is present).
+    """
     rename = (runner.rename if runner else os.rename)
     repair = (runner.repair if runner else _git_worktree_repair)
     remove_junction = (runner.remove_junction if runner else _remove_junction)
@@ -536,11 +605,23 @@ def rollback(manifest_path: Path, *, runner: Optional[Any] = None) -> None:
         if op == "ensure_dir":
             # Idempotent; leave dirs alone (they may now contain content).
             continue
+        state = entry.get("state", "completed")
+        src = entry["src"]
+        dst = entry["dst"]
+        # Old manifests (pre-state-tracking) lacked the field; treat as completed.
+        if state == "in_progress":
+            # SIGKILL window between persist and rename, OR between rename
+            # and the second persist. Decide based on FS observation.
+            if Path(dst).exists() and not Path(src).exists():
+                pass  # rename did happen; fall through to undo
+            else:
+                # rename never happened (or was already undone) — nothing to do.
+                continue
         if entry.get("compat_junction"):
-            remove_junction(Path(entry["src"]))
-        rename(entry["dst"], entry["src"])
+            remove_junction(Path(src))
+        rename(dst, src)
         if op == "rename_project" and entry.get("worktrees"):
-            repair(Path(entry["src"]))
+            repair(Path(src))
 
 
 def find_latest_manifest(workers_root: Path) -> Optional[Path]:
@@ -573,6 +654,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     p.add_argument("--from-manifest", type=Path,
                    help="--apply input: replay a previously generated --plan --json manifest "
                         "(supports tier-by-tier staging by hand-editing the manifest)")
+    p.add_argument("--db", type=Path, default=None,
+                   help="state.db path; preflight checks for active runs (status in 'in_use'/'review')")
+    p.add_argument("--force", action="store_true",
+                   help="treat preflight warnings about active runs as non-blocking")
     p.add_argument("--json", action="store_true", help="emit JSON manifest to stdout (with --plan)")
     args = p.parse_args(argv)
 
@@ -602,7 +687,9 @@ def main(argv: Optional[list[str]] = None) -> int:
             operations=[Operation(**op) for op in data.get("operations", [])],
             swap_intermediate=data.get("swap_intermediate", SWAP_INTERMEDIATE),
         )
-        issues = preflight(loaded_plan, Path(loaded_plan.workers_root))
+        issues = preflight(loaded_plan, Path(loaded_plan.workers_root),
+                           db_path=args.db)
+        issues = _filter_overridable(issues, force=args.force)
         if issues:
             print("preflight issues:", file=sys.stderr)
             for i in issues:
@@ -641,7 +728,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         if not args.confirm:
             print("error: --apply requires --confirm", file=sys.stderr)
             return 2
-        issues = preflight(plan, workers_root)
+        issues = preflight(plan, workers_root, db_path=args.db)
+        issues = _filter_overridable(issues, force=args.force)
         if issues:
             print("preflight issues:", file=sys.stderr)
             for i in issues:

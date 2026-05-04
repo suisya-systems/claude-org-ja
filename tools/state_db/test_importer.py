@@ -300,6 +300,35 @@ class TestImporter(unittest.TestCase):
             self.assertEqual(s1.input_lines_total, n_entries)
 
 
+class TestInventoryLifecycleMapping(unittest.TestCase):
+    """Inventory tier → worker_dirs.lifecycle must follow directory-layout.md
+    §5 H5. archive_candidate in particular must land at delete_pending so
+    `curator_archive --purge` can pick it up (round 1 review M2)."""
+
+    def test_archive_candidate_maps_to_delete_pending(self):
+        entries = _synthetic_inventory_entries()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "claude-org"
+            (root / "registry").mkdir(parents=True)
+            (root / ".state").mkdir(parents=True)
+            db = Path(td) / "inv.db"
+            inv = Path(td) / "inventory.json"
+            inv.write_text(json.dumps(entries, ensure_ascii=False), encoding="utf-8")
+            import_full_rebuild(db, root, inventory_json=inv, strict=False)
+            conn = connect(db)
+            try:
+                rows = {r["abs_path"]: r["lifecycle"]
+                        for r in conn.execute("SELECT abs_path, lifecycle FROM worker_dirs")}
+            finally:
+                conn.close()
+            self.assertEqual(rows["/workers/old-pile"], "delete_pending",
+                             "archive_candidate → delete_pending (per H5)")
+            self.assertEqual(rows["/workers/fizzbuzz"], "scratch")
+            self.assertEqual(rows["/workers/run-alpha"], "active")
+            self.assertEqual(rows["/workers/demo-project"], "active")
+            self.assertEqual(rows["/workers/mystery-dir"], "active")  # unknown → active default
+
+
 class TestStrictMode(unittest.TestCase):
     def test_strict_raises_on_missing_inputs(self):
         with tempfile.TemporaryDirectory() as td:
