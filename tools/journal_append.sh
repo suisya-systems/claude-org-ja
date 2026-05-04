@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# claude-org-ja journal append wrapper (M2 DB-write switch, Issue #267).
+# claude-org-ja journal append wrapper (M4 DB-only, Issue #267).
 #
-# Pre-M2 this script sourced core_harness.audit's bash companion and
-# appended directly to journal.jsonl. M2 routes writes through SQLite
-# (`.state/state.db`) and regenerates the jsonl from the events table;
-# the Python wrapper does both. Keeping the .sh entry point because
+# Pre-M2 this script appended directly to .state/journal.jsonl. M2
+# routed writes through SQLite (`.state/state.db`) while still
+# regenerating the jsonl side-output. M4 decommissions the jsonl
+# entirely — the ``events`` table is the SoT and this wrapper just
+# defers to the Python entry point. Keeping the .sh shim because
 # CLAUDE.md / SKILL.md / hook configs still reference it by name.
 #
 # Usage:
@@ -30,7 +31,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 if [ -n "${JOURNAL_PATH-}" ]; then
-    printf 'tools/journal_append.sh: warning: $JOURNAL_PATH override rejected at ja boundary; writing to canonical <repo_root>/.state/journal.jsonl\n' >&2
+    printf 'tools/journal_append.sh: warning: $JOURNAL_PATH override rejected at ja boundary; M4 writes go to <repo_root>/.state/state.db only\n' >&2
 fi
 
 EVENT="$1"

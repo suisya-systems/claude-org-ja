@@ -590,7 +590,10 @@ def import_full_rebuild(
     Inputs are resolved relative to `claude_org_root`:
       - `registry/projects.md`
       - `.state/org-state.md`
-      - `.state/journal.jsonl`
+
+    M4 (Issue #267): ``.state/journal.jsonl`` is decommissioned — the
+    DB ``events`` table is the SoT. The importer still drains the file
+    if it exists (legacy migration path) but no longer requires it.
     `inventory_json` is read independently (defaults to None — tests may
     supply the design-phase fixture).
 
@@ -608,10 +611,13 @@ def import_full_rebuild(
     inputs = {
         "registry/projects.md": claude_org_root / "registry" / "projects.md",
         ".state/org-state.md": claude_org_root / ".state" / "org-state.md",
-        ".state/journal.jsonl": claude_org_root / ".state" / "journal.jsonl",
     }
     if inventory_json is not None:
         inputs["inventory.json"] = Path(inventory_json)
+
+    # M4: ``.state/journal.jsonl`` is read opportunistically (legacy
+    # migration only) and is never part of the strict-mode required set.
+    legacy_journal = claude_org_root / ".state" / "journal.jsonl"
 
     found, missing = [], []
     for label, path in inputs.items():
@@ -634,7 +640,7 @@ def import_full_rebuild(
         if "inventory.json" in inputs:
             importer.import_inventory_json(inputs["inventory.json"])
         importer.import_org_state_md(inputs[".state/org-state.md"])
-        importer.import_journal_jsonl(inputs[".state/journal.jsonl"])
+        importer.import_journal_jsonl(legacy_journal)
         conn.commit()
         importer.summary.dump_sha256 = dump_signature(conn)
         return importer.summary

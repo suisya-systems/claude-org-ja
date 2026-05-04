@@ -339,7 +339,10 @@ class TestStrictMode(unittest.TestCase):
                 import_full_rebuild(db, root)
             self.assertIn("registry/projects.md", ctx.exception.missing)
             self.assertIn(".state/org-state.md", ctx.exception.missing)
-            self.assertIn(".state/journal.jsonl", ctx.exception.missing)
+            # M4 (Issue #267): ``.state/journal.jsonl`` is no longer a
+            # required input; it's drained opportunistically as legacy
+            # data and absence is normal post-freeze.
+            self.assertNotIn(".state/journal.jsonl", ctx.exception.missing)
             # DB file must not exist after a strict failure (no DB work done).
             self.assertFalse(db.exists())
 
@@ -351,7 +354,7 @@ class TestStrictMode(unittest.TestCase):
             summary = import_full_rebuild(db, root)
             self.assertEqual(summary.inputs_missing, [])
             self.assertIn("registry/projects.md", summary.inputs_found)
-            self.assertIn(".state/journal.jsonl", summary.inputs_found)
+            self.assertIn(".state/org-state.md", summary.inputs_found)
 
     def test_cli_strict_default_exits_nonzero_on_missing(self):
         with tempfile.TemporaryDirectory() as td:

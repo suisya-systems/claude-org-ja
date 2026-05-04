@@ -47,3 +47,7 @@ Thumbs.db
 .env
 .env.*
 .claude/scheduled_tasks.lock
+
+# M4 (Issue #267): journal.jsonl decommissioned — events table is the SoT.
+# Local files lingering from pre-M4 runs are no longer authoritative.
+.state/journal.jsonl

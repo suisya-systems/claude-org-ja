@@ -1,4 +1,4 @@
-"""Tests for tools.state_db.snapshotter and drift_check (Issue #267 M2)."""
+"""Tests for tools.state_db.snapshotter and drift_check (Issue #267 M4)."""
 from __future__ import annotations
 
 import tempfile
@@ -8,11 +8,8 @@ from pathlib import Path
 from tools.state_db import apply_schema, connect
 from tools.state_db.drift_check import compute_diff
 from tools.state_db.snapshotter import (
-    extract_unknown_sections,
     post_commit_regenerate,
-    regenerate_journal_jsonl,
     regenerate_org_state_md,
-    render_journal_jsonl,
     render_org_state_md,
     render_structured_markdown,
 )
@@ -25,22 +22,23 @@ def _seed_session(conn):
         status="ACTIVE",
         started_at="2026-04-22",
         updated_at="2026-05-04 (session #11)",
-        objective="finish M2",
+        objective="finish M4",
         dispatcher_pane_id="2", dispatcher_peer_id="2",
         curator_pane_id="3", curator_peer_id="3",
         resume_instructions="Run `/org-resume` then briefing.",
     )
-    wid = w.register_worker_dir(
-        abs_path="/x/wd/issue-267-m2-write-switch", layout="flat",
-        is_git_repo=True, is_worktree=True, current_branch="issue-267-m2",
+    w.register_worker_dir(
+        abs_path="/x/wd/issue-267-m4-markdown-freeze", layout="flat",
+        is_git_repo=True, is_worktree=True,
+        current_branch="issue-267-m4-markdown-freeze",
     )
     w.upsert_run(
-        task_id="issue-267-m2-write-switch",
+        task_id="issue-267-m4-markdown-freeze",
         project_slug="claude-org-ja",
         pattern="B",
-        title="M2 write switch",
+        title="M4 freeze",
         status="in_use",
-        worker_dir_abs_path="/x/wd/issue-267-m2-write-switch",
+        worker_dir_abs_path="/x/wd/issue-267-m4-markdown-freeze",
         outcome_note="DB SoT migration",
     )
     w.upsert_run(
@@ -49,13 +47,13 @@ def _seed_session(conn):
         pattern="B",
         title="prior",
         status="completed",
-        worker_dir_abs_path="/x/wd/issue-267-m2-write-switch",
+        worker_dir_abs_path="/x/wd/issue-267-m4-markdown-freeze",
         outcome_note="merged",
     )
     w.append_event(kind="dispatch", actor="dispatcher",
-                    payload={"task": "issue-267-m2-write-switch"},
+                    payload={"task": "issue-267-m4-markdown-freeze"},
                     occurred_at="2026-05-04T01:00:00.000Z",
-                    run_task_id="issue-267-m2-write-switch")
+                    run_task_id="issue-267-m4-markdown-freeze")
     w.append_event(kind="suspend", actor="secretary",
                     payload={"reason": "user_requested"},
                     occurred_at="2026-05-04T02:00:00.000Z")
@@ -77,136 +75,49 @@ class TestStructuredRender(unittest.TestCase):
         self.assertIn("# Org State", md)
         self.assertIn("Status: ACTIVE", md)
         self.assertIn("Started: 2026-04-22", md)
-        self.assertIn("Current Objective: finish M2", md)
-        # Section headings appear in canonical order. ``## Active Work
-        # Items`` was demoted to passthrough in M2.1 (Issue #272) — see
-        # ``_STRUCTURED_HEADINGS`` for the rationale — so the structured
-        # render does not emit it any more.
+        self.assertIn("Current Objective: finish M4", md)
+        # Section order: Dispatcher → Curator → WDR → Active Work Items
+        # → Resume Instructions. M4 (Issue #267) reinstates the
+        # ``## Active Work Items`` block as a DB-rendered section
+        # (sourced from runs with status in_use / review).
         idx_disp = md.index("## Dispatcher")
         idx_cur = md.index("## Curator")
         idx_wdr = md.index("## Worker Directory Registry")
+        idx_active = md.index("## Active Work Items")
         idx_resume = md.index("## Resume Instructions")
         self.assertLess(idx_disp, idx_cur)
         self.assertLess(idx_cur, idx_wdr)
-        self.assertLess(idx_wdr, idx_resume)
-        self.assertNotIn("## Active Work Items", md)
+        self.assertLess(idx_wdr, idx_active)
+        self.assertLess(idx_active, idx_resume)
         # WDR contains both runs (active + completed) so both task ids
         # are still rendered.
-        self.assertIn("issue-267-m2-write-switch", md)
+        self.assertIn("issue-267-m4-markdown-freeze", md)
         self.assertIn("prior-completed", md)
 
-
-class TestStructuredHeadingExactMatch(unittest.TestCase):
-    """Cross-review M1: substring match on heading names was eating
-    free-form headings whose name happened to *contain* a structured
-    keyword. Switched to exact match (lower-cased)."""
-
-    def test_dispatcher_notes_passes_through(self):
-        src = (
-            "## Dispatcher\n- Peer ID: 2\n\n"
-            "## Dispatcher Notes\nfree-form ops log\n\n"
-            "## Curator メモ\n人間の覚え書き\n\n"
-            "## Curator\n- Peer ID: 3\n"
-        )
-        passthrough = extract_unknown_sections(src)
-        self.assertIn("Dispatcher Notes", passthrough)
-        self.assertIn("free-form ops log", passthrough)
-        self.assertIn("Curator メモ", passthrough)
-        self.assertIn("人間の覚え書き", passthrough)
-        # The exact-match structured headings are excluded.
-        self.assertNotIn("Peer ID: 2", passthrough)
-        self.assertNotIn("Peer ID: 3", passthrough)
-
-    def test_drift_check_detects_loss_of_dispatcher_notes(self):
-        # Sanity: when the on-disk markdown has a "## Dispatcher Notes"
-        # section, drift_check must NOT report drift just because the
-        # snapshotter's structured slice doesn't render that section.
-        # The previous (substring) implementation classified it as
-        # structured, dropped it from the passthrough output, and then
-        # the strip-passthrough step in drift_check left it behind in
-        # the actual-side text — which surfaced as drift.
+    def test_active_work_items_only_lists_in_use_and_review(self):
         with tempfile.TemporaryDirectory() as td:
             db = Path(td) / "s.db"
-            md = Path(td) / "org-state.md"
             conn = connect(db)
             try:
                 apply_schema(conn)
                 _seed_session(conn)
-                regenerate_org_state_md(conn, md)
-                with md.open("a", encoding="utf-8") as fh:
-                    fh.write(
-                        "\n## Dispatcher Notes\nfree-form note\n"
-                        "\n## Curator メモ\n別の自由記述\n"
-                    )
-                diff = compute_diff(conn, md)
+                md = render_structured_markdown(conn)
             finally:
                 conn.close()
-        self.assertEqual(diff, "")
+        # The completed run must NOT appear under Active Work Items
+        # (it still appears in WDR).
+        active_section = md.split("## Active Work Items", 1)[1].split("\n## ", 1)[0]
+        self.assertIn("issue-267-m4-markdown-freeze", active_section)
+        self.assertNotIn("prior-completed", active_section)
+        # Status label uses the UI vocabulary.
+        self.assertIn("[IN_PROGRESS]", active_section)
 
 
-class TestActiveWorkItemsPassthrough(unittest.TestCase):
-    """M2.1 (Issue #272): the live ``.state/org-state.md`` keeps a
-    free-form ``## Active Work Items`` list that the importer routes
-    to ``events`` (kind ``legacy_active_item``), not to ``runs``. The
-    snapshotter must therefore preserve the existing block via
-    passthrough — otherwise the first post_commit_regenerate after the
-    cutover silently erases every COMPLETED / ABANDONED entry the
-    operator curated by hand. This test reproduces the live shape and
-    asserts the regen round-trip preserves the list."""
+class TestRenderOrgStateMdHasNoPassthrough(unittest.TestCase):
+    """M4 (Issue #267): the snapshotter no longer reads the on-disk
+    markdown — every byte of the regenerated file comes from the DB."""
 
-    _LIVE_SHAPE = (
-        "# Org State\n\nStatus: ACTIVE\n\n"
-        "## Dispatcher\n- Peer ID: 2\n\n"
-        "## Worker Directory Registry\n\n"
-        "## Active Work Items\n\n"
-        "- worker-brief-generator: COMPLETED (PR #228 merged)\n"
-        "- contract-set-a-outline: COMPLETED (PR #227 merged)\n"
-        "- dogfooding-smoke-rerun-session8: REVIEW 待ち\n"
-        "- session-current: IN_PROGRESS\n"
-        "\n"
-        "## Pending Lead アクション\n- 何かのフォローアップ\n"
-    )
-
-    def test_completed_items_survive_regen(self):
-        with tempfile.TemporaryDirectory() as td:
-            db = Path(td) / "s.db"
-            md = Path(td) / "org-state.md"
-            md.write_text(self._LIVE_SHAPE, encoding="utf-8")
-            conn = connect(db)
-            try:
-                apply_schema(conn)
-                _seed_session(conn)
-                regenerate_org_state_md(conn, md, source_md=md)
-                regenerated = md.read_text(encoding="utf-8")
-            finally:
-                conn.close()
-        # Operator-curated COMPLETED / REVIEW entries must survive.
-        self.assertIn("worker-brief-generator: COMPLETED", regenerated)
-        self.assertIn("contract-set-a-outline: COMPLETED", regenerated)
-        self.assertIn("dogfooding-smoke-rerun-session8: REVIEW", regenerated)
-        # Free-form follow-up section also survives.
-        self.assertIn("Pending Lead", regenerated)
-        # And the structured render still updates DB-owned blocks.
-        self.assertIn("Status: ACTIVE", regenerated)
-
-
-class TestPassthrough(unittest.TestCase):
-    def test_extract_unknown_sections_keeps_freeform(self):
-        src = (
-            "# Org State\n\nStatus: ACTIVE\n\n"
-            "## 2026-05-04 セッション #11 主要成果\n"
-            "- ratified Phase 1\n\n"
-            "## Dispatcher\n- Peer ID: 2\n\n"
-            "## 本セッションの学び\nlessons here\n"
-        )
-        passthrough = extract_unknown_sections(src)
-        self.assertIn("セッション #11", passthrough)
-        self.assertIn("本セッションの学び", passthrough)
-        self.assertNotIn("Dispatcher", passthrough)
-
-
-class TestMergeRender(unittest.TestCase):
-    def test_render_org_state_md_merges_passthrough(self):
+    def test_regenerate_drops_unknown_sections(self):
         with tempfile.TemporaryDirectory() as td:
             db = Path(td) / "s.db"
             md = Path(td) / "org-state.md"
@@ -221,15 +132,17 @@ class TestMergeRender(unittest.TestCase):
             try:
                 apply_schema(conn)
                 _seed_session(conn)
-                body = render_org_state_md(conn, source_md=md)
+                regenerate_org_state_md(conn, md)
+                body = md.read_text(encoding="utf-8")
             finally:
                 conn.close()
         # New header replaces old (DB-derived).
         self.assertIn("Status: ACTIVE", body)
         self.assertNotIn("Status: STALE", body)
-        # Free-form passthrough preserved.
-        self.assertIn("free-form note", body)
-        self.assertIn("freeform body", body)
+        # Free-form section is no longer carried through. Operators must
+        # extract such content to ``notes/`` before regenerate.
+        self.assertNotIn("free-form note", body)
+        self.assertNotIn("freeform body", body)
         # Old Dispatcher block is dropped (DB regenerates it).
         self.assertNotIn("Peer ID: 99", body)
         self.assertIn("- Peer ID: 2", body)
@@ -252,30 +165,11 @@ class TestIdempotency(unittest.TestCase):
                 conn.close()
         self.assertEqual(first, second)
 
-    def test_regenerate_journal_jsonl_byte_identical(self):
-        with tempfile.TemporaryDirectory() as td:
-            db = Path(td) / "s.db"
-            jl = Path(td) / "journal.jsonl"
-            conn = connect(db)
-            try:
-                apply_schema(conn)
-                _seed_session(conn)
-                regenerate_journal_jsonl(conn, jl)
-                first = jl.read_bytes()
-                regenerate_journal_jsonl(conn, jl)
-                second = jl.read_bytes()
-            finally:
-                conn.close()
-        self.assertEqual(first, second)
-        # Body has both events in chronological order.
-        text = first.decode("utf-8")
-        self.assertIn('"event": "dispatch"', text)
-        self.assertIn('"event": "suspend"', text)
-        self.assertLess(text.index("dispatch"), text.index("suspend"))
-
 
 class TestPostCommitRegenerate(unittest.TestCase):
-    def test_post_commit_regenerate_writes_both(self):
+    def test_post_commit_regenerate_writes_markdown_only(self):
+        # M4: jsonl side-output is decommissioned; the wrapper writes
+        # only `.state/org-state.md`.
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             (root / ".state").mkdir()
@@ -288,7 +182,7 @@ class TestPostCommitRegenerate(unittest.TestCase):
             finally:
                 conn.close()
             self.assertTrue((root / ".state" / "org-state.md").exists())
-            self.assertTrue((root / ".state" / "journal.jsonl").exists())
+            self.assertFalse((root / ".state" / "journal.jsonl").exists())
 
 
 class TestDriftCheck(unittest.TestCase):
@@ -325,7 +219,10 @@ class TestDriftCheck(unittest.TestCase):
         self.assertNotEqual(diff, "")
         self.assertIn("Status:", diff)
 
-    def test_freeform_section_not_treated_as_drift(self):
+    def test_freeform_section_appended_now_counts_as_drift(self):
+        # M4 (Issue #267): the passthrough exception is gone. A
+        # free-form ``## …`` section appended to the dump must surface
+        # as drift — operators must put such content under ``notes/``.
         with tempfile.TemporaryDirectory() as td:
             db = Path(td) / "s.db"
             md = Path(td) / "org-state.md"
@@ -334,14 +231,13 @@ class TestDriftCheck(unittest.TestCase):
                 apply_schema(conn)
                 _seed_session(conn)
                 regenerate_org_state_md(conn, md)
-                # Append a free-form section directly to the file. Drift
-                # check ignores unknown sections; expected diff = empty.
                 with md.open("a", encoding="utf-8") as fh:
                     fh.write("\n## 本セッションの学び\nlearned X\n")
                 diff = compute_diff(conn, md)
             finally:
                 conn.close()
-        self.assertEqual(diff, "")
+        self.assertNotEqual(diff, "")
+        self.assertIn("本セッションの学び", diff)
 
 
 if __name__ == "__main__":

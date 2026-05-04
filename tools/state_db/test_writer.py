@@ -579,10 +579,11 @@ class TestTransactionBoundary(unittest.TestCase):
 
 
 class TestTransactionContextManager(unittest.TestCase):
-    """M2.1 (Issue #272): ``transaction()`` is the canonical write entry
+    """M4 (Issue #267): ``transaction()`` is the canonical write entry
     point for skill-side callers. It must commit on normal exit, roll
-    back on exception, and best-effort regenerate the markdown/jsonl
-    dump after commit when ``claude_org_root`` is known."""
+    back on exception, and best-effort regenerate ``.state/org-state.md``
+    after commit when ``claude_org_root`` is known. The pre-M4 jsonl
+    side-output has been decommissioned."""
 
     def _root_with_state_db(self):
         td = tempfile.TemporaryDirectory()
@@ -627,20 +628,19 @@ class TestTransactionContextManager(unittest.TestCase):
             conn.close()
             td.cleanup()
 
-    def test_post_commit_regenerates_markdown_and_jsonl(self):
+    def test_post_commit_regenerates_markdown_only(self):
+        # M4 (Issue #267): jsonl side-output is decommissioned; the
+        # post-commit hook now writes only `.state/org-state.md`.
         td, root, db, conn = self._root_with_state_db()
         try:
             w = StateWriter(conn, claude_org_root=root)
             with w.transaction() as tx:
-                tx.update_session(status="ACTIVE", objective="ship M2.1")
+                tx.update_session(status="ACTIVE", objective="ship M4")
                 tx.append_event(kind="dispatch", actor="dispatcher",
                                  payload={"task": "t-x"})
             md = (root / ".state" / "org-state.md").read_text(encoding="utf-8")
             self.assertIn("Status: ACTIVE", md)
-            jsonl = (root / ".state" / "journal.jsonl").read_text(
-                encoding="utf-8"
-            )
-            self.assertIn('"event": "dispatch"', jsonl)
+            self.assertFalse((root / ".state" / "journal.jsonl").exists())
         finally:
             conn.close()
             td.cleanup()
