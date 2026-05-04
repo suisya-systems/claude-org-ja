@@ -40,6 +40,8 @@ class ImportSummary:
     unparsed_inserted: int = 0
     input_lines_total: int = 0
     dump_sha256: str = ""
+    inputs_found: list = field(default_factory=list)
+    inputs_missing: list = field(default_factory=list)
 
     @property
     def total_rows(self) -> int:
@@ -341,18 +343,15 @@ class _Importer:
                 ts = obj.get("ts") or obj.get("occurred_at")
                 actor = obj.get("actor")
                 payload = json.dumps(obj, ensure_ascii=False, sort_keys=True)
-                if ts:
-                    self.conn.execute(
-                        "INSERT INTO events (occurred_at, actor, kind, payload_json) "
-                        "VALUES (?, ?, ?, ?)",
-                        (ts, actor, kind, payload),
-                    )
-                else:
-                    self.conn.execute(
-                        "INSERT INTO events (actor, kind, payload_json) "
-                        "VALUES (?, ?, ?)",
-                        (actor, kind, payload),
-                    )
+                # Sentinel when the source line carries no timestamp — letting
+                # SQLite's strftime('now') default fire would break dump_signature
+                # idempotency on rebuild.
+                occurred_at = ts if ts else "2000-01-01T00:00:00.000Z"
+                self.conn.execute(
+                    "INSERT INTO events (occurred_at, actor, kind, payload_json) "
+                    "VALUES (?, ?, ?, ?)",
+                    (occurred_at, actor, kind, payload),
+                )
                 self.summary.events_inserted += 1
 
 
@@ -428,11 +427,22 @@ def dump_signature(conn: sqlite3.Connection) -> str:
 # ---------------------------------------------------------------------------
 
 
+class MissingInputsError(RuntimeError):
+    """Raised when strict=True and one or more expected inputs are missing."""
+
+    def __init__(self, missing: list):
+        super().__init__(
+            "expected importer inputs missing: " + ", ".join(missing)
+        )
+        self.missing = missing
+
+
 def import_full_rebuild(
     db_path: Path,
     claude_org_root: Path,
     *,
     inventory_json: Optional[Path] = None,
+    strict: bool = True,
 ) -> ImportSummary:
     """Drop everything, re-apply schema, re-import from markdown / JSONL.
 
@@ -442,22 +452,46 @@ def import_full_rebuild(
       - `.state/journal.jsonl`
     `inventory_json` is read independently (defaults to None — tests may
     supply the design-phase fixture).
+
+    With `strict=True` (default), a missing standard input raises
+    `MissingInputsError` before any DB work is done. The shadow-DB DoD
+    (migration-strategy.md §M0) requires that "no input row is silently
+    dropped"; that contract cannot be honoured if the importer cannot
+    distinguish "0 lines because empty" from "0 lines because path typo".
+    Tests that intentionally exercise a partial fixture set should pass
+    `strict=False`.
     """
     db_path = Path(db_path)
     claude_org_root = Path(claude_org_root)
+
+    inputs = {
+        "registry/projects.md": claude_org_root / "registry" / "projects.md",
+        ".state/org-state.md": claude_org_root / ".state" / "org-state.md",
+        ".state/journal.jsonl": claude_org_root / ".state" / "journal.jsonl",
+    }
+    if inventory_json is not None:
+        inputs["inventory.json"] = Path(inventory_json)
+
+    found, missing = [], []
+    for label, path in inputs.items():
+        (found if path.exists() else missing).append(label)
+    if strict and missing:
+        raise MissingInputsError(missing)
 
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = connect(db_path)
     try:
         _reset_schema(conn)
         importer = _Importer(conn)
+        importer.summary.inputs_found = found
+        importer.summary.inputs_missing = missing
         # Order matters: projects first so runs FK resolves; worker_dirs
         # before runs so worker_dir_id resolves; events last.
-        importer.import_projects_md(claude_org_root / "registry" / "projects.md")
-        if inventory_json is not None:
-            importer.import_inventory_json(Path(inventory_json))
-        importer.import_org_state_md(claude_org_root / ".state" / "org-state.md")
-        importer.import_journal_jsonl(claude_org_root / ".state" / "journal.jsonl")
+        importer.import_projects_md(inputs["registry/projects.md"])
+        if "inventory.json" in inputs:
+            importer.import_inventory_json(inputs["inventory.json"])
+        importer.import_org_state_md(inputs[".state/org-state.md"])
+        importer.import_journal_jsonl(inputs[".state/journal.jsonl"])
         conn.commit()
         importer.summary.dump_sha256 = dump_signature(conn)
         return importer.summary
@@ -480,13 +514,23 @@ def _main(argv: Optional[list[str]] = None) -> int:
                    help="Optional inventory.json fixture")
     p.add_argument("--rebuild", action="store_true",
                    help="Required acknowledgement that the DB will be wiped")
+    p.add_argument("--strict", dest="strict", action="store_true",
+                   default=True,
+                   help="Fail (exit != 0) if any expected input is missing (default)")
+    p.add_argument("--no-strict", dest="strict", action="store_false",
+                   help="Tolerate missing inputs (e.g. fixture-only smoke runs)")
     args = p.parse_args(argv)
     if not args.rebuild:
         print("error: --rebuild flag is required (this drops every table).",
               file=sys.stderr)
         return 2
-    summary = import_full_rebuild(args.db, args.root,
-                                   inventory_json=args.inventory)
+    try:
+        summary = import_full_rebuild(args.db, args.root,
+                                       inventory_json=args.inventory,
+                                       strict=args.strict)
+    except MissingInputsError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 3
     print(json.dumps(summary.to_dict(), ensure_ascii=False, indent=2))
     return 0
 

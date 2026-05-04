@@ -14,6 +14,8 @@ from pathlib import Path
 from tools.state_db import apply_schema, connect
 from tools.state_db.importer import (
     ImportSummary,
+    MissingInputsError,
+    _main,
     dump_signature,
     import_full_rebuild,
 )
@@ -53,7 +55,9 @@ def _seed_claude_org_root(root: Path) -> None:
 
     (root / ".state" / "journal.jsonl").write_text(
         '{"ts":"2026-04-01T00:00:00Z","event":"dispatch","task":"sample-task-1"}\n'
-        '{"ts":"2026-04-02T00:00:00Z","event":"complete","task":"sample-task-1"}\n',
+        '{"ts":"2026-04-02T00:00:00Z","event":"complete","task":"sample-task-1"}\n'
+        # ts-less line — exercises the sentinel branch (regression for M1).
+        '{"event":"orphan","note":"no ts"}\n',
         encoding="utf-8",
     )
 
@@ -224,13 +228,60 @@ class TestImporter(unittest.TestCase):
             (root / ".state").mkdir(parents=True)
             db = Path(td) / "inventory.db"
 
-            s1 = import_full_rebuild(db, root, inventory_json=_FIXTURE_INVENTORY)
-            s2 = import_full_rebuild(db, root, inventory_json=_FIXTURE_INVENTORY)
+            # strict=False: this fixture intentionally lacks projects.md /
+            # org-state.md / journal.jsonl; only inventory.json is provided.
+            s1 = import_full_rebuild(db, root, inventory_json=_FIXTURE_INVENTORY,
+                                       strict=False)
+            s2 = import_full_rebuild(db, root, inventory_json=_FIXTURE_INVENTORY,
+                                       strict=False)
 
             self.assertEqual(s1.dump_sha256, s2.dump_sha256)
             self.assertEqual(s1.worker_dirs_inserted, n_entries)
             self.assertEqual(s2.worker_dirs_inserted, n_entries)
             self.assertEqual(s1.input_lines_total, n_entries)
+
+
+class TestStrictMode(unittest.TestCase):
+    def test_strict_raises_on_missing_inputs(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "claude-org"
+            root.mkdir()  # no registry/, no .state/
+            db = Path(td) / "strict.db"
+            with self.assertRaises(MissingInputsError) as ctx:
+                import_full_rebuild(db, root)
+            self.assertIn("registry/projects.md", ctx.exception.missing)
+            self.assertIn(".state/org-state.md", ctx.exception.missing)
+            self.assertIn(".state/journal.jsonl", ctx.exception.missing)
+            # DB file must not exist after a strict failure (no DB work done).
+            self.assertFalse(db.exists())
+
+    def test_strict_summary_records_inputs_present(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "claude-org"
+            db = Path(td) / "ok.db"
+            _seed_claude_org_root(root)
+            summary = import_full_rebuild(db, root)
+            self.assertEqual(summary.inputs_missing, [])
+            self.assertIn("registry/projects.md", summary.inputs_found)
+            self.assertIn(".state/journal.jsonl", summary.inputs_found)
+
+    def test_cli_strict_default_exits_nonzero_on_missing(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "claude-org"
+            root.mkdir()
+            db = Path(td) / "cli.db"
+            rc = _main(["--db", str(db), "--root", str(root), "--rebuild"])
+            self.assertEqual(rc, 3)
+            self.assertFalse(db.exists())
+
+    def test_cli_no_strict_tolerates_missing(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "claude-org"
+            root.mkdir()
+            db = Path(td) / "cli.db"
+            rc = _main(["--db", str(db), "--root", str(root), "--rebuild",
+                         "--no-strict"])
+            self.assertEqual(rc, 0)
 
 
 if __name__ == "__main__":
