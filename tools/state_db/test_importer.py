@@ -21,7 +21,67 @@ from tools.state_db.importer import (
 )
 
 
-_FIXTURE_INVENTORY = Path(__file__).resolve().parent / "_fixtures" / "inventory.json"
+def _synthetic_inventory_entries() -> list[dict]:
+    """Tier-diverse inventory entries with sanitised placeholder paths.
+
+    Replaces the previous on-disk fixture (which leaked absolute developer
+    paths into a public OSS repo). Covers project / run / scratch /
+    archive_candidate / unknown tiers so the importer's classification
+    branches stay exercised.
+    """
+    return [
+        {"name": "demo-project", "abs_path": "/workers/demo-project",
+         "git": {"is_repo": True, "is_worktree": False,
+                 "origin_url": "https://example.invalid/demo.git",
+                 "current_branch": "main"},
+         "size_mb": None,
+         "proposed_classification": {"tier": "project",
+                                      "parent_project": "demo-project",
+                                      "parent_workstream": None,
+                                      "rationale": "long-lived clone"}},
+        {"name": "run-alpha", "abs_path": "/workers/run-alpha",
+         "git": {"is_repo": False, "is_worktree": False,
+                 "origin_url": None, "current_branch": None},
+         "proposed_classification": {"tier": "run",
+                                      "parent_project": "demo-project",
+                                      "parent_workstream": None,
+                                      "rationale": "completed run"}},
+        {"name": "run-beta", "abs_path": "/workers/run-beta",
+         "git": {"is_repo": True, "is_worktree": True,
+                 "origin_url": None, "current_branch": "feature/beta"},
+         "proposed_classification": {"tier": "run",
+                                      "parent_project": "demo-project",
+                                      "parent_workstream": "epic-1",
+                                      "rationale": "active worktree"}},
+        {"name": "run-gamma", "abs_path": "/workers/run-gamma",
+         "git": {"is_repo": False, "is_worktree": False,
+                 "origin_url": None, "current_branch": None},
+         "proposed_classification": {"tier": "run",
+                                      "parent_project": "research",
+                                      "parent_workstream": None,
+                                      "rationale": "report dir"}},
+        {"name": "fizzbuzz", "abs_path": "/workers/fizzbuzz",
+         "git": {"is_repo": False, "is_worktree": False,
+                 "origin_url": None, "current_branch": None},
+         "proposed_classification": {"tier": "scratch",
+                                      "parent_project": None,
+                                      "parent_workstream": None,
+                                      "rationale": "practice"}},
+        {"name": "old-pile", "abs_path": "/workers/old-pile",
+         "git": {"is_repo": False, "is_worktree": False,
+                 "origin_url": None, "current_branch": None},
+         "proposed_classification": {"tier": "archive_candidate",
+                                      "parent_project": None,
+                                      "parent_workstream": None,
+                                      "rationale": "mtime > 90d"}},
+        {"name": "mystery-dir", "abs_path": "/workers/mystery-dir",
+         "git": {"is_repo": False, "is_worktree": False,
+                 "origin_url": None, "current_branch": None},
+         "proposed_classification": {"tier": "unknown",
+                                      "parent_project": None,
+                                      "parent_workstream": None,
+                                      "rationale": "needs human triage"}},
+    ]
 
 
 def _seed_claude_org_root(root: Path) -> None:
@@ -215,10 +275,8 @@ class TestImporter(unittest.TestCase):
             self.assertEqual(accounted, summary.input_lines_total)
 
     def test_import_round_trip_inventory(self):
-        """130-entry inventory.json fixture: row counts + sha256 stable across re-imports."""
-        self.assertTrue(_FIXTURE_INVENTORY.exists(),
-                        f"fixture missing: {_FIXTURE_INVENTORY}")
-        entries = json.loads(_FIXTURE_INVENTORY.read_text(encoding="utf-8"))
+        """Synthetic tier-diverse inventory: row counts + sha256 stable across re-imports."""
+        entries = _synthetic_inventory_entries()
         n_entries = len(entries)
         self.assertGreater(n_entries, 0)
 
@@ -227,13 +285,14 @@ class TestImporter(unittest.TestCase):
             (root / "registry").mkdir(parents=True)
             (root / ".state").mkdir(parents=True)
             db = Path(td) / "inventory.db"
+            inv = Path(td) / "inventory.json"
+            inv.write_text(json.dumps(entries, ensure_ascii=False),
+                           encoding="utf-8")
 
             # strict=False: this fixture intentionally lacks projects.md /
             # org-state.md / journal.jsonl; only inventory.json is provided.
-            s1 = import_full_rebuild(db, root, inventory_json=_FIXTURE_INVENTORY,
-                                       strict=False)
-            s2 = import_full_rebuild(db, root, inventory_json=_FIXTURE_INVENTORY,
-                                       strict=False)
+            s1 = import_full_rebuild(db, root, inventory_json=inv, strict=False)
+            s2 = import_full_rebuild(db, root, inventory_json=inv, strict=False)
 
             self.assertEqual(s1.dump_sha256, s2.dump_sha256)
             self.assertEqual(s1.worker_dirs_inserted, n_entries)
