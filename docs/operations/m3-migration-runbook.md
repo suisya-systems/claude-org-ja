@@ -69,7 +69,7 @@ python -m tools.state_db.migrate_workers \
   --manifest      .state/m3-executed-step1.json
 ```
 
-`--from-manifest` replays the supplied operations exactly; it does NOT regenerate the plan from inventory. The `workers_root` and `archive_quarter` baked into the manifest are honoured (so `--workers-root` here is ignored). Preflight (cross-drive / source-missing / target-conflict) still runs against the loaded ops. Use `--manifest` to choose where the executed-op log is written (the migrator persists it incrementally after every successful op so a mid-batch failure still leaves a valid rollback record).
+`--from-manifest` replays the supplied operations exactly; it does NOT regenerate the plan from inventory. The `workers_root` and `archive_quarter` baked into the manifest are honoured (so `--workers-root` here is ignored). Preflight (cross-drive / source-missing / target-conflict / **root-escape** / **active-runs** when `--db` is also passed) still runs against the loaded ops. Use `--manifest` to choose where the executed-op log is written (the migrator persists it incrementally after every successful op so a mid-batch failure still leaves a valid rollback record).
 
 Recommended tier order:
 
@@ -86,12 +86,12 @@ python -m tools.state_db.migrate_workers \
   --apply --confirm \
   --inventory ../workers/state-db-hierarchy-design/inventory.json \
   --workers-root ../workers \
-  --db          .state/state.db   # gate on active-runs finding
-  --manifest    .state/m3-executed.json \
-  --keep-compat                   # OFF by default; ON during tier 3
+  --db .state/state.db \
+  --manifest .state/m3-executed.json \
+  --keep-compat
 ```
 
-`--db` is optional but strongly recommended: when present, preflight queries `runs.status IN ('in_use','review')` and refuses to start while any are live. `--force` drops only the active-runs finding; root-escape / cross-drive / source-missing / target-conflict findings stay fatal even with `--force`.
+`--db` gates on the active-runs preflight finding; preflight queries `runs.status IN ('in_use','review')` and refuses to start while any are live. `--force` drops only the active-runs finding; root-escape / cross-drive / source-missing / target-conflict findings stay fatal even with `--force`. `--keep-compat` is OFF by default and should be turned ON during tier 3 (the project renames) so legacy paths survive for a short tail.
 
 **Per-step verification:**
 
@@ -202,6 +202,8 @@ python -m tools.state_db.curator_archive --purge   # delete_pending → physical
 | `preflight: target already exists` | partial earlier run, or stale junction | inspect target; `rollback` the failing manifest |
 | `git worktree status` reports `not a git repository` after a project rename | `git worktree repair` was skipped | re-run `git -C <project> worktree repair` (idempotent) |
 | `cross-drive path detected` warning | source / target span different drives | drop `--keep-compat`; use manifest-only mode |
+| `path escapes workers_root` (root_escape) | hand-edited manifest points outside the `--workers-root` subtree | inspect the offending op; restore from the original `--plan --json` output. `--force` does NOT drop this finding |
+| `N active run(s) in <db>` (active_runs) | one or more `runs.status IN ('in_use','review')` rows in `.state/state.db` | suspend all worker panes (`/org-suspend`), confirm count drops to 0, retry. Pass `--force` only after manually verifying every flagged run is genuinely safe to leave moving |
 | DB `drift_check` non-zero post-apply | importer not re-run, or abs_path mismatch | re-run importer; if drift persists, rollback |
 | `curator_archive --apply` errors mid-batch | one row's mv failed | the script rolls that row back automatically; inspect, fix, re-run |
 | `claude-org-ja-tmp/` left behind after a failed swap | apply died between step 1 and step 3 of the 3-step rename | run `--rollback --manifest <step-N-manifest>`; the manifest was written incrementally so the in-progress entry IS recorded. If rollback is unavailable, manually `mv ../workers/claude-org-ja-tmp ../workers/claude-org-ja` (no other dir should be claiming that name during a stalled swap), then re-run `git -C ../workers/claude-org-ja worktree repair`. |
