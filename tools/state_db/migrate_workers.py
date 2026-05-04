@@ -602,8 +602,20 @@ def _git_worktree_repair(repo: Path) -> None:
                 ["git", "-C", str(repo), "worktree", "repair", str(path)],
                 capture_output=True, text=True, check=True, encoding="utf-8",
             )
-        except (subprocess.CalledProcessError, FileNotFoundError):
+        except subprocess.CalledProcessError as e:
+            # External worktrees can fail to repair without showing up in
+            # the parent's `prunable` count (the parent's gitdir file
+            # still points at a path that exists), so swallowing here
+            # would hide real failures from the post-repair check below.
+            stderr = (e.stderr or "").strip()
+            print(
+                f"warning: git worktree repair {path} failed (rc={e.returncode}): {stderr}",
+                file=sys.stderr,
+            )
             continue
+        except FileNotFoundError:
+            # git CLI absent; subsequent calls will fail the same way.
+            break
 
     remaining = _count_prunable_worktrees(repo)
     if remaining:
