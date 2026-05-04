@@ -220,27 +220,21 @@ def parse_org_state_md(text):
     }
 
 
-def parse_org_state_db(db_path):
+def parse_org_state_db(db_path, md_path=None):
     """Build the org-state.json shape from .state/state.db.
 
-    Status / Current Objective / Resume Instructions / Dispatcher / Curator
-    are not modelled in the DB schema yet (M1 scope keeps markdown as SoT for
-    those), so they are returned with placeholder values. Callers that need
-    those fields should still use the markdown source.
+    The DB does not yet model Status / Current Objective / Updated /
+    Dispatcher / Curator / Resume Instructions (M1 scope keeps markdown as
+    SoT for those). To stay non-lossy, this function ALSO parses the markdown
+    when present and merges the markdown-only fields into the output. The
+    workItems / workerDirectoryRegistry come from the DB.
     """
     from tools.state_db import connect
-    from tools.state_db.queries import (
-        get_org_state_summary,
-        list_worker_dirs,
-    )
+    from tools.state_db.queries import get_org_state_summary
 
     conn = connect(db_path)
     try:
         summary = get_org_state_summary(conn)
-        # Worker Directory Registry analogue: one row per active run that has
-        # a directory bound. Orphan worker_dirs (no run) are intentionally
-        # skipped so this matches the markdown-source registry semantics
-        # (every row is a (run, dir) pair).
         registry = []
         for r in summary["active_runs"]:
             if not r.get("worker_dir"):
@@ -265,16 +259,34 @@ def parse_org_state_db(db_path):
             "worker": r.get("worker_dir"),
         })
 
+    # Merge markdown-only fields (Status, Objective, Updated, Dispatcher,
+    # Curator, Resume Instructions). Without this, an `auto`/`db` CLI run
+    # would overwrite .state/org-state.json with a lossy snapshot and the
+    # dashboard's JSON-first reader would lose those fields.
+    md_overlay = {}
+    md_path = Path(md_path) if md_path else _MD_PATH
+    if md_path.exists():
+        try:
+            md_overlay = parse_org_state_md(md_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            print(f"[org_state_converter] markdown overlay failed: {exc}",
+                  file=sys.stderr)
+            md_overlay = {}
+
+    def _pick(key, default=None):
+        return md_overlay.get(key, default) if md_overlay else default
+
     return {
         "version": SCHEMA_VERSION,
-        "updated": None,
-        "status": "ACTIVE" if summary["active_runs"] else "IDLE",
-        "currentObjective": None,
+        "updated": _pick("updated"),
+        "status": _pick("status",
+                        "ACTIVE" if summary["active_runs"] else "IDLE"),
+        "currentObjective": _pick("currentObjective"),
         "workItems": work_items,
         "workerDirectoryRegistry": registry,
-        "dispatcher": None,
-        "curator": None,
-        "resumeInstructions": None,
+        "dispatcher": _pick("dispatcher"),
+        "curator": _pick("curator"),
+        "resumeInstructions": _pick("resumeInstructions"),
         "_source": "db",
     }
 
@@ -325,7 +337,7 @@ def convert(md_path=None, json_path=None, source="auto", db_path=None):
             print(f"[org_state_converter] state.db not found: {db_path}",
                   file=sys.stderr)
             return False
-        data = parse_org_state_db(db_path)
+        data = parse_org_state_db(db_path, md_path=md_path)
     elif chosen == "markdown":
         if not md_path.exists():
             print(f"[org_state_converter] org-state.md not found: {md_path}",

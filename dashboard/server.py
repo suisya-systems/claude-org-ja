@@ -333,15 +333,30 @@ def _activity_from_db_events(events):
     return out
 
 
+# Map DB run.status enum → the status vocabulary the dashboard frontend
+# (dashboard/app.js) renders icons / labels for. Without this remap an
+# `in_use` run would render as a `?` because the frontend has no entry for
+# IN_USE. Keep this in sync with app.js's STATUS_* tables.
+_DB_STATUS_TO_UI = {
+    "in_use": "IN_PROGRESS",
+    "queued": "PENDING",
+    "review": "REVIEW",
+    "completed": "COMPLETED",
+    "failed": "BLOCKED",
+    "suspended": "PENDING",
+    "abandoned": "ABANDONED",
+}
+
+
 def _work_items_from_db_runs(active_runs):
     """Render active runs (in_use / review) into the workItems shape."""
     items = []
     for r in active_runs:
-        status_raw = (r.get("status") or "in_use").upper()
+        raw = (r.get("status") or "in_use").lower()
         items.append({
             "id": r.get("task_id"),
             "title": r.get("title") or r.get("task_id"),
-            "status": status_raw,
+            "status": _DB_STATUS_TO_UI.get(raw, raw.upper()),
             "progress": r.get("outcome_note"),
             "worker": r.get("worker_dir"),
         })
@@ -427,6 +442,11 @@ def _get_mtimes():
         BASE_DIR / ".state" / "org-state.json",
         BASE_DIR / ".state" / "journal.jsonl",
         BASE_DIR / "registry" / "projects.md",
+        # Watch the state DB so importer rebuilds get pushed to SSE clients.
+        # WAL files change on every commit even if state.db itself doesn't,
+        # so include them as the writer-side change signal.
+        STATE_DB_PATH,
+        Path(str(STATE_DB_PATH) + "-wal"),
     ]
     # Glob workers and knowledge
     for p in (BASE_DIR / ".state" / "workers").glob("*.md"):
