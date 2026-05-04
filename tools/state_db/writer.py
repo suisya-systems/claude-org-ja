@@ -36,12 +36,12 @@ class StateWriter:
         # bare sqlite3.connect() handle.
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA busy_timeout = 5000")
-        # Auto-create the org_sessions singleton if missing so update_session
-        # can run on a freshly imported DB without a separate seed step.
-        conn.execute(
-            "INSERT OR IGNORE INTO org_sessions (id, status, last_writer_at) "
-            "VALUES (1, 'IDLE', strftime('%Y-%m-%dT%H:%M:%fZ','now'))"
-        )
+        # Forward-migrate pre-M2 DBs in place: org_sessions may be missing
+        # if this writer attaches to an M0 / M1 DB that was created before
+        # the schema bump. ensure_m2_schema is idempotent and seeds the
+        # singleton row when it's absent.
+        from tools.state_db import ensure_m2_schema
+        ensure_m2_schema(conn)
 
     # ------------------------------------------------------------------
     # Transaction control
@@ -122,41 +122,64 @@ class StateWriter:
         self,
         *,
         abs_path: str,
-        layout: str = "flat",
-        is_git_repo: bool = False,
-        is_worktree: bool = False,
+        layout: Optional[str] = None,
+        is_git_repo: Optional[bool] = None,
+        is_worktree: Optional[bool] = None,
         origin_url: Optional[str] = None,
         current_branch: Optional[str] = None,
         size_mb: Optional[float] = None,
-        lifecycle: str = "active",
+        lifecycle: Optional[str] = None,
     ) -> int:
-        """INSERT (or UPSERT) a worker_dirs row keyed by abs_path. Returns id.
+        """INSERT (or differential-UPDATE) a worker_dirs row by abs_path.
 
-        UPSERT keeps re-registration idempotent: the dispatcher / sweeper
-        often re-announces dirs on startup and we don't want duplicates.
+        Idempotent re-registration: the dispatcher / sweeper often
+        re-announces dirs on startup. Only fields the caller explicitly
+        passes are written on the UPDATE path so a status ping that omits
+        ``is_git_repo`` doesn't silently flip it back to False.
         """
-        cur = self.conn.execute(
-            "INSERT INTO worker_dirs ("
-            "abs_path, layout, is_git_repo, is_worktree, origin_url, "
-            "current_branch, size_mb, lifecycle) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
-            "ON CONFLICT(abs_path) DO UPDATE SET "
-            "  layout = excluded.layout, "
-            "  is_git_repo = excluded.is_git_repo, "
-            "  is_worktree = excluded.is_worktree, "
-            "  origin_url = COALESCE(excluded.origin_url, worker_dirs.origin_url), "
-            "  current_branch = COALESCE(excluded.current_branch, worker_dirs.current_branch), "
-            "  size_mb = COALESCE(excluded.size_mb, worker_dirs.size_mb), "
-            "  lifecycle = excluded.lifecycle, "
-            "  last_seen_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')",
-            (abs_path, layout, int(is_git_repo), int(is_worktree),
-             origin_url, current_branch, size_mb, lifecycle),
-        )
-        # cur.lastrowid is 0 on UPDATE-only path; resolve via SELECT.
-        row = self.conn.execute(
+        existing = self.conn.execute(
             "SELECT id FROM worker_dirs WHERE abs_path = ?", (abs_path,)
         ).fetchone()
-        return int(row["id"]) if row else cur.lastrowid
+        if existing is None:
+            cur = self.conn.execute(
+                "INSERT INTO worker_dirs ("
+                "abs_path, layout, is_git_repo, is_worktree, origin_url, "
+                "current_branch, size_mb, lifecycle) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (abs_path, layout or "flat",
+                 int(bool(is_git_repo)) if is_git_repo is not None else 0,
+                 int(bool(is_worktree)) if is_worktree is not None else 0,
+                 origin_url, current_branch, size_mb,
+                 lifecycle or "active"),
+            )
+            return cur.lastrowid
+
+        sets: list[str] = []
+        values: list = []
+
+        def _maybe(col: str, val):
+            if val is not None:
+                sets.append(f"{col} = ?")
+                values.append(val)
+
+        _maybe("layout", layout)
+        if is_git_repo is not None:
+            sets.append("is_git_repo = ?")
+            values.append(int(bool(is_git_repo)))
+        if is_worktree is not None:
+            sets.append("is_worktree = ?")
+            values.append(int(bool(is_worktree)))
+        _maybe("origin_url", origin_url)
+        _maybe("current_branch", current_branch)
+        _maybe("size_mb", size_mb)
+        _maybe("lifecycle", lifecycle)
+        sets.append("last_seen_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')")
+        values.append(abs_path)
+        self.conn.execute(
+            f"UPDATE worker_dirs SET {', '.join(sets)} WHERE abs_path = ?",
+            values,
+        )
+        return int(existing["id"])
 
     def update_worker_dir_lifecycle(self, abs_path: str, lifecycle: str) -> None:
         """Move a worker dir to a different lifecycle bucket (active/archived/etc)."""

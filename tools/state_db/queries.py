@@ -177,14 +177,28 @@ def get_session(conn: sqlite3.Connection) -> Optional[dict[str, Any]]:
     M2 (Issue #267) replaced the M1 markdown overlay; consumers now read
     Status / Updated / Suspended / Resumed / Current Objective / Dispatcher
     / Curator / Resume Instructions straight from this row.
+
+    Pre-M2 DBs lack the table — we forward-migrate in place via
+    ``ensure_m2_schema`` so dashboard / converter readers don't have to
+    special-case missing-table state. The migration is idempotent.
     """
     try:
         row = conn.execute(
             "SELECT * FROM org_sessions WHERE id = 1"
         ).fetchone()
     except sqlite3.OperationalError:
-        # DB pre-dates the M2 migration (no org_sessions table).
-        return None
+        # Forward-migrate then retry once. If migration fails (e.g. the DB
+        # is read-only), surface None rather than raising — readers should
+        # fall back to markdown in that case.
+        try:
+            from tools.state_db import ensure_m2_schema
+            ensure_m2_schema(conn)
+            conn.commit()
+            row = conn.execute(
+                "SELECT * FROM org_sessions WHERE id = 1"
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return None
     return _row_to_dict(row)
 
 

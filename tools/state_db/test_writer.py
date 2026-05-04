@@ -18,6 +18,86 @@ def _fresh_db():
     return td, conn
 
 
+class TestPreM2Migration(unittest.TestCase):
+    """Codex round-3 Blocker fix: an existing M0/M1 DB without
+    org_sessions must be migrated forward in place when read or written
+    by the M2 code paths."""
+
+    _M1_SCHEMA = """
+    CREATE TABLE projects (id INTEGER PRIMARY KEY, slug TEXT NOT NULL UNIQUE,
+                            display_name TEXT NOT NULL);
+    CREATE TABLE workstreams (id INTEGER PRIMARY KEY, project_id INTEGER,
+                                slug TEXT, display_name TEXT,
+                                UNIQUE (id, project_id));
+    CREATE TABLE worker_dirs (id INTEGER PRIMARY KEY, abs_path TEXT UNIQUE,
+                                layout TEXT, lifecycle TEXT,
+                                last_seen_at TEXT,
+                                archived INTEGER GENERATED ALWAYS AS
+                                  (CASE WHEN lifecycle IN ('archived','delete_pending')
+                                        THEN 1 ELSE 0 END) STORED);
+    CREATE TABLE runs (id INTEGER PRIMARY KEY, task_id TEXT UNIQUE,
+                        project_id INTEGER, pattern TEXT, title TEXT,
+                        status TEXT, dispatched_at TEXT,
+                        worker_dir_id INTEGER);
+    CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                          occurred_at TEXT, actor TEXT, kind TEXT,
+                          run_id INTEGER, project_id INTEGER,
+                          workstream_id INTEGER,
+                          payload_json TEXT NOT NULL DEFAULT '{}');
+    CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY,
+                                      applied_at TEXT, description TEXT);
+    INSERT INTO schema_migrations (version, applied_at, description)
+      VALUES (1, '2026-01-01T00:00:00.000Z', 'M0 initial');
+    """
+
+    def test_writer_init_migrates_pre_m2_db(self):
+        td = tempfile.TemporaryDirectory()
+        try:
+            db = Path(td.name) / "m1.db"
+            conn = connect(db)
+            conn.executescript(self._M1_SCHEMA)
+            conn.commit()
+            # Sanity: org_sessions absent before the writer touches it.
+            self.assertIsNone(conn.execute(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type='table' AND name='org_sessions'"
+            ).fetchone())
+            StateWriter(conn)
+            # After writer init the table exists and the singleton row is seeded.
+            row = conn.execute(
+                "SELECT id, status FROM org_sessions WHERE id = 1"
+            ).fetchone()
+            self.assertIsNotNone(row)
+            self.assertEqual(row["id"], 1)
+            # And v2 migration row is recorded.
+            v2 = conn.execute(
+                "SELECT 1 FROM schema_migrations WHERE version = 2"
+            ).fetchone()
+            self.assertIsNotNone(v2)
+            conn.close()
+        finally:
+            td.cleanup()
+
+    def test_get_session_migrates_pre_m2_db(self):
+        from tools.state_db.queries import get_session
+        td = tempfile.TemporaryDirectory()
+        try:
+            db = Path(td.name) / "m1.db"
+            conn = connect(db)
+            conn.executescript(self._M1_SCHEMA)
+            conn.commit()
+            sess = get_session(conn)
+            # Before round-3 fix get_session returned None on a pre-M2 DB,
+            # which dashboard read paths interpreted as "DB usable but
+            # empty session" → status went to IDLE. Now we forward-migrate
+            # and return the freshly-seeded singleton row.
+            self.assertIsNotNone(sess)
+            self.assertEqual(sess["id"], 1)
+            conn.close()
+        finally:
+            td.cleanup()
+
+
 class TestSessionSingleton(unittest.TestCase):
     def test_writer_seeds_singleton_on_init(self):
         td, conn = _fresh_db()
@@ -92,6 +172,32 @@ class TestWorkerDirs(unittest.TestCase):
             ).fetchone()
             self.assertEqual(row["current_branch"], "main")
             self.assertEqual(row["lifecycle"], "active")
+        finally:
+            conn.close()
+            td.cleanup()
+
+    def test_register_preserves_unspecified_attributes(self):
+        """Codex round-3: re-register with only current_branch must not
+        clobber previously-set is_git_repo / is_worktree / origin_url."""
+        td, conn = _fresh_db()
+        try:
+            w = StateWriter(conn)
+            w.register_worker_dir(
+                abs_path="/x/preserve", is_git_repo=True, is_worktree=True,
+                origin_url="https://example.invalid/x.git",
+                current_branch="main",
+            )
+            # Status ping with only current_branch.
+            w.register_worker_dir(abs_path="/x/preserve",
+                                   current_branch="feature/x")
+            row = conn.execute(
+                "SELECT is_git_repo, is_worktree, origin_url, current_branch "
+                "FROM worker_dirs WHERE abs_path = '/x/preserve'"
+            ).fetchone()
+            self.assertEqual(row["is_git_repo"], 1)
+            self.assertEqual(row["is_worktree"], 1)
+            self.assertEqual(row["origin_url"], "https://example.invalid/x.git")
+            self.assertEqual(row["current_branch"], "feature/x")
         finally:
             conn.close()
             td.cleanup()
