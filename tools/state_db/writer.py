@@ -52,8 +52,14 @@ class StateWriter:
     def __init__(self, conn: sqlite3.Connection,
                  *, claude_org_root: Optional[Path] = None):
         self.conn = conn
-        # Defensive: ensure project-wide PRAGMAs even when caller passed a
-        # bare sqlite3.connect() handle.
+        # Defensive: ensure project-wide PRAGMAs and row_factory even
+        # when caller passed a bare sqlite3.connect() handle. The
+        # ``sqlite3.Row`` row_factory is required by ``_detect_claude_org_root``
+        # below (which addresses ``row["file"]``); a default tuple
+        # row_factory would raise ``TypeError: tuple indices must be
+        # integers``. Setting it here is idempotent for connections
+        # opened via ``tools.state_db.connect``.
+        conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA busy_timeout = 5000")
         # Forward-migrate pre-M2 DBs in place: org_sessions may be missing
@@ -521,7 +527,14 @@ def _detect_claude_org_root(conn: sqlite3.Connection) -> Optional[Path]:
         return None
     if row is None:
         return None
-    file_path = row["file"] if "file" in row.keys() else None
+    # ``sqlite3.Row`` exposes ``keys()``; tuple rows do not. ``StateWriter``
+    # forces row_factory = sqlite3.Row defensively, so this guard mostly
+    # protects callers that invoke ``_detect_claude_org_root`` against a
+    # bare connection without going through ``StateWriter``.
+    try:
+        file_path = row["file"]
+    except (IndexError, TypeError):
+        return None
     if not file_path:
         return None
     p = Path(file_path).resolve()

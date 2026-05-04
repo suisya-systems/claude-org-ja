@@ -54,14 +54,23 @@ description: >
 > DB が古い場合は `python -m tools.state_db.importer --db .state/state.db --rebuild --no-strict` で再構築する。
 
 1. 既存の `org-state.md` を `org-state.prev.md` にコピー（バックアップ）
-2. **DB に Status / Suspended を書く** (post-commit hook が markdown / jsonl を自動再生成):
+2. **DB に Status / Suspended を書く** (`StateWriter.transaction()` 経由。post-commit hook が markdown / jsonl を自動再生成、regen 失敗時も DB は確定済みで stderr 警告のみ):
 
    ```bash
-   python -c "from datetime import datetime, timezone; from pathlib import Path; from tools.state_db import connect; from tools.state_db.writer import StateWriter; from tools.state_db.snapshotter import post_commit_regenerate; conn=connect('.state/state.db'); w=StateWriter(conn, claude_org_root=Path('.')); ts=datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%fZ'); w.begin(); w.update_session(status='SUSPENDED', suspended_at=ts, updated_at=ts); w.commit(); post_commit_regenerate(w.conn, Path('.')); conn.close()"
+   python -c "
+   from datetime import datetime, timezone
+   from pathlib import Path
+   from tools.state_db import connect
+   from tools.state_db.writer import StateWriter
+   ts = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%fZ')
+   conn = connect('.state/state.db')
+   with StateWriter(conn, claude_org_root=Path('.')).transaction() as w:
+       w.update_session(status='SUSPENDED', suspended_at=ts, updated_at=ts)
+   "
    ```
 
+   - bash / zsh / PowerShell すべて `"..."` 内の改行をそのまま透過するので multi-line でも cross-shell。Windows CMD は heredoc 不可なので `py -3 -c "ts=...; conn=...; w=...; w.begin(); w.update_session(...); w.commit()"` の単行 fallback を使う（その場合 `transaction()` の rollback / regen 自動 swallow は失われるので追加で try/except を書く）
    - 同コマンドが `.state/org-state.md` の Status 行を `SUSPENDED` に切り替え、`.state/journal.jsonl` も再生成する
-   - 一行版は `transaction()` の rollback セマンティクスを失う代わりに cross-shell (PowerShell / bash) で動く。Python from-script で書く場合は `with w.transaction():` を使う方が安全
    - free-form な「Resume Instructions の補足説明」「Pending Lead」等は markdown を直接 append してよい（passthrough で保持される）。`update_session(resume_instructions=...)` を使う場合は構造化セクションとして上書きされる
 3. 各 Work Item の状態を更新する場合は `upsert_run(task_id=..., status=...)` を `transaction()` 内で呼ぶ
 4. 各ワーカーの `.state/workers/worker-{id}.md` を更新:

@@ -51,18 +51,14 @@ jobs:
       - name: Run shell hook tests
         run: bash tests/run-all.sh
 
-      - name: state-db drift_check (Issue #272 / M2.1)
-        # M2.1 cutover gate. Rebuild .state/state.db from any tracked
-        # markdown / jsonl inputs (--no-strict because .state/* is
-        # gitignored, so most inputs are absent in CI), regenerate
-        # .state/org-state.md from the DB via the snapshotter, then
-        # diff DB-derived structured sections against that file. A
-        # non-zero diff means the snapshotter ↔ DB shape disagrees,
-        # which would also mean a skill that flips through StateWriter
-        # would silently produce broken markdown in production. Fix by
-        # adjusting the snapshotter's structured renderer or the writer
-        # field set, then re-run locally.
-        run: |
-          python -m tools.state_db.importer --db .state/state.db --rebuild --no-strict
-          python -c "from pathlib import Path; from tools.state_db import connect; from tools.state_db.snapshotter import post_commit_regenerate; conn = connect('.state/state.db'); post_commit_regenerate(conn, Path('.')); conn.close()"
-          python -m tools.state_db.drift_check --db .state/state.db --markdown .state/org-state.md
+      - name: state-db drift_check fixture round-trip (Issue #272 / M2.1)
+        # M2.1 cutover gate (see tools/state_db/test_drift_fixture.py).
+        # Round-trips the hand-curated fixture under
+        # tests/fixtures/m2_1_drift_sample/ through importer →
+        # snapshotter → drift_check, asserting zero structural drift.
+        # Catches importer ↔ snapshotter divergence (a field one side
+        # parses but the other doesn't render). The earlier formulation
+        # — importer.py against the worktree's `.state/` then drift_check
+        # — was tautological because both sides went through the same
+        # snapshotter call.
+        run: python -m unittest tools.state_db.test_drift_fixture -v

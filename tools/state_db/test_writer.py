@@ -726,6 +726,31 @@ class TestRootAutoDetect(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_writer_handles_bare_connection_without_row_factory(self):
+        """Cross-review M2.1 Minor 1: callers that pass a bare
+        ``sqlite3.connect()`` handle (no row_factory) must still get a
+        working StateWriter. The auto-detect helper addresses
+        ``row["file"]`` which would raise on a tuple-row connection;
+        StateWriter forces row_factory = Row defensively."""
+        td = tempfile.TemporaryDirectory()
+        try:
+            root = Path(td.name)
+            (root / ".state").mkdir()
+            db = root / ".state" / "state.db"
+            # Bare connect — explicitly NOT going through tools.state_db.connect.
+            conn = sqlite3.connect(str(db))
+            try:
+                apply_schema(conn)
+                w = StateWriter(conn)
+                self.assertIs(conn.row_factory, sqlite3.Row)
+                self.assertIsNotNone(w._claude_org_root)
+                with w.transaction() as tx:
+                    tx.register_worker_dir(abs_path="/x/bare-conn-ok")
+            finally:
+                conn.close()
+        finally:
+            td.cleanup()
+
 
 if __name__ == "__main__":
     unittest.main()

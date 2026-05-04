@@ -156,9 +156,16 @@ renga 0.18.0+ では `mcp__renga-peers__spawn_claude_pane` が役割別の構造
 3. `mcp__renga-peers__list_peers` で新しいピアが現れるのを待つ
 4. `mcp__renga-peers__send_message` でディスパッチャーに以下を送信する:
    「あなたはディスパッチャーです。窓口からの DELEGATE メッセージを受け取り、ワーカーのペイン起動・指示送信・状態記録を代行してください。CLOSE_PANE メッセージを受けたらペインを閉じてください。」
-5. **DB 経由で Dispatcher identity を記録する**（`.state/org-state.md` 直接編集禁止。post-commit hook が再生成）:
+5. **DB 経由で Dispatcher identity を記録する**（`StateWriter.transaction()` 経由、markdown 直接編集禁止。post-commit hook が再生成）:
    ```bash
-   python -c "from pathlib import Path; from tools.state_db import connect; from tools.state_db.writer import StateWriter; from tools.state_db.snapshotter import post_commit_regenerate; conn=connect('.state/state.db'); w=StateWriter(conn, claude_org_root=Path('.')); w.begin(); w.update_session(dispatcher_pane_id='<pane_id>', dispatcher_peer_id='<peer_id>'); w.commit(); post_commit_regenerate(w.conn, Path('.')); conn.close()"
+   python -c "
+   from pathlib import Path
+   from tools.state_db import connect
+   from tools.state_db.writer import StateWriter
+   conn = connect('.state/state.db')
+   with StateWriter(conn, claude_org_root=Path('.')).transaction() as w:
+       w.update_session(dispatcher_pane_id='<pane_id>', dispatcher_peer_id='<peer_id>')
+   "
    ```
 6. JSON スナップショットを再生成する（dashboard 用、state-db cutover とは別経路）:
    `py -3 dashboard/org_state_converter.py`
@@ -190,9 +197,16 @@ renga 0.18.0+ では `mcp__renga-peers__spawn_claude_pane` が役割別の構造
 3. `mcp__renga-peers__list_peers` で新しいピアが現れるのを待つ
 4. `mcp__renga-peers__send_message` でキュレーターに以下を送信する:
    「あなたはキュレーターです。 /loop 30m /org-curate を実行してください。知見整理を30分ごとに行います。」
-5. **DB 経由で Curator identity を記録する**（直接編集禁止。post-commit hook が再生成）:
+5. **DB 経由で Curator identity を記録する**（`StateWriter.transaction()` 経由、直接編集禁止。post-commit hook が再生成）:
    ```bash
-   python -c "from pathlib import Path; from tools.state_db import connect; from tools.state_db.writer import StateWriter; from tools.state_db.snapshotter import post_commit_regenerate; conn=connect('.state/state.db'); w=StateWriter(conn, claude_org_root=Path('.')); w.begin(); w.update_session(curator_pane_id='<pane_id>', curator_peer_id='<peer_id>'); w.commit(); post_commit_regenerate(w.conn, Path('.')); conn.close()"
+   python -c "
+   from pathlib import Path
+   from tools.state_db import connect
+   from tools.state_db.writer import StateWriter
+   conn = connect('.state/state.db')
+   with StateWriter(conn, claude_org_root=Path('.')).transaction() as w:
+       w.update_session(curator_pane_id='<pane_id>', curator_peer_id='<peer_id>')
+   "
    ```
 6. JSON スナップショットを再生成する（dashboard 用、state-db cutover とは別経路）:
    `py -3 dashboard/org_state_converter.py`
