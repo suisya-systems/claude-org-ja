@@ -8,8 +8,12 @@ Usage: python3 dashboard/server.py   (Mac/Linux)
 
 M4 (Issue #267): the dashboard reads exclusively from
 ``.state/state.db``. There is no markdown / JSON fallback — fresh
-clones must run ``python -m tools.state_db.importer .`` once before
-``server.py`` will start.
+clones must run::
+
+    python -m tools.state_db.importer \\
+        --db .state/state.db --root . --rebuild --no-strict
+
+once before ``server.py`` will return useful data.
 """
 
 import http.server

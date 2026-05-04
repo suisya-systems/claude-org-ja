@@ -206,8 +206,14 @@ class TestApply(unittest.TestCase):
         from tools.state_db.extract_freetext import _slugify
         self.assertTrue(_slugify("CON").startswith("_"))
         self.assertTrue(_slugify("Prn").startswith("_"))
+        # Stem-with-extension forms (Codex r2): Windows treats
+        # `CON.foo`, `COM1.log`, `PRN.v2` as the device too.
+        self.assertTrue(_slugify("CON.foo").startswith("_"))
+        self.assertTrue(_slugify("COM1.log").startswith("_"))
+        self.assertTrue(_slugify("PRN.v2").startswith("_"))
         # Non-reserved names untouched.
         self.assertEqual(_slugify("notes"), "notes")
+        self.assertEqual(_slugify("contact-list"), "contact-list")
 
     def test_no_freeform_means_noop(self):
         td = tempfile.TemporaryDirectory()

@@ -153,7 +153,11 @@ def _slugify(text: str, *, fallback: str = "section") -> str:
     s = re.sub(r"-+", "-", s).strip("-.")
     if not s:
         return fallback
-    if s in _WIN_RESERVED:
+    # Windows treats `CON.foo`, `PRN.v2`, `COM1.log` etc. as the device
+    # too — the reserved-name check applies to the stem before the
+    # first dot, not just the full string (Codex r2 minor).
+    stem = s.split(".", 1)[0]
+    if stem in _WIN_RESERVED:
         s = "_" + s
     return s
 
