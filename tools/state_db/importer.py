@@ -84,6 +84,22 @@ _STATUS_KEYWORDS: tuple[tuple[str, str], ...] = (
 )
 
 
+def _lifecycle_for_inventory_tier(tier: Optional[str]) -> str:
+    """Map inventory.json `proposed_classification.tier` → worker_dirs.lifecycle.
+
+    SoT: directory-layout.md §5 H5 lifecycle table. archive_candidate must
+    flow into delete_pending (not active) so curator --purge can pick it
+    up; archived stays archived; scratch stays scratch; everything else
+    (run / project / unknown) defaults to active.
+    """
+    return {
+        "scratch": "scratch",
+        "archive_candidate": "delete_pending",
+        "archive": "archived",
+        "archived": "archived",
+    }.get(tier or "", "active")
+
+
 def _map_status(raw: str) -> str:
     s = raw.lower()
     for kw, mapped in _STATUS_KEYWORDS:
@@ -234,7 +250,9 @@ class _Importer:
                 origin_url=git.get("origin_url"),
                 current_branch=git.get("current_branch"),
                 size_mb=entry.get("size_mb"),
-                lifecycle="scratch" if (entry.get("proposed_classification") or {}).get("tier") == "scratch" else "active",
+                lifecycle=_lifecycle_for_inventory_tier(
+                    (entry.get("proposed_classification") or {}).get("tier")
+                ),
             )
 
     # -- org-state.md / Worker Directory Registry ------------------------
