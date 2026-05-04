@@ -72,6 +72,30 @@ def list_active_runs(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     return _rows_to_dicts(rows)
 
 
+def list_runs_with_dirs(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Return every run that has a worker_dir attached, regardless of status.
+
+    Used by ``parse_org_state_db`` and the markdown snapshotter to render the
+    Worker Directory Registry, which historically lists *all* runs with a
+    directory (active + completed + failed + abandoned), not just the live ones.
+    """
+    rows = conn.execute(
+        """
+        SELECT
+            r.task_id, r.pattern, r.status, r.title, r.outcome_note,
+            r.dispatched_at,
+            p.slug          AS project_slug,
+            d.abs_path      AS worker_dir
+        FROM runs r
+        JOIN projects p         ON p.id = r.project_id
+        LEFT JOIN worker_dirs d ON d.id = r.worker_dir_id
+        WHERE d.abs_path IS NOT NULL
+        ORDER BY r.dispatched_at, r.id
+        """
+    ).fetchall()
+    return _rows_to_dicts(rows)
+
+
 def get_run_by_task_id(
     conn: sqlite3.Connection, task_id: str
 ) -> Optional[dict[str, Any]]:
@@ -232,6 +256,7 @@ def get_resume_briefing(conn: sqlite3.Connection) -> dict[str, Any]:
 
 __all__ = [
     "list_active_runs",
+    "list_runs_with_dirs",
     "get_run_by_task_id",
     "list_worker_dirs",
     "list_recent_events",

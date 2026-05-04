@@ -375,12 +375,15 @@ def build_state():
 
     # M2: DB is the primary source for everything the schema models —
     # Status / Objective via org_sessions, workItems via active runs,
-    # activity via the events table. Markdown / JSON snapshot remain as a
-    # safety net for the very first run after a fresh clone (no DB yet).
+    # activity via the events table. Markdown / JSON snapshot is consulted
+    # only when the DB itself is unavailable (fresh clone, missing import,
+    # corrupt file). An *empty* DB is a legitimate state and must not
+    # resurrect ghost tasks from a stale dump.
     status = "IDLE"
     objective = None
-    work_items = []
+    work_items: list = []
     activity = None
+    db_succeeded = False
 
     if _db_available():
         db_result = _load_state_from_db(state_dir)
@@ -390,9 +393,9 @@ def build_state():
                 status = db_status
             if db_objective:
                 objective = db_objective
+            db_succeeded = True
 
-    if not work_items or activity is None:
-        # Fall back to the legacy JSON / markdown path.
+    if not db_succeeded:
         _json_result = _load_org_state_from_json(state_dir)
         if _json_result is not None:
             md_status, md_objective, md_work_items = _json_result
@@ -401,15 +404,13 @@ def build_state():
             md_status, md_objective, md_work_items = _parse_org_state(
                 org_state_text
             )
-        if not work_items:
-            work_items = md_work_items
-            if md_status and status == "IDLE":
-                status = md_status
-            if objective is None:
-                objective = md_objective
-        if activity is None:
-            journal_text = _read(state_dir / "journal.jsonl")
-            activity = _parse_journal(journal_text)
+        work_items = md_work_items
+        if md_status:
+            status = md_status
+        if md_objective is not None:
+            objective = md_objective
+        journal_text = _read(state_dir / "journal.jsonl")
+        activity = _parse_journal(journal_text)
 
     projects_text = _read(BASE_DIR / "registry" / "projects.md")
     projects = _parse_projects(projects_text)

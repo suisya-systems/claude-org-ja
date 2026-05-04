@@ -54,9 +54,28 @@ def _legacy_append(journal_path: Path, event: str, payload: dict) -> None:
     Journal(journal_path).append(event, **payload)
 
 
+class _DBCommitted(Exception):
+    """Sentinel: DB COMMIT succeeded; the post-commit dump failed.
+
+    Raised from `_db_append` so the caller can distinguish "the canonical
+    write happened, only the dump regenerate is stale" (don't fall back —
+    that would double-record the event) from "nothing was written at all"
+    (do fall back to legacy file append)."""
+
+    def __init__(self, original: BaseException):
+        super().__init__(repr(original))
+        self.original = original
+
+
 def _db_append(repo_root: Path, journal_path: Path, event: str,
                 payload: dict) -> None:
-    """M2 canonical path: DB write → jsonl regenerate."""
+    """M2 canonical path: DB write → jsonl regenerate.
+
+    Raises ``_DBCommitted`` if the regenerate step fails after a
+    successful COMMIT — the event is durably recorded in the DB and the
+    next regenerate (e.g. cron, next dispatch) will catch up. The caller
+    must not re-append to the legacy jsonl in that case.
+    """
     from tools.state_db import apply_schema, connect
     from tools.state_db.snapshotter import regenerate_journal_jsonl
     from tools.state_db.writer import StateWriter
@@ -65,22 +84,26 @@ def _db_append(repo_root: Path, journal_path: Path, event: str,
     db_path.parent.mkdir(parents=True, exist_ok=True)
     is_new_db = not db_path.exists()
     conn = connect(db_path)
+    committed = False
     try:
         if is_new_db:
             apply_schema(conn)
         writer = StateWriter(conn)
-        # ``actor`` is conventionally an explicit payload field on the
-        # legacy wire format; promote it so the events table has the
-        # column populated even without per-call API change.
         actor = None
         if isinstance(payload, dict) and isinstance(payload.get("actor"),
                                                      str):
             actor = payload["actor"]
         writer.append_event(kind=event, actor=actor, payload=payload)
         writer.commit()
-        regenerate_journal_jsonl(conn, journal_path)
+        committed = True
+        try:
+            regenerate_journal_jsonl(conn, journal_path)
+        except Exception as exc:
+            raise _DBCommitted(exc) from exc
     finally:
         conn.close()
+    if not committed:  # pragma: no cover — defensive
+        raise RuntimeError("journal_append: DB write did not commit")
 
 
 def main(argv: "list[str] | None" = None) -> int:
@@ -134,9 +157,20 @@ def main(argv: "list[str] | None" = None) -> int:
     try:
         _db_append(repo_root, canonical_path, args.event, payload)
         return 0
+    except _DBCommitted as exc:
+        # DB has the event; only the dump regenerate failed. Do NOT
+        # double-write to the legacy jsonl — that would put the event in
+        # twice once the next regenerate succeeds. Surface the failure
+        # and exit 0 so the hook proceeds.
+        sys.stderr.write(
+            "tools/journal_append.py: event committed to DB but jsonl "
+            "regenerate failed "
+            f"({type(exc.original).__name__}: {exc.original}); the "
+            "next regenerate will catch up.\n"
+        )
+        return 0
     except Exception as exc:
-        # Don't let a DB-side hiccup take down the dispatcher hook —
-        # warn loudly and degrade to the legacy file append.
+        # No commit happened — safe to fall back to file append.
         sys.stderr.write(
             "tools/journal_append.py: DB-write path failed "
             f"({type(exc).__name__}: {exc}); falling back to file append.\n"

@@ -175,6 +175,17 @@ def _render_worker_directory_registry(runs: Iterable[dict]) -> str:
     return out.getvalue()
 
 
+_DB_STATUS_TO_MD_LABEL = {
+    "in_use": "IN_PROGRESS",
+    "review": "REVIEW",
+    "queued": "PENDING",
+    "completed": "COMPLETED",
+    "failed": "BLOCKED",
+    "suspended": "PENDING",
+    "abandoned": "ABANDONED",
+}
+
+
 def _render_active_work_items(runs: Iterable[dict]) -> str:
     active = [r for r in runs if (r.get("status") or "") in ("in_use", "review")]
     if not active:
@@ -183,9 +194,11 @@ def _render_active_work_items(runs: Iterable[dict]) -> str:
     out.write("## Active Work Items\n\n")
     for r in active:
         # Match the legacy "- task-id: title [STATUS]" convention parsed by
-        # dashboard/server.py and dashboard/org_state_converter.py so the
-        # downstream JSON view stays well-formed.
-        status_label = (r.get("status") or "").upper()
+        # dashboard/server.py and dashboard/org_state_converter.py. Use the
+        # frontend's status vocabulary (IN_PROGRESS / REVIEW / …) so a regen
+        # → markdown-fallback cycle doesn't render as `?` in the UI.
+        raw = (r.get("status") or "").lower()
+        status_label = _DB_STATUS_TO_MD_LABEL.get(raw, raw.upper())
         title = r.get("title") or r["task_id"]
         out.write(f"- {r['task_id']}: {title} [{status_label}]\n")
     out.write("\n")

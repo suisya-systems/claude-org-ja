@@ -236,32 +236,49 @@ def parse_org_state_db(db_path, md_path=None):
     """
     del md_path  # M2: no markdown overlay; arg kept for caller compat.
     from tools.state_db import connect
-    from tools.state_db.queries import get_org_state_summary
+    from tools.state_db.queries import (
+        get_org_state_summary,
+        list_runs_with_dirs,
+    )
 
     conn = connect(db_path)
     try:
         summary = get_org_state_summary(conn)
         session = summary.get("session") or {}
+        # WDR historically lists *every* run with a worker_dir
+        # (active + completed + failed + abandoned), so use the full
+        # listing rather than just the active runs from `summary`.
         registry = []
-        for r in summary["active_runs"]:
-            if not r.get("worker_dir"):
-                continue
+        for r in list_runs_with_dirs(conn):
             registry.append({
                 "taskId": r["task_id"],
                 "pattern": r["pattern"],
                 "directory": r["worker_dir"],
                 "project": r.get("project_slug") or "",
-                "status": r["status"],
+                "status": r.get("outcome_note") or r.get("status") or "",
             })
     finally:
         conn.close()
 
+    # Frontend (dashboard/app.js) renders icons keyed off IN_PROGRESS /
+    # REVIEW / PENDING / COMPLETED / BLOCKED / ABANDONED. Map the DB enum
+    # so a `_source: db` JSON renders the same as the markdown path.
+    _STATUS_MAP = {
+        "in_use": "IN_PROGRESS",
+        "review": "REVIEW",
+        "queued": "PENDING",
+        "completed": "COMPLETED",
+        "failed": "BLOCKED",
+        "suspended": "PENDING",
+        "abandoned": "ABANDONED",
+    }
     work_items = []
     for r in summary["active_runs"]:
+        raw = (r["status"] or "").lower()
         work_items.append({
             "id": r["task_id"],
             "title": r["title"] or r["task_id"],
-            "status": (r["status"] or "").upper(),
+            "status": _STATUS_MAP.get(raw, raw.upper()),
             "progress": r.get("outcome_note"),
             "worker": r.get("worker_dir"),
         })

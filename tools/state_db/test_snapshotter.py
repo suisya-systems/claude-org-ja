@@ -92,8 +92,12 @@ class TestStructuredRender(unittest.TestCase):
         # only the in_use one.
         self.assertIn("issue-267-m2-write-switch", md)
         self.assertIn("prior-completed", md)
-        self.assertIn("[IN_USE]", md)
+        # M2 Codex review fix: snapshotter emits the dashboard frontend's
+        # status vocabulary so a markdown-fallback render shows the right
+        # icon instead of `?`.
+        self.assertIn("[IN_PROGRESS]", md)
         self.assertNotIn("[COMPLETED]", md)
+        self.assertNotIn("[IN_USE]", md)
 
 
 class TestPassthrough(unittest.TestCase):
