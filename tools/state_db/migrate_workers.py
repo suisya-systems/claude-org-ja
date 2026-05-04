@@ -591,6 +591,23 @@ def main(argv: Optional[list[str]] = None) -> int:
         if not args.confirm:
             print("error: --apply requires --confirm", file=sys.stderr)
             return 2
+        # preflight the loaded manifest before replaying — staged manifests
+        # are hand-edited, so cross-drive / source-missing / target-conflict
+        # checks must run here too, not only on the inventory-driven path.
+        data = json.loads(args.from_manifest.read_text(encoding="utf-8"))
+        loaded_plan = Plan(
+            workers_root=data["workers_root"],
+            inventory_source=data.get("inventory_source", str(args.from_manifest)),
+            archive_quarter=data.get("archive_quarter", _archive_quarter_for()),
+            operations=[Operation(**op) for op in data.get("operations", [])],
+            swap_intermediate=data.get("swap_intermediate", SWAP_INTERMEDIATE),
+        )
+        issues = preflight(loaded_plan, Path(loaded_plan.workers_root))
+        if issues:
+            print("preflight issues:", file=sys.stderr)
+            for i in issues:
+                print(f"  - {i}", file=sys.stderr)
+            return 3
         out = apply_from_manifest(
             args.from_manifest,
             keep_compat=args.keep_compat,

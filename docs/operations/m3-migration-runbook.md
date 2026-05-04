@@ -69,11 +69,10 @@ cp .state/m3-plan.json .state/m3-plan-step1-scratch.json   # then edit
 python -m tools.state_db.migrate_workers \
   --apply --confirm \
   --from-manifest .state/m3-plan-step1-scratch.json \
-  --manifest      .state/m3-executed-step1.json \
-  --workers-root  ../workers
+  --manifest      .state/m3-executed-step1.json
 ```
 
-`--from-manifest` replays the supplied operations exactly; it does NOT regenerate the plan from inventory. Use `--manifest` to choose where the executed-op log is written (the migrator persists it incrementally after every successful op so a mid-batch failure still leaves a valid rollback record).
+`--from-manifest` replays the supplied operations exactly; it does NOT regenerate the plan from inventory. The `workers_root` and `archive_quarter` baked into the manifest are honoured (so `--workers-root` here is ignored). Preflight (cross-drive / source-missing / target-conflict) still runs against the loaded ops. Use `--manifest` to choose where the executed-op log is written (the migrator persists it incrementally after every successful op so a mid-batch failure still leaves a valid rollback record).
 
 Recommended tier order:
 

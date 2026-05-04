@@ -154,6 +154,58 @@ def test_age_days_threshold_override(tmp_path):
     assert len(ca.select_archive_candidates(conn, root, age_days=10)) == 1
 
 
+def test_exdev_fallback_uses_copytree(tmp_path, monkeypatch):
+    """When os.rename raises EXDEV, the archive must fall back to copytree+rmtree
+    (not shutil.move, which would silently nest under an existing target)."""
+    import errno as _errno
+    root = tmp_path / "workers"; root.mkdir()
+    p = root / "claude-org-ja" / "_runs" / "ws" / "stale"; p.mkdir(parents=True)
+    (p / "marker.txt").write_text("hi", encoding="utf-8")
+    _set_mtime(p, days_ago=200)
+    conn = _seed_db(tmp_path / "state.db")
+    _insert_dir(conn, str(p.as_posix()))
+
+    real_rename = os.rename
+    calls = {"n": 0}
+
+    def fake_rename(src, dst):
+        # Fail the forward archive rename once with EXDEV; let any subsequent
+        # rollback rename succeed normally.
+        calls["n"] += 1
+        if calls["n"] == 1:
+            err = OSError("synthetic cross-device")
+            err.errno = _errno.EXDEV
+            raise err
+        return real_rename(src, dst)
+
+    monkeypatch.setattr(ca.os, "rename", fake_rename)
+    cands = ca.select_archive_candidates(conn, root)
+    n = ca.apply_archive(conn, cands)
+    assert n == 1
+    assert not p.exists()
+    assert (Path(cands[0].target) / "marker.txt").read_text(encoding="utf-8") == "hi"
+
+
+def test_non_exdev_oserror_propagates(tmp_path, monkeypatch):
+    """Non-EXDEV OSError must NOT be swallowed by the cross-device fallback."""
+    import errno as _errno
+    root = tmp_path / "workers"; root.mkdir()
+    p = root / "claude-org-ja" / "_runs" / "ws" / "stale"; p.mkdir(parents=True)
+    _set_mtime(p, days_ago=200)
+    conn = _seed_db(tmp_path / "state.db")
+    _insert_dir(conn, str(p.as_posix()))
+
+    def fake_rename(src, dst):
+        err = OSError("permission denied")
+        err.errno = _errno.EACCES
+        raise err
+
+    monkeypatch.setattr(ca.os, "rename", fake_rename)
+    cands = ca.select_archive_candidates(conn, root)
+    with pytest.raises(OSError):
+        ca.apply_archive(conn, cands)
+
+
 def test_missing_dir_silently_skipped(tmp_path):
     """Row points to a non-existent path → not a candidate (no exception)."""
     root = tmp_path / "workers"; root.mkdir()
