@@ -78,7 +78,11 @@ class TestServerDbRead(unittest.TestCase):
         self.assertFalse(self.db_path.exists())
         state = self.server.build_state()
         self.assertEqual(state["status"], "IDLE")
-        self.assertIn("importer", (state["objective"] or "").lower())
+        obj = (state["objective"] or "")
+        self.assertIn("importer", obj.lower())
+        # M4: the guidance must be runnable verbatim.
+        self.assertIn("--rebuild", obj)
+        self.assertIn(".state/state.db", obj)
         self.assertEqual(state["workItems"], [])
         self.assertEqual(state["activity"], [])
 

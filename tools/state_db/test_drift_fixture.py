@@ -76,6 +76,13 @@ class TestImporterSnapshotterRoundtrip(unittest.TestCase):
                 "post_commit_regenerate produced bytes different from the "
                 "fixture — the round-trip is no longer idempotent.",
             )
+            # Codex M-r1-2: the importer must backfill `runs.title` from
+            # the Active Work Items bullets. Without that, the regen
+            # replaces the human-readable title (`M4 markdown freeze`)
+            # with the bare task_id and the round-trip silently drops
+            # operator-curated text.
+            self.assertIn("M4 markdown freeze", regenerated)
+            self.assertIn("prior task carry-over", regenerated)
 
 
 if __name__ == "__main__":

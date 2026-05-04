@@ -259,8 +259,9 @@ def build_state():
     if not STATE_DB_PATH.exists():
         status = "IDLE"
         objective = (
-            "state.db not found — run `python -m tools.state_db.importer .` "
-            "to seed the dashboard."
+            "state.db not found — run `python -m tools.state_db.importer "
+            "--db .state/state.db --root . --rebuild --no-strict` to seed "
+            "the dashboard."
         )
         work_items: list = []
         activity: list = []

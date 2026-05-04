@@ -22,8 +22,8 @@ Current Objective: M4 freeze fixture
 
 ## Active Work Items
 
-- issue-267-m4-markdown-freeze: issue-267-m4-markdown-freeze [IN_PROGRESS]
-- prior-task: prior-task [IN_PROGRESS]
+- issue-267-m4-markdown-freeze: M4 markdown freeze [IN_PROGRESS]
+- prior-task: prior task carry-over [IN_PROGRESS]
 
 ## Resume Instructions
 

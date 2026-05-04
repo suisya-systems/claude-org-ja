@@ -175,6 +175,40 @@ class TestApply(unittest.TestCase):
         # Heading line itself is preserved.
         self.assertIn("## 2026-05-04 セッション #11 主要成果", body)
 
+    def test_partial_failure_recovery_no_double_append(self):
+        """Codex M-r1-3: if a previous run wrote notes/ but crashed
+        before rewriting org-state.md, the second run must not append
+        the same blocks again. The manifest records prior (heading,
+        target) pairs; matching blocks are skipped on the notes/ side
+        even though the org-state rewrite still strips them."""
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        root = Path(td.name)
+        org_state = root / ".state" / "org-state.md"
+        org_state.parent.mkdir(parents=True)
+        org_state.write_text(_LIVE_SHAPE, encoding="utf-8")
+        notes_dir = root / "notes"
+        # First run completes normally.
+        apply_extraction(org_state, notes_dir, today_iso="2026-05-05")
+        first_size = (notes_dir / "sessions" /
+                      "2026-05-04-session-11.md").stat().st_size
+        # Simulate the crashed-before-rewrite state by re-injecting the
+        # free-form blocks back into the dump.
+        org_state.write_text(_LIVE_SHAPE, encoding="utf-8")
+        # Run again with the manifest already on disk.
+        apply_extraction(org_state, notes_dir, today_iso="2026-05-05")
+        second_size = (notes_dir / "sessions" /
+                       "2026-05-04-session-11.md").stat().st_size
+        # Same notes file — no double-append.
+        self.assertEqual(first_size, second_size)
+
+    def test_windows_reserved_name_is_prefixed(self):
+        from tools.state_db.extract_freetext import _slugify
+        self.assertTrue(_slugify("CON").startswith("_"))
+        self.assertTrue(_slugify("Prn").startswith("_"))
+        # Non-reserved names untouched.
+        self.assertEqual(_slugify("notes"), "notes")
+
     def test_no_freeform_means_noop(self):
         td = tempfile.TemporaryDirectory()
         self.addCleanup(td.cleanup)

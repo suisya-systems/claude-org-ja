@@ -2,8 +2,8 @@
 """Watch GitHub PR CI checks and emit a journal event when finished.
 
 Cross-platform helper for the secretary role: after creating a PR,
-invoke this script to block on ``gh pr checks --watch`` and append a
-``ci_completed`` event to ``.state/journal.jsonl``.
+invoke this script to block on ``gh pr checks --watch`` and record a
+``ci_completed`` event in ``.state/state.db`` (events table).
 
 Usage::
 
@@ -26,21 +26,22 @@ Behavior:
   (≥1 fail/cancel), ``incomplete`` (any pending / unknown bucket /
   empty list), or ``canceled`` (parent SIGINT). Falls back to
   exit-code-based classification only if the JSON probe itself
-  fails. Appends one JSON-Lines record to
-  ``<repo_root>/.state/journal.jsonl`` (anchored to ``tools/..`` so
-  cwd doesn't matter).
+  fails. Appends one row to the ``events`` table in
+  ``<repo_root>/.state/state.db`` (anchored to ``tools/..`` so cwd
+  doesn't matter).
 * Prints the final status as a single line on stdout and exits with
   the gh process' exit code.
 
-The journal payload shape is::
+M4 (Issue #267): events flow through the SQLite DB only —
+``.state/journal.jsonl`` is decommissioned. The recorder uses the same
+``StateWriter.append_event`` path as ``tools/journal_append.py``.
 
-    {"ts": "<ISO8601>", "event": "ci_completed",
+The event payload shape is::
+
+    {"event": "ci_completed", "ts": "<ISO8601>",
      "pr": <int>, "repo": "<owner/repo>",
      "status": "passed|failed|incomplete|canceled",
      "duration_sec": <int>}
-
-No new third-party dependencies; only the standard library plus the
-already-pinned ``core_harness.audit`` for the journal write.
 """
 
 from __future__ import annotations
@@ -53,11 +54,45 @@ import sys
 import time
 from pathlib import Path
 
-from core_harness.audit import Journal
-
-
+# Make `tools.state_db.*` importable when running this script directly.
 REPO_ROOT = Path(__file__).resolve().parent.parent
-JOURNAL_PATH = REPO_ROOT / ".state" / "journal.jsonl"
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+# Path used by tests via mock.patch — kept as a module-level Path so the
+# legacy test seam (`mock.patch.object(pr_watch, "JOURNAL_PATH", ...)`)
+# continues to redirect writes at the tempdir. M4 made the file be the
+# state DB rather than journal.jsonl.
+JOURNAL_PATH = REPO_ROOT / ".state" / "state.db"
+
+
+def _record_ci_completed(*, db_path: Path, pr: int, repo: str,
+                         status: str, duration: int) -> None:
+    """Append a ``ci_completed`` event to the DB events table."""
+    from tools.state_db import apply_schema, connect
+    from tools.state_db.writer import StateWriter
+
+    db_path = Path(db_path)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    is_new_db = not db_path.exists()
+    conn = connect(db_path)
+    try:
+        if is_new_db:
+            apply_schema(conn)
+        writer = StateWriter(conn)
+        writer.append_event(
+            kind="ci_completed",
+            actor="pr_watch",
+            payload={
+                "pr": pr,
+                "repo": repo,
+                "status": status,
+                "duration_sec": duration,
+            },
+        )
+        writer.commit()
+    finally:
+        conn.close()
 
 
 def _ensure_gh_installed() -> None:
@@ -314,12 +349,12 @@ def main(argv: "list[str] | None" = None) -> int:
         else:
             status = _classify_from_checks(checks)
 
-    Journal(JOURNAL_PATH).append(
-        "ci_completed",
+    _record_ci_completed(
+        db_path=JOURNAL_PATH,
         pr=args.pr,
         repo=repo,
         status=status,
-        duration_sec=duration,
+        duration=duration,
     )
 
     sys.stdout.write(f"pr_watch: PR #{args.pr} {status} ({duration}s)\n")

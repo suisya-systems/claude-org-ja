@@ -119,17 +119,29 @@ _DATE_RE = re.compile(r"(\d{4}-\d{1,2}-\d{1,2})")
 _SESSION_RE = re.compile(r"セッション\s*#?\s*(\d+)|session\s*#?\s*(\d+)", re.IGNORECASE)
 
 
+# Windows reserved device names (case-insensitive). A file called
+# ``CON.md`` resolves to the console device on Windows and the open()
+# call hangs or fails. Prefix the slug with ``_`` when the bare stem
+# matches one of these to keep notes/ portable.
+_WIN_RESERVED: frozenset[str] = frozenset({
+    "con", "prn", "aux", "nul",
+    "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
+    "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+})
+
+
 def _slugify(text: str, *, fallback: str = "section") -> str:
     """ASCII-or-unicode-letter slug suitable for a filename.
 
     Drops characters that confuse Windows / POSIX filesystems
     (``<>:"/\\|?*`` plus control chars), collapses runs of whitespace
-    and ``-`` / ``_`` into a single ``-``. Returns a lowercased result;
-    empty inputs collapse to ``fallback``.
+    and ``-`` / ``_`` into a single ``-``, and side-steps Windows
+    reserved device names (``CON``, ``PRN``, ``AUX``, ``NUL``,
+    ``COM1``-``COM9``, ``LPT1``-``LPT9``) by prefixing ``_``. Returns
+    a lowercased result; empty inputs collapse to ``fallback``.
     """
     cleaned: list[str] = []
     for ch in text.strip():
-        cat = ch
         if ch in '<>:"/\\|?*':
             cleaned.append("-")
         elif ord(ch) < 0x20:
@@ -139,7 +151,11 @@ def _slugify(text: str, *, fallback: str = "section") -> str:
     s = "".join(cleaned).lower()
     s = re.sub(r"[\s_]+", "-", s)
     s = re.sub(r"-+", "-", s).strip("-.")
-    return s or fallback
+    if not s:
+        return fallback
+    if s in _WIN_RESERVED:
+        s = "_" + s
+    return s
 
 
 def _target_for_heading(heading: str, *, today_iso: str) -> Path:
@@ -269,6 +285,17 @@ def apply_extraction(
     """Write notes/ files and rewrite ``org_state_path``.
 
     Returns a summary dict: ``{moved: int, files: list[str], unchanged: bool}``.
+
+    Safety: the operation is split into "write notes/" then "rewrite
+    org-state.md", which means a process crash between the two leaves
+    blocks both in the notes file *and* still in the org-state dump. To
+    keep the second run idempotent in that case we consult the
+    extraction manifest before appending: any (heading, target) pair
+    already present in the manifest is treated as already-extracted
+    and skipped on the notes/ side. The org-state rewrite still strips
+    those headings on the second run, so the partial-failure recovery
+    path converges on the same end state without duplicating bytes
+    inside the notes/ file (Codex M-r1-3).
     """
     org_state_path = Path(org_state_path)
     notes_dir = Path(notes_dir)
@@ -281,6 +308,12 @@ def apply_extraction(
         # Idempotency: nothing to do. Don't churn the manifest mtime.
         return {"moved": 0, "files": [], "unchanged": True}
 
+    prior_manifest = _read_manifest(notes_dir)
+    prior_pairs: set[tuple[str, str]] = {
+        (e.get("heading", ""), e.get("target", ""))
+        for e in (prior_manifest.get("entries") or [])
+    }
+
     # Group by target file in source order.
     grouped: "dict[str, list[dict]]" = {}
     order: list[str] = []
@@ -292,25 +325,29 @@ def apply_extraction(
         grouped[key].append(row)
 
     written: list[str] = []
-    manifest_entries: list[dict] = []
+    manifest_entries: list[dict] = list(prior_manifest.get("entries") or [])
     for target in order:
         target_path = notes_dir / target
         existing = ""
         if target_path.exists():
             existing = target_path.read_text(encoding="utf-8")
-        body_parts = [_normalize_block(r["body"]) for r in grouped[target]]
+        # Filter out blocks the manifest already records for this target —
+        # those bytes are already in the file from a prior partial run.
+        new_blocks = [r for r in grouped[target]
+                      if (r["heading"], target) not in prior_pairs]
+        if not new_blocks:
+            written.append(target)
+            continue
+        body_parts = [_normalize_block(r["body"]) for r in new_blocks]
         appended = "\n".join(body_parts).rstrip("\n") + "\n"
         if existing:
-            # Append on subsequent runs (rare — extraction is one-shot in
-            # practice — but keeps the operation safe if a stale notes
-            # file already exists for the same target).
             new_body = existing.rstrip("\n") + "\n\n" + appended
         else:
             new_body = appended
         if new_body != existing:
             _atomic_write(target_path, new_body)
         written.append(target)
-        for r in grouped[target]:
+        for r in new_blocks:
             manifest_entries.append({
                 "heading": r["heading"],
                 "target": target,
@@ -351,8 +388,9 @@ def apply_extraction(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
     )
 
+    moved_this_run = len(manifest_entries) - len(prior_manifest.get("entries") or [])
     return {
-        "moved": len(manifest_entries),
+        "moved": moved_this_run,
         "files": written,
         "unchanged": False,
     }

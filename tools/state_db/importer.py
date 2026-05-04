@@ -446,8 +446,36 @@ class _Importer:
                 if not line.lstrip().startswith("-"):
                     continue
                 self.summary.input_lines_total += 1
-                # Active / 直近完了 entries are free-form; record as events for
-                # auditability rather than trying to map to runs in M0.
+                # Active / 直近完了 bullets carry the human-readable title
+                # the operator sees in the dashboard. M4 (Issue #267) makes
+                # the snapshotter render Active Work Items from runs, so
+                # without title backfill the regen replaces every existing
+                # bullet's title with the bare task_id (Codex M-r1-2).
+                # Pattern: `- <task_id>: <title>` optional `[STATUS]`.
+                # Backfill ``runs.title`` from the bullet's title segment
+                # (Codex M-r1-2): the snapshotter renders Active Work
+                # Items from runs, and without this the human-readable
+                # title would be replaced by the bare task_id on first
+                # regen. We still emit the legacy_active_item event so
+                # the "no input row dropped" invariant is preserved
+                # (test_import_no_row_dropped_invariant) and the bullet
+                # remains auditable in `events`.
+                m = re.match(r"^\s*-\s*([\w./-]+):\s*(.+?)(?:\s*\[(\w+)\])?\s*$",
+                             line)
+                if m and section == "active":
+                    bullet_id, bullet_title, _bullet_status = m.groups()
+                    bullet_title = bullet_title.strip()
+                    if bullet_title and bullet_title != bullet_id:
+                        # Only patch runs the WDR already produced;
+                        # synthesising new rows would require inventing
+                        # a project_id (NOT NULL), which is importer
+                        # creep. Bullets without a matching WDR row
+                        # only land in events.
+                        self.conn.execute(
+                            "UPDATE runs SET title = ? "
+                            "WHERE task_id = ? AND title = task_id",
+                            (bullet_title, bullet_id),
+                        )
                 payload = json.dumps({"section": section, "raw": line,
                                        "source_line": i},
                                       ensure_ascii=False)
