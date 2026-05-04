@@ -595,8 +595,18 @@ mcp__renga-peers__send_message(
    - `.state/workers/worker-{task_id}.md` の Progress Log に追記
    - `journal.jsonl` にイベント追記
 2a. ワーカーから完了報告を受け取ったら:
-   - `org-state.md` の該当Work Itemを **REVIEW** に更新
-   - `journal.jsonl` にイベント追記
+   - **DB 経由で run を REVIEW に遷移する**（markdown 直接編集禁止。post-commit hook が `.state/org-state.md` を再生成）:
+     ```bash
+     python -c "
+     from pathlib import Path
+     from tools.state_db import connect
+     from tools.state_db.writer import StateWriter
+     conn = connect('.state/state.db')
+     with StateWriter(conn, claude_org_root=Path('.')).transaction() as w:
+         w.update_run_status('<task_id>', 'review')
+     "
+     ```
+   - `journal.jsonl` にイベント追記（`tools/journal_append.py` が DB ルーティング済み）
    - JSON スナップショットを再生成する: `py -3 dashboard/org_state_converter.py`
    - 結果を人間に報告する
    - **ペインはまだ閉じない**
@@ -607,7 +617,7 @@ mcp__renga-peers__send_message(
    - 必要に応じて窓口がプッシュ・PR作成を行う（ワーカーには権限がないため）
    - `journal.jsonl` にイベント追記（push / PR open など）
    - PR 番号が確定したら `tools/pr-watch.ps1 <PR>` (Windows) / `tools/pr-watch.sh <PR>` (POSIX) で CI を監視する。完了時に `ci_completed` が自動で journal に記録される
-   - `org-state.md` の該当Work Item は **REVIEW のまま据え置く**（GitHub 側 PR レビュー指摘が来たら同ペインで対応するため。COMPLETED への遷移は 2b-ii で行う）
+   - run.status は **REVIEW のまま据え置く**（GitHub 側 PR レビュー指摘が来たら同ペインで対応するため。COMPLETED への遷移は 2b-ii で `update_run_status('<task_id>', 'completed')` を呼ぶ）。markdown 直接編集はしない
    - **ペインはまだ閉じない**: PR 作成直後に `CLOSE_PANE` を送らない。worktree 除去・Worker Directory Registry 更新も 2b-ii まで遅延する
    - PR レビューで指摘が来た場合は 2c のフローで同ワーカーに `send_message` 追指示を送り、同ペインで修正コミットを積ませる（新ワーカー再派遣は避ける — Issue / diff / 判断境界の再構築コストを払うことになる）
 
@@ -649,8 +659,18 @@ mcp__renga-peers__send_message(
 2c. 人間がフィードバック・修正指示を出した場合:
    - ワーカーに renga-peers で追加指示を送る (`to_id="worker-{task_id}"`)
    - 追加指示が trivial fix（CI 出力整形 / typo / コメント修正等）なら **検証深度 `minimal`** を明示し、完了報告は `done: {commit SHA 短縮形} {変更ファイル名}` の 1 行だけで返すよう伝える（フォーマットは `references/instruction-template.md` / `references/worker-claude-template.md` に従う）
-   - `org-state.md` の該当Work Itemを **IN_PROGRESS** に戻す
-   - `journal.jsonl` にイベント追記
+   - **DB 経由で run を IN_PROGRESS に戻す**（`run.status='in_use'`、markdown 直接編集禁止。post-commit hook が `.state/org-state.md` を再生成）:
+     ```bash
+     python -c "
+     from pathlib import Path
+     from tools.state_db import connect
+     from tools.state_db.writer import StateWriter
+     conn = connect('.state/state.db')
+     with StateWriter(conn, claude_org_root=Path('.')).transaction() as w:
+         w.update_run_status('<task_id>', 'in_use')
+     "
+     ```
+   - `journal.jsonl` にイベント追記（`tools/journal_append.py` が DB ルーティング済み）
    - JSON スナップショットを再生成する: `py -3 dashboard/org_state_converter.py`
    - （ペインが生きているのでワーカーはそのまま作業続行）
 

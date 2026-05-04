@@ -16,17 +16,22 @@ This test replaces that with an actual round-trip:
    Resume Instructions) plus free-form sections that must pass through.
 2. Copy the fixture into a worktree-isolated tempdir, import it into a
    fresh DB.
-3. Regenerate the markdown from the DB via the snapshotter.
-4. Run ``compute_diff`` on the regenerated file. A non-zero diff
-   means: importer parsed something the snapshotter doesn't render,
-   or vice versa, or the writer's field set has drifted from either.
-   Failure mode is structural drift in the structured slice.
+3. Run ``compute_diff`` against the **fixture** (NOT a regenerated
+   copy). This compares the hand-written markdown against the
+   snapshotter's render of the DB the importer produced from that same
+   markdown. A non-zero diff means: importer dropped a field on parse,
+   or the snapshotter doesn't render a field the importer captured, or
+   the writer / schema columns the snapshotter relies on have drifted.
+4. THEN regenerate from the DB and assert the free-form sections are
+   preserved verbatim by passthrough. (Only after the diff check —
+   if we regenerated first, both compare sides would be the same
+   snapshotter render and the diff would always be zero.)
 
 The free-form sections (the curated learning notes and the demoted
-``## Active Work Items``) are excluded from comparison by ``drift_check``
-itself; the assertion below additionally checks the regenerated file
-still contains them, proving passthrough is preserved across the
-round-trip.
+``## Active Work Items``) are excluded from the structured-slice
+comparison by ``drift_check`` itself; step 4 additionally checks the
+regenerated file still contains them, proving passthrough is preserved
+across the round-trip.
 """
 from __future__ import annotations
 
@@ -61,17 +66,27 @@ class TestImporterSnapshotterRoundtrip(unittest.TestCase):
             import_full_rebuild(db_path, work, strict=False)
             conn = connect(db_path)
             try:
-                post_commit_regenerate(conn, work)
+                # CRITICAL ORDER: diff *before* regenerate. Comparing
+                # the snapshotter render of the DB against the
+                # hand-written fixture catches importer ↔ snapshotter
+                # divergence. Diffing after regenerate would just be
+                # the snapshotter against itself.
                 diff = compute_diff(conn, md_path)
+                self.assertEqual(
+                    diff, "",
+                    "importer ↔ snapshotter round-trip drift detected — "
+                    "the fixture's structured sections do not match what "
+                    "the snapshotter renders from the DB the importer "
+                    "produced. Either the importer is dropping a field "
+                    "on parse, or the snapshotter is not rendering a "
+                    f"field the importer captures. Diff:\n{diff}"
+                )
+                # Now regenerate and confirm passthrough preservation
+                # (free-form sections survive the snapshotter pass).
+                post_commit_regenerate(conn, work)
             finally:
                 conn.close()
 
-            self.assertEqual(
-                diff, "",
-                f"importer ↔ snapshotter round-trip drift detected:\n{diff}"
-            )
-
-            # Passthrough sections must survive the regenerate.
             regenerated = md_path.read_text(encoding="utf-8")
             self.assertIn("過去セッションの学び", regenerated)
             self.assertIn("## Active Work Items", regenerated)
