@@ -1,0 +1,2862 @@
+[
+  {
+    "name": "aainc-cleanup-untracked",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/aainc-cleanup-untracked",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-26",
+    "top_level_entries": 1,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-04-26; non-git work dir (deliverable / report only)"
+    }
+  },
+  {
+    "name": "anthropic-extended-audit",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/anthropic-extended-audit",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-26",
+    "top_level_entries": 1,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "research",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-04-26; non-git work dir (deliverable / report only)"
+    }
+  },
+  {
+    "name": "anthropic-official-depth-audit",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/anthropic-official-depth-audit",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-26",
+    "top_level_entries": 1,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "research",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-04-26; non-git work dir (deliverable / report only)"
+    }
+  },
+  {
+    "name": "auto-mirror-ci-p1",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/auto-mirror-ci-p1",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-05-01",
+    "top_level_entries": 3,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org-ja",
+      "parent_workstream": "auto-mirror",
+      "rationale": "dir mtime 2026-05-01; non-git work dir (deliverable / report only); belongs to workstream=auto-mirror"
+    }
+  },
+  {
+    "name": "bootstrap-audit",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/bootstrap-audit",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-26",
+    "top_level_entries": 1,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-04-26; non-git work dir (deliverable / report only)"
+    }
+  },
+  {
+    "name": "branch-protect-main",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/branch-protect-main",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-28",
+    "top_level_entries": 1,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org-ja",
+      "parent_workstream": "public-release",
+      "rationale": "dir mtime 2026-04-28; non-git work dir (deliverable / report only); belongs to workstream=public-release"
+    }
+  },
+  {
+    "name": "ccmux",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/ccmux",
+    "git": {
+      "is_repo": true,
+      "is_worktree": false,
+      "origin_url": "https://github.com/suisya-systems/renga.git",
+      "current_branch": "main",
+      "last_commit_iso": "2026-04-27T05:32:24+09:00",
+      "last_commit_subject": "docs(readme): position renga as AI-native terminal substrate (#127) (#165)"
+    },
+    "dir_mtime": "2026-04-27",
+    "top_level_entries": 17,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "project",
+      "parent_project": null,
+      "parent_workstream": null,
+      "rationale": "long-lived clone, origin=https://github.com/suisya-systems/renga.git, current branch=main"
+    }
+  },
+  {
+    "name": "ccmux-close-pane-issue",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/ccmux-close-pane-issue",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-20",
+    "top_level_entries": 1,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "renga",
+      "parent_workstream": "ccmux-issues-2026-04",
+      "rationale": "dir mtime 2026-04-20; non-git work dir (deliverable / report only); belongs to workstream=ccmux-issues-2026-04"
+    }
+  },
+  {
+    "name": "ccmux-cross-tab-issue",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/ccmux-cross-tab-issue",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-20",
+    "top_level_entries": 1,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "renga",
+      "parent_workstream": "ccmux-issues-2026-04",
+      "rationale": "dir mtime 2026-04-20; non-git work dir (deliverable / report only); belongs to workstream=ccmux-issues-2026-04"
+    }
+  },
+  {
+    "name": "ccmux-prompt-event-issue",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/ccmux-prompt-event-issue",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-20",
+    "top_level_entries": 1,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "renga",
+      "parent_workstream": "ccmux-issues-2026-04",
+      "rationale": "dir mtime 2026-04-20; non-git work dir (deliverable / report only); belongs to workstream=ccmux-issues-2026-04"
+    }
+  },
+  {
+    "name": "ccmux-rename-brainstorm",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/ccmux-rename-brainstorm",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-26",
+    "top_level_entries": 2,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "renga",
+      "parent_workstream": "rename-to-renga",
+      "rationale": "dir mtime 2026-04-26; non-git work dir (deliverable / report only); belongs to workstream=rename-to-renga"
+    }
+  },
+  {
+    "name": "ccswarm-depth-audit",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/ccswarm-depth-audit",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-26",
+    "top_level_entries": 2,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "research",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-04-26; non-git work dir (deliverable / report only)"
+    }
+  },
+  {
+    "name": "ccswarm-extended-audit",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/ccswarm-extended-audit",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-26",
+    "top_level_entries": 2,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "research",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-04-26; non-git work dir (deliverable / report only)"
+    }
+  },
+  {
+    "name": "ci-monitor-options-204",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/ci-monitor-options-204",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-05-02",
+    "top_level_entries": 2,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-05-02; non-git work dir (deliverable / report only)"
+    }
+  },
+  {
+    "name": "claude-org",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/claude-org",
+    "git": {
+      "is_repo": true,
+      "is_worktree": false,
+      "origin_url": "https://github.com/suisya-systems/claude-org-ja.git",
+      "current_branch": "main",
+      "last_commit_iso": "2026-04-28T09:47:09+09:00",
+      "last_commit_subject": "feat(worker-perms): Phase 2 generator migration + secretary deny + design doc (closes #99) (#170)"
+    },
+    "dir_mtime": "2026-04-28",
+    "top_level_entries": 12,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "project",
+      "parent_project": null,
+      "parent_workstream": null,
+      "rationale": "long-lived clone, origin=https://github.com/suisya-systems/claude-org-ja.git, current branch=main"
+    }
+  },
+  {
+    "name": "claude-org-drift-audit",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/claude-org-drift-audit",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-28",
+    "top_level_entries": 3,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org-ja",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-04-28; non-git work dir (deliverable / report only)"
+    }
+  },
+  {
+    "name": "claude-org-en",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/claude-org-en",
+    "git": {
+      "is_repo": true,
+      "is_worktree": false,
+      "origin_url": "https://github.com/suisya-systems/claude-org.git",
+      "current_branch": "en-batch-port-2026-04-28",
+      "last_commit_iso": "2026-04-28T12:14:52+09:00",
+      "last_commit_subject": "review-fix(en-batch): translate residual ja text in org-config.md + fix generator docstring"
+    },
+    "dir_mtime": "2026-05-03",
+    "top_level_entries": 14,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "project",
+      "parent_project": null,
+      "parent_workstream": null,
+      "rationale": "long-lived clone, origin=https://github.com/suisya-systems/claude-org.git, current branch=en-batch-port-2026-04-28"
+    }
+  },
+  {
+    "name": "claude-org-feature-inventory",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/claude-org-feature-inventory",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-26",
+    "top_level_entries": 1,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "research",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-04-26; non-git work dir (deliverable / report only)"
+    }
+  },
+  {
+    "name": "claude-org-runtime",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/claude-org-runtime",
+    "git": {
+      "is_repo": true,
+      "is_worktree": false,
+      "origin_url": "https://github.com/suisya-systems/claude-org-runtime",
+      "current_branch": "main",
+      "last_commit_iso": "2026-05-03T02:18:01+09:00",
+      "last_commit_subject": "chore(release): v0.1.1 - first PyPI publish via Trusted Publisher (#6)"
+    },
+    "dir_mtime": "2026-05-03",
+    "top_level_entries": 8,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "project",
+      "parent_project": null,
+      "parent_workstream": null,
+      "rationale": "long-lived clone, origin=https://github.com/suisya-systems/claude-org-runtime, current branch=main"
+    }
+  },
+  {
+    "name": "claude-org.old-worktrees-stale",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/claude-org.old-worktrees-stale",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-20",
+    "top_level_entries": 0,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "archive_candidate",
+      "parent_project": "claude-org",
+      "parent_workstream": null,
+      "rationale": "命名通り stale worktree retainer。 実態は空 wrapper、 lifecycle='delete_pending'。 curator バッチで物理削除。"
+    }
+  },
+  {
+    "name": "codex-review-pr2-3",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/codex-review-pr2-3",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-28",
+    "top_level_entries": 1,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-04-28; non-git work dir (deliverable / report only)"
+    }
+  },
+  {
+    "name": "codex-review-pr64",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/codex-review-pr64",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-24",
+    "top_level_entries": 2,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org-ja",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-04-24; non-git work dir (deliverable / report only)"
+    }
+  },
+  {
+    "name": "contract-set-a-outline",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/contract-set-a-outline",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-26",
+    "top_level_entries": 1,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org-ja",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-04-26; non-git work dir (deliverable / report only)"
+    }
+  },
+  {
+    "name": "core-harness",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/core-harness",
+    "git": {
+      "is_repo": true,
+      "is_worktree": false,
+      "origin_url": "https://github.com/suisya-systems/core-harness",
+      "current_branch": "fix/version-drift-issue-11",
+      "last_commit_iso": "2026-05-02T11:07:43+09:00",
+      "last_commit_subject": "fix(docs): correct README usage examples to match shipped 0.3.2 API"
+    },
+    "dir_mtime": "2026-05-03",
+    "top_level_entries": 8,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "project",
+      "parent_project": null,
+      "parent_workstream": null,
+      "rationale": "long-lived clone, origin=https://github.com/suisya-systems/core-harness, current branch=fix/version-drift-issue-11"
+    }
+  },
+  {
+    "name": "core-harness-031-fixes",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/core-harness-031-fixes",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-05-02",
+    "top_level_entries": 3,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "core-harness",
+      "parent_workstream": "phase3-fixes",
+      "rationale": "dir mtime 2026-05-02; non-git work dir (deliverable / report only); belongs to workstream=phase3-fixes"
+    }
+  },
+  {
+    "name": "core-harness-1-prep",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/core-harness-1-prep",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-05-02",
+    "top_level_entries": 2,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "core-harness",
+      "parent_workstream": "v1-prep",
+      "rationale": "dir mtime 2026-05-02; non-git work dir (deliverable / report only); belongs to workstream=v1-prep"
+    }
+  },
+  {
+    "name": "core-harness-bootstrap",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/core-harness-bootstrap",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-05-02",
+    "top_level_entries": 2,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "core-harness",
+      "parent_workstream": "bootstrap",
+      "rationale": "dir mtime 2026-05-02; non-git work dir (deliverable / report only); belongs to workstream=bootstrap"
+    }
+  },
+  {
+    "name": "core-harness-external-eval",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/core-harness-external-eval",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-05-02",
+    "top_level_entries": 2,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "core-harness",
+      "parent_workstream": "external-eval",
+      "rationale": "dir mtime 2026-05-02; non-git work dir (deliverable / report only); belongs to workstream=external-eval"
+    }
+  },
+  {
+    "name": "core-harness-extraction-inventory",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/core-harness-extraction-inventory",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-05-02",
+    "top_level_entries": 2,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "core-harness",
+      "parent_workstream": "extraction",
+      "rationale": "dir mtime 2026-05-02; non-git work dir (deliverable / report only); belongs to workstream=extraction"
+    }
+  },
+  {
+    "name": "core-harness-frank-eval",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/core-harness-frank-eval",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-05-02",
+    "top_level_entries": 3,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "core-harness",
+      "parent_workstream": "external-eval",
+      "rationale": "dir mtime 2026-05-02; non-git work dir (deliverable / report only); belongs to workstream=external-eval"
+    }
+  },
+  {
+    "name": "core-harness-node20-bump",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/core-harness-node20-bump",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-05-03",
+    "top_level_entries": 2,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "core-harness",
+      "parent_workstream": "ci-fixes",
+      "rationale": "dir mtime 2026-05-03; non-git work dir (deliverable / report only); belongs to workstream=ci-fixes"
+    }
+  },
+  {
+    "name": "core-harness-readme-positioning",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/core-harness-readme-positioning",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-05-02",
+    "top_level_entries": 2,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "core-harness",
+      "parent_workstream": "readme",
+      "rationale": "dir mtime 2026-05-02; non-git work dir (deliverable / report only); belongs to workstream=readme"
+    }
+  },
+  {
+    "name": "core-harness-readme-update",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/core-harness-readme-update",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-05-02",
+    "top_level_entries": 2,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "core-harness",
+      "parent_workstream": "readme",
+      "rationale": "dir mtime 2026-05-02; non-git work dir (deliverable / report only); belongs to workstream=readme"
+    }
+  },
+  {
+    "name": "core-harness-step-b",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/core-harness-step-b",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-05-02",
+    "top_level_entries": 6,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "core-harness",
+      "parent_workstream": "phase3-step-b",
+      "rationale": "dir mtime 2026-05-02; non-git work dir (deliverable / report only); belongs to workstream=phase3-step-b"
+    }
+  },
+  {
+    "name": "core-harness-step-c",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/core-harness-step-c",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-05-02",
+    "top_level_entries": 3,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "core-harness",
+      "parent_workstream": "phase3-step-c",
+      "rationale": "dir mtime 2026-05-02; non-git work dir (deliverable / report only); belongs to workstream=phase3-step-c"
+    }
+  },
+  {
+    "name": "core-harness-step-d",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/core-harness-step-d",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-05-02",
+    "top_level_entries": 4,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "core-harness",
+      "parent_workstream": "phase3-step-d",
+      "rationale": "dir mtime 2026-05-02; non-git work dir (deliverable / report only); belongs to workstream=phase3-step-d"
+    }
+  },
+  {
+    "name": "decisions-naming-update",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/decisions-naming-update",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-26",
+    "top_level_entries": 1,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-04-26; non-git work dir (deliverable / report only)"
+    }
+  },
+  {
+    "name": "decisions-sheet-extend",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/decisions-sheet-extend",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-26",
+    "top_level_entries": 1,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-04-26; non-git work dir (deliverable / report only)"
+    }
+  },
+  {
+    "name": "discord-channel-research",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/discord-channel-research",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-26",
+    "top_level_entries": 2,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "research",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-04-26; non-git work dir (deliverable / report only)"
+    }
+  },
+  {
+    "name": "dispatcher-cadence-analysis",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/dispatcher-cadence-analysis",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-05-02",
+    "top_level_entries": 1,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org-ja",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-05-02; non-git work dir (deliverable / report only)"
+    }
+  },
+  {
+    "name": "dogfooding-smoke-053",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/dogfooding-smoke-053",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-05-03",
+    "top_level_entries": 2,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org-ja",
+      "parent_workstream": "dogfooding-smoke",
+      "rationale": "dir mtime 2026-05-03; non-git work dir (deliverable / report only); belongs to workstream=dogfooding-smoke"
+    }
+  },
+  {
+    "name": "dogfooding-smoke-054",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/dogfooding-smoke-054",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-05-03",
+    "top_level_entries": 0,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org-ja",
+      "parent_workstream": "dogfooding-smoke",
+      "rationale": "dir mtime 2026-05-03; non-git work dir (deliverable / report only); belongs to workstream=dogfooding-smoke"
+    }
+  },
+  {
+    "name": "dogfooding-smoke-rerun",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/dogfooding-smoke-rerun",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-05-03",
+    "top_level_entries": 2,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org-ja",
+      "parent_workstream": "dogfooding-smoke",
+      "rationale": "dir mtime 2026-05-03; non-git work dir (deliverable / report only); belongs to workstream=dogfooding-smoke"
+    }
+  },
+  {
+    "name": "dogfooding-smoke-rerun-session8",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/dogfooding-smoke-rerun-session8",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-05-03",
+    "top_level_entries": 1,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org-ja",
+      "parent_workstream": "dogfooding-smoke",
+      "rationale": "dir mtime 2026-05-03; non-git work dir (deliverable / report only); belongs to workstream=dogfooding-smoke"
+    }
+  },
+  {
+    "name": "dogfooding-smoke-session8",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/dogfooding-smoke-session8",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-05-03",
+    "top_level_entries": 2,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org-ja",
+      "parent_workstream": "dogfooding-smoke",
+      "rationale": "dir mtime 2026-05-03; non-git work dir (deliverable / report only); belongs to workstream=dogfooding-smoke"
+    }
+  },
+  {
+    "name": "drift-reaudit",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/drift-reaudit",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-28",
+    "top_level_entries": 4,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org-ja",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-04-28; non-git work dir (deliverable / report only)"
+    }
+  },
+  {
+    "name": "en-branch-protect",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/en-branch-protect",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-28",
+    "top_level_entries": 1,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org",
+      "parent_workstream": "i18n-en-bootstrap",
+      "rationale": "dir mtime 2026-04-28; non-git work dir (deliverable / report only); belongs to workstream=i18n-en-bootstrap"
+    }
+  },
+  {
+    "name": "epic-101-checkbox-fix",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/epic-101-checkbox-fix",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-05-03",
+    "top_level_entries": 2,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org-ja",
+      "parent_workstream": "epic-101",
+      "rationale": "dir mtime 2026-05-03; non-git work dir (deliverable / report only); belongs to workstream=epic-101"
+    }
+  },
+  {
+    "name": "epic-101-progress-update",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/epic-101-progress-update",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-05-03",
+    "top_level_entries": 2,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org-ja",
+      "parent_workstream": "epic-101",
+      "rationale": "dir mtime 2026-05-03; non-git work dir (deliverable / report only); belongs to workstream=epic-101"
+    }
+  },
+  {
+    "name": "file-phase-d-issues",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/file-phase-d-issues",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-30",
+    "top_level_entries": 3,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org-ja",
+      "parent_workstream": "public-release",
+      "rationale": "dir mtime 2026-04-30; non-git work dir (deliverable / report only); belongs to workstream=public-release"
+    }
+  },
+  {
+    "name": "file-public-followups",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/file-public-followups",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-30",
+    "top_level_entries": 1,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org-ja",
+      "parent_workstream": "public-release",
+      "rationale": "dir mtime 2026-04-30; non-git work dir (deliverable / report only); belongs to workstream=public-release"
+    }
+  },
+  {
+    "name": "fizzbuzz",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/fizzbuzz",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-24",
+    "top_level_entries": 2,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "scratch",
+      "parent_project": "scratch",
+      "parent_workstream": null,
+      "rationale": "練習/scratch 用ディレクトリ。 lifecycle='scratch'。 _scratch/ に保持、 mtime > 90 日で _archive/ 候補。"
+    }
+  },
+  {
+    "name": "g1-2-stable-tag-issue",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/g1-2-stable-tag-issue",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-26",
+    "top_level_entries": 1,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-04-26; non-git work dir (deliverable / report only)"
+    }
+  },
+  {
+    "name": "hello-world",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/hello-world",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-24",
+    "top_level_entries": 2,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "scratch",
+      "parent_project": "scratch",
+      "parent_workstream": null,
+      "rationale": "練習/scratch 用ディレクトリ。 lifecycle='scratch'。 _scratch/ に保持、 mtime > 90 日で _archive/ 候補。"
+    }
+  },
+  {
+    "name": "hook-phase2-feasibility",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/hook-phase2-feasibility",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-24",
+    "top_level_entries": 3,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-04-24; non-git work dir (deliverable / report only)"
+    }
+  },
+  {
+    "name": "install-ux-design",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/install-ux-design",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-26",
+    "top_level_entries": 4,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-04-26; non-git work dir (deliverable / report only)"
+    }
+  },
+  {
+    "name": "issue-103-transfer-prep",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/issue-103-transfer-prep",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-26",
+    "top_level_entries": 4,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-04-26; non-git work dir (deliverable / report only)"
+    }
+  },
+  {
+    "name": "issue-105-upstream-notice",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/issue-105-upstream-notice",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-27",
+    "top_level_entries": 3,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org-ja",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-04-27; non-git work dir (deliverable / report only)"
+    }
+  },
+  {
+    "name": "issue-110-brainstorm",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/issue-110-brainstorm",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-27",
+    "top_level_entries": 7,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org-ja",
+      "parent_workstream": "issue-110-english",
+      "rationale": "dir mtime 2026-04-27; non-git work dir (deliverable / report only); belongs to workstream=issue-110-english"
+    }
+  },
+  {
+    "name": "issue-110-prep",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/issue-110-prep",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-27",
+    "top_level_entries": 9,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org-ja",
+      "parent_workstream": "issue-110-english",
+      "rationale": "dir mtime 2026-04-27; non-git work dir (deliverable / report only); belongs to workstream=issue-110-english"
+    }
+  },
+  {
+    "name": "issue-114-close",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/issue-114-close",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-28",
+    "top_level_entries": 1,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org-ja",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-04-28; non-git work dir (deliverable / report only)"
+    }
+  },
+  {
+    "name": "issue-120-effort-estimate",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/issue-120-effort-estimate",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-26",
+    "top_level_entries": 2,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-04-26; non-git work dir (deliverable / report only)"
+    }
+  },
+  {
+    "name": "issue-130-rebase-inventory",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/issue-130-rebase-inventory",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-05-04",
+    "top_level_entries": 3,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org-ja",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-05-04; non-git work dir (deliverable / report only)"
+    }
+  },
+  {
+    "name": "issue-131-internal-only",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/issue-131-internal-only",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-26",
+    "top_level_entries": 1,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-04-26; non-git work dir (deliverable / report only)"
+    }
+  },
+  {
+    "name": "issue-136-fix-wording",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/issue-136-fix-wording",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-26",
+    "top_level_entries": 2,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-04-26; non-git work dir (deliverable / report only)"
+    }
+  },
+  {
+    "name": "issue-157-back-port",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/issue-157-back-port",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-28",
+    "top_level_entries": 0,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org-ja",
+      "parent_workstream": "issue-110-english",
+      "rationale": "dir mtime 2026-04-28; non-git work dir (deliverable / report only); belongs to workstream=issue-110-english"
+    }
+  },
+  {
+    "name": "issue-187-coc",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/issue-187-coc",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-05-01",
+    "top_level_entries": 2,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org-ja",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-05-01; non-git work dir (deliverable / report only)"
+    }
+  },
+  {
+    "name": "issue-80-followups",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/issue-80-followups",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-28",
+    "top_level_entries": 3,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org-ja",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-04-28; non-git work dir (deliverable / report only)"
+    }
+  },
+  {
+    "name": "issue-99-phase-1",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/issue-99-phase-1",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-28",
+    "top_level_entries": 2,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org-ja",
+      "parent_workstream": "issue-99-worker-perms",
+      "rationale": "dir mtime 2026-04-28; non-git work dir (deliverable / report only); belongs to workstream=issue-99-worker-perms"
+    }
+  },
+  {
+    "name": "issue-99-phase-2",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/issue-99-phase-2",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-28",
+    "top_level_entries": 2,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org-ja",
+      "parent_workstream": "issue-99-worker-perms",
+      "rationale": "dir mtime 2026-04-28; non-git work dir (deliverable / report only); belongs to workstream=issue-99-worker-perms"
+    }
+  },
+  {
+    "name": "issue-npm-bootstrap-publish",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/issue-npm-bootstrap-publish",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-26",
+    "top_level_entries": 2,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-04-26; non-git work dir (deliverable / report only)"
+    }
+  },
+  {
+    "name": "issue-org-delegate-gitignore-check",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/issue-org-delegate-gitignore-check",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-26",
+    "top_level_entries": 2,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-04-26; non-git work dir (deliverable / report only)"
+    }
+  },
+  {
+    "name": "issue-tree-creation",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/issue-tree-creation",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-26",
+    "top_level_entries": 5,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org",
+      "parent_workstream": "epic-101",
+      "rationale": "dir mtime 2026-04-26; non-git work dir (deliverable / report only); belongs to workstream=epic-101"
+    }
+  },
+  {
+    "name": "ja-readme-update",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/ja-readme-update",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-05-02",
+    "top_level_entries": 2,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org-ja",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-05-02; non-git work dir (deliverable / report only)"
+    }
+  },
+  {
+    "name": "ja-shell-test-triage",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/ja-shell-test-triage",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-05-02",
+    "top_level_entries": 2,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org-ja",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-05-02; non-git work dir (deliverable / report only)"
+    }
+  },
+  {
+    "name": "layer3-design-qa",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/layer3-design-qa",
+    "git": {
+      "is_repo": true,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": "master",
+      "last_commit_iso": "2026-05-03T05:05:06+09:00",
+      "last_commit_subject": "Reorder Q&A: measurement to Q2, public OSS judgment to last 2"
+    },
+    "dir_mtime": "2026-05-03",
+    "top_level_entries": 2,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org-ja",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-05-03; git repo (worktree=False), last commit 2026-05-03T05:05:06+09:00 'Reorder Q&A: measurement to Q2, public OSS judgment to last 2'"
+    }
+  },
+  {
+    "name": "leapyear",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/leapyear",
+    "git": {
+      "is_repo": true,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": "main",
+      "last_commit_iso": "2026-04-22T23:16:03+09:00",
+      "last_commit_subject": "docs: add README with usage and test cases"
+    },
+    "dir_mtime": "2026-04-22",
+    "top_level_entries": 3,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "scratch",
+      "parent_project": "scratch",
+      "parent_workstream": null,
+      "rationale": "練習/scratch 用ディレクトリ。 lifecycle='scratch'。 _scratch/ に保持、 mtime > 90 日で _archive/ 候補。"
+    }
+  },
+  {
+    "name": "notify-ci-smoke",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/notify-ci-smoke",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-28",
+    "top_level_entries": 2,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org-ja",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-04-28; non-git work dir (deliverable / report only)"
+    }
+  },
+  {
+    "name": "open-flip-plan",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/open-flip-plan",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-30",
+    "top_level_entries": 2,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org-ja",
+      "parent_workstream": "public-release",
+      "rationale": "dir mtime 2026-04-30; non-git work dir (deliverable / report only); belongs to workstream=public-release"
+    }
+  },
+  {
+    "name": "palindrome",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/palindrome",
+    "git": {
+      "is_repo": true,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": "main",
+      "last_commit_iso": "2026-04-22T23:15:52+09:00",
+      "last_commit_subject": "docs: add README and gitignore"
+    },
+    "dir_mtime": "2026-04-22",
+    "top_level_entries": 3,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "scratch",
+      "parent_project": "scratch",
+      "parent_workstream": null,
+      "rationale": "練習/scratch 用ディレクトリ。 lifecycle='scratch'。 _scratch/ に保持、 mtime > 90 日で _archive/ 候補。"
+    }
+  },
+  {
+    "name": "phase-d-prep",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/phase-d-prep",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-30",
+    "top_level_entries": 2,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org-ja",
+      "parent_workstream": "public-release",
+      "rationale": "dir mtime 2026-04-30; non-git work dir (deliverable / report only); belongs to workstream=public-release"
+    }
+  },
+  {
+    "name": "phase3-cross-review",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/phase3-cross-review",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-05-02",
+    "top_level_entries": 3,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "core-harness",
+      "parent_workstream": "phase3-cross-review",
+      "rationale": "dir mtime 2026-05-02; non-git work dir (deliverable / report only); belongs to workstream=phase3-cross-review"
+    }
+  },
+  {
+    "name": "phase4-measurement",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/phase4-measurement",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-05-02",
+    "top_level_entries": 5,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org",
+      "parent_workstream": "phase4",
+      "rationale": "dir mtime 2026-05-02; non-git work dir (deliverable / report only); belongs to workstream=phase4"
+    }
+  },
+  {
+    "name": "phase5-decisions-doc",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/phase5-decisions-doc",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-05-03",
+    "top_level_entries": 2,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org-ja",
+      "parent_workstream": "phase5",
+      "rationale": "dir mtime 2026-05-03; non-git work dir (deliverable / report only); belongs to workstream=phase5"
+    }
+  },
+  {
+    "name": "post-public-gap-audit",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/post-public-gap-audit",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-30",
+    "top_level_entries": 1,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org-ja",
+      "parent_workstream": "public-release",
+      "rationale": "dir mtime 2026-04-30; non-git work dir (deliverable / report only); belongs to workstream=public-release"
+    }
+  },
+  {
+    "name": "pr-review-163-165",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/pr-review-163-165",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-28",
+    "top_level_entries": 1,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "renga",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-04-28; non-git work dir (deliverable / report only)"
+    }
+  },
+  {
+    "name": "pr24-codex-review",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/pr24-codex-review",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-05-01",
+    "top_level_entries": 2,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-05-01; non-git work dir (deliverable / report only)"
+    }
+  },
+  {
+    "name": "pr93-review-monitor",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/pr93-review-monitor",
+    "git": {
+      "is_repo": true,
+      "is_worktree": false,
+      "origin_url": "https://github.com/happy-ryo/claude-org.git",
+      "current_branch": "remove-company-refs",
+      "last_commit_iso": "2026-04-26T00:24:29+09:00",
+      "last_commit_subject": "docs: 会社名（Allied Architects / アライドアーキテクツ）の言及を削除"
+    },
+    "dir_mtime": "2026-04-26",
+    "top_level_entries": 10,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-04-26; git repo (worktree=False), last commit 2026-04-26T00:24:29+09:00 'docs: 会社名（Allied Architects / アライドアーキテクツ）の言及を削除'"
+    }
+  },
+  {
+    "name": "pr94-review-monitor",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/pr94-review-monitor",
+    "git": {
+      "is_repo": true,
+      "is_worktree": false,
+      "origin_url": "https://github.com/happy-ryo/claude-org.git",
+      "current_branch": "prep-public-release",
+      "last_commit_iso": "2026-04-26T01:40:04+09:00",
+      "last_commit_subject": "chore: revert unintended template/registry edits and finalize LICENSE holder"
+    },
+    "dir_mtime": "2026-04-26",
+    "top_level_entries": 12,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-04-26; git repo (worktree=False), last commit 2026-04-26T01:40:04+09:00 'chore: revert unintended template/registry edits and finalize LICENSE holder'"
+    }
+  },
+  {
+    "name": "pre-flight-sweep",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/pre-flight-sweep",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-30",
+    "top_level_entries": 1,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org-ja",
+      "parent_workstream": "public-release",
+      "rationale": "dir mtime 2026-04-30; non-git work dir (deliverable / report only); belongs to workstream=public-release"
+    }
+  },
+  {
+    "name": "public-readiness-audit",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/public-readiness-audit",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-26",
+    "top_level_entries": 1,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-04-26; non-git work dir (deliverable / report only)"
+    }
+  },
+  {
+    "name": "qiita-renga-review",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/qiita-renga-review",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-05-02",
+    "top_level_entries": 4,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "renga",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-05-02; non-git work dir (deliverable / report only)"
+    }
+  },
+  {
+    "name": "readme-drift-audit",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/readme-drift-audit",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-05-03",
+    "top_level_entries": 3,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org-ja",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-05-03; non-git work dir (deliverable / report only)"
+    }
+  },
+  {
+    "name": "remote-status-check",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/remote-status-check",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-28",
+    "top_level_entries": 1,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org-ja",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-04-28; non-git work dir (deliverable / report only)"
+    }
+  },
+  {
+    "name": "renga-api-inventory",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/renga-api-inventory",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-05-02",
+    "top_level_entries": 3,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "renga",
+      "parent_workstream": "renga-v1-freeze",
+      "rationale": "dir mtime 2026-05-02; non-git work dir (deliverable / report only); belongs to workstream=renga-v1-freeze"
+    }
+  },
+  {
+    "name": "renga-claude-detect-bug",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/renga-claude-detect-bug",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-05-03",
+    "top_level_entries": 4,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "renga",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-05-03; non-git work dir (deliverable / report only)"
+    }
+  },
+  {
+    "name": "renga-promotion-plan",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/renga-promotion-plan",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-05-02",
+    "top_level_entries": 4,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "renga",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-05-02; non-git work dir (deliverable / report only)"
+    }
+  },
+  {
+    "name": "renga-set-summary-impl",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/renga-set-summary-impl",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-05-02",
+    "top_level_entries": 2,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "renga",
+      "parent_workstream": "renga-v1-freeze",
+      "rationale": "dir mtime 2026-05-02; non-git work dir (deliverable / report only); belongs to workstream=renga-v1-freeze"
+    }
+  },
+  {
+    "name": "renga-v1-freeze-design",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/renga-v1-freeze-design",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-05-02",
+    "top_level_entries": 3,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "renga",
+      "parent_workstream": "renga-v1-freeze",
+      "rationale": "dir mtime 2026-05-02; non-git work dir (deliverable / report only); belongs to workstream=renga-v1-freeze"
+    }
+  },
+  {
+    "name": "renga-v1-release-notes",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/renga-v1-release-notes",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-05-02",
+    "top_level_entries": 3,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "renga",
+      "parent_workstream": "renga-v1-freeze",
+      "rationale": "dir mtime 2026-05-02; non-git work dir (deliverable / report only); belongs to workstream=renga-v1-freeze"
+    }
+  },
+  {
+    "name": "reverse-gap-audit",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/reverse-gap-audit",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-26",
+    "top_level_entries": 2,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "research",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-04-26; non-git work dir (deliverable / report only)"
+    }
+  },
+  {
+    "name": "role-config-drift-fix",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/role-config-drift-fix",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-26",
+    "top_level_entries": 1,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-04-26; non-git work dir (deliverable / report only)"
+    }
+  },
+  {
+    "name": "rpc-design-review",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/rpc-design-review",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-24",
+    "top_level_entries": 2,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org-ja",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-04-24; non-git work dir (deliverable / report only)"
+    }
+  },
+  {
+    "name": "session8-followup-issues",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/session8-followup-issues",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-05-03",
+    "top_level_entries": 1,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org-ja",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-05-03; non-git work dir (deliverable / report only)"
+    }
+  },
+  {
+    "name": "stale-issue-sweep",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/stale-issue-sweep",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-28",
+    "top_level_entries": 1,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org-ja",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-04-28; non-git work dir (deliverable / report only)"
+    }
+  },
+  {
+    "name": "strategic-memo-v4-integration",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/strategic-memo-v4-integration",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-26",
+    "top_level_entries": 1,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-04-26; non-git work dir (deliverable / report only)"
+    }
+  },
+  {
+    "name": "strategic-memo-v5-update",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/strategic-memo-v5-update",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-26",
+    "top_level_entries": 1,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-04-26; non-git work dir (deliverable / report only)"
+    }
+  },
+  {
+    "name": "structural-perm-issue",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/structural-perm-issue",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-26",
+    "top_level_entries": 2,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-04-26; non-git work dir (deliverable / report only)"
+    }
+  },
+  {
+    "name": "sum-1-to-100",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/sum-1-to-100",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-24",
+    "top_level_entries": 2,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "scratch",
+      "parent_project": "scratch",
+      "parent_workstream": null,
+      "rationale": "練習/scratch 用ディレクトリ。 lifecycle='scratch'。 _scratch/ に保持、 mtime > 90 日で _archive/ 候補。"
+    }
+  },
+  {
+    "name": "sync-sop-design",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/sync-sop-design",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-30",
+    "top_level_entries": 1,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org-ja",
+      "parent_workstream": "auto-mirror",
+      "rationale": "dir mtime 2026-04-30; non-git work dir (deliverable / report only); belongs to workstream=auto-mirror"
+    }
+  },
+  {
+    "name": "todo-cli",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/todo-cli",
+    "git": {
+      "is_repo": true,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": "master",
+      "last_commit_iso": "2026-04-22T23:11:01+09:00",
+      "last_commit_subject": "feat: initial todo-cli (add/list/done/rm, UTF-8 JSON store)"
+    },
+    "dir_mtime": "2026-04-22",
+    "top_level_entries": 4,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "scratch",
+      "parent_project": "scratch",
+      "parent_workstream": null,
+      "rationale": "練習/scratch 用ディレクトリ。 lifecycle='scratch'。 _scratch/ に保持、 mtime > 90 日で _archive/ 候補。"
+    }
+  },
+  {
+    "name": "translate-japanese-issues",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/translate-japanese-issues",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-26",
+    "top_level_entries": 7,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org-ja",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-04-26; non-git work dir (deliverable / report only)"
+    }
+  },
+  {
+    "name": "translation-wave-plan",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/translation-wave-plan",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-28",
+    "top_level_entries": 1,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org-ja",
+      "parent_workstream": "i18n-en-bootstrap",
+      "rationale": "dir mtime 2026-04-28; non-git work dir (deliverable / report only); belongs to workstream=i18n-en-bootstrap"
+    }
+  },
+  {
+    "name": "v010-release-tag",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/v010-release-tag",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-28",
+    "top_level_entries": 2,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org",
+      "parent_workstream": "i18n-en-bootstrap",
+      "rationale": "dir mtime 2026-04-28; non-git work dir (deliverable / report only); belongs to workstream=i18n-en-bootstrap"
+    }
+  },
+  {
+    "name": "v5-i1-correction",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/v5-i1-correction",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-26",
+    "top_level_entries": 1,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org",
+      "parent_workstream": null,
+      "rationale": "dir mtime 2026-04-26; non-git work dir (deliverable / report only)"
+    }
+  },
+  {
+    "name": "wave-0-glossary",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/wave-0-glossary",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-28",
+    "top_level_entries": 2,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org",
+      "parent_workstream": "i18n-en-bootstrap",
+      "rationale": "dir mtime 2026-04-28; non-git work dir (deliverable / report only); belongs to workstream=i18n-en-bootstrap"
+    }
+  },
+  {
+    "name": "wave-a-bootstrap",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/wave-a-bootstrap",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-28",
+    "top_level_entries": 3,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org",
+      "parent_workstream": "i18n-en-bootstrap",
+      "rationale": "dir mtime 2026-04-28; non-git work dir (deliverable / report only); belongs to workstream=i18n-en-bootstrap"
+    }
+  },
+  {
+    "name": "wave-b-core-fix",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/wave-b-core-fix",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-28",
+    "top_level_entries": 2,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org",
+      "parent_workstream": "i18n-en-bootstrap",
+      "rationale": "dir mtime 2026-04-28; non-git work dir (deliverable / report only); belongs to workstream=i18n-en-bootstrap"
+    }
+  },
+  {
+    "name": "wave-b-core-pr1-2",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/wave-b-core-pr1-2",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-28",
+    "top_level_entries": 2,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org",
+      "parent_workstream": "i18n-en-bootstrap",
+      "rationale": "dir mtime 2026-04-28; non-git work dir (deliverable / report only); belongs to workstream=i18n-en-bootstrap"
+    }
+  },
+  {
+    "name": "wave-b-core-pr3-4",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/wave-b-core-pr3-4",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-28",
+    "top_level_entries": 2,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org",
+      "parent_workstream": "i18n-en-bootstrap",
+      "rationale": "dir mtime 2026-04-28; non-git work dir (deliverable / report only); belongs to workstream=i18n-en-bootstrap"
+    }
+  },
+  {
+    "name": "wave-b-runtime-pr10",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/wave-b-runtime-pr10",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-28",
+    "top_level_entries": 2,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org",
+      "parent_workstream": "i18n-en-bootstrap",
+      "rationale": "dir mtime 2026-04-28; non-git work dir (deliverable / report only); belongs to workstream=i18n-en-bootstrap"
+    }
+  },
+  {
+    "name": "wave-b-runtime-pr5",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/wave-b-runtime-pr5",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-28",
+    "top_level_entries": 2,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org",
+      "parent_workstream": "i18n-en-bootstrap",
+      "rationale": "dir mtime 2026-04-28; non-git work dir (deliverable / report only); belongs to workstream=i18n-en-bootstrap"
+    }
+  },
+  {
+    "name": "wave-b-runtime-pr6",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/wave-b-runtime-pr6",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-28",
+    "top_level_entries": 2,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org",
+      "parent_workstream": "i18n-en-bootstrap",
+      "rationale": "dir mtime 2026-04-28; non-git work dir (deliverable / report only); belongs to workstream=i18n-en-bootstrap"
+    }
+  },
+  {
+    "name": "wave-b-runtime-pr7",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/wave-b-runtime-pr7",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-28",
+    "top_level_entries": 2,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org",
+      "parent_workstream": "i18n-en-bootstrap",
+      "rationale": "dir mtime 2026-04-28; non-git work dir (deliverable / report only); belongs to workstream=i18n-en-bootstrap"
+    }
+  },
+  {
+    "name": "wave-b-runtime-pr8",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/wave-b-runtime-pr8",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-28",
+    "top_level_entries": 2,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org",
+      "parent_workstream": "i18n-en-bootstrap",
+      "rationale": "dir mtime 2026-04-28; non-git work dir (deliverable / report only); belongs to workstream=i18n-en-bootstrap"
+    }
+  },
+  {
+    "name": "wave-b-runtime-pr8-fix",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/wave-b-runtime-pr8-fix",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-28",
+    "top_level_entries": 2,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org",
+      "parent_workstream": "i18n-en-bootstrap",
+      "rationale": "dir mtime 2026-04-28; non-git work dir (deliverable / report only); belongs to workstream=i18n-en-bootstrap"
+    }
+  },
+  {
+    "name": "wave-b-runtime-pr9",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/wave-b-runtime-pr9",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-28",
+    "top_level_entries": 2,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org",
+      "parent_workstream": "i18n-en-bootstrap",
+      "rationale": "dir mtime 2026-04-28; non-git work dir (deliverable / report only); belongs to workstream=i18n-en-bootstrap"
+    }
+  },
+  {
+    "name": "wave-c",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/wave-c",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-04-28",
+    "top_level_entries": 3,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "run",
+      "parent_project": "claude-org",
+      "parent_workstream": "i18n-en-bootstrap",
+      "rationale": "dir mtime 2026-04-28; non-git work dir (deliverable / report only); belongs to workstream=i18n-en-bootstrap"
+    }
+  },
+  {
+    "name": "wordcount",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/wordcount",
+    "git": {
+      "is_repo": true,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": "main",
+      "last_commit_iso": "2026-04-22T23:16:08+09:00",
+      "last_commit_subject": "docs: add README, sample text, and gitignore"
+    },
+    "dir_mtime": "2026-04-22",
+    "top_level_entries": 4,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "scratch",
+      "parent_project": "scratch",
+      "parent_workstream": null,
+      "rationale": "練習/scratch 用ディレクトリ。 lifecycle='scratch'。 _scratch/ に保持、 mtime > 90 日で _archive/ 候補。"
+    }
+  },
+  {
+    "name": "workers",
+    "abs_path": "C:/Users/iwama/Documents/work/workers/workers",
+    "git": {
+      "is_repo": false,
+      "is_worktree": false,
+      "origin_url": null,
+      "current_branch": null,
+      "last_commit_iso": null,
+      "last_commit_subject": null
+    },
+    "dir_mtime": "2026-05-02",
+    "top_level_entries": 1,
+    "size_mb": null,
+    "size_note": "計測未実施 (du は Windows 上で 30+ ディレクトリ走査が極端に遅いため省略。size_mb は別途バッチで埋める)",
+    "proposed_classification": {
+      "tier": "archive_candidate",
+      "parent_project": null,
+      "parent_workstream": null,
+      "rationale": "誤って workers/workers/claude-org として作られた nested dir。 lifecycle='delete_pending'、 curator バッチで物理削除。"
+    }
+  }
+]
