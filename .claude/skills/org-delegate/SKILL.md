@@ -411,6 +411,21 @@ mcp__renga-peers__send_message(
 
 ### ワーカーからのメッセージ受信時
 
+**Canonical event flow**（ワーカーからの完了 / 進捗 / Codex round / 判断仰ぎ いずれの peer message にも共通する正準順序。途中段階を飛ばしてはならない）:
+
+```
+worker → Secretary peer message
+  1. ack to worker (mcp__renga-peers__send_message, to_id="worker-{task_id}")
+  2. update Progress Log + DB (run.status / events / pending-decisions register)
+  3. report to user
+  4. wait for user approval before push/PR (2b-i)
+  5. CI watch / next instruction
+```
+
+- 1 (ack) は worker dead-lock 防止の必須 step。worker は ack を受け取るまで「次の指示待ち」で idle になり続ける。ack の最低内容と種別ごとの例文は [`references/ack-template.md`](references/ack-template.md) を参照
+- 2 → 3 の順序は「内部状態を先に整合させてから user に報告する」原則。逆にすると user 承認後に DB 不整合が残るリスクがある
+- 4 (user approval gate) は判断仰ぎ・完了報告いずれも対象。`git push` / `gh pr create` / `tools/pr-watch.*` は user の明示的 OK 後にのみ発行する。ack ≠ user 承認
+
 ワーカーから renga-peers でメッセージを受け取ったら:
 
 0. 判断仰ぎ・スコープ拡張提案・承認要求・ブロッカーの場合（**最優先で識別**）:
@@ -431,6 +446,14 @@ mcp__renga-peers__send_message(
    - `.state/workers/worker-{task_id}.md` の Progress Log に追記
    - DB の events テーブルにイベント追記 (`bash tools/journal_append.sh ...`)
 2a. ワーカーから完了報告を受け取ったら:
+   - **最初に worker へ ack を返す**（Canonical event flow の step 1。run.status 更新・user 報告・後続作業より前に発行する）:
+     ```
+     mcp__renga-peers__send_message(
+       to_id="worker-{task_id}",
+       message="<受領確認> + <次の予定: PR 作成は user 承認後 / CI 結果待ち / 追加レビュー要否> + <ペイン状態: 保持 or クローズ予定>"
+     )
+     ```
+     ack 文面の例（種別別）は [`references/ack-template.md`](references/ack-template.md)。worker は ack を受けるまで「次の指示待ち」で idle になり、dead-lock の原因になる
    - **DB 経由で run を REVIEW に遷移する**（markdown 直接編集禁止。post-commit hook が `.state/org-state.md` を再生成）:
      ```bash
      python -c "
@@ -446,6 +469,7 @@ mcp__renga-peers__send_message(
    - JSON snapshot は StateWriter post-commit hook が自動再生成 (Issue #284)
    - 結果を人間に報告する
    - **ペインはまだ閉じない**
+   - **承認待ちで停止する**: 人間から「OK」「確認した」「問題ない」「進めて」等の **明示的承認** を受けるまで、`git push` / `gh pr create` / `tools/pr-watch.ps1` / `tools/pr-watch.sh` を発行してはならない。「報告して即続行」ではなく「報告して承認待ち」が正準フロー。ack（worker 宛）は user 承認とは別物 — ack は worker dead-lock 解除のためで、push/PR 権限を生まない。承認なしで push/PR を発行すると worker / user 双方への protocol 違反
 
 2b. 人間が承認した場合（「OK」「確認した」「問題ない」等）:
 
