@@ -438,7 +438,7 @@ mcp__renga-peers__send_message(to_id="secretary", message="...")
 
    どちらも Step 5 (worker 側監視) と Step 4 (worker pane 画面監視) では検知できない。secretary 側の outbound (secretary→user / secretary→worker) を観測する独立チャネルが必要。Issue #287 (PR #295) の sibling、両側監視で完成。Issue #292。
 
-   **本 PR のスコープ (重要)**: 上記 2 パターンのうち **(1) 「secretary が人間に上げ忘れ」のみ** を検知対象とする。(2) 「user 回答を worker に転送し忘れ」は journal に secretary→worker outbound の ledger が無く ((c) 参照)、prose-only の本 PR では確実な検知手段が組めないため、(g) の register 化 follow-up Issue で恒久対応する。仕様の (b) 以降は (1) を絞り込む条件として読む。
+   **proxy 経路の歴史的スコープ (旧 PR #298)**: 以下 (b)〜(f) は PR #298 当時の proxy-only 実装を記述しており、(1) 「secretary が人間に上げ忘れ」のみを対象としていた。(2) 「user 回答を worker に転送し忘れ」は当時 journal に secretary→worker outbound の ledger が無く検知できなかった。Issue #297 (PR #302) で (a-0) primary lookup により (1) は register 経由で deterministic 化、Issue #301 で (a-2) primary lookup により (2) も `user_replied_at` marker 経由で deterministic 化済み。proxy 経路 (b)〜(f) は legacy entry / Secretary が CLI 呼び忘れ / register 不通の degraded mode の (a-3) Fallback として残置されている。
 
    #### (b) いつ relay gap を疑うか
    起点は **直近の worker→secretary event** に固定する。`.state/journal.jsonl` から `event ∈ {worker_escalation, worker_reported}` かつ `worker == "worker-{task_id}"` を満たすエントリの最新 1 件を取り、その `ts` を `T_last_worker_in` とする。`worker_completed` / `plan_delivered` / `prep_delivered` は **対象外** (これらは「完了 / 中間引き渡し」で、secretary が直ちに user に上げる契約ではない。判断仰ぎ・進捗共有のみが relay gap の対象)。
@@ -461,7 +461,7 @@ mcp__renga-peers__send_message(to_id="secretary", message="...")
    1. **journal scan**: 既存 event catalog (`docs/journal-events.md`) に「secretary→worker の send_message 受信時に secretary が書く event」は定義されていない。`worker_escalation` / `worker_reported` / `worker_completed` 等は **worker 起点の inbound** を secretary が記録する ledger であり、逆方向 (secretary→worker outbound) は ledger 化されていない。`user_decision_relayed` のような新 event を捏造して proxy にするのは event 名の確定を要し、本 PR スコープ外 (curator 領域)
    2. **renga-peers `poll_events` 経由**: Step 5 (c) と同じく現状の renga `poll_events` は pane lifecycle のみで `send_message` を流さない。将来 send_message が flow するようになれば、Step 1 の cursor (`.state/dispatcher-event-cursor.txt`) を再利用して `(actor=secretary, recipient=worker-{task_id})` を直接観測できる。プレースホルダ
 
-   従って (b)(2) のうち「secretary→worker 痕跡なし」は、本 PR では **常に true** として扱う (痕跡を観測する手段が無いため、中継が動いているかどうかを判別できない)。これにより relay gap 候補の絞り込みは事実上 (d) の secretary→user proxy だけに依存することになり、結果的に動機 (a)(2) の「user 答えた後に secretary が worker に転送し忘れ」ケースは **(d) の secretary 画面更新で擬陽性的に suppress される** (user 回答に secretary が応答した時点で secretary pane が更新されるため)。本ケースを正しく検知するには (g) の register 化が必須で、本 PR では割り切る (動機 (a)(1) の「人間に上げ忘れ」ケースを優先カバー)。
+   従って (b)(2) のうち「secretary→worker 痕跡なし」は、proxy 経路では **常に true** として扱う (痕跡を観測する手段が無いため、中継が動いているかどうかを判別できない)。これにより proxy 経路の絞り込みは事実上 (d) の secretary→user proxy だけに依存することになり、結果的に動機 (a)(2) の「user 答えた後に secretary が worker に転送し忘れ」ケースは proxy では **(d) の secretary 画面更新で擬陽性的に suppress** される。Issue #301 の (a-2) primary lookup (`user_replied_at` marker) で本ケースは deterministic 化済みであり、proxy 経路は legacy entry / 呼び忘れの (a-3) Fallback としてのみ機能する。
 
    #### (d) secretary→user 観測手段 — `inspect_pane` による画面 diff
    user 向け visible output を直接捉える journal event は無い (user pane に届く文字は renga の terminal レイヤーに流れるだけで journal を経由しない)。代替として **secretary pane の画面差分** を proxy として使う:
