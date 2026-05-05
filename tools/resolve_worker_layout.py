@@ -66,6 +66,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from tools.registry_parser import Project as RegistryProject, parse_projects
 from tools.state_db import connect as db_connect
 from tools.state_db.queries import list_runs_with_dirs
 
@@ -90,15 +91,11 @@ _FIX_TRIGGERS = ("fix", "bug", "修正", "hotfix", "patch")
 # ---------------------------------------------------------------------------
 # Data classes
 # ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class RegistryProject:
-    """Single row of registry/projects.md, for resolver-internal use."""
-    common_name: str        # 通称
-    slug: str               # プロジェクト名 (machine slug)
-    path: str               # local abs path, URL, or '-'
-    description: str
+#
+# ``RegistryProject`` is re-exported from :mod:`tools.registry_parser` so
+# downstream callers keep working without churn; the shared dataclass uses
+# ``name`` (slug) / ``nickname`` (通称) instead of the legacy ``slug`` /
+# ``common_name`` field names.
 
 
 @dataclass(frozen=True)
@@ -128,68 +125,13 @@ class ResolveError(ValueError):
 
 
 # ---------------------------------------------------------------------------
-# registry/projects.md parser
+# registry/projects.md lookup
 # ---------------------------------------------------------------------------
-#
-# TODO(#286): replace the ad-hoc parser below with the shared parser from
-# tools/registry_parser when Issue #286 lands. dashboard/server.py and
-# tools/state_db/importer.py have their own parsers today; #286 extracts a
-# single SoT module that all three call. Until then this resolver carries
-# the third (intentionally minimal) implementation, and we accept the drift
-# risk for the duration of one PR.
-
-_TABLE_SEP_RE = re.compile(r"^\|[\s\-:|]+\|\s*$")
-
-
-def parse_registry(text: str) -> list[RegistryProject]:
-    """Parse the markdown table in registry/projects.md.
-
-    Tolerates leading prose / multiple tables. Returns rows with at
-    least 4 columns (通称 / プロジェクト名 / パス / 説明). The 5th
-    column ('よくある作業例') is dropped — resolver doesn't use it.
-    """
-    rows: list[RegistryProject] = []
-    in_table = False
-    header_seen = False
-    for raw in text.splitlines():
-        line = raw.rstrip()
-        if _TABLE_SEP_RE.match(line):
-            in_table = True
-            header_seen = True
-            continue
-        if not in_table:
-            # Header line that precedes the |---| separator — capture so
-            # malformed tables (separator missing) still don't accidentally
-            # parse.  We only flip in_table on the separator.
-            if line.startswith("|"):
-                header_seen = True
-            continue
-        if not line.startswith("|"):
-            # blank line or end-of-table prose
-            in_table = False
-            continue
-        cols = [c.strip() for c in line.strip("|").split("|")]
-        if len(cols) < 4:
-            continue
-        common_name, slug, path, description = cols[0], cols[1], cols[2], cols[3]
-        if not slug:
-            continue
-        rows.append(
-            RegistryProject(
-                common_name=common_name,
-                slug=slug,
-                path=path,
-                description=description,
-            )
-        )
-    if not header_seen:
-        return []
-    return rows
 
 
 def find_project(rows: Iterable[RegistryProject], slug: str) -> Optional[RegistryProject]:
     for r in rows:
-        if r.slug == slug:
+        if r.name == slug:
             return r
     return None
 
@@ -361,10 +303,10 @@ def resolve(
         workers_dir = resolve_workers_dir(claude_org_root)
 
     # --- Project lookup ----------------------------------------------------
-    registry_text = ""
     if registry_path.exists():
-        registry_text = registry_path.read_text(encoding="utf-8")
-    projects = parse_registry(registry_text)
+        projects = parse_projects(registry_path)
+    else:
+        projects = []
     project = find_project(projects, project_slug)
 
     # --- Pattern decision --------------------------------------------------

@@ -22,6 +22,8 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Iterable, Optional
 
+from tools.registry_parser import iter_rows as _iter_registry_rows
+
 from . import apply_schema, connect
 
 
@@ -189,43 +191,37 @@ class _Importer:
 
     # -- registry/projects.md --------------------------------------------
 
-    _PROJ_ROW_RE = re.compile(r"^\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]*)\|\s*$")
+    # Reason strings recorded against ``unparsed_legacy`` for non-data lines.
+    # Kept as constants so the dump_signature contract (M0 DoD: every input
+    # line accounted for) is auditable from one place.
+    _UNPARSED_REASONS = {
+        "separator": "table separator",
+        "header": "header row",
+        "mismatch": "row regex mismatch",
+    }
 
     def import_projects_md(self, path: Path) -> None:
         if not path or not path.exists():
             return
         text = path.read_text(encoding="utf-8")
-        in_table = False
-        for i, raw_line in enumerate(text.splitlines(), start=1):
-            line = raw_line.rstrip()
-            if not line.startswith("|"):
-                in_table = False
+        for row in _iter_registry_rows(text):
+            if row.kind == "non_table":
                 continue
             self.summary.input_lines_total += 1
-            # separator row → record so the line is accounted for.
-            if re.match(r"^\|\s*-+", line):
-                in_table = True
-                self._record_unparsed("projects.md", i, raw_line,
-                                       "table separator")
-                continue
-            m = self._PROJ_ROW_RE.match(line)
-            if not m:
-                self._record_unparsed("projects.md", i, raw_line,
-                                       "row regex mismatch")
-                continue
-            cells = [c.strip() for c in m.groups()]
-            common, project_slug, src, desc, _examples = cells
-            if not in_table or project_slug.lower() in ("プロジェクト名", "name", "project"):
-                # header row — keep counted but mark as schema row
-                self._record_unparsed("projects.md", i, raw_line, "header row")
-                continue
-            origin_url = src if src.startswith("http") else None
-            self._ensure_project(
-                project_slug,
-                display_name=common or project_slug,
-                origin_url=origin_url,
-                notes=desc or None,
-            )
+            if row.kind == "data" and row.project is not None:
+                proj = row.project
+                origin_url = proj.path if proj.path.startswith("http") else None
+                self._ensure_project(
+                    proj.name,
+                    display_name=proj.nickname or proj.name,
+                    origin_url=origin_url,
+                    notes=proj.description or None,
+                )
+            else:
+                self._record_unparsed(
+                    "projects.md", row.line_no, row.raw,
+                    self._UNPARSED_REASONS[row.kind],
+                )
 
     # -- inventory.json ---------------------------------------------------
 

@@ -35,6 +35,7 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+from tools.registry_parser import parse_projects_text as _parse_projects_shared
 from tools.state_db import connect as _db_connect
 from tools.state_db.queries import (
     get_org_state_summary as _db_org_state_summary,
@@ -64,27 +65,18 @@ def _read(path, default=""):
 
 
 def _parse_projects(text):
-    projects = []
-    in_table = False
-    for line in text.splitlines():
-        if line.startswith("|---") or line.startswith("| ---"):
-            in_table = True
-            continue
-        if not in_table:
-            continue
-        if not line.startswith("|"):
-            continue
-        cols = [c.strip() for c in line.strip("|").split("|")]
-        if len(cols) >= 4:
-            tasks = [t.strip() for t in cols[4].split("、")] if len(cols) >= 5 else []
-            tasks = [t for t in tasks if t and t != "-"]
-            projects.append({
-                "name": cols[0],
-                "path": cols[2] if len(cols) > 2 else "",
-                "description": cols[3] if len(cols) > 3 else "",
-                "tasks": tasks,
-            })
-    return projects
+    return [
+        {
+            "name": p.nickname,
+            "path": p.path,
+            "description": p.description,
+            "tasks": [
+                t for t in (s.strip() for s in p.common_tasks.split("、"))
+                if t and t != "-"
+            ],
+        }
+        for p in _parse_projects_shared(text)
+    ]
 
 
 def _parse_workers(workers_dir):

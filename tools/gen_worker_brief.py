@@ -362,14 +362,12 @@ def build_config_from_task(
     project_name = project_slug
     project_description = project_description_override or ""
     if registry_for_meta.exists():
-        rows = rwl.parse_registry(
-            registry_for_meta.read_text(encoding="utf-8")
-        )
+        rows = rwl.parse_projects(registry_for_meta)
         match = rwl.find_project(rows, project_slug)
         if match is not None and not project_description_override:
-            common = match.common_name or match.slug
+            common = match.nickname or match.name
             base_desc = match.description or ""
-            if common and common != match.slug:
+            if common and common != match.name:
                 project_description = (
                     f"{common} - {base_desc}" if base_desc else common
                 )
