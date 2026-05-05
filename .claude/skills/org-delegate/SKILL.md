@@ -469,7 +469,7 @@ worker → Secretary peer message
    2b-i. **PR 作成段階（即時実行）**:
    - 必要に応じて窓口がプッシュ・PR作成を行う（ワーカーには権限がないため）
    - DB の events テーブルにイベント追記 (push / PR open など)
-   - PR 番号が確定したら `tools/pr-watch.ps1 <PR>` (Windows) / `tools/pr-watch.sh <PR>` (POSIX) で CI を監視する。完了時に `ci_completed` が自動で journal に記録される。CI が `passed` の場合、pr-watch はそのまま `gh pr view --json mergedAt` を 24h ポーリングし続け、初回の merge を観測した時点で `tools/run_complete_on_merge.py` を呼んで run を terminal に駆動する (Issue #317)。merge-watch を切りたい場合は `-NoMergeWatch` / `--no-merge-watch` を付ける
+   - PR 番号が確定したら `tools/pr-watch.ps1 <PR>` (Windows) / `tools/pr-watch.sh <PR>` (POSIX) で CI を監視する。完了時に `ci_completed` が自動で journal に記録される。CI 完了で pr-watch は **return** する（review feedback loop 2c や手動 close 2b-ii に進めるよう同期占有しない）。merge を待ち合わせたい時のみ `-MergeWatch` / `--merge-watch` を付けると CI 通過後に `gh pr view --json mergedAt` を 24h ポーリングし、初回の merge で `tools/run_complete_on_merge.py` を呼ぶ (Issue #317)
    - run.status は **REVIEW のまま据え置く**（GitHub 側 PR レビュー指摘が来たら同ペインで対応するため。COMPLETED への遷移は 2b-ii で `update_run_status('<task_id>', 'completed')` を呼ぶ）。markdown 直接編集はしない
    - **ペインはまだ閉じない**: PR 作成直後に `CLOSE_PANE` を送らない。worktree 除去・Worker Directory Registry 更新も 2b-ii まで遅延する
    - PR レビューで指摘が来た場合は 2c のフローで同ワーカーに `send_message` 追指示を送り、同ペインで修正コミットを積ませる（新ワーカー再派遣は避ける — Issue / diff / 判断境界の再構築コストを払うことになる）
@@ -497,9 +497,9 @@ worker → Secretary peer message
      ```bash
      python tools/run_complete_on_merge.py --pr <PR>
      ```
-     これは `gh pr view <PR> --json url,state,mergedAt,mergeCommit,headRefName` を一度引いて、PR が merged なら `StateWriter.transaction()` 経由で `pr_state='merged'` / `commit_short` / `pr_url` / `completed_at` を更新し、`pr_merged` イベント (payload に `task` / `pattern` / `auto_completed` 含む) を 1 行追記する。再呼び出しは idempotent（二重イベントを書かない）。task_id は `runs.pr_url` / `runs.branch`（active な runs 限定）から自動解決され、解決失敗時は `--task-id` を明示する。
-     - **Pattern A** (worktree なし): `runs.status='completed'` まで自動遷移 (post-commit hook が worker 状態ファイルを archive)
-     - **Pattern B / C / D** (worktree / ephemeral / live-repo): helper は `runs.status` を **触らず** `review` のまま残す。worktree remove / `CLOSE_PANE` / `remove_worker_dir` は窓口が手動で行ってから別途 `update_run_status('<task>', 'completed')` を呼ぶ (state-schema-contract §3.1)
+     これは `gh pr view <PR> --json url,state,mergedAt,mergeCommit,headRefName` を一度引いて、PR が merged なら `StateWriter.transaction()` 経由で `pr_state='merged'` / `commit_short` / `pr_url` / `completed_at` を更新し、`pr_merged` イベント (payload: `task` / `pattern` / `auto_completed`) を 1 行追記する。再呼び出しは idempotent（二重イベントを書かない）。task_id は `runs.pr_url` / `runs.branch`（active な runs 限定）から自動解決され、解決失敗時は `--task-id` を明示する。
+     - **helper は runs.status を触らない**: dispatcher 側 pane close / worker_closed / worker-state final update が必要 (delegation-lifecycle-contract §T5)。helper は merge 事実のみ記録し、status flip と worker_dir 削除は窓口が下記の StateWriter で行う
+     - **CLI 終了コード**: `merged` / `already` / `not_yet` は exit 0、`no_run`（runs に該当行なし）は exit 3 で失敗扱いになる。手動運用時は exit code を確認
    - **パターン B / C のレジストリエントリ削除と最終 close は別途 StateWriter を呼ぶ**（markdown 直接編集禁止。run_complete_on_merge が `pr_state='merged'` と `completed_at` を既に書いているので、ここでは status flip と worker_dir 削除のみ行う）:
      ```bash
      python -c "

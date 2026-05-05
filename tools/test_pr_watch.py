@@ -144,7 +144,9 @@ class ArgFormTests(unittest.TestCase):
                 # Issue #317: existing CI-only tests opt out of the
                 # post-CI merge-watch loop; that path is exercised
                 # separately in MergeWatchTests below.
-                rc = pr_watch.main(argv + ["--no-merge-watch"])
+                # Issue #317 round 3: merge-watch is now off by default,
+                # so existing CI-only tests don't need an opt-out flag.
+                rc = pr_watch.main(argv)
             rec = _read_ci_event(journal)
             return rc, rec
 
@@ -182,7 +184,6 @@ class JournalEmitTests(unittest.TestCase):
              mock.patch.object(pr_watch.time, "monotonic", side_effect=[100.0, 142.0]):
             return pr_watch.main([
                 "--pr", "205", "--repo", "octo/repo", "--interval", "5",
-                "--no-merge-watch",
             ])
 
     def test_passed_emits_ci_completed(self) -> None:
@@ -578,7 +579,7 @@ class MergeWatchTests(unittest.TestCase):
 
         return fake_run
 
-    def test_ci_pass_then_merged_completes_run(self) -> None:
+    def test_ci_pass_then_merged_records_metadata(self) -> None:
         with TempDir() as tmp:
             db = tmp / ".state" / "state.db"
             db.parent.mkdir(parents=True)
@@ -600,6 +601,7 @@ class MergeWatchTests(unittest.TestCase):
                  mock.patch.object(pr_watch.time, "monotonic", side_effect=[0.0, 1.0]):
                 rc = pr_watch.main([
                     "--pr", "777", "--repo", "octo/repo", "--interval", "1",
+                    "--merge-watch",
                 ])
             self.assertEqual(rc, 0)
 
@@ -610,7 +612,8 @@ class MergeWatchTests(unittest.TestCase):
                     "SELECT status, pr_state, completed_at "
                     "FROM runs WHERE task_id = 't-merge-watch'"
                 ).fetchone()
-                self.assertEqual(row["status"], "completed")
+                # status stays in 'review' — secretary owns the flip.
+                self.assertEqual(row["status"], "review")
                 self.assertEqual(row["pr_state"], "merged")
                 self.assertEqual(row["completed_at"], "2026-05-06T03:21:00Z")
                 merged_count = conn.execute(
@@ -619,6 +622,50 @@ class MergeWatchTests(unittest.TestCase):
                 self.assertEqual(merged_count, 1)
             finally:
                 conn.close()
+
+    def test_default_skips_merge_watch(self) -> None:
+        """Issue #317 round 3: merge-watch is opt-in, off by default.
+
+        Without `--merge-watch`, even on CI pass pr_watch must NOT
+        poll `gh pr view --json mergedAt`.
+        """
+        with TempDir() as tmp:
+            db = tmp / ".state" / "state.db"
+            db.parent.mkdir(parents=True)
+            self._seed_run_for_merge(
+                db, pr_url="https://github.com/octo/repo/pull/111",
+            )
+
+            calls: list[list[str]] = []
+
+            def fake_run(cmd, *args, **kwargs):
+                calls.append(list(cmd))
+                if (cmd[:3] == ["gh", "pr", "view"]
+                        and "number" in cmd):
+                    return mock.Mock(returncode=0, stdout="{}", stderr="")
+                if "checks" in cmd and "--json" in cmd:
+                    return mock.Mock(
+                        returncode=0,
+                        stdout=json.dumps(
+                            [{"name": "ci", "state": "COMPLETED",
+                              "bucket": "pass"}]
+                        ),
+                        stderr="",
+                    )
+                return mock.Mock(returncode=0)
+
+            with mock.patch.object(pr_watch, "JOURNAL_PATH", db), \
+                 mock.patch.object(pr_watch.shutil, "which", return_value="/usr/bin/gh"), \
+                 mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run), \
+                 mock.patch.object(pr_watch.time, "monotonic", side_effect=[0.0, 1.0]):
+                pr_watch.main([
+                    "--pr", "111", "--repo", "octo/repo", "--interval", "1",
+                ])
+
+            view_calls = [c for c in calls
+                          if c[:3] == ["gh", "pr", "view"]
+                          and "url" in str(c)]
+            self.assertEqual(view_calls, [])
 
     def test_ci_fail_skips_merge_watch(self) -> None:
         """When CI did not pass, pr_watch must not poll for merge."""
@@ -651,9 +698,10 @@ class MergeWatchTests(unittest.TestCase):
                  mock.patch.object(pr_watch.time, "monotonic", side_effect=[0.0, 1.0]):
                 pr_watch.main([
                     "--pr", "888", "--repo", "octo/repo", "--interval", "1",
+                    "--merge-watch",
                 ])
 
-            # Only the existence probe + checks-json call — no merge-watch.
+            # CI failed → no merge-watch even with --merge-watch on.
             view_calls = [c for c in calls
                           if c[:3] == ["gh", "pr", "view"]
                           and "url" in str(c)]

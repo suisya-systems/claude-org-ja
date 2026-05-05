@@ -116,7 +116,14 @@ class TempDB:
 
 
 class CompleteOnMergeTests(unittest.TestCase):
-    def test_marks_run_completed_on_first_merge(self) -> None:
+    def test_records_merge_metadata_without_flipping_status(self) -> None:
+        """Codex round-3 Blocker: helper never flips runs.status itself.
+
+        It records pr_state='merged', commit_short/full, pr_url,
+        completed_at, and appends one pr_merged event. The status
+        transition to 'completed' is the secretary's manual step
+        once worktree / pane / worker_dir cleanup is done.
+        """
         with TempDB() as db:
             _seed_run(db)
             with mock.patch.object(
@@ -128,7 +135,8 @@ class CompleteOnMergeTests(unittest.TestCase):
                 )
             self.assertEqual(result, run_complete_on_merge.RESULT_MERGED)
             row = _run_row(db)
-            self.assertEqual(row["status"], "completed")
+            # status must NOT be flipped — secretary owns the transition.
+            self.assertEqual(row["status"], "review")
             self.assertEqual(row["pr_state"], "merged")
             self.assertEqual(row["pr_url"], PR_URL)
             self.assertEqual(row["commit_full"], MERGE_OID)
@@ -138,13 +146,15 @@ class CompleteOnMergeTests(unittest.TestCase):
             evts = _events_of_kind(db, "pr_merged")
             self.assertEqual(len(evts), 1)
             payload = json.loads(evts[0]["payload_json"])
+            self.assertEqual(payload["task"], TASK_ID)
             self.assertEqual(payload["pr"], PR)
             self.assertEqual(payload["repo"], REPO)
             self.assertEqual(payload["merge_commit"], MERGE_OID)
             self.assertEqual(payload["merged_at"], MERGED_AT)
+            self.assertFalse(payload["auto_completed"])
 
-    def test_pattern_b_stops_at_pending_cleanup(self) -> None:
-        """Pattern B / C / D leaves runs.status untouched; only metadata + event."""
+    def test_pattern_b_records_metadata_without_status_flip(self) -> None:
+        """Pattern B / C / D path is identical to Pattern A: status untouched."""
         with TempDB() as db:
             _seed_run(db, pattern="B")
             with mock.patch.object(
@@ -154,25 +164,16 @@ class CompleteOnMergeTests(unittest.TestCase):
                 result = run_complete_on_merge.complete_on_merge(
                     pr=PR, repo=REPO, db_path=db,
                 )
-            self.assertEqual(
-                result, run_complete_on_merge.RESULT_MERGED_PENDING_CLEANUP
-            )
+            self.assertEqual(result, run_complete_on_merge.RESULT_MERGED)
             row = _run_row(db)
-            # status must NOT be flipped — secretary still has to run
-            # worktree / CLOSE_PANE / remove_worker_dir.
             self.assertEqual(row["status"], "review")
             self.assertEqual(row["pr_state"], "merged")
-            self.assertEqual(row["commit_full"], MERGE_OID)
-            evts = _events_of_kind(db, "pr_merged")
-            self.assertEqual(len(evts), 1)
-            payload = json.loads(evts[0]["payload_json"])
-            self.assertEqual(payload["task"], TASK_ID)
-            self.assertFalse(payload["auto_completed"])
-            self.assertEqual(payload["pattern"], "B")
-            # Codex round-2 Major: completed_at must be populated even
-            # when status stays in 'review' so time-to-merge aggregation
-            # doesn't lose the merge timestamp.
             self.assertEqual(row["completed_at"], MERGED_AT)
+            payload = json.loads(
+                _events_of_kind(db, "pr_merged")[0]["payload_json"]
+            )
+            self.assertEqual(payload["pattern"], "B")
+            self.assertFalse(payload["auto_completed"])
 
     def test_idempotent_second_call_is_noop(self) -> None:
         with TempDB() as db:
@@ -184,6 +185,15 @@ class CompleteOnMergeTests(unittest.TestCase):
                 first = run_complete_on_merge.complete_on_merge(
                     pr=PR, repo=REPO, db_path=db,
                 )
+                # Simulate the secretary completing the manual close
+                # between calls — the helper must still detect that the
+                # event was already recorded and no-op.
+                conn = connect(db)
+                try:
+                    with StateWriter(conn).transaction() as w:
+                        w.update_run_status(TASK_ID, "completed")
+                finally:
+                    conn.close()
                 second = run_complete_on_merge.complete_on_merge(
                     pr=PR, repo=REPO, db_path=db,
                 )
@@ -238,8 +248,7 @@ class CompleteOnMergeTests(unittest.TestCase):
     def test_resolves_task_id_via_branch_when_pr_url_absent(self) -> None:
         """If the seeded run has no pr_url, fall back to branch lookup."""
         with TempDB() as db:
-            _seed_run(db, pr_url="")  # empty pr_url
-            # Confirm pr_url really is NULL/empty so the lookup path is forced.
+            _seed_run(db, pr_url="")
             self.assertIn(_run_row(db)["pr_url"], (None, ""))
             with mock.patch.object(
                 run_complete_on_merge.subprocess, "run",
@@ -249,7 +258,10 @@ class CompleteOnMergeTests(unittest.TestCase):
                     pr=PR, repo=REPO, db_path=db,
                 )
             self.assertEqual(result, run_complete_on_merge.RESULT_MERGED)
-            self.assertEqual(_run_row(db)["status"], "completed")
+            row = _run_row(db)
+            self.assertEqual(row["pr_state"], "merged")
+            # status remains 'review' — secretary owns the flip.
+            self.assertEqual(row["status"], "review")
 
     def test_no_matching_run_returns_no_run(self) -> None:
         with TempDB() as db:
@@ -293,7 +305,24 @@ class CLITests(unittest.TestCase):
                     "--db-path", str(db),
                 ])
             self.assertEqual(rc, 0)
-            self.assertEqual(_run_row(db)["status"], "completed")
+            self.assertEqual(_run_row(db)["pr_state"], "merged")
+
+    def test_cli_no_run_exits_nonzero(self) -> None:
+        """Codex round-3 Major: CLI must surface no_run as a failure exit."""
+        with TempDB() as db:
+            apply_schema(connect(db))  # empty DB, no runs match
+            with mock.patch.object(
+                run_complete_on_merge.subprocess, "run",
+                side_effect=_fake_subprocess_run(_make_pr_view()),
+            ), mock.patch.object(
+                run_complete_on_merge.shutil, "which", return_value="/usr/bin/gh",
+            ):
+                rc = run_complete_on_merge.main([
+                    "--pr", str(PR),
+                    "--repo", REPO,
+                    "--db-path", str(db),
+                ])
+            self.assertEqual(rc, 3)
 
 
 if __name__ == "__main__":

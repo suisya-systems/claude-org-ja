@@ -388,14 +388,24 @@ def main(argv: "list[str] | None" = None) -> int:
         help="poll interval in seconds (default: 30)",
     )
     parser.add_argument(
-        "--no-merge-watch",
+        "--merge-watch",
         action="store_true",
         help=(
-            "skip the post-CI merge-watch loop (Issue #317). When unset, "
-            "after CI passes pr_watch keeps polling `gh pr view --json "
-            "mergedAt` for up to 24h and invokes "
-            "tools/run_complete_on_merge.py on the first mergedAt."
+            "After CI passes, keep polling `gh pr view --json mergedAt` "
+            "for up to 24h and invoke tools/run_complete_on_merge.py on "
+            "the first mergedAt (Issue #317). Off by default — pr_watch "
+            "is otherwise a CI-only blocking call, and a 24h wall is "
+            "incompatible with the secretary's 2c/T6 review-feedback "
+            "loop. Opt in only when secretary actually wants to wait."
         ),
+    )
+    # --no-merge-watch is kept as a no-op alias for back-compat with
+    # callers / tests that already opted out. The default is off either
+    # way; this keeps argv compatible with the prior turn's commits.
+    parser.add_argument(
+        "--no-merge-watch",
+        action="store_true",
+        help=argparse.SUPPRESS,
     )
     args = parser.parse_args(argv)
 
@@ -468,10 +478,11 @@ def main(argv: "list[str] | None" = None) -> int:
 
     sys.stdout.write(f"pr_watch: PR #{args.pr} {status} ({duration}s)\n")
 
-    # Issue #317: only enter merge-watch when CI actually passed.
-    # `failed`/`incomplete`/`canceled` mean there's nothing to merge yet
-    # — the secretary will re-issue pr_watch after the next push.
-    if status == "passed" and not args.no_merge_watch:
+    # Issue #317: only enter merge-watch when CI actually passed and
+    # the caller explicitly opted in via --merge-watch. The default is
+    # off so pr_watch stays a "CI passed → return" command compatible
+    # with secretary's 2c/T6 review-feedback loop.
+    if status == "passed" and args.merge_watch and not args.no_merge_watch:
         merge_result = _watch_for_merge(
             pr=args.pr,
             repo=repo,

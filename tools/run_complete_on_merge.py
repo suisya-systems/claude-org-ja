@@ -47,16 +47,20 @@ DEFAULT_DB_PATH = REPO_ROOT / ".state" / "state.db"
 
 # Return codes for :func:`complete_on_merge`. Stable strings so callers
 # (pr_watch's merge-watch loop, tests) can branch without parsing logs.
-RESULT_MERGED = "merged"        # PR was merged this call; DB updated, run completed.
-RESULT_ALREADY = "already"      # PR was merged previously; DB already terminal.
+RESULT_MERGED = "merged"        # PR was merged this call; PR metadata recorded.
+RESULT_ALREADY = "already"      # PR was merged previously; DB already has metadata + event.
 RESULT_NOT_YET = "not_yet"      # PR is open / draft; nothing written.
 RESULT_NO_RUN = "no_run"        # No matching run row; nothing written.
-# Pattern B / C / D: PR metadata + event recorded but run.status NOT
-# flipped to 'completed' because the secretary still needs to run
-# worktree / CLOSE_PANE / remove_worker_dir cleanup before the run
-# row may transition to terminal (state-schema-contract §3.1
-# Worker-directory ↔ worker-state-file consistency invariant).
-RESULT_MERGED_PENDING_CLEANUP = "merged_pending_cleanup"
+# Codex review (rounds 1-3): the helper records the merge fact
+# (pr_state='merged', commit, completed_at, pr_merged event) but never
+# flips runs.status itself. The status transition is gated on the
+# secretary running worktree remove / CLOSE_PANE / remove_worker_dir
+# and on the dispatcher closing the pane / writing the worker-state
+# final update (delegation-lifecycle-contract §T5, state-schema-contract
+# §3.1). Owning all of that from a one-shot subprocess is out of scope.
+# RESULT_MERGED_PENDING_CLEANUP is kept as an alias for
+# back-compat with callers that imported the symbol.
+RESULT_MERGED_PENDING_CLEANUP = RESULT_MERGED
 
 
 def _ensure_gh_installed() -> None:
@@ -251,16 +255,13 @@ def complete_on_merge(
 
         project_slug = run_row["project_slug"]
         pattern = (run_row["pattern"] or "B").upper()
-        # Codex Blocker (Issue #317 review): runs.status='completed' triggers
-        # the StateWriter post-commit hook to archive
-        # ``.state/workers/worker-{task}.md`` AND requires (per
-        # state-schema-contract §3.1) that the secretary has already
-        # run worktree remove / CLOSE_PANE / remove_worker_dir for
-        # Pattern B / C / D. The helper has no safe way to do those
-        # FS + pane operations, so for non-Pattern-A runs it stops at
-        # PR metadata + pr_merged event and leaves status untouched —
-        # the secretary still has to do the final close.
-        do_full_close = pattern == "A"
+        # Codex round 3 Blocker: even Pattern A close requires
+        # dispatcher-side pane close / worker_closed / worker-state
+        # final update (delegation-lifecycle-contract §T5). A
+        # subprocess helper cannot orchestrate those, so the helper
+        # records the merge fact (pr_state, commit, completed_at,
+        # pr_merged event) and leaves the runs.status flip to the
+        # secretary's manual cleanup step in 2b-ii.
 
         # claude_org_root=None lets StateWriter auto-detect from the
         # connection's database file (`<root>/.state/state.db`). That
@@ -277,25 +278,13 @@ def complete_on_merge(
                 commit_short=commit_short,
                 commit_full=commit_full,
             )
-            if do_full_close:
-                w.update_run_status(
-                    resolved_task_id,
-                    "completed",
-                    completed_at=merged_at,
-                )
-            else:
-                # Codex round-2 Major: Pattern B/C/D still need
-                # ``completed_at`` populated for time-to-merge
-                # aggregation and to satisfy the helper's documented
-                # contract. update_run_status would also flip
-                # runs.status which we explicitly want to defer until
-                # the secretary has cleaned up the worktree, so write
-                # only completed_at directly.
-                w.conn.execute(
-                    "UPDATE runs SET completed_at = COALESCE(completed_at, ?) "
-                    "WHERE task_id = ?",
-                    (merged_at, resolved_task_id),
-                )
+            # Always record completed_at without flipping runs.status —
+            # secretary owns the status transition (see comment above).
+            w.conn.execute(
+                "UPDATE runs SET completed_at = COALESCE(completed_at, ?) "
+                "WHERE task_id = ?",
+                (merged_at, resolved_task_id),
+            )
             w.append_event(
                 kind="pr_merged",
                 actor="run_complete_on_merge",
@@ -308,20 +297,19 @@ def complete_on_merge(
                     "merge_commit": commit_full,
                     "merged_at": merged_at,
                     "pattern": pattern,
-                    "auto_completed": do_full_close,
+                    "auto_completed": False,
                 },
                 run_task_id=resolved_task_id,
             )
-        if not do_full_close:
-            sys.stderr.write(
-                "tools/run_complete_on_merge.py: notice: PR merged for "
-                f"task {resolved_task_id} (pattern {pattern}); pr_state "
-                "set to 'merged' but runs.status left untouched — "
-                "secretary must complete worktree remove / CLOSE_PANE / "
-                "remove_worker_dir before flipping to 'completed' "
-                "(state-schema-contract §3.1).\n"
-            )
-            return RESULT_MERGED_PENDING_CLEANUP
+        sys.stderr.write(
+            "tools/run_complete_on_merge.py: notice: PR merged for "
+            f"task {resolved_task_id} (pattern {pattern}); pr_state set "
+            "to 'merged' and completed_at recorded, but runs.status "
+            "left untouched — secretary must complete worktree remove / "
+            "CLOSE_PANE / remove_worker_dir and call "
+            "update_run_status('<task>', 'completed') (Step 5 2b-ii / "
+            "delegation-lifecycle-contract §T5).\n"
+        )
         return RESULT_MERGED
     finally:
         conn.close()
@@ -363,8 +351,11 @@ def main(argv: "list[str] | None" = None) -> int:
         return 2
 
     sys.stdout.write(f"run_complete_on_merge: PR #{args.pr} {result}\n")
-    # not_yet is not a failure — the caller polls; exit 0 in all "no-op"
-    # cases keeps shell wrappers simple.
+    # not_yet is not a failure — the caller polls. Codex round-3 Major:
+    # no_run IS a failure (PR merged but no run row matched), so the
+    # secretary's manual invocation must see a non-zero exit code.
+    if result == RESULT_NO_RUN:
+        return 3
     return 0
 
 
