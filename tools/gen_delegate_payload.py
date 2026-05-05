@@ -630,7 +630,10 @@ def _load_task_args_from_toml(path: Path) -> dict[str, Any]:
     if role:
         layout_overrides["role"] = role
     if "self_edit" in worker:
-        layout_overrides["self_edit"] = bool(worker["self_edit"])
+        # Pass through unchanged so resolve()'s strict bool check fires
+        # on malformed input (e.g. self_edit = "false" parsed as a string).
+        # Codex Round 2 Minor.
+        layout_overrides["self_edit"] = worker["self_edit"]
 
     return {
         "task_id": task.get("id"),

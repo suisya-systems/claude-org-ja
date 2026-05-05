@@ -364,13 +364,31 @@ def resolve(
     # produced Pattern C without one). Codex Round 1 Major.
     if layout_overrides:
         if "pattern" in layout_overrides and layout_overrides["pattern"]:
-            pattern = layout_overrides["pattern"]
+            pat = layout_overrides["pattern"]
+            if pat not in VALID_PATTERNS:
+                raise ResolveError(
+                    f"layout_overrides['pattern'] must be one of {VALID_PATTERNS}, got {pat!r}"
+                )
+            pattern = pat
             # Pattern explicitly set; reset variant unless TOML also supplied one.
             variant = layout_overrides.get("pattern_variant")
+            if variant is not None and variant not in VALID_VARIANTS:
+                raise ResolveError(
+                    f"layout_overrides['pattern_variant'] must be one of {VALID_VARIANTS} or None, got {variant!r}"
+                )
         if "worker_dir" in layout_overrides and layout_overrides["worker_dir"]:
             worker_dir = Path(layout_overrides["worker_dir"]).resolve()
         if "role" in layout_overrides and layout_overrides["role"]:
-            role = layout_overrides["role"]
+            r = layout_overrides["role"]
+            # Validate before any side effect (e.g. before apply reserves
+            # the DB row): a malformed role used to leak through to
+            # gen_worker_brief.validate() and only fail after the DB
+            # reservation was already persisted (Codex Round 2 Major).
+            if r not in VALID_ROLES:
+                raise ResolveError(
+                    f"layout_overrides['role'] must be one of {VALID_ROLES}, got {r!r}"
+                )
+            role = r
             self_edit = role == "claude-org-self-edit"
         if "self_edit" in layout_overrides:
             se = layout_overrides["self_edit"]

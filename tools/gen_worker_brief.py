@@ -407,6 +407,11 @@ def build_config_from_task(
             "claude_org": str(Path(claude_org_root).resolve()),
         },
     }
+    # pattern_variant is added only when set so the common case keeps a
+    # minimal [worker] schema; gitignored_repo_root round-trips through
+    # --write-toml cleanly. Codex Round 2 Major.
+    if layout.pattern_variant is not None:
+        config["worker"]["pattern_variant"] = layout.pattern_variant
     if issue_url:
         config["task"]["issue_url"] = issue_url
     if closes_issue is not None:
