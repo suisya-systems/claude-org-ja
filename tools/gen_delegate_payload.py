@@ -199,7 +199,6 @@ def build_delegate_plan(
     issue_url: Optional[str] = None,
     closes_issue: Optional[int] = None,
     refs_issues: Optional[list[int]] = None,
-    project_name_override: Optional[str] = None,
     project_description_override: Optional[str] = None,
     implementation_target_files: Optional[list[str]] = None,
     implementation_guidance: Optional[str] = None,
@@ -227,7 +226,6 @@ def build_delegate_plan(
         issue_url=issue_url,
         closes_issue=closes_issue,
         refs_issues=refs_issues,
-        project_name_override=project_name_override,
         project_description_override=project_description_override,
         implementation_target_files=implementation_target_files,
         implementation_guidance=implementation_guidance,
@@ -494,7 +492,9 @@ def _add_task_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--issue-url", default=None)
     p.add_argument("--closes-issue", type=int, default=None)
     p.add_argument("--refs-issues", type=int, nargs="*", default=None)
-    p.add_argument("--project-name", dest="project_name_override", default=None)
+    # Intentionally no --project-name: project.name is the slug (use
+    # --project-slug). Allowing an override created a round-trip drift
+    # where the next --from-toml read 通称 back as the slug (Codex Round 2).
     p.add_argument(
         "--project-description",
         dest="project_description_override",
@@ -572,9 +572,8 @@ def _load_task_args_from_toml(path: Path) -> dict[str, Any]:
     The TOML schema (see ``tools/templates/worker_brief.example.toml``)
     uses ``project.name`` for the slug — that's what both the legacy
     hand-written briefs and Stage 2's ``from-task`` output write — so we
-    treat it as ``project_slug`` and as the ``project_name_override``
-    seed. Codex Round 1 caught the earlier inversion (common_name vs
-    slug round-trip mismatch).
+    treat it as ``project_slug`` directly. Codex Round 1+2 caught the
+    inversions (common_name vs slug; --project-name override drift).
 
     ``mode`` is derived from ``worker.role``: ``doc-audit`` → ``audit``,
     everything else → ``edit``. Returning the field at all (even when
@@ -600,7 +599,6 @@ def _load_task_args_from_toml(path: Path) -> dict[str, Any]:
         "issue_url": task.get("issue_url"),
         "closes_issue": task.get("closes_issue"),
         "refs_issues": task.get("refs_issues"),
-        "project_name_override": project.get("name"),
         "project_description_override": project.get("description"),
         "implementation_target_files": impl.get("target_files"),
         "implementation_guidance": impl.get("guidance"),
@@ -634,7 +632,6 @@ def _gather_plan_kwargs(args: argparse.Namespace) -> dict[str, Any]:
         "issue_url": args.issue_url,
         "closes_issue": args.closes_issue,
         "refs_issues": args.refs_issues,
-        "project_name_override": args.project_name_override,
         "project_description_override": args.project_description_override,
         "implementation_target_files": args.impl_target or None,
         "implementation_guidance": args.impl_guidance,

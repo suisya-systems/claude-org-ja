@@ -309,7 +309,6 @@ def build_config_from_task(
     issue_url: Optional[str] = None,
     closes_issue: Optional[int] = None,
     refs_issues: Optional[list[int]] = None,
-    project_name_override: Optional[str] = None,
     project_description_override: Optional[str] = None,
     implementation_target_files: Optional[list[str]] = None,
     implementation_guidance: Optional[str] = None,
@@ -360,7 +359,7 @@ def build_config_from_task(
     registry_for_meta = registry_path or (
         claude_org_root / "registry" / "projects.md"
     )
-    project_name = project_name_override or project_slug
+    project_name = project_slug
     project_description = project_description_override or ""
     if registry_for_meta.exists():
         rows = rwl.parse_registry(
@@ -372,7 +371,7 @@ def build_config_from_task(
             base_desc = match.description or ""
             if common and common != match.slug:
                 project_description = (
-                    f"{common} — {base_desc}" if base_desc else common
+                    f"{common} - {base_desc}" if base_desc else common
                 )
             else:
                 project_description = base_desc
@@ -480,16 +479,16 @@ def _build_from_task_parser() -> argparse.ArgumentParser:
         "--verification-depth",
         choices=("full", "minimal"),
         default="full",
-        help="full | minimal — passed through to brief and DELEGATE body.",
+        help="full | minimal - passed through to brief and DELEGATE body.",
     )
     p.add_argument("--issue-url", default=None)
     p.add_argument("--closes-issue", type=int, default=None)
     p.add_argument("--refs-issues", type=int, nargs="*", default=None)
-    p.add_argument("--project-name", dest="project_name_override", default=None)
     p.add_argument(
         "--project-description",
         dest="project_description_override",
         default=None,
+        help="Override the project.description text (defaults to the registry row's display name + description).",
     )
     p.add_argument("--impl-target", action="append", default=[],
                    help="Add an entry to [implementation].target_files (repeatable).")
@@ -546,7 +545,6 @@ def _main_from_task(argv: list[str]) -> int:
             issue_url=args.issue_url,
             closes_issue=args.closes_issue,
             refs_issues=args.refs_issues,
-            project_name_override=args.project_name_override,
             project_description_override=args.project_description_override,
             implementation_target_files=args.impl_target,
             implementation_guidance=args.impl_guidance,
