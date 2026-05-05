@@ -202,7 +202,7 @@ mcp__renga-peers__send_message(to_id="secretary", message="...")
    - `^Do you want to make this edit to .+\?$`
    - `^❯\s*1\.\s*Yes\s*$`
    - `^Press .+ to continue`
-   - `^Esc to cancel`
+   - `^\s*Esc to cancel` (cursor 非表示時に leading space が付く variant ` Esc to cancel` も match させる。`\s*` で tab / NBSP 等の将来 variant にも対応)
 
    **新しいプロンプト形が観測されたら、この regex リストに追記**。Claude Code の version 更新で形が変わる可能性があるため、網羅は前提にしない。
 
