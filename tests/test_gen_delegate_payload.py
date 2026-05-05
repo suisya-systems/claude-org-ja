@@ -668,6 +668,356 @@ class TestIssue290Regressions(unittest.TestCase):
         self.assertIn("日本語の説明文", decoded)
 
 
+# ---------------------------------------------------------------------------
+# Issue #309: Pattern B apply must create the git worktree
+# ---------------------------------------------------------------------------
+
+
+class TestPatternBWorktreeCreation(unittest.TestCase):
+    """apply for Pattern B (incl. live_repo_worktree variant) must run
+    `git worktree add` so the brief lands inside a real worktree."""
+
+    def setUp(self) -> None:
+        try:
+            import subprocess as _sp
+            _sp.run(["git", "--version"], capture_output=True, check=True)
+        except (FileNotFoundError):
+            self.skipTest("git not available")
+        self._td = tempfile.TemporaryDirectory()
+        self.sb = _Sandbox(Path(self._td.name))
+        # Initialize claude_org_root as a real git repo so live_repo_worktree
+        # can branch from it.
+        import os
+        self._git_env = os.environ.copy()
+        self._git_env.update(
+            {
+                "GIT_AUTHOR_NAME": "test",
+                "GIT_AUTHOR_EMAIL": "test@example.com",
+                "GIT_COMMITTER_NAME": "test",
+                "GIT_COMMITTER_EMAIL": "test@example.com",
+            }
+        )
+        import subprocess as _sp
+        self._init_repo_with_origin_main(self.sb.claude_org_root)
+
+    def _init_repo_with_origin_main(self, base: Path) -> None:
+        """Init ``base`` as a git repo on `main` with one commit and
+        ``origin/HEAD`` pointing at ``origin/main`` (no real remote required)."""
+        import subprocess as _sp
+        _sp.run(["git", "-C", str(base), "init", "-q", "-b", "main"],
+                check=True)
+        _sp.run(["git", "-C", str(base), "commit", "--allow-empty",
+                 "-m", "init", "-q"],
+                check=True, env=self._git_env)
+        sha = _sp.check_output(
+            ["git", "-C", str(base), "rev-parse", "main"],
+        ).decode().strip()
+        _sp.run(
+            ["git", "-C", str(base), "update-ref",
+             "refs/remotes/origin/main", sha],
+            check=True,
+        )
+        _sp.run(
+            ["git", "-C", str(base), "symbolic-ref",
+             "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
+            check=True,
+        )
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def _build_self_edit_b(self, *, task_id: str = "b-task"):
+        return gdp.build_delegate_plan(
+            task_id=task_id,
+            project_slug="claude-org-ja",
+            description="self-edit pattern B",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+            layout_overrides={
+                "pattern": "B",
+                "pattern_variant": "live_repo_worktree",
+                "role": "claude-org-self-edit",
+                "self_edit": True,
+            },
+        )
+
+    def _list_worktrees(self) -> list[str]:
+        import subprocess as _sp
+        out = _sp.check_output(
+            ["git", "-C", str(self.sb.claude_org_root),
+             "worktree", "list", "--porcelain"],
+        ).decode("utf-8", errors="replace")
+        return [
+            line[len("worktree "):].strip()
+            for line in out.splitlines()
+            if line.startswith("worktree ")
+        ]
+
+    def test_apply_creates_live_repo_worktree(self):
+        plan = self._build_self_edit_b()
+        # Plan should know which repo to branch from.
+        self.assertEqual(
+            Path(plan.base_repo).resolve(), self.sb.claude_org_root.resolve()
+        )
+        gdp.apply_delegate_plan(
+            plan,
+            state_db_path=self.sb.db_path,
+            claude_org_root=self.sb.claude_org_root,
+            skip_settings=True,
+        )
+        worker_dir = Path(plan.layout.worker_dir).resolve()
+        self.assertTrue(worker_dir.exists())
+        self.assertTrue((worker_dir / ".git").exists())
+        # Registered with git as a worktree
+        registered = {Path(p).resolve() for p in self._list_worktrees()}
+        self.assertIn(worker_dir, registered)
+        # Brief landed inside the worktree
+        brief = worker_dir / "CLAUDE.local.md"
+        self.assertTrue(brief.exists())
+
+    def test_apply_idempotent_when_worktree_already_registered(self):
+        plan = self._build_self_edit_b(task_id="idem-task")
+        worker_dir = Path(plan.layout.worker_dir)
+        # Pre-create the worktree manually to simulate a partial / retry run.
+        worker_dir.parent.mkdir(parents=True, exist_ok=True)
+        import subprocess as _sp
+        _sp.run(
+            ["git", "-C", str(self.sb.claude_org_root),
+             "worktree", "add", "-b", plan.layout.planned_branch,
+             str(worker_dir)],
+            check=True, capture_output=True,
+        )
+        # Apply must NOT raise and must not duplicate or replace it.
+        gdp.apply_delegate_plan(
+            plan,
+            state_db_path=self.sb.db_path,
+            claude_org_root=self.sb.claude_org_root,
+            skip_settings=True,
+        )
+        # Brief still lands in the worktree
+        self.assertTrue((worker_dir / "CLAUDE.local.md").exists())
+
+    def test_apply_aborts_when_worker_dir_has_unrelated_content(self):
+        plan = self._build_self_edit_b(task_id="dirty-task")
+        worker_dir = Path(plan.layout.worker_dir)
+        worker_dir.mkdir(parents=True)
+        (worker_dir / "stale.txt").write_text("garbage", encoding="utf-8")
+        with self.assertRaises(gdp.WorktreeApplyError) as cm:
+            gdp.apply_delegate_plan(
+                plan,
+                state_db_path=self.sb.db_path,
+                claude_org_root=self.sb.claude_org_root,
+                skip_settings=True,
+            )
+        self.assertIn("not a registered git worktree", str(cm.exception))
+        # Brief was NOT written into the dirty dir.
+        self.assertFalse((worker_dir / "CLAUDE.local.md").exists())
+
+    def test_apply_aborts_do_not_leak_queued_db_row(self):
+        """Codex Major: a failed _ensure_worktree must not leave behind a
+        queued runs row, because resolve_worker_layout treats `queued` as an
+        active run and would steer subsequent delegations onto Pattern B."""
+        plan = self._build_self_edit_b(task_id="leak-task")
+        worker_dir = Path(plan.layout.worker_dir)
+        worker_dir.mkdir(parents=True)
+        (worker_dir / "stale.txt").write_text("garbage", encoding="utf-8")
+        with self.assertRaises(gdp.WorktreeApplyError):
+            gdp.apply_delegate_plan(
+                plan,
+                state_db_path=self.sb.db_path,
+                claude_org_root=self.sb.claude_org_root,
+                skip_settings=True,
+            )
+        runs = self.sb.list_runs()
+        self.assertFalse(
+            any(r["task_id"] == "leak-task" for r in runs),
+            f"queued row leaked after worktree abort: {runs}",
+        )
+
+    def test_apply_branches_off_default_ref_not_current_head(self):
+        """Codex Blocker: the new worktree must branch off the default ref
+        (origin/HEAD or main), not the base repo's currently-checked-out
+        feature branch."""
+        import subprocess as _sp
+        # Make a commit on main so HEAD is non-empty, then check the base
+        # repo out onto a feature branch with its own commit. apply must
+        # still branch off main.
+        base = self.sb.claude_org_root
+        seed_file = base / "seed.txt"
+        seed_file.write_text("seed", encoding="utf-8")
+        _sp.run(["git", "-C", str(base), "add", "seed.txt"], check=True)
+        _sp.run(["git", "-C", str(base), "commit", "-m", "seed", "-q"],
+                check=True, env=self._git_env)
+        main_sha = _sp.check_output(
+            ["git", "-C", str(base), "rev-parse", "main"],
+        ).decode().strip()
+        # Refresh the simulated origin/main to point at the latest main tip,
+        # since setUp captured an earlier commit before the seed file landed.
+        _sp.run(
+            ["git", "-C", str(base), "update-ref",
+             "refs/remotes/origin/main", main_sha],
+            check=True,
+        )
+        _sp.run(["git", "-C", str(base), "checkout", "-q", "-b", "feat/other"],
+                check=True)
+        feat_file = base / "feat.txt"
+        feat_file.write_text("feat-only", encoding="utf-8")
+        _sp.run(["git", "-C", str(base), "add", "feat.txt"], check=True)
+        _sp.run(["git", "-C", str(base), "commit", "-m", "feat-only", "-q"],
+                check=True, env=self._git_env)
+        feat_sha = _sp.check_output(
+            ["git", "-C", str(base), "rev-parse", "HEAD"],
+        ).decode().strip()
+        self.assertNotEqual(main_sha, feat_sha)
+
+        plan = self._build_self_edit_b(task_id="default-ref-task")
+        gdp.apply_delegate_plan(
+            plan,
+            state_db_path=self.sb.db_path,
+            claude_org_root=self.sb.claude_org_root,
+            skip_settings=True,
+        )
+        worker_dir = Path(plan.layout.worker_dir)
+        new_sha = _sp.check_output(
+            ["git", "-C", str(worker_dir), "rev-parse", "HEAD"],
+        ).decode().strip()
+        self.assertEqual(
+            new_sha, main_sha,
+            "new worktree must branch off main, not the base repo's "
+            "currently-checked-out feature branch",
+        )
+        # Sanity: the feat-only file must NOT appear in the new worktree.
+        self.assertFalse((worker_dir / "feat.txt").exists())
+
+    def test_apply_aborts_when_existing_worktree_on_wrong_branch(self):
+        """Codex Round 2 Major: idempotent reuse must verify the existing
+        worktree is on the planned branch — a stale partial-retry on a
+        different branch must abort, not silently dispatch."""
+        plan = self._build_self_edit_b(task_id="branch-mismatch")
+        worker_dir = Path(plan.layout.worker_dir)
+        import subprocess as _sp
+        worker_dir.parent.mkdir(parents=True, exist_ok=True)
+        # Pre-create on a different branch than planned_branch.
+        _sp.run(
+            ["git", "-C", str(self.sb.claude_org_root),
+             "worktree", "add", "-b", "wrong-branch", str(worker_dir)],
+            check=True, capture_output=True,
+        )
+        with self.assertRaises(gdp.WorktreeApplyError) as cm:
+            gdp.apply_delegate_plan(
+                plan,
+                state_db_path=self.sb.db_path,
+                claude_org_root=self.sb.claude_org_root,
+                skip_settings=True,
+            )
+        self.assertIn("not the planned", str(cm.exception))
+
+    def test_apply_aborts_when_no_origin_head(self):
+        """Codex Round 2 + Round 3 Major: must abort when origin/HEAD is
+        absent — never guess from local main/master (could be stale after
+        a trunk-rename) and never fall back to HEAD (re-introduces the
+        original Pattern-B bug)."""
+        import subprocess as _sp
+        base = self.sb.claude_org_root
+        # Tear down the origin/HEAD setup from setUp so the resolver can't
+        # find any authoritative trunk.
+        _sp.run(["git", "-C", str(base), "symbolic-ref", "--delete",
+                 "refs/remotes/origin/HEAD"], check=True)
+        _sp.run(["git", "-C", str(base), "update-ref", "-d",
+                 "refs/remotes/origin/main"], check=True)
+        plan = self._build_self_edit_b(task_id="no-origin-head-task")
+        with self.assertRaises(gdp.WorktreeApplyError) as cm:
+            gdp.apply_delegate_plan(
+                plan,
+                state_db_path=self.sb.db_path,
+                claude_org_root=self.sb.claude_org_root,
+                skip_settings=True,
+            )
+        self.assertIn("origin/HEAD", str(cm.exception))
+        # Neither DB row nor brief should exist.
+        self.assertFalse(
+            any(r["task_id"] == "no-origin-head-task"
+                for r in self.sb.list_runs())
+        )
+
+    def test_apply_aborts_when_existing_worktree_in_detached_head(self):
+        """Codex Round 3 Major: idempotent reuse must reject detached HEAD
+        too, not just a different-named branch."""
+        import subprocess as _sp
+        plan = self._build_self_edit_b(task_id="detached-task")
+        worker_dir = Path(plan.layout.worker_dir)
+        worker_dir.parent.mkdir(parents=True, exist_ok=True)
+        # Create as a detached worktree (no -b, no branch name).
+        main_sha = _sp.check_output(
+            ["git", "-C", str(self.sb.claude_org_root), "rev-parse", "main"],
+        ).decode().strip()
+        _sp.run(
+            ["git", "-C", str(self.sb.claude_org_root),
+             "worktree", "add", "--detach", str(worker_dir), main_sha],
+            check=True, capture_output=True,
+        )
+        with self.assertRaises(gdp.WorktreeApplyError) as cm:
+            gdp.apply_delegate_plan(
+                plan,
+                state_db_path=self.sb.db_path,
+                claude_org_root=self.sb.claude_org_root,
+                skip_settings=True,
+            )
+        self.assertIn("detached-HEAD", str(cm.exception))
+
+    def test_apply_creates_plain_pattern_b_worktree_for_project_repo(self):
+        """Non-self-edit Pattern B branches from the project's registered repo."""
+        # Stand up a dedicated project repo on disk and re-seed the registry.
+        import subprocess as _sp
+        project_repo = Path(self._td.name) / "clock-app-repo"
+        project_repo.mkdir()
+        self._init_repo_with_origin_main(project_repo)
+        (self.sb.claude_org_root / "registry" / "projects.md").write_text(
+            "# Projects\n\n"
+            "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 |\n"
+            "|---|---|---|---|---|\n"
+            f"| 時計アプリ | clock-app | {project_repo} | Web 時計 | デザイン |\n"
+            f"| claude-org-ja | claude-org-ja | {self.sb.claude_org_root} | Self | スキル改善 |\n",
+            encoding="utf-8",
+        )
+        # Force Pattern B by adding an active concurrent run on the project.
+        self.sb.add_active_run(
+            task_id="other-clock-task",
+            project_slug="clock-app",
+            worker_dir=str(self.sb.workers / "clock-app"),
+        )
+        plan = gdp.build_delegate_plan(
+            task_id="plain-b-task",
+            project_slug="clock-app",
+            description="add a sparkline",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(plan.layout.pattern, "B")
+        self.assertIsNone(plan.layout.pattern_variant)
+        self.assertEqual(
+            Path(plan.base_repo).resolve(), project_repo.resolve()
+        )
+        gdp.apply_delegate_plan(
+            plan,
+            state_db_path=self.sb.db_path,
+            claude_org_root=self.sb.claude_org_root,
+            skip_settings=True,
+        )
+        worker_dir = Path(plan.layout.worker_dir).resolve()
+        # Worktree registered against the project repo (not claude-org).
+        out = _sp.check_output(
+            ["git", "-C", str(project_repo),
+             "worktree", "list", "--porcelain"],
+        ).decode("utf-8", errors="replace")
+        registered = {
+            Path(line[len("worktree "):].strip()).resolve()
+            for line in out.splitlines() if line.startswith("worktree ")
+        }
+        self.assertIn(worker_dir, registered)
+        self.assertTrue((worker_dir / "CLAUDE.md").exists())
+
+
 def _env_update_goldens() -> bool:
     import os
     return os.environ.get("UPDATE_GOLDENS") == "1"
