@@ -29,7 +29,7 @@
 
 **状態保存（必須）**: 判断仰ぎ受信時は `.state/workers/worker-{task_id}.md` の Progress Log に追記し、`bash tools/journal_append.sh worker_escalation worker=worker-{task_id} task={task_id} reason="<要約>"` を実行する。窓口再起動・引き継ぎで pending 判断を失わないため。手順詳細は `.claude/skills/org-delegate/SKILL.md` Step 5 のサブセクション 0 を参照。
 
-**pending-decisions register（必須、Issue #297）**: ディスパッチャーの SECRETARY_RELAY_GAP_SUSPECTED 検出 (`.dispatcher/CLAUDE.md` Step 5.1) は `.state/pending_decisions.json` を register として参照する。Secretary は判断仰ぎの受信・人間への伝達・ワーカーへの転送のそれぞれで本 register を更新する:
+**pending-decisions register（必須、Issue #297）**: ディスパッチャーの SECRETARY_RELAY_GAP_SUSPECTED 検出 ([`.dispatcher/references/worker-monitoring.md` Step 5.1](.dispatcher/references/worker-monitoring.md#step-5-1)) は `.state/pending_decisions.json` を register として参照する。Secretary は判断仰ぎの受信・人間への伝達・ワーカーへの転送のそれぞれで本 register を更新する:
 
 1. **判断仰ぎ受信時** — Progress Log と `worker_escalation` journal 追記に加えて register に entry を追加する:
 
@@ -51,7 +51,7 @@
    python tools/pending_decisions.py mark-user-replied --task-id <task_id>
    ```
 
-   該当 task の最古 `escalated` entry に user_replied_at を設定する（status は escalated のまま）。escalated entry が無い場合は no-op。既に user_replied_at が設定済みの場合も idempotent。これにより、ディスパッチャーは「ユーザーは答えたのに Secretary がワーカーへ転送し忘れている」帯を `.dispatcher/CLAUDE.md` Step 5.1 (a-2) で deterministic に観測できるようになる。
+   該当 task の最古 `escalated` entry に user_replied_at を設定する（status は escalated のまま）。escalated entry が無い場合は no-op。既に user_replied_at が設定済みの場合も idempotent。これにより、ディスパッチャーは「ユーザーは答えたのに Secretary がワーカーへ転送し忘れている」帯を [`.dispatcher/references/worker-monitoring.md` Step 5.1 (a-2)](.dispatcher/references/worker-monitoring.md#step-5-1) で deterministic に観測できるようになる。
 
 4. **ワーカーに人間判断を転送した時点** — `to_id="worker-{task_id}"` で `send_message` を発行した直後に register を `resolved` に更新する:
 
