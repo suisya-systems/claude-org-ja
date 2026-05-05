@@ -147,6 +147,8 @@ python tools/gen_delegate_payload.py apply \
 
 判定ロジック (Pattern A vs B vs C / gitignored サブモード / role 表 / planned_branch / DELEGATE 本文の必須行) は `references/delegate-flow-details.md` 参照。本 SKILL.md からは抜き出してある。
 
+**self-edit タスクの特例（Issue #289）**: claude-org 自己編集タスクが Pattern B に乗る場合、worktree base は通常の `{workers_dir}/{project_slug}/.worktrees/` ではなく **Secretary の live repo (`{claude_org_path}/.worktrees/`)** を使う（`pattern_variant='live_repo_worktree'`）。resolver が role=claude-org-self-edit のとき自動選択する。詳細・根拠は `references/claude-org-self-edit.md` §3 参照。
+
 ### Step 0.7 の対象ファイル抽出
 
 「対象ファイル」は窓口がタスク説明から抽出する（依頼文・Issue 本文・ユーザー発話の中で明示されたパス。機械的判定はしない）。対象ファイルが特定できないタスク（純粋な調査、対象パス未定の新規作成など）は `--target` を渡さなくてよい — `gen_delegate_payload` は target 0 件のときだけ check-ignore をスキップして通常判定に進む。

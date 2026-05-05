@@ -73,7 +73,11 @@ from tools.state_db.queries import list_runs_with_dirs
 
 VALID_MODES = ("edit", "audit")
 VALID_PATTERNS = ("A", "B", "C")
-VALID_VARIANTS = ("ephemeral", "gitignored_repo_root")
+# 'live_repo_worktree' is the Pattern B sub-mode used by claude-org self-edit
+# tasks: the worktree base is Secretary's live repo (claude_org_root) instead
+# of the conventional {workers_dir}/{project_slug}/. See Issue #289 and
+# references/claude-org-self-edit.md for the rationale.
+VALID_VARIANTS = ("ephemeral", "gitignored_repo_root", "live_repo_worktree")
 VALID_ROLES = ("default", "claude-org-self-edit", "doc-audit")
 
 # Active reservation states — these mean someone else is occupying the base
@@ -310,6 +314,10 @@ def resolve(
         projects = []
     project = find_project(projects, project_slug)
 
+    # --- Role decision (computed first so Pattern B can branch on it) -----
+    role = decide_role(mode=mode, project=project, claude_org_root=claude_org_root)
+    self_edit = role == "claude-org-self-edit"
+
     # --- Pattern decision --------------------------------------------------
     pattern: str
     variant: Optional[str]
@@ -341,17 +349,21 @@ def resolve(
             except sqlite3.Error:
                 active = False
         if active:
-            pattern, variant = "B", None
-            worker_dir = workers_dir / project_slug / ".worktrees" / task_id
+            pattern = "B"
+            # claude-org self-edit Pattern B places the worktree under
+            # Secretary's live repo (single .git, no two-clone sync). See
+            # Issue #289 / references/claude-org-self-edit.md.
+            if self_edit:
+                variant = "live_repo_worktree"
+                worker_dir = claude_org_root / ".worktrees" / task_id
+            else:
+                variant = None
+                worker_dir = workers_dir / project_slug / ".worktrees" / task_id
         else:
             pattern, variant = "A", None
             worker_dir = workers_dir / project_slug
 
     worker_dir = worker_dir.resolve() if worker_dir.is_absolute() else worker_dir.resolve()
-
-    # --- Role decision -----------------------------------------------------
-    role = decide_role(mode=mode, project=project, claude_org_root=claude_org_root)
-    self_edit = role == "claude-org-self-edit"
 
     # --- TOML [worker] block overrides (Issue #290 defect 1) --------------
     # Honor explicit values from the caller (typically a worker_brief.toml
@@ -363,6 +375,7 @@ def resolve(
     # pattern=B/A must compute a feat-/fix- branch even if auto-derive
     # produced Pattern C without one). Codex Round 1 Major.
     if layout_overrides:
+        explicit_worker_dir = bool(layout_overrides.get("worker_dir"))
         if "pattern" in layout_overrides and layout_overrides["pattern"]:
             pat = layout_overrides["pattern"]
             if pat not in VALID_PATTERNS:
@@ -376,6 +389,10 @@ def resolve(
                 raise ResolveError(
                     f"layout_overrides['pattern_variant'] must be one of {VALID_VARIANTS} or None, got {variant!r}"
                 )
+            # Pattern B + variant=live_repo_worktree without explicit worker_dir
+            # → re-derive to claude_org_root/.worktrees/{task_id}/ (Issue #289).
+            if pattern == "B" and variant == "live_repo_worktree" and not explicit_worker_dir:
+                worker_dir = (claude_org_root / ".worktrees" / task_id).resolve()
         if "worker_dir" in layout_overrides and layout_overrides["worker_dir"]:
             worker_dir = Path(layout_overrides["worker_dir"]).resolve()
         if "role" in layout_overrides and layout_overrides["role"]:
