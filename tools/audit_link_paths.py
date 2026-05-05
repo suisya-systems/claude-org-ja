@@ -22,7 +22,6 @@ Run: ``py -3 tools/audit_link_paths.py`` from the repo root.
 
 from __future__ import annotations
 
-import os
 import re
 import sys
 from pathlib import Path
@@ -38,10 +37,18 @@ IN_SCOPE_GLOBS = (
     ".claude/skills/**/SKILL.md",
     ".claude/skills/**/references/**/*.md",
     "docs/contracts/**/*.md",
+    "docs/contributing/**/*.md",
     "docs/journal-events.md",
 )
 
-LINK_RE = re.compile(r"\[`([^`\n]+)`\]\(([^)\s]+)\)")
+# Match `[`DISPLAY`](TARGET)` where TARGET is either a bare destination (no
+# whitespace, no parens) or an angle-bracket destination `<...>` allowing
+# spaces -- both forms are valid CommonMark.
+LINK_RE = re.compile(
+    r"\[`([^`\n]+)`\]\("
+    r"(?:<([^>\n]+)>|([^)\s]+))"
+    r"\)"
+)
 
 
 def collect_in_scope() -> list[Path]:
@@ -57,24 +64,38 @@ def is_external(target: str) -> bool:
     return target.startswith(("http://", "https://", "mailto:")) or target.startswith("#")
 
 
-def looks_like_path(display: str) -> bool:
-    return "/" in display or display.endswith(".md") or display.startswith("..")
-
-
 def expected_display(resolved_abs: Path) -> str:
     rel = resolved_abs.relative_to(REPO_ROOT)
     return rel.as_posix()
 
 
+def strip_fenced_code(text: str) -> str:
+    """Replace fenced code blocks with blank lines so example links inside
+    ```` ```markdown ```` fences are not audited as live links."""
+    out: list[str] = []
+    in_fence = False
+    for line in text.splitlines(keepends=True):
+        stripped = line.lstrip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            in_fence = not in_fence
+            out.append("\n")
+            continue
+        out.append("\n" if in_fence else line)
+    return "".join(out)
+
+
 def audit_file(md_path: Path) -> list[str]:
     violations: list[str] = []
-    text = md_path.read_text(encoding="utf-8")
+    text = strip_fenced_code(md_path.read_text(encoding="utf-8"))
     file_rel = md_path.relative_to(REPO_ROOT).as_posix()
     for m in LINK_RE.finditer(text):
-        display, target = m.group(1), m.group(2)
-        if is_external(target):
+        # Skip matches wrapped in an inline code span -- e.g. the literal
+        # example `[`...`](...)` shown as documentation, not a live link.
+        if m.start() > 0 and text[m.start() - 1] == "`":
             continue
-        if not looks_like_path(display):
+        display = m.group(1)
+        target = m.group(2) or m.group(3)
+        if is_external(target):
             continue
         # Strip in-doc anchor for filesystem resolution.
         target_path_part = target.split("#", 1)[0]
