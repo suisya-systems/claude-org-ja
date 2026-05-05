@@ -892,6 +892,27 @@ class TestPostCommitWorkerArchive(unittest.TestCase):
             conn.close()
             td.cleanup()
 
+    def test_toggle_completed_then_reopened_does_not_archive(self):
+        """Codex round-2: same-transaction toggle 'completed' → 'in_use'
+        must not move the worker file. The committed status is the
+        source of truth for archival, not the queue history."""
+        td, root, db, conn = self._root_with_state_db()
+        try:
+            w = StateWriter(conn, claude_org_root=root)
+            src = self._seed_worker_file(root, "ttoggle")
+            with w.transaction() as tx:
+                tx.upsert_run(task_id="ttoggle", project_slug="p", pattern="B")
+            with w.transaction() as tx:
+                tx.update_run_status("ttoggle", "completed")
+                tx.update_run_status("ttoggle", "in_use")
+            self.assertTrue(src.exists(),
+                "worker file must stay live when final status is in_use")
+            archive = root / ".state" / "workers" / "archive"
+            self.assertFalse(archive.exists())
+        finally:
+            conn.close()
+            td.cleanup()
+
     def test_completion_unknown_task_does_not_queue(self):
         """Codex review: an UPDATE that matches 0 rows (typo'd task_id
         or run never registered) must not enqueue an archive move —

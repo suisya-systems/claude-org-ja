@@ -195,7 +195,23 @@ class StateWriter:
             return
         workers_dir = self._claude_org_root / ".state" / "workers"
         archive_dir = workers_dir / "archive"
+        # Codex round-2 Major: a transaction may toggle a run through
+        # ``completed`` and back to ``in_use`` / ``review`` before
+        # commit. The pending queue would still hold the task_id, so
+        # confirm the *committed* status is actually ``completed``
+        # before moving the file. ``runs`` is read after self.commit(),
+        # so this query observes the durable post-commit state.
+        # De-duplicate to avoid re-querying for repeated entries.
+        seen: set[str] = set()
         for task_id in pending:
+            if task_id in seen:
+                continue
+            seen.add(task_id)
+            row = self.conn.execute(
+                "SELECT status FROM runs WHERE task_id = ?", (task_id,)
+            ).fetchone()
+            if row is None or row["status"] != "completed":
+                continue
             src = workers_dir / f"worker-{task_id}.md"
             if not src.exists():
                 continue
