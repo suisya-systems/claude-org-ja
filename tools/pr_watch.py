@@ -269,7 +269,7 @@ def _watch_for_merge(
     """
     from tools.run_complete_on_merge import (
         complete_on_merge, fetch_pr_view, RESULT_ALREADY, RESULT_MERGED,
-        RESULT_NO_RUN, RESULT_NOT_YET,
+        RESULT_MERGED_PENDING_CLEANUP, RESULT_NO_RUN, RESULT_NOT_YET,
     )
 
     deadline = monotonic() + max_seconds
@@ -295,7 +295,10 @@ def _watch_for_merge(
             sys.stdout.write(
                 f"pr_watch: PR #{pr} merge-watch result: {result}\n"
             )
-            if result in (RESULT_MERGED, RESULT_ALREADY, RESULT_NO_RUN):
+            if result in (
+                RESULT_MERGED, RESULT_MERGED_PENDING_CLEANUP,
+                RESULT_ALREADY, RESULT_NO_RUN,
+            ):
                 return result
             # RESULT_NOT_YET shouldn't occur once mergedAt is set; treat
             # defensively as "keep polling".
@@ -469,12 +472,19 @@ def main(argv: "list[str] | None" = None) -> int:
     # `failed`/`incomplete`/`canceled` mean there's nothing to merge yet
     # — the secretary will re-issue pr_watch after the next push.
     if status == "passed" and not args.no_merge_watch:
-        _watch_for_merge(
+        merge_result = _watch_for_merge(
             pr=args.pr,
             repo=repo,
             interval=args.interval,
             db_path=JOURNAL_PATH,
         )
+        # Codex Major: surface merge-watch failure modes via exit code
+        # so callers can distinguish "CI passed but PR did not merge in
+        # 24h" / "helper raised" from "CI passed and we successfully
+        # transitioned the run". Don't override a non-zero CI exit
+        # code — that already signaled trouble.
+        if exit_code == 0 and merge_result in ("timeout", "error"):
+            exit_code = 9
 
     return exit_code
 

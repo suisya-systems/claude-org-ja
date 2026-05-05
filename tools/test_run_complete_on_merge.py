@@ -31,16 +31,21 @@ MERGED_AT = "2026-05-06T03:21:00Z"
 MERGE_OID = "abcdef0123456789abcdef0123456789abcdef01"
 
 
-def _seed_run(db_path: Path, *, pr_url: str = PR_URL, branch: str = BRANCH) -> None:
-    """Create a fresh DB with one in-progress run row pointing at the PR."""
-    apply_schema(connect(db_path))  # schema in place
+def _seed_run(db_path: Path, *, pr_url: str = PR_URL, branch: str = BRANCH,
+              pattern: str = "A") -> None:
+    """Create a fresh DB with one in-progress run row pointing at the PR.
+
+    Default pattern is 'A' so the helper performs the full status
+    transition; pattern-B tests opt in explicitly via ``pattern='B'``.
+    """
+    apply_schema(connect(db_path))
     conn = connect(db_path)
     try:
         with StateWriter(conn).transaction() as w:
             w.upsert_run(
                 task_id=TASK_ID,
                 project_slug="claude-org",
-                pattern="B",
+                pattern=pattern,
                 title="PR-merge auto-completion helper",
                 status="review",
                 branch=branch,
@@ -138,6 +143,33 @@ class CompleteOnMergeTests(unittest.TestCase):
             self.assertEqual(payload["merge_commit"], MERGE_OID)
             self.assertEqual(payload["merged_at"], MERGED_AT)
 
+    def test_pattern_b_stops_at_pending_cleanup(self) -> None:
+        """Pattern B / C / D leaves runs.status untouched; only metadata + event."""
+        with TempDB() as db:
+            _seed_run(db, pattern="B")
+            with mock.patch.object(
+                run_complete_on_merge.subprocess, "run",
+                side_effect=_fake_subprocess_run(_make_pr_view()),
+            ):
+                result = run_complete_on_merge.complete_on_merge(
+                    pr=PR, repo=REPO, db_path=db,
+                )
+            self.assertEqual(
+                result, run_complete_on_merge.RESULT_MERGED_PENDING_CLEANUP
+            )
+            row = _run_row(db)
+            # status must NOT be flipped — secretary still has to run
+            # worktree / CLOSE_PANE / remove_worker_dir.
+            self.assertEqual(row["status"], "review")
+            self.assertEqual(row["pr_state"], "merged")
+            self.assertEqual(row["commit_full"], MERGE_OID)
+            evts = _events_of_kind(db, "pr_merged")
+            self.assertEqual(len(evts), 1)
+            payload = json.loads(evts[0]["payload_json"])
+            self.assertEqual(payload["task"], TASK_ID)
+            self.assertFalse(payload["auto_completed"])
+            self.assertEqual(payload["pattern"], "B")
+
     def test_idempotent_second_call_is_noop(self) -> None:
         with TempDB() as db:
             _seed_run(db)
@@ -169,6 +201,34 @@ class CompleteOnMergeTests(unittest.TestCase):
                 )
             self.assertEqual(result, run_complete_on_merge.RESULT_NOT_YET)
             self.assertEqual(_run_row(db)["status"], "review")
+            self.assertEqual(_events_of_kind(db, "pr_merged"), [])
+
+    def test_branch_fallback_skips_terminal_runs(self) -> None:
+        """Codex Major: branch lookup must ignore completed/failed/abandoned runs.
+
+        A historical completed run with the same branch as the live PR
+        must not be re-completed and have a stray pr_merged event
+        appended to it.
+        """
+        with TempDB() as db:
+            _seed_run(db, pr_url="", branch=BRANCH, pattern="A")
+            # Flip the seeded row to completed so it should be skipped
+            # by the branch fallback.
+            conn = connect(db)
+            try:
+                with StateWriter(conn).transaction() as w:
+                    w.update_run_status(TASK_ID, "completed")
+            finally:
+                conn.close()
+            with mock.patch.object(
+                run_complete_on_merge.subprocess, "run",
+                side_effect=_fake_subprocess_run(_make_pr_view()),
+            ):
+                result = run_complete_on_merge.complete_on_merge(
+                    pr=PR, repo=REPO, db_path=db,
+                )
+            # No active run row matched (the only row is terminal).
+            self.assertEqual(result, run_complete_on_merge.RESULT_NO_RUN)
             self.assertEqual(_events_of_kind(db, "pr_merged"), [])
 
     def test_resolves_task_id_via_branch_when_pr_url_absent(self) -> None:

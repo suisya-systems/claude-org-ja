@@ -1,4 +1,4 @@
-> **このドキュメントは歴史的参考資料です。** Secretary / worker / dispatcher の標準オペレーションでは参照しないでください。標準経路は `python tools/pr-watch.ps1 <PR>` / `python tools/pr-watch.sh <PR>` の merge-watch ループ、もしくは `python tools/run_complete_on_merge.py --pr <PR>` です (Issue #317)。`tools/run_complete_on_merge.py` が想定外の挙動をする場合は手動再現せず Issue を切り、resolver / helper 側のバグが直るまで該当クローズを pause してください。例外的に手作業を行うかどうかはユーザーの明示判断に委ね、Secretary が自走で本ドキュメントに reach した場合は protocol 違反です。
+> **このドキュメントは歴史的参考資料です。** Secretary / worker / dispatcher の標準オペレーションでは参照しないでください。標準経路は `tools/pr-watch.ps1 -PR <PR>` (Windows) / `tools/pr-watch.sh --pr <PR>` (POSIX) の merge-watch ループ、もしくは `python tools/run_complete_on_merge.py --pr <PR>` です (Issue #317)。`tools/run_complete_on_merge.py` が想定外の挙動をする場合は手動再現せず Issue を切り、resolver / helper 側のバグが直るまで該当クローズを pause してください。例外的に手作業を行うかどうかはユーザーの明示判断に委ね、Secretary が自走で本ドキュメントに reach した場合は protocol 違反です。
 
 # Legacy hand-rolled PR-merge completion (museum copy)
 

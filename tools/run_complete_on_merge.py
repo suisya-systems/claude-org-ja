@@ -47,10 +47,16 @@ DEFAULT_DB_PATH = REPO_ROOT / ".state" / "state.db"
 
 # Return codes for :func:`complete_on_merge`. Stable strings so callers
 # (pr_watch's merge-watch loop, tests) can branch without parsing logs.
-RESULT_MERGED = "merged"        # PR was merged this call; DB updated.
+RESULT_MERGED = "merged"        # PR was merged this call; DB updated, run completed.
 RESULT_ALREADY = "already"      # PR was merged previously; DB already terminal.
 RESULT_NOT_YET = "not_yet"      # PR is open / draft; nothing written.
 RESULT_NO_RUN = "no_run"        # No matching run row; nothing written.
+# Pattern B / C / D: PR metadata + event recorded but run.status NOT
+# flipped to 'completed' because the secretary still needs to run
+# worktree / CLOSE_PANE / remove_worker_dir cleanup before the run
+# row may transition to terminal (state-schema-contract §3.1
+# Worker-directory ↔ worker-state-file consistency invariant).
+RESULT_MERGED_PENDING_CLEANUP = "merged_pending_cleanup"
 
 
 def _ensure_gh_installed() -> None:
@@ -143,8 +149,14 @@ def _resolve_task_id(conn, *, pr: int, repo: str, pr_url: str,
         if row is not None:
             return row["task_id"]
     if head_ref:
+        # Codex Major: scope branch fallback to non-terminal runs so a
+        # past completed run with the same branch can't be mistakenly
+        # re-completed and have a stray pr_merged event appended.
         row = conn.execute(
-            "SELECT task_id FROM runs WHERE branch = ? LIMIT 1", (head_ref,)
+            "SELECT task_id FROM runs WHERE branch = ? "
+            "AND status NOT IN ('completed','failed','abandoned') "
+            "ORDER BY id DESC LIMIT 1",
+            (head_ref,),
         ).fetchone()
         if row is not None:
             return row["task_id"]
@@ -211,7 +223,8 @@ def complete_on_merge(
             return RESULT_NO_RUN
 
         run_row = conn.execute(
-            "SELECT r.task_id, r.status, r.pr_state, p.slug AS project_slug "
+            "SELECT r.task_id, r.status, r.pr_state, r.pattern, "
+            "p.slug AS project_slug "
             "FROM runs r JOIN projects p ON p.id = r.project_id "
             "WHERE r.task_id = ?",
             (resolved_task_id,),
@@ -228,12 +241,26 @@ def complete_on_merge(
             "WHERE r.task_id = ? AND e.kind = 'pr_merged' LIMIT 1",
             (resolved_task_id,),
         ).fetchone()
-        if (run_row["status"] == "completed"
-                and run_row["pr_state"] == "merged"
+        if (run_row["pr_state"] == "merged"
                 and already_event is not None):
+            # Either the run is fully completed (Pattern A auto-close
+            # path) or it has been left in 'review' awaiting secretary
+            # cleanup (Pattern B/C/D). Either way, we already wrote
+            # the PR metadata and the event row; do not double-write.
             return RESULT_ALREADY
 
         project_slug = run_row["project_slug"]
+        pattern = (run_row["pattern"] or "B").upper()
+        # Codex Blocker (Issue #317 review): runs.status='completed' triggers
+        # the StateWriter post-commit hook to archive
+        # ``.state/workers/worker-{task}.md`` AND requires (per
+        # state-schema-contract §3.1) that the secretary has already
+        # run worktree remove / CLOSE_PANE / remove_worker_dir for
+        # Pattern B / C / D. The helper has no safe way to do those
+        # FS + pane operations, so for non-Pattern-A runs it stops at
+        # PR metadata + pr_merged event and leaves status untouched —
+        # the secretary still has to do the final close.
+        do_full_close = pattern == "A"
 
         # claude_org_root=None lets StateWriter auto-detect from the
         # connection's database file (`<root>/.state/state.db`). That
@@ -250,23 +277,38 @@ def complete_on_merge(
                 commit_short=commit_short,
                 commit_full=commit_full,
             )
-            w.update_run_status(
-                resolved_task_id,
-                "completed",
-                completed_at=merged_at,
-            )
+            if do_full_close:
+                w.update_run_status(
+                    resolved_task_id,
+                    "completed",
+                    completed_at=merged_at,
+                )
             w.append_event(
                 kind="pr_merged",
                 actor="run_complete_on_merge",
                 payload={
+                    # `task` matches docs/journal-events.md §PR / push.
+                    "task": resolved_task_id,
                     "pr": pr,
                     "repo": repo,
                     "pr_url": pr_url,
                     "merge_commit": commit_full,
                     "merged_at": merged_at,
+                    "pattern": pattern,
+                    "auto_completed": do_full_close,
                 },
                 run_task_id=resolved_task_id,
             )
+        if not do_full_close:
+            sys.stderr.write(
+                "tools/run_complete_on_merge.py: notice: PR merged for "
+                f"task {resolved_task_id} (pattern {pattern}); pr_state "
+                "set to 'merged' but runs.status left untouched — "
+                "secretary must complete worktree remove / CLOSE_PANE / "
+                "remove_worker_dir before flipping to 'completed' "
+                "(state-schema-contract §3.1).\n"
+            )
+            return RESULT_MERGED_PENDING_CLEANUP
         return RESULT_MERGED
     finally:
         conn.close()

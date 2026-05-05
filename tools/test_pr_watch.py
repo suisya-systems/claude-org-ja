@@ -502,7 +502,11 @@ class TempDir:
 class MergeWatchTests(unittest.TestCase):
     """Issue #317: post-CI merge-watch loop in pr_watch.main."""
 
-    def _seed_run_for_merge(self, db: Path, *, pr_url: str) -> None:
+    def _seed_run_for_merge(self, db: Path, *, pr_url: str,
+                            pattern: str = "A") -> None:
+        """Seed a run pointing at the PR. Default pattern='A' so the
+        helper performs the full status transition; pass 'B' to test
+        the pending-cleanup path."""
         from tools.state_db import apply_schema, connect
         from tools.state_db.writer import StateWriter
 
@@ -513,7 +517,7 @@ class MergeWatchTests(unittest.TestCase):
                 w.upsert_run(
                     task_id="t-merge-watch",
                     project_slug="claude-org",
-                    pattern="B",
+                    pattern=pattern,
                     title="merge-watch test",
                     status="review",
                     branch="feat/merge-watch",
