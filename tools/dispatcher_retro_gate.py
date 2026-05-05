@@ -51,7 +51,7 @@ if getattr(sys.stdin, "encoding", "").lower() != "utf-8":
     except (AttributeError, io.UnsupportedOperation):
         pass
 
-DEFAULT_ACK_PATTERN = r"(届い|受領|受け取|ack|received|got it)"
+DEFAULT_ACK_PATTERN = r"(届[いきけくこ]|受領|受け取|ack|received|got it)"
 
 
 def _now_iso() -> str:
@@ -65,16 +65,11 @@ def _emit(obj: dict, stream=None) -> None:
 
 
 def _is_secretary_message(msg: dict, secretary: str) -> bool:
-    """Return True if the message looks like it came from the secretary pane.
-
-    renga-peers shapes vary across SDK versions, so accept either id or name
-    matching, and treat messages with no sender attribution as candidates
-    (the dispatcher already filters by recipient = self)."""
-    from_id = msg.get("from_id")
-    from_name = msg.get("from_name")
-    if from_id is None and from_name is None:
-        return True
-    return from_id == secretary or from_name == secretary
+    """Return True only if the message explicitly identifies the secretary
+    as sender. Messages with no sender attribution are NOT treated as
+    secretary-origin — accepting them would let an unrelated message whose
+    body happens to contain "届い" trigger a false ack."""
+    return msg.get("from_id") == secretary or msg.get("from_name") == secretary
 
 
 def _extract_body(msg: dict) -> str:
@@ -87,7 +82,17 @@ def run_gate(args: argparse.Namespace, *, sleep=time.sleep,
     stdout = stdout or sys.stdout
     stderr = stderr or sys.stderr
 
-    pattern = re.compile(args.ack_pattern)
+    try:
+        pattern = re.compile(args.ack_pattern)
+    except re.error as exc:
+        _emit({
+            "status": "error",
+            "reason": f"invalid_ack_pattern: {exc}",
+            "attempts": 0,
+            "received_at": None,
+            "raw": None,
+        }, stdout)
+        return 2
 
     _emit({
         "action": "send_initial",
@@ -124,8 +129,32 @@ def run_gate(args: argparse.Namespace, *, sleep=time.sleep,
             }, stdout)
             return 2
 
-        messages = payload.get("messages") or []
+        if not isinstance(payload, dict):
+            _emit({
+                "status": "error",
+                "reason": "invalid_schema: payload must be a JSON object",
+                "attempts": attempt,
+                "received_at": None,
+                "raw": None,
+            }, stdout)
+            return 2
+
+        messages = payload.get("messages", [])
+        if not isinstance(messages, list):
+            _emit({
+                "status": "error",
+                "reason": "invalid_schema: 'messages' must be a list",
+                "attempts": attempt,
+                "received_at": None,
+                "raw": None,
+            }, stdout)
+            return 2
+
         for msg in messages:
+            if not isinstance(msg, dict):
+                # Skip non-object entries rather than crash; the dispatcher
+                # may surface a future schema variant we don't recognise.
+                continue
             if not _is_secretary_message(msg, args.secretary):
                 continue
             body = _extract_body(msg)

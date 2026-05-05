@@ -97,6 +97,41 @@ class DispatcherRetroGateTests(unittest.TestCase):
         events = _parse(proc.stdout)
         self.assertEqual(events[-1]["status"], "timeout")
 
+    def test_invalid_ack_pattern_returns_error(self) -> None:
+        # No stdin needed — the failure happens before the first poll.
+        proc = _run([], extra_args=["--ack-pattern", "("])
+        self.assertEqual(proc.returncode, 2, msg=proc.stderr)
+        events = _parse(proc.stdout)
+        self.assertEqual(events[-1]["status"], "error")
+        self.assertIn("invalid_ack_pattern", events[-1]["reason"])
+
+    def test_malformed_messages_payload_returns_error(self) -> None:
+        # 'messages' is a string instead of a list.
+        proc = _run([{"messages": "oops"}])
+        self.assertEqual(proc.returncode, 2, msg=proc.stderr)
+        events = _parse(proc.stdout)
+        self.assertEqual(events[-1]["status"], "error")
+        self.assertIn("invalid_schema", events[-1]["reason"])
+
+    def test_non_dict_message_entries_are_skipped(self) -> None:
+        # Mixed list: a stray int followed by a real secretary ack must
+        # neither crash nor mask the ack.
+        stdin = [{"messages": [42, {"from_id": "secretary",
+                                    "message": "届きました"}]}]
+        proc = _run(stdin)
+        self.assertEqual(proc.returncode, 0, msg=proc.stderr)
+        events = _parse(proc.stdout)
+        self.assertEqual(events[-1]["status"], "acked")
+
+    def test_anonymous_message_does_not_ack(self) -> None:
+        # Body matches the ack regex but no sender attribution.
+        stdin = [{"messages": [{"message": "届いてます"}]}] + \
+                [{"messages": []} for _ in range(9)]
+        proc = _run(stdin)
+        self.assertEqual(proc.returncode, 1, msg=proc.stderr)
+        events = _parse(proc.stdout)
+        self.assertEqual(events[-1]["status"], "timeout")
+
     def test_custom_ack_pattern(self) -> None:
         stdin = [{"messages": [
             {"from_id": "secretary", "message": "CONFIRMED-285"},
