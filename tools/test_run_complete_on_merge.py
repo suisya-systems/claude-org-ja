@@ -169,6 +169,10 @@ class CompleteOnMergeTests(unittest.TestCase):
             self.assertEqual(payload["task"], TASK_ID)
             self.assertFalse(payload["auto_completed"])
             self.assertEqual(payload["pattern"], "B")
+            # Codex round-2 Major: completed_at must be populated even
+            # when status stays in 'review' so time-to-merge aggregation
+            # doesn't lose the merge timestamp.
+            self.assertEqual(row["completed_at"], MERGED_AT)
 
     def test_idempotent_second_call_is_noop(self) -> None:
         with TempDB() as db:

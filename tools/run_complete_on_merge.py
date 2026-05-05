@@ -283,6 +283,19 @@ def complete_on_merge(
                     "completed",
                     completed_at=merged_at,
                 )
+            else:
+                # Codex round-2 Major: Pattern B/C/D still need
+                # ``completed_at`` populated for time-to-merge
+                # aggregation and to satisfy the helper's documented
+                # contract. update_run_status would also flip
+                # runs.status which we explicitly want to defer until
+                # the secretary has cleaned up the worktree, so write
+                # only completed_at directly.
+                w.conn.execute(
+                    "UPDATE runs SET completed_at = COALESCE(completed_at, ?) "
+                    "WHERE task_id = ?",
+                    (merged_at, resolved_task_id),
+                )
             w.append_event(
                 kind="pr_merged",
                 actor="run_complete_on_merge",

@@ -483,7 +483,12 @@ def main(argv: "list[str] | None" = None) -> int:
         # 24h" / "helper raised" from "CI passed and we successfully
         # transitioned the run". Don't override a non-zero CI exit
         # code — that already signaled trouble.
-        if exit_code == 0 and merge_result in ("timeout", "error"):
+        if exit_code == 0 and merge_result in ("timeout", "error", "no_run"):
+            # Codex round-2 Major: no_run means we observed a merge but
+            # could not resolve the PR back to a runs row, so the
+            # status flip didn't happen and the secretary needs to
+            # intervene. Surface that as exit 9 so callers don't treat
+            # it as success.
             exit_code = 9
 
     return exit_code

@@ -500,16 +500,15 @@ worker → Secretary peer message
      これは `gh pr view <PR> --json url,state,mergedAt,mergeCommit,headRefName` を一度引いて、PR が merged なら `StateWriter.transaction()` 経由で `pr_state='merged'` / `commit_short` / `pr_url` / `completed_at` を更新し、`pr_merged` イベント (payload に `task` / `pattern` / `auto_completed` 含む) を 1 行追記する。再呼び出しは idempotent（二重イベントを書かない）。task_id は `runs.pr_url` / `runs.branch`（active な runs 限定）から自動解決され、解決失敗時は `--task-id` を明示する。
      - **Pattern A** (worktree なし): `runs.status='completed'` まで自動遷移 (post-commit hook が worker 状態ファイルを archive)
      - **Pattern B / C / D** (worktree / ephemeral / live-repo): helper は `runs.status` を **触らず** `review` のまま残す。worktree remove / `CLOSE_PANE` / `remove_worker_dir` は窓口が手動で行ってから別途 `update_run_status('<task>', 'completed')` を呼ぶ (state-schema-contract §3.1)
-   - **パターン B / C のレジストリエントリ削除や手動 close は別途 StateWriter を呼ぶ**（markdown 直接編集禁止）:
+   - **パターン B / C のレジストリエントリ削除と最終 close は別途 StateWriter を呼ぶ**（markdown 直接編集禁止。run_complete_on_merge が `pr_state='merged'` と `completed_at` を既に書いているので、ここでは status flip と worker_dir 削除のみ行う）:
      ```bash
      python -c "
      from tools.state_db import connect
      from tools.state_db.writer import StateWriter
      conn = connect('.state/state.db')
      with StateWriter(conn).transaction() as w:
-         # PR が無い手動クローズ時のみ:
-         #   w.update_run_status('<task_id>', 'completed')
-         w.remove_worker_dir('<abs>')  # パターン B / C
+         w.update_run_status('<task_id>', 'completed')  # post-commit hook が worker-{task}.md を archive
+         w.remove_worker_dir('<abs>')  # パターン B / C のみ
      "
      ```
      legacy のハンドロール完了スクリプトは `docs/legacy/pr-merge-completion-manual.md` に保管されている。標準経路は上記 `tools/run_complete_on_merge.py` であり、museum copy へ reach するのは Issue を切ってユーザー判断を仰いだ後に限る (PR #315 と同じ pattern)
