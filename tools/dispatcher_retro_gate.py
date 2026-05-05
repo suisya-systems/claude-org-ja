@@ -1,35 +1,55 @@
 #!/usr/bin/env python3
-"""Polling gate for the dispatcher's retro completion-report ack.
+"""Per-attempt ack judge for the dispatcher's retro completion-report gate.
 
 Issue #285. Replaces the natural-language polling prose in
 ``.dispatcher/CLAUDE.md`` (around the "完了報告ゲート" section) with a
 deterministic CLI so the dispatcher Claude no longer has to re-derive
-cadence and ack-judgement on every retro.
+ack-judgement on every retro.
 
-Design (option B from the issue brief): this CLI never calls renga-peers
-itself. The dispatcher Claude stays the MCP boundary — it issues
-``mcp__renga-peers__send_message`` once up front and then
-``mcp__renga-peers__check_messages`` per poll, piping each result into
-this script's stdin. The script owns:
+Design: this CLI never calls renga-peers itself, and it does not run a
+long-lived polling loop — Claude Code's Bash tool is one-shot, so a
+co-routine that demands interactive stdin/stdout would not be runnable
+in practice. Instead, the dispatcher Claude runs this script ONCE per
+poll attempt, piping the latest ``check_messages`` result into stdin
+along with the gate state from the previous attempt. The script returns
+either a terminal verdict (``acked`` / ``replied_no_ack`` / ``timeout``
+/ ``error``) or a ``polling`` verdict that carries the updated state
+back so the dispatcher can sleep, fetch again, and re-invoke.
 
-  * cadence (sleep between attempts, max attempt count)
-  * ack judgement (regex against secretary-origin messages)
-  * structured JSON output for the dispatcher to switch on
+Invocation per attempt::
 
-Wire protocol on stdout / stdin (newline-delimited JSON):
+    python tools/dispatcher_retro_gate.py \
+        --task-id <id> --secretary secretary \
+        --attempt <n> --max-attempts 10 [--ack-pattern <regex>]
 
-  CLI -> stdout: {"action": "send_initial", "to_id": "<secretary>",
-                  "message": "<task_id> の完了報告は届いていますか？"}
-  CLI -> stdout: {"action": "check_messages", "attempt": <n>}
-  stdin -> CLI:  {"messages": [<msg>, ...]}
-  ... (repeats up to --timeout-attempts)
-  CLI -> stdout: {"status": "acked"|"replied_no_ack"|"timeout"|"error", ...}
+stdin (single JSON object on one or more lines)::
 
-Exit codes: 0=acked, 1=timeout, 2=error, 3=replied_no_ack
-(secretary replied but the body did not match the ack regex — distinct
-from "no reply at all" so the dispatcher can avoid the
-`secretary_unreachable` fallback when the secretary IS reachable but
-the answer was "見当たりません" / "確認します" etc.).
+    {
+      "messages": [<renga-peers message dict>, ...],
+      "state":    {"last_secretary_attempt": <int>,
+                   "last_secretary_body":    <str|null>}   // optional
+    }
+
+stdout (single JSON object — terminal or progress)::
+
+    {"status": "acked",          "received_at": ..., "raw": ..., "attempts": <n>}
+    {"status": "replied_no_ack", "received_at": ..., "raw": ..., "attempts": <n>}
+    {"status": "timeout",        "received_at": null, "raw": null, "attempts": <max>}
+    {"status": "polling",        "attempts": <n>,  "state": {...}}
+    {"status": "error",          "reason":   ..., "attempts": <n>, ...}
+
+Exit codes::
+
+    0 = acked
+    1 = timeout
+    2 = error
+    3 = replied_no_ack
+    4 = polling (caller should sleep and re-invoke)
+
+The ``--print-initial-prompt`` mode prints the task-templated initial
+question (no stdin needed, no exit code semantics) so the dispatcher
+can pipe it into ``mcp__renga-peers__send_message`` once before the
+first attempt.
 """
 from __future__ import annotations
 
@@ -38,20 +58,20 @@ import io
 import json
 import re
 import sys
-import time
 from datetime import datetime, timezone
+from typing import Any
 
-# Ensure UTF-8 stdio on Windows (default cp932 mangles JP prompts).
-for _stream_name in ("stdout", "stderr"):
+# Ensure UTF-8 stdio on Windows (default cp932 mangles JP prompts/ack
+# bodies). Reconfigure is best-effort — on streams that don't support
+# it we leave the default in place.
+for _stream_name in ("stdout", "stderr", "stdin"):
     _stream = getattr(sys, _stream_name, None)
-    if _stream is not None and getattr(_stream, "encoding", "").lower() != "utf-8":
-        try:
-            _stream.reconfigure(encoding="utf-8")  # py>=3.7
-        except (AttributeError, io.UnsupportedOperation):
-            pass
-if getattr(sys.stdin, "encoding", "").lower() != "utf-8":
+    if _stream is None:
+        continue
+    if getattr(_stream, "encoding", "").lower() == "utf-8":
+        continue
     try:
-        sys.stdin.reconfigure(encoding="utf-8")
+        _stream.reconfigure(encoding="utf-8")  # py>=3.7
     except (AttributeError, io.UnsupportedOperation):
         pass
 
@@ -62,8 +82,7 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _emit(obj: dict, stream=None) -> None:
-    stream = stream or sys.stdout
+def _emit(obj: dict, stream) -> None:
     stream.write(json.dumps(obj, ensure_ascii=False) + "\n")
     stream.flush()
 
@@ -71,8 +90,8 @@ def _emit(obj: dict, stream=None) -> None:
 def _is_secretary_message(msg: dict, secretary: str) -> bool:
     """Return True only if the message explicitly identifies the secretary
     as sender. Messages with no sender attribution are NOT treated as
-    secretary-origin — accepting them would let an unrelated message whose
-    body happens to contain "届い" trigger a false ack."""
+    secretary-origin — accepting them would let an unrelated message
+    whose body happens to contain "届い" trigger a false ack."""
     return msg.get("from_id") == secretary or msg.get("from_name") == secretary
 
 
@@ -87,11 +106,34 @@ def _extract_body(msg: dict) -> str:
     return ""
 
 
-def run_gate(args: argparse.Namespace, *, sleep=time.sleep,
-             stdin=None, stdout=None, stderr=None) -> int:
+def _read_stdin_payload(stdin) -> dict[str, Any]:
+    raw = stdin.read()
+    if not raw or not raw.strip():
+        return {}
+    return json.loads(raw)
+
+
+def run_gate(args: argparse.Namespace, *, stdin=None, stdout=None) -> int:
     stdin = stdin or sys.stdin
     stdout = stdout or sys.stdout
-    stderr = stderr or sys.stderr
+
+    if args.print_initial_prompt:
+        # Plain text on stdout — the dispatcher pipes this into
+        # mcp__renga-peers__send_message before the first attempt.
+        stdout.write(f"{args.task_id} の完了報告は届いていますか？\n")
+        stdout.flush()
+        return 0
+
+    if args.attempt < 1 or args.attempt > args.max_attempts:
+        _emit({
+            "status": "error",
+            "reason": (f"attempt {args.attempt} out of range "
+                       f"[1, {args.max_attempts}]"),
+            "attempts": args.attempt,
+            "received_at": None,
+            "raw": None,
+        }, stdout)
+        return 2
 
     try:
         pattern = re.compile(args.ack_pattern)
@@ -99,123 +141,120 @@ def run_gate(args: argparse.Namespace, *, sleep=time.sleep,
         _emit({
             "status": "error",
             "reason": f"invalid_ack_pattern: {exc}",
-            "attempts": 0,
+            "attempts": args.attempt,
             "received_at": None,
             "raw": None,
         }, stdout)
         return 2
 
-    _emit({
-        "action": "send_initial",
-        "to_id": args.secretary,
-        "message": f"{args.task_id} の完了報告は届いていますか？",
-    }, stdout)
-
-    last_secretary_body: str | None = None
-    last_secretary_attempt: int = 0
-
-    for attempt in range(1, args.timeout_attempts + 1):
-        if attempt > 1 and args.interval_seconds > 0:
-            sleep(args.interval_seconds)
-
-        _emit({"action": "check_messages", "attempt": attempt}, stdout)
-
-        line = stdin.readline()
-        if not line:
-            _emit({
-                "status": "error",
-                "reason": "stdin_closed",
-                "attempts": attempt,
-                "received_at": None,
-                "raw": None,
-            }, stdout)
-            return 2
-
-        try:
-            payload = json.loads(line)
-        except json.JSONDecodeError as exc:
-            _emit({
-                "status": "error",
-                "reason": f"invalid_json: {exc}",
-                "attempts": attempt,
-                "received_at": None,
-                "raw": None,
-            }, stdout)
-            return 2
-
-        if not isinstance(payload, dict):
-            _emit({
-                "status": "error",
-                "reason": "invalid_schema: payload must be a JSON object",
-                "attempts": attempt,
-                "received_at": None,
-                "raw": None,
-            }, stdout)
-            return 2
-
-        messages = payload.get("messages", [])
-        if not isinstance(messages, list):
-            _emit({
-                "status": "error",
-                "reason": "invalid_schema: 'messages' must be a list",
-                "attempts": attempt,
-                "received_at": None,
-                "raw": None,
-            }, stdout)
-            return 2
-
-        for msg in messages:
-            if not isinstance(msg, dict):
-                # Skip non-object entries rather than crash; the dispatcher
-                # may surface a future schema variant we don't recognise.
-                continue
-            if not _is_secretary_message(msg, args.secretary):
-                continue
-            body = _extract_body(msg)
-            last_secretary_body = body
-            last_secretary_attempt = attempt
-            if pattern.search(body):
-                _emit({
-                    "status": "acked",
-                    "received_at": _now_iso(),
-                    "raw": body,
-                    "attempts": attempt,
-                }, stdout)
-                return 0
-
-    if last_secretary_body is not None:
+    try:
+        payload = _read_stdin_payload(stdin)
+    except json.JSONDecodeError as exc:
         _emit({
-            "status": "replied_no_ack",
-            "received_at": _now_iso(),
-            "raw": last_secretary_body,
-            "attempts": last_secretary_attempt,
+            "status": "error",
+            "reason": f"invalid_json: {exc}",
+            "attempts": args.attempt,
+            "received_at": None,
+            "raw": None,
         }, stdout)
-        return 3
+        return 2
 
+    if not isinstance(payload, dict):
+        _emit({
+            "status": "error",
+            "reason": "invalid_schema: payload must be a JSON object",
+            "attempts": args.attempt,
+            "received_at": None,
+            "raw": None,
+        }, stdout)
+        return 2
+
+    messages = payload.get("messages", [])
+    if not isinstance(messages, list):
+        _emit({
+            "status": "error",
+            "reason": "invalid_schema: 'messages' must be a list",
+            "attempts": args.attempt,
+            "received_at": None,
+            "raw": None,
+        }, stdout)
+        return 2
+
+    state = payload.get("state") or {}
+    if not isinstance(state, dict):
+        state = {}
+    last_secretary_body = state.get("last_secretary_body")
+    last_secretary_attempt = state.get("last_secretary_attempt") or 0
+    if not isinstance(last_secretary_attempt, int):
+        last_secretary_attempt = 0
+    if last_secretary_body is not None and not isinstance(last_secretary_body, str):
+        last_secretary_body = None
+
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        if not _is_secretary_message(msg, args.secretary):
+            continue
+        body = _extract_body(msg)
+        last_secretary_body = body
+        last_secretary_attempt = args.attempt
+        if pattern.search(body):
+            _emit({
+                "status": "acked",
+                "received_at": _now_iso(),
+                "raw": body,
+                "attempts": args.attempt,
+            }, stdout)
+            return 0
+
+    if args.attempt >= args.max_attempts:
+        if last_secretary_body is not None:
+            _emit({
+                "status": "replied_no_ack",
+                "received_at": _now_iso(),
+                "raw": last_secretary_body,
+                "attempts": last_secretary_attempt,
+            }, stdout)
+            return 3
+        _emit({
+            "status": "timeout",
+            "received_at": None,
+            "raw": None,
+            "attempts": args.max_attempts,
+        }, stdout)
+        return 1
+
+    # More attempts to go — return updated state for the next invocation.
     _emit({
-        "status": "timeout",
-        "received_at": None,
-        "raw": None,
-        "attempts": args.timeout_attempts,
+        "status": "polling",
+        "attempts": args.attempt,
+        "state": {
+            "last_secretary_attempt": last_secretary_attempt,
+            "last_secretary_body": last_secretary_body,
+        },
     }, stdout)
-    return 1
+    return 4
 
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description="Poll for the secretary's completion-report ack before "
-                    "running the dispatcher retro (Issue #285).",
+        description="Per-attempt ack judge for the dispatcher's retro "
+                    "completion-report gate (Issue #285).",
     )
     p.add_argument("--task-id", required=True,
                    help="Task id used in the prompt sent to the secretary.")
     p.add_argument("--secretary", default="secretary",
                    help="Secretary pane name / id (default: secretary).")
-    p.add_argument("--timeout-attempts", type=int, default=10,
-                   help="Maximum number of check_messages polls (default: 10).")
-    p.add_argument("--interval-seconds", type=float, default=30.0,
-                   help="Seconds to sleep between polls (default: 30).")
+    p.add_argument("--attempt", type=int, default=1,
+                   help="Current poll attempt number, 1-indexed.")
+    p.add_argument("--max-attempts", type=int, default=10,
+                   help="Total number of poll attempts (default: 10).")
     p.add_argument("--ack-pattern", default=DEFAULT_ACK_PATTERN,
                    help="Regex applied to incoming message bodies to decide ack.")
+    p.add_argument("--print-initial-prompt", action="store_true",
+                   help="Print the templated initial prompt and exit. "
+                        "Use this once before --attempt 1 to feed the "
+                        "secretary message via mcp__renga-peers__send_message.")
     return p
 
 

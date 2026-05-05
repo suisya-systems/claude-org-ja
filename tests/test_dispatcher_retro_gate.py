@@ -1,11 +1,11 @@
 """Tests for tools/dispatcher_retro_gate.py (Issue #285).
 
-The CLI is a stdin/stdout JSON co-routine: it emits "action" prompts on
-stdout, the dispatcher pipes ``check_messages`` results back on stdin,
-and the final "status" line on stdout decides retro continuation.
-
-These tests exercise the script end-to-end via subprocess with
-``--interval-seconds 0`` so the polling cadence does not slow CI.
+The CLI is a one-shot per-attempt ack judge: it reads
+``{"messages": [...], "state": {...}}`` from stdin, applies the ack
+regex, and prints either a terminal verdict (acked / replied_no_ack /
+timeout / error) or a ``polling`` verdict carrying state for the next
+invocation. Tests drive it via ``subprocess.run`` so the CLI contract
+is exercised end-to-end.
 """
 from __future__ import annotations
 
@@ -19,161 +19,199 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / "tools" / "dispatcher_retro_gate.py"
 
 
-def _run(stdin_payloads: list[dict], extra_args: list[str] | None = None,
+def _run(stdin_payload: dict | None, *, attempt: int = 1, max_attempts: int = 10,
+         extra_args: list[str] | None = None,
          task_id: str = "issue-285-test") -> subprocess.CompletedProcess:
     args = [
         sys.executable, str(SCRIPT),
         "--task-id", task_id,
-        "--interval-seconds", "0",
-        "--timeout-attempts", "10",
+        "--attempt", str(attempt),
+        "--max-attempts", str(max_attempts),
     ]
     if extra_args:
         args.extend(extra_args)
-    stdin_text = "".join(json.dumps(p, ensure_ascii=False) + "\n"
-                         for p in stdin_payloads)
+    stdin_text = ""
+    if stdin_payload is not None:
+        stdin_text = json.dumps(stdin_payload, ensure_ascii=False) + "\n"
     return subprocess.run(
         args, input=stdin_text, capture_output=True, text=True,
         timeout=15, encoding="utf-8",
     )
 
 
-def _parse(stdout: str) -> list[dict]:
-    return [json.loads(line) for line in stdout.splitlines() if line.strip()]
+def _final(proc: subprocess.CompletedProcess) -> dict:
+    lines = [line for line in proc.stdout.splitlines() if line.strip()]
+    assert lines, f"no stdout from CLI; stderr={proc.stderr!r}"
+    return json.loads(lines[-1])
 
 
 class DispatcherRetroGateTests(unittest.TestCase):
 
+    # --- Stage 2 baseline cases mandated by the issue brief ------------
+
     def test_ack_on_first_poll(self) -> None:
-        stdin = [{"messages": [
-            {"from_id": "secretary", "message": "完了報告は届いています"},
-        ]}]
-        proc = _run(stdin)
+        proc = _run(
+            {"messages": [
+                {"from_id": "secretary", "message": "完了報告は届いています"},
+            ]},
+            attempt=1,
+        )
         self.assertEqual(proc.returncode, 0, msg=proc.stderr)
-        events = _parse(proc.stdout)
-        # Order: send_initial, check_messages(attempt=1), status=acked.
-        self.assertEqual(events[0]["action"], "send_initial")
-        self.assertEqual(events[0]["to_id"], "secretary")
-        self.assertIn("issue-285-test", events[0]["message"])
-        self.assertEqual(events[1], {"action": "check_messages", "attempt": 1})
-        self.assertEqual(events[-1]["status"], "acked")
-        self.assertEqual(events[-1]["attempts"], 1)
-        self.assertIn("届いて", events[-1]["raw"])
-        self.assertIsNotNone(events[-1]["received_at"])
+        final = _final(proc)
+        self.assertEqual(final["status"], "acked")
+        self.assertEqual(final["attempts"], 1)
+        self.assertIn("届い", final["raw"])
 
     def test_ack_on_third_poll(self) -> None:
-        stdin = [
-            {"messages": []},
-            {"messages": [{"from_id": "other", "message": "noise"}]},
-            {"messages": [{"from_id": "secretary", "message": "ack received"}]},
-        ]
-        proc = _run(stdin)
+        # Driver loops three invocations, threading state through.
+        state = None
+
+        # Attempt 1: empty.
+        proc = _run({"messages": [], "state": state}, attempt=1)
+        self.assertEqual(proc.returncode, 4, msg=proc.stderr)
+        f1 = _final(proc)
+        self.assertEqual(f1["status"], "polling")
+        state = f1["state"]
+
+        # Attempt 2: noise from non-secretary.
+        proc = _run({"messages": [{"from_id": "other", "message": "noise"}],
+                      "state": state}, attempt=2)
+        self.assertEqual(proc.returncode, 4, msg=proc.stderr)
+        state = _final(proc)["state"]
+
+        # Attempt 3: real ack.
+        proc = _run({"messages": [{"from_id": "secretary",
+                                   "message": "ack received"}],
+                     "state": state}, attempt=3)
         self.assertEqual(proc.returncode, 0, msg=proc.stderr)
-        events = _parse(proc.stdout)
-        check_msgs = [e for e in events if e.get("action") == "check_messages"]
-        self.assertEqual([e["attempt"] for e in check_msgs], [1, 2, 3])
-        self.assertEqual(events[-1]["status"], "acked")
-        self.assertEqual(events[-1]["attempts"], 3)
-        self.assertEqual(events[-1]["raw"], "ack received")
+        final = _final(proc)
+        self.assertEqual(final["status"], "acked")
+        self.assertEqual(final["attempts"], 3)
+        self.assertEqual(final["raw"], "ack received")
 
     def test_timeout_after_max_attempts(self) -> None:
-        stdin = [{"messages": []} for _ in range(10)]
-        proc = _run(stdin)
+        # All 10 attempts return empty messages and no secretary reply.
+        state = None
+        for n in range(1, 10):
+            proc = _run({"messages": [], "state": state}, attempt=n)
+            self.assertEqual(proc.returncode, 4, msg=proc.stderr)
+            state = _final(proc)["state"]
+        proc = _run({"messages": [], "state": state}, attempt=10)
         self.assertEqual(proc.returncode, 1, msg=proc.stderr)
-        events = _parse(proc.stdout)
-        check_msgs = [e for e in events if e.get("action") == "check_messages"]
-        self.assertEqual(len(check_msgs), 10)
-        self.assertEqual(events[-1]["status"], "timeout")
-        self.assertEqual(events[-1]["attempts"], 10)
-        self.assertIsNone(events[-1]["received_at"])
-        self.assertIsNone(events[-1]["raw"])
+        final = _final(proc)
+        self.assertEqual(final["status"], "timeout")
+        self.assertEqual(final["attempts"], 10)
+        self.assertIsNone(final["received_at"])
+        self.assertIsNone(final["raw"])
 
-    def test_non_secretary_messages_do_not_ack(self) -> None:
-        # Secretary-pattern body but from a different sender — must not ack.
-        stdin = [
-            {"messages": [{"from_id": "worker-x", "message": "届いてます"}]},
-        ] + [{"messages": []} for _ in range(9)]
-        proc = _run(stdin)
-        self.assertEqual(proc.returncode, 1, msg=proc.stderr)
-        events = _parse(proc.stdout)
-        self.assertEqual(events[-1]["status"], "timeout")
-
-    def test_invalid_ack_pattern_returns_error(self) -> None:
-        # No stdin needed — the failure happens before the first poll.
-        proc = _run([], extra_args=["--ack-pattern", "("])
-        self.assertEqual(proc.returncode, 2, msg=proc.stderr)
-        events = _parse(proc.stdout)
-        self.assertEqual(events[-1]["status"], "error")
-        self.assertIn("invalid_ack_pattern", events[-1]["reason"])
-
-    def test_malformed_messages_payload_returns_error(self) -> None:
-        # 'messages' is a string instead of a list.
-        proc = _run([{"messages": "oops"}])
-        self.assertEqual(proc.returncode, 2, msg=proc.stderr)
-        events = _parse(proc.stdout)
-        self.assertEqual(events[-1]["status"], "error")
-        self.assertIn("invalid_schema", events[-1]["reason"])
-
-    def test_non_dict_message_entries_are_skipped(self) -> None:
-        # Mixed list: a stray int followed by a real secretary ack must
-        # neither crash nor mask the ack.
-        stdin = [{"messages": [42, {"from_id": "secretary",
-                                    "message": "届きました"}]}]
-        proc = _run(stdin)
-        self.assertEqual(proc.returncode, 0, msg=proc.stderr)
-        events = _parse(proc.stdout)
-        self.assertEqual(events[-1]["status"], "acked")
+    # --- Hardening cases from Codex review rounds ----------------------
 
     def test_anonymous_message_does_not_ack(self) -> None:
-        # Body matches the ack regex but no sender attribution.
-        stdin = [{"messages": [{"message": "届いてます"}]}] + \
-                [{"messages": []} for _ in range(9)]
-        proc = _run(stdin)
-        self.assertEqual(proc.returncode, 1, msg=proc.stderr)
-        events = _parse(proc.stdout)
-        self.assertEqual(events[-1]["status"], "timeout")
+        # Body matches the regex but no sender attribution → not ack.
+        proc = _run({"messages": [{"message": "届いてます"}]}, attempt=1)
+        self.assertEqual(proc.returncode, 4, msg=proc.stderr)
+        self.assertEqual(_final(proc)["status"], "polling")
+
+    def test_non_secretary_messages_do_not_ack(self) -> None:
+        proc = _run({"messages": [{"from_id": "worker-x",
+                                    "message": "届いてます"}]}, attempt=1)
+        self.assertEqual(proc.returncode, 4, msg=proc.stderr)
+
+    def test_invalid_ack_pattern_returns_error(self) -> None:
+        proc = _run(None, extra_args=["--ack-pattern", "("])
+        self.assertEqual(proc.returncode, 2, msg=proc.stderr)
+        final = _final(proc)
+        self.assertEqual(final["status"], "error")
+        self.assertIn("invalid_ack_pattern", final["reason"])
+
+    def test_malformed_messages_payload_returns_error(self) -> None:
+        proc = _run({"messages": "oops"}, attempt=1)
+        self.assertEqual(proc.returncode, 2, msg=proc.stderr)
+        final = _final(proc)
+        self.assertEqual(final["status"], "error")
+        self.assertIn("invalid_schema", final["reason"])
+
+    def test_payload_must_be_object(self) -> None:
+        # JSON list at top level instead of object.
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "--task-id", "x",
+             "--attempt", "1", "--max-attempts", "10"],
+            input="[1,2,3]\n", capture_output=True, text=True,
+            timeout=15, encoding="utf-8",
+        )
+        self.assertEqual(proc.returncode, 2, msg=proc.stderr)
+        self.assertIn("invalid_schema", _final(proc)["reason"])
+
+    def test_non_dict_message_entries_are_skipped(self) -> None:
+        # Mixed list: stray int, then real secretary ack.
+        proc = _run({"messages": [42, {"from_id": "secretary",
+                                        "message": "届きました"}]},
+                    attempt=1)
+        self.assertEqual(proc.returncode, 0, msg=proc.stderr)
+        self.assertEqual(_final(proc)["status"], "acked")
+
+    def test_non_string_body_does_not_crash(self) -> None:
+        proc = _run({"messages": [
+            {"from_id": "secretary", "message": 42},
+            {"from_id": "secretary", "message": "ack"},
+        ]}, attempt=1)
+        self.assertEqual(proc.returncode, 0, msg=proc.stderr)
+        self.assertEqual(_final(proc)["raw"], "ack")
 
     def test_secretary_replies_without_ack_regex(self) -> None:
-        # Secretary replied across attempts, but no body matched the ack
-        # regex — must surface as replied_no_ack (exit 3), not timeout, so
-        # the dispatcher does not jump to the secretary_unreachable fallback.
-        stdin = [
-            {"messages": [{"from_id": "secretary", "message": "確認します"}]},
-            {"messages": []},
-            {"messages": [{"from_id": "secretary",
-                            "message": "見当たりません"}]},
-        ] + [{"messages": []} for _ in range(7)]
-        proc = _run(stdin)
+        # Secretary replies but bodies never match — at the final
+        # attempt the verdict must be replied_no_ack (exit 3), not
+        # timeout, so the dispatcher does not jump to the
+        # secretary_unreachable fallback.
+        state = None
+        # Attempt 1: secretary says "確認します"
+        proc = _run({"messages": [{"from_id": "secretary",
+                                    "message": "確認します"}],
+                     "state": state}, attempt=1, max_attempts=3)
+        self.assertEqual(proc.returncode, 4, msg=proc.stderr)
+        state = _final(proc)["state"]
+        self.assertEqual(state["last_secretary_body"], "確認します")
+        self.assertEqual(state["last_secretary_attempt"], 1)
+
+        # Attempt 2: empty.
+        proc = _run({"messages": [], "state": state},
+                    attempt=2, max_attempts=3)
+        self.assertEqual(proc.returncode, 4, msg=proc.stderr)
+        state = _final(proc)["state"]
+
+        # Attempt 3 (final): secretary says "見当たりません"
+        proc = _run({"messages": [{"from_id": "secretary",
+                                    "message": "見当たりません"}],
+                     "state": state}, attempt=3, max_attempts=3)
         self.assertEqual(proc.returncode, 3, msg=proc.stderr)
-        events = _parse(proc.stdout)
-        final = events[-1]
+        final = _final(proc)
         self.assertEqual(final["status"], "replied_no_ack")
-        # Reports the LAST secretary body seen + the attempt it arrived on.
         self.assertEqual(final["raw"], "見当たりません")
         self.assertEqual(final["attempts"], 3)
 
-    def test_non_string_body_does_not_crash(self) -> None:
-        # message field is an int; pattern.search would TypeError if the
-        # body wasn't coerced. The script must skip the bad body and
-        # continue to the next message rather than die with a traceback.
-        stdin = [{"messages": [
-            {"from_id": "secretary", "message": 42},
-            {"from_id": "secretary", "message": "ack"},
-        ]}]
-        proc = _run(stdin)
-        self.assertEqual(proc.returncode, 0, msg=proc.stderr)
-        events = _parse(proc.stdout)
-        self.assertEqual(events[-1]["status"], "acked")
-        self.assertEqual(events[-1]["raw"], "ack")
-
     def test_custom_ack_pattern(self) -> None:
-        stdin = [{"messages": [
+        proc = _run({"messages": [
             {"from_id": "secretary", "message": "CONFIRMED-285"},
-        ]}]
-        proc = _run(stdin, extra_args=["--ack-pattern", r"CONFIRMED-\d+"])
+        ]}, attempt=1, extra_args=["--ack-pattern", r"CONFIRMED-\d+"])
         self.assertEqual(proc.returncode, 0, msg=proc.stderr)
-        events = _parse(proc.stdout)
-        self.assertEqual(events[-1]["status"], "acked")
-        self.assertEqual(events[-1]["raw"], "CONFIRMED-285")
+        self.assertEqual(_final(proc)["raw"], "CONFIRMED-285")
+
+    def test_attempt_out_of_range_returns_error(self) -> None:
+        proc = _run({"messages": []}, attempt=11, max_attempts=10)
+        self.assertEqual(proc.returncode, 2, msg=proc.stderr)
+        self.assertIn("out of range", _final(proc)["reason"])
+
+    # --- --print-initial-prompt mode -----------------------------------
+
+    def test_print_initial_prompt(self) -> None:
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "--task-id", "issue-285-test",
+             "--print-initial-prompt"],
+            capture_output=True, text=True, timeout=15, encoding="utf-8",
+        )
+        self.assertEqual(proc.returncode, 0, msg=proc.stderr)
+        self.assertIn("issue-285-test", proc.stdout)
+        self.assertIn("完了報告", proc.stdout)
 
 
 if __name__ == "__main__":

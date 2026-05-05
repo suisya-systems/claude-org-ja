@@ -296,26 +296,43 @@ mcp__renga-peers__send_message(to_id="secretary", message="...")
 
 #### ⚠️ 完了報告ゲート（結論を書く前に必ず実行）
 
-「完了報告未着」「報告が届かなかった」「ワーカーが報告しなかった」等の結論を retro に書く **前に**、必ず `tools/dispatcher_retro_gate.py` を起動して secretary の ack を待つこと。
+「完了報告未着」「報告が届かなかった」「ワーカーが報告しなかった」等の結論を retro に書く **前に**、必ず `tools/dispatcher_retro_gate.py` を使って secretary の ack を待つこと。
+
+CLI は **1 attempt あたり 1 回起動する単発判定**（Issue #285、Claude Code の Bash tool が一往復であるため、長寿命の双方向プロセスは想定しない）。各 attempt の cadence（30 秒スリープ）はディスパッチャー側が `Bash sleep 30` で挟む。
+
+#### 1. 初回送信（attempt=1 の前に 1 度だけ）
+
+`--print-initial-prompt` で task_id 込みの定型文を取り出し、`mcp__renga-peers__send_message` で secretary に送る:
 
 ```bash
 # ディスパッチャー cwd は .dispatcher/ なので 1 段上がリポジトリルート。
-python ../tools/dispatcher_retro_gate.py --task-id <task_id>
+python ../tools/dispatcher_retro_gate.py --task-id <task_id> --print-initial-prompt
+# stdout: <task_id> の完了報告は届いていますか？
 ```
 
-挙動（決定論的、Issue #285 で切り出し済み）:
+```
+mcp__renga-peers__send_message(to_id="secretary", message="<上記 stdout>")
+```
 
-- スクリプトは stdout に行区切り JSON で `{"action": "send_initial", ...}` → `{"action": "check_messages", "attempt": N}` の順にプロンプトを出す。
-- ディスパッチャー Claude は `send_initial` を見たら `mcp__renga-peers__send_message(to_id=<secretary>, message=<同梱の message>)` を 1 度だけ送る。
-- 各 `check_messages` プロンプトに対して `mcp__renga-peers__check_messages` の戻り（`from_id` 等を含むメッセージ配列）を `{"messages": [...]}` という JSON 1 行として stdin に書き戻す。
-- スクリプト側が cadence（30 秒×最大 10 回 = 5 分上限）と ack regex 判定を行い、最終行に `{"status": "acked"|"replied_no_ack"|"timeout"|"error", "received_at": ..., "raw": ..., "attempts": N}` を出力して exit する（exit code: 0=acked, 1=timeout, 2=error, 3=replied_no_ack）。
+#### 2. polling ループ（attempt=1..10、合計 5 分上限）
 
-この最終 JSON の `status` で switch する:
+各 attempt で:
 
-- `acked` → そのまま retro を続行する。
-- `replied_no_ack` → secretary は到達しているが本文が ack regex に一致しなかった（例: 「見当たりません」「確認します」）。`raw` を読んで内容に応じて判断する。「届いていない」旨の返信なら retro に未着を確定的に書いてよい。曖昧なら secretary に追問する。`secretary_unreachable` フローには入らない。
-- `timeout` → secretary から 5 分間まったく返信が無い。下の「secretary unreachable 時の fallback」フローに入る（retro に「未着」と書かない）。
-- `error` → CLI 側のスキーマ不整合 / regex compile 失敗。`reason` を確認して呼び出し側を修正する。retro は保留扱い。
+1. `mcp__renga-peers__check_messages` で受信を取得し、戻り値を `{"messages": [...]}` の形に整える（`state` は前 attempt の `polling` 出力から引き継ぐ。attempt=1 では省略可）。
+2. CLI を起動して stdin に渡す:
+
+   ```bash
+   echo '<json>' | python ../tools/dispatcher_retro_gate.py \
+       --task-id <task_id> --attempt <n> --max-attempts 10
+   ```
+
+3. stdout は単一 JSON。exit code で switch:
+
+   - `0 / status=acked` → retro を続行する。
+   - `1 / status=timeout` → secretary から 1 度も返信が無く打ち切り。下の「secretary unreachable 時の fallback」フローに入る（retro に「未着」と書かない）。
+   - `2 / status=error` → CLI スキーマ不整合 / regex compile 失敗。`reason` を確認して呼び出し側を修正する。retro は保留扱い。
+   - `3 / status=replied_no_ack` → secretary は到達したが本文が ack regex に一致せず最終 attempt まで進んだ。`raw` を読んで内容に応じて判断する（「届いていない」旨の確定返信なら retro に未着を確定的に書いてよい。曖昧なら secretary に追問する）。`secretary_unreachable` フローには入らない。
+   - `4 / status=polling` → まだ attempt が残っている。`Bash sleep 30` を挟み、`state` フィールドを次回呼び出しに渡して continue する。
 
 **理由**: ワーカーのレポートチャネルは secretary 直送である。dispatcher のメッセージキュー（`check_messages` の戻り）に完了報告が無いことは、「システム上に存在しない」ことを意味しない。secretary 側に既に届いていることがしばしばあり、確認を怠ると「完了報告未着」と誤った結論を retro に残してしまう（実インシデント: `knowledge/raw/2026-05-03-delegation-smoke-completion-report.md`）。
 
