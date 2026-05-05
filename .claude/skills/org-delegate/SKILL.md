@@ -155,9 +155,11 @@ python tools/gen_delegate_payload.py apply \
 
 ### 標準経路が想定外の出力を返した場合
 
-標準経路 (`gen_delegate_payload.py apply`) が想定外の出力 (Pattern 誤判定 / resolver エラー / brief 不整合 等) を返した場合、Secretary は **手動で同じ作業を再現してはならない**。Issue を切り、ユーザー判断を仰ぐ。手作業 fallback は skill のスコープ外。`gen_delegate_payload.py` (またはその resolver) のバグとして扱い、当該タスクの delegation は一時停止する。
+標準経路 (`gen_delegate_payload.py apply`) が想定外の出力 (Pattern 誤判定 / resolver エラー / brief 不整合 等) を返した場合、Secretary は **手動で同じ作業を再現してはならない**。`gen_delegate_payload.py` (またはその resolver) のバグとして Issue を切り、当該タスクの delegation は **resolver が直るまで pause** する。例外的に手作業を行うかどうかはユーザー判断に委ね、Secretary が自走で fallback に入らない。手作業 fallback は skill のスコープ外。
 
-歴史的な手書き経路の museum copy は `docs/legacy/hand-typed-delegate-path.md` にある (settings env mismatch / drift_check breakage / T1 reservation 欠落などの失敗事例つき)。発動条件は「runtime CLI が物理的に利用不能」のみで、それ以外で reach した場合は protocol 違反。
+runtime CLI 自体が壊れている場合 (`claude-org-runtime` / `gen_delegate_payload.py` が import / exec 不能) も同じく runtime 側の修復が前提で、手書き経路は代替にならない (旧手書き手順自体が `claude-org-runtime settings generate` に依存する)。標準経路の degraded mode が必要な場合 (CLI 未導入環境など) は `--skip-settings` フラグの利用に限定する。
+
+歴史的な手書き経路の museum copy は `docs/legacy/hand-typed-delegate-path.md` にある (settings env mismatch / drift_check breakage / T1 reservation 欠落などの失敗事例つき)。標準オペレーションでは参照禁止。
 
 <!-- 旧 Step 0.7 / Step 1 / Step 1.5 / Step 2 の詳細 prose は references/delegate-flow-details.md に移設済み (Issue #283 Stage 4)。
      判定コマンド・Pattern C 強制サブモード・パターン別 worktree/clone 手順・DELEGATE 本文の必須行は同 reference を SoT とする。 -->

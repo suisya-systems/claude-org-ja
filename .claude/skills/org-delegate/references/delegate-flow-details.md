@@ -125,11 +125,17 @@ If `gen_delegate_payload.py apply` errors or produces a wrong layout
 (Pattern misjudgment / resolver error / brief inconsistency / etc.),
 Secretary **must not** reproduce the work by hand. The canonical response
 is to file an Issue against `gen_delegate_payload.py` (or its resolver)
-and pause the affected delegation until the underlying bug is fixed.
+and pause the affected delegation **until the underlying bug is fixed**.
+Whether to invoke any manual workaround is a user judgment call;
+Secretary must not self-grant the exception. The standard path's own
+degraded mode (`--skip-settings` for runtime-CLI-less environments) is
+the supported way to keep going without leaving the skill.
 
 The pre-Issue-283 hand-typed procedure has been moved out of the active
 skill to `docs/legacy/hand-typed-delegate-path.md` as a museum copy. That
 document is for archaeological reference only; reaching it during normal
-operation is a protocol violation. Failure modes historically introduced
-by the legacy reach (settings env mismatch, drift_check breakage, T1
-reservation skipped) are listed there.
+operation is a protocol violation. Note that the legacy procedure itself
+depends on `claude-org-runtime settings generate`, so it is not a valid
+fallback for runtime-CLI-unavailable scenarios either. Failure modes
+historically introduced by the legacy reach (settings env mismatch,
+drift_check breakage, T1 reservation skipped) are listed there.

@@ -1,4 +1,4 @@
-> **このドキュメントは歴史的参考資料です。** Secretary / worker / dispatcher の標準オペレーションでは参照しないでください。発動条件は「runtime CLI が物理的に利用不能 (`gen_delegate_payload.py` / `claude-org-runtime` が import / exec 不能、state.db が壊れて再構築も不能、等)」のみで、それ以外で本ドキュメントに reach した場合は protocol 違反です。標準経路 (`tools/gen_delegate_payload.py apply`) が想定外の出力を返した場合は、手動再現せずに Issue を立ててユーザー判断を仰いでください。
+> **このドキュメントは歴史的参考資料です。** Secretary / worker / dispatcher の標準オペレーションでは参照しないでください。本手順自体が `claude-org-runtime settings generate` 等の runtime CLI に依存するため、runtime CLI 障害時のフォールバックとしても機能しません。標準経路 (`tools/gen_delegate_payload.py apply`) が想定外の出力を返した場合は、手動再現せずに Issue を切り、resolver / runtime 側のバグが直るまで該当 delegation を pause してください。例外的に手作業を行うかどうかはユーザーの明示判断に委ね、Secretary が自走で本ドキュメントに reach した場合は protocol 違反です。
 
 # Legacy hand-typed delegation path (museum copy)
 
@@ -13,7 +13,7 @@ Documenting a hand-typed fallback inside the active skill behaved like an "easy 
 - **T1 reservation skipped** — manual `DELEGATE` skips `runs.status='queued'`, so the dispatcher watch loop loses queue visibility and two delegations on the same project both choose Pattern A and collide on the base clone.
 - **Pattern misclassification carry-over** — when the resolver itself was wrong (e.g., Pattern A misjudgment for a self-edit task because the Worker Directory Registry was stale), reaching for the manual path masked the underlying resolver bug rather than filing it.
 
-Today, if `gen_delegate_payload.py apply` errors or produces a wrong layout, the canonical response is to **file an Issue against `gen_delegate_payload.py` (or its resolver) and pause the affected delegation**. Manual reproduction is out of skill scope.
+Today, if `gen_delegate_payload.py apply` errors or produces a wrong layout, the canonical response is to **file an Issue against `gen_delegate_payload.py` (or its resolver) and pause the affected delegation until the underlying bug is fixed**. Whether to invoke any manual workaround at all is a user judgment call — Secretary must not self-grant the exception. Note that the procedure below also depends on `claude-org-runtime` and is therefore not a general fallback when the runtime CLI itself is unavailable; in that case, restoring the runtime CLI is the prerequisite.
 
 ## Legacy procedure (verbatim, do not use)
 
