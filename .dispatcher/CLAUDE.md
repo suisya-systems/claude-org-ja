@@ -270,6 +270,29 @@ mcp__renga-peers__send_message(to_id="secretary", message="...")
    
    #### (b) いつ stall を疑うか
    Step 4 の inspect_pane で worker pane の target line が APPROVAL_BLOCKED / ERROR どちらの regex にも該当せず、かつ `cursor.visible == false` または cursor 位置が前サイクルから動いていない状態が **連続 3 サイクル以上** (= 9 分相当、`/loop 3m` cadence 前提) 続いた worker を **stall 候補** とする。サイクル数は本ファイルでこの 3 を目安として扱う。
+
+   **idle streak の保持** (worker ごとに per-pane で永続化):
+   - 保存先: `.state/dispatcher/worker-idle-state.json` (1 ファイルに全 worker を JSON object でまとめる、key は `worker-{task_id}`)
+   - 各 worker のレコード形式 (例):
+     ```json
+     {
+       "worker-issue-287-stall-signal": {
+         "last_target_line_text": "...",
+         "last_cursor_row": 12,
+         "last_cursor_col": 0,
+         "last_cursor_visible": false,
+         "idle_streak_cycles": 2,
+         "last_check_ts": "2026-05-05T05:48:56Z"
+       }
+     }
+     ```
+   - 更新規則 (Step 4 の inspect 直後に評価):
+     1. `(target_line_text, cursor_row, cursor_col, cursor_visible)` が前回値と完全一致 → `idle_streak_cycles += 1`
+     2. いずれかが変化 → `idle_streak_cycles = 0` で reset (画面に動きあり = アクティブ)
+     3. APPROVAL_BLOCKED / ERROR のどちらかが (e) の通知に進んだ場合も reset (anomaly が独立して扱われたので stall 評価を巻き戻す)
+     4. `pane_exited` を Step 1 で受信、または `list_panes` で消失検知 → 該当 key をファイルから削除
+   - 再起動時の挙動: ファイルが消失/読めない場合は全 worker `idle_streak_cycles = 0` から再観測する (誤検出より見逃しを優先、stall は数サイクル後に再評価される)
+   - 本 PR では JSON ファイル経由の prose 契約に留め、helper script 化 (`tools/journal_append.sh` 相当) は将来課題
    
    #### (c) 補助シグナル取得 — 直近の worker→secretary コミュニケーション
    stall 候補が見つかったら、STALL_SUSPECTED を発火する **前に** 補助シグナルを取得する:
@@ -281,7 +304,7 @@ mcp__renga-peers__send_message(to_id="secretary", message="...")
       - `event == "plan_delivered"` かつ `worker == "worker-{task_id}"` (plan 引き渡しの受信)
       - `event == "prep_delivered"` かつ `worker == "worker-{task_id}"` (prep 引き渡しの受信)
 
-      これらはいずれも worker 起点の `send_message` を secretary が受信した時点で append される ledger なので (`docs/journal-events.md` の **Emitted by = worker** + **Writer = secretary** 行を参照)、worker→secretary コミュニケーションの authoritative な痕跡になる。catalog で **Emitted by = worker** な event が将来追加された場合は本リストにも追加する (catalog と同期する宣言的リスト)。
+      これらはいずれも worker 起点の `send_message` を secretary が受信した時点で append される ledger なので、worker→secretary コミュニケーションの authoritative な痕跡になる。`worker_reported` / `worker_completed` / `plan_delivered` / `prep_delivered` は `docs/journal-events.md` の **Emitted by = worker** + **Writer = secretary** 行で定義されている。`worker_escalation` は同 catalog 未掲載だが本 `CLAUDE.md` 「ワーカーからの判断仰ぎは人間にエスカレーションする」節および `.claude/skills/org-delegate/SKILL.md` Step 5 で書き込み手順が明文化されている (catalog への追記は curator 領域、本 PR スコープ外)。将来 catalog に **Emitted by = worker** な event が追加された場合は本リストにも追加する (catalog と同期する宣言的リスト)。
 
       ```bash
       # ディスパッチャーの cwd は .dispatcher/ なので 1 階層上の .state/journal.jsonl を読む。
