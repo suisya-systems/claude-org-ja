@@ -364,21 +364,27 @@ mcp__renga-peers__send_message(to_id="secretary", message="...")
    どちらも Step 5 (worker 側監視) と Step 4 (worker pane 画面監視) では検知できない。secretary 側の outbound (secretary→user / secretary→worker) を観測する独立チャネルが必要。Issue #287 (PR #295) の sibling、両側監視で完成。Issue #292。
 
    #### (b) いつ relay gap を疑うか
+   起点は **直近の worker→secretary event** に固定する。`.state/journal.jsonl` から `event ∈ {worker_escalation, worker_reported}` かつ `worker == "worker-{task_id}"` を満たすエントリの最新 1 件を取り、その `ts` を `T_last_worker_in` とする。`worker_completed` / `plan_delivered` / `prep_delivered` は **対象外** (これらは「完了 / 中間引き渡し」で、secretary が直ちに user に上げる契約ではない。判断仰ぎ・進捗共有のみが relay gap の対象)。
+
    以下を **すべて** 満たす worker を **relay gap 候補** とする:
-   1. **worker→secretary 痕跡あり**: 直近 `STALL_SECRETARY_LOOKBACK_MIN` 分以内 (= 15 分) に `.state/journal.jsonl` に `event == "worker_escalation"` または `event == "worker_reported"` かつ `worker == "worker-{task_id}"` のエントリが 1 件以上ある。`worker_completed` / `plan_delivered` / `prep_delivered` は **対象外** (これらは「完了 / 中間引き渡し」であり、secretary が直ちに user に上げる必要が必ずしもない。判断仰ぎ・進捗共有のみが relay gap の対象)
-   2. **secretary→user 痕跡なし** ((d) 参照): 同 window 内に secretary→user の visible output 増加が観測されない
-   3. **secretary→worker 痕跡なし** ((c) 参照): 同 window 内に secretary→worker-{task_id} の `send_message` も観測されない (user が答えた後に worker に転送するルートも空 = 中継完全停止)
-   4. worker pane 自体は idle 継続中 (Step 5 の (b) 「idle streak ≥ 3 サイクル」と同じ条件)。即ち Step 5 の stall 候補集合と (1) の交差を取った後で (2)+(3) を見る、と読める
 
-   この 4 条件の交差で、「worker は上げた、worker は idle、secretary 側中継が止まっている」を絞り込む。
+   1. `T_last_worker_in` が存在し、`now - T_last_worker_in <= STALL_SECRETARY_LOOKBACK_MIN` (= 15 分以内)。これが「直近の worker→secretary 受信あり」の確定条件
+   2. `T_last_worker_in` **以降** (= 「あの一手以降」) に secretary 側 outbound 痕跡が **どちらも** ない:
+      - secretary→user の visible output 増加が観測されない ((d) 参照)
+      - secretary→worker-{task_id} の `send_message` 痕跡が観測されない ((c) 参照)
+      
+      **どちらか一方** でも `T_last_worker_in` 以降に観測されれば「中継は途中まで動いている」とみなして候補から除外する (誤発火を抑える)
+   3. worker pane 自体は idle 継続中 (Step 5 の (b) 「idle streak ≥ 3 サイクル」と同じ条件)。Step 5 の stall 候補集合と (1) の交差を取った後で (2) を見る、と読める
 
-   #### (c) secretary→worker 観測手段
-   secretary→worker の `send_message` 発生を観測する手段は現状 2 通り。本 PR では (1) を採用し、(2) は将来課題。
+   起点を「直近の worker→secretary event」に固定する理由: 動機 (a) の (1) と (2) は両方とも「**この一手の後** に secretary 側 outbound が止まっている」が共通条件。15 分の固定 sliding window で「user 痕跡なし AND worker 痕跡なし」を要求すると、(a)(2) のように直前に secretary→user の問い合わせが既にあったケースを誤って除外してしまう (= 仕様矛盾、Codex 指摘 Blocker)。`T_last_worker_in` 起点なら、その一手の後で中継が止まったことを正しく拾える。
 
-   1. **journal scan (採用)**: secretary が worker に `send_message` を送る経路は org-delegate / 判断仰ぎ応答返送 / 進捗フィードバック等いくつかあるが、**現状 journal に "secretary→worker の send_message" を直接表す event は存在しない** (`docs/journal-events.md` 参照)。代替として、secretary が worker に転送する際に書く既存 event を proxy として使う。たとえば判断仰ぎを user に上げた後に worker へ user 回答を伝達する場合、secretary skill が `bash tools/journal_append.sh user_decision_relayed worker=worker-{task_id} ...` 等の既存 event を append している前提に立つ。**現時点で未定義の event を要する場合は (e) の register 案 (Issue 化) で恒久対応する**。本 PR では「既存 event を時間窓 ts でフィルタしてヒットがあれば中継ありと判断する」prose 規約のみを書き、event 名は curator 領域 / 別 PR で確定する。
-   2. **renga-peers `poll_events` 経由 (将来)**: Step 5 (c) と同じく現状の renga `poll_events` は pane lifecycle のみで `send_message` を流さない。将来 send_message が flow するようになれば、Step 1 の cursor (`.state/dispatcher-event-cursor.txt`) を再利用して `(actor=secretary, recipient=worker-{task_id})` を直接観測できる。プレースホルダ。
+   #### (c) secretary→worker 観測手段 — 現状は不可、(d)+register で代替
+   secretary→worker の `send_message` 発生を journal だけで authoritative に観測する手段は **現状存在しない**:
 
-   実用上は本 PR スコープでは (1) だけでは網羅性に欠けるため、(d) の visible output 観測を主たる secretary→user signal として運用し、secretary→worker は補助扱いとする (relay gap 通知は false positive 寄りになり得るが、(d) で過半数のケースをカバーできる)。
+   1. **journal scan**: 既存 event catalog (`docs/journal-events.md`) に「secretary→worker の send_message 受信時に secretary が書く event」は定義されていない。`worker_escalation` / `worker_reported` / `worker_completed` 等は **worker 起点の inbound** を secretary が記録する ledger であり、逆方向 (secretary→worker outbound) は ledger 化されていない。`user_decision_relayed` のような新 event を捏造して proxy にするのは event 名の確定を要し、本 PR スコープ外 (curator 領域)
+   2. **renga-peers `poll_events` 経由**: Step 5 (c) と同じく現状の renga `poll_events` は pane lifecycle のみで `send_message` を流さない。将来 send_message が flow するようになれば、Step 1 の cursor (`.state/dispatcher-event-cursor.txt`) を再利用して `(actor=secretary, recipient=worker-{task_id})` を直接観測できる。プレースホルダ
+
+   従って (b)(2) のうち「secretary→worker 痕跡なし」は、本 PR では **常に true** として扱う (痕跡を観測する手段が無いため、中継が動いているかどうかを判別できない)。これにより relay gap 候補の絞り込みは事実上 (d) の secretary→user proxy だけに依存することになり、結果的に動機 (a)(2) の「user 答えた後に secretary が worker に転送し忘れ」ケースは **(d) の secretary 画面更新で擬陽性的に suppress される** (user 回答に secretary が応答した時点で secretary pane が更新されるため)。本ケースを正しく検知するには (g) の register 化が必須で、本 PR では割り切る (動機 (a)(1) の「人間に上げ忘れ」ケースを優先カバー)。
 
    #### (d) secretary→user 観測手段 — `inspect_pane` による画面 diff
    user 向け visible output を直接捉える journal event は無い (user pane に届く文字は renga の terminal レイヤーに流れるだけで journal を経由しない)。代替として **secretary pane の画面差分** を proxy として使う:
@@ -393,10 +399,14 @@ mcp__renga-peers__send_message(to_id="secretary", message="...")
    ```
 
    - 取得した `lines[].text` を改行 join して 1 文字列にし、 `.state/dispatcher/secretary-pane-snapshot.txt` に保存
-   - 次サイクル取得時に旧 snapshot と byte-equal でなければ「secretary pane に出力増加あり」とみなす (= secretary が user に向けて何かを書いた proxy)
-   - 過去 15 分以内に「変化あり」を 1 度でも観測していれば secretary→user 痕跡 **あり**
-     - 観測履歴は `.state/dispatcher/secretary-output-changes.jsonl` に `{ts, hash}` 1 行で append (Step 5 の `worker-idle-state.json` と同等の per-dispatcher local state、journal 本体は汚染しない)
+   - 次サイクル取得時に旧 snapshot と byte-equal でなければ「secretary pane に出力増加あり」とみなす (= secretary が user に向けて何かを書いた proxy)。`T_last_worker_in` 以降の 1 サイクルでも「変化あり」を観測していれば secretary→user 痕跡 **あり** とみなす ((b)(2) の評価では起点を `T_last_worker_in` に固定するので、それ以前の変化は無視する)
+     - 観測履歴は `.state/dispatcher/secretary-output-changes.jsonl` に `{ts, hash}` 1 行で append (Step 5 の `worker-idle-state.json` と同等の per-dispatcher local state、journal 本体は汚染しない)。比較は (b)(2) で `ts >= T_last_worker_in` でフィルタしてから「行数 ≥ 1」で判定する
      - 各サイクル 1 行のみ append、retention は本ファイル末尾の 30 行程度で十分 (15 分 / 3 分サイクル = 5 行 + buffer)
+   - **proxy の限界 (重要)**: 本 proxy は粗い signal で、誤抑制 (false suppression of legitimate relay gap) のリスクが残る:
+     - 別タスクの会話、user 自身の入力エコー、画面再描画やスクロール、curator からの送信、他 worker の進捗報告など、対象 worker と無関係な pane 変化でも「変化あり」と判定される
+     - secretary pane の last 40 行は task_id と紐付かないため、「対象 worker の話題で更新されたか」を判別できない
+     - 結果として、別タスク由来の変化が 1 度でも `T_last_worker_in` 以降に発生すると、対象 worker の relay gap 検知は次の `T_last_worker_in` 更新まで suppress される
+     - **soft 強化 (任意)**: snapshot diff 文字列に `task_id` または `worker-{task_id}` の substring が含まれることを必須化すると task 紐付けの精度が上がる。実装側で false negative を許容できる場合のみ有効化する
    - 制限: secretary が renga 外の I/O (Slack 等) で user に通知した場合はこの proxy では検知できない。実運用上 user は secretary pane を直接見ていることが大半なので許容する trade-off
    - エラー時の挙動 (`[pane_not_found]` 等) は Step 4 と同じく該当サイクル skip し journal に `anomaly_observed source=relay_gap_check kind=inspect_error` を残す
 
@@ -430,7 +440,7 @@ mcp__renga-peers__send_message(to_id="secretary", message="...")
      ```bash
      bash ../tools/journal_append.sh notify_sent source=relay_gap_check worker=worker-{task_id} kind=relay_gap_suspected confidence=n/a
      ```
-   - 30 秒窓は短すぎるように見えるが、relay gap は本質的に長期事象なので、worker→secretary 痕跡が新たに増えるか secretary 側 outbound が現れるまで継続的に suppress される (新 worker_escalation が来れば lookback window が更新されるので再評価サイクルになる)
+   - **再通知 cadence**: dedup window は 30 秒のみ (Step 4 / Step 5 と同じ at-least-once 担保のための短窓)。`/loop 3m` cadence では 30 秒は毎サイクル抜けるため、relay gap が解消するまで **3 分ごとに 1 回 user に再通知が届く**。relay gap は user の視認漏れが致命的な事象なので、stuck 通知のような長窓 suppress は採用しない。状態が変わった (= secretary 側 outbound が現れた、または新規 `T_last_worker_in` で起点更新により候補から外れた) 時点で次サイクルの観測時に (b) を不成立にして自然停止する
 
    #### (g) 設計メモ — register 化 (案 c) は別 Issue
    本来は `.state/pending_decisions.json` 相当の register を導入し:
