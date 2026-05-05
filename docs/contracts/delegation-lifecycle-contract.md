@@ -83,7 +83,7 @@ Each transition below names: **(a)** the event that triggers it, **(b)** which a
 
 ### T5 — `awaiting_review → complete` (close-condition met)
 - **Trigger**: §1.5 close-condition met AND user has approved (or condition is auto-satisfied via merge / idle).
-- **Actor**: secretary executes the close, then sends `CLOSE_PANE: {pane_id}` to dispatcher; dispatcher executes the close per `.dispatcher/CLAUDE.md` § ペインクローズ (retro Steps 1–2 first, then `mcp__renga-peers__close_pane`).
+- **Actor**: secretary executes the close, then sends `CLOSE_PANE: {pane_id}` to dispatcher; dispatcher executes the close per `.dispatcher/references/pane-close.md` (retro Steps 1–2 first, then `mcp__renga-peers__close_pane`).
 - **State write**:
   - secretary: `.state/org-state.md` Active Work Item → `COMPLETED`; pattern-specific Worker Directory Registry update (Pattern A → `available`; Pattern B → row removed and worktree removed via `git worktree remove`; Pattern C → row removed); JSON snapshot regenerated.
   - dispatcher: `.state/workers/worker-{task_id}.md` final update; pane closed via `close_pane`.
@@ -96,7 +96,7 @@ Each transition below names: **(a)** the event that triggers it, **(b)** which a
 - **Pane discipline**: New worker MUST NOT be re-spawned for in-scope review feedback (re-spawn is rejected by the contract because Issue/diff/judgment context would be lost).
 
 ### T7 — `* → aborted` (worker pane exits without completion)
-- **Trigger**: Dispatcher's `poll_events` sees `pane_exited` for `name == "worker-{task_id}"`, OR `list_panes` reconciliation finds the pane gone. The dispatcher does NOT itself decide whether the delegation was completed — it reports the lifecycle fact only (per `.dispatcher/CLAUDE.md` § (1) and § list_panes reconciliation).
+- **Trigger**: Dispatcher's `poll_events` sees `pane_exited` for `name == "worker-{task_id}"`, OR `list_panes` reconciliation finds the pane gone. The dispatcher does NOT itself decide whether the delegation was completed — it reports the lifecycle fact only (per `.dispatcher/references/worker-monitoring.md` § (1) and § list_panes reconciliation).
 - **Actor**: dispatcher writes the pane-closed fact and notifies; secretary then determines completion vs. unexpected-exit by inspecting the renga-peers message history (last `COMPLETED` report present? if not, treat as worker accident).
 - **State write**: dispatcher writes `.state/workers/worker-{task_id}.md` `Status: pane_closed`. Secretary, after judging the task is abandoned (no completion report and user does not re-delegate), sets the Active Work Item terminal status to `ABANDONED` (per `docs/org-state-schema.md` §50 vocabulary).
 - **Journal**: `worker_closed` (with reason hint); separately, `WORKER_PANE_EXITED` is a peer-message channel only (not journaled today).
@@ -122,13 +122,13 @@ Five error / anomaly classes are recognized. Each lists: who detects, who is not
 - **Abort condition**: User explicitly declines re-delegation, OR secretary determines task is no longer relevant. (Per §2 T7, no automatic retry counter is contracted.)
 
 ### E2 — `APPROVAL_BLOCKED` / `ERROR_DETECTED` from dispatcher inspect
-- **Detection**: dispatcher `inspect_pane` matches one of the anchored regexes in `.dispatcher/CLAUDE.md` § (b) (approval prompt) or substring set in § (d) (error banner).
+- **Detection**: dispatcher `inspect_pane` matches one of the anchored regexes in `.dispatcher/references/worker-monitoring.md` § (b) (approval prompt) or substring set in § (d) (error banner).
 - **Notification path**: dispatcher → secretary; tagged with `source=inspect` and `confidence=high|n/a`. De-duplication: 30-second window keyed on `(worker, kind)` against `event=notify_sent` ledger; `anomaly_observed` rows do NOT count toward de-dup.
 - **Retry**: Notification is at-least-once. The underlying anomaly is human-resolved (secretary asks user how to proceed and forwards `send_keys` instructions to the worker pane via the dispatcher / directly).
 - **Abort condition**: None automatic; only human decision aborts.
 
 ### E3 — Worker self-reports `ERROR` / `APPROVAL_BLOCKED` via `to_id="secretary"`
-- **Detection**: dispatcher receives via `check_messages` (and forwards), OR secretary receives directly. Both channels are independent (per `.dispatcher/CLAUDE.md` § (g) "両チャネル独立稼働で OK").
+- **Detection**: dispatcher receives via `check_messages` (and forwards), OR secretary receives directly. Both channels are independent (per `.dispatcher/references/worker-monitoring.md` § (g) "両チャネル独立稼働で OK").
 - **Notification path**: as in E2; tagged `source=self_report`, `confidence=n/a`.
 - **De-dup**: same 30-second `(worker, kind)` window applies, so inspect (E2) and self-report (E3) are not double-notified.
 - **Halting**: A self-report `ERROR` / `APPROVAL_BLOCKED` (`source=self_report`, `confidence=n/a`) without inspect corroboration produces a notification only. Halting the worker (e.g., via `Esc` send) is a human decision; the secretary may issue it but it is not automated by the harness.
@@ -156,7 +156,7 @@ Five error / anomaly classes are recognized. Each lists: who detects, who is not
 | E4 CI failure | `pr-watch` script (journal `ci_completed`) | secretary | n/a | no |
 | E5 Codex 4th-round | worker (self) | worker → secretary | n/a | yes — worker stops at 4th round |
 
-The authoritative list of inspect-detected approval-prompt regexes is maintained in `.dispatcher/CLAUDE.md` § (b), which is the single source of truth for this registry (consistent with Set A's treatment of dispatcher constraint surfaces). Updates to the regex set are made there; this contract refers to it rather than duplicating the list.
+The authoritative list of inspect-detected approval-prompt regexes is maintained in `.dispatcher/references/worker-monitoring.md` § (b), which is the single source of truth for this registry (consistent with Set A's treatment of dispatcher constraint surfaces). Updates to the regex set are made there; this contract refers to it rather than duplicating the list.
 
 ---
 
@@ -195,7 +195,7 @@ The canonical resume input is `.state/workers/worker-{task_id}.md` Progress Log 
 The 14 decisions ratified on 2026-05-03 cluster as follows:
 
 1. **State model (§1, §1, §4.3)** — A two-level state model is codified: the org-state.md Active Work Item view is canonical (`IN_PROGRESS` / `REVIEW` / `COMPLETED` / `ABANDONED`), and the worker-state-file view is a deliberately coarser pane-liveness subset. SUSPEND does NOT introduce a distinct `suspended` state — the SUSPEND report and Progress Log carry the discrimination.
-2. **Closed-set enumerations (§1, §3)** — Journal events and approval-prompt regexes are delegated to their existing single-source-of-truth files (`docs/journal-events.md`, `.dispatcher/CLAUDE.md` § (b)) rather than duplicated here. A follow-up Issue tracks adding the `required-for-transition` annotation to `docs/journal-events.md`.
+2. **Closed-set enumerations (§1, §3)** — Journal events and approval-prompt regexes are delegated to their existing single-source-of-truth files (`docs/journal-events.md`, `.dispatcher/references/worker-monitoring.md` § (b)) rather than duplicated here. A follow-up Issue tracks adding the `required-for-transition` annotation to `docs/journal-events.md`.
 3. **Retry bounds (§2 T7, §3 E5)** — Neither the post-pane-exit re-delegation cap nor the Codex round-cap is broadened: re-delegation is per-task secretary judgment with no counter, and the Codex 3-round cap applies only when `codex` is available in the worker environment.
 4. **Close-condition (§1.5)** — The 24–48h idle threshold remains an operator guideline, not a hard bound. No-PR delegations follow the same close gate (PR-merged condition is trivially false for them).
 5. **SUSPEND semantics (§4.1, §4.2, §4.4, §4.5)** — Only the secretary may issue SUSPEND (the dispatcher MUST NOT relay). The four-item prose report is authoritative with no auto-commit obligation. Same-pane resume is the default; the canonical resume input is the Progress Log plus the most recent SUSPEND report. `/org-suspend` MUST first issue per-worker SUSPEND and collect reports before flushing state.
