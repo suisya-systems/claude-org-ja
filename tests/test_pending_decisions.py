@@ -206,9 +206,11 @@ class PendingDecisionsTests(unittest.TestCase):
         again = pd.resolve("t1", "to_user", store_path=self.store)
         self.assertIsNone(again)
 
-    def test_list_pending_includes_escalated(self) -> None:
-        # An entry escalated 20 minutes ago must surface as a relay-gap
-        # candidate at the 15-minute threshold (covers (a)(2) direction).
+    def test_list_pending_excludes_escalated(self) -> None:
+        # Escalated entries are awaiting human reply, not Secretary
+        # action — surfacing them as relay-gap would false-positive on
+        # every slow human answer. (a)(2) detection is left to a
+        # follow-up Issue with a richer schema.
         old_ts = "2026-05-05T05:30:00Z"
         seed = [
             {
@@ -223,9 +225,29 @@ class PendingDecisionsTests(unittest.TestCase):
         self.store.parent.mkdir(parents=True, exist_ok=True)
         self.store.write_text(json.dumps(seed), encoding="utf-8")
         now = datetime(2026, 5, 5, 5, 50, 0, tzinfo=timezone.utc)
-        out = pd.list_pending_older_than(15, store_path=self.store, now=now)
-        self.assertEqual([e.task_id for e in out], ["t1"])
-        self.assertEqual(out[0].status, "escalated")
+        self.assertEqual(
+            pd.list_pending_older_than(15, store_path=self.store, now=now),
+            [],
+        )
+        self.assertEqual(pd.list_pending(store_path=self.store), [])
+
+    def test_unknown_status_in_register_raises(self) -> None:
+        # Status validation matches the loud-failure stance taken for
+        # unparseable received_at and malformed JSON; silently dropping
+        # an unknown-status entry would be a false-negative source for
+        # the relay-gap fallback contract.
+        seed = [
+            {
+                "task_id": "t1",
+                "received_at": "2026-05-05T05:00:00Z",
+                "raw_message": "ask",
+                "status": "weird",
+            },
+        ]
+        self.store.parent.mkdir(parents=True, exist_ok=True)
+        self.store.write_text(json.dumps(seed), encoding="utf-8")
+        with self.assertRaises(ValueError):
+            pd.list_pending(store_path=self.store)
 
     def test_unparseable_received_at_is_surfaced(self) -> None:
         # Malformed timestamp must surface as a relay-gap candidate

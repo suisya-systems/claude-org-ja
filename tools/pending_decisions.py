@@ -61,11 +61,17 @@ _KIND_TO_ELIGIBLE_STATUSES: dict[str, tuple[Status, ...]] = {
     "to_worker": ("pending", "escalated"),
 }
 
-# Statuses considered "open" for the purpose of relay-gap detection. The
-# dispatcher's Step 5.1 (a-0) lookup must surface anything not yet
-# terminally relayed back to the worker, otherwise the (a)(2) direction
-# (user answered but Secretary forgot to relay) is invisible.
-_OPEN_STATUSES: tuple[Status, ...] = ("pending", "escalated")
+# Statuses considered "open" — neither terminal nor in steady-state at
+# the user's hands. Only ``pending`` qualifies: ``escalated`` means the
+# Secretary has already done its half (relayed to user) and the entry
+# is now waiting on the human, which we cannot distinguish from
+# "Secretary forgot to relay back" without a separate user-replied
+# marker. So ``escalated`` is intentionally **not** an alarm trigger
+# for relay-gap detection (would produce false positives whenever a
+# human takes >15 min to reply).
+_OPEN_STATUSES: tuple[Status, ...] = ("pending",)
+
+_VALID_STATUSES: frozenset[str] = frozenset({"pending", "escalated", "resolved"})
 
 
 @dataclass
@@ -122,11 +128,18 @@ def _load(store_path: Path) -> list[PendingDecision]:
                 f"malformed register in {store_path}: entry[{i}] is not a dict"
             )
         try:
-            out.append(PendingDecision.from_dict(entry))
+            decoded = PendingDecision.from_dict(entry)
         except KeyError as exc:
             raise ValueError(
                 f"malformed register in {store_path}: entry[{i}] missing {exc}"
             ) from exc
+        if decoded.status not in _VALID_STATUSES:
+            raise ValueError(
+                f"malformed register in {store_path}: entry[{i}] has "
+                f"unknown status {decoded.status!r}; expected one of "
+                f"{sorted(_VALID_STATUSES)}"
+            )
+        out.append(decoded)
     return out
 
 
@@ -178,12 +191,21 @@ def resolve(
     kind: ResolutionKind,
     store_path: Path = DEFAULT_PATH,
 ) -> Optional[PendingDecision]:
-    """Resolve the oldest pending entry for ``task_id``.
+    """Advance the oldest open entry for ``task_id`` along the lifecycle.
 
-    ``kind="to_user"`` marks it ``escalated`` (Secretary relayed to
-    user). ``kind="to_worker"`` marks it ``resolved`` (Secretary
-    relayed user's answer back to worker). Returns the updated entry,
-    or ``None`` if no pending entry exists for ``task_id`` (no-op).
+    Lifecycle: ``pending`` → ``escalated`` (relayed to user) →
+    ``resolved`` (relayed user's answer back to worker).
+
+    * ``kind="to_user"`` advances ``pending`` → ``escalated``. Only
+      pending entries are eligible.
+    * ``kind="to_worker"`` advances ``pending`` or ``escalated`` →
+      ``resolved``. Either step is a valid terminal transition (the
+      Secretary may skip the explicit ``to_user`` step in trivial cases
+      where it inlines the relay-back).
+
+    Returns the updated entry, or ``None`` if no eligible entry exists
+    for ``task_id`` (no-op). When multiple eligible entries exist
+    (rare), the one with the oldest ``received_at`` is advanced.
     """
     if kind not in _KIND_TO_STATUS:
         raise ValueError(f"unknown kind {kind!r}; expected to_user|to_worker")
@@ -210,13 +232,12 @@ def resolve(
 
 
 def list_pending(store_path: Path = DEFAULT_PATH) -> list[PendingDecision]:
-    """Return all entries that are not yet terminally resolved.
+    """Return entries with status ``pending``.
 
-    Includes both ``pending`` (received but not yet relayed to user) and
-    ``escalated`` (relayed to user, awaiting answer to relay back to
-    worker). Excludes ``resolved`` (terminal). The function name keeps
-    "pending" for API-spec continuity (Issue #297) but its semantics
-    cover any open relay-gap candidate.
+    ``escalated`` entries are awaiting human reply and are deliberately
+    excluded — they're in the user's hands, not Secretary's, and surface
+    as an alarm would produce false positives whenever the human takes
+    a while to answer. ``resolved`` is terminal and also excluded.
     """
     return [e for e in _load(store_path) if e.status in _OPEN_STATUSES]
 
@@ -226,15 +247,15 @@ def list_pending_older_than(
     store_path: Path = DEFAULT_PATH,
     now: Optional[datetime] = None,
 ) -> list[PendingDecision]:
-    """Open entries whose ``received_at`` is older than ``threshold_minutes``.
+    """``pending`` entries whose ``received_at`` is older than ``threshold_minutes``.
 
-    "Open" = ``pending`` or ``escalated`` (see :func:`list_pending`). The
-    dispatcher uses this for SECRETARY_RELAY_GAP_SUSPECTED detection,
-    which must catch both:
-
-    * (a)(1) ``pending`` too long — Secretary forgot to relay to user
-    * (a)(2) ``escalated`` too long — Secretary forgot to relay user's
-      answer back to worker
+    Used by the dispatcher's Step 5.1 (a-0) for the (a)(1) direction
+    (Secretary forgot to relay worker's question to user). The (a)(2)
+    direction (Secretary forgot to relay user's answer back to worker)
+    is intentionally not caught here — the register has no signal for
+    "user has replied" so escalated-too-long would fire on every slow
+    human answer. (a)(2) coverage requires a richer schema (e.g. a
+    ``user_replied_at`` marker) and is left for a follow-up Issue.
 
     ``now`` is injectable for tests; defaults to ``datetime.now(UTC)``.
     Entries with an unparseable ``received_at`` are surfaced (treated as

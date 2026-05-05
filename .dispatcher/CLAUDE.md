@@ -372,8 +372,10 @@ mcp__renga-peers__send_message(to_id="secretary", message="...")
    python ../tools/pending_decisions.py list --older-than-min 15
    ```
 
-   - 出力 0 行 → relay gap **なし**。アラート発火不要。以降の (a)〜(f) (proxy 経路) も skip 可
-   - 出力 1 行以上 → 各行 (1 entry per line, JSON) を `task_id` 単位で集約し、SECRETARY_RELAY_GAP_SUSPECTED を **(e) と同じ通知経路** で発火する。register lookup は両方向 ((a)(1)(2)) を一括で拾うため、(b) の `T_last_worker_in` 起点ロジックを再評価する必要はない (register 自体が「Secretary が受領した judgment_request のうち未中継のもの」という ground truth)
+   - 出力 0 行 → register 経由の (a)(1) relay gap は **なし**。proxy 経路 ((a)〜(f)) で (a)(2) 方向を確認したい場合のみ続行 (デフォルトは skip 可)
+   - 出力 1 行以上 → 各行 (1 entry per line, JSON、`status="pending"` のみ) を `task_id` 単位で集約し、SECRETARY_RELAY_GAP_SUSPECTED を **(e) と同じ通知経路** で発火する。register は (a)(1) 方向 (Secretary が worker→user の中継を忘れた) を deterministic に拾う ground truth
+
+   **(a)(2) 方向の取り扱い** (Issue #297 のスコープ制限): register は「人間が返答済みか」を表す signal を持たないため、`escalated` 状態を時間で alarm 化すると「人間が考え中」と「Secretary が user→worker 転送を忘れた」を区別できず false positive が常態化する。よって `list --older-than-min` は意図的に `pending` のみを返す。(a)(2) 方向の deterministic 検知は `user_replied_at` marker 等の schema 拡張が必要で、別 Issue で扱う。本 PR では (a)(2) の最低限の保険として既存の (a)〜(f) proxy 経路を残置しているので、運用上は併用すること
    - de-dup と journal 追記は (f) と同じスキーマを使う:
 
      ```bash
