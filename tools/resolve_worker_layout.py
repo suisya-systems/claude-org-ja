@@ -353,21 +353,15 @@ def resolve(
     role = decide_role(mode=mode, project=project, claude_org_root=claude_org_root)
     self_edit = role == "claude-org-self-edit"
 
-    # --- Branch decision ---------------------------------------------------
-    if pattern == "C":
-        # Pattern C ephemeral has no branch (no git); gitignored sub-mode
-        # runs against the repo root's existing branch and must not invent
-        # a new one (Codex M-2: planned_branch is a *suggestion*, not a
-        # commitment, and for Pattern C the suggestion is "don't").
-        planned_branch: Optional[str] = None
-    else:
-        planned_branch = branch_override or infer_branch(task_id, description)
-
     # --- TOML [worker] block overrides (Issue #290 defect 1) --------------
     # Honor explicit values from the caller (typically a worker_brief.toml
     # passed via gen_delegate_payload --from-toml) instead of letting the
     # auto-derive above override them. Priority order, highest first:
     #   TOML [worker] field > CLI flag > resolver auto-derive.
+    # Applied BEFORE the branch decision so a TOML-supplied pattern flips
+    # planned_branch consistently (e.g. pattern=C must imply planned_branch=None;
+    # pattern=B/A must compute a feat-/fix- branch even if auto-derive
+    # produced Pattern C without one). Codex Round 1 Major.
     if layout_overrides:
         if "pattern" in layout_overrides and layout_overrides["pattern"]:
             pattern = layout_overrides["pattern"]
@@ -379,9 +373,29 @@ def resolve(
             role = layout_overrides["role"]
             self_edit = role == "claude-org-self-edit"
         if "self_edit" in layout_overrides:
-            self_edit = bool(layout_overrides["self_edit"])
-        if "planned_branch" in layout_overrides:
-            planned_branch = layout_overrides["planned_branch"]
+            se = layout_overrides["self_edit"]
+            # Strictly boolean — silently coercing a truthy string like
+            # "false" would let a malformed TOML bypass downstream validate()
+            # contracts (Codex Round 1 Minor).
+            if not isinstance(se, bool):
+                raise ResolveError(
+                    f"layout_overrides['self_edit'] must be bool, got {type(se).__name__}"
+                )
+            self_edit = se
+
+    # --- Branch decision ---------------------------------------------------
+    # Re-derived from the *final* pattern so a TOML-supplied pattern override
+    # flips planned_branch consistently.
+    if pattern == "C":
+        # Pattern C ephemeral has no branch (no git); gitignored sub-mode
+        # runs against the repo root's existing branch and must not invent
+        # a new one (Codex M-2: planned_branch is a *suggestion*, not a
+        # commitment, and for Pattern C the suggestion is "don't").
+        planned_branch: Optional[str] = None
+    else:
+        planned_branch = branch_override or infer_branch(task_id, description)
+    if layout_overrides and "planned_branch" in layout_overrides:
+        planned_branch = layout_overrides["planned_branch"]
 
     # --- settings_args -----------------------------------------------------
     settings_args = {

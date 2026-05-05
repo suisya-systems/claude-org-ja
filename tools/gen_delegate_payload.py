@@ -620,7 +620,13 @@ def _load_task_args_from_toml(path: Path) -> dict[str, Any]:
     if worker.get("pattern_variant"):
         layout_overrides["pattern_variant"] = worker["pattern_variant"]
     if worker.get("dir"):
-        layout_overrides["worker_dir"] = worker["dir"]
+        # Resolve relative dirs against the TOML file's parent so
+        # [paths].claude_org and [worker].dir share the same base
+        # (Codex Round 1 Minor — previously cwd-relative).
+        wd = Path(worker["dir"])
+        if not wd.is_absolute():
+            wd = (path.resolve().parent / wd)
+        layout_overrides["worker_dir"] = str(wd)
     if role:
         layout_overrides["role"] = role
     if "self_edit" in worker:
