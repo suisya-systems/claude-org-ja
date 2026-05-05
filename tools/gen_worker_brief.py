@@ -24,6 +24,11 @@ existing callers; from-task assembles an equivalent config dict in memory.
 """
 from __future__ import annotations
 
+# Direct-script bootstrap (see tools/resolve_worker_layout.py for context).
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
+
 import argparse
 import re
 import sys
@@ -346,11 +351,12 @@ def build_config_from_task(
         layout.pattern_variant == "gitignored_repo_root"
     )
 
-    # Look up project metadata from the registry for project.name /
-    # project.description defaults. Stage 2 doesn't add a registry-read
-    # round-trip — the resolver already parsed it; we re-read here only
-    # for the description string (resolver returns slug + path only on the
-    # public dataclass, not the full row).
+    # Look up project metadata from the registry. ``project.name`` in the
+    # TOML schema is the slug (matches the existing example.toml convention
+    # and round-trips through ``--from-toml``); 通称 / common_name flows
+    # into ``project.description`` only when the caller didn't supply one,
+    # so the brief still surfaces the human-friendly name without breaking
+    # slug semantics. Codex review surfaced this drift.
     registry_for_meta = registry_path or (
         claude_org_root / "registry" / "projects.md"
     )
@@ -361,11 +367,15 @@ def build_config_from_task(
             registry_for_meta.read_text(encoding="utf-8")
         )
         match = rwl.find_project(rows, project_slug)
-        if match is not None:
-            if not project_name_override:
-                project_name = match.common_name or match.slug
-            if not project_description_override:
-                project_description = match.description
+        if match is not None and not project_description_override:
+            common = match.common_name or match.slug
+            base_desc = match.description or ""
+            if common and common != match.slug:
+                project_description = (
+                    f"{common} — {base_desc}" if base_desc else common
+                )
+            else:
+                project_description = base_desc
 
     # Branch field for the brief: Pattern C has no branch; use task_id as
     # a stable label so the existing template (which requires task.branch
@@ -470,6 +480,7 @@ def _build_from_task_parser() -> argparse.ArgumentParser:
         "--verification-depth",
         choices=("full", "minimal"),
         default="full",
+        help="full | minimal — passed through to brief and DELEGATE body.",
     )
     p.add_argument("--issue-url", default=None)
     p.add_argument("--closes-issue", type=int, default=None)

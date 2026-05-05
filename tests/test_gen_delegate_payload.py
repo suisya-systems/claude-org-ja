@@ -12,6 +12,7 @@ Coverage:
 """
 from __future__ import annotations
 
+import argparse
 import json
 import re
 import sys
@@ -390,6 +391,130 @@ class TestGoldenSnapshots(unittest.TestCase):
             state_db_path=self.sb.db_path,
         )
         self._check("pattern_c_ephemeral_minimal", plan.delegate_body)
+
+    def test_golden_pattern_c_gitignored_repo_root(self):
+        """Codex Round 1 Minor: gitignored sub-mode is the highest-risk
+        Pattern C variant; lock its DELEGATE rendering down with a golden."""
+        try:
+            import subprocess as _sp
+            _sp.run(["git", "--version"], capture_output=True, check=True)
+        except (FileNotFoundError, _sp.CalledProcessError):
+            self.skipTest("git not available")
+        local_repo = Path(self._td.name) / "host-repo"
+        local_repo.mkdir()
+        _sp.run(["git", "-C", str(local_repo), "init", "-q"], check=True)
+        (local_repo / ".gitignore").write_text("tmp/\n", encoding="utf-8")
+        # Re-seed registry so the host-repo project is registered.
+        (self.sb.claude_org_root / "registry" / "projects.md").write_text(
+            "# Projects\n\n"
+            "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 |\n"
+            "|---|---|---|---|---|\n"
+            f"| ホスト | host-app | {local_repo} | Host repo | tmp 編集 |\n"
+            f"| claude-org-ja | claude-org-ja | {self.sb.claude_org_root} | Self | スキル改善 |\n",
+            encoding="utf-8",
+        )
+        plan = gdp.build_delegate_plan(
+            task_id="snap-c-gitignored",
+            project_slug="host-app",
+            targets=["tmp/secret.txt"],
+            description="redact gitignored notes",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        # Normalise the local_repo path so the golden stays portable.
+        body = plan.delegate_body.replace(str(local_repo.resolve()), "<HOSTREPO>")
+        self._check("pattern_c_gitignored_repo_root_full", body)
+        # Variant must be visible in the formatted body.
+        self.assertIn("gitignored サブモード", body)
+
+    def test_golden_pattern_a_doc_audit(self):
+        """Codex M-4 regression guard: --mode audit must surface as doc-audit
+        and the brief filename must stay CLAUDE.md (no spurious .local.md)."""
+        plan = gdp.build_delegate_plan(
+            task_id="snap-a-audit",
+            project_slug="claude-org-ja",
+            description="audit recent changes",
+            mode="audit",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self._check("pattern_a_doc_audit_full", plan.delegate_body)
+        self.assertEqual(plan.layout.role, "doc-audit")
+
+
+# ---------------------------------------------------------------------------
+# --from-toml round-trip (Codex Round 1 Major: TOML survives bare CLI)
+# ---------------------------------------------------------------------------
+
+
+class TestFromTomlRoundTrip(unittest.TestCase):
+    def setUp(self) -> None:
+        self._td = tempfile.TemporaryDirectory()
+        self.sb = _Sandbox(Path(self._td.name))
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def _write_toml(self, path: Path, *, role: str, depth: str) -> None:
+        path.write_text(
+            "[task]\n"
+            'id = "round-trip"\n'
+            'description = "round-trip via TOML"\n'
+            f'verification_depth = "{depth}"\n'
+            'branch = "round-trip"\n'
+            'commit_prefix = "feat(clock):"\n'
+            "\n[worker]\n"
+            f'dir = "X:/dummy"\n'
+            'pattern = "A"\n'
+            f'role = "{role}"\n'
+            f'self_edit = {"true" if role == "claude-org-self-edit" else "false"}\n'
+            "\n[project]\n"
+            'name = "clock-app"\n'
+            'description = "Web 時計"\n'
+            "\n[paths]\n"
+            'claude_org = "."\n',
+            encoding="utf-8",
+        )
+
+    def test_from_toml_preserves_doc_audit_mode_and_minimal_depth(self):
+        toml = Path(self._td.name) / "input.toml"
+        self._write_toml(toml, role="doc-audit", depth="minimal")
+        # Bare CLI: no --mode / --verification-depth flag → TOML wins.
+        kwargs = gdp._gather_plan_kwargs(
+            argparse.Namespace(
+                from_toml=toml,
+                task_id=None, project_slug=None, target=[], description=None,
+                mode=None, branch_override=None, commit_prefix=None,
+                verification_depth=None, issue_url=None, closes_issue=None,
+                refs_issues=None, project_name_override=None,
+                project_description_override=None, impl_target=[],
+                impl_guidance=None, knowledge=[], parallel_notes=None,
+                registry_path=None, state_db_path=None, claude_org_root=None,
+                workers_dir=None,
+            )
+        )
+        self.assertEqual(kwargs["mode"], "audit")
+        self.assertEqual(kwargs["verification_depth"], "minimal")
+        self.assertEqual(kwargs["project_slug"], "clock-app")
+
+    def test_from_toml_cli_override_wins(self):
+        toml = Path(self._td.name) / "input.toml"
+        self._write_toml(toml, role="doc-audit", depth="minimal")
+        kwargs = gdp._gather_plan_kwargs(
+            argparse.Namespace(
+                from_toml=toml,
+                task_id=None, project_slug=None, target=[], description=None,
+                mode="edit", branch_override=None, commit_prefix=None,
+                verification_depth="full", issue_url=None, closes_issue=None,
+                refs_issues=None, project_name_override=None,
+                project_description_override=None, impl_target=[],
+                impl_guidance=None, knowledge=[], parallel_notes=None,
+                registry_path=None, state_db_path=None, claude_org_root=None,
+                workers_dir=None,
+            )
+        )
+        self.assertEqual(kwargs["mode"], "edit")
+        self.assertEqual(kwargs["verification_depth"], "full")
 
 
 def _env_update_goldens() -> bool:

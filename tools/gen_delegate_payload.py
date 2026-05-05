@@ -31,6 +31,11 @@ executor). Tests exercise both paths.
 """
 from __future__ import annotations
 
+# Direct-script bootstrap (see tools/resolve_worker_layout.py for context).
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
+
 import argparse
 import json
 import re
@@ -157,6 +162,9 @@ def _format_delegate_body(
         if layout.planned_branch
         else "(Pattern C: 既存 repo の現在ブランチで作業 / 新規 branch なし)"
     )
+    # Use the platform-native joiner to avoid the mixed `\\…/CLAUDE.md`
+    # output the literal-`/` template produced on Windows (Codex Round 1 Nit).
+    brief_full_path = str(Path(layout.worker_dir) / brief_filename)
     body = f"""DELEGATE: 以下のワーカーを派遣してください。
 
 タスク一覧:
@@ -167,7 +175,7 @@ def _format_delegate_body(
   - ブランチ (planned): {branch_line}
   - Permission Mode: {permission_mode}
   - 検証深度: {verification_depth}
-  - 指示内容: 詳細は `{layout.worker_dir}/{brief_filename}` を参照。要約: {instr_summary or '(none)'}
+  - 指示内容: 詳細は `{brief_full_path}` を参照。要約: {instr_summary or '(none)'}
 
 窓口ペイン名: `secretary`（renga layout で登録済み）"""
     return body
@@ -464,16 +472,24 @@ def apply_delegate_plan(
 
 
 def _add_task_args(p: argparse.ArgumentParser) -> None:
-    """Args shared by preview and apply for the from-task input form."""
+    """Args shared by preview and apply for the from-task input form.
+
+    Defaults for ``--mode`` and ``--verification-depth`` are intentionally
+    ``None``. The merge step in :func:`_gather_plan_kwargs` only treats a
+    CLI value as an override when it is not None, so a ``--from-toml``
+    config's ``mode`` / ``verification_depth`` survives unless the caller
+    explicitly re-passes the flag. Final defaults (``edit`` / ``full``)
+    are applied after merging — see Codex Round 1 Major.
+    """
     p.add_argument("--task-id")
     p.add_argument("--project-slug")
     p.add_argument("--target", action="append", default=[])
-    p.add_argument("--description", default="")
-    p.add_argument("--mode", choices=("edit", "audit"), default="edit")
+    p.add_argument("--description", default=None)
+    p.add_argument("--mode", choices=("edit", "audit"), default=None)
     p.add_argument("--branch", dest="branch_override", default=None)
     p.add_argument("--commit-prefix", default=None)
     p.add_argument(
-        "--verification-depth", choices=("full", "minimal"), default="full"
+        "--verification-depth", choices=("full", "minimal"), default=None
     )
     p.add_argument("--issue-url", default=None)
     p.add_argument("--closes-issue", type=int, default=None)
@@ -551,10 +567,18 @@ def _resolve_state_db_path(args: argparse.Namespace, claude_org_root: Path) -> P
 
 
 def _load_task_args_from_toml(path: Path) -> dict[str, Any]:
-    """Pull task-shape kwargs out of a legacy worker_brief.toml.
+    """Pull task-shape kwargs out of a worker_brief.toml.
 
-    Returns the subset of build_delegate_plan kwargs derivable from the
-    config; CLI flags still override (CLI processed after TOML).
+    The TOML schema (see ``tools/templates/worker_brief.example.toml``)
+    uses ``project.name`` for the slug — that's what both the legacy
+    hand-written briefs and Stage 2's ``from-task`` output write — so we
+    treat it as ``project_slug`` and as the ``project_name_override``
+    seed. Codex Round 1 caught the earlier inversion (common_name vs
+    slug round-trip mismatch).
+
+    ``mode`` is derived from ``worker.role``: ``doc-audit`` → ``audit``,
+    everything else → ``edit``. Returning the field at all (even when
+    falsey) lets the merge step recognise an explicit TOML setting.
     """
     with path.open("rb") as fh:
         cfg = tomllib.load(fh)
@@ -564,13 +588,15 @@ def _load_task_args_from_toml(path: Path) -> dict[str, Any]:
     impl = cfg.get("implementation", {})
     refs = cfg.get("references", {})
     parallel = cfg.get("parallel", {})
+    role = (worker.get("role") or "").strip()
+    mode_from_toml = "audit" if role == "doc-audit" else "edit"
     return {
         "task_id": task.get("id"),
         "project_slug": project.get("name"),
-        "description": task.get("description", ""),
+        "description": task.get("description"),
         "branch_override": task.get("branch"),
         "commit_prefix": task.get("commit_prefix"),
-        "verification_depth": task.get("verification_depth", "full"),
+        "verification_depth": task.get("verification_depth"),
         "issue_url": task.get("issue_url"),
         "closes_issue": task.get("closes_issue"),
         "refs_issues": task.get("refs_issues"),
@@ -580,12 +606,18 @@ def _load_task_args_from_toml(path: Path) -> dict[str, Any]:
         "implementation_guidance": impl.get("guidance"),
         "references_knowledge": refs.get("knowledge"),
         "parallel_notes": parallel.get("notes"),
-        "mode": "edit" if not worker.get("self_edit") else "edit",
+        "mode": mode_from_toml,
     }
 
 
 def _gather_plan_kwargs(args: argparse.Namespace) -> dict[str, Any]:
-    """Merge --from-toml defaults with CLI flags (CLI wins)."""
+    """Merge --from-toml defaults with CLI flags (CLI wins).
+
+    Defaults for ``mode`` (``edit``) and ``verification_depth`` (``full``)
+    are applied **after** the merge so a TOML-supplied value survives a
+    bare CLI invocation. Otherwise argparse's defaults would always win
+    and TOML round-trip would silently flatten ``doc-audit`` / ``minimal``.
+    """
     base: dict[str, Any] = {}
     if args.from_toml is not None:
         base.update(_load_task_args_from_toml(args.from_toml))
@@ -594,7 +626,7 @@ def _gather_plan_kwargs(args: argparse.Namespace) -> dict[str, Any]:
         "task_id": args.task_id,
         "project_slug": args.project_slug,
         "targets": args.target or None,
-        "description": args.description or None,
+        "description": args.description,
         "mode": args.mode,
         "branch_override": args.branch_override,
         "commit_prefix": args.commit_prefix,
@@ -614,6 +646,9 @@ def _gather_plan_kwargs(args: argparse.Namespace) -> dict[str, Any]:
     for k, v in cli_overrides.items():
         if v is not None:
             base[k] = v
+    base.setdefault("mode", "edit")
+    base.setdefault("verification_depth", "full")
+    base.setdefault("description", "")
     if not base.get("task_id"):
         raise SystemExit("error: --task-id is required (or supply --from-toml)")
     if not base.get("project_slug"):

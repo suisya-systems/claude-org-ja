@@ -47,6 +47,15 @@ Key contract notes (from Codex review of Issue #283):
 """
 from __future__ import annotations
 
+# When invoked as ``python tools/resolve_worker_layout.py`` (the form the
+# org-delegate skill documents), sys.path[0] is the ``tools/`` directory and
+# ``from tools import ...`` would fail with ModuleNotFoundError. Insert the
+# repo root so the package import works regardless of launch form. Harmless
+# when this module is imported (the path may already be there).
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
+
 import argparse
 import json
 import re
