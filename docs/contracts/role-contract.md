@@ -104,7 +104,7 @@
 
 ### Outputs
 
-- **MCP calls** — `spawn_claude_pane` (workers, `model="opus"` mandatory, `permission_mode={default_permission_mode}`), `send_keys(enter=true)` for the dev-channel prompt, `list_peers` polling, `send_message` for the instruction, `inspect_pane` for the watch loop, `close_pane` for teardown.
+- **MCP calls** — `spawn_claude_pane` (workers, `model="opus"` mandatory, `permission_mode=auto`), `send_keys(enter=true)` for the dev-channel prompt, `list_peers` polling, `send_message` for the instruction, `inspect_pane` for the watch loop, `close_pane` for teardown.
 - **`DELEGATE_COMPLETE`** to secretary (one per worker spawned).
 - **`WORKER_PANE_EXITED`** to secretary (lifecycle event; not a completion claim).
 - **`APPROVAL_BLOCKED`** / **`ERROR_DETECTED`** to secretary, tagged with `source=inspect|self_report` and `confidence=high|n/a`.
@@ -174,7 +174,7 @@
 
 ### Constraints
 
-- **Permission mode**: Inherits `default_permission_mode` from `registry/org-config.md` (currently `auto`). Model: `opus`.
+- **Permission mode**: `auto` (hardcoded literal at spawn sites; `registry/org-config.md` value is reference-only — see its sync-warning). Model: `opus`.
 - **Path discipline** — curator's cwd is `.curator/`, but knowledge directories live in the parent repo. Must use parent-repo-relative or absolute paths; using cwd-relative `knowledge/raw/` would target a non-existent directory.
 - **Glob fallback** — when `Glob` returns 0 results, must verify with `Bash ls` to detect missing-directory vs. genuinely empty.
 - **No human dialogue** — `.curator/CLAUDE.md` "人間と直接対話することはない". Communication only via secretary.
@@ -185,7 +185,7 @@
 
 ### Lifecycle / boundaries
 
-- **Spawn**: By the secretary during `/org-start` Step 3. `cwd=".curator"`, `permission_mode={default_permission_mode}`, `model="opus"`. Stable name `curator`, role `curator`.
+- **Spawn**: By the secretary during `/org-start` Step 3. `cwd=".curator"`, `permission_mode=auto`, `model="opus"`. Stable name `curator`, role `curator`.
 - **Activation**: Receives an initial `send_message` from secretary telling it to start the `/loop 30m /org-curate` schedule.
 - **Steady state**: Wakes on the loop, runs `org-curate`, sleeps. Also processes ad-hoc messages from secretary.
 - **Termination**: Pane closed by secretary or by org shutdown.
@@ -231,7 +231,7 @@
 
 ### Constraints
 
-- **Permission mode**: `default_permission_mode` from `registry/org-config.md` (currently `auto`). Model: **`opus` mandatory** — `sonnet` is forbidden because `auto` mode's safety classifier is only stable on Opus.
+- **Permission mode**: `auto` (hardcoded literal at spawn sites; `registry/org-config.md` value is reference-only — see its sync-warning). Model: **`opus` mandatory** — `sonnet` is forbidden because `auto` mode's safety classifier is only stable on Opus.
 - **Working directory is enforced**: First action on launch is `pwd` to verify `worker_dir`. Mismatch → halt and report to secretary.
 - **Hard-blocked operations** (via `permissions.deny` + PreToolUse hooks):
   - Cannot reproduce claude-org structure (`.claude/`, `.dispatcher/`, `.curator/`, `.state/`, `registry/`, `dashboard/`, `knowledge/`) inside `worker_dir`.
@@ -255,7 +255,7 @@
 
 ### Lifecycle / boundaries
 
-- **Spawn**: By the dispatcher in `org-delegate` Step 3, via `mcp__renga-peers__spawn_claude_pane(role="worker", name="worker-{task_id}", cwd={worker_dir}, permission_mode={default_permission_mode}, model="opus")` after balanced-split target/direction selection. CLAUDE.md and `settings.local.json` are placed by the secretary in Step 1.5 *before* spawn.
+- **Spawn**: By the dispatcher in `org-delegate` Step 3, via `mcp__renga-peers__spawn_claude_pane(role="worker", name="worker-{task_id}", cwd={worker_dir}, permission_mode=auto, model="opus")` after balanced-split target/direction selection. CLAUDE.md and `settings.local.json` are placed by the secretary in Step 1.5 *before* spawn.
 - **Activation**: After spawn, the dispatcher approves the "Load development channel?" prompt on the worker's pane via `send_keys(enter=true)`; the worker is then detected via `list_peers` and receives its instruction message. It greets back when secretary sends the `DELEGATE_COMPLETE` follow-up.
 - **Steady state**: Executes the task; reports progress to secretary; if blocked on approval, halts (dispatcher detects via inspect or self-report and notifies secretary).
 - **Completion handoff**:
