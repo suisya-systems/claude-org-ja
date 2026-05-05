@@ -93,7 +93,7 @@ renga 0.18.0+ では `mcp__renga-peers__spawn_claude_pane` が役割別の構造
 ### キュレーター
 
 - `cwd=".curator"`
-- `permission_mode={default_permission_mode}`
+- `permission_mode=auto`
 - `model="opus"`
 
 ### ワーカー（org-delegate の Step 3 で使用）
@@ -103,7 +103,7 @@ renga 0.18.0+ では `mcp__renga-peers__spawn_claude_pane` が役割別の構造
 
 通常:
 - `cwd="{workers_dir}/{task_id}"`（絶対パス推奨）
-- `permission_mode={default_permission_mode}`
+- `permission_mode=auto`
 - `model="opus"`
 
 ## Step 1.5: ダッシュボードサーバー起動
@@ -178,7 +178,7 @@ renga 0.18.0+ では `mcp__renga-peers__spawn_claude_pane` が役割別の構造
      role="curator",
      name="curator",
      cwd=".curator",
-     permission_mode="{default_permission_mode}",
+     permission_mode="auto",
      model="opus"
    )
    ```

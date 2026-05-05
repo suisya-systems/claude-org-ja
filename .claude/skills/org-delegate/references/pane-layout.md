@@ -27,8 +27,8 @@ Tab 1: ops (ワーカー 0 人)
 | 対象 | 操作 | 備考 |
 |---|---|---|
 | ディスパッチャー | 窓口ペインを水平分割して下半分 | `mcp__renga-peers__spawn_claude_pane(target="focused", direction="horizontal", role="dispatcher", name="dispatcher", cwd=".dispatcher", permission_mode="bypassPermissions", model="sonnet")` (org-start Step 2) |
-| キュレーター | ディスパッチャーペインを垂直分割して右半分 | `mcp__renga-peers__spawn_claude_pane(target="dispatcher", direction="vertical", role="curator", name="curator", cwd=".curator", permission_mode="{default_permission_mode}")` (org-start Step 3) |
-| 各ワーカー | **balanced split**: `list_panes` が返す現在の rect から target と direction を動的に選び、同一タブ内に積む | 詳細は下記「ワーカーの balanced split 戦略」セクション。`mcp__renga-peers__spawn_claude_pane(target={target}, direction={direction}, role="worker", name="worker-{task_id}", cwd="{workers_dir}/{task_id}", permission_mode="{default_permission_mode}")` (org-delegate Step 3) |
+| キュレーター | ディスパッチャーペインを垂直分割して右半分 | `mcp__renga-peers__spawn_claude_pane(target="dispatcher", direction="vertical", role="curator", name="curator", cwd=".curator", permission_mode="auto")` (org-start Step 3) |
+| 各ワーカー | **balanced split**: `list_panes` が返す現在の rect から target と direction を動的に選び、同一タブ内に積む | 詳細は下記「ワーカーの balanced split 戦略」セクション。`mcp__renga-peers__spawn_claude_pane(target={target}, direction={direction}, role="worker", name="worker-{task_id}", cwd="{workers_dir}/{task_id}", permission_mode="auto")` (org-delegate Step 3) |
 
 > **`spawn_claude_pane` を使う理由**: renga 0.18.0+ で追加された構造化 launch ツール。`cwd` / `permission_mode` / `model` / `args[]` を構造化フィールドで渡すと、renga が内部で `claude --permission-mode {mode} --dangerously-load-development-channels server:renga-peers ...` を合成する。旧方式（`cd`-プレフィックス付き command 文字列を `spawn_pane` に流し込む）は **禁止**（cwd 変更プレフィックスがあると renga の bare-`claude` auto-upgrade が発動せず、`send_message` の channel push が届かなくなる。窓口→ディスパッチャー / ディスパッチャー→ワーカーの指示が一切通らなくなる）。Secretary のみ `ops.toml` から bare `claude` で起動され auto-upgrade に任せる。
 

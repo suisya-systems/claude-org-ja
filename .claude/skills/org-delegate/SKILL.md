@@ -215,7 +215,7 @@ mcp__renga-peers__spawn_claude_pane(
   role="worker",
   name="worker-{task_id}",                # 後続操作で参照する安定名。英字含む前提
   cwd="{workers_dir}/{task_id}",          # 絶対パス推奨。相対は caller pane の cwd 基点
-  permission_mode="{default_permission_mode}",
+  permission_mode="auto",
   model="opus"                            # 必須。sonnet 禁止（auto classifier が不安定）
 )
 ```
