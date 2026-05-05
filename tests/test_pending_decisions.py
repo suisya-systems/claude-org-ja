@@ -178,6 +178,72 @@ class PendingDecisionsTests(unittest.TestCase):
         raw = self._read_raw()
         self.assertEqual(len(raw), 2)
 
+    def test_canonical_lifecycle_pending_escalated_resolved(self) -> None:
+        # Mirrors the prose contract in CLAUDE.md / SKILL.md:
+        # append -> resolve(to_user) -> resolve(to_worker) must terminate
+        # the entry as resolved (not be a no-op on the third step).
+        pd.append("t1", "ask", store_path=self.store)
+        first = pd.resolve("t1", "to_user", store_path=self.store)
+        self.assertIsNotNone(first)
+        assert first is not None
+        self.assertEqual(first.status, "escalated")
+        second = pd.resolve("t1", "to_worker", store_path=self.store)
+        self.assertIsNotNone(second)
+        assert second is not None
+        self.assertEqual(second.status, "resolved")
+        self.assertEqual(second.resolution_kind, "to_worker")
+        # No open entries remain — relay-gap should not fire.
+        self.assertEqual(pd.list_pending(store_path=self.store), [])
+        self.assertEqual(
+            pd.list_pending_older_than(0, store_path=self.store), []
+        )
+
+    def test_resolve_to_user_after_escalated_is_noop(self) -> None:
+        # to_user only matches pending — escalated entries are not
+        # re-eligible for it.
+        pd.append("t1", "ask", store_path=self.store)
+        pd.resolve("t1", "to_user", store_path=self.store)
+        again = pd.resolve("t1", "to_user", store_path=self.store)
+        self.assertIsNone(again)
+
+    def test_list_pending_includes_escalated(self) -> None:
+        # An entry escalated 20 minutes ago must surface as a relay-gap
+        # candidate at the 15-minute threshold (covers (a)(2) direction).
+        old_ts = "2026-05-05T05:30:00Z"
+        seed = [
+            {
+                "task_id": "t1",
+                "received_at": old_ts,
+                "raw_message": "ask",
+                "status": "escalated",
+                "resolved_at": old_ts,
+                "resolution_kind": "to_user",
+            },
+        ]
+        self.store.parent.mkdir(parents=True, exist_ok=True)
+        self.store.write_text(json.dumps(seed), encoding="utf-8")
+        now = datetime(2026, 5, 5, 5, 50, 0, tzinfo=timezone.utc)
+        out = pd.list_pending_older_than(15, store_path=self.store, now=now)
+        self.assertEqual([e.task_id for e in out], ["t1"])
+        self.assertEqual(out[0].status, "escalated")
+
+    def test_unparseable_received_at_is_surfaced(self) -> None:
+        # Malformed timestamp must surface as a relay-gap candidate
+        # rather than be silently dropped (loud failure beats false
+        # negative against .dispatcher/CLAUDE.md Step 5.1 contract).
+        seed = [
+            {
+                "task_id": "broken",
+                "received_at": "not-a-timestamp",
+                "raw_message": "ask",
+                "status": "pending",
+            },
+        ]
+        self.store.parent.mkdir(parents=True, exist_ok=True)
+        self.store.write_text(json.dumps(seed), encoding="utf-8")
+        out = pd.list_pending_older_than(15, store_path=self.store)
+        self.assertEqual([e.task_id for e in out], ["broken"])
+
     def test_cli_append_and_list(self) -> None:
         rc = pd.main(
             [

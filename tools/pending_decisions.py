@@ -51,6 +51,22 @@ _KIND_TO_STATUS: dict[str, Status] = {
     "to_worker": "resolved",
 }
 
+# Statuses that ``resolve`` can transition *from*. ``to_user`` only accepts
+# fresh ``pending`` entries (Secretary just received the request from the
+# worker). ``to_worker`` accepts either ``pending`` (Secretary skipped the
+# explicit user-relay step) or ``escalated`` (canonical flow:
+# pending → escalated when user is informed → resolved when worker is told).
+_KIND_TO_ELIGIBLE_STATUSES: dict[str, tuple[Status, ...]] = {
+    "to_user": ("pending",),
+    "to_worker": ("pending", "escalated"),
+}
+
+# Statuses considered "open" for the purpose of relay-gap detection. The
+# dispatcher's Step 5.1 (a-0) lookup must surface anything not yet
+# terminally relayed back to the worker, otherwise the (a)(2) direction
+# (user answered but Secretary forgot to relay) is invisible.
+_OPEN_STATUSES: tuple[Status, ...] = ("pending", "escalated")
+
 
 @dataclass
 class PendingDecision:
@@ -171,15 +187,16 @@ def resolve(
     """
     if kind not in _KIND_TO_STATUS:
         raise ValueError(f"unknown kind {kind!r}; expected to_user|to_worker")
+    eligible = _KIND_TO_ELIGIBLE_STATUSES[kind]
     entries = _load(store_path)
     target_index: Optional[int] = None
     for i, entry in enumerate(entries):
-        if entry.task_id != task_id or entry.status != "pending":
+        if entry.task_id != task_id or entry.status not in eligible:
             continue
         if target_index is None:
             target_index = i
             continue
-        # Multiple pending (rare): keep the oldest received_at.
+        # Multiple eligible entries (rare): keep the oldest received_at.
         if entry.received_at < entries[target_index].received_at:
             target_index = i
     if target_index is None:
@@ -193,7 +210,15 @@ def resolve(
 
 
 def list_pending(store_path: Path = DEFAULT_PATH) -> list[PendingDecision]:
-    return [e for e in _load(store_path) if e.status == "pending"]
+    """Return all entries that are not yet terminally resolved.
+
+    Includes both ``pending`` (received but not yet relayed to user) and
+    ``escalated`` (relayed to user, awaiting answer to relay back to
+    worker). Excludes ``resolved`` (terminal). The function name keeps
+    "pending" for API-spec continuity (Issue #297) but its semantics
+    cover any open relay-gap candidate.
+    """
+    return [e for e in _load(store_path) if e.status in _OPEN_STATUSES]
 
 
 def list_pending_older_than(
@@ -201,23 +226,37 @@ def list_pending_older_than(
     store_path: Path = DEFAULT_PATH,
     now: Optional[datetime] = None,
 ) -> list[PendingDecision]:
-    """Pending entries whose ``received_at`` is older than ``threshold_minutes``.
+    """Open entries whose ``received_at`` is older than ``threshold_minutes``.
+
+    "Open" = ``pending`` or ``escalated`` (see :func:`list_pending`). The
+    dispatcher uses this for SECRETARY_RELAY_GAP_SUSPECTED detection,
+    which must catch both:
+
+    * (a)(1) ``pending`` too long — Secretary forgot to relay to user
+    * (a)(2) ``escalated`` too long — Secretary forgot to relay user's
+      answer back to worker
 
     ``now`` is injectable for tests; defaults to ``datetime.now(UTC)``.
-    Entries with unparseable ``received_at`` are skipped (defensive).
+    Entries with an unparseable ``received_at`` are surfaced (treated as
+    arbitrarily old) rather than silently skipped — silent drop would
+    create a relay-gap false negative against the fallback contract in
+    ``.dispatcher/CLAUDE.md`` Step 5.1.
     """
     if now is None:
         now = datetime.now(timezone.utc)
     cutoff = now - timedelta(minutes=threshold_minutes)
     out: list[PendingDecision] = []
     for entry in _load(store_path):
-        if entry.status != "pending":
+        if entry.status not in _OPEN_STATUSES:
             continue
         try:
             received = datetime.strptime(
                 entry.received_at, "%Y-%m-%dT%H:%M:%SZ"
             ).replace(tzinfo=timezone.utc)
         except ValueError:
+            # Unparseable timestamp: surface the entry as a relay-gap
+            # candidate (loud failure beats silent suppression).
+            out.append(entry)
             continue
         if received <= cutoff:
             out.append(entry)
