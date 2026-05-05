@@ -363,6 +363,8 @@ mcp__renga-peers__send_message(to_id="secretary", message="...")
 
    どちらも Step 5 (worker 側監視) と Step 4 (worker pane 画面監視) では検知できない。secretary 側の outbound (secretary→user / secretary→worker) を観測する独立チャネルが必要。Issue #287 (PR #295) の sibling、両側監視で完成。Issue #292。
 
+   **本 PR のスコープ (重要)**: 上記 2 パターンのうち **(1) 「secretary が人間に上げ忘れ」のみ** を検知対象とする。(2) 「user 回答を worker に転送し忘れ」は journal に secretary→worker outbound の ledger が無く ((c) 参照)、prose-only の本 PR では確実な検知手段が組めないため、(g) の register 化 follow-up Issue で恒久対応する。仕様の (b) 以降は (1) を絞り込む条件として読む。
+
    #### (b) いつ relay gap を疑うか
    起点は **直近の worker→secretary event** に固定する。`.state/journal.jsonl` から `event ∈ {worker_escalation, worker_reported}` かつ `worker == "worker-{task_id}"` を満たすエントリの最新 1 件を取り、その `ts` を `T_last_worker_in` とする。`worker_completed` / `plan_delivered` / `prep_delivered` は **対象外** (これらは「完了 / 中間引き渡し」で、secretary が直ちに user に上げる契約ではない。判断仰ぎ・進捗共有のみが relay gap の対象)。
 
@@ -398,15 +400,12 @@ mcp__renga-peers__send_message(to_id="secretary", message="...")
    )
    ```
 
-   - 取得した `lines[].text` を改行 join して 1 文字列にし、 `.state/dispatcher/secretary-pane-snapshot.txt` に保存
-   - 次サイクル取得時に旧 snapshot と byte-equal でなければ「secretary pane に出力増加あり」とみなす (= secretary が user に向けて何かを書いた proxy)。`T_last_worker_in` 以降の 1 サイクルでも「変化あり」を観測していれば secretary→user 痕跡 **あり** とみなす ((b)(2) の評価では起点を `T_last_worker_in` に固定するので、それ以前の変化は無視する)
-     - 観測履歴は `.state/dispatcher/secretary-output-changes.jsonl` に `{ts, hash}` 1 行で append (Step 5 の `worker-idle-state.json` と同等の per-dispatcher local state、journal 本体は汚染しない)。比較は (b)(2) で `ts >= T_last_worker_in` でフィルタしてから「行数 ≥ 1」で判定する
-     - 各サイクル 1 行のみ append、retention は本ファイル末尾の 30 行程度で十分 (15 分 / 3 分サイクル = 5 行 + buffer)
-   - **proxy の限界 (重要)**: 本 proxy は粗い signal で、誤抑制 (false suppression of legitimate relay gap) のリスクが残る:
-     - 別タスクの会話、user 自身の入力エコー、画面再描画やスクロール、curator からの送信、他 worker の進捗報告など、対象 worker と無関係な pane 変化でも「変化あり」と判定される
-     - secretary pane の last 40 行は task_id と紐付かないため、「対象 worker の話題で更新されたか」を判別できない
-     - 結果として、別タスク由来の変化が 1 度でも `T_last_worker_in` 以降に発生すると、対象 worker の relay gap 検知は次の `T_last_worker_in` 更新まで suppress される
-     - **soft 強化 (任意)**: snapshot diff 文字列に `task_id` または `worker-{task_id}` の substring が含まれることを必須化すると task 紐付けの精度が上がる。実装側で false negative を許容できる場合のみ有効化する
+   - 取得した `lines[].text` を改行 join して 1 文字列にし、SHA-256 hash を取る。直前の hash (`.state/dispatcher/secretary-pane-snapshot.txt` に 1 行で保存) と **不一致** な場合のみ:
+     1. snapshot 本文を `.state/dispatcher/secretary-pane-snapshot.txt` に上書き保存 (次サイクルの比較対象にする)
+     2. `.state/dispatcher/secretary-output-changes.jsonl` に `{ts, hash, diff_excerpt}` を 1 行 append。`diff_excerpt` は新 snapshot の **末尾 5 行** を文字列化したもの (task_id 紐付け用、(b)(2) で参照)
+   - hash 一致時は 1, 2 どちらもスキップ (= 画面無変化なら append しない)。Codex round 2 Blocker: 「毎サイクル無条件 append」は (b)(2) を常時 true にして検知経路を死なせるため、必ず変化検知時のみに限定する
+   - **(b)(2) の判定 (task_id 必須紐付け)**: `secretary-output-changes.jsonl` から `ts >= T_last_worker_in` の行を取り、`diff_excerpt` フィールドに **`task_id` または `worker-{task_id}` の substring** を含む行が 1 件以上あれば secretary→user 痕跡 **あり** とみなす。task_id を含まない更新 (別 worker の話題、curator 連携、無関係な user input echo) は痕跡カウントから除外する。これにより別タスク由来の更新で対象 worker の relay gap が誤抑制される問題を回避する (Codex round 2 Major)。trade-off として、secretary が task_id を文中に明示せずに human に上げた場合は false positive (relay gap が出てない場面で alert) になり得るが、本 PR スコープでは false positive を false suppression より優先する (relay gap 見逃しの方が事故として大きい)
+     - 観測履歴ファイルの retention: 末尾 50 行で十分 (15 分 / 3 分サイクル = 最大 5 行の変化観測 × バッファ。古い行は手動 / 別 cleanup で間引く)
    - 制限: secretary が renga 外の I/O (Slack 等) で user に通知した場合はこの proxy では検知できない。実運用上 user は secretary pane を直接見ていることが大半なので許容する trade-off
    - エラー時の挙動 (`[pane_not_found]` 等) は Step 4 と同じく該当サイクル skip し journal に `anomaly_observed source=relay_gap_check kind=inspect_error` を残す
 
