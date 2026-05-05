@@ -318,6 +318,7 @@ def build_config_from_task(
     state_db_path: Optional[Path] = None,
     claude_org_root: Path,
     workers_dir: Optional[Path] = None,
+    layout_overrides: Optional[dict[str, Any]] = None,
 ) -> tuple[dict[str, Any], "object"]:
     """Resolve layout + assemble a render-ready config.
 
@@ -341,6 +342,7 @@ def build_config_from_task(
         state_db_path=state_db_path,
         claude_org_root=claude_org_root,
         workers_dir=workers_dir,
+        layout_overrides=layout_overrides,
     )
 
     # gitignored_repo_root inherits the .local.md template treatment even
@@ -405,6 +407,11 @@ def build_config_from_task(
             "claude_org": str(Path(claude_org_root).resolve()),
         },
     }
+    # pattern_variant is added only when set so the common case keeps a
+    # minimal [worker] schema; gitignored_repo_root round-trips through
+    # --write-toml cleanly. Codex Round 2 Major.
+    if layout.pattern_variant is not None:
+        config["worker"]["pattern_variant"] = layout.pattern_variant
     if issue_url:
         config["task"]["issue_url"] = issue_url
     if closes_issue is not None:

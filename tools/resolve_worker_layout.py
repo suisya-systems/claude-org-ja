@@ -286,6 +286,7 @@ def resolve(
     state_db_path: Optional[Path] = None,
     claude_org_root: Path,
     workers_dir: Optional[Path] = None,
+    layout_overrides: Optional[dict[str, Any]] = None,
 ) -> WorkerLayout:
     """Resolve worker layout for one delegation. See module docstring."""
     if not task_id:
@@ -352,7 +353,57 @@ def resolve(
     role = decide_role(mode=mode, project=project, claude_org_root=claude_org_root)
     self_edit = role == "claude-org-self-edit"
 
+    # --- TOML [worker] block overrides (Issue #290 defect 1) --------------
+    # Honor explicit values from the caller (typically a worker_brief.toml
+    # passed via gen_delegate_payload --from-toml) instead of letting the
+    # auto-derive above override them. Priority order, highest first:
+    #   TOML [worker] field > CLI flag > resolver auto-derive.
+    # Applied BEFORE the branch decision so a TOML-supplied pattern flips
+    # planned_branch consistently (e.g. pattern=C must imply planned_branch=None;
+    # pattern=B/A must compute a feat-/fix- branch even if auto-derive
+    # produced Pattern C without one). Codex Round 1 Major.
+    if layout_overrides:
+        if "pattern" in layout_overrides and layout_overrides["pattern"]:
+            pat = layout_overrides["pattern"]
+            if pat not in VALID_PATTERNS:
+                raise ResolveError(
+                    f"layout_overrides['pattern'] must be one of {VALID_PATTERNS}, got {pat!r}"
+                )
+            pattern = pat
+            # Pattern explicitly set; reset variant unless TOML also supplied one.
+            variant = layout_overrides.get("pattern_variant")
+            if variant is not None and variant not in VALID_VARIANTS:
+                raise ResolveError(
+                    f"layout_overrides['pattern_variant'] must be one of {VALID_VARIANTS} or None, got {variant!r}"
+                )
+        if "worker_dir" in layout_overrides and layout_overrides["worker_dir"]:
+            worker_dir = Path(layout_overrides["worker_dir"]).resolve()
+        if "role" in layout_overrides and layout_overrides["role"]:
+            r = layout_overrides["role"]
+            # Validate before any side effect (e.g. before apply reserves
+            # the DB row): a malformed role used to leak through to
+            # gen_worker_brief.validate() and only fail after the DB
+            # reservation was already persisted (Codex Round 2 Major).
+            if r not in VALID_ROLES:
+                raise ResolveError(
+                    f"layout_overrides['role'] must be one of {VALID_ROLES}, got {r!r}"
+                )
+            role = r
+            self_edit = role == "claude-org-self-edit"
+        if "self_edit" in layout_overrides:
+            se = layout_overrides["self_edit"]
+            # Strictly boolean — silently coercing a truthy string like
+            # "false" would let a malformed TOML bypass downstream validate()
+            # contracts (Codex Round 1 Minor).
+            if not isinstance(se, bool):
+                raise ResolveError(
+                    f"layout_overrides['self_edit'] must be bool, got {type(se).__name__}"
+                )
+            self_edit = se
+
     # --- Branch decision ---------------------------------------------------
+    # Re-derived from the *final* pattern so a TOML-supplied pattern override
+    # flips planned_branch consistently.
     if pattern == "C":
         # Pattern C ephemeral has no branch (no git); gitignored sub-mode
         # runs against the repo root's existing branch and must not invent
@@ -361,6 +412,8 @@ def resolve(
         planned_branch: Optional[str] = None
     else:
         planned_branch = branch_override or infer_branch(task_id, description)
+    if layout_overrides and "planned_branch" in layout_overrides:
+        planned_branch = layout_overrides["planned_branch"]
 
     # --- settings_args -----------------------------------------------------
     settings_args = {
