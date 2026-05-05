@@ -37,7 +37,9 @@ Output (JSON shape):
     }
 
 Key contract notes (from Codex review of Issue #283):
-- ``pattern_variant`` distinguishes the two Pattern C sub-modes (M-1).
+- ``pattern_variant`` carries sub-mode labels: the two Pattern C sub-modes
+  (``ephemeral`` / ``gitignored_repo_root``, M-1) and the Pattern B
+  ``live_repo_worktree`` sub-mode used by claude-org self-edit (Issue #289).
 - ``planned_branch`` is the resolver's *suggestion*; the actual branch
   may diverge after worktree creation, so callers MUST re-read git
   before pinning it into the brief / payload (M-2).
