@@ -422,15 +422,27 @@ worker → Secretary peer message
   5. CI watch / next instruction
 ```
 
-- 1 (ack) は worker dead-lock 防止の必須 step。worker は ack を受け取るまで「次の指示待ち」で idle になり続ける。ack の最低内容と種別ごとの例文は [`references/ack-template.md`](references/ack-template.md) を参照
+- **適用範囲**:
+  - **step 1 (ack) と step 2 (state 更新) は全 message 共通で必須**。完了 / 進捗 / Codex round / 判断仰ぎ いずれを受けても worker 宛 ack を最初に発行する（dead-lock 防止）
+  - **step 3 (user 報告) と step 4 (承認待ち)** は完了報告・判断仰ぎ・ブロッカー・スコープ拡張提案 等 user の判断を要する種別に限る。**純粋な進捗報告（subsection 1）は ack + Progress Log + events 追記で完了**し、user 報告・承認待ちは行わない（worker を不要に止めない）
+  - **step 5 (CI watch / 次の指示)** は push / PR 後または追加指示が必要な種別のみ
+- ack の最低内容と種別ごとの例文は [`references/ack-template.md`](references/ack-template.md) を参照
 - 2 → 3 の順序は「内部状態を先に整合させてから user に報告する」原則。逆にすると user 承認後に DB 不整合が残るリスクがある
-- 4 (user approval gate) は判断仰ぎ・完了報告いずれも対象。`git push` / `gh pr create` / `tools/pr-watch.*` は user の明示的 OK 後にのみ発行する。ack ≠ user 承認
+- step 4 の `git push` / `gh pr create` / `tools/pr-watch.*` は user の明示的 OK 後にのみ発行する。**ack ≠ user 承認** — ack は worker dead-lock 解除のための受領確認で、push/PR 権限を生まない
 
 ワーカーから renga-peers でメッセージを受け取ったら:
 
 0. 判断仰ぎ・スコープ拡張提案・承認要求・ブロッカーの場合（**最優先で識別**）:
    - ワーカーが「承認を仰ぎます」「判断仰ぎます」「続行可否」「スコープ拡張」「提案」「想定外」「runbook 逸脱」「ブロック」「ブロッカー」「block」等を含むメッセージを送ってきた場合
-   - **Secretary は一次承認しない**。「受領しました、人間に確認します」のみ返答してよい
+   - **最初に worker へ ack を返す**（Canonical event flow step 1。状態保存・user 伝達より前に発行する）:
+     ```
+     mcp__renga-peers__send_message(
+       to_id="worker-{task_id}",
+       message="判断仰ぎ受領しました。Secretary では一次承認しません。人間に確認します。返答が来るまでペイン保持で待機してください（自動続行しないこと）。"
+     )
+     ```
+     文面例は [`references/ack-template.md`](references/ack-template.md) の「判断仰ぎ ack」節
+   - **Secretary は一次承認しない**。worker への返答も「受領しました、人間に確認します」のみ
    - **状態を保存する**（窓口再起動・引き継ぎで pending 判断を失わないため、進捗報告と同等の永続化を行う）:
      - `.state/workers/worker-{task_id}.md` の Progress Log に「判断仰ぎ受信」内容と要点を追記
      - DB の events テーブルに追記: `bash tools/journal_append.sh worker_escalation worker=worker-{task_id} task={task_id} reason="<要約>"`
@@ -443,6 +455,14 @@ worker → Secretary peer message
    - （注）ブロッカー報告も本分岐で扱うため、下段「3. ブロック報告の場合」と重複した場合は本分岐を優先する
 
 1. 進捗報告の場合:
+   - **最初に worker へ ack を返す**（Canonical event flow step 1。Progress Log 追記より前）:
+     ```
+     mcp__renga-peers__send_message(
+       to_id="worker-{task_id}",
+       message="進捗受領しました。続行 OK。完了したら同じ to_id=\"secretary\" で報告してください。ペイン保持で。"
+     )
+     ```
+     文面例は [`references/ack-template.md`](references/ack-template.md) の「進捗報告 ack」節。**進捗報告は user に上げない・承認待ちもしない**（Canonical event flow の適用範囲注記参照）
    - `.state/workers/worker-{task_id}.md` の Progress Log に追記
    - DB の events テーブルにイベント追記 (`bash tools/journal_append.sh ...`)
 2a. ワーカーから完了報告を受け取ったら:
