@@ -20,7 +20,7 @@ Tab 1: ops (ワーカー 0 人)
 └────────────────────┴──────────┴─────────┘
 ```
 
-> ※ 実際には `secretary` が左で `dispatcher/curator` が下半分を占める構成もあり、初期レイアウト詳細は org-start に委ねる。本ドキュメントで重要なのは「`dispatcher` ペインの矩形から balanced split でワーカー zone を作っていく」という点。
+> ※ 実際には `secretary` が左で `dispatcher/curator` が下半分を占める構成もあり、初期レイアウト詳細は org-start に委ねる。本ドキュメントで重要なのは「`secretary / curator / worker / dispatcher` の 4 役を候補とする role-priority 付き balanced split で動的にワーカー zone を作っていく」という点（詳細は下記アルゴリズム節）。
 
 ## 配置ルール
 
@@ -80,7 +80,7 @@ renga の cell 座標は整数なので tolerance なし完全一致で判定す
 
 - **1st worker spawn**: candidate = {secretary (priority 4, vertical split で 140×43, OK), curator (priority 3), worker は不在, dispatcher (priority 1, curator 隣接 OK)}。secretary が最優先で選ばれる → vertical split。secretary は 280→140 に縮む。
 - **2nd worker spawn**: secretary は今や 140 cols で `new_w = floor(140/2) = 70 < 140` のため SECRETARY_MIN_WIDTH ガードで脱落。残る最高優先度は **curator** (priority 3) → curator が target に。curator は典型 140×43 で横長なので vertical split。
-- **3rd worker spawn**: secretary 脱落、curator は分割済みで metric が落ち、worker-1 (priority 2) と curator (priority 3) で curator が priority 上位。ただし curator が MIN_PANE_WIDTH 不足になっていれば worker-1 が選ばれる。実際の選出は metric / 残幅で決まる。
+- **3rd worker spawn**: role priority が strict primary なので、curator が MIN_PANE を満たす限り curator が再度選ばれる (priority 3 > worker priority 2)。curator が MIN_PANE_WIDTH を割って候補から脱落して初めて、priority 2 の worker 群の中で metric desc 比較が効く。
 
 以降は role priority と分割後サイズに応じて自然に交替することで準 balanced な配置になる。固定的な 4 並列 / 8 並列の図は意味を持たないため割愛する (動的で決まるため)。
 
