@@ -563,6 +563,39 @@ class TestPatternBLiveRepoWorktree(unittest.TestCase):
             (self.sb.workers / "clock-app" / ".worktrees" / "clock-next").resolve(),
         )
 
+    def test_role_only_override_to_self_edit_re_derives_variant_and_worker_dir(self):
+        """Codex Round 1 Major regression: passing ONLY
+        layout_overrides={'role': 'claude-org-self-edit'} on a Pattern B
+        layout must promote pattern_variant to 'live_repo_worktree' and
+        relocate worker_dir to {claude_org_root}/.worktrees/. Otherwise
+        the resolver would emit an incoherent layout (role=self_edit but
+        worker_dir under {workers_dir}/{project_slug}/.worktrees/)."""
+        # Active run on clock-app forces Pattern B for the new task; the
+        # auto-resolved role would be 'default' (clock-app != claude-org).
+        self.sb.add_run(
+            task_id="clock-prev",
+            project_slug="clock-app",
+            pattern="A",
+            status="in_use",
+            worker_dir_abs=str(self.sb.workers / "clock-app"),
+        )
+        layout = rwl.resolve(
+            task_id="role-promoted",
+            project_slug="clock-app",
+            mode="edit",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+            layout_overrides={"role": "claude-org-self-edit"},
+        )
+        self.assertEqual(layout.pattern, "B")
+        self.assertEqual(layout.role, "claude-org-self-edit")
+        self.assertTrue(layout.self_edit)
+        self.assertEqual(layout.pattern_variant, "live_repo_worktree")
+        self.assertEqual(
+            Path(layout.worker_dir),
+            (self.sb.claude_org_root / ".worktrees" / "role-promoted").resolve(),
+        )
+
     def test_explicit_variant_via_layout_overrides_resets_worker_dir(self):
         """layout_overrides supplying pattern=B + variant='live_repo_worktree'
         without an explicit worker_dir → resolver re-derives worker_dir under

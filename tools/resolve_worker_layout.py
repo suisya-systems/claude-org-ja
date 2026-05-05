@@ -23,7 +23,7 @@ Output (JSON shape):
 
     {
       "pattern": "A" | "B" | "C",
-      "pattern_variant": "ephemeral" | "gitignored_repo_root" | None,
+      "pattern_variant": "ephemeral" | "gitignored_repo_root" | "live_repo_worktree" | None,
       "worker_dir": "<absolute path>",
       "role": "default" | "claude-org-self-edit" | "doc-audit",
       "self_edit": <bool>,
@@ -105,7 +105,7 @@ _FIX_TRIGGERS = ("fix", "bug", "修正", "hotfix", "patch")
 @dataclass(frozen=True)
 class WorkerLayout:
     pattern: str                       # "A" | "B" | "C"
-    pattern_variant: Optional[str]     # "ephemeral" | "gitignored_repo_root" | None
+    pattern_variant: Optional[str]     # "ephemeral" | "gitignored_repo_root" | "live_repo_worktree" | None
     worker_dir: str                    # absolute path
     role: str                          # default | claude-org-self-edit | doc-audit
     self_edit: bool
@@ -417,6 +417,21 @@ def resolve(
                     f"layout_overrides['self_edit'] must be bool, got {type(se).__name__}"
                 )
             self_edit = se
+
+        # Final coherence pass for Issue #289: if overrides upgraded the role
+        # to claude-org-self-edit on a Pattern B layout but did not also
+        # specify pattern_variant / worker_dir, re-derive them so the live
+        # repo convention holds. Skipped when the caller explicitly supplied
+        # either (their value wins).
+        explicit_variant = "pattern_variant" in layout_overrides and layout_overrides.get("pattern_variant") is not None
+        if (
+            self_edit
+            and pattern == "B"
+            and not explicit_variant
+            and not explicit_worker_dir
+        ):
+            variant = "live_repo_worktree"
+            worker_dir = (claude_org_root / ".worktrees" / task_id).resolve()
 
     # --- Branch decision ---------------------------------------------------
     # Re-derived from the *final* pattern so a TOML-supplied pattern override
