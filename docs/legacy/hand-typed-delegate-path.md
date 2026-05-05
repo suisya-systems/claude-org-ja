@@ -26,6 +26,22 @@ Operationally that meant:
 
 - `python tools/gen_worker_brief.py --config <task>.toml --out <CLAUDE.md>` で brief を手動生成
 - `claude-org-runtime settings generate` を **`--role` を窓口で確定させた上で** 直接呼ぶ
-- DELEGATE 本文は `.claude/skills/org-delegate/references/delegate-flow-details.md` §3 のテンプレートに従って手書きし、`mcp__renga-peers__send_message(to_id="dispatcher", message=…)` で送る
+- DELEGATE 本文を以下のテンプレートに従って手書きし、`mcp__renga-peers__send_message(to_id="dispatcher", message=…)` で送る (この museum copy を archaeology として保全するため、active doc の §3 を参照せず本ドキュメントに inline で残す。標準経路の最新仕様は `.claude/skills/org-delegate/references/delegate-flow-details.md` §3 を参照):
+
+  ```
+  DELEGATE: 以下のワーカーを派遣してください。
+  タスク一覧:
+  - {task_id}: {description}
+    - ワーカーディレクトリ: {worker_dir}
+    - ディレクトリパターン: {A|B|C}    # Pattern C のサブモードは variant ラベル
+    - プロジェクト: {clone source / reuse / worktree base}
+    - ブランチ (planned): {branch}    # Pattern C は null
+    - Permission Mode: {mode}        # registry/org-config.md から
+    - 検証深度: {full|minimal}
+    - 指示内容: CLAUDE.md / CLAUDE.local.md 参照。{1 行サマリ}
+  窓口ペイン名: secretary
+  ```
+
+  各行は省略不可。`tools/gen_delegate_payload.py` の snapshot test (`tests/fixtures/delegate_payload/`) が同フォーマットをロックしている (歴史的に "verification_depth row 抜け" などの fail を防ぐため)。
 
 Both paths skip the T1 reservation and therefore do not surface the queued state to the dispatcher's watch loop.
