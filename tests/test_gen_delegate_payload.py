@@ -867,6 +867,53 @@ class TestPatternBWorktreeCreation(unittest.TestCase):
         # Sanity: the feat-only file must NOT appear in the new worktree.
         self.assertFalse((worker_dir / "feat.txt").exists())
 
+    def test_apply_aborts_when_existing_worktree_on_wrong_branch(self):
+        """Codex Round 2 Major: idempotent reuse must verify the existing
+        worktree is on the planned branch — a stale partial-retry on a
+        different branch must abort, not silently dispatch."""
+        plan = self._build_self_edit_b(task_id="branch-mismatch")
+        worker_dir = Path(plan.layout.worker_dir)
+        import subprocess as _sp
+        worker_dir.parent.mkdir(parents=True, exist_ok=True)
+        # Pre-create on a different branch than planned_branch.
+        _sp.run(
+            ["git", "-C", str(self.sb.claude_org_root),
+             "worktree", "add", "-b", "wrong-branch", str(worker_dir)],
+            check=True, capture_output=True,
+        )
+        with self.assertRaises(gdp.WorktreeApplyError) as cm:
+            gdp.apply_delegate_plan(
+                plan,
+                state_db_path=self.sb.db_path,
+                claude_org_root=self.sb.claude_org_root,
+                skip_settings=True,
+            )
+        self.assertIn("not the planned", str(cm.exception))
+
+    def test_apply_aborts_when_no_default_trunk_ref(self):
+        """Codex Round 2 Major: must not silently fall back to HEAD when
+        origin/HEAD / main / master are all absent — that would re-introduce
+        the original bug on repos whose default branch is `trunk`."""
+        # Rename the only branch to `trunk` so neither main nor master nor
+        # origin/HEAD exists.
+        import subprocess as _sp
+        base = self.sb.claude_org_root
+        _sp.run(["git", "-C", str(base), "branch", "-m", "main", "trunk"],
+                check=True)
+        plan = self._build_self_edit_b(task_id="no-trunk-task")
+        with self.assertRaises(gdp.WorktreeApplyError) as cm:
+            gdp.apply_delegate_plan(
+                plan,
+                state_db_path=self.sb.db_path,
+                claude_org_root=self.sb.claude_org_root,
+                skip_settings=True,
+            )
+        self.assertIn("default trunk ref", str(cm.exception))
+        # Neither DB row nor brief should exist.
+        self.assertFalse(
+            any(r["task_id"] == "no-trunk-task" for r in self.sb.list_runs())
+        )
+
     def test_apply_creates_plain_pattern_b_worktree_for_project_repo(self):
         """Non-self-edit Pattern B branches from the project's registered repo."""
         # Stand up a dedicated project repo on disk and re-seed the registry.
