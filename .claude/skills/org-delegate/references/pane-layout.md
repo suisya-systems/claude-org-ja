@@ -44,12 +44,12 @@ renga は各 split で対象ペインを 50/50 に分ける。`MIN_PANE_WIDTH = 
 
 ### アルゴリズム
 
-balanced split の判定ロジック (target / direction 選択、MIN_PANE 制約、secretary 保険、role priority ソート、rect 隣接判定、`split_capacity_exceeded` 検出) は **`claude-org-runtime` の helper が SoT**。dispatcher は `mcp__renga-peers__list_panes` のスナップショットと task JSON を入力にして以下のいずれかを呼び、返却された action plan に従って `spawn_claude_pane` / escalate を実行する:
+balanced split の判定ロジック (target / direction 選択、MIN_PANE 制約、secretary 保険、role priority ソート、rect 隣接判定、`split_capacity_exceeded` 検出) は **`claude-org-runtime` の helper が SoT**。dispatcher は `mcp__renga-peers__list_panes` のスナップショットと task JSON を入力にして以下のいずれかを呼び、返却された action plan (`spawn` / `after_spawn` / `escalate` / `state_writes` / `status`) に従って `spawn_claude_pane` / escalate を実行する:
 
-- ライブラリ: `claude_org_runtime.dispatcher.runner.choose_split(panes)` / `build_plan(...)`
-- CLI: `python -m claude_org_runtime.dispatcher.runner delegate-plan --task-json ... --panes-json ...`
+- CLI (運用上の標準呼び出し): `claude-org-runtime dispatcher delegate-plan --task-json ... --panes-json ... --state-dir ... [--template-repo ...] [--locale-json ...]`。dispatcher 側の手順は `.dispatcher/CLAUDE.md` の delegate-plan helper 節を一次参照
+- ライブラリ: `claude_org_runtime.dispatcher.runner` モジュールの `build_plan(...)` (action plan 全体) と `choose_split(panes)` (target / direction だけ欲しい場合の low-level helper)
 
-定数値 (MIN_PANE_WIDTH / MIN_PANE_HEIGHT / SECRETARY_MIN_WIDTH / SECRETARY_MIN_HEIGHT / role priority マップ) と判定順序、rect 隣接の厳密な定義は **`claude-org-runtime/src/claude_org_runtime/dispatcher/runner.py` を一次参照** とする。本ドキュメントから定数値の prose を削除したのは、runtime と doc の drift が `[split_refused]` 等の不可解な失敗を生む原因になるため (Issue #307 cleanup)。
+定数値 (MIN_PANE_WIDTH / MIN_PANE_HEIGHT / SECRETARY_MIN_WIDTH / SECRETARY_MIN_HEIGHT / role priority マップ) と判定順序、rect 隣接の厳密な定義は **`claude_org_runtime.dispatcher.runner` モジュール本体** (`_ROLE_PRIORITY` / `MIN_PANE_*` / `SECRETARY_MIN_*` / `choose_split()` / `rect_adjacent()`) を一次参照とする。本ドキュメントから定数値の prose を削除したのは、runtime と doc の drift が `[split_refused]` 等の不可解な失敗を生む原因になるため (Issue #307 cleanup)。
 
 候補が空のときは helper が `status="split_capacity_exceeded"` と `escalate.send_message(to_id="secretary", ...)` を返す。dispatcher は `spawn_claude_pane` を発行せず、該当ワーカー 1 件だけ派遣を中止、本体監視ループは継続する (`SKILL.md` Step 3-1c 参照)。
 
