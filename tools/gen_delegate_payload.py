@@ -208,6 +208,7 @@ def build_delegate_plan(
     state_db_path: Optional[Path] = None,
     claude_org_root: Path,
     workers_dir: Optional[Path] = None,
+    layout_overrides: Optional[dict[str, Any]] = None,
 ) -> DelegatePlan:
     """Resolve the layout, assemble the brief config, format the DELEGATE body.
 
@@ -235,6 +236,7 @@ def build_delegate_plan(
         state_db_path=state_db_path,
         claude_org_root=claude_org_root,
         workers_dir=workers_dir,
+        layout_overrides=layout_overrides,
     )
 
     self_edit = bool(config["worker"]["self_edit"])
@@ -555,8 +557,28 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _resolve_claude_org_root(args: argparse.Namespace) -> Path:
+    """Resolve claude-org repo root. Priority (highest first):
+
+    1. ``--claude-org-root`` CLI flag (explicit).
+    2. ``[paths] claude_org`` from ``--from-toml`` (Issue #290 defect 2 —
+       previously ignored, leaving cwd-derived paths to drift).
+    3. cwd-walk fallback (:func:`gwb._detect_claude_org_root`).
+    """
     if args.claude_org_root is not None:
-        return args.claude_org_root
+        return Path(args.claude_org_root).resolve()
+    toml_path = getattr(args, "from_toml", None)
+    if toml_path is not None:
+        try:
+            with Path(toml_path).open("rb") as fh:
+                cfg = tomllib.load(fh)
+        except (OSError, tomllib.TOMLDecodeError):
+            cfg = {}
+        cfg_path = (cfg.get("paths") or {}).get("claude_org")
+        if cfg_path:
+            p = Path(cfg_path)
+            if not p.is_absolute():
+                p = (Path(toml_path).resolve().parent / p)
+            return p.resolve()
     return gwb._detect_claude_org_root()
 
 
@@ -589,6 +611,21 @@ def _load_task_args_from_toml(path: Path) -> dict[str, Any]:
     parallel = cfg.get("parallel", {})
     role = (worker.get("role") or "").strip()
     mode_from_toml = "audit" if role == "doc-audit" else "edit"
+
+    # Issue #290 defect 1: surface explicit [worker] fields so the resolver
+    # honors them instead of silently re-deriving pattern/role/dir/self_edit.
+    layout_overrides: dict[str, Any] = {}
+    if worker.get("pattern"):
+        layout_overrides["pattern"] = worker["pattern"]
+    if worker.get("pattern_variant"):
+        layout_overrides["pattern_variant"] = worker["pattern_variant"]
+    if worker.get("dir"):
+        layout_overrides["worker_dir"] = worker["dir"]
+    if role:
+        layout_overrides["role"] = role
+    if "self_edit" in worker:
+        layout_overrides["self_edit"] = bool(worker["self_edit"])
+
     return {
         "task_id": task.get("id"),
         "project_slug": project.get("name"),
@@ -605,6 +642,7 @@ def _load_task_args_from_toml(path: Path) -> dict[str, Any]:
         "references_knowledge": refs.get("knowledge"),
         "parallel_notes": parallel.get("notes"),
         "mode": mode_from_toml,
+        "layout_overrides": layout_overrides or None,
     }
 
 
@@ -722,7 +760,19 @@ def _cmd_apply(args: argparse.Namespace) -> int:
     return 0
 
 
+def _reconfigure_stdout() -> None:
+    """Force stdout/stderr to UTF-8 on Windows so the DELEGATE body / Layout
+    summary (which contain Japanese) don't mojibake under cp932 consoles
+    (Issue #290 defect 3). No-op when reconfigure is unavailable."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, OSError):
+            pass
+
+
 def main(argv: Optional[list[str]] = None) -> int:
+    _reconfigure_stdout()
     args = _build_parser().parse_args(argv)
     if args.cmd == "preview":
         return _cmd_preview(args)

@@ -286,6 +286,7 @@ def resolve(
     state_db_path: Optional[Path] = None,
     claude_org_root: Path,
     workers_dir: Optional[Path] = None,
+    layout_overrides: Optional[dict[str, Any]] = None,
 ) -> WorkerLayout:
     """Resolve worker layout for one delegation. See module docstring."""
     if not task_id:
@@ -361,6 +362,26 @@ def resolve(
         planned_branch: Optional[str] = None
     else:
         planned_branch = branch_override or infer_branch(task_id, description)
+
+    # --- TOML [worker] block overrides (Issue #290 defect 1) --------------
+    # Honor explicit values from the caller (typically a worker_brief.toml
+    # passed via gen_delegate_payload --from-toml) instead of letting the
+    # auto-derive above override them. Priority order, highest first:
+    #   TOML [worker] field > CLI flag > resolver auto-derive.
+    if layout_overrides:
+        if "pattern" in layout_overrides and layout_overrides["pattern"]:
+            pattern = layout_overrides["pattern"]
+            # Pattern explicitly set; reset variant unless TOML also supplied one.
+            variant = layout_overrides.get("pattern_variant")
+        if "worker_dir" in layout_overrides and layout_overrides["worker_dir"]:
+            worker_dir = Path(layout_overrides["worker_dir"]).resolve()
+        if "role" in layout_overrides and layout_overrides["role"]:
+            role = layout_overrides["role"]
+            self_edit = role == "claude-org-self-edit"
+        if "self_edit" in layout_overrides:
+            self_edit = bool(layout_overrides["self_edit"])
+        if "planned_branch" in layout_overrides:
+            planned_branch = layout_overrides["planned_branch"]
 
     # --- settings_args -----------------------------------------------------
     settings_args = {

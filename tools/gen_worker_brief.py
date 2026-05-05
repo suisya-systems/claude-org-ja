@@ -318,6 +318,7 @@ def build_config_from_task(
     state_db_path: Optional[Path] = None,
     claude_org_root: Path,
     workers_dir: Optional[Path] = None,
+    layout_overrides: Optional[dict[str, Any]] = None,
 ) -> tuple[dict[str, Any], "object"]:
     """Resolve layout + assemble a render-ready config.
 
@@ -341,6 +342,7 @@ def build_config_from_task(
         state_db_path=state_db_path,
         claude_org_root=claude_org_root,
         workers_dir=workers_dir,
+        layout_overrides=layout_overrides,
     )
 
     # gitignored_repo_root inherits the .local.md template treatment even

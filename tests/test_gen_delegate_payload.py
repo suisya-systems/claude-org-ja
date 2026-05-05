@@ -517,6 +517,157 @@ class TestFromTomlRoundTrip(unittest.TestCase):
         self.assertEqual(kwargs["verification_depth"], "full")
 
 
+# ---------------------------------------------------------------------------
+# Issue #290 regression tests — TOML [worker] / [paths] honor + encoding
+# ---------------------------------------------------------------------------
+
+
+class TestIssue290Regressions(unittest.TestCase):
+    def setUp(self) -> None:
+        self._td = tempfile.TemporaryDirectory()
+        self.sb = _Sandbox(Path(self._td.name))
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def _write_toml(self, path: Path, body: str) -> None:
+        path.write_text(body, encoding="utf-8")
+
+    def _run_preview_json(self, argv: list[str]) -> dict:
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        buf = StringIO()
+        with redirect_stdout(buf):
+            rc = gdp.main(["preview", *argv, "--json"])
+        self.assertEqual(rc, 0)
+        return json.loads(buf.getvalue())
+
+    def test_290_a_worker_block_overrides_resolver(self):
+        """TOML [worker] pattern/role/self_edit/dir survive into the layout
+        summary instead of being recomputed by the resolver."""
+        explicit_dir = self.sb.root / "explicit-worker-dir"
+        toml = self.sb.root / "in.toml"
+        self._write_toml(
+            toml,
+            "[task]\n"
+            'id = "t-290a"\n'
+            'description = "honor worker block"\n'
+            "\n[worker]\n"
+            f'dir = "{explicit_dir.as_posix()}"\n'
+            'pattern = "B"\n'
+            'role = "claude-org-self-edit"\n'
+            "self_edit = true\n"
+            "\n[project]\n"
+            'name = "clock-app"\n'
+            f'\n[paths]\nclaude_org = "{self.sb.claude_org_root.as_posix()}"\n',
+        )
+        data = self._run_preview_json([
+            "--from-toml", str(toml),
+            "--state-db-path", str(self.sb.db_path),
+        ])
+        s = data["summary"]
+        self.assertEqual(s["pattern"], "B")
+        self.assertEqual(s["role"], "claude-org-self-edit")
+        self.assertTrue(s["self_edit"])
+        self.assertEqual(
+            Path(s["worker_dir"]).resolve(), explicit_dir.resolve()
+        )
+        # settings_args picks up the overridden role + worker_dir.
+        self.assertEqual(s["settings_args"]["role"], "claude-org-self-edit")
+        self.assertEqual(
+            Path(s["settings_args"]["worker-dir"]).resolve(),
+            explicit_dir.resolve(),
+        )
+
+    def test_290_b_paths_claude_org_flows_into_settings_args(self):
+        """[paths] claude_org from TOML lands in settings_args.claude-org-path
+        when no CLI override is supplied (no more cwd-derived drift)."""
+        toml = self.sb.root / "in.toml"
+        self._write_toml(
+            toml,
+            "[task]\n"
+            'id = "t-290b"\n'
+            'description = "paths.claude_org honored"\n'
+            "\n[project]\n"
+            'name = "clock-app"\n'
+            f'\n[paths]\nclaude_org = "{self.sb.claude_org_root.as_posix()}"\n',
+        )
+        # Intentionally no --claude-org-root.
+        data = self._run_preview_json([
+            "--from-toml", str(toml),
+            "--state-db-path", str(self.sb.db_path),
+        ])
+        self.assertEqual(
+            Path(data["summary"]["settings_args"]["claude-org-path"]).resolve(),
+            self.sb.claude_org_root.resolve(),
+        )
+
+    def test_290_c_cli_claude_org_root_overrides_toml_paths(self):
+        """CLI --claude-org-root wins over [paths] claude_org."""
+        bogus = self.sb.root / "bogus-elsewhere"
+        toml = self.sb.root / "in.toml"
+        self._write_toml(
+            toml,
+            "[task]\n"
+            'id = "t-290c"\n'
+            'description = "cli wins"\n'
+            "\n[project]\n"
+            'name = "clock-app"\n'
+            f'\n[paths]\nclaude_org = "{bogus.as_posix()}"\n',
+        )
+        data = self._run_preview_json([
+            "--from-toml", str(toml),
+            "--claude-org-root", str(self.sb.claude_org_root),
+            "--state-db-path", str(self.sb.db_path),
+        ])
+        resolved = Path(
+            data["summary"]["settings_args"]["claude-org-path"]
+        ).resolve()
+        self.assertEqual(resolved, self.sb.claude_org_root.resolve())
+        self.assertNotEqual(resolved, bogus.resolve())
+
+    def test_290_d_japanese_preview_does_not_mojibake_under_cp932(self):
+        """preview stdout decodes cleanly even when the underlying console
+        is cp932 — the encoding wrapper rewraps stdout to utf-8."""
+        import io as _io
+
+        toml = self.sb.root / "in.toml"
+        self._write_toml(
+            toml,
+            "[task]\n"
+            'id = "t-290d"\n'
+            'description = "日本語の説明文 — 派遣テスト"\n'
+            "\n[project]\n"
+            'name = "clock-app"\n'
+            f'\n[paths]\nclaude_org = "{self.sb.claude_org_root.as_posix()}"\n',
+        )
+
+        raw = _io.BytesIO()
+        wrapper = _io.TextIOWrapper(
+            raw, encoding="cp932", errors="strict", write_through=True
+        )
+        old_stdout = sys.stdout
+        sys.stdout = wrapper
+        try:
+            rc = gdp.main([
+                "preview",
+                "--from-toml", str(toml),
+                "--state-db-path", str(self.sb.db_path),
+            ])
+        finally:
+            try:
+                wrapper.flush()
+            except Exception:
+                pass
+            sys.stdout = old_stdout
+        self.assertEqual(rc, 0)
+        decoded = raw.getvalue().decode("utf-8")
+        # Japanese phrases from the DELEGATE template + description survive.
+        self.assertIn("以下のワーカーを派遣", decoded)
+        self.assertIn("日本語の説明文", decoded)
+
+
 def _env_update_goldens() -> bool:
     import os
     return os.environ.get("UPDATE_GOLDENS") == "1"
