@@ -41,7 +41,7 @@ The audit script (`tools/audit_link_paths.py`) checks:
 - `.curator/CLAUDE.md`
 - `.dispatcher/CLAUDE.md`, `.dispatcher/references/**/*.md`
 - `.claude/skills/**/SKILL.md`, `.claude/skills/**/references/**/*.md`
-- `docs/contracts/**/*.md`, `docs/journal-events.md`
+- `docs/contracts/**/*.md`, `docs/contributing/**/*.md`, `docs/journal-events.md`
 
 `notes/`, `docs/legacy/` (museum copies), third-party docs, and generated
 dashboards are intentionally excluded.
