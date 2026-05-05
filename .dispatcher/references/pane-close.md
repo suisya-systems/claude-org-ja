@@ -54,7 +54,7 @@ mcp__renga-peers__send_message(to_id="secretary", message="<上記 stdout>")
 
 **secretary unreachable 時の fallback**: 上記送信が `[pane_not_found]` 等で失敗する、または 5 分以内に応答が返らない場合は、retro に「未着」と誤った結論を書かない。代わりに以下の手順で **CLOSE_PANE フローを中断** する:
 
-1. journal helper 経由で `retro_deferred` を追記する（生 JSON を `>>` で書かない。helper 契約は本ファイル「helper（`tools/journal_append.sh` ...）」節を参照）:
+1. journal helper 経由で `retro_deferred` を追記する（生 JSON を `>>` で書かない。helper 契約は `.dispatcher/CLAUDE.md`「delegate-plan helper」節末尾の `tools/journal_append.sh` 説明を参照）:
    ```bash
    bash ../tools/journal_append.sh retro_deferred worker=worker-{task_id} reason=secretary_unreachable
    ```

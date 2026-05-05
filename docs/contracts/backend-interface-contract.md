@@ -68,7 +68,7 @@ The backend MUST expose primitives to spawn, enumerate, identify, and close "pan
 
 - **Operation**: enumerate every pane in the current tab.
 - **Outputs**: per-pane records containing `id`, optional `name`, optional `role`, `focused` flag, terminal geometry (`x`, `y`, `width`, `height` in cell units), `cwd`, optional `summary` (see 2.4), and when known the peer client kind / receive mode (push vs poll).
-- **Required for**: balanced-split target selection (`org-delegate` Step 3-1), reconciliation of missed lifecycle events (`.dispatcher/CLAUDE.md` watch-loop Step 3), bootstrap identity verification (`org-start` Step 0.3).
+- **Required for**: balanced-split target selection (`org-delegate` Step 3-1), reconciliation of missed lifecycle events (`.dispatcher/references/worker-monitoring.md` watch-loop Step 3), bootstrap identity verification (`org-start` Step 0.3).
 - **Visibility scope**: current tab only. Panes in other tabs MUST NOT appear.
 - **Required-vs-optional**: REQUIRED. The backend MUST expose `x` / `y` / `width` / `height` in cell units on every `list_panes` record. The harness's balanced-split scheduling depends on it; a backend without geometry would require an entirely different scheduling strategy and the harness cannot operate against such a backend without contract amendment.
 
@@ -84,7 +84,7 @@ The backend MUST expose primitives to spawn, enumerate, identify, and close "pan
 - **Operation**: snapshot the visible screen of another pane (grid scrape).
 - **Inputs**: `target`, optional `lines` (trim to bottom N rows), optional `format` (`"text"` | `"grid"`), optional `include_cursor`.
 - **Outputs**: rendered screen text and/or structured grid (`{lines: [{row, text}], cursor?: {visible, row, col}}`).
-- **Used for**: independent observation of approval prompts and error banners by the dispatcher's watch loop, completion-state read-back during retro (`.dispatcher/CLAUDE.md` Step 4 (a)–(g)).
+- **Used for**: independent observation of approval prompts and error banners by the dispatcher's watch loop, completion-state read-back during retro (`.dispatcher/references/worker-monitoring.md` Step 4 (a)–(g)).
 - **Required-vs-optional**: REQUIRED. Independent grid-scrape observation is foundational to the dispatcher's confidence-graded notification model (cross-checking worker self-reports against observable screen state). A backend that exposes only logical messaging — forcing the harness onto self-report-only — is insufficient for the safety guarantees Set A and Set B depend on.
 
 ### 1.8 set_pane_identity

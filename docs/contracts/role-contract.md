@@ -130,7 +130,7 @@
 - **CLOSE_PANE discipline** — must complete retro Steps 1–2 before `close_pane`; closing first destroys evidence. If secretary is unreachable inside 5 minutes, write `retro_deferred` and skip the close (do NOT write a "completion report missing" retro conclusion).
 - **De-dup contract** — `notify_sent` records gate further notifications for the same `(worker, kind)` within 30 seconds; `anomaly_observed` records do NOT count toward de-dup.
 - **Curator dependency** — The dispatcher may operate without a curator present. Balanced-split logic adapts when the curator is absent. Knowledge curation is best-effort and is not a delegation prerequisite.
-- **Approval-prompt regex registry** — The dispatcher uses inspect-based detection per `.dispatcher/CLAUDE.md` § (b), which is the authoritative registry of approval-prompt regexes. The contract does not duplicate the list.
+- **Approval-prompt regex registry** — The dispatcher uses inspect-based detection per `.dispatcher/references/worker-monitoring.md` § (b), which is the authoritative registry of approval-prompt regexes. The contract does not duplicate the list.
 - **Concurrency** — No contractual concurrency limit beyond renga's pane cap (16) and balanced-split feasibility.
 
 ### Lifecycle / boundaries
@@ -277,7 +277,7 @@
 A digest of the Lead-confirmed choices made during the 2026-05-03 Q&A session, by cluster:
 
 1. **Latency / SLA contracts** — Soft SLA only. The secretary yields to active human dialogue; idle response is best-effort. Dispatcher crash recovery is best-effort with `list_panes` reconciliation as authority. Curator cadence is a tunable default, not a hard contract.
-2. **Closed-set enumerations** — Avoided. Authoritative registries live next to the code: `docs/journal-events.md` for journal events, `.dispatcher/CLAUDE.md` § (b) for approval-prompt regexes, `worker-claude-template.md` for the full-mode completion-report shape. The contract references these single-source-of-truth artifacts rather than duplicating their content. Worker max lifetime is left uncapped, governed by `org-delegate` Step 5 intervention triggers.
+2. **Closed-set enumerations** — Avoided. Authoritative registries live next to the code: `docs/journal-events.md` for journal events, `.dispatcher/references/worker-monitoring.md` § (b) for approval-prompt regexes, `worker-claude-template.md` for the full-mode completion-report shape. The contract references these single-source-of-truth artifacts rather than duplicating their content. Worker max lifetime is left uncapped, governed by `org-delegate` Step 5 intervention triggers.
 3. **Carve-outs to "no direct spawn"** — Codified. The secretary may directly spawn dispatcher and curator only during `/org-start`; all other pane spawns route through the dispatcher.
 4. **Self-management permissions** — Curator may archive but not delete `knowledge/raw/` entries. Workers may not spawn sub-workers (must escalate to secretary). Workers have no branch / worktree cleanup responsibility — branches are kept as audit trail; worktree handling follows `org-delegate` Step 5 patterns.
 5. **Suspend participation contracts** — `/org-suspend` skill at `.claude/skills/org-suspend/SKILL.md` is the authoritative flush list (the contract does not enumerate files). The curator does not participate in `/org-suspend`.
