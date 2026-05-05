@@ -182,44 +182,15 @@ runtime CLI 自体が壊れている場合 (`claude-org-runtime` / `gen_delegate
 - `focused`: bool（出力行に `(focused)` が付くかで判断）
 - `x / y / width / height`: cell 単位の整数
 
-#### 3-1b. balanced split アルゴリズム（Claude が判定ロジックを実行）
+#### 3-1b. balanced split アルゴリズム（runtime helper が判定ロジックを実行）
 
-**定数**:
-- `MIN_PANE_WIDTH = 20` / `MIN_PANE_HEIGHT = 5`: renga 側の分割下限（findings: renga-split-inv）
-- `SECRETARY_MIN_WIDTH = 140` / `SECRETARY_MIN_HEIGHT = 30`: secretary を分割候補にしてよい最小幅・最小高さ（280 cols → 1 回だけ vertical split で 140 まで縮め、以降は自動的に候補から脱落する設計）
-- **role priority**: `secretary = 4`, `curator = 3`, `worker = 2`, `dispatcher = 1`（Step 6 のソート primary key）
+balanced split の判定 (target / direction の選択、MIN_PANE / secretary 保険 / role priority によるソート、rect 隣接判定) は **dispatcher が `claude-org-runtime` の `delegate-plan` helper 経由で実行する**。Claude 側で再実装するロジックではない。helper は `mcp__renga-peers__list_panes` の rect スナップショットと task JSON を入力に取り、`spawn` ターゲット名と direction を含む action plan を返す（候補が空なら `split_capacity_exceeded` で escalate を指示）。
 
-**Step 1. curator を特定**: `role == "curator"` のペインを 1 つ選ぶ（複数あれば先頭）。以降 `$curator` と呼ぶ。存在しなければ `$curator = null`。
+仕様詳細・定数値・ソートキー・rect 隣接の正確な定義は **runtime SoT** を参照する:
+- CLI (運用上の標準呼び出し): `claude-org-runtime dispatcher delegate-plan --task-json ... --panes-json ... --state-dir ... [--template-repo ...] [--locale-json ...]`。`.dispatcher/CLAUDE.md` の delegate-plan helper 節が一次手順
+- ライブラリ: `claude_org_runtime.dispatcher.runner` モジュールの `build_plan()` (action plan 全体: `spawn` / `after_spawn` / `escalate` / `state_writes` / `status`) と、その内部で呼ばれる `choose_split()` (target / direction 選択) / `rect_adjacent()` / `_ROLE_PRIORITY` / `MIN_PANE_*` / `SECRETARY_MIN_*` 定数
 
-**Step 2. 候補を絞り込む**:
-- `role ∈ {"secretary", "curator", "dispatcher", "worker"}` の 4 役すべてが候補対象
-- `role == "dispatcher"` のペインは、**`$curator` と rect 隣接している場合のみ**残す（`$curator = null` なら dispatcher も除外）。curator 自体には adjacency 制約をかけない
-  - rect 隣接の定義（どちらかを満たす）:
-    - **縦辺共有 + y 区間重なり**: `a.x + a.width == b.x` または `b.x + b.width == a.x`、かつ `max(a.y, b.y) < min(a.y + a.height, b.y + b.height)`
-    - **横辺共有 + x 区間重なり**: `a.y + a.height == b.y` または `b.y + b.height == a.y`、かつ `max(a.x, b.x) < min(a.x + a.width, b.x + b.width)`
-
-**Step 3. 各候補に direction / new_w / new_h / metric を付与**:
-- `direction = (width > height * 2) ? "vertical" : "horizontal"`
-  - ターミナル cell は縦:横 ≈ 2:1（文字が縦長）。`width > height*2` は物理的に横長 → vertical（左右分割）で綺麗に割れる
-  - それ以外は horizontal（上下分割）
-- `new_w = (direction == "vertical") ? floor(width / 2) : width`
-- `new_h = (direction == "horizontal") ? floor(height / 2) : height`
-- `metric = (direction == "vertical") ? new_w : new_h`（分割軸方向の新サイズ）
-
-**Step 4. MIN_PANE 制約**:
-- `new_w >= MIN_PANE_WIDTH` かつ `new_h >= MIN_PANE_HEIGHT` のペインのみ残す
-
-**Step 5. secretary 保険条項**:
-- `role == "secretary"` のペインは `new_w >= SECRETARY_MIN_WIDTH` **かつ** `new_h >= SECRETARY_MIN_HEIGHT` のときだけ残す（width だけ通っても height が足りなければ除外）
-
-**Step 6. ソート & 選択**:
-- 並びは **(role priority desc, metric desc, id asc)**
-  - primary: role priority (secretary=4 > curator=3 > worker=2 > dispatcher=1)
-  - secondary: metric の降順（同 priority 内でのみ効く）
-  - tertiary: id の昇順
-- 先頭要素の `name` を `$target`、`direction` を `$direction` として使用
-
-初回（ワーカー 0 人、典型的な org-start 直後の `secretary 280×43 / dispatcher 140×43 / curator 140×43`、ターミナル ≈ 280×86 を仮定）は **secretary** が priority 4 で選ばれ vertical split される。ターミナル高さが小さく secretary が SECRETARY_MIN_HEIGHT=30 を満たさない場合は最初から脱落し、curator が target になる (role priority 規約は不変)。secretary が SECRETARY_MIN_WIDTH=140 で 1 回しか分割できないため、2 回目以降は **curator** が候補に残る間ずっと curator が選ばれ続ける（role priority が strict primary なので、curator が MIN_PANE を割って脱落して初めて worker 群に流れる）。dispatcher を最後に置くのは「ワーカー監視で active な dispatcher の viewport を頻繁に半減させないため」で、curator (`/loop 30m /org-curate` で大半は idle) を分割吸収先として優先する設計（Issue #307）。
+本 SKILL から定数値や Step 1-6 の prose を消したのは、runtime と doc が drift する原因になるため (Issue #307 cleanup)。dispatcher が helper を経由しない degraded mode に入った場合、判定再現は `claude_org_runtime.dispatcher.runner` モジュール (インストール先は `python -c "import claude_org_runtime.dispatcher.runner; print(claude_org_runtime.dispatcher.runner.__file__)"` で解決可能) を一次参照する。
 
 #### 3-1c. 候補が空だった場合
 
