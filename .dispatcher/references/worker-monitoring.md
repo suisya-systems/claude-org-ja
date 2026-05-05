@@ -250,7 +250,7 @@
 
    PR #298 (Issue #292) は (a) の動機 (1)(2) を proxy heuristics (snapshot diff / send_message timing) で検知していたが、(a)(2) (user 回答 → secretary → worker の転送漏れ) は worker outbound が起点となるため proxy では出ない死角があった。Issue #297 で Secretary 側に `.state/pending_decisions.json` 相当の **register** を導入し、両方向 (a)(1)(a)(2) を deterministic に追跡する:
 
-   - Secretary は `worker_escalation` を受領した時点で register に `{task_id, received_at, status="pending"}` を append する (CLAUDE.md / `.claude/skills/org-delegate/SKILL.md` Step 5 サブセクション 0)
+   - Secretary は `worker_escalation` を受領した時点で register に `{task_id, received_at, status="pending"}` を append する (CLAUDE.md / `.claude/skills/org-escalation/SKILL.md`)
    - 人間に伝達した時点で `resolve --kind to_user` で `escalated` に更新
    - 人間判断をワーカーに転送した時点で `resolve --kind to_worker` で `resolved` に更新
 

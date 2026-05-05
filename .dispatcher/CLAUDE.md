@@ -14,7 +14,7 @@
 
 作業手順は以下のスキルに定義されている。DELEGATE 受信時に必ず読むこと:
 
-- **ワーカー起動・指示送信・状態記録の手順**: `.claude/skills/org-delegate/SKILL.md` の Step 3, Step 4
+- **ワーカー起動・指示送信・状態記録の手順**: [`references/spawn-flow.md`](references/spawn-flow.md) （旧 `org-delegate` Step 3 / Step 4 はここに移設、Issue #320）
 - **ペイン配置ルール**: `.claude/skills/org-delegate/references/pane-layout.md`
 - **ワーカーへの指示フォーマット**: `.claude/skills/org-delegate/references/instruction-template.md`
 - **ClaudeCode 起動コマンド**: `.claude/skills/org-start/SKILL.md` の「ClaudeCode 起動コマンド（役割別）」セクション

@@ -7,7 +7,7 @@
 > **Method**: Each lifecycle state and transition below is filled from empirical sources (current `org-delegate` skill, dispatcher CLAUDE.md, worker template, journal helper). Sentences sourced from current behavior are written as facts. Design decisions ratified by the Lead on 2026-05-03 are stated as contract obligations.
 >
 > **Empirical sources consulted**:
-> - `.claude/skills/org-delegate/SKILL.md` (Step 1.5 worker-dir prep, Step 3 spawn / instruction send, Step 4 state record, Step 5 progress / close)
+> - `.claude/skills/org-delegate/SKILL.md` (Step 0–2 worker-dir prep / payload generation, Step 5 progress + completion ack), `.dispatcher/references/spawn-flow.md` (Step 3 spawn / instruction send, Step 4 state record), `.claude/skills/org-pull-request/SKILL.md` (Step 5 § 2b-i / 2b-ii / 2c push / PR / merge close), `.claude/skills/org-escalation/SKILL.md` (Step 5 § 0 judgment-escalation register protocol) — carved out of monolithic `org-delegate` per Issue #320
 > - `.claude/skills/org-delegate/references/instruction-template.md` (validation depth, completion-report format, SUSPEND clause)
 > - `.claude/skills/org-delegate/references/worker-claude-template.md` (worker steady-state behavior, completion / SUSPEND obligations)
 > - `.dispatcher/CLAUDE.md` (anomaly forwarding, watch loop, completion-report retro gate, CLOSE_PANE flow)
@@ -28,7 +28,7 @@ A single delegation moves through the following finite set of contract-level sta
 | # | State | Owner of transition in | Persisted at | Visible journal events |
 |---|---|---|---|---|
 | 1 | `pending` | secretary (drafts `DELEGATE`) | `.state/dispatcher/inbox/{task_id}.json` (task spec written for `delegate-plan`); `.state/org-state.md` Worker Directory Registry row added with Status `in_use` (per `org-delegate` Step 1.5). Worker state file does NOT yet exist — it is created by the dispatcher in T2. | `delegate_sent` |
-| 2 | `dispatched` | dispatcher (after `spawn_claude_pane` succeeds and `send_message` of the instruction) | `.state/workers/worker-{task_id}.md` created with `Status: planned`, then flipped to `active` once the worker is spawned and instructed (per `org-delegate` Step 4 / dispatcher `delegate-plan` helper). `.state/org-state.md` Active Work Items row added by dispatcher. | `worker_spawned` |
+| 2 | `dispatched` | dispatcher (after `spawn_claude_pane` succeeds and `send_message` of the instruction) | `.state/workers/worker-{task_id}.md` created with `Status: planned`, then flipped to `active` once the worker is spawned and instructed (per `.dispatcher/references/spawn-flow.md` Step 4 / dispatcher `delegate-plan` helper). `.state/org-state.md` Active Work Items row added by dispatcher. | `worker_spawned` |
 | 3 | `in_progress` | worker (begins acting on its instruction) | `.state/workers/worker-{task_id}.md` Progress Log appended on each report (Status remains `active`). | `worker_reported` (per progress message), `anomaly_observed` (if applicable) |
 | 4 | `awaiting_review` (a.k.a. `REVIEW`) | secretary (on receipt of completion report from worker) | `.state/org-state.md` Active Work Item set to `REVIEW`. Worker state file Status is NOT retitled today (remains `active`); the worker pane stays open. | `worker_completed`, `worker_review` |
 | 5 | `complete` (a.k.a. `COMPLETED`) | secretary (after close-condition met — see §1.5) | `.state/org-state.md` Active Work Item set to `COMPLETED`; Worker Directory Registry updated per pattern; `.state/workers/worker-{task_id}.md` final-update (dispatcher writes `Status: completed` or `pane_closed` per close path). | `worker_closed`, `worktree_removed` (Pattern B), pattern-specific registry updates |
@@ -40,7 +40,7 @@ The authoritative list of journal events permitted (and required) per lifecycle 
 
 ### 1.5 Close-condition (transition into `complete`)
 
-The secretary moves a delegation from `awaiting_review` to `complete` when at least one of the following is met (per `org-delegate` Step 5 § 2b-ii):
+The secretary moves a delegation from `awaiting_review` to `complete` when at least one of the following is met (per `.claude/skills/org-pull-request/SKILL.md` § 2b-ii):
 
 - The PR has been merged (verified via `gh pr view {n} --json mergedAt` or via merge notification).
 - The user has explicitly instructed close ("閉じてよい" / "クローズして" / "マージ済み").
@@ -63,7 +63,7 @@ Each transition below names: **(a)** the event that triggers it, **(b)** which a
 - **Journal**: `delegate_sent` (`task`, `worker`, `dir`).
 
 ### T2 — `pending → dispatched`
-- **Trigger**: Dispatcher receives `DELEGATE` from secretary and successfully completes Step 3 (balanced-split target / direction → `spawn_claude_pane` → dev-channel Enter approval → `list_peers` confirms the new peer → `send_message` delivers the worker instruction).
+- **Trigger**: Dispatcher receives `DELEGATE` from secretary and successfully completes the spawn flow (`.dispatcher/references/spawn-flow.md` Step 3: balanced-split target / direction → `spawn_claude_pane` → dev-channel Enter approval → `list_peers` confirms the new peer → `send_message` delivers the worker instruction).
 - **Actor**: dispatcher.
 - **State write**: `.state/workers/worker-{task_id}.md` is created with `Status: planned` (by `delegate-plan` helper), then flipped to `active` after spawn succeeds (per `.dispatcher/CLAUDE.md` § delegate-plan helper). `.state/org-state.md` Active Work Items row added by dispatcher. (Note: `.state/dispatcher-event-cursor.txt` is the dispatcher's watch-loop cursor for `poll_events(types=["pane_exited","events_dropped"])`; the spawn-time `pane_started` confirmation in Step 3-3 uses a local in-memory cursor, not this file.)
 - **Journal**: `worker_spawned` (`worker`, `dir`, `task`). `DELEGATE_COMPLETE` is a peer-message channel only and is NOT journaled — the `worker_spawned` event written by the dispatcher in this step already records the handoff completion, so a separate `delegate_complete` event would be redundant.
@@ -79,7 +79,7 @@ Each transition below names: **(a)** the event that triggers it, **(b)** which a
 - **Actor**: secretary.
 - **State write**: `.state/org-state.md` Active Work Item set to `REVIEW`. JSON snapshot regenerated via `dashboard/org_state_converter.py`. `.state/workers/worker-{task_id}.md` Progress Log appended.
 - **Journal**: `worker_completed` (`worker`, `task`).
-- **Pane discipline**: Worker pane MUST remain open; secretary must NOT instruct dispatcher to `CLOSE_PANE` at this stage (per `org-delegate` Step 5 § 2b-i and `worker-claude-template.md` § 2).
+- **Pane discipline**: Worker pane MUST remain open; secretary must NOT instruct dispatcher to `CLOSE_PANE` at this stage (per `.claude/skills/org-pull-request/SKILL.md` § 2b-i and `worker-claude-template.md` § 2).
 
 ### T5 — `awaiting_review → complete` (close-condition met)
 - **Trigger**: §1.5 close-condition met AND user has approved (or condition is auto-satisfied via merge / idle).
@@ -90,7 +90,7 @@ Each transition below names: **(a)** the event that triggers it, **(b)** which a
 - **Journal**: `worker_closed` (`worker`, `pane_id`). Pattern B additionally writes `worktree_removed` (`path`, `task`).
 
 ### T6 — `awaiting_review → in_progress` (review feedback / depth switch)
-- **Trigger**: User issues feedback / change request on the completion report or PR, OR secretary intervenes (per `org-delegate` Step 5 ワーカー監視と介入判定) and re-instructs in the same pane.
+- **Trigger**: User issues feedback / change request on the completion report or PR (handled per `.claude/skills/org-pull-request/SKILL.md` § 2c), OR secretary intervenes (per `.claude/skills/org-delegate/SKILL.md` ワーカー監視と介入判定) and re-instructs in the same pane.
 - **Actor**: secretary `send_message`s the same `worker-{task_id}` pane with the additional instruction.
 - **State write**: `.state/org-state.md` Active Work Item back to `IN_PROGRESS`; `.state/workers/worker-{task_id}.md` Progress Log appended.
 - **Pane discipline**: New worker MUST NOT be re-spawned for in-scope review feedback (re-spawn is rejected by the contract because Issue/diff/judgment context would be lost).
@@ -103,9 +103,9 @@ Each transition below names: **(a)** the event that triggers it, **(b)** which a
 - **Re-delegation**: Automatic re-delegation is not contracted. After an unexpected pane exit, the secretary determines per-task whether to abandon, ask the user, or re-delegate; the decision is not bounded by an automatic retry counter.
 
 ### T8 — `* → aborted` (`SPLIT_CAPACITY_EXCEEDED`)
-- **Trigger**: Dispatcher's balanced-split filter returns zero candidates (per `org-delegate` Step 3-1c).
+- **Trigger**: Dispatcher's balanced-split filter returns zero candidates (per `.dispatcher/references/spawn-flow.md` § 3-1c).
 - **Actor**: dispatcher.
-- **State write**: No worker pane is spawned; `.state/dispatcher/inbox/{task_id}.json` may remain on disk for re-attempt; `.state/workers/worker-{task_id}.md` is NOT written (no pane existed). On receipt of `SPLIT_CAPACITY_EXCEEDED`, the secretary MUST release the Worker Directory Registry row reserved in T1 Step 1.5 (set Status back to `available` for Pattern A, or remove the row for Pattern B/C) so the `in_use` reservation does not leak; no Active Work Item row need be reverted because T2 has not yet added one.
+- **State write**: No worker pane is spawned; `.state/dispatcher/inbox/{task_id}.json` may remain on disk for re-attempt; `.state/workers/worker-{task_id}.md` is NOT written (no pane existed). On receipt of `SPLIT_CAPACITY_EXCEEDED`, the secretary MUST release the Worker Directory Registry row reserved in T1 (set Status back to `available` for Pattern A, or remove the row for Pattern B/C) so the `in_use` reservation does not leak; no Active Work Item row need be reverted because T2 has not yet added one.
 - **Journal**: Today this case is signalled ONLY via the `SPLIT_CAPACITY_EXCEEDED` peer message to secretary; there is no corresponding journal event in `docs/journal-events.md`. The follow-up `required-for-transition` annotation work on the registry (see §1) will decide whether to introduce a `delegate_failed` (or equivalent) event for this transition; until then, the peer message is the sole record.
 - **Liveness**: Dispatcher watch loop continues; only this one delegation is aborted (`exit` / `return` of dispatcher pane is forbidden).
 
@@ -137,7 +137,7 @@ Five error / anomaly classes are recognized. Each lists: who detects, who is not
 - **Detection**: `tools/pr-watch.{ps1,sh}` writes a `ci_completed` event to `.state/journal.jsonl` on completion (per Secretary CLAUDE.md § PR 後の CI 監視). Failure is signalled within the event payload.
 - **Notification path**: secretary inspects the journal entry (or is notified out-of-band by `gh pr checks --watch` exit) and decides whether to send fix instructions back to the same worker pane (T6 review-feedback path).
 - **Retry**: Same-pane fix is the default (per `worker-claude-template.md` § 2 "ペインを保持してレビュー指摘待機"). Re-spawn of a fresh worker is forbidden.
-- **Abort condition**: User declines further work, OR worker fix loop exceeds intervention triggers in `org-delegate` Step 5 (30 min same-phase / 1 h silent / Codex round-4).
+- **Abort condition**: User declines further work, OR worker fix loop exceeds intervention triggers in `.claude/skills/org-delegate/SKILL.md` ワーカー監視と介入判定 (30 min same-phase / 1 h silent / Codex round-4).
 
 ### E5 — Codex Blocker / Major (worker self-review, full mode)
 - **Detection**: Worker's own `codex exec` review.
