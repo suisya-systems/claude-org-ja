@@ -668,6 +668,197 @@ class TestIssue290Regressions(unittest.TestCase):
         self.assertIn("日本語の説明文", decoded)
 
 
+# ---------------------------------------------------------------------------
+# Issue #309: Pattern B apply must create the git worktree
+# ---------------------------------------------------------------------------
+
+
+class TestPatternBWorktreeCreation(unittest.TestCase):
+    """apply for Pattern B (incl. live_repo_worktree variant) must run
+    `git worktree add` so the brief lands inside a real worktree."""
+
+    def setUp(self) -> None:
+        try:
+            import subprocess as _sp
+            _sp.run(["git", "--version"], capture_output=True, check=True)
+        except (FileNotFoundError):
+            self.skipTest("git not available")
+        self._td = tempfile.TemporaryDirectory()
+        self.sb = _Sandbox(Path(self._td.name))
+        # Initialize claude_org_root as a real git repo so live_repo_worktree
+        # can branch from it.
+        import os
+        self._git_env = os.environ.copy()
+        self._git_env.update(
+            {
+                "GIT_AUTHOR_NAME": "test",
+                "GIT_AUTHOR_EMAIL": "test@example.com",
+                "GIT_COMMITTER_NAME": "test",
+                "GIT_COMMITTER_EMAIL": "test@example.com",
+            }
+        )
+        import subprocess as _sp
+        _sp.run(
+            ["git", "-C", str(self.sb.claude_org_root), "init", "-q", "-b", "main"],
+            check=True,
+        )
+        _sp.run(
+            ["git", "-C", str(self.sb.claude_org_root), "commit",
+             "--allow-empty", "-m", "init", "-q"],
+            check=True, env=self._git_env,
+        )
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def _build_self_edit_b(self, *, task_id: str = "b-task"):
+        return gdp.build_delegate_plan(
+            task_id=task_id,
+            project_slug="claude-org-ja",
+            description="self-edit pattern B",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+            layout_overrides={
+                "pattern": "B",
+                "pattern_variant": "live_repo_worktree",
+                "role": "claude-org-self-edit",
+                "self_edit": True,
+            },
+        )
+
+    def _list_worktrees(self) -> list[str]:
+        import subprocess as _sp
+        out = _sp.check_output(
+            ["git", "-C", str(self.sb.claude_org_root),
+             "worktree", "list", "--porcelain"],
+        ).decode("utf-8", errors="replace")
+        return [
+            line[len("worktree "):].strip()
+            for line in out.splitlines()
+            if line.startswith("worktree ")
+        ]
+
+    def test_apply_creates_live_repo_worktree(self):
+        plan = self._build_self_edit_b()
+        # Plan should know which repo to branch from.
+        self.assertEqual(
+            Path(plan.base_repo).resolve(), self.sb.claude_org_root.resolve()
+        )
+        gdp.apply_delegate_plan(
+            plan,
+            state_db_path=self.sb.db_path,
+            claude_org_root=self.sb.claude_org_root,
+            skip_settings=True,
+        )
+        worker_dir = Path(plan.layout.worker_dir).resolve()
+        self.assertTrue(worker_dir.exists())
+        self.assertTrue((worker_dir / ".git").exists())
+        # Registered with git as a worktree
+        registered = {Path(p).resolve() for p in self._list_worktrees()}
+        self.assertIn(worker_dir, registered)
+        # Brief landed inside the worktree
+        brief = worker_dir / "CLAUDE.local.md"
+        self.assertTrue(brief.exists())
+
+    def test_apply_idempotent_when_worktree_already_registered(self):
+        plan = self._build_self_edit_b(task_id="idem-task")
+        worker_dir = Path(plan.layout.worker_dir)
+        # Pre-create the worktree manually to simulate a partial / retry run.
+        worker_dir.parent.mkdir(parents=True, exist_ok=True)
+        import subprocess as _sp
+        _sp.run(
+            ["git", "-C", str(self.sb.claude_org_root),
+             "worktree", "add", "-b", plan.layout.planned_branch,
+             str(worker_dir)],
+            check=True, capture_output=True,
+        )
+        # Apply must NOT raise and must not duplicate or replace it.
+        gdp.apply_delegate_plan(
+            plan,
+            state_db_path=self.sb.db_path,
+            claude_org_root=self.sb.claude_org_root,
+            skip_settings=True,
+        )
+        # Brief still lands in the worktree
+        self.assertTrue((worker_dir / "CLAUDE.local.md").exists())
+
+    def test_apply_aborts_when_worker_dir_has_unrelated_content(self):
+        plan = self._build_self_edit_b(task_id="dirty-task")
+        worker_dir = Path(plan.layout.worker_dir)
+        worker_dir.mkdir(parents=True)
+        (worker_dir / "stale.txt").write_text("garbage", encoding="utf-8")
+        with self.assertRaises(gdp.WorktreeApplyError) as cm:
+            gdp.apply_delegate_plan(
+                plan,
+                state_db_path=self.sb.db_path,
+                claude_org_root=self.sb.claude_org_root,
+                skip_settings=True,
+            )
+        self.assertIn("not a registered git worktree", str(cm.exception))
+        # Brief was NOT written into the dirty dir.
+        self.assertFalse((worker_dir / "CLAUDE.local.md").exists())
+
+    def test_apply_creates_plain_pattern_b_worktree_for_project_repo(self):
+        """Non-self-edit Pattern B branches from the project's registered repo."""
+        # Stand up a dedicated project repo on disk and re-seed the registry.
+        import subprocess as _sp
+        project_repo = Path(self._td.name) / "clock-app-repo"
+        project_repo.mkdir()
+        _sp.run(
+            ["git", "-C", str(project_repo), "init", "-q", "-b", "main"],
+            check=True,
+        )
+        _sp.run(
+            ["git", "-C", str(project_repo), "commit",
+             "--allow-empty", "-m", "init", "-q"],
+            check=True, env=self._git_env,
+        )
+        (self.sb.claude_org_root / "registry" / "projects.md").write_text(
+            "# Projects\n\n"
+            "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 |\n"
+            "|---|---|---|---|---|\n"
+            f"| 時計アプリ | clock-app | {project_repo} | Web 時計 | デザイン |\n"
+            f"| claude-org-ja | claude-org-ja | {self.sb.claude_org_root} | Self | スキル改善 |\n",
+            encoding="utf-8",
+        )
+        # Force Pattern B by adding an active concurrent run on the project.
+        self.sb.add_active_run(
+            task_id="other-clock-task",
+            project_slug="clock-app",
+            worker_dir=str(self.sb.workers / "clock-app"),
+        )
+        plan = gdp.build_delegate_plan(
+            task_id="plain-b-task",
+            project_slug="clock-app",
+            description="add a sparkline",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(plan.layout.pattern, "B")
+        self.assertIsNone(plan.layout.pattern_variant)
+        self.assertEqual(
+            Path(plan.base_repo).resolve(), project_repo.resolve()
+        )
+        gdp.apply_delegate_plan(
+            plan,
+            state_db_path=self.sb.db_path,
+            claude_org_root=self.sb.claude_org_root,
+            skip_settings=True,
+        )
+        worker_dir = Path(plan.layout.worker_dir).resolve()
+        # Worktree registered against the project repo (not claude-org).
+        out = _sp.check_output(
+            ["git", "-C", str(project_repo),
+             "worktree", "list", "--porcelain"],
+        ).decode("utf-8", errors="replace")
+        registered = {
+            Path(line[len("worktree "):].strip()).resolve()
+            for line in out.splitlines() if line.startswith("worktree ")
+        }
+        self.assertIn(worker_dir, registered)
+        self.assertTrue((worker_dir / "CLAUDE.md").exists())
+
+
 def _env_update_goldens() -> bool:
     import os
     return os.environ.get("UPDATE_GOLDENS") == "1"

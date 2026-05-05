@@ -66,6 +66,14 @@ _PATTERN_LABELS = {
 }
 
 
+class WorktreeApplyError(RuntimeError):
+    """Raised by apply when Pattern B worktree creation cannot proceed safely
+    (e.g. ``worker_dir`` already contains unrelated content, or git fails).
+    Issue #309: apply must abort rather than silently leave a half-formed
+    worker dir for Secretary to discover after the worker has been spawned.
+    """
+
+
 @dataclass(frozen=True)
 class DelegatePlan:
     task_id: str
@@ -81,6 +89,10 @@ class DelegatePlan:
     closes_issue: Optional[int]
     refs_issues: list[int]
     artifacts_to_create: list[Path] = field(default_factory=list)
+    # Pattern B only: absolute path of the repo from which `git worktree add`
+    # is run. None for Pattern A / C, or when no usable base repo could be
+    # determined (apply will then raise WorktreeApplyError).
+    base_repo: Optional[Path] = None
 
     def to_summary_dict(self) -> dict[str, Any]:
         return {
@@ -97,6 +109,7 @@ class DelegatePlan:
             "brief_out_path": str(self.brief_out_path),
             "settings_args": dict(self.settings_args),
             "artifacts_to_create": [str(p) for p in self.artifacts_to_create],
+            "base_repo": str(self.base_repo) if self.base_repo else None,
         }
 
 
@@ -273,6 +286,16 @@ def build_delegate_plan(
         Path(layout.worker_dir) / ".claude" / "settings.local.json",
     ]
 
+    # Pattern B: figure out which repo `git worktree add` should be run from.
+    # live_repo_worktree → Secretary's live claude-org repo;
+    # plain Pattern B    → the registered project's path.
+    base_repo: Optional[Path] = None
+    if layout.pattern == "B":
+        if layout.pattern_variant == "live_repo_worktree":
+            base_repo = Path(claude_org_root).resolve()
+        elif project_path and rwl.is_local_git_repo(project_path):
+            base_repo = Path(project_path).resolve()
+
     return DelegatePlan(
         task_id=task_id,
         project_slug=project_slug,
@@ -287,6 +310,7 @@ def build_delegate_plan(
         closes_issue=closes_issue,
         refs_issues=list(refs_issues or []),
         artifacts_to_create=artifacts,
+        base_repo=base_repo,
     )
 
 
@@ -368,6 +392,79 @@ def _reserve_in_db(
         conn.close()
 
 
+def _is_registered_worktree(base_repo: Path, worker_dir: Path) -> bool:
+    """True iff ``worker_dir`` is already a registered worktree of ``base_repo``.
+
+    Compared by resolved absolute path so a re-run of apply against an
+    already-created worktree is idempotent (Issue #309).
+    """
+    proc = subprocess.run(
+        ["git", "-C", str(base_repo), "worktree", "list", "--porcelain"],
+        capture_output=True,
+    )
+    if proc.returncode != 0:
+        return False
+    try:
+        target = worker_dir.resolve()
+    except OSError:
+        return False
+    for line in proc.stdout.decode("utf-8", errors="replace").splitlines():
+        if line.startswith("worktree "):
+            try:
+                p = Path(line[len("worktree "):]).resolve()
+            except OSError:
+                continue
+            if p == target:
+                return True
+    return False
+
+
+def _ensure_worktree(plan: DelegatePlan) -> None:
+    """For Pattern B, run ``git worktree add`` if the dir is not already one.
+
+    Idempotent — no-op when ``worker_dir`` is already a registered worktree
+    of ``base_repo``. Aborts with :class:`WorktreeApplyError` when the dir
+    exists with unrelated content (Secretary judgment call to clean up,
+    per Issue #309).
+    """
+    if plan.layout.pattern != "B":
+        return
+    if plan.base_repo is None:
+        raise WorktreeApplyError(
+            f"Pattern B but no usable base repo could be determined for "
+            f"project {plan.project_slug!r} (variant="
+            f"{plan.layout.pattern_variant!r}); cannot run `git worktree add`."
+        )
+    worker_dir = Path(plan.layout.worker_dir)
+    if _is_registered_worktree(plan.base_repo, worker_dir):
+        return
+    if worker_dir.exists() and any(worker_dir.iterdir()):
+        raise WorktreeApplyError(
+            f"worker_dir {worker_dir} exists with content but is not a "
+            f"registered git worktree of {plan.base_repo}. Refusing to "
+            "auto-recover — Secretary must clean up the directory (or run "
+            "`git worktree add` manually) and retry apply."
+        )
+    branch = plan.layout.planned_branch
+    if not branch:
+        raise WorktreeApplyError(
+            f"Pattern B requires a planned_branch but layout produced None "
+            f"(task_id={plan.task_id!r})."
+        )
+    worker_dir.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "git", "-C", str(plan.base_repo),
+        "worktree", "add", "-b", branch, str(worker_dir),
+    ]
+    proc = subprocess.run(cmd, capture_output=True)
+    if proc.returncode != 0:
+        stderr = (proc.stderr or b"").decode("utf-8", errors="replace").strip()
+        raise WorktreeApplyError(
+            f"`git worktree add` failed (rc={proc.returncode}) for "
+            f"{worker_dir} from {plan.base_repo}: {stderr}"
+        )
+
+
 def _write_brief(plan: DelegatePlan) -> Path:
     text = gwb.render(plan.config)
     out = plan.brief_out_path
@@ -446,6 +543,9 @@ def apply_delegate_plan(
     db_reservation = _reserve_in_db(
         plan, state_db_path=state_db_path, claude_org_root=claude_org_root
     )
+    # Issue #309: brief must be written *into* the worktree, so create the
+    # worktree first when Pattern B. No-op for A / C.
+    _ensure_worktree(plan)
     brief_path = _write_brief(plan)
     settings_path: Optional[Path] = None
     skipped_reason: Optional[str] = None
