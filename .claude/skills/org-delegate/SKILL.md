@@ -419,9 +419,11 @@ mcp__renga-peers__send_message(
    - **状態を保存する**（窓口再起動・引き継ぎで pending 判断を失わないため、進捗報告と同等の永続化を行う）:
      - `.state/workers/worker-{task_id}.md` の Progress Log に「判断仰ぎ受信」内容と要点を追記
      - DB の events テーブルに追記: `bash tools/journal_append.sh worker_escalation worker=worker-{task_id} task={task_id} reason="<要約>"`
-   - 人間に内容と選択肢を整理して提示し、人間の判断を待つ
-   - 人間の判断後にワーカーに伝達する（伝達時は `to_id="worker-{task_id}"` で `send_message`）
+     - **pending-decisions register に追加** (Issue #297): `python tools/pending_decisions.py append --task-id {task_id} --message "<本文要約>"`。同 task_id の pending が既存なら idempotent (no-op)。register はディスパッチャーの SECRETARY_RELAY_GAP_SUSPECTED 検出 (`.dispatcher/CLAUDE.md` Step 5.1) の primary lookup source
+   - 人間に内容と選択肢を整理して提示する。提示直後に **register を escalated に更新**: `python tools/pending_decisions.py resolve --task-id {task_id} --kind to_user`
+   - 人間の判断後にワーカーに伝達する（伝達時は `to_id="worker-{task_id}"` で `send_message`）。伝達直後に **register を resolved に更新**: `python tools/pending_decisions.py resolve --task-id {task_id} --kind to_worker`
    - 「ユーザーは選択肢 X を選んだから自動的に含意される」等の自己解釈で承認してはならない
+   - register の append / resolve のどちらかが欠落するとディスパッチャー側で SECRETARY_RELAY_GAP_SUSPECTED が誤発火または見逃しになる。Progress Log / journal は重複保険として維持し、register 更新とは独立に行うこと
    - （注）ブロッカー報告も本分岐で扱うため、下段「3. ブロック報告の場合」と重複した場合は本分岐を優先する
 
 1. 進捗報告の場合:

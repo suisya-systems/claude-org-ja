@@ -356,6 +356,40 @@ mcp__renga-peers__send_message(to_id="secretary", message="...")
 
    **定数**: `STALL_SECRETARY_LOOKBACK_MIN = 15` を再利用 (Step 5 と同じ window、関連事象は同じ時間スケール)。
 
+   #### (a-0) Primary check: pending-decisions register lookup (Issue #297)
+
+   PR #298 (Issue #292) は (a) の動機 (1)(2) を proxy heuristics (snapshot diff / send_message timing) で検知していたが、(a)(2) (user 回答 → secretary → worker の転送漏れ) は worker outbound が起点となるため proxy では出ない死角があった。Issue #297 で Secretary 側に `.state/pending_decisions.json` 相当の **register** を導入し、両方向 (a)(1)(a)(2) を deterministic に追跡する:
+
+   - Secretary は `worker_escalation` を受領した時点で register に `{task_id, received_at, status="pending"}` を append する (CLAUDE.md / `.claude/skills/org-delegate/SKILL.md` Step 5 サブセクション 0)
+   - 人間に伝達した時点で `resolve --kind to_user` で `escalated` に更新
+   - 人間判断をワーカーに転送した時点で `resolve --kind to_worker` で `resolved` に更新
+
+   ディスパッチャーは tick ごとに register を lookup する:
+
+   ```bash
+   # ディスパッチャー cwd は .dispatcher/。helper は repo root 起点で
+   # .state/pending_decisions.json を解決するため相対パスは不要。
+   python ../tools/pending_decisions.py list --older-than-min 15
+   ```
+
+   - 出力 0 行 → register 経由の (a)(1) relay gap は **なし**。ただし (a)(2) は register では捕捉できないため、proxy 経路 ((a)〜(f)) は **必ず続行する** (skip しない)
+   - 出力 1 行以上 → 各行 (1 entry per line, JSON、`status="pending"` のみ) を `task_id` 単位で集約し、SECRETARY_RELAY_GAP_SUSPECTED を **(e) と同じ通知経路** で発火する。register は (a)(1) 方向 (Secretary が worker→user の中継を忘れた) を deterministic に拾う ground truth。発火後も同サイクル内で proxy 経路を続行する (proxy が独立に拾う (a)(2) を見逃さないため)。同じ worker に対する重複通知は (f) の de-dup 30 秒窓で吸収される
+
+   **(a)(2) 方向の取り扱い** (Issue #297 のスコープ制限): register は「人間が返答済みか」を表す signal を持たないため、`escalated` 状態を時間で alarm 化すると「人間が考え中」と「Secretary が user→worker 転送を忘れた」を区別できず false positive が常態化する。よって `list --older-than-min` は意図的に `pending` のみを返す。(a)(2) 方向の deterministic 検知は `user_replied_at` marker 等の schema 拡張が必要で、別 Issue で扱う。本 PR で (a)(2) の唯一のカバーは既存 (a)〜(f) proxy 経路 (snapshot diff 等) であり、register lookup の結果に関わらず毎サイクル必ず実行する
+   - de-dup と journal 追記は (f) と同じスキーマを使う:
+
+     ```bash
+     bash ../tools/journal_append.sh anomaly_observed source=relay_gap_check worker=worker-{task_id} kind=relay_gap_suspected confidence=high
+     # 通知送信成功後:
+     bash ../tools/journal_append.sh notify_sent source=relay_gap_check worker=worker-{task_id} kind=relay_gap_suspected confidence=high
+     ```
+
+     `confidence=high` は register lookup 経由 (proxy より信頼度が高い) を表す。proxy 経路の confidence (n/a) と区別したい場合のラベル。
+
+   **register lookup は (a)(1) の primary、(a)〜(f) の proxy 経路は (a)(2) の唯一のカバー**: register と proxy は disjoint な方向を扱うため、毎サイクル両方を実行する (proxy 経路を skip すると (a)(2) のカバーが消える)。proxy 経路の (a)(1) 関連部分は register が一次 source なので冗長になるが、de-dup 30 秒窓で吸収されるためそのまま残す。proxy 経路の最終削除は (a)(2) 用の deterministic 検知 (user_replied_at marker など) が別 Issue で着地した後に再評価する。
+
+   register が読めない (helper not found / file corrupted で `ValueError`) 場合は (a)(1) も proxy 経路に fallback する。journal に `anomaly_observed source=relay_gap_check kind=register_unavailable` を残し、(b)〜(f) を従来通り実行する。
+
    #### (a) 動機
    Step 5 は worker 側 (worker→secretary 痕跡が **ある** ので stall 抑制) を見て補助シグナル化したが、逆方向 (secretary→user / secretary→worker の中継) には盲点がある。具体的なインシデントパターン:
    1. worker が "判断仰ぎます" を secretary に送信 → secretary は受領 (`worker_escalation` が journal に append) → secretary が **人間に上げ忘れ** → worker idle、Step 5 の補助シグナルは「ヒット」扱いで suppress、しかし user は何も知らない
@@ -446,18 +480,8 @@ mcp__renga-peers__send_message(to_id="secretary", message="...")
      ```
    - **再通知 cadence**: dedup window は 30 秒のみ (Step 4 / Step 5 と同じ at-least-once 担保のための短窓)。`/loop 3m` cadence では 30 秒は毎サイクル抜けるため、relay gap が解消するまで **3 分ごとに 1 回 user に再通知が届く**。relay gap は user の視認漏れが致命的な事象なので、stuck 通知のような長窓 suppress は採用しない。状態が変わった (= secretary 側 outbound が現れた、または新規 `T_last_worker_in` で起点更新により候補から外れた) 時点で次サイクルの観測時に (b) を不成立にして自然停止する
 
-   #### (g) 設計メモ — register 化 (案 c) は別 Issue
-   本来は `.state/pending_decisions.json` 相当の register を導入し:
-   - secretary が `worker_escalation` を受領した時点で entry 追加 (`{task_id, received_ts, kind: "judgment_request"}`)
-   - secretary が user に上げた時点で `acked_to_user_ts` を埋める
-   - secretary が user 回答を worker に伝達した時点で `relayed_to_worker_ts` を埋める or entry 削除
-   - dispatcher は tick ごとにこの register を読み、`now - received_ts > 15min` かつ未 ack を SECRETARY_RELAY_GAP_SUSPECTED 化
-
-   が clean。secretary 自身の自己観測ではなく外部 register に書かれるので false positive が大幅に減る。ただし:
-   - secretary skill / org-delegate / 判断仰ぎ受信ロジックを横断的に書き換える必要がある
-   - 既存の journal event との二重 source of truth になりかねない (移行期に矛盾が起きる)
-
-   本 PR では prose 仕様のみ着地させ、register 化は **別 Issue 化** する (本 PR 完了時の commit / PR description で `Follow-up: secretary-side pending_decisions register (separate issue)` として TODO を明記する)。
+   #### (g) 設計メモ — register 化は (a-0) で着地済み (Issue #297)
+   PR #298 で TODO 化した「`.state/pending_decisions.json` 相当の register」は Issue #297 で実装済み。詳細は本セクション (a-0) "Primary check: pending-decisions register lookup" を参照。本セクション (a)〜(f) の proxy 経路は fallback として残置されているが、primary は (a-0) の register lookup に切り替わっている。proxy 経路の最終削除は別 Issue (register lookup の安定運用が確認できた段階) で扱う。
 
    #### (h) 設計メモ — relay gap と Step 5 stall の関係
    Step 5 の stall 検出は worker→secretary 痕跡があれば「acked」として STALL_SUSPECTED を抑制する。relay gap 検出は **その抑制された acked 集合** にこそ存在する。即ち:
