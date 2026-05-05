@@ -77,7 +77,7 @@ read 経路は **DB only**（Issue #267 / M4）。
 renga 0.18.0+ では `mcp__renga-peers__spawn_claude_pane` が役割別の構造化フィールド（`cwd` / `permission_mode` / `model` / `args[]`）を受け取り、`--dangerously-load-development-channels server:renga-peers` を自動付与する。旧方式の `cd X && claude ...` を `spawn_pane` に流し込むパターンは **禁止**（renga の bare-`claude` auto-upgrade が発動せず channel push が届かなくなる落とし穴を再導入するため）。
 
 共通引数:
-- `permission_mode`: registry/org-config.md の default_permission_mode の値を使用（ディスパッチャー除く）
+- `permission_mode`: `auto` リテラル直書き（ディスパッチャー除く）。CLAUDE.md には変数展開機構がないため `registry/org-config.md` の値を実行時に代入することはできない。値を変更する場合は `registry/org-config.md` 冒頭の同期注意セクションを参照
 - `cwd`: 各ロール専用ディレクトリへの相対パス（caller pane の cwd 基準で解決される）
 
 > **注**: Secretary は `renga --layout ops` で起動され、`--permission-mode` 未指定のまま動作する（人間判断窓口のため）。`registry/org-config.md` の「Role別の適用範囲」節を参照。

@@ -174,7 +174,7 @@
 
 ### Constraints
 
-- **Permission mode**: Inherits `default_permission_mode` from `registry/org-config.md` (currently `auto`). Model: `opus`.
+- **Permission mode**: `auto` (hardcoded literal at spawn sites; `registry/org-config.md` value is reference-only — see its sync-warning). Model: `opus`.
 - **Path discipline** — curator's cwd is `.curator/`, but knowledge directories live in the parent repo. Must use parent-repo-relative or absolute paths; using cwd-relative `knowledge/raw/` would target a non-existent directory.
 - **Glob fallback** — when `Glob` returns 0 results, must verify with `Bash ls` to detect missing-directory vs. genuinely empty.
 - **No human dialogue** — `.curator/CLAUDE.md` "人間と直接対話することはない". Communication only via secretary.
@@ -231,7 +231,7 @@
 
 ### Constraints
 
-- **Permission mode**: `default_permission_mode` from `registry/org-config.md` (currently `auto`). Model: **`opus` mandatory** — `sonnet` is forbidden because `auto` mode's safety classifier is only stable on Opus.
+- **Permission mode**: `auto` (hardcoded literal at spawn sites; `registry/org-config.md` value is reference-only — see its sync-warning). Model: **`opus` mandatory** — `sonnet` is forbidden because `auto` mode's safety classifier is only stable on Opus.
 - **Working directory is enforced**: First action on launch is `pwd` to verify `worker_dir`. Mismatch → halt and report to secretary.
 - **Hard-blocked operations** (via `permissions.deny` + PreToolUse hooks):
   - Cannot reproduce claude-org structure (`.claude/`, `.dispatcher/`, `.curator/`, `.state/`, `registry/`, `dashboard/`, `knowledge/`) inside `worker_dir`.

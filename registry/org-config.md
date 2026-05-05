@@ -1,6 +1,6 @@
 # Organization Config
 
-> **同期注意**: CLAUDE.md には変数展開機構がないため、`.claude/skills/**` および `docs/contracts/role-contract.md` 内の `permission_mode` は `auto` リテラル直書きでハードコードされている（session #15 で Secretary が `acceptEdits` を誤代入した回帰を機に固定化）。このファイルの値を変更しただけでは skill / docs 側に反映されない。`default_permission_mode` を変更する場合は、以下も併せて grep で洗い出して手で書き換えること:
+> **同期注意**: CLAUDE.md には変数展開機構がないため、`.claude/skills/**` および `docs/contracts/role-contract.md` 内の `permission_mode` は `auto` リテラル直書きでハードコードされている（session #15 で Secretary が `acceptEdits` を誤代入した回帰を機に固定化）。このファイルの値を変更しただけでは skill / docs 側に反映されない。`default_permission_mode` を変更する場合は、以下も併せて手で書き換えること（`tools/gen_delegate_payload.py` だけはこのファイルを実行時に読むので追従する。`grep -rn '"auto"' .claude/skills docs/contracts` で取りこぼし確認）:
 >
 > - `.claude/skills/org-start/SKILL.md`
 > - `.claude/skills/org-delegate/SKILL.md`
