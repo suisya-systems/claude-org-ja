@@ -153,15 +153,11 @@ python tools/gen_delegate_payload.py apply \
 
 「対象ファイル」は窓口がタスク説明から抽出する（依頼文・Issue 本文・ユーザー発話の中で明示されたパス。機械的判定はしない）。対象ファイルが特定できないタスク（純粋な調査、対象パス未定の新規作成など）は `--target` を渡さなくてよい — `gen_delegate_payload` は target 0 件のときだけ check-ignore をスキップして通常判定に進む。
 
-### legacy / fallback 経路
+### 標準経路が想定外の出力を返した場合
 
-`gen_delegate_payload.py` を経由できない（runtime CLI 未導入・state.db 破損・特殊な手作業など）場合のみ、**従来の手書き経路** を使う。詳細手順は `references/delegate-flow-details.md` の「Legacy hand-typed paths」節参照。要点だけ:
+標準経路 (`gen_delegate_payload.py apply`) が想定外の出力 (Pattern 誤判定 / resolver エラー / brief 不整合 等) を返した場合、Secretary は **手動で同じ作業を再現してはならない**。Issue を切り、ユーザー判断を仰ぐ。手作業 fallback は skill のスコープ外。`gen_delegate_payload.py` (またはその resolver) のバグとして扱い、当該タスクの delegation は一時停止する。
 
-- `python tools/gen_worker_brief.py --config <task>.toml --out <CLAUDE.md>` で brief を手動生成
-- `claude-org-runtime settings generate` を **`--role` を窓口で確定させた上で** 直接呼ぶ
-- DELEGATE 本文は `references/delegate-flow-details.md` §3 のテンプレートに従って手書きし、`mcp__renga-peers__send_message(to_id="dispatcher", message=…)` で送る
-
-legacy 経路は **T1 reservation (runs.status='queued') を伴わない** ため、ディスパッチャー watch loop の queue 可視化が効かない点に注意。
+歴史的な手書き経路の museum copy は `docs/legacy/hand-typed-delegate-path.md` にある (settings env mismatch / drift_check breakage / T1 reservation 欠落などの失敗事例つき)。発動条件は「runtime CLI が物理的に利用不能」のみで、それ以外で reach した場合は protocol 違反。
 
 <!-- 旧 Step 0.7 / Step 1 / Step 1.5 / Step 2 の詳細 prose は references/delegate-flow-details.md に移設済み (Issue #283 Stage 4)。
      判定コマンド・Pattern C 強制サブモード・パターン別 worktree/clone 手順・DELEGATE 本文の必須行は同 reference を SoT とする。 -->
