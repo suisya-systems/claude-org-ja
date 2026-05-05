@@ -119,19 +119,23 @@ historical "verification_depth row dropped" failures stay impossible.
 
 ---
 
-## 4. Legacy hand-typed paths
+## 4. When the standard path returns unexpected output
 
-Two pre-Issue-283 paths remain supported for callers that already work in
-that idiom:
+If `gen_delegate_payload.py apply` errors or produces a wrong layout
+(Pattern misjudgment / resolver error / brief inconsistency / etc.),
+Secretary **must not** reproduce the work by hand. The canonical response
+is to file an Issue against `gen_delegate_payload.py` (or its resolver)
+and pause the affected delegation **until the underlying bug is fixed**.
+Whether to invoke any manual workaround is a user judgment call;
+Secretary must not self-grant the exception. The standard path's own
+degraded mode (`--skip-settings` for runtime-CLI-less environments) is
+the supported way to keep going without leaving the skill.
 
-- `python tools/gen_worker_brief.py --config <path>.toml --out <CLAUDE.md>`
-  — the original brief renderer. Still works exactly as before. New code
-  should prefer the `from-task` subcommand because it derives `worker.dir`
-  / `worker.pattern` / `worker.role` deterministically from registry and
-  state.db rather than asking the operator to fill them in.
-- Manually issuing the `DELEGATE:` message via `mcp__renga-peers__send_message`
-  — fine for one-off ad-hoc dispatches. The `gen_delegate_payload preview`
-  command can still be used to draft the body without writing anything.
-
-Both paths skip the T1 reservation and therefore do not surface the queued
-state to the dispatcher's watch loop. Use them sparingly.
+The pre-Issue-283 hand-typed procedure has been moved out of the active
+skill to `docs/legacy/hand-typed-delegate-path.md` as a museum copy. That
+document is for archaeological reference only; reaching it during normal
+operation is a protocol violation. Note that the legacy procedure itself
+depends on `claude-org-runtime settings generate`, so it is not a valid
+fallback for runtime-CLI-unavailable scenarios either. Failure modes
+historically introduced by the legacy reach (settings env mismatch,
+drift_check breakage, T1 reservation skipped) are listed there.
