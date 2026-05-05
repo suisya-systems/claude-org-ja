@@ -892,6 +892,46 @@ class TestPostCommitWorkerArchive(unittest.TestCase):
             conn.close()
             td.cleanup()
 
+    def test_completion_unknown_task_does_not_queue(self):
+        """Codex review: an UPDATE that matches 0 rows (typo'd task_id
+        or run never registered) must not enqueue an archive move —
+        otherwise we'd silently move a worker file with no completed
+        DB row to back it up."""
+        td, root, db, conn = self._root_with_state_db()
+        try:
+            w = StateWriter(conn, claude_org_root=root)
+            stray = self._seed_worker_file(root, "stray")
+            with w.transaction() as tx:
+                tx.update_run_status("stray", "completed")
+            archive = root / ".state" / "workers" / "archive"
+            self.assertFalse(archive.exists())
+            self.assertTrue(stray.exists())
+            self.assertEqual(w._pending_worker_archives, [])
+        finally:
+            conn.close()
+            td.cleanup()
+
+    def test_explicit_begin_commit_fires_hooks(self):
+        """Codex review: post-commit hooks live on commit() (not the
+        context manager) so begin()/commit() callers also get JSON
+        regen + archive move."""
+        td, root, db, conn = self._root_with_state_db()
+        try:
+            w = StateWriter(conn, claude_org_root=root)
+            src = self._seed_worker_file(root, "tmanual")
+            w.begin()
+            w.upsert_run(task_id="tmanual", project_slug="p", pattern="B")
+            w.update_run_status("tmanual", "completed")
+            w.commit()
+            self.assertFalse(src.exists())
+            archive = root / ".state" / "workers" / "archive" / "worker-tmanual.md"
+            self.assertTrue(archive.exists())
+            json_path = root / ".state" / "org-state.json"
+            self.assertTrue(json_path.exists())
+        finally:
+            conn.close()
+            td.cleanup()
+
     def test_rollback_voids_pending_archive(self):
         td, root, db, conn = self._root_with_state_db()
         try:

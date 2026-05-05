@@ -106,6 +106,19 @@ class StateWriter:
 
     def commit(self) -> None:
         self.conn.commit()
+        # Post-commit hooks. Hosted on ``commit()`` so they fire for
+        # both callers — explicit ``begin() / commit()`` and the
+        # ``transaction()`` context manager (which delegates here).
+        # Order matters: markdown is the SoT for humans, JSON is the
+        # dashboard derivative read from the DB after the markdown
+        # dump finishes (Issue #284 / CLAUDE.local.md constraint —
+        # markdown 再生成 → JSON 再生成). Archive moves run last so a
+        # mid-hook failure leaves the worker file in place.
+        # Each step soft-fails individually: a converter, FS, or import
+        # error must never bubble up after the DB commit succeeded.
+        self._regenerate_markdown_snapshot()
+        self._regenerate_json_snapshot()
+        self._drain_pending_worker_archives()
 
     def rollback(self) -> None:
         self.conn.rollback()
@@ -118,6 +131,27 @@ class StateWriter:
     # ------------------------------------------------------------------
     # Post-commit hooks (Issue #284)
     # ------------------------------------------------------------------
+
+    def _regenerate_markdown_snapshot(self) -> None:
+        """Regenerate ``.state/org-state.md`` from the DB after commit.
+
+        Soft-fail like the JSON variant — DB is the SoT and the
+        markdown dump is best-effort. Hosted here (rather than in
+        ``transaction()``) so begin()/commit() callers also keep the
+        markdown SoT in sync.
+        """
+        if self._claude_org_root is None:
+            return
+        try:
+            from tools.state_db.snapshotter import post_commit_regenerate
+            post_commit_regenerate(self.conn, self._claude_org_root)
+        except Exception as exc:
+            sys.stderr.write(
+                "tools.state_db.writer: post-commit regenerate failed "
+                f"({type(exc).__name__}: {exc}); "
+                "DB is committed, markdown will catch up on the next "
+                "StateWriter commit.\n"
+            )
 
     def _regenerate_json_snapshot(self) -> None:
         """Regenerate ``.state/org-state.json`` from the DB after commit.
@@ -197,30 +231,10 @@ class StateWriter:
         except BaseException:
             self.rollback()
             raise
+        # commit() owns the post-commit hooks (markdown regen + JSON
+        # regen + worker archive moves) so they fire for both this
+        # context-manager path and explicit begin()/commit() callers.
         self.commit()
-        if self._claude_org_root is not None:
-            try:
-                # Imported lazily to keep writer ↔ snapshotter import
-                # graph cycle-free at module load time.
-                from tools.state_db.snapshotter import post_commit_regenerate
-                post_commit_regenerate(self.conn, self._claude_org_root)
-            except Exception as exc:
-                sys.stderr.write(
-                    "tools.state_db.writer: post-commit regenerate failed "
-                    f"({type(exc).__name__}: {exc}); "
-                    "DB is committed, markdown will catch up on the next "
-                    "StateWriter commit.\n"
-                )
-            # Issue #284: regenerate the dashboard JSON snapshot
-            # (.state/org-state.json) after the markdown dump. Sequential
-            # (not parallel) and after markdown so the JSON observes the
-            # same DB state. Soft-fail like markdown — converter bugs
-            # must not block the already-committed write.
-            self._regenerate_json_snapshot()
-            # Issue #284: archive worker-state files for runs that this
-            # transaction marked completed. Deferred to post-commit so we
-            # never move the file before the row update is durable.
-            self._drain_pending_worker_archives()
 
     # ------------------------------------------------------------------
     # org session (singleton)
@@ -515,23 +529,22 @@ class StateWriter:
         completed_at: Optional[str] = None,
         outcome_note: Optional[str] = None,
     ) -> None:
-        self.conn.execute(
+        cur = self.conn.execute(
             "UPDATE runs SET status = ?, "
             "  completed_at = COALESCE(?, completed_at), "
             "  outcome_note = COALESCE(?, outcome_note) "
             "WHERE task_id = ?",
             (status, completed_at, outcome_note, task_id),
         )
-        # Issue #284: when a run goes to 'completed', schedule its
-        # worker-state file for archival. The actual move happens from
-        # ``transaction()``'s post-commit phase (the canonical write
-        # entry point per SKILL.md) so that a rollback leaves the file
-        # in place. Callers that compose ``begin()`` / ``commit()``
-        # manually will not trigger the archive move — use
-        # ``transaction()`` for completion writes. Idempotent: a second
-        # completed transition just queues a second move attempt that
-        # no-ops when the source file is already gone.
-        if status == "completed":
+        # Issue #284: when a run actually transitions to 'completed',
+        # schedule its worker-state file for archival. The actual move
+        # runs from commit()'s post-commit phase so a rollback leaves
+        # the file in place. Gated on ``cur.rowcount > 0`` — a no-op
+        # UPDATE (typo'd task_id, run never registered) must not move
+        # a worker file in the absence of a matching DB row.
+        # Idempotent: a second completed transition queues a second
+        # move attempt that no-ops when the source file is already gone.
+        if status == "completed" and cur.rowcount > 0:
             self._pending_worker_archives.append(task_id)
 
     # ------------------------------------------------------------------
