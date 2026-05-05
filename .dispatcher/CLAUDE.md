@@ -400,11 +400,16 @@ mcp__renga-peers__send_message(to_id="secretary", message="...")
    )
    ```
 
-   - 取得した `lines[].text` を改行 join して 1 文字列にし、SHA-256 hash を取る。直前の hash (`.state/dispatcher/secretary-pane-snapshot.txt` に 1 行で保存) と **不一致** な場合のみ:
-     1. snapshot 本文を `.state/dispatcher/secretary-pane-snapshot.txt` に上書き保存 (次サイクルの比較対象にする)
-     2. `.state/dispatcher/secretary-output-changes.jsonl` に `{ts, hash, diff_excerpt}` を 1 行 append。`diff_excerpt` は新 snapshot の **末尾 5 行** を文字列化したもの (task_id 紐付け用、(b)(2) で参照)
-   - hash 一致時は 1, 2 どちらもスキップ (= 画面無変化なら append しない)。Codex round 2 Blocker: 「毎サイクル無条件 append」は (b)(2) を常時 true にして検知経路を死なせるため、必ず変化検知時のみに限定する
-   - **(b)(2) の判定 (task_id 必須紐付け)**: `secretary-output-changes.jsonl` から `ts >= T_last_worker_in` の行を取り、`diff_excerpt` フィールドに **`task_id` または `worker-{task_id}` の substring** を含む行が 1 件以上あれば secretary→user 痕跡 **あり** とみなす。task_id を含まない更新 (別 worker の話題、curator 連携、無関係な user input echo) は痕跡カウントから除外する。これにより別タスク由来の更新で対象 worker の relay gap が誤抑制される問題を回避する (Codex round 2 Major)。trade-off として、secretary が task_id を文中に明示せずに human に上げた場合は false positive (relay gap が出てない場面で alert) になり得るが、本 PR スコープでは false positive を false suppression より優先する (relay gap 見逃しの方が事故として大きい)
+   - 永続化契約 (一意化):
+     - `.state/dispatcher/secretary-pane-snapshot.txt`: 直近の snapshot **本文** をそのまま保存する (改行 join 済み文字列)。次サイクル開始時にこのファイルを読み、新 snapshot 本文と byte-equal 比較を行う。SHA-256 hash は比較に使うが永続化はしない (毎サイクル本文から再計算する)
+     - `.state/dispatcher/secretary-output-changes.jsonl`: 変化検知時に 1 行 append する追記専用 ledger
+   - 比較・追記の手順:
+     1. 旧 snapshot 本文 (前サイクルが書いた `secretary-pane-snapshot.txt`) と新 snapshot 本文を取得し、それぞれの SHA-256 hash を算出
+     2. hash が一致 → なにもしない (画面無変化、(b)(2) は前回までの jsonl 内容で評価)
+     3. hash が不一致 → 以下を実施:
+        - 新 snapshot 本文を `secretary-pane-snapshot.txt` に上書き保存 (次サイクルの旧 snapshot になる)
+        - `secretary-output-changes.jsonl` に `{ts, hash, diff_lines}` を append。`diff_lines` は **新 snapshot にあって旧 snapshot に **無い** 行のみ** を改行 join した文字列 (line-set diff、追加行の純粋な集合)。task_id 紐付け判定はこの "新規追加行" だけで行うため、末尾に残留しているだけの古い task_id 文字列は含まれない (Codex round 3 Major 2 の対応)
+   - **(b)(2) の判定 (task_id 必須紐付け)**: `secretary-output-changes.jsonl` から `ts >= T_last_worker_in` の行を取り、`diff_lines` フィールドに **`task_id` または `worker-{task_id}` の substring** を含む行が 1 件以上あれば secretary→user 痕跡 **あり** とみなす。task_id を含まない更新 (別 worker の話題、curator 連携、無関係な user input echo) は痕跡カウントから除外する。これにより別タスク由来の更新で対象 worker の relay gap が誤抑制される問題を回避する。trade-off として、secretary が task_id を文中に明示せずに human に上げた場合は false positive (relay gap が出てない場面で alert) になり得るが、本 PR スコープでは false positive を false suppression より優先する (relay gap 見逃しの方が事故として大きい)
      - 観測履歴ファイルの retention: 末尾 50 行で十分 (15 分 / 3 分サイクル = 最大 5 行の変化観測 × バッファ。古い行は手動 / 別 cleanup で間引く)
    - 制限: secretary が renga 外の I/O (Slack 等) で user に通知した場合はこの proxy では検知できない。実運用上 user は secretary pane を直接見ていることが大半なので許容する trade-off
    - エラー時の挙動 (`[pane_not_found]` 等) は Step 4 と同じく該当サイクル skip し journal に `anomaly_observed source=relay_gap_check kind=inspect_error` を残す
