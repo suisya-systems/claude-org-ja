@@ -35,7 +35,7 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from tools.registry_parser import parse_projects as _parse_projects_shared
+from tools.registry_parser import parse_projects_text as _parse_projects_shared
 from tools.state_db import connect as _db_connect
 from tools.state_db.queries import (
     get_org_state_summary as _db_org_state_summary,

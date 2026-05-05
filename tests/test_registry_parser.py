@@ -12,7 +12,12 @@ from tools.registry_parser import (  # noqa: E402
     Project,
     iter_rows,
     parse_projects,
+    parse_projects_text,
 )
+
+
+def parse(text: str):  # convenience for in-memory tests
+    return parse_projects_text(text)
 
 
 HEADER = "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 |"
@@ -45,7 +50,7 @@ class TestParseProjects(unittest.TestCase):
             "| 時計アプリ | clock-app | apps/clock | demo clock | a、b |",
             "| ブログ | blog-site | sites/blog | blog | c |",
         )
-        projects = parse_projects(text)
+        projects = parse_projects_text(text)
         self.assertEqual(len(projects), 2)
         self.assertEqual(projects[0].nickname, "時計アプリ")
         self.assertEqual(projects[0].name, "clock-app")
@@ -55,17 +60,17 @@ class TestParseProjects(unittest.TestCase):
 
     def test_no_trailing_newline(self):
         text = _build("| n | slug | / | d | t |").rstrip("\n")
-        self.assertEqual(parse_projects(text)[0].name, "slug")
+        self.assertEqual(parse_projects_text(text)[0].name, "slug")
 
     def test_crlf_line_endings(self):
         text = _build("| n | slug | / | d | t |").replace("\n", "\r\n")
-        projects = parse_projects(text)
+        projects = parse_projects_text(text)
         self.assertEqual(len(projects), 1)
         self.assertEqual(projects[0].name, "slug")
 
     def test_bom_prefix(self):
         text = "﻿" + _build("| n | slug | / | d | t |")
-        projects = parse_projects(text)
+        projects = parse_projects_text(text)
         self.assertEqual(len(projects), 1)
         self.assertEqual(projects[0].name, "slug")
 
@@ -76,20 +81,34 @@ class TestParseProjects(unittest.TestCase):
             "| n2 | slug2 | / | d2 | t2 |",
         )
         with self.assertLogs("tools.registry_parser", level="WARNING") as cm:
-            projects = parse_projects(text)
+            projects = parse_projects_text(text)
         self.assertEqual([p.name for p in projects], ["slug", "slug2"])
         self.assertTrue(any("malformed row" in m for m in cm.output))
 
     def test_empty_text(self):
-        self.assertEqual(parse_projects(""), [])
+        self.assertEqual(parse_projects_text(""), [])
 
     def test_header_only_no_data(self):
         text = HEADER + "\n" + SEPARATOR + "\n"
-        self.assertEqual(parse_projects(text), [])
+        self.assertEqual(parse_projects_text(text), [])
+
+    def test_four_column_table_still_parses(self):
+        # Regression for Codex review M: the legacy resolver accepted 4-col
+        # tables (no 「よくある作業例」 column). Hand-edited registries in the
+        # wild may omit the 5th column; we must not silently drop them.
+        text = (
+            "| 通称 | プロジェクト名 | パス | 説明 |\n"
+            "|---|---|---|---|\n"
+            "| 時計 | clock-app | - | Demo |\n"
+        )
+        projects = parse_projects_text(text)
+        self.assertEqual(len(projects), 1)
+        self.assertEqual(projects[0].name, "clock-app")
+        self.assertEqual(projects[0].common_tasks, "")
 
     def test_empty_optional_fifth_column(self):
         text = _build("| n | slug | / | d |  |")
-        projects = parse_projects(text)
+        projects = parse_projects_text(text)
         self.assertEqual(len(projects), 1)
         self.assertEqual(projects[0].common_tasks, "")
 

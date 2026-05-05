@@ -93,11 +93,11 @@ def iter_rows(text: str) -> Iterator[ParsedRow]:
             # Header row (above the separator, or a stray repeat header).
             yield ParsedRow(line_no, raw_line, "header")
             continue
-        # Schema check: exactly 5 cells, and the machine slug column must be
-        # populated. Other columns are allowed to be empty so authors can omit
-        # description / common_tasks for early-stage entries (matches the
-        # legacy resolver's tolerant parse).
-        if len(cells) != COLUMN_COUNT or not cells[1]:
+        # Schema check: at least 4 cells (通称/slug/パス/説明) and the slug
+        # column populated. The 5th 「よくある作業例」 column is optional —
+        # the legacy resolver accepted 4-column tables so dropping them here
+        # would silently break manually-edited registries (Codex review M).
+        if len(cells) < 4 or not cells[1]:
             yield ParsedRow(line_no, raw_line, "mismatch")
             continue
         project = Project(
@@ -105,22 +105,24 @@ def iter_rows(text: str) -> Iterator[ParsedRow]:
             name=cells[1],
             path=cells[2],
             description=cells[3],
-            common_tasks=cells[4],
+            common_tasks=cells[4] if len(cells) >= COLUMN_COUNT else "",
         )
         yield ParsedRow(line_no, raw_line, "data", project)
 
 
-def parse_projects(source: Union[str, Path]) -> list[Project]:
-    """Return successfully parsed :class:`Project` rows from ``source``.
+def parse_projects(path: Union[str, Path]) -> list[Project]:
+    """Return successfully parsed :class:`Project` rows from a file path.
 
-    ``source`` may be either the raw markdown text or a path-like object
-    pointing at ``registry/projects.md``. Malformed rows are skipped with a
-    warning log; this function never raises on parsing errors.
+    ``path`` is always treated as a filesystem path (``str | Path``).
+    Callers that already have the markdown text in memory should use
+    :func:`parse_projects_text` instead.
     """
-    if isinstance(source, (str, bytes)):
-        text = source.decode("utf-8") if isinstance(source, bytes) else source
-    else:
-        text = Path(source).read_text(encoding="utf-8")
+    return parse_projects_text(Path(path).read_text(encoding="utf-8"))
+
+
+def parse_projects_text(text: str) -> list[Project]:
+    """Parse already-loaded markdown text. Malformed rows are skipped with
+    a warning; this function never raises on parsing errors."""
     out: list[Project] = []
     for row in iter_rows(text):
         if row.kind == "data" and row.project is not None:
