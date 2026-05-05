@@ -261,9 +261,100 @@ mcp__renga-peers__send_message(to_id="secretary", message="...")
    #### (g) worker 自己申告 (Step 2) と inspect (Step 4) の併用設計
    両チャネルが同じ anomaly を通知しても de-dup ((e) の step 2) が 30 秒窓で合算するので、窓口は重複通知を受け取らない。self-report は先に届けば inspect を抑制、inspect は worker が通知を忘れていれば self-report を補完する。両方独立稼働で OK。
 
-5. **重要**: ディスパッチャーが自動で承認・拒否することはしない (ユーザー判断が必要)
+5. **stall 検出 (STALL_SUSPECTED)** — 「stuck」と「Secretary 判断待ち idle」を補助シグナルで区別する独立チャネル:
 
-6. ワーカーペインがない場合は `poll_events` / `check_messages` / `inspect_pane` をすべてスキップし、監視ループを停止する
+   **定数**: `STALL_SECRETARY_LOOKBACK_MIN = 15` (補助シグナル look-back window、分単位)。値変更が必要な場合は本ファイルのこの行を直接書き換える (env 化は将来課題)。
+
+   #### (a) 動機
+   Step 4 の inspect_pane 単独では、ワーカーが「Secretary に判断仰ぎを送って人間応答を待っている」状態と「stuck (異常停止)」を区別できない。判断仰ぎ中は worker pane の Claude session は継続中で画面 idle、APPROVAL_BLOCKED の regex にも該当しない。誤って STALL_SUSPECTED を発火すると、判断待ちワーカーに対してサイクル毎に窓口 escalation を投げ続ける。Issue #287 で実インシデント発覚 (session #12 / `worker-issue-283-delegate-payload`)。
+   
+   #### (b) いつ stall を疑うか
+   Step 4 の inspect_pane で worker pane の target line が APPROVAL_BLOCKED / ERROR どちらの regex にも該当せず、かつ `cursor.visible == false` または cursor 位置が前サイクルから動いていない状態が **連続 3 サイクル以上** (= 9 分相当、`/loop 3m` cadence 前提) 続いた worker を **stall 候補** とする。サイクル数は本ファイルでこの 3 を目安として扱う。
+
+   **idle streak の保持** (worker ごとに per-pane で永続化):
+   - 保存先: `.state/dispatcher/worker-idle-state.json` (1 ファイルに全 worker を JSON object でまとめる、key は `worker-{task_id}`)
+   - 各 worker のレコード形式 (例):
+     ```json
+     {
+       "worker-issue-287-stall-signal": {
+         "last_target_line_text": "...",
+         "last_cursor_row": 12,
+         "last_cursor_col": 0,
+         "last_cursor_visible": false,
+         "idle_streak_cycles": 2,
+         "last_check_ts": "2026-05-05T05:48:56Z"
+       }
+     }
+     ```
+   - 更新規則 (Step 4 の inspect 直後に評価):
+     1. `(target_line_text, cursor_row, cursor_col, cursor_visible)` が前回値と完全一致 → `idle_streak_cycles += 1`
+     2. いずれかが変化 → `idle_streak_cycles = 0` で reset (画面に動きあり = アクティブ)
+     3. APPROVAL_BLOCKED / ERROR のどちらかが (e) の通知に進んだ場合も reset (anomaly が独立して扱われたので stall 評価を巻き戻す)
+     4. `pane_exited` を Step 1 で受信、または `list_panes` で消失検知 → 該当 key をファイルから削除
+   - 再起動時の挙動: ファイルが消失/読めない場合は全 worker `idle_streak_cycles = 0` から再観測する (誤検出より見逃しを優先、stall は数サイクル後に再評価される)
+   - 本 PR では JSON ファイル経由の prose 契約に留め、helper script 化 (`tools/journal_append.sh` 相当) は将来課題
+   
+   #### (c) 補助シグナル取得 — 直近の worker→secretary コミュニケーション
+   stall 候補が見つかったら、STALL_SUSPECTED を発火する **前に** 補助シグナルを取得する:
+
+   1. **journal scan (primary, authoritative)**: `.state/journal.jsonl` を読み、`.ts >= now - STALL_SECRETARY_LOOKBACK_MIN minutes` でフィルタし、以下のいずれかの event を持つ行が 1 件でもあるか確認する:
+      - `event == "worker_escalation"` かつ `worker == "worker-{task_id}"` (judgment request の受信)
+      - `event == "worker_reported"` かつ `worker == "worker-{task_id}"` (mid-task progress の受信)
+      - `event == "worker_completed"` かつ `worker == "worker-{task_id}"` (完了報告の受信、`REVIEW` 待機中の idle 区別用)
+      - `event == "plan_delivered"` かつ `worker == "worker-{task_id}"` (plan 引き渡しの受信)
+      - `event == "prep_delivered"` かつ `worker == "worker-{task_id}"` (prep 引き渡しの受信)
+
+      これらはいずれも worker 起点の `send_message` を secretary が受信した時点で append される ledger なので、worker→secretary コミュニケーションの authoritative な痕跡になる。`worker_reported` / `worker_completed` / `plan_delivered` / `prep_delivered` は `docs/journal-events.md` の **Emitted by = worker** + **Writer = secretary** 行で定義されている。`worker_escalation` は同 catalog 未掲載だが本 `CLAUDE.md` 「ワーカーからの判断仰ぎは人間にエスカレーションする」節および `.claude/skills/org-delegate/SKILL.md` Step 5 で書き込み手順が明文化されている (catalog への追記は curator 領域、本 PR スコープ外)。将来 catalog に **Emitted by = worker** な event が追加された場合は本リストにも追加する (catalog と同期する宣言的リスト)。
+
+      ```bash
+      # ディスパッチャーの cwd は .dispatcher/ なので 1 階層上の .state/journal.jsonl を読む。
+      # 時間窓ベースの抽出 (行数 cap で打ち切らないこと、journal が長期間追記され続けても 15 分窓は ts で正確に区切る)。
+      jq -c --arg cutoff "$(date -u -d '15 minutes ago' +%Y-%m-%dT%H:%M:%SZ)" '
+        select(.ts >= $cutoff) |
+        select(.event == "worker_escalation"
+            or .event == "worker_reported"
+            or .event == "worker_completed"
+            or .event == "plan_delivered"
+            or .event == "prep_delivered") |
+        select(.worker == "worker-{task_id}")
+      ' ../.state/journal.jsonl
+      # 1 件以上残れば「ヒット」。具体的な one-liner (PowerShell 環境での date 代替等) は dispatcher Claude の判断。
+      ```
+
+   2. **renga-peers poll_events (forward-compat、現状は補助のみ)**: 現状 `mcp__renga-peers__poll_events` は pane lifecycle event のみを流し、`send_message` は流れない (`references/renga-error-codes.md` の type 表参照)。さらに `since` は時刻ではなく前サイクルから受け取る **opaque cursor** で、初回省略時は「今以降」セマンティクス (過去履歴は返らない) なので、本判定で「過去 15 分」をピンポイント検索する用途には今は使えない。journal scan を **authoritative source** とする。将来 renga が `send_message` event を `poll_events` に流すようになれば、Step 1 で既に保持している `.state/dispatcher-event-cursor.txt` の cursor 経由で受信した worker→secretary の送信を `(worker, kind=stall_acked)` ledger に変換するルートを追加する想定 (本 PR ではプレースホルダとして記述するに留める)。
+
+   #### (d) 分岐 (acked vs timeout)
+   - **acked** — どちらかの系統で 1 件以上ヒット: 「Secretary 判断待ち idle」とみなし、STALL_SUSPECTED を **発火しない**。Step 4 (e) と同じ `anomaly_observed` ledger に soft-note として記録 (新 event 名は導入せず既存 catalog を再利用):
+     ```bash
+     bash ../tools/journal_append.sh anomaly_observed source=stall_check worker=worker-{task_id} kind=stall_acked confidence=n/a note=awaiting_secretary_lookback_15m
+     ```
+     以降のサイクルで journal entry が lookback window から外れて 0 件になれば、改めて (c) → (d) を再評価する (持続的 stuck の検出が遅れる代償として、判断待ちの誤発火を避ける trade-off)。
+
+   - **timeout** — 両系統とも痕跡なし、idle 継続: 従来通り stall として扱い、窓口に通知:
+     ```
+     mcp__renga-peers__send_message(to_id="secretary", message="
+       STALL_SUSPECTED: worker-{task_id} が直近 3 サイクル idle、
+       過去 15 分以内に secretary 向け worker→secretary 送信痕跡
+       (worker_escalation / worker_reported / worker_completed /
+       plan_delivered / prep_delivered) なし。stuck の可能性あり、確認願います。
+     ")
+     ```
+     通知後、Step 4 (e) の de-dup スキーマと整合させて `notify_sent` を journal に追記:
+     ```bash
+     bash ../tools/journal_append.sh notify_sent source=stall_check worker=worker-{task_id} kind=stall_suspected confidence=n/a
+     ```
+
+   #### (e) de-dup
+   Step 4 (e) と同じ 30 秒窓を共有し、直近 30 秒以内に `(worker, kind=stall_suspected)` の `notify_sent` があれば再通知をスキップする。stall は本質的に長時間の状態なので、3 分サイクル毎に再通知するとノイズになる。worker が完了するか acked 経路に入るまで沈黙でよい (at-least-once 担保のため失敗時は次サイクルで再試行される)。
+
+   #### (f) 設計メモ
+   - **`STALL_SECRETARY_LOOKBACK_MIN = 15` の根拠**: Secretary が人間に判断を仰いでから応答を返すまで 5–10 分のオーダーが典型で、その間ワーカーは idle のまま待機する。15 分 window で「直近やり取りあり」を担保すれば、人間応答待ちの誤発火を実用上排除できる。短くすると判断待ちワーカーが timeout 経路に落ちて誤発火、長くすると完了後ペインの reactivation 痕跡を拾い続けて stuck が見逃される。中間値の 15 分が現状のスイートスポット
+   - **journal scan を primary にした理由**: renga の `poll_events` は現状 pane lifecycle event (`pane_started` / `pane_exited` / `events_dropped` / `heartbeat`) のみで `send_message` を流さない (`references/renga-error-codes.md` の type 表参照)。一方、secretary 受信時の `worker_escalation` / `worker_reported` は authoritative な ledger として既に永続化されている。再利用が正解
+   - **soft-note を残す意味**: 後で「なぜ STALL_SUSPECTED が発火しなかったか」を retro / debug で再現できる。silent skip にすると、誤検出疑いが起きたとき journal だけでは判別不能になる。Step 4 と同じ `anomaly_observed` event を再利用するので、event catalog (`docs/journal-events.md`) への新規追記は不要 (kind だけ `stall_acked` を新設)
+
+6. **重要**: ディスパッチャーが自動で承認・拒否することはしない (ユーザー判断が必要)
+
+7. ワーカーペインがない場合は `poll_events` / `check_messages` / `inspect_pane` をすべてスキップし、監視ループを停止する
 
 監視対象のペイン名は `.state/workers/worker-{peer_id}.md` の Pane Name (`worker-{task_id}`) から取得する。
 
