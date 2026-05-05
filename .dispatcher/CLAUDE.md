@@ -261,9 +261,68 @@ mcp__renga-peers__send_message(to_id="secretary", message="...")
    #### (g) worker 自己申告 (Step 2) と inspect (Step 4) の併用設計
    両チャネルが同じ anomaly を通知しても de-dup ((e) の step 2) が 30 秒窓で合算するので、窓口は重複通知を受け取らない。self-report は先に届けば inspect を抑制、inspect は worker が通知を忘れていれば self-report を補完する。両方独立稼働で OK。
 
-5. **重要**: ディスパッチャーが自動で承認・拒否することはしない (ユーザー判断が必要)
+5. **stall 検出 (STALL_SUSPECTED)** — 「stuck」と「Secretary 判断待ち idle」を補助シグナルで区別する独立チャネル:
 
-6. ワーカーペインがない場合は `poll_events` / `check_messages` / `inspect_pane` をすべてスキップし、監視ループを停止する
+   **定数**: `STALL_SECRETARY_LOOKBACK_MIN = 15` (補助シグナル look-back window、分単位)。値変更が必要な場合は本ファイルのこの行を直接書き換える (env 化は将来課題)。
+
+   #### (a) 動機
+   Step 4 の inspect_pane 単独では、ワーカーが「Secretary に判断仰ぎを送って人間応答を待っている」状態と「stuck (異常停止)」を区別できない。判断仰ぎ中は worker pane の Claude session は継続中で画面 idle、APPROVAL_BLOCKED の regex にも該当しない。誤って STALL_SUSPECTED を発火すると、判断待ちワーカーに対してサイクル毎に窓口 escalation を投げ続ける。Issue #287 で実インシデント発覚 (session #12 / `worker-issue-283-delegate-payload`)。
+   
+   #### (b) いつ stall を疑うか
+   Step 4 の inspect_pane で worker pane の target line が APPROVAL_BLOCKED / ERROR どちらの regex にも該当せず、かつ `cursor.visible == false` または cursor 位置が前サイクルから動いていない状態が **連続 3 サイクル以上** (= 9 分相当、`/loop 3m` cadence 前提) 続いた worker を **stall 候補** とする。サイクル数は本ファイルでこの 3 を目安として扱う。
+   
+   #### (c) 補助シグナル取得 — 直近の worker→secretary コミュニケーション
+   stall 候補が見つかったら、STALL_SUSPECTED を発火する **前に** 補助シグナルを取得する:
+
+   1. **journal scan (primary, authoritative)**: `.state/journal.jsonl` の末尾を読み、`ts >= now - STALL_SECRETARY_LOOKBACK_MIN minutes` でフィルタし、以下のいずれかの event を持つ行が 1 件でもあるか確認する:
+      - `event == "worker_escalation"` かつ `worker == "worker-{task_id}"` (judgment request 受信を secretary が記録)
+      - `event == "worker_reported"` かつ `worker == "worker-{task_id}"` (mid-task progress 受信を secretary が記録)
+
+      これらは secretary が worker からの `send_message` を受信した時点で append する ledger なので、worker→secretary コミュニケーションの authoritative な痕跡になる。
+
+      ```bash
+      # ディスパッチャーの cwd は .dispatcher/ なので 1 階層上の .state/journal.jsonl を読む。
+      # 例: tail で末尾窓を切ってから jq でフィルタ (具体的な one-liner は dispatcher Claude の判断)。
+      tail -n 500 ../.state/journal.jsonl | jq -c '
+        select(.event == "worker_escalation" or .event == "worker_reported") |
+        select(.worker == "worker-{task_id}")
+      '
+      # 各行の .ts (ISO-8601 UTC) を now - 15min と比較し、1 件以上残れば「ヒット」
+      ```
+
+   2. **renga-peers poll_events (補完)**: 補助的に `mcp__renga-peers__poll_events(types=["send_message"], since=<now - STALL_SECRETARY_LOOKBACK_MIN 分の epoch>, timeout_ms=1000)` も呼んでよい。返却 events に `from_name == "worker-{task_id}"` かつ `to_id == "secretary"` のものがあれば 1 件以上ヒット扱い。ただし renga 0.14.x 時点では `poll_events` は pane lifecycle event のみを流し、`send_message` は流れない (`references/renga-error-codes.md` の type 表参照)。journal scan を **authoritative source** とし、poll_events 系統は将来 renga が拡張した際の forward-compat 経路として記述する。
+
+   #### (d) 分岐 (acked vs timeout)
+   - **acked** — どちらかの系統で 1 件以上ヒット: 「Secretary 判断待ち idle」とみなし、STALL_SUSPECTED を **発火しない**。soft-note のみ journal に追記:
+     ```bash
+     bash ../tools/journal_append.sh stall_softnote worker=worker-{task_id} reason=awaiting_secretary lookback_min=15
+     ```
+     以降のサイクルで journal entry が lookback window から外れて 0 件になれば、改めて (c) → (d) を再評価する (持続的 stuck の検出が遅れる代償として、判断待ちの誤発火を避ける trade-off)。
+
+   - **timeout** — 両系統とも痕跡なし、idle 継続: 従来通り stall として扱い、窓口に通知:
+     ```
+     mcp__renga-peers__send_message(to_id="secretary", message="
+       STALL_SUSPECTED: worker-{task_id} が直近 3 サイクル idle、
+       過去 15 分以内に secretary 向け worker_escalation / worker_reported なし。
+       stuck の可能性あり、確認願います。
+     ")
+     ```
+     通知後、Step 4 (e) の de-dup スキーマと整合させて `notify_sent` を journal に追記:
+     ```bash
+     bash ../tools/journal_append.sh notify_sent source=stall_check worker=worker-{task_id} kind=stall_suspected confidence=n/a
+     ```
+
+   #### (e) de-dup
+   Step 4 (e) と同じ 30 秒窓を共有し、直近 30 秒以内に `(worker, kind=stall_suspected)` の `notify_sent` があれば再通知をスキップする。stall は本質的に長時間の状態なので、3 分サイクル毎に再通知するとノイズになる。worker が完了するか acked 経路に入るまで沈黙でよい (at-least-once 担保のため失敗時は次サイクルで再試行される)。
+
+   #### (f) 設計メモ
+   - **`STALL_SECRETARY_LOOKBACK_MIN = 15` の根拠**: Secretary が人間に判断を仰いでから応答を返すまで 5–10 分のオーダーが典型で、その間ワーカーは idle のまま待機する。15 分 window で「直近やり取りあり」を担保すれば、人間応答待ちの誤発火を実用上排除できる。短くすると判断待ちワーカーが timeout 経路に落ちて誤発火、長くすると完了後ペインの reactivation 痕跡を拾い続けて stuck が見逃される。中間値の 15 分が現状のスイートスポット
+   - **journal scan を primary にした理由**: renga の `poll_events` は現状 pane lifecycle event (`pane_started` / `pane_exited` / `events_dropped` / `heartbeat`) のみで `send_message` を流さない (`references/renga-error-codes.md` の type 表参照)。一方、secretary 受信時の `worker_escalation` / `worker_reported` は authoritative な ledger として既に永続化されている。再利用が正解
+   - **soft-note を残す意味**: 後で「なぜ STALL_SUSPECTED が発火しなかったか」を retro / debug で再現できる。silent skip にすると、誤検出疑いが起きたとき journal だけでは判別不能になる。`stall_softnote` event は本ファイル導入時点で新設 (journal-events.md への catalog 追記は curator 領域、本 PR スコープ外)
+
+6. **重要**: ディスパッチャーが自動で承認・拒否することはしない (ユーザー判断が必要)
+
+7. ワーカーペインがない場合は `poll_events` / `check_messages` / `inspect_pane` をすべてスキップし、監視ループを停止する
 
 監視対象のペイン名は `.state/workers/worker-{peer_id}.md` の Pane Name (`worker-{task_id}`) から取得する。
 
