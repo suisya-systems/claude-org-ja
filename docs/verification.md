@@ -137,7 +137,7 @@ mcp__renga-peers__list_panes    # 現在のペイン一覧
    - a. ディスパッチャーの `mcp__renga-peers__spawn_claude_pane` 呼び出し結果テキストに `[split_refused]` が含まれない
    - b. Step 3-1b のアルゴリズムが選出した `target` / `direction` が、`list_panes` の直前スナップショットから rect ベースで再現可能
    - c. 起動直後の `mcp__renga-peers__list_panes` を **別ログファイル (例: `.state/verification/balanced-split-{timestamp}.log`)** に保存するか、その場で `role == "worker"` の `name` / `id` を記録し、`.state/journal.jsonl` の `worker_spawned` イベントと事後照合する
-3. 各 k 到達時点でペイン配置を `list_panes` で取得し、Step 3-1b のアルゴリズム（curator 特定 → role filter → dispatcher-curator 隣接判定 → direction 判定 → `new_w / new_h` 計算 → MIN_PANE 制約 → SECRETARY 保険条項 → metric sort）をスナップショットに対して手計算で再現できることを確認する。`pane-layout.md` の「ワーカーの balanced split 戦略」で述べている通り、rect ベース動的配置なので 2×2 や 2×4 のような固定グリッド形状は成功基準にしない。
+3. 各 k 到達時点でペイン配置を `list_panes` で取得し、Step 3-1b のアルゴリズム（curator 特定 → role filter (4 役すべて候補) → dispatcher-curator 隣接判定 → direction 判定 → `new_w / new_h` 計算 → MIN_PANE 制約 → SECRETARY 保険条項 (`new_w >= 140` かつ `new_h >= 30`) → **(role priority desc, metric desc, id asc) sort** ※ role priority = secretary 4 > curator 3 > worker 2 > dispatcher 1）をスナップショットに対して手計算で再現できることを確認する。`pane-layout.md` の「ワーカーの balanced split 戦略」で述べている通り、rect ベース動的配置なので 2×2 や 2×4 のような固定グリッド形状は成功基準にしない。
 4. 9 人目のダミータスクを試し、ディスパッチャーが `renga-peers` で窓口に `SPLIT_CAPACITY_EXCEEDED` を送信することを確認。**当該 9 人目のワーカーのみ派遣を中止し、ディスパッチャー本体の監視ループは継続稼働**すること（`spawn_claude_pane` は発行されず、`exit` などでディスパッチャーが落ちない）。
 
 > **注**: `.state/verification/balanced-split-{timestamp}.log` 等の検証用ログは一時ファイルなのでコミット対象外。`.state/*` は既存の `.gitignore` で除外済み。

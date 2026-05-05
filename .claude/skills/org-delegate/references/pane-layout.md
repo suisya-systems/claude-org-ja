@@ -20,7 +20,7 @@ Tab 1: ops (ワーカー 0 人)
 └────────────────────┴──────────┴─────────┘
 ```
 
-> ※ 実際には `secretary` が左で `dispatcher/curator` が下半分を占める構成もあり、初期レイアウト詳細は org-start に委ねる。本ドキュメントで重要なのは「`dispatcher` ペインの矩形から balanced split でワーカー zone を作っていく」という点。
+> ※ 実際には `secretary` が左で `dispatcher/curator` が下半分を占める構成もあり、初期レイアウト詳細は org-start に委ねる。本ドキュメントで重要なのは「`secretary / curator / worker / dispatcher` の 4 役を候補とする role-priority 付き balanced split で動的にワーカー zone を作っていく」という点（詳細は下記アルゴリズム節）。
 
 ## 配置ルール
 
@@ -47,10 +47,10 @@ renga は各 split で対象ペインを 50/50 に分ける。`MIN_PANE_WIDTH = 
 新規ワーカーを起動するディスパッチャーは、`spawn_claude_pane` を呼ぶ前に以下を実行する。判定ステップの詳細は `SKILL.md` Step 3-1 を参照（Claude が `list_panes` の結果テキストを解釈してロジックを実行する）。
 
 1. `mcp__renga-peers__list_panes` で全ペインと属性 (id / name / role / focused / x / y / width / height) を取得する
-2. **候補集合**: `role ∈ {worker, dispatcher, secretary}` のペイン (curator は常に除外)
+2. **候補集合**: `role ∈ {secretary, curator, worker, dispatcher}` のペイン (4 役すべてが候補対象)
 3. **候補の絞り込み**:
-   - **dispatcher-curator 隣接維持**: dispatcher は curator と rect 隣接 (後述) しているときのみ候補に入れる。組織運営上 dispatcher と curator の隣接配置は前提。dispatcher を分割すると隣接が崩れ得るので、既に非隣接な dispatcher は候補から外す
-   - **secretary 保護**: secretary は分割後の新ペイン幅 `new_w >= 125` **かつ** 新ペイン高さ `new_h >= 30` を満たす場合のみ候補化 (保険条項、実運用では通常発動しない)。width だけ通っても height が足りなければ却下する
+   - **dispatcher-curator 隣接維持**: dispatcher は curator と rect 隣接 (後述) しているときのみ候補に入れる。組織運営上 dispatcher と curator の隣接配置は前提。dispatcher を分割すると隣接が崩れ得るので、既に非隣接な dispatcher は候補から外す。curator 自体には adjacency 制約はかけない (curator が分割されても dispatcher と curator の残部は隣接維持される)
+   - **secretary 保護**: secretary は分割後の新ペイン幅 `new_w >= 140` **かつ** 新ペイン高さ `new_h >= 30` を満たす場合のみ候補化 (保険条項。280 cols → 1 回だけ vertical split で 140 まで縮め、以降は自動的に候補から脱落する設計)。width だけ通っても height が足りなければ却下する
 4. **direction 決定** (各候補の aspect ratio から):
    - `width > height * 2` → `vertical` (左右分割)
    - それ以外 → `horizontal` (上下分割)
@@ -58,7 +58,11 @@ renga は各 split で対象ペインを 50/50 に分ける。`MIN_PANE_WIDTH = 
 5. **MIN_PANE 制約**: 分割後の新ペインサイズ `(new_w, new_h)` が `new_w >= 20` かつ `new_h >= 5` を満たさない候補は除外
    - vertical 分割: `(new_w, new_h) = (floor(width / 2), height)`
    - horizontal 分割: `(new_w, new_h) = (width, floor(height / 2))`
-6. **target 選出**: 残った候補から **「分割軸方向の新サイズ」** (vertical なら `new_w`、horizontal なら `new_h`) が最大のペインを target にする。tie-break はその時点の pane id 昇順 (スナップショット内で再現可能。セッション跨ぎの安定性までは保証しない)
+6. **target 選出**: 残った候補を **(role priority desc, metric desc, id asc)** で並べ、先頭を target にする。
+   - role priority: `secretary = 4`, `curator = 3`, `worker = 2`, `dispatcher = 1`
+   - metric は分割軸方向の新サイズ (vertical なら `new_w`、horizontal なら `new_h`)
+   - id 昇順は最終 tie-break (スナップショット内で再現可能。セッション跨ぎの安定性までは保証しない)
+   - secretary を最優先にすることで、初期レイアウト (secretary 280 cols 想定) では 1 回目のワーカー split が必ず secretary 側に入り、以降は SECRETARY_MIN_WIDTH=140 ガードで自動的に curator → worker → dispatcher の順に流れる。dispatcher を最後に置くのは「ワーカー監視で active な dispatcher の viewport を頻繁に半減させないため」で、curator (`/loop 30m /org-curate` で大半は idle) を分割吸収先として優先する設計
 7. **候補が空なら escalate**: `SKILL.md` Step 3-1c の `SPLIT_CAPACITY_EXCEEDED` 経路で窓口に escalate (`spawn_claude_pane` は発行せず、該当ワーカー 1 件だけ派遣中止、ディスパッチャー本体は継続)
 
 ### rect 隣接判定の定義
@@ -72,9 +76,27 @@ renga の cell 座標は整数なので tolerance なし完全一致で判定す
 
 ### 初期状態と典型的な挙動
 
-ワーカー 0 人の時点では、候補は `dispatcher` のみ (secretary は `new_w >= 125` / `new_h >= 30` 条件または隣接条件で除外されるのが通常。curator は常に除外)。dispatcher は典型的に横長なので vertical 分割され、最初のワーカー zone が dispatcher の右側に作られる。
+> **前提条件**: 以下のシナリオは Issue #307 の verification と同じ「ターミナル ≈ 280 cols × 86 rows、org-start で secretary を horizontal split → dispatcher を vertical split した直後」を仮定する。secretary は上半分 (280×43) を占め、SECRETARY_MIN_HEIGHT=30 を満たす。43 行未満の縦に低いターミナル (例: 高さ 43 行で secretary が 21 行になる場合) では secretary は最初から SECRETARY_MIN_HEIGHT で脱落するため、本シナリオは成立しない。その場合 1st spawn は curator → ... の順で進行する (role priority 規約は不変)。
 
-以降は既存ペインの中で「分割後サイズが最大」のものが選ばれ、direction が rect に応じて自然に交替することで準 balanced な配置になる。固定的な 4 並列 / 8 並列の図は意味を持たないため割愛する (動的で決まるため)。
+典型的な org-start 直後のレイアウト (secretary 280×43 上半分 / dispatcher 140×43 下半分左 / curator 140×43 下半分右) では、role priority に従って:
+
+- **1st worker spawn**: candidate = {secretary (priority 4, vertical split で 140×43, OK), curator (priority 3), worker は不在, dispatcher (priority 1, curator 隣接 OK)}。secretary が最優先で選ばれる → vertical split。secretary は 280→140 に縮む。
+- **2nd worker spawn**: secretary は今や 140 cols で `new_w = floor(140/2) = 70 < 140` のため SECRETARY_MIN_WIDTH ガードで脱落。残る最高優先度は **curator** (priority 3) → curator が target に。curator は典型 140×43 で横長なので vertical split。
+- **3rd worker spawn**: role priority が strict primary なので、curator が MIN_PANE を満たす限り curator が再度選ばれる (priority 3 > worker priority 2)。curator が MIN_PANE_WIDTH を割って候補から脱落して初めて、priority 2 の worker 群の中で metric desc 比較が効く。
+
+以降は role priority と分割後サイズに応じて自然に交替することで準 balanced な配置になる。固定的な 4 並列 / 8 並列の図は意味を持たないため割愛する (動的で決まるため)。
+
+### Verification trace (Issue #307 シナリオ)
+
+`secretary 280×43 / dispatcher 140×43 / curator 140×43` の直後レイアウトで本アルゴリズムを手動 trace した結果:
+
+| spawn | candidates (Step 5 通過後) | 選出 (priority, metric) | direction | 分割後 |
+|---|---|---|---|---|
+| 1st | secretary (p4, m=140) / curator (p3, m=70) / dispatcher (p1, m=70) | **secretary** (p=4 最高) | vertical | secretary 140×43 / worker-1 140×43 |
+| 2nd | curator (p3, m=70) / worker-1 (p2, m=70) / dispatcher (p1, m=70) — secretary は new_w=70<140 で脱落 | **curator** (p=3 最高) | vertical | curator 70×43 / worker-2 70×43 |
+| 3rd | curator (p3, m=35) / worker-1 (p2, m=70) / worker-2 (p2, m=35) / dispatcher (p1, m=70) | **curator** (p=3 最高、metric が小さくても primary は role priority) | horizontal | curator 70×21 / worker-3 70×22 |
+
+注: 3rd spawn では Issue 本文の "curator or worker-1 (whichever has larger metric)" という記述があるが、本アルゴリズムでは role priority が primary key なので curator が MIN_PANE を通る限り curator が選ばれる。curator が将来 MIN_PANE を割って脱落した時点で、初めて worker-1 が priority 2 の中で metric desc で選ばれる。priority と metric の関係は「priority が strict primary、同 priority 内でのみ metric が効く」。
 
 ### Edge cases / 運用時の注意
 
