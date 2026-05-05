@@ -752,5 +752,170 @@ class TestRootAutoDetect(unittest.TestCase):
             td.cleanup()
 
 
+class TestPostCommitJsonSnapshot(unittest.TestCase):
+    """Issue #284: ``transaction()`` must regenerate the dashboard
+    JSON snapshot (``.state/org-state.json``) after the markdown dump,
+    soft-failing on converter errors so the DB write is never blocked."""
+
+    def _root_with_state_db(self):
+        td = tempfile.TemporaryDirectory()
+        root = Path(td.name)
+        (root / ".state").mkdir()
+        db = root / ".state" / "state.db"
+        conn = connect(db)
+        apply_schema(conn)
+        return td, root, db, conn
+
+    def test_transaction_regenerates_json_snapshot(self):
+        td, root, db, conn = self._root_with_state_db()
+        try:
+            w = StateWriter(conn, claude_org_root=root)
+            with w.transaction() as tx:
+                tx.update_session(status="ACTIVE", objective="ship #284")
+                tx.upsert_run(task_id="t-json", project_slug="p",
+                              pattern="B", title="json regen smoke",
+                              status="in_use")
+            json_path = root / ".state" / "org-state.json"
+            self.assertTrue(json_path.exists(),
+                            "post-commit hook should write org-state.json")
+            import json as _json
+            data = _json.loads(json_path.read_text(encoding="utf-8"))
+            self.assertEqual(data.get("status"), "ACTIVE")
+            self.assertEqual(data.get("currentObjective"), "ship #284")
+            ids = [w.get("id") for w in data.get("workItems", [])]
+            self.assertIn("t-json", ids)
+        finally:
+            conn.close()
+            td.cleanup()
+
+    def test_json_regen_failure_does_not_rollback(self):
+        td, root, db, conn = self._root_with_state_db()
+        try:
+            w = StateWriter(conn, claude_org_root=root)
+            from dashboard import org_state_converter as _conv
+            orig = _conv.convert
+            calls = {"n": 0}
+
+            def boom(*a, **kw):
+                calls["n"] += 1
+                raise RuntimeError("simulated json regen failure")
+
+            _conv.convert = boom
+            try:
+                with w.transaction() as tx:
+                    tx.register_worker_dir(abs_path="/x/json-regen-failed")
+            finally:
+                _conv.convert = orig
+            self.assertEqual(calls["n"], 1)
+            row = conn.execute(
+                "SELECT 1 FROM worker_dirs "
+                "WHERE abs_path = '/x/json-regen-failed'"
+            ).fetchone()
+            self.assertIsNotNone(row,
+                "DB write must remain committed even when JSON regen fails")
+        finally:
+            conn.close()
+            td.cleanup()
+
+
+class TestPostCommitWorkerArchive(unittest.TestCase):
+    """Issue #284: completing a run via ``update_run_status(..., 'completed')``
+    must atomically move ``.state/workers/worker-<task>.md`` into
+    ``.state/workers/archive/``, lazily creating the archive directory.
+    Idempotent on re-completion; rollback voids the move."""
+
+    def _root_with_state_db(self):
+        td = tempfile.TemporaryDirectory()
+        root = Path(td.name)
+        (root / ".state" / "workers").mkdir(parents=True)
+        db = root / ".state" / "state.db"
+        conn = connect(db)
+        apply_schema(conn)
+        return td, root, db, conn
+
+    def _seed_worker_file(self, root: Path, task_id: str) -> Path:
+        f = root / ".state" / "workers" / f"worker-{task_id}.md"
+        f.write_text(f"# Worker: worker-{task_id}\n", encoding="utf-8")
+        return f
+
+    def test_completion_moves_worker_file_to_archive(self):
+        td, root, db, conn = self._root_with_state_db()
+        try:
+            w = StateWriter(conn, claude_org_root=root)
+            src = self._seed_worker_file(root, "ta")
+            with w.transaction() as tx:
+                tx.upsert_run(task_id="ta", project_slug="p", pattern="B")
+            # Pre-condition: archive dir absent before completion.
+            archive = root / ".state" / "workers" / "archive"
+            self.assertFalse(archive.exists())
+            with w.transaction() as tx:
+                tx.update_run_status("ta", "completed")
+            self.assertFalse(src.exists(), "source file should have moved")
+            dst = archive / "worker-ta.md"
+            self.assertTrue(dst.exists(), "worker file should land in archive/")
+            self.assertIn("worker-ta", dst.read_text(encoding="utf-8"))
+        finally:
+            conn.close()
+            td.cleanup()
+
+    def test_completion_is_idempotent(self):
+        td, root, db, conn = self._root_with_state_db()
+        try:
+            w = StateWriter(conn, claude_org_root=root)
+            self._seed_worker_file(root, "tb")
+            with w.transaction() as tx:
+                tx.upsert_run(task_id="tb", project_slug="p", pattern="B")
+                tx.update_run_status("tb", "completed")
+            archive = root / ".state" / "workers" / "archive" / "worker-tb.md"
+            self.assertTrue(archive.exists())
+            # Second completion: no source file present, should no-op
+            # without raising.
+            with w.transaction() as tx:
+                tx.update_run_status("tb", "completed")
+            self.assertTrue(archive.exists())
+        finally:
+            conn.close()
+            td.cleanup()
+
+    def test_completion_no_worker_file_is_noop(self):
+        td, root, db, conn = self._root_with_state_db()
+        try:
+            w = StateWriter(conn, claude_org_root=root)
+            with w.transaction() as tx:
+                tx.upsert_run(task_id="tc", project_slug="p", pattern="B")
+                tx.update_run_status("tc", "completed")
+            archive = root / ".state" / "workers" / "archive"
+            # Archive dir must not be created for a completion with no
+            # worker-state file to move.
+            self.assertFalse(archive.exists())
+        finally:
+            conn.close()
+            td.cleanup()
+
+    def test_rollback_voids_pending_archive(self):
+        td, root, db, conn = self._root_with_state_db()
+        try:
+            w = StateWriter(conn, claude_org_root=root)
+            src = self._seed_worker_file(root, "td")
+            with w.transaction() as tx:
+                tx.upsert_run(task_id="td", project_slug="p", pattern="B")
+            with self.assertRaises(RuntimeError):
+                with w.transaction() as tx:
+                    tx.update_run_status("td", "completed")
+                    raise RuntimeError("boom")
+            # File must remain in place; archive must not be created.
+            self.assertTrue(src.exists())
+            archive = root / ".state" / "workers" / "archive"
+            self.assertFalse(archive.exists())
+            # Subsequent unrelated commit must NOT drain a stale queue.
+            with w.transaction() as tx:
+                tx.register_worker_dir(abs_path="/x/unrelated")
+            self.assertTrue(src.exists())
+            self.assertFalse(archive.exists())
+        finally:
+            conn.close()
+            td.cleanup()
+
+
 if __name__ == "__main__":
     unittest.main()
