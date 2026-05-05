@@ -469,7 +469,7 @@ worker → Secretary peer message
    2b-i. **PR 作成段階（即時実行）**:
    - 必要に応じて窓口がプッシュ・PR作成を行う（ワーカーには権限がないため）
    - DB の events テーブルにイベント追記 (push / PR open など)
-   - PR 番号が確定したら `tools/pr-watch.ps1 <PR>` (Windows) / `tools/pr-watch.sh <PR>` (POSIX) で CI を監視する。完了時に `ci_completed` が自動で journal に記録される
+   - PR 番号が確定したら `tools/pr-watch.ps1 <PR>` (Windows) / `tools/pr-watch.sh <PR>` (POSIX) で CI を監視する。完了時に `ci_completed` が自動で journal に記録される。CI が `passed` の場合、pr-watch はそのまま `gh pr view --json mergedAt` を 24h ポーリングし続け、初回の merge を観測した時点で `tools/run_complete_on_merge.py` を呼んで run を terminal に駆動する (Issue #317)。merge-watch を切りたい場合は `-NoMergeWatch` / `--no-merge-watch` を付ける
    - run.status は **REVIEW のまま据え置く**（GitHub 側 PR レビュー指摘が来たら同ペインで対応するため。COMPLETED への遷移は 2b-ii で `update_run_status('<task_id>', 'completed')` を呼ぶ）。markdown 直接編集はしない
    - **ペインはまだ閉じない**: PR 作成直後に `CLOSE_PANE` を送らない。worktree 除去・Worker Directory Registry 更新も 2b-ii まで遅延する
    - PR レビューで指摘が来た場合は 2c のフローで同ワーカーに `send_message` 追指示を送り、同ペインで修正コミットを積ませる（新ワーカー再派遣は避ける — Issue / diff / 判断境界の再構築コストを払うことになる）
@@ -493,18 +493,24 @@ worker → Secretary peer message
      - パターン B（worktree）: `git -C {workers_dir}/{project_slug}/ worktree remove .worktrees/{task_id}` を実行。ブランチは残す（マージ済みでもブランチ削除はしない、PR 履歴用）
        - **self-edit (`pattern_variant='live_repo_worktree'`) の場合**: worktree base が `{claude_org_path}` なので `git -C {claude_org_path} worktree remove .worktrees/{task_id}` を実行する（Issue #289）。ブランチは同様に残す
      - パターン C（エフェメラル）: ディレクトリは保持する（容量が問題になった場合のみ手動削除を検討）
-   - **DB 経由で Worker Directory Registry を更新する**（`StateWriter.transaction()` 経由、markdown 直接編集禁止）:
+   - **PR 起点のクローズの場合は `tools/run_complete_on_merge.py` を呼ぶ** (Issue #317。`pr-watch` の merge-watch ループが自動で起動するので通常は手動実行不要だが、merge-watch を skip した場合や手動でマージを観測した場合のみ明示的に呼ぶ):
+     ```bash
+     python tools/run_complete_on_merge.py --pr <PR>
+     ```
+     これは `gh pr view <PR> --json url,state,mergedAt,mergeCommit,headRefName` を一度引いて、PR が merged なら `StateWriter.transaction()` 経由で `runs.status='completed'` / `pr_state='merged'` / `commit_short` / `pr_url` / `completed_at` を更新し、`pr_merged` イベントを 1 行追記する。再呼び出しは idempotent（二重イベントを書かない）。task_id は `runs.pr_url` / `runs.branch` から自動解決され、解決失敗時は `--task-id` を明示する
+   - **パターン B / C のレジストリエントリ削除や手動 close は別途 StateWriter を呼ぶ**（markdown 直接編集禁止）:
      ```bash
      python -c "
-     from pathlib import Path
      from tools.state_db import connect
      from tools.state_db.writer import StateWriter
      conn = connect('.state/state.db')
-     with StateWriter(conn, claude_org_root=Path('.')).transaction() as w:
-         w.update_run_status('<task_id>', 'completed')
-         # パターン B / C のエントリ削除はここで w.remove_worker_dir('<abs>') を追加
+     with StateWriter(conn).transaction() as w:
+         # PR が無い手動クローズ時のみ:
+         #   w.update_run_status('<task_id>', 'completed')
+         w.remove_worker_dir('<abs>')  # パターン B / C
      "
      ```
+     legacy のハンドロール完了スクリプトは `docs/legacy/pr-merge-completion-manual.md` に保管されている。標準経路は上記 `tools/run_complete_on_merge.py` であり、museum copy へ reach するのは Issue を切ってユーザー判断を仰いだ後に限る (PR #315 と同じ pattern)
      - パターン A: lifecycle='active' のまま、run.status='completed' で snapshotter が available 相当の表示にする
      - パターン B / C: 物理 dir は別途処理（worktree remove / dir 保持）。レジストリエントリ削除は上記 with ブロック内に `w.remove_worker_dir('<abs>')` を追加
    - JSON snapshot は StateWriter post-commit hook が自動再生成 (Issue #284)

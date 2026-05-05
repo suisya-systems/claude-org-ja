@@ -54,6 +54,13 @@ import sys
 import time
 from pathlib import Path
 
+# Bound on the post-CI merge-watch loop. Issue #317: after CI passes we
+# keep polling `gh pr view --json mergedAt` until the PR is merged or
+# this many seconds elapse, whichever comes first. 24h matches the
+# upper end of the org-delegate Step 5 2b-ii idle window so the
+# secretary can intervene manually past that.
+MERGE_WATCH_MAX_SECONDS = 24 * 60 * 60
+
 # Make `tools.state_db.*` importable when running this script directly.
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
@@ -241,6 +248,95 @@ def _fetch_checks(pr: int, repo: str) -> "list[dict] | None":
     return [c for c in data if isinstance(c, dict)]
 
 
+def _watch_for_merge(
+    *,
+    pr: int,
+    repo: str,
+    interval: int,
+    db_path: Path,
+    max_seconds: int = MERGE_WATCH_MAX_SECONDS,
+    sleeper=time.sleep,
+    monotonic=time.monotonic,
+) -> str:
+    """Poll `gh pr view --json mergedAt` until merged or bound elapses.
+
+    Issue #317. On the first poll that returns a non-null ``mergedAt``,
+    invoke :func:`tools.run_complete_on_merge.complete_on_merge` to
+    drive the run row to its terminal state and return its result.
+    On bound exhaustion, append a ``pr_merge_watch_timeout`` event to
+    the DB and return ``"timeout"``. ``sleeper`` and ``monotonic`` are
+    injectable for tests.
+    """
+    from tools.run_complete_on_merge import (
+        complete_on_merge, fetch_pr_view, RESULT_ALREADY, RESULT_MERGED,
+        RESULT_NO_RUN, RESULT_NOT_YET,
+    )
+
+    deadline = monotonic() + max_seconds
+    while True:
+        try:
+            view = fetch_pr_view(pr, repo)
+        except RuntimeError as exc:
+            sys.stderr.write(
+                f"pr_watch: merge-watch: gh pr view failed: {exc}\n"
+            )
+            view = None
+
+        if view is not None and view.get("mergedAt"):
+            try:
+                result = complete_on_merge(
+                    pr=pr, repo=repo, db_path=db_path, pr_view=view,
+                )
+            except Exception as exc:  # noqa: BLE001
+                sys.stderr.write(
+                    f"pr_watch: merge-watch: complete_on_merge raised: {exc}\n"
+                )
+                return "error"
+            sys.stdout.write(
+                f"pr_watch: PR #{pr} merge-watch result: {result}\n"
+            )
+            if result in (RESULT_MERGED, RESULT_ALREADY, RESULT_NO_RUN):
+                return result
+            # RESULT_NOT_YET shouldn't occur once mergedAt is set; treat
+            # defensively as "keep polling".
+
+        if monotonic() >= deadline:
+            _record_event(
+                db_path=db_path,
+                kind="pr_merge_watch_timeout",
+                payload={
+                    "pr": pr, "repo": repo,
+                    "max_seconds": max_seconds,
+                },
+            )
+            sys.stdout.write(
+                f"pr_watch: PR #{pr} merge-watch timed out after "
+                f"{max_seconds}s\n"
+            )
+            return "timeout"
+
+        sleeper(interval)
+
+
+def _record_event(*, db_path: Path, kind: str, payload: dict) -> None:
+    """Append a single event row via StateWriter (used for merge-watch timeout)."""
+    from tools.state_db import apply_schema, connect
+    from tools.state_db.writer import StateWriter
+
+    db_path = Path(db_path)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    is_new_db = not db_path.exists()
+    conn = connect(db_path)
+    try:
+        if is_new_db:
+            apply_schema(conn)
+        writer = StateWriter(conn)
+        writer.append_event(kind=kind, actor="pr_watch", payload=payload)
+        writer.commit()
+    finally:
+        conn.close()
+
+
 def _pr_exists(pr: int, repo: str) -> bool:
     try:
         subprocess.run(
@@ -287,6 +383,16 @@ def main(argv: "list[str] | None" = None) -> int:
         type=int,
         default=30,
         help="poll interval in seconds (default: 30)",
+    )
+    parser.add_argument(
+        "--no-merge-watch",
+        action="store_true",
+        help=(
+            "skip the post-CI merge-watch loop (Issue #317). When unset, "
+            "after CI passes pr_watch keeps polling `gh pr view --json "
+            "mergedAt` for up to 24h and invokes "
+            "tools/run_complete_on_merge.py on the first mergedAt."
+        ),
     )
     args = parser.parse_args(argv)
 
@@ -358,6 +464,18 @@ def main(argv: "list[str] | None" = None) -> int:
     )
 
     sys.stdout.write(f"pr_watch: PR #{args.pr} {status} ({duration}s)\n")
+
+    # Issue #317: only enter merge-watch when CI actually passed.
+    # `failed`/`incomplete`/`canceled` mean there's nothing to merge yet
+    # — the secretary will re-issue pr_watch after the next push.
+    if status == "passed" and not args.no_merge_watch:
+        _watch_for_merge(
+            pr=args.pr,
+            repo=repo,
+            interval=args.interval,
+            db_path=JOURNAL_PATH,
+        )
+
     return exit_code
 
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env pwsh
 # Thin PowerShell wrapper around tools/pr_watch.py.
-# Usage: tools/pr-watch.ps1 -PR <PR> [-Repo OWNER/REPO] [-Interval SEC]
+# Usage: tools/pr-watch.ps1 -PR <PR> [-Repo OWNER/REPO] [-Interval SEC] [-NoMergeWatch]
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true, Position = 0)]
@@ -10,7 +10,10 @@ param(
     [string]$Repo,
 
     [Parameter(Mandatory = $false)]
-    [int]$Interval = 30
+    [int]$Interval = 30,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$NoMergeWatch
 )
 
 $ErrorActionPreference = 'Stop'
@@ -69,6 +72,9 @@ if (-not $pyExec) {
 $forwardArgs = $pyArgsPrefix + @($ScriptPath, '--pr', $PR, '--interval', $Interval)
 if ($PSBoundParameters.ContainsKey('Repo') -and $Repo) {
     $forwardArgs += @('--repo', $Repo)
+}
+if ($NoMergeWatch) {
+    $forwardArgs += @('--no-merge-watch')
 }
 
 & $pyExec @forwardArgs
