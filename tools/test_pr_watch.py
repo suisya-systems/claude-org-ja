@@ -141,6 +141,11 @@ class ArgFormTests(unittest.TestCase):
                  mock.patch.object(pr_watch.shutil, "which", return_value="/usr/bin/gh"), \
                  mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run), \
                  mock.patch.object(pr_watch.time, "monotonic", side_effect=[0.0, 1.0]):
+                # Issue #317: existing CI-only tests opt out of the
+                # post-CI merge-watch loop; that path is exercised
+                # separately in MergeWatchTests below.
+                # Issue #317 round 3: merge-watch is now off by default,
+                # so existing CI-only tests don't need an opt-out flag.
                 rc = pr_watch.main(argv)
             rec = _read_ci_event(journal)
             return rc, rec
@@ -177,7 +182,9 @@ class JournalEmitTests(unittest.TestCase):
              mock.patch.object(pr_watch.shutil, "which", return_value="/usr/bin/gh"), \
              mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run), \
              mock.patch.object(pr_watch.time, "monotonic", side_effect=[100.0, 142.0]):
-            return pr_watch.main(["--pr", "205", "--repo", "octo/repo", "--interval", "5"])
+            return pr_watch.main([
+                "--pr", "205", "--repo", "octo/repo", "--interval", "5",
+            ])
 
     def test_passed_emits_ci_completed(self) -> None:
         with TempDir() as tmp:
@@ -491,6 +498,304 @@ class TempDir:
 
     def __exit__(self, *exc) -> None:
         self._dir.cleanup()
+
+
+class MergeWatchTests(unittest.TestCase):
+    """Issue #317: post-CI merge-watch loop in pr_watch.main."""
+
+    def _seed_run_for_merge(self, db: Path, *, pr_url: str,
+                            pattern: str = "A") -> None:
+        """Seed a run pointing at the PR. Default pattern='A' so the
+        helper performs the full status transition; pass 'B' to test
+        the pending-cleanup path."""
+        from tools.state_db import apply_schema, connect
+        from tools.state_db.writer import StateWriter
+
+        apply_schema(connect(db))
+        conn = connect(db)
+        try:
+            with StateWriter(conn).transaction() as w:
+                w.upsert_run(
+                    task_id="t-merge-watch",
+                    project_slug="claude-org",
+                    pattern=pattern,
+                    title="merge-watch test",
+                    status="review",
+                    branch="feat/merge-watch",
+                    pr_url=pr_url,
+                    pr_state="open",
+                )
+        finally:
+            conn.close()
+
+    def _build_run_with_view_sequence(
+        self,
+        watch_exit: int,
+        view_sequence: "list[dict | None]",
+    ):
+        """Like _make_fake_run but threads a sequence of `gh pr view --json`
+        responses for the merge-watch loop. The first `gh pr view --json
+        number` (PR-exists probe) returns success; the *second* and
+        subsequent `view --json` calls cycle through ``view_sequence``."""
+        # Default check JSON for the CI-watch portion (status=passed).
+        checks_json = [{"name": "ci", "state": "COMPLETED", "bucket": "pass"}]
+
+        # Mutable index threaded across closures — track which entry of
+        # view_sequence the next merge-watch poll should consume.
+        view_idx = {"i": 0}
+        seen_existence_probe = {"v": False}
+
+        def fake_run(cmd, *args, **kwargs):
+            # PR-exists probe: `gh pr view <pr> --repo <r> --json number`.
+            if (cmd[:3] == ["gh", "pr", "view"]
+                    and "--json" in cmd
+                    and cmd[cmd.index("--json") + 1] == "number"):
+                seen_existence_probe["v"] = True
+                return mock.Mock(returncode=0, stdout="{}", stderr="")
+            # Merge-watch probe: `gh pr view <pr> --json number,url,...`
+            if cmd[:3] == ["gh", "pr", "view"] and "--json" in cmd:
+                idx = view_idx["i"]
+                if idx >= len(view_sequence):
+                    payload = view_sequence[-1]
+                else:
+                    payload = view_sequence[idx]
+                    view_idx["i"] += 1
+                if payload is None:
+                    return mock.Mock(returncode=1, stdout="", stderr="boom")
+                return mock.Mock(
+                    returncode=0,
+                    stdout=json.dumps(payload),
+                    stderr="",
+                )
+            # `gh pr checks --json` for CI classification.
+            if "checks" in cmd and "--json" in cmd:
+                return mock.Mock(
+                    returncode=0,
+                    stdout=json.dumps(checks_json),
+                    stderr="",
+                )
+            # The watched `gh pr checks --watch` run.
+            return mock.Mock(returncode=watch_exit)
+
+        return fake_run
+
+    def test_ci_pass_then_merged_records_metadata(self) -> None:
+        with TempDir() as tmp:
+            db = tmp / ".state" / "state.db"
+            db.parent.mkdir(parents=True)
+            pr_url = "https://github.com/octo/repo/pull/777"
+            self._seed_run_for_merge(db, pr_url=pr_url)
+
+            view_merged = {
+                "number": 777, "url": pr_url, "state": "MERGED",
+                "mergedAt": "2026-05-06T03:21:00Z",
+                "mergeCommit": {"oid": "f" * 40},
+                "headRefName": "feat/merge-watch",
+            }
+            fake_run = self._build_run_with_view_sequence(
+                watch_exit=0, view_sequence=[view_merged],
+            )
+            with mock.patch.object(pr_watch, "JOURNAL_PATH", db), \
+                 mock.patch.object(pr_watch.shutil, "which", return_value="/usr/bin/gh"), \
+                 mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run), \
+                 mock.patch.object(pr_watch.time, "monotonic", side_effect=[0.0, 1.0]):
+                rc = pr_watch.main([
+                    "--pr", "777", "--repo", "octo/repo", "--interval", "1",
+                    "--merge-watch",
+                ])
+            self.assertEqual(rc, 0)
+
+            conn = sqlite3.connect(str(db))
+            conn.row_factory = sqlite3.Row
+            try:
+                row = conn.execute(
+                    "SELECT status, pr_state, completed_at "
+                    "FROM runs WHERE task_id = 't-merge-watch'"
+                ).fetchone()
+                # status stays in 'review' — secretary owns the flip.
+                self.assertEqual(row["status"], "review")
+                self.assertEqual(row["pr_state"], "merged")
+                self.assertEqual(row["completed_at"], "2026-05-06T03:21:00Z")
+                merged_count = conn.execute(
+                    "SELECT COUNT(*) FROM events WHERE kind = 'pr_merged'"
+                ).fetchone()[0]
+                self.assertEqual(merged_count, 1)
+            finally:
+                conn.close()
+
+    def test_default_skips_merge_watch(self) -> None:
+        """Issue #317 round 3: merge-watch is opt-in, off by default.
+
+        Without `--merge-watch`, even on CI pass pr_watch must NOT
+        poll `gh pr view --json mergedAt`.
+        """
+        with TempDir() as tmp:
+            db = tmp / ".state" / "state.db"
+            db.parent.mkdir(parents=True)
+            self._seed_run_for_merge(
+                db, pr_url="https://github.com/octo/repo/pull/111",
+            )
+
+            calls: list[list[str]] = []
+
+            def fake_run(cmd, *args, **kwargs):
+                calls.append(list(cmd))
+                if (cmd[:3] == ["gh", "pr", "view"]
+                        and "number" in cmd):
+                    return mock.Mock(returncode=0, stdout="{}", stderr="")
+                if "checks" in cmd and "--json" in cmd:
+                    return mock.Mock(
+                        returncode=0,
+                        stdout=json.dumps(
+                            [{"name": "ci", "state": "COMPLETED",
+                              "bucket": "pass"}]
+                        ),
+                        stderr="",
+                    )
+                return mock.Mock(returncode=0)
+
+            with mock.patch.object(pr_watch, "JOURNAL_PATH", db), \
+                 mock.patch.object(pr_watch.shutil, "which", return_value="/usr/bin/gh"), \
+                 mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run), \
+                 mock.patch.object(pr_watch.time, "monotonic", side_effect=[0.0, 1.0]):
+                pr_watch.main([
+                    "--pr", "111", "--repo", "octo/repo", "--interval", "1",
+                ])
+
+            view_calls = [c for c in calls
+                          if c[:3] == ["gh", "pr", "view"]
+                          and "url" in str(c)]
+            self.assertEqual(view_calls, [])
+
+    def test_ci_fail_skips_merge_watch(self) -> None:
+        """When CI did not pass, pr_watch must not poll for merge."""
+        with TempDir() as tmp:
+            db = tmp / ".state" / "state.db"
+            db.parent.mkdir(parents=True)
+
+            # Fail the CI; assert no further `view --json` call is made.
+            calls: list[list[str]] = []
+
+            def fake_run(cmd, *args, **kwargs):
+                calls.append(list(cmd))
+                if (cmd[:3] == ["gh", "pr", "view"]
+                        and "number" in cmd):
+                    return mock.Mock(returncode=0, stdout="{}", stderr="")
+                if "checks" in cmd and "--json" in cmd:
+                    return mock.Mock(
+                        returncode=1,
+                        stdout=json.dumps([
+                            {"name": "ci", "state": "COMPLETED",
+                             "bucket": "fail"}
+                        ]),
+                        stderr="",
+                    )
+                return mock.Mock(returncode=1)
+
+            with mock.patch.object(pr_watch, "JOURNAL_PATH", db), \
+                 mock.patch.object(pr_watch.shutil, "which", return_value="/usr/bin/gh"), \
+                 mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run), \
+                 mock.patch.object(pr_watch.time, "monotonic", side_effect=[0.0, 1.0]):
+                pr_watch.main([
+                    "--pr", "888", "--repo", "octo/repo", "--interval", "1",
+                    "--merge-watch",
+                ])
+
+            # CI failed → no merge-watch even with --merge-watch on.
+            view_calls = [c for c in calls
+                          if c[:3] == ["gh", "pr", "view"]
+                          and "url" in str(c)]
+            self.assertEqual(view_calls, [])
+
+    def test_no_merge_watch_flag_skips_loop(self) -> None:
+        with TempDir() as tmp:
+            db = tmp / ".state" / "state.db"
+            db.parent.mkdir(parents=True)
+            self._seed_run_for_merge(
+                db, pr_url="https://github.com/octo/repo/pull/999",
+            )
+
+            calls: list[list[str]] = []
+
+            def fake_run(cmd, *args, **kwargs):
+                calls.append(list(cmd))
+                if (cmd[:3] == ["gh", "pr", "view"]
+                        and "number" in cmd):
+                    return mock.Mock(returncode=0, stdout="{}", stderr="")
+                if "checks" in cmd and "--json" in cmd:
+                    return mock.Mock(
+                        returncode=0,
+                        stdout=json.dumps(
+                            [{"name": "ci", "state": "COMPLETED",
+                              "bucket": "pass"}]
+                        ),
+                        stderr="",
+                    )
+                return mock.Mock(returncode=0)
+
+            with mock.patch.object(pr_watch, "JOURNAL_PATH", db), \
+                 mock.patch.object(pr_watch.shutil, "which", return_value="/usr/bin/gh"), \
+                 mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run), \
+                 mock.patch.object(pr_watch.time, "monotonic", side_effect=[0.0, 1.0]):
+                pr_watch.main([
+                    "--pr", "999", "--repo", "octo/repo", "--interval", "1",
+                    "--no-merge-watch",
+                ])
+
+            # Run row must NOT have been completed.
+            conn = sqlite3.connect(str(db))
+            conn.row_factory = sqlite3.Row
+            try:
+                row = conn.execute(
+                    "SELECT status FROM runs WHERE task_id = 't-merge-watch'"
+                ).fetchone()
+                self.assertEqual(row["status"], "review")
+            finally:
+                conn.close()
+
+    def test_watch_for_merge_timeout_records_event(self) -> None:
+        """Bound exhaustion appends pr_merge_watch_timeout."""
+        with TempDir() as tmp:
+            db = tmp / ".state" / "state.db"
+            db.parent.mkdir(parents=True)
+            view_pending = {
+                "number": 555, "url": "https://github.com/octo/repo/pull/555",
+                "state": "OPEN", "mergedAt": None,
+                "mergeCommit": None, "headRefName": "feat/x",
+            }
+
+            from tools.state_db import apply_schema, connect
+            apply_schema(connect(db))
+
+            # Patch view fetch + monotonic so the loop exhausts after
+            # one iteration. monotonic side_effect: start=0.0, then
+            # 99999.0 to immediately exceed deadline.
+            def fake_run(cmd, *args, **kwargs):
+                if cmd[:3] == ["gh", "pr", "view"]:
+                    return mock.Mock(
+                        returncode=0, stdout=json.dumps(view_pending),
+                        stderr="",
+                    )
+                raise AssertionError(f"unexpected cmd: {cmd}")
+
+            with mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run):
+                result = pr_watch._watch_for_merge(
+                    pr=555, repo="octo/repo", interval=0,
+                    db_path=db, max_seconds=60,
+                    sleeper=lambda _s: None,
+                    monotonic=mock.Mock(side_effect=[0.0, 100.0, 100.0]),
+                )
+            self.assertEqual(result, "timeout")
+
+            conn = sqlite3.connect(str(db))
+            try:
+                cnt = conn.execute(
+                    "SELECT COUNT(*) FROM events "
+                    "WHERE kind = 'pr_merge_watch_timeout'"
+                ).fetchone()[0]
+                self.assertEqual(cnt, 1)
+            finally:
+                conn.close()
 
 
 if __name__ == "__main__":
