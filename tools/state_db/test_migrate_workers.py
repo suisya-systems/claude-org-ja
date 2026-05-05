@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path, PurePosixPath
@@ -302,6 +304,71 @@ class TestWorktreeFixup(unittest.TestCase):
             runner = FakeRunner()
             mw.apply_plan(plan, manifest_path=tmp / "m.json", runner=runner)
             self.assertTrue(any(c.endswith("renga") for c in runner.repair_calls))
+
+
+# ---------------------------------------------------------------------------
+# 3a. Issue #278: per-worktree repair on Windows
+# ---------------------------------------------------------------------------
+
+
+def _git_available() -> bool:
+    return shutil.which("git") is not None
+
+
+@unittest.skipUnless(_git_available(), "git CLI not available")
+class TestGitWorktreeRepair(unittest.TestCase):
+    """Issue #278 regression: `_git_worktree_repair` must update gitlinks
+    of every linked worktree on Windows, not only the main repo.
+
+    Reproduces the failure mode from session #12: linked worktrees under
+    `<repo>/.worktrees/` are reported `prunable` after a parent rename
+    until each one is passed explicitly to `git worktree repair`.
+    """
+
+    @staticmethod
+    def _git(*args, cwd=None):
+        subprocess.run(
+            ["git", *args],
+            cwd=cwd, check=True, capture_output=True, text=True, encoding="utf-8",
+        )
+
+    def test_repair_clears_prunable_after_main_repo_rename(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            original = tmp / "main-repo"
+            original.mkdir()
+            self._git("init", "-q", "-b", "main", cwd=original)
+            self._git("config", "user.email", "test@example.com", cwd=original)
+            self._git("config", "user.name", "Test", cwd=original)
+            (original / "README.md").write_text("seed\n", encoding="utf-8")
+            self._git("add", "README.md", cwd=original)
+            self._git("commit", "-q", "-m", "seed", cwd=original)
+
+            wt_root = original / ".worktrees"
+            wt_root.mkdir()
+            for name in ("alpha", "beta", "gamma"):
+                self._git(
+                    "worktree", "add", "-q", "-b", f"feat/{name}",
+                    str(wt_root / name),
+                    cwd=original,
+                )
+
+            # Move the main repo to break gitlinks (each worktree's
+            # `.git` file points at the old absolute path).
+            renamed = tmp / "main-repo-renamed"
+            os.rename(original, renamed)
+
+            self.assertGreater(
+                mw._count_prunable_worktrees(renamed), 0,
+                "test setup: rename should have orphaned the linked worktrees",
+            )
+
+            mw._git_worktree_repair(renamed)
+
+            self.assertEqual(
+                mw._count_prunable_worktrees(renamed), 0,
+                "_git_worktree_repair must clear all prunable gitlinks",
+            )
 
 
 # ---------------------------------------------------------------------------
