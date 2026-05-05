@@ -274,28 +274,36 @@ mcp__renga-peers__send_message(to_id="secretary", message="...")
    #### (c) 補助シグナル取得 — 直近の worker→secretary コミュニケーション
    stall 候補が見つかったら、STALL_SUSPECTED を発火する **前に** 補助シグナルを取得する:
 
-   1. **journal scan (primary, authoritative)**: `.state/journal.jsonl` の末尾を読み、`ts >= now - STALL_SECRETARY_LOOKBACK_MIN minutes` でフィルタし、以下のいずれかの event を持つ行が 1 件でもあるか確認する:
-      - `event == "worker_escalation"` かつ `worker == "worker-{task_id}"` (judgment request 受信を secretary が記録)
-      - `event == "worker_reported"` かつ `worker == "worker-{task_id}"` (mid-task progress 受信を secretary が記録)
+   1. **journal scan (primary, authoritative)**: `.state/journal.jsonl` を読み、`.ts >= now - STALL_SECRETARY_LOOKBACK_MIN minutes` でフィルタし、以下のいずれかの event を持つ行が 1 件でもあるか確認する:
+      - `event == "worker_escalation"` かつ `worker == "worker-{task_id}"` (judgment request の受信)
+      - `event == "worker_reported"` かつ `worker == "worker-{task_id}"` (mid-task progress の受信)
+      - `event == "worker_completed"` かつ `worker == "worker-{task_id}"` (完了報告の受信、`REVIEW` 待機中の idle 区別用)
+      - `event == "plan_delivered"` かつ `worker == "worker-{task_id}"` (plan 引き渡しの受信)
+      - `event == "prep_delivered"` かつ `worker == "worker-{task_id}"` (prep 引き渡しの受信)
 
-      これらは secretary が worker からの `send_message` を受信した時点で append する ledger なので、worker→secretary コミュニケーションの authoritative な痕跡になる。
+      これらはいずれも worker 起点の `send_message` を secretary が受信した時点で append される ledger なので (`docs/journal-events.md` の **Emitted by = worker** + **Writer = secretary** 行を参照)、worker→secretary コミュニケーションの authoritative な痕跡になる。catalog で **Emitted by = worker** な event が将来追加された場合は本リストにも追加する (catalog と同期する宣言的リスト)。
 
       ```bash
       # ディスパッチャーの cwd は .dispatcher/ なので 1 階層上の .state/journal.jsonl を読む。
-      # 例: tail で末尾窓を切ってから jq でフィルタ (具体的な one-liner は dispatcher Claude の判断)。
-      tail -n 500 ../.state/journal.jsonl | jq -c '
-        select(.event == "worker_escalation" or .event == "worker_reported") |
+      # 時間窓ベースの抽出 (行数 cap で打ち切らないこと、journal が長期間追記され続けても 15 分窓は ts で正確に区切る)。
+      jq -c --arg cutoff "$(date -u -d '15 minutes ago' +%Y-%m-%dT%H:%M:%SZ)" '
+        select(.ts >= $cutoff) |
+        select(.event == "worker_escalation"
+            or .event == "worker_reported"
+            or .event == "worker_completed"
+            or .event == "plan_delivered"
+            or .event == "prep_delivered") |
         select(.worker == "worker-{task_id}")
-      '
-      # 各行の .ts (ISO-8601 UTC) を now - 15min と比較し、1 件以上残れば「ヒット」
+      ' ../.state/journal.jsonl
+      # 1 件以上残れば「ヒット」。具体的な one-liner (PowerShell 環境での date 代替等) は dispatcher Claude の判断。
       ```
 
-   2. **renga-peers poll_events (補完)**: 補助的に `mcp__renga-peers__poll_events(types=["send_message"], since=<now - STALL_SECRETARY_LOOKBACK_MIN 分の epoch>, timeout_ms=1000)` も呼んでよい。返却 events に `from_name == "worker-{task_id}"` かつ `to_id == "secretary"` のものがあれば 1 件以上ヒット扱い。ただし renga 0.14.x 時点では `poll_events` は pane lifecycle event のみを流し、`send_message` は流れない (`references/renga-error-codes.md` の type 表参照)。journal scan を **authoritative source** とし、poll_events 系統は将来 renga が拡張した際の forward-compat 経路として記述する。
+   2. **renga-peers poll_events (forward-compat、現状は補助のみ)**: 現状 `mcp__renga-peers__poll_events` は pane lifecycle event のみを流し、`send_message` は流れない (`references/renga-error-codes.md` の type 表参照)。さらに `since` は時刻ではなく前サイクルから受け取る **opaque cursor** で、初回省略時は「今以降」セマンティクス (過去履歴は返らない) なので、本判定で「過去 15 分」をピンポイント検索する用途には今は使えない。journal scan を **authoritative source** とする。将来 renga が `send_message` event を `poll_events` に流すようになれば、Step 1 で既に保持している `.state/dispatcher-event-cursor.txt` の cursor 経由で受信した worker→secretary の送信を `(worker, kind=stall_acked)` ledger に変換するルートを追加する想定 (本 PR ではプレースホルダとして記述するに留める)。
 
    #### (d) 分岐 (acked vs timeout)
-   - **acked** — どちらかの系統で 1 件以上ヒット: 「Secretary 判断待ち idle」とみなし、STALL_SUSPECTED を **発火しない**。soft-note のみ journal に追記:
+   - **acked** — どちらかの系統で 1 件以上ヒット: 「Secretary 判断待ち idle」とみなし、STALL_SUSPECTED を **発火しない**。Step 4 (e) と同じ `anomaly_observed` ledger に soft-note として記録 (新 event 名は導入せず既存 catalog を再利用):
      ```bash
-     bash ../tools/journal_append.sh stall_softnote worker=worker-{task_id} reason=awaiting_secretary lookback_min=15
+     bash ../tools/journal_append.sh anomaly_observed source=stall_check worker=worker-{task_id} kind=stall_acked confidence=n/a note=awaiting_secretary_lookback_15m
      ```
      以降のサイクルで journal entry が lookback window から外れて 0 件になれば、改めて (c) → (d) を再評価する (持続的 stuck の検出が遅れる代償として、判断待ちの誤発火を避ける trade-off)。
 
@@ -303,8 +311,9 @@ mcp__renga-peers__send_message(to_id="secretary", message="...")
      ```
      mcp__renga-peers__send_message(to_id="secretary", message="
        STALL_SUSPECTED: worker-{task_id} が直近 3 サイクル idle、
-       過去 15 分以内に secretary 向け worker_escalation / worker_reported なし。
-       stuck の可能性あり、確認願います。
+       過去 15 分以内に secretary 向け worker→secretary 送信痕跡
+       (worker_escalation / worker_reported / worker_completed /
+       plan_delivered / prep_delivered) なし。stuck の可能性あり、確認願います。
      ")
      ```
      通知後、Step 4 (e) の de-dup スキーマと整合させて `notify_sent` を journal に追記:
@@ -318,7 +327,7 @@ mcp__renga-peers__send_message(to_id="secretary", message="...")
    #### (f) 設計メモ
    - **`STALL_SECRETARY_LOOKBACK_MIN = 15` の根拠**: Secretary が人間に判断を仰いでから応答を返すまで 5–10 分のオーダーが典型で、その間ワーカーは idle のまま待機する。15 分 window で「直近やり取りあり」を担保すれば、人間応答待ちの誤発火を実用上排除できる。短くすると判断待ちワーカーが timeout 経路に落ちて誤発火、長くすると完了後ペインの reactivation 痕跡を拾い続けて stuck が見逃される。中間値の 15 分が現状のスイートスポット
    - **journal scan を primary にした理由**: renga の `poll_events` は現状 pane lifecycle event (`pane_started` / `pane_exited` / `events_dropped` / `heartbeat`) のみで `send_message` を流さない (`references/renga-error-codes.md` の type 表参照)。一方、secretary 受信時の `worker_escalation` / `worker_reported` は authoritative な ledger として既に永続化されている。再利用が正解
-   - **soft-note を残す意味**: 後で「なぜ STALL_SUSPECTED が発火しなかったか」を retro / debug で再現できる。silent skip にすると、誤検出疑いが起きたとき journal だけでは判別不能になる。`stall_softnote` event は本ファイル導入時点で新設 (journal-events.md への catalog 追記は curator 領域、本 PR スコープ外)
+   - **soft-note を残す意味**: 後で「なぜ STALL_SUSPECTED が発火しなかったか」を retro / debug で再現できる。silent skip にすると、誤検出疑いが起きたとき journal だけでは判別不能になる。Step 4 と同じ `anomaly_observed` event を再利用するので、event catalog (`docs/journal-events.md`) への新規追記は不要 (kind だけ `stall_acked` を新設)
 
 6. **重要**: ディスパッチャーが自動で承認・拒否することはしない (ユーザー判断が必要)
 
