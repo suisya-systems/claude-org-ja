@@ -471,6 +471,7 @@ mcp__renga-peers__send_message(
    - **ディレクトリパターンに応じた後処理**（同タイミングで実施）:
      - パターン A（プロジェクトディレクトリ）: ディレクトリは保持する（次タスクで再利用）
      - パターン B（worktree）: `git -C {workers_dir}/{project_slug}/ worktree remove .worktrees/{task_id}` を実行。ブランチは残す（マージ済みでもブランチ削除はしない、PR 履歴用）
+       - **self-edit (`pattern_variant='live_repo_worktree'`) の場合**: worktree base が `{claude_org_path}` なので `git -C {claude_org_path} worktree remove .worktrees/{task_id}` を実行する（Issue #289）。ブランチは同様に残す
      - パターン C（エフェメラル）: ディレクトリは保持する（容量が問題になった場合のみ手動削除を検討）
    - **DB 経由で Worker Directory Registry を更新する**（`StateWriter.transaction()` 経由、markdown 直接編集禁止）:
      ```bash

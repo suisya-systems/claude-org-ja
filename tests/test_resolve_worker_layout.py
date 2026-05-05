@@ -563,6 +563,21 @@ class TestPatternBLiveRepoWorktree(unittest.TestCase):
             (self.sb.workers / "clock-app" / ".worktrees" / "clock-next").resolve(),
         )
 
+    def test_inconsistent_role_self_edit_combo_is_rejected(self):
+        """Codex Round 3 Major regression: role and self_edit must agree.
+        role='default' + self_edit=true would otherwise let the coherence
+        pass relocate the worktree under claude_org_root while the
+        settings generator still emits non-self-edit permissions."""
+        with self.assertRaises(rwl.ResolveError):
+            rwl.resolve(
+                task_id="bad-combo",
+                project_slug="clock-app",
+                mode="edit",
+                claude_org_root=self.sb.claude_org_root,
+                state_db_path=self.sb.db_path,
+                layout_overrides={"role": "default", "self_edit": True},
+            )
+
     def test_role_only_override_to_self_edit_re_derives_variant_and_worker_dir(self):
         """Codex Round 1 Major regression: passing ONLY
         layout_overrides={'role': 'claude-org-self-edit'} on a Pattern B

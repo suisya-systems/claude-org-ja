@@ -420,14 +420,29 @@ def resolve(
                 )
             self_edit = se
 
+        # role / self_edit must agree. Otherwise a caller could pass
+        # role='default' + self_edit=true and the coherence pass below would
+        # relocate the worktree under claude_org_root while
+        # `settings generate --role default` still emits non-self-edit
+        # permissions (Codex Round 3 Major).
+        if self_edit != (role == "claude-org-self-edit"):
+            raise ResolveError(
+                "layout_overrides yielded inconsistent role / self_edit: "
+                f"role={role!r}, self_edit={self_edit!r}. "
+                "self_edit must be True iff role == 'claude-org-self-edit'."
+            )
+
         # Final coherence pass for Issue #289: if overrides upgraded the role
         # to claude-org-self-edit on a Pattern B layout but did not also
         # specify pattern_variant / worker_dir, re-derive them so the live
         # repo convention holds. Skipped when the caller explicitly supplied
-        # either (their value wins).
+        # either (their value wins). Keyed off ``role`` (not ``self_edit``)
+        # because role is the field the downstream settings generator reads
+        # — keeping them in sync prevents a mismatched permission profile
+        # from being applied to a self-edit worktree (Codex Round 3 Major).
         explicit_variant = "pattern_variant" in layout_overrides and layout_overrides.get("pattern_variant") is not None
         if (
-            self_edit
+            role == "claude-org-self-edit"
             and pattern == "B"
             and not explicit_variant
             and not explicit_worker_dir

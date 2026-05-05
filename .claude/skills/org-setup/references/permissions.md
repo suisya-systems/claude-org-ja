@@ -128,7 +128,9 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
       "Write(*/workers/*/.claude/settings.local.json)",
       "Edit(*/workers/*/.claude/settings.local.json)",
       "Write(*/workers/*/.worktrees/*/.claude/settings.local.json)",
-      "Edit(*/workers/*/.worktrees/*/.claude/settings.local.json)"
+      "Edit(*/workers/*/.worktrees/*/.claude/settings.local.json)",
+      "Write(*/.worktrees/*/.claude/settings.local.json)",
+      "Edit(*/.worktrees/*/.claude/settings.local.json)"
     ]
   },
   "hooks": {
@@ -149,7 +151,7 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
 
 **mcp__renga-peers__\* の重複**: ユーザー共通 settings.json と重複するが、窓口は run 直後に renga-peers MCP を必ず使うため、窓口スコープでも明示的に列挙して source-of-truth として固定する（user settings の drift でも窓口が動くことを保証）。
 
-**`permissions.deny` (Issue #99 Phase 2 で追加)**: ワーカー設定ファイル（`workers/<project>/.claude/settings.local.json` および worktree パス `workers/<project>/.worktrees/<task>/.claude/settings.local.json`）への **Claude の `Write` / `Edit` ツール経由の直接編集**を窓口に対して禁止する。窓口は通常モード起動（`bypassPermissions` ではない）なので、この `permissions.deny` は静的パターンマッチで常に効く。
+**`permissions.deny` (Issue #99 Phase 2 で追加、Issue #289 で live_repo_worktree パス追加)**: ワーカー設定ファイル（`workers/<project>/.claude/settings.local.json`、worktree パス `workers/<project>/.worktrees/<task>/.claude/settings.local.json`、および self-edit live repo worktree `<claude_org_path>/.worktrees/<task>/.claude/settings.local.json`）への **Claude の `Write` / `Edit` ツール経由の直接編集**を窓口に対して禁止する。窓口は通常モード起動（`bypassPermissions` ではない）なので、この `permissions.deny` は静的パターンマッチで常に効く。
 
 ただしこの deny は Claude のファイル編集ツール（Write/Edit）系のゲートに限定される。窓口は引き続き `Bash(python:*)` / `Bash(python3:*)` / `PowerShell(Out-File *)` を allow しているため、Bash/PowerShell から `cat > settings.local.json` のように書き出すことは技術的に可能。本 deny は **「窓口が手作業で `Edit` ツールを開いて settings を書き換える」** という主要な誤付与経路を塞ぐためのもので、`claude-org-runtime settings generate` 以外の経路を完全に遮断するものではない。完全な generator-only 化（Bash 側の遮断を含む）は Phase 3 の課題（drift CI 拡張・escape hatch と併走）。
 
