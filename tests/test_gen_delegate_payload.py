@@ -798,6 +798,75 @@ class TestPatternBWorktreeCreation(unittest.TestCase):
         # Brief was NOT written into the dirty dir.
         self.assertFalse((worker_dir / "CLAUDE.local.md").exists())
 
+    def test_apply_aborts_do_not_leak_queued_db_row(self):
+        """Codex Major: a failed _ensure_worktree must not leave behind a
+        queued runs row, because resolve_worker_layout treats `queued` as an
+        active run and would steer subsequent delegations onto Pattern B."""
+        plan = self._build_self_edit_b(task_id="leak-task")
+        worker_dir = Path(plan.layout.worker_dir)
+        worker_dir.mkdir(parents=True)
+        (worker_dir / "stale.txt").write_text("garbage", encoding="utf-8")
+        with self.assertRaises(gdp.WorktreeApplyError):
+            gdp.apply_delegate_plan(
+                plan,
+                state_db_path=self.sb.db_path,
+                claude_org_root=self.sb.claude_org_root,
+                skip_settings=True,
+            )
+        runs = self.sb.list_runs()
+        self.assertFalse(
+            any(r["task_id"] == "leak-task" for r in runs),
+            f"queued row leaked after worktree abort: {runs}",
+        )
+
+    def test_apply_branches_off_default_ref_not_current_head(self):
+        """Codex Blocker: the new worktree must branch off the default ref
+        (origin/HEAD or main), not the base repo's currently-checked-out
+        feature branch."""
+        import subprocess as _sp
+        # Make a commit on main so HEAD is non-empty, then check the base
+        # repo out onto a feature branch with its own commit. apply must
+        # still branch off main.
+        base = self.sb.claude_org_root
+        seed_file = base / "seed.txt"
+        seed_file.write_text("seed", encoding="utf-8")
+        _sp.run(["git", "-C", str(base), "add", "seed.txt"], check=True)
+        _sp.run(["git", "-C", str(base), "commit", "-m", "seed", "-q"],
+                check=True, env=self._git_env)
+        main_sha = _sp.check_output(
+            ["git", "-C", str(base), "rev-parse", "main"],
+        ).decode().strip()
+        _sp.run(["git", "-C", str(base), "checkout", "-q", "-b", "feat/other"],
+                check=True)
+        feat_file = base / "feat.txt"
+        feat_file.write_text("feat-only", encoding="utf-8")
+        _sp.run(["git", "-C", str(base), "add", "feat.txt"], check=True)
+        _sp.run(["git", "-C", str(base), "commit", "-m", "feat-only", "-q"],
+                check=True, env=self._git_env)
+        feat_sha = _sp.check_output(
+            ["git", "-C", str(base), "rev-parse", "HEAD"],
+        ).decode().strip()
+        self.assertNotEqual(main_sha, feat_sha)
+
+        plan = self._build_self_edit_b(task_id="default-ref-task")
+        gdp.apply_delegate_plan(
+            plan,
+            state_db_path=self.sb.db_path,
+            claude_org_root=self.sb.claude_org_root,
+            skip_settings=True,
+        )
+        worker_dir = Path(plan.layout.worker_dir)
+        new_sha = _sp.check_output(
+            ["git", "-C", str(worker_dir), "rev-parse", "HEAD"],
+        ).decode().strip()
+        self.assertEqual(
+            new_sha, main_sha,
+            "new worktree must branch off main, not the base repo's "
+            "currently-checked-out feature branch",
+        )
+        # Sanity: the feat-only file must NOT appear in the new worktree.
+        self.assertFalse((worker_dir / "feat.txt").exists())
+
     def test_apply_creates_plain_pattern_b_worktree_for_project_repo(self):
         """Non-self-edit Pattern B branches from the project's registered repo."""
         # Stand up a dedicated project repo on disk and re-seed the registry.

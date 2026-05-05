@@ -392,6 +392,38 @@ def _reserve_in_db(
         conn.close()
 
 
+def _resolve_base_ref(base_repo: Path) -> str:
+    """Pick the starting ref for ``git worktree add -b <branch> <path> <ref>``.
+
+    Pattern B is triggered precisely when another active run is occupying
+    the base clone — so the base's current ``HEAD`` is typically that
+    other task's feature branch. Branching off it would mix unmerged
+    commits into the new worktree (Codex Blocker 2026-05-06). Prefer:
+
+    1. ``origin/HEAD`` (the project's default branch as the remote knows it),
+    2. local ``main`` / ``master``,
+    3. ``HEAD`` as a last resort (single-branch repos with no remote).
+    """
+    proc = subprocess.run(
+        ["git", "-C", str(base_repo), "symbolic-ref", "--short",
+         "refs/remotes/origin/HEAD"],
+        capture_output=True,
+    )
+    if proc.returncode == 0:
+        ref = proc.stdout.decode("utf-8", errors="replace").strip()
+        if ref:
+            return ref
+    for cand in ("main", "master"):
+        rc = subprocess.run(
+            ["git", "-C", str(base_repo), "rev-parse", "--verify", "--quiet",
+             cand],
+            capture_output=True,
+        ).returncode
+        if rc == 0:
+            return cand
+    return "HEAD"
+
+
 def _is_registered_worktree(base_repo: Path, worker_dir: Path) -> bool:
     """True iff ``worker_dir`` is already a registered worktree of ``base_repo``.
 
@@ -452,9 +484,10 @@ def _ensure_worktree(plan: DelegatePlan) -> None:
             f"(task_id={plan.task_id!r})."
         )
     worker_dir.parent.mkdir(parents=True, exist_ok=True)
+    base_ref = _resolve_base_ref(plan.base_repo)
     cmd = [
         "git", "-C", str(plan.base_repo),
-        "worktree", "add", "-b", branch, str(worker_dir),
+        "worktree", "add", "-b", branch, str(worker_dir), base_ref,
     ]
     proc = subprocess.run(cmd, capture_output=True)
     if proc.returncode != 0:
@@ -540,12 +573,15 @@ def apply_delegate_plan(
     send_plan_out: Optional[Path] = None,
 ) -> ApplyResult:
     """Execute the side effects: reserve in DB, write brief, settings, send_plan."""
+    # Issue #309: create the worktree FIRST. If this fails (dirty dir,
+    # git error, etc.) we must not leak a `runs.status='queued'` row,
+    # because resolve_worker_layout treats `queued` as an active run and
+    # would silently steer the next delegation onto another Pattern B
+    # branch (Codex Major 2026-05-06). No-op for Pattern A / C.
+    _ensure_worktree(plan)
     db_reservation = _reserve_in_db(
         plan, state_db_path=state_db_path, claude_org_root=claude_org_root
     )
-    # Issue #309: brief must be written *into* the worktree, so create the
-    # worktree first when Pattern B. No-op for A / C.
-    _ensure_worktree(plan)
     brief_path = _write_brief(plan)
     settings_path: Optional[Path] = None
     skipped_reason: Optional[str] = None
