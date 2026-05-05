@@ -76,6 +76,8 @@ renga の cell 座標は整数なので tolerance なし完全一致で判定す
 
 ### 初期状態と典型的な挙動
 
+> **前提条件**: 以下のシナリオは Issue #307 の verification と同じ「ターミナル ≈ 280 cols × 86 rows、org-start で secretary を horizontal split → dispatcher を vertical split した直後」を仮定する。secretary は上半分 (280×43) を占め、SECRETARY_MIN_HEIGHT=30 を満たす。43 行未満の縦に低いターミナル (例: 高さ 43 行で secretary が 21 行になる場合) では secretary は最初から SECRETARY_MIN_HEIGHT で脱落するため、本シナリオは成立しない。その場合 1st spawn は curator → ... の順で進行する (role priority 規約は不変)。
+
 典型的な org-start 直後のレイアウト (secretary 280×43 上半分 / dispatcher 140×43 下半分左 / curator 140×43 下半分右) では、role priority に従って:
 
 - **1st worker spawn**: candidate = {secretary (priority 4, vertical split で 140×43, OK), curator (priority 3), worker は不在, dispatcher (priority 1, curator 隣接 OK)}。secretary が最優先で選ばれる → vertical split。secretary は 280→140 に縮む。
