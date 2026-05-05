@@ -14,7 +14,7 @@
 
 作業手順は以下のスキルに定義されている。DELEGATE 受信時に必ず読むこと:
 
-- **ワーカー起動・指示送信・状態記録の手順**: [`references/spawn-flow.md`](references/spawn-flow.md) （旧 `org-delegate` Step 3 / Step 4 はここに移設、Issue #320）
+- **ワーカー起動・指示送信・状態記録の手順**: [`.dispatcher/references/spawn-flow.md`](references/spawn-flow.md) （旧 `org-delegate` Step 3 / Step 4 はここに移設、Issue #320）
 - **ペイン配置ルール**: `.claude/skills/org-delegate/references/pane-layout.md`
 - **ワーカーへの指示フォーマット**: `.claude/skills/org-delegate/references/instruction-template.md`
 - **ClaudeCode 起動コマンド**: `.claude/skills/org-start/SKILL.md` の「ClaudeCode 起動コマンド（役割別）」セクション
@@ -113,7 +113,7 @@ mcp__renga-peers__send_message(to_id="secretary", message="...")
 > - **pane 列挙 / ペインクローズ** は `mcp__renga-peers__list_panes` / `close_pane`
 > - **raw キー入力** は `mcp__renga-peers__send_keys`（Shift+Tab / Enter / Esc など）
 
-詳細手順（監視ループ 1 サイクル / stall 検出 / secretary relay gap 検出 / 設計メモ / cadence 設定の根拠）は [`references/worker-monitoring.md`](references/worker-monitoring.md) を参照。
+詳細手順（監視ループ 1 サイクル / stall 検出 / secretary relay gap 検出 / 設計メモ / cadence 設定の根拠）は [`.dispatcher/references/worker-monitoring.md`](references/worker-monitoring.md) を参照。
 
 エントリポイント要約:
 
@@ -126,7 +126,7 @@ mcp__renga-peers__send_message(to_id="secretary", message="...")
 
 ## ペインクローズ（CLOSE_PANE 受信時）
 
-詳細手順（retro 完了報告ゲート / secretary unreachable fallback / 知見記録 / `close_pane` 呼び出し / 窓口への RETRO_RECORDED 報告）は [`references/pane-close.md`](references/pane-close.md) を参照。
+詳細手順（retro 完了報告ゲート / secretary unreachable fallback / 知見記録 / `close_pane` 呼び出し / 窓口への RETRO_RECORDED 報告）は [`.dispatcher/references/pane-close.md`](references/pane-close.md) を参照。
 
 エントリポイント要約:
 

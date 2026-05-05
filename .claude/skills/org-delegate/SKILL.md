@@ -13,10 +13,10 @@ description: >
 ペイン起動・指示送信はディスパッチャーに委託する。これにより窓口のロック時間を最小化する。
 
 > **本 SKILL のスコープ**: 派遣の「初動」(タスク特定 → 派遣ペイロード生成 → ディスパッチャーへの DELEGATE 受け渡し → ワーカー起動後の挨拶 → 進捗・完了報告受信時の ack と REVIEW 遷移) のみ。以下は別スキル / reference に分離している:
-> - **ワーカー起動・指示送信・状態記録の手順** → [`../../../.dispatcher/references/spawn-flow.md`](../../../.dispatcher/references/spawn-flow.md) (ディスパッチャー専属)
-> - **ユーザー承認後の push / PR / CI 監視 / レビュー指摘ループ / マージ後クローズ** → [`../org-pull-request/SKILL.md`](../org-pull-request/SKILL.md)
-> - **ワーカーからの判断仰ぎ / スコープ拡張 / ブロッカーのエスカレーション** → [`../org-escalation/SKILL.md`](../org-escalation/SKILL.md)
-> - **ack 文面の最低 3 要素・種別ごとの例文** → [`references/ack-template.md`](references/ack-template.md) (single SoT)
+> - **ワーカー起動・指示送信・状態記録の手順** → [`.dispatcher/references/spawn-flow.md`](../../../.dispatcher/references/spawn-flow.md) (ディスパッチャー専属)
+> - **ユーザー承認後の push / PR / CI 監視 / レビュー指摘ループ / マージ後クローズ** → [`.claude/skills/org-pull-request/SKILL.md`](../org-pull-request/SKILL.md)
+> - **ワーカーからの判断仰ぎ / スコープ拡張 / ブロッカーのエスカレーション** → [`.claude/skills/org-escalation/SKILL.md`](../org-escalation/SKILL.md)
+> - **ack 文面の最低 3 要素・種別ごとの例文** → [`.claude/skills/org-delegate/references/ack-template.md`](references/ack-template.md) (single SoT)
 
 > **state-db cutover (M4, Issue #267 / #284)**: 構造化セクションの write は **必ず `StateWriter.transaction()` 経由**で行う。post-commit hook が `.state/org-state.md` / `.state/org-state.json` を DB から自動再生成し、`update_run_status('<task_id>', 'completed')` 呼び出しは `.state/workers/worker-<task_id>.md` を `.state/workers/archive/` へ自動 move する。markdown 直接編集は drift_check が検出する。events は DB の `events` テーブルが SoT (`tools/journal_append.sh` / `.py` は DB ルーティング済み)。DB 不在時は `python -m tools.state_db.importer --db .state/state.db --rebuild --no-strict` で構築する。
 
@@ -28,7 +28,7 @@ description: >
 | work-skill 検索 | **窓口** |
 | タスク分解 / 派遣ペイロード生成 | **窓口** (`gen_delegate_payload.py`) |
 | DELEGATE 送信 | **窓口**（ここで窓口は解放される） |
-| ペイン起動・ピア待ち・指示送信・状態記録 | **ディスパッチャー** ([`spawn-flow.md`](../../../.dispatcher/references/spawn-flow.md)) |
+| ペイン起動・ピア待ち・指示送信・状態記録 | **ディスパッチャー** ([`.dispatcher/references/spawn-flow.md`](../../../.dispatcher/references/spawn-flow.md)) |
 | 窓口への派遣完了報告 | **ディスパッチャー** |
 | ワーカーからの進捗/完了/escalation 報告の受信 | **窓口** |
 | ワーカー完了時のペインクローズ | **ディスパッチャー**（窓口から `CLOSE_PANE` 依頼） |
@@ -111,7 +111,7 @@ python tools/gen_delegate_payload.py apply \
 
 ### Pattern / role / branch の判定詳細
 
-判定ロジック (Pattern A vs B vs C / gitignored サブモード / role 表 / planned_branch / DELEGATE 本文の必須行) は [`references/delegate-flow-details.md`](references/delegate-flow-details.md) 参照。self-edit タスクの特例（Issue #289、`pattern_variant='live_repo_worktree'`）は [`references/claude-org-self-edit.md`](references/claude-org-self-edit.md) §3 参照。
+判定ロジック (Pattern A vs B vs C / gitignored サブモード / role 表 / planned_branch / DELEGATE 本文の必須行) は [`.claude/skills/org-delegate/references/delegate-flow-details.md`](references/delegate-flow-details.md) 参照。self-edit タスクの特例（Issue #289、`pattern_variant='live_repo_worktree'`）は [`.claude/skills/org-delegate/references/claude-org-self-edit.md`](references/claude-org-self-edit.md) §3 参照。
 
 ### 対象ファイル抽出
 
@@ -123,7 +123,7 @@ python tools/gen_delegate_payload.py apply \
 
 ## Step 3 / 4: ワーカー起動・指示送信・状態記録（ディスパッチャーが実行）
 
-詳細手順 (3-1 balanced split / 3-1c SPLIT_CAPACITY_EXCEEDED escalate / 3-2 spawn / 3-3 pane_started / 3-3b channel approve / 3-4 list_peers / 3-5 instruction send / 3-6 順次起動 / Step 4 状態記録 / Worker Directory Registry) は **[`../../../.dispatcher/references/spawn-flow.md`](../../../.dispatcher/references/spawn-flow.md)** を一次参照する。窓口は触らない。
+詳細手順 (3-1 balanced split / 3-1c SPLIT_CAPACITY_EXCEEDED escalate / 3-2 spawn / 3-3 pane_started / 3-3b channel approve / 3-4 list_peers / 3-5 instruction send / 3-6 順次起動 / Step 4 状態記録 / Worker Directory Registry) は **[`.dispatcher/references/spawn-flow.md`](../../../.dispatcher/references/spawn-flow.md)** を一次参照する。窓口は触らない。
 
 ディスパッチャーは派遣完了時に窓口へ `DELEGATE_COMPLETE` を返す。
 
@@ -149,25 +149,25 @@ worker → Secretary peer message
   2. update Progress Log + DB (run.status / events / pending-decisions register)
   3. report to user           (完了 / escalation / blocker のみ。進捗報告は不要)
   4. wait for user approval before push/PR
-  5. CI watch / next instruction → [`../org-pull-request/SKILL.md`](../org-pull-request/SKILL.md)
+  5. CI watch / next instruction → [`.claude/skills/org-pull-request/SKILL.md`](../org-pull-request/SKILL.md)
 ```
 
-- ack の最低内容と種別ごとの例文は [`references/ack-template.md`](references/ack-template.md) を参照。**ack ≠ user 承認**: `git push` / `gh pr create` / `tools/pr-watch.*` は user の明示的 OK 後にのみ発行
+- ack の最低内容と種別ごとの例文は [`.claude/skills/org-delegate/references/ack-template.md`](references/ack-template.md) を参照。**ack ≠ user 承認**: `git push` / `gh pr create` / `tools/pr-watch.*` は user の明示的 OK 後にのみ発行
 - 2 → 3 の順序は「内部状態を先に整合させてから user に報告する」原則
 
 #### 0. 判断仰ぎ・スコープ拡張・ブロッカー（最優先で識別）
 
-→ [`../org-escalation/SKILL.md`](../org-escalation/SKILL.md) を発動する。Secretary は一次承認しない。
+→ [`.claude/skills/org-escalation/SKILL.md`](../org-escalation/SKILL.md) を発動する。Secretary は一次承認しない。
 
 #### 1. 進捗報告
 
-- worker へ ack を返す（[`references/ack-template.md`](references/ack-template.md) の「進捗報告 ack」節。Progress Log 追記より前）。**進捗報告は user に上げない・承認待ちもしない**
+- worker へ ack を返す（[`.claude/skills/org-delegate/references/ack-template.md`](references/ack-template.md) の「進捗報告 ack」節。Progress Log 追記より前）。**進捗報告は user に上げない・承認待ちもしない**
 - `.state/workers/worker-{task_id}.md` の Progress Log に追記
 - DB の events テーブルにイベント追記 (`bash tools/journal_append.sh ...`)
 
 #### 2a. 完了報告
 
-- worker へ ack を返す（[`references/ack-template.md`](references/ack-template.md) の「完了報告 ack」節）
+- worker へ ack を返す（[`.claude/skills/org-delegate/references/ack-template.md`](references/ack-template.md) の「完了報告 ack」節）
 - **DB 経由で run を REVIEW に遷移**（markdown 直接編集禁止）:
   ```bash
   python -c "
@@ -184,7 +184,7 @@ worker → Secretary peer message
 
 #### 2b / 2c. ユーザー承認後・レビュー指摘・マージ後クローズ
 
-→ [`../org-pull-request/SKILL.md`](../org-pull-request/SKILL.md) を発動する。
+→ [`.claude/skills/org-pull-request/SKILL.md`](../org-pull-request/SKILL.md) を発動する。
 
 ### ワーカー監視と介入判定（窓口が実行）
 

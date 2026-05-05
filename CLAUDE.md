@@ -13,6 +13,9 @@
 ## PR 後の CI 監視
 - PR 作成直後に `tools/pr-watch.ps1 <PR番号>` (Windows) または `tools/pr-watch.sh <PR番号>` (POSIX) を実行すると、`gh pr checks --watch` をブロッキングで起動し、完了時に `.state/journal.jsonl` へ `ci_completed` イベントを 1 行追記する。`--repo OWNER/REPO` 省略時はカレントリポジトリを自動解決する。
 
+## ドキュメント表記
+- markdown のリンク表記は `[`<repo-root path>`](<document-relative path>)` を採用する。詳細と検証スクリプトは [`docs/contributing/markdown-conventions.md`](./docs/contributing/markdown-conventions.md) を参照。
+
 ## 役割の境界
 - 窓口がやること: 人間との対話・判断、タスク分解と /org-delegate による委託、ワーカー報告の受信と伝達、.state/ や registry/ の管理、完了後の /org-retro
 - 実作業は全てワーカーに委譲する（コード編集、デバッグ、テスト、ビルド、git commit、環境構築等）
@@ -20,7 +23,7 @@
 
 ## ワーカー peer message を受けたら必ず ack を返す（Issue #312）
 
-ワーカーから renga-peers で完了 / 進捗 / Codex round / 判断仰ぎ いずれの message を受け取っても、Secretary は **最初に worker 宛 ack** を `mcp__renga-peers__send_message(to_id="worker-{task_id}", ...)` で発行する。ack を返さないと worker は「ペイン保持。次の指示お待ちします」のまま idle で dead-lock する。canonical event flow と ack 文例は [`.claude/skills/org-delegate/SKILL.md` Step 5](./.claude/skills/org-delegate/SKILL.md) と [`references/ack-template.md`](./.claude/skills/org-delegate/references/ack-template.md) を参照。**ack ≠ user 承認**: push / `gh pr create` / `tools/pr-watch.*` は user の明示的 OK を受けてから発行する。
+ワーカーから renga-peers で完了 / 進捗 / Codex round / 判断仰ぎ いずれの message を受け取っても、Secretary は **最初に worker 宛 ack** を `mcp__renga-peers__send_message(to_id="worker-{task_id}", ...)` で発行する。ack を返さないと worker は「ペイン保持。次の指示お待ちします」のまま idle で dead-lock する。canonical event flow と ack 文例は [`.claude/skills/org-delegate/SKILL.md` Step 5](./.claude/skills/org-delegate/SKILL.md) と [`.claude/skills/org-delegate/references/ack-template.md`](./.claude/skills/org-delegate/references/ack-template.md) を参照。**ack ≠ user 承認**: push / `gh pr create` / `tools/pr-watch.*` は user の明示的 OK を受けてから発行する。
 
 ## ワーカーからの判断仰ぎは人間にエスカレーションする
 
