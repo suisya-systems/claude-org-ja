@@ -372,10 +372,10 @@ mcp__renga-peers__send_message(to_id="secretary", message="...")
    python ../tools/pending_decisions.py list --older-than-min 15
    ```
 
-   - 出力 0 行 → register 経由の (a)(1) relay gap は **なし**。proxy 経路 ((a)〜(f)) で (a)(2) 方向を確認したい場合のみ続行 (デフォルトは skip 可)
-   - 出力 1 行以上 → 各行 (1 entry per line, JSON、`status="pending"` のみ) を `task_id` 単位で集約し、SECRETARY_RELAY_GAP_SUSPECTED を **(e) と同じ通知経路** で発火する。register は (a)(1) 方向 (Secretary が worker→user の中継を忘れた) を deterministic に拾う ground truth
+   - 出力 0 行 → register 経由の (a)(1) relay gap は **なし**。ただし (a)(2) は register では捕捉できないため、proxy 経路 ((a)〜(f)) は **必ず続行する** (skip しない)
+   - 出力 1 行以上 → 各行 (1 entry per line, JSON、`status="pending"` のみ) を `task_id` 単位で集約し、SECRETARY_RELAY_GAP_SUSPECTED を **(e) と同じ通知経路** で発火する。register は (a)(1) 方向 (Secretary が worker→user の中継を忘れた) を deterministic に拾う ground truth。発火後も同サイクル内で proxy 経路を続行する (proxy が独立に拾う (a)(2) を見逃さないため)。同じ worker に対する重複通知は (f) の de-dup 30 秒窓で吸収される
 
-   **(a)(2) 方向の取り扱い** (Issue #297 のスコープ制限): register は「人間が返答済みか」を表す signal を持たないため、`escalated` 状態を時間で alarm 化すると「人間が考え中」と「Secretary が user→worker 転送を忘れた」を区別できず false positive が常態化する。よって `list --older-than-min` は意図的に `pending` のみを返す。(a)(2) 方向の deterministic 検知は `user_replied_at` marker 等の schema 拡張が必要で、別 Issue で扱う。本 PR では (a)(2) の最低限の保険として既存の (a)〜(f) proxy 経路を残置しているので、運用上は併用すること
+   **(a)(2) 方向の取り扱い** (Issue #297 のスコープ制限): register は「人間が返答済みか」を表す signal を持たないため、`escalated` 状態を時間で alarm 化すると「人間が考え中」と「Secretary が user→worker 転送を忘れた」を区別できず false positive が常態化する。よって `list --older-than-min` は意図的に `pending` のみを返す。(a)(2) 方向の deterministic 検知は `user_replied_at` marker 等の schema 拡張が必要で、別 Issue で扱う。本 PR で (a)(2) の唯一のカバーは既存 (a)〜(f) proxy 経路 (snapshot diff 等) であり、register lookup の結果に関わらず毎サイクル必ず実行する
    - de-dup と journal 追記は (f) と同じスキーマを使う:
 
      ```bash
@@ -386,9 +386,9 @@ mcp__renga-peers__send_message(to_id="secretary", message="...")
 
      `confidence=high` は register lookup 経由 (proxy より信頼度が高い) を表す。proxy 経路の confidence (n/a) と区別したい場合のラベル。
 
-   **register lookup は primary、(a)〜(f) の proxy 経路は fallback (TODO 格下げ)**: register が空なら proxy 経路の判定 (snapshot diff / journal scan) は **skip して良い**。実装簡素化のため proxy 経路は当面残すが、register が安定運用に乗ったら本ファイルから削除する (将来 Issue で対応、本 PR ではコード/prose 両方を残置)。
+   **register lookup は (a)(1) の primary、(a)〜(f) の proxy 経路は (a)(2) の唯一のカバー**: register と proxy は disjoint な方向を扱うため、毎サイクル両方を実行する (proxy 経路を skip すると (a)(2) のカバーが消える)。proxy 経路の (a)(1) 関連部分は register が一次 source なので冗長になるが、de-dup 30 秒窓で吸収されるためそのまま残す。proxy 経路の最終削除は (a)(2) 用の deterministic 検知 (user_replied_at marker など) が別 Issue で着地した後に再評価する。
 
-   register が読めない (helper not found / file corrupted で `ValueError`) 場合は proxy 経路に fallback する。journal に `anomaly_observed source=relay_gap_check kind=register_unavailable` を残し、(b)〜(f) を従来通り実行する。
+   register が読めない (helper not found / file corrupted で `ValueError`) 場合は (a)(1) も proxy 経路に fallback する。journal に `anomaly_observed source=relay_gap_check kind=register_unavailable` を残し、(b)〜(f) を従来通り実行する。
 
    #### (a) 動機
    Step 5 は worker 側 (worker→secretary 痕跡が **ある** ので stall 抑制) を見て補助シグナル化したが、逆方向 (secretary→user / secretary→worker の中継) には盲点がある。具体的なインシデントパターン:
