@@ -74,7 +74,7 @@
      # result.structuredContent に {lines: [{row, text}], cursor: {visible, row, col}} が入る
      ```
      を順次実行 (16 ワーカー並列でも合計 1 秒未満)
-   - **エラー時の挙動**: tool result テキストに `[<code>] <msg>` 形式でエラーが埋まる。code で分岐する (詳細は `references/renga-error-codes.md`):
+   - **エラー時の挙動**: tool result テキストに `[<code>] <msg>` 形式でエラーが埋まる。code で分岐する (詳細は `.claude/skills/org-delegate/references/renga-error-codes.md`):
      - `[pane_not_found]` / `[pane_vanished]` — ワーカーが既に閉じた。そのワーカーの inspect を skip して Step 3 の list 結果で `WORKER_PANE_EXITED` 経路に回す (二重検出は de-dup で吸収される)
      - `[shutting_down]` — renga 停止中。監視ループを即停止し、`mcp__renga-peers__send_message` で `FOREMAN_STOPPING` を窓口に通知
      - `[io_error]` / `[app_timeout]` / `[internal]` — 一過性の可能性。`.state/journal.jsonl` に記録して次サイクルで再試行
@@ -210,7 +210,7 @@
       # 1 件以上残れば「ヒット」。具体的な one-liner (PowerShell 環境での date 代替等) は dispatcher Claude の判断。
       ```
 
-   2. **renga-peers poll_events (forward-compat、現状は補助のみ)**: 現状 `mcp__renga-peers__poll_events` は pane lifecycle event のみを流し、`send_message` は流れない (`references/renga-error-codes.md` の type 表参照)。さらに `since` は時刻ではなく前サイクルから受け取る **opaque cursor** で、初回省略時は「今以降」セマンティクス (過去履歴は返らない) なので、本判定で「過去 15 分」をピンポイント検索する用途には今は使えない。journal scan を **authoritative source** とする。将来 renga が `send_message` event を `poll_events` に流すようになれば、Step 1 で既に保持している `.state/dispatcher-event-cursor.txt` の cursor 経由で受信した worker→secretary の送信を `(worker, kind=stall_acked)` ledger に変換するルートを追加する想定 (本 PR ではプレースホルダとして記述するに留める)。
+   2. **renga-peers poll_events (forward-compat、現状は補助のみ)**: 現状 `mcp__renga-peers__poll_events` は pane lifecycle event のみを流し、`send_message` は流れない (`.claude/skills/org-delegate/references/renga-error-codes.md` の type 表参照)。さらに `since` は時刻ではなく前サイクルから受け取る **opaque cursor** で、初回省略時は「今以降」セマンティクス (過去履歴は返らない) なので、本判定で「過去 15 分」をピンポイント検索する用途には今は使えない。journal scan を **authoritative source** とする。将来 renga が `send_message` event を `poll_events` に流すようになれば、Step 1 で既に保持している `.state/dispatcher-event-cursor.txt` の cursor 経由で受信した worker→secretary の送信を `(worker, kind=stall_acked)` ledger に変換するルートを追加する想定 (本 PR ではプレースホルダとして記述するに留める)。
 
    #### (d) 分岐 (acked vs timeout)
    - **acked** — どちらかの系統で 1 件以上ヒット: 「Secretary 判断待ち idle」とみなし、STALL_SUSPECTED を **発火しない**。Step 4 (e) と同じ `anomaly_observed` ledger に soft-note として記録 (新 event 名は導入せず既存 catalog を再利用):
@@ -238,7 +238,7 @@
 
    #### (f) 設計メモ
    - **`STALL_SECRETARY_LOOKBACK_MIN = 15` の根拠**: Secretary が人間に判断を仰いでから応答を返すまで 5–10 分のオーダーが典型で、その間ワーカーは idle のまま待機する。15 分 window で「直近やり取りあり」を担保すれば、人間応答待ちの誤発火を実用上排除できる。短くすると判断待ちワーカーが timeout 経路に落ちて誤発火、長くすると完了後ペインの reactivation 痕跡を拾い続けて stuck が見逃される。中間値の 15 分が現状のスイートスポット
-   - **journal scan を primary にした理由**: renga の `poll_events` は現状 pane lifecycle event (`pane_started` / `pane_exited` / `events_dropped` / `heartbeat`) のみで `send_message` を流さない (`references/renga-error-codes.md` の type 表参照)。一方、secretary 受信時の `worker_escalation` / `worker_reported` は authoritative な ledger として既に永続化されている。再利用が正解
+   - **journal scan を primary にした理由**: renga の `poll_events` は現状 pane lifecycle event (`pane_started` / `pane_exited` / `events_dropped` / `heartbeat`) のみで `send_message` を流さない (`.claude/skills/org-delegate/references/renga-error-codes.md` の type 表参照)。一方、secretary 受信時の `worker_escalation` / `worker_reported` は authoritative な ledger として既に永続化されている。再利用が正解
    - **soft-note を残す意味**: 後で「なぜ STALL_SUSPECTED が発火しなかったか」を retro / debug で再現できる。silent skip にすると、誤検出疑いが起きたとき journal だけでは判別不能になる。Step 4 と同じ `anomaly_observed` event を再利用するので、event catalog (`docs/journal-events.md`) への新規追記は不要 (kind だけ `stall_acked` を新設)
 
 5.1. **secretary relay gap 検出 (SECRETARY_RELAY_GAP_SUSPECTED)** — Step 5 の sibling、worker→secretary→user の relay の **secretary 側中継漏れ** を検知する独立チャネル:
