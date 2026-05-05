@@ -282,5 +282,175 @@ class PendingDecisionsTests(unittest.TestCase):
         self.assertEqual(len(pd.list_pending(store_path=self.store)), 1)
 
 
+class MarkUserRepliedTests(unittest.TestCase):
+    """Regression tests for Issue #301 user_replied_at marker."""
+
+    def setUp(self) -> None:
+        import tempfile
+
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self.store = Path(self._tmpdir.name) / "pending_decisions.json"
+
+    def _read_raw(self) -> list[dict]:
+        return json.loads(self.store.read_text(encoding="utf-8"))
+
+    # (a) ----------------------------------------------------------------
+    def test_mark_user_replied_on_pending_is_noop(self) -> None:
+        # Only escalated entries are eligible — pending means Secretary
+        # has not yet relayed the question to the user, so a "user
+        # replied" marker is meaningless.
+        pd.append("t1", "ask", store_path=self.store)
+        out = pd.mark_user_replied("t1", store_path=self.store)
+        self.assertIsNone(out)
+        raw = self._read_raw()
+        self.assertEqual(len(raw), 1)
+        self.assertIsNone(raw[0].get("user_replied_at"))
+
+    # (b) ----------------------------------------------------------------
+    def test_mark_user_replied_on_escalated_sets_marker(self) -> None:
+        pd.append("t1", "ask", store_path=self.store)
+        pd.resolve("t1", "to_user", store_path=self.store)
+        out = pd.mark_user_replied("t1", store_path=self.store)
+        self.assertIsNotNone(out)
+        assert out is not None
+        self.assertEqual(out.status, "escalated")  # status unchanged
+        self.assertIsNotNone(out.user_replied_at)
+        # Persisted to disk
+        raw = self._read_raw()
+        self.assertEqual(raw[0]["status"], "escalated")
+        self.assertIsNotNone(raw[0]["user_replied_at"])
+
+    # (c) ----------------------------------------------------------------
+    def test_mark_user_replied_is_idempotent(self) -> None:
+        pd.append("t1", "ask", store_path=self.store)
+        pd.resolve("t1", "to_user", store_path=self.store)
+        first = pd.mark_user_replied("t1", store_path=self.store)
+        assert first is not None
+        first_ts = first.user_replied_at
+        second = pd.mark_user_replied("t1", store_path=self.store)
+        assert second is not None
+        # Timestamp not rewritten — original retained
+        self.assertEqual(second.user_replied_at, first_ts)
+
+    # (d) ----------------------------------------------------------------
+    def test_mark_user_replied_unknown_task_id_returns_none(self) -> None:
+        pd.append("t1", "ask", store_path=self.store)
+        pd.resolve("t1", "to_user", store_path=self.store)
+        out = pd.mark_user_replied("nonexistent", store_path=self.store)
+        self.assertIsNone(out)
+
+    # (e) ----------------------------------------------------------------
+    def test_json_roundtrip_preserves_user_replied_at(self) -> None:
+        pd.append("t1", "ask", store_path=self.store)
+        pd.resolve("t1", "to_user", store_path=self.store)
+        marked = pd.mark_user_replied("t1", store_path=self.store)
+        assert marked is not None
+        # Reload via list_pending fast-path or direct _load
+        reloaded = pd._load(self.store)
+        self.assertEqual(len(reloaded), 1)
+        self.assertEqual(reloaded[0].user_replied_at, marked.user_replied_at)
+        self.assertEqual(reloaded[0].status, "escalated")
+        self.assertEqual(reloaded[0].resolution_kind, "to_user")
+
+    # (f) ----------------------------------------------------------------
+    def test_cli_mark_user_replied(self) -> None:
+        pd.append("tcli", "ask", store_path=self.store)
+        pd.resolve("tcli", "to_user", store_path=self.store)
+        rc = pd.main(
+            [
+                "--store",
+                str(self.store),
+                "mark-user-replied",
+                "--task-id",
+                "tcli",
+            ]
+        )
+        self.assertEqual(rc, 0)
+        raw = self._read_raw()
+        self.assertEqual(len(raw), 1)
+        self.assertIsNotNone(raw[0]["user_replied_at"])
+
+    # extras -------------------------------------------------------------
+    def test_legacy_entry_without_user_replied_at_loads(self) -> None:
+        # Schema compat: entries written before #301 lack the
+        # user_replied_at field; load must default it to None.
+        seed = [
+            {
+                "task_id": "legacy",
+                "received_at": "2026-05-05T05:00:00Z",
+                "raw_message": "ask",
+                "status": "escalated",
+                "resolved_at": "2026-05-05T05:01:00Z",
+                "resolution_kind": "to_user",
+            }
+        ]
+        self.store.parent.mkdir(parents=True, exist_ok=True)
+        self.store.write_text(json.dumps(seed), encoding="utf-8")
+        loaded = pd._load(self.store)
+        self.assertEqual(len(loaded), 1)
+        self.assertIsNone(loaded[0].user_replied_at)
+
+    def test_list_escalated_user_replied_older_than_filters(self) -> None:
+        old_replied = "2026-05-05T05:00:00Z"
+        new_replied = "2026-05-05T05:50:00Z"
+        seed = [
+            {
+                "task_id": "stale",
+                "received_at": "2026-05-05T04:30:00Z",
+                "raw_message": "ask",
+                "status": "escalated",
+                "resolved_at": "2026-05-05T04:35:00Z",
+                "resolution_kind": "to_user",
+                "user_replied_at": old_replied,
+            },
+            {
+                "task_id": "fresh",
+                "received_at": "2026-05-05T05:40:00Z",
+                "raw_message": "ask",
+                "status": "escalated",
+                "resolved_at": "2026-05-05T05:45:00Z",
+                "resolution_kind": "to_user",
+                "user_replied_at": new_replied,
+            },
+            {
+                "task_id": "no-reply",
+                "received_at": "2026-05-05T04:00:00Z",
+                "raw_message": "ask",
+                "status": "escalated",
+                "resolved_at": "2026-05-05T04:05:00Z",
+                "resolution_kind": "to_user",
+            },
+            {
+                "task_id": "done",
+                "received_at": "2026-05-05T03:00:00Z",
+                "raw_message": "ask",
+                "status": "resolved",
+                "resolved_at": "2026-05-05T03:30:00Z",
+                "resolution_kind": "to_worker",
+                "user_replied_at": old_replied,
+            },
+        ]
+        self.store.parent.mkdir(parents=True, exist_ok=True)
+        self.store.write_text(json.dumps(seed), encoding="utf-8")
+        now = datetime(2026, 5, 5, 6, 0, 0, tzinfo=timezone.utc)
+        out = pd.list_escalated_user_replied_older_than(
+            15, store_path=self.store, now=now
+        )
+        # only "stale" matches: escalated + user_replied_at older than 15min
+        self.assertEqual([e.task_id for e in out], ["stale"])
+
+    def test_resolve_to_worker_after_user_replied_preserves_marker(self) -> None:
+        # Canonical lifecycle: pending -> escalated -> user_replied marker
+        # -> resolved. user_replied_at must survive the final resolve.
+        pd.append("t1", "ask", store_path=self.store)
+        pd.resolve("t1", "to_user", store_path=self.store)
+        pd.mark_user_replied("t1", store_path=self.store)
+        final = pd.resolve("t1", "to_worker", store_path=self.store)
+        assert final is not None
+        self.assertEqual(final.status, "resolved")
+        self.assertIsNotNone(final.user_replied_at)
+
+
 if __name__ == "__main__":
     unittest.main()

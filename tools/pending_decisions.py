@@ -82,6 +82,13 @@ class PendingDecision:
     status: Status = "pending"
     resolved_at: Optional[str] = None
     resolution_kind: Optional[ResolutionKind] = None
+    # ISO timestamp recorded when the user replies to this escalated
+    # entry (Issue #301). Lets the dispatcher's Step 5.1 (a-2) path
+    # deterministically detect the "Secretary forgot to relay user's
+    # answer back to worker" direction without proxy heuristics. None
+    # for legacy entries written before #301 — those fall back to the
+    # snapshot-diff proxy path (a-3).
+    user_replied_at: Optional[str] = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -95,6 +102,7 @@ class PendingDecision:
             status=data.get("status", "pending"),
             resolved_at=data.get("resolved_at"),
             resolution_kind=data.get("resolution_kind"),
+            user_replied_at=data.get("user_replied_at"),
         )
 
 
@@ -231,6 +239,43 @@ def resolve(
     return target
 
 
+def mark_user_replied(
+    task_id: str,
+    store_path: Path = DEFAULT_PATH,
+) -> Optional[PendingDecision]:
+    """Record that the user has replied to the oldest ``escalated`` entry.
+
+    Issue #301. Sets ``user_replied_at`` on the oldest ``escalated``
+    entry for ``task_id`` (status stays ``escalated``). The dispatcher's
+    Step 5.1 (a-2) path uses this marker to deterministically detect
+    the "Secretary forgot to relay user's answer back to worker"
+    direction without proxy heuristics.
+
+    Idempotent: if the matching entry already has ``user_replied_at``
+    set, returns it unchanged (no rewrite). Returns ``None`` when no
+    ``escalated`` entry exists for ``task_id`` — Secretary should call
+    ``resolve --kind to_user`` first.
+    """
+    entries = _load(store_path)
+    target_index: Optional[int] = None
+    for i, entry in enumerate(entries):
+        if entry.task_id != task_id or entry.status != "escalated":
+            continue
+        if target_index is None:
+            target_index = i
+            continue
+        if entry.received_at < entries[target_index].received_at:
+            target_index = i
+    if target_index is None:
+        return None
+    target = entries[target_index]
+    if target.user_replied_at is not None:
+        return target
+    target.user_replied_at = _now_iso()
+    _atomic_write(store_path, entries)
+    return target
+
+
 def list_pending(store_path: Path = DEFAULT_PATH) -> list[PendingDecision]:
     """Return entries with status ``pending``.
 
@@ -284,6 +329,46 @@ def list_pending_older_than(
     return out
 
 
+def list_escalated_user_replied_older_than(
+    threshold_minutes: int,
+    store_path: Path = DEFAULT_PATH,
+    now: Optional[datetime] = None,
+) -> list[PendingDecision]:
+    """``escalated`` entries with ``user_replied_at`` older than threshold.
+
+    Issue #301. Drives the dispatcher's Step 5.1 (a-2) deterministic
+    path: when a user has replied (user_replied_at is set) but Secretary
+    has not yet forwarded back to the worker (status still ``escalated``,
+    resolved_at unset), the elapsed time since the user reply is the
+    Secretary's relay-gap window.
+
+    Entries with a malformed ``user_replied_at`` are surfaced (treated
+    as arbitrarily old) — same loud-failure stance as
+    :func:`list_pending_older_than`.
+    """
+    if now is None:
+        now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(minutes=threshold_minutes)
+    out: list[PendingDecision] = []
+    for entry in _load(store_path):
+        if entry.status != "escalated":
+            # status=="resolved" means Secretary already forwarded the
+            # answer back to the worker — terminal, no relay-gap.
+            continue
+        if entry.user_replied_at is None:
+            continue
+        try:
+            replied = datetime.strptime(
+                entry.user_replied_at, "%Y-%m-%dT%H:%M:%SZ"
+            ).replace(tzinfo=timezone.utc)
+        except ValueError:
+            out.append(entry)
+            continue
+        if replied <= cutoff:
+            out.append(entry)
+    return out
+
+
 # --------------------------------------------------------------------- CLI
 
 
@@ -310,14 +395,28 @@ def _cmd_resolve(args: argparse.Namespace) -> int:
 
 def _cmd_list(args: argparse.Namespace) -> int:
     store_path = Path(args.store) if args.store else DEFAULT_PATH
-    if args.older_than_min is not None:
-        entries: Iterable[PendingDecision] = list_pending_older_than(
+    if args.user_replied_older_than_min is not None:
+        entries: Iterable[PendingDecision] = list_escalated_user_replied_older_than(
+            args.user_replied_older_than_min, store_path=store_path
+        )
+    elif args.older_than_min is not None:
+        entries = list_pending_older_than(
             args.older_than_min, store_path=store_path
         )
     else:
         entries = list_pending(store_path=store_path)
     for entry in entries:
         _print_entry(entry)
+    return 0
+
+
+def _cmd_mark_user_replied(args: argparse.Namespace) -> int:
+    store_path = Path(args.store) if args.store else DEFAULT_PATH
+    entry = mark_user_replied(args.task_id, store_path=store_path)
+    if entry is None:
+        print(json.dumps({"status": "no_escalated", "task_id": args.task_id}))
+        return 0
+    _print_entry(entry)
     return 0
 
 
@@ -349,9 +448,25 @@ def main(argv: Optional[list[str]] = None) -> int:
         "--older-than-min",
         type=int,
         default=None,
-        help="only entries whose received_at is older than N minutes",
+        help="only pending entries whose received_at is older than N minutes",
+    )
+    p_list.add_argument(
+        "--user-replied-older-than-min",
+        type=int,
+        default=None,
+        help=(
+            "only escalated entries whose user_replied_at is older than N "
+            "minutes (Issue #301, dispatcher Step 5.1 (a-2) deterministic path)"
+        ),
     )
     p_list.set_defaults(func=_cmd_list)
+
+    p_mark = sub.add_parser(
+        "mark-user-replied",
+        help="record that the user has replied to an escalated entry (Issue #301)",
+    )
+    p_mark.add_argument("--task-id", required=True)
+    p_mark.set_defaults(func=_cmd_mark_user_replied)
 
     args = parser.parse_args(argv)
     return args.func(args)

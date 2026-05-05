@@ -375,7 +375,7 @@ mcp__renga-peers__send_message(to_id="secretary", message="...")
    - 出力 0 行 → register 経由の (a)(1) relay gap は **なし**。ただし (a)(2) は register では捕捉できないため、proxy 経路 ((a)〜(f)) は **必ず続行する** (skip しない)
    - 出力 1 行以上 → 各行 (1 entry per line, JSON、`status="pending"` のみ) を `task_id` 単位で集約し、SECRETARY_RELAY_GAP_SUSPECTED を **(e) と同じ通知経路** で発火する。register は (a)(1) 方向 (Secretary が worker→user の中継を忘れた) を deterministic に拾う ground truth。発火後も同サイクル内で proxy 経路を続行する (proxy が独立に拾う (a)(2) を見逃さないため)。同じ worker に対する重複通知は (f) の de-dup 30 秒窓で吸収される
 
-   **(a)(2) 方向の取り扱い** (Issue #297 のスコープ制限): register は「人間が返答済みか」を表す signal を持たないため、`escalated` 状態を時間で alarm 化すると「人間が考え中」と「Secretary が user→worker 転送を忘れた」を区別できず false positive が常態化する。よって `list --older-than-min` は意図的に `pending` のみを返す。(a)(2) 方向の deterministic 検知は `user_replied_at` marker 等の schema 拡張が必要で、別 Issue で扱う。本 PR で (a)(2) の唯一のカバーは既存 (a)〜(f) proxy 経路 (snapshot diff 等) であり、register lookup の結果に関わらず毎サイクル必ず実行する
+   **(a)(2) 方向の取り扱い** (Issue #297 のスコープ制限、#301 で deterministic 化): Issue #297 時点では register に「人間が返答済みか」を表す signal が無く、`escalated` 状態を時間で alarm 化すると「人間が考え中」と「Secretary が user→worker 転送を忘れた」を区別できず false positive が常態化していたため、`list --older-than-min` は意図的に `pending` のみを返す設計だった。Issue #301 で `user_replied_at` marker を schema に追加したことで、(a)(2) 方向も deterministic に観測可能になった (下記 (a-2) 経路)。proxy 経路 ((a)〜(f)) は (a-2) を観測する手段が無かった旧 Secretary の既存 entry や Secretary が `mark-user-replied` を呼び忘れたケースの fallback として残置する
    - de-dup と journal 追記は (f) と同じスキーマを使う:
 
      ```bash
@@ -389,6 +389,47 @@ mcp__renga-peers__send_message(to_id="secretary", message="...")
    **register lookup は (a)(1) の primary、(a)〜(f) の proxy 経路は (a)(2) の唯一のカバー**: register と proxy は disjoint な方向を扱うため、毎サイクル両方を実行する (proxy 経路を skip すると (a)(2) のカバーが消える)。proxy 経路の (a)(1) 関連部分は register が一次 source なので冗長になるが、de-dup 30 秒窓で吸収されるためそのまま残す。proxy 経路の最終削除は (a)(2) 用の deterministic 検知 (user_replied_at marker など) が別 Issue で着地した後に再評価する。
 
    register が読めない (helper not found / file corrupted で `ValueError`) 場合は (a)(1) も proxy 経路に fallback する。journal に `anomaly_observed source=relay_gap_check kind=register_unavailable` を残し、(b)〜(f) を従来通り実行する。
+
+   #### (a-2) Primary check: user_replied_at lookup (Issue #301)
+
+   Issue #297 で register lookup を導入した際、(a)(2) 方向 (user 回答 → secretary → worker の転送漏れ) は schema に「人間返答済み signal」が無いため deterministic 化できず proxy 経路に依存していた。Issue #301 で `user_replied_at` (ISO timestamp) を `PendingDecision` に追加し、Secretary が user 返答受領時に `mark-user-replied` CLI で marker を記録する運用に変更したことで、(a)(2) 方向も register lookup で deterministic に判定できるようになった。
+
+   Secretary 側のライフサイクル (CLAUDE.md 「ワーカーからの判断仰ぎは人間にエスカレーションする」セクション):
+
+   - 判断仰ぎ受信 → `append` (status=`pending`)
+   - 人間に伝達 → `resolve --kind to_user` (status=`escalated`)
+   - **user 返答受領 → `mark-user-replied` (`user_replied_at` 設定、status=`escalated` のまま)**
+   - worker に転送 → `resolve --kind to_worker` (status=`resolved`)
+
+   ディスパッチャーは tick ごとに (a-0) の `--older-than-min` lookup と並行して、`user_replied_at` lookup を発行する:
+
+   ```bash
+   # ディスパッチャー cwd は .dispatcher/。helper は repo root 起点で
+   # .state/pending_decisions.json を解決するため相対パスは不要。
+   python ../tools/pending_decisions.py list --user-replied-older-than-min 15
+   ```
+
+   - 出力 0 行 → register 経由の (a)(2) relay gap は **なし**
+   - 出力 1 行以上 → 各行 (1 entry per line, JSON、`status="escalated"` かつ `user_replied_at` が 15 分以上前のもの) を `task_id` 単位で集約し、SECRETARY_RELAY_GAP_SUSPECTED を **(e) と同じ通知経路** で発火する。register は (a)(2) 方向 (user 回答済みなのに Secretary が worker へ転送忘れ) を deterministic に拾う ground truth。発火後も同サイクル内で proxy 経路 ((b)〜(f)) を続行する (`mark-user-replied` を呼び忘れた legacy entry を proxy がカバーするため)
+
+   - de-dup と journal 追記は (f) と同じスキーマを使う:
+
+     ```bash
+     bash ../tools/journal_append.sh anomaly_observed source=relay_gap_check worker=worker-{task_id} kind=relay_gap_suspected confidence=high
+     # 通知送信成功後:
+     bash ../tools/journal_append.sh notify_sent source=relay_gap_check worker=worker-{task_id} kind=relay_gap_suspected confidence=high
+     ```
+
+     (a-0) と (a-2) は同じ `kind=relay_gap_suspected` を共有する。同 worker に対する重複通知は 30 秒窓 de-dup で吸収される (両方向の register lookup が同時 hit するケースは Secretary が両方の中継を忘れた時に限られ、相対的に稀)。
+
+   register が読めない場合は (a-0) と同じ fallback (`register_unavailable` を journal に残し proxy 経路に委ねる)。
+
+   **proxy 経路 ((a)〜(f)) は (a-3) Fallback に格下げ**: Issue #297 時点では (a)(2) の唯一のカバーだったが、#301 で (a-2) deterministic 化が完了したことで、proxy 経路は次のケースの fallback としてのみ意味を持つ:
+   - 旧 Secretary 実装で書かれた entry (`user_replied_at` が None のまま) を後方互換でカバー
+   - Secretary が `mark-user-replied` を呼び忘れた運用ミスの保険
+   - register 自体が読めない / corrupted な状況の degraded mode
+
+   proxy 経路の最終削除は (a-2) の安定運用が確認できた段階で別 Issue で扱う。
 
    #### (a) 動機
    Step 5 は worker 側 (worker→secretary 痕跡が **ある** ので stall 抑制) を見て補助シグナル化したが、逆方向 (secretary→user / secretary→worker の中継) には盲点がある。具体的なインシデントパターン:

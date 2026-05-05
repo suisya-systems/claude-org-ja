@@ -45,7 +45,15 @@
    python tools/pending_decisions.py resolve --task-id <task_id> --kind to_user
    ```
 
-3. **ワーカーに人間判断を転送した時点** — `to_id="worker-{task_id}"` で `send_message` を発行した直後に register を `resolved` に更新する:
+3. **ユーザーから当該 task について返答（decision／フィードバック／修正指示等）を受領した時点** — ワーカーへ転送する **前に** `user_replied_at` marker を register に記録する（Issue #301）:
+
+   ```bash
+   python tools/pending_decisions.py mark-user-replied --task-id <task_id>
+   ```
+
+   該当 task の最古 `escalated` entry に user_replied_at を設定する（status は escalated のまま）。escalated entry が無い場合は no-op。既に user_replied_at が設定済みの場合も idempotent。これにより、ディスパッチャーは「ユーザーは答えたのに Secretary がワーカーへ転送し忘れている」帯を `.dispatcher/CLAUDE.md` Step 5.1 (a-2) で deterministic に観測できるようになる。
+
+4. **ワーカーに人間判断を転送した時点** — `to_id="worker-{task_id}"` で `send_message` を発行した直後に register を `resolved` に更新する:
 
    ```bash
    python tools/pending_decisions.py resolve --task-id <task_id> --kind to_worker
