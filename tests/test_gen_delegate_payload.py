@@ -698,14 +698,29 @@ class TestPatternBWorktreeCreation(unittest.TestCase):
             }
         )
         import subprocess as _sp
+        self._init_repo_with_origin_main(self.sb.claude_org_root)
+
+    def _init_repo_with_origin_main(self, base: Path) -> None:
+        """Init ``base`` as a git repo on `main` with one commit and
+        ``origin/HEAD`` pointing at ``origin/main`` (no real remote required)."""
+        import subprocess as _sp
+        _sp.run(["git", "-C", str(base), "init", "-q", "-b", "main"],
+                check=True)
+        _sp.run(["git", "-C", str(base), "commit", "--allow-empty",
+                 "-m", "init", "-q"],
+                check=True, env=self._git_env)
+        sha = _sp.check_output(
+            ["git", "-C", str(base), "rev-parse", "main"],
+        ).decode().strip()
         _sp.run(
-            ["git", "-C", str(self.sb.claude_org_root), "init", "-q", "-b", "main"],
+            ["git", "-C", str(base), "update-ref",
+             "refs/remotes/origin/main", sha],
             check=True,
         )
         _sp.run(
-            ["git", "-C", str(self.sb.claude_org_root), "commit",
-             "--allow-empty", "-m", "init", "-q"],
-            check=True, env=self._git_env,
+            ["git", "-C", str(base), "symbolic-ref",
+             "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
+            check=True,
         )
 
     def tearDown(self) -> None:
@@ -836,6 +851,13 @@ class TestPatternBWorktreeCreation(unittest.TestCase):
         main_sha = _sp.check_output(
             ["git", "-C", str(base), "rev-parse", "main"],
         ).decode().strip()
+        # Refresh the simulated origin/main to point at the latest main tip,
+        # since setUp captured an earlier commit before the seed file landed.
+        _sp.run(
+            ["git", "-C", str(base), "update-ref",
+             "refs/remotes/origin/main", main_sha],
+            check=True,
+        )
         _sp.run(["git", "-C", str(base), "checkout", "-q", "-b", "feat/other"],
                 check=True)
         feat_file = base / "feat.txt"
@@ -890,17 +912,20 @@ class TestPatternBWorktreeCreation(unittest.TestCase):
             )
         self.assertIn("not the planned", str(cm.exception))
 
-    def test_apply_aborts_when_no_default_trunk_ref(self):
-        """Codex Round 2 Major: must not silently fall back to HEAD when
-        origin/HEAD / main / master are all absent — that would re-introduce
-        the original bug on repos whose default branch is `trunk`."""
-        # Rename the only branch to `trunk` so neither main nor master nor
-        # origin/HEAD exists.
+    def test_apply_aborts_when_no_origin_head(self):
+        """Codex Round 2 + Round 3 Major: must abort when origin/HEAD is
+        absent — never guess from local main/master (could be stale after
+        a trunk-rename) and never fall back to HEAD (re-introduces the
+        original Pattern-B bug)."""
         import subprocess as _sp
         base = self.sb.claude_org_root
-        _sp.run(["git", "-C", str(base), "branch", "-m", "main", "trunk"],
-                check=True)
-        plan = self._build_self_edit_b(task_id="no-trunk-task")
+        # Tear down the origin/HEAD setup from setUp so the resolver can't
+        # find any authoritative trunk.
+        _sp.run(["git", "-C", str(base), "symbolic-ref", "--delete",
+                 "refs/remotes/origin/HEAD"], check=True)
+        _sp.run(["git", "-C", str(base), "update-ref", "-d",
+                 "refs/remotes/origin/main"], check=True)
+        plan = self._build_self_edit_b(task_id="no-origin-head-task")
         with self.assertRaises(gdp.WorktreeApplyError) as cm:
             gdp.apply_delegate_plan(
                 plan,
@@ -908,11 +933,37 @@ class TestPatternBWorktreeCreation(unittest.TestCase):
                 claude_org_root=self.sb.claude_org_root,
                 skip_settings=True,
             )
-        self.assertIn("default trunk ref", str(cm.exception))
+        self.assertIn("origin/HEAD", str(cm.exception))
         # Neither DB row nor brief should exist.
         self.assertFalse(
-            any(r["task_id"] == "no-trunk-task" for r in self.sb.list_runs())
+            any(r["task_id"] == "no-origin-head-task"
+                for r in self.sb.list_runs())
         )
+
+    def test_apply_aborts_when_existing_worktree_in_detached_head(self):
+        """Codex Round 3 Major: idempotent reuse must reject detached HEAD
+        too, not just a different-named branch."""
+        import subprocess as _sp
+        plan = self._build_self_edit_b(task_id="detached-task")
+        worker_dir = Path(plan.layout.worker_dir)
+        worker_dir.parent.mkdir(parents=True, exist_ok=True)
+        # Create as a detached worktree (no -b, no branch name).
+        main_sha = _sp.check_output(
+            ["git", "-C", str(self.sb.claude_org_root), "rev-parse", "main"],
+        ).decode().strip()
+        _sp.run(
+            ["git", "-C", str(self.sb.claude_org_root),
+             "worktree", "add", "--detach", str(worker_dir), main_sha],
+            check=True, capture_output=True,
+        )
+        with self.assertRaises(gdp.WorktreeApplyError) as cm:
+            gdp.apply_delegate_plan(
+                plan,
+                state_db_path=self.sb.db_path,
+                claude_org_root=self.sb.claude_org_root,
+                skip_settings=True,
+            )
+        self.assertIn("detached-HEAD", str(cm.exception))
 
     def test_apply_creates_plain_pattern_b_worktree_for_project_repo(self):
         """Non-self-edit Pattern B branches from the project's registered repo."""
@@ -920,15 +971,7 @@ class TestPatternBWorktreeCreation(unittest.TestCase):
         import subprocess as _sp
         project_repo = Path(self._td.name) / "clock-app-repo"
         project_repo.mkdir()
-        _sp.run(
-            ["git", "-C", str(project_repo), "init", "-q", "-b", "main"],
-            check=True,
-        )
-        _sp.run(
-            ["git", "-C", str(project_repo), "commit",
-             "--allow-empty", "-m", "init", "-q"],
-            check=True, env=self._git_env,
-        )
+        self._init_repo_with_origin_main(project_repo)
         (self.sb.claude_org_root / "registry" / "projects.md").write_text(
             "# Projects\n\n"
             "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 |\n"

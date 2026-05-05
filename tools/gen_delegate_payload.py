@@ -398,18 +398,20 @@ def _resolve_base_ref(base_repo: Path) -> Optional[str]:
     Pattern B is triggered precisely when another active run is occupying
     the base clone — so the base's current ``HEAD`` is typically that
     other task's feature branch. Branching off it would mix unmerged
-    commits into the new worktree. We only accept refs we can prove are
-    "the trunk" deterministically:
+    commits into the new worktree.
 
-    1. ``origin/HEAD`` (the project's default branch as the remote knows it),
-    2. local ``main`` / ``master``.
+    The only ref we treat as authoritative is ``origin/HEAD`` (the
+    project's default branch as the remote knows it). We deliberately do
+    NOT fall back to local ``main`` / ``master`` / ``HEAD`` because:
 
-    Returns ``None`` when neither is present — apply then aborts rather
-    than silently falling back to ``HEAD``, which would re-introduce the
-    original bug on repos whose default branch is named ``trunk`` /
-    ``develop`` / etc. (Codex Round 2 Major 2026-05-06). Secretary can
-    recover by setting ``git remote set-head origin --auto`` or renaming
-    the trunk to ``main``.
+    - a stale local ``main`` left over after a trunk-rename would silently
+      branch off the wrong commit (Codex Round 3 Major 2026-05-06);
+    - ``HEAD`` is the original bug (Codex Round 2);
+    - convention-based guessing of the trunk name is not safe in repos
+      using ``trunk`` / ``develop`` / etc.
+
+    Returns ``None`` when ``origin/HEAD`` is not set — apply then aborts
+    with a recovery hint pointing to ``git remote set-head origin --auto``.
     """
     proc = subprocess.run(
         ["git", "-C", str(base_repo), "symbolic-ref", "--short",
@@ -420,14 +422,6 @@ def _resolve_base_ref(base_repo: Path) -> Optional[str]:
         ref = proc.stdout.decode("utf-8", errors="replace").strip()
         if ref:
             return ref
-    for cand in ("main", "master"):
-        rc = subprocess.run(
-            ["git", "-C", str(base_repo), "rev-parse", "--verify", "--quiet",
-             cand],
-            capture_output=True,
-        ).returncode
-        if rc == 0:
-            return cand
     return None
 
 
@@ -493,18 +487,29 @@ def _ensure_worktree(plan: DelegatePlan) -> None:
     if _is_registered_worktree(plan.base_repo, worker_dir):
         # Idempotent reuse — but only when the existing worktree is on the
         # branch the brief / DB will pin. A stale partial-retry worktree on
-        # a different branch would otherwise silently dispatch on the wrong
-        # ref (Codex Round 2 Major 2026-05-06).
-        actual = _worktree_branch(worker_dir)
+        # a different branch (or in detached-HEAD state) would otherwise
+        # silently dispatch on the wrong ref (Codex Round 2 + Round 3
+        # Majors 2026-05-06).
         expected = plan.layout.planned_branch
-        if expected and actual and actual != expected:
-            raise WorktreeApplyError(
-                f"worker_dir {worker_dir} is registered as a git worktree "
-                f"but is on branch {actual!r}, not the planned "
-                f"{expected!r}. Refusing to dispatch on a mismatched branch "
-                "— Secretary must check out the intended branch (or remove "
-                "the worktree and let apply recreate it) and retry."
-            )
+        if expected:
+            actual = _worktree_branch(worker_dir)
+            if actual is None:
+                raise WorktreeApplyError(
+                    f"worker_dir {worker_dir} is registered as a git "
+                    f"worktree but is in detached-HEAD state, not on the "
+                    f"planned branch {expected!r}. Refusing to dispatch — "
+                    "Secretary must `git checkout` the intended branch (or "
+                    "remove the worktree and let apply recreate it) and retry."
+                )
+            if actual != expected:
+                raise WorktreeApplyError(
+                    f"worker_dir {worker_dir} is registered as a git "
+                    f"worktree but is on branch {actual!r}, not the planned "
+                    f"{expected!r}. Refusing to dispatch on a mismatched "
+                    "branch — Secretary must check out the intended branch "
+                    "(or remove the worktree and let apply recreate it) "
+                    "and retry."
+                )
         return
     if worker_dir.exists() and any(worker_dir.iterdir()):
         raise WorktreeApplyError(
@@ -522,13 +527,15 @@ def _ensure_worktree(plan: DelegatePlan) -> None:
     base_ref = _resolve_base_ref(plan.base_repo)
     if base_ref is None:
         raise WorktreeApplyError(
-            f"could not resolve a default trunk ref in {plan.base_repo} "
-            "(no origin/HEAD, no local main, no local master). Refusing to "
-            "fall back to HEAD because Pattern B is invoked precisely when "
-            "the base repo has another active task checked out — branching "
-            "off HEAD would mix that task's commits into the new worktree. "
-            "Set the trunk explicitly via `git remote set-head origin --auto` "
-            "or rename your default branch to main."
+            f"could not resolve `origin/HEAD` in {plan.base_repo}. Refusing "
+            "to guess the trunk from local refs because a stale local "
+            "`main` after a trunk-rename would silently branch the new "
+            "worktree off the wrong commit, and `HEAD` is the original "
+            "Pattern-B bug (it points to whatever feature branch the base "
+            "is currently on). Run `git remote set-head origin --auto` in "
+            f"{plan.base_repo} (or `git symbolic-ref refs/remotes/origin/"
+            "HEAD refs/remotes/origin/<trunk>` if you don't have remote "
+            "access) and retry."
         )
     worker_dir.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
