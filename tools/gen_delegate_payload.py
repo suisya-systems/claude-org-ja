@@ -249,7 +249,7 @@ def build_delegate_plan(
         Path(claude_org_root) / "registry" / "projects.md"
     )
     if registry_for_meta.exists():
-        rows = rwl.parse_registry(registry_for_meta.read_text(encoding="utf-8"))
+        rows = rwl.parse_projects(registry_for_meta)
         match = rwl.find_project(rows, project_slug)
         if match is not None:
             project_path = match.path
