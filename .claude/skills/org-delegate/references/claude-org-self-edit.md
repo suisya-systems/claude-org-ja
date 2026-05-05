@@ -43,7 +43,32 @@ claude-org 自己編集タスクでは、SKILL.md Step 1.5 および `worker-cla
 
 ルートの `CLAUDE.md`（Secretary 指示）はいかなる場合も上書きしない。
 
-## 3. `CLAUDE.local.md` 冒頭で「ルート CLAUDE.md は無視」を明示する
+## 3. Pattern B の worktree base は **Secretary の live repo** に置く（live_repo_worktree variant）
+
+claude-org 自己編集タスクで Pattern B（worktree）を採る場合、worktree base は **通常パターンの `{workers_dir}/{project_slug}/.worktrees/{task_id}/` ではなく Secretary 自身の live repo の `.worktrees/`** に置く:
+
+```
+{claude_org_path}/.worktrees/{task_id}/
+```
+
+これは session #11–#12 を通じて全 claude-org self-edit ワーカー (PR #276, #279, #280, #282, #288, #291, #294, #293, #295, #296) が採ってきた de facto 慣行で、Issue #289 で正式に明文化した。
+
+理由:
+
+- **単一 `.git/` を Secretary と worker が共有**するため、push / pull の二段クローン同期（Secretary 側 clone と workers 側 clone の間で `git pull` を挟む手数）が要らない
+- Secretary の repo がそのまま canonical local clone として機能し、追加の indirection が無い
+- `git worktree list` から live worker branch が常に見えるので、Secretary が状態確認するときに `cd` が要らない
+
+通常 Pattern B（self-edit ではない）と本特例の使い分け:
+
+| 条件 | worktree base | `pattern_variant` |
+|---|---|---|
+| Pattern B + `role == claude-org-self-edit` | `{claude_org_path}/.worktrees/{task_id}/` | `live_repo_worktree` |
+| Pattern B + `role == default`（通常プロジェクト） | `{workers_dir}/{project_slug}/.worktrees/{task_id}/` | `null` |
+
+`tools/resolve_worker_layout.py` は **Pattern B かつ self-edit role** のとき自動的に `pattern_variant='live_repo_worktree'` を選び `worker_dir` を上記 live repo パスに設定する（Issue #289）。TOML `[worker]` ブロックで `pattern_variant='live_repo_worktree'` を明示しても同じ結果になる。
+
+## 4. `CLAUDE.local.md` 冒頭で「ルート CLAUDE.md は無視」を明示する
 
 `CLAUDE.local.md` の最初に以下の趣旨を必ず書く:
 

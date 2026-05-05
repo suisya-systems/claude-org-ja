@@ -481,5 +481,160 @@ class TestCLI(unittest.TestCase):
         self.assertEqual(cm.exception.code, 2)
 
 
+# ---------------------------------------------------------------------------
+# Issue #289: Pattern B live_repo_worktree variant for claude-org self-edit
+# ---------------------------------------------------------------------------
+
+
+class TestPatternBLiveRepoWorktree(unittest.TestCase):
+    """Issue #289: claude-org self-edit Pattern B places the worktree under
+    Secretary's live repo (claude_org_root/.worktrees/{task_id}/) rather than
+    {workers_dir}/{project_slug}/.worktrees/."""
+
+    def setUp(self) -> None:
+        self._td = tempfile.TemporaryDirectory()
+        self.sb = _Sandbox(Path(self._td.name))
+        self.sb.write_registry(
+            [
+                ("時計", "clock-app", "-", "Demo clock"),
+                (
+                    "claude-org-ja",
+                    "claude-org-ja",
+                    str(self.sb.claude_org_root),
+                    "claude-org self",
+                ),
+            ]
+        )
+        # An active run on claude-org-ja forces Pattern B for the next task.
+        self.sb.add_run(
+            task_id="self-edit-prev",
+            project_slug="claude-org-ja",
+            pattern="A",
+            status="in_use",
+            worker_dir_abs=str(self.sb.claude_org_root),
+        )
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def test_pattern_b_self_edit_auto_selects_live_repo_worktree(self):
+        """Pattern B + role=claude-org-self-edit + variant unset →
+        variant auto-selected to 'live_repo_worktree' and worker_dir under
+        claude_org_root/.worktrees/."""
+        layout = rwl.resolve(
+            task_id="self-edit-task",
+            project_slug="claude-org-ja",
+            mode="edit",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(layout.pattern, "B")
+        self.assertEqual(layout.role, "claude-org-self-edit")
+        self.assertTrue(layout.self_edit)
+        self.assertEqual(layout.pattern_variant, "live_repo_worktree")
+        self.assertEqual(
+            Path(layout.worker_dir),
+            (self.sb.claude_org_root / ".worktrees" / "self-edit-task").resolve(),
+        )
+
+    def test_pattern_b_default_role_keeps_null_variant_and_workers_dir(self):
+        """Pattern B + role=default → variant stays None and worker_dir is
+        the conventional {workers_dir}/{project_slug}/.worktrees/ path."""
+        # Add an active run on clock-app so Pattern B fires for the new task.
+        self.sb.add_run(
+            task_id="clock-prev",
+            project_slug="clock-app",
+            pattern="A",
+            status="in_use",
+            worker_dir_abs=str(self.sb.workers / "clock-app"),
+        )
+        layout = rwl.resolve(
+            task_id="clock-next",
+            project_slug="clock-app",
+            mode="edit",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(layout.pattern, "B")
+        self.assertEqual(layout.role, "default")
+        self.assertIsNone(layout.pattern_variant)
+        self.assertEqual(
+            Path(layout.worker_dir),
+            (self.sb.workers / "clock-app" / ".worktrees" / "clock-next").resolve(),
+        )
+
+    def test_inconsistent_role_self_edit_combo_is_rejected(self):
+        """Codex Round 3 Major regression: role and self_edit must agree.
+        role='default' + self_edit=true would otherwise let the coherence
+        pass relocate the worktree under claude_org_root while the
+        settings generator still emits non-self-edit permissions."""
+        with self.assertRaises(rwl.ResolveError):
+            rwl.resolve(
+                task_id="bad-combo",
+                project_slug="clock-app",
+                mode="edit",
+                claude_org_root=self.sb.claude_org_root,
+                state_db_path=self.sb.db_path,
+                layout_overrides={"role": "default", "self_edit": True},
+            )
+
+    def test_role_only_override_to_self_edit_re_derives_variant_and_worker_dir(self):
+        """Codex Round 1 Major regression: passing ONLY
+        layout_overrides={'role': 'claude-org-self-edit'} on a Pattern B
+        layout must promote pattern_variant to 'live_repo_worktree' and
+        relocate worker_dir to {claude_org_root}/.worktrees/. Otherwise
+        the resolver would emit an incoherent layout (role=self_edit but
+        worker_dir under {workers_dir}/{project_slug}/.worktrees/)."""
+        # Active run on clock-app forces Pattern B for the new task; the
+        # auto-resolved role would be 'default' (clock-app != claude-org).
+        self.sb.add_run(
+            task_id="clock-prev",
+            project_slug="clock-app",
+            pattern="A",
+            status="in_use",
+            worker_dir_abs=str(self.sb.workers / "clock-app"),
+        )
+        layout = rwl.resolve(
+            task_id="role-promoted",
+            project_slug="clock-app",
+            mode="edit",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+            layout_overrides={"role": "claude-org-self-edit"},
+        )
+        self.assertEqual(layout.pattern, "B")
+        self.assertEqual(layout.role, "claude-org-self-edit")
+        self.assertTrue(layout.self_edit)
+        self.assertEqual(layout.pattern_variant, "live_repo_worktree")
+        self.assertEqual(
+            Path(layout.worker_dir),
+            (self.sb.claude_org_root / ".worktrees" / "role-promoted").resolve(),
+        )
+
+    def test_explicit_variant_via_layout_overrides_resets_worker_dir(self):
+        """layout_overrides supplying pattern=B + variant='live_repo_worktree'
+        without an explicit worker_dir → resolver re-derives worker_dir under
+        claude_org_root/.worktrees/."""
+        layout = rwl.resolve(
+            task_id="explicit-self-edit",
+            project_slug="clock-app",  # not claude-org, so auto-derive picks default role
+            mode="edit",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+            layout_overrides={
+                "pattern": "B",
+                "pattern_variant": "live_repo_worktree",
+                "role": "claude-org-self-edit",
+            },
+        )
+        self.assertEqual(layout.pattern, "B")
+        self.assertEqual(layout.pattern_variant, "live_repo_worktree")
+        self.assertEqual(layout.role, "claude-org-self-edit")
+        self.assertEqual(
+            Path(layout.worker_dir),
+            (self.sb.claude_org_root / ".worktrees" / "explicit-self-edit").resolve(),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

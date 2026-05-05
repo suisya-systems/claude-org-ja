@@ -50,6 +50,16 @@ uses the active-status set `{queued, in_use, review}`:
 | Project in registry, ≥1 active run on this project | B — worktree | `{workers_dir}/{project_slug}/.worktrees/{task_id}/` |
 | Project in registry, no active run | A — project dir | `{workers_dir}/{project_slug}/` |
 
+**Pattern B sub-mode — `live_repo_worktree` (Issue #289)**: when the role
+resolves to `claude-org-self-edit` (i.e. the project is claude-org itself and
+mode is `edit`), the resolver automatically substitutes the worktree base
+with `{claude_org_root}/.worktrees/{task_id}/` and sets
+`pattern_variant='live_repo_worktree'`. This codifies the de facto convention
+used by all claude-org self-edit workers since session #11 (single `.git/`
+shared between Secretary and worker — no two-clone sync). See
+`references/claude-org-self-edit.md` §3 for rationale and TOML override
+shape.
+
 `queued` is included in the active set because Issue #283's T1 reservation
 writes that status before any pane spawns. Two back-to-back delegations on
 the same project would otherwise both choose Pattern A and collide on the

@@ -119,6 +119,8 @@ def _pattern_label(layout: rwl.WorkerLayout) -> str:
     base = _PATTERN_LABELS.get(layout.pattern, layout.pattern)
     if layout.pattern_variant == "gitignored_repo_root":
         return "C: gitignored サブモード (registered repo 直接編集)"
+    if layout.pattern_variant == "live_repo_worktree":
+        return "B: worktree (live_repo_worktree — Secretary live repo 配下)"
     return base
 
 

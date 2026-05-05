@@ -23,7 +23,7 @@ Output (JSON shape):
 
     {
       "pattern": "A" | "B" | "C",
-      "pattern_variant": "ephemeral" | "gitignored_repo_root" | None,
+      "pattern_variant": "ephemeral" | "gitignored_repo_root" | "live_repo_worktree" | None,
       "worker_dir": "<absolute path>",
       "role": "default" | "claude-org-self-edit" | "doc-audit",
       "self_edit": <bool>,
@@ -37,7 +37,9 @@ Output (JSON shape):
     }
 
 Key contract notes (from Codex review of Issue #283):
-- ``pattern_variant`` distinguishes the two Pattern C sub-modes (M-1).
+- ``pattern_variant`` carries sub-mode labels: the two Pattern C sub-modes
+  (``ephemeral`` / ``gitignored_repo_root``, M-1) and the Pattern B
+  ``live_repo_worktree`` sub-mode used by claude-org self-edit (Issue #289).
 - ``planned_branch`` is the resolver's *suggestion*; the actual branch
   may diverge after worktree creation, so callers MUST re-read git
   before pinning it into the brief / payload (M-2).
@@ -73,7 +75,11 @@ from tools.state_db.queries import list_runs_with_dirs
 
 VALID_MODES = ("edit", "audit")
 VALID_PATTERNS = ("A", "B", "C")
-VALID_VARIANTS = ("ephemeral", "gitignored_repo_root")
+# 'live_repo_worktree' is the Pattern B sub-mode used by claude-org self-edit
+# tasks: the worktree base is Secretary's live repo (claude_org_root) instead
+# of the conventional {workers_dir}/{project_slug}/. See Issue #289 and
+# references/claude-org-self-edit.md for the rationale.
+VALID_VARIANTS = ("ephemeral", "gitignored_repo_root", "live_repo_worktree")
 VALID_ROLES = ("default", "claude-org-self-edit", "doc-audit")
 
 # Active reservation states — these mean someone else is occupying the base
@@ -101,7 +107,7 @@ _FIX_TRIGGERS = ("fix", "bug", "修正", "hotfix", "patch")
 @dataclass(frozen=True)
 class WorkerLayout:
     pattern: str                       # "A" | "B" | "C"
-    pattern_variant: Optional[str]     # "ephemeral" | "gitignored_repo_root" | None
+    pattern_variant: Optional[str]     # "ephemeral" | "gitignored_repo_root" | "live_repo_worktree" | None
     worker_dir: str                    # absolute path
     role: str                          # default | claude-org-self-edit | doc-audit
     self_edit: bool
@@ -310,6 +316,10 @@ def resolve(
         projects = []
     project = find_project(projects, project_slug)
 
+    # --- Role decision (computed first so Pattern B can branch on it) -----
+    role = decide_role(mode=mode, project=project, claude_org_root=claude_org_root)
+    self_edit = role == "claude-org-self-edit"
+
     # --- Pattern decision --------------------------------------------------
     pattern: str
     variant: Optional[str]
@@ -341,17 +351,21 @@ def resolve(
             except sqlite3.Error:
                 active = False
         if active:
-            pattern, variant = "B", None
-            worker_dir = workers_dir / project_slug / ".worktrees" / task_id
+            pattern = "B"
+            # claude-org self-edit Pattern B places the worktree under
+            # Secretary's live repo (single .git, no two-clone sync). See
+            # Issue #289 / references/claude-org-self-edit.md.
+            if self_edit:
+                variant = "live_repo_worktree"
+                worker_dir = claude_org_root / ".worktrees" / task_id
+            else:
+                variant = None
+                worker_dir = workers_dir / project_slug / ".worktrees" / task_id
         else:
             pattern, variant = "A", None
             worker_dir = workers_dir / project_slug
 
     worker_dir = worker_dir.resolve() if worker_dir.is_absolute() else worker_dir.resolve()
-
-    # --- Role decision -----------------------------------------------------
-    role = decide_role(mode=mode, project=project, claude_org_root=claude_org_root)
-    self_edit = role == "claude-org-self-edit"
 
     # --- TOML [worker] block overrides (Issue #290 defect 1) --------------
     # Honor explicit values from the caller (typically a worker_brief.toml
@@ -363,6 +377,7 @@ def resolve(
     # pattern=B/A must compute a feat-/fix- branch even if auto-derive
     # produced Pattern C without one). Codex Round 1 Major.
     if layout_overrides:
+        explicit_worker_dir = bool(layout_overrides.get("worker_dir"))
         if "pattern" in layout_overrides and layout_overrides["pattern"]:
             pat = layout_overrides["pattern"]
             if pat not in VALID_PATTERNS:
@@ -376,6 +391,10 @@ def resolve(
                 raise ResolveError(
                     f"layout_overrides['pattern_variant'] must be one of {VALID_VARIANTS} or None, got {variant!r}"
                 )
+            # Pattern B + variant=live_repo_worktree without explicit worker_dir
+            # → re-derive to claude_org_root/.worktrees/{task_id}/ (Issue #289).
+            if pattern == "B" and variant == "live_repo_worktree" and not explicit_worker_dir:
+                worker_dir = (claude_org_root / ".worktrees" / task_id).resolve()
         if "worker_dir" in layout_overrides and layout_overrides["worker_dir"]:
             worker_dir = Path(layout_overrides["worker_dir"]).resolve()
         if "role" in layout_overrides and layout_overrides["role"]:
@@ -400,6 +419,36 @@ def resolve(
                     f"layout_overrides['self_edit'] must be bool, got {type(se).__name__}"
                 )
             self_edit = se
+
+        # role / self_edit must agree. Otherwise a caller could pass
+        # role='default' + self_edit=true and the coherence pass below would
+        # relocate the worktree under claude_org_root while
+        # `settings generate --role default` still emits non-self-edit
+        # permissions (Codex Round 3 Major).
+        if self_edit != (role == "claude-org-self-edit"):
+            raise ResolveError(
+                "layout_overrides yielded inconsistent role / self_edit: "
+                f"role={role!r}, self_edit={self_edit!r}. "
+                "self_edit must be True iff role == 'claude-org-self-edit'."
+            )
+
+        # Final coherence pass for Issue #289: if overrides upgraded the role
+        # to claude-org-self-edit on a Pattern B layout but did not also
+        # specify pattern_variant / worker_dir, re-derive them so the live
+        # repo convention holds. Skipped when the caller explicitly supplied
+        # either (their value wins). Keyed off ``role`` (not ``self_edit``)
+        # because role is the field the downstream settings generator reads
+        # — keeping them in sync prevents a mismatched permission profile
+        # from being applied to a self-edit worktree (Codex Round 3 Major).
+        explicit_variant = "pattern_variant" in layout_overrides and layout_overrides.get("pattern_variant") is not None
+        if (
+            role == "claude-org-self-edit"
+            and pattern == "B"
+            and not explicit_variant
+            and not explicit_worker_dir
+        ):
+            variant = "live_repo_worktree"
+            worker_dir = (claude_org_root / ".worktrees" / task_id).resolve()
 
     # --- Branch decision ---------------------------------------------------
     # Re-derived from the *final* pattern so a TOML-supplied pattern override
