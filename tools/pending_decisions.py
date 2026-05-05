@@ -257,23 +257,32 @@ def mark_user_replied(
     ``resolve --kind to_user`` first.
     """
     entries = _load(store_path)
+    # Prefer the oldest escalated entry whose user_replied_at is still
+    # unset. If all are already set, fall back to the oldest escalated
+    # so callers see an idempotent no-op (Codex round 1 Major: a stale
+    # escalated entry with marker set must not shadow a newer one that
+    # actually needs marking after a re-open via append()).
     target_index: Optional[int] = None
+    fallback_index: Optional[int] = None
     for i, entry in enumerate(entries):
         if entry.task_id != task_id or entry.status != "escalated":
             continue
-        if target_index is None:
-            target_index = i
-            continue
-        if entry.received_at < entries[target_index].received_at:
-            target_index = i
-    if target_index is None:
-        return None
-    target = entries[target_index]
-    if target.user_replied_at is not None:
+        if entry.user_replied_at is None:
+            if target_index is None or entry.received_at < entries[target_index].received_at:
+                target_index = i
+        else:
+            if fallback_index is None or entry.received_at < entries[fallback_index].received_at:
+                fallback_index = i
+    if target_index is not None:
+        target = entries[target_index]
+        target.user_replied_at = _now_iso()
+        _atomic_write(store_path, entries)
         return target
-    target.user_replied_at = _now_iso()
-    _atomic_write(store_path, entries)
-    return target
+    if fallback_index is not None:
+        # All escalated entries already marked — idempotent no-op,
+        # return the oldest so callers can observe the prior marker.
+        return entries[fallback_index]
+    return None
 
 
 def list_pending(store_path: Path = DEFAULT_PATH) -> list[PendingDecision]:

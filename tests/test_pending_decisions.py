@@ -440,6 +440,47 @@ class MarkUserRepliedTests(unittest.TestCase):
         # only "stale" matches: escalated + user_replied_at older than 15min
         self.assertEqual([e.task_id for e in out], ["stale"])
 
+    def test_mark_user_replied_skips_already_marked_to_reach_new_escalated(self) -> None:
+        # Codex round 1 Major: append() permits re-opening for the same
+        # task_id (e.g. follow-up judgment-request after a prior round
+        # was resolved). If a stale escalated entry already has
+        # user_replied_at set, mark_user_replied() must not stop there
+        # — it must mark the newer escalated entry that actually needs
+        # the marker.
+        pd.append("t1", "round1", store_path=self.store)
+        pd.resolve("t1", "to_user", store_path=self.store)
+        pd.mark_user_replied("t1", store_path=self.store)
+        pd.resolve("t1", "to_worker", store_path=self.store)
+        # The store now has one resolved entry. Re-open with a new
+        # judgment-request and walk the lifecycle to a second escalated.
+        pd.append("t1", "round2", store_path=self.store)
+        pd.resolve("t1", "to_user", store_path=self.store)
+
+        # Direct-seed a third entry that mimics a stale escalated whose
+        # marker was set but whose to_worker resolve was forgotten — the
+        # exact shape Codex flagged. Use _atomic_write to bypass append().
+        entries = pd._load(self.store)
+        entries.append(
+            pd.PendingDecision(
+                task_id="t1",
+                received_at="2026-05-05T03:00:00Z",
+                raw_message="stale-escalated-with-marker",
+                status="escalated",
+                resolved_at="2026-05-05T03:01:00Z",
+                resolution_kind="to_user",
+                user_replied_at="2026-05-05T03:05:00Z",
+            )
+        )
+        pd._atomic_write(self.store, entries)
+
+        out = pd.mark_user_replied("t1", store_path=self.store)
+        self.assertIsNotNone(out)
+        assert out is not None
+        # Must have marked the round2 escalated, not returned the stale
+        # one as a no-op.
+        self.assertEqual(out.raw_message, "round2")
+        self.assertIsNotNone(out.user_replied_at)
+
     def test_resolve_to_worker_after_user_replied_preserves_marker(self) -> None:
         # Canonical lifecycle: pending -> escalated -> user_replied marker
         # -> resolved. user_replied_at must survive the final resolve.

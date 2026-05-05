@@ -386,9 +386,9 @@ mcp__renga-peers__send_message(to_id="secretary", message="...")
 
      `confidence=high` は register lookup 経由 (proxy より信頼度が高い) を表す。proxy 経路の confidence (n/a) と区別したい場合のラベル。
 
-   **register lookup は (a)(1) の primary、(a)〜(f) の proxy 経路は (a)(2) の唯一のカバー**: register と proxy は disjoint な方向を扱うため、毎サイクル両方を実行する (proxy 経路を skip すると (a)(2) のカバーが消える)。proxy 経路の (a)(1) 関連部分は register が一次 source なので冗長になるが、de-dup 30 秒窓で吸収されるためそのまま残す。proxy 経路の最終削除は (a)(2) 用の deterministic 検知 (user_replied_at marker など) が別 Issue で着地した後に再評価する。
+   **register lookup は (a)(1) の primary、(a-2) と並列に (a)(2) も deterministic 化済み (Issue #301)、(a)〜(f) の proxy 経路は (a-3) Fallback**: 毎サイクル (a-0) → (a-2) → (b)〜(f) を順に実行する。register lookup は (a)(1)(a)(2) 双方の ground truth を提供し、proxy 経路は legacy entry / 呼び忘れ運用ミス / register 不通の degraded mode をカバーする。重複通知は de-dup 30 秒窓で吸収される。proxy 経路の最終削除は (a-2) 安定運用確認後に別 Issue で扱う。
 
-   register が読めない (helper not found / file corrupted で `ValueError`) 場合は (a)(1) も proxy 経路に fallback する。journal に `anomaly_observed source=relay_gap_check kind=register_unavailable` を残し、(b)〜(f) を従来通り実行する。
+   register が読めない (helper not found / file corrupted で `ValueError`) 場合は (a)(1)(a)(2) 双方とも proxy 経路に fallback する。journal に `anomaly_observed source=relay_gap_check kind=register_unavailable` を残し、(b)〜(f) を従来通り実行する。
 
    #### (a-2) Primary check: user_replied_at lookup (Issue #301)
 
