@@ -7,7 +7,7 @@
 > **Method**: Each lifecycle state and transition below is filled from empirical sources (current `org-delegate` skill, dispatcher CLAUDE.md, worker template, journal helper). Sentences sourced from current behavior are written as facts. Design decisions ratified by the Lead on 2026-05-03 are stated as contract obligations.
 >
 > **Empirical sources consulted**:
-> - `.claude/skills/org-delegate/SKILL.md` (Step 0–2 worker-dir prep / payload generation, Step 5 progress + completion ack), `.dispatcher/references/spawn-flow.md` (Step 3 spawn / instruction send, Step 4 state record), `.claude/skills/org-pull-request/SKILL.md` (Step 5 § 2b-i / 2b-ii / 2c push / PR / merge close), `.claude/skills/org-escalation/SKILL.md` (Step 5 § 0 judgment-escalation register protocol) — carved out of monolithic `org-delegate` per Issue #320
+> - `.claude/skills/org-delegate/SKILL.md` (Step 0–2 worker-dir prep / payload generation, Step 5 progress + completion ack), `.dispatcher/references/spawn-flow.md` (Step 3 spawn / instruction send, Step 4 state record), `.claude/skills/org-pull-request/SKILL.md` (§ 2b-i / 2b-ii / 2c push / PR / merge close), `.claude/skills/org-escalation/SKILL.md` (judgment-escalation register protocol) — carved out of monolithic `org-delegate` per Issue #320
 > - `.claude/skills/org-delegate/references/instruction-template.md` (validation depth, completion-report format, SUSPEND clause)
 > - `.claude/skills/org-delegate/references/worker-claude-template.md` (worker steady-state behavior, completion / SUSPEND obligations)
 > - `.dispatcher/CLAUDE.md` (anomaly forwarding, watch loop, completion-report retro gate, CLOSE_PANE flow)
