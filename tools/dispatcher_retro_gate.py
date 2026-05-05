@@ -23,9 +23,13 @@ Wire protocol on stdout / stdin (newline-delimited JSON):
   CLI -> stdout: {"action": "check_messages", "attempt": <n>}
   stdin -> CLI:  {"messages": [<msg>, ...]}
   ... (repeats up to --timeout-attempts)
-  CLI -> stdout: {"status": "acked"|"timeout"|"error", ...}
+  CLI -> stdout: {"status": "acked"|"replied_no_ack"|"timeout"|"error", ...}
 
-Exit codes: 0=acked, 1=timeout, 2=error.
+Exit codes: 0=acked, 1=timeout, 2=error, 3=replied_no_ack
+(secretary replied but the body did not match the ack regex — distinct
+from "no reply at all" so the dispatcher can avoid the
+`secretary_unreachable` fallback when the secretary IS reachable but
+the answer was "見当たりません" / "確認します" etc.).
 """
 from __future__ import annotations
 
@@ -73,7 +77,14 @@ def _is_secretary_message(msg: dict, secretary: str) -> bool:
 
 
 def _extract_body(msg: dict) -> str:
-    return msg.get("message") or msg.get("text") or msg.get("body") or ""
+    """Pull the body text out of a renga-peers message dict. Non-string
+    values in any of the candidate fields are coerced to empty so the
+    caller's regex never sees a non-str (which would TypeError)."""
+    for key in ("message", "text", "body"):
+        value = msg.get(key)
+        if isinstance(value, str):
+            return value
+    return ""
 
 
 def run_gate(args: argparse.Namespace, *, sleep=time.sleep,
@@ -99,6 +110,9 @@ def run_gate(args: argparse.Namespace, *, sleep=time.sleep,
         "to_id": args.secretary,
         "message": f"{args.task_id} の完了報告は届いていますか？",
     }, stdout)
+
+    last_secretary_body: str | None = None
+    last_secretary_attempt: int = 0
 
     for attempt in range(1, args.timeout_attempts + 1):
         if attempt > 1 and args.interval_seconds > 0:
@@ -158,6 +172,8 @@ def run_gate(args: argparse.Namespace, *, sleep=time.sleep,
             if not _is_secretary_message(msg, args.secretary):
                 continue
             body = _extract_body(msg)
+            last_secretary_body = body
+            last_secretary_attempt = attempt
             if pattern.search(body):
                 _emit({
                     "status": "acked",
@@ -166,6 +182,15 @@ def run_gate(args: argparse.Namespace, *, sleep=time.sleep,
                     "attempts": attempt,
                 }, stdout)
                 return 0
+
+    if last_secretary_body is not None:
+        _emit({
+            "status": "replied_no_ack",
+            "received_at": _now_iso(),
+            "raw": last_secretary_body,
+            "attempts": last_secretary_attempt,
+        }, stdout)
+        return 3
 
     _emit({
         "status": "timeout",

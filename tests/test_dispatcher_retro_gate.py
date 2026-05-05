@@ -132,6 +132,39 @@ class DispatcherRetroGateTests(unittest.TestCase):
         events = _parse(proc.stdout)
         self.assertEqual(events[-1]["status"], "timeout")
 
+    def test_secretary_replies_without_ack_regex(self) -> None:
+        # Secretary replied across attempts, but no body matched the ack
+        # regex — must surface as replied_no_ack (exit 3), not timeout, so
+        # the dispatcher does not jump to the secretary_unreachable fallback.
+        stdin = [
+            {"messages": [{"from_id": "secretary", "message": "確認します"}]},
+            {"messages": []},
+            {"messages": [{"from_id": "secretary",
+                            "message": "見当たりません"}]},
+        ] + [{"messages": []} for _ in range(7)]
+        proc = _run(stdin)
+        self.assertEqual(proc.returncode, 3, msg=proc.stderr)
+        events = _parse(proc.stdout)
+        final = events[-1]
+        self.assertEqual(final["status"], "replied_no_ack")
+        # Reports the LAST secretary body seen + the attempt it arrived on.
+        self.assertEqual(final["raw"], "見当たりません")
+        self.assertEqual(final["attempts"], 3)
+
+    def test_non_string_body_does_not_crash(self) -> None:
+        # message field is an int; pattern.search would TypeError if the
+        # body wasn't coerced. The script must skip the bad body and
+        # continue to the next message rather than die with a traceback.
+        stdin = [{"messages": [
+            {"from_id": "secretary", "message": 42},
+            {"from_id": "secretary", "message": "ack"},
+        ]}]
+        proc = _run(stdin)
+        self.assertEqual(proc.returncode, 0, msg=proc.stderr)
+        events = _parse(proc.stdout)
+        self.assertEqual(events[-1]["status"], "acked")
+        self.assertEqual(events[-1]["raw"], "ack")
+
     def test_custom_ack_pattern(self) -> None:
         stdin = [{"messages": [
             {"from_id": "secretary", "message": "CONFIRMED-285"},
