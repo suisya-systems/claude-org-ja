@@ -295,5 +295,139 @@ class CLI(unittest.TestCase):
             self.assertFalse(out.exists())
 
 
+class FromTaskSubcommand(unittest.TestCase):
+    """``gen_worker_brief.py from-task ...`` (Issue #283 Stage 2).
+
+    Builds a config from registry+state.db (via resolve_worker_layout),
+    then renders the same template path as the legacy --config flow.
+    """
+
+    def setUp(self) -> None:
+        self._td = tempfile.TemporaryDirectory()
+        td = Path(self._td.name)
+        # Shape a claude-org-like sandbox.
+        self.claude_org_root = td / "claude-org"
+        (self.claude_org_root / ".state").mkdir(parents=True)
+        (self.claude_org_root / "registry").mkdir()
+        (self.claude_org_root / "registry" / "org-config.md").write_text(
+            "## Workers Directory\nworkers_dir: ../workers\n",
+            encoding="utf-8",
+        )
+        (self.claude_org_root / "registry" / "projects.md").write_text(
+            "# Projects\n\n"
+            "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 |\n"
+            "|---|---|---|---|---|\n"
+            "| 時計アプリ | clock-app | - | Web 時計 | デザイン |\n"
+            f"| claude-org-ja | claude-org-ja | {self.claude_org_root} | Self | スキル改善 |\n",
+            encoding="utf-8",
+        )
+        # workers/ alongside claude-org per workers_dir: ../workers
+        (td / "workers").mkdir()
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def _run(self, *extra: str) -> Path:
+        out = Path(self._td.name) / "CLAUDE.md"
+        argv = [
+            "from-task",
+            "--task-id", "demo-from-task",
+            "--project-slug", "clock-app",
+            "--description", "demo description for clock app",
+            "--claude-org-root", str(self.claude_org_root),
+            "--out", str(out),
+            *extra,
+        ]
+        rc = gwb.main(argv)
+        self.assertEqual(rc, 0)
+        return out
+
+    def test_from_task_renders_clock_app_brief(self):
+        out = self._run()
+        text = out.read_text(encoding="utf-8")
+        self.assertIn("demo-from-task", text)
+        self.assertIn("作業ディレクトリ", text)
+        # Pattern A → fresh clone path under ../workers/clock-app
+        self.assertIn("clock-app", text)
+        self.assertIn("feat(clock):", text)  # default scope from project_slug
+        # Not self-edit (clock-app is not claude-org)
+        self.assertNotIn("ルート CLAUDE.md", text)
+
+    def test_from_task_self_edit_auto_switches_to_local_md(self):
+        explicit_out = Path(self._td.name) / "CLAUDE.md"
+        rc = gwb.main([
+            "from-task",
+            "--task-id", "self-edit-demo",
+            "--project-slug", "claude-org-ja",
+            "--description", "edit a doc in claude-org",
+            "--commit-prefix", "feat(secretary):",
+            "--claude-org-root", str(self.claude_org_root),
+            "--out", str(explicit_out),
+        ])
+        self.assertEqual(rc, 0)
+        self.assertFalse(explicit_out.exists(), "CLAUDE.md should be skipped")
+        switched = explicit_out.with_name("CLAUDE.local.md")
+        self.assertTrue(switched.exists(), "should auto-switch to .local.md")
+        text = switched.read_text(encoding="utf-8")
+        self.assertIn("Secretary 指示は無視せよ", text)
+        self.assertIn("feat(secretary):", text)
+
+    def test_from_task_unknown_slug_falls_back_to_pattern_c(self):
+        # Unregistered slug → Pattern C ephemeral, role=default. Brief still
+        # renders because we provide sensible defaults for project.name /
+        # project.description.
+        out = self._run(
+            "--project-slug", "completely-new-slug",
+            "--description", "ad-hoc investigation",
+        )
+        text = out.read_text(encoding="utf-8")
+        self.assertIn("demo-from-task", text)
+        # Pattern C → no commit_prefix override needed; default scope from slug
+        self.assertIn("feat(completely):", text)
+
+    def test_from_task_writes_audit_toml_when_requested(self):
+        toml_path = Path(self._td.name) / "audit.toml"
+        self._run("--write-toml", str(toml_path))
+        self.assertTrue(toml_path.exists())
+        body = toml_path.read_text(encoding="utf-8")
+        self.assertIn("[task]", body)
+        self.assertIn('id = "demo-from-task"', body)
+        self.assertIn("[worker]", body)
+        self.assertIn('pattern = "A"', body)
+
+    def test_from_task_carries_implementation_and_references(self):
+        out = self._run(
+            "--impl-target", "src/foo.py",
+            "--impl-target", "src/bar.py",
+            "--impl-guidance", "step 1, step 2",
+            "--knowledge", "knowledge/curated/notes.md",
+            "--issue-url", "https://example.com/issues/9",
+            "--closes-issue", "9",
+        )
+        text = out.read_text(encoding="utf-8")
+        self.assertIn("実装ガイダンス", text)
+        self.assertIn("src/foo.py", text)
+        self.assertIn("src/bar.py", text)
+        self.assertIn("step 1, step 2", text)
+        self.assertIn("knowledge/curated/notes.md", text)
+        self.assertIn("Closes #9", text)
+        self.assertIn("https://example.com/issues/9", text)
+
+
+class LegacyCLIPreserved(unittest.TestCase):
+    """Stage 2 must not break the legacy --config / --out invocation."""
+
+    def test_main_dispatches_legacy_when_no_subcommand(self):
+        # Reuses the existing example.toml round-trip — equivalent to the
+        # original CLI test; this just re-asserts main() routes correctly
+        # after the from-task addition.
+        example = Path(__file__).parent / "templates" / "worker_brief.example.toml"
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td) / "CLAUDE.local.md"
+            rc = gwb.main(["--config", str(example), "--out", str(out)])
+            self.assertEqual(rc, 0)
+            self.assertTrue(out.exists())
+
+
 if __name__ == "__main__":
     unittest.main()

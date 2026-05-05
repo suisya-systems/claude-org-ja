@@ -1,0 +1,526 @@
+"""Tests for tools/gen_delegate_payload.py (Issue #283 Stage 3).
+
+Coverage:
+- preview is non-destructive (no DB / no files)
+- apply reserves a runs.status='queued' row (Codex Blocker B-1)
+- apply does NOT write Active Work Items (no writes outside the queued row)
+- DELEGATE body contains all required rows: pattern / role / Permission Mode
+  / 検証深度 / planned_branch
+- Snapshot tests for each Pattern + role variant
+- preview --json emits a structured object
+- --skip-settings / runtime missing → graceful (apply still succeeds)
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
+
+from tools import gen_delegate_payload as gdp  # noqa: E402
+from tools.state_db import apply_schema, connect  # noqa: E402
+from tools.state_db.writer import StateWriter  # noqa: E402
+
+
+GOLDEN_DIR = REPO_ROOT / "tests" / "fixtures" / "delegate_payload"
+
+
+# ---------------------------------------------------------------------------
+# Sandbox
+# ---------------------------------------------------------------------------
+
+
+class _Sandbox:
+    def __init__(self, td: Path):
+        self.root = td
+        self.workers = td / "workers"
+        self.workers.mkdir()
+        self.claude_org_root = td / "claude-org"
+        (self.claude_org_root / ".state").mkdir(parents=True)
+        (self.claude_org_root / "registry").mkdir()
+        (self.claude_org_root / "registry" / "org-config.md").write_text(
+            "## Permission Mode\ndefault_permission_mode: auto\n"
+            "## Workers Directory\nworkers_dir: ../workers\n",
+            encoding="utf-8",
+        )
+        (self.claude_org_root / "registry" / "projects.md").write_text(
+            "# Projects\n\n"
+            "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 |\n"
+            "|---|---|---|---|---|\n"
+            "| 時計アプリ | clock-app | - | Web 時計 | デザイン |\n"
+            f"| claude-org-ja | claude-org-ja | {self.claude_org_root} | Self | スキル改善 |\n",
+            encoding="utf-8",
+        )
+        self.db_path = self.claude_org_root / ".state" / "state.db"
+        conn = connect(self.db_path)
+        apply_schema(conn)
+        conn.close()
+
+    def add_active_run(self, *, task_id: str, project_slug: str, worker_dir: str) -> None:
+        conn = connect(self.db_path)
+        w = StateWriter(conn)
+        with w.transaction() as tx:
+            tx.register_worker_dir(abs_path=worker_dir, layout="flat")
+            tx.upsert_run(
+                task_id=task_id,
+                project_slug=project_slug,
+                pattern="A",
+                title=task_id,
+                status="in_use",
+                worker_dir_abs_path=worker_dir,
+            )
+        conn.close()
+
+    def list_runs(self) -> list[dict]:
+        conn = connect(self.db_path)
+        try:
+            rows = conn.execute(
+                "SELECT task_id, status, pattern, branch FROM runs"
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Pure planner
+# ---------------------------------------------------------------------------
+
+
+class TestBuildDelegatePlan(unittest.TestCase):
+    def setUp(self) -> None:
+        self._td = tempfile.TemporaryDirectory()
+        self.sb = _Sandbox(Path(self._td.name))
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def _build(self, **kwargs) -> gdp.DelegatePlan:
+        defaults = dict(
+            task_id="demo-task",
+            project_slug="clock-app",
+            description="add a feature",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        defaults.update(kwargs)
+        return gdp.build_delegate_plan(**defaults)
+
+    def test_pattern_a_default_role_full(self):
+        plan = self._build()
+        body = plan.delegate_body
+        # Required rows per org-delegate Step 2 template
+        self.assertIn("DELEGATE: 以下のワーカーを派遣してください", body)
+        self.assertIn("ワーカーディレクトリ:", body)
+        self.assertIn("ディレクトリパターン: A: プロジェクトディレクトリ", body)
+        self.assertIn("Permission Mode: auto", body)
+        self.assertIn("検証深度: full", body)
+        self.assertIn("ブランチ (planned): feat/demo-task", body)
+        self.assertIn("窓口ペイン名: `secretary`", body)
+        # Brief path uses CLAUDE.md (not self_edit)
+        self.assertEqual(plan.brief_out_path.name, "CLAUDE.md")
+
+    def test_pattern_b_when_concurrent_active_run(self):
+        self.sb.add_active_run(
+            task_id="other-task",
+            project_slug="clock-app",
+            worker_dir=str(self.sb.workers / "clock-app"),
+        )
+        plan = self._build()
+        body = plan.delegate_body
+        self.assertIn("ディレクトリパターン: B: worktree", body)
+        self.assertEqual(plan.layout.pattern, "B")
+
+    def test_pattern_c_ephemeral_for_unknown_slug(self):
+        plan = self._build(project_slug="unknown-thing")
+        body = plan.delegate_body
+        self.assertIn("ディレクトリパターン: C: エフェメラル", body)
+        self.assertIn("Pattern C", body)  # branch line carries the Pattern C note
+
+    def test_self_edit_brief_path_is_local_md(self):
+        plan = self._build(
+            project_slug="claude-org-ja",
+            description="edit a doc",
+        )
+        self.assertEqual(plan.brief_out_path.name, "CLAUDE.local.md")
+        self.assertEqual(plan.layout.role, "claude-org-self-edit")
+
+    def test_audit_mode_emits_doc_audit_role(self):
+        plan = self._build(mode="audit", project_slug="claude-org-ja")
+        self.assertEqual(plan.layout.role, "doc-audit")
+        # Should still be a CLAUDE.local.md because gitignored sub-mode
+        # logic only triggers self_edit for the claude-org-self-edit role,
+        # but doc-audit is not a self-edit. So plain CLAUDE.md is fine for
+        # audit on Pattern A worker dir (which is outside claude-org).
+        # (claude-org-ja audit uses Pattern A → workers/claude-org-ja/.)
+        self.assertEqual(plan.brief_out_path.name, "CLAUDE.md")
+
+
+# ---------------------------------------------------------------------------
+# Apply — side effects
+# ---------------------------------------------------------------------------
+
+
+class TestApplyDelegatePlan(unittest.TestCase):
+    def setUp(self) -> None:
+        self._td = tempfile.TemporaryDirectory()
+        self.sb = _Sandbox(Path(self._td.name))
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def _apply(self, **plan_kwargs):
+        defaults = dict(
+            task_id="apply-test",
+            project_slug="clock-app",
+            description="implement something",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        defaults.update(plan_kwargs)
+        plan = gdp.build_delegate_plan(**defaults)
+        return plan, gdp.apply_delegate_plan(
+            plan,
+            state_db_path=self.sb.db_path,
+            claude_org_root=self.sb.claude_org_root,
+            skip_settings=True,
+        )
+
+    def test_apply_reserves_queued_row(self):
+        _, result = self._apply()
+        runs = self.sb.list_runs()
+        match = [r for r in runs if r["task_id"] == "apply-test"]
+        self.assertEqual(len(match), 1)
+        row = match[0]
+        self.assertEqual(row["status"], "queued")
+        self.assertEqual(row["pattern"], "A")
+        self.assertEqual(row["branch"], "feat/apply-test")
+        self.assertEqual(result.db_reservation["status"], "queued")
+
+    def test_apply_writes_brief_and_send_plan(self):
+        plan, result = self._apply()
+        self.assertTrue(result.brief_path.exists())
+        text = result.brief_path.read_text(encoding="utf-8")
+        self.assertIn("apply-test", text)
+        self.assertTrue(result.send_plan_path.exists())
+        send_plan = json.loads(result.send_plan_path.read_text(encoding="utf-8"))
+        self.assertEqual(send_plan["to_id"], "dispatcher")
+        self.assertIn("DELEGATE:", send_plan["message"])
+        # The summary block in send_plan carries the layout for audit.
+        self.assertEqual(send_plan["summary"]["pattern"], "A")
+        self.assertEqual(send_plan["summary"]["task_id"], "apply-test")
+
+    def test_apply_skips_settings_gracefully(self):
+        _, result = self._apply()
+        self.assertIsNone(result.settings_path)
+        self.assertEqual(result.settings_skipped_reason, "skip_settings flag set")
+
+    def test_apply_does_not_write_active_work_items(self):
+        """Codex Blocker B-1: Active Work Items is dispatcher's T2.
+
+        We assert this indirectly by checking no run row has a non-queued
+        status after apply, and that the only run created is the queued
+        one we just added.
+        """
+        _, _ = self._apply()
+        runs = self.sb.list_runs()
+        statuses = {r["status"] for r in runs}
+        # Only the queued reservation; no in_use/review (= Active Work Items)
+        # rows were created by apply.
+        self.assertEqual(statuses, {"queued"})
+
+
+# ---------------------------------------------------------------------------
+# CLI smoke tests (preview + apply paths)
+# ---------------------------------------------------------------------------
+
+
+class TestCLI(unittest.TestCase):
+    def setUp(self) -> None:
+        self._td = tempfile.TemporaryDirectory()
+        self.sb = _Sandbox(Path(self._td.name))
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def _common_args(self) -> list[str]:
+        return [
+            "--task-id", "cli-task",
+            "--project-slug", "clock-app",
+            "--description", "do the thing",
+            "--claude-org-root", str(self.sb.claude_org_root),
+            "--state-db-path", str(self.sb.db_path),
+        ]
+
+    def test_preview_writes_no_files_no_db(self):
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        worker_dir = self.sb.workers / "clock-app"
+        # Pre-condition: the worker dir doesn't exist yet
+        self.assertFalse(worker_dir.exists())
+        runs_before = len(self.sb.list_runs())
+        buf = StringIO()
+        with redirect_stdout(buf):
+            rc = gdp.main(["preview", *self._common_args()])
+        self.assertEqual(rc, 0)
+        self.assertFalse(worker_dir.exists())
+        self.assertEqual(len(self.sb.list_runs()), runs_before)
+        out = buf.getvalue()
+        self.assertIn("DELEGATE body (preview, no writes)", out)
+        self.assertIn("Permission Mode: auto", out)
+        self.assertIn("検証深度: full", out)
+
+    def test_preview_json_emits_structured_object(self):
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        buf = StringIO()
+        with redirect_stdout(buf):
+            rc = gdp.main(["preview", *self._common_args(), "--json"])
+        self.assertEqual(rc, 0)
+        data = json.loads(buf.getvalue())
+        self.assertIn("delegate_body", data)
+        self.assertIn("summary", data)
+        self.assertEqual(data["summary"]["pattern"], "A")
+
+    def test_apply_creates_brief_and_reserves(self):
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        buf = StringIO()
+        with redirect_stdout(buf):
+            rc = gdp.main([
+                "apply",
+                *self._common_args(),
+                "--skip-settings",
+            ])
+        self.assertEqual(rc, 0)
+        runs = self.sb.list_runs()
+        self.assertTrue(any(r["task_id"] == "cli-task" and r["status"] == "queued" for r in runs))
+        brief = self.sb.workers / "clock-app" / "CLAUDE.md"
+        self.assertTrue(brief.exists())
+        send_plan = brief.with_name("send_plan.json")
+        self.assertTrue(send_plan.exists())
+
+
+# ---------------------------------------------------------------------------
+# Snapshot tests against goldens
+# ---------------------------------------------------------------------------
+
+
+def _normalize_body(text: str, sandbox_root: Path) -> str:
+    """Replace sandbox-specific paths with stable placeholders before snapshotting."""
+    text = text.replace(str(sandbox_root.resolve()), "<SANDBOX>")
+    # Windows backslashes vs forward slashes
+    text = text.replace("\\", "/")
+    return text
+
+
+class TestGoldenSnapshots(unittest.TestCase):
+    """Render DELEGATE bodies for each (pattern, role) combo and compare
+    against committed goldens. Update goldens with::
+
+        UPDATE_GOLDENS=1 python -m unittest tests.test_gen_delegate_payload
+
+    Goldens live in tests/fixtures/delegate_payload/ and intentionally
+    NORMALIZE absolute paths to ``<SANDBOX>`` placeholders to keep them
+    stable across machines/OSes.
+    """
+
+    def setUp(self) -> None:
+        self._td = tempfile.TemporaryDirectory()
+        self.sb = _Sandbox(Path(self._td.name))
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def _check(self, name: str, body: str) -> None:
+        GOLDEN_DIR.mkdir(parents=True, exist_ok=True)
+        path = GOLDEN_DIR / f"delegate_payload_{name}.golden.md"
+        normalized = _normalize_body(body, self.sb.root)
+        if not path.exists() or _env_update_goldens():
+            path.write_text(normalized, encoding="utf-8")
+            return
+        expected = path.read_text(encoding="utf-8")
+        self.assertEqual(
+            normalized,
+            expected,
+            f"DELEGATE body drift in {path}; rerun with UPDATE_GOLDENS=1 to refresh.",
+        )
+
+    def test_golden_pattern_a_default_full(self):
+        plan = gdp.build_delegate_plan(
+            task_id="snap-a-default",
+            project_slug="clock-app",
+            description="add a sparkline",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self._check("pattern_a_default_full", plan.delegate_body)
+
+    def test_golden_pattern_b_self_edit_full(self):
+        # claude-org-ja with concurrent active run forces Pattern B
+        self.sb.add_active_run(
+            task_id="self-edit-other",
+            project_slug="claude-org-ja",
+            worker_dir=str(self.sb.workers / "claude-org-ja"),
+        )
+        plan = gdp.build_delegate_plan(
+            task_id="snap-b-self-edit",
+            project_slug="claude-org-ja",
+            description="refactor a skill",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self._check("pattern_b_self_edit_full", plan.delegate_body)
+
+    def test_golden_pattern_c_ephemeral_minimal(self):
+        plan = gdp.build_delegate_plan(
+            task_id="snap-c-ephemeral",
+            project_slug="totally-new",
+            description="quick survey",
+            verification_depth="minimal",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self._check("pattern_c_ephemeral_minimal", plan.delegate_body)
+
+    def test_golden_pattern_c_gitignored_repo_root(self):
+        """Codex Round 1 Minor: gitignored sub-mode is the highest-risk
+        Pattern C variant; lock its DELEGATE rendering down with a golden."""
+        try:
+            import subprocess as _sp
+            _sp.run(["git", "--version"], capture_output=True, check=True)
+        except (FileNotFoundError, _sp.CalledProcessError):
+            self.skipTest("git not available")
+        local_repo = Path(self._td.name) / "host-repo"
+        local_repo.mkdir()
+        _sp.run(["git", "-C", str(local_repo), "init", "-q"], check=True)
+        (local_repo / ".gitignore").write_text("tmp/\n", encoding="utf-8")
+        # Re-seed registry so the host-repo project is registered.
+        (self.sb.claude_org_root / "registry" / "projects.md").write_text(
+            "# Projects\n\n"
+            "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 |\n"
+            "|---|---|---|---|---|\n"
+            f"| ホスト | host-app | {local_repo} | Host repo | tmp 編集 |\n"
+            f"| claude-org-ja | claude-org-ja | {self.sb.claude_org_root} | Self | スキル改善 |\n",
+            encoding="utf-8",
+        )
+        plan = gdp.build_delegate_plan(
+            task_id="snap-c-gitignored",
+            project_slug="host-app",
+            targets=["tmp/secret.txt"],
+            description="redact gitignored notes",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        # Normalise the local_repo path so the golden stays portable.
+        body = plan.delegate_body.replace(str(local_repo.resolve()), "<HOSTREPO>")
+        self._check("pattern_c_gitignored_repo_root_full", body)
+        # Variant must be visible in the formatted body.
+        self.assertIn("gitignored サブモード", body)
+
+    def test_golden_pattern_a_doc_audit(self):
+        """Codex M-4 regression guard: --mode audit must surface as doc-audit
+        and the brief filename must stay CLAUDE.md (no spurious .local.md)."""
+        plan = gdp.build_delegate_plan(
+            task_id="snap-a-audit",
+            project_slug="claude-org-ja",
+            description="audit recent changes",
+            mode="audit",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self._check("pattern_a_doc_audit_full", plan.delegate_body)
+        self.assertEqual(plan.layout.role, "doc-audit")
+
+
+# ---------------------------------------------------------------------------
+# --from-toml round-trip (Codex Round 1 Major: TOML survives bare CLI)
+# ---------------------------------------------------------------------------
+
+
+class TestFromTomlRoundTrip(unittest.TestCase):
+    def setUp(self) -> None:
+        self._td = tempfile.TemporaryDirectory()
+        self.sb = _Sandbox(Path(self._td.name))
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def _write_toml(self, path: Path, *, role: str, depth: str) -> None:
+        path.write_text(
+            "[task]\n"
+            'id = "round-trip"\n'
+            'description = "round-trip via TOML"\n'
+            f'verification_depth = "{depth}"\n'
+            'branch = "round-trip"\n'
+            'commit_prefix = "feat(clock):"\n'
+            "\n[worker]\n"
+            f'dir = "X:/dummy"\n'
+            'pattern = "A"\n'
+            f'role = "{role}"\n'
+            f'self_edit = {"true" if role == "claude-org-self-edit" else "false"}\n'
+            "\n[project]\n"
+            'name = "clock-app"\n'
+            'description = "Web 時計"\n'
+            "\n[paths]\n"
+            'claude_org = "."\n',
+            encoding="utf-8",
+        )
+
+    def test_from_toml_preserves_doc_audit_mode_and_minimal_depth(self):
+        toml = Path(self._td.name) / "input.toml"
+        self._write_toml(toml, role="doc-audit", depth="minimal")
+        # Bare CLI: no --mode / --verification-depth flag → TOML wins.
+        kwargs = gdp._gather_plan_kwargs(
+            argparse.Namespace(
+                from_toml=toml,
+                task_id=None, project_slug=None, target=[], description=None,
+                mode=None, branch_override=None, commit_prefix=None,
+                verification_depth=None, issue_url=None, closes_issue=None,
+                refs_issues=None, project_name_override=None,
+                project_description_override=None, impl_target=[],
+                impl_guidance=None, knowledge=[], parallel_notes=None,
+                registry_path=None, state_db_path=None, claude_org_root=None,
+                workers_dir=None,
+            )
+        )
+        self.assertEqual(kwargs["mode"], "audit")
+        self.assertEqual(kwargs["verification_depth"], "minimal")
+        self.assertEqual(kwargs["project_slug"], "clock-app")
+
+    def test_from_toml_cli_override_wins(self):
+        toml = Path(self._td.name) / "input.toml"
+        self._write_toml(toml, role="doc-audit", depth="minimal")
+        kwargs = gdp._gather_plan_kwargs(
+            argparse.Namespace(
+                from_toml=toml,
+                task_id=None, project_slug=None, target=[], description=None,
+                mode="edit", branch_override=None, commit_prefix=None,
+                verification_depth="full", issue_url=None, closes_issue=None,
+                refs_issues=None, project_name_override=None,
+                project_description_override=None, impl_target=[],
+                impl_guidance=None, knowledge=[], parallel_notes=None,
+                registry_path=None, state_db_path=None, claude_org_root=None,
+                workers_dir=None,
+            )
+        )
+        self.assertEqual(kwargs["mode"], "edit")
+        self.assertEqual(kwargs["verification_depth"], "full")
+
+
+def _env_update_goldens() -> bool:
+    import os
+    return os.environ.get("UPDATE_GOLDENS") == "1"
+
+
+if __name__ == "__main__":
+    unittest.main()

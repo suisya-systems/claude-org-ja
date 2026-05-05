@@ -86,17 +86,8 @@ description: >
   - {skill-name}: {description の1行目}
   ワーカーへの指示に参考情報として含めます。
   ```
-- Step 1 のタスク分解時に、work-skill の手順を参考にする
-- Step 1.5 の CLAUDE.md 生成時に、以下のセクションを追加する:
-  ```markdown
-  ## 参考 work-skill
-  以下の work-skill が参考になる可能性があります。手順や判断基準を参照してください。
-  ただし、タスクの要件に合わない部分は適宜調整すること。
-  
-  - スキル名: {skill-name}
-  - パス: .claude/skills/{skill-name}/SKILL.md
-  - 概要: {description}
-  ```
+- タスク分解時に、work-skill の手順を参考にする
+- `gen_delegate_payload.py` 呼び出しの `--knowledge` フラグに work-skill の SKILL.md パスを渡す。Stage 2 の brief renderer がそのパスを `[references].knowledge` として CLAUDE.md / CLAUDE.local.md に埋め込む。複数マッチがあれば `--knowledge <path1> --knowledge <path2>` のように繰り返す
 - ワーカーへの指示（instruction-template）にも参考スキルの存在を明記する
 
 **マッチしなかった場合:**
@@ -108,237 +99,63 @@ description: >
 - 複数マッチした場合は関連度順に全て含める
 - org- プレフィックスのスキル（org-retro, org-delegate 等）は組織運営スキルなので検索対象外
 
-## Step 0.7: ターゲットファイル gitignore 事前チェック（窓口が実行）
+## Step 0.7 / 1 / 1.5 / 2: 1 コマンドで派遣ペイロードを生成（Issue #283）
 
-> **この Step は Step 1 のディレクトリパターン判定に先行する最上位判定である**。Step 1 の A / B / C ヒューリスティックに入る前に、編集対象ファイルが `.gitignore` で除外されていないかを確認し、ignored なら **Pattern C 強制（gitignored サブモード）** に分岐させる。operator が見落とすと tracked 用の Pattern B / A 経路に落ちて対象ファイルに届かないワーカーを派遣することになるため、必ずここで判定する。
+Step 0.7 (gitignore 事前チェック) / Step 1 (Pattern 判定) / Step 1.5 (ワーカーディレクトリ準備 + role 決定 + settings 生成) / Step 2 (DELEGATE 本文組み立て) は **`tools/gen_delegate_payload.py` が一括で行う**。窓口の責務はタスク特定 (Step 0)・work-skill 検索 (Step 0.5)・対象ファイルの抽出・depth 判断のみ。
 
-**「対象ファイル」は窓口がタスク説明から抽出する**（依頼文・Issue 本文・ユーザー発話の中で明示されたパス。機械的判定はしない）。対象ファイルが特定できないタスク（純粋な調査、対象パス未定の新規作成など）はこのチェックをスキップし、Step 1 の通常判定に進む。
-
-### 適用条件
-
-このチェックは **ローカルに git repo が既に存在するプロジェクトでのみ実行する**。具体的には:
-
-- registry/projects.md の「パス」がローカル絶対パスで、かつ `.git/` を持つディレクトリ（または worktree）として解決できる場合のみ実行
-- パスが URL（未 clone）/ `-` / 解決不能なら **チェック自体をスキップ**して Step 1 の通常判定へ（初回 clone 後の状態は git の通常挙動に従うため、tracked 既存ファイルが gitignored になっているレアケースは別途レビューで拾う）
-
-### 判定コマンド
-
-ローカル repo root（=「パス」が指す絶対パス）で:
-
-```
-git -C {project_path} check-ignore -q -- <target>
-```
-
-- 終了コード 1（=ignored ではない）→ tracked または「単に未存在の新規ファイル」。**Step 1 の通常 A / B / C 判定に進む**
-- 終了コード 0（=ignored）→ **Pattern C 強制（gitignored サブモード）**。下記参照。Step 1 の通常判定はスキップする
-- 終了コード 128 等（コマンド失敗、repo 未初期化など）→ 適用条件外。スキップして Step 1 の通常判定へ
-
-> `git check-ignore` は「現在の `.gitignore` ルールにマッチするか」だけを判定し、ファイルが実在しなくても評価できる。`ls-files --error-unmatch` を使うと「単に未作成の新規ファイル」まで untracked 扱いで Pattern C に落としてしまうため、こちらを使わない。
-
-### Pattern C 強制（gitignored サブモード）
-
-通常の Pattern C は `{workers_dir}/{task_id}/` のエフェメラル空ディレクトリだが、gitignored 対象を編集する場合はそれでは対象ファイルに届かない。次の特例運用とする:
-
-- **WORKER_DIR**: 既存ローカル clone の **repo root を直接指定**する（registry の「パス」値そのもの）
-- **CLAUDE.md / settings.local.json の配置先**: その repo root 直下。既に他用途の CLAUDE.md がある場合は `CLAUDE.local.md` に書く（`references/claude-org-self-edit.md` の特例参照）
-- **Worker Directory Registry**: Pattern を `C` として登録、Directory に repo root の絶対パス、Status を `in_use`。完了時はエントリ削除（ディレクトリ自体は元プロジェクトなので保持）
-- **並行作業との競合**: repo root を直接掴むため、同 repo に対する Pattern A / B のワーカーと同時起動はしない（窓口側で順次化する）。**さらに Pattern C 強制ワーカー同士も同 repo で 2 本以上同時起動しない**（`CLAUDE.local.md` / `.claude/settings.local.json` はファイル名固定なので相互上書きが起きる）
-- **窓口メモ**: 「Pattern B 不可: 対象 `<target>` が gitignored。WORKER_DIR=既存 repo root 運用」と一文残す
-
-ここで Pattern C 強制が確定した場合、**Step 1 のディレクトリパターン判定基準テーブルおよび判定フローはスキップ**し、そのまま Step 1.5 のワーカーディレクトリ準備に進む（パターンは C 確定）。
-
-### claude-org 自己編集との関係
-
-通常のスキル / ドキュメント編集（`.claude/skills/...`, `references/...`）は tracked なので従来どおり Pattern B が選べる。`docs/internal/`, `notes/`, `tmp/` 等の gitignored 内部メモを編集する場合のみ本事前チェックで Pattern C 強制（gitignored サブモード）となる（`references/claude-org-self-edit.md` 参照）。
-
-## Step 1: タスク分解（窓口が実行）
-
-人間の依頼を分析し、ワーカーに委譲するタスクを定義する:
-
-- 各タスクに一意のIDを振る（依頼内容から連想しやすい英語 kebab-case。例: `data-analysis`, `login-fix`, `dashboard-redesign`）
-  - 既存のIDと重複しないよう `.state/state.db` の runs テーブル (`get_org_state_summary` 等) を確認する（重複時はサフィックスで区別: `login-fix-2`）
-- タスクごとに以下を明確にする:
-  - 目的（何を達成するか）
-  - 成果物（何ができあがるか）
-  - 作業ディレクトリ（どのプロジェクトで作業するか）
-  - 制約（ブランチ名、コーディング規約、依存関係等）
-  - **検証深度（`full` / `minimal`）** — 派遣指示には必ずどちらか 1 値を明示する。既定は `full`（コード・挙動の変更を伴うタスクはすべてこちら）。`full` では **codex の有無に関わらず** リポジトリ通常検証（テスト / lint / type-check 等）を green まで実行し通常の完了報告フォーマットで報告するのが必須ゲート。**追加ゲート（任意）** として、codex CLI が available なら commit 完了後に Codex セルフレビュー・同一指摘 3 ラウンド上限のルールが走る（未導入環境では skip）。trivial fix（CI 出力整形 / typo / コメント修正 / 既存テスト形式合わせ等）のみ `minimal` を選択し、ワーカーは `git add` → `git commit` → `done` 報告のみで終わる。詳細は `references/instruction-template.md` の「検証深度」節と `references/worker-claude-template.md` の「Codex セルフレビュー手順」節参照。値の決定は窓口の責任で、ワーカーには判断させない
-  - **ディレクトリパターン（A / B / C）** — 以下の判定基準で決定する（**Step 0.7 の事前チェックで Pattern C 強制が確定している場合はこの判定をスキップ**）
-  - **参考 work-skill**（Step 0.5 でマッチしたもの）
-- 注意: タスク説明にファイルパスを含める場合、それがワーカー作業ディレクトリからの相対パスであることを明記する。registry/projects.md の「パス」列の値をそのまま成果物パスとして指示しない（ワーカーが別の場所にパスを作成する原因になる）
-
-### ディレクトリパターン判定基準
-
-| パターン | 名称 | 条件 | ディレクトリ |
-|---|---|---|---|
-| A | プロジェクトディレクトリ | プロジェクトの clone が必要（初回は clone、2回目以降は再利用） | `{workers_dir}/{project_slug}/` |
-| B | worktree | 同一プロジェクトで並行作業が必要（既に別ワーカーが同じプロジェクトディレクトリを使用中） | `{workers_dir}/{project_slug}/.worktrees/{task_id}/` |
-| C | エフェメラル | 成果物を残す必要がない一時作業（調査・検証等） | `{workers_dir}/{task_id}/` |
-
-**判定フロー:**
-
-> **前提**: Step 0.7 のターゲットファイル gitignore 事前チェックが先行する。Step 0.7 で Pattern C 強制（gitignored サブモード）が確定している場合は本判定フローには入らない。Step 0.7 が「ignored ではない」または「適用条件外（URL のみ・対象未特定など）」で抜けた場合のみ、以下の通常判定を行う。
-
-1. プロジェクトの clone が必要な場合（registry/projects.md にパスが登録されているプロジェクト）:
-   a. Worker Directory Registry で同プロジェクトに `in_use` のエントリがある場合 → **パターン B**（worktree で並行作業）
-   b. 同プロジェクトに `available` のエントリがある場合 → **パターン A**（既存ディレクトリを再利用）
-   c. エントリがない場合 → **パターン A**（新規 clone）
-2. 上記に該当しない場合 → **パターン C**
-   - clone 不要の一時作業、成果物不要の調査タスク等
-
-## Step 1.5: ワーカーディレクトリ準備（窓口が実行）
-
-各タスクのワーカー専用ディレクトリを準備し、CLAUDE.md と設定を配置する。
-テンプレートは references/worker-claude-template.md を使用する。
-**パターン（A/B/C）によって手順が異なる。**
-
-> **claude-org 自身を編集するタスクの場合**: 通常手順に加えて `references/claude-org-self-edit.md` の特例手順（block-org-structure.sh hook の除外、CLAUDE.local.md への指示記述、ルート CLAUDE.md を無視する旨の明示）を必ず適用すること。**本セクション以下で「CLAUDE.md を生成 / 配置 / 確認」と書かれている箇所はすべて `CLAUDE.local.md` に読み替える**（ルート CLAUDE.md は Secretary 用なので上書き禁止）。
-
-### 共通手順（全パターン）
-
-1. `registry/org-config.md` の `workers_dir` を読み、リポジトリルートからの相対パスを絶対パスに解決する
-
-### ワーカーロール (`<ROLE>`) の選び方
-
-`.claude/settings.local.json` の生成は schema-driven generator (`claude-org-runtime settings generate`) に委ねる。窓口は **タスク特性に応じて 1 つの role を選ぶだけ** で、permission の手書き編集は禁止（schema → settings の drift は CI で fail する）。
-
-#### 事前判定: self-edit タスクか？（必須・最優先）
-
-下記 role 表に進む前に、まずこの判定を行う。self-edit タスク（claude-org 自身への **書き込み** を伴うタスク）なら role は `claude-org-self-edit` に **固定** され、`default` の検討には入らない。**読み取り専用の調査・監査は対象外** — claude-org 上であっても書き込みを伴わなければ通常通り `doc-audit` を選ぶ。
-
-> **Q.** これは self-edit タスクか？（`worker_dir` が claude-org リポジトリ本体、またはその worktree（例: `.worktrees/{task_id}/`）を指し、**かつ** claude-org 内のファイルを編集 / 追加 / 削除する書き込み作業を含むか）
-> - **Yes**（claude-org への書き込みあり）→ role を `claude-org-self-edit` に固定する（`block-org-structure.sh` hook を外す特例が必要なため）。`settings.local.json` 生成前にこの role を確定させ、加えて `references/claude-org-self-edit.md` の特例手順（CLAUDE.local.md への指示記述、ルート CLAUDE.md を無視する旨の明示など）を併せて適用する
-> - **No (読み取りのみ、claude-org 上での監査・調査)** → `doc-audit` を選ぶ（Edit/Write が deny されるので最小権限）。`block-org-structure.sh` は読み取り作業を阻害しないため特例不要
-> - **No (claude-org 以外のプロジェクト)** → 通常タスク。下記 role 表に従って `default` / `doc-audit` から選ぶ
-
-判定根拠: claude-org 自身を **編集** する場合、Pattern A / B / C いずれであっても `worker_dir` は claude-org repo（または worktree）配下となり、`block-org-structure.sh` がワーカーの書き込みを拒否してしまう。これを安全に外せるのは `claude-org-self-edit` role だけなので、operator が role を取り違えると Pattern 判定が正しくてもワーカーが立ち上がらない。一方、読み取り専用の監査では hook は発動しないため、最小権限の `doc-audit` を維持する（`claude-org-self-edit` に昇格させると不要に書き込み権限を与えることになる）。
-
-| Role | 用途 |
-|---|---|
-| `default` | 通常の実装・修正タスク（git commit / branch 操作あり、push 不可、recursive delete 不可）。**self-edit タスクには使わない** |
-| `claude-org-self-edit` | **claude-org リポジトリ自身を編集するタスク（self-edit task）**。`worker_dir` が claude-org repo or its worktree（`tools/`, `.claude/skills/`, `docs/` 等の編集を含む）。`block-org-structure.sh` を外す代わりに `check-worker-boundary.sh` で境界を担保。詳細は `references/claude-org-self-edit.md` |
-| `doc-audit` | 読み取り中心の調査・監査・レポート（Edit/Write/MultiEdit/NotebookEdit を deny。commit / branch も禁止）。**書き出しが必要な成果物（AUDIT.md 等）がある場合は instruction-template.md の「doc-audit 成果物の chunk 転送」セクションを必ずワーカー指示に含める** |
-
-各 role の具体的な allow/deny/hooks は **本 ja リポジトリの `tools/org_extension_schema.json`** の `worker_roles[<role>]` を参照（drift validator `tools/check_role_configs.py` がこのファイルを正典として読む）。新しいパターンが必要な場合は **ja の `tools/org_extension_schema.json` と `claude-org-runtime` にバンドルされた merged role schema の両方に role を追加する PR が必要**（窓口の手書き拡張は不可）: ja 側だけ追加しても `claude-org-runtime settings generate` が新 role を知らず生成失敗、runtime 側だけ追加しても drift CI が fail する。framework 側の schema 形（`worker_roles` の許容形状定義）のみ変える場合は `claude-org-runtime` 側のみで完結。詳細は `references/claude-org-self-edit.md` および `docs/internal/phase4-completion-2026-05-02.md:71-77` 参照。
-
-### パターン A: プロジェクトディレクトリ
-
-プロジェクト専用ディレクトリ（`{workers_dir}/{project_slug}/`）を使う。初回は clone、2回目以降は再利用。
-
-**初回（ディレクトリが存在しない場合）:**
-
-1. `git clone {project_path} {workers_dir}/{project_slug}/` を実行
-2. ディレクトリ直下に CLAUDE.md を生成する（テンプレートの変数を置換）
-3. ディレクトリ直下に `.claude/settings.local.json` を **generator で生成する**（schema が SOT。詳細は ja `tools/org_extension_schema.json` の `worker_roles` を参照）:
-   ```bash
-   claude-org-runtime settings generate \
-     --role <ROLE> \
-     --worker-dir {worker_dir} \
-     --claude-org-path {claude_org_path} \
-     --out {worker_dir}/.claude/settings.local.json
-   ```
-   `<ROLE>` の選び方は本 Step 冒頭の「ワーカーロール (`<ROLE>`) の選び方」表を参照。手書き JSON は禁止（drift CI が fail する）。
-4. `StateWriter.register_worker_dir(...)` で Worker Directory Registry に登録する（post-commit hook が `.state/org-state.md` を再生成する。直接編集は禁止）
-
-**再利用（ディレクトリが存在し、ステータスが `available` の場合）:**
-
-1. `git -C {workers_dir}/{project_slug}/ fetch origin` で最新化
-2. CLAUDE.md **のみ**を再生成する（新しいタスクID・タスク説明で上書き）
-   - settings.local.json はそのまま流用（`{worker_dir}` が変わらないため再生成不要）
-3. `StateWriter.register_worker_dir(...)` + `upsert_run(status='in_use', worker_dir_abs_path=...)` で再利用エントリを登録する（markdown 直接編集禁止。post-commit hook が `.state/org-state.md` を再生成）
-
-### パターン B: worktree
-
-同一プロジェクトで並行作業が必要な場合、プロジェクトディレクトリを base clone として worktree を作成する。
-
-1. base clone（`{workers_dir}/{project_slug}/`）の存在確認:
-   - 存在しない場合 → `git clone {project_path} {workers_dir}/{project_slug}/` を実行
-   - 既に存在する場合 → `git -C {workers_dir}/{project_slug}/ fetch origin` で最新化
-2. worktree を作成:
-   - `git -C {workers_dir}/{project_slug}/ worktree add .worktrees/{task_id} -b {branch_name}` を実行
-   - `{branch_name}` は Step 1 で決定したブランチ名（指定がなければ `{task_id}` をブランチ名に使う）
-   - ワーカーディレクトリ: `{workers_dir}/{project_slug}/.worktrees/{task_id}/`
-3. worktree 直下に CLAUDE.md を生成する（テンプレートの変数を置換）
-4. worktree 直下に `.claude/settings.local.json` を **generator で生成する**（schema-driven。詳細は ja `tools/org_extension_schema.json` の `worker_roles` 参照）:
-   ```bash
-   claude-org-runtime settings generate \
-     --role <ROLE> \
-     --worker-dir {worker_dir} \
-     --claude-org-path {claude_org_path} \
-     --out {worker_dir}/.claude/settings.local.json
-   ```
-   `<ROLE>` の選び方は本 Step 冒頭の「ワーカーロール (`<ROLE>`) の選び方」表を参照。手書き JSON は禁止。
-5. `StateWriter.register_worker_dir(...)` で Worker Directory Registry に登録する（markdown 直接編集禁止。post-commit hook が `.state/org-state.md` を再生成）
-
-### パターン C: エフェメラル
-
-成果物を残す必要がない一時作業（調査・検証等）で使用する。
-
-1. `{workers_dir}/{task_id}/` ディレクトリを作成する（例: `../workers/data-analysis/`）
-2. テンプレートから `{workers_dir}/{task_id}/CLAUDE.md` を生成する
-3. `{workers_dir}/{task_id}/.claude/settings.local.json` を **generator で生成する**（schema-driven。詳細は ja `tools/org_extension_schema.json` の `worker_roles` 参照）:
-   ```bash
-   claude-org-runtime settings generate \
-     --role <ROLE> \
-     --worker-dir {worker_dir} \
-     --claude-org-path {claude_org_path} \
-     --out {worker_dir}/.claude/settings.local.json
-   ```
-   `<ROLE>` の選び方は本 Step 冒頭の「ワーカーロール (`<ROLE>`) の選び方」表を参照。手書き JSON は禁止。
-4. `StateWriter.register_worker_dir(...)` で Worker Directory Registry に登録する（post-commit hook が `.state/org-state.md` を再生成する。直接編集は禁止）
-
-### 共通手順（全パターン・配置後）
-
-CLAUDE.md / CLAUDE.local.md は **`tools/gen_worker_brief.py` で自動生成する**（手書き禁止。settings.local.json の生成は generator が自動で行うため対象外）:
+### 標準フロー (推奨)
 
 ```bash
-python tools/gen_worker_brief.py --config <task>.toml --out {worker_dir}/CLAUDE.md
+# 1. preview: 完全に非破壊。DELEGATE 本文と作成予定ファイル一覧だけを確認する
+python tools/gen_delegate_payload.py preview \
+    --task-id <task-id> --project-slug <slug> \
+    --target <path>... --description "<desc>" \
+    --verification-depth full
+
+# 2. apply: state.db に runs.status='queued' で予約 + CLAUDE.md/CLAUDE.local.md 配置
+#    + claude-org-runtime settings generate 実行 + send_plan.json 出力
+python tools/gen_delegate_payload.py apply \
+    --task-id <task-id> --project-slug <slug> \
+    --target <path>... --description "<desc>" \
+    --verification-depth full
+
+# 3. apply 出力の send_plan.json を MCP 呼び出しにコピペ
+#    cat <worker_dir>/send_plan.json
+#    → mcp__renga-peers__send_message(to_id="dispatcher", message=<message>)
 ```
 
-self-edit task（Pattern B claude-org 自身編集）の場合は `--out` を `{worker_dir}/CLAUDE.local.md` にする（`worker.self_edit = true` を config に設定。テンプレートが自動的に「ルート CLAUDE.md は無視」注記を含める）。config TOML のフォーマットは `tools/templates/worker_brief.example.toml` を参照。
+`apply` は **T1 reservation のみ** (`runs.status='queued'`) を行う。Active Work Items への active 化はディスパッチャー T2 (`docs/contracts/delegation-lifecycle-contract.md`) なので本 skill では触らない。失敗時はキューを残したまま Secretary に判断を仰ぐこと。
 
-config TOML が要求する主なキー: `task.{id, description, verification_depth, branch, commit_prefix, closes_issue|refs_issues}`、`worker.{dir, pattern, role, self_edit}`、`project.{name, description}`、`paths.claude_org`。任意セクション: `[implementation]` `[references]` `[parallel]` `[task].issue_url`。
+### よく使うフラグ
 
-生成した CLAUDE.md / CLAUDE.local.md に「作業ディレクトリ」セクションが含まれていることを確認する。含まれていない場合は config 不備または generator バグのため再生成する。`tools/templates/worker_brief_normal.md` / `worker_brief_self_edit.md` が SOT であり、reference の `worker-claude-template.md` は互換性のため残置（Secretary 用 reference）。
+- `--mode edit|audit` (default `edit`): claude-org 上の **読み取り専用** 監査タスクは `--mode audit` を明示する。デフォルトの `edit` だと self-edit role が選ばれて余計な書き込み権限が付く。
+- `--branch <name>`: planned_branch を上書き。default は `feat/<task-id>` (description に "fix"/"bug"/"修正" を含むと `fix/<task-id>`)。
+- `--commit-prefix "<prefix>"`: TOML の `task.commit_prefix` を明示。省略時は project_slug の頭部から推論 (例: `claude-org-ja` → `feat(claude):`)。
+- `--closes-issue N` / `--refs-issues N1 N2`: 「Closes #N」「Refs #N1 #N2」を brief に埋め込む。
+- `--impl-target <path>` / `--impl-guidance "<text>"` / `--knowledge <path>`: optional な `[implementation]` / `[references]` セクション。
+- `--skip-settings`: `claude-org-runtime settings generate` をスキップ (CLI 未導入環境向け)。
+- `--from-toml <path>`: 既存 `worker_brief.toml` を入力にする。CLI フラグは TOML を上書きする。
 
-**参考 work-skill がある場合（Step 0.5 でマッチ）:**
+### Pattern / role / branch の判定詳細
 
-CLAUDE.md に以下のセクションを追加する（「参照すべきファイル」セクションの後に配置）:
+判定ロジック (Pattern A vs B vs C / gitignored サブモード / role 表 / planned_branch / DELEGATE 本文の必須行) は `references/delegate-flow-details.md` 参照。本 SKILL.md からは抜き出してある。
 
-```markdown
-## 参考 work-skill
-以下の work-skill が参考になる可能性があります。手順や判断基準を参照してください。
-ただし、タスクの要件に合わない部分は適宜調整すること。
+### Step 0.7 の対象ファイル抽出
 
-- スキル名: {skill-name}
-- パス: {claude_org_path}/.claude/skills/{skill-name}/SKILL.md
-- 概要: {description}
-```
+「対象ファイル」は窓口がタスク説明から抽出する（依頼文・Issue 本文・ユーザー発話の中で明示されたパス。機械的判定はしない）。対象ファイルが特定できないタスク（純粋な調査、対象パス未定の新規作成など）は `--target` を渡さなくてよい — `gen_delegate_payload` は target 0 件のときだけ check-ignore をスキップして通常判定に進む。
 
-## Step 2: ディスパッチャーへの委託（窓口が実行 → ここで窓口は解放）
+### legacy / fallback 経路
 
-renga-peers の `send_message` でディスパッチャー（pane name=`dispatcher`）に以下を送信する:
+`gen_delegate_payload.py` を経由できない（runtime CLI 未導入・state.db 破損・特殊な手作業など）場合のみ、**従来の手書き経路** を使う。詳細手順は `references/delegate-flow-details.md` の「Legacy hand-typed paths」節参照。要点だけ:
 
-```
-DELEGATE: 以下のワーカーを派遣してください。
+- `python tools/gen_worker_brief.py --config <task>.toml --out <CLAUDE.md>` で brief を手動生成
+- `claude-org-runtime settings generate` を **`--role` を窓口で確定させた上で** 直接呼ぶ
+- DELEGATE 本文は `references/delegate-flow-details.md` §3 のテンプレートに従って手書きし、`mcp__renga-peers__send_message(to_id="dispatcher", message=…)` で送る
 
-タスク一覧:
-- {task_id}: {タスク説明}
-  - ワーカーディレクトリ: {ワーカーディレクトリの絶対パス}（CLAUDE.md・設定配置済み）
-  - ディレクトリパターン: {A: プロジェクトディレクトリ / B: worktree / C: エフェメラル}
-  - プロジェクト: {clone先URL or ローカルパス or 新規作成 or worktree済み or 前タスク引継ぎ}
-  - Permission Mode: {org-config から読んだ default_permission_mode の値}
-  - 検証深度: {full | minimal}（instruction-template の同名行と同じ値を必ず記入。ディスパッチャーはこの値をワーカーへの指示にそのまま転記する）
-  - 指示内容: {instruction-template に基づく指示の要約。「検証深度」行は必ず残したまま転送する}
+legacy 経路は **T1 reservation (runs.status='queued') を伴わない** ため、ディスパッチャー watch loop の queue 可視化が効かない点に注意。
 
-窓口ペイン名: `secretary`（renga layout で登録済み。新規タブ作成時の基準となる）
-```
-
-**窓口はこの送信後すぐにユーザーとの対話に戻れる。**
-ユーザーには「ディスパッチャーに派遣を依頼しました。準備ができ次第報告します。」と伝える。
-
-> renga では窓口・ディスパッチャー・キュレーター等の「長寿命ペイン」は安定名 (`--id`) で addressable。
-> 窓口 (`secretary`) / ディスパッチャー (`dispatcher`) / キュレーター (`curator`) は `/org-start` で命名済み。
+<!-- 旧 Step 0.7 / Step 1 / Step 1.5 / Step 2 の詳細 prose は references/delegate-flow-details.md に移設済み (Issue #283 Stage 4)。
+     判定コマンド・Pattern C 強制サブモード・パターン別 worktree/clone 手順・DELEGATE 本文の必須行は同 reference を SoT とする。 -->
 
 ## Step 3: ワーカー起動と指示送信（ディスパッチャーが実行）
 
