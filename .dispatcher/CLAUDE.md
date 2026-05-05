@@ -296,13 +296,24 @@ mcp__renga-peers__send_message(to_id="secretary", message="...")
 
 #### ⚠️ 完了報告ゲート（結論を書く前に必ず実行）
 
-「完了報告未着」「報告が届かなかった」「ワーカーが報告しなかった」等の結論を retro に書く **前に**、必ず以下を実行すること:
+「完了報告未着」「報告が届かなかった」「ワーカーが報告しなかった」等の結論を retro に書く **前に**、必ず `tools/dispatcher_retro_gate.py` を起動して secretary の ack を待つこと。
 
-```
-mcp__renga-peers__send_message(to_id="secretary", message="<task_id> の完了報告は届いていますか？")
+```bash
+# ディスパッチャー cwd は .dispatcher/ なので 1 段上がリポジトリルート。
+python ../tools/dispatcher_retro_gate.py --task-id <task_id>
 ```
 
-そのうえで secretary の応答を待ってから retro を続行する。応答待ちは `mcp__renga-peers__check_messages` を 30 秒間隔で最大 10 回（合計 5 分上限）ポーリングし、`from_id == "secretary"` のメッセージが届いた時点で打ち切る。5 分経過しても応答が無い場合は下の「secretary unreachable」フローに入る。
+挙動（決定論的、Issue #285 で切り出し済み）:
+
+- スクリプトは stdout に行区切り JSON で `{"action": "send_initial", ...}` → `{"action": "check_messages", "attempt": N}` の順にプロンプトを出す。
+- ディスパッチャー Claude は `send_initial` を見たら `mcp__renga-peers__send_message(to_id=<secretary>, message=<同梱の message>)` を 1 度だけ送る。
+- 各 `check_messages` プロンプトに対して `mcp__renga-peers__check_messages` の戻り（`from_id` 等を含むメッセージ配列）を `{"messages": [...]}` という JSON 1 行として stdin に書き戻す。
+- スクリプト側が cadence（30 秒×最大 10 回 = 5 分上限）と ack regex 判定を行い、最終行に `{"status": "acked"|"timeout"|"error", "received_at": ..., "raw": ..., "attempts": N}` を出力して exit する（exit code: 0=acked, 1=timeout, 2=error）。
+
+この最終 JSON の `status` で switch する:
+
+- `acked` → そのまま retro を続行する。
+- `timeout` / `error` → 下の「secretary unreachable 時の fallback」フローに入る（retro に「未着」と書かない）。
 
 **理由**: ワーカーのレポートチャネルは secretary 直送である。dispatcher のメッセージキュー（`check_messages` の戻り）に完了報告が無いことは、「システム上に存在しない」ことを意味しない。secretary 側に既に届いていることがしばしばあり、確認を怠ると「完了報告未着」と誤った結論を retro に残してしまう（実インシデント: `knowledge/raw/2026-05-03-delegation-smoke-completion-report.md`）。
 
