@@ -141,7 +141,7 @@ class StateWriter:
                 "tools.state_db.writer: post-commit JSON snapshot "
                 f"regenerate failed ({type(exc).__name__}: {exc}); "
                 "DB is committed, dashboard JSON will catch up on the "
-                "next regenerate.\n"
+                "next StateWriter commit.\n"
             )
 
     def _drain_pending_worker_archives(self) -> None:
@@ -208,8 +208,8 @@ class StateWriter:
                 sys.stderr.write(
                     "tools.state_db.writer: post-commit regenerate failed "
                     f"({type(exc).__name__}: {exc}); "
-                    "DB is committed, markdown/jsonl will catch up on "
-                    "the next regenerate.\n"
+                    "DB is committed, markdown will catch up on the next "
+                    "StateWriter commit.\n"
                 )
             # Issue #284: regenerate the dashboard JSON snapshot
             # (.state/org-state.json) after the markdown dump. Sequential
@@ -523,11 +523,14 @@ class StateWriter:
             (status, completed_at, outcome_note, task_id),
         )
         # Issue #284: when a run goes to 'completed', schedule its
-        # worker-state file for archival. The actual move happens after
-        # commit (see _drain_pending_worker_archives) so that a rollback
-        # leaves the file in place. Idempotent: a second completed
-        # transition just queues a second move attempt that no-ops when
-        # the source file is already gone.
+        # worker-state file for archival. The actual move happens from
+        # ``transaction()``'s post-commit phase (the canonical write
+        # entry point per SKILL.md) so that a rollback leaves the file
+        # in place. Callers that compose ``begin()`` / ``commit()``
+        # manually will not trigger the archive move — use
+        # ``transaction()`` for completion writes. Idempotent: a second
+        # completed transition just queues a second move attempt that
+        # no-ops when the source file is already gone.
         if status == "completed":
             self._pending_worker_archives.append(task_id)
 
