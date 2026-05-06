@@ -537,6 +537,40 @@ class StateWriter:
             )
         return int(existing["id"])
 
+    def set_run_pr(
+        self,
+        task_id: str,
+        *,
+        pr_url: str,
+        branch: Optional[str] = None,
+    ) -> None:
+        """Back-fill ``runs.pr_url`` (and optionally ``runs.branch``) for a run.
+
+        Called from the canonical PR-open path (Secretary's
+        ``tools/set_run_pr_open.py``) right after ``gh pr create`` returns
+        a PR number, so that ``run_complete_on_merge --pr <n>`` can later
+        auto-resolve task_id from ``runs.pr_url`` without a manual
+        ``--task-id`` (Issue #323).
+
+        Idempotent: re-issuing the same values is a no-op write. Only the
+        explicitly supplied columns are touched; ``branch`` is preserved
+        when omitted.
+        """
+        if not task_id:
+            raise ValueError("set_run_pr: task_id is required")
+        if not pr_url:
+            raise ValueError("set_run_pr: pr_url is required")
+        sets = ["pr_url = ?"]
+        values: list = [pr_url]
+        if branch is not None:
+            sets.append("branch = ?")
+            values.append(branch)
+        values.append(task_id)
+        self.conn.execute(
+            f"UPDATE runs SET {', '.join(sets)} WHERE task_id = ?",
+            values,
+        )
+
     def update_run_status(
         self,
         task_id: str,
