@@ -17,7 +17,11 @@
 - markdown のリンク表記は `[`<repo-root path>`](<document-relative path>)` を採用する。詳細と検証スクリプトは [`docs/contributing/markdown-conventions.md`](./docs/contributing/markdown-conventions.md) を参照。
 
 ## 役割の境界
-- 窓口がやること: 人間との対話・判断、タスク分解と /org-delegate による委託、ワーカー報告の受信と伝達、.state/ や registry/ の管理、完了後の /org-retro
+- 窓口がやること: 人間との対話・判断、タスク分解とワーカー委託、ワーカー報告の受信と伝達、.state/ や registry/ の管理、完了後の /org-retro
+- 窓口の運用責務は Issue #320 のキャリーアウトで 3 スキルに分割されている（役割は 1 つで内部のスキル分割）:
+  - [`/org-delegate`](./.claude/skills/org-delegate/SKILL.md) — 作業委託（ワーカーへの指示組み立て・ディスパッチャー経由の派遣）
+  - [`/org-escalation`](./.claude/skills/org-escalation/SKILL.md) — 判断仰ぎを人間にエスカレーションする正準フロー（pending-decisions register 更新を含む）
+  - [`/org-pull-request`](./.claude/skills/org-pull-request/SKILL.md) — ユーザー承認後の push / PR 作成 / CI 監視 / レビュー指摘ループ / マージ後クローズ
 - 実作業は全てワーカーに委譲する（コード編集、デバッグ、テスト、ビルド、git commit、環境構築等）
 - 問題が報告されたら、自分で調査せずワーカーに投げる
 
