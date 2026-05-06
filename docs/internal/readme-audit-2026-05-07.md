@@ -60,10 +60,10 @@ These were deliberately **not fixed** because they require Lead-level judgment a
 - **Defer reason**: This is an actual contract ambiguity (is raw recording mandatory or opportunistic?), not a wording issue. Resolving it requires a Lead call about the worker contract, after which README + worker brief template + org-retro SKILL all need to move together.
 - **Suggested resolution path**: pin the worker contract in `docs/contracts/role-contract.md` first, then sync README phrasing.
 
-### Proposed Issue C — README does not list `tools/pending_decisions.py`
+### ~~Proposed Issue C~~ — Resolved in this PR (added `tools/pending_decisions.py` to the §ja 固有の運用ツール list)
 
-- **Why**: the pending-decisions register (#297 / #301) is now load-bearing in CLAUDE.md (§「pending-decisions register（必須）」) and is the SoT for SECRETARY_RELAY_GAP_SUSPECTED detection. README §「ja 固有の運用ツール」 enumerates many smaller tools but omits this one.
-- **Defer reason**: the README list is already long; adding one more requires a curation decision about which tools belong in the top-level enumeration vs. in the operations docs.
+- **Why**: the pending-decisions register (#297 / #301) is now load-bearing in CLAUDE.md (§「pending-decisions register（必須）」) and is the SoT for SECRETARY_RELAY_GAP_SUSPECTED detection. README §「ja 固有の運用ツール」 enumerates many smaller tools but omitted this one.
+- **Resolution**: added per Lead direction during PR review. 1-line addition to the existing tool list.
 
 ### Proposed Issue D — README does not advertise `org-escalation` / `org-pull-request` carve-out in the §仕組み diagram
 
