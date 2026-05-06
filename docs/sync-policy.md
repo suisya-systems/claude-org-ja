@@ -74,16 +74,20 @@ Lead は 2026-04-30 に **Option A (ja = SoT, en = auto-mirror runtime)** を確
 - 既存の `repository_dispatch` `ja_pr_merged`（`.github/workflows/notify-en-changes.yml` から発火）を再利用するため、ja 側で新規 PAT は不要
 - 運用ドキュメント: en repo `docs/runbook/auto-mirror-runtime.md`（一時無効化、過去 merge の手動再実行、各フェーズの定義）
 
-### 現在のフェーズ: P1 warn-only
+### 現在のフェーズ: P2 (mirror PR, manual merge)
 
-ja PR が merge されると、en 側 workflow は en repo に分類結果のトラッキング issue を 1 件起票するだけで、**自動 mirror PR は開かない**（cross-repo の書き込みを避けるため、ja PR への直接コメントは行わない設計）。translation-class が含まれる場合は同じ issue に `translation-pending` ラベルを付与し、従来の `notify-ja-changes.yml` の役割もこの workflow に統合する。観測期間として最低 1 週間 / ja merge 5 件以上の分類精度確認後に P2 へ進む。
+ja PR が merge されると、en 側 workflow は runtime-class のファイル群を ja の merge SHA から取り込み、`auto-mirror/ja-pr-<N>` ブランチに force-push して `auto-mirror: ja#<N> <title>` という mirror PR を起票する（手動マージ）。translation-class / unknown-class が含まれる場合は従来通り tracking issue（`auto-mirror P2: ja#<N>` ...）を 1 件起票し、`translation-pending` / `needs-triage` ラベルが付く。divergence-allowed のみのバッチは no-op。
+
+実装は en 側 Issue #335 で着地。kill-switch は `OPEN_PR: 'false'`（runbook 参照）で P1 warn-only に戻せる。
+
+認証は Lead 決定により en 側で 2 段構成: `secrets.AUTO_MIRROR_PAT` を優先（mirror PR に `pull_request` CI を走らせるため）、未設定なら `GITHUB_TOKEN` にフォールバック（push と PR 作成は通るが、GHA の仕様で下流 workflow はトリガーされない）。ja 側は既存の `NOTIFY_EN_PAT` のみで変更なし（Issue #189 の制約維持）。
 
 ロードマップ:
 
 | フェーズ | 振る舞い | 移行条件 |
 |---|---|---|
-| P1（現在） | 分類して ja PR にコメント。mirror PR は開かない | 1 週間 / 5 merges 以上の分類確認 |
-| P2 | en 側に mirror PR を開く（手動マージ） | 10 PR 以上のマージ実績、コンフリクト・docstring 影響の把握 |
+| P1 | 分類して tracking issue 起票のみ。mirror PR なし | （P2 に統合済み） |
+| P2（現在） | en 側に mirror PR を開く（手動マージ） | 10 PR 以上のマージ実績、コンフリクト・docstring 影響の把握 |
 | P3 | runtime-only の mirror PR を auto-merge（gate は Lead 決定待ち） | P2 の安定運用 4 週間以上 |
 | P4 | reverse drift 検出（ja 親なしの en 側 runtime 編集を警告） | 追加機能、ブロッカーなし |
 
