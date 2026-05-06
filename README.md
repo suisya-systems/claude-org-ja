@@ -6,6 +6,7 @@
 
 > **claude-org-ja は日本語ファーストのリファレンス配布物です。**
 > 英語版: [suisya-systems/claude-org](https://github.com/suisya-systems/claude-org)（日英 2 系統構成。両リポジトリの同期ルールは [`docs/sync-policy.md`](docs/sync-policy.md) を参照）。
+> **ja → en 同期は現在 P2 フェーズ（mirror PR、手動マージ）で稼働中**。ja `main` への merge をトリガに en 側で `auto-mirror: ja#<N> ...` という mirror PR が起票されます（詳細: [`docs/sync-policy.md` §「現在のフェーズ: P2」](docs/sync-policy.md#現在のフェーズ-p2-mirror-pr-manual-merge)）。
 
 ---
 
