@@ -18,7 +18,7 @@
 | **窓口（Secretary）** | 人間との唯一の接点となる Claude インスタンス。タスク分解・委譲判断・結果伝達のみを担い、実作業は持たない。 | [`CLAUDE.md`](CLAUDE.md) |
 | **ディスパッチャー（Dispatcher）** | 窓口の指示を受けてワーカーペインを起動し、作業指示書を渡す代行役。窓口がブロックされる時間を最小化する。 | [`.dispatcher/CLAUDE.md`](.dispatcher/CLAUDE.md) |
 | **キュレーター（Curator）** | `knowledge/raw/` に蓄積された生の学びを整理済み知見へ昇華する自動ループ役。30 分間隔で動作する。 | [`.curator/CLAUDE.md`](.curator/CLAUDE.md) |
-| **ワーカー（Worker）** | タスク 1 件ごとに起動される実作業担当。専用の作業ディレクトリ境界の中でコミット・プルリクエスト作成までを行い、完了後に消滅する。 | [`.claude/skills/org-delegate/SKILL.md`](.claude/skills/org-delegate/SKILL.md) |
+| **ワーカー（Worker）** | タスク 1 件ごとに起動される実作業担当。専用の作業ディレクトリ境界の中でコード編集・コミットまでを行う（`git push` / プルリクエスト作成は窓口側の責務、ワーカーは PR 作成権限を持たない）。 | [`.claude/skills/org-delegate/SKILL.md`](.claude/skills/org-delegate/SKILL.md) |
 | **renga** | Layer 3 の端末多重化器 + `renga-peers` MCP サーバー。ペイン制御とペイン間 P2P メッセージを提供する。 | [suisya-systems/renga](https://github.com/suisya-systems/renga) |
 | **ccmux** | `renga` の旧称。M3 マイグレーションで `renga` に改名済みで、過去ドキュメント・移行ツール内にのみ残存する。 | [`docs/operations/m3-migration-runbook.md`](docs/operations/m3-migration-runbook.md) |
 
@@ -36,10 +36,11 @@
 
 ## 前提ツール（Prerequisites）
 
-ワンライナー / 手動手順のいずれを使う場合も、以下の 6 ツールは事前に導入しておく必要があります。インストーラ（`scripts/install.sh` / `scripts/install.ps1`）は導入有無の確認のみ行い、不足分は導入手順を案内して終了します（自動インストールはしません）。
+ワンライナー / 手動手順のいずれを使う場合も、以下のツールは事前に導入しておく必要があります。インストーラ（`scripts/install.sh` / `scripts/install.ps1`）は `git` / `claude` / `renga` / `gh` の 4 つを fail-close で検証し、Python は警告のみ、`jq` / Node.js は検証されません（自動インストールはしません）。表中の用途を満たすには 7 つすべての導入が必要です。
 
 | ツール | 最小バージョン | 用途 | 導入リンク |
 |---|---|---|---|
+| **`git`** | 2.x 系の任意の安定版 | リポジトリ取得（`git clone`）・コミット・ワーカー作業ディレクトリ管理 | [git-scm.com/downloads](https://git-scm.com/downloads) |
 | **GitHub CLI (`gh`)** | 2.x 系の任意の安定版 | プルリクエスト作成・Issue 操作・CI 監視（`gh pr checks --watch`） | [cli.github.com](https://cli.github.com/) |
 | **Node.js** | v18+ | `renga` を npm 経由で導入するためのランタイム | [nodejs.org](https://nodejs.org/) |
 | **Python** | 3.10+ | `core-harness` / `claude-org-runtime` の `pip install -e .` 実行（`pyproject.toml` の `requires-python` に整合） | [python.org/downloads](https://www.python.org/downloads/) |
