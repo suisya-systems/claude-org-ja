@@ -181,7 +181,7 @@ def main(argv: "list[str] | None" = None) -> int:
     parser.add_argument("--pr", type=int, required=True,
                         help="pull request number")
     parser.add_argument("--repo", default=None,
-                        help=("OWNER/REPO for cross-repo PRs (Issue #331); "
+                        help=("OWNER/REPO for cross-repo PRs; "
                               "auto-detected via gh repo view when omitted"))
     parser.add_argument("--db-path", default=None,
                         help=f"path to state.db (default: {DEFAULT_DB_PATH})")
