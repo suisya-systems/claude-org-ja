@@ -320,7 +320,7 @@ bash scripts/install-hooks.sh
 
 - **`/org-start` しても反応しない** → 窓口ペインの Claude Code がログイン済みか確認（`claude` を叩いて初回認証）。`claude mcp list` に `renga-peers` が出ているかも確認
 - **`renga-peers` MCP サーバーが見えない** → `renga mcp status` で登録状態を確認し、未登録なら `renga mcp install` を再実行（ユーザースコープ登録なので全ペインに即時反映される）
-- **`gh auth status` が Not logged in** → `gh auth login` で GitHub 認証を済ませる。未認証だとワーカーがプルリクエストを作れません
+- **`gh auth status` が Not logged in** → `gh auth login` で GitHub 認証を済ませる。未認証だと窓口（Secretary）がプルリクエストを作れません（PR 作成は窓口の責務、ワーカーはコミットまで）
 - **互換性の事前確認**: `tools/check_renga_compat.py` で `renga` のバージョンと MCP ツール群を一括確認できます
 
 それでも解決しない場合は [Issues](https://github.com/suisya-systems/claude-org-ja/issues) へ。
