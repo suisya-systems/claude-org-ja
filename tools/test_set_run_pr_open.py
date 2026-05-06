@@ -192,6 +192,141 @@ class TestSetRunPrOpenHelper(unittest.TestCase):
             )
 
 
+class TestSetRunPrOpenCrossRepoCli(unittest.TestCase):
+    """Issue #331: --repo flag must be forwarded to ``gh pr view`` so the
+    helper can back-fill cross-repo PRs (e.g. delegating into another
+    repo) instead of querying the cwd-resolved repo and failing with
+    GraphQL "Could not resolve to a PullRequest"."""
+
+    FOREIGN_REPO = "suisya-systems/renga"
+    FOREIGN_PR = 216
+    FOREIGN_BRANCH = "feat/renga-214-files-pane-handle"
+    FOREIGN_TASK_ID = "renga-214-files-pane-handle"
+    FOREIGN_URL = (
+        f"https://github.com/{FOREIGN_REPO}/pull/{FOREIGN_PR}"
+    )
+
+    def setUp(self) -> None:
+        self._td = tempfile.TemporaryDirectory()
+        self.db = Path(self._td.name) / "state.db"
+        conn = connect(self.db)
+        apply_schema(conn)
+        with StateWriter(conn).transaction() as w:
+            w.upsert_run(
+                task_id=self.FOREIGN_TASK_ID,
+                project_slug="renga",
+                pattern="B",
+                title=self.FOREIGN_TASK_ID,
+                status="review",
+                branch=self.FOREIGN_BRANCH,
+            )
+        conn.close()
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def _fake_run_factory(self, captured: list):
+        """Return a subprocess.run stand-in that records argv lists and
+        emits a ``gh pr view`` payload for the foreign PR."""
+
+        class _Result:
+            def __init__(self, stdout: str):
+                self.stdout = stdout
+                self.stderr = ""
+                self.returncode = 0
+
+        def _fake_run(argv, *args, **kwargs):
+            captured.append(list(argv))
+            if argv[:3] == ["gh", "pr", "view"]:
+                payload = json.dumps({
+                    "url": self.FOREIGN_URL,
+                    "headRefName": self.FOREIGN_BRANCH,
+                })
+                return _Result(payload)
+            if argv[:3] == ["gh", "repo", "view"]:
+                payload = json.dumps({"nameWithOwner": "octo/cwd-repo"})
+                return _Result(payload)
+            raise AssertionError(f"unexpected argv: {argv}")
+
+        return _fake_run
+
+    def test_repo_flag_is_forwarded_to_gh_pr_view(self):
+        captured: list = []
+        argv = [
+            "--task-id", self.FOREIGN_TASK_ID,
+            "--pr", str(self.FOREIGN_PR),
+            "--repo", self.FOREIGN_REPO,
+            "--db-path", str(self.db),
+        ]
+        with mock.patch.object(
+            set_run_pr_open.subprocess, "run",
+            side_effect=self._fake_run_factory(captured),
+        ), mock.patch.object(
+            set_run_pr_open.shutil, "which", return_value="/usr/bin/gh",
+        ):
+            rc = set_run_pr_open.main(argv)
+        self.assertEqual(rc, 0)
+
+        pr_view_calls = [a for a in captured if a[:3] == ["gh", "pr", "view"]]
+        self.assertEqual(len(pr_view_calls), 1)
+        self.assertEqual(
+            pr_view_calls[0],
+            [
+                "gh", "pr", "view", str(self.FOREIGN_PR),
+                "--repo", self.FOREIGN_REPO,
+                "--json", "url,headRefName",
+            ],
+        )
+        # No cwd-resolution call should have been made when --repo is set.
+        self.assertEqual(
+            [a for a in captured if a[:3] == ["gh", "repo", "view"]], [],
+        )
+
+        conn = sqlite3.connect(str(self.db))
+        conn.row_factory = sqlite3.Row
+        try:
+            row = conn.execute(
+                "SELECT pr_url, branch FROM runs WHERE task_id = ?",
+                (self.FOREIGN_TASK_ID,),
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertEqual(row["pr_url"], self.FOREIGN_URL)
+        self.assertEqual(row["branch"], self.FOREIGN_BRANCH)
+
+    def test_no_repo_flag_falls_back_to_cwd_resolution(self):
+        captured: list = []
+        argv = [
+            "--task-id", self.FOREIGN_TASK_ID,
+            "--pr", str(self.FOREIGN_PR),
+            "--db-path", str(self.db),
+        ]
+        with mock.patch.object(
+            set_run_pr_open.subprocess, "run",
+            side_effect=self._fake_run_factory(captured),
+        ), mock.patch.object(
+            set_run_pr_open.shutil, "which", return_value="/usr/bin/gh",
+        ):
+            rc = set_run_pr_open.main(argv)
+        self.assertEqual(rc, 0)
+
+        # cwd auto-resolve must run, then pr view uses the resolved repo.
+        repo_view_calls = [
+            a for a in captured if a[:3] == ["gh", "repo", "view"]
+        ]
+        self.assertEqual(len(repo_view_calls), 1)
+        pr_view_calls = [a for a in captured if a[:3] == ["gh", "pr", "view"]]
+        self.assertEqual(len(pr_view_calls), 1)
+        self.assertEqual(
+            pr_view_calls[0],
+            [
+                "gh", "pr", "view", str(self.FOREIGN_PR),
+                "--repo", "octo/cwd-repo",
+                "--json", "url,headRefName",
+            ],
+        )
+
+
 # ---------------------------------------------------------------------------
 # Integration: gen_delegate_payload.apply → set_run_pr_open → run_complete_on_merge
 # ---------------------------------------------------------------------------
