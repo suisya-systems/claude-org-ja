@@ -72,6 +72,29 @@ if str(REPO_ROOT) not in sys.path:
 # state DB rather than journal.jsonl.
 JOURNAL_PATH = REPO_ROOT / ".state" / "state.db"
 
+# Issue #326: after writing a CI-completion / merge / timeout event,
+# also push a peer message to secretary so it doesn't have to poll the
+# DB. The dispatch is wrapped in a tiny module-level seam so tests can
+# mock it without poking subprocess.Popen of the real renga binary.
+_PEER_NOTIFY_TARGET = "secretary"
+
+
+def _notify_peer(message: str, to_id: str = _PEER_NOTIFY_TARGET) -> bool:
+    """Best-effort peer-message dispatch. Never raises.
+
+    Returns True on confirmed delivery, False otherwise (RENGA_SOCKET
+    unset, renga binary missing, transport error, recipient unknown).
+    Wrapped here so tests can patch a single seam.
+    """
+    try:
+        from tools.peer_notify import notify_peer
+    except Exception:  # noqa: BLE001
+        return False
+    try:
+        return notify_peer(to_id, message)
+    except Exception:  # noqa: BLE001
+        return False
+
 
 def _record_ci_completed(*, db_path: Path, pr: int, repo: str,
                          status: str, duration: int) -> None:
@@ -299,6 +322,10 @@ def _watch_for_merge(
                 RESULT_MERGED, RESULT_MERGED_PENDING_CLEANUP,
                 RESULT_ALREADY, RESULT_NO_RUN,
             ):
+                # Issue #326: notify secretary when we observe the
+                # merge so it can kick off post-merge cleanup without
+                # waiting for a human to refresh.
+                _notify_peer(f"PR_MERGED: PR #{pr}")
                 return result
             # RESULT_NOT_YET shouldn't occur once mergedAt is set; treat
             # defensively as "keep polling".
@@ -312,6 +339,9 @@ def _watch_for_merge(
                     "max_seconds": max_seconds,
                 },
             )
+            # Issue #326: surface the 24h bound to secretary so a stuck
+            # PR doesn't sit silently after the loop releases.
+            _notify_peer(f"PR_MERGE_WATCH_TIMEOUT: PR #{pr}")
             sys.stdout.write(
                 f"pr_watch: PR #{pr} merge-watch timed out after "
                 f"{max_seconds}s\n"
@@ -474,6 +504,14 @@ def main(argv: "list[str] | None" = None) -> int:
         repo=repo,
         status=status,
         duration=duration,
+    )
+
+    # Issue #326: nudge secretary as soon as the CI verdict is recorded
+    # so it doesn't have to poll the DB. Best-effort — silent fallback
+    # in non-renga environments (RENGA_SOCKET unset).
+    _notify_peer(
+        f"CI_COMPLETED: PR #{args.pr} {status} "
+        f"(duration {duration}s, repo {repo})"
     )
 
     sys.stdout.write(f"pr_watch: PR #{args.pr} {status} ({duration}s)\n")

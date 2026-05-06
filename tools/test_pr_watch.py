@@ -798,5 +798,125 @@ class MergeWatchTests(unittest.TestCase):
                 conn.close()
 
 
+class PeerNotifyTests(unittest.TestCase):
+    """Issue #326: pr_watch dispatches peer messages to secretary on
+    CI completion / merge detection / merge-watch timeout. Mocks the
+    `_notify_peer` seam so the test suite doesn't spawn renga."""
+
+    def test_ci_completed_dispatches_peer_message(self) -> None:
+        fake_run = _make_fake_run(watch_exit=0)
+        captured: list[str] = []
+
+        with TempDir() as tmp:
+            db = tmp / ".state" / "state.db"
+            with mock.patch.object(pr_watch, "JOURNAL_PATH", db), \
+                 mock.patch.object(pr_watch, "_notify_peer",
+                                   side_effect=lambda msg, *a, **kw: captured.append(msg) or True), \
+                 mock.patch.object(pr_watch.shutil, "which", return_value="/usr/bin/gh"), \
+                 mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run), \
+                 mock.patch.object(pr_watch.time, "monotonic", side_effect=[0.0, 7.0]):
+                rc = pr_watch.main(["--pr", "326", "--repo", "octo/repo"])
+            self.assertEqual(rc, 0)
+            self.assertEqual(len(captured), 1)
+            self.assertIn("CI_COMPLETED", captured[0])
+            self.assertIn("PR #326", captured[0])
+            self.assertIn("passed", captured[0])
+            self.assertIn("octo/repo", captured[0])
+
+    def test_pr_merged_dispatches_peer_message(self) -> None:
+        with TempDir() as tmp:
+            db = tmp / ".state" / "state.db"
+            db.parent.mkdir(parents=True)
+            pr_url = "https://github.com/octo/repo/pull/777"
+            mw_tests = MergeWatchTests()
+            mw_tests._seed_run_for_merge(db, pr_url=pr_url)
+
+            view_merged = {
+                "number": 777, "url": pr_url, "state": "MERGED",
+                "mergedAt": "2026-05-06T03:21:00Z",
+                "mergeCommit": {"oid": "f" * 40},
+                "headRefName": "feat/merge-watch",
+            }
+            fake_run = mw_tests._build_run_with_view_sequence(
+                watch_exit=0, view_sequence=[view_merged],
+            )
+            captured: list[str] = []
+            with mock.patch.object(pr_watch, "JOURNAL_PATH", db), \
+                 mock.patch.object(pr_watch, "_notify_peer",
+                                   side_effect=lambda msg, *a, **kw: captured.append(msg) or True), \
+                 mock.patch.object(pr_watch.shutil, "which", return_value="/usr/bin/gh"), \
+                 mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run), \
+                 mock.patch.object(pr_watch.time, "monotonic", side_effect=[0.0, 1.0]):
+                pr_watch.main([
+                    "--pr", "777", "--repo", "octo/repo", "--interval", "1",
+                    "--merge-watch",
+                ])
+            # Expect both CI_COMPLETED and PR_MERGED in captured.
+            self.assertTrue(any("CI_COMPLETED" in m for m in captured),
+                            f"missing CI_COMPLETED: {captured}")
+            self.assertTrue(any("PR_MERGED: PR #777" in m for m in captured),
+                            f"missing PR_MERGED: {captured}")
+
+    def test_merge_watch_timeout_dispatches_peer_message(self) -> None:
+        with TempDir() as tmp:
+            db = tmp / ".state" / "state.db"
+            db.parent.mkdir(parents=True)
+            view_pending = {
+                "number": 555, "url": "https://github.com/octo/repo/pull/555",
+                "state": "OPEN", "mergedAt": None,
+                "mergeCommit": None, "headRefName": "feat/x",
+            }
+            from tools.state_db import apply_schema, connect
+            apply_schema(connect(db))
+
+            def fake_run(cmd, *args, **kwargs):
+                if cmd[:3] == ["gh", "pr", "view"]:
+                    return mock.Mock(
+                        returncode=0, stdout=json.dumps(view_pending),
+                        stderr="",
+                    )
+                raise AssertionError(f"unexpected cmd: {cmd}")
+
+            captured: list[str] = []
+            with mock.patch.object(pr_watch, "_notify_peer",
+                                   side_effect=lambda msg, *a, **kw: captured.append(msg) or True), \
+                 mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run):
+                result = pr_watch._watch_for_merge(
+                    pr=555, repo="octo/repo", interval=0,
+                    db_path=db, max_seconds=60,
+                    sleeper=lambda _s: None,
+                    monotonic=mock.Mock(side_effect=[0.0, 100.0, 100.0]),
+                )
+            self.assertEqual(result, "timeout")
+            self.assertEqual(captured, ["PR_MERGE_WATCH_TIMEOUT: PR #555"])
+
+    def test_no_renga_socket_silent_fallback(self) -> None:
+        """With RENGA_SOCKET unset, _notify_peer must return False
+        without raising or spawning anything, and pr_watch.main must
+        complete normally."""
+        from tools import peer_notify
+
+        env = {k: v for k, v in os.environ.items() if k != "RENGA_SOCKET"}
+
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertFalse(peer_notify.notify_peer("secretary", "x"))
+            self.assertFalse(pr_watch._notify_peer("x"))
+
+        # And run pr_watch.main end-to-end with the helper unmocked but
+        # RENGA_SOCKET cleared — no exception, ci_completed event still
+        # written.
+        fake_run = _make_fake_run(watch_exit=0)
+        with TempDir() as tmp:
+            db = tmp / ".state" / "state.db"
+            with mock.patch.dict(os.environ, env, clear=True), \
+                 mock.patch.object(pr_watch, "JOURNAL_PATH", db), \
+                 mock.patch.object(pr_watch.shutil, "which", return_value="/usr/bin/gh"), \
+                 mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run), \
+                 mock.patch.object(pr_watch.time, "monotonic", side_effect=[0.0, 1.0]):
+                rc = pr_watch.main(["--pr", "10", "--repo", "octo/repo"])
+            self.assertEqual(rc, 0)
+            self.assertEqual(_count_ci_events(db), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
