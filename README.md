@@ -9,6 +9,21 @@
 
 ---
 
+## 用語集
+
+このリポジトリで頻出する役割名・周辺ツールの最小定義。各リンク先が一次情報源です。
+
+| 用語 | 意味 | 一次情報源 |
+|---|---|---|
+| **窓口（Secretary）** | 人間との唯一の接点となる Claude インスタンス。タスク分解・委譲判断・結果伝達のみを担い、実作業は持たない。 | [`CLAUDE.md`](CLAUDE.md) |
+| **ディスパッチャー（Dispatcher）** | 窓口の指示を受けてワーカーペインを起動し、作業指示書を渡す代行役。窓口がブロックされる時間を最小化する。 | [`.dispatcher/CLAUDE.md`](.dispatcher/CLAUDE.md) |
+| **キュレーター（Curator）** | `knowledge/raw/` に蓄積された生の学びを整理済み知見へ昇華する自動ループ役。30 分間隔で動作する。 | [`.curator/CLAUDE.md`](.curator/CLAUDE.md) |
+| **ワーカー（Worker）** | タスク 1 件ごとに起動される実作業担当。専用の作業ディレクトリ境界の中でコード編集・コミットまでを行う（`git push` / プルリクエスト作成は窓口側の責務、ワーカーは PR 作成権限を持たない）。 | [`.claude/skills/org-delegate/SKILL.md`](.claude/skills/org-delegate/SKILL.md) |
+| **renga** | Layer 3 の端末多重化器 + `renga-peers` MCP サーバー。ペイン制御とペイン間 P2P メッセージを提供する。 | [suisya-systems/renga](https://github.com/suisya-systems/renga) |
+| **ccmux** | `renga` の旧称。M3 マイグレーションで `renga` に改名済みで、過去ドキュメント・移行ツール内にのみ残存する。 | [`docs/operations/m3-migration-runbook.md`](docs/operations/m3-migration-runbook.md) |
+
+---
+
 ## 30 秒ピッチ
 
 **問題**: Claude Code を「窓口 1 つ + ワーカー多数」の体制で長時間運用したい。しかし Claude Code は単独セッション前提で、複数インスタンスを安全に協調させるための運用層は公式には提供されていない。tmux 風の素朴な分割や、いわゆる farm 系の全自動並列では、許可境界・知見の蓄積・状態の復元・タスクごとの環境構築といった**運用上の規律**が抜け落ちる。
@@ -16,6 +31,22 @@
 **解決策**: claude-org-ja は Claude Code 専用の**運用規律フレームワーク**である。1 つの窓口 Claude と対話するだけで、ディスパッチャー・キュレーター・ワーカーが裏で自動的に派生し、許可エントリの絞り込み（narrow allowlist）+ タスクごとの作業ディレクトリ境界 + 30 分おきの自動的な知見整理 + 状態の中断・再開を**最初から強制する**。
 
 **対象利用者**: Claude Code を業務で長時間回したい開発者・オペレーターのうち、「全自動より明示的な許可境界が欲しい」「3〜5 ワーカーを品質重視で動かしたい」「知見の自己成長ループを回したい」層。
+
+---
+
+## 前提ツール（Prerequisites）
+
+ワンライナー / 手動手順のいずれを使う場合も、以下のツールは事前に導入しておく必要があります。インストーラ（`scripts/install.sh` / `scripts/install.ps1`）は `git` / `claude` / `renga` / `gh` の 4 つを fail-close で検証し、Python は警告のみ、`jq` / Node.js は検証されません（自動インストールはしません）。表中の用途を満たすには 7 つすべての導入が必要です。
+
+| ツール | 最小バージョン | 用途 | 導入リンク |
+|---|---|---|---|
+| **`git`** | 2.x 系の任意の安定版 | リポジトリ取得（`git clone`）・コミット・ワーカー作業ディレクトリ管理 | [git-scm.com/downloads](https://git-scm.com/downloads) |
+| **GitHub CLI (`gh`)** | 2.x 系の任意の安定版 | プルリクエスト作成・Issue 操作・CI 監視（`gh pr checks --watch`） | [cli.github.com](https://cli.github.com/) |
+| **Node.js** | v18+ | `renga` を npm 経由で導入するためのランタイム | [nodejs.org](https://nodejs.org/) |
+| **Python** | 3.10+ | `core-harness` / `claude-org-runtime` の `pip install -e .` 実行（`pyproject.toml` の `requires-python` に整合） | [python.org/downloads](https://www.python.org/downloads/) |
+| **`jq`** | 1.6+ | `.state/` JSON / `gh api` 出力の整形・抽出（フック内・ツール内で使用） | [jqlang.org/download](https://jqlang.org/download/) |
+| **Claude Code CLI (`claude`)** | 最新安定版 | 各ロールペイン本体。初回ログインも `claude` 起動時に行う | [claude.ai/code](https://claude.ai/code) |
+| **`renga`** | 0.18.0+ | Layer 3 の端末多重化器 + `renga-peers` MCP サーバー（`npm install -g @suisya-systems/renga@0.18.0`） | [github.com/suisya-systems/renga](https://github.com/suisya-systems/renga) |
 
 ---
 
@@ -115,9 +146,7 @@ iwr -useb "https://raw.githubusercontent.com/suisya-systems/claude-org-ja/$Ref/s
 ### 手動手順（ワンライナーを使わない場合）
 
 ```bash
-# 1. 依存ツールを導入
-#    Claude Code (https://claude.ai/code), gh, Node.js v18+, Python 3.10+, jq を各公式手順で導入
-#    renga (Layer 3) は 0.18.0 以上が必須:
+# 1. 依存ツールを導入（一覧と最小バージョンは「前提ツール（Prerequisites）」セクションを参照）
 npm install -g @suisya-systems/renga@0.18.0
 
 # 2. 認証
@@ -181,7 +210,7 @@ renga --layout ops
 - **窓口（Secretary）**: 人間との唯一の接点。タスク分解・委譲判断・結果報告を担う
 - **ディスパッチャー（Dispatcher）**: ペイン起動・指示送信を代行し、窓口がブロックされる時間を最小化する
 - **キュレーター（Curator）**: 蓄積された生の知見を整理済みの知見に昇華し、スキルやプロセスの改善を提案する
-- **ワーカー（Worker）**: 実作業を担当する。タスクごとの作業ディレクトリ境界の中で自律的にコミット・プルリクエスト作成を行い、完了後に生の知見を記録する
+- **ワーカー（Worker）**: 実作業を担当する。タスクごとの作業ディレクトリ境界の中で自律的にコミットまでを行い（プルリクエスト作成は窓口側）、完了後に生の知見を記録する
 
 全ペインは同一タブ内で動作します（別タブを開く `new_tab` は組織運用では使いません）。
 
