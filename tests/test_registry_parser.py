@@ -33,12 +33,14 @@ class TestParseProjects(unittest.TestCase):
     def test_real_registry_fixture(self):
         path = PROJECT_ROOT / "registry" / "projects.md"
         projects = parse_projects(path)
-        # The actual checked-in registry has at least the 3 well-known
-        # projects (clock-app, renga, claude-org-ja).
+        # The checked-in registry carries the public, non-user-specific
+        # projects only. claude-org-ja self-edit is detected via the live
+        # repo's git origin URL (resolve_worker_layout.is_claude_org_project)
+        # and intentionally has no row here.
         names = [p.name for p in projects]
         self.assertIn("clock-app", names)
         self.assertIn("renga", names)
-        self.assertIn("claude-org-ja", names)
+        self.assertNotIn("claude-org-ja", names)
         # All rows are fully populated Project instances.
         for p in projects:
             self.assertIsInstance(p, Project)

@@ -309,6 +309,17 @@ class FromTaskSubcommand(unittest.TestCase):
         self.claude_org_root = td / "claude-org"
         (self.claude_org_root / ".state").mkdir(parents=True)
         (self.claude_org_root / "registry").mkdir()
+        # Self-edit detection runs off the live repo's git origin URL, so
+        # the sandbox needs an initialised git repo with the canonical
+        # origin set for the claude-org-ja → CLAUDE.local.md auto-switch
+        # to fire.
+        import subprocess as _sp
+        _sp.run(["git", "init", "-q", str(self.claude_org_root)], check=True)
+        _sp.run(
+            ["git", "-C", str(self.claude_org_root), "remote", "add",
+             "origin", "https://github.com/suisya-systems/claude-org-ja.git"],
+            check=True,
+        )
         (self.claude_org_root / "registry" / "org-config.md").write_text(
             "## Workers Directory\nworkers_dir: ../workers\n",
             encoding="utf-8",
