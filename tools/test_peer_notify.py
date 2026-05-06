@@ -89,7 +89,7 @@ class _FakeProc:
 def _ok_init(req: dict) -> dict:
     return {
         "jsonrpc": "2.0", "id": req["id"],
-        "result": {"protocolVersion": "2024-11-05",
+        "result": {"protocolVersion": "2025-03-26",
                    "capabilities": {}, "serverInfo": {"name": "fake"}},
     }
 
@@ -198,6 +198,37 @@ class NotifyPeerTests(unittest.TestCase):
 
         with self._patch_popen(server):
             self.assertTrue(peer_notify.notify_peer("secretary", "hi"))
+
+    def test_initialize_request_uses_modern_protocol_version(self) -> None:
+        """Regression guard against drifting back to 2024-11-05.
+
+        Should match the version sent by tools/check_renga_compat.py so a
+        future renga that tightens version negotiation doesn't silently
+        downgrade peer_notify to a no-op.
+        """
+        seen: list[dict] = []
+
+        def server(req: dict) -> Optional[dict]:
+            seen.append(req)
+            if req.get("method") == "initialize":
+                return _ok_init(req)
+            if req.get("method") == "tools/call":
+                return {
+                    "jsonrpc": "2.0", "id": req["id"],
+                    "result": {"isError": False,
+                               "content": [{"type": "text",
+                                            "text": "Delivered to 1."}]},
+                }
+            return None
+
+        with self._patch_popen(server):
+            self.assertTrue(peer_notify.notify_peer("secretary", "hi"))
+
+        init_calls = [r for r in seen if r.get("method") == "initialize"]
+        self.assertEqual(len(init_calls), 1)
+        self.assertEqual(
+            init_calls[0]["params"]["protocolVersion"], "2025-03-26",
+        )
 
     def test_unresponsive_server_times_out(self) -> None:
         """An unresponsive `renga mcp-peer` must not hang the caller."""
