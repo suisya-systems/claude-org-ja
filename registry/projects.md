@@ -10,10 +10,11 @@
 - `-` → 新規プロジェクト（clone 元なし）。`git init {worker_dir}` で初期化（clone は実行しない）
 
 注意: この列はワーカーの成果物パスを示すものではない（Issue #267 live-migration 後のレイアウトでは、active ワーカーは `workers/<project>/_runs/<workstream>/<run>/` を作業ルートとし、リサーチ系は `_research/_runs/<workstream>/<run>/`、検証用 sandbox は `_scratch/_runs/_solo/<name>/`、cold 成果物は curator が事後に `_archive/<YYYY-Qx>/<project>/<workstream>/<run>/` へ退避する）。
+
+claude-org-ja 自身（self-edit）は本レジストリに載せない。`tools/resolve_worker_layout.py:is_claude_org_project()` が `claude_org_root` の git origin URL を見て `suisya-systems/claude-org-ja` リポジトリかを判定する。
 この下の Markdown 表はワーカー派遣前に `dashboard/server.py:_parse_projects` で機械パースされるため、本セクションに追加の Markdown 表（`|---|` セパレータ付き）を差し込まないこと。説明を増やす場合はプレーン箇条書きで記述する。
 
 | 通称 | プロジェクト名 | パス | 説明 | よくある作業例 |
 |---|---|---|---|---|
 | 時計アプリ | clock-app | - | Webブラウザで動くデジタル時計 | デザイン変更、機能追加 |
 | renga | renga | https://github.com/suisya-systems/renga | Rust 製の Claude Code 用ターミナルマルチプレクサ（TUI） | 機能追加、バグ修正、Issue 対応 |
-| claude-org-ja | claude-org-ja | C:/Users/iwama/Documents/work/claude-org | Claude Code 多役 AI 組織ハーネス（Secretary / Dispatcher / Curator / Worker）日本語版本体（self-edit はこのローカル checkout の worktree 上で実施） | スキル改善、ドキュメント追記、Issue 対応 |

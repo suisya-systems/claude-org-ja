@@ -248,28 +248,86 @@ def infer_branch(task_id: str, description: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def is_claude_org_project(project: Optional[RegistryProject], claude_org_root: Path) -> bool:
-    """True iff the registered project resolves to the same dir as claude-org root."""
-    if project is None:
-        return False
-    if not project.path or project.path == "-" or "://" in project.path:
-        return False
+# Canonical claude-org self-edit slug. The resolver short-circuits Pattern B +
+# live_repo_worktree for this slug when claude_org_root's git origin matches
+# one of the canonical repos below. Detection runs off the origin URL so the
+# registry need not carry a user-specific local path for the self-edit target.
+_CLAUDE_ORG_SELF_EDIT_SLUG = "claude-org-ja"
+
+# Owner/repo identifiers (lowercased, no scheme, no trailing .git) that count
+# as claude-org self-edit targets. Tuple constant so adding the en mirror
+# (e.g. "suisya-systems/claude-org-en") is a one-line change.
+_CLAUDE_ORG_REPOS: tuple[str, ...] = ("suisya-systems/claude-org-ja",)
+
+# Capture <owner>/<repo> from common github URL forms:
+#   https://github.com/owner/repo(.git)
+#   git@github.com:owner/repo(.git)
+#   ssh://git@github.com/owner/repo(.git)
+_GITHUB_OWNER_REPO_RE = re.compile(r"github\.com[:/]([^/:\s]+/[^/:\s]+?)(?:\.git)?/?$")
+
+
+def _normalize_remote_url(url: str) -> Optional[str]:
+    """Return ``<owner>/<repo>`` lowercased if ``url`` is a github remote, else None.
+
+    A worker-dir clone has origin pointing at a local filesystem path
+    (e.g. ``C:/Users/.../claude-org``); that has no ``github.com`` segment,
+    so this returns None and self-edit detection naturally fails.
+    """
+    s = url.strip().lower()
+    if not s:
+        return None
+    m = _GITHUB_OWNER_REPO_RE.search(s)
+    return m.group(1) if m else None
+
+
+def _git_origin_url(repo_path: Path) -> Optional[str]:
+    """Return ``git -C repo_path remote get-url origin`` stdout, or None."""
     try:
-        return Path(project.path).resolve() == claude_org_root.resolve()
-    except (OSError, RuntimeError):
+        result = subprocess.run(
+            ["git", "-C", str(repo_path), "remote", "get-url", "origin"],
+            capture_output=True,
+            text=True,
+        )
+    except (FileNotFoundError, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    out = result.stdout.strip()
+    return out or None
+
+
+def is_claude_org_project(project_slug: str, claude_org_root: Path) -> bool:
+    """True iff this delegation targets claude-org self-edit.
+
+    Two signals must both hold:
+    1. ``project_slug`` equals the canonical self-edit slug
+       (``claude-org-ja``). Without this gate any edit task — clock-app,
+       renga, etc. — would be flagged self-edit because Secretary always
+       runs the resolver from inside the live claude-org checkout.
+    2. ``claude_org_root``'s ``origin`` remote URL normalizes to a known
+       claude-org repo (``suisya-systems/claude-org-ja``). A worker-dir
+       clone has origin set to a local Windows path, so it does not
+       match; a fresh repo without any remote also does not match.
+    """
+    if project_slug != _CLAUDE_ORG_SELF_EDIT_SLUG:
         return False
+    url = _git_origin_url(claude_org_root)
+    if url is None:
+        return False
+    normalized = _normalize_remote_url(url)
+    return normalized in _CLAUDE_ORG_REPOS
 
 
 def decide_role(
     *,
     mode: str,
-    project: Optional[RegistryProject],
+    project_slug: str,
     claude_org_root: Path,
 ) -> str:
     if mode == "audit":
         return "doc-audit"
     if mode == "edit":
-        if is_claude_org_project(project, claude_org_root):
+        if is_claude_org_project(project_slug, claude_org_root):
             return "claude-org-self-edit"
         return "default"
     raise ResolveError(f"unknown mode: {mode!r} (expected one of {VALID_MODES})")
@@ -317,7 +375,7 @@ def resolve(
     project = find_project(projects, project_slug)
 
     # --- Role decision (computed first so Pattern B can branch on it) -----
-    role = decide_role(mode=mode, project=project, claude_org_root=claude_org_root)
+    role = decide_role(mode=mode, project_slug=project_slug, claude_org_root=claude_org_root)
     self_edit = role == "claude-org-self-edit"
 
     # --- Pattern decision --------------------------------------------------
@@ -325,7 +383,17 @@ def resolve(
     variant: Optional[str]
     worker_dir: Path
 
-    if project is None:
+    if self_edit:
+        # claude-org self-edit always uses Pattern B + live_repo_worktree under
+        # claude_org_root/.worktrees/{task_id}/ (single .git, no two-clone
+        # sync). The self-edit target has no registry row — origin-URL
+        # detection is what makes this branch fire — so this short-circuit
+        # must come before the ``project is None → Pattern C ephemeral``
+        # fallback below.
+        pattern = "B"
+        variant = "live_repo_worktree"
+        worker_dir = claude_org_root / ".worktrees" / task_id
+    elif project is None:
         # Unknown project → Pattern C ephemeral.
         pattern, variant = "C", "ephemeral"
         worker_dir = workers_dir / task_id

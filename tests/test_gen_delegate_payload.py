@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -37,18 +38,41 @@ GOLDEN_DIR = REPO_ROOT / "tests" / "fixtures" / "delegate_payload"
 
 
 class _Sandbox:
-    def __init__(self, td: Path):
+    def __init__(self, td: Path, *, with_claude_org_origin: bool = True):
         self.root = td
         self.workers = td / "workers"
         self.workers.mkdir()
         self.claude_org_root = td / "claude-org"
         (self.claude_org_root / ".state").mkdir(parents=True)
         (self.claude_org_root / "registry").mkdir()
+        # Self-edit detection runs off git origin URL. Tests that drive
+        # their own git setup on claude_org_root (e.g. pre-seeding a
+        # ``main`` branch + initial commit for worktree-creation tests)
+        # opt out via ``with_claude_org_origin=False`` to avoid a
+        # ``git init`` race that would silently swallow ``--initial-branch``.
+        if with_claude_org_origin:
+            subprocess.run(
+                ["git", "init", "-q", str(self.claude_org_root)],
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(self.claude_org_root), "remote", "add",
+                 "origin", "https://github.com/suisya-systems/claude-org-ja.git"],
+                check=True,
+            )
         (self.claude_org_root / "registry" / "org-config.md").write_text(
             "## Permission Mode\ndefault_permission_mode: auto\n"
             "## Workers Directory\nworkers_dir: ../workers\n",
             encoding="utf-8",
         )
+        # The checked-in registry/projects.md no longer carries a
+        # claude-org-ja row (origin-URL detection replaces the path
+        # lookup), but several tests in this module still exercise the
+        # legacy *registry-driven* code paths (Pattern A doc-audit on a
+        # registered claude-org-ja path, gitignored sub-mode, etc.).
+        # The sandbox row uses the per-test temp dir as its path, so it
+        # doesn't leak any user-specific data — keeping it lets the legacy
+        # paths stay covered while the production registry stays clean.
         (self.claude_org_root / "registry" / "projects.md").write_text(
             "# Projects\n\n"
             "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 |\n"
@@ -684,7 +708,10 @@ class TestPatternBWorktreeCreation(unittest.TestCase):
         except (FileNotFoundError):
             self.skipTest("git not available")
         self._td = tempfile.TemporaryDirectory()
-        self.sb = _Sandbox(Path(self._td.name))
+        # This class drives its own ``git init -b main`` + initial commit on
+        # claude_org_root, so we opt out of the sandbox-level git init that
+        # would otherwise re-init and silently swallow ``--initial-branch``.
+        self.sb = _Sandbox(Path(self._td.name), with_claude_org_origin=False)
         # Initialize claude_org_root as a real git repo so live_repo_worktree
         # can branch from it.
         import os
