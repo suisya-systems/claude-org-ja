@@ -28,7 +28,7 @@ Usage::
 
 Exit codes: 0 on success, 2 on gh / DB failure, 3 when the run row for
 ``task_id`` is missing (so Secretary sees the misalignment instead of a
-silent no-op).
+silent no-op), 127 when the ``gh`` CLI is not installed.
 """
 from __future__ import annotations
 

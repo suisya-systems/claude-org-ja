@@ -24,6 +24,11 @@ from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
+# Also expose tools/ on sys.path so ``import set_run_pr_open`` /
+# ``import run_complete_on_merge`` work both when this file is run
+# directly (``python tools/test_set_run_pr_open.py``) and when invoked
+# through unittest discovery (``python -m unittest tools.test_set_...``).
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import set_run_pr_open  # noqa: E402  (tools/set_run_pr_open.py)
 import run_complete_on_merge  # noqa: E402  (tools/run_complete_on_merge.py)
@@ -351,6 +356,75 @@ class TestPrMergeAutoCompletionChain(unittest.TestCase):
         )
         self.assertEqual(result_again, run_complete_on_merge.RESULT_ALREADY)
         self.assertEqual(len(self._events("pr_merged")), 1)
+
+    def test_pr_url_is_load_bearing_when_branch_cannot_resolve(self):
+        """Codex round-1 Major: the basic chain test passes even without
+        set_run_pr_open because run_complete_on_merge falls back on
+        runs.branch. To prove the back-fill is actually load-bearing,
+        construct a state where the branch fallback cannot resolve
+        (apply reserved branch=X, but the merged PR's headRefName is Y
+        — e.g. dispatcher renamed the branch before the push). With
+        set_run_pr_open the merge is auto-completed via runs.pr_url;
+        without it, complete_on_merge returns RESULT_NO_RUN.
+        """
+        plan = gdp.build_delegate_plan(
+            task_id=TASK_ID,
+            project_slug="clock-app",
+            description="branch divergence scenario",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        gdp.apply_delegate_plan(
+            plan,
+            state_db_path=self.sb.db_path,
+            claude_org_root=self.sb.claude_org_root,
+            skip_settings=True,
+        )
+
+        # Sanity: without back-fill AND with a divergent headRefName,
+        # the helper must report no_run. This proves the gap exists
+        # (and therefore that the back-fill is doing real work below).
+        diverged_view = {
+            "number": PR,
+            "url": PR_URL,
+            "state": "MERGED",
+            "mergedAt": MERGED_AT,
+            "mergeCommit": {"oid": MERGE_OID},
+            "headRefName": "feat/renamed-after-delegate",
+        }
+        self.assertEqual(
+            run_complete_on_merge.complete_on_merge(
+                pr=PR, repo=REPO,
+                db_path=self.sb.db_path,
+                pr_view=diverged_view,
+            ),
+            run_complete_on_merge.RESULT_NO_RUN,
+        )
+
+        # Now run set_run_pr_open with the (also divergent) PR-open
+        # view and confirm the merged-PR resolution succeeds via pr_url.
+        open_view_diverged = {
+            "url": PR_URL,
+            "headRefName": "feat/renamed-after-delegate",
+        }
+        self.assertEqual(
+            set_run_pr_open.set_run_pr_open(
+                task_id=TASK_ID, pr=PR, repo=REPO,
+                db_path=self.sb.db_path, pr_view=open_view_diverged,
+            ),
+            set_run_pr_open.RESULT_OK,
+        )
+        self.assertEqual(
+            run_complete_on_merge.complete_on_merge(
+                pr=PR, repo=REPO,
+                db_path=self.sb.db_path,
+                pr_view=diverged_view,
+            ),
+            run_complete_on_merge.RESULT_MERGED,
+        )
+        final = self._row()
+        self.assertEqual(final["pr_state"], "merged")
+        self.assertEqual(final["pr_url"], PR_URL)
 
 
 if __name__ == "__main__":
