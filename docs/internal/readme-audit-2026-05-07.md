@@ -29,7 +29,7 @@
 
 - **Location**: README.md §「このリポジトリに残るもの (ja-specific)」, the ja 固有運用ツール bullet.
 - **Evidence**: actual files are `tools/pr_watch.py`, `tools/pr-watch.ps1`, `tools/pr-watch.sh` — the underscore vs hyphen split is mixed, so the single glob `pr_watch.*` would not match the two POSIX/PowerShell entry points. CLAUDE.md correctly writes `tools/pr-watch.ps1` / `tools/pr-watch.sh`.
-- **Action**: **fixed in this PR.** Replaced with `tools/pr_watch.py / tools/pr-watch.{ps1,sh}` and also expanded `tools/journal_*` → `tools/journal_append.{py,sh}` for symmetry (the only files matching that prefix today).
+- **Action**: **fixed in this PR.** Replaced with `tools/pr_watch.py / tools/pr-watch.{ps1,sh}`. The neighbouring `tools/journal_*` glob is left as-is — both `journal_append.py` and `journal_append.sh` match it, so it is not a factual error.
 
 ## Verified (no change needed)
 
@@ -56,7 +56,7 @@ These were deliberately **not fixed** because they require Lead-level judgment a
 
 ### Proposed Issue B — Reconcile worker raw-knowledge recording phrasing
 
-- **Why**: README §「仕組み」 line "ワーカー...完了後に**生の知見を記録する**" is stated as default behavior, but worker `CLAUDE.local.md` template (this very task) phrases it as "振り返り記録: **任意**（非自明な学びがあれば...）". `.claude/skills/org-retro/SKILL.md` line 16 says "自動的に `knowledge/raw/` に記録する。ここでは扱わない" and lines 128/132 add "ワーカーが既に記録している場合はスキップ" — implying the worker is expected to record by default. The current dispatcher-generated worker brief makes it optional.
+- **Why**: README §「仕組み」 line "ワーカー...完了後に**生の知見を記録する**" is stated as default behavior, but the in-tree worker brief templates phrase it as optional / conditional: `tools/templates/worker_brief_self_edit.md:69` says "振り返り記録: **任意**（非自明な学びがあれば...）" and `tools/templates/worker_brief_normal.md:84` adds "振り返り記録（`knowledge/raw/`）も minimal では不要". `.claude/skills/org-retro/SKILL.md:16` says "自動的に `knowledge/raw/` に記録する。ここでは扱わない" and lines 128/132 add "ワーカーが既に記録している場合はスキップ" — implying the worker is expected to record by default. The README and the templates therefore disagree about whether raw recording is mandatory.
 - **Defer reason**: This is an actual contract ambiguity (is raw recording mandatory or opportunistic?), not a wording issue. Resolving it requires a Lead call about the worker contract, after which README + worker brief template + org-retro SKILL all need to move together.
 - **Suggested resolution path**: pin the worker contract in `docs/contracts/role-contract.md` first, then sync README phrasing.
 
