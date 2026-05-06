@@ -19,11 +19,11 @@ description: >
 > ([`../../../.dispatcher/references/worker-monitoring.md` Step 5.1](../../../.dispatcher/references/worker-monitoring.md#step-5-1)) が誤発火 / 見逃しになる。
 
 > **ack template SoT**: 判断仰ぎ ack の最低 3 要素・例文・アンチパターンは
-> [`../org-delegate/references/ack-template.md`](../org-delegate/references/ack-template.md) を一次参照する。本 SKILL は重複コピーを置かず、リンクで委譲する。
+> [`.claude/skills/org-delegate/references/ack-template.md`](../org-delegate/references/ack-template.md) を一次参照する。本 SKILL は重複コピーを置かず、リンクで委譲する。
 
 ## 正準フロー
 
-1. **最初に worker へ ack を返す**（状態保存・user 伝達より前に発行する）。文面は [`../org-delegate/references/ack-template.md`](../org-delegate/references/ack-template.md) §「判断仰ぎ ack」を一次参照する（本 SKILL は重複コピーを置かない）。
+1. **最初に worker へ ack を返す**（状態保存・user 伝達より前に発行する）。文面は [`.claude/skills/org-delegate/references/ack-template.md`](../org-delegate/references/ack-template.md) §「判断仰ぎ ack」を一次参照する（本 SKILL は重複コピーを置かない）。
    - **Secretary は一次承認しない**。worker への返答も「受領しました、人間に確認します」のみ
    - 「ユーザーは選択肢 X を選んだから自動的に含意される」「一気通貫の意図に含まれる」等の自己解釈で承認してはならない（CLAUDE.md `feedback_relay_user_decisions_to_workers` 参照）
    - ack ≠ user 承認: ack は worker dead-lock 解除のための受領確認であり、push/PR 権限を生まない
