@@ -324,8 +324,15 @@ def _watch_for_merge(
             ):
                 # Issue #326: notify secretary when we observe the
                 # merge so it can kick off post-merge cleanup without
-                # waiting for a human to refresh.
-                _notify_peer(f"PR_MERGED: PR #{pr}")
+                # waiting for a human to refresh. NO_RUN means the
+                # merge was observed but no matching run row was found
+                # — Secretary must NOT treat it as the post-merge
+                # cleanup signal, so we surface a distinct error
+                # variant instead of PR_MERGED.
+                if result == RESULT_NO_RUN:
+                    _notify_peer(f"PR_MERGED_NO_RUN: PR #{pr}")
+                else:
+                    _notify_peer(f"PR_MERGED: PR #{pr}")
                 return result
             # RESULT_NOT_YET shouldn't occur once mergedAt is set; treat
             # defensively as "keep polling".

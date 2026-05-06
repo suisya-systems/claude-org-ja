@@ -890,6 +890,46 @@ class PeerNotifyTests(unittest.TestCase):
             self.assertEqual(result, "timeout")
             self.assertEqual(captured, ["PR_MERGE_WATCH_TIMEOUT: PR #555"])
 
+    def test_no_run_dispatches_distinct_message(self) -> None:
+        """When complete_on_merge returns no_run, pr-watch must NOT
+        send PR_MERGED (which would mislead secretary into starting
+        post-merge cleanup). It surfaces a PR_MERGED_NO_RUN variant."""
+        with TempDir() as tmp:
+            db = tmp / ".state" / "state.db"
+            db.parent.mkdir(parents=True)
+            from tools.state_db import apply_schema, connect
+            apply_schema(connect(db))
+            view_merged = {
+                "number": 444,
+                "url": "https://github.com/octo/repo/pull/444",
+                "state": "MERGED",
+                "mergedAt": "2026-05-06T03:21:00Z",
+                "mergeCommit": {"oid": "a" * 40},
+                "headRefName": "feat/x",
+            }
+
+            def fake_run(cmd, *args, **kwargs):
+                if cmd[:3] == ["gh", "pr", "view"]:
+                    return mock.Mock(
+                        returncode=0, stdout=json.dumps(view_merged),
+                        stderr="",
+                    )
+                raise AssertionError(f"unexpected cmd: {cmd}")
+
+            captured: list[str] = []
+            with mock.patch.object(pr_watch, "_notify_peer",
+                                   side_effect=lambda msg, *a, **kw: captured.append(msg) or True), \
+                 mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run):
+                # No seeded run for PR #444 → complete_on_merge → no_run.
+                result = pr_watch._watch_for_merge(
+                    pr=444, repo="octo/repo", interval=0,
+                    db_path=db, max_seconds=60,
+                    sleeper=lambda _s: None,
+                    monotonic=mock.Mock(side_effect=[0.0, 0.0, 100.0]),
+                )
+            self.assertEqual(result, "no_run")
+            self.assertEqual(captured, ["PR_MERGED_NO_RUN: PR #444"])
+
     def test_no_renga_socket_silent_fallback(self) -> None:
         """With RENGA_SOCKET unset, _notify_peer must return False
         without raising or spawning anything, and pr_watch.main must

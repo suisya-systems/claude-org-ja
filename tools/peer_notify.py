@@ -180,11 +180,12 @@ def _drive_send(
 
 
 def _shutdown(proc: subprocess.Popen, timeout: float) -> None:
-    try:
-        if proc.stdin is not None:
-            proc.stdin.close()
-    except Exception:  # noqa: BLE001
-        pass
+    for stream in (proc.stdin, proc.stdout, proc.stderr):
+        try:
+            if stream is not None:
+                stream.close()
+        except Exception:  # noqa: BLE001
+            pass
     try:
         proc.wait(timeout=timeout)
     except Exception:  # noqa: BLE001
