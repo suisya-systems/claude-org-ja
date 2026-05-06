@@ -254,30 +254,33 @@ def infer_branch(task_id: str, description: str) -> str:
 # registry need not carry a user-specific local path for the self-edit target.
 _CLAUDE_ORG_SELF_EDIT_SLUG = "claude-org-ja"
 
-# Owner/repo identifiers (lowercased, no scheme, no trailing .git) that count
-# as claude-org self-edit targets. Tuple constant so adding the en mirror
-# (e.g. "suisya-systems/claude-org-en") is a one-line change.
-_CLAUDE_ORG_REPOS: tuple[str, ...] = ("suisya-systems/claude-org-ja",)
+# Repo names (lowercased, no owner, no trailing ``.git``) that count as
+# claude-org self-edit targets. Owner is intentionally NOT pinned: the
+# project documents fork-based contribution (see CONTRIBUTING.md), and a
+# fork's ``origin`` points at the contributor's fork (e.g.
+# ``git@github.com:<user>/claude-org-ja.git``), not at suisya-systems'.
+# Tuple constant so adding the en mirror (e.g. ``claude-org-en``) is a
+# one-line change.
+_CLAUDE_ORG_REPO_NAMES: tuple[str, ...] = ("claude-org-ja",)
 
 # Capture <owner>/<repo> from common github URL forms:
 #   https://github.com/owner/repo(.git)
 #   git@github.com:owner/repo(.git)
 #   ssh://git@github.com/owner/repo(.git)
-_GITHUB_OWNER_REPO_RE = re.compile(r"github\.com[:/]([^/:\s]+/[^/:\s]+?)(?:\.git)?/?$")
+# A local-path origin (worker-dir clones use these) has no ``github.com``
+# segment, so the regex naturally rejects it — even when the upstream dir
+# happens to be named ``claude-org-ja``.
+_GITHUB_OWNER_REPO_RE = re.compile(r"github\.com[:/]([^/:\s]+)/([^/:\s]+?)(?:\.git)?/?$")
 
 
-def _normalize_remote_url(url: str) -> Optional[str]:
-    """Return ``<owner>/<repo>`` lowercased if ``url`` is a github remote, else None.
-
-    A worker-dir clone has origin pointing at a local filesystem path
-    (e.g. ``C:/Users/.../claude-org``); that has no ``github.com`` segment,
-    so this returns None and self-edit detection naturally fails.
-    """
+def _extract_github_repo_name(url: str) -> Optional[str]:
+    """Return the lowercased repo name (no ``.git``) if ``url`` is a github
+    remote, else None."""
     s = url.strip().lower()
     if not s:
         return None
     m = _GITHUB_OWNER_REPO_RE.search(s)
-    return m.group(1) if m else None
+    return m.group(2) if m else None
 
 
 def _git_origin_url(repo_path: Path) -> Optional[str]:
@@ -304,18 +307,22 @@ def is_claude_org_project(project_slug: str, claude_org_root: Path) -> bool:
        (``claude-org-ja``). Without this gate any edit task — clock-app,
        renga, etc. — would be flagged self-edit because Secretary always
        runs the resolver from inside the live claude-org checkout.
-    2. ``claude_org_root``'s ``origin`` remote URL normalizes to a known
-       claude-org repo (``suisya-systems/claude-org-ja``). A worker-dir
-       clone has origin set to a local Windows path, so it does not
-       match; a fresh repo without any remote also does not match.
+    2. ``claude_org_root``'s ``origin`` remote URL points at a github
+       repo whose name matches a known claude-org target. Owner is not
+       pinned — fork-based contribution is the documented workflow and a
+       fork's origin is ``<contributor>/claude-org-ja``, not
+       ``suisya-systems/claude-org-ja``. A worker-dir clone has origin
+       set to a local filesystem path (no github.com segment), so it
+       does not match; a fresh repo without any remote also does not
+       match.
     """
     if project_slug != _CLAUDE_ORG_SELF_EDIT_SLUG:
         return False
     url = _git_origin_url(claude_org_root)
     if url is None:
         return False
-    normalized = _normalize_remote_url(url)
-    return normalized in _CLAUDE_ORG_REPOS
+    repo_name = _extract_github_repo_name(url)
+    return repo_name in _CLAUDE_ORG_REPO_NAMES
 
 
 def decide_role(
@@ -374,6 +381,21 @@ def resolve(
         projects = []
     project = find_project(projects, project_slug)
 
+    # claude-org-ja is intentionally absent from the checked-in registry
+    # (the row used to leak a user-specific local path). When the slug +
+    # claude_org_root's git origin both signal self-edit, synthesize a
+    # virtual project pointing at the live checkout so audit mode and the
+    # active-run/state.db driven Pattern A↔B logic below keep treating it
+    # the same as a registered project.
+    if project is None and is_claude_org_project(project_slug, claude_org_root):
+        project = RegistryProject(
+            name=project_slug,
+            nickname=project_slug,
+            path=str(claude_org_root),
+            description="",
+            common_tasks="",
+        )
+
     # --- Role decision (computed first so Pattern B can branch on it) -----
     role = decide_role(mode=mode, project_slug=project_slug, claude_org_root=claude_org_root)
     self_edit = role == "claude-org-self-edit"
@@ -383,17 +405,7 @@ def resolve(
     variant: Optional[str]
     worker_dir: Path
 
-    if self_edit:
-        # claude-org self-edit always uses Pattern B + live_repo_worktree under
-        # claude_org_root/.worktrees/{task_id}/ (single .git, no two-clone
-        # sync). The self-edit target has no registry row — origin-URL
-        # detection is what makes this branch fire — so this short-circuit
-        # must come before the ``project is None → Pattern C ephemeral``
-        # fallback below.
-        pattern = "B"
-        variant = "live_repo_worktree"
-        worker_dir = claude_org_root / ".worktrees" / task_id
-    elif project is None:
+    if project is None:
         # Unknown project → Pattern C ephemeral.
         pattern, variant = "C", "ephemeral"
         worker_dir = workers_dir / task_id

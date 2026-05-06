@@ -366,6 +366,28 @@ class TestRoleDetection(unittest.TestCase):
         self.assertEqual(layout.role, "doc-audit")
         self.assertFalse(layout.self_edit)
 
+    def test_audit_mode_for_claude_org_keeps_pattern_a_via_synthesized_project(self):
+        """Regression: the production registry no longer carries a
+        claude-org-ja row, but ``mode='audit'`` on this slug must still
+        land on Pattern A with worker_dir under workers_dir/claude-org-ja
+        (read-only audit clone) — not silently fall through to Pattern C
+        ephemeral. The resolver synthesizes a virtual project entry from
+        the slug + matching git origin so the legacy pattern logic keeps
+        working."""
+        layout = rwl.resolve(
+            task_id="audit-task",
+            project_slug="claude-org-ja",
+            mode="audit",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(layout.role, "doc-audit")
+        self.assertEqual(layout.pattern, "A")
+        self.assertEqual(
+            Path(layout.worker_dir),
+            (self.sb.workers / "claude-org-ja").resolve(),
+        )
+
     def test_audit_mode_for_non_claude_org_also_doc_audit(self):
         layout = rwl.resolve(
             task_id="t-4",
@@ -507,13 +529,22 @@ class TestPatternBLiveRepoWorktree(unittest.TestCase):
 
     def setUp(self) -> None:
         self._td = tempfile.TemporaryDirectory()
-        # Self-edit detection runs off git origin, not the registry, and
-        # always picks Pattern B + live_repo_worktree (no active-run gate).
+        # Self-edit detection runs off git origin (claude-org-ja has no
+        # registry row); the active-run gate on Pattern B vs A still
+        # applies the same way it did when the row was present.
         self.sb = _Sandbox(Path(self._td.name), with_claude_org_origin=True)
         self.sb.write_registry(
             [
                 ("時計", "clock-app", "-", "Demo clock"),
             ]
+        )
+        # An active run on claude-org-ja forces Pattern B for the next task.
+        self.sb.add_run(
+            task_id="self-edit-prev",
+            project_slug="claude-org-ja",
+            pattern="A",
+            status="in_use",
+            worker_dir_abs=str(self.sb.claude_org_root),
         )
 
     def tearDown(self) -> None:
@@ -684,8 +715,10 @@ class TestIsClaudeOrgProject(unittest.TestCase):
                  "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"},
         )
         worker_clone = self.tmp / "worker"
+        # Pass the source as a ``file://`` URI so Git for Windows does not
+        # mistake a ``C:\...`` argument for a ``host:path`` SSH form.
         subprocess.run(
-            ["git", "clone", "-q", str(upstream), str(worker_clone)],
+            ["git", "clone", "-q", upstream.as_uri(), str(worker_clone)],
             check=True,
         )
         self.assertFalse(rwl.is_claude_org_project("claude-org-ja", worker_clone))
@@ -716,6 +749,18 @@ class TestIsClaudeOrgProject(unittest.TestCase):
         repo.mkdir()
         _Sandbox.init_git_with_origin(
             repo, "git@github.com:suisya-systems/claude-org-ja.git"
+        )
+        self.assertTrue(rwl.is_claude_org_project("claude-org-ja", repo))
+
+    def test_fork_origin_still_matches(self):
+        """CONTRIBUTING.md documents fork-based contribution: a fork's
+        ``origin`` points at the contributor's fork, not at suisya-systems.
+        Self-edit detection must still fire so fork-based maintainers
+        keep getting Pattern B + CLAUDE.local.md."""
+        repo = self.tmp / "fork-origin"
+        repo.mkdir()
+        _Sandbox.init_git_with_origin(
+            repo, "git@github.com:some-contributor/claude-org-ja.git"
         )
         self.assertTrue(rwl.is_claude_org_project("claude-org-ja", repo))
 
