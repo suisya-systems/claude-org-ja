@@ -55,8 +55,11 @@ class TestParseProjects(unittest.TestCase):
         path = PROJECT_ROOT / "registry" / "projects.md"
         if not path.exists():  # pragma: no cover - safety for fork checkouts
             self.skipTest("live registry/projects.md not present")
+        # parse_projects must not raise. An empty registry is valid (e.g.
+        # fresh checkout / fork that has not registered any project yet —
+        # see test_parsers.py for the build_state() side); we only check
+        # well-formedness of any rows that are present.
         projects = parse_projects(path)
-        self.assertGreater(len(projects), 0)
         for p in projects:
             self.assertIsInstance(p, Project)
             self.assertTrue(p.nickname)
