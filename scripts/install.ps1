@@ -189,22 +189,57 @@ if ($SkipMcp) {
 # claude-org-runtime package. Phase 5c (Issue #130) moved the install
 # path from `requirements.txt` to `pyproject.toml`; we prefer the
 # editable install so the dep set comes from the canonical source.
-$pyCmd = $null
-foreach ($cand in @('python', 'python3', 'py')) {
-    if (Get-Command $cand -ErrorAction SilentlyContinue) { $pyCmd = $cand; break }
-}
 $pyprojectFile = Join-Path $Dir 'pyproject.toml'
 $reqFile = Join-Path $Dir 'requirements.txt'
+
+# Skip the whole detection block on older refs / fixtures that ship
+# neither dependency file: invoking `python --version` there would
+# pointlessly touch the Microsoft Store App Execution Alias stub on
+# stock Windows boxes, surfacing a Store dialog where the previous
+# behaviour cleanly skipped without side effects.
+#
+# On a default Windows install only `py.exe` (the launcher) ends up
+# on PATH — bare `python` / `python3` are missing — so we add a
+# `py -3` fallback after the POSIX-friendly names. `-3` pins the
+# launcher to a Python 3 interpreter rather than letting it pick the
+# most recent installed version, which could surprise on dual-install
+# boxes still carrying 2.7. Each candidate is its own token list so
+# the launcher flag rides with the executable through Invoke-Step.
+#
+# Each candidate is then probed with `--version` to weed out the
+# Microsoft Store App Execution Alias stub — Windows preinstalls
+# `python.exe` under `...\WindowsApps\` even without a real Python,
+# and that stub exits non-zero (or pops the Store) on any real call.
+# A successful `--version` proves a working interpreter is on the
+# other end while still accepting genuine Store-installed Pythons.
+$pyCmd = $null
+if ((Test-Path -LiteralPath $pyprojectFile) -or (Test-Path -LiteralPath $reqFile)) {
+    $pyCandidates = @(
+        ,@('python'),
+        ,@('python3'),
+        ,@('py', '-3')
+    )
+    foreach ($cand in $pyCandidates) {
+        if (-not (Get-Command $cand[0] -ErrorAction SilentlyContinue)) { continue }
+        $rest = if ($cand.Length -gt 1) { $cand[1..($cand.Length - 1)] } else { @() }
+        try {
+            & $cand[0] @($rest + @('--version')) > $null 2>&1
+            if ($LASTEXITCODE -eq 0) { $pyCmd = $cand; break }
+        } catch {
+            # candidate is on PATH but failed to launch; try the next one
+        }
+    }
+}
 if ((Test-Path -LiteralPath $pyprojectFile) -and $pyCmd) {
     Write-Host ''
     Write-Host 'Installing Python deps via pyproject.toml (editable) ...'
-    Invoke-Step @($pyCmd, '-m', 'pip', 'install', '--user', '-e', $Dir)
+    Invoke-Step ($pyCmd + @('-m', 'pip', 'install', '--user', '-e', $Dir))
 } elseif ((Test-Path -LiteralPath $reqFile) -and $pyCmd) {
     # Backward-compat path for refs that predate Phase 5c (no
     # pyproject.toml) but post-date Step B (have requirements.txt).
     Write-Host ''
     Write-Host 'Installing Python deps (core-harness pin, requirements.txt) ...'
-    Invoke-Step @($pyCmd, '-m', 'pip', 'install', '--user', '-r', $reqFile)
+    Invoke-Step ($pyCmd + @('-m', 'pip', 'install', '--user', '-r', $reqFile))
 } elseif (-not ((Test-Path -LiteralPath $pyprojectFile) -or (Test-Path -LiteralPath $reqFile))) {
     # Older refs / fixtures predate Step B and ship neither file.
     # The shim CLIs only exist on Step-B-or-later commits, so skipping
