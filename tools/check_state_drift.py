@@ -31,10 +31,18 @@ D2. ``live_run_missing_worker_file``
     Steady-state breach of I3. The ``/org-suspend`` exception in I3 does
     not erase the worker-state file (suspend graceful-closes the pane only;
     the .md persists), so a missing file genuinely signals drift even when
-    ``org_sessions.status='SUSPENDED'``. Recovery: Secretary confirms with
-    Dispatcher whether ``WORKER_PANE_EXITED`` was missed; on confirmation,
-    the prescribed T7 transition (``→ abandoned``) is the recovery.
-    Operator confirmation required.
+    ``org_sessions.status='SUSPENDED'``. Recovery differs by source status:
+
+    * **in_use**: prescribed T7 (``in_use → abandoned``) once the contract
+      write path lands; until then the run row stays ``in_use`` pending
+      manual reconciliation.
+    * **review**: T7 is **wrong** here — review means the worker has
+      already submitted a completion report, so abandoning would discard
+      reported work. The normal exits remain T5 (``review → completed``)
+      and T6 (``review → in_use``); the operator restores the worker .md
+      from Progress Log evidence (or the archive) and proceeds normally.
+
+    Operator confirmation required in either branch.
 
 D3. ``completed_run_worker_file_present``
     ``runs.status='completed'`` but ``.state/workers/worker-{task_id}.md``
