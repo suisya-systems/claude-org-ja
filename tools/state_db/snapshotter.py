@@ -27,6 +27,8 @@ import tempfile
 from pathlib import Path
 from typing import Iterable
 
+from .queries import USER_VISIBLE_STATUSES
+
 
 # ---------------------------------------------------------------------------
 # Heading taxonomy
@@ -177,15 +179,21 @@ _DB_STATUS_TO_MD_LABEL = {
 def _render_active_work_items(runs: Iterable[dict]) -> str:
     """Render ``## Active Work Items`` from the runs table.
 
-    M4 (Issue #267): "active" = run.status in (in_use, review). The
-    legacy passthrough that surfaced operator-curated COMPLETED /
-    ABANDONED bullets is gone; those entries should live in
-    ``notes/sessions/`` (extracted by
+    Predicate: ``USER_VISIBLE_STATUSES`` (Set F §3.3 — ``in_use`` / ``review``).
+    ``queued`` is excluded per I8: a fresh T1 reservation has not yet
+    spawned a pane, and surfacing it here would conflate "secretary
+    reserved a slot" with "org has an in-flight delegation". The
+    operator anomaly surface for stuck queued rows is the dashboard /
+    dispatcher notification, not this markdown projection.
+
+    M4 (Issue #267): the legacy passthrough that surfaced
+    operator-curated COMPLETED / ABANDONED bullets is gone; those
+    entries should live in ``notes/sessions/`` (extracted by
     :mod:`tools.state_db.extract_freetext`) or be reflected by an
     actual run row whose ``status`` columns model the lifecycle.
     """
     active = [r for r in runs
-              if (r.get("status") or "") in ("in_use", "review")]
+              if (r.get("status") or "") in USER_VISIBLE_STATUSES]
     if not active:
         return ""
     out = io.StringIO()
