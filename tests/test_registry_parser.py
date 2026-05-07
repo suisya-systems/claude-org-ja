@@ -31,17 +31,32 @@ def _build(*body_lines: str, intro: str = "# Projects Registry\n\n") -> str:
 class TestParseProjects(unittest.TestCase):
 
     def test_real_registry_fixture(self):
-        path = PROJECT_ROOT / "registry" / "projects.md"
+        # Parses a checked-in fixture (not the live registry/projects.md), since
+        # the live registry is divergence-allowed across ja / en / forks per
+        # docs/sync-policy.md. The fixture pins a known project list so this
+        # test stays deterministic regardless of the host repo's roster.
+        path = PROJECT_ROOT / "tests" / "fixtures" / "registry" / "projects.md"
         projects = parse_projects(path)
-        # The checked-in registry carries the public, non-user-specific
-        # projects only. claude-org-ja self-edit is detected via the live
-        # repo's git origin URL (resolve_worker_layout.is_claude_org_project)
-        # and intentionally has no row here.
         names = [p.name for p in projects]
         self.assertIn("clock-app", names)
         self.assertIn("renga", names)
         self.assertNotIn("claude-org-ja", names)
         # All rows are fully populated Project instances.
+        for p in projects:
+            self.assertIsInstance(p, Project)
+            self.assertTrue(p.nickname)
+            self.assertTrue(p.name)
+
+    def test_live_registry_smoke(self):
+        # Smoke check: the live registry/projects.md (which may diverge per
+        # repo/fork) must remain parseable and yield at least one well-formed
+        # row. We do NOT assert specific project names here — that is the
+        # fixture-based test's job.
+        path = PROJECT_ROOT / "registry" / "projects.md"
+        if not path.exists():  # pragma: no cover - safety for fork checkouts
+            self.skipTest("live registry/projects.md not present")
+        projects = parse_projects(path)
+        self.assertGreater(len(projects), 0)
         for p in projects:
             self.assertIsInstance(p, Project)
             self.assertTrue(p.nickname)
