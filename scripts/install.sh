@@ -144,9 +144,10 @@ resolve_command() {
     "$HOME/.local/bin" \
     "$HOME/scoop/shims" \
     "$HOME/AppData/Local/Programs/$cmd"; do
-    # `.cmd` / `.bat` first so npm shims win over a stale bare-name
-    # POSIX wrapper that npm sometimes leaves alongside them; bare ""
-    # last so `node` / `python`-style POSIX shims still resolve.
+    # Extension-bearing variants first so a real Windows install wins
+    # over any stale bare-name POSIX wrapper npm sometimes leaves
+    # alongside them; bare "" last so `node` / `python`-style POSIX
+    # shims still resolve when no `.exe` / `.cmd` exists.
     for ext in .exe .cmd .bat ""; do
       candidate="$prefix/$cmd$ext"
       # `-f`, not `-x`: npm-generated `.cmd` shims ship without the
@@ -341,3 +342,24 @@ Inside the Secretary's Claude Code pane, run:
 
 For details see docs/getting-started.md.
 MSG
+
+# Final hint: the PATH prepend done by require_or_warn only affected
+# this script's process. If renga still isn't on the user's interactive
+# bash PATH (typical when it was found via the npm / cargo / scoop
+# fallback ladder above, especially `.cmd` shims that bash won't try
+# implicitly), the suggested `renga --layout ops` step would fail
+# silently with "command not found". Tell the user how to bridge that
+# gap in their own shell. POSIX environments skip this entirely.
+if [[ "$IS_WINDOWS_BASH" == "1" && -n "${RENGA_BIN:-}" ]] \
+   && ! command -v renga >/dev/null 2>&1; then
+  renga_dir=$(dirname -- "$RENGA_BIN")
+  cat <<MSG
+
+Note (Windows / Git Bash): bash on this shell can't find 'renga' on
+PATH. The installer resolved it via fallback to:
+  $RENGA_BIN
+Before running 'renga --layout ops' interactively, either invoke it by
+full path or add its directory to your bash PATH (e.g. in ~/.bashrc):
+  export PATH="$renga_dir:\$PATH"
+MSG
+fi
