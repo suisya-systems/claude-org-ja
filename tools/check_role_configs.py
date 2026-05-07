@@ -14,20 +14,24 @@ module is a thin CLI shim that:
   ``check_worker_settings``) so existing callers — including the test
   suite under ``tests/test_check_role_configs.py`` — keep using
   ``check_role_configs`` as the import surface unchanged.
-* Overrides ``extract_role_blocks`` with a bilingual wrapper that
-  accepts either the canonical ja heading from
-  ``org_extension_schema.json`` (``docs_section``) or its English
-  counterpart (Issue #340, Option A — "make the parser bilingual").
-  The ja repo's ``permissions.md`` ships ja headings; the en mirror
-  translates them to English. Mapping each ja heading to the canonical
-  role key and accepting the en alias as an additional substring
-  marker lets the same parser project roles out of either localisation
-  without forcing the en mirror to keep ja anchors. Options (B) and
-  (C) from Issue #340 were considered: (B) requires every translation
-  to preserve hidden ja anchors (brittle); (C) — schema-driven
-  ``permissions.md`` — is the long-term clean path but a much bigger
-  refactor. (A) is the least-invasive fix that unblocks
-  ``test_docs_projection_is_consistent`` on both localisations.
+* Overrides ``extract_role_blocks`` with a bilingual replacement
+  that accepts either the canonical ja heading from
+  ``org_extension_schema.json`` (``docs_section``) or one of its
+  English aliases (Issue #340, Option A — "make the parser
+  bilingual"). The ja repo's ``permissions.md`` ships ja headings;
+  the en mirror translates them to English. Mapping each ja heading
+  to the canonical role key and accepting en aliases as alternate
+  section markers lets the same parser project roles out of either
+  localisation without forcing the en mirror to keep ja anchors.
+  Matching is anchored at the start of the heading and word-bounded
+  so short aliases (``Lead``, ``Worker``) do not get picked up by
+  unrelated sub-headings such as ``## Dispatcher (Lead-owned)``.
+  Options (B) and (C) from Issue #340 were considered: (B) requires
+  every translation to preserve hidden ja anchors (brittle); (C) —
+  schema-driven ``permissions.md`` — is the long-term clean path but
+  a much bigger refactor. (A) is the least-invasive fix that
+  unblocks ``test_docs_projection_is_consistent`` on both
+  localisations.
 * Keeps the ja-specific behaviour (``check_docs``, ``check_on_disk``,
   ``run``, the CLI argparser, exit-code contract) here, since those
   read from the ja repo layout (permissions.md docs projection, the
@@ -58,28 +62,52 @@ from core_harness.validator import (
 
 # Issue #340: ja → en heading aliases. Keys are the ja heading strings
 # that org_extension_schema.json declares as ``docs_section``; values
-# are the English heading substrings that the en mirror's
-# permissions.md uses for the same role. ``extract_role_blocks`` below
-# treats either as a valid section marker so the same parser projects
-# roles out of either localisation.
-_JA_TO_EN_ROLE_HEADING_ALIASES: dict[str, str] = {
-    "ユーザー共通": "User-wide",
-    "窓口": "Lead",
-    "ディスパッチャー": "Dispatcher",
-    "キュレーター": "Curator",
-    "ワーカー": "Worker",
+# are the lists of English heading prefixes the en mirror's
+# permissions.md may use for the same role. Multiple aliases are
+# allowed because the surrounding codebase mixes ``Lead`` (the
+# org-skill name) and ``Secretary`` (the schema description) for the
+# 窓口 role; either is acceptable as an English heading.
+_JA_TO_EN_ROLE_HEADING_ALIASES: dict[str, tuple[str, ...]] = {
+    "ユーザー共通": ("User-wide", "User Common", "User common"),
+    "窓口": ("Lead", "Secretary"),
+    "ディスパッチャー": ("Dispatcher",),
+    "キュレーター": ("Curator",),
+    "ワーカー": ("Worker",),
 }
+
+
+def _heading_matches(heading: str, marker: str) -> bool:
+    """Return True iff ``heading`` opens with ``marker`` as a whole word.
+
+    The heading argument is the line *after* the ``## `` prefix has
+    been stripped. We require the marker to appear at position 0 and
+    to be followed either by end-of-line or by a non-word character
+    (whitespace, ``(``, ``（``, ``:``, ``：`` …). Substring matching
+    inside the line is *not* enough — Issue #340 review showed that a
+    short alias like ``Lead`` would otherwise be picked up by an
+    unrelated heading such as ``## Dispatcher (Lead-owned)``.
+    """
+    if not heading.startswith(marker):
+        return False
+    rest = heading[len(marker) :]
+    if rest == "":
+        return True
+    nxt = rest[0]
+    return not (nxt.isalnum() or nxt == "_")
 
 
 def extract_role_blocks(md_text: str, roles: dict) -> dict:
     """Extract the first ```json code block under each role's docs heading.
 
-    Bilingual wrapper around ``core_harness.validator.extract_role_blocks``:
-    a section matches if its ``## ``-prefixed heading line contains
-    either the canonical ja ``docs_section`` declared in the schema or
-    its English alias from ``_JA_TO_EN_ROLE_HEADING_ALIASES`` (Issue
+    Bilingual replacement for
+    ``core_harness.validator.extract_role_blocks``: a section matches
+    if its ``## ``-prefixed heading line *opens with* either the
+    canonical ja ``docs_section`` declared in the schema or one of the
+    English aliases from ``_JA_TO_EN_ROLE_HEADING_ALIASES`` (Issue
     #340, Option A). Roles whose ``docs_section`` is null/missing are
-    skipped, mirroring the upstream contract.
+    skipped, mirroring the upstream contract. Word-boundary anchoring
+    (see ``_heading_matches``) prevents short en aliases like ``Lead``
+    from being picked up by unrelated sub-headings.
     """
     results: dict = {}
     sections = re.split(r"(?m)^## ", md_text)
@@ -87,14 +115,11 @@ def extract_role_blocks(md_text: str, roles: dict) -> dict:
         marker = role_def.get("docs_section")
         if not marker:
             continue
-        markers = [marker]
-        en_alias = _JA_TO_EN_ROLE_HEADING_ALIASES.get(marker)
-        if en_alias:
-            markers.append(en_alias)
+        markers = [marker, *_JA_TO_EN_ROLE_HEADING_ALIASES.get(marker, ())]
         block = None
         for section in sections[1:]:
             heading = section.splitlines()[0]
-            if any(m in heading for m in markers):
+            if any(_heading_matches(heading, m) for m in markers):
                 m = re.search(r"```json\n(.*?)\n```", section, re.DOTALL)
                 if m:
                     try:

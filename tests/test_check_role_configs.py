@@ -220,6 +220,40 @@ class ExtractRoleBlocksTests(unittest.TestCase):
         self.assertEqual(blocks["secretary"]["permissions"]["allow"], ["a"])
         self.assertEqual(blocks["worker"]["permissions"]["allow"], ["b"])
 
+    def test_bilingual_secretary_alias_accepted(self):
+        # Issue #340 codex review: the codebase calls the 窓口 role
+        # "Secretary" in schema descriptions; that variant must work
+        # alongside the org-skill-aligned "Lead".
+        md = (
+            "## Secretary (`<repo>/.claude/settings.local.json`)\n\n"
+            "```json\n{\"permissions\": {\"allow\": [\"sec\"]}}\n```\n"
+        )
+        blocks = crc.extract_role_blocks(md, MINIMAL_SCHEMA["roles"])
+        self.assertEqual(blocks["secretary"]["permissions"]["allow"], ["sec"])
+
+    def test_bilingual_alias_does_not_substring_match(self):
+        # Issue #340 codex review: a heading that merely *contains* an
+        # alias as a substring (e.g. parenthetical) must not be
+        # picked up. ``## Dispatcher (Lead-owned)`` had silently been
+        # mis-projected as ``secretary`` under the substring matcher.
+        md = (
+            "## Dispatcher (Lead-owned)\n\n"
+            "```json\n{\"permissions\": {\"allow\": [\"disp\"]}}\n```\n\n"
+            "## Lead\n\n"
+            "```json\n{\"permissions\": {\"allow\": [\"sec\"]}}\n```\n"
+        )
+        blocks = crc.extract_role_blocks(md, MINIMAL_SCHEMA["roles"])
+        self.assertEqual(blocks["secretary"]["permissions"]["allow"], ["sec"])
+
+    def test_bilingual_alias_rejects_longer_word(self):
+        # ``Lead`` must not match ``Leadership``.
+        md = (
+            "## Leadership notes\n\n"
+            "```json\n{\"permissions\": {\"allow\": [\"x\"]}}\n```\n"
+        )
+        blocks = crc.extract_role_blocks(md, MINIMAL_SCHEMA["roles"])
+        self.assertIsNone(blocks["secretary"])
+
     def test_invalid_json_surfaces_parse_error(self):
         md = "## 窓口\n\n```json\n{not json}\n```\n"
         blocks = crc.extract_role_blocks(md, MINIMAL_SCHEMA["roles"])
