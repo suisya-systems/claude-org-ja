@@ -11,10 +11,23 @@ module is a thin CLI shim that:
   ``core_harness.schema.load_framework_schema()``.
 * Re-exports the public engine symbols (``Finding``,
   ``validate_config``, ``validate_schema_integrity``,
-  ``extract_role_blocks``, ``check_worker_settings``) so existing
-  callers — including the test suite under
-  ``tests/test_check_role_configs.py`` — keep using
+  ``check_worker_settings``) so existing callers — including the test
+  suite under ``tests/test_check_role_configs.py`` — keep using
   ``check_role_configs`` as the import surface unchanged.
+* Overrides ``extract_role_blocks`` with a bilingual wrapper that
+  accepts either the canonical ja heading from
+  ``org_extension_schema.json`` (``docs_section``) or its English
+  counterpart (Issue #340, Option A — "make the parser bilingual").
+  The ja repo's ``permissions.md`` ships ja headings; the en mirror
+  translates them to English. Mapping each ja heading to the canonical
+  role key and accepting the en alias as an additional substring
+  marker lets the same parser project roles out of either localisation
+  without forcing the en mirror to keep ja anchors. Options (B) and
+  (C) from Issue #340 were considered: (B) requires every translation
+  to preserve hidden ja anchors (brittle); (C) — schema-driven
+  ``permissions.md`` — is the long-term clean path but a much bigger
+  refactor. (A) is the least-invasive fix that unblocks
+  ``test_docs_projection_is_consistent`` on both localisations.
 * Keeps the ja-specific behaviour (``check_docs``, ``check_on_disk``,
   ``run``, the CLI argparser, exit-code contract) here, since those
   read from the ja repo layout (permissions.md docs projection, the
@@ -29,6 +42,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -37,10 +51,59 @@ from core_harness.schema import load_framework_schema, merge_schemas
 from core_harness.validator import (
     Finding,
     check_worker_settings,
-    extract_role_blocks,
     validate_config,
     validate_schema_integrity,
 )
+
+
+# Issue #340: ja → en heading aliases. Keys are the ja heading strings
+# that org_extension_schema.json declares as ``docs_section``; values
+# are the English heading substrings that the en mirror's
+# permissions.md uses for the same role. ``extract_role_blocks`` below
+# treats either as a valid section marker so the same parser projects
+# roles out of either localisation.
+_JA_TO_EN_ROLE_HEADING_ALIASES: dict[str, str] = {
+    "ユーザー共通": "User-wide",
+    "窓口": "Lead",
+    "ディスパッチャー": "Dispatcher",
+    "キュレーター": "Curator",
+    "ワーカー": "Worker",
+}
+
+
+def extract_role_blocks(md_text: str, roles: dict) -> dict:
+    """Extract the first ```json code block under each role's docs heading.
+
+    Bilingual wrapper around ``core_harness.validator.extract_role_blocks``:
+    a section matches if its ``## ``-prefixed heading line contains
+    either the canonical ja ``docs_section`` declared in the schema or
+    its English alias from ``_JA_TO_EN_ROLE_HEADING_ALIASES`` (Issue
+    #340, Option A). Roles whose ``docs_section`` is null/missing are
+    skipped, mirroring the upstream contract.
+    """
+    results: dict = {}
+    sections = re.split(r"(?m)^## ", md_text)
+    for role_name, role_def in roles.items():
+        marker = role_def.get("docs_section")
+        if not marker:
+            continue
+        markers = [marker]
+        en_alias = _JA_TO_EN_ROLE_HEADING_ALIASES.get(marker)
+        if en_alias:
+            markers.append(en_alias)
+        block = None
+        for section in sections[1:]:
+            heading = section.splitlines()[0]
+            if any(m in heading for m in markers):
+                m = re.search(r"```json\n(.*?)\n```", section, re.DOTALL)
+                if m:
+                    try:
+                        block = json.loads(m.group(1))
+                    except json.JSONDecodeError as exc:
+                        block = {"__parse_error__": str(exc)}
+                break
+        results[role_name] = block
+    return results
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent

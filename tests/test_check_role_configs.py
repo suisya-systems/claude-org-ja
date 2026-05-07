@@ -197,6 +197,29 @@ class ExtractRoleBlocksTests(unittest.TestCase):
         blocks = crc.extract_role_blocks(md, MINIMAL_SCHEMA["roles"])
         self.assertIsNone(blocks["worker"])
 
+    def test_bilingual_en_headings_match(self):
+        # Issue #340: an en mirror permissions.md uses English headings.
+        md = (
+            "# heading\n\n"
+            "## Lead (`<repo>/.claude/settings.local.json`)\n\n"
+            "```json\n{\"permissions\": {\"allow\": [\"a\"]}}\n```\n\n"
+            "## Worker (dynamically generated)\n\n"
+            "```json\n{\"permissions\": {\"allow\": [\"b\"]}}\n```\n"
+        )
+        blocks = crc.extract_role_blocks(md, MINIMAL_SCHEMA["roles"])
+        self.assertEqual(blocks["secretary"]["permissions"]["allow"], ["a"])
+        self.assertEqual(blocks["worker"]["permissions"]["allow"], ["b"])
+
+    def test_bilingual_mixed_ja_and_en_headings(self):
+        # A repo mid-translation may have a mix of ja and en headings.
+        md = (
+            "## 窓口\n\n```json\n{\"permissions\": {\"allow\": [\"a\"]}}\n```\n\n"
+            "## Worker\n\n```json\n{\"permissions\": {\"allow\": [\"b\"]}}\n```\n"
+        )
+        blocks = crc.extract_role_blocks(md, MINIMAL_SCHEMA["roles"])
+        self.assertEqual(blocks["secretary"]["permissions"]["allow"], ["a"])
+        self.assertEqual(blocks["worker"]["permissions"]["allow"], ["b"])
+
     def test_invalid_json_surfaces_parse_error(self):
         md = "## 窓口\n\n```json\n{not json}\n```\n"
         blocks = crc.extract_role_blocks(md, MINIMAL_SCHEMA["roles"])
