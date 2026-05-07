@@ -25,7 +25,7 @@ following columns (see `tools/state_db/schema.sql`):
 | Column          | Type                              | Purpose                                                     |
 |-----------------|-----------------------------------|-------------------------------------------------------------|
 | `id`            | INTEGER PK AUTOINCREMENT          | Row id                                                      |
-| `occurred_at`   | TEXT, `YYYY-MM-DDTHH:MM:fffZ`     | Append time (ISO-8601 UTC, ms prec.; default `strftime(now)`) |
+| `occurred_at`   | TEXT (ISO-8601 UTC, sub-second)   | Append time. Default `strftime('%Y-%m-%dT%H:%M:%fZ','now')` (e.g. `2026-05-08T01:02:03.456Z`) |
 | `actor`         | TEXT (nullable)                   | Originating role (`secretary` / `dispatcher` / …) when known |
 | `kind`          | TEXT NOT NULL                     | Event name (one of the entries below)                       |
 | `run_id` / `workstream_id` / `project_id` | INTEGER FK (nullable) | Optional join keys |

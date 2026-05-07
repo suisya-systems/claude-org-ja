@@ -18,7 +18,7 @@
 
 ### JSON の再生成（参考）
 
-state.db への書き込みが `StateWriter.transaction()` を経由していれば snapshotter が自動的に派生物を更新するため、通常は手動再生成は不要。ローカル debug でのみ:
+state.db への書き込みが `StateWriter.transaction()` を経由していれば、post-commit hook が **(a) `tools/state_db.snapshotter`** で `.state/org-state.md` を、 **(b) `dashboard.org_state_converter.convert()`** で `.state/org-state.json` をそれぞれ別 hook として再生成するため、通常は手動再生成は不要。ローカル debug で JSON のみを単体再生成したい場合:
 
 ```bash
 py -3 dashboard/org_state_converter.py      # Windows
@@ -37,7 +37,7 @@ python3 dashboard/org_state_converter.py     # Mac/Linux
 | 組織中断 / 再開 | org-suspend / org-resume | `StateWriter` 経由で `org_sessions.status` を更新（個別 run の status は変更しない、[contract I4](contracts/state-semantics-contract.md)）|
 | Dispatcher/Curator 記録 | org-start | `StateWriter` 経由で `org_sessions` の dispatcher/curator pane+peer フィールドを更新 |
 
-これらの書き込みは全て `StateWriter.transaction()` の post-commit hook で snapshotter が `.state/org-state.md` と派生 JSON を自動再生成するため、skill 側で converter を呼ぶ必要は無い。
+これらの書き込みは全て `StateWriter.transaction()` の post-commit hook で markdown snapshotter (`tools/state_db.snapshotter`) と JSON converter (`dashboard.org_state_converter.convert()`) が別々に派生物を再生成するため、skill 側で converter を呼ぶ必要は無い。
 
 ---
 
@@ -63,7 +63,7 @@ python3 dashboard/org_state_converter.py     # Mac/Linux
       "taskId": "<task ID>",
       "pattern": "A | B | C",
       "directory": "<absolute path>",
-      "project": "<project name | ->",
+      "project": "<projects.slug; エフェメラル run も slug をそのまま出力>",
       "status": "<runs.outcome_note OR runs.status — 7 値全てが出現し得る (queued / in_use / review / completed / failed / suspended / abandoned)>"
     }
   ],
@@ -125,7 +125,7 @@ python3 dashboard/org_state_converter.py     # Mac/Linux
 | `taskId` | `string` | そのディレクトリを使用しているタスク ID |
 | `pattern` | `string` | ディレクトリパターン: `A`（プロジェクトディレクトリ）/ `B`（worktree）/ `C`（エフェメラル） |
 | `directory` | `string` | ワーカーディレクトリの絶対パス |
-| `project` | `string` | `projects.slug`（プロジェクトの kebab-case 識別子）をそのまま出力。`display_name`（人間向け表示名）ではない点に注意。エフェメラルの場合は `-` |
+| `project` | `string` | `projects.slug`（プロジェクトの kebab-case 識別子）をそのまま出力。`display_name`（人間向け表示名）ではない点に注意。エフェメラル run も別途特殊化せず slug をそのまま出力する |
 | `status` | `string` | `runs.outcome_note` が設定されていればそれを、なければ `runs.status` をそのまま射影。`runs.status` は閉じた 7 値 (`queued` / `in_use` / `review` / `completed` / `failed` / `suspended` / `abandoned`) で、T1 reservation 段階の `queued` も `worker_dir_id` が紐付いていれば本配列に出現する。pre-M4 の `available` 表記は実装からは出力されない。詳細は [`dashboard/org_state_converter.py`](../dashboard/org_state_converter.py) |
 
 ### dispatcher / curator
