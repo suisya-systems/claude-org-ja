@@ -208,9 +208,16 @@ renga --layout ops
               +-> ワーカー群（実作業、完了後に自動消滅）
 ```
 
-![/org-start 後のペインレイアウト例: 窓口（Secretary）・ディスパッチャー・キュレーターと 5 並列ワーカーが同一タブ内で動作する様子](docs/assets/org-start-pane-layout.png)
-
-*`/org-start` 実行後のペインレイアウト例。窓口（Secretary）・ディスパッチャー・キュレーターに加え、タスク委譲で派生した 5 つの並列ワーカーが同一タブ内で動作している。*
+<table>
+  <tr>
+    <td width="50%"><img src="docs/assets/org-start-fresh.png" alt="/org-start 直後のペインレイアウト: 窓口（Secretary）・ディスパッチャー・キュレーターの 3 ロールのみが起動し、ワーカーは未派生の状態"></td>
+    <td width="50%"><img src="docs/assets/org-start-pane-layout.png" alt="動作中のペインレイアウト: 窓口（Secretary）・ディスパッチャー・キュレーターに加え、タスク委譲で派生した並列ワーカーが同一タブ内で稼働している様子"></td>
+  </tr>
+  <tr>
+    <td><em>直後 (Just started): <code>/org-start</code> 実行直後。窓口・ディスパッチャー・キュレーターの 3 ロールが立ち上がり、ワーカーはまだ存在しない。</em></td>
+    <td><em>動作中 (In action with workers): タスク委譲によりディスパッチャーが並列ワーカーを派生させ、4 ロール構成で稼働している状態。</em></td>
+  </tr>
+</table>
 
 - **窓口（Secretary）**: 人間との唯一の接点。タスク分解・委譲判断・結果報告を担う。窓口の運用責務は Issue [#320](https://github.com/suisya-systems/claude-org-ja/issues/320) のキャリーアウトで以下 3 スキルに分割されています（役割そのものは 1 つで、内部のスキル分割）:
   - [`/org-delegate`](.claude/skills/org-delegate/SKILL.md) — 作業の委譲（ワーカーへの指示組み立てとディスパッチャー経由の派遣）
