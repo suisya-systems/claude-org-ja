@@ -187,6 +187,20 @@ echo "== claude-org-ja installer =="
 echo
 
 echo "Checking prerequisites..."
+# Snapshot whether `renga` was already discoverable on the user's
+# interactive bash PATH *before* any prerequisite probe runs. That
+# is the right baseline for the trailing Git-Bash-on-Windows hint:
+# require_or_warn below may prepend a fallback dir to PATH for the
+# remainder of this process, but that change does not survive into
+# the user's shell. If the snapshot says "no" and we still resolve
+# renga via the fallback ladder, the user's `renga --layout ops`
+# step needs the shell-PATH advice regardless of whether the
+# resolved file was a `.exe` or a `.cmd`.
+if command -v renga >/dev/null 2>&1; then
+  RENGA_ON_USER_PATH=1
+else
+  RENGA_ON_USER_PATH=0
+fi
 missing=0
 require_or_warn git    "https://git-scm.com/downloads" || missing=1
 require_or_warn claude "https://claude.ai/code (Claude Code CLI)" || missing=1
@@ -344,14 +358,15 @@ For details see docs/getting-started.md.
 MSG
 
 # Final hint: the PATH prepend done by require_or_warn only affected
-# this script's process. If renga still isn't on the user's interactive
-# bash PATH (typical when it was found via the npm / cargo / scoop
-# fallback ladder above, especially `.cmd` shims that bash won't try
-# implicitly), the suggested `renga --layout ops` step would fail
-# silently with "command not found". Tell the user how to bridge that
-# gap in their own shell. POSIX environments skip this entirely.
-if [[ "$IS_WINDOWS_BASH" == "1" && -n "${RENGA_BIN:-}" ]] \
-   && ! command -v renga >/dev/null 2>&1; then
+# this script's process. Use the pre-resolution snapshot taken before
+# any prerequisite probe ran (RENGA_ON_USER_PATH) as the baseline —
+# that's the user's interactive shell view, which `command -v renga`
+# checked here would misrepresent after the prepend. This catches
+# both `.cmd` shims (which MSYS bash never auto-resolves) AND `.exe`
+# binaries reached via a fallback dir that isn't on the user's
+# interactive bash PATH. POSIX environments skip this entirely.
+if [[ "$IS_WINDOWS_BASH" == "1" && -n "${RENGA_BIN:-}" \
+      && "$RENGA_ON_USER_PATH" != "1" ]]; then
   renga_dir=$(dirname -- "$RENGA_BIN")
   cat <<MSG
 
