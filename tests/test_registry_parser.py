@@ -68,14 +68,19 @@ class TestParseProjects(unittest.TestCase):
             self.assertIsInstance(p, Project)
             self.assertTrue(p.nickname)
             self.assertTrue(p.name)
-        has_data_lines = any(
-            r.kind == "data" or r.kind == "mismatch" for r in iter_rows(text)
+        # Detect "looks like a markdown table" by counting pipe-prefixed
+        # lines, not by iter_rows() kinds: when the separator row is missing
+        # iter_rows classifies every `| ... |` line (header AND would-be
+        # data rows) as "header", so a kind-based check would silently miss
+        # exactly the corruption mode we want to catch.
+        pipe_lines = sum(
+            1 for ln in text.splitlines() if ln.lstrip().startswith("|")
         )
-        if has_data_lines:
+        if pipe_lines >= 2:
             self.assertGreater(
                 len(projects), 0,
-                "live registry has table rows but none parsed — likely "
-                "separator/header corruption",
+                "live registry has pipe-table lines but none parsed — "
+                "likely separator/header corruption",
             )
 
     def test_happy_path(self):
