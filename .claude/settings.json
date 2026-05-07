@@ -11,6 +11,7 @@
       "Bash(renga mcp uninstall:*)",
       "Bash(renga mcp status:*)",
       "Bash(renga mcp --help)",
+      "Bash(gh pr merge:*)",
       "mcp__renga-peers__set_summary",
       "mcp__renga-peers__list_peers",
       "mcp__renga-peers__send_message",
