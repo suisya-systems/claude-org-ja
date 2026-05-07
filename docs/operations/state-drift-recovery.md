@@ -84,16 +84,27 @@ worker-state .md file persists on disk for the resume hand-off
 A missing .md therefore signals genuine drift even when
 `org_sessions.status='SUSPENDED'`; this tool does not suppress it.
 
-**Why warn-only.** The contract recovery is T7 (`in_use → abandoned`),
-which Set F § 4 T7 also flags as prescribed-but-not-yet-implemented. The
-Secretary classifies and writes the terminal status (Set B § 2 T7); the
-dispatcher only writes the worker-state-file `Status: pane_closed`.
+**Why warn-only.** The Secretary owns the outcome classification (Set
+F § 4); the dispatcher only writes the worker-state-file `Status:
+pane_closed`. The recovery transition differs by source status:
+
+- For `in_use` rows the contract recovery is T7 (`in_use → abandoned`),
+  which Set F § 4 T7 flags as prescribed-but-not-yet-implemented.
+- For `review` rows the worker has **already submitted a completion
+  report** (T4 entered review). The normal exits are T5 (close to
+  `completed`) or T6 (back to `in_use` for review feedback). T7 is
+  **wrong** here — it would discard reported work.
 
 **Operator action.**
 1. Confirm with the Dispatcher whether `WORKER_PANE_EXITED` was missed.
-2. If the worker is genuinely gone, apply T7 once the prescribed write
-   path lands. Today the run row remains `in_use` until manually
-   reconciled.
+2. **If the source status is `in_use`** and the worker is genuinely
+   gone: once the prescribed T7 write path lands, apply
+   `update_run_status('<task>', 'abandoned')`. Today the run row
+   remains `in_use` until manually reconciled.
+3. **If the source status is `review`**: do NOT apply T7. Restore the
+   worker .md from Progress Log evidence (or `.state/workers/archive/`
+   if it was archived prematurely) so the operator can read the
+   completion report, then proceed with the normal T5 or T6 transition.
 
 ### D3 — `completed_run_worker_file_present`
 

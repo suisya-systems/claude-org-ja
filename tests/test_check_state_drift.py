@@ -181,6 +181,28 @@ class DriftDetectorTests(unittest.TestCase):
         self.assertEqual([r.klass for r in records],
                          ["live_run_missing_worker_file"])
 
+    def test_review_recovery_action_does_not_recommend_T7(self):
+        # Codex review caught: Set F § 4 review's normal exits are T5/T6;
+        # pushing T7 (abandoned) would discard a worker that already
+        # submitted a completion report.
+        ts = _iso(self.now)
+        self._write(t_review=("review", ts))
+        records = self._detect()
+        self.assertEqual(len(records), 1)
+        action = records[0].operator_action
+        self.assertIn("T5", action)
+        self.assertIn("T6", action)
+        # The negation phrasing must be present so the Secretary cannot
+        # accidentally read T7 as the recommended path.
+        self.assertIn("Do NOT apply T7", action)
+
+    def test_in_use_recovery_action_does_recommend_T7(self):
+        ts = _iso(self.now)
+        self._write(t_live=("in_use", ts))
+        records = self._detect()
+        self.assertEqual(len(records), 1)
+        self.assertIn("T7", records[0].operator_action)
+
     # ------------------------------------------------------------------
     # D3 completed_run_worker_file_present
     # ------------------------------------------------------------------
@@ -223,6 +245,48 @@ class DriftDetectorTests(unittest.TestCase):
     # ------------------------------------------------------------------
     # warn-only guarantee
     # ------------------------------------------------------------------
+
+    def test_detect_does_not_mutate_journal_mode(self):
+        # Codex review caught: opening via tools.state_db.connect issues
+        # PRAGMA journal_mode=WAL, which physically writes to the DB
+        # (creating -wal/-shm siblings, flipping the mode). A warn-only
+        # detector must NOT do that. Build a fresh delete-mode DB so the
+        # mutation, if it happened, would visibly flip the mode.
+        fresh_db = self.root / "ro_guard.db"
+        c = sqlite3.connect(fresh_db)
+        try:
+            apply_schema(c)
+            mode_before = c.execute(
+                "PRAGMA journal_mode"
+            ).fetchone()[0].lower()
+            c.commit()
+        finally:
+            c.close()
+        self.assertEqual(mode_before, "delete")
+        before_mtime = fresh_db.stat().st_mtime_ns
+
+        detect_drift(
+            fresh_db,
+            self.workers,
+            queued_stale_seconds=_DEFAULT_QUEUED_STALE_SECONDS,
+            now=self.now,
+        )
+
+        c = sqlite3.connect(fresh_db)
+        try:
+            mode_after = c.execute(
+                "PRAGMA journal_mode"
+            ).fetchone()[0].lower()
+        finally:
+            c.close()
+        self.assertEqual(mode_after, "delete")
+        # No -wal / -shm siblings on a delete-mode DB.
+        for sibling in ("ro_guard.db-wal", "ro_guard.db-shm"):
+            self.assertFalse(
+                (self.root / sibling).exists(),
+                f"unexpected sibling: {sibling}",
+            )
+        self.assertEqual(fresh_db.stat().st_mtime_ns, before_mtime)
 
     def test_detect_does_not_mutate_db_or_files(self):
         ts = _iso(self.now - timedelta(seconds=900))

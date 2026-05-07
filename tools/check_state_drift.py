@@ -86,20 +86,29 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 import sys
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-# Allow direct ``python tools/check_state_drift.py`` invocation by
-# putting the repo root on sys.path before importing the in-tree package.
-# Mirrors the pattern in tools/run_complete_on_merge.py.
-_REPO_ROOT = Path(__file__).resolve().parent.parent
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
 
-from tools.state_db import connect  # noqa: E402
+def _open_readonly(db_path: Path) -> sqlite3.Connection:
+    """Open ``db_path`` strictly read-only so detection cannot mutate state.
+
+    The package-level ``tools.state_db.connect`` issues
+    ``PRAGMA journal_mode = WAL`` on first open, which materially writes
+    to the DB (flips the journal mode and creates ``-wal``/``-shm``
+    siblings). For a *warn-only* detector that contract-claims "no
+    mutation", that side-effect is itself drift. We open via the SQLite
+    URI ``mode=ro`` so the connection has no write capability at all —
+    journal-mode changes silently no-op rather than touching the file.
+    """
+    uri = f"file:{db_path}?mode=ro"
+    conn = sqlite3.connect(uri, uri=True)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 
 # Run-status groupings reused from the canonical contract (see
@@ -117,7 +126,7 @@ class DriftRecord:
     """One detected drift incident.
 
     ``operator_action`` names the documented recovery (see
-    ``docs/runbooks/state-drift-recovery.md``); ``ambiguous`` is True when
+    ``docs/operations/state-drift-recovery.md``); ``ambiguous`` is True when
     the class requires operator confirmation rather than mechanical fix.
     """
     klass: str
@@ -214,18 +223,36 @@ def _detect_live_missing_worker_file(
         md = workers_dir / f"worker-{task_id}.md"
         if md.exists():
             continue
+        status = r["status"]
+        # Per state-semantics-contract.md § 4: in_use's prescribed
+        # recovery on missing pane is T7 (abandoned), but review's
+        # normal exits are T5 (completed) and T6 (in_use). Pushing
+        # T7 for review would discard already-reported completion
+        # work. Tailor the guidance per status.
+        if status == "review":
+            action = (
+                "Secretary: review state means a completion report is "
+                "already on file. Restore the worker .md from "
+                "Progress Log / archive if recoverable, then proceed "
+                "with normal T5 (completed) or T6 (in_use review-"
+                "feedback). Do NOT apply T7 — it would discard "
+                "reported work."
+            )
+        else:
+            action = (
+                "Secretary: confirm with Dispatcher whether "
+                "WORKER_PANE_EXITED was missed; on confirmation, "
+                "apply T7 (abandoned) once the prescribed write path "
+                "is live."
+            )
         out.append(DriftRecord(
             klass="live_run_missing_worker_file",
             task_id=task_id,
             detail=(
-                f"runs.status='{r['status']}' but {md.name} is missing "
+                f"runs.status='{status}' but {md.name} is missing "
                 f"from {workers_dir}"
             ),
-            operator_action=(
-                "Secretary: confirm with Dispatcher whether "
-                "WORKER_PANE_EXITED was missed; on confirmation, apply "
-                "T7 (abandoned) once the prescribed write path is live"
-            ),
+            operator_action=action,
             ambiguous=True,
         ))
     return out
@@ -308,7 +335,7 @@ def detect_drift(
     """
     if now is None:
         now = datetime.now(timezone.utc)
-    conn = connect(db_path)
+    conn = _open_readonly(db_path)
     try:
         records: list[DriftRecord] = []
         records.extend(_detect_queued_stale(
