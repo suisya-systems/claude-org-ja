@@ -965,6 +965,70 @@ class TestPatternBEnRepoWorktree(unittest.TestCase):
             (self.en_clone / ".worktrees" / "en-task-live").resolve(),
         )
 
+    def test_active_run_under_other_alias_forces_pattern_b(self):
+        """Codex Major regression: alias slugs share the same physical clone,
+        so an active run under ``claude-org`` must gate ``claude-org-en``
+        (and vice versa) into Pattern B. Without this both would land on
+        Pattern A in the same worker_dir simultaneously."""
+        self.sb.add_run(
+            task_id="run-under-claude-org",
+            project_slug="claude-org",
+            pattern="A",
+            status="in_use",
+            worker_dir_abs=str(self.en_clone),
+        )
+        layout = rwl.resolve(
+            task_id="incoming-en-alias",
+            project_slug="claude-org-en",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(layout.pattern, "B")
+        self.assertEqual(layout.pattern_variant, "en_repo_worktree")
+        self.assertEqual(
+            Path(layout.worker_dir),
+            (self.en_clone / ".worktrees" / "incoming-en-alias").resolve(),
+        )
+
+    def test_layout_overrides_en_repo_worktree_re_derives_worker_dir(self):
+        """Codex Minor regression: layout_overrides supplying pattern=B +
+        variant=en_repo_worktree without an explicit worker_dir must re-pin
+        worker_dir to {en_clone}/.worktrees/{task_id}, otherwise
+        gen_delegate_payload would derive base_repo from a stale path."""
+        layout = rwl.resolve(
+            task_id="explicit-en",
+            project_slug="claude-org",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+            layout_overrides={
+                "pattern": "B",
+                "pattern_variant": "en_repo_worktree",
+            },
+        )
+        self.assertEqual(layout.pattern, "B")
+        self.assertEqual(layout.pattern_variant, "en_repo_worktree")
+        self.assertEqual(
+            Path(layout.worker_dir),
+            (self.en_clone / ".worktrees" / "explicit-en").resolve(),
+        )
+
+    def test_layout_overrides_en_repo_worktree_without_clone_raises(self):
+        """When the override requests en_repo_worktree but no clone exists,
+        we'd silently emit an unusable layout — fail loudly instead."""
+        import shutil as _shutil
+        _shutil.rmtree(self.en_clone)
+        with self.assertRaises(rwl.ResolveError):
+            rwl.resolve(
+                task_id="explicit-en-no-clone",
+                project_slug="claude-org",
+                claude_org_root=self.sb.claude_org_root,
+                state_db_path=self.sb.db_path,
+                layout_overrides={
+                    "pattern": "B",
+                    "pattern_variant": "en_repo_worktree",
+                },
+            )
+
     def test_unrelated_slug_does_not_match_even_with_clone_present(self):
         """Slug gate: a non-en slug (clock-app, renga) must not be promoted
         even when the en clone is on disk."""

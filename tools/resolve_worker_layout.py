@@ -492,11 +492,24 @@ def resolve(
         # for "no concurrent work known". The dispatcher / Stage 3 apply step
         # will re-validate before actually creating any worktree.
         active = False
+        # Issue #370 (Codex Major): when the en mirror is in play, the two
+        # alias slugs (``claude-org`` / ``claude-org-en``) point at the same
+        # physical clone, so an active run recorded under one alias must
+        # gate the other into Pattern B too. Otherwise back-to-back
+        # delegations under different aliases would land in the same
+        # Pattern A worker_dir simultaneously.
+        active_run_slugs: tuple[str, ...]
+        if en_clone is not None:
+            active_run_slugs = _CLAUDE_ORG_EN_SLUGS
+        else:
+            active_run_slugs = (project_slug,)
         if state_db_path is not None and Path(state_db_path).exists():
             try:
                 conn = db_connect(state_db_path)
                 try:
-                    active = project_has_active_run(conn, project_slug)
+                    active = any(
+                        project_has_active_run(conn, s) for s in active_run_slugs
+                    )
                 finally:
                     conn.close()
             except sqlite3.Error:
@@ -560,6 +573,26 @@ def resolve(
             # → re-derive to claude_org_root/.worktrees/{task_id}/ (Issue #289).
             if pattern == "B" and variant == "live_repo_worktree" and not explicit_worker_dir:
                 worker_dir = (claude_org_root / ".worktrees" / task_id).resolve()
+            # Issue #370 (Codex Minor): same re-derivation for the en
+            # mirror variant — without it, an explicit override leaves
+            # worker_dir at whatever auto-derive produced (often the clone
+            # root) and gen_delegate_payload's
+            # ``base_repo = worker_dir.parent.parent`` derivation lands on
+            # the wrong directory.
+            if pattern == "B" and variant == "en_repo_worktree" and not explicit_worker_dir:
+                en_clone_for_override = en_clone or find_claude_org_en_clone(
+                    project_slug, workers_dir
+                )
+                if en_clone_for_override is None:
+                    raise ResolveError(
+                        "layout_overrides requested pattern=B "
+                        "variant=en_repo_worktree but no claude-org en mirror "
+                        f"clone was detected at {workers_dir}/"
+                        f"{_CLAUDE_ORG_EN_CLONE_DIRNAME} (slug={project_slug!r}). "
+                        "Either supply layout_overrides['worker_dir'] "
+                        "explicitly or clone the en mirror at that path."
+                    )
+                worker_dir = (en_clone_for_override / ".worktrees" / task_id).resolve()
         if "worker_dir" in layout_overrides and layout_overrides["worker_dir"]:
             worker_dir = Path(layout_overrides["worker_dir"]).resolve()
         if "role" in layout_overrides and layout_overrides["role"]:
