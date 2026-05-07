@@ -208,6 +208,10 @@ renga --layout ops
               +-> ワーカー群（実作業、完了後に自動消滅）
 ```
 
+![/org-start 後のペインレイアウト例: 窓口（Secretary）・ディスパッチャー・キュレーターと 5 並列ワーカーが同一タブ内で動作する様子](docs/assets/org-start-pane-layout.png)
+
+*`/org-start` 実行後のペインレイアウト例。窓口（Secretary）・ディスパッチャー・キュレーターに加え、タスク委譲で派生した 5 つの並列ワーカーが同一タブ内で動作している。*
+
 - **窓口（Secretary）**: 人間との唯一の接点。タスク分解・委譲判断・結果報告を担う。窓口の運用責務は Issue [#320](https://github.com/suisya-systems/claude-org-ja/issues/320) のキャリーアウトで以下 3 スキルに分割されています（役割そのものは 1 つで、内部のスキル分割）:
   - [`/org-delegate`](.claude/skills/org-delegate/SKILL.md) — 作業の委譲（ワーカーへの指示組み立てとディスパッチャー経由の派遣）
   - [`/org-escalation`](.claude/skills/org-escalation/SKILL.md) — ワーカーからの判断仰ぎを人間にエスカレーションし、`.state/pending_decisions.json` を更新する正準フロー
