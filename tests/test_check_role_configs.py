@@ -245,6 +245,39 @@ class ExtractRoleBlocksTests(unittest.TestCase):
         blocks = crc.extract_role_blocks(md, MINIMAL_SCHEMA["roles"])
         self.assertEqual(blocks["secretary"]["permissions"]["allow"], ["sec"])
 
+    def test_bilingual_all_alias_table_entries_match(self):
+        # Issue #340 codex round 2: every en alias declared in
+        # ``_JA_TO_EN_ROLE_HEADING_ALIASES`` must be exercised so a
+        # future typo or translation update is caught here. Build a
+        # synthetic schema that covers all five canonical roles.
+        schema = {
+            name: {"docs_section": ja}
+            for name, ja in {
+                "user_common": "ユーザー共通",
+                "secretary": "窓口",
+                "dispatcher": "ディスパッチャー",
+                "curator": "キュレーター",
+                "worker": "ワーカー",
+            }.items()
+        }
+        for ja, aliases in crc._JA_TO_EN_ROLE_HEADING_ALIASES.items():
+            for alias in aliases:
+                md = (
+                    f"## {alias} (`...`)\n\n"
+                    f'```json\n{{"permissions": {{"allow": ["{alias}"]}}}}\n```\n'
+                )
+                blocks = crc.extract_role_blocks(md, schema)
+                # Find which role uses this ja heading and assert the
+                # alias projects to it.
+                role_for_ja = next(
+                    role for role, defn in schema.items()
+                    if defn["docs_section"] == ja
+                )
+                self.assertEqual(
+                    blocks[role_for_ja]["permissions"]["allow"], [alias],
+                    msg=f"alias {alias!r} (for ja {ja!r}) failed to project",
+                )
+
     def test_bilingual_alias_rejects_longer_word(self):
         # ``Lead`` must not match ``Leadership``.
         md = (
