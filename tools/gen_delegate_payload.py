@@ -134,6 +134,8 @@ def _pattern_label(layout: rwl.WorkerLayout) -> str:
         return "C: gitignored サブモード (registered repo 直接編集)"
     if layout.pattern_variant == "live_repo_worktree":
         return "B: worktree (live_repo_worktree — Secretary live repo 配下)"
+    if layout.pattern_variant == "claude_org_repo_worktree":
+        return "B: worktree (claude_org_repo_worktree — claude-org mirror 配下)"
     return base
 
 
@@ -258,6 +260,22 @@ def build_delegate_plan(
     brief_filename = _brief_filename(self_edit)
     brief_out_path = Path(layout.worker_dir) / brief_filename
 
+    # Issue #370: the claude-org mirror's registry-display alias
+    # ``claude-org-en`` (the 通称 column) and the canonical project slug
+    # ``claude-org`` both point at the same physical clone. Normalize to
+    # the canonical slug (matches both
+    # ``tools/state_db/migrate_workers.py:PROJECT_RENAMES`` and the github
+    # repo name) before storing, so state.db / dashboard aggregations
+    # don't split the repo's runs across two project rows. Applies to ALL
+    # patterns (A / B / C-gitignored) — Pattern A's variant is None but
+    # the mirror still anchors worker_dir on the shared clone.
+    workers_dir_for_norm = workers_dir or rwl.resolve_workers_dir(
+        Path(claude_org_root)
+    )
+    canonical_slug = rwl._CLAUDE_ORG_SLUG_ALIASES.get(project_slug, project_slug)
+    if rwl.find_claude_org_clone(canonical_slug, Path(workers_dir_for_norm)) is not None:
+        project_slug = rwl._CLAUDE_ORG_CLONE_DIRNAME
+
     permission_mode = parse_permission_mode(Path(claude_org_root))
 
     # Look up project.path for the DELEGATE body label.
@@ -293,6 +311,30 @@ def build_delegate_plan(
     if layout.pattern == "B":
         if layout.pattern_variant == "live_repo_worktree":
             base_repo = Path(claude_org_root).resolve()
+        elif layout.pattern_variant == "claude_org_repo_worktree":
+            # Issue #370: worker_dir = {clone}/.worktrees/<task>. A generic
+            # git-repo check on parent.parent let
+            # ``layout_overrides.worker_dir=<unrelated_repo>/.worktrees/<task>``
+            # slip through. Re-run the origin-URL match against
+            # ``workers_dir/claude-org`` and assert the derived base equals
+            # that canonical clone path, so worktree creation can't be
+            # redirected at an arbitrary repo via override.
+            candidate = Path(layout.worker_dir).parent.parent.resolve()
+            expected = rwl.find_claude_org_clone(
+                rwl._CLAUDE_ORG_CLONE_DIRNAME,
+                Path(workers_dir_for_norm),
+            )
+            if expected is None or candidate != expected.resolve():
+                raise ValueError(
+                    f"pattern_variant='claude_org_repo_worktree' requires "
+                    f"worker_dir of shape <clone>/.worktrees/<task> where "
+                    f"<clone> is the canonical claude-org mirror at "
+                    f"{Path(workers_dir_for_norm) / rwl._CLAUDE_ORG_CLONE_DIRNAME}. "
+                    f"worker_dir={layout.worker_dir!r} derives "
+                    f"base_repo={candidate!s} which does not match the "
+                    "canonical clone."
+                )
+            base_repo = candidate
         elif project_path and rwl.is_local_git_repo(project_path):
             base_repo = Path(project_path).resolve()
 
