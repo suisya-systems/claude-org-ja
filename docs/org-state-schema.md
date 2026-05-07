@@ -14,7 +14,7 @@
 ## 概要
 
 `.state/org-state.json` は state.db から `dashboard/org_state_converter.py` が生成する派生 JSON。
-ダッシュボード（`dashboard/server.py`）その他のプログラム的消費者が JSON を優先的に読み込めるようにするために導入された。
+**M4 以降のダッシュボード本体（`dashboard/server.py`）は state.db を直接読むため本ファイルを参照しない**。本 JSON は外部 consumer（CI / 外部スクリプト / 他言語の reader 等）向けの派生スナップショットとして残存する。
 
 ### JSON の再生成（参考）
 
@@ -64,7 +64,7 @@ python3 dashboard/org_state_converter.py     # Mac/Linux
       "pattern": "A | B | C",
       "directory": "<absolute path>",
       "project": "<project name | ->",
-      "status": "<runs.outcome_note OR runs.status (e.g. in_use / review / completed / abandoned)>"
+      "status": "<runs.outcome_note OR runs.status — 7 値全てが出現し得る (queued / in_use / review / completed / failed / suspended / abandoned)>"
     }
   ],
   "dispatcher": {
@@ -125,8 +125,8 @@ python3 dashboard/org_state_converter.py     # Mac/Linux
 | `taskId` | `string` | そのディレクトリを使用しているタスク ID |
 | `pattern` | `string` | ディレクトリパターン: `A`（プロジェクトディレクトリ）/ `B`（worktree）/ `C`（エフェメラル） |
 | `directory` | `string` | ワーカーディレクトリの絶対パス |
-| `project` | `string` | プロジェクト名。エフェメラルの場合は `-` |
-| `status` | `string` | `runs.outcome_note` が設定されていればそれを、なければ `runs.status`（`in_use` / `review` / `completed` / `failed` / `abandoned`）をそのまま射影。pre-M4 の `available` 表記は実装からは出力されない。詳細は [`dashboard/org_state_converter.py`](../dashboard/org_state_converter.py) |
+| `project` | `string` | `projects.slug`（プロジェクトの kebab-case 識別子）をそのまま出力。`display_name`（人間向け表示名）ではない点に注意。エフェメラルの場合は `-` |
+| `status` | `string` | `runs.outcome_note` が設定されていればそれを、なければ `runs.status` をそのまま射影。`runs.status` は閉じた 7 値 (`queued` / `in_use` / `review` / `completed` / `failed` / `suspended` / `abandoned`) で、T1 reservation 段階の `queued` も `worker_dir_id` が紐付いていれば本配列に出現する。pre-M4 の `available` 表記は実装からは出力されない。詳細は [`dashboard/org_state_converter.py`](../dashboard/org_state_converter.py) |
 
 ### dispatcher / curator
 

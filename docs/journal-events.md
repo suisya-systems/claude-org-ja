@@ -17,16 +17,27 @@ The journal is consumed informally (retros, dashboard readers, ad-hoc
 SQL via `sqlite3 .state/state.db`). Field shapes here are descriptive
 and may evolve; consumers should tolerate unknown fields gracefully.
 
-## Reserved envelope (from core-harness)
+## Reserved envelope
 
-Each event row carries the two reserved keys defined by Layer 1
-(serialized into the state.db `events` table; the same envelope shape
-applied to legacy jsonl rows pre-M4):
+Each event row in the `.state/state.db` `events` table has the
+following columns (see `tools/state_db/schema.sql`):
 
-| Key     | Type                              | Purpose                                  |
-|---------|-----------------------------------|------------------------------------------|
-| `ts`    | string, `YYYY-MM-DDTHH:MM:SSZ`    | Append time (ISO-8601 UTC, second prec.) |
-| `event` | string                            | Event name (one of the entries below)    |
+| Column          | Type                              | Purpose                                                     |
+|-----------------|-----------------------------------|-------------------------------------------------------------|
+| `id`            | INTEGER PK AUTOINCREMENT          | Row id                                                      |
+| `occurred_at`   | TEXT, `YYYY-MM-DDTHH:MM:fffZ`     | Append time (ISO-8601 UTC, ms prec.; default `strftime(now)`) |
+| `actor`         | TEXT (nullable)                   | Originating role (`secretary` / `dispatcher` / …) when known |
+| `kind`          | TEXT NOT NULL                     | Event name (one of the entries below)                       |
+| `run_id` / `workstream_id` / `project_id` | INTEGER FK (nullable) | Optional join keys |
+| `payload_json`  | TEXT NOT NULL (JSON object)       | Per-event typed fields documented below                     |
+
+The CLI wrappers (`tools/journal_append.{sh,py}`) take the event name
+as a positional argument and route it into the `kind` column,
+synthesize `occurred_at`, and pack remaining `k=v` / `--json` fields
+into `payload_json`. Pre-M4 jsonl rows used a flat `{ts, event, …}`
+envelope; that shape is retained inside `payload_json` only when the
+caller passes it through, but the **column-level reserved keys are
+`occurred_at` / `kind`**.
 
 ## Writers
 
