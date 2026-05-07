@@ -102,6 +102,11 @@ class TestRunStatusVocabulary(unittest.TestCase):
     schema CHECK constraint at write time."""
 
     def test_schema_enumeration_matches_contract(self):
+        """Codex round-1 Major: assert *exact* set equality. A drift
+        that adds a new status to the CHECK clause (e.g. 'blocked')
+        must fail this test even though every contract value is still
+        listed."""
+        import re
         td, _root, _db, conn = _make_root_with_db()
         try:
             row = conn.execute(
@@ -109,11 +114,23 @@ class TestRunStatusVocabulary(unittest.TestCase):
             ).fetchone()
             self.assertIsNotNone(row)
             sql = row["sql"]
-            for value in CONTRACT_STATUS_VOCAB:
-                self.assertIn(
-                    f"'{value}'", sql,
-                    f"runs.status CHECK clause missing contract value {value!r}"
-                )
+            # Extract the status CHECK clause's IN (...) member list and
+            # parse out the literals between single quotes. This lets
+            # the assertion fail on *any* difference — added values,
+            # removed values, or renamed values.
+            m = re.search(
+                r"status\s+TEXT[^,]*?CHECK\s*\(\s*status\s+IN\s*\(([^)]*)\)",
+                sql, re.IGNORECASE,
+            )
+            self.assertIsNotNone(
+                m, "could not locate runs.status CHECK clause in DDL"
+            )
+            literals = set(re.findall(r"'([^']*)'", m.group(1)))
+            self.assertEqual(
+                literals, set(CONTRACT_STATUS_VOCAB),
+                "runs.status CHECK clause MUST equal the contract vocabulary "
+                f"exactly; drift={literals ^ set(CONTRACT_STATUS_VOCAB)!r}"
+            )
         finally:
             conn.close()
             td.cleanup()
@@ -312,18 +329,26 @@ class TestTerminalStates(unittest.TestCase):
 
 
 class TestForbiddenTransitions(unittest.TestCase):
-    """Set F § 6: the contract transition table is an allow-list. The
-    writer's row-level ``UPDATE`` does not enforce table-level
-    transitions today (I5 is operator-level per the contract), but the
-    *committed terminal* state is the source of truth for the read side
-    — once terminal, the run must drop out of every active projection
-    regardless of stray writes that may follow.
+    """Set F § 6: the contract transition table is an allow-list.
 
-    These tests pin the read-side guarantee: even if a writer were to
-    re-issue an active status against a terminal row, the user-visible
-    projection that operators rely on must be derived from the *current*
-    runs.status. We don't enforce I5 in code; we assert the projections
-    behave correctly across the legal terminal-states space."""
+    The writer's row-level ``UPDATE`` does not enforce *table-level*
+    transitions today (I5 is operator-level per the contract); attempts
+    to write a forbidden cell of the table (e.g. ``queued → completed``)
+    succeed at the SQL layer and are caught by code-review / journal
+    audit, not by SQL CHECK. We therefore lock two complementary
+    guarantees here:
+
+    1. **Read-side projection** — once a row commits to a terminal
+       status, every user-visible projection MUST exclude it,
+       regardless of how it got there.
+    2. **Operator audit surface** — the run row's *committed* status
+       remains exactly what the writer wrote, so retros / journal
+       audits can detect and roll back an out-of-allow-list transition
+       (the only mechanism that currently enforces the allow-list).
+
+    A future Issue may add a CHECK trigger to enforce I5 in code; when
+    that lands, additional tests should assert that a forbidden write
+    raises rather than commits."""
 
     def test_terminal_rows_excluded_from_user_visible_projection(self):
         td, root, _db, conn = _make_root_with_db()
@@ -353,6 +378,43 @@ class TestForbiddenTransitions(unittest.TestCase):
             self.assertEqual(
                 visible, {"t-live"},
                 "user-visible projection MUST equal status IN ('in_use','review')"
+            )
+        finally:
+            conn.close()
+            td.cleanup()
+
+    def test_forbidden_queued_jumps_commit_audit_surface(self):
+        """Set F § 6: ``queued → completed`` and ``queued → review`` are
+        forbidden allow-list cells (the only legal exit from queued
+        without T2 promotion is T8 → abandoned). The writer does NOT
+        block these today — pin the audit surface that will detect
+        them: the row's *committed* status equals exactly what the
+        writer wrote, no silent normalization, so journal audits can
+        trip on the violation. If a future commit adds CHECK-trigger
+        enforcement, this test should be tightened to assert the
+        write raises instead."""
+        td, root, _db, conn = _make_root_with_db()
+        try:
+            w = StateWriter(conn, claude_org_root=root)
+            with w.transaction() as tx:
+                tx.upsert_run(
+                    task_id="t-jump-c", project_slug="p", pattern="B",
+                    status="queued",
+                )
+                tx.upsert_run(
+                    task_id="t-jump-r", project_slug="p", pattern="B",
+                    status="queued",
+                )
+            with w.transaction() as tx:
+                tx.update_run_status("t-jump-c", "completed")
+                tx.update_run_status("t-jump-r", "review")
+            self.assertEqual(
+                get_run_by_task_id(conn, "t-jump-c")["status"], "completed",
+                "writer MUST commit the literal status the caller wrote"
+            )
+            self.assertEqual(
+                get_run_by_task_id(conn, "t-jump-r")["status"], "review",
+                "writer MUST commit the literal status the caller wrote"
             )
         finally:
             conn.close()
@@ -507,9 +569,14 @@ class TestDerivedArtifactSoftFailure(unittest.TestCase):
             td.cleanup()
 
     def test_json_regen_failure_is_swallowed_and_db_committed(self):
+        """Codex round-1 Major: a JSON regen failure must NOT
+        short-circuit the post-commit worker-archive hook that runs
+        after it. Seed a real worker file and assert it lands in
+        archive/ even when the JSON converter explodes mid-hook."""
         td, root, _db, conn = _make_root_with_db()
         try:
             w = StateWriter(conn, claude_org_root=root)
+            src = _seed_worker_file(root, "t-soft-json")
             from dashboard import org_state_converter as _conv
             orig = _conv.convert
 
@@ -530,19 +597,20 @@ class TestDerivedArtifactSoftFailure(unittest.TestCase):
             run = get_run_by_task_id(conn, "t-soft-json")
             self.assertIsNotNone(run)
             self.assertEqual(run["status"], "completed")
-            # The completed-archive hook runs *after* the JSON regen
-            # hook (writer.commit() ordering); a JSON failure must not
-            # short-circuit the archive step either.
+            # JSON regen blew up; subsequent worker-archive hook MUST
+            # still run. Source file moved → archive populated.
+            self.assertFalse(
+                src.exists(),
+                "JSON regen failure must NOT short-circuit the worker "
+                "archive post-commit step"
+            )
             archived = (
                 root / ".state" / "workers" / "archive" / "worker-t-soft-json.md"
             )
-            # No worker file was seeded for this task, so the archive dir
-            # may or may not exist; the contract guarantee is just that
-            # the writer didn't raise. Be permissive about the archive
-            # dir but assert the run row is durable.
-            self.assertFalse(
+            self.assertTrue(
                 archived.exists(),
-                "no source file existed; archival should be a no-op"
+                "worker file MUST land in archive/ even when an earlier "
+                "post-commit hook raised"
             )
         finally:
             conn.close()
@@ -565,24 +633,10 @@ class TestReadSideCoherence(unittest.TestCase):
         w = StateWriter(self._conn, claude_org_root=self._root)
         # Seed every status in the closed vocabulary so any conflation
         # between predicates surfaces as a wrong row count.
-        seeds = [
-            ("rq", "queued"),
-            ("ri", "in_use"),
-            ("rr", "review"),
-            ("rc", "completed"),
-            ("rf", "failed"),
-            ("rs", "suspended"),  # reserved-for-future, no production write path
-            ("ra", "abandoned"),
-        ]
         with w.transaction() as tx:
             tx.register_worker_dir(
                 abs_path="/tmp/cohpath", layout="flat", lifecycle="active"
             )
-            for tid, _status in seeds:
-                # Insert via upsert (status defaults to in_use), then
-                # transition through update_run_status — except for
-                # queued which is a T1 reservation written at insert.
-                pass
             tx.upsert_run(
                 task_id="rq", project_slug="p", pattern="B",
                 status="queued", worker_dir_abs_path="/tmp/cohpath",
