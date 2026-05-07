@@ -170,31 +170,64 @@ codex exec --skip-git-repo-check "<task-id> の design review。\
 
 ### 窓口（org-delegate）の責務
 
-1. 適用条件に該当することを Step 1.7 評価時に判定し、`preview` の脇で「dogfood 対象タスク」とマーク
-2. `apply` 後、ワーカー指示の `description` に「Dogfood follow-up issue を Closes ではなく Refs で参照する」旨を含める
-3. **dogfood 予約 register**: `registry/dogfood_pending.md` に 1 行追加する（次節フォーマット）。これが org-pull-request 側の paired issue 作成・後続 delegation の earmark の SoT
-4. 後続の delegation を起こす際、`registry/dogfood_pending.md` の pending を確認。新規 tool を使用する task を見つけたら、その worker brief に「このタスクは dogfood pass。defect は paired issue #N に報告」を含める
+dogfood protocol は **2 つの delegation** に跨る: (A) 新規 tool を導入する **実装 delegation**, (B) その後その tool を実使用する **dogfood pass delegation**。窓口は両方で `registry/dogfood_pending.md` を読み書きする。
+
+**(A) 実装 delegation の起票時（Step 1.7 評価と同タイミング）:**
+
+1. 適用条件に該当することを判定し、preview と並行で「dogfood 対象タスク」とマーク
+2. `registry/dogfood_pending.md` に新規行を 1 行 append し、`status=pending` / `dogfood_issue` / `dogfood_run_task_id` は空 / `impl_pr` は空（PR 番号は後で埋める）。この時点では実装 PR 自体まだ存在しない
+3. 実装 worker への brief には dogfood の言及は不要（issue 番号も PR 番号もこの時点では未確定）。実装 worker は通常通り tool を作るだけ
+
+**(B) dogfood pass delegation の起票時:**
+
+4. 新規 delegation を起こす際は、毎回 `registry/dogfood_pending.md` の `status=open` 行（= paired follow-up issue 作成済 / dogfood pass 未実施）を確認する
+5. 起票しようとしている新規 task が `tool / surface` 列の対象を実使用する場合、その task を dogfood pass として earmark:
+   - `apply` 呼び出しに `--impl-guidance "Dogfood pass for paired follow-up issue #<N>. Report any defects to that issue using the format in references/dogfood-issue-template.md. Refs #<N>, do not Closes."` を追加する
+   - 追加で `--knowledge .claude/skills/org-delegate/references/dogfood-issue-template.md` を渡し、defect 報告フォーマットを brief に含める
+6. 該当行を更新: `dogfood_run_task_id=<新規 task_id>` を埋め、`status` は `open` のまま据え置き（dogfood worker からの完了報告を受領した時点で `consumed` に遷移、 §register 状態遷移参照）
 
 ### org-pull-request 側の責務（cross-ref）
 
-実装 PR 作成時に以下を行う（手順詳細は org-pull-request 側で別途整備、Issue #338 は本 SKILL に protocol を記録するスコープ）:
+実装 PR 作成 / マージのタイミングで以下を行う（手順詳細は org-pull-request 側で別途整備、Issue #338 は本 SKILL に protocol を記録するスコープ）:
 
-1. `registry/dogfood_pending.md` に該当行があれば、`gh issue create` で paired follow-up issue を作成（template: [`references/dogfood-issue-template.md`](references/dogfood-issue-template.md)）
-2. 作成した issue 番号を `registry/dogfood_pending.md` の該当行に追記
-3. 実装 PR の本文末に `Paired dogfood issue: #<N>` を付ける
+1. 実装 PR 作成直後: `registry/dogfood_pending.md` で `status=pending` の該当行を探し、`impl_pr=#<NNN>` を埋め、`gh issue create --body-file <rendered template>` で paired follow-up issue を作成（template: [`references/dogfood-issue-template.md`](references/dogfood-issue-template.md)）
+2. 作成した issue 番号を該当行の `dogfood_issue=#<MMM>` に埋め、`status` を `pending → open` に遷移
+3. 実装 PR の本文末に `Paired dogfood issue: #<MMM>` を付ける
+4. paired issue がクローズされた時点で該当行の `status` を `consumed → closed` に遷移
 
 ### dogfood_pending register フォーマット
 
-`registry/dogfood_pending.md` に append-only で記録する:
+`registry/dogfood_pending.md` は **append-only ではなく partial-update register**: 行追加は append、各列（`impl_pr` / `dogfood_issue` / `dogfood_run_task_id` / `status`）への追記更新は許可。論理削除や行の reorder は禁止。
 
 ```
 | task_id | tool / surface | impl_pr | dogfood_issue | dogfood_run_task_id | status |
 |---------|----------------|---------|---------------|---------------------|--------|
-| issue-XXX-new-tool | tools/foo.py | #YYY | #ZZZ |  | pending |
+| issue-XXX-new-tool | tools/foo.py | #YYY | #ZZZ | issue-MMM-bar | open |
 ```
 
-- `status`: `pending` (issue 未作成) / `open` (paired issue 作成済 / dogfood pass 未実施) / `consumed` (dogfood 実施完了 → defect が paired issue に集約済) / `closed` (paired issue クローズ済)
-- `dogfood_run_task_id`: 後続 delegation で earmark した task_id
+### register 状態遷移
+
+```
+[行追加] (org-delegate Step 1.8 §A.2)
+  status = pending      ← issue 未作成 / impl_pr も空
+       │
+       │ 実装 PR 作成 + paired issue 作成 (org-pull-request §1-2)
+       ▼
+  status = open         ← paired issue 作成済 / dogfood pass 未実施
+       │
+       │ 後続 delegation で earmark (org-delegate Step 1.8 §B.5-6)
+       │ dogfood_run_task_id を埋める。status は open のまま
+       │
+       │ dogfood pass worker 完了報告受領 → defect が paired issue に集約済
+       ▼
+  status = consumed     ← defect 監視期間
+       │
+       │ paired issue クローズ (org-pull-request §4)
+       ▼
+  status = closed       ← 終端
+```
+
+各遷移は表の単一行に対する **単一列の差分書き換え**。複数列を同時に書き換える場合（例: pending → open は `impl_pr` と `dogfood_issue` と `status` を一括更新）も同一行内なら可。
 
 ## Step 3 / 4: ワーカー起動・指示送信・状態記録（ディスパッチャーが実行）
 
