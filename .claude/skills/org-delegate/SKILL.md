@@ -151,7 +151,8 @@ codex exec --skip-git-repo-check "<task-id> の design review。\
 **review 要約の組み込み:**
 
 - 要約を `tmp/codex-review-{task-id}.md` に保存
-- `apply` 呼び出し時に `--knowledge tmp/codex-review-{task-id}.md` を追加し、ワーカーの brief に design review 要約として埋め込む（あるいは `--impl-guidance "<要約>"` で直接渡す）
+- `apply` 呼び出し時に **`--impl-guidance "<要約本文>"`** を渡す。これにより要約本文が brief の `[implementation].guidance` に展開され、ワーカーが直読できる
+- 補足として `--knowledge tmp/codex-review-{task-id}.md` を追加すると brief の `[references].knowledge` にパスが列挙され、ワーカーが必要に応じて全文を参照できる（`gen_worker_brief.py` はパスを列挙するだけで本文は埋め込まない）。本文を確実にワーカーへ届けるのは `--impl-guidance` 側の責務
 - Blocker / Major が指摘された場合は、ユーザーに上げて方針変更可否を確認してから apply に進む
 
 **helper script:** Issue #337 acceptance で optional とされており、本 PR では実装しない。Secretary が手動で上記表を判定する。
@@ -288,6 +289,7 @@ worker → Secretary peer message
   "
   ```
 - DB の events テーブルにイベント追記 (`bash tools/journal_append.sh ...`)
+- **dogfood pass 完了時の register 更新（Issue #338）**: 完了したタスクが `registry/dogfood_pending.md` の `dogfood_run_task_id` 列に earmark されていた場合、該当行の `status` を `open → consumed` に遷移する。defect は paired follow-up issue (`dogfood_issue` 列) に既に集約されている前提（dogfood pass worker の brief で format 指定済）。protocol 全体は本 SKILL Step 1.8 を SoT
 - 結果を人間に報告し、**ペインを閉じず承認待ちで停止**。承認なしで push/PR を発行すると worker / user 双方への protocol 違反
 
 #### 2b / 2c. ユーザー承認後・レビュー指摘・マージ後クローズ

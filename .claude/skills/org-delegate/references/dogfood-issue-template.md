@@ -59,13 +59,7 @@ Append findings as comments on this issue using the following block:
 
 ## Dogfood pass tracking
 
-| field | value |
-|---|---|
-| dogfood_run_task_id | <set by Secretary when earmarked> |
-| dogfood_run_pr | <set after dogfood worker opens PR> |
-| status | open / consumed / closed |
-
-`registry/dogfood_pending.md` の該当行と一致させること。
+正準値は `registry/dogfood_pending.md` の該当行（`task_id` / `tool / surface` / `impl_pr` / `dogfood_issue` / `dogfood_run_task_id` / `status`）。重複転記しない — register 側を SoT として参照する。本 issue の comment では defect 報告のみ記録し、状態 (`status`) や earmark (`dogfood_run_task_id`) は register 側を確認する運用とする。
 
 ## Closing criteria
 
