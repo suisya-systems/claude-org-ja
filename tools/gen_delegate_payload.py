@@ -260,13 +260,19 @@ def build_delegate_plan(
     brief_filename = _brief_filename(self_edit)
     brief_out_path = Path(layout.worker_dir) / brief_filename
 
-    # Issue #370 (Codex Round 2 Major): the en mirror has two alias slugs in
-    # the wild (``claude-org`` / ``claude-org-en``) but they point at the
+    # Issue #370 (Codex Round 2/3 Major): the en mirror has two alias slugs
+    # in the wild (``claude-org`` / ``claude-org-en``) but they point at the
     # same physical clone. Normalize to the post-migration canonical slug
     # (``claude-org`` per ``tools/state_db/migrate_workers.py:PROJECT_RENAMES``)
     # before storing, so state.db / dashboard aggregations don't split the
-    # repo's runs across two project rows.
-    if layout.pattern_variant == "en_repo_worktree":
+    # repo's runs across two project rows. Round 3 widened this to ALL
+    # patterns (A / B / C-gitignored) — Pattern A's variant is None but the
+    # en mirror still anchors worker_dir on the shared clone, so the same
+    # split would occur for Pattern A delegations.
+    workers_dir_for_norm = workers_dir or rwl.resolve_workers_dir(
+        Path(claude_org_root)
+    )
+    if rwl.find_claude_org_en_clone(project_slug, Path(workers_dir_for_norm)) is not None:
         project_slug = rwl._CLAUDE_ORG_EN_CLONE_DIRNAME
 
     permission_mode = parse_permission_mode(Path(claude_org_root))
@@ -305,21 +311,27 @@ def build_delegate_plan(
         if layout.pattern_variant == "live_repo_worktree":
             base_repo = Path(claude_org_root).resolve()
         elif layout.pattern_variant == "en_repo_worktree":
-            # Issue #370: worker_dir = {en_clone}/.worktrees/<task>; the en
-            # clone has no registry row, so derive base_repo from the
-            # worker_dir layout convention rather than re-running origin URL
-            # detection here. Codex Round 2 Major: validate the derived
-            # path is a real local git repo so a malformed override (any
-            # worker_dir whose parent.parent isn't the en clone) fails fast
-            # instead of silently running `git worktree add` against an
-            # unrelated directory.
+            # Issue #370: worker_dir = {en_clone}/.worktrees/<task>. Codex
+            # Round 3 Major: a generic git-repo check on parent.parent let
+            # ``layout_overrides.worker_dir=<unrelated_repo>/.worktrees/<task>``
+            # slip through. Re-run the origin-URL match against
+            # ``workers_dir/claude-org`` and assert the derived base equals
+            # that canonical en clone path, so worktree creation can't be
+            # redirected at an arbitrary repo via override.
             candidate = Path(layout.worker_dir).parent.parent.resolve()
-            if not rwl.is_local_git_repo(str(candidate)):
+            expected = rwl.find_claude_org_en_clone(
+                rwl._CLAUDE_ORG_EN_CLONE_DIRNAME,
+                Path(workers_dir_for_norm),
+            )
+            if expected is None or candidate != expected.resolve():
                 raise ValueError(
-                    f"pattern_variant='en_repo_worktree' requires worker_dir "
-                    f"of shape <en_clone>/.worktrees/<task>, but "
-                    f"{layout.worker_dir!r} derives base_repo={candidate!s} "
-                    "which is not a local git repo."
+                    f"pattern_variant='en_repo_worktree' requires "
+                    f"worker_dir of shape <en_clone>/.worktrees/<task> "
+                    f"where en_clone is the canonical claude-org mirror at "
+                    f"{Path(workers_dir_for_norm) / rwl._CLAUDE_ORG_EN_CLONE_DIRNAME}. "
+                    f"worker_dir={layout.worker_dir!r} derives "
+                    f"base_repo={candidate!s} which does not match the en "
+                    "clone."
                 )
             base_repo = candidate
         elif project_path and rwl.is_local_git_repo(project_path):

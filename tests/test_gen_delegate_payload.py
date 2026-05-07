@@ -1196,6 +1196,46 @@ class TestPatternBEnRepoWorktreePlan(unittest.TestCase):
                 },
             )
 
+    def test_plan_rejects_en_variant_pointing_at_unrelated_git_repo(self):
+        """Codex Round 3 Major: a worker_dir whose parent.parent IS a git
+        repo — but a different one — used to slip through the validation.
+        Re-running origin-URL detection against the canonical en clone
+        path catches this."""
+        import subprocess as _sp
+        unrelated = Path(self._td.name) / "unrelated-repo"
+        unrelated.mkdir()
+        self._init_repo_with_origin_main(
+            unrelated, "https://github.com/some-other-org/unrelated.git"
+        )
+        with self.assertRaises(ValueError):
+            gdp.build_delegate_plan(
+                task_id="evil-task",
+                project_slug="claude-org",
+                claude_org_root=self.sb.claude_org_root,
+                state_db_path=self.sb.db_path,
+                layout_overrides={
+                    "pattern": "B",
+                    "pattern_variant": "en_repo_worktree",
+                    "worker_dir": str(unrelated / ".worktrees" / "evil-task"),
+                },
+            )
+
+    def test_plan_normalizes_alias_slug_for_pattern_a_too(self):
+        """Codex Round 3 Major: Pattern A (no active concurrent run, variant
+        None) on slug=claude-org-en still anchors worker_dir on the shared
+        clone, so the same alias-split must be normalized for Pattern A,
+        not just Pattern B."""
+        # No add_active_run call — this is Pattern A.
+        plan = gdp.build_delegate_plan(
+            task_id="alias-norm-pattern-a",
+            project_slug="claude-org-en",
+            description="docs sync",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(plan.layout.pattern, "A")
+        self.assertEqual(plan.project_slug, "claude-org")
+
     def test_apply_creates_en_repo_worktree(self):
         """End-to-end: the original repro (apply fails with `no usable
         base repo`) is gone — apply succeeds and registers the worktree
