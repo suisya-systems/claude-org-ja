@@ -53,7 +53,7 @@ python3 dashboard/org_state_converter.py     # Mac/Linux
     {
       "id": "<kebab-case task ID>",
       "title": "<task title (may be Japanese)>",
-      "status": "IN_PROGRESS | COMPLETED | PENDING | BLOCKED | REVIEW | ABANDONED",
+      "status": "IN_PROGRESS | REVIEW",
       "progress": "<latest progress note | null>",
       "worker": "<peer ID | null>"
     }
@@ -64,7 +64,7 @@ python3 dashboard/org_state_converter.py     # Mac/Linux
       "pattern": "A | B | C",
       "directory": "<absolute path>",
       "project": "<project name | ->",
-      "status": "in_use | available"
+      "status": "<runs.outcome_note OR runs.status (e.g. in_use / review / completed / abandoned)>"
     }
   ],
   "dispatcher": {
@@ -107,16 +107,16 @@ python3 dashboard/org_state_converter.py     # Mac/Linux
 | `progress` | `string \| null` | 最新の進捗メモ（`- 結果:` サブ項目）。なければ `null` |
 | `worker` | `string \| null` | 担当ワーカーのピア ID（`- ワーカー:` サブ項目）。なければ `null` |
 
-**status の値:**
+**status の値（M4 現行）:**
 
-| 値 | 意味 |
-|---|---|
-| `IN_PROGRESS` | 作業中 |
-| `COMPLETED` | 完了（人間が承認済み） |
-| `PENDING` | 待機中（まだ開始していない） |
-| `BLOCKED` | ブロック中（依存関係や問題あり） |
-| `REVIEW` | レビュー中（ワーカーが完了報告済み、人間の承認待ち） |
-| `ABANDONED` | 中止 |
+`workItems` は `dashboard/org_state_converter.py` が **active run のみ**（`runs.status IN ('in_use','review')`、[`tools/state_db/queries.py`](../tools/state_db/queries.py) `_ACTIVE_STATUSES`）から生成するため、現行で出力される値は以下 2 値:
+
+| 値 | 由来 (`runs.status`) | 意味 |
+|---|---|---|
+| `IN_PROGRESS` | `in_use` | 作業中（[contract § 3.2](contracts/state-semantics-contract.md)） |
+| `REVIEW` | `review` | レビュー中（ワーカーが完了報告済み、人間の承認待ち） |
+
+`COMPLETED` / `ABANDONED` / `PENDING` / `BLOCKED` は **`workItems` 配列には現れない**（terminal state は `workItems` から除外され、`PENDING` / `BLOCKED` という `runs.status` 値はそもそも DB enum に存在しない）。閉じた 7 値の run-status 全体定義は [`docs/contracts/state-semantics-contract.md` § 2](contracts/state-semantics-contract.md) を参照。
 
 ### workerDirectoryRegistry 要素
 
@@ -126,7 +126,7 @@ python3 dashboard/org_state_converter.py     # Mac/Linux
 | `pattern` | `string` | ディレクトリパターン: `A`（プロジェクトディレクトリ）/ `B`（worktree）/ `C`（エフェメラル） |
 | `directory` | `string` | ワーカーディレクトリの絶対パス |
 | `project` | `string` | プロジェクト名。エフェメラルの場合は `-` |
-| `status` | `string` | `in_use`（作業中）/ `available`（完了済み・再利用可能） |
+| `status` | `string` | `runs.outcome_note` が設定されていればそれを、なければ `runs.status`（`in_use` / `review` / `completed` / `failed` / `abandoned`）をそのまま射影。pre-M4 の `available` 表記は実装からは出力されない。詳細は [`dashboard/org_state_converter.py`](../dashboard/org_state_converter.py) |
 
 ### dispatcher / curator
 
@@ -139,12 +139,7 @@ python3 dashboard/org_state_converter.py     # Mac/Linux
 
 ## ダッシュボードとの統合
 
-`dashboard/server.py` は以下の優先順位で org-state を読み込みます:
-
-1. `.state/org-state.json` が存在し、かつ mtime が `.state/org-state.md` 以上の場合 → JSON を使用
-2. それ以外 → `.state/org-state.md` を正規表現でパース（フォールバック）
-
-この設計により、converter 未実行の環境や JSON が stale な場合でも正常動作します。
+> **historical**: M4 以前は `dashboard/server.py` が `.state/org-state.json`（あれば）→ `.state/org-state.md`（フォールバック）の順で読んでいた。**M4 以降は `dashboard.server.build_state` が `.state/state.db` を直接読み**、`org-state.json` / `org-state.md` を一切参照しない（[`dashboard/server.py`](../dashboard/server.py) 冒頭ドキュメント、[`docs/contracts/state-semantics-contract.md` § 1.2](contracts/state-semantics-contract.md)）。`org-state.json` は外部 consumer 向けの派生スナップショットとして残存する。
 
 ---
 
