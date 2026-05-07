@@ -260,6 +260,15 @@ def build_delegate_plan(
     brief_filename = _brief_filename(self_edit)
     brief_out_path = Path(layout.worker_dir) / brief_filename
 
+    # Issue #370 (Codex Round 2 Major): the en mirror has two alias slugs in
+    # the wild (``claude-org`` / ``claude-org-en``) but they point at the
+    # same physical clone. Normalize to the post-migration canonical slug
+    # (``claude-org`` per ``tools/state_db/migrate_workers.py:PROJECT_RENAMES``)
+    # before storing, so state.db / dashboard aggregations don't split the
+    # repo's runs across two project rows.
+    if layout.pattern_variant == "en_repo_worktree":
+        project_slug = rwl._CLAUDE_ORG_EN_CLONE_DIRNAME
+
     permission_mode = parse_permission_mode(Path(claude_org_root))
 
     # Look up project.path for the DELEGATE body label.
@@ -299,8 +308,20 @@ def build_delegate_plan(
             # Issue #370: worker_dir = {en_clone}/.worktrees/<task>; the en
             # clone has no registry row, so derive base_repo from the
             # worker_dir layout convention rather than re-running origin URL
-            # detection here.
-            base_repo = Path(layout.worker_dir).parent.parent.resolve()
+            # detection here. Codex Round 2 Major: validate the derived
+            # path is a real local git repo so a malformed override (any
+            # worker_dir whose parent.parent isn't the en clone) fails fast
+            # instead of silently running `git worktree add` against an
+            # unrelated directory.
+            candidate = Path(layout.worker_dir).parent.parent.resolve()
+            if not rwl.is_local_git_repo(str(candidate)):
+                raise ValueError(
+                    f"pattern_variant='en_repo_worktree' requires worker_dir "
+                    f"of shape <en_clone>/.worktrees/<task>, but "
+                    f"{layout.worker_dir!r} derives base_repo={candidate!s} "
+                    "which is not a local git repo."
+                )
+            base_repo = candidate
         elif project_path and rwl.is_local_git_repo(project_path):
             base_repo = Path(project_path).resolve()
 

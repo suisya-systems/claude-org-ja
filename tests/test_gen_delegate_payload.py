@@ -1162,6 +1162,40 @@ class TestPatternBEnRepoWorktreePlan(unittest.TestCase):
             Path(plan.base_repo).resolve(), self.en_clone.resolve()
         )
 
+    def test_plan_normalizes_alias_slug_to_canonical(self):
+        """Codex Round 2 Major: alias slugs must be normalized to the
+        post-migration canonical slug (``claude-org`` per migrate_workers
+        PROJECT_RENAMES) before reaching state.db, otherwise the same
+        physical repo's runs split across two project rows in the
+        dashboard."""
+        self._force_pattern_b("claude-org-en")
+        plan = gdp.build_delegate_plan(
+            task_id="alias-norm-task",
+            project_slug="claude-org-en",
+            description="test alias normalization",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        # Plan-level project_slug is the canonical form, regardless of input alias.
+        self.assertEqual(plan.project_slug, "claude-org")
+
+    def test_plan_rejects_en_variant_with_bad_worker_dir(self):
+        """Codex Round 2 Major: pattern_variant=en_repo_worktree with a
+        worker_dir whose parent.parent is not a local git repo would silently
+        run ``git worktree add`` against an unrelated directory. Reject."""
+        with self.assertRaises(ValueError):
+            gdp.build_delegate_plan(
+                task_id="bad-shape-task",
+                project_slug="claude-org",
+                claude_org_root=self.sb.claude_org_root,
+                state_db_path=self.sb.db_path,
+                layout_overrides={
+                    "pattern": "B",
+                    "pattern_variant": "en_repo_worktree",
+                    "worker_dir": str(Path(self._td.name) / "not" / "a-repo"),
+                },
+            )
+
     def test_apply_creates_en_repo_worktree(self):
         """End-to-end: the original repro (apply fails with `no usable
         base repo`) is gone — apply succeeds and registers the worktree
