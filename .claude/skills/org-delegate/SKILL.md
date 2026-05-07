@@ -85,6 +85,10 @@ python tools/gen_delegate_payload.py preview \
     --target <path>... --description "<desc>" \
     --verification-depth full
 
+# 1.5. Step 1.7 gate: preview 出力で Codex design review トリガー条件を評価
+#      該当する場合のみ codex exec で design review を実行し、要約を
+#      --impl-guidance または --knowledge で apply に渡す（下節 Step 1.7 参照）
+
 # 2. apply: state.db に runs.status='queued' で予約 + CLAUDE.md/CLAUDE.local.md 配置
 #    + claude-org-runtime settings generate 実行 + send_plan.json 出力
 python tools/gen_delegate_payload.py apply \
@@ -120,6 +124,77 @@ python tools/gen_delegate_payload.py apply \
 ### 標準経路が想定外の出力を返した場合
 
 標準経路 (`gen_delegate_payload.py apply`) が想定外の出力 (Pattern 誤判定 / resolver エラー / brief 不整合 等) を返した場合、Secretary は **手動で同じ作業を再現してはならない**。resolver のバグとして Issue を切り、当該タスクの delegation は resolver が直るまで pause する。手作業 fallback は skill のスコープ外。CLI 未導入環境では `--skip-settings` フラグに限定する。歴史的な手書き経路の museum copy は `docs/legacy/hand-typed-delegate-path.md` にあるが標準オペレーションでは参照禁止。
+
+## Step 1.7: Codex design review trigger（窓口が実行、Issue #337）
+
+`preview` 出力の `description` / `--target` 件数 / 参照ドキュメントを見て、以下の **いずれか 1 つ以上** に該当する場合は、`apply` の前に Codex design review を実行する。Curator session #18 retrospective (Issue #283 / session #12) で「事前 Codex design review が 1 ラウンドで Blocker 2 件 + Major 5 件を捕捉」した実績に基づくゲート。
+
+| トリガー | 判定方法 |
+|---|---|
+| 推定工数 ≥ 3h | タスク説明から窓口が判断（ユーザー入力 / preview の規模感） |
+| 新規 module / 新規 tool 導入 | description に「新規」「new tool」「新ツール」「新規導入」等、または preview の作成予定ファイルが新規パスのみ |
+| ファイル変更 ≥ 3 件 | `--target` の数 + preview の brief に列挙される編集対象 |
+| `docs/contracts/` 配下の契約ドキュメント参照 | description / brief / `--knowledge` で `docs/contracts/` を参照 |
+
+**実行手順:**
+
+```bash
+codex exec --skip-git-repo-check "<task-id> の design review。\
+  タスク内容: <description>。\
+  対象ファイル: <target paths>。\
+  関連 contract / 参考: <docs paths>。\
+  事前設計上の Blocker / Major / Minor / Nit を分類し、各指摘に対象ファイル:行番号と根拠を添えて日本語で簡潔に。"
+```
+
+`codex:rescue` skill は使わない（CLAUDE.local.md の禁止事項）。`codex exec` 直打ちのみ。
+
+**review 要約の組み込み:**
+
+- 要約を `tmp/codex-review-{task-id}.md` に保存
+- `apply` 呼び出し時に `--knowledge tmp/codex-review-{task-id}.md` を追加し、ワーカーの brief に design review 要約として埋め込む（あるいは `--impl-guidance "<要約>"` で直接渡す）
+- Blocker / Major が指摘された場合は、ユーザーに上げて方針変更可否を確認してから apply に進む
+
+**helper script:** Issue #337 acceptance で optional とされており、本 PR では実装しない。Secretary が手動で上記表を判定する。
+
+## Step 1.8: dogfood follow-up issue protocol（窓口 + org-pull-request 連携、Issue #338）
+
+新規 tool / runtime / workflow を導入する PR では、実装 PR と paired で「dogfood follow-up」issue を作成し、次回その新規 tool を実使用する delegation を **dogfood pass** として明示的に予約する。Curator session #18 retrospective で「PR #288 で 4 カテゴリの defect が初回実使用時にしか出てこなかった」事象（session #11 でも再現）に基づく protocol。
+
+### 適用条件
+
+タスクが以下のいずれかに該当する場合に発動:
+
+- 新規 CLI tool / script (`tools/*.py`, `tools/*.sh`, `tools/*.ps1` 等) の追加
+- 新規 runtime / 新規 workflow / 新規 protocol の導入
+- 既存 tool への break-change を伴う再設計
+
+### 窓口（org-delegate）の責務
+
+1. 適用条件に該当することを Step 1.7 評価時に判定し、`preview` の脇で「dogfood 対象タスク」とマーク
+2. `apply` 後、ワーカー指示の `description` に「Dogfood follow-up issue を Closes ではなく Refs で参照する」旨を含める
+3. **dogfood 予約 register**: `registry/dogfood_pending.md` に 1 行追加する（次節フォーマット）。これが org-pull-request 側の paired issue 作成・後続 delegation の earmark の SoT
+4. 後続の delegation を起こす際、`registry/dogfood_pending.md` の pending を確認。新規 tool を使用する task を見つけたら、その worker brief に「このタスクは dogfood pass。defect は paired issue #N に報告」を含める
+
+### org-pull-request 側の責務（cross-ref）
+
+実装 PR 作成時に以下を行う（手順詳細は org-pull-request 側で別途整備、Issue #338 は本 SKILL に protocol を記録するスコープ）:
+
+1. `registry/dogfood_pending.md` に該当行があれば、`gh issue create` で paired follow-up issue を作成（template: [`references/dogfood-issue-template.md`](references/dogfood-issue-template.md)）
+2. 作成した issue 番号を `registry/dogfood_pending.md` の該当行に追記
+3. 実装 PR の本文末に `Paired dogfood issue: #<N>` を付ける
+
+### dogfood_pending register フォーマット
+
+`registry/dogfood_pending.md` に append-only で記録する:
+
+```
+| task_id | tool / surface | impl_pr | dogfood_issue | dogfood_run_task_id | status |
+|---------|----------------|---------|---------------|---------------------|--------|
+| issue-XXX-new-tool | tools/foo.py | #YYY | #ZZZ |  | pending |
+```
+
+- `status`: `pending` (issue 未作成) / `open` (paired issue 作成済 / dogfood pass 未実施) / `consumed` (dogfood 実施完了 → defect が paired issue に集約済) / `closed` (paired issue クローズ済)
+- `dogfood_run_task_id`: 後続 delegation で earmark した task_id
 
 ## Step 3 / 4: ワーカー起動・指示送信・状態記録（ディスパッチャーが実行）
 
