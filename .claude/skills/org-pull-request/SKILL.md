@@ -83,7 +83,7 @@ description: >
   - パターン B（worktree）: `git -C {workers_dir}/{project_slug}/ worktree remove .worktrees/{task_id}` を実行。ブランチは残す（マージ済みでもブランチ削除はしない、PR 履歴用）
     - **self-edit (`pattern_variant='live_repo_worktree'`) の場合**: worktree base が `{claude_org_path}` なので `git -C {claude_org_path} worktree remove .worktrees/{task_id}` を実行する（Issue #289）。ブランチは同様に残す
   - パターン C（エフェメラル）: ディレクトリは保持する（容量が問題になった場合のみ手動削除を検討）
-- **dogfood 対象 PR の paired issue クローズ時（Issue #338）**: paired follow-up issue が手動 / split によりクローズされた時点で、`registry/dogfood_pending.md` の該当行 `status` を `consumed → closed` に遷移する。protocol 全体は [`.claude/skills/org-delegate/SKILL.md`](../org-delegate/SKILL.md) Step 1.8 を SoT とする
+- **dogfood 対象 PR の paired issue クローズ時（Issue #338）**: 実装 PR のマージと paired follow-up issue のクローズはライフサイクルが独立しうるため、本スキル側では「実装 PR マージで `consumed → closed` をする」という保証はしない。`consumed → closed` の終端遷移は窓口の register hygiene 責務として [`.claude/skills/org-delegate/SKILL.md`](../org-delegate/SKILL.md) Step 1.8 §consumed → closed 観察タイミング（register 書き込み時 + `/org-resume` 起動時に `gh issue view` で paired issue 状態確認）で回収する。本スキルが PR マージ時にたまたま該当行を観察した場合のみ、ついでに hygiene 手順を呼ぶ
 - **PR 起点のクローズの場合は `tools/run_complete_on_merge.py` を呼ぶ** (Issue #317。`pr-watch --merge-watch` の merge-watch ループが自動で起動するので通常は手動実行不要だが、merge-watch を skip した場合や手動でマージを観測した場合のみ明示的に呼ぶ):
   ```bash
   python tools/run_complete_on_merge.py --pr <PR>
