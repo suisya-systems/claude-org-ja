@@ -1,37 +1,43 @@
 # org-state.json スキーマ定義
 
+> **Status: historical / pre-M4**（Issue [#353](https://github.com/suisya-systems/claude-org-ja/issues/353) 同期時点）
+>
+> 本ドキュメントの「Source of truth ルール」「Markdown が正本」「converter 再実行」記述は **M4 cutover 前のモデル**であり、現行実装とは整合しません。**現行の正準は [`docs/contracts/state-semantics-contract.md`](contracts/state-semantics-contract.md)** です:
+>
+> - `.state/state.db` が `runs` / `org_sessions` / `worker_dirs` / `events` の **唯一の SoT**。
+> - `.state/org-state.md` は `StateWriter.transaction()` の post-commit hook が `tools/state_db.snapshotter` で自動再生成する **派生物**（手動編集は drift）。
+> - `.state/org-state.json` も state.db を直接読む `dashboard/org_state_converter.py` が生成する派生物（`--source markdown` モードは M4 で削除済み）。
+> - 旧来の `org-state.md` 手動編集 → converter 再実行ループは **行ってはならない**。state.db への書き込みは `tools/state_db.writer.StateWriter` の API（`upsert_run` / `update_run_status` / 他）を経由する。
+>
+> 以下に残す JSON スキーマ定義（version 1）は dashboard / 外部 consumer がペイロード形状を参照するためのリファレンスとして migration-only で保持している。フィールドの意味づけが state-semantics-contract と矛盾する場合は contract が governs する。
+
 ## 概要
 
-`.state/org-state.json` は `.state/org-state.md` の機械可読スナップショットです。
-ダッシュボード（`dashboard/server.py`）その他のプログラム的消費者が JSON を優先的に読み込めるようにするために導入されました。
+`.state/org-state.json` は state.db から `dashboard/org_state_converter.py` が生成する派生 JSON。
+ダッシュボード（`dashboard/server.py`）その他のプログラム的消費者が JSON を優先的に読み込めるようにするために導入された。
 
-### Source of truth ルール
+### JSON の再生成（参考）
 
-**Markdown が正本、JSON は派生です。**
-
-- `org-state.md` が常に正本です。Claude Code インスタンスが直接読み書きします。
-- `org-state.json` は派生ファイルです。`org_state_converter.py` が生成します。
-- `org-state.md` を手動編集した場合は、必ず converter を再実行してください。
-- 両者が矛盾する場合は `org-state.md` を信頼してください。
-
-### JSON の再生成
+state.db への書き込みが `StateWriter.transaction()` を経由していれば snapshotter が自動的に派生物を更新するため、通常は手動再生成は不要。ローカル debug でのみ:
 
 ```bash
 py -3 dashboard/org_state_converter.py      # Windows
 python3 dashboard/org_state_converter.py     # Mac/Linux
 ```
 
-### 更新ポイント
+### 更新ポイント（参考、historical）
 
-以下の操作を行った後、converter を実行して JSON を更新してください:
+下表は pre-M4 の「skill が markdown を編集 → converter で JSON 化」フローの記述。**現行は state.db への書き込みが SoT** であり、対応する API は以下:
 
-| 操作 | スキル | 更新内容 |
+| 操作 | スキル / 経路 | 現行の writer |
 |---|---|---|
-| ワーカー派遣 | org-delegate Step 4 | Current Objective, Active Work Items, Worker Directory Registry |
-| ステータス変更 | org-delegate Step 5 | Work Item のステータス（REVIEW/COMPLETED/IN_PROGRESS） |
-| 組織中断 | org-suspend Phase 3 | Status=SUSPENDED, Updated, Work Items, Resume Instructions |
-| 組織再開 | org-resume Phase 4 | Status=ACTIVE |
-| 起動（Dispatcher/Curator 記録） | org-start Steps 2-3 | Dispatcher/Curator の peerId / paneId |
+| ワーカー派遣（T1 reservation）| org-delegate | `tools/gen_delegate_payload.py`（`StateWriter.upsert_run` で `runs.status='queued'`）|
+| ペイン spawn（T2）| dispatcher delegate-plan helper | `StateWriter.upsert_run` で `runs.status='in_use'` |
+| ステータス変更（T4 review / T5 completed / T6 review→in_use）| org-delegate / org-pull-request | `StateWriter.update_run_status` |
+| 組織中断 / 再開 | org-suspend / org-resume | `StateWriter` 経由で `org_sessions.status` を更新（個別 run の status は変更しない、[contract I4](contracts/state-semantics-contract.md)）|
+| Dispatcher/Curator 記録 | org-start | `StateWriter` 経由で `org_sessions` の dispatcher/curator pane+peer フィールドを更新 |
+
+これらの書き込みは全て `StateWriter.transaction()` の post-commit hook で snapshotter が `.state/org-state.md` と派生 JSON を自動再生成するため、skill 側で converter を呼ぶ必要は無い。
 
 ---
 

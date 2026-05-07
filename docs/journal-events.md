@@ -1,19 +1,27 @@
 # Journal Event Catalog (claude-org-ja)
 
+> **Storage update (M4 / Issue [#267](https://github.com/suisya-systems/claude-org-ja/issues/267)).**
+> Journal events are now written to the **`events` table inside `.state/state.db`**, not to a flat `.state/journal.jsonl` file. `.state/journal.jsonl` was retired at M4 and is no longer the SoT — any historical jsonl file present in a repo is migration-only and is **not** appended to.
+> The writer wrappers (`tools/journal_append.sh` / `tools/journal_append.py`) keep their public CLI shape but route writes into state.db. Readers should query the DB (`tools/state_db/queries.py` or direct SQL) rather than tail the jsonl file.
+> The canonical state surface — including journal events — is defined in [`docs/contracts/state-semantics-contract.md`](contracts/state-semantics-contract.md) § 1.1; this catalog documents the **event vocabulary and per-event payload shape**, which is unchanged across the M4 cutover.
+
 > **Scope: org-specific.** This document catalogs the event types
-> claude-org-ja writes to `.state/journal.jsonl`. The wire-format and
-> reader-tolerance contract live in core-harness
+> claude-org-ja emits via `tools/journal_append.{sh,py}` (DB-routed
+> since M4). The wire-format and reader-tolerance contract live in
+> core-harness
 > ([`docs/journal-contract.md`](https://github.com/suisya-systems/core-harness/blob/v0.3.0/docs/journal-contract.md));
 > this file documents the *what* (which events / which fields), which
 > Layer 1 deliberately does not own (Q11 B, design PR #196 §4 Step D).
 
-The journal is consumed informally (retros, ad-hoc `tail` / `jq`,
-dashboard readers in the future). Field shapes here are descriptive
+The journal is consumed informally (retros, dashboard readers, ad-hoc
+SQL via `sqlite3 .state/state.db`). Field shapes here are descriptive
 and may evolve; consumers should tolerate unknown fields gracefully.
 
 ## Reserved envelope (from core-harness)
 
-Every line carries the two reserved keys defined by Layer 1:
+Each event row carries the two reserved keys defined by Layer 1
+(serialized into the state.db `events` table; the same envelope shape
+applied to legacy jsonl rows pre-M4):
 
 | Key     | Type                              | Purpose                                  |
 |---------|-----------------------------------|------------------------------------------|
@@ -29,10 +37,12 @@ Every line carries the two reserved keys defined by Layer 1:
 | `org-start` identity recovery | `bash tools/journal_append.sh secretary_identity_restored ...`     |
 
 The wrappers resolve their location via `${BASH_SOURCE[0]}` /
-`__file__` and write to `<repo_root>/.state/journal.jsonl` regardless
-of caller cwd, so the same file is the canonical org journal. Only
-the script *path* in the invocation depends on cwd (relative to where
-the caller runs).
+`__file__` and write into the `events` table of
+`<repo_root>/.state/state.db` regardless of caller cwd (M4 routing).
+Only the script *path* in the invocation depends on cwd (relative to
+where the caller runs). Pre-M4 these wrappers wrote to
+`<repo_root>/.state/journal.jsonl`; the file is retired and any
+remnant is migration-only.
 
 Workers do **not** write the journal directly; they report via
 `send_message` and the dispatcher / secretary persists the event.
@@ -174,7 +184,9 @@ itself errored — see the fallback rules in `tools/pr_watch.py`);
    - bash: `bash tools/journal_append.sh <event> k=v k2=v2`
    - python: `py -3 tools/journal_append.py <event> k=v --json '{"nested": {...}}'`
 
-Do **not** hand-craft `printf '%s\n' '{"ts": ..., "event": ...}' >>
-.state/journal.jsonl` — the helper handles timestamp generation, JSON
-escaping, file locking, and reserved-key validation. The raw `>>`
-pattern is the legacy approach replaced in this PR.
+Do **not** hand-craft direct DB inserts (`sqlite3 .state/state.db
+"INSERT INTO events ..."`) or the legacy `printf '%s\n' '{...}' >>
+.state/journal.jsonl` pattern — the helper handles timestamp
+generation, JSON escaping, schema validation, and reserved-key
+checking. Direct INSERTs bypass these checks and direct jsonl writes
+go to a retired sink (M4).
