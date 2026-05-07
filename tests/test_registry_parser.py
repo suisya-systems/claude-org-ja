@@ -55,15 +55,28 @@ class TestParseProjects(unittest.TestCase):
         path = PROJECT_ROOT / "registry" / "projects.md"
         if not path.exists():  # pragma: no cover - safety for fork checkouts
             self.skipTest("live registry/projects.md not present")
-        # parse_projects must not raise. An empty registry is valid (e.g.
-        # fresh checkout / fork that has not registered any project yet —
-        # see test_parsers.py for the build_state() side); we only check
-        # well-formedness of any rows that are present.
-        projects = parse_projects(path)
+        # parse_projects must not raise and must not emit malformed-row
+        # warnings against the live file. An empty registry is valid (fresh
+        # checkout / fork) — but if the file *contains* table data rows, at
+        # least one must parse cleanly, otherwise the registry is silently
+        # corrupt (e.g. separator dropped → every row classified as
+        # non_table and parser returns []).
+        text = path.read_text(encoding="utf-8")
+        with self.assertNoLogs("tools.registry_parser", level="WARNING"):
+            projects = parse_projects(path)
         for p in projects:
             self.assertIsInstance(p, Project)
             self.assertTrue(p.nickname)
             self.assertTrue(p.name)
+        has_data_lines = any(
+            r.kind == "data" or r.kind == "mismatch" for r in iter_rows(text)
+        )
+        if has_data_lines:
+            self.assertGreater(
+                len(projects), 0,
+                "live registry has table rows but none parsed — likely "
+                "separator/header corruption",
+            )
 
     def test_happy_path(self):
         text = _build(
