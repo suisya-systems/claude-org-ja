@@ -700,28 +700,39 @@ class TestIsClaudeOrgProject(unittest.TestCase):
 
     def test_worker_dir_clone_returns_false(self):
         """(b) A worker-dir clone has origin pointing at a local filesystem
-        path (no github.com segment), so detection returns False even for
-        the canonical slug."""
+        path (no ``github.com`` segment), so detection returns False even
+        for the canonical slug.
+
+        Implementation note: we do NOT invoke ``git clone`` here. The
+        contract under test is purely about the recorded ``origin`` URL —
+        ``is_claude_org_project`` only reads ``git remote get-url origin``
+        and rejects any value lacking a ``github.com`` segment. Driving an
+        actual clone (via ``file://`` URI or plain path) is fragile on
+        Windows because Git for Windows / MSYS path translation rules
+        differ across installations. Instead, we initialize a repo and
+        register a local-path origin directly, modeling each origin shape
+        a worker-dir clone would plausibly record. Trade-off: this no
+        longer asserts the exact string Git itself would write — only
+        that the github-URL gate rejects each modeled local form. The
+        gate's regex (no ``github.com`` segment → reject) is what guards
+        the contract, so this coverage is sufficient and stable."""
         upstream = self.tmp / "upstream"
-        upstream.mkdir()
-        _Sandbox.init_git(upstream)
-        # Need an initial commit so ``git clone`` succeeds. Identity vars
-        # are passed via env so the test does not depend on the user's
-        # global git config.
-        subprocess.run(
-            ["git", "-C", str(upstream), "commit", "--allow-empty", "-q", "-m", "init"],
-            check=True,
-            env={**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
-                 "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"},
-        )
-        worker_clone = self.tmp / "worker"
-        # Pass the source as a ``file://`` URI so Git for Windows does not
-        # mistake a ``C:\...`` argument for a ``host:path`` SSH form.
-        subprocess.run(
-            ["git", "clone", "-q", upstream.as_uri(), str(worker_clone)],
-            check=True,
-        )
-        self.assertFalse(rwl.is_claude_org_project("claude-org-ja", worker_clone))
+        # ``git clone`` of a local source records origin in one of these
+        # shapes depending on how the source was specified. We assert that
+        # ALL of them fail the github-URL gate.
+        local_origin_forms = [
+            upstream.as_uri(),                  # file:///... URI form
+            str(upstream),                      # raw absolute path form
+            upstream.as_posix(),                # forward-slash path form
+        ]
+        for i, origin_url in enumerate(local_origin_forms):
+            with self.subTest(origin_url=origin_url):
+                worker_clone = self.tmp / f"worker-{i}"
+                worker_clone.mkdir()
+                _Sandbox.init_git_with_origin(worker_clone, origin_url)
+                self.assertFalse(
+                    rwl.is_claude_org_project("claude-org-ja", worker_clone)
+                )
 
     def test_repo_without_remote_returns_false(self):
         """(c) A fresh git repo with no ``origin`` remote returns False."""
