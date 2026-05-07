@@ -10,6 +10,23 @@ the M1 markdown overlay is gone, ``org_sessions`` carries Status / Updated /
 Suspended / Resumed / Current Objective / Dispatcher / Curator /
 Resume Instructions, and ``.state/org-state.md`` is regenerated from this
 DB by :mod:`tools.state_db.snapshotter`.
+
+State semantics (Set F — ``docs/contracts/state-semantics-contract.md``):
+the contract pins four orthogonal predicates over ``runs.status`` (§3.5).
+This module exposes those predicates as the named tuples below so resolver,
+snapshotter, and dashboard share one definition. The ``queued`` ⊂
+active-reservation but ⊄ user-visible asymmetry (§3 final paragraph, I8) is
+the central correctness fact:
+
+* ``ACTIVE_RESERVATION_STATUSES`` — the resolver's pattern-selection set
+  (§3.1). A queued reservation already occupies the project's base-clone
+  slot, so a concurrent delegation MUST switch to Pattern B.
+* ``USER_VISIBLE_STATUSES`` — the dashboard / org-state.md Active Work Items
+  set (§3.3). ``queued`` is intentionally excluded so a sub-second
+  reservation does not flicker into the operator UI; lingering queued is an
+  anomaly the dispatcher should surface, not a normal Active Work Item (I8).
+* ``TERMINAL_STATUSES`` — runs that cannot transition further without
+  operator override (§3.4).
 """
 from __future__ import annotations
 
@@ -17,7 +34,17 @@ import sqlite3
 from typing import Any, Optional
 
 
-_ACTIVE_STATUSES: tuple[str, ...] = ("in_use", "review")
+# Set F §3.5 predicate table. Names match the contract's concept labels so
+# `git grep` from the contract lands on the implementation.
+ACTIVE_RESERVATION_STATUSES: tuple[str, ...] = ("queued", "in_use", "review")
+USER_VISIBLE_STATUSES: tuple[str, ...] = ("in_use", "review")
+ACTIVE_EXECUTION_STATUSES: tuple[str, ...] = ("in_use",)
+TERMINAL_STATUSES: tuple[str, ...] = ("completed", "failed", "abandoned")
+
+# Backwards-compatible alias retained for in-tree callers that still import
+# the pre-Set-F name. Points at the user-visible projection (the prior
+# meaning) rather than the broader active-reservation set.
+_ACTIVE_STATUSES: tuple[str, ...] = USER_VISIBLE_STATUSES
 
 
 def _row_to_dict(row: sqlite3.Row | None) -> Optional[dict[str, Any]]:
@@ -36,7 +63,19 @@ def _rows_to_dicts(rows) -> list[dict[str, Any]]:
 
 
 def list_active_runs(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-    """Return runs whose status is in_use or review (Worker Directory Registry)."""
+    """Return runs in the user-visible projection (Set F §3.3).
+
+    Predicate: ``runs.status IN ('in_use', 'review')`` —
+    ``USER_VISIBLE_STATUSES``. ``queued`` is intentionally excluded per
+    contract §3.3 / I8: a fresh T1 reservation has not yet produced a pane,
+    and surfacing it in Active Work Items would flicker the operator UI for
+    sub-second reservations. Use :func:`list_reserved_runs` to see queued
+    rows separately, or :func:`list_active_reservation_runs` to get the
+    union (the resolver's pattern-selection set §3.1).
+
+    Used by the dashboard's Active Work Items list and the snapshotter's
+    ``## Active Work Items`` rendering.
+    """
     rows = conn.execute(
         """
         SELECT
@@ -66,6 +105,41 @@ def list_active_runs(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         LEFT JOIN workstreams w     ON w.id = r.workstream_id
         LEFT JOIN worker_dirs d     ON d.id = r.worker_dir_id
         WHERE r.status IN ('in_use', 'review')
+        ORDER BY r.dispatched_at DESC, r.id DESC
+        """
+    ).fetchall()
+    return _rows_to_dicts(rows)
+
+
+def list_reserved_runs(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Return runs in the active-reservation-only projection (Set F §3.1 \\ §3.3).
+
+    Predicate: ``runs.status = 'queued'``. These rows occupy a project's
+    base-clone slot (so the resolver must consider them for Pattern B
+    selection — §3.1) but are not yet user-visible in Active Work Items
+    (§3.3). The dashboard surfaces them as a separate "reserved" group so
+    operators can spot a stuck T1→T2 transition (I8): a row that lingers
+    here for more than a few seconds is itself a signal of a failed
+    ``spawn_claude_pane`` step that never flipped the row to ``in_use``.
+    """
+    rows = conn.execute(
+        """
+        SELECT
+            r.id            AS run_id,
+            r.task_id       AS task_id,
+            r.title         AS title,
+            r.pattern       AS pattern,
+            r.status        AS status,
+            r.branch        AS branch,
+            r.dispatched_at AS dispatched_at,
+            p.slug          AS project_slug,
+            p.display_name  AS project_name,
+            d.abs_path      AS worker_dir,
+            d.lifecycle     AS worker_dir_lifecycle
+        FROM runs r
+        JOIN projects p         ON p.id = r.project_id
+        LEFT JOIN worker_dirs d ON d.id = r.worker_dir_id
+        WHERE r.status = 'queued'
         ORDER BY r.dispatched_at DESC, r.id DESC
         """
     ).fetchall()
@@ -221,7 +295,8 @@ def get_org_state_summary(conn: sqlite3.Connection) -> dict[str, Any]:
     Shape:
         {
           "session": {... org_sessions row ...} | None,
-          "active_runs": [...],            # in_use / review
+          "active_runs": [...],            # Set F §3.3 user-visible (in_use / review)
+          "reserved_runs": [...],          # Set F §3.1 \\ §3.3 (queued only)
           "active_worker_dirs": [...],     # lifecycle='active'
           "recent_events": [...],          # 20 newest
           "run_status_counts": {status: count},
@@ -239,6 +314,7 @@ def get_org_state_summary(conn: sqlite3.Connection) -> dict[str, Any]:
     return {
         "session": get_session(conn),
         "active_runs": list_active_runs(conn),
+        "reserved_runs": list_reserved_runs(conn),
         "active_worker_dirs": list_worker_dirs(conn, lifecycle="active"),
         "recent_events": list_recent_events(conn, limit=20),
         "run_status_counts": _run_status_counts(conn),
@@ -282,7 +358,12 @@ def get_resume_briefing(conn: sqlite3.Connection) -> dict[str, Any]:
 
 
 __all__ = [
+    "ACTIVE_RESERVATION_STATUSES",
+    "USER_VISIBLE_STATUSES",
+    "ACTIVE_EXECUTION_STATUSES",
+    "TERMINAL_STATUSES",
     "list_active_runs",
+    "list_reserved_runs",
     "list_runs_with_dirs",
     "get_run_by_task_id",
     "list_worker_dirs",

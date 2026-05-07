@@ -53,7 +53,7 @@ function setConn(ok) {
 function render(data) {
   renderHeader(data);
   renderWorkers(data.workers || []);
-  renderWorkItems(data.workItems || []);
+  renderWorkItems(data.workItems || [], data.reservedItems || []);
   renderActivity(data.activity || []);
   renderProjects(data.projects || []);
   renderKnowledge(data.knowledge || []);
@@ -138,17 +138,44 @@ function elapsedStr(iso) {
 // Work Items
 // ---------------------------------------------------------------------------
 
+// Set F state-semantics-contract §3 phase icons. The four orthogonal
+// phases (reserved / running / review / terminal) each get a distinct
+// glyph so the operator can tell them apart at a glance:
+//   RESERVED    🔒  queued (T1 reservation, no live pane yet — §3.1 \\ §3.3)
+//   IN_PROGRESS 🟢  in_use (live worker — §3.2)
+//   REVIEW      🟡  review (paused for human review — §3.3 / Set B T4)
+//   COMPLETED   ✅  completed (terminal success — §3.4)
+//   BLOCKED     🔴  failed (terminal failure — §3.4)
+//   ABANDONED   ❌  abandoned (terminal — §3.4)
+//   PENDING     ⚪  suspended (reserved-for-future enum slot — §2 / I4)
 const STATUS_ICON = {
-  IN_PROGRESS: "🟢", COMPLETED: "✅", PENDING: "⚪",
-  BLOCKED: "🔴", REVIEW: "🟡", ABANDONED: "❌",
+  RESERVED: "🔒", IN_PROGRESS: "🟢", REVIEW: "🟡",
+  COMPLETED: "✅", BLOCKED: "🔴", ABANDONED: "❌", PENDING: "⚪",
 };
 
-function renderWorkItems(items) {
+function renderWorkItems(items, reserved) {
   const el = document.getElementById("work-items-list");
-  if (!items.length) {
+  reserved = reserved || [];
+  if (!items.length && !reserved.length) {
     el.innerHTML = '<p class="empty-state">No work items</p>'; return;
   }
-  el.innerHTML = [...items].reverse().map((item) => `
+  // Reserved (queued) rows are kept in a distinct group above the active
+  // list. I8 forbids surfacing them inside Active Work Items proper, but
+  // a stuck T1→T2 row is itself an operator anomaly, so we render them
+  // as a labelled "RESERVED" sub-group rather than dropping them silently.
+  const reservedHtml = reserved.length
+    ? `<div class="wi-group-label">RESERVED — queued, awaiting pane spawn</div>`
+      + [...reserved].reverse().map(workItemRow).join("")
+    : "";
+  const activeHtml = items.length
+    ? (reserved.length ? `<div class="wi-group-label">ACTIVE</div>` : "")
+      + [...items].reverse().map(workItemRow).join("")
+    : "";
+  el.innerHTML = reservedHtml + activeHtml;
+}
+
+function workItemRow(item) {
+  return `
     <div class="work-item">
       <span class="wi-icon">${STATUS_ICON[item.status] || "❓"}</span>
       <div class="wi-body">
@@ -159,7 +186,7 @@ function renderWorkItems(items) {
         <div class="wi-meta">${esc(item.progress || item.status)}${item.worker ? ` — ${esc(item.worker)}` : ""}</div>
       </div>
     </div>
-  `).join("");
+  `;
 }
 
 // ---------------------------------------------------------------------------

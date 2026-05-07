@@ -19,11 +19,15 @@ from pathlib import Path
 from tools.state_db import apply_schema, connect
 from tools.state_db.importer import import_full_rebuild
 from tools.state_db.queries import (
+    ACTIVE_RESERVATION_STATUSES,
+    TERMINAL_STATUSES,
+    USER_VISIBLE_STATUSES,
     get_org_state_summary,
     get_resume_briefing,
     get_run_by_task_id,
     list_active_runs,
     list_recent_events,
+    list_reserved_runs,
     list_worker_dirs,
 )
 from tools.state_db.test_importer import _seed_claude_org_root
@@ -49,6 +53,9 @@ class TestEmptyDB(unittest.TestCase):
     def test_list_active_runs_empty(self):
         self.assertEqual(list_active_runs(self.conn), [])
 
+    def test_list_reserved_runs_empty(self):
+        self.assertEqual(list_reserved_runs(self.conn), [])
+
     def test_list_worker_dirs_empty(self):
         self.assertEqual(list_worker_dirs(self.conn), [])
         self.assertEqual(list_worker_dirs(self.conn, lifecycle="active"), [])
@@ -62,6 +69,7 @@ class TestEmptyDB(unittest.TestCase):
     def test_get_org_state_summary_empty(self):
         s = get_org_state_summary(self.conn)
         self.assertEqual(s["active_runs"], [])
+        self.assertEqual(s["reserved_runs"], [])
         self.assertEqual(s["active_worker_dirs"], [])
         self.assertEqual(s["recent_events"], [])
         self.assertEqual(s["run_status_counts"], {})
@@ -212,6 +220,37 @@ class TestEdgeCases(unittest.TestCase):
         # Payload survives as raw JSON text (caller decodes).
         self.assertEqual(json.loads(b["last_suspend_payload"])["reason"],
                          "end of day")
+
+    def test_status_set_constants_match_contract(self):
+        # Set F §3.5 — pin the four predicates so a future edit cannot
+        # silently drift the resolver / dashboard / snapshotter contract.
+        self.assertEqual(
+            ACTIVE_RESERVATION_STATUSES, ("queued", "in_use", "review")
+        )
+        self.assertEqual(USER_VISIBLE_STATUSES, ("in_use", "review"))
+        self.assertEqual(
+            TERMINAL_STATUSES, ("completed", "failed", "abandoned")
+        )
+
+    def test_reserved_runs_returns_only_queued(self):
+        # Seed one queued + one in_use + one completed and verify the
+        # reserved query returns only the queued row (Set F §3.1 \\ §3.3).
+        self.conn.execute(
+            "INSERT INTO runs (task_id, project_id, pattern, title, status) "
+            "VALUES ('t-queued', 1, 'A', 't-queued', 'queued')"
+        )
+        self.conn.execute(
+            "INSERT INTO runs (task_id, project_id, pattern, title, status) "
+            "VALUES ('t-done', 1, 'A', 't-done', 'completed')"
+        )
+        self.conn.commit()
+        reserved = list_reserved_runs(self.conn)
+        self.assertEqual([r["task_id"] for r in reserved], ["t-queued"])
+        self.assertEqual(reserved[0]["status"], "queued")
+        # And the user-visible projection (in_use / review only) excludes it.
+        active_ids = {r["task_id"] for r in list_active_runs(self.conn)}
+        self.assertNotIn("t-queued", active_ids)
+        self.assertIn("t-null-ws", active_ids)  # the in_use seed row
 
     def test_recent_events_negative_limit_is_safe(self):
         # Defensive: a caller passing limit=-1 should not blow up.

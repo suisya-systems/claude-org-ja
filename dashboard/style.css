@@ -376,6 +376,19 @@ main {
   padding: 8px 0;
 }
 
+/* Phase group label (RESERVED / ACTIVE). Set F §3 distinguishes the
+   queued reservation from active work items; the label makes the
+   I8-anomaly group visually distinct without hiding it. */
+.wi-group-label {
+  font-family: var(--mono);
+  font-size: .7rem;
+  letter-spacing: .12em;
+  color: var(--text-dim);
+  padding: 6px var(--panel-pad) 4px;
+  border-bottom: 1px dashed var(--border);
+  text-transform: uppercase;
+}
+
 .work-item {
   display: flex;
   align-items: flex-start;

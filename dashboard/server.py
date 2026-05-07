@@ -193,9 +193,26 @@ def _activity_from_db_events(events):
 # (dashboard/app.js) renders icons / labels for. Without this remap an
 # `in_use` run would render as a `?` because the frontend has no entry for
 # IN_USE. Keep this in sync with app.js's STATUS_* tables.
+# Set F state-semantics-contract §3 pins four orthogonal phase predicates
+# over runs.status. The dashboard renders three of them as distinct UI
+# groups so operators can tell reserved / running / review / terminal apart:
+#
+# * Reserved (§3.1 \\ §3.3, queued only) — rendered as ``reservedItems``,
+#   a separate group above Active Work Items. I8 says queued MUST be
+#   invisible to the user-visible projection; surfacing it as a distinct
+#   anomaly group preserves that while making a stuck T1→T2 transition
+#   visible to the operator.
+# * User-visible (§3.3, in_use / review) — Active Work Items.
+# * Terminal (§3.4) — filtered out of ``list_active_runs`` and not
+#   normally rendered. The terminal entries in the map below stay as
+#   defense-in-depth so a leaked terminal row renders with the right
+#   phase icon instead of "?". ``suspended`` is reserved-for-future
+#   per §2 / I4 — no production path writes it today.
+#
+# Keep this in sync with app.js's STATUS_ICON table.
 _DB_STATUS_TO_UI = {
+    "queued": "RESERVED",
     "in_use": "IN_PROGRESS",
-    "queued": "PENDING",
     "review": "REVIEW",
     "completed": "COMPLETED",
     "failed": "BLOCKED",
@@ -204,11 +221,16 @@ _DB_STATUS_TO_UI = {
 }
 
 
-def _work_items_from_db_runs(active_runs):
-    """Render active runs (in_use / review) into the workItems shape."""
+def _work_items_from_db_runs(runs, default_status="in_use"):
+    """Render run rows into the app.js workItems shape.
+
+    Used for both the Set F §3.3 user-visible projection (in_use / review)
+    and the §3.1 \\ §3.3 reserved-only projection (queued); callers pass the
+    appropriate default_status for the rare row whose status field is empty.
+    """
     items = []
-    for r in active_runs:
-        raw = (r.get("status") or "in_use").lower()
+    for r in runs:
+        raw = (r.get("status") or default_status).lower()
         task_id = r.get("task_id")
         title = r.get("title")
         if title == task_id:
@@ -224,11 +246,16 @@ def _work_items_from_db_runs(active_runs):
 
 
 def _load_state_from_db():
-    """Return (status, objective, work_items, activity) from state.db.
+    """Return (status, objective, work_items, reserved_items, activity).
 
     M4 (Issue #267): the DB is required. Callers must check
     ``STATE_DB_PATH.exists()`` first; this function raises on a missing
     file rather than degrading silently.
+
+    ``work_items`` is the Set F §3.3 user-visible projection (in_use /
+    review); ``reserved_items`` is the §3.1 \\ §3.3 reserved-only group
+    (queued). They are returned separately so app.js can keep the I8
+    anomaly surface visually distinct from Active Work Items.
     """
     conn = _db_connect(STATE_DB_PATH)
     try:
@@ -241,6 +268,9 @@ def _load_state_from_db():
         session.get("status"),
         session.get("objective"),
         _work_items_from_db_runs(summary["active_runs"]),
+        _work_items_from_db_runs(
+            summary.get("reserved_runs", []), default_status="queued"
+        ),
         _activity_from_db_events(events),
     )
 
@@ -264,9 +294,16 @@ def build_state():
             "the dashboard."
         )
         work_items: list = []
+        reserved_items: list = []
         activity: list = []
     else:
-        status, objective, work_items, activity = _load_state_from_db()
+        (
+            status,
+            objective,
+            work_items,
+            reserved_items,
+            activity,
+        ) = _load_state_from_db()
         if not status:
             status = "IDLE"
 
@@ -285,6 +322,7 @@ def build_state():
         "objective": objective,
         "projects": projects,
         "workItems": work_items,
+        "reservedItems": reserved_items,
         "workers": workers,
         "activity": activity,
         "knowledge": knowledge,
