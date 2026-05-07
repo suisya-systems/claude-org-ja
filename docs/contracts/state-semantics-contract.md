@@ -35,7 +35,7 @@ The harness maintains a layered state surface. Each layer is either **authoritat
 
 | Surface | Path | Authoritative for | Writers |
 |---|---|---|---|
-| **state.db** (`runs` table) | `.state/state.db` | Run-level status / pattern / branch / PR / commit / outcome / worker-dir association | `tools/gen_delegate_payload.py` (T1), `.dispatcher` `delegate-plan` helper (T2 upsert), `.claude/skills/org-delegate` Step 5 (T4 → review), `.claude/skills/org-pull-request` § 2b-ii (T5 → completed) and § 2c (T6 review re-entry → in_use), `tools/run_complete_on_merge.py` (T5 PR-merge close), `tools/state_db.writer.StateWriter.update_run_status` is the single sanctioned mutation entry point per `tools/state_db/writer.py:574`. |
+| **state.db** (`runs` table) | `.state/state.db` | Run-level status / pattern / branch / PR / commit / outcome / worker-dir association | `tools/gen_delegate_payload.py` (T1 reservation insert with `status='queued'`), `.dispatcher` `delegate-plan` helper (T2 upsert with `status='in_use'`), `.claude/skills/org-delegate` Step 5 (T4 `update_run_status('<task>', 'review')`), `.claude/skills/org-pull-request` § 2c (T6 `update_run_status('<task>', 'in_use')`) and § 2b-ii (T5 `update_run_status('<task>', 'completed')`). The two sanctioned mutation entry points are `StateWriter.update_run_status` (`tools/state_db/writer.py:574`, the canonical lifecycle-status writer) and `StateWriter.upsert_run` (`tools/state_db/writer.py:433`, used at T1 / T2 to insert or upsert the row including its initial `status`). Direct SQL UPDATE is forbidden because the post-commit hooks (snapshotter regen, completed-archive move) would not fire. |
 | **state.db** (`org_sessions` row) | `.state/state.db` (singleton `id=1`) | Org-wide session: `Status` ∈ `{ACTIVE, SUSPENDED, IDLE}`, `Updated`, `Suspended`, `Resumed`, `Current Objective`, dispatcher / curator pane+peer ids, resume instructions | `/org-start`, `/org-suspend`, `/org-resume` skills (via `StateWriter`). |
 | **state.db** (`events` table) | `.state/state.db` | Append-only journal of cross-role events | `tools/journal_append.sh` / `tools/journal_append.py` (DB-routed since M4). |
 | **state.db** (`worker_dirs` table) | `.state/state.db` | Worker directory inventory + `lifecycle` ∈ `{active, scratch, archived, delete_pending}` | `tools/gen_delegate_payload.py` (T1 worker-dir reservation), `StateWriter` worker-dir mutators. |
@@ -48,7 +48,7 @@ The post-M4 reality (Issue #267 / #284) is that **`state.db` is the canonical wr
 | Surface | Path | Derived from | Regenerator |
 |---|---|---|---|
 | `.state/org-state.md` | repo-relative | state.db (`org_sessions`, `runs`, `worker_dirs`) | `tools/state_db.snapshotter` (called automatically as a `StateWriter.transaction()` post-commit hook). Direct manual edits are detected by `tools/state_db.drift_check`. |
-| `.state/org-state.json` | repo-relative | state.db (preferred) or `.state/org-state.md` (fallback) | `dashboard/org_state_converter.py`; dashboard server reads state.db directly when present (`dashboard/server.py:226–245`). |
+| `.state/org-state.json` | repo-relative | state.db (DB-only since M4) | `dashboard/org_state_converter.py` (the pre-M4 `--source markdown` mode was removed; `dashboard/org_state_converter.py:10–13`); the dashboard server reads state.db directly via `dashboard.server.build_state` (`dashboard/server.py:226–245`) without consulting the JSON. |
 | Dashboard payload (`/api/state`) | HTTP | state.db | `dashboard.server.build_state` (`dashboard/server.py:248–289`). |
 
 ### 1.3 Reconciliation gaps with prior prose
@@ -119,7 +119,7 @@ The `queued` ⊂ active-reservation but ⊄ user-visible asymmetry is deliberate
 
 ## 4. Transition ownership
 
-Each transition lists the actor authorized to originate it, the writing tool, and the resulting `runs.status` value. **Only `StateWriter.update_run_status` (or the T1 `gen_delegate_payload` reservation insert) may write `runs.status`**; direct SQL UPDATE is forbidden because the post-commit archive hook would not fire.
+Each transition lists the actor authorized to originate it, the writing tool, and the resulting `runs.status` value. The sanctioned writers are `StateWriter.upsert_run` (T1 insert, T2 upsert — initial / promoted status) and `StateWriter.update_run_status` (all subsequent lifecycle transitions). Direct SQL UPDATE is forbidden: it bypasses the post-commit snapshotter regen (I6) and the `update_run_status('<task>', 'completed')` worker-state-file archive hook (`tools/state_db/writer.py:597`).
 
 | # | From → To | Actor | Writer | Transition (Set B) |
 |---|---|---|---|---|
@@ -127,10 +127,10 @@ Each transition lists the actor authorized to originate it, the writing tool, an
 | T2 | `queued → in_use` | dispatcher | `delegate-plan` helper upsert with `status='in_use'` (`.dispatcher/references/spawn-flow.md:160`); fires after `spawn_claude_pane` confirms the new peer | T2 (`dispatched`) |
 | T3 | `in_use → in_use` (no-op) | secretary records progress | Progress Log append in `.state/workers/worker-{task_id}.md`; `runs.status` unchanged | T3 (`in_progress`) |
 | T4 | `in_use → review` | secretary | `StateWriter.update_run_status('<task>', 'review')` (`.claude/skills/org-delegate/SKILL.md:179`) | T4 (`awaiting_review`) |
-| T5 | `review → completed` | secretary | `StateWriter.update_run_status('<task>', 'completed')` (`.claude/skills/org-pull-request/SKILL.md:99`); also automatic via `tools/run_complete_on_merge.py` on PR-merge sweep | T5 (`complete`) |
+| T5 | `review → completed` | secretary | `StateWriter.update_run_status('<task>', 'completed')` (`.claude/skills/org-pull-request/SKILL.md:99`). `tools/run_complete_on_merge.py` is **not** a T5 writer: on PR-merge sweep it records only `pr_state='merged'` and `completed_at`, leaving `runs.status` untouched and emitting a stderr notice that the secretary must perform the worktree remove / `CLOSE_PANE` / `update_run_status('<task>', 'completed')` cleanup (`tools/run_complete_on_merge.py:281–311`). The status flip remains a secretary act. | T5 (`complete`) |
 | T6 | `review → in_use` | secretary | `StateWriter.update_run_status('<task>', 'in_use')` (`.claude/skills/org-pull-request/SKILL.md:55`) | T6 (review feedback / depth switch) |
 | T7 | `in_use → abandoned` | secretary | `StateWriter.update_run_status('<task>', 'abandoned')` after dispatcher reports `WORKER_PANE_EXITED` and user declines re-delegation | T7 (worker pane exits without completion) |
-| T8 | `queued → (deleted/abandoned)` | secretary | On `SPLIT_CAPACITY_EXCEEDED` from dispatcher: secretary releases the reservation per Set B § 2 T8 (Worker Directory Registry row reverted; `runs.status` set to `abandoned` or the row removed if no Active Work Item was added) | T8 (capacity-exceeded) |
+| T8 | `queued → abandoned` | secretary | On `SPLIT_CAPACITY_EXCEEDED` from dispatcher: secretary calls `StateWriter.update_run_status('<task>', 'abandoned')` and reverts the Worker Directory Registry row per Set B § 2 T8. (No `remove_run` API exists in `StateWriter`; physical deletion of run rows is not a sanctioned operation, so the queued reservation transitions to the `abandoned` terminal status rather than being deleted.) | T8 (capacity-exceeded) |
 | T9 | `in_use → failed` | secretary | `StateWriter.update_run_status('<task>', 'failed')` — reserved entry point; no production caller today (Issue #353+ may activate) | E4 / E5 deferred |
 
 Transitions T7 / T8 / T9 all share the abstract `aborted` mapping in Set B; the run-status vocabulary distinguishes them so retros and dashboards can tell "user abandoned" from "split capacity prevented spawn" from "explicit failure recorded".
