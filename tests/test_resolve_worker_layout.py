@@ -785,5 +785,202 @@ class TestIsClaudeOrgProject(unittest.TestCase):
         self.assertFalse(rwl.is_claude_org_project("claude-org-ja", repo))
 
 
+# ---------------------------------------------------------------------------
+# Issue #370: Pattern B en_repo_worktree variant for the claude-org en mirror
+# ---------------------------------------------------------------------------
+
+
+class TestPatternBEnRepoWorktree(unittest.TestCase):
+    """Issue #370: the en-canonical claude-org clone at
+    ``{workers_dir}/claude-org`` is detected via origin URL (no registry row),
+    and Pattern B routes worktrees under it regardless of which alias slug
+    the caller passed (``claude-org`` or ``claude-org-en``).
+
+    Requires `git` on PATH. Skipped when unavailable."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        try:
+            subprocess.run(["git", "--version"], capture_output=True, check=True)
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            raise unittest.SkipTest("git not available")
+
+    def setUp(self) -> None:
+        self._td = tempfile.TemporaryDirectory()
+        self.sb = _Sandbox(Path(self._td.name))
+        self.sb.write_registry([("時計", "clock-app", "-", "Demo clock")])
+        self.en_clone = self.sb.workers / "claude-org"
+        self.en_clone.mkdir()
+        _Sandbox.init_git_with_origin(
+            self.en_clone, "https://github.com/suisya-systems/claude-org.git"
+        )
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def test_pattern_a_for_claude_org_slug_anchors_on_en_clone(self):
+        layout = rwl.resolve(
+            task_id="en-task-a",
+            project_slug="claude-org",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(layout.pattern, "A")
+        self.assertIsNone(layout.pattern_variant)
+        self.assertEqual(Path(layout.worker_dir), self.en_clone.resolve())
+        self.assertEqual(layout.planned_branch, "feat/en-task-a")
+
+    def test_pattern_a_for_claude_org_en_slug_anchors_on_en_clone(self):
+        """slug=claude-org-en (registry-style alias) must still land on the
+        same physical clone — the resolver overrides worker_dir off the
+        clone path, not the slug."""
+        layout = rwl.resolve(
+            task_id="en-task-en",
+            project_slug="claude-org-en",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(layout.pattern, "A")
+        self.assertEqual(Path(layout.worker_dir), self.en_clone.resolve())
+
+    def test_pattern_b_for_claude_org_slug_emits_en_repo_worktree(self):
+        """Issue #370 repro 1: slug=claude-org with active concurrent run
+        used to emit Pattern B with variant=None and base_repo unresolvable."""
+        self.sb.add_run(
+            task_id="other-en-task",
+            project_slug="claude-org",
+            pattern="A",
+            status="in_use",
+            worker_dir_abs=str(self.en_clone),
+        )
+        layout = rwl.resolve(
+            task_id="en-issue-159",
+            project_slug="claude-org",
+            description="install runtime classify",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(layout.pattern, "B")
+        self.assertEqual(layout.pattern_variant, "en_repo_worktree")
+        self.assertEqual(
+            Path(layout.worker_dir),
+            (self.en_clone / ".worktrees" / "en-issue-159").resolve(),
+        )
+        self.assertEqual(layout.planned_branch, "feat/en-issue-159")
+        self.assertEqual(layout.role, "default")
+        self.assertFalse(layout.self_edit)
+
+    def test_pattern_b_for_claude_org_en_slug_emits_en_repo_worktree(self):
+        """Issue #370 repro 2: slug=claude-org-en used to fall through to
+        Pattern C ephemeral. Now anchors on the en clone with the new
+        variant — even though the slug differs from the clone's dirname."""
+        self.sb.add_run(
+            task_id="other-en-task",
+            project_slug="claude-org-en",
+            pattern="A",
+            status="in_use",
+            worker_dir_abs=str(self.en_clone),
+        )
+        layout = rwl.resolve(
+            task_id="en-task-b-alias",
+            project_slug="claude-org-en",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(layout.pattern, "B")
+        self.assertEqual(layout.pattern_variant, "en_repo_worktree")
+        self.assertEqual(
+            Path(layout.worker_dir),
+            (self.en_clone / ".worktrees" / "en-task-b-alias").resolve(),
+        )
+
+    def test_no_en_clone_falls_through_to_pattern_c_ephemeral(self):
+        """Without a clone at workers_dir/claude-org, the slug is still
+        unknown → Pattern C ephemeral (regression guard for the no-en-clone
+        deployment)."""
+        import shutil as _shutil
+        _shutil.rmtree(self.en_clone)
+        layout = rwl.resolve(
+            task_id="en-task-no-clone",
+            project_slug="claude-org",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(layout.pattern, "C")
+        self.assertEqual(layout.pattern_variant, "ephemeral")
+
+    def test_en_clone_with_unrelated_origin_does_not_match(self):
+        """A repo at workers_dir/claude-org that happens to be an unrelated
+        github repo (e.g. a typo'd clone) must not be promoted to en mirror."""
+        subprocess.run(
+            ["git", "-C", str(self.en_clone), "remote", "set-url",
+             "origin", "https://github.com/someone-else/claude-org-fork.git"],
+            check=True,
+        )
+        layout = rwl.resolve(
+            task_id="en-task-bad-origin",
+            project_slug="claude-org",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(layout.pattern, "C")
+        self.assertEqual(layout.pattern_variant, "ephemeral")
+
+    def test_registry_url_path_falls_back_to_local_en_clone(self):
+        """Live deployment regression: ``registry/projects.md`` carries
+        ``| claude-org-en | claude-org | https://github.com/.../claude-org |``
+        (path = remote URL). Before the fix the resolver would land on the
+        registry row, see ``is_local_git_repo(URL)=False``, run state.db
+        Pattern B, and emit ``variant=None`` + ``base_repo=None`` because
+        the URL can't be a worktree base. With the en-clone fallback, we
+        re-pin onto the local clone and tag the variant."""
+        self.sb.write_registry(
+            [
+                ("時計", "clock-app", "-", "Demo clock"),
+                (
+                    "claude-org-en",
+                    "claude-org",
+                    "https://github.com/suisya-systems/claude-org",
+                    "en mirror",
+                ),
+            ]
+        )
+        self.sb.add_run(
+            task_id="other-en-task",
+            project_slug="claude-org",
+            pattern="A",
+            status="in_use",
+            worker_dir_abs=str(self.en_clone),
+        )
+        layout = rwl.resolve(
+            task_id="en-task-live",
+            project_slug="claude-org",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(layout.pattern, "B")
+        self.assertEqual(layout.pattern_variant, "en_repo_worktree")
+        self.assertEqual(
+            Path(layout.worker_dir),
+            (self.en_clone / ".worktrees" / "en-task-live").resolve(),
+        )
+
+    def test_unrelated_slug_does_not_match_even_with_clone_present(self):
+        """Slug gate: a non-en slug (clock-app, renga) must not be promoted
+        even when the en clone is on disk."""
+        layout = rwl.resolve(
+            task_id="clock-task",
+            project_slug="clock-app",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        # clock-app is in the registry as Pattern A under workers_dir/clock-app.
+        self.assertEqual(layout.pattern, "A")
+        self.assertEqual(
+            Path(layout.worker_dir),
+            (self.sb.workers / "clock-app").resolve(),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

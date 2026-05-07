@@ -1045,6 +1045,157 @@ class TestPatternBWorktreeCreation(unittest.TestCase):
         self.assertTrue((worker_dir / "CLAUDE.md").exists())
 
 
+class TestPatternBEnRepoWorktreePlan(unittest.TestCase):
+    """Issue #370: ``build_delegate_plan`` must populate ``base_repo`` for
+    the ``en_repo_worktree`` variant so ``apply`` can run
+    ``git worktree add`` against the en mirror clone instead of failing
+    with ``no usable base repo could be determined``."""
+
+    def setUp(self) -> None:
+        try:
+            import subprocess as _sp
+            _sp.run(["git", "--version"], capture_output=True, check=True)
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            self.skipTest("git not available")
+        self._td = tempfile.TemporaryDirectory()
+        self.sb = _Sandbox(Path(self._td.name), with_claude_org_origin=False)
+        # Reset the auto-seeded registry to drop the synthesized
+        # claude-org-ja row; otherwise it'd fight the en-mirror detection
+        # for the claude-org slug. (The registry has clock-app only.)
+        (self.sb.claude_org_root / "registry" / "projects.md").write_text(
+            "# Projects\n\n"
+            "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 |\n"
+            "|---|---|---|---|---|\n"
+            "| 時計アプリ | clock-app | - | Web 時計 | デザイン |\n",
+            encoding="utf-8",
+        )
+        # claude_org_root needs to be a real git repo with a main branch
+        # (the worktree-creation tests do the same dance).
+        import os
+        self._git_env = os.environ.copy()
+        self._git_env.update(
+            {
+                "GIT_AUTHOR_NAME": "test",
+                "GIT_AUTHOR_EMAIL": "test@example.com",
+                "GIT_COMMITTER_NAME": "test",
+                "GIT_COMMITTER_EMAIL": "test@example.com",
+            }
+        )
+        # en mirror clone with the canonical origin.
+        self.en_clone = self.sb.workers / "claude-org"
+        self.en_clone.mkdir()
+        self._init_repo_with_origin_main(
+            self.en_clone, "https://github.com/suisya-systems/claude-org.git"
+        )
+
+    def _init_repo_with_origin_main(self, base: Path, origin_url: str) -> None:
+        import subprocess as _sp
+        _sp.run(["git", "-C", str(base), "init", "-q", "-b", "main"], check=True)
+        _sp.run(
+            ["git", "-C", str(base), "remote", "add", "origin", origin_url],
+            check=True,
+        )
+        _sp.run(
+            ["git", "-C", str(base), "commit", "--allow-empty", "-m", "init", "-q"],
+            check=True, env=self._git_env,
+        )
+        sha = _sp.check_output(
+            ["git", "-C", str(base), "rev-parse", "main"]
+        ).decode().strip()
+        _sp.run(
+            ["git", "-C", str(base), "update-ref",
+             "refs/remotes/origin/main", sha],
+            check=True,
+        )
+        _sp.run(
+            ["git", "-C", str(base), "symbolic-ref",
+             "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
+            check=True,
+        )
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def _force_pattern_b(self, slug: str) -> None:
+        self.sb.add_active_run(
+            task_id=f"prev-{slug}",
+            project_slug=slug,
+            worker_dir=str(self.en_clone),
+        )
+
+    def test_plan_for_claude_org_slug_populates_base_repo(self):
+        """Issue #370 repro 1: slug=claude-org Pattern B used to leave
+        base_repo=None, causing apply to raise WorktreeApplyError."""
+        self._force_pattern_b("claude-org")
+        plan = gdp.build_delegate_plan(
+            task_id="en-issue-370-1",
+            project_slug="claude-org",
+            description="install runtime classify",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(plan.layout.pattern, "B")
+        self.assertEqual(plan.layout.pattern_variant, "en_repo_worktree")
+        self.assertIsNotNone(plan.base_repo)
+        self.assertEqual(
+            Path(plan.base_repo).resolve(), self.en_clone.resolve()
+        )
+        self.assertEqual(
+            Path(plan.layout.worker_dir),
+            (self.en_clone / ".worktrees" / "en-issue-370-1").resolve(),
+        )
+
+    def test_plan_for_claude_org_en_slug_populates_base_repo(self):
+        """Issue #370 repro 2: slug=claude-org-en used to land on Pattern C
+        ephemeral; now Pattern B with base_repo anchored on the clone."""
+        self._force_pattern_b("claude-org-en")
+        plan = gdp.build_delegate_plan(
+            task_id="en-issue-370-2",
+            project_slug="claude-org-en",
+            description="docs sweep",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(plan.layout.pattern, "B")
+        self.assertEqual(plan.layout.pattern_variant, "en_repo_worktree")
+        self.assertEqual(
+            Path(plan.base_repo).resolve(), self.en_clone.resolve()
+        )
+
+    def test_apply_creates_en_repo_worktree(self):
+        """End-to-end: the original repro (apply fails with `no usable
+        base repo`) is gone — apply succeeds and registers the worktree
+        against the en clone."""
+        import subprocess as _sp
+        self._force_pattern_b("claude-org")
+        plan = gdp.build_delegate_plan(
+            task_id="en-issue-370-apply",
+            project_slug="claude-org",
+            description="add resolver fix",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        gdp.apply_delegate_plan(
+            plan,
+            state_db_path=self.sb.db_path,
+            claude_org_root=self.sb.claude_org_root,
+            skip_settings=True,
+        )
+        worker_dir = Path(plan.layout.worker_dir).resolve()
+        self.assertTrue(worker_dir.exists())
+        self.assertTrue((worker_dir / ".git").exists())
+        out = _sp.check_output(
+            ["git", "-C", str(self.en_clone),
+             "worktree", "list", "--porcelain"],
+        ).decode("utf-8", errors="replace")
+        registered = {
+            Path(line[len("worktree "):].strip()).resolve()
+            for line in out.splitlines() if line.startswith("worktree ")
+        }
+        self.assertIn(worker_dir, registered)
+        self.assertTrue((worker_dir / "CLAUDE.md").exists())
+
+
 def _env_update_goldens() -> bool:
     import os
     return os.environ.get("UPDATE_GOLDENS") == "1"

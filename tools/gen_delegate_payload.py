@@ -134,6 +134,8 @@ def _pattern_label(layout: rwl.WorkerLayout) -> str:
         return "C: gitignored サブモード (registered repo 直接編集)"
     if layout.pattern_variant == "live_repo_worktree":
         return "B: worktree (live_repo_worktree — Secretary live repo 配下)"
+    if layout.pattern_variant == "en_repo_worktree":
+        return "B: worktree (en_repo_worktree — claude-org en mirror 配下)"
     return base
 
 
@@ -293,6 +295,12 @@ def build_delegate_plan(
     if layout.pattern == "B":
         if layout.pattern_variant == "live_repo_worktree":
             base_repo = Path(claude_org_root).resolve()
+        elif layout.pattern_variant == "en_repo_worktree":
+            # Issue #370: worker_dir = {en_clone}/.worktrees/<task>; the en
+            # clone has no registry row, so derive base_repo from the
+            # worker_dir layout convention rather than re-running origin URL
+            # detection here.
+            base_repo = Path(layout.worker_dir).parent.parent.resolve()
         elif project_path and rwl.is_local_git_repo(project_path):
             base_repo = Path(project_path).resolve()
 
