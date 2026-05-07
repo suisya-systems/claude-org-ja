@@ -1045,11 +1045,11 @@ class TestPatternBWorktreeCreation(unittest.TestCase):
         self.assertTrue((worker_dir / "CLAUDE.md").exists())
 
 
-class TestPatternBEnRepoWorktreePlan(unittest.TestCase):
+class TestPatternBClaudeOrgRepoWorktreePlan(unittest.TestCase):
     """Issue #370: ``build_delegate_plan`` must populate ``base_repo`` for
-    the ``en_repo_worktree`` variant so ``apply`` can run
-    ``git worktree add`` against the en mirror clone instead of failing
-    with ``no usable base repo could be determined``."""
+    the ``claude_org_repo_worktree`` variant so ``apply`` can run
+    ``git worktree add`` against the claude-org mirror clone instead of
+    failing with ``no usable base repo could be determined``."""
 
     def setUp(self) -> None:
         try:
@@ -1060,7 +1060,7 @@ class TestPatternBEnRepoWorktreePlan(unittest.TestCase):
         self._td = tempfile.TemporaryDirectory()
         self.sb = _Sandbox(Path(self._td.name), with_claude_org_origin=False)
         # Reset the auto-seeded registry to drop the synthesized
-        # claude-org-ja row; otherwise it'd fight the en-mirror detection
+        # claude-org-ja row; otherwise it'd fight the claude-org detection
         # for the claude-org slug. (The registry has clock-app only.)
         (self.sb.claude_org_root / "registry" / "projects.md").write_text(
             "# Projects\n\n"
@@ -1081,11 +1081,11 @@ class TestPatternBEnRepoWorktreePlan(unittest.TestCase):
                 "GIT_COMMITTER_EMAIL": "test@example.com",
             }
         )
-        # en mirror clone with the canonical origin.
-        self.en_clone = self.sb.workers / "claude-org"
-        self.en_clone.mkdir()
+        # claude-org mirror clone with the canonical origin.
+        self.clone = self.sb.workers / "claude-org"
+        self.clone.mkdir()
         self._init_repo_with_origin_main(
-            self.en_clone, "https://github.com/suisya-systems/claude-org.git"
+            self.clone, "https://github.com/suisya-systems/claude-org.git"
         )
 
     def _init_repo_with_origin_main(self, base: Path, origin_url: str) -> None:
@@ -1120,7 +1120,7 @@ class TestPatternBEnRepoWorktreePlan(unittest.TestCase):
         self.sb.add_active_run(
             task_id=f"prev-{slug}",
             project_slug=slug,
-            worker_dir=str(self.en_clone),
+            worker_dir=str(self.clone),
         )
 
     def test_plan_for_claude_org_slug_populates_base_repo(self):
@@ -1135,14 +1135,14 @@ class TestPatternBEnRepoWorktreePlan(unittest.TestCase):
             state_db_path=self.sb.db_path,
         )
         self.assertEqual(plan.layout.pattern, "B")
-        self.assertEqual(plan.layout.pattern_variant, "en_repo_worktree")
+        self.assertEqual(plan.layout.pattern_variant, "claude_org_repo_worktree")
         self.assertIsNotNone(plan.base_repo)
         self.assertEqual(
-            Path(plan.base_repo).resolve(), self.en_clone.resolve()
+            Path(plan.base_repo).resolve(), self.clone.resolve()
         )
         self.assertEqual(
             Path(plan.layout.worker_dir),
-            (self.en_clone / ".worktrees" / "en-issue-370-1").resolve(),
+            (self.clone / ".worktrees" / "en-issue-370-1").resolve(),
         )
 
     def test_plan_for_claude_org_en_slug_populates_base_repo(self):
@@ -1157,9 +1157,9 @@ class TestPatternBEnRepoWorktreePlan(unittest.TestCase):
             state_db_path=self.sb.db_path,
         )
         self.assertEqual(plan.layout.pattern, "B")
-        self.assertEqual(plan.layout.pattern_variant, "en_repo_worktree")
+        self.assertEqual(plan.layout.pattern_variant, "claude_org_repo_worktree")
         self.assertEqual(
-            Path(plan.base_repo).resolve(), self.en_clone.resolve()
+            Path(plan.base_repo).resolve(), self.clone.resolve()
         )
 
     def test_plan_normalizes_alias_slug_to_canonical(self):
@@ -1179,8 +1179,8 @@ class TestPatternBEnRepoWorktreePlan(unittest.TestCase):
         # Plan-level project_slug is the canonical form, regardless of input alias.
         self.assertEqual(plan.project_slug, "claude-org")
 
-    def test_plan_rejects_en_variant_with_bad_worker_dir(self):
-        """Codex Round 2 Major: pattern_variant=en_repo_worktree with a
+    def test_plan_rejects_variant_with_bad_worker_dir(self):
+        """Codex Round 2 Major: pattern_variant=claude_org_repo_worktree with a
         worker_dir whose parent.parent is not a local git repo would silently
         run ``git worktree add`` against an unrelated directory. Reject."""
         with self.assertRaises(ValueError):
@@ -1191,15 +1191,15 @@ class TestPatternBEnRepoWorktreePlan(unittest.TestCase):
                 state_db_path=self.sb.db_path,
                 layout_overrides={
                     "pattern": "B",
-                    "pattern_variant": "en_repo_worktree",
+                    "pattern_variant": "claude_org_repo_worktree",
                     "worker_dir": str(Path(self._td.name) / "not" / "a-repo"),
                 },
             )
 
-    def test_plan_rejects_en_variant_pointing_at_unrelated_git_repo(self):
+    def test_plan_rejects_variant_pointing_at_unrelated_git_repo(self):
         """Codex Round 3 Major: a worker_dir whose parent.parent IS a git
         repo — but a different one — used to slip through the validation.
-        Re-running origin-URL detection against the canonical en clone
+        Re-running origin-URL detection against the canonical claude-org clone
         path catches this."""
         import subprocess as _sp
         unrelated = Path(self._td.name) / "unrelated-repo"
@@ -1215,7 +1215,7 @@ class TestPatternBEnRepoWorktreePlan(unittest.TestCase):
                 state_db_path=self.sb.db_path,
                 layout_overrides={
                     "pattern": "B",
-                    "pattern_variant": "en_repo_worktree",
+                    "pattern_variant": "claude_org_repo_worktree",
                     "worker_dir": str(unrelated / ".worktrees" / "evil-task"),
                 },
             )
@@ -1236,10 +1236,10 @@ class TestPatternBEnRepoWorktreePlan(unittest.TestCase):
         self.assertEqual(plan.layout.pattern, "A")
         self.assertEqual(plan.project_slug, "claude-org")
 
-    def test_apply_creates_en_repo_worktree(self):
+    def test_apply_creates_claude_org_repo_worktree(self):
         """End-to-end: the original repro (apply fails with `no usable
         base repo`) is gone — apply succeeds and registers the worktree
-        against the en clone."""
+        against the claude-org clone."""
         import subprocess as _sp
         self._force_pattern_b("claude-org")
         plan = gdp.build_delegate_plan(
@@ -1259,7 +1259,7 @@ class TestPatternBEnRepoWorktreePlan(unittest.TestCase):
         self.assertTrue(worker_dir.exists())
         self.assertTrue((worker_dir / ".git").exists())
         out = _sp.check_output(
-            ["git", "-C", str(self.en_clone),
+            ["git", "-C", str(self.clone),
              "worktree", "list", "--porcelain"],
         ).decode("utf-8", errors="replace")
         registered = {
