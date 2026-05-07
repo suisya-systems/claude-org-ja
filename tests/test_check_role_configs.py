@@ -197,6 +197,96 @@ class ExtractRoleBlocksTests(unittest.TestCase):
         blocks = crc.extract_role_blocks(md, MINIMAL_SCHEMA["roles"])
         self.assertIsNone(blocks["worker"])
 
+    def test_bilingual_en_headings_match(self):
+        # Issue #340: an en mirror permissions.md uses English headings.
+        md = (
+            "# heading\n\n"
+            "## Lead (`<repo>/.claude/settings.local.json`)\n\n"
+            "```json\n{\"permissions\": {\"allow\": [\"a\"]}}\n```\n\n"
+            "## Worker (dynamically generated)\n\n"
+            "```json\n{\"permissions\": {\"allow\": [\"b\"]}}\n```\n"
+        )
+        blocks = crc.extract_role_blocks(md, MINIMAL_SCHEMA["roles"])
+        self.assertEqual(blocks["secretary"]["permissions"]["allow"], ["a"])
+        self.assertEqual(blocks["worker"]["permissions"]["allow"], ["b"])
+
+    def test_bilingual_mixed_ja_and_en_headings(self):
+        # A repo mid-translation may have a mix of ja and en headings.
+        md = (
+            "## 窓口\n\n```json\n{\"permissions\": {\"allow\": [\"a\"]}}\n```\n\n"
+            "## Worker\n\n```json\n{\"permissions\": {\"allow\": [\"b\"]}}\n```\n"
+        )
+        blocks = crc.extract_role_blocks(md, MINIMAL_SCHEMA["roles"])
+        self.assertEqual(blocks["secretary"]["permissions"]["allow"], ["a"])
+        self.assertEqual(blocks["worker"]["permissions"]["allow"], ["b"])
+
+    def test_bilingual_secretary_alias_accepted(self):
+        # Issue #340 codex review: the codebase calls the 窓口 role
+        # "Secretary" in schema descriptions; that variant must work
+        # alongside the org-skill-aligned "Lead".
+        md = (
+            "## Secretary (`<repo>/.claude/settings.local.json`)\n\n"
+            "```json\n{\"permissions\": {\"allow\": [\"sec\"]}}\n```\n"
+        )
+        blocks = crc.extract_role_blocks(md, MINIMAL_SCHEMA["roles"])
+        self.assertEqual(blocks["secretary"]["permissions"]["allow"], ["sec"])
+
+    def test_bilingual_alias_does_not_substring_match(self):
+        # Issue #340 codex review: a heading that merely *contains* an
+        # alias as a substring (e.g. parenthetical) must not be
+        # picked up. ``## Dispatcher (Lead-owned)`` had silently been
+        # mis-projected as ``secretary`` under the substring matcher.
+        md = (
+            "## Dispatcher (Lead-owned)\n\n"
+            "```json\n{\"permissions\": {\"allow\": [\"disp\"]}}\n```\n\n"
+            "## Lead\n\n"
+            "```json\n{\"permissions\": {\"allow\": [\"sec\"]}}\n```\n"
+        )
+        blocks = crc.extract_role_blocks(md, MINIMAL_SCHEMA["roles"])
+        self.assertEqual(blocks["secretary"]["permissions"]["allow"], ["sec"])
+
+    def test_bilingual_all_alias_table_entries_match(self):
+        # Issue #340 codex round 2: every en alias declared in
+        # ``_JA_TO_EN_ROLE_HEADING_ALIASES`` must be exercised so a
+        # future typo or translation update is caught here. Build a
+        # synthetic schema that covers all five canonical roles.
+        schema = {
+            name: {"docs_section": ja}
+            for name, ja in {
+                "user_common": "ユーザー共通",
+                "secretary": "窓口",
+                "dispatcher": "ディスパッチャー",
+                "curator": "キュレーター",
+                "worker": "ワーカー",
+            }.items()
+        }
+        for ja, aliases in crc._JA_TO_EN_ROLE_HEADING_ALIASES.items():
+            for alias in aliases:
+                md = (
+                    f"## {alias} (`...`)\n\n"
+                    f'```json\n{{"permissions": {{"allow": ["{alias}"]}}}}\n```\n'
+                )
+                blocks = crc.extract_role_blocks(md, schema)
+                # Find which role uses this ja heading and assert the
+                # alias projects to it.
+                role_for_ja = next(
+                    role for role, defn in schema.items()
+                    if defn["docs_section"] == ja
+                )
+                self.assertEqual(
+                    blocks[role_for_ja]["permissions"]["allow"], [alias],
+                    msg=f"alias {alias!r} (for ja {ja!r}) failed to project",
+                )
+
+    def test_bilingual_alias_rejects_longer_word(self):
+        # ``Lead`` must not match ``Leadership``.
+        md = (
+            "## Leadership notes\n\n"
+            "```json\n{\"permissions\": {\"allow\": [\"x\"]}}\n```\n"
+        )
+        blocks = crc.extract_role_blocks(md, MINIMAL_SCHEMA["roles"])
+        self.assertIsNone(blocks["secretary"])
+
     def test_invalid_json_surfaces_parse_error(self):
         md = "## 窓口\n\n```json\n{not json}\n```\n"
         blocks = crc.extract_role_blocks(md, MINIMAL_SCHEMA["roles"])
