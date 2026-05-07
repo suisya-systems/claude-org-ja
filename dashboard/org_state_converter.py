@@ -64,28 +64,41 @@ def parse_org_state_db(db_path):
     finally:
         conn.close()
 
-    # Frontend (dashboard/app.js) renders icons keyed off IN_PROGRESS /
-    # REVIEW / PENDING / COMPLETED / BLOCKED / ABANDONED. Map the DB enum
-    # so the JSON renders the same labels the markdown path used to.
+    # Set F state-semantics-contract §3 phase mapping. Kept in sync with
+    # ``dashboard/server.py:_DB_STATUS_TO_UI`` so the /api/state HTTP
+    # surface and the regenerated org-state.json describe the same DB
+    # row with the same UI status. ``queued`` → RESERVED (§3.1 \\ §3.3,
+    # rendered separately from Active Work Items per I8); terminal
+    # entries are defense-in-depth — ``list_active_runs`` excludes them.
     _STATUS_MAP = {
+        "queued": "RESERVED",
         "in_use": "IN_PROGRESS",
         "review": "REVIEW",
-        "queued": "PENDING",
         "completed": "COMPLETED",
         "failed": "BLOCKED",
         "suspended": "PENDING",
         "abandoned": "ABANDONED",
     }
-    work_items = []
-    for r in summary["active_runs"]:
-        raw = (r["status"] or "").lower()
-        work_items.append({
-            "id": r["task_id"],
-            "title": r["title"] or r["task_id"],
-            "status": _STATUS_MAP.get(raw, raw.upper()),
-            "progress": None,
-            "worker": None,
-        })
+
+    def _shape(rows):
+        out = []
+        for r in rows:
+            raw = (r.get("status") or "").lower()
+            out.append({
+                "id": r["task_id"],
+                "title": r.get("title") or r["task_id"],
+                "status": _STATUS_MAP.get(raw, raw.upper()),
+                "progress": None,
+                "worker": None,
+            })
+        return out
+
+    work_items = _shape(summary["active_runs"])
+    # ``reservedItems`` parallels the /api/state payload (Set F §3.1 \\ §3.3).
+    # Surfacing queued separately in the JSON keeps the derived layer
+    # consistent with the HTTP layer; downstream consumers reading the JSON
+    # see the same anomaly group as the live dashboard.
+    reserved_items = _shape(summary.get("reserved_runs", []))
 
     dispatcher = None
     if session.get("dispatcher_pane_id") or session.get("dispatcher_peer_id"):
@@ -109,6 +122,7 @@ def parse_org_state_db(db_path):
         "status": status,
         "currentObjective": session.get("objective"),
         "workItems": work_items,
+        "reservedItems": reserved_items,
         "workerDirectoryRegistry": registry,
         "dispatcher": dispatcher,
         "curator": curator,

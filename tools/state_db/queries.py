@@ -70,8 +70,10 @@ def list_active_runs(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     contract §3.3 / I8: a fresh T1 reservation has not yet produced a pane,
     and surfacing it in Active Work Items would flicker the operator UI for
     sub-second reservations. Use :func:`list_reserved_runs` to see queued
-    rows separately, or :func:`list_active_reservation_runs` to get the
-    union (the resolver's pattern-selection set §3.1).
+    rows separately; the resolver's pattern-selection set (§3.1, the
+    union of queued + in_use + review) is exposed as the
+    ``ACTIVE_RESERVATION_STATUSES`` constant for callers that need to
+    build their own predicate.
 
     Used by the dashboard's Active Work Items list and the snapshotter's
     ``## Active Work Items`` rendering.

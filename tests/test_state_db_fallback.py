@@ -22,6 +22,7 @@ from pathlib import Path
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 
+from tools.state_db import connect
 from tools.state_db.importer import import_full_rebuild
 
 
@@ -96,6 +97,55 @@ class TestServerDbRead(unittest.TestCase):
         ids = [w["id"] for w in state["workItems"]]
         self.assertIn("task-1", ids)
 
+    def test_set_f_phase_groups_split_correctly(self):
+        """Set F §3 — queued lands in reservedItems (RESERVED), in_use
+        in workItems (IN_PROGRESS), terminal rows in neither.
+
+        Regression for Issue #352: dashboard /api/state must keep the
+        active-reservation, user-visible, and terminal phases separated
+        so I8 (queued invisible to user-visible projection) and the
+        4-phase UI distinguishability acceptance criterion both hold.
+        """
+        import_full_rebuild(self.db_path, self.root)
+        # Seed one of each phase against the imported project.
+        conn = connect(self.db_path)
+        try:
+            project_row = conn.execute(
+                "SELECT id FROM projects LIMIT 1"
+            ).fetchone()
+            project_id = project_row[0]
+            conn.execute(
+                "INSERT INTO runs (task_id, project_id, pattern, title, status) "
+                "VALUES ('t-queued', ?, 'A', 't-queued', 'queued')",
+                (project_id,),
+            )
+            conn.execute(
+                "INSERT INTO runs (task_id, project_id, pattern, title, status) "
+                "VALUES ('t-running', ?, 'A', 't-running', 'in_use')",
+                (project_id,),
+            )
+            conn.execute(
+                "INSERT INTO runs (task_id, project_id, pattern, title, status) "
+                "VALUES ('t-done', ?, 'A', 't-done', 'completed')",
+                (project_id,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        state = self.server.build_state()
+        work_ids = {w["id"]: w["status"] for w in state["workItems"]}
+        reserved_ids = {w["id"]: w["status"] for w in state["reservedItems"]}
+        # Reserved bucket only contains queued (§3.1 \\ §3.3).
+        self.assertEqual(reserved_ids.get("t-queued"), "RESERVED")
+        self.assertNotIn("t-queued", work_ids)
+        # Active bucket contains in_use / review only (§3.3).
+        self.assertEqual(work_ids.get("t-running"), "IN_PROGRESS")
+        self.assertNotIn("t-running", reserved_ids)
+        # Terminal rows are filtered out of both surfaces (§3.4).
+        self.assertNotIn("t-done", work_ids)
+        self.assertNotIn("t-done", reserved_ids)
+
 
 class TestConverterDbOnly(unittest.TestCase):
     def setUp(self) -> None:
@@ -131,6 +181,34 @@ class TestConverterDbOnly(unittest.TestCase):
         self.assertEqual(data.get("_source"), "db")
         self.assertEqual(data["status"], "ACTIVE")
         self.assertEqual(data["currentObjective"], "M4 freeze tests")
+
+    def test_json_emits_reserved_items_alongside_work_items(self):
+        """Set F §3 — queued runs surface in org-state.json as
+        reservedItems, parallel to /api/state. Regression for the
+        derived-layer drift Codex flagged on the Issue #352 review:
+        without this, the JSON projection silently dropped queued rows
+        while the HTTP projection rendered them.
+        """
+        import_full_rebuild(self.db_path, self.root)
+        conn = connect(self.db_path)
+        try:
+            pid = conn.execute("SELECT id FROM projects LIMIT 1").fetchone()[0]
+            conn.execute(
+                "INSERT INTO runs (task_id, project_id, pattern, title, status) "
+                "VALUES ('t-q', ?, 'A', 't-q', 'queued')",
+                (pid,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        ok = self.converter.convert(json_path=self.json_path,
+                                     db_path=self.db_path)
+        self.assertTrue(ok)
+        data = self._read_json()
+        reserved = {w["id"]: w["status"] for w in data.get("reservedItems", [])}
+        work = {w["id"] for w in data.get("workItems", [])}
+        self.assertEqual(reserved.get("t-q"), "RESERVED")
+        self.assertNotIn("t-q", work)
 
 
 if __name__ == "__main__":
