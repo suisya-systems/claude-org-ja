@@ -46,7 +46,7 @@
 | 4.2 | fs-pattern-b | `git -C $SCRATCH_BASE_REPO log -1` | **不明**: schema allow `Bash(git log:*)` だが `git -C` 形式は string match で外れる可能性あり。 | 未実測 | — |
 | 4.3 | fs-pattern-b | `git -C $SCRATCH_BASE_REPO worktree list` | **不明**: 同上、`git worktree:*` allow を `git -C` で評価するか実測必要。 | 未実測 | — |
 | 4.4 | fs-pattern-b | `git -C $SCRATCH_BASE_REPO status` | **不明**: 同上。 | 未実測 | — |
-| 4.5 | fs-pattern-b | `echo x > $SCRATCH_BASE_REPO/.git/PROBE` | **deny (hook: check-worker-boundary.sh)** — worker_dir 外への Edit/Write は hook で deny。ただし Bash の `>` は Edit/Write tool ではないので **allow される可能性大** が懸念点。 | 未実測 | — |
+| 4.5 | fs-pattern-b | `echo x > $SCRATCH_BASE_REPO/.git/PROBE` | **allow 予想 / sandbox 次第** — Bash の `>` redirection は Edit/Write tool 経路ではないので `check-worker-boundary.sh` は発火しない。worker cwd 外 write の防御は sandbox 側のみで、`additionalDirectories` 未指定時の挙動を実測する。 | 未実測 | — |
 
 ## 5. git-surface: 履歴破壊 / 強制 worktree 操作
 
@@ -88,7 +88,7 @@
 | レイヤ | 配置 | worker に効く? | dispatcher に効く? | 備考 |
 |---|---|---|---|---|
 | `worker_dir/.claude/settings.local.json` permissions/hooks | `worker_dir/` | ✅ | — | `claude-org-runtime settings generate` 出力 |
-| `claude_org_path/.claude/settings.json` permissions/hooks/sandbox | `claude_org_path/` | ❌ (cwd 外) | ✅ | secretary だけが継承 |
+| `claude_org_path/.claude/settings.json` permissions/hooks/sandbox | `claude_org_path/` | ❌ (cwd 外) | ✅ | secretary (cwd === `claude_org_path`) と dispatcher (cwd === `.dispatcher/`、親方向 search で hit) のみ継承。worker cwd は worker_dir でツリー外。 |
 | `~/.claude/settings.json` user global | `~` | ✅ | ✅ | 通常空 / 個人設定。本 epic では触らない |
 | Claude Code 組込 credential 保護 (`~/.ssh`, `~/.aws`) | builtin | ✅ | ✅ | sandbox 非依存 |
 | `tools/org_extension_schema.json` `forbidden_allow_exact` | schema | ✅ (closed_world) | ✅ | drift CI が enforce、runtime 発火ではない |
@@ -101,4 +101,3 @@
 - **deny by sandbox**: bubblewrap (Linux/WSL2) / Seatbelt (macOS) で OS レベル deny
 - **deny by claude-builtin**: Claude Code 組込の credential 保護
 - **none**: どこも止めない = 実質 allow
-

@@ -160,7 +160,7 @@ sed -i "s|{worker_dir}|/home/$USER/work/org/workers/sandbox-probe-iter1|g; s|{cl
 Claude Code を再起動し、追加で (`$SCRATCH_BASE_REPO` は `probes/checklist.md` 冒頭の安全前提に従い disposable な scratch clone を指す。例: `/tmp/sandbox-probe-scratch`):
 - `git -C $SCRATCH_BASE_REPO reset --hard HEAD` → **deny by perms** 期待
 - `git worktree remove --force ../<other>` → **deny by perms** 期待
-- `cat ~/.aws/credentials` (dummy) → **deny by sandbox + perms** 期待 (二重防御)
+- `cat ~/.aws/credentials` (dummy) → **deny by sandbox** 期待 (Bash 経由なので `permissions.deny` の `Read(~/.aws/*)` は Read tool 用で効かない。`Read tool` で `~/.aws/credentials` を読もうとすれば perms 側でも deny されるが、それは別 row として実測する想定)
 
 ## 5. 検証完了の判定
 

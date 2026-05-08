@@ -28,7 +28,7 @@ docs/sandbox-probe/
     └── profile-tightened.json       ← 強化版 (git -C 形式 deny / sandbox denyWrite 拡張 等)
 ```
 
-> 元 spike worker は `docs/` サブディレクトリに runbook / 観察 / 提案メモを置いていた。本 repo 取り込み時は `docs/sandbox-probe/docs/` の二重 `docs` を避けるため `notes/` にリネームした。ファイル本文は無変更 (sha256 一致)。元コミット参照: `git -C /home/$USER/work/org/workers/sandbox-probe show 198576c --stat`。
+> 元 spike worker は `docs/` サブディレクトリに runbook / 観察 / 提案メモを置いていた。本 repo 取り込み時は `docs/sandbox-probe/docs/` の二重 `docs` を避けるため `notes/` にリネームした。初回コミット (5ee1089) 時点では 9 files 全て本文無変更 (元 commit 198576c と sha256 一致)。続く round1 self-review fix commit (ffe15d6) で安全性 / 用語の明確化のため `notes/sandbox-probe-runbook.md`, `probes/checklist.md`, `probes/README.md`, `profiles/README.md` を編集している (詳細は当該 commit message)。元コミット参照: `git -C /home/$USER/work/org/workers/sandbox-probe show 198576c --stat`。
 
 ## 読み順
 
