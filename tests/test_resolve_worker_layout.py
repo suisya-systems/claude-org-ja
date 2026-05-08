@@ -1167,6 +1167,31 @@ class TestMirrorOfRegistryMetadata(unittest.TestCase):
         )
         self.assertEqual(layout.planned_branch, "feat/mirror-task-1")
 
+    def test_mirror_of_with_url_path_raises_resolve_error(self):
+        """Codex Round 1 Blocker: ``mirror_of`` set on a row whose path is
+        a URL (or ``-``) used to force Pattern B even though
+        gen_delegate_payload could not derive a base for ``git worktree
+        add``. The mismatch surfaced as ``no usable base repo`` at apply
+        time, after a DB reservation. Surface the misconfiguration at
+        resolve() instead, before any side effect."""
+        path = self.sb.claude_org_root / "registry" / "projects.md"
+        path.write_text(
+            "# Projects Registry\n\n"
+            "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 | mirror_of |\n"
+            "|---|---|---|---|---|---|\n"
+            "| ミラー | url-mirror | "
+            "https://github.com/example/mirror | mirror | - | upstream |\n",
+            encoding="utf-8",
+        )
+        with self.assertRaises(rwl.ResolveError) as cm:
+            rwl.resolve(
+                task_id="bad-mirror",
+                project_slug="url-mirror",
+                claude_org_root=self.sb.claude_org_root,
+                state_db_path=self.sb.db_path,
+            )
+        self.assertIn("mirror_of", str(cm.exception))
+
     def test_empty_mirror_of_keeps_legacy_pattern_a(self):
         """A project whose 6th column is empty must keep the legacy A/B/C
         decision tree — the mirror short-circuit triggers only on
@@ -1279,6 +1304,30 @@ class TestPatternOverrideContract(unittest.TestCase):
             Path(layout.worker_dir),
             (self.sb.claude_org_root / ".worktrees" / "ok-b-self").resolve(),
         )
+
+    def test_force_pattern_b_with_role_default_on_self_edit_slug_rejects(self):
+        """Codex Round 1 Major: ``--pattern B`` together with a role
+        override flipping the slug out of self-edit dropped through the
+        contract — the resolver let the layout through because the
+        synthesized self-edit project record satisfied ``has_base``, but
+        gen_delegate_payload (which re-reads the registry and finds no
+        claude-org-ja row) ended up with ``base_repo=None``. The check
+        must drop the synthesized record when the override removes the
+        self-edit role."""
+        with self.assertRaises(rwl.ResolveError) as cm:
+            rwl.resolve(
+                task_id="bad-b-via-role",
+                project_slug="claude-org-ja",
+                mode="edit",
+                claude_org_root=self.sb.claude_org_root,
+                state_db_path=self.sb.db_path,
+                layout_overrides={
+                    "pattern": "B",
+                    "role": "default",
+                    "self_edit": False,
+                },
+            )
+        self.assertIn("Pattern B", str(cm.exception))
 
     def test_force_pattern_b_with_local_repo_path_succeeds(self):
         """Registered project with a local git repo path → ``--pattern B``

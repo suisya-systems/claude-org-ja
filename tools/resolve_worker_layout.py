@@ -451,6 +451,7 @@ def resolve(
     # virtual project pointing at the live checkout so audit mode and the
     # active-run/state.db driven Pattern A↔B logic below keep treating it
     # the same as a registered project.
+    project_synthesized_for_self_edit = False
     if project is None and is_claude_org_project(project_slug, claude_org_root):
         project = RegistryProject(
             name=project_slug,
@@ -459,6 +460,12 @@ def resolve(
             description="",
             common_tasks="",
         )
+        # Track that this row only exists because the auto-derived role is
+        # self-edit. If a later layout_overrides flips the role away from
+        # self-edit, the contract check below must not credit this row as
+        # a worktree base — gen_delegate_payload re-reads the registry and
+        # won't find it (Codex Round 1 Major).
+        project_synthesized_for_self_edit = True
 
     # Issue #370: claude-org mirror at {workers_dir}/claude-org should
     # anchor any Pattern A/B for that repo regardless of whether the slug
@@ -543,6 +550,20 @@ def resolve(
         #   task is independent, never accumulating, so worktree-per-task
         #   is the natural default. The 5-column legacy registry leaves
         #   this empty and behaviour is unchanged for those projects.
+        # mirror_of additionally requires a local clone path: without one,
+        # ``gen_delegate_payload`` cannot derive a worktree base, and apply
+        # would fail with ``no usable base repo``. Surface that as a config
+        # error here rather than after a DB reservation (Codex Round 1
+        # Blocker).
+        if project.mirror_of and not is_local_git_repo(project.path):
+            raise ResolveError(
+                f"project {project_slug!r} has mirror_of={project.mirror_of!r} "
+                f"in the registry but path={project.path!r} is not a local "
+                "git repo. Pattern B (the mirror back-port default) requires "
+                "the mirror to be cloned at a usable local path; either "
+                "register the local clone path or remove the mirror_of "
+                "annotation."
+            )
         force_b = active or self_edit or bool(project.mirror_of)
         if force_b:
             pattern = "B"
@@ -628,12 +649,26 @@ def resolve(
                     layout_overrides.get("pattern_variant") is not None
                 )
                 if not (explicit_worker_dir or explicit_variant_now):
+                    # The synthesized self-edit project record only exists
+                    # in this resolve(); gen_delegate_payload re-reads the
+                    # registry and finds nothing there for the slug. So if
+                    # the role override is also flipping us out of
+                    # self-edit, that synthesized record cannot back the
+                    # plain Pattern B layout — drop it from the base check
+                    # so we surface the contract error here rather than
+                    # letting apply blow up later (Codex Round 1 Major).
+                    project_for_base = project
+                    if (
+                        project_synthesized_for_self_edit
+                        and not effective_self_edit
+                    ):
+                        project_for_base = None
                     has_base = (
                         effective_self_edit
                         or claude_org_clone is not None
                         or (
-                            project is not None
-                            and is_local_git_repo(project.path)
+                            project_for_base is not None
+                            and is_local_git_repo(project_for_base.path)
                         )
                     )
                     if not has_base:
