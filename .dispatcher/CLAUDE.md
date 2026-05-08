@@ -118,8 +118,9 @@ mcp__renga-peers__send_message(to_id="secretary", message="...")
 エントリポイント要約:
 
 - 最初のワーカー派遣完了後 `/loop 3m` で監視ループを開始、全ワーカーペインが閉じたら停止
-- 各サイクルで `poll_events` → `check_messages` → `list_panes` → `inspect_pane` → stall / relay gap 評価の順
+- 各サイクルで `poll_events` → `check_messages` → `list_panes` → `inspect_pane` → stall / relay gap / pane_output_without_peer_msg 評価の順
 - stall 検出 (Step 5) は通常 lookback `STALL_SECRETARY_LOOKBACK_MIN = 15` 分で評価するが、対象 worker の task に対して `pr_opened` event が journal に記録済みかつ `pr_merged` が未記録の **PR-pending-merge sub-state** では `STALL_PR_MERGE_LOOKBACK_MIN = 60` 分に拡張する (Issue #304、session #12 の merge 承認待ち誤発火を抑制)。`pr_opened` / `pr_merged` は Secretary が emit する event (`docs/journal-events.md` 参照) で、worker が直接書く event ではない。詳細は [`.dispatcher/references/worker-monitoring.md` Step 5 (b-2)](references/worker-monitoring.md)
+- pane_output_without_peer_msg 検出 (Step 5.2) は worker がペインに出力したのに secretary 宛 `send_message` を発行し忘れた **silent dead-lock** を捕捉する。`PANE_OUTPUT_SETTLE_SEC = 60` 秒静止 + `idle_streak_cycles >= 1` + 過去 `PANE_OUTPUT_LOOKBACK_MIN = 15` 分以内に worker→secretary 痕跡なし、で fire し worker への self-healing nudge と secretary への informational を両系統送信する。詳細は [`.dispatcher/references/worker-monitoring.md` Step 5.2](references/worker-monitoring.md#step-5-2)
 - ディスパッチャーが自動で承認・拒否することはしない (ユーザー判断が必要)
 - ワーカーペインがない場合は監視ループを停止する
 - 監視対象のペイン名は `.state/workers/worker-{peer_id}.md` の Pane Name から取得する
