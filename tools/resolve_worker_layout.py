@@ -451,6 +451,7 @@ def resolve(
     # virtual project pointing at the live checkout so audit mode and the
     # active-run/state.db driven Pattern A↔B logic below keep treating it
     # the same as a registered project.
+    project_synthesized_for_self_edit = False
     if project is None and is_claude_org_project(project_slug, claude_org_root):
         project = RegistryProject(
             name=project_slug,
@@ -459,6 +460,12 @@ def resolve(
             description="",
             common_tasks="",
         )
+        # Track that this row only exists because the auto-derived role is
+        # self-edit. If a later layout_overrides flips the role away from
+        # self-edit, the contract check below must not credit this row as
+        # a worktree base — gen_delegate_payload re-reads the registry and
+        # won't find it (Codex Round 1 Major).
+        project_synthesized_for_self_edit = True
 
     # Issue #370: claude-org mirror at {workers_dir}/claude-org should
     # anchor any Pattern A/B for that repo regardless of whether the slug
@@ -482,6 +489,13 @@ def resolve(
             path=str(claude_org_clone),
             description=project.description if project is not None else "",
             common_tasks=project.common_tasks if project is not None else "",
+            # Codex Round 3 Major: preserve ``mirror_of`` when re-pinning
+            # onto the local clone. The live registry row may carry
+            # ``| ... | https://... | ... | upstream-slug |`` (non-local
+            # path + mirror_of); without this carry-over the synthesis
+            # erased mirror_of and the first-run Pattern B short-circuit
+            # silently fell back to Pattern A.
+            mirror_of=project.mirror_of if project is not None else "",
         )
 
     # --- Role decision (computed first so Pattern B can branch on it) -----
@@ -532,11 +546,34 @@ def resolve(
                     conn.close()
             except sqlite3.Error:
                 active = False
-        if active:
+        # Issue #374: two more reasons Pattern B is required even on a
+        # first dispatch:
+        # - ``self_edit`` is a *repo policy* (Secretary's live claude-org
+        #   checkout must always be a worktree, single .git, no two-clone
+        #   sync), independent of the concurrency policy that ``active``
+        #   captures. Without this short-circuit the very first self-edit
+        #   delegation lands on Pattern A and writes into the live repo.
+        # - ``project.mirror_of`` flags a mirror back-port workflow — each
+        #   task is independent, never accumulating, so worktree-per-task
+        #   is the natural default. The 5-column legacy registry leaves
+        #   this empty and behaviour is unchanged for those projects.
+        # mirror_of additionally requires a local clone path: without one,
+        # ``gen_delegate_payload`` cannot derive a worktree base, and apply
+        # would fail with ``no usable base repo``. Surface that as a config
+        # error here rather than after a DB reservation (Codex Round 1
+        # Blocker).
+        if project.mirror_of and not is_local_git_repo(project.path):
+            raise ResolveError(
+                f"project {project_slug!r} has mirror_of={project.mirror_of!r} "
+                f"in the registry but path={project.path!r} is not a local "
+                "git repo. Pattern B (the mirror back-port default) requires "
+                "the mirror to be cloned at a usable local path; either "
+                "register the local clone path or remove the mirror_of "
+                "annotation."
+            )
+        force_b = active or self_edit or bool(project.mirror_of)
+        if force_b:
             pattern = "B"
-            # claude-org self-edit Pattern B places the worktree under
-            # Secretary's live repo (single .git, no two-clone sync). See
-            # Issue #289 / references/claude-org-self-edit.md.
             if self_edit:
                 variant = "live_repo_worktree"
                 worker_dir = claude_org_root / ".worktrees" / task_id
@@ -573,12 +610,86 @@ def resolve(
     # produced Pattern C without one). Codex Round 1 Major.
     if layout_overrides:
         explicit_worker_dir = bool(layout_overrides.get("worker_dir"))
+        explicit_role_override = bool(layout_overrides.get("role"))
         if "pattern" in layout_overrides and layout_overrides["pattern"]:
             pat = layout_overrides["pattern"]
             if pat not in VALID_PATTERNS:
                 raise ResolveError(
                     f"layout_overrides['pattern'] must be one of {VALID_PATTERNS}, got {pat!r}"
                 )
+            # Issue #374: ``--pattern`` is an override flag exposed for
+            # Secretary judgment, so the contract must surface invalid combos
+            # at preview time rather than letting apply discover them after
+            # a DB reservation. The contract:
+            #   - A is forbidden when the current role is claude-org-self-edit
+            #     (Pattern A would land the brief in workers_dir/claude-org-ja/,
+            #     a separate clone, which voids the single-.git invariant
+            #     Issue #289 codified for the live repo).
+            #   - B requires a worktree base — registered local clone OR the
+            #     synthesized claude-org mirror clone OR self-edit (live repo
+            #     base). When the only candidate is a URL/placeholder path
+            #     and no clone is detected, fail loudly here so apply does
+            #     not raise after the DB row exists.
+            #   - C is always permitted.
+            #   - The role override (if any) is applied later in this block,
+            #     so consult the *post-override* role when its key is present;
+            #     otherwise fall back to the auto-derived role/self_edit.
+            effective_role = (
+                layout_overrides["role"]
+                if explicit_role_override
+                else role
+            )
+            effective_self_edit = effective_role == "claude-org-self-edit"
+            if pat == "A" and effective_self_edit:
+                raise ResolveError(
+                    "layout_overrides['pattern']='A' is incompatible with "
+                    "role='claude-org-self-edit' (would dispatch into "
+                    "{workers_dir}/claude-org-ja/, breaking the live-repo "
+                    "single-.git invariant from Issue #289). Choose pattern=B "
+                    "or override the role away from claude-org-self-edit."
+                )
+            if pat == "B":
+                # Skip the base check when the caller is supplying their own
+                # worker_dir or pattern_variant — those branches re-derive
+                # the base further below (e.g. claude_org_repo_worktree).
+                explicit_variant_now = (
+                    layout_overrides.get("pattern_variant") is not None
+                )
+                if not (explicit_worker_dir or explicit_variant_now):
+                    # The synthesized self-edit project record only exists
+                    # in this resolve(); gen_delegate_payload re-reads the
+                    # registry and finds nothing there for the slug. So if
+                    # the role override is also flipping us out of
+                    # self-edit, that synthesized record cannot back the
+                    # plain Pattern B layout — drop it from the base check
+                    # so we surface the contract error here rather than
+                    # letting apply blow up later (Codex Round 1 Major).
+                    project_for_base = project
+                    if (
+                        project_synthesized_for_self_edit
+                        and not effective_self_edit
+                    ):
+                        project_for_base = None
+                    has_base = (
+                        effective_self_edit
+                        or claude_org_clone is not None
+                        or (
+                            project_for_base is not None
+                            and is_local_git_repo(project_for_base.path)
+                        )
+                    )
+                    if not has_base:
+                        raise ResolveError(
+                            "layout_overrides['pattern']='B' requires a "
+                            "resolvable worktree base, but none could be "
+                            f"determined for project={project_slug!r}. "
+                            "Pattern B needs one of: a registered project "
+                            "row whose path is a local git repo, the "
+                            "claude-org mirror clone, or role="
+                            "'claude-org-self-edit' (live repo base). "
+                            "Either register the project's local clone, set "
+                            "role accordingly, or fall back to pattern=C."
+                        )
             pattern = pat
             # Pattern explicitly set; reset variant unless TOML also supplied one.
             variant = layout_overrides.get("pattern_variant")
@@ -586,6 +697,54 @@ def resolve(
                 raise ResolveError(
                     f"layout_overrides['pattern_variant'] must be one of {VALID_VARIANTS} or None, got {variant!r}"
                 )
+            # Codex Round 3 Blocker: pattern_variant carries strong implications
+            # for *which repo* the worker dispatches into. Without these gates
+            # a caller could request
+            # ``pattern=B, pattern_variant=live_repo_worktree, role=default``
+            # on slug=clock-app and have the worker land inside Secretary's
+            # live claude-org repo — an entirely different project than the
+            # task targets. Tie each variant to the role/slug context that
+            # makes it meaningful so the override cannot redirect dispatch
+            # at the wrong repo.
+            if variant == "live_repo_worktree" and not effective_self_edit:
+                raise ResolveError(
+                    "layout_overrides['pattern_variant']='live_repo_worktree' "
+                    "is reserved for claude-org-self-edit dispatches (the "
+                    "variant pins worker_dir + base_repo at Secretary's live "
+                    f"claude-org repo). Got effective role={effective_role!r} "
+                    f"for slug={project_slug!r}; pattern B without self-edit "
+                    "should leave pattern_variant unset and let the resolver "
+                    "anchor on the registered project's clone instead."
+                )
+            if variant == "claude_org_repo_worktree" and (
+                project_slug != _CLAUDE_ORG_CLONE_DIRNAME
+                or claude_org_clone is None
+            ):
+                raise ResolveError(
+                    "layout_overrides['pattern_variant']='claude_org_repo_worktree' "
+                    f"requires project_slug={_CLAUDE_ORG_CLONE_DIRNAME!r} (or "
+                    "its registered alias) AND a detected claude-org mirror "
+                    f"clone at {workers_dir}/{_CLAUDE_ORG_CLONE_DIRNAME}. Got "
+                    f"slug={project_slug!r}, clone_present="
+                    f"{claude_org_clone is not None}; the variant cannot "
+                    "redirect dispatch at the wrong repo."
+                )
+            # Issue #374 (Codex Round 2 Blocker): the claude-org mirror
+            # case used to lose its variant on a plain ``--pattern B``
+            # override — auto-derive set ``claude_org_repo_worktree`` but
+            # the override above resets variant to None when the caller
+            # didn't supply ``pattern_variant``. Without this re-default
+            # the worker_dir stays at the clone root (auto-derive's
+            # Pattern A path) and gen_delegate_payload's variant-specific
+            # base_repo derivation never fires. Re-default the variant
+            # so the existing ``claude_org_repo_worktree`` re-derivation
+            # below picks up worker_dir correctly.
+            if (
+                pattern == "B"
+                and variant is None
+                and claude_org_clone is not None
+            ):
+                variant = "claude_org_repo_worktree"
             # Pattern B + variant=live_repo_worktree without explicit worker_dir
             # → re-derive to claude_org_root/.worktrees/{task_id}/ (Issue #289).
             if pattern == "B" and variant == "live_repo_worktree" and not explicit_worker_dir:
@@ -610,6 +769,50 @@ def resolve(
                         "explicitly or clone the mirror at that path."
                     )
                 worker_dir = (clone_for_override / ".worktrees" / task_id).resolve()
+            # Issue #374: a plain ``--pattern B`` (no variant, no explicit
+            # worker_dir) flips A → B for a registered project. The
+            # auto-derived worker_dir is still the Pattern A path
+            # (``workers_dir/<slug>/``); without re-deriving it here the
+            # override would leave the brief at the clone root and apply
+            # would refuse to treat it as a worktree. Skipped when
+            # claude_org_clone has already pinned the clone-root path —
+            # the post-override fallback below re-derives for that case.
+            if (
+                pattern == "B"
+                and variant is None
+                and not explicit_worker_dir
+                and claude_org_clone is None
+            ):
+                worker_dir = (
+                    workers_dir / project_slug / ".worktrees" / task_id
+                ).resolve()
+            # Same idea for ``--pattern A``: when the override drops
+            # B → A, pin worker_dir back at the clone root rather than
+            # leaving it in a stale ``.worktrees/<task_id>/`` path that
+            # auto-derive built for Pattern B. Codex Round 2 Major: the
+            # claude-org mirror branch must re-derive too — without this
+            # ``--pattern A`` on slug=claude-org leaves worker_dir at the
+            # auto-derived ``.worktrees/<task_id>/`` even though the
+            # final pattern is A, an incoherent layout.
+            if pattern == "A" and not explicit_worker_dir:
+                if claude_org_clone is not None:
+                    worker_dir = claude_org_clone.resolve()
+                else:
+                    worker_dir = (workers_dir / project_slug).resolve()
+            # ``--pattern C`` override: ephemeral default. Without this
+            # branch the override would dispatch into the *registered*
+            # project's directory (auto-derive's Pattern A worker_dir),
+            # silently re-using a clone instead of an ephemeral workspace.
+            # Default variant is ``ephemeral`` (gitignored_repo_root needs
+            # an explicit variant + targets at minimum and is left to the
+            # auto-derive path).
+            if (
+                pattern == "C"
+                and variant is None
+                and not explicit_worker_dir
+            ):
+                variant = "ephemeral"
+                worker_dir = (workers_dir / task_id).resolve()
         if "worker_dir" in layout_overrides and layout_overrides["worker_dir"]:
             worker_dir = Path(layout_overrides["worker_dir"]).resolve()
         if "role" in layout_overrides and layout_overrides["role"]:

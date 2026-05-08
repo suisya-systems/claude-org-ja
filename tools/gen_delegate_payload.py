@@ -749,6 +749,21 @@ def _add_task_args(p: argparse.ArgumentParser) -> None:
         default=None,
         help="Load task arguments from a worker_brief-style TOML instead of CLI flags.",
     )
+    # Issue #374: Secretary-side pattern override. The resolver enforces a
+    # strict contract (B requires a usable base, A forbidden on self-edit,
+    # C always permitted); see ``ResolveError`` raised from
+    # ``resolve_worker_layout.resolve``. Default None means "let the
+    # resolver auto-derive" — preserves the pre-#374 behaviour.
+    p.add_argument(
+        "--pattern",
+        choices=("A", "B", "C"),
+        default=None,
+        help=(
+            "Force a specific dispatch pattern (A/B/C). Validated by the "
+            "resolver: B requires a worktree base; A forbidden on "
+            "claude-org-self-edit; C always permitted."
+        ),
+    )
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -899,6 +914,27 @@ def _gather_plan_kwargs(args: argparse.Namespace) -> dict[str, Any]:
     base: dict[str, Any] = {}
     if args.from_toml is not None:
         base.update(_load_task_args_from_toml(args.from_toml))
+    # Issue #374: ``--pattern`` is a layout override, not a task field, so
+    # merge it into ``layout_overrides`` rather than into the top-level
+    # kwargs. CLI wins over a TOML [worker].pattern of the same key, matching
+    # the rest of the merge order documented above. ``None`` means "no CLI
+    # override", which preserves any TOML value already merged into base.
+    #
+    # When the CLI flag is supplied, also drop the TOML's [worker].dir and
+    # [worker].pattern_variant from the override dict — otherwise the
+    # resolver treats them as explicit values and skips its pattern-driven
+    # re-derivation, leaving worker_dir / variant on the previous pattern's
+    # convention. Codex Round 2 Major: ``--pattern C`` on a TOML that
+    # carries [worker].dir = workers/<slug>/ used to keep worker_dir at
+    # the registered clone, producing a contradictory C layout.
+    pattern_override = getattr(args, "pattern", None)
+    if pattern_override is not None:
+        existing_overrides = base.get("layout_overrides") or {}
+        merged = dict(existing_overrides)
+        merged["pattern"] = pattern_override
+        merged.pop("worker_dir", None)
+        merged.pop("pattern_variant", None)
+        base["layout_overrides"] = merged
     # CLI overrides — only when caller actually provided a value.
     cli_overrides: dict[str, Any] = {
         "task_id": args.task_id,
