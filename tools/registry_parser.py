@@ -27,8 +27,12 @@ from typing import Iterator, Optional, Union
 
 logger = logging.getLogger(__name__)
 
-# The projects table is a fixed-width 5-column shape.
-COLUMN_COUNT = 5
+# The projects table grew from 5 columns (legacy) to 6 columns (Issue #374
+# `mirror_of`). We still parse 4-column hand-edited tables ('legacy' resolver
+# leniency) and ignore extra trailing columns rather than rejecting the whole
+# row, so a future addition doesn't silently drop registered projects.
+COLUMN_COUNT = 6
+LEGACY_COLUMN_COUNT = 5
 
 # Header rows (above the |---| separator) sometimes literally contain these
 # words in the second column. Catch them when the separator is missing or
@@ -46,7 +50,15 @@ class Project:
     name: str           # プロジェクト名 (slug)
     path: str           # URL, local path, or '-'
     description: str
-    common_tasks: str   # 「よくある作業例」 raw column value (may be empty)
+    common_tasks: str = ""   # 「よくある作業例」 raw column value (may be empty)
+    # Issue #374: when non-empty, this row is a mirror of <slug>. Resolver
+    # uses the presence of this signal — not just an active concurrent run —
+    # to choose Pattern B from the first dispatch (per-task back-port style
+    # workflow, distinct from accumulating self-edit work). 5-column legacy
+    # tables (and fork registries that haven't adopted the column yet) leave
+    # this empty and the resolver falls through to the conventional A/B/C
+    # decision tree.
+    mirror_of: str = ""
 
 
 # Per-line classification. ``kind`` values:
@@ -94,9 +106,12 @@ def iter_rows(text: str) -> Iterator[ParsedRow]:
             yield ParsedRow(line_no, raw_line, "header")
             continue
         # Schema check: at least 4 cells (通称/slug/パス/説明) and the slug
-        # column populated. The 5th 「よくある作業例」 column is optional —
-        # the legacy resolver accepted 4-column tables so dropping them here
-        # would silently break manually-edited registries (Codex review M).
+        # column populated. The 5th 「よくある作業例」 and 6th `mirror_of`
+        # columns are optional — the legacy resolver accepted 4-column
+        # tables, the pre-Issue-#374 registry was 5-column, and a fork that
+        # hasn't adopted the new column yet must keep parsing. Extra
+        # trailing cells are ignored rather than treated as schema breakage
+        # so the next column addition doesn't silently drop every row.
         if len(cells) < 4 or not cells[1]:
             yield ParsedRow(line_no, raw_line, "mismatch")
             continue
@@ -105,7 +120,8 @@ def iter_rows(text: str) -> Iterator[ParsedRow]:
             name=cells[1],
             path=cells[2],
             description=cells[3],
-            common_tasks=cells[4] if len(cells) >= COLUMN_COUNT else "",
+            common_tasks=cells[4] if len(cells) >= LEGACY_COLUMN_COUNT else "",
+            mirror_of=cells[5] if len(cells) >= COLUMN_COUNT else "",
         )
         yield ParsedRow(line_no, raw_line, "data", project)
 

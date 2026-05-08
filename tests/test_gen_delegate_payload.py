@@ -1275,5 +1275,94 @@ def _env_update_goldens() -> bool:
     return os.environ.get("UPDATE_GOLDENS") == "1"
 
 
+# ---------------------------------------------------------------------------
+# Issue #374: ``--pattern {A|B|C}`` override propagates into brief / send_plan
+# ---------------------------------------------------------------------------
+
+
+class TestPatternOverrideCLI(unittest.TestCase):
+    """Issue #374: Secretary may force a specific pattern via ``--pattern``.
+    The override must reach (a) the resolved layout, (b) the DELEGATE body
+    rendering, and (c) the ``summary`` block in send_plan.json. Invalid
+    combinations must surface as preview-time errors rather than after a DB
+    reservation.
+    """
+
+    def setUp(self) -> None:
+        self._td = tempfile.TemporaryDirectory()
+        self.sb = _Sandbox(Path(self._td.name))
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def _common_args(self, *, slug: str = "clock-app") -> list[str]:
+        return [
+            "--task-id", "override-task",
+            "--project-slug", slug,
+            "--description", "force the pattern",
+            "--claude-org-root", str(self.sb.claude_org_root),
+            "--state-db-path", str(self.sb.db_path),
+        ]
+
+    def _run_preview_json(self, argv: list[str]) -> dict:
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        buf = StringIO()
+        with redirect_stdout(buf):
+            rc = gdp.main(["preview", *argv, "--json"])
+        self.assertEqual(rc, 0)
+        return json.loads(buf.getvalue())
+
+    def test_force_pattern_c_overrides_auto_a(self):
+        """Without override, clock-app + no active run = Pattern A. With
+        ``--pattern C`` the layout flips to ephemeral and planned_branch
+        becomes None (Pattern C has no branch by contract)."""
+        data = self._run_preview_json([*self._common_args(), "--pattern", "C"])
+        s = data["summary"]
+        self.assertEqual(s["pattern"], "C")
+        self.assertIsNone(s["planned_branch"])
+        # The DELEGATE body label reflects the override.
+        self.assertIn("ディレクトリパターン: C", data["delegate_body"])
+
+    def test_apply_writes_override_into_send_plan_summary(self):
+        """End-to-end: apply with ``--pattern C`` produces a send_plan.json
+        whose summary carries the overridden pattern (= what dispatcher
+        will see when it copies the manifest into renga-peers)."""
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        buf = StringIO()
+        with redirect_stdout(buf):
+            rc = gdp.main([
+                "apply", *self._common_args(),
+                "--pattern", "C",
+                "--skip-settings",
+            ])
+        self.assertEqual(rc, 0)
+        # send_plan.json lives alongside the brief (Pattern C ephemeral
+        # writes to workers_dir/<task_id>/CLAUDE.md).
+        worker_dir = self.sb.workers / "override-task"
+        send_plan_path = worker_dir / "send_plan.json"
+        self.assertTrue(send_plan_path.exists())
+        send_plan = json.loads(send_plan_path.read_text(encoding="utf-8"))
+        self.assertEqual(send_plan["summary"]["pattern"], "C")
+
+    def test_force_pattern_a_on_self_edit_slug_errors_in_preview(self):
+        """Resolver rejects pattern=A on a self-edit slug — the error must
+        propagate out of ``preview`` rather than letting the bad layout
+        slip through."""
+        # ResolveError is raised inside build_delegate_plan, which runs
+        # under preview without reaching apply.
+        from tools.resolve_worker_layout import ResolveError as _RE
+
+        with self.assertRaises(_RE):
+            gdp.main([
+                "preview",
+                *self._common_args(slug="claude-org-ja"),
+                "--pattern", "A",
+            ])
+
+
 if __name__ == "__main__":
     unittest.main()

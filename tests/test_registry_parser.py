@@ -158,6 +158,53 @@ class TestParseProjects(unittest.TestCase):
         self.assertIn("blog-site", names)
 
 
+class TestMirrorOfColumn(unittest.TestCase):
+    """Issue #374: optional 6th column ``mirror_of`` carries a project slug
+    reference for back-port style mirrors. Backwards compatibility must
+    hold for fork registries that haven't adopted the column yet."""
+
+    def test_six_column_table_populates_mirror_of(self):
+        text = (
+            "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 | mirror_of |\n"
+            "|---|---|---|---|---|---|\n"
+            "| EN ミラー | my-mirror | "
+            "https://github.com/example/mirror | mirror | - | upstream-slug |\n"
+        )
+        projects = parse_projects_text(text)
+        self.assertEqual(len(projects), 1)
+        self.assertEqual(projects[0].name, "my-mirror")
+        self.assertEqual(projects[0].mirror_of, "upstream-slug")
+
+    def test_legacy_five_column_table_leaves_mirror_of_empty(self):
+        text = _build("| n | slug | / | d | t |")
+        projects = parse_projects_text(text)
+        self.assertEqual(len(projects), 1)
+        self.assertEqual(projects[0].mirror_of, "")
+
+    def test_extra_trailing_columns_are_ignored_not_rejected(self):
+        # Future column additions or fork-side experiments must not silently
+        # drop every row. iter_rows accepts trailing cells beyond the schema.
+        text = (
+            "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 | mirror_of | future_col |\n"
+            "|---|---|---|---|---|---|---|\n"
+            "| n | slug | / | d | t | upstream | extra-value |\n"
+        )
+        projects = parse_projects_text(text)
+        self.assertEqual(len(projects), 1)
+        self.assertEqual(projects[0].name, "slug")
+        # The mirror_of column is still populated from cell index 5.
+        self.assertEqual(projects[0].mirror_of, "upstream")
+
+    def test_six_column_empty_mirror_of_cell_normalizes_to_empty(self):
+        text = (
+            "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 | mirror_of |\n"
+            "|---|---|---|---|---|---|\n"
+            "| n | slug | / | d | t |  |\n"
+        )
+        projects = parse_projects_text(text)
+        self.assertEqual(projects[0].mirror_of, "")
+
+
 class TestIterRows(unittest.TestCase):
 
     def test_classifies_lines(self):

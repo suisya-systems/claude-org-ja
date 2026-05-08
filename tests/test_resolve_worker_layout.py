@@ -1048,5 +1048,264 @@ class TestPatternBClaudeOrgRepoWorktree(unittest.TestCase):
         )
 
 
+# ---------------------------------------------------------------------------
+# Issue #374: self-edit first-run short-circuit + mirror_of + --pattern override
+# ---------------------------------------------------------------------------
+
+
+class TestSelfEditFirstRunShortCircuit(unittest.TestCase):
+    """Issue #374: ``role=claude-org-self-edit`` is a *repo policy* (single
+    ``.git``, no two-clone sync), not a concurrency policy. Even on the
+    very first dispatch (no active runs) the layout must be Pattern B +
+    ``live_repo_worktree`` — not the legacy Pattern A that landed the
+    brief in the live repo root.
+    """
+
+    def setUp(self) -> None:
+        self._td = tempfile.TemporaryDirectory()
+        self.sb = _Sandbox(Path(self._td.name), with_claude_org_origin=True)
+        # No registry row for claude-org-ja (matches the production layout
+        # — origin URL detection replaces the row).
+        self.sb.write_registry([("時計", "clock-app", "-", "Demo clock")])
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def test_first_run_self_edit_picks_pattern_b_live_repo_worktree(self):
+        """No active run exists. Before #374 this returned Pattern A and
+        wrote into ``workers_dir/claude-org-ja/`` (a separate clone),
+        breaking the single-.git invariant from Issue #289."""
+        layout = rwl.resolve(
+            task_id="self-edit-first",
+            project_slug="claude-org-ja",
+            mode="edit",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(layout.role, "claude-org-self-edit")
+        self.assertTrue(layout.self_edit)
+        self.assertEqual(layout.pattern, "B")
+        self.assertEqual(layout.pattern_variant, "live_repo_worktree")
+        self.assertEqual(
+            Path(layout.worker_dir),
+            (self.sb.claude_org_root / ".worktrees" / "self-edit-first").resolve(),
+        )
+
+    def test_first_run_audit_mode_keeps_pattern_a(self):
+        """``mode='audit'`` is doc-audit, not self-edit, so the
+        short-circuit must not fire — audit clones go under
+        ``workers_dir/claude-org-ja/`` and behave like Pattern A."""
+        layout = rwl.resolve(
+            task_id="audit-first",
+            project_slug="claude-org-ja",
+            mode="audit",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(layout.role, "doc-audit")
+        self.assertEqual(layout.pattern, "A")
+
+
+class TestMirrorOfRegistryMetadata(unittest.TestCase):
+    """Issue #374: a registered project with non-empty ``mirror_of`` is a
+    back-port style mirror — each task is independent rather than
+    accumulating on a shared branch — so worktree-per-task (Pattern B) is
+    the natural default even on the very first dispatch."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        try:
+            subprocess.run(["git", "--version"], capture_output=True, check=True)
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            raise unittest.SkipTest("git not available")
+
+    def setUp(self) -> None:
+        self._td = tempfile.TemporaryDirectory()
+        self.sb = _Sandbox(Path(self._td.name))
+        # A real local clone for the mirror, so Pattern B has a usable base.
+        self.mirror_repo = Path(self._td.name) / "mirror-repo"
+        self.mirror_repo.mkdir()
+        subprocess.run(
+            ["git", "-C", str(self.mirror_repo), "init", "-q"], check=True
+        )
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def _write_registry_with_mirror(self, mirror_of: str = "upstream-slug") -> None:
+        # Hand-write the table so we can include the new 6th column without
+        # adding a Sandbox helper for every column variant.
+        path = self.sb.claude_org_root / "registry" / "projects.md"
+        path.write_text(
+            "# Projects Registry\n\n"
+            "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 | mirror_of |\n"
+            "|---|---|---|---|---|---|\n"
+            f"| 時計 | clock-app | - | Demo clock | - |  |\n"
+            f"| ミラー | my-mirror | {self.mirror_repo} | mirror | - | {mirror_of} |\n",
+            encoding="utf-8",
+        )
+
+    def test_first_run_mirror_picks_pattern_b_with_clone_base(self):
+        """No active run, mirror_of populated → Pattern B with worker_dir
+        under the mirror project's worktrees subtree. The base for
+        ``git worktree add`` is the registered local clone (gen_delegate_payload
+        derives base_repo from project.path)."""
+        self._write_registry_with_mirror()
+        layout = rwl.resolve(
+            task_id="mirror-task-1",
+            project_slug="my-mirror",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(layout.pattern, "B")
+        # Generic mirror — no special variant; base is the registered
+        # project path, not the live claude-org repo.
+        self.assertIsNone(layout.pattern_variant)
+        self.assertEqual(
+            Path(layout.worker_dir),
+            (self.sb.workers / "my-mirror" / ".worktrees" / "mirror-task-1").resolve(),
+        )
+        self.assertEqual(layout.planned_branch, "feat/mirror-task-1")
+
+    def test_empty_mirror_of_keeps_legacy_pattern_a(self):
+        """A project whose 6th column is empty must keep the legacy A/B/C
+        decision tree — the mirror short-circuit triggers only on
+        non-empty values, otherwise the column rollout would silently
+        change the pattern of every existing project."""
+        self._write_registry_with_mirror(mirror_of="")
+        layout = rwl.resolve(
+            task_id="ordinary-task",
+            project_slug="my-mirror",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(layout.pattern, "A")
+
+
+class TestPatternOverrideContract(unittest.TestCase):
+    """Issue #374: ``layout_overrides['pattern']`` is a Secretary judgment
+    override. The contract is enforced at resolve() time so invalid combos
+    surface in preview rather than after a DB reservation:
+      - C is always allowed
+      - B requires a worktree base (registered local clone, claude-org
+        mirror clone, or self-edit)
+      - A is forbidden when the role is claude-org-self-edit (would dispatch
+        into a separate clone, breaking Issue #289 single-.git invariant)
+    """
+
+    def setUp(self) -> None:
+        self._td = tempfile.TemporaryDirectory()
+        self.sb = _Sandbox(Path(self._td.name), with_claude_org_origin=True)
+        self.sb.write_registry([("時計", "clock-app", "-", "Demo clock")])
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def test_force_pattern_c_always_allowed(self):
+        layout = rwl.resolve(
+            task_id="force-c",
+            project_slug="clock-app",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+            layout_overrides={"pattern": "C"},
+        )
+        self.assertEqual(layout.pattern, "C")
+        self.assertIsNone(layout.planned_branch)
+
+    def test_force_pattern_a_on_self_edit_is_rejected(self):
+        """Pattern A on a self-edit slug would dispatch into
+        ``workers_dir/claude-org-ja/``, voiding the live-repo single-.git
+        invariant."""
+        with self.assertRaises(rwl.ResolveError) as cm:
+            rwl.resolve(
+                task_id="bad-a",
+                project_slug="claude-org-ja",
+                mode="edit",
+                claude_org_root=self.sb.claude_org_root,
+                state_db_path=self.sb.db_path,
+                layout_overrides={"pattern": "A"},
+            )
+        self.assertIn("claude-org-self-edit", str(cm.exception))
+
+    def test_force_pattern_a_on_self_edit_role_override_is_rejected(self):
+        """When the override also flips role to self-edit (e.g.
+        ``--pattern A`` plus ``[worker].role = 'claude-org-self-edit'``),
+        the contract still rejects — we consult the *post-override* role
+        so the bad combo can't slip in via the role channel."""
+        with self.assertRaises(rwl.ResolveError):
+            rwl.resolve(
+                task_id="bad-a-via-role",
+                project_slug="clock-app",
+                mode="edit",
+                claude_org_root=self.sb.claude_org_root,
+                state_db_path=self.sb.db_path,
+                layout_overrides={
+                    "pattern": "A",
+                    "role": "claude-org-self-edit",
+                    "self_edit": True,
+                },
+            )
+
+    def test_force_pattern_b_without_local_clone_is_rejected(self):
+        """Slug whose registry path is ``-`` (no clone) and not a self-edit
+        target / mirror clone → Pattern B has no base, must error."""
+        with self.assertRaises(rwl.ResolveError) as cm:
+            rwl.resolve(
+                task_id="bad-b",
+                project_slug="clock-app",
+                claude_org_root=self.sb.claude_org_root,
+                state_db_path=self.sb.db_path,
+                layout_overrides={"pattern": "B"},
+            )
+        self.assertIn("Pattern B", str(cm.exception))
+
+    def test_force_pattern_b_on_self_edit_succeeds(self):
+        """Self-edit always has a base (the live repo), so ``--pattern B``
+        is permitted and re-derives variant + worker_dir like the
+        auto-resolved case."""
+        layout = rwl.resolve(
+            task_id="ok-b-self",
+            project_slug="claude-org-ja",
+            mode="edit",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+            layout_overrides={"pattern": "B"},
+        )
+        self.assertEqual(layout.pattern, "B")
+        # Coherence pass kicks in because role auto-resolves to self-edit
+        # and worker_dir wasn't supplied.
+        self.assertEqual(layout.pattern_variant, "live_repo_worktree")
+        self.assertEqual(
+            Path(layout.worker_dir),
+            (self.sb.claude_org_root / ".worktrees" / "ok-b-self").resolve(),
+        )
+
+    def test_force_pattern_b_with_local_repo_path_succeeds(self):
+        """Registered project with a local git repo path → ``--pattern B``
+        is allowed and the conventional ``workers_dir/<slug>/.worktrees/``
+        location is used."""
+        local_repo = Path(self._td.name) / "local-repo"
+        local_repo.mkdir()
+        subprocess.run(
+            ["git", "-C", str(local_repo), "init", "-q"], check=True
+        )
+        self.sb.write_registry(
+            [("ローカル", "local-app", str(local_repo), "Demo")]
+        )
+        layout = rwl.resolve(
+            task_id="ok-b-local",
+            project_slug="local-app",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+            layout_overrides={"pattern": "B"},
+        )
+        self.assertEqual(layout.pattern, "B")
+        self.assertIsNone(layout.pattern_variant)
+        self.assertEqual(
+            Path(layout.worker_dir),
+            (self.sb.workers / "local-app" / ".worktrees" / "ok-b-local").resolve(),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
