@@ -5,8 +5,7 @@
 [![Install](https://img.shields.io/badge/install-one--liner-brightgreen.svg)](#クイックスタート)
 
 > **claude-org-ja は日本語ファーストのリファレンス配布物です。**
-> 英語版: [suisya-systems/claude-org](https://github.com/suisya-systems/claude-org)（日英 2 系統構成。両リポジトリの同期ルールは [`docs/sync-policy.md`](docs/sync-policy.md) を参照）。
-> **ja → en 同期は現在 P2 フェーズ（mirror PR、手動マージ）で稼働中**。ja `main` への merge をトリガに en 側で `auto-mirror: ja#<N> ...` という mirror PR が起票されます（詳細: [`docs/sync-policy.md` §「現在のフェーズ: P2」](docs/sync-policy.md#現在のフェーズ-p2-mirror-pr-manual-merge)）。
+> 英語版: [suisya-systems/claude-org](https://github.com/suisya-systems/claude-org)（日英 2 系統構成。同期ルールは [`docs/sync-policy.md`](docs/sync-policy.md) を参照）。
 
 ---
 
@@ -21,7 +20,6 @@
 | **キュレーター（Curator）** | `knowledge/raw/` に蓄積された生の学びを整理済み知見へ昇華する自動ループ役。30 分間隔で動作する。 | [`.curator/CLAUDE.md`](.curator/CLAUDE.md) |
 | **ワーカー（Worker）** | タスク 1 件ごとに起動される実作業担当。専用の作業ディレクトリ境界の中でコード編集・コミットまでを行う（`git push` / プルリクエスト作成は窓口側の責務、ワーカーは PR 作成権限を持たない）。 | [`.claude/skills/org-delegate/SKILL.md`](.claude/skills/org-delegate/SKILL.md) |
 | **renga** | Layer 3 の端末多重化器 + `renga-peers` MCP サーバー。ペイン制御とペイン間 P2P メッセージを提供する。 | [suisya-systems/renga](https://github.com/suisya-systems/renga) |
-| **ccmux** | `renga` の旧称。M3 マイグレーションで `renga` に改名済みで、過去ドキュメント・移行ツール内にのみ残存する。 | [`docs/operations/m3-migration-runbook.md`](docs/operations/m3-migration-runbook.md) |
 
 ---
 
@@ -72,24 +70,10 @@ flowchart TD
 
 Phase 5 完了時点で **Layer 1 / 2 / 3 はいずれも独立 OSS パッケージとして公開済み**、claude-org-ja (Layer 4) は consumer として Layer 1〜3 を取り込む thin shim です。各層の責務の詳細は [docs/overview-technical.md](docs/overview-technical.md) を参照。
 
-- **Layer 1: `core-harness`** — v0.3.x として独立 OSS リポ ([suisya-systems/core-harness](https://github.com/suisya-systems/core-harness)) で公開。validator / schema / journal / hooks library を提供し、Layer 2 と claude-org-ja の双方が consumer として利用 (Phase 3 / Issue [#128](https://github.com/suisya-systems/claude-org-ja/issues/128) closed)。
-- **Layer 2: `claude-org-runtime`** — v0.1.x として PyPI 公開。dispatcher CLI、`settings.local.json` 生成、bundle 済み role schema を提供。claude-org-ja は派遣プラン生成と worker 用設定生成を本パッケージに委譲 (Phase 4 / Issue [#129](https://github.com/suisya-systems/claude-org-ja/issues/129) closed)。
+- **Layer 1: `core-harness`** — v0.3.x として独立 OSS リポ ([suisya-systems/core-harness](https://github.com/suisya-systems/core-harness)) で公開。validator / schema / journal / hooks library を提供し、Layer 2 と claude-org-ja の双方が consumer として利用。
+- **Layer 2: `claude-org-runtime`** — v0.1.x として PyPI 公開。dispatcher CLI、`settings.local.json` 生成、bundle 済み role schema を提供。claude-org-ja は派遣プラン生成と worker 用設定生成を本パッケージに委譲。
 - **Layer 3: `renga`** — Rust 製 TUI + MCP サーバー。Set D backend interface contract に準拠。`renga` 自体は単体配布済みで、AI 開発以外の用途でも汎用端末多重化器として利用可能。
 - **Layer 4: `claude-org-ja` (このリポジトリ)** — Layer 1〜3 を consumer として取り込む日本語ファースト配布物。英語版 [`claude-org`](https://github.com/suisya-systems/claude-org) もこの層の peer。
-
-> 補足: orchestration glue (skill 層) を `claude-org-skills` として別 OSS に切り出すかどうかは Layer 4 内部の追加抽出案件で、現在判断保留中（[`docs/internal/phase5-decisions-2026-05-03.md`](docs/internal/phase5-decisions-2026-05-03.md) Q1=b 参照）。本決定が proceed に倒れた場合でも上記 4 層構造は変わらず、claude-org-ja 内 `.claude/skills/` の一部が外部リポへ移管される形になります。
-
-### このリポジトリに残るもの (ja-specific)
-
-Phase 5 (Layer 1/2/3 抽出後) の時点で claude-org-ja に残る ja-specific 構成要素は以下の通り（Lead 確認済み、[`docs/internal/phase5-decisions-2026-05-03.md`](docs/internal/phase5-decisions-2026-05-03.md) Q5/Q6/Q7）:
-
-- `.claude/skills/` 配下のスキル一式（`/org-*` 運用スキル + `/skill-*` メタスキル）— Layer 3 抽出 defer により全 12 skill が in-tree
-- 日本語 prose template: `.dispatcher/CLAUDE.md` / `.curator/CLAUDE.md`（Layer 2 英語 reference の consumer-side override）
-- ja locale フック群（`.hooks/` / `.githooks/` 配下、deny-message を日本語化したもの）
-- `dashboard/` — 組織状態の可視化 SPA（Phase 4 Q9=c で claude-org-ja 残置確定）
-- ja 固有の運用ツール: `tools/check_renga_compat.py` / `tools/gen_worker_brief.py` / `tools/org_setup_prune.py` / `tools/journal_*` / `tools/pending_decisions.py` / `tools/pr_watch.py` / `tools/pr-watch.{ps1,sh}` / `tools/state_migrate.py` / `tools/state_db/`（state DB writer / importer / drift_check / curator_archive、Issue [#267](https://github.com/suisya-systems/claude-org-ja/issues/267) live-migration 後 `.state/state.db` が組織状態の唯一の SoT。`.state/org-state.md` は `StateWriter.transaction()` の commit 後処理で自動再生成される派生物、`.state/journal.jsonl` は M4 で廃止）
-- ja 固有のスキーマ・ロケールデータ: `tools/ja_locale.json` / `tools/org_extension_schema.json`
-- インストールスクリプト: `scripts/install.sh` / `scripts/install.ps1` / `scripts/install-hooks.sh`
 
 ---
 
@@ -208,10 +192,7 @@ renga --layout ops
               +-> ワーカー群（実作業、完了後に自動消滅）
 ```
 
-- **窓口（Secretary）**: 人間との唯一の接点。タスク分解・委譲判断・結果報告を担う。窓口の運用責務は Issue [#320](https://github.com/suisya-systems/claude-org-ja/issues/320) のキャリーアウトで以下 3 スキルに分割されています（役割そのものは 1 つで、内部のスキル分割）:
-  - [`/org-delegate`](.claude/skills/org-delegate/SKILL.md) — 作業の委譲（ワーカーへの指示組み立てとディスパッチャー経由の派遣）
-  - [`/org-escalation`](.claude/skills/org-escalation/SKILL.md) — ワーカーからの判断仰ぎを人間にエスカレーションし、`.state/pending_decisions.json` を更新する正準フロー
-  - [`/org-pull-request`](.claude/skills/org-pull-request/SKILL.md) — ユーザー承認後の `git push` / PR 作成 / CI 監視 / レビュー指摘ループ / マージ後クローズ
+- **窓口（Secretary）**: 人間との唯一の接点。タスク分解・委譲判断・結果報告を担う。運用責務は内部で 3 スキル（[`/org-delegate`](.claude/skills/org-delegate/SKILL.md) / [`/org-escalation`](.claude/skills/org-escalation/SKILL.md) / [`/org-pull-request`](.claude/skills/org-pull-request/SKILL.md)）に分割されている
 - **ディスパッチャー（Dispatcher）**: ペイン起動・指示送信を代行し、窓口がブロックされる時間を最小化する
 - **キュレーター（Curator）**: 蓄積された生の知見を整理済みの知見に昇華し、スキルやプロセスの改善を提案する
 - **ワーカー（Worker）**: 実作業を担当する。タスクごとの作業ディレクトリ境界の中で自律的にコミットまでを行い（プルリクエスト作成は窓口側）、完了後に生の知見を記録する
