@@ -173,15 +173,19 @@
          "last_cursor_col": 0,
          "last_cursor_visible": false,
          "idle_streak_cycles": 2,
-         "last_check_ts": "2026-05-05T05:48:56Z"
+         "last_check_ts": "2026-05-05T05:48:56Z",
+         "last_content_change_ts": "2026-05-05T05:42:30Z"
        }
      }
      ```
-   - 更新規則 (Step 4 の inspect 直後に評価):
-     1. `(target_line_text, cursor_row, cursor_col, cursor_visible)` が前回値と完全一致 → `idle_streak_cycles += 1`
-     2. いずれかが変化 → `idle_streak_cycles = 0` で reset (画面に動きあり = アクティブ)
-     3. APPROVAL_BLOCKED / ERROR のどちらかが (e) の通知に進んだ場合も reset (anomaly が独立して扱われたので stall 評価を巻き戻す)
+   - 更新規則 (Step 4 の inspect 直後に評価。`last_check_ts` は本サイクルの inspect_pane 呼び出し時刻 = `now` に常に更新される。`last_content_change_ts` の更新は idle→active 遷移時のみで、値は **前サイクルの `last_check_ts`** を採用する — Codex round 3 Major 対応。同サイクル内で `check_messages` (Step 2) が `inspect_pane` (Step 4) より先に実行されるため、現サイクルの inspect 時刻を `last_content_change_ts` に入れると同サイクルで届いた正当な worker→secretary peer-msg の `occurred_at` が cutoff に弾かれて (c)(ii) で空集合になり Step 5.2 が誤発火する。前サイクルの `last_check_ts` を起点にすれば「最後に画面が idle と確認できた時点」が cutoff になり、同サイクル中に届いた peer-msg は確実にその cutoff 以降になるので acked として正しく拾える):
+     1. `(target_line_text, cursor_row, cursor_col, cursor_visible)` が前回値と完全一致 → `idle_streak_cycles += 1` (`last_content_change_ts` は据え置き)
+     2. いずれかが変化 (= 画面に動きあり = アクティブ):
+        - **idle→active 遷移時** (前サイクルの `idle_streak_cycles >= 1` から本サイクルで変化を観測) → `idle_streak_cycles = 0` で reset、`last_content_change_ts = (前サイクルの) last_check_ts` に更新 (= 直前まで idle と確認できていた時刻、本サイクルで届く peer-msg より必ず古い)。Step 5.2 (PANE_OUTPUT_WITHOUT_PEER_MSG) がこの ts を起点に worker→secretary 痕跡を scan して fire / acked 判定する
+        - **active 継続時** (前サイクルの `idle_streak_cycles == 0` から本サイクルでも変化を観測、出力が連続している間) → `idle_streak_cycles = 0` のまま、`last_content_change_ts` は **据え置き** (active 期間の START 時刻を保持し、active 期間中に届く peer-msg を全部 acked 経路に乗せる)
+     3. APPROVAL_BLOCKED / ERROR のどちらかが (e) の通知に進んだ場合も reset (anomaly が独立して扱われたので stall 評価を巻き戻す)、`last_content_change_ts = (前サイクルの) last_check_ts` に更新 (anomaly 通知後は再観測扱いで、(2) の遷移時規則と同じ起点を使う)
      4. `pane_exited` を Step 1 で受信、または `list_panes` で消失検知 → 該当 key をファイルから削除
+     5. 既存 record に `last_content_change_ts` フィールドが無い (本 PR 以前の永続化、または新規 worker の初回観測で前サイクル `last_check_ts` が無い) 場合は **`null` 扱い**。Step 5.2 (b)(1) の前提条件 (ts 存在) を満たさず fire しないので、初回観測直後の false positive を構造的に抑止する。次サイクル以降で前サイクル `last_check_ts` が確定した上での idle→active 遷移を待ってから初めて ts が値を持つ
    - 再起動時の挙動: ファイルが消失/読めない場合は全 worker `idle_streak_cycles = 0` から再観測する (誤検出より見逃しを優先、stall は数サイクル後に再評価される)
    - 本 PR では JSON ファイル経由の prose 契約に留め、helper script 化 (`tools/journal_append.sh` 相当) は将来課題
    
@@ -461,6 +465,134 @@
    - Step 5 で `timeout` 経路 (STALL_SUSPECTED 通知済み) に入った worker = worker 側痕跡が無いので relay gap の (b)(1) が成立せず candidate にならない (= 通常 stall として扱う、単純 stuck)
    - 両者は **disjoint な通知** になるため、windowed de-dup で merge する必要はない (kind が異なる)
    - Step 5 の `worker-idle-state.json` は relay gap 評価でも参照される (idle streak ≥ 3 サイクルが (b)(4) の条件)。新規 state file は (d) の secretary pane snapshot のみ追加で、Step 5 の state とは独立
+
+<a id="step-5-2"></a>
+5.2. **PANE_OUTPUT_WITHOUT_PEER_MSG 検出** — Step 5 / 5.1 の sibling、ワーカーがペイン上に応答出力したのに secretary 宛 `mcp__renga-peers__send_message` を発行し忘れた **silent dead-lock** を検知する独立チャネル:
+
+   **定数**: `PANE_OUTPUT_SETTLE_SEC = 60` (ペイン content が静止してから fire 候補とするまでの最小経過秒数、(g) で根拠説明)、`PANE_OUTPUT_IDLE_STREAK_MIN = 2` (= `idle_streak_cycles` の最低値。`/loop 3m` cadence で実効 ~6 分の完全静止を要求。(g) で根拠説明)。**look-back window は持たない** (worker→secretary 痕跡の比較は `last_content_change_ts` 起点で行い、(g) Codex round 1 Blocker 対応で 15 分窓は意図的に削除)。値変更時は本ファイルのこの行を直接書き換える。
+
+   #### (a) 動機
+   2026-05-09 の renga-ime-paste-routing タスクで実発生したインシデントパターン: worker は窓口の問い合わせに対しペイン上に長文回答を展開したが `mcp__renga-peers__send_message(to_id="secretary", ...)` を呼び忘れたため、secretary 側は `mcp__renga-peers__inspect_pane` で気づくまで待機し続けた。worker / secretary 間の peer message が SoT のため、これは **silent dead-lock** (どちらの pane も live、Step 4 / Step 5 / Step 5.1 のどの既存検知器にも該当しない) になる:
+
+   - **Step 4 (画面 anomaly: APPROVAL_BLOCKED / ERROR)**: 規定の承認プロンプト / エラー banner が出ていなければ match しない。自由記述の長文回答は anchored regex (b) に乗らない
+   - **Step 5 (STALL_SUSPECTED)**: idle_streak ≥ 3 サイクル (= ~9 分) が必要だが、worker がペインに出力を始めれば `idle_streak_cycles = 0` reset で stall 候補から外れる。output 自体が STALL を抑制してしまう
+   - **Step 5.1 (SECRETARY_RELAY_GAP_SUSPECTED)**: secretary 側 outbound 不在 (secretary→user / secretary→worker) を観測する逆方向の検知器。worker outbound 不発はカバー対象外
+
+   worker side outbound (= peer message 不発) を独立 channel で観測する必要がある。Issue #287 (Step 5) と Issue #292 (Step 5.1) で確立した `anomaly_observed` / `notify_sent` ledger スキーマと、Step 5 (b) の `worker-idle-state.json` の拡張のみで実装でき、新規 event / 新規 state file は不要。
+
+   #### (b) いつ pane_output_without_peer_msg を疑うか
+   ペイン content が一旦変化し、十分長い時間静止し、ペイン活動後に worker→secretary 痕跡が無い worker を **候補** とする。以下を **すべて** 満たすこと:
+
+   1. Step 5 (b) の `worker-idle-state.json` に `last_content_change_ts` (Step 5 (b) 更新規則 (2)/(3) で更新される ISO-8601 UTC ts) が **存在し** (= `null` でない)、かつ `now - last_content_change_ts >= PANE_OUTPUT_SETTLE_SEC` (= ペインが少なくとも 60 秒静止)
+   2. かつ `idle_streak_cycles >= PANE_OUTPUT_IDLE_STREAK_MIN` (= 直近 2 サイクル ≈ 6 分は内容変化なし、出力が完全に一段落している)。`/loop 3m` cadence で 6 分の完全静止を要求することで、worker が長時間コマンドを走らせて画面が連続的に shift しているケース (= idle_streak が 0 に reset され続ける) を構造的に除外し、Codex round 1 Major で指摘された「通常作業の途中出力」を nudge する誤検知を抑制する
+   3. かつ Step 4 (e) の APPROVAL_BLOCKED / ERROR がこのサイクルで通知経路に乗っていない (= 画面に承認プロンプトやエラー banner が無い)。あれば Step 4 が優先され、PANE_OUTPUT は同サイクルで evaluate しない (規定パターン anomaly と自由出力 anomaly を 1 つの worker に対して二重通知しない)
+   4. かつ worker の事前 peer-msg 履歴が **存在する** ((c)(i) の existence check)。worker が起動以来一度も worker→secretary 送信を発行していない record は本検知から除外する (Issue #312 の起動 ack を未発行な状態は別検知 (起動失敗 / instruction 未受領) のスコープで、PANE_OUTPUT の対象ではない。「peer-msg 慣行を確立済の worker が以後の活動で peer-msg を漏らした」という silent dead-lock の典型 signature に絞る)
+   5. かつ (c)(ii) のクエリ返却が **NULL** (= `last_content_change_ts` 以降に worker→secretary 痕跡が 0 件、ペイン活動後に peer-msg を発行していない)。`last_content_change_ts` を WHERE 句に直接埋め込んでいるため非 NULL 値は必然的に `>= last_content_change_ts` (= acked) を意味し、両者は構造上 disjoint。「(c)(ii) returns NULL」を fire 条件、「(c)(ii) returns 非 NULL」を acked 条件として (d) で分岐する
+
+   `idle_streak_cycles` が ≥ 3 になった時点で Step 5 STALL_SUSPECTED 候補にも該当しうるが、Step 5 の (c)→(d) で acked / timeout の独立判定が走るため、PANE_OUTPUT と STALL は disjoint な kind で並行通知される (de-dup は kind 単位、(f) 参照)。
+
+   #### (c) 補助シグナル取得 — worker→secretary 痕跡 (2 段問い合わせ)
+   Step 5 (c)(1) と同じ event 集合 ({`worker_escalation`, `worker_reported`, `worker_completed`, `plan_delivered`, `prep_delivered`}) を 2 つの観点で query する。**look-back window は使わない** (Codex round 1 Blocker 対応): 「`last_content_change_ts` 起点で peer-msg 痕跡を見る」のが正しい sematics で、固定 window だと PR 待ち / レビュー待ちなど正常 idle の worker で痕跡が window から外れて誤発火する。
+
+   M4 cutover (Issue #267、`docs/journal-events.md` 参照) で journal は `.state/state.db` の `events` テーブルが SoT になっているため、SQLite で直接 query する:
+
+   **(c)(i) existence check — worker は過去に peer-msg を発行したか** ((b)(4) の評価入力):
+
+   ```bash
+   # ディスパッチャー cwd は .dispatcher/。state.db は repo root の .state/ 下。
+   sqlite3 ../.state/state.db "
+     SELECT COUNT(*) FROM events
+     WHERE kind IN ('worker_escalation','worker_reported','worker_completed','plan_delivered','prep_delivered')
+       AND json_extract(payload_json, '\$.worker') = 'worker-{task_id}'
+   "
+   ```
+
+   返却が `0` なら起動 ack 含めて peer-msg 履歴なし → (b)(4) 不成立で fire 候補から除外。
+
+   **(c)(ii) 直近 peer-msg ts (`last_content_change_ts` 以降に絞り込む)** ((b)(5) の評価入力):
+
+   ```bash
+   sqlite3 ../.state/state.db "
+     SELECT MAX(occurred_at) FROM events
+     WHERE occurred_at >= '${last_content_change_ts}'
+       AND kind IN ('worker_escalation','worker_reported','worker_completed','plan_delivered','prep_delivered')
+       AND json_extract(payload_json, '\$.worker') = 'worker-{task_id}'
+   "
+   ```
+
+   - 返却 `MAX(occurred_at)` が空 (NULL) → ペイン活動後に worker→secretary 痕跡なし → (b)(5) 成立 → fire 候補
+   - 返却が `last_content_change_ts` 以降の ts → 既に peer-msg 発行済 → (b)(5) 不成立 → (d) acked 経路
+
+   `last_content_change_ts` を WHERE 句に直接埋め込むことで「`last_content_change_ts` 以降の event」だけを scan するので、PR レビュー待ち等で 15 分以上前の `worker_completed` だけしかない worker でも、その worker_completed の ts ≥ last_content_change_ts であれば NULL ではない値が返り fire しない (Codex round 1 Blocker)。
+
+   **task_id の SQL 文字列補間について** (Codex round 1 Minor): claude-org-ja の task_id は slug 規約 (`[a-z0-9-]+`、CLAUDE.local.md で task_id 値が決まる時点で人間 / runtime helper の制約で実質遵守、引用符 / SQL metachar は事実上含まれない) を満たすため、上記の string interpolation は安全。helper script 化 (sqlite3 `.parameter` 渡し or Python `tools/state_db/queries.py` 拡張) は将来課題で、現状は dispatcher Claude が SQLite one-liner を直接実行する。slug 以外の値が混入する経路 (例: 旧 worker_id 直書き) を将来導入する場合は、helper script 経由必須に切り替える。
+
+   #### (d) 分岐 (acked vs fire vs no-baseline)
+   - **acked** — (c)(ii) が `last_content_change_ts` 以降の ts を返す (= ペイン活動後に peer message を発行済): **fire しない**。soft-note を journal に追記して次サイクルへ:
+     ```bash
+     bash ../tools/journal_append.sh anomaly_observed source=pane_output_check worker=worker-{task_id} kind=pane_output_acked confidence=n/a note=peer_msg_after_change
+     ```
+   - **no-baseline** — (c)(i) が `0` (= worker が過去一度も peer-msg を発行していない、起動 ack 未発行含む): **fire しない**。本検知のスコープ外 (起動失敗等の別検知が拾うべき領域) として soft-note のみ:
+     ```bash
+     bash ../tools/journal_append.sh anomaly_observed source=pane_output_check worker=worker-{task_id} kind=pane_output_no_baseline confidence=n/a note=no_prior_peer_msg
+     ```
+   - **fire** — (b)(1)〜(5) を全部満たす ((c)(i) ≥ 1 かつ (c)(ii) NULL): silent dead-lock 候補として (e) 通知 + (f) journal 追記に進む
+
+   #### (e) 通知 — 二段構え (worker への self-healing nudge + secretary への informational)
+   relay gap (Step 5.1 (e)) と同じ「両系統発火」で safety-net を組む。どちらか一方が届かなくても他方で状況が認識される冗長性設計:
+
+   1. **worker への self-healing nudge** (採用): dispatcher が worker pane に直接 nudge を送り、peer message 慣行を促す。承認・拒否の自動代行ではないので `.dispatcher/CLAUDE.md` 「ディスパッチャーが自動で承認・拒否することはしない」に抵触しない (構造の遵守を促すだけで内容判断はしない):
+      ```
+      mcp__renga-peers__send_message(to_id="worker-{task_id}", message="
+        PANE_OUTPUT_WITHOUT_PEER_MSG: 直近のペイン出力 (last_content_change_ts={ts}) 以降に
+        secretary 宛の send_message 痕跡が観測できません。silent dead-lock を防ぐため、直前の応答内容を
+        `mcp__renga-peers__send_message(to_id=\"secretary\", ...)` で secretary に送信してください。
+        既に送信済みの場合は無視して構いません (`last_content_change_ts` 起点での痕跡走査で 0 件のため
+        自動 nudge を発行しています)。
+      ")
+      ```
+   2. **secretary への informational** (採用): silent dead-lock の検知事実と dispatcher の自動 nudge 発行を informational として secretary に届ける。secretary は人間応答待ちのつもりで idle になっているケースが想定されるため、worker が peer message を発行し忘れているシグナルとして受け取り、対応 (待つ / `inspect_pane` で内容を直接確認 / 人間にエスカレ) を判断する:
+      ```
+      mcp__renga-peers__send_message(to_id="secretary", message="
+        PANE_OUTPUT_WITHOUT_PEER_MSG (informational): worker-{task_id} がペインに出力済みですが、
+        last_content_change_ts={ts} 以降に worker→secretary の send_message 痕跡 (worker_escalation /
+        worker_reported / worker_completed / plan_delivered / prep_delivered) が観測できないため、
+        dispatcher が worker に nudge を送信しました。worker からの応答到着を一度待ち、来なければ
+        inspect_pane で確認・問い直しを推奨します。
+      ")
+      ```
+
+   両系統とも送信成功した場合のみ (f) の `notify_sent` を書く。片方失敗時は `notify_sent` を書かず、次サイクルで dedup が抜けて再試行 (at-least-once、Step 4 (e) と同じセマンティクス)。
+
+   #### (f) de-dup と journal
+   Step 4 (e) / Step 5 (e) / Step 5.1 (f) と同じスキーマを共有し、同じ `notify_sent` ledger に乗せる。(d) で fire 経路に入った場合のみ本セクションが走る (acked / no-baseline は (d) で独自 kind の soft-note を書いて終了する。`pane_output_without_peer_msg` kind の `anomaly_observed` を always 書くと acked / no-baseline でも「peer-msg 不発」観測扱いになって retro / debug の信号が汚れるため、Codex round 2 Minor 対応で fire 経路限定にする):
+
+   - 観測記録 (fire 経路のみ):
+     ```bash
+     bash ../tools/journal_append.sh anomaly_observed source=pane_output_check worker=worker-{task_id} kind=pane_output_without_peer_msg confidence=n/a
+     ```
+   - 通知判定: 直近 30 秒以内の events に `kind == "notify_sent"` かつ `payload_json` の `(worker=worker-{task_id}, kind=pane_output_without_peer_msg)` 一致のエントリが無ければ通知に進む
+   - 通知送信成功後 ((e) の (1)+(2) 双方ペイロード発行成功時のみ):
+     ```bash
+     bash ../tools/journal_append.sh notify_sent source=pane_output_check worker=worker-{task_id} kind=pane_output_without_peer_msg confidence=n/a
+     ```
+   - **再通知 cadence**: 30 秒 dedup window のみ (Step 4 / 5 / 5.1 と同じ at-least-once 担保短窓)。`/loop 3m` cadence で 30 秒 window は毎サイクル抜けるため、状態が解消されるまで毎サイクル両系統発火する。worker が nudge を受けて peer message を発行すれば次サイクルで `T_last_worker_to_secretary >= last_content_change_ts` となり (d) acked 経路に切り替わって自然停止する。worker が反応せずペインが完全に静止し続ければ idle_streak が ≥ 3 になった時点で Step 5 STALL_SUSPECTED が並行発火し相補的にカバーする (kind が異なるので de-dup で merge されない)
+
+   #### (g) 設計メモ — Step 4 / 5 / 5.1 との関係
+   - **Step 4 (画面 anomaly)** との関係: PANE_OUTPUT は (b)(3) で「APPROVAL_BLOCKED / ERROR が (e) 通知経路に乗っていない」を要求するので、画面に規定パターンの承認プロンプト / エラーが出ているケースは Step 4 が優先される。Step 4 = 規定パターンの画面 anomaly、PANE_OUTPUT = 規定外の自由出力 anomaly で disjoint な事象
+   - **Step 5 (STALL)** との関係: STALL は idle_streak ≥ 3 サイクル (= ~9 分) が必要。PANE_OUTPUT は idle_streak ≥ 2 (= ~6 分) で発火するため時間的に PANE_OUTPUT が先行する。worker が nudge を無視して停止し続けたら自然に STALL 経路へ移行する (= 二段階の検知層、worker の peer message 不発 → silent dead-lock 検知 → 全停止 → stuck 検知)。kind が `pane_output_without_peer_msg` と `stall_suspected` で異なるので de-dup は独立し、両通知が並行で出ても merge されない
+   - **Step 5.1 (relay gap)** との関係: 5.1 は secretary→user / secretary→worker の中継漏れ (secretary 側 outbound)。PANE_OUTPUT は worker→secretary の outbound (peer message 不発) で、観測対象が逆方向。両者は完全に独立で重なり領域なし
+   - **silent dead-lock の two-sided coverage**: Step 5 = worker stuck (双方向 outbound 不在)、Step 5.1 = secretary outbound 不在、Step 5.2 = worker outbound 不在。これで worker / secretary 両方向の send_message 健全性を監視ループで覆う
+   - **`PANE_OUTPUT_SETTLE_SEC = 60` の根拠**: claude code の応答生成は数秒〜数十秒で完了するのが典型 (短い ack で 5–10 秒、長文回答で 30–90 秒)。60 秒静止すれば「output が一段落した」と判定して妥当。短すぎると thinking 中の一時的 idle で誤発火 (worker が次の output を生成中の谷間)、長すぎると silent dead-lock 検知遅延が増える。`PANE_OUTPUT_IDLE_STREAK_MIN = 2` (= 約 6 分) との AND で実効 settle 時間は ~6 分以上になるため、`PANE_OUTPUT_SETTLE_SEC` は事実上 idle_streak の最低値の補強 (ts ベースの floor、サイクルロジックに glitch があっても絶対時刻として 60 秒を担保) として効く
+   - **`PANE_OUTPUT_IDLE_STREAK_MIN = 2` の根拠 (Codex round 1 Major 対応)**: round 1 で「`idle_streak_cycles >= 1` (~3 分) では worker が長時間コマンドを走らせている途中の谷間出力で誤発火しうる」と指摘された。`/loop 3m` cadence では 1 サイクル = 約 3 分なので、`>= 2` を要求すると **6 分連続で画面に変化が無い** ことを担保する。worker 側で Bash / build / test 等の出力が断続的に流れる作業はこの 6 分静止条件を満たさないため、構造的に nudge 候補から外れる。逆に、長文回答を出して入力待ちに戻った worker は 6 分以上完全静止するため正しく fire する
+   - **`PANE_OUTPUT_LOOKBACK_MIN` を持たない理由 (Codex round 1 Blocker 対応)**: round 1 で「15 分の固定 window で worker→secretary 痕跡を切ると、PR レビュー待ち / 人間判断待ちで pane を開けたまま正常 idle している worker (`worker_completed` が 15 分以上前) を毎サイクル誤発火する」と指摘された。検知意図は「ペイン活動後に peer-msg が無いか」であり、固定 window では表現できない。(c)(ii) で `last_content_change_ts` を WHERE 句に直接埋め込み、その ts 以降に絞り込んで MAX を取ることで「ペイン活動 後 の peer-msg 痕跡」を正確に評価する。これにより 1 時間前に `worker_completed` を出して以後 PR 待ちで idle している worker が、何らかのきっかけ (cron driven screen update など) で `last_content_change_ts` が更新されない限り fire しない
+   - **`last_content_change_ts` を新フィールドにした理由**: `idle_streak_cycles` だけでは「いつから idle か」の絶対時刻が不明 (cycle 数 × cadence の近似値しか出ない)。peer message ts との大小比較は ISO-8601 時刻で deterministic に行うべき。`last_check_ts` は更新時刻を表すが change 時刻ではない (idle 継続中も毎サイクル更新される) ため流用不可
+   - **`last_content_change_ts` の値が「前サイクルの `last_check_ts`」になる理由 (Codex round 3 Major 対応)**: 同サイクル内のステップ順序は Step 2 (check_messages) → Step 4 (inspect_pane) で、worker→secretary の peer-msg は Step 2 の時点で events table に `occurred_at = T_msg` として永続化される。Step 4 の inspect_pane で初めて画面変化を検知して `last_content_change_ts` を更新する場合、現サイクルの inspect 時刻 (`now`) を入れると `T_msg < now` なので (c)(ii) の `WHERE occurred_at >= last_content_change_ts` で正当な peer-msg が cutoff に弾かれ、後続サイクルで Step 5.2 が誤発火する。「前サイクルの `last_check_ts`」(= 直前に画面 idle と確認できていた時刻) を起点にすれば、現サイクル中に届いた peer-msg は必ずその cutoff 以降の `occurred_at` を持つため acked として正しく拾える。前サイクルの `last_check_ts` は最低でも 1 サイクル前 (`/loop 3m` で ~3 分以上前) なので、`PANE_OUTPUT_SETTLE_SEC = 60` の (b)(1) 条件は次サイクル以降も自然に満たされる
+   - **active 継続中に `last_content_change_ts` を据え置く理由**: 出力が複数サイクルに渡って連続している間 (worker が長文回答を流している、build ログが流れている等)、active 期間の START 時刻を保持し続ける必要がある。現サイクル = 0 から再リセットすると、active 期間中に届いた worker→secretary peer-msg (例: 進捗報告) が後続の (c)(ii) cutoff より古くなり、acked と判定されなくなる。active 期間が「1 つの連続イベント」で、その START 時点より後の peer-msg が 1 件でもあれば acked、というセマンティクスを保つ
+   - **新規 worker / 旧 record の初回観測**: Step 5 (b) 更新規則 (5) で `last_content_change_ts = null` 扱いとし (b)(1) を不成立にすることで、worker spawn 直後の表示変化や本 PR 以前から永続化されている record で false positive nudge を出すことを防ぐ。worker は起動時に ack 相当の peer message を最初に送る (Issue #312、CLAUDE.md 「ワーカー peer message を受けたら必ず ack を返す」を worker 側からも遵守する) ことが前提なので、初回 activity 観測 → ts 確定 → 次サイクル以降に peer message との比較が始まる、の流れで正しく機能する
+   - **(b)(4) 事前 peer-msg 履歴要件 (Codex round 1 Major 対応の補助)**: worker が起動 ack を含めて一度も peer-msg を発行していない record は「peer-msg 慣行が確立していない異常」であり、別検知 (起動失敗 / instruction 未受領) のスコープ。silent dead-lock の典型 signature は「peer-msg 慣行のある worker が以後の活動で peer-msg を漏らした」なので、(b)(4) の existence check で対象集合を絞ることで Major で指摘された誤検知層を更に削減する。`pane_output_no_baseline` soft-note のみ追記して (d) で fire しない
+   - **Issue 化なしの起点インシデント**: 2026-05-09 renga-ime-paste-routing タスクで実発生 (issue 化はされていない、本 PR が初の機械検知化)。当時 worker は窓口に「修正完了。次の指示を待ちます」相当の長文回答をペイン上に展開したが send_message 未発行で silent dead-lock 化、人間が `inspect_pane` で発見するまで停滞
+   - **既存 ack 強制 (Issue #312)** との関係: ack 強制は secretary 側の責務 (= worker 起点 message 受信時に ack を返す、CLAUDE.md 「ワーカー peer message を受けたら必ず ack を返す」)。Step 5.2 は dispatcher 側の機械観測で worker の outbound 不発を補完する (= ack 強制の対偶側面)。両者は補完関係で、人間運用契約 + 機械観測の二重化により silent dead-lock の発生確率を抑える
 
 6. **重要**: ディスパッチャーが自動で承認・拒否することはしない (ユーザー判断が必要)
 
