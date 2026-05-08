@@ -117,6 +117,15 @@ if [[ "$IS_WINDOWS_BASH" != "1" ]]; then
   esac
 fi
 
+# Linux / macOS classification for OS-specific install hints (node /
+# npm tip, Python venv guidance). Windows / Git Bash is already
+# handled by IS_WINDOWS_BASH above.
+case "$(uname -s 2>/dev/null || true)" in
+  Linux*)  IS_LINUX=1; IS_MAC=0 ;;
+  Darwin*) IS_LINUX=0; IS_MAC=1 ;;
+  *)       IS_LINUX=0; IS_MAC=0 ;;
+esac
+
 resolve_command() {
   # Pure resolver: prints the resolved path on stdout and returns 0,
   # or returns 1 with no output. Side effects (PATH prepend) live in
@@ -202,8 +211,23 @@ else
   RENGA_ON_USER_PATH=0
 fi
 missing=0
+# Build OS-aware install hints. The renga hint by itself ("npm install
+# -g ...") is misleading on a fresh WSL2 / Ubuntu / macOS box where
+# node + npm aren't installed at all — users follow it, hit a "command
+# not found: npm" wall, and have to retrace. Surfacing node / npm as
+# explicit prereqs ahead of renga puts the actual blocker first.
+if [[ "$IS_LINUX" == "1" ]]; then
+  NODE_HINT='install Node 20 LTS via nvm — https://github.com/nvm-sh/nvm (then: nvm install --lts)'
+elif [[ "$IS_MAC" == "1" ]]; then
+  NODE_HINT='brew install node  (or use nvm: https://github.com/nvm-sh/nvm)'
+else
+  NODE_HINT='https://nodejs.org/  (LTS) — or use nvm-windows / fnm / scoop'
+fi
+NPM_HINT="ships with Node — install Node first ($NODE_HINT)"
 require_or_warn git    "https://git-scm.com/downloads" || missing=1
 require_or_warn claude "https://claude.ai/code (Claude Code CLI)" || missing=1
+require_or_warn node   "$NODE_HINT" || missing=1
+require_or_warn npm    "$NPM_HINT" || missing=1
 require_or_warn renga  "npm install -g @suisya-systems/renga@0.18.0" || missing=1
 require_or_warn gh     "https://cli.github.com/" || missing=1
 # Capture the absolute path so the later `run renga mcp install` can
@@ -320,32 +344,119 @@ if [[ -z "$PY" && "$IS_WINDOWS_BASH" == "1" ]]; then
 fi
 PYPROJECT_FILE="$TARGET_DIR/pyproject.toml"
 REQ_FILE="$TARGET_DIR/requirements.txt"
-if [[ -f "$PYPROJECT_FILE" && -n "$PY" ]]; then
-  echo
-  echo "Installing Python deps via pyproject.toml (editable) ..."
-  run $PY $PY_LAUNCHER -m pip install --user -e "$TARGET_DIR"
-elif [[ -f "$REQ_FILE" && -n "$PY" ]]; then
-  # Backward-compat path for refs that predate Phase 5c (no
-  # pyproject.toml) but post-date Step B (have requirements.txt).
-  echo
-  echo "Installing Python deps (core-harness pin, requirements.txt) ..."
-  run $PY $PY_LAUNCHER -m pip install --user -r "$REQ_FILE"
-elif [[ ! -f "$PYPROJECT_FILE" && ! -f "$REQ_FILE" ]]; then
+
+# PEP 668 ("externally-managed-environment", default on Debian 12+ /
+# Ubuntu 23.04+ and on Homebrew Python) makes `pip install --user`
+# abort. Detect by asking the resolved interpreter directly so the
+# answer reflects whatever python `$PY` actually points at, not just
+# `/usr/lib/...`. PEP668=1 switches to a project-local venv below.
+# This is *not* an auto-install of a missing tool — Python itself is
+# already on the system; the venv is just an isolated install
+# location for this project's editable deps so the externally-managed
+# system Python stays untouched.
+PEP668=0
+if [[ -n "$PY" ]] && $PY $PY_LAUNCHER -c \
+    'import os, sysconfig; raise SystemExit(0 if os.path.exists(os.path.join(sysconfig.get_path("stdlib"), "EXTERNALLY-MANAGED")) else 1)' \
+    >/dev/null 2>&1; then
+  PEP668=1
+fi
+
+USED_VENV=0
+if [[ ! -f "$PYPROJECT_FILE" && ! -f "$REQ_FILE" ]]; then
   # Older refs / fixtures predate Step B and ship neither file.
   # The shim CLIs only exist on Step-B-or-later commits, so skipping
   # here keeps the installer backward compatible.
   echo "Skipping Python deps (no pyproject.toml or requirements.txt)."
-else
+elif [[ -z "$PY" ]]; then
   echo "WARN: python not found; tools/check_role_configs.py will fail until you 'pip install -e .'."
+elif [[ "$PEP668" == "1" ]]; then
+  # Externally-managed: install editable into $TARGET_DIR/.venv.
+  # `python -m venv` requires the `venv` module; on Debian / Ubuntu
+  # that ships separately as `python3-venv` (or pulled in by
+  # `python3-full`). Probe before creating so the failure mode is a
+  # named apt package instead of a bare ensurepip traceback.
+  if ! $PY $PY_LAUNCHER -m venv --help >/dev/null 2>&1; then
+    cat <<'MSG' >&2
+install.sh: this Python install is externally-managed (PEP 668), so
+the installer needs `python -m venv` to create an isolated venv for
+project deps — but the venv module is missing.
+On Debian / Ubuntu, install:
+  sudo apt install -y python3-full
+(or: sudo apt install -y python3-venv python3-pip)
+Then re-run this installer.
+MSG
+    exit 1
+  fi
+  VENV_DIR="$TARGET_DIR/.venv"
+  if [[ "$IS_WINDOWS_BASH" == "1" ]]; then
+    VENV_PY="$VENV_DIR/Scripts/python.exe"
+  else
+    VENV_PY="$VENV_DIR/bin/python"
+  fi
+  echo
+  echo "Detected externally-managed Python (PEP 668)."
+  if [[ -d "$VENV_DIR" ]]; then
+    echo "Reusing existing venv at $VENV_DIR ..."
+  else
+    echo "Creating venv at $VENV_DIR ..."
+    run $PY $PY_LAUNCHER -m venv "$VENV_DIR"
+  fi
+  if [[ -f "$PYPROJECT_FILE" ]]; then
+    echo "Installing Python deps into venv (editable, pyproject.toml) ..."
+    run "$VENV_PY" -m pip install -e "$TARGET_DIR"
+  else
+    echo "Installing Python deps into venv (requirements.txt) ..."
+    run "$VENV_PY" -m pip install -r "$REQ_FILE"
+  fi
+  USED_VENV=1
+else
+  # Legacy --user path. Probe the pip module first so a stock Ubuntu
+  # without `python3-pip` fails with installable guidance instead of
+  # a bare "No module named pip" from set -e.
+  if ! $PY $PY_LAUNCHER -m pip --version >/dev/null 2>&1; then
+    cat <<'MSG' >&2
+install.sh: python is on PATH but its `pip` module is missing.
+On Debian / Ubuntu, install:
+  sudo apt install -y python3-pip
+(or python3-full to also get the venv module)
+Then re-run this installer.
+MSG
+    exit 1
+  fi
+  if [[ -f "$PYPROJECT_FILE" ]]; then
+    echo
+    echo "Installing Python deps via pyproject.toml (editable) ..."
+    run $PY $PY_LAUNCHER -m pip install --user -e "$TARGET_DIR"
+  else
+    # Backward-compat path for refs that predate Phase 5c (no
+    # pyproject.toml) but post-date Step B (have requirements.txt).
+    echo
+    echo "Installing Python deps (core-harness pin, requirements.txt) ..."
+    run $PY $PY_LAUNCHER -m pip install --user -r "$REQ_FILE"
+  fi
 fi
 
 # --- Done ------------------------------------------------------------------
 
+# When the PEP 668 path created a project-local venv, the user's
+# interactive shell still doesn't know about it (we ran pip via the
+# venv's python directly, not by sourcing activate). Tell them to
+# activate before any later `python tools/...` step. Empty otherwise.
+VENV_HINT=""
+if [[ "$USED_VENV" == "1" ]]; then
+  if [[ "$IS_WINDOWS_BASH" == "1" ]]; then
+    VENV_HINT="
+  source .venv/Scripts/activate   # activate Python venv (this terminal)"
+  else
+    VENV_HINT="
+  source .venv/bin/activate       # activate Python venv (this terminal)"
+  fi
+fi
 cat <<MSG
 
 Done. Next steps:
 
-  cd $TARGET_DIR
+  cd $TARGET_DIR$VENV_HINT
   bash scripts/install-hooks.sh   # enable pre-commit secret scanner
   renga --layout ops              # launch the Secretary pane
 
