@@ -1,5 +1,5 @@
 {
-  "$comment": "Issue #376 Pre-Phase 0 spike — handcraft tightened sandbox profile (Pattern A worker). Layered on profile-baseline: (a) git -C 形式の dangerous-git deny を追加、(b) sandbox denyWrite を ~/.claude / ~/.ssh / ~/.aws まで拡張、(c) additionalDirectories に worker_dir のみ明示、(d) sandbox denyRead に ~/.aws / ~/.ssh を追加し、permissions.deny の Read() と二重化。",
+  "$comment": "Issue #376 Pre-Phase 0 spike — handcraft tightened sandbox profile (Pattern A worker). Layered on profile-baseline: (a) git -C 形式の dangerous-git / forced worktree remove deny を追加、(b) sandbox denyWrite を ~/.claude / ~/.ssh / ~/.aws まで拡張、(c) additionalDirectories に worker_dir のみ明示、(d) sandbox denyRead に ~/.aws / ~/.ssh を追加し、permissions.deny の Read() と二重化。",
   "permissions": {
     "allow": [
       "Bash(git add:*)",
@@ -47,6 +47,8 @@
       "Bash(git -C * branch * -D*)",
       "Bash(git worktree remove --force*)",
       "Bash(git worktree remove * --force*)",
+      "Bash(git -C * worktree remove --force*)",
+      "Bash(git -C * worktree remove * --force*)",
       "Read(~/.ssh/*)",
       "Read(~/.aws/*)"
     ]

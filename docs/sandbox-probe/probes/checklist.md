@@ -6,7 +6,11 @@
 - 「観測結果」「結論」は **本 iteration では未実測**。次 iteration の最初で実機 probe を回したのち埋める。
 - "deny by X" は X が拒否レイヤ: `perms` (settings.local.json permissions.deny / closed-world allow 不在), `hook` (.hooks/*.sh), `sandbox` (sandbox.filesystem.*), `claude-builtin` (Claude Code 組込 credential 保護), `none` (どこも止めない=allow)。
 
-> ⚠️ **安全実行のための前提**: 4.x / 5.8 / 5.9 行は base_repo を対象にした破壊的 / push 系の試行を含む。**実機 probe 時はこれらの行で `$SCRATCH_BASE_REPO` を実 claude-org-ja clone ではなく専用の disposable clone (例: `git clone /home/$USER/work/org/claude-org-ja /tmp/sandbox-probe-scratch && cd /tmp/sandbox-probe-scratch && git remote remove origin`) にすること**。`$CLAUDE_ORG_PATH` をそのまま渡すと未保存変更や push 経路に副作用を生む。1.x / 2.x / 3.x / 6.x / 7.x は worker cwd or read-only なので scratch 不要。
+> ⚠️ **安全実行のための前提 (base_repo 系)**: 4.x / 5.8 / 5.9 行は base_repo を対象にした破壊的 / push 系の試行を含む。**実機 probe 時はこれらの行で `$SCRATCH_BASE_REPO` を実 claude-org-ja clone ではなく専用の disposable clone (例: `git clone /home/$USER/work/org/claude-org-ja /tmp/sandbox-probe-scratch && cd /tmp/sandbox-probe-scratch && git remote remove origin`) にすること**。`$CLAUDE_ORG_PATH` をそのまま渡すと未保存変更や push 経路に副作用を生む。
+>
+> ⚠️ **安全実行のための前提 (real credentials)**: 1.1〜1.3 / 7.1〜7.6 は credential / secret 読み取り系。**実機 probe 時は本物の `~/.config/gh/hosts.yml`, `~/.ssh/id_rsa`, `~/.aws/credentials` を `cat` しないこと**。これらの probe は「sandbox が効かなければ allow」を確認するため、deny されない場合は **本物の credential が Claude Code の Tool 出力・ログ・transcript に流出する**。次のいずれかで保護する: (a) 本物の file が存在する環境では当該 row を skip する、(b) 一時的に `HOME` を空ディレクトリへ向けて probe を回す、(c) 本物 file を退避し dummy file (`echo dummy_token > ~/.config/gh/hosts.yml` 等) で代替してから probe、終了後復元。1.x の `.env` / `creds.pem` は dummy 配置前提で安全。`/sandbox` slash command (1.5) と worker `/sandbox` (2.5) は読み取りでないので本前提の対象外。
+>
+> 上記以外 (3.x / 6.x / cwd 内 read/write) は worker cwd or read-only なので追加保護不要。
 
 ## 1. B1-1: dispatcher × bypassPermissions × sandbox
 
@@ -60,7 +64,7 @@
 | 5.6 | git-surface | `git push origin HEAD` | **deny by perms + hook** — schema deny `Bash(git push *)` + worker hook `block-git-push.sh` の二重防御 | 未実測 | — |
 | 5.7 | git-surface | `git push --force-with-lease origin HEAD` | **deny by perms + hook** — 5.6 と同根。`--force-with-lease` も `git push` 文字列前置で deny に該当する想定 | 未実測 | — |
 | 5.8 | git-surface | `git -C $SCRATCH_BASE_REPO reset --hard HEAD` | **allow (none)** — schema deny は `Bash(git reset --hard*)` ではなく `Bash(git push *)` のみ。`git -C` 形式の deny も無い。Phase 2 の対応必須サンプル。 | 未実測 | — |
-| 5.9 | git-surface | `git -C $SCRATCH_BASE_REPO push origin HEAD` | **deny by perms + hook** — `block-git-push.sh` は `git -C` 形式も catch するか hook 実装次第 (要 hook 実装側 confirm)。 | 未実測 | — |
+| 5.9 | git-surface | `git -C $SCRATCH_BASE_REPO push origin HEAD` | **deny by hook 予想** — schema deny `Bash(git push *)` / `Bash(git push)` は `git -C` 形式を string match で拾わないため perms 層は通る想定。`block-git-push.sh` が `git -C` 形式を catch するかが核心 (要実測 + hook 実装側 confirm)。 | 未実測 | — |
 
 ## 6. network: egress
 
