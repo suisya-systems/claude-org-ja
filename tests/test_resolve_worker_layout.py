@@ -895,6 +895,43 @@ class TestPatternBClaudeOrgRepoWorktree(unittest.TestCase):
             (self.clone / ".worktrees" / "en-task-b-alias").resolve(),
         )
 
+    def test_mirror_of_preserved_when_synthesizing_from_url_path_row(self):
+        """Codex Round 3 Major: when the registry row carries
+        ``path=https://...`` AND ``mirror_of=<slug>``, the resolver
+        re-pins onto the local clone but used to drop ``mirror_of``,
+        silently turning the row into a non-mirror project. The
+        first-run Pattern B short-circuit then never fired. Re-create
+        the production registry shape (URL path + mirror_of) and
+        verify Pattern B kicks in on the very first dispatch."""
+        # Live deployment shape: URL path AND mirror_of populated.
+        path = self.sb.claude_org_root / "registry" / "projects.md"
+        path.write_text(
+            "# Projects Registry\n\n"
+            "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 | mirror_of |\n"
+            "|---|---|---|---|---|---|\n"
+            "| 時計アプリ | clock-app | - | Demo clock | - |  |\n"
+            "| claude-org-en | claude-org | "
+            "https://github.com/suisya-systems/claude-org | mirror | - | "
+            "claude-org-ja |\n",
+            encoding="utf-8",
+        )
+        layout = rwl.resolve(
+            task_id="first-run-mirror",
+            project_slug="claude-org",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        # No active run → without mirror_of preservation this would have
+        # been Pattern A. With it preserved, the mirror_of short-circuit
+        # fires and lifts the layout to Pattern B (claude_org_repo_worktree
+        # variant added by the post-derive claude_org_clone re-pin).
+        self.assertEqual(layout.pattern, "B")
+        self.assertEqual(layout.pattern_variant, "claude_org_repo_worktree")
+        self.assertEqual(
+            Path(layout.worker_dir),
+            (self.clone / ".worktrees" / "first-run-mirror").resolve(),
+        )
+
     def test_no_clone_falls_through_to_pattern_c_ephemeral(self):
         """Without a clone at workers_dir/claude-org, the slug is still
         unknown → Pattern C ephemeral (regression guard for the no-en-clone
@@ -1401,6 +1438,48 @@ class TestPatternOverrideContract(unittest.TestCase):
         )
         self.assertEqual(layout.pattern, "A")
         self.assertEqual(Path(layout.worker_dir), clone.resolve())
+
+    def test_variant_live_repo_worktree_requires_self_edit_role(self):
+        """Codex Round 3 Blocker: ``pattern_variant=live_repo_worktree``
+        pins worker_dir + base_repo to Secretary's live claude-org repo.
+        Allowing it on a non-self-edit task (e.g. ``role=default``,
+        ``project_slug=clock-app``) would dispatch a clock-app worker into
+        the live claude-org repo — a different project entirely. The
+        override must reject this combination."""
+        with self.assertRaises(rwl.ResolveError) as cm:
+            rwl.resolve(
+                task_id="bad-variant",
+                project_slug="clock-app",
+                mode="edit",
+                claude_org_root=self.sb.claude_org_root,
+                state_db_path=self.sb.db_path,
+                layout_overrides={
+                    "pattern": "B",
+                    "pattern_variant": "live_repo_worktree",
+                    # role/self_edit explicitly NOT self-edit
+                    "role": "default",
+                    "self_edit": False,
+                },
+            )
+        self.assertIn("live_repo_worktree", str(cm.exception))
+
+    def test_variant_claude_org_repo_worktree_requires_canonical_slug(self):
+        """Same blocker class for the other variant: it must only be
+        permitted on the canonical claude-org slug *and* with a clone
+        actually detected at workers_dir/claude-org. clock-app must not
+        be allowed to slip into the mirror's worktree pool."""
+        with self.assertRaises(rwl.ResolveError) as cm:
+            rwl.resolve(
+                task_id="bad-mirror-variant",
+                project_slug="clock-app",
+                claude_org_root=self.sb.claude_org_root,
+                state_db_path=self.sb.db_path,
+                layout_overrides={
+                    "pattern": "B",
+                    "pattern_variant": "claude_org_repo_worktree",
+                },
+            )
+        self.assertIn("claude_org_repo_worktree", str(cm.exception))
 
     def test_force_pattern_b_with_local_repo_path_succeeds(self):
         """Registered project with a local git repo path → ``--pattern B``

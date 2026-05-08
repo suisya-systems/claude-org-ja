@@ -489,6 +489,13 @@ def resolve(
             path=str(claude_org_clone),
             description=project.description if project is not None else "",
             common_tasks=project.common_tasks if project is not None else "",
+            # Codex Round 3 Major: preserve ``mirror_of`` when re-pinning
+            # onto the local clone. The live registry row may carry
+            # ``| ... | https://... | ... | upstream-slug |`` (non-local
+            # path + mirror_of); without this carry-over the synthesis
+            # erased mirror_of and the first-run Pattern B short-circuit
+            # silently fell back to Pattern A.
+            mirror_of=project.mirror_of if project is not None else "",
         )
 
     # --- Role decision (computed first so Pattern B can branch on it) -----
@@ -689,6 +696,38 @@ def resolve(
             if variant is not None and variant not in VALID_VARIANTS:
                 raise ResolveError(
                     f"layout_overrides['pattern_variant'] must be one of {VALID_VARIANTS} or None, got {variant!r}"
+                )
+            # Codex Round 3 Blocker: pattern_variant carries strong implications
+            # for *which repo* the worker dispatches into. Without these gates
+            # a caller could request
+            # ``pattern=B, pattern_variant=live_repo_worktree, role=default``
+            # on slug=clock-app and have the worker land inside Secretary's
+            # live claude-org repo — an entirely different project than the
+            # task targets. Tie each variant to the role/slug context that
+            # makes it meaningful so the override cannot redirect dispatch
+            # at the wrong repo.
+            if variant == "live_repo_worktree" and not effective_self_edit:
+                raise ResolveError(
+                    "layout_overrides['pattern_variant']='live_repo_worktree' "
+                    "is reserved for claude-org-self-edit dispatches (the "
+                    "variant pins worker_dir + base_repo at Secretary's live "
+                    f"claude-org repo). Got effective role={effective_role!r} "
+                    f"for slug={project_slug!r}; pattern B without self-edit "
+                    "should leave pattern_variant unset and let the resolver "
+                    "anchor on the registered project's clone instead."
+                )
+            if variant == "claude_org_repo_worktree" and (
+                project_slug != _CLAUDE_ORG_CLONE_DIRNAME
+                or claude_org_clone is None
+            ):
+                raise ResolveError(
+                    "layout_overrides['pattern_variant']='claude_org_repo_worktree' "
+                    f"requires project_slug={_CLAUDE_ORG_CLONE_DIRNAME!r} (or "
+                    "its registered alias) AND a detected claude-org mirror "
+                    f"clone at {workers_dir}/{_CLAUDE_ORG_CLONE_DIRNAME}. Got "
+                    f"slug={project_slug!r}, clone_present="
+                    f"{claude_org_clone is not None}; the variant cannot "
+                    "redirect dispatch at the wrong repo."
                 )
             # Issue #374 (Codex Round 2 Blocker): the claude-org mirror
             # case used to lose its variant on a plain ``--pattern B``
