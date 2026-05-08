@@ -1,0 +1,90 @@
+{
+  "$comment": "Issue #376 Pre-Phase 0 spike — handcraft baseline sandbox profile (Pattern A worker). Drop-in replacement for worker_dir/.claude/settings.local.json. Adds repo-shared dangerous-git/no-verify hooks and minimum sandbox.filesystem.denyRead so secrets in cwd are blocked. {worker_dir}/{claude_org_path} are placeholders the operator substitutes manually.",
+  "permissions": {
+    "allow": [
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git branch:*)",
+      "Bash(git checkout:*)",
+      "Bash(git switch:*)",
+      "Bash(git worktree:*)",
+      "Bash(git stash:*)",
+      "Bash(sleep:*)"
+    ],
+    "deny": [
+      "Bash(git push *)",
+      "Bash(git push)",
+      "Bash(rm -rf *)",
+      "Bash(rm -r *)",
+      "Bash(git commit --no-verify*)",
+      "Bash(git commit * --no-verify*)",
+      "Bash(git push --no-verify*)",
+      "Bash(git push * --no-verify*)",
+      "Bash(git reset --hard*)",
+      "Bash(git reset * --hard*)",
+      "Bash(git branch -D*)",
+      "Bash(git branch * -D*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"{claude_org_path}/.hooks/check-worker-boundary.sh\""
+          },
+          {
+            "type": "command",
+            "command": "bash \"{claude_org_path}/.hooks/block-org-structure.sh\""
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"{claude_org_path}/.hooks/block-git-push.sh\""
+          },
+          {
+            "type": "command",
+            "command": "bash \"{claude_org_path}/.hooks/block-org-structure.sh\""
+          },
+          {
+            "type": "command",
+            "command": "bash \"{claude_org_path}/.hooks/block-dangerous-git.sh\""
+          },
+          {
+            "type": "command",
+            "command": "bash \"{claude_org_path}/.hooks/block-no-verify.sh\""
+          }
+        ]
+      }
+    ]
+  },
+  "env": {
+    "WORKER_DIR": "{worker_dir}",
+    "CLAUDE_ORG_PATH": "{claude_org_path}"
+  },
+  "sandbox": {
+    "enabled": true,
+    "failIfUnavailable": false,
+    "filesystem": {
+      "denyRead": [
+        ".env",
+        ".env.*",
+        "**/credentials*",
+        "**/*.pem",
+        "~/.config/gh/hosts.yml"
+      ],
+      "denyWrite": [
+        "~/.claude/settings.json"
+      ]
+    }
+  }
+}
