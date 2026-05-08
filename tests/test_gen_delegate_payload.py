@@ -1348,6 +1348,56 @@ class TestPatternOverrideCLI(unittest.TestCase):
         send_plan = json.loads(send_plan_path.read_text(encoding="utf-8"))
         self.assertEqual(send_plan["summary"]["pattern"], "C")
 
+    def test_cli_pattern_drops_toml_worker_dir_and_variant(self):
+        """Codex Round 2 Major: ``--pattern X`` together with ``--from-toml``
+        used to keep the TOML's ``[worker].dir`` and ``[worker].pattern_variant``
+        in the override dict, so the resolver treated worker_dir as
+        explicitly set and skipped its pattern-driven re-derivation. Result
+        was an inconsistent layout (e.g. ``pattern=C`` but worker_dir on
+        the registered clone). The CLI flag must override fully."""
+        # TOML pre-pins Pattern A worker_dir to a deterministic path.
+        toml_path = self.sb.root / "in.toml"
+        explicit_dir = self.sb.workers / "clock-app"
+        toml_path.write_text(
+            "[task]\n"
+            'id = "toml-pattern"\n'
+            'description = "drop dir on cli pattern"\n'
+            "\n[worker]\n"
+            f'dir = "{explicit_dir.as_posix()}"\n'
+            'pattern = "A"\n'
+            'role = "default"\n'
+            'self_edit = false\n'
+            "\n[project]\n"
+            'name = "clock-app"\n'
+            f'\n[paths]\nclaude_org = "{self.sb.claude_org_root.as_posix()}"\n',
+            encoding="utf-8",
+        )
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        buf = StringIO()
+        with redirect_stdout(buf):
+            rc = gdp.main([
+                "preview",
+                "--from-toml", str(toml_path),
+                "--state-db-path", str(self.sb.db_path),
+                "--pattern", "C",
+                "--json",
+            ])
+        self.assertEqual(rc, 0)
+        s = json.loads(buf.getvalue())["summary"]
+        # CLI pattern wins over TOML's pattern.
+        self.assertEqual(s["pattern"], "C")
+        # And worker_dir gets re-derived for the new pattern (workers_dir/<task_id>),
+        # not left at the TOML-supplied registered clone path.
+        self.assertEqual(
+            Path(s["worker_dir"]).resolve(),
+            (self.sb.workers / "toml-pattern").resolve(),
+        )
+        # Variant from TOML (or derived for old pattern) is dropped — Pattern
+        # C ephemeral default.
+        self.assertEqual(s["pattern_variant"], "ephemeral")
+
     def test_force_pattern_a_on_self_edit_slug_errors_in_preview(self):
         """Resolver rejects pattern=A on a self-edit slug — the error must
         propagate out of ``preview`` rather than letting the bad layout

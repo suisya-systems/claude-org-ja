@@ -1329,6 +1329,79 @@ class TestPatternOverrideContract(unittest.TestCase):
             )
         self.assertIn("Pattern B", str(cm.exception))
 
+    def test_force_pattern_b_with_claude_org_mirror_re_derives_variant(self):
+        """Codex Round 2 Blocker: ``--pattern B`` on slug=claude-org used
+        to lose its variant (override resets it to None) and leave
+        worker_dir at the clone root, so gen_delegate_payload could not
+        derive a base. Re-default the variant to claude_org_repo_worktree
+        when the clone is detected, then re-derive worker_dir."""
+        # Build a fresh sandbox with a real claude-org mirror clone.
+        try:
+            subprocess.run(["git", "--version"], capture_output=True, check=True)
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            self.skipTest("git not available")
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        sb = _Sandbox(Path(td.name))
+        sb.write_registry([("時計", "clock-app", "-", "Demo clock")])
+        clone = sb.workers / "claude-org"
+        clone.mkdir()
+        _Sandbox.init_git_with_origin(
+            clone, "https://github.com/suisya-systems/claude-org.git"
+        )
+        layout = rwl.resolve(
+            task_id="force-b-mirror",
+            project_slug="claude-org",
+            claude_org_root=sb.claude_org_root,
+            state_db_path=sb.db_path,
+            layout_overrides={"pattern": "B"},
+        )
+        self.assertEqual(layout.pattern, "B")
+        self.assertEqual(layout.pattern_variant, "claude_org_repo_worktree")
+        self.assertEqual(
+            Path(layout.worker_dir),
+            (clone / ".worktrees" / "force-b-mirror").resolve(),
+        )
+
+    def test_force_pattern_a_on_claude_org_mirror_re_derives_worker_dir(self):
+        """Codex Round 2 Major: ``--pattern A`` on slug=claude-org used to
+        leave worker_dir at the auto-derived ``.worktrees/<task>/`` path
+        because the A re-derivation was gated on
+        ``claude_org_clone is None``. Mirror branch must re-pin to the
+        clone root."""
+        try:
+            subprocess.run(["git", "--version"], capture_output=True, check=True)
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            self.skipTest("git not available")
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        sb = _Sandbox(Path(td.name))
+        sb.write_registry([("時計", "clock-app", "-", "Demo clock")])
+        clone = sb.workers / "claude-org"
+        clone.mkdir()
+        _Sandbox.init_git_with_origin(
+            clone, "https://github.com/suisya-systems/claude-org.git"
+        )
+        # Auto-derive will be Pattern A here (no active run); add one so
+        # auto-derive picks B + claude_org_repo_worktree (the case where
+        # the override stale-path bug used to bite).
+        sb.add_run(
+            task_id="other-en-task",
+            project_slug="claude-org",
+            pattern="A",
+            status="in_use",
+            worker_dir_abs=str(clone),
+        )
+        layout = rwl.resolve(
+            task_id="force-a-mirror",
+            project_slug="claude-org",
+            claude_org_root=sb.claude_org_root,
+            state_db_path=sb.db_path,
+            layout_overrides={"pattern": "A"},
+        )
+        self.assertEqual(layout.pattern, "A")
+        self.assertEqual(Path(layout.worker_dir), clone.resolve())
+
     def test_force_pattern_b_with_local_repo_path_succeeds(self):
         """Registered project with a local git repo path → ``--pattern B``
         is allowed and the conventional ``workers_dir/<slug>/.worktrees/``

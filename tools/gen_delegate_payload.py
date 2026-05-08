@@ -919,11 +919,21 @@ def _gather_plan_kwargs(args: argparse.Namespace) -> dict[str, Any]:
     # kwargs. CLI wins over a TOML [worker].pattern of the same key, matching
     # the rest of the merge order documented above. ``None`` means "no CLI
     # override", which preserves any TOML value already merged into base.
+    #
+    # When the CLI flag is supplied, also drop the TOML's [worker].dir and
+    # [worker].pattern_variant from the override dict — otherwise the
+    # resolver treats them as explicit values and skips its pattern-driven
+    # re-derivation, leaving worker_dir / variant on the previous pattern's
+    # convention. Codex Round 2 Major: ``--pattern C`` on a TOML that
+    # carries [worker].dir = workers/<slug>/ used to keep worker_dir at
+    # the registered clone, producing a contradictory C layout.
     pattern_override = getattr(args, "pattern", None)
     if pattern_override is not None:
         existing_overrides = base.get("layout_overrides") or {}
         merged = dict(existing_overrides)
         merged["pattern"] = pattern_override
+        merged.pop("worker_dir", None)
+        merged.pop("pattern_variant", None)
         base["layout_overrides"] = merged
     # CLI overrides — only when caller actually provided a value.
     cli_overrides: dict[str, Any] = {

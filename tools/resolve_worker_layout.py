@@ -690,6 +690,22 @@ def resolve(
                 raise ResolveError(
                     f"layout_overrides['pattern_variant'] must be one of {VALID_VARIANTS} or None, got {variant!r}"
                 )
+            # Issue #374 (Codex Round 2 Blocker): the claude-org mirror
+            # case used to lose its variant on a plain ``--pattern B``
+            # override — auto-derive set ``claude_org_repo_worktree`` but
+            # the override above resets variant to None when the caller
+            # didn't supply ``pattern_variant``. Without this re-default
+            # the worker_dir stays at the clone root (auto-derive's
+            # Pattern A path) and gen_delegate_payload's variant-specific
+            # base_repo derivation never fires. Re-default the variant
+            # so the existing ``claude_org_repo_worktree`` re-derivation
+            # below picks up worker_dir correctly.
+            if (
+                pattern == "B"
+                and variant is None
+                and claude_org_clone is not None
+            ):
+                variant = "claude_org_repo_worktree"
             # Pattern B + variant=live_repo_worktree without explicit worker_dir
             # → re-derive to claude_org_root/.worktrees/{task_id}/ (Issue #289).
             if pattern == "B" and variant == "live_repo_worktree" and not explicit_worker_dir:
@@ -734,13 +750,16 @@ def resolve(
             # Same idea for ``--pattern A``: when the override drops
             # B → A, pin worker_dir back at the clone root rather than
             # leaving it in a stale ``.worktrees/<task_id>/`` path that
-            # auto-derive built for Pattern B.
-            if (
-                pattern == "A"
-                and not explicit_worker_dir
-                and claude_org_clone is None
-            ):
-                worker_dir = (workers_dir / project_slug).resolve()
+            # auto-derive built for Pattern B. Codex Round 2 Major: the
+            # claude-org mirror branch must re-derive too — without this
+            # ``--pattern A`` on slug=claude-org leaves worker_dir at the
+            # auto-derived ``.worktrees/<task_id>/`` even though the
+            # final pattern is A, an incoherent layout.
+            if pattern == "A" and not explicit_worker_dir:
+                if claude_org_clone is not None:
+                    worker_dir = claude_org_clone.resolve()
+                else:
+                    worker_dir = (workers_dir / project_slug).resolve()
             # ``--pattern C`` override: ephemeral default. Without this
             # branch the override would dispatch into the *registered*
             # project's directory (auto-derive's Pattern A worker_dir),
