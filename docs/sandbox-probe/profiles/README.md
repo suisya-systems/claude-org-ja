@@ -15,9 +15,16 @@ worker `.claude/settings.local.json` 形式に直接適用できる **handcraft 
 
 1. probe iteration で worker dir を 1 つ用意（このディレクトリでも可）
 2. `cp profiles/profile-baseline.json .claude/settings.local.json`
-3. Claude Code を当該 worker dir で再起動
-4. `probes/checklist.md` の対応 row を実行し、観測結果を埋める
-5. 必要なら `profile-tightened.json` に切り替えて差分を比較
+3. **placeholder 置換** (これを忘れると hook command が literal `{claude_org_path}` 等を指して防御層が機能しない):
+   ```bash
+   sed -i "s|{worker_dir}|<probe worker の絶対 path>|g; \
+           s|{claude_org_path}|<claude-org-ja の絶対 path>|g" \
+          .claude/settings.local.json
+   jq empty .claude/settings.local.json
+   ```
+4. Claude Code を当該 worker dir で再起動
+5. `probes/checklist.md` の対応 row を実行し、観測結果を埋める
+6. 必要なら `profile-tightened.json` に切り替え (#2-3 を再実行) して差分を比較
 
 ## 注意
 

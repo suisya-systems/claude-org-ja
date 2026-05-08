@@ -29,7 +29,7 @@ Issue #376 Pre-Phase 0 spike (probe-worker pattern, Issue #376 issuecomment-4410
 
 ## 用語
 
-- **allow** = sandbox or hook どちらか以上の防御層が通す状態
-- **deny** = sandbox or hook いずれかが拒否し、Claude Code の Tool 結果としてエラーが返る
+- **allow** = どの防御層 (perms / hook / sandbox / claude-builtin) も拒否せず、Tool が副作用を伴って成功する状態
+- **deny** = いずれかの防御層が拒否し、Claude Code の Tool 結果としてエラーが返る
 - **silent** = エラーは出ないが副作用が抑止 (例: sandbox が fail-open している, hook が exit 0)
 - **observed**列 = 本 iteration では「未実測」と書く。実機 probe iteration が走り次第埋める。
