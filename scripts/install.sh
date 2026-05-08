@@ -117,6 +117,21 @@ if [[ "$IS_WINDOWS_BASH" != "1" ]]; then
   esac
 fi
 
+# Linux / macOS classification for OS-specific install hints (node /
+# npm tip, Python venv guidance). Windows / Git Bash is handled by
+# IS_WINDOWS_BASH above; force IS_LINUX/IS_MAC=0 there so the three
+# flags stay mutually exclusive even when OSTYPE is set without
+# uname agreeing.
+if [[ "$IS_WINDOWS_BASH" == "1" ]]; then
+  IS_LINUX=0; IS_MAC=0
+else
+  case "$(uname -s 2>/dev/null || true)" in
+    Linux*)  IS_LINUX=1; IS_MAC=0 ;;
+    Darwin*) IS_LINUX=0; IS_MAC=1 ;;
+    *)       IS_LINUX=0; IS_MAC=0 ;;
+  esac
+fi
+
 resolve_command() {
   # Pure resolver: prints the resolved path on stdout and returns 0,
   # or returns 1 with no output. Side effects (PATH prepend) live in
@@ -204,6 +219,22 @@ fi
 missing=0
 require_or_warn git    "https://git-scm.com/downloads" || missing=1
 require_or_warn claude "https://claude.ai/code (Claude Code CLI)" || missing=1
+# Surface node + npm as prereqs on Linux/macOS so a fresh WSL2 /
+# Ubuntu / macOS box doesn't follow the renga "npm install -g ..."
+# hint into a "command not found: npm" wall. On Windows / Git Bash,
+# renga can ship via npm shims, scoop, cargo, or standalone
+# installers (resolve_command's fallback ladder handles all of
+# those), so a global node/npm requirement there would be a
+# regression for working installs — leave that path's prereqs alone.
+if [[ "$IS_LINUX" == "1" || "$IS_MAC" == "1" ]]; then
+  if [[ "$IS_LINUX" == "1" ]]; then
+    NODE_HINT='install Node 20 LTS via nvm — https://github.com/nvm-sh/nvm (then: nvm install --lts)'
+  else
+    NODE_HINT='brew install node  (or use nvm: https://github.com/nvm-sh/nvm)'
+  fi
+  require_or_warn node "$NODE_HINT" || missing=1
+  require_or_warn npm  "ships with Node — install Node first ($NODE_HINT)" || missing=1
+fi
 require_or_warn renga  "npm install -g @suisya-systems/renga@0.18.0" || missing=1
 require_or_warn gh     "https://cli.github.com/" || missing=1
 # Capture the absolute path so the later `run renga mcp install` can
@@ -320,32 +351,118 @@ if [[ -z "$PY" && "$IS_WINDOWS_BASH" == "1" ]]; then
 fi
 PYPROJECT_FILE="$TARGET_DIR/pyproject.toml"
 REQ_FILE="$TARGET_DIR/requirements.txt"
-if [[ -f "$PYPROJECT_FILE" && -n "$PY" ]]; then
-  echo
-  echo "Installing Python deps via pyproject.toml (editable) ..."
-  run $PY $PY_LAUNCHER -m pip install --user -e "$TARGET_DIR"
-elif [[ -f "$REQ_FILE" && -n "$PY" ]]; then
-  # Backward-compat path for refs that predate Phase 5c (no
-  # pyproject.toml) but post-date Step B (have requirements.txt).
-  echo
-  echo "Installing Python deps (core-harness pin, requirements.txt) ..."
-  run $PY $PY_LAUNCHER -m pip install --user -r "$REQ_FILE"
-elif [[ ! -f "$PYPROJECT_FILE" && ! -f "$REQ_FILE" ]]; then
+
+USED_VENV=0
+if [[ ! -f "$PYPROJECT_FILE" && ! -f "$REQ_FILE" ]]; then
   # Older refs / fixtures predate Step B and ship neither file.
   # The shim CLIs only exist on Step-B-or-later commits, so skipping
   # here keeps the installer backward compatible.
   echo "Skipping Python deps (no pyproject.toml or requirements.txt)."
-else
+elif [[ -z "$PY" ]]; then
   echo "WARN: python not found; tools/check_role_configs.py will fail until you 'pip install -e .'."
+elif [[ "$IS_WINDOWS_BASH" == "1" ]]; then
+  # Windows / Git Bash: keep the legacy `pip install --user` path
+  # (Windows venv layout, the activate script difference, and stock
+  # python.org / `py -3` installers all behave well with --user).
+  # Probe the pip module first so any stripped-down install fails
+  # with named guidance instead of a bare "No module named pip".
+  # Skip the probe under --dry-run so the echo-only contract holds
+  # even when the operator's box happens to have pip stripped out.
+  if [[ "$DRY_RUN" != "1" ]] && ! $PY $PY_LAUNCHER -m pip --version >/dev/null 2>&1; then
+    cat <<'MSG' >&2
+install.sh: python is on PATH but its `pip` module is missing.
+Install pip (e.g. `python -m ensurepip --upgrade`, or reinstall
+Python with the standard installer that bundles pip).
+Then re-run this installer.
+MSG
+    exit 1
+  fi
+  if [[ -f "$PYPROJECT_FILE" ]]; then
+    echo
+    echo "Installing Python deps via pyproject.toml (editable) ..."
+    run $PY $PY_LAUNCHER -m pip install --user -e "$TARGET_DIR"
+  else
+    # Backward-compat path for refs that predate Phase 5c (no
+    # pyproject.toml) but post-date Step B (have requirements.txt).
+    echo
+    echo "Installing Python deps (core-harness pin, requirements.txt) ..."
+    run $PY $PY_LAUNCHER -m pip install --user -r "$REQ_FILE"
+  fi
+else
+  # Linux / macOS: always create $TARGET_DIR/.venv and editable-
+  # install into it. Conditional PEP 668 detection was rejected as
+  # unnecessary judgement work — even where `pip install --user`
+  # would still succeed (older Linux, plain macOS), a project-local
+  # venv keeps the dep set reproducible and the user's site-packages
+  # untouched. Externally-managed boxes (Debian 12+, Ubuntu 23.04+,
+  # Homebrew Python) just naturally land here too. This is *not* an
+  # auto-install of a missing tool — Python is already on the system;
+  # the venv is just an isolated install location.
+  VENV_DIR="$TARGET_DIR/.venv"
+  VENV_PY="$VENV_DIR/bin/python"
+  echo
+  if [[ -d "$VENV_DIR" ]]; then
+    echo "Reusing existing venv at $VENV_DIR ..."
+  else
+    echo "Creating venv at $VENV_DIR ..."
+    if [[ "$DRY_RUN" == "1" ]]; then
+      # Dry-run: echo only, never touch the filesystem. Both the
+      # venv creation and the pip install collapse to `run`'s echo,
+      # so a missing python3-venv on the operator's box can't make
+      # `--dry-run` exit non-zero.
+      run $PY $PY_LAUNCHER -m venv "$VENV_DIR"
+    else
+      # Real run. Capture stderr so a `python3-venv` / `ensurepip`
+      # absence shows the interpreter's own message *and* a named
+      # apt package the user can install. `--help` probes are not
+      # sufficient — `python -m venv --help` succeeds even when
+      # ensurepip is unavailable (the failure only surfaces during
+      # actual creation), so we test by doing.
+      venv_err=$(mktemp 2>/dev/null || echo "/tmp/install-sh.venv-err.$$")
+      if ! $PY $PY_LAUNCHER -m venv "$VENV_DIR" 2>"$venv_err"; then
+        cat "$venv_err" >&2
+        rm -f "$venv_err"
+        cat <<'MSG' >&2
+install.sh: failed to create the project venv.
+On Debian / Ubuntu, the venv module needs python3-venv (and
+ensurepip). Install:
+  sudo apt install -y python3-full
+(or: sudo apt install -y python3-venv python3-pip)
+Then re-run this installer.
+MSG
+        exit 1
+      fi
+      rm -f "$venv_err"
+    fi
+  fi
+  if [[ -f "$PYPROJECT_FILE" ]]; then
+    echo "Installing Python deps into venv (editable, pyproject.toml) ..."
+    run "$VENV_PY" -m pip install -e "$TARGET_DIR"
+  else
+    # Backward-compat (see Windows branch).
+    echo "Installing Python deps into venv (requirements.txt) ..."
+    run "$VENV_PY" -m pip install -r "$REQ_FILE"
+  fi
+  USED_VENV=1
 fi
 
 # --- Done ------------------------------------------------------------------
 
+# When the Linux/macOS path created a project-local venv, the user's
+# interactive shell still doesn't know about it (we ran pip via the
+# venv's python directly, not by sourcing activate). Tell them to
+# activate before any later `python tools/...` step. Windows keeps
+# the legacy --user path so USED_VENV stays 0 there.
+VENV_HINT=""
+if [[ "$USED_VENV" == "1" ]]; then
+  VENV_HINT="
+  source .venv/bin/activate       # activate Python venv (this terminal)"
+fi
 cat <<MSG
 
 Done. Next steps:
 
-  cd $TARGET_DIR
+  cd $TARGET_DIR$VENV_HINT
   bash scripts/install-hooks.sh   # enable pre-commit secret scanner
   renga --layout ops              # launch the Secretary pane
 
