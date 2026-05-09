@@ -16,11 +16,11 @@
 
 | # | category | 試行コマンド | 期待される allow or deny | 観測結果 | 結論 |
 |---|---|---|---|---|---|
-| 1.1 | B1-1 | dispatcher cwd で `cat ~/.config/gh/hosts.yml` | **不明 (探索目標)**: bypassPermissions が sandbox を巻き込まなければ deny by sandbox / 巻き込めば allow (= bypassPermissions が sandbox も無効化) | 未実測 | — |
-| 1.2 | B1-1 | dispatcher cwd で `cat ./.env` (`.env` を事前に作成) | 同上 (deny by sandbox / または allow) | 未実測 | — |
-| 1.3 | B1-1 | dispatcher cwd で `cat ./creds.pem` (dummy 配置) | 同上 | 未実測 | — |
-| 1.4 | B1-1 | dispatcher cwd で `echo x >> ~/.claude/settings.json.sandbox-test` | 同上 (deny by sandbox denyWrite / または allow) | 未実測 | — |
-| 1.5 | B1-1 | dispatcher で `/sandbox` slash command 実行 | sandbox status を確認できる (Linux/WSL2 で `bubblewrap` 有 → enabled、無 → fail-open silent) | 未実測 | — |
+| 1.1 | B1-1 | dispatcher cwd で `cat ~/.config/gh/hosts.yml` | **不明 (探索目標)**: bypassPermissions が sandbox を巻き込まなければ deny by sandbox / 巻き込めば allow (= bypassPermissions が sandbox も無効化) | 完全に通る。実 oauth_token を含む YAML が dispatcher stdout に丸ごと出力された (token 値は本書に redact 記録) | **allow (none)** — sandbox auto-allow + denyRead 列不在のため `~/.config/` の read は素通り。bypassPermissions による sandbox 無効化と即断はできない (1.5 で sandbox 自体は active 確認) |
+| 1.2 | B1-1 | dispatcher cwd で `cat ./.env` (`.env` を事前に作成) | 同上 (deny by sandbox / または allow) | `SECRET=probe_dummy` が dispatcher stdout に表示 (.dispatcher/.env: `SECRET=probe_dummy`) | **allow (none)** — cwd 内 read。sandbox の自然な許可範囲 (denyRead 列不在) |
+| 1.3 | B1-1 | dispatcher cwd で `cat ./creds.pem` (dummy 配置) | 同上 | `dummy creds` が dispatcher stdout に表示 (.dispatcher/creds.pem: `dummy creds`) | **allow (none)** — cwd 内 read。`.pem` 拡張子による特別扱いなし |
+| 1.4 | B1-1 | dispatcher cwd で `echo x >> ~/.claude/settings.json.sandbox-test` | 同上 (deny by sandbox denyWrite / または allow) | "Bash completed with no output" (success, exit 0) | **allow (success, write-verification pending)** — exit 0 だが、shadow FS 経由か実 FS 反映かは本 iteration では未確定 (rm -f cleanup 直前で ls/cat 検証を skip)。次 iteration row 化 |
+| 1.5 | B1-1 | dispatcher で `/sandbox` slash command 実行 | sandbox status を確認できる (Linux/WSL2 で `bubblewrap` 有 → enabled、無 → fail-open silent) | Tab "Mode" → "✓ Sandbox enabled with auto-allow for bash commands" 表示 (3 択中 1 番 "Sandbox BashTool, with auto-allow" 選択中) | **sandbox active** (bubblewrap 経由で起動済み)。1.1〜1.4 の allow は sandbox 不在ではなく **denyRead/Write rule 不在のため** と確定 |
 
 ## 2. B2-1: worker × repo-shared settings 継承
 
