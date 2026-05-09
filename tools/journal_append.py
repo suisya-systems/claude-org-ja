@@ -48,18 +48,21 @@ def _parse_kv(pair: str) -> "tuple[str, str]":
     return key, val
 
 
-def _db_append(repo_root: Path, event: str, payload: dict) -> None:
+def _db_append(db_path: Path, event: str, payload: dict) -> None:
     """M4 canonical path: DB write only (no jsonl side-output)."""
     from tools.state_db import apply_schema, connect
+    from tools.state_db.discover import verify_or_exit
     from tools.state_db.writer import StateWriter
 
-    db_path = repo_root / ".state" / "state.db"
+    db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     is_new_db = not db_path.exists()
     conn = connect(db_path)
     try:
         if is_new_db:
             apply_schema(conn)
+        else:
+            verify_or_exit(db_path, conn=conn, prog="tools/journal_append.py")
         writer = StateWriter(conn)
         actor = None
         if isinstance(payload, dict) and isinstance(payload.get("actor"), str):
@@ -88,7 +91,14 @@ def main(argv: "list[str] | None" = None) -> int:
         default=None,
         help="JSON object to merge into the payload (typed values).",
     )
-    repo_root = Path(__file__).resolve().parent.parent
+    parser.add_argument(
+        "--db-path",
+        default=None,
+        help=(
+            "Override the resolved state.db path. Highest precedence: "
+            "--db-path > $STATE_DB_PATH > discovery (Issue #398)."
+        ),
+    )
     parser.add_argument("--path", default=None, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
 
@@ -115,9 +125,18 @@ def main(argv: "list[str] | None" = None) -> int:
             parser.error("--json must encode a JSON object")
         payload.update(extra)
 
+    from tools.state_db.discover import resolve_state_db_path
+    db_path = resolve_state_db_path(
+        Path(args.db_path) if args.db_path else None
+    )
+
     try:
-        _db_append(repo_root, args.event, payload)
+        _db_append(db_path, args.event, payload)
         return 0
+    except SystemExit:
+        # verify_or_exit -> sys.exit on schema mismatch — let it through
+        # so the caller sees the prepared error code.
+        raise
     except Exception as exc:
         sys.stderr.write(
             "tools/journal_append.py: DB write failed "

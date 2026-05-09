@@ -66,11 +66,14 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from tools.state_db.discover import resolve_state_db_path  # noqa: E402
+
 # Path used by tests via mock.patch — kept as a module-level Path so the
 # legacy test seam (`mock.patch.object(pr_watch, "JOURNAL_PATH", ...)`)
-# continues to redirect writes at the tempdir. M4 made the file be the
-# state DB rather than journal.jsonl.
-JOURNAL_PATH = REPO_ROOT / ".state" / "state.db"
+# continues to redirect writes at the tempdir. Issue #398: resolved
+# via discovery so worktree-cwd invocations target the main checkout's
+# state.db, not the worktree's empty `.state/`.
+JOURNAL_PATH = resolve_state_db_path()
 
 # Issue #326: after writing a CI-completion / merge / timeout event,
 # also push a peer message to secretary so it doesn't have to poll the
@@ -100,6 +103,7 @@ def _record_ci_completed(*, db_path: Path, pr: int, repo: str,
                          status: str, duration: int) -> None:
     """Append a ``ci_completed`` event to the DB events table."""
     from tools.state_db import apply_schema, connect
+    from tools.state_db.discover import verify_or_exit
     from tools.state_db.writer import StateWriter
 
     db_path = Path(db_path)
@@ -109,6 +113,8 @@ def _record_ci_completed(*, db_path: Path, pr: int, repo: str,
     try:
         if is_new_db:
             apply_schema(conn)
+        else:
+            verify_or_exit(db_path, conn=conn, prog="tools/pr_watch.py")
         writer = StateWriter(conn)
         writer.append_event(
             kind="ci_completed",
@@ -361,6 +367,7 @@ def _watch_for_merge(
 def _record_event(*, db_path: Path, kind: str, payload: dict) -> None:
     """Append a single event row via StateWriter (used for merge-watch timeout)."""
     from tools.state_db import apply_schema, connect
+    from tools.state_db.discover import verify_or_exit
     from tools.state_db.writer import StateWriter
 
     db_path = Path(db_path)
@@ -370,6 +377,8 @@ def _record_event(*, db_path: Path, kind: str, payload: dict) -> None:
     try:
         if is_new_db:
             apply_schema(conn)
+        else:
+            verify_or_exit(db_path, conn=conn, prog="tools/pr_watch.py")
         writer = StateWriter(conn)
         writer.append_event(kind=kind, actor="pr_watch", payload=payload)
         writer.commit()

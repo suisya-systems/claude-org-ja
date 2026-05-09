@@ -42,7 +42,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-DEFAULT_DB_PATH = REPO_ROOT / ".state" / "state.db"
+from tools.state_db.discover import resolve_state_db_path  # noqa: E402
+
+# Issue #398: discovery-based default so worktree-cwd invocations target
+# the main checkout's state.db rather than an empty `.worktrees/<task>/.state/`.
+DEFAULT_DB_PATH = resolve_state_db_path()
 
 
 # Return codes for :func:`complete_on_merge`. Stable strings so callers
@@ -190,7 +194,10 @@ def complete_on_merge(
     payload (e.g. pr_watch's merge-watch loop); when omitted the helper
     fetches it via :func:`fetch_pr_view`.
     """
-    db_path = Path(db_path) if db_path is not None else DEFAULT_DB_PATH
+    db_path = (
+        resolve_state_db_path(Path(db_path)) if db_path is not None
+        else resolve_state_db_path()
+    )
     if pr_view is None:
         pr_view = fetch_pr_view(pr, repo)
 
@@ -206,6 +213,7 @@ def complete_on_merge(
     commit_short = _short_sha(commit_full)
 
     from tools.state_db import apply_schema, connect
+    from tools.state_db.discover import verify_or_exit
     from tools.state_db.writer import StateWriter
 
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -214,6 +222,10 @@ def complete_on_merge(
     try:
         if is_new_db:
             apply_schema(conn)
+        else:
+            verify_or_exit(
+                db_path, conn=conn, prog="tools/run_complete_on_merge.py",
+            )
 
         resolved_task_id = task_id or _resolve_task_id(
             conn, pr=pr, repo=repo, pr_url=pr_url, head_ref=head_ref,
