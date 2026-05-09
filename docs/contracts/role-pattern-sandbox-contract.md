@@ -479,7 +479,26 @@ project repo; worker has its own `.git/` directory.
     matcher. Carve-out: `<worker_dir>/.claude/plans/**`.
   - Anywhere outside `<worker_dir>/` not in the small carve-out set —
     Layer 4
-    [`.hooks/check-worker-boundary.sh`](../../.hooks/check-worker-boundary.sh).
+    [`.hooks/check-worker-boundary.sh`](../../.hooks/check-worker-boundary.sh)
+    **for `Edit`/`Write` tool calls only** (per §1.2 the hook's matcher is
+    `Edit | Write`; some role configs additionally include `MultiEdit`).
+    **Bash-mediated writes outside `<worker_dir>/` are NOT caught by this
+    hook today** — `Bash(echo x > /tmp/foo)`, `Bash(tee /etc/hosts)`,
+    `Bash(sed -i "..." /outside/path)`, `Bash(cp file /outside/)`, etc.
+    are evaluated by the Bash hook chain
+    ([`.hooks/block-git-push.sh`](../../.hooks/block-git-push.sh),
+    [`.hooks/block-org-structure.sh`](../../.hooks/block-org-structure.sh)
+    Bash half, etc.) and none of those check redirect-target / argument
+    paths against the worker boundary. **Gap → Phase 1**: Layer 3
+    `denyWrite` against everything outside the worktree
+    `additionalDirectories` set is the natural fix (sandbox sees all
+    syscall-level writes regardless of which Claude tool invoked them).
+    Until Phase 1, Bash-mediated writes outside the worktree rely on
+    Claude Code's Layer 1 classifier and on the Layer 2 `permissions.allow`
+    closed-world (the role does not positively allow `Bash(tee:*)`,
+    `Bash(cp:*)`, etc., so Bash invocations of those commands prompt for
+    user approval rather than running silently — this is harness UX, not
+    a hard guarantee).
   - `git push` (incl. `eval` / `bash -c`) — Layer 4
     [`.hooks/block-git-push.sh`](../../.hooks/block-git-push.sh).
   - `git push --force / -f / --force-with-lease`, `git reset --hard`,
@@ -857,10 +876,28 @@ into the following layer-specific enforcements that all must hold:
 | `git commit` / `git branch` / `git checkout` / `git switch` | `permissions.deny` ✔ (per `worker_roles.doc-audit.permissions.deny`) | n/a | [`.hooks/block-git-push.sh`](../../.hooks/block-git-push.sh), etc. |
 
 To make the prescriptive "write surface = none" claim hold, **Layer 3
-must deny everywhere except the Plan-mode carve-outs**. The shape of the
-emit therefore needs `denyWrite` to *exclude* Plan paths (either by NOT
-naming them in `denyWrite`, or by emitting Plan paths as
-`additionalDirectories`-allow that overrides a broad `denyWrite`):
+must deny across every path the sandbox makes writable, with carve-outs
+only for Plan-mode**. The set of paths the sandbox makes writable is the
+union of:
+
+- `additionalDirectories` (the role's positive allow set; adds bwrap
+  bind-mount writable mounts).
+- The harness-default writables that bwrap exposes when bubblewrap is
+  configured by Claude Code with `failIfUnavailable: false` and no
+  explicit denyWrite — typically `/tmp/<sandbox-temp>/`,
+  `~/.claude/<harness-internal>/`, and a few claude-local scratch dirs.
+  The exact set is not part of this contract surface; it is owned by
+  Claude Code's sandbox-bootstrap.
+
+For doc-audit the contract is:
+
+| Path category | Required wire-level enforcement |
+|---|---|
+| `<worker_dir>/**` (every path the worker sees in its working tree) | denied at Layer 3 |
+| `~/.claude/plans/**` and `<worker_dir>/.claude/plans/**` | **NOT denied** — Plan-mode carve-out |
+| Everything outside `<worker_dir>` and outside Plan paths (e.g. `/tmp/`, `/var/tmp/`, arbitrary system paths, the user's home outside `.claude/plans`) | denied at Layer 3 — either by not appearing in `additionalDirectories` (so bwrap presents them as read-only by default) **or** by an explicit `denyWrite` entry. The prescriptive surface is "denied"; the wire-form is implementation. |
+
+Sample wire form (one of several Phase-1-acceptable shapes):
 
 ```jsonc
 "sandbox": {
@@ -870,26 +907,39 @@ naming them in `denyWrite`, or by emitting Plan paths as
       "{worker_dir}/.claude/plans"
     ],
     "denyWrite": [
-      "{worker_dir}/**"
-      // NOTE: ~/.claude/plans and {worker_dir}/.claude/plans must NOT
-      // appear in this list. They are emitted as additionalDirectories
-      // (positive allow) so the deny against {worker_dir}/** does not
-      // close them. The exact precedence is bwrap-emit specific; the
-      // schema generator MUST verify on emit that Plan paths remain
-      // writable.
+      "{worker_dir}/**",
+      "/tmp/**",
+      "/var/tmp/**",
+      "~/**"
+      // Plan paths above are emitted as additionalDirectories. The schema
+      // generator MUST verify on emit that the additionalDirectories
+      // entries override the broad denyWrite globs in bwrap precedence
+      // (or split the denyWrite globs to exclude Plan paths explicitly).
+      // Other paths the sandbox would otherwise make writable (process
+      // scratch, /dev/shm, etc.) are governed by Claude Code's own
+      // sandbox-bootstrap defaults; this contract does not enumerate them
+      // because they are upstream-owned. Phase 1 may add explicit denies
+      // if probe results show holes.
     ]
   }
 }
 ```
 
-Phase 1 must encode this when emitting `worker_roles.doc-audit.sandbox`.
-The bwrap-emit precedence between `additionalDirectories` and
-`denyWrite` MUST keep the Plan paths writable; if precedence cannot be
-arranged, the alternative is to enumerate `denyWrite` paths individually
-to exclude Plan paths (e.g. `denyWrite: ["{worker_dir}/.claude/!(plans/**)",
-"{worker_dir}/!(.claude/**)/**"]` or equivalent generated patterns). The
-prescriptive surface is "writes prevented everywhere except Plan paths";
-the wire format is implementation detail to be settled in Phase 1.
+Phase 1 must encode this shape (or an equivalent that yields the same
+prescriptive surface) when emitting `worker_roles.doc-audit.sandbox`. The
+bwrap-emit precedence between `additionalDirectories` and `denyWrite`
+MUST keep the Plan paths writable; the alternative is to split the
+denyWrite globs so they explicitly exclude Plan paths (e.g.
+`denyWrite: ["{worker_dir}/.claude/!(plans/**)", "{worker_dir}/!(.claude/**)/**"]`
+or equivalent generated patterns). The schema generator's emit step is
+the right place to settle the precedence; the contract surface is "writes
+prevented everywhere except Plan paths". The /tmp threat example below
+is satisfied either by (a) the role not having `Bash(tee:*)` /
+`Bash(cp:*)` / `Bash(bash:*)` etc. as positive allows (the doc-audit
+template is closed-world per `disallow_allow_regex`, and a typical
+audit doesn't allow these), so Bash redirect attempts hit Layer 2's
+closed-world prompt; or (b) Layer 3 `denyWrite` against `/tmp/**` as
+above, which is the durable fix.
 
 Without Layer 3, the combination of Layer 2 `deny [Edit, Write, MultiEdit,
 NotebookEdit]` + Layer 4 [`.hooks/block-git-push.sh`](../../.hooks/block-git-push.sh)
