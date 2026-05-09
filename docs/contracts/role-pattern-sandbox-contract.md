@@ -934,12 +934,25 @@ denyWrite globs so they explicitly exclude Plan paths (e.g.
 or equivalent generated patterns). The schema generator's emit step is
 the right place to settle the precedence; the contract surface is "writes
 prevented everywhere except Plan paths". The /tmp threat example below
-is satisfied either by (a) the role not having `Bash(tee:*)` /
-`Bash(cp:*)` / `Bash(bash:*)` etc. as positive allows (the doc-audit
-template is closed-world per `disallow_allow_regex`, and a typical
-audit doesn't allow these), so Bash redirect attempts hit Layer 2's
-closed-world prompt; or (b) Layer 3 `denyWrite` against `/tmp/**` as
-above, which is the durable fix.
+is **only durably satisfied by Layer 3 `denyWrite`**. The interim Layer 2
+closed-world surface mitigates *some* attack shapes — `Bash(tee:*)`,
+`Bash(cp:*)`, `Bash(bash:*)`, `Bash(sh:*)`, `Bash(python:*)`, etc. are
+not positively allowed by the doc-audit role, so they hit a user-approval
+prompt — but **does not cover redirects from positively-allowed commands**.
+The doc-audit role allows `Bash(git status:*)`, `Bash(git diff:*)`,
+`Bash(git log:*)`, `Bash(sleep:*)` (see `worker_roles.doc-audit.permissions.allow`
+in [`tools/org_extension_schema.json`](../../tools/org_extension_schema.json));
+shapes like `git diff > /tmp/out`, `git diff --output=/tmp/out`,
+`git log > /tmp/log` would pass Layer 2 because the matched glob is
+`Bash(git diff:*)` and the redirect/argument is part of the same Bash
+invocation. **Phase 0 conclusion: doc-audit's read-only hard guarantee
+is NOT in force today**; it depends on Phase 1 emitting the Layer 3
+`denyWrite` set above. Until then, the doc-audit role's read-only
+property is a *soft* guarantee held by Layer 1 + the closed-world Bash
+allow set, with the redirect-from-allowed-command hole as a known
+exception. Reviewers reading `--mode audit` reports should not treat
+the absence of write tool calls in the transcript as proof that no
+writes occurred until Phase 1 closes this.
 
 Without Layer 3, the combination of Layer 2 `deny [Edit, Write, MultiEdit,
 NotebookEdit]` + Layer 4 [`.hooks/block-git-push.sh`](../../.hooks/block-git-push.sh)
