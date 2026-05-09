@@ -1,5 +1,5 @@
 {
-  "$comment": "Issue #376 Pre-Phase 0 spike — handcraft tightened sandbox profile (Pattern A worker). Layered on profile-baseline: (a) git -C 形式の dangerous-git / forced worktree remove deny を追加、(b) sandbox denyWrite を ~/.claude / ~/.ssh / ~/.aws まで拡張、(c) additionalDirectories に worker_dir のみ明示、(d) sandbox denyRead に ~/.aws / ~/.ssh を追加し、permissions.deny の Read() と二重化。",
+  "$comment": "Issue #376 Pre-Phase 0 spike — handcraft tightened sandbox profile (Pattern A worker). Layered on profile-baseline: (a) git -C 形式の dangerous-git / forced worktree remove deny を追加、(b) sandbox denyWrite を ~/.claude / ~/.ssh / ~/.aws まで拡張、(c) additionalDirectories に worker_dir のみ明示、(d) sandbox denyRead に ~/.aws / ~/.ssh を追加し、permissions.deny の Read() と二重化。 As of runtime 0.1.4 (claude-org-runtime#10) + ja PR #397, the equivalent Layer 3 suppression that this handcraft profile documented is now generated automatically by render_role_with_metadata() based on realpath escape detection. This handcraft profile is preserved as the Phase 0 spike reference baseline and as a fall-back for non-WSL deployments or environments where sandbox field-driven generation is disabled.",
   "permissions": {
     "allow": [
       "Bash(git add:*)",
