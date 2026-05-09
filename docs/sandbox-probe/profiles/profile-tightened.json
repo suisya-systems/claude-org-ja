@@ -50,7 +50,12 @@
       "Bash(git -C * worktree remove --force*)",
       "Bash(git -C * worktree remove * --force*)",
       "Read(~/.ssh/*)",
-      "Read(~/.aws/*)"
+      "Read(~/.aws/*)",
+      "Read(.env)",
+      "Read(.env.*)",
+      "Read(**/credentials*)",
+      "Read(**/*.pem)",
+      "Read(~/.config/gh/hosts.yml)"
     ]
   },
   "hooks": {
