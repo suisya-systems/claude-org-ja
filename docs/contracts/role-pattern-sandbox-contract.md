@@ -598,6 +598,8 @@ This is the **explicit decision** Phase 0 fixes:
 | `<workers_dir>/<project_slug>/.git/objects/` (common object store) | **allowed** | **allowed** | Object store is shared by design. Any commit / write-tree / checkout in the worktree writes new objects here. |
 | `<workers_dir>/<project_slug>/.git/refs/heads/<this_branch>` | **allowed** | **allowed** | This is *this* worktree's branch ref. |
 | `<workers_dir>/<project_slug>/.git/refs/heads/<other_branch>` | allowed (read) | denied (write) | A task may need to read other refs (e.g. `git log master..HEAD`) but must not move them. |
+| `<workers_dir>/<project_slug>/.git/refs/remotes/<remote>/*` | allowed (read) | denied (write) | These refs are written by `git fetch` / `git pull` / `git clone`. Pattern B workers do not execute those subcommands (see operational consequence below); the secretary handles network ref sync and hands the worker `origin/<branch>` SHAs out-of-band when needed. |
+| `<workers_dir>/<project_slug>/.git/FETCH_HEAD` | allowed (read) | denied (write) | Same as above — written only by the network-fetching subcommand family the worker does not run. |
 | `<workers_dir>/<project_slug>/.git/HEAD` (the base clone's HEAD) | allowed (read) | denied (write) | A worktree's `git checkout` updates `<worktree>/HEAD`, not the base clone's HEAD. Writing the base HEAD from a worktree is an error. |
 | `<workers_dir>/<project_slug>/.git/config` | allowed (read) | denied (write) | Per-repo config is shared; mutating it from a worktree affects every worktree. |
 | `<workers_dir>/<project_slug>/.git/packed-refs` | allowed (read) | allowed (write) — git mutates this | Git itself rewrites this file as part of `gc` / `pack-refs`. Layer 3 must not deny it. |
@@ -637,6 +639,27 @@ prescriptive surface above is the contract.
   from within the worktree fail to write to the per-worktree metadata
   outside `<worker_dir>` (today's handcraft profile is in this state and
   *only* works because Layer 3 is suppressed on WSL).
+
+**Operational consequence — `git fetch` / `pull` / `clone` family is denied
+for Pattern B workers**: the rows above for `refs/remotes/<remote>/*` and
+`FETCH_HEAD`, taken together with the existing write-deny on `config` and
+the base `HEAD`, leave the network-fetching subcommand family with no
+legitimate write target inside the Pattern B sandbox surface. Rather than
+emit a partial allowlist (e.g. allow writes to `refs/remotes/` only while
+keeping `config` denied — which still leaves common `git fetch`
+configurations failing on first use), this contract takes the conservative
+posture: `git fetch`, `git pull`, and `git clone`, including the
+`git -C <other_dir> fetch` / `pull` / `clone` `-C` variants, are denied at
+Layer 2 for Pattern B workers. The secretary hands the worker any required
+`origin/<branch>` SHAs or commit lists out-of-band. The mechanization
+(Layer 2 `Bash(git fetch ...)` / `Bash(git pull ...)` / `Bash(git clone ...)`
+deny family with `-C` expansions) is captured as a Phase 2 worker-template
+change in [`docs/contracts/worker-git-guardrails-design.md`](./worker-git-guardrails-design.md)
+§5.2.4 and is not itself a Phase 0 schema emit. **Self-edit role parity**:
+the same deny applies to `worker_roles.claude-org-self-edit` × Pattern B
+`live_repo_worktree` (see §4.4 and the cross-row summary in §5.2); the
+self-edit role's write carve-outs are scoped to `.dispatcher/` / `.curator/`
+/ `.state/`, not to git network operations.
 
 #### 4.2.2 Read / write / Layer attribution (rest of the row)
 
@@ -1218,3 +1241,43 @@ This document is doc-only. The intended verification posture for this PR is:
 Phase 1 will add positive verification: drift CI for the `sandbox` field,
 and a Pattern B Git metadata test that exercises the `additionalDirectories`
 union from §4.2.1 against a real worktree.
+
+---
+
+## 9. Amendments
+
+This section accumulates **dated, append-only** consistency reconciliations
+made after the initial Phase 0 publication. Each amendment names what was
+changed, the source that surfaced the inconsistency, and why the change is
+reconciled inside Phase 0 rather than deferred to a later phase. New
+amendments append a new dated subsection; prior subsections are not
+rewritten.
+
+### 9.1 2026-05-10 — `git fetch` / `pull` / `clone` deny for Pattern B (§4.2.1)
+
+**Surfaced by**: [`docs/contracts/worker-git-guardrails-design.md`](./worker-git-guardrails-design.md)
+§10.1 — the Phase 2 design noted that the original §4.2.1 boundary table
+denied writes to `<base_clone>/.git/config` and the base `HEAD` but did
+not enumerate `refs/remotes/<remote>/*` or `FETCH_HEAD`, leaving the
+status of `git fetch` / `git pull` / `git clone` from a Pattern B worker
+ambiguous and prompting Phase 2 to recommend a conservative deny pending
+a Phase 0 amendment.
+
+**Change**: §4.2.1 now lists `<workers_dir>/<project_slug>/.git/refs/remotes/<remote>/*`
+(read allowed, write denied) and `<workers_dir>/<project_slug>/.git/FETCH_HEAD`
+(read allowed, write denied) as explicit boundary rows, and adds an
+operational-consequence paragraph stating that `git fetch`, `git pull`,
+and `git clone` (including their `-C` variants) are denied for Pattern B
+workers. Self-edit × Pattern B inherits the same deny.
+
+**Why reconciled in Phase 0 rather than deferred**: this amendment does
+not introduce a new schema field, a new hook, or a new Layer 3 mechanism.
+It tightens the prescriptive surface that the Phase 1 emit and the Phase
+2 worker-template `permissions.deny` family will both consume. The Phase
+2 mechanization (Layer 2 `Bash(git fetch ...)` deny family) is already in
+scope for that document's §5.2.4; aligning the Phase 0 contract first
+prevents Phase 1 and Phase 2 from each having to re-derive the
+`refs/remotes/` / `FETCH_HEAD` boundary independently. No previously
+allowed worker capability is reversed — the network-fetching subcommands
+were never enumerated as allowed, only as ambiguous; the amendment
+records the conservative resolution as authoritative.
