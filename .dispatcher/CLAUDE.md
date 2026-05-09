@@ -87,6 +87,10 @@ helper（`tools/journal_append.sh` / `tools/journal_append.py`）は core-harnes
 - ディスパッチャー自身を報告先として伝えないこと
 - 指示送信時に「報告先は窓口です。ディスパッチャーではありません」と念押しすること
 
+## `spawn_claude_pane` `args[]` の取り扱い（重要）
+
+`mcp__renga-peers__spawn_claude_pane` の `args[]` は Claude Code CLI の実フラグ（例: `--resume`, `--continue`）専用。**通常は空（省略）にする**。DELEGATE / worker brief 本文中に `--skip-settings` / `--no-foo` 等の **flag-like text** が含まれていても、それは窓口側ツール（`gen_delegate_payload.py` の `--skip-settings` 等）の文脈情報や作業説明であり、Claude CLI 引数として `args[]` に直訳しないこと。直訳すると `error: unknown option '--xxx'` でペインが即時 exit する（2026-05-09 `--skip-settings` の事故事例参照）。詳細は [`.dispatcher/references/spawn-flow.md`](references/spawn-flow.md) Step 3-2。
+
 ## 窓口への返信方法（重要）
 
 窓口（Secretary）から `<channel source="renga-peers">` メッセージを受信したとき、MCP サーバーの汎用 instruction は「`from_id` で返信せよ」と案内するが、`from_id` は numeric pane id（例: `"1"`）であり、renga レイアウト再構築や pane id 採番変更で壊れる。

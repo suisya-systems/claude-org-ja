@@ -68,13 +68,14 @@ mcp__renga-peers__spawn_claude_pane(
 - `name="worker-{task_id}"`: 後続の `mcp__renga-peers__send_message(to_id="worker-{task_id}", ...)` や `close_pane(target="worker-{task_id}")` で addressable にする安定名。**全桁数字は id 扱いになる** ので、`worker-` プレフィックス等で英字を必ず含める
 - `role="worker"`: `list_panes` の結果で役割識別（次回以降の balanced split の target 選出にも使われる）
 - `cwd` / `permission_mode` / `model` / `args[]` は `spawn_claude_pane` の構造化フィールド。renga が `claude --permission-mode {mode} --dangerously-load-development-channels server:renga-peers ...` を合成する。旧方式（`cd`-プレフィックス付き command 文字列を `spawn_pane` に渡す）は **禁止**
+- **`args[]` は通常空（省略）にする**。`args[]` は Claude Code CLI の実フラグ（例: `--resume`, `--continue`）のみが渡せる。DELEGATE メッセージや worker brief 本文に `--skip-settings` / `--no-foo` のような **flag-like text** が現れても、それは窓口側ツール（`gen_delegate_payload.py` の `--skip-settings` 等）のコンテキスト情報や作業の説明であり、`spawn_claude_pane` の `args[]` に直訳してはならない。直訳すると Claude Code が `error: unknown option '--xxx'` で即時 exit し、ペインが起動直後に閉じる（実例: 2026-05-09 sandbox-probe-iter-b-round-3 で `--skip-settings` を args に渡して pane id=11 が即時退役 — `knowledge/raw/2026-05-09-delegation-skip-settings-wrong-cli-arg.md`）。worker 用 settings 等の準備状態は窓口の `apply` 段階で完了済みなので、ワーカー起動側で追加 flag を載せる必要はない
 - 起動コマンドの仕様は `.claude/skills/org-start/SKILL.md` の「ClaudeCode 起動コマンド（役割別）」セクションを参照
 - `spawn_claude_pane` が内部で `--dangerously-load-development-channels` を付与するため、`Load development channel?` 確認プロンプトが初回表示される。3-3b で `send_keys(enter=true)` による承認が必要
 - **エラーハンドリング**: MCP 結果テキストに `[<code>] <msg>` 形式でエラーが埋まる。主な code:
   - `[split_refused]` (MAX_PANES / too small): [`.claude/skills/org-delegate/references/renga-error-codes.md`](../../.claude/skills/org-delegate/references/renga-error-codes.md) の手順に従いキュレーター → 窓口に escalate
   - `[pane_not_found]`: `$target` に選んだ既存ペインが spawn 発行直前に閉じたレース。同じくエラーコード経路で escalate
   - `[cwd_invalid]`: 指定した cwd が存在しない / ディレクトリでない。窓口に escalate し、ワーカーディレクトリ準備（`.claude/skills/org-delegate/SKILL.md` Step 0.7 / 1 / 1.5 / 2）が完了しているか確認
-  - `[invalid-params]`: `args[]` に `--permission-mode` / `--model` / `--dangerously-load-development-channels` を含めた場合の拒否。構造化フィールドで渡す
+  - `[invalid-params]`: `args[]` に `--permission-mode` / `--model` / `--dangerously-load-development-channels` を含めた場合の拒否。構造化フィールドで渡す。同じく brief 本文中の flag-like text を args[] に転記して unknown option を起こす経路も避ける（上の args[] ルール参照）
   - その他の code は同 reference 参照
 
 ### 3-3. ペインが起動したことを確認
