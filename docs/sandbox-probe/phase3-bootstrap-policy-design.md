@@ -1,6 +1,6 @@
 # Phase 3: Sandbox Bootstrap Policy Design (~/.aws/.env deny-map fragility)
 
-**Refs**: Issue #376（epic）/ Issue #380（Phase 3 環境別 fail policy）
+**Refs**: Issue #376（epic）/ Issue #392（Phase 3 実装）。Linux runbook 関連の #380 とは別スコープ
 **Branch**: `feat/sandbox-bootstrap-policy-design`
 **作成日**: 2026-05-09
 **スコープ**: 設計（writeup のみ）。実装は本 worker の責務外で、ユーザー判断後に後続 worker が引き継ぐ。
@@ -202,7 +202,7 @@ e. **可観測性**:
 
 ## 7. スコープ外（後続 worker への引き継ぎ）
 
-実装は本 worker の責務外。以下は採用案を実装する後続 worker（Issue #380 / Issue #378 連動）が扱う:
+実装は本 worker の責務外。以下は採用案を実装する後続 worker（Issue #392 / Issue #378 連動）が扱う:
 
 - `claude-org-runtime settings generate` の platform 検出ロジック追加
 - `role_configs_schema.json` の `sandbox` field 追加（Phase 1 / Issue #378）
