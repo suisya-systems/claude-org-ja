@@ -31,7 +31,7 @@
 
 ### retro gate ack の宛先
 
-retro gate ack は必ず `mcp__renga-peers__send_message(to_id="dispatcher", ...)` で返す。channel broadcast 形式の ack は `dispatcher_retro_gate.py` が `check_messages` で検出できず timeout する（phase3-doc-fix-issue-ref で実害発生）。dispatcher 宛の direct send_message のみが retro gate を通過する経路である。
+retro gate ack は必ず `mcp__renga-peers__send_message(to_id="dispatcher", ...)` で返す。channel broadcast 形式の ack は `dispatcher_retro_gate.py` が `check_messages` で検出できず timeout する。dispatcher 宛の direct send_message のみが retro gate を通過する経路である。
 
 ## ワーカーからの判断仰ぎは人間にエスカレーションする
 

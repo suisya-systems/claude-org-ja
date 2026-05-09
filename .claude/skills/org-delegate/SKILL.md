@@ -54,7 +54,7 @@ description: >
 | ソースと destination の乖離 | `git log <source>..<destination>` / `git log <destination>..<source>` で双方向に確認 | 双方向に diverge があれば cp 禁止、selective merge を採用 |
 | destination 側の追加修正 | destination ブランチで Codex review fix / Blocker fix が積まれていないか | 積まれている場合は cp で機械的に上書きしないこと（cherry-pick or hunk 単位の apply） |
 
-背景: iter A で round3 の credential 露出対策 Blocker fix を revert 寸前まで進んだ事故（cp で destination の修正を巻き戻し）。ワーカーへの brief で「初手 cp 禁止 / 取り込み戦略を明示」を要求する。
+背景: cp で destination の修正を機械的に巻き戻す事故が過去に発生（destination 側の credential 露出対策 Blocker fix を revert 寸前まで進んだ）。ワーカーへの brief で「初手 cp 禁止 / 取り込み戦略を明示」を要求する。
 
 ## Step 0: プロジェクト名前解決（窓口が実行）
 
