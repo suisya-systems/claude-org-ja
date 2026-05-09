@@ -227,10 +227,10 @@ worker briefs and `settings.local.json` files.
 | `<claude_org_path>/.state/**` | Direct | Journal append must go through [`tools/journal_append.sh`](../../tools/journal_append.sh) / [`tools/journal_append.py`](../../tools/journal_append.py); raw `>>` is an org-discipline ban (see [`docs/contracts/role-contract.md`](./role-contract.md) §secretary). |
 | `<claude_org_path>/registry/**` | Direct | `registry/projects.md`, `registry/org-config.md`. |
 | `<claude_org_path>/dashboard/**` | Direct | Snapshot regeneration via [`dashboard/org_state_converter.py`](../../dashboard/org_state_converter.py). |
-| `<claude_org_path>/knowledge/**` | Direct | Limited in practice to retro-related files and `knowledge/skill-candidates.md`; raw learnings are typically worker / dispatcher / curator owned. |
+| `<claude_org_path>/knowledge/skill-candidates.md` | Direct | Per [`docs/contracts/knowledge-curation-contract.md`](./knowledge-curation-contract.md) the secretary may write the skill-candidate queue. **`<claude_org_path>/knowledge/raw/**` and `<claude_org_path>/knowledge/curated/**` are NOT secretary-writeable** in the normal flow — see same contract §1.1 and §3.1; scrub of operator-private content is delegated, not edited in place. |
 | `<workers_dir>/<task>/CLAUDE.md` and `<task>/.claude/settings.local.json` | Generator-only | Worker brief + settings file placement during the org-delegate skill's worker-dir-prep step. **`Edit` / `Write` to `*/workers/*/.claude/settings.local.json` is denied at Layer 2** (`required_deny` in [`tools/org_extension_schema.json`](../../tools/org_extension_schema.json) `roles.secretary`); the canonical generator is `claude-org-runtime settings generate`. Manual JSON authoring is rejected by drift CI. |
 | `<workers_dir>/<task>/.worktrees/.../.claude/settings.local.json` | Generator-only | Same constraint; required_deny rule covers the worktree path too. |
-| `<claude_org_path>/.worktrees/<task>/.claude/settings.local.json` | Generator-only | Same constraint applies for the live_repo_worktree variant; the secretary's `roles.secretary.required_deny` rule is keyed on the file-path glob, so it extends to the live repo's worktree subtree as well. |
+| `<claude_org_path>/.worktrees/<task>/.claude/settings.local.json` | Generator-only (convention) | **NOT covered by the secretary's current Layer 2 `required_deny`** — those rules glob only `*/workers/*/.claude/settings.local.json` and `*/workers/*/.worktrees/*/.claude/settings.local.json`, neither of which matches the live repo's `.worktrees/` subtree. The generator-only discipline is enforced for this variant by *convention* (the org-delegate skill calls `claude-org-runtime settings generate`); there is no Layer 2 rule that would block a manual `Edit`/`Write` here today. **Gap → Phase 1**: extend `roles.secretary.required_deny` with a glob that matches `<claude_org_path>/.worktrees/*/.claude/settings.local.json` so the live_repo_worktree variant has the same hard guarantee. |
 
 **Denied writes (prescriptive)**:
 
@@ -483,15 +483,34 @@ project repo; worker has its own `.git/` directory.
   - `git push` (incl. `eval` / `bash -c`) — Layer 4
     [`.hooks/block-git-push.sh`](../../.hooks/block-git-push.sh).
   - `git push --force / -f / --force-with-lease`, `git reset --hard`,
-    `git branch -D`, `git branch --delete --force` — Layer 4
+    `git branch -D`, `git branch --delete --force` — **NOT enforced for
+    default workers today**. The repo-shared
+    [`.claude/settings.json`](../../.claude/settings.json) installs
     [`.hooks/block-dangerous-git.sh`](../../.hooks/block-dangerous-git.sh)
-    (defense-in-depth at the **repo-shared**
-    [`.claude/settings.json`](../../.claude/settings.json) level — see role
-    `repo_shared`. The worker role does not duplicate-install the dangerous-
-    git hook because it ships at the repo-shared layer.)
-  - `git commit --no-verify` / `git push --no-verify` — Layer 4
-    [`.hooks/block-no-verify.sh`](../../.hooks/block-no-verify.sh) (also
-    repo-shared).
+    only for processes whose cwd is inside the claude-org repo (Claude
+    Code reads cwd-tree `.claude/settings*.json` and `~/.claude/settings.json`,
+    not arbitrary trees). Pattern A and default Pattern B workers run with
+    cwd outside the claude-org repo, so they do **not** inherit this hook.
+    Empirically confirmed in
+    [`docs/sandbox-probe/notes/iteration-b-round1-results.md`](../sandbox-probe/notes/iteration-b-round1-results.md)
+    §non-inheritance. The `worker_roles.default` schema does not duplicate
+    `block-dangerous-git.sh` either. **Gap → Phase 1**: either include
+    `block-dangerous-git.sh` in `worker_roles.default.hooks.PreToolUse[Bash]`,
+    or extend `worker_roles.default.permissions.deny` with the equivalent
+    pattern denies (`Bash(git push --force*)`, `Bash(git reset --hard*)`,
+    etc.) — the handcraft profile-tightened.json already lists those at
+    Layer 2.
+  - `git commit --no-verify` / `git push --no-verify` — same as above:
+    [`.hooks/block-no-verify.sh`](../../.hooks/block-no-verify.sh) is
+    repo-shared and **not inherited** by default workers running outside
+    the claude-org repo. Default-worker enforcement of `--no-verify` today
+    relies on the `repo_shared.required_hooks` invariant only when the
+    worker happens to commit into the claude-org repo (i.e. the self-edit
+    case in §4.4 — see that section's Layer 4 row). For non-claude-org
+    projects, secret-scan bypass via `--no-verify` is currently
+    unenforced at Claude Code's hook layer; the upstream project's own
+    pre-commit hook chain (if installed) is the only gate. **Gap →
+    Phase 1**.
   - `rm -rf` / `rm -r` — Layer 2
     `worker_roles.default.permissions.deny`.
 
@@ -505,8 +524,8 @@ project repo; worker has its own `.git/` directory.
 | `Read(.env)` / credentials | `permissions.deny` ✔ | (handcraft) `denyRead` ✔ | n/a |
 | `Read(~/.aws/*)` | not in default; in `profile-tightened` only | adaptive (§1.3) when present | n/a |
 | `git push` | not denied at Layer 2 (positive allow excludes push but does not deny) | n/a | [`.hooks/block-git-push.sh`](../../.hooks/block-git-push.sh) |
-| `git push --force` / `reset --hard` | n/a | n/a | [`.hooks/block-dangerous-git.sh`](../../.hooks/block-dangerous-git.sh) (repo-shared) |
-| `git commit --no-verify` | n/a | n/a | [`.hooks/block-no-verify.sh`](../../.hooks/block-no-verify.sh) (repo-shared) |
+| `git push --force` / `reset --hard` | (handcraft profile-tightened only) `Bash(git push --force*)` etc. | n/a | **NOT installed** for default worker; repo-shared hook is not inherited by cwd-outside-claude-org workers. **Gap → Phase 1.** |
+| `git commit --no-verify` | n/a | n/a | **NOT installed** for default worker on non-claude-org projects (same cwd-tree non-inheritance reason). **Gap → Phase 1.** |
 | `rm -rf` | `permissions.deny` ✔ | n/a | n/a |
 
 **Gap → Phase 1**: The `sandbox` block for default Pattern A is **handcraft-
@@ -838,35 +857,53 @@ into the following layer-specific enforcements that all must hold:
 | `git commit` / `git branch` / `git checkout` / `git switch` | `permissions.deny` ✔ (per `worker_roles.doc-audit.permissions.deny`) | n/a | [`.hooks/block-git-push.sh`](../../.hooks/block-git-push.sh), etc. |
 
 To make the prescriptive "write surface = none" claim hold, **Layer 3
-`denyWrite` against the entire worktree minus tightly enumerated carve-outs**
-is required:
+must deny everywhere except the Plan-mode carve-outs**. The shape of the
+emit therefore needs `denyWrite` to *exclude* Plan paths (either by NOT
+naming them in `denyWrite`, or by emitting Plan paths as
+`additionalDirectories`-allow that overrides a broad `denyWrite`):
 
 ```jsonc
 "sandbox": {
   "filesystem": {
-    "additionalDirectories": [],   // no positive write surface inside the worktree
+    "additionalDirectories": [
+      "~/.claude/plans",
+      "{worker_dir}/.claude/plans"
+    ],
     "denyWrite": [
-      "{worker_dir}/**",
-      "~/.claude/plans/**"     // intentional carve-out
+      "{worker_dir}/**"
+      // NOTE: ~/.claude/plans and {worker_dir}/.claude/plans must NOT
+      // appear in this list. They are emitted as additionalDirectories
+      // (positive allow) so the deny against {worker_dir}/** does not
+      // close them. The exact precedence is bwrap-emit specific; the
+      // schema generator MUST verify on emit that Plan paths remain
+      // writable.
     ]
   }
 }
 ```
 
-with the carve-outs the **only** writeable paths. Phase 1 must encode this
-when emitting `worker_roles.doc-audit.sandbox`. Without Layer 3, the
-combination of Layer 2 `deny [Edit, Write, MultiEdit, NotebookEdit]` +
-Layer 4 [`.hooks/block-git-push.sh`](../../.hooks/block-git-push.sh) does
-**not** prevent `Bash(echo malicious > /tmp/evil.sh && bash /tmp/evil.sh)`
+Phase 1 must encode this when emitting `worker_roles.doc-audit.sandbox`.
+The bwrap-emit precedence between `additionalDirectories` and
+`denyWrite` MUST keep the Plan paths writable; if precedence cannot be
+arranged, the alternative is to enumerate `denyWrite` paths individually
+to exclude Plan paths (e.g. `denyWrite: ["{worker_dir}/.claude/!(plans/**)",
+"{worker_dir}/!(.claude/**)/**"]` or equivalent generated patterns). The
+prescriptive surface is "writes prevented everywhere except Plan paths";
+the wire format is implementation detail to be settled in Phase 1.
+
+Without Layer 3, the combination of Layer 2 `deny [Edit, Write, MultiEdit,
+NotebookEdit]` + Layer 4 [`.hooks/block-git-push.sh`](../../.hooks/block-git-push.sh)
+does **not** prevent `Bash(echo malicious > /tmp/evil.sh && bash /tmp/evil.sh)`
 — the redirect itself is unblocked.
 
 **Carve-out rationale**:
 
-- `~/.claude/plans/**` — Plan-mode files are essential to Claude Code's
-  Plan-mode operation; denying them would break the harness UX. This
-  carve-out is consistent across all worker roles (Layer 4
+- `~/.claude/plans/**` and `<worker_dir>/.claude/plans/**` — Plan-mode
+  files are essential to Claude Code's Plan-mode operation; denying them
+  would break the harness UX. This carve-out is consistent across all
+  worker roles (Layer 4
   [`.hooks/check-worker-boundary.sh`](../../.hooks/check-worker-boundary.sh)
-  allow path 2).
+  allow paths 1 and 2).
 - The worker may **read** widely; the prescriptive surface here is only
   about writes.
 
@@ -878,8 +915,11 @@ doc-audit's `permissions.deny` denies `Edit` and `Write` outright. The
 require a positive `Edit` / `Write` allow that the role's deny rule
 overrides. **doc-audit produces no `knowledge/raw/` notes.** Reusable
 learnings from audit observations should be reported back to the secretary
-and the secretary writes them (or delegates a separate non-audit task to
-record them). This contradicts the
+in the completion report; the secretary then delegates a separate non-audit
+task whose worker authors the `knowledge/raw/` entry (the secretary itself
+does not write `knowledge/raw/` per
+[`docs/contracts/knowledge-curation-contract.md`](./knowledge-curation-contract.md)
+§1.1). This contradicts the
 [`.claude/skills/org-delegate/references/worker-claude-template.md`](../../.claude/skills/org-delegate/references/worker-claude-template.md)
 text that suggests workers always have raw-write ability — that text is
 **default-role specific** (the template's wording is followed by a specific
@@ -898,7 +938,7 @@ conditional** for the worker case:
 
 | Role | knowledge/raw/ write | knowledge/raw/ delete | Filename constraint | Layer |
 |---|---|---|---|---|
-| Secretary | yes (rare; typically retro-related) | yes (Bash-mediated; convention-bounded) | none enforced | none — convention only |
+| Secretary | **no** (does not write to `knowledge/raw/` in the normal flow per [`docs/contracts/knowledge-curation-contract.md`](./knowledge-curation-contract.md) §1.1; scrub of operator-private content is delegated to a worker, not edited in place by the secretary, per same contract §3.1) | **no** (outright deletion of raw entries is forbidden by [`docs/contracts/knowledge-curation-contract.md`](./knowledge-curation-contract.md) §1.1; only the curator may move into `archive/`) | n/a | none enforced today (convention-only ban; **Gap → Phase 1** could mechanize via Layer 3 `denyWrite` on `<claude_org_path>/knowledge/raw/**` for the secretary role) |
 | Dispatcher | yes (retro learnings only, after dispatcher retro step) | no | `YYYY-MM-DD-<kebab-topic>.md` | Layer 4 [`.hooks/block-dispatcher-out-of-scope.sh`](../../.hooks/block-dispatcher-out-of-scope.sh) allow rule 3 (kebab-case validated) |
 | Curator | **move to `knowledge/raw/archive/` only**; outright delete forbidden | no (move only; convention) | none for moves | none — convention only |
 | Worker `default` | yes, **full-mode only**; minimal mode prohibited | no | `YYYY-MM-DD-<kebab-topic>.md` | Layer 4 [`.hooks/check-worker-boundary.sh`](../../.hooks/check-worker-boundary.sh) allow path 3; depth-condition is convention only |
@@ -941,8 +981,8 @@ This complements §1.2 by showing which roles install which hook.
 
 | Hook | Tool matcher | secretary | dispatcher | curator | worker default | worker self-edit | worker doc-audit | Notes |
 |---|---|---|---|---|---|---|---|---|
-| [`.hooks/block-no-verify.sh`](../../.hooks/block-no-verify.sh) | Bash | repo-shared | required | repo-shared | repo-shared | repo-shared | repo-shared | Installed at the repo-shared [`.claude/settings.json`](../../.claude/settings.json) layer (`roles.repo_shared.required_hooks`); secretary / curator inherit it. |
-| [`.hooks/block-dangerous-git.sh`](../../.hooks/block-dangerous-git.sh) | Bash | repo-shared | required | repo-shared | repo-shared | repo-shared | repo-shared | Same. |
+| [`.hooks/block-no-verify.sh`](../../.hooks/block-no-verify.sh) | Bash | repo-shared (effective; cwd is claude-org root) | required | repo-shared (effective; cwd is `<claude_org>/.curator/`, inside the repo tree) | **NOT inherited** for default workers running outside the claude-org repo (cwd-tree non-inheritance) | repo-shared (effective; cwd is `<claude_org>/.worktrees/<task>/` or the live repo root, both inside the repo tree) | repo-shared (effective only when the audit target is the claude-org repo itself; otherwise NOT inherited) | Installed at the repo-shared [`.claude/settings.json`](../../.claude/settings.json) layer (`roles.repo_shared.required_hooks`). Claude Code reads cwd-tree `.claude/settings*.json` only, so inheritance applies only when the role's cwd is inside the claude-org repo. **Gap → Phase 1** for default / doc-audit on non-claude-org projects. |
+| [`.hooks/block-dangerous-git.sh`](../../.hooks/block-dangerous-git.sh) | Bash | repo-shared (effective) | required | repo-shared (effective) | **NOT inherited** for default workers outside claude-org cwd-tree | repo-shared (effective) | repo-shared (effective only when audit target is claude-org) | Same inheritance rule as above. |
 | [`.hooks/block-git-push.sh`](../../.hooks/block-git-push.sh) | Bash | not installed (secretary pushes) | required | not installed | required | required | required | |
 | [`.hooks/block-workers-delete.sh`](../../.hooks/block-workers-delete.sh) | Bash | required | required | not installed | not installed | not installed | not installed | Only secretary + dispatcher manage `<workers_dir>/`. |
 | [`.hooks/block-org-structure.sh`](../../.hooks/block-org-structure.sh) (Edit/Write portion) | Edit \| Write | not installed | not installed | not installed | required | **NOT installed** (carve-out) | required | The carve-out is the whole reason the self-edit role exists. |
@@ -1096,17 +1136,21 @@ crosses contracts, update both and link the cross-reference.
 
 ## 8. Verification surface (informational; no test changes in this PR)
 
-This document is doc-only. The repo's existing tests / lints / drift CI
-should pass unchanged:
+This document is doc-only. The intended verification posture for this PR is:
 
 - `pytest tests/` — passes (no code change).
-- [`tools/audit_link_paths.py`](../../tools/audit_link_paths.py) — every
-  `[`...`](...)` link in this file follows the convention from
-  [`docs/contributing/markdown-conventions.md`](../contributing/markdown-conventions.md);
-  links target existing files relative to this document's location
-  (`docs/contracts/`).
+- [`tools/audit_link_paths.py`](../../tools/audit_link_paths.py) on this
+  file specifically — `python tools/audit_link_paths.py docs/contracts/role-pattern-sandbox-contract.md`
+  reports zero violations originating from this file. The repo-wide
+  `python tools/audit_link_paths.py` invocation may still report a small
+  number of pre-existing violations in unrelated files (CLAUDE.md and
+  `.claude/skills/org-delegate/SKILL.md`); those predate this PR and are
+  not introduced or modified here. Every `[`...`](...)` link in this file
+  follows the convention from
+  [`docs/contributing/markdown-conventions.md`](../contributing/markdown-conventions.md),
+  with targets resolving relative to `docs/contracts/`.
 - [`tools/check_role_configs.py`](../../tools/check_role_configs.py) — no
-  schema change in this PR.
+  schema change in this PR; drift remains green.
 
 Phase 1 will add positive verification: drift CI for the `sandbox` field,
 and a Pattern B Git metadata test that exercises the `additionalDirectories`
