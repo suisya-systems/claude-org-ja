@@ -60,6 +60,28 @@ org-delegate の Step 1.5 でワーカー専用ディレクトリ（`{workers_di
 - git push: 不可（`permissions.deny` + hook により技術的にブロック。窓口経由で依頼すること）
 - `rm -rf` / `rm -r`: 不可（`permissions.deny` により技術的にブロック）
 
+## 監査・調査タスクの行動規範（audit / 検証 / 調査）
+
+audit / 検証 / 調査タスクで観察された shape（症状・ログ・出力）が **複数の仮説経路で説明できる場合、最低 1 つを実機反証実験で除外せよ**。複数仮説のうち 1 つだけを採用して結論を出す前に、他仮説を実機で確認し排除する。
+
+背景: db-mystery-iter-a-audit で sandbox shadow FS 仮説を採用したが、真因は `state_db.connect()` の cwd 相対パスだった。別仮説の実機反証を要求していれば 1 ラウンドで真因に到達できた。
+
+実装の目安:
+- 「仮説 X が真なら Y が観察されるはず」の予測を立て、Y を実機で確認する手順を brief / 報告に明記する
+- 仮説が単一しか挙がらない場合は「他にどう説明できるか」を 1 ラウンド明示的に発散させる
+- 反証実験の結果（hypothesis / experiment / observation / verdict）を報告に含める
+
+## probe / fuzzing 系タスクの credential 取扱い
+
+probe / 検証 / fuzzing 系タスク（sandbox 探索・hook 動作確認・ファイルアクセス可否調査など）で、本番 credential 系パス（`~/.config/`, `~/.aws/`, `~/.ssh/`, `~/.netrc`, `~/.npmrc`）に触れる可能性があるときは、**testbed credential への切替手順を実行前必須化する**。
+
+実装の目安:
+- 実行前に `gh auth login --with-token` 等で testbed credential に切り替え、本番 token を一時的に退避する
+- probe 中は本番 credential が読まれない状態を維持する（環境変数 / config path の override 等）
+- probe 終了後に本番 credential を復元する手順も brief / 報告に明記する
+
+背景: iter A で `cat ~/.config/gh/hosts.yml` の実 oauth_token を dispatcher stdout に露出した事故。probe 系タスクは「読み取りそのもの」が攻撃面になるため、testbed への切替を実行前ゲートとして強制する。
+
 ## Codex セルフレビュー手順
 
 派遣指示に**必ず含まれる「検証深度」行**（`full` または `minimal`）に従うこと。指示に値が無い・不明瞭な場合は勝手に決めず窓口（`secretary`）に確認すること。

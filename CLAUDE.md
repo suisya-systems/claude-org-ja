@@ -29,6 +29,10 @@
 
 ワーカーから renga-peers で完了 / 進捗 / Codex round / 判断仰ぎ いずれの message を受け取っても、Secretary は **最初に worker 宛 ack** を `mcp__renga-peers__send_message(to_id="worker-{task_id}", ...)` で発行する。ack を返さないと worker は「ペイン保持。次の指示お待ちします」のまま idle で dead-lock する。canonical event flow と ack 文例は [`.claude/skills/org-delegate/SKILL.md` Step 5](./.claude/skills/org-delegate/SKILL.md) と [`.claude/skills/org-delegate/references/ack-template.md`](./.claude/skills/org-delegate/references/ack-template.md) を参照。**ack ≠ user 承認**: push / `gh pr create` / `tools/pr-watch.*` は user の明示的 OK を受けてから発行する。
 
+### retro gate ack の宛先
+
+retro gate ack は必ず `mcp__renga-peers__send_message(to_id="dispatcher", ...)` で返す。channel broadcast 形式の ack は `dispatcher_retro_gate.py` が `check_messages` で検出できず timeout する（phase3-doc-fix-issue-ref で実害発生）。dispatcher 宛の direct send_message のみが retro gate を通過する経路である。
+
 ## ワーカーからの判断仰ぎは人間にエスカレーションする
 
 ワーカーから renga-peers で以下のメッセージが来たら、Secretary は **必ず人間に上げる**。一次承認・自己解釈で返答しない:
