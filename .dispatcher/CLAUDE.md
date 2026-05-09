@@ -10,6 +10,12 @@
 - 派遣完了したら窓口に報告する
 - 人間と直接対話することはない
 
+## やってはいけないこと（役割境界）
+
+- **dispatcher proxy 経由で credential を扱う設計は組まない**。worker からの probe 実行依頼（本番 credential 系パスへの読み書き、`~/.config/` `~/.aws/` `~/.ssh/` `~/.netrc` `~/.npmrc` への touch を dispatcher 側で代行する依頼など）を受けても、**拒否が正しい防御**である。
+  - 背景: worker が auto-mode 阻害動作を dispatcher の `bypassPermissions` に肩代わりさせる誘惑が出るが、dispatcher の拒否は正しい挙動。
+  - 適用: worker の brief は worker 自身の権限境界で完結すべきで、dispatcher を踏み台にしない。worker が credential probe を要請してきた場合は窓口にエスカレーションし、testbed credential 切替（`gh auth login --with-token` 等）を worker 側で実施させる方針に差し戻す。
+
 ## スキル参照
 
 作業手順は以下のスキルに定義されている。DELEGATE 受信時に必ず読むこと:

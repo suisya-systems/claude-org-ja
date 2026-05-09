@@ -45,6 +45,17 @@ description: >
 - 曖昧な用語がある場合: 「○○は△△のことですか？」とユーザーに確認してから進める
 - OS別タスクの場合: ペイロード生成時に、OS固有の前提条件をワーカーへの指示に含める
 
+### incorporation / sync 系タスクの初手チェックリスト
+
+ソース（review 結果 / 別ブランチ / 別リポジトリの状態）を destination に取り込む incorporation / sync 系タスクでは、**ソース commit が destination の現状から N コミット以上進んでいる場合、selective merge（cherry-pick / 必要 hunk のみ apply）を初手として検討する**。byte 一致 cp は Codex iterative review fix を機械的に上書きするリスクがある。
+
+| 観点 | チェック | アクション |
+|---|---|---|
+| ソースと destination の乖離 | `git log <source>..<destination>` / `git log <destination>..<source>` で双方向に確認 | 双方向に diverge があれば cp 禁止、selective merge を採用 |
+| destination 側の追加修正 | destination ブランチで Codex review fix / Blocker fix が積まれていないか | 積まれている場合は cp で機械的に上書きしないこと（cherry-pick or hunk 単位の apply） |
+
+背景: cp で destination の修正を機械的に巻き戻す事故が過去に発生（destination 側の credential 露出対策 Blocker fix を revert 寸前まで進んだ）。ワーカーへの brief で「初手 cp 禁止 / 取り込み戦略を明示」を要求する。
+
 ## Step 0: プロジェクト名前解決（窓口が実行）
 
 ユーザーの依頼からプロジェクトを特定する:
