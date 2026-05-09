@@ -261,6 +261,10 @@ gh issue view <dogfood_issue> --json state -q .state
 
 ## Step 5: 進捗管理（窓口が実行）
 
+### ⚠️ cwd 注意: state.db touching tools
+
+`tools/journal_append.sh` / `tools/journal_append.py` / `tools/set_run_pr_open.py` / `python -c "... StateWriter ..."` 等、`state.db` を相対パスで開く tool は ja root 相対前提。worker / worktree cwd から起動すると `no such table: runs` / `no such table: events` でサイレント or クラッシュ失敗し、後段の post-commit hook や snapshot 再生成も走らない。必ず `cd <ja-root>` してから実行すること。Issue #398 で根本対応中。
+
 ### DELEGATE_COMPLETE 受信時
 
 ディスパッチャーから派遣完了報告を受け取ったら、各ワーカーに挨拶メッセージを送る:
