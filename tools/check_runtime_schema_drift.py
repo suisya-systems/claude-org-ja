@@ -35,7 +35,7 @@ from pathlib import Path
 # requirements.txt. Keep this constant in sync when widening the pin
 # (Phase 5e+ scope per CLAUDE.local.md). Stored as tuples for ordered
 # comparison; only major.minor.micro are honoured.
-RUNTIME_PIN_LOWER_INCLUSIVE = (0, 1, 1)
+RUNTIME_PIN_LOWER_INCLUSIVE = (0, 1, 3)
 RUNTIME_PIN_UPPER_EXCLUSIVE = (0, 2, 0)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
