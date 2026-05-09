@@ -128,7 +128,9 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
       "Write(*/workers/*/.claude/settings.local.json)",
       "Edit(*/workers/*/.claude/settings.local.json)",
       "Write(*/workers/*/.worktrees/*/.claude/settings.local.json)",
-      "Edit(*/workers/*/.worktrees/*/.claude/settings.local.json)"
+      "Edit(*/workers/*/.worktrees/*/.claude/settings.local.json)",
+      "Write(*/.worktrees/*/.claude/settings.local.json)",
+      "Edit(*/.worktrees/*/.claude/settings.local.json)"
     ]
   },
   "hooks": {
