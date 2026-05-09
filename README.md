@@ -21,6 +21,8 @@
 | **ワーカー（Worker）** | タスク 1 件ごとに起動される実作業担当。専用の作業ディレクトリ境界の中でコード編集・コミットまでを行う（`git push` / プルリクエスト作成は窓口側の責務、ワーカーは PR 作成権限を持たない）。 | [`.claude/skills/org-delegate/SKILL.md`](.claude/skills/org-delegate/SKILL.md) |
 | **renga** | Layer 3 の端末多重化器 + `renga-peers` MCP サーバー。ペイン制御とペイン間 P2P メッセージを提供する。 | [suisya-systems/renga](https://github.com/suisya-systems/renga) |
 
+> **See also**: `renga` は旧称 `ccmux` からのリネーム済み（`renga (旧 ccmux)`）。歴史的な名称で検索する読者向けの補足。リネーム経緯は [`docs/operations/m3-migration-runbook.md`](docs/operations/m3-migration-runbook.md) を参照。
+
 ---
 
 ## 30 秒ピッチ
@@ -190,6 +192,21 @@ renga --layout ops
               +-> ディスパッチャー（ワーカー起動・指示の代行）
               +-> キュレーター（知見整理、30 分ごとに自動実行）
               +-> ワーカー群（実作業、完了後に自動消滅）
+```
+
+**ペインレイアウト（`/org-start` 直後 — 各役割の詳細は[用語集](#用語集)を参照）**:
+
+```mermaid
+flowchart TB
+    subgraph row1[" "]
+        S["<b>窓口（Secretary）</b><br/>上段・全幅 — 人間との唯一の接点"]
+    end
+    subgraph row2[" "]
+        direction LR
+        D["<b>ディスパッチャー（Dispatcher）</b><br/>下段左 — ワーカー起動・指示送信を代行"]
+        C["<b>キュレーター（Curator）</b><br/>下段右 — 知見整理（30 分自動ループ）"]
+    end
+    row1 ~~~ row2
 ```
 
 <table>
