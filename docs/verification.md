@@ -458,6 +458,50 @@ WSL2 などで `bubblewrap` 未導入時に sandbox init が silent no-op fallba
 
 ---
 
+## 10.2. Phase 3 sandbox case E 実機検証 (WSL Layer 3 suppression, runtime 0.1.4+)
+
+**目的**: runtime 0.1.4 で導入された WSL Layer 3 suppression が期待通り発火することを確認する。具体的には worker_dir の realpath が sandbox read roots を escape する場合（典型: WSL の `/home/user/...` が `/mnt/c/...` へ resolve）、`sandbox.filesystem.denyRead` / `denyWrite` の該当 entry が rendered `settings.local.json` から自動的に dropped されること。
+
+**前提**: `claude-org-runtime>=0.1.4` が install されていること（`pyproject.toml` / `requirements.txt` 経由）。
+
+**手順**:
+
+1. WSL 環境で fresh worker dir を用意し、以下を実行:
+   ```bash
+   claude-org-runtime settings show \
+       --explain --json \
+       --role default \
+       --worker-dir <worker_dir> \
+       --claude-org-path <ja root>
+   ```
+2. 出力 JSON の `wsl_detected` が `true`、`sandbox_read_roots` が `<worker_dir>` + `additionalDirectories` を含むことを確認。
+3. `suppressions` 配列に少なくとも 1 件、以下のフィールドを持つエントリが含まれることを確認:
+   - `layer == 'sandbox.filesystem.denyRead'` または `'sandbox.filesystem.denyWrite'`
+   - `reason == 'realpath escapes sandbox read roots'`
+   - `realpath`, `sandbox_read_roots`
+
+   WSL では typically `~/.aws/*` や `~/.ssh/*` 系の Layer 3 entries が realpath escape で suppressed される。
+4. rendered `settings.local.json` を別途 generate し、`suppressions` に含まれた entries が `sandbox.filesystem.denyRead` / `denyWrite` から消えていることを確認。逆に `permissions.deny` の `Read(~/.aws/*)` / `Read(~/.ssh/*)` は Layer 2 として **必ず存在する** こと（runtime contract: Layer 2 は never suppressed）。
+5. 非 WSL Linux 環境（GitHub Actions `ubuntu-latest` 等）で同様に `settings show --explain` を実行し、`wsl_detected=false` / `suppressions=[]` / Layer 3 entries が rendered settings に残ることを確認。
+
+**期待結果と判断**:
+- WSL では Layer 3 が adaptive に dropped、Layer 2 は常に保持。
+- 非 WSL では Layer 3 はそのまま残る。
+- 両方で `permissions.deny` は intact。
+
+**失敗時の切り分け**:
+- (a) `wsl_detected` が `false` なのに `/mnt/c` が realpath に出る → `/proc/version` / `osrelease` 検出ロジックの不具合（runtime issue）。
+- (b) `suppressions` が空でも rendered settings から entries が消えている → `render_role` と `show` のソースが乖離。
+- (c) Layer 2 entries が消えている → runtime regression、即座に runtime 側に escalation。
+
+**関連 §Phase 2a portability fix (§10.1) との関係**: Phase 2a fix は「home dotfiles を sandbox スコープ外として `permissions.deny` で防御する」baseline であり、Phase 3 case E はその上で「WSL では Layer 3 entries も含めて自動的に dropped」という adaptive behavior を追加する。両者は併存し、非 WSL や bwrap 未導入環境では Phase 2a fix のまま動作する（§10.2 は WSL 環境向けの追加検証）。
+
+**Reference**:
+- runtime 0.1.4 release notes: https://github.com/suisya-systems/claude-org-runtime/releases/tag/v0.1.4
+- claude-org-runtime#10 (Phase 3 case E MVP)
+
+---
+
 ## 11. MCP 疎通テスト（環境確認）
 
 **目的**: `renga-peers` MCP サーバが Claude Code に接続済みで、14 ツール全てが tool surface として登録されていることを確認し、副作用なしで呼び出せるツールについてはサンプル呼び出しで応答を検証する。副作用の大きいツール（`send_keys` / `spawn_pane` / `spawn_claude_pane` / `close_pane` / `focus_pane` / `new_tab` / `set_pane_identity`）の実動作確認は Test 1-10 の E2E フローでカバーされるため、本テストでは登録確認のみに留める。
