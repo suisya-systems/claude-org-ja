@@ -111,6 +111,31 @@ class DiscoverRepoRootTests(unittest.TestCase):
         self.assertEqual(result, main)
         self.assertNotEqual(result, wt)
 
+    def test_redirects_worktree_with_relative_gitdir(self) -> None:
+        # Codex review Major 1: ``git worktree add --relative-paths``
+        # writes a relative ``gitdir:`` line. Discovery has to resolve
+        # it relative to the .git file's parent, not cwd, otherwise an
+        # invocation from a different cwd would silently fall back to
+        # the worktree's own .state/.
+        main = _make_fake_repo(self.tmp / "main-rel-repo")
+        wt = _make_fake_worktree(main, "feat-rel")
+        # Replace the absolute gitdir with a relative one. The expected
+        # main_root resolution is independent of cwd.
+        worktree_internal = main / ".git" / "worktrees" / "feat-rel"
+        rel = os.path.relpath(worktree_internal, wt)
+        (wt / ".git").write_text(f"gitdir: {rel}\n", encoding="utf-8")
+        nested = wt / "tools"
+        nested.mkdir()
+        # Switch cwd to an unrelated directory before discovery to prove
+        # the relative resolution does not leak cwd.
+        prior = os.getcwd()
+        try:
+            os.chdir(str(self.tmp))
+            result = discover_repo_root(start=nested)
+        finally:
+            os.chdir(prior)
+        self.assertEqual(result, main)
+
     def test_raises_when_no_marker(self) -> None:
         bare = self.tmp / "bare"
         bare.mkdir()
@@ -203,6 +228,18 @@ class VerifyStateDbSchemaTests(unittest.TestCase):
             verify_state_db_schema(partial)
         self.assertIn("runs", str(ctx.exception))
 
+    def test_corrupt_sqlite_file_raises_schema_error(self) -> None:
+        # Codex review Major 2: a non-sqlite file at the resolved path
+        # makes ``conn.execute`` raise ``sqlite3.DatabaseError``. Without
+        # explicit handling, that propagates as a bare traceback.
+        # verify_state_db_schema must wrap it into StateDbSchemaError
+        # so callers see a single, actionable failure type.
+        corrupt = self.tmp / "corrupt.db"
+        corrupt.write_bytes(b"this is not a sqlite database " + b"\x00" * 200)
+        with self.assertRaises(StateDbSchemaError) as ctx:
+            verify_state_db_schema(corrupt)
+        self.assertIn("not a valid sqlite database", str(ctx.exception))
+
     def test_full_schema_passes(self) -> None:
         good = self.tmp / "good.db"
         conn = connect(good)
@@ -276,8 +313,16 @@ class _SubprocessFixture:
     def cleanup(self) -> None:
         self._td.cleanup()
 
-    def make_worktree(self, name: str) -> Path:
-        """Create a fake worktree pointing at the main checkout."""
+    def make_worktree(self, name: str, *, mirror_tools: bool = True) -> Path:
+        """Create a fake worktree pointing at the main checkout.
+
+        When ``mirror_tools`` is True (default), copies the same tools/
+        tree into the worktree — that's what real ``git worktree add``
+        produces. Tests that exercise discovery from a worktree-relative
+        ``__file__`` need this so the tool script's ``Path(__file__)``
+        starts inside ``wt/tools/`` (the actual production scenario for
+        Issue #398), not under ``main/tools/``.
+        """
         worktree_internal = self.main / ".git" / "worktrees" / name
         worktree_internal.mkdir(parents=True)
         wt = self.tmp / f"worktree-{name}"
@@ -295,6 +340,8 @@ class _SubprocessFixture:
         )
         # Worktrees have an empty .state/ (modulo workers/ + .gitkeep).
         (wt / ".state").mkdir()
+        if mirror_tools:
+            shutil.copytree(self.main / "tools", wt / "tools")
         return wt
 
     def event_count(self, kind: str) -> int:
@@ -354,6 +401,37 @@ class JournalAppendCwdTests(unittest.TestCase):
         wt = self.sb.make_worktree("feat-cwd-fix")
         proc = self._invoke(wt)
         self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self.sb.event_count("worker_progress"), 1)
+        worktree_state = wt / ".state" / "state.db"
+        self.assertFalse(
+            worktree_state.exists(),
+            f"worktree state.db must NOT be auto-created; saw {worktree_state}",
+        )
+
+    def test_runs_worktree_owned_script_from_worktree_cwd(self) -> None:
+        # Codex review Minor: the actual production scenario is
+        # ``cd .worktrees/<task> && python tools/journal_append.py …``,
+        # i.e. invoking the worktree's own copy of the script. That
+        # makes Python's ``Path(__file__)`` start inside the worktree —
+        # discovery has to walk up from there and successfully redirect
+        # to the main checkout's state.db. Running ``main/tools/...``
+        # from the worktree cwd doesn't exercise the same code path.
+        wt = self.sb.make_worktree("feat-cwd-fix-owned")
+        env = {**os.environ}
+        env.pop("STATE_DB_PATH", None)
+        env.pop("RENGA_SOCKET", None)
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(wt / "tools" / "journal_append.py"),
+                "worker_progress",
+                "task=cwd_test_owned",
+                "note=worktree_owned_script",
+            ],
+            cwd=str(wt), capture_output=True, text=True, env=env, check=False,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        # Event landed in the main state.db — not the worktree's.
         self.assertEqual(self.sb.event_count("worker_progress"), 1)
         worktree_state = wt / ".state" / "state.db"
         self.assertFalse(

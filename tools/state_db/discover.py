@@ -67,6 +67,13 @@ def _resolve_main_checkout_from_worktree(git_file: Path) -> Optional[Path]:
     pointing at ``<main_git>/worktrees/<name>``. The main checkout is
     three parents up from that gitdir (gitdir → worktrees → .git → main).
 
+    The gitdir path may be absolute or relative. Per gitrepository-layout
+    (and confirmed by ``git worktree add --relative-paths``), a relative
+    gitdir is resolved against the directory holding the ``.git`` file —
+    NOT the cwd. We must honour that here, otherwise invocations from a
+    different cwd would resolve the wrong target and silently fall back
+    to the worktree's own ``.state/`` (the bug we're fixing).
+
     Returns None if the file is not a valid worktree pointer or the
     inferred main checkout doesn't itself look like the right project
     (sanity-check via :data:`_PROJECT_NAME_MARKER`).
@@ -79,6 +86,8 @@ def _resolve_main_checkout_from_worktree(git_file: Path) -> Optional[Path]:
     if not text.startswith(prefix):
         return None
     gitdir = Path(text[len(prefix):].strip())
+    if not gitdir.is_absolute():
+        gitdir = (git_file.parent / gitdir).resolve()
     # gitdir = <main>/.git/worktrees/<name>
     # parents: gitdir.parent = .git/worktrees, .parent.parent = .git,
     # .parent.parent.parent = main checkout root.
@@ -177,7 +186,12 @@ def verify_state_db_schema(
     (callers that already hold an open connection can pass it to avoid
     re-opening). Raises :class:`StateDbSchemaError` with an actionable
     message on failure — callers translate that into a non-zero exit
-    code (see :func:`exit_on_schema_error`).
+    code (see :func:`verify_or_exit`).
+
+    A corrupt sqlite file (e.g. random bytes planted at the resolved
+    path) raises ``sqlite3.DatabaseError`` from the schema-introspection
+    query; we wrap that into :class:`StateDbSchemaError` too so callers
+    see a single, actionable error type instead of a bare traceback.
     """
     db_path = Path(db_path)
     if not db_path.exists():
@@ -188,9 +202,17 @@ def verify_state_db_schema(
         conn = sqlite3.connect(str(db_path))
         own_conn = True
     try:
-        rows = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        ).fetchall()
+        try:
+            rows = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        except sqlite3.DatabaseError as exc:
+            raise StateDbSchemaError(
+                _format_missing_message(
+                    db_path,
+                    f"is not a valid sqlite database ({exc})",
+                )
+            ) from exc
         present = {row[0] for row in rows}
         missing = [t for t in _REQUIRED_TABLES if t not in present]
         if missing:
