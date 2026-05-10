@@ -71,6 +71,21 @@ result is returned. Paths that match no rule pass through unchanged.
   hand-rolled mini-schema cannot detect a regression in the shipped
   body; the shipped form can.
 
+### `layer2Fallback` is forward-looking, not auto-mirrored today
+
+A structured deny entry may carry a `layer2Fallback` string per
+`worker_roles.$comment_sandbox_anchor` in the schema. The intent is
+that when the Layer-3 entry is suppressed (e.g. on WSL the home-
+anchored `~/.aws/**` deny escapes sandbox read roots), the runtime
+mirrors the fallback string into `permissions.deny`. The version of
+`claude-org-runtime` pinned by this repo does NOT yet implement that
+mirror — the `layer2Fallback` field is preserved on the suppression
+record's `entry` but not emitted into `permissions.deny`. Fixtures
+therefore only compare suppressions and the rendered sandbox dict;
+they do not assert anything about `permissions.deny`. Effective
+Layer 2 deny for credentials still has to be declared by hand via
+`roles.<role>.required_deny`.
+
 ### `home_dir` and `anchor: "home"`
 
 The runtime resolves `anchor: "home"` via `os.path.expanduser("~")`,
