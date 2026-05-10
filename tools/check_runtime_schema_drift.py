@@ -130,6 +130,45 @@ def _normalise(obj: object) -> object:
     return obj
 
 
+def _strip_ja_only_sandbox_bodies(schema: object) -> object:
+    """Drop ja-only ``sandbox`` bodies from each role / worker_role.
+
+    Phase 1 PR3 (Refs claude-org-ja#378 #376) lands concrete
+    ``sandbox`` bodies on ``roles.{secretary,dispatcher,curator}`` in
+    ja's ``tools/org_extension_schema.json``, driven by the Phase 0
+    contract at ``docs/contracts/role-pattern-sandbox-contract.md``.
+    The ``claude-org-runtime`` bundled schema only carries the
+    *structural* sandbox surface (Phase 1 PR1) — concrete bodies are
+    ja-side org policy, not runtime template defaults, and intentionally
+    do not ship in the runtime package. The byte check would otherwise
+    flag this as drift on every PR3+ commit.
+
+    The semantic check (``--semantic``) keeps end-to-end coverage of
+    the in-tree concrete bodies via the
+    ``tests/fixtures/runtime_schema_drift/sandbox_intent/role_*.json``
+    fixtures (``schema_source: "shipped"``), so stripping here does
+    not lose verification — it just lets the byte check focus on the
+    schema *surface* contract, which is where ja and runtime must agree.
+    """
+    if not isinstance(schema, dict):
+        return schema
+    out: dict[str, Any] = {}
+    for top_key, top_val in schema.items():
+        if top_key not in ("roles", "worker_roles") or not isinstance(top_val, dict):
+            out[top_key] = top_val
+            continue
+        new_bucket: dict[str, Any] = {}
+        for role_name, role_def in top_val.items():
+            if isinstance(role_def, dict) and "sandbox" in role_def:
+                new_bucket[role_name] = {
+                    k: v for k, v in role_def.items() if k != "sandbox"
+                }
+            else:
+                new_bucket[role_name] = role_def
+        out[top_key] = new_bucket
+    return out
+
+
 def _build_realpath_fn(
     rules: list[dict[str, str]],
 ) -> Callable[[str], str]:
@@ -363,7 +402,9 @@ def _check_byte_drift(installed_str: str) -> int:
     bundled = json.loads(bundled_path.read_text(encoding="utf-8"))
     ja = json.loads(JA_SCHEMA.read_text(encoding="utf-8"))
 
-    if _normalise(bundled) == _normalise(ja):
+    bundled_norm = _normalise(_strip_ja_only_sandbox_bodies(bundled))
+    ja_norm = _normalise(_strip_ja_only_sandbox_bodies(ja))
+    if bundled_norm == ja_norm:
         print(
             f"check_runtime_schema_drift: OK (claude-org-runtime "
             f"{installed_str} bundled schema matches {JA_SCHEMA.name})"
