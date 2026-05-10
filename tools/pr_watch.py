@@ -321,13 +321,21 @@ def _resolve_final_status(
     * ``incomplete`` (empty list, ``pending`` bucket, or
       ``gh exit 8``) → enter a bounded retry loop. Each iteration
       sleeps ``retry_interval_sec`` and re-queries.
-    * Budget exhaustion → return the last observed ``incomplete``
-      verdict (recorded as a single, honest final event whose
-      ``duration_sec`` reflects the full observation window).
-    * JSON probe unavailable (``_fetch_checks`` returns ``None``)
-      → fall back to :func:`_classify` against ``exit_code``. This
-      is a catastrophic state (gh missing / unparseable stdout); the
-      retry loop is not the right tool for it.
+    * ``_fetch_checks`` returns ``None`` (probe was unparseable —
+      empty / malformed stdout, JSON parse error, unexpected
+      shape) → also retried within the same budget (Codex round-2
+      Major: a single transient probe failure used to bypass the
+      retry loop and short-circuit to ``_classify(exit_code)``,
+      reintroducing the Issue #413 race when it coincided with
+      ``gh exit 8``).
+    * Budget exhausted with at least one parseable response →
+      return the last observed ``incomplete`` verdict (recorded as
+      a single, honest final event whose ``duration_sec`` reflects
+      the full observation window).
+    * Budget exhausted with NO parseable response → fall back to
+      :func:`_classify` against ``exit_code`` so the recorded
+      status still reflects what gh believed about CI even when
+      the JSON probe never succeeded.
 
     Time / sleep are referenced via the ``time`` module attribute
     lookup so existing tests (``mock.patch.object(pr_watch.time,
