@@ -8,7 +8,7 @@ total_pass=0
 total_fail=0
 total_errors=0
 
-for test_file in "$SCRIPT_DIR"/test-*.sh; do
+for test_file in "$SCRIPT_DIR"/test-*.sh "$SCRIPT_DIR"/sandbox/test_*.sh; do
   [[ -f "$test_file" ]] || continue
   echo ""
   echo "=== $(basename "$test_file") ==="
