@@ -71,8 +71,15 @@ unshare --user --pid echo ok              # ok が出れば user namespaces OK
 ```bash
 bwrap --version   # bubblewrap 0.5.x 〜 0.10.x が contract scope
 claude --version
+
+# claude-org-runtime のバージョンは CLI 直叩きで確認する。pip show は
+# 実際に operator が呼ぶ CLI と別の site-packages を覗くため stale 値を
+# 返すことがあり、`settings generate` の実効版数を見誤る (round 3 review)。
+# venv 優先 → PATH 上の CLI、両方無ければ pip show を fallback として参照。
 .venv/bin/claude-org-runtime --version 2>/dev/null \
+  || claude-org-runtime --version 2>/dev/null \
   || pip show claude-org-runtime | grep -E '^(Name|Version)'
+
 jq --version
 ```
 
@@ -101,7 +108,7 @@ bash tests/sandbox/test_role_pattern_smoke.sh
 | §1.1 bwrap | soft skip | 不在を検出して `# SKIP` 報告 (Layer 3 fall-open 警告) |
 | §1.1 socat | soft skip | 同上 |
 | §1.1 claude | soft skip | 不在を検出して E2E spawn (§3) は本 runbook で手動 |
-| §1.2 claude-org-runtime バージョン | soft skip | `pip show` で `>=0.1.9,<0.2` を確認、外れていれば `# SKIP` |
+| §1.2 claude-org-runtime バージョン | soft skip | `claude-org-runtime --version` (venv 優先 → PATH) で `>=0.1.9,<0.2` を確認。CLI 不到達時のみ `pip show` に fallback (出力に source ラベル付き)。外れていれば `# SKIP` |
 | §3 schema 整合 | hard | `worker_roles.default.sandbox_by_pattern` / Layer 2 mirror / Phase 2 hook attach の存在 assert |
 | §4 hook smoke (§6.1 / §6.2 含む) | hard | `.hooks/*` を直接 PreToolUse JSON で叩いて exit 0 / 2 を確認 |
 | §2 `/sandbox` 表示, §3 spawn E2E, §4 commit smoke, §5 syscall-level deny | 手動 | Claude Code 実起動 / bwrap subprocess が必要なため本 runbook で実行 |
