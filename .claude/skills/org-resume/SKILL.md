@@ -28,21 +28,23 @@ description: >
    ```
 
    exit 0 なら続行。exit 1（未対応 version 残存）/ exit 2（migration ループ異常）なら人間に報告して停止する。
-1. **DB から前回状態を取得する**:
+1. **DB から前回状態を取得する**（Phase 1 は軽量 briefing API、Issue #412）:
    - `.state/state.db` が存在 → DB をクエリ:
      ```bash
-     python -c "from tools.state_db import connect; from tools.state_db.queries import get_resume_briefing; import json; \
+     python -c "from tools.state_db import connect; from tools.state_db.queries import get_resume_briefing_light; import json; \
        conn = connect('.state/state.db'); \
-       print(json.dumps(get_resume_briefing(conn), ensure_ascii=False, indent=2, default=str))"
+       print(json.dumps(get_resume_briefing_light(conn), ensure_ascii=False, indent=2, default=str))"
      ```
-     `active_runs` / `recent_events` / `last_suspend_at` でブリーフィング素材を作る。
-     Status / Current Objective / Resume Instructions も `org_sessions` に格納される。
+     `active_runs` / `reserved_runs` / `recent_events` / `last_suspend_summary` でブリーフィング素材を作る。
+     `session` には Status / Current Objective / suspended_at / resumed_at / resume_summary が圧縮されて入る（raw `resume_instructions` 本文と raw event `payload_json` は含まれない）。
+     `active_inventory_dirs` は `runs.status` から逆引きした worker_dir 集合（state-semantics-contract I7 — `worker_dirs.lifecycle='active'` ではない）。
+     必要があれば（極稀ケース）`get_resume_briefing` で raw payload / 完全な resume_instructions を取得できるが、起動時 Phase 1 では使わない。
    - DB が無い → 人間に rebuild を促す:
      「state.db not found. Run: `python -m tools.state_db.importer --db .state/state.db --root . --rebuild`」
 2. 人間に簡潔なサマリーを提示する:
-   - 全体の目標 (DB の `objective`)
-   - 各作業アイテムの状態 (完了/進行中/保留/ブロック、DB の active_runs)
-   - 中断時刻 (DB の `last_suspend_at`)
+   - 全体の目標 (briefing の `session.objective`)
+   - 各作業アイテムの状態 (完了/進行中/保留/ブロック、briefing の `active_runs` / `reserved_runs`)
+   - 中断時刻 (briefing の `last_suspend_summary.occurred_at`、reason / counts も同 dict)
 3. `notes/` 配下にある自由記述 (学び / Pending Lead / セッションサマリー) を確認する
 
 ## Phase 2: 現実との照合
