@@ -6,14 +6,21 @@
 #   - git push --force / -f / --force-with-lease   （履歴書き換え）
 #   - git reset --hard                              （未コミット変更の消失）
 #   - git branch -D / --delete --force              （未マージブランチ削除）
+#   - git clean -f / -fd / -fx / -dfx 等            （ワークツリー破壊）
+#   - git checkout -- <path> / git checkout -- .    （未コミット変更破棄）
+#   - git restore --worktree --source=<ref> .       （--source 指定の同上）
+#   - git tag -d / --delete                         （共有タグ namespace 改変）
+#   - git update-ref -d                             （任意 ref 削除）
+#   - git reflog expire/delete --all/--expire=now   （audit trail 改変）
 #
 # 補足:
 #   - git push そのものはワーカーでは block-git-push.sh が先に止める。
 #     本フックは「窓口側でうっかり叩いた場合の最後の壁」も兼ねる。
 #   - --force-with-lease は --force より安全だが、本フェーズでは
 #     workflow から外す方針で一律ブロックする（Phase 2 で再検討）。
-#   - TODO(Phase 2): git clean -fd / git checkout -- . / git restore .
-#     も同様にブロックする。本フェーズはスコープ外。
+#   - Phase 2 (Refs claude-org-ja#379): clean -fd / checkout -- . / tag -d /
+#     update-ref -d / reflog expire 等のカバレッジを追加した。
+#     詳細は docs/contracts/worker-git-guardrails-design.md §5.2.2 参照。
 #
 # 入力: stdin から PreToolUse JSON
 # 出力: 拒否時 exit 2 + stderr。許可時 exit 0。
@@ -139,6 +146,78 @@ for segment in "${SEGMENTS[@]}"; do
     if echo "$flat" | grep -qE '(^|[[:space:]])--delete([[:space:]]|$)' && \
        echo "$flat" | grep -qE '(^|[[:space:]])--force([[:space:]=]|$)'; then
       deny_with_reason "git branch --delete --force は禁止です（-D 相当）。-d で安全削除を試すか、窓口に確認してください。"
+    fi
+  fi
+
+  # 4) git clean -f / -fd / -fx / -dfx ...（ワークツリー破壊）
+  if segment_has_git_subcmd "$flat" "clean"; then
+    # 長形式 --force / 短形式 -f（単独）
+    if echo "$flat" | grep -qE '(^|[[:space:]])--force([[:space:]=]|$)'; then
+      deny_with_reason "git clean --force は禁止です。未追跡ファイルが失われます。事前に内容確認してから個別に削除してください。"
+    fi
+    if echo "$flat" | grep -qE '(^|[[:space:]])-f([[:space:]]|$)'; then
+      deny_with_reason "git clean -f は禁止です。未追跡ファイルが失われます。事前に内容確認してから個別に削除してください。"
+    fi
+    # バンドル短オプション（-fd / -dfx 等、f を含む）
+    if echo "$flat" | grep -qE '(^|[[:space:]])-[a-zA-Z]*f[a-zA-Z]*([[:space:]]|$)'; then
+      deny_with_reason "git clean のバンドル短オプションに force フラグが含まれています。未追跡ファイルが失われます。"
+    fi
+  fi
+
+  # 5) git checkout -- <path> / git checkout -- . （未コミット変更の破棄）
+  if segment_has_git_subcmd "$flat" "checkout"; then
+    if echo "$flat" | grep -qE '(^|[[:space:]])--([[:space:]]|$)'; then
+      deny_with_reason "git checkout -- <path> は禁止です。未コミット変更が失われます。git stash / git diff で退避を検討してください。"
+    fi
+  fi
+
+  # 6) git restore --source=<ref> ... （checkout -- 相当の worktree 上書き）
+  # git restore のデフォルトモードは --worktree（--staged 単独でない限り
+  # worktree 書き換えが発生）なので、--source / -s が指定された restore は
+  # 一律拒否する。--staged 単独の場合のみ除外（index のみ書き換えで未コミット
+  # 変更は失われない）。
+  # `-s` の attached-arg 形式（例: `-sHEAD~1`）も catch するため、`-s` の後に
+  # スペース / `=` / 任意の非空白文字 / 行末いずれが続く場合も拾う。
+  if segment_has_git_subcmd "$flat" "restore"; then
+    if echo "$flat" | grep -qE '(^|[[:space:]])(--source([[:space:]=])|-s([[:space:]=]|$|[^[:space:]]))'; then
+      # --staged が独立トークンとして存在し、かつ --worktree / -W が無い場合のみ pass
+      if echo "$flat" | grep -qE '(^|[[:space:]])(--staged|-S)([[:space:]]|$)' \
+         && ! echo "$flat" | grep -qE '(^|[[:space:]])(--worktree|-W)([[:space:]]|$)'; then
+        : # index-only restore: 安全
+      else
+        deny_with_reason "git restore --source=<ref> は禁止です。未コミット変更が <ref> 内容で上書きされ失われます。index のみの restore は --staged 単独で実行してください。"
+      fi
+    fi
+  fi
+
+  # 7) git tag -d / --delete （共有タグ namespace 改変）
+  if segment_has_git_subcmd "$flat" "tag"; then
+    if echo "$flat" | grep -qE '(^|[[:space:]])-d([[:space:]]|$)'; then
+      deny_with_reason "git tag -d は禁止です。共有タグ namespace を改変します。タグの追加/削除は窓口経由で実施してください。"
+    fi
+    if echo "$flat" | grep -qE '(^|[[:space:]])--delete([[:space:]]|$)'; then
+      deny_with_reason "git tag --delete は禁止です。共有タグ namespace を改変します。タグの追加/削除は窓口経由で実施してください。"
+    fi
+  fi
+
+  # 8) git update-ref -d （任意 ref 削除）
+  if segment_has_git_subcmd "$flat" "update-ref"; then
+    if echo "$flat" | grep -qE '(^|[[:space:]])-d([[:space:]]|$)'; then
+      deny_with_reason "git update-ref -d は禁止です。任意の ref を直接削除する低レベル escape hatch であり、ワーカーの作業範囲外です。"
+    fi
+    if echo "$flat" | grep -qE '(^|[[:space:]])--stdin([[:space:]]|$)'; then
+      deny_with_reason "git update-ref --stdin は禁止です。任意 ref をバッチ書換する低レベル escape hatch であり、ワーカーの作業範囲外です。"
+    fi
+  fi
+
+  # 9) git reflog expire/delete --all / --expire=now / --expire-unreachable=now （audit trail 改変）
+  if segment_has_git_subcmd "$flat" "reflog"; then
+    if echo "$flat" | grep -qE '(^|[[:space:]])(expire|delete)([[:space:]]|$)'; then
+      if echo "$flat" | grep -qE '(^|[[:space:]])--all([[:space:]]|$)' \
+         || echo "$flat" | grep -qE '(^|[[:space:]])--expire(=|[[:space:]])(now|0)' \
+         || echo "$flat" | grep -qE '(^|[[:space:]])--expire-unreachable(=|[[:space:]])(now|0)'; then
+        deny_with_reason "git reflog expire/delete --all / --expire=now は禁止です。reflog audit trail が失われます。"
+      fi
     fi
   fi
 done
