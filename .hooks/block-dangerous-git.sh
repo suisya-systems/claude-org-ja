@@ -176,8 +176,10 @@ for segment in "${SEGMENTS[@]}"; do
   # worktree 書き換えが発生）なので、--source / -s が指定された restore は
   # 一律拒否する。--staged 単独の場合のみ除外（index のみ書き換えで未コミット
   # 変更は失われない）。
+  # `-s` の attached-arg 形式（例: `-sHEAD~1`）も catch するため、`-s` の後に
+  # スペース / `=` / 任意の非空白文字 / 行末いずれが続く場合も拾う。
   if segment_has_git_subcmd "$flat" "restore"; then
-    if echo "$flat" | grep -qE '(^|[[:space:]])(--source([[:space:]=])|-s([[:space:]=]))'; then
+    if echo "$flat" | grep -qE '(^|[[:space:]])(--source([[:space:]=])|-s([[:space:]=]|$|[^[:space:]]))'; then
       # --staged が独立トークンとして存在し、かつ --worktree / -W が無い場合のみ pass
       if echo "$flat" | grep -qE '(^|[[:space:]])(--staged|-S)([[:space:]]|$)' \
          && ! echo "$flat" | grep -qE '(^|[[:space:]])(--worktree|-W)([[:space:]]|$)'; then

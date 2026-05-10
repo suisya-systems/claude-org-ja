@@ -174,6 +174,10 @@ substitute_run "$DG_HOOK" 'g_it restore --source HEAD~1 -W some/file.py' block '
 substitute_run "$DG_HOOK" 'g_it restore --source=HEAD~1 some/file.py' block 'restore-source-default-worktree'
 substitute_run "$DG_HOOK" 'g_it restore -s HEAD~1 some/file.py' block 'restore-s-short-form'
 substitute_run "$DG_HOOK" 'g_it restore -s HEAD~1 -W some/file.py' block 'restore-s-W-short'
+# Phase 2 round 2 codex: attached-arg short form must also block
+substitute_run "$DG_HOOK" 'g_it restore -sHEAD~1 some/file.py' block 'restore-s-attached-arg'
+substitute_run "$DG_HOOK" 'g_it restore -sHEAD some/file.py' block 'restore-s-attached-no-tilde'
+substitute_run "$DG_HOOK" 'g_it -C /tmp/repo restore -sHEAD~1 some/file.py' block 'restore-s-attached-with-C'
 # index-only restore via --staged is safe (only writes index, no worktree loss)
 substitute_run "$DG_HOOK" 'g_it restore --staged --source=HEAD~1 some/file.py' pass 'restore-staged-source-must-pass'
 substitute_run "$DG_HOOK" 'g_it restore -S -s HEAD~1 some/file.py' pass 'restore-S-s-must-pass'
