@@ -124,6 +124,11 @@ substitute_run "$NV_HOOK" 'g_it -c core.hooksPath=/tmp/x p_ush origin main' bloc
 # But -c with unrelated keys must still pass (e.g. user.name override)
 substitute_run "$NV_HOOK" 'g_it -c user.name=worker commit -m feat' pass 'git-c-user-name-must-pass'
 substitute_run "$NV_HOOK" 'g_it -c color.ui=never status' pass 'git-c-status-must-pass'
+# Phase 2 round 4 (Codex Major): variable-expansion bypass for -c / env-var
+substitute_run "$NV_HOOK" 'cfg=core.hooksPath=/tmp/empty; g_it -c "$cfg" commit -m feat' block 'cfg-var-hookspath'
+substitute_run "$NV_HOOK" 'cfg=core.hooksPath=/dev/null; g_it -c ${cfg} commit -m feat' block 'cfg-var-braces-hookspath'
+substitute_run "$NV_HOOK" 'h=HUSKY=0; env "$h" g_it commit -m feat' block 'env-var-husky-via-var'
+substitute_run "$NV_HOOK" 'k=SKIP_SECRET_SCAN=1; env "$k" g_it commit -m feat' block 'env-var-skip-via-var'
 
 echo ""
 echo "=== block-dangerous-git.sh ==="

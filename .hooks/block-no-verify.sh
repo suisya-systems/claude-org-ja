@@ -171,13 +171,19 @@ for segment in "${SEGMENTS[@]}"; do
 
 done
 
-# HUSKY=0 / SKIP_SECRET_SCAN=1 / NO_VERIFY=1 等の inline env-var bypass の検出は
-# COMMAND 文字列全体に対して行う。`export HUSKY=0; git commit ...` のように
-# 別セグメントで env を立ててから git を呼ぶ形式は per-segment ループでは
-# catch できない（assign セグメントに git は無く、git セグメントに env name は
-# 無いため）。COMMAND 全体に env name + git subcmd の両方が含まれる時点で
-# 多層防御として一律拒否する。
+# HUSKY=0 / SKIP_SECRET_SCAN=1 / NO_VERIFY=1 / git -c <key>=<value> 等の
+# inline bypass の検出は COMMAND 文字列全体に対して行う。`export HUSKY=0;
+# git commit ...` のように別セグメントで env を立ててから git を呼ぶ形式は
+# per-segment ループでは catch できない（assign セグメントに git は無く、
+# git セグメントに env name は無いため）。COMMAND 全体に bypass キー + 対象
+# git subcmd の両方が含まれる時点で多層防御として一律拒否する。
+# 変数展開（cfg=core.hooksPath=...; git -c "$cfg" commit）対策として
+# expand_known_vars を COMMAND 全体に対しても適用してから検査する
+# （Codex round 4 Major）。
 COMMAND_FLAT=$(printf '%s' "$COMMAND" | flatten_substitutions)
+if [[ ${#ASSIGNMENTS[@]} -gt 0 ]]; then
+  COMMAND_FLAT=$(printf '%s' "$COMMAND_FLAT" | expand_known_vars "${ASSIGNMENTS[@]}")
+fi
 if echo "$COMMAND_FLAT" | grep -qE '(^|[[:space:]])git[[:space:]]+(commit|push|merge|pull|am)([[:space:]]|$)' \
    || echo "$COMMAND_FLAT" | grep -qE '(^|[[:space:]])git[[:space:]].*[[:space:]](commit|push|merge|pull|am)([[:space:]]|$)'; then
   if echo "$COMMAND_FLAT" | grep -qE '(^|[[:space:]])HUSKY='; then
