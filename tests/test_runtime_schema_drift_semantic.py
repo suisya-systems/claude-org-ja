@@ -79,20 +79,21 @@ class FixtureExplainGoldenTest(unittest.TestCase):
 
     def test_fixture_does_not_carry_verification_depth_field(self) -> None:
         # ``verification_depth`` is a delegate-payload convention, not a
-        # sandbox enforcement dimension. Fixtures must not introduce it
-        # into either ``inputs`` or ``expected_explain`` so the check
-        # keeps a tight enforcement surface.
+        # sandbox enforcement dimension. Fixtures must not introduce
+        # it anywhere in the file (top-level *or* nested inside
+        # ``schema_fragment``) so the check keeps a tight enforcement
+        # surface. Reuses the same recursive helper the CLI runs so
+        # both surfaces give the same answer.
         for fixture_path in _fixture_paths():
             with self.subTest(fixture=fixture_path.name):
                 fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
-                for section in ("inputs", "expected_explain"):
-                    self.assertNotIn(
-                        "verification_depth",
-                        fixture.get(section, {}),
-                        f"{fixture_path.name}: 'verification_depth' must not "
-                        f"appear in '{section}'; depth is convention-only "
-                        "and not part of the sandbox semantic contract.",
-                    )
+                violations = csd._validate_fixture_policy(fixture_path, fixture)
+                self.assertEqual(
+                    violations,
+                    [],
+                    f"{fixture_path.name} violates the out-of-scope-field "
+                    f"policy: {violations}",
+                )
 
 
 class RealpathShimTest(unittest.TestCase):

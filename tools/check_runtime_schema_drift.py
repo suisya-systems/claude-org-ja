@@ -249,6 +249,34 @@ def _check_byte_drift(installed_str: str) -> int:
 _FIXTURE_OUT_OF_SCOPE_FIELDS = ("verification_depth",)
 
 
+def _find_forbidden_keys(
+    obj: Any, forbidden: tuple[str, ...]
+) -> list[tuple[str, str]]:
+    """Walk ``obj`` and return ``(json_pointer, key)`` for every
+    forbidden key found at any depth.
+
+    Recurses through dicts and lists; ignores everything else. The
+    ``json_pointer`` is a slash-joined path so violations point at
+    the offending location even when the forbidden key is nested
+    inside ``inputs.schema_fragment.worker_roles.<role>.…``.
+    """
+    hits: list[tuple[str, str]] = []
+
+    def _walk(node: Any, path: str) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                child_path = f"{path}/{key}" if path else key
+                if key in forbidden:
+                    hits.append((child_path, key))
+                _walk(value, child_path)
+        elif isinstance(node, list):
+            for idx, value in enumerate(node):
+                _walk(value, f"{path}/{idx}")
+
+    _walk(obj, "")
+    return hits
+
+
 def _validate_fixture_policy(
     fixture_path: Path, fixture: dict[str, Any]
 ) -> list[str]:
@@ -257,23 +285,23 @@ def _validate_fixture_policy(
     Currently enforces only that the out-of-scope fields listed in
     ``_FIXTURE_OUT_OF_SCOPE_FIELDS`` (notably ``verification_depth``,
     which is a delegate-payload convention rather than a sandbox
-    enforcement dimension) do not appear in either the fixture's
-    ``inputs`` or its ``expected_explain``. Mirrors the policy check
-    in ``tests/test_runtime_schema_drift_semantic.py`` so the manual
-    CLI run gives the same answer as pytest.
+    enforcement dimension) do not appear *anywhere* in the fixture —
+    not just at the top level of ``inputs`` / ``expected_explain``,
+    but also nested inside ``schema_fragment``. A shallow check would
+    let a fixture sneak ``verification_depth`` into the schema body
+    and silently establish a precedent the rest of the codebase has
+    to maintain. Mirrors the policy check in
+    ``tests/test_runtime_schema_drift_semantic.py`` so the manual CLI
+    run gives the same answer as the unittest suite.
     """
     violations: list[str] = []
-    for section in ("inputs", "expected_explain"):
-        section_obj = fixture.get(section, {})
-        if not isinstance(section_obj, dict):
-            continue
-        for field_name in _FIXTURE_OUT_OF_SCOPE_FIELDS:
-            if field_name in section_obj:
-                violations.append(
-                    f"{fixture_path.name}: {field_name!r} must not appear "
-                    f"in {section!r} (out-of-scope for sandbox semantic "
-                    "contract; see fixture-dir README)."
-                )
+    hits = _find_forbidden_keys(fixture, _FIXTURE_OUT_OF_SCOPE_FIELDS)
+    for path, key in hits:
+        violations.append(
+            f"{fixture_path.name}: {key!r} must not appear in fixture "
+            f"(found at {path!r}; out-of-scope for sandbox semantic "
+            "contract; see fixture-dir README)."
+        )
     return violations
 
 
@@ -339,9 +367,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Drift check between ja's tools/org_extension_schema.json and "
-            "the bundled claude-org-runtime schema. Without flags runs the "
-            "byte-identical check; --semantic adds a render-output golden "
-            "diff against fixture explain JSON."
+            "the bundled claude-org-runtime schema. With no flags runs the "
+            "byte-identical check; --semantic switches to the render-output "
+            "golden diff against fixture explain JSON; pass --byte "
+            "--semantic together to run both."
         ),
     )
     parser.add_argument(
