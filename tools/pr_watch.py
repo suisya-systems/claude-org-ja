@@ -30,7 +30,15 @@ Behavior:
   ``<repo_root>/.state/state.db`` (anchored to ``tools/..`` so cwd
   doesn't matter).
 * Prints the final status as a single line on stdout and exits with
-  the gh process' exit code.
+  a deterministic exit code derived from the *resolved* status
+  (Issue #413 / Codex round-1 Major): ``passed``→0, ``failed``→1,
+  ``canceled``→2, ``incomplete``→8. The original ``gh`` exit code
+  is intentionally NOT propagated, because the resolver may upgrade
+  ``gh exit 8`` ("Checks pending") to a final ``passed`` verdict
+  via retry — returning 8 in that case would mislead shell callers
+  inspecting ``$?``. The post-CI merge-watch helper may further
+  override 0 → 9 on its own failure modes (timeout / no_run /
+  helper exception).
 
 M4 (Issue #267): events flow through the SQLite DB only —
 ``.state/journal.jsonl`` is decommissioned. The recorder uses the same
@@ -60,6 +68,18 @@ from pathlib import Path
 # upper end of the org-delegate Step 5 2b-ii idle window so the
 # secretary can intervene manually past that.
 MERGE_WATCH_MAX_SECONDS = 24 * 60 * 60
+
+# Issue #413: post-watch verdict-resolution retry. `gh pr checks --watch`
+# can return immediately on a freshly-created PR (before any check-run
+# row has propagated through GitHub's API), in which case the JSON
+# probe sees `[]` and the legacy code wrote a final
+# `ci_completed(status=incomplete)` event with `duration_sec=1`. The
+# retry loop absorbs `[]` / `pending` / `gh exit 8` as "still
+# observing" until either a final verdict (`passed` / `failed`)
+# appears or the budget is exhausted (in which case we record a final
+# `incomplete` once, capturing the elapsed time honestly).
+RETRY_BUDGET_SEC = 60
+RETRY_INTERVAL_SEC = 5
 
 # Make `tools.state_db.*` importable when running this script directly.
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -277,6 +297,102 @@ def _fetch_checks(pr: int, repo: str) -> "list[dict] | None":
     return [c for c in data if isinstance(c, dict)]
 
 
+def _resolve_final_status(
+    pr: int,
+    repo: str,
+    exit_code: int,
+    *,
+    budget_sec: "float | None" = None,
+    retry_interval_sec: "float | None" = None,
+) -> str:
+    """Drive `_fetch_checks` until a final CI verdict is observed.
+
+    Issue #413: ``gh pr checks --watch`` occasionally returns
+    immediately when invoked on a freshly created PR — before any
+    check-run row has propagated. The first :func:`_fetch_checks`
+    response is then ``[]`` (transient empty), and the legacy code
+    classified that as ``incomplete`` and wrote it as the *final*
+    ``ci_completed`` event with ``duration_sec=1`` (e.g. PRs #411 /
+    #14 / #15 / #416 in a single session).
+
+    Final-verdict semantics:
+
+    * ``passed`` / ``failed`` → return immediately (deterministic).
+    * ``incomplete`` (empty list, ``pending`` bucket, or
+      ``gh exit 8``) → enter a bounded retry loop. Each iteration
+      sleeps ``retry_interval_sec`` and re-queries.
+    * ``_fetch_checks`` returns ``None`` (probe was unparseable —
+      empty / malformed stdout, JSON parse error, unexpected
+      shape) → also retried within the same budget (Codex round-2
+      Major: a single transient probe failure used to bypass the
+      retry loop and short-circuit to ``_classify(exit_code)``,
+      reintroducing the Issue #413 race when it coincided with
+      ``gh exit 8``).
+    * Budget exhausted with at least one parseable response →
+      return the last observed ``incomplete`` verdict (recorded as
+      a single, honest final event whose ``duration_sec`` reflects
+      the full observation window).
+    * Budget exhausted with NO parseable response → fall back to
+      :func:`_classify` against ``exit_code`` so the recorded
+      status still reflects what gh believed about CI even when
+      the JSON probe never succeeded.
+
+    Time / sleep are referenced via the ``time`` module attribute
+    lookup so existing tests (``mock.patch.object(pr_watch.time,
+    "monotonic", ...)``) keep working.
+    """
+    if budget_sec is None:
+        budget_sec = RETRY_BUDGET_SEC
+    if retry_interval_sec is None:
+        retry_interval_sec = RETRY_INTERVAL_SEC
+
+    # Codex round-2 Major: a transient JSON parse failure (the
+    # subprocess succeeded but stdout was empty / malformed for a
+    # single observation) used to short-circuit the retry budget and
+    # return :func:`_classify`(exit_code) — which on `gh exit 8`
+    # would record `incomplete` immediately, re-introducing the
+    # Issue #413 race. Treat both ``None`` (unparseable probe) and
+    # ``incomplete`` (transient empty / pending) as retryable, and
+    # only fall back to the exit-code classifier if NO parseable
+    # response is observed within the budget.
+    last_verdict: "str | None" = None
+    deadline_set = False
+    deadline = 0.0
+
+    def _set_deadline_once() -> None:
+        nonlocal deadline_set, deadline
+        if not deadline_set:
+            deadline = time.monotonic() + budget_sec
+            deadline_set = True
+
+    while True:
+        checks = _fetch_checks(pr, repo)
+        if checks is not None:
+            verdict = _classify_from_checks(checks)
+            if verdict in ("passed", "failed"):
+                return verdict
+            last_verdict = verdict
+        # Either probe was unparseable (checks is None) or the verdict
+        # is `incomplete`. Initialise the budget on the first observed
+        # need to wait, then back off and try again.
+        _set_deadline_once()
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(retry_interval_sec)
+
+    if last_verdict is None:
+        # Never got a parseable probe response. Catastrophic-end:
+        # honour the exit-code fallback so the recorded status still
+        # reflects what gh believed the watched PR's CI was doing.
+        sys.stderr.write(
+            "tools/pr_watch.py: warning: could not query check results "
+            "via `gh pr checks --json` within the retry budget; falling "
+            "back to exit-code classification.\n"
+        )
+        return _classify(exit_code)
+    return last_verdict
+
+
 def _watch_for_merge(
     *,
     pr: int,
@@ -491,7 +607,6 @@ def main(argv: "list[str] | None" = None) -> int:
         # so callers (and the journal status mapping) see a portable signal.
         exit_code = 2
         canceled = True
-    duration = int(round(time.monotonic() - started))
 
     # gh's documented cancellation exit code is 2 (parent SIGINT or
     # subprocess-side Ctrl-C). Honor it directly so we don't overwrite a
@@ -499,20 +614,36 @@ def main(argv: "list[str] | None" = None) -> int:
     if canceled or exit_code == 2:
         status = "canceled"
     else:
-        # Issue #224: gh exit 1 from a transient watch-loop error must not
-        # be conflated with "CI failed". Re-derive the status from the
-        # per-check JSON; only fall back to the exit code if the probe
-        # itself fails.
-        checks = _fetch_checks(args.pr, repo)
-        if checks is None:
-            sys.stderr.write(
-                "tools/pr_watch.py: warning: could not query check results "
-                "via `gh pr checks --json`; falling back to exit-code "
-                "classification.\n"
-            )
-            status = _classify(exit_code)
-        else:
-            status = _classify_from_checks(checks)
+        # Issue #224: gh exit 1 from a transient watch-loop error must
+        # not be conflated with "CI failed". Issue #413: a freshly
+        # created PR may have no check rows yet when --watch returns,
+        # so an empty / pending JSON response is "still observing"
+        # rather than the final verdict. Drive the resolver until it
+        # returns a final verdict (or exhausts its retry budget).
+        status = _resolve_final_status(args.pr, repo, exit_code)
+
+    # Issue #413: duration is measured from the start of the watch to
+    # the moment we have a final verdict (post-retry), so a
+    # transient-empty race no longer reports `1s`.
+    duration = int(round(time.monotonic() - started))
+
+    # Codex review (round 1, Major): once the resolver picks the final
+    # verdict, the script's exit code must reflect that verdict, not
+    # whatever gh returned from the initial `--watch` invocation. With
+    # the retry loop, gh can exit ``8`` ("Checks pending") on the first
+    # observation and then a later JSON probe surfaces the actual
+    # ``passed`` state — returning ``8`` to the caller would falsely
+    # signal "incomplete" to shell-script consumers checking `$?`. The
+    # mapping below mirrors :func:`_classify` (gh's documented codes:
+    # 0=passed, 2=canceled, 8=incomplete) and adds 1 for failed. The
+    # later merge-watch block can still override ``0`` → ``9`` when
+    # the post-CI loop itself fails.
+    exit_code = {
+        "passed": 0,
+        "failed": 1,
+        "canceled": 2,
+        "incomplete": 8,
+    }.get(status, exit_code)
 
     _record_ci_completed(
         db_path=JOURNAL_PATH,
@@ -524,7 +655,13 @@ def main(argv: "list[str] | None" = None) -> int:
 
     # Issue #326: nudge secretary as soon as the CI verdict is recorded
     # so it doesn't have to poll the DB. Best-effort — silent fallback
-    # in non-renga environments (RENGA_SOCKET unset).
+    # in non-renga environments (RENGA_SOCKET unset). Issue #413: the
+    # peer notification, like the DB event, fires once per pr_watch
+    # invocation and only on the final verdict (the retry loop above
+    # already absorbed transient incomplete observations). If a
+    # progress channel is ever wanted, route it through a distinct
+    # event/message name (e.g. `ci_progress`) rather than overloading
+    # `CI_COMPLETED`.
     _notify_peer(
         f"CI_COMPLETED: PR #{args.pr} {status} "
         f"(duration {duration}s, repo {repo})"
@@ -536,6 +673,11 @@ def main(argv: "list[str] | None" = None) -> int:
     # the caller explicitly opted in via --merge-watch. The default is
     # off so pr_watch stays a "CI passed → return" command compatible
     # with secretary's 2c/T6 review-feedback loop.
+    # Codex pre-design review (Minor 1): `run_complete_on_merge` is
+    # the downstream actor for the green-PR path and is invoked here
+    # only when `status == "passed"`. `incomplete` / `failed` /
+    # `canceled` results never trigger merge-watch, so callers can
+    # treat the `passed`-gated invocation as the contract.
     if status == "passed" and args.merge_watch and not args.no_merge_watch:
         merge_result = _watch_for_merge(
             pr=args.pr,

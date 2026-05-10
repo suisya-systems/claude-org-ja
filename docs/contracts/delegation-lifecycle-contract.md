@@ -134,8 +134,8 @@ Five error / anomaly classes are recognized. Each lists: who detects, who is not
 - **Halting**: A self-report `ERROR` / `APPROVAL_BLOCKED` (`source=self_report`, `confidence=n/a`) without inspect corroboration produces a notification only. Halting the worker (e.g., via `Esc` send) is a human decision; the secretary may issue it but it is not automated by the harness.
 
 ### E4 — CI fails on PR
-- **Detection**: `tools/pr-watch.{ps1,sh}` writes a `ci_completed` event to `.state/journal.jsonl` on completion (per Secretary CLAUDE.md § PR 後の CI 監視). Failure is signalled within the event payload.
-- **Notification path**: secretary inspects the journal entry (or is notified out-of-band by `gh pr checks --watch` exit) and decides whether to send fix instructions back to the same worker pane (T6 review-feedback path).
+- **Detection**: `tools/pr-watch.{ps1,sh}` writes a `ci_completed` event to the `events` table in `.state/state.db` on completion (M4 cutover, Issue #267 — `.state/journal.jsonl` is decommissioned). Per Secretary CLAUDE.md § PR 後の CI 監視. Failure is signalled within the event payload (`status` ∈ `{passed, failed, incomplete, canceled}`). Issue #413: a single `ci_completed` event is emitted per pr_watch invocation, only after the *final* verdict — the resolver retries transient empty / pending / `gh exit 8` observations AND transient JSON-probe failures (unparseable stdout / malformed JSON, treated identically to `incomplete`) until a deterministic verdict (`passed` / `failed`) appears or the retry budget is exhausted (in which case the final event records `incomplete` with the full elapsed `duration_sec`, or — if NO parseable probe response was ever observed — falls back to the gh exit-code classifier).
+- **Notification path**: secretary inspects the events table (or is notified out-of-band by `gh pr checks --watch` exit / the `CI_COMPLETED` peer message) and decides whether to send fix instructions back to the same worker pane (T6 review-feedback path).
 - **Retry**: Same-pane fix is the default (per `worker-claude-template.md` § 2 "ペインを保持してレビュー指摘待機"). Re-spawn of a fresh worker is forbidden.
 - **Abort condition**: User declines further work, OR worker fix loop exceeds intervention triggers in `.claude/skills/org-delegate/SKILL.md` ワーカー監視と介入判定 (30 min same-phase / 1 h silent / Codex round-4).
 
@@ -153,7 +153,7 @@ Five error / anomaly classes are recognized. Each lists: who detects, who is not
 | E1 pane-exited | dispatcher poll_events | dispatcher → secretary | n/a | no (human decides) |
 | E2 inspect anomaly | dispatcher inspect_pane | dispatcher → secretary | 30s `(worker, kind)` | no |
 | E3 worker self-report | worker → secretary (also dispatcher.check_messages) | secretary direct (or dispatcher forward) | 30s `(worker, kind)`, shared with E2 | no |
-| E4 CI failure | `pr-watch` script (journal `ci_completed`) | secretary | n/a | no |
+| E4 CI failure | `pr-watch` script (DB event `ci_completed`) | secretary | n/a | no |
 | E5 Codex 4th-round | worker (self) | worker → secretary | n/a | yes — worker stops at 4th round |
 
 The authoritative list of inspect-detected approval-prompt regexes is maintained in `.dispatcher/references/worker-monitoring.md` § (b), which is the single source of truth for this registry (consistent with Set A's treatment of dispatcher constraint surfaces). Updates to the regex set are made there; this contract refers to it rather than duplicating the list.
