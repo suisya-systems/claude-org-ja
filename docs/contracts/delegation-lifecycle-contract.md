@@ -153,7 +153,7 @@ Five error / anomaly classes are recognized. Each lists: who detects, who is not
 | E1 pane-exited | dispatcher poll_events | dispatcher → secretary | n/a | no (human decides) |
 | E2 inspect anomaly | dispatcher inspect_pane | dispatcher → secretary | 30s `(worker, kind)` | no |
 | E3 worker self-report | worker → secretary (also dispatcher.check_messages) | secretary direct (or dispatcher forward) | 30s `(worker, kind)`, shared with E2 | no |
-| E4 CI failure | `pr-watch` script (journal `ci_completed`) | secretary | n/a | no |
+| E4 CI failure | `pr-watch` script (DB event `ci_completed`) | secretary | n/a | no |
 | E5 Codex 4th-round | worker (self) | worker → secretary | n/a | yes — worker stops at 4th round |
 
 The authoritative list of inspect-detected approval-prompt regexes is maintained in `.dispatcher/references/worker-monitoring.md` § (b), which is the single source of truth for this registry (consistent with Set A's treatment of dispatcher constraint surfaces). Updates to the regex set are made there; this contract refers to it rather than duplicating the list.

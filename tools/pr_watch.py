@@ -593,6 +593,24 @@ def main(argv: "list[str] | None" = None) -> int:
     # transient-empty race no longer reports `1s`.
     duration = int(round(time.monotonic() - started))
 
+    # Codex review (round 1, Major): once the resolver picks the final
+    # verdict, the script's exit code must reflect that verdict, not
+    # whatever gh returned from the initial `--watch` invocation. With
+    # the retry loop, gh can exit ``8`` ("Checks pending") on the first
+    # observation and then a later JSON probe surfaces the actual
+    # ``passed`` state — returning ``8`` to the caller would falsely
+    # signal "incomplete" to shell-script consumers checking `$?`. The
+    # mapping below mirrors :func:`_classify` (gh's documented codes:
+    # 0=passed, 2=canceled, 8=incomplete) and adds 1 for failed. The
+    # later merge-watch block can still override ``0`` → ``9`` when
+    # the post-CI loop itself fails.
+    exit_code = {
+        "passed": 0,
+        "failed": 1,
+        "canceled": 2,
+        "incomplete": 8,
+    }.get(status, exit_code)
+
     _record_ci_completed(
         db_path=JOURNAL_PATH,
         pr=args.pr,

@@ -22,6 +22,45 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pr_watch  # noqa: E402
 
 
+# Issue #398 / pr-watch-race-fix: tools/conftest.py auto-scrubs
+# ``RENGA_SOCKET`` when this suite runs under pytest. Direct
+# ``python tools/test_pr_watch.py`` / ``python -m unittest`` invocations
+# bypass conftest entirely, so we re-assert isolation at the unittest
+# layer too: setUpModule deletes the env var unconditionally so
+# ``tools.peer_notify.notify_peer`` short-circuits before reaching the
+# real ``renga mcp-peer`` subprocess. Without this guard,
+# ``test_watch_for_merge_timeout_records_event`` and similar tests that
+# invoke ``pr_watch.main`` / ``_watch_for_merge`` without an explicit
+# ``_notify_peer`` mock could leak fake CI / merge messages onto the
+# live peer channel (observed against PR #555 from a parallel worker).
+_RENGA_SOCKET_BEFORE: "str | None" = None
+
+
+def setUpModule() -> None:  # noqa: N802 (unittest hook)
+    global _RENGA_SOCKET_BEFORE
+    _RENGA_SOCKET_BEFORE = os.environ.pop("RENGA_SOCKET", None)
+
+
+def tearDownModule() -> None:  # noqa: N802 (unittest hook)
+    if _RENGA_SOCKET_BEFORE is not None:
+        os.environ["RENGA_SOCKET"] = _RENGA_SOCKET_BEFORE
+
+
+def _assert_peer_isolation() -> None:
+    """Defense-in-depth: reject the test if the runtime would spawn renga.
+
+    Even with ``RENGA_SOCKET`` cleared, a regression in
+    ``peer_notify.notify_peer`` that bypasses the env-guard could still
+    spawn a subprocess. Tests that exercise the unmocked ``_notify_peer``
+    path call this helper to fail fast instead of leaking.
+    """
+    assert "RENGA_SOCKET" not in os.environ, (
+        "test isolation breach: RENGA_SOCKET is set during a test that "
+        "does not mock _notify_peer; peer messages would leak onto the "
+        "live channel"
+    )
+
+
 def _read_ci_event(db_path: Path) -> dict:
     """Return the (single) ci_completed event from the DB as a payload dict
     flattened with the ``ts`` / ``event`` keys the tests expect."""
@@ -181,12 +220,19 @@ def _make_stateful_fake_run(
 class ArgFormTests(unittest.TestCase):
     """Both `--pr <n>` and the legacy positional form must parse identically."""
 
+    def setUp(self) -> None:
+        # Belt-and-braces: the module-level setUp already cleared
+        # RENGA_SOCKET, but if a pytest plugin or an earlier test
+        # restored it we want to fail loudly rather than leak.
+        _assert_peer_isolation()
+
     def _run(self, argv: "list[str]") -> "tuple[int, dict]":
         fake_run = _make_fake_run(watch_exit=0)
 
         with TempDir() as tmp:
             journal = tmp / ".state" / "state.db"
             with mock.patch.object(pr_watch, "JOURNAL_PATH", journal), \
+                 mock.patch.object(pr_watch, "_notify_peer", return_value=False), \
                  mock.patch.object(pr_watch.shutil, "which", return_value="/usr/bin/gh"), \
                  mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run), \
                  mock.patch.object(pr_watch.time, "monotonic", side_effect=[0.0, 1.0]):
@@ -215,6 +261,9 @@ class ArgFormTests(unittest.TestCase):
 
 
 class JournalEmitTests(unittest.TestCase):
+    def setUp(self) -> None:
+        _assert_peer_isolation()
+
     def _run(
         self,
         tmp_journal: Path,
@@ -227,7 +276,10 @@ class JournalEmitTests(unittest.TestCase):
             checks_json=checks_json,
             checks_raises=checks_raises,
         )
+        # `_notify_peer` mocked at the seam so even a regression in
+        # peer_notify's env-guard cannot leak onto the live channel.
         with mock.patch.object(pr_watch, "JOURNAL_PATH", tmp_journal), \
+             mock.patch.object(pr_watch, "_notify_peer", return_value=False), \
              mock.patch.object(pr_watch.shutil, "which", return_value="/usr/bin/gh"), \
              mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run), \
              mock.patch.object(pr_watch.time, "monotonic", side_effect=[100.0, 142.0]):
@@ -308,6 +360,7 @@ class JournalEmitTests(unittest.TestCase):
         with TempDir() as tmp:
             journal = tmp / ".state" / "state.db"
             with mock.patch.object(pr_watch, "JOURNAL_PATH", journal), \
+                 mock.patch.object(pr_watch, "_notify_peer", return_value=False), \
                  mock.patch.object(pr_watch.shutil, "which", return_value="/usr/bin/gh"), \
                  mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run), \
                  mock.patch.object(pr_watch.time, "sleep", return_value=None), \
@@ -342,6 +395,7 @@ class JournalEmitTests(unittest.TestCase):
         with TempDir() as tmp:
             journal = tmp / ".state" / "state.db"
             with mock.patch.object(pr_watch, "JOURNAL_PATH", journal), \
+                 mock.patch.object(pr_watch, "_notify_peer", return_value=False), \
                  mock.patch.object(pr_watch.shutil, "which", return_value="/usr/bin/gh"), \
                  mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run), \
                  mock.patch.object(pr_watch.time, "sleep", return_value=None), \
@@ -359,6 +413,38 @@ class JournalEmitTests(unittest.TestCase):
             # (post-retry), not to the first transient observation.
             self.assertEqual(rec["duration_sec"], 42)
 
+    def test_transient_pending_then_passes_returns_zero(self) -> None:
+        """Codex round-1 Major: the script's exit code must follow the
+        final verdict, not gh's initial ``--watch`` exit code.
+
+        Repro: gh exits 8 (pending) on the first observation, then a
+        retry resolves to passed. The caller checks ``$?`` and must
+        see 0 — otherwise a CI-passed PR is mistaken for
+        ``incomplete`` by every shell consumer.
+        """
+        fake_run = _make_stateful_fake_run(
+            watch_exit=8,
+            checks_sequence=[
+                [{"name": "ci", "state": "IN_PROGRESS", "bucket": "pending"}],
+                [{"name": "ci", "state": "COMPLETED", "bucket": "pass"}],
+            ],
+        )
+        with TempDir() as tmp:
+            journal = tmp / ".state" / "state.db"
+            with mock.patch.object(pr_watch, "JOURNAL_PATH", journal), \
+                 mock.patch.object(pr_watch, "_notify_peer", return_value=False), \
+                 mock.patch.object(pr_watch.shutil, "which", return_value="/usr/bin/gh"), \
+                 mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run), \
+                 mock.patch.object(pr_watch.time, "sleep", return_value=None), \
+                 mock.patch.object(pr_watch.time, "monotonic",
+                                   side_effect=[0.0, 0.1, 0.2, 1.0]):
+                rc = pr_watch.main([
+                    "--pr", "417", "--repo", "octo/repo", "--interval", "5",
+                ])
+            self.assertEqual(rc, 0)
+            rec = _read_ci_event(journal)
+            self.assertEqual(rec["status"], "passed")
+
     def test_transient_pending_then_fails_emits_one_final_event(self) -> None:
         """Symmetric coverage: a real CI failure that arrives after a
         pending observation must still record exactly one final
@@ -374,6 +460,7 @@ class JournalEmitTests(unittest.TestCase):
         with TempDir() as tmp:
             journal = tmp / ".state" / "state.db"
             with mock.patch.object(pr_watch, "JOURNAL_PATH", journal), \
+                 mock.patch.object(pr_watch, "_notify_peer", return_value=False), \
                  mock.patch.object(pr_watch.shutil, "which", return_value="/usr/bin/gh"), \
                  mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run), \
                  mock.patch.object(pr_watch.time, "sleep", return_value=None), \
@@ -405,6 +492,7 @@ class JournalEmitTests(unittest.TestCase):
         with TempDir() as tmp:
             journal = tmp / ".state" / "state.db"
             with mock.patch.object(pr_watch, "JOURNAL_PATH", journal), \
+                 mock.patch.object(pr_watch, "_notify_peer", return_value=False), \
                  mock.patch.object(pr_watch.shutil, "which", return_value="/usr/bin/gh"), \
                  mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run), \
                  mock.patch.object(pr_watch.time, "sleep", return_value=None), \
@@ -663,6 +751,15 @@ class TempDir:
 class MergeWatchTests(unittest.TestCase):
     """Issue #317: post-CI merge-watch loop in pr_watch.main."""
 
+    def setUp(self) -> None:
+        # Hard-isolate from the live renga peer channel — see the
+        # module-level setUp comment. The previously-observed leak
+        # (PR #555 PR_MERGE_WATCH_TIMEOUT visible to a parallel
+        # worker) originated from `test_watch_for_merge_timeout_*`,
+        # which calls `_watch_for_merge` without mocking
+        # `_notify_peer`.
+        _assert_peer_isolation()
+
     def _seed_run_for_merge(self, db: Path, *, pr_url: str,
                             pattern: str = "A") -> None:
         """Seed a run pointing at the PR. Default pattern='A' so the
@@ -756,6 +853,7 @@ class MergeWatchTests(unittest.TestCase):
                 watch_exit=0, view_sequence=[view_merged],
             )
             with mock.patch.object(pr_watch, "JOURNAL_PATH", db), \
+                 mock.patch.object(pr_watch, "_notify_peer", return_value=False), \
                  mock.patch.object(pr_watch.shutil, "which", return_value="/usr/bin/gh"), \
                  mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run), \
                  mock.patch.object(pr_watch.time, "monotonic", side_effect=[0.0, 1.0]):
@@ -815,6 +913,7 @@ class MergeWatchTests(unittest.TestCase):
                 return mock.Mock(returncode=0)
 
             with mock.patch.object(pr_watch, "JOURNAL_PATH", db), \
+                 mock.patch.object(pr_watch, "_notify_peer", return_value=False), \
                  mock.patch.object(pr_watch.shutil, "which", return_value="/usr/bin/gh"), \
                  mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run), \
                  mock.patch.object(pr_watch.time, "monotonic", side_effect=[0.0, 1.0]):
@@ -853,6 +952,7 @@ class MergeWatchTests(unittest.TestCase):
                 return mock.Mock(returncode=1)
 
             with mock.patch.object(pr_watch, "JOURNAL_PATH", db), \
+                 mock.patch.object(pr_watch, "_notify_peer", return_value=False), \
                  mock.patch.object(pr_watch.shutil, "which", return_value="/usr/bin/gh"), \
                  mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run), \
                  mock.patch.object(pr_watch.time, "monotonic", side_effect=[0.0, 1.0]):
@@ -894,6 +994,7 @@ class MergeWatchTests(unittest.TestCase):
                 return mock.Mock(returncode=0)
 
             with mock.patch.object(pr_watch, "JOURNAL_PATH", db), \
+                 mock.patch.object(pr_watch, "_notify_peer", return_value=False), \
                  mock.patch.object(pr_watch.shutil, "which", return_value="/usr/bin/gh"), \
                  mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run), \
                  mock.patch.object(pr_watch.time, "monotonic", side_effect=[0.0, 1.0]):
@@ -938,7 +1039,13 @@ class MergeWatchTests(unittest.TestCase):
                     )
                 raise AssertionError(f"unexpected cmd: {cmd}")
 
-            with mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run):
+            with mock.patch.object(pr_watch, "_notify_peer", return_value=False), \
+                 mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run):
+                # Hardened against the PR #555 leak: even though the
+                # module-level setUp scrubs RENGA_SOCKET, a regression
+                # in `peer_notify`'s env-guard would still spawn the
+                # `renga mcp-peer` binary if `_notify_peer` were
+                # unmocked. Mocking the seam directly closes the door.
                 result = pr_watch._watch_for_merge(
                     pr=555, repo="octo/repo", interval=0,
                     db_path=db, max_seconds=60,
