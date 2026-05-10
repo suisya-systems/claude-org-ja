@@ -130,22 +130,56 @@ def _normalise(obj: object) -> object:
     return obj
 
 
+# Phase 1 PR4: ja-side Layer 2 credential mirror entries that the byte
+# check strips from ``worker_roles[*].permissions.deny`` on BOTH sides
+# before comparison. Background: the schema's ``$comment_sandbox_anchor``
+# documents that ``sandbox.filesystem.denyRead`` entries may carry a
+# ``layer2Fallback`` string intended as the Layer-2 ``permissions.deny``
+# mirror for when the Layer-3 entry is suppressed on
+# WSL / symlink-escape platforms. The pinned runtime versions do NOT
+# auto-mirror ``layer2Fallback`` into ``permissions.deny``, so PR4
+# (Codex round-1 review) added the home-anchored credential mirrors
+# (``Read(~/.aws/*)`` / ``Read(~/.ssh/*)`` and the full credential set
+# for doc-audit) to ja's schema. The runtime bundled schema does not
+# ship these mirrors — they are ja-side org policy, equivalent to the
+# concrete ``sandbox_by_pattern`` bodies stripped above. Listing them
+# here lets the byte check stay focused on the schema *surface* contract
+# while the semantic fixtures (``schema_source: "shipped"``) keep
+# end-to-end coverage of the mirrors. New mirror entries added by future
+# ja-only Layer-2 policy work should be added to this set.
+_JA_ONLY_LAYER2_CREDENTIAL_DENIES = frozenset(
+    {
+        "Read(.env)",
+        "Read(.env.*)",
+        "Read(**/credentials*)",
+        "Read(**/*.pem)",
+        "Read(~/.config/gh/hosts.yml)",
+        "Read(~/.aws/*)",
+        "Read(~/.ssh/*)",
+    }
+)
+
+
 def _strip_ja_only_sandbox_bodies(schema: object) -> object:
-    """Drop ja-only ``sandbox`` / ``sandbox_by_pattern`` bodies from each
-    role / worker_role.
+    """Drop ja-only ``sandbox`` / ``sandbox_by_pattern`` bodies and ja-only
+    Layer 2 credential mirror entries from each role / worker_role.
 
     Phase 1 PR3 (Refs claude-org-ja#378 #376) lands concrete
     ``sandbox`` bodies on ``roles.{secretary,dispatcher,curator}`` and
     Phase 1 PR4 lands concrete ``sandbox_by_pattern`` bodies on
     ``worker_roles.{default,claude-org-self-edit,doc-audit}``. Both are
     driven by the Phase 0 contract at
-    ``docs/contracts/role-pattern-sandbox-contract.md``. The
-    ``claude-org-runtime`` bundled schema only carries the *structural*
-    sandbox surface (Phase 1 PR1 + PR4 sandbox_by_pattern shape) —
-    concrete bodies are ja-side org policy, not runtime template
-    defaults, and intentionally do not ship in the runtime package. The
-    byte check would otherwise flag this as drift on every PR3+ /
-    PR4+ commit.
+    ``docs/contracts/role-pattern-sandbox-contract.md``. PR4 also adds
+    home-anchored credential mirrors (``Read(~/.aws/*)`` / ``Read(~/.ssh/*)``
+    on default/self-edit, the full credential set on doc-audit) to
+    ``worker_roles[*].permissions.deny`` to compensate for runtime not
+    auto-mirroring ``layer2Fallback`` strings (Codex round-1 review).
+    The ``claude-org-runtime`` bundled schema only carries the
+    *structural* sandbox surface (Phase 1 PR1 + PR4 sandbox_by_pattern
+    shape) — concrete bodies AND the credential mirror set are ja-side
+    org policy, not runtime template defaults, and intentionally do not
+    ship in the runtime package. The byte check would otherwise flag
+    this as drift on every PR3+ / PR4+ commit.
 
     The semantic check (``--semantic``) keeps end-to-end coverage of
     the in-tree concrete bodies via the
@@ -164,16 +198,38 @@ def _strip_ja_only_sandbox_bodies(schema: object) -> object:
             continue
         new_bucket: dict[str, Any] = {}
         for role_name, role_def in top_val.items():
-            if isinstance(role_def, dict) and (
-                "sandbox" in role_def or "sandbox_by_pattern" in role_def
-            ):
-                new_bucket[role_name] = {
-                    k: v
-                    for k, v in role_def.items()
-                    if k not in ("sandbox", "sandbox_by_pattern")
-                }
-            else:
+            if not isinstance(role_def, dict):
                 new_bucket[role_name] = role_def
+                continue
+            cleaned = {
+                k: v
+                for k, v in role_def.items()
+                if k not in ("sandbox", "sandbox_by_pattern")
+            }
+            # Strip ja-only Layer 2 credential mirrors from
+            # ``permissions.deny`` (worker_roles only — org roles
+            # carry their credential denies in ``required_deny`` /
+            # ``required_allow`` which the byte check already handles
+            # symmetrically because PR3 secretary/curator deliberately
+            # match runtime baseline modulo the stripped sandbox body).
+            if top_key == "worker_roles":
+                permissions = cleaned.get("permissions")
+                if isinstance(permissions, dict) and isinstance(
+                    permissions.get("deny"), list
+                ):
+                    cleaned = {
+                        **cleaned,
+                        "permissions": {
+                            **permissions,
+                            "deny": [
+                                entry
+                                for entry in permissions["deny"]
+                                if entry
+                                not in _JA_ONLY_LAYER2_CREDENTIAL_DENIES
+                            ],
+                        },
+                    }
+            new_bucket[role_name] = cleaned
         out[top_key] = new_bucket
     return out
 
