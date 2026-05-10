@@ -21,7 +21,8 @@
       "/home/u/co/.worktrees/T123",
       "/home/u/co/.git/worktrees/T123",
       "/home/u/co/.git/objects",
-      "/home/u/co/.git/refs/heads/feat/self-edit"
+      "/home/u/co/.git/refs/heads/feat/self-edit",
+      "/home/u/co/.git/packed-refs"
     ],
     "suppressions": [
       {
@@ -38,7 +39,8 @@
           "/home/u/co/.worktrees/T123",
           "/home/u/co/.git/worktrees/T123",
           "/home/u/co/.git/objects",
-          "/home/u/co/.git/refs/heads/feat/self-edit"
+          "/home/u/co/.git/refs/heads/feat/self-edit",
+          "/home/u/co/.git/packed-refs"
         ]
       },
       {
@@ -55,7 +57,8 @@
           "/home/u/co/.worktrees/T123",
           "/home/u/co/.git/worktrees/T123",
           "/home/u/co/.git/objects",
-          "/home/u/co/.git/refs/heads/feat/self-edit"
+          "/home/u/co/.git/refs/heads/feat/self-edit",
+          "/home/u/co/.git/packed-refs"
         ]
       },
       {
@@ -72,7 +75,8 @@
           "/home/u/co/.worktrees/T123",
           "/home/u/co/.git/worktrees/T123",
           "/home/u/co/.git/objects",
-          "/home/u/co/.git/refs/heads/feat/self-edit"
+          "/home/u/co/.git/refs/heads/feat/self-edit",
+          "/home/u/co/.git/packed-refs"
         ]
       }
     ]
@@ -83,7 +87,8 @@
       "additionalDirectories": [
         "/home/u/co/.git/worktrees/T123",
         "/home/u/co/.git/objects",
-        "/home/u/co/.git/refs/heads/feat/self-edit"
+        "/home/u/co/.git/refs/heads/feat/self-edit",
+        "/home/u/co/.git/packed-refs"
       ],
       "denyRead": [
         {

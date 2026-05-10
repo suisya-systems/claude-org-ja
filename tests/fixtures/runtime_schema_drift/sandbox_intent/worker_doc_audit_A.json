@@ -15,7 +15,8 @@
     "enabled": true,
     "wsl_detected": false,
     "sandbox_read_roots": [
-      "/home/u/work/wd"
+      "/home/u/work/wd",
+      "/home/u/work/wd/.claude/plans"
     ],
     "suppressions": [
       {
@@ -29,7 +30,8 @@
         "reason": "realpath escapes sandbox read roots",
         "realpath": "/H/.config/gh/hosts.yml",
         "sandbox_read_roots": [
-          "/home/u/work/wd"
+          "/home/u/work/wd",
+          "/home/u/work/wd/.claude/plans"
         ]
       },
       {
@@ -43,7 +45,8 @@
         "reason": "realpath escapes sandbox read roots",
         "realpath": "/H/.aws",
         "sandbox_read_roots": [
-          "/home/u/work/wd"
+          "/home/u/work/wd",
+          "/home/u/work/wd/.claude/plans"
         ]
       },
       {
@@ -57,7 +60,8 @@
         "reason": "realpath escapes sandbox read roots",
         "realpath": "/H/.ssh",
         "sandbox_read_roots": [
-          "/home/u/work/wd"
+          "/home/u/work/wd",
+          "/home/u/work/wd/.claude/plans"
         ]
       }
     ]
@@ -65,7 +69,9 @@
   "expected_rendered_sandbox": {
     "enabled": true,
     "filesystem": {
-      "additionalDirectories": [],
+      "additionalDirectories": [
+        "/home/u/work/wd/.claude/plans"
+      ],
       "denyRead": [
         {
           "anchor": "worker_dir",

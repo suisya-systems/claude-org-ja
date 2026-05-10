@@ -503,7 +503,7 @@
     "$comment_sandbox_anchor": "Phase 1 schema surface: `denyRead` / `denyWrite` entries may now be either (a) a legacy raw string (anchored at worker_dir for relative paths, treated literally for absolute paths) or (b) a structured object {anchor: 'home'|'worker_dir'|'claude_org_path'|'base_clone'|'absolute', path: string, suppressOnSymlinkEscape: bool default true, layer2Fallback: optional Layer-2 permissions.deny mirror entry}. The structured form fixes the legacy ambiguity where '~/.aws/**'-style entries were misjudged as worker_dir-relative. 'home' resolves to the current user's home directory, 'absolute' is treated literally, 'worker_dir' / 'claude_org_path' / 'base_clone' use the corresponding generator-context substitutions. When `suppressOnSymlinkEscape` is false the entry is preserved even if its realpath escapes the sandbox read roots (useful for entries the operator wants in the rendered output regardless of reachability). When `layer2Fallback` is set, the value is the Layer-2 `permissions.deny` mirror string INTENDED to be emitted whenever the Layer-3 entry is suppressed; the field is forward-looking — `claude-org-runtime` versions up to and including the one pinned by `tools/check_runtime_schema_drift.py` do NOT auto-mirror it into `permissions.deny`, the runtime evaluator only preserves the field on the suppression record's `entry`. Effective Layer 2 deny for credentials therefore still has to be declared via `roles.<role>.required_deny` / `worker_roles.<role>.permissions.deny` directly, not relied on via `layer2Fallback` alone. Pattern B context placeholders ({base_clone}, {task_id}, {branch_ref}, {pattern}) are recognized substitution variables in addition to the legacy {worker_dir} / {claude_org_path}; they are substituted in entry.path and additionalDirectories before realpath evaluation when supplied via the generator API. Backward compat: legacy raw-string entries continue to parse via the runtime adapter and need not be migrated when this schema surface is adopted.",
     "default": {
       "description": "Standard worker template — git read/write within the worktree, no push, no recursive delete. Mirrors the historical org-delegate Step 3 inline JSON.",
-      "$comment_sandbox": "Phase 1 PR4 (Refs claude-org-ja#378 #376): concrete sandbox_by_pattern body for worker_roles.default. The Layer 3 surface is keyed by dispatch pattern per docs/contracts/role-pattern-sandbox-contract.md §4.1 (Pattern A) / §4.2 (Pattern B default variant) / §4.3 (Pattern C ephemeral and gitignored_repo_root). Pattern A and Pattern C add only the knowledge/raw carve-out (§5.1: full-mode workers may write `<claude_org_path>/knowledge/raw/YYYY-MM-DD-<topic>.md`); the worker_dir itself is auto-mounted and does not need to be re-listed. Pattern B union per §4.2.1 / worker-git-guardrails-design.md §2 categories B1+B2 (this worktree's metadata + shared object store + this branch's ref) is `<base_clone>/.git/worktrees/<task_id>`, `<base_clone>/.git/objects`, `<base_clone>/.git/refs/heads/<branch_ref>`. Refs scope is THIS-branch only by design (§4.2.1 cross-task isolation): listing `<base_clone>/.git/refs/heads` whole would let the worker rewrite a sibling worktree's branch ref. denyRead carries the standard credential set with `layer2Fallback` strings for forward compatibility (current runtime preserves the field but does not auto-mirror it into permissions.deny — see $comment_sandbox_anchor). denyWrite is empty: by virtue of additionalDirectories not including `<base_clone>` root / sibling worktrees / `.git/HEAD` / `.git/config`, those paths are already not writable; explicit denyWrite on subpaths inside additionalDirectories would just add suppression noise on platforms with realpath escapes. Layer 4 hooks (.hooks/block-org-structure.sh, .hooks/check-worker-boundary.sh) handle org-structure / out-of-WORKER_DIR write boundaries inside the mounted writable surface. Pattern A's branch ref deny for `<base_clone>/.git/HEAD` etc. (§4.1 / §5.2 worker × Pattern A row) is implicit: Pattern A workers operate in their own clone, no base_clone is supplied at dispatch (--base-clone null), and `{base_clone}` placeholders therefore never substitute into A's body.",
+      "$comment_sandbox": "Phase 1 PR4 (Refs claude-org-ja#378 #376): concrete sandbox_by_pattern body for worker_roles.default. The Layer 3 surface is keyed by dispatch pattern per docs/contracts/role-pattern-sandbox-contract.md §4.1 (Pattern A) / §4.2 (Pattern B default variant) / §4.3 (Pattern C ephemeral and gitignored_repo_root). Pattern A and Pattern C add only the knowledge/raw carve-out (§5.1: full-mode workers may write `<claude_org_path>/knowledge/raw/YYYY-MM-DD-<topic>.md`); the worker_dir itself is auto-mounted and does not need to be re-listed. Pattern B union per §4.2.1 / worker-git-guardrails-design.md §2 categories B1+B2 (this worktree's metadata + shared object store + this branch's ref + packed-refs) is `<base_clone>/.git/worktrees/<task_id>`, `<base_clone>/.git/objects`, `<base_clone>/.git/refs/heads/<branch_ref>`, `<base_clone>/.git/packed-refs`. Refs scope is THIS-branch only by design (§4.2.1 cross-task isolation): listing `<base_clone>/.git/refs/heads` whole would let the worker rewrite a sibling worktree's branch ref. `<base_clone>/.git/packed-refs` is added because git itself rewrites this file as part of normal commit / pack-refs operations (§4.2.1 row); without it Pattern B workers would fail any operation that touches packed refs. denyRead carries the standard credential set with `layer2Fallback` strings for forward compatibility (current runtime preserves the field but does not auto-mirror it into permissions.deny — see $comment_sandbox_anchor); the corresponding Layer 2 mirrors live in `worker_roles.default.permissions.deny` directly so secret reads remain blocked even when Layer 3 is suppressed on WSL. denyWrite is empty: by virtue of additionalDirectories not including `<base_clone>` root / sibling worktrees / `.git/HEAD` / `.git/config`, those paths are already not writable; explicit denyWrite on subpaths inside additionalDirectories would just add suppression noise on platforms with realpath escapes. Layer 4 hooks (.hooks/block-org-structure.sh, .hooks/check-worker-boundary.sh) handle org-structure / out-of-WORKER_DIR write boundaries inside the mounted writable surface. Pattern A's branch ref deny for `<base_clone>/.git/HEAD` etc. (§4.1 / §5.2 worker × Pattern A row) is implicit: Pattern A workers operate in their own clone, no base_clone is supplied at dispatch (--base-clone null), and `{base_clone}` placeholders therefore never substitute into A's body. RESIDUAL GAP (Phase 2): the knowledge/raw mount is whole-directory; the §5.1 filename / depth carve-out (`YYYY-MM-DD-<kebab-topic>.md` and full-mode-only) is enforced ONLY at Layer 4 by .hooks/check-worker-boundary.sh allow path 3, NOT at Layer 3. Layer 3 cannot express the kebab-case filename rule, and the schema cannot express the verification-depth conditional. Phase 2 may add a Bash-matcher hook for tighter knowledge/raw discipline if drift is observed.",
       "sandbox_by_pattern": {
         "A": {
           "enabled": true,
@@ -530,6 +530,7 @@
               "{base_clone}/.git/worktrees/{task_id}",
               "{base_clone}/.git/objects",
               "{base_clone}/.git/refs/heads/{branch_ref}",
+              "{base_clone}/.git/packed-refs",
               "{claude_org_path}/knowledge/raw"
             ],
             "denyRead": [
@@ -586,7 +587,9 @@
           "Read(.env.*)",
           "Read(**/credentials*)",
           "Read(**/*.pem)",
-          "Read(~/.config/gh/hosts.yml)"
+          "Read(~/.config/gh/hosts.yml)",
+          "Read(~/.aws/*)",
+          "Read(~/.ssh/*)"
         ]
       },
       "hooks": {
@@ -634,7 +637,8 @@
             "additionalDirectories": [
               "{base_clone}/.git/worktrees/{task_id}",
               "{base_clone}/.git/objects",
-              "{base_clone}/.git/refs/heads/{branch_ref}"
+              "{base_clone}/.git/refs/heads/{branch_ref}",
+              "{base_clone}/.git/packed-refs"
             ],
             "denyRead": [
               {"anchor": "worker_dir", "path": ".env", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env)"},
@@ -688,7 +692,9 @@
           "Read(.env.*)",
           "Read(**/credentials*)",
           "Read(**/*.pem)",
-          "Read(~/.config/gh/hosts.yml)"
+          "Read(~/.config/gh/hosts.yml)",
+          "Read(~/.aws/*)",
+          "Read(~/.ssh/*)"
         ]
       },
       "hooks": {
@@ -720,12 +726,14 @@
     },
     "doc-audit": {
       "description": "Read-only investigation worker — no Write/Edit allow, no commit/branch mutation. Suitable for survey / audit / reporting tasks where the worker should not modify the worktree.",
-      "$comment_sandbox": "Phase 1 PR4 (Refs claude-org-ja#378 #376): concrete sandbox_by_pattern body for worker_roles.doc-audit. Per docs/contracts/role-pattern-sandbox-contract.md §3.5 / §4.6 the doc-audit role's pattern dimension is ORTHOGONAL — the read-only audit constraint dominates and the same Layer 3 surface holds whether the worker landed in Pattern A's clone, Pattern B's worktree, or Pattern C's ephemeral / gitignored host repo. The three pattern keys (A / B / C) carry the SAME body intentionally; per the Codex pre-design review this is preferable to a single shared sub-key (which would diverge from the schema-level shape declared in `$comment_sandbox_by_pattern`). Layer 3 closes the §4.6.2 gap that Layer 2 + Layer 4 alone cannot: `{anchor: 'worker_dir', path: '**', suppressOnSymlinkEscape: false}` denies any write inside the worktree at the syscall level — including Bash redirects (`git diff > /tmp/x`, `git log > log`, `tee`), tool-generated temp files, and any other write channel that bypasses the `Edit` / `Write` Layer 2 deny. `suppressOnSymlinkEscape: false` is intentional: even on platforms where `<worker_dir>` would be suppressed off (handcraft profile-tightened style), we want the deny to stay in the rendered surface so the audit role's read-only invariant is not platform-dependent. denyRead carries the standard credential set with `layer2Fallback` strings (forward-compat). additionalDirectories is empty: doc-audit needs no extra writable surface. Plan-mode carve-out (`~/.claude/plans` / `<worker_dir>/.claude/plans`) is NOT modeled here — the contract §4.6.2 sample wire-form sketches an additionalDirectories carve-out with assumed bwrap precedence, but the runtime semantic is unsettled (additionalDirectories does not necessarily override denyWrite globs); deferring carve-out work avoids shipping a fragile precedence assumption. Plan files written by doc-audit workers in this PR will be denied at the syscall level and the operator must use a non-audit role for any task that requires Plan-mode persistence.",
+      "$comment_sandbox": "Phase 1 PR4 (Refs claude-org-ja#378 #376): concrete sandbox_by_pattern body for worker_roles.doc-audit. Per docs/contracts/role-pattern-sandbox-contract.md §3.5 / §4.6 the doc-audit role's pattern dimension is ORTHOGONAL — the read-only audit constraint dominates and the same Layer 3 surface holds whether the worker landed in Pattern A's clone, Pattern B's worktree, or Pattern C's ephemeral / gitignored host repo. The three pattern keys (A / B / C) carry the SAME body intentionally; per the Codex pre-design review this is preferable to a single shared sub-key (which would diverge from the schema-level shape declared in `$comment_sandbox_by_pattern`). Layer 3 closes the §4.6.2 gap that Layer 2 + Layer 4 alone cannot: `{anchor: 'worker_dir', path: '**', suppressOnSymlinkEscape: false}` denies any write inside the worktree at the syscall level — including Bash redirects (`git diff > /tmp/x`, `git log > log`, `tee`), tool-generated temp files, and any other write channel that bypasses the `Edit` / `Write` Layer 2 deny. `suppressOnSymlinkEscape: false` is intentional: even on platforms where `<worker_dir>` would be suppressed off (handcraft profile-tightened style), we want the deny to stay in the rendered surface so the audit role's read-only invariant is not platform-dependent. denyRead carries the standard credential set with `layer2Fallback` strings (forward-compat). Plan-mode carve-out (§4.6.2 lines 919-921 mark `~/.claude/plans/**` and `<worker_dir>/.claude/plans/**` as 'NOT denied'): `<worker_dir>/.claude/plans` is added to additionalDirectories so the contract surface is encoded — the bwrap precedence between additionalDirectories and a parent `denyWrite` glob is launcher-determined and remains the correctness ground for Plan-mode persistence. The home-anchored Plan path (`~/.claude/plans/**`) is a RESIDUAL GAP for this PR: the runtime's additionalDirectories is a flat string list (no per-entry anchor), and a raw '~/...' string would be misinterpreted as worker_dir-relative by `_normalize_sandbox_entry` — see runtime $comment_sandbox_anchor in role_configs_schema.json. Encoding the home-anchored carve-out requires either (a) a runtime extension to support anchor='home' in additionalDirectories, or (b) the launcher tilde-expanding additionalDirectories paths; both are deferred. Operators relying on `~/.claude/plans` for Plan-mode persistence in doc-audit should use the worker-relative path (`<worker_dir>/.claude/plans/`) for now.",
       "sandbox_by_pattern": {
         "A": {
           "enabled": true,
           "filesystem": {
-            "additionalDirectories": [],
+            "additionalDirectories": [
+              "{worker_dir}/.claude/plans"
+            ],
             "denyRead": [
               {"anchor": "worker_dir", "path": ".env", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env)"},
               {"anchor": "worker_dir", "path": ".env.*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env.*)"},
@@ -744,7 +752,9 @@
         "B": {
           "enabled": true,
           "filesystem": {
-            "additionalDirectories": [],
+            "additionalDirectories": [
+              "{worker_dir}/.claude/plans"
+            ],
             "denyRead": [
               {"anchor": "worker_dir", "path": ".env", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env)"},
               {"anchor": "worker_dir", "path": ".env.*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env.*)"},
@@ -763,7 +773,9 @@
         "C": {
           "enabled": true,
           "filesystem": {
-            "additionalDirectories": [],
+            "additionalDirectories": [
+              "{worker_dir}/.claude/plans"
+            ],
             "denyRead": [
               {"anchor": "worker_dir", "path": ".env", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env)"},
               {"anchor": "worker_dir", "path": ".env.*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env.*)"},
@@ -798,6 +810,13 @@
           "Bash(git switch *)",
           "Bash(rm -rf *)",
           "Bash(rm -r *)",
+          "Read(.env)",
+          "Read(.env.*)",
+          "Read(**/credentials*)",
+          "Read(**/*.pem)",
+          "Read(~/.config/gh/hosts.yml)",
+          "Read(~/.aws/*)",
+          "Read(~/.ssh/*)",
           "Edit",
           "Write",
           "MultiEdit",

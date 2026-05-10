@@ -22,6 +22,7 @@
       "/home/u/workers/proj/.git/worktrees/T123",
       "/home/u/workers/proj/.git/objects",
       "/home/u/workers/proj/.git/refs/heads/feat/example",
+      "/home/u/workers/proj/.git/packed-refs",
       "/home/u/co/knowledge/raw"
     ],
     "suppressions": [
@@ -40,6 +41,7 @@
           "/home/u/workers/proj/.git/worktrees/T123",
           "/home/u/workers/proj/.git/objects",
           "/home/u/workers/proj/.git/refs/heads/feat/example",
+          "/home/u/workers/proj/.git/packed-refs",
           "/home/u/co/knowledge/raw"
         ]
       },
@@ -58,6 +60,7 @@
           "/home/u/workers/proj/.git/worktrees/T123",
           "/home/u/workers/proj/.git/objects",
           "/home/u/workers/proj/.git/refs/heads/feat/example",
+          "/home/u/workers/proj/.git/packed-refs",
           "/home/u/co/knowledge/raw"
         ]
       },
@@ -76,6 +79,7 @@
           "/home/u/workers/proj/.git/worktrees/T123",
           "/home/u/workers/proj/.git/objects",
           "/home/u/workers/proj/.git/refs/heads/feat/example",
+          "/home/u/workers/proj/.git/packed-refs",
           "/home/u/co/knowledge/raw"
         ]
       }
@@ -88,6 +92,7 @@
         "/home/u/workers/proj/.git/worktrees/T123",
         "/home/u/workers/proj/.git/objects",
         "/home/u/workers/proj/.git/refs/heads/feat/example",
+        "/home/u/workers/proj/.git/packed-refs",
         "/home/u/co/knowledge/raw"
       ],
       "denyRead": [

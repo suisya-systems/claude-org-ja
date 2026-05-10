@@ -18,7 +18,8 @@
     "enabled": true,
     "wsl_detected": false,
     "sandbox_read_roots": [
-      "/home/u/workers/proj/.worktrees/T123"
+      "/home/u/workers/proj/.worktrees/T123",
+      "/home/u/workers/proj/.worktrees/T123/.claude/plans"
     ],
     "suppressions": [
       {
@@ -32,7 +33,8 @@
         "reason": "realpath escapes sandbox read roots",
         "realpath": "/H/.config/gh/hosts.yml",
         "sandbox_read_roots": [
-          "/home/u/workers/proj/.worktrees/T123"
+          "/home/u/workers/proj/.worktrees/T123",
+          "/home/u/workers/proj/.worktrees/T123/.claude/plans"
         ]
       },
       {
@@ -46,7 +48,8 @@
         "reason": "realpath escapes sandbox read roots",
         "realpath": "/H/.aws",
         "sandbox_read_roots": [
-          "/home/u/workers/proj/.worktrees/T123"
+          "/home/u/workers/proj/.worktrees/T123",
+          "/home/u/workers/proj/.worktrees/T123/.claude/plans"
         ]
       },
       {
@@ -60,7 +63,8 @@
         "reason": "realpath escapes sandbox read roots",
         "realpath": "/H/.ssh",
         "sandbox_read_roots": [
-          "/home/u/workers/proj/.worktrees/T123"
+          "/home/u/workers/proj/.worktrees/T123",
+          "/home/u/workers/proj/.worktrees/T123/.claude/plans"
         ]
       }
     ]
@@ -68,7 +72,9 @@
   "expected_rendered_sandbox": {
     "enabled": true,
     "filesystem": {
-      "additionalDirectories": [],
+      "additionalDirectories": [
+        "/home/u/workers/proj/.worktrees/T123/.claude/plans"
+      ],
       "denyRead": [
         {
           "anchor": "worker_dir",
