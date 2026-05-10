@@ -52,6 +52,7 @@ from __future__ import annotations
 import argparse
 import difflib
 import json
+import os
 import sys
 from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from pathlib import Path
@@ -129,6 +130,45 @@ def _normalise(obj: object) -> object:
     return obj
 
 
+def _strip_ja_only_sandbox_bodies(schema: object) -> object:
+    """Drop ja-only ``sandbox`` bodies from each role / worker_role.
+
+    Phase 1 PR3 (Refs claude-org-ja#378 #376) lands concrete
+    ``sandbox`` bodies on ``roles.{secretary,dispatcher,curator}`` in
+    ja's ``tools/org_extension_schema.json``, driven by the Phase 0
+    contract at ``docs/contracts/role-pattern-sandbox-contract.md``.
+    The ``claude-org-runtime`` bundled schema only carries the
+    *structural* sandbox surface (Phase 1 PR1) — concrete bodies are
+    ja-side org policy, not runtime template defaults, and intentionally
+    do not ship in the runtime package. The byte check would otherwise
+    flag this as drift on every PR3+ commit.
+
+    The semantic check (``--semantic``) keeps end-to-end coverage of
+    the in-tree concrete bodies via the
+    ``tests/fixtures/runtime_schema_drift/sandbox_intent/role_*.json``
+    fixtures (``schema_source: "shipped"``), so stripping here does
+    not lose verification — it just lets the byte check focus on the
+    schema *surface* contract, which is where ja and runtime must agree.
+    """
+    if not isinstance(schema, dict):
+        return schema
+    out: dict[str, Any] = {}
+    for top_key, top_val in schema.items():
+        if top_key not in ("roles", "worker_roles") or not isinstance(top_val, dict):
+            out[top_key] = top_val
+            continue
+        new_bucket: dict[str, Any] = {}
+        for role_name, role_def in top_val.items():
+            if isinstance(role_def, dict) and "sandbox" in role_def:
+                new_bucket[role_name] = {
+                    k: v for k, v in role_def.items() if k != "sandbox"
+                }
+            else:
+                new_bucket[role_name] = role_def
+        out[top_key] = new_bucket
+    return out
+
+
 def _build_realpath_fn(
     rules: list[dict[str, str]],
 ) -> Callable[[str], str]:
@@ -156,11 +196,94 @@ def _build_realpath_fn(
     return _realpath
 
 
-def _render_fixture_explain(fixture: dict[str, Any]) -> dict[str, Any]:
-    """Render one fixture and return the canonical explain JSON.
+def _schema_role_uses_home_anchor(
+    schema: dict[str, Any], role_kind: str, role: str
+) -> bool:
+    """Return True iff the resolved role declares any deny entry with anchor=home.
+
+    Used by the fixture loader to enforce that any fixture rendering a
+    role whose sandbox body uses ``anchor: "home"`` must set
+    ``inputs.home_dir`` explicitly. Without that the host's real
+    ``$HOME`` leaks into the suppression record's ``realpath`` and the
+    fixture's ``expected_explain`` becomes host-dependent — exactly the
+    portability gap the README warns about.
+    """
+    bucket_key = "roles" if role_kind == "org" else "worker_roles"
+    role_def = (schema.get(bucket_key) or {}).get(role)
+    if not isinstance(role_def, dict):
+        return False
+    sandbox = role_def.get("sandbox")
+    if not isinstance(sandbox, dict):
+        return False
+    fs = sandbox.get("filesystem")
+    if not isinstance(fs, dict):
+        return False
+    for layer_key in ("denyRead", "denyWrite"):
+        for entry in fs.get(layer_key) or []:
+            if isinstance(entry, dict) and entry.get("anchor") == "home":
+                return True
+    return False
+
+
+def _resolve_fixture_schema(inputs: dict[str, Any]) -> dict[str, Any]:
+    """Resolve which schema dict to feed the renderer for this fixture.
+
+    Two forms are supported:
+
+    - ``inputs.schema_fragment``: an inline mini-schema (the legacy form,
+      useful for tightly-scoped evaluator coverage that is independent of
+      the current shipped contents of ``tools/org_extension_schema.json``).
+    - ``inputs.schema_source = "shipped"``: load the in-tree
+      ``tools/org_extension_schema.json`` and feed it to the renderer.
+      This is what the Phase 1 PR3 ``role_secretary`` / ``role_dispatcher``
+      / ``role_curator`` fixtures use to verify the *actual* concrete
+      sandbox bodies as shipped — without it the fixtures would only
+      exercise hand-rolled mini-schemas and could silently drift from the
+      body operators see.
+
+    Exactly one of the two must be set; passing both is rejected to keep
+    the fixture's intent unambiguous.
+    """
+    has_fragment = "schema_fragment" in inputs
+    source = inputs.get("schema_source")
+    if has_fragment and source is not None:
+        raise ValueError(
+            "fixture must set exactly one of inputs.schema_fragment or "
+            "inputs.schema_source, not both"
+        )
+    if source is not None:
+        if source != "shipped":
+            raise ValueError(
+                f"unknown schema_source: {source!r}; "
+                "only 'shipped' is currently supported"
+            )
+        return json.loads(JA_SCHEMA.read_text(encoding="utf-8"))
+    if not has_fragment:
+        raise ValueError(
+            "fixture must set inputs.schema_fragment (inline) "
+            "or inputs.schema_source = 'shipped' (read "
+            "tools/org_extension_schema.json)"
+        )
+    return inputs["schema_fragment"]
+
+
+def _render_fixture_result(fixture: dict[str, Any]) -> Any:
+    """Render one fixture and return the full ``RenderResult``.
 
     Imports the runtime lazily so a missing install surfaces the same
     way the byte check does.
+
+    Fixtures that exercise ``anchor: home`` entries set ``inputs.home_dir``
+    to a stable path. The runtime's ``_anchor_base_path`` resolves the
+    home anchor via ``os.path.expanduser('~')`` which reads ``$HOME`` on
+    POSIX (and ``$USERPROFILE`` on Windows), so we temporarily swap those
+    env vars for the duration of the render and restore them afterwards.
+    Without this hook the home-anchored realpath would be host-dependent
+    and ``expected_explain`` could not be byte-compared across machines —
+    the original fixture set sidestepped this by avoiding ``anchor: home``
+    altogether (see fixture-dir README), but the Phase 1 PR3 ``role_*``
+    fixtures must verify the shipped credential entries which use
+    ``anchor: home``.
     """
     from claude_org_runtime.settings.generator import (  # noqa: PLC0415
         render_role_with_metadata,
@@ -169,20 +292,75 @@ def _render_fixture_explain(fixture: dict[str, Any]) -> dict[str, Any]:
     inputs = fixture["inputs"]
     realpath_fn = _build_realpath_fn(inputs.get("realpath_map", []))
     wsl_detected = bool(inputs.get("wsl_detected", False))
-    result = render_role_with_metadata(
-        inputs["schema_fragment"],
-        role=inputs["role"],
-        worker_dir=inputs["worker_dir"],
-        claude_org_path=inputs["claude_org_path"],
-        role_kind=inputs.get("role_kind", "worker"),
-        base_clone=inputs.get("base_clone"),
-        task_id=inputs.get("task_id"),
-        branch_ref=inputs.get("branch_ref"),
-        pattern=inputs.get("pattern"),
-        realpath_fn=realpath_fn,
-        wsl_detector=lambda: wsl_detected,
-    )
-    return result.sandbox.to_jsonable()
+    schema = _resolve_fixture_schema(inputs)
+    home_dir = inputs.get("home_dir")
+    if home_dir is None and _schema_role_uses_home_anchor(
+        schema, inputs.get("role_kind", "worker"), inputs["role"]
+    ):
+        raise ValueError(
+            f"fixture for role {inputs['role']!r} (role_kind="
+            f"{inputs.get('role_kind', 'worker')!r}) must set "
+            "inputs.home_dir because the role's sandbox body declares "
+            "at least one deny entry with anchor='home' — without the "
+            "swap the host's $HOME would leak into the suppression "
+            "record realpath and expected_explain would not be portable."
+        )
+
+    def _do_render() -> Any:
+        return render_role_with_metadata(
+            schema,
+            role=inputs["role"],
+            worker_dir=inputs["worker_dir"],
+            claude_org_path=inputs["claude_org_path"],
+            role_kind=inputs.get("role_kind", "worker"),
+            base_clone=inputs.get("base_clone"),
+            task_id=inputs.get("task_id"),
+            branch_ref=inputs.get("branch_ref"),
+            pattern=inputs.get("pattern"),
+            realpath_fn=realpath_fn,
+            wsl_detector=lambda: wsl_detected,
+        )
+
+    if home_dir is None:
+        return _do_render()
+    if not isinstance(home_dir, str):
+        raise ValueError(
+            f"inputs.home_dir must be a string, got {type(home_dir).__name__}"
+        )
+    # Swap HOME and USERPROFILE so os.path.expanduser('~') is
+    # deterministic. Restore-on-finally is mandatory: a stray
+    # exception leaving HOME pointed at the fixture's fake path
+    # would make every subsequent test render diverge.
+    _swap_keys = ("HOME", "USERPROFILE")
+    original = {k: os.environ.get(k) for k in _swap_keys}
+    for k in _swap_keys:
+        os.environ[k] = home_dir
+    try:
+        return _do_render()
+    finally:
+        for k, v in original.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+def _render_fixture_explain(fixture: dict[str, Any]) -> dict[str, Any]:
+    """Render one fixture and return the canonical explain JSON."""
+    return _render_fixture_result(fixture).sandbox.to_jsonable()
+
+
+def _render_fixture_rendered_sandbox(fixture: dict[str, Any]) -> Any:
+    """Render one fixture and return the rendered ``sandbox`` dict.
+
+    The explain JSON only describes *suppressed* deny entries; the
+    *kept* deny entries (and the rest of the sandbox body) live on
+    ``result.settings.sandbox``. Without comparing the rendered body
+    a regression that drops e.g. ``denyWrite: tools`` from the
+    dispatcher would not be detected by ``expected_explain`` alone.
+    Fixtures that want kept-entry coverage set ``expected_rendered_sandbox``.
+    """
+    return _render_fixture_result(fixture).settings.get("sandbox")
 
 
 def _format_explain_diff(
@@ -224,7 +402,9 @@ def _check_byte_drift(installed_str: str) -> int:
     bundled = json.loads(bundled_path.read_text(encoding="utf-8"))
     ja = json.loads(JA_SCHEMA.read_text(encoding="utf-8"))
 
-    if _normalise(bundled) == _normalise(ja):
+    bundled_norm = _normalise(_strip_ja_only_sandbox_bodies(bundled))
+    ja_norm = _normalise(_strip_ja_only_sandbox_bodies(ja))
+    if bundled_norm == ja_norm:
         print(
             f"check_runtime_schema_drift: OK (claude-org-runtime "
             f"{installed_str} bundled schema matches {JA_SCHEMA.name})"
@@ -326,20 +506,39 @@ def _check_semantic_drift(installed_str: str) -> int:
     for fixture_path in fixture_paths:
         fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
         policy_violations.extend(_validate_fixture_policy(fixture_path, fixture))
+        # Render once; both checks read from the same RenderResult so a
+        # transient env-var swap (home_dir) doesn't have to happen twice.
+        result = _render_fixture_result(fixture)
         expected = fixture["expected_explain"]
-        actual = _render_fixture_explain(fixture)
-        if expected == actual:
-            continue
-        drift_seen = True
-        print(
-            "check_runtime_schema_drift: SEMANTIC DRIFT — "
-            f"{fixture_path.relative_to(REPO_ROOT)} explain JSON differs "
-            f"from claude-org-runtime {installed_str} render output.",
-            file=sys.stderr,
-        )
-        diff = _format_explain_diff(fixture_path, expected, actual)
-        if diff:
-            print(diff, file=sys.stderr)
+        actual = result.sandbox.to_jsonable()
+        if expected != actual:
+            drift_seen = True
+            print(
+                "check_runtime_schema_drift: SEMANTIC DRIFT — "
+                f"{fixture_path.relative_to(REPO_ROOT)} explain JSON differs "
+                f"from claude-org-runtime {installed_str} render output.",
+                file=sys.stderr,
+            )
+            diff = _format_explain_diff(fixture_path, expected, actual)
+            if diff:
+                print(diff, file=sys.stderr)
+        if "expected_rendered_sandbox" in fixture:
+            expected_sandbox = fixture["expected_rendered_sandbox"]
+            actual_sandbox = result.settings.get("sandbox")
+            if expected_sandbox != actual_sandbox:
+                drift_seen = True
+                print(
+                    "check_runtime_schema_drift: SEMANTIC DRIFT — "
+                    f"{fixture_path.relative_to(REPO_ROOT)} rendered sandbox "
+                    f"body differs from claude-org-runtime {installed_str} "
+                    "output (kept deny entries / additionalDirectories).",
+                    file=sys.stderr,
+                )
+                diff = _format_explain_diff(
+                    fixture_path, expected_sandbox, actual_sandbox
+                )
+                if diff:
+                    print(diff, file=sys.stderr)
     if policy_violations:
         for v in policy_violations:
             print(

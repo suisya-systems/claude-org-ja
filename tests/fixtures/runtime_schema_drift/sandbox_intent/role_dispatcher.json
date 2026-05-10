@@ -1,0 +1,128 @@
+{
+  "description": "Dispatcher role (org-side, role_kind=org) rendered against the in-tree shipped tools/org_extension_schema.json (schema_source=shipped). Pins both the explain JSON (suppressions) and the rendered sandbox body (kept deny entries) so a regression that drops e.g. denyWrite: tools/dashboard/tests/.claude/skills/docs/registry from the shipped body — not just one that flips its suppression state — is detected. The dispatcher runs in permission_mode=bypassPermissions which makes Layer 2 a no-op (docs/contracts/role-pattern-sandbox-contract.md §3.2 line 270-272), so the shipped body intentionally OMITS layer2Fallback on every entry — Major 1 from the Codex pre-design review for PR3. Layer 3 is the primary enforcement vector. worker_dir = claude_org_path/.dispatcher; additionalDirectories adds claude_org_path so .state/ knowledge/raw/ registry/ tools/ are reachable for read (per §3.2.1) and so denyWrite entries for tools/ dashboard/ tests/ .claude/skills/ docs/ registry/ resolve inside read_roots and are kept (closing the §3.2.4 Bash-redirect carve-out where .hooks/block-dispatcher-out-of-scope.sh only matches Edit/Write). claude_org_path-anchored credential entries are kept (target inside read_roots); home-anchored entries are suppressed with realpath under home_dir=/H. workers_dir/** is intentionally NOT in denyWrite — it falls outside read_roots and is protected at Layer 4 by .hooks/block-dispatcher-out-of-scope.sh + .hooks/block-workers-delete.sh.",
+  "inputs": {
+    "role": "dispatcher",
+    "role_kind": "org",
+    "worker_dir": "/home/u/co/.dispatcher",
+    "claude_org_path": "/home/u/co",
+    "home_dir": "/H",
+    "wsl_detected": false,
+    "realpath_map": [],
+    "schema_source": "shipped"
+  },
+  "expected_explain": {
+    "enabled": true,
+    "wsl_detected": false,
+    "sandbox_read_roots": [
+      "/home/u/co/.dispatcher",
+      "/home/u/co"
+    ],
+    "suppressions": [
+      {
+        "layer": "sandbox.filesystem.denyRead",
+        "entry": {
+          "anchor": "home",
+          "path": ".config/gh/hosts.yml",
+          "suppressOnSymlinkEscape": true
+        },
+        "reason": "realpath escapes sandbox read roots",
+        "realpath": "/H/.config/gh/hosts.yml",
+        "sandbox_read_roots": [
+          "/home/u/co/.dispatcher",
+          "/home/u/co"
+        ]
+      },
+      {
+        "layer": "sandbox.filesystem.denyRead",
+        "entry": {
+          "anchor": "home",
+          "path": ".aws/**",
+          "suppressOnSymlinkEscape": true
+        },
+        "reason": "realpath escapes sandbox read roots",
+        "realpath": "/H/.aws",
+        "sandbox_read_roots": [
+          "/home/u/co/.dispatcher",
+          "/home/u/co"
+        ]
+      },
+      {
+        "layer": "sandbox.filesystem.denyRead",
+        "entry": {
+          "anchor": "home",
+          "path": ".ssh/**",
+          "suppressOnSymlinkEscape": true
+        },
+        "reason": "realpath escapes sandbox read roots",
+        "realpath": "/H/.ssh",
+        "sandbox_read_roots": [
+          "/home/u/co/.dispatcher",
+          "/home/u/co"
+        ]
+      }
+    ]
+  },
+  "expected_rendered_sandbox": {
+    "enabled": true,
+    "failIfUnavailable": false,
+    "filesystem": {
+      "additionalDirectories": [
+        "/home/u/co"
+      ],
+      "denyRead": [
+        {
+          "anchor": "claude_org_path",
+          "path": "**/credentials*",
+          "suppressOnSymlinkEscape": true
+        },
+        {
+          "anchor": "claude_org_path",
+          "path": "**/*.pem",
+          "suppressOnSymlinkEscape": true
+        },
+        {
+          "anchor": "claude_org_path",
+          "path": ".env",
+          "suppressOnSymlinkEscape": true
+        },
+        {
+          "anchor": "claude_org_path",
+          "path": ".env.*",
+          "suppressOnSymlinkEscape": true
+        }
+      ],
+      "denyWrite": [
+        {
+          "anchor": "claude_org_path",
+          "path": "tools",
+          "suppressOnSymlinkEscape": true
+        },
+        {
+          "anchor": "claude_org_path",
+          "path": "dashboard",
+          "suppressOnSymlinkEscape": true
+        },
+        {
+          "anchor": "claude_org_path",
+          "path": "tests",
+          "suppressOnSymlinkEscape": true
+        },
+        {
+          "anchor": "claude_org_path",
+          "path": ".claude/skills",
+          "suppressOnSymlinkEscape": true
+        },
+        {
+          "anchor": "claude_org_path",
+          "path": "docs",
+          "suppressOnSymlinkEscape": true
+        },
+        {
+          "anchor": "claude_org_path",
+          "path": "registry",
+          "suppressOnSymlinkEscape": true
+        }
+      ]
+    }
+  }
+}

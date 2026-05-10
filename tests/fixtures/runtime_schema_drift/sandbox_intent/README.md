@@ -15,7 +15,7 @@ suppression evaluator on top of identical schema bytes.
 {
   "description": "what this fixture exercises",
   "inputs": {
-    "role": "...",                // required, key inside schema_fragment.worker_roles or schema_fragment.roles
+    "role": "...",                // required, key inside schema's worker_roles or roles
     "role_kind": "worker"|"org",  // optional, defaults to "worker"
     "worker_dir": "...",          // required absolute path
     "claude_org_path": "...",     // required absolute path
@@ -27,15 +27,76 @@ suppression evaluator on top of identical schema bytes.
     "realpath_map": [             // fake realpath rules; first match wins
       {"prefix": "/some/path", "replacement": "/another/path"}
     ],
-    "schema_fragment": { ... }    // a minimal schema dict the renderer can load
+
+    // Choose exactly one of the next two — the loader rejects setting
+    // both, and rejects setting neither.
+    "schema_fragment": { ... },   // (a) inline mini-schema dict
+    "schema_source": "shipped",   // (b) load tools/org_extension_schema.json
+
+    "home_dir": "/H"              // optional; required if any deny entry uses
+                                  //   anchor:"home". Swaps $HOME/$USERPROFILE
+                                  //   for the duration of the render so
+                                  //   os.path.expanduser('~') is deterministic.
   },
-  "expected_explain": { ... }     // SandboxMetadata.to_jsonable() output
+  "expected_explain": { ... },    // SandboxMetadata.to_jsonable() output
+
+  "expected_rendered_sandbox": {  // optional; rendered RenderResult.settings.sandbox
+    "enabled": true, ...          // (kept deny entries + additionalDirectories,
+  }                               // post-substitution, suppressed entries dropped).
+                                  // Set when the fixture wants to detect a
+                                  // regression that drops a kept entry — the
+                                  // explain JSON only describes *suppressions*,
+                                  // so without this a removed `denyWrite` would
+                                  // not be detected if its suppression state
+                                  // didn't change.
 }
 ```
 
 `realpath_map` rules apply to a path `p` when `p == prefix` or
 `p.startswith(prefix + "/")`. The matched prefix is replaced and the
 result is returned. Paths that match no rule pass through unchanged.
+
+### `schema_source: "shipped"` vs inline `schema_fragment`
+
+- Use `schema_fragment` when the fixture's purpose is to exercise a
+  specific evaluator path with a minimal, hand-rolled mini-schema —
+  the original sandbox_default / sandbox_doc_audit /
+  sandbox_pattern_b_self_edit fixtures use this form.
+- Use `schema_source: "shipped"` when the fixture's purpose is to
+  pin behaviour against the *actual concrete sandbox body* that ships
+  in [`tools/org_extension_schema.json`](../../../../tools/org_extension_schema.json).
+  The Phase 1 PR3 `role_secretary.json` / `role_dispatcher.json` /
+  `role_curator.json` fixtures use this form so the concrete bodies
+  for the three org roles are verified, not just the evaluator. A
+  hand-rolled mini-schema cannot detect a regression in the shipped
+  body; the shipped form can.
+
+### `layer2Fallback` is forward-looking, not auto-mirrored today
+
+A structured deny entry may carry a `layer2Fallback` string per
+`worker_roles.$comment_sandbox_anchor` in the schema. The intent is
+that when the Layer-3 entry is suppressed (e.g. on WSL the home-
+anchored `~/.aws/**` deny escapes sandbox read roots), the runtime
+mirrors the fallback string into `permissions.deny`. The version of
+`claude-org-runtime` pinned by this repo does NOT yet implement that
+mirror — the `layer2Fallback` field is preserved on the suppression
+record's `entry` but not emitted into `permissions.deny`. Fixtures
+therefore only compare suppressions and the rendered sandbox dict;
+they do not assert anything about `permissions.deny`. Effective
+Layer 2 deny for credentials still has to be declared by hand via
+`roles.<role>.required_deny`.
+
+### `home_dir` and `anchor: "home"`
+
+The runtime resolves `anchor: "home"` via `os.path.expanduser("~")`,
+which on POSIX reads `$HOME` (Windows: `$USERPROFILE`) — host-dependent
+by default. Setting `inputs.home_dir = "/H"` (or any stable path) makes
+the loader temporarily swap those env vars for the duration of the
+render so home-anchored entries produce a byte-portable
+`expected_explain`. Restore-on-finally is unconditional: a stray
+exception cannot leak the fake `$HOME` into other tests.
+
+Fixtures that do not use `anchor: "home"` should omit `home_dir`.
 
 ## Out-of-scope intentionally
 
@@ -46,16 +107,13 @@ result is returned. Paths that match no rule pass through unchanged.
   JSON does not include it. Fixtures here MUST NOT add a
   `verification_depth` field to either `inputs` or
   `expected_explain` — depth is enforcement-out-of-scope by design.
-- **`anchor: "home"`**: skipped to keep fixtures host-independent.
-  `os.path.expanduser("~")` resolves against the running user's
-  `HOME` env var and would make goldens differ across machines.
-- **Concrete sandbox bodies for shipped roles**: the `schema_fragment`
-  in each fixture is a self-contained minimal example; it does not
-  need to match the in-tree
-  [`tools/org_extension_schema.json`](../../../../tools/org_extension_schema.json)
-  contents. Concrete bodies for `secretary` / `dispatcher` / `curator`
-  / worker `default` (A/B/C) / `claude-org-self-edit` / `doc-audit`
-  are added in a later changeset.
+- **Concrete sandbox bodies for `worker_roles.*`**: not landed in the
+  Phase 1 PR3 changeset; the worker_roles A/B/C pattern variation
+  needs a `sandbox_by_pattern` schema decision (deferred to PR4 per
+  the Codex pre-design review). The three `role_secretary` /
+  `role_dispatcher` / `role_curator` fixtures pin the org-side bodies
+  added in PR3. `worker_roles.default` / `claude-org-self-edit` /
+  `doc-audit` shipped-body fixtures are tracked for a later changeset.
 
 ## Adding a new fixture
 
