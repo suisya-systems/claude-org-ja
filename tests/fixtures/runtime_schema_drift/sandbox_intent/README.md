@@ -130,10 +130,17 @@ dedicated fixture file:
   refuses `pattern=A` for `claude-org-self-edit` (would break the
   live-repo single-`.git` invariant from Issue #289).
 - `worker_doc_audit_A.json` / `worker_doc_audit_B.json` / `worker_doc_audit_C.json`
-  — doc-audit is pattern-orthogonal per Phase 0 §4.6, but per-pattern
-  fixtures verify each `sandbox_by_pattern.{A,B,C}` key renders
-  identically (and that Pattern B placeholders pass through cleanly
-  even when the body does not reference them).
+  — doc-audit is pattern-orthogonal in WRITE intent (the read-only
+  audit constraint dominates regardless of pattern) but pattern-
+  dependent in READ surface per Phase 0 §4.6.1 ('Identical to the
+  underlying pattern'). Pattern B's body therefore additionally mounts
+  the base_clone Git metadata carve-outs from §4.2.1 (worktrees /
+  objects / refs/heads/<branch_ref> / packed-refs) so doc-audit's
+  allowed `git status` / `diff` / `log` Bash commands can resolve
+  `<worker_dir>/.git`'s gitdir pointer; explicit denyWrite entries
+  keep those mounts read-only on top of the broader
+  `denyWrite[{worker_dir}/**]`. Pattern A and C bodies are simpler
+  (worker_dir auto-mount covers their .git location).
 
 Each fixture sets `inputs.schema_source = "shipped"` so it pins the
 *actual concrete body* in
