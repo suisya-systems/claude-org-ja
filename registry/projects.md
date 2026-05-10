@@ -18,3 +18,5 @@ claude-org-ja 自身（self-edit）は本レジストリに載せない。`tools
 |---|---|---|---|---|
 | 時計アプリ | clock-app | - | Webブラウザで動くデジタル時計 | デザイン変更、機能追加 |
 | renga | renga | https://github.com/suisya-systems/renga | Rust 製の Claude Code 用ターミナルマルチプレクサ（TUI） | 機能追加、バグ修正、Issue 対応 |
+| サンドボックス検証 | sandbox-probe | - | Issue #376 / #377 用の sandbox profile / hook / settings 配備の実測検証エリア。candidate profile を handcraft して probe を回し allow/deny matrix を作る | Pre-Phase 0 spike、probe 反復、profile validation |
+| ランタイム | claude-org-runtime | https://github.com/suisya-systems/claude-org-runtime | Layer 2 = org-runtime: claude-org-ja から抽出された Python runtime (dispatcher / state schema / reference role prompts)。ja は pin で参照する | role_configs_schema.json 同期、release 駆動、dispatcher / settings.generator のメンテ |

@@ -51,3 +51,13 @@ Thumbs.db
 # M4 (Issue #267): journal.jsonl decommissioned — events table is the SoT.
 # Local files lingering from pre-M4 runs are no longer authoritative.
 .state/journal.jsonl
+
+# Local Python venv (Secretary main working tree only)
+.venv/
+
+# Ad-hoc scratch / log artifacts
+tmp/
+err.log
+
+# Dispatcher pane snapshot scratch (machine-local)
+.dispatcher/panes-snapshot-tmp.json
