@@ -13,14 +13,17 @@ Pin-window tolerance
 --------------------
 ja pins ``claude-org-runtime`` to a narrow window (see
 ``RUNTIME_PIN_LOWER_INCLUSIVE`` / ``RUNTIME_PIN_UPPER_EXCLUSIVE``).
-When the installed runtime is *outside* that window (e.g. a contributor
-previewed a new minor locally before ja widened its pin), this check
-**skips with a warning** rather than failing — the bundled schema is by
+When the installed runtime is *outside* that window, the **byte check
+skips with a warning** rather than failing — the bundled schema is by
 definition allowed to evolve ahead of ja's pin window, and a hard
-failure here would just block unrelated PRs.
+failure here would just block unrelated PRs. Inside the window the
+byte check treats any structural difference as a hard failure.
 
-When the installed runtime is *inside* the window, the byte check
-treats any structural difference as a hard failure.
+The ``--semantic`` check, in contrast, runs unconditionally when
+explicitly requested: an operator invoking it against a preview
+runtime is asking "does my evaluator-shape golden still match?", and
+silently skipping would defeat the point of the flag. The same
+unconditional semantics apply to the matching pytest test.
 
 Two drift dimensions
 --------------------
@@ -243,6 +246,37 @@ def _check_byte_drift(installed_str: str) -> int:
     return 1
 
 
+_FIXTURE_OUT_OF_SCOPE_FIELDS = ("verification_depth",)
+
+
+def _validate_fixture_policy(
+    fixture_path: Path, fixture: dict[str, Any]
+) -> list[str]:
+    """Return a list of policy violations for one fixture.
+
+    Currently enforces only that the out-of-scope fields listed in
+    ``_FIXTURE_OUT_OF_SCOPE_FIELDS`` (notably ``verification_depth``,
+    which is a delegate-payload convention rather than a sandbox
+    enforcement dimension) do not appear in either the fixture's
+    ``inputs`` or its ``expected_explain``. Mirrors the policy check
+    in ``tests/test_runtime_schema_drift_semantic.py`` so the manual
+    CLI run gives the same answer as pytest.
+    """
+    violations: list[str] = []
+    for section in ("inputs", "expected_explain"):
+        section_obj = fixture.get(section, {})
+        if not isinstance(section_obj, dict):
+            continue
+        for field_name in _FIXTURE_OUT_OF_SCOPE_FIELDS:
+            if field_name in section_obj:
+                violations.append(
+                    f"{fixture_path.name}: {field_name!r} must not appear "
+                    f"in {section!r} (out-of-scope for sandbox semantic "
+                    "contract; see fixture-dir README)."
+                )
+    return violations
+
+
 def _check_semantic_drift(installed_str: str) -> int:
     if not SEMANTIC_FIXTURE_DIR.is_dir():
         print(
@@ -260,8 +294,10 @@ def _check_semantic_drift(installed_str: str) -> int:
         )
         return 1
     drift_seen = False
+    policy_violations: list[str] = []
     for fixture_path in fixture_paths:
         fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+        policy_violations.extend(_validate_fixture_policy(fixture_path, fixture))
         expected = fixture["expected_explain"]
         actual = _render_fixture_explain(fixture)
         if expected == actual:
@@ -276,6 +312,12 @@ def _check_semantic_drift(installed_str: str) -> int:
         diff = _format_explain_diff(fixture_path, expected, actual)
         if diff:
             print(diff, file=sys.stderr)
+    if policy_violations:
+        for v in policy_violations:
+            print(
+                f"check_runtime_schema_drift: FIXTURE POLICY — {v}",
+                file=sys.stderr,
+            )
     if drift_seen:
         print(
             "  Update the affected fixture(s) under "
@@ -283,6 +325,8 @@ def _check_semantic_drift(installed_str: str) -> int:
             "behaviour change is intended, or fix the runtime if it is not.",
             file=sys.stderr,
         )
+        return 1
+    if policy_violations:
         return 1
     print(
         f"check_runtime_schema_drift: semantic OK (claude-org-runtime "
@@ -333,21 +377,34 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
     installed = _parse_version(installed_str)
-    if not _runtime_in_pin_window(installed):
-        print(
-            f"check_runtime_schema_drift: WARN — installed claude-org-runtime "
-            f"{installed_str} is outside ja's pin window "
-            f">={'.'.join(map(str, RUNTIME_PIN_LOWER_INCLUSIVE))},"
-            f"<{'.'.join(map(str, RUNTIME_PIN_UPPER_EXCLUSIVE[:2]))}; "
-            "skipping strict drift check (runtime is allowed to ship a new "
-            "minor before ja widens the pin)."
-        )
-        return 0
+    in_window = _runtime_in_pin_window(installed)
 
     rc = 0
     if run_byte:
-        rc = _check_byte_drift(installed_str) or rc
+        # Byte check honours the pin window: a runtime preview release
+        # is allowed to ship a schema ahead of ja's pin, so a hard
+        # failure here would just block unrelated PRs. Skip with a
+        # warning when out-of-window.
+        if not in_window:
+            print(
+                f"check_runtime_schema_drift: WARN — installed "
+                f"claude-org-runtime {installed_str} is outside ja's pin "
+                f"window "
+                f">={'.'.join(map(str, RUNTIME_PIN_LOWER_INCLUSIVE))},"
+                f"<{'.'.join(map(str, RUNTIME_PIN_UPPER_EXCLUSIVE[:2]))}; "
+                "skipping byte drift check (runtime is allowed to ship a "
+                "new minor before ja widens the pin)."
+            )
+        else:
+            rc = _check_byte_drift(installed_str) or rc
     if run_semantic:
+        # Semantic check runs unconditionally when explicitly
+        # requested. Operators invoking `--semantic` against a
+        # 0.2-preview runtime want exactly this answer ("does the
+        # explain JSON still match my goldens against the new
+        # evaluator?"), and silently skipping would defeat the point
+        # of the flag. The matching pytest test is the same shape:
+        # it always runs against whatever runtime is importable.
         rc = _check_semantic_drift(installed_str) or rc
     return rc
 
