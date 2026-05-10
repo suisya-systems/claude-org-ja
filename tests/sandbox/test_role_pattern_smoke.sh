@@ -156,30 +156,64 @@ else
 fi
 
 if command -v claude >/dev/null 2>&1; then
-  ok "claude (Claude Code CLI) is on \$PATH"
+  # `claude --version` is what the runbook §1.2 instructs operators to
+  # run. Verifying the binary actually responds (not just that it is on
+  # PATH) catches the case where a broken install leaves the entry on
+  # PATH but the binary fails to execute — which would in turn break
+  # /sandbox status checks downstream.
+  if claude_ver=$(claude --version 2>/dev/null) && [[ -n "$claude_ver" ]]; then
+    ok "claude --version succeeded ($claude_ver)"
+  else
+    skip_msg "claude is on \$PATH but '--version' did not return output — likely a broken install (runbook §1.2)"
+  fi
 else
   skip_msg "claude unavailable — E2E spawn verification (runbook §3) cannot run from this host"
 fi
 
-# claude-org-runtime version check. Try the project venv first
-# (.venv/bin/pip), then fall back to the system pip. This mirrors the
-# runbook §1.2 invocation. We accept any 0.1.x ≥0.1.9 (the requirements.txt
-# pin window). Older versions skip the assertion rather than fail because
-# the schema / hook tests below do not depend on the runtime; the row
-# exists to surface "your runtime is older than requirements.txt expects,
-# Layer 3 sandbox blocks may not be emitted into worker settings.local.json"
-# at smoke time.
-runtime_version=""
-for pip_cmd in "$REPO_ROOT/.venv/bin/pip" "pip3" "pip"; do
-  if command -v "$pip_cmd" >/dev/null 2>&1 || [[ -x "$pip_cmd" ]]; then
-    if v=$("$pip_cmd" show claude-org-runtime 2>/dev/null | awk -F': ' '/^Version:/ {print $2}'); then
+# claude-org-runtime version check. Prefer the CLI (`claude-org-runtime
+# --version`) over `pip show` — `pip show` walks the *system* site-
+# packages and can return a stale version that has nothing to do with
+# the binary an operator actually invokes when running
+# `claude-org-runtime settings generate`. The CLI is what the runbook §1.2
+# instructs.
+#
+# We try the project venv first, then PATH. We accept any 0.1.x ≥0.1.9
+# (the requirements.txt pin window). Older or out-of-window versions
+# skip the assertion rather than fail because the schema / hook tests
+# below do not depend on the runtime; the row exists to surface
+# "your runtime is older than requirements.txt expects, sandbox_by_pattern
+# may not be emitted into worker settings.local.json" at smoke time.
+runtime_version=""    # parseable "X.Y.Z" (no suffix)
+runtime_version_src=""  # human-readable source label for the OK/SKIP message
+for runtime_cmd in "$REPO_ROOT/.venv/bin/claude-org-runtime" "claude-org-runtime"; do
+  if command -v "$runtime_cmd" >/dev/null 2>&1 || [[ -x "$runtime_cmd" ]]; then
+    # `claude-org-runtime --version` prints "claude-org-runtime X.Y.Z";
+    # take the last whitespace-delimited token.
+    if v=$("$runtime_cmd" --version 2>/dev/null | awk '{print $NF}'); then
       if [[ -n "$v" ]]; then
         runtime_version="$v"
+        runtime_version_src="$runtime_cmd"
         break
       fi
     fi
   fi
 done
+# pip show is consulted only if the CLI was unreachable, as a last
+# resort. It is intentionally lower-priority because of the stale-
+# metadata risk above.
+if [[ -z "$runtime_version" ]]; then
+  for pip_cmd in "$REPO_ROOT/.venv/bin/pip" "pip3" "pip"; do
+    if command -v "$pip_cmd" >/dev/null 2>&1 || [[ -x "$pip_cmd" ]]; then
+      if v=$("$pip_cmd" show claude-org-runtime 2>/dev/null | awk -F': ' '/^Version:/ {print $2}'); then
+        if [[ -n "$v" ]]; then
+          runtime_version="$v"
+          runtime_version_src="$pip_cmd show (CLI unreachable)"
+          break
+        fi
+      fi
+    fi
+  done
+fi
 if [[ -z "$runtime_version" ]]; then
   skip_msg "claude-org-runtime not installed — cannot verify >=0.1.9,<0.2 pin (runbook §1.2)"
 else
@@ -190,9 +224,9 @@ else
   minor=$(echo "$runtime_version" | awk -F. '{print $2+0}')
   patch=$(echo "$runtime_version" | awk -F. '{print $3+0}')
   if [[ "$major" -eq 0 && "$minor" -eq 1 && "$patch" -ge 9 ]]; then
-    ok "claude-org-runtime $runtime_version satisfies >=0.1.9,<0.2"
+    ok "claude-org-runtime $runtime_version satisfies >=0.1.9,<0.2 (source: $runtime_version_src)"
   else
-    skip_msg "claude-org-runtime $runtime_version is outside the >=0.1.9,<0.2 pin — sandbox_by_pattern may not be emitted into worker settings (runbook §1.2)"
+    skip_msg "claude-org-runtime $runtime_version is outside the >=0.1.9,<0.2 pin (source: $runtime_version_src) — sandbox_by_pattern may not be emitted into worker settings (runbook §1.2)"
   fi
 fi
 
