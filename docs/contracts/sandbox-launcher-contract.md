@@ -831,22 +831,44 @@ Scope, in order of dependency:
    contract surface (payload validation against the journal helper)
    can land independently of §6.1 and stay in this repo.
 
-### 6.3 claude-org-runtime PR (companion, optional)
+### 6.3 claude-org-runtime PR (companion)
 
-Scope:
+Scope. Two surfaces must be verified or implemented; the runtime PR is
+"optional" only if **both** already hold:
 
-1. **Verify only**: confirm that `render_role_with_metadata()` already
-   emits the case-E suppression metadata in the form §2.1 expects. If
-   it does (released in 0.1.4 / pinned at 0.1.6), no runtime change is
-   needed.
-2. If a change is needed: tighten `RenderResult.suppressed_entries`
-   into the schema this contract expects, and add the
-   `sandbox_deny_skipped` `phase=case_e` emit at settings-generation
-   time. The runtime is invoked from the secretary's / dispatcher's
-   environment (typically by `claude-org-runtime settings generate`),
-   so the helper invocation runs from the org repo's cwd and writes
-   to `<repo>/.state/state.db`. This must NOT extend `RenderResult` to
-   carry launcher-side state — see §2.4.
+1. **`$comment` metadata surface (§2.1)**: confirm that
+   `render_role_with_metadata()` emits the conditionally-required
+   `$comment` whenever `RenderResult.suppressed_entries` is non-empty,
+   in the format `platform=<linux|wsl>, layer-3 entries suppressed:
+   [<list>]`. If the released runtime (≥0.1.4 / pinned at 0.1.6) does
+   this, no metadata-side change is needed.
+2. **Case-E `sandbox_deny_skipped` event emit (§3.3 + §5.3)**: confirm
+   that the runtime emits one `sandbox_deny_skipped` event row per
+   suppressed entry at settings-generation time, with
+   `phase=case_e`, `source=render_suppression`, `attempt=0`,
+   `severity=info`, `audience=debug`, `suppressed_by_default=true`,
+   plus the per-entry payload fields (`role`, `entry`, `reason=
+   symlink_escape`, `dedupe_key`, `fail_if_unavailable`).
+   - `$comment` metadata existence is **not** sufficient: the
+     contract surface §3.3 requires the journal event regardless of
+     whether the metadata is also written. A runtime that emits
+     `$comment` but skips the event MUST be patched.
+   - The runtime is invoked from the secretary's / dispatcher's
+     environment (typically by `claude-org-runtime settings generate`),
+     so the helper invocation runs from the org repo's cwd and writes
+     to `<repo>/.state/state.db` via
+     [`tools/journal_append.sh`](../../tools/journal_append.sh) /
+     [`tools/journal_append.py`](../../tools/journal_append.py). The
+     helper path is provided by the org caller; the runtime's job is
+     to invoke it (or hand back the per-entry payloads to the caller,
+     who emits) once per suppressed entry.
+
+If both surfaces are present in the released runtime, this PR
+degenerates into a verification-only patch (a test that asserts the
+event row appears with the §3.3 fields). If either is missing, the
+runtime PR adds the missing piece. In neither case does the contract
+permit `RenderResult` to be extended with launcher-side state — see
+§2.4.
 
 ### 6.4 Test strategy
 
