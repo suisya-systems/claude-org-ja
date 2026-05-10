@@ -107,13 +107,49 @@ Fixtures that do not use `anchor: "home"` should omit `home_dir`.
   JSON does not include it. Fixtures here MUST NOT add a
   `verification_depth` field to either `inputs` or
   `expected_explain` — depth is enforcement-out-of-scope by design.
-- **Concrete sandbox bodies for `worker_roles.*`**: not landed in the
-  Phase 1 PR3 changeset; the worker_roles A/B/C pattern variation
-  needs a `sandbox_by_pattern` schema decision (deferred to PR4 per
-  the Codex pre-design review). The three `role_secretary` /
-  `role_dispatcher` / `role_curator` fixtures pin the org-side bodies
-  added in PR3. `worker_roles.default` / `claude-org-self-edit` /
-  `doc-audit` shipped-body fixtures are tracked for a later changeset.
+- ~~**Concrete sandbox bodies for `worker_roles.*`**: not landed in the
+  Phase 1 PR3 changeset~~ — landed in Phase 1 PR4 via the
+  `worker_<role>_<pattern>.json` fixtures (per the Codex pre-design
+  review's per-pattern file convention: 1 fixture = 1 pattern render,
+  no nested-fixture-object form). See "Per-pattern fixtures" below.
+
+## Per-pattern fixtures (Phase 1 PR4)
+
+`worker_roles.<role>.sandbox_by_pattern.{A,B,C}` is a per-pattern
+sandbox surface — the runtime selects the body keyed by `--pattern` at
+render time (per [`role_configs_schema.json`](https://pypi.org/project/claude-org-runtime/)
+`$comment_sandbox_by_pattern`). To pin behaviour without losing per-
+pattern coverage, each shipped worker role × pattern combination has a
+dedicated fixture file:
+
+- `worker_default_A.json` / `worker_default_B.json` / `worker_default_C.json`
+  — `worker_roles.default`, all three patterns.
+- `worker_self_edit_B.json` / `worker_self_edit_C.json` — Pattern A is
+  intentionally omitted because the resolver
+  ([`tools/resolve_worker_layout.py:643`](../../../../tools/resolve_worker_layout.py))
+  refuses `pattern=A` for `claude-org-self-edit` (would break the
+  live-repo single-`.git` invariant from Issue #289).
+- `worker_doc_audit_A.json` / `worker_doc_audit_B.json` / `worker_doc_audit_C.json`
+  — doc-audit is pattern-orthogonal per Phase 0 §4.6, but per-pattern
+  fixtures verify each `sandbox_by_pattern.{A,B,C}` key renders
+  identically (and that Pattern B placeholders pass through cleanly
+  even when the body does not reference them).
+
+Each fixture sets `inputs.schema_source = "shipped"` so it pins the
+*actual concrete body* in
+[`tools/org_extension_schema.json`](../../../../tools/org_extension_schema.json),
+not a hand-rolled mini-schema. `inputs.pattern` selects the
+`sandbox_by_pattern[pattern]` body. Pattern B fixtures additionally
+set `base_clone` / `task_id` / `branch_ref` so `{base_clone}` /
+`{task_id}` / `{branch_ref}` placeholders resolve deterministically.
+
+The single-pattern-per-file convention is intentional: a nested
+fixture object form (e.g. `expected_explain_by_pattern: {A, B, C}`)
+would have required widening the loader, the validation, the diff
+formatter, and the pytest companion all in one go (Codex Major 3 —
+the per-file form is preferred over a nested-object form). Adding a
+new pattern coverage row is just a matter of dropping a new fixture
+file.
 
 ## Adding a new fixture
 

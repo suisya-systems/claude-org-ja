@@ -261,6 +261,88 @@ class TestApplyDelegatePlan(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# settings_args dispatch-context pass-through (Phase 1 PR4)
+# ---------------------------------------------------------------------------
+
+
+class TestSettingsGenerateCmd(unittest.TestCase):
+    """Verifies _build_settings_generate_cmd forwards the dispatch context
+    (--pattern / --base-clone / --task-id / --branch-ref) so the runtime
+    can substitute `worker_roles.<role>.sandbox_by_pattern` placeholders.
+    """
+
+    _MANDATORY = {
+        "role": "default",
+        "worker-dir": "/wd",
+        "claude-org-path": "/co",
+        "out": "/wd/.claude/settings.local.json",
+    }
+
+    def _build(self, **extra: str) -> list[str]:
+        args = dict(self._MANDATORY)
+        args.update(extra)
+        return gdp._build_settings_generate_cmd(args, runtime_cmd="claude-org-runtime")
+
+    def test_pattern_a_omits_pattern_b_only_flags(self):
+        cmd = self._build(pattern="A", **{"task-id": "t-1", "branch-ref": "feat/x"})
+        # Pattern A leaves base-clone unset because the resolver does not
+        # supply it; the runtime must error if a Pattern A body references
+        # {base_clone}, so we MUST NOT pass an empty --base-clone here.
+        self.assertNotIn("--base-clone", cmd)
+        self.assertIn("--pattern", cmd)
+        self.assertEqual(cmd[cmd.index("--pattern") + 1], "A")
+        self.assertEqual(cmd[cmd.index("--task-id") + 1], "t-1")
+        self.assertEqual(cmd[cmd.index("--branch-ref") + 1], "feat/x")
+
+    def test_pattern_b_passes_full_dispatch_context(self):
+        cmd = self._build(
+            pattern="B",
+            **{
+                "base-clone": "/bc",
+                "task-id": "T123",
+                "branch-ref": "feat/self-edit",
+            },
+        )
+        self.assertEqual(cmd[cmd.index("--pattern") + 1], "B")
+        self.assertEqual(cmd[cmd.index("--base-clone") + 1], "/bc")
+        self.assertEqual(cmd[cmd.index("--task-id") + 1], "T123")
+        self.assertEqual(cmd[cmd.index("--branch-ref") + 1], "feat/self-edit")
+
+    def test_pattern_c_ephemeral_omits_branch_ref(self):
+        # Pattern C ephemeral has planned_branch=None; settings_args
+        # therefore omits branch-ref entirely. The cmd builder MUST drop
+        # the flag rather than emit "--branch-ref None" or empty string.
+        cmd = self._build(pattern="C", **{"task-id": "t-c"})
+        self.assertNotIn("--branch-ref", cmd)
+        self.assertNotIn("--base-clone", cmd)
+        self.assertEqual(cmd[cmd.index("--pattern") + 1], "C")
+        self.assertEqual(cmd[cmd.index("--task-id") + 1], "t-c")
+
+    def test_pre_pr4_settings_args_renders_minimum_cmd(self):
+        # Backward compatibility: a settings_args dict that lacks the
+        # PR4-added keys (e.g. an old caller that constructs the dict by
+        # hand) must still render a runnable cmd — the runtime CLI's
+        # required args are only the four mandatory ones.
+        cmd = self._build()
+        self.assertEqual(
+            cmd,
+            [
+                "claude-org-runtime",
+                "settings",
+                "generate",
+                "--role",
+                "default",
+                "--worker-dir",
+                "/wd",
+                "--claude-org-path",
+                "/co",
+                "--out",
+                "/wd/.claude/settings.local.json",
+            ],
+        )
+
+
+# ---------------------------------------------------------------------------
 # CLI smoke tests (preview + apply paths)
 # ---------------------------------------------------------------------------
 

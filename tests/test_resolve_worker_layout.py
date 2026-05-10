@@ -471,10 +471,49 @@ class TestSettingsArgs(unittest.TestCase):
             state_db_path=self.sb.db_path,
         )
         args = layout.settings_args
-        self.assertEqual(set(args), {"role", "worker-dir", "claude-org-path", "out"})
+        # Phase 1 PR4: settings_args carries dispatch context (pattern /
+        # task-id / branch-ref) so `claude-org-runtime settings generate`
+        # can resolve `worker_roles.<role>.sandbox_by_pattern` placeholders.
+        # base-clone is filled in by gen_delegate_payload for Pattern B
+        # only; Pattern A (this test) leaves it absent. branch-ref is set
+        # because Pattern A always has a planned_branch.
+        self.assertEqual(
+            set(args),
+            {
+                "role",
+                "worker-dir",
+                "claude-org-path",
+                "out",
+                "pattern",
+                "task-id",
+                "branch-ref",
+            },
+        )
         self.assertEqual(args["role"], layout.role)
         self.assertEqual(args["worker-dir"], layout.worker_dir)
+        self.assertEqual(args["pattern"], layout.pattern)
+        self.assertEqual(args["task-id"], "t-5")
+        self.assertEqual(args["branch-ref"], layout.planned_branch)
         self.assertTrue(args["out"].endswith(os.path.join(".claude", "settings.local.json")))
+
+    def test_settings_args_omits_branch_ref_for_pattern_c(self):
+        # Pattern C ephemeral has planned_branch=None; settings_args must
+        # therefore omit branch-ref (rather than passing the literal string
+        # "None") so the runtime CLI never substitutes a bogus
+        # {branch_ref} value into a sandbox_by_pattern.C body that
+        # references it.
+        self.sb.write_registry([("既存", "ephemeral-only", "-", "")])
+        layout = rwl.resolve(
+            task_id="t-c",
+            project_slug="missing-from-registry",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(layout.pattern, "C")
+        self.assertIsNone(layout.planned_branch)
+        self.assertNotIn("branch-ref", layout.settings_args)
+        self.assertEqual(layout.settings_args["pattern"], "C")
+        self.assertEqual(layout.settings_args["task-id"], "t-c")
 
 
 class TestCLI(unittest.TestCase):

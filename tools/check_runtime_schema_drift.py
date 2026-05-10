@@ -62,7 +62,7 @@ from typing import Any, Callable
 # requirements.txt. Keep this constant in sync when widening the pin
 # (Phase 5e+ scope per CLAUDE.local.md). Stored as tuples for ordered
 # comparison; only major.minor.micro are honoured.
-RUNTIME_PIN_LOWER_INCLUSIVE = (0, 1, 6)
+RUNTIME_PIN_LOWER_INCLUSIVE = (0, 1, 7)
 RUNTIME_PIN_UPPER_EXCLUSIVE = (0, 2, 0)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -131,24 +131,29 @@ def _normalise(obj: object) -> object:
 
 
 def _strip_ja_only_sandbox_bodies(schema: object) -> object:
-    """Drop ja-only ``sandbox`` bodies from each role / worker_role.
+    """Drop ja-only ``sandbox`` / ``sandbox_by_pattern`` bodies from each
+    role / worker_role.
 
     Phase 1 PR3 (Refs claude-org-ja#378 #376) lands concrete
-    ``sandbox`` bodies on ``roles.{secretary,dispatcher,curator}`` in
-    ja's ``tools/org_extension_schema.json``, driven by the Phase 0
-    contract at ``docs/contracts/role-pattern-sandbox-contract.md``.
-    The ``claude-org-runtime`` bundled schema only carries the
-    *structural* sandbox surface (Phase 1 PR1) — concrete bodies are
-    ja-side org policy, not runtime template defaults, and intentionally
-    do not ship in the runtime package. The byte check would otherwise
-    flag this as drift on every PR3+ commit.
+    ``sandbox`` bodies on ``roles.{secretary,dispatcher,curator}`` and
+    Phase 1 PR4 lands concrete ``sandbox_by_pattern`` bodies on
+    ``worker_roles.{default,claude-org-self-edit,doc-audit}``. Both are
+    driven by the Phase 0 contract at
+    ``docs/contracts/role-pattern-sandbox-contract.md``. The
+    ``claude-org-runtime`` bundled schema only carries the *structural*
+    sandbox surface (Phase 1 PR1 + PR4 sandbox_by_pattern shape) —
+    concrete bodies are ja-side org policy, not runtime template
+    defaults, and intentionally do not ship in the runtime package. The
+    byte check would otherwise flag this as drift on every PR3+ /
+    PR4+ commit.
 
     The semantic check (``--semantic``) keeps end-to-end coverage of
     the in-tree concrete bodies via the
     ``tests/fixtures/runtime_schema_drift/sandbox_intent/role_*.json``
-    fixtures (``schema_source: "shipped"``), so stripping here does
-    not lose verification — it just lets the byte check focus on the
-    schema *surface* contract, which is where ja and runtime must agree.
+    and ``worker_*.json`` fixtures (``schema_source: "shipped"``), so
+    stripping here does not lose verification — it just lets the byte
+    check focus on the schema *surface* contract, which is where ja
+    and runtime must agree.
     """
     if not isinstance(schema, dict):
         return schema
@@ -159,9 +164,13 @@ def _strip_ja_only_sandbox_bodies(schema: object) -> object:
             continue
         new_bucket: dict[str, Any] = {}
         for role_name, role_def in top_val.items():
-            if isinstance(role_def, dict) and "sandbox" in role_def:
+            if isinstance(role_def, dict) and (
+                "sandbox" in role_def or "sandbox_by_pattern" in role_def
+            ):
                 new_bucket[role_name] = {
-                    k: v for k, v in role_def.items() if k != "sandbox"
+                    k: v
+                    for k, v in role_def.items()
+                    if k not in ("sandbox", "sandbox_by_pattern")
                 }
             else:
                 new_bucket[role_name] = role_def
@@ -196,6 +205,22 @@ def _build_realpath_fn(
     return _realpath
 
 
+def _filesystem_uses_home_anchor(filesystem: Any) -> bool:
+    """Return True iff a filesystem block has any anchor='home' deny entry.
+
+    Helper for :func:`_schema_role_uses_home_anchor` so the home-anchor
+    scan can be applied to either the legacy single ``sandbox.filesystem``
+    block or each ``sandbox_by_pattern.{A,B,C}.filesystem`` block.
+    """
+    if not isinstance(filesystem, dict):
+        return False
+    for layer_key in ("denyRead", "denyWrite"):
+        for entry in filesystem.get(layer_key) or []:
+            if isinstance(entry, dict) and entry.get("anchor") == "home":
+                return True
+    return False
+
+
 def _schema_role_uses_home_anchor(
     schema: dict[str, Any], role_kind: str, role: str
 ) -> bool:
@@ -207,20 +232,30 @@ def _schema_role_uses_home_anchor(
     ``$HOME`` leaks into the suppression record's ``realpath`` and the
     fixture's ``expected_explain`` becomes host-dependent — exactly the
     portability gap the README warns about.
+
+    Phase 1 PR4: scans both the legacy single ``sandbox.filesystem``
+    block and every ``sandbox_by_pattern.{A,B,C}.filesystem`` block on
+    worker roles. Without the per-pattern recursion, a fixture that
+    omits ``home_dir`` while rendering a role whose Pattern A/B/C body
+    declares anchor='home' would silently render with host ``$HOME``
+    and the ``expected_explain`` would not be portable across
+    machines (the original Codex Major 1 finding).
     """
     bucket_key = "roles" if role_kind == "org" else "worker_roles"
     role_def = (schema.get(bucket_key) or {}).get(role)
     if not isinstance(role_def, dict):
         return False
     sandbox = role_def.get("sandbox")
-    if not isinstance(sandbox, dict):
-        return False
-    fs = sandbox.get("filesystem")
-    if not isinstance(fs, dict):
-        return False
-    for layer_key in ("denyRead", "denyWrite"):
-        for entry in fs.get(layer_key) or []:
-            if isinstance(entry, dict) and entry.get("anchor") == "home":
+    if isinstance(sandbox, dict) and _filesystem_uses_home_anchor(
+        sandbox.get("filesystem")
+    ):
+        return True
+    sandbox_by_pattern = role_def.get("sandbox_by_pattern")
+    if isinstance(sandbox_by_pattern, dict):
+        for pattern_body in sandbox_by_pattern.values():
+            if isinstance(pattern_body, dict) and _filesystem_uses_home_anchor(
+                pattern_body.get("filesystem")
+            ):
                 return True
     return False
 

@@ -338,6 +338,19 @@ def build_delegate_plan(
         elif project_path and rwl.is_local_git_repo(project_path):
             base_repo = Path(project_path).resolve()
 
+    # Phase 1 PR4: surface base_clone into settings_args for Pattern B so the
+    # runtime can substitute `{base_clone}` in
+    # `worker_roles.<role>.sandbox_by_pattern.B.filesystem`. resolve_worker_layout
+    # leaves this slot empty (the resolver does not materialize base_repo) and
+    # gen_delegate_payload is the right place to fill it in because base_repo
+    # is computed here (lines 310-339 above) from project_path / variant. For
+    # Pattern A / C base_repo is None and base-clone is omitted from
+    # settings_args — the runtime then errors if a Pattern A / C sandbox body
+    # references {base_clone}, which is the desired loud-failure behaviour.
+    settings_args = dict(layout.settings_args)
+    if base_repo is not None:
+        settings_args["base-clone"] = str(base_repo)
+
     return DelegatePlan(
         task_id=task_id,
         project_slug=project_slug,
@@ -346,7 +359,7 @@ def build_delegate_plan(
         layout=layout,
         delegate_body=delegate_body,
         brief_out_path=brief_out_path,
-        settings_args=dict(layout.settings_args),
+        settings_args=settings_args,
         permission_mode=permission_mode,
         verification_depth=verification_depth,
         closes_issue=closes_issue,
@@ -601,6 +614,52 @@ def _write_brief(plan: DelegatePlan) -> Path:
     return out
 
 
+def _build_settings_generate_cmd(
+    settings_args: dict[str, Any],
+    *,
+    runtime_cmd: str,
+) -> list[str]:
+    """Build the ``claude-org-runtime settings generate`` argv list.
+
+    Pure helper extracted from :func:`_run_settings_generate` so the
+    Phase 1 PR4 dispatch-context pass-through (``--pattern`` /
+    ``--base-clone`` / ``--task-id`` / ``--branch-ref``) is unit-testable
+    without subprocess mocking.
+
+    The mandatory flags (``--role`` / ``--worker-dir`` / ``--claude-org-path``
+    / ``--out``) are always emitted in a stable order. The optional
+    dispatch-context flags are emitted only when the corresponding key is
+    present and non-None in ``settings_args`` — the runtime CLI accepts
+    each independently and errors only if the rendered body references a
+    placeholder for which the corresponding context is missing (that
+    loud-failure surface is intentional: Pattern A / C without
+    ``--base-clone`` must NOT silently substitute an empty string into a
+    ``{base_clone}``-using sandbox body).
+    """
+    cmd = [
+        runtime_cmd,
+        "settings",
+        "generate",
+        "--role",
+        settings_args["role"],
+        "--worker-dir",
+        settings_args["worker-dir"],
+        "--claude-org-path",
+        settings_args["claude-org-path"],
+        "--out",
+        settings_args["out"],
+    ]
+    for flag, key in (
+        ("--pattern", "pattern"),
+        ("--base-clone", "base-clone"),
+        ("--task-id", "task-id"),
+        ("--branch-ref", "branch-ref"),
+    ):
+        if key in settings_args and settings_args[key] is not None:
+            cmd.extend([flag, str(settings_args[key])])
+    return cmd
+
+
 def _run_settings_generate(
     plan: DelegatePlan,
     *,
@@ -620,19 +679,7 @@ def _run_settings_generate(
     settings_args = plan.settings_args
     out = Path(settings_args["out"])
     out.parent.mkdir(parents=True, exist_ok=True)
-    cmd = [
-        runtime_cmd,
-        "settings",
-        "generate",
-        "--role",
-        settings_args["role"],
-        "--worker-dir",
-        settings_args["worker-dir"],
-        "--claude-org-path",
-        settings_args["claude-org-path"],
-        "--out",
-        settings_args["out"],
-    ]
+    cmd = _build_settings_generate_cmd(settings_args, runtime_cmd=runtime_cmd)
     try:
         subprocess.run(cmd, check=True, capture_output=True)
     except subprocess.CalledProcessError as e:

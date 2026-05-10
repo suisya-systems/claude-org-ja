@@ -883,12 +883,28 @@ def resolve(
         planned_branch = layout_overrides["planned_branch"]
 
     # --- settings_args -----------------------------------------------------
+    # Phase 1 PR4: pass dispatch context through to `claude-org-runtime
+    # settings generate` so the renderer can resolve {task_id} / {branch_ref}
+    # / {base_clone} placeholders in `worker_roles.<role>.sandbox_by_pattern`.
+    # `pattern` is always set from the resolved layout. `task-id` and
+    # `branch-ref` (when known) are always passed — they are cheap and the
+    # runtime ignores them when the role has no sandbox_by_pattern body that
+    # references them. `base-clone` is left for gen_delegate_payload to fill
+    # in (Pattern B only) because the resolver does not currently materialize
+    # the worktree base path; for Pattern A / C base_clone is intentionally
+    # absent so the runtime errors loudly if the schema body references
+    # `{base_clone}` outside Pattern B (rather than substituting an empty
+    # string and emitting a malformed `/.git/worktrees/...` path).
     settings_args = {
         "role": role,
         "worker-dir": str(worker_dir),
         "claude-org-path": str(claude_org_root),
         "out": str(worker_dir / ".claude" / "settings.local.json"),
+        "pattern": pattern,
+        "task-id": task_id,
     }
+    if planned_branch is not None:
+        settings_args["branch-ref"] = planned_branch
 
     return WorkerLayout(
         pattern=pattern,

@@ -1,0 +1,99 @@
+{
+  "description": "worker_roles.claude-org-self-edit × Pattern C gitignored_repo_root sub-mode. Worker_dir = `<existing_repo_root>/` (the host repo`s root, used as-is when the self-edit target is gitignored — see Phase 0 §4.5). No base_clone, no worktree. additionalDirectories is empty: worker_dir is auto-mounted and there is no shared base. Pins per docs/contracts/role-pattern-sandbox-contract.md §4.5.",
+  "inputs": {
+    "role": "claude-org-self-edit",
+    "role_kind": "worker",
+    "worker_dir": "/home/u/co",
+    "claude_org_path": "/home/u/co",
+    "pattern": "C",
+    "home_dir": "/H",
+    "wsl_detected": false,
+    "realpath_map": [],
+    "schema_source": "shipped"
+  },
+  "expected_explain": {
+    "enabled": true,
+    "wsl_detected": false,
+    "sandbox_read_roots": [
+      "/home/u/co"
+    ],
+    "suppressions": [
+      {
+        "layer": "sandbox.filesystem.denyRead",
+        "entry": {
+          "anchor": "home",
+          "path": ".config/gh/hosts.yml",
+          "suppressOnSymlinkEscape": true,
+          "layer2Fallback": "Read(~/.config/gh/hosts.yml)"
+        },
+        "reason": "realpath escapes sandbox read roots",
+        "realpath": "/H/.config/gh/hosts.yml",
+        "sandbox_read_roots": [
+          "/home/u/co"
+        ]
+      },
+      {
+        "layer": "sandbox.filesystem.denyRead",
+        "entry": {
+          "anchor": "home",
+          "path": ".aws/**",
+          "suppressOnSymlinkEscape": true,
+          "layer2Fallback": "Read(~/.aws/*)"
+        },
+        "reason": "realpath escapes sandbox read roots",
+        "realpath": "/H/.aws",
+        "sandbox_read_roots": [
+          "/home/u/co"
+        ]
+      },
+      {
+        "layer": "sandbox.filesystem.denyRead",
+        "entry": {
+          "anchor": "home",
+          "path": ".ssh/**",
+          "suppressOnSymlinkEscape": true,
+          "layer2Fallback": "Read(~/.ssh/*)"
+        },
+        "reason": "realpath escapes sandbox read roots",
+        "realpath": "/H/.ssh",
+        "sandbox_read_roots": [
+          "/home/u/co"
+        ]
+      }
+    ]
+  },
+  "expected_rendered_sandbox": {
+    "enabled": true,
+    "filesystem": {
+      "additionalDirectories": [],
+      "denyRead": [
+        {
+          "anchor": "worker_dir",
+          "path": ".env",
+          "suppressOnSymlinkEscape": true,
+          "layer2Fallback": "Read(.env)"
+        },
+        {
+          "anchor": "worker_dir",
+          "path": ".env.*",
+          "suppressOnSymlinkEscape": true,
+          "layer2Fallback": "Read(.env.*)"
+        },
+        {
+          "anchor": "worker_dir",
+          "path": "**/credentials*",
+          "suppressOnSymlinkEscape": true,
+          "layer2Fallback": "Read(**/credentials*)"
+        },
+        {
+          "anchor": "worker_dir",
+          "path": "**/*.pem",
+          "suppressOnSymlinkEscape": true,
+          "layer2Fallback": "Read(**/*.pem)"
+        }
+      ],
+      "denyWrite": []
+    },
+    "failIfUnavailable": false
+  }
+}
