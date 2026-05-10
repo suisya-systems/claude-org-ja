@@ -499,9 +499,71 @@
   "worker_roles": {
     "$comment": "Concrete templates historically emitted by tools/generate_worker_settings.py. Phase 4 (Issue #129) moved generation into the claude-org-runtime package (run `claude-org-runtime settings generate ...`). This section is kept here for the audit constraints in roles.worker — drift tooling (tools/check_role_configs.py) validates emitted files against them. Placeholders {worker_dir} and {claude_org_path} are substituted at generation time; Pattern B context placeholders are documented under `$comment_sandbox_anchor`.",
     "$comment_sandbox": "Phase 1 schema surface: each `worker_roles.<role>` may include an optional `sandbox` object of the form {enabled: bool, filesystem: {denyRead: [entry], denyWrite: [entry], additionalDirectories: [string]}, failIfUnavailable: bool, default false}. The sandbox object is forwarded as-is to the rendered settings.local.json (consumed by claude-org-ja's bwrap launcher). At render time the generator applies Layer 3 suppression: each filesystem.denyRead / denyWrite entry whose realpath escapes the sandbox read roots (worker_dir + additionalDirectories) is dropped from the rendered sandbox object because the sandbox cannot reach the path anyway. This is common on WSL (where /home/<user>/... may be a /mnt/c/... symlink) and devcontainers (/workspaces symlinks). Layer 2 `permissions.deny` `Read(...)` / `Write(...)` entries are NEVER suppressed. Suppression metadata is exposed via `claude-org-runtime settings show --explain`. Roles without `sandbox` are treated as sandbox-disabled (backward compatible).",
+    "$comment_sandbox_by_pattern": "Phase 1 PR4 (Refs claude-org-ja#378 #376): a worker role may declare `sandbox_by_pattern` instead of the single `sandbox` field. Shape: `{A?: <sandbox-object>, B?: <sandbox-object>, C?: <sandbox-object>}` keyed by dispatch pattern (the pattern keys are exactly 'A' / 'B' / 'C' matching the resolver / delegate payload normalization). `sandbox` and `sandbox_by_pattern` are MUTUALLY EXCLUSIVE on worker roles; the runtime errors if both are declared. Org roles (`roles.{secretary,dispatcher,curator}`) keep the single `sandbox` shape and may NOT declare `sandbox_by_pattern`. At render time the generator picks `sandbox_by_pattern[--pattern]` and treats it as the role's sandbox; missing pattern keys for the requested pattern are an authoring error (not a silent fallthrough), so Pattern B's distinct additionalDirectories / base_clone surface is never replaced by an A/C surface. Pattern B's command-isolation layer (Bash(git worktree *) deny + .hooks/block-dangerous-git.sh attachment) is intentionally NOT modeled here — runtime sandbox_by_pattern is path-isolation only; command isolation lives in `worker_roles.<role>.permissions.deny` / `.hooks` and is the responsibility of Phase 2 #379 (NOT this PR). Pattern C sub-modes (ephemeral vs gitignored_repo_root) share a single `C` body — the sub-mode-specific surface (worker_dir = host repo root for `gitignored_repo_root`) is captured at dispatch time via `--worker-dir`. Concrete bodies are driven by docs/contracts/role-pattern-sandbox-contract.md §4 (per-role per-pattern read/write surface) and worker-git-guardrails-design.md §2 (Pattern B Git metadata boundary categories B1–B5). Cross-cutting design constraints landed by Codex pre-design review: (a) Pattern B refs scope is THIS-branch only — `<base_clone>/.git/refs/heads/{branch_ref}` carve-out, NEVER `<base_clone>/.git/refs/heads` whole, so cross-branch ref isolation (§4.2.1 row 'refs/heads/<other_branch>': read allowed, write denied) holds; (b) for `claude-org-self-edit` Pattern B (`live_repo_worktree`), additionalDirectories MUST scope to `{worker_dir}` (auto-mounted) + `<base_clone>/.git/...` carve-outs only — adding `<base_clone>` root or `{claude_org_path}` root would make the live repo's working tree writable and break check-worker-boundary.sh's WORKER_DIR boundary (Phase 0 §3.4 / §4.4). Knowledge/raw raw-write carve-out for self-edit Pattern B is a residual gap deferred to Phase 2 #379 — adding `{claude_org_path}/knowledge/raw` here would re-introduce a writable subtree of the live repo's working tree from inside a worktree that is not the live repo, conflicting with (b); the default-role Pattern B carve-out is unaffected because its base_clone is the registered project's clone, not claude_org_path.",
     "$comment_sandbox_anchor": "Phase 1 schema surface: `denyRead` / `denyWrite` entries may now be either (a) a legacy raw string (anchored at worker_dir for relative paths, treated literally for absolute paths) or (b) a structured object {anchor: 'home'|'worker_dir'|'claude_org_path'|'base_clone'|'absolute', path: string, suppressOnSymlinkEscape: bool default true, layer2Fallback: optional Layer-2 permissions.deny mirror entry}. The structured form fixes the legacy ambiguity where '~/.aws/**'-style entries were misjudged as worker_dir-relative. 'home' resolves to the current user's home directory, 'absolute' is treated literally, 'worker_dir' / 'claude_org_path' / 'base_clone' use the corresponding generator-context substitutions. When `suppressOnSymlinkEscape` is false the entry is preserved even if its realpath escapes the sandbox read roots (useful for entries the operator wants in the rendered output regardless of reachability). When `layer2Fallback` is set, the value is the Layer-2 `permissions.deny` mirror string INTENDED to be emitted whenever the Layer-3 entry is suppressed; the field is forward-looking — `claude-org-runtime` versions up to and including the one pinned by `tools/check_runtime_schema_drift.py` do NOT auto-mirror it into `permissions.deny`, the runtime evaluator only preserves the field on the suppression record's `entry`. Effective Layer 2 deny for credentials therefore still has to be declared via `roles.<role>.required_deny` / `worker_roles.<role>.permissions.deny` directly, not relied on via `layer2Fallback` alone. Pattern B context placeholders ({base_clone}, {task_id}, {branch_ref}, {pattern}) are recognized substitution variables in addition to the legacy {worker_dir} / {claude_org_path}; they are substituted in entry.path and additionalDirectories before realpath evaluation when supplied via the generator API. Backward compat: legacy raw-string entries continue to parse via the runtime adapter and need not be migrated when this schema surface is adopted.",
     "default": {
       "description": "Standard worker template — git read/write within the worktree, no push, no recursive delete. Mirrors the historical org-delegate Step 3 inline JSON.",
+      "$comment_sandbox": "Phase 1 PR4 (Refs claude-org-ja#378 #376): concrete sandbox_by_pattern body for worker_roles.default. The Layer 3 surface is keyed by dispatch pattern per docs/contracts/role-pattern-sandbox-contract.md §4.1 (Pattern A) / §4.2 (Pattern B default variant) / §4.3 (Pattern C ephemeral and gitignored_repo_root). Pattern A and Pattern C add only the knowledge/raw carve-out (§5.1: full-mode workers may write `<claude_org_path>/knowledge/raw/YYYY-MM-DD-<topic>.md`); the worker_dir itself is auto-mounted and does not need to be re-listed. Pattern B union per §4.2.1 / worker-git-guardrails-design.md §2 categories B1+B2 (this worktree's metadata + shared object store + this branch's ref + packed-refs) is `<base_clone>/.git/worktrees/<task_id>`, `<base_clone>/.git/objects`, `<base_clone>/.git/refs/heads/<branch_ref>`, `<base_clone>/.git/packed-refs`. Refs scope is THIS-branch only by design (§4.2.1 cross-task isolation): listing `<base_clone>/.git/refs/heads` whole would let the worker rewrite a sibling worktree's branch ref. `<base_clone>/.git/packed-refs` is added because git itself rewrites this file as part of normal commit / pack-refs operations (§4.2.1 row); without it Pattern B workers would fail any operation that touches packed refs. denyRead carries the standard credential set with `layer2Fallback` strings for forward compatibility (current runtime preserves the field but does not auto-mirror it into permissions.deny — see $comment_sandbox_anchor); the corresponding Layer 2 mirrors live in `worker_roles.default.permissions.deny` directly so secret reads remain blocked even when Layer 3 is suppressed on WSL. denyWrite is empty: by virtue of additionalDirectories not including `<base_clone>` root / sibling worktrees / `.git/HEAD` / `.git/config`, those paths are already not writable; explicit denyWrite on subpaths inside additionalDirectories would just add suppression noise on platforms with realpath escapes. Layer 4 hooks (.hooks/block-org-structure.sh, .hooks/check-worker-boundary.sh) handle org-structure / out-of-WORKER_DIR write boundaries inside the mounted writable surface. Pattern A's branch ref deny for `<base_clone>/.git/HEAD` etc. (§4.1 / §5.2 worker × Pattern A row) is implicit: Pattern A workers operate in their own clone, no base_clone is supplied at dispatch (--base-clone null), and `{base_clone}` placeholders therefore never substitute into A's body. RESIDUAL GAP (Phase 2): the knowledge/raw mount is whole-directory; the §5.1 filename / depth carve-out (`YYYY-MM-DD-<kebab-topic>.md` and full-mode-only) is enforced ONLY at Layer 4 by .hooks/check-worker-boundary.sh allow path 3, NOT at Layer 3. Layer 3 cannot express the kebab-case filename rule, and the schema cannot express the verification-depth conditional. Phase 2 may add a Bash-matcher hook for tighter knowledge/raw discipline if drift is observed.",
+      "sandbox_by_pattern": {
+        "A": {
+          "enabled": true,
+          "filesystem": {
+            "additionalDirectories": [
+              "{claude_org_path}/knowledge/raw"
+            ],
+            "denyRead": [
+              {"anchor": "worker_dir", "path": ".env", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env)"},
+              {"anchor": "worker_dir", "path": ".env.*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env.*)"},
+              {"anchor": "worker_dir", "path": "**/credentials*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/credentials*)"},
+              {"anchor": "worker_dir", "path": "**/*.pem", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/*.pem)"},
+              {"anchor": "home", "path": ".config/gh/hosts.yml", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.config/gh/hosts.yml)"},
+              {"anchor": "home", "path": ".aws/**", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.aws/*)"},
+              {"anchor": "home", "path": ".ssh/**", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.ssh/*)"}
+            ]
+          },
+          "failIfUnavailable": false
+        },
+        "B": {
+          "enabled": true,
+          "filesystem": {
+            "additionalDirectories": [
+              "{base_clone}/.git/worktrees/{task_id}",
+              "{base_clone}/.git/objects",
+              "{base_clone}/.git/refs/heads/{branch_ref}",
+              "{base_clone}/.git/packed-refs",
+              "{claude_org_path}/knowledge/raw"
+            ],
+            "denyRead": [
+              {"anchor": "worker_dir", "path": ".env", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env)"},
+              {"anchor": "worker_dir", "path": ".env.*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env.*)"},
+              {"anchor": "worker_dir", "path": "**/credentials*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/credentials*)"},
+              {"anchor": "worker_dir", "path": "**/*.pem", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/*.pem)"},
+              {"anchor": "home", "path": ".config/gh/hosts.yml", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.config/gh/hosts.yml)"},
+              {"anchor": "home", "path": ".aws/**", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.aws/*)"},
+              {"anchor": "home", "path": ".ssh/**", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.ssh/*)"}
+            ]
+          },
+          "failIfUnavailable": false
+        },
+        "C": {
+          "enabled": true,
+          "filesystem": {
+            "additionalDirectories": [
+              "{claude_org_path}/knowledge/raw"
+            ],
+            "denyRead": [
+              {"anchor": "worker_dir", "path": ".env", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env)"},
+              {"anchor": "worker_dir", "path": ".env.*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env.*)"},
+              {"anchor": "worker_dir", "path": "**/credentials*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/credentials*)"},
+              {"anchor": "worker_dir", "path": "**/*.pem", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/*.pem)"},
+              {"anchor": "home", "path": ".config/gh/hosts.yml", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.config/gh/hosts.yml)"},
+              {"anchor": "home", "path": ".aws/**", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.aws/*)"},
+              {"anchor": "home", "path": ".ssh/**", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.ssh/*)"}
+            ]
+          },
+          "failIfUnavailable": false
+        }
+      },
       "permissions": {
         "allow": [
           "Bash(git add:*)",
@@ -525,7 +587,9 @@
           "Read(.env.*)",
           "Read(**/credentials*)",
           "Read(**/*.pem)",
-          "Read(~/.config/gh/hosts.yml)"
+          "Read(~/.config/gh/hosts.yml)",
+          "Read(~/.aws/*)",
+          "Read(~/.ssh/*)"
         ]
       },
       "hooks": {
@@ -565,6 +629,46 @@
     },
     "claude-org-self-edit": {
       "description": "Worker that edits the claude-org repo itself (e.g. tools/, .claude/skills/). Drops block-org-structure.sh hooks because by definition this role must touch org structure paths. check-worker-boundary.sh remains the boundary check.",
+      "$comment_sandbox": "Phase 1 PR4 (Refs claude-org-ja#378 #376): concrete sandbox_by_pattern body for worker_roles.claude-org-self-edit. Pattern A is INTENTIONALLY OMITTED — the resolver (`tools/resolve_worker_layout.py:643`) refuses `pattern=A` for this role because Pattern A would land the worker inside `<workers_dir>/claude-org-ja/` (a separate clone) and break the live-repo single-`.git` invariant from Issue #289. Including a Pattern A key here would silently sanction a layout the resolver rejects. Pattern B handles the canonical `live_repo_worktree` variant: worker_dir = `<claude_org_path>/.worktrees/<task_id>/`, base_clone = claude_org_path. additionalDirectories covers the per-worktree `.git/worktrees/<task_id>/` admin dir + shared object store + this branch's ref only — the cross-row constraint from worker-git-guardrails-design.md §2 (B1+B2 categories writable; B3 `<base_clone>/.git/HEAD`/`config` / other branch refs read-only; B4 sibling worktrees denied). CRITICAL: additionalDirectories MUST NOT include `<base_clone>` root or `{claude_org_path}` root — both resolve to the live repo and would expose the secretary's working tree as writable, breaking check-worker-boundary.sh's WORKER_DIR boundary (Phase 0 §3.4 `claude-org-self-edit Pattern B` row / §4.4.4 attribution table). The refs scope is THIS-branch only (`<base_clone>/.git/refs/heads/<branch_ref>`), NOT `<base_clone>/.git/refs/heads` whole, to preserve cross-task isolation. Pattern C covers the `gitignored_repo_root` sub-mode only (worker_dir = the existing repo's root, no worktree, no base_clone). additionalDirectories is empty for C: worker_dir is auto-mounted and there is no shared base. RESIDUAL GAP for Pattern B: knowledge/raw raw-write carve-out (`<claude_org_path>/knowledge/raw/YYYY-MM-DD-<topic>.md`, allowed by check-worker-boundary.sh allow path 3) is NOT mounted writable here — adding `{claude_org_path}/knowledge/raw` would re-introduce a writable subtree of the live repo's working tree, conflicting with the live-repo-mount prohibition above. Self-edit Pattern B retro notes therefore land via the worktree-local `<worker_dir>/knowledge/raw/...` path; the live-repo write convention codified in §4.4.5 / §5.1 is deferred to Phase 2 #379 (will need either a worktree-to-livepath mover hook or a more granular sandbox surface than the current runtime placeholder set supports).",
+      "sandbox_by_pattern": {
+        "B": {
+          "enabled": true,
+          "filesystem": {
+            "additionalDirectories": [
+              "{base_clone}/.git/worktrees/{task_id}",
+              "{base_clone}/.git/objects",
+              "{base_clone}/.git/refs/heads/{branch_ref}",
+              "{base_clone}/.git/packed-refs"
+            ],
+            "denyRead": [
+              {"anchor": "worker_dir", "path": ".env", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env)"},
+              {"anchor": "worker_dir", "path": ".env.*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env.*)"},
+              {"anchor": "worker_dir", "path": "**/credentials*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/credentials*)"},
+              {"anchor": "worker_dir", "path": "**/*.pem", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/*.pem)"},
+              {"anchor": "home", "path": ".config/gh/hosts.yml", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.config/gh/hosts.yml)"},
+              {"anchor": "home", "path": ".aws/**", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.aws/*)"},
+              {"anchor": "home", "path": ".ssh/**", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.ssh/*)"}
+            ]
+          },
+          "failIfUnavailable": false
+        },
+        "C": {
+          "enabled": true,
+          "filesystem": {
+            "additionalDirectories": [],
+            "denyRead": [
+              {"anchor": "worker_dir", "path": ".env", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env)"},
+              {"anchor": "worker_dir", "path": ".env.*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env.*)"},
+              {"anchor": "worker_dir", "path": "**/credentials*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/credentials*)"},
+              {"anchor": "worker_dir", "path": "**/*.pem", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/*.pem)"},
+              {"anchor": "home", "path": ".config/gh/hosts.yml", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.config/gh/hosts.yml)"},
+              {"anchor": "home", "path": ".aws/**", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.aws/*)"},
+              {"anchor": "home", "path": ".ssh/**", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.ssh/*)"}
+            ]
+          },
+          "failIfUnavailable": false
+        }
+      },
       "permissions": {
         "allow": [
           "Bash(git add:*)",
@@ -588,7 +692,9 @@
           "Read(.env.*)",
           "Read(**/credentials*)",
           "Read(**/*.pem)",
-          "Read(~/.config/gh/hosts.yml)"
+          "Read(~/.config/gh/hosts.yml)",
+          "Read(~/.aws/*)",
+          "Read(~/.ssh/*)"
         ]
       },
       "hooks": {
@@ -620,6 +726,80 @@
     },
     "doc-audit": {
       "description": "Read-only investigation worker — no Write/Edit allow, no commit/branch mutation. Suitable for survey / audit / reporting tasks where the worker should not modify the worktree.",
+      "$comment_sandbox": "Phase 1 PR4 (Refs claude-org-ja#378 #376): concrete sandbox_by_pattern body for worker_roles.doc-audit. Per docs/contracts/role-pattern-sandbox-contract.md §3.5 / §4.6 the doc-audit role's WRITE surface is pattern-orthogonal (the read-only audit constraint dominates) but the READ surface inherits from the underlying pattern (§4.6.1: 'Identical to the underlying pattern'). Pattern A / Pattern C only need worker_dir + Plan-mode carve-out; Pattern B additionally needs base_clone Git metadata (§4.2.1 categories B1+B2: this worktree's admin dir, shared object store, this branch's ref, packed-refs) so doc-audit's allowed Bash commands (`git status:*` / `git diff:*` / `git log:*`) can resolve `<worker_dir>/.git` (the gitdir pointer file) into the base_clone's Git metadata. Layer 3 closes the §4.6.2 write gap that Layer 2 + Layer 4 alone cannot: `{anchor: 'worker_dir', path: '**', suppressOnSymlinkEscape: false}` denies any write inside the worktree at the syscall level — including Bash redirects (`git diff > /tmp/x`, `git log > log`, `tee`), tool-generated temp files, and any other write channel that bypasses the `Edit` / `Write` Layer 2 deny. `suppressOnSymlinkEscape: false` is intentional: even on platforms where `<worker_dir>` would be suppressed off (handcraft profile-tightened style), we want the deny to stay in the rendered surface so the audit role's read-only invariant is not platform-dependent. Pattern B additionally denyWrites the base_clone Git metadata carve-outs (worktrees/<task_id>, objects, refs/heads/<branch_ref>, packed-refs) so the additional read mounts cannot be exploited as a write channel — read-only by intent on top of additionalDirectories. denyRead carries the standard credential set with `layer2Fallback` strings (forward-compat); the corresponding Layer 2 mirrors live in `worker_roles.doc-audit.permissions.deny`. Plan-mode carve-out (§4.6.2 lines 919-921 mark `~/.claude/plans/**` and `<worker_dir>/.claude/plans/**` as 'NOT denied'): `<worker_dir>/.claude/plans` is added to additionalDirectories so the contract surface is encoded. PRECEDENCE ASSUMPTION (residual gap): bwrap evaluates additionalDirectories AFTER denyWrite globs — the more-specific `<worker_dir>/.claude/plans` write-mount overrides the parent `<worker_dir>/**` deny because the additionalDirectories bind is the last mount applied at that path. This assumption is launcher-implementation-dependent and is NOT empirically verified in this PR. Operators relying on Plan-mode persistence in doc-audit should treat it as best-effort; the redundant Layer 2 `Edit` / `Write` deny means Plan files written via Claude tools are blocked regardless of L3 outcome. The home-anchored Plan path (`~/.claude/plans/**`) is a RESIDUAL GAP: the runtime's additionalDirectories is a flat string list (no per-entry anchor), and a raw '~/...' string would be misinterpreted as worker_dir-relative by `_normalize_sandbox_entry`. Encoding the home-anchored carve-out requires either (a) a runtime extension to support anchor='home' in additionalDirectories, or (b) the launcher tilde-expanding additionalDirectories paths; both are deferred to Phase 2.",
+      "sandbox_by_pattern": {
+        "A": {
+          "enabled": true,
+          "filesystem": {
+            "additionalDirectories": [
+              "{worker_dir}/.claude/plans"
+            ],
+            "denyRead": [
+              {"anchor": "worker_dir", "path": ".env", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env)"},
+              {"anchor": "worker_dir", "path": ".env.*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env.*)"},
+              {"anchor": "worker_dir", "path": "**/credentials*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/credentials*)"},
+              {"anchor": "worker_dir", "path": "**/*.pem", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/*.pem)"},
+              {"anchor": "home", "path": ".config/gh/hosts.yml", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.config/gh/hosts.yml)"},
+              {"anchor": "home", "path": ".aws/**", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.aws/*)"},
+              {"anchor": "home", "path": ".ssh/**", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.ssh/*)"}
+            ],
+            "denyWrite": [
+              {"anchor": "worker_dir", "path": "**", "suppressOnSymlinkEscape": false}
+            ]
+          },
+          "failIfUnavailable": false
+        },
+        "B": {
+          "enabled": true,
+          "filesystem": {
+            "additionalDirectories": [
+              "{worker_dir}/.claude/plans",
+              "{base_clone}/.git/worktrees/{task_id}",
+              "{base_clone}/.git/objects",
+              "{base_clone}/.git/refs/heads/{branch_ref}",
+              "{base_clone}/.git/packed-refs"
+            ],
+            "denyRead": [
+              {"anchor": "worker_dir", "path": ".env", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env)"},
+              {"anchor": "worker_dir", "path": ".env.*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env.*)"},
+              {"anchor": "worker_dir", "path": "**/credentials*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/credentials*)"},
+              {"anchor": "worker_dir", "path": "**/*.pem", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/*.pem)"},
+              {"anchor": "home", "path": ".config/gh/hosts.yml", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.config/gh/hosts.yml)"},
+              {"anchor": "home", "path": ".aws/**", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.aws/*)"},
+              {"anchor": "home", "path": ".ssh/**", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.ssh/*)"}
+            ],
+            "denyWrite": [
+              {"anchor": "worker_dir", "path": "**", "suppressOnSymlinkEscape": false},
+              {"anchor": "base_clone", "path": ".git/worktrees/{task_id}/**", "suppressOnSymlinkEscape": false},
+              {"anchor": "base_clone", "path": ".git/objects/**", "suppressOnSymlinkEscape": false},
+              {"anchor": "base_clone", "path": ".git/refs/heads/{branch_ref}", "suppressOnSymlinkEscape": false},
+              {"anchor": "base_clone", "path": ".git/packed-refs", "suppressOnSymlinkEscape": false}
+            ]
+          },
+          "failIfUnavailable": false
+        },
+        "C": {
+          "enabled": true,
+          "filesystem": {
+            "additionalDirectories": [
+              "{worker_dir}/.claude/plans"
+            ],
+            "denyRead": [
+              {"anchor": "worker_dir", "path": ".env", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env)"},
+              {"anchor": "worker_dir", "path": ".env.*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env.*)"},
+              {"anchor": "worker_dir", "path": "**/credentials*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/credentials*)"},
+              {"anchor": "worker_dir", "path": "**/*.pem", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/*.pem)"},
+              {"anchor": "home", "path": ".config/gh/hosts.yml", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.config/gh/hosts.yml)"},
+              {"anchor": "home", "path": ".aws/**", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.aws/*)"},
+              {"anchor": "home", "path": ".ssh/**", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.ssh/*)"}
+            ],
+            "denyWrite": [
+              {"anchor": "worker_dir", "path": "**", "suppressOnSymlinkEscape": false}
+            ]
+          },
+          "failIfUnavailable": false
+        }
+      },
       "permissions": {
         "allow": [
           "Bash(git status:*)",
@@ -638,6 +818,13 @@
           "Bash(git switch *)",
           "Bash(rm -rf *)",
           "Bash(rm -r *)",
+          "Read(.env)",
+          "Read(.env.*)",
+          "Read(**/credentials*)",
+          "Read(**/*.pem)",
+          "Read(~/.config/gh/hosts.yml)",
+          "Read(~/.aws/*)",
+          "Read(~/.ssh/*)",
           "Edit",
           "Write",
           "MultiEdit",

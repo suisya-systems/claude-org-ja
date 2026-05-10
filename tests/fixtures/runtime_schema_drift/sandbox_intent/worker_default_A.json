@@ -1,0 +1,105 @@
+{
+  "description": "worker_roles.default × Pattern A (independent project clone). Worker_dir = `<workers_dir>/<project_slug>/`, no base_clone supplied (Pattern A is supposed to be self-contained). additionalDirectories adds the knowledge/raw carve-out at {claude_org_path}/knowledge/raw (full-mode only by convention; Layer 4 hook permits raw notes). Home-anchored credential entries (~/.config/gh/hosts.yml / ~/.aws/** / ~/.ssh/**) escape read_roots and are suppressed; worker_dir-anchored credential entries resolve under read_roots and are kept. Pins per docs/contracts/role-pattern-sandbox-contract.md §4.1.",
+  "inputs": {
+    "role": "default",
+    "role_kind": "worker",
+    "worker_dir": "/home/u/workers/proj",
+    "claude_org_path": "/home/u/co",
+    "pattern": "A",
+    "home_dir": "/H",
+    "wsl_detected": false,
+    "realpath_map": [],
+    "schema_source": "shipped"
+  },
+  "expected_explain": {
+    "enabled": true,
+    "wsl_detected": false,
+    "sandbox_read_roots": [
+      "/home/u/workers/proj",
+      "/home/u/co/knowledge/raw"
+    ],
+    "suppressions": [
+      {
+        "layer": "sandbox.filesystem.denyRead",
+        "entry": {
+          "anchor": "home",
+          "path": ".config/gh/hosts.yml",
+          "suppressOnSymlinkEscape": true,
+          "layer2Fallback": "Read(~/.config/gh/hosts.yml)"
+        },
+        "reason": "realpath escapes sandbox read roots",
+        "realpath": "/H/.config/gh/hosts.yml",
+        "sandbox_read_roots": [
+          "/home/u/workers/proj",
+          "/home/u/co/knowledge/raw"
+        ]
+      },
+      {
+        "layer": "sandbox.filesystem.denyRead",
+        "entry": {
+          "anchor": "home",
+          "path": ".aws/**",
+          "suppressOnSymlinkEscape": true,
+          "layer2Fallback": "Read(~/.aws/*)"
+        },
+        "reason": "realpath escapes sandbox read roots",
+        "realpath": "/H/.aws",
+        "sandbox_read_roots": [
+          "/home/u/workers/proj",
+          "/home/u/co/knowledge/raw"
+        ]
+      },
+      {
+        "layer": "sandbox.filesystem.denyRead",
+        "entry": {
+          "anchor": "home",
+          "path": ".ssh/**",
+          "suppressOnSymlinkEscape": true,
+          "layer2Fallback": "Read(~/.ssh/*)"
+        },
+        "reason": "realpath escapes sandbox read roots",
+        "realpath": "/H/.ssh",
+        "sandbox_read_roots": [
+          "/home/u/workers/proj",
+          "/home/u/co/knowledge/raw"
+        ]
+      }
+    ]
+  },
+  "expected_rendered_sandbox": {
+    "enabled": true,
+    "filesystem": {
+      "additionalDirectories": [
+        "/home/u/co/knowledge/raw"
+      ],
+      "denyRead": [
+        {
+          "anchor": "worker_dir",
+          "path": ".env",
+          "suppressOnSymlinkEscape": true,
+          "layer2Fallback": "Read(.env)"
+        },
+        {
+          "anchor": "worker_dir",
+          "path": ".env.*",
+          "suppressOnSymlinkEscape": true,
+          "layer2Fallback": "Read(.env.*)"
+        },
+        {
+          "anchor": "worker_dir",
+          "path": "**/credentials*",
+          "suppressOnSymlinkEscape": true,
+          "layer2Fallback": "Read(**/credentials*)"
+        },
+        {
+          "anchor": "worker_dir",
+          "path": "**/*.pem",
+          "suppressOnSymlinkEscape": true,
+          "layer2Fallback": "Read(**/*.pem)"
+        }
+      ],
+      "denyWrite": []
+    },
+    "failIfUnavailable": false
+  }
+}

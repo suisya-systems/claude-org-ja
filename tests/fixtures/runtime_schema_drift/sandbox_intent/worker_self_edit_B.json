@@ -1,0 +1,123 @@
+{
+  "description": "worker_roles.claude-org-self-edit × Pattern B live_repo_worktree variant. Worker_dir = `<claude_org_path>/.worktrees/<task_id>/`, base_clone = claude_org_path (the secretary`s live repo). additionalDirectories scopes to the per-worktree `.git/worktrees/<task_id>/` admin dir + shared object store + this branch`s ref ONLY — Codex Blocker 3: live repo working tree must NOT be writable. Knowledge/raw raw-write carve-out is residual gap (Phase 2 #379). Pins per docs/contracts/role-pattern-sandbox-contract.md §4.4.",
+  "inputs": {
+    "role": "claude-org-self-edit",
+    "role_kind": "worker",
+    "worker_dir": "/home/u/co/.worktrees/T123",
+    "claude_org_path": "/home/u/co",
+    "pattern": "B",
+    "home_dir": "/H",
+    "wsl_detected": false,
+    "realpath_map": [],
+    "schema_source": "shipped",
+    "base_clone": "/home/u/co",
+    "task_id": "T123",
+    "branch_ref": "feat/self-edit"
+  },
+  "expected_explain": {
+    "enabled": true,
+    "wsl_detected": false,
+    "sandbox_read_roots": [
+      "/home/u/co/.worktrees/T123",
+      "/home/u/co/.git/worktrees/T123",
+      "/home/u/co/.git/objects",
+      "/home/u/co/.git/refs/heads/feat/self-edit",
+      "/home/u/co/.git/packed-refs"
+    ],
+    "suppressions": [
+      {
+        "layer": "sandbox.filesystem.denyRead",
+        "entry": {
+          "anchor": "home",
+          "path": ".config/gh/hosts.yml",
+          "suppressOnSymlinkEscape": true,
+          "layer2Fallback": "Read(~/.config/gh/hosts.yml)"
+        },
+        "reason": "realpath escapes sandbox read roots",
+        "realpath": "/H/.config/gh/hosts.yml",
+        "sandbox_read_roots": [
+          "/home/u/co/.worktrees/T123",
+          "/home/u/co/.git/worktrees/T123",
+          "/home/u/co/.git/objects",
+          "/home/u/co/.git/refs/heads/feat/self-edit",
+          "/home/u/co/.git/packed-refs"
+        ]
+      },
+      {
+        "layer": "sandbox.filesystem.denyRead",
+        "entry": {
+          "anchor": "home",
+          "path": ".aws/**",
+          "suppressOnSymlinkEscape": true,
+          "layer2Fallback": "Read(~/.aws/*)"
+        },
+        "reason": "realpath escapes sandbox read roots",
+        "realpath": "/H/.aws",
+        "sandbox_read_roots": [
+          "/home/u/co/.worktrees/T123",
+          "/home/u/co/.git/worktrees/T123",
+          "/home/u/co/.git/objects",
+          "/home/u/co/.git/refs/heads/feat/self-edit",
+          "/home/u/co/.git/packed-refs"
+        ]
+      },
+      {
+        "layer": "sandbox.filesystem.denyRead",
+        "entry": {
+          "anchor": "home",
+          "path": ".ssh/**",
+          "suppressOnSymlinkEscape": true,
+          "layer2Fallback": "Read(~/.ssh/*)"
+        },
+        "reason": "realpath escapes sandbox read roots",
+        "realpath": "/H/.ssh",
+        "sandbox_read_roots": [
+          "/home/u/co/.worktrees/T123",
+          "/home/u/co/.git/worktrees/T123",
+          "/home/u/co/.git/objects",
+          "/home/u/co/.git/refs/heads/feat/self-edit",
+          "/home/u/co/.git/packed-refs"
+        ]
+      }
+    ]
+  },
+  "expected_rendered_sandbox": {
+    "enabled": true,
+    "filesystem": {
+      "additionalDirectories": [
+        "/home/u/co/.git/worktrees/T123",
+        "/home/u/co/.git/objects",
+        "/home/u/co/.git/refs/heads/feat/self-edit",
+        "/home/u/co/.git/packed-refs"
+      ],
+      "denyRead": [
+        {
+          "anchor": "worker_dir",
+          "path": ".env",
+          "suppressOnSymlinkEscape": true,
+          "layer2Fallback": "Read(.env)"
+        },
+        {
+          "anchor": "worker_dir",
+          "path": ".env.*",
+          "suppressOnSymlinkEscape": true,
+          "layer2Fallback": "Read(.env.*)"
+        },
+        {
+          "anchor": "worker_dir",
+          "path": "**/credentials*",
+          "suppressOnSymlinkEscape": true,
+          "layer2Fallback": "Read(**/credentials*)"
+        },
+        {
+          "anchor": "worker_dir",
+          "path": "**/*.pem",
+          "suppressOnSymlinkEscape": true,
+          "layer2Fallback": "Read(**/*.pem)"
+        }
+      ],
+      "denyWrite": []
+    },
+    "failIfUnavailable": false
+  }
+}

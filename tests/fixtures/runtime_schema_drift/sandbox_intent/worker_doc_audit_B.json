@@ -1,0 +1,154 @@
+{
+  "description": "worker_roles.doc-audit × Pattern B. Per §4.6.1 the doc-audit READ surface is 'Identical to the underlying pattern' — Pattern B therefore inherits default Pattern B's Git metadata read carve-outs (`{base_clone}/.git/worktrees/{task_id}` / `/objects` / `/refs/heads/{branch_ref}` / `/packed-refs`) so doc-audit's allowed `git status` / `diff` / `log` Bash commands can resolve `<worker_dir>/.git` (the gitdir pointer file) into base_clone metadata. The WRITE surface stays read-only: in addition to `denyWrite[{worker_dir}/**]`, the body adds explicit denyWrite entries for each base_clone Git carve-out so the new mounts cannot be exploited via Bash redirect. Pattern A and Pattern C bodies (worker_dir auto-mount covers their .git) intentionally do NOT carry these base_clone entries — doc-audit is pattern-orthogonal in WRITE intent but pattern-dependent in READ surface. Pins per docs/contracts/role-pattern-sandbox-contract.md §4.6.1 (read) + §4.6.2 (write).",
+  "inputs": {
+    "role": "doc-audit",
+    "role_kind": "worker",
+    "worker_dir": "/home/u/workers/proj/.worktrees/T123",
+    "claude_org_path": "/home/u/co",
+    "pattern": "B",
+    "home_dir": "/H",
+    "wsl_detected": false,
+    "realpath_map": [],
+    "schema_source": "shipped",
+    "base_clone": "/home/u/workers/proj",
+    "task_id": "T123",
+    "branch_ref": "feat/audit"
+  },
+  "expected_explain": {
+    "enabled": true,
+    "wsl_detected": false,
+    "sandbox_read_roots": [
+      "/home/u/workers/proj/.worktrees/T123",
+      "/home/u/workers/proj/.worktrees/T123/.claude/plans",
+      "/home/u/workers/proj/.git/worktrees/T123",
+      "/home/u/workers/proj/.git/objects",
+      "/home/u/workers/proj/.git/refs/heads/feat/audit",
+      "/home/u/workers/proj/.git/packed-refs"
+    ],
+    "suppressions": [
+      {
+        "layer": "sandbox.filesystem.denyRead",
+        "entry": {
+          "anchor": "home",
+          "path": ".config/gh/hosts.yml",
+          "suppressOnSymlinkEscape": true,
+          "layer2Fallback": "Read(~/.config/gh/hosts.yml)"
+        },
+        "reason": "realpath escapes sandbox read roots",
+        "realpath": "/H/.config/gh/hosts.yml",
+        "sandbox_read_roots": [
+          "/home/u/workers/proj/.worktrees/T123",
+          "/home/u/workers/proj/.worktrees/T123/.claude/plans",
+          "/home/u/workers/proj/.git/worktrees/T123",
+          "/home/u/workers/proj/.git/objects",
+          "/home/u/workers/proj/.git/refs/heads/feat/audit",
+          "/home/u/workers/proj/.git/packed-refs"
+        ]
+      },
+      {
+        "layer": "sandbox.filesystem.denyRead",
+        "entry": {
+          "anchor": "home",
+          "path": ".aws/**",
+          "suppressOnSymlinkEscape": true,
+          "layer2Fallback": "Read(~/.aws/*)"
+        },
+        "reason": "realpath escapes sandbox read roots",
+        "realpath": "/H/.aws",
+        "sandbox_read_roots": [
+          "/home/u/workers/proj/.worktrees/T123",
+          "/home/u/workers/proj/.worktrees/T123/.claude/plans",
+          "/home/u/workers/proj/.git/worktrees/T123",
+          "/home/u/workers/proj/.git/objects",
+          "/home/u/workers/proj/.git/refs/heads/feat/audit",
+          "/home/u/workers/proj/.git/packed-refs"
+        ]
+      },
+      {
+        "layer": "sandbox.filesystem.denyRead",
+        "entry": {
+          "anchor": "home",
+          "path": ".ssh/**",
+          "suppressOnSymlinkEscape": true,
+          "layer2Fallback": "Read(~/.ssh/*)"
+        },
+        "reason": "realpath escapes sandbox read roots",
+        "realpath": "/H/.ssh",
+        "sandbox_read_roots": [
+          "/home/u/workers/proj/.worktrees/T123",
+          "/home/u/workers/proj/.worktrees/T123/.claude/plans",
+          "/home/u/workers/proj/.git/worktrees/T123",
+          "/home/u/workers/proj/.git/objects",
+          "/home/u/workers/proj/.git/refs/heads/feat/audit",
+          "/home/u/workers/proj/.git/packed-refs"
+        ]
+      }
+    ]
+  },
+  "expected_rendered_sandbox": {
+    "enabled": true,
+    "filesystem": {
+      "additionalDirectories": [
+        "/home/u/workers/proj/.worktrees/T123/.claude/plans",
+        "/home/u/workers/proj/.git/worktrees/T123",
+        "/home/u/workers/proj/.git/objects",
+        "/home/u/workers/proj/.git/refs/heads/feat/audit",
+        "/home/u/workers/proj/.git/packed-refs"
+      ],
+      "denyRead": [
+        {
+          "anchor": "worker_dir",
+          "path": ".env",
+          "suppressOnSymlinkEscape": true,
+          "layer2Fallback": "Read(.env)"
+        },
+        {
+          "anchor": "worker_dir",
+          "path": ".env.*",
+          "suppressOnSymlinkEscape": true,
+          "layer2Fallback": "Read(.env.*)"
+        },
+        {
+          "anchor": "worker_dir",
+          "path": "**/credentials*",
+          "suppressOnSymlinkEscape": true,
+          "layer2Fallback": "Read(**/credentials*)"
+        },
+        {
+          "anchor": "worker_dir",
+          "path": "**/*.pem",
+          "suppressOnSymlinkEscape": true,
+          "layer2Fallback": "Read(**/*.pem)"
+        }
+      ],
+      "denyWrite": [
+        {
+          "anchor": "worker_dir",
+          "path": "**",
+          "suppressOnSymlinkEscape": false
+        },
+        {
+          "anchor": "base_clone",
+          "path": ".git/worktrees/T123/**",
+          "suppressOnSymlinkEscape": false
+        },
+        {
+          "anchor": "base_clone",
+          "path": ".git/objects/**",
+          "suppressOnSymlinkEscape": false
+        },
+        {
+          "anchor": "base_clone",
+          "path": ".git/refs/heads/feat/audit",
+          "suppressOnSymlinkEscape": false
+        },
+        {
+          "anchor": "base_clone",
+          "path": ".git/packed-refs",
+          "suppressOnSymlinkEscape": false
+        }
+      ]
+    },
+    "failIfUnavailable": false
+  }
+}

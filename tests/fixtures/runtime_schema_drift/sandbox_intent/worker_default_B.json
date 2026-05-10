@@ -1,0 +1,128 @@
+{
+  "description": "worker_roles.default × Pattern B default variant (worktree). Worker_dir = `<workers_dir>/<project_slug>/.worktrees/<task_id>/`, base_clone = `<workers_dir>/<project_slug>/`. additionalDirectories carries the union from §4.2.1 / worker-git-guardrails-design.md §2 categories B1+B2: this worktree`s admin dir, shared object store, this branch`s ref (refs scope is THIS-branch only — Codex Blocker 2), plus the knowledge/raw carve-out. base_clone is distinct from claude_org_path here so the knowledge/raw mount does not collide with Codex Blocker 3 (which scopes to claude-org-self-edit Pattern B specifically). Pins per docs/contracts/role-pattern-sandbox-contract.md §4.2.",
+  "inputs": {
+    "role": "default",
+    "role_kind": "worker",
+    "worker_dir": "/home/u/workers/proj/.worktrees/T123",
+    "claude_org_path": "/home/u/co",
+    "pattern": "B",
+    "home_dir": "/H",
+    "wsl_detected": false,
+    "realpath_map": [],
+    "schema_source": "shipped",
+    "base_clone": "/home/u/workers/proj",
+    "task_id": "T123",
+    "branch_ref": "feat/example"
+  },
+  "expected_explain": {
+    "enabled": true,
+    "wsl_detected": false,
+    "sandbox_read_roots": [
+      "/home/u/workers/proj/.worktrees/T123",
+      "/home/u/workers/proj/.git/worktrees/T123",
+      "/home/u/workers/proj/.git/objects",
+      "/home/u/workers/proj/.git/refs/heads/feat/example",
+      "/home/u/workers/proj/.git/packed-refs",
+      "/home/u/co/knowledge/raw"
+    ],
+    "suppressions": [
+      {
+        "layer": "sandbox.filesystem.denyRead",
+        "entry": {
+          "anchor": "home",
+          "path": ".config/gh/hosts.yml",
+          "suppressOnSymlinkEscape": true,
+          "layer2Fallback": "Read(~/.config/gh/hosts.yml)"
+        },
+        "reason": "realpath escapes sandbox read roots",
+        "realpath": "/H/.config/gh/hosts.yml",
+        "sandbox_read_roots": [
+          "/home/u/workers/proj/.worktrees/T123",
+          "/home/u/workers/proj/.git/worktrees/T123",
+          "/home/u/workers/proj/.git/objects",
+          "/home/u/workers/proj/.git/refs/heads/feat/example",
+          "/home/u/workers/proj/.git/packed-refs",
+          "/home/u/co/knowledge/raw"
+        ]
+      },
+      {
+        "layer": "sandbox.filesystem.denyRead",
+        "entry": {
+          "anchor": "home",
+          "path": ".aws/**",
+          "suppressOnSymlinkEscape": true,
+          "layer2Fallback": "Read(~/.aws/*)"
+        },
+        "reason": "realpath escapes sandbox read roots",
+        "realpath": "/H/.aws",
+        "sandbox_read_roots": [
+          "/home/u/workers/proj/.worktrees/T123",
+          "/home/u/workers/proj/.git/worktrees/T123",
+          "/home/u/workers/proj/.git/objects",
+          "/home/u/workers/proj/.git/refs/heads/feat/example",
+          "/home/u/workers/proj/.git/packed-refs",
+          "/home/u/co/knowledge/raw"
+        ]
+      },
+      {
+        "layer": "sandbox.filesystem.denyRead",
+        "entry": {
+          "anchor": "home",
+          "path": ".ssh/**",
+          "suppressOnSymlinkEscape": true,
+          "layer2Fallback": "Read(~/.ssh/*)"
+        },
+        "reason": "realpath escapes sandbox read roots",
+        "realpath": "/H/.ssh",
+        "sandbox_read_roots": [
+          "/home/u/workers/proj/.worktrees/T123",
+          "/home/u/workers/proj/.git/worktrees/T123",
+          "/home/u/workers/proj/.git/objects",
+          "/home/u/workers/proj/.git/refs/heads/feat/example",
+          "/home/u/workers/proj/.git/packed-refs",
+          "/home/u/co/knowledge/raw"
+        ]
+      }
+    ]
+  },
+  "expected_rendered_sandbox": {
+    "enabled": true,
+    "filesystem": {
+      "additionalDirectories": [
+        "/home/u/workers/proj/.git/worktrees/T123",
+        "/home/u/workers/proj/.git/objects",
+        "/home/u/workers/proj/.git/refs/heads/feat/example",
+        "/home/u/workers/proj/.git/packed-refs",
+        "/home/u/co/knowledge/raw"
+      ],
+      "denyRead": [
+        {
+          "anchor": "worker_dir",
+          "path": ".env",
+          "suppressOnSymlinkEscape": true,
+          "layer2Fallback": "Read(.env)"
+        },
+        {
+          "anchor": "worker_dir",
+          "path": ".env.*",
+          "suppressOnSymlinkEscape": true,
+          "layer2Fallback": "Read(.env.*)"
+        },
+        {
+          "anchor": "worker_dir",
+          "path": "**/credentials*",
+          "suppressOnSymlinkEscape": true,
+          "layer2Fallback": "Read(**/credentials*)"
+        },
+        {
+          "anchor": "worker_dir",
+          "path": "**/*.pem",
+          "suppressOnSymlinkEscape": true,
+          "layer2Fallback": "Read(**/*.pem)"
+        }
+      ],
+      "denyWrite": []
+    },
+    "failIfUnavailable": false
+  }
+}
