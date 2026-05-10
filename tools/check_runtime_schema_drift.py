@@ -157,6 +157,35 @@ def _build_realpath_fn(
     return _realpath
 
 
+def _schema_role_uses_home_anchor(
+    schema: dict[str, Any], role_kind: str, role: str
+) -> bool:
+    """Return True iff the resolved role declares any deny entry with anchor=home.
+
+    Used by the fixture loader to enforce that any fixture rendering a
+    role whose sandbox body uses ``anchor: "home"`` must set
+    ``inputs.home_dir`` explicitly. Without that the host's real
+    ``$HOME`` leaks into the suppression record's ``realpath`` and the
+    fixture's ``expected_explain`` becomes host-dependent — exactly the
+    portability gap the README warns about.
+    """
+    bucket_key = "roles" if role_kind == "org" else "worker_roles"
+    role_def = (schema.get(bucket_key) or {}).get(role)
+    if not isinstance(role_def, dict):
+        return False
+    sandbox = role_def.get("sandbox")
+    if not isinstance(sandbox, dict):
+        return False
+    fs = sandbox.get("filesystem")
+    if not isinstance(fs, dict):
+        return False
+    for layer_key in ("denyRead", "denyWrite"):
+        for entry in fs.get(layer_key) or []:
+            if isinstance(entry, dict) and entry.get("anchor") == "home":
+                return True
+    return False
+
+
 def _resolve_fixture_schema(inputs: dict[str, Any]) -> dict[str, Any]:
     """Resolve which schema dict to feed the renderer for this fixture.
 
@@ -226,6 +255,17 @@ def _render_fixture_result(fixture: dict[str, Any]) -> Any:
     wsl_detected = bool(inputs.get("wsl_detected", False))
     schema = _resolve_fixture_schema(inputs)
     home_dir = inputs.get("home_dir")
+    if home_dir is None and _schema_role_uses_home_anchor(
+        schema, inputs.get("role_kind", "worker"), inputs["role"]
+    ):
+        raise ValueError(
+            f"fixture for role {inputs['role']!r} (role_kind="
+            f"{inputs.get('role_kind', 'worker')!r}) must set "
+            "inputs.home_dir because the role's sandbox body declares "
+            "at least one deny entry with anchor='home' — without the "
+            "swap the host's $HOME would leak into the suppression "
+            "record realpath and expected_explain would not be portable."
+        )
 
     def _do_render() -> Any:
         return render_role_with_metadata(
