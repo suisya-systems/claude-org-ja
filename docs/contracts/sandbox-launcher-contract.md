@@ -318,18 +318,19 @@ The launcher result schema (defined here purely as the contract surface
 for what gets logged; the in-core representation is implementation):
 
 ```jsonc
+// Example: case-A retry-prune that succeeded on attempt #2.
 LauncherResult := {
-  "bootstrap_outcome": "success" | "partial_success" | "total_failure" | "skipped_no_bwrap",
+  "bootstrap_outcome": "partial_success",
   "attempts": [
     {
       "attempt_no": 1,
-      "exit_code": 0,                        // bwrap exit; -1 if not yet exec'd
+      "exit_code": 1,                        // attempt 1 failed (transient mount)
       "failed_entries": ["/home/<user>/.aws/.env"],
       "stderr_excerpt": "bwrap: Can't create file at /home/<user>/.aws/.env: ..."
     },
     {
       "attempt_no": 2,
-      "exit_code": 0,
+      "exit_code": 0,                        // attempt 2 succeeded (after pruning)
       "failed_entries": [],
       "stderr_excerpt": ""
     }
@@ -346,6 +347,14 @@ LauncherResult := {
   "fall_open": false   // true iff bootstrap_outcome ∈ {total_failure, skipped_no_bwrap} and failIfUnavailable=false
 }
 ```
+
+Per §3.2 invariant: `attempts[].failed_entries` is non-empty only on
+attempts whose `exit_code != 0`; an attempt with `exit_code == 0` ends
+the loop with the `effective_deny_set` it was launched with, so its
+`failed_entries` is `[]`. The example above is the canonical
+retry-prune case (attempt 1 failed → drop entry → attempt 2 succeeded);
+a single-attempt success has `attempts: [{ "attempt_no": 1, "exit_code":
+0, "failed_entries": [], "stderr_excerpt": "" }]`.
 
 `bootstrap_outcome` values:
 
@@ -560,10 +569,10 @@ distinctly, and adds a per-role expectations table.
 
 ### 4.1 Re-defined semantics
 
-| `failIfUnavailable` | bwrap missing | bwrap exec'd → `permanent_setup_failure` | bwrap exec'd → `transient_mount_failure` (case A) |
+| `failIfUnavailable` | bwrap missing (`bootstrap_outcome=skipped_no_bwrap`) | bwrap exec'd → `permanent_setup_failure` (`bootstrap_outcome=total_failure`) | bwrap exec'd → `transient_mount_failure` retry per §3.2 |
 |---|---|---|---|
-| `true` | fail-closed (claude exits with sandbox-required error) | fail-closed | First retry per §3.2; if retry budget exhausts and `effective_deny_set` is empty (whole input pruned), fail-closed. If retry budget exhausts but partial success (some entries kept), warn + continue. |
-| `false` (default) | fall-open: claude starts with no Layer 3 enforcement | fall-open | First retry per §3.2; on any outcome (success / partial / total_failure) the claude work loop starts; total_failure → fall-open with `severity=error` event. |
+| `true` | fail-closed (claude exits with sandbox-required error) | fail-closed | If §3.2 yields `bootstrap_outcome=success` or `=partial_success` (i.e., final attempt's bwrap is running), continue with a `severity=warning` event for each dropped entry. If §3.2 yields `bootstrap_outcome=total_failure` (final attempt failed; no running bwrap), fail-closed. |
+| `false` (default) | fall-open: claude starts with no Layer 3 enforcement | fall-open | If §3.2 yields `success` or `partial_success`, continue (with `severity=warning` per dropped entry). If `total_failure`, fall-open with one `severity=error` summary event (`entry="*"`, `source=bootstrap_retry`). |
 
 This preserves backward compatibility with the existing schema field
 (`failIfUnavailable=true`/`false` still parses and still distinguishes
@@ -580,10 +589,23 @@ profile MAY override that default. The expectations below are normative
 for the runtime's role templates; deviations require a contract
 amendment.
 
-| Role | Default `failIfUnavailable` | Fall-open allowed? | Rationale |
+**Current vs. prescribed**: at the time of this contract,
+[`tools/org_extension_schema.json`](../../tools/org_extension_schema.json)
+emits `failIfUnavailable=false` for *every* role (including the
+dispatcher). The Dispatcher row marked **Prescribed (not yet
+implemented)** below is therefore a contract-level target that the
+schema follow-up listed in §6.2 must realize. Until that
+follow-up lands, the dispatcher emits the default `false` and is
+treated as a known gap (analogous to the "Phase 0 contract surface vs.
+current enforcement state" pattern in
+[`docs/contracts/role-pattern-sandbox-contract.md`](./role-pattern-sandbox-contract.md)
+§Status header). Drift CI (§4.3) MUST surface this gap rather than
+fail the build.
+
+| Role | Target `failIfUnavailable` | Fall-open allowed? | Rationale |
 |---|---|---|---|
 | Secretary | `false` | Yes | Secretary runs in normal Claude Code permission mode (per-tool prompts); Layer 2 `permissions.deny` and operator judgment cover credentials even without Layer 3. Sandbox absence does not silently broaden the role's surface. |
-| Dispatcher | **`true`** (override) | **No** | Dispatcher runs with `permission_mode=bypassPermissions` per [`docs/contracts/role-pattern-sandbox-contract.md`](./role-pattern-sandbox-contract.md) §3.2, which makes Layer 2 a no-op. Sandbox absence + bypassPermissions = only Layer 4 hooks remain, and the hook chain has the §3.2.4 Bash-redirect carve-out. Fall-open here would mean credentials are reachable via `Bash(cat ~/.aws/...)`. The contract therefore overrides the default and requires `failIfUnavailable=true` so that the dispatcher refuses to start without bwrap. |
+| Dispatcher | **`true`** (override) — **Prescribed (not yet implemented)** | **No** | Dispatcher runs with `permission_mode=bypassPermissions` per [`docs/contracts/role-pattern-sandbox-contract.md`](./role-pattern-sandbox-contract.md) §3.2, which makes Layer 2 a no-op. Sandbox absence + bypassPermissions = only Layer 4 hooks remain, and the hook chain has the §3.2.4 Bash-redirect carve-out. Fall-open here would mean credentials are reachable via `Bash(cat ~/.aws/...)`. The contract therefore overrides the default and requires `failIfUnavailable=true` so that the dispatcher refuses to start without bwrap. **Today** the schema emits `false`; the §6.2 schema-update step flips it. |
 | Curator | `false` | Yes | Curator runs at `permission_mode=auto` with a near-empty allow list and a read-mostly task surface (knowledge/curated). Sandbox absence does not enable a new attack surface that Layer 2 + role discipline does not already cover. |
 | Worker `default` | `false` | Yes | Worker has Layer 2 `permissions.deny` for credentials and Layer 4 hooks (`block-org-structure.sh`, `check-worker-boundary.sh`). Sandbox absence keeps Layer 2 + Layer 4 active. |
 | Worker `claude-org-self-edit` | `false` (with operator-warning) | Yes-with-caveat | Self-edit role writes to `<claude_org_path>/.worktrees/<task_id>/`, so the blast radius is broader than a project worker. The default remains `false` for parity, but the runtime SHOULD emit an operator-visible advisory in `$comment` when it detects sandbox-absent + self-edit role; the dispatcher monitoring (§4.3) should treat the resulting fall-open `severity=error` event as a high-attention anomaly. |
@@ -794,7 +816,15 @@ Scope, in order of dependency:
    §1.3 prose to cite this contract's §5.3 boundary explicitly (the
    current language already names case E; case A becomes a sibling
    subsection).
-3. Add a smoke test under [`docs/sandbox-probe`](../sandbox-probe/)
+3. **Flip dispatcher `failIfUnavailable` to `true` in
+   [`tools/org_extension_schema.json`](../../tools/org_extension_schema.json)**
+   per §4.2. This is the schema-update that closes the "Prescribed
+   (not yet implemented)" gap on the Dispatcher row of the §4.2 table;
+   it pairs with a regen of `.dispatcher/.claude/settings.local.json`
+   via `claude-org-runtime settings generate` and a CI drift check.
+   Until this lands, §4.2 marks the dispatcher row as Prescribed and
+   the runtime emits the default `false`.
+4. Add a smoke test under [`docs/sandbox-probe`](../sandbox-probe/)
    that exercises the case-A retry on a synthetic dangling-symlink
    fixture, **only after** §6.1 is wired (otherwise there is no
    case-A code path to test from this repo). Pure-unit tests for the
@@ -818,7 +848,7 @@ Scope:
    to `<repo>/.state/state.db`. This must NOT extend `RenderResult` to
    carry launcher-side state — see §2.4.
 
-### 6.3 Test strategy
+### 6.4 Test strategy
 
 Per the Codex review (Minor / Nit findings folded in):
 
