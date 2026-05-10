@@ -199,8 +199,8 @@ def _resolve_fixture_schema(inputs: dict[str, Any]) -> dict[str, Any]:
     return inputs["schema_fragment"]
 
 
-def _render_fixture_explain(fixture: dict[str, Any]) -> dict[str, Any]:
-    """Render one fixture and return the canonical explain JSON.
+def _render_fixture_result(fixture: dict[str, Any]) -> Any:
+    """Render one fixture and return the full ``RenderResult``.
 
     Imports the runtime lazily so a missing install surfaces the same
     way the byte check does.
@@ -243,29 +243,45 @@ def _render_fixture_explain(fixture: dict[str, Any]) -> dict[str, Any]:
         )
 
     if home_dir is None:
-        result = _do_render()
-    else:
-        if not isinstance(home_dir, str):
-            raise ValueError(
-                f"inputs.home_dir must be a string, got {type(home_dir).__name__}"
-            )
-        # Swap HOME and USERPROFILE so os.path.expanduser('~') is
-        # deterministic. Restore-on-finally is mandatory: a stray
-        # exception leaving HOME pointed at the fixture's fake path
-        # would make every subsequent test render diverge.
-        _swap_keys = ("HOME", "USERPROFILE")
-        original = {k: os.environ.get(k) for k in _swap_keys}
-        for k in _swap_keys:
-            os.environ[k] = home_dir
-        try:
-            result = _do_render()
-        finally:
-            for k, v in original.items():
-                if v is None:
-                    os.environ.pop(k, None)
-                else:
-                    os.environ[k] = v
-    return result.sandbox.to_jsonable()
+        return _do_render()
+    if not isinstance(home_dir, str):
+        raise ValueError(
+            f"inputs.home_dir must be a string, got {type(home_dir).__name__}"
+        )
+    # Swap HOME and USERPROFILE so os.path.expanduser('~') is
+    # deterministic. Restore-on-finally is mandatory: a stray
+    # exception leaving HOME pointed at the fixture's fake path
+    # would make every subsequent test render diverge.
+    _swap_keys = ("HOME", "USERPROFILE")
+    original = {k: os.environ.get(k) for k in _swap_keys}
+    for k in _swap_keys:
+        os.environ[k] = home_dir
+    try:
+        return _do_render()
+    finally:
+        for k, v in original.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+def _render_fixture_explain(fixture: dict[str, Any]) -> dict[str, Any]:
+    """Render one fixture and return the canonical explain JSON."""
+    return _render_fixture_result(fixture).sandbox.to_jsonable()
+
+
+def _render_fixture_rendered_sandbox(fixture: dict[str, Any]) -> Any:
+    """Render one fixture and return the rendered ``sandbox`` dict.
+
+    The explain JSON only describes *suppressed* deny entries; the
+    *kept* deny entries (and the rest of the sandbox body) live on
+    ``result.settings.sandbox``. Without comparing the rendered body
+    a regression that drops e.g. ``denyWrite: tools`` from the
+    dispatcher would not be detected by ``expected_explain`` alone.
+    Fixtures that want kept-entry coverage set ``expected_rendered_sandbox``.
+    """
+    return _render_fixture_result(fixture).settings.get("sandbox")
 
 
 def _format_explain_diff(
@@ -409,20 +425,39 @@ def _check_semantic_drift(installed_str: str) -> int:
     for fixture_path in fixture_paths:
         fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
         policy_violations.extend(_validate_fixture_policy(fixture_path, fixture))
+        # Render once; both checks read from the same RenderResult so a
+        # transient env-var swap (home_dir) doesn't have to happen twice.
+        result = _render_fixture_result(fixture)
         expected = fixture["expected_explain"]
-        actual = _render_fixture_explain(fixture)
-        if expected == actual:
-            continue
-        drift_seen = True
-        print(
-            "check_runtime_schema_drift: SEMANTIC DRIFT — "
-            f"{fixture_path.relative_to(REPO_ROOT)} explain JSON differs "
-            f"from claude-org-runtime {installed_str} render output.",
-            file=sys.stderr,
-        )
-        diff = _format_explain_diff(fixture_path, expected, actual)
-        if diff:
-            print(diff, file=sys.stderr)
+        actual = result.sandbox.to_jsonable()
+        if expected != actual:
+            drift_seen = True
+            print(
+                "check_runtime_schema_drift: SEMANTIC DRIFT — "
+                f"{fixture_path.relative_to(REPO_ROOT)} explain JSON differs "
+                f"from claude-org-runtime {installed_str} render output.",
+                file=sys.stderr,
+            )
+            diff = _format_explain_diff(fixture_path, expected, actual)
+            if diff:
+                print(diff, file=sys.stderr)
+        if "expected_rendered_sandbox" in fixture:
+            expected_sandbox = fixture["expected_rendered_sandbox"]
+            actual_sandbox = result.settings.get("sandbox")
+            if expected_sandbox != actual_sandbox:
+                drift_seen = True
+                print(
+                    "check_runtime_schema_drift: SEMANTIC DRIFT — "
+                    f"{fixture_path.relative_to(REPO_ROOT)} rendered sandbox "
+                    f"body differs from claude-org-runtime {installed_str} "
+                    "output (kept deny entries / additionalDirectories).",
+                    file=sys.stderr,
+                )
+                diff = _format_explain_diff(
+                    fixture_path, expected_sandbox, actual_sandbox
+                )
+                if diff:
+                    print(diff, file=sys.stderr)
     if policy_violations:
         for v in policy_violations:
             print(

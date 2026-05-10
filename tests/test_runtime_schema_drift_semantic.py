@@ -65,8 +65,11 @@ class FixtureExplainGoldenTest(unittest.TestCase):
         for fixture_path in _fixture_paths():
             with self.subTest(fixture=fixture_path.name):
                 fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+                # Single render shared by both checks — the home_dir
+                # env swap should only happen once per fixture.
+                result = csd._render_fixture_result(fixture)
                 expected = fixture["expected_explain"]
-                actual = csd._render_fixture_explain(fixture)
+                actual = result.sandbox.to_jsonable()
                 self.assertEqual(
                     actual,
                     expected,
@@ -76,6 +79,19 @@ class FixtureExplainGoldenTest(unittest.TestCase):
                     f"actual:   "
                     f"{json.dumps(actual, indent=2, sort_keys=True)}",
                 )
+                if "expected_rendered_sandbox" in fixture:
+                    expected_sandbox = fixture["expected_rendered_sandbox"]
+                    actual_sandbox = result.settings.get("sandbox")
+                    self.assertEqual(
+                        actual_sandbox,
+                        expected_sandbox,
+                        f"Rendered sandbox drift in {fixture_path.name} "
+                        "(kept deny entries / additionalDirectories):\n"
+                        f"expected: "
+                        f"{json.dumps(expected_sandbox, indent=2, sort_keys=True)}\n"
+                        f"actual:   "
+                        f"{json.dumps(actual_sandbox, indent=2, sort_keys=True)}",
+                    )
 
     def test_fixture_does_not_carry_verification_depth_field(self) -> None:
         # ``verification_depth`` is a delegate-payload convention, not a

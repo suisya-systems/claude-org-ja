@@ -38,7 +38,17 @@ suppression evaluator on top of identical schema bytes.
                                   //   for the duration of the render so
                                   //   os.path.expanduser('~') is deterministic.
   },
-  "expected_explain": { ... }     // SandboxMetadata.to_jsonable() output
+  "expected_explain": { ... },    // SandboxMetadata.to_jsonable() output
+
+  "expected_rendered_sandbox": {  // optional; rendered RenderResult.settings.sandbox
+    "enabled": true, ...          // (kept deny entries + additionalDirectories,
+  }                               // post-substitution, suppressed entries dropped).
+                                  // Set when the fixture wants to detect a
+                                  // regression that drops a kept entry — the
+                                  // explain JSON only describes *suppressions*,
+                                  // so without this a removed `denyWrite` would
+                                  // not be detected if its suppression state
+                                  // didn't change.
 }
 ```
 

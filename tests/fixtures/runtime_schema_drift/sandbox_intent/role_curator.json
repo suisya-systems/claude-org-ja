@@ -1,5 +1,5 @@
 {
-  "description": "Curator role (org-side, role_kind=org) rendered against the in-tree shipped tools/org_extension_schema.json (schema_source=shipped). worker_dir = claude_org_path/.curator; additionalDirectories adds claude_org_path so the curator can read knowledge/raw/ knowledge/curated/ knowledge/skill-candidates.md (per docs/contracts/role-pattern-sandbox-contract.md §3.3.1) and so denyWrite entries for .state/ registry/ tools/ dashboard/ .claude/skills/ resolve inside read_roots and are kept. Major 2 from the Codex pre-design review: knowledge/raw/ deletion-vs-move discipline is operation-semantic, NOT path-based, so the shipped body intentionally does NOT mechanize it via denyWrite; that row is a deferred Bash-matcher hook follow-up (see role's $comment_sandbox in tools/org_extension_schema.json). Worker_dir-anchored credential entries are kept (target inside read_roots); home-anchored entries are suppressed with realpath under home_dir=/H, layer2Fallback strings preserved in the suppression record so a future Layer-2 mirror emit can use them.",
+  "description": "Curator role (org-side, role_kind=org) rendered against the in-tree shipped tools/org_extension_schema.json (schema_source=shipped). Pins both the explain JSON (suppressions) and the rendered sandbox body (kept deny entries) so a regression that drops e.g. denyWrite: .state from the shipped body — not just one that flips its suppression state — is detected. worker_dir = claude_org_path/.curator; additionalDirectories is narrow (just {claude_org_path}/knowledge) per docs/contracts/role-pattern-sandbox-contract.md §3.3.1 read surface and §3.3.3 Phase 1 prescription. With the narrow read scope, denyWrite entries (.state/ registry/ tools/ dashboard/ .claude/skills/ workers_dir/**, from §3.3.2 / §3.3.3) all fall outside read_roots and are SUPPRESSED at Layer 3 — by design: the entries document intent and would activate if read scope were ever widened, while at runtime the same paths are protected by absence-of-mount. Major 2 from the Codex pre-design review: knowledge/raw/ deletion-vs-move discipline is operation-semantic, NOT path-based, so the shipped body intentionally does NOT mechanize it via denyWrite. Worker_dir-anchored credential entries are kept (target inside read_roots); home-anchored entries are suppressed with realpath under home_dir=/H, layer2Fallback strings preserved in the suppression record.",
   "inputs": {
     "role": "curator",
     "role_kind": "org",
@@ -15,7 +15,7 @@
     "wsl_detected": false,
     "sandbox_read_roots": [
       "/home/u/co/.curator",
-      "/home/u/co"
+      "/home/u/co/knowledge"
     ],
     "suppressions": [
       {
@@ -30,7 +30,7 @@
         "realpath": "/H/.config/gh/hosts.yml",
         "sandbox_read_roots": [
           "/home/u/co/.curator",
-          "/home/u/co"
+          "/home/u/co/knowledge"
         ]
       },
       {
@@ -45,7 +45,7 @@
         "realpath": "/H/.aws",
         "sandbox_read_roots": [
           "/home/u/co/.curator",
-          "/home/u/co"
+          "/home/u/co/knowledge"
         ]
       },
       {
@@ -60,9 +60,129 @@
         "realpath": "/H/.ssh",
         "sandbox_read_roots": [
           "/home/u/co/.curator",
-          "/home/u/co"
+          "/home/u/co/knowledge"
+        ]
+      },
+      {
+        "layer": "sandbox.filesystem.denyWrite",
+        "entry": {
+          "anchor": "claude_org_path",
+          "path": ".state",
+          "suppressOnSymlinkEscape": true
+        },
+        "reason": "realpath escapes sandbox read roots",
+        "realpath": "/home/u/co/.state",
+        "sandbox_read_roots": [
+          "/home/u/co/.curator",
+          "/home/u/co/knowledge"
+        ]
+      },
+      {
+        "layer": "sandbox.filesystem.denyWrite",
+        "entry": {
+          "anchor": "claude_org_path",
+          "path": "registry",
+          "suppressOnSymlinkEscape": true
+        },
+        "reason": "realpath escapes sandbox read roots",
+        "realpath": "/home/u/co/registry",
+        "sandbox_read_roots": [
+          "/home/u/co/.curator",
+          "/home/u/co/knowledge"
+        ]
+      },
+      {
+        "layer": "sandbox.filesystem.denyWrite",
+        "entry": {
+          "anchor": "claude_org_path",
+          "path": "tools",
+          "suppressOnSymlinkEscape": true
+        },
+        "reason": "realpath escapes sandbox read roots",
+        "realpath": "/home/u/co/tools",
+        "sandbox_read_roots": [
+          "/home/u/co/.curator",
+          "/home/u/co/knowledge"
+        ]
+      },
+      {
+        "layer": "sandbox.filesystem.denyWrite",
+        "entry": {
+          "anchor": "claude_org_path",
+          "path": "dashboard",
+          "suppressOnSymlinkEscape": true
+        },
+        "reason": "realpath escapes sandbox read roots",
+        "realpath": "/home/u/co/dashboard",
+        "sandbox_read_roots": [
+          "/home/u/co/.curator",
+          "/home/u/co/knowledge"
+        ]
+      },
+      {
+        "layer": "sandbox.filesystem.denyWrite",
+        "entry": {
+          "anchor": "claude_org_path",
+          "path": ".claude/skills",
+          "suppressOnSymlinkEscape": true
+        },
+        "reason": "realpath escapes sandbox read roots",
+        "realpath": "/home/u/co/.claude/skills",
+        "sandbox_read_roots": [
+          "/home/u/co/.curator",
+          "/home/u/co/knowledge"
+        ]
+      },
+      {
+        "layer": "sandbox.filesystem.denyWrite",
+        "entry": {
+          "anchor": "absolute",
+          "path": "/home/u/co/../workers/**",
+          "suppressOnSymlinkEscape": true
+        },
+        "reason": "realpath escapes sandbox read roots",
+        "realpath": "/home/u/co/../workers",
+        "sandbox_read_roots": [
+          "/home/u/co/.curator",
+          "/home/u/co/knowledge"
         ]
       }
     ]
+  },
+  "expected_rendered_sandbox": {
+    "enabled": true,
+    "failIfUnavailable": false,
+    "filesystem": {
+      "additionalDirectories": [
+        "/home/u/co/knowledge"
+      ],
+      "denyRead": [
+        {
+          "anchor": "worker_dir",
+          "path": ".env",
+          "suppressOnSymlinkEscape": true,
+          "layer2Fallback": "Read(.env)"
+        },
+        {
+          "anchor": "worker_dir",
+          "path": ".env.*",
+          "suppressOnSymlinkEscape": true,
+          "layer2Fallback": "Read(.env.*)"
+        },
+        {
+          "anchor": "worker_dir",
+          "path": "**/credentials*",
+          "suppressOnSymlinkEscape": true,
+          "layer2Fallback": "Read(**/credentials*)"
+        },
+        {
+          "anchor": "worker_dir",
+          "path": "**/*.pem",
+          "suppressOnSymlinkEscape": true,
+          "layer2Fallback": "Read(**/*.pem)"
+        }
+      ],
+      "denyWrite": []
+    }
   }
 }
