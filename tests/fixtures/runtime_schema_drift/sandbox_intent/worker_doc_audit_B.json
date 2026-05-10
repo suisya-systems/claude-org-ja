@@ -19,7 +19,11 @@
     "wsl_detected": false,
     "sandbox_read_roots": [
       "/home/u/workers/proj/.worktrees/T123",
-      "/home/u/workers/proj/.worktrees/T123/.claude/plans"
+      "/home/u/workers/proj/.worktrees/T123/.claude/plans",
+      "/home/u/workers/proj/.git/worktrees/T123",
+      "/home/u/workers/proj/.git/objects",
+      "/home/u/workers/proj/.git/refs/heads/feat/audit",
+      "/home/u/workers/proj/.git/packed-refs"
     ],
     "suppressions": [
       {
@@ -34,7 +38,11 @@
         "realpath": "/H/.config/gh/hosts.yml",
         "sandbox_read_roots": [
           "/home/u/workers/proj/.worktrees/T123",
-          "/home/u/workers/proj/.worktrees/T123/.claude/plans"
+          "/home/u/workers/proj/.worktrees/T123/.claude/plans",
+          "/home/u/workers/proj/.git/worktrees/T123",
+          "/home/u/workers/proj/.git/objects",
+          "/home/u/workers/proj/.git/refs/heads/feat/audit",
+          "/home/u/workers/proj/.git/packed-refs"
         ]
       },
       {
@@ -49,7 +57,11 @@
         "realpath": "/H/.aws",
         "sandbox_read_roots": [
           "/home/u/workers/proj/.worktrees/T123",
-          "/home/u/workers/proj/.worktrees/T123/.claude/plans"
+          "/home/u/workers/proj/.worktrees/T123/.claude/plans",
+          "/home/u/workers/proj/.git/worktrees/T123",
+          "/home/u/workers/proj/.git/objects",
+          "/home/u/workers/proj/.git/refs/heads/feat/audit",
+          "/home/u/workers/proj/.git/packed-refs"
         ]
       },
       {
@@ -64,7 +76,11 @@
         "realpath": "/H/.ssh",
         "sandbox_read_roots": [
           "/home/u/workers/proj/.worktrees/T123",
-          "/home/u/workers/proj/.worktrees/T123/.claude/plans"
+          "/home/u/workers/proj/.worktrees/T123/.claude/plans",
+          "/home/u/workers/proj/.git/worktrees/T123",
+          "/home/u/workers/proj/.git/objects",
+          "/home/u/workers/proj/.git/refs/heads/feat/audit",
+          "/home/u/workers/proj/.git/packed-refs"
         ]
       }
     ]
@@ -73,7 +89,11 @@
     "enabled": true,
     "filesystem": {
       "additionalDirectories": [
-        "/home/u/workers/proj/.worktrees/T123/.claude/plans"
+        "/home/u/workers/proj/.worktrees/T123/.claude/plans",
+        "/home/u/workers/proj/.git/worktrees/T123",
+        "/home/u/workers/proj/.git/objects",
+        "/home/u/workers/proj/.git/refs/heads/feat/audit",
+        "/home/u/workers/proj/.git/packed-refs"
       ],
       "denyRead": [
         {
@@ -105,6 +125,26 @@
         {
           "anchor": "worker_dir",
           "path": "**",
+          "suppressOnSymlinkEscape": false
+        },
+        {
+          "anchor": "base_clone",
+          "path": ".git/worktrees/T123/**",
+          "suppressOnSymlinkEscape": false
+        },
+        {
+          "anchor": "base_clone",
+          "path": ".git/objects/**",
+          "suppressOnSymlinkEscape": false
+        },
+        {
+          "anchor": "base_clone",
+          "path": ".git/refs/heads/feat/audit",
+          "suppressOnSymlinkEscape": false
+        },
+        {
+          "anchor": "base_clone",
+          "path": ".git/packed-refs",
           "suppressOnSymlinkEscape": false
         }
       ]
