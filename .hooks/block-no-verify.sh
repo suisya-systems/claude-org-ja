@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# PreToolUse Hook: git commit / git push の verify-bypass フラグをブロック
+# PreToolUse Hook: git commit / push / merge / pull / am の verify-bypass
+# フラグおよび HUSKY=0 / SKIP_SECRET_SCAN=1 系 env-var bypass をブロック
 # 方式: exit 2 + stderr メッセージ でブロック
 #
 # 背景:
@@ -7,6 +8,14 @@
 #   スキャナを含む）をスキップする。ワーカー Claude が秘匿情報スキャンを
 #   迂回して commit / push するのを防ぐため、Claude のツール呼び出し
 #   レベルで拒否する。
+#
+#   Phase 2 (Refs claude-org-ja#379, worker-git-guardrails-design.md §5.2.3 /
+#   §4.7): merge / pull / am も --no-verify でこの commit hook を迂回するため
+#   検査対象に追加する。pull 自体は permissions.deny 側で原則ブロックされる
+#   が、本フックは多層防御として redundant に持つ。
+#   HUSKY=0 / SKIP_SECRET_SCAN=1 / NO_VERIFY=1 等の inline env-var による
+#   bypass も検出する（commit メッセージに "SKIP_SECRET_SCAN=1" 等が
+#   含まれる場合は false positive になり得るが、安全側に倒す）。
 #
 # 入力: stdin から PreToolUse JSON
 # 出力: 拒否時 exit 2 + stderr。許可時 exit 0。
@@ -98,9 +107,12 @@ for segment in "${SEGMENTS[@]}"; do
   # コマンド置換 $(...) / `...` 内のフラグも検査対象に含める
   flat=$(printf '%s' "$expanded" | flatten_substitutions)
 
-  # git commit / git push の有無（loose match）。展開後で判定する。
+  # git commit / push / merge / pull / am の有無（loose match）。展開後で判定する。
   has_git_commit=0
   has_git_push=0
+  has_git_merge=0
+  has_git_pull=0
+  has_git_am=0
   if echo "$flat" | grep -qE '(^|[[:space:]])git[[:space:]]+commit([[:space:]]|$)' \
      || echo "$flat" | grep -qE '(^|[[:space:]])git[[:space:]].*[[:space:]]commit([[:space:]]|$)'; then
     has_git_commit=1
@@ -109,16 +121,58 @@ for segment in "${SEGMENTS[@]}"; do
      || echo "$flat" | grep -qE '(^|[[:space:]])git[[:space:]].*[[:space:]]push([[:space:]]|$)'; then
     has_git_push=1
   fi
-  [[ $has_git_commit -eq 0 && $has_git_push -eq 0 ]] && continue
+  if echo "$flat" | grep -qE '(^|[[:space:]])git[[:space:]]+merge([[:space:]]|$)' \
+     || echo "$flat" | grep -qE '(^|[[:space:]])git[[:space:]].*[[:space:]]merge([[:space:]]|$)'; then
+    has_git_merge=1
+  fi
+  if echo "$flat" | grep -qE '(^|[[:space:]])git[[:space:]]+pull([[:space:]]|$)' \
+     || echo "$flat" | grep -qE '(^|[[:space:]])git[[:space:]].*[[:space:]]pull([[:space:]]|$)'; then
+    has_git_pull=1
+  fi
+  if echo "$flat" | grep -qE '(^|[[:space:]])git[[:space:]]+am([[:space:]]|$)' \
+     || echo "$flat" | grep -qE '(^|[[:space:]])git[[:space:]].*[[:space:]]am([[:space:]]|$)'; then
+    has_git_am=1
+  fi
+  has_any_git_subcmd=$(( has_git_commit + has_git_push + has_git_merge + has_git_pull + has_git_am ))
+  [[ $has_any_git_subcmd -eq 0 ]] && continue
 
   # 同一セグメント（展開・フラット化後）に verify-bypass フラグが独立トークンとして存在するか
   if echo "$flat" | grep -qE '(^|[[:space:]])--no-verify([[:space:]]|$)'; then
     if [[ $has_git_commit -eq 1 ]]; then
       deny_with_reason "git commit の verify-bypass フラグは禁止です。pre-commit secret スキャナ（Issue #69）を必ず通してください。誤検知の場合は allow-secret マーカー、緊急時は SKIP_SECRET_SCAN=1 を使ってください。"
-    else
+    elif [[ $has_git_push -eq 1 ]]; then
       deny_with_reason "git push の verify-bypass フラグは禁止です。pre-push hook を迂回するため拒否します（現在 pre-push は未配備ですが、将来追加された hook を保護する目的で先行ブロックします）。push が必要な場合は窓口経由で実施してください。"
+    elif [[ $has_git_merge -eq 1 ]]; then
+      deny_with_reason "git merge の verify-bypass フラグは禁止です。merge commit が pre-commit hook を迂回するため拒否します。"
+    elif [[ $has_git_pull -eq 1 ]]; then
+      deny_with_reason "git pull の verify-bypass フラグは禁止です。pull は fetch+merge/rebase であり、結果の commit が pre-commit hook を迂回するため拒否します。"
+    else
+      deny_with_reason "git am の verify-bypass フラグは禁止です。patch 適用時の pre-commit / pre-applypatch hook を迂回するため拒否します。"
     fi
   fi
+
 done
+
+# HUSKY=0 / SKIP_SECRET_SCAN=1 / NO_VERIFY=1 等の inline env-var bypass の検出は
+# COMMAND 文字列全体に対して行う。`export HUSKY=0; git commit ...` のように
+# 別セグメントで env を立ててから git を呼ぶ形式は per-segment ループでは
+# catch できない（assign セグメントに git は無く、git セグメントに env name は
+# 無いため）。COMMAND 全体に env name + git subcmd の両方が含まれる時点で
+# 多層防御として一律拒否する。
+COMMAND_FLAT=$(printf '%s' "$COMMAND" | flatten_substitutions)
+if echo "$COMMAND_FLAT" | grep -qE '(^|[[:space:]])git[[:space:]]+(commit|push|merge|pull|am)([[:space:]]|$)' \
+   || echo "$COMMAND_FLAT" | grep -qE '(^|[[:space:]])git[[:space:]].*[[:space:]](commit|push|merge|pull|am)([[:space:]]|$)'; then
+  if echo "$COMMAND_FLAT" | grep -qE '(^|[[:space:]])HUSKY='; then
+    deny_with_reason "HUSKY=... による pre-commit/pre-push hook 迂回は禁止です（HUSKY=0 / HUSKY=false 等で hook が無効化されます）。"
+  fi
+  if echo "$COMMAND_FLAT" | grep -qE '(^|[[:space:]])SKIP_SECRET_SCAN='; then
+    # SKIP_SECRET_SCAN=1 は緊急時の人間オペレーション用 escape hatch であり、
+    # ワーカー Claude のツール呼び出し経路では絶対に使ってはならない（Issue #69）。
+    deny_with_reason "SKIP_SECRET_SCAN=... は人間用 escape hatch です。ワーカーは secret スキャナを必ず通してください（Issue #69）。誤検知時は allow-secret マーカーで個別対応してください。"
+  fi
+  if echo "$COMMAND_FLAT" | grep -qE '(^|[[:space:]])NO_VERIFY='; then
+    deny_with_reason "NO_VERIFY=... による hook 迂回は禁止です。--no-verify と等価のため拒否します。"
+  fi
+fi
 
 exit 0

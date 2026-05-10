@@ -273,13 +273,35 @@ python tools/org_setup_prune.py --all                        # secretary / dispa
       "Bash(git branch:*)",
       "Bash(git checkout:*)",
       "Bash(git switch:*)",
-      "Bash(git worktree:*)",
       "Bash(git stash:*)",
       "Bash(sleep:*)"
     ],
     "deny": [
       "Bash(git push *)",
       "Bash(git push)",
+      "Bash(git worktree)",
+      "Bash(git worktree *)",
+      "Bash(git fetch)",
+      "Bash(git fetch *)",
+      "Bash(git pull)",
+      "Bash(git pull *)",
+      "Bash(git submodule)",
+      "Bash(git submodule *)",
+      "Bash(git lfs)",
+      "Bash(git lfs *)",
+      "Bash(git gc)",
+      "Bash(git gc *)",
+      "Bash(git filter-branch)",
+      "Bash(git filter-branch *)",
+      "Bash(git filter-repo)",
+      "Bash(git filter-repo *)",
+      "Bash(git replace)",
+      "Bash(git replace *)",
+      "Bash(git update-ref)",
+      "Bash(git update-ref *)",
+      "Bash(git config --global *)",
+      "Bash(git config --local *)",
+      "Bash(git config --worktree *)",
       "Bash(rm -rf *)",
       "Bash(rm -r *)"
     ]
@@ -308,6 +330,14 @@ python tools/org_setup_prune.py --all                        # secretary / dispa
           },
           {
             "type": "command",
+            "command": "bash \"{claude_org_path}/.hooks/block-dangerous-git.sh\""
+          },
+          {
+            "type": "command",
+            "command": "bash \"{claude_org_path}/.hooks/block-no-verify.sh\""
+          },
+          {
+            "type": "command",
             "command": "bash \"{claude_org_path}/.hooks/block-org-structure.sh\""
           }
         ]
@@ -323,4 +353,6 @@ python tools/org_setup_prune.py --all                        # secretary / dispa
 
 **注意**: `{claude_org_path}` と `{worker_dir}` は settings.local.json 生成時に解決済みの絶対パスに置換すること。Hook command 内のパスはスペース対策のためクォートされている。
 
-**deny と hooks の役割分担**: ワーカーは通常モード（`bypassPermissions` ではない）で起動するため、`permissions.deny` は静的パターンマッチで常に効く。外部コマンド（jq, bash）に依存しないので信頼性が高い。一方 hooks はワーカーディレクトリ境界チェック等の動的検証を担う。両者を併用することで多層防御を実現する。`deny` は `echo foo && git push` のような埋め込みコマンドはカバーできないため、`block-git-push.sh` hook は副次防御として維持する。なお `bypassPermissions` で起動するロール（ディスパッチャー）では `permissions.deny` は bypass されるので、そちらは hook のみが障壁になる（前述 `重要` 節参照）。
+**deny と hooks の役割分担**: ワーカーは通常モード（`bypassPermissions` ではない）で起動するため、`permissions.deny` は静的パターンマッチで常に効く。外部コマンド（jq, bash）に依存しないので信頼性が高い。一方 hooks はワーカーディレクトリ境界チェック等の動的検証を担う。両者を併用することで多層防御を実現する。`deny` は `echo foo && git push` のような埋め込みコマンドはカバーできないため、`block-git-push.sh` / `block-dangerous-git.sh` / `block-no-verify.sh` hook は副次防御として維持する。なお `bypassPermissions` で起動するロール（ディスパッチャー）では `permissions.deny` は bypass されるので、そちらは hook のみが障壁になる（前述 `重要` 節参照）。
+
+**Phase 2 worker git guardrails (Refs #379)**: 上記 `deny` / `hooks` は worker-git-guardrails-design.md §5 / §6 / §11 cheat sheet の即時項目を反映する。`Bash(git worktree*)` deny family は Pattern B 共有 base clone の `.git/worktrees/<other>` への副作用（remove / prune / lock 等）を Layer 2 で全 deny する（§6）。`block-dangerous-git.sh` / `block-no-verify.sh` の attach はワーカー作業ディレクトリが claude-org repo 外の場合に発生していた cwd-tree non-inheritance gap を埋める（§5.1 / §5.2）。`Bash(git fetch / pull / remote / submodule / lfs / gc / filter-branch / replace / update-ref / config --{global,local,worktree} / reflog {expire,delete})` の deny family は §4.6 (N) network deny + §5.2.4 history-rewrite / config write deny を Layer 2 で固定する。

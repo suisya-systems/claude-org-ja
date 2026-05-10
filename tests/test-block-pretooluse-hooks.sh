@@ -88,6 +88,22 @@ substitute_run "$NV_HOOK" "sh -c 'g_it commit --no-verify'" block 'sh-c-single-q
 substitute_run "$NV_HOOK" "bash -c \"eval 'g_it commit --no-verify'\"" block 'nested-bash-eval'
 # unquoted multi-token eval: segment-level regex already catches (tokens appear verbatim)
 substitute_run "$NV_HOOK" 'eval g_it commit --no-verify' block 'eval-unquoted-multitoken'
+# Phase 2 (Refs #379): merge / pull / am --no-verify
+substitute_run "$NV_HOOK" 'g_it merge --no-verify topic-branch' block 'merge-no-verify'
+substitute_run "$NV_HOOK" 'g_it merge topic-branch --no-verify' block 'merge-no-verify-flag-at-end'
+substitute_run "$NV_HOOK" 'g_it pull --no-verify origin main' block 'pull-no-verify'
+substitute_run "$NV_HOOK" 'g_it am --no-verify patch.mbox' block 'am-no-verify'
+substitute_run "$NV_HOOK" 'g_it -C /tmp/repo merge --no-verify other' block 'merge-no-verify-with-C'
+# Phase 2: env-var bypass (HUSKY / SKIP_SECRET_SCAN / NO_VERIFY)
+substitute_run "$NV_HOOK" 'HUSKY=0 g_it commit -m feat' block 'husky-zero-prefix'
+substitute_run "$NV_HOOK" 'HUSKY=false g_it commit -m feat' block 'husky-false-prefix'
+substitute_run "$NV_HOOK" 'export HUSKY=0; g_it commit -m feat' block 'husky-export'
+substitute_run "$NV_HOOK" 'SKIP_SECRET_SCAN=1 g_it commit -m feat' block 'skip-secret-scan-prefix'
+substitute_run "$NV_HOOK" 'NO_VERIFY=1 g_it commit -m feat' block 'no-verify-env-prefix'
+# Pure git plumbing without any of these env-vars or --no-verify must still pass
+substitute_run "$NV_HOOK" 'g_it merge topic-branch' pass 'merge-clean-must-pass'
+substitute_run "$NV_HOOK" 'g_it pull origin main' pass 'pull-clean-must-pass'
+substitute_run "$NV_HOOK" 'g_it am patch.mbox' pass 'am-clean-must-pass'
 
 echo ""
 echo "=== block-dangerous-git.sh ==="
@@ -128,6 +144,30 @@ substitute_run "$DG_HOOK" 'bash -c "g_it reset --hard HEAD~1"' block 'bash-c-res
 substitute_run "$DG_HOOK" "sh -c 'g_it branch -D some'" block 'sh-c-branch-D'
 substitute_run "$DG_HOOK" "bash -c \"eval 'g_it p_ush --force'\"" block 'nested-bash-eval-push-force'
 substitute_run "$DG_HOOK" 'eval g_it p_ush --force' block 'eval-unquoted-multitoken-dg'
+# Phase 2 (Refs #379): clean -fd / -f / bundled
+substitute_run "$DG_HOOK" 'g_it clean -fd' block 'clean-fd'
+substitute_run "$DG_HOOK" 'g_it clean -f' block 'clean-f'
+substitute_run "$DG_HOOK" 'g_it clean --force' block 'clean-force-long'
+substitute_run "$DG_HOOK" 'g_it clean -fdx' block 'clean-bundled-fdx'
+substitute_run "$DG_HOOK" 'g_it clean -dfx' block 'clean-bundled-dfx'
+substitute_run "$DG_HOOK" 'g_it -C /tmp/repo clean -fd' block 'clean-fd-with-C'
+# Phase 2: checkout -- <path>
+substitute_run "$DG_HOOK" 'g_it checkout -- .' block 'checkout-discard-dot'
+substitute_run "$DG_HOOK" 'g_it checkout -- some/file.py' block 'checkout-discard-path'
+substitute_run "$DG_HOOK" 'g_it -C /tmp/repo checkout -- .' block 'checkout-discard-dot-with-C'
+# Phase 2: restore --source --worktree
+substitute_run "$DG_HOOK" 'g_it restore --source=HEAD~1 --worktree some/file.py' block 'restore-source-worktree'
+substitute_run "$DG_HOOK" 'g_it restore --source HEAD~1 -W some/file.py' block 'restore-source-W'
+# Phase 2: tag -d / --delete
+substitute_run "$DG_HOOK" 'g_it tag -d v1.0.0' block 'tag-delete-short'
+substitute_run "$DG_HOOK" 'g_it tag --delete v1.0.0' block 'tag-delete-long'
+# Phase 2: update-ref -d / --stdin
+substitute_run "$DG_HOOK" 'g_it update-ref -d refs/heads/topic' block 'update-ref-delete'
+substitute_run "$DG_HOOK" 'g_it update-ref --stdin' block 'update-ref-stdin'
+# Phase 2: reflog expire/delete --all / --expire=now
+substitute_run "$DG_HOOK" 'g_it reflog expire --all --expire=now' block 'reflog-expire-all-now'
+substitute_run "$DG_HOOK" 'g_it reflog expire --expire-unreachable=now --all' block 'reflog-expire-unreachable-now'
+substitute_run "$DG_HOOK" 'g_it reflog delete --all' block 'reflog-delete-all'
 
 echo ""
 echo "--- false-positive guard ---"
@@ -143,6 +183,17 @@ substitute_run "$DG_HOOK" 'g_it branch -d some-branch' pass
 substitute_run "$DG_HOOK" 'g_it branch --delete some-branch' pass
 substitute_run "$DG_HOOK" 'renga mcp install --force' pass 'non-git-with-force'
 substitute_run "$DG_HOOK" 'bash scripts/install-hooks.sh --force' pass 'non-git-with-force'
+# Phase 2 false-positive guard: legitimate forms must keep passing
+substitute_run "$DG_HOOK" 'g_it tag v1.0.0' pass 'tag-create-must-pass'
+substitute_run "$DG_HOOK" 'g_it tag -a v1.0.0 -m release' pass 'tag-annotate-must-pass'
+substitute_run "$DG_HOOK" 'g_it restore some/file.py' pass 'restore-no-source-must-pass'
+substitute_run "$DG_HOOK" 'g_it restore --staged some/file.py' pass 'restore-staged-must-pass'
+substitute_run "$DG_HOOK" 'g_it checkout main' pass 'checkout-branch-must-pass'
+substitute_run "$DG_HOOK" 'g_it checkout -b feat/new' pass 'checkout-new-branch-must-pass'
+substitute_run "$DG_HOOK" 'g_it reflog' pass 'reflog-read-must-pass'
+substitute_run "$DG_HOOK" 'g_it reflog show' pass 'reflog-show-must-pass'
+substitute_run "$DG_HOOK" 'g_it clean -n' pass 'clean-dry-run-must-pass'
+substitute_run "$DG_HOOK" 'g_it update-ref refs/heads/topic HEAD' pass 'update-ref-write-must-pass'
 
 total=$((pass_count + fail_count))
 echo ""
