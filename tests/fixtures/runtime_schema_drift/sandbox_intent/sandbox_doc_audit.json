@@ -1,0 +1,36 @@
+{
+  "description": "doc-audit role, Pattern A, non-WSL. The anchored relative pure-glob denyWrite entry resolves to worker_dir under the identity realpath (no host-cross symlink), so it is kept. failIfUnavailable=true on the schema is informational and is not part of the explain metadata.",
+  "inputs": {
+    "role": "doc-audit",
+    "role_kind": "worker",
+    "worker_dir": "/home/u/work/wd",
+    "claude_org_path": "/home/u/co",
+    "pattern": "A",
+    "wsl_detected": false,
+    "realpath_map": [],
+    "schema_fragment": {
+      "worker_roles": {
+        "doc-audit": {
+          "permissions": {"deny": ["Edit", "Write", "MultiEdit", "NotebookEdit"]},
+          "sandbox": {
+            "enabled": true,
+            "filesystem": {
+              "denyRead": [],
+              "denyWrite": [
+                {"anchor": "worker_dir", "path": "**", "suppressOnSymlinkEscape": false}
+              ],
+              "additionalDirectories": []
+            },
+            "failIfUnavailable": true
+          }
+        }
+      }
+    }
+  },
+  "expected_explain": {
+    "enabled": true,
+    "wsl_detected": false,
+    "sandbox_read_roots": ["/home/u/work/wd"],
+    "suppressions": []
+  }
+}
