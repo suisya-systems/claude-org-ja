@@ -471,10 +471,34 @@ _BRIEFING_PAYLOAD_FIELDS: dict[str, tuple[str, ...]] = {
 _BRIEFING_FIELD_MAX_LEN = 120
 
 
-def _truncate(value: Any) -> Any:
-    if isinstance(value, str) and len(value) > _BRIEFING_FIELD_MAX_LEN:
-        return value[:_BRIEFING_FIELD_MAX_LEN] + "…"
-    return value
+def _briefing_value(value: Any) -> Any:
+    """Coerce a payload value to the scalar subset the briefing accepts.
+
+    The allowlist only enumerates *which keys* survive into the briefing
+    — it doesn't say anything about the value shape, and
+    ``tools/journal_append.py --json '{...}'`` cheerfully accepts nested
+    objects. So a single allowlisted ``summary`` field that happens to
+    carry a 30-KB list would re-inflate the briefing past the
+    Issue #412 budget. Restrict to JSON scalars; downgrade list/dict to
+    a length-only marker so the operator still sees that *something*
+    was there without the bytes coming along.
+    """
+    if isinstance(value, str):
+        if len(value) > _BRIEFING_FIELD_MAX_LEN:
+            return value[:_BRIEFING_FIELD_MAX_LEN] + "…"
+        return value
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, (int, float)):
+        return value
+    if isinstance(value, list):
+        return {"_type": "list", "_len": len(value)}
+    if isinstance(value, dict):
+        return {"_type": "dict", "_keys": len(value)}
+    # Fallback: a JSON-decodable but unexpected scalar type. Stringify
+    # the type name; never echo ``repr(value)`` since that would inline
+    # the bytes the caller is trying to suppress.
+    return {"_type": type(value).__name__}
 
 
 def _extract_briefing_payload(
@@ -489,7 +513,7 @@ def _extract_briefing_payload(
         return {}
     if not isinstance(payload, dict):
         return {}
-    return {f: _truncate(payload[f]) for f in fields if f in payload}
+    return {f: _briefing_value(payload[f]) for f in fields if f in payload}
 
 
 def list_recent_events_for_briefing(
@@ -501,46 +525,54 @@ def list_recent_events_for_briefing(
 
     * default ``limit`` is 5 (vs. 50): the briefing renders a short
       headline list, not the full activity tail.
-    * ``BRIEFING_EVENT_KINDS_NOISE`` rows are excluded.
+    * ``BRIEFING_EVENT_KINDS_NOISE`` rows are excluded *in the SQL
+      WHERE clause* so the LIMIT counts only signal rows. A previous
+      Python-side filter could return < ``limit`` rows when a busy
+      tail of dispatcher noise crowded out the older signal.
     * each row is the ``event_summary`` shape — ``id, occurred_at, actor,
       kind, fields`` — where ``fields`` is the per-kind payload allowlist
       extraction (see ``_BRIEFING_PAYLOAD_FIELDS``). Raw ``payload_json``
       is never returned. Unknown kinds get an empty ``fields`` map and
       fall back to ``{kind, actor, occurred_at}`` for identification.
-
-    The query over-fetches before noise filtering so a window of five
-    interesting events is still returned even if a recent suspend was
-    preceded by, say, four ``events_dropped`` rows.
     """
     if limit <= 0:
         return []
-    # Over-fetch ×4 (capped at 200) so the noise filter still has room
-    # to deliver ``limit`` signal rows on a noisy tail.
-    fetch_limit = min(limit * 4 + len(BRIEFING_EVENT_KINDS_NOISE), 200)
-    rows = conn.execute(
-        """
-        SELECT id, occurred_at, actor, kind, payload_json
-        FROM events
-        ORDER BY id DESC
-        LIMIT ?
-        """,
-        (fetch_limit,),
-    ).fetchall()
-    out: list[dict[str, Any]] = []
-    for r in rows:
-        kind = r["kind"]
-        if kind in BRIEFING_EVENT_KINDS_NOISE:
-            continue
-        out.append({
+    # Build the NOT IN clause from the noise constant rather than
+    # hard-coding it, so the SQL stays in lockstep with
+    # ``BRIEFING_EVENT_KINDS_NOISE`` if the set grows.
+    noise = tuple(sorted(BRIEFING_EVENT_KINDS_NOISE))
+    if noise:
+        placeholders = ",".join("?" * len(noise))
+        rows = conn.execute(
+            f"""
+            SELECT id, occurred_at, actor, kind, payload_json
+            FROM events
+            WHERE kind NOT IN ({placeholders})
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (*noise, limit),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT id, occurred_at, actor, kind, payload_json
+            FROM events
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [
+        {
             "id": r["id"],
             "occurred_at": r["occurred_at"],
             "actor": r["actor"],
-            "kind": kind,
-            "fields": _extract_briefing_payload(kind, r["payload_json"]),
-        })
-        if len(out) >= limit:
-            break
-    return out
+            "kind": r["kind"],
+            "fields": _extract_briefing_payload(r["kind"], r["payload_json"]),
+        }
+        for r in rows
+    ]
 
 
 def format_session_brief(
@@ -644,7 +676,7 @@ def format_last_suspend_summary(
     return {
         "occurred_at": suspend_row.get("occurred_at"),
         "actor": suspend_row.get("actor"),
-        "reason": _truncate(reason) if isinstance(reason, str) else reason,
+        "reason": _briefing_value(reason) if reason is not None else None,
         "active_workers_count": _count("active_workers"),
         "pending_items_count": _count("pending_items"),
     }

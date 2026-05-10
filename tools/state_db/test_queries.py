@@ -512,6 +512,53 @@ class TestBriefingLight(unittest.TestCase):
                 if isinstance(v, str):
                     self.assertNotIn(_HUGE_PAYLOAD_SENTINEL, v)
 
+    def test_recent_events_for_briefing_drops_nested_payload_blobs(self):
+        # Codex round 1 Major: ``_briefing_value`` must not pass through
+        # nested list/dict in an allowlisted field, otherwise a single
+        # ``summary`` field carrying a 30 KB list re-inflates the
+        # briefing past Issue #412's budget. Seed an allowlisted-key
+        # event whose value is a 200-element list of 200-char strings;
+        # the briefing must replace it with a length marker.
+        big_list = [_HUGE_PAYLOAD_SENTINEL[:64] + str(i) for i in range(200)]
+        big_dict = {f"k{i}": _HUGE_PAYLOAD_SENTINEL[:64] for i in range(200)}
+        self.conn.execute(
+            "INSERT INTO events (occurred_at, actor, kind, payload_json) "
+            "VALUES ('2026-05-09T04:00:00Z', 'secretary', 'plan_delivered', ?)",
+            (json.dumps({
+                "task": big_list,    # allowlisted key, nested value
+                "worker": big_dict,  # allowlisted key, nested value
+            }),),
+        )
+        self.conn.commit()
+        events = list_recent_events_for_briefing(self.conn, limit=1)
+        # The two values must come back as length markers, not raw lists.
+        self.assertEqual(
+            events[0]["fields"]["task"], {"_type": "list", "_len": 200}
+        )
+        self.assertEqual(
+            events[0]["fields"]["worker"], {"_type": "dict", "_keys": 200}
+        )
+        size = len(json.dumps(events[0], ensure_ascii=False, default=str))
+        # Without the scalar coercion this row alone would be > 30 KB.
+        self.assertLess(size, 500)
+
+    def test_recent_events_for_briefing_filters_noise_in_sql(self):
+        # Codex round 1 Minor: noise filtering must happen in SQL so a
+        # busy tail of noise rows never crowds out signal. Seed 30 noise
+        # rows on top of the existing 10 signal events; ``limit=5`` must
+        # still return 5 signal rows.
+        for i in range(30):
+            self.conn.execute(
+                "INSERT INTO events (occurred_at, actor, kind, payload_json) "
+                "VALUES (?, 'dispatcher', 'events_dropped', '{\"count\":1}')",
+                (f"2026-05-09T05:00:{i:02d}Z",),
+            )
+        self.conn.commit()
+        events = list_recent_events_for_briefing(self.conn, limit=5)
+        self.assertEqual(len(events), 5)
+        for e in events:
+            self.assertNotIn(e["kind"], BRIEFING_EVENT_KINDS_NOISE)
+
     def test_recent_events_for_briefing_unknown_kind_falls_back(self):
         self.conn.execute(
             "INSERT INTO events (occurred_at, actor, kind, payload_json) "
