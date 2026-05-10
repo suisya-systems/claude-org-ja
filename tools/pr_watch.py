@@ -30,7 +30,15 @@ Behavior:
   ``<repo_root>/.state/state.db`` (anchored to ``tools/..`` so cwd
   doesn't matter).
 * Prints the final status as a single line on stdout and exits with
-  the gh process' exit code.
+  a deterministic exit code derived from the *resolved* status
+  (Issue #413 / Codex round-1 Major): ``passed``→0, ``failed``→1,
+  ``canceled``→2, ``incomplete``→8. The original ``gh`` exit code
+  is intentionally NOT propagated, because the resolver may upgrade
+  ``gh exit 8`` ("Checks pending") to a final ``passed`` verdict
+  via retry — returning 8 in that case would mislead shell callers
+  inspecting ``$?``. The post-CI merge-watch helper may further
+  override 0 → 9 on its own failure modes (timeout / no_run /
+  helper exception).
 
 M4 (Issue #267): events flow through the SQLite DB only —
 ``.state/journal.jsonl`` is decommissioned. The recorder uses the same
@@ -330,33 +338,51 @@ def _resolve_final_status(
     if retry_interval_sec is None:
         retry_interval_sec = RETRY_INTERVAL_SEC
 
-    checks = _fetch_checks(pr, repo)
-    if checks is None:
+    # Codex round-2 Major: a transient JSON parse failure (the
+    # subprocess succeeded but stdout was empty / malformed for a
+    # single observation) used to short-circuit the retry budget and
+    # return :func:`_classify`(exit_code) — which on `gh exit 8`
+    # would record `incomplete` immediately, re-introducing the
+    # Issue #413 race. Treat both ``None`` (unparseable probe) and
+    # ``incomplete`` (transient empty / pending) as retryable, and
+    # only fall back to the exit-code classifier if NO parseable
+    # response is observed within the budget.
+    last_verdict: "str | None" = None
+    deadline_set = False
+    deadline = 0.0
+
+    def _set_deadline_once() -> None:
+        nonlocal deadline_set, deadline
+        if not deadline_set:
+            deadline = time.monotonic() + budget_sec
+            deadline_set = True
+
+    while True:
+        checks = _fetch_checks(pr, repo)
+        if checks is not None:
+            verdict = _classify_from_checks(checks)
+            if verdict in ("passed", "failed"):
+                return verdict
+            last_verdict = verdict
+        # Either probe was unparseable (checks is None) or the verdict
+        # is `incomplete`. Initialise the budget on the first observed
+        # need to wait, then back off and try again.
+        _set_deadline_once()
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(retry_interval_sec)
+
+    if last_verdict is None:
+        # Never got a parseable probe response. Catastrophic-end:
+        # honour the exit-code fallback so the recorded status still
+        # reflects what gh believed the watched PR's CI was doing.
         sys.stderr.write(
             "tools/pr_watch.py: warning: could not query check results "
-            "via `gh pr checks --json`; falling back to exit-code "
-            "classification.\n"
+            "via `gh pr checks --json` within the retry budget; falling "
+            "back to exit-code classification.\n"
         )
         return _classify(exit_code)
-    verdict = _classify_from_checks(checks)
-    if verdict in ("passed", "failed"):
-        return verdict
-
-    deadline = time.monotonic() + budget_sec
-    while time.monotonic() < deadline:
-        time.sleep(retry_interval_sec)
-        checks = _fetch_checks(pr, repo)
-        if checks is None:
-            sys.stderr.write(
-                "tools/pr_watch.py: warning: could not query check results "
-                "via `gh pr checks --json` during retry; falling back to "
-                "exit-code classification.\n"
-            )
-            return _classify(exit_code)
-        verdict = _classify_from_checks(checks)
-        if verdict in ("passed", "failed"):
-            return verdict
-    return verdict
+    return last_verdict
 
 
 def _watch_for_merge(

@@ -548,17 +548,91 @@ class JournalEmitTests(unittest.TestCase):
             self.assertEqual(rec["status"], "canceled")
 
     def test_json_probe_failure_falls_back_to_exit_code(self) -> None:
-        """If `gh pr checks --json` itself fails, use exit-code mapping."""
+        """If every `gh pr checks --json` probe fails (binary missing /
+        malformed stdout), the resolver retries within its budget and
+        only after exhaustion does it fall back to the exit-code
+        classifier.
+
+        Codex round-2 Major: a transient JSON parse failure used to
+        short-circuit the retry budget and bypass the resolver
+        entirely; the fix unifies the retry path so probe failures
+        and ``incomplete`` observations are both retryable.
+        """
+        # Always-FileNotFoundError stub: `_fetch_checks` returns None
+        # for every call.
+        fake_run = _make_fake_run(
+            watch_exit=0,
+            checks_raises=FileNotFoundError("gh missing"),
+        )
+        # monotonic side_effect:
+        #   1st: started = 100.0
+        #   2nd: deadline = monotonic() + budget (set on iter 1)
+        #   3rd: deadline check (already past → exit loop)
+        #   4th: duration = monotonic() - started
         with TempDir() as tmp:
             journal = tmp / ".state" / "state.db"
-            self._run(
-                journal,
-                gh_exit=0,
-                checks_raises=FileNotFoundError("gh missing"),
-            )
+            with mock.patch.object(pr_watch, "JOURNAL_PATH", journal), \
+                 mock.patch.object(pr_watch, "_notify_peer", return_value=False), \
+                 mock.patch.object(pr_watch.shutil, "which", return_value="/usr/bin/gh"), \
+                 mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run), \
+                 mock.patch.object(pr_watch.time, "sleep", return_value=None), \
+                 mock.patch.object(pr_watch.time, "monotonic",
+                                   side_effect=[100.0, 100.5, 9999.0, 9999.5]):
+                pr_watch.main([
+                    "--pr", "205", "--repo", "octo/repo", "--interval", "5",
+                ])
             rec = _read_ci_event(journal)
-            # exit 0 → passed via _classify fallback.
+            # exit 0 → passed via _classify fallback (post-exhaustion).
             self.assertEqual(rec["status"], "passed")
+
+    def test_transient_probe_failure_then_passes(self) -> None:
+        """Codex round-2 Major regression test: a single transient
+        unparseable JSON response (e.g. ``gh`` returned empty stdout
+        for one observation) must NOT short-circuit the retry budget.
+
+        We simulate one ``FileNotFoundError`` (so ``_fetch_checks``
+        returns ``None``) then a passing observation. The pre-fix
+        code would have called ``_classify(exit_code=8)`` →
+        ``incomplete`` and recorded that as the final event,
+        re-introducing the Issue #413 race when a transient probe
+        failure coincided with ``gh exit 8``.
+        """
+        call_state = {"i": 0}
+
+        def fake_run(cmd, *args, **kwargs):
+            if "view" in cmd and "--json" in cmd and "number" in cmd:
+                return mock.Mock(returncode=0, stdout="{}", stderr="")
+            if "checks" in cmd and "--json" in cmd:
+                i = call_state["i"]
+                call_state["i"] = i + 1
+                if i == 0:
+                    raise FileNotFoundError("transient")
+                return mock.Mock(
+                    returncode=0,
+                    stdout=json.dumps(
+                        [{"name": "ci", "state": "COMPLETED",
+                          "bucket": "pass"}]
+                    ),
+                    stderr="",
+                )
+            return mock.Mock(returncode=8)  # gh --watch exit 8 (pending)
+
+        with TempDir() as tmp:
+            journal = tmp / ".state" / "state.db"
+            with mock.patch.object(pr_watch, "JOURNAL_PATH", journal), \
+                 mock.patch.object(pr_watch, "_notify_peer", return_value=False), \
+                 mock.patch.object(pr_watch.shutil, "which", return_value="/usr/bin/gh"), \
+                 mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run), \
+                 mock.patch.object(pr_watch.time, "sleep", return_value=None), \
+                 mock.patch.object(pr_watch.time, "monotonic",
+                                   side_effect=[0.0, 0.1, 0.2, 1.0]):
+                rc = pr_watch.main([
+                    "--pr", "418", "--repo", "octo/repo", "--interval", "5",
+                ])
+            self.assertEqual(rc, 0)
+            rec = _read_ci_event(journal)
+            self.assertEqual(rec["status"], "passed")
+            self.assertEqual(_count_ci_events(journal), 1)
 
 
 class ClassifyFromChecksTests(unittest.TestCase):
@@ -621,13 +695,21 @@ class ClassifyFromChecksTests(unittest.TestCase):
 
 
 class PowerShellInterpreterProbeTests(unittest.TestCase):
-    """Issue #224 (b): pr-watch.ps1 must reject Pythons that lack core_harness.
+    """Issue #224 (b) / pr-watch-race-fix: pr-watch.ps1 must reject
+    Pythons that fail the combined ``Python 3 + stdlib sqlite3``
+    probe.
 
-    These tests exercise the actual PowerShell script via pwsh; they are
-    skipped on hosts where pwsh isn't available (e.g. minimal CI images).
-    The probe logic itself is small and self-contained, so we extract just
-    the Test-Interpreter function and call it with synthetic shim
-    interpreters.
+    Originally the probe required ``core_harness.audit``; that import
+    was retired during M4 (the events table replaced
+    ``.state/journal.jsonl``) and the probe in ``tools/pr-watch.ps1``
+    now imports stdlib ``sqlite3`` instead — the actual external
+    dependency of ``tools.state_db``.
+
+    These tests exercise the actual PowerShell script via pwsh; they
+    are skipped on hosts where pwsh isn't available (e.g. minimal CI
+    images). The probe logic itself is small and self-contained, so
+    we extract just the ``Test-Interpreter`` function and call it
+    with synthetic shim interpreters.
     """
 
     @classmethod
