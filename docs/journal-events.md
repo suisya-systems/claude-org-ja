@@ -154,7 +154,7 @@ addition to its writer / payload shape:
 | `anomaly_observed` | `worker`, `kind`, `confidence`, `note`  | dispatcher | dispatcher | E2 (conditional) |
 | `notify_sent`      | `recipient`, `kind`, `summary`          | dispatcher | dispatcher | E2, E3 (de-dup ledger) |
 | `events_dropped`   | `count`, `since_ts`                     | dispatcher | dispatcher | —            |
-| `sandbox_deny_skipped` | `role`, `worker?`, `layer=layer_3`, `entry`, `reason`, `phase=case_a\|case_e`, `source=render_suppression\|bootstrap_retry`, `attempt`, `fail_if_unavailable`, `bwrap_exit?`, `bwrap_stderr_excerpt?`, `severity`, `audience`, `dedupe_key`, `suppressed_by_default` | secretary | secretary, runtime, launcher | — |
+| `sandbox_deny_skipped` | `role`, `worker?`, `layer=layer_3`, `entry`, `reason`, `phase=case_a\|case_e`, `source=render_suppression\|bootstrap_retry\|bwrap_unavailable`, `attempt`, `fail_if_unavailable`, `bwrap_exit?`, `bwrap_stderr_excerpt?`, `severity`, `audience`, `dedupe_key`, `suppressed_by_default` | runtime / launcher | secretary, dispatcher, curator, worker | — |
 
 `sandbox_deny_skipped` records that a Layer-3 sandbox deny entry was
 skipped before or during bwrap startup. `phase=case_e` /

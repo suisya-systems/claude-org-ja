@@ -261,12 +261,19 @@ schema and contains exactly the fields the launcher consumes:
   (typically a read-only bind).
 - `sandbox.failIfUnavailable` — boolean, default `false`. Re-defined in §4.1.
 
-**Optional fields** the runtime may emit; the launcher MAY surface them
-in `/sandbox` status but MUST NOT change retry behavior based on them:
+**Conditionally required fields** — the launcher MUST NOT change retry
+behavior based on them, but MUST surface them in `/sandbox` status:
 
-- `$comment` — human-readable platform note. Format is fixed at
-  `platform=<linux|wsl>, layer-3 entries suppressed: [<list>]` per
-  case E §5.2(b) of [`docs/sandbox-probe/phase3-bootstrap-policy-design.md`](../sandbox-probe/phase3-bootstrap-policy-design.md).
+- `$comment` — human-readable platform note, machine-parseable.
+  **REQUIRED** whenever the runtime suppressed at least one Layer 3
+  entry (i.e., `RenderResult.suppressed_entries` non-empty). Format is
+  fixed at `platform=<linux|wsl>, layer-3 entries suppressed: [<list>]`
+  per case E §5.2(b) of [`docs/sandbox-probe/phase3-bootstrap-policy-design.md`](../sandbox-probe/phase3-bootstrap-policy-design.md).
+  Optional only when the runtime suppressed nothing (in which case
+  there is no case-E set to display, and the launcher's `/sandbox`
+  status block can omit the case-E section). The fixed prefix
+  `platform=<linux|wsl>, layer-3 entries suppressed: [` is the
+  machine-parseable anchor that §3.4 requires.
 
 **Forbidden in the consumer direction**: the runtime MUST NOT include
 entry-level retry hints, attempt counters, or any field that asks the
@@ -404,27 +411,44 @@ to this table; the rest of the algorithm is shape-stable.
 ### 3.2 Retry decision table
 
 ```
-For each bwrap attempt (1, 2, ...):
+MAX_ATTEMPTS = 2
+For attempt_no in 1..MAX_ATTEMPTS:
   → run bwrap with effective_deny_set
-  → if exit == 0: bootstrap_outcome = success (or partial_success if
-    attempt_no > 1 and entries were dropped on prior attempts), exit loop
+  → if exit == 0:
+      → if attempt_no == 1 AND no entries were dropped on prior attempts:
+          bootstrap_outcome = success
+      → else:
+          bootstrap_outcome = partial_success
+      → exit loop with a running bwrap (the claude work loop starts
+        inside it)
   → else classify stderr:
       transient_mount_failure
         → identify offending entry from stderr (the absolute path
           mentioned after `Can't create file at` / `Can't mount tmpfs on`)
         → if offending entry not in effective_deny_set: log unknown_failure
-          and treat as permanent_setup_failure
+          and treat as permanent_setup_failure (next bullet)
         → else: append to suppressed_entries with reason="bwrap_bootstrap_failure",
                 drop entry from effective_deny_set
-        → if attempt_no >= MAX_ATTEMPTS (=2): bootstrap_outcome =
-          total_failure if effective_deny_set is empty AND original was
-          non-empty, else partial_success
-        → else: continue loop
+        → if attempt_no < MAX_ATTEMPTS:
+            continue loop (retry with the pruned set)
+        → else (last attempt failed):
+            bootstrap_outcome = total_failure   # no running bwrap
+            exit loop
       permanent_setup_failure / unknown_failure
         → bootstrap_outcome = total_failure (or skipped_no_bwrap if
           bwrap was not exec'd)
         → exit loop
 ```
+
+Key invariant: `partial_success` ⇒ at least one bwrap attempt succeeded
+(non-zero `attempts[].failed_entries` exists *only* on attempts that
+also returned non-zero exit; the success that produced
+`partial_success` is the final attempt with `exit == 0`). The launcher
+MUST NOT report `partial_success` while no running bwrap exists. If the
+final attempt's exit is non-zero, the outcome is `total_failure`
+regardless of how many entries were retained in `effective_deny_set` —
+because the contract surface for "the work loop started inside bwrap"
+is "bwrap is running", not "at least some entries survived".
 
 `MAX_ATTEMPTS = 2`. Rationale: the only known transient failure mode
 is per-entry path-resolution failure, and one round of pruning is
@@ -437,7 +461,7 @@ After exiting the loop:
 
 - If `bootstrap_outcome ∈ {total_failure, skipped_no_bwrap}`, consult
   `failIfUnavailable` per §4.1 to decide whether the claude work loop
-  starts at all.
+  starts at all (no bwrap is running in either case).
 - If `bootstrap_outcome ∈ {success, partial_success}`, the claude work
   loop starts inside the now-running bwrap.
 
@@ -455,10 +479,10 @@ under §"Observability"):
 
 ```
 | sandbox_deny_skipped | role, worker?, layer=layer_3, entry, reason,
-phase=case_a|case_e, source=render_suppression|bootstrap_retry,
-attempt, fail_if_unavailable, bwrap_exit, bwrap_stderr_excerpt,
+phase=case_a|case_e, source=render_suppression|bootstrap_retry|bwrap_unavailable,
+attempt, fail_if_unavailable, bwrap_exit?, bwrap_stderr_excerpt?,
 severity, audience, dedupe_key, suppressed_by_default |
-secretary | secretary, runtime, launcher | — |
+runtime / launcher | secretary, dispatcher, curator, worker | — |
 A Layer-3 deny entry was skipped before or during bwrap startup. |
 ```
 
@@ -470,13 +494,13 @@ A Layer-3 deny entry was skipped before or during bwrap startup. |
 | `worker` | string | only when `role=worker` | `worker-<task_id>` | Identifies the per-worker task; absent for org roles. |
 | `layer` | string | yes | `layer_3` | Always `layer_3` for now (the only layer this event covers). Future-reserved. |
 | `entry` | string | yes | absolute path or glob | The denyRead / denyWrite entry that was skipped. |
-| `reason` | string | yes | `symlink_escape` / `bwrap_bootstrap_failure` / `bwrap_unavailable` | Why the entry was skipped. `symlink_escape` is case-E only; `bwrap_bootstrap_failure` is case-A only; `bwrap_unavailable` is the no-bwrap branch. |
-| `phase` | string | yes | `case_a` / `case_e` | Boundary marker; mirrors `source`. Must be present so consumers can filter without parsing `reason`. |
-| `source` | string | yes | `render_suppression` (= case_e) / `bootstrap_retry` (= case_a) | Synonym of `phase` aimed at downstream consumers preferring the noun-style key. Both `phase` and `source` are required so that filtering remains unambiguous regardless of consumer preference. |
-| `attempt` | int | yes | `0` (case_e, no bwrap attempt yet) / `1` / `2` | bwrap attempt number that produced the suppression, or `0` for case E. |
+| `reason` | string | yes | `symlink_escape` / `bwrap_bootstrap_failure` / `bwrap_unavailable` | Why the entry was skipped. `symlink_escape` is case-E only; `bwrap_bootstrap_failure` is case-A retry-prune; `bwrap_unavailable` is case-A no-bwrap (binary missing on `$PATH`). |
+| `phase` | string | yes | `case_a` / `case_e` | Boundary marker; case_e = pre-launcher (runtime). case_a = post-launcher (Claude Code core / bwrap consumer); covers both `bwrap_bootstrap_failure` and `bwrap_unavailable` branches. |
+| `source` | string | yes | `render_suppression` (= case_e) / `bootstrap_retry` (= case_a, retry-prune branch) / `bwrap_unavailable` (= case_a, no-bwrap branch) | Three-way enum that mirrors `reason` 1:1 and carries the noun-style key consumers prefer. Both `phase` and `source` are required so consumers can filter without joining tables: `phase` partitions by who emitted, `source` partitions by why. |
+| `attempt` | int | yes | `0` / `1` / `2` | `0` = case_e (no bwrap attempt) OR case_a `bwrap_unavailable` (bwrap binary missing, never exec'd). `1` / `2` = case_a `bootstrap_retry` attempt number that produced the suppression. |
 | `fail_if_unavailable` | bool | yes | — | The in-effect `sandbox.failIfUnavailable` setting at suppression time. |
-| `bwrap_exit` | int | only when `phase=case_a` | bwrap exit code | Absent for `phase=case_e`. |
-| `bwrap_stderr_excerpt` | string | only when `phase=case_a` | first 256 chars of bwrap stderr | Truncated to keep payload bounded; absent for `phase=case_e`. |
+| `bwrap_exit` | int | only when `source=bootstrap_retry` | bwrap exit code | Absent for `source=render_suppression` and `source=bwrap_unavailable` (in both cases there is no exit code to report). |
+| `bwrap_stderr_excerpt` | string | only when `source=bootstrap_retry` | first 256 chars of bwrap stderr | Truncated to keep payload bounded; absent for `source=render_suppression` and `source=bwrap_unavailable`. |
 | `severity` | string | yes | `info` / `warning` / `error` | `info` = expected case-E suppression on a known WSL-style symlink. `warning` = case-A suppression that altered the deny set. `error` = bootstrap totally failed and fall-open occurred (one event per drop, plus one summary event with `entry="*"` `severity=error`). |
 | `audience` | string | yes | `operator` / `debug` | `operator` = should surface in dashboards / `/sandbox` status. `debug` = noisy detail (e.g., per-entry case-E events on every spawn) intended for retro / curator scope. |
 | `dedupe_key` | string | yes | `sha256(role + entry + reason + phase)` (lowercase hex, full digest) | Stable across spawns of the same role with the same suppression; allows dispatcher monitoring (§4.3) to count *unique* drops, not raw event lines. |
@@ -510,9 +534,15 @@ launcher MUST display:
 - Whether bwrap is in use for the current process.
 - The full `additionalDirectories` set actually mounted.
 - The `effective_deny_set` (post-case-A pruning) actually enforced.
-- The `suppressed_entries` set (case A only; case E is suppressed
-  before the launcher saw it but should still appear in a separate
-  block read from the live settings file's `$comment`).
+- The case-A `suppressed_entries` set from `LauncherResult` (in-memory).
+- The case-E suppressed-entries set, parsed from the live
+  `.claude/settings.local.json` `$comment` field (which is conditionally
+  required per §2.1 whenever the runtime suppressed entries). If
+  `$comment` is absent and no case-E entries were expected, the
+  case-E section may be omitted; if `$comment` is absent but the
+  runtime is known to support case E (i.e., a runtime version that
+  produces it), the launcher SHOULD display "case-E status: unknown
+  (`$comment` missing)" rather than silently hiding the section.
 - The `failIfUnavailable` setting in effect.
 
 The runtime MUST NOT participate in `/sandbox` rendering at run time;
@@ -710,12 +740,49 @@ introduces.
 
 ## 6. Recommended implementation split
 
-This contract is doc-only. The implementation work it unblocks is
-expected to land as 1–2 follow-up PRs. The split below is a
-recommendation, not a contract requirement; the actual scoping decision
-belongs to the implementing worker(s) on the case-A follow-up.
+This contract is doc-only. The implementation work it unblocks
+straddles **three** repositories — Claude Code core (upstream), the
+`claude-org-runtime` package, and `claude-org-ja` (this repo) — because
+the launcher itself lives in Claude Code core (§1.1). The split below
+is a recommendation, not a contract requirement; the actual scoping
+decision belongs to the implementing worker(s) on the case-A follow-up.
 
-### 6.1 claude-org-ja PR (primary)
+### 6.1 Claude Code core (upstream — outside this repo)
+
+The case-A retry algorithm (§3.2) and the case-A `sandbox_deny_skipped`
+emit (§3.3, `source ∈ {bootstrap_retry, bwrap_unavailable}`) are the
+launcher's responsibility. The launcher lives inside Claude Code core
+(§1.1), which is **not** vendored into this repo. Implementing the
+launcher side therefore means one of:
+
+1. **Verify-only path**: if Claude Code core already implements bwrap
+   retry semantically equivalent to §3.2 (substring-based stderr
+   classification + ≤1 retry + per-attempt failed-entry detection),
+   the case-A behavior contract is *satisfied by upstream* and only
+   the journal-emit side needs verification. The verifier confirms
+   that case-A drops result in `sandbox_deny_skipped` event rows on
+   `.state/state.db` with the §3.3 payload shape.
+2. **Upstream-change path**: if Claude Code core does not implement
+   §3.2, file an upstream feature request / patch against Claude Code
+   core for the retry algorithm and the journal-emit hook. The hook
+   invokes `bash tools/journal_append.sh sandbox_deny_skipped …` (or
+   the equivalent helper) per suppressed entry, executed in the role
+   process's cwd.
+3. **In-org wrapper path** (fallback): if upstream changes are not
+   feasible, an in-org wrapper around bwrap may be introduced to
+   intercept failures and emit events. This wrapper would live in
+   [`tools`](../../tools/) and be wired by the role's
+   `.claude/settings.local.json` to launch as the sandbox program.
+   The contract surface is unchanged — only the layer that physically
+   invokes bwrap shifts. This path is documented for completeness; it
+   is the option of last resort because it duplicates Claude Code's
+   bwrap setup logic.
+
+This contract does **not** mandate which path the case-A follow-up
+takes; the contract surface (§3.2 / §3.3) is what each path must
+honor.
+
+### 6.2 claude-org-ja PR (this repo — primary)
 
 Scope, in order of dependency:
 
@@ -723,31 +790,18 @@ Scope, in order of dependency:
    Observability table per the §"Adding a new event type" recipe, with
    the §3.3 payload schema rendered into the table row. (Done in this
    contract's PR; see §3.3 above.)
-2. Implement (or wire into Claude Code core's existing wiring, if
-   already present) the case-A retry algorithm per §3.2. This is the
-   only side that requires touching Claude Code core; if Claude Code
-   already retries semantically equivalently, this step degenerates
-   into "verify the existing behavior matches §3.2 and document the
-   match".
-3. Wire the `sandbox_deny_skipped` emit path through
-   [`tools/journal_append.sh`](../../tools/journal_append.sh) /
-   [`tools/journal_append.py`](../../tools/journal_append.py). Per
-   [`docs/journal-events.md`](../journal-events.md) §"Adding a new
-   event type", direct INSERTs are forbidden; the helper is the only
-   sanctioned writer. The launcher invokes the helper as a post-bwrap
-   shell call (one event per suppressed entry).
-4. Update [`docs/contracts/role-pattern-sandbox-contract.md`](./role-pattern-sandbox-contract.md)
+2. Update [`docs/contracts/role-pattern-sandbox-contract.md`](./role-pattern-sandbox-contract.md)
    §1.3 prose to cite this contract's §5.3 boundary explicitly (the
    current language already names case E; case A becomes a sibling
    subsection).
-5. Add a smoke test under [`docs/sandbox-probe`](../sandbox-probe/)
+3. Add a smoke test under [`docs/sandbox-probe`](../sandbox-probe/)
    that exercises the case-A retry on a synthetic dangling-symlink
-   fixture. Pure-unit tests should cover stderr classification, retry
-   decision, payload validation, and the `failIfUnavailable` matrix
-   (§3.1, §3.2, §3.3, §4.1); WSL/bwrap smoke tests cover only end-to-end
-   integration. (See §6.3 for the full test strategy.)
+   fixture, **only after** §6.1 is wired (otherwise there is no
+   case-A code path to test from this repo). Pure-unit tests for the
+   contract surface (payload validation against the journal helper)
+   can land independently of §6.1 and stay in this repo.
 
-### 6.2 claude-org-runtime PR (companion, optional)
+### 6.3 claude-org-runtime PR (companion, optional)
 
 Scope:
 
@@ -758,8 +812,11 @@ Scope:
 2. If a change is needed: tighten `RenderResult.suppressed_entries`
    into the schema this contract expects, and add the
    `sandbox_deny_skipped` `phase=case_e` emit at settings-generation
-   time. This must NOT extend `RenderResult` to carry launcher-side
-   state — see §2.4.
+   time. The runtime is invoked from the secretary's / dispatcher's
+   environment (typically by `claude-org-runtime settings generate`),
+   so the helper invocation runs from the org repo's cwd and writes
+   to `<repo>/.state/state.db`. This must NOT extend `RenderResult` to
+   carry launcher-side state — see §2.4.
 
 ### 6.3 Test strategy
 
