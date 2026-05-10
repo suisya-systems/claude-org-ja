@@ -193,4 +193,27 @@ if echo "$COMMAND_FLAT" | grep -qE '(^|[[:space:]])git[[:space:]]+(commit|push|m
   fi
 fi
 
+# git -c <key>=<value> による per-command config 上書きで pre-commit / pre-push
+# hook を無効化する経路をブロックする（Codex round 3 Major）。
+#   `git -c core.hooksPath=/dev/null commit` は hooks を空ディレクトリに
+#   差し替えるため secret scanner / pre-commit hook が走らない。
+#   `git -c hook.*` も同様に hook 設定を上書きしうる。
+# 対象 git subcmd は commit / push / merge / pull / am に限定（read 系は対象外）。
+# `git config core.hooksPath ...` の永続書込みは Layer 2 deny
+# （Bash(git config --global|--local|--worktree *)）でブロックされるが、
+# `git -c` はそれらに該当しないので本フックで補完する。
+if echo "$COMMAND_FLAT" | grep -qE '(^|[[:space:]])git[[:space:]]+-c[[:space:]]' \
+   || echo "$COMMAND_FLAT" | grep -qE '(^|[[:space:]])git[[:space:]].*[[:space:]]-c[[:space:]]'; then
+  if echo "$COMMAND_FLAT" | grep -qE '(^|[[:space:]])(commit|push|merge|pull|am)([[:space:]]|$)'; then
+    # core.hooksPath 上書き（hook ディレクトリ自体を切り替える bypass）
+    if echo "$COMMAND_FLAT" | grep -qiE '(^|[[:space:]])-c[[:space:]]+core\.hookspath='; then
+      deny_with_reason "git -c core.hooksPath=... による hook ディレクトリ切替は禁止です。pre-commit / pre-push hook を無効化する bypass のため拒否します。"
+    fi
+    # hook.<name>.* per-command 上書き（個別 hook の有効/無効切替）
+    if echo "$COMMAND_FLAT" | grep -qiE '(^|[[:space:]])-c[[:space:]]+hook\.'; then
+      deny_with_reason "git -c hook.* による per-command hook 設定上書きは禁止です。"
+    fi
+  fi
+fi
+
 exit 0

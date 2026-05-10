@@ -116,6 +116,14 @@ substitute_run "$NV_HOOK" 'g_it merge -n topic' pass 'merge-n-no-stat-must-pass'
 # Plain `-m` (with message arg) must still pass
 substitute_run "$NV_HOOK" 'g_it commit -m feat' pass 'commit-m-must-pass-after-n-rule'
 substitute_run "$NV_HOOK" 'g_it commit -am feat' pass 'commit-am-bundled-must-pass'
+# Phase 2 round 3 (Codex Major): git -c core.hooksPath / hook.* override
+substitute_run "$NV_HOOK" 'g_it -c core.hooksPath=/tmp/empty commit -m feat' block 'git-c-core-hookspath'
+substitute_run "$NV_HOOK" 'g_it -c core.hooksPath=/dev/null commit -m feat' block 'git-c-core-hookspath-devnull'
+substitute_run "$NV_HOOK" 'g_it -c hook.precommit.command=true commit -m feat' block 'git-c-hook-override'
+substitute_run "$NV_HOOK" 'g_it -c core.hooksPath=/tmp/x p_ush origin main' block 'git-c-core-hookspath-push'
+# But -c with unrelated keys must still pass (e.g. user.name override)
+substitute_run "$NV_HOOK" 'g_it -c user.name=worker commit -m feat' pass 'git-c-user-name-must-pass'
+substitute_run "$NV_HOOK" 'g_it -c color.ui=never status' pass 'git-c-status-must-pass'
 
 echo ""
 echo "=== block-dangerous-git.sh ==="
