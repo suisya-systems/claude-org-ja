@@ -154,6 +154,24 @@ addition to its writer / payload shape:
 | `anomaly_observed` | `worker`, `kind`, `confidence`, `note`  | dispatcher | dispatcher | E2 (conditional) |
 | `notify_sent`      | `recipient`, `kind`, `summary`          | dispatcher | dispatcher | E2, E3 (de-dup ledger) |
 | `events_dropped`   | `count`, `since_ts`                     | dispatcher | dispatcher | —            |
+| `sandbox_deny_skipped` | `role`, `worker?`, `layer=layer_3`, `entry`, `reason`, `phase=case_a\|case_e`, `source=render_suppression\|bootstrap_retry\|bwrap_unavailable`, `attempt`, `fail_if_unavailable`, `bwrap_exit?`, `bwrap_stderr_excerpt?`, `severity`, `audience`, `dedupe_key`, `suppressed_by_default` | runtime / launcher | secretary, dispatcher, curator, worker | — |
+
+`sandbox_deny_skipped` records that a Layer-3 sandbox deny entry was
+skipped before or during bwrap startup. `phase=case_e` /
+`source=render_suppression` covers the runtime's pre-launcher
+realpath-escape suppression (steady-state on WSL); `phase=case_a` /
+`source=bootstrap_retry` covers Claude Code's launcher dropping an
+entry after a transient `bwrap` mount failure. The full payload schema
+(field types, required vs conditional, allowed values) and the
+filter contract (curator out-of-scope, dispatcher monitoring
+`severity ≥ warning` only) are pinned in
+[`docs/contracts/sandbox-launcher-contract.md`](contracts/sandbox-launcher-contract.md)
+§3.3. Emit via the journal helper (e.g. `bash tools/journal_append.sh
+sandbox_deny_skipped role=worker entry=/home/<user>/.aws/.env
+phase=case_a source=bootstrap_retry attempt=1 fail_if_unavailable=false
+severity=warning audience=operator suppressed_by_default=false
+dedupe_key=<sha256>`); direct DB INSERTs are forbidden per
+§"Adding a new event type" below.
 
 ### CI
 
