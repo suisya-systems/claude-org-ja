@@ -42,6 +42,12 @@ trap cleanup EXIT
 
 ok()       { ((TEST_NUM++)); echo "ok $TEST_NUM - $1"; ((PASS++)); }
 not_ok()   { ((TEST_NUM++)); echo "not ok $TEST_NUM - $1"; ((FAIL++)); }
+# Soft-skip: counts as pass so CI without sandbox prereqs (bwrap/socat) or
+# without the Python venv (claude-org-runtime) still reports success on
+# the schema / hook assertions, which are the meaningful regression
+# surface of this smoke. The runbook (§1) covers the manual prereq
+# check; this script's role is to catch *schema* drift and *hook* drift,
+# not to gate the harness on a fully-provisioned sandbox host.
 skip_msg() { ((TEST_NUM++)); echo "ok $TEST_NUM - # SKIP $1"; ((PASS++)); }
 
 assert_exit() {
@@ -117,30 +123,77 @@ mktmp_stderr() {
 # -----------------------------------------------------------------------
 # §1. Prerequisite tooling
 # -----------------------------------------------------------------------
-# bwrap / socat / jq must be on $PATH for the runbook's full Layer 3
-# verification. jq is also a hard dependency of the .hooks/ scripts
-# themselves (they exit 2 if missing).
+# jq is a HARD requirement: the .hooks/ scripts under §4 themselves exit 2
+# if jq is missing, so we cannot meaningfully run the rest of the smoke
+# without it.
+#
+# bwrap / socat / claude / claude-org-runtime are SOFT requirements: they
+# are needed for the runbook's full Layer 3 / E2E verification, but the
+# schema-drift and hook-behavior assertions in §3 / §4 do not depend on
+# them. CI ([.github/workflows/tests.yml] only installs jq) and partially
+# provisioned dev hosts skip these rows rather than failing — the runbook
+# §1 is the operator's checklist for the full verification.
 echo "# §1 prerequisite tooling"
+
+if command -v jq >/dev/null 2>&1; then
+  ok "jq is on \$PATH (hard requirement: hooks depend on jq)"
+else
+  not_ok "jq is on \$PATH (install: sudo apt-get install jq)"
+  echo "# 1 passed, 1 failed (jq unavailable, cannot continue)"
+  exit 1
+fi
 
 if command -v bwrap >/dev/null 2>&1; then
   ok "bwrap is on \$PATH"
 else
-  not_ok "bwrap is on \$PATH (install: sudo apt-get install bubblewrap)"
+  skip_msg "bwrap unavailable — Layer 3 sandbox enforcement falls open. Install: sudo apt-get install bubblewrap (per runbook §1.1)"
 fi
 
 if command -v socat >/dev/null 2>&1; then
   ok "socat is on \$PATH"
 else
-  not_ok "socat is on \$PATH (install: sudo apt-get install socat)"
+  skip_msg "socat unavailable — required by some Claude Code sandbox features. Install: sudo apt-get install socat (per runbook §1.1)"
 fi
 
-if command -v jq >/dev/null 2>&1; then
-  ok "jq is on \$PATH"
+if command -v claude >/dev/null 2>&1; then
+  ok "claude (Claude Code CLI) is on \$PATH"
 else
-  not_ok "jq is on \$PATH (install: sudo apt-get install jq)"
-  # Without jq the rest of this script can't run meaningfully.
-  echo "# 1 passed, 1 failed (jq unavailable, cannot continue)"
-  exit 1
+  skip_msg "claude unavailable — E2E spawn verification (runbook §3) cannot run from this host"
+fi
+
+# claude-org-runtime version check. Try the project venv first
+# (.venv/bin/pip), then fall back to the system pip. This mirrors the
+# runbook §1.2 invocation. We accept any 0.1.x ≥0.1.9 (the requirements.txt
+# pin window). Older versions skip the assertion rather than fail because
+# the schema / hook tests below do not depend on the runtime; the row
+# exists to surface "your runtime is older than requirements.txt expects,
+# Layer 3 sandbox blocks may not be emitted into worker settings.local.json"
+# at smoke time.
+runtime_version=""
+for pip_cmd in "$REPO_ROOT/.venv/bin/pip" "pip3" "pip"; do
+  if command -v "$pip_cmd" >/dev/null 2>&1 || [[ -x "$pip_cmd" ]]; then
+    if v=$("$pip_cmd" show claude-org-runtime 2>/dev/null | awk -F': ' '/^Version:/ {print $2}'); then
+      if [[ -n "$v" ]]; then
+        runtime_version="$v"
+        break
+      fi
+    fi
+  fi
+done
+if [[ -z "$runtime_version" ]]; then
+  skip_msg "claude-org-runtime not installed — cannot verify >=0.1.9,<0.2 pin (runbook §1.2)"
+else
+  # Compare 0.1.X >= 0.1.9 numerically. We only need to detect "below
+  # 0.1.9" or "outside 0.1.x" since the requirements.txt pin window is
+  # narrow. Anything in 0.2.x is also out-of-window.
+  major=$(echo "$runtime_version" | awk -F. '{print $1+0}')
+  minor=$(echo "$runtime_version" | awk -F. '{print $2+0}')
+  patch=$(echo "$runtime_version" | awk -F. '{print $3+0}')
+  if [[ "$major" -eq 0 && "$minor" -eq 1 && "$patch" -ge 9 ]]; then
+    ok "claude-org-runtime $runtime_version satisfies >=0.1.9,<0.2"
+  else
+    skip_msg "claude-org-runtime $runtime_version is outside the >=0.1.9,<0.2 pin — sandbox_by_pattern may not be emitted into worker settings (runbook §1.2)"
+  fi
 fi
 
 # -----------------------------------------------------------------------
@@ -162,17 +215,19 @@ for pattern in A B C; do
     ".worker_roles.default.sandbox_by_pattern.${pattern}.enabled == true"
 done
 
-# 3.b Each pattern declares credential denyRead entries (.env, .env.*,
-# **/credentials*, **/*.pem). The structured-anchor schema uses entries
-# of shape {anchor, path, ...}; we assert the {worker_dir, .env} entry
-# exists for each pattern.
+# 3.b Each pattern declares the full credential denyRead set from
+# role-pattern-sandbox-contract §4.1.1 (.env, .env.*, **/credentials*,
+# **/*.pem). The structured-anchor schema uses entries of shape
+# {anchor, path, ...}; we assert each {worker_dir, <path>} entry exists
+# for each pattern. Asserting the full set (not just two representatives)
+# protects against schema regressions that drop a single credential
+# pattern; missing .env.* would silently expose .env.local etc.
 for pattern in A B C; do
-  assert_jq_true \
-    "worker_roles.default.sandbox_by_pattern.$pattern.filesystem.denyRead has worker_dir/.env" \
-    "any(.worker_roles.default.sandbox_by_pattern.${pattern}.filesystem.denyRead[]; .anchor == \"worker_dir\" and .path == \".env\")"
-  assert_jq_true \
-    "worker_roles.default.sandbox_by_pattern.$pattern.filesystem.denyRead has worker_dir/**/credentials*" \
-    "any(.worker_roles.default.sandbox_by_pattern.${pattern}.filesystem.denyRead[]; .anchor == \"worker_dir\" and .path == \"**/credentials*\")"
+  for path in '.env' '.env.*' '**/credentials*' '**/*.pem'; do
+    assert_jq_true \
+      "worker_roles.default.sandbox_by_pattern.$pattern.filesystem.denyRead has worker_dir/$path" \
+      "any(.worker_roles.default.sandbox_by_pattern.${pattern}.filesystem.denyRead[]; .anchor == \"worker_dir\" and .path == \"$path\")"
+  done
 done
 
 # 3.c Pattern B union must include the four worktree git-metadata mounts
