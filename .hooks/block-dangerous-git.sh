@@ -171,12 +171,19 @@ for segment in "${SEGMENTS[@]}"; do
     fi
   fi
 
-  # 6) git restore --worktree --source=<ref> . （checkout -- 相当）
+  # 6) git restore --source=<ref> ... （checkout -- 相当の worktree 上書き）
+  # git restore のデフォルトモードは --worktree（--staged 単独でない限り
+  # worktree 書き換えが発生）なので、--source / -s が指定された restore は
+  # 一律拒否する。--staged 単独の場合のみ除外（index のみ書き換えで未コミット
+  # 変更は失われない）。
   if segment_has_git_subcmd "$flat" "restore"; then
-    if echo "$flat" | grep -qE '(^|[[:space:]])--source([[:space:]=])'; then
-      if echo "$flat" | grep -qE '(^|[[:space:]])--worktree([[:space:]]|$)' \
-         || echo "$flat" | grep -qE '(^|[[:space:]])-W([[:space:]]|$)'; then
-        deny_with_reason "git restore --source=<ref> --worktree は禁止です。未コミット変更が <ref> 内容で上書きされ失われます。"
+    if echo "$flat" | grep -qE '(^|[[:space:]])(--source([[:space:]=])|-s([[:space:]=]))'; then
+      # --staged が独立トークンとして存在し、かつ --worktree / -W が無い場合のみ pass
+      if echo "$flat" | grep -qE '(^|[[:space:]])(--staged|-S)([[:space:]]|$)' \
+         && ! echo "$flat" | grep -qE '(^|[[:space:]])(--worktree|-W)([[:space:]]|$)'; then
+        : # index-only restore: 安全
+      else
+        deny_with_reason "git restore --source=<ref> は禁止です。未コミット変更が <ref> 内容で上書きされ失われます。index のみの restore は --staged 単独で実行してください。"
       fi
     fi
   fi

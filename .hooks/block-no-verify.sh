@@ -139,7 +139,7 @@ for segment in "${SEGMENTS[@]}"; do
   # 同一セグメント（展開・フラット化後）に verify-bypass フラグが独立トークンとして存在するか
   if echo "$flat" | grep -qE '(^|[[:space:]])--no-verify([[:space:]]|$)'; then
     if [[ $has_git_commit -eq 1 ]]; then
-      deny_with_reason "git commit の verify-bypass フラグは禁止です。pre-commit secret スキャナ（Issue #69）を必ず通してください。誤検知の場合は allow-secret マーカー、緊急時は SKIP_SECRET_SCAN=1 を使ってください。"
+      deny_with_reason "git commit の verify-bypass フラグは禁止です。pre-commit secret スキャナ（Issue #69）を必ず通してください。誤検知の場合は allow-secret マーカーで個別対応してください。"
     elif [[ $has_git_push -eq 1 ]]; then
       deny_with_reason "git push の verify-bypass フラグは禁止です。pre-push hook を迂回するため拒否します（現在 pre-push は未配備ですが、将来追加された hook を保護する目的で先行ブロックします）。push が必要な場合は窓口経由で実施してください。"
     elif [[ $has_git_merge -eq 1 ]]; then
@@ -148,6 +148,24 @@ for segment in "${SEGMENTS[@]}"; do
       deny_with_reason "git pull の verify-bypass フラグは禁止です。pull は fetch+merge/rebase であり、結果の commit が pre-commit hook を迂回するため拒否します。"
     else
       deny_with_reason "git am の verify-bypass フラグは禁止です。patch 適用時の pre-commit / pre-applypatch hook を迂回するため拒否します。"
+    fi
+  fi
+
+  # git commit -n は --no-verify の短縮形。`-n` はコマンドによって意味が違うため
+  # commit 限定で検査する（push --dry-run / merge --no-stat / pull --no-stat 等で
+  # `-n` は no-verify ではない）。git am の -n は --no-verify の短縮形ではないので
+  # ここでは扱わない（git am は --no-verify 専用）。
+  if [[ $has_git_commit -eq 1 ]]; then
+    # 独立した `-n` トークン
+    if echo "$flat" | grep -qE '(^|[[:space:]])-n([[:space:]]|$)'; then
+      deny_with_reason "git commit -n は --no-verify の短縮形であり禁止です。pre-commit secret スキャナ（Issue #69）を必ず通してください。"
+    fi
+    # バンドル短オプション例: `-nm "msg"` / `-mn "msg"` / `-Snm`（GPG sign + n + m）
+    # `-` 直後に英字列を持ち、その中に `n` を含む形を catch する。
+    # 単独 `-m` 等の関係ないオプションを誤判定しないよう、長さ 2 以上を要求する。
+    if echo "$flat" | grep -qE '(^|[[:space:]])-[a-zA-Z]*n[a-zA-Z]+([[:space:]]|$)' \
+       || echo "$flat" | grep -qE '(^|[[:space:]])-[a-zA-Z]+n([[:space:]]|$)'; then
+      deny_with_reason "git commit のバンドル短オプションに -n（--no-verify 短縮形）が含まれています。pre-commit secret スキャナを必ず通してください。"
     fi
   fi
 

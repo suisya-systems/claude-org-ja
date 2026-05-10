@@ -104,6 +104,18 @@ substitute_run "$NV_HOOK" 'NO_VERIFY=1 g_it commit -m feat' block 'no-verify-env
 substitute_run "$NV_HOOK" 'g_it merge topic-branch' pass 'merge-clean-must-pass'
 substitute_run "$NV_HOOK" 'g_it pull origin main' pass 'pull-clean-must-pass'
 substitute_run "$NV_HOOK" 'g_it am patch.mbox' pass 'am-clean-must-pass'
+# Phase 2 round 2 (Codex Major): git commit -n short form
+substitute_run "$NV_HOOK" 'g_it commit -n -m feat' block 'commit-n-short-form'
+substitute_run "$NV_HOOK" 'g_it commit -nm feat' block 'commit-bundled-nm'
+substitute_run "$NV_HOOK" 'g_it commit -mn feat' block 'commit-bundled-mn'
+substitute_run "$NV_HOOK" 'g_it -C /tmp/repo commit -n -m feat' block 'commit-n-with-C'
+# But -n on push / merge / pull means --dry-run / --no-stat, not --no-verify;
+# do not over-trigger. Note: hook still allows these forms.
+substitute_run "$NV_HOOK" 'g_it push -n origin main' pass 'push-n-dry-run-must-pass'
+substitute_run "$NV_HOOK" 'g_it merge -n topic' pass 'merge-n-no-stat-must-pass'
+# Plain `-m` (with message arg) must still pass
+substitute_run "$NV_HOOK" 'g_it commit -m feat' pass 'commit-m-must-pass-after-n-rule'
+substitute_run "$NV_HOOK" 'g_it commit -am feat' pass 'commit-am-bundled-must-pass'
 
 echo ""
 echo "=== block-dangerous-git.sh ==="
@@ -158,6 +170,15 @@ substitute_run "$DG_HOOK" 'g_it -C /tmp/repo checkout -- .' block 'checkout-disc
 # Phase 2: restore --source --worktree
 substitute_run "$DG_HOOK" 'g_it restore --source=HEAD~1 --worktree some/file.py' block 'restore-source-worktree'
 substitute_run "$DG_HOOK" 'g_it restore --source HEAD~1 -W some/file.py' block 'restore-source-W'
+# Phase 2 round 2 (Codex Major): restore --source default (no --worktree) is also destructive
+substitute_run "$DG_HOOK" 'g_it restore --source=HEAD~1 some/file.py' block 'restore-source-default-worktree'
+substitute_run "$DG_HOOK" 'g_it restore -s HEAD~1 some/file.py' block 'restore-s-short-form'
+substitute_run "$DG_HOOK" 'g_it restore -s HEAD~1 -W some/file.py' block 'restore-s-W-short'
+# index-only restore via --staged is safe (only writes index, no worktree loss)
+substitute_run "$DG_HOOK" 'g_it restore --staged --source=HEAD~1 some/file.py' pass 'restore-staged-source-must-pass'
+substitute_run "$DG_HOOK" 'g_it restore -S -s HEAD~1 some/file.py' pass 'restore-S-s-must-pass'
+# but --staged + --worktree (both) IS destructive on worktree
+substitute_run "$DG_HOOK" 'g_it restore --staged --worktree --source=HEAD~1 some/file.py' block 'restore-staged-worktree-source-block'
 # Phase 2: tag -d / --delete
 substitute_run "$DG_HOOK" 'g_it tag -d v1.0.0' block 'tag-delete-short'
 substitute_run "$DG_HOOK" 'g_it tag --delete v1.0.0' block 'tag-delete-long'
