@@ -1,0 +1,45 @@
+{
+  "description": "Worker default role, Pattern A. WSL host-cross symlink causes the structured anchor=worker_dir denyRead entry to be suppressed; sandbox_read_roots reflects worker_dir as the only read root.",
+  "inputs": {
+    "role": "default",
+    "role_kind": "worker",
+    "worker_dir": "/home/u/work/wd",
+    "claude_org_path": "/home/u/co",
+    "pattern": "A",
+    "wsl_detected": true,
+    "realpath_map": [
+      {"prefix": "/home/u/work/wd", "replacement": "/mnt/c/Users/u/wd"}
+    ],
+    "schema_fragment": {
+      "worker_roles": {
+        "default": {
+          "permissions": {"deny": ["Read(.env)"]},
+          "sandbox": {
+            "enabled": true,
+            "filesystem": {
+              "denyRead": [
+                {"anchor": "worker_dir", "path": "secrets.env", "suppressOnSymlinkEscape": true}
+              ],
+              "additionalDirectories": []
+            },
+            "failIfUnavailable": false
+          }
+        }
+      }
+    }
+  },
+  "expected_explain": {
+    "enabled": true,
+    "wsl_detected": true,
+    "sandbox_read_roots": ["/home/u/work/wd"],
+    "suppressions": [
+      {
+        "layer": "sandbox.filesystem.denyRead",
+        "entry": {"anchor": "worker_dir", "path": "secrets.env", "suppressOnSymlinkEscape": true},
+        "reason": "realpath escapes sandbox read roots",
+        "realpath": "/mnt/c/Users/u/wd/secrets.env",
+        "sandbox_read_roots": ["/home/u/work/wd"]
+      }
+    ]
+  }
+}

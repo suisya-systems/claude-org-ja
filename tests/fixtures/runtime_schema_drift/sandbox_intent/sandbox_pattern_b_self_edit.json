@@ -1,0 +1,42 @@
+{
+  "description": "Worker self-edit role, Pattern B. Demonstrates {base_clone} placeholder substitution in entry path and {base_clone}/{worker_dir} substitution in additionalDirectories. The denyWrite entry resolves inside the base-clone .git tree, so it is kept (no suppression) and read_roots show the substituted directories.",
+  "inputs": {
+    "role": "claude-org-self-edit",
+    "role_kind": "worker",
+    "worker_dir": "/home/u/repo/.git/worktrees/T123",
+    "claude_org_path": "/home/u/repo",
+    "base_clone": "/home/u/repo",
+    "task_id": "T123",
+    "branch_ref": "feat/self-edit",
+    "pattern": "B",
+    "wsl_detected": false,
+    "realpath_map": [],
+    "schema_fragment": {
+      "worker_roles": {
+        "claude-org-self-edit": {
+          "permissions": {"deny": ["Bash(git push *)"]},
+          "sandbox": {
+            "enabled": true,
+            "filesystem": {
+              "denyWrite": [
+                {"anchor": "absolute", "path": "{base_clone}/.git/objects", "suppressOnSymlinkEscape": true}
+              ],
+              "additionalDirectories": ["{base_clone}/.git", "{worker_dir}"]
+            },
+            "failIfUnavailable": false
+          }
+        }
+      }
+    }
+  },
+  "expected_explain": {
+    "enabled": true,
+    "wsl_detected": false,
+    "sandbox_read_roots": [
+      "/home/u/repo/.git/worktrees/T123",
+      "/home/u/repo/.git",
+      "/home/u/repo/.git/worktrees/T123"
+    ],
+    "suppressions": []
+  }
+}
