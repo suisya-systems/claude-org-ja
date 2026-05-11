@@ -258,7 +258,7 @@ Done. Next steps:
 
   cd $Dir
   bash scripts/install-hooks.sh                                # enable pre-commit secret scanner (run from Git Bash / WSL)
-  py -3 tools/org_setup_prune.py --user-common-sandbox         # required after main pull (Issue #429 Task B/C)
+  py -3 tools/org_setup_prune.py --user-common-sandbox         # required after main pull (Issue #429 Task B/C + Issue #433 denyWrite)
   renga --layout ops                                           # launch the Secretary pane
 
 Inside the Secretary's Claude Code pane, run:

@@ -102,7 +102,7 @@ iwr -useb https://raw.githubusercontent.com/suisya-systems/claude-org-ja/main/sc
 ```bash
 cd claude-org-ja
 bash scripts/install-hooks.sh                            # コミット直前の秘密情報スキャナを有効化
-python tools/org_setup_prune.py --user-common-sandbox    # main pull 後に 1 回必須 (Issue #429 Task B/C)
+python tools/org_setup_prune.py --user-common-sandbox    # main pull 後に 1 回必須 (Issue #429 Task B/C + Issue #433 denyWrite)
 renga --layout ops                                       # 窓口（Secretary）ペインを起動
 ```
 
@@ -316,12 +316,13 @@ claude-org-ja は **4 層防御**（`permissions.deny` / PreToolUse フック / 
 | `git push --force` / `git reset --hard` / `git branch -D`（窓口・キュレーター） | ✅ | ✅ (`block-dangerous-git.sh`) | — | — |
 | `cat .env` / 認証情報読み取り（Bash 経由） | — | — | ⚠️ macOS (Seatbelt) / Linux / WSL2 (`bubblewrap`+`socat`) のみ。**Windows native は Claude Code 側未実装で素通り**（[docs/verification.md §10.1](docs/verification.md)） | — |
 | `cat ~/.ssh/<key>` / `cat ~/.aws/credentials`（Bash subprocess 経由のホーム dotfile 読み取り） | — (Issue #429 Task C で共有 settings から除去) | — | ⚠️ 個人 `~/.claude/settings.json` で `python tools/org_setup_prune.py --user-common-sandbox` を 1 回実行すると `sandbox.filesystem.denyRead` に directory-level deny がマージされる（symlink-escape は自動 skip。Issue #429 Task B）。**Bash subprocess (sandboxed commands) のみ防御**: `sandbox.filesystem.denyRead` は sandbox 経由 syscall を止めるが Read tool 自体は止めない | — |
+| `echo x >> ~/.claude/settings.json`（Bash subprocess 経由の個人 Claude 設定上書き） | — (Issue #433 で共有 settings の `denyWrite` から除去・個人 settings 側へ移管) | — | ⚠️ 個人 `~/.claude/settings.json` で `python tools/org_setup_prune.py --user-common-sandbox` を 1 回実行すると `sandbox.filesystem.denyWrite` に `~/.claude/settings.json` がマージされる（preventive deny、ファイル未作成でも適用。Issue #433）。**Bash subprocess (sandboxed commands) のみ防御**: Read tool 経由の `Edit(...)` は別 layer (`permissions.deny`) で抑止する | — |
 | `Read tool` 経由のホーム dotfile 読み取り（`Read(~/.ssh/<key>)` 等） | — (Issue #429 Task C で共有 settings から除去) | — | — (`sandbox.filesystem.denyRead` は Read tool に逆方向 merge されない。Claude Code 公式 docs は `Read(...)` deny → `denyRead` の一方向 merge のみ規定) | — |
 | ステージ差分への秘密情報混入 | — | — | — | ✅ ([.githooks/pre-commit](.githooks/pre-commit)) |
 | シェル関数経由の bypass（`f(){ git commit --no-verify; }; f`） | — | ➖ 関数定義の静的解析は非対応 | — | — |
 
 **残存リスク (residual risk)**:
-- **シェル関数定義経由のルーティング**: 関数本体内に隠された禁止コマンドは PreToolUse フックの静的解析では検出できません（Phase 2c で検討した shell-layer 静的解析は誤検知率と保守コストの観点から廃案）。sandbox の `denyWrite` も対象が `~/.claude/settings.json` 等の限定リストで、`git commit` などのリポジトリ副作用は止めません（ホーム dotfile `~/.ssh` / `~/.aws` の defense-in-depth は [Issue #429](https://github.com/suisya-systems/claude-org-ja/issues/429) Task B/C で **個人 `~/.claude/settings.json` 側に移管** されています。共有 settings からは個人 path entry を除去し、`python tools/org_setup_prune.py --user-common-sandbox` で個人環境ごとに directory-level の `sandbox.filesystem.denyRead` をマージする方式に変更されました。**この補強は sandboxed Bash サブプロセス経由の read のみを止め、Read tool 経由の `Read(~/.aws/<file>)` は止めません**（Claude Code 公式 docs の merge は `Read(...)` deny → `denyRead` の一方向）。Read tool 経由は Claude Code 組込の credential 保護層と、worker_role schema (`tools/org_extension_schema.json` の `worker_roles.*`) が emit する `permissions.deny` で受ける残存リスクとして整理されています。WSL2 + DriveFS で `~/.aws` が `/mnt/c/...` への symlink になっている環境は自動 skip され、bwrap bootstrap 失敗を構造的に避けます。なお WSL 環境では `claude-org-runtime` が、realpath がサンドボックスの可視範囲から外れる Layer 3 `denyRead` / `denyWrite` エントリを出力時に抑止し、抑止対象を `$comment` フィールドに列挙して出力します）。本ベクトルは現状ロール契約による自主規律と上記 user-level sandbox deny の併用で担保されます。
+- **シェル関数定義経由のルーティング**: 関数本体内に隠された禁止コマンドは PreToolUse フックの静的解析では検出できません（Phase 2c で検討した shell-layer 静的解析は誤検知率と保守コストの観点から廃案）。sandbox の `denyWrite` も `git commit` などのリポジトリ副作用は止めません。ホーム dotfile の defense-in-depth は [Issue #429](https://github.com/suisya-systems/claude-org-ja/issues/429) Task B/C（`denyRead` 系候補）および [Issue #433](https://github.com/suisya-systems/claude-org-ja/issues/433)（`denyWrite` の `~/.claude/settings.json`）で **共有 `.claude/settings.json` から個人 `~/.claude/settings.json` 側へ移管** されています。`python tools/org_setup_prune.py --user-common-sandbox` を 1 回実行することで、個人環境ごとに directory-level の `sandbox.filesystem.denyRead`（symlink-escape は自動 skip）と file-level の `sandbox.filesystem.denyWrite`（preventive、ファイル未作成でも適用）が同時にマージされます。**この補強は sandboxed Bash サブプロセス経由の read / write のみを止め、Read tool 経由の `Read(~/.aws/<file>)` や Edit tool 経由の `Edit(~/.claude/settings.json)` は止めません**（Claude Code 公式 docs の merge は `Read(...)` deny → `denyRead` / `Edit(...)` deny → `denyWrite` の一方向のみ）。Read / Edit tool 経由は Claude Code 組込の credential 保護層と、worker_role schema (`tools/org_extension_schema.json` の `worker_roles.*`) が emit する `permissions.deny` で受ける残存リスクとして整理されています。WSL2 + DriveFS で `~/.aws` が `/mnt/c/...` への symlink になっている環境では denyRead 側が自動 skip され、bwrap bootstrap 失敗を構造的に避けます（denyWrite は単一ファイル literal のため symlink-escape の影響を受けません）。なお WSL 環境では `claude-org-runtime` が、realpath がサンドボックスの可視範囲から外れる Layer 3 `denyRead` / `denyWrite` エントリを出力時に抑止し、抑止対象を `$comment` フィールドに列挙して出力します。本ベクトルは現状ロール契約による自主規律と上記 user-level sandbox deny の併用で担保されます。
 - **Windows native の sandbox 不在**: 上記表のとおり `cat .env` 等は Windows native では素通りします。ワーカー実行環境としては macOS / Linux / WSL2 を推奨し、Windows native では別経路（OS 側のファイル権限・GitHub Secret Scanning 等）で補完してください。
 
 詳細と段階導入の意思決定は [Issue #79](https://github.com/suisya-systems/claude-org-ja/issues/79) と [docs/verification.md §10](docs/verification.md) を参照。
@@ -335,9 +336,13 @@ python tools/org_setup_prune.py --user-common-sandbox  # 後述「個人 sandbox
 
 これで `core.hooksPath` が `.githooks/` に設定され、コミット直前の秘密情報スキャナが有効になります。
 
-### 個人 sandbox の補強（main pull 後に 1 回必須、Issue #429 Task B / C）
+### 個人 sandbox の補強（main pull 後に 1 回必須、Issue #429 Task B / C + Issue #433）
 
-> **⚠️ 移行 pre-condition**: 共有 `.claude/settings.json` から個人パスエントリ (`~/.config/gh/hosts.yml` / `Read(~/.ssh/*)` / `Read(~/.aws/*)`) を除去 ([Issue #429](https://github.com/suisya-systems/claude-org-ja/issues/429) Task C) しました。**本 PR を pull した後、`python tools/org_setup_prune.py --user-common-sandbox` を 1 回実行しないと、個人環境の sandbox 防御が一時的に弱くなります**（共有 settings の defense-in-depth 分が個人側で補完されないため）。
+> **⚠️ 移行 pre-condition**: 共有 `.claude/settings.json` から個人パスエントリを除去しました:
+> - `~/.config/gh/hosts.yml` / `Read(~/.ssh/*)` / `Read(~/.aws/*)` ([Issue #429](https://github.com/suisya-systems/claude-org-ja/issues/429) Task C, denyRead 系)
+> - `sandbox.filesystem.denyWrite: ["~/.claude/settings.json"]` ([Issue #433](https://github.com/suisya-systems/claude-org-ja/issues/433), denyWrite 系)
+>
+> **本 PR を pull した後、`python tools/org_setup_prune.py --user-common-sandbox` を 1 回実行しないと、個人環境の sandbox 防御（denyRead / denyWrite 両系統）が一時的に弱くなります**（共有 settings の defense-in-depth 分が個人側で補完されないため）。
 
 ```bash
 # diff プレビュー（書き込まない）
@@ -347,9 +352,11 @@ python tools/org_setup_prune.py --user-common-sandbox --dry-run
 python tools/org_setup_prune.py --user-common-sandbox
 ```
 
-`~/.claude/settings.json` の `sandbox.filesystem.denyRead` に対し、機密 credential ディレクトリ群（`~/.ssh` / `~/.aws` / `~/.config/gh` / `~/.kube` / `~/.gnupg` / `~/.docker` / `~/.config/aws-vault`）を idempotent に union-merge します。**実在しないもの・realpath が HOME を escape する symlink（WSL2 + DriveFS で `~/.aws → /mnt/c/...` のケース等）は自動 skip** されます。他のキー (`theme`, `env`, `permissions` 等) は無触。
+`~/.claude/settings.json` の `sandbox.filesystem.denyRead` に対し、機密 credential ディレクトリ群（`~/.ssh` / `~/.aws` / `~/.config/gh` / `~/.kube` / `~/.gnupg` / `~/.docker` / `~/.config/aws-vault`）を idempotent に union-merge します。**実在しないもの・realpath が HOME を escape する symlink（WSL2 + DriveFS で `~/.aws → /mnt/c/...` のケース等）は自動 skip** されます。
 
-実装 / 仕様の詳細は [`.claude/skills/org-setup/references/permissions.md`](.claude/skills/org-setup/references/permissions.md) の「ユーザー共通の sandbox denyRead 補強」節と Task A 調査結論 ([docs/verification.md §10.1 Addendum](docs/verification.md)) を参照。
+同じフラグで `sandbox.filesystem.denyWrite` に `~/.claude/settings.json` も union-merge します（Issue #433）。denyWrite は **preventive deny** で扱い、対象ファイルが未作成でも entry を追加します（書込防御は fresh install で `~/.claude/settings.json` が Claude Code により初回作成される瞬間から有効にする意図）。他のキー (`theme`, `env`, `permissions` 等) は無触。
+
+実装 / 仕様の詳細は [`.claude/skills/org-setup/references/permissions.md`](.claude/skills/org-setup/references/permissions.md) の「ユーザー共通の sandbox denyRead / denyWrite 補強」節と Task A 調査結論 ([docs/verification.md §10.1 Addendum](docs/verification.md)) を参照。
 
 ---
 

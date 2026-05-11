@@ -477,6 +477,26 @@ claude-org-ja 本体は Issue #429 Task C（本 addendum と同 PR）で共有 `
 
 調査ログ全文は [Issue #429 のコメント](https://github.com/suisya-systems/claude-org-ja/issues/429#issuecomment-4419741705) を参照。
 
+#### Addendum 2: denyWrite の merge セマンティクス確認と移管（Issue #433）
+
+**前提確認**: Claude Code 公式 docs <https://code.claude.com/docs/en/settings> の `sandbox.filesystem.denyWrite` 説明（2026-05 時点）:
+
+> Paths where sandboxed commands cannot write. Arrays are merged across all settings scopes. **Also merged with paths from `Edit(...)` deny permission rules.**
+
+つまり denyWrite も denyRead と対称に、(a) 複数 settings scope（user / shared / project）の array が merge される、(b) Layer 2 (`permissions.deny` の `Edit(...)`) のパスが effective set に追加される。「`Edit(...)` のみで `Write(...)` には言及されていない」点に注意 — `Write(...)` も新規ファイル書き込み tool だが、公式 docs では明示的に挙げられていない（実機での `Write(...)` → `denyWrite` merge 検証は本 PR スコープ外、現状は doc 通り `Edit(...)` のみが Layer 3 へ自動 mirror すると解釈する）。
+
+**移管の決定**: Issue #429 Task C と Issue #433 で **`~/.claude/settings.json` への denyWrite も共有 `.claude/settings.json` から個人 `~/.claude/settings.json` 側へ移管** した（Task C の denyRead 移管と対称、Task B の `--user-common-sandbox` フラグを単一のまま denyRead + denyWrite 双方を扱うよう拡張）。理由:
+
+1. **個人ごとの opt-out 可能性**: 共有 settings に `denyWrite: ["~/.claude/settings.json"]` を置くと、repo を pull する全ユーザーの home path に対して deny が適用される。個人 settings 側へ移すと、各操作者が自分の `~/.claude/settings.json` を編集して撤回でき、ロール契約と個人運用の整合が取りやすい。
+2. **保管場所と意図の一致**: 「個人の `~/.claude/settings.json` を sandbox subprocess 経由の書き込みから守る」という意図と、deny 自身が記述される場所（個人 `~/.claude/settings.json`）が物理的に一致する。共有 settings 側にあると「誰が誰の home dir を守っているのか」が不透明になりやすい。
+3. **defense-in-depth の維持**: 公式 docs の merge ルールに従い、Layer 2 (`permissions.deny Edit(~/.claude/settings.json)`) と Layer 3 (`sandbox.filesystem.denyWrite`) は effective set で合流する。Layer 3 を個人側へ落としても、Layer 2 を共有 settings 側で必要に応じて宣言できるため、defense-in-depth は idempotent に再構成可能。
+
+**preventive deny（=ファイル不在でも merge）の判断**: `~/.claude/settings.json` は fresh install の Claude Code が初回起動時に作成する。`--user-common-sandbox` を **`~/.claude/settings.json` 作成前に**実行した場合に entry を skip すると、初回 Claude Code 起動と次の `--user-common-sandbox` 実行の間に bwrap subprocess の write が素通りする時間窓ができる。これを避けるため、denyWrite candidate は **存在チェックを行わず常に merge** する（denyRead が directory 単位かつ bwrap bootstrap 失敗 risk があるため existence-check を行うのとは非対称）。
+
+**残存検証 (実機)**: Issue #79 の §10.1 表に denyWrite 行が既に含まれており、共有 settings 移行後も `~/.claude/settings.json` の denyWrite で同等の挙動が出ることを各 OS 行で再測すること。本 addendum 時点で実機検証済みの環境は Phase 2a 計画と同じ（Windows / macOS / Linux / WSL2; 詳細結果記載は §10.1 の表本体を参照）。
+
+**実装**: `tools/org_setup_prune.py` の `merge_user_common_sandbox_denywrite` / `USER_COMMON_SANDBOX_DENYWRITE_CANDIDATES`、`tools/test_org_setup_prune.py` の `MergeUserCommonSandboxDenywriteTests` および `UserCommonSandboxEndToEndTests` の denyWrite 関連ケース群。
+
 ---
 
 ## 10.2. Phase 3 sandbox case E 実機検証 (WSL Layer 3 suppression, runtime 0.1.4+)
