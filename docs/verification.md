@@ -407,7 +407,7 @@ head -1 knowledge/raw/*.md  # <!-- curated --> マーカー確認
 - Windows で glob (`**/credentials*`) が効かない → forward/backward slash 差異の可能性。glob パターンを `./credentials*` 等に調整して再試行
 - sandbox 自体が発動していない → Claude Code の `sandbox.enabled` デフォルトが OFF の可能性。公式 docs の現行デフォルトを確認
 
-**注**: `sandbox.enabled` は本 PR では明示指定していない（Claude Code 側のデフォルトに任せる）。既知バグ #32226 の影響範囲を限定するため段階導入とし、デフォルト挙動で denyRead が無効な環境では別途明示 true 化を検討する。
+**注**: `sandbox.enabled` は **現行の共有 [`.claude/settings.json`](../.claude/settings.json) で `true` を明示指定済み**（v0.1.0 の初期コミット時点から）。本節の旧版では未明示としていたが、その後共有 settings 側で明示 `true` 化された。既知バグ #32226 の影響を受ける環境では `false` への一時退避を検討するための judgment lever として残しているが、現在のデフォルト方針は明示 `true` であることに留意。
 
 ### 実測結果（2026-04-25, Windows 11 + Git Bash, Claude Code Desktop）
 
