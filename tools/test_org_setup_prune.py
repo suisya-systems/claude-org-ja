@@ -467,6 +467,25 @@ class MergeUserCommonSandboxTests(unittest.TestCase):
         self.assertEqual(once, twice)
         self.assertEqual(twice["sandbox"]["filesystem"]["denyRead"], ["~/.ssh", "~/.aws"])
 
+    def test_empty_entries_on_empty_settings_is_noop(self) -> None:
+        # Codex round-2 minor: when none of the candidate dirs exist on
+        # this system the merge must NOT inject an empty
+        # ``sandbox.filesystem.denyRead: []`` block. The non-dry-run write
+        # path must therefore agree with the dry-run "(no changes)" output.
+        out = p.merge_user_common_sandbox_denyread({"theme": "dark"}, [])
+        self.assertEqual(out, {"theme": "dark"})
+        self.assertNotIn("sandbox", out)
+
+    def test_empty_entries_preserves_existing_sandbox(self) -> None:
+        base = {"sandbox": {"enabled": True, "filesystem": {"denyRead": ["**/*.pem"]}}}
+        out = p.merge_user_common_sandbox_denyread(base, [])
+        self.assertEqual(out, base)
+
+    def test_all_entries_already_present_is_noop(self) -> None:
+        base = {"sandbox": {"filesystem": {"denyRead": ["~/.ssh", "~/.aws"]}}}
+        out = p.merge_user_common_sandbox_denyread(base, ["~/.ssh", "~/.aws"])
+        self.assertEqual(out, base)
+
     def test_input_is_not_mutated(self) -> None:
         base = {"sandbox": {"filesystem": {"denyRead": ["existing"]}}}
         snapshot = json.loads(json.dumps(base))
@@ -601,6 +620,31 @@ class UserCommonSandboxEndToEndTests(unittest.TestCase):
         # Sibling keys preserved.
         self.assertTrue(loaded["sandbox"]["enabled"])
         self.assertEqual(loaded["sandbox"]["filesystem"]["denyWrite"], ["~/.claude/settings.json"])
+
+    def test_no_existing_candidates_does_not_write_empty_sandbox(self) -> None:
+        # HOME with none of the candidate directories present: the merge
+        # must be a true no-op -- not "write an empty sandbox block".
+        bare_home = Path(tempfile.mkdtemp(prefix="user_common_bare_"))
+        try:
+            (bare_home / ".claude").mkdir()
+            bare_settings = bare_home / ".claude" / "settings.json"
+            bare_settings.write_text(json.dumps({"theme": "dark"}), encoding="utf-8")
+            rc = p.process_user_common_sandbox(
+                settings_path=bare_settings,
+                home=bare_home,
+                dry_run=False,
+                no_backup=True,
+            )
+            self.assertEqual(rc, 0)
+            loaded = json.loads(bare_settings.read_text(encoding="utf-8"))
+            self.assertEqual(loaded, {"theme": "dark"})
+            # No spurious .bak either: when target == current we skip the
+            # writer altogether, so the file was never overwritten.
+            baks = list(bare_settings.parent.glob("settings.json.bak.*"))
+            self.assertEqual(baks, [])
+        finally:
+            import shutil
+            shutil.rmtree(bare_home, ignore_errors=True)
 
     def test_idempotent_run_no_changes(self) -> None:
         rc1 = p.process_user_common_sandbox(

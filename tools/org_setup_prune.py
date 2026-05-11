@@ -352,34 +352,24 @@ def merge_user_common_sandbox_denyread(
     The caller is expected to abort before touching the file rather than
     silently coerce a malformed shape (which would destroy user data).
     """
-    result = dict(settings)
-    sandbox_val = result.get("sandbox")
-    if sandbox_val is None:
-        sandbox: dict = {}
-    elif isinstance(sandbox_val, dict):
-        sandbox = dict(sandbox_val)
-    else:
+    # Validate existing shape first so a malformed file aborts with a clear
+    # error regardless of whether we end up writing.
+    sandbox_val = settings.get("sandbox")
+    if sandbox_val is not None and not isinstance(sandbox_val, dict):
         raise ValueError(
             f"settings['sandbox'] must be an object or absent, got {type(sandbox_val).__name__}"
         )
-    fs_val = sandbox.get("filesystem")
-    if fs_val is None:
-        filesystem: dict = {}
-    elif isinstance(fs_val, dict):
-        filesystem = dict(fs_val)
-    else:
+    fs_val = sandbox_val.get("filesystem") if isinstance(sandbox_val, dict) else None
+    if fs_val is not None and not isinstance(fs_val, dict):
         raise ValueError(
             f"settings['sandbox']['filesystem'] must be an object or absent, got {type(fs_val).__name__}"
         )
-    dr_val = filesystem.get("denyRead")
-    if dr_val is None:
-        deny_read: list = []
-    elif isinstance(dr_val, list):
-        deny_read = list(dr_val)
-    else:
+    dr_val = fs_val.get("denyRead") if isinstance(fs_val, dict) else None
+    if dr_val is not None and not isinstance(dr_val, list):
         raise ValueError(
             f"settings['sandbox']['filesystem']['denyRead'] must be an array or absent, got {type(dr_val).__name__}"
         )
+    existing_dr: list = list(dr_val) if isinstance(dr_val, list) else []
     # All existing entries must be strings: Claude Code's own bwrap launcher
     # consumes the raw-string form in ~/.claude/settings.json (the structured
     # ``{anchor: ..., path: ...}`` form is internal to claude-org-runtime's
@@ -388,15 +378,26 @@ def merge_user_common_sandbox_denyread(
     # diff operations on the rendered list never hit ``TypeError`` on an
     # unhashable element, and so the merge cannot accidentally legitimize an
     # entry shape the launcher would reject.
-    for i, existing in enumerate(deny_read):
+    for i, existing in enumerate(existing_dr):
         if not isinstance(existing, str):
             raise ValueError(
                 f"settings['sandbox']['filesystem']['denyRead'][{i}] must be a string, got {type(existing).__name__}"
             )
-    for entry in entries:
-        if entry not in deny_read:
-            deny_read.append(entry)
-    filesystem["denyRead"] = deny_read
+
+    added = [e for e in entries if e not in existing_dr]
+    if not added:
+        # No new entries to merge -- return the input unchanged. This keeps
+        # the operation a true no-op when none of the candidate directories
+        # exist on this system (or all of them are already present), instead
+        # of injecting an empty ``sandbox.filesystem.denyRead: []`` block
+        # that the user never had. Required so the non-dry-run path matches
+        # the dry-run "(no changes)" output (Codex round-2 review).
+        return dict(settings)
+
+    result = dict(settings)
+    sandbox = dict(sandbox_val) if isinstance(sandbox_val, dict) else {}
+    filesystem = dict(fs_val) if isinstance(fs_val, dict) else {}
+    filesystem["denyRead"] = existing_dr + added
     sandbox["filesystem"] = filesystem
     result["sandbox"] = sandbox
     return result
