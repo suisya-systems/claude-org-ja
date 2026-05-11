@@ -66,7 +66,7 @@ jq empty /home/$USER/work/org/workers/sandbox-probe-iter1/.claude/settings.local
 
 ## 関連リソース
 
-- audit-issue-376-2026-05-09.md (B0/B1/B2/B3 の詳細指摘) — claude-org-ja の repo 外: `/home/happy_ryo/work/org/workers/claude-org-ja/tmp/audit-issue-376-2026-05-09.md`
+- audit-issue-376-2026-05-09.md (B0/B1/B2/B3 の詳細指摘) — claude-org-ja の repo 外: `<workers-root>/claude-org-ja/tmp/audit-issue-376-2026-05-09.md`
 - [`docs/verification.md`](../verification.md) §sandbox 実機検証 (bubblewrap/socat 前提と現行 verification 手順)
 - [`docs/worker-permissions-design.md`](../worker-permissions-design.md) (sandbox `additionalDirectories` の design 注釈)
 - [`tools/org_extension_schema.json`](../../tools/org_extension_schema.json) (`worker_roles` と `forbidden_allow_exact`)

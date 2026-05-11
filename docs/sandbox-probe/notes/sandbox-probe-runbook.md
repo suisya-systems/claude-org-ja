@@ -23,12 +23,12 @@ bubblewrap/socat 不在環境では `sandbox.failIfUnavailable: false` により
 
 ### 2.1 Pattern A worker dir を 1 本立てる
 
-dispatcher 経由で本 worker (sandbox-probe) と同形のディレクトリを派遣するか、手動で `/home/$USER/work/org/workers/sandbox-probe-iter1/` を切る。本 spike worker (`/home/happy_ryo/work/org/workers/sandbox-probe`) を再利用してもよい。
+dispatcher 経由で本 worker (sandbox-probe) と同形のディレクトリを派遣するか、手動で `/home/$USER/work/org/workers/sandbox-probe-iter1/` を切る。本 spike worker (`<workers-root>/sandbox-probe`) を再利用してもよい。
 
 ### 2.2 settings.local.json を generate
 
 ```bash
-cd /home/happy_ryo/work/org/claude-org-ja
+cd /home/$USER/work/org/claude-org-ja
 .venv/bin/claude-org-runtime settings generate \
   --role default \
   --worker-dir /home/$USER/work/org/workers/sandbox-probe-iter1 \
@@ -180,7 +180,7 @@ Claude Code を再起動し、追加で (`$SCRATCH_BASE_REPO` は `probes/checkl
 
 ## 7. 関連資料
 
-- audit-issue-376-2026-05-09.md (B0/B1/B2/B3 詳細、`/home/happy_ryo/work/org/workers/claude-org-ja/tmp/audit-issue-376-2026-05-09.md`)
+- audit-issue-376-2026-05-09.md (B0/B1/B2/B3 詳細、`<workers-root>/claude-org-ja/tmp/audit-issue-376-2026-05-09.md`)
 - claude-org-ja `docs/verification.md:386-457` (sandbox 実機検証手順、bubblewrap/socat 前提)
 - claude-org-ja `tools/org_extension_schema.json` (worker_roles と forbidden_allow_exact)
 - claude-org-ja `.claude/settings.json` (repo-shared 防御の現状)
