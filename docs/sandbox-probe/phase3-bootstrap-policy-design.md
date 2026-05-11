@@ -8,7 +8,7 @@
 
 ## 1. 背景
 
-iteration B round 3 で、`profile-tightened.json` の `sandbox.filesystem.denyRead` / `denyWrite` に `~/.aws/**` / `~/.ssh/**` を追加すると、WSL 環境（`~/.aws` が `/mnt/c/Users/<windows-user>/.aws` への symlink）で **sandbox 起動全体が `bwrap` exit=1 で fail する**ことが確認された。round 3 の観測では tmpfs マウント時のエラー (`Can't mount tmpfs on /newroot<home>/.aws`) が主因だったが、本セッション (worktree `feat/sandbox-bootstrap-policy-design`) では deny 対象を **個別ファイル列挙**（`<home>/.aws/.env`, `<home>/.aws/config`, `<home>/.aws/credentials`, `<home>/.aws/sso`）に絞ったプロファイルでも、別形式の bwrap エラーで全 sandboxed Bash が exit=1 する状態が再現している:
+iteration B round 3 で、`profile-tightened.json` の `sandbox.filesystem.denyRead` / `denyWrite` に `~/.aws/**` / `~/.ssh/**` を追加すると、WSL 環境（`~/.aws` が `/mnt/c/Users/<windows-user>/.aws` への symlink）で **sandbox 起動全体が `bwrap` exit=1 で fail する**ことが確認された。round 3 の観測では tmpfs マウント時のエラー (`Can't mount tmpfs on /newroot/home/<user>/.aws`) が主因だったが、本セッション (worktree `feat/sandbox-bootstrap-policy-design`) では deny 対象を **個別ファイル列挙**（`<home>/.aws/.env`, `<home>/.aws/config`, `<home>/.aws/credentials`, `<home>/.aws/sso`）に絞ったプロファイルでも、別形式の bwrap エラーで全 sandboxed Bash が exit=1 する状態が再現している:
 
 ```text
 $ pwd
