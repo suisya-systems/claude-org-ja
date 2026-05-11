@@ -37,7 +37,7 @@
 
 ## 前提ツール（Prerequisites）
 
-ワンライナー / 手動手順のいずれを使う場合も、以下のツールは事前に導入しておく必要があります。インストーラ（`scripts/install.sh` / `scripts/install.ps1`）は `git` / `claude` / `renga` / `gh` の 4 つを fail-close で検証し、Python は警告のみ、`jq` / Node.js は検証されません（自動インストールはしません）。表中の用途を満たすには 7 つすべての導入が必要です。
+ワンライナー / 手動手順のいずれを使う場合も、以下のツールは事前に導入しておく必要があります。インストーラ（`scripts/install.sh` / `scripts/install.ps1`）は `git` / `claude` / `renga` / `gh` / `jq` の 5 つを fail-close で検証し、Python は警告のみ、Node.js は Linux / macOS のみ検証します（自動インストールはしません）。表中の用途を満たすには 7 つすべての導入が必要です。
 
 | ツール | 最小バージョン | 用途 | 導入リンク |
 |---|---|---|---|
