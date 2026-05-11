@@ -356,5 +356,292 @@ class CheckerOverrideAwarenessTests(unittest.TestCase):
         )
 
 
+class FilterExistingUserDirsTests(unittest.TestCase):
+    """Existence check must stat against the injected HOME, return the
+    original ``~``-prefixed literal (not the expanded path), and ignore
+    candidates that aren't ``~``-rooted directories."""
+
+    def setUp(self) -> None:
+        self.td = tempfile.TemporaryDirectory()
+        self.home = Path(self.td.name)
+        (self.home / ".ssh").mkdir()
+        (self.home / ".config").mkdir()
+        (self.home / ".config" / "gh").mkdir()
+        # Sentinel file (not a directory) -- must be skipped because the
+        # bwrap parent-dir mitigation only makes sense on directories.
+        (self.home / ".netrc").write_text("placeholder", encoding="utf-8")
+
+    def tearDown(self) -> None:
+        self.td.cleanup()
+
+    def test_returns_only_existing_dirs(self) -> None:
+        result = p.filter_existing_user_dirs(
+            ["~/.ssh", "~/.aws", "~/.config/gh", "~/.kube"], home=self.home,
+        )
+        self.assertEqual(result, ["~/.ssh", "~/.config/gh"])
+
+    def test_returned_entries_keep_tilde_prefix(self) -> None:
+        result = p.filter_existing_user_dirs(["~/.ssh"], home=self.home)
+        self.assertEqual(result, ["~/.ssh"])
+        # No absolute home path leaked into the entry -- portability is
+        # the whole point of using the ``~``-prefixed literal in the
+        # settings file.
+        self.assertFalse(any(str(self.home) in e for e in result))
+
+    def test_file_is_not_a_directory_match(self) -> None:
+        # ``~/.netrc`` exists as a file but is not a directory; the
+        # bwrap directory-unit deny would be ill-typed against a file.
+        result = p.filter_existing_user_dirs(["~/.netrc"], home=self.home)
+        self.assertEqual(result, [])
+
+    def test_non_tilde_entries_are_skipped(self) -> None:
+        result = p.filter_existing_user_dirs(
+            ["/etc", "relative/path", "~/.ssh"], home=self.home,
+        )
+        self.assertEqual(result, ["~/.ssh"])
+
+
+class MergeUserCommonSandboxTests(unittest.TestCase):
+    """``merge_user_common_sandbox_denyread`` is the pure core: idempotent,
+    preserving existing values, never mutates the input."""
+
+    def test_creates_sandbox_block_when_missing(self) -> None:
+        out = p.merge_user_common_sandbox_denyread({"theme": "dark"}, ["~/.ssh"])
+        self.assertEqual(out["theme"], "dark")
+        self.assertEqual(out["sandbox"]["filesystem"]["denyRead"], ["~/.ssh"])
+
+    def test_preserves_existing_deny_read_entries_and_order(self) -> None:
+        base = {
+            "sandbox": {
+                "enabled": True,
+                "failIfUnavailable": False,
+                "filesystem": {
+                    "denyRead": ["**/credentials*", "~/.config/gh/hosts.yml"],
+                    "denyWrite": ["~/.claude/settings.json"],
+                },
+            },
+        }
+        out = p.merge_user_common_sandbox_denyread(base, ["~/.ssh", "~/.aws"])
+        self.assertEqual(
+            out["sandbox"]["filesystem"]["denyRead"],
+            ["**/credentials*", "~/.config/gh/hosts.yml", "~/.ssh", "~/.aws"],
+        )
+        # Sibling sandbox keys MUST survive.
+        self.assertTrue(out["sandbox"]["enabled"])
+        self.assertEqual(out["sandbox"]["failIfUnavailable"], False)
+        self.assertEqual(
+            out["sandbox"]["filesystem"]["denyWrite"],
+            ["~/.claude/settings.json"],
+        )
+
+    def test_idempotent_on_repeat(self) -> None:
+        base = {"sandbox": {"filesystem": {"denyRead": ["~/.ssh"]}}}
+        once = p.merge_user_common_sandbox_denyread(base, ["~/.ssh", "~/.aws"])
+        twice = p.merge_user_common_sandbox_denyread(once, ["~/.ssh", "~/.aws"])
+        self.assertEqual(once, twice)
+        self.assertEqual(twice["sandbox"]["filesystem"]["denyRead"], ["~/.ssh", "~/.aws"])
+
+    def test_input_is_not_mutated(self) -> None:
+        base = {"sandbox": {"filesystem": {"denyRead": ["existing"]}}}
+        snapshot = json.loads(json.dumps(base))
+        p.merge_user_common_sandbox_denyread(base, ["~/.ssh"])
+        self.assertEqual(base, snapshot)
+
+    def test_malformed_sandbox_block_raises(self) -> None:
+        with self.assertRaises(ValueError):
+            p.merge_user_common_sandbox_denyread({"sandbox": "off"}, ["~/.ssh"])
+
+    def test_malformed_filesystem_raises(self) -> None:
+        with self.assertRaises(ValueError):
+            p.merge_user_common_sandbox_denyread(
+                {"sandbox": {"filesystem": "broken"}}, ["~/.ssh"],
+            )
+
+    def test_malformed_deny_read_raises(self) -> None:
+        with self.assertRaises(ValueError):
+            p.merge_user_common_sandbox_denyread(
+                {"sandbox": {"filesystem": {"denyRead": "not-a-list"}}}, ["~/.ssh"],
+            )
+
+    def test_dedup_is_value_exact(self) -> None:
+        # ``~/.ssh`` and ``~/.ssh/**`` are distinct strings -- dedup is by
+        # literal equality, so both survive. This keeps the helper agnostic
+        # to glob normalization (which belongs to the bwrap launcher).
+        out = p.merge_user_common_sandbox_denyread(
+            {"sandbox": {"filesystem": {"denyRead": ["~/.ssh"]}}}, ["~/.ssh/**"],
+        )
+        self.assertEqual(out["sandbox"]["filesystem"]["denyRead"], ["~/.ssh", "~/.ssh/**"])
+
+
+class UserCommonSandboxEndToEndTests(unittest.TestCase):
+    """CLI ``--user-common-sandbox`` end-to-end against an injected HOME."""
+
+    def setUp(self) -> None:
+        self.td = tempfile.TemporaryDirectory()
+        self.home = Path(self.td.name)
+        (self.home / ".claude").mkdir()
+        self.settings_path = self.home / ".claude" / "settings.json"
+        # Pretend the user has .ssh and .aws but not .kube / .gnupg.
+        (self.home / ".ssh").mkdir()
+        (self.home / ".aws").mkdir()
+
+    def tearDown(self) -> None:
+        self.td.cleanup()
+
+    def _candidates_match(self, deny_read: list[str]) -> None:
+        # Only existing directories should appear; non-existent ones must not.
+        self.assertIn("~/.ssh", deny_read)
+        self.assertIn("~/.aws", deny_read)
+        self.assertNotIn("~/.kube", deny_read)
+        self.assertNotIn("~/.gnupg", deny_read)
+
+    def test_creates_settings_when_missing(self) -> None:
+        # File deliberately absent; the merge should create it with only
+        # the sandbox block populated.
+        self.assertFalse(self.settings_path.exists())
+        # Inject ``home`` via the helper-level API to avoid touching the
+        # real home. We call ``process_user_common_sandbox`` directly so
+        # the test stays user-agnostic (no $HOME monkey-patching needed).
+        rc = p.process_user_common_sandbox(
+            settings_path=self.settings_path,
+            home=self.home,
+            dry_run=False,
+            no_backup=True,
+        )
+        self.assertEqual(rc, 0)
+        loaded = json.loads(self.settings_path.read_text(encoding="utf-8"))
+        self._candidates_match(loaded["sandbox"]["filesystem"]["denyRead"])
+        # No spurious extra keys.
+        self.assertEqual(set(loaded.keys()), {"sandbox"})
+
+    def test_preserves_unrelated_keys(self) -> None:
+        self.settings_path.write_text(json.dumps({
+            "theme": "dark",
+            "permissions": {"allow": ["Bash(echo)"]},
+            "env": {"FOO": "1"},
+        }), encoding="utf-8")
+        rc = p.process_user_common_sandbox(
+            settings_path=self.settings_path,
+            home=self.home,
+            dry_run=False,
+            no_backup=True,
+        )
+        self.assertEqual(rc, 0)
+        loaded = json.loads(self.settings_path.read_text(encoding="utf-8"))
+        # Unrelated top-level keys survive untouched.
+        self.assertEqual(loaded["theme"], "dark")
+        self.assertEqual(loaded["permissions"]["allow"], ["Bash(echo)"])
+        self.assertEqual(loaded["env"]["FOO"], "1")
+        self._candidates_match(loaded["sandbox"]["filesystem"]["denyRead"])
+
+    def test_existing_deny_read_entries_are_preserved(self) -> None:
+        # Operator already added their own credential entry; the merge
+        # must NOT remove it.
+        self.settings_path.write_text(json.dumps({
+            "sandbox": {
+                "enabled": True,
+                "filesystem": {
+                    "denyRead": ["**/*.pem", "/etc/secret"],
+                    "denyWrite": ["~/.claude/settings.json"],
+                },
+            },
+        }), encoding="utf-8")
+        rc = p.process_user_common_sandbox(
+            settings_path=self.settings_path,
+            home=self.home,
+            dry_run=False,
+            no_backup=True,
+        )
+        self.assertEqual(rc, 0)
+        loaded = json.loads(self.settings_path.read_text(encoding="utf-8"))
+        deny = loaded["sandbox"]["filesystem"]["denyRead"]
+        self.assertIn("**/*.pem", deny)
+        self.assertIn("/etc/secret", deny)
+        self.assertIn("~/.ssh", deny)
+        self.assertIn("~/.aws", deny)
+        # Sibling keys preserved.
+        self.assertTrue(loaded["sandbox"]["enabled"])
+        self.assertEqual(loaded["sandbox"]["filesystem"]["denyWrite"], ["~/.claude/settings.json"])
+
+    def test_idempotent_run_no_changes(self) -> None:
+        rc1 = p.process_user_common_sandbox(
+            settings_path=self.settings_path,
+            home=self.home,
+            dry_run=False,
+            no_backup=True,
+        )
+        self.assertEqual(rc1, 0)
+        first = self.settings_path.read_text(encoding="utf-8")
+        rc2 = p.process_user_common_sandbox(
+            settings_path=self.settings_path,
+            home=self.home,
+            dry_run=False,
+            no_backup=True,
+        )
+        self.assertEqual(rc2, 0)
+        # Second run must not modify the file -- byte-identical content.
+        self.assertEqual(self.settings_path.read_text(encoding="utf-8"), first)
+
+    def test_dry_run_does_not_modify(self) -> None:
+        original = json.dumps({"theme": "dark"})
+        self.settings_path.write_text(original, encoding="utf-8")
+        rc = p.process_user_common_sandbox(
+            settings_path=self.settings_path,
+            home=self.home,
+            dry_run=True,
+            no_backup=True,
+        )
+        self.assertEqual(rc, 0)
+        # File untouched.
+        self.assertEqual(self.settings_path.read_text(encoding="utf-8"), original)
+
+    def test_invalid_json_aborts(self) -> None:
+        self.settings_path.write_text("{not json", encoding="utf-8")
+        rc = p.process_user_common_sandbox(
+            settings_path=self.settings_path,
+            home=self.home,
+            dry_run=False,
+            no_backup=True,
+        )
+        self.assertNotEqual(rc, 0)
+        # Untouched: no backup, no write attempted.
+        self.assertEqual(self.settings_path.read_text(encoding="utf-8"), "{not json")
+
+    def test_malformed_sandbox_aborts_without_write(self) -> None:
+        original = json.dumps({"sandbox": "off"})
+        self.settings_path.write_text(original, encoding="utf-8")
+        rc = p.process_user_common_sandbox(
+            settings_path=self.settings_path,
+            home=self.home,
+            dry_run=False,
+            no_backup=True,
+        )
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(self.settings_path.read_text(encoding="utf-8"), original)
+        baks = list(self.settings_path.parent.glob("settings.json.bak.*"))
+        self.assertEqual(baks, [])
+
+    def test_top_level_array_aborts(self) -> None:
+        self.settings_path.write_text(json.dumps([1, 2, 3]), encoding="utf-8")
+        rc = p.process_user_common_sandbox(
+            settings_path=self.settings_path,
+            home=self.home,
+            dry_run=False,
+            no_backup=True,
+        )
+        self.assertNotEqual(rc, 0)
+
+    def test_cli_entrypoint(self) -> None:
+        # Smoke-test the argparse plumbing: --user-common-sandbox with a
+        # custom settings path runs without --role and exits 0.
+        rc = p.main([
+            "--user-common-sandbox",
+            "--user-common-settings-path", str(self.settings_path),
+            "--no-backup",
+            "--dry-run",
+        ])
+        self.assertEqual(rc, 0)
+
+
 if __name__ == "__main__":
     unittest.main()
