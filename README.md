@@ -310,12 +310,12 @@ claude-org-ja は **4 層防御**（`permissions.deny` / PreToolUse フック / 
 | `VAR=$(printf -- '--no-verify'); git commit $VAR` | — | ✅ assignment 収集 + `flatten_substitutions` | — | — |
 | `git push --force` / `git reset --hard` / `git branch -D`（窓口・キュレーター） | ✅ | ✅ (`block-dangerous-git.sh`) | — | — |
 | `cat .env` / 認証情報読み取り（Bash 経由） | — | — | ⚠️ macOS (Seatbelt) / Linux / WSL2 (`bubblewrap`+`socat`) のみ。**Windows native は Claude Code 側未実装で素通り**（[docs/verification.md §10.1](docs/verification.md)） | — |
-| `Read(~/.ssh/*)` / `Read(~/.aws/*)`（Read tool 経由のホーム dotfile 読み取り） | ✅ ([Issue #83](https://github.com/suisya-systems/claude-org-ja/issues/83)) | — | — | — |
+| `Read(~/.ssh/*)` / `Read(~/.aws/*)`（Read tool 経由のホーム dotfile 読み取り） | — (Issue #429 Task C で共有 settings から除去) | — | ⚠️ 個人 `~/.claude/settings.json` で `python tools/org_setup_prune.py --user-common-sandbox` を 1 回実行すると `sandbox.filesystem.denyRead` に directory-level deny がマージされる（symlink-escape は自動 skip。Issue #429 Task B） | — |
 | ステージ差分への秘密情報混入 | — | — | — | ✅ ([.githooks/pre-commit](.githooks/pre-commit)) |
 | シェル関数経由の bypass（`f(){ git commit --no-verify; }; f`） | — | ➖ 関数定義の静的解析は非対応 | — | — |
 
 **残存リスク (residual risk)**:
-- **シェル関数定義経由のルーティング**: 関数本体内に隠された禁止コマンドは PreToolUse フックの静的解析では検出できません（Phase 2c で検討した shell-layer 静的解析は誤検知率と保守コストの観点から廃案）。sandbox の `denyWrite` も対象が `~/.claude/settings.json` 等の限定リストで、`git commit` などのリポジトリ副作用は止めません（ホーム dotfile `~/.ssh` / `~/.aws` は WSL2 での sandbox init 失敗を避けるため `permissions.deny` の Read 側で防御する方針へ移行、[Issue #83](https://github.com/suisya-systems/claude-org-ja/issues/83)。なお WSL 環境では `claude-org-runtime` が、realpath がサンドボックスの可視範囲から外れる Layer 3 `denyRead` / `denyWrite` エントリ（例: `~/.aws` が `/mnt/c/...` 経由のリンク先になっているケース）を出力時に抑止し、抑止対象を `$comment` フィールドに列挙して出力します。Layer 2 `permissions.deny` の `Read(...)` / `Write(...)` 側が引き続き一次防御です）。本ベクトルは現状ロール契約による自主規律のみで担保されます。
+- **シェル関数定義経由のルーティング**: 関数本体内に隠された禁止コマンドは PreToolUse フックの静的解析では検出できません（Phase 2c で検討した shell-layer 静的解析は誤検知率と保守コストの観点から廃案）。sandbox の `denyWrite` も対象が `~/.claude/settings.json` 等の限定リストで、`git commit` などのリポジトリ副作用は止めません（ホーム dotfile `~/.ssh` / `~/.aws` の defense-in-depth は [Issue #429](https://github.com/suisya-systems/claude-org-ja/issues/429) Task B/C で **個人 `~/.claude/settings.json` 側に移管** されています。共有 settings からは個人 path entry を除去し、`python tools/org_setup_prune.py --user-common-sandbox` で個人環境ごとに directory-level の `sandbox.filesystem.denyRead` をマージする方式に変更されました。WSL2 + DriveFS で `~/.aws` が `/mnt/c/...` への symlink になっている環境は自動 skip され、bwrap bootstrap 失敗を構造的に避けます。なお WSL 環境では `claude-org-runtime` が、realpath がサンドボックスの可視範囲から外れる Layer 3 `denyRead` / `denyWrite` エントリを出力時に抑止し、抑止対象を `$comment` フィールドに列挙して出力します）。本ベクトルは現状ロール契約による自主規律と上記 user-level sandbox deny の併用で担保されます。
 - **Windows native の sandbox 不在**: 上記表のとおり `cat .env` 等は Windows native では素通りします。ワーカー実行環境としては macOS / Linux / WSL2 を推奨し、Windows native では別経路（OS 側のファイル権限・GitHub Secret Scanning 等）で補完してください。
 
 詳細と段階導入の意思決定は [Issue #79](https://github.com/suisya-systems/claude-org-ja/issues/79) と [docs/verification.md §10](docs/verification.md) を参照。
@@ -324,9 +324,26 @@ claude-org-ja は **4 層防御**（`permissions.deny` / PreToolUse フック / 
 
 ```bash
 bash scripts/install-hooks.sh
+python tools/org_setup_prune.py --user-common-sandbox  # 後述「個人 sandbox 補強」参照
 ```
 
 これで `core.hooksPath` が `.githooks/` に設定され、コミット直前の秘密情報スキャナが有効になります。
+
+### 個人 sandbox の補強（main pull 後に 1 回必須、Issue #429 Task B / C）
+
+> **⚠️ 移行 pre-condition**: 共有 `.claude/settings.json` から個人パスエントリ (`~/.config/gh/hosts.yml` / `Read(~/.ssh/*)` / `Read(~/.aws/*)`) を除去 ([Issue #429](https://github.com/suisya-systems/claude-org-ja/issues/429) Task C) しました。**本 PR を pull した後、`python tools/org_setup_prune.py --user-common-sandbox` を 1 回実行しないと、個人環境の sandbox 防御が一時的に弱くなります**（共有 settings の defense-in-depth 分が個人側で補完されないため）。
+
+```bash
+# diff プレビュー（書き込まない）
+python tools/org_setup_prune.py --user-common-sandbox --dry-run
+
+# 実行（既存があれば .bak 自動生成、対象候補が無ければ no-op）
+python tools/org_setup_prune.py --user-common-sandbox
+```
+
+`~/.claude/settings.json` の `sandbox.filesystem.denyRead` に対し、機密 credential ディレクトリ群（`~/.ssh` / `~/.aws` / `~/.config/gh` / `~/.kube` / `~/.gnupg` / `~/.docker` / `~/.config/aws-vault`）を idempotent に union-merge します。**実在しないもの・realpath が HOME を escape する symlink（WSL2 + DriveFS で `~/.aws → /mnt/c/...` のケース等）は自動 skip** されます。他のキー (`theme`, `env`, `permissions` 等) は無触。
+
+実装 / 仕様の詳細は [`.claude/skills/org-setup/references/permissions.md`](.claude/skills/org-setup/references/permissions.md) の「ユーザー共通の sandbox denyRead 補強」節と Task A 調査結論 ([docs/verification.md §10.1 Addendum](docs/verification.md)) を参照。
 
 ---
 

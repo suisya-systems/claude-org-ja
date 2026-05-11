@@ -456,6 +456,27 @@ WSL で deny されなければ、 (a) Claude Code のバージョンが sandbox
 
 WSL2 などで `bubblewrap` 未導入時に sandbox init が silent no-op fallback して `~/.aws/**` / `~/.ssh/**` の denyRead/denyWrite が無効化される問題への対処として、**ホーム dotfile（`~/.aws` / `~/.ssh`）は sandbox の対象範囲外**とし、`permissions.deny` の `Read(~/.ssh/*)` / `Read(~/.aws/*)` で防御する。for portability, home dotfiles are out of sandbox scope。sandbox 側の `denyRead` / `denyWrite` はリポジトリローカルの `.env` / 認証情報ファイルに集中させる。
 
+#### Addendum: Phase 2a 前提の撤回（Issue #429 Task A 調査結論）
+
+**前提撤回**: 上記「`permissions.deny` の `Read(...)` で防御する」前提は **現行 Claude Code の documented behavior と乖離している**。`permissions.deny` への移管は portability fix として成立しない。
+
+**根拠（Claude Code 公式 docs）**: <https://code.claude.com/docs/en/settings> の `sandbox.filesystem.denyRead` 説明:
+
+> Paths where sandboxed commands cannot read. Arrays are merged across all settings scopes. **Also merged with paths from `Read(...)` deny permission rules.**
+
+つまり `permissions.deny` に `Read(~/.aws/*)` を書いた時点で、明示的に `sandbox.filesystem.denyRead` に書かなくても、Claude Code 側で sandbox の effective denyRead 集合に同パスが加算される。**共有 settings に書こうが個人 settings に書こうが merge 挙動は同じ**で、permissions.deny への移管は sandbox bootstrap 失敗（WSL2 + bwrap で `~/.aws` が `/mnt/c/...` への symlink になっている環境などで `bwrap: Can't create file at /home/<user>/.aws/config` が出る case）を回避できない。
+
+**実用上の portability fix（二択）**:
+
+1. **対象環境で当該 symlink を退避/削除し、real directory を `mkdir -p` で作り直す**。`mkdir -p` 単発では既存 symlink を real directory に置き換えないため、`rm <link> && mkdir -p <dir>` 等の明示的置換が必要。
+2. **当該環境では `Read(~/.aws/*)` / `Read(~/.ssh/*)` を共有・個人いずれの settings からも除外する**。bwrap の bootstrap 失敗を避けつつ、credential 読み出し自体は OS のファイルパーミッション + claude-org-runtime の WSL Layer 3 suppression（§10.2 Phase 3 case E）で多層防御する。
+
+claude-org-ja 本体は Issue #429 Task C（本 addendum と同 PR）で共有 `.claude/settings.json` から `Read(~/.ssh/*)` / `Read(~/.aws/*)` / `~/.config/gh/hosts.yml` を除去した（= 上記選択肢 2 を採用）。個人環境ごとに実在する（= symlink でない）機密ディレクトリを deny したい場合は、Issue #429 Task B で導入された `python tools/org_setup_prune.py --user-common-sandbox` を 1 回実行することで `~/.claude/settings.json` の `sandbox.filesystem.denyRead` に directory-level deny がマージされる（symlink-escape candidate は自動 skip）。詳細は [`.claude/skills/org-setup/references/permissions.md`](../.claude/skills/org-setup/references/permissions.md) の「ユーザー共通の sandbox denyRead 補強（`--user-common-sandbox`）」節を参照。
+
+**upstream への enhancement request（任意）**: 「`Read(...)` / `Edit(...)` の `permissions.deny` を `sandbox.filesystem.denyRead` に merge する際、realpath が `sandbox_read_roots` を escape する path は除外する」改善が Claude Code 側に入れば、本 portability 問題は構造的に解消する。本タスクのスコープ外。
+
+調査ログ全文は [Issue #429 のコメント](https://github.com/suisya-systems/claude-org-ja/issues/429#issuecomment-4419741705) を参照。
+
 ---
 
 ## 10.2. Phase 3 sandbox case E 実機検証 (WSL Layer 3 suppression, runtime 0.1.4+)

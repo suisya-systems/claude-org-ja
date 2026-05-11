@@ -51,9 +51,7 @@
       "Bash(git branch -D*)",
       "Bash(git branch * -D*)",
       "Bash(git -C * branch -D*)",
-      "Bash(git -C * branch * -D*)",
-      "Read(~/.ssh/*)",
-      "Read(~/.aws/*)"
+      "Bash(git -C * branch * -D*)"
     ]
   },
   "hooks": {
@@ -81,8 +79,7 @@
         ".env",
         ".env.*",
         "**/credentials*",
-        "**/*.pem",
-        "~/.config/gh/hosts.yml"
+        "**/*.pem"
       ],
       "denyWrite": [
         "~/.claude/settings.json"

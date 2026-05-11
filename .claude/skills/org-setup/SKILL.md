@@ -146,6 +146,24 @@ python tools/org_setup_prune.py --role dispatcher --claude-org-path "C:/Users/me
 失敗時はこの `.bak` を `mv` で戻せば原状復帰できる。
 不要であれば `--no-backup` で抑止できる。
 
+### Step 6: ユーザー共通の sandbox denyRead 補強（`--user-common-sandbox`、Issue #429 Task B / C）
+
+> **⚠️ main pull 後の 1 回必須**: 本リポジトリを clone / pull した後に **`python tools/org_setup_prune.py --user-common-sandbox` を 1 回実行する**。Issue #429 Task C で共有 `.claude/settings.json` から個人 path（`~/.config/gh/hosts.yml` および `Read(~/.ssh/*)` / `Read(~/.aws/*)`）を除去したため、未実行だと **個人環境の sandbox denyRead 補強が一時的に弱くなる**。
+
+`--user-common-sandbox` は `~/.claude/settings.json` の `sandbox.filesystem.denyRead` に対してのみ idempotent な union-merge を行う専用モード（他キーは無触）:
+
+```bash
+# diff プレビュー
+python tools/org_setup_prune.py --user-common-sandbox --dry-run
+
+# 実行（既存があれば .bak 自動生成、上書き候補がない場合は no-op）
+python tools/org_setup_prune.py --user-common-sandbox
+```
+
+対象ディレクトリ（`~/.ssh` / `~/.aws` / `~/.config/gh` / `~/.kube` / `~/.gnupg` / `~/.docker` / `~/.config/aws-vault`）のうち、**実在し、かつ realpath が HOME を escape しない symlink でない** ものだけが追加される。WSL2 + DriveFS の `~/.aws → /mnt/c/...` のようなケースは自動 skip（bwrap bootstrap 失敗の予防）。
+
+仕様詳細は [`.claude/skills/org-setup/references/permissions.md`](references/permissions.md) の「ユーザー共通の sandbox denyRead 補強」節を参照。
+
 ## 注意事項
 
 - `settings.local.json` は `.gitignore` に入っている前提（個人設定のため）

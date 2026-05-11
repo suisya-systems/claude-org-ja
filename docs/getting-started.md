@@ -70,6 +70,16 @@ renga --layout ops
 
 `/org-setup` は **additive-only**（不足分を追加するだけで既存を消さない）。drift を baseline に戻したい場合は [`.claude/skills/org-setup/references/permissions.md`](../.claude/skills/org-setup/references/permissions.md) のロール別サンプル JSON で `settings.local.json` を手動置換する。
 
+> **⚠️ main pull 後の 1 回必須（Issue #429 Task B / C）**: 共有 `.claude/settings.json` から個人パスエントリ (`~/.config/gh/hosts.yml` / `Read(~/.ssh/*)` / `Read(~/.aws/*)`) を除去したため、初回 / pull 後に **`python tools/org_setup_prune.py --user-common-sandbox` を 1 回実行**してください。未実行だと個人環境の sandbox 防御が一時的に弱くなります（[README §個人 sandbox の補強](../README.md) と [`.claude/skills/org-setup/references/permissions.md`](../.claude/skills/org-setup/references/permissions.md) 参照）。
+>
+> ```bash
+> # diff プレビュー
+> python tools/org_setup_prune.py --user-common-sandbox --dry-run
+>
+> # 実行（idempotent。再実行は no-op）
+> python tools/org_setup_prune.py --user-common-sandbox
+> ```
+
 ### 互換性プリフライト（任意、推奨）
 
 `/org-start` を実行する前に、renga のバージョンと MCP ツール surface が claude-org の要件を満たすか検証できる:
