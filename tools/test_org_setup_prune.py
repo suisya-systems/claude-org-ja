@@ -400,6 +400,32 @@ class FilterExistingUserDirsTests(unittest.TestCase):
         )
         self.assertEqual(result, ["~/.ssh"])
 
+    def test_symlink_escaping_home_is_dropped(self) -> None:
+        # Simulate the WSL pattern: ``~/.aws`` is a symlink to a directory
+        # that lives outside HOME (on WSL this would be ``/mnt/c/...``).
+        outside = Path(tempfile.mkdtemp(prefix="user_common_outside_"))
+        try:
+            (self.home / ".aws").symlink_to(outside)
+            result = p.filter_existing_user_dirs(
+                ["~/.ssh", "~/.aws"], home=self.home,
+            )
+            # ``~/.ssh`` (regular dir inside HOME) survives; ``~/.aws``
+            # (symlink with realpath outside HOME) is suppressed so the
+            # rendered settings.json does not ask bwrap to deny an entry
+            # that would fail its bootstrap on WSL.
+            self.assertEqual(result, ["~/.ssh"])
+        finally:
+            import shutil
+            shutil.rmtree(outside, ignore_errors=True)
+
+    def test_symlink_inside_home_is_kept(self) -> None:
+        # A symlink whose target resolves back inside HOME is still safe
+        # (no realpath escape), so it should be retained.
+        (self.home / ".real-kube").mkdir()
+        (self.home / ".kube").symlink_to(self.home / ".real-kube")
+        result = p.filter_existing_user_dirs(["~/.kube"], home=self.home)
+        self.assertEqual(result, ["~/.kube"])
+
 
 class MergeUserCommonSandboxTests(unittest.TestCase):
     """``merge_user_common_sandbox_denyread`` is the pure core: idempotent,
@@ -461,6 +487,19 @@ class MergeUserCommonSandboxTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             p.merge_user_common_sandbox_denyread(
                 {"sandbox": {"filesystem": {"denyRead": "not-a-list"}}}, ["~/.ssh"],
+            )
+
+    def test_non_string_existing_entry_raises(self) -> None:
+        # Claude Code's bwrap launcher only accepts the raw-string form
+        # at the user-level settings.json; a structured ``{anchor, path}``
+        # dict must NOT be silently merged with new entries (and would
+        # also blow up set / diff bookkeeping later because dicts are
+        # unhashable). The merger refuses with ValueError so the caller
+        # aborts before any write.
+        with self.assertRaises(ValueError):
+            p.merge_user_common_sandbox_denyread(
+                {"sandbox": {"filesystem": {"denyRead": [{"anchor": "home", "path": ".aws/**"}]}}},
+                ["~/.ssh"],
             )
 
     def test_dedup_is_value_exact(self) -> None:
@@ -633,14 +672,75 @@ class UserCommonSandboxEndToEndTests(unittest.TestCase):
 
     def test_cli_entrypoint(self) -> None:
         # Smoke-test the argparse plumbing: --user-common-sandbox with a
-        # custom settings path runs without --role and exits 0.
+        # custom settings path runs without --role and exits 0. The CLI
+        # auto-derives HOME from the ``<DIR>/.claude/settings.json`` shape
+        # so existence checks run against the test's temp HOME (which has
+        # ``.ssh`` and ``.aws`` but not ``.kube``).
         rc = p.main([
             "--user-common-sandbox",
             "--user-common-settings-path", str(self.settings_path),
             "--no-backup",
-            "--dry-run",
         ])
         self.assertEqual(rc, 0)
+        loaded = json.loads(self.settings_path.read_text(encoding="utf-8"))
+        deny = loaded["sandbox"]["filesystem"]["denyRead"]
+        self.assertIn("~/.ssh", deny)
+        self.assertIn("~/.aws", deny)
+        self.assertNotIn("~/.kube", deny)
+
+    def test_cli_home_override_takes_precedence(self) -> None:
+        # When both --user-common-settings-path and --user-common-home are
+        # supplied, the explicit home wins over the auto-derived one.
+        alt_home = Path(tempfile.mkdtemp(prefix="user_common_home_"))
+        try:
+            (alt_home / ".gnupg").mkdir()
+            rc = p.main([
+                "--user-common-sandbox",
+                "--user-common-settings-path", str(self.settings_path),
+                "--user-common-home", str(alt_home),
+                "--no-backup",
+            ])
+            self.assertEqual(rc, 0)
+            loaded = json.loads(self.settings_path.read_text(encoding="utf-8"))
+            deny = loaded["sandbox"]["filesystem"]["denyRead"]
+            # Only the alt_home's directories should match -- self.home's
+            # ``.ssh`` / ``.aws`` should NOT appear.
+            self.assertIn("~/.gnupg", deny)
+            self.assertNotIn("~/.ssh", deny)
+            self.assertNotIn("~/.aws", deny)
+        finally:
+            import shutil
+            shutil.rmtree(alt_home, ignore_errors=True)
+
+    def test_dry_run_renders_skipped_even_on_noop(self) -> None:
+        # First merge populates the file; then a second --dry-run is a
+        # no-op merge but should still list the candidates that were
+        # skipped (e.g. ``~/.kube`` not existing in this test's HOME) so
+        # the operator can audit the result.
+        rc = p.process_user_common_sandbox(
+            settings_path=self.settings_path,
+            home=self.home,
+            dry_run=False,
+            no_backup=True,
+        )
+        self.assertEqual(rc, 0)
+        # Capture stdout of a subsequent dry-run.
+        import io
+        import contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc2 = p.process_user_common_sandbox(
+                settings_path=self.settings_path,
+                home=self.home,
+                dry_run=True,
+                no_backup=True,
+            )
+        self.assertEqual(rc2, 0)
+        out = buf.getvalue()
+        # No-op header is OK, but the skipped section MUST appear so the
+        # operator can see what was excluded.
+        self.assertIn("skipped", out)
+        self.assertIn("~/.kube", out)
 
 
 if __name__ == "__main__":

@@ -275,15 +275,31 @@ def filter_existing_user_dirs(
     home: Path | None = None,
 ) -> list[str]:
     """Return the subset of ``~``-prefixed candidates whose expanded path is
-    an existing directory.
+    an existing directory **and resolves to a realpath inside HOME**.
 
     The returned entries are the *original* ``~``-prefixed literals -- they
     are what gets written into ``settings.json`` so the file stays portable
     across users. ``home`` is injectable so tests can stand up a temporary
     HOME without monkey-patching ``Path.home``. Non-``~`` and non-directory
     entries are skipped (we never deny things that do not exist; the
-    bwrap launcher would treat them as case-A skipped entries anyway)."""
+    bwrap launcher would treat them as case-A skipped entries anyway).
+
+    **Realpath escape suppression**: on WSL it is common for ``~/.aws`` /
+    ``~/.ssh`` to be symlinks pointing at ``/mnt/c/Users/<name>/.aws`` etc.,
+    which is outside the sandbox read root and trips a bwrap bootstrap
+    failure (case A in the launcher contract). Mirror the claude-org-runtime
+    generator's behavior (``suppressOnSymlinkEscape=True`` default in
+    ``role_configs_schema.json#$comment_sandbox_anchor``): if the candidate's
+    ``Path.resolve()`` lands outside ``home.resolve()`` we drop it here so
+    the user_common settings.json never asks the launcher to deny an entry
+    it would have to skip anyway. The corresponding Layer 2 mirror
+    (``Read(~/.aws/*)`` etc.) lives in the project ``.claude/settings.json``
+    permissions.deny and is not affected by this filter."""
     base = home if home is not None else Path.home()
+    try:
+        base_real = base.resolve()
+    except OSError:
+        base_real = base
     out: list[str] = []
     for entry in candidates:
         if entry.startswith("~/"):
@@ -294,8 +310,22 @@ def filter_existing_user_dirs(
             # Absolute / relative entries are out of scope for this helper;
             # the merge function will still preserve them if already present.
             continue
-        if target.is_dir():
-            out.append(entry)
+        if not target.is_dir():
+            continue
+        try:
+            target_real = target.resolve()
+        except OSError:
+            # If realpath cannot be computed we conservatively drop the
+            # entry rather than risk a bwrap failure on a broken symlink.
+            continue
+        try:
+            target_real.relative_to(base_real)
+        except ValueError:
+            # Symlink escape: realpath landed outside HOME. Skip to avoid
+            # the WSL bwrap bootstrap failure described in
+            # docs/sandbox-probe/phase3-bootstrap-policy-design.md §5.
+            continue
+        out.append(entry)
     return out
 
 
@@ -350,6 +380,19 @@ def merge_user_common_sandbox_denyread(
         raise ValueError(
             f"settings['sandbox']['filesystem']['denyRead'] must be an array or absent, got {type(dr_val).__name__}"
         )
+    # All existing entries must be strings: Claude Code's own bwrap launcher
+    # consumes the raw-string form in ~/.claude/settings.json (the structured
+    # ``{anchor: ..., path: ...}`` form is internal to claude-org-runtime's
+    # worker-settings generator, NOT the user-level surface). If a caller has
+    # smuggled a non-string entry in we refuse to merge so downstream set /
+    # diff operations on the rendered list never hit ``TypeError`` on an
+    # unhashable element, and so the merge cannot accidentally legitimize an
+    # entry shape the launcher would reject.
+    for i, existing in enumerate(deny_read):
+        if not isinstance(existing, str):
+            raise ValueError(
+                f"settings['sandbox']['filesystem']['denyRead'][{i}] must be a string, got {type(existing).__name__}"
+            )
     for entry in entries:
         if entry not in deny_read:
             deny_read.append(entry)
@@ -402,17 +445,20 @@ def process_user_common_sandbox(
         )
         return 2
 
+    if dry_run:
+        # In dry-run we always render the report, even on no-op, so the
+        # operator can see which candidates were skipped (missing dir /
+        # symlink-escape) and judge whether the result is correct.
+        print(render_user_common_diff(settings_path, current, target, candidates, existing_entries))
+        return 0
+
     if target == current:
         msg = f"[org_setup_prune] user_common: {settings_path} already has all applicable sandbox.filesystem.denyRead entries; no changes."
         print(msg)
         return 0
 
-    if dry_run:
-        print(render_user_common_diff(settings_path, current, target, candidates, existing_entries))
-        return 0
-
     bak = write_settings(settings_path, target, make_backup=not no_backup)
-    added = sorted(set(_safe_deny_read(target)) - set(_safe_deny_read(current)))
+    added = _added_in_append_order(_safe_deny_read(current), _safe_deny_read(target))
     print(
         f"[org_setup_prune] user_common: wrote {settings_path}"
         + (f" (backup: {bak.name})" if bak else "")
@@ -425,6 +471,14 @@ def _safe_deny_read(settings: dict) -> list[str]:
     return list(((settings.get("sandbox") or {}).get("filesystem") or {}).get("denyRead") or [])
 
 
+def _added_in_append_order(current: list[str], target: list[str]) -> list[str]:
+    """Return the suffix of ``target`` that ``merge_user_common_sandbox_denyread``
+    appended on top of ``current`` -- preserving the input-append order the
+    merger advertises (i.e., the order the user will see in the file)."""
+    cur_set = set(current)
+    return [e for e in target if e not in cur_set]
+
+
 def render_user_common_diff(
     settings_path: Path,
     current: dict,
@@ -432,9 +486,7 @@ def render_user_common_diff(
     candidates: tuple[str, ...] | list[str],
     existing_entries: list[str],
 ) -> str:
-    cur = set(_safe_deny_read(current))
-    tgt = set(_safe_deny_read(target))
-    added = sorted(tgt - cur)
+    added = _added_in_append_order(_safe_deny_read(current), _safe_deny_read(target))
     skipped_missing = [c for c in candidates if c not in existing_entries]
     lines = [f"=== user_common: {settings_path} ==="]
     if not added:
@@ -444,7 +496,10 @@ def render_user_common_diff(
         for it in added:
             lines.append(f"    + {it}")
     if skipped_missing:
-        lines.append("  skipped (directory does not exist):")
+        # These include both non-existent directories AND symlink-escape
+        # entries (the latter are common on WSL where ``~/.aws`` /
+        # ``~/.ssh`` may resolve to ``/mnt/c/...``).
+        lines.append("  skipped (directory missing or resolves outside HOME):")
         for it in skipped_missing:
             lines.append(f"    - {it}")
     return "\n".join(lines)
@@ -660,6 +715,16 @@ def main(argv: list[str] | None = None) -> int:
         help="Override the user_common settings.json path (default: ~/.claude/settings.json). "
              "Primarily for tests.",
     )
+    parser.add_argument(
+        "--user-common-home",
+        type=Path,
+        default=None,
+        help="Override the HOME directory used for the existence + realpath-escape check "
+             "of --user-common-sandbox candidates. Primarily for tests. When omitted, the "
+             "real HOME is used (or, if --user-common-settings-path points at a path of the "
+             "form <DIR>/.claude/settings.json, <DIR> is used so tests can supply only the "
+             "settings path).",
+    )
     args = parser.parse_args(argv)
 
     if not args.role and not args.all and not args.user_common_sandbox:
@@ -683,8 +748,18 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.user_common_sandbox:
         settings_path = args.user_common_settings_path or DEFAULT_USER_COMMON_SETTINGS_PATH
+        home = args.user_common_home
+        if home is None and args.user_common_settings_path is not None:
+            # Auto-derive HOME from a ``<DIR>/.claude/settings.json``-shaped
+            # override so a test that supplies only --user-common-settings-path
+            # exercises the existence + realpath-escape check against the
+            # temp tree, not the operator's real HOME.
+            p = args.user_common_settings_path
+            if p.name == "settings.json" and p.parent.name == ".claude":
+                home = p.parent.parent
         r = process_user_common_sandbox(
             settings_path=settings_path,
+            home=home,
             dry_run=args.dry_run,
             no_backup=args.no_backup,
         )
