@@ -55,13 +55,21 @@ if echo "$COMMAND" | grep -qE '(^|[|&;[:space:]])renga[[:space:]]'; then
 fi
 
 # workers ディレクトリのパスを org-config.md から読み取って解決する
-# Hook はプロジェクトルート (claude-org/) から実行される前提
-WORKERS_REL=$(grep 'workers_dir:' registry/org-config.md 2>/dev/null | sed 's/.*workers_dir:[[:space:]]*//' | tr -d '[:space:]')
+# org-config.md の workers_dir はリポジトリルート起点の相対パスなので、
+# config の読み込みも workers パスの正規化も ORG_ROOT 起点で行う
+# （CLAUDE_ORG_PATH 未設定時は cwd を fallback。Secretary は cwd がプロジェクトルートなので動作する）
+ORG_ROOT="${CLAUDE_ORG_PATH:-$(pwd)}"
+ORG_CONFIG="$ORG_ROOT/registry/org-config.md"
+WORKERS_REL=$(grep 'workers_dir:' "$ORG_CONFIG" 2>/dev/null | sed 's/.*workers_dir:[[:space:]]*//' | tr -d '[:space:]' || true)
 if [[ -z "$WORKERS_REL" ]]; then
   # org-config.md が読めない場合はスキップ（Hook の責務外）
   exit 0
 fi
-WORKERS_CANONICAL=$(portable_realpath "$WORKERS_REL")
+case "$WORKERS_REL" in
+  /*) WORKERS_ABS="$WORKERS_REL" ;;
+  *)  WORKERS_ABS="$ORG_ROOT/$WORKERS_REL" ;;
+esac
+WORKERS_CANONICAL=$(portable_realpath "$WORKERS_ABS")
 
 # 判定ロジック: 「再帰削除コマンドが含まれる」AND「workers パスが含まれる」
 # 引数パースではなく文字列マッチで判定する（for ループ等の回避パターンにも対応）
