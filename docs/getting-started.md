@@ -25,6 +25,7 @@ claude-orgの使い方ガイド。
 curl -fsSL https://raw.githubusercontent.com/suisya-systems/claude-org-ja/main/scripts/install.sh | bash
 cd claude-org-ja
 bash scripts/install-hooks.sh
+python tools/org_setup_prune.py --user-common-sandbox   # main pull 後に 1 回必須 (Issue #429 Task B/C)
 renga --layout ops
 ```
 
@@ -33,7 +34,8 @@ renga --layout ops
 ```powershell
 iwr -useb https://raw.githubusercontent.com/suisya-systems/claude-org-ja/main/scripts/install.ps1 | iex
 cd claude-org-ja
-bash scripts/install-hooks.sh   # Git Bash / WSL 上で実行
+bash scripts/install-hooks.sh                            # Git Bash / WSL 上で実行
+py -3 tools/org_setup_prune.py --user-common-sandbox     # main pull 後に 1 回必須 (Issue #429 Task B/C)
 renga --layout ops
 ```
 
@@ -58,7 +60,9 @@ pwsh -NoProfile -File $env:TEMP\install.ps1 -Dir my-claude-org
 ```bash
 git clone https://github.com/suisya-systems/claude-org-ja.git
 cd claude-org-ja
-renga mcp install              # 初回のみ。renga-peers MCP を user-scope 登録
+renga mcp install                                            # 初回のみ。renga-peers MCP を user-scope 登録
+bash scripts/install-hooks.sh                                # pre-commit secret scanner を有効化
+python tools/org_setup_prune.py --user-common-sandbox        # main pull 後に 1 回必須 (Issue #429 Task B/C)
 renga --layout ops
 ```
 

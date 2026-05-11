@@ -99,7 +99,7 @@ python tools/org_setup_prune.py --user-common-sandbox  # → "no changes"
 
 **前提（Issue #429 Task A 調査結論を踏まえた含意）**: Claude Code は `permissions.deny` の `Read(...)` を `sandbox.filesystem.denyRead` に **merge する** ([公式 docs](https://code.claude.com/docs/en/settings))。したがって `permissions.deny Read(~/.aws/*)` を共有 / 個人 settings いずれかに書くと、symlink-escape 環境では bwrap bootstrap 失敗が起きうる。本モードが directory-level deny を採用し symlink-escape を skip するのは、Layer 2 (`Read(...)`) と Layer 3 (`sandbox.filesystem.denyRead`) のどちらに書いても同じ failure を踏むためで、Layer 3 側で realpath ベースに前さばきして root-cause を構造的に避ける設計。
 
-**スコープ外（本モード）**: `sandbox.filesystem.denyWrite` は **本モードの対象外**。共有 `.claude/settings.json` の `denyWrite: ["~/.claude/settings.json"]` は Issue #429 Task C 時点では残置（Task B の denyWrite 拡張は別 Issue で扱う）。詳細は本リポジトリ root の `.claude/settings.json` 該当 entry のコメントと Task C PR 本文の denyWrite 方針節を参照。
+**スコープ外（本モード）**: `sandbox.filesystem.denyWrite` は **本モードの対象外**。共有 `.claude/settings.json` の `denyWrite: ["~/.claude/settings.json"]` は Issue #429 Task C 時点では残置している。理由: (i) Task B PR #430 が `denyRead` 限定で `denyWrite` 拡張を持たない、(ii) 削除すると defense-in-depth が失われる（`~/.claude/settings.json` への意図しない上書きを止める唯一の Layer 3 mechanism）、(iii) 単一 file 名のため username 漏洩の影響は globbed entry より軽微、の 3 点に基づく判断。`denyWrite` も個人 settings 側へ移管するための Task B 拡張 (`tools/org_setup_prune.py` に `--user-common-sandbox-write` 相当を追加し、`~/.claude/settings.json` を candidate として merge する) は別 Issue を起票して扱う方針。本判断は本ファイル内に閉じる（旧版で参照していた共有 `.claude/settings.json` の inline コメントは JSON 仕様上設置できないため誤りだった）。
 
 **詳細**: 実装は `tools/org_setup_prune.py` の `merge_user_common_sandbox_denyread` / `filter_existing_user_dirs` / `process_user_common_sandbox`、テストは `tools/test_org_setup_prune.py` の `MergeUserCommonSandboxDenyread` / `ProcessUserCommonSandboxCli` クラス群。
 
