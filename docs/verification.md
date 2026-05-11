@@ -407,7 +407,7 @@ head -1 knowledge/raw/*.md  # <!-- curated --> マーカー確認
 - Windows で glob (`**/credentials*`) が効かない → forward/backward slash 差異の可能性。glob パターンを `./credentials*` 等に調整して再試行
 - sandbox 自体が発動していない → Claude Code の `sandbox.enabled` デフォルトが OFF の可能性。公式 docs の現行デフォルトを確認
 
-**注**: `sandbox.enabled` は本 PR では明示指定していない（Claude Code 側のデフォルトに任せる）。既知バグ #32226 の影響範囲を限定するため段階導入とし、デフォルト挙動で denyRead が無効な環境では別途明示 true 化を検討する。
+**注**: `sandbox.enabled` は **現行の共有 [`.claude/settings.json`](../.claude/settings.json) で `true` を明示指定済み**（v0.1.0 の初期コミット時点から）。本節の旧版では未明示としていたが、その後共有 settings 側で明示 `true` 化された。既知バグ #32226 の影響を受ける環境では `false` への一時退避を検討するための judgment lever として残しているが、現在のデフォルト方針は明示 `true` であることに留意。
 
 ### 実測結果（2026-04-25, Windows 11 + Git Bash, Claude Code Desktop）
 
@@ -456,6 +456,27 @@ WSL で deny されなければ、 (a) Claude Code のバージョンが sandbox
 
 WSL2 などで `bubblewrap` 未導入時に sandbox init が silent no-op fallback して `~/.aws/**` / `~/.ssh/**` の denyRead/denyWrite が無効化される問題への対処として、**ホーム dotfile（`~/.aws` / `~/.ssh`）は sandbox の対象範囲外**とし、`permissions.deny` の `Read(~/.ssh/*)` / `Read(~/.aws/*)` で防御する。for portability, home dotfiles are out of sandbox scope。sandbox 側の `denyRead` / `denyWrite` はリポジトリローカルの `.env` / 認証情報ファイルに集中させる。
 
+#### Addendum: Phase 2a 前提の撤回（Issue #429 Task A 調査結論）
+
+**前提撤回**: 上記「`permissions.deny` の `Read(...)` で防御する」前提は **現行 Claude Code の documented behavior と乖離している**。`permissions.deny` への移管は portability fix として成立しない。
+
+**根拠（Claude Code 公式 docs）**: <https://code.claude.com/docs/en/settings> の `sandbox.filesystem.denyRead` 説明:
+
+> Paths where sandboxed commands cannot read. Arrays are merged across all settings scopes. **Also merged with paths from `Read(...)` deny permission rules.**
+
+つまり `permissions.deny` に `Read(~/.aws/*)` を書いた時点で、明示的に `sandbox.filesystem.denyRead` に書かなくても、Claude Code 側で sandbox の effective denyRead 集合に同パスが加算される。**共有 settings に書こうが個人 settings に書こうが merge 挙動は同じ**で、permissions.deny への移管は sandbox bootstrap 失敗（WSL2 + bwrap で `~/.aws` が `/mnt/c/...` への symlink になっている環境などで `bwrap: Can't create file at /home/<user>/.aws/config` が出る case）を回避できない。
+
+**実用上の portability fix（二択）**:
+
+1. **対象環境で当該 symlink を退避/削除し、real directory を `mkdir -p` で作り直す**。`mkdir -p` 単発では既存 symlink を real directory に置き換えないため、`rm <link> && mkdir -p <dir>` 等の明示的置換が必要。
+2. **当該環境では `Read(~/.aws/*)` / `Read(~/.ssh/*)` を共有・個人いずれの settings からも除外する**。bwrap の bootstrap 失敗を避けるための回避策。**ただしこの選択は意図的に Claude 側の credential read 防御を弱める残存リスクを含む**: (a) Claude Code は同一ユーザー権限で動くため OS のファイルパーミッションは Claude プロセス自身を止めない、(b) claude-org-runtime の WSL Layer 3 suppression (§10.2 Phase 3 case E) は escape する Layer 3 entry を **emit 段階で落とす** 動作で、deny を強化するわけではない、(c) `--user-common-sandbox` も同 candidate を skip する。残るのは Claude Code 組込の credential 保護層 (`~/.ssh/id_*` 等の特定 path に対するもの) と Layer 4 hook / role 契約のみで、`~/.aws/credentials` の `cat` を完全に止める保証は無い。symlink-escape 環境では選択肢 1 (real directory 化) が望ましく、選択肢 2 はそれが運用上不可能な場合の妥協策と位置付ける。
+
+claude-org-ja 本体は Issue #429 Task C（本 addendum と同 PR）で共有 `.claude/settings.json` から `Read(~/.ssh/*)` / `Read(~/.aws/*)` / `~/.config/gh/hosts.yml` を除去した（= 上記選択肢 2 を採用）。個人環境ごとに実在する（= symlink でない）機密ディレクトリを deny したい場合は、Issue #429 Task B で導入された `python tools/org_setup_prune.py --user-common-sandbox` を 1 回実行することで `~/.claude/settings.json` の `sandbox.filesystem.denyRead` に directory-level deny がマージされる（symlink-escape candidate は自動 skip）。詳細は [`.claude/skills/org-setup/references/permissions.md`](../.claude/skills/org-setup/references/permissions.md) の「ユーザー共通の sandbox denyRead 補強（`--user-common-sandbox`）」節を参照。
+
+**upstream への enhancement request（任意）**: 「`Read(...)` / `Edit(...)` の `permissions.deny` を `sandbox.filesystem.denyRead` に merge する際、realpath が `sandbox_read_roots` を escape する path は除外する」改善が Claude Code 側に入れば、本 portability 問題は構造的に解消する。本タスクのスコープ外。
+
+調査ログ全文は [Issue #429 のコメント](https://github.com/suisya-systems/claude-org-ja/issues/429#issuecomment-4419741705) を参照。
+
 ---
 
 ## 10.2. Phase 3 sandbox case E 実機検証 (WSL Layer 3 suppression, runtime 0.1.4+)
@@ -481,20 +502,20 @@ WSL2 などで `bubblewrap` 未導入時に sandbox init が silent no-op fallba
    - `realpath`, `sandbox_read_roots`
 
    WSL では typically `~/.aws/*` や `~/.ssh/*` 系の Layer 3 entries が realpath escape で suppressed される。
-4. rendered `settings.local.json` を別途 generate し、`suppressions` に含まれた entries が `sandbox.filesystem.denyRead` / `denyWrite` から消えていることを確認。逆に `permissions.deny` の `Read(~/.aws/*)` / `Read(~/.ssh/*)` は Layer 2 として **必ず存在する** こと（runtime contract: Layer 2 は never suppressed）。
+4. rendered `settings.local.json` を別途 generate し、`suppressions` に含まれた entries が `sandbox.filesystem.denyRead` / `denyWrite` から消えていることを確認。なお Issue #429 Task C 後の本リポジトリ共有 `.claude/settings.json` には `Read(~/.aws/*)` / `Read(~/.ssh/*)` が **そもそも存在しない**（§10.1 Addendum 参照、Phase 2a の Layer 2 mirror 前提を撤回）。Layer 2 fallback は worker_role のテンプレート (`tools/org_extension_schema.json` の `worker_roles.*`) や個人 `~/.claude/settings.json` でのみ評価する。runtime 側 contract「Layer 2 は never suppressed」自体は健在で、worker_role が emit する `permissions.deny` は §1.3 case E と独立して残る。
 5. 非 WSL Linux 環境（GitHub Actions `ubuntu-latest` 等）で同様に `settings show --explain` を実行し、`wsl_detected=false` / `suppressions=[]` / Layer 3 entries が rendered settings に残ることを確認。
 
 **期待結果と判断**:
-- WSL では Layer 3 が adaptive に dropped、Layer 2 は常に保持。
+- WSL では Layer 3 が adaptive に dropped、worker_role の Layer 2 mirror（emit 元側）は常に保持。
 - 非 WSL では Layer 3 はそのまま残る。
-- 両方で `permissions.deny` は intact。
+- worker_role 側の `permissions.deny` は intact（共有 `.claude/settings.json` 側は §10.1 Addendum 後 `Read(~/.aws/*)` 等を持たない点に注意）。
 
 **失敗時の切り分け**:
 - (a) `wsl_detected` が `false` なのに `/mnt/c` が realpath に出る → `/proc/version` / `osrelease` 検出ロジックの不具合（runtime issue）。
 - (b) `suppressions` が空でも rendered settings から entries が消えている → `render_role` と `show` のソースが乖離。
-- (c) Layer 2 entries が消えている → runtime regression、即座に runtime 側に escalation。
+- (c) worker_role が emit するはずの Layer 2 entries が消えている → runtime regression、即座に runtime 側に escalation（共有 `.claude/settings.json` 側からの除去は Issue #429 Task C で意図的なもの。両者を取り違えない）。
 
-**関連 §Phase 2a portability fix (§10.1) との関係**: Phase 2a fix は「home dotfiles を sandbox スコープ外として `permissions.deny` で防御する」baseline であり、Phase 3 case E はその上で「WSL では Layer 3 entries も含めて自動的に dropped」という adaptive behavior を追加する。両者は併存し、非 WSL や bwrap 未導入環境では Phase 2a fix のまま動作する（§10.2 は WSL 環境向けの追加検証）。
+**関連 §Phase 2a portability fix (§10.1) との関係**: §10.1 Addendum (Issue #429 Task A 調査結論) で「`permissions.deny Read(...)` は Claude Code 側で `sandbox.filesystem.denyRead` に merge される（共有 / 個人 settings 問わず）」事実が確認された結果、Phase 2a の「permissions.deny への移管が portability fix になる」前提は撤回された。共有 `.claude/settings.json` からは `Read(~/.ssh/*)` / `Read(~/.aws/*)` を除去し、個人環境ごとの directory-level deny は `python tools/org_setup_prune.py --user-common-sandbox`（symlink-escape 自動 skip）で個人 `~/.claude/settings.json` 側に補強する方針に切り替わっている。Phase 3 case E（runtime 側の WSL Layer 3 suppression）は worker_role の generator 動作として依然有効で、本 §10.2 は WSL 環境向けの runtime suppression 検証として独立して残す。
 
 **Reference**:
 - runtime 0.1.4 release notes: https://github.com/suisya-systems/claude-org-runtime/releases/tag/v0.1.4

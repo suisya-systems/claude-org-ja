@@ -56,6 +56,53 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
 
 **注意**: `renga-peers` MCP ツール 14 種は `renga mcp install` を一度実行して user-scope に MCP サーバーを登録した後に利用可能になる。登録手順は README「インストール」セクションを参照。
 
+### ユーザー共通の sandbox denyRead 補強（`--user-common-sandbox`、Issue #429 Task B）
+
+> **⚠️ main pull 後の 1 回必須**: 本リポジトリを clone / pull した後に **`python tools/org_setup_prune.py --user-common-sandbox` を 1 回実行する**。未実行だと共有 `.claude/settings.json` から除去された `~/.ssh` / `~/.aws` / `~/.config/gh` 等の sandbox denyRead が補完されず、**sandbox 防御が一時的に弱くなる**。
+
+`tools/org_setup_prune.py --user-common-sandbox` は `~/.claude/settings.json` の `sandbox.filesystem.denyRead` に対して、機密 credential ディレクトリ群を **idempotent に union-merge** する専用モード。共有 (= リポジトリ) 側の `.claude/settings.json` から個人 path を除去（Issue #429 Task C）した分の defense-in-depth を、個人環境ごとに directory-level の bwrap deny として復元する。
+
+**対象ディレクトリ（候補）**: `~`-prefixed の literal で保存され、ユーザー間で共有されても portable:
+
+- `~/.ssh`
+- `~/.aws`
+- `~/.config/gh`
+- `~/.kube`
+- `~/.gnupg`
+- `~/.docker`
+- `~/.config/aws-vault`
+
+**フィルタ規則**:
+
+- **存在しないディレクトリは skip**。`~/.docker` が無い環境では entry を追加しない（bwrap launcher の case A 扱いを先回り）。
+- **realpath が HOME を escape する symlink は skip**。WSL2 + DriveFS で `~/.aws → /mnt/c/Users/<name>/.aws` のようになっている場合、bwrap の bootstrap mount が失敗する（`bwrap: Can't create file at /home/<user>/.aws/config: No such file or directory`）。これは claude-org-runtime の Layer 3 generator (`role_configs_schema.json#$comment_sandbox_anchor` の `suppressOnSymlinkEscape=True`) と同じ判定を user_common 側でも先回りする。
+
+**動作（idempotent / additive-only）**:
+
+- 既存の top-level key (`theme`, `env`, `permissions`, etc.) は無触。
+- 既存の `sandbox` / `sandbox.filesystem` siblings (`enabled`, `failIfUnavailable`, `denyWrite`, `additionalDirectories`) は保持。
+- `denyRead` の既存順序を保ちつつ、未追加の candidate のみを後ろに append。重複は skip。
+- malformed shape（`sandbox` が object でない、`denyRead` が array でない、entry が string でない、等）は **書込前に `ValueError` で abort**。ユーザーデータの黙示的破壊を防ぐ。
+
+**使用方法**:
+
+```bash
+# diff プレビュー（書き込まない）
+python tools/org_setup_prune.py --user-common-sandbox --dry-run
+
+# 実行（既存があれば .bak 自動生成）
+python tools/org_setup_prune.py --user-common-sandbox
+
+# 既に全候補が入っていれば no-op
+python tools/org_setup_prune.py --user-common-sandbox  # → "no changes"
+```
+
+**前提（Issue #429 Task A 調査結論を踏まえた含意）**: Claude Code は `permissions.deny` の `Read(...)` を `sandbox.filesystem.denyRead` に **merge する** ([公式 docs](https://code.claude.com/docs/en/settings))。したがって `permissions.deny Read(~/.aws/*)` を共有 / 個人 settings いずれかに書くと、symlink-escape 環境では bwrap bootstrap 失敗が起きうる。本モードが directory-level deny を採用し symlink-escape を skip するのは、Layer 2 (`Read(...)`) と Layer 3 (`sandbox.filesystem.denyRead`) のどちらに書いても同じ failure を踏むためで、Layer 3 側で realpath ベースに前さばきして root-cause を構造的に避ける設計。
+
+**スコープ外（本モード）**: `sandbox.filesystem.denyWrite` は **本モードの対象外**。共有 `.claude/settings.json` の `denyWrite: ["~/.claude/settings.json"]` は Issue #429 Task C 時点では残置している。理由: (i) Task B PR #430 が `denyRead` 限定で `denyWrite` 拡張を持たない、(ii) 削除すると defense-in-depth が失われる（`~/.claude/settings.json` への意図しない上書きを止める唯一の Layer 3 mechanism）、(iii) 単一 file 名のため username 漏洩の影響は globbed entry より軽微、の 3 点に基づく判断。`denyWrite` も個人 settings 側へ移管するための Task B 拡張 (`tools/org_setup_prune.py` に `--user-common-sandbox-write` 相当を追加し、`~/.claude/settings.json` を candidate として merge する) は別 Issue を起票して扱う方針。本判断は本ファイル内に閉じる（旧版で参照していた共有 `.claude/settings.json` の inline コメントは JSON 仕様上設置できないため誤りだった）。
+
+**詳細**: 実装は `tools/org_setup_prune.py` の `merge_user_common_sandbox_denyread` / `filter_existing_user_dirs` / `process_user_common_sandbox`、テストは `tools/test_org_setup_prune.py` の `MergeUserCommonSandboxDenyread` / `ProcessUserCommonSandboxCli` クラス群。
+
 ## 窓口 (`<repo>/.claude/settings.local.json`)
 
 窓口固有の設定。ユーザー共通分はユーザーレベルにあるため、ここには窓口だけが必要なものを書く。

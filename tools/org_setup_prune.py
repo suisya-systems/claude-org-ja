@@ -292,9 +292,12 @@ def filter_existing_user_dirs(
     ``role_configs_schema.json#$comment_sandbox_anchor``): if the candidate's
     ``Path.resolve()`` lands outside ``home.resolve()`` we drop it here so
     the user_common settings.json never asks the launcher to deny an entry
-    it would have to skip anyway. The corresponding Layer 2 mirror
-    (``Read(~/.aws/*)`` etc.) lives in the project ``.claude/settings.json``
-    permissions.deny and is not affected by this filter."""
+    it would have to skip anyway. Note: Issue #429 Task C removed
+    ``Read(~/.aws/*)`` / ``Read(~/.ssh/*)`` from the project shared
+    ``.claude/settings.json``; the only Layer 2 mirrors that survive today
+    are inside ``tools/org_extension_schema.json`` ``worker_roles.*``
+    templates, which are emitted into per-worker ``settings.local.json`` and
+    are likewise unaffected by this filter."""
     base = home if home is not None else Path.home()
     try:
         base_real = base.resolve()
