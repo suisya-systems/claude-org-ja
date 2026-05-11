@@ -17,7 +17,7 @@ claude-orgの使い方ガイド。
 
 ### インストール
 
-依存ツール（`git` / `claude` / `renga` / `gh`）が揃っていれば、ワンライナーでクローン + `renga mcp install` までを一括実行できる。
+依存ツール（`git` / `claude` / `renga` / `gh` / `jq`）が揃っていれば、ワンライナーでクローン + `renga mcp install` までを一括実行できる。
 
 **macOS / Linux（bash）**:
 
