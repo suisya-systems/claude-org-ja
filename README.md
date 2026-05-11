@@ -83,7 +83,7 @@ Phase 5 完了時点で **Layer 1 / 2 / 3 はいずれも独立 OSS パッケー
 
 ### ワンライナー（推奨）
 
-依存ツール（`git` / `claude` / `renga` / `gh`）が導入済みなら、以下のワンライナーでクローン + `renga mcp install` までを一気に実行できます。
+依存ツール（`git` / `claude` / `renga` / `gh` / `jq`）が導入済みなら、以下のワンライナーでクローン + `renga mcp install` までを一気に実行できます。
 
 **macOS / Linux（bash）**:
 
