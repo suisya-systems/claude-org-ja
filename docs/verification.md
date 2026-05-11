@@ -588,6 +588,36 @@ claude-org-ja 本体は Issue #429 Task C（本 addendum と同 PR）で共有 `
 
 ---
 
+<a id="security-matrix"></a>
+
+## 12. 攻撃ベクトル × 防御層マトリクス
+
+本リポジトリ自身の `.claude/settings.json`（窓口・キュレーター用、`auto` モード）と `.githooks/pre-commit` を基準にした、主要な攻撃ベクトルと各層の対応表。ワーカーロール用テンプレート（[`tools/org_extension_schema.json`](../tools/org_extension_schema.json) の `worker_roles.{default,claude-org-self-edit}` が SoT。`.claude/skills/org-setup/references/permissions.md` は同 SoT の参照ドキュメント）にも `check-worker-boundary.sh` / `block-org-structure.sh` / `block-git-push.sh` に加えて `block-no-verify.sh` / `block-dangerous-git.sh` が配備済み。`permissions.deny` も `git push` 系と `rm -r` / `rm -rf` に加えて `git fetch` / `git pull` / `git remote add|set-url|remove` / `git submodule` / `git lfs` / `git gc` / `git filter-branch` / `git filter-repo` / `git replace` / `git update-ref` / `git config --global|--local|--worktree` / `git reflog expire|delete` / `git worktree*` を `-C` バリアント込みで拒否する。`--no-verify` / `git reset --hard` / `git branch -D` 系の直接遮断は窓口・キュレーターに加えてワーカー側でも有効（ディスパッチャーは `.dispatcher/` 用の独立した hook 群で別途管理）。
+
+凡例: ✅ ブロック / ⚠️ 部分・条件付き / — 対象外 / ➖ 未配備。
+
+| 攻撃ベクトル | `permissions.deny` | PreToolUse フック | sandbox | pre-commit |
+|---|---|---|---|---|
+| `git commit --no-verify` 直書き（窓口・キュレーター） | ✅ | ✅ (`block-no-verify.sh`) | — | — |
+| `eval "git commit --no-verify"` / `bash -c "..."` | — | ✅ Phase 2a [#79](https://github.com/suisya-systems/claude-org-ja/issues/79): `unwrap_eval_and_bashc` で明示パース | — | — |
+| `VAR=$(printf -- '--no-verify'); git commit $VAR` | — | ✅ assignment 収集 + `flatten_substitutions` | — | — |
+| `git push --force` / `git reset --hard` / `git branch -D`（窓口・キュレーター） | ✅ | ✅ (`block-dangerous-git.sh`) | — | — |
+| `cat .env` / 認証情報読み取り（Bash 経由） | — | — | ⚠️ macOS (Seatbelt) / Linux / WSL2 (`bubblewrap`+`socat`) のみ。**Windows native は Claude Code 側未実装で素通り**（[§10.1](#101-sandboxdenyread--denywrite-実機検証phase-2a-issue-79)） | — |
+| `cat ~/.ssh/<key>` / `cat ~/.aws/credentials`（Bash subprocess 経由のホーム dotfile 読み取り） | — (Issue #429 Task C で共有 settings から除去) | — | ⚠️ 個人 `~/.claude/settings.json` で `python tools/org_setup_prune.py --user-common-sandbox` を 1 回実行すると `sandbox.filesystem.denyRead` に directory-level deny がマージされる（symlink-escape は自動 skip。Issue #429 Task B）。**Bash subprocess (sandboxed commands) のみ防御**: `sandbox.filesystem.denyRead` は sandbox 経由 syscall を止めるが Read tool 自体は止めない | — |
+| `echo x >> ~/.claude/settings.json`（Bash subprocess 経由の個人 Claude 設定上書き） | — (Issue #433 で共有 settings の `denyWrite` から除去・個人 settings 側へ移管) | — | ⚠️ 個人 `~/.claude/settings.json` で `python tools/org_setup_prune.py --user-common-sandbox` を 1 回実行すると `sandbox.filesystem.denyWrite` に `~/.claude/settings.json` がマージされる（preventive deny、ファイル未作成でも適用。Issue #433）。**Bash subprocess (sandboxed commands) のみ防御**: Read tool 経由の `Edit(...)` は別 layer (`permissions.deny`) で抑止する | — |
+| `Read tool` 経由のホーム dotfile 読み取り（`Read(~/.ssh/<key>)` 等） | — (Issue #429 Task C で共有 settings から除去) | — | — (`sandbox.filesystem.denyRead` は Read tool に逆方向 merge されない。Claude Code 公式 docs は `Read(...)` deny → `denyRead` の一方向 merge のみ規定) | — |
+| ステージ差分への秘密情報混入 | — | — | — | ✅ ([.githooks/pre-commit](../.githooks/pre-commit)) |
+| シェル関数経由の bypass（`f(){ git commit --no-verify; }; f`） | — | ➖ 関数定義の静的解析は非対応 | — | — |
+
+### 残存リスク (residual risk)
+
+- **シェル関数定義経由のルーティング**: 関数本体内に隠された禁止コマンドは PreToolUse フックの静的解析では検出できない（Phase 2c で検討した shell-layer 静的解析は誤検知率と保守コストの観点から廃案）。sandbox の `denyWrite` も `git commit` などのリポジトリ副作用は止めない。ホーム dotfile の defense-in-depth は [Issue #429](https://github.com/suisya-systems/claude-org-ja/issues/429) Task B/C（`denyRead` 系候補）および [Issue #433](https://github.com/suisya-systems/claude-org-ja/issues/433)（`denyWrite` の `~/.claude/settings.json`）で **共有 `.claude/settings.json` から個人 `~/.claude/settings.json` 側へ移管** されている。`python tools/org_setup_prune.py --user-common-sandbox` を 1 回実行することで、個人環境ごとに directory-level の `sandbox.filesystem.denyRead`（symlink-escape は自動 skip）と file-level の `sandbox.filesystem.denyWrite`（preventive、ファイル未作成でも適用）が同時にマージされる。**この補強は sandboxed Bash サブプロセス経由の read / write のみを止め、Read tool 経由の `Read(~/.aws/<file>)` や Edit tool 経由の `Edit(~/.claude/settings.json)` は止めない**（Claude Code 公式 docs の merge は `Read(...)` deny → `denyRead` / `Edit(...)` deny → `denyWrite` の一方向のみ）。Read / Edit tool 経由は Claude Code 組込の credential 保護層と、worker_role schema (`tools/org_extension_schema.json` の `worker_roles.*`) が emit する `permissions.deny` で受ける残存リスクとして整理されている。WSL2 + DriveFS で `~/.aws` が `/mnt/c/...` への symlink になっている環境では denyRead 側が自動 skip され、bwrap bootstrap 失敗を構造的に避ける（denyWrite は単一ファイル literal のため symlink-escape の影響を受けない）。なお WSL 環境では `claude-org-runtime` が、realpath がサンドボックスの可視範囲から外れる Layer 3 `denyRead` / `denyWrite` エントリを出力時に抑止し、抑止対象を `$comment` フィールドに列挙して出力する。本ベクトルは現状ロール契約による自主規律と上記 user-level sandbox deny の併用で担保される。
+- **Windows native の sandbox 不在**: 上記表のとおり `cat .env` 等は Windows native では素通りする。ワーカー実行環境としては macOS / Linux / WSL2 を推奨し、Windows native では別経路（OS 側のファイル権限・GitHub Secret Scanning 等）で補完する。
+
+詳細と段階導入の意思決定は [Issue #79](https://github.com/suisya-systems/claude-org-ja/issues/79) と [§10.1〜§10.2](#101-sandboxdenyread--denywrite-実機検証phase-2a-issue-79) を参照。
+
+---
+
 ## テスト結果の記録
 
 各テストの結果は以下のフォーマットで記録する:
