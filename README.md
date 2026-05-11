@@ -101,8 +101,9 @@ iwr -useb https://raw.githubusercontent.com/suisya-systems/claude-org-ja/main/sc
 
 ```bash
 cd claude-org-ja
-bash scripts/install-hooks.sh   # コミット直前の秘密情報スキャナを有効化
-renga --layout ops              # 窓口（Secretary）ペインを起動
+bash scripts/install-hooks.sh                            # コミット直前の秘密情報スキャナを有効化
+python tools/org_setup_prune.py --user-common-sandbox    # main pull 後に 1 回必須 (Issue #429 Task B/C)
+renga --layout ops                                       # 窓口（Secretary）ペインを起動
 ```
 
 #### 特定バージョンを固定したい場合（`CLAUDE_ORG_REF`）
@@ -151,7 +152,11 @@ pip install -e .
 # 5. renga の MCP サーバーを Claude Code に登録（初回のみ）
 renga mcp install
 
-# 6. 窓口（Secretary）ペインを起動
+# 6. pre-commit secret scanner と個人 sandbox 補強（main pull 後に 1 回必須、Issue #429 Task B/C）
+bash scripts/install-hooks.sh
+python tools/org_setup_prune.py --user-common-sandbox
+
+# 7. 窓口（Secretary）ペインを起動
 renga --layout ops
 ```
 

@@ -469,7 +469,7 @@ WSL2 などで `bubblewrap` 未導入時に sandbox init が silent no-op fallba
 **実用上の portability fix（二択）**:
 
 1. **対象環境で当該 symlink を退避/削除し、real directory を `mkdir -p` で作り直す**。`mkdir -p` 単発では既存 symlink を real directory に置き換えないため、`rm <link> && mkdir -p <dir>` 等の明示的置換が必要。
-2. **当該環境では `Read(~/.aws/*)` / `Read(~/.ssh/*)` を共有・個人いずれの settings からも除外する**。bwrap の bootstrap 失敗を避けつつ、credential 読み出し自体は OS のファイルパーミッション + claude-org-runtime の WSL Layer 3 suppression（§10.2 Phase 3 case E）で多層防御する。
+2. **当該環境では `Read(~/.aws/*)` / `Read(~/.ssh/*)` を共有・個人いずれの settings からも除外する**。bwrap の bootstrap 失敗を避けるための回避策。**ただしこの選択は意図的に Claude 側の credential read 防御を弱める残存リスクを含む**: (a) Claude Code は同一ユーザー権限で動くため OS のファイルパーミッションは Claude プロセス自身を止めない、(b) claude-org-runtime の WSL Layer 3 suppression (§10.2 Phase 3 case E) は escape する Layer 3 entry を **emit 段階で落とす** 動作で、deny を強化するわけではない、(c) `--user-common-sandbox` も同 candidate を skip する。残るのは Claude Code 組込の credential 保護層 (`~/.ssh/id_*` 等の特定 path に対するもの) と Layer 4 hook / role 契約のみで、`~/.aws/credentials` の `cat` を完全に止める保証は無い。symlink-escape 環境では選択肢 1 (real directory 化) が望ましく、選択肢 2 はそれが運用上不可能な場合の妥協策と位置付ける。
 
 claude-org-ja 本体は Issue #429 Task C（本 addendum と同 PR）で共有 `.claude/settings.json` から `Read(~/.ssh/*)` / `Read(~/.aws/*)` / `~/.config/gh/hosts.yml` を除去した（= 上記選択肢 2 を採用）。個人環境ごとに実在する（= symlink でない）機密ディレクトリを deny したい場合は、Issue #429 Task B で導入された `python tools/org_setup_prune.py --user-common-sandbox` を 1 回実行することで `~/.claude/settings.json` の `sandbox.filesystem.denyRead` に directory-level deny がマージされる（symlink-escape candidate は自動 skip）。詳細は [`.claude/skills/org-setup/references/permissions.md`](../.claude/skills/org-setup/references/permissions.md) の「ユーザー共通の sandbox denyRead 補強（`--user-common-sandbox`）」節を参照。
 
