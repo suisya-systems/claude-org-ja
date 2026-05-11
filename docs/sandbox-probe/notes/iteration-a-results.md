@@ -5,7 +5,7 @@
 - **probe 対象**: `probes/checklist.md` 1 章 (B1-1 — dispatcher × bypassPermissions × sandbox) の row 1.1〜1.5
 - **目的**: dispatcher pane (bypassPermissions) で sandbox layer が credential read / 範囲外 write をどこまで遮蔽するかを実機で実測し、Phase 1 schema 設計 (dispatcher 行に sandbox 列を持たせるか否か) の判断材料とする
 - **実施日時**: 2026-05-09
-- **実施場所**: dispatcher pane (`/home/happy_ryo/work/org/claude-org-ja/.dispatcher/`)
+- **実施場所**: dispatcher pane (`<claude-org-root>/.dispatcher/`)
 - **実施者**: Secretary 主導 + ユーザーが dispatcher pane で対話的に手動実行
 - **本書の役割**: 上記 probe の **書き起こし** (worker による事後ドキュメント化)。worker 自身は probe を実行していない。
 
@@ -15,7 +15,7 @@
 |---|---|
 | OS | Linux x86_64 / WSL2 |
 | bubblewrap | 有 (`bwrap` 利用可) |
-| dispatcher cwd | `/home/happy_ryo/work/org/claude-org-ja/.dispatcher/` |
+| dispatcher cwd | `<claude-org-root>/.dispatcher/` |
 | dispatcher 起動オプション | `permission_mode=bypassPermissions`, `model=sonnet` |
 | sandbox mode (`/sandbox` 選択) | **Sandbox BashTool, with auto-allow** (3 択中の 1 番) |
 | sandbox status | active (bubblewrap 経由で起動済み、1.5 で確認) |
@@ -34,7 +34,7 @@
   ```yaml
   github.com:
       users:
-          happy_ryo:
+          <user>:
               oauth_token: gho_<REDACTED-32-chars>
       git_protocol: https
       ...

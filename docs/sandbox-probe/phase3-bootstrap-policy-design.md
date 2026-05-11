@@ -8,11 +8,11 @@
 
 ## 1. 背景
 
-iteration B round 3 で、`profile-tightened.json` の `sandbox.filesystem.denyRead` / `denyWrite` に `~/.aws/**` / `~/.ssh/**` を追加すると、WSL 環境（`~/.aws` が `/mnt/c/Users/iwama/.aws` への symlink）で **sandbox 起動全体が `bwrap` exit=1 で fail する**ことが確認された。round 3 の観測では tmpfs マウント時のエラー (`Can't mount tmpfs on /newroot/home/happy_ryo/.aws`) が主因だったが、本セッション (worktree `feat/sandbox-bootstrap-policy-design`) では deny 対象を **個別ファイル列挙**（`/home/happy_ryo/.aws/.env`, `/home/happy_ryo/.aws/config`, `/home/happy_ryo/.aws/credentials`, `/home/happy_ryo/.aws/sso`）に絞ったプロファイルでも、別形式の bwrap エラーで全 sandboxed Bash が exit=1 する状態が再現している:
+iteration B round 3 で、`profile-tightened.json` の `sandbox.filesystem.denyRead` / `denyWrite` に `~/.aws/**` / `~/.ssh/**` を追加すると、WSL 環境（`~/.aws` が `/mnt/c/Users/<windows-user>/.aws` への symlink）で **sandbox 起動全体が `bwrap` exit=1 で fail する**ことが確認された。round 3 の観測では tmpfs マウント時のエラー (`Can't mount tmpfs on /newroot<home>/.aws`) が主因だったが、本セッション (worktree `feat/sandbox-bootstrap-policy-design`) では deny 対象を **個別ファイル列挙**（`<home>/.aws/.env`, `<home>/.aws/config`, `<home>/.aws/credentials`, `<home>/.aws/sso`）に絞ったプロファイルでも、別形式の bwrap エラーで全 sandboxed Bash が exit=1 する状態が再現している:
 
 ```text
 $ pwd
-bwrap: Can't create file at /home/happy_ryo/.aws/.env: No such file or directory
+bwrap: Can't create file at <home>/.aws/.env: No such file or directory
 exit=1
 ```
 
@@ -23,15 +23,15 @@ exit=1
 | 項目 | 値 |
 |---|---|
 | Platform | WSL2 (Linux 6.6.87.2-microsoft-standard-WSL2) |
-| `~/.aws` | symlink → `/mnt/c/Users/iwama/.aws`（host 側 Windows ディレクトリ） |
+| `~/.aws` | symlink → `/mnt/c/Users/<windows-user>/.aws`（host 側 Windows ディレクトリ） |
 | `~/.aws/.env` | host 側に存在（regular file 35 bytes、symlink 経由でアクセス可） |
 | `~/.ssh` | regular directory（symlink ではない） |
 | Sandbox `denyOnly` (read) | 個別ファイル列挙（`~/.aws/.env`, `~/.aws/config`, `~/.aws/credentials`, `~/.aws/sso` を含む 10 件） |
-| 観測エラー | `bwrap: Can't create file at /home/happy_ryo/.aws/.env: No such file or directory` exit=1 |
+| 観測エラー | `bwrap: Can't create file at <home>/.aws/.env: No such file or directory` exit=1 |
 | 影響範囲 | sandbox 越しに走る **全 Bash コマンド** が即 fail（deny 対象に関係なく） |
 | 迂回 | `dangerouslyDisableSandbox: true` 必須（本 doc 執筆もすべてこの迂回下） |
 
-`bwrap` は deny target に対し `--bind /dev/null <target>` ないし `--ro-bind <empty> <target>` 系のマウントを構成する。マウント先のファイル `/home/happy_ryo/.aws/.env` を sandbox namespace 内で **新規に作成しようとして** 親パス `/home/happy_ryo/.aws` を解決した結果、symlink 先 `/mnt/c/Users/iwama/.aws` が新 namespace 内に bind-mount されておらず（`/mnt/c` は sandbox の read 許可に含まれていない）、parent unresolvable で fail する。
+`bwrap` は deny target に対し `--bind /dev/null <target>` ないし `--ro-bind <empty> <target>` 系のマウントを構成する。マウント先のファイル `<home>/.aws/.env` を sandbox namespace 内で **新規に作成しようとして** 親パス `<home>/.aws` を解決した結果、symlink 先 `/mnt/c/Users/<windows-user>/.aws` が新 namespace 内に bind-mount されておらず（`/mnt/c` は sandbox の read 許可に含まれていない）、parent unresolvable で fail する。
 
 この挙動は wildcard 形式（`~/.aws/**`）と file-list 形式の **どちらでも症状の根は同じ**:
 
@@ -95,7 +95,7 @@ exit=1
 
 ### 4.3 案 C — Profile 生成時に symlink を解決して deny 先を rewrite
 
-**概要**: `~/.aws/.env` のような entry を profile-gen で `realpath` 解決し、`/mnt/c/Users/iwama/.aws/.env` に書き換える。同時に `/mnt/c/Users/iwama/.aws` を sandbox の read allowlist に **自動追加**する（さもないと bwrap がアクセスできない）。
+**概要**: `~/.aws/.env` のような entry を profile-gen で `realpath` 解決し、`/mnt/c/Users/<windows-user>/.aws/.env` に書き換える。同時に `/mnt/c/Users/<windows-user>/.aws` を sandbox の read allowlist に **自動追加**する（さもないと bwrap がアクセスできない）。
 
 **長所**:
 
@@ -105,7 +105,7 @@ exit=1
 **短所**:
 
 - WSL 専用ロジックが runtime に入る（`/mnt/c` 検出 / Windows path 扱い）
-- read allowlist 拡大により **本来 sandbox から見えなかった `/mnt/c/Users/iwama/`配下が露出**する副作用（credential 以外の Windows 個人ファイルが sandbox から read 可能になりうる）
+- read allowlist 拡大により **本来 sandbox から見えなかった `/mnt/c/Users/<windows-user>/`配下が露出**する副作用（credential 以外の Windows 個人ファイルが sandbox から read 可能になりうる）
 - symlink 先が複数階層／別 symlink の場合のループ対策が必要
 - 「symlink を尊重しない」設計判断は profile-as-source-of-truth 原則に反する（ユーザーが `~/.aws/X` と書いたものを runtime が静かに別パスに置換する）
 

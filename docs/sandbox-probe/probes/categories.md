@@ -120,7 +120,7 @@
 ### 確認したい
 
 1. worker cwd で `cat .env`：sandbox 継承なし → 読める / 何かが deny する、を実測。
-2. `cat ~/.ssh/id_rsa`：worker schema deny にない → Claude Code 組込 credential 保護で deny される（公式 docs ベース）/ 素通りする、を実測。
+2. `cat ~/.ssh/<ssh-key>`：worker schema deny にない → Claude Code 組込 credential 保護で deny される（公式 docs ベース）/ 素通りする、を実測。
 3. `cat ~/.config/gh/hosts.yml`：sandbox 継承なし → 読める可能性大。
 4. `cat **/credentials.json` (worker_dir 配下に dummy 配置して)：sandbox 継承なし → 読める可能性大。
 

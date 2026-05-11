@@ -18,7 +18,7 @@ round 1 では role=default 設定下 (sandbox/dangerous-git hook 未継承) で
 
 | 項目 | 値 |
 |---|---|
-| worker_dir | `/home/happy_ryo/work/org/workers/sandbox-probe` |
+| worker_dir | `<workers-root>/sandbox-probe` |
 | 起点 commit | `a8a5ed3 spike(claude): iteration B round 1 ...` |
 | permission_mode | 通常 (auto-mode classifier 経由) |
 | settings 配置 | Secretary が `profile-baseline.json` の placeholder を実パスに展開して `.claude/settings.local.json` を事前配置済 (worker は `claude-org-runtime settings generate` を発行せず `--skip-settings` で起動) |
@@ -40,12 +40,12 @@ $ jq '.sandbox.filesystem.denyRead' .claude/settings.local.json
 
 $ jq '[.hooks.PreToolUse[].hooks[].command]' .claude/settings.local.json
 [
-  "bash \"/home/happy_ryo/work/org/claude-org-ja/.hooks/check-worker-boundary.sh\"",
-  "bash \"/home/happy_ryo/work/org/claude-org-ja/.hooks/block-org-structure.sh\"",
-  "bash \"/home/happy_ryo/work/org/claude-org-ja/.hooks/block-git-push.sh\"",
-  "bash \"/home/happy_ryo/work/org/claude-org-ja/.hooks/block-org-structure.sh\"",
-  "bash \"/home/happy_ryo/work/org/claude-org-ja/.hooks/block-dangerous-git.sh\"",
-  "bash \"/home/happy_ryo/work/org/claude-org-ja/.hooks/block-no-verify.sh\""
+  "bash \"<claude-org-root>/.hooks/check-worker-boundary.sh\"",
+  "bash \"<claude-org-root>/.hooks/block-org-structure.sh\"",
+  "bash \"<claude-org-root>/.hooks/block-git-push.sh\"",
+  "bash \"<claude-org-root>/.hooks/block-org-structure.sh\"",
+  "bash \"<claude-org-root>/.hooks/block-dangerous-git.sh\"",
+  "bash \"<claude-org-root>/.hooks/block-no-verify.sh\""
 ]                                                             # 6 件、block-dangerous-git / block-no-verify 含む ✅
 
 $ jq '.permissions.deny' .claude/settings.local.json

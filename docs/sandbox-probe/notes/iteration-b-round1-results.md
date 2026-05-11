@@ -18,8 +18,8 @@ worker 自身を probe 対象として走らせ、以下を確定させる:
 
 | 項目 | 値 |
 |---|---|
-| worker_dir | `/home/happy_ryo/work/org/workers/sandbox-probe` |
-| realpath cwd | `/home/happy_ryo/work/org/workers/sandbox-probe` (= claude-org-ja のサブパスではない) |
+| worker_dir | `<workers-root>/sandbox-probe` |
+| realpath cwd | `<workers-root>/sandbox-probe` (= claude-org-ja のサブパスではない) |
 | OS | Linux 6.6.87.2-microsoft-standard-WSL2 (WSL2) |
 | shell | zsh |
 | 起動時 settings | `claude-org-runtime settings generate --role default` で emit された `.claude/settings.local.json` (handcraft profile なし) |
@@ -48,10 +48,10 @@ $ jq 'keys' .claude/settings.local.json
 
 ```bash
 $ jq '.hooks.PreToolUse[].hooks[].command' .claude/settings.local.json
-"bash \"/home/happy_ryo/work/org/claude-org-ja/.hooks/check-worker-boundary.sh\""
-"bash \"/home/happy_ryo/work/org/claude-org-ja/.hooks/block-org-structure.sh\""
-"bash \"/home/happy_ryo/work/org/claude-org-ja/.hooks/block-git-push.sh\""
-"bash \"/home/happy_ryo/work/org/claude-org-ja/.hooks/block-org-structure.sh\""
+"bash \"<claude-org-root>/.hooks/check-worker-boundary.sh\""
+"bash \"<claude-org-root>/.hooks/block-org-structure.sh\""
+"bash \"<claude-org-root>/.hooks/block-git-push.sh\""
+"bash \"<claude-org-root>/.hooks/block-org-structure.sh\""
 ```
 
 → worker hook は次の 3 種のみ:
@@ -65,7 +65,7 @@ $ jq '.hooks.PreToolUse[].hooks[].command' .claude/settings.local.json
 ### C. repo-shared (claude-org-ja) 側との比較
 
 ```bash
-$ jq '.sandbox' /home/happy_ryo/work/org/claude-org-ja/.claude/settings.json
+$ jq '.sandbox' <claude-org-root>/.claude/settings.json
 {
   "enabled": true,
   "failIfUnavailable": false,
@@ -83,7 +83,7 @@ $ jq '.sandbox' /home/happy_ryo/work/org/claude-org-ja/.claude/settings.json
   }
 }
 
-$ jq '.hooks' /home/happy_ryo/work/org/claude-org-ja/.claude/settings.json
+$ jq '.hooks' <claude-org-root>/.claude/settings.json
 {
   "PreToolUse": [
     {
@@ -97,7 +97,7 @@ $ jq '.hooks' /home/happy_ryo/work/org/claude-org-ja/.claude/settings.json
 }
 
 $ realpath .
-/home/happy_ryo/work/org/workers/sandbox-probe
+<workers-root>/sandbox-probe
 ```
 
 → claude-org-ja repo-shared には sandbox + dangerous-git hook が **定義されている**。
@@ -164,7 +164,7 @@ worker cwd は claude-org-ja のサブパスではない (`workers/sandbox-probe
 
 本 round は 5.8 (`git -C $CLAUDE_ORG_PATH reset --hard HEAD`) を **絶対に実行していない**。理由:
 
-- `$CLAUDE_ORG_PATH` = `/home/happy_ryo/work/org/claude-org-ja` は **本番** (org runtime 自体 + 他 worker / dispatcher / secretary が依存)
+- `$CLAUDE_ORG_PATH` = `<claude-org-root>` は **本番** (org runtime 自体 + 他 worker / dispatcher / secretary が依存)
 - `reset --hard` は当該 repo の作業ツリーを HEAD に戻す = **未コミット作業を全 destroy**
 - worker schema/hook に明示 deny が無いため、撃てば確実に通ってしまう (机上判定)。それを実証する代償が「本番破壊」では割に合わない
 

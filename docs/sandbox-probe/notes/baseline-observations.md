@@ -9,7 +9,7 @@
 - 根拠:
   - `claude-org-runtime` (v0.1.2) bundled `role_configs_schema.json` に `sandbox` field が **存在しない** (`/home/.../site-packages/claude_org_runtime/settings/role_configs_schema.json` を grep したが該当無し)
   - `tools/org_extension_schema.json` の `worker_roles.default.hooks.PreToolUse` に `block-dangerous-git.sh` / `block-no-verify.sh` が **含まれない** (`org_extension_schema.json:302-330`)
-  - 本 worker の実 settings (`/home/happy_ryo/work/org/workers/sandbox-probe/.claude/settings.local.json`) は schema 通りで、上記 2 hook を持たず、`sandbox` ブロックも無い
+  - 本 worker の実 settings (`<workers-root>/sandbox-probe/.claude/settings.local.json`) は schema 通りで、上記 2 hook を持たず、`sandbox` ブロックも無い
   - worker の cwd (`/home/.../workers/<project>/`) は `claude-org-ja/.claude/settings.json` のツリー外のため、Claude Code の cwd-based settings 検索ロジックでは `claude_org_path/.claude/settings.json` には届かない
 - 帰結:
   - worker には `git reset --hard`, `git branch -D`, `git commit --no-verify` が **schema/hook いずれでも止まらない**
@@ -60,8 +60,8 @@
 - 根拠:
   - worker schema deny に `Read(~/.ssh/*)` / `Read(~/.aws/*)` 無し (`org_extension_schema.json:242-247`)
   - worker は repo-shared `.claude/settings.json:55-56` の `Read(~/.ssh/*)` / `Read(~/.aws/*)` deny を継承しない (1.1 と同根)
-  - Claude Code 組込 credential 保護 (`docs/verification.md:418`) は `cat ~/.ssh/id_rsa` を deny する観察があるが、これは **claude-builtin** であり sandbox/perms 非依存
-- 結論: 7.2 (`cat ~/.ssh/id_rsa`) は claude-builtin で deny される可能性が高い。一方 7.3 (`cat ~/.config/gh/hosts.yml`) は claude-builtin の保護対象外と推定 → **読める** 可能性が高い
+  - Claude Code 組込 credential 保護 (`docs/verification.md:418`) は `cat ~/.ssh/<ssh-key>` を deny する観察があるが、これは **claude-builtin** であり sandbox/perms 非依存
+- 結論: 7.2 (`cat ~/.ssh/<ssh-key>`) は claude-builtin で deny される可能性が高い。一方 7.3 (`cat ~/.config/gh/hosts.yml`) は claude-builtin の保護対象外と推定 → **読める** 可能性が高い
 
 ### 2.3 `git -C <base_repo> reset --hard` は schema deny を bypass する
 
