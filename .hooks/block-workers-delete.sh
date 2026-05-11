@@ -55,8 +55,9 @@ if echo "$COMMAND" | grep -qE '(^|[|&;[:space:]])renga[[:space:]]'; then
 fi
 
 # workers ディレクトリのパスを org-config.md から読み取って解決する
-# Hook はプロジェクトルート (claude-org/) から実行される前提
-WORKERS_REL=$(grep 'workers_dir:' registry/org-config.md 2>/dev/null | sed 's/.*workers_dir:[[:space:]]*//' | tr -d '[:space:]')
+# CLAUDE_ORG_PATH 未設定時は cwd を使う（Secretary は cwd がプロジェクトルートなので fallback で動作）
+ORG_CONFIG="${CLAUDE_ORG_PATH:-$(pwd)}/registry/org-config.md"
+WORKERS_REL=$(grep 'workers_dir:' "$ORG_CONFIG" 2>/dev/null | sed 's/.*workers_dir:[[:space:]]*//' | tr -d '[:space:]' || true)
 if [[ -z "$WORKERS_REL" ]]; then
   # org-config.md が読めない場合はスキップ（Hook の責務外）
   exit 0
