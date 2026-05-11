@@ -356,5 +356,436 @@ class CheckerOverrideAwarenessTests(unittest.TestCase):
         )
 
 
+class FilterExistingUserDirsTests(unittest.TestCase):
+    """Existence check must stat against the injected HOME, return the
+    original ``~``-prefixed literal (not the expanded path), and ignore
+    candidates that aren't ``~``-rooted directories."""
+
+    def setUp(self) -> None:
+        self.td = tempfile.TemporaryDirectory()
+        self.home = Path(self.td.name)
+        (self.home / ".ssh").mkdir()
+        (self.home / ".config").mkdir()
+        (self.home / ".config" / "gh").mkdir()
+        # Sentinel file (not a directory) -- must be skipped because the
+        # bwrap parent-dir mitigation only makes sense on directories.
+        (self.home / ".netrc").write_text("placeholder", encoding="utf-8")
+
+    def tearDown(self) -> None:
+        self.td.cleanup()
+
+    def test_returns_only_existing_dirs(self) -> None:
+        result = p.filter_existing_user_dirs(
+            ["~/.ssh", "~/.aws", "~/.config/gh", "~/.kube"], home=self.home,
+        )
+        self.assertEqual(result, ["~/.ssh", "~/.config/gh"])
+
+    def test_returned_entries_keep_tilde_prefix(self) -> None:
+        result = p.filter_existing_user_dirs(["~/.ssh"], home=self.home)
+        self.assertEqual(result, ["~/.ssh"])
+        # No absolute home path leaked into the entry -- portability is
+        # the whole point of using the ``~``-prefixed literal in the
+        # settings file.
+        self.assertFalse(any(str(self.home) in e for e in result))
+
+    def test_file_is_not_a_directory_match(self) -> None:
+        # ``~/.netrc`` exists as a file but is not a directory; the
+        # bwrap directory-unit deny would be ill-typed against a file.
+        result = p.filter_existing_user_dirs(["~/.netrc"], home=self.home)
+        self.assertEqual(result, [])
+
+    def test_non_tilde_entries_are_skipped(self) -> None:
+        result = p.filter_existing_user_dirs(
+            ["/etc", "relative/path", "~/.ssh"], home=self.home,
+        )
+        self.assertEqual(result, ["~/.ssh"])
+
+    def test_symlink_escaping_home_is_dropped(self) -> None:
+        # Simulate the WSL pattern: ``~/.aws`` is a symlink to a directory
+        # that lives outside HOME (on WSL this would be ``/mnt/c/...``).
+        outside = Path(tempfile.mkdtemp(prefix="user_common_outside_"))
+        try:
+            (self.home / ".aws").symlink_to(outside)
+            result = p.filter_existing_user_dirs(
+                ["~/.ssh", "~/.aws"], home=self.home,
+            )
+            # ``~/.ssh`` (regular dir inside HOME) survives; ``~/.aws``
+            # (symlink with realpath outside HOME) is suppressed so the
+            # rendered settings.json does not ask bwrap to deny an entry
+            # that would fail its bootstrap on WSL.
+            self.assertEqual(result, ["~/.ssh"])
+        finally:
+            import shutil
+            shutil.rmtree(outside, ignore_errors=True)
+
+    def test_symlink_inside_home_is_kept(self) -> None:
+        # A symlink whose target resolves back inside HOME is still safe
+        # (no realpath escape), so it should be retained.
+        (self.home / ".real-kube").mkdir()
+        (self.home / ".kube").symlink_to(self.home / ".real-kube")
+        result = p.filter_existing_user_dirs(["~/.kube"], home=self.home)
+        self.assertEqual(result, ["~/.kube"])
+
+
+class MergeUserCommonSandboxTests(unittest.TestCase):
+    """``merge_user_common_sandbox_denyread`` is the pure core: idempotent,
+    preserving existing values, never mutates the input."""
+
+    def test_creates_sandbox_block_when_missing(self) -> None:
+        out = p.merge_user_common_sandbox_denyread({"theme": "dark"}, ["~/.ssh"])
+        self.assertEqual(out["theme"], "dark")
+        self.assertEqual(out["sandbox"]["filesystem"]["denyRead"], ["~/.ssh"])
+
+    def test_preserves_existing_deny_read_entries_and_order(self) -> None:
+        base = {
+            "sandbox": {
+                "enabled": True,
+                "failIfUnavailable": False,
+                "filesystem": {
+                    "denyRead": ["**/credentials*", "~/.config/gh/hosts.yml"],
+                    "denyWrite": ["~/.claude/settings.json"],
+                },
+            },
+        }
+        out = p.merge_user_common_sandbox_denyread(base, ["~/.ssh", "~/.aws"])
+        self.assertEqual(
+            out["sandbox"]["filesystem"]["denyRead"],
+            ["**/credentials*", "~/.config/gh/hosts.yml", "~/.ssh", "~/.aws"],
+        )
+        # Sibling sandbox keys MUST survive.
+        self.assertTrue(out["sandbox"]["enabled"])
+        self.assertEqual(out["sandbox"]["failIfUnavailable"], False)
+        self.assertEqual(
+            out["sandbox"]["filesystem"]["denyWrite"],
+            ["~/.claude/settings.json"],
+        )
+
+    def test_idempotent_on_repeat(self) -> None:
+        base = {"sandbox": {"filesystem": {"denyRead": ["~/.ssh"]}}}
+        once = p.merge_user_common_sandbox_denyread(base, ["~/.ssh", "~/.aws"])
+        twice = p.merge_user_common_sandbox_denyread(once, ["~/.ssh", "~/.aws"])
+        self.assertEqual(once, twice)
+        self.assertEqual(twice["sandbox"]["filesystem"]["denyRead"], ["~/.ssh", "~/.aws"])
+
+    def test_empty_entries_on_empty_settings_is_noop(self) -> None:
+        # Codex round-2 minor: when none of the candidate dirs exist on
+        # this system the merge must NOT inject an empty
+        # ``sandbox.filesystem.denyRead: []`` block. The non-dry-run write
+        # path must therefore agree with the dry-run "(no changes)" output.
+        out = p.merge_user_common_sandbox_denyread({"theme": "dark"}, [])
+        self.assertEqual(out, {"theme": "dark"})
+        self.assertNotIn("sandbox", out)
+
+    def test_empty_entries_preserves_existing_sandbox(self) -> None:
+        base = {"sandbox": {"enabled": True, "filesystem": {"denyRead": ["**/*.pem"]}}}
+        out = p.merge_user_common_sandbox_denyread(base, [])
+        self.assertEqual(out, base)
+
+    def test_all_entries_already_present_is_noop(self) -> None:
+        base = {"sandbox": {"filesystem": {"denyRead": ["~/.ssh", "~/.aws"]}}}
+        out = p.merge_user_common_sandbox_denyread(base, ["~/.ssh", "~/.aws"])
+        self.assertEqual(out, base)
+
+    def test_input_is_not_mutated(self) -> None:
+        base = {"sandbox": {"filesystem": {"denyRead": ["existing"]}}}
+        snapshot = json.loads(json.dumps(base))
+        p.merge_user_common_sandbox_denyread(base, ["~/.ssh"])
+        self.assertEqual(base, snapshot)
+
+    def test_malformed_sandbox_block_raises(self) -> None:
+        with self.assertRaises(ValueError):
+            p.merge_user_common_sandbox_denyread({"sandbox": "off"}, ["~/.ssh"])
+
+    def test_malformed_filesystem_raises(self) -> None:
+        with self.assertRaises(ValueError):
+            p.merge_user_common_sandbox_denyread(
+                {"sandbox": {"filesystem": "broken"}}, ["~/.ssh"],
+            )
+
+    def test_malformed_deny_read_raises(self) -> None:
+        with self.assertRaises(ValueError):
+            p.merge_user_common_sandbox_denyread(
+                {"sandbox": {"filesystem": {"denyRead": "not-a-list"}}}, ["~/.ssh"],
+            )
+
+    def test_non_string_existing_entry_raises(self) -> None:
+        # Claude Code's bwrap launcher only accepts the raw-string form
+        # at the user-level settings.json; a structured ``{anchor, path}``
+        # dict must NOT be silently merged with new entries (and would
+        # also blow up set / diff bookkeeping later because dicts are
+        # unhashable). The merger refuses with ValueError so the caller
+        # aborts before any write.
+        with self.assertRaises(ValueError):
+            p.merge_user_common_sandbox_denyread(
+                {"sandbox": {"filesystem": {"denyRead": [{"anchor": "home", "path": ".aws/**"}]}}},
+                ["~/.ssh"],
+            )
+
+    def test_dedup_is_value_exact(self) -> None:
+        # ``~/.ssh`` and ``~/.ssh/**`` are distinct strings -- dedup is by
+        # literal equality, so both survive. This keeps the helper agnostic
+        # to glob normalization (which belongs to the bwrap launcher).
+        out = p.merge_user_common_sandbox_denyread(
+            {"sandbox": {"filesystem": {"denyRead": ["~/.ssh"]}}}, ["~/.ssh/**"],
+        )
+        self.assertEqual(out["sandbox"]["filesystem"]["denyRead"], ["~/.ssh", "~/.ssh/**"])
+
+
+class UserCommonSandboxEndToEndTests(unittest.TestCase):
+    """CLI ``--user-common-sandbox`` end-to-end against an injected HOME."""
+
+    def setUp(self) -> None:
+        self.td = tempfile.TemporaryDirectory()
+        self.home = Path(self.td.name)
+        (self.home / ".claude").mkdir()
+        self.settings_path = self.home / ".claude" / "settings.json"
+        # Pretend the user has .ssh and .aws but not .kube / .gnupg.
+        (self.home / ".ssh").mkdir()
+        (self.home / ".aws").mkdir()
+
+    def tearDown(self) -> None:
+        self.td.cleanup()
+
+    def _candidates_match(self, deny_read: list[str]) -> None:
+        # Only existing directories should appear; non-existent ones must not.
+        self.assertIn("~/.ssh", deny_read)
+        self.assertIn("~/.aws", deny_read)
+        self.assertNotIn("~/.kube", deny_read)
+        self.assertNotIn("~/.gnupg", deny_read)
+
+    def test_creates_settings_when_missing(self) -> None:
+        # File deliberately absent; the merge should create it with only
+        # the sandbox block populated.
+        self.assertFalse(self.settings_path.exists())
+        # Inject ``home`` via the helper-level API to avoid touching the
+        # real home. We call ``process_user_common_sandbox`` directly so
+        # the test stays user-agnostic (no $HOME monkey-patching needed).
+        rc = p.process_user_common_sandbox(
+            settings_path=self.settings_path,
+            home=self.home,
+            dry_run=False,
+            no_backup=True,
+        )
+        self.assertEqual(rc, 0)
+        loaded = json.loads(self.settings_path.read_text(encoding="utf-8"))
+        self._candidates_match(loaded["sandbox"]["filesystem"]["denyRead"])
+        # No spurious extra keys.
+        self.assertEqual(set(loaded.keys()), {"sandbox"})
+
+    def test_preserves_unrelated_keys(self) -> None:
+        self.settings_path.write_text(json.dumps({
+            "theme": "dark",
+            "permissions": {"allow": ["Bash(echo)"]},
+            "env": {"FOO": "1"},
+        }), encoding="utf-8")
+        rc = p.process_user_common_sandbox(
+            settings_path=self.settings_path,
+            home=self.home,
+            dry_run=False,
+            no_backup=True,
+        )
+        self.assertEqual(rc, 0)
+        loaded = json.loads(self.settings_path.read_text(encoding="utf-8"))
+        # Unrelated top-level keys survive untouched.
+        self.assertEqual(loaded["theme"], "dark")
+        self.assertEqual(loaded["permissions"]["allow"], ["Bash(echo)"])
+        self.assertEqual(loaded["env"]["FOO"], "1")
+        self._candidates_match(loaded["sandbox"]["filesystem"]["denyRead"])
+
+    def test_existing_deny_read_entries_are_preserved(self) -> None:
+        # Operator already added their own credential entry; the merge
+        # must NOT remove it.
+        self.settings_path.write_text(json.dumps({
+            "sandbox": {
+                "enabled": True,
+                "filesystem": {
+                    "denyRead": ["**/*.pem", "/etc/secret"],
+                    "denyWrite": ["~/.claude/settings.json"],
+                },
+            },
+        }), encoding="utf-8")
+        rc = p.process_user_common_sandbox(
+            settings_path=self.settings_path,
+            home=self.home,
+            dry_run=False,
+            no_backup=True,
+        )
+        self.assertEqual(rc, 0)
+        loaded = json.loads(self.settings_path.read_text(encoding="utf-8"))
+        deny = loaded["sandbox"]["filesystem"]["denyRead"]
+        self.assertIn("**/*.pem", deny)
+        self.assertIn("/etc/secret", deny)
+        self.assertIn("~/.ssh", deny)
+        self.assertIn("~/.aws", deny)
+        # Sibling keys preserved.
+        self.assertTrue(loaded["sandbox"]["enabled"])
+        self.assertEqual(loaded["sandbox"]["filesystem"]["denyWrite"], ["~/.claude/settings.json"])
+
+    def test_no_existing_candidates_does_not_write_empty_sandbox(self) -> None:
+        # HOME with none of the candidate directories present: the merge
+        # must be a true no-op -- not "write an empty sandbox block".
+        bare_home = Path(tempfile.mkdtemp(prefix="user_common_bare_"))
+        try:
+            (bare_home / ".claude").mkdir()
+            bare_settings = bare_home / ".claude" / "settings.json"
+            bare_settings.write_text(json.dumps({"theme": "dark"}), encoding="utf-8")
+            rc = p.process_user_common_sandbox(
+                settings_path=bare_settings,
+                home=bare_home,
+                dry_run=False,
+                no_backup=True,
+            )
+            self.assertEqual(rc, 0)
+            loaded = json.loads(bare_settings.read_text(encoding="utf-8"))
+            self.assertEqual(loaded, {"theme": "dark"})
+            # No spurious .bak either: when target == current we skip the
+            # writer altogether, so the file was never overwritten.
+            baks = list(bare_settings.parent.glob("settings.json.bak.*"))
+            self.assertEqual(baks, [])
+        finally:
+            import shutil
+            shutil.rmtree(bare_home, ignore_errors=True)
+
+    def test_idempotent_run_no_changes(self) -> None:
+        rc1 = p.process_user_common_sandbox(
+            settings_path=self.settings_path,
+            home=self.home,
+            dry_run=False,
+            no_backup=True,
+        )
+        self.assertEqual(rc1, 0)
+        first = self.settings_path.read_text(encoding="utf-8")
+        rc2 = p.process_user_common_sandbox(
+            settings_path=self.settings_path,
+            home=self.home,
+            dry_run=False,
+            no_backup=True,
+        )
+        self.assertEqual(rc2, 0)
+        # Second run must not modify the file -- byte-identical content.
+        self.assertEqual(self.settings_path.read_text(encoding="utf-8"), first)
+
+    def test_dry_run_does_not_modify(self) -> None:
+        original = json.dumps({"theme": "dark"})
+        self.settings_path.write_text(original, encoding="utf-8")
+        rc = p.process_user_common_sandbox(
+            settings_path=self.settings_path,
+            home=self.home,
+            dry_run=True,
+            no_backup=True,
+        )
+        self.assertEqual(rc, 0)
+        # File untouched.
+        self.assertEqual(self.settings_path.read_text(encoding="utf-8"), original)
+
+    def test_invalid_json_aborts(self) -> None:
+        self.settings_path.write_text("{not json", encoding="utf-8")
+        rc = p.process_user_common_sandbox(
+            settings_path=self.settings_path,
+            home=self.home,
+            dry_run=False,
+            no_backup=True,
+        )
+        self.assertNotEqual(rc, 0)
+        # Untouched: no backup, no write attempted.
+        self.assertEqual(self.settings_path.read_text(encoding="utf-8"), "{not json")
+
+    def test_malformed_sandbox_aborts_without_write(self) -> None:
+        original = json.dumps({"sandbox": "off"})
+        self.settings_path.write_text(original, encoding="utf-8")
+        rc = p.process_user_common_sandbox(
+            settings_path=self.settings_path,
+            home=self.home,
+            dry_run=False,
+            no_backup=True,
+        )
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(self.settings_path.read_text(encoding="utf-8"), original)
+        baks = list(self.settings_path.parent.glob("settings.json.bak.*"))
+        self.assertEqual(baks, [])
+
+    def test_top_level_array_aborts(self) -> None:
+        self.settings_path.write_text(json.dumps([1, 2, 3]), encoding="utf-8")
+        rc = p.process_user_common_sandbox(
+            settings_path=self.settings_path,
+            home=self.home,
+            dry_run=False,
+            no_backup=True,
+        )
+        self.assertNotEqual(rc, 0)
+
+    def test_cli_entrypoint(self) -> None:
+        # Smoke-test the argparse plumbing: --user-common-sandbox with a
+        # custom settings path runs without --role and exits 0. The CLI
+        # auto-derives HOME from the ``<DIR>/.claude/settings.json`` shape
+        # so existence checks run against the test's temp HOME (which has
+        # ``.ssh`` and ``.aws`` but not ``.kube``).
+        rc = p.main([
+            "--user-common-sandbox",
+            "--user-common-settings-path", str(self.settings_path),
+            "--no-backup",
+        ])
+        self.assertEqual(rc, 0)
+        loaded = json.loads(self.settings_path.read_text(encoding="utf-8"))
+        deny = loaded["sandbox"]["filesystem"]["denyRead"]
+        self.assertIn("~/.ssh", deny)
+        self.assertIn("~/.aws", deny)
+        self.assertNotIn("~/.kube", deny)
+
+    def test_cli_home_override_takes_precedence(self) -> None:
+        # When both --user-common-settings-path and --user-common-home are
+        # supplied, the explicit home wins over the auto-derived one.
+        alt_home = Path(tempfile.mkdtemp(prefix="user_common_home_"))
+        try:
+            (alt_home / ".gnupg").mkdir()
+            rc = p.main([
+                "--user-common-sandbox",
+                "--user-common-settings-path", str(self.settings_path),
+                "--user-common-home", str(alt_home),
+                "--no-backup",
+            ])
+            self.assertEqual(rc, 0)
+            loaded = json.loads(self.settings_path.read_text(encoding="utf-8"))
+            deny = loaded["sandbox"]["filesystem"]["denyRead"]
+            # Only the alt_home's directories should match -- self.home's
+            # ``.ssh`` / ``.aws`` should NOT appear.
+            self.assertIn("~/.gnupg", deny)
+            self.assertNotIn("~/.ssh", deny)
+            self.assertNotIn("~/.aws", deny)
+        finally:
+            import shutil
+            shutil.rmtree(alt_home, ignore_errors=True)
+
+    def test_dry_run_renders_skipped_even_on_noop(self) -> None:
+        # First merge populates the file; then a second --dry-run is a
+        # no-op merge but should still list the candidates that were
+        # skipped (e.g. ``~/.kube`` not existing in this test's HOME) so
+        # the operator can audit the result.
+        rc = p.process_user_common_sandbox(
+            settings_path=self.settings_path,
+            home=self.home,
+            dry_run=False,
+            no_backup=True,
+        )
+        self.assertEqual(rc, 0)
+        # Capture stdout of a subsequent dry-run.
+        import io
+        import contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc2 = p.process_user_common_sandbox(
+                settings_path=self.settings_path,
+                home=self.home,
+                dry_run=True,
+                no_backup=True,
+            )
+        self.assertEqual(rc2, 0)
+        out = buf.getvalue()
+        # No-op header is OK, but the skipped section MUST appear so the
+        # operator can see what was excluded.
+        self.assertIn("skipped", out)
+        self.assertIn("~/.kube", out)
+
+
 if __name__ == "__main__":
     unittest.main()
