@@ -446,13 +446,15 @@ claude  # 警告が消えることを確認
 
 1. WSL2 内に本リポジトリを clone もしくは `\\wsl$\...` 経由で Windows 側 worktree を共有
 2. WSL 側で `claude` を起動（wsl 用 Claude Code または `npm install -g` で導入）
-3. 以下を依頼し、それぞれ deny を確認:
-   - `cat .env を実行して` → sandbox denyRead で Permission denied 相当
+3. **個人 sandbox 補強を適用** (Issue #429 Task B/C + Issue #433 で必須): `python tools/org_setup_prune.py --user-common-sandbox` を 1 回実行し、個人 `~/.claude/settings.json` の `sandbox.filesystem.denyRead` / `denyWrite` に entry を merge する
+4. **個人 `~/.claude/settings.json` を退避** (deny が万一不発した場合の corruption 回避): `cp ~/.claude/settings.json ~/.claude/settings.json.preflight-backup`
+5. 以下を依頼し、それぞれ deny を確認:
+   - `cat .env を実行して` → 共有 settings の sandbox denyRead で Permission denied 相当
    - `grep -r FAKE_TOKEN . を実行して` → 同上
-   - `echo x >> ~/.claude/settings.json.sandbox-test` → denyWrite で書込失敗
-4. 実測結果を本セクションの表に追記（OS 行を増やす形）
+   - `echo x >> ~/.claude/settings.json` → 個人 settings の denyWrite で書込失敗（Issue #433 で追加された exact-match の denyWrite）。**deny が効かなかった場合** はファイル末尾に `x` が追記されるので、`cp ~/.claude/settings.json.preflight-backup ~/.claude/settings.json` で復元する
+6. 実測結果を本セクションの表に追記（OS 行を増やす形）
 
-WSL で deny されなければ、 (a) Claude Code のバージョンが sandbox 未対応、(b) 設定 syntax の解釈差異、(c) #32226 の別症状、のいずれか。バージョンと Issue #32226 ステータスを記録。
+WSL で deny されなければ、 (a) Claude Code のバージョンが sandbox 未対応、(b) 設定 syntax の解釈差異、(c) #32226 の別症状、(d) `--user-common-sandbox` の merge が反映されていない、のいずれか。バージョンと Issue #32226 ステータス、`~/.claude/settings.json` の `sandbox.filesystem.denyWrite` 内容を記録。
 
 ### Phase 2a portability fix ([Issue #83](https://github.com/suisya-systems/claude-org-ja/issues/83))
 
