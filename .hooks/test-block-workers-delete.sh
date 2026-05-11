@@ -7,7 +7,10 @@ set -euo pipefail
 HOOK=".hooks/block-workers-delete.sh"
 PASS=0
 FAIL=0
-WORKERS_DIR=$(realpath -m "../workers")
+# hook と同じ流儀で workers パスを解決する（registry/org-config.md の workers_dir は
+# ORG_ROOT 起点の相対パスとして定義されているため、CLAUDE_ORG_PATH があれば優先する）
+TEST_ORG_ROOT="${CLAUDE_ORG_PATH:-$(pwd)}"
+WORKERS_DIR=$(realpath -m "$TEST_ORG_ROOT/../workers")
 
 run_test() {
   local description="$1"
@@ -136,6 +139,58 @@ run_test "Edit ツール (Bash ではない)" \
 run_test "空コマンド" \
   "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"\"}}" \
   0
+
+echo ""
+
+# --- cwd 非依存性のテスト ---
+# 回帰: hook が registry/org-config.md を cwd 相対で読んでいた頃、Dispatcher cwd=.dispatcher/
+# では grep が exit 2 を返し set -euo pipefail で全 Bash がブロックされていた。
+# また、WORKERS_REL の正規化を cwd 起点で行うと絶対パス指定の workers 削除を検知できない。
+# CLAUDE_ORG_PATH 起点で config / workers パスを解決していることを担保する。
+echo "[cwd 非依存性 (CLAUDE_ORG_PATH 起点解決)]"
+
+HOOK_ABS="$(realpath "$HOOK")"
+# .dispatcher 配下を擬似 cwd として使う。ORG_ROOT は TEST_ORG_ROOT に揃える
+# （WORKERS_DIR と整合した workers パス解決を hook 側で起こすため）
+ALT_CWD="$(pwd)/.dispatcher"
+
+if [[ ! -d "$ALT_CWD" ]]; then
+  echo "  SKIP: .dispatcher ディレクトリが無いため cwd 非依存テストを省略"
+else
+  run_test_cwd() {
+    local description="$1"
+    local cwd="$2"
+    local org_path="$3"
+    local input_json="$4"
+    local expected_exit="$5"
+
+    actual_exit=0
+    ( cd "$cwd" && CLAUDE_ORG_PATH="$org_path" bash "$HOOK_ABS" ) <<< "$input_json" >/dev/null 2>&1 || actual_exit=$?
+
+    if [[ "$actual_exit" -eq "$expected_exit" ]]; then
+      echo "  PASS: $description"
+      PASS=$((PASS + 1))
+    else
+      echo "  FAIL: $description (expected exit $expected_exit, got $actual_exit)"
+      FAIL=$((FAIL + 1))
+    fi
+  }
+
+  run_test_cwd "Dispatcher cwd + 良性コマンド (回帰: 全 Bash ブロック)" \
+    "$ALT_CWD" "$TEST_ORG_ROOT" \
+    '{"tool_name":"Bash","tool_input":{"command":"ls"}}' \
+    0
+
+  run_test_cwd "Dispatcher cwd + workers 絶対パスの rm -rf (Blocker 回帰)" \
+    "$ALT_CWD" "$TEST_ORG_ROOT" \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"rm -rf ${WORKERS_DIR}/dummy-task\"}}" \
+    2
+
+  run_test_cwd "Dispatcher cwd + CLAUDE_ORG_PATH 未設定 + 良性コマンド (config 不在 fallback)" \
+    "$ALT_CWD" "" \
+    '{"tool_name":"Bash","tool_input":{"command":"ls"}}' \
+    0
+fi
 
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
