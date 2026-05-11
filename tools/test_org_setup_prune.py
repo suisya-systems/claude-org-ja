@@ -531,6 +531,93 @@ class MergeUserCommonSandboxTests(unittest.TestCase):
         self.assertEqual(out["sandbox"]["filesystem"]["denyRead"], ["~/.ssh", "~/.ssh/**"])
 
 
+class MergeUserCommonSandboxDenywriteTests(unittest.TestCase):
+    """``merge_user_common_sandbox_denywrite`` mirrors the denyRead helper
+    (idempotent, additive-only, malformed-shape rejection). denyWrite is
+    NOT existence-filtered by the caller -- the test set focuses on the
+    merger semantics; existence behavior is asserted at the process_*
+    layer (file-absent preventive deny). (Issue #433)"""
+
+    def test_creates_sandbox_block_when_missing(self) -> None:
+        out = p.merge_user_common_sandbox_denywrite({"theme": "dark"}, ["~/.claude/settings.json"])
+        self.assertEqual(out["theme"], "dark")
+        self.assertEqual(
+            out["sandbox"]["filesystem"]["denyWrite"],
+            ["~/.claude/settings.json"],
+        )
+
+    def test_preserves_existing_deny_write_entries_and_order(self) -> None:
+        base = {
+            "sandbox": {
+                "enabled": True,
+                "filesystem": {
+                    "denyRead": ["**/credentials*"],
+                    "denyWrite": ["~/.something/existing"],
+                },
+            },
+        }
+        out = p.merge_user_common_sandbox_denywrite(base, ["~/.claude/settings.json"])
+        self.assertEqual(
+            out["sandbox"]["filesystem"]["denyWrite"],
+            ["~/.something/existing", "~/.claude/settings.json"],
+        )
+        # Sibling sandbox keys + the denyRead list survive untouched.
+        self.assertTrue(out["sandbox"]["enabled"])
+        self.assertEqual(out["sandbox"]["filesystem"]["denyRead"], ["**/credentials*"])
+
+    def test_idempotent_on_repeat(self) -> None:
+        base = {"sandbox": {"filesystem": {"denyWrite": ["~/.claude/settings.json"]}}}
+        once = p.merge_user_common_sandbox_denywrite(base, ["~/.claude/settings.json"])
+        twice = p.merge_user_common_sandbox_denywrite(once, ["~/.claude/settings.json"])
+        self.assertEqual(once, twice)
+        self.assertEqual(twice["sandbox"]["filesystem"]["denyWrite"], ["~/.claude/settings.json"])
+
+    def test_empty_entries_is_noop(self) -> None:
+        # Symmetric with the denyRead helper: empty input must NOT inject
+        # a ``denyWrite: []`` block that the user never had.
+        out = p.merge_user_common_sandbox_denywrite({"theme": "dark"}, [])
+        self.assertEqual(out, {"theme": "dark"})
+        self.assertNotIn("sandbox", out)
+
+    def test_all_entries_already_present_is_noop(self) -> None:
+        base = {"sandbox": {"filesystem": {"denyWrite": ["~/.claude/settings.json"]}}}
+        out = p.merge_user_common_sandbox_denywrite(base, ["~/.claude/settings.json"])
+        self.assertEqual(out, base)
+
+    def test_input_is_not_mutated(self) -> None:
+        base = {"sandbox": {"filesystem": {"denyWrite": ["existing"]}}}
+        snapshot = json.loads(json.dumps(base))
+        p.merge_user_common_sandbox_denywrite(base, ["~/.claude/settings.json"])
+        self.assertEqual(base, snapshot)
+
+    def test_malformed_deny_write_raises(self) -> None:
+        with self.assertRaises(ValueError):
+            p.merge_user_common_sandbox_denywrite(
+                {"sandbox": {"filesystem": {"denyWrite": "not-a-list"}}},
+                ["~/.claude/settings.json"],
+            )
+
+    def test_non_string_existing_deny_write_entry_raises(self) -> None:
+        # Same launcher contract as denyRead: only raw-string entries are
+        # accepted on the user-level surface.
+        with self.assertRaises(ValueError):
+            p.merge_user_common_sandbox_denywrite(
+                {"sandbox": {"filesystem": {"denyWrite": [{"anchor": "home", "path": ".claude/settings.json"}]}}},
+                ["~/.claude/settings.json"],
+            )
+
+    def test_denyread_sibling_is_preserved(self) -> None:
+        # Sequential application (denyRead then denyWrite) must not
+        # clobber the denyRead list the prior merge produced.
+        after_read = p.merge_user_common_sandbox_denyread({"theme": "dark"}, ["~/.ssh"])
+        after_both = p.merge_user_common_sandbox_denywrite(after_read, ["~/.claude/settings.json"])
+        self.assertEqual(after_both["sandbox"]["filesystem"]["denyRead"], ["~/.ssh"])
+        self.assertEqual(
+            after_both["sandbox"]["filesystem"]["denyWrite"],
+            ["~/.claude/settings.json"],
+        )
+
+
 class UserCommonSandboxEndToEndTests(unittest.TestCase):
     """CLI ``--user-common-sandbox`` end-to-end against an injected HOME."""
 
@@ -553,6 +640,11 @@ class UserCommonSandboxEndToEndTests(unittest.TestCase):
         self.assertNotIn("~/.kube", deny_read)
         self.assertNotIn("~/.gnupg", deny_read)
 
+    def _denywrite_default_present(self, deny_write: list[str]) -> None:
+        # Issue #433: every default run merges ``~/.claude/settings.json``
+        # into denyWrite (preventive deny, no existence check).
+        self.assertIn("~/.claude/settings.json", deny_write)
+
     def test_creates_settings_when_missing(self) -> None:
         # File deliberately absent; the merge should create it with only
         # the sandbox block populated.
@@ -569,6 +661,7 @@ class UserCommonSandboxEndToEndTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         loaded = json.loads(self.settings_path.read_text(encoding="utf-8"))
         self._candidates_match(loaded["sandbox"]["filesystem"]["denyRead"])
+        self._denywrite_default_present(loaded["sandbox"]["filesystem"]["denyWrite"])
         # No spurious extra keys.
         self.assertEqual(set(loaded.keys()), {"sandbox"})
 
@@ -591,6 +684,7 @@ class UserCommonSandboxEndToEndTests(unittest.TestCase):
         self.assertEqual(loaded["permissions"]["allow"], ["Bash(echo)"])
         self.assertEqual(loaded["env"]["FOO"], "1")
         self._candidates_match(loaded["sandbox"]["filesystem"]["denyRead"])
+        self._denywrite_default_present(loaded["sandbox"]["filesystem"]["denyWrite"])
 
     def test_existing_deny_read_entries_are_preserved(self) -> None:
         # Operator already added their own credential entry; the merge
@@ -622,9 +716,41 @@ class UserCommonSandboxEndToEndTests(unittest.TestCase):
         self.assertEqual(loaded["sandbox"]["filesystem"]["denyWrite"], ["~/.claude/settings.json"])
 
     def test_no_existing_candidates_does_not_write_empty_sandbox(self) -> None:
-        # HOME with none of the candidate directories present: the merge
-        # must be a true no-op -- not "write an empty sandbox block".
+        # HOME with none of the candidate directories present AND empty
+        # denyWrite candidates: the merge must be a true no-op -- not
+        # "write an empty sandbox block". (Issue #433: denyWrite defaults
+        # to ``~/.claude/settings.json`` and would otherwise always inject
+        # a sandbox block; pass ``denywrite_candidates=()`` to exercise
+        # the all-empty case.)
         bare_home = Path(tempfile.mkdtemp(prefix="user_common_bare_"))
+        try:
+            (bare_home / ".claude").mkdir()
+            bare_settings = bare_home / ".claude" / "settings.json"
+            bare_settings.write_text(json.dumps({"theme": "dark"}), encoding="utf-8")
+            rc = p.process_user_common_sandbox(
+                settings_path=bare_settings,
+                home=bare_home,
+                denywrite_candidates=(),
+                dry_run=False,
+                no_backup=True,
+            )
+            self.assertEqual(rc, 0)
+            loaded = json.loads(bare_settings.read_text(encoding="utf-8"))
+            self.assertEqual(loaded, {"theme": "dark"})
+            # No spurious .bak either: when target == current we skip the
+            # writer altogether, so the file was never overwritten.
+            baks = list(bare_settings.parent.glob("settings.json.bak.*"))
+            self.assertEqual(baks, [])
+        finally:
+            import shutil
+            shutil.rmtree(bare_home, ignore_errors=True)
+
+    def test_default_denywrite_inserted_even_when_denyread_empty(self) -> None:
+        # Counterpart to test_no_existing_candidates_does_not_write_empty_sandbox:
+        # with the DEFAULT denywrite_candidates the bare-home scenario is
+        # NOT a no-op -- the preventive denyWrite for ~/.claude/settings.json
+        # must be merged even though no denyRead directories exist. (Issue #433)
+        bare_home = Path(tempfile.mkdtemp(prefix="user_common_default_dw_"))
         try:
             (bare_home / ".claude").mkdir()
             bare_settings = bare_home / ".claude" / "settings.json"
@@ -637,11 +763,13 @@ class UserCommonSandboxEndToEndTests(unittest.TestCase):
             )
             self.assertEqual(rc, 0)
             loaded = json.loads(bare_settings.read_text(encoding="utf-8"))
-            self.assertEqual(loaded, {"theme": "dark"})
-            # No spurious .bak either: when target == current we skip the
-            # writer altogether, so the file was never overwritten.
-            baks = list(bare_settings.parent.glob("settings.json.bak.*"))
-            self.assertEqual(baks, [])
+            self.assertEqual(loaded["theme"], "dark")
+            self.assertEqual(
+                loaded["sandbox"]["filesystem"]["denyWrite"],
+                ["~/.claude/settings.json"],
+            )
+            # denyRead absent (nothing to merge there).
+            self.assertNotIn("denyRead", loaded["sandbox"]["filesystem"])
         finally:
             import shutil
             shutil.rmtree(bare_home, ignore_errors=True)
@@ -727,10 +855,16 @@ class UserCommonSandboxEndToEndTests(unittest.TestCase):
         ])
         self.assertEqual(rc, 0)
         loaded = json.loads(self.settings_path.read_text(encoding="utf-8"))
-        deny = loaded["sandbox"]["filesystem"]["denyRead"]
-        self.assertIn("~/.ssh", deny)
-        self.assertIn("~/.aws", deny)
-        self.assertNotIn("~/.kube", deny)
+        deny_read = loaded["sandbox"]["filesystem"]["denyRead"]
+        self.assertIn("~/.ssh", deny_read)
+        self.assertIn("~/.aws", deny_read)
+        self.assertNotIn("~/.kube", deny_read)
+        # Issue #433: denyWrite is part of the single --user-common-sandbox
+        # flag and must be applied alongside denyRead.
+        self.assertEqual(
+            loaded["sandbox"]["filesystem"]["denyWrite"],
+            ["~/.claude/settings.json"],
+        )
 
     def test_cli_home_override_takes_precedence(self) -> None:
         # When both --user-common-settings-path and --user-common-home are
@@ -746,15 +880,110 @@ class UserCommonSandboxEndToEndTests(unittest.TestCase):
             ])
             self.assertEqual(rc, 0)
             loaded = json.loads(self.settings_path.read_text(encoding="utf-8"))
-            deny = loaded["sandbox"]["filesystem"]["denyRead"]
+            deny_read = loaded["sandbox"]["filesystem"]["denyRead"]
             # Only the alt_home's directories should match -- self.home's
             # ``.ssh`` / ``.aws`` should NOT appear.
-            self.assertIn("~/.gnupg", deny)
-            self.assertNotIn("~/.ssh", deny)
-            self.assertNotIn("~/.aws", deny)
+            self.assertIn("~/.gnupg", deny_read)
+            self.assertNotIn("~/.ssh", deny_read)
+            self.assertNotIn("~/.aws", deny_read)
+            # denyWrite is HOME-independent (file literal, no existence
+            # check), so it appears regardless of which HOME is used.
+            self.assertEqual(
+                loaded["sandbox"]["filesystem"]["denyWrite"],
+                ["~/.claude/settings.json"],
+            )
         finally:
             import shutil
             shutil.rmtree(alt_home, ignore_errors=True)
+
+    def test_denywrite_added_when_settings_path_was_absent(self) -> None:
+        # The denyWrite candidate is ``~/.claude/settings.json``. The file
+        # may legitimately be absent on a fresh install (Claude Code
+        # writes it on first launch); the preventive-deny contract
+        # (Issue #433) says we still merge the entry so the guard is in
+        # place from the start.
+        absent_target = self.home / ".claude" / "settings.json.absent-target"
+        self.assertFalse(absent_target.exists())
+        rc = p.process_user_common_sandbox(
+            settings_path=self.settings_path,
+            denywrite_candidates=(str(absent_target),),
+            home=self.home,
+            dry_run=False,
+            no_backup=True,
+        )
+        self.assertEqual(rc, 0)
+        loaded = json.loads(self.settings_path.read_text(encoding="utf-8"))
+        self.assertIn(str(absent_target), loaded["sandbox"]["filesystem"]["denyWrite"])
+        # File still absent -- preventive deny does NOT create the target.
+        self.assertFalse(absent_target.exists())
+
+    def test_existing_denywrite_entry_preserved_alongside_default(self) -> None:
+        # Operator already pinned a custom denyWrite path; the merge must
+        # union, not replace.
+        self.settings_path.write_text(json.dumps({
+            "sandbox": {
+                "filesystem": {
+                    "denyWrite": ["~/.operator/custom"],
+                },
+            },
+        }), encoding="utf-8")
+        rc = p.process_user_common_sandbox(
+            settings_path=self.settings_path,
+            home=self.home,
+            dry_run=False,
+            no_backup=True,
+        )
+        self.assertEqual(rc, 0)
+        loaded = json.loads(self.settings_path.read_text(encoding="utf-8"))
+        deny_write = loaded["sandbox"]["filesystem"]["denyWrite"]
+        self.assertIn("~/.operator/custom", deny_write)
+        self.assertIn("~/.claude/settings.json", deny_write)
+        # Existing comes first (input order preservation).
+        self.assertEqual(deny_write[0], "~/.operator/custom")
+
+    def test_dry_run_reports_denywrite_added(self) -> None:
+        # Capture the dry-run report and confirm denyWrite shows up in
+        # the diff section (separately from denyRead).
+        import io
+        import contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = p.process_user_common_sandbox(
+                settings_path=self.settings_path,
+                home=self.home,
+                dry_run=True,
+                no_backup=True,
+            )
+        self.assertEqual(rc, 0)
+        out = buf.getvalue()
+        self.assertIn("sandbox.filesystem.denyWrite added", out)
+        self.assertIn("~/.claude/settings.json", out)
+        # And denyRead is still rendered (composability check).
+        self.assertIn("sandbox.filesystem.denyRead added", out)
+
+    def test_malformed_denywrite_aborts_without_write(self) -> None:
+        # Existing ``denyWrite`` shape is malformed -> raise before any
+        # write happens. denyRead may be well-formed; the sequential
+        # merge must surface the denyWrite shape error.
+        original = json.dumps({
+            "sandbox": {
+                "filesystem": {
+                    "denyRead": ["~/.ssh"],
+                    "denyWrite": "off",
+                },
+            },
+        })
+        self.settings_path.write_text(original, encoding="utf-8")
+        rc = p.process_user_common_sandbox(
+            settings_path=self.settings_path,
+            home=self.home,
+            dry_run=False,
+            no_backup=True,
+        )
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(self.settings_path.read_text(encoding="utf-8"), original)
+        baks = list(self.settings_path.parent.glob("settings.json.bak.*"))
+        self.assertEqual(baks, [])
 
     def test_dry_run_renders_skipped_even_on_noop(self) -> None:
         # First merge populates the file; then a second --dry-run is a

@@ -18,11 +18,18 @@ org-delegate -- out of scope here.)
 ``user_common`` (``~/.claude/settings.json``) lives in the user's home and is
 shared with non-org plugins, so the prune rewrite would clobber unrelated
 keys. Instead a dedicated mode -- ``--user-common-sandbox`` -- performs only
-a *targeted, idempotent union merge* of sensitive credential directories
-into ``sandbox.filesystem.denyRead`` (existence-checked, ``~``-prefixed
-literal entries preserved so the file remains portable across users). All
-other keys are passed through untouched. See Issue #429 for the migration
-that moves these entries out of the shared, checked-in ``.claude/settings.json``.
+a *targeted, idempotent union merge* into the user-level sandbox block:
+
+- ``sandbox.filesystem.denyRead`` for sensitive credential directories
+  (existence-checked + realpath-escape skipped on WSL; ``~``-prefixed
+  literal entries preserved so the file stays portable across users).
+- ``sandbox.filesystem.denyWrite`` for ``~/.claude/settings.json``
+  (file literal, NOT existence-checked -- preventive deny so the write
+  guard is in place before Claude Code first creates the file).
+
+All other keys are passed through untouched. See Issue #429 for the
+denyRead migration (Task B/C) and Issue #433 for the denyWrite migration
+out of the shared, checked-in ``.claude/settings.json``.
 
 Usage:
     py -3 tools/org_setup_prune.py --role secretary --dry-run
@@ -76,6 +83,28 @@ USER_COMMON_SANDBOX_DENYREAD_CANDIDATES: tuple[str, ...] = (
     "~/.gnupg",
     "~/.docker",
     "~/.config/aws-vault",
+)
+
+# Files (not directories) that should be added to user_common's
+# ``sandbox.filesystem.denyWrite`` so writes to user-level Claude
+# settings can never be made via Bash subprocess inside the bwrap
+# sandbox (Issue #433 -- previously lived as a project-shared entry
+# in ``.claude/settings.json`` until Task C migrated denyRead candidates
+# to user_common; denyWrite is now migrated symmetrically).
+#
+# Stored as ``~``-prefixed *file* literals (portable across users), and
+# **not existence-checked**: blocking a write is preventive and remains
+# meaningful even when the file has not been created yet (fresh
+# installs come in with ``~/.claude/settings.json`` absent, and we want
+# the deny in place before Claude Code first writes it).
+#
+# Note: symmetric directory denyWrite for ``~/.ssh`` / ``~/.aws`` / etc.
+# is intentionally **deferred** (Issue #433 scope) -- those would block
+# legitimate writes (e.g. ``ssh-keygen``, ``aws configure``) without a
+# clear threat model, and the denyRead candidates already mitigate the
+# read-exfiltration vector that motivated Task B/C.
+USER_COMMON_SANDBOX_DENYWRITE_CANDIDATES: tuple[str, ...] = (
+    "~/.claude/settings.json",
 )
 
 DEFAULT_USER_COMMON_SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
@@ -332,18 +361,24 @@ def filter_existing_user_dirs(
     return out
 
 
-def merge_user_common_sandbox_denyread(
+def _merge_sandbox_deny(
     settings: dict,
     entries: list[str] | tuple[str, ...],
+    *,
+    key: str,
 ) -> dict:
-    """Pure: return a new settings dict with ``entries`` union-merged into
-    ``sandbox.filesystem.denyRead``.
+    """Shared pure merger for ``sandbox.filesystem.{key}`` -- the engine
+    behind both ``merge_user_common_sandbox_denyread`` and
+    ``merge_user_common_sandbox_denywrite``. ``key`` is ``"denyRead"`` or
+    ``"denyWrite"``.
+
+    Semantics (identical across the two keys):
 
     - Existing top-level keys (theme, env, permissions, etc.) are preserved.
     - Existing ``sandbox`` / ``sandbox.filesystem`` siblings (``enabled``,
-      ``failIfUnavailable``, ``denyWrite``, ``additionalDirectories``) are
-      preserved.
-    - Existing ``denyRead`` order and entries are preserved; new entries are
+      ``failIfUnavailable``, the *other* deny list, ``additionalDirectories``,
+      etc.) are preserved.
+    - Existing list order and entries are preserved; new entries are
       appended in input order, skipping any that already match an existing
       value verbatim. This makes the operation idempotent: re-running on a
       previously-merged file is a no-op.
@@ -351,12 +386,11 @@ def merge_user_common_sandbox_denyread(
       along the touched spine. Callers can compare ``id`` / ``==`` safely.
 
     Raises ``ValueError`` if an existing ``sandbox`` / ``sandbox.filesystem``
-    is not a JSON object, or an existing ``denyRead`` is not a JSON array.
-    The caller is expected to abort before touching the file rather than
-    silently coerce a malformed shape (which would destroy user data).
+    is not a JSON object, or the targeted deny list is not a JSON array of
+    strings. The caller is expected to abort before touching the file
+    rather than silently coerce a malformed shape (which would destroy
+    user data).
     """
-    # Validate existing shape first so a malformed file aborts with a clear
-    # error regardless of whether we end up writing.
     sandbox_val = settings.get("sandbox")
     if sandbox_val is not None and not isinstance(sandbox_val, dict):
         raise ValueError(
@@ -367,12 +401,12 @@ def merge_user_common_sandbox_denyread(
         raise ValueError(
             f"settings['sandbox']['filesystem'] must be an object or absent, got {type(fs_val).__name__}"
         )
-    dr_val = fs_val.get("denyRead") if isinstance(fs_val, dict) else None
-    if dr_val is not None and not isinstance(dr_val, list):
+    deny_val = fs_val.get(key) if isinstance(fs_val, dict) else None
+    if deny_val is not None and not isinstance(deny_val, list):
         raise ValueError(
-            f"settings['sandbox']['filesystem']['denyRead'] must be an array or absent, got {type(dr_val).__name__}"
+            f"settings['sandbox']['filesystem']['{key}'] must be an array or absent, got {type(deny_val).__name__}"
         )
-    existing_dr: list = list(dr_val) if isinstance(dr_val, list) else []
+    existing: list = list(deny_val) if isinstance(deny_val, list) else []
     # All existing entries must be strings: Claude Code's own bwrap launcher
     # consumes the raw-string form in ~/.claude/settings.json (the structured
     # ``{anchor: ..., path: ...}`` form is internal to claude-org-runtime's
@@ -381,40 +415,73 @@ def merge_user_common_sandbox_denyread(
     # diff operations on the rendered list never hit ``TypeError`` on an
     # unhashable element, and so the merge cannot accidentally legitimize an
     # entry shape the launcher would reject.
-    for i, existing in enumerate(existing_dr):
-        if not isinstance(existing, str):
+    for i, ex in enumerate(existing):
+        if not isinstance(ex, str):
             raise ValueError(
-                f"settings['sandbox']['filesystem']['denyRead'][{i}] must be a string, got {type(existing).__name__}"
+                f"settings['sandbox']['filesystem']['{key}'][{i}] must be a string, got {type(ex).__name__}"
             )
 
-    added = [e for e in entries if e not in existing_dr]
+    added = [e for e in entries if e not in existing]
     if not added:
         # No new entries to merge -- return the input unchanged. This keeps
-        # the operation a true no-op when none of the candidate directories
-        # exist on this system (or all of them are already present), instead
-        # of injecting an empty ``sandbox.filesystem.denyRead: []`` block
-        # that the user never had. Required so the non-dry-run path matches
-        # the dry-run "(no changes)" output (Codex round-2 review).
+        # the operation a true no-op when none of the candidates apply (or
+        # all of them are already present), instead of injecting an empty
+        # ``sandbox.filesystem.{key}: []`` block that the user never had.
+        # Required so the non-dry-run path matches the dry-run "(no
+        # changes)" output (Codex round-2 review, Issue #429 Task B).
         return dict(settings)
 
     result = dict(settings)
     sandbox = dict(sandbox_val) if isinstance(sandbox_val, dict) else {}
     filesystem = dict(fs_val) if isinstance(fs_val, dict) else {}
-    filesystem["denyRead"] = existing_dr + added
+    filesystem[key] = existing + added
     sandbox["filesystem"] = filesystem
     result["sandbox"] = sandbox
     return result
 
 
+def merge_user_common_sandbox_denyread(
+    settings: dict,
+    entries: list[str] | tuple[str, ...],
+) -> dict:
+    """Pure: union-merge ``entries`` into ``sandbox.filesystem.denyRead``.
+    See ``_merge_sandbox_deny`` for the shared semantics (idempotent,
+    additive-only, malformed shape raises ``ValueError``, input never
+    mutated)."""
+    return _merge_sandbox_deny(settings, entries, key="denyRead")
+
+
+def merge_user_common_sandbox_denywrite(
+    settings: dict,
+    entries: list[str] | tuple[str, ...],
+) -> dict:
+    """Pure: union-merge ``entries`` into ``sandbox.filesystem.denyWrite``.
+
+    Mirrors ``merge_user_common_sandbox_denyread`` -- denyWrite entries
+    are *file* literals (e.g. ``~/.claude/settings.json``) rather than
+    directories, and the caller is expected **not** to existence-filter
+    them: blocking a write is preventive and remains meaningful even
+    when the file has not yet been created. Shape validation and the
+    idempotent / additive semantics are identical to the denyRead helper.
+    """
+    return _merge_sandbox_deny(settings, entries, key="denyWrite")
+
+
 def process_user_common_sandbox(
     *,
     settings_path: Path,
-    candidates: tuple[str, ...] | list[str] = USER_COMMON_SANDBOX_DENYREAD_CANDIDATES,
+    denyread_candidates: tuple[str, ...] | list[str] = USER_COMMON_SANDBOX_DENYREAD_CANDIDATES,
+    denywrite_candidates: tuple[str, ...] | list[str] = USER_COMMON_SANDBOX_DENYWRITE_CANDIDATES,
     home: Path | None = None,
     dry_run: bool,
     no_backup: bool,
 ) -> int:
     """Drive a user_common sandbox merge against ``settings_path``.
+
+    Applies two idempotent merges in sequence: directory-level
+    ``sandbox.filesystem.denyRead`` candidates (existence + realpath-escape
+    filtered) followed by file-level ``sandbox.filesystem.denyWrite``
+    candidates (preventive deny -- no existence filter; Issue #433).
 
     Returns a process-style return code (0 on success / no-op; non-zero on
     malformed JSON). When ``settings_path`` does not exist the file is
@@ -439,9 +506,10 @@ def process_user_common_sandbox(
     else:
         current = {}
 
-    existing_entries = filter_existing_user_dirs(candidates, home=home)
+    existing_read_entries = filter_existing_user_dirs(denyread_candidates, home=home)
     try:
-        target = merge_user_common_sandbox_denyread(current, existing_entries)
+        target = merge_user_common_sandbox_denyread(current, existing_read_entries)
+        target = merge_user_common_sandbox_denywrite(target, denywrite_candidates)
     except ValueError as exc:
         print(
             f"[org_setup_prune] user_common: {settings_path} has malformed sandbox shape: {exc}; aborting.",
@@ -453,32 +521,62 @@ def process_user_common_sandbox(
         # In dry-run we always render the report, even on no-op, so the
         # operator can see which candidates were skipped (missing dir /
         # symlink-escape) and judge whether the result is correct.
-        print(render_user_common_diff(settings_path, current, target, candidates, existing_entries))
+        print(
+            render_user_common_diff(
+                settings_path,
+                current,
+                target,
+                denyread_candidates,
+                existing_read_entries,
+                denywrite_candidates,
+            )
+        )
         return 0
 
     if target == current:
-        msg = f"[org_setup_prune] user_common: {settings_path} already has all applicable sandbox.filesystem.denyRead entries; no changes."
+        msg = (
+            f"[org_setup_prune] user_common: {settings_path} already has all "
+            "applicable sandbox.filesystem.denyRead / denyWrite entries; no changes."
+        )
         print(msg)
         return 0
 
     bak = write_settings(settings_path, target, make_backup=not no_backup)
-    added = _added_in_append_order(_safe_deny_read(current), _safe_deny_read(target))
+    added_read = _added_in_append_order(_safe_deny_list(current, "denyRead"), _safe_deny_list(target, "denyRead"))
+    added_write = _added_in_append_order(_safe_deny_list(current, "denyWrite"), _safe_deny_list(target, "denyWrite"))
+    fragments: list[str] = []
+    if added_read:
+        fragments.append(f"denyRead {added_read}")
+    if added_write:
+        fragments.append(f"denyWrite {added_write}")
+    added_summary = "; added " + ", ".join(fragments) if fragments else ""
     print(
         f"[org_setup_prune] user_common: wrote {settings_path}"
         + (f" (backup: {bak.name})" if bak else "")
-        + (f"; added {added}" if added else "")
+        + added_summary
     )
     return 0
 
 
+def _safe_deny_list(settings: dict, key: str) -> list[str]:
+    """Return a copy of ``sandbox.filesystem.{key}`` from ``settings``,
+    defaulting to an empty list when any spine node is missing. ``key`` is
+    ``"denyRead"`` or ``"denyWrite"``."""
+    return list(((settings.get("sandbox") or {}).get("filesystem") or {}).get(key) or [])
+
+
 def _safe_deny_read(settings: dict) -> list[str]:
-    return list(((settings.get("sandbox") or {}).get("filesystem") or {}).get("denyRead") or [])
+    """Backwards-compatible shim around ``_safe_deny_list`` (Issue #429
+    Task B). Retained because external callers / tests may import the
+    symbol directly."""
+    return _safe_deny_list(settings, "denyRead")
 
 
 def _added_in_append_order(current: list[str], target: list[str]) -> list[str]:
-    """Return the suffix of ``target`` that ``merge_user_common_sandbox_denyread``
-    appended on top of ``current`` -- preserving the input-append order the
-    merger advertises (i.e., the order the user will see in the file)."""
+    """Return the suffix of ``target`` that the merger appended on top of
+    ``current`` -- preserving the input-append order the merger advertises
+    (i.e., the order the user will see in the file). Used for both
+    denyRead and denyWrite diffs."""
     cur_set = set(current)
     return [e for e in target if e not in cur_set]
 
@@ -487,23 +585,31 @@ def render_user_common_diff(
     settings_path: Path,
     current: dict,
     target: dict,
-    candidates: tuple[str, ...] | list[str],
-    existing_entries: list[str],
+    denyread_candidates: tuple[str, ...] | list[str],
+    existing_read_entries: list[str],
+    denywrite_candidates: tuple[str, ...] | list[str] = (),
 ) -> str:
-    added = _added_in_append_order(_safe_deny_read(current), _safe_deny_read(target))
-    skipped_missing = [c for c in candidates if c not in existing_entries]
+    added_read = _added_in_append_order(_safe_deny_list(current, "denyRead"), _safe_deny_list(target, "denyRead"))
+    added_write = _added_in_append_order(_safe_deny_list(current, "denyWrite"), _safe_deny_list(target, "denyWrite"))
+    skipped_missing = [c for c in denyread_candidates if c not in existing_read_entries]
     lines = [f"=== user_common: {settings_path} ==="]
-    if not added:
+    if not added_read and not added_write:
         lines.append("  (no changes)")
-    else:
+    if added_read:
         lines.append("  sandbox.filesystem.denyRead added:")
-        for it in added:
+        for it in added_read:
+            lines.append(f"    + {it}")
+    if added_write:
+        lines.append("  sandbox.filesystem.denyWrite added:")
+        for it in added_write:
             lines.append(f"    + {it}")
     if skipped_missing:
         # These include both non-existent directories AND symlink-escape
         # entries (the latter are common on WSL where ``~/.aws`` /
-        # ``~/.ssh`` may resolve to ``/mnt/c/...``).
-        lines.append("  skipped (directory missing or resolves outside HOME):")
+        # ``~/.ssh`` may resolve to ``/mnt/c/...``). denyWrite candidates
+        # are *not* existence-checked (preventive deny, Issue #433) so they
+        # never appear in this list.
+        lines.append("  skipped denyRead (directory missing or resolves outside HOME):")
         for it in skipped_missing:
             lines.append(f"    - {it}")
     return "\n".join(lines)
@@ -708,9 +814,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--user-common-sandbox",
         action="store_true",
-        help="Union-merge sensitive credential directory denyRead entries into the user-level "
-             "~/.claude/settings.json sandbox block (existence-checked, idempotent, ~-prefixed). "
-             "Does NOT rewrite other keys. See Issue #429.",
+        help="Union-merge sensitive credential directory denyRead entries AND a denyWrite entry "
+             "for ~/.claude/settings.json into the user-level ~/.claude/settings.json sandbox "
+             "block (idempotent, ~-prefixed; denyRead candidates existence-checked, denyWrite "
+             "candidates always merged as preventive deny). Does NOT rewrite other keys. "
+             "See Issue #429 (Task B/C, denyRead) and Issue #433 (denyWrite migration).",
     )
     parser.add_argument(
         "--user-common-settings-path",
