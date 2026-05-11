@@ -152,7 +152,7 @@ pip install -e .
 # 5. renga の MCP サーバーを Claude Code に登録（初回のみ）
 renga mcp install
 
-# 6. pre-commit secret scanner と個人 sandbox 補強（main pull 後に 1 回必須、Issue #429 Task B/C）
+# 6. pre-commit secret scanner と個人 sandbox 補強（main pull 後に 1 回必須、Issue #429 Task B/C + Issue #433 denyWrite）
 bash scripts/install-hooks.sh
 python tools/org_setup_prune.py --user-common-sandbox
 

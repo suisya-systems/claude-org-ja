@@ -391,6 +391,7 @@ head -1 knowledge/raw/*.md  # <!-- curated --> マーカー確認
 - 本リポジトリを clone し Claude Code が起動できる状態
 - 検証対象リポジトリ直下にダミー `.env`（例: `FAKE_TOKEN=dummy-not-a-real-secret`）を用意（`.gitignore` 対象のため commit されない）
 - 既知バグ [anthropics/claude-code#32226](https://github.com/anthropics/claude-code/issues/32226) により denyRead が期待通り効かないケースが報告されているため、**必ず実機で挙動を確認**する
+- **個人 sandbox 補強の事前適用（Issue #429 Task B/C + Issue #433）**: 手順 3 の `~/.ssh/id_rsa` 読出と手順 4 の `~/.claude/settings.json` 書込はいずれも **個人 `~/.claude/settings.json` 側に移管された** deny を経由する。検証前に `python tools/org_setup_prune.py --user-common-sandbox` を 1 回実行し、個人 `~/.claude/settings.json` の `sandbox.filesystem.denyRead` / `denyWrite` に当該 entry が merge 済みである状態にしてから手順 1〜4 を実施すること。実行しないまま手順 3 / 4 を確認すると、共有 settings 側に entry が無いため何も deny されず誤った "fail" 判定になる
 
 **手順**:
 1. 窓口 Claude に `cat .env` を実行するよう依頼する（Bash ツール経由）
@@ -399,8 +400,9 @@ head -1 knowledge/raw/*.md  # <!-- curated --> マーカー確認
 4. `~/.claude/settings.json` の書込を試みるコマンドを依頼する（例: `echo x >> ~/.claude/settings.json`）
 
 **期待結果**:
-- 手順 1〜3: sandbox により Bash サブプロセスで denied（`Permission denied` 相当のエラー）。Claude Code が結果を受け取っても内容は空 / エラーになる
-- 手順 4: denyWrite により write 失敗
+- 手順 1〜2: 共有 `.claude/settings.json` の `sandbox.filesystem.denyRead` (`.env` / `**/credentials*` 等) により Bash サブプロセスで denied（`Permission denied` 相当）
+- 手順 3: 個人 `~/.claude/settings.json` の `sandbox.filesystem.denyRead` (`~/.ssh` 等、上記前提で merge 済み) により Bash サブプロセスで denied。merge していない環境では Claude Code 組込の credential 保護層が拾うケースもあるが、ここでは Layer 3 (sandbox) の検証として individual 確認する
+- 手順 4: 個人 `~/.claude/settings.json` の `sandbox.filesystem.denyWrite` (`~/.claude/settings.json`、上記前提で merge 済み、Issue #433) により write 失敗
 
 **失敗パターンと対処**:
 - `.env` の内容が読めてしまう → Claude Code 側のバグの可能性。バージョンと `claude --version` を記録し Issue #32226 のステータスを確認。暫定対応として `permissions.deny` の `Read(./.env)` 追加（Claude Code の Read ツール経路を塞ぐ）
@@ -471,7 +473,7 @@ WSL2 などで `bubblewrap` 未導入時に sandbox init が silent no-op fallba
 1. **対象環境で当該 symlink を退避/削除し、real directory を `mkdir -p` で作り直す**。`mkdir -p` 単発では既存 symlink を real directory に置き換えないため、`rm <link> && mkdir -p <dir>` 等の明示的置換が必要。
 2. **当該環境では `Read(~/.aws/*)` / `Read(~/.ssh/*)` を共有・個人いずれの settings からも除外する**。bwrap の bootstrap 失敗を避けるための回避策。**ただしこの選択は意図的に Claude 側の credential read 防御を弱める残存リスクを含む**: (a) Claude Code は同一ユーザー権限で動くため OS のファイルパーミッションは Claude プロセス自身を止めない、(b) claude-org-runtime の WSL Layer 3 suppression (§10.2 Phase 3 case E) は escape する Layer 3 entry を **emit 段階で落とす** 動作で、deny を強化するわけではない、(c) `--user-common-sandbox` も同 candidate を skip する。残るのは Claude Code 組込の credential 保護層 (`~/.ssh/id_*` 等の特定 path に対するもの) と Layer 4 hook / role 契約のみで、`~/.aws/credentials` の `cat` を完全に止める保証は無い。symlink-escape 環境では選択肢 1 (real directory 化) が望ましく、選択肢 2 はそれが運用上不可能な場合の妥協策と位置付ける。
 
-claude-org-ja 本体は Issue #429 Task C（本 addendum と同 PR）で共有 `.claude/settings.json` から `Read(~/.ssh/*)` / `Read(~/.aws/*)` / `~/.config/gh/hosts.yml` を除去した（= 上記選択肢 2 を採用）。個人環境ごとに実在する（= symlink でない）機密ディレクトリを deny したい場合は、Issue #429 Task B で導入された `python tools/org_setup_prune.py --user-common-sandbox` を 1 回実行することで `~/.claude/settings.json` の `sandbox.filesystem.denyRead` に directory-level deny がマージされる（symlink-escape candidate は自動 skip）。詳細は [`.claude/skills/org-setup/references/permissions.md`](../.claude/skills/org-setup/references/permissions.md) の「ユーザー共通の sandbox denyRead 補強（`--user-common-sandbox`）」節を参照。
+claude-org-ja 本体は Issue #429 Task C（本 addendum と同 PR）で共有 `.claude/settings.json` から `Read(~/.ssh/*)` / `Read(~/.aws/*)` / `~/.config/gh/hosts.yml` を除去した（= 上記選択肢 2 を採用）。個人環境ごとに実在する（= symlink でない）機密ディレクトリを deny したい場合は、Issue #429 Task B で導入された `python tools/org_setup_prune.py --user-common-sandbox` を 1 回実行することで `~/.claude/settings.json` の `sandbox.filesystem.denyRead` に directory-level deny がマージされる（symlink-escape candidate は自動 skip）。詳細は [`.claude/skills/org-setup/references/permissions.md`](../.claude/skills/org-setup/references/permissions.md) の「ユーザー共通の sandbox denyRead / denyWrite 補強（`--user-common-sandbox`）」節を参照。
 
 **upstream への enhancement request（任意）**: 「`Read(...)` / `Edit(...)` の `permissions.deny` を `sandbox.filesystem.denyRead` に merge する際、realpath が `sandbox_read_roots` を escape する path は除外する」改善が Claude Code 側に入れば、本 portability 問題は構造的に解消する。本タスクのスコープ外。
 
@@ -493,7 +495,7 @@ claude-org-ja 本体は Issue #429 Task C（本 addendum と同 PR）で共有 `
 
 **preventive deny（=ファイル不在でも merge）の判断**: `~/.claude/settings.json` は fresh install の Claude Code が初回起動時に作成する。`--user-common-sandbox` を **`~/.claude/settings.json` 作成前に**実行した場合に entry を skip すると、初回 Claude Code 起動と次の `--user-common-sandbox` 実行の間に bwrap subprocess の write が素通りする時間窓ができる。これを避けるため、denyWrite candidate は **存在チェックを行わず常に merge** する（denyRead が directory 単位かつ bwrap bootstrap 失敗 risk があるため existence-check を行うのとは非対称）。
 
-**残存検証 (実機)**: Issue #79 の §10.1 表に denyWrite 行が既に含まれており、共有 settings 移行後も `~/.claude/settings.json` の denyWrite で同等の挙動が出ることを各 OS 行で再測すること。本 addendum 時点で実機検証済みの環境は Phase 2a 計画と同じ（Windows / macOS / Linux / WSL2; 詳細結果記載は §10.1 の表本体を参照）。
+**残存検証 (実機、未実施)**: §10.1 の現状表は Windows native（sandbox 未実装、`cat .env` 等が素通り）と WSL2 (`bubblewrap` 未導入で sandbox disabled) の 2 行のみで、macOS / Linux / WSL2 + bubblewrap 導入後の denyWrite 実機確認は本 PR 時点で **未実施**。Issue #433 の正常系（`echo x >> ~/.claude/settings.json` が、`--user-common-sandbox` 適用後の個人 `~/.claude/settings.json` の `denyWrite` で deny される）の確認は §10.1 手順 4 の人間タスクとして残し、結果を本節の表に追記すること。Windows native での deny 不発は §10.1 が既に記録しており、本 addendum でも追加検証は不要（sandbox 自体が未実装のため）。
 
 **実装**: `tools/org_setup_prune.py` の `merge_user_common_sandbox_denywrite` / `USER_COMMON_SANDBOX_DENYWRITE_CANDIDATES`、`tools/test_org_setup_prune.py` の `MergeUserCommonSandboxDenywriteTests` および `UserCommonSandboxEndToEndTests` の denyWrite 関連ケース群。
 
