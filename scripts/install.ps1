@@ -4,7 +4,7 @@
 #   pwsh -NoProfile -File scripts/install.ps1 [-Dir <path>] [-DryRun] [-SkipMcp]
 #
 # This script:
-#   1. Checks for required commands (git, claude, renga, gh) and prints
+#   1. Checks for required commands (git, claude, renga, gh, jq) and prints
 #      installation hints when something is missing.
 #   2. Clones suisya-systems/claude-org-ja (asks before reusing an
 #      existing directory).
@@ -91,6 +91,7 @@ if (-not (Test-Prerequisite 'git'    'https://git-scm.com/downloads'))          
 if (-not (Test-Prerequisite 'claude' 'https://claude.ai/code (Claude Code CLI)'))               { $missing = $true }
 if (-not (Test-Prerequisite 'renga'  'npm install -g @suisya-systems/renga@0.18.0'))            { $missing = $true }
 if (-not (Test-Prerequisite 'gh'     'https://cli.github.com/'))                                { $missing = $true }
+if (-not (Test-Prerequisite 'jq'     'https://jqlang.org/download/'))                           { $missing = $true }
 Write-Host ''
 
 if ($missing) {

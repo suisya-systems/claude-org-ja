@@ -5,7 +5,7 @@
 #   bash scripts/install.sh [--dir <path>] [--dry-run] [--skip-mcp]
 #
 # This script:
-#   1. Checks for required commands (git, claude, renga, gh) and prints
+#   1. Checks for required commands (git, claude, renga, gh, jq) and prints
 #      installation hints when something is missing.
 #   2. Clones suisya-systems/claude-org-ja (asks before reusing an
 #      existing directory).
@@ -237,6 +237,7 @@ if [[ "$IS_LINUX" == "1" || "$IS_MAC" == "1" ]]; then
 fi
 require_or_warn renga  "npm install -g @suisya-systems/renga@0.18.0" || missing=1
 require_or_warn gh     "https://cli.github.com/" || missing=1
+require_or_warn jq     "apt install jq / brew install jq / https://jqlang.org/download/" || missing=1
 # Capture the absolute path so the later `run renga mcp install` can
 # bypass bash's PATH-extension blind spot for `.cmd` shims (Git Bash
 # on Windows tries `.exe` but not `.cmd` / `.bat`, so a PATH-only
