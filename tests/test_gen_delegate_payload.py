@@ -1458,6 +1458,27 @@ class TestPatternBUrlOnlyRegistryFallback(unittest.TestCase):
         self.assertEqual(plan.layout.pattern, "B")
         self.assertIsNone(plan.base_repo)
 
+    def test_explicit_port_ssh_url_still_enforces_origin_match(self):
+        """Codex Round 4 Blocker: ``ssh://git@github.com:22/org/repo.git``
+        (explicit-port SSH form) used to escape the github gate because the
+        regex's ``[^/:\\s]+`` owner slot was eaten by the port digits, so
+        ``_extract_github_repo_name`` returned None and origin matching was
+        skipped. Regex now tolerates an optional ``:port``. Bare-init clone
+        under such a registry entry must still be rejected."""
+        self._set_registry("ssh://git@github.com:22/suisya-systems/renga.git")
+        clone = self.sb.workers / "renga"
+        self._init_bare_repo(clone)  # no origin
+        self._force_pattern_b("renga")
+        plan = gdp.build_delegate_plan(
+            task_id="renga-ssh-port-bare-task",
+            project_slug="renga",
+            description="alt+p ux fix",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(plan.layout.pattern, "B")
+        self.assertIsNone(plan.base_repo)
+
     def test_ssh_style_registry_url_accepts_matching_origin(self):
         """SSH-registered renga + clone whose origin (https or ssh) resolves
         to the same github repo name → fallback accepts. Owner is

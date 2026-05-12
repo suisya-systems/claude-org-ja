@@ -275,7 +275,14 @@ _CLAUDE_ORG_REPO_NAMES: tuple[str, ...] = ("claude-org-ja",)
 # A local-path origin (worker-dir clones use these) has no ``github.com``
 # segment, so the regex naturally rejects it — even when the upstream dir
 # happens to be named ``claude-org-ja``.
-_GITHUB_OWNER_REPO_RE = re.compile(r"github\.com[:/]([^/:\s]+)/([^/:\s]+?)(?:\.git)?/?$")
+# Codex Round 4 Blocker (Issue #450 follow-up): allow an optional ``:port``
+# between ``github.com`` and the owner/repo segment so the explicit-port SSH
+# form ``ssh://git@github.com:22/org/repo.git`` (and the equivalent
+# ``https://github.com:443/...``) match. Without this the owner slot ate the
+# port digits and the rest of the URL never reached the repo capture.
+_GITHUB_OWNER_REPO_RE = re.compile(
+    r"github\.com(?::\d+)?[:/]([^/:\s]+)/([^/:\s]+?)(?:\.git)?/?$"
+)
 
 
 def _extract_github_repo_name(url: str) -> Optional[str]:
