@@ -1352,6 +1352,247 @@ class TestPatternBClaudeOrgRepoWorktreePlan(unittest.TestCase):
         self.assertTrue((worker_dir / "CLAUDE.md").exists())
 
 
+# ---------------------------------------------------------------------------
+# Issue #450: Pattern B base_repo fallback to workers_dir/<slug>
+# ---------------------------------------------------------------------------
+
+
+class TestPatternBUrlOnlyRegistryFallback(unittest.TestCase):
+    """Issue #450: registry rows with a URL-only path (e.g. renga registered
+    as ``| renga | renga | https://github.com/.../renga.git | ... |``) used to
+    fall through all three base_repo branches in build_delegate_plan, leaving
+    base_repo=None and causing apply to raise WorktreeApplyError. The fallback
+    must pick up a manually-cloned local repo at ``workers_dir/<project_slug>``
+    so Pattern B delegation works for URL-only registry entries."""
+
+    def setUp(self) -> None:
+        try:
+            subprocess.run(["git", "--version"], capture_output=True, check=True)
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            self.skipTest("git not available")
+        self._td = tempfile.TemporaryDirectory()
+        self.sb = _Sandbox(Path(self._td.name))
+        # Replace the auto-seeded registry with a URL-only row for ``renga``
+        # so the build_delegate_plan path lookup yields a non-local path.
+        (self.sb.claude_org_root / "registry" / "projects.md").write_text(
+            "# Projects\n\n"
+            "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 |\n"
+            "|---|---|---|---|---|\n"
+            "| renga | renga | https://github.com/suisya-systems/renga.git "
+            "| Renga | dev |\n",
+            encoding="utf-8",
+        )
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def _init_bare_repo(self, base: Path) -> None:
+        base.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["git", "-C", str(base), "init", "-q"], check=True
+        )
+
+    def _init_repo_with_origin(self, base: Path, origin_url: str) -> None:
+        base.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["git", "-C", str(base), "init", "-q"], check=True
+        )
+        subprocess.run(
+            ["git", "-C", str(base), "remote", "add", "origin", origin_url],
+            check=True,
+        )
+
+    def _force_pattern_b(self, slug: str) -> None:
+        self.sb.add_active_run(
+            task_id=f"prev-{slug}",
+            project_slug=slug,
+            worker_dir=str(self.sb.workers / slug),
+        )
+
+    def test_fallback_to_workers_dir_slug_when_registry_path_is_url(self):
+        """workers_dir/<slug> with origin URL matching the registered github
+        repo → base_repo resolves to that clone."""
+        clone = self.sb.workers / "renga"
+        self._init_repo_with_origin(
+            clone, "https://github.com/suisya-systems/renga.git"
+        )
+        self._force_pattern_b("renga")
+        plan = gdp.build_delegate_plan(
+            task_id="renga-fallback-task",
+            project_slug="renga",
+            description="alt+p ux fix",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(plan.layout.pattern, "B")
+        self.assertIsNone(plan.layout.pattern_variant)
+        self.assertIsNotNone(plan.base_repo)
+        self.assertEqual(Path(plan.base_repo).resolve(), clone.resolve())
+
+    def _set_registry(self, url: str) -> None:
+        (self.sb.claude_org_root / "registry" / "projects.md").write_text(
+            "# Projects\n\n"
+            "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 |\n"
+            "|---|---|---|---|---|\n"
+            f"| renga | renga | {url} | Renga | dev |\n",
+            encoding="utf-8",
+        )
+
+    def test_ssh_style_registry_url_still_enforces_origin_match(self):
+        """Codex Round 3 Blocker: ``git@github.com:org/renga.git`` SSH-style
+        registry entries used to bypass the github gate because the helper
+        keyed on ``"://"``. ``_extract_github_repo_name`` accepts both forms
+        so the gate must too — a bare-init clone under an SSH-registered
+        slug must still be rejected."""
+        self._set_registry("git@github.com:suisya-systems/renga.git")
+        clone = self.sb.workers / "renga"
+        self._init_bare_repo(clone)  # no origin
+        self._force_pattern_b("renga")
+        plan = gdp.build_delegate_plan(
+            task_id="renga-ssh-bare-task",
+            project_slug="renga",
+            description="alt+p ux fix",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(plan.layout.pattern, "B")
+        self.assertIsNone(plan.base_repo)
+
+    def test_explicit_port_ssh_url_still_enforces_origin_match(self):
+        """Codex Round 4 Blocker: ``ssh://git@github.com:22/org/repo.git``
+        (explicit-port SSH form) used to escape the github gate because the
+        regex's ``[^/:\\s]+`` owner slot was eaten by the port digits, so
+        ``_extract_github_repo_name`` returned None and origin matching was
+        skipped. Regex now tolerates an optional ``:port``. Bare-init clone
+        under such a registry entry must still be rejected."""
+        self._set_registry("ssh://git@github.com:22/suisya-systems/renga.git")
+        clone = self.sb.workers / "renga"
+        self._init_bare_repo(clone)  # no origin
+        self._force_pattern_b("renga")
+        plan = gdp.build_delegate_plan(
+            task_id="renga-ssh-port-bare-task",
+            project_slug="renga",
+            description="alt+p ux fix",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(plan.layout.pattern, "B")
+        self.assertIsNone(plan.base_repo)
+
+    def test_ssh_style_registry_url_accepts_matching_origin(self):
+        """SSH-registered renga + clone whose origin (https or ssh) resolves
+        to the same github repo name → fallback accepts. Owner is
+        intentionally unpinned so forks remain accepted, mirroring
+        ``find_claude_org_clone``."""
+        self._set_registry("git@github.com:suisya-systems/renga.git")
+        clone = self.sb.workers / "renga"
+        # Mismatched owner (fork), same repo name — must still match.
+        self._init_repo_with_origin(
+            clone, "https://github.com/happy-ryo/renga.git"
+        )
+        self._force_pattern_b("renga")
+        plan = gdp.build_delegate_plan(
+            task_id="renga-ssh-match-task",
+            project_slug="renga",
+            description="alt+p ux fix",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(plan.layout.pattern, "B")
+        self.assertEqual(Path(plan.base_repo).resolve(), clone.resolve())
+
+    def test_fallback_rejected_when_clone_has_no_origin(self):
+        """Codex Round 2 Blocker: a bare ``git init`` clone with no origin
+        must not be accepted as a base for a github-registered project —
+        otherwise any leftover same-named directory silently adopts the
+        registered slug. ``origin`` URL must match the registered repo
+        name for github URLs."""
+        clone = self.sb.workers / "renga"
+        self._init_bare_repo(clone)  # no origin remote
+        self._force_pattern_b("renga")
+        plan = gdp.build_delegate_plan(
+            task_id="renga-no-origin-task",
+            project_slug="renga",
+            description="alt+p ux fix",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(plan.layout.pattern, "B")
+        self.assertIsNone(plan.base_repo)
+
+    def test_no_fallback_when_workers_dir_slug_missing(self):
+        """No directory at workers_dir/<slug> → base_repo stays None
+        (existing apply-time error path preserved)."""
+        self._force_pattern_b("renga")
+        plan = gdp.build_delegate_plan(
+            task_id="renga-no-clone-task",
+            project_slug="renga",
+            description="alt+p ux fix",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(plan.layout.pattern, "B")
+        self.assertIsNone(plan.base_repo)
+
+    def test_fallback_rejected_when_clone_origin_url_mismatches_registry(self):
+        """A leftover unrelated github repo at workers_dir/<slug> must not be
+        adopted as the base — would redirect dispatch into the wrong repo
+        (Issue #370 precedent). Origin URL repo-name match guards against it."""
+        clone = self.sb.workers / "renga"
+        self._init_repo_with_origin(
+            clone, "https://github.com/some-other-org/not-renga.git"
+        )
+        self._force_pattern_b("renga")
+        plan = gdp.build_delegate_plan(
+            task_id="renga-mismatch-task",
+            project_slug="renga",
+            description="alt+p ux fix",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(plan.layout.pattern, "B")
+        self.assertIsNone(plan.base_repo)
+
+    def test_pattern_b_override_uses_url_only_fallback_for_preflight(self):
+        """Issue #450 consistency: ``--pattern B`` override preflight must
+        accept the same workers_dir/<slug> base that auto-derived Pattern B
+        uses, otherwise the same setup errors at preview only when forced."""
+        clone = self.sb.workers / "renga"
+        self._init_repo_with_origin(
+            clone, "https://github.com/suisya-systems/renga.git"
+        )
+        # No add_active_run — this is the no-concurrent-run case where
+        # ``--pattern B`` override is the only way to get Pattern B.
+        plan = gdp.build_delegate_plan(
+            task_id="renga-override-task",
+            project_slug="renga",
+            description="alt+p ux fix",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+            layout_overrides={"pattern": "B"},
+        )
+        self.assertEqual(plan.layout.pattern, "B")
+        self.assertEqual(
+            Path(plan.base_repo).resolve(), clone.resolve()
+        )
+
+    def test_no_fallback_when_workers_dir_slug_is_not_git_repo(self):
+        """A plain directory (no .git) at workers_dir/<slug> must not be
+        accepted as a base_repo — would yield "fatal: not a git repository"
+        from git worktree add. Stay None and surface the existing error."""
+        (self.sb.workers / "renga").mkdir()
+        self._force_pattern_b("renga")
+        plan = gdp.build_delegate_plan(
+            task_id="renga-plain-dir-task",
+            project_slug="renga",
+            description="alt+p ux fix",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(plan.layout.pattern, "B")
+        self.assertIsNone(plan.base_repo)
+
+
 def _env_update_goldens() -> bool:
     import os
     return os.environ.get("UPDATE_GOLDENS") == "1"

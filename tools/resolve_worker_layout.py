@@ -275,7 +275,14 @@ _CLAUDE_ORG_REPO_NAMES: tuple[str, ...] = ("claude-org-ja",)
 # A local-path origin (worker-dir clones use these) has no ``github.com``
 # segment, so the regex naturally rejects it — even when the upstream dir
 # happens to be named ``claude-org-ja``.
-_GITHUB_OWNER_REPO_RE = re.compile(r"github\.com[:/]([^/:\s]+)/([^/:\s]+?)(?:\.git)?/?$")
+# Codex Round 4 Blocker (Issue #450 follow-up): allow an optional ``:port``
+# between ``github.com`` and the owner/repo segment so the explicit-port SSH
+# form ``ssh://git@github.com:22/org/repo.git`` (and the equivalent
+# ``https://github.com:443/...``) match. Without this the owner slot ate the
+# port digits and the rest of the URL never reached the repo capture.
+_GITHUB_OWNER_REPO_RE = re.compile(
+    r"github\.com(?::\d+)?[:/]([^/:\s]+)/([^/:\s]+?)(?:\.git)?/?$"
+)
 
 
 def _extract_github_repo_name(url: str) -> Optional[str]:
@@ -356,6 +363,57 @@ def find_claude_org_clone(
         return None
     repo_name = _extract_github_repo_name(url)
     return candidate if repo_name in _CLAUDE_ORG_MIRROR_REPO_NAMES else None
+
+
+def find_workers_dir_clone(
+    project_slug: str,
+    project_path: Optional[str],
+    workers_dir: Path,
+) -> Optional[Path]:
+    """Return ``workers_dir/<project_slug>`` if it is a local git repo that
+    matches the registered project, else None.
+
+    Issue #450: registry rows registered with a URL-only path (e.g.
+    ``| renga | renga | https://github.com/.../renga.git | ... |``) typically
+    have a manually-cloned local repo at the conventional
+    ``workers_dir/<project_slug>`` location. Pattern B needs a local base
+    for ``git worktree add``; use that clone when none of the prior base
+    branches resolve.
+
+    Slug match (``workers_dir/<project_slug>``) alone is not enough — a
+    leftover unrelated repo at that path would silently redirect dispatch
+    (the Issue #370 precedent for "別 repo への誤派遣"). When the registered
+    path looks like a github URL, additionally require the clone's
+    ``origin`` URL to point at a github repo with the same name (owner is
+    intentionally not pinned so forks are accepted, mirroring
+    :func:`find_claude_org_clone`). For non-github registry URLs the
+    trust signal falls back to the slug + local-git-repo check; the
+    motivating renga case is github so this gate covers the practical risk.
+    """
+    candidate = (Path(workers_dir) / project_slug).resolve()
+    if not is_local_git_repo(str(candidate)):
+        return None
+    # ``_extract_github_repo_name`` accepts both ``https://github.com/o/r.git``
+    # and ``git@github.com:o/r.git`` (the regex is scheme-agnostic), so we
+    # MUST NOT gate on ``"://"`` — that would let SSH-style registry URLs
+    # bypass the origin gate (Codex Round 3 Blocker).
+    registered_name = _extract_github_repo_name(project_path or "")
+    if registered_name is not None:
+        # Registered URL is a github remote (the motivating renga case):
+        # the clone's ``origin`` MUST also be a github remote with the same
+        # repo name. A bare ``git init`` with no origin, or an origin
+        # pointing at an unrelated repo, is rejected — otherwise any
+        # leftover same-named directory would be silently adopted
+        # (Codex Round 2 Blocker; Issue #370 precedent).
+        origin = _git_origin_url(candidate)
+        clone_name = _extract_github_repo_name(origin) if origin else None
+        if clone_name != registered_name:
+            return None
+    # Non-github registry URL (gitlab, bitbucket, custom git server) or a
+    # placeholder like "-": ``_extract_github_repo_name`` returns None and
+    # we fall back to the slug + local-git-repo trust signal. The motivating
+    # renga case is github so the strict gate above covers the practical risk.
+    return candidate
 
 
 def is_claude_org_project(project_slug: str, claude_org_root: Path) -> bool:
@@ -670,6 +728,16 @@ def resolve(
                         and not effective_self_edit
                     ):
                         project_for_base = None
+                    # Issue #450: the workers_dir/<slug> fallback that
+                    # gen_delegate_payload uses for URL-only registry rows
+                    # must be honored here too, otherwise ``--pattern B``
+                    # preview errors at preflight while normal active-run
+                    # driven Pattern B succeeds on the same setup.
+                    url_only_base = find_workers_dir_clone(
+                        project_slug,
+                        project_for_base.path if project_for_base else None,
+                        workers_dir,
+                    )
                     has_base = (
                         effective_self_edit
                         or claude_org_clone is not None
@@ -677,6 +745,7 @@ def resolve(
                             project_for_base is not None
                             and is_local_git_repo(project_for_base.path)
                         )
+                        or url_only_base is not None
                     )
                     if not has_base:
                         raise ResolveError(
@@ -684,8 +753,9 @@ def resolve(
                             "resolvable worktree base, but none could be "
                             f"determined for project={project_slug!r}. "
                             "Pattern B needs one of: a registered project "
-                            "row whose path is a local git repo, the "
-                            "claude-org mirror clone, or role="
+                            "row whose path is a local git repo, a manually "
+                            f"cloned repo at workers_dir/{project_slug}, "
+                            "the claude-org mirror clone, or role="
                             "'claude-org-self-edit' (live repo base). "
                             "Either register the project's local clone, set "
                             "role accordingly, or fall back to pattern=C."
