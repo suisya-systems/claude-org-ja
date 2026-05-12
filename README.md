@@ -11,12 +11,12 @@
 
 ## なぜ claude-org-ja なのか — Agent View との対比
 
-Anthropic 公式の [Claude Code Agent View](https://claude.com/blog/agent-view-in-claude-code) は、複数の Claude Code を 1 画面で見渡すための**可視化機能**です。タブやウィンドウを束ねて表示してくれますが、どのインスタンスを起動するか・どこに何を指示するかを決めるのは、引き続き人間の仕事です。
+Anthropic 公式の [Claude Code Agent View](https://claude.com/blog/agent-view-in-claude-code) は、複数の Claude Code を 1 画面で見渡すための可視化機能です。タブやウィンドウを束ねて表示してくれますが、どのインスタンスを起動するか・どこに何を指示するかを決めるのは、引き続き人間の仕事です。
 
 claude-org-ja は労働集約の集合点を人からエージェントに移すために作られました:
 
-- 人間が会話する相手は **窓口担当の Claude Code 1 つだけ**。
-- 新しい Claude Code（ワーカー）を立ち上げるか・どこに何を投げるかは **窓口が判断する**。
+- 人間が会話する相手は窓口担当の Claude Code 1 つだけ。
+- 新しい Claude Code（ワーカー）を立ち上げるか・どこに何を投げるかは窓口が判断する。
 - 人間が窓口に話した内容は、窓口の判断で適切なワーカーに自動で分配される。
 
 一言でいえば、**Agent View は「人間がより速く見渡せるようにする」ツール、claude-org-ja は「人間が見渡さなくて済むようにする」運用層** です。**労働集約の先を人間から AI（窓口）に移譲する** — これが差別化の核心です。
