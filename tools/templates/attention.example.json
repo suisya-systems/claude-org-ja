@@ -1,0 +1,79 @@
+{
+  "desktop": true,
+  "sound": "urgent-only",
+  "cooldown_sec": 300,
+  "poll_interval_sec": 10,
+  "pending_decision_min": 15,
+  "user_replied_min": 15,
+  "max_title_chars": 80,
+  "max_body_chars": 240,
+  "notify": {
+    "approval_blocked": "urgent",
+    "relay_gap_suspected": "urgent",
+    "silent_worker_output": "urgent",
+    "ci_failed": "urgent",
+    "pending_decision": "urgent",
+    "user_reply_not_forwarded": "urgent",
+    "pane_silent": "urgent",
+    "pane_crashed": "urgent",
+    "worker_stalled": "urgent",
+    "worker_not_reported": "urgent",
+    "worker_error": "urgent",
+    "worker_completed": "normal",
+    "pr_merged": "normal"
+  },
+  "templates": {
+    "approval_blocked": {
+      "title": "ワーカーが承認待ちです",
+      "body": "{worker} が承認待ちで停止しています。"
+    },
+    "ci_failed": {
+      "title": "CI が失敗しました",
+      "body": "PR #{pr} の CI が {status} で完了しました。"
+    },
+    "pending_decision": {
+      "title": "判断待ちがあります",
+      "body": "{task_id} が人間の判断を待っています。"
+    },
+    "user_reply_not_forwarded": {
+      "title": "返答の転送待ちです",
+      "body": "{task_id} でユーザー返答が worker に未転送です。"
+    },
+    "relay_gap_suspected": {
+      "title": "ワーカー宛 relay が滞っています",
+      "body": "{task_id} の {worker} 宛て転送が遅延している可能性があります。"
+    },
+    "silent_worker_output": {
+      "title": "ワーカーが無言で出力しています",
+      "body": "{worker} ペインに出力がありますが peer message が届いていません。"
+    },
+    "pane_silent": {
+      "title": "ワーカーペインが無反応です",
+      "body": "{worker} のペインに動きがありません。"
+    },
+    "pane_crashed": {
+      "title": "ワーカーペインが異常終了しました",
+      "body": "{worker} のペインが予期せず終了しました。"
+    },
+    "worker_stalled": {
+      "title": "ワーカーが停滞しています",
+      "body": "{worker} は進捗が見られず停滞しているようです。"
+    },
+    "worker_not_reported": {
+      "title": "ワーカーから報告がありません",
+      "body": "{worker} から窓口への報告がまだ届いていません。"
+    },
+    "worker_error": {
+      "title": "ワーカーがエラーを報告しました",
+      "body": "{worker} がエラーを報告しています。"
+    },
+    "worker_completed": {
+      "title": "ワーカーが完了しました",
+      "body": "{task_id} の作業が完了し、レビュー待ちです。"
+    },
+    "pr_merged": {
+      "title": "PR がマージされました",
+      "body": "PR #{pr} がマージされました。"
+    }
+  }
+}
