@@ -1,0 +1,47 @@
+[
+  {
+    "key": "event:2",
+    "kind": "approval_blocked",
+    "severity": "urgent",
+    "title": "Worker approval required",
+    "body": "worker-T-approval is waiting for approval.",
+    "source": "state.db.events",
+    "task_id": "T-approval",
+    "worker": "worker-T-approval",
+    "created_at": "2026-05-01T01:00:00Z"
+  },
+  {
+    "key": "event:4",
+    "kind": "ci_failed",
+    "severity": "urgent",
+    "title": "CI failed",
+    "body": "PR #42 finished with failed.",
+    "source": "state.db.events",
+    "task_id": "T-ci-fail",
+    "pr": 42,
+    "status": "failed",
+    "created_at": "2026-05-01T03:00:00Z"
+  },
+  {
+    "key": "pending:T-pending-stale:pending_decision",
+    "kind": "pending_decision",
+    "severity": "urgent",
+    "title": "Pending decision",
+    "body": "T-pending-stale is waiting for human judgment.",
+    "source": "pending_decisions",
+    "task_id": "T-pending-stale",
+    "summary": "Need approval to expand scope to migration cleanup.",
+    "created_at": "2026-01-01T00:00:00Z"
+  },
+  {
+    "key": "pending:T-relay-gap:user_reply_not_forwarded",
+    "kind": "user_reply_not_forwarded",
+    "severity": "urgent",
+    "title": "User reply not forwarded",
+    "body": "T-relay-gap: user reply has not been relayed to the worker.",
+    "source": "pending_decisions",
+    "task_id": "T-relay-gap",
+    "summary": "Codex review round 3 done; OK to merge?",
+    "created_at": "2026-01-02T00:00:00Z"
+  }
+]

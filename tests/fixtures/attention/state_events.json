@@ -1,0 +1,47 @@
+[
+  {
+    "kind": "heartbeat",
+    "occurred_at": "2026-05-01T00:00:00Z",
+    "actor": null,
+    "payload": {}
+  },
+  {
+    "kind": "notify_sent",
+    "occurred_at": "2026-05-01T01:00:00Z",
+    "actor": null,
+    "payload": {
+      "kind": "approval_blocked",
+      "task_id": "T-approval",
+      "worker": "worker-T-approval"
+    }
+  },
+  {
+    "kind": "notify_sent",
+    "occurred_at": "2026-05-01T02:00:00Z",
+    "actor": null,
+    "payload": {
+      "kind": "heartbeat_ping",
+      "task_id": "T-ignored"
+    }
+  },
+  {
+    "kind": "ci_completed",
+    "occurred_at": "2026-05-01T03:00:00Z",
+    "actor": null,
+    "payload": {
+      "status": "failed",
+      "pr": 42,
+      "task_id": "T-ci-fail"
+    }
+  },
+  {
+    "kind": "ci_completed",
+    "occurred_at": "2026-05-01T03:30:00Z",
+    "actor": null,
+    "payload": {
+      "status": "success",
+      "pr": 43,
+      "task_id": "T-ci-ok"
+    }
+  }
+]
