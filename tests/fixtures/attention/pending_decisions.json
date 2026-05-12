@@ -1,0 +1,21 @@
+[
+  {
+    "task_id": "T-pending-stale",
+    "received_at": "2026-01-01T00:00:00Z",
+    "raw_message": "Need approval to expand scope to migration cleanup.",
+    "status": "pending"
+  },
+  {
+    "task_id": "T-relay-gap",
+    "received_at": "2026-01-01T00:30:00Z",
+    "raw_message": "Codex review round 3 done; OK to merge?",
+    "status": "escalated",
+    "user_replied_at": "2026-01-02T00:00:00Z"
+  },
+  {
+    "task_id": "T-future-dated",
+    "received_at": "2099-01-01T00:00:00Z",
+    "raw_message": "Below threshold (received_at far in the future so _minutes_since stays negative regardless of wall clock).",
+    "status": "pending"
+  }
+]
