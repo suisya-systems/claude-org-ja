@@ -13,7 +13,7 @@
 
 Anthropic 公式の [Claude Code Agent View](https://claude.com/blog/agent-view-in-claude-code) は、複数の Claude Code を 1 画面で見渡すための**可視化機能**です。タブやウィンドウを束ねて表示してくれますが、どのインスタンスを起動するか・どこに何を指示するかを決めるのは、引き続き人間の仕事です。
 
-claude-org-ja が動かそうとしているのは、その「誰がオーケストレーターか」のレイヤーそのものです:
+claude-org-ja は労働集約の集合点を人からエージェントに移すために作られました:
 
 - 人間が会話する相手は **窓口担当の Claude Code 1 つだけ**。
 - 新しい Claude Code（ワーカー）を立ち上げるか・どこに何を投げるかは **窓口が判断する**。
