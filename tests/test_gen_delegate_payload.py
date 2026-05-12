@@ -1410,9 +1410,12 @@ class TestPatternBUrlOnlyRegistryFallback(unittest.TestCase):
         )
 
     def test_fallback_to_workers_dir_slug_when_registry_path_is_url(self):
-        """workers_dir/<slug> with .git → base_repo resolves to that clone."""
+        """workers_dir/<slug> with origin URL matching the registered github
+        repo → base_repo resolves to that clone."""
         clone = self.sb.workers / "renga"
-        self._init_bare_repo(clone)
+        self._init_repo_with_origin(
+            clone, "https://github.com/suisya-systems/renga.git"
+        )
         self._force_pattern_b("renga")
         plan = gdp.build_delegate_plan(
             task_id="renga-fallback-task",
@@ -1425,6 +1428,25 @@ class TestPatternBUrlOnlyRegistryFallback(unittest.TestCase):
         self.assertIsNone(plan.layout.pattern_variant)
         self.assertIsNotNone(plan.base_repo)
         self.assertEqual(Path(plan.base_repo).resolve(), clone.resolve())
+
+    def test_fallback_rejected_when_clone_has_no_origin(self):
+        """Codex Round 2 Blocker: a bare ``git init`` clone with no origin
+        must not be accepted as a base for a github-registered project —
+        otherwise any leftover same-named directory silently adopts the
+        registered slug. ``origin`` URL must match the registered repo
+        name for github URLs."""
+        clone = self.sb.workers / "renga"
+        self._init_bare_repo(clone)  # no origin remote
+        self._force_pattern_b("renga")
+        plan = gdp.build_delegate_plan(
+            task_id="renga-no-origin-task",
+            project_slug="renga",
+            description="alt+p ux fix",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(plan.layout.pattern, "B")
+        self.assertIsNone(plan.base_repo)
 
     def test_no_fallback_when_workers_dir_slug_missing(self):
         """No directory at workers_dir/<slug> → base_repo stays None
