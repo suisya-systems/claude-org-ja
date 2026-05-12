@@ -339,7 +339,7 @@ python tools/org_setup_prune.py --user-common-sandbox  # 後述「個人 sandbox
 ### 個人 sandbox の補強（main pull 後に 1 回必須、Issue #429 Task B / C + Issue #433）
 
 > **⚠️ 移行 pre-condition**: 共有 `.claude/settings.json` から個人パスエントリを除去しました:
-> - `~/.config/gh/hosts.yml` / `Read(~/.ssh/*)` / `Read(~/.aws/*)` ([Issue #429](https://github.com/suisya-systems/claude-org-ja/issues/429) Task C, denyRead 系)
+> - `Read(~/.ssh/*)` / `Read(~/.aws/*)` ([Issue #429](https://github.com/suisya-systems/claude-org-ja/issues/429) Task C, denyRead 系。`~/.config/gh/hosts.yml` も同時に除去したが gh CLI は窓口業務動線で必須のため、Issue [#436](https://github.com/suisya-systems/claude-org-ja/issues/436) で個人 sandbox 補強の対象からも除外した)
 > - `sandbox.filesystem.denyWrite: ["~/.claude/settings.json"]` ([Issue #433](https://github.com/suisya-systems/claude-org-ja/issues/433), denyWrite 系)
 >
 > **本 PR を pull した後、`python tools/org_setup_prune.py --user-common-sandbox` を 1 回実行しないと、個人環境の sandbox 防御（denyRead / denyWrite 両系統）が一時的に弱くなります**（共有 settings の defense-in-depth 分が個人側で補完されないため）。
@@ -352,7 +352,7 @@ python tools/org_setup_prune.py --user-common-sandbox --dry-run
 python tools/org_setup_prune.py --user-common-sandbox
 ```
 
-`~/.claude/settings.json` の `sandbox.filesystem.denyRead` に対し、機密 credential ディレクトリ群（`~/.ssh` / `~/.aws` / `~/.config/gh` / `~/.kube` / `~/.gnupg` / `~/.docker` / `~/.config/aws-vault`）を idempotent に union-merge します。**実在しないもの・realpath が HOME を escape する symlink（WSL2 + DriveFS で `~/.aws → /mnt/c/...` のケース等）は自動 skip** されます。
+`~/.claude/settings.json` の `sandbox.filesystem.denyRead` に対し、機密 credential ディレクトリ群（`~/.ssh` / `~/.aws` / `~/.kube` / `~/.gnupg` / `~/.docker` / `~/.config/aws-vault`）を idempotent に union-merge します。**実在しないもの・realpath が HOME を escape する symlink（WSL2 + DriveFS で `~/.aws → /mnt/c/...` のケース等）は自動 skip** されます。`~/.config/gh` は **意図的に候補から除外** しています（gh CLI が窓口の業務動線で必須なため、Issue [#436](https://github.com/suisya-systems/claude-org-ja/issues/436) で defense-in-depth と運用継続性のトレードオフを評価し後者を優先）。過去のリビジョンで `~/.config/gh` が個人 settings.json に追加されている場合は、次回 `--user-common-sandbox` 実行時に **黙って除去** されます（additive + prune セマンティクス）。
 
 同じフラグで `sandbox.filesystem.denyWrite` に `~/.claude/settings.json` も union-merge します（Issue #433）。denyWrite は **preventive deny** で扱い、対象ファイルが未作成でも entry を追加します（書込防御は fresh install で `~/.claude/settings.json` が Claude Code により初回作成される瞬間から有効にする意図）。他のキー (`theme`, `env`, `permissions` 等) は無触。
 
