@@ -352,7 +352,7 @@ python tools/org_setup_prune.py --user-common-sandbox --dry-run
 python tools/org_setup_prune.py --user-common-sandbox
 ```
 
-`~/.claude/settings.json` の `sandbox.filesystem.denyRead` に対し、機密 credential ディレクトリ群（`~/.ssh` / `~/.aws` / `~/.kube` / `~/.gnupg` / `~/.docker` / `~/.config/aws-vault`）を idempotent に union-merge します。**実在しないもの・realpath が HOME を escape する symlink（WSL2 + DriveFS で `~/.aws → /mnt/c/...` のケース等）は自動 skip** されます。`~/.config/gh` は **意図的に候補から除外** しています（gh CLI が窓口の業務動線で必須なため、Issue [#436](https://github.com/suisya-systems/claude-org-ja/issues/436) で defense-in-depth と運用継続性のトレードオフを評価し後者を優先）。過去のリビジョンで `~/.config/gh` が個人 settings.json に追加されている場合は、次回 `--user-common-sandbox` 実行時に **黙って除去** されます（additive + prune セマンティクス）。
+`~/.claude/settings.json` の `sandbox.filesystem.denyRead` に対し、機密 credential ディレクトリ群（`~/.ssh` / `~/.aws` / `~/.kube` / `~/.gnupg` / `~/.docker` / `~/.config/aws-vault`）を idempotent に union-merge します。**実在しないもの・realpath が HOME を escape する symlink（WSL2 + DriveFS で `~/.aws → /mnt/c/...` のケース等）は自動 skip** されます。`~/.config/gh` は **意図的に候補から除外** しています（gh CLI が窓口の業務動線で必須なため、Issue [#436](https://github.com/suisya-systems/claude-org-ja/issues/436) で defense-in-depth と運用継続性のトレードオフを評価し後者を優先）。過去のリビジョンで `~/.config/gh` が個人 settings.json に追加されている場合は、次回 `--user-common-sandbox` 実行時に **自動的に除去** されます（自動的な additive + prune セマンティクス）。
 
 同じフラグで `sandbox.filesystem.denyWrite` に `~/.claude/settings.json` も union-merge します（Issue #433）。denyWrite は **preventive deny** で扱い、対象ファイルが未作成でも entry を追加します（書込防御は fresh install で `~/.claude/settings.json` が Claude Code により初回作成される瞬間から有効にする意図）。他のキー (`theme`, `env`, `permissions` 等) は無触。
 
