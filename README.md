@@ -23,7 +23,7 @@ claude-org-ja が動かそうとしているのは、その「誰がオーケス
 
 さらに、窓口ペインで `/remote-connect` を実行すれば、Web / モバイル / デスクトップの Claude アプリからも本システム全体を操作できます。黒い画面に張り付かなくても、窓口と話すだけで配下のワーカーまで動くので、**他に開いている Claude Code を一切意識しなくてよい**体験が CLI を離れた場所でも成立します。
 
-そしてもう 1 つの軸が **安全寄りの設定のまま日常運用できること** です。Claude Code を素のまま厳しく締めると確認プロンプトが頻発して回らず、逆に `bypassPermissions` で楽にすると `permissions.deny` まで一緒に bypass されて `git push --force` 等の防御がごっそり抜けます。claude-org-ja は `permissions.defaultMode` / 静的 `allow` / `deny` / OS 層 sandbox / `PreToolUse` フックの 4 層を **ロール別に組み合わせて配備** し、窓口・ワーカーは `auto` モードに狭い allow とフックを重ね、ディスパッチャーは Sonnet 制約で `bypassPermissions` 固定としつつフックで実効防御を補い、push / PR 作成といった重要判断は必ず人間に戻します。**安全のための面倒を、人間ではなく仕組みに持たせる** — これが労働集約軸と並ぶ、もう 1 つの差別化軸です（4 層 × 攻撃ベクトルの対応表は [`docs/verification.md` §12 攻撃ベクトル × 防御層マトリクス](docs/verification.md#security-matrix)、ディスパッチャー bypass 例外の詳細は [`docs/non-goals.md` §1](docs/non-goals.md#1-ワーカーに---dangerously-skip-permissions-を既定で撒かない) を参照）。
+他に特筆すべき事として、サンドボックスモードやpre-hooksを含めた安全機構を人間が特別な設定を行わなくても全てのタスクに対して自動的に適応することができる点が挙げられます。これは複数のプロジェクトを同時に回す際に特に有効に機能し、auto modeやbypass permissionsを比較的安心して運用可能にすることに繋がります。窓口に事前に指示を行うことで標準的な防御設定から必要な許可を追加で与えることも可能です。
 
 ---
 
