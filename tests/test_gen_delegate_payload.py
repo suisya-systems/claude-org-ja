@@ -1352,6 +1352,101 @@ class TestPatternBClaudeOrgRepoWorktreePlan(unittest.TestCase):
         self.assertTrue((worker_dir / "CLAUDE.md").exists())
 
 
+# ---------------------------------------------------------------------------
+# Issue #450: Pattern B base_repo fallback to workers_dir/<slug>
+# ---------------------------------------------------------------------------
+
+
+class TestPatternBUrlOnlyRegistryFallback(unittest.TestCase):
+    """Issue #450: registry rows with a URL-only path (e.g. renga registered
+    as ``| renga | renga | https://github.com/.../renga.git | ... |``) used to
+    fall through all three base_repo branches in build_delegate_plan, leaving
+    base_repo=None and causing apply to raise WorktreeApplyError. The fallback
+    must pick up a manually-cloned local repo at ``workers_dir/<project_slug>``
+    so Pattern B delegation works for URL-only registry entries."""
+
+    def setUp(self) -> None:
+        try:
+            subprocess.run(["git", "--version"], capture_output=True, check=True)
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            self.skipTest("git not available")
+        self._td = tempfile.TemporaryDirectory()
+        self.sb = _Sandbox(Path(self._td.name))
+        # Replace the auto-seeded registry with a URL-only row for ``renga``
+        # so the build_delegate_plan path lookup yields a non-local path.
+        (self.sb.claude_org_root / "registry" / "projects.md").write_text(
+            "# Projects\n\n"
+            "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 |\n"
+            "|---|---|---|---|---|\n"
+            "| renga | renga | https://github.com/suisya-systems/renga.git "
+            "| Renga | dev |\n",
+            encoding="utf-8",
+        )
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def _init_bare_repo(self, base: Path) -> None:
+        base.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["git", "-C", str(base), "init", "-q"], check=True
+        )
+
+    def _force_pattern_b(self, slug: str) -> None:
+        self.sb.add_active_run(
+            task_id=f"prev-{slug}",
+            project_slug=slug,
+            worker_dir=str(self.sb.workers / slug),
+        )
+
+    def test_fallback_to_workers_dir_slug_when_registry_path_is_url(self):
+        """workers_dir/<slug> with .git → base_repo resolves to that clone."""
+        clone = self.sb.workers / "renga"
+        self._init_bare_repo(clone)
+        self._force_pattern_b("renga")
+        plan = gdp.build_delegate_plan(
+            task_id="renga-fallback-task",
+            project_slug="renga",
+            description="alt+p ux fix",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(plan.layout.pattern, "B")
+        self.assertIsNone(plan.layout.pattern_variant)
+        self.assertIsNotNone(plan.base_repo)
+        self.assertEqual(Path(plan.base_repo).resolve(), clone.resolve())
+
+    def test_no_fallback_when_workers_dir_slug_missing(self):
+        """No directory at workers_dir/<slug> → base_repo stays None
+        (existing apply-time error path preserved)."""
+        self._force_pattern_b("renga")
+        plan = gdp.build_delegate_plan(
+            task_id="renga-no-clone-task",
+            project_slug="renga",
+            description="alt+p ux fix",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(plan.layout.pattern, "B")
+        self.assertIsNone(plan.base_repo)
+
+    def test_no_fallback_when_workers_dir_slug_is_not_git_repo(self):
+        """A plain directory (no .git) at workers_dir/<slug> must not be
+        accepted as a base_repo — would yield "fatal: not a git repository"
+        from git worktree add. Stay None and surface the existing error."""
+        (self.sb.workers / "renga").mkdir()
+        self._force_pattern_b("renga")
+        plan = gdp.build_delegate_plan(
+            task_id="renga-plain-dir-task",
+            project_slug="renga",
+            description="alt+p ux fix",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(plan.layout.pattern, "B")
+        self.assertIsNone(plan.base_repo)
+
+
 def _env_update_goldens() -> bool:
     import os
     return os.environ.get("UPDATE_GOLDENS") == "1"

@@ -337,6 +337,17 @@ def build_delegate_plan(
             base_repo = candidate
         elif project_path and rwl.is_local_git_repo(project_path):
             base_repo = Path(project_path).resolve()
+        else:
+            # Issue #450: registry rows may carry only a URL (no local path),
+            # with a manually-cloned repo at workers_dir/<project_slug> (renga
+            # is the motivating case). Pattern B needs a local base for
+            # ``git worktree add``; fall back to that conventional location
+            # before giving up. Skipped silently when the directory is missing
+            # or not a git repo so apply still raises the existing
+            # "no usable base repo" error rather than masking the real cause.
+            candidate = Path(workers_dir_for_norm) / project_slug
+            if rwl.is_local_git_repo(str(candidate)):
+                base_repo = candidate.resolve()
 
     # Phase 1 PR4: surface base_clone into settings_args for Pattern B so the
     # runtime can substitute `{base_clone}` in
