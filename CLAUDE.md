@@ -22,6 +22,9 @@
   - [`/org-delegate`](./.claude/skills/org-delegate/SKILL.md) — 作業委託（ワーカーへの指示組み立て・ディスパッチャー経由の派遣）
   - [`/org-escalation`](./.claude/skills/org-escalation/SKILL.md) — 判断仰ぎを人間にエスカレーションする正準フロー（pending-decisions register 更新を含む）
   - [`/org-pull-request`](./.claude/skills/org-pull-request/SKILL.md) — ユーザー承認後の push / PR 作成 / CI 監視 / レビュー指摘ループ / マージ後クローズ
+- 窓口セッションの context が長くなったら以下で引き継ぎ:
+  - [`/secretary-handover`](./.claude/skills/secretary-handover/SKILL.md) — 直近やり取り・組織状態を `.state/secretary-handover.md` に書き出す（ペインは生かしたまま）
+  - [`/secretary-resume`](./.claude/skills/secretary-resume/SKILL.md) — `/clear` 後の最初のターンで handover を読み込んで窓口復帰
 - 実作業は全てワーカーに委譲する（コード編集、デバッグ、テスト、ビルド、git commit、環境構築等）
 - 問題が報告されたら、自分で調査せずワーカーに投げる
 
