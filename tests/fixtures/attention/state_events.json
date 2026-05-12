@@ -25,6 +25,26 @@
     }
   },
   {
+    "kind": "notify_sent",
+    "occurred_at": "2026-05-01T02:30:00Z",
+    "actor": null,
+    "payload": {
+      "kind": "relay_gap_suspected",
+      "task_id": "T-relay-suspected",
+      "worker": "worker-T-relay-suspected"
+    }
+  },
+  {
+    "kind": "notify_sent",
+    "occurred_at": "2026-05-01T02:45:00Z",
+    "actor": null,
+    "payload": {
+      "kind": "pane_output_without_peer_msg",
+      "task_id": "T-silent",
+      "worker": "worker-T-silent"
+    }
+  },
+  {
     "kind": "ci_completed",
     "occurred_at": "2026-05-01T03:00:00Z",
     "actor": null,

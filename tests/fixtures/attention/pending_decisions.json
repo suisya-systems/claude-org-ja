@@ -13,9 +13,9 @@
     "user_replied_at": "2026-01-02T00:00:00Z"
   },
   {
-    "task_id": "T-fresh",
+    "task_id": "T-future-dated",
     "received_at": "2099-01-01T00:00:00Z",
-    "raw_message": "Just asked, no urgency.",
+    "raw_message": "Below threshold (received_at far in the future so _minutes_since stays negative regardless of wall clock).",
     "status": "pending"
   }
 ]

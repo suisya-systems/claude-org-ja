@@ -12,6 +12,28 @@
   },
   {
     "key": "event:4",
+    "kind": "relay_gap_suspected",
+    "severity": "urgent",
+    "title": "Secretary relay gap suspected",
+    "body": "Relay gap detected for T-relay-suspected.",
+    "source": "state.db.events",
+    "task_id": "T-relay-suspected",
+    "worker": "worker-T-relay-suspected",
+    "created_at": "2026-05-01T02:30:00Z"
+  },
+  {
+    "key": "event:5",
+    "kind": "silent_worker_output",
+    "severity": "urgent",
+    "title": "Silent worker output",
+    "body": "worker-T-silent produced output without a peer message.",
+    "source": "state.db.events",
+    "task_id": "T-silent",
+    "worker": "worker-T-silent",
+    "created_at": "2026-05-01T02:45:00Z"
+  },
+  {
+    "key": "event:6",
     "kind": "ci_failed",
     "severity": "urgent",
     "title": "CI failed",

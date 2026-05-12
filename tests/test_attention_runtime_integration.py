@@ -51,12 +51,15 @@ _DISPATCH_ONLY_KEYS = frozenset({
 })
 
 # Drift canary: the set of urgent attention kinds the fixture is
-# expected to surface. If the runtime stops classifying any of these
-# as urgent, the assertion in
+# expected to surface. Mirrors the urgent rows of
+# docs/design/attention-notification.md §5 — if the runtime stops
+# classifying any of these as urgent, the assertion in
 # test_all_expected_urgent_kinds_are_recognized fails and points at
 # the gap.
 _EXPECTED_URGENT_KINDS = frozenset({
     "approval_blocked",
+    "relay_gap_suspected",
+    "silent_worker_output",
     "ci_failed",
     "pending_decision",
     "user_reply_not_forwarded",
@@ -177,8 +180,18 @@ class AttentionRuntimeIntegrationTests(unittest.TestCase):
         self.assertEqual(ev["severity"], "urgent")
         self.assertEqual(ev["task_id"], "T-approval")
 
-    def test_ci_completed_failed_is_urgent(self) -> None:
+    def test_notify_sent_relay_gap_is_urgent(self) -> None:
         ev = self._find_event(self._run_scan(), key="event:4")
+        self.assertEqual(ev["kind"], "relay_gap_suspected")
+        self.assertEqual(ev["severity"], "urgent")
+
+    def test_notify_sent_silent_output_is_urgent(self) -> None:
+        ev = self._find_event(self._run_scan(), key="event:5")
+        self.assertEqual(ev["kind"], "silent_worker_output")
+        self.assertEqual(ev["severity"], "urgent")
+
+    def test_ci_completed_failed_is_urgent(self) -> None:
+        ev = self._find_event(self._run_scan(), key="event:6")
         self.assertEqual(ev["kind"], "ci_failed")
         self.assertEqual(ev["severity"], "urgent")
         self.assertEqual(ev["pr"], 42)
@@ -211,9 +224,14 @@ class AttentionRuntimeIntegrationTests(unittest.TestCase):
         # notify_sent with unrecognized subkind (filtered by classifier)
         self.assertNotIn("event:3", keys)
         # ci_completed status=success (filtered by classifier)
-        self.assertNotIn("event:5", keys)
-        # pending decision still inside the freshness window
-        self.assertNotIn("pending:T-fresh:pending_decision", keys)
+        self.assertNotIn("event:7", keys)
+        # pending decision whose received_at is far in the future —
+        # _minutes_since returns negative so the entry stays below the
+        # urgent threshold; this exercises the negative-delta branch
+        # of the staleness check.
+        self.assertNotIn(
+            "pending:T-future-dated:pending_decision", keys,
+        )
 
     # ------------------------------------------------------------------
     # (4) Drift canary — the runtime must still classify every kind the
