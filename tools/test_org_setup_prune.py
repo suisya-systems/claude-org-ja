@@ -357,10 +357,10 @@ class CheckerOverrideAwarenessTests(unittest.TestCase):
 
 
 class CandidateSetTests(unittest.TestCase):
-    """Issue #436: ``~/.config/gh`` was retired from the denyRead
-    candidate set (gh CLI is on the Secretary critical path) and moved to
-    the retire list so older personal settings.json files have it pruned
-    on the next ``--user-common-sandbox`` run."""
+    """``~/.config/gh`` was retired from the denyRead candidate set
+    (gh CLI is on the Secretary critical path) and moved to the retire
+    list so older personal settings.json files have it pruned on the
+    next ``--user-common-sandbox`` run."""
 
     def test_gh_not_in_active_candidates(self) -> None:
         self.assertNotIn("~/.config/gh", p.USER_COMMON_SANDBOX_DENYREAD_CANDIDATES)
@@ -551,8 +551,8 @@ class MergeUserCommonSandboxTests(unittest.TestCase):
         self.assertEqual(out["sandbox"]["filesystem"]["denyRead"], ["~/.ssh", "~/.ssh/**"])
 
     def test_remove_strips_legacy_entry_and_preserves_others(self) -> None:
-        # Issue #436: a retired candidate (``~/.config/gh``) lingering in
-        # an existing settings.json is silently pruned, while operator
+        # A retired candidate (``~/.config/gh``) lingering in an
+        # existing settings.json is pruned automatically, while operator
         # additions and the entries we are appending right now survive.
         base = {
             "sandbox": {
@@ -1057,10 +1057,10 @@ class UserCommonSandboxEndToEndTests(unittest.TestCase):
         self.assertEqual(baks, [])
 
     def test_legacy_gh_entry_silently_removed_on_merge(self) -> None:
-        # Issue #436: an existing personal settings.json that still has
+        # An existing personal settings.json that still has
         # ``~/.config/gh`` in denyRead (added by an older revision of
-        # --user-common-sandbox) must have it silently stripped on the
-        # next run, while operator-added entries are preserved.
+        # --user-common-sandbox) must have it stripped automatically on
+        # the next run, while operator-added entries are preserved.
         self.settings_path.write_text(json.dumps({
             "sandbox": {
                 "filesystem": {

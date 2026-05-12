@@ -86,8 +86,8 @@ USER_COMMON_SANDBOX_DENYREAD_CANDIDATES: tuple[str, ...] = (
 
 # Entries that **were** in the candidate set in older revisions but have
 # since been retired. Listing them here lets ``--user-common-sandbox``
-# silently strip them on every run so the user does not have to hand-edit
-# their personal ``~/.claude/settings.json`` after a pull (Issue #436).
+# strip them automatically on every run so the user does not have to
+# hand-edit their personal ``~/.claude/settings.json`` after a pull.
 #
 # Each entry is removed from an existing ``sandbox.filesystem.denyRead``
 # **only when it is not also present in the current candidate set** -- a
@@ -99,8 +99,8 @@ USER_COMMON_SANDBOX_DENYREAD_CANDIDATES: tuple[str, ...] = (
 #   ``~/.config/gh``: gh CLI is on the Secretary critical path
 #       (push / PR create / CI watch / review feedback loop / merge
 #       cleanup). Deny-by-directory at the bwrap layer broke that loop
-#       in practice (Issue #436); the defense-in-depth trade-off was
-#       resolved in favour of operational continuity.
+#       in practice; the defense-in-depth trade-off was resolved in
+#       favour of operational continuity.
 USER_COMMON_SANDBOX_DENYREAD_REMOVE: tuple[str, ...] = (
     "~/.config/gh",
 )
@@ -407,11 +407,10 @@ def _merge_sandbox_deny(
       along the touched spine. Callers can compare ``id`` / ``==`` safely.
 
     Optional ``remove`` lists retired candidates that must be stripped
-    from the existing deny list (Issue #436). An entry is removed only
-    when it is present in ``existing`` AND not also present in
-    ``entries`` -- a path cannot simultaneously be retired and an active
-    candidate. Operator-added entries that aren't in ``remove`` are
-    untouched.
+    from the existing deny list. An entry is removed only when it is
+    present in ``existing`` AND not also present in ``entries`` -- a
+    path cannot simultaneously be retired and an active candidate.
+    Operator-added entries that aren't in ``remove`` are untouched.
 
     Raises ``ValueError`` if an existing ``sandbox`` / ``sandbox.filesystem``
     is not a JSON object, or the targeted deny list is not a JSON array of
@@ -487,9 +486,9 @@ def merge_user_common_sandbox_denyread(
     See ``_merge_sandbox_deny`` for the shared semantics (idempotent,
     malformed shape raises ``ValueError``, input never mutated).
 
-    Optional ``remove`` lists retired candidates (e.g. ``~/.config/gh``
-    after Issue #436) that must be silently stripped from the existing
-    deny list so users do not have to hand-edit their personal
+    Optional ``remove`` lists retired candidates (e.g. ``~/.config/gh``)
+    that must be stripped automatically from the existing deny list so
+    users do not have to hand-edit their personal
     ``~/.claude/settings.json`` after a pull. An entry is dropped only
     when it is currently present AND not also a member of ``entries``.
     """
@@ -530,10 +529,10 @@ def process_user_common_sandbox(
     candidates (preventive deny -- no existence filter; Issue #433).
 
     ``denyread_remove`` lists retired denyRead candidates that must be
-    silently stripped from an existing settings.json on every run
-    (Issue #436): defense-in-depth retirements that the operator should
-    not need to apply by hand. Operator-added entries that aren't in this
-    list are left untouched.
+    stripped automatically from an existing settings.json on every run:
+    defense-in-depth retirements that the operator should not need to
+    apply by hand. Operator-added entries that aren't in this list are
+    left untouched.
 
     Returns a process-style return code (0 on success / no-op; non-zero on
     malformed JSON). When ``settings_path`` does not exist the file is
@@ -641,10 +640,9 @@ def _added_in_append_order(current: list[str], target: list[str]) -> list[str]:
 
 
 def _removed_from_input(current: list[str], target: list[str]) -> list[str]:
-    """Counterpart of ``_added_in_append_order`` for the retire path
-    (Issue #436): entries present in ``current`` but absent from
-    ``target``, in their original input order so the diff stays
-    deterministic."""
+    """Counterpart of ``_added_in_append_order`` for the retire path:
+    entries present in ``current`` but absent from ``target``, in their
+    original input order so the diff stays deterministic."""
     tgt_set = set(target)
     return [e for e in current if e not in tgt_set]
 
@@ -671,9 +669,9 @@ def render_user_common_diff(
         for it in added_read:
             lines.append(f"    + {it}")
     if removed_read:
-        # Retired denyRead candidates (Issue #436): silently stripped on
-        # every run so the operator does not have to hand-edit their
-        # personal settings.json after a pull.
+        # Retired denyRead candidates: stripped automatically on every
+        # run so the operator does not have to hand-edit their personal
+        # settings.json after a pull.
         lines.append("  sandbox.filesystem.denyRead removed (retired candidate):")
         for it in removed_read:
             lines.append(f"    - {it}")
