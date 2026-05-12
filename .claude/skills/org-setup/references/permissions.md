@@ -58,7 +58,7 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
 
 ### ユーザー共通の sandbox denyRead / denyWrite 補強（`--user-common-sandbox`、Issue #429 Task B + Issue #433）
 
-> **⚠️ main pull 後の 1 回必須**: 本リポジトリを clone / pull した後に **`python tools/org_setup_prune.py --user-common-sandbox` を 1 回実行する**。未実行だと共有 `.claude/settings.json` から除去された `~/.ssh` / `~/.aws` / `~/.config/gh` 等の sandbox denyRead **および** `~/.claude/settings.json` の sandbox denyWrite が補完されず、**sandbox 防御が一時的に弱くなる**。
+> **⚠️ main pull 後の 1 回必須**: 本リポジトリを clone / pull した後に **`python tools/org_setup_prune.py --user-common-sandbox` を 1 回実行する**。未実行だと共有 `.claude/settings.json` から除去された `~/.ssh` / `~/.aws` 等の sandbox denyRead **および** `~/.claude/settings.json` の sandbox denyWrite が補完されず、**sandbox 防御が一時的に弱くなる**。
 
 `tools/org_setup_prune.py --user-common-sandbox` は `~/.claude/settings.json` の `sandbox.filesystem.denyRead` / `denyWrite` 双方に対し、対象エントリを **idempotent に union-merge** する専用モード。共有 (= リポジトリ) 側の `.claude/settings.json` から個人 path を除去（Issue #429 Task C で denyRead 群、Issue #433 で denyWrite の `~/.claude/settings.json`）した分の defense-in-depth を、個人環境ごとに復元する。**単一フラグで denyRead + denyWrite の両方を処理する**（`--user-common-sandbox-write` のような別フラグは設けない、UX 簡素化方針）。
 
