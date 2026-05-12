@@ -356,6 +356,26 @@ class CheckerOverrideAwarenessTests(unittest.TestCase):
         )
 
 
+class CandidateSetTests(unittest.TestCase):
+    """``~/.config/gh`` was retired from the denyRead candidate set
+    (gh CLI is on the Secretary critical path) and moved to the retire
+    list so older personal settings.json files have it pruned on the
+    next ``--user-common-sandbox`` run."""
+
+    def test_gh_not_in_active_candidates(self) -> None:
+        self.assertNotIn("~/.config/gh", p.USER_COMMON_SANDBOX_DENYREAD_CANDIDATES)
+
+    def test_gh_in_retire_list(self) -> None:
+        self.assertIn("~/.config/gh", p.USER_COMMON_SANDBOX_DENYREAD_REMOVE)
+
+    def test_other_credential_dirs_still_active(self) -> None:
+        # Sentinel: removing gh must not have collaterally dropped any of
+        # the other credential candidates.
+        for entry in ("~/.ssh", "~/.aws", "~/.kube", "~/.gnupg",
+                      "~/.docker", "~/.config/aws-vault"):
+            self.assertIn(entry, p.USER_COMMON_SANDBOX_DENYREAD_CANDIDATES)
+
+
 class FilterExistingUserDirsTests(unittest.TestCase):
     """Existence check must stat against the injected HOME, return the
     original ``~``-prefixed literal (not the expanded path), and ignore
@@ -529,6 +549,57 @@ class MergeUserCommonSandboxTests(unittest.TestCase):
             {"sandbox": {"filesystem": {"denyRead": ["~/.ssh"]}}}, ["~/.ssh/**"],
         )
         self.assertEqual(out["sandbox"]["filesystem"]["denyRead"], ["~/.ssh", "~/.ssh/**"])
+
+    def test_remove_strips_legacy_entry_and_preserves_others(self) -> None:
+        # A retired candidate (``~/.config/gh``) lingering in an
+        # existing settings.json is pruned automatically, while operator
+        # additions and the entries we are appending right now survive.
+        base = {
+            "sandbox": {
+                "filesystem": {
+                    "denyRead": [
+                        "**/*.pem",          # operator-added
+                        "~/.config/gh",      # retired candidate, must go
+                        "~/.ssh",            # active candidate, must stay
+                    ],
+                },
+            },
+        }
+        out = p.merge_user_common_sandbox_denyread(
+            base, ["~/.ssh", "~/.aws"], remove=("~/.config/gh",),
+        )
+        self.assertEqual(
+            out["sandbox"]["filesystem"]["denyRead"],
+            ["**/*.pem", "~/.ssh", "~/.aws"],
+        )
+
+    def test_remove_when_entry_absent_is_noop(self) -> None:
+        # Once the legacy entry is gone, subsequent runs must not modify
+        # the file (idempotency under the new prune semantics).
+        base = {"sandbox": {"filesystem": {"denyRead": ["~/.ssh"]}}}
+        out = p.merge_user_common_sandbox_denyread(
+            base, ["~/.ssh"], remove=("~/.config/gh",),
+        )
+        self.assertEqual(out, base)
+
+    def test_remove_does_not_drop_entry_also_in_active_candidates(self) -> None:
+        # Defensive: if a path is somehow in both the retire list AND the
+        # active candidate list, it must NOT be removed (otherwise the
+        # subsequent additive merge would just re-append it, producing a
+        # write loop with no semantic change).
+        base = {"sandbox": {"filesystem": {"denyRead": ["~/.config/gh"]}}}
+        out = p.merge_user_common_sandbox_denyread(
+            base, ["~/.config/gh"], remove=("~/.config/gh",),
+        )
+        self.assertEqual(out, base)
+
+    def test_remove_input_not_mutated(self) -> None:
+        base = {"sandbox": {"filesystem": {"denyRead": ["~/.config/gh"]}}}
+        snapshot = json.loads(json.dumps(base))
+        p.merge_user_common_sandbox_denyread(
+            base, [], remove=("~/.config/gh",),
+        )
+        self.assertEqual(base, snapshot)
 
 
 class MergeUserCommonSandboxDenywriteTests(unittest.TestCase):
@@ -984,6 +1055,95 @@ class UserCommonSandboxEndToEndTests(unittest.TestCase):
         self.assertEqual(self.settings_path.read_text(encoding="utf-8"), original)
         baks = list(self.settings_path.parent.glob("settings.json.bak.*"))
         self.assertEqual(baks, [])
+
+    def test_legacy_gh_entry_silently_removed_on_merge(self) -> None:
+        # An existing personal settings.json that still has
+        # ``~/.config/gh`` in denyRead (added by an older revision of
+        # --user-common-sandbox) must have it stripped automatically on
+        # the next run, while operator-added entries are preserved.
+        self.settings_path.write_text(json.dumps({
+            "sandbox": {
+                "filesystem": {
+                    "denyRead": [
+                        "**/*.pem",         # operator-added, must stay
+                        "~/.config/gh",     # retired candidate
+                        "~/.ssh",           # active candidate, must stay
+                    ],
+                },
+            },
+        }), encoding="utf-8")
+        rc = p.process_user_common_sandbox(
+            settings_path=self.settings_path,
+            home=self.home,
+            dry_run=False,
+            no_backup=True,
+        )
+        self.assertEqual(rc, 0)
+        loaded = json.loads(self.settings_path.read_text(encoding="utf-8"))
+        deny = loaded["sandbox"]["filesystem"]["denyRead"]
+        self.assertNotIn("~/.config/gh", deny)
+        self.assertIn("**/*.pem", deny)
+        self.assertIn("~/.ssh", deny)
+        self.assertIn("~/.aws", deny)
+        # denyWrite still gets the preventive deny (Issue #433).
+        self.assertEqual(
+            loaded["sandbox"]["filesystem"]["denyWrite"],
+            ["~/.claude/settings.json"],
+        )
+
+    def test_legacy_gh_entry_absent_is_idempotent_noop(self) -> None:
+        # When ``~/.config/gh`` was never in the file, a run with the
+        # default retire list must remain a no-op against an
+        # already-merged settings.json. (Sanity check: the prune branch
+        # must not flip a clean steady state into a new write.)
+        rc1 = p.process_user_common_sandbox(
+            settings_path=self.settings_path,
+            home=self.home,
+            dry_run=False,
+            no_backup=True,
+        )
+        self.assertEqual(rc1, 0)
+        first = self.settings_path.read_text(encoding="utf-8")
+        # Confirm setup landed without ``~/.config/gh`` (the .config/gh
+        # directory does not exist in this test's HOME).
+        loaded_first = json.loads(first)
+        self.assertNotIn(
+            "~/.config/gh", loaded_first["sandbox"]["filesystem"]["denyRead"],
+        )
+        rc2 = p.process_user_common_sandbox(
+            settings_path=self.settings_path,
+            home=self.home,
+            dry_run=False,
+            no_backup=True,
+        )
+        self.assertEqual(rc2, 0)
+        self.assertEqual(self.settings_path.read_text(encoding="utf-8"), first)
+
+    def test_dry_run_renders_removed_legacy_entry(self) -> None:
+        # Capture the dry-run report and confirm the retire branch
+        # surfaces the removal so the operator can audit the change.
+        self.settings_path.write_text(json.dumps({
+            "sandbox": {"filesystem": {"denyRead": ["~/.config/gh"]}},
+        }), encoding="utf-8")
+        import contextlib
+        import io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = p.process_user_common_sandbox(
+                settings_path=self.settings_path,
+                home=self.home,
+                dry_run=True,
+                no_backup=True,
+            )
+        self.assertEqual(rc, 0)
+        out = buf.getvalue()
+        self.assertIn("denyRead removed", out)
+        self.assertIn("~/.config/gh", out)
+        # File must remain untouched in dry-run.
+        self.assertEqual(
+            json.loads(self.settings_path.read_text(encoding="utf-8")),
+            {"sandbox": {"filesystem": {"denyRead": ["~/.config/gh"]}}},
+        )
 
     def test_dry_run_renders_skipped_even_on_noop(self) -> None:
         # First merge populates the file; then a second --dry-run is a

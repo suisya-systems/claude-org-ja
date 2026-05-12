@@ -58,7 +58,7 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
 
 ### ユーザー共通の sandbox denyRead / denyWrite 補強（`--user-common-sandbox`、Issue #429 Task B + Issue #433）
 
-> **⚠️ main pull 後の 1 回必須**: 本リポジトリを clone / pull した後に **`python tools/org_setup_prune.py --user-common-sandbox` を 1 回実行する**。未実行だと共有 `.claude/settings.json` から除去された `~/.ssh` / `~/.aws` / `~/.config/gh` 等の sandbox denyRead **および** `~/.claude/settings.json` の sandbox denyWrite が補完されず、**sandbox 防御が一時的に弱くなる**。
+> **⚠️ main pull 後の 1 回必須**: 本リポジトリを clone / pull した後に **`python tools/org_setup_prune.py --user-common-sandbox` を 1 回実行する**。未実行だと共有 `.claude/settings.json` から除去された `~/.ssh` / `~/.aws` 等の sandbox denyRead **および** `~/.claude/settings.json` の sandbox denyWrite が補完されず、**sandbox 防御が一時的に弱くなる**。
 
 `tools/org_setup_prune.py --user-common-sandbox` は `~/.claude/settings.json` の `sandbox.filesystem.denyRead` / `denyWrite` 双方に対し、対象エントリを **idempotent に union-merge** する専用モード。共有 (= リポジトリ) 側の `.claude/settings.json` から個人 path を除去（Issue #429 Task C で denyRead 群、Issue #433 で denyWrite の `~/.claude/settings.json`）した分の defense-in-depth を、個人環境ごとに復元する。**単一フラグで denyRead + denyWrite の両方を処理する**（`--user-common-sandbox-write` のような別フラグは設けない、UX 簡素化方針）。
 
@@ -66,7 +66,6 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
 
 - `~/.ssh`
 - `~/.aws`
-- `~/.config/gh`
 - `~/.kube`
 - `~/.gnupg`
 - `~/.docker`
@@ -77,6 +76,14 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
 - **存在しないディレクトリは skip**。`~/.docker` が無い環境では entry を追加しない（bwrap launcher の case A 扱いを先回り）。
 - **realpath が HOME を escape する symlink は skip**。WSL2 + DriveFS で `~/.aws → /mnt/c/Users/<name>/.aws` のようになっている場合、bwrap の bootstrap mount が失敗する（`bwrap: Can't create file at /home/<user>/.aws/config: No such file or directory`）。これは claude-org-runtime の Layer 3 generator (`role_configs_schema.json#$comment_sandbox_anchor` の `suppressOnSymlinkEscape=True`) と同じ判定を user_common 側でも先回りする。
 
+**候補リストから恒久的に除外しているもの**（候補定数 `USER_COMMON_SANDBOX_DENYREAD_CANDIDATES` 自体に含めない）:
+
+- `~/.config/gh`: gh CLI は窓口（Secretary）の業務動線（push / PR 作成 / CI 監視 / review feedback ループ / merge cleanup）で必須のため deny しない。defense-in-depth と運用継続性のトレードオフを評価し、後者を優先する判断とした。`~/.config/gh` は `USER_COMMON_SANDBOX_DENYREAD_REMOVE` の retire リストに登録されており、過去に `--user-common-sandbox` を実行して個人 `~/.claude/settings.json` の `sandbox.filesystem.denyRead` に当該 entry が残っているユーザーの環境では、次回 `--user-common-sandbox` 実行時に **自動的に除去** される（自動的な additive + prune セマンティクス）。ユーザーが手で追加した他の entry は touch しない。
+
+**候補リストには残るが実行時に skip されるケース**（候補定数には残るが merge 時に弾かれる）:
+
+- `~/.aws` の HOME-escape symlink ケース（WSL2 + DriveFS）: 上記「realpath が HOME を escape する symlink は skip」に従い実行時に自動 skip される。候補リストからは除外しないため、symlink を解消すれば次回実行で deny が効くようになる。
+
 **denyWrite 対象ファイル（候補）**: `~`-prefixed の *file* literal:
 
 - `~/.claude/settings.json`
@@ -86,11 +93,12 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
 - **存在チェック無し**: ファイルが未作成でも entry を merge する。書込防御は **ファイル未作成時点で意味があり**（fresh install では `~/.claude/settings.json` が Claude Code の初回起動時に作成される）、deny を先に置くことで初回作成時から bwrap subprocess の書き込みを構造的に止める。
 - **symlink-escape skip も適用しない**: denyWrite の対象は単一ファイル literal で、bwrap が write 先 path を解釈する際に存在しない path を case A で skip するため bootstrap 失敗の risk が無い。symmetric directory denyWrite (`~/.ssh` 等) は **Issue #433 のスコープ外**として deferred（`ssh-keygen` / `aws configure` 等の正規 write を巻き込む副作用が大きく、明確な threat model も無いため）。
 
-**動作（idempotent / additive-only、denyRead/denyWrite 共通）**:
+**動作（idempotent、denyRead/denyWrite 共通）**:
 
 - 既存の top-level key (`theme`, `env`, `permissions`, etc.) は無触。
 - 既存の `sandbox` / `sandbox.filesystem` siblings (`enabled`, `failIfUnavailable`, `additionalDirectories`, および merge 対象でない側の deny list) は保持。
 - `denyRead` / `denyWrite` の既存順序を保ちつつ、未追加の candidate のみを後ろに append。重複は skip。
+- **denyRead のみ additive + prune**: 上記の「retire リスト」(`USER_COMMON_SANDBOX_DENYREAD_REMOVE`) に列挙された entry が既存 `denyRead` に残っていれば、毎回の実行で **自動的に除去** する。retire 対象が現行候補リストにも入っている場合は除去せず保持（再追加ループを避けるため）。retire リストに無いユーザー追加 entry は一切 touch しない。denyWrite 側には retire リストを設けていない（現状 retire 対象が無いため）。
 - malformed shape（`sandbox` が object でない、`denyRead` / `denyWrite` が array でない、entry が string でない、等）は **書込前に `ValueError` で abort**。ユーザーデータの黙示的破壊を防ぐ。denyRead 側で先に shape error が出れば denyWrite merge は実行されない（その逆も同様）。
 
 **使用方法**:

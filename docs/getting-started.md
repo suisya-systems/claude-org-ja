@@ -84,7 +84,7 @@ renga --layout ops
 
 `/org-setup` は **additive-only**（不足分を追加するだけで既存を消さない）。drift を baseline に戻したい場合は [`.claude/skills/org-setup/references/permissions.md`](../.claude/skills/org-setup/references/permissions.md) のロール別サンプル JSON で `settings.local.json` を手動置換する。
 
-> **⚠️ main pull 後の 1 回必須（Issue #429 Task B / C + Issue #433）**: 共有 `.claude/settings.json` から個人パスエントリを除去したため（denyRead 系: `~/.config/gh/hosts.yml` / `Read(~/.ssh/*)` / `Read(~/.aws/*)`、denyWrite 系: `~/.claude/settings.json`）、初回 / pull 後に **`python tools/org_setup_prune.py --user-common-sandbox` を 1 回実行**してください（単一フラグで denyRead + denyWrite 両系統を補完）。未実行だと個人環境の sandbox 防御が一時的に弱くなります（[README §個人 sandbox の補強](../README.md) と [`.claude/skills/org-setup/references/permissions.md`](../.claude/skills/org-setup/references/permissions.md) 参照）。
+> **⚠️ main pull 後の 1 回必須（Issue #429 Task B / C + Issue #433）**: 共有 `.claude/settings.json` から個人パスエントリを除去したため（denyRead 系: `Read(~/.ssh/*)` / `Read(~/.aws/*)` 等、denyWrite 系: `~/.claude/settings.json`）、初回 / pull 後に **`python tools/org_setup_prune.py --user-common-sandbox` を 1 回実行**してください（単一フラグで denyRead + denyWrite 両系統を補完）。未実行だと個人環境の sandbox 防御が一時的に弱くなります（[README §個人 sandbox の補強](../README.md) と [`.claude/skills/org-setup/references/permissions.md`](../.claude/skills/org-setup/references/permissions.md) 参照）。なお `~/.config/gh` は gh CLI が窓口業務動線で必須のため候補から除外しており、過去のリビジョンで個人 settings.json に残っていれば次回実行時に自動的に prune されます。
 >
 > ```bash
 > # diff プレビュー

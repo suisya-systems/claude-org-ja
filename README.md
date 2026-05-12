@@ -227,7 +227,7 @@ bash scripts/install-hooks.sh                          # core.hooksPath を .git
 python tools/org_setup_prune.py --user-common-sandbox  # 個人 ~/.claude/settings.json の sandbox denyRead / denyWrite を補強
 ```
 
-`--user-common-sandbox` は idempotent で、`~/.claude/settings.json` の `sandbox.filesystem.denyRead` に機密 credential ディレクトリ群（`~/.ssh` / `~/.aws` / `~/.config/gh` / `~/.kube` / `~/.gnupg` / `~/.docker` / `~/.config/aws-vault`）を、`denyWrite` に `~/.claude/settings.json` 自身を idempotent に union-merge します（実在しないもの・symlink-escape は自動 skip。詳細は [`docs/getting-started.md`](docs/getting-started.md) と [`.claude/skills/org-setup/references/permissions.md`](.claude/skills/org-setup/references/permissions.md)）。
+`--user-common-sandbox` は idempotent で、`~/.claude/settings.json` の `sandbox.filesystem.denyRead` に機密 credential ディレクトリ群（`~/.ssh` / `~/.aws` / `~/.kube` / `~/.gnupg` / `~/.docker` / `~/.config/aws-vault`）を、`denyWrite` に `~/.claude/settings.json` 自身を idempotent に union-merge します（実在しないもの・symlink-escape は自動 skip。詳細は [`docs/getting-started.md`](docs/getting-started.md) と [`.claude/skills/org-setup/references/permissions.md`](.claude/skills/org-setup/references/permissions.md)）。`~/.config/gh` は gh CLI が窓口の業務動線（push / PR 作成 / CI 監視 / review feedback ループ / merge cleanup）で必須のため候補から意図的に除外しており、過去のリビジョンで個人 settings.json に残っていれば次回実行時に自動的に prune されます。
 
 ---
 

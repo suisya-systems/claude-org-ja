@@ -78,11 +78,31 @@ PRUNABLE_ROLES = ("secretary", "dispatcher", "curator")
 USER_COMMON_SANDBOX_DENYREAD_CANDIDATES: tuple[str, ...] = (
     "~/.ssh",
     "~/.aws",
-    "~/.config/gh",
     "~/.kube",
     "~/.gnupg",
     "~/.docker",
     "~/.config/aws-vault",
+)
+
+# Entries that **were** in the candidate set in older revisions but have
+# since been retired. Listing them here lets ``--user-common-sandbox``
+# strip them automatically on every run so the user does not have to
+# hand-edit their personal ``~/.claude/settings.json`` after a pull.
+#
+# Each entry is removed from an existing ``sandbox.filesystem.denyRead``
+# **only when it is not also present in the current candidate set** -- a
+# path cannot simultaneously be a retiree and an active candidate. Other
+# existing entries (operator-added literals, glob patterns, etc.) are
+# never touched.
+#
+# Membership rationale:
+#   ``~/.config/gh``: gh CLI is on the Secretary critical path
+#       (push / PR create / CI watch / review feedback loop / merge
+#       cleanup). Deny-by-directory at the bwrap layer broke that loop
+#       in practice; the defense-in-depth trade-off was resolved in
+#       favour of operational continuity.
+USER_COMMON_SANDBOX_DENYREAD_REMOVE: tuple[str, ...] = (
+    "~/.config/gh",
 )
 
 # Files (not directories) that should be added to user_common's
@@ -366,6 +386,7 @@ def _merge_sandbox_deny(
     entries: list[str] | tuple[str, ...],
     *,
     key: str,
+    remove: list[str] | tuple[str, ...] = (),
 ) -> dict:
     """Shared pure merger for ``sandbox.filesystem.{key}`` -- the engine
     behind both ``merge_user_common_sandbox_denyread`` and
@@ -384,6 +405,12 @@ def _merge_sandbox_deny(
       previously-merged file is a no-op.
     - The input is never mutated; nested dicts/lists are shallow-copied
       along the touched spine. Callers can compare ``id`` / ``==`` safely.
+
+    Optional ``remove`` lists retired candidates that must be stripped
+    from the existing deny list. An entry is removed only when it is
+    present in ``existing`` AND not also present in ``entries`` -- a
+    path cannot simultaneously be retired and an active candidate.
+    Operator-added entries that aren't in ``remove`` are untouched.
 
     Raises ``ValueError`` if an existing ``sandbox`` / ``sandbox.filesystem``
     is not a JSON object, or the targeted deny list is not a JSON array of
@@ -421,20 +448,29 @@ def _merge_sandbox_deny(
                 f"settings['sandbox']['filesystem']['{key}'][{i}] must be a string, got {type(ex).__name__}"
             )
 
-    added = [e for e in entries if e not in existing]
-    if not added:
-        # No new entries to merge -- return the input unchanged. This keeps
-        # the operation a true no-op when none of the candidates apply (or
-        # all of them are already present), instead of injecting an empty
-        # ``sandbox.filesystem.{key}: []`` block that the user never had.
-        # Required so the non-dry-run path matches the dry-run "(no
-        # changes)" output (Codex round-2 review, Issue #429 Task B).
+    entries_set = set(entries)
+    removed = [r for r in remove if r in existing and r not in entries_set]
+    if removed:
+        removed_set = set(removed)
+        pruned = [e for e in existing if e not in removed_set]
+    else:
+        pruned = existing
+
+    added = [e for e in entries if e not in pruned]
+    if not added and not removed:
+        # No new entries to merge AND nothing to prune -- return the input
+        # unchanged. This keeps the operation a true no-op when none of
+        # the candidates apply (or all of them are already present),
+        # instead of injecting an empty ``sandbox.filesystem.{key}: []``
+        # block that the user never had. Required so the non-dry-run path
+        # matches the dry-run "(no changes)" output (Codex round-2 review,
+        # Issue #429 Task B).
         return dict(settings)
 
     result = dict(settings)
     sandbox = dict(sandbox_val) if isinstance(sandbox_val, dict) else {}
     filesystem = dict(fs_val) if isinstance(fs_val, dict) else {}
-    filesystem[key] = existing + added
+    filesystem[key] = pruned + added
     sandbox["filesystem"] = filesystem
     result["sandbox"] = sandbox
     return result
@@ -443,12 +479,20 @@ def _merge_sandbox_deny(
 def merge_user_common_sandbox_denyread(
     settings: dict,
     entries: list[str] | tuple[str, ...],
+    *,
+    remove: list[str] | tuple[str, ...] = (),
 ) -> dict:
     """Pure: union-merge ``entries`` into ``sandbox.filesystem.denyRead``.
     See ``_merge_sandbox_deny`` for the shared semantics (idempotent,
-    additive-only, malformed shape raises ``ValueError``, input never
-    mutated)."""
-    return _merge_sandbox_deny(settings, entries, key="denyRead")
+    malformed shape raises ``ValueError``, input never mutated).
+
+    Optional ``remove`` lists retired candidates (e.g. ``~/.config/gh``)
+    that must be stripped automatically from the existing deny list so
+    users do not have to hand-edit their personal
+    ``~/.claude/settings.json`` after a pull. An entry is dropped only
+    when it is currently present AND not also a member of ``entries``.
+    """
+    return _merge_sandbox_deny(settings, entries, key="denyRead", remove=remove)
 
 
 def merge_user_common_sandbox_denywrite(
@@ -472,6 +516,7 @@ def process_user_common_sandbox(
     settings_path: Path,
     denyread_candidates: tuple[str, ...] | list[str] = USER_COMMON_SANDBOX_DENYREAD_CANDIDATES,
     denywrite_candidates: tuple[str, ...] | list[str] = USER_COMMON_SANDBOX_DENYWRITE_CANDIDATES,
+    denyread_remove: tuple[str, ...] | list[str] = USER_COMMON_SANDBOX_DENYREAD_REMOVE,
     home: Path | None = None,
     dry_run: bool,
     no_backup: bool,
@@ -482,6 +527,12 @@ def process_user_common_sandbox(
     ``sandbox.filesystem.denyRead`` candidates (existence + realpath-escape
     filtered) followed by file-level ``sandbox.filesystem.denyWrite``
     candidates (preventive deny -- no existence filter; Issue #433).
+
+    ``denyread_remove`` lists retired denyRead candidates that must be
+    stripped automatically from an existing settings.json on every run:
+    defense-in-depth retirements that the operator should not need to
+    apply by hand. Operator-added entries that aren't in this list are
+    left untouched.
 
     Returns a process-style return code (0 on success / no-op; non-zero on
     malformed JSON). When ``settings_path`` does not exist the file is
@@ -508,7 +559,9 @@ def process_user_common_sandbox(
 
     existing_read_entries = filter_existing_user_dirs(denyread_candidates, home=home)
     try:
-        target = merge_user_common_sandbox_denyread(current, existing_read_entries)
+        target = merge_user_common_sandbox_denyread(
+            current, existing_read_entries, remove=denyread_remove,
+        )
         target = merge_user_common_sandbox_denywrite(target, denywrite_candidates)
     except ValueError as exc:
         print(
@@ -542,18 +595,23 @@ def process_user_common_sandbox(
         return 0
 
     bak = write_settings(settings_path, target, make_backup=not no_backup)
-    added_read = _added_in_append_order(_safe_deny_list(current, "denyRead"), _safe_deny_list(target, "denyRead"))
+    cur_read = _safe_deny_list(current, "denyRead")
+    tgt_read = _safe_deny_list(target, "denyRead")
+    added_read = _added_in_append_order(cur_read, tgt_read)
+    removed_read = _removed_from_input(cur_read, tgt_read)
     added_write = _added_in_append_order(_safe_deny_list(current, "denyWrite"), _safe_deny_list(target, "denyWrite"))
     fragments: list[str] = []
     if added_read:
-        fragments.append(f"denyRead {added_read}")
+        fragments.append(f"denyRead added {added_read}")
+    if removed_read:
+        fragments.append(f"denyRead removed {removed_read}")
     if added_write:
-        fragments.append(f"denyWrite {added_write}")
-    added_summary = "; added " + ", ".join(fragments) if fragments else ""
+        fragments.append(f"denyWrite added {added_write}")
+    summary = "; " + ", ".join(fragments) if fragments else ""
     print(
         f"[org_setup_prune] user_common: wrote {settings_path}"
         + (f" (backup: {bak.name})" if bak else "")
-        + added_summary
+        + summary
     )
     return 0
 
@@ -581,6 +639,14 @@ def _added_in_append_order(current: list[str], target: list[str]) -> list[str]:
     return [e for e in target if e not in cur_set]
 
 
+def _removed_from_input(current: list[str], target: list[str]) -> list[str]:
+    """Counterpart of ``_added_in_append_order`` for the retire path:
+    entries present in ``current`` but absent from ``target``, in their
+    original input order so the diff stays deterministic."""
+    tgt_set = set(target)
+    return [e for e in current if e not in tgt_set]
+
+
 def render_user_common_diff(
     settings_path: Path,
     current: dict,
@@ -589,16 +655,26 @@ def render_user_common_diff(
     existing_read_entries: list[str],
     denywrite_candidates: tuple[str, ...] | list[str] = (),
 ) -> str:
-    added_read = _added_in_append_order(_safe_deny_list(current, "denyRead"), _safe_deny_list(target, "denyRead"))
+    cur_read = _safe_deny_list(current, "denyRead")
+    tgt_read = _safe_deny_list(target, "denyRead")
+    added_read = _added_in_append_order(cur_read, tgt_read)
+    removed_read = _removed_from_input(cur_read, tgt_read)
     added_write = _added_in_append_order(_safe_deny_list(current, "denyWrite"), _safe_deny_list(target, "denyWrite"))
     skipped_missing = [c for c in denyread_candidates if c not in existing_read_entries]
     lines = [f"=== user_common: {settings_path} ==="]
-    if not added_read and not added_write:
+    if not added_read and not added_write and not removed_read:
         lines.append("  (no changes)")
     if added_read:
         lines.append("  sandbox.filesystem.denyRead added:")
         for it in added_read:
             lines.append(f"    + {it}")
+    if removed_read:
+        # Retired denyRead candidates: stripped automatically on every
+        # run so the operator does not have to hand-edit their personal
+        # settings.json after a pull.
+        lines.append("  sandbox.filesystem.denyRead removed (retired candidate):")
+        for it in removed_read:
+            lines.append(f"    - {it}")
     if added_write:
         lines.append("  sandbox.filesystem.denyWrite added:")
         for it in added_write:
