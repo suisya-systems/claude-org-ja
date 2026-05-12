@@ -68,7 +68,7 @@
 ### Lifecycle / boundaries
 
 - **Spawn**: Started by the human running `renga --layout ops`. There is exactly one secretary per org session.
-- **Initialization**: First action is `/org-start`. Step 0 sets `set_summary`, validates / repairs pane identity, confirms renga-peers MCP is installed, and inventories `workers_dir`. Step 1 reads `.state/org-state.md` and resumes / briefs. Steps 2–3 spawn the dispatcher and curator panes.
+- **Initialization**: First action is `/org-start`. Step 0 sets `set_summary`, validates / repairs pane identity, confirms renga-peers MCP is installed, and inventories `workers_dir`. After Step 0 completes, the dispatcher / curator panes are spawned (Block A) in parallel with the DB-backed state read (Block B) and dashboard server launch (Block C); the four identities converge in Block D where peer registration, greeting, and `org_sessions` DB writes happen in one batched transaction.
 - **Termination**: `/org-suspend` (graceful, persists state) or hard close. Must not be killed while workers are alive without going through suspend, otherwise pane-id remapping and worker reply paths break.
 - **Hard prohibitions**:
   - Must NOT silently delete worker directories during `org-start` (they may hold reusable project state — `org-start` Step 0.4 explicit ban).

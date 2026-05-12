@@ -139,7 +139,7 @@ Block A の spawn が両方成功した後、両ペインで Claude が並列に
    - Enter は CR (0x0D) として PTY に書き込まれる
    - 承認しないと `server:renga-peers` チャネルが有効化されず、`send_message` の channel push が届かない
    - Claude の boot 速度に差があるためプロンプト未表示の段階で Enter を送信すると no-op になる場合がある。次の list_peers poll で peer 登録が確認できなければ Enter を再送する
-2. **list_peers を poll し dispatcher / curator 両方の peer 登録を 1 回で確認** — 旧 SKILL では Step 2 と Step 3 で 2 回 poll していたが、両ペインが並列に boot しているので 1 つの poll loop で両方の登録を待てる:
+2. **list_peers を poll し dispatcher / curator 両方の peer 登録を 1 回で確認** — 両ペインが並列に boot しているので、role ごとに別々の poll を回す必要はなく、1 つの poll loop で両方の登録を同時に待てる:
    ```
    mcp__renga-peers__list_peers
    # 結果から name="dispatcher" / "curator" が両方揃うまで poll
@@ -197,7 +197,10 @@ Block A の spawn が両方成功した後、両ペインで Claude が並列に
           curator_pane_id=StateWriter.CLEAR, curator_peer_id=StateWriter.CLEAR,
       )
   ```
-- **両 spawn 成功・boot 中に片方が peer 登録されない** — Block D-2 の poll で片方が timeout する。該当ペインに Enter を再送 → 再 poll。3 回 retry してダメなら該当ペインを `close_pane` で破棄してユーザー報告。**この場合も Block D-5 の DB write は「成功 role のみ書き込み・失敗 role は `StateWriter.CLEAR`」の分岐に乗せる**（curator spawn 失敗時と同じ理由で stale identity を残してはいけない）
+- **両 spawn 成功・boot 中に片方が peer 登録されない** — Block D-2 の poll で片方が timeout する。該当ペインに Enter を再送 → 再 poll。3 回 retry してダメなら該当ペインを `close_pane` で破棄して以下のいずれかに分岐する:
+  - **curator のみ peer 登録失敗**: 上記「curator spawn 失敗 / dispatcher spawn 成功」と同等の暫定継続を許容する（dispatcher 単独で組織機能の中核は維持される）。Block D-5 の DB write は dispatcher のみ書き込み、curator は `StateWriter.CLEAR`
+  - **dispatcher のみ peer 登録失敗**: 暫定継続を許容しない (fatal)。dispatcher 無しでは org-delegate / SECRETARY_RELAY が機能せず、curator 単独で残しても役に立たないため、curator も `close_pane` で閉じ、**両 identity を `StateWriter.CLEAR` で消した上でユーザー報告**し /org-start 再実行を促す
+  - **両者とも timeout**: 両ペインを `close_pane`、両 identity を `StateWriter.CLEAR`、ユーザー報告 + 再実行
 - **Enter 送信タイミングのずれ** — 「Load development channel?」プロンプト未表示の段階で Enter を送ると no-op になる。Block D-1 で両者並列に送るので片方が早すぎる可能性があるが、Block D-2 の peer 登録 poll が ground truth。peer 未登録なら Block D-1 に戻って再送する
 
 ### Stage A / Stage B の wall-clock 効果
