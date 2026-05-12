@@ -134,14 +134,15 @@ Block A の spawn 発火と並列。ダッシュボード server は別プロセ
 > 有効化したいユーザーには Step 4 の起動完了報告と合わせて以下を案内する:
 >
 > ```bash
-> # 初回のみ ja 既定テンプレートを .state/ にコピー（.state/ は gitignored）
+> # 初回のみ ja 既定テンプレートを .state/ にコピー（.state/ は gitignored、fresh clone 直後は未作成）
+> mkdir -p .state
 > cp tools/templates/attention.example.json .state/attention.json
 >
 > # 別ターミナル or バックグラウンドで常駐
 > claude-org-runtime attention watch --state-dir .state --config .state/attention.json
 > ```
 >
-> 1 回限りの動作確認は `claude-org-runtime attention scan --state-dir .state --dry-run --json`。OS 別 backend 挙動・トラブルシューティングは [`docs/operations/attention-watch.md`](../../../docs/operations/attention-watch.md) を参照。
+> 1 回限りの動作確認は `claude-org-runtime attention scan --state-dir .state --config .state/attention.json --dry-run --json`（`--config` を外すと runtime 中立の英語 default が出るので、ja テンプレートの導通確認には必ず付ける）。OS 別 backend 挙動・トラブルシューティングは [`docs/operations/attention-watch.md`](../../../docs/operations/attention-watch.md) を参照。
 
 ### Block D: 両ペインの合流 (Enter / list_peers poll / 挨拶 / DB write / snapshot)
 

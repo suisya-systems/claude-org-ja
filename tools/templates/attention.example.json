@@ -14,6 +14,11 @@
     "ci_failed": "urgent",
     "pending_decision": "urgent",
     "user_reply_not_forwarded": "urgent",
+    "pane_silent": "urgent",
+    "pane_crashed": "urgent",
+    "worker_stalled": "urgent",
+    "worker_not_reported": "urgent",
+    "worker_error": "urgent",
     "worker_completed": "normal",
     "pr_merged": "normal"
   },
@@ -41,6 +46,26 @@
     "silent_worker_output": {
       "title": "ワーカーが無言で出力しています",
       "body": "{worker} ペインに出力がありますが peer message が届いていません。"
+    },
+    "pane_silent": {
+      "title": "ワーカーペインが無反応です",
+      "body": "{worker} のペインに動きがありません。"
+    },
+    "pane_crashed": {
+      "title": "ワーカーペインが異常終了しました",
+      "body": "{worker} のペインが予期せず終了しました。"
+    },
+    "worker_stalled": {
+      "title": "ワーカーが停滞しています",
+      "body": "{worker} は進捗が見られず停滞しているようです。"
+    },
+    "worker_not_reported": {
+      "title": "ワーカーから報告がありません",
+      "body": "{worker} から窓口への報告がまだ届いていません。"
+    },
+    "worker_error": {
+      "title": "ワーカーがエラーを報告しました",
+      "body": "{worker} がエラーを報告しています。"
     },
     "worker_completed": {
       "title": "ワーカーが完了しました",

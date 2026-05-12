@@ -597,8 +597,9 @@ claude-org-ja 本体は Issue #429 Task C（本 addendum と同 PR）で共有 `
 
 **手順**:
 
-1. ja default config を `.state/` に配置する（`.state/` は gitignored なので tracked example をコピーして使う）:
+1. ja default config を `.state/` に配置する（`.state/` は gitignored なので tracked example をコピーして使う、fresh clone 直後は未作成のため `mkdir -p .state` を併発）:
    ```bash
+   mkdir -p .state
    cp tools/templates/attention.example.json .state/attention.json
    ```
 2. dry-run scan を JSON 出力で実行する:
@@ -607,7 +608,7 @@ claude-org-ja 本体は Issue #429 Task C（本 addendum と同 PR）で共有 `
    ```
 3. 出力 JSON を確認する。`events` 配列の各要素が以下のフィールドを持つこと:
    - `key`: dedup 用安定 ID（`event:<events.id>` または `pending:<task_id>:<kind>` のいずれか）
-   - `kind`: `approval_blocked` / `relay_gap_suspected` / `silent_worker_output` / `ci_failed` / `pending_decision` / `user_reply_not_forwarded` / `worker_completed` / `pr_merged` のいずれか
+   - `kind`: runtime 0.1.x の分類 kind の集合（`approval_blocked` / `relay_gap_suspected` / `silent_worker_output` / `ci_failed` / `pending_decision` / `user_reply_not_forwarded` / `pane_silent` / `pane_crashed` / `worker_stalled` / `worker_not_reported` / `worker_error` / `worker_completed` / `pr_merged`）
    - `severity`: `urgent` または `normal`
    - `title` / `body`: ja config のテンプレートが適用された文字列（日本語）
    - 必要に応じて `task_id` / `worker` / `created_at`
@@ -616,11 +617,11 @@ claude-org-ja 本体は Issue #429 Task C（本 addendum と同 PR）で共有 `
 
 - exit code 0 で JSON が返る。`.state/state.db` に該当する `notify_sent kind=approval_blocked` event があれば `kind: "approval_blocked"`, `severity: "urgent"` で出る
 - `ci_completed` で `status` が `failed` / `canceled` / `incomplete` のいずれかなら `kind: "ci_failed"`, `severity: "urgent"`
-- `worker_completed` / `pr_merged` は `severity: "normal"`
+- `worker_completed` / `pr_merged` は `severity: "normal"`、それ以外の上記分類は ja default で `urgent`
 - pending decision が `pending_decision_min`（既定 15 分）を超えていれば `kind: "pending_decision"`, `severity: "urgent"`
 - title / body が ja default の日本語文字列で、`{worker}` / `{task_id}` / `{pr}` / `{status}` 等の placeholder が解決済み
 - `--dry-run` 指定なので desktop notification subprocess が呼ばれない（macOS で notification center に何も出ない、Linux で `notify-send` が走らない）
-- `.state/attention.json` を指定しなかった場合は runtime の中立的な英語 default が title / body に出ること（ja 上書きが効いていることの裏取り）
+- `--config .state/attention.json` を外して再実行すると runtime の中立的な英語 default が title / body に出ること（ja 上書きが effective であることの裏取り）
 
 **失敗パターンと対処**:
 
