@@ -8,12 +8,22 @@ claude-orgの使い方ガイド。
 
 ### 前提条件
 
-以下が全てインストール・設定済みであること。詳細は [README.md](../README.md#クイックスタート) を参照。
+ワンライナー / 手動手順のいずれを使う場合も、以下のツールを事前に導入しておく必要がある。インストーラ（`scripts/install.sh` / `scripts/install.ps1`）は `git` / `claude` / `renga` / `gh` / `jq` の 5 つを fail-close で検証し、Python は警告のみ、Node.js は Linux / macOS のみ検証する（自動インストールはしない）。表中の用途を満たすには 7 つすべての導入が必要。
 
-- **Claude Code** — AIエージェント本体
-- **renga** — ターミナルマルチプレクサ (組織のペイン管理に使用)
+| ツール | 最小バージョン | 用途 | 導入リンク |
+|---|---|---|---|
+| **`git`** | 2.x 系の任意の安定版 | リポジトリ取得（`git clone`）・コミット・ワーカー作業ディレクトリ管理 | [git-scm.com/downloads](https://git-scm.com/downloads) |
+| **GitHub CLI (`gh`)** | 2.x 系の任意の安定版 | プルリクエスト作成・Issue 操作・CI 監視（`gh pr checks --watch`） | [cli.github.com](https://cli.github.com/) |
+| **Node.js** | v18+ | `renga` を npm 経由で導入するためのランタイム | [nodejs.org](https://nodejs.org/) |
+| **Python** | 3.10+ | `core-harness` / `claude-org-runtime` の `pip install -e .` 実行（`pyproject.toml` の `requires-python` に整合） | [python.org/downloads](https://www.python.org/downloads/) |
+| **`jq`** | 1.6+ | `.state/` JSON / `gh api` 出力の整形・抽出（フック内・ツール内で使用） | [jqlang.org/download](https://jqlang.org/download/) |
+| **Claude Code CLI (`claude`)** | 最新安定版 | 各ロールペイン本体。初回ログインも `claude` 起動時に行う | [claude.ai/code](https://claude.ai/code) |
+| **`renga`** | 0.18.0+ | Layer 3 の端末多重化器 + `renga-peers` MCP サーバー（`npm install -g @suisya-systems/renga@0.18.0`） | [github.com/suisya-systems/renga](https://github.com/suisya-systems/renga) |
+
+加えて以下の Claude Code 設定が必要:
+
 - **renga-peers MCP** — 同タブ内インスタンス間通信とペイン操作（`renga mcp install` で登録）
-- **GitHub CLI (`gh`)** — 認証済み（`gh auth status` で確認）
+- **GitHub CLI 認証** — `gh auth status` が Logged in を返す状態
 
 ### インストール
 
