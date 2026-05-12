@@ -136,7 +136,7 @@
 
 ### Lifecycle / boundaries
 
-- **Spawn**: By the secretary during `/org-start` Step 2. `cwd=".dispatcher"`, `permission_mode="bypassPermissions"`, `model="sonnet"`. Stable name `dispatcher`, role `dispatcher`.
+- **Spawn**: By the secretary during `/org-start` Block A (the parallelized spawn phase that fires dispatcher + curator after Step 0 identity check). `cwd=".dispatcher"`, `permission_mode="bypassPermissions"`, `model="sonnet"`. Stable name `dispatcher`, role `dispatcher`.
 - **Activation**: Receives an initial `send_message` from secretary instructing it of its role. Begins waiting for `DELEGATE`.
 - **Watch loop**: Started after the first worker spawn via `/loop 3m`; stops when all worker panes have exited.
 - **Suspension**: Via `/org-suspend` flow (state flushed to `.state/dispatcher-event-cursor.txt` and `.state/workers/`).
@@ -185,7 +185,7 @@
 
 ### Lifecycle / boundaries
 
-- **Spawn**: By the secretary during `/org-start` Step 3. `cwd=".curator"`, `permission_mode=auto`, `model="opus"`. Stable name `curator`, role `curator`.
+- **Spawn**: By the secretary during `/org-start` Block A (the parallelized spawn phase that fires dispatcher + curator after Step 0 identity check). `cwd=".curator"`, `permission_mode=auto`, `model="opus"`. Stable name `curator`, role `curator`.
 - **Activation**: Receives an initial `send_message` from secretary telling it to start the `/loop 30m /org-curate` schedule.
 - **Steady state**: Wakes on the loop, runs `org-curate`, sleeps. Also processes ad-hoc messages from secretary.
 - **Termination**: Pane closed by secretary or by org shutdown.

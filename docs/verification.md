@@ -67,7 +67,7 @@ py -3 tools/check_renga_compat.py --json     # 機械可読出力
 **期待結果**:
 - `.state/org-state.md` が存在しないので、初回起動と判断される
 - `mcp__renga-peers__spawn_claude_pane` でディスパッチャーペインが窓口の下に開き、その右にキュレーターペインが開く
-- Dispatcher / Curator 起動直後の「開発チャネル確認プロンプト」を `mcp__renga-peers__send_keys(target=<pane>, enter=true)` で Enter 注入して通過している（`org-start` SKILL Step 2 / Step 3 の手順）
+- Dispatcher / Curator 起動直後の「開発チャネル確認プロンプト」を `mcp__renga-peers__send_keys(target=<pane>, enter=true)` で Enter 注入して通過している（`org-start` SKILL Block D-1 の手順）
 - キュレーターに `mcp__renga-peers__send_message` 経由で `/loop 30m /org-curate` の実行が指示される
 - 「初回起動です。何をしましょうか？」と報告される
 
@@ -227,9 +227,9 @@ cat .state/journal.jsonl | tail -1  # suspend イベントを確認
 - ディスパッチャーとキュレーターペインが起動しているか（`mcp__renga-peers__list_panes` で確認）
 
 **失敗パターンと対処**:
-- `/org-start` が状態を読まない → org-start スキルの Step 1 を見直し
+- `/org-start` が状態を読まない → org-start スキルの Block B (旧 Step 1) を見直し
 - 状態が不正確 → org-state.md のフォーマットまたはorg-suspendの書き込みを見直し
-- キュレーターが起動しない → org-start Step 3 の `send_message` / `spawn_claude_pane` を確認
+- キュレーターが起動しない → org-start Block A (spawn_claude_pane) / Block D (送信・peer 登録) を確認
 
 ---
 
