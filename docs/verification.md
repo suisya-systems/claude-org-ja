@@ -587,6 +587,54 @@ claude-org-ja 本体は Issue #429 Task C（本 addendum と同 PR）で共有 `
 
 ---
 
+## 11.1. attention watcher 検証（scan --dry-run）
+
+**目的**: `claude-org-runtime attention scan` が `.state/state.db` と `.state/pending_decisions.json` から attention event を抽出し、ja default の日本語テンプレート（[`tools/templates/attention.example.json`](../tools/templates/attention.example.json)）が runtime config として読み込まれることを確認する。`watch` は常駐コマンドで CI でも回しにくいため、verification は `scan --dry-run --json` で 1 回限りの抽出結果を JSON で取り、shape と severity 分類を見るのを正攻法とする。詳細は [`docs/operations/attention-watch.md`](operations/attention-watch.md) を参照。
+
+**前提**:
+- `claude-org-runtime` が install 済み（`pip install -e .` で `claude-org-runtime` CLI が `PATH` に乗っていること）
+- 本リポジトリ直下で `/org-start` 済み、もしくは `python -m tools.state_db.importer --db .state/state.db --rebuild --no-strict` で `.state/state.db` が初期化済み
+
+**手順**:
+
+1. ja default config を `.state/` に配置する（`.state/` は gitignored なので tracked example をコピーして使う）:
+   ```bash
+   cp tools/templates/attention.example.json .state/attention.json
+   ```
+2. dry-run scan を JSON 出力で実行する:
+   ```bash
+   claude-org-runtime attention scan --state-dir .state --config .state/attention.json --dry-run --json
+   ```
+3. 出力 JSON を確認する。`events` 配列の各要素が以下のフィールドを持つこと:
+   - `key`: dedup 用安定 ID（`event:<events.id>` または `pending:<task_id>:<kind>` のいずれか）
+   - `kind`: `approval_blocked` / `relay_gap_suspected` / `silent_worker_output` / `ci_failed` / `pending_decision` / `user_reply_not_forwarded` / `worker_completed` / `pr_merged` のいずれか
+   - `severity`: `urgent` または `normal`
+   - `title` / `body`: ja config のテンプレートが適用された文字列（日本語）
+   - 必要に応じて `task_id` / `worker` / `created_at`
+
+**期待結果**:
+
+- exit code 0 で JSON が返る。`.state/state.db` に該当する `notify_sent kind=approval_blocked` event があれば `kind: "approval_blocked"`, `severity: "urgent"` で出る
+- `ci_completed` で `status` が `failed` / `canceled` / `incomplete` のいずれかなら `kind: "ci_failed"`, `severity: "urgent"`
+- `worker_completed` / `pr_merged` は `severity: "normal"`
+- pending decision が `pending_decision_min`（既定 15 分）を超えていれば `kind: "pending_decision"`, `severity: "urgent"`
+- title / body が ja default の日本語文字列で、`{worker}` / `{task_id}` / `{pr}` / `{status}` 等の placeholder が解決済み
+- `--dry-run` 指定なので desktop notification subprocess が呼ばれない（macOS で notification center に何も出ない、Linux で `notify-send` が走らない）
+- `.state/attention.json` を指定しなかった場合は runtime の中立的な英語 default が title / body に出ること（ja 上書きが効いていることの裏取り）
+
+**失敗パターンと対処**:
+
+- `command not found: claude-org-runtime` → `pip install -e .` 未実行。プロジェクト直下で `pip install -e .` を実行（`pyproject.toml` の dependency 経由で runtime が入る）
+- `.state/state.db: no such file` → `python -m tools.state_db.importer --db .state/state.db --rebuild --no-strict` で初期化
+- `events` 配列が空 → `.state/state.db` に分類対象 event が無い（クリーンな初期化直後など正常なケース）。手動で `tools/journal_append.sh notify_sent kind=approval_blocked task=test-1 worker=worker-test-1` 相当を投入して再 scan
+- title / body の placeholder が `{worker}` のまま残る → `tools/templates/attention.example.json` の template に runtime 未対応の placeholder を足してしまった可能性。allowlist は `{task_id} {worker} {kind} {status} {pr} {summary}` の 6 種（[`docs/design/attention-notification.md`](design/attention-notification.md) §6）
+- title / body が英語のまま → `.state/attention.json` が読まれていない。`--config` の path を絶対 path で渡し直すか、`.state/attention.json` の存在を確認
+- `--json` 無しの human-readable 出力で「fallback to terminal bell」と出る → backend が落ちている。`--dry-run` 時は notification subprocess 自体を呼ばない仕様なので、本検証では fallback log は出ない想定。出る場合は runtime のバージョンを確認
+
+**注**: `watch` の常駐動作確認は本リポジトリの自動 verification にはまだ含まれない。`tests/fixtures/attention/*` と統合テストは別 Issue（#445）で追加される。本節は `scan --dry-run` で ja templates が runtime に解決される導線が壊れていないかを最低限担保する。
+
+---
+
 <a id="security-matrix"></a>
 
 ## 12. 攻撃ベクトル × 防御層マトリクス
