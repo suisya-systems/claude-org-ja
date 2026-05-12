@@ -1392,6 +1392,16 @@ class TestPatternBUrlOnlyRegistryFallback(unittest.TestCase):
             ["git", "-C", str(base), "init", "-q"], check=True
         )
 
+    def _init_repo_with_origin(self, base: Path, origin_url: str) -> None:
+        base.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["git", "-C", str(base), "init", "-q"], check=True
+        )
+        subprocess.run(
+            ["git", "-C", str(base), "remote", "add", "origin", origin_url],
+            check=True,
+        )
+
     def _force_pattern_b(self, slug: str) -> None:
         self.sb.add_active_run(
             task_id=f"prev-{slug}",
@@ -1429,6 +1439,48 @@ class TestPatternBUrlOnlyRegistryFallback(unittest.TestCase):
         )
         self.assertEqual(plan.layout.pattern, "B")
         self.assertIsNone(plan.base_repo)
+
+    def test_fallback_rejected_when_clone_origin_url_mismatches_registry(self):
+        """A leftover unrelated github repo at workers_dir/<slug> must not be
+        adopted as the base — would redirect dispatch into the wrong repo
+        (Issue #370 precedent). Origin URL repo-name match guards against it."""
+        clone = self.sb.workers / "renga"
+        self._init_repo_with_origin(
+            clone, "https://github.com/some-other-org/not-renga.git"
+        )
+        self._force_pattern_b("renga")
+        plan = gdp.build_delegate_plan(
+            task_id="renga-mismatch-task",
+            project_slug="renga",
+            description="alt+p ux fix",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(plan.layout.pattern, "B")
+        self.assertIsNone(plan.base_repo)
+
+    def test_pattern_b_override_uses_url_only_fallback_for_preflight(self):
+        """Issue #450 consistency: ``--pattern B`` override preflight must
+        accept the same workers_dir/<slug> base that auto-derived Pattern B
+        uses, otherwise the same setup errors at preview only when forced."""
+        clone = self.sb.workers / "renga"
+        self._init_repo_with_origin(
+            clone, "https://github.com/suisya-systems/renga.git"
+        )
+        # No add_active_run — this is the no-concurrent-run case where
+        # ``--pattern B`` override is the only way to get Pattern B.
+        plan = gdp.build_delegate_plan(
+            task_id="renga-override-task",
+            project_slug="renga",
+            description="alt+p ux fix",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+            layout_overrides={"pattern": "B"},
+        )
+        self.assertEqual(plan.layout.pattern, "B")
+        self.assertEqual(
+            Path(plan.base_repo).resolve(), clone.resolve()
+        )
 
     def test_no_fallback_when_workers_dir_slug_is_not_git_repo(self):
         """A plain directory (no .git) at workers_dir/<slug> must not be

@@ -342,12 +342,12 @@ def build_delegate_plan(
             # with a manually-cloned repo at workers_dir/<project_slug> (renga
             # is the motivating case). Pattern B needs a local base for
             # ``git worktree add``; fall back to that conventional location
-            # before giving up. Skipped silently when the directory is missing
-            # or not a git repo so apply still raises the existing
-            # "no usable base repo" error rather than masking the real cause.
-            candidate = Path(workers_dir_for_norm) / project_slug
-            if rwl.is_local_git_repo(str(candidate)):
-                base_repo = candidate.resolve()
+            # before giving up. The helper validates the clone's origin URL
+            # so an unrelated repo left at that path can't redirect dispatch
+            # (Issue #370 precedent).
+            base_repo = rwl.find_workers_dir_clone(
+                project_slug, project_path, Path(workers_dir_for_norm)
+            )
 
     # Phase 1 PR4: surface base_clone into settings_args for Pattern B so the
     # runtime can substitute `{base_clone}` in

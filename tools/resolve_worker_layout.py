@@ -358,6 +358,44 @@ def find_claude_org_clone(
     return candidate if repo_name in _CLAUDE_ORG_MIRROR_REPO_NAMES else None
 
 
+def find_workers_dir_clone(
+    project_slug: str,
+    project_path: Optional[str],
+    workers_dir: Path,
+) -> Optional[Path]:
+    """Return ``workers_dir/<project_slug>`` if it is a local git repo that
+    matches the registered project, else None.
+
+    Issue #450: registry rows registered with a URL-only path (e.g.
+    ``| renga | renga | https://github.com/.../renga.git | ... |``) typically
+    have a manually-cloned local repo at the conventional
+    ``workers_dir/<project_slug>`` location. Pattern B needs a local base
+    for ``git worktree add``; use that clone when none of the prior base
+    branches resolve.
+
+    Slug match (``workers_dir/<project_slug>``) alone is not enough — a
+    leftover unrelated repo at that path would silently redirect dispatch
+    (the Issue #370 precedent for "別 repo への誤派遣"). When the registered
+    path looks like a github URL, additionally require the clone's
+    ``origin`` URL to point at a github repo with the same name (owner is
+    intentionally not pinned so forks are accepted, mirroring
+    :func:`find_claude_org_clone`). For non-github registry URLs the
+    trust signal falls back to the slug + local-git-repo check; the
+    motivating renga case is github so this gate covers the practical risk.
+    """
+    candidate = (Path(workers_dir) / project_slug).resolve()
+    if not is_local_git_repo(str(candidate)):
+        return None
+    if project_path and "://" in project_path:
+        registered_name = _extract_github_repo_name(project_path)
+        origin = _git_origin_url(candidate)
+        clone_name = _extract_github_repo_name(origin) if origin else None
+        if registered_name is not None and clone_name is not None:
+            if registered_name != clone_name:
+                return None
+    return candidate
+
+
 def is_claude_org_project(project_slug: str, claude_org_root: Path) -> bool:
     """True iff this delegation targets claude-org self-edit.
 
@@ -670,6 +708,16 @@ def resolve(
                         and not effective_self_edit
                     ):
                         project_for_base = None
+                    # Issue #450: the workers_dir/<slug> fallback that
+                    # gen_delegate_payload uses for URL-only registry rows
+                    # must be honored here too, otherwise ``--pattern B``
+                    # preview errors at preflight while normal active-run
+                    # driven Pattern B succeeds on the same setup.
+                    url_only_base = find_workers_dir_clone(
+                        project_slug,
+                        project_for_base.path if project_for_base else None,
+                        workers_dir,
+                    )
                     has_base = (
                         effective_self_edit
                         or claude_org_clone is not None
@@ -677,6 +725,7 @@ def resolve(
                             project_for_base is not None
                             and is_local_git_repo(project_for_base.path)
                         )
+                        or url_only_base is not None
                     )
                     if not has_base:
                         raise ResolveError(
@@ -684,8 +733,9 @@ def resolve(
                             "resolvable worktree base, but none could be "
                             f"determined for project={project_slug!r}. "
                             "Pattern B needs one of: a registered project "
-                            "row whose path is a local git repo, the "
-                            "claude-org mirror clone, or role="
+                            "row whose path is a local git repo, a manually "
+                            f"cloned repo at workers_dir/{project_slug}, "
+                            "the claude-org mirror clone, or role="
                             "'claude-org-self-edit' (live repo base). "
                             "Either register the project's local clone, set "
                             "role accordingly, or fall back to pattern=C."
