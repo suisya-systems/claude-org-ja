@@ -78,7 +78,7 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
 
 **候補リストから恒久的に除外しているもの**（候補定数 `USER_COMMON_SANDBOX_DENYREAD_CANDIDATES` 自体に含めない）:
 
-- `~/.config/gh`: gh CLI は窓口（Secretary）の業務動線（push / PR 作成 / CI 監視 / review feedback ループ / merge cleanup）で必須のため deny しない。Issue [#436](https://github.com/suisya-systems/claude-org-ja/issues/436) で defense-in-depth と運用継続性のトレードオフを評価し、**後者を優先**することにした。`~/.config/gh` は `USER_COMMON_SANDBOX_DENYREAD_REMOVE` の retire リストに登録されており、過去に `--user-common-sandbox` を実行して個人 `~/.claude/settings.json` の `sandbox.filesystem.denyRead` に当該 entry が残っているユーザーの環境では、次回 `--user-common-sandbox` 実行時に **自動的に除去** される（自動的な additive + prune セマンティクス）。ユーザーが手で追加した他の entry は touch しない。
+- `~/.config/gh`: gh CLI は窓口（Secretary）の業務動線（push / PR 作成 / CI 監視 / review feedback ループ / merge cleanup）で必須のため deny しない。defense-in-depth と運用継続性のトレードオフを評価し、後者を優先する判断とした。`~/.config/gh` は `USER_COMMON_SANDBOX_DENYREAD_REMOVE` の retire リストに登録されており、過去に `--user-common-sandbox` を実行して個人 `~/.claude/settings.json` の `sandbox.filesystem.denyRead` に当該 entry が残っているユーザーの環境では、次回 `--user-common-sandbox` 実行時に **自動的に除去** される（自動的な additive + prune セマンティクス）。ユーザーが手で追加した他の entry は touch しない。
 
 **候補リストには残るが実行時に skip されるケース**（候補定数には残るが merge 時に弾かれる）:
 
@@ -98,7 +98,7 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
 - 既存の top-level key (`theme`, `env`, `permissions`, etc.) は無触。
 - 既存の `sandbox` / `sandbox.filesystem` siblings (`enabled`, `failIfUnavailable`, `additionalDirectories`, および merge 対象でない側の deny list) は保持。
 - `denyRead` / `denyWrite` の既存順序を保ちつつ、未追加の candidate のみを後ろに append。重複は skip。
-- **denyRead のみ additive + prune** (Issue [#436](https://github.com/suisya-systems/claude-org-ja/issues/436)): 上記の「retire リスト」(`USER_COMMON_SANDBOX_DENYREAD_REMOVE`) に列挙された entry が既存 `denyRead` に残っていれば、毎回の実行で **自動的に除去** する。retire 対象が現行候補リストにも入っている場合は除去せず保持（再追加ループを避けるため）。retire リストに無いユーザー追加 entry は一切 touch しない。denyWrite 側には retire リストを設けていない（現状 retire 対象が無いため）。
+- **denyRead のみ additive + prune**: 上記の「retire リスト」(`USER_COMMON_SANDBOX_DENYREAD_REMOVE`) に列挙された entry が既存 `denyRead` に残っていれば、毎回の実行で **自動的に除去** する。retire 対象が現行候補リストにも入っている場合は除去せず保持（再追加ループを避けるため）。retire リストに無いユーザー追加 entry は一切 touch しない。denyWrite 側には retire リストを設けていない（現状 retire 対象が無いため）。
 - malformed shape（`sandbox` が object でない、`denyRead` / `denyWrite` が array でない、entry が string でない、等）は **書込前に `ValueError` で abort**。ユーザーデータの黙示的破壊を防ぐ。denyRead 側で先に shape error が出れば denyWrite merge は実行されない（その逆も同様）。
 
 **使用方法**:
