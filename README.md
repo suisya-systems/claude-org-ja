@@ -53,7 +53,7 @@ claude-org-ja が動かそうとしているのは、その「誰がオーケス
 
 ## 4 層アーキテクチャ（要約）
 
-claude-org-ja は 4 層スタックの **Layer 4** に位置するリファレンス配布物です。Layer 3（`renga`）と Layer 2（`claude-org-runtime`）に依存し、Layer 2 はさらに Layer 1（`core-harness`）に依存します。Phase 5 完了時点で Layer 1〜3 はいずれも独立 OSS パッケージとして公開済みで、claude-org-ja (Layer 4) は consumer として取り込む thin shim です。
+claude-org-ja は 4 層スタックの **Layer 4** に位置するリファレンス配布物です。Layer 3（`renga`）と Layer 2（`claude-org-runtime`）に依存し、Layer 2 はさらに Layer 1（`core-harness`）に依存します。Layer 1〜3 はそれぞれ独立 OSS パッケージとして公開済みで、claude-org-ja (Layer 4) は consumer として取り込む thin shim です。
 
 各層の責務・mermaid 図・パッケージ詳細は [`docs/overview-technical.md`](docs/overview-technical.md) を参照。
 
@@ -81,6 +81,7 @@ iwr -useb https://raw.githubusercontent.com/suisya-systems/claude-org-ja/main/sc
 
 ```bash
 cd claude-org-ja
+source .venv/bin/activate                                # Linux / macOS のみ。Windows native は scripts/install.ps1 が pip install --user 経路のため不要
 bash scripts/install-hooks.sh                            # コミット直前の秘密情報スキャナを有効化
 python tools/org_setup_prune.py --user-common-sandbox    # main pull 後に 1 回必須 (Issue #429 Task B/C + Issue #433 denyWrite)
 renga --layout ops                                       # 窓口（Secretary）ペインを起動
