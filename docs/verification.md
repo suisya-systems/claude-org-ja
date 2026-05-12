@@ -214,12 +214,11 @@ cat .state/journal.jsonl | tail -1  # suspend イベントを確認
 3. `/org-start` を実行する
 
 **期待結果**:
-- `/org-start` が `.state/org-state.md` を検出し、Status: SUSPENDED を確認
-- `/org-resume` の手順に従い、前回の状態サマリーが表示される
-- 各作業ディレクトリのgit状態との照合結果が報告される
-- 再開計画が提案される
-- 人間の承認を待つ（勝手にワーカーを派遣しない）
-- ディスパッチャーとキュレーターペインが `mcp__renga-peers__spawn_claude_pane` 経由で再起動される
+- `/org-start` の Block A が Step 0 直後に dispatcher / curator の `spawn_claude_pane` を発火する（Issue #410 の並列化以降。boot 完了は待たず Block B / C を並行進行）
+- Block B が `.state/state.db` をクエリし、Status: SUSPENDED を確認
+- `/org-resume` の Phase 1〜3（ブリーフィング・git 状態照合・再開計画提案）が裏で Claude boot 中に進行する
+- 再開計画提示後、**Phase 4 のワーカー再派遣は人間の承認を待つ**（勝手に派遣しない）
+- 承認前にすでに dispatcher / curator ペインは `mcp__renga-peers__list_panes` 上に出現済みである（Block A で先行発火 → Block D で peer 登録合流）
 
 **確認ポイント**:
 - ブリーフィング内容が `.state/org-state.md` と一致するか
@@ -227,7 +226,7 @@ cat .state/journal.jsonl | tail -1  # suspend イベントを確認
 - ディスパッチャーとキュレーターペインが起動しているか（`mcp__renga-peers__list_panes` で確認）
 
 **失敗パターンと対処**:
-- `/org-start` が状態を読まない → org-start スキルの Block B (旧 Step 1) を見直し
+- `/org-start` が状態を読まない → org-start スキルの Block B (前回状態の DB 読み込み) を見直し
 - 状態が不正確 → org-state.md のフォーマットまたはorg-suspendの書き込みを見直し
 - キュレーターが起動しない → org-start Block A (spawn_claude_pane) / Block D (送信・peer 登録) を確認
 
