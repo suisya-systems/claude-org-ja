@@ -43,6 +43,10 @@ description: >
 
 `tools/pr-watch.sh` / `tools/pr-watch.ps1` / `tools/pr_watch.py` は `state.db` を相対パスで開くため、起動時の cwd が ja root でないと CI 完了 event 書き込みでクラッシュし、peer 通知 (`CI_COMPLETED` / `PR_MERGED` 等) が飛ばない。直前に `cd .worktrees/...` していた場合は必ず `cd <ja-root> && nohup bash tools/pr-watch.sh <PR> ...` の形で起動すること。Issue #398 で根本対応中（cwd 非依存化）。
 
+### ⚠️ Claude Code Bash tool 経由で起動する場合
+
+窓口が Claude Code 内から `tools/pr-watch.sh` / `tools/pr-watch.ps1` を起動するときは、必ず Bash tool の `run_in_background: true` で投げる。`nohup ... &` + `disown` だけだと Claude Code の bash sub-shell が短命なため呼び出し終了と同時に pr-watch ごと kill され、CI 完了 event も peer 通知も一切飛ばなくなる（プロセスが消えていることに気付きづらく、ログファイルだけが空のまま残る）。特に `/clear` / [`/secretary-resume`](../secretary-resume/SKILL.md) 直後の fresh session ではこの罠を踏みやすい。`run_in_background: true` で投げれば完了通知（exit code 付き）が自動で届くので、CI 完了の検出経路がそちらでも担保される。
+
 ## 2c. レビュー指摘 / CI 失敗のフィードバックループ
 
 人間がフィードバック・修正指示を出した場合、または CI が失敗してユーザーが「直してもらって」と指示した場合:
