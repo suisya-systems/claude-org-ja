@@ -386,23 +386,26 @@ def find_workers_dir_clone(
     candidate = (Path(workers_dir) / project_slug).resolve()
     if not is_local_git_repo(str(candidate)):
         return None
-    if project_path and "://" in project_path:
-        registered_name = _extract_github_repo_name(project_path)
-        if registered_name is not None:
-            # Registered URL is a github remote (the motivating renga case):
-            # the clone's ``origin`` MUST also be a github remote with the
-            # same repo name. A bare ``git init`` with no origin, or an
-            # origin pointing at an unrelated repo, is rejected — otherwise
-            # any leftover same-named directory would be silently adopted
-            # (Codex Round 2 Blocker; Issue #370 precedent).
-            origin = _git_origin_url(candidate)
-            clone_name = _extract_github_repo_name(origin) if origin else None
-            if clone_name != registered_name:
-                return None
-        # Non-github registry URL (gitlab, bitbucket, custom git server):
-        # ``_extract_github_repo_name`` can't validate it, so fall back to
-        # the slug + local-git-repo trust signal. The motivating renga case
-        # is github so the strict gate above covers the practical risk.
+    # ``_extract_github_repo_name`` accepts both ``https://github.com/o/r.git``
+    # and ``git@github.com:o/r.git`` (the regex is scheme-agnostic), so we
+    # MUST NOT gate on ``"://"`` — that would let SSH-style registry URLs
+    # bypass the origin gate (Codex Round 3 Blocker).
+    registered_name = _extract_github_repo_name(project_path or "")
+    if registered_name is not None:
+        # Registered URL is a github remote (the motivating renga case):
+        # the clone's ``origin`` MUST also be a github remote with the same
+        # repo name. A bare ``git init`` with no origin, or an origin
+        # pointing at an unrelated repo, is rejected — otherwise any
+        # leftover same-named directory would be silently adopted
+        # (Codex Round 2 Blocker; Issue #370 precedent).
+        origin = _git_origin_url(candidate)
+        clone_name = _extract_github_repo_name(origin) if origin else None
+        if clone_name != registered_name:
+            return None
+    # Non-github registry URL (gitlab, bitbucket, custom git server) or a
+    # placeholder like "-": ``_extract_github_repo_name`` returns None and
+    # we fall back to the slug + local-git-repo trust signal. The motivating
+    # renga case is github so the strict gate above covers the practical risk.
     return candidate
 
 

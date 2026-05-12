@@ -1429,6 +1429,57 @@ class TestPatternBUrlOnlyRegistryFallback(unittest.TestCase):
         self.assertIsNotNone(plan.base_repo)
         self.assertEqual(Path(plan.base_repo).resolve(), clone.resolve())
 
+    def _set_registry(self, url: str) -> None:
+        (self.sb.claude_org_root / "registry" / "projects.md").write_text(
+            "# Projects\n\n"
+            "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 |\n"
+            "|---|---|---|---|---|\n"
+            f"| renga | renga | {url} | Renga | dev |\n",
+            encoding="utf-8",
+        )
+
+    def test_ssh_style_registry_url_still_enforces_origin_match(self):
+        """Codex Round 3 Blocker: ``git@github.com:org/renga.git`` SSH-style
+        registry entries used to bypass the github gate because the helper
+        keyed on ``"://"``. ``_extract_github_repo_name`` accepts both forms
+        so the gate must too — a bare-init clone under an SSH-registered
+        slug must still be rejected."""
+        self._set_registry("git@github.com:suisya-systems/renga.git")
+        clone = self.sb.workers / "renga"
+        self._init_bare_repo(clone)  # no origin
+        self._force_pattern_b("renga")
+        plan = gdp.build_delegate_plan(
+            task_id="renga-ssh-bare-task",
+            project_slug="renga",
+            description="alt+p ux fix",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(plan.layout.pattern, "B")
+        self.assertIsNone(plan.base_repo)
+
+    def test_ssh_style_registry_url_accepts_matching_origin(self):
+        """SSH-registered renga + clone whose origin (https or ssh) resolves
+        to the same github repo name → fallback accepts. Owner is
+        intentionally unpinned so forks remain accepted, mirroring
+        ``find_claude_org_clone``."""
+        self._set_registry("git@github.com:suisya-systems/renga.git")
+        clone = self.sb.workers / "renga"
+        # Mismatched owner (fork), same repo name — must still match.
+        self._init_repo_with_origin(
+            clone, "https://github.com/happy-ryo/renga.git"
+        )
+        self._force_pattern_b("renga")
+        plan = gdp.build_delegate_plan(
+            task_id="renga-ssh-match-task",
+            project_slug="renga",
+            description="alt+p ux fix",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(plan.layout.pattern, "B")
+        self.assertEqual(Path(plan.base_repo).resolve(), clone.resolve())
+
     def test_fallback_rejected_when_clone_has_no_origin(self):
         """Codex Round 2 Blocker: a bare ``git init`` clone with no origin
         must not be accepted as a base for a github-registered project —
