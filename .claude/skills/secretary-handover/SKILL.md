@@ -39,17 +39,24 @@ description: >
 
 ## Step 2: state.db から構造化情報を取得する
 
-handover に参考情報として埋め込む。
+handover に参考情報として埋め込む。書き出し先は sandbox で write 可能な `$TMPDIR`
+（未設定なら `/tmp` フォールバック）に置く:
 
 ```bash
-python -c "
+python3 -c "
 from tools.state_db import connect
 from tools.state_db.queries import get_org_state_summary
-import json
+import json, os
 conn = connect('.state/state.db')
-print(json.dumps(get_org_state_summary(conn), ensure_ascii=False, indent=2, default=str))
-" > /tmp/secretary-handover-state.json
+out_path = os.path.join(os.environ.get('TMPDIR', '/tmp'), 'secretary-handover-state.json')
+with open(out_path, 'w') as f:
+    json.dump(get_org_state_summary(conn), f, ensure_ascii=False, indent=2, default=str)
+print(out_path)
+"
 ```
+
+シェルリダイレクトで `> /tmp/...` を使うと、sandbox 環境では `/tmp` が read-only で
+書き込み失敗する。Python 側で `TMPDIR` を解決してから `open(..., 'w')` する形が安全。
 
 ここから以下を取り出す:
 - `session.status` / `session.objective`
