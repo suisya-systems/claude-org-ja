@@ -111,11 +111,55 @@ Issue #25 / PR #27 以前は、WSL / Windows native とも「PowerShell `Write-H
 | `sound` | `"urgent-only"` | `"off"` / `"urgent-only"` / `"all"`。urgent-only は urgent severity の event だけ音 |
 | `cooldown_sec` | `300` | 同じ dedup key に対する再通知の最短間隔（秒） |
 | `poll_interval_sec` | `10` | `watch` の polling 周期 |
-| `pending_decision_min` | `15` | `pending_decisions.json` の pending を urgent と判定する経過分 |
+| `pending_decision_min` | `15` | `pending_decisions.json` の pending を urgent と判定する経過分（4 段 ladder の入り口、§4.1 参照） |
+| `pending_decision_max` | `1440` | urgent 期間の上限（分）。これを超えた pending は normal に降格する（24h） |
+| `pending_decision_drop` | `10080` | normal 通知の終端（分）。これを超えた pending は通知抑止され `--json` 出力にのみ残る（7d） |
 | `user_replied_min` | `15` | user replied だが worker 未転送の状態を urgent と判定する経過分 |
 | `max_title_chars` / `max_body_chars` | `80` / `240` | template 出力の truncation 上限（secret-safe formatting の一環） |
-| `notify.<kind>` | §1 参照 | event kind ごとの severity（`urgent` / `normal` の 2 値のみ、`off` は不可。完全に止めたい場合は全体 `desktop: false` を使う） |
+| `notify.<kind>` | §4.1 参照 | event kind ごとの severity（`urgent` / `normal` の 2 値のみ、`off` は不可。完全に止めたい場合は全体 `desktop: false` を使う） |
 | `templates.<kind>.{title,body}` | ja 既定文面 | placeholder allowlist は `{task_id} {worker} {kind} {status} {pr} {summary}` |
+
+### 4.1 既定の severity 分類
+
+`tools/templates/attention.example.json` の `notify` map に対応する各 kind の既定 severity を以下に示す。**urgent は「ユーザーだけが復旧経路の action-required moment」、normal は「自己復旧する可能性のある anomaly / 予兆シグナル」** に概ね対応する（taxonomy の根拠は [`docs/design/attention-notification.md`](../design/attention-notification.md) §12 を参照）。
+
+| event kind | 既定 severity | 区分 | 備考 |
+|---|---|---|---|
+| `approval_blocked` | urgent | action-required | tool approval 等で worker が完全停止。ユーザー以外の経路で解除できない |
+| `ci_failed` | urgent | action-required | CI 失敗。再 push / 修正の判断にユーザーが必要 |
+| `pending_decision` | urgent | action-required | worker から判断仰ぎ。Secretary は人間に上げる責務（CLAUDE.md 参照） |
+| `user_reply_not_forwarded` | urgent | action-required | ユーザーは返答済みだが worker に未転送。Secretary の運用ギャップ |
+| `pane_crashed` | urgent | action-required | ペインが予期せず終了。再起動判断にユーザーが必要 |
+| `relay_gap_suspected` | normal | anomaly / 予兆 | dispatcher monitoring の予兆検出。自己復旧する場合が多く urgent muting の主因だったため demote |
+| `silent_worker_output` | normal | anomaly / 予兆 | ペイン出力ありだが peer message 未着。同上 |
+| `pane_silent` | normal | anomaly / 予兆 | ペインが無反応。dispatcher 側で自己復旧する場合あり |
+| `worker_stalled` | normal | anomaly / 予兆 | worker の進捗停滞推定。短期は自己復旧する場合あり |
+| `worker_not_reported` | normal | anomaly / 予兆 | worker からの報告が未着。短期は遅延の可能性 |
+| `worker_error` | normal | anomaly / 予兆 | worker のエラー報告。worker 内で recover する場合あり |
+| `worker_completed` | normal | progress | 完了。即時 action は不要だが review 待ち |
+| `pr_merged` | normal | progress | マージ済み。post-merge cleanup の trigger |
+
+**※ ローカル上書き**: `.state/attention.json` で個別 kind の severity を上書きできる。ja 配布の template 既定値とユーザー個別の `.state/attention.json` overlay は別レイヤーである（template は tracked、overlay は gitignored）。たとえば `worker_completed` を「即見たい」ユーザーは `.state/attention.json` 側で urgent に上げてよく、template 既定（normal）はそれと独立に維持される。
+
+### 4.2 pending_decisions の 4 段 TTL ladder
+
+`pending_decision_min` / `pending_decision_max` / `pending_decision_drop` の 3 つの閾値は、判断仰ぎが register に登録されてからの経過時間に応じて **4 段階の通知 decay** を作る。これは「未対応の判断仰ぎを永遠に urgent で鳴らし続ける」運用が結果的に watcher 自体を mute されてしまう（noise → 全 ignore）失敗パターンを避けるための設計である（rationale は [`docs/design/attention-notification.md`](../design/attention-notification.md) §12 を参照）。
+
+| 経過時間 | 段階 | 挙動 |
+|---|---|---|
+| `< pending_decision_min` (既定 15 分未満) | 猶予 | attention event を発火しない。Secretary が短時間で人間に転送できる前提の grace window |
+| `pending_decision_min ≤ t < pending_decision_max` (既定 15 分〜24h) | urgent | desktop notification + urgent sound + terminal bell。一次対応窓 |
+| `pending_decision_max ≤ t < pending_decision_drop` (既定 24h〜7d) | normal / visual-only | desktop notification は出るが urgent sound は鳴らさない。長期未対応案件として visual 残し |
+| `≥ pending_decision_drop` (既定 7d 以上) | suppressed | desktop / sound 共に抑止。`attention scan --json` の出力にのみ残り、audit / dashboard 経路で参照可能 |
+
+**runtime 側の整合性条件**: `pending_decision_min < pending_decision_max < pending_decision_drop` を満たさない config は runtime の `attention/config.py` が load 時に validation error を返す（`user_replied_min < pending_decision_max` も併せて検査される）。
+
+**Tuning advice**:
+
+- **noisier workflows で urgent 期間を絞りたい**: `pending_decision_max` を下げる（例: 24h → 4h）。早めに urgent → normal に降格させ、緊急度の高い新規 pending と区別する
+- **長い audit trail を残したい**: `pending_decision_drop` を上げる（例: 7d → 30d）。完全 suppress までの猶予を伸ばし、長期 backlog を `attention scan --json` で監査可能にする
+- **判断仰ぎが頻繁で 15 分の grace が短い**: `pending_decision_min` を伸ばす（例: 15 → 60）。Secretary の relay 余裕を見たい運用で urgent 過多を抑える
+- `pending_decision_drop = pending_decision_max` に揃えると normal/visual 段が消え、超過時に即 suppressed になる。短い lifecycle の運用で「降格中の表示」が要らないチーム向け
 
 ## 5. トラブルシューティング
 

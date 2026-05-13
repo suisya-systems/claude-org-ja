@@ -528,3 +528,53 @@ local notification が安定してから optional sink として追加する。
 5. `state.db` が無い初回起動時の挙動。
    - warning ではなく no-op。`scan` / `watch` は落ちない。
 
+---
+
+## 12. Severity taxonomy と TTL ladder
+
+> **実装実態のメモ（design ↔ implementation drift, Part B）**: §5 の Config 例は本ドキュメント初版時点の design snapshot を残してある。実 runtime の既定値は Issue #26 / `claude-org-runtime` PR #29（[suisya-systems/claude-org-runtime#29](https://github.com/suisya-systems/claude-org-runtime/pull/29)）で更新され、(a) 6 つの anomaly kind の severity が `urgent` → `normal` に降格し、(b) `pending_decision_max` / `pending_decision_drop` の 2 つの TTL key が追加された。本節はその更新の根拠と taxonomy を SoT として記述する。Layer 4 ja 配布の reflected defaults は [`tools/templates/attention.example.json`](../../tools/templates/attention.example.json) を参照、運用視点の table と tuning advice は [`docs/operations/attention-watch.md`](../operations/attention-watch.md) §4.1 / §4.2 を参照。
+
+### 12.1 Anomaly / 予兆 vs action-required の二分法
+
+attention event は **「ユーザー以外の経路で recover し得るか」** で 2 つに分かれる。これは Issue #26 Part B で severity 既定を見直した時の根拠でもある。
+
+- **action-required moments（urgent 既定）** — ユーザーだけが復旧経路の event。runtime / dispatcher / Secretary は detect と通知しかできず、状態を解除するには人間の介入が必要。
+  - `approval_blocked`：tool approval / sensitive op 承認、ユーザーの返事なしには進めない
+  - `ci_failed`：CI 失敗、再 push / 修正の判断はユーザー
+  - `pending_decision`：worker の判断仰ぎ、Secretary は伝言役で人間が判断レイヤー（CLAUDE.md § 判断仰ぎは人間にエスカレーション）
+  - `user_reply_not_forwarded`：ユーザー返答済みだが worker 未転送、Secretary 運用ギャップの可視化
+  - `pane_crashed`：ペイン異常終了、再起動判断はユーザー
+
+- **anomaly / 予兆シグナル（normal 既定）** — best-effort の検出で、worker / dispatcher / runtime 側で自己復旧する可能性がある event。urgent muting（毎日鳴り続けて結果的に全部 ignore される）を避けるため Part B で全 6 種を normal に降格した。
+  - `relay_gap_suspected`：dispatcher の SECRETARY_RELAY_GAP_SUSPECTED 予兆検出。短期は Secretary 側で transient
+  - `silent_worker_output`：ペイン出力ありだが peer message 未着、worker 側で flush される場合あり
+  - `pane_silent`：ペイン無反応、tool 実行中の沈黙含む。完全 stall とは限らない
+  - `worker_stalled`：worker 進捗停滞の heuristic 推定、自己復旧する場合あり
+  - `worker_not_reported`：worker 報告未着、遅延の可能性
+  - `worker_error`：worker のエラー報告、内部 retry / recover する場合あり
+
+`worker_completed` / `pr_merged` は **progress event** の扱いで、normal 既定だが taxonomy 上は 3 つ目の独立カテゴリである（即時 action 不要、ただし review / cleanup の trigger）。
+
+### 12.2 pending_decisions の 4 段 TTL ladder
+
+判断仰ぎを「一度 urgent にしたら永遠に urgent」とすると、未対応案件が溜まる運用では watcher 自体が mute される（noise → 全 ignore）失敗モードに入る。runtime PR #29 はこれを避けるため、pending decision の経過時間を 4 段階に decay させる ladder を導入した。
+
+| 経過時間 | 段階 | 挙動 |
+|---|---|---|
+| `t < pending_decision_min` | 猶予 | event 発火せず。Secretary が短時間で人間転送できる前提の grace window |
+| `pending_decision_min ≤ t < pending_decision_max` | urgent | desktop notification + urgent sound + terminal bell |
+| `pending_decision_max ≤ t < pending_decision_drop` | normal / visual-only | desktop notification は出るが urgent sound は鳴らさない。長期未対応として visual 残し |
+| `t ≥ pending_decision_drop` | suppressed | desktop / sound 共に抑止、`attention scan --json` 出力のみ |
+
+設計の狙いは **「decay curve は signal を保ちつつ dead state を suppress する」** こと：
+
+- 新規 pending の **最初の 24 時間（既定）** は urgent で確実に視聴覚で気付く期間。
+- 24h を越えても dashboard / `--json` 出力からは消さず、normal/visual で残す。**長期 backlog が 0 件ではない事実**を視認できる状態。
+- 7 日を越えた dead state は通知サーフェスから抑止し、audit/dashboard 経路でのみ参照可能。これにより noise が線形に増えない。
+
+整合性条件（runtime `attention/config.py` で validation）:
+
+- `pending_decision_min < pending_decision_max < pending_decision_drop`
+- `user_replied_min < pending_decision_max`
+
+これらは load 時に validation error として返るため、Layer 4 / ユーザー overlay の typo を early に検出できる。
