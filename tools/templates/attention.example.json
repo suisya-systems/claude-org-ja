@@ -76,6 +76,10 @@
     "pr_merged": {
       "title": "PR がマージされました",
       "body": "PR #{pr} がマージされました。"
+    },
+    "secretary_awaiting_user": {
+      "title": "窓口が判断待ちです",
+      "body": "{task_id} で窓口がユーザー入力を待っています。"
     }
   }
 }
