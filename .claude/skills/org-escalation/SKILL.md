@@ -51,6 +51,12 @@ description: >
    ```
    escalated entry が無ければ no-op、既に設定済みでも idempotent。これにより [`../../../.dispatcher/references/worker-monitoring.md` Step 5.1 (a-2)](../../../.dispatcher/references/worker-monitoring.md#step-5-1) で「ユーザー返答済みなのに Secretary が転送忘れ」を deterministic に検知できる
 
+4.5. **awaiting_user 通知の emit（Issue #28）**: `mark-user-replied` → `resolve --kind to_worker` の境界で、attention watcher に「ユーザー返答が secretary 側に着き、worker へ転送する間の secretary 側 user-driven 動作」を知らせる 1 行を emit する:
+   ```bash
+   bash tools/journal_append.sh notify_sent kind=awaiting_user task_id={task_id} gate=escalation_reply_forward note="<decision の短い要約>"
+   ```
+   並走 runtime PR の classifier が `secretary_awaiting_user` (default severity `urgent`) として拾う。CLAUDE.md「secretary が user の判断を待っている状態を通知する」節を参照。本 emit は escalated entry の有無に依らず副作用を残さない（journal 1 行追記のみ、register / pending_decisions は触らない）
+
 5. **ワーカーに人間判断を転送する** (`to_id="worker-{task_id}"` で `send_message`)。伝達直後に register を `resolved` に更新:
    ```bash
    python tools/pending_decisions.py resolve --task-id {task_id} --kind to_worker
