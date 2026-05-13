@@ -22,6 +22,7 @@ import sqlite3
 import subprocess
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "attention"
@@ -51,19 +52,27 @@ _DISPATCH_ONLY_KEYS = frozenset({
 })
 
 # Drift canary: the set of urgent attention kinds the fixture is
-# expected to surface. Mirrors the urgent rows of
-# docs/design/attention-notification.md §5 — if the runtime stops
-# classifying any of these as urgent, the assertion in
-# test_all_expected_urgent_kinds_are_recognized fails and points at
-# the gap.
+# expected to surface at the claude-org-runtime v0.1.11 defaults.
+# Issue #26 demoted relay_gap_suspected / silent_worker_output /
+# pane_silent / worker_stalled / worker_not_reported / worker_error
+# from urgent to normal (anomaly signals are best-effort early
+# warnings, not user-action-required), and introduced the TTL ladder
+# that keeps pending_decision / user_reply_not_forwarded urgent only
+# inside the min..max window. The fixture refreshes the latter pair's
+# timestamps in setUp() so they fall inside that window.
 _EXPECTED_URGENT_KINDS = frozenset({
     "approval_blocked",
-    "relay_gap_suspected",
-    "silent_worker_output",
     "ci_failed",
     "pending_decision",
     "user_reply_not_forwarded",
 })
+
+# Placeholder ``created_at`` value used in the golden file for events
+# whose timestamps the test rewrites in :meth:`setUp` so they land in
+# the urgent TTL window. The comparison in
+# :meth:`test_scan_output_matches_golden` swaps the placeholder for
+# the actual rewritten ISO timestamp before asserting equality.
+_DYNAMIC_CREATED_AT = "__DYNAMIC__"
 
 
 def _build_state_db(db_path: Path, events: list[dict]) -> None:
@@ -138,8 +147,38 @@ class AttentionRuntimeIntegrationTests(unittest.TestCase):
         self.state_dir = Path(self._tmpdir.name) / ".state"
         self.state_dir.mkdir()
         _build_state_db(self.state_dir / "state.db", self.events_spec)
+
+        # claude-org-runtime v0.1.11 enforces a TTL ladder on
+        # pending_decision / user_reply_not_forwarded rows: only the
+        # ``pending_decision_min`` (15 min) ≤ age < ``pending_decision_max``
+        # (24h) window keeps the design-default ``urgent`` severity.
+        # Anything older is demoted (or, past the 7d drop, suppressed).
+        # The checked-in fixture timestamps would always fall past that
+        # window at wall-clock test time, so refresh the entries whose
+        # urgent path the test exercises to "30 minutes ago" before
+        # handing the fixture to the runtime. ``T-future-dated`` keeps
+        # its far-future timestamp because
+        # :meth:`test_progress_only_events_are_filtered` asserts it
+        # stays below the urgent threshold.
+        fresh_iso = (
+            datetime.now(timezone.utc) - timedelta(minutes=30)
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        pending = [dict(entry) for entry in self.pending]
+        self._fresh_created_at: dict[str, str] = {}
+        for entry in pending:
+            tid = entry.get("task_id")
+            if tid == "T-pending-stale":
+                entry["received_at"] = fresh_iso
+                self._fresh_created_at[
+                    f"pending:{tid}:pending_decision"
+                ] = fresh_iso
+            elif tid == "T-relay-gap":
+                entry["user_replied_at"] = fresh_iso
+                self._fresh_created_at[
+                    f"pending:{tid}:user_reply_not_forwarded"
+                ] = fresh_iso
         (self.state_dir / "pending_decisions.json").write_text(
-            json.dumps(self.pending, indent=2), encoding="utf-8",
+            json.dumps(pending, indent=2), encoding="utf-8",
         )
 
     def _run_scan(self) -> list[dict]:
@@ -169,7 +208,12 @@ class AttentionRuntimeIntegrationTests(unittest.TestCase):
     # ------------------------------------------------------------------
     def test_scan_output_matches_golden(self) -> None:
         events = self._run_scan()
-        self.assertEqual(_normalize(events), _normalize(self.golden))
+        expected = [dict(ev) for ev in self.golden]
+        for ev in expected:
+            actual_ts = self._fresh_created_at.get(ev.get("key", ""))
+            if actual_ts is not None and ev.get("created_at") == _DYNAMIC_CREATED_AT:
+                ev["created_at"] = actual_ts
+        self.assertEqual(_normalize(events), _normalize(expected))
 
     # ------------------------------------------------------------------
     # (2) Each individual acceptance case from design §8 is present.
@@ -180,15 +224,15 @@ class AttentionRuntimeIntegrationTests(unittest.TestCase):
         self.assertEqual(ev["severity"], "urgent")
         self.assertEqual(ev["task_id"], "T-approval")
 
-    def test_notify_sent_relay_gap_is_urgent(self) -> None:
+    def test_notify_sent_relay_gap_is_normal(self) -> None:
         ev = self._find_event(self._run_scan(), key="event:4")
         self.assertEqual(ev["kind"], "relay_gap_suspected")
-        self.assertEqual(ev["severity"], "urgent")
+        self.assertEqual(ev["severity"], "normal")
 
-    def test_notify_sent_silent_output_is_urgent(self) -> None:
+    def test_notify_sent_silent_output_is_normal(self) -> None:
         ev = self._find_event(self._run_scan(), key="event:5")
         self.assertEqual(ev["kind"], "silent_worker_output")
-        self.assertEqual(ev["severity"], "urgent")
+        self.assertEqual(ev["severity"], "normal")
 
     def test_ci_completed_failed_is_urgent(self) -> None:
         ev = self._find_event(self._run_scan(), key="event:6")
@@ -197,7 +241,7 @@ class AttentionRuntimeIntegrationTests(unittest.TestCase):
         self.assertEqual(ev["pr"], 42)
         self.assertEqual(ev["status"], "failed")
 
-    def test_stale_pending_decision_is_urgent(self) -> None:
+    def test_pending_decision_is_urgent(self) -> None:
         ev = self._find_event(
             self._run_scan(),
             key="pending:T-pending-stale:pending_decision",
@@ -245,9 +289,10 @@ class AttentionRuntimeIntegrationTests(unittest.TestCase):
         missing = _EXPECTED_URGENT_KINDS - urgent_kinds
         self.assertEqual(
             missing, set(),
-            "runtime is no longer classifying "
-            f"{sorted(missing)} as urgent; either the runtime vocabulary "
-            "drifted or the ja fixture is stale — reconcile before merging."
+            "runtime is no longer surfacing "
+            f"{sorted(missing)} as urgent against this fixture; either "
+            "the runtime defaults drifted or the fixture aged out of "
+            "the TTL urgent window — reconcile before merging."
         )
 
     # ------------------------------------------------------------------

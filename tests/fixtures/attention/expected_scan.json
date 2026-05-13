@@ -13,7 +13,7 @@
   {
     "key": "event:4",
     "kind": "relay_gap_suspected",
-    "severity": "urgent",
+    "severity": "normal",
     "title": "Secretary relay gap suspected",
     "body": "Relay gap detected for T-relay-suspected.",
     "source": "state.db.events",
@@ -24,7 +24,7 @@
   {
     "key": "event:5",
     "kind": "silent_worker_output",
-    "severity": "urgent",
+    "severity": "normal",
     "title": "Silent worker output",
     "body": "worker-T-silent produced output without a peer message.",
     "source": "state.db.events",
@@ -53,7 +53,7 @@
     "source": "pending_decisions",
     "task_id": "T-pending-stale",
     "summary": "Need approval to expand scope to migration cleanup.",
-    "created_at": "2026-01-01T00:00:00Z"
+    "created_at": "__DYNAMIC__"
   },
   {
     "key": "pending:T-relay-gap:user_reply_not_forwarded",
@@ -64,6 +64,6 @@
     "source": "pending_decisions",
     "task_id": "T-relay-gap",
     "summary": "Codex review round 3 done; OK to merge?",
-    "created_at": "2026-01-02T00:00:00Z"
+    "created_at": "__DYNAMIC__"
   }
 ]
