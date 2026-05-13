@@ -317,6 +317,11 @@ worker → Secretary peer message
   ```
 - DB の events テーブルにイベント追記 (`bash tools/journal_append.sh ...`)
 - **dogfood pass 完了時の register 更新（Issue #338）**: 完了したタスクが `registry/dogfood_pending.md` の `dogfood_run_task_id` 列に earmark されていた場合、該当行の `status` を `open → consumed` に遷移する。defect は paired follow-up issue (`dogfood_issue` 列) に既に集約されている前提（dogfood pass worker の brief で format 指定済）。protocol 全体は本 SKILL Step 1.8 を SoT
+- **awaiting_user 通知の emit（Issue #28）**: 人間への報告 → 承認待ち停止に入る直前で、attention watcher に「Secretary が user の判断待ちで停止する」ことを知らせる:
+  ```bash
+  bash tools/journal_append.sh notify_sent kind=awaiting_user task_id=<task_id> gate=worker_completed note="<PR/Issue 等の短い文脈>"
+  ```
+  並走 runtime PR の classifier がこの 1 行を `secretary_awaiting_user` (default severity `urgent`) として拾い、画面前にユーザーが居ない場合でもビープで気付ける。CLAUDE.md「secretary が user の判断を待っている状態を通知する」節を参照
 - 結果を人間に報告し、**ペインを閉じず承認待ちで停止**。承認なしで push/PR を発行すると worker / user 双方への protocol 違反
 
 #### 2b / 2c. ユーザー承認後・レビュー指摘・マージ後クローズ

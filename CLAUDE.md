@@ -36,6 +36,26 @@
 
 retro gate ack は必ず `mcp__renga-peers__send_message(to_id="dispatcher", ...)` で返す。channel broadcast 形式の ack は `dispatcher_retro_gate.py` が `check_messages` で検出できず timeout する。dispatcher 宛の direct send_message のみが retro gate を通過する経路である。
 
+## secretary が user の判断を待っている状態を通知する（Issue #28）
+
+Secretary が「次の一手はユーザーの返答待ち」で停止する gate では、attention watcher がユーザーに気付かせるための信号を 1 行 emit する。Secretary 側は claude-org-ja の本リポジトリで stop しているため、画面前にユーザーが居ない場合 awaiting_user の状態が長時間放置される。この emit を runtime classifier 側で `secretary_awaiting_user` (default severity `urgent`) にマップすることで、ビープ等で通知される。
+
+### 対象 gate（3 箇所）
+- **`worker_completed`**: ワーカーから完了報告を受領 → ack + DB の events テーブルへ review transition を追記 → ユーザーへ承認待ちで停止する直前。[`/org-delegate`](./.claude/skills/org-delegate/SKILL.md) Step 5 sub 2a。
+- **`ci_green_merge_gate`**: PR 作成後の CI 監視で `CI_COMPLETED` 受信（CI green）→ ユーザーへ merge 承認を仰ぐ直前。[`/org-pull-request`](./.claude/skills/org-pull-request/SKILL.md) 2b-i。
+- **`escalation_reply_forward`**: 判断仰ぎを人間に上げ、ユーザー返答を受け取り、ワーカーへ転送する直前。[`/org-escalation`](./.claude/skills/org-escalation/SKILL.md) の `mark-user-replied` → `resolve --kind to_worker` の境界。
+
+### Canonical emit 形
+```
+bash tools/journal_append.sh notify_sent kind=awaiting_user task_id=TASK gate=GATE note=SHORT
+```
+- `task_id`: 対象ワーカー / PR / decision に対応する task_id（escalation_reply_forward の場合は decision に紐付く task_id）。
+- `gate`: `worker_completed` / `ci_green_merge_gate` / `escalation_reply_forward` のいずれか。
+- `note`: 1 行以下の短い文脈（PR 番号 / Issue 番号 / 要約等）。
+
+### 通知側の挙動
+並走の runtime PR が attention watcher classifier に `notify_sent` payload の `kind=awaiting_user` を `secretary_awaiting_user` subkind として認識する mapping を追加する。default severity は `urgent`（即時ビープ）。
+
 ## ワーカーからの判断仰ぎは人間にエスカレーションする
 
 ワーカーから renga-peers で以下のメッセージが来たら、Secretary は **必ず人間に上げる**。一次承認・自己解釈で返答しない:

@@ -33,6 +33,11 @@ description: >
 - DB の events テーブルにイベント追記 (push / PR open など、`bash tools/journal_append.sh ...`)
 - PR 番号が確定したら `tools/pr-watch.ps1 <PR>` (Windows) / `tools/pr-watch.sh <PR>` (POSIX) で CI を監視する。完了時に `ci_completed` が自動で events に記録される。CI 完了で pr-watch は **return** する（review feedback loop 2c や手動 close 2b-ii に進めるよう同期占有しない）
 - **renga 環境では pr-watch が CI 完了 / merge 検出 / 24h タイムアウトの瞬間に Secretary へ peer message を送る** (Issue #326)。窓口は events テーブルをポーリングせず、`<channel source="renga-peers"> CI_COMPLETED: PR #<n> ...` (および `PR_MERGED: PR #<n>` / `PR_MERGE_WATCH_TIMEOUT: PR #<n>` / `PR_MERGED_NO_RUN: PR #<n>`) の到着で次のステップへ進める。`CI_COMPLETED` 受信 → ユーザーに merge 承認を仰ぐ → ユーザー承認 → `PR_MERGED` 受信で 2b-ii の post-merge cleanup へ。`PR_MERGED_NO_RUN` は merge は観測したが対応 run 行が見つからなかった失敗系（`tools/run_complete_on_merge.py` の `no_run` 終端）で、post-merge cleanup には進めず人間判断で対処する。RENGA_SOCKET 未設定の plain shell / CI では peer-send は silent noop となり、従来どおり events テーブルのポーリングにフォールバックする
+- **CI_COMPLETED 受信 → ユーザーに merge 承認を仰ぐ直前で awaiting_user 通知を emit する（Issue #28）**: attention watcher にユーザーが merge 承認待ちで stop していることを知らせる:
+  ```bash
+  bash tools/journal_append.sh notify_sent kind=awaiting_user task_id=<task_id> gate=ci_green_merge_gate note="PR #<PR> CI green, awaiting merge approval"
+  ```
+  並走 runtime PR の classifier が `secretary_awaiting_user` (default severity `urgent`) として拾う。CLAUDE.md「secretary が user の判断を待っている状態を通知する」節を参照。`PR_MERGE_WATCH_TIMEOUT` 等の失敗系は対象外（awaiting_user ではなく別経路で人間判断）
 - **merge を待ち合わせたい時のみ** `-MergeWatch` (PowerShell) / `--merge-watch` (POSIX) を付ける。CI 通過後に `gh pr view --json mergedAt` を 24h ポーリングし、初回の merge で `tools/run_complete_on_merge.py` を呼ぶ (Issue #317)。merge-watch 中も pr-watch プロセスは生きたまま、merge 観測時に `pr_merged` イベントを events に追記してから return する
 - run.status は **REVIEW のまま据え置く**（GitHub 側 PR レビュー指摘が来たら同ペインで対応するため。COMPLETED への遷移は 2b-ii で `update_run_status('<task_id>', 'completed')` を呼ぶ）。markdown 直接編集はしない
 - **ペインはまだ閉じない**: PR 作成直後に `CLOSE_PANE` を送らない。worktree 除去・Worker Directory Registry 更新も 2b-ii まで遅延する
