@@ -338,6 +338,8 @@ python tools/org_setup_prune.py --all                        # secretary / dispa
       "Bash(git checkout:*)",
       "Bash(git switch:*)",
       "Bash(git stash:*)",
+      "Bash(git fetch:*)",
+      "Bash(git merge:*)",
       "Bash(sleep:*)"
     ],
     "deny": [
@@ -345,8 +347,6 @@ python tools/org_setup_prune.py --all                        # secretary / dispa
       "Bash(git push)",
       "Bash(git worktree)",
       "Bash(git worktree *)",
-      "Bash(git fetch)",
-      "Bash(git fetch *)",
       "Bash(git pull)",
       "Bash(git pull *)",
       "Bash(git submodule)",
