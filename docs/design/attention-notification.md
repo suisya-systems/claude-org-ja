@@ -206,11 +206,14 @@ class AttentionEvent:
 |---|---|---|
 | macOS | `osascript display notification` | `afplay` if configured, else bell |
 | Linux | `notify-send` | `paplay` / `canberra-gtk-play` / bell |
-| Windows | PowerShell notification or console fallback | PowerShell beep |
-| WSL | `powershell.exe` via Windows host | PowerShell beep |
+| Windows native | PowerShell `Write-Host`（実装段階で visible UI を持たない defect が残存。real toast 化は別 follow-up Issue） | PowerShell `[console]::beep` |
+| WSL（`wsl-notify-send.exe` あり、推奨） | `wsl-notify-send.exe --category <title> <body>` で Windows 通知センターに real toast | 別 subprocess の PowerShell `[console]::beep`（toast 成功時は terminal bell を抑制） |
+| WSL（`powershell.exe` のみ、fallback） | PowerShell `Write-Host`（visible UI なし、Issue #25 で発覚した legacy 経路） | PowerShell `[console]::beep` |
 | fallback | stdout | terminal bell `\a` |
 
 Desktop notification backend が利用できない場合も watch は落ちない。stdout + bell に fallback する。
+
+**実装実態のメモ（design ↔ implementation drift）**: 当初の design は WSL backend を「`powershell.exe` via Windows host」と 1 行で記述していたが、実装段階で `Write-Host` 経路は Windows 通知センターに到達しないことが Issue #25 で発覚し、`claude-org-runtime` PR #27（[suisya-systems/claude-org-runtime#27](https://github.com/suisya-systems/claude-org-runtime/pull/27)）で `wsl-notify-send.exe` → `powershell.exe` → stdout の 3 段階優先順位に分割した。Windows native backend は同じ defect を抱えたままで、PR #27 では未修正（別 follow-up Issue 追跡）。運用導線とインストール手順は [`docs/operations/attention-watch.md`](../operations/attention-watch.md) §3.1 を参照。
 
 ### Config
 
