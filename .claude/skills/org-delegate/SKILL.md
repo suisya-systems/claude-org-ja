@@ -102,32 +102,13 @@ work-skill の手順をそのままコピーしない。参考情報として提
 
 ## Step 0.6: release-class タスクの pre-fetch（窓口が実行）
 
-`release/*` ブランチを切るタスクは worker が **対象プロジェクトの最新 `main`** から branch することを前提とする。Phase 2 worker git guardrails 以降、worker 側 `.claude/settings.json` の `permissions.deny` に `Bash(git fetch)` / `Bash(git pull)` / `Bash(git remote update)` が含まれており、ローカル `origin/main` が古いまま worker をディスパッチすると着手 5 分以内に「git fetch deny」BLOCKER が発火し、窓口往復で 10 分以上のロスになる（claude-org-runtime v0.1.10 事例）。
+以下 4 条件のいずれかに該当する場合のみ、`gen_delegate_payload.py apply` の **前に** 対象プロジェクトの local main を `git fetch origin` + `git pull --ff-only origin main` で更新する:
 
-このため **release-class タスクに限り**、`gen_delegate_payload.py preview` / `apply` の前に窓口側で fetch を代行する:
-
-```bash
-# 対象プロジェクト（release を切るリポジトリ）のローカルルート
-cd <target project root>
-
-# 最新 origin/main を取り込んで local main を ff 更新
-git fetch origin
-git pull --ff-only origin main
-```
-
-### 適用条件
-
-以下のいずれかに該当する場合のみ発動:
-
-- task description / commit-prefix / planned branch に `release`, `release/`, `vX.Y.Z` 等のリリース昇格を示す語が含まれる
-- 対象ファイルに `CHANGELOG.md` の昇格、`__about__.__version__` / `pyproject.toml` の `version` bump 等のリリース昇格作業が含まれる
+- task description / commit-prefix / planned branch に `release`, `release/`, `vX.Y.Z` 等のリリース昇格語を含む
+- 対象ファイルに `CHANGELOG.md` 昇格 / `__about__.__version__` / `pyproject.toml` の `version` bump 等を含む
 - task_id に `release` を含む（例: `runtime-0-1-10-release`）
 
-通常の feature / fix / docs タスクでは実行しない。worker permissions deny は「worker は本流履歴を引き寄せず sandbox 内で完結する」意図的設計であり、release だけが「最新 main からの branch」を必須とする例外フローである。
-
-### 背景・経緯
-
-詳細な経緯（worker 5 分以内 BLOCKER → 10 分追加ロスの実測、4 つの対応選択肢の比較、permissions 側根本原因）は [`knowledge/curated/release-process.md`](../../../knowledge/curated/release-process.md) の「release ブランチ作成時は窓口側で `git fetch` を代行する」節を参照。
+詳細条件・実行コマンド・worker permissions deny の根拠（fetch 漏れ → 着手 5 分以内に worker BLOCKER → 10 分以上ロスの背景）は [`references/release-pre-fetch.md`](references/release-pre-fetch.md) を一次参照。**トリガー見逃しが BLOCKER 直結のため本体に残す 4 条件は省略禁止。**
 
 ## Step 0.7 / 1 / 1.5 / 2: 1 コマンドで派遣ペイロードを生成（Issue #283）
 
@@ -184,120 +165,22 @@ python tools/gen_delegate_payload.py apply \
 
 ## Step 1.7: Codex design review trigger（窓口が実行、Issue #337）
 
-`preview` 出力の `description` / `--target` 件数 / 参照ドキュメントを見て、以下の **いずれか 1 つ以上** に該当する場合は、`apply` の前に Codex design review を実行する。Curator session #18 retrospective (Issue #283 / session #12) で「事前 Codex design review が 1 ラウンドで Blocker 2 件 + Major 5 件を捕捉」した実績に基づくゲート。
+`apply` の前に Codex design review を実施するか判定する。以下のいずれかに該当する場合のみ実行:
 
-| トリガー | 判定方法 |
-|---|---|
-| 推定工数 ≥ 3h | タスク説明から窓口が判断（ユーザー入力 / preview の規模感） |
-| 新規 module / 新規 tool 導入 | description に「新規」「new tool」「新ツール」「新規導入」等、または preview の作成予定ファイルが新規パスのみ |
-| ファイル変更 ≥ 3 件 | `--target` の数 + preview の brief に列挙される編集対象 |
-| `docs/contracts/` 配下の契約ドキュメント参照 | description / brief / `--knowledge` で `docs/contracts/` を参照 |
+- 推定工数 ≥ 3h
+- 新規 module / 新規 tool 導入
+- ファイル変更 ≥ 3 件
+- `docs/contracts/` 配下の契約ドキュメント参照
 
-**実行手順:**
-
-```bash
-codex exec --skip-git-repo-check "<task-id> の design review。\
-  タスク内容: <description>。\
-  対象ファイル: <target paths>。\
-  関連 contract / 参考: <docs paths>。\
-  事前設計上の Blocker / Major / Minor / Nit を分類し、各指摘に対象ファイル:行番号と根拠を添えて日本語で簡潔に。"
-```
-
-`codex:rescue` skill は使わない（CLAUDE.local.md の禁止事項）。`codex exec` 直打ちのみ。
-
-**review 要約の組み込み:**
-
-- 要約を `tmp/codex-review-{task-id}.md` に保存
-- `apply` 呼び出し時に **`--impl-guidance "<要約本文>"`** を渡す。これにより要約本文が brief の `[implementation].guidance` に展開され、ワーカーが直読できる
-- 補足として `--knowledge tmp/codex-review-{task-id}.md` を追加すると brief の `[references].knowledge` にパスが列挙され、ワーカーが必要に応じて全文を参照できる（`gen_worker_brief.py` はパスを列挙するだけで本文は埋め込まない）。本文を確実にワーカーへ届けるのは `--impl-guidance` 側の責務
-- Blocker / Major が指摘された場合は、ユーザーに上げて方針変更可否を確認してから apply に進む
-
-**helper script:** Issue #337 acceptance で optional とされており、本 PR では実装しない。Secretary が手動で上記表を判定する。
+トリガー判定の詳細表・`codex exec` コマンド・review 要約の `--impl-guidance` / `--knowledge` への組み込み手順は [`references/codex-design-review.md`](references/codex-design-review.md) を一次参照。
 
 ## Step 1.8: dogfood follow-up issue protocol（窓口 + org-pull-request 連携、Issue #338）
 
-新規 tool / runtime / workflow を導入する PR では、実装 PR と paired で「dogfood follow-up」issue を作成し、次回その新規 tool を実使用する delegation を **dogfood pass** として明示的に予約する。Curator session #18 retrospective で「PR #288 で 4 カテゴリの defect が初回実使用時にしか出てこなかった」事象（session #11 でも再現）に基づく protocol。
+新規 CLI tool / 新規 runtime / 新規 workflow / 新規 protocol の導入、または既存 tool の break-change 再設計に該当するタスクは **dogfood 対象**。実装 delegation と paired で follow-up issue を作成し、後続の実使用 delegation を dogfood pass として earmark する。
 
-### 適用条件
+dogfood 対象判定 / 窓口責務 (A) 実装起票時の `registry/dogfood_pending.md` append / (B) dogfood pass earmark の手順 / org-pull-request 連携 / register フォーマット / hygiene チェック (consumed→closed) は [`references/dogfood-protocol.md`](references/dogfood-protocol.md) を一次参照。
 
-タスクが以下のいずれかに該当する場合に発動:
-
-- 新規 CLI tool / script (`tools/*.py`, `tools/*.sh`, `tools/*.ps1` 等) の追加
-- 新規 runtime / 新規 workflow / 新規 protocol の導入
-- 既存 tool への break-change を伴う再設計
-
-### 窓口（org-delegate）の責務
-
-dogfood protocol は **2 つの delegation** に跨る: (A) 新規 tool を導入する **実装 delegation**, (B) その後その tool を実使用する **dogfood pass delegation**。窓口は両方で `registry/dogfood_pending.md` を読み書きする。
-
-**(A) 実装 delegation の起票時（Step 1.7 評価と同タイミング）:**
-
-1. 適用条件に該当することを判定し、preview と並行で「dogfood 対象タスク」とマーク
-2. `registry/dogfood_pending.md` に新規行を 1 行 append し、`status=pending` / `dogfood_issue` / `dogfood_run_task_id` は空 / `impl_pr` は空（PR 番号は後で埋める）。この時点では実装 PR 自体まだ存在しない
-3. 実装 worker への brief には dogfood の言及は不要（issue 番号も PR 番号もこの時点では未確定）。実装 worker は通常通り tool を作るだけ
-
-**(B) dogfood pass delegation の起票時:**
-
-4. 新規 delegation を起こす際は、毎回 `registry/dogfood_pending.md` の `status=open` 行（= paired follow-up issue 作成済 / dogfood pass 未実施）を確認する
-5. 起票しようとしている新規 task が `tool / surface` 列の対象を実使用する場合、その task を dogfood pass として earmark:
-   - `apply` 呼び出しに `--impl-guidance "Dogfood pass for paired follow-up issue #<N>. Report any defects to that issue using the format in references/dogfood-issue-template.md. Refs #<N>, do not Closes."` を追加する
-   - 追加で `--knowledge .claude/skills/org-delegate/references/dogfood-issue-template.md` を渡し、defect 報告フォーマットを brief に含める
-6. 該当行を更新: `dogfood_run_task_id=<新規 task_id>` を埋め、`status` は `open` のまま据え置き（dogfood worker からの完了報告を受領した時点で `consumed` に遷移、 §register 状態遷移参照）
-
-### org-pull-request 側の責務（cross-ref）
-
-実装 PR 作成 / マージのタイミングで以下を行う（手順詳細は org-pull-request 側で別途整備、Issue #338 は本 SKILL に protocol を記録するスコープ）:
-
-1. 実装 PR 作成直後: `registry/dogfood_pending.md` で `status=pending` の該当行を探し、`impl_pr=#<NNN>` を埋め、`gh issue create --body-file <rendered template>` で paired follow-up issue を作成（template: [`references/dogfood-issue-template.md`](references/dogfood-issue-template.md)）
-2. 作成した issue 番号を該当行の `dogfood_issue=#<MMM>` に埋め、`status` を `pending → open` に遷移
-3. 実装 PR の本文末に `Paired dogfood issue: #<MMM>` を付ける
-4. paired issue がクローズされた時点で該当行の `status` を `consumed → closed` に遷移
-
-### dogfood_pending register フォーマット
-
-`registry/dogfood_pending.md` は **append-only ではなく partial-update register**: 行追加は append、各列（`impl_pr` / `dogfood_issue` / `dogfood_run_task_id` / `status`）への追記更新は許可。論理削除や行の reorder は禁止。
-
-```
-| task_id | tool / surface | impl_pr | dogfood_issue | dogfood_run_task_id | status |
-|---------|----------------|---------|---------------|---------------------|--------|
-| issue-XXX-new-tool | tools/foo.py | #YYY | #ZZZ | issue-MMM-bar | open |
-```
-
-### register 状態遷移
-
-```
-[行追加] (org-delegate Step 1.8 §A.2)
-  status = pending      ← issue 未作成 / impl_pr も空
-       │
-       │ 実装 PR 作成 + paired issue 作成 (org-pull-request §1-2)
-       ▼
-  status = open         ← paired issue 作成済 / dogfood pass 未実施
-       │
-       │ 後続 delegation で earmark (org-delegate Step 1.8 §B.5-6)
-       │ dogfood_run_task_id を埋める。status は open のまま
-       │
-       │ dogfood pass worker 完了報告受領 → defect が paired issue に集約済
-       ▼
-  status = consumed     ← defect 監視期間
-       │
-       │ paired issue クローズ (org-pull-request §4)
-       ▼
-  status = closed       ← 終端
-```
-
-各遷移は表の単一行に対する **単一列の差分書き換え**。複数列を同時に書き換える場合（例: pending → open は `impl_pr` と `dogfood_issue` と `status` を一括更新）も同一行内なら可。
-
-### consumed → closed 観察タイミング（窓口の register hygiene 責務）
-
-paired follow-up issue のクローズは実装 PR のライフサイクル外で起こりうるため（手動 close / 個別 fix issue への split / 長期 idle 後の整理）、`org-pull-request` の発動契機（PR 作成・レビュー・マージ後クローズ）だけでは検出漏れが起きる。窓口は **`registry/dogfood_pending.md` に書き込みを行うあらゆるタイミング**（= 実装 delegation 起票 / dogfood pass earmark / dogfood pass 完了報告受領 / 状態確認）で次の hygiene チェックを行う:
-
-```bash
-# status=consumed の行について、paired dogfood_issue が closed なら closed に遷移
-gh issue view <dogfood_issue> --json state -q .state
-  # → "CLOSED" なら status を consumed → closed に書き換える
-```
-
-加えて、`/org-resume` 起動時のブリーフィングでも `status=consumed` の行を 1 度ずつスキャンして閉じる（resume 時 hygiene）。これにより consumed が register に滞留しても、次のレジスタ操作までに必ず回収される。
+状態遷移: `pending → open → consumed → closed`
 
 ## Step 3 / 4: ワーカー起動・指示送信・状態記録（ディスパッチャーが実行）
 
