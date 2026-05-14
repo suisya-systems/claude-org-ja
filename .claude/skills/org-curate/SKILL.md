@@ -4,6 +4,16 @@ description: >
   蓄積された生の学び（knowledge/raw/）を整理・統合する。
   キュレーターClaudeの /loop から定期呼び出しされる。
   手動で「知見を整理して」と言われたときにも使う。
+effort: medium
+allowed-tools:
+  - Read
+  - Write
+  - Edit
+  - Bash(mkdir -p knowledge/raw/archive/)
+  - Bash(mv knowledge/raw/*)
+  - Bash(grep:*)
+  - Bash(find knowledge/*)
+  - mcp__renga-peers__send_message
 ---
 
 # org-curate: 知見整理

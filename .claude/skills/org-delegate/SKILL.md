@@ -5,6 +5,23 @@ description: >
   手を動かす実作業は原則としてワーカーに任せる。
   ユーザーから作業の依頼を受けたとき、ファイル編集・実装・調査等の
   実作業が発生する場合に発動する。
+effort: medium
+allowed-tools:
+  - Read
+  - Edit
+  - Write
+  - Bash(python tools/gen_delegate_payload.py:*)
+  - Bash(py -3 tools/gen_delegate_payload.py:*)
+  - Bash(bash tools/journal_append.sh:*)
+  - Bash(py -3 tools/journal_append.py:*)
+  - Bash(python -m tools.state_db.importer:*)
+  - Bash(git fetch:*)
+  - Bash(git log:*)
+  - Bash(gh issue create:*)
+  - mcp__renga-peers__send_message
+  - mcp__renga-peers__inspect_pane
+  - mcp__renga-peers__list_peers
+  - mcp__renga-peers__list_panes
 ---
 
 # org-delegate: ワーカー派遣

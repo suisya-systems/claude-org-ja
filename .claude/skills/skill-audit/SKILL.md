@@ -5,6 +5,13 @@ description: >
   状態ベースで発火する: 候補キュー knowledge/skill-candidates.md の pending が 5 件以上、
   または .claude/skills/ 配下の work-skill 数（org-* を除く）が 20 以上になった場合のみ実行。
   時間ベースの /loop では起動しない（変化の無い日に raw ログを汚す副作用を避けるため）。
+effort: medium
+allowed-tools:
+  - Read
+  - Bash(grep:*)
+  - Bash(find:*)
+  - Bash(wc:*)
+  - mcp__renga-peers__send_message
 ---
 
 # skill-audit: skill 棚卸し

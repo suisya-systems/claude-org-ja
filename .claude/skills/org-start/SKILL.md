@@ -4,6 +4,15 @@ description: >
   組織を起動する。前回の状態を読み込んでブリーフィングし、
   ディスパッチャーとキュレーターペインを起動する。ClaudeCode起動直後に1回実行する。
   「起動して」「スタート」「始めて」等でも発動。
+effort: low
+allowed-tools:
+  - Read
+  - Bash(bash tools/journal_append.sh:*)
+  - Bash(py -3 tools/journal_append.py:*)
+  - Bash(python -m tools.state_db.importer:*)
+  - Bash(py -3 dashboard/org_state_converter.py:*)
+  - Bash(python3 dashboard/org_state_converter.py:*)
+  - mcp__renga-peers__*
 ---
 
 # org-start: 組織の起動

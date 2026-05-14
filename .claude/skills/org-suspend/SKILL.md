@@ -3,6 +3,13 @@ name: org-suspend
 description: >
   組織を中断し、全状態をディスクに保存する。「中断」「保存して終了」
   「閉じたい」「一旦やめる」「今日は終わり」と言われたときに使う。
+effort: low
+allowed-tools:
+  - Read
+  - Bash(bash tools/journal_append.sh:*)
+  - Bash(py -3 tools/journal_append.py:*)
+  - Bash(python -m tools.state_db.importer:*)
+  - mcp__renga-peers__*
 ---
 
 # org-suspend: 組織の中断

@@ -5,6 +5,15 @@ description: |
   Claude Code の許可設定・環境変数を一括で配置・更新するスキル。
   「設定して」「許可設定を更新して」「セットアップして」
   「permissions設定」「org-setup」等で発動する。
+effort: low
+allowed-tools:
+  - Read
+  - Edit
+  - Write
+  - Bash(python tools/org_setup_prune.py:*)
+  - Bash(py -3 tools/org_setup_prune.py:*)
+  - Bash(python tools/check_role_configs.py:*)
+  - Bash(py -3 tools/check_role_configs.py:*)
 ---
 
 # org-setup: 組織の許可設定を一括配置

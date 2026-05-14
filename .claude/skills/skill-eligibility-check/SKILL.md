@@ -5,6 +5,11 @@ description: >
   「skill 化推奨 / 候補止まり / curated ノートのまま」の 3 値と根拠を返す。
   自動 skill 化はせず、推奨は knowledge/skill-candidates.md に追記し、
   窓口が候補キューが溜まった時点でバッチで人間に問い合わせる二段構え。
+effort: low
+allowed-tools:
+  - Read
+  - Edit
+  - Write
 ---
 
 # skill-eligibility-check: skill 化判定

@@ -6,6 +6,13 @@ description: >
   /clear → /secretary-resume で新しい窓口セッションを開始する準備をする。
   「リフレッシュ」「窓口を引き継ぎたい」「コンテキスト整理」と言われたとき、
   または窓口自身が context が長くなったと判断したときに使う。
+effort: low
+allowed-tools:
+  - Read
+  - Write
+  - Edit
+  - Bash(py -3 tools/journal_append.py:*)
+  - Bash(bash tools/journal_append.sh:*)
 ---
 
 # secretary-handover: 窓口の引き継ぎ
