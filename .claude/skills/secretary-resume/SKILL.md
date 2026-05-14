@@ -5,6 +5,15 @@ description: >
   窓口を新しいセッションで復帰させる。/clear 直後の最初のターンで使う。
   「窓口を復帰」「resume」「引き継ぎから再開」と言われたときに使う。
   /org-start ではない（ディスパッチャー・キュレーターは既に生きている前提）。
+effort: low
+allowed-tools:
+  - Read
+  - Bash(py -3 tools/journal_append.py:*)
+  - mcp__renga-peers__set_summary
+  - mcp__renga-peers__list_panes
+  - mcp__renga-peers__set_pane_identity
+  - mcp__renga-peers__list_peers
+  - mcp__renga-peers__check_messages
 ---
 
 # secretary-resume: 窓口の復帰

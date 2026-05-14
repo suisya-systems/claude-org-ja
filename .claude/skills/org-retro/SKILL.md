@@ -5,6 +5,12 @@ description: >
   委譲の進め方自体を振り返り、プロセス改善の知見を記録する。
   さらに、完了タスクの作業パターンをwork-skillとして蓄積すべきか判断する。
   実作業の技術的な振り返りはワーカーが自動的に行うため、ここでは扱わない。
+effort: medium
+allowed-tools:
+  - Read
+  - Write
+  - Edit
+  - mcp__renga-peers__send_message
 ---
 
 # org-retro: 委譲プロセスの振り返り

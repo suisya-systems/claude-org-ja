@@ -7,6 +7,14 @@ description: >
   scope-expansion / blocker メッセージ受信時。
   通常の進捗 / 完了報告は org-delegate Step 5 (1) / (2a) で扱う。本スキルは
   「自己解釈で承認しないための register 更新を含む正準フロー」を担当する。
+effort: medium
+allowed-tools:
+  - Read
+  - Edit
+  - Bash(bash tools/journal_append.sh:*)
+  - Bash(python tools/pending_decisions.py:*)
+  - Bash(py -3 tools/pending_decisions.py:*)
+  - mcp__renga-peers__send_message
 ---
 
 # org-escalation: 判断仰ぎ・スコープ拡張・ブロッカーのエスカレーション

@@ -7,6 +7,28 @@ description: >
   (2) GitHub PR にレビュー指摘 / CI 失敗が来てワーカーへ修正指示を送り直すとき、
   (3) PR がマージされ最終クローズ条件を満たしたとき。
   単に「ワーカーに作業を依頼する」初動は org-delegate であり本スキルではない。
+effort: medium
+allowed-tools:
+  - Read
+  - Bash(git push:*)
+  - Bash(git -C * worktree remove:*)
+  - Bash(git worktree remove:*)
+  - Bash(gh pr create:*)
+  - Bash(gh pr view:*)
+  - Bash(gh pr checks:*)
+  - Bash(gh issue create:*)
+  - Bash(gh issue edit:*)
+  - Bash(bash tools/journal_append.sh:*)
+  - Bash(py -3 tools/journal_append.py:*)
+  - Bash(python tools/set_run_pr_open.py:*)
+  - Bash(py -3 tools/set_run_pr_open.py:*)
+  - Bash(python tools/run_complete_on_merge.py:*)
+  - Bash(py -3 tools/run_complete_on_merge.py:*)
+  - Bash(bash tools/pr-watch.sh:*)
+  - Bash(pwsh tools/pr-watch.ps1:*)
+  - Bash(powershell tools/pr-watch.ps1:*)
+  - mcp__renga-peers__send_message
+  - mcp__renga-peers__check_messages
 ---
 
 # org-pull-request: PR 作成・レビュー・マージ後クローズ

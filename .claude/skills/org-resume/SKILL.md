@@ -4,6 +4,16 @@ description: >
   中断された組織を再開する。.state/org-state.md が存在し Status: SUSPENDED のとき、
   「再開」「続きから」「前回どこまでやった？」と言われたときに使う。
   起動時の自動ブリーフィングにも対応。
+effort: low
+allowed-tools:
+  - Read
+  - Bash(git status)
+  - Bash(git log:*)
+  - Bash(py -3 tools/state_migrate.py)
+  - Bash(python3 tools/state_migrate.py)
+  - Bash(py -3 tools/journal_append.py:*)
+  - Bash(bash tools/journal_append.sh:*)
+  - Bash(python -m tools.state_db.importer:*)
 ---
 
 # org-resume: 組織の再開

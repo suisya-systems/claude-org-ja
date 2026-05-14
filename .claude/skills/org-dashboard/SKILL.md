@@ -4,6 +4,14 @@ description: >
   組織のダッシュボードを更新してブラウザで開く。
   「ダッシュボード見せて」「状況を可視化して」「プロジェクト一覧見たい」
   「全体像を見せて」等で発動。
+effort: low
+allowed-tools:
+  - Bash(cat .state/dashboard.pid)
+  - Bash(kill -0 *)
+  - Bash(python3 dashboard/server.py *)
+  - Bash(py -3 dashboard/server.py *)
+  - Bash(open http://localhost:8099)
+  - Bash(start http://localhost:8099)
 ---
 
 # org-dashboard: ダッシュボードを開く
