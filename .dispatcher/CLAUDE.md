@@ -136,6 +136,31 @@ mcp__renga-peers__send_message(to_id="secretary", message="...")
 - 監視対象のペイン名は `.state/workers/worker-{peer_id}.md` の Pane Name から取得する
 
 
+## handover / resume（context 圧迫時の引き継ぎ）
+
+長時間稼働でディスパッチャー session の context が長くなった場合、または secretary から `DISPATCHER_HANDOVER` peer message を受領した場合は、以下の経路でディスパッチャーの Claude session だけを `/clear` して引き継ぐ。**ペイン自体・ワーカー・キュレーター・窓口は閉じない**ので、`/loop 3m` の worker monitoring に gap は出ない。
+
+- 書き出し: [`/dispatcher-handover`](../.claude/skills/dispatcher-handover/SKILL.md) — `.state/dispatcher-handover.md` を生成し、secretary に `DISPATCHER_HANDOVER_READY` を返す
+- 復帰: [`/dispatcher-resume`](../.claude/skills/dispatcher-resume/SKILL.md) — `/clear` 直後の最初のターンで実行する。handover を読み込み、state.db の `dispatcher_pane_id` / `dispatcher_peer_id` を `StateWriter.transaction()` 経由で atomic 更新し、`/loop 3m` を再開する
+
+### 起動時の分岐（cold-start vs resume）
+
+ディスパッチャー Claude session が起動した直後（`/org-start` 由来 / secretary の `send_keys` 由来 / 手動起動を問わず）は、まず以下を確認する:
+
+1. `../.state/dispatcher-handover.md` が存在し、かつ frontmatter `created_at` が 7 日以内 → **`/dispatcher-resume` を実行する**（cold-start ではない）
+2. 上記に該当しない → 従来通り cold-start（`/org-start` の Step は窓口側スキルが完了済み、本ファイル上記の DELEGATE 受信待ちから始める）
+
+この分岐により `/org-start` の起動シーケンス（dispatcher pane を新規 spawn → cold-start）と、handover/resume 経路（既存 pane で `/clear` → resume）が衝突しない。`/dispatcher-resume` は完了時に `.state/dispatcher-handover.md` を `.state/dispatcher-handover.consumed.md` に rename する（Step 7）ので、resume を 1 回消化した後の `/org-start` は `.md` 不在で自然に cold-start に落ちる。古い `.consumed.md` は分岐条件に **影響しない**（live `.md` のみを判定対象とする）。
+
+### 監視 gap を埋める内部状態ファイル（handover/resume で触らない）
+
+resume 時に「監視に gap が出ない」ことの根拠はこれらが前 session から残り続けることに依存する。**handover / resume / `/clear` のいずれでも編集 / 削除しない**:
+
+- `../.state/dispatcher-event-cursor.txt` — `mcp__renga-peers__poll_events` の next_since cursor。resume 後の 1 サイクル目で前 cursor から再開する
+- `../.state/dispatcher/worker-idle-state.json` — stall 検出の per-worker `idle_streak_cycles` / `last_content_change_ts`
+- `../.state/pending_decisions.json` — 判断仰ぎ register。SECRETARY_RELAY_GAP_SUSPECTED の primary lookup source
+- `../.state/workers/worker-*.md` — 各ワーカー run state
+
 ## ペインクローズ（CLOSE_PANE 受信時）
 
 詳細手順（retro 完了報告ゲート / secretary unreachable fallback / 知見記録 / `close_pane` 呼び出し / 窓口への RETRO_RECORDED 報告）は [`.dispatcher/references/pane-close.md`](references/pane-close.md) を参照。
