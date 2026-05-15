@@ -198,6 +198,8 @@ itself errored — see the fallback rules in `tools/pr_watch.py`);
 | `resume`                       | `restored_workers[]`, `note`            | secretary | secretary  | —            |
 | `task_completed`               | `task`                                  | secretary | secretary  | —            |
 | `secretary_identity_restored`  | `note`                                  | org-start | secretary  | —            |
+| `dispatcher_handover`          | `active_workers`, `pending_decisions`, `note` | dispatcher | dispatcher | —      |
+| `dispatcher_resumed`           | `pane_id`, `peer_id`, `active_workers`, `note` | dispatcher | dispatcher | —     |
 
 ## Adding a new event type
 
