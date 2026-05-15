@@ -150,7 +150,7 @@ mcp__renga-peers__send_message(to_id="secretary", message="...")
 1. `../.state/dispatcher-handover.md` が存在し、かつ frontmatter `created_at` が 7 日以内 → **`/dispatcher-resume` を実行する**（cold-start ではない）
 2. 上記に該当しない → 従来通り cold-start（`/org-start` の Step は窓口側スキルが完了済み、本ファイル上記の DELEGATE 受信待ちから始める）
 
-この分岐により `/org-start` の起動シーケンス（dispatcher pane を新規 spawn → cold-start）と、handover/resume 経路（既存 pane で `/clear` → resume）が衝突しない。`/org-start` 直後は handover ファイルが古い（または存在しない）ので自然に cold-start に落ちる。
+この分岐により `/org-start` の起動シーケンス（dispatcher pane を新規 spawn → cold-start）と、handover/resume 経路（既存 pane で `/clear` → resume）が衝突しない。`/dispatcher-resume` は完了時に `.state/dispatcher-handover.md` を `.state/dispatcher-handover.consumed.md` に rename する（Step 7）ので、resume を 1 回消化した後の `/org-start` は `.md` 不在で自然に cold-start に落ちる。古い `.consumed.md` は分岐条件に **影響しない**（live `.md` のみを判定対象とする）。
 
 ### 監視 gap を埋める内部状態ファイル（handover/resume で触らない）
 

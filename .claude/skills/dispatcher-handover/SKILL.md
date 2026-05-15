@@ -14,6 +14,8 @@ allowed-tools:
   - Edit
   - Bash(py -3 ../tools/journal_append.py:*)
   - Bash(bash ../tools/journal_append.sh:*)
+  - Bash(python3 -c:*)
+  - Bash(py -3 -c:*)
   - Bash(ls:*)
   - Bash(cp:*)
   - mcp__renga-peers__send_message

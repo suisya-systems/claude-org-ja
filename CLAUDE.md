@@ -27,9 +27,10 @@
   - [`/secretary-resume`](./.claude/skills/secretary-resume/SKILL.md) — `/clear` 後の最初のターンで handover を読み込んで窓口復帰
 - ディスパッチャー session の context が長くなったら窓口から発火する canonical 経路 (Issue #464):
   1. `mcp__renga-peers__send_message(to_id="dispatcher", message="DISPATCHER_HANDOVER: context refresh をお願いします。/dispatcher-handover を実行してください。")` で起点を送る
-  2. ディスパッチャーから `DISPATCHER_HANDOVER_READY` の peer message を受領
-  3. `mcp__renga-peers__send_keys(target="dispatcher", text="/clear", enter=true)` → 数秒後に `mcp__renga-peers__send_keys(target="dispatcher", text="/dispatcher-resume", enter=true)` を打鍵
-  4. ディスパッチャーから `DISPATCHER_RESUMED` を受領して引き継ぎ完了。`/loop 3m` 監視は resume 内で再開済み
+  2. ディスパッチャーから `DISPATCHER_HANDOVER_READY` の peer message を受領（ここまで取りこぼしなく到達した時点で handover ファイル書き出しは完了している）
+  3. `mcp__renga-peers__send_keys(target="dispatcher", text="/clear", enter=true)` を発行。**直後に固定 sleep を置かず、`mcp__renga-peers__inspect_pane(target="dispatcher", lines=10)` で `/` プロンプトが空 (welcome screen / empty input) になるまで 1 秒間隔で poll する**（最大 15 秒）。プロンプト不確認のまま次の打鍵に進むと no-op で取りこぼし監視 gap になる
+  4. プロンプト確認後、`mcp__renga-peers__send_keys(target="dispatcher", text="/dispatcher-resume", enter=true)` を発行。送信後 `mcp__renga-peers__check_messages` を 30 秒以内 poll し `DISPATCHER_RESUMED` または `DISPATCHER_RESUME_FAILED` を待つ。タイムアウト時は `inspect_pane` でペイン状態を観測し、必要なら `/dispatcher-resume` を再送する（idempotent: resume の Step 7 で handover ファイルが `.consumed.md` に rename されているので、2 回目以降の起動分岐は cold-start 側に落ちる前に check_messages 再 drain で済む）
+  5. ディスパッチャーから `DISPATCHER_RESUMED` を受領して引き継ぎ完了。`/loop 3m` 監視は resume 内で再開済み
   - ペインは閉じない（pane_id 維持で監視 gap を最小化）。`/org-suspend` ではなく、ディスパッチャー Claude の context だけをリセットする操作
   - 詳細は [`/dispatcher-handover`](./.claude/skills/dispatcher-handover/SKILL.md) と [`/dispatcher-resume`](./.claude/skills/dispatcher-resume/SKILL.md) を参照
 - 実作業は全てワーカーに委譲する（コード編集、デバッグ、テスト、ビルド、git commit、環境構築等）

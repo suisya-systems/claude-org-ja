@@ -12,7 +12,10 @@ allowed-tools:
   - Read
   - Bash(py -3 ../tools/journal_append.py:*)
   - Bash(bash ../tools/journal_append.sh:*)
+  - Bash(python3 -c:*)
+  - Bash(py -3 -c:*)
   - Bash(ls:*)
+  - Bash(mv:*)
   - mcp__renga-peers__set_summary
   - mcp__renga-peers__list_panes
   - mcp__renga-peers__set_pane_identity
@@ -162,10 +165,19 @@ DISPATCHER_RESUMED: ディスパッチャー復帰完了。
 - 監視ループ: /loop 3m 再開 (or idle)
 ```
 
-## Step 7: handover ファイルを保持する
+## Step 7: handover ファイルを consumed 状態に切り替える
 
-- 削除しない（次回トラブル時の参照用に残す）
-- `.state/dispatcher-handover.prev.md` も読み込み済みでも消さない
+resume が成功したら、`.state/dispatcher-handover.md` を `.state/dispatcher-handover.consumed.md` に **rename する**。これにより:
+
+- `.dispatcher/CLAUDE.md` 起動時の自動分岐（handover ファイルが直近 7 日以内に存在すれば resume）が「次の `/org-start` cold-start 時にも誤って resume に分岐する」事故を防ぐ
+- 直近 1 件のみ参照用に `.consumed.md` 形式で残る（次の `/dispatcher-handover` が新たに `.md` を書いた時点で `.prev.md` バックアップに置き換わる、または上書きされる）
+
+```bash
+mv ../.state/dispatcher-handover.md ../.state/dispatcher-handover.consumed.md
+```
+
+- 既に `.consumed.md` があれば上書きで構わない（直近 1 件のみ保持）
+- `.state/dispatcher-handover.prev.md` は前回の `/dispatcher-handover` で書かれたバックアップ。読み込み済みでも消さない
 
 ## イベント記録
 
