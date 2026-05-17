@@ -125,37 +125,45 @@ mcp__renga-peers__spawn_pane(
   ください」と報告して abort
 - その他 `[<code>]`: [`renga-error-codes.md`](../org-delegate/references/renga-error-codes.md) を参照
 
-## Step 4: 起動 health check（即時クラッシュ検出）
+## Step 4: 起動 health check（即時クラッシュの negative-signal 検出のみ）
 
 `spawn_pane` の成功は「shell が立ち上がって command を発火した」までしか保証しない。
-`claude-org-runtime` 未導入 / 設定不正 / import error 等で watcher 本体が即時終了すると、
-sidecar に stale pane_id が記録されて以後の `/org-attention-start` / `/org-attention-stop`
-判定を壊す。Step 5 に進む前に **最低 2 秒待ってから** `inspect_pane` でペイン内容を観測し、
-watcher が生きているかを確認する:
+`claude-org-runtime` 未導入 / 設定不正 / import error で watcher 本体が即時終了すると、
+sidecar に stale pane_id が記録されて以後の判定を壊す。一方、watcher が **正常起動時に
+何を出力するか** は `claude-org-runtime` 側の契約で固定されておらず（polling loop に入って
+静かに待機する実装もあり得る）、「起動バナーが見えるまで待つ」「無出力なら fail」と扱うと
+**正常な quiet start を誤って kill する**経路になる。よって本 skill は **明示的な失敗
+シグナルだけを fail と判定**し、それ以外（空出力 / 不明な出力）は「起動成功扱い」とする:
 
 ```
-mcp__renga-peers__inspect_pane(target="attention", format="text", lines=40)
+mcp__renga-peers__inspect_pane(target="attention", format="text", lines=60)
 ```
 
-判定基準（いずれかに該当したら **起動失敗** として扱う）:
-- 出力末尾に shell prompt（`PS C:\...>` / `$ ` / `% ` 等）が露出している → command が即時終了して
-  shell に戻った
-- 出力に `command not found` / `is not recognized` / `ModuleNotFoundError` / `ImportError` /
-  `Traceback` / `[error]` / `[ERROR]` が含まれる
-- 出力が完全に空 → spawn 自体が wedged。10 秒猶予して再 inspect、それでも空なら失敗扱い
+inspect 自体のラウンドトリップ（数百 ms）で shell が即時終了するケースは pty buffer に
+残った prompt や error が cap される。**以下のいずれかに該当した場合のみ「起動失敗」**:
+
+- 出力末尾に shell prompt が露出している（`PS C:\...> ` / `$ ` / `% ` / `> ` の末尾露出）
+  → command が即時終了して shell に戻った
+- 出力に以下のいずれかの文字列を含む:
+  - `command not found` / `is not recognized` / `not recognized as an internal or external command`
+  - `ModuleNotFoundError` / `ImportError` / `Traceback (most recent call last)`
+  - `[error]` / `[ERROR]` / `FATAL` / `fatal:`
+
+**上記いずれも検出されない場合**（空出力 / 起動バナー / polling 待機 / 不明な行のみ等）
+→ **起動成功扱い** で Step 5 に進む。固定 sleep を入れて再 inspect する経路は持たない
+（quiet な健全起動を誤殺する経路を作らないため）。
 
 **起動失敗時**:
 1. `mcp__renga-peers__close_pane(target="<spawn 返り値の pane_id>")` で死んだペインを掃除
 2. sidecar は **書き込まない**
-3. journal に `attention_watch_start_failed pane_id=<N> reason="<inspect 抜粋>"` を記録:
+3. journal に `attention_watch_start_failed` を記録:
    ```bash
    bash tools/journal_append.sh attention_watch_start_failed pane_id=<N> reason=immediate_exit
    ```
-4. ユーザーに「watcher が起動直後に終了しました（出力: ...）。`claude-org-runtime` の導入確認
-   (`claude-org-runtime --version`) と `.state/attention.json` の構文確認を行ってください」と
-   報告して abort
-
-**起動成功時**（出力に watcher の起動ログ / polling 待機が見える）: Step 5 へ進む。
+4. ユーザーに「watcher が起動直後に終了しました（出力: <inspect 抜粋>）。
+   `claude-org-runtime --version` で導入を確認し、`.state/attention.json` の構文も
+   `claude-org-runtime attention scan --state-dir .state --config .state/attention.json --dry-run --json`
+   で検査してください」と報告して abort
 
 ## Step 5: pane_id を sidecar に記録
 
