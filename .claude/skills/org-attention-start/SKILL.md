@@ -15,10 +15,14 @@ allowed-tools:
   - Bash(cp:*)
   - Bash(copy:*)
   - Bash(test:*)
+  - Bash(rm:*)
+  - Bash(del:*)
   - Bash(bash tools/journal_append.sh:*)
   - Bash(py -3 tools/journal_append.py:*)
   - mcp__renga-peers__list_panes
   - mcp__renga-peers__spawn_pane
+  - mcp__renga-peers__close_pane
+  - mcp__renga-peers__inspect_pane
 ---
 
 # org-attention-start: attention watcher の常駐起動
@@ -42,19 +46,29 @@ pane_id を `.state/attention_pane.json` に sidecar として記録する。停
 
 ## Step 1: 二重起動チェック
 
-1. `.state/attention_pane.json` が存在するか確認:
+二重起動の判定は **sidecar の有無と live pane の両方** を見る必要がある（sidecar 不在でも
+過去の手動 spawn / クラッシュ後の孤児 `name="attention"` ペインが live で残るケースがあり、
+sidecar だけ見ると Step 3 の `spawn_pane(..., name="attention")` が `[name_in_use]` で失敗する）。
+
+1. `mcp__renga-peers__list_panes` を呼び、`name="attention"` / `role="attention"` の pane が
+   live で存在するか確認する
+2. `.state/attention_pane.json` が存在するか確認:
    ```bash
    test -f .state/attention_pane.json && echo exists || echo absent
    ```
-2. **存在する場合**: `mcp__renga-peers__list_panes` を呼び、sidecar に書かれた `pane_id` が
-   現在のタブに生存しているか照合する:
-   - **生存している** → 既に起動中。ユーザーに「attention watcher は既に pane id={N} で稼働中です。
-     再起動したい場合は `/org-attention-stop` を先に実行してください」と報告して **abort**
-   - **生存していない** (sidecar に stale な id) → 旧 sidecar を削除して Step 2 へ進む:
+3. 分岐:
+   - **live pane あり + sidecar あり + sidecar の pane_id が live pane と一致** → 正常に稼働中。
+     「attention watcher は既に pane id={N} で稼働中です。再起動したい場合は
+     `/org-attention-stop` を先に実行してください」と報告して **abort**
+   - **live pane あり + sidecar 無し / pane_id 不一致** → 孤児ペインまたは sidecar drift。
+     ユーザーに状況を報告し「`/org-attention-stop` で孤児 pane を掃除してから再実行してください」
+     と案内して **abort**（自動 close はしない。孤児ペインに何が動いているか不明なため）
+   - **live pane 無し + sidecar あり** → stale sidecar。削除して Step 2 へ進む:
      ```bash
      rm .state/attention_pane.json
      ```
-3. **存在しない場合**: Step 2 へ進む
+     Windows native: `del .state\attention_pane.json`
+   - **live pane 無し + sidecar 無し** → クリーン状態。Step 2 へ進む
 
 ## Step 2: 設定ファイルの配置（未配置時のみ）
 
@@ -106,9 +120,44 @@ mcp__renga-peers__spawn_pane(
 - `[pane_not_found]`: dispatcher pane が存在しない（org-start 未実行 or dispatcher 落ち）。
   ユーザーに「dispatcher pane が見つかりません。`/org-start` を先に実行してください」と
   報告して abort
+- `[name_in_use]`: Step 1 の二重起動チェックが取りこぼした live pane が直前に再出現した race。
+  ユーザーに「attention pane が並走で先に立ち上がりました。`/org-attention-stop` で掃除して
+  ください」と報告して abort
 - その他 `[<code>]`: [`renga-error-codes.md`](../org-delegate/references/renga-error-codes.md) を参照
 
-## Step 4: pane_id を sidecar に記録
+## Step 4: 起動 health check（即時クラッシュ検出）
+
+`spawn_pane` の成功は「shell が立ち上がって command を発火した」までしか保証しない。
+`claude-org-runtime` 未導入 / 設定不正 / import error 等で watcher 本体が即時終了すると、
+sidecar に stale pane_id が記録されて以後の `/org-attention-start` / `/org-attention-stop`
+判定を壊す。Step 5 に進む前に **最低 2 秒待ってから** `inspect_pane` でペイン内容を観測し、
+watcher が生きているかを確認する:
+
+```
+mcp__renga-peers__inspect_pane(target="attention", format="text", lines=40)
+```
+
+判定基準（いずれかに該当したら **起動失敗** として扱う）:
+- 出力末尾に shell prompt（`PS C:\...>` / `$ ` / `% ` 等）が露出している → command が即時終了して
+  shell に戻った
+- 出力に `command not found` / `is not recognized` / `ModuleNotFoundError` / `ImportError` /
+  `Traceback` / `[error]` / `[ERROR]` が含まれる
+- 出力が完全に空 → spawn 自体が wedged。10 秒猶予して再 inspect、それでも空なら失敗扱い
+
+**起動失敗時**:
+1. `mcp__renga-peers__close_pane(target="<spawn 返り値の pane_id>")` で死んだペインを掃除
+2. sidecar は **書き込まない**
+3. journal に `attention_watch_start_failed pane_id=<N> reason="<inspect 抜粋>"` を記録:
+   ```bash
+   bash tools/journal_append.sh attention_watch_start_failed pane_id=<N> reason=immediate_exit
+   ```
+4. ユーザーに「watcher が起動直後に終了しました（出力: ...）。`claude-org-runtime` の導入確認
+   (`claude-org-runtime --version`) と `.state/attention.json` の構文確認を行ってください」と
+   報告して abort
+
+**起動成功時**（出力に watcher の起動ログ / polling 待機が見える）: Step 5 へ進む。
+
+## Step 5: pane_id を sidecar に記録
 
 返り値からパースした pane_id を `.state/attention_pane.json` に書き出す:
 
@@ -131,7 +180,7 @@ bash tools/journal_append.sh attention_watch_started pane_id=<N> config=.state/a
 
 Windows native では `py -3 tools/journal_append.py attention_watch_started pane_id=<N> config=.state/attention.json`。
 
-## Step 5: 報告
+## Step 6: 報告
 
 ```
 attention watcher を起動しました（pane id={N}、dispatcher の右側）。
