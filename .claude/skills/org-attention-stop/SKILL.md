@@ -12,8 +12,7 @@ allowed-tools:
   - Bash(del:*)
   - Bash(bash tools/journal_append.sh:*)
   - Bash(py -3 tools/journal_append.py:*)
-  - mcp__renga-peers__list_panes
-  - mcp__renga-peers__close_pane
+  - mcp__renga-peers__*
 ---
 
 # org-attention-stop: attention watcher の停止
