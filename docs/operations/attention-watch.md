@@ -17,9 +17,22 @@
 
 ## 2. 有効化 / 無効化
 
-### 2.1 設定ファイルの配置
+### 2.1 推奨: skill 経由の起動 / 停止
 
-`tools/templates/attention.example.json` は ja 既定のテンプレート集を含む tracked example。実運用では `.state/attention.json` にコピーする（`.state/` は gitignored、fresh clone や `/org-start` 前だと未作成）:
+renga タブ内（窓口セッション）からは、設定ファイルの自動配置・dispatcher ペインへの split 起動・pane_id 記録までを一括で扱う **2 つのスキル**を使うのが推奨経路:
+
+| 操作 | スキル | 副作用 |
+|---|---|---|
+| 起動 | [`/org-attention-start`](../../.claude/skills/org-attention-start/SKILL.md) | `.state/attention.json` 未配置時は `tools/templates/attention.example.json` から自動コピー → dispatcher ペインの右側を vertical split → `claude-org-runtime attention watch ...` を常駐起動 → pane_id を `.state/attention_pane.json` sidecar に記録 |
+| 停止 | [`/org-attention-stop`](../../.claude/skills/org-attention-stop/SKILL.md) | sidecar を読んで `mcp__renga-peers__close_pane` でペイン破棄 → sidecar 削除 |
+
+`/org-start` からの自動起動はしない（OS 通知 backend は環境依存が強く、勝手に音が鳴ると不快になりやすいため。設計 [`docs/design/attention-notification.md`](../design/attention-notification.md) §11 Q1）。`/org-start` 完了後に明示的に `/org-attention-start` を発火するか、必要なときだけ手動配置（§2.2）する。
+
+sidecar (`.state/attention_pane.json`) は `.state/dashboard.pid` / `.state/attention_notified.json` と同じ「補助プロセス追跡」パターンで、`.state/state.db` schema は拡張しない（importer / writer / snapshotter / converter / drift_check への波及を避けるため）。`.state/` が gitignored なので sidecar も commit には乗らない。
+
+### 2.2 手動配置（renga 外 / 別ターミナルから起動したい場合）
+
+`tools/templates/attention.example.json` は ja 既定のテンプレート集を含む tracked example。renga タブを使わず別ターミナルから常駐させたい場合や、テンプレートを手動編集してから配置したい場合は次の通り:
 
 ```bash
 mkdir -p .state
@@ -28,7 +41,7 @@ cp tools/templates/attention.example.json .state/attention.json
 
 OS 通知や音の挙動を変えたい場合は `.state/attention.json` を編集する（template strings の上書き、`sound` の切替、`cooldown_sec` の調整など）。テンプレートの placeholder allowlist は `{task_id}` / `{worker}` / `{kind}` / `{status}` / `{pr}` / `{summary}` の 6 種で、未知 placeholder は literal のまま残るか runtime の fallback template で補われる（設計 §6 参照）。
 
-### 2.2 1 回限りの動作確認 (`scan`)
+### 2.3 1 回限りの動作確認 (`scan`)
 
 `watch` を常駐させる前に、現状の `.state/` から想定どおりに attention event が抽出されるか確認する:
 
@@ -38,17 +51,19 @@ claude-org-runtime attention scan --state-dir .state --config .state/attention.j
 
 `--config .state/attention.json` を必ず付ける（外すと runtime 中立の英語 default が title/body に出てしまい、ja テンプレートが効いているかの確認にならない）。`--dry-run` は OS notification subprocess を呼ばないので、CI 環境や音を鳴らしたくない時間帯でも安全。出力は `{ "events": [{ "key": ..., "kind": ..., "severity": ..., "title": ..., "body": ...}, ...] }` 形式（詳細は [`docs/verification.md` の attention scan 検証ブロック](../verification.md) を参照）。
 
-### 2.3 常駐 (`watch`)
+### 2.4 常駐 (`watch`) — 手動起動
+
+renga タブの外（別ターミナル / バックグラウンド）から直接 watcher を起動したい場合の素の CLI:
 
 ```bash
 claude-org-runtime attention watch --state-dir .state --config .state/attention.json
 ```
 
-別ターミナル or バックグラウンドで起動する。`/org-start` から自動起動はしない（環境依存が強いため明示起動が推奨。設計 §11 Q1 / §7 "org-start guidance"）。停止は通常通り Ctrl-C（dedup state の書き込みは atomic replace で行われるため、強制終了でも次回起動時に復旧可能。§5 参照）。
+通常運用では §2.1 の `/org-attention-start` を使う（pane_id 記録・sidecar 管理・二重起動チェックを skill が担当）。停止は Ctrl-C（dedup state の書き込みは atomic replace で行われるため、強制終了でも次回起動時に復旧可能。§5 参照）。
 
-### 2.4 無効化
+### 2.5 無効化
 
-恒久的に止める場合は単に `watch` プロセスを終了するだけでよい。設定ファイル（`.state/attention.json`）の削除は不要。一時的に通知を抑えたい場合は `.state/attention.json` で `"desktop": false` / `"sound": "off"` に切り替えるか、個別 kind の severity を `"urgent"` → `"normal"` に下げる（`notify.<kind>` に取れる値は `"urgent"` / `"normal"` の 2 値のみで、kind 単位の `off` は無い。完全に止めたい場合は全体 `desktop: false` を使う）。
+renga タブ内から起動した場合は [`/org-attention-stop`](../../.claude/skills/org-attention-stop/SKILL.md) で sidecar とペインを一括クリーンアップする。手動起動した watcher は Ctrl-C で終了するだけでよい。設定ファイル（`.state/attention.json`）の削除は不要。一時的に通知を抑えたい場合は `.state/attention.json` で `"desktop": false` / `"sound": "off"` に切り替えるか、個別 kind の severity を `"urgent"` → `"normal"` に下げる（`notify.<kind>` に取れる値は `"urgent"` / `"normal"` の 2 値のみで、kind 単位の `off` は無い。完全に止めたい場合は全体 `desktop: false` を使う）。
 
 ## 3. OS 別の notification backend 挙動
 

@@ -140,18 +140,13 @@ Block A の spawn 発火と並列。ダッシュボード server は別プロセ
 >
 > 承認待ち / 判断待ち / CI 失敗 / silent stop / PR merged 等を OS notification + 音 + terminal bell で能動的に通知する watcher を別途常駐させられる。**`/org-start` からの自動起動はしない**（OS 通知 backend は環境依存が強く、勝手に音が鳴ると不快になりやすいため。設計 [`docs/design/attention-notification.md`](../../../docs/design/attention-notification.md) §11 Q1）。
 >
-> 有効化したいユーザーには Step 4 の起動完了報告と合わせて以下を案内する:
+> 有効化したいユーザーには Step 4 の起動完了報告と合わせて [`/org-attention-start`](../org-attention-start/SKILL.md) の実行を案内する。skill が以下を一括で行う:
 >
-> ```bash
-> # 初回のみ ja 既定テンプレートを .state/ にコピー（.state/ は gitignored、fresh clone 直後は未作成）
-> mkdir -p .state
-> cp tools/templates/attention.example.json .state/attention.json
+> - `.state/attention.json` 未配置時は `tools/templates/attention.example.json` から自動コピー
+> - dispatcher ペインの右側を vertical split し `claude-org-runtime attention watch ...` を常駐起動
+> - pane_id を `.state/attention_pane.json` sidecar に記録（停止は [`/org-attention-stop`](../org-attention-stop/SKILL.md) で参照）
 >
-> # 別ターミナル or バックグラウンドで常駐
-> claude-org-runtime attention watch --state-dir .state --config .state/attention.json
-> ```
->
-> 1 回限りの動作確認は `claude-org-runtime attention scan --state-dir .state --config .state/attention.json --dry-run --json`（`--config` を外すと runtime 中立の英語 default が出るので、ja テンプレートの導通確認には必ず付ける）。OS 別 backend 挙動・トラブルシューティングは [`docs/operations/attention-watch.md`](../../../docs/operations/attention-watch.md) を参照。
+> 1 回限りの動作確認は `claude-org-runtime attention scan --state-dir .state --config .state/attention.json --dry-run --json`（`--config` を外すと runtime 中立の英語 default が出るので、ja テンプレートの導通確認には必ず付ける）。OS 別 backend 挙動・トラブルシューティング・別ターミナルからの素 CLI 起動手順は [`docs/operations/attention-watch.md`](../../../docs/operations/attention-watch.md) を参照。
 
 ### Block D: 両ペインの合流 (Enter / list_peers poll / 挨拶 / DB write / snapshot)
 
