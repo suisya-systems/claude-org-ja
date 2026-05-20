@@ -1,11 +1,20 @@
 #!/usr/bin/env python3
 """Runtime version drift check for /org-start (Issue #472).
 
-Compares the installed ``claude-org-runtime`` version against the latest
-release on PyPI. If they differ, prints a single warning line to stdout
-so /org-start can splice it into its Step 4 readiness report. In all
-other cases (versions match, package not installed, PyPI unreachable,
-parse failure) the script stays silent.
+Compares the installed ``claude-org-runtime`` version against the
+latest release on PyPI that still satisfies ja's pin window (declared
+in ``pyproject.toml`` dependencies, e.g. ``>=0.1.9,<0.2``). If they
+differ, prints a single warning line to stdout so /org-start can
+splice it into its Step 4 readiness report. In all other cases —
+versions match, package not installed, PyPI unreachable, parse
+failure, no pin-compatible release found, ``packaging`` import
+failure — the script stays silent.
+
+The pin window matters because /org-start's warning must not steer
+users into an upgrade that breaks ja's compatibility contract: when
+ja pins ``<0.2`` and PyPI ships ``0.2.0``, we still want to bring
+users up to the latest in-window release (e.g. ``0.1.11``) but never
+recommend the out-of-window one.
 
 The script never auto-upgrades and never exits non-zero — drift is
 informational, and skipping silently is the correct behavior when the
@@ -17,13 +26,12 @@ Used by ``.claude/skills/org-start/SKILL.md`` Block C2.
 from __future__ import annotations
 
 import json
+import re
 import sys
 import urllib.error
 import urllib.request
+from pathlib import Path
 
-# On Windows the default console codepage is cp932 / cp1252, which can't
-# encode the JP message body. Force UTF-8 on stdout so /org-start (which
-# reads this script's stdout via the Bash tool) gets a clean string.
 try:
     sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
 except (AttributeError, OSError):
@@ -32,6 +40,12 @@ except (AttributeError, OSError):
 PACKAGE = "claude-org-runtime"
 PYPI_JSON_URL = f"https://pypi.org/pypi/{PACKAGE}/json"
 TIMEOUT_SEC = 3.0
+PYPROJECT_PATH = Path(__file__).resolve().parent.parent / "pyproject.toml"
+
+# Sentinel so callers can pass ``pin=None`` to *opt out* of the pin
+# window, while leaving the default unspecified branch free to
+# auto-discover the pin from pyproject.toml.
+_AUTO_PIN = object()
 
 
 def _installed_version() -> str | None:
@@ -47,7 +61,27 @@ def _installed_version() -> str | None:
         return None
 
 
-def _latest_version() -> str | None:
+def _read_pin_spec() -> str | None:
+    """Return the version specifier string for PACKAGE from
+    pyproject.toml, or None when it can't be located. We grep with a
+    regex rather than parse TOML so the script keeps its
+    zero-runtime-dependency contract (Python 3.10 has no stdlib
+    tomllib)."""
+    try:
+        text = PYPROJECT_PATH.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    m = re.search(
+        rf'["\']{re.escape(PACKAGE)}\s*([^"\']*?)["\']',
+        text,
+    )
+    if not m:
+        return None
+    spec = m.group(1).strip()
+    return spec or None
+
+
+def _fetch_pypi_payload() -> dict | None:
     try:
         req = urllib.request.Request(
             PYPI_JSON_URL,
@@ -61,11 +95,62 @@ def _latest_version() -> str | None:
         return None
     except Exception:
         return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _latest_version(pin=_AUTO_PIN) -> str | None:
+    """Return the newest stable release of PACKAGE on PyPI that
+    satisfies ``pin``. Pass ``pin=None`` to disable the pin window;
+    omit the argument to auto-discover the pin from pyproject.toml.
+    Returns None on any failure path so the caller stays silent."""
+    payload = _fetch_pypi_payload()
+    if payload is None:
+        return None
+
+    if pin is _AUTO_PIN:
+        pin = _read_pin_spec()
+
+    releases = payload.get("releases")
+    if isinstance(releases, dict) and releases:
+        try:
+            from packaging.specifiers import InvalidSpecifier, SpecifierSet
+            from packaging.version import InvalidVersion, Version
+        except ImportError:
+            return _fallback_info_version(payload, pin)
+        try:
+            spec = SpecifierSet(pin) if pin else SpecifierSet()
+        except InvalidSpecifier:
+            spec = SpecifierSet()
+        candidates: list[Version] = []
+        for raw in releases.keys():
+            try:
+                ver = Version(raw)
+            except InvalidVersion:
+                continue
+            if ver.is_prerelease or ver.is_devrelease:
+                continue
+            if spec and ver not in spec:
+                continue
+            candidates.append(ver)
+        if candidates:
+            return str(max(candidates))
+        return None
+
+    return _fallback_info_version(payload, pin)
+
+
+def _fallback_info_version(payload: dict, pin: str | None) -> str | None:
+    """Last-resort path when releases dict is missing or packaging is
+    unavailable. Trusts info.version only when no pin window applies
+    — silent skip otherwise to avoid recommending an out-of-window
+    upgrade."""
     info = payload.get("info") if isinstance(payload, dict) else None
     if not isinstance(info, dict):
         return None
     latest = info.get("version")
     if not isinstance(latest, str) or not latest:
+        return None
+    if pin:
         return None
     return latest
 
@@ -81,7 +166,7 @@ def main() -> int:
         return 0
     print(
         f"[runtime drift] {PACKAGE}: installed={installed} latest={latest} "
-        f"-- `pip install --upgrade {PACKAGE}` で最新化できます"
+        f"-- ja の pin 内最新です。`python -m pip install --upgrade '{PACKAGE}'` で更新できます"
     )
     return 0
 

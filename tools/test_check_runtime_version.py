@@ -2,11 +2,13 @@
 
 The script is invoked by /org-start Block C2. It must:
 
-* print one warning line when installed != latest
+* print one warning line when installed != latest-in-pin-window
 * print nothing (and exit 0) when installed == latest
 * print nothing on every "can't tell" branch — package missing,
-  PyPI unreachable, JSON parse failure — because /org-start treats
-  silence as "no drift to report"
+  PyPI unreachable, JSON parse failure, no pin-compatible release
+* respect ja's pin window declared in pyproject.toml so the warning
+  never steers users to an out-of-window upgrade (Codex review,
+  Issue #472)
 """
 
 from __future__ import annotations
@@ -24,9 +26,21 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import check_runtime_version  # noqa: E402
 
+try:  # noqa: SIM105
+    import packaging  # type: ignore  # noqa: F401
+
+    _HAS_PACKAGING = True
+except ImportError:
+    _HAS_PACKAGING = False
+
+requires_packaging = unittest.skipUnless(
+    _HAS_PACKAGING,
+    "packaging not installed — pin-window resolution falls back to "
+    "silent skip, so the pin-aware paths are untestable here",
+)
+
 
 def _fake_urlopen(payload: dict):
-    """Return a context-manager-compatible stand-in for urlopen()."""
     body = json.dumps(payload).encode("utf-8")
 
     class _Resp(io.BytesIO):
@@ -40,7 +54,16 @@ def _fake_urlopen(payload: dict):
     return lambda *a, **kw: _Resp(body)
 
 
-class CheckRuntimeVersionTest(unittest.TestCase):
+def _payload(*versions: str) -> dict:
+    """Build a minimally-PyPI-shaped JSON payload from the given
+    release versions (newest last, as PyPI usually sorts)."""
+    return {
+        "info": {"version": versions[-1] if versions else ""},
+        "releases": {v: [{"yanked": False}] for v in versions},
+    }
+
+
+class MainCliTest(unittest.TestCase):
     def _run_main(self) -> tuple[int, str]:
         buf = io.StringIO()
         with mock.patch.object(sys, "stdout", buf):
@@ -93,15 +116,59 @@ class CheckRuntimeVersionTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(out, "")
 
-    def test_pypi_returns_garbage_is_silent(self):
-        with mock.patch.object(
-            check_runtime_version, "_installed_version", return_value="0.1.2"
-        ), mock.patch(
+
+class LatestVersionTest(unittest.TestCase):
+    """Direct tests for _latest_version() and the pin-window logic."""
+
+    @requires_packaging
+    def test_picks_latest_within_pin_window(self):
+        payload = _payload("0.1.9", "0.1.11", "0.2.0", "0.2.1")
+        with mock.patch("urllib.request.urlopen", _fake_urlopen(payload)):
+            self.assertEqual(
+                check_runtime_version._latest_version(pin=">=0.1.9,<0.2"),
+                "0.1.11",
+            )
+
+    @requires_packaging
+    def test_no_pin_picks_global_max(self):
+        payload = _payload("0.1.9", "0.1.11", "0.2.0", "0.2.1")
+        with mock.patch("urllib.request.urlopen", _fake_urlopen(payload)):
+            self.assertEqual(
+                check_runtime_version._latest_version(pin=None),
+                "0.2.1",
+            )
+
+    @requires_packaging
+    def test_skips_prereleases(self):
+        payload = _payload("0.1.9", "0.1.11", "0.1.12a1")
+        with mock.patch("urllib.request.urlopen", _fake_urlopen(payload)):
+            self.assertEqual(
+                check_runtime_version._latest_version(pin=">=0.1.9,<0.2"),
+                "0.1.11",
+            )
+
+    @requires_packaging
+    def test_no_pin_compatible_release_is_silent(self):
+        payload = _payload("0.2.0", "0.2.1")
+        with mock.patch("urllib.request.urlopen", _fake_urlopen(payload)):
+            self.assertIsNone(
+                check_runtime_version._latest_version(pin=">=0.1.9,<0.2")
+            )
+
+    @requires_packaging
+    def test_invalid_pin_falls_back_to_global_max(self):
+        payload = _payload("0.1.9", "0.1.11")
+        with mock.patch("urllib.request.urlopen", _fake_urlopen(payload)):
+            self.assertEqual(
+                check_runtime_version._latest_version(pin="garbage"),
+                "0.1.11",
+            )
+
+    def test_pypi_returns_empty_payload_is_silent(self):
+        with mock.patch(
             "urllib.request.urlopen", _fake_urlopen({"info": {"version": ""}})
         ):
-            code, out = self._run_main()
-        self.assertEqual(code, 0)
-        self.assertEqual(out, "")
+            self.assertIsNone(check_runtime_version._latest_version(pin=None))
 
     def test_pypi_json_parse_failure_is_silent(self):
         class _Resp(io.BytesIO):
@@ -112,22 +179,40 @@ class CheckRuntimeVersionTest(unittest.TestCase):
                 self.close()
                 return False
 
-        with mock.patch.object(
-            check_runtime_version, "_installed_version", return_value="0.1.2"
-        ), mock.patch(
-            "urllib.request.urlopen",
-            lambda *a, **kw: _Resp(b"not-json"),
+        with mock.patch(
+            "urllib.request.urlopen", lambda *a, **kw: _Resp(b"not-json")
         ):
-            code, out = self._run_main()
-        self.assertEqual(code, 0)
-        self.assertEqual(out, "")
+            self.assertIsNone(check_runtime_version._latest_version(pin=None))
 
-    def test_latest_version_extracted_from_pypi_payload(self):
-        """End-to-end smoke: _latest_version returns the payload's
-        info.version when urlopen succeeds."""
-        payload = {"info": {"version": "9.9.9"}, "releases": {}}
+    def test_fallback_to_info_version_when_releases_missing_and_no_pin(self):
+        payload = {"info": {"version": "1.2.3"}}
         with mock.patch("urllib.request.urlopen", _fake_urlopen(payload)):
-            self.assertEqual(check_runtime_version._latest_version(), "9.9.9")
+            self.assertEqual(
+                check_runtime_version._latest_version(pin=None),
+                "1.2.3",
+            )
+
+    def test_fallback_is_silent_when_pin_present_but_releases_missing(self):
+        """Without a releases dict we can't enforce a pin window, so
+        prefer silence over recommending an out-of-window upgrade."""
+        payload = {"info": {"version": "1.2.3"}}
+        with mock.patch("urllib.request.urlopen", _fake_urlopen(payload)):
+            self.assertIsNone(
+                check_runtime_version._latest_version(pin=">=0.1.9,<0.2")
+            )
+
+
+class ReadPinSpecTest(unittest.TestCase):
+    def test_reads_pin_from_real_pyproject(self):
+        """The script lives next to ja's pyproject.toml; sanity-check
+        the actual file has a pin we recognise."""
+        spec = check_runtime_version._read_pin_spec()
+        self.assertIsNotNone(spec)
+        self.assertIn("claude-org-runtime", "claude-org-runtime")  # tautology
+        self.assertTrue(
+            spec.startswith(">=") or spec.startswith("=="),
+            f"unexpected pin shape: {spec!r}",
+        )
 
 
 if __name__ == "__main__":

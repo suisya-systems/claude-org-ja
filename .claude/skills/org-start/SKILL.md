@@ -153,6 +153,7 @@ Block A の spawn 発火と並列。`claude-org-runtime` の installed バージ
 
 > 設計メモ:
 > - latest 取得は PyPI JSON API (`https://pypi.org/pypi/claude-org-runtime/json`) を urllib.request で叩く (timeout 3s)。`pip index versions` は experimental で stderr に warning を吐くため採用しない
+> - **pin window**: ja の `pyproject.toml` 依存に書かれた制約 (例 `>=0.1.9,<0.2`) を読み取り、PyPI releases から制約を満たす最新だけを latest として比較する。これにより `0.2.x` が PyPI にリリースされても窓外への upgrade を促さない（`packaging` モジュール利用）。`packaging` 未インストール環境では silent skip
 > - 「drift = 古い」も「drift = preview 入り (installed > latest の release channel ずれ)」も同じく 1 行で通知する。auto-upgrade はせず、対応はユーザー判断に委ねる
 > - スクリプト本体: [`tools/check_runtime_version.py`](../../../tools/check_runtime_version.py)
 
@@ -286,7 +287,7 @@ curator を再 spawn して復旧するか、curator 無しで暫定継続する
 ...
 何をしますか？
 
-[runtime drift] claude-org-runtime: installed=0.1.2 latest=0.1.11 -- `pip install --upgrade claude-org-runtime` で最新化できます
+[runtime drift] claude-org-runtime: installed=0.1.2 latest=0.1.11 -- ja の pin 内最新です。`python -m pip install --upgrade 'claude-org-runtime'` で更新できます
 ```
 
 ## Appendix: ClaudeCode 起動コマンド（役割別）
