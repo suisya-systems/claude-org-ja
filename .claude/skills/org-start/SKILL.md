@@ -12,6 +12,8 @@ allowed-tools:
   - Bash(python -m tools.state_db.importer:*)
   - Bash(py -3 dashboard/org_state_converter.py:*)
   - Bash(python3 dashboard/org_state_converter.py:*)
+  - Bash(py -3 tools/check_runtime_version.py:*)
+  - Bash(python3 tools/check_runtime_version.py:*)
   - mcp__renga-peers__*
 ---
 
@@ -136,6 +138,24 @@ Block A の spawn 発火と並列。ダッシュボード server は別プロセ
 3. ユーザーに案内する:
    「ダッシュボードを起動しました → http://localhost:8099」
 
+### Block C2: claude-org-runtime バージョン drift 検出 (Issue #472)
+
+Block A の spawn 発火と並列。`claude-org-runtime` の installed バージョンと PyPI の latest を比較し、drift があれば Step 4 の起動完了報告に 1 行 warning を添える。auto-upgrade は行わず通知のみ。
+
+1. drift チェックを実行する:
+   ```bash
+   py -3 tools/check_runtime_version.py   # Windows
+   python3 tools/check_runtime_version.py # Mac/Linux
+   ```
+2. 出力分岐:
+   - stdout が空 (exit 0): INSTALLED == LATEST、未インストール、オフライン、PyPI レスポンス parse 失敗 のいずれか。**Step 4 報告に warning 行を出さない**（silent）
+   - stdout に `[runtime drift] ...` の 1 行: drift 検出。**この 1 行をそのまま Step 4 起動完了報告の末尾に warning として転記する**
+
+> 設計メモ:
+> - latest 取得は PyPI JSON API (`https://pypi.org/pypi/claude-org-runtime/json`) を urllib.request で叩く (timeout 3s)。`pip index versions` は experimental で stderr に warning を吐くため採用しない
+> - 「drift = 古い」も「drift = preview 入り (installed > latest の release channel ずれ)」も同じく 1 行で通知する。auto-upgrade はせず、対応はユーザー判断に委ねる
+> - スクリプト本体: [`tools/check_runtime_version.py`](../../../tools/check_runtime_version.py)
+
 > **Sidebar: attention watcher の起動案内（optional, 明示起動推奨）**
 >
 > 承認待ち / 判断待ち / CI 失敗 / silent stop / PR merged 等を OS notification + 音 + terminal bell で能動的に通知する watcher を別途常駐させられる。**`/org-start` からの自動起動はしない**（OS 通知 backend は環境依存が強く、勝手に音が鳴ると不快になりやすいため。設計 [`docs/design/attention-notification.md`](../../../docs/design/attention-notification.md) §11 Q1）。
@@ -234,7 +254,9 @@ Block A の spawn が両方成功した後、両ペインで Claude が並列に
 
 ## Step 4: 準備完了の報告
 
-人間に簡潔に報告する。Block D-5 の DB write 内容に応じて、起動済み role を正確に列挙する（curator 失敗時に「キュレーターを起動しました」と虚偽報告しないため）:
+人間に簡潔に報告する。Block D-5 の DB write 内容に応じて、起動済み role を正確に列挙する（curator 失敗時に「キュレーターを起動しました」と虚偽報告しないため）。
+
+**Block C2 の runtime drift 出力の扱い**: Block C2 で `tools/check_runtime_version.py` の stdout に `[runtime drift] ...` の 1 行が出ていれば、下記いずれのテンプレートでも **末尾に空行を 1 つ挟んだ上でその 1 行をそのまま転記する**。stdout が空であれば warning 行は付けない（INSTALLED == LATEST / 未インストール / オフライン / parse 失敗 はすべて silent）。
 
 **前回の状態がある場合 (両 role 成功)**:
 ```
@@ -257,6 +279,14 @@ Block A の spawn が両方成功した後、両ペインで Claude が並列に
 ディスパッチャーは稼働中ですが、キュレーター起動に失敗しました（理由: {[<code>] / peer 未登録 timeout 等}）。
 curator を再 spawn して復旧するか、curator 無しで暫定継続するかを選んでください。
 （curator 無しでもワーカー派遣・状態書き込みは可能ですが、知見の自動 curate (/loop 30m /org-curate) は停止します）
+```
+
+**drift 検出時の warning 添付例** (上記テンプレートの末尾に転記):
+```
+...
+何をしますか？
+
+[runtime drift] claude-org-runtime: installed=0.1.2 latest=0.1.11 -- `pip install --upgrade claude-org-runtime` で最新化できます
 ```
 
 ## Appendix: ClaudeCode 起動コマンド（役割別）
