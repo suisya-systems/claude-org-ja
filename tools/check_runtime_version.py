@@ -2,19 +2,22 @@
 """Runtime version drift check for /org-start (Issue #472).
 
 Compares the installed ``claude-org-runtime`` version against the
-latest release on PyPI that still satisfies ja's pin window (declared
-in ``pyproject.toml`` dependencies, e.g. ``>=0.1.9,<0.2``). If they
-differ, prints a single warning line to stdout so /org-start can
-splice it into its Step 4 readiness report. In all other cases —
-versions match, package not installed, PyPI unreachable, parse
-failure, no pin-compatible release found, ``packaging`` import
-failure — the script stays silent.
+latest release on PyPI that still satisfies ja's pin window
+(declared in ``pyproject.toml`` dependencies). If they differ,
+prints a single warning line to stdout so /org-start can splice it
+into its Step 4 readiness report. In all other cases — versions
+match, package not installed, PyPI unreachable, parse failure, no
+pin-compatible release found, ``packaging`` import failure — the
+script stays silent.
 
 The pin window matters because /org-start's warning must not steer
 users into an upgrade that breaks ja's compatibility contract: when
-ja pins ``<0.2`` and PyPI ships ``0.2.0``, we still want to bring
-users up to the latest in-window release (e.g. ``0.1.11``) but never
-recommend the out-of-window one.
+ja's upper bound is exclusive and PyPI ships a release past it, we
+still want to bring users up to the latest in-window release but
+never recommend the out-of-window one. No specific version is
+hard-coded anywhere — installed comes from ``importlib.metadata``,
+latest from the PyPI JSON API, and the pin spec from a regex over
+``pyproject.toml`` at read time.
 
 The script never auto-upgrades and never exits non-zero — drift is
 informational, and skipping silently is the correct behavior when the
