@@ -3,7 +3,11 @@
 # 方式: exit 2 + stderr メッセージ でブロック
 #
 # ブロック対象:
-#   - git push --force / -f / --force-with-lease   （履歴書き換え）
+#   - git push --force / -f                         （履歴書き換え、無条件 deny）
+#   - git push --force-with-lease （protected branch のみ deny / Issue #470）
+#       protected = main / develop / release/* / production
+#       非保護 branch への --force-with-lease は許容（PR rebase 後の安全な再 push）
+#       refspec を解決できない（ambiguous）形式は安全側で deny
 #   - git reset --hard                              （未コミット変更の消失）
 #   - git branch -D / --delete --force              （未マージブランチ削除）
 #   - git clean -f / -fd / -fx / -dfx 等            （ワークツリー破壊）
@@ -16,8 +20,10 @@
 # 補足:
 #   - git push そのものはワーカーでは block-git-push.sh が先に止める。
 #     本フックは「窓口側でうっかり叩いた場合の最後の壁」も兼ねる。
-#   - --force-with-lease は --force より安全だが、本フェーズでは
-#     workflow から外す方針で一律ブロックする（Phase 2 で再検討）。
+#   - --force-with-lease の条件付き許可は Issue #470 で導入。
+#     上流 ref を確認してから強制 push するため --force より安全であり、
+#     PR レビュー指摘の rebase / squash 後の再 push 等で正当な需要がある。
+#     ただし protected branch への適用は引き続き禁止（共有履歴の保護）。
 #   - Phase 2 (Refs claude-org-ja#379): clean -fd / checkout -- . / tag -d /
 #     update-ref -d / reflog expire 等のカバレッジを追加した。
 #     詳細は docs/contracts/worker-git-guardrails-design.md §5.2.2 参照。
@@ -73,6 +79,86 @@ if [[ -z "$COMMAND" ]]; then
   exit 0
 fi
 
+# Issue #470: protected branch（共有履歴）への --force-with-lease は引き続き
+# deny する。非保護 branch（feature/* 等）への --force-with-lease は許容。
+# protected branch 名は本ファイル内で完結（環境変数経由の override は意図的に
+# 提供しない: hook の振る舞いを env で動的に変えると drift 検出が難しくなるため）。
+PROTECTED_BRANCH_PATTERNS=(
+  "main"
+  "develop"
+  "production"
+  # release/* は別途 case でマッチ
+)
+
+# git push の引数群から push 先 branch 名を推定し、protected branch を含むか
+# あるいは「決定不能」かを判定する。決定不能の場合は安全側 deny。
+#
+# 入力: flat（コマンド置換等が展開済みの 1 セグメント文字列）
+# 戻り値: 0 = protected branch を含む / または ambiguous（deny 推奨）
+#         1 = 明確に非保護 branch（allow 可）
+push_target_protected_or_unknown() {
+  local flat="$1"
+
+  # `git ... push <args...>` の <args> 部分を切り出す（awk でトークン化）。
+  local args_str
+  args_str=$(printf '%s\n' "$flat" | awk '
+    {
+      found=0
+      out=""
+      for(i=1;i<=NF;i++){
+        if(!found){
+          if($i=="push") { found=1 }
+        } else {
+          out = out " " $i
+        }
+      }
+      print substr(out,2)
+    }')
+
+  # 非フラグの positional トークンを収集。--force-with-lease=<ref> 等の attached
+  # value はフラグ側に属するため positional には数えない。
+  local positional=()
+  local tok
+  for tok in $args_str; do
+    case "$tok" in
+      -*) continue ;;
+      *) positional+=("$tok") ;;
+    esac
+  done
+
+  # 0 positional → `git push` のみ（upstream of HEAD を使用）→ ambiguous
+  # 1 positional → remote のみ・refspec 無し → ambiguous（push.default 依存）
+  if (( ${#positional[@]} < 2 )); then
+    return 0
+  fi
+
+  # positional[0] = remote、それ以降が refspec
+  local refspec target pat
+  local idx
+  for (( idx=1; idx<${#positional[@]}; idx++ )); do
+    refspec="${positional[$idx]}"
+    # 先頭の '+' force prefix を剥がす（refspec 内 force 指定の慣習）
+    refspec="${refspec#+}"
+    # `<src>:<dst>` 形式 → dst が destination。`:<dst>` (delete) や
+    # `<src>:<dst>` も最後の `:` 以降を採用
+    target="${refspec##*:}"
+    # `refs/heads/xxx` prefix を剥がす
+    target="${target#refs/heads/}"
+
+    # protected branch 一致判定
+    for pat in "${PROTECTED_BRANCH_PATTERNS[@]}"; do
+      if [[ "$target" == "$pat" ]]; then
+        return 0
+      fi
+    done
+    if [[ "$target" == release/* ]]; then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
 # セグメントの中に git の特定サブコマンドが含まれるか判定するヘルパ
 segment_has_git_subcmd() {
   local segment="$1"
@@ -118,16 +204,38 @@ for segment in "${SEGMENTS[@]}"; do
   # コマンド置換 $(...) / `...` 内のフラグも検査対象に含める
   flat=$(printf '%s' "$expanded" | flatten_substitutions)
 
-  # 1) git push の force 系
+  # 1) git push の force 系（Issue #470 で --force-with-lease を条件付き許可）
   if segment_has_git_subcmd "$flat" "push"; then
-    if echo "$flat" | grep -qE '(^|[[:space:]])--force(-with-lease)?([[:space:]=]|$)'; then
-      deny_with_reason "git push の force 系フラグは禁止です。履歴の書き換えはレビュー後に窓口経由で実施してください。"
+    has_force_with_lease=0
+    has_plain_force=0
+
+    # --force-with-lease は --force より先に判定する（部分一致回避）
+    if echo "$flat" | grep -qE '(^|[[:space:]])--force-with-lease([[:space:]=]|$)'; then
+      has_force_with_lease=1
     fi
+    # 素の --force（--force-with-lease は除外: 後続文字が '-' で regex 不一致）
+    if echo "$flat" | grep -qE '(^|[[:space:]])--force([[:space:]=]|$)'; then
+      has_plain_force=1
+    fi
+    # 短縮形 -f 単独
     if echo "$flat" | grep -qE '(^|[[:space:]])-f([[:space:]]|$)'; then
-      deny_with_reason "git push の短縮 force フラグは禁止です。履歴の書き換えはレビュー後に窓口経由で実施してください。"
+      has_plain_force=1
     fi
+    # バンドル短オプション内に 'f' を含む（-uf 等）
     if echo "$flat" | grep -qE '(^|[[:space:]])-[a-zA-Z]*f[a-zA-Z]*([[:space:]]|$)'; then
-      deny_with_reason "git push のバンドル短オプションに force フラグが含まれています。履歴の書き換えはレビュー後に窓口経由で実施してください。"
+      has_plain_force=1
+    fi
+
+    # 素の force は無条件 deny。Issue #470 でも維持。
+    if (( has_plain_force == 1 )); then
+      deny_with_reason "git push の素の force フラグ（--force / -f / バンドル短オプション）は禁止です。--force-with-lease（非保護 branch のみ許可）を使ってください。protected branch への履歴書き換えはレビュー後に窓口経由で実施してください。"
+    fi
+
+    # --force-with-lease は protected branch にのみ deny
+    if (( has_force_with_lease == 1 )); then
+      if push_target_protected_or_unknown "$flat"; then
+        deny_with_reason "git push --force-with-lease は protected branch (main / develop / release/* / production) または refspec 未指定の ambiguous なケースでは禁止です。push 先 branch を明示し、非保護 branch のみに使用してください。"
+      fi
     fi
   fi
 

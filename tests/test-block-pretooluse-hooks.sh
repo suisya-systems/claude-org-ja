@@ -135,6 +135,25 @@ echo "=== block-dangerous-git.sh ==="
 substitute_run "$DG_HOOK" 'g_it p_ush --force' block
 substitute_run "$DG_HOOK" 'g_it p_ush -f' block
 substitute_run "$DG_HOOK" 'g_it p_ush --force-with-lease' block
+# Issue #470: --force-with-lease 条件付き許可
+#   - protected branch (main / develop / release/* / production) は引き続き deny
+#   - 非保護 branch は allow
+#   - ambiguous (refspec 無し / remote のみ) は安全側 deny
+substitute_run "$DG_HOOK" 'g_it p_ush --force-with-lease origin main' block 'fwl-protected-main'
+substitute_run "$DG_HOOK" 'g_it p_ush --force-with-lease origin develop' block 'fwl-protected-develop'
+substitute_run "$DG_HOOK" 'g_it p_ush --force-with-lease origin production' block 'fwl-protected-production'
+substitute_run "$DG_HOOK" 'g_it p_ush --force-with-lease origin release/v1.0' block 'fwl-protected-release-slash'
+substitute_run "$DG_HOOK" 'g_it p_ush --force-with-lease origin HEAD:main' block 'fwl-protected-refspec-head'
+substitute_run "$DG_HOOK" 'g_it p_ush --force-with-lease origin refs/heads/main' block 'fwl-protected-full-ref'
+substitute_run "$DG_HOOK" 'g_it p_ush --force-with-lease=feat/foo origin main' block 'fwl-with-ref-protected-dest'
+substitute_run "$DG_HOOK" 'g_it p_ush --force-with-lease origin' block 'fwl-ambiguous-remote-only'
+substitute_run "$DG_HOOK" 'g_it p_ush --force-with-lease origin feat/foo' pass 'fwl-non-protected-feat'
+substitute_run "$DG_HOOK" 'g_it p_ush --force-with-lease origin fix/bug-123' pass 'fwl-non-protected-fix'
+substitute_run "$DG_HOOK" 'g_it p_ush --force-with-lease origin HEAD:feat/foo' pass 'fwl-non-protected-refspec-head'
+substitute_run "$DG_HOOK" 'g_it p_ush --force-with-lease=feat/foo origin feat/foo' pass 'fwl-with-ref-non-protected'
+substitute_run "$DG_HOOK" 'g_it p_ush --force-with-lease origin feat/foo feat/bar' pass 'fwl-multi-refspec-all-non-protected'
+substitute_run "$DG_HOOK" 'g_it p_ush --force-with-lease origin feat/foo main' block 'fwl-multi-refspec-one-protected'
+substitute_run "$DG_HOOK" 'g_it -C /tmp/repo p_ush --force-with-lease origin feat/foo' pass 'fwl-with-C-non-protected'
 substitute_run "$DG_HOOK" 'g_it p_ush -fu origin main' block 'bundled-short-opt'
 substitute_run "$DG_HOOK" 'g_it p_ush -uf origin main' block 'bundled-short-opt'
 substitute_run "$DG_HOOK" 'g_it p_ush --force origin main' block
