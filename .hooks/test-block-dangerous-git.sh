@@ -89,6 +89,24 @@ run_test "git push --force-with-lease origin release/2026-05" \
 run_test "git push --force-with-lease origin master (alias of main)" \
   "$(mk_bash_json "git push --force-with-lease origin master")" 2
 
+run_test "git push --force-with-lease origin HEAD:master (refspec)" \
+  "$(mk_bash_json "git push --force-with-lease origin HEAD:master")" 2
+
+run_test "git push --force-with-lease origin refs/heads/master (full ref)" \
+  "$(mk_bash_json "git push --force-with-lease origin refs/heads/master")" 2
+
+run_test "git push --force-with-lease origin feat/foo:master (cross-name master)" \
+  "$(mk_bash_json "git push --force-with-lease origin feat/foo:master")" 2
+
+# 引用符は split_segments で空白へ正規化される（lib/segment-split.sh 内部実装）
+# ため、quoted refspec はクオート無しと同じ判定経路を通る。protected 名は
+# 引用符の有無に関わらず deny できることを回帰確認する。
+run_test "git push --force-with-lease origin \"main\" (quoted protected → deny via 正規化後の name 一致)" \
+  "$(mk_bash_json 'git push --force-with-lease origin "main"')" 2
+
+run_test "git push --force-with-lease origin \$BRANCH (未展開の変数 → ambiguous deny)" \
+  "$(mk_bash_json 'git push --force-with-lease origin $BRANCH')" 2
+
 run_test "git push --force-with-lease origin HEAD:main (refspec)" \
   "$(mk_bash_json "git push --force-with-lease origin HEAD:main")" 2
 
