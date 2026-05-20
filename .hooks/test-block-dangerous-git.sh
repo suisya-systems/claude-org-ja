@@ -187,6 +187,24 @@ run_test "git push --force-with-lease --tags origin" \
 run_test "git push --force-with-lease origin HEAD:refs/heads/* (wildcard 部分含む)" \
   "$(mk_bash_json "git push --force-with-lease origin HEAD:refs/heads/*")" 2
 
+run_test "git push --force-with-lease origin refs/tags/v1.0 (tag namespace)" \
+  "$(mk_bash_json "git push --force-with-lease origin refs/tags/v1.0")" 2
+
+run_test "git push --force-with-lease origin tag v1.0 (tag keyword)" \
+  "$(mk_bash_json "git push --force-with-lease origin tag v1.0")" 2
+
+run_test "git push --force-with-lease origin refs/notes/commits (notes namespace)" \
+  "$(mk_bash_json "git push --force-with-lease origin refs/notes/commits")" 2
+
+run_test "git push --force-with-lease origin refs/replace/abc (replace namespace)" \
+  "$(mk_bash_json "git push --force-with-lease origin refs/replace/abc")" 2
+
+run_test "git push --force-with-lease origin HEAD:refs/tags/v1.0 (dst=tag namespace)" \
+  "$(mk_bash_json "git push --force-with-lease origin HEAD:refs/tags/v1.0")" 2
+
+run_test "git push --force-with-lease origin feat/foo:refs/tags/v1.0 (cross-ns to tag)" \
+  "$(mk_bash_json "git push --force-with-lease origin feat/foo:refs/tags/v1.0")" 2
+
 echo ""
 
 # =====================================================================

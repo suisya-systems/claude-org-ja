@@ -13,6 +13,10 @@
 #         - target が wildcard（refs/heads/* / : 等の matching/delete-all）
 #         - --all / --mirror / --tags（upstream 全体に作用）
 #         - refspec トークンに引用符 / $展開 / `...` 等を含み静的解析不能
+#         - destination が refs/heads/ 以外の namespace（refs/tags/* 等の
+#           tag / notes / replace 等の任意 ref。--force-with-lease の本来の
+#           用途は branch のみ）
+#         - `git push origin tag <name>` の "tag" キーワード形式
 #   - git reset --hard                              （未コミット変更の消失）
 #   - git branch -D / --delete --force              （未マージブランチ削除）
 #   - git clean -f / -fd / -fx / -dfx 等            （ワークツリー破壊）
@@ -153,7 +157,7 @@ push_target_requires_deny() {
   fi
 
   # positional[0] = remote、それ以降が refspec
-  local refspec target pat
+  local refspec target pat dst
   local idx
   for (( idx=1; idx<${#positional[@]}; idx++ )); do
     refspec="${positional[$idx]}"
@@ -166,28 +170,51 @@ push_target_requires_deny() {
       *\"*|*\'*|*\$*|*\`*) return 0 ;;
     esac
 
+    # `git push origin tag <name>` 形式の "tag" キーワード → ambiguous deny
+    # （branch 以外の namespace、--force-with-lease の本来の用途外）
+    if [[ "$refspec" == "tag" ]]; then
+      return 0
+    fi
+
     # `<src>:<dst>` 形式 → dst が destination。`:<dst>` (delete) や
     # `<src>:<dst>` も最後の `:` 以降を採用
-    target="${refspec##*:}"
-    # `refs/heads/xxx` prefix を剥がす
-    target="${target#refs/heads/}"
+    dst="${refspec##*:}"
 
-    # 空ターゲット（`:` で matching push / delete 全件等）→ ambiguous deny
-    if [[ -z "$target" ]]; then
+    # 空 destination（`:` で matching push / delete 全件等）→ ambiguous deny
+    if [[ -z "$dst" ]]; then
       return 0
     fi
 
-    # wildcard を含む refspec（`refs/heads/*` / `*` 等）は protected branch を
-    # 含み得るため ambiguous deny
-    if [[ "$target" == *\** || "$target" == *\?* || "$target" == *\[* ]]; then
+    # wildcard を含む destination は protected branch を含み得る → ambiguous deny
+    if [[ "$dst" == *\** || "$dst" == *\?* || "$dst" == *\[* ]]; then
       return 0
     fi
 
-    # HEAD / @ は実行時の current branch 依存で protected branch を指し得る
-    # → ambiguous deny
-    if [[ "$target" == "HEAD" || "$target" == "@" ]]; then
+    # HEAD / @ は実行時の current branch 依存 → ambiguous deny
+    if [[ "$dst" == "HEAD" || "$dst" == "@" ]]; then
       return 0
     fi
+
+    # destination の namespace 判定
+    # --force-with-lease の正当な用途は branch (refs/heads/) のみ。
+    # refs/tags/* / refs/notes/* / refs/remotes/* / refs/replace/* /
+    # refs/pull/* 等の任意 ref は共有 namespace の改変リスクがあるため
+    # ambiguous deny。
+    case "$dst" in
+      refs/heads/*)
+        # branch namespace、prefix を剥がして name のみで protected 判定
+        target="${dst#refs/heads/}"
+        ;;
+      refs/*)
+        # branch 以外の任意 ref → deny
+        return 0
+        ;;
+      *)
+        # prefix 無しの bare name → git のデフォルト解決で
+        # refs/heads/<name> へ push される branch shorthand
+        target="$dst"
+        ;;
+    esac
 
     # protected branch 一致判定
     for pat in "${PROTECTED_BRANCH_PATTERNS[@]}"; do
