@@ -4,10 +4,15 @@
 #
 # ブロック対象:
 #   - git push --force / -f                         （履歴書き換え、無条件 deny）
-#   - git push --force-with-lease （protected branch のみ deny / Issue #470）
-#       protected = main / develop / release/* / production
+#   - git push --force-with-lease （protected branch / ambiguous のみ deny / Issue #470）
+#       protected = main / master / develop / release/* / production
 #       非保護 branch への --force-with-lease は許容（PR rebase 後の安全な再 push）
-#       refspec を解決できない（ambiguous）形式は安全側で deny
+#       下記いずれかに該当する場合は安全側で deny:
+#         - refspec を解決できない（remote のみ / 引数無し）
+#         - target が HEAD / @ （実行時の current branch 依存）
+#         - target が wildcard（refs/heads/* / : 等の matching/delete-all）
+#         - --all / --mirror / --tags（upstream 全体に作用）
+#         - refspec トークンに引用符 / $展開 / `...` 等を含み静的解析不能
 #   - git reset --hard                              （未コミット変更の消失）
 #   - git branch -D / --delete --force              （未マージブランチ削除）
 #   - git clean -f / -fd / -fx / -dfx 等            （ワークツリー破壊）
@@ -83,23 +88,38 @@ fi
 # deny する。非保護 branch（feature/* 等）への --force-with-lease は許容。
 # protected branch 名は本ファイル内で完結（環境変数経由の override は意図的に
 # 提供しない: hook の振る舞いを env で動的に変えると drift 検出が難しくなるため）。
+# master は git の歴史的デフォルト名で main の同義として扱う組織が多いため保護
+# 対象に含める（task brief の main/develop/release/*/production を超える保護
+# 拡張だが、誤検知に倒すリスクの方が小さい）。
 PROTECTED_BRANCH_PATTERNS=(
   "main"
+  "master"
   "develop"
   "production"
   # release/* は別途 case でマッチ
 )
 
-# git push の引数群から push 先 branch 名を推定し、protected branch を含むか
-# あるいは「決定不能」かを判定する。決定不能の場合は安全側 deny。
+# git push の引数群を解析し、deny が必要かを判定する。
 #
 # 入力: flat（コマンド置換等が展開済みの 1 セグメント文字列）
-# 戻り値: 0 = protected branch を含む / または ambiguous（deny 推奨）
-#         1 = 明確に非保護 branch（allow 可）
-push_target_protected_or_unknown() {
+# 戻り値: 0 = deny 推奨（protected branch を含む / refspec を決定できない / 不審
+#               な refspec が混在 / wildcard・matching push 等の広域 push）
+#         1 = 明確に非保護 branch のみへの push（allow 可）
+#
+# 安全側方針: allow と判断するためには「全 positional refspec が確実に非保護
+# branch を指している」ことが必要。少しでも曖昧さがあれば deny に倒す。
+push_target_requires_deny() {
   local flat="$1"
 
+  # --all / --mirror / --tags は upstream 全体に作用するため protected branch を
+  # 含み得る → 無条件 deny
+  if echo "$flat" | grep -qE '(^|[[:space:]])--(all|mirror|tags)([[:space:]=]|$)'; then
+    return 0
+  fi
+
   # `git ... push <args...>` の <args> 部分を切り出す（awk でトークン化）。
+  # awk は引用符を理解しないため "..."/'...' を含む refspec は次の段で
+  # 個別に ambiguous deny に倒す。
   local args_str
   args_str=$(printf '%s\n' "$flat" | awk '
     {
@@ -139,11 +159,35 @@ push_target_protected_or_unknown() {
     refspec="${positional[$idx]}"
     # 先頭の '+' force prefix を剥がす（refspec 内 force 指定の慣習）
     refspec="${refspec#+}"
+
+    # 引用符・$ 展開・`...`・コマンド置換の残骸を含むトークンは
+    # シェル構文を再解釈しないと安全に判定できない → ambiguous deny
+    case "$refspec" in
+      *\"*|*\'*|*\$*|*\`*) return 0 ;;
+    esac
+
     # `<src>:<dst>` 形式 → dst が destination。`:<dst>` (delete) や
     # `<src>:<dst>` も最後の `:` 以降を採用
     target="${refspec##*:}"
     # `refs/heads/xxx` prefix を剥がす
     target="${target#refs/heads/}"
+
+    # 空ターゲット（`:` で matching push / delete 全件等）→ ambiguous deny
+    if [[ -z "$target" ]]; then
+      return 0
+    fi
+
+    # wildcard を含む refspec（`refs/heads/*` / `*` 等）は protected branch を
+    # 含み得るため ambiguous deny
+    if [[ "$target" == *\** || "$target" == *\?* || "$target" == *\[* ]]; then
+      return 0
+    fi
+
+    # HEAD / @ は実行時の current branch 依存で protected branch を指し得る
+    # → ambiguous deny
+    if [[ "$target" == "HEAD" || "$target" == "@" ]]; then
+      return 0
+    fi
 
     # protected branch 一致判定
     for pat in "${PROTECTED_BRANCH_PATTERNS[@]}"; do
@@ -233,8 +277,8 @@ for segment in "${SEGMENTS[@]}"; do
 
     # --force-with-lease は protected branch にのみ deny
     if (( has_force_with_lease == 1 )); then
-      if push_target_protected_or_unknown "$flat"; then
-        deny_with_reason "git push --force-with-lease は protected branch (main / develop / release/* / production) または refspec 未指定の ambiguous なケースでは禁止です。push 先 branch を明示し、非保護 branch のみに使用してください。"
+      if push_target_requires_deny "$flat"; then
+        deny_with_reason "git push --force-with-lease は protected branch (main / master / develop / release/* / production) や refspec 未指定 / HEAD / wildcard / --all / --mirror / --tags など宛先が曖昧なケースでは禁止です。push 先 branch を明示し、非保護 branch のみに使用してください。"
       fi
     fi
   fi

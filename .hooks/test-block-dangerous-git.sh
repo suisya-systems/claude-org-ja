@@ -86,6 +86,9 @@ run_test "git push --force-with-lease origin release/v1.0" \
 run_test "git push --force-with-lease origin release/2026-05" \
   "$(mk_bash_json "git push --force-with-lease origin release/2026-05")" 2
 
+run_test "git push --force-with-lease origin master (alias of main)" \
+  "$(mk_bash_json "git push --force-with-lease origin master")" 2
+
 run_test "git push --force-with-lease origin HEAD:main (refspec)" \
   "$(mk_bash_json "git push --force-with-lease origin HEAD:main")" 2
 
@@ -141,6 +144,30 @@ run_test "git push --force-with-lease (引数無し)" \
 
 run_test "git push --force-with-lease origin (remote のみ, refspec 無し)" \
   "$(mk_bash_json "git push --force-with-lease origin")" 2
+
+run_test "git push --force-with-lease origin HEAD (current branch 依存)" \
+  "$(mk_bash_json "git push --force-with-lease origin HEAD")" 2
+
+run_test "git push --force-with-lease origin @ (HEAD alias)" \
+  "$(mk_bash_json "git push --force-with-lease origin @")" 2
+
+run_test "git push --force-with-lease origin : (matching push 全件)" \
+  "$(mk_bash_json "git push --force-with-lease origin :")" 2
+
+run_test "git push --force-with-lease origin refs/heads/*:refs/heads/* (wildcard refspec)" \
+  "$(mk_bash_json "git push --force-with-lease origin refs/heads/*:refs/heads/*")" 2
+
+run_test "git push --force-with-lease --all origin (--all flag)" \
+  "$(mk_bash_json "git push --force-with-lease --all origin")" 2
+
+run_test "git push --force-with-lease --mirror origin" \
+  "$(mk_bash_json "git push --force-with-lease --mirror origin")" 2
+
+run_test "git push --force-with-lease --tags origin" \
+  "$(mk_bash_json "git push --force-with-lease --tags origin")" 2
+
+run_test "git push --force-with-lease origin HEAD:refs/heads/* (wildcard 部分含む)" \
+  "$(mk_bash_json "git push --force-with-lease origin HEAD:refs/heads/*")" 2
 
 echo ""
 
