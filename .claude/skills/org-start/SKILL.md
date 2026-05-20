@@ -12,6 +12,8 @@ allowed-tools:
   - Bash(python -m tools.state_db.importer:*)
   - Bash(py -3 dashboard/org_state_converter.py:*)
   - Bash(python3 dashboard/org_state_converter.py:*)
+  - Bash(py -3 tools/check_runtime_version.py:*)
+  - Bash(python3 tools/check_runtime_version.py:*)
   - mcp__renga-peers__*
 ---
 
@@ -136,6 +138,27 @@ Block A の spawn 発火と並列。ダッシュボード server は別プロセ
 3. ユーザーに案内する:
    「ダッシュボードを起動しました → http://localhost:8099」
 
+### Block C2: claude-org-runtime バージョン drift 検出 (Issue #472)
+
+Block A の spawn 発火と並列。`claude-org-runtime` の installed バージョンと PyPI の latest を比較し、drift があれば Step 4 の起動完了報告に 1 行 warning を添える。auto-upgrade は行わず通知のみ。**バージョン番号は本ファイルにも script にも hard-code せず、すべて importlib.metadata と PyPI JSON API の動的取得値のみを使う**（runtime のリリースごとに記述が陳腐化することを避けるため）。
+
+1. drift チェックを実行する:
+   ```bash
+   py -3 tools/check_runtime_version.py   # Windows
+   python3 tools/check_runtime_version.py # Mac/Linux
+   ```
+2. 出力分岐:
+   - stdout が空 (exit 0): installed == latest、未インストール、オフライン、PyPI レスポンス parse 失敗、pin 解析失敗、pin 範囲内に release 無し のいずれか。**Step 4 報告に warning 行を出さない**（silent）
+   - stdout に `[runtime drift] ...` の 1 行: drift 検出。**この 1 行をそのまま Step 4 起動完了報告の末尾に warning として転記する**
+
+> 設計メモ:
+> - latest 取得は PyPI JSON API (`https://pypi.org/pypi/claude-org-runtime/json`) を urllib.request で叩く (timeout 3s)。`pip index versions` は experimental で stderr に warning を吐くため採用しない
+> - **pin window**: ja の `pyproject.toml` の `claude-org-runtime` 依存制約を regex で動的に読み取り、PyPI releases からその制約を満たす最新のみを latest として比較する。これにより上位 major / 上位 minor が PyPI にリリースされても窓外への upgrade を促さない（`packaging.SpecifierSet` 利用）。`packaging` 未インストール環境では silent skip
+> - yanked release は候補から除外する（pip が通常選ばないバージョンを `latest` として表示しないため）
+> - 「drift = 古い」も「drift = preview 入り (installed > latest の release channel ずれ)」も同じく 1 行で通知する。auto-upgrade はせず、対応はユーザー判断に委ねる
+> - 警告コマンドには `pyproject.toml` から読み取った pin 制約をそのまま埋め込むので、ユーザーが警告コマンドをそのまま貼り付けても窓外への upgrade にはならない
+> - スクリプト本体: [`tools/check_runtime_version.py`](../../../tools/check_runtime_version.py)
+
 > **Sidebar: attention watcher の起動案内（optional, 明示起動推奨）**
 >
 > 承認待ち / 判断待ち / CI 失敗 / silent stop / PR merged 等を OS notification + 音 + terminal bell で能動的に通知する watcher を別途常駐させられる。**`/org-start` からの自動起動はしない**（OS 通知 backend は環境依存が強く、勝手に音が鳴ると不快になりやすいため。設計 [`docs/design/attention-notification.md`](../../../docs/design/attention-notification.md) §11 Q1）。
@@ -234,7 +257,9 @@ Block A の spawn が両方成功した後、両ペインで Claude が並列に
 
 ## Step 4: 準備完了の報告
 
-人間に簡潔に報告する。Block D-5 の DB write 内容に応じて、起動済み role を正確に列挙する（curator 失敗時に「キュレーターを起動しました」と虚偽報告しないため）:
+人間に簡潔に報告する。Block D-5 の DB write 内容に応じて、起動済み role を正確に列挙する（curator 失敗時に「キュレーターを起動しました」と虚偽報告しないため）。
+
+**Block C2 の runtime drift 出力の扱い**: Block C2 で `tools/check_runtime_version.py` の stdout に `[runtime drift] ...` の 1 行が出ていれば、下記いずれのテンプレートでも **末尾に空行を 1 つ挟んだ上でその 1 行をそのまま転記する**。stdout が空であれば warning 行は付けない（installed == latest / 未インストール / オフライン / parse 失敗 / pin 範囲内 release 無し はすべて silent）。
 
 **前回の状態がある場合 (両 role 成功)**:
 ```
@@ -257,6 +282,14 @@ Block A の spawn が両方成功した後、両ペインで Claude が並列に
 ディスパッチャーは稼働中ですが、キュレーター起動に失敗しました（理由: {[<code>] / peer 未登録 timeout 等}）。
 curator を再 spawn して復旧するか、curator 無しで暫定継続するかを選んでください。
 （curator 無しでもワーカー派遣・状態書き込みは可能ですが、知見の自動 curate (/loop 30m /org-curate) は停止します）
+```
+
+**drift 検出時の warning 添付例** (上記テンプレートの末尾に転記。`{installed}` / `{latest_in_window}` / `{pin}` は実行時にスクリプトが PyPI と `pyproject.toml` から動的に決定するもので、本ファイルには hard-code しない):
+```
+...
+何をしますか？
+
+[runtime drift] claude-org-runtime: installed={installed} latest={latest_in_window} -- `python -m pip install --upgrade 'claude-org-runtime{pin}'` で更新できます
 ```
 
 ## Appendix: ClaudeCode 起動コマンド（役割別）
