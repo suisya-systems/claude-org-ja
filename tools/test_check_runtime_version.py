@@ -54,12 +54,16 @@ def _fake_urlopen(payload: dict):
     return lambda *a, **kw: _Resp(body)
 
 
-def _payload(*versions: str) -> dict:
+def _payload(*versions: str, yanked: tuple[str, ...] = ()) -> dict:
     """Build a minimally-PyPI-shaped JSON payload from the given
-    release versions (newest last, as PyPI usually sorts)."""
+    release versions (newest last, as PyPI usually sorts). Versions
+    listed in ``yanked`` are emitted with every file marked yanked."""
+    releases = {}
+    for v in versions:
+        releases[v] = [{"yanked": v in yanked}]
     return {
         "info": {"version": versions[-1] if versions else ""},
-        "releases": {v: [{"yanked": False}] for v in versions},
+        "releases": releases,
     }
 
 
@@ -156,12 +160,28 @@ class LatestVersionTest(unittest.TestCase):
             )
 
     @requires_packaging
-    def test_invalid_pin_falls_back_to_global_max(self):
-        payload = _payload("0.1.9", "0.1.11")
+    def test_invalid_pin_is_silent(self):
+        """When the pin string fails to parse we can no longer enforce
+        the window, so prefer silence over recommending an
+        out-of-window upgrade (Codex round 2 Major)."""
+        payload = _payload("0.1.9", "0.1.11", "0.2.1")
+        with mock.patch("urllib.request.urlopen", _fake_urlopen(payload)):
+            self.assertIsNone(
+                check_runtime_version._latest_version(pin="garbage")
+            )
+
+    @requires_packaging
+    def test_yanked_release_is_excluded(self):
+        """If the only in-window release newer than installed is
+        yanked, _latest_version must not surface it as ``latest`` —
+        pip wouldn't pick it either (Codex round 2 Minor)."""
+        payload = _payload(
+            "0.1.9", "0.1.10", "0.1.11", yanked=("0.1.11",)
+        )
         with mock.patch("urllib.request.urlopen", _fake_urlopen(payload)):
             self.assertEqual(
-                check_runtime_version._latest_version(pin="garbage"),
-                "0.1.11",
+                check_runtime_version._latest_version(pin=">=0.1.9,<0.2"),
+                "0.1.10",
             )
 
     def test_pypi_returns_empty_payload_is_silent(self):
@@ -208,11 +228,41 @@ class ReadPinSpecTest(unittest.TestCase):
         the actual file has a pin we recognise."""
         spec = check_runtime_version._read_pin_spec()
         self.assertIsNotNone(spec)
-        self.assertIn("claude-org-runtime", "claude-org-runtime")  # tautology
         self.assertTrue(
             spec.startswith(">=") or spec.startswith("=="),
             f"unexpected pin shape: {spec!r}",
         )
+
+
+class UpgradeCommandShapeTest(unittest.TestCase):
+    """Warning text must bake the pin spec into the recommended
+    upgrade command so users never get steered to an out-of-window
+    release (Codex round 2 Major)."""
+
+    def _drive_main_with_pin(self, pin):
+        buf = io.StringIO()
+        with mock.patch.object(
+            check_runtime_version, "_installed_version", return_value="0.1.2"
+        ), mock.patch.object(
+            check_runtime_version, "_read_pin_spec", return_value=pin
+        ), mock.patch.object(
+            check_runtime_version, "_latest_version", return_value="0.1.11"
+        ), mock.patch.object(sys, "stdout", buf):
+            check_runtime_version.main()
+        return buf.getvalue()
+
+    def test_command_includes_pin_when_pin_known(self):
+        out = self._drive_main_with_pin(">=0.1.9,<0.2")
+        self.assertIn(
+            "'claude-org-runtime>=0.1.9,<0.2'",
+            out,
+            "upgrade command must carry the pin spec",
+        )
+
+    def test_command_is_bare_when_pin_missing(self):
+        out = self._drive_main_with_pin(None)
+        self.assertIn("'claude-org-runtime'", out)
+        self.assertNotIn("<", out.split("install --upgrade")[-1])
 
 
 if __name__ == "__main__":

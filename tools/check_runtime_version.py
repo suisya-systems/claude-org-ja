@@ -117,19 +117,27 @@ def _latest_version(pin=_AUTO_PIN) -> str | None:
             from packaging.version import InvalidVersion, Version
         except ImportError:
             return _fallback_info_version(payload, pin)
-        try:
-            spec = SpecifierSet(pin) if pin else SpecifierSet()
-        except InvalidSpecifier:
-            spec = SpecifierSet()
+        if pin:
+            try:
+                spec: SpecifierSet | None = SpecifierSet(pin)
+            except InvalidSpecifier:
+                # Pin parse failure: prefer silence over recommending an
+                # out-of-window upgrade (the docstring guarantees silent
+                # skip on parse failure).
+                return None
+        else:
+            spec = None
         candidates: list[Version] = []
-        for raw in releases.keys():
+        for raw, files in releases.items():
+            if _release_is_yanked(files):
+                continue
             try:
                 ver = Version(raw)
             except InvalidVersion:
                 continue
             if ver.is_prerelease or ver.is_devrelease:
                 continue
-            if spec and ver not in spec:
+            if spec is not None and ver not in spec:
                 continue
             candidates.append(ver)
         if candidates:
@@ -137,6 +145,21 @@ def _latest_version(pin=_AUTO_PIN) -> str | None:
         return None
 
     return _fallback_info_version(payload, pin)
+
+
+def _release_is_yanked(files) -> bool:
+    """A PyPI release version is considered yanked when every uploaded
+    file under it is marked yanked. Conservatively treat an empty file
+    list as "not yanked" so we don't drop legitimate releases that
+    simply lack file metadata in the JSON snapshot."""
+    if not isinstance(files, list) or not files:
+        return False
+    for entry in files:
+        if not isinstance(entry, dict):
+            return False
+        if not entry.get("yanked"):
+            return False
+    return True
 
 
 def _fallback_info_version(payload: dict, pin: str | None) -> str | None:
@@ -159,14 +182,21 @@ def main() -> int:
     installed = _installed_version()
     if installed is None:
         return 0
-    latest = _latest_version()
+    pin = _read_pin_spec()
+    latest = _latest_version(pin)
     if latest is None:
         return 0
     if installed == latest:
         return 0
+    # Bare ``pip install --upgrade claude-org-runtime`` would fetch the
+    # PyPI maximum, which may be out of ja's pin window. Bake the pin
+    # spec into the recommended command so the user never gets steered
+    # to an unsupported version.
+    spec_suffix = pin if pin else ""
+    upgrade_target = f"{PACKAGE}{spec_suffix}"
     print(
         f"[runtime drift] {PACKAGE}: installed={installed} latest={latest} "
-        f"-- ja の pin 内最新です。`python -m pip install --upgrade '{PACKAGE}'` で更新できます"
+        f"-- `python -m pip install --upgrade '{upgrade_target}'` で更新できます"
     )
     return 0
 

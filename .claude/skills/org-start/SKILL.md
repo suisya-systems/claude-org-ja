@@ -287,7 +287,7 @@ curator を再 spawn して復旧するか、curator 無しで暫定継続する
 ...
 何をしますか？
 
-[runtime drift] claude-org-runtime: installed=0.1.2 latest=0.1.11 -- ja の pin 内最新です。`python -m pip install --upgrade 'claude-org-runtime'` で更新できます
+[runtime drift] claude-org-runtime: installed=0.1.2 latest=0.1.11 -- `python -m pip install --upgrade 'claude-org-runtime>=0.1.9,<0.2'` で更新できます
 ```
 
 ## Appendix: ClaudeCode 起動コマンド（役割別）
