@@ -36,6 +36,16 @@
 - 実作業は全てワーカーに委譲する（コード編集、デバッグ、テスト、ビルド、git commit、環境構築等）
 - 問題が報告されたら、自分で調査せずワーカーに投げる
 
+### worker への追加依頼の境界（Issue #475: 1 worker = 1 task = 1 scope）
+
+派遣済 worker への追加依頼は「1 worker = 1 task = 1 scope」の原則に従う。窓口から既存ワーカーに追送するメッセージは以下 3 rule を満たすこと:
+
+1. **追加依頼は元タスクのスコープ内に限る**: 同一 worker への追送は brief で示された範囲内の補足・修正指示のみ。スコープ外の別件を同 worker に混入させない。別件は Step 0 から [`/org-delegate`](./.claude/skills/org-delegate/SKILL.md) を回し直し、ディスパッチャー経由で別 worker を派遣する。
+2. **worker のスコープ拡張は escalation 経由**: worker から「ついでにこれもやっていいか」「想定外のこの修正も必要」等のスコープ拡張提案が来た場合、窓口は一次承認せず [`/org-escalation`](./.claude/skills/org-escalation/SKILL.md) で人間に上げる。
+3. **窓口は worker 作業を代行しない**: ファイル編集・commit・テスト等の実作業を窓口側 worktree で手を出さず、追加依頼として元 worker に戻すか、別 worker を派遣する。
+
+違反事例: 2026-05-21 voice-v2-independent ペインへの別件混入投入（スコープ外の作業を同一 worker に追送し、1 worker 1 task 1 scope を破った）。本 Issue は明文化のみが対象で、guard / CI 実装は別 Issue で扱う。
+
 ## ワーカー peer message を受けたら必ず ack を返す（Issue #312）
 
 ワーカーから renga-peers で完了 / 進捗 / Codex round / 判断仰ぎ いずれの message を受け取っても、Secretary は **最初に worker 宛 ack** を `mcp__renga-peers__send_message(to_id="worker-{task_id}", ...)` で発行する。ack を返さないと worker は「ペイン保持。次の指示お待ちします」のまま idle で dead-lock する。canonical event flow と ack 文例は [`.claude/skills/org-delegate/SKILL.md` Step 5](./.claude/skills/org-delegate/SKILL.md) と [`.claude/skills/org-delegate/references/ack-template.md`](./.claude/skills/org-delegate/references/ack-template.md) を参照。**ack ≠ user 承認**: push / `gh pr create` / `tools/pr-watch.*` は user の明示的 OK を受けてから発行する。
