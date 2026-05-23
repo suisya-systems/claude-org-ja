@@ -194,6 +194,16 @@ dogfood 対象判定 / 窓口責務 (A) 実装起票時の `registry/dogfood_pen
 
 `tools/journal_append.sh` / `tools/journal_append.py` / `tools/set_run_pr_open.py` / `python -c "... StateWriter ..."` 等、`state.db` を相対パスで開く tool は ja root 相対前提。worker / worktree cwd から起動すると `no such table: runs` / `no such table: events` でサイレント or クラッシュ失敗し、後段の post-commit hook や snapshot 再生成も走らない。必ず `cd <ja-root>` してから実行すること。Issue #398 で根本対応中。
 
+### 窓口 → worker のメッセージング規約（Issue #475: 1 worker = 1 task = 1 scope）
+
+窓口から既存 worker へ送る全 message は「1 worker = 1 task = 1 scope」の原則に従う。canonical な 3 rule は CLAUDE.md「役割の境界 > worker への追加依頼の境界」を SoT 参照:
+
+1. **追加依頼は元タスクのスコープ内に限る**: brief で示した範囲内の補足・修正指示のみ追送する。スコープ外の別件は同 worker に投入せず、Step 0 から本 SKILL を回し直してディスパッチャー経由で別 worker を派遣する
+2. **worker のスコープ拡張提案は escalation 経由**: 窓口は一次承認せず [`/org-escalation`](../org-escalation/SKILL.md) を発動する
+3. **窓口は worker 作業を代行しない**: ファイル編集・commit・テスト等を窓口側 worktree で手を出さず、追加依頼として worker に戻すか別 worker を派遣する
+
+違反事例: 2026-05-21 voice-v2-independent ペインへの別件混入投入（スコープ外作業を同 worker に追送し、本来別 worker を立てるべき別件を 1 worker に集約してしまった）。本節の guard / CI 実装は別 Issue。
+
 ### DELEGATE_COMPLETE 受信時
 
 ディスパッチャーから派遣完了報告を受け取ったら、各ワーカーに挨拶メッセージを送る:
