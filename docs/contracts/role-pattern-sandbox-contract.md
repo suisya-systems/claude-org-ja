@@ -731,6 +731,62 @@ existing branch. Therefore:
   Phase 1** could consider denying `Bash(git checkout *)` /
   `Bash(git switch *)` for this sub-mode.
 
+##### Post-completion cleanup contract (Issue #478)
+
+Because `worker_dir == <existing_repo_root>` (and, for the claude-org
+self-edit case, that root is the secretary's live `<claude_org_path>/`), the
+brief file the secretary placed at `<worker_dir>/CLAUDE.local.md` (per
+[`.claude/skills/org-delegate/references/claude-org-self-edit.md`](../../.claude/skills/org-delegate/references/claude-org-self-edit.md)
+§2) is **not reclaimed by the close-time directory teardown** that Patterns A
+/ B / C-ephemeral rely on:
+
+| Pattern / variant | `worker_dir` | Brief reclaimed at close by | Residue risk |
+|---|---|---|---|
+| B (default / `live_repo_worktree`) | a `.worktrees/<task_id>/` subtree | `git worktree remove` deletes the subtree | none |
+| C ephemeral | `<workers_dir>/<task_id>/` | dir retained or `rm -rf` (manual) | none (no `CLAUDE.local.md` there) |
+| **C `gitignored_repo_root`** | `<existing_repo_root>/` (host repo, **not removable**) | **nothing** — there is no worktree / disposable dir to delete | `CLAUDE.local.md` lingers in the repo root |
+
+A lingering self-edit `CLAUDE.local.md` is not cosmetic: its first line tells
+the reader "あなたは窓口ではなくワーカーである", so on the next `/org-start` the
+secretary loads a contradictory role identity (secretary *and* that worker),
+inherits the worker's `git push` / Codex / verification constraints, and the
+worker's completion `send_message(to_id="secretary", ...)` becomes a self-loop.
+It is gitignored, so CI never flags it (the Issue #478 stratification example:
+task `lt-lapras-392778-01`, residual for a week).
+
+**Contract**: a Pattern C `gitignored_repo_root` run carries a
+**post-completion cleanup obligation on the secretary** — at close, the brief
+`<existing_repo_root>/CLAUDE.local.md` MUST be deleted. The canonical
+mechanization is [`tools/run_complete_on_merge.py`](../../tools/run_complete_on_merge.py)
+`cleanup_pattern_c_local_md()`:
+
+- **Detection** (no schema change): `runs.pattern == 'C'` AND the run's
+  `worker_dirs.abs_path` equals `<claude_org_path>` (the repo root). Pattern C
+  ephemeral has `worker_dir == <workers_dir>/<task_id> ≠ root`, so it falls
+  through as a no-op; Patterns A / B are excluded by the `pattern == 'C'` gate.
+  (The schema stores `runs.pattern` but **not** `pattern_variant`; the
+  root-equality check is the cheap derivation that distinguishes the two
+  Pattern C sub-modes without a migration.)
+- **Idempotency**: `Path.unlink(missing_ok=True)` — never raises on a missing
+  file; safe to re-invoke.
+- **Audit**: appends one `events` row `kind='pattern_c_cleanup'`
+  (payload `task` / `removed_path` / `mode`, where `mode='auto'` on actual
+  removal and `mode='skip'` when the brief was already gone). Non-qualifying
+  runs write nothing.
+- **Trigger paths**: the PR-merge close path
+  (`tools/run_complete_on_merge.py --pr <PR>`) runs it automatically when it
+  records the merge; the non-PR close path — the common case, since gitignored
+  edits rarely produce a merged PR — invokes it from the secretary's close
+  block in [`.claude/skills/org-pull-request/SKILL.md`](../../.claude/skills/org-pull-request/SKILL.md)
+  2b-ii.
+
+**Scope boundary**: `<existing_repo_root>/.claude/settings.local.json` is
+**NOT** covered by this cleanup. The secretary itself uses that file (e.g.
+renga-peers MCP allows), so deleting it requires a worker-origin-vs-secretary-
+origin discrimination design that is deferred to a follow-up Issue. Phase 0 /
+Issue #478 cover only the `CLAUDE.local.md` brief. **Gap → follow-up Issue**
+for the settings file.
+
 #### 4.3.3 knowledge/raw/ carve-out
 
 Same as §4.1.4 (full-only).

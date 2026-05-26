@@ -67,6 +67,86 @@ RESULT_NO_RUN = "no_run"        # No matching run row; nothing written.
 RESULT_MERGED_PENDING_CLEANUP = RESULT_MERGED
 
 
+# --- Pattern C (gitignored_repo_root) post-completion cleanup (Issue #478) --
+# The brief filename the secretary writes into a claude-org self-edit worker's
+# dir (per .claude/skills/org-delegate/references/claude-org-self-edit.md §2).
+# For Pattern B (live_repo_worktree) the worktree removal at close reclaims it;
+# for Pattern C gitignored_repo_root the worker_dir *is* the claude-org repo
+# root, so there is no directory to remove and the brief must be deleted
+# file-by-file or it lingers and overwrites the secretary's role identity on
+# the next /org-start.
+PATTERN_C_BRIEF_FILENAME = "CLAUDE.local.md"
+
+# Return codes for :func:`cleanup_pattern_c_local_md`.
+CLEANUP_REMOVED = "removed"          # file existed and was deleted; event mode=auto.
+CLEANUP_ABSENT = "absent"            # Pattern C @ root but file already gone; event mode=skip.
+CLEANUP_NOT_APPLICABLE = "not_applicable"  # not Pattern C, or worker_dir != root; no event.
+
+
+def cleanup_pattern_c_local_md(
+    conn,
+    *,
+    task_id: str,
+    claude_org_root: Path,
+) -> str:
+    """Remove a leftover ``CLAUDE.local.md`` from the claude-org repo root
+    for a Pattern C ``gitignored_repo_root`` self-edit run (Issue #478).
+
+    Detection (design judgment 1 of Issue #478): ``runs.pattern == 'C'`` AND
+    the run's ``worker_dirs.abs_path`` equals ``claude_org_root``. This needs
+    no schema change — Pattern C *ephemeral* has ``worker_dir`` at
+    ``{workers_dir}/{task_id}`` (≠ root), so it is reclaimed by ordinary dir
+    removal and naturally falls through here as ``not_applicable``.
+
+    Idempotent: ``Path.unlink(missing_ok=True)`` never raises on a missing
+    file, and a re-call after the brief is gone returns
+    :data:`CLEANUP_ABSENT`. An audit row (``kind='pattern_c_cleanup'``) is
+    appended whenever the run qualifies — ``mode='auto'`` when the file was
+    actually removed, ``mode='skip'`` when it was already absent — so the
+    hook firing is observable in the events table. Non-qualifying runs
+    (Pattern A/B, or Pattern C ephemeral) write nothing.
+
+    Returns one of :data:`CLEANUP_REMOVED`, :data:`CLEANUP_ABSENT`,
+    :data:`CLEANUP_NOT_APPLICABLE`.
+    """
+    row = conn.execute(
+        "SELECT r.pattern, d.abs_path "
+        "FROM runs r LEFT JOIN worker_dirs d ON d.id = r.worker_dir_id "
+        "WHERE r.task_id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return CLEANUP_NOT_APPLICABLE
+    pattern = (row["pattern"] or "").upper()
+    worker_dir = row["abs_path"]
+    if pattern != "C" or not worker_dir:
+        return CLEANUP_NOT_APPLICABLE
+
+    root = Path(claude_org_root).resolve()
+    if Path(worker_dir).resolve() != root:
+        # Pattern C ephemeral: worker_dir is {workers_dir}/{task_id}, a
+        # disposable dir whose CLAUDE.md is reclaimed by dir removal.
+        return CLEANUP_NOT_APPLICABLE
+
+    target = root / PATTERN_C_BRIEF_FILENAME
+    existed = target.exists()
+    target.unlink(missing_ok=True)  # OS-level idempotent
+
+    from tools.state_db.writer import StateWriter
+    with StateWriter(conn).transaction() as w:
+        w.append_event(
+            kind="pattern_c_cleanup",
+            actor="run_complete_on_merge",
+            payload={
+                "task": task_id,
+                "removed_path": str(target),
+                "mode": "auto" if existed else "skip",
+            },
+            run_task_id=task_id,
+        )
+    return CLEANUP_REMOVED if existed else CLEANUP_ABSENT
+
+
 def _ensure_gh_installed() -> None:
     if shutil.which("gh") is None:
         sys.stderr.write(
@@ -321,6 +401,18 @@ def complete_on_merge(
             "CLOSE_PANE / remove_worker_dir and call "
             "update_run_status('<task>', 'completed') (Step 5 2b-ii / "
             "delegation-lifecycle-contract §T5).\n"
+        )
+        # Issue #478: a Pattern C gitignored_repo_root self-edit run keeps
+        # its CLAUDE.local.md inside the claude-org repo root (worker_dir ==
+        # root), so the worktree-remove path the secretary runs at close has
+        # no directory to reclaim it. Delete the brief here while we have the
+        # connection. No-op for every other pattern/variant. The non-PR
+        # close path (gitignored tasks rarely produce a merged PR) must call
+        # this helper from the runbook too — see org-pull-request 2b-ii.
+        cleanup_pattern_c_local_md(
+            conn,
+            task_id=resolved_task_id,
+            claude_org_root=db_path.parent.parent,
         )
         return RESULT_MERGED
     finally:

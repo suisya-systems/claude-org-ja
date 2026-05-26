@@ -56,6 +56,30 @@ def _seed_run(db_path: Path, *, pr_url: str = PR_URL, branch: str = BRANCH,
         conn.close()
 
 
+def _seed_pattern_c_run(db_path: Path, *, worker_dir: str, pattern: str = "C",
+                        task_id: str = TASK_ID) -> None:
+    """Seed a run linked to a worker_dir, for the Issue #478 cleanup tests.
+
+    ``worker_dir`` is registered first so ``upsert_run`` can resolve it to a
+    ``worker_dir_id`` within the same transaction.
+    """
+    apply_schema(connect(db_path))
+    conn = connect(db_path)
+    try:
+        with StateWriter(conn).transaction() as w:
+            w.register_worker_dir(abs_path=worker_dir, is_git_repo=True)
+            w.upsert_run(
+                task_id=task_id,
+                project_slug="claude-org-ja",
+                pattern=pattern,
+                title="pattern C self-edit",
+                status="review",
+                worker_dir_abs_path=worker_dir,
+            )
+    finally:
+        conn.close()
+
+
 def _make_pr_view(*, merged_at=MERGED_AT, merge_oid=MERGE_OID) -> dict:
     return {
         "number": PR,
@@ -323,6 +347,125 @@ class CLITests(unittest.TestCase):
                     "--db-path", str(db),
                 ])
             self.assertEqual(rc, 3)
+
+
+class CleanupPatternCTests(unittest.TestCase):
+    """Issue #478: Pattern C gitignored_repo_root CLAUDE.local.md cleanup."""
+
+    def _brief_path(self, root: Path) -> Path:
+        return root / run_complete_on_merge.PATTERN_C_BRIEF_FILENAME
+
+    def test_pattern_c_at_root_removes_brief_and_records_event(self) -> None:
+        """Case 1: Pattern C + worker_dir == claude_org_root → delete + event."""
+        with TempDB() as db:
+            root = db.parent
+            brief = self._brief_path(root)
+            brief.write_text("worker brief\n", encoding="utf-8")
+            _seed_pattern_c_run(db, worker_dir=str(root.resolve()))
+            conn = connect(db)
+            try:
+                result = run_complete_on_merge.cleanup_pattern_c_local_md(
+                    conn, task_id=TASK_ID, claude_org_root=root,
+                )
+            finally:
+                conn.close()
+            self.assertEqual(result, run_complete_on_merge.CLEANUP_REMOVED)
+            self.assertFalse(brief.exists())
+            evts = _events_of_kind(db, "pattern_c_cleanup")
+            self.assertEqual(len(evts), 1)
+            payload = json.loads(evts[0]["payload_json"])
+            self.assertEqual(payload["task"], TASK_ID)
+            self.assertEqual(payload["mode"], "auto")
+            self.assertEqual(
+                payload["removed_path"],
+                str(root.resolve() / run_complete_on_merge.PATTERN_C_BRIEF_FILENAME),
+            )
+
+    def test_pattern_c_ephemeral_does_nothing(self) -> None:
+        """Case 2: Pattern C ephemeral (worker_dir != root) → no-op, no event."""
+        with TempDB() as db:
+            root = db.parent
+            ephemeral = root / "ephemeral_worker"
+            ephemeral.mkdir()
+            brief = self._brief_path(root)
+            brief.write_text("untouched\n", encoding="utf-8")
+            _seed_pattern_c_run(db, worker_dir=str(ephemeral.resolve()))
+            conn = connect(db)
+            try:
+                result = run_complete_on_merge.cleanup_pattern_c_local_md(
+                    conn, task_id=TASK_ID, claude_org_root=root,
+                )
+            finally:
+                conn.close()
+            self.assertEqual(
+                result, run_complete_on_merge.CLEANUP_NOT_APPLICABLE
+            )
+            self.assertTrue(brief.exists())
+            self.assertEqual(_events_of_kind(db, "pattern_c_cleanup"), [])
+
+    def test_pattern_a_and_b_do_nothing(self) -> None:
+        """Case 3: even with worker_dir == root, non-C patterns are no-ops."""
+        for pattern in ("A", "B"):
+            with self.subTest(pattern=pattern), TempDB() as db:
+                root = db.parent
+                brief = self._brief_path(root)
+                brief.write_text("untouched\n", encoding="utf-8")
+                _seed_pattern_c_run(
+                    db, worker_dir=str(root.resolve()), pattern=pattern,
+                )
+                conn = connect(db)
+                try:
+                    result = run_complete_on_merge.cleanup_pattern_c_local_md(
+                        conn, task_id=TASK_ID, claude_org_root=root,
+                    )
+                finally:
+                    conn.close()
+                self.assertEqual(
+                    result, run_complete_on_merge.CLEANUP_NOT_APPLICABLE
+                )
+                self.assertTrue(brief.exists())
+                self.assertEqual(_events_of_kind(db, "pattern_c_cleanup"), [])
+
+    def test_idempotent_second_call_when_absent(self) -> None:
+        """Case 4: re-call after the brief is gone does not raise."""
+        with TempDB() as db:
+            root = db.parent
+            brief = self._brief_path(root)
+            brief.write_text("worker brief\n", encoding="utf-8")
+            _seed_pattern_c_run(db, worker_dir=str(root.resolve()))
+            conn = connect(db)
+            try:
+                first = run_complete_on_merge.cleanup_pattern_c_local_md(
+                    conn, task_id=TASK_ID, claude_org_root=root,
+                )
+                second = run_complete_on_merge.cleanup_pattern_c_local_md(
+                    conn, task_id=TASK_ID, claude_org_root=root,
+                )
+            finally:
+                conn.close()
+            self.assertEqual(first, run_complete_on_merge.CLEANUP_REMOVED)
+            self.assertEqual(second, run_complete_on_merge.CLEANUP_ABSENT)
+            self.assertFalse(brief.exists())
+            modes = [
+                json.loads(e["payload_json"])["mode"]
+                for e in _events_of_kind(db, "pattern_c_cleanup")
+            ]
+            self.assertEqual(modes, ["auto", "skip"])
+
+    def test_no_run_row_is_not_applicable(self) -> None:
+        """A task_id with no run row resolves cleanly to not_applicable."""
+        with TempDB() as db:
+            apply_schema(connect(db))
+            conn = connect(db)
+            try:
+                result = run_complete_on_merge.cleanup_pattern_c_local_md(
+                    conn, task_id="ghost-task", claude_org_root=db.parent,
+                )
+            finally:
+                conn.close()
+            self.assertEqual(
+                result, run_complete_on_merge.CLEANUP_NOT_APPLICABLE
+            )
 
 
 if __name__ == "__main__":
