@@ -64,6 +64,19 @@ class RenderNormal(unittest.TestCase):
         # no leftover ${...} placeholders
         self.assertNotIn("${", out)
 
+    def test_normal_does_not_emit_self_edit_clone_directive(self):
+        """Issue #484 bug 1: a non-self-edit worker (e.g. a remote
+        translation-sync clone) must NOT be told to edit claude-org directly.
+        The self-edit ``（直接編集すること）`` prohibition is reserved for the
+        self-edit brief; the normal brief instructs the worker to clone the
+        infra repo nowhere and work inside its own project clone."""
+        cfg = _base_config(self_edit=False)
+        out = gwb.render(cfg)
+        self.assertNotIn("直接編集すること", out)
+        self.assertNotIn("別途 clone", out)
+        # The reworded guard still tells the worker claude-org is reference-only.
+        self.assertIn("参照専用", out)
+
 
 class RenderSelfEdit(unittest.TestCase):
     def test_self_edit_emits_ignore_root_note(self):
@@ -73,6 +86,15 @@ class RenderSelfEdit(unittest.TestCase):
         self.assertIn("Secretary 指示は無視せよ", out)
         self.assertIn("あなたは窓口ではなくワーカーである", out)
         self.assertNotIn("<!--BEGIN:", out)
+
+    def test_self_edit_keeps_direct_edit_prohibition(self):
+        """The self-edit brief (origin URL == suisya-systems/claude-org-ja)
+        legitimately works *inside* the live repo, so its prohibition still
+        says ``直接編集`` (don't re-clone, edit in place). Issue #484 only
+        moved this directive out of the *normal* brief."""
+        cfg = _base_config(self_edit=True)
+        out = gwb.render(cfg)
+        self.assertIn("直接編集", out)
 
 
 class OptionalSections(unittest.TestCase):

@@ -1125,6 +1125,170 @@ class TestPatternBClaudeOrgRepoWorktree(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Issue #484: a remote project registered under an alias *name* (e.g.
+# ``claude-org-en``) with a clone URL must resolve to Pattern A on the first
+# delegation, not fall through to Pattern C ephemeral. The alias normalization
+# (``claude-org-en`` → ``claude-org``) is for the local mirror's 通称; it must
+# not hide a registry row keyed by the alias name itself.
+# ---------------------------------------------------------------------------
+
+
+class TestAliasNamedRemoteRow(unittest.TestCase):
+    """Issue #484 bug 2: ``registry/projects.md`` carries
+    ``| … | claude-org-en | https://github.com/suisya-systems/claude-org | … |``
+    (the row's プロジェクト名/slug column is the alias). With no local
+    ``{workers_dir}/claude-org`` mirror clone present, the slug alias
+    normalization used to rewrite ``claude-org-en`` → ``claude-org`` *before*
+    the registry lookup, so ``find_project`` missed the row and the resolver
+    dropped to Pattern C ephemeral. The fix retries the lookup with the
+    original (un-normalized) slug and adopts the registered row."""
+
+    def setUp(self) -> None:
+        self._td = tempfile.TemporaryDirectory()
+        self.sb = _Sandbox(Path(self._td.name))
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def test_alias_named_url_row_resolves_pattern_a_first_delegation(self):
+        # No local mirror clone, empty state.db (no projects/runs rows) —
+        # the "first delegation" scenario from the Issue #484 repro.
+        self.sb.write_registry(
+            [
+                ("時計", "clock-app", "-", "Demo clock"),
+                (
+                    "claude-org-en",
+                    "claude-org-en",
+                    "https://github.com/suisya-systems/claude-org",
+                    "EN upstream",
+                ),
+            ]
+        )
+        layout = rwl.resolve(
+            task_id="en-translation-sync-v2",
+            project_slug="claude-org-en",
+            description="translation sync",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(layout.pattern, "A")
+        self.assertIsNone(layout.pattern_variant)
+        # worker_dir keeps the registered alias name (not the mirror's
+        # canonical ``claude-org``) — this row is a distinct remote project.
+        self.assertEqual(
+            Path(layout.worker_dir),
+            (self.sb.workers / "claude-org-en").resolve(),
+        )
+        self.assertEqual(layout.role, "default")
+        self.assertFalse(layout.self_edit)
+        self.assertEqual(layout.planned_branch, "feat/en-translation-sync-v2")
+
+    def test_alias_named_url_row_without_state_db(self):
+        """The registry row alone must drive Pattern A — no pre-existing
+        state-DB ``projects`` row required (``state_db_path=None``)."""
+        self.sb.write_registry(
+            [
+                (
+                    "claude-org-en",
+                    "claude-org-en",
+                    "https://github.com/suisya-systems/claude-org",
+                    "EN upstream",
+                ),
+            ]
+        )
+        layout = rwl.resolve(
+            task_id="en-first",
+            project_slug="claude-org-en",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=None,
+        )
+        self.assertEqual(layout.pattern, "A")
+        self.assertEqual(
+            Path(layout.worker_dir),
+            (self.sb.workers / "claude-org-en").resolve(),
+        )
+
+    def test_canonical_named_row_still_normalizes_via_alias(self):
+        """Regression guard: the canonical registry shape
+        ``| claude-org-en | claude-org | URL | … |`` (通称=alias, name=canonical)
+        must still resolve via the alias slug to Pattern A — the original-slug
+        fallback only fires when the canonical lookup misses."""
+        self.sb.write_registry(
+            [
+                (
+                    "claude-org-en",
+                    "claude-org",
+                    "https://github.com/suisya-systems/claude-org",
+                    "EN upstream",
+                ),
+            ]
+        )
+        layout = rwl.resolve(
+            task_id="en-canonical",
+            project_slug="claude-org-en",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(layout.pattern, "A")
+        # canonical name → worker_dir anchored on the canonical slug.
+        self.assertEqual(
+            Path(layout.worker_dir),
+            (self.sb.workers / "claude-org").resolve(),
+        )
+
+    def test_unknown_alias_with_no_row_still_pattern_c(self):
+        """Regression guard for the no-clone / no-row deployment: an alias
+        slug with neither a mirror clone nor any registry row must still fall
+        to Pattern C ephemeral (the original-slug fallback finds nothing)."""
+        self.sb.write_registry([("時計", "clock-app", "-", "Demo clock")])
+        layout = rwl.resolve(
+            task_id="en-orphan",
+            project_slug="claude-org-en",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(layout.pattern, "C")
+        self.assertEqual(layout.pattern_variant, "ephemeral")
+
+    def test_mirror_clone_wins_over_alias_named_row(self):
+        """Codex review guard: when a local mirror clone exists at
+        ``{workers_dir}/claude-org`` AND an alias-named row is also present,
+        the Issue #370 mirror machinery must win (anchor on the clone) so the
+        resolver stays consistent with ``gen_delegate_payload``'s own
+        canonical normalization. The alias-row fallback must NOT hijack the
+        slug back to ``claude-org-en`` in that case."""
+        try:
+            subprocess.run(["git", "--version"], capture_output=True, check=True)
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            self.skipTest("git not available")
+        clone = self.sb.workers / "claude-org"
+        clone.mkdir()
+        _Sandbox.init_git_with_origin(
+            clone, "https://github.com/suisya-systems/claude-org.git"
+        )
+        self.sb.write_registry(
+            [
+                ("時計", "clock-app", "-", "Demo clock"),
+                (
+                    "claude-org-en",
+                    "claude-org-en",
+                    "https://github.com/suisya-systems/claude-org",
+                    "EN upstream",
+                ),
+            ]
+        )
+        layout = rwl.resolve(
+            task_id="en-with-clone",
+            project_slug="claude-org-en",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(layout.pattern, "A")
+        # Anchored on the canonical mirror clone, NOT workers/claude-org-en.
+        self.assertEqual(Path(layout.worker_dir), clone.resolve())
+
+
+# ---------------------------------------------------------------------------
 # Issue #374: self-edit first-run short-circuit + mirror_of + --pattern override
 # ---------------------------------------------------------------------------
 

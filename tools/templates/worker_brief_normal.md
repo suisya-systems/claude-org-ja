@@ -11,7 +11,7 @@
 
 ### 禁止事項（permissions.deny + PreToolUse Hooks により技術的にブロックされる）
 1. `${worker_dir}` 内に claude-org の構造（.claude/, .dispatcher/, .curator/, .state/, registry/, dashboard/, knowledge/ 等）を再現してはならない
-2. claude-org リポジトリ（`${claude_org_path}`）を別途 clone してはならない（直接編集すること）
+2. claude-org リポジトリ（`${claude_org_path}`）を `${worker_dir}` 内へ clone してはならない（claude-org 本体は参照専用。編集対象は本ワーカーディレクトリのプロジェクトのみ）
 3. `git push` は実行できない（完了報告で窓口に依頼すること）
 
 ### Windows 環境の注意事項
