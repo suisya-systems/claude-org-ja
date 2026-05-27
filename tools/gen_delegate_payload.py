@@ -478,6 +478,10 @@ def _resolve_base_ref(base_repo: Path) -> Optional[str]:
 
     Returns ``None`` when ``origin/HEAD`` is not set — apply then aborts
     with a recovery hint pointing to ``git remote set-head origin --auto``.
+
+    Freshness of the returned ref is the caller's job: :func:`_ensure_worktree`
+    runs :func:`_fetch_base_origin` immediately before this, so ``origin/HEAD``
+    reflects the live remote tip rather than a stale local clone (Issue #480).
     """
     proc = subprocess.run(
         ["git", "-C", str(base_repo), "symbolic-ref", "--short",
@@ -489,6 +493,52 @@ def _resolve_base_ref(base_repo: Path) -> Optional[str]:
         if ref:
             return ref
     return None
+
+
+def _fetch_base_origin(base_repo: Path) -> None:
+    """Refresh ``base_repo``'s remote-tracking refs before a Pattern B
+    worktree is branched off them (Issue #480).
+
+    :func:`_resolve_base_ref` branches the new worktree off ``origin/HEAD``
+    (i.e. ``origin/main``) — a *remote-tracking* ref only as fresh as the base
+    clone's last ``git fetch``. A stale clone (e.g. another PR merged into the
+    trunk after the last local fetch) would silently branch off an out-of-date
+    commit, so the worker starts from a trunk missing already-merged work — the
+    logical conflict / rework this fix eliminates. Fetching here makes the
+    start ref the live remote tip.
+
+    Fail-closed: the freshness guarantee only holds if the fetch actually
+    succeeds, so a configured ``origin`` whose fetch fails aborts apply with a
+    recovery hint (consistent with :func:`_resolve_base_ref` aborting on an
+    unset ``origin/HEAD``) rather than silently branching off a possibly-stale
+    ref — that silent path is exactly the Issue #480 bug. ``_ensure_worktree``
+    runs before any DB reservation, so the abort leaks no ``queued`` run row.
+
+    The only quiet path is "no ``origin`` remote configured": purely local
+    repos (and the test fixtures that synthesize ``refs/remotes/origin/*``
+    without a real remote) have nothing to fetch.
+    """
+    probe = subprocess.run(
+        ["git", "-C", str(base_repo), "remote", "get-url", "origin"],
+        capture_output=True,
+    )
+    if probe.returncode != 0:
+        return  # no origin remote — nothing to refresh
+    proc = subprocess.run(
+        ["git", "-C", str(base_repo), "fetch", "origin"],
+        capture_output=True,
+    )
+    if proc.returncode != 0:
+        stderr = (proc.stderr or b"").decode("utf-8", errors="replace").strip()
+        raise WorktreeApplyError(
+            f"`git fetch origin` failed (rc={proc.returncode}) in {base_repo} "
+            f"before creating the Pattern B worktree: {stderr}. Refusing to "
+            "branch off a possibly-stale origin/main (Issue #480). Fix the "
+            f"network / remote and retry apply (or run `git -C {base_repo} "
+            "fetch origin` manually first). If this base is intentionally "
+            "offline / local-only, remove its `origin` remote so apply skips "
+            "the fetch."
+        )
 
 
 def _worktree_branch(worker_dir: Path) -> Optional[str]:
@@ -540,6 +590,13 @@ def _ensure_worktree(plan: DelegatePlan) -> None:
     of ``base_repo``. Aborts with :class:`WorktreeApplyError` when the dir
     exists with unrelated content (Secretary judgment call to clean up,
     per Issue #309).
+
+    The Issue #480 origin fetch gates *creation* only. A reused worktree
+    keeps the start ref it was created from — re-fetching here would not move
+    its already-committed branch tip, and force-resetting it could clobber
+    work a worker has already committed on a partial-retry. To re-base a stale
+    reused worktree the Secretary removes it so apply recreates it (which then
+    fetches). See the reuse branch below.
     """
     if plan.layout.pattern != "B":
         return
@@ -555,7 +612,11 @@ def _ensure_worktree(plan: DelegatePlan) -> None:
         # branch the brief / DB will pin. A stale partial-retry worktree on
         # a different branch (or in detached-HEAD state) would otherwise
         # silently dispatch on the wrong ref (Codex Round 2 + Round 3
-        # Majors 2026-05-06).
+        # Majors 2026-05-06). We deliberately do NOT fetch / re-base here
+        # (Issue #480): the worktree already has a committed branch tip, so a
+        # fetch can't advance it and a reset could discard a worker's
+        # in-progress commits. Refresh = remove the worktree so the creation
+        # path below recreates it off a freshly fetched origin/HEAD.
         expected = plan.layout.planned_branch
         if expected:
             actual = _worktree_branch(worker_dir)
@@ -590,6 +651,9 @@ def _ensure_worktree(plan: DelegatePlan) -> None:
             f"Pattern B requires a planned_branch but layout produced None "
             f"(task_id={plan.task_id!r})."
         )
+    # Issue #480: refresh remote-tracking refs first so we branch off the
+    # *current* origin/HEAD, not a stale local clone's old origin/main.
+    _fetch_base_origin(plan.base_repo)
     base_ref = _resolve_base_ref(plan.base_repo)
     if base_ref is None:
         raise WorktreeApplyError(

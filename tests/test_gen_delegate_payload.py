@@ -1331,6 +1331,19 @@ class TestPatternBClaudeOrgRepoWorktreePlan(unittest.TestCase):
             claude_org_root=self.sb.claude_org_root,
             state_db_path=self.sb.db_path,
         )
+        # Issue #480: apply now `git fetch origin` before branching. Detection
+        # above needed the github origin URL, but the fetch must stay offline —
+        # repoint origin at a local (empty) bare repo. The synthesized
+        # origin/main remote-tracking ref survives the no-op fetch and is what
+        # the worktree branches off (this test asserts registration, not fetch
+        # freshness — see TestPatternBWorktreeFetchesStaleOrigin for that).
+        upstream = Path(self._td.name) / "claude-org-upstream.git"
+        _sp.run(["git", "init", "-q", "--bare", str(upstream)], check=True)
+        _sp.run(
+            ["git", "-C", str(self.clone), "remote", "set-url", "origin",
+             str(upstream)],
+            check=True,
+        )
         gdp.apply_delegate_plan(
             plan,
             state_db_path=self.sb.db_path,
@@ -1735,6 +1748,194 @@ class TestPatternOverrideCLI(unittest.TestCase):
                 *self._common_args(slug="claude-org-ja"),
                 "--pattern", "A",
             ])
+
+
+# ---------------------------------------------------------------------------
+# Issue #480: apply must fetch origin before branching the Pattern B worktree
+# ---------------------------------------------------------------------------
+
+
+class TestFetchBaseOrigin(unittest.TestCase):
+    """Unit coverage for :func:`gen_delegate_payload._fetch_base_origin`
+    (Issue #480): refresh the base clone's remote-tracking refs before a
+    Pattern B worktree branches off them, best-effort."""
+
+    def setUp(self) -> None:
+        try:
+            subprocess.run(["git", "--version"], capture_output=True, check=True)
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            self.skipTest("git not available")
+        self._td = tempfile.TemporaryDirectory()
+        self.repo = Path(self._td.name) / "repo"
+        self.repo.mkdir()
+        subprocess.run(
+            ["git", "-C", str(self.repo), "init", "-q", "-b", "main"],
+            check=True,
+        )
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def test_skips_quietly_when_no_origin_remote(self):
+        """No origin remote (local-only repo / synthetic-ref fixture) → no
+        fetch attempt, no raise, no output."""
+        import contextlib
+        import io
+
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            # Must not raise even though there is nothing to fetch.
+            gdp._fetch_base_origin(self.repo)
+        self.assertEqual(err.getvalue(), "")
+
+    def test_raises_when_fetch_fails(self):
+        """An origin pointing at an unreachable (local, nonexistent) path must
+        abort with WorktreeApplyError — branching off a possibly-stale
+        origin/main is exactly the Issue #480 bug, so apply fails closed
+        instead of silently proceeding."""
+        bogus = Path(self._td.name) / "does-not-exist.git"
+        subprocess.run(
+            ["git", "-C", str(self.repo), "remote", "add", "origin",
+             str(bogus)],
+            check=True,
+        )
+        with self.assertRaises(gdp.WorktreeApplyError) as cm:
+            gdp._fetch_base_origin(self.repo)
+        self.assertIn("git fetch origin", str(cm.exception))
+        self.assertIn("480", str(cm.exception))
+
+
+class TestPatternBWorktreeFetchesStaleOrigin(unittest.TestCase):
+    """Issue #480: apply must ``git fetch origin`` before branching the
+    Pattern B worktree, so a base clone that has fallen behind origin still
+    branches off the *latest* remote default-branch tip — not the stale local
+    ``origin/main`` captured at the last fetch."""
+
+    def setUp(self) -> None:
+        try:
+            subprocess.run(["git", "--version"], capture_output=True, check=True)
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            self.skipTest("git not available")
+        self._td = tempfile.TemporaryDirectory()
+        self.sb = _Sandbox(Path(self._td.name), with_claude_org_origin=False)
+        import os
+        self._git_env = os.environ.copy()
+        self._git_env.update(
+            {
+                "GIT_AUTHOR_NAME": "test",
+                "GIT_AUTHOR_EMAIL": "test@example.com",
+                "GIT_COMMITTER_NAME": "test",
+                "GIT_COMMITTER_EMAIL": "test@example.com",
+            }
+        )
+        # A local non-bare repo plays the role of the GitHub remote; we commit
+        # directly in its working tree to "advance origin" mid-test.
+        self.upstream = Path(self._td.name) / "upstream"
+        self.upstream.mkdir()
+        self._git(self.upstream, "init", "-q", "-b", "main")
+        (self.upstream / "trunk.txt").write_text("v1", encoding="utf-8")
+        self._git(self.upstream, "add", "trunk.txt")
+        self._git(self.upstream, "commit", "-q", "-m", "c1")
+        self.c1 = self._rev(self.upstream, "main")
+        # claude_org_root is a clone of upstream: a real origin remote,
+        # origin/main + origin/HEAD set, local main == c1.
+        base = self.sb.claude_org_root
+        self._git(base, "init", "-q", "-b", "main")
+        self._git(base, "remote", "add", "origin", str(self.upstream))
+        self._git(base, "fetch", "-q", "origin")
+        self._git(base, "symbolic-ref", "refs/remotes/origin/HEAD",
+                  "refs/remotes/origin/main")
+        self._git(base, "reset", "-q", "--hard", "origin/main")
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def _git(self, repo: Path, *args: str) -> None:
+        subprocess.run(
+            ["git", "-C", str(repo), *args], check=True, env=self._git_env,
+        )
+
+    def _rev(self, repo: Path, ref: str) -> str:
+        return subprocess.check_output(
+            ["git", "-C", str(repo), "rev-parse", ref],
+        ).decode().strip()
+
+    def _build_self_edit_b(self, *, task_id: str):
+        return gdp.build_delegate_plan(
+            task_id=task_id,
+            project_slug="claude-org-ja",
+            description="self-edit pattern B",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+            layout_overrides={
+                "pattern": "B",
+                "pattern_variant": "live_repo_worktree",
+                "role": "claude-org-self-edit",
+                "self_edit": True,
+            },
+        )
+
+    def test_apply_fetches_so_worktree_branches_off_latest_origin(self):
+        # Advance the upstream trunk to c2 AFTER the base clone last fetched,
+        # so the base's local origin/main is now stale (still c1).
+        (self.upstream / "trunk.txt").write_text("v2", encoding="utf-8")
+        self._git(self.upstream, "add", "trunk.txt")
+        self._git(self.upstream, "commit", "-q", "-m", "c2")
+        c2 = self._rev(self.upstream, "main")
+        self.assertNotEqual(self.c1, c2)
+        # Precondition: the base clone is stale — origin/main still points at c1.
+        self.assertEqual(
+            self._rev(self.sb.claude_org_root, "refs/remotes/origin/main"),
+            self.c1,
+        )
+
+        plan = self._build_self_edit_b(task_id="stale-origin-task")
+        gdp.apply_delegate_plan(
+            plan,
+            state_db_path=self.sb.db_path,
+            claude_org_root=self.sb.claude_org_root,
+            skip_settings=True,
+        )
+
+        worker_dir = Path(plan.layout.worker_dir)
+        self.assertEqual(
+            self._rev(worker_dir, "HEAD"), c2,
+            "apply must `git fetch origin` and branch the worktree off the "
+            "latest origin tip (c2), not the base clone's stale origin/main "
+            "(c1)",
+        )
+        # The worktree reflects c2's content, not c1's.
+        self.assertEqual(
+            (worker_dir / "trunk.txt").read_text(encoding="utf-8"), "v2",
+        )
+        # The fetch also advanced the base clone's own origin/main.
+        self.assertEqual(
+            self._rev(self.sb.claude_org_root, "refs/remotes/origin/main"), c2,
+        )
+
+    def test_apply_aborts_when_fetch_fails_without_leaking_db_row(self):
+        """Fail-closed: an origin that cannot be fetched aborts apply rather
+        than branching off a possibly-stale ref (Issue #480). The abort runs
+        before the DB reservation, so no queued run row leaks (which would
+        otherwise steer the next delegation onto another Pattern B branch)."""
+        # Repoint origin at a nonexistent path so the pre-branch fetch fails.
+        self._git(self.sb.claude_org_root, "remote", "set-url", "origin",
+                  str(Path(self._td.name) / "gone.git"))
+        plan = self._build_self_edit_b(task_id="fetch-fail-task")
+        with self.assertRaises(gdp.WorktreeApplyError) as cm:
+            gdp.apply_delegate_plan(
+                plan,
+                state_db_path=self.sb.db_path,
+                claude_org_root=self.sb.claude_org_root,
+                skip_settings=True,
+            )
+        self.assertIn("480", str(cm.exception))
+        self.assertFalse(
+            any(r["task_id"] == "fetch-fail-task" for r in self.sb.list_runs()),
+            "queued row leaked after fetch-failure abort",
+        )
+        # No worktree was created.
+        self.assertFalse(Path(plan.layout.worker_dir).exists())
 
 
 if __name__ == "__main__":
