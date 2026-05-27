@@ -110,6 +110,8 @@ work-skill の手順をそのままコピーしない。参考情報として提
 
 詳細条件・実行コマンド・worker permissions deny の根拠（fetch 漏れ → 着手 5 分以内に worker BLOCKER → 10 分以上ロスの背景）は [`references/release-pre-fetch.md`](references/release-pre-fetch.md) を一次参照。**トリガー見逃しが BLOCKER 直結のため本体に残す 4 条件は省略禁止。**
 
+> **Pattern B との切り分け（Issue #480）**: Pattern B の worktree 作成は apply 自身が `git fetch origin` してから `origin/HEAD` 起点で切るため、worktree の起点鮮度はこの Step 0.6 に依存しない。Step 0.6 が担保するのは Pattern A（worker が local main から `release/*` を切る）の **local main の鮮度** であり、両者は対象が異なる。詳細は [`.claude/skills/org-delegate/references/release-pre-fetch.md`](references/release-pre-fetch.md) の「Issue #480 との関係」節。
+
 ## Step 0.7 / 1 / 1.5 / 2: 1 コマンドで派遣ペイロードを生成（Issue #283）
 
 Step 0.7 (gitignore 事前チェック) / Step 1 (Pattern 判定) / Step 1.5 (ワーカーディレクトリ準備 + role 決定 + settings 生成) / Step 2 (DELEGATE 本文組み立て) は **`tools/gen_delegate_payload.py` が一括で行う**。窓口の責務はタスク特定 (Step 0)・work-skill 検索 (Step 0.5)・対象ファイルの抽出・depth 判断のみ。
