@@ -487,6 +487,7 @@ def resolve(
     # Normalize registry-display aliases to the canonical project slug.
     # ``claude-org-en`` is the 通称 (display name) for the ``claude-org``
     # mirror; downstream code only operates on the canonical form.
+    original_slug = project_slug
     project_slug = _CLAUDE_ORG_SLUG_ALIASES.get(project_slug, project_slug)
 
     targets = list(targets or [])
@@ -502,6 +503,35 @@ def resolve(
     else:
         projects = []
     project = find_project(projects, project_slug)
+    # Issue #484: the alias normalization above assumes ``claude-org-en`` is
+    # only ever the 通称 for the canonical ``claude-org`` *mirror* row. But a
+    # remote project can be registered under the alias *name* itself
+    # (``| … | claude-org-en | https://github.com/…/claude-org | … |``).
+    # Normalizing to ``claude-org`` then made ``find_project`` miss that row,
+    # so the resolver dropped to Pattern C ephemeral on the very first
+    # delegation even though a clone URL was registered. When the canonical
+    # slug matches nothing but the original (un-normalized) slug does, that
+    # row is a genuinely distinct registered project — not the mirror — so
+    # adopt it and revert ``project_slug`` to the registered name (keeps
+    # worker_dir naming / active-run gating consistent with the registry and
+    # leaves the ``find_claude_org_clone`` mirror path inert for this slug).
+    #
+    # Gated on "no local mirror clone for the canonical slug": when a clone
+    # *does* exist at ``{workers_dir}/claude-org`` the established Issue #370
+    # mirror machinery owns the alias (it re-pins onto the clone below), and
+    # gen_delegate_payload re-applies the same canonical normalization for the
+    # DELEGATE body / DB reservation — reverting here would diverge the two
+    # (Codex review). So the alias-row fallback only fires for the genuine
+    # no-clone deployment that Issue #484 hit.
+    if (
+        project is None
+        and original_slug != project_slug
+        and find_claude_org_clone(project_slug, workers_dir) is None
+    ):
+        fallback = find_project(projects, original_slug)
+        if fallback is not None:
+            project = fallback
+            project_slug = original_slug
 
     # claude-org-ja is intentionally absent from the checked-in registry
     # (the row used to leak a user-specific local path). When the slug +

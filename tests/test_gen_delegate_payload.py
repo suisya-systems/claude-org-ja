@@ -25,6 +25,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from tools import gen_delegate_payload as gdp  # noqa: E402
+from tools import gen_worker_brief as gwb  # noqa: E402
 from tools.state_db import apply_schema, connect  # noqa: E402
 from tools.state_db.writer import StateWriter  # noqa: E402
 
@@ -184,6 +185,63 @@ class TestBuildDelegatePlan(unittest.TestCase):
         # audit on Pattern A worker dir (which is outside claude-org).
         # (claude-org-ja audit uses Pattern A → workers/claude-org-ja/.)
         self.assertEqual(plan.brief_out_path.name, "CLAUDE.md")
+
+
+class TestIssue484AliasRemoteRow(unittest.TestCase):
+    """End-to-end (``build_delegate_plan``) coverage for the Issue #484 repro:
+    a remote project registered under the alias *name* ``claude-org-en`` with
+    a clone URL, dispatched on the first delegation (no local mirror clone, no
+    state-DB run). Both bugs must be fixed together:
+
+    - bug 2: resolves to Pattern A (clone the URL), not Pattern C ephemeral.
+    - bug 1: renders the *normal* brief (CLAUDE.md) with no self-edit
+      ``直接編集すること`` directive — the worker clones the EN upstream rather
+      than being told to edit the live claude-org-ja repo in place.
+    """
+
+    def setUp(self) -> None:
+        self._td = tempfile.TemporaryDirectory()
+        self.sb = _Sandbox(Path(self._td.name))
+        # Replace the default registry with an alias-named remote URL row.
+        (self.sb.claude_org_root / "registry" / "projects.md").write_text(
+            "# Projects\n\n"
+            "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 |\n"
+            "|---|---|---|---|---|\n"
+            "| 時計アプリ | clock-app | - | Web 時計 | デザイン |\n"
+            "| claude-org-en | claude-org-en | "
+            "https://github.com/suisya-systems/claude-org | EN upstream | 翻訳同期 |\n",
+            encoding="utf-8",
+        )
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def test_alias_remote_row_pattern_a_normal_brief(self):
+        plan = gdp.build_delegate_plan(
+            task_id="en-translation-sync-v2",
+            project_slug="claude-org-en",
+            description="translation sync",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        # bug 2: Pattern A, anchored on the registered alias name.
+        self.assertEqual(plan.layout.pattern, "A")
+        self.assertIsNone(plan.layout.pattern_variant)
+        self.assertFalse(plan.layout.self_edit)
+        self.assertEqual(
+            Path(plan.layout.worker_dir),
+            (self.sb.workers / "claude-org-en").resolve(),
+        )
+        # The DELEGATE body advertises a clone source (Pattern A label).
+        self.assertIn("clone or reuse:", plan.delegate_body)
+        self.assertIn(
+            "https://github.com/suisya-systems/claude-org", plan.delegate_body
+        )
+        # bug 1: non-self-edit brief, no in-place-edit directive.
+        self.assertEqual(plan.brief_out_path.name, "CLAUDE.md")
+        brief = gwb.render(plan.config)
+        self.assertNotIn("直接編集すること", brief)
+        self.assertNotIn("ルート CLAUDE.md", brief)
 
 
 # ---------------------------------------------------------------------------
