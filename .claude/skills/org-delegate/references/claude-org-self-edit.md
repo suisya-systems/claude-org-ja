@@ -52,7 +52,7 @@ claude-org 自己編集タスクでは、SKILL.md Step 1.5 および `worker-cla
 
 Pattern C の個別削除は close phase の責務として [`.claude/skills/org-pull-request/SKILL.md`](../../org-pull-request/SKILL.md) 2b-ii に組み込まれている。実体は [`tools/run_complete_on_merge.py`](../../../../tools/run_complete_on_merge.py) の `cleanup_pattern_c_local_md(conn, task_id=..., claude_org_root=..., worker_dir_abs=...)`:
 
-- 判定: `runs.pattern == 'C'` AND `worker_dir == claude_org_root`（schema 拡張不要。ephemeral C は `worker_dir != root` で自動的に no-op）。`worker_dir` は `worker_dir_abs` 引数があればそれを、無ければ `runs.worker_dir_id` → `worker_dirs` の join から解決する。
+- 判定: `runs.pattern == 'C'` AND `worker_dir == claude_org_root`（schema 拡張不要。ephemeral C は `worker_dir != root` で自動的に no-op）。`worker_dir` は `runs.worker_dir_id` → `worker_dirs` の join を優先し、join が NULL（= `remove_worker_dir()` 済み）のときだけ `worker_dir_abs` 引数にフォールバックする（live 行を stray な引数で override させない）。
 - 動作: `{claude_org_root}/CLAUDE.local.md` を `Path.unlink(missing_ok=True)` で削除し、`events` に `pattern_c_cleanup`（payload: `task` / `removed_path` / `mode`）を 1 行残す。idempotent（ファイル不在なら `mode=skip`、エラーで止めない）。
 - **順序非依存（Issue #486）**: close phase の StateWriter ブロックは `remove_worker_dir()` で `worker_dirs` 行を DELETE する（`runs.worker_dir_id` は `ON DELETE SET NULL`）。cleanup を行削除の後に呼ぶと join が `abs_path=NULL` を返し no-op 化するため、呼び出し側は削除した `abs_path` を `worker_dir_abs=` に明示で渡し、検出が行削除の前後どちらでも壊れないようにする。
 - PR 起点のクローズで `tools/run_complete_on_merge.py --pr <PR>` を呼ぶ場合は merge 記録時に自動で同 cleanup が走る（このパスは `remove_worker_dir()` を呼ばないので join フォールバックで足りる）。ただし gitignored タスクは PR を生まないことが多いため、close phase の StateWriter ブロックでの明示呼び出しが本筋。
