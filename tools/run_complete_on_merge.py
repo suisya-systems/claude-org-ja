@@ -88,15 +88,28 @@ def cleanup_pattern_c_local_md(
     *,
     task_id: str,
     claude_org_root: Path,
+    worker_dir_abs: Optional[str] = None,
 ) -> str:
     """Remove a leftover ``CLAUDE.local.md`` from the claude-org repo root
     for a Pattern C ``gitignored_repo_root`` self-edit run (Issue #478).
 
     Detection (design judgment 1 of Issue #478): ``runs.pattern == 'C'`` AND
-    the run's ``worker_dirs.abs_path`` equals ``claude_org_root``. This needs
-    no schema change — Pattern C *ephemeral* has ``worker_dir`` at
+    the run's worker_dir equals ``claude_org_root``. This needs no schema
+    change — Pattern C *ephemeral* has ``worker_dir`` at
     ``{workers_dir}/{task_id}`` (≠ root), so it is reclaimed by ordinary dir
     removal and naturally falls through here as ``not_applicable``.
+
+    The worker_dir is taken from the explicit ``worker_dir_abs`` argument when
+    provided, otherwise from the live ``runs.worker_dir_id`` → ``worker_dirs``
+    join. Issue #486: the close-phase runbook calls
+    ``StateWriter.remove_worker_dir()`` which DELETEs the ``worker_dirs`` row,
+    and ``runs.worker_dir_id`` is ``ON DELETE SET NULL`` (schema.sql:84), so a
+    cleanup invoked *after* the removal would see ``abs_path = NULL`` through
+    the join and no-op even for a genuine gitignored_repo_root run. Callers
+    that are about to (or just did) drop the worker_dirs row must pass the
+    path they hold via ``worker_dir_abs`` so detection stays order-independent.
+    The in-process PR-merge path (:func:`complete_on_merge`) leaves the row in
+    place and so relies on the join fallback.
 
     Idempotent: ``Path.unlink(missing_ok=True)`` never raises on a missing
     file, and a re-call after the brief is gone returns
@@ -118,7 +131,9 @@ def cleanup_pattern_c_local_md(
     if row is None:
         return CLEANUP_NOT_APPLICABLE
     pattern = (row["pattern"] or "").upper()
-    worker_dir = row["abs_path"]
+    # Prefer the caller-supplied path: it survives a prior remove_worker_dir()
+    # that NULLs the join. Fall back to the live join when omitted.
+    worker_dir = worker_dir_abs if worker_dir_abs is not None else row["abs_path"]
     if pattern != "C" or not worker_dir:
         return CLEANUP_NOT_APPLICABLE
 
