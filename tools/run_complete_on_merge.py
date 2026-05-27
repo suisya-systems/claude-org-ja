@@ -99,17 +99,21 @@ def cleanup_pattern_c_local_md(
     ``{workers_dir}/{task_id}`` (≠ root), so it is reclaimed by ordinary dir
     removal and naturally falls through here as ``not_applicable``.
 
-    The worker_dir is taken from the explicit ``worker_dir_abs`` argument when
-    provided, otherwise from the live ``runs.worker_dir_id`` → ``worker_dirs``
-    join. Issue #486: the close-phase runbook calls
+    The worker_dir is resolved from the live ``runs.worker_dir_id`` →
+    ``worker_dirs`` join, which stays authoritative whenever the row is
+    present, and only falls back to the explicit ``worker_dir_abs`` argument
+    when that join yields ``NULL``. Issue #486: the close-phase runbook calls
     ``StateWriter.remove_worker_dir()`` which DELETEs the ``worker_dirs`` row,
     and ``runs.worker_dir_id`` is ``ON DELETE SET NULL`` (schema.sql:84), so a
     cleanup invoked *after* the removal would see ``abs_path = NULL`` through
     the join and no-op even for a genuine gitignored_repo_root run. Callers
-    that are about to (or just did) drop the worker_dirs row must pass the
-    path they hold via ``worker_dir_abs`` so detection stays order-independent.
-    The in-process PR-merge path (:func:`complete_on_merge`) leaves the row in
-    place and so relies on the join fallback.
+    that are about to (or just did) drop the worker_dirs row pass the path they
+    hold via ``worker_dir_abs`` so detection stays order-independent. The
+    fallback is deliberately *not* an override: while the row is live the DB
+    value wins, so a caller that mistakenly passes ``root`` for a Pattern C
+    *ephemeral* run cannot trick the helper into deleting ``root``'s brief. The
+    in-process PR-merge path (:func:`complete_on_merge`) leaves the row in
+    place and so always uses the join value.
 
     Idempotent: ``Path.unlink(missing_ok=True)`` never raises on a missing
     file, and a re-call after the brief is gone returns
@@ -131,9 +135,11 @@ def cleanup_pattern_c_local_md(
     if row is None:
         return CLEANUP_NOT_APPLICABLE
     pattern = (row["pattern"] or "").upper()
-    # Prefer the caller-supplied path: it survives a prior remove_worker_dir()
-    # that NULLs the join. Fall back to the live join when omitted.
-    worker_dir = worker_dir_abs if worker_dir_abs is not None else row["abs_path"]
+    # The live join is authoritative; only fall back to the caller-supplied
+    # path when the worker_dirs row is already gone (Issue #486:
+    # remove_worker_dir() NULLs the join via ON DELETE SET NULL). Keeping the
+    # DB value in front means a stray worker_dir_abs cannot override a live row.
+    worker_dir = row["abs_path"] if row["abs_path"] is not None else worker_dir_abs
     if pattern != "C" or not worker_dir:
         return CLEANUP_NOT_APPLICABLE
 

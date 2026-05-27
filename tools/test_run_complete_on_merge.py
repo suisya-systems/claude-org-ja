@@ -586,6 +586,38 @@ class CleanupPatternCCloseOrderTests(unittest.TestCase):
             self.assertTrue(brief.exists())
             self.assertEqual(_events_of_kind(db, "pattern_c_cleanup"), [])
 
+    def test_live_row_wins_over_stray_worker_dir_abs(self) -> None:
+        """Codex Major: a stray worker_dir_abs must not override a live row.
+
+        While the worker_dirs row is still present (ephemeral C: abs_path
+        != root), a caller that mistakenly passes root via worker_dir_abs
+        must NOT delete root's brief — the DB value stays authoritative.
+        """
+        with TempDB() as db:
+            root = db.parent
+            ephemeral = root / "ephemeral_worker"
+            ephemeral.mkdir()
+            brief = self._brief_path(root)
+            brief.write_text("untouched\n", encoding="utf-8")
+            # Row is left in place (no remove_worker_dir): join resolves to
+            # the ephemeral dir, so root must be ignored.
+            _seed_pattern_c_run(db, worker_dir=str(ephemeral.resolve()))
+
+            conn = connect(db)
+            try:
+                result = run_complete_on_merge.cleanup_pattern_c_local_md(
+                    conn, task_id=TASK_ID, claude_org_root=root,
+                    worker_dir_abs=str(root.resolve()),  # stray override attempt
+                )
+            finally:
+                conn.close()
+
+            self.assertEqual(
+                result, run_complete_on_merge.CLEANUP_NOT_APPLICABLE
+            )
+            self.assertTrue(brief.exists())
+            self.assertEqual(_events_of_kind(db, "pattern_c_cleanup"), [])
+
 
 if __name__ == "__main__":
     unittest.main()
