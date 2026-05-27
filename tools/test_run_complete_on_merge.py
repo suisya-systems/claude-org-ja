@@ -468,5 +468,156 @@ class CleanupPatternCTests(unittest.TestCase):
             )
 
 
+class CleanupPatternCCloseOrderTests(unittest.TestCase):
+    """Issue #486: cleanup must fire even after remove_worker_dir().
+
+    The org-pull-request close-phase StateWriter block runs
+    ``remove_worker_dir()`` (DELETE on worker_dirs), and ``runs.worker_dir_id``
+    is ``ON DELETE SET NULL``. A cleanup that resolves the worker_dir via the
+    live join therefore sees ``abs_path = NULL`` and no-ops, leaving the
+    Pattern C gitignored_repo_root ``CLAUDE.local.md`` behind. The fix is the
+    explicit ``worker_dir_abs`` argument, which survives the row removal.
+    """
+
+    def _brief_path(self, root: Path) -> Path:
+        return root / run_complete_on_merge.PATTERN_C_BRIEF_FILENAME
+
+    def _close_remove_worker_dir(self, db: Path, abs_path: str) -> None:
+        """Mimic the SKILL StateWriter close block: status flip + row delete."""
+        conn = connect(db)
+        try:
+            with StateWriter(conn).transaction() as w:
+                w.update_run_status(TASK_ID, "completed")
+                w.remove_worker_dir(abs_path)
+        finally:
+            conn.close()
+
+    def test_cleanup_after_remove_with_worker_dir_abs_fires(self) -> None:
+        """The fix: passing worker_dir_abs keeps cleanup firing post-removal."""
+        with TempDB() as db:
+            root = db.parent
+            abs_path = str(root.resolve())
+            brief = self._brief_path(root)
+            brief.write_text("worker brief\n", encoding="utf-8")
+            _seed_pattern_c_run(db, worker_dir=abs_path)
+
+            # Close-phase ordering: worker_dirs row is gone before cleanup.
+            self._close_remove_worker_dir(db, abs_path)
+
+            conn = connect(db)
+            try:
+                # Sanity: the join no longer resolves the worker_dir.
+                row = conn.execute(
+                    "SELECT d.abs_path FROM runs r "
+                    "LEFT JOIN worker_dirs d ON d.id = r.worker_dir_id "
+                    "WHERE r.task_id = ?",
+                    (TASK_ID,),
+                ).fetchone()
+                self.assertIsNone(row["abs_path"])
+
+                result = run_complete_on_merge.cleanup_pattern_c_local_md(
+                    conn, task_id=TASK_ID, claude_org_root=root,
+                    worker_dir_abs=abs_path,
+                )
+            finally:
+                conn.close()
+
+            self.assertEqual(result, run_complete_on_merge.CLEANUP_REMOVED)
+            self.assertFalse(brief.exists())
+            evts = _events_of_kind(db, "pattern_c_cleanup")
+            self.assertEqual(len(evts), 1)
+            self.assertEqual(json.loads(evts[0]["payload_json"])["mode"], "auto")
+
+    def test_cleanup_after_remove_without_abs_regresses_to_noop(self) -> None:
+        """Root cause: the join-only path no-ops once the row is deleted.
+
+        Without ``worker_dir_abs`` the helper falls back to the live join,
+        which returns NULL after remove_worker_dir() — exactly the Issue #486
+        bug this test pins. The brief is (incorrectly) left behind.
+        """
+        with TempDB() as db:
+            root = db.parent
+            abs_path = str(root.resolve())
+            brief = self._brief_path(root)
+            brief.write_text("worker brief\n", encoding="utf-8")
+            _seed_pattern_c_run(db, worker_dir=abs_path)
+
+            self._close_remove_worker_dir(db, abs_path)
+
+            conn = connect(db)
+            try:
+                result = run_complete_on_merge.cleanup_pattern_c_local_md(
+                    conn, task_id=TASK_ID, claude_org_root=root,
+                )
+            finally:
+                conn.close()
+
+            self.assertEqual(
+                result, run_complete_on_merge.CLEANUP_NOT_APPLICABLE
+            )
+            self.assertTrue(brief.exists())
+            self.assertEqual(_events_of_kind(db, "pattern_c_cleanup"), [])
+
+    def test_worker_dir_abs_ephemeral_stays_noop(self) -> None:
+        """worker_dir_abs for an ephemeral C run (≠ root) must not delete."""
+        with TempDB() as db:
+            root = db.parent
+            ephemeral = root / "ephemeral_worker"
+            ephemeral.mkdir()
+            eph_abs = str(ephemeral.resolve())
+            brief = self._brief_path(root)
+            brief.write_text("untouched\n", encoding="utf-8")
+            _seed_pattern_c_run(db, worker_dir=eph_abs)
+
+            self._close_remove_worker_dir(db, eph_abs)
+
+            conn = connect(db)
+            try:
+                result = run_complete_on_merge.cleanup_pattern_c_local_md(
+                    conn, task_id=TASK_ID, claude_org_root=root,
+                    worker_dir_abs=eph_abs,
+                )
+            finally:
+                conn.close()
+
+            self.assertEqual(
+                result, run_complete_on_merge.CLEANUP_NOT_APPLICABLE
+            )
+            self.assertTrue(brief.exists())
+            self.assertEqual(_events_of_kind(db, "pattern_c_cleanup"), [])
+
+    def test_live_row_wins_over_stray_worker_dir_abs(self) -> None:
+        """Codex Major: a stray worker_dir_abs must not override a live row.
+
+        While the worker_dirs row is still present (ephemeral C: abs_path
+        != root), a caller that mistakenly passes root via worker_dir_abs
+        must NOT delete root's brief — the DB value stays authoritative.
+        """
+        with TempDB() as db:
+            root = db.parent
+            ephemeral = root / "ephemeral_worker"
+            ephemeral.mkdir()
+            brief = self._brief_path(root)
+            brief.write_text("untouched\n", encoding="utf-8")
+            # Row is left in place (no remove_worker_dir): join resolves to
+            # the ephemeral dir, so root must be ignored.
+            _seed_pattern_c_run(db, worker_dir=str(ephemeral.resolve()))
+
+            conn = connect(db)
+            try:
+                result = run_complete_on_merge.cleanup_pattern_c_local_md(
+                    conn, task_id=TASK_ID, claude_org_root=root,
+                    worker_dir_abs=str(root.resolve()),  # stray override attempt
+                )
+            finally:
+                conn.close()
+
+            self.assertEqual(
+                result, run_complete_on_merge.CLEANUP_NOT_APPLICABLE
+            )
+            self.assertTrue(brief.exists())
+            self.assertEqual(_events_of_kind(db, "pattern_c_cleanup"), [])
+
+
 if __name__ == "__main__":
     unittest.main()
