@@ -867,13 +867,20 @@ class TestPatternBClaudeOrgRepoWorktree(unittest.TestCase):
         )
         self.assertEqual(layout.pattern, "A")
         self.assertIsNone(layout.pattern_variant)
-        self.assertEqual(Path(layout.worker_dir), self.clone.resolve())
+        # Issue #489 (Codex Round 2 Major): mirror Pattern A also routes
+        # into the unified ``<clone>/.worktrees/<task>/`` layout so it
+        # cannot collide with a concurrent Pattern B over the clone root.
+        self.assertEqual(
+            Path(layout.worker_dir),
+            (self.clone / ".worktrees" / "en-task-a").resolve(),
+        )
         self.assertEqual(layout.planned_branch, "feat/en-task-a")
 
     def test_pattern_a_for_claude_org_en_slug_anchors_on_clone(self):
         """slug=claude-org-en (registry-style alias) must still land on the
         same physical clone — the resolver overrides worker_dir off the
-        clone path, not the slug."""
+        clone path, not the slug. Issue #489 mirror Pattern A: under
+        ``.worktrees/<task>/`` rather than the clone root."""
         layout = rwl.resolve(
             task_id="en-task-en",
             project_slug="claude-org-en",
@@ -881,7 +888,10 @@ class TestPatternBClaudeOrgRepoWorktree(unittest.TestCase):
             state_db_path=self.sb.db_path,
         )
         self.assertEqual(layout.pattern, "A")
-        self.assertEqual(Path(layout.worker_dir), self.clone.resolve())
+        self.assertEqual(
+            Path(layout.worker_dir),
+            (self.clone / ".worktrees" / "en-task-en").resolve(),
+        )
 
     def test_pattern_b_for_claude_org_slug_emits_claude_org_repo_worktree(self):
         """Issue #370 repro 1: slug=claude-org with active concurrent run
@@ -1285,7 +1295,11 @@ class TestAliasNamedRemoteRow(unittest.TestCase):
         )
         self.assertEqual(layout.pattern, "A")
         # Anchored on the canonical mirror clone, NOT workers/claude-org-en.
-        self.assertEqual(Path(layout.worker_dir), clone.resolve())
+        # Issue #489: under ``.worktrees/<task>/`` (unified mirror layout).
+        self.assertEqual(
+            Path(layout.worker_dir),
+            (clone / ".worktrees" / "en-with-clone").resolve(),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1640,7 +1654,13 @@ class TestPatternOverrideContract(unittest.TestCase):
             layout_overrides={"pattern": "A"},
         )
         self.assertEqual(layout.pattern, "A")
-        self.assertEqual(Path(layout.worker_dir), clone.resolve())
+        # Issue #489 Codex Round 2: ``--pattern A`` on the claude-org
+        # mirror also routes into ``<clone>/.worktrees/<task>/`` so
+        # auto-derive and override agree on the unified layout.
+        self.assertEqual(
+            Path(layout.worker_dir),
+            (clone / ".worktrees" / "force-a-mirror").resolve(),
+        )
 
     def test_variant_live_repo_worktree_requires_self_edit_role(self):
         """Codex Round 3 Blocker: ``pattern_variant=live_repo_worktree``

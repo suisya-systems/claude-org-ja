@@ -113,9 +113,14 @@ class DelegatePlan:
     closes_issue: Optional[int]
     refs_issues: list[int]
     artifacts_to_create: list[Path] = field(default_factory=list)
-    # Pattern B only: absolute path of the repo from which `git worktree add`
-    # is run. None for Pattern A / C, or when no usable base repo could be
-    # determined (apply will then raise WorktreeApplyError).
+    # Absolute path of the repo from which ``git worktree add`` is run.
+    # Set for Pattern B (live_repo_worktree, claude_org_repo_worktree,
+    # generic) AND for Pattern A when the resolver routed worker_dir into
+    # the Issue #489 unified ``<base>/.worktrees/<task>/`` layout. None
+    # for Pattern A legacy direct (workers/<slug>/), Pattern C, or when
+    # no usable base repo could be determined (apply then raises
+    # WorktreeApplyError on Pattern B, or skips worktree creation on
+    # Pattern A legacy / Pattern C).
     base_repo: Optional[Path] = None
     # Issue #489 surface: non-blocking notes (e.g. legacy ``_repo_clone``
     # layout still in use; canonical clone is preferred). Apply still
@@ -463,22 +468,22 @@ def build_delegate_plan(
     # Blocker).
     base_repo: Optional[Path] = None
     if layout.pattern == "A":
-        candidate = rwl.find_workers_dir_clone(
-            project_slug, project_path, Path(workers_dir_for_norm)
-        )
-        if candidate is not None:
-            try:
-                wd_resolved = Path(layout.worker_dir).resolve()
-                candidate_resolved = candidate.resolve()
-            except OSError:
-                wd_resolved = Path(layout.worker_dir)
-                candidate_resolved = candidate
-            # Only treat the clone as a Pattern A base when worker_dir is
-            # actually rooted under it (the new Issue #489 layout). For
-            # the legacy direct path (worker_dir == workers/<slug>/) we
-            # leave base_repo unset so _ensure_worktree stays a no-op.
-            if wd_resolved.parent.parent == candidate_resolved:
-                base_repo = candidate_resolved
+        # Pattern A's Issue #489 unified layout puts worker_dir at
+        # ``<base>/.worktrees/<task>/`` regardless of whether the base is a
+        # workers/<slug>/ clone, a workers/<slug>/_repo_clone/ legacy
+        # subdir, or the claude-org mirror clone. Derive base_repo from
+        # the worker_dir shape so all three sources are handled with one
+        # rule. Pattern A legacy direct (worker_dir == workers/<slug>/)
+        # has no ``.worktrees`` parent and leaves ``base_repo`` None, so
+        # ``_ensure_worktree`` stays a no-op for that path.
+        try:
+            wd_resolved = Path(layout.worker_dir).resolve()
+        except OSError:
+            wd_resolved = Path(layout.worker_dir)
+        if wd_resolved.parent.name == ".worktrees":
+            candidate = wd_resolved.parent.parent
+            if rwl.is_local_git_repo(str(candidate)):
+                base_repo = candidate
     if layout.pattern == "B":
         if layout.pattern_variant == "live_repo_worktree":
             base_repo = Path(claude_org_root).resolve()

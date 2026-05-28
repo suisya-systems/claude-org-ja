@@ -701,9 +701,23 @@ def resolve(
         # local clone yet"; we fall through to the legacy direct path so
         # first-time / `-`-placeholder / local-path-registry deployments
         # behave as they did before.
-        base_for_worktree = find_workers_dir_clone(
-            project_slug, project.path, workers_dir
-        )
+        #
+        # Codex Round 2 Major: ``find_workers_dir_clone`` is only
+        # consulted for URL-only / placeholder registry rows. When the
+        # registry records a real local git repo path
+        # (``project.path = /repos/clock-app``), THAT path is the
+        # canonical base — ``workers/<slug>/`` is a per-dispatch work
+        # area, NEVER a clone. The helper's permissive non-URL fallback
+        # would otherwise silently adopt any random git repo that
+        # happened to live at ``workers/<slug>/`` and diverge from
+        # ``gen_delegate_payload``'s base derivation (which still
+        # prefers ``project.path`` for local-path rows).
+        if project.path and is_local_git_repo(project.path):
+            base_for_worktree = None
+        else:
+            base_for_worktree = find_workers_dir_clone(
+                project_slug, project.path, workers_dir
+            )
         if force_b:
             pattern = "B"
             if self_edit:
@@ -724,18 +738,24 @@ def resolve(
 
     worker_dir = worker_dir.resolve() if worker_dir.is_absolute() else worker_dir.resolve()
 
-    # --- claude-org mirror anchoring (Issue #370) -------------------------
+    # --- claude-org mirror anchoring (Issue #370 + Issue #489) ----------
     # Re-pin worker_dir on the actual clone (which lives at
     # ``{workers_dir}/claude-org``). For Pattern B, also tag the variant so
     # gen_delegate_payload can derive base_repo from worker_dir.parent.parent
     # without needing a registry row. Skipped for Pattern C / gitignored
     # cases — those already use the synthesized project.path directly.
+    #
+    # Codex Round 2 Major (Issue #489): Pattern A on the mirror also
+    # uses the unified ``<clone>/.worktrees/<task>/`` layout. The
+    # previous "Pattern A = clone root" behavior would have re-introduced
+    # the historical collision (mirror_of-less first dispatch wrote
+    # CLAUDE.md / send_plan.json directly into the canonical clone,
+    # exactly the directory a concurrent Pattern B dispatch needs as
+    # its worktree base).
     if claude_org_clone is not None and pattern in ("A", "B"):
+        worker_dir = (claude_org_clone / ".worktrees" / task_id).resolve()
         if pattern == "B":
             variant = "claude_org_repo_worktree"
-            worker_dir = (claude_org_clone / ".worktrees" / task_id).resolve()
-        else:
-            worker_dir = claude_org_clone.resolve()
 
     # --- TOML [worker] block overrides (Issue #290 defect 1) --------------
     # Honor explicit values from the caller (typically a worker_brief.toml
@@ -942,11 +962,22 @@ def resolve(
                 and not explicit_worker_dir
                 and claude_org_clone is None
             ):
-                override_base = find_workers_dir_clone(
-                    project_slug,
-                    project.path if project is not None else None,
-                    workers_dir,
+                # Codex Round 2 Major: skip the workers_dir fallback
+                # when the registry records a real local clone path —
+                # use that as the base instead so resolver and payload
+                # agree on which repo backs the worktree.
+                _override_project_path = (
+                    project.path if project is not None else None
                 )
+                if (
+                    _override_project_path
+                    and is_local_git_repo(_override_project_path)
+                ):
+                    override_base = None
+                else:
+                    override_base = find_workers_dir_clone(
+                        project_slug, _override_project_path, workers_dir,
+                    )
                 if override_base is not None:
                     worker_dir = (override_base / ".worktrees" / task_id).resolve()
                 else:
@@ -971,13 +1002,32 @@ def resolve(
             # for the same project.
             if pattern == "A" and not explicit_worker_dir:
                 if claude_org_clone is not None:
-                    worker_dir = claude_org_clone.resolve()
+                    # Issue #489: mirror Pattern A also lands in the
+                    # unified ``<clone>/.worktrees/<task>/`` layout (see
+                    # the mirror anchoring block below) — keep the
+                    # ``--pattern A`` override consistent.
+                    worker_dir = (
+                        claude_org_clone / ".worktrees" / task_id
+                    ).resolve()
                 else:
-                    override_base = find_workers_dir_clone(
-                        project_slug,
-                        project.path if project is not None else None,
-                        workers_dir,
+                    # Codex Round 2 Major: skip the workers_dir fallback
+                    # when the registry records a real local clone path —
+                    # use that as the base instead so resolver and payload
+                    # agree on which repo backs the worktree.
+                    _override_project_path_a = (
+                        project.path if project is not None else None
                     )
+                    if (
+                        _override_project_path_a
+                        and is_local_git_repo(_override_project_path_a)
+                    ):
+                        override_base = None
+                    else:
+                        override_base = find_workers_dir_clone(
+                            project_slug,
+                            _override_project_path_a,
+                            workers_dir,
+                        )
                     if override_base is not None:
                         worker_dir = (
                             override_base / ".worktrees" / task_id
