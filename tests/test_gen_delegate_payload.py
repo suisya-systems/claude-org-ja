@@ -1996,5 +1996,623 @@ class TestPatternBWorktreeFetchesStaleOrigin(unittest.TestCase):
         self.assertFalse(Path(plan.layout.worker_dir).exists())
 
 
+# ---------------------------------------------------------------------------
+# Issue #489: preview warnings/blocking_warnings surface + atomic apply
+# rollback when post-reservation steps fail (Codex review (d) + Blocker 2)
+# ---------------------------------------------------------------------------
+
+
+class TestIssue489PreviewWarnings(unittest.TestCase):
+    """Issue #489 (d): preview must surface
+
+    - ``warnings``: non-blocking notes (legacy ``_repo_clone`` layout in use).
+    - ``blocking_warnings``: layout integrity refused apply (non-git
+      ``workers/<slug>/`` with Pattern A residue and no usable base).
+
+    Both are exposed in the preview JSON at the top level (and mirrored
+    in ``summary``); the human preview emits them to stderr and exits
+    nonzero on blocking_warnings. ``apply`` raises
+    :class:`gdp.BlockingPreviewWarningError` rather than touching the
+    DB / filesystem.
+    """
+
+    def setUp(self) -> None:
+        try:
+            subprocess.run(["git", "--version"], capture_output=True, check=True)
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            self.skipTest("git not available")
+        self._td = tempfile.TemporaryDirectory()
+        self.sb = _Sandbox(Path(self._td.name))
+        # URL-only registry for renga — the Issue #489 motivating shape.
+        (self.sb.claude_org_root / "registry" / "projects.md").write_text(
+            "# Projects\n\n"
+            "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 |\n"
+            "|---|---|---|---|---|\n"
+            "| renga | renga | https://github.com/suisya-systems/renga.git "
+            "| Renga | dev |\n",
+            encoding="utf-8",
+        )
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def _clone(self, path: Path, origin: str) -> None:
+        path.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["git", "-C", str(path), "init", "-q"], check=True
+        )
+        subprocess.run(
+            ["git", "-C", str(path), "remote", "add", "origin", origin],
+            check=True,
+        )
+
+    def test_non_git_workers_slug_with_residue_emits_blocking_warning(self):
+        """``workers/renga/`` is a plain directory holding leftover
+        Pattern-A artifacts (CLAUDE.md / send_plan.json), and no
+        ``_repo_clone`` fallback exists — apply would be ambiguous, so
+        preview refuses."""
+        slug_dir = self.sb.workers / "renga"
+        slug_dir.mkdir()
+        (slug_dir / "CLAUDE.md").write_text("old brief", encoding="utf-8")
+        (slug_dir / "send_plan.json").write_text("{}", encoding="utf-8")
+        plan = gdp.build_delegate_plan(
+            task_id="renga-blocked-task",
+            project_slug="renga",
+            description="alt+p ux fix",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertTrue(plan.blocking_warnings)
+        self.assertTrue(
+            any("Pattern-A residue" in w for w in plan.blocking_warnings)
+        )
+        # Summary mirrors top-level + base_repo is None for this shape.
+        self.assertIsNone(plan.base_repo)
+        summary = plan.to_summary_dict()
+        self.assertEqual(summary["blocking_warnings"], plan.blocking_warnings)
+
+    def test_legacy_repo_clone_emits_non_blocking_deprecation_warning(self):
+        """``_repo_clone`` legacy fallback resolved → preview ships a
+        non-blocking deprecation warning so the deployment can migrate
+        to the canonical ``workers/<slug>/`` layout. Apply still
+        proceeds (warnings, not blocking_warnings)."""
+        slug_dir = self.sb.workers / "renga"
+        slug_dir.mkdir()
+        (slug_dir / "README.md").write_text("loose note", encoding="utf-8")
+        legacy = slug_dir / "_repo_clone"
+        self._clone(legacy, "https://github.com/suisya-systems/renga.git")
+        plan = gdp.build_delegate_plan(
+            task_id="renga-legacy-task",
+            project_slug="renga",
+            description="alt+p ux fix",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertFalse(plan.blocking_warnings)
+        self.assertTrue(plan.warnings)
+        self.assertTrue(any("_repo_clone" in w for w in plan.warnings))
+        # Codex Round 1 follow-up: Pattern A now carries ``base_repo`` when
+        # routed through the new unified ``<base>/.worktrees/<task>/``
+        # layout — without it, apply's ``_ensure_worktree`` would skip
+        # ``git worktree add`` for Pattern A entirely.
+        self.assertEqual(plan.layout.pattern, "A")
+        self.assertIsNotNone(plan.base_repo)
+        self.assertEqual(Path(plan.base_repo).resolve(), legacy.resolve())
+        self.assertEqual(
+            Path(plan.layout.worker_dir),
+            (legacy / ".worktrees" / "renga-legacy-task").resolve(),
+        )
+
+    def test_preview_json_exposes_warnings_at_top_level(self):
+        """JSON consumers (jq pipelines, dispatcher previews) read
+        ``warnings`` / ``blocking_warnings`` at the top level."""
+        slug_dir = self.sb.workers / "renga"
+        slug_dir.mkdir()
+        (slug_dir / "CLAUDE.md").write_text("old brief", encoding="utf-8")
+        from contextlib import redirect_stdout, redirect_stderr
+        from io import StringIO
+
+        out = StringIO()
+        err = StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            rc = gdp.main([
+                "preview",
+                "--task-id", "renga-blocked-cli",
+                "--project-slug", "renga",
+                "--description", "alt+p ux fix",
+                "--claude-org-root", str(self.sb.claude_org_root),
+                "--state-db-path", str(self.sb.db_path),
+                "--json",
+            ])
+        self.assertEqual(rc, 3, msg=f"stderr={err.getvalue()!r}")
+        data = json.loads(out.getvalue())
+        self.assertIn("blocking_warnings", data)
+        self.assertTrue(data["blocking_warnings"])
+        # Mirrored in summary too.
+        self.assertEqual(
+            data["blocking_warnings"], data["summary"]["blocking_warnings"]
+        )
+        # JSON path keeps stderr clean — the warning content is already in
+        # the JSON body. The human path (no ``--json``) separately writes
+        # a ``BLOCKING:`` marker to stderr; covered by
+        # :meth:`test_human_preview_writes_blocking_marker_to_stderr`.
+        self.assertEqual(err.getvalue(), "")
+
+    def test_human_preview_writes_blocking_marker_to_stderr(self):
+        """Human preview path (no ``--json``) emits a ``BLOCKING:`` line
+        per blocking_warning to stderr so a wrapper script can grep for
+        the marker. Exit code is 3, matching the JSON path."""
+        slug_dir = self.sb.workers / "renga"
+        slug_dir.mkdir()
+        (slug_dir / "CLAUDE.md").write_text("old brief", encoding="utf-8")
+        from contextlib import redirect_stdout, redirect_stderr
+        from io import StringIO
+
+        out = StringIO()
+        err = StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            rc = gdp.main([
+                "preview",
+                "--task-id", "renga-blocked-human",
+                "--project-slug", "renga",
+                "--description", "alt+p ux fix",
+                "--claude-org-root", str(self.sb.claude_org_root),
+                "--state-db-path", str(self.sb.db_path),
+            ])
+        self.assertEqual(rc, 3)
+        self.assertIn("BLOCKING:", err.getvalue())
+
+    def test_apply_refuses_when_plan_has_blocking_warnings(self):
+        """``apply_delegate_plan`` must not touch DB / filesystem when
+        the plan carries blocking_warnings — raise
+        :class:`BlockingPreviewWarningError` BEFORE the DB reservation
+        so no queued row leaks."""
+        slug_dir = self.sb.workers / "renga"
+        slug_dir.mkdir()
+        (slug_dir / "CLAUDE.md").write_text("old brief", encoding="utf-8")
+        plan = gdp.build_delegate_plan(
+            task_id="renga-blocked-apply",
+            project_slug="renga",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        with self.assertRaises(gdp.BlockingPreviewWarningError):
+            gdp.apply_delegate_plan(
+                plan,
+                state_db_path=self.sb.db_path,
+                claude_org_root=self.sb.claude_org_root,
+                skip_settings=True,
+            )
+        runs = self.sb.list_runs()
+        self.assertFalse(
+            any(r["task_id"] == "renga-blocked-apply" for r in runs),
+            f"queued row leaked after blocking-warning abort: {runs}",
+        )
+
+    def test_local_path_registry_with_residue_is_not_blocking(self):
+        """Codex Round 3 Major regression: a project registered with a
+        real local clone path (``project.path = /repos/clock-app``) gets
+        ``base_repo`` derived from the registered path, NOT from
+        ``find_workers_dir_clone``. The blocking_warning logic must use
+        ``base_repo`` as the authoritative "is there a usable base?"
+        signal — otherwise leftover residue in ``workers/<slug>/`` would
+        false-positive even though apply could safely run worktree-add
+        from the registered local clone."""
+        try:
+            subprocess.run(["git", "--version"], capture_output=True, check=True)
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            self.skipTest("git not available")
+        local_repo = Path(self._td.name) / "registered-clock-app"
+        local_repo.mkdir()
+        subprocess.run(
+            ["git", "-C", str(local_repo), "init", "-q"], check=True
+        )
+        # Registry row points at the registered local clone (NOT at
+        # workers/<slug>/). This is the existing
+        # "test_apply_creates_plain_pattern_b_worktree_for_project_repo"
+        # shape with the extra wrinkle that workers/clock-app/ has
+        # leftover Pattern-A residue from an earlier dispatch.
+        (self.sb.claude_org_root / "registry" / "projects.md").write_text(
+            "# Projects\n\n"
+            "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 |\n"
+            "|---|---|---|---|---|\n"
+            f"| 時計 | clock-app | {local_repo} | Demo clock | - |\n",
+            encoding="utf-8",
+        )
+        # Force Pattern B so the registered local path drives base_repo.
+        self.sb.add_active_run(
+            task_id="prev-clock-task",
+            project_slug="clock-app",
+            worker_dir=str(self.sb.workers / "clock-app"),
+        )
+        # Leftover Pattern-A residue in workers/clock-app/.
+        residue_dir = self.sb.workers / "clock-app"
+        residue_dir.mkdir(exist_ok=True)
+        (residue_dir / "CLAUDE.md").write_text("old", encoding="utf-8")
+        plan = gdp.build_delegate_plan(
+            task_id="clock-with-residue",
+            project_slug="clock-app",
+            description="non-blocking residue regression",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(plan.layout.pattern, "B")
+        self.assertEqual(Path(plan.base_repo).resolve(), local_repo.resolve())
+        # Residue + leftover workers/<slug>/ exists, but base_repo is
+        # the registered local clone — no blocking_warning fires.
+        self.assertEqual(plan.blocking_warnings, [])
+
+    def test_no_warnings_when_canonical_clone_present(self):
+        """The clean Issue #489 canonical layout — clone at
+        ``workers/renga/`` directly — emits neither a deprecation
+        warning nor a blocker."""
+        self._clone(
+            self.sb.workers / "renga",
+            "https://github.com/suisya-systems/renga.git",
+        )
+        plan = gdp.build_delegate_plan(
+            task_id="renga-canonical-task",
+            project_slug="renga",
+            description="alt+p ux fix",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(plan.warnings, [])
+        self.assertEqual(plan.blocking_warnings, [])
+
+
+class TestIssue489PatternAWorktreeCreation(unittest.TestCase):
+    """Issue #489 Codex Round 1 Blocker follow-up: when Pattern A resolves
+    to the unified ``<base>/.worktrees/<task>/`` layout (i.e. a real base
+    clone is detected at ``workers/<slug>/`` or its legacy ``_repo_clone``
+    subdir), ``apply`` must actually run ``git worktree add`` against
+    that base — not just mkdir an empty directory. ``base_repo`` is
+    populated on the plan so :func:`_ensure_worktree` fires for Pattern A
+    too."""
+
+    def setUp(self) -> None:
+        try:
+            subprocess.run(["git", "--version"], capture_output=True, check=True)
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            self.skipTest("git not available")
+        self._td = tempfile.TemporaryDirectory()
+        # Suppress sandbox-level git init so the per-test seed picks the
+        # ``main`` branch deterministically.
+        self.sb = _Sandbox(Path(self._td.name), with_claude_org_origin=False)
+        import os
+        self._git_env = os.environ.copy()
+        self._git_env.update(
+            {
+                "GIT_AUTHOR_NAME": "test",
+                "GIT_AUTHOR_EMAIL": "test@example.com",
+                "GIT_COMMITTER_NAME": "test",
+                "GIT_COMMITTER_EMAIL": "test@example.com",
+            }
+        )
+        # Replace the auto-seeded registry with a renga URL-only row.
+        (self.sb.claude_org_root / "registry" / "projects.md").write_text(
+            "# Projects\n\n"
+            "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 |\n"
+            "|---|---|---|---|---|\n"
+            "| renga | renga | https://github.com/suisya-systems/renga.git "
+            "| Renga | dev |\n",
+            encoding="utf-8",
+        )
+        # Build a local upstream whose filesystem path *contains* a
+        # ``github.com/suisya-systems/renga.git`` suffix so that the
+        # origin URL passes :func:`_origin_matches_registered`'s github
+        # gate AND ``git fetch origin`` succeeds locally. The gate uses
+        # a non-anchored regex search so the leading directory prefix
+        # is harmless; the trailing path is what matters.
+        self.upstream = (
+            Path(self._td.name)
+            / "github.com"
+            / "suisya-systems"
+            / "renga.git"
+        )
+        self.upstream.mkdir(parents=True)
+        self._git(self.upstream, "init", "-q", "-b", "main")
+        (self.upstream / "trunk.txt").write_text("v1", encoding="utf-8")
+        self._git(self.upstream, "add", "trunk.txt")
+        self._git(self.upstream, "commit", "-q", "-m", "c1")
+        # Clone (canonical layout) lives at workers/renga/. Point its
+        # origin at the github-named local upstream so the gate accepts
+        # AND the fetch can refresh remote-tracking refs.
+        self.clone = self.sb.workers / "renga"
+        self._git_init_match_origin(self.clone, str(self.upstream))
+        self._git(self.clone, "fetch", "-q", "origin")
+        self._git(self.clone, "symbolic-ref", "refs/remotes/origin/HEAD",
+                  "refs/remotes/origin/main")
+        self._git(self.clone, "reset", "-q", "--hard", "origin/main")
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def _git(self, repo: Path, *args: str) -> None:
+        subprocess.run(
+            ["git", "-C", str(repo), *args], check=True, env=self._git_env,
+        )
+
+    def _git_init_match_origin(self, repo: Path, origin_url: str) -> None:
+        repo.mkdir(parents=True, exist_ok=True)
+        self._git(repo, "init", "-q", "-b", "main")
+        self._git(repo, "remote", "add", "origin", origin_url)
+
+    def test_apply_creates_pattern_a_worktree_when_base_clone_present(self):
+        """Plan must populate ``base_repo`` for Pattern A so apply runs
+        ``git worktree add`` against the canonical clone — without this
+        the worker lands in an empty ``<base>/.worktrees/<task>/``
+        directory rather than a real git checkout (Codex Round 1
+        Blocker)."""
+        plan = gdp.build_delegate_plan(
+            task_id="renga-pattern-a",
+            project_slug="renga",
+            description="alt+p ux fix",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(plan.layout.pattern, "A")
+        self.assertIsNotNone(plan.base_repo)
+        self.assertEqual(Path(plan.base_repo).resolve(), self.clone.resolve())
+        self.assertEqual(
+            Path(plan.layout.worker_dir),
+            (self.clone / ".worktrees" / "renga-pattern-a").resolve(),
+        )
+        gdp.apply_delegate_plan(
+            plan,
+            state_db_path=self.sb.db_path,
+            claude_org_root=self.sb.claude_org_root,
+            skip_settings=True,
+        )
+        worker_dir = Path(plan.layout.worker_dir)
+        self.assertTrue(worker_dir.exists())
+        # A real worktree has a ``.git`` entry (file or directory).
+        self.assertTrue((worker_dir / ".git").exists())
+        # The clone treats it as a registered worktree.
+        out = subprocess.check_output(
+            ["git", "-C", str(self.clone),
+             "worktree", "list", "--porcelain"],
+        ).decode("utf-8", errors="replace")
+        registered = {
+            Path(line[len("worktree "):].strip()).resolve()
+            for line in out.splitlines() if line.startswith("worktree ")
+        }
+        self.assertIn(worker_dir.resolve(), registered)
+        # Brief lands inside the worktree (not in workers/renga/ root).
+        self.assertTrue((worker_dir / "CLAUDE.md").exists())
+        self.assertFalse((self.sb.workers / "renga" / "CLAUDE.md").is_file())
+
+    def test_pattern_a_worktree_surfaces_sandbox_pattern_b_to_runtime(self):
+        """Codex Round 3 Blocker: ``settings_args["pattern"]`` is what
+        ``claude-org-runtime settings generate`` keys ``sandbox_by_pattern``
+        off. Pattern A's unified worktree layout needs Pattern B's
+        Git-metadata carve-outs (``<base>/.git/worktrees/<task>/``,
+        objects, branch ref, packed-refs) — without the override the
+        runtime selects A's sandbox and git commits inside the worktree
+        fail under bwrap. ``layout.pattern`` stays at ``A`` (first-run
+        label / DB row), only ``settings_args["pattern"]`` flips to B."""
+        plan = gdp.build_delegate_plan(
+            task_id="renga-sandbox-flip",
+            project_slug="renga",
+            description="alt+p ux fix",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(plan.layout.pattern, "A")
+        self.assertEqual(plan.settings_args["pattern"], "B")
+        # base-clone is surfaced too so the runtime can substitute
+        # ``{base_clone}`` in B's sandbox body.
+        self.assertEqual(
+            plan.settings_args["base-clone"], str(self.clone.resolve())
+        )
+        # The cmd builder honors the override.
+        cmd = gdp._build_settings_generate_cmd(
+            plan.settings_args, runtime_cmd="claude-org-runtime"
+        )
+        self.assertEqual(cmd[cmd.index("--pattern") + 1], "B")
+        self.assertEqual(
+            cmd[cmd.index("--base-clone") + 1], str(self.clone.resolve())
+        )
+
+    def test_apply_skips_worktree_for_pattern_a_legacy_direct(self):
+        """When no base clone is detected (e.g. ``-`` placeholder
+        registry row, or a clone is simply missing), Pattern A keeps the
+        legacy ``workers/<slug>/`` direct layout and apply must NOT try
+        to ``git worktree add`` — ``base_repo`` stays None and
+        ``_ensure_worktree`` returns early."""
+        # Reset registry to a `-` placeholder so find_workers_dir_clone
+        # cannot resolve the renga clone we set up in setUp.
+        (self.sb.claude_org_root / "registry" / "projects.md").write_text(
+            "# Projects\n\n"
+            "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 |\n"
+            "|---|---|---|---|---|\n"
+            "| 時計 | clock-app | - | Demo clock | - |\n",
+            encoding="utf-8",
+        )
+        plan = gdp.build_delegate_plan(
+            task_id="clock-legacy",
+            project_slug="clock-app",
+            description="legacy direct",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(plan.layout.pattern, "A")
+        self.assertIsNone(plan.base_repo)
+        self.assertEqual(
+            Path(plan.layout.worker_dir),
+            (self.sb.workers / "clock-app").resolve(),
+        )
+        gdp.apply_delegate_plan(
+            plan,
+            state_db_path=self.sb.db_path,
+            claude_org_root=self.sb.claude_org_root,
+            skip_settings=True,
+        )
+        # Brief landed in the direct workers/<slug>/ — no worktree
+        # was created (no .git in workers/clock-app), but apply also
+        # did not fail.
+        wd = Path(plan.layout.worker_dir)
+        self.assertTrue((wd / "CLAUDE.md").exists())
+        self.assertFalse((wd / ".git").exists())
+
+
+class TestIssue489OverrideWorkerDirAlignment(unittest.TestCase):
+    """Issue #489 Codex Round 1 Major follow-up: ``--pattern A``/``B``
+    override must consult :func:`find_workers_dir_clone` so the
+    override-driven worker_dir lands on the same base the auto-derive
+    would pick (canonical ``workers/<slug>/`` OR legacy
+    ``workers/<slug>/_repo_clone/``). Previously the override
+    hardcoded ``workers/<slug>/.worktrees/`` which diverged whenever
+    the base lived under the legacy subdir."""
+
+    def setUp(self) -> None:
+        try:
+            subprocess.run(["git", "--version"], capture_output=True, check=True)
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            self.skipTest("git not available")
+        self._td = tempfile.TemporaryDirectory()
+        self.sb = _Sandbox(Path(self._td.name))
+        (self.sb.claude_org_root / "registry" / "projects.md").write_text(
+            "# Projects\n\n"
+            "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 |\n"
+            "|---|---|---|---|---|\n"
+            "| renga | renga | https://github.com/suisya-systems/renga.git "
+            "| Renga | dev |\n",
+            encoding="utf-8",
+        )
+        # Legacy layout: clone parked under workers/renga/_repo_clone/.
+        (self.sb.workers / "renga").mkdir()
+        (self.sb.workers / "renga" / "README.md").write_text(
+            "loose note", encoding="utf-8"
+        )
+        self.legacy_clone = self.sb.workers / "renga" / "_repo_clone"
+        self.legacy_clone.mkdir()
+        subprocess.run(
+            ["git", "-C", str(self.legacy_clone), "init", "-q"], check=True
+        )
+        subprocess.run(
+            ["git", "-C", str(self.legacy_clone), "remote", "add",
+             "origin", "https://github.com/suisya-systems/renga.git"],
+            check=True,
+        )
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def test_force_pattern_b_override_uses_repo_clone_base_path(self):
+        from tools import resolve_worker_layout as rwl
+
+        layout = rwl.resolve(
+            task_id="override-legacy-b",
+            project_slug="renga",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+            layout_overrides={"pattern": "B"},
+        )
+        self.assertEqual(layout.pattern, "B")
+        self.assertEqual(
+            Path(layout.worker_dir),
+            (self.legacy_clone / ".worktrees" / "override-legacy-b").resolve(),
+        )
+
+    def test_force_pattern_a_override_uses_repo_clone_base_path(self):
+        from tools import resolve_worker_layout as rwl
+
+        layout = rwl.resolve(
+            task_id="override-legacy-a",
+            project_slug="renga",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+            layout_overrides={"pattern": "A"},
+        )
+        self.assertEqual(layout.pattern, "A")
+        self.assertEqual(
+            Path(layout.worker_dir),
+            (self.legacy_clone / ".worktrees" / "override-legacy-a").resolve(),
+        )
+
+
+class TestIssue489AtomicApplyRollback(unittest.TestCase):
+    """Issue #489 Blocker 2: ``_reserve_in_db`` commits the queued run
+    row before ``_write_brief`` / ``_run_settings_generate`` /
+    ``_write_send_plan`` run. A failure in any of those post-reservation
+    steps leaves the queued row in place; resolver then sees Pattern A
+    as occupied on the next dispatch and silently flips to Pattern B.
+    The atomic-rollback layer wraps the post-reservation block and
+    compensates with ``status='abandoned'`` on failure so the leak is
+    closed."""
+
+    def setUp(self) -> None:
+        self._td = tempfile.TemporaryDirectory()
+        self.sb = _Sandbox(Path(self._td.name))
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def _build_plain_a(self, task_id: str = "atomic-task") -> gdp.DelegatePlan:
+        return gdp.build_delegate_plan(
+            task_id=task_id,
+            project_slug="clock-app",
+            description="atomic apply",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+
+    def test_write_brief_failure_compensates_queued_run(self):
+        """Patch ``_write_brief`` to raise after the DB reservation
+        commits. Expect: the exception propagates, and the queued run
+        row is flipped to ``abandoned`` so a follow-up dispatch sees
+        Pattern A as free."""
+        plan = self._build_plain_a()
+        boom = RuntimeError("simulated disk failure during brief write")
+        from unittest.mock import patch
+
+        with patch.object(gdp, "_write_brief", side_effect=boom):
+            with self.assertRaises(RuntimeError) as cm:
+                gdp.apply_delegate_plan(
+                    plan,
+                    state_db_path=self.sb.db_path,
+                    claude_org_root=self.sb.claude_org_root,
+                    skip_settings=True,
+                )
+        self.assertIs(cm.exception, boom)
+        runs = self.sb.list_runs()
+        match = [r for r in runs if r["task_id"] == "atomic-task"]
+        self.assertEqual(len(match), 1, runs)
+        self.assertEqual(match[0]["status"], "abandoned")
+
+    def test_send_plan_write_failure_compensates_queued_run(self):
+        """Same contract for ``_write_send_plan`` — the last
+        post-reservation side effect must also be guarded."""
+        plan = self._build_plain_a(task_id="send-plan-fail")
+        boom = OSError("permission denied")
+        from unittest.mock import patch
+
+        with patch.object(gdp, "_write_send_plan", side_effect=boom):
+            with self.assertRaises(OSError):
+                gdp.apply_delegate_plan(
+                    plan,
+                    state_db_path=self.sb.db_path,
+                    claude_org_root=self.sb.claude_org_root,
+                    skip_settings=True,
+                )
+        match = [r for r in self.sb.list_runs() if r["task_id"] == "send-plan-fail"]
+        self.assertEqual(match[0]["status"], "abandoned")
+
+    def test_successful_apply_leaves_queued_run_intact(self):
+        """Sanity guard: on the happy path the queued row stays queued
+        (the rollback layer must be a no-op when nothing fails). The
+        next dispatcher T2 promotes it to ``in_use``."""
+        plan = self._build_plain_a(task_id="happy-task")
+        gdp.apply_delegate_plan(
+            plan,
+            state_db_path=self.sb.db_path,
+            claude_org_root=self.sb.claude_org_root,
+            skip_settings=True,
+        )
+        match = [r for r in self.sb.list_runs() if r["task_id"] == "happy-task"]
+        self.assertEqual(match[0]["status"], "queued")
+
+
 if __name__ == "__main__":
     unittest.main()

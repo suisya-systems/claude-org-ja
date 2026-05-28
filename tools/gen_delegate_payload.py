@@ -74,6 +74,30 @@ class WorktreeApplyError(RuntimeError):
     """
 
 
+class BlockingPreviewWarningError(RuntimeError):
+    """Raised by ``apply`` when the plan carries one or more
+    ``blocking_warnings`` (Issue #489 surface). Distinct from
+    :class:`WorktreeApplyError` so callers can disambiguate "preview-time
+    layout integrity refused apply" from "git worktree creation failed
+    at apply time"; both classes always run before any DB / FS write so
+    neither leaks a queued run row.
+    """
+
+
+# Filenames whose presence in a non-git ``workers/<slug>/`` is treated as a
+# tell-tale leftover from an earlier Pattern A dispatch (the layout Issue
+# #489 sunsets). Used by :func:`_compute_layout_warnings` to decide whether
+# the directory is "non-git with residue" (blocking) vs "non-git but empty
+# enough to safely bootstrap into" (no warning, falls through to legacy
+# Pattern A direct).
+_PATTERN_A_RESIDUE_FILENAMES: tuple[str, ...] = (
+    "CLAUDE.md",
+    "CLAUDE.local.md",
+    "send_plan.json",
+    ".claude",
+)
+
+
 @dataclass(frozen=True)
 class DelegatePlan:
     task_id: str
@@ -89,10 +113,24 @@ class DelegatePlan:
     closes_issue: Optional[int]
     refs_issues: list[int]
     artifacts_to_create: list[Path] = field(default_factory=list)
-    # Pattern B only: absolute path of the repo from which `git worktree add`
-    # is run. None for Pattern A / C, or when no usable base repo could be
-    # determined (apply will then raise WorktreeApplyError).
+    # Absolute path of the repo from which ``git worktree add`` is run.
+    # Set for Pattern B (live_repo_worktree, claude_org_repo_worktree,
+    # generic) AND for Pattern A when the resolver routed worker_dir into
+    # the Issue #489 unified ``<base>/.worktrees/<task>/`` layout. None
+    # for Pattern A legacy direct (workers/<slug>/), Pattern C, or when
+    # no usable base repo could be determined (apply then raises
+    # WorktreeApplyError on Pattern B, or skips worktree creation on
+    # Pattern A legacy / Pattern C).
     base_repo: Optional[Path] = None
+    # Issue #489 surface: non-blocking notes (e.g. legacy ``_repo_clone``
+    # layout still in use; canonical clone is preferred). Apply still
+    # proceeds — they are informational only.
+    warnings: list[str] = field(default_factory=list)
+    # Issue #489 surface: layout integrity refused apply. ``preview`` JSON
+    # exposes these so Secretary can fix the deployment before retrying;
+    # ``apply`` raises :class:`BlockingPreviewWarningError` rather than
+    # touching the DB / filesystem.
+    blocking_warnings: list[str] = field(default_factory=list)
 
     def to_summary_dict(self) -> dict[str, Any]:
         return {
@@ -110,6 +148,8 @@ class DelegatePlan:
             "settings_args": dict(self.settings_args),
             "artifacts_to_create": [str(p) for p in self.artifacts_to_create],
             "base_repo": str(self.base_repo) if self.base_repo else None,
+            "warnings": list(self.warnings),
+            "blocking_warnings": list(self.blocking_warnings),
         }
 
 
@@ -160,6 +200,118 @@ def _summarize_description(description: str, limit: int = 120) -> str:
 
 def _brief_filename(self_edit: bool) -> str:
     return "CLAUDE.local.md" if self_edit else "CLAUDE.md"
+
+
+def _has_pattern_a_residue(workers_slug_dir: Path) -> bool:
+    """Return True iff ``workers_slug_dir`` is non-empty in a way that
+    looks like a previous Pattern A dispatch's left-overs (CLAUDE.md /
+    send_plan.json / .claude/ etc.).
+
+    A directory that does not exist or only contains hidden git internals
+    is treated as "safe to fall through to legacy Pattern A direct
+    bootstrapping" (the historical first-time behavior). The residue
+    check intentionally lists tell-tale dispatch artifacts rather than
+    "any file" so a manually-placed README.md on a brand-new workers
+    deployment doesn't trip the blocker.
+    """
+    if not workers_slug_dir.exists() or not workers_slug_dir.is_dir():
+        return False
+    try:
+        entries = list(workers_slug_dir.iterdir())
+    except OSError:
+        return False
+    for entry in entries:
+        if entry.name in _PATTERN_A_RESIDUE_FILENAMES:
+            return True
+    return False
+
+
+def _compute_layout_warnings(
+    *,
+    project_slug: str,
+    workers_dir: Path,
+    pattern: str,
+    base_repo: Optional[Path],
+) -> tuple[list[str], list[str]]:
+    """Compute ``(warnings, blocking_warnings)`` for the preview surface
+    (Issue #489 (d)).
+
+    Currently emits:
+
+    - ``blocking_warnings``: ``workers/<slug>/`` exists as a non-git
+      directory with Pattern-A-residue files (CLAUDE.md / send_plan.json
+      / .claude/) AND ``base_repo`` is None (no usable base discoverable
+      from any source — canonical clone, ``_repo_clone`` legacy, or a
+      registered local project path). The directory is the ambiguous
+      Pattern A / Pattern B collision target — apply against it would
+      either re-write residual files or try to ``git worktree add``
+      from a non-git directory. Surface as blocking so Secretary can
+      clean the residue or bootstrap a base before retrying.
+
+      Codex Round 3 Major: the predicate is ``base_repo is None`` (the
+      authoritative "no usable base" answer the rest of the plan was
+      built against) — NOT "did ``find_workers_dir_clone`` return
+      something". A registered local-path project (``project.path =
+      /repos/clock-app``) supplies ``base_repo`` via the payload's
+      project-path branch even when ``find_workers_dir_clone`` returns
+      None, so leftover residue in ``workers/<slug>/`` is NOT a real
+      collision — apply uses the registered local clone as base.
+
+    - ``warnings``: ``base_repo`` resolved through the legacy
+      ``workers/<slug>/_repo_clone/`` subdirectory rather than the
+      canonical ``workers/<slug>/``. Apply still proceeds — the legacy
+      layout works — but the canonical layout is preferred so a
+      follow-up migration step can normalize it.
+
+    Pattern C ephemeral / gitignored cases never touch ``workers/<slug>/``
+    directly, so they bypass both checks.
+    """
+    warnings: list[str] = []
+    blocking_warnings: list[str] = []
+    if pattern == "C":
+        return warnings, blocking_warnings
+    workers_slug_dir = (Path(workers_dir) / project_slug).resolve()
+    if base_repo is None and _has_pattern_a_residue(workers_slug_dir):
+        blocking_warnings.append(
+            f"workers_dir/{project_slug}/ exists with Pattern-A residue "
+            f"(CLAUDE.md / send_plan.json / .claude/) but no usable base "
+            f"clone could be determined (canonical workers_dir/{project_slug}/, "
+            f"legacy workers_dir/{project_slug}/_repo_clone/, and the "
+            "registered local-path base all came up empty). Refusing to "
+            "apply — either clean the residue and rerun (legacy Pattern A "
+            f"bootstrap), or clone the project at workers_dir/{project_slug}/ "
+            "first so dispatch can use the Issue #489 canonical layout "
+            "(workers_dir/<slug>/.worktrees/<task>/)."
+        )
+    if base_repo is not None:
+        try:
+            resolved = base_repo.resolve()
+        except OSError:
+            resolved = base_repo
+        # Legacy fallback lives at ``<canonical>/_repo_clone``. We detect
+        # the legacy subdir by exact-name comparison against the canonical
+        # parent so a deliberately misnamed ``_repo_clone`` sibling of an
+        # unrelated directory cannot trigger the warning.
+        if (
+            resolved.name == _REPO_CLONE_LEGACY_NAME
+            and resolved.parent.resolve() == workers_slug_dir
+        ):
+            warnings.append(
+                f"workers_dir/{project_slug}/_repo_clone/ detected as base "
+                "clone (legacy layout). The Issue #489 canonical layout "
+                f"places the clone directly at workers_dir/{project_slug}/. "
+                "Migrate by moving the clone up one level so it lives at "
+                f"workers_dir/{project_slug}/ (a strict migration script "
+                "is out of scope for Issue #489 itself — a follow-up "
+                "issue may automate the move)."
+            )
+    return warnings, blocking_warnings
+
+
+# Mirrors :data:`tools.resolve_worker_layout._REPO_CLONE_SUBDIR` so the
+# warning helper above doesn't reach into the resolver's private name to
+# do an equality check.
+_REPO_CLONE_LEGACY_NAME = "_repo_clone"
 
 
 def _format_delegate_body(
@@ -307,7 +459,32 @@ def build_delegate_plan(
     # Pattern B: figure out which repo `git worktree add` should be run from.
     # live_repo_worktree → Secretary's live claude-org repo;
     # plain Pattern B    → the registered project's path.
+    # Pattern A (Issue #489): when the resolver routed worker_dir into
+    # ``<base>/.worktrees/<task>/`` (i.e. a real clone was detected), the
+    # base is whatever ``find_workers_dir_clone`` resolved. Carry it on
+    # ``plan.base_repo`` so ``_ensure_worktree`` actually creates the
+    # worktree — without this, apply for the new Pattern A layout would
+    # just mkdir an empty ``.worktrees/<task>/`` under the base clone and
+    # the worker would land in a non-checkout directory (Codex Round 1
+    # Blocker).
     base_repo: Optional[Path] = None
+    if layout.pattern == "A":
+        # Pattern A's Issue #489 unified layout puts worker_dir at
+        # ``<base>/.worktrees/<task>/`` regardless of whether the base is a
+        # workers/<slug>/ clone, a workers/<slug>/_repo_clone/ legacy
+        # subdir, or the claude-org mirror clone. Derive base_repo from
+        # the worker_dir shape so all three sources are handled with one
+        # rule. Pattern A legacy direct (worker_dir == workers/<slug>/)
+        # has no ``.worktrees`` parent and leaves ``base_repo`` None, so
+        # ``_ensure_worktree`` stays a no-op for that path.
+        try:
+            wd_resolved = Path(layout.worker_dir).resolve()
+        except OSError:
+            wd_resolved = Path(layout.worker_dir)
+        if wd_resolved.parent.name == ".worktrees":
+            candidate = wd_resolved.parent.parent
+            if rwl.is_local_git_repo(str(candidate)):
+                base_repo = candidate
     if layout.pattern == "B":
         if layout.pattern_variant == "live_repo_worktree":
             base_repo = Path(claude_org_root).resolve()
@@ -361,6 +538,33 @@ def build_delegate_plan(
     settings_args = dict(layout.settings_args)
     if base_repo is not None:
         settings_args["base-clone"] = str(base_repo)
+    # Issue #489 Codex Round 3 Blocker: Pattern A's Issue #489 unified
+    # worktree layout (``<base>/.worktrees/<task>/``) requires the same
+    # Git-metadata sandbox carve-outs as Pattern B (the worktree's
+    # ``.git/worktrees/<task>/`` admin dir, the shared ``.git/objects``,
+    # the THIS-branch ref, ``.git/packed-refs``). ``worker_roles.<role>.sandbox_by_pattern.A``
+    # in ``tools/org_extension_schema.json`` is authored for the LEGACY
+    # Pattern A layout (worker_dir == workers/<slug>/, no shared
+    # ``.git``) and does NOT include those mounts; selecting it for a
+    # worktree-based dispatch would cause git commit / push / fetch to
+    # fail with "permission denied" inside the bwrap sandbox. We surface
+    # ``pattern=B`` to the runtime ONLY for the sandbox selection while
+    # leaving ``layout.pattern`` / ``settings_args["task-id"]`` / the
+    # DELEGATE body / DB row at the original A label (first-vs-concurrent
+    # dispatch tracking is independent of sandbox shape). ``base_repo is
+    # not None`` is the same predicate that drives ``_ensure_worktree``,
+    # so the two stay in lock-step. When the schema grows a
+    # Pattern-A-with-worktree sandbox variant this override can be
+    # removed.
+    if layout.pattern == "A" and base_repo is not None:
+        settings_args["pattern"] = "B"
+
+    warnings, blocking_warnings = _compute_layout_warnings(
+        project_slug=project_slug,
+        workers_dir=Path(workers_dir_for_norm),
+        pattern=layout.pattern,
+        base_repo=base_repo,
+    )
 
     return DelegatePlan(
         task_id=task_id,
@@ -377,6 +581,8 @@ def build_delegate_plan(
         refs_issues=list(refs_issues or []),
         artifacts_to_create=artifacts,
         base_repo=base_repo,
+        warnings=warnings,
+        blocking_warnings=blocking_warnings,
     )
 
 
@@ -428,7 +634,12 @@ def _reserve_in_db(
                 layout="flat",
                 is_git_repo=plan.layout.pattern != "C"
                 or plan.layout.pattern_variant == "gitignored_repo_root",
-                is_worktree=plan.layout.pattern == "B",
+                # Issue #489: Pattern A with a detected base clone (new
+                # ``<base>/.worktrees/<task>/`` layout) is registered as
+                # a worktree too — ``base_repo is not None`` covers both
+                # patterns. Pattern A legacy direct (workers/<slug>/) and
+                # Pattern C are NOT worktrees.
+                is_worktree=plan.base_repo is not None,
             )
             issue_refs_iter = None
             if plan.closes_issue is not None:
@@ -598,14 +809,21 @@ def _ensure_worktree(plan: DelegatePlan) -> None:
     reused worktree the Secretary removes it so apply recreates it (which then
     fetches). See the reuse branch below.
     """
-    if plan.layout.pattern != "B":
-        return
+    # Issue #489: Pattern A with a detected base clone now uses the same
+    # ``<base>/.worktrees/<task>/`` layout as Pattern B, so the worktree
+    # creation must fire for either pattern when ``base_repo`` is set.
+    # Conversely, Pattern A WITHOUT a base clone (legacy direct path,
+    # worker_dir == workers/<slug>/) and Pattern C ephemeral / gitignored
+    # both leave ``base_repo`` unset; for those, apply only writes the
+    # brief — no worktree to create.
     if plan.base_repo is None:
-        raise WorktreeApplyError(
-            f"Pattern B but no usable base repo could be determined for "
-            f"project {plan.project_slug!r} (variant="
-            f"{plan.layout.pattern_variant!r}); cannot run `git worktree add`."
-        )
+        if plan.layout.pattern == "B":
+            raise WorktreeApplyError(
+                f"Pattern B but no usable base repo could be determined for "
+                f"project {plan.project_slug!r} (variant="
+                f"{plan.layout.pattern_variant!r}); cannot run `git worktree add`."
+            )
+        return
     worker_dir = Path(plan.layout.worker_dir)
     if _is_registered_worktree(plan.base_repo, worker_dir):
         # Idempotent reuse — but only when the existing worktree is on the
@@ -780,6 +998,45 @@ def _write_send_plan(plan: DelegatePlan, *, out_path: Path) -> Path:
     return out_path
 
 
+def _abandon_queued_run(state_db_path: Path, task_id: str) -> None:
+    """Compensating UPDATE that flips a same-task queued run to
+    ``abandoned`` so it stops counting as an active reservation.
+
+    Used by :func:`apply_delegate_plan` when a post-reservation step fails
+    after the DB transaction has already committed (Issue #489 Blocker 2:
+    a leaked queued row makes the next dispatch see Pattern A as
+    occupied and silently flips it onto Pattern B). Best-effort: a
+    compensation failure is logged to stderr but not re-raised, because
+    we are already on the exception path and the original failure
+    should be what the caller observes.
+    """
+    from tools.state_db import connect
+    from tools.state_db.writer import StateWriter
+
+    try:
+        conn = connect(state_db_path)
+        try:
+            writer = StateWriter(conn)
+            with writer.transaction() as tx:
+                tx.update_run_status(
+                    task_id,
+                    "abandoned",
+                    outcome_note=(
+                        "apply post-reservation failed; compensated by "
+                        "tools.gen_delegate_payload (Issue #489 Blocker 2)"
+                    ),
+                )
+        finally:
+            conn.close()
+    except Exception as exc:  # noqa: BLE001 — best-effort compensation
+        sys.stderr.write(
+            "tools.gen_delegate_payload: failed to compensate queued run "
+            f"task_id={task_id!r} ({type(exc).__name__}: {exc}). Manually "
+            f"`UPDATE runs SET status='abandoned' WHERE task_id='{task_id}'` "
+            "to unblock subsequent dispatch.\n"
+        )
+
+
 def apply_delegate_plan(
     plan: DelegatePlan,
     *,
@@ -790,6 +1047,17 @@ def apply_delegate_plan(
     send_plan_out: Optional[Path] = None,
 ) -> ApplyResult:
     """Execute the side effects: reserve in DB, write brief, settings, send_plan."""
+    # Issue #489 (d): preview-time layout integrity check. ``blocking_warnings``
+    # surfaces deployments that have a non-git ``workers/<slug>/`` with
+    # Pattern-A residue and no usable base clone — apply would either rewrite
+    # the residue or fail loudly inside ``git worktree add``. Refuse here so
+    # the failure happens BEFORE any DB / FS write, leaving no queued row to
+    # compensate.
+    if plan.blocking_warnings:
+        raise BlockingPreviewWarningError(
+            "apply refused: preview emitted blocking warnings:\n  - "
+            + "\n  - ".join(plan.blocking_warnings)
+        )
     # Issue #309: create the worktree FIRST. If this fails (dirty dir,
     # git error, etc.) we must not leak a `runs.status='queued'` row,
     # because resolve_worker_layout treats `queued` as an active run and
@@ -799,18 +1067,29 @@ def apply_delegate_plan(
     db_reservation = _reserve_in_db(
         plan, state_db_path=state_db_path, claude_org_root=claude_org_root
     )
-    brief_path = _write_brief(plan)
-    settings_path: Optional[Path] = None
-    skipped_reason: Optional[str] = None
-    if skip_settings:
-        skipped_reason = "skip_settings flag set"
-    else:
-        settings_path, skipped_reason = _run_settings_generate(
-            plan, runtime_cmd=runtime_cmd
-        )
-    if send_plan_out is None:
-        send_plan_out = brief_path.with_name("send_plan.json")
-    send_plan_path = _write_send_plan(plan, out_path=send_plan_out)
+    # Issue #489 Blocker 2: ``_reserve_in_db`` already committed the queued
+    # row. Anything that fails *after* this commit (brief write hitting a
+    # full disk, send_plan write losing permissions, settings subprocess
+    # raising unexpectedly) leaks an active reservation. ``StateWriter``
+    # rollback can't help — its transaction is already closed. Wrap the
+    # remaining steps and run the compensating ``abandoned`` update on
+    # failure so the next dispatch sees Pattern A as free.
+    try:
+        brief_path = _write_brief(plan)
+        settings_path: Optional[Path] = None
+        skipped_reason: Optional[str] = None
+        if skip_settings:
+            skipped_reason = "skip_settings flag set"
+        else:
+            settings_path, skipped_reason = _run_settings_generate(
+                plan, runtime_cmd=runtime_cmd
+            )
+        if send_plan_out is None:
+            send_plan_out = brief_path.with_name("send_plan.json")
+        send_plan_path = _write_send_plan(plan, out_path=send_plan_out)
+    except BaseException:
+        _abandon_queued_run(state_db_path, plan.task_id)
+        raise
     return ApplyResult(
         plan=plan,
         brief_path=brief_path,
@@ -1108,13 +1387,25 @@ def _cmd_preview(args: argparse.Namespace) -> int:
             {
                 "delegate_body": plan.delegate_body,
                 "summary": plan.to_summary_dict(),
+                # Issue #489 (d): hoist warnings / blocking_warnings to the
+                # top level so shell consumers can ``jq '.blocking_warnings | length > 0'``
+                # without descending into ``summary``. ``summary`` keeps a
+                # copy too (every key of the schema is mirrored there) so
+                # already-built tooling that only reads ``summary`` is not
+                # broken.
+                "warnings": list(plan.warnings),
+                "blocking_warnings": list(plan.blocking_warnings),
             },
             sys.stdout,
             indent=2,
             ensure_ascii=False,
         )
         sys.stdout.write("\n")
-        return 0
+        # Mirror the human-path exit code so JSON / human consumers agree:
+        # blocking_warnings → rc=3 so CI wrappers detect the refusal even when
+        # they only read stdout JSON. ``stderr`` is left clean here (the JSON
+        # body already carries the warning content) to keep pipelines simple.
+        return 3 if plan.blocking_warnings else 0
 
     print("--- DELEGATE body (preview, no writes) ---")
     print(plan.delegate_body)
@@ -1126,6 +1417,17 @@ def _cmd_preview(args: argparse.Namespace) -> int:
     print()
     print("--- Layout summary ---")
     print(json.dumps(plan.to_summary_dict(), indent=2, ensure_ascii=False))
+    # Issue #489 (d): emit warnings to stderr (so a piped stdout JSON / body
+    # capture stays clean), and BLOCKING markers loudly so an attempted
+    # ``apply`` after this preview will refuse. The non-zero exit on
+    # blocking_warnings means CI / wrapper scripts see a clear signal.
+    if plan.warnings:
+        for w in plan.warnings:
+            sys.stderr.write(f"warning: {w}\n")
+    if plan.blocking_warnings:
+        for w in plan.blocking_warnings:
+            sys.stderr.write(f"BLOCKING: {w}\n")
+        return 3
     return 0
 
 

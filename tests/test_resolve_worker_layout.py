@@ -867,13 +867,20 @@ class TestPatternBClaudeOrgRepoWorktree(unittest.TestCase):
         )
         self.assertEqual(layout.pattern, "A")
         self.assertIsNone(layout.pattern_variant)
-        self.assertEqual(Path(layout.worker_dir), self.clone.resolve())
+        # Issue #489 (Codex Round 2 Major): mirror Pattern A also routes
+        # into the unified ``<clone>/.worktrees/<task>/`` layout so it
+        # cannot collide with a concurrent Pattern B over the clone root.
+        self.assertEqual(
+            Path(layout.worker_dir),
+            (self.clone / ".worktrees" / "en-task-a").resolve(),
+        )
         self.assertEqual(layout.planned_branch, "feat/en-task-a")
 
     def test_pattern_a_for_claude_org_en_slug_anchors_on_clone(self):
         """slug=claude-org-en (registry-style alias) must still land on the
         same physical clone — the resolver overrides worker_dir off the
-        clone path, not the slug."""
+        clone path, not the slug. Issue #489 mirror Pattern A: under
+        ``.worktrees/<task>/`` rather than the clone root."""
         layout = rwl.resolve(
             task_id="en-task-en",
             project_slug="claude-org-en",
@@ -881,7 +888,10 @@ class TestPatternBClaudeOrgRepoWorktree(unittest.TestCase):
             state_db_path=self.sb.db_path,
         )
         self.assertEqual(layout.pattern, "A")
-        self.assertEqual(Path(layout.worker_dir), self.clone.resolve())
+        self.assertEqual(
+            Path(layout.worker_dir),
+            (self.clone / ".worktrees" / "en-task-en").resolve(),
+        )
 
     def test_pattern_b_for_claude_org_slug_emits_claude_org_repo_worktree(self):
         """Issue #370 repro 1: slug=claude-org with active concurrent run
@@ -1285,7 +1295,11 @@ class TestAliasNamedRemoteRow(unittest.TestCase):
         )
         self.assertEqual(layout.pattern, "A")
         # Anchored on the canonical mirror clone, NOT workers/claude-org-en.
-        self.assertEqual(Path(layout.worker_dir), clone.resolve())
+        # Issue #489: under ``.worktrees/<task>/`` (unified mirror layout).
+        self.assertEqual(
+            Path(layout.worker_dir),
+            (clone / ".worktrees" / "en-with-clone").resolve(),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1640,7 +1654,13 @@ class TestPatternOverrideContract(unittest.TestCase):
             layout_overrides={"pattern": "A"},
         )
         self.assertEqual(layout.pattern, "A")
-        self.assertEqual(Path(layout.worker_dir), clone.resolve())
+        # Issue #489 Codex Round 2: ``--pattern A`` on the claude-org
+        # mirror also routes into ``<clone>/.worktrees/<task>/`` so
+        # auto-derive and override agree on the unified layout.
+        self.assertEqual(
+            Path(layout.worker_dir),
+            (clone / ".worktrees" / "force-a-mirror").resolve(),
+        )
 
     def test_variant_live_repo_worktree_requires_self_edit_role(self):
         """Codex Round 3 Blocker: ``pattern_variant=live_repo_worktree``
@@ -1708,6 +1728,271 @@ class TestPatternOverrideContract(unittest.TestCase):
         self.assertEqual(
             Path(layout.worker_dir),
             (self.sb.workers / "local-app" / ".worktrees" / "ok-b-local").resolve(),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Issue #489: Pattern A も worktree 化 + _repo_clone legacy fallback +
+# origin-gate共通化 (Codex review (b) + (c))
+# ---------------------------------------------------------------------------
+
+
+class TestIssue489ResolverPatternAWorktree(unittest.TestCase):
+    """Issue #489: when ``workers/<slug>/`` is a usable base clone (Issue
+    #450 URL-only registry case), Pattern A's worker_dir lives at
+    ``<base>/.worktrees/<task>/`` instead of ``<base>/`` directly so it
+    cannot collide with Pattern B over the same directory. The new
+    ``_repo_clone`` legacy fallback is exercised here too (case (c) in
+    the design review) — when the canonical ``workers/<slug>/`` is
+    non-git but a matching-origin clone is parked under
+    ``workers/<slug>/_repo_clone/``, the resolver still adopts it as a
+    base."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        try:
+            subprocess.run(["git", "--version"], capture_output=True, check=True)
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            raise unittest.SkipTest("git not available")
+
+    def setUp(self) -> None:
+        self._td = tempfile.TemporaryDirectory()
+        self.sb = _Sandbox(Path(self._td.name))
+        # URL-only registry row — the motivating Issue #489 collision shape.
+        self.sb.write_registry(
+            [
+                (
+                    "Renga",
+                    "renga",
+                    "https://github.com/suisya-systems/renga.git",
+                    "Renga app",
+                ),
+            ]
+        )
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def _clone_at(self, path: Path, origin: str) -> None:
+        path.mkdir(parents=True, exist_ok=True)
+        _Sandbox.init_git_with_origin(path, origin)
+
+    def test_pattern_a_routes_into_worktree_when_workers_slug_is_base_clone(self):
+        """Canonical Issue #489 layout: ``workers/renga/`` IS a usable
+        base clone → Pattern A worker_dir lands in
+        ``workers/renga/.worktrees/<task>/`` rather than the legacy
+        ``workers/renga/`` (no more collision with Pattern B)."""
+        clone = self.sb.workers / "renga"
+        self._clone_at(clone, "https://github.com/suisya-systems/renga.git")
+        layout = rwl.resolve(
+            task_id="renga-first",
+            project_slug="renga",
+            description="alt+p ux fix",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(layout.pattern, "A")
+        self.assertIsNone(layout.pattern_variant)
+        self.assertEqual(
+            Path(layout.worker_dir),
+            (clone / ".worktrees" / "renga-first").resolve(),
+        )
+
+    def test_repo_clone_legacy_fallback_resolves_when_canonical_is_non_git(self):
+        """Case (c) success path: ``workers/renga/`` is a non-git
+        directory with leftover files; ``workers/renga/_repo_clone/`` is
+        the actual clone with matching origin. find_workers_dir_clone
+        adopts the legacy subdir; resolver routes Pattern A's worktree
+        under it."""
+        (self.sb.workers / "renga").mkdir()
+        (self.sb.workers / "renga" / "README.md").write_text(
+            "loose note", encoding="utf-8"
+        )
+        legacy = self.sb.workers / "renga" / "_repo_clone"
+        self._clone_at(legacy, "https://github.com/suisya-systems/renga.git")
+        base = rwl.find_workers_dir_clone(
+            "renga",
+            "https://github.com/suisya-systems/renga.git",
+            self.sb.workers,
+        )
+        self.assertIsNotNone(base)
+        self.assertEqual(Path(base).resolve(), legacy.resolve())
+        layout = rwl.resolve(
+            task_id="renga-legacy",
+            project_slug="renga",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(layout.pattern, "A")
+        self.assertEqual(
+            Path(layout.worker_dir),
+            (legacy / ".worktrees" / "renga-legacy").resolve(),
+        )
+
+    def test_repo_clone_with_no_origin_is_rejected(self):
+        """Case (c) gate: a bare ``git init`` under ``_repo_clone/`` with
+        no origin remote must NOT be adopted as a base for a github-URL
+        registry row (Issue #370 origin gate now shared via
+        :func:`_origin_matches_registered`)."""
+        (self.sb.workers / "renga").mkdir()
+        legacy = self.sb.workers / "renga" / "_repo_clone"
+        legacy.mkdir()
+        subprocess.run(
+            ["git", "-C", str(legacy), "init", "-q"], check=True
+        )
+        base = rwl.find_workers_dir_clone(
+            "renga",
+            "https://github.com/suisya-systems/renga.git",
+            self.sb.workers,
+        )
+        self.assertIsNone(base)
+
+    def test_repo_clone_with_mismatched_origin_is_rejected(self):
+        """Case (c) gate: a ``_repo_clone/`` with origin pointing at a
+        different github repo must be rejected — would otherwise silently
+        redirect dispatch at an unrelated repo (Issue #370 precedent)."""
+        (self.sb.workers / "renga").mkdir()
+        legacy = self.sb.workers / "renga" / "_repo_clone"
+        self._clone_at(
+            legacy, "https://github.com/some-other-org/not-renga.git"
+        )
+        base = rwl.find_workers_dir_clone(
+            "renga",
+            "https://github.com/suisya-systems/renga.git",
+            self.sb.workers,
+        )
+        self.assertIsNone(base)
+
+    def test_canonical_clone_preferred_when_both_layouts_present(self):
+        """Sanity: if both the canonical ``workers/<slug>/`` and the
+        legacy ``workers/<slug>/_repo_clone/`` clone are present and
+        matching, the resolver prefers the canonical (no deprecation
+        warning needed downstream)."""
+        canonical = self.sb.workers / "renga"
+        self._clone_at(
+            canonical, "https://github.com/suisya-systems/renga.git"
+        )
+        legacy = canonical / "_repo_clone"
+        self._clone_at(legacy, "https://github.com/suisya-systems/renga.git")
+        base = rwl.find_workers_dir_clone(
+            "renga",
+            "https://github.com/suisya-systems/renga.git",
+            self.sb.workers,
+        )
+        self.assertEqual(Path(base).resolve(), canonical.resolve())
+
+    def test_a_b_a_b_continuous_dispatch_lands_on_same_base(self):
+        """End-to-end: A → B → A → B continuous dispatch all use the same
+        base clone with distinct ``.worktrees/<task>/`` paths. This is
+        the regression Codex review (b) called out — previously Pattern A
+        on the same project would land at ``workers/<slug>/`` directly
+        and the second dispatch (Pattern B via the queued reservation)
+        would try to ``git worktree add`` from a directory the previous
+        task was actively using as a work dir."""
+        clone = self.sb.workers / "renga"
+        self._clone_at(clone, "https://github.com/suisya-systems/renga.git")
+
+        # First dispatch: no runs → Pattern A.
+        first = rwl.resolve(
+            task_id="renga-a-1",
+            project_slug="renga",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(first.pattern, "A")
+        self.assertEqual(
+            Path(first.worker_dir),
+            (clone / ".worktrees" / "renga-a-1").resolve(),
+        )
+
+        # Second dispatch arriving while the first is in_use → Pattern B.
+        self.sb.add_run(
+            task_id="renga-a-1",
+            project_slug="renga",
+            pattern="A",
+            status="in_use",
+            worker_dir_abs=str(first.worker_dir),
+        )
+        second = rwl.resolve(
+            task_id="renga-b-2",
+            project_slug="renga",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(second.pattern, "B")
+        self.assertEqual(
+            Path(second.worker_dir),
+            (clone / ".worktrees" / "renga-b-2").resolve(),
+        )
+
+        # First task completes → next dispatch falls back to Pattern A
+        # but STILL lands in .worktrees/ (the collision fix is durable,
+        # not just for the concurrent-run window).
+        self.sb.add_run(
+            task_id="renga-b-2",
+            project_slug="renga",
+            pattern="B",
+            status="in_use",
+            worker_dir_abs=str(second.worker_dir),
+        )
+        # Mark renga-a-1 as completed by re-upserting with status='completed'.
+        completed = connect(self.sb.db_path)
+        try:
+            cw = StateWriter(completed)
+            with cw.transaction() as tx:
+                tx.update_run_status("renga-a-1", "completed")
+        finally:
+            completed.close()
+        # Mark renga-b-2 completed too so the next round is Pattern A.
+        completed = connect(self.sb.db_path)
+        try:
+            cw = StateWriter(completed)
+            with cw.transaction() as tx:
+                tx.update_run_status("renga-b-2", "completed")
+        finally:
+            completed.close()
+
+        third = rwl.resolve(
+            task_id="renga-a-3",
+            project_slug="renga",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(third.pattern, "A")
+        self.assertEqual(
+            Path(third.worker_dir),
+            (clone / ".worktrees" / "renga-a-3").resolve(),
+        )
+
+        # And the fourth concurrent dispatch lands on Pattern B again.
+        self.sb.add_run(
+            task_id="renga-a-3",
+            project_slug="renga",
+            pattern="A",
+            status="in_use",
+            worker_dir_abs=str(third.worker_dir),
+        )
+        fourth = rwl.resolve(
+            task_id="renga-b-4",
+            project_slug="renga",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(fourth.pattern, "B")
+        self.assertEqual(
+            Path(fourth.worker_dir),
+            (clone / ".worktrees" / "renga-b-4").resolve(),
+        )
+        # All four worker_dirs are distinct .worktrees siblings of the
+        # same base clone — no collision over workers/renga/ itself.
+        self.assertEqual(
+            {first.worker_dir, second.worker_dir, third.worker_dir, fourth.worker_dir},
+            {
+                str((clone / ".worktrees" / t).resolve())
+                for t in (
+                    "renga-a-1", "renga-b-2", "renga-a-3", "renga-b-4",
+                )
+            },
         )
 
 
