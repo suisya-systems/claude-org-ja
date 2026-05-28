@@ -365,55 +365,85 @@ def find_claude_org_clone(
     return candidate if repo_name in _CLAUDE_ORG_MIRROR_REPO_NAMES else None
 
 
+# Legacy subdirectory layout: some manually-bootstrapped projects placed
+# the clone at ``workers/<slug>/_repo_clone/`` so ``workers/<slug>/`` could
+# hold loose notes (CLAUDE.md / send_plan.json) alongside the clone.
+# Issue #489 collapses that split — the canonical layout is the clone
+# living directly at ``workers/<slug>/`` and every dispatch (Pattern A or
+# B) uses ``<base>/.worktrees/<task>/``. The legacy form is still
+# accepted as a base, but ``gen_delegate_payload`` surfaces a deprecation
+# warning so deployments can migrate.
+_REPO_CLONE_SUBDIR = "_repo_clone"
+
+
+def _origin_matches_registered(
+    clone_path: Path, project_path: Optional[str]
+) -> bool:
+    """Return True iff ``clone_path`` is acceptable as a base clone for the
+    project registered at ``project_path``.
+
+    The Issue #370 origin URL gate, factored out so every clone-discovery
+    path (canonical ``workers/<slug>``, legacy ``workers/<slug>/_repo_clone``,
+    Pattern B ``base_repo`` derivation in ``gen_delegate_payload``) shares
+    the same trust signal. ``_extract_github_repo_name`` is scheme-agnostic
+    (https + ssh + ssh-with-port), so this gate MUST NOT key on ``"://"``.
+
+    Contract:
+    - When ``project_path`` parses as a github URL, the clone's ``origin``
+      MUST be a github URL with the same repo name. Owner is intentionally
+      unpinned so forks are accepted (mirrors :func:`find_claude_org_clone`
+      and :func:`is_claude_org_project` — see CONTRIBUTING.md for the
+      fork-based workflow). A bare ``git init`` with no origin, or an
+      origin pointing at an unrelated repo, is rejected.
+    - For non-github registry URLs (gitlab / bitbucket / custom git
+      server) or placeholders like ``-``, the gate falls back to the
+      slug + local-git-repo trust signal. The motivating renga / Issue
+      #489 cases are github so the strict gate above covers the
+      practical risk.
+    """
+    if not is_local_git_repo(str(clone_path)):
+        return False
+    registered_name = _extract_github_repo_name(project_path or "")
+    if registered_name is None:
+        return True
+    origin = _git_origin_url(clone_path)
+    clone_name = _extract_github_repo_name(origin) if origin else None
+    return clone_name == registered_name
+
+
 def find_workers_dir_clone(
     project_slug: str,
     project_path: Optional[str],
     workers_dir: Path,
 ) -> Optional[Path]:
-    """Return ``workers_dir/<project_slug>`` if it is a local git repo that
-    matches the registered project, else None.
+    """Return the path to use as a Pattern A/B base clone, or ``None``.
 
-    Issue #450: registry rows registered with a URL-only path (e.g.
-    ``| renga | renga | https://github.com/.../renga.git | ... |``) typically
-    have a manually-cloned local repo at the conventional
-    ``workers_dir/<project_slug>`` location. Pattern B needs a local base
-    for ``git worktree add``; use that clone when none of the prior base
-    branches resolve.
+    Issue #450 + #489: registry rows registered with a URL-only path
+    (e.g. ``| renga | renga | https://github.com/.../renga.git | ... |``)
+    need a locally-cloned repo to back ``git worktree add``. Two layouts
+    are accepted:
 
-    Slug match (``workers_dir/<project_slug>``) alone is not enough — a
-    leftover unrelated repo at that path would silently redirect dispatch
-    (the Issue #370 precedent for "別 repo への誤派遣"). When the registered
-    path looks like a github URL, additionally require the clone's
-    ``origin`` URL to point at a github repo with the same name (owner is
-    intentionally not pinned so forks are accepted, mirroring
-    :func:`find_claude_org_clone`). For non-github registry URLs the
-    trust signal falls back to the slug + local-git-repo check; the
-    motivating renga case is github so this gate covers the practical risk.
+    - canonical: ``workers_dir/<project_slug>/`` — the layout Issue #489
+      codifies. Pattern A uses ``<base>/.worktrees/<task>/`` so it cannot
+      collide with Pattern B over the same directory.
+    - legacy fallback: ``workers_dir/<project_slug>/_repo_clone/`` — used
+      by some older bootstrapping scripts that wanted ``workers/<slug>/``
+      free for loose notes. Still accepted so existing deployments keep
+      working; ``gen_delegate_payload`` flags it with a deprecation
+      warning in the preview output. Canonical is preferred when both
+      are present.
+
+    Both candidates run through :func:`_origin_matches_registered`, so
+    slug + path alone never grants base-clone status — the gate must
+    succeed to be accepted (Issue #370 precedent for "別 repo への誤派遣").
     """
-    candidate = (Path(workers_dir) / project_slug).resolve()
-    if not is_local_git_repo(str(candidate)):
-        return None
-    # ``_extract_github_repo_name`` accepts both ``https://github.com/o/r.git``
-    # and ``git@github.com:o/r.git`` (the regex is scheme-agnostic), so we
-    # MUST NOT gate on ``"://"`` — that would let SSH-style registry URLs
-    # bypass the origin gate (Codex Round 3 Blocker).
-    registered_name = _extract_github_repo_name(project_path or "")
-    if registered_name is not None:
-        # Registered URL is a github remote (the motivating renga case):
-        # the clone's ``origin`` MUST also be a github remote with the same
-        # repo name. A bare ``git init`` with no origin, or an origin
-        # pointing at an unrelated repo, is rejected — otherwise any
-        # leftover same-named directory would be silently adopted
-        # (Codex Round 2 Blocker; Issue #370 precedent).
-        origin = _git_origin_url(candidate)
-        clone_name = _extract_github_repo_name(origin) if origin else None
-        if clone_name != registered_name:
-            return None
-    # Non-github registry URL (gitlab, bitbucket, custom git server) or a
-    # placeholder like "-": ``_extract_github_repo_name`` returns None and
-    # we fall back to the slug + local-git-repo trust signal. The motivating
-    # renga case is github so the strict gate above covers the practical risk.
-    return candidate
+    canonical = (Path(workers_dir) / project_slug).resolve()
+    if _origin_matches_registered(canonical, project_path):
+        return canonical
+    legacy = (canonical / _REPO_CLONE_SUBDIR).resolve()
+    if _origin_matches_registered(legacy, project_path):
+        return legacy
+    return None
 
 
 def is_claude_org_project(project_slug: str, claude_org_root: Path) -> bool:
@@ -660,17 +690,37 @@ def resolve(
                 "annotation."
             )
         force_b = active or self_edit or bool(project.mirror_of)
+        # Issue #489: when a usable base clone is detected at
+        # ``workers/<slug>/`` (or the legacy ``workers/<slug>/_repo_clone/``
+        # subdir), every Pattern A or B task lands under
+        # ``<base>/.worktrees/<task>/``. This is what collapses the
+        # historical Pattern A vs Pattern B collision over the same
+        # ``workers/<slug>/`` directory — Pattern A no longer uses that
+        # path as its work dir, so Pattern B's worktree-add against it
+        # cannot stomp on Pattern A's commits. ``None`` here means "no
+        # local clone yet"; we fall through to the legacy direct path so
+        # first-time / `-`-placeholder / local-path-registry deployments
+        # behave as they did before.
+        base_for_worktree = find_workers_dir_clone(
+            project_slug, project.path, workers_dir
+        )
         if force_b:
             pattern = "B"
             if self_edit:
                 variant = "live_repo_worktree"
                 worker_dir = claude_org_root / ".worktrees" / task_id
+            elif base_for_worktree is not None:
+                variant = None
+                worker_dir = base_for_worktree / ".worktrees" / task_id
             else:
                 variant = None
                 worker_dir = workers_dir / project_slug / ".worktrees" / task_id
         else:
             pattern, variant = "A", None
-            worker_dir = workers_dir / project_slug
+            if base_for_worktree is not None:
+                worker_dir = base_for_worktree / ".worktrees" / task_id
+            else:
+                worker_dir = workers_dir / project_slug
 
     worker_dir = worker_dir.resolve() if worker_dir.is_absolute() else worker_dir.resolve()
 

@@ -1996,5 +1996,302 @@ class TestPatternBWorktreeFetchesStaleOrigin(unittest.TestCase):
         self.assertFalse(Path(plan.layout.worker_dir).exists())
 
 
+# ---------------------------------------------------------------------------
+# Issue #489: preview warnings/blocking_warnings surface + atomic apply
+# rollback when post-reservation steps fail (Codex review (d) + Blocker 2)
+# ---------------------------------------------------------------------------
+
+
+class TestIssue489PreviewWarnings(unittest.TestCase):
+    """Issue #489 (d): preview must surface
+
+    - ``warnings``: non-blocking notes (legacy ``_repo_clone`` layout in use).
+    - ``blocking_warnings``: layout integrity refused apply (non-git
+      ``workers/<slug>/`` with Pattern A residue and no usable base).
+
+    Both are exposed in the preview JSON at the top level (and mirrored
+    in ``summary``); the human preview emits them to stderr and exits
+    nonzero on blocking_warnings. ``apply`` raises
+    :class:`gdp.BlockingPreviewWarningError` rather than touching the
+    DB / filesystem.
+    """
+
+    def setUp(self) -> None:
+        try:
+            subprocess.run(["git", "--version"], capture_output=True, check=True)
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            self.skipTest("git not available")
+        self._td = tempfile.TemporaryDirectory()
+        self.sb = _Sandbox(Path(self._td.name))
+        # URL-only registry for renga — the Issue #489 motivating shape.
+        (self.sb.claude_org_root / "registry" / "projects.md").write_text(
+            "# Projects\n\n"
+            "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 |\n"
+            "|---|---|---|---|---|\n"
+            "| renga | renga | https://github.com/suisya-systems/renga.git "
+            "| Renga | dev |\n",
+            encoding="utf-8",
+        )
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def _clone(self, path: Path, origin: str) -> None:
+        path.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["git", "-C", str(path), "init", "-q"], check=True
+        )
+        subprocess.run(
+            ["git", "-C", str(path), "remote", "add", "origin", origin],
+            check=True,
+        )
+
+    def test_non_git_workers_slug_with_residue_emits_blocking_warning(self):
+        """``workers/renga/`` is a plain directory holding leftover
+        Pattern-A artifacts (CLAUDE.md / send_plan.json), and no
+        ``_repo_clone`` fallback exists — apply would be ambiguous, so
+        preview refuses."""
+        slug_dir = self.sb.workers / "renga"
+        slug_dir.mkdir()
+        (slug_dir / "CLAUDE.md").write_text("old brief", encoding="utf-8")
+        (slug_dir / "send_plan.json").write_text("{}", encoding="utf-8")
+        plan = gdp.build_delegate_plan(
+            task_id="renga-blocked-task",
+            project_slug="renga",
+            description="alt+p ux fix",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertTrue(plan.blocking_warnings)
+        self.assertTrue(
+            any("Pattern-A residue" in w for w in plan.blocking_warnings)
+        )
+        # Summary mirrors top-level + base_repo is None for this shape.
+        self.assertIsNone(plan.base_repo)
+        summary = plan.to_summary_dict()
+        self.assertEqual(summary["blocking_warnings"], plan.blocking_warnings)
+
+    def test_legacy_repo_clone_emits_non_blocking_deprecation_warning(self):
+        """``_repo_clone`` legacy fallback resolved → preview ships a
+        non-blocking deprecation warning so the deployment can migrate
+        to the canonical ``workers/<slug>/`` layout. Apply still
+        proceeds (warnings, not blocking_warnings)."""
+        slug_dir = self.sb.workers / "renga"
+        slug_dir.mkdir()
+        (slug_dir / "README.md").write_text("loose note", encoding="utf-8")
+        legacy = slug_dir / "_repo_clone"
+        self._clone(legacy, "https://github.com/suisya-systems/renga.git")
+        plan = gdp.build_delegate_plan(
+            task_id="renga-legacy-task",
+            project_slug="renga",
+            description="alt+p ux fix",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertFalse(plan.blocking_warnings)
+        self.assertTrue(plan.warnings)
+        self.assertTrue(any("_repo_clone" in w for w in plan.warnings))
+        # Worker_dir is routed through the legacy subdir. Pattern A leaves
+        # ``base_repo`` unset by design (it is a Pattern B concept), so we
+        # assert directly on ``worker_dir.parent.parent`` for the base
+        # discovery proof.
+        self.assertEqual(plan.layout.pattern, "A")
+        self.assertIsNone(plan.base_repo)
+        self.assertEqual(
+            Path(plan.layout.worker_dir),
+            (legacy / ".worktrees" / "renga-legacy-task").resolve(),
+        )
+        self.assertEqual(
+            Path(plan.layout.worker_dir).parent.parent.resolve(),
+            legacy.resolve(),
+        )
+
+    def test_preview_json_exposes_warnings_at_top_level(self):
+        """JSON consumers (jq pipelines, dispatcher previews) read
+        ``warnings`` / ``blocking_warnings`` at the top level."""
+        slug_dir = self.sb.workers / "renga"
+        slug_dir.mkdir()
+        (slug_dir / "CLAUDE.md").write_text("old brief", encoding="utf-8")
+        from contextlib import redirect_stdout, redirect_stderr
+        from io import StringIO
+
+        out = StringIO()
+        err = StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            rc = gdp.main([
+                "preview",
+                "--task-id", "renga-blocked-cli",
+                "--project-slug", "renga",
+                "--description", "alt+p ux fix",
+                "--claude-org-root", str(self.sb.claude_org_root),
+                "--state-db-path", str(self.sb.db_path),
+                "--json",
+            ])
+        self.assertEqual(rc, 3, msg=f"stderr={err.getvalue()!r}")
+        data = json.loads(out.getvalue())
+        self.assertIn("blocking_warnings", data)
+        self.assertTrue(data["blocking_warnings"])
+        # Mirrored in summary too.
+        self.assertEqual(
+            data["blocking_warnings"], data["summary"]["blocking_warnings"]
+        )
+        # JSON path keeps stderr clean — the warning content is already in
+        # the JSON body. The human path (no ``--json``) separately writes
+        # a ``BLOCKING:`` marker to stderr; covered by
+        # :meth:`test_human_preview_writes_blocking_marker_to_stderr`.
+        self.assertEqual(err.getvalue(), "")
+
+    def test_human_preview_writes_blocking_marker_to_stderr(self):
+        """Human preview path (no ``--json``) emits a ``BLOCKING:`` line
+        per blocking_warning to stderr so a wrapper script can grep for
+        the marker. Exit code is 3, matching the JSON path."""
+        slug_dir = self.sb.workers / "renga"
+        slug_dir.mkdir()
+        (slug_dir / "CLAUDE.md").write_text("old brief", encoding="utf-8")
+        from contextlib import redirect_stdout, redirect_stderr
+        from io import StringIO
+
+        out = StringIO()
+        err = StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            rc = gdp.main([
+                "preview",
+                "--task-id", "renga-blocked-human",
+                "--project-slug", "renga",
+                "--description", "alt+p ux fix",
+                "--claude-org-root", str(self.sb.claude_org_root),
+                "--state-db-path", str(self.sb.db_path),
+            ])
+        self.assertEqual(rc, 3)
+        self.assertIn("BLOCKING:", err.getvalue())
+
+    def test_apply_refuses_when_plan_has_blocking_warnings(self):
+        """``apply_delegate_plan`` must not touch DB / filesystem when
+        the plan carries blocking_warnings — raise
+        :class:`BlockingPreviewWarningError` BEFORE the DB reservation
+        so no queued row leaks."""
+        slug_dir = self.sb.workers / "renga"
+        slug_dir.mkdir()
+        (slug_dir / "CLAUDE.md").write_text("old brief", encoding="utf-8")
+        plan = gdp.build_delegate_plan(
+            task_id="renga-blocked-apply",
+            project_slug="renga",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        with self.assertRaises(gdp.BlockingPreviewWarningError):
+            gdp.apply_delegate_plan(
+                plan,
+                state_db_path=self.sb.db_path,
+                claude_org_root=self.sb.claude_org_root,
+                skip_settings=True,
+            )
+        runs = self.sb.list_runs()
+        self.assertFalse(
+            any(r["task_id"] == "renga-blocked-apply" for r in runs),
+            f"queued row leaked after blocking-warning abort: {runs}",
+        )
+
+    def test_no_warnings_when_canonical_clone_present(self):
+        """The clean Issue #489 canonical layout — clone at
+        ``workers/renga/`` directly — emits neither a deprecation
+        warning nor a blocker."""
+        self._clone(
+            self.sb.workers / "renga",
+            "https://github.com/suisya-systems/renga.git",
+        )
+        plan = gdp.build_delegate_plan(
+            task_id="renga-canonical-task",
+            project_slug="renga",
+            description="alt+p ux fix",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(plan.warnings, [])
+        self.assertEqual(plan.blocking_warnings, [])
+
+
+class TestIssue489AtomicApplyRollback(unittest.TestCase):
+    """Issue #489 Blocker 2: ``_reserve_in_db`` commits the queued run
+    row before ``_write_brief`` / ``_run_settings_generate`` /
+    ``_write_send_plan`` run. A failure in any of those post-reservation
+    steps leaves the queued row in place; resolver then sees Pattern A
+    as occupied on the next dispatch and silently flips to Pattern B.
+    The atomic-rollback layer wraps the post-reservation block and
+    compensates with ``status='abandoned'`` on failure so the leak is
+    closed."""
+
+    def setUp(self) -> None:
+        self._td = tempfile.TemporaryDirectory()
+        self.sb = _Sandbox(Path(self._td.name))
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def _build_plain_a(self, task_id: str = "atomic-task") -> gdp.DelegatePlan:
+        return gdp.build_delegate_plan(
+            task_id=task_id,
+            project_slug="clock-app",
+            description="atomic apply",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+
+    def test_write_brief_failure_compensates_queued_run(self):
+        """Patch ``_write_brief`` to raise after the DB reservation
+        commits. Expect: the exception propagates, and the queued run
+        row is flipped to ``abandoned`` so a follow-up dispatch sees
+        Pattern A as free."""
+        plan = self._build_plain_a()
+        boom = RuntimeError("simulated disk failure during brief write")
+        from unittest.mock import patch
+
+        with patch.object(gdp, "_write_brief", side_effect=boom):
+            with self.assertRaises(RuntimeError) as cm:
+                gdp.apply_delegate_plan(
+                    plan,
+                    state_db_path=self.sb.db_path,
+                    claude_org_root=self.sb.claude_org_root,
+                    skip_settings=True,
+                )
+        self.assertIs(cm.exception, boom)
+        runs = self.sb.list_runs()
+        match = [r for r in runs if r["task_id"] == "atomic-task"]
+        self.assertEqual(len(match), 1, runs)
+        self.assertEqual(match[0]["status"], "abandoned")
+
+    def test_send_plan_write_failure_compensates_queued_run(self):
+        """Same contract for ``_write_send_plan`` — the last
+        post-reservation side effect must also be guarded."""
+        plan = self._build_plain_a(task_id="send-plan-fail")
+        boom = OSError("permission denied")
+        from unittest.mock import patch
+
+        with patch.object(gdp, "_write_send_plan", side_effect=boom):
+            with self.assertRaises(OSError):
+                gdp.apply_delegate_plan(
+                    plan,
+                    state_db_path=self.sb.db_path,
+                    claude_org_root=self.sb.claude_org_root,
+                    skip_settings=True,
+                )
+        match = [r for r in self.sb.list_runs() if r["task_id"] == "send-plan-fail"]
+        self.assertEqual(match[0]["status"], "abandoned")
+
+    def test_successful_apply_leaves_queued_run_intact(self):
+        """Sanity guard: on the happy path the queued row stays queued
+        (the rollback layer must be a no-op when nothing fails). The
+        next dispatcher T2 promotes it to ``in_use``."""
+        plan = self._build_plain_a(task_id="happy-task")
+        gdp.apply_delegate_plan(
+            plan,
+            state_db_path=self.sb.db_path,
+            claude_org_root=self.sb.claude_org_root,
+            skip_settings=True,
+        )
+        match = [r for r in self.sb.list_runs() if r["task_id"] == "happy-task"]
+        self.assertEqual(match[0]["status"], "queued")
+
+
 if __name__ == "__main__":
     unittest.main()
