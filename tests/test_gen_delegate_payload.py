@@ -2091,19 +2091,16 @@ class TestIssue489PreviewWarnings(unittest.TestCase):
         self.assertFalse(plan.blocking_warnings)
         self.assertTrue(plan.warnings)
         self.assertTrue(any("_repo_clone" in w for w in plan.warnings))
-        # Worker_dir is routed through the legacy subdir. Pattern A leaves
-        # ``base_repo`` unset by design (it is a Pattern B concept), so we
-        # assert directly on ``worker_dir.parent.parent`` for the base
-        # discovery proof.
+        # Codex Round 1 follow-up: Pattern A now carries ``base_repo`` when
+        # routed through the new unified ``<base>/.worktrees/<task>/``
+        # layout — without it, apply's ``_ensure_worktree`` would skip
+        # ``git worktree add`` for Pattern A entirely.
         self.assertEqual(plan.layout.pattern, "A")
-        self.assertIsNone(plan.base_repo)
+        self.assertIsNotNone(plan.base_repo)
+        self.assertEqual(Path(plan.base_repo).resolve(), legacy.resolve())
         self.assertEqual(
             Path(plan.layout.worker_dir),
             (legacy / ".worktrees" / "renga-legacy-task").resolve(),
-        )
-        self.assertEqual(
-            Path(plan.layout.worker_dir).parent.parent.resolve(),
-            legacy.resolve(),
         )
 
     def test_preview_json_exposes_warnings_at_top_level(self):
@@ -2209,6 +2206,245 @@ class TestIssue489PreviewWarnings(unittest.TestCase):
         )
         self.assertEqual(plan.warnings, [])
         self.assertEqual(plan.blocking_warnings, [])
+
+
+class TestIssue489PatternAWorktreeCreation(unittest.TestCase):
+    """Issue #489 Codex Round 1 Blocker follow-up: when Pattern A resolves
+    to the unified ``<base>/.worktrees/<task>/`` layout (i.e. a real base
+    clone is detected at ``workers/<slug>/`` or its legacy ``_repo_clone``
+    subdir), ``apply`` must actually run ``git worktree add`` against
+    that base — not just mkdir an empty directory. ``base_repo`` is
+    populated on the plan so :func:`_ensure_worktree` fires for Pattern A
+    too."""
+
+    def setUp(self) -> None:
+        try:
+            subprocess.run(["git", "--version"], capture_output=True, check=True)
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            self.skipTest("git not available")
+        self._td = tempfile.TemporaryDirectory()
+        # Suppress sandbox-level git init so the per-test seed picks the
+        # ``main`` branch deterministically.
+        self.sb = _Sandbox(Path(self._td.name), with_claude_org_origin=False)
+        import os
+        self._git_env = os.environ.copy()
+        self._git_env.update(
+            {
+                "GIT_AUTHOR_NAME": "test",
+                "GIT_AUTHOR_EMAIL": "test@example.com",
+                "GIT_COMMITTER_NAME": "test",
+                "GIT_COMMITTER_EMAIL": "test@example.com",
+            }
+        )
+        # Replace the auto-seeded registry with a renga URL-only row.
+        (self.sb.claude_org_root / "registry" / "projects.md").write_text(
+            "# Projects\n\n"
+            "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 |\n"
+            "|---|---|---|---|---|\n"
+            "| renga | renga | https://github.com/suisya-systems/renga.git "
+            "| Renga | dev |\n",
+            encoding="utf-8",
+        )
+        # Build a local upstream whose filesystem path *contains* a
+        # ``github.com/suisya-systems/renga.git`` suffix so that the
+        # origin URL passes :func:`_origin_matches_registered`'s github
+        # gate AND ``git fetch origin`` succeeds locally. The gate uses
+        # a non-anchored regex search so the leading directory prefix
+        # is harmless; the trailing path is what matters.
+        self.upstream = (
+            Path(self._td.name)
+            / "github.com"
+            / "suisya-systems"
+            / "renga.git"
+        )
+        self.upstream.mkdir(parents=True)
+        self._git(self.upstream, "init", "-q", "-b", "main")
+        (self.upstream / "trunk.txt").write_text("v1", encoding="utf-8")
+        self._git(self.upstream, "add", "trunk.txt")
+        self._git(self.upstream, "commit", "-q", "-m", "c1")
+        # Clone (canonical layout) lives at workers/renga/. Point its
+        # origin at the github-named local upstream so the gate accepts
+        # AND the fetch can refresh remote-tracking refs.
+        self.clone = self.sb.workers / "renga"
+        self._git_init_match_origin(self.clone, str(self.upstream))
+        self._git(self.clone, "fetch", "-q", "origin")
+        self._git(self.clone, "symbolic-ref", "refs/remotes/origin/HEAD",
+                  "refs/remotes/origin/main")
+        self._git(self.clone, "reset", "-q", "--hard", "origin/main")
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def _git(self, repo: Path, *args: str) -> None:
+        subprocess.run(
+            ["git", "-C", str(repo), *args], check=True, env=self._git_env,
+        )
+
+    def _git_init_match_origin(self, repo: Path, origin_url: str) -> None:
+        repo.mkdir(parents=True, exist_ok=True)
+        self._git(repo, "init", "-q", "-b", "main")
+        self._git(repo, "remote", "add", "origin", origin_url)
+
+    def test_apply_creates_pattern_a_worktree_when_base_clone_present(self):
+        """Plan must populate ``base_repo`` for Pattern A so apply runs
+        ``git worktree add`` against the canonical clone — without this
+        the worker lands in an empty ``<base>/.worktrees/<task>/``
+        directory rather than a real git checkout (Codex Round 1
+        Blocker)."""
+        plan = gdp.build_delegate_plan(
+            task_id="renga-pattern-a",
+            project_slug="renga",
+            description="alt+p ux fix",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(plan.layout.pattern, "A")
+        self.assertIsNotNone(plan.base_repo)
+        self.assertEqual(Path(plan.base_repo).resolve(), self.clone.resolve())
+        self.assertEqual(
+            Path(plan.layout.worker_dir),
+            (self.clone / ".worktrees" / "renga-pattern-a").resolve(),
+        )
+        gdp.apply_delegate_plan(
+            plan,
+            state_db_path=self.sb.db_path,
+            claude_org_root=self.sb.claude_org_root,
+            skip_settings=True,
+        )
+        worker_dir = Path(plan.layout.worker_dir)
+        self.assertTrue(worker_dir.exists())
+        # A real worktree has a ``.git`` entry (file or directory).
+        self.assertTrue((worker_dir / ".git").exists())
+        # The clone treats it as a registered worktree.
+        out = subprocess.check_output(
+            ["git", "-C", str(self.clone),
+             "worktree", "list", "--porcelain"],
+        ).decode("utf-8", errors="replace")
+        registered = {
+            Path(line[len("worktree "):].strip()).resolve()
+            for line in out.splitlines() if line.startswith("worktree ")
+        }
+        self.assertIn(worker_dir.resolve(), registered)
+        # Brief lands inside the worktree (not in workers/renga/ root).
+        self.assertTrue((worker_dir / "CLAUDE.md").exists())
+        self.assertFalse((self.sb.workers / "renga" / "CLAUDE.md").is_file())
+
+    def test_apply_skips_worktree_for_pattern_a_legacy_direct(self):
+        """When no base clone is detected (e.g. ``-`` placeholder
+        registry row, or a clone is simply missing), Pattern A keeps the
+        legacy ``workers/<slug>/`` direct layout and apply must NOT try
+        to ``git worktree add`` — ``base_repo`` stays None and
+        ``_ensure_worktree`` returns early."""
+        # Reset registry to a `-` placeholder so find_workers_dir_clone
+        # cannot resolve the renga clone we set up in setUp.
+        (self.sb.claude_org_root / "registry" / "projects.md").write_text(
+            "# Projects\n\n"
+            "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 |\n"
+            "|---|---|---|---|---|\n"
+            "| 時計 | clock-app | - | Demo clock | - |\n",
+            encoding="utf-8",
+        )
+        plan = gdp.build_delegate_plan(
+            task_id="clock-legacy",
+            project_slug="clock-app",
+            description="legacy direct",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(plan.layout.pattern, "A")
+        self.assertIsNone(plan.base_repo)
+        self.assertEqual(
+            Path(plan.layout.worker_dir),
+            (self.sb.workers / "clock-app").resolve(),
+        )
+        gdp.apply_delegate_plan(
+            plan,
+            state_db_path=self.sb.db_path,
+            claude_org_root=self.sb.claude_org_root,
+            skip_settings=True,
+        )
+        # Brief landed in the direct workers/<slug>/ — no worktree
+        # was created (no .git in workers/clock-app), but apply also
+        # did not fail.
+        wd = Path(plan.layout.worker_dir)
+        self.assertTrue((wd / "CLAUDE.md").exists())
+        self.assertFalse((wd / ".git").exists())
+
+
+class TestIssue489OverrideWorkerDirAlignment(unittest.TestCase):
+    """Issue #489 Codex Round 1 Major follow-up: ``--pattern A``/``B``
+    override must consult :func:`find_workers_dir_clone` so the
+    override-driven worker_dir lands on the same base the auto-derive
+    would pick (canonical ``workers/<slug>/`` OR legacy
+    ``workers/<slug>/_repo_clone/``). Previously the override
+    hardcoded ``workers/<slug>/.worktrees/`` which diverged whenever
+    the base lived under the legacy subdir."""
+
+    def setUp(self) -> None:
+        try:
+            subprocess.run(["git", "--version"], capture_output=True, check=True)
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            self.skipTest("git not available")
+        self._td = tempfile.TemporaryDirectory()
+        self.sb = _Sandbox(Path(self._td.name))
+        (self.sb.claude_org_root / "registry" / "projects.md").write_text(
+            "# Projects\n\n"
+            "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 |\n"
+            "|---|---|---|---|---|\n"
+            "| renga | renga | https://github.com/suisya-systems/renga.git "
+            "| Renga | dev |\n",
+            encoding="utf-8",
+        )
+        # Legacy layout: clone parked under workers/renga/_repo_clone/.
+        (self.sb.workers / "renga").mkdir()
+        (self.sb.workers / "renga" / "README.md").write_text(
+            "loose note", encoding="utf-8"
+        )
+        self.legacy_clone = self.sb.workers / "renga" / "_repo_clone"
+        self.legacy_clone.mkdir()
+        subprocess.run(
+            ["git", "-C", str(self.legacy_clone), "init", "-q"], check=True
+        )
+        subprocess.run(
+            ["git", "-C", str(self.legacy_clone), "remote", "add",
+             "origin", "https://github.com/suisya-systems/renga.git"],
+            check=True,
+        )
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def test_force_pattern_b_override_uses_repo_clone_base_path(self):
+        from tools import resolve_worker_layout as rwl
+
+        layout = rwl.resolve(
+            task_id="override-legacy-b",
+            project_slug="renga",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+            layout_overrides={"pattern": "B"},
+        )
+        self.assertEqual(layout.pattern, "B")
+        self.assertEqual(
+            Path(layout.worker_dir),
+            (self.legacy_clone / ".worktrees" / "override-legacy-b").resolve(),
+        )
+
+    def test_force_pattern_a_override_uses_repo_clone_base_path(self):
+        from tools import resolve_worker_layout as rwl
+
+        layout = rwl.resolve(
+            task_id="override-legacy-a",
+            project_slug="renga",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+            layout_overrides={"pattern": "A"},
+        )
+        self.assertEqual(layout.pattern, "A")
+        self.assertEqual(
+            Path(layout.worker_dir),
+            (self.legacy_clone / ".worktrees" / "override-legacy-a").resolve(),
+        )
 
 
 class TestIssue489AtomicApplyRollback(unittest.TestCase):

@@ -296,8 +296,8 @@ def _compute_layout_warnings(
                 f"places the clone directly at workers_dir/{project_slug}/. "
                 "Migrate by moving the clone up one level so it lives at "
                 f"workers_dir/{project_slug}/ (a strict migration script "
-                "is out of scope for this PR — see Major M-3 in the "
-                "review)."
+                "is out of scope for Issue #489 itself — a follow-up "
+                "issue may automate the move)."
             )
     return warnings, blocking_warnings
 
@@ -453,7 +453,32 @@ def build_delegate_plan(
     # Pattern B: figure out which repo `git worktree add` should be run from.
     # live_repo_worktree → Secretary's live claude-org repo;
     # plain Pattern B    → the registered project's path.
+    # Pattern A (Issue #489): when the resolver routed worker_dir into
+    # ``<base>/.worktrees/<task>/`` (i.e. a real clone was detected), the
+    # base is whatever ``find_workers_dir_clone`` resolved. Carry it on
+    # ``plan.base_repo`` so ``_ensure_worktree`` actually creates the
+    # worktree — without this, apply for the new Pattern A layout would
+    # just mkdir an empty ``.worktrees/<task>/`` under the base clone and
+    # the worker would land in a non-checkout directory (Codex Round 1
+    # Blocker).
     base_repo: Optional[Path] = None
+    if layout.pattern == "A":
+        candidate = rwl.find_workers_dir_clone(
+            project_slug, project_path, Path(workers_dir_for_norm)
+        )
+        if candidate is not None:
+            try:
+                wd_resolved = Path(layout.worker_dir).resolve()
+                candidate_resolved = candidate.resolve()
+            except OSError:
+                wd_resolved = Path(layout.worker_dir)
+                candidate_resolved = candidate
+            # Only treat the clone as a Pattern A base when worker_dir is
+            # actually rooted under it (the new Issue #489 layout). For
+            # the legacy direct path (worker_dir == workers/<slug>/) we
+            # leave base_repo unset so _ensure_worktree stays a no-op.
+            if wd_resolved.parent.parent == candidate_resolved:
+                base_repo = candidate_resolved
     if layout.pattern == "B":
         if layout.pattern_variant == "live_repo_worktree":
             base_repo = Path(claude_org_root).resolve()
@@ -583,7 +608,12 @@ def _reserve_in_db(
                 layout="flat",
                 is_git_repo=plan.layout.pattern != "C"
                 or plan.layout.pattern_variant == "gitignored_repo_root",
-                is_worktree=plan.layout.pattern == "B",
+                # Issue #489: Pattern A with a detected base clone (new
+                # ``<base>/.worktrees/<task>/`` layout) is registered as
+                # a worktree too — ``base_repo is not None`` covers both
+                # patterns. Pattern A legacy direct (workers/<slug>/) and
+                # Pattern C are NOT worktrees.
+                is_worktree=plan.base_repo is not None,
             )
             issue_refs_iter = None
             if plan.closes_issue is not None:
@@ -753,14 +783,21 @@ def _ensure_worktree(plan: DelegatePlan) -> None:
     reused worktree the Secretary removes it so apply recreates it (which then
     fetches). See the reuse branch below.
     """
-    if plan.layout.pattern != "B":
-        return
+    # Issue #489: Pattern A with a detected base clone now uses the same
+    # ``<base>/.worktrees/<task>/`` layout as Pattern B, so the worktree
+    # creation must fire for either pattern when ``base_repo`` is set.
+    # Conversely, Pattern A WITHOUT a base clone (legacy direct path,
+    # worker_dir == workers/<slug>/) and Pattern C ephemeral / gitignored
+    # both leave ``base_repo`` unset; for those, apply only writes the
+    # brief — no worktree to create.
     if plan.base_repo is None:
-        raise WorktreeApplyError(
-            f"Pattern B but no usable base repo could be determined for "
-            f"project {plan.project_slug!r} (variant="
-            f"{plan.layout.pattern_variant!r}); cannot run `git worktree add`."
-        )
+        if plan.layout.pattern == "B":
+            raise WorktreeApplyError(
+                f"Pattern B but no usable base repo could be determined for "
+                f"project {plan.project_slug!r} (variant="
+                f"{plan.layout.pattern_variant!r}); cannot run `git worktree add`."
+            )
+        return
     worker_dir = Path(plan.layout.worker_dir)
     if _is_registered_worktree(plan.base_repo, worker_dir):
         # Idempotent reuse — but only when the existing worktree is on the

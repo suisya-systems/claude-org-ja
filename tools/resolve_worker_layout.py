@@ -927,15 +927,32 @@ def resolve(
             # would refuse to treat it as a worktree. Skipped when
             # claude_org_clone has already pinned the clone-root path —
             # the post-override fallback below re-derives for that case.
+            #
+            # Issue #489 (Codex Round 1 Major follow-up): consult
+            # :func:`find_workers_dir_clone` here too so the override
+            # lands the worktree under the SAME base the auto-derive
+            # would pick (canonical ``workers/<slug>/`` OR legacy
+            # ``workers/<slug>/_repo_clone/``). Hardcoding
+            # ``workers/<slug>/.worktrees/`` made the override diverge
+            # from the auto-derived path whenever the base lived under
+            # the legacy subdirectory.
             if (
                 pattern == "B"
                 and variant is None
                 and not explicit_worker_dir
                 and claude_org_clone is None
             ):
-                worker_dir = (
-                    workers_dir / project_slug / ".worktrees" / task_id
-                ).resolve()
+                override_base = find_workers_dir_clone(
+                    project_slug,
+                    project.path if project is not None else None,
+                    workers_dir,
+                )
+                if override_base is not None:
+                    worker_dir = (override_base / ".worktrees" / task_id).resolve()
+                else:
+                    worker_dir = (
+                        workers_dir / project_slug / ".worktrees" / task_id
+                    ).resolve()
             # Same idea for ``--pattern A``: when the override drops
             # B → A, pin worker_dir back at the clone root rather than
             # leaving it in a stale ``.worktrees/<task_id>/`` path that
@@ -944,11 +961,29 @@ def resolve(
             # ``--pattern A`` on slug=claude-org leaves worker_dir at the
             # auto-derived ``.worktrees/<task_id>/`` even though the
             # final pattern is A, an incoherent layout.
+            #
+            # Issue #489 (Codex Round 1 Major follow-up): mirror the
+            # Pattern A auto-derive — when a usable base clone is
+            # detected at workers/<slug>/ or workers/<slug>/_repo_clone/,
+            # the override-driven worker_dir also lands at
+            # ``<base>/.worktrees/<task>/`` (the new unified layout).
+            # Otherwise the override and auto-derive disagree on layout
+            # for the same project.
             if pattern == "A" and not explicit_worker_dir:
                 if claude_org_clone is not None:
                     worker_dir = claude_org_clone.resolve()
                 else:
-                    worker_dir = (workers_dir / project_slug).resolve()
+                    override_base = find_workers_dir_clone(
+                        project_slug,
+                        project.path if project is not None else None,
+                        workers_dir,
+                    )
+                    if override_base is not None:
+                        worker_dir = (
+                            override_base / ".worktrees" / task_id
+                        ).resolve()
+                    else:
+                        worker_dir = (workers_dir / project_slug).resolve()
             # ``--pattern C`` override: ephemeral default. Without this
             # branch the override would dispatch into the *registered*
             # project's directory (auto-derive's Pattern A worker_dir),
