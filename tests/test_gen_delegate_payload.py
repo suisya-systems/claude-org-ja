@@ -2189,6 +2189,59 @@ class TestIssue489PreviewWarnings(unittest.TestCase):
             f"queued row leaked after blocking-warning abort: {runs}",
         )
 
+    def test_local_path_registry_with_residue_is_not_blocking(self):
+        """Codex Round 3 Major regression: a project registered with a
+        real local clone path (``project.path = /repos/clock-app``) gets
+        ``base_repo`` derived from the registered path, NOT from
+        ``find_workers_dir_clone``. The blocking_warning logic must use
+        ``base_repo`` as the authoritative "is there a usable base?"
+        signal — otherwise leftover residue in ``workers/<slug>/`` would
+        false-positive even though apply could safely run worktree-add
+        from the registered local clone."""
+        try:
+            subprocess.run(["git", "--version"], capture_output=True, check=True)
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            self.skipTest("git not available")
+        local_repo = Path(self._td.name) / "registered-clock-app"
+        local_repo.mkdir()
+        subprocess.run(
+            ["git", "-C", str(local_repo), "init", "-q"], check=True
+        )
+        # Registry row points at the registered local clone (NOT at
+        # workers/<slug>/). This is the existing
+        # "test_apply_creates_plain_pattern_b_worktree_for_project_repo"
+        # shape with the extra wrinkle that workers/clock-app/ has
+        # leftover Pattern-A residue from an earlier dispatch.
+        (self.sb.claude_org_root / "registry" / "projects.md").write_text(
+            "# Projects\n\n"
+            "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 |\n"
+            "|---|---|---|---|---|\n"
+            f"| 時計 | clock-app | {local_repo} | Demo clock | - |\n",
+            encoding="utf-8",
+        )
+        # Force Pattern B so the registered local path drives base_repo.
+        self.sb.add_active_run(
+            task_id="prev-clock-task",
+            project_slug="clock-app",
+            worker_dir=str(self.sb.workers / "clock-app"),
+        )
+        # Leftover Pattern-A residue in workers/clock-app/.
+        residue_dir = self.sb.workers / "clock-app"
+        residue_dir.mkdir(exist_ok=True)
+        (residue_dir / "CLAUDE.md").write_text("old", encoding="utf-8")
+        plan = gdp.build_delegate_plan(
+            task_id="clock-with-residue",
+            project_slug="clock-app",
+            description="non-blocking residue regression",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(plan.layout.pattern, "B")
+        self.assertEqual(Path(plan.base_repo).resolve(), local_repo.resolve())
+        # Residue + leftover workers/<slug>/ exists, but base_repo is
+        # the registered local clone — no blocking_warning fires.
+        self.assertEqual(plan.blocking_warnings, [])
+
     def test_no_warnings_when_canonical_clone_present(self):
         """The clean Issue #489 canonical layout — clone at
         ``workers/renga/`` directly — emits neither a deprecation
@@ -2328,6 +2381,38 @@ class TestIssue489PatternAWorktreeCreation(unittest.TestCase):
         # Brief lands inside the worktree (not in workers/renga/ root).
         self.assertTrue((worker_dir / "CLAUDE.md").exists())
         self.assertFalse((self.sb.workers / "renga" / "CLAUDE.md").is_file())
+
+    def test_pattern_a_worktree_surfaces_sandbox_pattern_b_to_runtime(self):
+        """Codex Round 3 Blocker: ``settings_args["pattern"]`` is what
+        ``claude-org-runtime settings generate`` keys ``sandbox_by_pattern``
+        off. Pattern A's unified worktree layout needs Pattern B's
+        Git-metadata carve-outs (``<base>/.git/worktrees/<task>/``,
+        objects, branch ref, packed-refs) — without the override the
+        runtime selects A's sandbox and git commits inside the worktree
+        fail under bwrap. ``layout.pattern`` stays at ``A`` (first-run
+        label / DB row), only ``settings_args["pattern"]`` flips to B."""
+        plan = gdp.build_delegate_plan(
+            task_id="renga-sandbox-flip",
+            project_slug="renga",
+            description="alt+p ux fix",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(plan.layout.pattern, "A")
+        self.assertEqual(plan.settings_args["pattern"], "B")
+        # base-clone is surfaced too so the runtime can substitute
+        # ``{base_clone}`` in B's sandbox body.
+        self.assertEqual(
+            plan.settings_args["base-clone"], str(self.clone.resolve())
+        )
+        # The cmd builder honors the override.
+        cmd = gdp._build_settings_generate_cmd(
+            plan.settings_args, runtime_cmd="claude-org-runtime"
+        )
+        self.assertEqual(cmd[cmd.index("--pattern") + 1], "B")
+        self.assertEqual(
+            cmd[cmd.index("--base-clone") + 1], str(self.clone.resolve())
+        )
 
     def test_apply_skips_worktree_for_pattern_a_legacy_direct(self):
         """When no base clone is detected (e.g. ``-`` placeholder

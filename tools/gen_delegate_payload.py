@@ -229,9 +229,9 @@ def _has_pattern_a_residue(workers_slug_dir: Path) -> bool:
 def _compute_layout_warnings(
     *,
     project_slug: str,
-    project_path: Optional[str],
     workers_dir: Path,
     pattern: str,
+    base_repo: Optional[Path],
 ) -> tuple[list[str], list[str]]:
     """Compute ``(warnings, blocking_warnings)`` for the preview surface
     (Issue #489 (d)).
@@ -240,53 +240,54 @@ def _compute_layout_warnings(
 
     - ``blocking_warnings``: ``workers/<slug>/`` exists as a non-git
       directory with Pattern-A-residue files (CLAUDE.md / send_plan.json
-      / .claude/) and no usable base clone could be detected (neither
-      canonical nor ``_repo_clone`` legacy). The directory is the
-      ambiguous Pattern A / Pattern B collision target — apply against
-      it would either re-write residual files or try to ``git worktree
-      add`` from a non-git directory. Surface as blocking so Secretary
-      can decide between cleaning the residue or bootstrapping a real
-      base clone before retrying.
+      / .claude/) AND ``base_repo`` is None (no usable base discoverable
+      from any source — canonical clone, ``_repo_clone`` legacy, or a
+      registered local project path). The directory is the ambiguous
+      Pattern A / Pattern B collision target — apply against it would
+      either re-write residual files or try to ``git worktree add``
+      from a non-git directory. Surface as blocking so Secretary can
+      clean the residue or bootstrap a base before retrying.
 
-    - ``warnings``: a usable base clone was detected at the legacy
+      Codex Round 3 Major: the predicate is ``base_repo is None`` (the
+      authoritative "no usable base" answer the rest of the plan was
+      built against) — NOT "did ``find_workers_dir_clone`` return
+      something". A registered local-path project (``project.path =
+      /repos/clock-app``) supplies ``base_repo`` via the payload's
+      project-path branch even when ``find_workers_dir_clone`` returns
+      None, so leftover residue in ``workers/<slug>/`` is NOT a real
+      collision — apply uses the registered local clone as base.
+
+    - ``warnings``: ``base_repo`` resolved through the legacy
       ``workers/<slug>/_repo_clone/`` subdirectory rather than the
       canonical ``workers/<slug>/``. Apply still proceeds — the legacy
-      layout works — but the canonical layout is preferred so a follow-up
-      migration step can normalize it.
+      layout works — but the canonical layout is preferred so a
+      follow-up migration step can normalize it.
 
     Pattern C ephemeral / gitignored cases never touch ``workers/<slug>/``
-    directly, so they bypass both checks. Both the canonical and legacy
-    candidates are re-probed here (rather than relying on a cached
-    ``base_repo`` from the caller) because Pattern A leaves ``base_repo``
-    unset — the worktree-base concept is only carried for Pattern B in
-    the plan object, while the underlying clone-discovery rule is
-    identical for both patterns now (Issue #489 (b) unification).
+    directly, so they bypass both checks.
     """
     warnings: list[str] = []
     blocking_warnings: list[str] = []
     if pattern == "C":
         return warnings, blocking_warnings
     workers_slug_dir = (Path(workers_dir) / project_slug).resolve()
-    detected_clone = rwl.find_workers_dir_clone(
-        project_slug, project_path, Path(workers_dir)
-    )
-    if detected_clone is None:
-        if _has_pattern_a_residue(workers_slug_dir):
-            blocking_warnings.append(
-                f"workers_dir/{project_slug}/ exists with Pattern-A residue "
-                f"(CLAUDE.md / send_plan.json / .claude/) but no usable base "
-                f"clone could be detected at workers_dir/{project_slug}/ or "
-                f"workers_dir/{project_slug}/_repo_clone/. Refusing to apply "
-                "— either clean the residue and rerun (legacy Pattern A "
-                "bootstrap), or clone the project at workers_dir/"
-                f"{project_slug}/ first so dispatch can use the Issue #489 "
-                "canonical layout (workers_dir/<slug>/.worktrees/<task>/)."
-            )
-    else:
+    if base_repo is None and _has_pattern_a_residue(workers_slug_dir):
+        blocking_warnings.append(
+            f"workers_dir/{project_slug}/ exists with Pattern-A residue "
+            f"(CLAUDE.md / send_plan.json / .claude/) but no usable base "
+            f"clone could be determined (canonical workers_dir/{project_slug}/, "
+            f"legacy workers_dir/{project_slug}/_repo_clone/, and the "
+            "registered local-path base all came up empty). Refusing to "
+            "apply — either clean the residue and rerun (legacy Pattern A "
+            f"bootstrap), or clone the project at workers_dir/{project_slug}/ "
+            "first so dispatch can use the Issue #489 canonical layout "
+            "(workers_dir/<slug>/.worktrees/<task>/)."
+        )
+    if base_repo is not None:
         try:
-            resolved = detected_clone.resolve()
+            resolved = base_repo.resolve()
         except OSError:
-            resolved = detected_clone
+            resolved = base_repo
         # Legacy fallback lives at ``<canonical>/_repo_clone``. We detect
         # the legacy subdir by exact-name comparison against the canonical
         # parent so a deliberately misnamed ``_repo_clone`` sibling of an
@@ -537,12 +538,32 @@ def build_delegate_plan(
     settings_args = dict(layout.settings_args)
     if base_repo is not None:
         settings_args["base-clone"] = str(base_repo)
+    # Issue #489 Codex Round 3 Blocker: Pattern A's Issue #489 unified
+    # worktree layout (``<base>/.worktrees/<task>/``) requires the same
+    # Git-metadata sandbox carve-outs as Pattern B (the worktree's
+    # ``.git/worktrees/<task>/`` admin dir, the shared ``.git/objects``,
+    # the THIS-branch ref, ``.git/packed-refs``). ``worker_roles.<role>.sandbox_by_pattern.A``
+    # in ``tools/org_extension_schema.json`` is authored for the LEGACY
+    # Pattern A layout (worker_dir == workers/<slug>/, no shared
+    # ``.git``) and does NOT include those mounts; selecting it for a
+    # worktree-based dispatch would cause git commit / push / fetch to
+    # fail with "permission denied" inside the bwrap sandbox. We surface
+    # ``pattern=B`` to the runtime ONLY for the sandbox selection while
+    # leaving ``layout.pattern`` / ``settings_args["task-id"]`` / the
+    # DELEGATE body / DB row at the original A label (first-vs-concurrent
+    # dispatch tracking is independent of sandbox shape). ``base_repo is
+    # not None`` is the same predicate that drives ``_ensure_worktree``,
+    # so the two stay in lock-step. When the schema grows a
+    # Pattern-A-with-worktree sandbox variant this override can be
+    # removed.
+    if layout.pattern == "A" and base_repo is not None:
+        settings_args["pattern"] = "B"
 
     warnings, blocking_warnings = _compute_layout_warnings(
         project_slug=project_slug,
-        project_path=project_path,
         workers_dir=Path(workers_dir_for_norm),
         pattern=layout.pattern,
+        base_repo=base_repo,
     )
 
     return DelegatePlan(
