@@ -67,13 +67,13 @@
      ```
      result = mcp__renga-peers__inspect_pane(
          target="worker-{task_id}",
-         lines=10,
+         lines=<該当 worker pane の height>,   # Step 3 list_panes の height。取れなければ十分大きい固定値 (例 200)
          include_cursor=true,
          format="grid"
      )
      # result.structuredContent に {lines: [{row, text}], cursor: {visible, row, col}} が入る
      ```
-     を順次実行 (16 ワーカー並列でも合計 1 秒未満)
+     を順次実行 (16 ワーカー並列でも合計 1 秒未満)。`lines` は **Step 3 の `list_panes` で得た該当 worker pane の `height`** を渡し、pane の全 visible 行を取得して (d) の ERROR scan を全行対象にする (Issue #492 gap 1: `lines=10` の bottom-10 窓では row 15 のような scroll-up した error banner を取りこぼす。`inspect_pane` の `lines` は「末尾 N 行への trim」なので、固定値だと pane height がそれを超えた環境で上段を取りこぼす — 必ず実 height を使う)。`list_panes` の height が取れない場合のみ十分大きい固定値 (例 200) でフォールバックする。APPROVAL_BLOCKED の target line は (a) の通り「最後の非空行」なので返却行数を増やしても変わらない。
    - **エラー時の挙動**: tool result テキストに `[<code>] <msg>` 形式でエラーが埋まる。code で分岐する (詳細は `.claude/skills/org-delegate/references/renga-error-codes.md`):
      - `[pane_not_found]` / `[pane_vanished]` — ワーカーが既に閉じた。そのワーカーの inspect を skip して Step 3 の list 結果で `WORKER_PANE_EXITED` 経路に回す (二重検出は de-dup で吸収される)
      - `[shutting_down]` — renga 停止中。監視ループを即停止し、`mcp__renga-peers__send_message` で `FOREMAN_STOPPING` を窓口に通知
@@ -82,7 +82,7 @@
 
    #### (a) マッチ対象の定義
    返却された `lines` 配列 (各要素 `{row, text}`) の中で、**`text != ""` を満たす最後の 1 要素** だけを APPROVAL_BLOCKED パターンの match 対象とする (複数行を対象にしない)。
-   この 1 行を以降 **target line** と呼ぶ。ERROR パターンは bottom 10 行すべてが対象で良い (プロンプト位置と無関係なため)。
+   この 1 行を以降 **target line** と呼ぶ。ERROR / spinner-age パターン ((d)) は **全 visible 行** が対象 (プロンプト位置と無関係で、scroll-up した banner も拾うため。Issue #492 gap 1)。`inspect_pane(lines=<pane height>)` で取得した **返却行配列全体** を scan する。
 
    #### (b) APPROVAL_BLOCKED 検出 — target line の anchored regex 完全一致
    以下のいずれか:
@@ -102,13 +102,24 @@
 
    **high-confidence のみ journal 記録 + `mcp__renga-peers__send_message` 通知の両方を発行**。low-confidence は journal のみに記録し、窓口通知はスキップする (誤検出による窓口への偽通知を抑えるため)。
 
-   #### (d) ERROR 検出 — substring match
-   bottom 10 行のいずれかが以下を含む:
-   - `API Error`, `api error`
-   - `rate limit`, `429`, `500`
-   - `^Error: `, `^ERROR: `
+   #### (d) ERROR 検出 — 全 visible 行 substring / regex / spinner-age
+   **全 visible 行** ((a) で説明した `inspect_pane(lines=<pane height>)` の **返却行配列全体**。bottom 10 ではない — Issue #492 gap 1) のいずれかが以下に該当:
 
-   ERROR は cursor 補強なしで journal + 通知の両方を発行する (error banner は cursor 位置と相関しないため)。
+   - **strong substring (大文字小文字無視、無条件で発火)**: `API Error`, `api error`, `rate limit`
+   - **status code (語境界 + エラー文脈ゲート)**: `429`, `500`, `502`, `503`, `504`, `529` のいずれかが **語境界トークン** (`(?<!#)\b...\b`) として現れ、**かつ同一行に error 文脈キーワード** (`error` / `overload` / `unavailable` / `rate limit` / `too many requests` / `retry`(ing) / `gateway` / `server error` / `throttl`) がある場合のみ発火
+     - `529` は Anthropic overload、`502/503/504` は transient gateway 系 (Issue #492 gap 2)。全行 scan に広げたことで bare 数字 substring の誤検出 (`localhost:5000` / `500 passed` / issue ref `#529` 等) が増えるため、語境界 + 文脈ゲート + `#` 接頭の issue ref 除外 (`(?<!#)`) で絞る (Codex review 対応)。主信号は `API Error` substring と spinner-age で、status code は文言変更への futureproof な補足
+   - **anchored regex (大文字小文字区別)**: `^Error: `, `^ERROR: `
+   - **spinner-age (Issue #492 gap 3)**: `^\s*[spinner glyphs]+\s+\w+\s+for\s+(\d+)m\s+(\d+)s` に該当し、かつ捕捉した分が **threshold (default 5 分) 以上**。Claude Code の `{glyph} {動詞} for {Xm Ys}` スピナーが 5 分以上回り続けるのは API retry loop / hang の signal で、substring とは独立に **ERROR 同等** として扱う (観測 case: `✻ Sautéed for 9m 12s`)
+
+   ERROR / spinner-age は cursor 補強なしで journal + 通知の両方を発行する (error banner / 停止スピナーは cursor 位置と相関しないため)。spinner-age 検出も notify フォーマット上は `ERROR_DETECTED` 経路に乗せる (kind=error)。
+
+   **正準実装**: 上記 substring / regex / spinner-age 判定の決定論的コアは `tools/inspect_anomaly_scan.py` (`scan_lines()`) に codify 済み。ディスパッチャーは inspect_pane 結果を JSON で渡してこの helper を呼ぶことで全行 scan を 1 コマンドで実行できる (cwd は `.dispatcher/` なので `../tools/`):
+   ```bash
+   # inspect_pane の structuredContent を JSON 化して渡す。
+   # exit 3 = anomaly 検出、exit 0 = clean。detections[] に {kind, reason, row, matched}。
+   echo "$inspect_json" | py -3 ../tools/inspect_anomaly_scan.py --spinner-threshold-min 5
+   ```
+   threshold やパターンの単一定義はこの module 側にあり、regression test (`tests/test_inspect_anomaly_scan.py`、観測 case = row 15 の 529 banner + 9m spinner + bottom 10 空) が契約を pin する。手で判定する場合も上記リストと同義。
 
    #### (e) 実行シーケンス (journal + de-dup + notify)
    以下の順番で厳密に実行する:
@@ -149,6 +160,9 @@
 
    #### (g) worker 自己申告 (Step 2) と inspect (Step 4) の併用設計
    両チャネルが同じ anomaly を通知しても de-dup ((e) の step 2) が 30 秒窓で合算するので、窓口は重複通知を受け取らない。self-report は先に届けば inspect を抑制、inspect は worker が通知を忘れていれば self-report を補完する。両方独立稼働で OK。
+
+   #### (h) 設計メモ — secretary 側 inspect cadence は別 Issue (Issue #492 gap 4)
+   Issue #492 gap 4「secretary 自身が active inspect cadence を持つべきか」は **本 PR スコープ外として別 Issue に切り出す判断**。理由: dispatcher の Step 4 を全 visible 行 scan + spinner-age に強化する (本 PR の gap 1–3) 方が変更が小さく、観測 case (529 + 9m spin) は dispatcher 側の検出強化だけで 5 分時点の ERROR 通知に乗る。secretary に二重の inspect ループを足すのは監視層の二重化で、まず dispatcher 強化の効果を観測してから要否を判断するのが妥当。secretary cadence / `secretary-monitor` skill が必要と判明したら別 Issue で扱う。
 
 5. **stall 検出 (STALL_SUSPECTED)** — 「stuck」と「Secretary 判断待ち idle」を補助シグナルで区別する独立チャネル:
 
