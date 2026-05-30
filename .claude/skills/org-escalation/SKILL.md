@@ -48,10 +48,12 @@ allowed-tools:
      ```
      同 task_id の pending entry が既存なら idempotent (no-op)。register はディスパッチャーの SECRETARY_RELAY_GAP_SUSPECTED 検出 ([`../../../.dispatcher/references/worker-monitoring.md` Step 5.1](../../../.dispatcher/references/worker-monitoring.md#step-5-1)) の primary lookup source
 
-3. **人間に伝達する**: 内容と選択肢を整理して提示する。提示直後に register を `escalated` に更新:
+3. **人間に伝達する**: 内容と選択肢を整理して提示する。**選択肢を提示した時点（ask の瞬間）** で、register を `escalated` に更新する直前/同時に attention watcher へ awaiting_user を即時 emit する（Issue #28、ask-time ゲート）:
    ```bash
+   bash tools/journal_append.sh notify_sent kind=awaiting_user task_id={task_id} gate=escalation_to_user note="<選択肢提示の短い要約>"
    python tools/pending_decisions.py resolve --task-id {task_id} --kind to_user
    ```
+   classifier が `secretary_awaiting_user` (default severity `urgent`) として拾い、判断を仰がれた瞬間に即ビープする。interactive ではユーザーが数十秒〜数分で返答するため pending_decision aging (15分) は実質発火せず、この ask-time emit が urgent 通知の主経路となる。Step 4.5 (`escalation_reply_forward`, 転送時) の emit はそのまま別タイミングとして残す（Step 3=ask 時 / 4.5=転送時）。本 emit は journal 1 行追記のみで register / pending_decisions の状態は触らない。
 
 4. **ユーザーから返答を受領した時点** — ワーカーへ転送する **前に** `user_replied_at` marker を register に記録する (Issue #301):
    ```bash

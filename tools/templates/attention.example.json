@@ -22,7 +22,8 @@
     "worker_not_reported": "normal",
     "worker_error": "normal",
     "worker_completed": "normal",
-    "pr_merged": "normal"
+    "pr_merged": "normal",
+    "secretary_awaiting_user": "urgent"
   },
   "templates": {
     "approval_blocked": {
