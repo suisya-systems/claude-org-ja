@@ -571,12 +571,25 @@ no legitimate use of any `git worktree` verb — see §6).
 
 #### 5.2.5 [`.hooks/block-org-structure.sh`](../../.hooks/block-org-structure.sh)
 
-- **Disposition: leave attached as-is for `worker_roles.default`; no
-  change.** This script is filesystem-boundary scoped and does not need
-  to know about git. The Bash-half regex on `mkdir|touch|cp|mv` plus
+- **Disposition (git-guardrails scope): leave attached for
+  `worker_roles.default`; this git-guardrails work makes no git-related
+  change to it.** This script is filesystem-boundary scoped and does not
+  need to know about git. The Bash-half regex on `mkdir|touch|cp|mv` plus
   org-structure dirnames does not double-catch git operations because
   git invocations against `.claude/`, `.dispatcher/`, `.state/` etc. are
   rare and would surface as Edit/Write tool calls before reaching git.
+- **Note (later change, out of git scope):** the org-structure block's
+  **Edit/Write half** was subsequently scoped to claude-org itself — when
+  `WORKER_DIR` is outside `CLAUDE_ORG_PATH` (a target-repo worker),
+  `WORKER_DIR/.claude/` is allowed in full (the target repo's own Claude Code
+  config); in-org behavior is unchanged. The **Bash half is intentionally NOT
+  relaxed** (it blocks `.claude/` for all hook-running roles as before),
+  because a shell-string grep cannot safely scope relative/variable references
+  away from claude-org's own `.claude/` — only the `realpath`-based Edit/Write
+  half can. So this hook is no longer literally byte-for-byte "as-is", but the
+  git-guardrails disposition above (no git-related change) still holds. See
+  [`docs/contracts/role-pattern-sandbox-contract.md`](./role-pattern-sandbox-contract.md)
+  §1.2 for the current Decision rule.
 
 #### 5.2.6 New git-aware wrapper (separate deliverable)
 
