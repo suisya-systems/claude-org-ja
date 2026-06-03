@@ -72,6 +72,16 @@ ROOT_ONLY_BLOCKED=('registry' 'dashboard' 'knowledge')
 CANONICAL_WORKER=$(normalize_drive_letter "$(normalize_slashes "$(portable_realpath "$WORKER_DIR")")")
 CANONICAL_CLAUDE_ORG=$(normalize_drive_letter "$(normalize_slashes "$(portable_realpath "$CLAUDE_ORG_PATH")")")
 
+# WORKER_DIR が claude-org 本体の内側か外側かを判定する。
+# このガードの目的は claude-org 本体の組織構造保護であり、対象リポジトリ（claude-org の
+# 外に置かれた worker dir）の .claude/ は Claude Code の正当な設定ディレクトリなので保護対象外。
+# 判定軸: CANONICAL_WORKER が CANONICAL_CLAUDE_ORG と一致するか、その配下にあるか。
+# （末尾スラッシュ付き前方一致で claude-org-ja-foo 等の兄弟前方一致誤判定を防ぐ）
+WORKER_IN_ORG=0
+if [[ "$CANONICAL_WORKER" == "$CANONICAL_CLAUDE_ORG" || "$CANONICAL_WORKER" == "$CANONICAL_CLAUDE_ORG/"* ]]; then
+  WORKER_IN_ORG=1
+fi
+
 # --- Write/Edit の場合: file_path をチェック ---
 if [[ "$TOOL_NAME" == "Write" || "$TOOL_NAME" == "Edit" ]]; then
   FILE_PATH=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty')
@@ -94,6 +104,23 @@ if [[ "$TOOL_NAME" == "Write" || "$TOOL_NAME" == "Edit" ]]; then
   PLANS_DIR="$CANONICAL_WORKER/.claude/plans"
   if [[ "$CANONICAL_FILE" == "$PLANS_DIR/"* || "$CANONICAL_FILE" == "$PLANS_DIR" ]]; then
     exit 0
+  fi
+
+  # 例外: WORKER_DIR が claude-org 本体の外（=対象リポジトリの worker。本 hook が
+  # attach される worker_roles.default の通常ケース）の場合、WORKER_DIR/.claude/ 配下への
+  # 書き込みを許可する。対象リポジトリの .claude/ (settings / commands / agents / skills 等) は
+  # Claude Code プロジェクト設定として正当で、組織構造ガードの保護対象（claude-org 本体）では
+  # ない。WORKER_DIR が claude-org 内の場合は従来どおり .claude/ をブロックする（例: claude-org
+  # 自身を対象とする audit worker は本 hook が attach され in-org でこの分岐に到達する。
+  # claude-org-self-edit role は本 hook 自体を attach しない運用のため対象外 —
+  # role-pattern-sandbox-contract.md §5.3）。本変更は
+  # CLAUDE_ORG_PATH/.claude/ への書込経路を一切増やさないため、knowledge-curation-contract
+  # §3.1（claude-org 自身の .claude/skills/ 境界）には影響しない。
+  if [[ "$WORKER_IN_ORG" == "0" ]]; then
+    CLAUDE_DIR="$CANONICAL_WORKER/.claude"
+    if [[ "$CANONICAL_FILE" == "$CLAUDE_DIR/"* || "$CANONICAL_FILE" == "$CLAUDE_DIR" ]]; then
+      exit 0
+    fi
   fi
 
   # 全深度ブロック: パスコンポーネントに含まれるかチェック
@@ -143,6 +170,13 @@ if [[ "$TOOL_NAME" == "Bash" ]]; then
       if [[ "$DIR" == ".claude" ]] && echo "$NORMALIZED_CMD" | grep -qE "\.claude/plans(/|[[:space:]]|\"|$)"; then
         continue
       fi
+      # 注: out-of-org（対象リポジトリ）worker 向けの .claude/ 緩和は Write/Edit 経路のみ。
+      # Bash 半は従来どおり .claude/ 操作を全ブロックする。Bash 半は grep ベースの
+      # best-effort で、相対 (../claude-org-ja/.claude/) や変数展開 (${CLAUDE_ORG_PATH}/.claude/)
+      # 経由の claude-org 本体 .claude/ 参照を確実にスコープできず、緩和すると §3.1 の
+      # Layer-4 境界に穴が開くため（CANONICAL_WORKER で positively scope できる Write/Edit
+      # 経路と異なる）。skill ファイル作成は Write ツールが親 dir を自動生成するため、
+      # Bash 緩和なしでも対象リポジトリの .claude/skills/ 作成は成立する。
       deny_with_reason "Bash コマンドで claude-org の組織構造ディレクトリ ($DIR/) を作成しようとしています。"
     fi
   done

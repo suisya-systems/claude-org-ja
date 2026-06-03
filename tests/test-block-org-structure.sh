@@ -25,6 +25,14 @@ portable_realpath() {
 WORKER_DIR="$(portable_realpath "$REPO_ROOT")"
 CLAUDE_ORG_PATH="$(portable_realpath "$REPO_ROOT/../..")"
 
+# Out-of-org WORKER_DIR: a sibling of claude-org (NOT under CLAUDE_ORG_PATH).
+# Models a worker_roles.default worker operating on a target repository. For such
+# workers the org-structure guard lifts the WORKER_DIR/.claude/ block (the target
+# repo's .claude/ is legitimate Claude Code project config), while the other
+# org-structure dirs stay blocked. WORKER_DIR inside CLAUDE_ORG_PATH (the in-org
+# cases above) keeps the original blocking behavior.
+OOO_WORKER_DIR="$(portable_realpath "$CLAUDE_ORG_PATH/../target-repo-test")"
+
 PASS=0; FAIL=0; TEST_NUM=0
 TMPFILES=()
 cleanup() { rm -f "${TMPFILES[@]}"; }
@@ -58,6 +66,14 @@ run_hook() {
   local json="$1" stderr_file="$2"
   local exit_code=0
   echo "$json" | env WORKER_DIR="$WORKER_DIR" CLAUDE_ORG_PATH="$CLAUDE_ORG_PATH" bash "$HOOK" 2>"$stderr_file" || exit_code=$?
+  echo "$exit_code"
+}
+
+# Same as run_hook but with an out-of-org WORKER_DIR (target-repo worker).
+run_hook_ooo() {
+  local json="$1" stderr_file="$2"
+  local exit_code=0
+  echo "$json" | env WORKER_DIR="$OOO_WORKER_DIR" CLAUDE_ORG_PATH="$CLAUDE_ORG_PATH" bash "$HOOK" 2>"$stderr_file" || exit_code=$?
   echo "$exit_code"
 }
 
@@ -252,6 +268,90 @@ stderr=$(mktemp); TMPFILES+=("$stderr")
 json='{"tool_name":"Read","tool_input":{"file_path":"'"$WORKER_DIR"'/.claude/settings.json"}}'
 ec=$(run_hook "$json" "$stderr")
 assert_exit 0 "$ec" "Other tool (Read): passes through"
+
+# ========== Out-of-org WORKER_DIR Tests (target-repo worker) ==========
+# WORKER_DIR is a sibling of claude-org (outside CLAUDE_ORG_PATH). The guard's
+# purpose is protecting claude-org itself, so the target repo's .claude/ is allowed
+# on the Edit/Write half (realpath-scoped to WORKER_DIR/.claude), while the other
+# org-structure dirs remain blocked. The Bash half is NOT relaxed (it blocks
+# .claude/ for all roles) — see the out-of-org Bash cases below.
+
+# 28. out-of-org WORKER_DIR/.claude/skills/<name>/SKILL.md (allow)
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json='{"tool_name":"Write","tool_input":{"file_path":"'"$OOO_WORKER_DIR"'/.claude/skills/my-skill/SKILL.md"}}'
+ec=$(run_hook_ooo "$json" "$stderr")
+assert_exit 0 "$ec" "Write(out-of-org): target repo .claude/skills/ is allowed"
+
+# 29. out-of-org WORKER_DIR/.claude/settings.json (allow — whole .claude/)
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json='{"tool_name":"Write","tool_input":{"file_path":"'"$OOO_WORKER_DIR"'/.claude/settings.json"}}'
+ec=$(run_hook_ooo "$json" "$stderr")
+assert_exit 0 "$ec" "Write(out-of-org): target repo .claude/settings.json is allowed"
+
+# 30. out-of-org WORKER_DIR/.claude/commands/foo.md (allow — whole .claude/)
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json='{"tool_name":"Write","tool_input":{"file_path":"'"$OOO_WORKER_DIR"'/.claude/commands/foo.md"}}'
+ec=$(run_hook_ooo "$json" "$stderr")
+assert_exit 0 "$ec" "Write(out-of-org): target repo .claude/commands/ is allowed"
+
+# 31. out-of-org WORKER_DIR/.dispatcher/foo (block — only .claude/ is lifted)
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json='{"tool_name":"Write","tool_input":{"file_path":"'"$OOO_WORKER_DIR"'/.dispatcher/task.md"}}'
+ec=$(run_hook_ooo "$json" "$stderr")
+assert_exit 2 "$ec" "Write(out-of-org): .dispatcher/ is still blocked"
+
+# 32. out-of-org WORKER_DIR/.state/foo (block — only .claude/ is lifted)
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json='{"tool_name":"Write","tool_input":{"file_path":"'"$OOO_WORKER_DIR"'/.state/state.json"}}'
+ec=$(run_hook_ooo "$json" "$stderr")
+assert_exit 2 "$ec" "Write(out-of-org): .state/ is still blocked"
+
+# 33. out-of-org WORKER_DIR/registry/foo (block — only .claude/ is lifted)
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json='{"tool_name":"Write","tool_input":{"file_path":"'"$OOO_WORKER_DIR"'/registry/workers.json"}}'
+ec=$(run_hook_ooo "$json" "$stderr")
+assert_exit 2 "$ec" "Write(out-of-org): registry/ is still blocked"
+
+# --- out-of-org Bash: the .claude/ relaxation is Edit/Write-only; the Bash half
+#     keeps blocking .claude/ for all roles. A shell-string grep cannot safely scope
+#     relative/variable references away from claude-org's own .claude/, so relaxing
+#     it would open a Layer-4 hole into knowledge-curation-contract §3.1. ---
+
+# 34. out-of-org Bash mkdir .claude/skills (block — Bash half is NOT relaxed)
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json='{"tool_name":"Bash","tool_input":{"command":"mkdir -p .claude/skills/my-skill"}}'
+ec=$(run_hook_ooo "$json" "$stderr")
+assert_exit 2 "$ec" "Bash(out-of-org): mkdir .claude/skills is blocked (Bash half not relaxed)"
+
+# 35. out-of-org Bash mkdir .state (block)
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json='{"tool_name":"Bash","tool_input":{"command":"mkdir -p .state/foo"}}'
+ec=$(run_hook_ooo "$json" "$stderr")
+assert_exit 2 "$ec" "Bash(out-of-org): mkdir .state is blocked"
+
+# 36. out-of-org Bash absolute CLAUDE_ORG_PATH/.claude/ (block — §3.1 boundary)
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json='{"tool_name":"Bash","tool_input":{"command":"cp foo '"$CLAUDE_ORG_PATH"'/.claude/skills/x/SKILL.md"}}'
+ec=$(run_hook_ooo "$json" "$stderr")
+assert_exit 2 "$ec" "Bash(out-of-org): write into CLAUDE_ORG_PATH/.claude/ is blocked"
+
+# 37. out-of-org Bash worker's OWN absolute .claude/ (block — Bash half not relaxed; use Write)
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json='{"tool_name":"Bash","tool_input":{"command":"mkdir -p '"$OOO_WORKER_DIR"'/.claude/skills/x"}}'
+ec=$(run_hook_ooo "$json" "$stderr")
+assert_exit 2 "$ec" "Bash(out-of-org): worker's own absolute .claude/ via Bash is blocked"
+
+# 38. out-of-org Bash relative reference to claude-org's .claude/ (block — closed Layer-4 leak)
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json='{"tool_name":"Bash","tool_input":{"command":"cp foo ../claude-org-ja/.claude/skills/x/SKILL.md"}}'
+ec=$(run_hook_ooo "$json" "$stderr")
+assert_exit 2 "$ec" "Bash(out-of-org): relative ../claude-org-ja/.claude/ is blocked"
+
+# 39. out-of-org Bash variable reference to claude-org's .claude/ (block — closed Layer-4 leak)
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json='{"tool_name":"Bash","tool_input":{"command":"cp foo ${CLAUDE_ORG_PATH}/.claude/skills/x/SKILL.md"}}'
+ec=$(run_hook_ooo "$json" "$stderr")
+assert_exit 2 "$ec" "Bash(out-of-org): variable \${CLAUDE_ORG_PATH}/.claude/ is blocked"
 
 # --- Summary ---
 echo "# $PASS passed, $FAIL failed out of $TEST_NUM tests"
