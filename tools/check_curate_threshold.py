@@ -105,7 +105,8 @@ def _has_legacy_marker(path: Path) -> bool:
     caller): silently treating an unreadable head as "no marker" would
     be a false negative that suppresses a legitimate curator launch,
     breaking the error contract in the module docstring."""
-    head = path.read_bytes()[:_HEAD_BYTES]
+    with path.open("rb") as f:
+        head = f.read(_HEAD_BYTES)
     text = head.decode("utf-8", errors="replace").lstrip("﻿").lstrip()
     return text.startswith(LEGACY_MARKER)
 

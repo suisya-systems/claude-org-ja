@@ -202,11 +202,15 @@ class TestWorkSkillCount(_TreeCase):
             # bash being on PATH does not guarantee it can run (e.g.
             # sandboxes where process creation fails with Win32 error
             # 5) — probe by running and skip on any launch/exec error.
+            # encoding/errors explicit so a failed bash launch can't
+            # leak a _readerthread UnicodeDecodeError into the test log
+            # before the skip fires (Codex round 2 Minor).
             proc = subprocess.run(
                 ["bash", "-c", pipeline],
                 cwd=_REPO_ROOT,
                 capture_output=True,
-                text=True,
+                encoding="utf-8",
+                errors="replace",
                 check=True,
                 timeout=60,
             )
@@ -250,8 +254,8 @@ class TestErrorPath(_TreeCase):
         self.add_raw("note.md")
         buf = io.StringIO()
         with mock.patch.object(
-            Path,
-            "read_bytes",
+            cct,
+            "_has_legacy_marker",
             side_effect=PermissionError("denied"),
         ):
             with redirect_stdout(buf):
