@@ -101,10 +101,11 @@ _PENDING_RE = re.compile(r"^- \*\*status\*\*: pending\s*$", re.MULTILINE)
 
 
 def _has_legacy_marker(path: Path) -> bool:
-    try:
-        head = path.read_bytes()[:_HEAD_BYTES]
-    except OSError:
-        return False
+    """Read errors propagate (except a vanished file, handled by the
+    caller): silently treating an unreadable head as "no marker" would
+    be a false negative that suppresses a legitimate curator launch,
+    breaking the error contract in the module docstring."""
+    head = path.read_bytes()[:_HEAD_BYTES]
     text = head.decode("utf-8", errors="replace").lstrip("﻿").lstrip()
     return text.startswith(LEGACY_MARKER)
 
@@ -114,7 +115,11 @@ def count_raw(root: Path) -> tuple[int, int]:
 
     Only regular files directly under the directory count;
     ``archive/`` (and any other subdirectory) is excluded, as are
-    sentinel / hidden entries whose name starts with ``.``.
+    sentinel / hidden entries whose name starts with ``.``. A file that
+    vanishes between listing and reading is skipped (race with a
+    concurrent archive move); any other read error propagates so
+    ``main`` reports ``status=error`` / exit 2 instead of silently
+    under-counting.
     """
     raw_dir = root / "knowledge" / "raw"
     if not raw_dir.is_dir():
@@ -126,7 +131,11 @@ def count_raw(root: Path) -> tuple[int, int]:
             continue
         if entry.name.startswith("."):
             continue
-        if _has_legacy_marker(entry):
+        try:
+            marked = _has_legacy_marker(entry)
+        except FileNotFoundError:
+            continue
+        if marked:
             legacy += 1
         else:
             active += 1
@@ -134,11 +143,16 @@ def count_raw(root: Path) -> tuple[int, int]:
 
 
 def count_pending(root: Path) -> int:
-    """Count ``- **status**: pending`` lines in skill-candidates.md."""
+    """Count ``- **status**: pending`` lines in skill-candidates.md.
+
+    A missing file counts as 0 (normal in fresh checkouts); any other
+    read error propagates so ``main`` reports ``status=error`` / exit 2
+    rather than masking a real queue behind a false 0.
+    """
     candidates = root / "knowledge" / "skill-candidates.md"
     try:
         text = candidates.read_text(encoding="utf-8")
-    except OSError:
+    except FileNotFoundError:
         return 0
     return len(_PENDING_RE.findall(text))
 
@@ -231,7 +245,11 @@ def main(argv=None) -> int:
 
     try:
         result = evaluate(root)
-    except Exception as exc:  # pragma: no cover - defensive
+    except Exception as exc:
+        # Real path, not just defensive: count_raw / count_pending
+        # propagate non-FileNotFoundError read errors here so the
+        # dispatcher sees status=error / exit 2 instead of a silent
+        # under-count (false negative would suppress curator launches).
         print(
             json.dumps(
                 {"status": "error", "reasons": [], "error": str(exc)},

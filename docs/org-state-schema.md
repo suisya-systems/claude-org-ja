@@ -71,10 +71,7 @@ python3 dashboard/org_state_converter.py     # Mac/Linux
     "peerId": "<renga-peers peer ID>",
     "paneId": "<renga pane ID>"
   },
-  "curator": {
-    "peerId": "<renga-peers peer ID>",
-    "paneId": "<renga pane ID>"
-  },
+  "curator": null,
   "resumeInstructions": "<free text | null>"
 }
 ```

@@ -188,28 +188,31 @@ class TestWorkSkillCount(_TreeCase):
         _, out = self.run_main(self.root)
         self.assertEqual(out["counts"]["work_skill"], 0)
 
-    @unittest.skipUnless(
-        shutil.which("bash") and shutil.which("find"),
-        "bash/find unavailable — shell-pipeline parity untestable here",
-    )
     def test_parity_with_skill_audit_pipeline_on_real_tree(self):
         """M4: the Python count must equal skill-audit Step 1's literal
         shell pipeline when run over the actual repository tree, so the
         two definitions cannot drift."""
+        if not shutil.which("bash"):
+            self.skipTest("bash not on PATH — shell parity untestable")
         pipeline = (
             "find .claude/skills -maxdepth 2 -name SKILL.md "
             "| grep -v '/org-' | wc -l"
         )
-        shell = int(
-            subprocess.run(
+        try:
+            # bash being on PATH does not guarantee it can run (e.g.
+            # sandboxes where process creation fails with Win32 error
+            # 5) — probe by running and skip on any launch/exec error.
+            proc = subprocess.run(
                 ["bash", "-c", pipeline],
                 cwd=_REPO_ROOT,
                 capture_output=True,
                 text=True,
                 check=True,
-            ).stdout.strip()
-        )
-        self.assertEqual(cct.count_work_skills(_REPO_ROOT), shell)
+                timeout=60,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            self.skipTest(f"bash unusable here ({exc!r}) — parity skipped")
+        self.assertEqual(cct.count_work_skills(_REPO_ROOT), int(proc.stdout.strip()))
 
 
 class TestErrorPath(_TreeCase):
@@ -224,6 +227,52 @@ class TestErrorPath(_TreeCase):
         out = json.loads(buf.getvalue())
         self.assertEqual(out["status"], "error")
         self.assertIn("boom", out["error"])
+
+    def test_unreadable_candidates_file_exits_2(self):
+        # Contract: only a *missing* file counts as 0. Any other read
+        # error must surface as status=error / exit 2, not silently
+        # mask a real queue behind a false 0.
+        self.add_candidates(pending=5)
+        buf = io.StringIO()
+        with mock.patch.object(
+            Path,
+            "read_text",
+            side_effect=PermissionError("denied"),
+        ):
+            with redirect_stdout(buf):
+                code = cct.main(["--root", str(self.root)])
+        self.assertEqual(code, cct.EXIT_ERROR)
+        self.assertEqual(json.loads(buf.getvalue())["status"], "error")
+
+    def test_unreadable_raw_head_exits_2(self):
+        # A raw file whose head can't be read (not merely vanished)
+        # must not be silently counted as "no legacy marker".
+        self.add_raw("note.md")
+        buf = io.StringIO()
+        with mock.patch.object(
+            Path,
+            "read_bytes",
+            side_effect=PermissionError("denied"),
+        ):
+            with redirect_stdout(buf):
+                code = cct.main(["--root", str(self.root)])
+        self.assertEqual(code, cct.EXIT_ERROR)
+        self.assertEqual(json.loads(buf.getvalue())["status"], "error")
+
+    def test_raw_file_vanishing_mid_scan_is_skipped(self):
+        # Race with a concurrent archive move: listing saw the file but
+        # the head read finds it gone — skip, don't error.
+        for i in range(2):
+            self.add_raw(f"note-{i}.md")
+        with mock.patch.object(
+            cct,
+            "_has_legacy_marker",
+            side_effect=FileNotFoundError("gone"),
+        ):
+            code, out = self.run_main(self.root)
+        self.assertEqual(code, cct.EXIT_BELOW_THRESHOLD)
+        self.assertEqual(out["counts"]["raw_active"], 0)
+        self.assertEqual(out["counts"]["legacy_marker"], 0)
 
 
 if __name__ == "__main__":
