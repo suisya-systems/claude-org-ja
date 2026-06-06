@@ -300,7 +300,10 @@ cat knowledge/raw/*.md  # フォーマット確認
 
 **確認コマンド**:
 ```bash
-py -3 tools/check_curate_threshold.py; echo "exit=$?"
+# POSIX (bash)
+python3 tools/check_curate_threshold.py; echo "exit=$?"
+# Windows (PowerShell — $? は真偽値なので $LASTEXITCODE を使う)
+py -3 tools/check_curate_threshold.py; echo "exit=$LASTEXITCODE"
 ls knowledge/curated/
 cat knowledge/curated/*.md
 head -1 knowledge/raw/archive/*.md  # <!-- curated --> マーカー確認

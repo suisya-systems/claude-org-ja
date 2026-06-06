@@ -12,9 +12,12 @@ allowed-tools:
   - Write
   - Edit
   - Bash(mkdir -p knowledge/raw/archive/)
+  - Bash(mkdir -p ../knowledge/raw/archive/)
   - Bash(mv knowledge/raw/*)
+  - Bash(mv ../knowledge/raw/*)
   - Bash(grep:*)
   - Bash(find knowledge/*)
+  - Bash(find ../knowledge/*)
   - Bash(py -3 tools/check_curate_threshold.py:*)
   - Bash(python3 tools/check_curate_threshold.py:*)
   - Bash(py -3 ../tools/check_curate_threshold.py:*)
@@ -30,6 +33,12 @@ knowledge/raw/ に蓄積された生の学びを読み、分類・統合して k
 閾値判定は外部スクリプト [`tools/check_curate_threshold.py`](../../../tools/check_curate_threshold.py) に
 一本化されており、本スキル内部には「raw 5 件未満なら即終了」のようなゲートは**存在しない**。
 起動理由 `reasons[]` を受け取り、該当するステップだけを実行する。
+
+**パス解決（重要）**: 本スキル中の `knowledge/...` / `tools/...` 表記は**リポジトリルート相対の
+論理パス**である。オンデマンド起動された curator ペインの CWD は `.curator/` なので、Bash で
+実行する際は `../knowledge/...` / `../tools/...`（または `cd .. && pwd` で得た絶対パス）に
+読み替えること（`.curator/CLAUDE.md` の「パス」節と同じ規約。allowed-tools には両形が
+許可済み）。リポジトリルートで手動実行する場合はそのまま使う。
 
 ## Step 0: 起動理由 (reasons) の確定
 
