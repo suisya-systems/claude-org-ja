@@ -40,7 +40,7 @@ plan-110 §8 Wave C Minor 振り返りの通り、`docs/getting-started.md` は 
 
 ## クロスリポジトリ通知 CI
 
-ja 側で PR が `main` に merge されると、`.github/workflows/notify-en-changes.yml`（このリポジトリ）が `repository_dispatch` イベント `ja_pr_merged` を en repo へ発火する。受信側の `.github/workflows/notify-ja-changes.yml`（en repo）が ja PR タイトルと URL を載せた `TRANSLATION-PENDING` Issue を起票する。窓口/キュレーターがトリアージし、Issue を close（対象外あるいは canonical-en と判定）するか、翻訳作業をスケジュールする。
+ja 側で PR が `main` に merge されると、`.github/workflows/notify-en-changes.yml`（このリポジトリ）が `repository_dispatch` イベント `ja_pr_merged` を en repo へ発火する。受信側の `.github/workflows/notify-ja-changes.yml`（en repo）が ja PR タイトルと URL を載せた `TRANSLATION-PENDING` Issue を起票する。窓口がトリアージし、Issue を close（対象外あるいは canonical-en と判定）するか、翻訳作業をスケジュールする。
 
 逆方向（en → ja）は対称: en 側 merge で `en_pr_merged` を ja repo へ発火し、ja 側に翻訳ペンディング Issue を起票する。
 

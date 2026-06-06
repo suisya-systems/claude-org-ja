@@ -13,7 +13,7 @@ claude-orgは以下の特徴を持つ:
 |---|---|
 | **マルチインスタンス協調** | 窓口・ディスパッチャー・キュレーター・ワーカーの4種類のClaude Codeインスタンスが協調動作 |
 | **役割分担** | Secretary（対話）、Dispatcher（ペイン管理）、Curator（知見整理）、Worker（実作業）の明確な分業 |
-| **常駐ロール** | Secretary/Dispatcher/Curatorは常駐、Workerはオンデマンド起動 |
+| **常駐ロール** | Secretary/Dispatcherは常駐、Curator/Workerはオンデマンド起動 |
 | **状態管理** | ジャーナル（JSONL）＋スナップショット（Markdown）＋サスペンドの三層構造 |
 | **自己成長ループ** | Worker→raw知見→Curator整理→改善提案→ユーザー承認→スキル/CLAUDE.md更新 |
 | **通信方式** | `renga-peers` MCP（同タブ内 P2P プッシュ型）＋ CLAUDE.md（永続ベースライン） |
@@ -79,7 +79,7 @@ claude-orgは以下の特徴を持つ:
 
 | プロジェクト | 役割モデル | 常駐ロール | 動的ロール |
 |---|---|---|---|
-| **claude-org** | **Secretary / Dispatcher / Curator / Worker** | **3（Sec/Fore/Cur）** | **Worker（オンデマンド）** |
+| **claude-org** | **Secretary / Dispatcher / Curator / Worker** | **2（Sec/Fore）** | **Curator / Worker（オンデマンド）** |
 | CrewAI | ユーザー定義ロール（Manager / Researcher 等） | なし（実行時のみ） | 全エージェント |
 | LangGraph | ノードとして定義（固定名なし） | なし | 全ノード |
 | AutoGen | UserProxy / Assistant / GroupChatManager 等 | なし | 全エージェント |
@@ -92,7 +92,7 @@ claude-orgは以下の特徴を持つ:
 | Agent Zero | 親エージェント＋子エージェント | 親（1） | 子エージェント |
 | OpenSpace | 単体エージェント（役割分担なし） | — | — |
 
-**claude-orgの独自性**: **常駐ロールの多さ**（3種）と**明確な組織構造**（Secretary-Dispatcher-Curator-Worker）は他に類を見ない。特にCurator（知見整理専門の常駐プロセス）はclaude-org固有の設計。
+**claude-orgの独自性**: **常駐ロール**（2種）と**明確な組織構造**（Secretary-Dispatcher-Curator-Worker）は他に類を見ない。特にCurator（知見整理専門のオンデマンドロール。知見の蓄積量に応じて自動起動）はclaude-org固有の設計。
 
 ### 3.3 状態管理
 
@@ -197,7 +197,7 @@ claude-orgは以下の特徴を持つ:
 
 ### 6.1 既存OSSにない特徴
 
-1. **常駐マルチロール組織**: Secretary/Dispatcher/Curator の3種の常駐ロールを持つ組織構造は他に例がない
+1. **マルチロール組織**: Secretary/Dispatcher の常駐ロールと Curator のオンデマンドロールを組み合わせた組織構造は他に例がない
 2. **人間承認付き自己改善ループ**: 自己改善を持つフレームワークは複数あるが、人間の承認を安全弁として組み込んでいるのはclaude-orgのみ
 3. **指示の二重化**: CLAUDE.md（永続ベースライン）＋ `renga-peers` メッセージ（リアルタイム補足）の組み合わせは他に類を見ない
 4. **プログレッシブディスクロージャー**: スキルシステムによるコンテキスト消費の最小化戦略
@@ -217,7 +217,7 @@ claude-orgは以下の特徴を持つ:
 
 claude-orgは「複数AIインスタンスによる永続的な組織運営」という独自のポジションを持つ。既存OSSの多くは「タスク実行時のエージェント協調」に焦点を当てているのに対し、claude-orgは**組織そのものの継続的運営と自己改善**を目指している。
 
-最も近いプロジェクトであるClaude Code Agent Teamsでさえ、常駐キュレーターや自己成長ループを持たない。claude-orgの設計思想は、現時点のOSSランドスケープにおいて明確なギャップを埋めるものである。
+最も近いプロジェクトであるClaude Code Agent Teamsでさえ、キュレーターロールや自己成長ループを持たない。claude-orgの設計思想は、現時点のOSSランドスケープにおいて明確なギャップを埋めるものである。
 
 ---
 

@@ -24,6 +24,11 @@
 - **統合先**: （status が `merged-into-*` のとき記入、それ以外は省略）
 ```
 
+> **status 行の形式は厳守**: pending のカウントは `- **status**: pending` の**行形式
+> 完全一致**（`grep '^- \*\*status\*\*: pending'`）で行われる（`skill-audit` Step 1 /
+> `tools/check_curate_threshold.py`）。インデント・スペース数・大文字小文字を変える
+> とカウントから漏れ、skill-audit / オンデマンド curate が発火しなくなる。
+
 ## status の遷移
 
 - `pending`: 人間に未問い合わせ。`skill-audit` の発火条件 N=5 でカウントされる

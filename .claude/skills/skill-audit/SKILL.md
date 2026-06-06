@@ -43,6 +43,13 @@ work_skill_count=$(find .claude/skills -maxdepth 2 -name SKILL.md \
 `org-*` を除外する理由: ノイズ源は `org-delegate` の work-skill 検索であり、
 `org-*` の増減は検索ノイズに直接影響しない。
 
+> **カウント定義の同期（重要）**: 上記 2 つのカウント定義（pending は
+> `^- \*\*status\*\*: pending` の行一致、work-skill は `find .claude/skills -maxdepth 2
+> -name SKILL.md | grep -v '/org-'`）は、オンデマンド curator の起動判定
+> [`tools/check_curate_threshold.py`](../../../tools/check_curate_threshold.py) と
+> **完全一致**させること。どちらかを変更する場合は両方を更新する
+> （`tools/test_check_curate_threshold.py` の parity テストが drift を検出する）。
+
 ## Step 2: 廃止候補の洗い出し
 
 各 skill について以下を評価する。**現時点で観測可能な項目のみ**を機械判定に使い、
@@ -107,7 +114,10 @@ skill ペアを総当たりして以下を確認する:
 
 このスキルは自律的に走らない。以下のいずれかで起動する:
 
-1. `org-curate` Step 6（skill 棚卸しの発火チェック）で閾値を満たせば呼び出される（推奨経路）
+1. `org-curate` Step 6 で呼び出される（推奨経路）。オンデマンド化後の流れ:
+   ディスパッチャーが worker クローズ時に `tools/check_curate_threshold.py` を実行し、
+   `reasons[]` に `skill_candidates_pending` / `work_skill_count` が立つと curator が
+   一時起動され、org-curate Step 6 が本スキルを発火する
 2. 窓口が `skill-candidates.md` を見て手動で起動する
 3. 人間が「棚卸しして」と依頼
 

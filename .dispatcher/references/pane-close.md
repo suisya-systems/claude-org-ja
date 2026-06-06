@@ -99,3 +99,112 @@ mcp__renga-peers__close_pane(target="worker-{task_id}")
 ```
 RETRO_RECORDED: {task_id} の委譲について {topic} の学びを記録しました。
 ```
+
+### 5. curate 閾値チェックとオンデマンド curator 起動
+
+常駐キュレーター（`/org-start` 起動 + `/loop 30m`）は廃止されている。worker クローズは
+knowledge/raw/ が増える主経路なので、**CLOSE_PANE 処理の最後（Step 1〜4 完了後）に毎回**
+閾値チェックを行い、超過時のみ curator を一時起動する。
+
+> **実行コンテキスト**: 本ステップは CLOSE_PANE ハンドラの**インライン処理**であり、
+> `/loop 3m` の監視サイクルには載せない（最後の worker のクローズでは監視ループが既に
+> 停止対象のため）。「全ワーカーペインが閉じたら監視ループを停止する」判定よりも**先に**
+> 本ステップを完走させること。
+>
+> **starvation の既知の限界**: worker close が発生しない期間（手動 raw 追加のみ /
+> skill-candidate のみ増加等）はこのチェックが走らない。補助トリガーは
+> [Issue #501](https://github.com/suisya-systems/claude-org-ja/issues/501)（org-retro 末尾）/
+> [Issue #502](https://github.com/suisya-systems/claude-org-ja/issues/502)（org-start バックストップ）
+> としてバックログ化済み。
+
+#### 5-1. 閾値チェックスクリプトの実行
+
+```bash
+# ディスパッチャー cwd は .dispatcher/ なので 1 段上がリポジトリルート。
+py -3 ../tools/check_curate_threshold.py    # Windows
+python3 ../tools/check_curate_threshold.py  # Mac/Linux
+```
+
+stdout に `status` / `reasons[]` / `counts` の JSON が 1 行出る。分岐は **exit code** で行う:
+
+- **exit 0 (below_threshold)** → 何もしない。CLOSE_PANE フロー完了
+- **exit 10 (curate_needed)** → stdout の JSON を控えて 5-2 へ
+- **exit 2 (error)** → 窓口に informational として 1 行報告し、curate はスキップする
+  （CLOSE_PANE フロー自体は完了扱い。閾値チェック失敗で worker クローズを止めない）
+
+#### 5-2. single-flight 確認（coalesce）
+
+spawn の**前に必ず** `mcp__renga-peers__list_panes` で既存 curator を確認する:
+
+- `name == "curator"` のペインが既に存在する → **coalesce: 再 spawn しない**。実行中の
+  curate サイクルは現時点のファイルシステム状態（今回の増分を含む）を読むため、本トリガー分の
+  作業はそのサイクルでカバーされる。CLOSE_PANE フロー完了
+- 存在しない → 5-3 へ
+
+worker close が短時間に連続した場合の `name_in_use` 衝突 / 別名重複起動（knowledge/ への
+競合書き込み）をこの規約で防ぐ。
+
+#### 5-3. curator ペインの spawn
+
+```
+mcp__renga-peers__spawn_claude_pane(
+  target="dispatcher",
+  direction="vertical",
+  role="curator",
+  name="curator",
+  cwd="../.curator",
+  permission_mode="auto",
+  model="opus"
+)
+```
+
+- `cwd` は caller（dispatcher、cwd=`.dispatcher/`）基準の相対解決なので `../.curator`
+- `[name_in_use]` が返った場合は 5-2 とのレース（直前に別トリガーが spawn した）なので
+  **coalesce 扱いで終了**してよい
+- その他の `[<code>]` エラーは窓口に informational として報告し、curate をスキップする
+
+> **state.db には書かない**: オンデマンド curator は ephemeral であり、`curator_pane_id` /
+> `curator_peer_id` は **null のまま**が正常系。生存確認は `list_panes`（5-2）のみで行う。
+> DB に書くと常駐前提が復活し、suspend / handover / dashboard の照合が誤る。
+
+#### 5-4. boot 確認（Enter / list_peers poll）
+
+`/org-start` Block D-1〜D-2 の dispatcher 分と同じ手順:
+
+1. `mcp__renga-peers__send_keys(target="curator", enter=true)` で
+   「Load development channel? (Y/n)」プロンプトを承認する
+2. `mcp__renga-peers__list_peers` で `name="curator"` の peer 登録を poll する。
+   未登録なら Enter を再送して再 poll（最大 3 回 retry）
+3. 3 回 retry しても登録されない場合は `close_pane(target="curator")` で破棄し、
+   窓口に informational として報告して curate をスキップする
+
+#### 5-5. 起動指示の送信
+
+5-1 で控えた JSON を**そのまま**埋め込んで送る（dispatcher 側で再解釈・再計算しない）:
+
+```
+mcp__renga-peers__send_message(to_id="curator", message="あなたはキュレーターです。/org-curate を 1 回だけ実行してください（/loop 禁止）。起動理由: {check_curate_threshold.py の stdout JSON}。完了時は改善提案（secretary 宛て）を送った後、必ず dispatcher 宛て direct send で CURATE_DONE / CURATE_SKIPPED / CURATE_ERROR のいずれかを送ってください。")
+```
+
+#### 5-6. 完了待ち（bounded wait — 絶対に hang しない）
+
+`mcp__renga-peers__check_messages` を 30 秒間隔で poll し、curator からの
+`CURATE_DONE` / `CURATE_SKIPPED` / `CURATE_ERROR` を待つ。**上限 15 分**。
+
+- **CURATE_DONE / CURATE_SKIPPED 受信** → 5-7 へ
+- **CURATE_ERROR 受信** → 内容を 1 行で窓口に informational 転送してから 5-7 へ
+- **15 分 timeout** → `mcp__renga-peers__inspect_pane(target="curator", lines=30)` で画面を
+  観測し、(a) 明らかに作業継続中（出力が直近で変化している）なら **1 回だけ** 15 分延長、
+  (b) それ以外（stall / エラー表示 / 入力待ち）なら観測内容を添えて窓口に informational
+  報告し、5-7 のクローズに進む（curate は途中でも knowledge/ は move-then-mark 設計のため
+  破壊的な中間状態は残らない）
+
+#### 5-7. curator ペインのクローズ
+
+```
+mcp__renga-peers__close_pane(target="curator")
+```
+
+- `[pane_not_found]` / `[pane_vanished]` は既に閉じた扱いで skip
+- クローズ後、CLOSE_PANE フロー完了。state.db への後始末は不要（5-3 の注記どおり
+  そもそも書いていない）

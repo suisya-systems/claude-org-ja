@@ -61,14 +61,14 @@
 - **Reply addressing** — when forwarding to dispatcher / curator / workers, must use stable pane names (`dispatcher`, `curator`, `worker-{task_id}`), not numeric `from_id`s.
 - **Settings generation** — must invoke `claude-org-runtime settings generate` for worker `settings.local.json`; hand-edited JSON is rejected by drift CI.
 - **Human-dialogue priority (soft SLA)** — During active human dialogue, the secretary must yield to the human ahead of background worker / dispatcher reports. While idle, response is best-effort with no numeric latency guarantee.
-- **Direct-spawn carve-out** — The secretary may directly spawn long-lived infrastructure panes (dispatcher, curator) only during `/org-start`. All other pane spawns must go through the dispatcher.
+- **Direct-spawn carve-out** — The secretary may directly spawn the long-lived dispatcher pane only during `/org-start`. All other pane spawns must go through the dispatcher (including the on-demand curator, which the dispatcher spawns at worker close).
 - **Authoritative journal events** — The set of journal events the secretary is permitted to emit is defined by `docs/journal-events.md`, which is the authoritative event registry. Each event there must carry an `emitted-by` role tag. (Follow-up: an Issue tracks adding `emitted-by` annotations to that registry if not already present.)
 - **No manual delegation fallback** — When `tools/gen_delegate_payload.py apply` errors or produces an unexpected layout, the secretary must NOT reproduce the delegation by hand; the canonical response is to file an Issue against the resolver and pause the affected task until the underlying bug is fixed. The standard path's own documented degraded mode (`--skip-settings`, for genuinely runtime-CLI-less environments) is the only sanctioned way to keep going without leaving the skill, and overrides the `claude-org-runtime settings generate` requirement above only in that scope. Granting any other manual-workaround exception is a user judgment call, not a secretary self-grant. The historical hand-typed procedure lives at `docs/legacy/hand-typed-delegate-path.md` as a museum copy for archaeology only; it depends on `claude-org-runtime` and is therefore not itself a valid fallback (Issue #313).
 
 ### Lifecycle / boundaries
 
 - **Spawn**: Started by the human running `renga --layout ops`. There is exactly one secretary per org session.
-- **Initialization**: First action is `/org-start`. Step 0 sets `set_summary`, validates / repairs pane identity, confirms renga-peers MCP is installed, and inventories `workers_dir`. After Step 0 completes, the dispatcher / curator panes are spawned (Block A) in parallel with the DB-backed state read (Block B) and dashboard server launch (Block C); the four identities converge in Block D where peer registration, greeting, and `org_sessions` DB writes happen in one batched transaction.
+- **Initialization**: First action is `/org-start`. Step 0 sets `set_summary`, validates / repairs pane identity, confirms renga-peers MCP is installed, and inventories `workers_dir`. After Step 0 completes, the dispatcher pane is spawned (Block A) in parallel with the DB-backed state read (Block B) and dashboard server launch (Block C); Block D handles peer registration, greeting, and the `org_sessions` DB write (dispatcher identity written, curator identity explicitly cleared via `StateWriter.CLEAR` — the curator is on-demand and never resident).
 - **Termination**: `/org-suspend` (graceful, persists state) or hard close. Must not be killed while workers are alive without going through suspend, otherwise pane-id remapping and worker reply paths break.
 - **Hard prohibitions**:
   - Must NOT silently delete worker directories during `org-start` (they may hold reusable project state — `org-start` Step 0.4 explicit ban).
@@ -130,13 +130,13 @@
 - **Journal append discipline** — every event goes through `tools/journal_append.sh` or `tools/journal_append.py` (the latter required when payload contains nested objects such as `cursor`).
 - **CLOSE_PANE discipline** — must complete retro Steps 1–2 before `close_pane`; closing first destroys evidence. If secretary is unreachable inside 5 minutes, write `retro_deferred` and skip the close (do NOT write a "completion report missing" retro conclusion).
 - **De-dup contract** — `notify_sent` records gate further notifications for the same `(worker, kind)` within 30 seconds; `anomaly_observed` records do NOT count toward de-dup.
-- **Curator dependency** — The dispatcher may operate without a curator present. Balanced-split logic adapts when the curator is absent. Knowledge curation is best-effort and is not a delegation prerequisite.
+- **Curator dependency** — Curator absence is the normal steady state (on-demand model). Balanced-split logic adapts when the curator is absent. Knowledge curation is best-effort and is not a delegation prerequisite. The dispatcher itself owns the curate trigger: it runs `tools/check_curate_threshold.py` at every worker pane close and spawns / closes the one-shot curator pane (`.dispatcher/references/pane-close.md` Step 5).
 - **Approval-prompt regex registry** — The dispatcher uses inspect-based detection per `.dispatcher/references/worker-monitoring.md` § (b), which is the authoritative registry of approval-prompt regexes. The contract does not duplicate the list.
 - **Concurrency** — No contractual concurrency limit beyond renga's pane cap (16) and balanced-split feasibility.
 
 ### Lifecycle / boundaries
 
-- **Spawn**: By the secretary during `/org-start` Block A (the parallelized spawn phase that fires dispatcher + curator after Step 0 identity check). `cwd=".dispatcher"`, `permission_mode="bypassPermissions"`, `model="sonnet"`. Stable name `dispatcher`, role `dispatcher`.
+- **Spawn**: By the secretary during `/org-start` Block A (the spawn phase that fires after Step 0 identity check). `cwd=".dispatcher"`, `permission_mode="bypassPermissions"`, `model="sonnet"`. Stable name `dispatcher`, role `dispatcher`.
 - **Activation**: Receives an initial `send_message` from secretary instructing it of its role. Begins waiting for `DELEGATE`.
 - **Watch loop**: Started after the first worker spawn via `/loop 3m`; stops when all worker panes have exited.
 - **Suspension**: Via `/org-suspend` flow (state flushed to `.state/dispatcher-event-cursor.txt` and `.state/workers/`).
@@ -154,16 +154,17 @@
 
 ### Responsibilities
 
-- Periodically organizes accumulated raw learnings under `knowledge/raw/` into curated, deduplicated notes under `knowledge/curated/`, on a `/loop 30m /org-curate` cadence.
+- On demand, organizes accumulated raw learnings under `knowledge/raw/` into curated, deduplicated notes under `knowledge/curated/`. The curator is **not resident**: the dispatcher runs `tools/check_curate_threshold.py` at every worker pane close and spawns a one-shot curator pane only when a threshold fires; the curator runs `/org-curate` exactly once per activation (no `/loop`). *(Amends ratified Q10 — resident `/loop 30m` cadence retired 2026-06-07, curator-on-demand change.)*
 - Surfaces improvement proposals to the secretary via renga-peers when curation reveals process issues.
+- Reports cycle completion to the **dispatcher** via direct `send_message(to_id="dispatcher")` — one of `CURATE_DONE` / `CURATE_SKIPPED` / `CURATE_ERROR` — **after** all secretary-bound improvement proposals are sent. This message is the dispatcher's signal to close the curator pane.
 
 ### Inputs
 
 - **Files (read)**:
   - Parent-repo `knowledge/raw/` (relative `../knowledge/raw/` from curator's `.curator/` cwd; absolute path recommended for `Glob`).
   - Parent-repo `knowledge/curated/` (existing curated notes, for dedup / merge decisions).
-- **Loop trigger** — its own `/loop 30m /org-curate` schedule.
-- **Optional** — direct messages from secretary (e.g., "knowledge を整理して" — handled with the same skill).
+- **Activation trigger** — the dispatcher's spawn-time instruction message, which embeds the `reasons[]` / `counts` JSON computed by `tools/check_curate_threshold.py` (reasons: `raw_threshold` / `skill_candidates_pending` / `work_skill_count` / `legacy_marker_sweep`). Threshold judgment lives in that script alone; `org-curate` has no internal threshold gate and executes the steps matching the received reasons.
+- **Optional** — manual invocation via secretary (e.g., "knowledge を整理して"). Without dispatcher-provided reasons, `org-curate` Step 0 runs the threshold script itself.
 
 ### Outputs
 
@@ -171,6 +172,7 @@
   - Parent-repo `knowledge/curated/{topic}.md` — consolidated notes.
   - Possibly `knowledge/skill-candidates.md` updates (via `skill-eligibility-check` invoked by `org-curate`).
 - **renga-peers messages to secretary** (`to_id="secretary"`) — improvement proposals, curation summaries.
+- **renga-peers completion message to dispatcher** (`to_id="dispatcher"`, direct send — channel broadcast does not reach the dispatcher's `check_messages` wait) — `CURATE_DONE` / `CURATE_SKIPPED` / `CURATE_ERROR`, sent last.
 
 ### Constraints
 
@@ -180,20 +182,20 @@
 - **No human dialogue** — `.curator/CLAUDE.md` "人間と直接対話することはない". Communication only via secretary.
 - **Reply addressing** — all messages to secretary use stable `to_id="secretary"`.
 - **`knowledge/raw/` write authority** — The curator may move processed entries from `knowledge/raw/` into `knowledge/raw/archive/` after successful curation. Outright deletion of raw entries is forbidden.
-- **Loop cadence** — `/loop 30m /org-curate` is the default cadence. The human may override it via `/org-start` configuration; that override is authoritative when present.
+- **One-shot execution** — exactly one `/org-curate` cycle per activation; `/loop` is forbidden. The pane is closed by the dispatcher after the `CURATE_*` completion message (bounded wait: 30 s polls, 15 min cap).
 - **Skill-candidate promotion** — The curator promotes a curated learning to a skill candidate when the same pattern appears in 3 or more raw entries (cf. memory `feedback_tool_after_three_repeats`). No hard time SLA applies.
 
 ### Lifecycle / boundaries
 
-- **Spawn**: By the secretary during `/org-start` Block A (the parallelized spawn phase that fires dispatcher + curator after Step 0 identity check). `cwd=".curator"`, `permission_mode=auto`, `model="opus"`. Stable name `curator`, role `curator`.
-- **Activation**: Receives an initial `send_message` from secretary telling it to start the `/loop 30m /org-curate` schedule.
-- **Steady state**: Wakes on the loop, runs `org-curate`, sleeps. Also processes ad-hoc messages from secretary.
-- **Termination**: Pane closed by secretary or by org shutdown.
+- **Spawn**: By the **dispatcher** during CLOSE_PANE handling (`.dispatcher/references/pane-close.md` Step 5-3), only when `tools/check_curate_threshold.py` exits 10. `cwd="../.curator"` (dispatcher-relative), `permission_mode=auto`, `model="opus"`. Stable name `curator`, role `curator`. Single-flight: the dispatcher checks `list_panes` first and coalesces onto an already-running curator instead of re-spawning. `/org-start` does **not** spawn a curator and clears `curator_pane_id` / `curator_peer_id` via `StateWriter.CLEAR` — the curator's identity is never recorded in state.db; `list_panes` is the only liveness source, and null DB fields are the normal steady state.
+- **Activation**: Receives the dispatcher's instruction message carrying the threshold-check JSON; runs `/org-curate` once with those reasons.
+- **Steady state**: None — the pane exists only for the duration of one curation cycle.
+- **Termination**: Pane closed by the dispatcher after receiving `CURATE_DONE` / `CURATE_SKIPPED` / `CURATE_ERROR` (or on bounded-wait timeout), or by org shutdown if a cycle happens to be in flight.
 - **Hard prohibitions**:
   - Must NOT write to `.state/`, `registry/`, or worker directories — its write surface is `knowledge/curated/` and the skill-candidate queue only.
   - Must NOT talk to the human directly or to workers.
   - Must NOT delete `knowledge/raw/` entries. Moving processed entries into `knowledge/raw/archive/` is permitted; outright deletion is forbidden.
-- **`/org-suspend` participation** — The curator has no in-memory state requiring flush during `/org-suspend`, so it does not contribute to the suspend state-collection step. Standard pane-shutdown handling (SHUTDOWN signal, `pane_exited` wait, `close_pane` if needed) per `.claude/skills/org-suspend/SKILL.md` still applies.
+- **`/org-suspend` participation** — Normally none: the curator is absent in the steady state, and `/org-suspend`'s curator-shutdown step is a no-op. Only when an on-demand cycle is in flight at suspend time does standard pane-shutdown handling (SHUTDOWN signal, `pane_exited` wait, `close_pane` if needed) per `.claude/skills/org-suspend/SKILL.md` apply.
 
 ---
 
@@ -277,8 +279,8 @@
 
 A digest of the Lead-confirmed choices made during the 2026-05-03 Q&A session, by cluster:
 
-1. **Latency / SLA contracts** — Soft SLA only. The secretary yields to active human dialogue; idle response is best-effort. Dispatcher crash recovery is best-effort with `list_panes` reconciliation as authority. Curator cadence is a tunable default, not a hard contract.
+1. **Latency / SLA contracts** — Soft SLA only. The secretary yields to active human dialogue; idle response is best-effort. Dispatcher crash recovery is best-effort with `list_panes` reconciliation as authority. Curate latency is best-effort: the check runs at worker close only, and no-worker-close starvation windows are a known gap (backlog Issues #501 / #502).
 2. **Closed-set enumerations** — Avoided. Authoritative registries live next to the code: `docs/journal-events.md` for journal events, `.dispatcher/references/worker-monitoring.md` § (b) for approval-prompt regexes, `worker-claude-template.md` for the full-mode completion-report shape. The contract references these single-source-of-truth artifacts rather than duplicating their content. Worker max lifetime is left uncapped, governed by `org-delegate` Step 5 intervention triggers.
-3. **Carve-outs to "no direct spawn"** — Codified. The secretary may directly spawn dispatcher and curator only during `/org-start`; all other pane spawns route through the dispatcher.
+3. **Carve-outs to "no direct spawn"** — Codified. The secretary may directly spawn the dispatcher only during `/org-start`; all other pane spawns — including the on-demand curator — route through the dispatcher.
 4. **Self-management permissions** — Curator may archive but not delete `knowledge/raw/` entries. Workers may not spawn sub-workers (must escalate to secretary). Workers have no branch / worktree cleanup responsibility — branches are kept as audit trail; worktree handling follows `org-delegate` Step 5 patterns.
 5. **Suspend participation contracts** — `/org-suspend` skill at `.claude/skills/org-suspend/SKILL.md` is the authoritative flush list (the contract does not enumerate files). The curator does not participate in `/org-suspend`.

@@ -168,5 +168,16 @@ resume 時に「監視に gap が出ない」ことの根拠はこれらが前 s
 エントリポイント要約:
 
 - **Step 1〜2 の振り返りが完全に終わるまで、絶対にペインを閉じない**（出力消失で retro 不能になるため）
-- 順序: (1) 振り返り（`tools/dispatcher_retro_gate.py` で secretary ack を待ってから結論を書く） → (2) 知見記録（該当時のみ `knowledge/raw/`） → (3) `mcp__renga-peers__close_pane` でペイン破棄 → (4) 知見記録した場合のみ窓口に `RETRO_RECORDED` 報告
+- 順序: (1) 振り返り（`tools/dispatcher_retro_gate.py` で secretary ack を待ってから結論を書く） → (2) 知見記録（該当時のみ `knowledge/raw/`） → (3) `mcp__renga-peers__close_pane` でペイン破棄 → (4) 知見記録した場合のみ窓口に `RETRO_RECORDED` 報告 → (5) curate 閾値チェック（`py -3 ../tools/check_curate_threshold.py`、exit 10 のときだけ curator をオンデマンド起動）
 - secretary unreachable 時は retro に「未着」と書かず、`retro_deferred` を journal に追記してペインは閉じない（後続の `/org-resume` で再試行）
+
+### オンデマンド curator（worker クローズ時のみ）
+
+常駐キュレーターは廃止済み。CLOSE_PANE 処理の Step 5 で閾値チェックスクリプトを実行し、
+**exit 10（curate_needed）のときだけ** curator ペインを spawn → `/org-curate` を 1 回実行させ →
+`CURATE_DONE` / `CURATE_SKIPPED` / `CURATE_ERROR` の direct send を受領してからペインを閉じる。
+
+- spawn 前に `list_panes` で既存 curator を確認し、存在すれば coalesce（再 spawn しない、single-flight 規約）
+- 完了待ちは 30 秒 poll × 上限 15 分の bounded wait（絶対に hang しない）
+- `curator_pane_id` / `curator_peer_id` は state.db に**書かない**（null が正常系。生存確認は `list_panes` のみ）
+- 詳細手順は [`.dispatcher/references/pane-close.md`](references/pane-close.md) Step 5 を参照

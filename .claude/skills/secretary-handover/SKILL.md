@@ -69,6 +69,8 @@ print(out_path)
 - `session.status` / `session.objective`
 - `session.dispatcher_pane_id` / `session.dispatcher_peer_id`
 - `session.curator_pane_id` / `session.curator_peer_id`
+  （**null が正常系**。curator はオンデマンド化済みで常駐せず、org-start が
+  `StateWriter.CLEAR` で明示クリアする。null を「欠損」扱いしない）
 - `active_runs[]`（進行中タスク）
 - `active_worker_dirs[]`（生きているワーカーディレクトリ）
 - 直近の `recent_events` 上位 3〜5 件
@@ -91,7 +93,7 @@ created_at: <UTC ISO8601>
 session_status: <ACTIVE | IDLE | SUSPENDED>
 session_objective: <一行サマリー or null>
 dispatcher_pane: <pane_id> / peer=<peer_id>
-curator_pane: <pane_id> / peer=<peer_id>
+curator_pane: null  # 常駐廃止（オンデマンド化）。null が正常
 ---
 
 # Secretary Handover
