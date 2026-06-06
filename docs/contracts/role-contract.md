@@ -1,6 +1,6 @@
 # Contract Set A — Role Contract
 
-> **Status**: Ratified (2026-05-03). Lead-confirmed decisions for all open questions. This document specifies the four roles (`secretary`, `dispatcher`, `curator`, `worker`) as they exist in the current `claude-org` implementation.
+> **Status**: Ratified (2026-05-03); amended 2026-06-07 (Q10 — curator residency replaced by the on-demand worker-close trigger, human-approved in the curator-on-demand change; see § Role: curator). Lead-confirmed decisions for all open questions. This document specifies the four roles (`secretary`, `dispatcher`, `curator`, `worker`) as they exist in the current `claude-org` implementation.
 >
 > **Scope**: Phase 1 Contract Set A only. Contract Sets B–E (state, messaging, lifecycle, knowledge) are tracked in #122–#125 and out of scope here.
 >

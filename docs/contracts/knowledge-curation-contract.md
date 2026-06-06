@@ -1,6 +1,6 @@
 # Contract Set E — Knowledge & Curation Boundaries
 
-> **Status**: Ratified (2026-05-03). Lead-confirmed decisions for all 9 open questions. This contract defines the knowledge-and-curation surface that the `claude-org` harness reads and writes.
+> **Status**: Ratified (2026-05-03); amended 2026-06-07 (§2.2 R2 trigger — Set A Q10 amendment, curator on-demand: threshold judgment externalized to `tools/check_curate_threshold.py`, resident `/loop 30m` retired). Lead-confirmed decisions for all 9 open questions. This contract defines the knowledge-and-curation surface that the `claude-org` harness reads and writes.
 >
 > **Scope**: Phase 1 Contract Set E only. Sets A (roles), B (delegation lifecycle), C (state schema), and D (backend interface) are tracked in #121 / #122 / #124 / #123 and out of scope here. Set E is marked "optional, small" in Issue #125: the open-questions surface is intentionally narrower than the larger sets.
 >
