@@ -99,3 +99,138 @@ mcp__renga-peers__close_pane(target="worker-{task_id}")
 ```
 RETRO_RECORDED: {task_id} の委譲について {topic} の学びを記録しました。
 ```
+
+### 5. curate 閾値チェックとオンデマンド curator 起動
+
+常駐キュレーター（`/org-start` 起動 + `/loop 30m`）は廃止されている。worker クローズは
+knowledge/raw/ が増える主経路なので、**CLOSE_PANE 処理の最後（Step 1〜4 完了後）に毎回**
+閾値チェックを行い、超過時のみ curator を一時起動する。
+
+> **実行コンテキスト**: 閾値チェック（5-1）〜 spawn / 起動指示（5-5）と inflight 記録（5-6）
+> までが CLOSE_PANE ハンドラの**インライン処理**。CURATE_* の完了受領・timeout 管理・
+> curator ペインのクローズは**ブロッキングせず** `/loop 3m` 監視サイクル側
+> （[`.dispatcher/references/worker-monitoring.md` Step 5.3](worker-monitoring.md#step-5-3)）が行う。
+> 「全ワーカーペインが閉じたら監視ループを停止する」判定よりも**先に** 5-1〜5-6 を完走させ、
+> `curate-inflight.json` が存在する間は監視ループを停止しないこと。
+>
+> **starvation の既知の限界**: worker close が発生しない期間（手動 raw 追加のみ /
+> skill-candidate のみ増加等）はこのチェックが走らない。補助トリガーは
+> [Issue #501](https://github.com/suisya-systems/claude-org-ja/issues/501)（org-retro 末尾）/
+> [Issue #502](https://github.com/suisya-systems/claude-org-ja/issues/502)（org-start バックストップ）
+> としてバックログ化済み。
+
+#### 5-1. 閾値チェックスクリプトの実行
+
+```bash
+# ディスパッチャー cwd は .dispatcher/ なので 1 段上がリポジトリルート。
+py -3 ../tools/check_curate_threshold.py    # Windows
+python3 ../tools/check_curate_threshold.py  # Mac/Linux
+```
+
+stdout に `status` / `reasons[]` / `counts` の JSON が 1 行出る。分岐は **exit code** で行う:
+
+- **exit 0 (below_threshold)** → 何もしない。CLOSE_PANE フロー完了
+- **exit 10 (curate_needed)** → stdout の JSON を控えて 5-2 へ
+- **exit 2 (error)** → 窓口に informational として 1 行報告し、curate はスキップする
+  （CLOSE_PANE フロー自体は完了扱い。閾値チェック失敗で worker クローズを止めない）
+
+#### 5-2. single-flight 確認（coalesce）
+
+spawn の**前に必ず** `mcp__renga-peers__list_panes` で既存 curator を確認する:
+
+- `name == "curator"` のペインが既に存在する → **coalesce: 再 spawn しない**。CLOSE_PANE
+  フロー完了。実行中のサイクルが raw 列挙（org-curate Step 2）を既に通過していた場合、
+  今回の増分はそのサイクルでは拾われないが、**取りこぼしではなく遅延**である: 未処理の
+  raw / pending はファイルとして残り続け、次回の worker close の閾値チェックで再評価される
+  （worker close が長期間発生しないケースの保険は backlog Issue #501 / #502 の補助トリガー）
+- 存在しない → 5-3 へ
+
+worker close が短時間に連続した場合の `name_in_use` 衝突 / 別名重複起動（knowledge/ への
+競合書き込み）をこの規約で防ぐ。
+
+#### 5-3. curator ペインの spawn
+
+```
+mcp__renga-peers__spawn_claude_pane(
+  target="dispatcher",
+  direction="vertical",
+  role="curator",
+  name="curator",
+  cwd="../.curator",
+  permission_mode="auto",
+  model="opus"
+)
+```
+
+- `cwd` は caller（dispatcher、cwd=`.dispatcher/`）基準の相対解決なので `../.curator`
+- `[name_in_use]` が返った場合は 5-2 とのレース（直前に別トリガーが spawn した）なので
+  **coalesce 扱いで終了**してよい
+- その他の `[<code>]` エラーは窓口に informational として報告し、curate をスキップする
+
+**spawn 成功（pane_id 取得）直後、5-4 の boot 確認より前に**、追跡状態を
+`.state/dispatcher/curate-inflight.json` に書く（cwd は `.dispatcher/` なので
+`../.state/dispatcher/curate-inflight.json`）。boot 確認・指示送信の途中で dispatcher が
+`/clear` / crash しても、実在する curator ペインが untracked にならないようにするため:
+
+```json
+{
+  "started_at": "<ISO-8601 UTC、spawn 直後の現在時刻>",
+  "reasons": ["<5-1 の JSON の reasons[] をそのまま>"],
+  "trigger_task_id": "<本 CLOSE_PANE の対象だった task_id>",
+  "extended": false,
+  "last_inspect_hash": null,
+  "last_inspect_ts": null
+}
+```
+
+このファイルは [`.claude/skills/dispatcher-handover/SKILL.md`](../../.claude/skills/dispatcher-handover/SKILL.md) /
+`/clear` / resume で**保持される側**の内部状態ファイル（`.dispatcher/CLAUDE.md`
+「監視 gap を埋める内部状態ファイル」リスト参照）。resume 後の監視ループが
+`started_at` 起点で timeout 管理を引き継ぐ。
+
+> **state.db には書かない**: オンデマンド curator は ephemeral であり、`curator_pane_id` /
+> `curator_peer_id` は **null のまま**が正常系。生存確認は `list_panes`（5-2）のみで行う。
+> DB に書くと常駐前提が復活し、suspend / handover / dashboard の照合が誤る。
+
+#### 5-4. boot 確認（Enter / list_peers poll）
+
+`/org-start` Block D-1〜D-2 の dispatcher 分と同じ手順:
+
+1. `mcp__renga-peers__send_keys(target="curator", enter=true)` で
+   「Load development channel? (Y/n)」プロンプトを承認する
+2. `mcp__renga-peers__list_peers` で `name="curator"` の peer 登録を poll する。
+   未登録なら Enter を再送して再 poll（最大 3 回 retry）
+3. 3 回 retry しても登録されない場合は `close_pane(target="curator")` で破棄し、
+   **5-3 で書いた `curate-inflight.json` を削除して**、窓口に informational として
+   報告して curate をスキップする（inflight を残すと監視ループ Step 5.3 が
+   存在しない curate を timeout 管理し続ける）
+
+#### 5-5. 起動指示の送信
+
+5-1 で控えた JSON を**そのまま**埋め込んで送る（dispatcher 側で再解釈・再計算しない）:
+
+```
+mcp__renga-peers__send_message(to_id="curator", message="あなたはキュレーターです。/org-curate を 1 回だけ実行してください（/loop 禁止）。起動理由: {check_curate_threshold.py の stdout JSON}。完了時は改善提案（secretary 宛て）を送った後、必ず dispatcher 宛て direct send で CURATE_DONE / CURATE_SKIPPED / CURATE_ERROR のいずれかを送ってください。")
+```
+
+#### 5-6. 監視ループへの即時復帰（ブロッキング待ちをしない）
+
+**ここで CURATE_* を待たない**。完了待ちで CLOSE_PANE ハンドラをブロックすると、その間
+他 worker の `/loop 3m` 監視（stall / relay gap / silent dead-lock 検出）が止まり、
+安全網の目的と矛盾するため、完了受領とクローズは監視ループ側
+（[`.dispatcher/references/worker-monitoring.md` Step 5.3](worker-monitoring.md#step-5-3)）に委ねる。
+
+1. 追跡状態 `curate-inflight.json` は **5-3 の spawn 直後に書き込み済み**であることを確認する
+   （未書き込みならここで書く — 内容は 5-3 参照）
+2. **即座に CLOSE_PANE フローを完了し、`/loop 3m` 監視ループへ復帰する**
+3. 今回の worker close で全 worker ペインが閉じていても、`curate-inflight.json` が存在する
+   間は監視ループを**停止しない**（curate 完了監視のため継続。
+   [`.dispatcher/references/worker-monitoring.md`](worker-monitoring.md) 末尾の停止条件参照）
+
+#### 5-7. 完了受領・timeout 管理・クローズ（監視ループ側の責務）
+
+CURATE_DONE / CURATE_SKIPPED / CURATE_ERROR の受領、20 分 timeout の観測、
+`close_pane(target="curator")`、inflight ファイルの削除は、すべて監視ループの
+[`.dispatcher/references/worker-monitoring.md` Step 5.3](worker-monitoring.md#step-5-3) が通常サイクル内で行う。
+本 CLOSE_PANE ハンドラ側に残る作業は無い。state.db への後始末も不要（5-3 の注記どおり
+そもそも書いていない）。

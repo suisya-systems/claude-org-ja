@@ -66,9 +66,9 @@ py -3 tools/check_renga_compat.py --json     # 機械可読出力
 
 **期待結果**:
 - `.state/org-state.md` が存在しないので、初回起動と判断される
-- `mcp__renga-peers__spawn_claude_pane` でディスパッチャーペインが窓口の下に開き、その右にキュレーターペインが開く
-- Dispatcher / Curator 起動直後の「開発チャネル確認プロンプト」を `mcp__renga-peers__send_keys(target=<pane>, enter=true)` で Enter 注入して通過している（`org-start` SKILL Block D-1 の手順）
-- キュレーターに `mcp__renga-peers__send_message` 経由で `/loop 30m /org-curate` の実行が指示される
+- `mcp__renga-peers__spawn_claude_pane` でディスパッチャーペインが窓口の下に開く（キュレーターペインは開かない — オンデマンド化済み）
+- Dispatcher 起動直後の「開発チャネル確認プロンプト」を `mcp__renga-peers__send_keys(target=<pane>, enter=true)` で Enter 注入して通過している（`org-start` SKILL Block D-1 の手順）
+- state.db の `curator_pane_id` / `curator_peer_id` が `StateWriter.CLEAR` で null になっている（null が正常系）
 - 「初回起動です。何をしましょうか？」と報告される
 
 **失敗パターンと対処**:
@@ -76,7 +76,7 @@ py -3 tools/check_renga_compat.py --json     # 機械可読出力
 - スキルが認識されない → `.claude/skills/*/SKILL.md` のfrontmatter形式を確認
 - `/org-start` が発動しない → スキル名の競合やdescriptionを確認
 - `mcp__renga-peers__list_panes` で error → `renga mcp install --force` を再実行、`claude mcp list` で登録確認
-- `send_keys(enter=true)` が Enter 注入に失敗 → Dispatcher / Curator ペインが「Load development channel?」プロンプトで止まっているか確認、手動で Enter
+- `send_keys(enter=true)` が Enter 注入に失敗 → Dispatcher ペインが「Load development channel?」プロンプトで止まっているか確認、手動で Enter
 
 ---
 
@@ -214,21 +214,21 @@ cat .state/journal.jsonl | tail -1  # suspend イベントを確認
 3. `/org-start` を実行する
 
 **期待結果**:
-- `/org-start` の Block A が Step 0 直後に dispatcher / curator の `spawn_claude_pane` を発火する（Issue #410 の並列化以降。boot 完了は待たず Block B / C を並行進行）
+- `/org-start` の Block A が Step 0 直後に dispatcher の `spawn_claude_pane` を発火する（Issue #410 の並列化以降。boot 完了は待たず Block B / C を並行進行。curator はオンデマンド化により spawn されない）
 - Block B が `.state/state.db` をクエリし、Status: SUSPENDED を確認
 - `/org-resume` の Phase 1〜3（ブリーフィング・git 状態照合・再開計画提案）が裏で Claude boot 中に進行する
 - 再開計画提示後、**Phase 4 のワーカー再派遣は人間の承認を待つ**（勝手に派遣しない）
-- 承認前にすでに dispatcher / curator ペインは `mcp__renga-peers__list_panes` 上に出現済みである（Block A で先行発火 → Block D で peer 登録合流）
+- 承認前にすでに dispatcher ペインは `mcp__renga-peers__list_panes` 上に出現済みである（Block A で先行発火 → Block D で peer 登録合流。curator ペインが無いことは正常）
 
 **確認ポイント**:
 - ブリーフィング内容が `.state/org-state.md` と一致するか
 - git状態の照合が正確か
-- ディスパッチャーとキュレーターペインが起動しているか（`mcp__renga-peers__list_panes` で確認）
+- ディスパッチャーペインが起動しているか（`mcp__renga-peers__list_panes` で確認。curator ペインは存在しないのが正常）
 
 **失敗パターンと対処**:
 - `/org-start` が状態を読まない → org-start スキルの Block B (前回状態の DB 読み込み) を見直し
 - 状態が不正確 → org-state.md のフォーマットまたはorg-suspendの書き込みを見直し
-- キュレーターが起動しない → org-start Block A (spawn_claude_pane) / Block D (送信・peer 登録) を確認
+- ディスパッチャーが起動しない → org-start Block A (spawn_claude_pane) / Block D (送信・peer 登録) を確認
 
 ---
 
@@ -288,19 +288,25 @@ cat knowledge/raw/*.md  # フォーマット確認
 
 **手順**:
 1. テスト用に `knowledge/raw/` に5件以上のダミー知見ファイルを作成
-2. 手動で `/org-curate` を実行（またはキュレーターの /loop を待つ）
+2. `py -3 tools/check_curate_threshold.py` を実行し、exit 10 + `reasons` に `raw_threshold` が立つことを確認
+3. 手動で `/org-curate` を実行（または worker をクローズしてディスパッチャー経由のオンデマンド起動を待つ）
 
 **期待結果**:
 - rawファイルがテーマ別に分類される
 - `knowledge/curated/{theme}.md` にテーマ別ファイルが作成される
-- 処理済みrawファイルの先頭に `<!-- curated -->` が追記される
+- 処理済みrawファイルが `knowledge/raw/archive/` に move され、先頭に `<!-- curated -->` が追記される
 - 改善提案がある場合、`renga-peers` で窓口に通知される
+- 最後に dispatcher 宛て direct send で `CURATE_DONE` が送られる（dispatcher 起動中の場合）
 
 **確認コマンド**:
 ```bash
+# POSIX (bash)
+python3 tools/check_curate_threshold.py; echo "exit=$?"
+# Windows (PowerShell — $? は真偽値なので $LASTEXITCODE を使う)
+py -3 tools/check_curate_threshold.py; echo "exit=$LASTEXITCODE"
 ls knowledge/curated/
 cat knowledge/curated/*.md
-head -1 knowledge/raw/*.md  # <!-- curated --> マーカー確認
+head -1 knowledge/raw/archive/*.md  # <!-- curated --> マーカー確認
 ```
 
 **自己成長の確認**:
@@ -309,28 +315,27 @@ head -1 knowledge/raw/*.md  # <!-- curated --> マーカー確認
 
 ---
 
-## 8. ディスパッチャー・キュレーターペインテスト
+## 8. ディスパッチャー・オンデマンドキュレーターテスト
 
-**目的**: ディスパッチャーとキュレーターが専用ペインで正しく起動し機能するか確認。
+**目的**: ディスパッチャーが正しく起動し、worker クローズ時の閾値超過でキュレーターがオンデマンド起動されるか確認。
 
 **手順**:
-1. `/org-start` を実行し、ディスパッチャーとキュレーターのペインが起動されるか確認
+1. `/org-start` を実行し、ディスパッチャーのペインが起動されるか確認（キュレーターは起動されない）
 2. ディスパッチャーが `mcp__renga-peers__send_message` 経由で役割指示を受け取っているか確認
-3. キュレーターが `mcp__renga-peers__send_message` 経由で `/loop 30m /org-curate` を実行しているか確認
-4. `knowledge/raw/` に閾値未満のファイルを置き、キュレーターがスキップするか確認
-5. 閾値以上に増やし、次の /loop サイクルで実行されるか確認
+3. `knowledge/raw/` に閾値未満のファイルを置いた状態で worker をクローズし、curator が起動**されない**こと（`check_curate_threshold.py` exit 0）を確認
+4. 閾値以上に増やして worker をクローズし、curator ペインが一時起動 → `/org-curate` 1 回実行 → `CURATE_DONE` 受領後にペインが閉じられることを確認
 
 **期待結果**:
-- `/org-start` 実行後に窓口の下にディスパッチャーとキュレーターが横並びで開く（`mcp__renga-peers__list_panes` で確認）
+- `/org-start` 実行後に窓口の下にディスパッチャーが開く（`mcp__renga-peers__list_panes` で確認。curator ペインは無い）
 - ディスパッチャーが DELEGATE メッセージを待ち受ける状態になる
-- キュレーターが `/loop` を開始する
-- 30分ごとに org-curate が発動する
-- 閾値未満ではスキップ、閾値以上で実行
+- worker クローズ時のみ閾値チェックが走る（`.dispatcher/references/pane-close.md` Step 5）
+- 閾値未満では curator は起動されず、閾値以上で一時起動 → 完了後クローズ
 
 **失敗パターンと対処**:
 - ペインは開くが指示を受け取らない → `renga-peers` のピア検出タイミングを調整（`list_peers` のリトライ、pane_started イベント待ちの延長）
 - ディスパッチャーが DELEGATE に反応しない → ディスパッチャーへの初期メッセージの内容を見直し
-- /loop が実行されない → キュレーターへのメッセージ内容を見直し
+- curator が起動されない → `py -3 tools/check_curate_threshold.py` を手動実行して exit code / reasons を確認
+- curator ペインが残留する → `.state/dispatcher/curate-inflight.json` の有無と監視ループの Step 5.3（CURATE_* 受領 / 20 分 timeout 管理）が回っているか、CURATE_* direct send の到達を確認
 
 ---
 

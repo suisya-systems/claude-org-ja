@@ -1,6 +1,6 @@
 # Contract Set E — Knowledge & Curation Boundaries
 
-> **Status**: Ratified (2026-05-03). Lead-confirmed decisions for all 9 open questions. This contract defines the knowledge-and-curation surface that the `claude-org` harness reads and writes.
+> **Status**: Ratified (2026-05-03); amended 2026-06-07 (§2.2 R2 trigger — Set A Q10 amendment, curator on-demand: threshold judgment externalized to `tools/check_curate_threshold.py`, resident `/loop 30m` retired). Lead-confirmed decisions for all 9 open questions. This contract defines the knowledge-and-curation surface that the `claude-org` harness reads and writes.
 >
 > **Scope**: Phase 1 Contract Set E only. Sets A (roles), B (delegation lifecycle), C (state schema), and D (backend interface) are tracked in #121 / #122 / #124 / #123 and out of scope here. Set E is marked "optional, small" in Issue #125: the open-questions surface is intentionally narrower than the larger sets.
 >
@@ -9,7 +9,7 @@
 > **Method**: Each artifact and lifecycle step is filled from empirical sources (the curation / retro / audit / eligibility-check skills, the in-tree knowledge-standards reference, and the existing `knowledge/` tree). Sentences sourced from current behavior are written as facts. Open design questions are marked inline for Lead fill-in.
 >
 > **Empirical sources consulted**:
-> - `.claude/skills/org-curate/SKILL.md` (curator's curation cycle: threshold check, classify, dedup, archive)
+> - `.claude/skills/org-curate/SKILL.md` (curator's curation cycle: reasons-driven step selection, classify, dedup, archive; threshold judgment is externalized to `tools/check_curate_threshold.py`)
 > - `.claude/skills/org-curate/references/knowledge-standards.md` (record format `事実 / 判断 / 根拠 / 適用場面`, merge / promotion criteria)
 > - `.claude/skills/org-retro/SKILL.md` (post-delegation retro path that writes `knowledge/raw/{date}-delegation-{topic}.md` and may invoke `skill-eligibility-check`)
 > - `.claude/skills/skill-eligibility-check/SKILL.md` (5-signal scorer, 3-value decision, `skill-candidates.md` writer)
@@ -18,7 +18,7 @@
 > - `knowledge/skill-candidates.md` (entry format, status vocabulary, batch-question rationale)
 > - Existing `knowledge/raw/` and `knowledge/curated/` samples in this worktree
 > - `docs/contracts/role-contract.md` (Set A) — § Role: curator / § Role: worker for the knowledge-write surface
-> - `docs/contracts/role-contract.md` § Decisions ratified — Q9 (raw archive, not delete), Q10 (curator `/loop 30m`), Q11 (3-entry skill-promotion threshold)
+> - `docs/contracts/role-contract.md` § Decisions ratified — Q9 (raw archive, not delete), Q10 (curator cadence — originally `/loop 30m`, amended 2026-06-07 to the on-demand worker-close trigger; see § Role: curator), Q11 (3-entry skill-promotion threshold)
 > - `docs/contracts/delegation-lifecycle-contract.md` (Set B), `docs/contracts/state-schema-contract.md` (Set C), `docs/contracts/backend-interface-contract.md` (Set D) — structural template
 >
 > **Refs**: #125 (this issue), parent epic #101.
@@ -89,7 +89,7 @@ The lifecycle that moves a learning from initial capture to a reusable skill con
 
 ### 2.2 R2 — Curate (`org-curate` → `knowledge/curated/` + move-then-mark into `knowledge/raw/archive/`)
 
-- **Trigger**: curator's `/loop 30m /org-curate` cycle (Set A Q10 default cadence) **or** a manual prompt from the secretary. Threshold gate: at least 5 unmarked raw entries (`org-curate` Step 1); below threshold, the curator returns immediately.
+- **Trigger**: on-demand (Set A Q10 as amended 2026-06-07 — the resident `/loop 30m` cadence is retired). The dispatcher runs `tools/check_curate_threshold.py` at every worker pane close and spawns a one-shot curator only when the script exits 10 (`curate_needed`), **or** a manual prompt from the secretary invokes `/org-curate` directly. Threshold gate: the script alone owns the thresholds (≥ 5 active raw entries / ≥ 5 pending skill candidates / ≥ 20 work-skills excluding `org-*` / ≥ 1 legacy `<!-- curated -->` remnant directly under `knowledge/raw/`); `org-curate` itself has **no** internal threshold gate and executes the steps matching the `reasons[]` it receives. On a manual prompt without dispatcher-provided reasons, `org-curate` Step 0 runs the script itself and reports `CURATE_SKIPPED` when below threshold.
 - **Effect**: read all unmarked raw entries, classify by theme, dedup against `knowledge/curated/`, write merged content to `knowledge/curated/{topic}.md` (Step 3), then for each consumed raw entry move the file into `knowledge/raw/archive/` and apply the `<!-- curated -->` marker on the archived copy (Step 4, move-then-mark per §1.1). Deletion of raw entries is forbidden (Set A Q9).
 - **Constraint**: curator's cwd is `.curator/`; paths to parent-repo `knowledge/` MUST be parent-repo-relative or absolute (per Set A § Role: curator "Path discipline").
 

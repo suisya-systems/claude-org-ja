@@ -35,7 +35,7 @@ python3 dashboard/org_state_converter.py     # Mac/Linux
 | ペイン spawn（T2）| dispatcher delegate-plan helper | `StateWriter.upsert_run` で `runs.status='in_use'` |
 | ステータス変更（T4 review / T5 completed / T6 review→in_use）| org-delegate / org-pull-request | `StateWriter.update_run_status` |
 | 組織中断 / 再開 | org-suspend / org-resume | `StateWriter` 経由で `org_sessions.status` を更新（個別 run の status は変更しない、[contract I4](contracts/state-semantics-contract.md)）|
-| Dispatcher/Curator 記録 | org-start | `StateWriter` 経由で `org_sessions` の dispatcher/curator pane+peer フィールドを更新 |
+| Dispatcher/Curator 記録 | org-start | `StateWriter` 経由で `org_sessions` の dispatcher pane+peer フィールドを更新。curator フィールドは `StateWriter.CLEAR` で常に明示クリア（オンデマンド化、null が正常系） |
 
 これらの書き込みは全て `StateWriter.transaction()` の post-commit hook で markdown snapshotter (`tools/state_db.snapshotter`) と JSON converter (`dashboard.org_state_converter.convert()`) が別々に派生物を再生成するため、skill 側で converter を呼ぶ必要は無い。
 
@@ -71,10 +71,7 @@ python3 dashboard/org_state_converter.py     # Mac/Linux
     "peerId": "<renga-peers peer ID>",
     "paneId": "<renga pane ID>"
   },
-  "curator": {
-    "peerId": "<renga-peers peer ID>",
-    "paneId": "<renga pane ID>"
-  },
+  "curator": null,
   "resumeInstructions": "<free text | null>"
 }
 ```
@@ -94,7 +91,7 @@ python3 dashboard/org_state_converter.py     # Mac/Linux
 | `workItems` | `array` | 作業アイテム一覧 |
 | `workerDirectoryRegistry` | `array` | ワーカーディレクトリ再利用テーブル |
 | `dispatcher` | `object \| null` | ディスパッチャーのピア・ペイン情報。未記録なら `null` |
-| `curator` | `object \| null` | キュレーターのピア・ペイン情報。未記録なら `null` |
+| `curator` | `object \| null` | キュレーターのピア・ペイン情報。**オンデマンド化により定常状態では常に `null`**（curator は worker クローズ時に dispatcher が一時起動し、state.db には記録しない。null は欠損ではなく正常系） |
 | `resumeInstructions` | `string \| null` | 再開時の注意事項（org-suspend が書く）。なければ `null` |
 
 ### workItems 要素

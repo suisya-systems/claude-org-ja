@@ -106,6 +106,12 @@ def parse_org_state_db(db_path):
             "peerId": session.get("dispatcher_peer_id"),
             "paneId": session.get("dispatcher_pane_id"),
         }
+    # The curator is on-demand (spawned by the dispatcher at worker
+    # close, never registered in state.db), so both fields are NULL in
+    # the steady state and ``curator: null`` in the JSON is the normal
+    # outcome, not an anomaly. A non-null value can only come from a
+    # pre-on-demand DB snapshot; /org-start clears it via
+    # StateWriter.CLEAR.
     curator = None
     if session.get("curator_pane_id") or session.get("curator_peer_id"):
         curator = {

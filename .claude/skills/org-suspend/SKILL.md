@@ -16,6 +16,12 @@ allowed-tools:
 
 全ワーカーの状態を収集し、ディスクに保存し、全ペインを停止する。
 
+> **curator 不在は正常系（オンデマンド化）**: キュレーターは常駐しない。state.db の
+> `curator_pane_id` / `curator_peer_id` は null が正常で、`list_panes` / `list_peers` に
+> curator が見えないことは異常ではない。curator ペインが存在するのは「worker クローズ起点の
+> オンデマンド curate が実行中に suspend が重なった」一時的なケースのみで、その場合だけ
+> Phase 4 の停止対象に含める。
+
 ペイン操作は `mcp__renga-peers__*` MCP ツール経由で行う（renga 0.18.0+ 前提）。pane_exited
 相当の lifecycle イベントは `mcp__renga-peers__poll_events` で long-poll、画面スクレイプ
 は `mcp__renga-peers__inspect_pane` で取得、raw キー入力は `mcp__renga-peers__send_keys`。
@@ -146,13 +152,16 @@ kill $(cat .state/dashboard.pid 2>/dev/null) 2>/dev/null || true
 
 4. **ディスパッチャーを停止**: ディスパッチャーに `mcp__renga-peers__send_message` で終了を指示:
    「SHUTDOWN: 作業を終了してください。」
-5. **キュレーターを停止**: キュレーターに `mcp__renga-peers__send_message` で終了を指示:
-   「SHUTDOWN: 作業を終了してください。」
-6. ディスパッチャー・キュレーターも (3) と同じ 2-pass 構造で確認（`pending = {"dispatcher", "curator"}` を集合に入れ、`role == "dispatcher"` または `role == "curator"` の `pane_exited` を待つ）:
+5. **キュレーターを停止（存在する場合のみ）**: curator は常駐しないため、通常このステップは
+   no-op。`mcp__renga-peers__list_panes` に `name == "curator"` のペインが存在する場合
+   （オンデマンド curate 実行中に suspend が重なったケース）のみ、`send_message` で終了を指示:
+   「SHUTDOWN: 作業を終了してください。」（curate は move-then-mark 設計のため途中停止でも
+   破壊的な中間状態は残らない）
+6. ディスパッチャー（および存在した場合のみキュレーター）も (3) と同じ 2-pass 構造で確認（`pending = {"dispatcher"}`、curator が存在した場合は `"curator"` も集合に入れ、`role == "dispatcher"` または `role == "curator"` の `pane_exited` を待つ）:
    - Pass 1: `poll_events(types=["pane_exited"], timeout_ms=10000)` 相当ループ
-   - Pass 2: 残った pane に `mcp__renga-peers__close_pane(target="dispatcher")` / `mcp__renga-peers__close_pane(target="curator")` を送り、`poll_events` ループ (timeout_ms=5000) で再確認
+   - Pass 2: 残った pane に `mcp__renga-peers__close_pane(target="dispatcher")`（curator 残存時は `close_pane(target="curator")` も）を送り、`poll_events` ループ (timeout_ms=5000) で再確認
 
-**最後のペイン (窓口) の扱い**: ディスパッチャー・キュレーターを閉じた時点でタブに残るのは窓口
+**最後のペイン (窓口) の扱い**: ディスパッチャー（と存在した場合のキュレーター）を閉じた時点でタブに残るのは窓口
 ペインのみになる。窓口が自分自身を `mcp__renga-peers__close_pane(target="secretary")` で
 閉じようとすると `[last_pane]` (唯一のタブの唯一のペイン) が返るので、**窓口は自分自身で
 `exit` して自然終了させる** (人間が端末を閉じる、または `/exit` でシェルに戻る)。
