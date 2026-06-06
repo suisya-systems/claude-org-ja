@@ -133,7 +133,11 @@ secretary に **報告して** 判断を仰ぐ（勝手に再 spawn / status 変
 handover の `active_worker_count > 0`、state.db の active worker dirs が非空、
 **または `.state/dispatcher/curate-inflight.json` が存在する**（オンデマンド curate の
 完了監視が引き継ぎ対象。`.dispatcher/references/worker-monitoring.md` Step 5.3）ならば `/loop 3m` で
-worker monitoring を再開する:
+worker monitoring を再開する。さらに **Step 4 の `list_peers` / `list_panes` に
+`name == "curator"` のペインが生きているのに inflight が無い**場合（前 session が
+spawn 直後の inflight 書き込み前に途切れた等）は、untracked curator を放置しないよう
+`started_at = 現在時刻` / `reasons: []` / `extended: false` / `last_inspect_hash: null` で
+inflight を再生成してから `/loop 3m` を再開する:
 
 ```
 /loop 3m

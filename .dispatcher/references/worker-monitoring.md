@@ -608,20 +608,21 @@
    - **Issue 化なしの起点インシデント**: 2026-05-09 renga-ime-paste-routing タスクで実発生 (issue 化はされていない、本 PR が初の機械検知化)。当時 worker は窓口に「修正完了。次の指示を待ちます」相当の長文回答をペイン上に展開したが send_message 未発行で silent dead-lock 化、人間が `inspect_pane` で発見するまで停滞
    - **既存 ack 強制 (Issue #312)** との関係: ack 強制は secretary 側の責務 (= worker 起点 message 受信時に ack を返す、CLAUDE.md 「ワーカー peer message を受けたら必ず ack を返す」)。Step 5.2 は dispatcher 側の機械観測で worker の outbound 不発を補完する (= ack 強制の対偶側面)。両者は補完関係で、人間運用契約 + 機械観測の二重化により silent dead-lock の発生確率を抑える
 
-5.3. **オンデマンド curate の完了監視 (curate-inflight)** — CLOSE_PANE Step 5-6 ([`.dispatcher/references/pane-close.md`](pane-close.md)) が書いた `.state/dispatcher/curate-inflight.json` が存在する場合のみ実行する (無ければ skip)。curator の完了待ちを CLOSE_PANE ハンドラでブロッキングせず、本監視ループの通常サイクルに載せるための受け口:
+5.3. **オンデマンド curate の完了監視 (curate-inflight)** — CLOSE_PANE Step 5-3 ([`.dispatcher/references/pane-close.md`](pane-close.md)) が spawn 直後に書いた `.state/dispatcher/curate-inflight.json` が存在する場合のみ実行する (無ければ skip)。curator の完了待ちを CLOSE_PANE ハンドラでブロッキングせず、本監視ループの通常サイクルに載せるための受け口。判定順序は (c) → (a) → (b):
 
-   **定数**: `CURATE_TIMEOUT_MIN = 20` (curate 開始からの初回観測閾値) / `CURATE_HARD_CAP_MIN = 40` (延長後の絶対上限)。
+   **定数**: `CURATE_TIMEOUT_MIN = 20` (curate 開始からの初回観測閾値) / `CURATE_HARD_CAP_MIN = 40` (延長を含む絶対上限)。
+
+   (c) **ペイン消失の検知** (最初に評価): inflight が存在するサイクルでは curator の生存を必ず確認する。判定材料は (i) Step 1 の `poll_events` で curator の `pane_exited` を観測した、(ii) `list_panes` の結果に `name == "curator"` が不在 — の 2 系統。**worker 不在の reduced mode (下記 7) では Step 3 が skip されるため、(ii) は本 step 内で `mcp__renga-peers__list_panes` を直接呼んで評価する** (Step 3 が走ったサイクルではその結果を再利用してよい)。これにより `events_dropped` / cursor ギャップで `pane_exited` を取り逃しても list_panes 側で必ず検知できる。消失を検知したら inflight を削除し、CURATE_* 未受領のまま消えた旨を窓口に informational 報告する (curator 側クラッシュの可能性。閾値超過分はファイルとして残るため、次回 worker close の閾値チェックで再評価され取りこぼしにはならない)
 
    (a) **完了受領**: Step 2 の `check_messages` で受領済みメッセージに curator からの `CURATE_DONE` / `CURATE_SKIPPED` / `CURATE_ERROR` が含まれていたら:
    - `CURATE_ERROR` の場合のみ内容を 1 行で窓口に informational 転送する
    - `mcp__renga-peers__close_pane(target="curator")` でペインを閉じる (`[pane_not_found]` / `[pane_vanished]` は既に閉じた扱いで skip)
    - `curate-inflight.json` を削除して終了 (state.db への後始末は不要 — curator identity はそもそも書いていない)
 
-   (b) **timeout 管理** (受領が無いサイクル): `now - started_at > CURATE_TIMEOUT_MIN` なら `mcp__renga-peers__inspect_pane(target="curator", lines=30)` で画面を観測する:
-   - 明らかに作業継続中 (出力が直近で変化している) かつ `extended == false` → `extended: true` を inflight に書いて継続 (以降は hard cap のみ評価)
-   - それ以外 (stall / エラー表示 / 入力待ち)、または `now - started_at > CURATE_HARD_CAP_MIN` → 観測内容を添えて窓口に informational 報告 → `close_pane(target="curator")` → inflight 削除。curate は途中終了でも knowledge/ は move-then-mark 設計のため破壊的な中間状態は残らない
-
-   (c) **ペイン消失の検知**: Step 1 の `poll_events` で curator の `pane_exited` を観測した、または Step 3 の `list_panes` に `name == "curator"` が不在なのに inflight が残っている場合 → inflight を削除し、CURATE_* 未受領のまま消えた旨を窓口に informational 報告する (curator 側クラッシュの可能性。閾値超過分は次回 worker close の閾値チェックで再評価されるため取りこぼしにはならない)
+   (b) **timeout 管理** (受領が無いサイクル): `now - started_at > CURATE_HARD_CAP_MIN` なら**無条件で**下記の打ち切り処理。そうでなく `now - started_at > CURATE_TIMEOUT_MIN` なら、`mcp__renga-peers__inspect_pane(target="curator", lines=30)` の出力 hash を inflight の `last_inspect_hash` と突き合わせ、**サイクル間の hash 比較で決定的に**判定する (単発 inspect から「作業継続中か」を主観判定しない。hash 比較は Step 5.1 (d) の secretary-pane-snapshot と同じ idiom):
+   - `last_inspect_hash == null` (timeout 後の初回観測) → 現 inspect 出力の hash / 現在時刻を `last_inspect_hash` / `last_inspect_ts` に書いて継続 (このサイクルでは閉じない。次サイクル以降の比較基準になる)
+   - 現 hash ≠ `last_inspect_hash` (前回観測から画面が変化 = 作業継続中) → `extended: true` と現 hash / 現在時刻を書いて継続 (hard cap 到達まで同様に再評価)
+   - 現 hash == `last_inspect_hash` (1 サイクル ≈ 3 分以上完全静止 = stall / エラー表示 / 入力待ち) → **打ち切り処理**: 観測内容を添えて窓口に informational 報告 → `close_pane(target="curator")` → inflight 削除。curate は途中終了でも knowledge/ は move-then-mark 設計のため破壊的な中間状態は残らない
 
    `curate-inflight.json` は handover / resume / `/clear` で**保持される**内部状態ファイル (`.dispatcher/CLAUDE.md` 「監視 gap を埋める内部状態ファイル」)。resume 後の 1 サイクル目から `started_at` 起点で timeout 管理が継続する。
 

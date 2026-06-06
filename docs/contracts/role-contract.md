@@ -138,7 +138,7 @@
 
 - **Spawn**: By the secretary during `/org-start` Block A (the spawn phase that fires after Step 0 identity check). `cwd=".dispatcher"`, `permission_mode="bypassPermissions"`, `model="sonnet"`. Stable name `dispatcher`, role `dispatcher`.
 - **Activation**: Receives an initial `send_message` from secretary instructing it of its role. Begins waiting for `DELEGATE`.
-- **Watch loop**: Started after the first worker spawn via `/loop 3m`; stops when all worker panes have exited.
+- **Watch loop**: Started after the first worker spawn via `/loop 3m`; stops when all worker panes have exited **and** no on-demand curate cycle is in flight (`.state/dispatcher/curate-inflight.json` absent). While only a curate cycle remains, the loop continues in a reduced mode (`worker-monitoring.md` Step 7 / Step 5.3).
 - **Suspension**: Via `/org-suspend` flow (state flushed to `.state/dispatcher-event-cursor.txt` and `.state/workers/`).
 - **Termination**: Pane closed by secretary or by org shutdown. Must NOT exit on its own when a single delegation fails (e.g., `SPLIT_CAPACITY_EXCEEDED` aborts that one task only; the watch loop continues).
 - **Hard prohibitions**:

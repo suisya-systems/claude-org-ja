@@ -167,6 +167,27 @@ mcp__renga-peers__spawn_claude_pane(
   **coalesce 扱いで終了**してよい
 - その他の `[<code>]` エラーは窓口に informational として報告し、curate をスキップする
 
+**spawn 成功（pane_id 取得）直後、5-4 の boot 確認より前に**、追跡状態を
+`.state/dispatcher/curate-inflight.json` に書く（cwd は `.dispatcher/` なので
+`../.state/dispatcher/curate-inflight.json`）。boot 確認・指示送信の途中で dispatcher が
+`/clear` / crash しても、実在する curator ペインが untracked にならないようにするため:
+
+```json
+{
+  "started_at": "<ISO-8601 UTC、spawn 直後の現在時刻>",
+  "reasons": ["<5-1 の JSON の reasons[] をそのまま>"],
+  "trigger_task_id": "<本 CLOSE_PANE の対象だった task_id>",
+  "extended": false,
+  "last_inspect_hash": null,
+  "last_inspect_ts": null
+}
+```
+
+このファイルは [`.claude/skills/dispatcher-handover/SKILL.md`](../../.claude/skills/dispatcher-handover/SKILL.md) /
+`/clear` / resume で**保持される側**の内部状態ファイル（`.dispatcher/CLAUDE.md`
+「監視 gap を埋める内部状態ファイル」リスト参照）。resume 後の監視ループが
+`started_at` 起点で timeout 管理を引き継ぐ。
+
 > **state.db には書かない**: オンデマンド curator は ephemeral であり、`curator_pane_id` /
 > `curator_peer_id` は **null のまま**が正常系。生存確認は `list_panes`（5-2）のみで行う。
 > DB に書くと常駐前提が復活し、suspend / handover / dashboard の照合が誤る。
@@ -180,7 +201,9 @@ mcp__renga-peers__spawn_claude_pane(
 2. `mcp__renga-peers__list_peers` で `name="curator"` の peer 登録を poll する。
    未登録なら Enter を再送して再 poll（最大 3 回 retry）
 3. 3 回 retry しても登録されない場合は `close_pane(target="curator")` で破棄し、
-   窓口に informational として報告して curate をスキップする
+   **5-3 で書いた `curate-inflight.json` を削除して**、窓口に informational として
+   報告して curate をスキップする（inflight を残すと監視ループ Step 5.3 が
+   存在しない curate を timeout 管理し続ける）
 
 #### 5-5. 起動指示の送信
 
@@ -190,27 +213,15 @@ mcp__renga-peers__spawn_claude_pane(
 mcp__renga-peers__send_message(to_id="curator", message="あなたはキュレーターです。/org-curate を 1 回だけ実行してください（/loop 禁止）。起動理由: {check_curate_threshold.py の stdout JSON}。完了時は改善提案（secretary 宛て）を送った後、必ず dispatcher 宛て direct send で CURATE_DONE / CURATE_SKIPPED / CURATE_ERROR のいずれかを送ってください。")
 ```
 
-#### 5-6. inflight 記録と監視ループへの即時復帰（ブロッキング待ちをしない）
+#### 5-6. 監視ループへの即時復帰（ブロッキング待ちをしない）
 
 **ここで CURATE_* を待たない**。完了待ちで CLOSE_PANE ハンドラをブロックすると、その間
 他 worker の `/loop 3m` 監視（stall / relay gap / silent dead-lock 検出）が止まり、
 安全網の目的と矛盾するため、完了受領とクローズは監視ループ側
 （[`.dispatcher/references/worker-monitoring.md` Step 5.3](worker-monitoring.md#step-5-3)）に委ねる。
 
-1. 追跡状態を `.state/dispatcher/curate-inflight.json` に書く（ディスパッチャー cwd は
-   `.dispatcher/` なので `../.state/dispatcher/curate-inflight.json`）:
-   ```json
-   {
-     "started_at": "<ISO-8601 UTC、spawn 直後の現在時刻>",
-     "reasons": ["<5-1 の JSON の reasons[] をそのまま>"],
-     "trigger_task_id": "<本 CLOSE_PANE の対象だった task_id>",
-     "extended": false
-   }
-   ```
-   このファイルは [`.claude/skills/dispatcher-handover/SKILL.md`](../../.claude/skills/dispatcher-handover/SKILL.md) /
-   `/clear` / resume で**保持される側**の内部状態ファイル（`.dispatcher/CLAUDE.md`
-   「監視 gap を埋める内部状態ファイル」リスト参照）。resume 後の監視ループが
-   `started_at` 起点で timeout 管理を引き継ぐ。
+1. 追跡状態 `curate-inflight.json` は **5-3 の spawn 直後に書き込み済み**であることを確認する
+   （未書き込みならここで書く — 内容は 5-3 参照）
 2. **即座に CLOSE_PANE フローを完了し、`/loop 3m` 監視ループへ復帰する**
 3. 今回の worker close で全 worker ペインが閉じていても、`curate-inflight.json` が存在する
    間は監視ループを**停止しない**（curate 完了監視のため継続。
