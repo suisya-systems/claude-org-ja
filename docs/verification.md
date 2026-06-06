@@ -335,7 +335,7 @@ head -1 knowledge/raw/archive/*.md  # <!-- curated --> マーカー確認
 - ペインは開くが指示を受け取らない → `renga-peers` のピア検出タイミングを調整（`list_peers` のリトライ、pane_started イベント待ちの延長）
 - ディスパッチャーが DELEGATE に反応しない → ディスパッチャーへの初期メッセージの内容を見直し
 - curator が起動されない → `py -3 tools/check_curate_threshold.py` を手動実行して exit code / reasons を確認
-- curator ペインが残留する → dispatcher の bounded wait（30 秒 poll × 15 分）と CURATE_* direct send の到達を確認
+- curator ペインが残留する → `.state/dispatcher/curate-inflight.json` の有無と監視ループの Step 5.3（CURATE_* 受領 / 20 分 timeout 管理）が回っているか、CURATE_* direct send の到達を確認
 
 ---
 

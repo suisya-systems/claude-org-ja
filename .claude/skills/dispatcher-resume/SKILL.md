@@ -38,7 +38,8 @@ allowed-tools:
 >   変わっていないはずだが、必ず観測して state.db を **atomic 更新する**。
 > - state DB (`.state/state.db`) はそのまま使う。
 > - 監視 gap を埋める内部状態ファイル（`.state/dispatcher-event-cursor.txt` /
->   `.state/dispatcher/worker-idle-state.json` / `.state/pending_decisions.json`）は
+>   `.state/dispatcher/worker-idle-state.json` / `.state/dispatcher/curate-inflight.json`（存在時） /
+>   `.state/pending_decisions.json`）は
 >   前 session から残っている。新規作成・初期化しない（既存値からそのまま継続）。
 > - handover ファイルが存在しないか古すぎる場合は、`/org-start` を案内して停止する。
 
@@ -129,8 +130,10 @@ secretary に **報告して** 判断を仰ぐ（勝手に再 spawn / status 変
 
 ## Step 5: 監視ループの再開
 
-handover の `active_worker_count > 0` または state.db の active worker dirs が
-非空ならば `/loop 3m` で worker monitoring を再開する:
+handover の `active_worker_count > 0`、state.db の active worker dirs が非空、
+**または `.state/dispatcher/curate-inflight.json` が存在する**（オンデマンド curate の
+完了監視が引き継ぎ対象。`.dispatcher/references/worker-monitoring.md` Step 5.3）ならば `/loop 3m` で
+worker monitoring を再開する:
 
 ```
 /loop 3m
@@ -145,8 +148,8 @@ handover の `active_worker_count > 0` または state.db の active worker dirs
 - `.state/dispatcher/worker-idle-state.json` は前 session の `idle_streak_cycles` を
   保持しているので stall 検出の連続性も維持される
 
-監視対象が 0 件（active worker dir も 0、active_runs も 0）の場合は `/loop` を
-始動せず、idle 状態を secretary に通知して待機する:
+監視対象が 0 件（active worker dir も 0、active_runs も 0、`curate-inflight.json` も
+無し）の場合は `/loop` を始動せず、idle 状態を secretary に通知して待機する:
 
 ```
 DISPATCHER_RESUMED_IDLE: 監視対象なしで resume 完了。DELEGATE 待機。
@@ -194,7 +197,7 @@ bash ../tools/journal_append.sh dispatcher_resumed \
 - 新規にディスパッチャー / キュレーターを spawn する（既に生きている）
 - ワーカーに勝手に SUSPEND / SHUTDOWN を送る
 - `.state/dispatcher-event-cursor.txt` / `worker-idle-state.json` /
-  `pending_decisions.json` を初期化 / 削除する（前 session からの監視連続性が壊れる）
+  `curate-inflight.json` / `pending_decisions.json` を初期化 / 削除する（前 session からの監視連続性が壊れる）
 - handover の内容と state.db の現状が食い違うときに、勝手にどちらかへ寄せる
   （必ず secretary に報告して判断を仰ぐ）
 - atomic 更新を分割して書く（必ず `StateWriter.transaction()` 1 ブロックで完結させる）

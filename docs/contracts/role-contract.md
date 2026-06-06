@@ -182,7 +182,7 @@
 - **No human dialogue** — `.curator/CLAUDE.md` "人間と直接対話することはない". Communication only via secretary.
 - **Reply addressing** — all messages to secretary use stable `to_id="secretary"`.
 - **`knowledge/raw/` write authority** — The curator may move processed entries from `knowledge/raw/` into `knowledge/raw/archive/` after successful curation. Outright deletion of raw entries is forbidden.
-- **One-shot execution** — exactly one `/org-curate` cycle per activation; `/loop` is forbidden. The pane is closed by the dispatcher after the `CURATE_*` completion message (bounded wait: 30 s polls, 15 min cap).
+- **One-shot execution** — exactly one `/org-curate` cycle per activation; `/loop` is forbidden. The pane is closed by the dispatcher's monitoring loop upon receiving the `CURATE_*` completion message in a normal `check_messages` cycle — the dispatcher does **not** block on completion (async via `.state/dispatcher/curate-inflight.json`; 20 min timeout guard, one extension, 40 min hard cap — `worker-monitoring.md` Step 5.3).
 - **Skill-candidate promotion** — The curator promotes a curated learning to a skill candidate when the same pattern appears in 3 or more raw entries (cf. memory `feedback_tool_after_three_repeats`). No hard time SLA applies.
 
 ### Lifecycle / boundaries
@@ -190,7 +190,7 @@
 - **Spawn**: By the **dispatcher** during CLOSE_PANE handling (`.dispatcher/references/pane-close.md` Step 5-3), only when `tools/check_curate_threshold.py` exits 10. `cwd="../.curator"` (dispatcher-relative), `permission_mode=auto`, `model="opus"`. Stable name `curator`, role `curator`. Single-flight: the dispatcher checks `list_panes` first and coalesces onto an already-running curator instead of re-spawning. `/org-start` does **not** spawn a curator and clears `curator_pane_id` / `curator_peer_id` via `StateWriter.CLEAR` — the curator's identity is never recorded in state.db; `list_panes` is the only liveness source, and null DB fields are the normal steady state.
 - **Activation**: Receives the dispatcher's instruction message carrying the threshold-check JSON; runs `/org-curate` once with those reasons.
 - **Steady state**: None — the pane exists only for the duration of one curation cycle.
-- **Termination**: Pane closed by the dispatcher after receiving `CURATE_DONE` / `CURATE_SKIPPED` / `CURATE_ERROR` (or on bounded-wait timeout), or by org shutdown if a cycle happens to be in flight.
+- **Termination**: Pane closed by the dispatcher's monitoring loop after receiving `CURATE_DONE` / `CURATE_SKIPPED` / `CURATE_ERROR` (or on the loop-side timeout guard), or by org shutdown if a cycle happens to be in flight. The dispatcher never blocks waiting for completion.
 - **Hard prohibitions**:
   - Must NOT write to `.state/`, `registry/`, or worker directories — its write surface is `knowledge/curated/` and the skill-candidate queue only.
   - Must NOT talk to the human directly or to workers.

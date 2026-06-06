@@ -106,10 +106,12 @@ RETRO_RECORDED: {task_id} の委譲について {topic} の学びを記録しま
 knowledge/raw/ が増える主経路なので、**CLOSE_PANE 処理の最後（Step 1〜4 完了後）に毎回**
 閾値チェックを行い、超過時のみ curator を一時起動する。
 
-> **実行コンテキスト**: 本ステップは CLOSE_PANE ハンドラの**インライン処理**であり、
-> `/loop 3m` の監視サイクルには載せない（最後の worker のクローズでは監視ループが既に
-> 停止対象のため）。「全ワーカーペインが閉じたら監視ループを停止する」判定よりも**先に**
-> 本ステップを完走させること。
+> **実行コンテキスト**: 閾値チェック（5-1）〜 spawn / 起動指示（5-5）と inflight 記録（5-6）
+> までが CLOSE_PANE ハンドラの**インライン処理**。CURATE_* の完了受領・timeout 管理・
+> curator ペインのクローズは**ブロッキングせず** `/loop 3m` 監視サイクル側
+> （[`.dispatcher/references/worker-monitoring.md` Step 5.3](worker-monitoring.md#step-5-3)）が行う。
+> 「全ワーカーペインが閉じたら監視ループを停止する」判定よりも**先に** 5-1〜5-6 を完走させ、
+> `curate-inflight.json` が存在する間は監視ループを停止しないこと。
 >
 > **starvation の既知の限界**: worker close が発生しない期間（手動 raw 追加のみ /
 > skill-candidate のみ増加等）はこのチェックが走らない。補助トリガーは
@@ -188,25 +190,36 @@ mcp__renga-peers__spawn_claude_pane(
 mcp__renga-peers__send_message(to_id="curator", message="あなたはキュレーターです。/org-curate を 1 回だけ実行してください（/loop 禁止）。起動理由: {check_curate_threshold.py の stdout JSON}。完了時は改善提案（secretary 宛て）を送った後、必ず dispatcher 宛て direct send で CURATE_DONE / CURATE_SKIPPED / CURATE_ERROR のいずれかを送ってください。")
 ```
 
-#### 5-6. 完了待ち（bounded wait — 絶対に hang しない）
+#### 5-6. inflight 記録と監視ループへの即時復帰（ブロッキング待ちをしない）
 
-`mcp__renga-peers__check_messages` を 30 秒間隔で poll し、curator からの
-`CURATE_DONE` / `CURATE_SKIPPED` / `CURATE_ERROR` を待つ。**上限 15 分**。
+**ここで CURATE_* を待たない**。完了待ちで CLOSE_PANE ハンドラをブロックすると、その間
+他 worker の `/loop 3m` 監視（stall / relay gap / silent dead-lock 検出）が止まり、
+安全網の目的と矛盾するため、完了受領とクローズは監視ループ側
+（[`.dispatcher/references/worker-monitoring.md` Step 5.3](worker-monitoring.md#step-5-3)）に委ねる。
 
-- **CURATE_DONE / CURATE_SKIPPED 受信** → 5-7 へ
-- **CURATE_ERROR 受信** → 内容を 1 行で窓口に informational 転送してから 5-7 へ
-- **15 分 timeout** → `mcp__renga-peers__inspect_pane(target="curator", lines=30)` で画面を
-  観測し、(a) 明らかに作業継続中（出力が直近で変化している）なら **1 回だけ** 15 分延長、
-  (b) それ以外（stall / エラー表示 / 入力待ち）なら観測内容を添えて窓口に informational
-  報告し、5-7 のクローズに進む（curate は途中でも knowledge/ は move-then-mark 設計のため
-  破壊的な中間状態は残らない）
+1. 追跡状態を `.state/dispatcher/curate-inflight.json` に書く（ディスパッチャー cwd は
+   `.dispatcher/` なので `../.state/dispatcher/curate-inflight.json`）:
+   ```json
+   {
+     "started_at": "<ISO-8601 UTC、spawn 直後の現在時刻>",
+     "reasons": ["<5-1 の JSON の reasons[] をそのまま>"],
+     "trigger_task_id": "<本 CLOSE_PANE の対象だった task_id>",
+     "extended": false
+   }
+   ```
+   このファイルは [`.claude/skills/dispatcher-handover/SKILL.md`](../../.claude/skills/dispatcher-handover/SKILL.md) /
+   `/clear` / resume で**保持される側**の内部状態ファイル（`.dispatcher/CLAUDE.md`
+   「監視 gap を埋める内部状態ファイル」リスト参照）。resume 後の監視ループが
+   `started_at` 起点で timeout 管理を引き継ぐ。
+2. **即座に CLOSE_PANE フローを完了し、`/loop 3m` 監視ループへ復帰する**
+3. 今回の worker close で全 worker ペインが閉じていても、`curate-inflight.json` が存在する
+   間は監視ループを**停止しない**（curate 完了監視のため継続。
+   [`.dispatcher/references/worker-monitoring.md`](worker-monitoring.md) 末尾の停止条件参照）
 
-#### 5-7. curator ペインのクローズ
+#### 5-7. 完了受領・timeout 管理・クローズ（監視ループ側の責務）
 
-```
-mcp__renga-peers__close_pane(target="curator")
-```
-
-- `[pane_not_found]` / `[pane_vanished]` は既に閉じた扱いで skip
-- クローズ後、CLOSE_PANE フロー完了。state.db への後始末は不要（5-3 の注記どおり
-  そもそも書いていない）
+CURATE_DONE / CURATE_SKIPPED / CURATE_ERROR の受領、20 分 timeout の観測、
+`close_pane(target="curator")`、inflight ファイルの削除は、すべて監視ループの
+[`.dispatcher/references/worker-monitoring.md` Step 5.3](worker-monitoring.md#step-5-3) が通常サイクル内で行う。
+本 CLOSE_PANE ハンドラ側に残る作業は無い。state.db への後始末も不要（5-3 の注記どおり
+そもそも書いていない）。

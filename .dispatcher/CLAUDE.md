@@ -114,7 +114,7 @@ mcp__renga-peers__send_message(to_id="secretary", message="...")
 ## ワーカーペイン監視
 
 アクティブなワーカーペインがある間、以下の監視を行う。
-**実現方法**: 最初のワーカー派遣完了後、`/loop 3m` で監視ループを開始する。全ワーカーペインが閉じたらループを停止する。
+**実現方法**: 最初のワーカー派遣完了後、`/loop 3m` で監視ループを開始する。全ワーカーペインが閉じたらループを停止する（ただし `.state/dispatcher/curate-inflight.json` が存在する間はオンデマンド curate の完了監視のため継続する）。
 
 > **役割分担** (renga 0.14.0+ で全機能 MCP 化済み):
 > - **pane ライフサイクル (起動・終了)** は `mcp__renga-peers__poll_events` で cursor-based long-poll
@@ -127,12 +127,12 @@ mcp__renga-peers__send_message(to_id="secretary", message="...")
 
 エントリポイント要約:
 
-- 最初のワーカー派遣完了後 `/loop 3m` で監視ループを開始、全ワーカーペインが閉じたら停止
+- 最初のワーカー派遣完了後 `/loop 3m` で監視ループを開始、全ワーカーペインが閉じたら停止（curate-inflight 存在中は継続、[Step 5.3](references/worker-monitoring.md#step-5-3)）
 - 各サイクルで `poll_events` → `check_messages` → `list_panes` → `inspect_pane` → stall / relay gap / pane_output_without_peer_msg 評価の順
 - stall 検出 (Step 5) は通常 lookback `STALL_SECRETARY_LOOKBACK_MIN = 15` 分で評価するが、対象 worker の task に対して `pr_opened` event が journal に記録済みかつ `pr_merged` が未記録の **PR-pending-merge sub-state** では `STALL_PR_MERGE_LOOKBACK_MIN = 60` 分に拡張する (Issue #304、session #12 の merge 承認待ち誤発火を抑制)。`pr_opened` / `pr_merged` は Secretary が emit する event (`docs/journal-events.md` 参照) で、worker が直接書く event ではない。詳細は [`.dispatcher/references/worker-monitoring.md` Step 5 (b-2)](references/worker-monitoring.md)
 - pane_output_without_peer_msg 検出 (Step 5.2) は worker がペインに出力したのに secretary 宛 `send_message` を発行し忘れた **silent dead-lock** を捕捉する。`PANE_OUTPUT_SETTLE_SEC = 60` 秒以上の静止 + `idle_streak_cycles >= PANE_OUTPUT_IDLE_STREAK_MIN = 2` (~6 分の完全静止) + worker が過去に peer-msg 履歴あり + `last_content_change_ts` 起点で見て peer-msg 痕跡なし、で fire し worker への self-healing nudge と secretary への informational を両系統送信する。look-back window は持たず `last_content_change_ts` を WHERE 句に直接埋め込んで「ペイン活動後の peer-msg 有無」を deterministic に評価する。詳細は [`.dispatcher/references/worker-monitoring.md` Step 5.2](references/worker-monitoring.md#step-5-2)
 - ディスパッチャーが自動で承認・拒否することはしない (ユーザー判断が必要)
-- ワーカーペインがない場合は監視ループを停止する
+- ワーカーペインがない場合は監視ループを停止する（`.state/dispatcher/curate-inflight.json` 存在中を除く）
 - 監視対象のペイン名は `.state/workers/worker-{peer_id}.md` の Pane Name から取得する
 
 
@@ -158,6 +158,7 @@ resume 時に「監視に gap が出ない」ことの根拠はこれらが前 s
 
 - `../.state/dispatcher-event-cursor.txt` — `mcp__renga-peers__poll_events` の next_since cursor。resume 後の 1 サイクル目で前 cursor から再開する
 - `../.state/dispatcher/worker-idle-state.json` — stall 検出の per-worker `idle_streak_cycles` / `last_content_change_ts`
+- `../.state/dispatcher/curate-inflight.json` — オンデマンド curate の開始記録（`started_at` / `reasons` / `trigger_task_id` / `extended`）。監視ループ Step 5.3 の完了受領・timeout 管理の SoT。resume 後も `started_at` 起点で timeout 管理が継続する
 - `../.state/pending_decisions.json` — 判断仰ぎ register。SECRETARY_RELAY_GAP_SUSPECTED の primary lookup source
 - `../.state/workers/worker-*.md` — 各ワーカー run state
 
@@ -174,10 +175,15 @@ resume 時に「監視に gap が出ない」ことの根拠はこれらが前 s
 ### オンデマンド curator（worker クローズ時のみ）
 
 常駐キュレーターは廃止済み。CLOSE_PANE 処理の Step 5 で閾値チェックスクリプトを実行し、
-**exit 10（curate_needed）のときだけ** curator ペインを spawn → `/org-curate` を 1 回実行させ →
-`CURATE_DONE` / `CURATE_SKIPPED` / `CURATE_ERROR` の direct send を受領してからペインを閉じる。
+**exit 10（curate_needed）のときだけ** curator ペインを spawn → `/org-curate` を 1 回実行させる。
+完了待ちで**ブロッキングしない**: spawn 後は `.state/dispatcher/curate-inflight.json` に開始記録を
+書いて即座に `/loop 3m` 監視ループへ復帰し、`CURATE_DONE` / `CURATE_SKIPPED` / `CURATE_ERROR` の
+direct send は監視ループの通常サイクル（`check_messages`）で受領 → 受領したサイクルで
+`close_pane(target="curator")` する。
 
 - spawn 前に `list_panes` で既存 curator を確認し、存在すれば coalesce（再 spawn しない、single-flight 規約）
-- 完了待ちは 30 秒 poll × 上限 15 分の bounded wait（絶対に hang しない）
+- 閉じ忘れ・暴走対策は監視ループ側の timeout 管理（開始から 20 分超で CURATE_* 未受領なら
+  `inspect_pane` で状況確認 → 作業継続中なら 1 回だけ延長（絶対上限 40 分）、それ以外は close +
+  窓口へ informational 報告）。詳細は [`.dispatcher/references/worker-monitoring.md` Step 5.3](references/worker-monitoring.md#step-5-3)
 - `curator_pane_id` / `curator_peer_id` は state.db に**書かない**（null が正常系。生存確認は `list_panes` のみ）
 - 詳細手順は [`.dispatcher/references/pane-close.md`](references/pane-close.md) Step 5 を参照
