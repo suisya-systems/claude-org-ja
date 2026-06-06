@@ -130,14 +130,19 @@ secretary に **報告して** 判断を仰ぐ（勝手に再 spawn / status 変
 
 ## Step 5: 監視ループの再開
 
-handover の `active_worker_count > 0`、state.db の active worker dirs が非空、
-**または `.state/dispatcher/curate-inflight.json` が存在する**（オンデマンド curate の
-完了監視が引き継ぎ対象。`.dispatcher/references/worker-monitoring.md` Step 5.3）ならば `/loop 3m` で
-worker monitoring を再開する。さらに **Step 4 の `list_peers` / `list_panes` に
-`name == "curator"` のペインが生きているのに inflight が無い**場合（前 session が
-spawn 直後の inflight 書き込み前に途切れた等）は、untracked curator を放置しないよう
-`started_at = 現在時刻` / `reasons: []` / `extended: false` / `last_inspect_hash: null` で
-inflight を再生成してから `/loop 3m` を再開する:
+以下を**この順序で**評価する:
+
+1. **inflight 再生成（先に実行）**: Step 4 の `list_peers` / `list_panes` に
+   `name == "curator"` のペインが生きているのに `.state/dispatcher/curate-inflight.json`
+   が無い場合（前 session が spawn 直後の inflight 書き込み前に途切れた等）、untracked
+   curator を放置しないよう `started_at = 現在時刻` / `reasons: []` / `extended: false` /
+   `last_inspect_hash: null` / `last_inspect_ts: null` で inflight を**再生成する**。
+   以降の判定はこの再生成後の状態で行う（= このケースは必ず 2 の再開条件を満たす）
+2. **`/loop 3m` 再開条件**: handover の `active_worker_count > 0`、state.db の
+   active worker dirs が非空、**または `curate-inflight.json` が存在する**
+   （1 の再生成分を含む。オンデマンド curate の完了監視が引き継ぎ対象。
+   `.dispatcher/references/worker-monitoring.md` Step 5.3）のいずれかを満たせば
+   `/loop 3m` で worker monitoring を再開する:
 
 ```
 /loop 3m
@@ -153,7 +158,8 @@ inflight を再生成してから `/loop 3m` を再開する:
   保持しているので stall 検出の連続性も維持される
 
 監視対象が 0 件（active worker dir も 0、active_runs も 0、`curate-inflight.json` も
-無し）の場合は `/loop` を始動せず、idle 状態を secretary に通知して待機する:
+無し、かつ 1 の評価後なので `list_panes` に curator ペインも不在）の場合のみ `/loop` を
+始動せず、idle 状態を secretary に通知して待機する:
 
 ```
 DISPATCHER_RESUMED_IDLE: 監視対象なしで resume 完了。DELEGATE 待機。
