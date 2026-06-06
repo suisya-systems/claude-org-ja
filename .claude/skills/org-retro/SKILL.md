@@ -94,16 +94,16 @@ output_format: <成果物の構造>
 
 #### decision == skill_recommend
 
-1. 人間に提案する:
-   ```
-   [work-skill 提案] このタスクの作業パターンはwork-skillとして記録すると再利用できそうです。
-   - スキル名案: {proposed_skill_name}
-   - 理由: {matched_signals} （合計 {score}/5 点）
-   - 概要: {何を再利用できるか}
+キュー追記（`knowledge/skill-candidates.md` への追記はスキル側で実施済み）に留め、
+人間への即時提案はせず**黙って次に進む**。人間への問い合わせは、候補キューの pending が
+5 件以上（N=5）に達した時点で窓口が行うバッチ問い合わせ、または `/skill-audit` の発火時のみ。
+一次参照は [`knowledge/skill-candidates.md`](../../../knowledge/skill-candidates.md) 冒頭の
+運用ルール（Issue #68 方針）。
 
-   記録しますか？
-   ```
-2. 人間が承認した場合:
+以下 1〜3 は即時には実行しない。バッチ問い合わせ（または `/skill-audit`）で人間が各候補を
+判断した時点で**窓口が実行する**処理フローとしてここに温存する:
+
+1. 人間が承認した場合:
    - **skill ファイルの作成・編集は窓口（secretary）が直接行わない**。Set E §2.4 (Q7) の批准に従い、
      skill-promotion は委譲タスクとして `org-delegate` 経由でワーカーに渡す。
    - 窓口は `org-delegate` を起動し、role `claude-org-self-edit` のワーカータスクを生成する。
@@ -116,12 +116,12 @@ output_format: <成果物の構造>
    - ディスパッチャー / 窓口は `.claude/skills/{skill-name}/` および `knowledge/skill-candidates.md` への
      直接書き込みを行わない。Set E §1.4 / §2.4 に従い、`skill-candidates.md` の status transition
      （`approved` への遷移と `決定日` の記入）も同じ委譲ワーカーの責務とし、指示にその旨を含める。
-3. 人間が却下した場合:
+2. 人間が却下した場合:
    - 理由を `knowledge/raw/` に記録し、次回の判断に活かす
    - `knowledge/skill-candidates.md` の status を `rejected` に更新し却下理由を追記する作業も
      ワーカーへの委譲（`org-delegate`）経由で行う。窓口・ディスパッチャーは直接編集しない
      （Set E §1.4 の owner 定義に従う）。
-4. 人間が「既存 skill に統合」を選択した場合（terminal status `merged-into-{existing-skill}`）:
+3. 人間が「既存 skill に統合」を選択した場合（terminal status `merged-into-{existing-skill}`）:
    - 統合先となる既存 skill を特定し、`org-delegate` で skill-promotion ワーカーに以下を委譲する:
      既存 `.claude/skills/{existing-skill}/SKILL.md` への取り込み編集、および
      `knowledge/skill-candidates.md` 該当エントリの status を `merged-into-{existing-skill}` に
@@ -142,5 +142,7 @@ output_format: <成果物の構造>
 
 人間に簡潔に報告する:
 - 知見を記録した場合: 「委譲プロセスについて{topic}の学びを記録しました」
-- work-skill 化を提案する場合: Step 4.2 の `skill_recommend` フォーマットで提案
-- `candidate_queue` / `curated_only` の場合: 報告不要（黙って次に進む）
+- `skill_recommend` / `candidate_queue` / `curated_only` のいずれの場合も: 報告不要（黙って次に進む）。
+  `skill_recommend` はキュー追記のみで完結し、人間への問い合わせは
+  [`knowledge/skill-candidates.md`](../../../knowledge/skill-candidates.md) 冒頭の運用ルールに従い
+  pending ≥5 のバッチ問い合わせまたは `/skill-audit` 発火時に窓口が行う
