@@ -71,6 +71,63 @@ and either reuses or clones.
 
 ---
 
+## 1.5 Pre-dispatch verification checks (Secretary, manual)
+
+These checks are **not** performed by `gen_delegate_payload.py`. Secretary
+runs them by hand before `preview` / `apply`. When a check fails, the
+dispatch is **not viable**: do not `apply` — resolve the cause on the
+Secretary side (commit the base, fix the citations, re-scope) or escalate
+to the user, then restart from Step 0.
+
+### (a) Committed-base existence check
+
+The worker only sees the **committed** base: Pattern B worktrees are cut
+from committed history (`origin/HEAD` or local main) and Pattern A clones
+likewise. Uncommitted live-tree state is invisible to the worker.
+
+- **File existence — always**: for every `--target`, confirm the path
+  exists in the committed base the worker will receive, e.g.
+  `git -C <project_path> cat-file -e <base>:<target-path>`. A target that
+  exists only as an uncommitted live-tree file means the delegation is not
+  viable as written — commit first, or drop the target.
+- **Line existence — only when the input carries line numbers**: when the
+  delegation input includes line-numbered review findings or a patch (a
+  Codex review file citing `file:line`, a PR review comment, a diff to
+  apply), additionally verify the cited lines exist in the committed base
+  (`git -C <project_path> show <base>:<path>` and inspect the cited
+  region). Delegations without line-numbered inputs skip this — there is
+  no input surface to validate (Codex design review Blocker 1).
+- **Live-tree-only edits are not delegable**: if the requested change
+  targets uncommitted modifications in the Secretary's live tree, the
+  delegation fails by construction. Return it to the Secretary flow and
+  commit (with user approval where required) before re-delegating.
+
+### (b) Contracts grep for org-behavior changes
+
+When the delegation changes **org behavior** — cadence, lifecycle (spawn /
+close / retire), or responsibility boundaries between roles — grep
+`docs/contracts/` for the behavior keywords the task touches, e.g.:
+
+```bash
+grep -rn -E "loop|cadence|curator|close|spawn|blocking|monitor" docs/contracts/
+```
+
+Pick keywords from the task description (the list above is a starting set,
+not exhaustive). For every hit:
+
+1. Read the matching contract section and **follow the cited sources** the
+   contract points at (`.dispatcher/CLAUDE.md`,
+   [`.dispatcher/references/worker-monitoring.md`](../../../../.dispatcher/references/worker-monitoring.md),
+   etc.). The contract docs are the minimum bar; the SoT for cadence /
+   non-blocking-wait behavior lives on the dispatcher side (Codex design
+   review Major 1).
+2. Carry the hits into the brief via `--knowledge <path>` (plus a short
+   `--impl-guidance` summary when the worker must obey a specific clause).
+   **Never add contract docs to `--target`** — that contaminates the edit
+   scope (Codex design review Major 2).
+
+---
+
 ## 2. Role detection (Step 1.5 — "Role の選び方")
 
 | `--mode` | Project = claude-org | Project ≠ claude-org |
