@@ -180,6 +180,18 @@ done: {commit SHA 短縮形} {変更ファイル名}
 
 ---
 
+## 条件付き追記: 監視ロール待ち合わせ設計を含むタスク
+
+委譲タスクが監視ロール（dispatcher / curator 等の /loop 常駐・定期 polling ロール）への待ち合わせ・spawn 連携・lifecycle を変更する場合、生成する CLAUDE.md（claude-org 自己編集タスクでは CLAUDE.local.md）の「現在のタスク」セクション直後に、以下の節を**そのまま**追記する（**ファイル変更が 1 件でも省略しない**。[`.claude/skills/org-delegate/references/instruction-template.md`](instruction-template.md) の brief 必須文言と同内容）:
+
+> ## 監視ロール待ち合わせ設計の必須制約
+> - 監視ロールにブロッキング待ちを追加してはならない（sleep / busy-wait / 同期 join での完了待ち禁止）
+> - spawn 後は即時復帰し、監視ループに制御を返すこと
+> - 完了通知の検出はループ通常サイクル（次回 polling）で行う
+> - timeout はループ側で管理する（spawn 呼び出し側で待たない）
+
+---
+
 ## 変数一覧
 
 | 変数 | 説明 | 例 |

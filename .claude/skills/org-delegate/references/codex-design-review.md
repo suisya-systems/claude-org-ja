@@ -12,6 +12,7 @@
 | 新規 module / 新規 tool 導入 | description に「新規」「new tool」「新ツール」「新規導入」等、または preview の作成予定ファイルが新規パスのみ |
 | ファイル変更 ≥ 3 件 | `--target` の数 + preview の brief に列挙される編集対象 |
 | `docs/contracts/` 配下の契約ドキュメント参照 | description / brief / `--knowledge` で `docs/contracts/` を参照 |
+| 監視ロールへの blocking wait 追加 / lifecycle 変更を含む委譲 | description / brief が監視ロール（dispatcher / curator 等の /loop 常駐・定期 polling ロール）に blocking wait（完了待ち・同期 join）を追加する、または org の lifecycle（spawn / close / cadence / 常駐⇄オンデマンド切替）を変更する。**ファイル変更が 1 件でも発動**（件数条件と独立） |
 
 ## 実行手順
 
@@ -24,6 +25,16 @@ codex exec --skip-git-repo-check "<task-id> の design review。\
 ```
 
 `codex:rescue` skill は使わない（CLAUDE.local.md の禁止事項）。`codex exec` 直打ちのみ。
+
+### 監視ロール待ち合わせ設計の追加 3 問
+
+トリガー「監視ロールへの blocking wait 追加 / lifecycle 変更を含む委譲」に該当する場合は、上記プロンプトに以下の 3 問を必ず追記し、review に回答を求める:
+
+1. **誰がブロックするか** — どのロールのどのループ / サイクルが停止するか
+2. **上限は何分か** — 待ちの timeout 値と、それをどちら側（spawn 呼び出し側 / ループ側）が管理するか
+3. **その間何が検出不能になるか** — polling が止まることで見逃すイベント（worker 完了報告・escalation・SECRETARY_RELAY_GAP 検出等）
+
+brief に載せる必須文言（ブロッキング待ち禁止・spawn 後即時復帰・完了通知はループ通常サイクル・timeout はループ側管理）は [`.claude/skills/org-delegate/references/instruction-template.md`](instruction-template.md) の「監視ロール待ち合わせ設計を含む委譲の brief 必須文言」節を参照。
 
 ## review 要約の組み込み
 

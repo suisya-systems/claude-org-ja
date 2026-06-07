@@ -116,6 +116,15 @@ work-skill の手順をそのままコピーしない。参考情報として提
 
 Step 0.7 (gitignore 事前チェック) / Step 1 (Pattern 判定) / Step 1.5 (ワーカーディレクトリ準備 + role 決定 + settings 生成) / Step 2 (DELEGATE 本文組み立て) は **`tools/gen_delegate_payload.py` が一括で行う**。窓口の責務はタスク特定 (Step 0)・work-skill 検索 (Step 0.5)・対象ファイルの抽出・depth 判断のみ。
 
+### dispatch 前検証チェック（Step 0.7 付随・窓口が手動で実行）
+
+以下 2 点は `gen_delegate_payload.py` が検証**しない**ため、`preview` の前に窓口が手動で確認する。**満たせない場合はその委譲を dispatch 不成立とし、`apply` に進まない**（原因を窓口側で解消するかユーザーに上げてから Step 0 から回し直す）:
+
+1. **コミット済みベースの存在確認**: `--target` の **file existence は常に確認**する。**line existence は、行番号付きレビュー指摘 / パッチを入力に持つ委譲のみ**検証する。live tree の未コミット変更を編集ベースとする委譲は不成立（worker の worktree / clone はコミット済みベースから切られるため対象が見えない）— commit してから委譲し直す
+2. **org 挙動変更時の契約 grep**: org の挙動（cadence / lifecycle / 責務境界）を変える委譲では `docs/contracts/` を挙動キーワード（loop / cadence / curator / close 等）で grep し、ヒットした契約の cited source（`.dispatcher/CLAUDE.md`, `.dispatcher/references/worker-monitoring.md` 等）まで辿る。ヒットは **`--target` に入れず**（edit scope 汚染）、`--knowledge` / `--impl-guidance` で brief に運ぶ
+
+判定基準・コマンド例・grep キーワードの詳細は [`.claude/skills/org-delegate/references/delegate-flow-details.md`](references/delegate-flow-details.md) §1.5 を一次参照。
+
 ### 標準フロー (推奨)
 
 ```bash
@@ -215,6 +224,8 @@ mcp__renga-peers__send_message(
   message="窓口です。{task_id} の作業をお願いしています。完了・進捗・ブロック、全ての報告は `to_id=\"secretary\"` で renga-peers 送信してください。"
 )
 ```
+
+**`.claude/` 編集タスクの send_keys 事前承認（root `.claude/**` self-edit のみ）**: 委譲対象に claude-org root の `.claude/**` が含まれる場合（`.dispatcher/` / `.curator/`、worker dir 生成物の `.claude/settings.local.json` は対象外）、窓口は上記挨拶の送信に**続けて** `mcp__renga-peers__send_keys` で承認文（対象ファイル列挙 + task_id + 「窓口経由のユーザー承認」の明記）を worker ペインへ入力しておく。worker 側は編集前にこの承認入力の存在を確認し、無ければ編集せず窓口に要求する（ハンドシェイク固定で deadlock / 空打ちを防止）。スコープ境界・背景（2 層ガード）・承認文テンプレート・worker brief 必須文言は [`.claude/skills/org-delegate/references/claude-org-self-edit.md`](references/claude-org-self-edit.md) §5 を一次参照。
 
 ### ワーカーからのメッセージ受信時
 

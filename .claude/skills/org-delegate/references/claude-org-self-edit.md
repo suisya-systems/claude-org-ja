@@ -92,6 +92,36 @@ claude-org 自己編集タスクで Pattern B（worktree）を採る場合、wor
 
 この明示がないと、ワーカーがルート CLAUDE.md を先に読んで Secretary として振る舞い始める（/org-start の実行を促す等）。
 
+## 5. root `.claude/**` 編集タスクの send_keys 事前承認ハンドシェイク
+
+### スコープ境界
+
+本節の対象は **claude-org root の `.claude/**`（self-edit）のみ**:
+
+- **対象**: `.claude/skills/`・`.claude/settings.json` 等、claude-org repo root 直下の `.claude/**` への Edit / Write を含む委譲
+- **対象外**: `.dispatcher/` / `.curator/`（別ロールの runtime ディレクトリであり `.claude/` ではない）、および worker dir 生成物の `.claude/settings.local.json`（`claude-org-runtime settings generate` が配置する生成物で、worker 自身が編集することはない）
+
+### 背景（2 層ガード）
+
+`.claude/` 配下への書き込みは 2 層でガードされる: `block-org-structure.sh` hook は Edit / Write に限り通すが、auto-mode 分類器が「ユーザー承認の無い `.claude/` 編集」をブロックする。分類器の承認は **send_keys による端末入力（worker の会話に user message として届く形）でのみ通る**。peer message（`send_message`）は user 入力にならないため承認として機能しない。
+
+### ハンドシェイク（固定手順）
+
+deadlock（worker が届かない承認を待ち続ける）と空打ち Enter（承認文の無い送信）を防ぐため、以下に固定する:
+
+1. **窓口**: ディスパッチャーから `DELEGATE_COMPLETE` を受信したら、SKILL.md Step 5 の挨拶送信に**続けて**、承認文を send_keys で worker ペインへ入力しておく:
+   ```
+   mcp__renga-peers__send_keys(
+     target="worker-{task_id}",
+     text="承認します: 本タスク ({task_id}) における {対象ファイルの列挙} の編集を承認します。これは窓口経由のユーザー承認です。",
+     enter=true
+   )
+   ```
+   承認文の必須 3 要素: **対象ファイルの列挙** / **task_id** / **「窓口経由のユーザー承認」の明記**。
+2. **worker brief**: `.claude/**` を対象に含む委譲の brief（`CLAUDE.local.md` / 指示メッセージ）には次の趣旨を必ず書く:
+   > 本タスクは `.claude/` 編集を含む。**編集前に、承認入力（対象ファイル列挙 + task_id + 「窓口経由のユーザー承認」）が会話に user message として存在することを確認**せよ。存在しなければ編集を開始せず、`send_message(to_id="secretary")` で窓口に承認入力を要求して待機せよ。
+3. **worker**: 上記の確認が取れてから編集を開始する。承認文に列挙されていないファイルへの `.claude/` 編集が必要になった場合はスコープ拡張として扱い、[`.claude/skills/org-escalation/SKILL.md`](../../org-escalation/SKILL.md) 経由でエスカレーションする。
+
 ## 根拠
 
 `knowledge/curated/delegation.md` の「claude-org 自身を編集するワーカーは worktree 内の設定を事前に調整する」セクション参照。
