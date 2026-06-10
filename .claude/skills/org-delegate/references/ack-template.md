@@ -35,6 +35,17 @@ mcp__renga-peers__send_message(
 )
 ```
 
+### 完了報告 ack（検証深度 `full` で人間向け理解サマリが欠落していた場合）
+
+full モード完了報告に「人間向け理解サマリ」（最重要の変更点 N 個 / 要確認ファイル・hunk / 設計判断と理由）が含まれていない場合、標準の完了報告 ack（「user 承認に進む」文面）は返さず、補完依頼として返す。REVIEW 遷移・`awaiting_user` emit・user 承認提示には進まない（SKILL.md Step 5 (2a)）:
+
+```
+mcp__renga-peers__send_message(
+  to_id="worker-{task_id}",
+  message="完了報告受領しました。push / PR 作成前に『人間向け理解サマリ』を追送してください: (1) 最重要の変更点を効果順に N 個（目安 3〜5 個）、(2) 人間が承認前に必ず目を通すべきファイル / hunk、(3) 設計判断とその理由。これが揃うまで user 承認には進みません。ペイン保持で。"
+)
+```
+
 ### Codex セルフレビュー round 完了 ack
 
 ```
