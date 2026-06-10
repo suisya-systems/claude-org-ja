@@ -238,6 +238,12 @@ class ScanConfig:
 # ----------------------------------------------------------------------
 
 
+def _is_int(value) -> bool:
+    """True for a *genuine* int — `bool` is an int subclass, so `True`/`False`
+    must be rejected as Issue/PR numbers (else `True` matches PR #1)."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 def _label_names(issue: dict) -> list[str]:
     """Normalize an issue's labels to a list of lowercase name strings.
 
@@ -519,7 +525,7 @@ def estimate_unblocked_by_recent_merge(
             )
             hit = True
     number = issue.get("number")
-    if isinstance(number, int) and number in recent_merge_referenced_issues:
+    if _is_int(number) and number in recent_merge_referenced_issues:
         signals.append("referenced by a recently-merged PR")
         hit = True
     if not hit:
@@ -704,7 +710,7 @@ def scan(
     is never silent (design §5.1). No I/O here.
     """
     open_issue_numbers = {
-        i["number"] for i in issues if isinstance(i.get("number"), int)
+        i["number"] for i in issues if _is_int(i.get("number"))
     }
     open_refs = open_issue_numbers | open_pr_numbers
 
@@ -714,7 +720,7 @@ def scan(
     recent_merge_referenced_issues: set[int] = set()
     for pr in recent_merges:
         num = pr.get("number")
-        if isinstance(num, int):
+        if _is_int(num):
             recent_merge_pr_numbers.add(num)
         text = f"{pr.get('title') or ''}\n{pr.get('body') or ''}"
         closed = _pr_close_refs(text)
@@ -869,7 +875,7 @@ def fetch_open_pr_numbers(repo: str | None, limit: int = DEFAULT_OPEN_LIMIT) -> 
             "number",
         ]
     )
-    return {p["number"] for p in data if isinstance(p.get("number"), int)}
+    return {p["number"] for p in data if _is_int(p.get("number"))}
 
 
 # How much larger than the requested K to fetch before picking the mergedAt
@@ -1025,8 +1031,16 @@ def _probe_trigger(argv) -> str:
     A type error (e.g. ``--top-n nope``) makes argparse call ``error()``
     during ``parse_args``, before ``--trigger`` is bound — so a lightweight
     pre-parse (that tolerates unknown/other args) lets the error envelope
-    still carry the real trigger. Falls back to ``manual`` on any hiccup."""
-    probe = argparse.ArgumentParser(add_help=False)
+    still carry the real trigger. Falls back to ``manual`` on any hiccup.
+
+    The probe must stay *silent*: a malformed probe parse must NOT print
+    usage to stderr (the main parser owns error reporting — JSON to stdout)."""
+
+    class _SilentParser(argparse.ArgumentParser):
+        def error(self, message):  # no stderr usage; just abort the probe
+            raise SystemExit(2)
+
+    probe = _SilentParser(add_help=False)
     probe.add_argument("--trigger", default="manual")
     try:
         known, _ = probe.parse_known_args(argv)

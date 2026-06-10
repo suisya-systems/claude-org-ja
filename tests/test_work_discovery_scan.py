@@ -612,6 +612,20 @@ class TestCliWiring(unittest.TestCase):
         self.assertEqual(data["status"], "error")
         self.assertEqual(data["generated_for"], "post_merge")
 
+    def test_malformed_arg_keeps_stderr_clean(self):
+        # The trigger-probe pre-parse must stay silent: a malformed CLI emits
+        # the JSON envelope to stdout and nothing to stderr (single-channel
+        # machine contract, §5.1).
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "--trigger"],  # missing value
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(proc.returncode, wds.EXIT_ERROR)
+        self.assertEqual(proc.stderr, "")
+        data = json.loads(proc.stdout)
+        self.assertEqual(data["status"], "error")
+
     def test_input_truncated_present_in_normal_output(self):
         bundle = {
             "issues": [_issue(1, body="b")],
@@ -985,6 +999,21 @@ class TestMalformedFieldNormalization(unittest.TestCase):
         result = wds.scan([issue], set(), [], wds.ScanConfig())
         # No crash; the issue is a clean candidate (no blockers, no labels).
         self.assertEqual(result["candidates"][0]["issue"], 1)
+
+    def test_is_int_excludes_bool(self):
+        self.assertTrue(wds._is_int(5))
+        self.assertFalse(wds._is_int(True))
+        self.assertFalse(wds._is_int(False))
+        self.assertFalse(wds._is_int("5"))
+        self.assertFalse(wds._is_int(None))
+
+    def test_bool_pr_number_not_treated_as_issue_one(self):
+        # `number: true` must NOT be read as PR #1 (bool is an int subclass):
+        # an issue depending on #1 must stay blocked-agnostic, not "unblocked".
+        issues = [{"number": 10, "title": "t", "body": "Depends on #1"}]
+        merges = [{"number": True, "title": "x", "body": "no refs"}]
+        result = wds.scan(issues, set(), merges, wds.ScanConfig())
+        self.assertFalse(result["candidates"][0]["unblocked_by_recent_merge"])
 
     def test_candidate_title_always_a_string(self):
         # A non-string title (e.g. null from a malformed bundle) must be
