@@ -35,6 +35,8 @@ mcp__renga-peers__send_message(
 )
 ```
 
+（full 完了報告に「人間向け理解サマリ」が欠落していた場合は特別な ack を設けず、通常の review feedback として同ペインに補完を依頼する。手順は [`.claude/skills/org-delegate/SKILL.md`](../SKILL.md) Step 5 (2a) / [`.claude/skills/org-pull-request/SKILL.md`](../../org-pull-request/SKILL.md) 2c を参照。）
+
 ### Codex セルフレビュー round 完了 ack
 
 ```
