@@ -97,10 +97,12 @@ DEFAULT_RECENT_MERGES = 10
 DEFAULT_OPEN_LIMIT = 500
 
 # --- dependency notation (design §4.1, calibrated §11-3) ---------------
-# Match a blocking *keyword* (anywhere on a line — body or comment, inline
-# or list-led, e.g. "Update: Blocked by #5"), capturing the text *before*
-# the keyword (`pre`) and the rest of the line (`rest`). Precision is
-# enforced by _LEADING_REFS_RE below, not by anchoring: a keyword not
+# Match a blocking *keyword* (anywhere — body or comment, inline or list-led,
+# e.g. "Update: Blocked by #5"). extract_blocking_refs locates every keyword
+# occurrence (so multiple clauses on one line — "Blocked by #1; depends on
+# #2" — are all seen), derives the same-line text *before* it (for the
+# negation guard) and the text *after* it (for the leading refs). Precision
+# is enforced by _LEADING_REFS_RE below, not by anchoring: a keyword not
 # immediately followed by a `#N` (e.g. "requires careful thought",
 # "Depends on: Commit 1 ...") contributes no ref.
 #
@@ -118,7 +120,7 @@ _BLOCK_NEG_RE = re.compile(
     r"(?i)(?:\b(?:not|never|no\s+longer|no\s+more)|n['’]t)[\w\s]{0,20}$"
 )
 _BLOCK_KEYWORD_RE = re.compile(
-    r"(?im)^(?P<pre>.*?)\b(?:blocked\s+by|depends\s+on|requires)\b(?P<rest>.*)$"
+    r"(?i)\b(?:blocked\s+by|depends\s+on|requires)\b"
 )
 # From a blocking clause, consume only the *leading* run of refs
 # (`#N`, optionally `PR #N`, comma/and-separated). #N refs are taken from
@@ -287,9 +289,19 @@ def extract_blocking_refs(text: str | None, *, is_epic: bool) -> list[int]:
         return []
     refs: set[int] = set()
     for m in _BLOCK_KEYWORD_RE.finditer(text):
-        if _BLOCK_NEG_RE.search(m.group("pre")):
+        # the keyword's own line, split at the keyword (`.` never crosses
+        # newlines in the original regex — keep refs same-line so a keyword on
+        # one line and a bare `#N` on the next are NOT linked, §11-3).
+        line_start = text.rfind("\n", 0, m.start()) + 1
+        line_end = text.find("\n", m.end())
+        if line_end == -1:
+            line_end = len(text)
+        if _BLOCK_NEG_RE.search(text[line_start : m.start()]):
             continue  # negated clause ("not blocked by #5") — not a blocker
-        lead = _LEADING_REFS_RE.match(m.group("rest"))
+        # Leading refs come from immediately after THIS keyword; the run stops
+        # at the next non-ref token, so a following keyword's refs are picked
+        # up by that keyword's own iteration ("Blocked by #1; depends on #2").
+        lead = _LEADING_REFS_RE.match(text[m.end() : line_end])
         if not lead:
             continue
         for num in _ISSUE_REF_RE.findall(lead.group(1)):
@@ -893,20 +905,50 @@ def _load_bundle(path: str) -> tuple[list[dict], set[int], list[dict]]:
         )
     issues = bundle.get("issues") or []
     recent_merges = bundle.get("recent_merges") or []
-    for field, value in (("issues", issues), ("recent_merges", recent_merges)):
+    pr_raw = bundle.get("open_pr_numbers") or []
+    # Validate shapes up front so a malformed bundle yields a *pinpointed*
+    # error (exit 2) instead of a confusing downstream exception or — worse —
+    # a malformed candidate JSON (`"issue": null`). The gh path never hits
+    # this (its fetchers always return well-formed arrays); this guards the
+    # offline/test `--from-file` affordance against untrusted input.
+    for field, value in (
+        ("issues", issues),
+        ("recent_merges", recent_merges),
+        ("open_pr_numbers", pr_raw),
+    ):
         if not isinstance(value, list):
             raise GhError(
                 f"--from-file `{field}` must be a list, got "
                 f"{type(value).__name__}"
             )
-    try:
-        open_pr_numbers = {
-            int(n) for n in (bundle.get("open_pr_numbers") or [])
-        }
-    except (TypeError, ValueError) as exc:
-        raise GhError(
-            f"--from-file `open_pr_numbers` must be a list of integers: {exc}"
-        ) from exc
+    for i, item in enumerate(issues):
+        if not isinstance(item, dict):
+            raise GhError(
+                f"--from-file issues[{i}] must be an object, got "
+                f"{type(item).__name__}"
+            )
+        # `bool` is an int subclass — exclude it so True/False can't pose as a
+        # number; every candidate's `issue` field must be a real integer.
+        if not isinstance(item.get("number"), int) or isinstance(
+            item.get("number"), bool
+        ):
+            raise GhError(
+                f"--from-file issues[{i}] must have an integer `number`"
+            )
+    for i, item in enumerate(recent_merges):
+        if not isinstance(item, dict):
+            raise GhError(
+                f"--from-file recent_merges[{i}] must be an object, got "
+                f"{type(item).__name__}"
+            )
+    open_pr_numbers: set[int] = set()
+    for i, n in enumerate(pr_raw):
+        if not isinstance(n, int) or isinstance(n, bool):
+            raise GhError(
+                f"--from-file open_pr_numbers[{i}] must be an integer, got "
+                f"{type(n).__name__}"
+            )
+        open_pr_numbers.add(n)
     return issues, open_pr_numbers, recent_merges
 
 
@@ -1007,6 +1049,10 @@ def main(argv=None) -> int:
         # and break the "直近 K 件" contract. Require a positive integer.
         if args.recent_merges < 1:
             raise ValueError("--recent-merges must be >= 1")
+        # `--free-panes` is a count of free worker panes; 0 is valid (none
+        # free → no parallelizable boost), but a negative count is nonsense.
+        if args.free_panes is not None and args.free_panes < 0:
+            raise ValueError("--free-panes must be >= 0")
         input_truncated = {"open_issues": False, "open_prs": False}
         if args.from_file:
             issues, open_pr_numbers, recent_merges = _load_bundle(args.from_file)

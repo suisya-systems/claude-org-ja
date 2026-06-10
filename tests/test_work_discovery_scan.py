@@ -195,6 +195,28 @@ class TestBlockingRefExtraction(unittest.TestCase):
             [5],
         )
 
+    def test_multiple_clauses_on_one_line(self):
+        # Both clauses on a single line must be extracted, not just the first.
+        self.assertEqual(
+            wds.extract_blocking_refs(
+                "Blocked by #1; depends on #2", is_epic=False
+            ),
+            [1, 2],
+        )
+        self.assertEqual(
+            wds.extract_blocking_refs(
+                "Requires #3 and Blocked by #4", is_epic=False
+            ),
+            [3, 4],
+        )
+
+    def test_ref_on_next_line_not_linked_to_keyword(self):
+        # A keyword and a bare `#N` on the *next* line are not linked (§11-3
+        # same-line precision: avoid spurious cross-line blockers).
+        self.assertEqual(
+            wds.extract_blocking_refs("Blocked by\n#5", is_epic=False), []
+        )
+
 
 class TestClassifyDependency(unittest.TestCase):
     def test_resolved_when_refs_all_closed(self):
@@ -650,6 +672,18 @@ class TestCliWiring(unittest.TestCase):
         data = json.loads(proc.stdout)
         self.assertEqual(data["status"], "error")
 
+    def test_free_panes_negative_rejected_as_error(self):
+        # `--free-panes` is a non-negative count; 0 is valid, negative is not.
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "--free-panes=-2"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(proc.returncode, wds.EXIT_ERROR)
+        data = json.loads(proc.stdout)
+        self.assertEqual(data["status"], "error")
+        self.assertIn("--free-panes", data["error"])
+
 
 class TestCommentsAndMilestone(unittest.TestCase):
     """Blockers in comments + milestone tier."""
@@ -942,6 +976,23 @@ class TestBundleValidation(unittest.TestCase):
         data = json.loads(proc.stdout)
         self.assertEqual(data["status"], "error")
         self.assertIn("open_pr_numbers", data["error"])
+
+    def test_bundle_open_pr_numbers_string_errors(self):
+        # A string `"123"` must NOT be iterated into {1,2,3}; require a list.
+        proc = self._run_bundle_text('{"issues": [], "open_pr_numbers": "123"}')
+        self.assertEqual(proc.returncode, wds.EXIT_ERROR)
+        data = json.loads(proc.stdout)
+        self.assertEqual(data["status"], "error")
+        self.assertIn("open_pr_numbers", data["error"])
+
+    def test_bundle_issue_without_integer_number_errors(self):
+        # An issue lacking an int `number` would emit `"issue": null` —
+        # reject it so the candidate JSON schema stays consistent.
+        proc = self._run_bundle_text('{"issues": [{"title": "no number"}]}')
+        self.assertEqual(proc.returncode, wds.EXIT_ERROR)
+        data = json.loads(proc.stdout)
+        self.assertEqual(data["status"], "error")
+        self.assertIn("number", data["error"])
 
 
 if __name__ == "__main__":
