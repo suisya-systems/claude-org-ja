@@ -67,7 +67,7 @@ triage を「**計算（どの Issue がどう triage されるか）**」と「
 
 ## 4. triage 基準
 
-候補 Issue の評価軸は assessment §7(b) が挙げる 3 つ —— **依存解決済み / 優先度 / 工数見積もり** —— を一次基準とし、補助軸を 2 つ加える。各軸は計算層が Issue メタデータから決定的に算出する（人間の解釈を挟まない）。
+候補 Issue の評価軸は assessment §7(b) が挙げる 3 つ —— **依存解決済み / 優先度 / 工数見積もり** —— を一次基準とし、補助軸を 2 つ加える。各軸は計算層が Issue メタデータから算出し、**実行ごとに同じ入力なら同じ出力になる（再現性）こと**を契約とする。ただし全軸が「メタデータの素直な読み取り」で決まるわけではない: `dependency` と `priority`（ラベル/milestone 由来）は決定的だが、`effort`・`parallelizable`・`unblocked_by_recent_merge` は**ヒューリスティック推定**を含む。後者は出力に不確実性フラグ（`*_estimated` / `signals[]`）を必ず添え、「機械推定であって断定ではない」ことを人間に明示する（[§4.4](#44-推定軸の不確実性明示)）。これにより propose-only（推定が外れても着手は人間判断）と監査性（どのシグナルで推定したか追える）を両立させる。
 
 ### 4.1 一次基準
 
@@ -75,14 +75,14 @@ triage を「**計算（どの Issue がどう triage されるか）**」と「
 |---|---|---|
 | **依存解決済み** (`dependency`) | Issue body / コメントの `Blocked by #N` / `Depends on #N` / `Requires #N` / タスクリスト `- [ ] #N` を抽出し、参照先 Issue/PR が **全て closed か** を判定。`blocked` / `on-hold` ラベルは即 unresolved 扱い。 | `resolved` / `blocked`（blocked は候補から除外、理由付きで別枠表示） |
 | **優先度** (`priority`) | ラベル（`priority:high` / `p0`〜`p2` 等）＞ milestone ＞ 経過日数（stale 加点 or 減点はポリシで選択）。ラベル体系が無いリポジトリでは milestone と更新日時のみで算出。 | `high` / `medium` / `low` |
-| **工数見積もり** (`effort`) | `size:S/M/L` 等のラベルがあれば採用。無ければヒューリスティック（body 長 / acceptance criteria 個数 / 変更が想定される領域数）で `S/M/L` を**推定**する。推定値には必ず `estimated: true` を付し、人間に「これは機械推定」と明示する。 | `S` / `M` / `L`（+ `estimated` フラグ） |
+| **工数見積もり** (`effort`) | `size:S/M/L` 等のラベルがあれば採用。無ければヒューリスティック（body 長 / acceptance criteria 個数 / 変更が想定される領域数）で `S/M/L` を**推定**する。推定値には必ず `effort_estimated: true` を付し、人間に「これは機械推定」と明示する。 | `S` / `M` / `L`（+ `effort_estimated` フラグ） |
 
 ### 4.2 補助軸（ランク付けに使う）
 
 | 軸 | 用途 |
 |---|---|
-| **並列性** (`parallelizable`) | 他 Issue と独立に着手でき、空いた pane 枠を埋められるか。[`CLAUDE.md`](../../CLAUDE.md) の proactive 方針「independent な open issue で並列性を埋める」と直結。空き pane があるときランクを上げる。 |
-| **直近マージ起点** (`unblocked_by_recent_merge`) | 直近マージで unblock された / 自然な follow-up になる Issue か。[§8](#8-post-merge-proactive-next-dispatch-との統合) の格上げで最重要。post-merge トリガではこの軸が強く効く。 |
+| **並列性** (`parallelizable`) | 他 Issue と独立に着手でき、空いた pane 枠を埋められるか。判定シグナル: 当該 Issue が他の open Issue を `Blocked by` / `Depends on` で参照して**いない**こと（= 依存グラフ上の葉）。[`CLAUDE.md`](../../CLAUDE.md) の proactive 方針「independent な open issue で並列性を埋める」と直結。空き pane があるときランクを上げる。**ヒューリスティック**（依存記法に現れない暗黙の競合は検知できない）→ `parallelizable_estimated` を添える。 |
+| **直近マージ起点** (`unblocked_by_recent_merge`) | 直近マージで unblock された / 自然な follow-up になる Issue か。判定シグナル: 当該 Issue の `Blocked by` / `Depends on` 参照先に「直近 K 件のマージ済み PR がクローズした Issue/PR」が含まれる、または直近マージ PR が `Refs #N` 等で当該 Issue を参照している。[§8](#8-post-merge-proactive-next-dispatch-との統合) の格上げで最重要。post-merge トリガではこの軸が強く効く。**ヒューリスティック**（記法に現れない「概念的 follow-up」は検知できない）→ `unblocked_by_recent_merge_estimated` を添える。 |
 
 ### 4.3 ランク付けと「推奨 1 つ」の決定
 
@@ -90,9 +90,19 @@ triage を「**計算（どの Issue がどう triage されるか）**」と「
 
 > **重要**: 計算層は「推奨」を出すが、これは**提案**であって決定ではない。最終選択は人間（[§7](#7-安全レール不変条件) INV-2）。ランク 1 位を自動着手することは設計上禁止。
 
+### 4.4 推定軸の不確実性明示
+
+`effort` / `parallelizable` / `unblocked_by_recent_merge` はヒューリスティック推定を含む（[§4.1](#41-一次基準) / [§4.2](#42-補助軸ランク付けに使う)）。これらは出力で必ず次を満たす:
+
+- 推定値には対応する `*_estimated: true` フラグを付す（`effort_estimated` / `parallelizable_estimated` / `unblocked_by_recent_merge_estimated`）。
+- 推定の根拠となった生シグナルを `signals[]` に列挙する（例: `"label:size:M"`, `"leaf in dependency graph"`, `"follow-up of #528 (merged)"`）。人間が「なぜそう推定したか」を追える。
+- 人間可読レンダリング（[§5.2](#52-人間可読レンダリング窓口--人間)）では推定値に `(推定)` を付す。
+
+これは「機械が断定した」と人間が誤読して着手判断を機構に明け渡すこと（認知的降伏、assessment §5）を防ぐための装置であり、INV-1 / INV-2 を運用面で支える。
+
 ## 5. 出力フォーマット
 
-計算層は 2 つの表現を持つ: 機械可読 JSON（ツール stdout、delivery 層が消費）と、それを窓口が人間へ提示する markdown（人間可読）。JSON が SoT、markdown は派生レンダリング。
+計算層は 2 つの表現を持つ: 機械可読 JSON（ツール stdout、delivery 層が消費）と、それを窓口が人間へ提示する人間可読テキスト（plain text / markdown 互換）。JSON が SoT、後者は派生レンダリング。
 
 ### 5.1 機械可読 JSON（ツール stdout）
 
@@ -102,7 +112,8 @@ triage を「**計算（どの Issue がどう triage されるか）**」と「
 {
   "status": "candidates_found",
   "generated_for": "post_merge",
-  "candidate_count": 3,
+  "candidate_count": 1,
+  "truncated_count": 0,
   "candidates": [
     {
       "issue": 531,
@@ -114,9 +125,11 @@ triage を「**計算（どの Issue がどう triage されるか）**」と「
       "effort": "S",
       "effort_estimated": true,
       "parallelizable": true,
+      "parallelizable_estimated": true,
       "unblocked_by_recent_merge": true,
+      "unblocked_by_recent_merge_estimated": true,
       "rank": 1,
-      "signals": ["label:priority:high", "follow-up of #528 (merged)"]
+      "signals": ["label:priority:high", "leaf in dependency graph", "follow-up of #528 (merged)"]
     }
   ],
   "recommendation": {
@@ -129,9 +142,12 @@ triage を「**計算（どの Issue がどう triage されるか）**」と「
 }
 ```
 
+（上記 `candidates` は 1 件のみ示した例。実際は `candidate_count` 件が `rank` 昇順で並ぶ。JSON はコメントを許さないため省略記法は使わない。）
+
 - `status`: `candidates_found` / `no_candidates`（候補ゼロ）/ `error`。
-- exit code で delivery 側が分岐する（`0` = 候補あり、`1` = 候補なし、`2` = error）。delivery 層は JSON パース失敗に依存せず exit code で挙動を決める（curator threshold ツールと同方針）。
-- `excluded_blocked` は「依存未解決で除外した Issue」を理由付きで残す。**サイレント truncation をしない**（網羅範囲を人間が監査できるようにする）。N 件に絞った結果落とした候補も `truncated_count` 等で明示する。
+- `candidate_count`: `candidates[]` の実件数。`truncated_count`: N 件上限で `candidates[]` から落とした「依存解決済みだが順位外」の候補数（**必須フィールド**。`0` でも省略しない。サイレント truncation を禁じるため）。
+- exit code で delivery 側が分岐する。[`tools/check_curate_threshold.py`](../../tools/check_curate_threshold.py) に倣い、**`1` を意味付けに使わない**（Python が未捕捉例外時に既定で返す exit `1` と衝突し、scan のクラッシュが「候補なし」に誤読されて error が窓口に届かなくなるのを防ぐ）。割り当ては `0` = 候補なし（`no_candidates`）、`10` = 候補あり（`candidates_found`）、`2` = error。delivery 層は JSON パース失敗に依存せず exit code で挙動を決める（curator threshold ツールと同方針）。
+- `excluded_blocked` は「依存未解決で除外した Issue」を理由付きで残す。**サイレント truncation をしない**（`truncated_count` で順位外候補の存在も、`excluded_blocked` で依存除外も、ともに人間が監査できるようにする）。
 
 ### 5.2 人間可読レンダリング（窓口 → 人間）
 
@@ -172,7 +188,7 @@ triage を「**計算（どの Issue がどう triage されるか）**」と「
 
 ### 6.2 案 B: ローカル skill
 
-窓口（または委譲ワーカー）がローカルで起動する skill（例: 仮称 `/work-discovery`）。skill が計算層ツールを呼び、出力を窓口が人間へ提示する。
+窓口がローカルで起動する skill（例: 仮称 `/work-discovery`）。skill が計算層ツールを呼び、出力を窓口が人間へ提示する。起動主体は**窓口に限定する**: 委譲済みワーカーが自タスク外の次仕事探索を起動すると、「1 worker = 1 task = 1 scope」と「別件は Step 0 から [`/org-delegate`](../../.claude/skills/org-delegate/SKILL.md)」（[`CLAUDE.md`](../../CLAUDE.md)）を崩すため。
 
 - **利点**: 窓口境界を自然に保つ（窓口が起動し窓口が提示）。ライブ状態（空き pane）をローカルで見られる。手動 on-demand と相性が良い。
 - **欠点 / 留意**:
@@ -221,7 +237,7 @@ triage を「**計算（どの Issue がどう triage されるか）**」と「
 
 ### 7.1 不変条件の検証可能性
 
-- **監査ログ**: scan 実行・候補件数・推奨を journal イベント（[`docs/journal-events.md`](../journal-events.md) 台帳への追記、proposed kind 例: `work_discovery_scanned` / payload に `candidate_count` / `recommendation_issue` / `trigger`）として残し、「いつ・何件・何を推奨したか」を後追いできるようにする。**proposed イベントの実体配線は本設計のスコープ外**（台帳追記とともに別タスク）。
+- **監査ログ**: scan 実行・候補件数・推奨を journal イベント（proposed kind 例: `work_discovery_scanned` / payload に `candidate_count` / `recommendation_issue` / `trigger`）として残し、「いつ・何件・何を推奨したか」を後追いできるようにする。[`docs/journal-events.md`](../journal-events.md) のとおり events の SoT は `.state/state.db` の events table であり、emit は DB-routed helper（`tools/journal_append.sh` / `tools/journal_append.py`）経由で行う（旧 `.state/journal.jsonl` 直書きや直接 DB INSERT はしない）。**proposed イベントの台帳追記と実体配線は本設計のスコープ外**（別タスク）。
 - **副作用ゼロの担保**: 計算層ツールは `gh issue list` / `rtk gh issue view` 等の**読み取り API のみ**を使い、書き込み系 API・git 操作を一切呼ばないことをツールの契約（および将来のユニットテスト）で固定する。
 
 ## 8. post-merge proactive-next-dispatch との統合
