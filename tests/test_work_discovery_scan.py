@@ -938,6 +938,23 @@ class TestFetchRobustness(unittest.TestCase):
                 wds.fetch_open_pr_numbers(None)
 
 
+class TestMalformedFieldNormalization(unittest.TestCase):
+    """Non-list `comments` / `labels` shapes must normalize to empty, never
+    crash the pure core (a bare comment *count* is a real gh-shape risk)."""
+
+    def test_comments_as_count_does_not_crash(self):
+        self.assertEqual(wds._comment_bodies({"comments": 5}), [])
+
+    def test_labels_as_string_does_not_crash(self):
+        self.assertEqual(wds._label_names({"labels": "blocked"}), [])
+
+    def test_scan_survives_non_list_comments_and_labels(self):
+        issue = {"number": 1, "title": "t", "body": "b", "comments": 3, "labels": 0}
+        result = wds.scan([issue], set(), [], wds.ScanConfig())
+        # No crash; the issue is a clean candidate (no blockers, no labels).
+        self.assertEqual(result["candidates"][0]["issue"], 1)
+
+
 class TestBundleValidation(unittest.TestCase):
     """--from-file shape validation surfaces a clear error (exit 2)."""
 

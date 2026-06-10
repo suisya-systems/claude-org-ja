@@ -236,7 +236,10 @@ def _label_names(issue: dict) -> list[str]:
     Accepts both ``gh``'s ``[{"name": ...}]`` shape and a plain list of
     strings (the latter is convenient for tests / `--from-file`)."""
     out: list[str] = []
-    for label in issue.get("labels") or []:
+    labels = issue.get("labels")
+    if not isinstance(labels, list):  # malformed/absent → no labels
+        return out
+    for label in labels:
         if isinstance(label, dict):
             name = label.get("name")
         else:
@@ -252,7 +255,10 @@ def _comment_bodies(issue: dict) -> list[str]:
     Accepts ``gh``'s ``[{"body": ...}]`` shape and a plain list of strings
     (test / ``--from-file`` convenience). Missing → empty list."""
     out: list[str] = []
-    for c in issue.get("comments") or []:
+    comments = issue.get("comments")
+    if not isinstance(comments, list):  # e.g. a bare count, or absent → none
+        return out
+    for c in comments:
         if isinstance(c, dict):
             body = c.get("body")
         else:
