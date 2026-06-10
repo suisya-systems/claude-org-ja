@@ -37,7 +37,7 @@ mcp__renga-peers__send_message(
 
 ### 完了報告のサマリ補完依頼（検証深度 `full` で人間向け理解サマリが欠落していた場合）
 
-full モード完了報告に「人間向け理解サマリ」（最重要の変更点 N 個 / 要確認ファイル・hunk / 設計判断と理由）が欠落していたら、標準「完了報告 ack」を返したうえで、completion report の review feedback として同ペインに補完を依頼する（既存の T6: `awaiting_review → in_progress` 経路。REVIEW (T4) 遷移はブロックせず、user 承認提示・`awaiting_user` emit には補完到着まで進まない。SKILL.md Step 5 (2a)）:
+full モード完了報告に「人間向け理解サマリ」（最重要の変更点 N 個 / 要確認ファイル・hunk / 設計判断と理由）が欠落していたら、標準「完了報告 ack」を返したうえで、completion report の review feedback として同ペインに補完を依頼する（既存の T6: `awaiting_review → in_progress` 経路。REVIEW (T4) 遷移はブロックせず、user 承認提示・`awaiting_user` emit には補完到着まで進まない。SKILL.md Step 5 (2a)）。**この補完依頼は review feedback なので `run.status` を IN_PROGRESS に戻す DB 更新が必須**（手順は [`.claude/skills/org-pull-request/SKILL.md`](../../org-pull-request/SKILL.md) 2c に従う。これを怠ると REVIEW のまま残り dashboard / resume / watcher が誤認する）:
 
 ```
 mcp__renga-peers__send_message(
