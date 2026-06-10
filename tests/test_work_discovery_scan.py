@@ -28,6 +28,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -114,6 +115,40 @@ class TestBlockingRefExtraction(unittest.TestCase):
     def test_empty_body(self):
         self.assertEqual(wds.extract_blocking_refs(None, is_epic=False), [])
         self.assertEqual(wds.extract_blocking_refs("", is_epic=False), [])
+
+    def test_negated_not_blocked_by_yields_no_ref(self):
+        # §11-3: a negated keyword is NOT a blocker — must not exclude.
+        self.assertEqual(
+            wds.extract_blocking_refs("not blocked by #5", is_epic=False), []
+        )
+
+    def test_negated_no_longer_blocked_by_yields_no_ref(self):
+        self.assertEqual(
+            wds.extract_blocking_refs("no longer blocked by #5", is_epic=False),
+            [],
+        )
+
+    def test_unblocked_by_yields_no_ref(self):
+        # "unblocked" must not match the "blocked by" keyword mid-word.
+        self.assertEqual(
+            wds.extract_blocking_refs("unblocked by #5", is_epic=False), []
+        )
+
+    def test_negated_doesnt_depend_on_yields_no_ref(self):
+        self.assertEqual(
+            wds.extract_blocking_refs("This doesn't depend on #5", is_epic=False),
+            [],
+        )
+
+    def test_negation_only_when_adjacent_to_keyword(self):
+        # The "not" here negates "a blocker", not the later "blocked by" —
+        # so the immediate `blocked by #5` still counts.
+        self.assertEqual(
+            wds.extract_blocking_refs(
+                "This is not a blocker, but blocked by #5", is_epic=False
+            ),
+            [5],
+        )
 
 
 class TestClassifyDependency(unittest.TestCase):
@@ -499,6 +534,30 @@ class TestCliWiring(unittest.TestCase):
             data["input_truncated"], {"open_issues": False, "open_prs": False}
         )
 
+    def test_top_n_zero_rejected_as_error(self):
+        # `--top-n 0` would silently return an empty `top` (status
+        # no_candidates / exit 0) even with candidates — a contract break.
+        # It must be rejected as an argument error (exit 2, JSON envelope).
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "--top-n", "0"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(proc.returncode, wds.EXIT_ERROR)
+        data = json.loads(proc.stdout)
+        self.assertEqual(data["status"], "error")
+        self.assertIn("--top-n", data["error"])
+
+    def test_top_n_negative_rejected_as_error(self):
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "--top-n=-5"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(proc.returncode, wds.EXIT_ERROR)
+        data = json.loads(proc.stdout)
+        self.assertEqual(data["status"], "error")
+
 
 class TestCommentsAndMilestone(unittest.TestCase):
     """Blockers in comments + milestone tier."""
@@ -617,6 +676,29 @@ class TestCommentsAndMilestone(unittest.TestCase):
         self.assertTrue(unblocked[10])
         self.assertTrue(unblocked[11])
 
+    def test_pr_referenced_refs_comma_separated(self):
+        # The reference side is symmetric with the close side: `Refs #10, #11`
+        # must capture BOTH, not just the first.
+        self.assertEqual(wds._pr_referenced_refs("Refs #10, #11"), {10, 11})
+
+    def test_pr_referenced_refs_and_separated(self):
+        self.assertEqual(
+            wds._pr_referenced_refs("Ref #10 and #11 & #12"), {10, 11, 12}
+        )
+
+    def test_multi_ref_in_full_scan(self):
+        # A recent PR that references several issues marks every one of them
+        # as referenced-by-recent-merge (the natural-follow-up axis).
+        issues = [_issue(10, body="x"), _issue(11, body="y")]
+        merges = [{"number": 900, "title": "z", "body": "Refs #10, #11"}]
+        result = wds.scan(issues, set(), merges, wds.ScanConfig())
+        unblocked = {
+            c["issue"]: c["unblocked_by_recent_merge"]
+            for c in result["candidates"]
+        }
+        self.assertTrue(unblocked[10])
+        self.assertTrue(unblocked[11])
+
     def test_milestone_emitted_as_signal(self):
         issue = _issue(1, body="b")
         issue["milestone"] = {"title": "v1.0"}
@@ -637,6 +719,42 @@ class TestCommentsAndMilestone(unittest.TestCase):
         issue["milestone"] = {"title": "v1.0"}
         result = wds.scan([issue], set(), [], wds.ScanConfig())
         self.assertNotIn("_has_milestone", result["candidates"][0])
+
+
+class TestFetchRecentMerges(unittest.TestCase):
+    """`gh pr list` order is not guaranteed, so fetch_recent_merges must
+    sort by mergedAt (newest first) before taking the 直近 K 件 (§4.2)."""
+
+    _UNSORTED = [
+        {"number": 1, "title": "a", "body": "", "mergedAt": "2026-01-01T00:00:00Z"},
+        {"number": 3, "title": "c", "body": "", "mergedAt": "2026-03-01T00:00:00Z"},
+        {"number": 2, "title": "b", "body": "", "mergedAt": "2026-02-01T00:00:00Z"},
+    ]
+
+    def test_sorted_by_merged_at_desc(self):
+        with mock.patch.object(wds, "_run_gh_json", return_value=list(self._UNSORTED)):
+            merges = wds.fetch_recent_merges(None, 10)
+        self.assertEqual([m["number"] for m in merges], [3, 2, 1])
+
+    def test_limit_takes_newest_after_sort(self):
+        # The 直近 K 件 must be the K *newest* by mergedAt, not the first K
+        # in gh's return order.
+        with mock.patch.object(wds, "_run_gh_json", return_value=list(self._UNSORTED)):
+            merges = wds.fetch_recent_merges(None, 2)
+        self.assertEqual([m["number"] for m in merges], [3, 2])
+
+    def test_missing_merged_at_sorts_last(self):
+        data = [
+            {"number": 1, "mergedAt": None},
+            {"number": 2, "mergedAt": "2026-05-01T00:00:00Z"},
+        ]
+        with mock.patch.object(wds, "_run_gh_json", return_value=data):
+            merges = wds.fetch_recent_merges(None, 10)
+        self.assertEqual([m["number"] for m in merges], [2, 1])
+
+    def test_non_list_payload_is_empty(self):
+        with mock.patch.object(wds, "_run_gh_json", return_value=None):
+            self.assertEqual(wds.fetch_recent_merges(None, 10), [])
 
 
 if __name__ == "__main__":

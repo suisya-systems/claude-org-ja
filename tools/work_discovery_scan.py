@@ -98,12 +98,22 @@ DEFAULT_OPEN_LIMIT = 500
 
 # --- dependency notation (design §4.1, calibrated §11-3) ---------------
 # Match a blocking *keyword* (anywhere on a line — body or comment, inline
-# or list-led, e.g. "Update: Blocked by #5") and capture the rest of the
-# line. Precision is enforced by _LEADING_REFS_RE below, not by anchoring:
-# a keyword not immediately followed by a `#N` (e.g. "requires careful
-# thought", "Depends on: Commit 1 ...") contributes no ref.
+# or list-led, e.g. "Update: Blocked by #5"), capturing the text *before*
+# the keyword (`pre`) and the rest of the line (`rest`). Precision is
+# enforced by _LEADING_REFS_RE below, not by anchoring: a keyword not
+# immediately followed by a `#N` (e.g. "requires careful thought",
+# "Depends on: Commit 1 ...") contributes no ref.
+#
+# Negation guard: a keyword carrying a *negation* immediately before it
+# ("not blocked by #5", "no longer blocked by #5", "doesn't depend on #5")
+# is NOT a blocker — extract_blocking_refs drops the clause when `pre` ends
+# with a negation marker (_BLOCK_NEG_RE). The leading `\b` on the keyword
+# also rejects "unblocked by #5": there is no word boundary inside the word
+# "unblocked", so the keyword never matches mid-word. Both guards prefer
+# *not* excluding (§11-3 over-matching guard).
+_BLOCK_NEG_RE = re.compile(r"(?i)(?:\bnot|\bno\s+longer|\bnever|n['’]t)\s+$")
 _BLOCK_KEYWORD_RE = re.compile(
-    r"(?im)(?:blocked\s+by|depends\s+on|requires)\b(.*)$"
+    r"(?im)^(?P<pre>.*?)\b(?:blocked\s+by|depends\s+on|requires)\b(?P<rest>.*)$"
 )
 # From a blocking clause, consume only the *leading* run of refs
 # (`#N`, optionally `PR #N`, comma/and-separated). #N refs are taken from
@@ -133,30 +143,42 @@ _OPEN_TASK_REF_RE = re.compile(r"(?im)^[ \t]*[-*]\s*\[ \]\s*.*?#(\d+)\b")
 #     "this Issue is referenced by (a natural follow-up of) a recent merge".
 # Conflating them would let a bare `Refs #100` mark #100 as resolved.
 #
-# A single close keyword can close several issues at once
-# (`Closes #100, #101 and #102`), so `_PR_CLOSE_RE` captures the whole
-# leading run of comma/space/`and`-separated `#N` refs (mirroring
-# `_LEADING_REFS_RE`); `_pr_close_refs` then extracts every number with
-# `_ISSUE_REF_RE`. Capturing only the first would silently drop the 2nd+
-# issue from `recent_merge_closed_issues` (hurts the unblocked_by_recent_merge
-# axis).
+# A single keyword can reference several issues at once
+# (`Closes #100, #101 and #102`), so both patterns capture the whole leading
+# run of comma/space/`and`-separated `#N` refs (mirroring `_LEADING_REFS_RE`);
+# `_extract_ref_run` then pulls every number with `_ISSUE_REF_RE`. Capturing
+# only the first would silently drop the 2nd+ issue from
+# `recent_merge_closed_issues` / `recent_merge_referenced_issues` (hurts the
+# unblocked_by_recent_merge axis).
+_KEYWORD_REF_RUN = r"\s+((?:#\d+[\s,]*(?:and\s+|&\s*)?)+)"
 _PR_CLOSE_RE = re.compile(
-    r"(?i)\b(?:closes|close|closed|fixes|fix|fixed|resolves|resolve|resolved)\s+"
-    r"((?:#\d+[\s,]*(?:and\s+|&\s*)?)+)"
+    r"(?i)\b(?:closes|close|closed|fixes|fix|fixed|resolves|resolve|resolved)"
+    + _KEYWORD_REF_RUN
 )
-_PR_REF_RE = re.compile(r"(?i)\b(?:refs|ref|re)\s+#(\d+)\b")
+_PR_REF_RE = re.compile(r"(?i)\b(?:refs|ref|re)" + _KEYWORD_REF_RUN)
+
+
+def _extract_ref_run(pattern: re.Pattern, text: str) -> set[int]:
+    """All issue numbers in `text`'s keyword-led `#N` runs (design §4.2).
+
+    Every `#N` in the leading run after each keyword is captured, so
+    `Closes #100, #101` / `Refs #100, #101` yield ``{100, 101}`` — not just
+    the first.
+    """
+    nums: set[int] = set()
+    for match in pattern.finditer(text):
+        nums.update(int(n) for n in _ISSUE_REF_RE.findall(match.group(1)))
+    return nums
 
 
 def _pr_close_refs(text: str) -> set[int]:
-    """Issue numbers closed by `text`'s close clauses (design §4.2).
+    """Issue numbers a PR *closes* (Closes/Fixes/Resolves #N, …)."""
+    return _extract_ref_run(_PR_CLOSE_RE, text)
 
-    Every `#N` in the leading run after a close keyword is captured, so
-    `Closes #100, #101` yields ``{100, 101}`` — not just the first.
-    """
-    nums: set[int] = set()
-    for match in _PR_CLOSE_RE.finditer(text):
-        nums.update(int(n) for n in _ISSUE_REF_RE.findall(match.group(1)))
-    return nums
+
+def _pr_referenced_refs(text: str) -> set[int]:
+    """Issue numbers a PR merely *references* (Refs/Ref/Re #N, …)."""
+    return _extract_ref_run(_PR_REF_RE, text)
 
 # Labels that force `blocked` regardless of refs (design §4.1).
 _BLOCK_LABELS = {"blocked", "on-hold", "on hold"}
@@ -247,8 +269,10 @@ def extract_blocking_refs(text: str | None, *, is_epic: bool) -> list[int]:
     if not text:
         return []
     refs: set[int] = set()
-    for clause in _BLOCK_KEYWORD_RE.findall(text):
-        lead = _LEADING_REFS_RE.match(clause)
+    for m in _BLOCK_KEYWORD_RE.finditer(text):
+        if _BLOCK_NEG_RE.search(m.group("pre")):
+            continue  # negated clause ("not blocked by #5") — not a blocker
+        lead = _LEADING_REFS_RE.match(m.group("rest"))
         if not lead:
             continue
         for num in _ISSUE_REF_RE.findall(lead.group(1)):
@@ -641,7 +665,7 @@ def scan(
             recent_merge_pr_numbers.add(num)
         text = f"{pr.get('title') or ''}\n{pr.get('body') or ''}"
         closed = _pr_close_refs(text)
-        referenced = closed | {int(n) for n in _PR_REF_RE.findall(text)}
+        referenced = closed | _pr_referenced_refs(text)
         recent_merge_closed_issues |= closed
         recent_merge_referenced_issues |= referenced
 
@@ -796,7 +820,13 @@ def fetch_recent_merges(repo: str | None, limit: int) -> list[dict]:
             "number,title,body,mergedAt",
         ]
     )
-    return data if isinstance(data, list) else []
+    merges = data if isinstance(data, list) else []
+    # `gh pr list` does not guarantee `mergedAt` order, so sort newest-first
+    # ourselves before taking the "直近 K 件" (design §4.2). ISO-8601 stamps
+    # sort lexicographically = chronologically; a missing `mergedAt` sorts
+    # last (treated as oldest).
+    merges.sort(key=lambda p: p.get("mergedAt") or "", reverse=True)
+    return merges[:limit]
 
 
 def _load_bundle(path: str) -> tuple[list[dict], set[int], list[dict]]:
@@ -894,6 +924,12 @@ def main(argv=None) -> int:
         "JSON bundle instead of calling gh (offline / validation).",
     )
     args = parser.parse_args(argv)
+
+    # `--top-n 0` (or negative) would silently return an empty `top` even
+    # when candidates exist, yielding status no_candidates / exit 0 — a
+    # contract break for the exit-code-driven delivery layer. Reject it.
+    if args.top_n < 1:
+        parser.error("--top-n must be >= 1")
 
     config = ScanConfig(
         top_n=args.top_n, free_panes=args.free_panes, trigger=args.trigger
