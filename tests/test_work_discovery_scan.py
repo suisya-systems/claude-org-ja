@@ -954,6 +954,15 @@ class TestMalformedFieldNormalization(unittest.TestCase):
         # No crash; the issue is a clean candidate (no blockers, no labels).
         self.assertEqual(result["candidates"][0]["issue"], 1)
 
+    def test_candidate_title_always_a_string(self):
+        # A non-string title (e.g. null from a malformed bundle) must be
+        # coerced to "" so the candidate JSON schema holds, never crash.
+        issue = {"number": 1, "title": None, "body": "body text here"}
+        result = wds.scan([issue], set(), [], wds.ScanConfig())
+        cand = result["candidates"][0]
+        self.assertEqual(cand["title"], "")
+        self.assertIsInstance(cand["summary"], str)
+
 
 class TestBundleValidation(unittest.TestCase):
     """--from-file shape validation surfaces a clear error (exit 2)."""

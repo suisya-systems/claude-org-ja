@@ -580,10 +580,17 @@ def build_candidate(
 
     signals = prio_signals + effort_signals + par_signals + merge_signals
 
+    # Coerce `title` to a string here so the candidate JSON always satisfies
+    # its schema regardless of input shape (a malformed `--from-file` could
+    # carry `title: null`/a number). This also keeps extract_summary's
+    # title fallback safe (it calls `.strip()` on the title).
+    raw_title = issue.get("title")
+    title = raw_title if isinstance(raw_title, str) else ""
+
     return {
         "issue": issue.get("number"),
-        "title": issue.get("title", ""),
-        "summary": extract_summary(issue.get("body"), issue.get("title", "")),
+        "title": title,
+        "summary": extract_summary(issue.get("body"), title),
         "dependency": "resolved",
         "blocking_refs": all_blocking,
         "priority": priority,
