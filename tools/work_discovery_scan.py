@@ -132,10 +132,31 @@ _OPEN_TASK_REF_RE = re.compile(r"(?im)^[ \t]*[-*]\s*\[ \]\s*.*?#(\d+)\b")
 #   * a *mere reference* (Refs #N) does not close #N — only used to decide
 #     "this Issue is referenced by (a natural follow-up of) a recent merge".
 # Conflating them would let a bare `Refs #100` mark #100 as resolved.
+#
+# A single close keyword can close several issues at once
+# (`Closes #100, #101 and #102`), so `_PR_CLOSE_RE` captures the whole
+# leading run of comma/space/`and`-separated `#N` refs (mirroring
+# `_LEADING_REFS_RE`); `_pr_close_refs` then extracts every number with
+# `_ISSUE_REF_RE`. Capturing only the first would silently drop the 2nd+
+# issue from `recent_merge_closed_issues` (hurts the unblocked_by_recent_merge
+# axis).
 _PR_CLOSE_RE = re.compile(
-    r"(?i)\b(?:closes|close|closed|fixes|fix|fixed|resolves|resolve|resolved)\s+#(\d+)\b"
+    r"(?i)\b(?:closes|close|closed|fixes|fix|fixed|resolves|resolve|resolved)\s+"
+    r"((?:#\d+[\s,]*(?:and\s+|&\s*)?)+)"
 )
 _PR_REF_RE = re.compile(r"(?i)\b(?:refs|ref|re)\s+#(\d+)\b")
+
+
+def _pr_close_refs(text: str) -> set[int]:
+    """Issue numbers closed by `text`'s close clauses (design §4.2).
+
+    Every `#N` in the leading run after a close keyword is captured, so
+    `Closes #100, #101` yields ``{100, 101}`` — not just the first.
+    """
+    nums: set[int] = set()
+    for match in _PR_CLOSE_RE.finditer(text):
+        nums.update(int(n) for n in _ISSUE_REF_RE.findall(match.group(1)))
+    return nums
 
 # Labels that force `blocked` regardless of refs (design §4.1).
 _BLOCK_LABELS = {"blocked", "on-hold", "on hold"}
@@ -619,7 +640,7 @@ def scan(
         if isinstance(num, int):
             recent_merge_pr_numbers.add(num)
         text = f"{pr.get('title') or ''}\n{pr.get('body') or ''}"
-        closed = {int(n) for n in _PR_CLOSE_RE.findall(text)}
+        closed = _pr_close_refs(text)
         referenced = closed | {int(n) for n in _PR_REF_RE.findall(text)}
         recent_merge_closed_issues |= closed
         recent_merge_referenced_issues |= referenced

@@ -450,8 +450,8 @@ class TestCliWiring(unittest.TestCase):
         self.assertNotIn(1, {wds.EXIT_NO_CANDIDATES, wds.EXIT_CANDIDATES_FOUND, wds.EXIT_ERROR})
 
     def test_error_json_keeps_fixed_schema(self):
-        # Codex review (Major): the error branch must carry the same audit
-        # fields as a normal result, not a bespoke shape.
+        # The error branch must carry the same audit fields as a normal
+        # result, not a bespoke shape.
         proc = subprocess.run(
             [sys.executable, str(SCRIPT), "--from-file", "/no/such/file.json"],
             capture_output=True,
@@ -474,8 +474,8 @@ class TestCliWiring(unittest.TestCase):
         self.assertEqual(data["truncated_count"], 0)
 
     def test_argparse_error_emits_json_exit_2(self):
-        # Codex review round 2 (Minor): a CLI parse error must still print a
-        # single JSON object to stdout and exit 2, not bare usage on stderr.
+        # A CLI parse error must still print a single JSON object to stdout
+        # and exit 2, not bare usage on stderr.
         proc = subprocess.run(
             [sys.executable, str(SCRIPT), "--top-n", "not-an-int"],
             capture_output=True,
@@ -501,7 +501,7 @@ class TestCliWiring(unittest.TestCase):
 
 
 class TestCommentsAndMilestone(unittest.TestCase):
-    """Codex review (Major/Minor): blockers in comments + milestone tier."""
+    """Blockers in comments + milestone tier."""
 
     def test_blocker_in_comment_detected(self):
         # §4.1: a blocker added later in a *comment* must still be detected.
@@ -534,8 +534,8 @@ class TestCommentsAndMilestone(unittest.TestCase):
         self.assertIn(10, excluded)
 
     def test_unblocked_via_ref_closed_by_recent_merge(self):
-        # Codex review (Major): Depends on #100 + a recent PR that Closes
-        # #100 → this issue is now unblocked-by-recent-merge.
+        # Depends on #100 + a recent PR that Closes #100 → this issue is now
+        # unblocked-by-recent-merge.
         ok, sig = wds.estimate_unblocked_by_recent_merge(
             _issue(10),
             blocking_refs=[100],
@@ -555,7 +555,7 @@ class TestCommentsAndMilestone(unittest.TestCase):
         )
 
     def test_bare_refs_does_not_close_blocking_ref(self):
-        # Codex review round 2 (Major): a recent PR that only `Refs #100`
+        # A recent PR that only `Refs #100`
         # (not Closes/Fixes/Resolves) must NOT mark #100 as resolved, so an
         # issue depending on #100 is not unblocked via the blocking-ref side.
         ok, _ = wds.estimate_unblocked_by_recent_merge(
@@ -574,6 +574,48 @@ class TestCommentsAndMilestone(unittest.TestCase):
         self.assertFalse(
             result["candidates"][0]["unblocked_by_recent_merge"]
         )
+
+    def test_pr_close_refs_single(self):
+        self.assertEqual(wds._pr_close_refs("Closes #100"), {100})
+
+    def test_pr_close_refs_comma_separated(self):
+        # `Closes #100, #101` must capture BOTH, not just the first.
+        self.assertEqual(wds._pr_close_refs("Closes #100, #101"), {100, 101})
+
+    def test_pr_close_refs_space_separated(self):
+        self.assertEqual(wds._pr_close_refs("Fixes #100 #101 #102"), {100, 101, 102})
+
+    def test_pr_close_refs_and_separated(self):
+        self.assertEqual(
+            wds._pr_close_refs("Resolves #100, #101 and #102"), {100, 101, 102}
+        )
+
+    def test_pr_close_refs_mixed_case_keywords(self):
+        # Keyword casing is irrelevant; every following #N is captured.
+        self.assertEqual(
+            wds._pr_close_refs("CLOSED #100, #101\nfix #200 and #201"),
+            {100, 101, 200, 201},
+        )
+
+    def test_pr_close_refs_bare_ref_not_captured(self):
+        # Only close-keyword runs count; a bare `Refs #100` closes nothing.
+        self.assertEqual(wds._pr_close_refs("Refs #100, #101"), set())
+
+    def test_multi_issue_close_in_full_scan(self):
+        # A single recent PR closing several issues must unblock dependents
+        # on *each* listed issue, not just the first.
+        issues = [
+            _issue(10, body="Depends on #100"),
+            _issue(11, body="Depends on #101"),
+        ]
+        merges = [{"number": 900, "title": "x", "body": "Closes #100, #101"}]
+        result = wds.scan(issues, set(), merges, wds.ScanConfig())
+        unblocked = {
+            c["issue"]: c["unblocked_by_recent_merge"]
+            for c in result["candidates"]
+        }
+        self.assertTrue(unblocked[10])
+        self.assertTrue(unblocked[11])
 
     def test_milestone_emitted_as_signal(self):
         issue = _issue(1, body="b")
