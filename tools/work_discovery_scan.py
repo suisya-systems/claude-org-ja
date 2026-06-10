@@ -807,6 +807,14 @@ def fetch_open_pr_numbers(repo: str | None, limit: int = DEFAULT_OPEN_LIMIT) -> 
 
 
 def fetch_recent_merges(repo: str | None, limit: int) -> list[dict]:
+    # `gh pr list`'s DEFAULT order is createdAt-desc, NOT merge-time — so a
+    # plain `--limit K` would drop a recently-*merged* PR that was *created*
+    # long ago, silently shrinking the "直近 K 件" pool (design §4.2) and
+    # mis-deciding `unblocked_by_recent_merge`. We therefore ask the server
+    # to order by recency via `sort:updated-desc`: for a merged PR the merge
+    # is its last (or near-last) activity, so updatedAt-desc ≈ mergedAt-desc,
+    # making the fetched K the *most recently merged* K. The client-side
+    # `mergedAt` sort below then makes the final ordering exact among them.
     data = _run_gh_json(
         [
             "pr",
@@ -814,6 +822,8 @@ def fetch_recent_merges(repo: str | None, limit: int) -> list[dict]:
             *_repo_args(repo),
             "--state",
             "merged",
+            "--search",
+            "sort:updated-desc",
             "--limit",
             str(limit),
             "--json",
@@ -821,10 +831,10 @@ def fetch_recent_merges(repo: str | None, limit: int) -> list[dict]:
         ]
     )
     merges = data if isinstance(data, list) else []
-    # `gh pr list` does not guarantee `mergedAt` order, so sort newest-first
-    # ourselves before taking the "直近 K 件" (design §4.2). ISO-8601 stamps
-    # sort lexicographically = chronologically; a missing `mergedAt` sorts
-    # last (treated as oldest).
+    # Exact newest-first ordering by mergedAt (ISO-8601 sorts
+    # lexicographically = chronologically); a missing `mergedAt` sorts last
+    # (treated as oldest). Also a defensive cap in case the fetch returned
+    # more than `limit` rows.
     merges.sort(key=lambda p: p.get("mergedAt") or "", reverse=True)
     return merges[:limit]
 

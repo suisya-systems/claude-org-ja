@@ -722,8 +722,9 @@ class TestCommentsAndMilestone(unittest.TestCase):
 
 
 class TestFetchRecentMerges(unittest.TestCase):
-    """`gh pr list` order is not guaranteed, so fetch_recent_merges must
-    sort by mergedAt (newest first) before taking the 直近 K 件 (§4.2)."""
+    """`gh pr list` defaults to createdAt-desc, NOT merge-time, so
+    fetch_recent_merges must (a) ask the server to order by recency and
+    (b) sort by mergedAt before taking the 直近 K 件 (§4.2)."""
 
     _UNSORTED = [
         {"number": 1, "title": "a", "body": "", "mergedAt": "2026-01-01T00:00:00Z"},
@@ -731,14 +732,27 @@ class TestFetchRecentMerges(unittest.TestCase):
         {"number": 2, "title": "b", "body": "", "mergedAt": "2026-02-01T00:00:00Z"},
     ]
 
+    def test_server_side_recency_ordering_requested(self):
+        # The fix for createdAt-desc dropping recent merges is a server-side
+        # recency sort + the K limit — assert both reach the gh call.
+        with mock.patch.object(
+            wds, "_run_gh_json", return_value=[]
+        ) as gh:
+            wds.fetch_recent_merges("owner/repo", 7)
+        argv = gh.call_args[0][0]
+        self.assertIn("--search", argv)
+        self.assertEqual(argv[argv.index("--search") + 1], "sort:updated-desc")
+        self.assertEqual(argv[argv.index("--limit") + 1], "7")
+        self.assertIn("merged", argv)
+
     def test_sorted_by_merged_at_desc(self):
         with mock.patch.object(wds, "_run_gh_json", return_value=list(self._UNSORTED)):
             merges = wds.fetch_recent_merges(None, 10)
         self.assertEqual([m["number"] for m in merges], [3, 2, 1])
 
-    def test_limit_takes_newest_after_sort(self):
-        # The 直近 K 件 must be the K *newest* by mergedAt, not the first K
-        # in gh's return order.
+    def test_defensive_limit_applied_after_sort(self):
+        # Even if the fetch over-returns, the client side caps to the K
+        # *newest* by mergedAt (not the first K in arrival order).
         with mock.patch.object(wds, "_run_gh_json", return_value=list(self._UNSORTED)):
             merges = wds.fetch_recent_merges(None, 2)
         self.assertEqual([m["number"] for m in merges], [3, 2])
