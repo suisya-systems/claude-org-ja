@@ -107,6 +107,30 @@ class TestBlockingRefExtraction(unittest.TestCase):
             wds.extract_blocking_refs(body, is_epic=False), [11]
         )
 
+    def test_task_list_pure_ref_run_counts(self):
+        # A task item that is *only* refs is a genuine sub-task dependency.
+        body = "- [ ] #11\n- [ ] #12, #13 and #14\n"
+        self.assertEqual(
+            wds.extract_blocking_refs(body, is_epic=False), [11, 12, 13, 14]
+        )
+
+    def test_task_list_prose_after_ref_is_not_a_blocker(self):
+        # §11-3: `- [ ] #123 を参考に確認する` merely *mentions* #123 — it is
+        # not a dependency. Counting it would wrongly exclude the candidate.
+        body = "- [ ] #123 を参考に確認する\n- [ ] #124 review notes\n"
+        self.assertEqual(wds.extract_blocking_refs(body, is_epic=False), [])
+
+    def test_task_list_prose_before_ref_is_not_a_blocker(self):
+        # `- [ ] Fix #11` — prose before the ref → mention, not a blocker.
+        self.assertEqual(
+            wds.extract_blocking_refs("- [ ] Fix #11", is_epic=False), []
+        )
+
+    def test_task_list_mixed_pure_and_prose(self):
+        # Only the pure-ref items count; the prose-annotated one is dropped.
+        body = "- [ ] #11\n- [ ] #99 を参考に\n"
+        self.assertEqual(wds.extract_blocking_refs(body, is_epic=False), [11])
+
     def test_task_list_ignored_for_epic(self):
         # An epic's child checklist is tracking, not a blocker on the epic.
         body = "## Children\n- [ ] #11\n- [ ] #12\n"
@@ -428,6 +452,17 @@ class TestRankingAndScan(unittest.TestCase):
         top, _ = wds.rank_candidates(cands, top_n=3, free_panes=0)
         self.assertEqual(top[0]["issue"], 1)
 
+    def test_free_panes_none_does_not_boost(self):
+        # `--free-panes` unspecified (None) is *unknown*, not "panes free":
+        # per the documented contract it must NOT boost parallelizable, so the
+        # ranking is identical to free_panes=0 (stable original order here).
+        cands = [
+            self._cand(1, parallelizable=False),
+            self._cand(2, parallelizable=True),
+        ]
+        top, _ = wds.rank_candidates(cands, top_n=3, free_panes=None)
+        self.assertEqual(top[0]["issue"], 1)
+
 
 # ----------------------------------------------------------------------
 # CLI wiring: stdout JSON + exit codes (§5.1)
@@ -570,6 +605,29 @@ class TestCliWiring(unittest.TestCase):
         data = json.loads(proc.stdout)
         self.assertEqual(data["status"], "error")
         self.assertEqual(data["generated_for"], "post_merge")
+
+    def test_recent_merges_zero_rejected_as_error(self):
+        # `--recent-merges 0` would request a nonsensical `gh --limit 0` and
+        # break the 直近 K 件 contract — must be rejected (exit 2).
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "--recent-merges", "0"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(proc.returncode, wds.EXIT_ERROR)
+        data = json.loads(proc.stdout)
+        self.assertEqual(data["status"], "error")
+        self.assertIn("--recent-merges", data["error"])
+
+    def test_recent_merges_negative_rejected_as_error(self):
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "--recent-merges=-3"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(proc.returncode, wds.EXIT_ERROR)
+        data = json.loads(proc.stdout)
+        self.assertEqual(data["status"], "error")
 
 
 class TestCommentsAndMilestone(unittest.TestCase):

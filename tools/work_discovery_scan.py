@@ -128,11 +128,20 @@ _LEADING_REFS_RE = re.compile(
 # A bare-number ref like `#531`; the leading `(?<![\w/])` stops it firing
 # inside `org/repo#531`-style cross-repo refs (single-repo scope, §10).
 _ISSUE_REF_RE = re.compile(r"(?<![\w/])#(\d+)\b")
-# Unchecked task-list item that references an Issue: `- [ ] #N`. Counted
-# as a pending dependency for NON-epic issues only — an epic's child
-# checklist is tracking, not a blocker on the epic itself (calibrated
-# against epic #376; see classify_dependency).
-_OPEN_TASK_REF_RE = re.compile(r"(?im)^[ \t]*[-*]\s*\[ \]\s*.*?#(\d+)\b")
+# Unchecked task-list item used as a pending-dependency signal: `- [ ] #N`
+# (design §4.1). Counted for NON-epic issues only — an epic's child checklist
+# is tracking, not a blocker on the epic itself (calibrated against epic
+# #376; see classify_dependency).
+#
+# §11-3 calibration: the item's content must be a *pure run of issue refs*
+# (`- [ ] #11`, `- [ ] #11, #12`). An item with descriptive prose around the
+# ref (`- [ ] #123 を参考に確認する`, `- [ ] Fix #11`) is a mere *mention*,
+# NOT a blocker — counting it would wrongly exclude a live candidate. Work
+# discovery prefers false-inclusion over false-exclusion (誤除外 < 誤包含):
+# when in doubt, do not treat the item as a blocker.
+_OPEN_TASK_ITEM_RE = re.compile(r"(?im)^[ \t]*[-*]\s*\[ \]\s*(.+?)\s*$")
+# True iff the captured task content is nothing but a `#N` ref run.
+_PURE_REF_RUN_RE = re.compile(r"(?i)^(?:#\d+[\s,]*(?:and\s+|&\s*)?)+$")
 
 # PR → linked-Issue notation for the recent-merge heuristic (design §4.2).
 # §4.2 keeps two *distinct* conditions, so we keep two patterns:
@@ -278,8 +287,12 @@ def extract_blocking_refs(text: str | None, *, is_epic: bool) -> list[int]:
         for num in _ISSUE_REF_RE.findall(lead.group(1)):
             refs.add(int(num))
     if not is_epic:
-        for num in _OPEN_TASK_REF_RE.findall(text):
-            refs.add(int(num))
+        for item in _OPEN_TASK_ITEM_RE.finditer(text):
+            content = item.group(1)
+            if not _PURE_REF_RUN_RE.match(content):
+                continue  # prose-annotated mention, not a blocker (§11-3)
+            for num in _ISSUE_REF_RE.findall(content):
+                refs.add(int(num))
     return sorted(refs)
 
 
@@ -574,13 +587,12 @@ def _sort_key(cand: dict, free_panes: int | None) -> tuple:
     """
     prio = _PRIORITY_RANK.get(cand["priority"], 1)
     unblocked = 1 if cand["unblocked_by_recent_merge"] else 0
-    # parallelizable only earns rank weight when there is a free pane to
-    # fill (design §4.2); otherwise it is neutral.
-    par = (
-        1
-        if (cand["parallelizable"] and (free_panes is None or free_panes > 0))
-        else 0
-    )
+    # parallelizable only earns rank weight when there is a *known* free pane
+    # to fill (design §4.2 「空き pane があるとき」); unknown (`--free-panes`
+    # unspecified → None) and zero are both neutral, matching the documented
+    # contract. (In practice every candidate is parallelizable by
+    # construction, so this term only discriminates when free_panes > 0.)
+    par = 1 if (cand["parallelizable"] and (free_panes or 0) > 0) else 0
     effort_small = -_EFFORT_RANK.get(cand["effort"], 1)  # S best
     has_ms = 1 if cand.get("_has_milestone") else 0
     recency = cand.get("_updated_at") or ""  # ISO8601 sorts lexically
@@ -954,6 +966,11 @@ def main(argv=None) -> int:
         # `--trigger` context in `generated_for`, not a hardcoded "manual".
         if config.top_n < 1:
             raise ValueError("--top-n must be >= 1")
+        # `--recent-merges` feeds `gh pr list --limit` and the mergedAt
+        # top-K slice; a non-positive value would request a nonsensical limit
+        # and break the "直近 K 件" contract. Require a positive integer.
+        if args.recent_merges < 1:
+            raise ValueError("--recent-merges must be >= 1")
         input_truncated = {"open_issues": False, "open_prs": False}
         if args.from_file:
             issues, open_pr_numbers, recent_merges = _load_bundle(args.from_file)
