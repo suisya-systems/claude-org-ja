@@ -166,10 +166,31 @@ class TestBlockingRefExtraction(unittest.TestCase):
 
     def test_negation_only_when_adjacent_to_keyword(self):
         # The "not" here negates "a blocker", not the later "blocked by" —
-        # so the immediate `blocked by #5` still counts.
+        # a comma breaks the negation run, so `blocked by #5` still counts.
         self.assertEqual(
             wds.extract_blocking_refs(
                 "This is not a blocker, but blocked by #5", is_epic=False
+            ),
+            [5],
+        )
+
+    def test_negation_with_intervening_adverb(self):
+        # "not currently blocked by", "not yet blocked by" are negations even
+        # though an adverb sits between "not" and the keyword.
+        for s in (
+            "not currently blocked by #5",
+            "not yet blocked by #5",
+            "doesn't currently depend on #5",
+        ):
+            self.assertEqual(
+                wds.extract_blocking_refs(s, is_epic=False), [], msg=s
+            )
+
+    def test_far_away_negation_with_punctuation_still_blocks(self):
+        # A "not" separated from the keyword by punctuation does not suppress.
+        self.assertEqual(
+            wds.extract_blocking_refs(
+                "We fixed it (not the UI). Now blocked by #5", is_epic=False
             ),
             [5],
         )
@@ -757,6 +778,14 @@ class TestCommentsAndMilestone(unittest.TestCase):
             wds._pr_referenced_refs("Ref #10 and #11 & #12"), {10, 11, 12}
         )
 
+    def test_pr_close_refs_colon_form(self):
+        # `Closes: #1` / `Fixes: #1, #2` (colon notation) must be captured.
+        self.assertEqual(wds._pr_close_refs("Closes: #1"), {1})
+        self.assertEqual(wds._pr_close_refs("Fixes: #1, #2"), {1, 2})
+
+    def test_pr_referenced_refs_colon_form(self):
+        self.assertEqual(wds._pr_referenced_refs("Refs: #9"), {9})
+
     def test_multi_ref_in_full_scan(self):
         # A recent PR that references several issues marks every one of them
         # as referenced-by-recent-merge (the natural-follow-up axis).
@@ -853,9 +882,66 @@ class TestFetchRecentMerges(unittest.TestCase):
             merges = wds.fetch_recent_merges(None, 10)
         self.assertEqual([m["number"] for m in merges], [2, 1])
 
-    def test_non_list_payload_is_empty(self):
+    def test_non_list_payload_raises(self):
+        # A non-array gh payload is an anomaly, not "no merges": it must raise
+        # (→ exit 2), never silently degrade to [] (which reads as exit 0).
         with mock.patch.object(wds, "_run_gh_json", return_value=None):
-            self.assertEqual(wds.fetch_recent_merges(None, 10), [])
+            with self.assertRaises(wds.GhError):
+                wds.fetch_recent_merges(None, 10)
+
+
+class TestFetchRobustness(unittest.TestCase):
+    """A non-array gh payload is an error (exit 2), never a silent empty."""
+
+    def test_open_issues_non_list_raises(self):
+        with mock.patch.object(wds, "_run_gh_json", return_value={"x": 1}):
+            with self.assertRaises(wds.GhError):
+                wds.fetch_open_issues(None)
+
+    def test_open_pr_numbers_non_list_raises(self):
+        with mock.patch.object(wds, "_run_gh_json", return_value=None):
+            with self.assertRaises(wds.GhError):
+                wds.fetch_open_pr_numbers(None)
+
+
+class TestBundleValidation(unittest.TestCase):
+    """--from-file shape validation surfaces a clear error (exit 2)."""
+
+    def _run_bundle_text(self, text):
+        fd, name = tempfile.mkstemp(suffix=".json", prefix="wds_bad_")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(text)
+            return subprocess.run(
+                [sys.executable, str(SCRIPT), "--from-file", name],
+                capture_output=True,
+                text=True,
+            )
+        finally:
+            os.unlink(name)
+
+    def test_bundle_not_object_errors(self):
+        proc = self._run_bundle_text("[1, 2, 3]")
+        self.assertEqual(proc.returncode, wds.EXIT_ERROR)
+        data = json.loads(proc.stdout)
+        self.assertEqual(data["status"], "error")
+        self.assertIn("JSON object", data["error"])
+
+    def test_bundle_issues_not_list_errors(self):
+        proc = self._run_bundle_text('{"issues": {"not": "a list"}}')
+        self.assertEqual(proc.returncode, wds.EXIT_ERROR)
+        data = json.loads(proc.stdout)
+        self.assertEqual(data["status"], "error")
+        self.assertIn("issues", data["error"])
+
+    def test_bundle_bad_open_pr_numbers_errors(self):
+        proc = self._run_bundle_text(
+            '{"issues": [], "open_pr_numbers": ["not-an-int"]}'
+        )
+        self.assertEqual(proc.returncode, wds.EXIT_ERROR)
+        data = json.loads(proc.stdout)
+        self.assertEqual(data["status"], "error")
+        self.assertIn("open_pr_numbers", data["error"])
 
 
 if __name__ == "__main__":

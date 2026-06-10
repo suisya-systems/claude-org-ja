@@ -104,14 +104,19 @@ DEFAULT_OPEN_LIMIT = 500
 # immediately followed by a `#N` (e.g. "requires careful thought",
 # "Depends on: Commit 1 ...") contributes no ref.
 #
-# Negation guard: a keyword carrying a *negation* immediately before it
-# ("not blocked by #5", "no longer blocked by #5", "doesn't depend on #5")
-# is NOT a blocker — extract_blocking_refs drops the clause when `pre` ends
-# with a negation marker (_BLOCK_NEG_RE). The leading `\b` on the keyword
-# also rejects "unblocked by #5": there is no word boundary inside the word
-# "unblocked", so the keyword never matches mid-word. Both guards prefer
-# *not* excluding (§11-3 over-matching guard).
-_BLOCK_NEG_RE = re.compile(r"(?i)(?:\bnot|\bno\s+longer|\bnever|n['’]t)\s+$")
+# Negation guard: a keyword carrying a *negation* shortly before it
+# ("not blocked by #5", "no longer blocked by #5", "not currently blocked by
+# #5", "doesn't depend on #5") is NOT a blocker — extract_blocking_refs drops
+# the clause when `pre` ends with a negation marker optionally followed by a
+# short run of plain words/spaces (adverbs like "currently"/"yet"). The run
+# is word+space only, so punctuation/clause boundaries stop it: "not a
+# blocker, but blocked by #5" still counts (the comma breaks the run). The
+# leading `\b` on the keyword also rejects "unblocked by #5" (no word
+# boundary inside "unblocked", so the keyword never matches mid-word). Both
+# guards prefer *not* excluding (§11-3: false-exclusion is the worse error).
+_BLOCK_NEG_RE = re.compile(
+    r"(?i)(?:\b(?:not|never|no\s+longer|no\s+more)|n['’]t)[\w\s]{0,20}$"
+)
 _BLOCK_KEYWORD_RE = re.compile(
     r"(?im)^(?P<pre>.*?)\b(?:blocked\s+by|depends\s+on|requires)\b(?P<rest>.*)$"
 )
@@ -159,7 +164,10 @@ _PURE_REF_RUN_RE = re.compile(r"(?i)^(?:#\d+[\s,]*(?:and\s+|&\s*)?)+$")
 # only the first would silently drop the 2nd+ issue from
 # `recent_merge_closed_issues` / `recent_merge_referenced_issues` (hurts the
 # unblocked_by_recent_merge axis).
-_KEYWORD_REF_RUN = r"\s+((?:#\d+[\s,]*(?:and\s+|&\s*)?)+)"
+#
+# The keyword may be followed by a colon (`Closes: #1`, `Fixes: #1`) — a
+# common GitHub notation — so the separator is `[\s:]+`, not just `\s+`.
+_KEYWORD_REF_RUN = r"[\s:]+((?:#\d+[\s,]*(?:and\s+|&\s*)?)+)"
 _PR_CLOSE_RE = re.compile(
     r"(?i)\b(?:closes|close|closed|fixes|fix|fixed|resolves|resolve|resolved)"
     + _KEYWORD_REF_RUN
@@ -778,12 +786,28 @@ def _run_gh_json(args: list[str]) -> list | dict:
         ) from exc
 
 
+def _run_gh_json_list(args: list[str]) -> list:
+    """Like ``_run_gh_json`` but require a JSON **array**.
+
+    ``gh ... list --json`` always returns an array; a non-list payload means
+    an unexpected/changed response. Treat it as an error (``GhError`` → exit
+    2) rather than silently degrading to ``[]`` (which would masquerade as
+    ``no_candidates`` / exit 0 — a contract break, design §5.1)."""
+    data = _run_gh_json(args)
+    if not isinstance(data, list):
+        raise GhError(
+            f"`gh {' '.join(args)}` returned a non-array JSON payload "
+            f"({type(data).__name__}); expected a list"
+        )
+    return data
+
+
 def _repo_args(repo: str | None) -> list[str]:
     return ["--repo", repo] if repo else []
 
 
 def fetch_open_issues(repo: str | None, limit: int = DEFAULT_OPEN_LIMIT) -> list[dict]:
-    data = _run_gh_json(
+    return _run_gh_json_list(
         [
             "issue",
             "list",
@@ -796,11 +820,10 @@ def fetch_open_issues(repo: str | None, limit: int = DEFAULT_OPEN_LIMIT) -> list
             "number,title,body,labels,updatedAt,createdAt,milestone,comments",
         ]
     )
-    return data if isinstance(data, list) else []
 
 
 def fetch_open_pr_numbers(repo: str | None, limit: int = DEFAULT_OPEN_LIMIT) -> set[int]:
-    data = _run_gh_json(
+    data = _run_gh_json_list(
         [
             "pr",
             "list",
@@ -813,8 +836,6 @@ def fetch_open_pr_numbers(repo: str | None, limit: int = DEFAULT_OPEN_LIMIT) -> 
             "number",
         ]
     )
-    if not isinstance(data, list):
-        return set()
     return {p["number"] for p in data if isinstance(p.get("number"), int)}
 
 
@@ -835,7 +856,7 @@ def fetch_recent_merges(repo: str | None, limit: int) -> list[dict]:
     # alone guarantees the "直近 K 件" (design §4.2): the server sort biases
     # the pool toward recency, the client sort + cap makes the final K exact.
     fetch_limit = max(limit, limit * _RECENT_MERGE_OVERFETCH)
-    data = _run_gh_json(
+    merges = _run_gh_json_list(
         [
             "pr",
             "list",
@@ -850,7 +871,6 @@ def fetch_recent_merges(repo: str | None, limit: int) -> list[dict]:
             "number,title,body,mergedAt",
         ]
     )
-    merges = data if isinstance(data, list) else []
     # Exact newest-first ordering by mergedAt (ISO-8601 sorts
     # lexicographically = chronologically); a missing `mergedAt` sorts last
     # (treated as oldest). The slice takes the genuine 直近 K 件.
@@ -866,11 +886,27 @@ def _load_bundle(path: str) -> tuple[list[dict], set[int], list[dict]]:
     """
     with open(path, encoding="utf-8") as f:
         bundle = json.load(f)
+    if not isinstance(bundle, dict):
+        raise GhError(
+            f"--from-file bundle must be a JSON object, got "
+            f"{type(bundle).__name__}"
+        )
     issues = bundle.get("issues") or []
-    open_pr_numbers = {
-        int(n) for n in (bundle.get("open_pr_numbers") or [])
-    }
     recent_merges = bundle.get("recent_merges") or []
+    for field, value in (("issues", issues), ("recent_merges", recent_merges)):
+        if not isinstance(value, list):
+            raise GhError(
+                f"--from-file `{field}` must be a list, got "
+                f"{type(value).__name__}"
+            )
+    try:
+        open_pr_numbers = {
+            int(n) for n in (bundle.get("open_pr_numbers") or [])
+        }
+    except (TypeError, ValueError) as exc:
+        raise GhError(
+            f"--from-file `open_pr_numbers` must be a list of integers: {exc}"
+        ) from exc
     return issues, open_pr_numbers, recent_merges
 
 
