@@ -255,11 +255,7 @@ worker → Secretary peer message
 
 #### 2a. 完了報告
 
-- **worker へ ack を返す（受信直後・状態更新より前。実行順: サマリ有無の最小確認 → 適切な ack を 1 回送信）**: 完了報告を受けたら、まず full モードのみ「人間向け理解サマリ」の**有無だけを最小確認**し（コード精読はしない）、その結果に応じた ack を **1 回だけ** dead-lock 防止のため即返す。サマリが揃っていれば [`.claude/skills/org-delegate/references/ack-template.md`](references/ack-template.md) の標準「完了報告 ack」（この後 user 承認に進む文面）、欠落していれば同テンプレの『サマリ補完依頼』ack（user 承認には進まず補完を待つ旨）。minimal は無条件に標準「完了報告 ack」。ack 送信後に下記の状態更新・ユーザー提示へ進む
-- **人間向け理解サマリの受領・確認・永続化（検証深度 `full` 限定・REVIEW 遷移より前に行う）**: full モード完了報告には worker が「人間向け理解サマリ」（(1) 最重要の変更点 N 個、(2) 要確認ファイル / hunk、(3) 設計判断と理由）を含める。窓口は自分でコードを精読せず、このサマリをユーザーへの承認提示の土台にする（必要なら業務言語に整える）。full モード完了報告スキーマの SoT は [`.claude/skills/org-delegate/references/worker-claude-template.md`](references/worker-claude-template.md)（[`docs/contracts/role-contract.md`](../../../docs/contracts/role-contract.md) が指定）。per-task 指示としての同フォーマットは [`.claude/skills/org-delegate/references/instruction-template.md`](references/instruction-template.md) にも展開される
-  - **欠落時は下記 REVIEW 遷移・`awaiting_user` emit・ユーザー承認提示のいずれにも進まず worker へ差し戻す**: full なのにサマリが欠落している間は user 待ちではなく worker 待ちが正しい状態。ここで worker へ追送するのは**「サマリ補完依頼」の ack** であり、ack-template の標準完了報告 ack（「この後 user 承認に進む」文面）はサマリが揃ってから返す（先に REVIEW へ遷移すると DB が `awaiting_review` になり監視・resume・PR 承認フローが誤判定し、先に `awaiting_user` を emit すると urgent 通知が誤発火する）。サマリが揃ってから以降の遷移に進む
-  - **永続化**: サマリが揃ったら `.state/workers/worker-{task_id}.md` の Progress Log に **`Human Understanding Summary:` 固定見出しで追記**する。`/clear` / resume・CI 監視後も手元の元メッセージ本文に依存せず、merge 承認時（[`.claude/skills/org-pull-request/SKILL.md`](../org-pull-request/SKILL.md) 2b-i）に再掲できるようにするため。レビュー指摘後の再完了など full 完了報告が複数回あった場合は**最新の full 完了報告のサマリ**を正とする（追記し、再掲時は直近の見出しを使う）。PR 作成時は PR 本文にも要約を載せてよい
-  - これは `awaiting_review` (REVIEW) 遷移を起こす `worker_completed` 報告の一部で、contract の不変条件は変えない（手順レイヤの提示・永続フォーマット拡張のみ）。minimal の 1 行 `done:` 報告にはサマリは付かない
+- **worker へ ack を返す（受信直後・dead-lock 防止で他の状態更新より前に 1 回）**: [`.claude/skills/org-delegate/references/ack-template.md`](references/ack-template.md) の標準「完了報告 ack」を返す
 - **DB 経由で run を REVIEW に遷移**（markdown 直接編集禁止）:
   ```bash
   python -c "
@@ -273,6 +269,9 @@ worker → Secretary peer message
   ```
 - DB の events テーブルにイベント追記 (`bash tools/journal_append.sh ...`)
 - **dogfood pass 完了時の register 更新（Issue #338）**: 完了したタスクが `registry/dogfood_pending.md` の `dogfood_run_task_id` 列に earmark されていた場合、該当行の `status` を `open → consumed` に遷移する。defect は paired follow-up issue (`dogfood_issue` 列) に既に集約されている前提（dogfood pass worker の brief で format 指定済）。protocol 全体は本 SKILL Step 1.8 を SoT
+- **人間向け理解サマリの確認・永続化・承認提示の土台化（検証深度 `full` 限定）**: full モード完了報告には worker が「人間向け理解サマリ」（(1) 最重要の変更点 N 個、(2) 要確認ファイル / hunk、(3) 設計判断と理由）を含める（スキーマ SoT は [`.claude/skills/org-delegate/references/worker-claude-template.md`](references/worker-claude-template.md)、[`docs/contracts/role-contract.md`](../../../docs/contracts/role-contract.md) が指定）。窓口は自分でコードを精読せず、このサマリをユーザーへの承認提示の土台にする（必要なら業務言語に整える）。受領したサマリは `.state/workers/worker-{task_id}.md` の Progress Log に **`Human Understanding Summary:` 固定見出しで追記**する（`/clear` / resume・CI 監視後も merge 承認時に再掲できるよう手元メッセージに依存しない。full 完了報告が複数回ある場合は最新を正とする）。PR 作成時は PR 本文にも要約を載せてよい
+  - **欠落時は同ペインで補完を依頼してから user 承認に進む**: full なのにサマリが欠落していたら、下記 `awaiting_user` emit・user 承認提示には進まず、同ペインの worker に補完を依頼する（completion report の review feedback として既存の T6: `awaiting_review → in_progress` 経路で扱い、ack は [`.claude/skills/org-delegate/references/ack-template.md`](references/ack-template.md) の『サマリ補完依頼』を使う）。**T4 (REVIEW) 遷移自体はブロックしない** — サマリ必須化は手順レイヤの完了報告フォーマット拡張であり、contract（[`docs/contracts/delegation-lifecycle-contract.md`](../../../docs/contracts/delegation-lifecycle-contract.md) T4）の `worker_completed` トリガー条件（full 完了報告の受領）は変えない。補完到着後に user 承認提示へ進む
+  - minimal の 1 行 `done:` 報告にはサマリは付かない
 - **awaiting_user 通知の emit（Issue #28）**: 人間への報告 → 承認待ち停止に入る直前で、attention watcher に「Secretary が user の判断待ちで停止する」ことを知らせる:
   ```bash
   bash tools/journal_append.sh notify_sent kind=awaiting_user task_id=<task_id> gate=worker_completed note="<PR/Issue 等の短い文脈>"
