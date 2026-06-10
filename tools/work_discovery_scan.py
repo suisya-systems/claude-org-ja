@@ -91,6 +91,10 @@ DEFAULT_TOP_N = 3
 # How many most-recent merged PRs feed the `unblocked_by_recent_merge`
 # heuristic (design §4.2 "直近 K 件"). Configurable via --recent-merges.
 DEFAULT_RECENT_MERGES = 10
+# Row cap for the open-Issue / open-PR fetches. If a fetch returns exactly
+# this many rows the result may be truncated, which is surfaced via the
+# output's `input_truncated` flags (never silent — design §5.1).
+DEFAULT_OPEN_LIMIT = 500
 
 # --- dependency notation (design §4.1, calibrated §11-3) ---------------
 # Match a blocking *keyword* (anywhere on a line — body or comment, inline
@@ -121,9 +125,17 @@ _ISSUE_REF_RE = re.compile(r"(?<![\w/])#(\d+)\b")
 _OPEN_TASK_REF_RE = re.compile(r"(?im)^[ \t]*[-*]\s*\[ \]\s*.*?#(\d+)\b")
 
 # PR → linked-Issue notation for the recent-merge heuristic (design §4.2).
-_PR_LINK_RE = re.compile(
-    r"(?i)(?:closes|close|closed|fixes|fix|fixed|resolves|resolve|resolved|refs|ref)\s+#(\d+)\b"
+# §4.2 keeps two *distinct* conditions, so we keep two patterns:
+#   * a *closing* keyword (Closes/Fixes/Resolves #N) means the merged PR
+#     actually resolved #N — used to decide a blocking ref "was closed by a
+#     recent merge";
+#   * a *mere reference* (Refs #N) does not close #N — only used to decide
+#     "this Issue is referenced by (a natural follow-up of) a recent merge".
+# Conflating them would let a bare `Refs #100` mark #100 as resolved.
+_PR_CLOSE_RE = re.compile(
+    r"(?i)\b(?:closes|close|closed|fixes|fix|fixed|resolves|resolve|resolved)\s+#(\d+)\b"
 )
+_PR_REF_RE = re.compile(r"(?i)\b(?:refs|ref|re)\s+#(\d+)\b")
 
 # Labels that force `blocked` regardless of refs (design §4.1).
 _BLOCK_LABELS = {"blocked", "on-hold", "on hold"}
@@ -388,15 +400,19 @@ def estimate_unblocked_by_recent_merge(
     issue: dict,
     blocking_refs: list[int],
     recent_merge_pr_numbers: set[int],
-    recent_merge_linked_issues: set[int],
+    recent_merge_closed_issues: set[int],
+    recent_merge_referenced_issues: set[int],
 ) -> tuple[bool, list[str]]:
     """Estimate whether a recent merge unblocked / spawned this Issue.
 
-    True (design §4.2) when any of:
-      * a blocking ref of this Issue is a recently-merged PR,
-      * a blocking ref of this Issue is an Issue/PR that a recent merge
-        closed (i.e. the thing it depended on just got resolved), or
-      * a recently-merged PR references this Issue (Refs/Closes #thisN).
+    Per design §4.2 — two distinct conditions, deliberately separated:
+      * **blocking-ref side**: a blocking ref of this Issue is a
+        recently-merged PR, or an Issue/PR that a recent merge actually
+        *closed* (``recent_merge_closed_issues``, from Closes/Fixes/Resolves
+        — NOT a bare ``Refs``). I.e. the thing it depended on just got done.
+      * **this-Issue side**: a recently-merged PR *references* this Issue
+        (``recent_merge_referenced_issues``, any ref incl. ``Refs``) — a
+        natural follow-up.
     Always an estimate (conceptual follow-ups not in any ref are invisible).
     """
     signals: list[str] = []
@@ -405,13 +421,13 @@ def estimate_unblocked_by_recent_merge(
         if n in recent_merge_pr_numbers:
             signals.append(f"blocking ref #{n} was a recently-merged PR")
             hit = True
-        elif n in recent_merge_linked_issues:
+        elif n in recent_merge_closed_issues:
             signals.append(
                 f"blocking ref #{n} was closed by a recently-merged PR"
             )
             hit = True
     number = issue.get("number")
-    if isinstance(number, int) and number in recent_merge_linked_issues:
+    if isinstance(number, int) and number in recent_merge_referenced_issues:
         signals.append("referenced by a recently-merged PR")
         hit = True
     if not hit:
@@ -452,7 +468,8 @@ def build_candidate(
     *,
     open_refs: set[int],
     recent_merge_pr_numbers: set[int],
-    recent_merge_linked_issues: set[int],
+    recent_merge_closed_issues: set[int],
+    recent_merge_referenced_issues: set[int],
 ) -> dict | None:
     """Build one candidate dict, or ``None`` if the Issue is blocked.
 
@@ -470,7 +487,11 @@ def build_candidate(
     effort, effort_estimated, effort_signals = estimate_effort(issue)
     parallelizable, par_signals = estimate_parallelizable(open_blocking)
     unblocked, merge_signals = estimate_unblocked_by_recent_merge(
-        issue, all_blocking, recent_merge_pr_numbers, recent_merge_linked_issues
+        issue,
+        all_blocking,
+        recent_merge_pr_numbers,
+        recent_merge_closed_issues,
+        recent_merge_referenced_issues,
     )
 
     signals = prio_signals + effort_signals + par_signals + merge_signals
@@ -570,29 +591,38 @@ def scan(
     open_pr_numbers: set[int],
     recent_merges: list[dict],
     config: ScanConfig,
+    input_truncated: dict | None = None,
 ) -> dict:
     """Pure triage core: produce the candidate JSON dict (design §5.1).
 
     ``issues`` — open Issues (each: ``number``, ``title``, ``body``,
-    ``labels``, ``updatedAt``). ``open_pr_numbers`` — currently-open PR
-    numbers (combined with open-issue numbers to resolve blocking refs).
-    ``recent_merges`` — recent merged PRs (each: ``number``, ``title``,
-    ``body``) for the unblocked-by-recent-merge heuristic. No I/O here.
+    ``labels``, ``updatedAt``, ``milestone``, ``comments``).
+    ``open_pr_numbers`` — currently-open PR numbers (combined with
+    open-issue numbers to resolve blocking refs). ``recent_merges`` —
+    recent merged PRs (each: ``number``, ``title``, ``body``) for the
+    unblocked-by-recent-merge heuristic. ``input_truncated`` — optional
+    ``{"open_issues": bool, "open_prs": bool}`` set by the caller when a
+    fetch hit its row cap, surfaced in the output so input-side truncation
+    is never silent (design §5.1). No I/O here.
     """
     open_issue_numbers = {
         i["number"] for i in issues if isinstance(i.get("number"), int)
     }
     open_refs = open_issue_numbers | open_pr_numbers
 
+    # §4.2: keep "closed by a recent merge" and "merely referenced" apart.
     recent_merge_pr_numbers: set[int] = set()
-    recent_merge_linked_issues: set[int] = set()
+    recent_merge_closed_issues: set[int] = set()
+    recent_merge_referenced_issues: set[int] = set()
     for pr in recent_merges:
         num = pr.get("number")
         if isinstance(num, int):
             recent_merge_pr_numbers.add(num)
         text = f"{pr.get('title') or ''}\n{pr.get('body') or ''}"
-        for n in _PR_LINK_RE.findall(text):
-            recent_merge_linked_issues.add(int(n))
+        closed = {int(n) for n in _PR_CLOSE_RE.findall(text)}
+        referenced = closed | {int(n) for n in _PR_REF_RE.findall(text)}
+        recent_merge_closed_issues |= closed
+        recent_merge_referenced_issues |= referenced
 
     candidates: list[dict] = []
     excluded_blocked: list[dict] = []
@@ -618,7 +648,8 @@ def scan(
             issue,
             open_refs=open_refs,
             recent_merge_pr_numbers=recent_merge_pr_numbers,
-            recent_merge_linked_issues=recent_merge_linked_issues,
+            recent_merge_closed_issues=recent_merge_closed_issues,
+            recent_merge_referenced_issues=recent_merge_referenced_issues,
         )
         if cand is not None:
             candidates.append(cand)
@@ -633,11 +664,22 @@ def scan(
 
     excluded_blocked.sort(key=lambda e: (e["issue"] is None, e["issue"]))
 
+    truncation = {"open_issues": False, "open_prs": False}
+    if input_truncated:
+        truncation.update(
+            {k: bool(v) for k, v in input_truncated.items() if k in truncation}
+        )
+
     return {
         "status": "candidates_found" if top else "no_candidates",
         "generated_for": config.trigger,
         "candidate_count": len(top),
         "truncated_count": truncated,
+        # Input-side coverage caveat: True when the open-Issue/open-PR fetch
+        # hit its row cap, so some open Issues (candidates) or open blockers
+        # may be unseen — a blocker not fetched would be mis-resolved
+        # (design §5.1: never truncate silently).
+        "input_truncated": truncation,
         "candidates": top,
         "recommendation": recommendation,
         "excluded_blocked": excluded_blocked,
@@ -683,7 +725,7 @@ def _repo_args(repo: str | None) -> list[str]:
     return ["--repo", repo] if repo else []
 
 
-def fetch_open_issues(repo: str | None, limit: int = 300) -> list[dict]:
+def fetch_open_issues(repo: str | None, limit: int = DEFAULT_OPEN_LIMIT) -> list[dict]:
     data = _run_gh_json(
         [
             "issue",
@@ -700,7 +742,7 @@ def fetch_open_issues(repo: str | None, limit: int = 300) -> list[dict]:
     return data if isinstance(data, list) else []
 
 
-def fetch_open_pr_numbers(repo: str | None, limit: int = 300) -> set[int]:
+def fetch_open_pr_numbers(repo: str | None, limit: int = DEFAULT_OPEN_LIMIT) -> set[int]:
     data = _run_gh_json(
         [
             "pr",
@@ -752,8 +794,41 @@ def _load_bundle(path: str) -> tuple[list[dict], set[int], list[dict]]:
     return issues, open_pr_numbers, recent_merges
 
 
+def _error_payload(trigger: str, message: str) -> dict:
+    """The fixed-schema error envelope (design §5.1), used by every error
+    path so the delivery layer parses one shape regardless of cause."""
+    return {
+        "status": "error",
+        "generated_for": trigger,
+        "candidate_count": 0,
+        "truncated_count": 0,
+        "input_truncated": {"open_issues": False, "open_prs": False},
+        "candidates": [],
+        "recommendation": None,
+        "excluded_blocked": [],
+        "error": message,
+    }
+
+
+class _JsonErrorParser(argparse.ArgumentParser):
+    """ArgumentParser that emits the error envelope as a single stdout JSON
+    on a usage error (instead of bare usage text), keeping the §5.1
+    "stdout is a single JSON object / exit 2 on error" contract even for
+    CLI parse errors. ``--help`` still exits 0 via the default path."""
+
+    def error(self, message: str):  # noqa: D102 — argparse override
+        print(
+            json.dumps(
+                _error_payload("manual", f"argument error: {message}"),
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        self.exit(EXIT_ERROR)
+
+
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(
+    parser = _JsonErrorParser(
         description=(
             "Work-discovery triage scan (read-only). Prints a single "
             "candidate JSON to stdout; exit 0=no_candidates, "
@@ -804,29 +879,29 @@ def main(argv=None) -> int:
     )
 
     try:
+        input_truncated = {"open_issues": False, "open_prs": False}
         if args.from_file:
             issues, open_pr_numbers, recent_merges = _load_bundle(args.from_file)
         else:
             issues = fetch_open_issues(args.repo)
             open_pr_numbers = fetch_open_pr_numbers(args.repo)
             recent_merges = fetch_recent_merges(args.repo, args.recent_merges)
-        result = scan(issues, open_pr_numbers, recent_merges, config)
+            # A full page (== cap) means the fetch may have dropped rows; the
+            # flags surface that input-side truncation in the output.
+            input_truncated = {
+                "open_issues": len(issues) >= DEFAULT_OPEN_LIMIT,
+                "open_prs": len(open_pr_numbers) >= DEFAULT_OPEN_LIMIT,
+            }
+        result = scan(
+            issues, open_pr_numbers, recent_merges, config, input_truncated
+        )
     except Exception as exc:  # noqa: BLE001 — report any failure as error/exit 2
         # Keep the fixed schema (design §5.1) so the delivery layer parses
         # the error branch the same way; the audit fields are present (empty)
         # rather than absent, and `error` carries the cause.
         print(
             json.dumps(
-                {
-                    "status": "error",
-                    "generated_for": config.trigger,
-                    "candidate_count": 0,
-                    "truncated_count": 0,
-                    "candidates": [],
-                    "recommendation": None,
-                    "excluded_blocked": [],
-                    "error": str(exc),
-                },
+                _error_payload(config.trigger, str(exc)),
                 ensure_ascii=False,
                 indent=2,
             )

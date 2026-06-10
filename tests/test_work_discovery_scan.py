@@ -228,7 +228,7 @@ class TestEstimatedAxes(unittest.TestCase):
     def test_unblocked_by_recent_merge_via_blocking_ref(self):
         ok, sig = wds.estimate_unblocked_by_recent_merge(
             _issue(10), blocking_refs=[200], recent_merge_pr_numbers={200},
-            recent_merge_linked_issues=set(),
+            recent_merge_closed_issues=set(), recent_merge_referenced_issues=set(),
         )
         self.assertTrue(ok)
         self.assertTrue(any("#200" in s for s in sig))
@@ -236,14 +236,14 @@ class TestEstimatedAxes(unittest.TestCase):
     def test_unblocked_by_recent_merge_via_pr_link(self):
         ok, _ = wds.estimate_unblocked_by_recent_merge(
             _issue(10), blocking_refs=[], recent_merge_pr_numbers=set(),
-            recent_merge_linked_issues={10},
+            recent_merge_closed_issues=set(), recent_merge_referenced_issues={10},
         )
         self.assertTrue(ok)
 
     def test_no_recent_merge_linkage(self):
         ok, sig = wds.estimate_unblocked_by_recent_merge(
             _issue(10), blocking_refs=[1], recent_merge_pr_numbers=set(),
-            recent_merge_linked_issues=set(),
+            recent_merge_closed_issues=set(), recent_merge_referenced_issues=set(),
         )
         self.assertFalse(ok)
         self.assertTrue(any("no recent-merge" in s for s in sig))
@@ -463,6 +463,7 @@ class TestCliWiring(unittest.TestCase):
             "generated_for",
             "candidate_count",
             "truncated_count",
+            "input_truncated",
             "candidates",
             "recommendation",
             "excluded_blocked",
@@ -471,6 +472,32 @@ class TestCliWiring(unittest.TestCase):
             self.assertIn(key, data)
         self.assertEqual(data["candidate_count"], 0)
         self.assertEqual(data["truncated_count"], 0)
+
+    def test_argparse_error_emits_json_exit_2(self):
+        # Codex review round 2 (Minor): a CLI parse error must still print a
+        # single JSON object to stdout and exit 2, not bare usage on stderr.
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "--top-n", "not-an-int"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(proc.returncode, wds.EXIT_ERROR)
+        data = json.loads(proc.stdout)  # stdout is valid JSON
+        self.assertEqual(data["status"], "error")
+        self.assertIn("argument error", data["error"])
+
+    def test_input_truncated_present_in_normal_output(self):
+        bundle = {
+            "issues": [_issue(1, body="b")],
+            "open_pr_numbers": [],
+            "recent_merges": [],
+        }
+        proc = self._run(bundle)
+        data = json.loads(proc.stdout)
+        self.assertIn("input_truncated", data)
+        self.assertEqual(
+            data["input_truncated"], {"open_issues": False, "open_prs": False}
+        )
 
 
 class TestCommentsAndMilestone(unittest.TestCase):
@@ -513,7 +540,8 @@ class TestCommentsAndMilestone(unittest.TestCase):
             _issue(10),
             blocking_refs=[100],
             recent_merge_pr_numbers=set(),
-            recent_merge_linked_issues={100},
+            recent_merge_closed_issues={100},
+            recent_merge_referenced_issues={100},
         )
         self.assertTrue(ok)
         self.assertTrue(any("#100" in s for s in sig))
@@ -523,6 +551,27 @@ class TestCommentsAndMilestone(unittest.TestCase):
         merges = [{"number": 900, "title": "x", "body": "Closes #100"}]
         result = wds.scan(issues, set(), merges, wds.ScanConfig())
         self.assertTrue(
+            result["candidates"][0]["unblocked_by_recent_merge"]
+        )
+
+    def test_bare_refs_does_not_close_blocking_ref(self):
+        # Codex review round 2 (Major): a recent PR that only `Refs #100`
+        # (not Closes/Fixes/Resolves) must NOT mark #100 as resolved, so an
+        # issue depending on #100 is not unblocked via the blocking-ref side.
+        ok, _ = wds.estimate_unblocked_by_recent_merge(
+            _issue(10),
+            blocking_refs=[100],
+            recent_merge_pr_numbers=set(),
+            recent_merge_closed_issues=set(),  # #100 only referenced, not closed
+            recent_merge_referenced_issues={100},
+        )
+        self.assertFalse(ok)
+
+    def test_bare_refs_negative_in_full_scan(self):
+        issues = [_issue(10, body="Depends on #100")]
+        merges = [{"number": 900, "title": "x", "body": "Refs #100"}]
+        result = wds.scan(issues, set(), merges, wds.ScanConfig())
+        self.assertFalse(
             result["candidates"][0]["unblocked_by_recent_merge"]
         )
 
