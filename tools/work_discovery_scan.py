@@ -998,12 +998,20 @@ class _JsonErrorParser(argparse.ArgumentParser):
     """ArgumentParser that emits the error envelope as a single stdout JSON
     on a usage error (instead of bare usage text), keeping the §5.1
     "stdout is a single JSON object / exit 2 on error" contract even for
-    CLI parse errors. ``--help`` still exits 0 via the default path."""
+    CLI parse errors. ``--help`` still exits 0 via the default path.
+
+    ``trigger`` is the resolved ``--trigger`` (best-effort, see
+    ``_probe_trigger``) so the error envelope's ``generated_for`` matches the
+    CLI context even for argparse type errors raised mid-parse."""
+
+    def __init__(self, *args, trigger: str = "manual", **kwargs):
+        super().__init__(*args, **kwargs)
+        self._trigger = trigger
 
     def error(self, message: str):  # noqa: D102 — argparse override
         print(
             json.dumps(
-                _error_payload("manual", f"argument error: {message}"),
+                _error_payload(self._trigger, f"argument error: {message}"),
                 ensure_ascii=False,
                 indent=2,
             )
@@ -1011,8 +1019,25 @@ class _JsonErrorParser(argparse.ArgumentParser):
         self.exit(EXIT_ERROR)
 
 
+def _probe_trigger(argv) -> str:
+    """Best-effort `--trigger` recovery *before* the main parse.
+
+    A type error (e.g. ``--top-n nope``) makes argparse call ``error()``
+    during ``parse_args``, before ``--trigger`` is bound — so a lightweight
+    pre-parse (that tolerates unknown/other args) lets the error envelope
+    still carry the real trigger. Falls back to ``manual`` on any hiccup."""
+    probe = argparse.ArgumentParser(add_help=False)
+    probe.add_argument("--trigger", default="manual")
+    try:
+        known, _ = probe.parse_known_args(argv)
+        return known.trigger
+    except SystemExit:
+        return "manual"
+
+
 def main(argv=None) -> int:
     parser = _JsonErrorParser(
+        trigger=_probe_trigger(argv),
         description=(
             "Work-discovery triage scan (read-only). Prints a single "
             "candidate JSON to stdout; exit 0=no_candidates, "

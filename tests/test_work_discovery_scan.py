@@ -599,6 +599,19 @@ class TestCliWiring(unittest.TestCase):
         self.assertEqual(data["status"], "error")
         self.assertIn("argument error", data["error"])
 
+    def test_argparse_type_error_keeps_trigger_context(self):
+        # Even an argparse type error raised mid-parse must carry the real
+        # --trigger in generated_for (best-effort probe), not "manual".
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "--top-n", "nope", "--trigger", "post_merge"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(proc.returncode, wds.EXIT_ERROR)
+        data = json.loads(proc.stdout)
+        self.assertEqual(data["status"], "error")
+        self.assertEqual(data["generated_for"], "post_merge")
+
     def test_input_truncated_present_in_normal_output(self):
         bundle = {
             "issues": [_issue(1, body="b")],
