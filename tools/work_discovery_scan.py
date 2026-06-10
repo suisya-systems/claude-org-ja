@@ -93,9 +93,13 @@ DEFAULT_TOP_N = 3
 DEFAULT_RECENT_MERGES = 10
 
 # --- dependency notation (design §4.1, calibrated §11-3) ---------------
-# Match a blocking *keyword* and capture the rest of its line.
+# Match a blocking *keyword* (anywhere on a line — body or comment, inline
+# or list-led, e.g. "Update: Blocked by #5") and capture the rest of the
+# line. Precision is enforced by _LEADING_REFS_RE below, not by anchoring:
+# a keyword not immediately followed by a `#N` (e.g. "requires careful
+# thought", "Depends on: Commit 1 ...") contributes no ref.
 _BLOCK_KEYWORD_RE = re.compile(
-    r"(?im)^[ \t>*\-]*\**\s*(?:blocked\s+by|depends\s+on|requires)\b(.*)$"
+    r"(?im)(?:blocked\s+by|depends\s+on|requires)\b(.*)$"
 )
 # From a blocking clause, consume only the *leading* run of refs
 # (`#N`, optionally `PR #N`, comma/and-separated). #N refs are taken from
@@ -168,28 +172,56 @@ def _label_names(issue: dict) -> list[str]:
     return out
 
 
-def extract_blocking_refs(body: str | None, *, is_epic: bool) -> list[int]:
+def _comment_bodies(issue: dict) -> list[str]:
+    """Return comment body strings for an Issue (``gh`` ``comments`` field).
+
+    Accepts ``gh``'s ``[{"body": ...}]`` shape and a plain list of strings
+    (test / ``--from-file`` convenience). Missing → empty list."""
+    out: list[str] = []
+    for c in issue.get("comments") or []:
+        if isinstance(c, dict):
+            body = c.get("body")
+        else:
+            body = c
+        if isinstance(body, str):
+            out.append(body)
+    return out
+
+
+def dependency_text(issue: dict) -> str:
+    """Concatenate body + all comment bodies for dependency scanning.
+
+    Design §4.1 says blockers may live in the Issue **body or comments**
+    (a blocker added later in a comment must still be detected), so the
+    dependency extractor reads both."""
+    parts = [issue.get("body") or ""]
+    parts.extend(_comment_bodies(issue))
+    return "\n".join(parts)
+
+
+def extract_blocking_refs(text: str | None, *, is_epic: bool) -> list[int]:
     """Return Issue/PR numbers this Issue is blocked by / depends on.
 
-    Only the three blocking keywords (`Blocked by` / `Depends on` /
-    `Requires`) contribute, and only via the `#N` refs in their trailing
-    clause (design §4.1, §11-3 calibration). For non-epic issues an
-    unchecked task-list item `- [ ] #N` also counts as a pending
+    ``text`` is the Issue body concatenated with its comments (see
+    ``dependency_text``). Only the three blocking keywords (`Blocked by` /
+    `Depends on` / `Requires`) contribute, and only via the `#N` refs in
+    their trailing clause (design §4.1, §11-3 calibration). For non-epic
+    issues an unchecked task-list item `- [ ] #N` also counts as a pending
     dependency; for epics it does not (child checklists are tracking).
 
     Deduplicated, sorted ascending for a stable, reproducible output.
     """
-    if not body:
+    if not text:
         return []
     refs: set[int] = set()
-    for clause in _BLOCK_KEYWORD_RE.findall(body):
+    for clause in _BLOCK_KEYWORD_RE.findall(text):
         lead = _LEADING_REFS_RE.match(clause)
         if not lead:
             continue
         for num in _ISSUE_REF_RE.findall(lead.group(1)):
             refs.add(int(num))
     if not is_epic:
-        for num in _OPEN_TASK_REF_RE.findall(body):
+        for num in _OPEN_TASK_REF_RE.findall(text):
             refs.add(int(num))
     return sorted(refs)
 
@@ -215,22 +247,45 @@ def classify_dependency(
     sorted list of refs that are still open (empty when resolved).
     """
     is_epic = "epic" in _label_names(issue)
-    blocking = extract_blocking_refs(issue.get("body"), is_epic=is_epic)
+    blocking = extract_blocking_refs(dependency_text(issue), is_epic=is_epic)
     open_blocking = sorted(n for n in blocking if n in open_refs)
     if has_block_label(issue) or open_blocking:
         return "blocked", open_blocking
     return "resolved", []
 
 
+def milestone_title(issue: dict) -> str | None:
+    """Return the Issue's milestone title, or ``None`` (``gh`` ``milestone``).
+
+    Accepts ``gh``'s ``{"title": ...}`` object, a plain title string, or
+    ``None``."""
+    ms = issue.get("milestone")
+    if isinstance(ms, dict):
+        title = ms.get("title")
+        return title if isinstance(title, str) and title else None
+    if isinstance(ms, str) and ms:
+        return ms
+    return None
+
+
 def compute_priority(issue: dict) -> tuple[str, list[str]]:
     """Compute `high`/`medium`/`low` priority + signals (design §4.1).
 
-    Order: explicit priority label > low-priority label > default medium.
+    Tier order per §4.1 — **label > milestone > recency**:
+
+    1. an explicit priority label (`priority:*` / `p0..p2`) → its level;
+    2. a `backlog` / `wontfix` label → `low`;
+    3. otherwise `medium` (the default). A milestone, when present, does
+       not change the *level* (mapping a milestone to high/low needs a
+       due-date policy, deferred to §9 future work) but is emitted as a
+       signal and used as a ranking tiebreaker (see ``_sort_key`` — a
+       milestoned Issue ranks above a non-milestoned one of equal
+       priority), which is exactly the "milestone > recency" tier.
+
     This repo has neither priority labels nor milestones (§11-2), so in
     practice the result is `low` for `backlog`/`wontfix` and `medium`
-    otherwise; the label matchers remain for repos that do carry them.
-    Recency does NOT change the level here (see rank_candidates — it is a
-    tiebreaker only), keeping the level deterministic from metadata.
+    otherwise. Recency never changes the level (it is a tiebreaker only),
+    keeping the level deterministic from metadata (§4 再現性契約).
     """
     signals: list[str] = []
     for name in _label_names(issue):
@@ -254,6 +309,10 @@ def compute_priority(issue: dict) -> tuple[str, list[str]]:
         if name in _LOW_PRIORITY_LABELS:
             signals.append(f"label:{name}")
             return "low", signals
+    ms = milestone_title(issue)
+    if ms:
+        signals.append(f"milestone:{ms} (level not promoted — see §9)")
+        return "medium", signals
     signals.append("no priority label/milestone → default medium")
     return "medium", signals
 
@@ -333,8 +392,10 @@ def estimate_unblocked_by_recent_merge(
 ) -> tuple[bool, list[str]]:
     """Estimate whether a recent merge unblocked / spawned this Issue.
 
-    True (design §4.2) when either:
-      * a blocking ref of this Issue is a recently-merged PR, or
+    True (design §4.2) when any of:
+      * a blocking ref of this Issue is a recently-merged PR,
+      * a blocking ref of this Issue is an Issue/PR that a recent merge
+        closed (i.e. the thing it depended on just got resolved), or
       * a recently-merged PR references this Issue (Refs/Closes #thisN).
     Always an estimate (conceptual follow-ups not in any ref are invisible).
     """
@@ -343,6 +404,11 @@ def estimate_unblocked_by_recent_merge(
     for n in blocking_refs:
         if n in recent_merge_pr_numbers:
             signals.append(f"blocking ref #{n} was a recently-merged PR")
+            hit = True
+        elif n in recent_merge_linked_issues:
+            signals.append(
+                f"blocking ref #{n} was closed by a recently-merged PR"
+            )
             hit = True
     number = issue.get("number")
     if isinstance(number, int) and number in recent_merge_linked_issues:
@@ -398,7 +464,7 @@ def build_candidate(
         return None
 
     is_epic = "epic" in _label_names(issue)
-    all_blocking = extract_blocking_refs(issue.get("body"), is_epic=is_epic)
+    all_blocking = extract_blocking_refs(dependency_text(issue), is_epic=is_epic)
 
     priority, prio_signals = compute_priority(issue)
     effort, effort_estimated, effort_signals = estimate_effort(issue)
@@ -422,10 +488,12 @@ def build_candidate(
         "parallelizable_estimated": True,
         "unblocked_by_recent_merge": unblocked,
         "unblocked_by_recent_merge_estimated": True,
-        # rank filled in by rank_candidates; updatedAt kept for tiebreak.
+        # rank filled in by rank_candidates; _updated_at / _has_milestone
+        # are internal tiebreak fields stripped before serialization.
         "rank": None,
         "signals": signals,
         "_updated_at": issue.get("updatedAt") or "",
+        "_has_milestone": milestone_title(issue) is not None,
     }
 
 
@@ -433,8 +501,10 @@ def _sort_key(cand: dict, free_panes: int | None) -> tuple:
     """Lexicographic ranking key (design §4.3), higher = better.
 
     (priority, unblocked_by_recent_merge, parallelizable-when-free-panes,
-    effort smallness, recency). Returned negated where needed so a plain
-    ascending sort puts the best candidate first.
+    effort smallness, milestone-presence, recency). The milestone term sits
+    just above recency, realising §4.1's "label > milestone > recency" tier.
+    Returned negated where needed so a plain ascending sort puts the best
+    candidate first.
     """
     prio = _PRIORITY_RANK.get(cand["priority"], 1)
     unblocked = 1 if cand["unblocked_by_recent_merge"] else 0
@@ -446,8 +516,9 @@ def _sort_key(cand: dict, free_panes: int | None) -> tuple:
         else 0
     )
     effort_small = -_EFFORT_RANK.get(cand["effort"], 1)  # S best
+    has_ms = 1 if cand.get("_has_milestone") else 0
     recency = cand.get("_updated_at") or ""  # ISO8601 sorts lexically
-    return (-prio, -unblocked, -par, -effort_small, _neg_str(recency))
+    return (-prio, -unblocked, -par, -effort_small, -has_ms, _neg_str(recency))
 
 
 def _neg_str(s: str) -> tuple:
@@ -558,6 +629,7 @@ def scan(
     # strip internal-only fields before serialization
     for cand in top:
         cand.pop("_updated_at", None)
+        cand.pop("_has_milestone", None)
 
     excluded_blocked.sort(key=lambda e: (e["issue"] is None, e["issue"]))
 
@@ -622,7 +694,7 @@ def fetch_open_issues(repo: str | None, limit: int = 300) -> list[dict]:
             "--limit",
             str(limit),
             "--json",
-            "number,title,body,labels,updatedAt,createdAt",
+            "number,title,body,labels,updatedAt,createdAt,milestone,comments",
         ]
     )
     return data if isinstance(data, list) else []
@@ -740,9 +812,23 @@ def main(argv=None) -> int:
             recent_merges = fetch_recent_merges(args.repo, args.recent_merges)
         result = scan(issues, open_pr_numbers, recent_merges, config)
     except Exception as exc:  # noqa: BLE001 — report any failure as error/exit 2
+        # Keep the fixed schema (design §5.1) so the delivery layer parses
+        # the error branch the same way; the audit fields are present (empty)
+        # rather than absent, and `error` carries the cause.
         print(
             json.dumps(
-                {"status": "error", "error": str(exc)}, ensure_ascii=False
+                {
+                    "status": "error",
+                    "generated_for": config.trigger,
+                    "candidate_count": 0,
+                    "truncated_count": 0,
+                    "candidates": [],
+                    "recommendation": None,
+                    "excluded_blocked": [],
+                    "error": str(exc),
+                },
+                ensure_ascii=False,
+                indent=2,
             )
         )
         return EXIT_ERROR

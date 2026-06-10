@@ -22,8 +22,10 @@ network, no subprocess. A final test execs the script through
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -399,16 +401,17 @@ class TestRankingAndScan(unittest.TestCase):
 
 class TestCliWiring(unittest.TestCase):
     def _run(self, bundle):
-        path = REPO_ROOT / "tests" / "_tmp_bundle.json"
-        path.write_text(json.dumps(bundle), encoding="utf-8")
+        fd, name = tempfile.mkstemp(suffix=".json", prefix="wds_bundle_")
         try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(bundle, f)
             proc = subprocess.run(
-                [sys.executable, str(SCRIPT), "--from-file", str(path)],
+                [sys.executable, str(SCRIPT), "--from-file", name],
                 capture_output=True,
                 text=True,
             )
         finally:
-            path.unlink(missing_ok=True)
+            os.unlink(name)
         return proc
 
     def test_exit_10_when_candidates(self):
@@ -445,6 +448,104 @@ class TestCliWiring(unittest.TestCase):
         # Guard the §5.1 rationale: a Python crash exits 1, which must not be
         # reachable as a meaningful status code.
         self.assertNotIn(1, {wds.EXIT_NO_CANDIDATES, wds.EXIT_CANDIDATES_FOUND, wds.EXIT_ERROR})
+
+    def test_error_json_keeps_fixed_schema(self):
+        # Codex review (Major): the error branch must carry the same audit
+        # fields as a normal result, not a bespoke shape.
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "--from-file", "/no/such/file.json"],
+            capture_output=True,
+            text=True,
+        )
+        data = json.loads(proc.stdout)
+        for key in (
+            "status",
+            "generated_for",
+            "candidate_count",
+            "truncated_count",
+            "candidates",
+            "recommendation",
+            "excluded_blocked",
+            "error",
+        ):
+            self.assertIn(key, data)
+        self.assertEqual(data["candidate_count"], 0)
+        self.assertEqual(data["truncated_count"], 0)
+
+
+class TestCommentsAndMilestone(unittest.TestCase):
+    """Codex review (Major/Minor): blockers in comments + milestone tier."""
+
+    def test_blocker_in_comment_detected(self):
+        # §4.1: a blocker added later in a *comment* must still be detected.
+        issue = {
+            "number": 10,
+            "title": "t",
+            "body": "no blocker in body",
+            "labels": [],
+            "comments": [{"body": "Update: Blocked by #5 now."}],
+            "updatedAt": "2026-06-01T00:00:00Z",
+        }
+        status, open_refs = wds.classify_dependency(issue, open_refs={5})
+        self.assertEqual(status, "blocked")
+        self.assertEqual(open_refs, [5])
+
+    def test_comment_blocker_excluded_in_scan(self):
+        issues = [
+            {
+                "number": 10,
+                "title": "t",
+                "body": "b",
+                "labels": [],
+                "comments": [{"body": "Depends on #5"}],
+                "updatedAt": "2026-06-01T00:00:00Z",
+            },
+            _issue(5, body="open dep"),
+        ]
+        result = wds.scan(issues, set(), [], wds.ScanConfig())
+        excluded = {e["issue"] for e in result["excluded_blocked"]}
+        self.assertIn(10, excluded)
+
+    def test_unblocked_via_ref_closed_by_recent_merge(self):
+        # Codex review (Major): Depends on #100 + a recent PR that Closes
+        # #100 → this issue is now unblocked-by-recent-merge.
+        ok, sig = wds.estimate_unblocked_by_recent_merge(
+            _issue(10),
+            blocking_refs=[100],
+            recent_merge_pr_numbers=set(),
+            recent_merge_linked_issues={100},
+        )
+        self.assertTrue(ok)
+        self.assertTrue(any("#100" in s for s in sig))
+
+    def test_unblocked_via_closed_ref_in_full_scan(self):
+        issues = [_issue(10, body="Depends on #100")]
+        merges = [{"number": 900, "title": "x", "body": "Closes #100"}]
+        result = wds.scan(issues, set(), merges, wds.ScanConfig())
+        self.assertTrue(
+            result["candidates"][0]["unblocked_by_recent_merge"]
+        )
+
+    def test_milestone_emitted_as_signal(self):
+        issue = _issue(1, body="b")
+        issue["milestone"] = {"title": "v1.0"}
+        level, sig = wds.compute_priority(issue)
+        self.assertEqual(level, "medium")
+        self.assertTrue(any("milestone:v1.0" in s for s in sig))
+
+    def test_milestone_breaks_tie_above_no_milestone(self):
+        a = _issue(1, body="b")
+        b = _issue(2, body="b")
+        b["milestone"] = {"title": "v1.0"}
+        result = wds.scan([a, b], set(), [], wds.ScanConfig())
+        # Equal priority/effort/etc.; #2 (milestoned) ranks first.
+        self.assertEqual(result["candidates"][0]["issue"], 2)
+
+    def test_milestone_internal_field_stripped(self):
+        issue = _issue(1, body="b")
+        issue["milestone"] = {"title": "v1.0"}
+        result = wds.scan([issue], set(), [], wds.ScanConfig())
+        self.assertNotIn("_has_milestone", result["candidates"][0])
 
 
 if __name__ == "__main__":
