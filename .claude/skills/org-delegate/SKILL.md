@@ -257,8 +257,8 @@ worker → Secretary peer message
 
 - worker へ ack を返す（[`.claude/skills/org-delegate/references/ack-template.md`](references/ack-template.md) の「完了報告 ack」節）
 - **人間向け理解サマリの受領・確認・永続化（検証深度 `full` 限定・REVIEW 遷移より前に行う）**: full モード完了報告には worker が「人間向け理解サマリ」（(1) 最重要の変更点 N 個、(2) 要確認ファイル / hunk、(3) 設計判断と理由）を含める。窓口は自分でコードを精読せず、このサマリをユーザーへの承認提示の土台にする（必要なら業務言語に整える）。フォーマット定義は [`.claude/skills/org-delegate/references/instruction-template.md`](references/instruction-template.md) の full モード完了報告フォーマットを SoT とする
-  - **欠落時は下記 REVIEW 遷移・`awaiting_user` emit・ユーザー承認提示のいずれにも進まず worker へ差し戻す**: full なのにサマリが欠落している間は user 待ちではなく worker 待ちが正しい状態。ここで worker へ追送して補完させる（先に REVIEW へ遷移すると DB が `awaiting_review` になり監視・resume・PR 承認フローが誤判定し、先に `awaiting_user` を emit すると urgent 通知が誤発火する）。サマリが揃ってから以降の遷移に進む
-  - **永続化**: サマリが揃ったら `.state/workers/worker-{task_id}.md` の Progress Log に追記する。`/clear` / resume・CI 監視後も手元の元メッセージ本文に依存せず、merge 承認時（[`.claude/skills/org-pull-request/SKILL.md`](../org-pull-request/SKILL.md) 2b-i）に再掲できるようにするため。PR 作成時は PR 本文にも要約を載せてよい
+  - **欠落時は下記 REVIEW 遷移・`awaiting_user` emit・ユーザー承認提示のいずれにも進まず worker へ差し戻す**: full なのにサマリが欠落している間は user 待ちではなく worker 待ちが正しい状態。ここで worker へ追送するのは**「サマリ補完依頼」の ack** であり、ack-template の標準完了報告 ack（「この後 user 承認に進む」文面）はサマリが揃ってから返す（先に REVIEW へ遷移すると DB が `awaiting_review` になり監視・resume・PR 承認フローが誤判定し、先に `awaiting_user` を emit すると urgent 通知が誤発火する）。サマリが揃ってから以降の遷移に進む
+  - **永続化**: サマリが揃ったら `.state/workers/worker-{task_id}.md` の Progress Log に **`Human Understanding Summary:` 固定見出しで追記**する。`/clear` / resume・CI 監視後も手元の元メッセージ本文に依存せず、merge 承認時（[`.claude/skills/org-pull-request/SKILL.md`](../org-pull-request/SKILL.md) 2b-i）に再掲できるようにするため。レビュー指摘後の再完了など full 完了報告が複数回あった場合は**最新の full 完了報告のサマリ**を正とする（追記し、再掲時は直近の見出しを使う）。PR 作成時は PR 本文にも要約を載せてよい
   - これは `awaiting_review` (REVIEW) 遷移を起こす `worker_completed` 報告の一部で、contract の不変条件は変えない（手順レイヤの提示・永続フォーマット拡張のみ）。minimal の 1 行 `done:` 報告にはサマリは付かない
 - **DB 経由で run を REVIEW に遷移**（markdown 直接編集禁止）:
   ```bash
