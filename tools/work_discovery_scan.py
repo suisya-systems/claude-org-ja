@@ -806,15 +806,23 @@ def fetch_open_pr_numbers(repo: str | None, limit: int = DEFAULT_OPEN_LIMIT) -> 
     return {p["number"] for p in data if isinstance(p.get("number"), int)}
 
 
+# How much larger than the requested K to fetch before picking the mergedAt
+# top-K. `gh pr list`'s DEFAULT order is createdAt-desc (NOT merge-time), and
+# even `sort:updated-desc` is only an *approximation* of merge recency: an
+# old merged PR that later gets a comment has its `updatedAt` bumped and can
+# crowd a genuinely-recent merge out of the top-K. Over-fetching a few × K
+# and then taking the `mergedAt` top-K makes that false-negative effectively
+# impossible (it would take >2K old PRs each freshly touched). Cheap: K is
+# small (default 10) and these PRs are metadata-only.
+_RECENT_MERGE_OVERFETCH = 3
+
+
 def fetch_recent_merges(repo: str | None, limit: int) -> list[dict]:
-    # `gh pr list`'s DEFAULT order is createdAt-desc, NOT merge-time — so a
-    # plain `--limit K` would drop a recently-*merged* PR that was *created*
-    # long ago, silently shrinking the "直近 K 件" pool (design §4.2) and
-    # mis-deciding `unblocked_by_recent_merge`. We therefore ask the server
-    # to order by recency via `sort:updated-desc`: for a merged PR the merge
-    # is its last (or near-last) activity, so updatedAt-desc ≈ mergedAt-desc,
-    # making the fetched K the *most recently merged* K. The client-side
-    # `mergedAt` sort below then makes the final ordering exact among them.
+    # Over-fetch in merge-recency-biased order (`sort:updated-desc`), then
+    # take the exact `mergedAt` top-K client-side. Two layers because neither
+    # alone guarantees the "直近 K 件" (design §4.2): the server sort biases
+    # the pool toward recency, the client sort + cap makes the final K exact.
+    fetch_limit = max(limit, limit * _RECENT_MERGE_OVERFETCH)
     data = _run_gh_json(
         [
             "pr",
@@ -825,7 +833,7 @@ def fetch_recent_merges(repo: str | None, limit: int) -> list[dict]:
             "--search",
             "sort:updated-desc",
             "--limit",
-            str(limit),
+            str(fetch_limit),
             "--json",
             "number,title,body,mergedAt",
         ]
@@ -833,8 +841,7 @@ def fetch_recent_merges(repo: str | None, limit: int) -> list[dict]:
     merges = data if isinstance(data, list) else []
     # Exact newest-first ordering by mergedAt (ISO-8601 sorts
     # lexicographically = chronologically); a missing `mergedAt` sorts last
-    # (treated as oldest). Also a defensive cap in case the fetch returned
-    # more than `limit` rows.
+    # (treated as oldest). The slice takes the genuine 直近 K 件.
     merges.sort(key=lambda p: p.get("mergedAt") or "", reverse=True)
     return merges[:limit]
 
@@ -935,17 +942,18 @@ def main(argv=None) -> int:
     )
     args = parser.parse_args(argv)
 
-    # `--top-n 0` (or negative) would silently return an empty `top` even
-    # when candidates exist, yielding status no_candidates / exit 0 — a
-    # contract break for the exit-code-driven delivery layer. Reject it.
-    if args.top_n < 1:
-        parser.error("--top-n must be >= 1")
-
     config = ScanConfig(
         top_n=args.top_n, free_panes=args.free_panes, trigger=args.trigger
     )
 
     try:
+        # `--top-n 0` (or negative) would silently return an empty `top` even
+        # when candidates exist, yielding status no_candidates / exit 0 — a
+        # contract break for the exit-code-driven delivery layer. Reject it
+        # here (not via parser.error) so the error envelope carries the real
+        # `--trigger` context in `generated_for`, not a hardcoded "manual".
+        if config.top_n < 1:
+            raise ValueError("--top-n must be >= 1")
         input_truncated = {"open_issues": False, "open_prs": False}
         if args.from_file:
             issues, open_pr_numbers, recent_merges = _load_bundle(args.from_file)

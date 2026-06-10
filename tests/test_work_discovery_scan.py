@@ -558,6 +558,19 @@ class TestCliWiring(unittest.TestCase):
         data = json.loads(proc.stdout)
         self.assertEqual(data["status"], "error")
 
+    def test_top_n_error_envelope_keeps_trigger_context(self):
+        # The error envelope must carry the real --trigger in generated_for,
+        # not a hardcoded "manual" (delivery layer reads the context).
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "--top-n", "0", "--trigger", "post_merge"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(proc.returncode, wds.EXIT_ERROR)
+        data = json.loads(proc.stdout)
+        self.assertEqual(data["status"], "error")
+        self.assertEqual(data["generated_for"], "post_merge")
+
 
 class TestCommentsAndMilestone(unittest.TestCase):
     """Blockers in comments + milestone tier."""
@@ -734,7 +747,7 @@ class TestFetchRecentMerges(unittest.TestCase):
 
     def test_server_side_recency_ordering_requested(self):
         # The fix for createdAt-desc dropping recent merges is a server-side
-        # recency sort + the K limit — assert both reach the gh call.
+        # recency sort + an over-fetched pool — assert both reach the gh call.
         with mock.patch.object(
             wds, "_run_gh_json", return_value=[]
         ) as gh:
@@ -742,8 +755,24 @@ class TestFetchRecentMerges(unittest.TestCase):
         argv = gh.call_args[0][0]
         self.assertIn("--search", argv)
         self.assertEqual(argv[argv.index("--search") + 1], "sort:updated-desc")
-        self.assertEqual(argv[argv.index("--limit") + 1], "7")
+        # Over-fetch K × factor so a freshly-commented old merge can't crowd
+        # out a genuine recent merge before the client mergedAt top-K slice.
+        self.assertEqual(
+            argv[argv.index("--limit") + 1],
+            str(7 * wds._RECENT_MERGE_OVERFETCH),
+        )
         self.assertIn("merged", argv)
+
+    def test_overfetched_pool_trimmed_to_requested_k(self):
+        # Fetch returns the over-fetched pool; the result is the mergedAt
+        # top-K for the *requested* K, regardless of the larger fetch.
+        pool = [
+            {"number": n, "mergedAt": f"2026-{n:02d}-01T00:00:00Z"}
+            for n in range(1, 10)
+        ]
+        with mock.patch.object(wds, "_run_gh_json", return_value=pool):
+            merges = wds.fetch_recent_merges(None, 3)
+        self.assertEqual([m["number"] for m in merges], [9, 8, 7])
 
     def test_sorted_by_merged_at_desc(self):
         with mock.patch.object(wds, "_run_gh_json", return_value=list(self._UNSORTED)):
