@@ -97,13 +97,30 @@ DEFAULT_RECENT_MERGES = 10
 DEFAULT_OPEN_LIMIT = 500
 
 # --- dependency notation (design §4.1, calibrated §11-3) ---------------
-# Match a blocking *keyword* (anywhere on a line — body or comment, inline
-# or list-led, e.g. "Update: Blocked by #5") and capture the rest of the
-# line. Precision is enforced by _LEADING_REFS_RE below, not by anchoring:
-# a keyword not immediately followed by a `#N` (e.g. "requires careful
-# thought", "Depends on: Commit 1 ...") contributes no ref.
+# Match a blocking *keyword* (anywhere — body or comment, inline or list-led,
+# e.g. "Update: Blocked by #5"). extract_blocking_refs locates every keyword
+# occurrence (so multiple clauses on one line — "Blocked by #1; depends on
+# #2" — are all seen), derives the same-line text *before* it (for the
+# negation guard) and the text *after* it (for the leading refs). Precision
+# is enforced by _LEADING_REFS_RE below, not by anchoring: a keyword not
+# immediately followed by a `#N` (e.g. "requires careful thought",
+# "Depends on: Commit 1 ...") contributes no ref.
+#
+# Negation guard: a keyword carrying a *negation* shortly before it
+# ("not blocked by #5", "no longer blocked by #5", "not currently blocked by
+# #5", "doesn't depend on #5") is NOT a blocker — extract_blocking_refs drops
+# the clause when `pre` ends with a negation marker optionally followed by a
+# short run of plain words/spaces (adverbs like "currently"/"yet"). The run
+# is word+space only, so punctuation/clause boundaries stop it: "not a
+# blocker, but blocked by #5" still counts (the comma breaks the run). The
+# leading `\b` on the keyword also rejects "unblocked by #5" (no word
+# boundary inside "unblocked", so the keyword never matches mid-word). Both
+# guards prefer *not* excluding (§11-3: false-exclusion is the worse error).
+_BLOCK_NEG_RE = re.compile(
+    r"(?i)(?:\b(?:not|never|no\s+longer|no\s+more)|n['’]t)[\w\s]{0,20}$"
+)
 _BLOCK_KEYWORD_RE = re.compile(
-    r"(?im)(?:blocked\s+by|depends\s+on|requires)\b(.*)$"
+    r"(?i)\b(?:blocked\s+by|depends\s+on|requires)\b"
 )
 # From a blocking clause, consume only the *leading* run of refs
 # (`#N`, optionally `PR #N`, comma/and-separated). #N refs are taken from
@@ -118,11 +135,20 @@ _LEADING_REFS_RE = re.compile(
 # A bare-number ref like `#531`; the leading `(?<![\w/])` stops it firing
 # inside `org/repo#531`-style cross-repo refs (single-repo scope, §10).
 _ISSUE_REF_RE = re.compile(r"(?<![\w/])#(\d+)\b")
-# Unchecked task-list item that references an Issue: `- [ ] #N`. Counted
-# as a pending dependency for NON-epic issues only — an epic's child
-# checklist is tracking, not a blocker on the epic itself (calibrated
-# against epic #376; see classify_dependency).
-_OPEN_TASK_REF_RE = re.compile(r"(?im)^[ \t]*[-*]\s*\[ \]\s*.*?#(\d+)\b")
+# Unchecked task-list item used as a pending-dependency signal: `- [ ] #N`
+# (design §4.1). Counted for NON-epic issues only — an epic's child checklist
+# is tracking, not a blocker on the epic itself (calibrated against epic
+# #376; see classify_dependency).
+#
+# §11-3 calibration: the item's content must be a *pure run of issue refs*
+# (`- [ ] #11`, `- [ ] #11, #12`). An item with descriptive prose around the
+# ref (`- [ ] #123 を参考に確認する`, `- [ ] Fix #11`) is a mere *mention*,
+# NOT a blocker — counting it would wrongly exclude a live candidate. Work
+# discovery prefers false-inclusion over false-exclusion (誤除外 < 誤包含):
+# when in doubt, do not treat the item as a blocker.
+_OPEN_TASK_ITEM_RE = re.compile(r"(?im)^[ \t]*[-*]\s*\[ \]\s*(.+?)\s*$")
+# True iff the captured task content is nothing but a `#N` ref run.
+_PURE_REF_RUN_RE = re.compile(r"(?i)^(?:#\d+[\s,]*(?:and\s+|&\s*)?)+$")
 
 # PR → linked-Issue notation for the recent-merge heuristic (design §4.2).
 # §4.2 keeps two *distinct* conditions, so we keep two patterns:
@@ -132,10 +158,54 @@ _OPEN_TASK_REF_RE = re.compile(r"(?im)^[ \t]*[-*]\s*\[ \]\s*.*?#(\d+)\b")
 #   * a *mere reference* (Refs #N) does not close #N — only used to decide
 #     "this Issue is referenced by (a natural follow-up of) a recent merge".
 # Conflating them would let a bare `Refs #100` mark #100 as resolved.
+#
+# A single keyword can reference several issues at once
+# (`Closes #100, #101 and #102`), so both patterns capture the whole leading
+# run of comma/space/`and`-separated `#N` refs (mirroring `_LEADING_REFS_RE`);
+# `_extract_ref_run` then pulls every number with `_ISSUE_REF_RE`. Capturing
+# only the first would silently drop the 2nd+ issue from
+# `recent_merge_closed_issues` / `recent_merge_referenced_issues` (hurts the
+# unblocked_by_recent_merge axis).
+#
+# The keyword may be followed by a colon (`Closes: #1`, `Fixes: #1`) — a
+# common GitHub notation — so the separator is `[\s:]+`, not just `\s+`.
+_KEYWORD_REF_RUN = r"[\s:]+((?:#\d+[\s,]*(?:and\s+|&\s*)?)+)"
 _PR_CLOSE_RE = re.compile(
-    r"(?i)\b(?:closes|close|closed|fixes|fix|fixed|resolves|resolve|resolved)\s+#(\d+)\b"
+    r"(?i)\b(?:closes|close|closed|fixes|fix|fixed|resolves|resolve|resolved)"
+    + _KEYWORD_REF_RUN
 )
-_PR_REF_RE = re.compile(r"(?i)\b(?:refs|ref|re)\s+#(\d+)\b")
+_PR_REF_RE = re.compile(r"(?i)\b(?:refs|ref|re)" + _KEYWORD_REF_RUN)
+
+
+def _extract_ref_run(pattern: re.Pattern, text: str) -> set[int]:
+    """All issue numbers in `text`'s keyword-led `#N` runs (design §4.2).
+
+    Every `#N` in the leading run after each keyword is captured, so
+    `Closes #100, #101` / `Refs #100, #101` yield ``{100, 101}`` — not just
+    the first.
+
+    A keyword negated on the same line (`does not close #100`,
+    `no longer closes #100`) is skipped — this is exactly GitHub's auto-close
+    false-positive that reopened #520, applied here so a recent merge that
+    *disclaims* closing #N does not wrongly mark #N resolved.
+    """
+    nums: set[int] = set()
+    for match in pattern.finditer(text):
+        line_start = text.rfind("\n", 0, match.start()) + 1
+        if _BLOCK_NEG_RE.search(text[line_start : match.start()]):
+            continue  # negated keyword ("does not close #100") — not a close
+        nums.update(int(n) for n in _ISSUE_REF_RE.findall(match.group(1)))
+    return nums
+
+
+def _pr_close_refs(text: str) -> set[int]:
+    """Issue numbers a PR *closes* (Closes/Fixes/Resolves #N, …)."""
+    return _extract_ref_run(_PR_CLOSE_RE, text)
+
+
+def _pr_referenced_refs(text: str) -> set[int]:
+    """Issue numbers a PR merely *references* (Refs/Ref/Re #N, …)."""
+    return _extract_ref_run(_PR_REF_RE, text)
 
 # Labels that force `blocked` regardless of refs (design §4.1).
 _BLOCK_LABELS = {"blocked", "on-hold", "on hold"}
@@ -168,13 +238,22 @@ class ScanConfig:
 # ----------------------------------------------------------------------
 
 
+def _is_int(value) -> bool:
+    """True for a *genuine* int — `bool` is an int subclass, so `True`/`False`
+    must be rejected as Issue/PR numbers (else `True` matches PR #1)."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 def _label_names(issue: dict) -> list[str]:
     """Normalize an issue's labels to a list of lowercase name strings.
 
     Accepts both ``gh``'s ``[{"name": ...}]`` shape and a plain list of
     strings (the latter is convenient for tests / `--from-file`)."""
     out: list[str] = []
-    for label in issue.get("labels") or []:
+    labels = issue.get("labels")
+    if not isinstance(labels, list):  # malformed/absent → no labels
+        return out
+    for label in labels:
         if isinstance(label, dict):
             name = label.get("name")
         else:
@@ -190,7 +269,10 @@ def _comment_bodies(issue: dict) -> list[str]:
     Accepts ``gh``'s ``[{"body": ...}]`` shape and a plain list of strings
     (test / ``--from-file`` convenience). Missing → empty list."""
     out: list[str] = []
-    for c in issue.get("comments") or []:
+    comments = issue.get("comments")
+    if not isinstance(comments, list):  # e.g. a bare count, or absent → none
+        return out
+    for c in comments:
         if isinstance(c, dict):
             body = c.get("body")
         else:
@@ -226,15 +308,31 @@ def extract_blocking_refs(text: str | None, *, is_epic: bool) -> list[int]:
     if not text:
         return []
     refs: set[int] = set()
-    for clause in _BLOCK_KEYWORD_RE.findall(text):
-        lead = _LEADING_REFS_RE.match(clause)
+    for m in _BLOCK_KEYWORD_RE.finditer(text):
+        # the keyword's own line, split at the keyword (`.` never crosses
+        # newlines in the original regex — keep refs same-line so a keyword on
+        # one line and a bare `#N` on the next are NOT linked, §11-3).
+        line_start = text.rfind("\n", 0, m.start()) + 1
+        line_end = text.find("\n", m.end())
+        if line_end == -1:
+            line_end = len(text)
+        if _BLOCK_NEG_RE.search(text[line_start : m.start()]):
+            continue  # negated clause ("not blocked by #5") — not a blocker
+        # Leading refs come from immediately after THIS keyword; the run stops
+        # at the next non-ref token, so a following keyword's refs are picked
+        # up by that keyword's own iteration ("Blocked by #1; depends on #2").
+        lead = _LEADING_REFS_RE.match(text[m.end() : line_end])
         if not lead:
             continue
         for num in _ISSUE_REF_RE.findall(lead.group(1)):
             refs.add(int(num))
     if not is_epic:
-        for num in _OPEN_TASK_REF_RE.findall(text):
-            refs.add(int(num))
+        for item in _OPEN_TASK_ITEM_RE.finditer(text):
+            content = item.group(1)
+            if not _PURE_REF_RUN_RE.match(content):
+                continue  # prose-annotated mention, not a blocker (§11-3)
+            for num in _ISSUE_REF_RE.findall(content):
+                refs.add(int(num))
     return sorted(refs)
 
 
@@ -427,7 +525,7 @@ def estimate_unblocked_by_recent_merge(
             )
             hit = True
     number = issue.get("number")
-    if isinstance(number, int) and number in recent_merge_referenced_issues:
+    if _is_int(number) and number in recent_merge_referenced_issues:
         signals.append("referenced by a recently-merged PR")
         hit = True
     if not hit:
@@ -496,10 +594,17 @@ def build_candidate(
 
     signals = prio_signals + effort_signals + par_signals + merge_signals
 
+    # Coerce `title` to a string here so the candidate JSON always satisfies
+    # its schema regardless of input shape (a malformed `--from-file` could
+    # carry `title: null`/a number). This also keeps extract_summary's
+    # title fallback safe (it calls `.strip()` on the title).
+    raw_title = issue.get("title")
+    title = raw_title if isinstance(raw_title, str) else ""
+
     return {
         "issue": issue.get("number"),
-        "title": issue.get("title", ""),
-        "summary": extract_summary(issue.get("body"), issue.get("title", "")),
+        "title": title,
+        "summary": extract_summary(issue.get("body"), title),
         "dependency": "resolved",
         "blocking_refs": all_blocking,
         "priority": priority,
@@ -529,13 +634,12 @@ def _sort_key(cand: dict, free_panes: int | None) -> tuple:
     """
     prio = _PRIORITY_RANK.get(cand["priority"], 1)
     unblocked = 1 if cand["unblocked_by_recent_merge"] else 0
-    # parallelizable only earns rank weight when there is a free pane to
-    # fill (design §4.2); otherwise it is neutral.
-    par = (
-        1
-        if (cand["parallelizable"] and (free_panes is None or free_panes > 0))
-        else 0
-    )
+    # parallelizable only earns rank weight when there is a *known* free pane
+    # to fill (design §4.2 「空き pane があるとき」); unknown (`--free-panes`
+    # unspecified → None) and zero are both neutral, matching the documented
+    # contract. (In practice every candidate is parallelizable by
+    # construction, so this term only discriminates when free_panes > 0.)
+    par = 1 if (cand["parallelizable"] and (free_panes or 0) > 0) else 0
     effort_small = -_EFFORT_RANK.get(cand["effort"], 1)  # S best
     has_ms = 1 if cand.get("_has_milestone") else 0
     recency = cand.get("_updated_at") or ""  # ISO8601 sorts lexically
@@ -606,7 +710,7 @@ def scan(
     is never silent (design §5.1). No I/O here.
     """
     open_issue_numbers = {
-        i["number"] for i in issues if isinstance(i.get("number"), int)
+        i["number"] for i in issues if _is_int(i.get("number"))
     }
     open_refs = open_issue_numbers | open_pr_numbers
 
@@ -616,11 +720,11 @@ def scan(
     recent_merge_referenced_issues: set[int] = set()
     for pr in recent_merges:
         num = pr.get("number")
-        if isinstance(num, int):
+        if _is_int(num):
             recent_merge_pr_numbers.add(num)
         text = f"{pr.get('title') or ''}\n{pr.get('body') or ''}"
-        closed = {int(n) for n in _PR_CLOSE_RE.findall(text)}
-        referenced = closed | {int(n) for n in _PR_REF_RE.findall(text)}
+        closed = _pr_close_refs(text)
+        referenced = closed | _pr_referenced_refs(text)
         recent_merge_closed_issues |= closed
         recent_merge_referenced_issues |= referenced
 
@@ -721,12 +825,28 @@ def _run_gh_json(args: list[str]) -> list | dict:
         ) from exc
 
 
+def _run_gh_json_list(args: list[str]) -> list:
+    """Like ``_run_gh_json`` but require a JSON **array**.
+
+    ``gh ... list --json`` always returns an array; a non-list payload means
+    an unexpected/changed response. Treat it as an error (``GhError`` → exit
+    2) rather than silently degrading to ``[]`` (which would masquerade as
+    ``no_candidates`` / exit 0 — a contract break, design §5.1)."""
+    data = _run_gh_json(args)
+    if not isinstance(data, list):
+        raise GhError(
+            f"`gh {' '.join(args)}` returned a non-array JSON payload "
+            f"({type(data).__name__}); expected a list"
+        )
+    return data
+
+
 def _repo_args(repo: str | None) -> list[str]:
     return ["--repo", repo] if repo else []
 
 
 def fetch_open_issues(repo: str | None, limit: int = DEFAULT_OPEN_LIMIT) -> list[dict]:
-    data = _run_gh_json(
+    return _run_gh_json_list(
         [
             "issue",
             "list",
@@ -739,11 +859,10 @@ def fetch_open_issues(repo: str | None, limit: int = DEFAULT_OPEN_LIMIT) -> list
             "number,title,body,labels,updatedAt,createdAt,milestone,comments",
         ]
     )
-    return data if isinstance(data, list) else []
 
 
 def fetch_open_pr_numbers(repo: str | None, limit: int = DEFAULT_OPEN_LIMIT) -> set[int]:
-    data = _run_gh_json(
+    data = _run_gh_json_list(
         [
             "pr",
             "list",
@@ -756,26 +875,46 @@ def fetch_open_pr_numbers(repo: str | None, limit: int = DEFAULT_OPEN_LIMIT) -> 
             "number",
         ]
     )
-    if not isinstance(data, list):
-        return set()
-    return {p["number"] for p in data if isinstance(p.get("number"), int)}
+    return {p["number"] for p in data if _is_int(p.get("number"))}
+
+
+# How much larger than the requested K to fetch before picking the mergedAt
+# top-K. `gh pr list`'s DEFAULT order is createdAt-desc (NOT merge-time), and
+# even `sort:updated-desc` is only an *approximation* of merge recency: an
+# old merged PR that later gets a comment has its `updatedAt` bumped and can
+# crowd a genuinely-recent merge out of the top-K. Over-fetching a few × K
+# and then taking the `mergedAt` top-K makes that false-negative effectively
+# impossible (it would take >2K old PRs each freshly touched). Cheap: K is
+# small (default 10) and these PRs are metadata-only.
+_RECENT_MERGE_OVERFETCH = 3
 
 
 def fetch_recent_merges(repo: str | None, limit: int) -> list[dict]:
-    data = _run_gh_json(
+    # Over-fetch in merge-recency-biased order (`sort:updated-desc`), then
+    # take the exact `mergedAt` top-K client-side. Two layers because neither
+    # alone guarantees the "直近 K 件" (design §4.2): the server sort biases
+    # the pool toward recency, the client sort + cap makes the final K exact.
+    fetch_limit = max(limit, limit * _RECENT_MERGE_OVERFETCH)
+    merges = _run_gh_json_list(
         [
             "pr",
             "list",
             *_repo_args(repo),
             "--state",
             "merged",
+            "--search",
+            "sort:updated-desc",
             "--limit",
-            str(limit),
+            str(fetch_limit),
             "--json",
             "number,title,body,mergedAt",
         ]
     )
-    return data if isinstance(data, list) else []
+    # Exact newest-first ordering by mergedAt (ISO-8601 sorts
+    # lexicographically = chronologically); a missing `mergedAt` sorts last
+    # (treated as oldest). The slice takes the genuine 直近 K 件.
+    merges.sort(key=lambda p: p.get("mergedAt") or "", reverse=True)
+    return merges[:limit]
 
 
 def _load_bundle(path: str) -> tuple[list[dict], set[int], list[dict]]:
@@ -786,11 +925,62 @@ def _load_bundle(path: str) -> tuple[list[dict], set[int], list[dict]]:
     """
     with open(path, encoding="utf-8") as f:
         bundle = json.load(f)
-    issues = bundle.get("issues") or []
-    open_pr_numbers = {
-        int(n) for n in (bundle.get("open_pr_numbers") or [])
-    }
-    recent_merges = bundle.get("recent_merges") or []
+    if not isinstance(bundle, dict):
+        raise GhError(
+            f"--from-file bundle must be a JSON object, got "
+            f"{type(bundle).__name__}"
+        )
+    # Validate shapes up front so a malformed bundle yields a *pinpointed*
+    # error (exit 2) instead of a confusing downstream exception or — worse —
+    # a malformed candidate JSON (`"issue": null`). The gh path never hits
+    # this (its fetchers always return well-formed arrays); this guards the
+    # offline/test `--from-file` affordance against untrusted input.
+    #
+    # Default ONLY when the key is absent or explicitly null — a *present*
+    # non-list (`{}`, `""`, `false`, `0`) is malformed and must error, not be
+    # coalesced to `[]` (which would masquerade as no_candidates / exit 0).
+    def _list_field(name: str) -> list:
+        value = bundle.get(name)
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise GhError(
+                f"--from-file `{name}` must be a list, got "
+                f"{type(value).__name__}"
+            )
+        return value
+
+    issues = _list_field("issues")
+    recent_merges = _list_field("recent_merges")
+    pr_raw = _list_field("open_pr_numbers")
+    for i, item in enumerate(issues):
+        if not isinstance(item, dict):
+            raise GhError(
+                f"--from-file issues[{i}] must be an object, got "
+                f"{type(item).__name__}"
+            )
+        # `bool` is an int subclass — exclude it so True/False can't pose as a
+        # number; every candidate's `issue` field must be a real integer.
+        if not isinstance(item.get("number"), int) or isinstance(
+            item.get("number"), bool
+        ):
+            raise GhError(
+                f"--from-file issues[{i}] must have an integer `number`"
+            )
+    for i, item in enumerate(recent_merges):
+        if not isinstance(item, dict):
+            raise GhError(
+                f"--from-file recent_merges[{i}] must be an object, got "
+                f"{type(item).__name__}"
+            )
+    open_pr_numbers: set[int] = set()
+    for i, n in enumerate(pr_raw):
+        if not isinstance(n, int) or isinstance(n, bool):
+            raise GhError(
+                f"--from-file open_pr_numbers[{i}] must be an integer, got "
+                f"{type(n).__name__}"
+            )
+        open_pr_numbers.add(n)
     return issues, open_pr_numbers, recent_merges
 
 
@@ -814,12 +1004,20 @@ class _JsonErrorParser(argparse.ArgumentParser):
     """ArgumentParser that emits the error envelope as a single stdout JSON
     on a usage error (instead of bare usage text), keeping the §5.1
     "stdout is a single JSON object / exit 2 on error" contract even for
-    CLI parse errors. ``--help`` still exits 0 via the default path."""
+    CLI parse errors. ``--help`` still exits 0 via the default path.
+
+    ``trigger`` is the resolved ``--trigger`` (best-effort, see
+    ``_probe_trigger``) so the error envelope's ``generated_for`` matches the
+    CLI context even for argparse type errors raised mid-parse."""
+
+    def __init__(self, *args, trigger: str = "manual", **kwargs):
+        super().__init__(*args, **kwargs)
+        self._trigger = trigger
 
     def error(self, message: str):  # noqa: D102 — argparse override
         print(
             json.dumps(
-                _error_payload("manual", f"argument error: {message}"),
+                _error_payload(self._trigger, f"argument error: {message}"),
                 ensure_ascii=False,
                 indent=2,
             )
@@ -827,8 +1025,33 @@ class _JsonErrorParser(argparse.ArgumentParser):
         self.exit(EXIT_ERROR)
 
 
+def _probe_trigger(argv) -> str:
+    """Best-effort `--trigger` recovery *before* the main parse.
+
+    A type error (e.g. ``--top-n nope``) makes argparse call ``error()``
+    during ``parse_args``, before ``--trigger`` is bound — so a lightweight
+    pre-parse (that tolerates unknown/other args) lets the error envelope
+    still carry the real trigger. Falls back to ``manual`` on any hiccup.
+
+    The probe must stay *silent*: a malformed probe parse must NOT print
+    usage to stderr (the main parser owns error reporting — JSON to stdout)."""
+
+    class _SilentParser(argparse.ArgumentParser):
+        def error(self, message):  # no stderr usage; just abort the probe
+            raise SystemExit(2)
+
+    probe = _SilentParser(add_help=False)
+    probe.add_argument("--trigger", default="manual")
+    try:
+        known, _ = probe.parse_known_args(argv)
+        return known.trigger
+    except SystemExit:
+        return "manual"
+
+
 def main(argv=None) -> int:
     parser = _JsonErrorParser(
+        trigger=_probe_trigger(argv),
         description=(
             "Work-discovery triage scan (read-only). Prints a single "
             "candidate JSON to stdout; exit 0=no_candidates, "
@@ -879,6 +1102,22 @@ def main(argv=None) -> int:
     )
 
     try:
+        # `--top-n 0` (or negative) would silently return an empty `top` even
+        # when candidates exist, yielding status no_candidates / exit 0 — a
+        # contract break for the exit-code-driven delivery layer. Reject it
+        # here (not via parser.error) so the error envelope carries the real
+        # `--trigger` context in `generated_for`, not a hardcoded "manual".
+        if config.top_n < 1:
+            raise ValueError("--top-n must be >= 1")
+        # `--recent-merges` feeds `gh pr list --limit` and the mergedAt
+        # top-K slice; a non-positive value would request a nonsensical limit
+        # and break the "直近 K 件" contract. Require a positive integer.
+        if args.recent_merges < 1:
+            raise ValueError("--recent-merges must be >= 1")
+        # `--free-panes` is a count of free worker panes; 0 is valid (none
+        # free → no parallelizable boost), but a negative count is nonsense.
+        if args.free_panes is not None and args.free_panes < 0:
+            raise ValueError("--free-panes must be >= 0")
         input_truncated = {"open_issues": False, "open_prs": False}
         if args.from_file:
             issues, open_pr_numbers, recent_merges = _load_bundle(args.from_file)
