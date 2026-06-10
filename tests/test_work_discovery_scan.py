@@ -786,6 +786,25 @@ class TestCommentsAndMilestone(unittest.TestCase):
         # Only close-keyword runs count; a bare `Refs #100` closes nothing.
         self.assertEqual(wds._pr_close_refs("Refs #100, #101"), set())
 
+    def test_pr_close_refs_negated_does_not_close(self):
+        # The GitHub auto-close false-positive that reopened #520: a PR body
+        # saying it does NOT close #N must not mark #N closed.
+        self.assertEqual(wds._pr_close_refs("This does not close #100"), set())
+        self.assertEqual(wds._pr_close_refs("no longer closes #5"), set())
+
+    def test_pr_close_refs_mixed_affirmed_and_negated(self):
+        self.assertEqual(
+            wds._pr_close_refs("Closes #100 but does not close #101"), {100}
+        )
+
+    def test_recent_merge_negated_close_not_unblocking(self):
+        # Full-scan: a recent PR that disclaims closing #100 must NOT unblock
+        # an issue depending on #100 via the closed-ref path.
+        issues = [_issue(10, body="Depends on #100")]
+        merges = [{"number": 900, "title": "x", "body": "This does not close #100"}]
+        result = wds.scan(issues, set(), merges, wds.ScanConfig())
+        self.assertFalse(result["candidates"][0]["unblocked_by_recent_merge"])
+
     def test_multi_issue_close_in_full_scan(self):
         # A single recent PR closing several issues must unblock dependents
         # on *each* listed issue, not just the first.
@@ -1019,6 +1038,26 @@ class TestBundleValidation(unittest.TestCase):
         data = json.loads(proc.stdout)
         self.assertEqual(data["status"], "error")
         self.assertIn("number", data["error"])
+
+    def test_bundle_falsey_non_list_field_errors(self):
+        # A *present* falsey non-list (`{}`, `""`, `false`) is malformed and
+        # must error — it must NOT be coalesced to [] (which would read as
+        # no_candidates / exit 0, hiding the malformed input).
+        for bad in ('{"issues": {}}', '{"issues": ""}', '{"issues": false}'):
+            with self.subTest(bundle=bad):
+                proc = self._run_bundle_text(bad)
+                self.assertEqual(proc.returncode, wds.EXIT_ERROR)
+                data = json.loads(proc.stdout)
+                self.assertEqual(data["status"], "error")
+                self.assertIn("issues", data["error"])
+
+    def test_bundle_absent_or_null_fields_default_empty(self):
+        # Absent / explicit null fields legitimately default to empty (and
+        # yield a clean no_candidates / exit 0), unlike a present wrong type.
+        proc = self._run_bundle_text('{"issues": null}')
+        self.assertEqual(proc.returncode, wds.EXIT_NO_CANDIDATES)
+        data = json.loads(proc.stdout)
+        self.assertEqual(data["status"], "no_candidates")
 
 
 if __name__ == "__main__":

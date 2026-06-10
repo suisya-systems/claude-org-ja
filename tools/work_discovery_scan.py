@@ -183,9 +183,17 @@ def _extract_ref_run(pattern: re.Pattern, text: str) -> set[int]:
     Every `#N` in the leading run after each keyword is captured, so
     `Closes #100, #101` / `Refs #100, #101` yield ``{100, 101}`` — not just
     the first.
+
+    A keyword negated on the same line (`does not close #100`,
+    `no longer closes #100`) is skipped — this is exactly GitHub's auto-close
+    false-positive that reopened #520, applied here so a recent merge that
+    *disclaims* closing #N does not wrongly mark #N resolved.
     """
     nums: set[int] = set()
     for match in pattern.finditer(text):
+        line_start = text.rfind("\n", 0, match.start()) + 1
+        if _BLOCK_NEG_RE.search(text[line_start : match.start()]):
+            continue  # negated keyword ("does not close #100") — not a close
         nums.update(int(n) for n in _ISSUE_REF_RE.findall(match.group(1)))
     return nums
 
@@ -916,24 +924,29 @@ def _load_bundle(path: str) -> tuple[list[dict], set[int], list[dict]]:
             f"--from-file bundle must be a JSON object, got "
             f"{type(bundle).__name__}"
         )
-    issues = bundle.get("issues") or []
-    recent_merges = bundle.get("recent_merges") or []
-    pr_raw = bundle.get("open_pr_numbers") or []
     # Validate shapes up front so a malformed bundle yields a *pinpointed*
     # error (exit 2) instead of a confusing downstream exception or — worse —
     # a malformed candidate JSON (`"issue": null`). The gh path never hits
     # this (its fetchers always return well-formed arrays); this guards the
     # offline/test `--from-file` affordance against untrusted input.
-    for field, value in (
-        ("issues", issues),
-        ("recent_merges", recent_merges),
-        ("open_pr_numbers", pr_raw),
-    ):
+    #
+    # Default ONLY when the key is absent or explicitly null — a *present*
+    # non-list (`{}`, `""`, `false`, `0`) is malformed and must error, not be
+    # coalesced to `[]` (which would masquerade as no_candidates / exit 0).
+    def _list_field(name: str) -> list:
+        value = bundle.get(name)
+        if value is None:
+            return []
         if not isinstance(value, list):
             raise GhError(
-                f"--from-file `{field}` must be a list, got "
+                f"--from-file `{name}` must be a list, got "
                 f"{type(value).__name__}"
             )
+        return value
+
+    issues = _list_field("issues")
+    recent_merges = _list_field("recent_merges")
+    pr_raw = _list_field("open_pr_numbers")
     for i, item in enumerate(issues):
         if not isinstance(item, dict):
             raise GhError(
