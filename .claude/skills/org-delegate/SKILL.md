@@ -274,6 +274,7 @@ worker → Secretary peer message
   bash tools/journal_append.sh notify_sent kind=awaiting_user task_id=<task_id> gate=worker_completed note="<PR/Issue 等の短い文脈>"
   ```
   並走 runtime PR の classifier がこの 1 行を `secretary_awaiting_user` (default severity `urgent`) として拾い、画面前にユーザーが居ない場合でもビープで気付ける。CLAUDE.md「secretary が user の判断を待っている状態を通知する」節を参照
+- **人間向け理解サマリを承認提示の土台にする（検証深度 `full` 限定）**: full モード完了報告には worker が「人間向け理解サマリ」（(1) 最重要の変更点 N 個、(2) 要確認ファイル / hunk、(3) 設計判断と理由）を含める。窓口は自分でコードを精読せず、このサマリをそのまま（必要なら業務言語に整えて）ユーザーへの承認提示に使う。**full なのにサマリが欠落していたら、push/PR 承認をユーザーに仰ぐ前に worker へ追送して補完させる**（フォーマット定義は [`.claude/skills/org-delegate/references/instruction-template.md`](references/instruction-template.md) の full モード完了報告フォーマットを SoT とする）。これは `awaiting_review` (REVIEW) 遷移を起こす `worker_completed` 報告の一部で、contract の不変条件は変えない（手順レイヤの提示フォーマット拡張のみ）。minimal の 1 行 `done:` 報告にはサマリは付かない
 - 結果を人間に報告し、**ペインを閉じず承認待ちで停止**。承認なしで push/PR を発行すると worker / user 双方への protocol 違反
 
 #### 2b / 2c. ユーザー承認後・レビュー指摘・マージ後クローズ

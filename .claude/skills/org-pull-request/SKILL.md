@@ -60,6 +60,7 @@ allowed-tools:
   bash tools/journal_append.sh notify_sent kind=awaiting_user task_id=<task_id> gate=ci_green_merge_gate note="PR #<PR> CI green, awaiting merge approval"
   ```
   並走 runtime PR の classifier が `secretary_awaiting_user` (default severity `urgent`) として拾う。CLAUDE.md「secretary が user の判断を待っている状態を通知する」節を参照。`PR_MERGE_WATCH_TIMEOUT` 等の失敗系は対象外（awaiting_user ではなく別経路で人間判断）
+- **merge 承認提示でも人間向け理解サマリを再掲する（検証深度 `full` 限定）**: CI green → ユーザーに merge 承認を仰ぐ際、worker 完了報告の「人間向け理解サマリ」（(1) 最重要の変更点 N 個、(2) 要確認ファイル / hunk、(3) 設計判断と理由）を再掲し、ユーザーが diff を開かずに最終 merge 判断を下せるようにする。完了報告受領時の承認提示（[`.claude/skills/org-delegate/SKILL.md`](../org-delegate/SKILL.md) Step 5 (2a)）と同じサマリで、定義は [`.claude/skills/org-delegate/references/instruction-template.md`](../org-delegate/references/instruction-template.md) の full モード完了報告フォーマットを SoT とする。minimal タスクには付かない
 - **merge を待ち合わせたい時のみ** `-MergeWatch` (PowerShell) / `--merge-watch` (POSIX) を付ける。CI 通過後に `gh pr view --json mergedAt` を 24h ポーリングし、初回の merge で `tools/run_complete_on_merge.py` を呼ぶ (Issue #317)。merge-watch 中も pr-watch プロセスは生きたまま、merge 観測時に `pr_merged` イベントを events に追記してから return する
 - run.status は **REVIEW のまま据え置く**（GitHub 側 PR レビュー指摘が来たら同ペインで対応するため。COMPLETED への遷移は 2b-ii で `update_run_status('<task_id>', 'completed')` を呼ぶ）。markdown 直接編集はしない
 - **ペインはまだ閉じない**: PR 作成直後に `CLOSE_PANE` を送らない。worktree 除去・Worker Directory Registry 更新も 2b-ii まで遅延する
