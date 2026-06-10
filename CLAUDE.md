@@ -13,6 +13,15 @@
 ## PR 後の CI 監視
 - PR 作成直後に `tools/pr-watch.ps1 <PR番号>` (Windows) または `tools/pr-watch.sh <PR番号>` (POSIX) を実行すると、`gh pr checks --watch` をブロッキングで起動し、完了時に `.state/journal.jsonl` へ `ci_completed` イベントを 1 行追記する。`--repo OWNER/REPO` 省略時はカレントリポジトリを自動解決する。
 
+## PR マージ後の次タスク提案（proactive next-dispatch）
+
+PR マージ → post-merge cleanup が終わったら、ユーザーの催促を待たず窓口側から「次の仕事候補」を能動的に提示する。**候補生成はその場で `gh issue list` を即興で叩くのではなく、[`/work-discovery`](./.claude/skills/work-discovery/SKILL.md) skill（= 決定的ツール `tools/work_discovery_scan.py` の triage 出力）を消費する**。これにより判定基準（依存解決済み / 優先度 / 工数）が明文化され、提示に再現性・網羅性・監査性が付く（即興提示には無かった性質）。設計の一次参照は [`docs/design/work-discovery-triage.md`](./docs/design/work-discovery-triage.md)（§5.2 提示フォーマット / §8 post-merge 統合 / §7 不変条件）。
+
+- **起動主体は窓口**。post-merge の文脈では `/work-discovery` を `post_merge` トリガで走らせる（候補 JSON に `generated_for: "post_merge"` が載る）。post-merge では「直近マージで unblock された / 自然な follow-up」を上位に出す `unblocked_by_recent_merge` 軸が強く効く。空き pane があれば free-pane 数を渡し、`parallelizable` 候補のランクを上げて並列枠を埋める。
+- **外形は完全に維持する**: triage 結果を §5.2 形式（候補 N 件 + 推奨 1、推定軸には `(推定)`、除外枠も提示）で**窓口が人間へ提示 → 人間が番号で選択 → 選ばれた候補は [`/org-delegate`](./.claude/skills/org-delegate/SKILL.md) の Step 0 から**通常委譲フローに入る。候補生成の手段が即興から triage に替わるだけで、人間の操作・人間ゲートは変えない。
+- **propose-only**: 候補を出したら停止する。rank 1（推奨）の自動着手・自動 commit・自動 PR はしない（着手判断は人間のみ）。`/work-discovery` 自身が org-delegate を呼んだり spawn することも禁止。
+- マージ後クローズ直後の具体的な提示手順は [`/org-pull-request`](./.claude/skills/org-pull-request/SKILL.md)（2b-ii post-merge cleanup 後の next-dispatch）を参照。
+
 ## ドキュメント表記
 - markdown のリンク表記は `[`<repo-root path>`](<document-relative path>)` を採用する。詳細と検証スクリプトは [`docs/contributing/markdown-conventions.md`](./docs/contributing/markdown-conventions.md) を参照。
 
