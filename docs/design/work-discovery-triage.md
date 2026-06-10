@@ -1,12 +1,18 @@
 # 自律 work-discovery（Issue triage）— 設計
 
-> ステータス: **design only / 実装なし**。本リポジトリにこの設計の実装・配線は一切存在しない。本ドキュメントは「未実装の将来設計」であり、以下の記述はすべて**提案・計画**である。`.claude/` スキル・`.dispatcher/` prose・`tools/` への変更は本ブランチでは行っていない（成果物は本設計書 1 本のみ）。
+> ステータス: **Phase 1〜4 実装済み（運用中）**。本設計は [§9](#9-段階導入と検証提案) の段階導入計画に沿って実装・配線済みである。実体（すべてリポジトリルート相対）:
+> - **Phase 1 — 計算層**: [`tools/work_discovery_scan.py`](../../tools/work_discovery_scan.py)（read-only scan・候補 JSON stdout・exit code 分岐）。
+> - **Phase 2 — 案 B 手動エントリ**: [`.claude/skills/work-discovery/SKILL.md`](../../.claude/skills/work-discovery/SKILL.md)（窓口が手動 / イベント起動して提示）。
+> - **Phase 3 — 案 C 定常トリガ**: worker クローズ時に scan を起動し窓口へ転送する配線（[`.dispatcher/references/pane-close.md`](../../.dispatcher/references/pane-close.md) ほか dispatcher prose）。
+> - **Phase 4 — post-merge 統合**: proactive next-dispatch の候補生成を triage 出力へ差し替え（[`CLAUDE.md`](../../CLAUDE.md)「PR マージ後の次タスク提案」と [`.claude/skills/org-pull-request/SKILL.md`](../../.claude/skills/org-pull-request/SKILL.md) 2b-iii）。
+>
+> **以降の本文は当初の設計記述をそのまま残している**。本文中の「未実装」「（未実装の）提案」「proposed tool」「本設計書ではインタフェースのみ定義し実装はしない」等の表現は**設計時点の framing** であり、現在の実体は上記パスに存在する。不変条件 [§7](#7-安全レール不変条件)（INV-1〜5）は実装後も維持される契約である。
 >
 > 一次入力:
 > - [`.state/reports/loop-engineering-assessment.md`](../../.state/reports/loop-engineering-assessment.md) の **§5-1（唯一の構造的ギャップ = 仕事の自律発見が無い）** と **§7(b)（限定的な自律 work-discovery を「提案まで自動・着手判断は人間維持」で導入、+2〜3 点）**。
 > - originating Issue: suisya-systems/claude-org-ja#520。
 >
-> 依存ドキュメント（参照は本設計書 → 既存文書の一方向のみ。既存文書側からの参照追加は行わない）:
+> 依存ドキュメント（設計時点では本設計書 → 既存文書の一方向参照のみとしていた。実装後の現在は Phase 2/4 で [`CLAUDE.md`](../../CLAUDE.md) と [`.claude/skills/work-discovery/SKILL.md`](../../.claude/skills/work-discovery/SKILL.md) / [`.claude/skills/org-pull-request/SKILL.md`](../../.claude/skills/org-pull-request/SKILL.md) から本設計書への参照が加わっている）:
 > - [`CLAUDE.md`](../../CLAUDE.md)（窓口 = 唯一の人間接点 / 実作業は全委譲 / proactive next-dispatch / 役割の境界）
 > - [`.claude/skills/org-delegate/SKILL.md`](../../.claude/skills/org-delegate/SKILL.md)（着手の正準経路 = 人間ゲート後の Step 0 から）
 > - [`tools/check_curate_threshold.py`](../../tools/check_curate_threshold.py) と [`.dispatcher/references/pane-close.md`](../../.dispatcher/references/pane-close.md)（worker クローズ時のオンデマンド spawn = 本設計の delivery 先例）

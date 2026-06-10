@@ -154,3 +154,12 @@ allowed-tools:
   - パターン A: lifecycle='active' のまま、run.status='completed' で snapshotter が available 相当の表示にする
   - パターン B / C: 物理 dir は別途処理（worktree remove / dir 保持）。レジストリエントリ削除は上記 with ブロック内に `w.remove_worker_dir('<abs>')` を追加
 - JSON snapshot は StateWriter post-commit hook が自動再生成 (Issue #284)
+
+## 2b-iii. マージ後の次タスク提案（proactive next-dispatch）
+
+2b-ii の post-merge cleanup（run COMPLETED 化・ペインクローズ・worktree 後処理）まで終わったら、窓口はユーザーの催促を待たず次の仕事候補を能動的に提示する。**候補生成はその場で `gh issue list` を即興で叩くのではなく、[`/work-discovery`](../work-discovery/SKILL.md) skill（= 決定的ツール `tools/work_discovery_scan.py` の triage 出力）を消費する**。判定基準（依存解決済み / 優先度 / 工数）が明文化され、提示に再現性・監査性が付く。方針の一次参照は [`CLAUDE.md`](../../../CLAUDE.md)「PR マージ後の次タスク提案（proactive next-dispatch）」、設計の一次参照は [`docs/design/work-discovery-triage.md`](../../../docs/design/work-discovery-triage.md) §8（post-merge 統合）。
+
+- **post_merge トリガで走らせる**: `/work-discovery` を post-merge 文脈で起動する（scan を `--trigger post_merge`、空き pane があれば `--free-panes <数>` 付き）。候補 JSON に `generated_for: "post_merge"` が載り、**post-merge では「直近マージで unblock された / 自然な follow-up」を上位に出す `unblocked_by_recent_merge` 軸が強く効く**（設計 §4.2 / §8.1-3）。空き枠があれば `parallelizable` 候補のランクが上がり並列枠を埋められる。
+- **提示と人間ゲートは現行と互換**: triage 結果を設計 §5.2 形式（候補 N 件 + 推奨 1、推定軸には `(推定)`、除外枠も提示）で窓口が人間へ提示する。**人間が番号で選択 → 選ばれた候補は [`/org-delegate`](../org-delegate/SKILL.md) の Step 0 から**通常委譲フローに入る。候補生成の手段が即興から triage に替わるだけで、人間の操作・人間ゲートの外形は変えない（設計 §8.1-4）。
+- **propose-only で停止**: 候補を出したら止める。rank 1（推奨）の自動着手・自動 commit・自動 PR はしない（着手判断は人間のみ。設計 INV-1 / INV-2）。本ステップ・`/work-discovery` が org-delegate を呼んだり spawn することも禁止。
+- 手動・任意タイミングの提示（idle 時など）は同じ `/work-discovery` を `--trigger manual` で起動する。skill 内の exit code 分岐・レンダリング規則は [`/work-discovery`](../work-discovery/SKILL.md) を一次参照する。
