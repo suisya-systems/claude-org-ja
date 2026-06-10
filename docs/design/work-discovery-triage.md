@@ -229,7 +229,8 @@ triage を「**計算（どの Issue がどう triage されるか）**」と「
 
 - **INV-1 — propose-only / 提案で停止**: 機構の出力はランク付き候補リストのみ。生成後は**停止する**。spawn・delegate・ブランチ作成・commit・PR・Issue への書き込みのいずれも行わない。計算層は read-only（Issue を読むだけ・副作用ゼロ）。
 - **INV-2 — 着手判断は人間ゲート必須**: 候補の選択は人間のみが行う。選ばれた候補は**既存の [`/org-delegate`](../../.claude/skills/org-delegate/SKILL.md) の Step 0 から**通常委譲フローに入る。discovery 機構が org-delegate を自分で呼ぶことは禁止。ランク 1 位（推奨）の自動着手も禁止。
-- **INV-3 — 自動 PR / 自動 commit をしない**: 本機構は repo を一切変更しない。triage 結果を repo にコミットして残す運用にする場合も、それは別途人間判断による別タスクであり、機構が自動で行わない。
+- **INV-3 — 自動 PR / 自動 commit をしない**: 本機構は**ソースツリー・Issue・PR・git（commit / branch / push）を一切変更しない**。triage 結果をソースにコミットして残す運用にする場合も、それは別途人間判断による別タスクであり、機構が自動で行わない。
+  - **例外（=変更ではなく組織状態の記帳）**: 通常の運用記帳である `.state/state.db` の events table への journal イベント追記（[§7.1](#71-不変条件の検証可能性)）は本 INV の対象外。これは他の全ロールが日常的に行う bookkeeping と同格で、git 履歴・ソース・GitHub を変えない。**read-only な計算層ツール自体は state.db にも書かない**（[§7.1](#71-不変条件の検証可能性) 「副作用ゼロの担保」）。journal 記帳を行うのは delivery 層（窓口 / dispatcher）であって計算層ツールではない、という分離を守る。
 - **INV-4 — 窓口 = 唯一の人間接点**: triage 結果は必ず窓口に届き、窓口が人間へ提示する。discovery 機構（dispatcher / cron / ツール）が人間または GitHub 上の人間可視面へ直接到達してはならない（案 A 不採用の直接的根拠）。
 - **INV-5 — 実作業は全委譲 / 秘書は調査しない**: scan は決定的ツール実行であり「調査」ではない。候補の実現性深掘り・設計が必要なら、それは人間ゲートを通った後の委譲ワーカータスクとして扱う。窓口・dispatcher が候補の中身を自前で調査・実装しない。
 
@@ -237,7 +238,7 @@ triage を「**計算（どの Issue がどう triage されるか）**」と「
 
 ### 7.1 不変条件の検証可能性
 
-- **監査ログ**: scan 実行・候補件数・推奨を journal イベント（proposed kind 例: `work_discovery_scanned` / payload に `candidate_count` / `recommendation_issue` / `trigger`）として残し、「いつ・何件・何を推奨したか」を後追いできるようにする。[`docs/journal-events.md`](../journal-events.md) のとおり events の SoT は `.state/state.db` の events table であり、emit は DB-routed helper（`tools/journal_append.sh` / `tools/journal_append.py`）経由で行う（旧 `.state/journal.jsonl` 直書きや直接 DB INSERT はしない）。**proposed イベントの台帳追記と実体配線は本設計のスコープ外**（別タスク）。
+- **監査ログ**: scan 実行・候補件数・推奨を journal イベント（proposed kind 例: `work_discovery_scanned` / payload に `candidate_count` / `recommendation_issue` / `trigger`）として残し、「いつ・何件・何を推奨したか」を後追いできるようにする。記帳するのは **delivery 層（窓口 / dispatcher）であって read-only な計算層ツールではない**（INV-3 例外の分離）。[`docs/journal-events.md`](../journal-events.md) のとおり events の SoT は `.state/state.db` の events table であり、emit は DB-routed helper（`tools/journal_append.sh` / `tools/journal_append.py`）経由で行う（旧 `.state/journal.jsonl` 直書きや直接 DB INSERT はしない）。**proposed イベントの台帳追記と実体配線は本設計のスコープ外**（別タスク）。
 - **副作用ゼロの担保**: 計算層ツールは `gh issue list` / `rtk gh issue view` 等の**読み取り API のみ**を使い、書き込み系 API・git 操作を一切呼ばないことをツールの契約（および将来のユニットテスト）で固定する。
 
 ## 8. post-merge proactive-next-dispatch との統合
