@@ -277,5 +277,122 @@ class CheckRoleConfigsOnDiskBrokerValidation(unittest.TestCase):
         self.assertTrue(errors, "broker settings should NOT pass renga validation")
 
 
+class UserCommonAllowlistProjection(unittest.TestCase):
+    """user_common (~/.claude/settings.json) の broker 射影 (Option A, §5.3)。
+
+    curator / worker / dispatcher が継承する messaging MCP floor を broker 化する
+    経路。**renga は strict no-op (file を 1 byte も書かない)**。
+    """
+
+    _RENGA_SETTINGS = {
+        "permissions": {
+            "allow": [
+                "Bash(renga --version)",
+                "mcp__renga-peers__set_summary",
+                "mcp__renga-peers__send_message",
+                "mcp__renga-peers__check_messages",
+                "mcp__renga-peers__list_peers",
+                "mcp__renga-peers__spawn_pane",
+            ]
+        },
+        "env": {"CLAUDE_CODE_NO_FLICKER": "1"},
+    }
+
+    def _write_tmp(self, data) -> Path:
+        d = tempfile.mkdtemp()
+        p = Path(d) / "settings.json"
+        p.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        return p
+
+    def test_renga_is_strict_no_op_file_untouched(self):
+        p = self._write_tmp(self._RENGA_SETTINGS)
+        before = p.read_bytes()
+        with _env_transport(None):  # 既定 renga
+            rc = osp.process_user_common_allowlist(
+                settings_path=p, dry_run=False, no_backup=True
+            )
+        self.assertEqual(rc, 0)
+        # byte 完全一致 (read-modify-write すら起こさない)。
+        self.assertEqual(p.read_bytes(), before)
+
+    def test_renga_explicit_is_no_op(self):
+        p = self._write_tmp(self._RENGA_SETTINGS)
+        before = p.read_bytes()
+        with _env_transport("renga"):
+            osp.process_user_common_allowlist(
+                settings_path=p, dry_run=False, no_backup=True
+            )
+        self.assertEqual(p.read_bytes(), before)
+
+    def test_broker_dry_run_does_not_write(self):
+        p = self._write_tmp(self._RENGA_SETTINGS)
+        before = p.read_bytes()
+        with _env_transport("broker"):
+            osp.process_user_common_allowlist(
+                settings_path=p, dry_run=True, no_backup=True
+            )
+        self.assertEqual(p.read_bytes(), before)
+
+    def test_broker_projects_messaging_floor(self):
+        p = self._write_tmp(self._RENGA_SETTINGS)
+        with _env_transport("broker"):
+            rc = osp.process_user_common_allowlist(
+                settings_path=p, dry_run=False, no_backup=True
+            )
+        self.assertEqual(rc, 0)
+        allow = json.loads(p.read_text(encoding="utf-8"))["permissions"]["allow"]
+        # renga MCP は消え、broker messaging tier が入る
+        self.assertFalse(any(e.startswith(RENGA_PREFIX) for e in allow))
+        broker = [e for e in allow if e.startswith(BROKER_PREFIX)]
+        self.assertEqual(sorted(broker), sorted(t.allow_entries("user_common", flag="broker")))
+        self.assertEqual(len(broker), 4)  # messaging tier
+        # 非 MCP エントリ・env は保持
+        self.assertIn("Bash(renga --version)", allow)
+        self.assertEqual(
+            json.loads(p.read_text(encoding="utf-8")).get("env"),
+            {"CLAUDE_CODE_NO_FLICKER": "1"},
+        )
+
+    def test_broker_idempotent(self):
+        p = self._write_tmp(self._RENGA_SETTINGS)
+        with _env_transport("broker"):
+            osp.process_user_common_allowlist(settings_path=p, dry_run=False, no_backup=True)
+            after_first = p.read_bytes()
+            osp.process_user_common_allowlist(settings_path=p, dry_run=False, no_backup=True)
+            after_second = p.read_bytes()
+        self.assertEqual(after_first, after_second)
+
+    def test_merge_pure_drops_renga_and_ensures_tier(self):
+        tier = t.allow_entries("user_common", flag="broker")
+        out = osp.merge_user_common_allowlist(
+            self._RENGA_SETTINGS, tier, renga_prefix=RENGA_PREFIX
+        )
+        allow = out["permissions"]["allow"]
+        self.assertFalse(any(e.startswith(RENGA_PREFIX) for e in allow))
+        for e in tier:
+            self.assertIn(e, allow)
+        # 元 dict は破壊されない
+        self.assertTrue(
+            any(e.startswith(RENGA_PREFIX) for e in self._RENGA_SETTINGS["permissions"]["allow"])
+        )
+
+    def test_merge_creates_allow_when_absent(self):
+        tier = t.allow_entries("user_common", flag="broker")
+        out = osp.merge_user_common_allowlist({"env": {}}, tier, renga_prefix=RENGA_PREFIX)
+        self.assertEqual(out["permissions"]["allow"], list(tier))
+        self.assertEqual(out["env"], {})  # 他 key は invent しない/保持
+
+    def test_merge_malformed_shape_raises(self):
+        tier = t.allow_entries("user_common", flag="broker")
+        with self.assertRaises(ValueError):
+            osp.merge_user_common_allowlist(
+                {"permissions": {"allow": "not-a-list"}}, tier, renga_prefix=RENGA_PREFIX
+            )
+        with self.assertRaises(ValueError):
+            osp.merge_user_common_allowlist(
+                {"permissions": [1, 2]}, tier, renga_prefix=RENGA_PREFIX
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
