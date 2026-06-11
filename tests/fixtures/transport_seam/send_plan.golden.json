@@ -1,0 +1,8 @@
+{
+  "to_id": "dispatcher",
+  "message": "DELEGATE: 以下のワーカーを派遣してください。\n\nタスク一覧:\n- demo-task: デモタスク。X を Y に変更する。\n  - ワーカーディレクトリ: /tmp/workers/demo-task（CLAUDE.md・設定配置済み）\n  - ディレクトリパターン: B: worktree (live_repo_worktree — Secretary live repo 配下)\n  - プロジェクト: worktree base: /tmp/proj\n  - ブランチ (planned): feat/demo-task\n  - Permission Mode: auto\n  - 検証深度: full\n  - 指示内容: 詳細は `/tmp/workers/demo-task/CLAUDE.md` を参照。要約: デモタスク。X を Y に変更する。\n\n窓口ペイン名: `secretary`（renga layout で登録済み）",
+  "summary": {
+    "task_id": "demo-task",
+    "pattern": "B"
+  }
+}

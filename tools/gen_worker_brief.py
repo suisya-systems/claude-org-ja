@@ -215,7 +215,15 @@ def _build_substitutions(config: dict[str, Any]) -> dict[str, str]:
     refs = config.get("references", {})
     parallel = config.get("parallel", {})
 
+    # transport プレフィックスは descriptor 駆動 (§5.2 (i) 単一 SoT)。
+    # ハードコードせず ``tools.transport`` 経由で runtime の descriptor を
+    # 読む。既定 (ORG_TRANSPORT 無設定) = renga で
+    # ``mcp__renga-peers__send_message`` = 現行と bit 等価、broker 明示時は
+    # ``mcp__org-broker__send_message``。
+    from tools import transport as _transport
+
     return {
+        "transport_send_message": _transport.send_message_call(),
         "worker_dir": worker["dir"],
         "worker_pattern": worker["pattern"],
         "worker_role": worker["role"],

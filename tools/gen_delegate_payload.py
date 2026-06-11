@@ -19,11 +19,14 @@ full delegation packet:
   3. Optionally call ``claude-org-runtime settings generate`` to write
      ``.claude/settings.local.json`` (skip with ``--skip-settings``;
      useful when the runtime CLI isn't on PATH yet, e.g. in tests).
-  4. Emit ``send_plan.json`` describing the renga-peers send_message
+  4. Emit ``send_plan.json`` describing the transport send_message
      call Secretary should issue (``to_id="dispatcher"``, ``message=<body>``).
      Codex M-3 reframed the original ``--send`` flag: this script never
      calls MCP itself; Secretary copies the JSON into their own
-     ``mcp__renga-peers__send_message`` call.
+     ``mcp__<server>__send_message`` call, where ``<server>`` is the
+     transport surface server resolved from the descriptor
+     (``renga-peers`` by default, ``org-broker`` when ``ORG_TRANSPORT=broker``;
+     Epic #6 D / ja#513, single SoT = ``tools.transport``).
 
 The internal split is :func:`build_delegate_plan` (pure planner returning
 a :class:`DelegatePlan`) and :func:`apply_delegate_plan` (side-effect
@@ -53,6 +56,7 @@ except ModuleNotFoundError:  # pragma: no cover - 3.10 fallback
 
 from tools import gen_worker_brief as gwb
 from tools import resolve_worker_layout as rwl
+from tools import transport as _transport
 
 
 _PERMISSION_MODE_RE = re.compile(
@@ -984,7 +988,14 @@ def _run_settings_generate(
 
 
 def _write_send_plan(plan: DelegatePlan, *, out_path: Path) -> Path:
-    """Write the renga-peers MCP call manifest Secretary will copy from."""
+    """Write the transport MCP call manifest Secretary will copy from.
+
+    The manifest is transport-neutral (``to_id`` / ``message`` only); the
+    concrete ``mcp__<server>__send_message`` tool name is chosen by the
+    Secretary from the descriptor-driven server (``tools.transport``,
+    §5.2 (i)). Renga is the default, so the emitted JSON is byte-identical
+    to the current output.
+    """
     payload = {
         "to_id": "dispatcher",
         "message": plan.delegate_body,
@@ -1455,11 +1466,23 @@ def _cmd_apply(args: argparse.Namespace) -> int:
     elif result.settings_skipped_reason:
         print(f"settings: SKIPPED ({result.settings_skipped_reason})")
     print(f"send_plan: {result.send_plan_path}")
-    print(
-        "Next step: copy send_plan.json's `to_id`/`message` into a "
-        "renga-peers send_message call."
-    )
+    print(_next_step_hint())
     return 0
+
+
+def _next_step_hint() -> str:
+    """Operator-facing next-step line for ``apply``.
+
+    The transport server name is descriptor-driven (§5.2 (i) single SoT):
+    ``renga-peers`` by default (byte-identical with the current output) and
+    ``org-broker`` when ``ORG_TRANSPORT=broker``. This keeps the hint aligned
+    with the ``mcp__<server>__send_message`` call the Secretary actually
+    issues when copying ``send_plan.json``.
+    """
+    return (
+        "Next step: copy send_plan.json's `to_id`/`message` into a "
+        f"{_transport.server_name()} send_message call."
+    )
 
 
 def _reconfigure_stdout() -> None:
