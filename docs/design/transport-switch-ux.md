@@ -41,7 +41,7 @@
 
 本設計が**覆さない**確定制約。設計のすべてはこの 3 点の下に置かれる。
 
-1. **既定 `renga`（無設定）= bit 等価の非破壊不変条件は不可侵**。`ORG_TRANSPORT` 無設定では、生成器（settings / allowlist 等の生成物）が現行と 1 byte も変わらない。これは [`tools/transport.py`](../../tools/transport.py) の `rewrite_allow_entries`（既定 `renga` で入力をそのまま返す恒等）と runtime descriptor が構造的に保証している。**会話インターフェースを足しても、会話を一切行わなければ env は設定されず、既定 renga のまま bit 等価が保たれる**（[§5.5](#55-非破壊不変条件の因果連鎖)）。
+1. **既定 `renga`（無設定）= bit 等価の非破壊不変条件は不可侵**。`ORG_TRANSPORT` 無設定では、生成器（settings / allowlist 等の生成物）が現行と 1 byte も変わらない。これは [`tools/transport.py`](../../tools/transport.py) の `rewrite_allow_entries`（既定 `renga` で入力をそのまま返す恒等）と runtime descriptor が構造的に保証している。**会話インターフェースを足しても、会話 IF で broker を選んでいない限り（= 永続選択が未設定 / renga）env は設定されず、既定 renga のまま bit 等価が保たれる**（条件は「このセッションで会話したか」ではなく「broker を opt-in したか」。[§5.4](#54-提案する持続選択機構persisted-choice) クロスセッション含意 / [§5.5](#55-非破壊不変条件の因果連鎖)）。
 
 2. **解決順（explicit 引数 > `ORG_TRANSPORT` env > 既定 `renga`）と SoT は変更しない**。輸送系の決定ロジックは [`tools/transport.py`](../../tools/transport.py) の `resolve()`（= runtime の `resolve_transport`）に閉じており、その唯一の SoT は runtime transport descriptor（`claude_org_runtime.transport`）である。**会話インターフェースは `resolve()` を置き換えず、その入力（env）を*供給する*だけ**。可視化（[§6](#6-機構-2-org-start-起動報告への現在輸送系の常時-1-行可視化)）も `resolve()` を**consume** するのみで、輸送系を再導出（独自判定）しない。
 
