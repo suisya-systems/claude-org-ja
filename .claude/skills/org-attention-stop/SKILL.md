@@ -20,6 +20,8 @@ allowed-tools:
 [`/org-attention-start`](../org-attention-start/SKILL.md) で起動した watcher ペインを閉じ、
 sidecar (`.state/attention_pane.json`) をクリアする。
 
+> **輸送層 両系（`ORG_TRANSPORT`: 既定 `renga` / opt-in `broker`）**: 本スキルの `mcp__renga-peers__*`（`list_panes` / `close_pane`）は **既定 `renga`** で書いてあり、`ORG_TRANSPORT` 無設定ならそのまま従えばよい（既定挙動不変）。`ORG_TRANSPORT=broker`（opt-in・切戻し可）では完全修飾名が **`mcp__renga-peers__*` → `mcp__org-broker__*`** に機械置換される（引数形・セマンティクスは同一）。ペインを閉じる側なので spawn 承認の差は無関係。エラーは broker 追加コード（`[no_backend]` / `[token_invalid]` 等、[`.claude/skills/org-delegate/references/renga-error-codes.md`](../org-delegate/references/renga-error-codes.md) の broker 節）が加わる。契約面は [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) Surface 8（批准待ち）、設計 SoT は transport-lab `docs/design/ja-migration-plan.md` §5.2(ii)。既定 renga の手順は不変（broker は加算）。
+
 ## Step 1: sidecar と live pane の状態確認
 
 1. `mcp__renga-peers__list_panes` を呼び、`name="attention"` または `role="attention"` の

@@ -105,6 +105,8 @@ claude-org 自己編集タスクで Pattern B（worktree）を採る場合、wor
 
 `.claude/` 配下への書き込みは 2 層でガードされる: `block-org-structure.sh` hook は Edit / Write に限り通すが、auto-mode 分類器が「ユーザー承認の無い `.claude/` 編集」をブロックする。分類器の承認は **send_keys による端末入力（worker の会話に user message として届く形）でのみ通る**。peer message（`send_message`）は user 入力にならないため承認として機能しない。
 
+> **輸送層 両系（`ORG_TRANSPORT`: 既定 `renga` / opt-in `broker`）**: 本ハンドシェイクの `send_keys` は **既定 `renga`**（`ORG_TRANSPORT` 無設定）で `mcp__renga-peers__send_keys`。`ORG_TRANSPORT=broker`（opt-in・切戻し可）では **`mcp__renga-peers__send_keys` → `mcp__org-broker__send_keys`** に機械置換される（raw キー入力 = 端末への承認文入力という性質・引数形は同一なので、承認文が user message として届き分類器を通る論理は両系で不変）。なお spawn 時の初回承認プロンプト自体は renga の dev-channel ではなく Claude Code の **folder-trust プロンプト**に変わるが、それは本節の「`.claude/` 編集の事前承認」とは別レイヤー（spawn 儀式の差。pane-layout / spawn-flow 側）。詳細は [`docs/contracts/backend-interface-contract.md`](../../../../docs/contracts/backend-interface-contract.md) Surface 8（批准待ち）と [`.claude/skills/org-delegate/references/renga-error-codes.md`](renga-error-codes.md) の broker 節を参照。既定 renga の手順は不変（broker は加算）。
+
 ### ハンドシェイク（固定手順）
 
 deadlock（worker が届かない承認を待ち続ける）と空打ち Enter（承認文の無い送信）を防ぐため、以下に固定する:

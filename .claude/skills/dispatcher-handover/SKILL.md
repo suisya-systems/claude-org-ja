@@ -28,6 +28,8 @@ allowed-tools:
 secretary に「ack を受けたら send_keys で /clear → /dispatcher-resume を打って
 ほしい」と通知する。
 
+> **輸送層 両系（`ORG_TRANSPORT`: 既定 `renga` / opt-in `broker`）**: 本スキルの `mcp__renga-peers__*`（handover 通知の `send_message` 等）は **既定 `renga`** で書いてあり、`ORG_TRANSPORT` 無設定ならそのまま従えばよい（既定挙動不変）。`ORG_TRANSPORT=broker`（opt-in・切戻し可）では完全修飾名が **`mcp__renga-peers__*` → `mcp__org-broker__*`** に機械置換され、secretary からの ack 受信は in-band push ではなく **pane-local ナッジ + `check_messages` で pull**、secretary 側の `/clear` → `/dispatcher-resume` 打鍵は `mcp__org-broker__send_keys` で同型、エラーは broker 追加コード（[`.claude/skills/org-delegate/references/renga-error-codes.md`](../org-delegate/references/renga-error-codes.md) の broker 節）が加わる。詳細は [`.dispatcher/CLAUDE.md`](../../../.dispatcher/CLAUDE.md)「輸送層（transport）両系」節と [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) Surface 8（批准待ち）を参照。既定 renga の手順は不変（broker は加算）。
+
 > **重要な前提**:
 > - 本 skill は **ディスパッチャー自身**（`.dispatcher/` cwd）が実行する。
 >   secretary から直接呼ぶものではない。

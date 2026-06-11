@@ -3,6 +3,14 @@
 renga のペイン / タブ配置ルール。`org-start` と `org-delegate` が参照する。
 ペイン制御は `mcp__renga-peers__*` MCP ツール経由で行う（renga 0.18.0+ 前提。`spawn_claude_pane` / `set_pane_identity` を含む 14 ツールすべて MCP で完結）。
 
+> **輸送層（transport）両系 — 既定 `renga` / opt-in `broker`**: 本ファイルの `mcp__renga-peers__*` 呼び出しは **既定 `renga`**（`ORG_TRANSPORT` 無設定）で書いてあり、そのまま従えばよい（既定挙動は不変）。`ORG_TRANSPORT=broker`（opt-in・切戻し可）では MCP サーバー名が `org-broker` になり、ツールの **完全修飾名が `mcp__renga-peers__*` → `mcp__org-broker__*`** に機械置換される（引数形・セマンティクスは同一なので balanced split の判定・操作の論理は変わらない）。輸送依存で手順が変わる点だけ broker 併記する:
+>
+> - **spawn 儀式（dev-channel 承認 → folder-trust 承認）**: 下記「`spawn_claude_pane` を使う理由」のとおり renga は `--dangerously-load-development-channels server:renga-peers` を注入する。broker は代わりに `--mcp-config <broker>` を注入し、起動時の承認プロンプトが Claude Code の **folder-trust プロンプト**に変わる（`send_keys(enter=true)` での機械承認は同型）。なお broker spawn helper は内部で interactive-TUI argv を default-deny billing-neutral guard の背後で組み立てる。
+> - **受信モデル（push → pull）**: renga の `send_message` は in-band push、broker は pane-local ナッジ + `check_messages` での pull。レイアウト操作自体（`list_panes` / `spawn_claude_pane` / `close_pane` 等）はどちらも同じ論理でツール名のみ `mcp__org-broker__*` に変わる。
+> - **エラー分岐（broker 追加コード）**: `split_capacity_exceeded` / `[split_refused]` / `[cwd_invalid]` 等の renga コードに加え broker は `[token_invalid]` / `[session_invalid]` / `[tool_not_authorized]` / `[no_backend]`（= adapter_unavailable）/ `[nudge_failed]` / `[peer_not_found]` / `[name_taken]` を返しうる。一覧は [`.claude/skills/org-delegate/references/renga-error-codes.md`](renga-error-codes.md) の broker 節を参照。
+>
+> `new_tab` / `focus_pane` は broker surface に**無い**（意図的除外）— ただし本ドキュメントの balanced split は同一タブ内 split のみで `new_tab` を使わない設計なので、broker でも欠落の影響は無い。契約面の正本は [`docs/contracts/backend-interface-contract.md`](../../../../docs/contracts/backend-interface-contract.md) Surface 8（提案・批准待ち）、設計 SoT は transport-lab `docs/design/ja-migration-plan.md` §5.2(ii)。broker 実走（dogfood）は Epic #6 Issue G スコープで本ファイルの既定経路ではない。
+
 ## 初期レイアウト (`renga --layout ops` の結果 + ディスパッチャー・キュレーター起動後)
 
 窓口 (`secretary`) / ディスパッチャー / キュレーターが同一タブに立ち上がり、ワーカーも同一タブ内に split で積んでいく方針。
@@ -30,7 +38,7 @@ Tab 1: ops (ワーカー 0 人)
 | キュレーター（オンデマンド時のみ） | ディスパッチャーペインを垂直分割して右半分 | `mcp__renga-peers__spawn_claude_pane(target="dispatcher", direction="vertical", role="curator", name="curator", cwd="../.curator", permission_mode="auto")` (pane-close.md Step 5-3。常駐廃止につき org-start からは spawn しない) |
 | 各ワーカー | **balanced split**: `list_panes` が返す現在の rect から target と direction を動的に選び、同一タブ内に積む | 詳細は下記「ワーカーの balanced split 戦略」セクション。`mcp__renga-peers__spawn_claude_pane(target={target}, direction={direction}, role="worker", name="worker-{task_id}", cwd="{workers_dir}/{task_id}", permission_mode="auto")` (org-delegate Step 3) |
 
-> **`spawn_claude_pane` を使う理由**: renga 0.18.0+ で追加された構造化 launch ツール。`cwd` / `permission_mode` / `model` / `args[]` を構造化フィールドで渡すと、renga が内部で `claude --permission-mode {mode} --dangerously-load-development-channels server:renga-peers ...` を合成する。旧方式（`cd`-プレフィックス付き command 文字列を `spawn_pane` に流し込む）は **禁止**（cwd 変更プレフィックスがあると renga の bare-`claude` auto-upgrade が発動せず、`send_message` の channel push が届かなくなる。窓口→ディスパッチャー / ディスパッチャー→ワーカーの指示が一切通らなくなる）。Secretary のみ `ops.toml` から bare `claude` で起動され auto-upgrade に任せる。
+> **`spawn_claude_pane` を使う理由**: renga 0.18.0+ で追加された構造化 launch ツール。`cwd` / `permission_mode` / `model` / `args[]` を構造化フィールドで渡すと、renga が内部で `claude --permission-mode {mode} --dangerously-load-development-channels server:renga-peers ...` を合成する。旧方式（`cd`-プレフィックス付き command 文字列を `spawn_pane` に流し込む）は **禁止**（cwd 変更プレフィックスがあると renga の bare-`claude` auto-upgrade が発動せず、`send_message` の channel push が届かなくなる。窓口→ディスパッチャー / ディスパッチャー→ワーカーの指示が一切通らなくなる）。Secretary のみ `ops.toml` から bare `claude` で起動され auto-upgrade に任せる。broker（`ORG_TRANSPORT=broker`）では合成される flag が `--dangerously-load-development-channels server:renga-peers` ではなく `--mcp-config <broker>` になり、初回承認は dev-channel ではなく **folder-trust プロンプト**（手順形は同型、本ファイル冒頭の両系注記を参照）。
 
 ## ワーカーの balanced split 戦略
 

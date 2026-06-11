@@ -21,6 +21,8 @@ allowed-tools:
 
 ワーカーから「承認を仰ぎます」「判断仰ぎます」「続行可否を確認」「スコープ拡張」「提案」「想定外」「runbook 逸脱」「ブロック」「ブロッカー」「block」等を含む peer message を受け取ったとき、窓口は **一次承認せず** 人間にエスカレーションする。窓口は伝言役であり判断レイヤーではない。
 
+> **輸送層 両系（`ORG_TRANSPORT`: 既定 `renga` / opt-in `broker`）**: 本スキルの `mcp__renga-peers__*`（ack の `send_message` 等）は **既定 `renga`** で書いてあり、`ORG_TRANSPORT` 無設定ならそのまま従えばよい（既定挙動不変）。`ORG_TRANSPORT=broker`（opt-in・切戻し可）では完全修飾名が **`mcp__renga-peers__*` → `mcp__org-broker__*`** に機械置換され、worker からの判断仰ぎ受信は in-band push ではなく **pane-local ナッジ + `check_messages` で pull**（受信契機が「ナッジを見たら `check_messages`」に変わるだけで、ack や register 更新の手順は同型）、エラーは broker 追加コード（[`.claude/skills/org-delegate/references/renga-error-codes.md`](../org-delegate/references/renga-error-codes.md) の broker 節）が加わる。詳細は CLAUDE.md「輸送層（transport）両系」節と [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) Surface 8（批准待ち）を参照。既定 renga の手順は不変（broker は加算）。
+
 > **状態保存の必要性**: 窓口再起動・引き継ぎで pending 判断を失わないため、
 > Progress Log / events / pending-decisions register の 3 層に同時記録する。
 > どれが欠落してもディスパッチャーの SECRETARY_RELAY_GAP_SUSPECTED 検出
