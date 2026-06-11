@@ -42,6 +42,8 @@ allowed-tools:
 
 > **ack ≠ user 承認**: 本スキルが発動した時点で ack は既に発行済み（`.claude/skills/org-delegate/SKILL.md` Step 5 step 1 / [`.claude/skills/org-delegate/references/ack-template.md`](../org-delegate/references/ack-template.md)）。push / `gh pr create` / `tools/pr-watch.*` はユーザー承認後にのみ発行する。
 
+> **輸送層 両系（`ORG_TRANSPORT`: 既定 `renga` / opt-in `broker`）**: 本スキルの `mcp__renga-peers__*`（worker への修正指示 `send_message` 等）と pr-watch の peer 通知は **既定 `renga`** で書いてあり、`ORG_TRANSPORT` 無設定ならそのまま従えばよい（既定挙動不変）。`ORG_TRANSPORT=broker`（opt-in・切戻し可）では完全修飾名が **`mcp__renga-peers__*` → `mcp__org-broker__*`** に機械置換され、**CI_COMPLETED / PR_MERGED 等の受信が in-band push ではなく pane-local ナッジ + `check_messages` での pull になる**（下記 2b-i の受信モデル注記を参照）、エラーは broker 追加コード（[`.claude/skills/org-delegate/references/renga-error-codes.md`](../org-delegate/references/renga-error-codes.md) の broker 節）が加わる。詳細は CLAUDE.md「輸送層（transport）両系」節と [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) Surface 8（批准待ち）を参照。既定 renga の手順は不変（broker は加算）。
+
 ## 2b-i. PR 作成段階（即時実行）
 
 ユーザーが「OK」「確認した」「問題ない」「進めて」等の **明示的承認** を出した直後に発動する:
@@ -55,6 +57,7 @@ allowed-tools:
 - DB の events テーブルにイベント追記 (push / PR open など、`bash tools/journal_append.sh ...`)
 - PR 番号が確定したら `tools/pr-watch.ps1 <PR>` (Windows) / `tools/pr-watch.sh <PR>` (POSIX) で CI を監視する。完了時に `ci_completed` が自動で events に記録される。CI 完了で pr-watch は **return** する（review feedback loop 2c や手動 close 2b-ii に進めるよう同期占有しない）
 - **renga 環境では pr-watch が CI 完了 / merge 検出 / 24h タイムアウトの瞬間に Secretary へ peer message を送る** (Issue #326)。窓口は events テーブルをポーリングせず、`<channel source="renga-peers"> CI_COMPLETED: PR #<n> ...` (および `PR_MERGED: PR #<n>` / `PR_MERGE_WATCH_TIMEOUT: PR #<n>` / `PR_MERGED_NO_RUN: PR #<n>`) の到着で次のステップへ進める。`CI_COMPLETED` 受信 → ユーザーに merge 承認を仰ぐ → ユーザー承認 → `PR_MERGED` 受信で 2b-ii の post-merge cleanup へ。`PR_MERGED_NO_RUN` は merge は観測したが対応 run 行が見つからなかった失敗系（`tools/run_complete_on_merge.py` の `no_run` 終端）で、post-merge cleanup には進めず人間判断で対処する。RENGA_SOCKET 未設定の plain shell / CI では peer-send は silent noop となり、従来どおり events テーブルのポーリングにフォールバックする
+  - **broker（`ORG_TRANSPORT=broker`）の場合**: pr-watch が送る `CI_COMPLETED` / `PR_MERGED` / `PR_MERGE_WATCH_TIMEOUT` / `PR_MERGED_NO_RUN` は in-band の `<channel source="renga-peers">` push ではなく **pane-local ナッジ**として届く（channel source は `org-broker`）。窓口は **ナッジを見たら `mcp__org-broker__check_messages` で本文を pull** してから次のステップへ進む（メッセージ本文の semantics・分岐は renga と同一、受信契機だけ pull に変わる）。RENGA_SOCKET 同様、broker daemon 未起動の plain shell / CI では従来どおり events テーブルのポーリングにフォールバックする
 - **CI_COMPLETED 受信 → ユーザーに merge 承認を仰ぐ直前で awaiting_user 通知を emit する（Issue #28）**: attention watcher にユーザーが merge 承認待ちで stop していることを知らせる:
   ```bash
   bash tools/journal_append.sh notify_sent kind=awaiting_user task_id=<task_id> gate=ci_green_merge_gate note="PR #<PR> CI green, awaiting merge approval"

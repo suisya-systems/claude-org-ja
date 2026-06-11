@@ -31,6 +31,25 @@ mcp__renga-peers__send_message(to_id="worker-nonexistent", message="hi")
 | `parse` / `protocol` | 通常出ない (MCP が正しく組み立てる前提) | 発生時はバグ。journal に記録して窓口に `IPC_PROTOCOL_ERROR` で報告 |
 | `internal` | renga 内部不変条件違反 (parser lock poison 等) | `app_timeout` と同じ扱い |
 
+## Broker（`ORG_TRANSPORT=broker`）の追加コードとツール名射影
+
+本ファイルは **既定 `renga`**（`ORG_TRANSPORT` 無設定）の error code を正典として記述する。`ORG_TRANSPORT=broker`（opt-in・切戻し可）では MCP サーバー名が `org-broker` になり、ツールの **完全修飾名が `mcp__renga-peers__*` → `mcp__org-broker__*`** に機械置換される（wire format `[<code>] <message>` の抽出方法・分岐方針は同一）。broker は上表の共有コードのうち **`pane_not_found` / `last_pane` / `invalid-params` を意味が一致するものとして再利用**し、以下の broker 固有コードを **加算**する（renga harness は影響を受けず、broker harness も未知コードは default-branch で扱う）。契約の正本は [`docs/contracts/backend-interface-contract.md`](../../../../docs/contracts/backend-interface-contract.md) Surface 8（broker auth & delivery、提案・批准待ち）§8.7。
+
+| Code | 意味 | 出る操作 | 推奨挙動 |
+|---|---|---|---|
+| `token_invalid` | bind token が未知 / malformed / revoked | 認証が要る全操作 | バグ or session 喪失。journal 記録 + 窓口 escalate |
+| `session_invalid` | この agent の broker session が消えた（daemon 再起動 / bind drop） | 認証が要る全操作 | spawn からやり直し（再 bind）が必要。窓口 escalate |
+| `tool_not_authorized` | caller の `auth_role` tier に当該ツールが含まれない（§8.3 tier gating） | tier 制限のある操作 | 設定ミス。tier 設計を見直し窓口 escalate（renga には無い概念） |
+| `peer_not_found` | `send_message` / messaging の宛先 id / name が解決できない | messaging 操作 | renga の `pane_not_found`（messaging 文脈）相当。閉じた peer 扱い |
+| `name_taken` | spawn / `set_pane_identity` の name 衝突 | spawn 系 / `set_pane_identity` | renga の `name_in_use` の broker 綴り。同じ扱い（numeric id 運用 or 永続修復） |
+| `no_backend` | terminal adapter（tmux/WezTerm）が利用不可 = "adapter_unavailable" | pane 制御操作 | adapter 環境を確認し窓口 escalate。renga の `io_error` 近傍 |
+| `nudge_failed` | pull 用ナッジを宛先ペインに配送できなかった | `send_message` | 本文はキュー済だが受信側が気付けない。再送 or 窓口 escalate |
+| `unknown_tool` | broker surface に存在しないツールを呼んだ（`new_tab` / `focus_pane` 等） | 全操作 | broker は `new_tab` / `focus_pane` を意図的に omit。呼び出し側のバグ |
+
+> **設計 §5.2(ii) の命名との対応**: `token_*` = `token_invalid` + `session_invalid`、`adapter_unavailable` = `no_backend`、tier gating の追加が `tool_not_authorized`。`name_taken` は共有 `name_in_use` の broker 綴り。
+
+> **broker の ok-return / 配送差**: 後述の renga 例外（`list_peers` / `send_message` の renga 非接続時 ok-text shim）は **broker には無い**（§6.3 carve-out 不適用）。broker では transport loss も §8.7 のエラーコードで返る。また broker は全 peer が pull 配送（push peer は存在しない）なので、受信は「pane-local ナッジ → `mcp__org-broker__check_messages` で本文 pull」となる（`receive_mode` は定数 `"poll"`、§8.4/§8.8）。
+
 ## MCP ツール特有の ok-return ルール
 
 以下 2 つの MCP ツールは、renga 到達不可でも **JSON-RPC error にせず ok-text で返す** 例外扱い。

@@ -140,6 +140,7 @@ done: {commit SHA 短縮形} {変更ファイル名}
 
 1. **完了報告**: renga-peers で **窓口（`secretary`）** に報告する
    - 送信方法: `mcp__renga-peers__send_message(to_id="secretary", message="...")`（`secretary` は renga layout で固定された pane name）
+   - **輸送層 両系（`ORG_TRANSPORT`: 既定 `renga` / opt-in `broker`）**: 上記は **既定 `renga`**（`ORG_TRANSPORT` 無設定）。`ORG_TRANSPORT=broker`（opt-in・切戻し可）なら完全修飾名が **`mcp__renga-peers__send_message` → `mcp__org-broker__send_message`** に機械置換される（`to_id` 等の引数形・宛先は同一）。窓口からの ack 等の受信は in-band push ではなく **pane-local ナッジ + `mcp__org-broker__check_messages` で pull**（「ナッジを見たら `check_messages`」に変わるだけ）。`[pane_not_found]` 系の代わりに broker は `[peer_not_found]` を返しうるが、下記フォールバック（numeric pane id 送信）は同型に効く。既定 renga の手順は不変
    - **注意: ディスパッチャー（指示を送ってきた相手）ではなく、窓口に送ること**
    - **フォールバック**: `to_id="secretary"` が `[pane_not_found]` で返る場合は、`renga --layout ops` 以外の経路で窓口ペインが起動された可能性がある。その場合は DELEGATE メッセージ本文で指定された numeric pane id（例: `to_id="1"`）を使って送信する。窓口側で `/org-start` Step 0 の `set_pane_identity` 自動修復が走れば、以降は `to_id="secretary"` が使える
    - 何を完了したか

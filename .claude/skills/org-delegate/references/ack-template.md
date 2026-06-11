@@ -2,6 +2,8 @@
 
 Secretary が worker からの peer message を受け取ったときの ack（acknowledgement）文面テンプレート。SKILL.md Step 5 の "Canonical event flow" の **step 1** で必ず発行する。
 
+> **輸送層 両系（`ORG_TRANSPORT`: 既定 `renga` / opt-in `broker`）**: 下記例文の `mcp__renga-peers__send_message` は **既定 `renga`**（`ORG_TRANSPORT` 無設定）。`ORG_TRANSPORT=broker`（opt-in・切戻し可）では完全修飾名が **`mcp__renga-peers__send_message` → `mcp__org-broker__send_message`** に機械置換される（引数形・宛先指定・ack 文面は同一）。worker の報告受信が in-band push ではなく **pane-local ナッジ + `check_messages` で pull** になるので、Secretary は「ナッジを見たら `mcp__org-broker__check_messages` で本文 pull → ack」の順になる（ack 必須・dead-lock 防止という性質は両系で不変）。詳細は [`docs/contracts/backend-interface-contract.md`](../../../../docs/contracts/backend-interface-contract.md) Surface 8（批准待ち）と [`.claude/skills/org-delegate/references/renga-error-codes.md`](renga-error-codes.md) の broker 節を参照。既定 renga の例文は不変（broker は加算）。
+
 ## なぜ ack が必須か
 
 - worker-claude-template は完了 / 進捗報告の末尾に「ペイン保持。次の指示お待ちします」を書くよう指示している

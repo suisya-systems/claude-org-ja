@@ -28,6 +28,8 @@ allowed-tools:
 pane_id を `.state/attention_pane.json` に sidecar として記録する。停止は
 [`/org-attention-stop`](../org-attention-stop/SKILL.md) を使う。
 
+> **輸送層 両系（`ORG_TRANSPORT`: 既定 `renga` / opt-in `broker`）**: 本スキルの `mcp__renga-peers__*`（`spawn_pane` / `list_panes` / `inspect_pane` / `close_pane`）は **既定 `renga`** で書いてあり、`ORG_TRANSPORT` 無設定ならそのまま従えばよい（既定挙動不変）。`ORG_TRANSPORT=broker`（opt-in・切戻し可）では完全修飾名が **`mcp__renga-peers__*` → `mcp__org-broker__*`** に機械置換される（引数形・セマンティクスは同一なので spawn / 監視操作の論理は変わらない）。attention watcher は Claude ペインではなく `claude-org-runtime` CLI なので **dev-channel / folder-trust の承認は両系とも不要**（spawn 儀式の差は Claude ペイン spawn にのみ効く）。エラーは broker 追加コード（`[no_backend]`（= adapter_unavailable）/ `[token_invalid]` 等、[`.claude/skills/org-delegate/references/renga-error-codes.md`](../org-delegate/references/renga-error-codes.md) の broker 節）が加わる。`new_tab` / `focus_pane` は broker surface に**無い**が本スキルは使わない。契約面は [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) Surface 8（批准待ち）、設計 SoT は transport-lab `docs/design/ja-migration-plan.md` §5.2(ii)。既定 renga の手順は不変（broker は加算）。
+
 > **前提**: この skill は窓口（Secretary）の cwd（= claude-org-ja リポジトリ root）から呼ばれる。
 > attention watcher 自体は `claude-org-runtime` の console_scripts entrypoint で、`--state-dir .state` /
 > `--config .state/attention.json` の相対パスが repo root から resolve される必要がある。
