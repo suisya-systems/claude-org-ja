@@ -181,7 +181,7 @@ def _resolve_repo() -> str:
     try:
         result = subprocess.run(
             ["gh", "repo", "view", "--json", "nameWithOwner"],
-            capture_output=True, text=True, check=True,
+            capture_output=True, text=True, encoding="utf-8", check=True,  # gh emits UTF-8; locale decode (cp932) corrupts/crashes (#537)
         )
     except subprocess.CalledProcessError as exc:
         sys.stderr.write(
@@ -213,7 +213,7 @@ def fetch_pr_view(pr: int, repo: str) -> dict:
             "--repo", repo,
             "--json", "number,url,state,mergedAt,mergeCommit,headRefName",
         ],
-        capture_output=True, text=True, check=False,
+        capture_output=True, text=True, encoding="utf-8", check=False,  # gh emits UTF-8; locale decode (cp932) corrupts/crashes (#537)
     )
     if proc.returncode != 0:
         raise RuntimeError(

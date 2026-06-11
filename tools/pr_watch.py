@@ -165,6 +165,7 @@ def _resolve_repo() -> str:
             ["gh", "repo", "view", "--json", "nameWithOwner"],
             capture_output=True,
             text=True,
+            encoding="utf-8",  # gh emits UTF-8; locale decode (cp932) corrupts/crashes (#537)
             check=True,
         )
     except subprocess.CalledProcessError as exc:
@@ -284,6 +285,7 @@ def _fetch_checks(pr: int, repo: str) -> "list[dict] | None":
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",  # gh emits UTF-8; locale decode (cp932) corrupts/crashes (#537)
             check=False,
         )
     except FileNotFoundError:
@@ -508,6 +510,7 @@ def _pr_exists(pr: int, repo: str) -> bool:
             ["gh", "pr", "view", str(pr), "--repo", repo, "--json", "number"],
             capture_output=True,
             text=True,
+            encoding="utf-8",  # gh emits UTF-8; locale decode (cp932) corrupts/crashes (#537)
             check=True,
         )
     except subprocess.CalledProcessError:
