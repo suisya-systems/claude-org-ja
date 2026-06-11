@@ -2,6 +2,8 @@
 
 > **Status**: Ratified (2026-05-03). Lead-confirmed decisions for all 12 open questions. This contract defines the abstract backend surface that the `claude-org` harness depends on; renga 0.18.0+ is the reference implementation, but any backend meeting the surface specified here is permitted.
 >
+> **Proposed amendment (2026-06-11, pending ratification — Epic #6 / ja#514)**: a second reference backend — **`org-broker`** (the pure-backend broker extracted into `claude_org_runtime.broker`, driven by terminal adapters tmux/WezTerm) — is added as an **additive** amendment. The amendment introduces a new [Surface 8 (Broker auth & delivery)](#surface-8-broker-auth--delivery-proposed-amendment) and short per-surface broker notes on Surfaces 1–5; it does **not** modify any ratified normative text above. Renga (`renga-peers`) remains the **default** backend (`ORG_TRANSPORT` unset = `renga`); broker is **opt-in** (`ORG_TRANSPORT=broker`) and renga is never removed (opt-in fallback / rollback safety). Ratification is gated on the Epic #6 dogfood (transport-lab `docs/design/ja-migration-plan.md` §8 Issue G). Each broker note below is marked **“Broker amendment (proposed)”** so the ratified renga surface stays the byte-stable normative baseline until the amendment is ratified.
+>
 > **Scope**: Phase 1 Contract Set D only. Sets A (roles), B (delegation lifecycle), C (state), and E (knowledge) are tracked in #121 / #122 / #124 / #125 and out of scope here.
 >
 > **Subject**: Set D defines the abstract API that any backend must provide for `claude-org` to operate. Today the only implementation is **renga** (`mcp__renga-peers__*` MCP server, renga 0.18.0+). This contract documents what the harness *requires*, not what renga *happens to provide* — alternative backends are permitted as long as they meet the surface specified here.
@@ -24,6 +26,8 @@
 ## Surface 1: Pane control
 
 The backend MUST expose primitives to spawn, enumerate, identify, and close "panes" (process-bearing rectangles in a tiling terminal). Per the Lead-ratified decisions: `inspect_pane`, `send_keys`, and `list_panes` geometry are REQUIRED; the per-runtime spawn helpers (`spawn_claude_pane`, `spawn_codex_pane`) and a graceful-exit operation are OPTIONAL (backends may provide them, but harnesses must be able to drive a generic spawn with flag injection); `focus_pane` and `new_tab` are user-affordance surfaces that backends SHOULD provide but the harness does not depend on for correctness. All operations are scoped to a single tab (see Surface 4 — Identity & addressing).
+
+> **Broker amendment (proposed)**: `org-broker` provides the generic `spawn_pane` plus `spawn_claude_pane` / `spawn_codex_pane` convenience helpers (§1.2/§1.3) and `close_pane` / `list_panes` / `inspect_pane` / `send_keys` / `set_pane_identity`; it intentionally **omits** `focus_pane` and `new_tab` (exercising the OPTIONAL latitude of §1.6/§4.3). Broker spawn helpers inject `--mcp-config <broker>` (not `--dangerously-load-development-channels`) and build the interactive-TUI argv internally behind a default-deny billing-neutral guard. `list_panes` output fields carry broker semantics (§1.5 note, [Surface 8](#surface-8-broker-auth--delivery-proposed-amendment) §8.5/§8.8/§8.9).
 
 ### 1.1 spawn (generic)
 
@@ -69,6 +73,8 @@ The backend MUST expose primitives to spawn, enumerate, identify, and close "pan
 - **Operation**: enumerate every pane in the current tab.
 - **Outputs**: per-pane records containing `id`, optional `name`, optional `role`, `focused` flag, terminal geometry (`x`, `y`, `width`, `height` in cell units), `cwd`, optional `summary` (see 2.4), and when known the peer client kind / receive mode (push vs poll).
 - **Required for**: balanced-split target selection (`org-delegate` Step 3-1), reconciliation of missed lifecycle events (`.dispatcher/references/worker-monitoring.md` watch-loop Step 3), bootstrap identity verification (`org-start` Step 0.3).
+
+> **Broker amendment (proposed)**: under `org-broker` the `cwd`, `kind`, and `receive_mode` fields are populated with broker semantics — `cwd` is known at spawn-time token bind, `kind` reflects the broker client, and `receive_mode` is the constant `"poll"` (broker delivers all peers pull-style — there are no push peers; [Surface 8](#surface-8-broker-auth--delivery-proposed-amendment) §8.4/§8.8). Geometry, `id`, `focused`, and the rest of the record are unchanged. Where the ratified text says these fields are present "when known", broker makes them deterministic per §8.8.
 - **Visibility scope**: current tab only. Panes in other tabs MUST NOT appear.
 - **Required-vs-optional**: REQUIRED. The backend MUST expose `x` / `y` / `width` / `height` in cell units on every `list_panes` record. The harness's balanced-split scheduling depends on it; a backend without geometry would require an entirely different scheduling strategy and the harness cannot operate against such a backend without contract amendment.
 
@@ -111,6 +117,8 @@ The backend MUST expose primitives to spawn, enumerate, identify, and close "pan
 
 The backend MUST provide a logical peer-messaging channel separate from raw PTY input.
 
+> **Broker amendment (proposed)**: `org-broker` keeps the same messaging tools (`send_message` / `list_peers` / `check_messages` / `set_summary`, same argument shapes), but delivery is **pull for every recipient** — `send_message` queues the body and emits a pane-local nudge, and the recipient drains it via `check_messages` (2.3). There is no push (in-band `<channel>`) delivery under broker. The channel source label becomes `source="org-broker"` (a transport tag — still non-normative per 2.1's HYBRID encoding rule; harnesses MUST NOT route on it). The `from_id` / `from_name` / `sent_at` semantic fields remain contracted and unchanged. `list_peers` output `cwd` / `kind` / `receive_mode` carry broker semantics ([Surface 8](#surface-8-broker-auth--delivery-proposed-amendment) §8.4/§8.8). On transport loss broker raises an error code per §8.7 (no ok-text shim — broker has no §6.3 carve-out).
+
 ### 2.1 send_message
 
 - **Operation**: deliver a text payload to another pane in the same tab.
@@ -150,6 +158,8 @@ The backend MUST provide a logical peer-messaging channel separate from raw PTY 
 
 The backend MUST expose pane lifecycle events via a long-poll API with cursor-based resume.
 
+> **Broker amendment (proposed)**: `org-broker` exposes the same `poll_events` long-poll API and the same minimum vocabulary (`pane_started` / `pane_exited` / `events_dropped`). Because terminal backends (tmux/WezTerm) have no native lifecycle push, broker **synthesizes** these events from `list_panes` diff reconciliation (transport-lab `docs/design/ja-migration-plan.md` §6 — backend-agnostic, exactly-once `pane_exited`, `events_dropped` on overflow with `list_panes` reconcile recovery). This satisfies the §3.1 best-effort + reconciliation contract (Q9) without change; the cursor/timeout semantics (initial-call = "now", 30 s hard cap) are identical.
+
 ### 3.1 poll_events
 
 - **Operation**: long-poll for pane lifecycle events.
@@ -169,6 +179,8 @@ The backend MUST expose pane lifecycle events via a long-poll API with cursor-ba
 ---
 
 ## Surface 4: Identity & addressing
+
+> **Broker amendment (proposed)**: `org-broker` resolves `target` by the same three addressing kinds as renga — numeric/all-digit handle, stable `name`, and the literal `"focused"` — preserving the §4.1 all-digit-is-id disambiguation rule. Broker honours the SINGLE-TAB MUST scope (§4.2). `new_tab` (§4.3) is **not** provided by broker (OPTIONAL surface; harnesses already tolerate its absence). The reserved-name convention (§4.1) is unchanged.
 
 ### 4.1 Pane identifiers
 
@@ -193,6 +205,8 @@ The backend MUST expose pane lifecycle events via a long-poll API with cursor-ba
 ---
 
 ## Surface 5: Authentication / channel
+
+> **Broker amendment (proposed)**: under `org-broker` the dev-channel flow of §5.1 is replaced by a **bind-token + folder-trust** flow (detail in [Surface 8](#surface-8-broker-auth--delivery-proposed-amendment) §8.2/§8.5). The spawn helper injects `--mcp-config <broker>` instead of `--dangerously-load-development-channels server:<channel>`; the Claude-side approval prompt is the **folder-trust** prompt (a Claude Code feature, not a backend feature), machine-approved by the orchestrator via `send_keys(enter=true)` — structurally the same "spawn → approve prompt → peer joins" shape as §5.1, so §1.9 `send_keys` remains REQUIRED. Authentication itself (which renga leaves to the channel) is carried by a per-agent broker bind token with an immutable permission tier (§8.2/§8.3). The §5.2 transport-agnosticism statement already permits this: broker's channel transport is a localhost HTTP MCP server (§8.6).
 
 ### 5.1 Dev-channel injection
 
@@ -236,6 +250,8 @@ The backend MUST surface failures via a machine-readable code, not by message-st
 - New codes MAY be added at any time. Callers MUST treat unknown codes as non-fatal (default-branch in case analysis), so backends can extend the vocabulary without breaking conformance.
 - The human-facing message MAY change freely; only the `[<code>]` prefix is contracted.
 
+> **Broker amendment (proposed)**: `org-broker` reuses the shared codes where semantics match (`pane_not_found`, `last_pane`, `invalid-params`) and **adds** the broker-specific codes catalogued in [Surface 8](#surface-8-broker-auth--delivery-proposed-amendment) §8.7 (`token_invalid`, `session_invalid`, `tool_not_authorized`, `peer_not_found`, `name_taken`, `no_backend`, `nudge_failed`, `unknown_tool`). These are additive per the 6.2 rule above; renga harnesses are unaffected and broker harnesses default-branch any unknown code.
+
 ### 6.3 ok-text exceptions (today's renga behavior)
 
 Today renga returns ok-text (NOT a JSON-RPC error) on backend-unreachable for two ops only:
@@ -251,6 +267,80 @@ All other ops raise on unreachable.
 ## Surface 7: Backwards-compatibility commitment
 
 The backend surface MUST follow semantic versioning. Breaking changes — operation removal, parameter removal, error-code rename without a deprecation window — MUST bump the major version. New operations, new parameters with safe defaults, and new error codes MAY be added in minor versions. Renames of error codes MUST go through a deprecation window with both the old and new code emitted in parallel for at least one minor version (consistent with the existing 6.2 stability requirements).
+
+---
+
+## Surface 8: Broker auth & delivery (proposed amendment)
+
+> **Status of this surface**: **PROPOSED amendment — 2026-06-11, pending ratification** (Epic #6 / ja#514). Surfaces 1–7 are ratified (2026-05-03) and describe the **renga** reference backend; this section is **additive** and introduces a **second** reference backend, **`org-broker`** (the pure-backend broker extracted into `claude_org_runtime.broker`, driven by terminal adapters `tmux` / `wezterm`). It modifies no ratified normative text. Renga (`renga-peers`) stays the **default** (`ORG_TRANSPORT` unset = `renga`); broker is **opt-in** (`ORG_TRANSPORT=broker`) and renga is never removed (opt-in fallback / rollback safety). Ratification is gated on the Epic #6 dogfood (transport-lab `docs/design/ja-migration-plan.md` §8 Issue G). Design SoT for everything below: transport-lab `docs/design/ja-migration-plan.md` §3 (compat surface), §4 (runtime extraction), §5 (ja seam). Reference implementation: `claude_org_runtime.broker` (server / tokens / surface) 0.1.17.
+
+### 8.1 Transport identity & coexistence
+
+- The broker MCP server name is **`org-broker`** (deliberately distinct from `renga-peers`), so fully-qualified tool names become `mcp__org-broker__<tool>` (renga: `mcp__renga-peers__<tool>`). The distinct name lets both servers be registered in the same machine/session without collision, which is what makes opt-in / staged migration / rollback safe (design §3.4).
+- "Drop-in compatibility" holds at the **argument-shape and semantics** level (so harness logic / retraining is minimized); the FQ tool-name prefix and the per-role MCP allowlist strings are mechanically rewritten by the generation seam, not by the contract. Renga remains the default and the byte-stable baseline.
+
+### 8.2 Authentication — per-agent bind tokens
+
+- The backend issues a **per-agent bind token** at spawn (reference impl: `secrets.token_urlsafe(32)`). Every subsequent MCP call from that agent is authenticated by its token; an unknown/invalid token raises `token_invalid` (§8.7).
+- Each token carries an **immutable permission tier** (`auth_role`) decided at issue time. The display `role` (mutable via `set_pane_identity`, Surface 1.8) is **decoupled** from `auth_role` and CANNOT escalate the tier — `set_pane_identity` changes the label only. This is a structural strengthening over renga, where `role` is purely a display label and the allowlist is the only gate.
+- A spawned child's tier is **capped at the caller's tier** (a caller cannot grant a child more authority than it holds). This bounds privilege flow through the spawn tree.
+
+### 8.3 Tier-gated surface (structural authorization)
+
+- The broker filters `tools/list` by the caller's `auth_role`, so out-of-tier tools are **not even visible** to a lower tier; invoking one anyway raises `tool_not_authorized` (§8.7). Tiers:
+  - **messaging tier** (`worker` / `curator` / unknown role): `send_message`, `check_messages`, `list_peers`, `set_summary` (4 tools).
+  - **ops tier** (`dispatcher` / `secretary`): the messaging four **plus** pane control (`list_panes`, `inspect_pane`, `send_keys`, `poll_events`, `close_pane`, `set_pane_identity`, `spawn_claude_pane`, `spawn_codex_pane`; `secretary` additionally gets generic `spawn_pane` for the attention-watcher).
+- This is **defense-in-depth**: structural tier gating at the backend is the primary gate; the settings MCP allowlist (per-role) is a second, redundant gate. Under renga every role sees the same surface and the allowlist is the *only* gate — broker is strictly stronger here, not a regression.
+
+### 8.4 Delivery model — pull for every recipient
+
+- `send_message` **queues** the body and emits a **pane-local nudge** to the recipient; the recipient retrieves the body via `check_messages` (Surface 2.3). This applies to **all** recipients — there is no push (in-band `<channel>`) delivery under broker.
+- Consequence for harness prose: the renga receive cue "when a `<channel>` notification arrives, ack" becomes "when a nudge line appears, run `check_messages`, then ack" under broker. The `from_id` / `from_name` / `sent_at` semantic fields (Surface 2.1 HYBRID rule) are unchanged; only the transport source tag differs (`source="org-broker"`).
+
+### 8.5 Spawn ritual — `--mcp-config` injection + folder-trust approval
+
+- Broker spawn helpers (`spawn_claude_pane` / `spawn_codex_pane`) inject **`--mcp-config <broker>`** (not `--dangerously-load-development-channels`) and **build the interactive-TUI argv internally** rather than accepting a caller-supplied `argv`.
+- The Claude-side approval prompt under broker is the **folder-trust** prompt (a Claude Code feature), machine-approved by the orchestrator via `send_keys(enter=true)` — the same "approve the spawn prompt" shape as renga's dev-channel approval (Surface 5.1), so Surface 1.9 `send_keys` stays REQUIRED.
+- **Billing-neutral guard (maintenance contract continues)**: because broker builds the argv, the interactive-TUI guard checks the **builder's own output** (structurally an interactive TUI) rather than caller argv. The guard is a **default-deny allowlist**: headless / non-interactive subcommands and flags (claude/codex `exec` / `review` / `*-server` / `apply` / `sandbox` / `completion` / unknown subcommands / bare positionals / `--` bypass) are rejected with `invalid-params`. New legitimate interactive flags require an allowlist extension; headless surfaces are never added (design §3.3-1/§3.3-6, §7.6 lineage).
+
+### 8.6 Channel transport — localhost HTTP MCP
+
+- The broker is a **localhost-only HTTP MCP server** (bound to `127.0.0.1`). Surface 5.2 already declares the channel transport backend-defined; this records the concrete broker choice.
+- This is a **host-local exception** to `docs/non-goals.md` §12 ("no external HTTP MCP exposure"): the broker is not externally reachable, introduces no TLS / network-boundary / external-auth surface, and stays inside the "local-completeness" operating discipline. See the §12 amendment in `docs/non-goals.md`.
+
+### 8.7 Broker error vocabulary (extends Surface 6)
+
+Additive codes (the `[<code>]` prefix form of Surface 6 applies unchanged). Renga harnesses never see these; broker harnesses default-branch any unknown code (6.2).
+
+| Code | Meaning | Issued by |
+|---|---|---|
+| `token_invalid` | Bind token is unknown / malformed / revoked. | All authenticated ops. |
+| `session_invalid` | Broker session for this agent is gone (daemon restarted, bind dropped). | All authenticated ops. |
+| `tool_not_authorized` | Caller's `auth_role` tier does not include the requested tool (§8.3). | Tier-gated ops. |
+| `unknown_tool` | Tool name not in the broker catalogue. | All ops. |
+| `peer_not_found` | `send_message` / messaging target id or name does not resolve. | messaging ops. |
+| `name_taken` | Spawn / `set_pane_identity` name collision (broker's spelling of renga's `name_in_use`). | spawn family, `set_pane_identity`. |
+| `no_backend` | The terminal adapter (tmux/WezTerm) is unavailable — the "adapter_unavailable" condition. | pane-control ops. |
+| `nudge_failed` | The pull nudge could not be delivered to the recipient pane. | `send_message`. |
+
+> Mapping note for prose (design §5.2 ii names the broker error additions as `token_*` / `nudge_failed` / `adapter_unavailable`): `token_*` = `token_invalid` + `session_invalid`; `adapter_unavailable` = `no_backend`; tier gating adds `tool_not_authorized`. `name_taken` is the broker spelling of the shared `name_in_use` semantics.
+
+### 8.8 Output-field semantics (amends §1.5 / §2.2)
+
+- Under broker, `list_panes` / `list_peers` records populate `cwd` (known at spawn-time token bind), `kind` (broker client kind), and `receive_mode` deterministically. `receive_mode` is the **constant `"poll"`** — broker has no push peers. Where the ratified §1.5/§2.2 wording says these fields appear "when known" / "optional", broker makes them deterministic; this is an *amendment to the output-field documentation*, not a change to the renga shape (renga keeps its existing optional/"when known" behavior).
+
+### 8.9 Surfaces intentionally not provided
+
+- `new_tab` (§4.3) and `focus_pane` (§1.6) are **omitted** from the broker surface — both are already OPTIONAL / SHOULD (no harness correctness flow depends on them), and harnesses already MUST tolerate their absence. This is a deliberate scope decision (design §3.1), not a gap.
+
+### 8.10 Coexistence, default, and rollback
+
+- `org-broker` and `renga-peers` use distinct MCP server names and MAY be registered simultaneously; the `ORG_TRANSPORT` flag selects which the harness drives (org-wide single value — not mixed per-pane).
+- Renga is the **default** and is **never removed** — it is retained as the opt-in fallback / rollback target. A `transport=renga` rollback re-points the *next* spawned pane at renga; full rollback of an active broker deployment additionally requires settings regeneration, respawn of active broker panes, ordered broker-daemon stop, and token/queue-store teardown (design §5.5).
+
+### 8.11 SemVer
+
+- The broker surface follows the Surface 7 SemVer commitment. The runtime release that adds broker is **additive** (existing renga API unchanged), consumable within ja's `<0.2` pin window as a minor bump.
 
 ---
 
@@ -283,3 +373,7 @@ The 12 Lead-confirmed decisions above cluster as follows:
 4. **Identity / scope rules** — SINGLE-TAB MUST. Multi-tab addressing is deferred to a future contract amendment.
 5. **Failure-mode normativity** — Message delivery is at-most-once (drain semantics). Backend-unreachable conditions normalize to error codes; the current renga ok-text carve-out is transitional and tracked as a follow-up Issue.
 6. **Backwards-compatibility commitment** — Surface follows SemVer (Surface 7).
+
+### Proposed amendments log
+
+- **2026-06-11 (proposed, pending ratification — Epic #6 / ja#514)**: added [Surface 8 (Broker auth & delivery)](#surface-8-broker-auth--delivery-proposed-amendment) and additive per-surface broker notes on Surfaces 1–6, introducing **`org-broker`** as a second reference backend (pure-backend, tmux/WezTerm adapters). Additive only — no ratified renga normative text changed. Renga stays the default; broker is opt-in (`ORG_TRANSPORT=broker`). Output-field amendments: `cwd` / `kind` / `receive_mode` semantics under broker (§8.8, amends §1.5/§2.2). Error vocabulary extended additively (§8.7). Ratification gated on the Epic #6 dogfood (transport-lab `docs/design/ja-migration-plan.md` §8 Issue G).

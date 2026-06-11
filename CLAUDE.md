@@ -10,6 +10,16 @@
 - 依頼が曖昧なときは選択肢を提示して聞き返す
 - registry/projects.md を参照し、通称でプロジェクトを特定する
 
+## 輸送層（transport）両系 — 既定 `renga` / opt-in `broker`
+
+本ファイル（および各スキル）の peer message・pane 操作は `mcp__renga-peers__*` で書いてあり、**`ORG_TRANSPORT` 無設定＝既定 `renga`** ではそのまま従えばよい（既定挙動は不変）。`ORG_TRANSPORT=broker`（opt-in、切戻し可）では MCP サーバー名が `org-broker` になり、**完全修飾名が `mcp__renga-peers__*` → `mcp__org-broker__*`** に機械置換される（引数形・セマンティクスは同一なので操作の論理は変わらない）。窓口が意識すべき輸送依存の差は次の 3 点:
+
+- **受信モデル（push → pull）**: renga ではワーカー報告・ディスパッチャー応答が `<channel source="renga-peers" …>` として in-band で push される。broker では **pane-local ナッジが出るだけ**で本文は `check_messages` で pull する。ワーカー ack（`to_id="worker-{task_id}"`）・retro gate ack（`to_id="dispatcher"`）・ディスパッチャー handover 経路（下記）の `send_message` / `check_messages` / `send_keys` / `inspect_pane` は broker でも同じツール名（`mcp__org-broker__*`）で動くが、受信は「ナッジを見たら `check_messages`」に変わる。
+- **spawn 儀式（dev-channel 承認 → folder-trust 承認）**: 子ペイン起動時、renga は `--dangerously-load-development-channels server:renga-peers` を注入し「Load development channel?」を Enter 承認。broker は `--mcp-config <broker>` を注入し、Claude Code の **folder-trust プロンプト**を `send_keys(enter=true)` で機械承認する（手順形は同型。詳細は [`.dispatcher/references/spawn-flow.md`](./.dispatcher/references/spawn-flow.md) 3-2 / 3-3b）。
+- **エラー分岐（broker 追加コード）**: renga コードに加え broker は `[token_invalid]` / `[session_invalid]` / `[tool_not_authorized]` / `[no_backend]`(= adapter_unavailable) / `[nudge_failed]` / `[peer_not_found]` / `[name_taken]` を返しうる（未知コードは default-branch で escalate）。
+
+契約面の正本は [`docs/contracts/backend-interface-contract.md`](./docs/contracts/backend-interface-contract.md) Surface 8（broker auth & delivery、提案・批准待ち）、設計 SoT は transport-lab `docs/design/ja-migration-plan.md` §5。**既定 `renga` は削除せず opt-in fallback として常時有効**（切戻しの安全装置）。broker 実走（dogfood）は Epic #6 Issue G スコープであり、本ファイルの既定運用経路ではない。
+
 ## PR 後の CI 監視
 - PR 作成直後に `tools/pr-watch.ps1 <PR番号>` (Windows) または `tools/pr-watch.sh <PR番号>` (POSIX) を実行すると、`gh pr checks --watch` をブロッキングで起動し、完了時に `.state/journal.jsonl` へ `ci_completed` イベントを 1 行追記する。`--repo OWNER/REPO` 省略時はカレントリポジトリを自動解決する。
 

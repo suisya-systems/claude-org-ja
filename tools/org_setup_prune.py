@@ -52,6 +52,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import check_role_configs as _check  # noqa: E402  -- reuse validate_config
+import transport as _transport  # noqa: E402  -- flag-aware MCP allowlist (§5.3)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_SCHEMA = REPO_ROOT / "tools" / "org_extension_schema.json"
@@ -616,6 +617,173 @@ def process_user_common_sandbox(
     return 0
 
 
+def _transport_fq_prefixes() -> tuple[str, ...]:
+    """全 transport (renga / broker) の FQ MCP プレフィックス集合。
+
+    user_common 射影で「反対 transport の残骸」や「上位 tier の stale エントリ」を
+    一掃するため、active tier 以外の transport MCP を一律 drop する判定に使う。
+    """
+    return tuple(_transport.surface(f).fq_prefix for f in _transport.TRANSPORTS)
+
+
+def merge_user_common_allowlist(
+    current: dict,
+    tier_entries: list[str] | tuple[str, ...],
+) -> dict:
+    """``permissions.allow`` を transport の user_common tier へ **射影** した
+    **新しい settings dict** を返す (§5.3, user_common の broker 射影)。
+
+    「射影」= **全 transport の MCP エントリ (renga / org-broker いずれの FQ
+    プレフィックス始まりも) を一旦除去**し、``tier_entries`` (active transport の
+    messaging tier) を idempotent に確保する。これにより、過去の手動設定や実験で
+    残った反対 transport / 上位 tier (例 ``mcp__org-broker__spawn_pane``) が
+    user_common に残留して継承で漏れることを防ぐ (codex round-2 Major)。
+
+    - transport MCP **以外** のエントリ (``Bash(...)`` / 他 MCP サーバー /
+      ``Bash(renga --version)`` 等) と env 等の他 key は順序・内容を保持する。
+    - 未追加の ``tier_entries`` のみ末尾に append (重複 skip = idempotent)。
+    - ``permissions.allow`` が無ければ ``tier_entries`` で新設する (他の
+      top-level key は invent しない。``--user-common-sandbox`` と同方針)。
+    - input は破壊しない (浅いコピー)。malformed shape は ``ValueError``。
+    """
+    if not isinstance(current, dict):
+        raise ValueError(
+            f"top level must be a JSON object, got {type(current).__name__}"
+        )
+    perms = current.get("permissions")
+    if perms is None:
+        perms_out: dict = {}
+    elif isinstance(perms, dict):
+        perms_out = dict(perms)
+    else:
+        raise ValueError(
+            f"'permissions' must be an object, got {type(perms).__name__}"
+        )
+    allow = perms_out.get("allow")
+    if allow is None:
+        allow = []
+    elif not isinstance(allow, list) or not all(isinstance(x, str) for x in allow):
+        raise ValueError("'permissions.allow' must be a list of strings")
+    transport_prefixes = _transport_fq_prefixes()
+    # 全 transport の MCP エントリ (renga / broker いずれも) を drop。transport
+    # MCP 以外 (Bash / 他 MCP サーバー) は順序保持。これで「active tier ぴったり」へ
+    # 射影され、stale な上位 tier / 反対 transport が継承漏れしない。
+    new_allow = [
+        e for e in allow if not any(e.startswith(p) for p in transport_prefixes)
+    ]
+    # active transport の tier を idempotent に確保 (未追加のみ末尾 append)。
+    for entry in tier_entries:
+        if entry not in new_allow:
+            new_allow.append(entry)
+    perms_out["allow"] = new_allow
+    out = dict(current)
+    out["permissions"] = perms_out
+    return out
+
+
+def process_user_common_allowlist(
+    *,
+    settings_path: Path,
+    dry_run: bool,
+    no_backup: bool,
+    env=None,
+) -> int:
+    """``ORG_TRANSPORT=broker`` のときだけ ``~/.claude/settings.json`` の
+    ``permissions.allow`` を transport の user_common messaging tier
+    (``mcp__org-broker__*`` 4 種) へ射影する (§5.3, D から defer した broker
+    consume の user_common 分)。
+
+    **renga (既定) は完全 no-op = 1 byte も書かない**。user_common の renga
+    allowlist は org-setup スキル + ``permissions.md`` 経由で適用される既定運用が
+    SoT であり、本モードはそれを **broker のときだけ** 射影し直す加算経路。
+    curator / worker / dispatcher は MCP floor を user_common から継承するため、
+    これで broker 時の messaging-4 floor が供給される。
+
+    ``--user-common-sandbox`` と同じ安全パターン: backup (.bak) / dry-run /
+    idempotent / malformed-shape は書込前に ``ValueError`` で abort。
+    """
+    try:
+        flag = _transport.resolve(env=env)
+    except ValueError as exc:
+        # 未知 / 空の ORG_TRANSPORT。書込前に rc=2 で abort
+        # (--user-common-sandbox と同じ運用。traceback を出さない)。
+        print(
+            f"[org_setup_prune] user_common allowlist: invalid ORG_TRANSPORT "
+            f"({exc}); aborting before any read/write.",
+            file=sys.stderr,
+        )
+        return 2
+    if flag == _transport.DEFAULT_TRANSPORT:
+        # 既定 renga: 不変保証のため file には一切触れない (read もしない)。
+        print(
+            "[org_setup_prune] user_common allowlist: transport=renga (既定); "
+            "no-op — ~/.claude/settings.json は不変 (renga allowlist は org-setup "
+            "スキル + permissions.md が SoT)。ORG_TRANSPORT=broker で broker 射影。"
+        )
+        return 0
+
+    tier = _transport.allow_entries("user_common", flag=flag, env=env)
+
+    if settings_path.is_file():
+        try:
+            current = json.loads(settings_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            print(
+                f"[org_setup_prune] user_common allowlist: current settings.json is "
+                f"invalid JSON ({exc}); aborting before any write.",
+                file=sys.stderr,
+            )
+            return 2
+    else:
+        current = {}
+
+    try:
+        target = merge_user_common_allowlist(current, tier)
+    except ValueError as exc:
+        print(
+            f"[org_setup_prune] user_common allowlist: {settings_path} has malformed "
+            f"permissions shape: {exc}; aborting.",
+            file=sys.stderr,
+        )
+        return 2
+
+    cur_allow = ((current.get("permissions") or {}) if isinstance(current, dict) else {}).get("allow") or []
+    tgt_allow = target["permissions"]["allow"]
+    added = [e for e in tgt_allow if e not in cur_allow]
+    removed = [e for e in cur_allow if e not in tgt_allow]
+
+    if dry_run:
+        print(f"=== user_common allowlist (transport={flag}): {settings_path} ===")
+        for e in removed:
+            print(f"  - {e}")
+        for e in added:
+            print(f"  + {e}")
+        if not added and not removed:
+            print("  (no changes)")
+        return 0
+
+    if target == current:
+        print(
+            f"[org_setup_prune] user_common allowlist: {settings_path} already "
+            f"projects the {flag} messaging tier; no changes."
+        )
+        return 0
+
+    bak = write_settings(settings_path, target, make_backup=not no_backup)
+    summary_bits = []
+    if added:
+        summary_bits.append(f"added {added}")
+    if removed:
+        summary_bits.append(f"removed {removed}")
+    summary = ("; " + ", ".join(summary_bits)) if summary_bits else ""
+    print(
+        f"[org_setup_prune] user_common allowlist: wrote {settings_path}"
+        + (f" (backup: {bak.name})" if bak else "")
+        + summary
+    )
+    return 0
+
+
 def _safe_deny_list(settings: dict, key: str) -> list[str]:
     """Return a copy of ``sandbox.filesystem.{key}`` from ``settings``,
     defaulting to an empty list when any spine node is missing. ``key`` is
@@ -842,6 +1010,20 @@ def process_role(
         print(str(exc), file=sys.stderr)
         return 2
 
+    # transport flag-aware MCP allowlist (§5.3, D から defer した broker consume)。
+    # ``ORG_TRANSPORT=broker`` のときだけ allow の renga MCP ブロック
+    # (``mcp__renga-peers__*``) を当該ロールの broker tier 集合
+    # (``mcp__org-broker__*``) へ置換する。**既定 ``renga`` では恒等 (target は
+    # 一切変えない = 生成物が byte 等価)**。renga アンカーの
+    # ``org_extension_schema.json`` / ``permissions.md`` には触れず、生成段でのみ
+    # broker 面を加算する (byte-drift を壊さない設計)。
+    perms = target.get("permissions")
+    if isinstance(perms, dict) and isinstance(perms.get("allow"), list):
+        rewritten_allow = _transport.rewrite_allow_entries(perms["allow"], role)
+        if rewritten_allow != perms["allow"]:
+            # broker のときのみ到達 (renga は恒等で False)。
+            perms["allow"] = rewritten_allow
+
     safety_blockers = _validate_target_safety(role, role_schema, schema.get("global", {}), target)
     if safety_blockers:
         print(
@@ -897,6 +1079,17 @@ def main(argv: list[str] | None = None) -> int:
              "See Issue #429 (Task B/C, denyRead) and Issue #433 (denyWrite migration).",
     )
     parser.add_argument(
+        "--user-common-allowlist",
+        action="store_true",
+        help="Project the user_common (~/.claude/settings.json) MCP permissions.allow "
+             "onto the active transport (ORG_TRANSPORT). With ORG_TRANSPORT=broker this "
+             "drops mcp__renga-peers__* and ensures the broker messaging tier "
+             "(mcp__org-broker__*) is present; the default renga transport is a strict "
+             "no-op (the file is never touched). Idempotent; writes a .bak unless "
+             "--no-backup. Resolves the broker MCP floor that curator/worker/dispatcher "
+             "inherit from user_common (Epic #6 E / ja#514 §5.3).",
+    )
+    parser.add_argument(
         "--user-common-settings-path",
         type=Path,
         default=None,
@@ -915,8 +1108,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    if not args.role and not args.all and not args.user_common_sandbox:
-        parser.error("specify --role <name>, --all, or --user-common-sandbox")
+    if (
+        not args.role
+        and not args.all
+        and not args.user_common_sandbox
+        and not args.user_common_allowlist
+    ):
+        parser.error(
+            "specify --role <name>, --all, --user-common-sandbox, or "
+            "--user-common-allowlist"
+        )
 
     rc = 0
 
@@ -948,6 +1149,15 @@ def main(argv: list[str] | None = None) -> int:
         r = process_user_common_sandbox(
             settings_path=settings_path,
             home=home,
+            dry_run=args.dry_run,
+            no_backup=args.no_backup,
+        )
+        rc = rc or r
+
+    if args.user_common_allowlist:
+        settings_path = args.user_common_settings_path or DEFAULT_USER_COMMON_SETTINGS_PATH
+        r = process_user_common_allowlist(
+            settings_path=settings_path,
             dry_run=args.dry_run,
             no_backup=args.no_backup,
         )

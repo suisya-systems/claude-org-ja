@@ -2,6 +2,13 @@
 
 `.dispatcher/CLAUDE.md` から参照される、`DELEGATE` 受信後のワーカー起動 / 指示送信 / 状態記録の詳細手順。**ディスパッチャー専属**で、窓口は触らない。判定ロジックは `claude-org-runtime dispatcher delegate-plan` helper に委譲済み。本ファイルは MCP 呼び出しと state 書き込みの具体手順をまとめる。
 
+> **輸送層 両系（`ORG_TRANSPORT`: 既定 `renga` / opt-in `broker`）**: 本ファイルの手順は **既定 `renga`** で書いてあり、`ORG_TRANSPORT` 無設定なら以下すべてそのまま従えばよい（既定挙動は不変）。`ORG_TRANSPORT=broker`（opt-in）では MCP サーバー名が `org-broker` になり、ツールの **完全修飾名が `mcp__renga-peers__*` → `mcp__org-broker__*`** に機械的に置換される（引数形・セマンティクスは同一なので手順の論理は変わらない）。輸送依存で**手順が変わる 3 点**だけ broker 併記する:
+> 1. **受信モデル（push → pull）**: renga はワーカー報告が `<channel source="renga-peers" …>` として in-band で push される。broker は **pane-local なナッジが出るだけ**で、本文は `check_messages` で pull 取得する（Step 3-5 で送る指示や、`worker-monitoring.md` の `check_messages` 受信は broker でも同じツール名で動くが、「ナッジを見たら `check_messages`」という流れになる）。
+> 2. **spawn 儀式（dev-channel 承認 → folder-trust 承認）**: renga の `spawn_claude_pane` は `--dangerously-load-development-channels server:renga-peers` を注入し「Load development channel?」プロンプトを Enter 承認する（3-3b）。broker は **`--mcp-config <broker>` を注入**し、承認プロンプトは Claude Code の **folder-trust プロンプト**に変わる（同じく `send_keys(enter=true)` で機械承認、手順形は同型）。
+> 3. **エラー分岐（broker 追加コード）**: renga のエラーコード（`[split_refused]` / `[pane_not_found]` / `[cwd_invalid]` / `[invalid-params]` 等、3-2 のエラーハンドリング参照）に加え、broker は `[token_invalid]` / `[session_invalid]`（token 系）・`[tool_not_authorized]`（auth_role tier gating）・`[no_backend]`（adapter 不在 = adapter_unavailable）・`[nudge_failed]`・`[peer_not_found]` / `[name_taken]` を返しうる。未知コードは renga と同じく default-branch で escalate 経路に流す。
+>
+> なお `new_tab` / `focus_pane` は broker surface に**無い**（意図的除外。本フローは元々使わない）。契約面の正本は [`docs/contracts/backend-interface-contract.md`](../../docs/contracts/backend-interface-contract.md) Surface 8（提案・批准待ち）、設計 SoT は transport-lab `docs/design/ja-migration-plan.md` §5.2(ii) / §3。broker 実走（dogfood）は Issue G スコープで本ファイルの既定経路ではない。
+
 > **state-db cutover (M4, Issue #267)**: 構造化セクション
 > (Worker Directory Registry / Active Work Items / Dispatcher / Curator / Status) の write は
 > **必ず `StateWriter.transaction()` 経由**で行う。`transaction()` の post-commit hook が
@@ -114,6 +121,8 @@ mcp__renga-peers__send_keys(target="worker-{task_id}", enter=true)
 ```
 
 承認しないと `server:renga-peers` チャネルが有効化されず、3-4 の `list_peers` 待ちがタイムアウトし、3-5 の `send_message` も届かない。Enter は CR (0x0D) として PTY に書き込まれる（byte-identical to renga `append_enter`）。
+
+> **broker（`ORG_TRANSPORT=broker`）の場合**: `spawn_claude_pane` が注入するのは `--dangerously-load-development-channels` ではなく `--mcp-config <broker>`。初回プロンプトは「Load development channel?」ではなく Claude Code の **folder-trust プロンプト**（「Do you trust the files in this folder?」相当）に変わるが、承認手順は同型で `mcp__org-broker__send_keys(target="worker-{task_id}", enter=true)` で機械承認する。承認しないと broker token のバインドが完了せず、`list_peers` 待ち・`send_message` が同様に成立しない。
 
 ### 3-4. `mcp__renga-peers__list_peers` で新ピア出現を待機
 

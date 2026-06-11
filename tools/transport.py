@@ -54,6 +54,8 @@ __all__ = [
     "server_name",
     "send_message_call",
     "spawn_inject",
+    "allow_entries",
+    "rewrite_allow_entries",
 ]
 
 
@@ -141,3 +143,69 @@ def spawn_inject(
     (``broker_mcp_config`` で具体化、未指定なら ``<broker>`` プレースホルダ)。
     """
     return surface(flag, env=env).spawn_inject(broker_mcp_config=broker_mcp_config)
+
+
+def allow_entries(
+    role: str,
+    *,
+    flag: Optional[str] = None,
+    env: Optional[Mapping[str, str]] = None,
+) -> list:
+    """role の ``mcp__<server>__<tool>`` allowlist エントリ (transport 解決込み)。
+
+    §5.3 (allowlist の flag-aware 化) の単一 SoT。runtime の
+    :func:`claude_org_runtime.settings.generator.transport_allowlist`
+    (= descriptor 駆動) を consume する。``flag`` 解決順は他のアクセサと整合:
+    explicit > ``ORG_TRANSPORT`` env > 既定 ``renga``。
+
+    既定 ``renga`` では全ロールが required-14 surface
+    (``mcp__renga-peers__*``)、``broker`` ではロールの auth tier に応じた
+    ``mcp__org-broker__*`` 集合 (worker/curator=4・dispatcher/secretary=ops)
+    を返す。未知ロールは broker で messaging tier (4) に落ちる
+    (descriptor の default-deny 既定)。
+    """
+    # runtime の生成器 API を一次 SoT として lazy import (ja は consume のみ、
+    # ハードコードしない, §5.2 (i) / §5.3)。
+    from claude_org_runtime.settings.generator import transport_allowlist
+
+    return list(transport_allowlist(role, transport=flag, env=env))
+
+
+def rewrite_allow_entries(
+    entries,
+    role: str,
+    *,
+    flag: Optional[str] = None,
+    env: Optional[Mapping[str, str]] = None,
+) -> list:
+    """allow / required_allow 等の文字列リスト中の renga MCP ブロックを、
+    解決した transport の role-tier 集合へ置換して返す。
+
+    **非破壊の核 (§5.3)**: 既定 ``renga`` (``DEFAULT_TRANSPORT``) では
+    **入力をそのまま返す (恒等)** ので、既存の生成物・schema 期待は 1 byte も
+    変わらない (bit 等価)。``broker`` 等の非既定 flag のときだけ、renga の FQ
+    プレフィックス (``mcp__renga-peers__``) で始まるエントリ群を除去し、**最初に
+    現れた位置へ** transport の tier エントリを挿入する。``Bash(...)`` 等の
+    非 MCP エントリは順序を保って残す。
+
+    renga ブロックが 1 つも無いリスト (例: mcp を持たないロールの per-role
+    テンプレート) は非既定 flag でも素通し (tier エントリを勝手に注入しない =
+    「renga ブロックの swap」に限定し、無いものは足さない)。
+    """
+    resolved = resolve(flag, env=env)
+    if resolved == DEFAULT_TRANSPORT:
+        # 既定 renga: 恒等。byte 等価を構造的に保証する。
+        return list(entries)
+    renga_prefix = surface(DEFAULT_TRANSPORT, env=env).fq_prefix
+    tier = allow_entries(role, flag=resolved, env=env)
+    out: list = []
+    inserted = False
+    for entry in entries:
+        if isinstance(entry, str) and entry.startswith(renga_prefix):
+            if not inserted:
+                out.extend(tier)
+                inserted = True
+            # renga エントリ本体は drop (tier で置換済み)。
+            continue
+        out.append(entry)
+    return out

@@ -2,6 +2,12 @@
 
 `.dispatcher/CLAUDE.md` の「ワーカーペイン監視」エントリポイントから参照される本体仕様。監視ループ 1 サイクルの手順、stall 検出、secretary relay gap 検出、設計メモ、cadence 設定の根拠を含む。
 
+> **輸送層 両系（`ORG_TRANSPORT`: 既定 `renga` / opt-in `broker`）**: 本ファイルの監視手順は **既定 `renga`** で書いてある（`ORG_TRANSPORT` 無設定ならそのまま従う。既定挙動不変）。`ORG_TRANSPORT=broker`（opt-in）では完全修飾名が **`mcp__renga-peers__*` → `mcp__org-broker__*`** に置換される（引数形・cursor / timeout セマンティクスは同一）。監視ループで輸送依存に**意味が変わる**のは次の 2 点:
+> 1. **受信モデル（push → pull）**: Step 2 の `check_messages` でワーカー自己報告を受ける流れは broker でも**同じツール名・同じ drain セマンティクス**で動く。違いは renga ではワーカー報告が `<channel source="renga-peers" …>` として in-band で push されるのに対し、broker では **pane-local ナッジが出て本文は `check_messages` で pull** される点（「ナッジを見たら `check_messages`」）。Step 5.2 のワーカーへの self-healing nudge / secretary への informational も broker では nudge + `check_messages` 経路になる。
+> 2. **`poll_events` の生成元（native push → 差分 reconcile 合成）**: renga はペイン lifecycle を native に push する。broker は端末 backend（tmux/WezTerm）に native push が無いため、**`list_panes` 差分 reconcile で `pane_started` / `pane_exited` / `events_dropped` を合成**する（設計 §6、exactly-once `pane_exited` / overflow 時 `events_dropped` + `list_panes` リコンサイル回復）。`poll_events` の API 形・最小 vocabulary・cursor / 30s cap は同一なので Step 1 / Step 3 の手順は不変。`events_dropped` 時に `list_panes` で突き合わせる Step 3 の保険は broker でも同じ（むしろ broker の正準経路）。
+>
+> エラーコードは renga の `[<code>]`（`[pane_not_found]` / `[shutting_down]` / `[io_error]` / `[app_timeout]` / `[internal]` 等、Step 4 のハンドリング参照）に加え、broker は `[token_invalid]` / `[session_invalid]` / `[tool_not_authorized]` / `[no_backend]`(= adapter_unavailable) / `[nudge_failed]` / `[peer_not_found]` を返しうる（未知コードは default-branch）。契約面の正本は [`docs/contracts/backend-interface-contract.md`](../../docs/contracts/backend-interface-contract.md) Surface 8（提案・批准待ち）、設計 SoT は transport-lab `docs/design/ja-migration-plan.md` §5.2(ii) / §6。broker 実走（dogfood）は Issue G スコープで本ファイルの既定経路ではない。
+
 ### 監視ループ 1 サイクル (3 分おき)
 
 各サイクルで以下を順次実行する:
