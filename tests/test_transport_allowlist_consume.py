@@ -364,9 +364,7 @@ class UserCommonAllowlistProjection(unittest.TestCase):
 
     def test_merge_pure_drops_renga_and_ensures_tier(self):
         tier = t.allow_entries("user_common", flag="broker")
-        out = osp.merge_user_common_allowlist(
-            self._RENGA_SETTINGS, tier, renga_prefix=RENGA_PREFIX
-        )
+        out = osp.merge_user_common_allowlist(self._RENGA_SETTINGS, tier)
         allow = out["permissions"]["allow"]
         self.assertFalse(any(e.startswith(RENGA_PREFIX) for e in allow))
         for e in tier:
@@ -376,9 +374,34 @@ class UserCommonAllowlistProjection(unittest.TestCase):
             any(e.startswith(RENGA_PREFIX) for e in self._RENGA_SETTINGS["permissions"]["allow"])
         )
 
+    def test_merge_drops_stale_broker_ops_entries(self):
+        # codex round-2 Major: 既存の上位 tier broker (ops) が残留して継承漏れ
+        # しないこと。射影後は messaging tier ぴったりになる。
+        tier = t.allow_entries("user_common", flag="broker")
+        stale = {
+            "permissions": {
+                "allow": [
+                    "Bash(git add:*)",
+                    "mcp__org-broker__send_message",   # messaging (残る)
+                    "mcp__org-broker__spawn_pane",     # ops tier の stale (除去対象)
+                    "mcp__org-broker__close_pane",     # ops tier の stale (除去対象)
+                    "mcp__renga-peers__list_panes",    # 反対 transport の stale
+                ]
+            }
+        }
+        out = osp.merge_user_common_allowlist(stale, tier)
+        broker = [e for e in out["permissions"]["allow"] if e.startswith(BROKER_PREFIX)]
+        # ぴったり messaging tier に射影される (ops の残骸なし)
+        self.assertEqual(sorted(broker), sorted(tier))
+        self.assertNotIn("mcp__org-broker__spawn_pane", broker)
+        self.assertNotIn("mcp__org-broker__close_pane", broker)
+        # renga 残骸も消える / 非 transport は残る
+        self.assertFalse(any(e.startswith(RENGA_PREFIX) for e in out["permissions"]["allow"]))
+        self.assertIn("Bash(git add:*)", out["permissions"]["allow"])
+
     def test_merge_creates_allow_when_absent(self):
         tier = t.allow_entries("user_common", flag="broker")
-        out = osp.merge_user_common_allowlist({"env": {}}, tier, renga_prefix=RENGA_PREFIX)
+        out = osp.merge_user_common_allowlist({"env": {}}, tier)
         self.assertEqual(out["permissions"]["allow"], list(tier))
         self.assertEqual(out["env"], {})  # 他 key は invent しない/保持
 
@@ -386,12 +409,46 @@ class UserCommonAllowlistProjection(unittest.TestCase):
         tier = t.allow_entries("user_common", flag="broker")
         with self.assertRaises(ValueError):
             osp.merge_user_common_allowlist(
-                {"permissions": {"allow": "not-a-list"}}, tier, renga_prefix=RENGA_PREFIX
+                {"permissions": {"allow": "not-a-list"}}, tier
             )
         with self.assertRaises(ValueError):
-            osp.merge_user_common_allowlist(
-                {"permissions": [1, 2]}, tier, renga_prefix=RENGA_PREFIX
+            osp.merge_user_common_allowlist({"permissions": [1, 2]}, tier)
+
+    def test_unknown_transport_aborts_rc2_without_write(self):
+        # codex round-2 Minor: 未知 ORG_TRANSPORT は traceback でなく rc=2 abort。
+        p = self._write_tmp(self._RENGA_SETTINGS)
+        before = p.read_bytes()
+        with _env_transport("bogus"):
+            rc = osp.process_user_common_allowlist(
+                settings_path=p, dry_run=False, no_backup=True
             )
+        self.assertEqual(rc, 2)
+        self.assertEqual(p.read_bytes(), before)  # 書込なし
+
+    def test_broker_idempotent_after_stale_cleanup(self):
+        # stale ops が混ざった初期状態でも 1 回目で射影、2 回目で no-op。
+        stale = {
+            "permissions": {
+                "allow": [
+                    "mcp__org-broker__spawn_pane",
+                    "mcp__renga-peers__list_panes",
+                    "Bash(git add:*)",
+                ]
+            }
+        }
+        p = self._write_tmp(stale)
+        with _env_transport("broker"):
+            osp.process_user_common_allowlist(settings_path=p, dry_run=False, no_backup=True)
+            first = p.read_bytes()
+            osp.process_user_common_allowlist(settings_path=p, dry_run=False, no_backup=True)
+            second = p.read_bytes()
+        self.assertEqual(first, second)
+        allow = json.loads(first.decode("utf-8"))["permissions"]["allow"]
+        self.assertNotIn("mcp__org-broker__spawn_pane", allow)
+        self.assertEqual(
+            sorted(e for e in allow if e.startswith(BROKER_PREFIX)),
+            sorted(t.allow_entries("user_common", flag="broker")),
+        )
 
 
 if __name__ == "__main__":

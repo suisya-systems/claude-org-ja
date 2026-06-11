@@ -617,19 +617,31 @@ def process_user_common_sandbox(
     return 0
 
 
+def _transport_fq_prefixes() -> tuple[str, ...]:
+    """全 transport (renga / broker) の FQ MCP プレフィックス集合。
+
+    user_common 射影で「反対 transport の残骸」や「上位 tier の stale エントリ」を
+    一掃するため、active tier 以外の transport MCP を一律 drop する判定に使う。
+    """
+    return tuple(_transport.surface(f).fq_prefix for f in _transport.TRANSPORTS)
+
+
 def merge_user_common_allowlist(
     current: dict,
     tier_entries: list[str] | tuple[str, ...],
-    *,
-    renga_prefix: str,
 ) -> dict:
-    """``permissions.allow`` から renga MCP エントリ (``renga_prefix`` 始まり) を
-    除去し、``tier_entries`` (broker の user_common messaging tier) を idempotent に
-    確保した **新しい settings dict** を返す (§5.3, user_common の broker 射影)。
+    """``permissions.allow`` を transport の user_common tier へ **射影** した
+    **新しい settings dict** を返す (§5.3, user_common の broker 射影)。
 
-    - 非 MCP エントリ (``Bash(...)`` / ``Bash(renga --version)`` 等) と既存の
-      broker エントリは順序を保って残す。
-    - 未追加の ``tier_entries`` は末尾に append (重複は skip = idempotent)。
+    「射影」= **全 transport の MCP エントリ (renga / org-broker いずれの FQ
+    プレフィックス始まりも) を一旦除去**し、``tier_entries`` (active transport の
+    messaging tier) を idempotent に確保する。これにより、過去の手動設定や実験で
+    残った反対 transport / 上位 tier (例 ``mcp__org-broker__spawn_pane``) が
+    user_common に残留して継承で漏れることを防ぐ (codex round-2 Major)。
+
+    - transport MCP **以外** のエントリ (``Bash(...)`` / 他 MCP サーバー /
+      ``Bash(renga --version)`` 等) と env 等の他 key は順序・内容を保持する。
+    - 未追加の ``tier_entries`` のみ末尾に append (重複 skip = idempotent)。
     - ``permissions.allow`` が無ければ ``tier_entries`` で新設する (他の
       top-level key は invent しない。``--user-common-sandbox`` と同方針)。
     - input は破壊しない (浅いコピー)。malformed shape は ``ValueError``。
@@ -652,9 +664,14 @@ def merge_user_common_allowlist(
         allow = []
     elif not isinstance(allow, list) or not all(isinstance(x, str) for x in allow):
         raise ValueError("'permissions.allow' must be a list of strings")
-    # renga MCP ブロックを drop (broker では stale)、非 MCP は順序保持。
-    new_allow = [e for e in allow if not e.startswith(renga_prefix)]
-    # broker tier を idempotent に確保 (未追加のみ末尾 append)。
+    transport_prefixes = _transport_fq_prefixes()
+    # 全 transport の MCP エントリ (renga / broker いずれも) を drop。transport
+    # MCP 以外 (Bash / 他 MCP サーバー) は順序保持。これで「active tier ぴったり」へ
+    # 射影され、stale な上位 tier / 反対 transport が継承漏れしない。
+    new_allow = [
+        e for e in allow if not any(e.startswith(p) for p in transport_prefixes)
+    ]
+    # active transport の tier を idempotent に確保 (未追加のみ末尾 append)。
     for entry in tier_entries:
         if entry not in new_allow:
             new_allow.append(entry)
@@ -685,7 +702,17 @@ def process_user_common_allowlist(
     ``--user-common-sandbox`` と同じ安全パターン: backup (.bak) / dry-run /
     idempotent / malformed-shape は書込前に ``ValueError`` で abort。
     """
-    flag = _transport.resolve(env=env)
+    try:
+        flag = _transport.resolve(env=env)
+    except ValueError as exc:
+        # 未知 / 空の ORG_TRANSPORT。書込前に rc=2 で abort
+        # (--user-common-sandbox と同じ運用。traceback を出さない)。
+        print(
+            f"[org_setup_prune] user_common allowlist: invalid ORG_TRANSPORT "
+            f"({exc}); aborting before any read/write.",
+            file=sys.stderr,
+        )
+        return 2
     if flag == _transport.DEFAULT_TRANSPORT:
         # 既定 renga: 不変保証のため file には一切触れない (read もしない)。
         print(
@@ -696,7 +723,6 @@ def process_user_common_allowlist(
         return 0
 
     tier = _transport.allow_entries("user_common", flag=flag, env=env)
-    renga_prefix = _transport.surface(_transport.DEFAULT_TRANSPORT, env=env).fq_prefix
 
     if settings_path.is_file():
         try:
@@ -712,7 +738,7 @@ def process_user_common_allowlist(
         current = {}
 
     try:
-        target = merge_user_common_allowlist(current, tier, renga_prefix=renga_prefix)
+        target = merge_user_common_allowlist(current, tier)
     except ValueError as exc:
         print(
             f"[org_setup_prune] user_common allowlist: {settings_path} has malformed "
