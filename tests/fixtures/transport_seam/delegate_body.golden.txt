@@ -1,0 +1,13 @@
+DELEGATE: 以下のワーカーを派遣してください。
+
+タスク一覧:
+- demo-task: デモタスク。X を Y に変更する。
+  - ワーカーディレクトリ: /tmp/workers/demo-task（CLAUDE.md・設定配置済み）
+  - ディレクトリパターン: B: worktree (live_repo_worktree — Secretary live repo 配下)
+  - プロジェクト: worktree base: /tmp/proj
+  - ブランチ (planned): feat/demo-task
+  - Permission Mode: auto
+  - 検証深度: full
+  - 指示内容: 詳細は `/tmp/workers/demo-task/CLAUDE.md` を参照。要約: デモタスク。X を Y に変更する。
+
+窓口ペイン名: `secretary`（renga layout で登録済み）
