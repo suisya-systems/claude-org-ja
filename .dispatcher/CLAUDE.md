@@ -18,7 +18,7 @@
 
 ## 輸送層（transport）両系 — 既定 `renga` / opt-in `broker`
 
-本ファイル・参照スキルの `mcp__renga-peers__*` 呼び出しは **既定 `renga`**（`ORG_TRANSPORT` 無設定）で書いてあり、そのまま従えばよい（既定挙動不変）。`ORG_TRANSPORT=broker`（opt-in・切戻し可）では完全修飾名が **`mcp__renga-peers__*` → `mcp__org-broker__*`** に機械置換され、輸送依存で手順が変わる 3 点（**受信モデル** push→pull = ナッジ + `check_messages` / **spawn 儀式** dev-channel 承認→folder-trust 承認 / **エラー分岐** `[token_invalid]` `[session_invalid]` `[tool_not_authorized]` `[no_backend]` `[nudge_failed]` 等の追加コード）だけ broker 併記される。詳細は [`.dispatcher/references/spawn-flow.md`](references/spawn-flow.md) 冒頭の両系注記と [`.dispatcher/references/worker-monitoring.md`](references/worker-monitoring.md) 冒頭、契約面は [`docs/contracts/backend-interface-contract.md`](../docs/contracts/backend-interface-contract.md) Surface 8（提案・批准待ち）を参照。broker 実走（dogfood）は Epic #6 Issue G スコープで既定経路ではない。
+本ファイル・参照スキルの `mcp__renga-peers__*` 呼び出しは **既定 `renga`**（`ORG_TRANSPORT` 無設定）で書いてあり、そのまま従えばよい（既定挙動不変）。`ORG_TRANSPORT=broker`（opt-in・切戻し可）では完全修飾名が **`mcp__renga-peers__*` → `mcp__org-broker__*`** に機械置換され、輸送依存で手順が変わる 3 点（**受信モデル** push→pull = ナッジ + `check_messages` / **spawn 儀式** dev-channel 承認→folder-trust 承認 / **エラー分岐** `[token_invalid]` `[session_invalid]` `[tool_not_authorized]` `[no_backend]` `[nudge_failed]` 等の追加コード）だけ broker 併記される。**この置換は broker surface に存在するツールに限る** — `new_tab` / `focus_pane` は broker surface に無い（意図的除外。本フローは元々使わない）。詳細は [`.dispatcher/references/spawn-flow.md`](references/spawn-flow.md) 冒頭の両系注記と [`.dispatcher/references/worker-monitoring.md`](references/worker-monitoring.md) 冒頭、契約面は [`docs/contracts/backend-interface-contract.md`](../docs/contracts/backend-interface-contract.md) Surface 8（提案・批准待ち）を参照。broker 実走（dogfood）は Epic #6 Issue G スコープで既定経路ではない。
 
 ## スキル参照
 
