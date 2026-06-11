@@ -302,6 +302,7 @@ def _git_origin_url(repo_path: Path) -> Optional[str]:
             ["git", "-C", str(repo_path), "remote", "get-url", "origin"],
             capture_output=True,
             text=True,
+            encoding="utf-8",  # decode git output as UTF-8, not the cp932 locale (#537)
         )
     except (FileNotFoundError, OSError):
         return None

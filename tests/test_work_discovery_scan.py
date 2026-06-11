@@ -522,6 +522,7 @@ class TestCliWiring(unittest.TestCase):
                 [sys.executable, str(SCRIPT), "--from-file", name],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",  # script emits UTF-8; don't decode via cp932 locale (#537)
             )
         finally:
             os.unlink(name)
@@ -553,6 +554,7 @@ class TestCliWiring(unittest.TestCase):
             [sys.executable, str(SCRIPT), "--from-file", "/no/such/file.json"],
             capture_output=True,
             text=True,
+            encoding="utf-8",  # script emits UTF-8; don't decode via cp932 locale (#537)
         )
         self.assertEqual(proc.returncode, wds.EXIT_ERROR)
         self.assertEqual(json.loads(proc.stdout)["status"], "error")
@@ -569,6 +571,7 @@ class TestCliWiring(unittest.TestCase):
             [sys.executable, str(SCRIPT), "--from-file", "/no/such/file.json"],
             capture_output=True,
             text=True,
+            encoding="utf-8",  # script emits UTF-8; don't decode via cp932 locale (#537)
         )
         data = json.loads(proc.stdout)
         for key in (
@@ -593,6 +596,7 @@ class TestCliWiring(unittest.TestCase):
             [sys.executable, str(SCRIPT), "--top-n", "not-an-int"],
             capture_output=True,
             text=True,
+            encoding="utf-8",  # script emits UTF-8; don't decode via cp932 locale (#537)
         )
         self.assertEqual(proc.returncode, wds.EXIT_ERROR)
         data = json.loads(proc.stdout)  # stdout is valid JSON
@@ -606,6 +610,7 @@ class TestCliWiring(unittest.TestCase):
             [sys.executable, str(SCRIPT), "--top-n", "nope", "--trigger", "post_merge"],
             capture_output=True,
             text=True,
+            encoding="utf-8",  # script emits UTF-8; don't decode via cp932 locale (#537)
         )
         self.assertEqual(proc.returncode, wds.EXIT_ERROR)
         data = json.loads(proc.stdout)
@@ -620,6 +625,7 @@ class TestCliWiring(unittest.TestCase):
             [sys.executable, str(SCRIPT), "--trigger"],  # missing value
             capture_output=True,
             text=True,
+            encoding="utf-8",  # script emits UTF-8; don't decode via cp932 locale (#537)
         )
         self.assertEqual(proc.returncode, wds.EXIT_ERROR)
         self.assertEqual(proc.stderr, "")
@@ -647,6 +653,7 @@ class TestCliWiring(unittest.TestCase):
             [sys.executable, str(SCRIPT), "--top-n", "0"],
             capture_output=True,
             text=True,
+            encoding="utf-8",  # script emits UTF-8; don't decode via cp932 locale (#537)
         )
         self.assertEqual(proc.returncode, wds.EXIT_ERROR)
         data = json.loads(proc.stdout)
@@ -658,6 +665,7 @@ class TestCliWiring(unittest.TestCase):
             [sys.executable, str(SCRIPT), "--top-n=-5"],
             capture_output=True,
             text=True,
+            encoding="utf-8",  # script emits UTF-8; don't decode via cp932 locale (#537)
         )
         self.assertEqual(proc.returncode, wds.EXIT_ERROR)
         data = json.loads(proc.stdout)
@@ -670,6 +678,7 @@ class TestCliWiring(unittest.TestCase):
             [sys.executable, str(SCRIPT), "--top-n", "0", "--trigger", "post_merge"],
             capture_output=True,
             text=True,
+            encoding="utf-8",  # script emits UTF-8; don't decode via cp932 locale (#537)
         )
         self.assertEqual(proc.returncode, wds.EXIT_ERROR)
         data = json.loads(proc.stdout)
@@ -683,6 +692,7 @@ class TestCliWiring(unittest.TestCase):
             [sys.executable, str(SCRIPT), "--recent-merges", "0"],
             capture_output=True,
             text=True,
+            encoding="utf-8",  # script emits UTF-8; don't decode via cp932 locale (#537)
         )
         self.assertEqual(proc.returncode, wds.EXIT_ERROR)
         data = json.loads(proc.stdout)
@@ -694,6 +704,7 @@ class TestCliWiring(unittest.TestCase):
             [sys.executable, str(SCRIPT), "--recent-merges=-3"],
             capture_output=True,
             text=True,
+            encoding="utf-8",  # script emits UTF-8; don't decode via cp932 locale (#537)
         )
         self.assertEqual(proc.returncode, wds.EXIT_ERROR)
         data = json.loads(proc.stdout)
@@ -705,6 +716,7 @@ class TestCliWiring(unittest.TestCase):
             [sys.executable, str(SCRIPT), "--free-panes=-2"],
             capture_output=True,
             text=True,
+            encoding="utf-8",  # script emits UTF-8; don't decode via cp932 locale (#537)
         )
         self.assertEqual(proc.returncode, wds.EXIT_ERROR)
         data = json.loads(proc.stdout)
@@ -984,6 +996,41 @@ class TestFetchRobustness(unittest.TestCase):
                 wds.fetch_open_pr_numbers(None)
 
 
+class TestGhUtf8Decoding(unittest.TestCase):
+    """#537 regression: gh stdout is decoded as UTF-8 in the caller's thread,
+    so a cp932 locale can neither corrupt Japanese output nor swallow a decode
+    error into a NoneType cascade."""
+
+    def test_decode_japanese_stdout(self):
+        # gh emits UTF-8; the bytes below are invalid under cp932 (the exact
+        # failure mode of #537) but must decode cleanly here.
+        raw = "ログイン機能 — 並列可".encode("utf-8")
+        self.assertEqual(wds._decode_gh_stdout(raw, ["x"]), "ログイン機能 — 並列可")
+
+    def test_invalid_utf8_raises_clear_gherror(self):
+        # A genuinely non-UTF-8 byte must surface as a GhError naming the byte
+        # and position — NOT be swallowed into proc.stdout=None / a NoneType
+        # 'JSON object must be str/bytes' cascade (the #537 symptom).
+        with self.assertRaises(wds.GhError) as ctx:
+            wds._decode_gh_stdout(b"\x96\x96", ["issue", "list"])
+        msg = str(ctx.exception)
+        self.assertIn("not valid UTF-8", msg)
+        self.assertIn("0x96", msg)
+        self.assertNotIn("NoneType", msg)
+
+    def test_run_gh_json_parses_japanese_via_bytes(self):
+        # End-to-end: subprocess returns *bytes* stdout (as it does without
+        # text=True); _run_gh_json must decode + parse it regardless of locale.
+        payload = json.dumps([{"number": 1, "title": "日本語"}]).encode("utf-8")
+        completed = subprocess.CompletedProcess(
+            args=["gh"], returncode=0, stdout=payload, stderr=b""
+        )
+        with mock.patch.object(wds.shutil, "which", return_value="/usr/bin/gh"):
+            with mock.patch.object(wds.subprocess, "run", return_value=completed):
+                data = wds._run_gh_json(["issue", "list"])
+        self.assertEqual(data, [{"number": 1, "title": "日本語"}])
+
+
 class TestMalformedFieldNormalization(unittest.TestCase):
     """Non-list `comments` / `labels` shapes must normalize to empty, never
     crash the pure core (a bare comment *count* is a real gh-shape risk)."""
@@ -1037,6 +1084,7 @@ class TestBundleValidation(unittest.TestCase):
                 [sys.executable, str(SCRIPT), "--from-file", name],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",  # script emits UTF-8; don't decode via cp932 locale (#537)
             )
         finally:
             os.unlink(name)

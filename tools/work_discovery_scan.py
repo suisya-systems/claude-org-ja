@@ -800,25 +800,58 @@ class GhError(RuntimeError):
     """A `gh` read call failed (missing binary, auth, API error, bad JSON)."""
 
 
+def _decode_gh_stdout(raw: bytes, args: list[str]) -> str:
+    """Decode a ``gh`` stdout byte stream as UTF-8 in the **caller's** thread.
+
+    ``gh`` always emits UTF-8 regardless of the OS locale. We deliberately
+    capture *bytes* (no ``text=True``) and decode here, rather than letting
+    ``subprocess`` decode inside its reader thread: on a non-UTF-8 locale
+    (e.g. cp932 on Japanese Windows) ``text=True`` decodes with the *locale*
+    codec, and a ``UnicodeDecodeError`` raised in that daemon reader thread is
+    **swallowed** — ``proc.stdout`` comes back ``None`` and the failure
+    resurfaces downstream as a baffling ``the JSON object must be str, bytes
+    or bytearray, not NoneType`` (Issue #537). Decoding in the main thread
+    means a genuine decode failure raises *here*, naming the offending byte
+    and the command, instead of cascading into a misleading NoneType error.
+    """
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise GhError(
+            f"`gh {' '.join(args)}` stdout was not valid UTF-8 "
+            f"(byte 0x{exc.object[exc.start]:02x} at position {exc.start}); "
+            f"gh emits UTF-8 regardless of locale — {exc}"
+        ) from exc
+
+
 def _run_gh_json(args: list[str]) -> list | dict:
     """Run a read-only ``gh`` command and parse its JSON stdout.
 
     Only ``gh`` subcommands that *read* are ever passed here (callers pass
     ``repo view`` / ``issue list`` / ``pr list``). Raises ``GhError`` on
     any failure so ``main`` can emit ``status=error`` / exit 2.
+
+    Output is captured as bytes and decoded as UTF-8 in this thread (see
+    ``_decode_gh_stdout``) so a cp932-locale decode failure surfaces as a
+    clear ``GhError`` rather than being swallowed in subprocess's reader
+    thread and cascading into a NoneType error (Issue #537).
     """
     if shutil.which("gh") is None:
         raise GhError("GitHub CLI (gh) not found in PATH")
     try:
         proc = subprocess.run(
-            ["gh", *args], capture_output=True, text=True, check=True
+            ["gh", *args], capture_output=True, check=True
         )
     except subprocess.CalledProcessError as exc:
+        # stderr is diagnostic only → lossy decode is fine (a mangled error
+        # message must not mask the real `gh` failure being reported).
+        stderr = (exc.stderr or b"").decode("utf-8", "replace").strip()
         raise GhError(
-            f"`gh {' '.join(args)}` failed: {exc.stderr.strip() or exc}"
+            f"`gh {' '.join(args)}` failed: {stderr or exc}"
         ) from exc
+    stdout = _decode_gh_stdout(proc.stdout or b"", args)
     try:
-        return json.loads(proc.stdout)
+        return json.loads(stdout)
     except json.JSONDecodeError as exc:
         raise GhError(
             f"`gh {' '.join(args)}` returned non-JSON output: {exc}"
