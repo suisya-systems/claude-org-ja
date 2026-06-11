@@ -290,6 +290,40 @@ def _is_git_tracked(path: Path, root: Path) -> bool:
 WORKER_LOCAL_SETTINGS = ".claude/settings.local.json"
 
 
+def _transport_aware_role_schema(role_name: str, role_schema: dict) -> dict:
+    """Return ``role_schema`` with ``required_allow`` projected onto the active
+    transport's allowlist (§5.3, D から defer した broker consume).
+
+    **既定 ``renga`` では同一オブジェクトをそのまま返す (恒等)** ので、CI の通常
+    経路 (``ORG_TRANSPORT`` 無設定) は挙動・検証結果が完全に不変。
+    ``ORG_TRANSPORT=broker`` のときだけ、schema の renga 期待
+    (``mcp__renga-peers__*``) を当該ロールの broker tier (``mcp__org-broker__*``)
+    へ rewrite した **浅いコピー** を返す。これは on-disk の broker 設定
+    (``ORG_TRANSPORT=broker`` で生成したもの) を検証するための期待面の付け替えで、
+    byte 比較される ``org_extension_schema.json`` 自体は touch しない (in-memory
+    のみ)。permissions.md は renga のままなので ``check_docs`` 側は付け替えない。
+    """
+    required = role_schema.get("required_allow")
+    if not isinstance(required, list):
+        return role_schema
+    # transport モジュールは同じ tools/ ディレクトリ。スクリプト実行時は script
+    # dir が sys.path[0]、モジュール import 時は呼び元が path を通している前提だが、
+    # 念のため lazy import 時に保険を入れる。
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    _here = str(_Path(__file__).resolve().parent)
+    if _here not in _sys.path:
+        _sys.path.insert(0, _here)
+    import transport as _transport
+
+    rewritten = _transport.rewrite_allow_entries(required, role_name)
+    if rewritten == required:
+        # renga (恒等) もしくは renga ブロックを持たないロール: 無変更。
+        return role_schema
+    return {**role_schema, "required_allow": rewritten}
+
+
 def check_on_disk(
     schema: dict,
     root: Path,
@@ -333,7 +367,7 @@ def check_on_disk(
                     str(path),
                     role_override,
                     config,
-                    role_schema,
+                    _transport_aware_role_schema(role_override, role_schema),
                     schema.get("global", {}),
                     extra_allowed=_load_override_allow(path),
                 )
@@ -393,7 +427,7 @@ def check_on_disk(
                     str(path),
                     role_name,
                     config,
-                    role_schema,
+                    _transport_aware_role_schema(role_name, role_schema),
                     schema.get("global", {}),
                     extra_allowed=_load_override_allow(path),
                 )

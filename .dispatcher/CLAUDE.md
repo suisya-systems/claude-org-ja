@@ -16,6 +16,10 @@
   - 背景: worker が auto-mode 阻害動作を dispatcher の `bypassPermissions` に肩代わりさせる誘惑が出るが、dispatcher の拒否は正しい挙動。
   - 適用: worker の brief は worker 自身の権限境界で完結すべきで、dispatcher を踏み台にしない。worker が credential probe を要請してきた場合は窓口にエスカレーションし、testbed credential 切替（`gh auth login --with-token` 等）を worker 側で実施させる方針に差し戻す。
 
+## 輸送層（transport）両系 — 既定 `renga` / opt-in `broker`
+
+本ファイル・参照スキルの `mcp__renga-peers__*` 呼び出しは **既定 `renga`**（`ORG_TRANSPORT` 無設定）で書いてあり、そのまま従えばよい（既定挙動不変）。`ORG_TRANSPORT=broker`（opt-in・切戻し可）では完全修飾名が **`mcp__renga-peers__*` → `mcp__org-broker__*`** に機械置換され、輸送依存で手順が変わる 3 点（**受信モデル** push→pull = ナッジ + `check_messages` / **spawn 儀式** dev-channel 承認→folder-trust 承認 / **エラー分岐** `[token_invalid]` `[session_invalid]` `[tool_not_authorized]` `[no_backend]` `[nudge_failed]` 等の追加コード）だけ broker 併記される。詳細は [`.dispatcher/references/spawn-flow.md`](references/spawn-flow.md) 冒頭の両系注記と [`.dispatcher/references/worker-monitoring.md`](references/worker-monitoring.md) 冒頭、契約面は [`docs/contracts/backend-interface-contract.md`](../docs/contracts/backend-interface-contract.md) Surface 8（提案・批准待ち）を参照。broker 実走（dogfood）は Epic #6 Issue G スコープで既定経路ではない。
+
 ## スキル参照
 
 作業手順は以下のスキルに定義されている。DELEGATE 受信時に必ず読むこと:

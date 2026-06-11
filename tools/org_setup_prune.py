@@ -52,6 +52,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import check_role_configs as _check  # noqa: E402  -- reuse validate_config
+import transport as _transport  # noqa: E402  -- flag-aware MCP allowlist (§5.3)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_SCHEMA = REPO_ROOT / "tools" / "org_extension_schema.json"
@@ -841,6 +842,20 @@ def process_role(
         # of bubbling up so callers (incl. tests) get a normal return.
         print(str(exc), file=sys.stderr)
         return 2
+
+    # transport flag-aware MCP allowlist (§5.3, D から defer した broker consume)。
+    # ``ORG_TRANSPORT=broker`` のときだけ allow の renga MCP ブロック
+    # (``mcp__renga-peers__*``) を当該ロールの broker tier 集合
+    # (``mcp__org-broker__*``) へ置換する。**既定 ``renga`` では恒等 (target は
+    # 一切変えない = 生成物が byte 等価)**。renga アンカーの
+    # ``org_extension_schema.json`` / ``permissions.md`` には触れず、生成段でのみ
+    # broker 面を加算する (byte-drift を壊さない設計)。
+    perms = target.get("permissions")
+    if isinstance(perms, dict) and isinstance(perms.get("allow"), list):
+        rewritten_allow = _transport.rewrite_allow_entries(perms["allow"], role)
+        if rewritten_allow != perms["allow"]:
+            # broker のときのみ到達 (renga は恒等で False)。
+            perms["allow"] = rewritten_allow
 
     safety_blockers = _validate_target_safety(role, role_schema, schema.get("global", {}), target)
     if safety_blockers:
