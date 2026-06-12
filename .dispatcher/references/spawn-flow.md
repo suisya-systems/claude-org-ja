@@ -128,9 +128,48 @@ mcp__renga-peers__send_keys(target="worker-{task_id}", enter=true)
 
 pane は live でも Claude がまだ起動中の場合があるため二重確認。`mcp__renga-peers__list_peers` を呼び、`worker-{task_id}` が peer 一覧に現れるまで短い間隔（例: 2 秒）でリトライする（最大 30 秒程度）。タイムアウトした場合は `list_panes` でペイン状態を再確認し、必要なら窓口に escalate する。
 
-### 3-5. `mcp__renga-peers__send_message` でワーカーに指示を送信
+### 3-5. ワーカーに指示を送信
 
-[`.claude/skills/org-delegate/references/instruction-template.md`](../../.claude/skills/org-delegate/references/instruction-template.md) のフォーマットに従う。`to_id="worker-{task_id}"` で pane name 指定。
+[`.claude/skills/org-delegate/references/instruction-template.md`](../../.claude/skills/org-delegate/references/instruction-template.md) のフォーマットに従い、**使用中 transport の `send_message`**（既定 renga なら `mcp__renga-peers__send_message`、`ORG_TRANSPORT=broker` なら `mcp__org-broker__send_message`）で `to_id="worker-{task_id}"` 宛に送る。
+
+#### 3-5a. ultracode 武装（worker brief に ultracode 許可がある場合のみ）
+
+worker brief に **ultracode 使用許可**があるタスクでは、kickoff を **「使用中 transport の `send_keys`」によるペイン打鍵 user turn** として送り、その本文に standalone トークン `ultracode` を含める。**これを行わないと、brief に許可があっても worker は ultracode（multi-agent workflow / Workflow tool）を発動できない**（Issue #554 の defect 本体）。
+
+> **transport 両系**: `send_keys` も冒頭の機械置換ルール対象。`ORG_TRANSPORT` 無設定なら `mcp__renga-peers__send_keys`、`ORG_TRANSPORT=broker` なら `mcp__org-broker__send_keys`。`send_keys` は配送方式ではなく PTY キーストロークなので、**武装ロジックは transport 非依存と考えてよい**（broker で実走武装確認済。renga は未実走だが、同じ PTY キーストローク経路で user turn 化するため同様に武装する想定）。
+
+**許可の判定（dispatcher が行う）**: worker が読む行動規範ファイル（`claude_md_filename`。**既定 `CLAUDE.md`、claude-org 自己編集タスクは `CLAUDE.local.md`** — instruction-template の helper 変数参照）の「実装ガイダンス」/ implementation 指示に ultracode 使用許可が描画されているかを確認する（窓口の `gen_delegate_payload.py --impl-guidance "... ultracode の使用を許可する"` がこの箇所にレンダリングされる。dispatcher は `worker_dir` を持つので読める。brief ファイル名は `worker_dir` 内の実ファイルで判別する＝既定 `CLAUDE.md`、claude-org 自己編集タスクのみ `CLAUDE.local.md`。`claude_md_filename` は helper-rendered instruction の optional var であって spawn action plan には現れない）。これが常時参照可能な正準シグナル。task JSON 側に `implementation_guidance` が載る dispatch 経路ならそれを併用してよいが、`delegate-plan` helper はこのフィールドを消費しないため brief を一次シグナルとする。
+
+**なぜ `send_keys` か（実走確定、Issue #554）**: ultracode の opt-in は worker セッションの **user turn 入力**に `ultracode` トークンが現れることを harness が検出して初めて武装される（武装時は worker 側に「opting this turn into multi-agent orchestration」の system-reminder が出る）。以下は **武装しない**ことが broker 実走で確認済み:
+- brief ファイル（`CLAUDE.md` / `CLAUDE.local.md` としてロードされる context）内の keyword
+- `send_message` 本文・in-band push・`check_messages`（tool result）経由で届く指示本文内の keyword
+
+`send_keys` は本文をペインの PTY に**キーストロークとして書き込む**ため worker の user turn になる。`send_message` / `check_messages` は peer/channel メッセージ（injected message）であって user turn ではない。この武装は **body の生成方式に依存しない** — helper（`delegate-plan`）の `message_file` 経路でも、task JSON に `instruction` を直接指定した経路でも、武装は body ではなく send_keys user turn 側で成立するため共通でカバーされる。
+
+**武装の scope（turn-scoped、実走確定）**: 武装は **user turn 単位**で検出・有効化される。Claude Code worker は「kickoff user turn への応答」の中で実装〜Codex 前セルフレビュー収束までを autonomous に行い、その間の internal な複数 LLM call / 並列 review / commit 確認は **同一 user turn 下の応答フェーズ**に含まれるため武装は失われない（本タスク自身の実走で、armed turn 内で多数の tool 呼び出しを経た後でも Workflow 起動に成功＝応答全体が武装される、を確認済）。ack / 追加指示など**別の user turn には武装は引き継がれない**（再検出が要る）。
+
+**手順:**
+
+1. **kickoff を send_keys の armed turn にする（race 回避、全 instruction 経路で成立させる）**: ultracode タスクでは、send_keys の `ultracode` kickoff を **唯一の actionable な着手トリガ**にし、3-5 の `send_message` を「worker が即座に本作業を始める kickoff」として使わない。詳細 brief は worker の行動規範ファイル（既定 `CLAUDE.md` / self-edit は `CLAUDE.local.md`、spawn 時ロード済）が全文を持つため、send_keys 行は短い 1 行で良く、worker はこれだけで着手できる。actionable kickoff を send_message 側にすると worker は**未武装の応答**を始め、turn-scoped ゆえに収束フェーズまで未武装のままになる。
+   - **reference として send_message を送る場合**、worker が先に着手しないための待機文（「この peer message では着手せず ultracode send_keys kickoff を待つ」）が worker に届くかは **instruction 経路に依存する**ので注意する:
+     - **AUTO 展開テンプレ経路**（helper-rendered。`instruction_vars` 指定）: 待機文は body の「作業の進め方」節に条件付きで埋め込み済みで worker に届く（[`.claude/skills/org-delegate/references/instruction-template.md`](../../.claude/skills/org-delegate/references/instruction-template.md) の「作業の進め方」節。冒頭の「ultracode タスクでの worker 着手規約」節は SoT 説明）。
+     - **`instruction` 直指定経路**（AUTO テンプレを使わない backward-compat 経路）: body に待機文が入らない。この経路で reference の send_message を送るなら dispatcher が待機文を body 冒頭に **prepend** すること。
+   - **最も単純で経路非依存な保険**は、ultracode タスクで **actionable な send_message を一切送らず send_keys を唯一のトリガにする**こと（brief が全文を持つため成立）。経路差を気にしたくない場合はこれを既定にする。
+
+2. **send_keys は 2 段で打つ**（text と Enter を別呼び出しに分ける。同時送は draft 残りになりやすい — 既存の承認ハンドシェイク規律と同型）。`ultracode` は **語境界付きの単独トークン**として置く（行頭に単独で置くのを推奨。`ultracode-arming-fix` のような **slug 内 substring では武装しなかった**＝実走確認済。harness の検出方式の内部仕様には依存せず「語境界付き単独トークンなら武装／slug 内 substring なら非武装」という実走事実で運用する）。`send_keys` は **1 行**（埋め込み改行を入れない。生 `\n` は Claude Code 入力欄で途中 submit になる）:
+   ```
+   send_keys(target="worker-{task_id}",
+     text="ultracode で本タスクに着手してください。詳細は worker brief の通り。まず pwd で作業ディレクトリを確認。",
+     enter=false)
+   # inspect_pane で text が入力欄に乗ったことを確認後、別呼び出しで Enter:
+   send_keys(target="worker-{task_id}", enter=true)
+   ```
+
+3. **位置づけ（worker brief と一致させる）**: ultracode は実装と **Codex 前のセルフレビュー収束**（複数観点の並列レビューで指摘の種を潰し Codex 周回数を減らす）に使う。最終ゲート「Codex Blocker / Major ゼロ（別モデルによる独立レビュー）」は**従来どおり維持**する。ultracode は Codex ゲートの**前段**であって置き換えではない。
+
+> **検証状況メモ**: 「send_keys の単独 `ultracode` トークンで武装」「armed turn の応答全体（多数 tool 呼び出し）にわたり武装継続」は本タスクで broker 実走確認済。手順 1 の「send_message をリファレンス配信し worker が send_keys turn で着手する」待ち合わせは、上記実走事実から導いた by-design の推奨手順（race を構造的に避ける）。最もシンプルな保険は **ultracode タスクで actionable な send_message kickoff を送らず、send_keys を唯一の着手トリガにする**こと（worker brief = 既定 `CLAUDE.md` / self-edit は `CLAUDE.local.md` が brief 全文を持つため成立する）。
+
+**ultracode 許可が無いタスク**: 従来どおり 3-5 の `send_message` kickoff のみ（send_keys 武装は行わない）。
 
 ### 3-6. 複数ワーカーの順次起動
 
