@@ -172,7 +172,7 @@ doc-audit role + write 成果物がある委譲では、以下の文言を「制
 
 ## 自動展開テンプレート (helper-rendered)
 
-`claude-org-runtime dispatcher delegate-plan --locale-json <path-to-ja_locale.json>` は task JSON に `instruction_vars` が含まれる場合、以下の strict テンプレートを変数展開してワーカー指示として書き出す（日本語の挨拶文や `(なし)` などの defaults はリポジトリルート直下の `tools/ja_locale.json` で上書きする。ディスパッチャーは `cwd=".dispatcher/"` で動くため、実際の呼び出しでは `--locale-json ../tools/ja_locale.json --template-repo ..` のように 1 段上を指す。詳細は `.dispatcher/CLAUDE.md` のコマンド例参照）。`instruction` フィールドが直接指定されている場合はそちらが優先され、本テンプレートは使われない（backward-compat）。
+`claude-org-runtime dispatcher delegate-plan --locale-json <path-to-ja_locale.json>` は task JSON に `instruction_vars` が含まれる場合、以下の strict テンプレートを変数展開してワーカー指示として書き出す（日本語の挨拶文や `(なし)` などの defaults はリポジトリルート直下の `tools/ja_locale.json` で上書きする。ディスパッチャーは `cwd=".dispatcher/"` で動くため、実際の呼び出しでは `--locale-json ../tools/ja_locale.json --template-repo ..` のように 1 段上を指す。詳細は `.dispatcher/CLAUDE.md` のコマンド例参照）。`instruction` フィールドが直接指定されている場合はそちらが優先され、本テンプレートは使われない（backward-compat）。**この直指定経路では上記「作業の進め方」節の ultracode 待機文も自動では入らない**ため、ultracode 許可タスクを直指定 instruction で派遣する場合は、dispatcher が待機文を body に prepend するか、reference の send_message を送らず send_keys のみを着手トリガにすること（[`.dispatcher/references/spawn-flow.md`](../../../../.dispatcher/references/spawn-flow.md) 3-5a 手順1）。
 
 変数一覧 (helper 側で参照):
 
