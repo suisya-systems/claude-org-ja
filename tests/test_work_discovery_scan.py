@@ -1557,5 +1557,573 @@ class TestBundleValidation(unittest.TestCase):
         self.assertEqual(data["status"], "no_candidates")
 
 
+# ----------------------------------------------------------------------
+# Cross-repo triage (Issue #528, design §10)
+# ----------------------------------------------------------------------
+
+JA = "suisya-systems/claude-org-ja"
+RT = "suisya-systems/claude-org-runtime"
+
+
+class TestCrossRepoExtraction(unittest.TestCase):
+    """The cross-repo blocking extractor is keyword-gated and leading-run
+    anchored exactly like the home one (§11-3): real cross-repo refs live in
+    non-blocking notations (Epic:/Refs:/Found by) and must NOT be excluded."""
+
+    def test_owner_repo_blocked_by(self):
+        self.assertEqual(
+            wds.extract_cross_repo_blocking_refs(
+                f"Blocked by {RT}#60", is_epic=False
+            ),
+            [(RT, 60)],
+        )
+
+    def test_github_url_blocked_by(self):
+        self.assertEqual(
+            wds.extract_cross_repo_blocking_refs(
+                f"Depends on https://github.com/{RT}/issues/42", is_epic=False
+            ),
+            [(RT, 42)],
+        )
+
+    def test_github_pull_url(self):
+        self.assertEqual(
+            wds.extract_cross_repo_blocking_refs(
+                f"Requires https://github.com/{JA}/pull/7", is_epic=False
+            ),
+            [(JA, 7)],
+        )
+
+    def test_mixed_home_and_cross_run(self):
+        # A run mixing home `#1` and cross `RT#2`: the cross extractor pulls
+        # only the cross ref; the home one is left to extract_blocking_refs.
+        text = f"Blocked by #1, {RT}#2"
+        self.assertEqual(
+            wds.extract_cross_repo_blocking_refs(text, is_epic=False), [(RT, 2)]
+        )
+        self.assertEqual(wds.extract_blocking_refs(text, is_epic=False), [1])
+
+    def test_epic_notation_not_a_blocker(self):
+        # §11-3 cross-repo: `Epic: owner/repo#6` is tracking, not a blocker.
+        self.assertEqual(
+            wds.extract_cross_repo_blocking_refs(
+                "Epic: suisya-systems/claude-org-transport-lab#6", is_epic=False
+            ),
+            [],
+        )
+
+    def test_refs_and_found_by_not_blockers(self):
+        body = (
+            f"Refs {JA}#467, suisya-systems/claude-org#264\n"
+            f"Found by Codex during {JA}#467\n"
+            f"Design source: {JA}#443\n"
+        )
+        self.assertEqual(
+            wds.extract_cross_repo_blocking_refs(body, is_epic=False), []
+        )
+
+    def test_negated_cross_ref_not_a_blocker(self):
+        self.assertEqual(
+            wds.extract_cross_repo_blocking_refs(
+                f"no longer blocked by {RT}#60", is_epic=False
+            ),
+            [],
+        )
+
+    def test_prose_before_cross_ref_not_extracted(self):
+        # Leading-run anchored: prose before the ref → not the immediate run.
+        self.assertEqual(
+            wds.extract_cross_repo_blocking_refs(
+                f"Blocked by the runtime work, see {RT}#60", is_epic=False
+            ),
+            [],
+        )
+
+    def test_bare_repo_shorthand_not_resolved(self):
+        # `ja#467` (no owner) is ambiguous — deliberately not a cross ref.
+        self.assertEqual(
+            wds.extract_cross_repo_blocking_refs(
+                "Blocked by ja#467", is_epic=False
+            ),
+            [],
+        )
+
+    def test_cross_task_list_pure_ref(self):
+        body = f"- [ ] {RT}#11\n- [ ] {RT}#12 を参考に\n"
+        # Only the pure-ref item counts; the prose-annotated one is dropped.
+        self.assertEqual(
+            wds.extract_cross_repo_blocking_refs(body, is_epic=False), [(RT, 11)]
+        )
+
+    def test_cross_task_list_ignored_for_epic(self):
+        self.assertEqual(
+            wds.extract_cross_repo_blocking_refs(
+                f"- [ ] {RT}#11", is_epic=True
+            ),
+            [],
+        )
+
+
+class TestQualifiedRefHelpers(unittest.TestCase):
+    def test_ref_to_json_home_is_bare_int(self):
+        self.assertEqual(wds._ref_to_json((None, 5)), 5)
+
+    def test_ref_to_json_cross_is_string(self):
+        self.assertEqual(wds._ref_to_json((RT, 5)), f"{RT}#5")
+
+    def test_issue_blocking_refs_q_unifies_self_ref(self):
+        # A cross ref naming the issue's own repo dedups with home keying.
+        issue = {"number": 1, "title": "t", "body": f"Blocked by #2 and {JA}#2"}
+        self.assertEqual(
+            wds.issue_blocking_refs_q(issue, JA), [(JA, 2)]
+        )
+
+
+class TestCrossRepoScan(unittest.TestCase):
+    """End-to-end cross-repo behaviour through ``scan_repos``."""
+
+    def _bundle(self, repo, issues, prs=None, merges=None):
+        return {
+            "repo": repo,
+            "issues": issues,
+            "open_pr_numbers": prs or [],
+            "recent_merges": merges or [],
+        }
+
+    def test_blocked_by_open_cross_repo_issue_excluded(self):
+        ja = self._bundle(
+            JA, [_issue(60, body=f"Blocked by {RT}#60")]
+        )
+        rt = self._bundle(RT, [_issue(60, body="open runtime work")])
+        result = wds.scan_repos([ja, rt], wds.ScanConfig())
+        cand_keys = {(c["repo"], c["issue"]) for c in result["candidates"]}
+        self.assertNotIn((JA, 60), cand_keys)  # ja#60 excluded
+        self.assertIn((RT, 60), cand_keys)  # runtime#60 is itself a candidate
+        excluded = {(e["repo"], e["issue"]): e for e in result["excluded_blocked"]}
+        self.assertIn((JA, 60), excluded)
+        self.assertEqual(excluded[(JA, 60)]["blocking_refs"], [f"{RT}#60"])
+
+    def test_blocked_by_closed_cross_repo_issue_resolved(self):
+        # runtime#60 is NOT open (not in runtime's issue list) → resolved.
+        ja = self._bundle(JA, [_issue(60, body=f"Blocked by {RT}#60")])
+        rt = self._bundle(RT, [])
+        result = wds.scan_repos([ja, rt], wds.ScanConfig())
+        cand_keys = {(c["repo"], c["issue"]) for c in result["candidates"]}
+        self.assertIn((JA, 60), cand_keys)
+
+    def test_issue_number_collision_across_repos(self):
+        # ja#60 and runtime#60 are distinct candidates — no collision.
+        ja = self._bundle(JA, [_issue(60, body="ja work")])
+        rt = self._bundle(RT, [_issue(60, body="runtime work")])
+        result = wds.scan_repos([ja, rt], wds.ScanConfig())
+        keys = sorted((c["repo"], c["issue"]) for c in result["candidates"])
+        self.assertEqual(keys, [(JA, 60), (RT, 60)])
+
+    def test_candidates_carry_repo_field(self):
+        result = wds.scan_repos(
+            [self._bundle(JA, [_issue(1, body="b")])], wds.ScanConfig()
+        )
+        self.assertEqual(result["candidates"][0]["repo"], JA)
+        self.assertEqual(result["recommendation"]["repo"], JA)
+
+    def test_unblocked_by_recent_cross_repo_merge(self):
+        # ja#72 Depends on runtime#80; a runtime merge Closes #80 → unblocked.
+        ja = self._bundle(JA, [_issue(72, body=f"Depends on {RT}#80")])
+        rt = self._bundle(
+            RT, [], merges=[{"number": 900, "title": "x", "body": "Closes #80"}]
+        )
+        result = wds.scan_repos([ja, rt], wds.ScanConfig())
+        cand = next(c for c in result["candidates"] if c["issue"] == 72)
+        self.assertTrue(cand["unblocked_by_recent_merge"])
+        self.assertTrue(
+            any(f"{RT}#80" in s for s in cand["signals"])
+        )
+
+    def test_recent_merge_qualified_by_repo(self):
+        # A *ja* merge `Closes #80` must NOT unblock a dep on runtime#80.
+        ja = self._bundle(
+            JA,
+            [_issue(72, body=f"Depends on {RT}#80")],
+            merges=[{"number": 900, "title": "x", "body": "Closes #80"}],
+        )
+        rt = self._bundle(RT, [])
+        result = wds.scan_repos([ja, rt], wds.ScanConfig())
+        cand = next(c for c in result["candidates"] if c["issue"] == 72)
+        self.assertFalse(cand["unblocked_by_recent_merge"])
+
+    def test_unscanned_repo_ref_resolved_with_signal(self):
+        # Blocked by a repo not in the scan set → resolved (誤除外<誤包含) but
+        # the silent resolution is surfaced as an auditable signal (§10).
+        ja = self._bundle(JA, [_issue(71, body="Blocked by Shin-sibainu/ccmux#4")])
+        result = wds.scan_repos([ja], wds.ScanConfig())
+        cand = result["candidates"][0]
+        self.assertTrue(
+            any("un-scanned repo" in s for s in cand["signals"])
+        )
+
+    def test_cross_repo_merge_closes_other_repo_issue(self):
+        # A runtime PR that explicitly Closes ja#5 unblocks a dep on ja#5.
+        ja = self._bundle(JA, [_issue(5, body="dep target")])
+        ja2 = self._bundle(JA, [_issue(6, body=f"Depends on {JA}#5")])
+        # Note: #5 open → #6 would be blocked. Use a separate scenario where #5
+        # is closed but a recent cross-repo merge referenced it.
+        rt = self._bundle(
+            RT, [], merges=[{"number": 901, "title": "x", "body": f"Closes {JA}#5"}]
+        )
+        # #5 is open in ja, so #6 is blocked regardless; assert the cross-close
+        # was parsed by checking an issue depending on a *closed* ja ref.
+        ja3 = self._bundle(JA, [_issue(7, body=f"Depends on {JA}#999")])
+        rt2 = self._bundle(
+            RT, [], merges=[{"number": 902, "title": "x", "body": f"Closes {JA}#999"}]
+        )
+        result = wds.scan_repos([ja3, rt2], wds.ScanConfig())
+        cand = next(c for c in result["candidates"] if c["issue"] == 7)
+        self.assertTrue(cand["unblocked_by_recent_merge"])
+
+    def test_deterministic_order_on_collision(self):
+        # Full tie across axes: order is (repo, issue) ascending, stable.
+        ja = self._bundle(JA, [_issue(60, body="b")])
+        rt = self._bundle(RT, [_issue(60, body="b")])
+        r1 = wds.scan_repos([ja, rt], wds.ScanConfig())
+        r2 = wds.scan_repos([rt, ja], wds.ScanConfig())  # reversed input order
+        self.assertEqual(
+            [(c["repo"], c["issue"]) for c in r1["candidates"]],
+            [(c["repo"], c["issue"]) for c in r2["candidates"]],
+        )
+
+
+class TestCrossRepoCli(unittest.TestCase):
+    """`--from-file` multi-repo shape + `--repo` repeatable wiring."""
+
+    def _run_text(self, text):
+        fd, name = tempfile.mkstemp(suffix=".json", prefix="wds_xrepo_")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(text)
+            return subprocess.run(
+                [sys.executable, str(SCRIPT), "--from-file", name],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            )
+        finally:
+            os.unlink(name)
+
+    def test_multi_repo_bundle_end_to_end(self):
+        bundle = json.dumps(
+            {
+                "repos": [
+                    {
+                        "repo": JA,
+                        "issues": [
+                            {"number": 60, "title": "t", "body": f"Blocked by {RT}#60"},
+                            {"number": 61, "title": "free", "body": "indep"},
+                        ],
+                        "open_pr_numbers": [],
+                        "recent_merges": [],
+                    },
+                    {
+                        "repo": RT,
+                        "issues": [{"number": 60, "title": "rt", "body": "w"}],
+                        "open_pr_numbers": [],
+                        "recent_merges": [],
+                    },
+                ]
+            }
+        )
+        proc = self._run_text(bundle)
+        self.assertEqual(proc.returncode, wds.EXIT_CANDIDATES_FOUND)
+        data = json.loads(proc.stdout)
+        excluded = {(e["repo"], e["issue"]) for e in data["excluded_blocked"]}
+        self.assertIn((JA, 60), excluded)
+        cand_keys = {(c["repo"], c["issue"]) for c in data["candidates"]}
+        self.assertEqual(cand_keys, {(JA, 61), (RT, 60)})
+
+    def test_multi_repo_bad_repo_type_errors(self):
+        proc = self._run_text('{"repos": [{"repo": 5, "issues": []}]}')
+        self.assertEqual(proc.returncode, wds.EXIT_ERROR)
+        data = json.loads(proc.stdout)
+        self.assertEqual(data["status"], "error")
+        self.assertIn("repos[0].repo", data["error"])
+
+    def test_multi_repo_repos_not_list_errors(self):
+        proc = self._run_text('{"repos": {"not": "a list"}}')
+        self.assertEqual(proc.returncode, wds.EXIT_ERROR)
+        data = json.loads(proc.stdout)
+        self.assertIn("repos", data["error"])
+
+    def test_multi_repo_bad_issue_number_errors(self):
+        proc = self._run_text(
+            '{"repos": [{"repo": "o/r", "issues": [{"title": "no num"}]}]}'
+        )
+        self.assertEqual(proc.returncode, wds.EXIT_ERROR)
+        data = json.loads(proc.stdout)
+        self.assertIn("repos[0].issues[0]", data["error"])
+
+    def test_effort_samples_not_applied_in_multi_repo_offline(self):
+        # Effort learning is repo-calibrated: a top-level effort_samples must
+        # NOT be applied across a genuine multi-repo (2+) offline scan (uniform
+        # with the gh-path single-repo guard) — effort_model is null, visible.
+        samples = [
+            {"body_len": 100 * i, "changed_lines": 50 * i, "changed_files": i,
+             "criteria": 0, "review_rounds": 0, "hours_to_merge": None}
+            for i in range(1, 12)
+        ]
+        bundle = json.dumps({
+            "effort_samples": samples,
+            "repos": [
+                {"repo": JA, "issues": [{"number": 1, "title": "a", "body": "b"}],
+                 "open_pr_numbers": [], "recent_merges": []},
+                {"repo": RT, "issues": [{"number": 1, "title": "c", "body": "d"}],
+                 "open_pr_numbers": [], "recent_merges": []},
+            ],
+        })
+        proc = self._run_text(bundle)
+        self.assertEqual(proc.returncode, wds.EXIT_CANDIDATES_FOUND)
+        self.assertIsNone(json.loads(proc.stdout)["effort_model"])  # not applied
+
+    def test_effort_samples_applied_in_single_repo_offline(self):
+        # The single-repo offline shape keeps the learned model (back-compat
+        # with #529's offline effort path).
+        samples = [
+            {"body_len": 100 * i, "changed_lines": 50 * i, "changed_files": i,
+             "criteria": 0, "review_rounds": 0, "hours_to_merge": None}
+            for i in range(1, 12)
+        ]
+        bundle = json.dumps({
+            "effort_samples": samples,
+            "issues": [{"number": 1, "title": "a", "body": "b"}],
+            "open_pr_numbers": [],
+            "recent_merges": [],
+        })
+        proc = self._run_text(bundle)
+        self.assertEqual(proc.returncode, wds.EXIT_CANDIDATES_FOUND)
+        self.assertIsNotNone(json.loads(proc.stdout)["effort_model"])  # applied
+
+    def test_malformed_effort_samples_errors_even_in_multi_repo(self):
+        # The samples are validated regardless of repo shape — a malformed one
+        # errors (exit 2) even when it would not be applied.
+        proc = self._run_text(
+            '{"effort_samples": [{"body_len": "x"}], "repos": ['
+            '{"repo": "o/r", "issues": [], "open_pr_numbers": [], '
+            '"recent_merges": []}]}'
+        )
+        self.assertEqual(proc.returncode, wds.EXIT_ERROR)
+        self.assertIn("effort_samples", json.loads(proc.stdout)["error"])
+
+    def test_repo_arg_is_repeatable(self):
+        # `--repo` uses action=append; two of them must parse to a 2-list and
+        # reach the (mocked) fetchers once each, then scan_repos over both.
+        calls = []
+
+        def _fake_issues(repo, limit=wds.DEFAULT_OPEN_LIMIT):
+            calls.append(repo)
+            return []
+
+        with mock.patch.object(wds, "fetch_open_issues", _fake_issues), \
+             mock.patch.object(wds, "fetch_open_pr_numbers", lambda r, limit=wds.DEFAULT_OPEN_LIMIT: set()), \
+             mock.patch.object(wds, "fetch_recent_merges", lambda r, k: []):
+            rc = wds.main(["--repo", JA, "--repo", RT])
+        self.assertEqual(calls, [JA, RT])
+        self.assertEqual(rc, wds.EXIT_NO_CANDIDATES)
+
+
+class TestCrossRepoOrderIndependence(unittest.TestCase):
+    """Regression: a leading cross ref must not hide a trailing home `#N`
+    (and vice versa). One shared run isolator feeds both extractors, so order
+    inside a mixed run is irrelevant."""
+
+    def test_home_ref_after_cross_ref_blocking(self):
+        # cross-first: `Blocked by RT#2, #1` — home `#1` must still be found.
+        text = f"Blocked by {RT}#2, #1"
+        self.assertEqual(wds.extract_blocking_refs(text, is_epic=False), [1])
+        self.assertEqual(
+            wds.extract_cross_repo_blocking_refs(text, is_epic=False), [(RT, 2)]
+        )
+
+    def test_home_ref_after_cross_ref_in_scan_excludes(self):
+        # ja#9 `Blocked by RT#2, #1` with home #1 open → must be excluded.
+        ja = {
+            "repo": JA,
+            "issues": [
+                _issue(9, body=f"Blocked by {RT}#2, #1"),
+                _issue(1, body="open home dep"),
+            ],
+            "open_pr_numbers": [],
+            "recent_merges": [],
+        }
+        result = wds.scan_repos([ja], wds.ScanConfig())
+        excluded = {e["issue"] for e in result["excluded_blocked"]}
+        self.assertIn(9, excluded)
+
+    def test_recent_merge_home_close_after_cross_close(self):
+        # cross-first close: `Closes RT#81, #80` must still capture home #80.
+        self.assertEqual(wds._pr_close_refs(f"Closes {RT}#81, #80"), {80})
+
+    def test_recent_merge_home_close_after_cross_in_scan(self):
+        # A home merge `Closes RT#81, #80` unblocks a dep on home #80.
+        bundle = {
+            "repo": JA,
+            "issues": [_issue(7, body="Depends on #80")],
+            "open_pr_numbers": [],
+            "recent_merges": [
+                {"number": 900, "title": "x", "body": f"Closes {RT}#81, #80"}
+            ],
+        }
+        result = wds.scan_repos([bundle], wds.ScanConfig())
+        cand = next(c for c in result["candidates"] if c["issue"] == 7)
+        self.assertTrue(cand["unblocked_by_recent_merge"])
+
+
+class TestSingleRepoBackCompat(unittest.TestCase):
+    """A single-repo scan keys candidates as the home repo (`repo: null`,
+    home blocking_refs as bare ints) even when `--repo` names it explicitly —
+    the original `scan()` contract (design §5.1 / §10)."""
+
+    def _run_main_capture(self, argv, issue):
+        import io
+        from contextlib import redirect_stdout
+
+        buf = io.StringIO()
+        with mock.patch.object(
+            wds, "fetch_open_issues", lambda r, limit=wds.DEFAULT_OPEN_LIMIT: [issue]
+        ), mock.patch.object(
+            wds, "fetch_open_pr_numbers", lambda r, limit=wds.DEFAULT_OPEN_LIMIT: set()
+        ), mock.patch.object(
+            wds, "fetch_recent_merges", lambda r, k: []
+        ):
+            with redirect_stdout(buf):
+                rc = wds.main(argv)
+        return rc, json.loads(buf.getvalue())
+
+    def test_single_explicit_repo_keys_as_null(self):
+        rc, data = self._run_main_capture(["--repo", JA], _issue(1, body="b"))
+        self.assertEqual(rc, wds.EXIT_CANDIDATES_FOUND)
+        self.assertIsNone(data["candidates"][0]["repo"])
+        self.assertIsNone(data["recommendation"]["repo"])
+
+    def test_single_explicit_repo_home_blocking_refs_are_ints(self):
+        # home blocker `#5` open → excluded with bare int [5], not "JA#5".
+        issue = _issue(10, body="Blocked by #5")
+        dep = _issue(5, body="open")
+        import io
+        from contextlib import redirect_stdout
+
+        buf = io.StringIO()
+        with mock.patch.object(
+            wds, "fetch_open_issues", lambda r, limit=wds.DEFAULT_OPEN_LIMIT: [issue, dep]
+        ), mock.patch.object(
+            wds, "fetch_open_pr_numbers", lambda r, limit=wds.DEFAULT_OPEN_LIMIT: set()
+        ), mock.patch.object(
+            wds, "fetch_recent_merges", lambda r, k: []
+        ):
+            with redirect_stdout(buf):
+                wds.main(["--repo", JA])
+        data = json.loads(buf.getvalue())
+        excl = {e["issue"]: e for e in data["excluded_blocked"]}
+        self.assertEqual(excl[10]["blocking_refs"], [5])
+
+    def test_duplicate_repo_arg_fetched_once(self):
+        # `--repo JA --repo JA` de-dups → JA fetched once, single-repo (null).
+        calls = []
+        with mock.patch.object(
+            wds, "fetch_open_issues",
+            lambda r, limit=wds.DEFAULT_OPEN_LIMIT: (calls.append(r) or [_issue(1, body="b")]),
+        ), mock.patch.object(
+            wds, "fetch_open_pr_numbers", lambda r, limit=wds.DEFAULT_OPEN_LIMIT: set()
+        ), mock.patch.object(
+            wds, "fetch_recent_merges", lambda r, k: []
+        ):
+            import io
+            from contextlib import redirect_stdout
+
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                wds.main(["--repo", JA, "--repo", JA])
+            data = json.loads(buf.getvalue())
+        self.assertEqual(calls, [JA])  # fetched once, not twice
+        self.assertEqual(data["candidate_count"], 1)
+        self.assertIsNone(data["candidates"][0]["repo"])
+
+
+class TestSingleRepoSelfReferenceKeying(unittest.TestCase):
+    """Round-2 regression: a single-repo scan keys by the *real* repo (so a
+    self-reference by full name resolves) while still *displaying* as home
+    (`repo: null`, int blocking_refs) via collapse_repo (design §10)."""
+
+    def _bundle(self, repo, issues, merges=None):
+        return {
+            "repo": repo,
+            "issues": issues,
+            "open_pr_numbers": [],
+            "recent_merges": merges or [],
+        }
+
+    def test_self_ref_full_name_excludes_when_open(self):
+        # `Blocked by JA#5` in a JA scan, #5 open → blocked (keyed by real JA),
+        # displayed as home: repo null, blocking_refs int, note `#5 ...`.
+        b = self._bundle(
+            JA,
+            [_issue(10, body=f"Blocked by {JA}#5"), _issue(5, body="open")],
+        )
+        result = wds.scan_repos([b], wds.ScanConfig(), collapse_repo=JA)
+        excl = {e["issue"]: e for e in result["excluded_blocked"]}
+        self.assertIn(10, excl)
+        self.assertIsNone(excl[10]["repo"])  # displayed as home
+        self.assertEqual(excl[10]["blocking_refs"], [5])  # int, not "JA#5"
+        self.assertNotIn(10, {c["issue"] for c in result["candidates"]})
+
+    def test_self_ref_recent_merge_unblocks(self):
+        # `Depends on JA#80` + a JA merge `Closes JA#80` → unblocked (keyed
+        # real), displayed home.
+        b = self._bundle(
+            JA,
+            [_issue(7, body=f"Depends on {JA}#80")],
+            merges=[{"number": 900, "title": "x", "body": f"Closes {JA}#80"}],
+        )
+        result = wds.scan_repos([b], wds.ScanConfig(), collapse_repo=JA)
+        cand = next(c for c in result["candidates"] if c["issue"] == 7)
+        self.assertTrue(cand["unblocked_by_recent_merge"])
+        self.assertIsNone(cand["repo"])  # displayed home
+
+    def test_collapse_does_not_affect_other_repo_ref(self):
+        # A cross ref to a *different* repo in a collapsed single scan still
+        # renders as "owner/repo#N" and carries the un-scanned signal.
+        b = self._bundle(JA, [_issue(71, body=f"Blocked by {RT}#9")])
+        result = wds.scan_repos([b], wds.ScanConfig(), collapse_repo=JA)
+        cand = result["candidates"][0]
+        self.assertIsNone(cand["repo"])
+        self.assertEqual(cand["blocking_refs"], [f"{RT}#9"])  # not collapsed
+        self.assertTrue(any("un-scanned" in s for s in cand["signals"]))
+
+    def test_multi_repo_not_collapsed(self):
+        # collapse_repo is None for a genuine multi-repo scan → real repos kept.
+        ja = self._bundle(JA, [_issue(1, body="b")])
+        rt = self._bundle(RT, [_issue(1, body="b")])
+        result = wds.scan_repos([ja, rt], wds.ScanConfig(), collapse_repo=None)
+        repos = {c["repo"] for c in result["candidates"]}
+        self.assertEqual(repos, {JA, RT})
+
+
+class TestDuplicateRepoBundleDedup(unittest.TestCase):
+    """A repo bundle appearing twice (offline `repos:[A, A]`) must not
+    double-count candidates / excluded entries."""
+
+    def test_duplicate_bundle_dedups_candidates(self):
+        b = {
+            "repo": JA,
+            "issues": [_issue(1, body="b"), _issue(2, body="Blocked by #3")],
+            "open_pr_numbers": [],
+            "recent_merges": [],
+        }
+        dep = {"repo": JA, "issues": [_issue(3, body="open")], "open_pr_numbers": [], "recent_merges": []}
+        result = wds.scan_repos([b, dict(b), dep], wds.ScanConfig())
+        keys = [(c["repo"], c["issue"]) for c in result["candidates"]]
+        self.assertEqual(keys.count((JA, 1)), 1)  # not duplicated
+        self.assertEqual(result["candidate_count"], len(set(keys)))
+        excl_keys = [(e["repo"], e["issue"]) for e in result["excluded_blocked"]]
+        self.assertEqual(excl_keys.count((JA, 2)), 1)  # excluded not duplicated
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -123,6 +123,7 @@ triage を「**計算（どの Issue がどう triage されるか）**」と「
   "effort_model": null,
   "candidates": [
     {
+      "repo": "suisya-systems/claude-org-ja",
       "issue": 531,
       "title": "...",
       "summary": "一行要約（body から機械抽出）",
@@ -140,11 +141,12 @@ triage を「**計算（どの Issue がどう triage されるか）**」と「
     }
   ],
   "recommendation": {
+    "repo": "suisya-systems/claude-org-ja",
     "issue": 531,
     "reason": "直近マージ #528 の自然な follow-up で依存解決済み・工数 S・空き pane を埋められる"
   },
   "excluded_blocked": [
-    { "issue": 540, "blocking_refs": [537], "note": "#537 が open のため除外" }
+    { "repo": "suisya-systems/claude-org-ja", "issue": 540, "blocking_refs": [537], "note": "#537 が open のため除外" }
   ]
 }
 ```
@@ -152,6 +154,8 @@ triage を「**計算（どの Issue がどう triage されるか）**」と「
 （上記 `candidates` は 1 件のみ示した例。実際は `candidate_count` 件が `rank` 昇順で並ぶ。JSON はコメントを許さないため省略記法は使わない。）
 
 - `status`: `candidates_found` / `no_candidates`（候補ゼロ）/ `error`。
+- `repo`（候補・推奨・除外枠の各エントリ）: クロスリポジトリ triage（[§10](#10-クロスリポジトリ-triage実装済み)）で候補の出自リポジトリ（`owner/repo`）を識別する。単一リポジトリ scan（`--repo` 省略 or 1 回）では `null`。`repo` と `issue` の組が候補の同一性なので、`ja#60` と `runtime#60` は衝突しない。
+- `blocking_refs`（候補・除外枠）: 依存参照の正準表現。home リポジトリ参照は素の整数 `N`（後方互換）、クロスリポジトリ参照は文字列 `"owner/repo#N"`（混在しうる）。
 - `candidate_count`: `candidates[]` の実件数。`truncated_count`: N 件上限で `candidates[]` から落とした「依存解決済みだが順位外」の候補数（**必須フィールド**。`0` でも省略しない。サイレント truncation を禁じるため）。
 - exit code で delivery 側が分岐する。[`tools/check_curate_threshold.py`](../../tools/check_curate_threshold.py) に倣い、**`1` を意味付けに使わない**（Python が未捕捉例外時に既定で返す exit `1` と衝突し、scan のクラッシュが「候補なし」に誤読されて error が窓口に届かなくなるのを防ぐ）。割り当ては `0` = 候補なし（`no_candidates`）、`10` = 候補あり（`candidates_found`）、`2` = error。delivery 層は JSON パース失敗に依存せず exit code で挙動を決める（curator threshold ツールと同方針）。
 - `excluded_blocked` は「依存未解決で除外した Issue」を理由付きで残す。**サイレント truncation をしない**（`truncated_count` で順位外候補の存在も、`excluded_blocked` で依存除外も、ともに人間が監査できるようにする）。
@@ -178,6 +182,7 @@ triage を「**計算（どの Issue がどう triage されるか）**」と「
 - 工数が機械推定なら `(推定)` を必ず付す。
 - 「提案のみ / 着手はあなたの判断」を毎回明示する（INV-1 の運用上の現れ）。
 - 除外枠を必ず見せる（監査性 + 「全部見たうえで N 件」という安心）。
+- **クロスリポジトリ scan（[§10](#10-クロスリポジトリ-triage実装済み)）時**: 候補の `repo` が `null` でない（複数 repo 横断）なら、`#N` の代わりに `repo#N`（例 `runtime#531`）で表示し、出自 repo の曖昧さを無くす。単一 repo scan（`repo: null`）では従来どおり `#N`。delivery 層（窓口 skill）でこのレンダリング分岐を実装する（[§9](#9-段階導入と検証提案) と同様に `.claude/` 編集を伴うため計算層ワーカーのスコープ外・別タスク）。
 
 ## 6. delivery 方式 3 案比較
 
@@ -284,12 +289,38 @@ triage を「**計算（どの Issue がどう triage されるか）**」と「
 
 各 Phase は INV-1〜INV-5 を破らないことをレビューゲートで確認する。とくに「read-only か」「人間ゲートを飛ばしていないか」を Phase ごとに検証する。
 
-## 10. スコープ外 / 将来課題
+## 10. クロスリポジトリ triage（実装済み）
+
+> ステータス: **実装済み**（Issue #528）。当初は「単一リポジトリ前提・将来拡張」としていたが、計算層（[`tools/work_discovery_scan.py`](../../tools/work_discovery_scan.py)）を**複数リポジトリ横断の依存解決 + 横断ランク付け**へ additive に拡張した。単一リポジトリ動作（`scan()` 入口）は完全に保持され、不変条件 INV-1〜5（[§7](#7-安全レール不変条件)）も維持される。
+
+複数リポジトリ（ja / runtime / renga / transport-lab 等）を一度に scan し、横断で次の仕事候補をランク付けする。中核は **qualified ref**: すべての open Issue/PR・依存参照・直近マージリンクを `(repo, number)` で keying するので、`ja#60` と `runtime#60` は別物として扱われ衝突しない。
+
+### 10.1 依存記法と較正（2026-06-12, 実 Issue ベース）
+
+- **解決する記法**: `Blocked by owner/repo#N` / `Depends on owner/repo#N` / `Requires owner/repo#N`、および GitHub URL 形式（`https://github.com/owner/repo/issues/N`・`/pull/N`）。home リポジトリの素の `#N` は従来どおり当該 Issue の repo に qualify される。
+- **較正で確認した最重要点**: 実 Issue 群でクロスリポジトリ参照は **すべて非ブロッキング記法**（`Epic:` / `Refs:` / `Found by` / `Design source:`）に現れ、`Blocked by` 等のブロッキング節には現状ゼロ。よってクロスリポジトリ抽出器も home 抽出器と同じく **キーワードゲート + leading-run anchored**（[§11-3](#11-未解決の論点実装前に人間判断が要る点) の過剰一致回避）で、`Epic: owner/repo#6` を誤ってブロッカー扱いしない。本機能は**前方互換的に「有効化」する**もの — 実 Issue がブロッキング記法を採用した瞬間に解決し、既存の非ブロッキング参照は誤読しない。
+- **意図的な非カバレッジ**（誤読より明示を優先、[§4.4](#44-推定軸の不確実性明示)）:
+  - owner 無しの短縮形 `ja#467` は曖昧なため解決しない。
+  - リリース/バージョンの散文依存（`claude-org-runtime>=0.1.11`、「runtime 0.1.20 リリース待ち」）は Issue 参照ではないため解決しない。実ブロッカーがこの形で書かれている場合は **人間のスコープ判断**が要る（黙って取りこぼさない）。
+
+### 10.2 解決モデル（scan-set-relative + 監査シグナル）
+
+- ブロッキング参照は **scan 対象に含まれる repo の open 集合**に対して解決する。`runtime#60` を解決するには runtime を scan セットに入れる（横断 triage は ja/runtime/renga 等を一括 scan する想定なので自然）。
+- **keying は常に実 repo 名で行う（表示とは分離）**: 単一リポジトリ scan で表示を home（`repo: null` / int `blocking_refs`、§5.1 後方互換）に畳む場合も、依存解決の keying は実 repo 名で行う。これにより同一 repo を**フル修飾で書いた自己参照**（`Blocked by owner/repo#5` を当該 repo の scan で）が自分の repo の open 集合に対して正しく解決し、`#5` が open なら blocked になる（畳み込みを keying まで適用すると未走査誤判定になるのを回避）。表示の畳み込みは出力レンダリングのみの責務。
+- scan セット**外**の repo を指すクロスリポジトリ参照は **resolved 扱い**（既存の 誤除外<誤包含 方針を踏襲）だが、候補の `signals[]` に「`cross-repo ref owner/repo#N to un-scanned repo — treated resolved`」を必ず emit し、「closed だから」と「未確認だから」を人間が区別できるようにする（silent resolution の監査可能化）。
+- 直近マージ集合は**マージ元 repo で qualify**される（runtime PR の `Closes #60` は runtime#60 を解決し、ja#60 には触れない）。
+
+### 10.3 起動（CLI）
+
+- `--repo` を繰り返して複数 repo を渡す: `python3 tools/work_discovery_scan.py --repo suisya-systems/claude-org-ja --repo suisya-systems/claude-org-runtime`。省略 or 1 回なら従来どおり単一 repo。
+- 候補識別性（`repo`+`issue`）・正準 `blocking_refs`・推奨の `repo` は [§5.1](#51-機械可読-jsonツール-stdout)。INV-1（read-only / propose-only）は維持: gh の**読み取りサブコマンドのみ**を使い、横断でも書き込み・git 操作・spawn を一切しない。
+
+## 10'. スコープ外 / 将来課題
 
 - **着手の自動化**: 本設計の対象外（INV-1 / INV-2 で恒久的に禁止）。assessment §5 が言うとおり「人間をループ頂点に残す」のが本組織の確定方針。
-- **クロスリポジトリ triage**: 複数リポジトリ（runtime / ja / renga 等）横断の依存解決は本設計では単一リポジトリ前提。将来拡張。
+- **リリース/バージョン依存の解決**: [§10.1](#101-依存記法と較正2026-06-12-実-issue-ベース) の散文リリース依存（`runtime>=0.1.11` 等）の自動解決は対象外（スコープ A 確定: Issue 参照の横断解決まで）。`gh release` 横断照合は将来課題。
 - **工数見積もりの高度化（実装済み・本リポジトリではゲート OFF）**: §4.1 の静的ヒューリスティックに加え、[`tools/work_discovery_scan.py`](../../tools/work_discovery_scan.py) は直近マージ PR の**実工数**（変更行数 / ファイル数。review ラウンド数・着手〜マージ所要時間は退化シグナルのため composite から除外しコンテキストとしてのみ記録）から repo 較正された effort モデルを学習する（`--effort-history`、既定 60 / `0` で無効化）。`closingIssuesReferences` で PR↔Issue を橋渡しし、トリアージ時に観測できる唯一の予測子（Issue body 長）が実工数と相関するかを測る。**データ駆動ゲート**（十分なサンプル数 AND Spearman ≥ 閾値）を超えた時のみ静的推定を上書きし、それ以外は静的推定を維持して理由＋実工数コンテキストを `signals[]` に明示する。本リポジトリの実データでは body 長は実工数と相関しない（ρ ≈ 0、n≈23 — body 長は spec の詳細さを反映し、コード変更量を反映しない）ため、ゲートは正しく上書きを見送り、モデルは「機械が断定した」誤認（認知的降伏、§4.4）を避けつつ監査コンテキストのみ付与する。将来 size ラベル運用や body 長相関が現れた repo では同一フレームワークが自動で学習 cutpoint を適用する。学習フェッチは **non-fatal**（gh 失敗時は静的ヒューリスティックへ縮退、triage は中断しない）。`effort_estimated` + `signals[]` の不確実性明示契約は学習経路でも維持。モデル要約は出力の `effort_model` に echo される。**既知の限界（明示）**: 予測子に使う body は closed issue の *現在の* body であり、merge / triage 時点のスナップショットではない（gh から履歴 body を安価に取得できないため）。閉鎖後の本文編集は学習相関 / cutpoint を動かしうる（spec issue は閉鎖後ほとんど編集されないが、ノイズ源として `coverage` で網羅性を監査可能にしている）。
-- **`.claude/` skill・`.dispatcher/` prose・`tools/` の実体実装**: 本ワーカーは DESIGN ONLY。すべて別タスク。
+- **`.claude/` skill・`.dispatcher/` prose の実体実装**: クロスリポジトリ対応の delivery 層配線（窓口 skill の多 repo 起動・dispatcher 拡張）と effort 学習ゲートの運用配線は別タスク。
 - **proposed journal イベントの台帳追記と配線**: `work_discovery_scanned` 等の [`docs/journal-events.md`](../journal-events.md) 追記・emit 配線は実装タスク側。
 
 ## 11. 未解決の論点（実装前に人間判断が要る点）
