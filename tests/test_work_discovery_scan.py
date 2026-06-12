@@ -462,6 +462,25 @@ class TestEffortLearning(unittest.TestCase):
         b = wds.estimate_effort(_issue(1, body="short"), None)
         self.assertEqual(a, b)
 
+    def test_learning_signals_ascii_only(self):
+        # Issue #546: the learning path's *generated* strings (reason /
+        # degenerate_signals / effort signals) must be ASCII-only so the
+        # stdout JSON (ensure_ascii=False for Japanese GitHub titles) never
+        # crashes a cp932 console on typographic chars like ≤ / ρ / — / →.
+        models = [
+            wds.learn_effort_model([]),  # zero training pairs
+            wds.learn_effort_model(self._correlated(9)),  # gate fires
+            wds.learn_effort_model(self._correlated(4)),  # insufficient n
+            wds.learn_effort_model(self._uncorrelated()),  # gate declines
+        ]
+        for m in models:
+            for s in [m["reason"], *m["degenerate_signals"]]:
+                s.encode("ascii")  # raises UnicodeEncodeError on regression
+            for body in ("short", "x" * 5000):
+                _, _, sig = wds.estimate_effort(_issue(1, body=body), m)
+                for s in sig:
+                    s.encode("ascii")
+
     # --- sample building ---------------------------------------------
     def test_build_samples_single_issue_join(self):
         prs = [
