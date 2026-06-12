@@ -1,11 +1,26 @@
 #!/usr/bin/env python3
-"""Work-discovery triage — Phase 1 computation layer (Issue #520).
+"""Work-discovery triage — computation layer (Issue #520; cross-repo #528).
 
 This is the **deterministic, side-effect-free computation layer** described
 in ``docs/design/work-discovery-triage.md`` §3 (二層構造) / §4 (triage 基準)
-/ §5 (出力フォーマット). It reads open Issues (via the GitHub CLI ``gh``,
-read-only), ranks the ones whose dependencies are resolved, and prints a
-single candidate JSON object to stdout. It does **nothing else**.
+/ §5 (出力フォーマット) / §10 (クロスリポジトリ triage). It reads open Issues
+(via the GitHub CLI ``gh``, read-only), ranks the ones whose dependencies are
+resolved, and prints a single candidate JSON object to stdout. It does
+**nothing else**.
+
+Cross-repo triage (design §10): pass ``--repo`` more than once to scan
+several repositories together. Candidates from all of them are ranked into
+one list, and a ``Blocked by owner/repo#N`` / github-URL dependency is
+resolved against the *scanned set* — so a ja Issue blocked by an open
+runtime Issue is excluded, and unblocked once a runtime merge closes it.
+Every open Issue/PR, blocker and recent-merge link is keyed by a qualified
+``(repo, number)`` ref, so ``ja#60`` and ``runtime#60`` never collide.
+Single-repo invocation (``--repo`` once or not at all) is unchanged — the
+``scan()`` entry point is a thin shim over the cross-repo ``scan_repos()``
+core, and candidates then carry ``repo: null``. A cross-repo blocker pointing
+at a repo *not* in the scan set is treated resolved (誤除外<誤包含) but emits
+an auditable ``signals[]`` entry; bare ``repo#N`` shorthand and release/version
+prose (``runtime>=0.1.11``) are deliberately not resolved (see ``_OWNER_REPO``).
 
 Invariants enforced here (design §7):
 
@@ -143,18 +158,12 @@ _BLOCK_NEG_RE = re.compile(
 _BLOCK_KEYWORD_RE = re.compile(
     r"(?i)\b(?:blocked\s+by|depends\s+on|requires)\b"
 )
-# From a blocking clause, consume only the *leading* run of refs
-# (`#N`, optionally `PR #N`, comma/and-separated). #N refs are taken from
-# this leading run **only** — so `Depends on: Commit 1 ... filed under #80`
-# (real #177/#178) yields *no* ref (the clause starts with prose, not a
-# `#N`), and `Parent: #N` / `Design: PR #N` / `Refs #N` / `Closes #N` /
-# `Discovered while working on #N` / bare `#N` are never misread as
-# blockers. This is the §11-3 over-matching guard: prefer *not* excluding.
-_LEADING_REFS_RE = re.compile(
-    r"^[\s:]*((?:(?:pr\s+)?#\d+[\s,]*(?:and\s+|&\s*)?)+)", re.I
-)
-# A bare-number ref like `#531`; the leading `(?<![\w/])` stops it firing
-# inside `org/repo#531`-style cross-repo refs (single-repo scope, §10).
+# A bare-number ref like `#531`. The leading `(?<![\w/])` stops it firing
+# inside `org/repo#531`-style cross-repo refs — so when this is applied to a
+# *mixed* leading run (`#1, owner/repo#2`) it picks up only the home `#1` and
+# leaves `owner/repo#2` to the cross-repo extractor (design §10). This is the
+# mechanism that lets one shared run isolator (`_keyword_lead_runs`) feed both
+# the home and cross paths without either hiding the other's refs.
 _ISSUE_REF_RE = re.compile(r"(?<![\w/])#(\d+)\b")
 # Unchecked task-list item used as a pending-dependency signal: `- [ ] #N`
 # (design §4.1). Counted for NON-epic issues only — an epic's child checklist
@@ -168,65 +177,154 @@ _ISSUE_REF_RE = re.compile(r"(?<![\w/])#(\d+)\b")
 # discovery prefers false-inclusion over false-exclusion (誤除外 < 誤包含):
 # when in doubt, do not treat the item as a blocker.
 _OPEN_TASK_ITEM_RE = re.compile(r"(?im)^[ \t]*[-*]\s*\[ \]\s*(.+?)\s*$")
-# True iff the captured task content is nothing but a `#N` ref run.
-_PURE_REF_RUN_RE = re.compile(r"(?i)^(?:#\d+[\s,]*(?:and\s+|&\s*)?)+$")
 
 # PR → linked-Issue notation for the recent-merge heuristic (design §4.2).
-# §4.2 keeps two *distinct* conditions, so we keep two patterns:
+# §4.2 keeps two *distinct* conditions:
 #   * a *closing* keyword (Closes/Fixes/Resolves #N) means the merged PR
 #     actually resolved #N — used to decide a blocking ref "was closed by a
 #     recent merge";
 #   * a *mere reference* (Refs #N) does not close #N — only used to decide
 #     "this Issue is referenced by (a natural follow-up of) a recent merge".
-# Conflating them would let a bare `Refs #100` mark #100 as resolved.
-#
-# A single keyword can reference several issues at once
-# (`Closes #100, #101 and #102`), so both patterns capture the whole leading
-# run of comma/space/`and`-separated `#N` refs (mirroring `_LEADING_REFS_RE`);
-# `_extract_ref_run` then pulls every number with `_ISSUE_REF_RE`. Capturing
-# only the first would silently drop the 2nd+ issue from
-# `recent_merge_closed_issues` / `recent_merge_referenced_issues` (hurts the
-# unblocked_by_recent_merge axis).
-#
-# The keyword may be followed by a colon (`Closes: #1`, `Fixes: #1`) — a
-# common GitHub notation — so the separator is `[\s:]+`, not just `\s+`.
-_KEYWORD_REF_RUN = r"[\s:]+((?:#\d+[\s,]*(?:and\s+|&\s*)?)+)"
-_PR_CLOSE_RE = re.compile(
-    r"(?i)\b(?:closes|close|closed|fixes|fix|fixed|resolves|resolve|resolved)"
-    + _KEYWORD_REF_RUN
+# Conflating them would let a bare `Refs #100` mark #100 as resolved. The two
+# keyword sets are `_PR_CLOSE_KEYWORD_RE` / `_PR_REF_KEYWORD_RE` below; both
+# feed the shared `_keyword_lead_runs` isolator so a single keyword closing
+# several issues (`Closes #100, #101 and #102`, colon form `Closes: #1`) yields
+# every number, and a leading cross ref (`Closes owner/repo#81, #80`) no longer
+# hides the trailing home `#80` (design §10). `_pr_close_refs` /
+# `_pr_referenced_refs` are defined after that isolator.
+
+
+# --- cross-repo notation (design §10) ----------------------------------
+# Calibrated against the org's real Issues (2026-06-12, `gh issue list` over
+# ja / runtime / renga / transport-lab): cross-repo refs in the wild are
+# written as ``owner/repo#N`` (e.g. ``suisya-systems/claude-org-runtime#38``)
+# and as full GitHub URLs (``https://github.com/suisya-systems/claude-org-ja/
+# issues/377``). Two deliberate NON-coverages, both surfaced rather than
+# guessed (design §10 / §4.4):
+#   * Bare ``repo#N`` shorthand without an owner (``ja#467``) is ambiguous —
+#     not resolved.
+#   * Release/version prose (``claude-org-runtime>=0.1.11``, "blocked by the
+#     runtime 0.1.20 release") is not an issue ref and is not resolved; if a
+#     real blocker is phrased that way it needs a human scope decision, not a
+#     silent miss.
+# Crucially, **every** cross-repo ref observed today lives in a *non-blocking*
+# notation (``Epic:`` / ``Refs:`` / ``Found by`` / ``Design source:``), never
+# in ``Blocked by`` / ``Depends on`` / ``Requires``. So the cross-repo
+# extractor is keyword-gated and leading-run-anchored exactly like the
+# home-repo one (§11-3 precision): a stray ``Epic: owner/repo#6`` must NOT be
+# read as a blocker. The feature is therefore *forward-enabling* — it resolves
+# the cross-repo blocking notation the moment a real Issue adopts it, without
+# misreading the existing non-blocking cross-repo mentions.
+_OWNER_REPO = r"[A-Za-z0-9](?:[A-Za-z0-9-]*)/[A-Za-z0-9._-]+"
+# A single cross-repo ref token — URL form (groups 1,2) or owner/repo#N form
+# (groups 3,4). Used to pull cross refs out of an already-isolated leading run.
+_CROSS_REF_TOKEN_RE = re.compile(
+    r"https?://github\.com/(" + _OWNER_REPO + r")/(?:issues|pull)/(\d+)"
+    r"|(" + _OWNER_REPO + r")#(\d+)"
 )
-_PR_REF_RE = re.compile(r"(?i)\b(?:refs|ref|re)" + _KEYWORD_REF_RUN)
+# Any ref token (home `#N` / `PR #N`, cross `owner/repo#N`, or a github URL).
+# Used to bound the *leading run* after a keyword so the same "immediate run
+# only" §11-3 precision applies uniformly: a keyword whose clause starts with
+# prose yields nothing (URL alt first so the bare `#\d+` alt can't truncate a
+# URL mid-match). One run isolator (`_keyword_lead_runs`) then feeds BOTH the
+# home extractor (`_ISSUE_REF_RE`) and the cross extractor (`_cross_tokens`),
+# so a mixed run never lets one ref type hide the other regardless of order.
+_REF_TOKEN_ANY = (
+    r"(?:https?://github\.com/" + _OWNER_REPO + r"/(?:issues|pull)/\d+"
+    r"|" + _OWNER_REPO + r"#\d+"
+    r"|(?:pr\s+)?#\d+)"
+)
+_QUALIFIED_LEADING_RUN_RE = re.compile(
+    r"^[\s:]*((?:" + _REF_TOKEN_ANY + r"[\s,]*(?:and\s+|&\s*)?)+)", re.I
+)
+# A task-list item whose content is *nothing but* a run of any ref tokens
+# (incl. cross) — §11-3: a prose-annotated mention is not a blocker. Used by
+# both the home and cross task-list paths.
+_PURE_REF_RUN_ANY_RE = re.compile(
+    r"(?i)^(?:" + _REF_TOKEN_ANY + r"[\s,]*(?:and\s+|&\s*)?)+$"
+)
+# Recent-merge close / reference keywords (design §4.2). Both feed the shared
+# `_keyword_lead_runs` isolator so a leading cross ref cannot hide a trailing
+# home `#N` (and vice-versa).
+_PR_CLOSE_KEYWORD_RE = re.compile(
+    r"(?i)\b(?:closes|close|closed|fixes|fix|fixed|resolves|resolve|resolved)\b"
+)
+_PR_REF_KEYWORD_RE = re.compile(r"(?i)\b(?:refs|ref|re)\b")
 
 
-def _extract_ref_run(pattern: re.Pattern, text: str) -> set[int]:
-    """All issue numbers in `text`'s keyword-led `#N` runs (design §4.2).
+def _keyword_lead_runs(text: str, keyword_re: re.Pattern):
+    """Yield the isolated leading ref-run after each non-negated keyword hit.
 
-    Every `#N` in the leading run after each keyword is captured, so
-    `Closes #100, #101` / `Refs #100, #101` yield ``{100, 101}`` — not just
-    the first.
-
-    A keyword negated on the same line (`does not close #100`,
-    `no longer closes #100`) is skipped — this is exactly GitHub's auto-close
-    false-positive that reopened #520, applied here so a recent merge that
-    *disclaims* closing #N does not wrongly mark #N resolved.
+    The single source of the keyword / negation / same-line / leading-run
+    discipline (§11-3), shared by every extractor — home & cross blocking
+    (`_BLOCK_KEYWORD_RE`) and recent-merge close/reference
+    (`_PR_CLOSE_KEYWORD_RE` / `_PR_REF_KEYWORD_RE`). For each keyword
+    occurrence it derives the same-line text before it (negation guard:
+    "not blocked by #5" / "does not close #100" → dropped) and the leading run
+    of ref tokens immediately after it (`_QUALIFIED_LEADING_RUN_RE`). A keyword
+    not immediately followed by a ref run (prose, e.g. "Depends on: Commit 1")
+    yields nothing. ``.`` never crosses newlines: a keyword on one line and a
+    `#N` on the next are not linked. The run may mix home and cross tokens in
+    any order; the caller pulls whichever type it wants from it.
     """
-    nums: set[int] = set()
-    for match in pattern.finditer(text):
-        line_start = text.rfind("\n", 0, match.start()) + 1
-        if _BLOCK_NEG_RE.search(text[line_start : match.start()]):
-            continue  # negated keyword ("does not close #100") — not a close
-        nums.update(int(n) for n in _ISSUE_REF_RE.findall(match.group(1)))
-    return nums
+    for m in keyword_re.finditer(text):
+        line_start = text.rfind("\n", 0, m.start()) + 1
+        line_end = text.find("\n", m.end())
+        if line_end == -1:
+            line_end = len(text)
+        if _BLOCK_NEG_RE.search(text[line_start : m.start()]):
+            continue  # negated clause ("not blocked by #5") — not a blocker
+        run = _QUALIFIED_LEADING_RUN_RE.match(text[m.end() : line_end])
+        if run:
+            yield run.group(1)
+
+
+def _cross_tokens(run_text: str) -> list[tuple[str, int]]:
+    """Pull every cross-repo ``(owner/repo, number)`` from an isolated run.
+
+    Home-repo bare ``#N`` / ``PR #N`` tokens in the run are ignored here —
+    they belong to ``extract_blocking_refs`` (the home path). Only the URL and
+    ``owner/repo#N`` forms produce a cross ref.
+    """
+    out: list[tuple[str, int]] = []
+    for m in _CROSS_REF_TOKEN_RE.finditer(run_text):
+        if m.group(1) is not None:  # URL form
+            out.append((m.group(1), int(m.group(2))))
+        else:  # owner/repo#N form
+            out.append((m.group(3), int(m.group(4))))
+    return out
+
+
+def _cross_keyword_refs(text: str, keyword_re: re.Pattern) -> set[tuple[str, int]]:
+    """Cross refs in the leading run after each non-negated ``keyword_re`` hit.
+
+    Used for the recent-merge cross-repo close/reference path (a runtime PR
+    that ``Closes suisya-systems/claude-org-ja#5``)."""
+    refs: set[tuple[str, int]] = set()
+    for run in _keyword_lead_runs(text, keyword_re):
+        refs.update(_cross_tokens(run))
+    return refs
 
 
 def _pr_close_refs(text: str) -> set[int]:
-    """Issue numbers a PR *closes* (Closes/Fixes/Resolves #N, …)."""
-    return _extract_ref_run(_PR_CLOSE_RE, text)
+    """Home-repo Issue numbers a PR *closes* (Closes/Fixes/Resolves #N, …).
+
+    Pulls home `#N` from each close-keyword's leading run; a negated keyword
+    ("does not close #100") and a leading cross ref ("Closes owner/repo#81,
+    #80" → still yields {80}) are both handled by the shared isolator."""
+    refs: set[int] = set()
+    for run in _keyword_lead_runs(text, _PR_CLOSE_KEYWORD_RE):
+        refs.update(int(n) for n in _ISSUE_REF_RE.findall(run))
+    return refs
 
 
 def _pr_referenced_refs(text: str) -> set[int]:
-    """Issue numbers a PR merely *references* (Refs/Ref/Re #N, …)."""
-    return _extract_ref_run(_PR_REF_RE, text)
+    """Home-repo Issue numbers a PR merely *references* (Refs/Ref/Re #N, …)."""
+    refs: set[int] = set()
+    for run in _keyword_lead_runs(text, _PR_REF_KEYWORD_RE):
+        refs.update(int(n) for n in _ISSUE_REF_RE.findall(run))
+    return refs
+
 
 # Labels that force `blocked` regardless of refs (design §4.1).
 _BLOCK_LABELS = {"blocked", "on-hold", "on hold"}
@@ -343,13 +441,15 @@ def dependency_text(issue: dict) -> str:
 
 
 def extract_blocking_refs(text: str | None, *, is_epic: bool) -> list[int]:
-    """Return Issue/PR numbers this Issue is blocked by / depends on.
+    """Return *home-repo* Issue/PR numbers this Issue is blocked by / depends on.
 
     ``text`` is the Issue body concatenated with its comments (see
     ``dependency_text``). Only the three blocking keywords (`Blocked by` /
-    `Depends on` / `Requires`) contribute, and only via the `#N` refs in
-    their trailing clause (design §4.1, §11-3 calibration). For non-epic
-    issues an unchecked task-list item `- [ ] #N` also counts as a pending
+    `Depends on` / `Requires`) contribute, and only via the bare `#N` refs in
+    their trailing clause (design §4.1, §11-3 calibration). Cross-repo refs
+    (`owner/repo#N`, github URLs) are deliberately ignored here — they belong
+    to ``extract_cross_repo_blocking_refs`` (design §10). For non-epic issues
+    an unchecked task-list item `- [ ] #N` also counts as a pending
     dependency; for epics it does not (child checklists are tracking).
 
     Deduplicated, sorted ascending for a stable, reproducible output.
@@ -357,31 +457,50 @@ def extract_blocking_refs(text: str | None, *, is_epic: bool) -> list[int]:
     if not text:
         return []
     refs: set[int] = set()
-    for m in _BLOCK_KEYWORD_RE.finditer(text):
-        # the keyword's own line, split at the keyword (`.` never crosses
-        # newlines in the original regex — keep refs same-line so a keyword on
-        # one line and a bare `#N` on the next are NOT linked, §11-3).
-        line_start = text.rfind("\n", 0, m.start()) + 1
-        line_end = text.find("\n", m.end())
-        if line_end == -1:
-            line_end = len(text)
-        if _BLOCK_NEG_RE.search(text[line_start : m.start()]):
-            continue  # negated clause ("not blocked by #5") — not a blocker
-        # Leading refs come from immediately after THIS keyword; the run stops
-        # at the next non-ref token, so a following keyword's refs are picked
-        # up by that keyword's own iteration ("Blocked by #1; depends on #2").
-        lead = _LEADING_REFS_RE.match(text[m.end() : line_end])
-        if not lead:
-            continue
-        for num in _ISSUE_REF_RE.findall(lead.group(1)):
+    for run in _keyword_lead_runs(text, _BLOCK_KEYWORD_RE):
+        # `_ISSUE_REF_RE`'s `(?<![\w/])` lookbehind pulls only the home `#N`
+        # from the run, leaving any `owner/repo#N` to the cross extractor — so
+        # a mixed run ("owner/repo#2, #1") still yields the home `#1` (design
+        # §10), unlike a run regex that had to *start* with a home `#N`.
+        for num in _ISSUE_REF_RE.findall(run):
             refs.add(int(num))
     if not is_epic:
         for item in _OPEN_TASK_ITEM_RE.finditer(text):
             content = item.group(1)
-            if not _PURE_REF_RUN_RE.match(content):
+            if not _PURE_REF_RUN_ANY_RE.match(content):
                 continue  # prose-annotated mention, not a blocker (§11-3)
             for num in _ISSUE_REF_RE.findall(content):
                 refs.add(int(num))
+    return sorted(refs)
+
+
+def extract_cross_repo_blocking_refs(
+    text: str | None, *, is_epic: bool
+) -> list[tuple[str, int]]:
+    """Return *cross-repo* ``(owner/repo, number)`` blockers (design §10).
+
+    The cross-repo sibling of ``extract_blocking_refs``: same keyword gating,
+    negation guard, same-line precision and task-list discipline, but it pulls
+    only the ``owner/repo#N`` / github-URL tokens from each blocking clause's
+    leading run. A cross ref naming the Issue's *own* repo unifies with the
+    home keying upstream (both become ``(repo, N)``), so self-references by
+    full name resolve against that repo's open set.
+
+    Returns a sorted, de-duplicated list. Empty when the text carries no
+    cross-repo blocking refs (the common case today — see ``_OWNER_REPO``
+    notes), so this is purely additive over the home-repo path.
+    """
+    if not text:
+        return []
+    refs: set[tuple[str, int]] = set()
+    for run in _keyword_lead_runs(text, _BLOCK_KEYWORD_RE):
+        refs.update(_cross_tokens(run))
+    if not is_epic:
+        for item in _OPEN_TASK_ITEM_RE.finditer(text):
+            content = item.group(1)
+            if not _PURE_REF_RUN_ANY_RE.match(content):
+                continue  # prose-annotated mention, not a blocker (§11-3)
+            refs.update(_cross_tokens(content))
     return sorted(refs)
 
 
@@ -390,27 +509,106 @@ def has_block_label(issue: dict) -> bool:
     return any(name in _BLOCK_LABELS for name in _label_names(issue))
 
 
+# ----------------------------------------------------------------------
+# Qualified refs (design §10). A *qualified ref* is ``(repo, number)`` where
+# ``repo`` is the full ``owner/repo`` string for a cross-repo ref, or ``None``
+# for a home-repo ref in single-repo scans (``scan()``). Keying every open
+# Issue/PR, blocker and recent-merge link by ``(repo, number)`` is what makes
+# cross-repo dependency resolution + cross-repo candidate identity correct:
+# ``ja#60`` and ``runtime#60`` are distinct refs that never collide.
+# ----------------------------------------------------------------------
+
+QualRef = tuple  # (repo: str | None, number: int)
+
+
+def _is_home_disp(repo, collapse_repo) -> bool:
+    """True if ``repo`` should *display* as the home repo (bare ``#N`` / int).
+
+    Keying always uses the real repo name so a self-reference by full name
+    (``Blocked by owner/repo#5`` in a scan of that same repo) resolves against
+    the repo's open set. ``collapse_repo`` is the back-compat display knob: in
+    a *single*-repo scan (design §5.1) the scanned repo is rendered as the home
+    repo (``repo: null`` / int ``blocking_refs``) so the output matches the
+    original single-repo contract. ``repo is None`` is always home (the
+    ``scan()`` shim / single-shape bundle)."""
+    return repo is None or (collapse_repo is not None and repo == collapse_repo)
+
+
+def _ref_to_json(ref: QualRef, collapse_repo=None):
+    """Canonical JSON form of a qualified ref: home → bare int (back-compat,
+    design §5.1), cross-repo → ``"owner/repo#N"`` string. ``collapse_repo``
+    renders the single scanned repo as home (see ``_is_home_disp``)."""
+    repo, num = ref
+    return num if _is_home_disp(repo, collapse_repo) else f"{repo}#{num}"
+
+
+def _ref_to_disp(ref: QualRef, collapse_repo=None) -> str:
+    """Human/​signal display of a qualified ref: ``#N`` (home) / ``repo#N``."""
+    repo, num = ref
+    return f"#{num}" if _is_home_disp(repo, collapse_repo) else f"{repo}#{num}"
+
+
+def _ref_sort_key(ref: QualRef) -> tuple:
+    """Stable ordering for qualified refs: by repo string then number."""
+    repo, num = ref
+    return (repo or "", num)
+
+
+def issue_blocking_refs_q(issue: dict, home_repo: str | None) -> list[QualRef]:
+    """All blocking refs of ``issue`` as qualified ``(repo, number)`` refs.
+
+    Home-repo bare ``#N`` blockers (``extract_blocking_refs``) qualify to
+    ``home_repo``; cross-repo blockers (``extract_cross_repo_blocking_refs``)
+    keep their own repo. A cross ref naming ``home_repo`` itself dedups with
+    the home keying (both are ``(home_repo, N)``). Sorted for determinism.
+    """
+    is_epic = "epic" in _label_names(issue)
+    text = dependency_text(issue)
+    refs: set[QualRef] = {
+        (home_repo, n) for n in extract_blocking_refs(text, is_epic=is_epic)
+    }
+    refs.update(extract_cross_repo_blocking_refs(text, is_epic=is_epic))
+    return sorted(refs, key=_ref_sort_key)
+
+
+def _classify_dependency_q(
+    issue: dict, home_repo: str | None, open_refs_q: set[QualRef]
+) -> tuple[str, list[QualRef], list[QualRef]]:
+    """Qualified ``resolved`` vs ``blocked`` decision (design §4.1 + §10).
+
+    ``open_refs_q`` is the set of still-open ``(repo, number)`` refs across
+    every scanned repo. A blocker counts as unresolved iff it is in that set;
+    a ref to a *closed* issue/PR **or to a repo not in the scan set** is
+    treated as resolved (the deliberate 誤除外<誤包含 stance, §11-3) — the
+    un-scanned-repo case is surfaced as a candidate ``signals[]`` entry by
+    ``build_candidate`` so the silent resolution stays auditable (design §10).
+
+    Returns ``(status, open_blocking, all_blocking)`` — both lists sorted.
+    """
+    blocking = issue_blocking_refs_q(issue, home_repo)
+    open_blocking = [r for r in blocking if r in open_refs_q]  # already sorted
+    if has_block_label(issue) or open_blocking:
+        return "blocked", open_blocking, blocking
+    return "resolved", [], blocking
+
+
 def classify_dependency(
     issue: dict, open_refs: set[int]
 ) -> tuple[str, list[int]]:
-    """Decide `resolved` vs `blocked` for one Issue (design §4.1).
+    """Single-repo ``resolved`` vs ``blocked`` decision (design §4.1).
 
-    ``open_refs`` is the set of Issue/PR numbers that are still **open**
-    (open issues ∪ open PRs). A blocking ref counts as unresolved iff it is
-    in ``open_refs``; a ref that is not (closed issue, merged/closed PR, or
-    a number that does not exist) is treated as resolved — deliberately, to
-    avoid the §11-3 over-exclusion failure mode.
+    Back-compat home-repo shim over ``_classify_dependency_q`` (home_repo
+    ``None``): ``open_refs`` is a set of bare open Issue/PR *numbers*. A
+    blocking ref counts as unresolved iff it is in ``open_refs``; a ref that
+    is not (closed issue, merged/closed PR, nonexistent, or — in a multi-repo
+    scan — cross-repo) is treated as resolved, avoiding §11-3 over-exclusion.
 
-    Returns ``(status, open_blocking_refs)`` where ``status`` is
-    ``"blocked"`` or ``"resolved"`` and ``open_blocking_refs`` is the
-    sorted list of refs that are still open (empty when resolved).
+    Returns ``(status, open_blocking_refs)`` where ``open_blocking_refs`` is
+    the sorted list of bare numbers still open (empty when resolved).
     """
-    is_epic = "epic" in _label_names(issue)
-    blocking = extract_blocking_refs(dependency_text(issue), is_epic=is_epic)
-    open_blocking = sorted(n for n in blocking if n in open_refs)
-    if has_block_label(issue) or open_blocking:
-        return "blocked", open_blocking
-    return "resolved", []
+    open_refs_q = {(None, n) for n in open_refs}
+    status, open_blocking, _ = _classify_dependency_q(issue, None, open_refs_q)
+    return status, [num for (_repo, num) in open_blocking]
 
 
 def milestone_title(issue: dict) -> str | None:
@@ -780,6 +978,45 @@ def estimate_parallelizable(
     return True, ["leaf in dependency graph (no open dependency refs)"]
 
 
+def _estimate_unblocked_q(
+    issue_ref: QualRef,
+    blocking_refs: list[QualRef],
+    recent_merge_pr_refs: set[QualRef],
+    recent_merge_closed_refs: set[QualRef],
+    recent_merge_referenced_refs: set[QualRef],
+    collapse_repo=None,
+) -> tuple[bool, list[str]]:
+    """Qualified unblocked-by-recent-merge estimate (design §4.2 + §10).
+
+    All inputs are ``(repo, number)`` refs so the linkage is repo-correct
+    cross-repo: a runtime PR that closed ``runtime#60`` unblocks a ja Issue
+    blocked by ``runtime#60`` (and does *not* touch ja#60). Two distinct
+    conditions, deliberately separated, exactly as the single-repo version.
+    ``collapse_repo`` only affects how refs are *rendered* in signals.
+    """
+    signals: list[str] = []
+    hit = False
+    for ref in blocking_refs:
+        if ref in recent_merge_pr_refs:
+            signals.append(
+                f"blocking ref {_ref_to_disp(ref, collapse_repo)} was a "
+                f"recently-merged PR"
+            )
+            hit = True
+        elif ref in recent_merge_closed_refs:
+            signals.append(
+                f"blocking ref {_ref_to_disp(ref, collapse_repo)} was closed "
+                f"by a recently-merged PR"
+            )
+            hit = True
+    if issue_ref[1] is not None and issue_ref in recent_merge_referenced_refs:
+        signals.append("referenced by a recently-merged PR")
+        hit = True
+    if not hit:
+        signals.append("no recent-merge linkage detected")
+    return hit, signals
+
+
 def estimate_unblocked_by_recent_merge(
     issue: dict,
     blocking_refs: list[int],
@@ -787,36 +1024,28 @@ def estimate_unblocked_by_recent_merge(
     recent_merge_closed_issues: set[int],
     recent_merge_referenced_issues: set[int],
 ) -> tuple[bool, list[str]]:
-    """Estimate whether a recent merge unblocked / spawned this Issue.
+    """Single-repo unblocked-by-recent-merge estimate (design §4.2).
 
-    Per design §4.2 — two distinct conditions, deliberately separated:
+    Back-compat home-repo shim over ``_estimate_unblocked_q`` (everything
+    qualified to ``None``). Two distinct conditions:
       * **blocking-ref side**: a blocking ref of this Issue is a
-        recently-merged PR, or an Issue/PR that a recent merge actually
-        *closed* (``recent_merge_closed_issues``, from Closes/Fixes/Resolves
-        — NOT a bare ``Refs``). I.e. the thing it depended on just got done.
+        recently-merged PR, or an Issue/PR a recent merge actually *closed*
+        (``recent_merge_closed_issues``, from Closes/Fixes/Resolves — NOT a
+        bare ``Refs``). The thing it depended on just got done.
       * **this-Issue side**: a recently-merged PR *references* this Issue
         (``recent_merge_referenced_issues``, any ref incl. ``Refs``) — a
         natural follow-up.
     Always an estimate (conceptual follow-ups not in any ref are invisible).
     """
-    signals: list[str] = []
-    hit = False
-    for n in blocking_refs:
-        if n in recent_merge_pr_numbers:
-            signals.append(f"blocking ref #{n} was a recently-merged PR")
-            hit = True
-        elif n in recent_merge_closed_issues:
-            signals.append(
-                f"blocking ref #{n} was closed by a recently-merged PR"
-            )
-            hit = True
     number = issue.get("number")
-    if _is_int(number) and number in recent_merge_referenced_issues:
-        signals.append("referenced by a recently-merged PR")
-        hit = True
-    if not hit:
-        signals.append("no recent-merge linkage detected")
-    return hit, signals
+    issue_ref = (None, number) if _is_int(number) else (None, None)
+    return _estimate_unblocked_q(
+        issue_ref,
+        [(None, n) for n in blocking_refs],
+        {(None, n) for n in recent_merge_pr_numbers},
+        {(None, n) for n in recent_merge_closed_issues},
+        {(None, n) for n in recent_merge_referenced_issues},
+    )
 
 
 def extract_summary(body: str | None, title: str) -> str:
@@ -850,36 +1079,67 @@ def extract_summary(body: str | None, title: str) -> str:
 def build_candidate(
     issue: dict,
     *,
-    open_refs: set[int],
-    recent_merge_pr_numbers: set[int],
-    recent_merge_closed_issues: set[int],
-    recent_merge_referenced_issues: set[int],
+    home_repo: str | None,
+    open_refs_q: set[QualRef],
+    recent_merge_pr_refs: set[QualRef],
+    recent_merge_closed_refs: set[QualRef],
+    recent_merge_referenced_refs: set[QualRef],
+    scanned_repos: set,
+    collapse_repo=None,
     effort_model: dict | None = None,
 ) -> dict | None:
     """Build one candidate dict, or ``None`` if the Issue is blocked.
 
-    Blocked Issues are not candidates; the caller records them in
-    ``excluded_blocked`` instead (design §5.1).
+    Operates on qualified ``(repo, number)`` refs (design §10) so blocking
+    resolution and the recent-merge axis are repo-correct across repos —
+    ``home_repo`` is always the *real* repo (so a self-reference by full name
+    resolves). The candidate's ``repo`` / ``blocking_refs`` are *displayed*
+    via ``collapse_repo``: in a single-repo scan the one scanned repo renders
+    as home (``repo: null``, int ``blocking_refs``, design §5.1); cross-repo it
+    keeps ``"owner/repo#N"``. Blocked Issues are not candidates; the caller
+    records them in ``excluded_blocked`` instead.
+
+    Auditability (design §10 / §4.4): a cross-repo blocker pointing at a repo
+    *not in the scan set* is treated resolved (誤除外<誤包含) but emits a
+    ``signals[]`` entry, so that silent resolution stays visible to the human.
     """
-    status, open_blocking = classify_dependency(issue, open_refs)
+    status, open_blocking, all_blocking = _classify_dependency_q(
+        issue, home_repo, open_refs_q
+    )
     if status == "blocked":
         return None
 
-    is_epic = "epic" in _label_names(issue)
-    all_blocking = extract_blocking_refs(dependency_text(issue), is_epic=is_epic)
+    issue_number = issue.get("number")
+    issue_ref = (
+        (home_repo, issue_number) if _is_int(issue_number) else (home_repo, None)
+    )
 
     priority, prio_signals = compute_priority(issue)
     effort, effort_estimated, effort_signals = estimate_effort(issue, effort_model)
     parallelizable, par_signals = estimate_parallelizable(open_blocking)
-    unblocked, merge_signals = estimate_unblocked_by_recent_merge(
-        issue,
+    unblocked, merge_signals = _estimate_unblocked_q(
+        issue_ref,
         all_blocking,
-        recent_merge_pr_numbers,
-        recent_merge_closed_issues,
-        recent_merge_referenced_issues,
+        recent_merge_pr_refs,
+        recent_merge_closed_refs,
+        recent_merge_referenced_refs,
+        collapse_repo,
     )
 
-    signals = prio_signals + effort_signals + par_signals + merge_signals
+    # A resolved candidate's cross-repo blockers are, by definition, not open;
+    # flag any that resolve only because their repo was not scanned (design
+    # §10 audit hook) so the human can tell "closed" from "not checked". Keyed
+    # by real repo, so a same-repo self-reference is *not* flagged here.
+    cross_signals = [
+        f"cross-repo ref {repo}#{num} to un-scanned repo — treated resolved"
+        for (repo, num) in all_blocking
+        if repo is not None and repo not in scanned_repos
+    ]
+
+    signals = (
+        prio_signals + effort_signals + par_signals + merge_signals
+        + cross_signals
+    )
 
     # Coerce `title` to a string here so the candidate JSON always satisfies
     # its schema regardless of input shape (a malformed `--from-file` could
@@ -889,11 +1149,12 @@ def build_candidate(
     title = raw_title if isinstance(raw_title, str) else ""
 
     return {
-        "issue": issue.get("number"),
+        "repo": None if _is_home_disp(home_repo, collapse_repo) else home_repo,
+        "issue": issue_number,
         "title": title,
         "summary": extract_summary(issue.get("body"), title),
         "dependency": "resolved",
-        "blocking_refs": all_blocking,
+        "blocking_refs": [_ref_to_json(r, collapse_repo) for r in all_blocking],
         "priority": priority,
         "effort": effort,
         "effort_estimated": effort_estimated,
@@ -930,7 +1191,19 @@ def _sort_key(cand: dict, free_panes: int | None) -> tuple:
     effort_small = -_EFFORT_RANK.get(cand["effort"], 1)  # S best
     has_ms = 1 if cand.get("_has_milestone") else 0
     recency = cand.get("_updated_at") or ""  # ISO8601 sorts lexically
-    return (-prio, -unblocked, -par, -effort_small, -has_ms, _neg_str(recency))
+    # Final, fully-deterministic tiebreaker on (repo, issue number): once two
+    # candidates tie on every axis above (incl. equal recency), order them by
+    # repo string then issue number rather than relying on input/list order.
+    # Cross-repo, this is load-bearing — ja#60 and runtime#60 collide on the
+    # number alone, so the repo string disambiguates (design §10). Ascending
+    # (lower repo/number first) matches the single-repo expectation that the
+    # lower issue number wins a full tie.
+    repo_key = cand.get("repo") or ""
+    issue_key = cand["issue"] if _is_int(cand.get("issue")) else 0
+    return (
+        -prio, -unblocked, -par, -effort_small, -has_ms,
+        _neg_str(recency), repo_key, issue_key,
+    )
 
 
 def _neg_str(s: str) -> tuple:
@@ -972,82 +1245,147 @@ def make_recommendation(top: list[dict]) -> dict | None:
     bits.append(f"工数 {best['effort']}{'(推定)' if best['effort_estimated'] else ''}")
     bits.append("依存解決済み")
     return {
+        # `repo` disambiguates the recommendation when candidates span repos
+        # (ja#60 vs runtime#60); None in a single-repo scan (design §10).
+        "repo": best.get("repo"),
         "issue": best["issue"],
         "reason": "・".join(bits),
     }
 
 
-def scan(
-    issues: list[dict],
-    open_pr_numbers: set[int],
-    recent_merges: list[dict],
+def _excluded_note(
+    issue: dict, open_blocking: list[QualRef], collapse_repo=None
+) -> str:
+    """Visible exclusion reason for a blocked Issue (design §5.1, never silent).
+
+    Cross-repo aware: open blockers render as ``#N`` (home / collapsed single
+    repo) / ``owner/repo#N`` (cross). A ``blocked``/``on-hold`` label with no
+    open ref says so."""
+    if has_block_label(issue) and not open_blocking:
+        return "blocked/on-hold label"
+    return (
+        ", ".join(_ref_to_disp(r, collapse_repo) for r in open_blocking)
+        + " が open のため除外"
+    )
+
+
+def scan_repos(
+    repo_bundles: list[dict],
     config: ScanConfig,
     input_truncated: dict | None = None,
+    collapse_repo=None,
     effort_model: dict | None = None,
 ) -> dict:
-    """Pure triage core: produce the candidate JSON dict (design §5.1).
+    """Cross-repo triage core: produce the candidate JSON dict (design §10).
 
-    ``issues`` — open Issues (each: ``number``, ``title``, ``body``,
-    ``labels``, ``updatedAt``, ``milestone``, ``comments``).
-    ``open_pr_numbers`` — currently-open PR numbers (combined with
-    open-issue numbers to resolve blocking refs). ``recent_merges`` —
-    recent merged PRs (each: ``number``, ``title``, ``body``) for the
-    unblocked-by-recent-merge heuristic. ``input_truncated`` — optional
-    ``{"open_issues": bool, "open_prs": bool}`` set by the caller when a
-    fetch hit its row cap, surfaced in the output so input-side truncation
-    is never silent (design §5.1). ``effort_model`` — optional learned
-    effort model (``learn_effort_model``) passed to each candidate's effort
-    estimate and echoed in the output for audit (design §10). No I/O here.
-    """
-    open_issue_numbers = {
-        i["number"] for i in issues if _is_int(i.get("number"))
-    }
-    open_refs = open_issue_numbers | open_pr_numbers
+    ``repo_bundles`` — one entry per scanned repo, each a dict::
 
-    # §4.2: keep "closed by a recent merge" and "merely referenced" apart.
-    recent_merge_pr_numbers: set[int] = set()
-    recent_merge_closed_issues: set[int] = set()
-    recent_merge_referenced_issues: set[int] = set()
-    for pr in recent_merges:
-        num = pr.get("number")
-        if _is_int(num):
-            recent_merge_pr_numbers.add(num)
-        text = f"{pr.get('title') or ''}\n{pr.get('body') or ''}"
-        closed = _pr_close_refs(text)
-        referenced = closed | _pr_referenced_refs(text)
-        recent_merge_closed_issues |= closed
-        recent_merge_referenced_issues |= referenced
+        {"repo": "owner/repo" | None,   # None = gh current-repo (single-repo)
+         "issues": [...],               # open Issues for that repo
+         "open_pr_numbers": [...]|set,  # open PR numbers for that repo
+         "recent_merges": [...]}        # recent merged PRs for that repo
+
+    Every open Issue/PR, blocker and recent-merge link is keyed by a
+    qualified ``(repo, number)`` ref — always the *real* repo name — so a ja
+    Issue ``Blocked by suisya-systems/claude-org-runtime#60`` is excluded while
+    runtime#60 is open and unblocked once a runtime merge closes it, a
+    self-reference by full name resolves against its own repo, and ja#60 /
+    runtime#60 never collide. Candidates from all repos are ranked into one
+    list (cross-repo triage).
+
+    ``collapse_repo`` is the single-repo *display* back-compat knob (design
+    §5.1): when set (the one scanned repo in a single-repo CLI run), that repo
+    is rendered as the home repo in the output (``repo: null``, int
+    ``blocking_refs``) while keying still uses its real name. ``effort_model`` —
+    optional learned effort model (``learn_effort_model``, Issue #529) passed to
+    each candidate's effort estimate and echoed in the output for audit.
+    ``input_truncated`` is OR-aggregated across repos. No I/O here; pure
+    function of its inputs (design §4 再現性契約)."""
+    scanned_repos: set = set()
+    open_refs_q: set[QualRef] = set()
+    # §4.2: keep "closed by a recent merge" and "merely referenced" apart;
+    # each set qualified by the *merging repo* so a runtime PR's `Closes #60`
+    # resolves runtime#60, not ja#60.
+    recent_merge_pr_refs: set[QualRef] = set()
+    recent_merge_closed_refs: set[QualRef] = set()
+    recent_merge_referenced_refs: set[QualRef] = set()
+
+    for bundle in repo_bundles:
+        repo = bundle.get("repo")
+        scanned_repos.add(repo)
+        for issue in bundle.get("issues") or []:
+            if _is_int(issue.get("number")):
+                open_refs_q.add((repo, issue["number"]))
+        for num in bundle.get("open_pr_numbers") or ():
+            if _is_int(num):
+                open_refs_q.add((repo, num))
+        for pr in bundle.get("recent_merges") or []:
+            num = pr.get("number")
+            if _is_int(num):
+                recent_merge_pr_refs.add((repo, num))
+            text = f"{pr.get('title') or ''}\n{pr.get('body') or ''}"
+            closed = _pr_close_refs(text)  # bare #N → this merge's repo
+            referenced = closed | _pr_referenced_refs(text)
+            recent_merge_closed_refs.update((repo, n) for n in closed)
+            recent_merge_referenced_refs.update((repo, n) for n in referenced)
+            # Rare but real: a PR that closes/refs *another* repo's issue
+            # (`Closes suisya-systems/claude-org-ja#5`). Keep their own repo.
+            cross_closed = _cross_keyword_refs(text, _PR_CLOSE_KEYWORD_RE)
+            recent_merge_closed_refs.update(cross_closed)
+            recent_merge_referenced_refs.update(cross_closed)
+            recent_merge_referenced_refs.update(
+                _cross_keyword_refs(text, _PR_REF_KEYWORD_RE)
+            )
 
     candidates: list[dict] = []
     excluded_blocked: list[dict] = []
-    for issue in issues:
-        status, open_blocking = classify_dependency(issue, open_refs)
-        if status == "blocked":
-            note = (
-                "blocked/on-hold label"
-                if has_block_label(issue) and not open_blocking
-                else (
-                    ", ".join(f"#{n}" for n in open_blocking) + " が open のため除外"
+    # Identity is (repo, number); de-dup so a repo appearing twice (a duplicate
+    # bundle in `--from-file`'s `repos[]`, or the same Issue listed twice) never
+    # double-counts a candidate / excluded entry (which would corrupt
+    # candidate_count / truncated_count). The CLI de-dups `--repo` upstream;
+    # this guards the offline/bundle path too.
+    seen: set[QualRef] = set()
+    for bundle in repo_bundles:
+        repo = bundle.get("repo")
+        for issue in bundle.get("issues") or []:
+            number = issue.get("number")
+            if _is_int(number):
+                key = (repo, number)
+                if key in seen:
+                    continue
+                seen.add(key)
+            status, open_blocking, _all = _classify_dependency_q(
+                issue, repo, open_refs_q
+            )
+            if status == "blocked":
+                excluded_blocked.append(
+                    {
+                        "repo": (
+                            None
+                            if _is_home_disp(repo, collapse_repo)
+                            else repo
+                        ),
+                        "issue": issue.get("number"),
+                        "blocking_refs": [
+                            _ref_to_json(r, collapse_repo) for r in open_blocking
+                        ],
+                        "note": _excluded_note(issue, open_blocking, collapse_repo),
+                    }
                 )
+                continue
+            cand = build_candidate(
+                issue,
+                home_repo=repo,
+                open_refs_q=open_refs_q,
+                recent_merge_pr_refs=recent_merge_pr_refs,
+                recent_merge_closed_refs=recent_merge_closed_refs,
+                recent_merge_referenced_refs=recent_merge_referenced_refs,
+                scanned_repos=scanned_repos,
+                collapse_repo=collapse_repo,
+                effort_model=effort_model,
             )
-            excluded_blocked.append(
-                {
-                    "issue": issue.get("number"),
-                    "blocking_refs": open_blocking,
-                    "note": note,
-                }
-            )
-            continue
-        cand = build_candidate(
-            issue,
-            open_refs=open_refs,
-            recent_merge_pr_numbers=recent_merge_pr_numbers,
-            recent_merge_closed_issues=recent_merge_closed_issues,
-            recent_merge_referenced_issues=recent_merge_referenced_issues,
-            effort_model=effort_model,
-        )
-        if cand is not None:
-            candidates.append(cand)
+            if cand is not None:
+                candidates.append(cand)
 
     top, truncated = rank_candidates(candidates, config.top_n, config.free_panes)
     recommendation = make_recommendation(top)
@@ -1057,7 +1395,14 @@ def scan(
         cand.pop("_updated_at", None)
         cand.pop("_has_milestone", None)
 
-    excluded_blocked.sort(key=lambda e: (e["issue"] is None, e["issue"]))
+    # Deterministic order on (repo, issue) — repo string disambiguates a
+    # cross-repo issue-number collision; a None issue number sorts last.
+    excluded_blocked.sort(
+        key=lambda e: (
+            e.get("repo") or "",
+            (e["issue"] is None, e["issue"] if _is_int(e["issue"]) else 0),
+        )
+    )
 
     truncation = {"open_issues": False, "open_prs": False}
     if input_truncated:
@@ -1070,9 +1415,9 @@ def scan(
         "generated_for": config.trigger,
         "candidate_count": len(top),
         "truncated_count": truncated,
-        # Input-side coverage caveat: True when the open-Issue/open-PR fetch
-        # hit its row cap, so some open Issues (candidates) or open blockers
-        # may be unseen — a blocker not fetched would be mis-resolved
+        # Input-side coverage caveat: True when any repo's open-Issue/open-PR
+        # fetch hit its row cap, so some open Issues (candidates) or open
+        # blockers may be unseen — a blocker not fetched would be mis-resolved
         # (design §5.1: never truncate silently).
         "input_truncated": truncation,
         # The learned effort model summary (design §10), or ``None`` when
@@ -1084,6 +1429,42 @@ def scan(
         "recommendation": recommendation,
         "excluded_blocked": excluded_blocked,
     }
+
+
+def scan(
+    issues: list[dict],
+    open_pr_numbers: set[int],
+    recent_merges: list[dict],
+    config: ScanConfig,
+    input_truncated: dict | None = None,
+    effort_model: dict | None = None,
+) -> dict:
+    """Single-repo triage core (design §5.1).
+
+    Back-compat shim over ``scan_repos`` with one ``None``-repo bundle:
+    ``issues`` — open Issues (each: ``number``, ``title``, ``body``,
+    ``labels``, ``updatedAt``, ``milestone``, ``comments``);
+    ``open_pr_numbers`` — currently-open PR numbers (combined with open-issue
+    numbers to resolve blocking refs); ``recent_merges`` — recent merged PRs
+    for the unblocked-by-recent-merge heuristic; ``input_truncated`` — optional
+    ``{"open_issues": bool, "open_prs": bool}``; ``effort_model`` — optional
+    learned effort model (Issue #529). Candidates carry ``repo: null``.
+    Cross-repo blockers (if any) resolve against the empty cross set, i.e.
+    treated resolved — matching the prior single-repo behaviour. No I/O.
+    """
+    return scan_repos(
+        [
+            {
+                "repo": None,
+                "issues": issues,
+                "open_pr_numbers": open_pr_numbers,
+                "recent_merges": recent_merges,
+            }
+        ],
+        config,
+        input_truncated,
+        effort_model=effort_model,
+    )
 
 
 # ----------------------------------------------------------------------
@@ -1428,43 +1809,33 @@ def build_effort_model(repo: str | None, history_limit: int) -> dict:
     return model
 
 
-def _load_bundle(
-    path: str,
-) -> tuple[list[dict], set[int], list[dict], dict | None]:
-    """Load a pre-fetched bundle JSON.
+def _validate_repo_bundle(src: dict, prefix: str) -> dict:
+    """Validate one repo's ``{repo?, issues, open_pr_numbers, recent_merges}``.
 
-    ``{issues, open_pr_numbers, recent_merges}`` plus an optional
-    ``effort_samples`` (a list of ``learn_effort_model`` training-pair dicts)
-    that, when present, is learned into the returned effort model — letting
-    the effort-learning path be exercised fully offline / hermetically.
-    Strictly read-only.
-    """
-    with open(path, encoding="utf-8") as f:
-        bundle = json.load(f)
-    if not isinstance(bundle, dict):
-        raise GhError(
-            f"--from-file bundle must be a JSON object, got "
-            f"{type(bundle).__name__}"
-        )
-    # Validate shapes up front so a malformed bundle yields a *pinpointed*
-    # error (exit 2) instead of a confusing downstream exception or — worse —
-    # a malformed candidate JSON (`"issue": null`). The gh path never hits
-    # this (its fetchers always return well-formed arrays); this guards the
-    # offline/test `--from-file` affordance against untrusted input.
-    #
-    # Default ONLY when the key is absent or explicitly null — a *present*
-    # non-list (`{}`, `""`, `false`, `0`) is malformed and must error, not be
-    # coalesced to `[]` (which would masquerade as no_candidates / exit 0).
+    Shared by the single-shape and multi-repo (``repos: [...]``) ``--from-file``
+    forms. ``prefix`` labels errors (e.g. ``repos[1].``). Returns a clean
+    bundle ready for ``scan_repos``. Same precision as the gh path: a *present*
+    non-list field is malformed and errors (it must not be coalesced to ``[]``,
+    which would masquerade as no_candidates / exit 0), while an absent / null
+    field legitimately defaults to empty."""
+
     def _list_field(name: str) -> list:
-        value = bundle.get(name)
+        value = src.get(name)
         if value is None:
             return []
         if not isinstance(value, list):
             raise GhError(
-                f"--from-file `{name}` must be a list, got "
+                f"--from-file `{prefix}{name}` must be a list, got "
                 f"{type(value).__name__}"
             )
         return value
+
+    repo = src.get("repo")
+    if repo is not None and not isinstance(repo, str):
+        raise GhError(
+            f"--from-file `{prefix}repo` must be a string or null, got "
+            f"{type(repo).__name__}"
+        )
 
     issues = _list_field("issues")
     recent_merges = _list_field("recent_merges")
@@ -1472,7 +1843,7 @@ def _load_bundle(
     for i, item in enumerate(issues):
         if not isinstance(item, dict):
             raise GhError(
-                f"--from-file issues[{i}] must be an object, got "
+                f"--from-file {prefix}issues[{i}] must be an object, got "
                 f"{type(item).__name__}"
             )
         # `bool` is an int subclass — exclude it so True/False can't pose as a
@@ -1481,49 +1852,114 @@ def _load_bundle(
             item.get("number"), bool
         ):
             raise GhError(
-                f"--from-file issues[{i}] must have an integer `number`"
+                f"--from-file {prefix}issues[{i}] must have an integer `number`"
             )
     for i, item in enumerate(recent_merges):
         if not isinstance(item, dict):
             raise GhError(
-                f"--from-file recent_merges[{i}] must be an object, got "
+                f"--from-file {prefix}recent_merges[{i}] must be an object, got "
                 f"{type(item).__name__}"
             )
     open_pr_numbers: set[int] = set()
     for i, n in enumerate(pr_raw):
         if not isinstance(n, int) or isinstance(n, bool):
             raise GhError(
-                f"--from-file open_pr_numbers[{i}] must be an integer, got "
-                f"{type(n).__name__}"
+                f"--from-file {prefix}open_pr_numbers[{i}] must be an integer, "
+                f"got {type(n).__name__}"
             )
         open_pr_numbers.add(n)
+    return {
+        "repo": repo,
+        "issues": issues,
+        "open_pr_numbers": open_pr_numbers,
+        "recent_merges": recent_merges,
+    }
 
-    # Optional effort-learning training pairs. Absent/null → no model (the
-    # offline path then behaves exactly like the pre-learning tool). A present
-    # non-list is malformed and must error (same contract as the lists above).
-    effort_model: dict | None = None
+
+def _parse_effort_samples(bundle: dict) -> dict | None:
+    """Learn an effort model from an optional top-level ``effort_samples``
+    (Issue #529), letting the effort-learning path run fully offline.
+
+    Absent/null → ``None`` (the offline path then behaves exactly like the
+    pre-learning tool). A present non-list, or a sample missing an integer
+    predictor field, is malformed and errors (same contract as the bundle
+    lists). Read-only / pure."""
     raw_samples = bundle.get("effort_samples")
-    if raw_samples is not None:
-        if not isinstance(raw_samples, list):
+    if raw_samples is None:
+        return None
+    if not isinstance(raw_samples, list):
+        raise GhError(
+            f"--from-file `effort_samples` must be a list, got "
+            f"{type(raw_samples).__name__}"
+        )
+    for i, s in enumerate(raw_samples):
+        if not isinstance(s, dict):
             raise GhError(
-                f"--from-file `effort_samples` must be a list, got "
-                f"{type(raw_samples).__name__}"
+                f"--from-file effort_samples[{i}] must be an object, got "
+                f"{type(s).__name__}"
             )
-        for i, s in enumerate(raw_samples):
-            if not isinstance(s, dict):
+        for field in ("body_len", "changed_lines", "changed_files"):
+            if not _is_int(s.get(field)):
                 raise GhError(
-                    f"--from-file effort_samples[{i}] must be an object, got "
-                    f"{type(s).__name__}"
+                    f"--from-file effort_samples[{i}] must have an "
+                    f"integer `{field}`"
                 )
-            for field in ("body_len", "changed_lines", "changed_files"):
-                if not _is_int(s.get(field)):
-                    raise GhError(
-                        f"--from-file effort_samples[{i}] must have an "
-                        f"integer `{field}`"
-                    )
-        effort_model = learn_effort_model(raw_samples)
+    return learn_effort_model(raw_samples)
 
-    return issues, open_pr_numbers, recent_merges, effort_model
+
+def _load_bundle(path: str) -> tuple[list[dict], dict | None]:
+    """Load a pre-fetched ``--from-file`` JSON into ``scan_repos`` bundles.
+
+    Returns ``(bundles, effort_model)``. Two accepted bundle shapes (design
+    §10), both strictly read-only / offline:
+
+    * **single-repo** (back-compat): ``{issues, open_pr_numbers,
+      recent_merges}`` — one ``None``-repo bundle, identical to the original
+      contract.
+    * **multi-repo**: ``{"repos": [{repo, issues, open_pr_numbers,
+      recent_merges}, ...]}`` — one bundle per repo for cross-repo triage.
+
+    A top-level optional ``effort_samples`` (Issue #529) is learned into the
+    returned effort model so the effort-learning path is exercisable offline,
+    independent of the per-repo bundle shape.
+
+    A malformed bundle yields a *pinpointed* error (exit 2) rather than a
+    confusing downstream exception or a malformed candidate JSON.
+    """
+    with open(path, encoding="utf-8") as f:
+        bundle = json.load(f)
+    if not isinstance(bundle, dict):
+        raise GhError(
+            f"--from-file bundle must be a JSON object, got "
+            f"{type(bundle).__name__}"
+        )
+    effort_model = _parse_effort_samples(bundle)
+    if "repos" in bundle:
+        repos = bundle["repos"]
+        if not isinstance(repos, list):
+            raise GhError(
+                f"--from-file `repos` must be a list, got "
+                f"{type(repos).__name__}"
+            )
+        out: list[dict] = []
+        for i, src in enumerate(repos):
+            if not isinstance(src, dict):
+                raise GhError(
+                    f"--from-file repos[{i}] must be an object, got "
+                    f"{type(src).__name__}"
+                )
+            out.append(_validate_repo_bundle(src, f"repos[{i}]."))
+        # Effort learning is repo-calibrated, so — mirroring the gh path's
+        # single-repo guard in main() — a learned model is NOT applied across a
+        # genuine multi-repo (2+) scan even when effort_samples is supplied. The
+        # samples are still validated above (malformed input errors); the model
+        # is merely not applied (a `None` effort_model in the output makes that
+        # visible — no silent gap). A 1-entry `repos` is a single repo → keep.
+        if len(out) > 1:
+            effort_model = None
+        return out, effort_model
+    # single-repo shape → one None-repo bundle
+    return [_validate_repo_bundle(bundle, "")], effort_model
 
 
 def _error_payload(trigger: str, message: str) -> dict:
@@ -1603,8 +2039,14 @@ def main(argv=None) -> int:
     )
     parser.add_argument(
         "--repo",
+        action="append",
         default=None,
-        help="OWNER/REPO (default: current repo via gh auto-detection).",
+        metavar="OWNER/REPO",
+        help="Repository to scan (default: current repo via gh auto-detection). "
+        "Repeat for cross-repo triage, e.g. `--repo suisya-systems/claude-org-ja "
+        "--repo suisya-systems/claude-org-runtime`; candidates from all repos "
+        "are ranked into one list and `Blocked by owner/repo#N` is resolved "
+        "across the scanned set (design §10).",
     )
     parser.add_argument(
         "--top-n",
@@ -1643,9 +2085,11 @@ def main(argv=None) -> int:
     parser.add_argument(
         "--from-file",
         default=None,
-        help="Read a pre-fetched {issues, open_pr_numbers, recent_merges, "
-        "effort_samples?} JSON bundle instead of calling gh (offline / "
-        "validation).",
+        help="Read a pre-fetched JSON bundle instead of calling gh (offline / "
+        "validation). Single-repo shape {issues, open_pr_numbers, "
+        "recent_merges} or multi-repo {\"repos\": [{repo, issues, "
+        "open_pr_numbers, recent_merges}, ...]}; an optional top-level "
+        "effort_samples learns the effort model offline (Issue #529).",
     )
     args = parser.parse_args(argv)
 
@@ -1676,44 +2120,66 @@ def main(argv=None) -> int:
             raise ValueError("--effort-history must be >= 0")
         input_truncated = {"open_issues": False, "open_prs": False}
         effort_model: dict | None = None
+        collapse_repo = None
         if args.from_file:
-            issues, open_pr_numbers, recent_merges, effort_model = _load_bundle(
-                args.from_file
-            )
+            bundles, effort_model = _load_bundle(args.from_file)
         else:
-            issues = fetch_open_issues(args.repo)
-            open_pr_numbers = fetch_open_pr_numbers(args.repo)
-            recent_merges = fetch_recent_merges(args.repo, args.recent_merges)
-            # A full page (== cap) means the fetch may have dropped rows; the
-            # flags surface that input-side truncation in the output.
-            input_truncated = {
-                "open_issues": len(issues) >= DEFAULT_OPEN_LIMIT,
-                "open_prs": len(open_pr_numbers) >= DEFAULT_OPEN_LIMIT,
-            }
-            # Effort learning is an ENHANCEMENT, not a core input: wire it
-            # NON-FATALLY. A *fetch* failure here (gh hiccup on the
-            # history/closed-issue read) must NOT abort the triage — degrade to
-            # the static heuristic with the reason disclosed in each candidate's
-            # effort signals. Crucially this catches ONLY GhError (the fetch
-            # failure mode): a genuine bug or unexpected schema in the pure
-            # learning code must still propagate to the outer handler → exit 2,
-            # never be masked as "fetch failed" / exit 0|10 (that would break
-            # the §5.1 `exit 2 = error` contract — Codex Blocker).
-            if args.effort_history > 0:
+            # `--repo` may be given 0..N times (action=append). De-dup while
+            # preserving order so `--repo ja --repo ja` is not fetched (and
+            # ranked) twice. None / no `--repo` → a single gh-current-repo scan.
+            repos = list(dict.fromkeys(args.repo)) if args.repo else [None]
+            # Back-compat (design §5.1 / §10): a *single*-repo scan keys by the
+            # real repo (so a self-reference by full name resolves) but is
+            # *displayed* as the home repo (`repo: null`, int blocking_refs),
+            # identical to the original single-repo contract — even when the one
+            # repo was named explicitly via `--repo`. `collapse_repo` carries
+            # that display directive; a genuine multi-repo scan (2+) keeps real
+            # repo strings in the output.
+            if len(repos) == 1:
+                collapse_repo = repos[0]
+            bundles = []
+            for repo in repos:
+                issues = fetch_open_issues(repo)
+                open_pr_numbers = fetch_open_pr_numbers(repo)
+                recent_merges = fetch_recent_merges(repo, args.recent_merges)
+                bundles.append(
+                    {
+                        "repo": repo,
+                        "issues": issues,
+                        "open_pr_numbers": open_pr_numbers,
+                        "recent_merges": recent_merges,
+                    }
+                )
+                # A full page (== cap) means a fetch may have dropped rows; the
+                # flags OR-aggregate across repos so input-side truncation is
+                # never silent (design §5.1).
+                if len(issues) >= DEFAULT_OPEN_LIMIT:
+                    input_truncated["open_issues"] = True
+                if len(open_pr_numbers) >= DEFAULT_OPEN_LIMIT:
+                    input_truncated["open_prs"] = True
+            # Effort learning (Issue #529) is an ENHANCEMENT, wired NON-FATALLY:
+            # a *fetch* failure (gh hiccup on the history/closed-issue read) must
+            # NOT abort the triage — degrade to the static heuristic with the
+            # reason disclosed. Catch ONLY GhError; a genuine bug in the pure
+            # learning code must still propagate → exit 2 (§5.1). The learned
+            # model is *repo-calibrated*, so it is only applied to a SINGLE-repo
+            # scan (`repos[0]`, matching the original `--repo` contract); a
+            # genuine cross-repo scan (2+) leaves `effort_model` None rather than
+            # misapply one repo's cutpoints to another's candidates (the null
+            # `effort_model` in the output makes that visible — no silent gap).
+            if args.effort_history > 0 and len(repos) == 1:
                 try:
-                    effort_model = build_effort_model(args.repo, args.effort_history)
+                    effort_model = build_effort_model(
+                        repos[0], args.effort_history
+                    )
                 except GhError as exc:
                     effort_model = empty_effort_model(
                         f"effort-history fetch failed "
                         f"({type(exc).__name__}) → static heuristic retained"
                     )
-        result = scan(
-            issues,
-            open_pr_numbers,
-            recent_merges,
-            config,
-            input_truncated,
-            effort_model,
+        result = scan_repos(
+            bundles, config, input_truncated, collapse_repo,
+            effort_model=effort_model,
         )
     except Exception as exc:  # noqa: BLE001 — report any failure as error/exit 2
         # Keep the fixed schema (design §5.1) so the delivery layer parses
