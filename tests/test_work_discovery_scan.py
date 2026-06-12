@@ -316,6 +316,210 @@ class TestEffort(unittest.TestCase):
 # ----------------------------------------------------------------------
 
 
+class TestEffortLearning(unittest.TestCase):
+    """Learned effort model (design §10): learn realized-effort scale from
+    merged PRs, override the static heuristic ONLY when the issue-body
+    predictor actually correlates with realized effort (data-driven gate),
+    else retain the static estimate and disclose why + the realized context."""
+
+    @staticmethod
+    def _sample(body_len, lines, *, files=1, reviews=0, hours=0.1, criteria=0):
+        return {
+            "body_len": body_len,
+            "criteria": criteria,
+            "changed_lines": lines,
+            "changed_files": files,
+            "review_rounds": reviews,
+            "hours_to_merge": hours,
+        }
+
+    def _correlated(self, n=9):
+        # body_len rises with changed_lines → Spearman ≈ 1.0 (gate fires).
+        return [self._sample(100 * i, 30 * i) for i in range(1, n + 1)]
+
+    def _uncorrelated(self):
+        # body_len and changed_lines unrelated → Spearman ≈ 0 (gate declines).
+        # The repo's real shape: long specs, small diffs and vice versa.
+        bodies = [100, 200, 300, 400, 500, 600, 700, 800, 900]
+        lines = [900, 100, 700, 200, 500, 300, 800, 50, 400]
+        return [self._sample(b, l) for b, l in zip(bodies, lines)]
+
+    # --- helpers ------------------------------------------------------
+    def test_spearman_perfect_positive(self):
+        self.assertAlmostEqual(wds._spearman([1, 2, 3], [10, 20, 30]), 1.0)
+
+    def test_spearman_perfect_negative(self):
+        self.assertAlmostEqual(wds._spearman([1, 2, 3], [30, 20, 10]), -1.0)
+
+    def test_spearman_zero_variance_is_zero(self):
+        self.assertEqual(wds._spearman([5, 5, 5], [1, 2, 3]), 0.0)
+
+    def test_spearman_degenerate_lengths(self):
+        self.assertEqual(wds._spearman([1], [1]), 0.0)
+        self.assertEqual(wds._spearman([1, 2], [1]), 0.0)
+
+    def test_spearman_handles_ties(self):
+        # Tie-aware average ranks: monotone-with-ties stays strongly positive.
+        self.assertGreater(wds._spearman([1, 1, 2, 3], [1, 1, 2, 3]), 0.9)
+
+    def test_tertile_cutpoints_none_below_three(self):
+        self.assertIsNone(wds._tertile_cutpoints([1, 2]))
+
+    def test_tertile_cutpoints_two_values(self):
+        t = wds._tertile_cutpoints([0, 30, 60, 90])
+        self.assertEqual(len(t), 2)
+        self.assertLess(t[0], t[1])
+
+    # --- learn_effort_model ------------------------------------------
+    def test_empty_samples_not_applied(self):
+        m = wds.learn_effort_model([])
+        self.assertEqual(m["sample_size"], 0)
+        self.assertFalse(m["applies"])
+        self.assertIn("no linked", m["reason"])
+
+    def test_correlated_above_gate_applies(self):
+        m = wds.learn_effort_model(self._correlated(9))
+        self.assertTrue(m["applies"])
+        self.assertEqual(m["sample_size"], 9)
+        self.assertIsNotNone(m["predictor_cutpoints"])
+        self.assertGreaterEqual(m["predictor_correlation"], 0.3)
+        self.assertIn("tracks realized effort", m["reason"])
+
+    def test_uncorrelated_declines_even_with_samples(self):
+        m = wds.learn_effort_model(self._uncorrelated())
+        self.assertGreaterEqual(m["sample_size"], wds.MIN_EFFORT_SAMPLES)
+        self.assertFalse(m["applies"])  # the crux: N is fine, signal is not
+        self.assertIn("does not predict", m["reason"])
+
+    def test_insufficient_samples_declines(self):
+        # Strongly correlated but too few pairs → gate declines on N.
+        m = wds.learn_effort_model(self._correlated(4))
+        self.assertFalse(m["applies"])
+        self.assertIn("insufficient", m["reason"])
+
+    def test_realized_context_always_reported(self):
+        # Even when not applied, the realized-effort context is present so a
+        # human sees the empirical basis (anti-cognitive-surrender).
+        m = wds.learn_effort_model(self._uncorrelated())
+        self.assertIsNotNone(m["realized_median_lines"])
+        self.assertIsNotNone(m["realized_cutpoints"])
+        self.assertTrue(m["realized_metric"].startswith("changed_lines"))
+
+    def test_degenerate_review_rounds_noted(self):
+        m = wds.learn_effort_model(self._correlated(9))  # all reviews=0
+        self.assertTrue(
+            any("review_rounds" in d for d in m["degenerate_signals"])
+        )
+
+    def test_review_rounds_present_not_flagged_degenerate(self):
+        samples = [
+            self._sample(100 * i, 30 * i, reviews=(i % 2)) for i in range(1, 10)
+        ]
+        m = wds.learn_effort_model(samples)
+        self.assertFalse(
+            any("review_rounds" in d for d in m["degenerate_signals"])
+        )
+
+    def test_model_order_independent(self):
+        # Determinism: learning is invariant to sample order (§4 再現性).
+        s = self._correlated(9)
+        m1 = wds.learn_effort_model(s)
+        m2 = wds.learn_effort_model(list(reversed(s)))
+        self.assertEqual(
+            json.dumps(m1, sort_keys=True), json.dumps(m2, sort_keys=True)
+        )
+
+    # --- estimate_effort with a model --------------------------------
+    def test_applied_model_uses_learned_cutpoints(self):
+        m = wds.learn_effort_model(self._correlated(9))
+        t1, t2 = m["predictor_cutpoints"]
+        small = wds.estimate_effort(_issue(1, body="x" * int(t1 - 1)), m)
+        large = wds.estimate_effort(_issue(1, body="x" * int(t2 + 50)), m)
+        self.assertEqual(small[0], "S")
+        self.assertEqual(large[0], "L")
+        self.assertTrue(small[1])  # still estimated=True
+        self.assertTrue(any("learned effort" in s for s in small[2]))
+
+    def test_label_authoritative_even_with_model(self):
+        # An explicit size label still wins over the learned model.
+        m = wds.learn_effort_model(self._correlated(9))
+        size, estimated, _ = wds.estimate_effort(_issue(1, labels=["size:L"]), m)
+        self.assertEqual(size, "L")
+        self.assertFalse(estimated)
+
+    def test_declined_model_keeps_static_and_discloses(self):
+        m = wds.learn_effort_model(self._uncorrelated())
+        size, estimated, sig = wds.estimate_effort(_issue(1, body="short"), m)
+        self.assertEqual(size, "S")  # unchanged static result
+        self.assertTrue(estimated)
+        self.assertTrue(any("estimated effort from body_len" in s for s in sig))
+        self.assertTrue(any("effort model not applied" in s for s in sig))
+        self.assertTrue(any("realized context" in s for s in sig))
+
+    def test_no_model_is_pure_static(self):
+        # model=None must reproduce the pre-learning behaviour exactly.
+        a = wds.estimate_effort(_issue(1, body="short"))
+        b = wds.estimate_effort(_issue(1, body="short"), None)
+        self.assertEqual(a, b)
+
+    # --- sample building ---------------------------------------------
+    def test_build_samples_single_issue_join(self):
+        prs = [
+            {
+                "closingIssuesReferences": [{"number": 5}],
+                "additions": 10,
+                "deletions": 5,
+                "changedFiles": 2,
+                "reviews": [],
+                "createdAt": "2026-06-01T00:00:00Z",
+                "mergedAt": "2026-06-01T02:00:00Z",
+            }
+        ]
+        samples = wds._build_effort_samples(prs, {5: "issue body text"})
+        self.assertEqual(len(samples), 1)
+        self.assertEqual(samples[0]["changed_lines"], 15)
+        self.assertEqual(samples[0]["changed_files"], 2)
+        self.assertEqual(samples[0]["hours_to_merge"], 2.0)
+        self.assertEqual(samples[0]["body_len"], len("issue body text"))
+
+    def test_build_samples_skips_multi_issue_pr(self):
+        prs = [{"closingIssuesReferences": [{"number": 5}, {"number": 6}]}]
+        self.assertEqual(wds._build_effort_samples(prs, {5: "b", 6: "b"}), [])
+
+    def test_build_samples_skips_unlinked_and_empty_body(self):
+        prs = [
+            {"closingIssuesReferences": []},  # unlinked
+            {"closingIssuesReferences": [{"number": 9}]},  # body not fetched
+            {"closingIssuesReferences": [{"number": 7}]},  # empty body
+        ]
+        self.assertEqual(wds._build_effort_samples(prs, {7: ""}), [])
+
+    def test_hours_between_basic_and_bad(self):
+        self.assertEqual(
+            wds._hours_between("2026-06-01T00:00:00Z", "2026-06-01T03:30:00Z"),
+            3.5,
+        )
+        self.assertIsNone(wds._hours_between(None, "2026-06-01T03:30:00Z"))
+        self.assertIsNone(wds._hours_between("garbage", "also-bad"))
+
+    # --- scan integration --------------------------------------------
+    def test_scan_echoes_effort_model(self):
+        m = wds.learn_effort_model(self._uncorrelated())
+        result = wds.scan([_issue(1, body="b")], set(), [], wds.ScanConfig(), None, m)
+        self.assertEqual(result["effort_model"]["sample_size"], m["sample_size"])
+
+    def test_scan_effort_model_none_by_default(self):
+        result = wds.scan([_issue(1, body="b")], set(), [], wds.ScanConfig())
+        self.assertIsNone(result["effort_model"])
+
+    def test_scan_applied_model_changes_candidate_effort(self):
+        m = wds.learn_effort_model(self._correlated(9))
+        t2 = m["predictor_cutpoints"][1]
+        big = _issue(1, body="x" * int(t2 + 100))
+        result = wds.scan([big], set(), [], wds.ScanConfig(), None, m)
+        self.assertEqual(result["candidates"][0]["effort"], "L")
+
+
 class TestEstimatedAxes(unittest.TestCase):
     def test_parallelizable_leaf(self):
         ok, sig = wds.estimate_parallelizable([])
@@ -724,6 +928,171 @@ class TestCliWiring(unittest.TestCase):
         self.assertIn("--free-panes", data["error"])
 
 
+class TestEffortLearningCliAndWiring(unittest.TestCase):
+    """CLI/bundle wiring for effort learning + the NON-FATAL guarantee:
+    a learning-fetch failure must degrade to the static heuristic, never
+    abort the triage (design §10 / effort model is an enhancement input)."""
+
+    def _run_bundle(self, bundle):
+        fd, name = tempfile.mkstemp(suffix=".json", prefix="wds_effort_")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(bundle, f)
+            return subprocess.run(
+                [sys.executable, str(SCRIPT), "--from-file", name],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            )
+        finally:
+            os.unlink(name)
+
+    def _correlated_samples(self, n=9):
+        return [
+            {
+                "body_len": 100 * i,
+                "criteria": 0,
+                "changed_lines": 30 * i,
+                "changed_files": 1,
+                "review_rounds": 0,
+                "hours_to_merge": 0.1,
+            }
+            for i in range(1, n + 1)
+        ]
+
+    def test_effort_model_in_output_schema(self):
+        bundle = {"issues": [_issue(1, body="b")], "open_pr_numbers": [], "recent_merges": []}
+        proc = self._run_bundle(bundle)
+        data = json.loads(proc.stdout)
+        self.assertIn("effort_model", data)
+        self.assertIsNone(data["effort_model"])  # no effort_samples → None
+
+    def test_bundle_effort_samples_learned_and_applied(self):
+        bundle = {
+            "issues": [_issue(1, body="x" * 5000)],  # very long body
+            "open_pr_numbers": [],
+            "recent_merges": [],
+            "effort_samples": self._correlated_samples(9),
+        }
+        proc = self._run_bundle(bundle)
+        self.assertEqual(proc.returncode, wds.EXIT_CANDIDATES_FOUND)
+        data = json.loads(proc.stdout)
+        self.assertTrue(data["effort_model"]["applies"])
+        # body 5000 ≫ top cutpoint → learned 'L'; signal names the learned route
+        cand = data["candidates"][0]
+        self.assertEqual(cand["effort"], "L")
+        self.assertTrue(any("learned effort" in s for s in cand["signals"]))
+
+    def test_bundle_effort_samples_not_a_list_errors(self):
+        bundle = {"issues": [], "effort_samples": {"not": "a list"}}
+        proc = self._run_bundle(bundle)
+        self.assertEqual(proc.returncode, wds.EXIT_ERROR)
+        data = json.loads(proc.stdout)
+        self.assertIn("effort_samples", data["error"])
+
+    def test_bundle_effort_sample_missing_int_field_errors(self):
+        bundle = {
+            "issues": [],
+            "effort_samples": [{"body_len": 10, "changed_files": 1}],  # no changed_lines
+        }
+        proc = self._run_bundle(bundle)
+        self.assertEqual(proc.returncode, wds.EXIT_ERROR)
+        data = json.loads(proc.stdout)
+        self.assertIn("changed_lines", data["error"])
+
+    def test_effort_history_negative_rejected(self):
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "--effort-history=-1"],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        self.assertEqual(proc.returncode, wds.EXIT_ERROR)
+        self.assertIn("--effort-history", json.loads(proc.stdout)["error"])
+
+    def _run_main_capture(self, argv):
+        import io
+        from contextlib import redirect_stdout
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = wds.main(argv)
+        return rc, buf.getvalue()
+
+    def test_effort_history_fetch_failure_is_non_fatal(self):
+        # The crux: a GhError on the effort-history *fetch* must still let the
+        # triage succeed on the static heuristic, with the failure disclosed in
+        # the echoed effort_model (NOT exit 2).
+        with mock.patch.object(wds, "fetch_open_issues", return_value=[_issue(1, body="b")]), \
+             mock.patch.object(wds, "fetch_open_pr_numbers", return_value=set()), \
+             mock.patch.object(wds, "fetch_recent_merges", return_value=[]), \
+             mock.patch.object(
+                 wds, "build_effort_model", side_effect=wds.GhError("boom")
+             ):
+            rc, out = self._run_main_capture(["--effort-history", "60"])
+        self.assertEqual(rc, wds.EXIT_CANDIDATES_FOUND)  # NOT EXIT_ERROR
+        data = json.loads(out)
+        self.assertEqual(data["status"], "candidates_found")
+        self.assertFalse(data["effort_model"]["applies"])
+        self.assertIn("fetch failed", data["effort_model"]["reason"])
+        # the failure stub is full-shape, not a partial dict (no KeyError risk)
+        self.assertIn("predictor_correlation", data["effort_model"])
+        self.assertIn(data["candidates"][0]["effort"], {"S", "M", "L"})
+
+    def test_effort_learning_bug_is_not_swallowed(self):
+        # Codex Blocker: a NON-GhError exception (a genuine bug / unexpected
+        # schema in the pure learning code) must NOT be masked as "fetch
+        # failed" / exit 0|10 — it must propagate to exit 2 (the §5.1
+        # `error` contract), like any other unexpected failure.
+        with mock.patch.object(wds, "fetch_open_issues", return_value=[_issue(1, body="b")]), \
+             mock.patch.object(wds, "fetch_open_pr_numbers", return_value=set()), \
+             mock.patch.object(wds, "fetch_recent_merges", return_value=[]), \
+             mock.patch.object(
+                 wds, "build_effort_model", side_effect=KeyError("body_len")
+             ):
+            rc, out = self._run_main_capture(["--effort-history", "60"])
+        self.assertEqual(rc, wds.EXIT_ERROR)
+        self.assertEqual(json.loads(out)["status"], "error")
+
+    def test_build_effort_model_surfaces_coverage(self):
+        # build_effort_model must report learning-data coverage (no silent
+        # drop): one single-issue PR yields a sample, one is dropped (no body).
+        prs = [
+            {
+                "closingIssuesReferences": [{"number": 5}],
+                "additions": 10, "deletions": 5, "changedFiles": 2,
+                "reviews": [], "createdAt": "2026-06-01T00:00:00Z",
+                "mergedAt": "2026-06-01T01:00:00Z",
+            },
+            {  # single-issue linked but its body is absent from the fetch
+                "closingIssuesReferences": [{"number": 99}],
+                "additions": 1, "deletions": 1, "changedFiles": 1,
+                "reviews": [], "createdAt": "2026-06-01T00:00:00Z",
+                "mergedAt": "2026-06-01T01:00:00Z",
+            },
+        ]
+        with mock.patch.object(wds, "fetch_effort_history", return_value=prs), \
+             mock.patch.object(
+                 wds, "fetch_closed_issue_bodies", return_value={5: "issue body"}
+             ):
+            model = wds.build_effort_model(None, 60)
+        self.assertEqual(model["coverage"]["single_issue_linked_prs"], 2)
+        self.assertEqual(model["coverage"]["usable_samples"], 1)
+        self.assertEqual(model["coverage"]["dropped_missing_body"], 1)
+
+    def test_effort_history_zero_disables_learning(self):
+        with mock.patch.object(wds, "fetch_open_issues", return_value=[_issue(1, body="b")]), \
+             mock.patch.object(wds, "fetch_open_pr_numbers", return_value=set()), \
+             mock.patch.object(wds, "fetch_recent_merges", return_value=[]), \
+             mock.patch.object(wds, "build_effort_model") as bem:
+            import io
+            from contextlib import redirect_stdout
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = wds.main(["--effort-history", "0"])
+        bem.assert_not_called()  # learning skipped entirely
+        self.assertEqual(rc, wds.EXIT_CANDIDATES_FOUND)
+        self.assertIsNone(json.loads(buf.getvalue())["effort_model"])
+
+
 class TestCommentsAndMilestone(unittest.TestCase):
     """Blockers in comments + milestone tier."""
 
@@ -980,6 +1349,44 @@ class TestFetchRecentMerges(unittest.TestCase):
         with mock.patch.object(wds, "_run_gh_json", return_value=None):
             with self.assertRaises(wds.GhError):
                 wds.fetch_recent_merges(None, 10)
+
+
+class TestFetchEffortHistory(unittest.TestCase):
+    """fetch_effort_history mirrors fetch_recent_merges' two-layer ordering:
+    over-fetch in recency-biased order, then take the exact mergedAt top-K
+    (so a freshly-commented old merge can't displace a recent one)."""
+
+    def test_overfetch_and_recency_ordering_requested(self):
+        with mock.patch.object(wds, "_run_gh_json", return_value=[]) as gh:
+            wds.fetch_effort_history("owner/repo", 7)
+        argv = gh.call_args[0][0]
+        self.assertIn("merged", argv)
+        self.assertEqual(argv[argv.index("--search") + 1], "sort:updated-desc")
+        self.assertEqual(
+            argv[argv.index("--limit") + 1], str(7 * wds._RECENT_MERGE_OVERFETCH)
+        )
+        # realized-effort fields + the PR↔issue bridge are requested
+        json_fields = argv[argv.index("--json") + 1]
+        for f in ("additions", "deletions", "changedFiles", "closingIssuesReferences"):
+            self.assertIn(f, json_fields)
+
+    def test_trimmed_to_merged_at_top_k(self):
+        pool = [
+            {"number": n, "mergedAt": f"2026-{n:02d}-01T00:00:00Z"}
+            for n in range(1, 10)
+        ]
+        with mock.patch.object(wds, "_run_gh_json", return_value=pool):
+            merges = wds.fetch_effort_history(None, 3)
+        self.assertEqual([m["number"] for m in merges], [9, 8, 7])
+
+    def test_closed_issue_fetch_recency_ordered(self):
+        # The closed-issue body fetch must be recency-ordered so recently-closed
+        # (incl. long-lived) issues are not silently dropped (Codex Major).
+        with mock.patch.object(wds, "_run_gh_json", return_value=[]) as gh:
+            wds.fetch_closed_issue_bodies("owner/repo", 200)
+        argv = gh.call_args[0][0]
+        self.assertIn("closed", argv)
+        self.assertEqual(argv[argv.index("--search") + 1], "sort:updated-desc")
 
 
 class TestFetchRobustness(unittest.TestCase):

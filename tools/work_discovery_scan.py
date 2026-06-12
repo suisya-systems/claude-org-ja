@@ -66,6 +66,25 @@ Estimated axes (design §4.4) — ``effort`` / ``parallelizable`` /
 contribute entries to the per-candidate ``signals[]`` so a human can audit
 *why* the machine guessed what it did. ``truncated_count`` and
 ``excluded_blocked`` are always emitted (no silent truncation, design §5.1).
+
+Effort learning (design §10「工数見積もりの高度化」): when ``--effort-history``
+> 0 the tool learns a repo-calibrated effort model from recently-merged PRs'
+*realized* effort (changed lines/files; review_rounds and time-to-merge are
+captured as context but excluded from the composite — degenerate here: zero
+GitHub reviews, minute-scale merges). The model bridges each PR to the issue
+it closed (``closingIssuesReferences``) to measure whether the only
+triage-time predictor we have — issue body length — actually correlates with
+realized effort. The model overrides the static heuristic ONLY past a
+data-driven gate (enough samples AND Spearman ≥ ``MIN_EFFORT_CORRELATION``);
+otherwise the static estimate is retained and the reason + realized-effort
+context are disclosed in ``signals[]``. On this repo the predictor does not
+track effort (ρ ≈ 0), so the gate correctly declines — the model adds audit
+context without manufacturing false precision (anti-cognitive-surrender,
+§4.4). The learned model summary is echoed in the output as ``effort_model``
+(``None`` when learning is disabled/offline). The learning fetch is wired
+NON-FATALLY: a gh failure there degrades to the static heuristic, it never
+aborts the triage. ``effort_estimated`` stays ``true`` on every estimated
+route (learned or static).
 """
 
 from __future__ import annotations
@@ -74,9 +93,11 @@ import argparse
 import json
 import re
 import shutil
+import statistics
 import subprocess
 import sys
 from dataclasses import dataclass
+from datetime import datetime
 
 try:
     sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
@@ -221,6 +242,34 @@ _BARE_SIZE_RE = re.compile(r"(?i)^(xs|s|m|l|xl)$")
 
 _PRIORITY_RANK = {"high": 2, "medium": 1, "low": 0}
 _EFFORT_RANK = {"S": 0, "M": 1, "L": 2}
+
+# --- effort learning (design §4.1 / §10「工数見積もりの高度化」) -----------
+# Default window of recently-merged PRs whose *realized* effort feeds the
+# learned effort model (design §10). Larger than DEFAULT_RECENT_MERGES (which
+# wants recency for the unblocked-by-recent-merge axis) because learning wants
+# *volume*. Configurable via --effort-history; 0 disables learning entirely.
+DEFAULT_EFFORT_HISTORY = 60
+# Minimum number of (issue ↔ merged-PR) training pairs before the learned
+# model is allowed to *override* the static heuristic. Below this the model
+# still reports realized-effort context but does not change the estimate.
+MIN_EFFORT_SAMPLES = 8
+# Minimum Spearman correlation between the triage-time predictor (issue body
+# length) and realized effort before the model overrides the static estimate.
+# The override gate is the heart of the anti-cognitive-surrender design: if the
+# only predictor we can observe at triage time does not actually track realized
+# effort (this repo: ρ ≈ 0 — body length reflects spec verbosity, not code
+# size), the model declines to manufacture a point estimate it cannot justify
+# and the static heuristic is retained, with the weakness disclosed in signals.
+MIN_EFFORT_CORRELATION = 0.3
+# Fixed (NOT learned) weight blending changed_files into the realized-effort
+# composite: a touched file ≈ this many lines of coordination cost. Held
+# constant so the learned degrees of freedom stay limited to the cutpoints
+# (design §4.4 / advisor: fewer learned params on a small, noisy sample =
+# defensible). review_rounds and time-to-merge are captured as context but
+# deliberately excluded from the composite (degenerate here: this org has zero
+# GitHub reviews — Codex local review — and merges in minutes, so both are
+# dominated by process, not effort).
+EFFORT_FILE_WEIGHT = 20
 
 
 @dataclass
@@ -432,13 +481,26 @@ def _count_acceptance_criteria(body: str) -> int:
     return len(re.findall(r"(?im)^[ \t]*[-*]\s*\[[ xX]\]", body))
 
 
-def estimate_effort(issue: dict) -> tuple[str, bool, list[str]]:
-    """Return ``(size, estimated, signals)`` — S/M/L (design §4.1).
+def estimate_effort(
+    issue: dict, model: dict | None = None
+) -> tuple[str, bool, list[str]]:
+    """Return ``(size, estimated, signals)`` — S/M/L (design §4.1 / §10).
 
     A ``size:S/M/L`` / ``effort:*`` label (or a bare ``S``/``M``/``L``
-    label) is authoritative → ``estimated=False``. Otherwise a heuristic
-    over body length + acceptance-criteria count estimates the size and
-    ``estimated=True`` (design §4.4: estimated values must say so).
+    label) is authoritative → ``estimated=False``. Otherwise the size is
+    *estimated* (``estimated=True``, design §4.4: estimated values must say
+    so) by one of two routes:
+
+    * **Learned (design §10)** — when ``model`` was learned from realized
+      merged-PR effort *and* its override gate fired (enough samples AND the
+      issue-body predictor actually correlates with realized effort), the
+      body length is bucketed against the model's repo-calibrated cutpoints.
+    * **Static fallback** — otherwise the original heuristic over body length
+      + acceptance-criteria count applies, unchanged. When a ``model`` exists
+      but its gate declined (e.g. this repo, where body length does not track
+      realized effort), the static estimate is kept and the *reason* plus the
+      realized-effort context are appended to ``signals[]`` so a human sees
+      both the estimate and why the machine did not over-claim.
     """
     for name in _label_names(issue):
         m = _SIZE_LABEL_RE.match(name) or _BARE_SIZE_RE.match(name)
@@ -452,7 +514,28 @@ def estimate_effort(issue: dict) -> tuple[str, bool, list[str]]:
     body = issue.get("body") or ""
     length = len(body)
     criteria = _count_acceptance_criteria(body)
-    # Heuristic buckets (documented so the estimate is auditable):
+
+    # Learned route: only when the model's data-driven gate fired. Bucket the
+    # body length against repo-calibrated cutpoints (larger body → larger
+    # effort holds *because* the gate verified a positive correlation).
+    if model and model.get("applies") and model.get("predictor_cutpoints"):
+        t1, t2 = model["predictor_cutpoints"]
+        size = "S" if length <= t1 else ("M" if length <= t2 else "L")
+        signals = [
+            f"learned effort: body_len={length} vs repo-calibrated cutpoints "
+            f"S≤{round(t1)}<M≤{round(t2)}<L "
+            f"(n={model.get('sample_size')}, ρ={model.get('predictor_correlation')})",
+        ]
+        median_lines = model.get("realized_median_lines")
+        if median_lines is not None:
+            signals.append(
+                f"realized basis: recent merged tasks median {median_lines} "
+                f"changed lines / {model.get('realized_median_files')} files"
+            )
+        return size, True, signals
+
+    # Static fallback heuristic (documented buckets, kept identical to the
+    # pre-learning behaviour so it is the safe default):
     #   L: long body OR many acceptance criteria (broad scope)
     #   S: short body AND few criteria
     #   M: everything in between
@@ -465,7 +548,210 @@ def estimate_effort(issue: dict) -> tuple[str, bool, list[str]]:
     signals = [
         f"estimated effort from body_len={length}, acceptance_criteria={criteria}"
     ]
+    # If a model was attempted but its gate declined, disclose *why* and show
+    # the realized-effort context, so the human is not left thinking the
+    # estimate is uninformed (anti-cognitive-surrender, design §4.4).
+    if model is not None and not model.get("applies"):
+        reason = model.get("reason")
+        if reason:
+            signals.append(f"effort model not applied — {reason}")
+        median_lines = model.get("realized_median_lines")
+        if median_lines is not None:
+            signals.append(
+                f"realized context: recent merged tasks median {median_lines} "
+                f"changed lines / {model.get('realized_median_files')} files "
+                f"(n={model.get('sample_size')})"
+            )
+        for note in model.get("degenerate_signals", []):
+            signals.append(f"signal note: {note}")
     return size, True, signals
+
+
+def _spearman(xs: list[float], ys: list[float]) -> float:
+    """Spearman rank correlation of two equal-length numeric sequences.
+
+    Uses average ranks for ties (standard Spearman). Returns ``0.0`` for
+    degenerate input (n<2, mismatched lengths, or zero variance) — a neutral
+    value that makes the override gate decline rather than fire on noise."""
+    n = len(xs)
+    if n < 2 or len(ys) != n:
+        return 0.0
+
+    def _ranks(vals: list[float]) -> list[float]:
+        order = sorted(range(n), key=lambda i: vals[i])
+        ranks = [0.0] * n
+        i = 0
+        while i < n:
+            j = i
+            while j + 1 < n and vals[order[j + 1]] == vals[order[i]]:
+                j += 1
+            avg = (i + j) / 2.0  # average rank across a tie run
+            for k in range(i, j + 1):
+                ranks[order[k]] = avg
+            i = j + 1
+        return ranks
+
+    rx, ry = _ranks(xs), _ranks(ys)
+    mx, my = sum(rx) / n, sum(ry) / n
+    cov = sum((rx[i] - mx) * (ry[i] - my) for i in range(n))
+    vx = sum((r - mx) ** 2 for r in rx) ** 0.5
+    vy = sum((r - my) ** 2 for r in ry) ** 0.5
+    if vx == 0 or vy == 0:
+        return 0.0
+    return cov / (vx * vy)
+
+
+def _tertile_cutpoints(values: list[float]) -> tuple[float, float] | None:
+    """Two cutpoints splitting ``values`` into ~thirds (``S``/``M``/``L``).
+
+    ``statistics.quantiles(values, n=3)`` → ``[t1, t2]``; deterministic
+    (sorts internally). Returns ``None`` when there are fewer than 3 values
+    (cannot form two cuts)."""
+    if len(values) < 3:
+        return None
+    q = statistics.quantiles(values, n=3)
+    return (q[0], q[1])
+
+
+def _realized_composite(changed_lines: int, changed_files: int) -> float:
+    """Fixed (non-learned) realized-effort composite for one merged PR.
+
+    ``changed_lines`` (additions+deletions) is the primary signal;
+    ``changed_files`` is folded in with the documented constant
+    ``EFFORT_FILE_WEIGHT`` (secondary). review_rounds / time-to-merge are
+    intentionally NOT in the composite (see ``EFFORT_FILE_WEIGHT``)."""
+    return changed_lines + EFFORT_FILE_WEIGHT * changed_files
+
+
+def empty_effort_model(reason: str) -> dict:
+    """A full-shape, not-applied effort model carrying only ``reason``.
+
+    Used whenever a model can be reported but nothing was learned (zero
+    training pairs, or a NON-FATAL learning-fetch failure). Returning the
+    **full key set** (None-filled) — not a partial dict — keeps ``effort_model``
+    a single shape across every path, so a consumer can read e.g.
+    ``effort_model["predictor_correlation"]`` without a KeyError regardless of
+    why learning produced nothing."""
+    return {
+        "sample_size": 0,
+        "predictor": "issue_body_length",
+        "predictor_correlation": None,
+        "predictor_cutpoints": None,
+        "realized_metric": f"changed_lines + {EFFORT_FILE_WEIGHT}*changed_files",
+        "realized_cutpoints": None,
+        "realized_median_lines": None,
+        "realized_median_files": None,
+        "realized_median_hours": None,
+        "degenerate_signals": [],
+        "coverage": None,
+        "applies": False,
+        "reason": reason,
+    }
+
+
+def learn_effort_model(
+    samples: list[dict],
+    *,
+    min_samples: int = MIN_EFFORT_SAMPLES,
+    min_correlation: float = MIN_EFFORT_CORRELATION,
+) -> dict:
+    """Learn a repo-calibrated effort model from realized merged-PR effort.
+
+    ``samples`` — one dict per merged PR that closed *exactly one* issue,
+    pairing the issue's triage-time predictor with the PR's realized effort::
+
+        {"body_len": int, "criteria": int, "changed_lines": int,
+         "changed_files": int, "review_rounds": int,
+         "hours_to_merge": float | None}
+
+    Pure function (no I/O); deterministic — the result is independent of
+    ``samples`` order (every statistic sorts or is order-invariant).
+
+    Returns a model dict (never raises). Its ``applies`` flag is a
+    **data-driven override gate**: it fires only when there are enough
+    samples AND the issue-body predictor actually correlates with realized
+    effort (Spearman ≥ ``min_correlation``). When the predictor does not
+    track effort (this repo: ρ ≈ 0), ``applies`` is ``False`` and the caller
+    keeps the static estimate — the model still reports realized-effort
+    *context* for the human, it just does not manufacture a point estimate it
+    cannot justify (design §4.4 anti-cognitive-surrender).
+    """
+    n = len(samples)
+    if n == 0:
+        return empty_effort_model(
+            "no linked (issue ↔ merged-PR) training samples → static heuristic"
+        )
+
+    body_lens = [s["body_len"] for s in samples]
+    lines = [s["changed_lines"] for s in samples]
+    files = [s["changed_files"] for s in samples]
+    composites = [
+        _realized_composite(s["changed_lines"], s["changed_files"]) for s in samples
+    ]
+    reviews = [s.get("review_rounds", 0) for s in samples]
+    hours = [s["hours_to_merge"] for s in samples if s.get("hours_to_merge") is not None]
+
+    degenerate: list[str] = []
+    if not any(reviews):
+        degenerate.append(
+            "review_rounds: all zero across samples (no GitHub reviews — "
+            "Codex local review) → excluded from composite"
+        )
+    degenerate.append(
+        "time-to-merge: captured as context only, excluded from composite "
+        "(dominated by queueing, not effort)"
+    )
+
+    realized_cuts = _tertile_cutpoints(composites)
+    predictor_cuts = _tertile_cutpoints(body_lens)
+    rho = _spearman(body_lens, composites)
+
+    applies = (
+        n >= min_samples
+        and realized_cuts is not None
+        and predictor_cuts is not None
+        and rho >= min_correlation
+    )
+    if applies:
+        reason = (
+            f"body length tracks realized effort (ρ={round(rho, 2)} ≥ "
+            f"{min_correlation}, n={n}) → learned cutpoints applied"
+        )
+    elif n < min_samples:
+        reason = (
+            f"insufficient training pairs (n={n} < {min_samples}) → "
+            f"static heuristic retained"
+        )
+    elif realized_cuts is None or predictor_cuts is None:
+        reason = f"could not form cutpoints (n={n}) → static heuristic retained"
+    else:
+        reason = (
+            f"body length does not predict realized effort (ρ={round(rho, 2)} "
+            f"< {min_correlation}, n={n}) → static heuristic retained"
+        )
+
+    return {
+        "sample_size": n,
+        "predictor": "issue_body_length",
+        "predictor_correlation": round(rho, 3),
+        "predictor_cutpoints": [round(predictor_cuts[0], 1), round(predictor_cuts[1], 1)]
+        if predictor_cuts
+        else None,
+        "realized_metric": f"changed_lines + {EFFORT_FILE_WEIGHT}*changed_files",
+        "realized_cutpoints": [round(realized_cuts[0], 1), round(realized_cuts[1], 1)]
+        if realized_cuts
+        else None,
+        "realized_median_lines": statistics.median(lines),
+        "realized_median_files": statistics.median(files),
+        "realized_median_hours": round(statistics.median(hours), 2) if hours else None,
+        "degenerate_signals": degenerate,
+        # Coverage of the learning data (how many linked PRs vs usable samples)
+        # is an I/O concern filled in by build_effort_model; None on the pure
+        # path (e.g. offline --from-file, where samples are supplied directly).
+        "coverage": None,
+        "applies": applies,
+        "reason": reason,
+    }
 
 
 def estimate_parallelizable(
@@ -568,6 +854,7 @@ def build_candidate(
     recent_merge_pr_numbers: set[int],
     recent_merge_closed_issues: set[int],
     recent_merge_referenced_issues: set[int],
+    effort_model: dict | None = None,
 ) -> dict | None:
     """Build one candidate dict, or ``None`` if the Issue is blocked.
 
@@ -582,7 +869,7 @@ def build_candidate(
     all_blocking = extract_blocking_refs(dependency_text(issue), is_epic=is_epic)
 
     priority, prio_signals = compute_priority(issue)
-    effort, effort_estimated, effort_signals = estimate_effort(issue)
+    effort, effort_estimated, effort_signals = estimate_effort(issue, effort_model)
     parallelizable, par_signals = estimate_parallelizable(open_blocking)
     unblocked, merge_signals = estimate_unblocked_by_recent_merge(
         issue,
@@ -696,6 +983,7 @@ def scan(
     recent_merges: list[dict],
     config: ScanConfig,
     input_truncated: dict | None = None,
+    effort_model: dict | None = None,
 ) -> dict:
     """Pure triage core: produce the candidate JSON dict (design §5.1).
 
@@ -707,7 +995,9 @@ def scan(
     unblocked-by-recent-merge heuristic. ``input_truncated`` — optional
     ``{"open_issues": bool, "open_prs": bool}`` set by the caller when a
     fetch hit its row cap, surfaced in the output so input-side truncation
-    is never silent (design §5.1). No I/O here.
+    is never silent (design §5.1). ``effort_model`` — optional learned
+    effort model (``learn_effort_model``) passed to each candidate's effort
+    estimate and echoed in the output for audit (design §10). No I/O here.
     """
     open_issue_numbers = {
         i["number"] for i in issues if _is_int(i.get("number"))
@@ -754,6 +1044,7 @@ def scan(
             recent_merge_pr_numbers=recent_merge_pr_numbers,
             recent_merge_closed_issues=recent_merge_closed_issues,
             recent_merge_referenced_issues=recent_merge_referenced_issues,
+            effort_model=effort_model,
         )
         if cand is not None:
             candidates.append(cand)
@@ -784,6 +1075,11 @@ def scan(
         # may be unseen — a blocker not fetched would be mis-resolved
         # (design §5.1: never truncate silently).
         "input_truncated": truncation,
+        # The learned effort model summary (design §10), or ``None`` when
+        # learning was disabled / unavailable. Surfaced so the delivery layer
+        # and a human can audit what was learned and whether it was applied —
+        # never hidden, mirroring truncated_count / excluded_blocked.
+        "effort_model": effort_model,
         "candidates": top,
         "recommendation": recommendation,
         "excluded_blocked": excluded_blocked,
@@ -950,11 +1246,198 @@ def fetch_recent_merges(repo: str | None, limit: int) -> list[dict]:
     return merges[:limit]
 
 
-def _load_bundle(path: str) -> tuple[list[dict], set[int], list[dict]]:
-    """Load a pre-fetched ``{issues, open_pr_numbers, recent_merges}`` JSON.
+# ----------------------------------------------------------------------
+# Effort learning I/O (design §10). All read-only. These feed the learned
+# effort model and are wired NON-FATALLY in main(): a failure here degrades
+# to the static heuristic, it never aborts the triage (the model is an
+# enhancement, not a core input).
+# ----------------------------------------------------------------------
 
-    Lets the tool run fully offline (manual validation / determinism
-    checks) without touching ``gh``. Strictly read-only.
+
+def fetch_effort_history(repo: str | None, limit: int) -> list[dict]:
+    """Fetch the ``limit`` most-recently-*merged* PRs with realized-effort
+    fields for learning.
+
+    A larger window than ``fetch_recent_merges`` (which wants *recency* for
+    the unblocked-by-recent-merge axis); learning wants *volume*. Pulls the
+    realized-effort signals (changed lines/files, reviews, timestamps) plus
+    ``closingIssuesReferences`` to bridge each PR to the issue it closed.
+
+    Mirrors ``fetch_recent_merges``' two-layer ordering: ``gh pr list``
+    defaults to createdAt-desc and even ``sort:updated-desc`` only
+    *approximates* merge recency (an old PR with a fresh comment bubbles up),
+    so over-fetch in recency-biased order then take the exact ``mergedAt``
+    top-K client-side — otherwise a freshly-commented old merge could displace
+    a genuinely-recent one from the learning window (Codex Major). Read-only
+    (``gh pr list``)."""
+    fetch_limit = max(limit, limit * _RECENT_MERGE_OVERFETCH)
+    merges = _run_gh_json_list(
+        [
+            "pr",
+            "list",
+            *_repo_args(repo),
+            "--state",
+            "merged",
+            "--search",
+            "sort:updated-desc",
+            "--limit",
+            str(fetch_limit),
+            "--json",
+            "number,additions,deletions,changedFiles,reviews,createdAt,"
+            "mergedAt,closingIssuesReferences",
+        ]
+    )
+    merges.sort(key=lambda p: p.get("mergedAt") or "", reverse=True)
+    return merges[:limit]
+
+
+def fetch_closed_issue_bodies(repo: str | None, limit: int) -> dict[int, str]:
+    """Map closed-issue number → body, in ONE batched read (not per-issue).
+
+    Used to recover the predictor (issue body) of the issues that recent
+    merges closed. Ordered by ``sort:updated-desc`` so recently-closed issues
+    (including long-lived ones closed only recently) sit near the top of the
+    window and are not silently dropped (Codex Major). Read-only
+    (``gh issue list --state closed``).
+
+    Caveat (inherent, documented): this returns each issue's *current* body,
+    not its body at merge/triage time. A post-close edit to an issue body
+    shifts the learned correlation/cutpoints. Spec issues are rarely edited
+    after closing, but this is a known limitation of learning the predictor
+    from issue text and is why ``build_effort_model`` also surfaces a
+    ``coverage`` summary for audit."""
+    data = _run_gh_json_list(
+        [
+            "issue",
+            "list",
+            *_repo_args(repo),
+            "--state",
+            "closed",
+            "--search",
+            "sort:updated-desc",
+            "--limit",
+            str(limit),
+            "--json",
+            "number,body",
+        ]
+    )
+    return {
+        i["number"]: (i.get("body") or "")
+        for i in data
+        if _is_int(i.get("number"))
+    }
+
+
+def _hours_between(created: str | None, merged: str | None) -> float | None:
+    """Hours from ``createdAt`` to ``mergedAt`` (ISO-8601), or ``None``.
+
+    Context-only (NOT in the effort composite — see ``EFFORT_FILE_WEIGHT``):
+    this org merges in minutes, so the value reflects queueing, not effort."""
+    if not created or not merged:
+        return None
+    try:
+        c = datetime.fromisoformat(created.replace("Z", "+00:00"))
+        m = datetime.fromisoformat(merged.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+    return max(0.0, (m - c).total_seconds() / 3600.0)
+
+
+def _single_closing_issue(pr: dict) -> int | None:
+    """The issue number a PR closes, iff it closes *exactly one* issue.
+
+    Returns ``None`` for unlinked or multi-issue PRs — one PR's effort cannot
+    be honestly attributed across several issues, so multi-issue PRs are not
+    training pairs."""
+    refs = pr.get("closingIssuesReferences") or []
+    if not isinstance(refs, list) or len(refs) != 1:
+        return None
+    ref = refs[0]
+    num = ref.get("number") if isinstance(ref, dict) else None
+    return num if _is_int(num) else None
+
+
+def _build_effort_samples(
+    merged_prs: list[dict], closed_bodies: dict[int, str]
+) -> list[dict]:
+    """Join single-issue-linked merged PRs with their closed issue's body to
+    form ``learn_effort_model`` training pairs.
+
+    Multi-issue PRs are skipped (see ``_single_closing_issue``). PRs whose
+    closed issue was not fetched or has an empty body are also skipped (the
+    drop is counted in ``build_effort_model``'s ``coverage``, not silent)."""
+    samples: list[dict] = []
+    for pr in merged_prs:
+        num = _single_closing_issue(pr)
+        if num is None:
+            continue
+        body = closed_bodies.get(num)
+        if not body:  # unfetched or empty → unusable predictor
+            continue
+        adds = pr.get("additions")
+        dels = pr.get("deletions")
+        cfiles = pr.get("changedFiles")
+        reviews = pr.get("reviews")
+        samples.append(
+            {
+                "issue": num,
+                "body_len": len(body),
+                # Reserved: the static fallback predictor also uses acceptance-
+                # criteria count, so it is recorded here to keep a sample a full
+                # picture of the predictor. learn_effort_model does not yet fold
+                # it into the learned predictor (body_len alone keeps the learned
+                # DOF minimal); kept so a future composite predictor needs no
+                # re-fetch.
+                "criteria": _count_acceptance_criteria(body),
+                "changed_lines": (adds if _is_int(adds) else 0)
+                + (dels if _is_int(dels) else 0),
+                "changed_files": cfiles if _is_int(cfiles) else 0,
+                "review_rounds": len(reviews) if isinstance(reviews, list) else 0,
+                "hours_to_merge": _hours_between(
+                    pr.get("createdAt"), pr.get("mergedAt")
+                ),
+            }
+        )
+    return samples
+
+
+def build_effort_model(repo: str | None, history_limit: int) -> dict:
+    """Fetch effort history + closed-issue bodies and learn the effort model.
+
+    Thin I/O wrapper around ``_build_effort_samples`` + ``learn_effort_model``.
+    Read-only. Raises ``GhError`` on a gh failure — the caller (``main``) wraps
+    this NON-FATALLY so learning degrades to the static heuristic rather than
+    aborting the triage."""
+    merged = fetch_effort_history(repo, history_limit)
+    # Fetch enough closed issues to cover the linked set. Closed issues that
+    # recent merges reference are themselves recent, so a window a few × the
+    # PR window comfortably covers them; capped so the batch stays cheap.
+    closed_limit = min(max(history_limit * 4, 200), DEFAULT_OPEN_LIMIT)
+    closed_bodies = fetch_closed_issue_bodies(repo, closed_limit)
+    samples = _build_effort_samples(merged, closed_bodies)
+    model = learn_effort_model(samples)
+    # Surface learning-data coverage so dropped linkages are never silent
+    # (Codex Major / design §5.1 ethos): a single-issue-linked PR whose closed
+    # issue body was not in the fetch window does not become a sample.
+    linked = sum(1 for pr in merged if _single_closing_issue(pr) is not None)
+    model["coverage"] = {
+        "single_issue_linked_prs": linked,
+        "usable_samples": len(samples),
+        "dropped_missing_body": linked - len(samples),
+    }
+    return model
+
+
+def _load_bundle(
+    path: str,
+) -> tuple[list[dict], set[int], list[dict], dict | None]:
+    """Load a pre-fetched bundle JSON.
+
+    ``{issues, open_pr_numbers, recent_merges}`` plus an optional
+    ``effort_samples`` (a list of ``learn_effort_model`` training-pair dicts)
+    that, when present, is learned into the returned effort model — letting
+    the effort-learning path be exercised fully offline / hermetically.
+    Strictly read-only.
     """
     with open(path, encoding="utf-8") as f:
         bundle = json.load(f)
@@ -1014,7 +1497,33 @@ def _load_bundle(path: str) -> tuple[list[dict], set[int], list[dict]]:
                 f"{type(n).__name__}"
             )
         open_pr_numbers.add(n)
-    return issues, open_pr_numbers, recent_merges
+
+    # Optional effort-learning training pairs. Absent/null → no model (the
+    # offline path then behaves exactly like the pre-learning tool). A present
+    # non-list is malformed and must error (same contract as the lists above).
+    effort_model: dict | None = None
+    raw_samples = bundle.get("effort_samples")
+    if raw_samples is not None:
+        if not isinstance(raw_samples, list):
+            raise GhError(
+                f"--from-file `effort_samples` must be a list, got "
+                f"{type(raw_samples).__name__}"
+            )
+        for i, s in enumerate(raw_samples):
+            if not isinstance(s, dict):
+                raise GhError(
+                    f"--from-file effort_samples[{i}] must be an object, got "
+                    f"{type(s).__name__}"
+                )
+            for field in ("body_len", "changed_lines", "changed_files"):
+                if not _is_int(s.get(field)):
+                    raise GhError(
+                        f"--from-file effort_samples[{i}] must have an "
+                        f"integer `{field}`"
+                    )
+        effort_model = learn_effort_model(raw_samples)
+
+    return issues, open_pr_numbers, recent_merges, effort_model
 
 
 def _error_payload(trigger: str, message: str) -> dict:
@@ -1026,6 +1535,7 @@ def _error_payload(trigger: str, message: str) -> dict:
         "candidate_count": 0,
         "truncated_count": 0,
         "input_truncated": {"open_issues": False, "open_prs": False},
+        "effort_model": None,
         "candidates": [],
         "recommendation": None,
         "excluded_blocked": [],
@@ -1123,10 +1633,19 @@ def main(argv=None) -> int:
         f"merge heuristic (default {DEFAULT_RECENT_MERGES}).",
     )
     parser.add_argument(
+        "--effort-history",
+        type=int,
+        default=DEFAULT_EFFORT_HISTORY,
+        help=f"How many recent merged PRs to learn realized effort from "
+        f"(design §10); 0 disables effort learning (static heuristic only). "
+        f"Default {DEFAULT_EFFORT_HISTORY}.",
+    )
+    parser.add_argument(
         "--from-file",
         default=None,
-        help="Read a pre-fetched {issues, open_pr_numbers, recent_merges} "
-        "JSON bundle instead of calling gh (offline / validation).",
+        help="Read a pre-fetched {issues, open_pr_numbers, recent_merges, "
+        "effort_samples?} JSON bundle instead of calling gh (offline / "
+        "validation).",
     )
     args = parser.parse_args(argv)
 
@@ -1151,9 +1670,16 @@ def main(argv=None) -> int:
         # free → no parallelizable boost), but a negative count is nonsense.
         if args.free_panes is not None and args.free_panes < 0:
             raise ValueError("--free-panes must be >= 0")
+        # `--effort-history` is a count of merged PRs to learn from; 0 disables
+        # learning, negative is nonsense.
+        if args.effort_history < 0:
+            raise ValueError("--effort-history must be >= 0")
         input_truncated = {"open_issues": False, "open_prs": False}
+        effort_model: dict | None = None
         if args.from_file:
-            issues, open_pr_numbers, recent_merges = _load_bundle(args.from_file)
+            issues, open_pr_numbers, recent_merges, effort_model = _load_bundle(
+                args.from_file
+            )
         else:
             issues = fetch_open_issues(args.repo)
             open_pr_numbers = fetch_open_pr_numbers(args.repo)
@@ -1164,8 +1690,30 @@ def main(argv=None) -> int:
                 "open_issues": len(issues) >= DEFAULT_OPEN_LIMIT,
                 "open_prs": len(open_pr_numbers) >= DEFAULT_OPEN_LIMIT,
             }
+            # Effort learning is an ENHANCEMENT, not a core input: wire it
+            # NON-FATALLY. A *fetch* failure here (gh hiccup on the
+            # history/closed-issue read) must NOT abort the triage — degrade to
+            # the static heuristic with the reason disclosed in each candidate's
+            # effort signals. Crucially this catches ONLY GhError (the fetch
+            # failure mode): a genuine bug or unexpected schema in the pure
+            # learning code must still propagate to the outer handler → exit 2,
+            # never be masked as "fetch failed" / exit 0|10 (that would break
+            # the §5.1 `exit 2 = error` contract — Codex Blocker).
+            if args.effort_history > 0:
+                try:
+                    effort_model = build_effort_model(args.repo, args.effort_history)
+                except GhError as exc:
+                    effort_model = empty_effort_model(
+                        f"effort-history fetch failed "
+                        f"({type(exc).__name__}) → static heuristic retained"
+                    )
         result = scan(
-            issues, open_pr_numbers, recent_merges, config, input_truncated
+            issues,
+            open_pr_numbers,
+            recent_merges,
+            config,
+            input_truncated,
+            effort_model,
         )
     except Exception as exc:  # noqa: BLE001 — report any failure as error/exit 2
         # Keep the fixed schema (design §5.1) so the delivery layer parses

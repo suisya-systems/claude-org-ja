@@ -120,6 +120,7 @@ triage を「**計算（どの Issue がどう triage されるか）**」と「
   "generated_for": "post_merge",
   "candidate_count": 1,
   "truncated_count": 0,
+  "effort_model": null,
   "candidates": [
     {
       "issue": 531,
@@ -154,6 +155,7 @@ triage を「**計算（どの Issue がどう triage されるか）**」と「
 - `candidate_count`: `candidates[]` の実件数。`truncated_count`: N 件上限で `candidates[]` から落とした「依存解決済みだが順位外」の候補数（**必須フィールド**。`0` でも省略しない。サイレント truncation を禁じるため）。
 - exit code で delivery 側が分岐する。[`tools/check_curate_threshold.py`](../../tools/check_curate_threshold.py) に倣い、**`1` を意味付けに使わない**（Python が未捕捉例外時に既定で返す exit `1` と衝突し、scan のクラッシュが「候補なし」に誤読されて error が窓口に届かなくなるのを防ぐ）。割り当ては `0` = 候補なし（`no_candidates`）、`10` = 候補あり（`candidates_found`）、`2` = error。delivery 層は JSON パース失敗に依存せず exit code で挙動を決める（curator threshold ツールと同方針）。
 - `excluded_blocked` は「依存未解決で除外した Issue」を理由付きで残す。**サイレント truncation をしない**（`truncated_count` で順位外候補の存在も、`excluded_blocked` で依存除外も、ともに人間が監査できるようにする）。
+- `effort_model`: 学習された effort モデルの要約（[§10](#10-スコープ外--将来課題) 工数見積もりの高度化）、または学習無効 / オフライン時は `null`。**固定スキーマ前提**なので `effort_model: null | object` の 2 値を常に取り、object 形では `sample_size` / `applies`（データ駆動ゲートの上書き可否）/ `predictor_correlation` / `realized_cutpoints` / `realized_median_lines` / `coverage`（学習データの網羅性: single-issue-linked PR 数・採用サンプル数・body 欠落で落とした数）/ `reason` などを持つ。`applies==false` の時は静的ヒューリスティックが維持され、各候補の `signals[]` に理由＋実工数コンテキストが明示される。本リポジトリでは body 長が実工数と相関しないため常に `applies==false`（gated OFF）。
 
 ### 5.2 人間可読レンダリング（窓口 → 人間）
 
@@ -286,7 +288,7 @@ triage を「**計算（どの Issue がどう triage されるか）**」と「
 
 - **着手の自動化**: 本設計の対象外（INV-1 / INV-2 で恒久的に禁止）。assessment §5 が言うとおり「人間をループ頂点に残す」のが本組織の確定方針。
 - **クロスリポジトリ triage**: 複数リポジトリ（runtime / ja / renga 等）横断の依存解決は本設計では単一リポジトリ前提。将来拡張。
-- **工数見積もりの高度化**: §4.1 の effort はヒューリスティック。過去 PR の実工数からの学習等は将来課題。
+- **工数見積もりの高度化（実装済み・本リポジトリではゲート OFF）**: §4.1 の静的ヒューリスティックに加え、[`tools/work_discovery_scan.py`](../../tools/work_discovery_scan.py) は直近マージ PR の**実工数**（変更行数 / ファイル数。review ラウンド数・着手〜マージ所要時間は退化シグナルのため composite から除外しコンテキストとしてのみ記録）から repo 較正された effort モデルを学習する（`--effort-history`、既定 60 / `0` で無効化）。`closingIssuesReferences` で PR↔Issue を橋渡しし、トリアージ時に観測できる唯一の予測子（Issue body 長）が実工数と相関するかを測る。**データ駆動ゲート**（十分なサンプル数 AND Spearman ≥ 閾値）を超えた時のみ静的推定を上書きし、それ以外は静的推定を維持して理由＋実工数コンテキストを `signals[]` に明示する。本リポジトリの実データでは body 長は実工数と相関しない（ρ ≈ 0、n≈23 — body 長は spec の詳細さを反映し、コード変更量を反映しない）ため、ゲートは正しく上書きを見送り、モデルは「機械が断定した」誤認（認知的降伏、§4.4）を避けつつ監査コンテキストのみ付与する。将来 size ラベル運用や body 長相関が現れた repo では同一フレームワークが自動で学習 cutpoint を適用する。学習フェッチは **non-fatal**（gh 失敗時は静的ヒューリスティックへ縮退、triage は中断しない）。`effort_estimated` + `signals[]` の不確実性明示契約は学習経路でも維持。モデル要約は出力の `effort_model` に echo される。**既知の限界（明示）**: 予測子に使う body は closed issue の *現在の* body であり、merge / triage 時点のスナップショットではない（gh から履歴 body を安価に取得できないため）。閉鎖後の本文編集は学習相関 / cutpoint を動かしうる（spec issue は閉鎖後ほとんど編集されないが、ノイズ源として `coverage` で網羅性を監査可能にしている）。
 - **`.claude/` skill・`.dispatcher/` prose・`tools/` の実体実装**: 本ワーカーは DESIGN ONLY。すべて別タスク。
 - **proposed journal イベントの台帳追記と配線**: `work_discovery_scanned` 等の [`docs/journal-events.md`](../journal-events.md) 追記・emit 配線は実装タスク側。
 
