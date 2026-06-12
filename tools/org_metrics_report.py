@@ -56,6 +56,17 @@ from typing import Any, Optional
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
+
+def _fmt_ts(dt: datetime) -> str:
+    """Format ``dt`` exactly like the DB writers do: ISO-8601 with 3-digit
+    milliseconds and a ``Z`` suffix (SQLite ``strftime('%Y-%m-%dT%H:%M:%fZ')``
+    yields millisecond precision). Producing the same width matters because
+    the period filter compares timestamps *lexicographically*: a 6-digit
+    microsecond bound would sort after a 3-digit DB value sharing the same
+    instant and wrongly exclude an on-boundary row.
+    """
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond // 1000:03d}Z"
+
 # --- frozen event-kind vocabulary (design note 4) ------------------------
 REDISPATCH_KINDS: tuple[str, ...] = ("delegate_resume", "delegate_resume_r2")
 PANE_CLOSE_KINDS: tuple[str, ...] = ("worker_closed", "pane_closed")
@@ -81,7 +92,10 @@ def open_readonly(db_path: Path) -> sqlite3.Connection:
     than creating an empty one) and pins ``query_only=ON`` as a belt-and-
     suspenders guard. Never applies WAL or runs migrations.
     """
-    uri = f"file:{db_path}?mode=ro"
+    # ``Path.as_uri()`` percent-encodes the path (spaces, ``?``, ``#``) and
+    # normalizes separators cross-platform, so a path containing a literal
+    # ``?`` is not mis-parsed as the start of the URI query string.
+    uri = db_path.resolve().as_uri() + "?mode=ro"
     conn = sqlite3.connect(uri, uri=True)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA query_only = ON")
@@ -119,7 +133,10 @@ def _normalize_until(value: str) -> str:
     component is used as-is."""
     v = value.strip()
     if len(v) == 10 and v.count("-") == 2:
-        return v + "T23:59:59.999999Z"
+        # End-of-day at the DB's 3-digit millisecond precision so a row stamped
+        # at the day's last writable instant (``...T23:59:59.999Z``) still
+        # sorts <= this bound under lexicographic compare.
+        return v + "T23:59:59.999Z"
     return v
 
 
@@ -137,10 +154,8 @@ def compute_bounds(
     (the caller validates this and raises argparse error upstream).
     """
     if last_days is not None:
-        lo = (now - timedelta(days=last_days)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-        hi = _normalize_until(until) if until else now.strftime(
-            "%Y-%m-%dT%H:%M:%S.%fZ"
-        )
+        lo = _fmt_ts(now - timedelta(days=last_days))
+        hi = _normalize_until(until) if until else _fmt_ts(now)
         return lo, hi
     lo = _normalize_since(since) if since else None
     hi = _normalize_until(until) if until else None
@@ -222,6 +237,21 @@ def _parse_pr_url(pr_url: Optional[str]) -> Optional[tuple[str, int]]:
     return (m.group(1).lower(), int(m.group(2)))
 
 
+def gather_pr_index(conn: sqlite3.Connection) -> dict[tuple[str, int], str]:
+    """Index ``(owner/repo, pr-number) -> task_id`` over **all** runs.
+
+    Deliberately not period-scoped: a CI event inside the window can belong to
+    a run dispatched before it, and the 3-stage join's PR fallback must still
+    resolve that rather than mislabel it unmatched (design note 3).
+    """
+    index: dict[tuple[str, int], str] = {}
+    for r in conn.execute("SELECT task_id, pr_url FROM runs").fetchall():
+        parsed = _parse_pr_url(r["pr_url"])
+        if parsed is not None:
+            index[parsed] = r["task_id"]
+    return index
+
+
 def gather_runs(conn: sqlite3.Connection, lo, hi) -> dict[str, Any]:
     rows = conn.execute(
         "SELECT r.task_id, r.status, r.pattern, r.pr_url, r.pr_state, "
@@ -236,7 +266,6 @@ def gather_runs(conn: sqlite3.Connection, lo, hi) -> dict[str, Any]:
     total = 0
     completed = 0
     with_pr = 0
-    pr_index: dict[tuple[str, int], str] = {}
 
     for r in rows:
         if not _in_period(r["dispatched_at"], lo, hi):
@@ -252,9 +281,6 @@ def gather_runs(conn: sqlite3.Connection, lo, hi) -> dict[str, Any]:
             with_pr += 1
             state = r["pr_state"] or "unknown"
             by_pr_state[state] = by_pr_state.get(state, 0) + 1
-        parsed = _parse_pr_url(r["pr_url"])
-        if parsed is not None:
-            pr_index[parsed] = r["task_id"]
 
     live = sum(by_status.get(s, 0) for s in LIVE_STATUSES)
     terminal = sum(by_status.get(s, 0) for s in TERMINAL_STATUSES)
@@ -273,8 +299,6 @@ def gather_runs(conn: sqlite3.Connection, lo, hi) -> dict[str, Any]:
         "by_pattern": by_pattern,
         "with_pr": with_pr,
         "by_pr_state": by_pr_state,
-        # internal: PR index for CI joins (not part of the report payload)
-        "_pr_index": pr_index,
     }
 
 
@@ -385,7 +409,7 @@ def build_report(
     db_path: Path,
 ) -> dict[str, Any]:
     runs = gather_runs(conn, lo, hi)
-    pr_index = runs.pop("_pr_index")
+    pr_index = gather_pr_index(conn)
     events, ci = gather_events_and_ci(conn, lo, hi, pr_index)
     pending = load_pending_decisions(pending_path)
     return {
@@ -407,6 +431,18 @@ def build_report(
 # =========================================================================
 # Rendering
 # =========================================================================
+def _ascii(s: str) -> str:
+    """Coerce a string to pure ASCII so it is safe on a cp932 console.
+
+    DB-derived values (project slugs, PR repos, payload fragments) can hold
+    arbitrary Unicode -- emoji, CJK, en/em dashes. The JSON renderer escapes
+    these via ``ensure_ascii=True``; the Markdown renderer routes its final
+    output through here so a stray non-cp932 character becomes a visible
+    ``\\u....`` escape instead of crashing ``print`` with UnicodeEncodeError.
+    """
+    return s.encode("ascii", "backslashreplace").decode("ascii")
+
+
 def _fmt_pct(rate: Optional[float]) -> str:
     return "n/a" if rate is None else f"{rate * 100:.1f}%"
 
@@ -520,7 +556,7 @@ def render_markdown(report: dict[str, Any]) -> str:
         lines.append(_fmt_counts(pending["by_status"]))
     lines.append("")
 
-    return "\n".join(lines)
+    return _ascii("\n".join(lines))
 
 
 def render_json(report: dict[str, Any]) -> str:
@@ -595,7 +631,7 @@ def run(argv: Optional[list[str]] = None, *, now: Optional[datetime] = None) -> 
         parser.error("--last-days must be a non-negative integer")
 
     now = now or datetime.now(timezone.utc)
-    generated_at = now.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    generated_at = _fmt_ts(now)
 
     db_path = resolve_db_path(args.db_path)
     if not db_path.exists():

@@ -151,13 +151,15 @@ class MetricsReportTest(unittest.TestCase):
     # --- period inclusion (dispatched_at basis) -------------------------
     def test_runs_filtered_by_dispatched_at(self) -> None:
         rep = self._report()
-        # 5 in-period runs; the 2026-05-01 run is excluded.
+        # 5 in-period runs; the 2026-05-01 completed run is excluded.
         self.assertEqual(rep["runs"]["total"], 5)
-        self.assertNotIn("r-old", rep["runs"]["by_status"])
+        self.assertEqual(rep["runs"]["completed"], 1)
 
     def test_open_ended_period_includes_old_run(self) -> None:
         rep = self._report(lo=None, hi=None)
         self.assertEqual(rep["runs"]["total"], 6)
+        # the out-of-period run is a 2nd completed -> proves it was excluded above
+        self.assertEqual(rep["runs"]["by_status"]["completed"], 2)
 
     # --- status classification (suspended reserved) ---------------------
     def test_status_classification_excludes_suspended(self) -> None:
@@ -244,8 +246,18 @@ class MetricsReportTest(unittest.TestCase):
     def test_last_days_bounds(self) -> None:
         lo, hi = omr.compute_bounds(
             since=None, until=None, last_days=3, now=self.now)
-        self.assertEqual(lo, "2026-06-10T00:00:00.000000Z")
-        self.assertEqual(hi, "2026-06-13T00:00:00.000000Z")
+        # 3-digit millisecond precision matches the DB writer format so an
+        # on-boundary row is not lexicographically excluded.
+        self.assertEqual(lo, "2026-06-10T00:00:00.000Z")
+        self.assertEqual(hi, "2026-06-13T00:00:00.000Z")
+
+    def test_boundary_row_included_under_last_days(self) -> None:
+        # A DB-format (3-digit ms) timestamp exactly at the lower bound must be
+        # inside the period -- guards the precision-mismatch regression.
+        lo, hi = omr.compute_bounds(
+            since=None, until=None, last_days=3, now=self.now)
+        self.assertTrue(omr._in_period("2026-06-10T00:00:00.000Z", lo, hi))
+        self.assertTrue(omr._in_period("2026-06-13T00:00:00.000Z", lo, hi))
 
     # --- format smoke ----------------------------------------------------
     def test_markdown_render_ascii_safe(self) -> None:
@@ -262,8 +274,79 @@ class MetricsReportTest(unittest.TestCase):
         js = omr.render_json(self._report())
         data = json.loads(js)
         self.assertEqual(data["runs"]["total"], 5)
-        self.assertNotIn("_pr_index", data["runs"])  # internal key stripped
         js.encode("cp932")  # ASCII-only, cp932 safe
+
+    def test_markdown_cp932_safe_with_unicode_db_values(self) -> None:
+        # Project slug + PR repo carry emoji / CJK; the Markdown renderer must
+        # still produce cp932-encodable output (design note 7).
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        db = Path(d.name) / "state.db"
+        conn = _conn(db)
+        apply_schema(conn)
+        conn.execute(
+            "INSERT INTO projects (id, slug, display_name) VALUES "
+            "(1, 'proj-\U0001f680-漢字', 'p')"
+        )
+        conn.execute(
+            "INSERT INTO runs (task_id, project_id, pattern, title, status, "
+            "dispatched_at) VALUES ('t', 1, 'A', 'x', 'completed', "
+            "'2026-06-11T00:00:00.000Z')"
+        )
+        conn.execute(
+            "INSERT INTO events (kind, occurred_at, payload_json) VALUES "
+            "('ci_completed', '2026-06-11T01:00:00.000Z', ?)",
+            (json.dumps({"repo": "o/\U0001f4a9", "pr": 5, "status": "success"}),),
+        )
+        conn.commit()
+        conn.close()
+        rep = omr.build_report(
+            omr.open_readonly(db), lo=None, hi=None,
+            pending_path=db.parent / "none.json",
+            generated_at="2026-06-13T00:00:00.000Z", db_path=db)
+        md = omr.render_markdown(rep)
+        md.encode("cp932")  # must not raise
+        self.assertNotIn("\U0001f680", md)  # raw emoji replaced by escape
+
+    def test_ci_pr_join_spans_period(self) -> None:
+        # A CI event inside the window references (by PR, no run_id) a run
+        # dispatched OUTSIDE the window. The PR index is not period-scoped, so
+        # the join must resolve rather than mislabel it unmatched.
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        db = Path(d.name) / "state.db"
+        conn = _conn(db)
+        apply_schema(conn)
+        conn.execute(
+            "INSERT INTO projects (id, slug, display_name) VALUES "
+            "(1, 'claude-org', 'c')"
+        )
+        # run dispatched well before the period, carrying the PR
+        conn.execute(
+            "INSERT INTO runs (task_id, project_id, pattern, title, status, "
+            "pr_url, dispatched_at) VALUES ('old', 1, 'A', 'x', 'completed', "
+            "?, '2026-05-01T00:00:00.000Z')",
+            (f"https://github.com/{REPO}/pull/77",),
+        )
+        # CI event inside the period, no run_id, matched only via PR normalize
+        conn.execute(
+            "INSERT INTO events (kind, occurred_at, payload_json) VALUES "
+            "('ci_completed', '2026-06-11T00:00:00.000Z', ?)",
+            (json.dumps({"repo": REPO, "pr": 77, "status": "success"}),),
+        )
+        conn.commit()
+        conn.close()
+        rep = omr.build_report(
+            omr.open_readonly(db),
+            lo="2026-06-10", hi=omr._normalize_until("2026-06-12"),
+            pending_path=db.parent / "none.json",
+            generated_at="g", db_path=db)
+        ci = rep["ci"]
+        self.assertEqual(ci["total"], 1)
+        self.assertEqual(ci["matched_by_pr"], 1)
+        self.assertEqual(ci["unmatched_count"], 0)
+        # and the old run itself is NOT in the in-period run aggregate
+        self.assertEqual(rep["runs"]["total"], 0)
 
 
 class CliArgvTest(unittest.TestCase):
