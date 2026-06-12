@@ -9,29 +9,41 @@
 
 ---
 
-## なぜ claude-org-ja なのか — 「呼び戻される」運用
+## なぜ claude-org-ja なのか
 
-複数の Claude Code を長時間回していると、最大の摩擦は「並列度」でも「画面の広さ」でもなく、**人間の反応を必要とした瞬間に気づけない**ことです。
+claude-org-ja は Claude Code を「窓口 1 つ + ワーカー多数」の体制で長時間回すための運用層です。差別化は次の 3 つの柱にあります。
 
-- ワーカーが tool 承認待ちで止まっているのに、別画面を見ていて気づかない。
-- 判断仰ぎが窓口に届いているのに、人間が席を外していて返答できない。
-- CI が失敗したのに、ターミナルを最小化していて見逃す。
-- ペインに出力はあるが peer message が飛んでおらず、進んでいるのか止まっているのか判別できない。
+### 第一の柱: 課金中立設計 — 定額プラン枠の中で回り続ける
 
-claude-org-ja は、こうした「人間の反応が必要な瞬間」を OS notification + 音 + terminal bell fallback で**能動的に呼び戻す attention layer** を備えています（[`docs/operations/attention-watch.md`](docs/operations/attention-watch.md)）。`claude-org-runtime attention watch` を 1 度起動しておけば、approval blocked / CI failed / 判断待ち / silent stop / PR merged 等を見逃さず、複数 worker を常時眺める運用から解放されます。
+全エージェント（窓口・ディスパッチャー・キュレーター・ワーカー）は**対話型 TUI セッションのまま**動き、`claude -p` / Agent SDK といった headless 実行を一切使いません。2026-06-15 以降、headless 利用は対話枠から分離されて従量課金（Agent SDK 月間クレジット + 超過分は API 課金）に移りますが[^billing]、本システムはその影響を受けず**プラン定額枠の中で回り続けます**。headless を前提にしたエージェント farm / ループ構成との最大の差がここにあります。
 
-この attention layer を支えているのが、Anthropic 公式の [Claude Code Agent View](https://claude.com/blog/agent-view-in-claude-code) とは対照的な思想です。Agent View は複数の Claude Code を 1 画面で見渡すための**可視化**機能で、どのインスタンスを起動するか・どこに何を指示するかを決めるのは引き続き人間の仕事ですが、claude-org-ja は労働集約の集合点を人からエージェントに移します:
+opt-in の broker 輸送（[後述](#4-層アーキテクチャ要約)）では、spawn 時に対話 TUI 用 flag だけを通す default-deny の argv allowlist で headless 起動を**構造的に拒否**し、稼働中プロセスの実 argv を `ps` で検査する attestation 手順も用意しています（[`docs/operations/broker-dogfood-runbook.md` §6](docs/operations/broker-dogfood-runbook.md)）。既定の renga 経路でも、ワーカーは常に対話 TUI として spawn され headless flag を渡しません。
 
-- 人間が会話する相手は窓口担当の Claude Code 1 つだけ。
-- 新しい Claude Code（ワーカー）を立ち上げるか・どこに何を投げるかは窓口が判断する。
-- 人間が窓口に話した内容は、窓口の判断で適切なワーカーに自動で分配される。
-- それらの実行中に「人間の反応が必要になった瞬間」は attention watcher が捕まえて通知する。
+### 第二の柱: Loop Engineering のリファレンス実装
 
-一言でいえば、**Agent View は「人間がより速く見渡せるようにする」ツール、claude-org-ja は「人間が見渡さなくて済むようにする」運用層** です。**労働集約の先を人間から AI（窓口）に移譲し、人間は呼び戻された時だけ戻ってくる** — これが差別化の核心です。
+エージェントを「回し続けるループそのもの」を設計する Loop Engineering[^loop] の 6 要素を、本システムは全て実装しています。
 
-さらに、窓口ペインで `/remote-connect` を実行すれば、Web / モバイル / デスクトップの Claude アプリからも本システム全体を操作できます。黒い画面に張り付かなくても、窓口と話すだけで配下のワーカーまで動くので、**他に開いている Claude Code を一切意識しなくてよい**体験が CLI を離れた場所でも成立します。
+| 要素 | 本システムでの実装 |
+|---|---|
+| **Trigger**（起動契機） | peer message 受信（renga=in-band push / broker=ナッジ + `check_messages` pull）/ PR マージ後の next-dispatch / ディスパッチャーの定期監視 |
+| **Context**（文脈供給） | `CLAUDE.md` ベースライン + `.state/` + handover/resume |
+| **Action**（実行） | 作業ディレクトリ境界の中でのワーカー実作業 |
+| **Verification**（検証） | テスト / lint / 型チェック + CI 監視 + 人間ゲート（`codex` がある場合は任意で Codex セルフレビューを追加） |
+| **Memory**（記憶） | 生の知見 → 整理済み知見への昇華パイプライン（キュレーター） |
+| **Escalation**（判断委譲） | 判断仰ぎの人間集約 + pending-decisions 台帳 |
 
-他に特筆すべき点として、サンドボックスモードやpre-hooksを含めた安全機構を人間が特別な設定を行わなくても全てのタスクに対して自動的に適応することができる点が挙げられます。これは複数のプロジェクトを同時に回す際に特に有効に機能し、auto modeやbypass permissionsを比較的安心して運用可能にすることに繋がります。窓口に事前に指示を行うことで標準的な防御設定から必要な許可を追加で与えることも可能です。
+加えて、提唱の整理には無い**ループ死活監視**（無音停止・リレー欠落の検出）・**引き継ぎ機構**（context 肥大時の handover → resume）・**人間ゲートのスロットル運用**（承認待ちの能動通知と台帳化）まで備えます。
+
+### 第三の柱: 人間は判断だけを供給する
+
+人間が会話する相手は窓口 Claude 1 つだけです。起動・指示・分配の判断は窓口が担い、人間は「呼び戻された時に判断を返す」役割に集約されます。判断の推定代行は禁止で、ワーカーからの判断仰ぎ・スコープ拡張・ブロッカーは窓口が一次承認せず必ず人間にエスカレーションし、pending-decisions 台帳で取りこぼしを防ぎます。
+
+この第三の柱を支える仕組みの 1 つが attention layer です。approval blocked / CI failed / 判断待ち / silent stop / PR merged 等、人間の反応が必要な瞬間を OS notification + 音 + terminal bell fallback で能動的に通知し、複数ワーカーを常時眺める運用から解放します（[`docs/operations/attention-watch.md`](docs/operations/attention-watch.md)）。
+
+なお、サンドボックスモードや pre-hooks を含む安全機構は、人間が特別な設定をしなくても全タスクへ自動適用されます。複数プロジェクトを同時に回す際に特に有効で、auto mode や bypass permissions を比較的安心して運用できます（窓口に事前指示すれば標準防御に許可を追加することも可能）。
+
+[^billing]: 出典: code.claude.com/docs/en/headless、support.claude.com 記事 15036540。
+[^loop]: Loop Engineering の整理は <https://aimanavo.com/c/morphox_ai/a/7YDI1wUoI824pw> および <https://note.com/make_a_change/n/nd34f79a935b7> を参照。
 
 ---
 
@@ -45,7 +57,7 @@ claude-org-ja は、こうした「人間の反応が必要な瞬間」を OS no
 | **ディスパッチャー（Dispatcher）** | 窓口の指示を受けてワーカーペインを起動し、作業指示書を渡す代行役。窓口がブロックされる時間を最小化する。 | [`.dispatcher/CLAUDE.md`](.dispatcher/CLAUDE.md) |
 | **キュレーター（Curator）** | `knowledge/raw/` に蓄積された生の学びを整理済み知見へ昇華するオンデマンド役。知見が閾値を超えた worker クローズ時に一時起動され、整理完了後に自動でクローズされる。 | [`.curator/CLAUDE.md`](.curator/CLAUDE.md) |
 | **ワーカー（Worker）** | タスク 1 件ごとに起動される実作業担当。専用の作業ディレクトリ境界の中でコード編集・コミットまでを行う（`git push` / プルリクエスト作成は窓口側の責務、ワーカーは PR 作成権限を持たない）。 | [`.claude/skills/org-delegate/SKILL.md`](.claude/skills/org-delegate/SKILL.md) |
-| **renga** | Layer 3 の端末多重化器 + `renga-peers` MCP サーバー。ペイン制御とペイン間 P2P メッセージを提供する。 | [suisya-systems/renga](https://github.com/suisya-systems/renga) |
+| **renga** | 既定 transport（Layer 3）の端末多重化器 + `renga-peers` MCP サーバー。ペイン制御とペイン間 P2P メッセージを提供する（opt-in で runtime 内蔵の `broker` に差し替え可能。両系は併存し切戻し可）。 | [suisya-systems/renga](https://github.com/suisya-systems/renga) |
 
 > **See also**: `renga` は旧称 `ccmux` からのリネーム済み（`renga (旧 ccmux)`）。歴史的な名称で検索する読者向けの補足。リネーム経緯は [`docs/operations/m3-migration-runbook.md`](docs/operations/m3-migration-runbook.md) を参照。
 
@@ -55,7 +67,7 @@ claude-org-ja は、こうした「人間の反応が必要な瞬間」を OS no
 
 **問題**: Claude Code を「窓口 1 つ + ワーカー多数」の体制で長時間運用したい。Agent View 等の公式機能は複数インスタンスの**可視化**を解決するが、誰を起動するか・どこに何を指示するか・許可境界の整備・知見蓄積・状態復元といった、**人間が手を動かす範囲**は減らない。tmux 風の素朴な分割や farm 系の全自動並列にも、運用上の規律（許可境界・タスクごとの環境構築・学びの整理）が抜け落ちる。
 
-**解決策**: claude-org-ja は Claude Code 専用の**運用規律フレームワーク**。1 つの窓口 Claude と対話するだけで、ディスパッチャー・キュレーター・ワーカーが裏で自動的に派生し、許可エントリの絞り込み（narrow allowlist）+ タスクごとの作業ディレクトリ境界 + 知見が溜まった時点での自動知見整理 + 状態の中断・再開を**最初から強制する**。
+**解決策**: claude-org-ja は Claude Code 専用の**運用規律フレームワーク**（Loop Engineering のリファレンス実装）。1 つの窓口 Claude と対話するだけで、ディスパッチャー・キュレーター・ワーカーが裏で自動的に派生し、許可エントリの絞り込み（narrow allowlist）+ タスクごとの作業ディレクトリ境界 + 知見が溜まった時点での自動知見整理 + 状態の中断・再開を**最初から強制する**。
 
 **対象利用者**: Claude Code を業務で長時間回したい開発者・オペレーターのうち、「全自動より明示的な許可境界が欲しい」「3〜5 ワーカーを品質重視で動かしたい」「知見の自己成長ループを回したい」層。
 
@@ -63,7 +75,9 @@ claude-org-ja は、こうした「人間の反応が必要な瞬間」を OS no
 
 ## 4 層アーキテクチャ（要約）
 
-claude-org-ja は 4 層スタックの **Layer 4** に位置するリファレンス配布物です。Layer 3（`renga`）と Layer 2（`claude-org-runtime`）に依存し、Layer 2 はさらに Layer 1（`core-harness`）に依存します。Layer 1〜3 はそれぞれ独立 OSS パッケージとして公開済みで、claude-org-ja (Layer 4) は consumer として取り込む thin shim です。
+claude-org-ja は 4 層スタックの **Layer 4** に位置するリファレンス配布物です。**Layer 3 は差し替え可能な transport** で、既定は `renga`、opt-in で runtime 内蔵の `broker` を選べます（ペイン制御とメッセージングは Layer 2 = `claude-org-runtime` でも担保できるようになりました）。Layer 2 はさらに Layer 1（`core-harness`）に依存します。Layer 1〜3 はそれぞれ独立 OSS パッケージとして公開済みで、claude-org-ja (Layer 4) は consumer として取り込む thin shim です。
+
+> **輸送層は両系（既定 renga / opt-in broker）**: ja の既定 transport は **renga** のままです。runtime 内蔵の **broker**（`org-broker`）は `ORG_TRANSPORT=broker` で opt-in でき、現在は dogfood 段階にあります。既定 renga は opt-in fallback として常時有効で、いつでも切戻し可能です。broker の起動・ライフサイクル・課金中立 attestation・切戻し手順は [`docs/operations/broker-dogfood-runbook.md`](docs/operations/broker-dogfood-runbook.md) を参照してください。
 
 各層の責務・mermaid 図・パッケージ詳細は [`docs/overview-technical.md`](docs/overview-technical.md) を参照。
 
@@ -107,7 +121,8 @@ renga --layout ops                                       # 窓口（Secretary）
 
 | 比較対象 | 立ち位置 | claude-org-ja との違い |
 |---|---|---|
-| **Claude Code Agent View（公式）** | 複数 Claude Code を**1 画面で見渡すための可視化機能**。指示先の選択は引き続き人間が担う | claude-org-ja は**取りまとめ役を窓口 AI が担う**。起動・指示・分配の判断ごと AI 側へ渡す。窓口で `/remote-connect` を実行すれば Web / モバイル / デスクトップの Claude アプリから操作でき、黒い画面に張り付かなくてよい |
+| **Claude Code Agent View（公式）** | 複数 Claude Code を**1 画面で見渡す可視化機能**。指示先の選択は人間が担う | claude-org-ja は**取りまとめ役（起動・指示・分配の判断）を窓口 AI に移す**。窓口で `/remote-connect` すれば Web / モバイル / デスクトップからも操作できる |
+| **ヘッドレス型エージェントループ（`claude -p` / Agent SDK farm）** | エージェントを headless 実行で大規模並列・自動ループさせる構成 | claude-org-ja は**全エージェントが対話型 TUI** で headless 従量課金系を採らず、**プラン定額枠内で回り続ける**（課金中立。2026-06-15 の課金分離は第一の柱を参照） |
 | **Claude Code Subagents / Agent Teams（公式）** | Anthropic 公式の「リード / チームメイト」階層 + 自動メモリ + フック | claude-org-ja は公式の上に乗る運用層。**競合せず共存**する。公式が提供しない「タスクごとの作業ディレクトリ境界の強制」「スキーマ駆動の設定 drift 検出」「生の知見 → 整理済み知見への昇華パイプライン」「閾値駆動のオンデマンド自動整理」を上乗せする |
 | **ccswarm / Ruflo / oh-my-claudecode 等の Claude 系協調基盤** | 固定ロールプール + 大規模並列志向 | claude-org-ja は**タスクごとに作業ディレクトリと `CLAUDE.md` を都度生成**する（事前のロールプールは持たない）。3〜5 ワーカーで品質重視（farm 系とは方向が逆） |
 | **tmux / zellij + 手動でのプロンプト分割** | 汎用の端末多重化器 + 人間によるペインの手動運用 | claude-org-ja は専用 MCP サーバー（`renga-peers`）で**ペイン間 P2P メッセージ + 構造化ペイン生成 + 状態の中断・再開**を提供する。手動運用には無い「役割契約」「自動知見整理」「ロール別の許可配布」が中核 |
