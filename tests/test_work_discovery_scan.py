@@ -513,6 +513,67 @@ class TestEffortLearning(unittest.TestCase):
         ]
         self.assertEqual(wds._build_effort_samples(prs, {7: ""}), [])
 
+    # --- cross-repo closing join (Issue #545) -------------------------
+    @staticmethod
+    def _pr_closing(num, owner=None, name=None):
+        ref = {"number": num}
+        if owner is not None:
+            ref["repository"] = {"name": name, "owner": {"login": owner}}
+        return {
+            "closingIssuesReferences": [ref],
+            "additions": 10, "deletions": 5, "changedFiles": 2,
+            "reviews": [], "createdAt": "2026-06-01T00:00:00Z",
+            "mergedAt": "2026-06-01T01:00:00Z",
+        }
+
+    def test_build_samples_excludes_cross_repo_closing(self):
+        # A PR in repo A closing an issue in repo B must NOT become one of
+        # repo A's training pairs — even when the issue NUMBER collides with
+        # a closed issue in repo A (the join keys by (repo, number)).
+        prs = [self._pr_closing(5, "suisya-systems", "claude-org-runtime")]
+        samples = wds._build_effort_samples(
+            prs, {5: "home issue body"}, "suisya-systems/claude-org-ja"
+        )
+        self.assertEqual(samples, [])
+
+    def test_build_samples_same_number_two_repos(self):
+        # ja#5 and runtime#5: only the home-repo closing joins; the
+        # cross-repo one with the colliding number is excluded.
+        prs = [
+            self._pr_closing(5, "suisya-systems", "claude-org-ja"),
+            self._pr_closing(5, "suisya-systems", "claude-org-runtime"),
+        ]
+        samples = wds._build_effort_samples(
+            prs, {5: "home issue body"}, "suisya-systems/claude-org-ja"
+        )
+        self.assertEqual(len(samples), 1)
+        self.assertEqual(samples[0]["issue"], 5)
+        self.assertEqual(samples[0]["body_len"], len("home issue body"))
+
+    def test_build_samples_same_repo_closing_unchanged(self):
+        # Normal same-repo closings (with the repository field gh always
+        # returns) keep joining exactly as before; the repo match is
+        # case-insensitive (GitHub owner/repo names are).
+        prs = [self._pr_closing(5, "Owner", "Repo")]
+        samples = wds._build_effort_samples(
+            prs, {5: "issue body text"}, "owner/repo"
+        )
+        self.assertEqual(len(samples), 1)
+        self.assertEqual(samples[0]["changed_lines"], 15)
+
+    def test_build_samples_missing_repository_field_treated_as_home(self):
+        # Back-compat: a ref without repository info (hand-built fixtures;
+        # gh always provides it) is treated as home, not dropped.
+        prs = [self._pr_closing(5)]
+        samples = wds._build_effort_samples(prs, {5: "b"}, "owner/repo")
+        self.assertEqual(len(samples), 1)
+
+    def test_single_closing_issue_cross_repo_returns_none(self):
+        pr = self._pr_closing(7, "other", "repo")
+        self.assertIsNone(wds._single_closing_issue(pr, "owner/repo"))
+        # without a home repo (pure-fixture mode) the number still extracts
+        self.assertEqual(wds._single_closing_issue(pr), 7)
+
     def test_hours_between_basic_and_bad(self):
         self.assertEqual(
             wds._hours_between("2026-06-01T00:00:00Z", "2026-06-01T03:30:00Z"),
@@ -1091,11 +1152,85 @@ class TestEffortLearningCliAndWiring(unittest.TestCase):
         with mock.patch.object(wds, "fetch_effort_history", return_value=prs), \
              mock.patch.object(
                  wds, "fetch_closed_issue_bodies", return_value={5: "issue body"}
+             ), \
+             mock.patch.object(
+                 wds, "_resolve_home_repo", return_value="owner/repo"
              ):
             model = wds.build_effort_model(None, 60)
         self.assertEqual(model["coverage"]["single_issue_linked_prs"], 2)
         self.assertEqual(model["coverage"]["usable_samples"], 1)
         self.assertEqual(model["coverage"]["dropped_missing_body"], 1)
+        self.assertEqual(model["coverage"]["dropped_cross_repo"], 0)
+
+    def test_build_effort_model_excludes_cross_repo_closings(self):
+        # Issue #545: a PR closing an issue in ANOTHER repo must not feed
+        # this repo's training samples, and the drop must be disclosed in
+        # coverage (not silent, not misattributed).
+        def _ref(num, owner, name):
+            return {
+                "number": num,
+                "repository": {"name": name, "owner": {"login": owner}},
+            }
+
+        prs = [
+            {  # home-repo closing: stays a sample
+                "closingIssuesReferences": [_ref(5, "owner", "repo")],
+                "additions": 10, "deletions": 5, "changedFiles": 2,
+                "reviews": [], "createdAt": "2026-06-01T00:00:00Z",
+                "mergedAt": "2026-06-01T01:00:00Z",
+            },
+            {  # cross-repo closing (same number as a home closed issue!)
+                "closingIssuesReferences": [_ref(5, "owner", "other-repo")],
+                "additions": 900, "deletions": 900, "changedFiles": 40,
+                "reviews": [], "createdAt": "2026-06-01T00:00:00Z",
+                "mergedAt": "2026-06-01T01:00:00Z",
+            },
+        ]
+        with mock.patch.object(wds, "fetch_effort_history", return_value=prs), \
+             mock.patch.object(
+                 wds, "fetch_closed_issue_bodies", return_value={5: "issue body"}
+             ), \
+             mock.patch.object(
+                 wds, "_resolve_home_repo", return_value="owner/repo"
+             ):
+            model = wds.build_effort_model("owner/repo", 60)
+        self.assertEqual(model["coverage"]["single_issue_linked_prs"], 1)
+        self.assertEqual(model["coverage"]["usable_samples"], 1)
+        self.assertEqual(model["coverage"]["dropped_missing_body"], 0)
+        self.assertEqual(model["coverage"]["dropped_cross_repo"], 1)
+
+    def test_resolve_home_repo_passthrough_and_gh_default(self):
+        # Explicit --repo: no gh call. None: one read-only `gh repo view`.
+        with mock.patch.object(wds, "_run_gh_json") as gh:
+            self.assertEqual(
+                wds._resolve_home_repo("owner/repo"), "owner/repo"
+            )
+        gh.assert_not_called()
+        with mock.patch.object(
+            wds, "_run_gh_json", return_value={"nameWithOwner": "o/r"}
+        ) as gh:
+            self.assertEqual(wds._resolve_home_repo(None), "o/r")
+        self.assertEqual(gh.call_args[0][0][:2], ["repo", "view"])
+
+    def test_resolve_home_repo_normalizes_host_qualified_forms(self):
+        # gh --repo also accepts HOST/OWNER/REPO and full URLs; the join key
+        # must still be bare owner/repo (what closingIssuesReferences
+        # carries), or same-repo closings would misclassify as cross-repo.
+        for given in (
+            "github.com/owner/repo",
+            "https://github.com/owner/repo",
+            "https://github.com/owner/repo/",
+        ):
+            self.assertEqual(wds._resolve_home_repo(given), "owner/repo")
+
+    def test_resolve_home_repo_bad_payload_raises(self):
+        # An unusable `gh repo view` payload must raise GhError (degrades
+        # learning to the static heuristic non-fatally in main), never
+        # silently fall back to a number-only join.
+        for payload in ({}, {"nameWithOwner": ""}, ["x"], None):
+            with mock.patch.object(wds, "_run_gh_json", return_value=payload):
+                with self.assertRaises(wds.GhError):
+                    wds._resolve_home_repo(None)
 
     def test_effort_history_zero_disables_learning(self):
         with mock.patch.object(wds, "fetch_open_issues", return_value=[_issue(1, body="b")]), \
