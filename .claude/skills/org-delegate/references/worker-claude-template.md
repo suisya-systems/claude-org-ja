@@ -32,7 +32,7 @@ org-delegate の Step 1.5 でワーカー専用ディレクトリ（`{workers_di
 - ファイル作成時は絶対パスが `{worker_dir}/` で始まることを確認
 
 ### Windows 環境の注意事項
-- Python 実行時は `python` ではなく `py -3` を使用すること（Windows では `python` がストアアプリにリダイレクトされる場合がある）
+- Python 実行時は `py -3` または `python` を使用すること（Windows では `python` がストアアプリにリダイレクトされる場合があり、`py -3` も py launcher が別の Python 環境を指す場合がある。起動直後に `--version` で意図したバージョンか確認し、動作する方を使うこと）
 - 日本語を含むファイルを扱う場合は `encoding="utf-8"` を明示すること
 
 ## プロジェクト情報

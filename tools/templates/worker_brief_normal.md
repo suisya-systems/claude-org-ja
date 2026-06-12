@@ -15,7 +15,7 @@
 3. `git push` は実行できない（完了報告で窓口に依頼すること）
 
 ### Windows 環境の注意事項
-- Python 実行時は `python` ではなく `py -3` を使用すること（Windows では `python` がストアアプリにリダイレクトされる場合がある）
+- Python 実行時は `py -3` または `python` を使用すること（Windows では `python` がストアアプリにリダイレクトされる場合があり、`py -3` も py launcher が別の Python 環境を指す場合がある。起動直後に `--version` で意図したバージョンか確認し、動作する方を使うこと）
 - 日本語を含むファイルを扱う場合は `encoding="utf-8"` を明示すること
 - CLI / 標準出力を持つツールを実装する場合、CLI へ出力される文字列（argparse の `help=` / `print()` など）には ASCII の `-` を使い、em-dash（`—` U+2014）等 cp932 で encode できない文字を含めないこと。含めると cp932 コンソールでの `--help` 実行時に `UnicodeEncodeError` でクラッシュする（pytest は `redirect_stdout` で UTF-8 キャプチャするため検出できず、実端末でのみ落ちる）。実装後は `--help` を実端末で 1 回スモークすること
 
