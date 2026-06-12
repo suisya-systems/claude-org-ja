@@ -721,8 +721,8 @@ def estimate_effort(
         size = "S" if length <= t1 else ("M" if length <= t2 else "L")
         signals = [
             f"learned effort: body_len={length} vs repo-calibrated cutpoints "
-            f"S≤{round(t1)}<M≤{round(t2)}<L "
-            f"(n={model.get('sample_size')}, ρ={model.get('predictor_correlation')})",
+            f"S<={round(t1)}<M<={round(t2)}<L "
+            f"(n={model.get('sample_size')}, rho={model.get('predictor_correlation')})",
         ]
         median_lines = model.get("realized_median_lines")
         if median_lines is not None:
@@ -752,7 +752,7 @@ def estimate_effort(
     if model is not None and not model.get("applies"):
         reason = model.get("reason")
         if reason:
-            signals.append(f"effort model not applied — {reason}")
+            signals.append(f"effort model not applied -- {reason}")
         median_lines = model.get("realized_median_lines")
         if median_lines is not None:
             signals.append(
@@ -877,7 +877,7 @@ def learn_effort_model(
     n = len(samples)
     if n == 0:
         return empty_effort_model(
-            "no linked (issue ↔ merged-PR) training samples → static heuristic"
+            "no linked (issue <-> merged-PR) training samples -> static heuristic"
         )
 
     body_lens = [s["body_len"] for s in samples]
@@ -892,8 +892,8 @@ def learn_effort_model(
     degenerate: list[str] = []
     if not any(reviews):
         degenerate.append(
-            "review_rounds: all zero across samples (no GitHub reviews — "
-            "Codex local review) → excluded from composite"
+            "review_rounds: all zero across samples (no GitHub reviews -- "
+            "Codex local review) -> excluded from composite"
         )
     degenerate.append(
         "time-to-merge: captured as context only, excluded from composite "
@@ -912,20 +912,20 @@ def learn_effort_model(
     )
     if applies:
         reason = (
-            f"body length tracks realized effort (ρ={round(rho, 2)} ≥ "
-            f"{min_correlation}, n={n}) → learned cutpoints applied"
+            f"body length tracks realized effort (rho={round(rho, 2)} >= "
+            f"{min_correlation}, n={n}) -> learned cutpoints applied"
         )
     elif n < min_samples:
         reason = (
-            f"insufficient training pairs (n={n} < {min_samples}) → "
+            f"insufficient training pairs (n={n} < {min_samples}) -> "
             f"static heuristic retained"
         )
     elif realized_cuts is None or predictor_cuts is None:
-        reason = f"could not form cutpoints (n={n}) → static heuristic retained"
+        reason = f"could not form cutpoints (n={n}) -> static heuristic retained"
     else:
         reason = (
-            f"body length does not predict realized effort (ρ={round(rho, 2)} "
-            f"< {min_correlation}, n={n}) → static heuristic retained"
+            f"body length does not predict realized effort (rho={round(rho, 2)} "
+            f"< {min_correlation}, n={n}) -> static heuristic retained"
         )
 
     return {
@@ -2175,7 +2175,7 @@ def main(argv=None) -> int:
                 except GhError as exc:
                     effort_model = empty_effort_model(
                         f"effort-history fetch failed "
-                        f"({type(exc).__name__}) → static heuristic retained"
+                        f"({type(exc).__name__}) -> static heuristic retained"
                     )
         result = scan_repos(
             bundles, config, input_truncated, collapse_repo,
