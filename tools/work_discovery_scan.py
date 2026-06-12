@@ -1724,32 +1724,77 @@ def _hours_between(created: str | None, merged: str | None) -> float | None:
     return max(0.0, (m - c).total_seconds() / 3600.0)
 
 
-def _single_closing_issue(pr: dict) -> int | None:
-    """The issue number a PR closes, iff it closes *exactly one* issue.
+def _closing_ref_repo(ref: dict) -> str | None:
+    """``owner/name`` (lowercased) of a closing-issue reference, or ``None``.
+
+    ``gh pr list --json closingIssuesReferences`` returns each reference with
+    a ``repository: {name, owner: {login}}`` object, so a PR that closes an
+    issue in *another* repository is detectable. ``None`` when the repository
+    info is absent/malformed (e.g. minimal ``--from-file``-era fixtures) —
+    callers treat that as home-repo for back-compat."""
+    rep = ref.get("repository")
+    if not isinstance(rep, dict):
+        return None
+    name = rep.get("name")
+    owner = rep.get("owner")
+    login = owner.get("login") if isinstance(owner, dict) else None
+    if isinstance(name, str) and name and isinstance(login, str) and login:
+        return f"{login}/{name}".lower()
+    return None
+
+
+def _single_closing_issue(pr: dict, home_repo: str | None = None) -> int | None:
+    """The issue number a PR closes, iff it closes *exactly one* issue
+    **in the home repo**.
 
     Returns ``None`` for unlinked or multi-issue PRs — one PR's effort cannot
     be honestly attributed across several issues, so multi-issue PRs are not
-    training pairs."""
+    training pairs.
+
+    Issue #545: when ``home_repo`` (``owner/repo``) is given, a closing issue
+    that lives in *another* repository also returns ``None`` — the effort
+    model is repo-calibrated, so a PR in repo A closing an issue in repo B
+    must not feed repo A's training samples (the same ``(repo, number)``
+    identity discipline design §10 applies to candidates; a bare number-only
+    join would collide ``ja#60`` with ``runtime#60``). ``home_repo=None``
+    skips the repo check (pure-fixture back-compat); the production caller
+    ``build_effort_model`` always resolves and passes the home repo."""
     refs = pr.get("closingIssuesReferences") or []
     if not isinstance(refs, list) or len(refs) != 1:
         return None
     ref = refs[0]
-    num = ref.get("number") if isinstance(ref, dict) else None
+    if not isinstance(ref, dict):
+        return None
+    if home_repo is not None:
+        ref_repo = _closing_ref_repo(ref)
+        # Missing repository info is treated as home (gh always provides it;
+        # only hand-built fixtures omit it). Compare case-insensitively —
+        # GitHub owner/repo names are case-insensitive.
+        if ref_repo is not None and ref_repo != home_repo.lower():
+            return None
+    num = ref.get("number")
     return num if _is_int(num) else None
 
 
 def _build_effort_samples(
-    merged_prs: list[dict], closed_bodies: dict[int, str]
+    merged_prs: list[dict],
+    closed_bodies: dict[int, str],
+    home_repo: str | None = None,
 ) -> list[dict]:
     """Join single-issue-linked merged PRs with their closed issue's body to
     form ``learn_effort_model`` training pairs.
 
     Multi-issue PRs are skipped (see ``_single_closing_issue``). PRs whose
     closed issue was not fetched or has an empty body are also skipped (the
-    drop is counted in ``build_effort_model``'s ``coverage``, not silent)."""
+    drop is counted in ``build_effort_model``'s ``coverage``, not silent).
+    Cross-repo closings (Issue #545) are excluded by keying the join on
+    ``(repo, number)``: ``closed_bodies`` is fetched from ``home_repo`` only,
+    so without the repo check a cross-repo closing issue whose *number*
+    collides with a home closed issue would pair this PR's effort with the
+    wrong issue's body."""
     samples: list[dict] = []
     for pr in merged_prs:
-        num = _single_closing_issue(pr)
+        num = _single_closing_issue(pr, home_repo)
         if num is None:
             continue
         body = closed_bodies.get(num)
@@ -1782,6 +1827,32 @@ def _build_effort_samples(
     return samples
 
 
+def _resolve_home_repo(repo: str | None) -> str:
+    """The scanned repo as ``owner/repo``, resolving gh's current-repo default.
+
+    Issue #545: the effort-learning join must key by ``(repo, number)``, so
+    the home repo must be *known* even when the scan runs without ``--repo``
+    (gh resolves the current directory's repo). One read-only ``gh repo view``
+    call, only on the ``repo is None`` path. Raises ``GhError`` on failure —
+    the caller (``build_effort_model``) is wrapped NON-FATALLY in ``main``,
+    so a resolution failure degrades learning to the static heuristic with
+    the reason disclosed rather than risking a misattributed join."""
+    if repo:
+        # `gh --repo` also accepts HOST/OWNER/REPO and full github URLs, but
+        # `closingIssuesReferences.repository` is bare owner/name — keep the
+        # last two path segments so the comparison key matches (Codex Minor).
+        parts = repo.strip("/").split("/")
+        return "/".join(parts[-2:]) if len(parts) > 2 else repo
+    data = _run_gh_json(["repo", "view", "--json", "nameWithOwner"])
+    name = data.get("nameWithOwner") if isinstance(data, dict) else None
+    if not isinstance(name, str) or not name:
+        raise GhError(
+            "gh repo view returned no nameWithOwner; cannot key the "
+            "effort-learning join by (repo, number)"
+        )
+    return name
+
+
 def build_effort_model(repo: str | None, history_limit: int) -> dict:
     """Fetch effort history + closed-issue bodies and learn the effort model.
 
@@ -1789,22 +1860,33 @@ def build_effort_model(repo: str | None, history_limit: int) -> dict:
     Read-only. Raises ``GhError`` on a gh failure — the caller (``main``) wraps
     this NON-FATALLY so learning degrades to the static heuristic rather than
     aborting the triage."""
+    # Resolve the home repo so the PR -> closed-issue join keys by
+    # (repo, number), not number alone (Issue #545).
+    home_repo = _resolve_home_repo(repo)
     merged = fetch_effort_history(repo, history_limit)
     # Fetch enough closed issues to cover the linked set. Closed issues that
     # recent merges reference are themselves recent, so a window a few × the
     # PR window comfortably covers them; capped so the batch stays cheap.
     closed_limit = min(max(history_limit * 4, 200), DEFAULT_OPEN_LIMIT)
     closed_bodies = fetch_closed_issue_bodies(repo, closed_limit)
-    samples = _build_effort_samples(merged, closed_bodies)
+    samples = _build_effort_samples(merged, closed_bodies, home_repo)
     model = learn_effort_model(samples)
     # Surface learning-data coverage so dropped linkages are never silent
     # (Codex Major / design §5.1 ethos): a single-issue-linked PR whose closed
-    # issue body was not in the fetch window does not become a sample.
-    linked = sum(1 for pr in merged if _single_closing_issue(pr) is not None)
+    # issue body was not in the fetch window does not become a sample, and a
+    # single-issue PR whose closing issue lives in another repo (Issue #545)
+    # is excluded from this repo's calibration — both drops are disclosed.
+    linked = sum(
+        1 for pr in merged if _single_closing_issue(pr, home_repo) is not None
+    )
+    linked_any_repo = sum(
+        1 for pr in merged if _single_closing_issue(pr) is not None
+    )
     model["coverage"] = {
         "single_issue_linked_prs": linked,
         "usable_samples": len(samples),
         "dropped_missing_body": linked - len(samples),
+        "dropped_cross_repo": linked_any_repo - linked,
     }
     return model
 
