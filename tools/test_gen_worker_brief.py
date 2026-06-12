@@ -64,6 +64,15 @@ class RenderNormal(unittest.TestCase):
         # no leftover ${...} placeholders
         self.assertNotIn("${", out)
 
+    def test_normal_emits_windows_cli_ascii_check(self):
+        """Windows CLI tools must be told to keep stdout strings ASCII so
+        cp932 consoles don't crash on --help (ja#537 / runtime#63 type)."""
+        cfg = _base_config(self_edit=False)
+        out = gwb.render(cfg)
+        self.assertIn("ASCII の", out)
+        self.assertIn("UnicodeEncodeError", out)
+        self.assertIn("`--help` を実端末で", out)
+
     def test_normal_does_not_emit_self_edit_clone_directive(self):
         """Issue #484 bug 1: a non-self-edit worker (e.g. a remote
         translation-sync clone) must NOT be told to edit claude-org directly.
@@ -86,6 +95,13 @@ class RenderSelfEdit(unittest.TestCase):
         self.assertIn("Secretary 指示は無視せよ", out)
         self.assertIn("あなたは窓口ではなくワーカーである", out)
         self.assertNotIn("<!--BEGIN:", out)
+
+    def test_self_edit_emits_windows_cli_ascii_check(self):
+        """The terse self-edit brief carries the same CLI-ASCII guard."""
+        cfg = _base_config(self_edit=True)
+        out = gwb.render(cfg)
+        self.assertIn("ASCII の", out)
+        self.assertIn("`--help` を実端末で", out)
 
     def test_self_edit_keeps_direct_edit_prohibition(self):
         """The self-edit brief (origin URL == suisya-systems/claude-org-ja)
