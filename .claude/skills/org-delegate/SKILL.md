@@ -69,6 +69,7 @@ allowed-tools:
 
 - 曖昧な用語がある場合: 「○○は△△のことですか？」とユーザーに確認してから進める
 - OS別タスクの場合: ペイロード生成時に、OS固有の前提条件をワーカーへの指示に含める
+  - **Windows worker + CLI / 標準出力を持つツール実装の場合**: CLI へ出力される文字列（argparse `help=` / `print()`）は ASCII の `-` を使い em-dash 等 cp932 非対応文字を避けること、`--help` を実端末で 1 回スモークすること、の 2 点を `--impl-guidance` 等で brief に載せる（rendered brief の Windows 注意事項にも常時記載済みだが、CLI ツール委譲時は窓口が明示的に意識する）。背景: cp932 コンソールが em-dash(U+2014) を encode できず `--help` がクラッシュする型が 2 回発火（ja#537 / runtime#63）。pytest は `redirect_stdout` で UTF-8 キャプチャするため通り、実端末でのみ落ちる
 
 ### incorporation / sync 系タスクの初手チェックリスト
 
