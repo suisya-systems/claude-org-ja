@@ -13,7 +13,7 @@
 3. `git push` 不可
 
 ### Windows
-- Python は `py -3` または `python` (3.10 推奨)
+- Python は `py -3` または `python`（3.10 推奨。どちらも別の Python 環境を指す場合があるため `--version` で確認し、動作する方を使う）
 - 日本語ファイル: `encoding="utf-8"` 明示
 - CLI 出力文字列（argparse `help=` / `print()`）は ASCII の `-` を使う（em-dash 等 cp932 非対応文字は cp932 コンソールでの `--help` を `UnicodeEncodeError` でクラッシュさせる。pytest の `redirect_stdout` では検出できず実端末でのみ落ちる）。実装後 `--help` を実端末で 1 回スモーク
 
