@@ -68,6 +68,15 @@
             "command": "bash \"${CLAUDE_PROJECT_DIR}/.hooks/block-dangerous-git.sh\""
           }
         ]
+      },
+      {
+        "matcher": "Agent|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PROJECT_DIR}/.hooks/block-foreground-subagent.sh\""
+          }
+        ]
       }
     ]
   },
