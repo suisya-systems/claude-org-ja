@@ -383,5 +383,193 @@ class CliArgvTest(unittest.TestCase):
                      "--since", "2026-06-10", "--last-days", "3"])
 
 
+class BadDbExitCodeTest(unittest.TestCase):
+    """Issue #562 regression: a present-but-unusable DB must yield a friendly
+    actionable message on stderr + exit 2, NOT a raw sqlite traceback + exit 1.
+
+    These fixtures are built WITHOUT ``apply_schema`` on purpose -- the gap
+    that escaped to the dogfood pass was that every prior test used a
+    well-formed schema, so the no-such-table / no-such-column / not-a-database
+    failure paths were never exercised. Each case asserts both the exit code
+    and that the stderr message is actionable (names the path, points at
+    --db-path), since an actionable message is the entire point of the fix.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def _run_capturing_stderr(self, db_path: Path):
+        import contextlib
+        import io
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            rc = omr.run(["--db-path", str(db_path)])
+        return rc, buf.getvalue()
+
+    def _assert_friendly(self, rc: int, err: str, db_path: Path) -> None:
+        self.assertEqual(rc, 2)
+        # actionable: names the offending path and points at the override knob
+        self.assertIn(str(db_path), err)
+        self.assertIn("--db-path", err)
+        # not a raw traceback dumped to stderr
+        self.assertNotIn("Traceback (most recent call last)", err)
+        # output stays cp932-safe (ASCII hyphens only, no em/en dash)
+        self.assertNotIn("—", err)
+        self.assertNotIn("–", err)
+        err.encode("cp932")  # must not raise
+
+    def test_wrong_schema_no_such_table(self) -> None:
+        # valid sqlite file, but no ``runs`` table -> first query fails
+        db = self.dir / "wrong_schema.db"
+        c = sqlite3.connect(db)
+        c.execute("CREATE TABLE not_runs (id INTEGER PRIMARY KEY)")
+        c.commit()
+        c.close()
+        rc, err = self._run_capturing_stderr(db)
+        self._assert_friendly(rc, err, db)
+
+    def test_schema_drift_missing_column(self) -> None:
+        # ``runs`` exists but lacks columns the report SELECTs (e.g. pattern)
+        db = self.dir / "drift.db"
+        c = sqlite3.connect(db)
+        c.execute(
+            "CREATE TABLE projects (id INTEGER PRIMARY KEY, slug TEXT, "
+            "display_name TEXT)"
+        )
+        c.execute(
+            "CREATE TABLE runs (id INTEGER PRIMARY KEY, task_id TEXT, "
+            "project_id INTEGER)"  # missing status/pattern/pr_url/dispatched_at
+        )
+        c.commit()
+        c.close()
+        rc, err = self._run_capturing_stderr(db)
+        self._assert_friendly(rc, err, db)
+
+    def test_empty_valid_db(self) -> None:
+        # a valid but empty sqlite file (connect + close, no tables)
+        db = self.dir / "empty.db"
+        sqlite3.connect(db).close()
+        rc, err = self._run_capturing_stderr(db)
+        self._assert_friendly(rc, err, db)
+
+    def test_not_a_database_file(self) -> None:
+        # arbitrary bytes at a .db path -> "file is not a database"
+        db = self.dir / "garbage.db"
+        db.write_bytes(b"this is plainly not an sqlite database\n" * 4)
+        rc, err = self._run_capturing_stderr(db)
+        self._assert_friendly(rc, err, db)
+
+
+class JsonContractTest(unittest.TestCase):
+    """Issue #563 regression: JSON output type / key-set stability."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.tmp.name) / "state.db"
+        self.pending = self.db_path.parent / "pending_decisions.json"
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def _build(self, lo=None, hi=None):
+        conn = omr.open_readonly(self.db_path)
+        try:
+            return omr.build_report(
+                conn, lo=lo, hi=hi, pending_path=self.pending,
+                generated_at="g", db_path=self.db_path)
+        finally:
+            conn.close()
+
+    # --- Minor 1: ci.unmatched[].pr type is stable across the array --------
+    def test_unmatched_pr_type_is_consistently_int_or_none(self) -> None:
+        conn = _conn(self.db_path)
+        apply_schema(conn)
+        conn.execute(
+            "INSERT INTO projects (id, slug, display_name) VALUES "
+            "(1, 'claude-org', 'c')"
+        )
+
+        def ev(payload):
+            conn.execute(
+                "INSERT INTO events (kind, occurred_at, payload_json) VALUES "
+                "('ci_completed', '2026-06-11T00:00:00.000Z', ?)",
+                (json.dumps(payload),),
+            )
+
+        # one unmatched with int pr, one with str pr, one with missing pr:
+        # all must be surfaced as unmatched (no run owns these PRs) and their
+        # ``pr`` field must be int-or-None, never a mix of int and str.
+        ev({"repo": "octo/repo", "pr": 259, "status": "success"})
+        ev({"repo": "octo/repo", "pr": "37", "status": "success"})
+        ev({"status": "incomplete"})  # no repo/pr
+        conn.commit()
+        conn.close()
+
+        ci = self._build()["ci"]
+        self.assertEqual(ci["unmatched_count"], 3)
+        prs = [u["pr"] for u in ci["unmatched"]]
+        # every value is int or None -- no str leaks through
+        for v in prs:
+            self.assertTrue(
+                v is None or (isinstance(v, int) and not isinstance(v, bool)),
+                f"pr value {v!r} is neither int nor None",
+            )
+        # the str '37' was normalized to int 37
+        self.assertIn(37, prs)
+        self.assertIn(259, prs)
+        self.assertIn(None, prs)
+        # and the whole thing survives a JSON round-trip with stable types
+        data = json.loads(omr.render_json(self._build()))
+        for u in data["ci"]["unmatched"]:
+            self.assertTrue(u["pr"] is None or isinstance(u["pr"], int))
+
+    # --- Minor 2: pending_decisions key-set is stable across states --------
+    def test_pending_error_branch_has_full_key_set(self) -> None:
+        conn = _conn(self.db_path)
+        apply_schema(conn)
+        conn.commit()
+        conn.close()
+        # corrupt register: not valid JSON
+        self.pending.write_text("{ this is not json", encoding="utf-8")
+        pd = self._build()["pending_decisions"]
+        self.assertIsNotNone(pd)
+        self.assertIsNotNone(pd["error"])
+        # full key-set present so downstream ``.total`` reads never KeyError
+        self.assertEqual(
+            set(pd.keys()), {"error", "total", "pending", "by_status"})
+        self.assertIsNone(pd["total"])
+        self.assertIsNone(pd["pending"])
+
+    def test_pending_not_list_branch_has_full_key_set(self) -> None:
+        conn = _conn(self.db_path)
+        apply_schema(conn)
+        conn.commit()
+        conn.close()
+        # valid JSON but not a list (e.g. an object)
+        self.pending.write_text('{"oops": true}', encoding="utf-8")
+        pd = self._build()["pending_decisions"]
+        self.assertIsNotNone(pd)
+        self.assertIsNotNone(pd["error"])
+        self.assertEqual(
+            set(pd.keys()), {"error", "total", "pending", "by_status"})
+        self.assertIsNone(pd["total"])
+        self.assertIsNone(pd["pending"])
+
+    def test_pending_success_branch_key_set_matches_error_branch(self) -> None:
+        conn = _conn(self.db_path)
+        apply_schema(conn)
+        conn.commit()
+        conn.close()
+        self.pending.write_text("[]", encoding="utf-8")
+        pd = self._build()["pending_decisions"]
+        # same key-set as the error branches -> stable contract
+        self.assertEqual(
+            set(pd.keys()), {"error", "total", "pending", "by_status"})
+
+
 if __name__ == "__main__":
     unittest.main()
