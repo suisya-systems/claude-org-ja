@@ -208,9 +208,24 @@ def load_pending_decisions(path: Path) -> Optional[dict[str, Any]]:
     try:
         data = json.loads(path.read_text(encoding="utf-8") or "[]")
     except (OSError, ValueError) as exc:
-        return {"error": f"could not read register: {exc}", "by_status": {}}
+        # Keep the key-set identical to the success branch (Issue #563): a
+        # downstream JSON consumer that reads ``.total`` must not KeyError just
+        # because the register was unreadable. The three register states stay
+        # distinguishable (``None`` file-absent / ``error`` non-null / ``error``
+        # null), so total/pending are surfaced as ``null`` here, not 0.
+        return {
+            "error": f"could not read register: {exc}",
+            "total": None,
+            "pending": None,
+            "by_status": {},
+        }
     if not isinstance(data, list):
-        return {"error": "register top-level is not a list", "by_status": {}}
+        return {
+            "error": "register top-level is not a list",
+            "total": None,
+            "pending": None,
+            "by_status": {},
+        }
     by_status: dict[str, int] = {}
     for entry in data:
         if not isinstance(entry, dict):
@@ -351,13 +366,26 @@ def gather_events_and_ci(
                 ci_matched_run_id += 1
                 continue
             repo = payload.get("repo")
-            pr = payload.get("pr")
-            key = None
-            if isinstance(repo, str) and isinstance(pr, (int, str)):
+            pr_raw = payload.get("pr")
+            # Normalize ``pr`` to int (or None) up front so the value stored in
+            # an unmatched entry has a stable type (Issue #563): the same JSON
+            # array previously mixed int (pr=259) and str (pr='37') because the
+            # join coerced ``int(pr)`` but the unmatched bucket stored the raw
+            # payload value. A non-numeric / missing pr normalizes to None.
+            pr: Optional[int]
+            if isinstance(pr_raw, bool):
+                # bool is a subclass of int; a JSON true/false is not a PR no.
+                pr = None
+            elif isinstance(pr_raw, int):
+                pr = pr_raw
+            elif isinstance(pr_raw, str):
                 try:
-                    key = (repo.lower(), int(pr))
-                except (TypeError, ValueError):
-                    key = None
+                    pr = int(pr_raw)
+                except ValueError:
+                    pr = None
+            else:
+                pr = None
+            key = (repo.lower(), pr) if isinstance(repo, str) and pr is not None else None
             if key is not None and key in pr_index:
                 ci_matched_pr += 1
                 continue
@@ -653,8 +681,18 @@ def run(argv: Optional[list[str]] = None, *, now: Optional[datetime] = None) -> 
         now=now,
     )
 
-    conn = open_readonly(db_path)
+    # The DB may exist but not be a usable state.db: wrong schema (no ``runs``
+    # table), schema drift (a column we SELECT is gone), an empty-but-valid
+    # sqlite file, or a non-sqlite file altogether. ``mode=ro`` opens lazily so
+    # the failure usually surfaces on the first query inside ``build_report``,
+    # but ``open_readonly`` also runs a PRAGMA, so wrap both. ``sqlite3.Error``
+    # is the base class of OperationalError / DatabaseError -- catching it gives
+    # the week-running human an actionable next step instead of a raw traceback
+    # + exit 1 (Issue #562; this also unifies the exit code on 2 for all
+    # bad-DB cases, matching the missing-DB branch above).
+    conn = None
     try:
+        conn = open_readonly(db_path)
         report = build_report(
             conn,
             lo=lo,
@@ -663,8 +701,16 @@ def run(argv: Optional[list[str]] = None, *, now: Optional[datetime] = None) -> 
             generated_at=generated_at,
             db_path=db_path,
         )
+    except sqlite3.Error as exc:
+        sys.stderr.write(
+            f"tools/org_metrics_report.py: error: DB at {db_path} is not a "
+            f"valid/expected state.db ({exc}). Check --db-path or "
+            f"STATE_DB_PATH.\n"
+        )
+        return 2
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
     if args.format == "json":
         out = render_json(report)
