@@ -67,9 +67,15 @@ mcp-config: {"mcpServers": {"org-broker": {"type": "http", "url": "...", "header
 # 起動（既定 state-dir = .state/broker、tmux backend 自動選択）
 claude-org-runtime broker serve
 
-# 停止: 前景の serve に Ctrl+C（SIGINT）。journal に broker_stopped が 1 行残る。
-# バックグラウンド起動した場合は PID へ SIGINT を送る:
-#   kill -INT <pid>
+# 停止（起動形態で場合分け）:
+#   - 前景 serve（このシェルでブロック中）: Ctrl+C（SIGINT）。graceful 停止経路 =
+#     stop() が走り journal 末尾に broker_stopped が 1 行残る。
+#   - 背景 daemon（nohup ... & 等で起動）: SIGTERM を送る:
+#       kill -TERM <pid>
+#     背景 daemon に SIGINT（kill -INT）は効かずプロセスが残存する
+#     （2026-06-13 切戻しドリルで 2 回再現）。背景は SIGTERM で止める。
+#     ただし SIGTERM は stop() を経由しないため broker_stopped は emit されない。
+#     背景停止の確認は「プロセス消滅 + 未読突合」で行う（§5(4)/(5)）。
 ```
 
 ### 2.3 テスト用 state-dir での起動→疎通→停止（本番 `.state` 不可侵の実証手順）
@@ -155,7 +161,7 @@ broker の内部状態遷移は `claude_org_runtime/broker/` の `server` / `sto
 
 ### 3.5 停止 / 失効
 
-- daemon 停止: `stop()` が HTTP server を shutdown + close し、journal に `broker_stopped` を残す。
+- graceful 停止（`stop()` 経由）: `stop()` が HTTP server を shutdown + close し、journal に `broker_stopped` を残す。**`broker_stopped` は `stop()` が走る graceful 停止経路（前景 serve への SIGINT / Ctrl-C）でのみ emit される**。背景 daemon を `kill -TERM` で止めた場合は `stop()` を経由しないため `broker_stopped` は残らない（停止確認はプロセス消滅 + 未読突合で行う、§5(4)/(5)）。なお背景 daemon に SIGINT（`kill -INT`）は効かずプロセスが残存する（2026-06-13 切戻しドリルで 2 回再現）。
 - session 終了（MCP `DELETE`）: 当該 bind の `session_id` を失効させ、`registered = False` に落とす（切断済み client を `list_peers` / 配送先に残さない）。journal: `session_closed`。
 - pane クローズ（`close_pane`）: adapter で kill 後、registry pop と token revoke を 1 ロックスコープで原子的に行う。journal: `pane_closed` + event `pane_exited`。
 
@@ -346,14 +352,30 @@ grep -l "mcp__org-broker__" ~/.claude/settings.json 2>/dev/null && echo "NG: use
 
 **順序が重要**: 先に残ペインを revoke（close）して配送先から外し、最後に daemon を止める。
 
+**停止シグナルは起動形態で場合分けする（2026-06-13 切戻しドリルの実測反映）**: 前景 serve は Ctrl-C（SIGINT）で graceful に止まり `broker_stopped` を emit するが、`nohup ... &` 等で背景起動した daemon に **SIGINT（`kill -INT`）は効かずプロセスが残存する**（ドリルで 2 回再現）。背景 daemon は **SIGTERM（`kill -TERM`）** で止める。ただし SIGTERM は `stop()` を経由しないため `broker_stopped` は emit されず、journal 末尾は `broker_started` / `token_issued` 等のままになる。したがって停止確認手段も経路ごとに分ける。
+
 ```bash
 # 1) 残っている broker ペインを close（token revoke される。close_pane の journal: pane_closed）
 #    renga/dispatcher から各 broker ペインを close_pane する。
-# 2) すべて revoke したら daemon を停止（前景 serve に SIGINT、または）
-kill -INT <broker_pid>
-# 3) journal 末尾に broker_stopped が記録されることを確認
+# 2) すべて revoke したら daemon を停止（起動形態で場合分け）:
+#    - 前景 serve（このシェルでブロック中）: このコマンドは実行せず Ctrl-C（SIGINT）を打つ。graceful 停止。
+#    - 背景 daemon（nohup ... & 等）: SIGTERM を送る。SIGINT（kill -INT）は効かない。
+kill -TERM <broker_pid>   # 背景 daemon の停止。前景 serve なら代わりに Ctrl-C を打つ
+# 3) 停止確認（経路で手段が異なる）:
+#    a) graceful 停止（前景 SIGINT / Ctrl-C）した場合のみ journal 末尾に broker_stopped が残る:
 tail -n 3 "$BROKER_STATE/queue.jsonl"
+#    b) SIGTERM（背景 daemon）で止めた場合は broker_stopped が emit されないので、
+#       プロセス消滅 + 未読突合で確認する（§5(5) の未読突合スクリプトと整合）。
+#       SIGTERM 直後は終了処理中で誤判定しうるため短い timeout loop で消滅を待つ:
+for i in $(seq 1 10); do
+  kill -0 <broker_pid> 2>/dev/null || { echo "OK: daemon プロセス消滅"; break; }
+  sleep 1
+done
+kill -0 <broker_pid> 2>/dev/null && echo "NG: daemon がまだ生きている"
+#       未読突合（enqueued vs drained）は §5(5) のスクリプトを実行する（ここでは重複させない）。
 ```
+
+> **runtime follow-up 候補（実装はこのタスクのスコープ外）**: runtime 側の SIGTERM ハンドラが SIGTERM 停止でも `broker_stopped` を emit するようになれば、停止確認を「broker_stopped を確認」に統一でき経路の場合分けが不要になる。本 runbook は手順の明文化に留め、runtime 実装は別 Issue 化を検討する。
 
 ### (5) 旧 token / queue store の破棄確認（`.state/broker/` の未読・bind 残存なし）
 
