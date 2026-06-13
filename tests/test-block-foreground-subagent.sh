@@ -191,6 +191,33 @@ stderr=$(mktemp); TMPFILES+=("$stderr")
 ec=$(run_hook '{"tool_name":"Agent","tool_input":true}' "$stderr")
 assert_exit 2 "$ec" "Agent with boolean tool_input is blocked"
 
+# 23. Top-level JSON is an array (valid JSON, not an object) -> block (fail-closed)
+#     Without a top-level type guard, .tool_name indexing would jq-error (exit 5)
+#     and fail OPEN. Must deny (exit 2).
+stderr=$(mktemp); TMPFILES+=("$stderr")
+ec=$(run_hook '[]' "$stderr")
+assert_exit 2 "$ec" "top-level array payload is blocked (fail-closed)"
+
+# 24. Top-level JSON is a string -> block (fail-closed)
+stderr=$(mktemp); TMPFILES+=("$stderr")
+ec=$(run_hook '"str"' "$stderr")
+assert_exit 2 "$ec" "top-level string payload is blocked (fail-closed)"
+
+# 25. Top-level JSON is a boolean -> block (fail-closed)
+stderr=$(mktemp); TMPFILES+=("$stderr")
+ec=$(run_hook 'true' "$stderr")
+assert_exit 2 "$ec" "top-level boolean payload is blocked (fail-closed)"
+
+# 26. Top-level JSON is a number -> block (fail-closed)
+stderr=$(mktemp); TMPFILES+=("$stderr")
+ec=$(run_hook '1' "$stderr")
+assert_exit 2 "$ec" "top-level number payload is blocked (fail-closed)"
+
+# 27. Top-level JSON is null -> block (fail-closed)
+stderr=$(mktemp); TMPFILES+=("$stderr")
+ec=$(run_hook 'null' "$stderr")
+assert_exit 2 "$ec" "top-level null payload is blocked (fail-closed)"
+
 # --- Summary ---
 echo "# $PASS passed, $FAIL failed out of $TEST_NUM tests"
 [[ $FAIL -eq 0 ]]

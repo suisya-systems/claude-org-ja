@@ -56,13 +56,19 @@ fi
 # stdin から JSON を読み取り
 INPUT=$(cat)
 
-# JSON として parse 可能か検証する (fail closed)。
-# set -euo pipefail 下で `VAR=$(echo "$INPUT" | jq ...)` 形式は jq の parse
-# error 時に exit 5 でスクリプトを中断し、PreToolUse では exit!=2 が
-# 非ブロッキング扱い = fail-open になる。これを避けるため、deny ロジック前に
-# 明示的な `if !` 条件で JSON 妥当性を検査し、不正なら exit 2 で deny する。
-if ! echo "$INPUT" | jq -e . >/dev/null 2>&1; then
-  deny_with_reason "PreToolUse payload を JSON として解析できませんでした。subagent ツール呼び出しは安全側 (fail-closed) で拒否します。"
+# top-level が JSON object か検証する (fail closed)。
+# set -euo pipefail 下で `VAR=$(echo "$INPUT" | jq ...)` 形式は、jq の parse
+# error や非 object への index error 時に exit 5 でスクリプトを中断し、
+# PreToolUse では exit!=2 が非ブロッキング扱い = fail-open になる。これを避ける
+# ため、deny ロジック前に明示的な `if !` 条件で「parse 可能 かつ top-level が
+# object」を一括検査し、満たさなければ exit 2 で deny する。
+#   - `jq -e 'type == "object"'`: object なら true 出力 exit 0、配列/文字列/
+#     数値/bool/null なら false 出力 exit 1、不正 JSON なら parse error exit 5。
+#     いずれの非 object/不正系も非ゼロ → fail-closed deny。
+# これにより後続の `.tool_name` / `.tool_input` の index は top-level が object
+# である前提で安全に評価できる。
+if ! echo "$INPUT" | jq -e 'type == "object"' >/dev/null 2>&1; then
+  deny_with_reason "PreToolUse payload が JSON object として解析できませんでした。subagent ツール呼び出しは安全側 (fail-closed) で拒否します。"
 fi
 
 # tool_name を取得。subagent ツール以外は passthrough。
