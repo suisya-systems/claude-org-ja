@@ -32,7 +32,7 @@ allowed-tools:
 > - **spawn 儀式（dev-channel 承認 → folder-trust 承認）**: suspend はペインを閉じる側なので spawn 承認は使わないが、broker では spawn 時の承認が dev-channel ではなく Claude Code の **folder-trust プロンプト**になる（org-start / org-delegate 側）。
 > - **エラー分岐（broker 追加コード）**: renga コード（`[pane_not_found]` / `[pane_vanished]` / `[last_pane]` 等）に加え broker は `[token_invalid]` / `[session_invalid]` / `[tool_not_authorized]` / `[no_backend]`（= adapter_unavailable）/ `[nudge_failed]` / `[peer_not_found]` / `[name_taken]` を返しうる（未知コードは default-branch で扱う）。一覧は [`.claude/skills/org-delegate/references/renga-error-codes.md`](../org-delegate/references/renga-error-codes.md) の broker 節を参照。
 >
-> `new_tab` / `focus_pane` は broker surface に**無い**（意図的除外）。契約面の正本は [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) Surface 8（提案・批准待ち）、設計 SoT は transport-lab `docs/design/ja-migration-plan.md` §5.2(ii)。broker 実走（dogfood）は Epic #6 Issue G スコープで本スキルの既定経路ではない。
+> `new_tab` / `focus_pane` は broker surface に**無い**（意図的除外）。契約面の正本は [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) Surface 8（ratified 2026-06-14）、設計 SoT は transport-lab `docs/design/ja-migration-plan.md` §5.2(ii)。broker 実走（dogfood）は Epic #6 Issue G スコープで本スキルの既定経路ではない。
 
 ## Phase 1: ワーカー状態収集
 

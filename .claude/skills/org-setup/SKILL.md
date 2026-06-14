@@ -21,7 +21,7 @@ allowed-tools:
 組織の各ロールが必要とする permissions allow と環境変数を、
 正しいスコープの settings ファイルに配置する。
 
-> **輸送層 両系（`ORG_TRANSPORT`: 既定 `renga` / opt-in `broker`）**: 本スキルが配る messaging MCP の allow は **既定 `renga`**（`ORG_TRANSPORT` 無設定）で `mcp__renga-peers__*` tier。**`references/permissions.md` は renga アンカー（byte 比較対象）として不変**であり、broker への置換は prose ではなく生成/検証ツール側で行う: `tools/org_setup_prune.py`（per-role allow / `--user-common-allowlist`）と `tools/check_role_configs.py` が `ORG_TRANSPORT=broker` のとき `mcp__renga-peers__*` ブロックを broker messaging tier（`mcp__org-broker__*`）に射影する（runtime の `transport_allowlist` descriptor 駆動、Epic #6 E）。**既定 renga は恒等**（生成物 byte 等価・file no-op）なので本スキルの手順・報告文はそのまま使えばよい。設計 SoT は transport-lab `docs/design/ja-migration-plan.md` §5.3、契約面は [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) Surface 8（批准待ち）。
+> **輸送層 両系（`ORG_TRANSPORT`: 既定 `renga` / opt-in `broker`）**: 本スキルが配る messaging MCP の allow は **既定 `renga`**（`ORG_TRANSPORT` 無設定）で `mcp__renga-peers__*` tier。**`references/permissions.md` は renga アンカー（byte 比較対象）として不変**であり、broker への置換は prose ではなく生成/検証ツール側で行う: `tools/org_setup_prune.py`（per-role allow / `--user-common-allowlist`）と `tools/check_role_configs.py` が `ORG_TRANSPORT=broker` のとき `mcp__renga-peers__*` ブロックを broker messaging tier（`mcp__org-broker__*`）に射影する（runtime の `transport_allowlist` descriptor 駆動、Epic #6 E）。**既定 renga は恒等**（生成物 byte 等価・file no-op）なので本スキルの手順・報告文はそのまま使えばよい。設計 SoT は transport-lab `docs/design/ja-migration-plan.md` §5.3、契約面は [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) Surface 8（ratified 2026-06-14）。
 
 ## 設定ファイルの配置先とスコープ
 
