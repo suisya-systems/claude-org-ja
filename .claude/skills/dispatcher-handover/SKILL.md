@@ -127,7 +127,7 @@ cwd `.dispatcher/` からは `../.state/dispatcher-handover.md`）。
 
 ```markdown
 ---
-created_at: <UTC ISO8601>
+created_at: <date -u +%Y-%m-%dT%H:%M:%SZ の出力。決定的 UTC、JST-as-Z 禁止>
 dispatcher_pane: <pane_id> / peer=<peer_id>
 active_worker_count: <int>
 event_cursor_present: <true | false>
@@ -166,6 +166,12 @@ pending_decisions_count: <int>
 
 **書き方の注意**:
 - 「過去ログ」ではなく「次の自分への申し送り」として書く。
+- `created_at` は **`date -u +%Y-%m-%dT%H:%M:%SZ`**（PowerShell 環境は
+  `(Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")`）の出力をそのまま埋める。
+  local(JST)時刻を手書きして `Z` を付けない（JST-as-Z 禁止）。[`/dispatcher-resume`](../dispatcher-resume/SKILL.md)
+  はこの `created_at` を 7 日鮮度窓（cold-start vs resume 分岐）で `now - created_at` 評価するため、
+  未来時刻が混入すると判定がぶれる。dispatcher 状態ファイルの時刻を一律 UTC に揃える方針
+  （[`.dispatcher/references/worker-monitoring.md`](../../../.dispatcher/references/worker-monitoring.md) 冒頭の時刻規約）と整合させる。
 - 機密情報・トークン・パスワードは絶対に書かない。
 - ファイルは secretary / 人間も読むことを想定する。
 
