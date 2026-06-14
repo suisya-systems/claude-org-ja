@@ -6,7 +6,7 @@
 
 > **スコープと不可触制約**: 本 runbook は「実走を可能にする手順書」であり、**本番 ja の broker 実走（org-start ハイジャック）は後日のトラック 3（ユーザー hands-on）で行う**。本書の手順はすべて **テスト用 state-dir（`.state/broker/` ではない別ディレクトリ）** で daemon を起動・停止し、本番 `.state/` を汚さない前提で書く。**既定 `renga` は削除せず opt-in fallback として常時有効**（切戻しの安全装置）。
 
-> **検証ステータス（2026-06-11、runtime 0.1.17 / tmux 3.2a / WSL2）**: 本書の起動・停止・ライフサイクル・dry-run の各コマンドは worker worktree 環境で実機検証済み。生ログの要点は各節に埋め込む。
+> **検証ステータス**: 起動・停止・ライフサイクル・dry-run の各コマンドは 2026-06-11 に **runtime 0.1.17** / tmux 3.2a / WSL2 の worker worktree 環境で実機検証済み（生ログの要点は各節に埋め込む）。§8 の attach 導線は 2026-06-13 に **runtime 0.1.22** で確認。**本書の broker surface 記述は runtime 0.1.22 に同期済み**（§1.1 setup / §2.1 serve flag に `--root-role` / `--root-cwd` / §3.6 journal / §3.8 admin RPC・sidecar / §5(4)-(5) sidecar disposal）。0.1.17 → 0.1.22 で増えた serve 面・admin 面・sidecar は `claude_org_runtime/broker/{cli,server,sidecar}.py`（0.1.22）から照合した（#515 dogfood の D2-D6 整理）。
 
 ---
 
@@ -14,10 +14,11 @@
 
 - **入力 / 制御**:
   - 環境変数 `ORG_TRANSPORT`（`renga` | `broker`、未設定 = 既定 `renga`）。daemon 自体は flag を読まないが、ja 側の生成器（§4）が flag に従って broker 面 allowlist を出す。
-  - CLI 引数（`--port` / `--host` / `--state-dir` / `--backend` / `--no-nudge`、§2.1）。
+  - CLI 引数（`--port` / `--host` / `--state-dir` / `--backend` / `--no-nudge` / `--root-role` / `--root-cwd`、§2.1）。
 - **出力 / 副作用**:
-  - localhost HTTP MCP エンドポイント（既定 `http://127.0.0.1:48720/mcp`）。
+  - localhost HTTP MCP エンドポイント（既定 `http://127.0.0.1:48720/mcp`）と admin RPC エンドポイント（`/admin`、§3.8）。
   - queue store + JSONL journal（`<state-dir>/queue.jsonl`、既定 state-dir = `.state/broker`）。
+  - daemon sidecar（`<state-dir>/daemon.json` 発見用メタ + `<state-dir>/admin.token` 0600 秘密、§3.8。graceful 停止で削除 / SIGTERM 残置）。
   - 子ペインへのナッジ注入（terminal adapter 経由、`--no-nudge` で無効化）。
 - **依存方向（一方向）**: `broker → terminal / dispatcher.choose_split`。**claude-org-ja は broker を import しない**（flag 既定 renga で不活性）。
 - **観察性（重要）**: tmux backend では broker が spawn する子ペイン（ディスパッチャー・ワーカー）が **detached な独立セッション**として起動し、デフォルトでは画面に出ない（窓口は logical pane で人間の手元 terminal に残る）。走行中の子ペインを read-only で覗く attach 導線は §8 を参照。
@@ -27,6 +28,26 @@
 $ claude-org-runtime broker --help
 usage: claude-org-runtime broker [-h] {serve} ...
     serve     org-broker daemon を localhost で起動する (Ctrl+C で停止)。
+```
+
+### 1.1 isolated venv のセットアップ（D6）
+
+dogfood を本番環境から隔離するため broker org は **isolated venv（WSL/tmux 隔離 clone）** で走らせる。この venv には **`claude-org-runtime>=0.1.22`**（D2-D6 surface を持つ版）と **`core-harness>=0.3.2`** の両方が要る。
+
+- **runtime は 0.1.22 以上が必須**: 本書の D2-D6（`--root-role` / `--root-cwd` / `/admin` RPC / sidecar）は **0.1.22 で入った surface**で、0.1.17-0.1.21 には無い。**ところが ja の現行 pin は `claude-org-runtime>=0.1.17,<0.2`（下限 0.1.17）** なので、`pip install -e .` は 0.1.22 を**保証しない**（下限 0.1.17 が解決されうる）。dogfood では明示的に `pip install 'claude-org-runtime>=0.1.22,<0.2'` で 0.1.22 以上を入れる（または `pip install -U` で最新 0.1.x に上げる）。下限を恒久的に上げる場合は `pyproject.toml` / `requirements.txt` の pin bump を別途行う（本 runbook の scope 外）。
+- **core-harness は runtime 依存ではない**（runtime の `Requires-Dist` は `jsonschema` のみ。runtime は `core_harness` を import しない）。一方 **claude-org-ja 側のツール**（`tools/check_role_configs.py` 等）が `core_harness` を import するため、ja の org 運用には必須。`pip install claude-org-runtime` 単体では入らず隔離 venv で ja ツールが `ImportError` で落ちるので、**ja repo から `pip install -e .`** で `pyproject.toml` / `requirements.txt` の pin **`core-harness>=0.3.2,<0.4`** を解決する（最小構成で runtime だけ入れた場合は `pip install 'core-harness>=0.3.2,<0.4'` を明示的に足す）。
+- pin 根拠: `core-harness` は 0.x なので x-bump（minor）が破壊的変更を含みうる方針で、`>=0.3.2,<0.4` に範囲固定している（`requirements.txt` のコメント / 設計 Q9-Q10）。
+
+```bash
+# isolated venv 例（隔離 clone のルートで）
+python3 -m venv .venv && . .venv/bin/activate
+pip install -e .   # core-harness>=0.3.2 と claude-org-runtime>=0.1.17 を pin どおり解決
+# ただし -e . の runtime 下限は 0.1.17。D2-D6 surface には 0.1.22 以上が要るので明示で上書きする:
+pip install 'claude-org-runtime>=0.1.22,<0.2'
+# runtime だけ入れた最小構成なら core-harness も明示追加:
+#   pip install 'core-harness>=0.3.2,<0.4'
+# 確認:
+python3 -c "from claude_org_runtime import __about__; print(__about__.__version__)"   # 0.1.22 以上
 ```
 
 ---
@@ -40,24 +61,36 @@ $ claude-org-runtime broker serve --help
 usage: claude-org-runtime broker serve [-h] [--port PORT] [--host HOST]
                                        [--state-dir STATE_DIR]
                                        [--backend {wezterm,tmux}] [--no-nudge]
+                                       [--root-role {worker,curator,dispatcher,secretary}]
+                                       [--root-cwd ROOT_CWD]
 ```
 
 | オプション | 既定 | 意味 |
 |---|---|---|
 | `--port` | `48720`（`DEFAULT_PORT`） | localhost bind ポート。`0` で ephemeral（OS 採番、起動ログの `listening on` に実ポートが出る）。 |
 | `--host` | `127.0.0.1` | bind host。設計上 localhost 専用。 |
-| `--state-dir` | `.state/broker`（`DEFAULT_STATE_DIR`、CWD 相対） | `queue.jsonl` の書込先。**検証時は必ず別ディレクトリを渡す**（§2.3 / §7）。 |
+| `--state-dir` | `.state/broker`（`DEFAULT_STATE_DIR`、CWD 相対） | `queue.jsonl` / `daemon.json` / `admin.token` の書込先。**検証時は必ず別ディレクトリを渡す**（§2.3 / §7）。 |
 | `--backend` | OS 自動選択（POSIX=`tmux` / Windows=`wezterm`） | terminal adapter。`VALID_BACKENDS = (wezterm, tmux)`。`--no-nudge` 時は無視。 |
 | `--no-nudge` | （無効） | terminal adapter を生成せずナッジ配達を切る（**queue のみ**）。backend 非依存で疎通だけ見たいときに使う。 |
+| `--root-role` | `worker`（`DEFAULT_ROOT_ROLE`） | 手動検証用 **root token を bind する権限 tier（auth_role）**。`tools/list` の公開面がこの tier で構造的に絞られる（§3.4）。受理集合 `ROOT_ROLE_CHOICES = (worker, curator, dispatcher, secretary)`。既定 `worker` = messaging 4 面で現行挙動不変、`secretary` で全 13 面。 |
+| `--root-cwd` | （省略時は daemon の起動 cwd = `os.getcwd()`） | **root pane（人間駆動の窓口/secretary）の cwd を bind に持たせる**（runtime#61）。`spawn_*` の relative cwd はこの cwd を base に解決される（absolute は as-is）。relative を渡しても daemon 起動 cwd 基準で **absolute 化** して bind する（解決アンカーは常に absolute）。**daemon は session root から起動する運用契約**で、その起動ディレクトリが relative spawn の解決アンカーになる。session root 以外から起動する場合は本フラグで明示する。 |
 
-`serve` は前景でブロックする（`Ctrl+C` / `SIGINT` で停止）。起動時に手動検証用の token を 1 本発行し、`--mcp-config` に渡す JSON を標準出力に表示する:
+> **0.1.17 → 0.1.22 の差分（D2）**: `--root-role` / `--root-cwd` は 0.1.22（runtime#61）で増えたフラグ。cwd を bind に持たないと人間駆動の窓口が投げる relative cwd の `spawn_*` が解決アンカーを失い拒否 / 誤 base に落ちる、が runtime#61 の根因。`--root-cwd` 省略時は daemon 起動 cwd を充てるため、**daemon は必ず session root から起動する**（または `--root-cwd` を明示する）。
+
+`serve` は前景でブロックする。停止は (a) `Ctrl+C` / `SIGINT`、または (b) admin RPC `shutdown`（§3.8）の二経路（どちらも `run()` の `finally` を通り graceful に停止し、`broker_stopped` 記録 + sidecar 削除を行う）。起動時に admin token を 1 本生成して sidecar に 0600 で書き（§3.8）、手動検証用の root token を 1 本発行して `--mcp-config` に渡す JSON を標準出力に表示する:
 
 ```
 org-broker listening on http://127.0.0.1:48803/mcp
+admin RPC: http://127.0.0.1:48803/admin (token in /<state-dir>/admin.token)
+daemon sidecar: /<state-dir>/daemon.json (backend=tmux)
 queue store: /<state-dir>/queue.jsonl
-manual test token: <token>
+manual test token (worker): <token>
+root pane cwd (relative spawn anchor): /<root-cwd>
 mcp-config: {"mcpServers": {"org-broker": {"type": "http", "url": "...", "headers": {"Authorization": "Bearer <token>"}}}}
+root pane registered (logical, id=<pane_id>, role=worker)
 ```
+
+> **起動時の副作用（0.1.22）**: 上記のとおり起動時に `<state-dir>/daemon.json`（発見用メタ、非秘密）と `<state-dir>/admin.token`（admin RPC 認証 token、0600 の秘密）を書き、root token を **logical pane** として pane 登録簿に載せる（`logical_pane_registered` journal、§3.6）。詳細は §3.8。
 
 ### 2.2 起動 / 停止コマンド（本番形）
 
@@ -69,13 +102,17 @@ claude-org-runtime broker serve
 
 # 停止（起動形態で場合分け）:
 #   - 前景 serve（このシェルでブロック中）: Ctrl+C（SIGINT）。graceful 停止経路 =
-#     stop() が走り journal 末尾に broker_stopped が 1 行残る。
+#     run() の finally で stop() が走り journal 末尾に broker_stopped が 1 行残り、
+#     daemon.json / admin.token sidecar も削除される。
 #   - 背景 daemon（nohup ... & 等で起動）: SIGTERM を送る:
 #       kill -TERM <pid>
 #     背景 daemon に SIGINT（kill -INT）は効かずプロセスが残存する
 #     （2026-06-13 切戻しドリルで 2 回再現）。背景は SIGTERM で止める。
-#     ただし SIGTERM は stop() を経由しないため broker_stopped は emit されない。
-#     背景停止の確認は「プロセス消滅 + 未読突合」で行う（§5(4)/(5)）。
+#     ただし SIGTERM は run() の finally を経由しないため broker_stopped は emit されず、
+#     daemon.json / admin.token sidecar も残置する（§5(5) で明示破棄）。
+#     背景停止の確認は「プロセス消滅 + 未読突合 + sidecar 破棄」で行う（§5(4)/(5)）。
+#   - graceful 代替（推奨、シグナル非依存）: admin RPC shutdown を叩く（§3.8）。
+#     背景 daemon でも broker_stopped 記録 + sidecar 自動削除まで一括で済む。
 ```
 
 ### 2.3 テスト用 state-dir での起動→疎通→停止（本番 `.state` 不可侵の実証手順）
@@ -161,7 +198,7 @@ broker の内部状態遷移は `claude_org_runtime/broker/` の `server` / `sto
 
 ### 3.5 停止 / 失効
 
-- graceful 停止（`stop()` 経由）: `stop()` が HTTP server を shutdown + close し、journal に `broker_stopped` を残す。**`broker_stopped` は `stop()` が走る graceful 停止経路（前景 serve への SIGINT / Ctrl-C）でのみ emit される**。背景 daemon を `kill -TERM` で止めた場合は `stop()` を経由しないため `broker_stopped` は残らない（停止確認はプロセス消滅 + 未読突合で行う、§5(4)/(5)）。なお背景 daemon に SIGINT（`kill -INT`）は効かずプロセスが残存する（2026-06-13 切戻しドリルで 2 回再現）。
+- graceful 停止（`run()` の `finally` → `stop()` + sidecar 削除）: graceful 停止経路は **(a) 前景 serve への SIGINT / Ctrl-C** と **(b) admin RPC `shutdown`（§3.8）** の 2 つ。どちらも `run()` が唯一の `stop()` 呼出元として `finally` を通り、`stop()` が HTTP server を shutdown + close して journal に `broker_stopped` を残し、続けて `daemon.json` / `admin.token` sidecar を削除する（`remove_sidecar`、§3.8）。**`broker_stopped` の emit と sidecar 削除は graceful 経路（SIGINT / admin RPC shutdown）でのみ起きる**。背景 daemon を `kill -TERM` で止めた場合は `run()` の `finally` を経由しないため `broker_stopped` は残らず、**`daemon.json` / `admin.token` sidecar も削除されず残置する**（停止確認はプロセス消滅 + 未読突合、後始末は sidecar の明示破棄で行う、§5(4)/(5)）。なお背景 daemon に SIGINT（`kill -INT`）は効かずプロセスが残存する（2026-06-13 切戻しドリルで 2 回再現）。
 - session 終了（MCP `DELETE`）: 当該 bind の `session_id` を失効させ、`registered = False` に落とす（切断済み client を `list_peers` / 配送先に残さない）。journal: `session_closed`。
 - pane クローズ（`close_pane`）: adapter で kill 後、registry pop と token revoke を 1 ロックスコープで原子的に行う。journal: `pane_closed` + event `pane_exited`。
 
@@ -170,10 +207,14 @@ broker の内部状態遷移は `claude_org_runtime/broker/` の `server` / `sto
 `<state-dir>/queue.jsonl` に 1 行 1 JSON で追記される。運用での観測点:
 
 ```
-broker_started → token_issued → agent_registered → message_enqueued
+broker_started → token_issued → logical_pane_registered (起動時の root pane)
+  → agent_registered → message_enqueued
   → nudge_sent / nudge_deferred / nudge_failed → queue_drained
+  → pane_spawned / pane_identity_set (spawn / identity 操作時)
   → session_closed / pane_closed → broker_stopped
 ```
+
+> **0.1.22 で増えたイベント（D3）**: `logical_pane_registered`（起動時に root token を logical pane として登録、§3.8）/ `pane_spawned`（`spawn_claude_pane` / `spawn_codex_pane` / `spawn_pane`）/ `pane_identity_set`（`set_pane_identity`）。`broker_stopped` は graceful 停止（SIGINT / admin RPC shutdown）でのみ末尾に残る（§3.5 / §5(4)）。
 
 > **検証ログ（実機、messaging 往復）**: `broker_started → token_issued → agent_registered → message_enqueued(chars=12) → queue_drained(count=1) → broker_stopped` を 1 サイクルで確認。
 
@@ -190,6 +231,32 @@ renga コードに加え broker は次を返しうる。窓口 / ディスパッ
 | `[nudge_failed]` | ナッジ注入が defer 上限まで届かなかった |
 | `[peer_not_found]` | `send_message` の宛先が registered な bind に無い |
 | `[name_taken]` | pane name の重複 |
+| `[admin_unauthorized]` | `/admin` RPC を admin token 無し / 不正 token で呼んだ（HTTP 401、§3.8） |
+
+> 上表は `/mcp`（messaging / ops）面のコードに、admin 面の認証ゲート `[admin_unauthorized]`（運用頻度が高いため掲載）を加えたもの。admin 面（`/admin`）は per-agent bearer とは**別系統**の `admin_token` で認証し、`[admin_unauthorized]` 以外にも `[parse_error]` / `[invalid_params]` / `[unknown_admin_method]` / `[invalid_role]` / `[invalid_cwd]` / `[invalid_name]` を返しうる。**admin RPC のコード一覧は §3.8** を参照（経路が分かれるため上表には集約しない）。
+
+### 3.8 admin RPC（token mint / graceful shutdown）と daemon sidecar
+
+0.1.22 で **走行中 daemon を外部から制御する admin 面**と、**発見用 sidecar** が入った（runtime#61 / #63、`server.py` の `_handle_admin` / `sidecar.py`）。messaging / ops（`/mcp`）とは独立の制御面である。
+
+**admin RPC（`/admin`）**:
+
+- エンドポイントは `http://<host>:<port>/admin`（`broker.admin_url`）。`/mcp`（messaging / ops）とは別パス。
+- 認証は per-agent bearer ではなく **`admin_token`**（`secrets.token_urlsafe(32)`、起動時生成）。`Authorization: Bearer <admin_token>` を定数時間比較（`hmac.compare_digest`）。**admin token 未設定なら経路ごと隠す（HTTP 404）**＝内部テスト用に admin 面を無効化できる。不正 / 欠落 token は HTTP 401 `[admin_unauthorized]`。
+- メソッド（JSON-RPC 風 `{"method": ..., "params": {...}}`）:
+  - `mint_token` — 走行中 daemon に対し新規 root token を mint する（`role` = auth_role）。root token と同様 spawn 子ではないため tier 上限切り（`capped_auth_role`）は適用せず要求どおりの tier で bind。`params.cwd` は relative spawn の解決アンカー（CLI と同様 absolute 化）。
+  - `shutdown` — graceful shutdown を要求する。ack（`{"ok": true, "shutting_down": true}`）を先に返してから `request_shutdown()` を呼び、実停止（`stop()` + sidecar 削除）は `run()` の前景ループが行う（ハンドラスレッドから直接 `shutdown` を呼ぶデッドロックを避ける）。**シグナルに依存しない停止経路**で、SIGTERM/SIGINT を送りにくい環境（Windows 等）の graceful 停止手段になる。
+- **`/admin` のエラーコード（§3.7 の `/mcp` 表とは別系統）**: 認証失敗 `[admin_unauthorized]`（401、§3.7 に掲載）に加え、JSON body 不正 `[parse_error]`（400）/ `params` が object でない `[invalid_params]`（400）/ 未知メソッド `[unknown_admin_method]`（400）。`mint_token` は引数検証で `[invalid_role]`（受理外 role）/ `[invalid_cwd]`（cwd が文字列でない）/ `[invalid_name]`（name が文字列でない）を返す（いずれも 400 / `{"ok": false, "error": ...}`）。窓口 / ディスパッチャーは未知コードを default-branch で escalate に流す（§3.7 と同じ方針）。
+
+**daemon sidecar（`<state-dir>/` の 2 ファイル、`sidecar.py`）**:
+
+| ファイル | 内容 | 秘密 | パーミッション | 停止時 |
+|---|---|---|---|---|
+| `daemon.json`（`SIDECAR_NAME`） | 発見用メタ（`pid` / `host` / `port` / `state_dir`(絶対) / `backend`(解決済み実値) / `started_at` / `journal_offset`） | 含まない | 通常 | graceful 停止で削除（SIGTERM で残置） |
+| `admin.token`（`ADMIN_TOKEN_NAME`） | admin RPC 認証 token | **含む** | 0600（temp→atomic rename で torn read 回避。**Windows NTFS では read-only ビットのみ**で group/other read は本当には落ちない既知制限） | graceful 停止で削除（SIGTERM で残置 → §5(4)/(5) で明示破棄） |
+
+- どちらも `os.replace` の atomic publish で公開し、部分書き / torn read を晒さない。`journal_offset` は run 開始時点の `queue.jsonl` バイト長で、停止確認（`broker_stopped` 検出）を当該 run のスライスに限定して**過去 run の残留による偽陽性を避ける**ための起点。
+- **logical pane 登録**: 起動時に root token を pane 登録簿へ **logical pane** として載せる（`register_logical_pane`、journal `logical_pane_registered`）。`bind.pane_id = None` なので PTY ナッジは飛ばず（人間は `check_messages` で読む）、`list_panes` に窓口が出ることで子を 1 つだけ spawn した状態でも `close_pane` が `[last_pane]` 誤判定せず子を閉じられる（§8 の「窓口は logical pane」と整合）。
 
 ---
 
@@ -352,7 +419,9 @@ grep -l "mcp__org-broker__" ~/.claude/settings.json 2>/dev/null && echo "NG: use
 
 **順序が重要**: 先に残ペインを revoke（close）して配送先から外し、最後に daemon を止める。
 
-**停止シグナルは起動形態で場合分けする（2026-06-13 切戻しドリルの実測反映）**: 前景 serve は Ctrl-C（SIGINT）で graceful に止まり `broker_stopped` を emit するが、`nohup ... &` 等で背景起動した daemon に **SIGINT（`kill -INT`）は効かずプロセスが残存する**（ドリルで 2 回再現）。背景 daemon は **SIGTERM（`kill -TERM`）** で止める。ただし SIGTERM は `stop()` を経由しないため `broker_stopped` は emit されず、journal 末尾は `broker_started` / `token_issued` 等のままになる。したがって停止確認手段も経路ごとに分ける。
+**停止シグナルは起動形態で場合分けする（2026-06-13 切戻しドリルの実測反映）**: 前景 serve は Ctrl-C（SIGINT）で graceful に止まり `broker_stopped` を emit するが、`nohup ... &` 等で背景起動した daemon に **SIGINT（`kill -INT`）は効かずプロセスが残存する**（ドリルで 2 回再現）。背景 daemon は **SIGTERM（`kill -TERM`）** で止める。ただし SIGTERM は `run()` の `finally`（= `stop()` + sidecar 削除の唯一経路）を経由しないため、**(i) `broker_stopped` が emit されず**（journal 末尾は `broker_started` / `token_issued` 等のまま）、**(ii) `daemon.json` / `admin.token` sidecar が削除されず state-dir に残置する**（D4）。`admin.token` は admin RPC の認証 secret なので、残置は (5) で明示破棄する。したがって停止確認手段も後始末も経路ごとに分ける。
+
+> **背景 daemon を graceful に止めたいとき（推奨代替）**: SIGTERM の代わりに **admin RPC `shutdown`（§3.8）** を叩けば、`run()` の `finally` を通って `broker_stopped` 記録 + sidecar 自動削除まで一括で済む（シグナル非依存）。admin token は `<state-dir>/admin.token` から読む。SIGTERM で止めた場合のみ (5) の sidecar 破棄が必要になる。
 
 ```bash
 # 1) 残っている broker ペインを close（token revoke される。close_pane の journal: pane_closed）
@@ -375,9 +444,9 @@ kill -0 <broker_pid> 2>/dev/null && echo "NG: daemon がまだ生きている"
 #       未読突合（enqueued vs drained）は §5(5) のスクリプトを実行する（ここでは重複させない）。
 ```
 
-> **runtime follow-up 候補（実装はこのタスクのスコープ外）**: runtime 側の SIGTERM ハンドラが SIGTERM 停止でも `broker_stopped` を emit するようになれば、停止確認を「broker_stopped を確認」に統一でき経路の場合分けが不要になる。本 runbook は手順の明文化に留め、runtime 実装は別 Issue 化を検討する。
+> **runtime follow-up 候補（実装はこのタスクのスコープ外）**: runtime 側の SIGTERM ハンドラが `run()` の `finally` 経路（`stop()` + `remove_sidecar`）を通すようになれば、SIGTERM 停止でも `broker_stopped` emit と sidecar 自動削除（`daemon.json` / `admin.token`）が走り、**停止確認の場合分けも (5) の sidecar 手動破棄も不要**になる。本 runbook は手順の明文化に留め、runtime 実装は別 Issue 化を検討する。現状の graceful 代替は admin RPC `shutdown`（§3.8）。
 
-### (5) 旧 token / queue store の破棄確認（`.state/broker/` の未読・bind 残存なし）
+### (5) 旧 token / queue store / sidecar の破棄確認（`.state/broker/` の未読・bind・sidecar 残存なし）
 
 ```bash
 # 未読（enqueue されたが drain で消されていない message）が残っていないか journal を突合する。
@@ -399,12 +468,25 @@ print(f"enqueued={enq} drained_msgs={drained_msgs} unread={unread}")
 print("OK: 未読なし" if unread <= 0 else f"NG: 未読 {unread} 件が残存（daemon 停止前に drain される必要）")
 PY
 
-# token / bind はプロセス内 in-memory（daemon 停止で消える。永続化されない）。
+# sidecar 残置の確認と破棄（D4）。graceful 停止（SIGINT / admin RPC shutdown）なら
+# run() の finally が daemon.json / admin.token を自動削除済み。SIGTERM で止めた場合は
+# 両者が残置するので明示破棄する。admin.token は admin RPC の認証 secret なので必ず消す。
+for f in admin.token daemon.json; do
+  if [ -e "$BROKER_STATE/$f" ]; then
+    echo "残置: $BROKER_STATE/$f（SIGTERM 停止の名残。破棄する）"
+    rm -f "$BROKER_STATE/$f"   # rm 不可環境では shred/truncate 等、運用ルールに従う
+  else
+    echo "OK: $f なし（graceful 停止で削除済み or 未生成）"
+  fi
+done
+
+# per-agent token / bind 表はプロセス内 in-memory（daemon 停止で消える。永続化されない）。
+# 永続するのは journal（queue.jsonl）と、SIGTERM 残置時の sidecar 2 ファイルだけ。
 # queue store ファイルを破棄して跡を残さない（rm 不可環境では truncate / アーカイブ）:
 #   mv "$BROKER_STATE" "$BROKER_STATE.archived-$(date +%Y%m%d)"   # または運用ルールに従い削除
 ```
 
-> **token / bind の永続性**: `AgentBind` は daemon プロセスの in-memory のみ（journal には `token_issued` の事実は残るが token 値・bind 表は永続化されない）。daemon を停止すれば bind は消える。残るのは `queue.jsonl`（journal + 未 drain message）だけなので、(5) はこのファイルの未読突合と破棄に閉じる。
+> **token / bind / sidecar の永続性（D4）**: per-agent の `AgentBind`（token 値・bind 表）は daemon プロセスの in-memory のみで永続化されない（journal には `token_issued` の事実は残るが値は残らない）。**例外は admin token**: これは `<state-dir>/admin.token`（0600）として**ディスクに書かれる秘密**で、graceful 停止（SIGINT / admin RPC shutdown）なら `run()` の `finally`（`remove_sidecar`）が `daemon.json` とともに自動削除するが、**SIGTERM 停止では削除されず残置する**。したがって state-dir に残りうるのは `queue.jsonl`（journal + 未 drain message）に加え、SIGTERM 残置時の `admin.token` / `daemon.json` の計 3 ファイル。(5) はこの未読突合と、これら 3 ファイルの破棄に閉じる。
 
 ---
 
