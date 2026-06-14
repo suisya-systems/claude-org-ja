@@ -26,13 +26,14 @@ core-harness>=0.3.2,<0.4
 # PyPI via Trusted Publisher; pinned to the 0.1.x range. 0.x bumps may be
 # breaking per the runtime's compatibility policy, so widen this pin
 # deliberately when adopting a new minor.
-# Floor bumped to 0.1.22 for the broker admin surface (admin RPC and the
-# --root-role/--root-cwd flags) exercised by broker-dogfood-runbook; ja#565
-# flagged the pin mismatch against the installed runtime. The 0.1.17 floor
-# (transport surface descriptor claude_org_runtime.transport consumed by
-# tools/transport.py — Epic #6 next-stage D / ja#513) is subsumed. Keep in
-# sync with pyproject.toml.
-claude-org-runtime>=0.1.22,<0.2
+# Floor bumped to 0.1.26 to adopt the WezTerm Windows fixes (0.1.25 cli
+# window flicker suppression, runtime#87; 0.1.26 child-pane tab aggregation,
+# runtime#88). The 0.1.22 floor (broker admin surface — admin RPC and the
+# --root-role/--root-cwd flags exercised by broker-dogfood-runbook; ja#565)
+# and the 0.1.17 floor (transport surface descriptor
+# claude_org_runtime.transport consumed by tools/transport.py — Epic #6
+# next-stage D / ja#513) are subsumed. Keep in sync with pyproject.toml.
+claude-org-runtime>=0.1.26,<0.2
 
 # tools/gen_worker_brief.py reads TOML config. tomllib is stdlib in 3.11+,
 # but ja still supports 3.10 (CLAUDE.local.md template recommends 3.10).
