@@ -49,7 +49,7 @@ allowed-tools:
 > - **spawn 儀式（folder-trust 承認 + dev-channel sidecar 承認の再導入）**: resume は spawn しないので承認手順は使わないが、broker の spawn 時（org-start / org-delegate 側）は `--mcp-config <broker>` の **folder-trust プロンプト**承認に**加えて**、push 一次のため channel sidecar の `--dangerously-load-development-channels server:org-broker-channel` による「Load development channel?」承認（spawn-flow 3-3b の再導入）を機械承認する（ratified §5/§8.5 への加算。設計 broker-native-roles.md §9.5）。
 > - **エラー分岐（broker 追加コード）**: renga コードに加え broker は `[token_invalid]` / `[session_invalid]` / `[tool_not_authorized]` / `[no_backend]`（= adapter_unavailable）/ `[nudge_failed]` / `[peer_not_found]` / `[name_taken]` を返しうる（未知コードは default-branch で扱う）。一覧は [`.claude/skills/org-delegate/references/renga-error-codes.md`](../org-delegate/references/renga-error-codes.md) の broker 節を参照。
 >
-> `new_tab` / `focus_pane` は broker surface に**無い**（意図的除外）。契約面の正本は [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) Surface 8（ratified 2026-06-14。push 一次への additive 改訂提案 S3 を併記済・ratified 本文不変更）、設計 SoT は transport-lab `docs/design/broker-native-roles.md` §9（push 一次再設計）/ `docs/design/ja-migration-plan.md` §5.2(ii)・§8。broker 実走（dogfood）は Epic #6 Issue G スコープで本スキルの既定経路ではない。
+> `new_tab` / `focus_pane` は broker surface に**無い**（意図的除外）。契約面の正本は [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) Surface 8（ratified 2026-06-14。push 一次への additive 改訂 S3 が ratified 済み（2026-06-15）・既存 ratified 本文不変更）、設計 SoT は transport-lab `docs/design/broker-native-roles.md` §9（push 一次再設計）/ `docs/design/ja-migration-plan.md` §5.2(ii)・§8。broker 実走（dogfood）は Epic #6 Issue G スコープで本スキルの既定経路ではない。
 
 ## Step 0: 自分の identity を確認する
 
