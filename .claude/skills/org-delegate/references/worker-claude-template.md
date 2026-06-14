@@ -140,7 +140,7 @@ done: {commit SHA 短縮形} {変更ファイル名}
 
 1. **完了報告**: renga-peers で **窓口（`secretary`）** に報告する
    - 送信方法: `mcp__renga-peers__send_message(to_id="secretary", message="...")`（`secretary` は renga layout で固定された pane name）
-   - **輸送層 両系（`ORG_TRANSPORT`: 既定 `renga` / opt-in `broker`）**: 上記は **既定 `renga`**（`ORG_TRANSPORT` 無設定）。`ORG_TRANSPORT=broker`（opt-in・切戻し可）なら完全修飾名が **`mcp__renga-peers__send_message` → `mcp__org-broker__send_message`** に機械置換される（`to_id` 等の引数形・宛先は同一）。窓口からの ack 等の受信は in-band push ではなく **pane-local ナッジ + `mcp__org-broker__check_messages` で pull**（「ナッジを見たら `check_messages`」に変わるだけ）。`[pane_not_found]` 系の代わりに broker は `[peer_not_found]` を返しうるが、下記フォールバック（numeric pane id 送信）は同型に効く。既定 renga の手順は不変
+   - **輸送層 両系（`ORG_TRANSPORT`: 既定 `renga` / opt-in `broker`）**: 上記は **既定 `renga`**（`ORG_TRANSPORT` 無設定）。`ORG_TRANSPORT=broker`（opt-in・切戻し可）なら完全修飾名が **`mcp__renga-peers__send_message` → `mcp__org-broker__send_message`** に機械置換される（`to_id` 等の引数形・宛先は同一）。窓口からの ack 等の受信は **push 一次**に再設計済（runtime push-first 0.1.24+、transport-lab `docs/design/broker-native-roles.md` §9）＝ペイン同居の channel sidecar（`server:org-broker-channel`）が `notifications/claude/channel` で本文を idle セッションへ注入する。**pull はフォールバック層**: sidecar 不在 / unhealthy / channel 非対応時のみ **pane-local ナッジ + `mcp__org-broker__check_messages` で pull**（既存 pull prose は撤回せずフォールバック cadence として読む。§9.6）。`[pane_not_found]` 系の代わりに broker は `[peer_not_found]` を返しうるが、下記フォールバック（numeric pane id 送信）は同型に効く。既定 renga の手順は不変
    - **注意: ディスパッチャー（指示を送ってきた相手）ではなく、窓口に送ること**
    - **フォールバック**: `to_id="secretary"` が `[pane_not_found]` で返る場合は、`renga --layout ops` 以外の経路で窓口ペインが起動された可能性がある。その場合は DELEGATE メッセージ本文で指定された numeric pane id（例: `to_id="1"`）を使って送信する。窓口側で `/org-start` Step 0 の `set_pane_identity` 自動修復が走れば、以降は `to_id="secretary"` が使える
    - 何を完了したか
@@ -153,6 +153,7 @@ done: {commit SHA 短縮形} {変更ファイル名}
    - minimal モードではこのサマリは不要（trivial fix に負荷をかけない。上記「Codex セルフレビュー手順」節の 1 行 `done:` 報告のまま）
 
 2. **PR 作成後はペインを保持してレビュー指摘待機**: 窓口から「push / PR 作成完了」の連絡が来てもペインは閉じない。GitHub 側で PR レビュー指摘が来たら同ペインで修正コミットを積む（新ワーカー再派遣だと Issue / diff / 判断境界の再構築コストを払うため）。「閉じてよい」「マージ済み」など窓口からの明示クローズ指示が来るまで待機状態を維持する。
+   - **輸送層 両系（`ORG_TRANSPORT=broker` 時の受信）**: 既定 `renga` ではレビュー指摘 / クローズ指示が in-band push で届く。broker は **push 一次**に再設計済（transport-lab `docs/design/broker-native-roles.md` §9）で、保持中の idle ペインにも channel sidecar（`server:org-broker-channel`）が `notifications/claude/channel` で本文を注入するため、待機していても指摘 / クローズ指示を取りこぼさない。**push 失効時のフォールバック層**として、sidecar 不在 / unhealthy 時は worker が自身の cadence で能動的に `mcp__org-broker__check_messages` する（§9.6 読み替え表の worker cadence: 実行中=ターン境界 poll / 完了後レビュー待機=bounded `/loop` poll。ナッジが出れば契機になりうるが idle を起こさないため能動 poll が受信の正路。既存 pull cadence を撤回せずこの fallback として読む）。renga 枝の待機手順は不変。
 
 3. **振り返り記録**: 再利用可能な学びがあれば記録する
    - パス: {claude_org_path}/knowledge/raw/{YYYY-MM-DD}-{topic}.md
