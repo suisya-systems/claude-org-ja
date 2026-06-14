@@ -33,7 +33,7 @@ mcp__renga-peers__send_message(to_id="worker-nonexistent", message="hi")
 
 ## Broker（`ORG_TRANSPORT=broker`）の追加コードとツール名射影
 
-本ファイルは **既定 `renga`**（`ORG_TRANSPORT` 無設定）の error code を正典として記述する。`ORG_TRANSPORT=broker`（opt-in・切戻し可）では MCP サーバー名が `org-broker` になり、ツールの **完全修飾名が `mcp__renga-peers__*` → `mcp__org-broker__*`** に機械置換される（wire format `[<code>] <message>` の抽出方法・分岐方針は同一）。broker は上表の共有コードのうち **`pane_not_found` / `last_pane` / `invalid-params` を意味が一致するものとして再利用**し、以下の broker 固有コードを **加算**する（renga harness は影響を受けず、broker harness も未知コードは default-branch で扱う）。契約の正本は [`docs/contracts/backend-interface-contract.md`](../../../../docs/contracts/backend-interface-contract.md) Surface 8（broker auth & delivery、提案・批准待ち）§8.7。
+本ファイルは **既定 `renga`**（`ORG_TRANSPORT` 無設定）の error code を正典として記述する。`ORG_TRANSPORT=broker`（opt-in・切戻し可）では MCP サーバー名が `org-broker` になり、ツールの **完全修飾名が `mcp__renga-peers__*` → `mcp__org-broker__*`** に機械置換される（wire format `[<code>] <message>` の抽出方法・分岐方針は同一）。broker は上表の共有コードのうち **`pane_not_found` / `last_pane` / `invalid-params` を意味が一致するものとして再利用**し、以下の broker 固有コードを **加算**する（renga harness は影響を受けず、broker harness も未知コードは default-branch で扱う）。契約の正本は [`docs/contracts/backend-interface-contract.md`](../../../../docs/contracts/backend-interface-contract.md) Surface 8（broker auth & delivery、ratified 2026-06-14）§8.7。
 
 | Code | 意味 | 出る操作 | 推奨挙動 |
 |---|---|---|---|

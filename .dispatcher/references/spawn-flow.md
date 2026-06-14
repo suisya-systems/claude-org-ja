@@ -7,7 +7,7 @@
 > 2. **spawn 儀式（dev-channel 承認 → folder-trust 承認）**: renga の `spawn_claude_pane` は `--dangerously-load-development-channels server:renga-peers` を注入し「Load development channel?」プロンプトを Enter 承認する（3-3b）。broker は **`--mcp-config <broker>` を注入**し、承認プロンプトは Claude Code の **folder-trust プロンプト**に変わる（同じく `send_keys(enter=true)` で機械承認、手順形は同型）。
 > 3. **エラー分岐（broker 追加コード）**: renga のエラーコード（`[split_refused]` / `[pane_not_found]` / `[cwd_invalid]` / `[invalid-params]` 等、3-2 のエラーハンドリング参照）に加え、broker は `[token_invalid]` / `[session_invalid]`（token 系）・`[tool_not_authorized]`（auth_role tier gating）・`[no_backend]`（adapter 不在 = adapter_unavailable）・`[nudge_failed]`・`[peer_not_found]` / `[name_taken]` を返しうる。未知コードは renga と同じく default-branch で escalate 経路に流す。
 >
-> なお `new_tab` / `focus_pane` は broker surface に**無い**（意図的除外。本フローは元々使わない）。契約面の正本は [`docs/contracts/backend-interface-contract.md`](../../docs/contracts/backend-interface-contract.md) Surface 8（提案・批准待ち）、設計 SoT は transport-lab `docs/design/ja-migration-plan.md` §5.2(ii) / §3。broker 実走（dogfood）は Issue G スコープで本ファイルの既定経路ではない。
+> なお `new_tab` / `focus_pane` は broker surface に**無い**（意図的除外。本フローは元々使わない）。契約面の正本は [`docs/contracts/backend-interface-contract.md`](../../docs/contracts/backend-interface-contract.md) Surface 8（ratified 2026-06-14）、設計 SoT は transport-lab `docs/design/ja-migration-plan.md` §5.2(ii) / §3。broker 実走（dogfood）は Issue G スコープで本ファイルの既定経路ではない。
 
 > **state-db cutover (M4, Issue #267)**: 構造化セクション
 > (Worker Directory Registry / Active Work Items / Dispatcher / Curator / Status) の write は
