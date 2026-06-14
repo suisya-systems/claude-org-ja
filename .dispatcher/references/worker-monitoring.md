@@ -10,6 +10,19 @@
 
 ### 監視ループ 1 サイクル (3 分おき)
 
+> **時刻はすべて UTC（決定的コマンド由来、JST-as-Z 厳禁）**: 本ファイルの `now` と、dispatcher
+> 状態ファイルに書く全タイムスタンプ（`worker-idle-state.json` の `last_check_ts` /
+> `last_content_change_ts`、`curate-inflight.json` の `started_at` / `last_inspect_ts`）は
+> **必ず UTC** で、`date -u +%Y-%m-%dT%H:%M:%SZ`（PowerShell 環境は
+> `(Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")`）の出力をそのまま用いる。
+> local 時刻（JST 等）を手書きして末尾に `Z` を付けてはならない。これらの値は journal /
+> events table の `occurred_at`（core-harness が ISO-8601 UTC で記帳）や `started_at` と
+> `now - <ts>` で経過比較されるため、1 つでも local-as-Z が混入すると経過が負値 / 過大になり、
+> Step 5.2 の peer-msg 痕跡判定（`occurred_at >= last_content_change_ts`）や Step 5.3 の
+> curate timeout（`now - started_at`）が破綻する（JST を `Z` で書くと約 9 時間先の未来時刻になり、
+> 自動クローズが永久不発 → curator ペイン孤立）。`started_at` の決定的取得は
+> [`.dispatcher/references/pane-close.md` 5-3](pane-close.md) を一次参照。
+
 各サイクルで以下を順次実行する:
 
 1. **`mcp__renga-peers__poll_events` で直近のペイン lifecycle を drain** (タイムアウト付きで 1 回だけ):
@@ -626,8 +639,8 @@
    (c) **ペイン消失の検知** ((a) で CURATE_* を受領しなかったサイクルのみ): curator の生存を確認する。判定材料は (i) Step 1 の `poll_events` で curator の `pane_exited` を観測した、(ii) `list_panes` の結果に `name == "curator"` が不在 — の 2 系統。**worker 不在の reduced mode (下記 7) では Step 3 が skip されるため、(ii) は本 step 内で `mcp__renga-peers__list_panes` を直接呼んで評価する** (Step 3 が走ったサイクルではその結果を再利用してよい)。これにより `events_dropped` / cursor ギャップで `pane_exited` を取り逃しても list_panes 側で必ず検知できる。消失を検知したら inflight を削除し、CURATE_* 未受領のまま消えた旨を窓口に informational 報告する (curator 側クラッシュの可能性。閾値超過分はファイルとして残るため、次回 worker close の閾値チェックで再評価され取りこぼしにはならない)
 
    (b) **timeout 管理** (受領が無いサイクル): `now - started_at > CURATE_HARD_CAP_MIN` なら**無条件で**下記の打ち切り処理。そうでなく `now - started_at > CURATE_TIMEOUT_MIN` なら、`mcp__renga-peers__inspect_pane(target="curator", lines=30)` の出力 hash を inflight の `last_inspect_hash` と突き合わせ、**サイクル間の hash 比較で決定的に**判定する (単発 inspect から「作業継続中か」を主観判定しない。hash 比較は Step 5.1 (d) の secretary-pane-snapshot と同じ idiom):
-   - `last_inspect_hash == null` (timeout 後の初回観測) → 現 inspect 出力の hash / 現在時刻を `last_inspect_hash` / `last_inspect_ts` に書いて継続 (このサイクルでは閉じない。次サイクル以降の比較基準になる)
-   - 現 hash ≠ `last_inspect_hash` (前回観測から画面が変化 = 作業継続中) → `extended: true` と現 hash / 現在時刻を書いて継続 (hard cap 到達まで同様に再評価)
+   - `last_inspect_hash == null` (timeout 後の初回観測) → 現 inspect 出力の hash / 現在時刻 (UTC、本サイクルの `date -u` 由来 `now`) を `last_inspect_hash` / `last_inspect_ts` に書いて継続 (このサイクルでは閉じない。次サイクル以降の比較基準になる)
+   - 現 hash ≠ `last_inspect_hash` (前回観測から画面が変化 = 作業継続中) → `extended: true` と現 hash / 現在時刻 (UTC) を書いて継続 (hard cap 到達まで同様に再評価)
    - 現 hash == `last_inspect_hash` (1 サイクル ≈ 3 分以上完全静止 = stall / エラー表示 / 入力待ち) → **打ち切り処理**: 観測内容を添えて窓口に informational 報告 → `close_pane(target="curator")` → inflight 削除。curate は途中終了でも knowledge/ は move-then-mark 設計のため破壊的な中間状態は残らない
 
    `curate-inflight.json` は handover / resume / `/clear` で**保持される**内部状態ファイル (`.dispatcher/CLAUDE.md` 「監視 gap を埋める内部状態ファイル」)。resume 後の 1 サイクル目から `started_at` 起点で timeout 管理が継続する。

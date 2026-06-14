@@ -179,9 +179,27 @@ mcp__renga-peers__spawn_claude_pane(
 `../.state/dispatcher/curate-inflight.json`）。boot 確認・指示送信の途中で dispatcher が
 `/clear` / crash しても、実在する curator ペインが untracked にならないようにするため:
 
+> **`started_at` は決定的 UTC コマンドの出力をそのまま埋める（手書き厳禁・JST 禁止）**:
+> [`.dispatcher/references/worker-monitoring.md` Step 5.3](worker-monitoring.md#step-5-3) の timeout 管理は
+> `now - started_at`（`now` は `date -u` 由来の UTC）で経過を測るため、`started_at` も
+> **必ず UTC** でなければならない。dispatcher が現在の local 時刻（JST 等）を手で書いて末尾に
+> `Z` を付けると、UTC より進んだ未来時刻が記録され（JST なら約 9 時間先）、`now - started_at`
+> が負値になって 20 分 / 40 分の自動クローズが**永久に不発**になる（curator ペインが孤立する）。
+> 値は次のコマンドの出力をそのまま埋めること（prose の「ISO-8601 UTC」という説明では local
+> 時刻が混入しうるため、明示コマンドで決定的に得る）:
+>
+> ```bash
+> # POSIX (bash) — dispatcher の既定。出力例（UTC）: 2026-06-14T00:26:00Z
+> date -u +%Y-%m-%dT%H:%M:%SZ
+> ```
+> ```powershell
+> # PowerShell 環境での等価（UTC 固定。Get-Date の既定は local なので ToUniversalTime 必須）
+> (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+> ```
+
 ```json
 {
-  "started_at": "<ISO-8601 UTC、spawn 直後の現在時刻>",
+  "started_at": "<上記 date -u コマンドの出力をそのまま。UTC のみ、JST-as-Z 禁止>",
   "reasons": ["<5-1 の JSON の reasons[] をそのまま>"],
   "trigger_task_id": "<本 CLOSE_PANE の対象だった task_id>",
   "extended": false,

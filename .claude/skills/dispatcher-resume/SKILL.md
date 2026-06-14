@@ -73,7 +73,11 @@ allowed-tools:
      DISPATCHER_RESUME_FAILED: handover ファイルがありません。
      /org-start でディスパッチャーを cold start してください。
      ```
-2. フロントマター `created_at` を見て鮮度を判定:
+2. フロントマター `created_at` を見て鮮度を判定する。`created_at` は決定的 UTC で書かれている
+   ([`/dispatcher-handover`](../dispatcher-handover/SKILL.md)) ので、**比較用の `now` も決定的 UTC で取得する**
+   （`date -u +%Y-%m-%dT%H:%M:%SZ`、PowerShell 環境は
+   `(Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")`）。local(JST)時刻で `now` を
+   取ると `now - created_at` が約 9 時間ぶれ、24h / 7d 境界付近で鮮度を誤判定するため:
    - 24 時間以内 → そのまま採用
    - 24 時間超〜7 日以内 → secretary に警告（「handover が古い、続行する旨」）
    - 7 日超 → 採用せず `/org-start` への切り替えを推奨し停止
@@ -143,8 +147,13 @@ secretary に **報告して** 判断を仰ぐ（勝手に再 spawn / status 変
 1. **inflight 再生成（先に実行）**: Step 4 の `list_peers` / `list_panes` に
    `name == "curator"` のペインが生きているのに `.state/dispatcher/curate-inflight.json`
    が無い場合（前 session が spawn 直後の inflight 書き込み前に途切れた等）、untracked
-   curator を放置しないよう `started_at = 現在時刻` / `reasons: []` / `extended: false` /
+   curator を放置しないよう `started_at = <決定的 UTC>` / `reasons: []` / `extended: false` /
    `last_inspect_hash: null` / `last_inspect_ts: null` で inflight を**再生成する**。
+   `started_at` は **`date -u +%Y-%m-%dT%H:%M:%SZ`**（PowerShell 環境は
+   `(Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")`）の出力をそのまま埋め、
+   **手書きの local(JST)時刻を `Z` で書かない**（再生成 started_at が未来時刻になると Step 5.3 の
+   `now - started_at` が負値となり curator が永久に孤立する。決定的取得の正本は
+   [`.dispatcher/references/pane-close.md` 5-3](../../../.dispatcher/references/pane-close.md)）。
    以降の判定はこの再生成後の状態で行う（= このケースは必ず 2 の再開条件を満たす）
 2. **`/loop 3m` 再開条件**: handover の `active_worker_count > 0`、state.db の
    active worker dirs が非空、**または `curate-inflight.json` が存在する**
