@@ -32,7 +32,11 @@ core-harness>=0.3.2,<0.4
 # --root-role/--root-cwd flags exercised by broker-dogfood-runbook; ja#565)
 # and the 0.1.17 floor (transport surface descriptor
 # claude_org_runtime.transport consumed by tools/transport.py — Epic #6
-# next-stage D / ja#513) are subsumed. Keep in sync with pyproject.toml.
+# next-stage D / ja#513) are subsumed. The 0.1.24 floor (broker push-first
+# delivery — per-pane channel_sidecar + daemon delivery lifecycle +
+# RECEIVE_MODE=push, PR #24; the runtime surface the ja push-first prose and
+# the contract S3 amendment proposal follow, transport-lab#23/#18) is likewise
+# subsumed by 0.1.26. Keep in sync with pyproject.toml.
 claude-org-runtime>=0.1.26,<0.2
 
 # tools/gen_worker_brief.py reads TOML config. tomllib is stdlib in 3.11+,
