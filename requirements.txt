@@ -26,18 +26,21 @@ core-harness>=0.3.2,<0.4
 # PyPI via Trusted Publisher; pinned to the 0.1.x range. 0.x bumps may be
 # breaking per the runtime's compatibility policy, so widen this pin
 # deliberately when adopting a new minor.
-# Floor bumped to 0.1.26 to adopt the WezTerm Windows fixes (0.1.25 cli
-# window flicker suppression, runtime#87; 0.1.26 child-pane tab aggregation,
-# runtime#88). The 0.1.22 floor (broker admin surface — admin RPC and the
-# --root-role/--root-cwd flags exercised by broker-dogfood-runbook; ja#565)
-# and the 0.1.17 floor (transport surface descriptor
-# claude_org_runtime.transport consumed by tools/transport.py — Epic #6
-# next-stage D / ja#513) are subsumed. The 0.1.24 floor (broker push-first
-# delivery — per-pane channel_sidecar + daemon delivery lifecycle +
+# Floor bumped to 0.1.27 to adopt the broker-native push-first wiring fixes
+# (0.1.27 delegate-plan accepts the broker-native list_panes snapshot,
+# runtime#89; secretary(root) startup path wires org-broker-channel so
+# push-first delivery reaches the secretary too, runtime#90). The 0.1.26 floor
+# (WezTerm Windows fixes — 0.1.25 cli window flicker suppression, runtime#87;
+# 0.1.26 child-pane tab aggregation, runtime#88), the 0.1.24 floor (broker
+# push-first delivery — per-pane channel_sidecar + daemon delivery lifecycle +
 # RECEIVE_MODE=push, PR #24; the runtime surface the ja push-first prose and
-# the contract S3 amendment proposal follow, transport-lab#23/#18) is likewise
-# subsumed by 0.1.26. Keep in sync with pyproject.toml.
-claude-org-runtime>=0.1.26,<0.2
+# the contract S3 amendment proposal follow, transport-lab#23/#18), the 0.1.22
+# floor (broker admin surface — admin RPC and the --root-role/--root-cwd flags
+# exercised by broker-dogfood-runbook; ja#565), and the 0.1.17 floor (transport
+# surface descriptor claude_org_runtime.transport consumed by tools/transport.py
+# — Epic #6 next-stage D / ja#513) are subsumed by 0.1.27. Keep in sync with
+# pyproject.toml.
+claude-org-runtime>=0.1.27,<0.2
 
 # tools/gen_worker_brief.py reads TOML config. tomllib is stdlib in 3.11+,
 # but ja still supports 3.10 (CLAUDE.local.md template recommends 3.10).
