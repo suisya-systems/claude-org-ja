@@ -16,15 +16,18 @@
 
 ## 実行手順
 
+デザインレビューは **実装前で diff が存在しない**ため、差分セルフレビューの `codex exec review`（review surface）は適用できない。設計内容・対象ファイル・契約参照を渡す **`codex exec` のプロンプト形を維持**する。方式ベンチマーク（[`knowledge/curated/codex.md`](../../../../knowledge/curated/codex.md)）では、重い多観点 exec プロンプトが subtle / 設計レベルの Blocker を拾う breadth に優れることが実測されており、デザインレビューはまさにその breadth が要る用途であるため、ここでは exec プロンプト形が適切（差分セルフレビューの review surface 切替とは別判断）。
+
 ```bash
-codex exec --skip-git-repo-check "<task-id> の design review。\
+codex exec --skip-git-repo-check -m gpt-5.5 -c model_reasoning_effort=medium \
+  "<task-id> の design review。\
   タスク内容: <description>。\
   対象ファイル: <target paths>。\
   関連 contract / 参考: <docs paths>。\
   事前設計上の Blocker / Major / Minor / Nit を分類し、各指摘に対象ファイル:行番号と根拠を添えて日本語で簡潔に。"
 ```
 
-`codex:rescue` skill は使わない（CLAUDE.local.md の禁止事項）。`codex exec` 直打ちのみ。
+`codex:rescue` skill は使わない（CLAUDE.local.md の禁止事項）。`codex exec` 直打ちのみ。`gpt-5.5-codex` モデル / API キー surface は ChatGPT アカウントで実行不可のため `-m gpt-5.5` を明示する。ハングガード（stdin `< /dev/null`・ラウンド別ログ・0 byte 5–10 分で kill）は [`knowledge/curated/codex.md`](../../../../knowledge/curated/codex.md) 参照。
 
 ### 監視ロール待ち合わせ設計の追加 3 問
 

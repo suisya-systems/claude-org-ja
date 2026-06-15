@@ -140,7 +140,7 @@ Five error / anomaly classes are recognized. Each lists: who detects, who is not
 - **Abort condition**: User declines further work, OR worker fix loop exceeds intervention triggers in `.claude/skills/org-delegate/SKILL.md` ワーカー監視と介入判定 (30 min same-phase / 1 h silent / Codex round-4).
 
 ### E5 — Codex Blocker / Major (worker self-review, full mode)
-- **Detection**: Worker's own `codex exec` review.
+- **Detection**: Worker's own `codex exec review` (review surface) diff self-review.
 - **Handling rule**: 3-round cap on same-category Blocker/Major findings; on 4th round the worker MUST stop and report to secretary "design issue — request scope reduction" (per `worker-claude-template.md` § Codex セルフレビュー手順).
 - **Notification path**: worker → secretary direct.
 - **Retry / abort**: Retry is bounded by the 3-round cap; abort condition is the round-4 declaration.
