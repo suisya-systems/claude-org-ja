@@ -94,7 +94,7 @@ probe / 検証 / fuzzing 系タスク（sandbox 探索・hook 動作確認・フ
 
 **追加ゲートとしての Codex セルフレビュー（任意。codex CLI がインストールされていれば実行）:**
 
-commit 完了後・完了報告前に **`codex` CLI が available なら** `codex exec --skip-git-repo-check` 直打ちでセルフレビューを実行する。これは `full` の上に乗る追加ゲートであり、未導入環境では上記「`full` の前提」のみで完了報告に進んで構わない。
+commit 完了後・完了報告前に **`codex` CLI が available なら** `codex exec review`（review surface）でセルフレビューを実行する（`codex exec` 直打ちの長文プロンプト形は廃止。review surface は中小 diff で約 2 倍速く、安全側 Blocker/Major のパリティは同等）。これは `full` の上に乗る追加ゲートであり、未導入環境では上記「`full` の前提」のみで完了報告に進んで構わない。
 
 availability check 例:
 ```bash
@@ -105,11 +105,14 @@ Get-Command codex -ErrorAction SilentlyContinue
 ```
 
 - `unavailable` の場合: セルフレビューを skip し、commit 後そのまま完了報告に進む（このセクション以下のラウンド規律・修正ループは適用しない）
-- `available` の場合: 以下のコマンドで実行する
+- `available` の場合: 以下のコマンドを**前景実行**する（`--base` にはこのブランチのベース（通常 `main`）を渡す。stdin は `< /dev/null` で明示クローズ。背景化 `&` + ログ redirect は完了を待たず指摘を読まずに完了報告してゲートを素通りする事故を招くため避ける）
 
 ```bash
-codex exec --skip-git-repo-check "このブランチの main からの差分をレビュー。Blocker/Major/Minor/Nit で分類し、各指摘に対象ファイル:行番号と根拠を添えて日本語で簡潔に"
+codex exec review --base main -m gpt-5.5 -c model_reasoning_effort=medium < /dev/null
 ```
+
+- review surface は内蔵レビュープロンプトで Blocker/Major 相当（P1/P2 等）を返す。**前景で出力を読んでから次に進む**（応答が長く来ない稀なケースのみ中断して skip 可）。**large diff（100 行超目安）では effort を上げない**（high-effort review は大 diff でスケールせず直打ちより遅くなる）。**large diff（100 行超目安）では effort を上げない**（high-effort review は大 diff でスケールせず直打ちより遅くなる）。
+- review surface は危険側 Major（false positive で gate 誤通過する系）は守るが、benign な safe-side Major（過剰 polling 方向の false negative）や ReDoS 級の付加バグを取りこぼしうる。設計に近い変更で深掘りが要る場合は窓口に design review 併用を相談する。詳細・実測根拠の SoT は [`knowledge/curated/codex.md`](../../../../knowledge/curated/codex.md)。
 
 `codex` を実行した場合のみ以下が適用される:
 - Blocker / Major は修正コミットを積み、再レビュー
@@ -130,7 +133,7 @@ done: {commit SHA 短縮形} {変更ファイル名}
 - 振り返り記録（`knowledge/raw/`）も minimal では **不要**（trivial fix に再利用可能な学びはない前提）。非自明な発見があれば `full` と同じ手順で 1 件作ってよい
 
 ### 禁止事項（両モード共通・codex を使う場合）
-`codex:rescue` スキルは使用しないこと（過去に 18 分超ハングした実害あり。`codex exec` 直打ちに切り替えると正常動作した）。codex 未導入環境ではこの注記は無関係。
+`codex:rescue` スキルは使用しないこと（過去に 18 分超ハングした実害あり。`codex exec review` / `codex exec` 系の直打ちは正常動作する）。`gpt-5.5-codex` モデルおよび API キー surface は ChatGPT アカウントでは実行不可（`-m gpt-5.5` を明示する）。codex 未導入環境ではこの注記は無関係。
 
 ## 作業完了時（必須・検証深度 `full` のみ）
 

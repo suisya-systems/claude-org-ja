@@ -41,15 +41,18 @@
 
 `full` の前提（codex の有無に関わらず必ず実施）: 既存テストスイート / lint / type-check 等、リポジトリで定義された通常検証を実行し、green を確認してから完了報告する。
 
-追加ゲート: commit 完了後・完了報告前に **`codex` CLI が available なら** `codex exec --skip-git-repo-check` 直打ちでセルフレビューを実行する。未導入環境では skip して通常の完了報告に進む。
+追加ゲート: commit 完了後・完了報告前に **`codex` CLI が available なら** `codex exec review`（review surface）で差分セルフレビューを実行する（`codex exec` 直打ちの長文プロンプト形は廃止。review surface は中小 diff で約 2 倍速・安全側 Blocker/Major のパリティは同等）。未導入環境では skip して通常の完了報告に進む。
 
 ```bash
-codex exec --skip-git-repo-check "このブランチの main からの差分をレビュー。Blocker/Major/Minor/Nit で分類し、各指摘に対象ファイル:行番号と根拠を添えて日本語で簡潔に"
+# --base はブランチのベース（通常 main）。前景実行して出力（Blocker/Major 相当）を読んでから次へ進む。
+codex exec review --base main -m gpt-5.5 -c model_reasoning_effort=medium < /dev/null
 ```
 
+- **前景実行する**（背景化 `&` + ログ redirect は、完了を待たず指摘を読まずに完了報告してゲートを素通りする事故を招く）。応答が長く来ない稀なケースのみ中断して skip 可。
 - Blocker / Major は修正コミットを積み再レビュー、同一指摘カテゴリで 3 ラウンド消せない場合は設計問題と判断し窓口に仕様縮小の判断を仰ぐ
 - Minor / Nit は原則残置し PR 本文に既知制限として明記
-- `codex:rescue` skill は使用しないこと（過去 18 分超ハングの実害あり、`codex exec` 直打ちのみ）
+- **large diff（100 行超目安）では effort を上げない**（high-effort review は大 diff でスケールせず遅くなる）。review surface は危険側 Major は守るが benign な safe-side false-negative / ReDoS 級を取りこぼしうる（深掘りが要る変更は窓口に design review 併用を相談）。詳細・実測根拠は claude-org リポジトリの `knowledge/curated/codex.md`
+- `codex:rescue` skill は使用しないこと（過去 18 分超ハングの実害あり、`codex exec review` / `codex exec` 系直打ちのみ）。`gpt-5.5-codex` / API キー surface は ChatGPT アカウントで実行不可（`-m gpt-5.5` 明示）
 
 **完了報告に人間向け理解サマリを必須化（full）**: 窓口がコードを精読せず、そのままユーザーへの承認提示に使えるよう、完了報告に以下 3 点を必ず含める:
 1. **最重要の変更点（N 個）**: このタスクで実際に変えたことを効果の大きい順に N 個（目安 3〜5 個、各 1〜2 行、diff を開かず要旨が掴める粒度）
