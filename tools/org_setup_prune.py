@@ -713,12 +713,14 @@ def process_user_common_allowlist(
             file=sys.stderr,
         )
         return 2
-    if flag == _transport.DEFAULT_TRANSPORT:
-        # 既定 renga: 不変保証のため file には一切触れない (read もしない)。
+    if flag == _transport.TEMPLATE_TRANSPORT:
+        # renga (テンプレ著述面): 不変保証のため file には一切触れない (read もしない)。
+        # 基準はテンプレ著述面であって既定 transport ではない (Epic #586 で既定が
+        # broker にフリップしても、no-op になるのは renga 解決時のみ)。
         print(
-            "[org_setup_prune] user_common allowlist: transport=renga (既定); "
+            "[org_setup_prune] user_common allowlist: transport=renga; "
             "no-op — ~/.claude/settings.json は不変 (renga allowlist は org-setup "
-            "スキル + permissions.md が SoT)。ORG_TRANSPORT=broker で broker 射影。"
+            "スキル + permissions.md が SoT)。ORG_TRANSPORT 未設定/broker で broker 射影。"
         )
         return 0
 

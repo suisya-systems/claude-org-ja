@@ -14,12 +14,18 @@ runtime の transport surface descriptor
 モジュール 1 つを経由してそれを読む**。runtime には一切変更を加えず、ja は
 pin (``>=0.1.17``) で consume するだけ。
 
-非破壊の絶対条件 (§5.1 / §5.3):
+解決と既定 (§5.1 / §5.3、Epic #586 で既定フリップ):
 - transport flag の所在は環境変数 ``ORG_TRANSPORT`` (``renga`` | ``broker``)。
-- **既定 (無設定) = ``renga``** で現行と bit 等価 (既存生成物が 1 byte も
-  変わらない)。``broker`` は ``ORG_TRANSPORT=broker`` を明示した時のみ。
-- 解決順は runtime と整合: explicit 引数 > ``ORG_TRANSPORT`` env > 既定 renga。
-- renga 経路は削除せず併存 (opt-in / 切戻し可)。
+- **既定 (無設定) = ``DEFAULT_TRANSPORT``**。runtime 0.1.28 (Epic #586) で
+  ``DEFAULT_TRANSPORT`` が ``renga`` → ``broker`` にフリップしたため、無設定時の
+  既定は ``broker``。``renga`` は ``ORG_TRANSPORT=renga`` を明示した時に選ぶ
+  opt-in fallback として retain される (削除せず併存 / 切戻し可)。
+- 解決順は runtime と整合: explicit 引数 > ``ORG_TRANSPORT`` env > 既定
+  (``DEFAULT_TRANSPORT``)。
+- なお、生成器の付け替え基準は「既定 transport」ではなく
+  **テンプレートの著述面 (``TEMPLATE_TRANSPORT`` = renga)** で固定する
+  (``rewrite_allow_entries`` 参照)。既定が broker になっても、renga テンプレを
+  恒等扱いし broker へは付け替えで導出する不変条件は変わらない。
 """
 from __future__ import annotations
 
@@ -43,8 +49,20 @@ from claude_org_runtime.transport import (  # noqa: F401  (re-export)
 # rename / 削除を黙って取り逃さない (drift 防止, §5.2)。
 _SEND_MESSAGE_TOOL = "send_message"
 
+# ja の on-disk テンプレート (``permissions.md`` の allowlist) と golden fixture は
+# **renga 面 (``mcp__renga-peers__*``) で著述されている**。``rewrite_allow_entries``
+# はこの renga 面を「素材 (identity) 面」とみなし、broker へは renga→broker の
+# 付け替えで導出する。したがって付け替えの基準は **テンプレートの著述面 = renga**
+# であって「既定 transport」ではない。Epic #586 で ``DEFAULT_TRANSPORT`` が
+# renga→broker にフリップしても、テンプレートが renga で書かれている事実は不変
+# なので、この定数を ``DEFAULT_TRANSPORT`` から分離して固定する (両者を混同すると
+# 既定フリップ後に broker 側が恒等 no-op に化ける = #586 で顕在化したバグ)。
+# renga は opt-in fallback として retain されるため ``TRANSPORTS`` から消えない。
+TEMPLATE_TRANSPORT = "renga"
+
 __all__ = [
     "DEFAULT_TRANSPORT",
+    "TEMPLATE_TRANSPORT",
     "ENV_KEY",
     "TRANSPORTS",
     "TransportSurface",
@@ -67,7 +85,8 @@ def resolve(
     """有効な transport flag (``renga`` | ``broker``) を返す。
 
     解決順は runtime の ``transport_allowlist`` と整合: explicit 引数 >
-    ``ORG_TRANSPORT`` env > 既定 ``renga`` (§5.1)。``env=None`` は
+    ``ORG_TRANSPORT`` env > 既定 ``DEFAULT_TRANSPORT`` (§5.1)。Epic #586 で
+    既定は ``renga`` → ``broker`` にフリップ済み。``env=None`` は
     ``os.environ`` を読む。空文字列・未知値は ``ValueError``。
     """
     return resolve_transport(explicit, env=env)
@@ -156,9 +175,10 @@ def allow_entries(
     §5.3 (allowlist の flag-aware 化) の単一 SoT。runtime の
     :func:`claude_org_runtime.settings.generator.transport_allowlist`
     (= descriptor 駆動) を consume する。``flag`` 解決順は他のアクセサと整合:
-    explicit > ``ORG_TRANSPORT`` env > 既定 ``renga``。
+    explicit > ``ORG_TRANSPORT`` env > 既定 ``DEFAULT_TRANSPORT`` (Epic #586 で
+    broker にフリップ済み)。
 
-    既定 ``renga`` では全ロールが required-14 surface
+    ``renga`` では全ロールが required-14 surface
     (``mcp__renga-peers__*``)、``broker`` ではロールの auth tier に応じた
     ``mcp__org-broker__*`` 集合 (worker/curator=4・dispatcher/secretary=ops)
     を返す。未知ロールは broker で messaging tier (4) に落ちる
@@ -181,22 +201,26 @@ def rewrite_allow_entries(
     """allow / required_allow 等の文字列リスト中の renga MCP ブロックを、
     解決した transport の role-tier 集合へ置換して返す。
 
-    **非破壊の核 (§5.3)**: 既定 ``renga`` (``DEFAULT_TRANSPORT``) では
-    **入力をそのまま返す (恒等)** ので、既存の生成物・schema 期待は 1 byte も
-    変わらない (bit 等価)。``broker`` 等の非既定 flag のときだけ、renga の FQ
-    プレフィックス (``mcp__renga-peers__``) で始まるエントリ群を除去し、**最初に
-    現れた位置へ** transport の tier エントリを挿入する。``Bash(...)`` 等の
-    非 MCP エントリは順序を保って残す。
+    **非破壊の核 (§5.3)**: 入力テンプレートの著述面である ``renga``
+    (``TEMPLATE_TRANSPORT``) に解決された場合は **入力をそのまま返す (恒等)** ので、
+    既存の生成物・schema 期待は 1 byte も変わらない (bit 等価)。``broker`` に
+    解決された場合だけ、renga の FQ プレフィックス (``mcp__renga-peers__``) で
+    始まるエントリ群を除去し、**最初に現れた位置へ** transport の tier エントリを
+    挿入する。``Bash(...)`` 等の非 MCP エントリは順序を保って残す。
+
+    付け替えの基準は **テンプレートの著述面 (renga)** であって「既定 transport」
+    ではない。Epic #586 で ``DEFAULT_TRANSPORT`` が broker にフリップしても、
+    恒等扱いになるのは飽くまで ``renga`` 解決時のみ (``broker`` は常に付け替え)。
 
     renga ブロックが 1 つも無いリスト (例: mcp を持たないロールの per-role
-    テンプレート) は非既定 flag でも素通し (tier エントリを勝手に注入しない =
+    テンプレート) は broker でも素通し (tier エントリを勝手に注入しない =
     「renga ブロックの swap」に限定し、無いものは足さない)。
     """
     resolved = resolve(flag, env=env)
-    if resolved == DEFAULT_TRANSPORT:
-        # 既定 renga: 恒等。byte 等価を構造的に保証する。
+    if resolved == TEMPLATE_TRANSPORT:
+        # テンプレ著述面 renga: 恒等。byte 等価を構造的に保証する。
         return list(entries)
-    renga_prefix = surface(DEFAULT_TRANSPORT, env=env).fq_prefix
+    renga_prefix = surface(TEMPLATE_TRANSPORT, env=env).fq_prefix
     tier = allow_entries(role, flag=resolved, env=env)
     out: list = []
     inserted = False

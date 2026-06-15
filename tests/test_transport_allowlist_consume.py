@@ -71,18 +71,25 @@ def _secretary_template_allow() -> list:
 
 
 class RewriteIdentityUnderRenga(unittest.TestCase):
-    """flag=renga (既定) では rewrite_allow_entries が恒等 = bit 等価の核。"""
+    """flag=renga (テンプレ著述面 / opt-in fallback) では rewrite_allow_entries が
+    恒等 = bit 等価の核。恒等の基準はテンプレ著述面 (renga) であって既定 transport
+    ではない (Epic #586 で既定が broker にフリップしても renga 恒等は不変)。"""
 
     def test_explicit_renga_is_identity(self):
         allow = _secretary_template_allow()
         out = t.rewrite_allow_entries(allow, "secretary", flag="renga")
         self.assertEqual(out, allow)
 
-    def test_default_unset_env_is_renga_identity(self):
+    def test_default_unset_env_is_broker_swap(self):
+        # Epic #586: 無設定の既定が broker にフリップしたため、テンプレ (renga 著述)
+        # は broker tier へ付け替えられる (もはや恒等ではない)。恒等は明示 renga
+        # (test_explicit_renga_is_identity) が担保する。
         allow = _secretary_template_allow()
-        with _env_transport(None):  # ORG_TRANSPORT 無設定 = 既定 renga
+        with _env_transport(None):  # ORG_TRANSPORT 無設定 = 既定 broker
             out = t.rewrite_allow_entries(allow, "secretary")
-        self.assertEqual(out, allow)
+        self.assertFalse(any(e.startswith(RENGA_PREFIX) for e in out))
+        broker = [e for e in out if e.startswith(BROKER_PREFIX)]
+        self.assertEqual(broker, t.allow_entries("secretary", flag="broker"))
 
     def test_identity_for_all_org_roles(self):
         # renga ではどのロールでも入力をそのまま返す (per-role 手書きサブセットを
@@ -192,15 +199,17 @@ class OrgSetupPruneBitEquivalence(unittest.TestCase):
             )
         return written["permissions"]["allow"]
 
-    def test_renga_default_generates_template_allow_byte_equivalent(self):
-        # ORG_TRANSPORT 無設定 (既定 renga) → 生成 allow == permissions.md テンプレ。
+    def test_renga_explicit_generates_template_allow_byte_equivalent(self):
+        # ORG_TRANSPORT=renga (opt-in fallback) → 生成 allow == permissions.md
+        # テンプレ (renga 著述面で byte 等価 = 切戻し忠実性)。
         template_allow = _secretary_template_allow()
-        generated = self._write_secretary(None)
+        generated = self._write_secretary("renga")
         self.assertEqual(generated, template_allow)
 
-    def test_renga_explicit_equals_default(self):
+    def test_default_unset_equals_explicit_broker(self):
+        # Epic #586: 無設定の既定が broker にフリップ。明示 broker と生成物が一致。
         self.assertEqual(
-            self._write_secretary("renga"), self._write_secretary(None)
+            self._write_secretary(None), self._write_secretary("broker")
         )
 
     def test_broker_generates_org_broker_allow(self):
@@ -215,9 +224,9 @@ class CheckRoleConfigsTransportAware(unittest.TestCase):
 
     def test_renga_returns_same_object_identity(self):
         rs = {"required_allow": [RENGA_PREFIX + "send_message", RENGA_PREFIX + "list_panes"]}
-        with _env_transport(None):
+        with _env_transport("renga"):  # renga (opt-in fallback): schema を触らない
             out = crc._transport_aware_role_schema("secretary", rs)
-        self.assertIs(out, rs)  # 既定 renga: schema オブジェクトを一切触らない
+        self.assertIs(out, rs)  # renga 恒等: schema オブジェクトを一切触らない
 
     def test_no_required_allow_returns_same_object(self):
         rs = {"settings_paths": ["x"]}
@@ -269,7 +278,7 @@ class CheckRoleConfigsOnDiskBrokerValidation(unittest.TestCase):
         schema, root = self._settings_for("broker")
         sec = {**schema["roles"]["secretary"], "settings_paths": [".claude/settings.local.json"]}
         schema = {**schema, "roles": {**schema["roles"], "secretary": sec}}
-        with _env_transport(None):  # renga 期待
+        with _env_transport("renga"):  # renga 期待 (明示 fallback; 既定は broker)
             findings = crc.check_on_disk(
                 schema, root, include_untracked=True, role_override="secretary"
             )
@@ -281,7 +290,8 @@ class UserCommonAllowlistProjection(unittest.TestCase):
     """user_common (~/.claude/settings.json) の broker 射影 (Option A, §5.3)。
 
     curator / worker / dispatcher が継承する messaging MCP floor を broker 化する
-    経路。**renga は strict no-op (file を 1 byte も書かない)**。
+    経路。**renga (明示) は strict no-op (file を 1 byte も書かない)**。Epic #586 で
+    無設定の既定は broker にフリップしたため、無設定では broker floor を射影する。
     """
 
     _RENGA_SETTINGS = {
@@ -304,16 +314,22 @@ class UserCommonAllowlistProjection(unittest.TestCase):
         p.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
         return p
 
-    def test_renga_is_strict_no_op_file_untouched(self):
+    def test_default_unset_projects_broker_floor(self):
+        # Epic #586: 無設定の既定が broker にフリップしたため、user_common は
+        # broker messaging floor へ射影される (renga 時の strict no-op は
+        # test_renga_explicit_is_no_op が担保)。
         p = self._write_tmp(self._RENGA_SETTINGS)
-        before = p.read_bytes()
-        with _env_transport(None):  # 既定 renga
+        with _env_transport(None):  # ORG_TRANSPORT 無設定 = 既定 broker
             rc = osp.process_user_common_allowlist(
                 settings_path=p, dry_run=False, no_backup=True
             )
         self.assertEqual(rc, 0)
-        # byte 完全一致 (read-modify-write すら起こさない)。
-        self.assertEqual(p.read_bytes(), before)
+        allow = json.loads(p.read_text(encoding="utf-8"))["permissions"]["allow"]
+        self.assertFalse(any(e.startswith(RENGA_PREFIX) for e in allow))
+        broker = [e for e in allow if e.startswith(BROKER_PREFIX)]
+        self.assertEqual(
+            sorted(broker), sorted(t.allow_entries("user_common", flag="broker"))
+        )
 
     def test_renga_explicit_is_no_op(self):
         p = self._write_tmp(self._RENGA_SETTINGS)
