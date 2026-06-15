@@ -83,7 +83,7 @@ for _stream_name in ("stdout", "stderr", "stdin"):
 #
 # Rather than enumerate every negation/question phrasing, BOTH tokens
 # share one CLAUSE-SCOPED negative lookahead (``_NEG_Q``): the token is
-# rejected if a question 助詞 ``か`` or a negation (``ない`` / ``ありませ``)
+# rejected if a question 助詞 ``か`` or a negation (``ない`` / ``ませ``)
 # appears before the next sentence terminator (``。．！？!?`` / newline).
 # ``_CLAUSE`` is that "rest of the current clause" character class — note
 # it spans ``、`` (read-point), so a negation in a later comma-clause of
@@ -95,14 +95,27 @@ for _stream_name in ("stdout", "stderr", "stdin"):
 #     additionally NOT inside the noun ``完了報告`` (which appears in
 #     negatives like "完了報告は見当たりません") and NOT ``未完了`` (incomplete).
 #   * ``マージ済み`` matches the bare affirmative form.
-#   * ``_NEG_Q`` then rejects either token when the clause turns it into a
-#     negation or question (マージ済みではありません/じゃありません/でない,
-#     完了しましたか？/完了しましたでしょうか？, マージ済みか確認します).
+#   * The negation stem is ``ませ`` (not just the older ``ありませ``):
+#     ``ませ`` is the shared substring of the whole polite-negation
+#     ``ません`` family — ありません / ございません / しません / できません /
+#     見当たりません — so "マージ済みではございません" and "完了済みですが報告
+#     はございません" stay non-acking (Issue #591 false-positive fix). ``ませ``
+#     never occurs in an affirmative continuation (polite affirmative is
+#     ``ます``/``まし`` e.g. しました/します), so broadening it loses no real
+#     ack. ``ない`` still catches plain negation (ではない/していない).
+#   * The question 助詞 ``か`` is rejected ANYWHERE in the clause EXCEPT the
+#     indefinite ``何か`` ("something") when it is NOT clause-terminal. The
+#     ``(?<!何)か`` alternative keeps suppressing マージ済みか確認します
+#     (token-adjacent whether-か), 完了しましたか？, でしょうか？ and incidental
+#     とか/から/かつ (safe-side over-suppression), while a real completion
+#     that merely carries a mid-clause 何か now acks ("マージ済みですが何か
+#     問題あれば連絡します", Issue #591 false-negative fix). A clause-terminal
+#     何か (何か？) is re-rejected as a question via ``何か(?=[。．！？!?]|$)``.
 # These are deliberately stricter than the bare ``受領``/``届い`` tokens
 # above because the completion wording collides with the gate's own
 # ``完了報告`` prompt noun; erring toward extra polling is the safe side.
 _CLAUSE = r"[^。．！？!?\n]*"
-_NEG_Q = r"(?!" + _CLAUSE + r"(?:か|ない|ありませ))"
+_NEG_Q = r"(?!" + _CLAUSE + r"(?:(?<!何)か|何か(?=[。．！？!?\n]|$)|ない|ませ))"
 DEFAULT_ACK_PATTERN = (
     r"(届[いきけくこ]|受領|受け取"
     r"|マージ済み" + _NEG_Q +
