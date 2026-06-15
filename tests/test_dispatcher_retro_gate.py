@@ -201,6 +201,127 @@ class DispatcherRetroGateTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 2, msg=proc.stderr)
         self.assertIn("out of range", _final(proc)["reason"])
 
+    # --- Issue #584: completion-phrasing acks in DEFAULT_ACK_PATTERN ----
+
+    def test_secretary_merged_phrase_acks(self) -> None:
+        # "マージ済み" from the secretary must trip the default pattern so
+        # the gate passes without a per-invocation --ack-pattern override.
+        proc = _run({"messages": [
+            {"from_id": "secretary", "message": "PR #584 マージ済みです"},
+        ]}, attempt=1)
+        self.assertEqual(proc.returncode, 0, msg=proc.stderr)
+        final = _final(proc)
+        self.assertEqual(final["status"], "acked")
+        self.assertIn("マージ済み", final["raw"])
+
+    def test_secretary_kanryo_phrase_acks(self) -> None:
+        # "完了" from the secretary (without any 届い/受領 token) acks.
+        proc = _run({"messages": [
+            {"from_id": "secretary", "message": "対応完了しました"},
+        ]}, attempt=1)
+        self.assertEqual(proc.returncode, 0, msg=proc.stderr)
+        final = _final(proc)
+        self.assertEqual(final["status"], "acked")
+        self.assertIn("完了", final["raw"])
+
+    def test_non_secretary_completion_phrase_does_not_ack(self) -> None:
+        # The same completion wording from a non-secretary sender must
+        # still be gated out by _is_secretary_message (no false positive).
+        proc = _run({"messages": [
+            {"from_id": "worker-x", "message": "マージ済み、完了しました"},
+        ]}, attempt=1)
+        self.assertEqual(proc.returncode, 4, msg=proc.stderr)
+        self.assertEqual(_final(proc)["status"], "polling")
+
+    def test_kanryo_houkoku_negative_reply_does_not_ack(self) -> None:
+        # Regression: the secretary's negative reply "完了報告は見当たり
+        # ません" contains 完了 (inside the 完了報告 noun) but is NOT an ack.
+        # A bare 完了 in the pattern would falsely pass the gate here; the
+        # guarded form must keep it polling at a non-final attempt.
+        proc = _run({"messages": [{"from_id": "secretary",
+                                    "message": "完了報告は見当たりません"}]},
+                    attempt=1, max_attempts=3)
+        self.assertEqual(proc.returncode, 4, msg=proc.stderr)
+        self.assertEqual(_final(proc)["status"], "polling")
+
+    def test_negated_completion_verb_does_not_ack(self) -> None:
+        # "まだ完了していません" — secretary says it is NOT done. The 完了
+        # token is directly negated and must not ack.
+        proc = _run({"messages": [{"from_id": "secretary",
+                                    "message": "まだ完了していません"}]},
+                    attempt=1)
+        self.assertEqual(proc.returncode, 4, msg=proc.stderr)
+        self.assertEqual(_final(proc)["status"], "polling")
+
+    def test_mikanryo_does_not_ack(self) -> None:
+        # "未完了です" — 完了 preceded by 未 (incomplete) must not ack.
+        proc = _run({"messages": [{"from_id": "secretary",
+                                    "message": "タスクは未完了です"}]},
+                    attempt=1)
+        self.assertEqual(proc.returncode, 4, msg=proc.stderr)
+        self.assertEqual(_final(proc)["status"], "polling")
+
+    def test_completion_question_does_not_ack(self) -> None:
+        # "作業は完了しましたか？" — a question, not an assertion, must
+        # not pass the gate (trailing 疑問助詞 か is excluded).
+        proc = _run({"messages": [{"from_id": "secretary",
+                                    "message": "作業は完了しましたか？"}]},
+                    attempt=1)
+        self.assertEqual(proc.returncode, 4, msg=proc.stderr)
+        self.assertEqual(_final(proc)["status"], "polling")
+
+    def test_merged_affirmative_acks(self) -> None:
+        # "マージ済みです" — affirmative merged assertion acks.
+        proc = _run({"messages": [{"from_id": "secretary",
+                                    "message": "PR はマージ済みです"}]},
+                    attempt=1)
+        self.assertEqual(proc.returncode, 0, msg=proc.stderr)
+        self.assertEqual(_final(proc)["status"], "acked")
+
+    def test_merged_negation_does_not_ack(self) -> None:
+        # "マージ済みではありません" — negation of merged must not ack.
+        proc = _run({"messages": [{"from_id": "secretary",
+                                    "message": "PR はまだマージ済みではありません"}]},
+                    attempt=1)
+        self.assertEqual(proc.returncode, 4, msg=proc.stderr)
+        self.assertEqual(_final(proc)["status"], "polling")
+
+    def test_colloquial_and_polite_negation_question_do_not_ack(self) -> None:
+        # The clause-scoped guard must reject colloquial negation and
+        # polite question forms, not just the literal ではありません/〜か？.
+        for body in (
+            "マージ済みじゃありません",          # 口語否定
+            "作業は完了しましたでしょうか？",      # 丁寧疑問
+            "PR はマージ済みでしょうか？",         # 丁寧疑問 (merged)
+            "マージ済みか確認します",             # 確認中（疑問助詞 か）
+        ):
+            with self.subTest(body=body):
+                proc = _run({"messages": [{"from_id": "secretary",
+                                            "message": body}]}, attempt=1)
+                self.assertEqual(proc.returncode, 4, msg=proc.stderr)
+                self.assertEqual(_final(proc)["status"], "polling")
+
+    def test_cross_clause_negation_does_not_ack(self) -> None:
+        # "対応は完了しましたが、マージ済みではありません" — the 完了 verb is
+        # affirmative but the SAME sentence (past the read-point 、) negates
+        # the merge. The shared clause-scoped guard spans 、 so neither
+        # 完了 nor マージ済み may ack here.
+        proc = _run({"messages": [{"from_id": "secretary",
+                                    "message": "対応は完了しましたが、マージ済みではありません"}]},
+                    attempt=1)
+        self.assertEqual(proc.returncode, 4, msg=proc.stderr)
+        self.assertEqual(_final(proc)["status"], "polling")
+
+    def test_affirmative_with_trailing_sentence_still_acks(self) -> None:
+        # The clause-scoped か/negation guard stops at the sentence
+        # terminator, so an affirmative ack followed by an unrelated
+        # question in the NEXT sentence still acks.
+        proc = _run({"messages": [{"from_id": "secretary",
+                                    "message": "完了しました。次は何をしますか？"}]},
+                    attempt=1)
+        self.assertEqual(proc.returncode, 0, msg=proc.stderr)
+        self.assertEqual(_final(proc)["status"], "acked")
+
     # --- --print-initial-prompt mode -----------------------------------
 
     def test_print_initial_prompt(self) -> None:

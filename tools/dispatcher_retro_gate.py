@@ -75,7 +75,40 @@ for _stream_name in ("stdout", "stderr", "stdin"):
     except (AttributeError, io.UnsupportedOperation):
         pass
 
-DEFAULT_ACK_PATTERN = r"(届[いきけくこ]|受領|受け取|ack|received|got it)"
+# ``完了`` / ``マージ済み`` are the two completion-phrasing acks added for
+# Issue #584. Both are guarded to fire ONLY on an affirmative assertion,
+# never on a negation/question/noun, so the retro gate keeps its safe-side
+# "completion report not yet received" judgement (a false positive here
+# would wrongly pass the gate; a false negative merely keeps polling).
+#
+# Rather than enumerate every negation/question phrasing, BOTH tokens
+# share one CLAUSE-SCOPED negative lookahead (``_NEG_Q``): the token is
+# rejected if a question 助詞 ``か`` or a negation (``ない`` / ``ありませ``)
+# appears before the next sentence terminator (``。．！？!?`` / newline).
+# ``_CLAUSE`` is that "rest of the current clause" character class — note
+# it spans ``、`` (read-point), so a negation in a later comma-clause of
+# the SAME sentence still suppresses the ack (e.g. "完了しましたが、マージ
+# 済みではありません" stays non-acking).
+#   * ``完了`` matches an affirmative completion ending
+#     (完了しました/した/しています/です/でした/済) — the ending whitelist
+#     already excludes negated verbs (完了していません/完了しません) — and is
+#     additionally NOT inside the noun ``完了報告`` (which appears in
+#     negatives like "完了報告は見当たりません") and NOT ``未完了`` (incomplete).
+#   * ``マージ済み`` matches the bare affirmative form.
+#   * ``_NEG_Q`` then rejects either token when the clause turns it into a
+#     negation or question (マージ済みではありません/じゃありません/でない,
+#     完了しましたか？/完了しましたでしょうか？, マージ済みか確認します).
+# These are deliberately stricter than the bare ``受領``/``届い`` tokens
+# above because the completion wording collides with the gate's own
+# ``完了報告`` prompt noun; erring toward extra polling is the safe side.
+_CLAUSE = r"[^。．！？!?\n]*"
+_NEG_Q = r"(?!" + _CLAUSE + r"(?:か|ない|ありませ))"
+DEFAULT_ACK_PATTERN = (
+    r"(届[いきけくこ]|受領|受け取"
+    r"|マージ済み" + _NEG_Q +
+    r"|(?<!未)完了(?:しました|しています|した(?![いくな])|です|でした|済)" + _NEG_Q +
+    r"|ack|received|got it)"
+)
 
 
 def _now_iso() -> str:
