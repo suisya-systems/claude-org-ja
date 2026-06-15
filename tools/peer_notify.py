@@ -1,18 +1,30 @@
-"""Best-effort renga-peers message dispatch from CLI subprocesses.
+"""Best-effort peer-message dispatch from CLI subprocesses.
 
-Issue #326. ``mcp__renga-peers__send_message`` is only reachable from
-inside a Claude Code session — a CLI helper like ``tools/pr_watch.py``
-cannot call MCP tools directly. The renga binary, however, ships an
-``mcp-peer`` subcommand that runs the same MCP server over stdio, so
-spawning it as a subprocess and driving a one-shot JSON-RPC handshake
-is the simplest reliable bridge from a Python CLI back into the
-peer-message channel.
+Issue #326 / #590. ``mcp__{renga-peers,org-broker}__send_message`` is
+only reachable from inside a Claude Code session — a CLI helper like
+``tools/pr_watch.py`` cannot call MCP tools directly. ``notify_peer``
+bridges a Python CLI back into the peer-message channel and is
+**transport-neutral**: it picks the path from ``ORG_TRANSPORT``.
 
-When ``RENGA_SOCKET`` is unset (plain shell, CI, etc.), this helper is a
-silent no-op so the calling tool keeps working in non-renga
-environments. All failures (binary missing, handshake error, timeout,
-peer not found, backend unreachable) are swallowed — peer notification
-is decoration on top of the canonical event row, never a precondition.
+* ``ORG_TRANSPORT`` unset / anything but ``broker`` → renga path. The
+  renga binary ships an ``mcp-peer`` subcommand that runs the same MCP
+  server over stdio, so spawning it as a subprocess and driving a
+  one-shot JSON-RPC handshake is the simplest reliable bridge. When
+  ``RENGA_SOCKET`` is unset (plain shell, CI, etc.) this is a silent
+  no-op so the caller keeps working in non-renga environments.
+* ``ORG_TRANSPORT=broker`` → broker path. Shells out to the frozen
+  ``claude-org-runtime broker send --to <id> --message <text>`` CLI and
+  treats ``returncode == 0`` as delivered. Until that CLI ships
+  (claude-org-runtime #93) the subprocess raises ``FileNotFoundError``,
+  which — like every other failure — maps to ``False``, so the broker
+  branch lands as a graceful no-op and end-to-end delivery is enabled
+  later by a runtime release + ja pin bump.
+
+The signature and the best-effort ``bool`` contract are identical across
+both transports. All failures (binary missing, handshake error, timeout,
+peer not found, backend unreachable, non-zero exit) are swallowed — peer
+notification is decoration on top of the canonical event row, never a
+precondition. ``notify_peer`` never raises.
 
 Failure handling notes:
 * ``stdout.readline()`` would block indefinitely on a renga binary that
@@ -36,11 +48,68 @@ import threading
 from typing import Optional
 
 _RENGA_BIN = "renga"
+_RUNTIME_BIN = "claude-org-runtime"
 _HANDSHAKE_TIMEOUT_SEC = 5.0
 _DROPPED_PREFIX = "(message dropped"
 
 
 def notify_peer(
+    to_id: str,
+    message: str,
+    *,
+    timeout: float = _HANDSHAKE_TIMEOUT_SEC,
+    renga_bin: str = _RENGA_BIN,
+) -> bool:
+    """Send a peer message on the active transport. Best-effort.
+
+    Dispatches on ``ORG_TRANSPORT``: ``broker`` shells out to the
+    ``claude-org-runtime broker send`` CLI; anything else (including
+    unset) uses the renga ``mcp-peer`` JSON-RPC path. Returns ``True``
+    only on confirmed delivery and ``False`` for every other outcome
+    (transport not configured, binary missing, subprocess crash,
+    protocol error, timeout, non-zero exit, backend-unreachable shim).
+    Never raises. The signature and ``bool`` contract are identical
+    across transports.
+    """
+    # Deliberately a raw env check, NOT tools.transport.resolve(): this
+    # module is stdlib-only and best-effort. transport.resolve() imports
+    # claude_org_runtime at load time (coupling this CLI bridge to the
+    # runtime install) and raises ValueError on unknown/empty values,
+    # which would violate the never-raise contract. The dispatch is
+    # binary anyway — broker vs. "everything else falls back to renga" —
+    # so the SoT resolver buys nothing here. (Issue #590.)
+    if os.environ.get("ORG_TRANSPORT") == "broker":
+        return _notify_peer_broker(to_id, message, timeout=timeout)
+    return _notify_peer_renga(to_id, message, timeout=timeout, renga_bin=renga_bin)
+
+
+def _notify_peer_broker(
+    to_id: str,
+    message: str,
+    *,
+    timeout: float = _HANDSHAKE_TIMEOUT_SEC,
+    runtime_bin: str = _RUNTIME_BIN,
+) -> bool:
+    """Send via the ``claude-org-runtime broker send`` CLI. Best-effort.
+
+    Frozen contract (claude-org-runtime #93)::
+
+        claude-org-runtime broker send --to <to_id> --message <message>
+
+    Returns ``True`` iff the subprocess exits 0. ``FileNotFoundError``
+    (CLI not installed — the common case until runtime#93 ships),
+    non-zero exit, timeout, and any other exception all map to ``False``.
+    Never raises.
+    """
+    cmd = [runtime_bin, "broker", "send", "--to", to_id, "--message", message]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, timeout=timeout)
+    except Exception:  # noqa: BLE001 — best-effort; CLI absent, timeout, etc.
+        return False
+    return proc.returncode == 0
+
+
+def _notify_peer_renga(
     to_id: str,
     message: str,
     *,
