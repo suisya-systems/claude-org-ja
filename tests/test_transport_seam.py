@@ -89,10 +89,17 @@ def _env_transport(value):
 
 
 class WorkerBriefBitEquivalence(unittest.TestCase):
-    """flag=renga (既定) で worker_brief が golden と byte 一致する。"""
+    """flag=renga (opt-in fallback) で worker_brief が golden と byte 一致し、
+    既定 (無設定) は broker 面を指す (Epic #586 既定フリップ)。
 
-    def test_default_unset_is_bit_equivalent(self):
-        with _env_transport(None):
+    renga golden は切戻し忠実性の不変条件として retain。明示 renga 経路で
+    1 byte も変わらないことを担保しつつ、無設定の既定は broker にフリップした
+    ことを併せて検証する。"""
+
+    def test_explicit_renga_is_bit_equivalent(self):
+        # renga は opt-in fallback として retain。明示時は golden と byte 一致
+        # (切戻し忠実性 / 非破壊の絶対条件は renga 経路で不変)。
+        with _env_transport("renga"):
             for name, self_edit, depth in _BRIEF_CASES:
                 with self.subTest(fixture=name):
                     golden = (FIXTURES / name).read_text(encoding="utf-8")
@@ -102,14 +109,14 @@ class WorkerBriefBitEquivalence(unittest.TestCase):
                         "mcp__renga-peers__send_message", out
                     )
 
-    def test_explicit_renga_matches_default(self):
-        with _env_transport("renga"):
+    def test_default_unset_is_broker_surface(self):
+        # Epic #586: 既定 (ORG_TRANSPORT 無設定) は broker にフリップ。
+        with _env_transport(None):
             for name, self_edit, depth in _BRIEF_CASES:
                 with self.subTest(fixture=name):
-                    golden = (FIXTURES / name).read_text(encoding="utf-8")
-                    self.assertEqual(
-                        gwb.render(_base_config(self_edit, depth)), golden
-                    )
+                    out = gwb.render(_base_config(self_edit, depth))
+                    self.assertIn("mcp__org-broker__send_message", out)
+                    self.assertNotIn("mcp__renga-peers__", out)
 
 
 class WorkerBriefBrokerSurface(unittest.TestCase):
@@ -225,8 +232,18 @@ class DelegateNextStepHintMatchesDescriptor(unittest.TestCase):
                 server = rt_descriptor.get_surface(flag).server
                 self.assertIn(f"{server} send_message call.", hint)
 
-    def test_hint_default_is_renga_byte_for_byte(self):
+    def test_hint_default_is_broker_byte_for_byte(self):
+        # Epic #586: 既定 (無設定) は broker。hint も broker server を指す。
         with _env_transport(None):
+            self.assertEqual(
+                gdp._next_step_hint(),
+                "Next step: copy send_plan.json's `to_id`/`message` into a "
+                "org-broker send_message call.",
+            )
+
+    def test_hint_explicit_renga_byte_for_byte(self):
+        # renga (opt-in fallback) 明示時は renga-peers を指す (切戻し忠実性)。
+        with _env_transport("renga"):
             self.assertEqual(
                 gdp._next_step_hint(),
                 "Next step: copy send_plan.json's `to_id`/`message` into a "
@@ -238,13 +255,16 @@ class JaSeamMatchesRuntimeDescriptor(unittest.TestCase):
     """ja 側 ``tools.transport`` が runtime descriptor と一致 (単一 SoT, no drift)。"""
 
     def test_resolution_order(self):
-        self.assertEqual(t.resolve(env={}), "renga")
+        # Epic #586: 無設定の既定は broker にフリップ。
+        self.assertEqual(t.resolve(env={}), "broker")
+        self.assertEqual(t.resolve(env={t.ENV_KEY: "renga"}), "renga")
         self.assertEqual(t.resolve(env={t.ENV_KEY: "broker"}), "broker")
         # explicit > env (§5.1)
         self.assertEqual(t.resolve("renga", env={t.ENV_KEY: "broker"}), "renga")
 
-    def test_default_is_renga(self):
-        self.assertEqual(t.DEFAULT_TRANSPORT, "renga")
+    def test_default_is_broker(self):
+        # Epic #586: DEFAULT_TRANSPORT が renga→broker にフリップ。
+        self.assertEqual(t.DEFAULT_TRANSPORT, "broker")
         self.assertEqual(t.resolve(env={}), t.DEFAULT_TRANSPORT)
 
     def test_unknown_flag_rejected(self):
@@ -290,12 +310,16 @@ class JaSeamMatchesRuntimeDescriptor(unittest.TestCase):
             "--mcp-config /x/b.json",
         )
 
-    def test_renga_surface_is_current_behavior(self):
-        # 既定 renga の spawn 注入は現行の dev-channel flag (非破壊)。
+    def test_renga_surface_spawn_inject(self):
+        # renga (opt-in fallback) の spawn 注入は dev-channel flag (非破壊)。
         self.assertEqual(
-            t.spawn_inject(env={}),
+            t.spawn_inject(env={t.ENV_KEY: "renga"}),
             "--dangerously-load-development-channels server:renga-peers",
         )
+
+    def test_default_unset_spawn_inject_is_broker(self):
+        # Epic #586: 既定 (無設定) は broker の mcp-config 注入。
+        self.assertEqual(t.spawn_inject(env={}), "--mcp-config <broker>")
 
 
 # ---------------------------------------------------------------------------
