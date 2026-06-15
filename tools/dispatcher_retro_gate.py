@@ -110,12 +110,16 @@ for _stream_name in ("stdout", "stderr", "stdin"):
 #     とか/から/かつ (safe-side over-suppression), while a real completion
 #     that merely carries a mid-clause 何か now acks ("マージ済みですが何か
 #     問題あれば連絡します", Issue #591 false-negative fix). A clause-terminal
-#     何か (何か？) is re-rejected as a question via ``何か(?=[。．！？!?]|$)``.
+#     何か (何か？, optionally with trailing spaces before the terminator) is
+#     re-rejected as a question via ``何か(?=[ \t　]*(?:[。．！？!?\n]|$))``.
 # These are deliberately stricter than the bare ``受領``/``届い`` tokens
 # above because the completion wording collides with the gate's own
 # ``完了報告`` prompt noun; erring toward extra polling is the safe side.
 _CLAUSE = r"[^。．！？!?\n]*"
-_NEG_Q = r"(?!" + _CLAUSE + r"(?:(?<!何)か|何か(?=[。．！？!?\n]|$)|ない|ませ))"
+_NEG_Q = (
+    r"(?!" + _CLAUSE +
+    r"(?:(?<!何)か|何か(?=[ \t　]*(?:[。．！？!?\n]|$))|ない|ませ))"
+)
 DEFAULT_ACK_PATTERN = (
     r"(届[いきけくこ]|受領|受け取"
     r"|マージ済み" + _NEG_Q +

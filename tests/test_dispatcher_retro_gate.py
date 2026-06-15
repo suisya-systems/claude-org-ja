@@ -359,6 +359,8 @@ class DispatcherRetroGateTests(unittest.TestCase):
         # (whose mid-word か the (?<!何)か rule still rejects) does not ack.
         for body in (
             "マージ済みは何か？",                    # terminal 何か question
+            "マージ済みは何か ？",                   # terminal 何か with spacing
+            "マージ済みは何か　？",                  # terminal 何か, full-width space
             "マージ済みにはできかねます",             # polite negation できかね
             "完了しましたとかいう話です",             # hearsay とか, not own completion
         ):
