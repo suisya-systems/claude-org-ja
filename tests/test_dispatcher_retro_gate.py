@@ -322,6 +322,55 @@ class DispatcherRetroGateTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, msg=proc.stderr)
         self.assertEqual(_final(proc)["status"], "acked")
 
+    # --- Issue #591: ございません false-positive / 何か false-negative ----
+
+    def test_polite_negation_gozaimasen_does_not_ack(self) -> None:
+        # Regression (Issue #591 BUG-FP): the polite negation ございません
+        # was NOT caught by the old ありませ stem, so an affirmative token
+        # followed by ございません wrongly acked. The negation stem is now
+        # ませ — the shared substring of the whole ません family — so these
+        # negative replies keep polling at a non-final attempt.
+        for body in (
+            "マージ済みではございません",            # merged-negation, polite
+            "完了済みですが報告はございません",        # 完了済 token then ございません
+            "完了報告はございません",                # 完了報告 noun + polite negation
+        ):
+            with self.subTest(body=body):
+                proc = _run({"messages": [{"from_id": "secretary",
+                                            "message": body}]},
+                            attempt=1, max_attempts=3)
+                self.assertEqual(proc.returncode, 4, msg=proc.stderr)
+                self.assertEqual(_final(proc)["status"], "polling")
+
+    def test_affirmative_with_incidental_nanika_acks(self) -> None:
+        # Regression (Issue #591 BUG-FN): an affirmative completion that
+        # merely carries the indefinite 何か ("something") mid-clause was
+        # wrongly suppressed by the blanket か rejection. The (?<!何)か
+        # carve-out lets the real ack through.
+        proc = _run({"messages": [{"from_id": "secretary",
+                                    "message": "マージ済みですが何か問題あれば連絡します"}]},
+                    attempt=1)
+        self.assertEqual(proc.returncode, 0, msg=proc.stderr)
+        self.assertEqual(_final(proc)["status"], "acked")
+
+    def test_kano_negation_and_terminal_nanika_question_do_not_ack(self) -> None:
+        # The 何か carve-out must NOT open a hole: a clause-terminal 何か
+        # question stays suppressed, and a polite-negation 〜できかねます
+        # (whose mid-word か the (?<!何)か rule still rejects) does not ack.
+        for body in (
+            "マージ済みは何か？",                    # terminal 何か question
+            "マージ済みは何か ？",                   # terminal 何か with spacing
+            "マージ済みは何か　？",                  # terminal 何か, full-width space
+            "マージ済みにはできかねます",             # polite negation できかね
+            "完了しましたとかいう話です",             # hearsay とか, not own completion
+        ):
+            with self.subTest(body=body):
+                proc = _run({"messages": [{"from_id": "secretary",
+                                            "message": body}]},
+                            attempt=1, max_attempts=3)
+                self.assertEqual(proc.returncode, 4, msg=proc.stderr)
+                self.assertEqual(_final(proc)["status"], "polling")
+
     # --- --print-initial-prompt mode -----------------------------------
 
     def test_print_initial_prompt(self) -> None:
