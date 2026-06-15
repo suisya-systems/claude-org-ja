@@ -1,10 +1,17 @@
-"""Direct unit tests for tools/peer_notify.py (Issue #326).
+"""Direct unit tests for tools/peer_notify.py (Issue #326 / #590).
 
-These exercise the JSON-RPC handshake, timeout, and the ok-text
-``(message dropped — …)`` rejection without invoking the real renga
-binary. The helper spawns ``renga mcp-peer`` with subprocess.Popen,
-so we substitute a fake Popen that wires its stdin/stdout to in-memory
-streams scripted by each test.
+``NotifyPeerTests`` exercise the renga JSON-RPC handshake, timeout, and
+the ok-text ``(message dropped — …)`` rejection without invoking the
+real renga binary. The helper spawns ``renga mcp-peer`` with
+subprocess.Popen, so we substitute a fake Popen that wires its
+stdin/stdout to in-memory streams scripted by each test.
+
+``NotifyPeerBrokerTests`` cover the ``ORG_TRANSPORT=broker`` branch,
+which shells out to the frozen ``claude-org-runtime broker send`` CLI.
+These stub ``subprocess.run`` so they verify the argv, the
+``returncode == 0`` success mapping, and the best-effort ``False`` for
+non-zero exit / CLI-absent (FileNotFoundError) / timeout — all without a
+live broker daemon or an installed runtime.
 """
 from __future__ import annotations
 
@@ -97,9 +104,13 @@ def _ok_init(req: dict) -> dict:
 class NotifyPeerTests(unittest.TestCase):
     def setUp(self) -> None:
         # Pretend renga is on PATH and RENGA_SOCKET is set so the
-        # short-circuit guards don't fire.
+        # short-circuit guards don't fire. Pin ORG_TRANSPORT=renga so a
+        # real broker session env (ORG_TRANSPORT=broker) can't misroute
+        # these renga-path tests through the broker branch.
         self._env = mock.patch.dict(
-            os.environ, {"RENGA_SOCKET": r"\\.\pipe\fake"}, clear=False,
+            os.environ,
+            {"RENGA_SOCKET": r"\\.\pipe\fake", "ORG_TRANSPORT": "renga"},
+            clear=False,
         )
         self._env.start()
         self._which = mock.patch.object(
@@ -243,6 +254,99 @@ class NotifyPeerTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertLess(elapsed, 5.0,
                         f"timeout not enforced; elapsed={elapsed:.2f}s")
+
+
+class _FakeCompleted:
+    """Minimal subprocess.CompletedProcess stand-in."""
+
+    def __init__(self, returncode: int) -> None:
+        self.returncode = returncode
+        self.stdout = b""
+        self.stderr = b""
+
+
+class NotifyPeerBrokerTests(unittest.TestCase):
+    """ORG_TRANSPORT=broker branch — shells out to the runtime CLI."""
+
+    def setUp(self) -> None:
+        self._env = mock.patch.dict(
+            os.environ, {"ORG_TRANSPORT": "broker"}, clear=False,
+        )
+        self._env.start()
+
+    def tearDown(self) -> None:
+        self._env.stop()
+
+    def _patch_run(self, **kwargs):
+        return mock.patch.object(peer_notify.subprocess, "run", **kwargs)
+
+    def test_returncode_zero_is_delivered(self) -> None:
+        with self._patch_run(return_value=_FakeCompleted(0)) as run:
+            self.assertTrue(peer_notify.notify_peer("secretary", "hi"))
+        run.assert_called_once()
+
+    def test_nonzero_returncode_is_false(self) -> None:
+        with self._patch_run(return_value=_FakeCompleted(1)):
+            self.assertFalse(peer_notify.notify_peer("secretary", "hi"))
+
+    def test_cli_absent_filenotfound_is_false(self) -> None:
+        """Until runtime#93 ships the CLI is not on PATH; the subprocess
+        raises FileNotFoundError, which must map to a graceful no-op."""
+        with self._patch_run(side_effect=FileNotFoundError("no runtime")):
+            self.assertFalse(peer_notify.notify_peer("secretary", "hi"))
+
+    def test_timeout_is_false(self) -> None:
+        exc = peer_notify.subprocess.TimeoutExpired(cmd="x", timeout=0.1)
+        with self._patch_run(side_effect=exc):
+            self.assertFalse(peer_notify.notify_peer("secretary", "hi"))
+
+    def test_generic_exception_is_false_not_raised(self) -> None:
+        with self._patch_run(side_effect=RuntimeError("boom")):
+            self.assertFalse(peer_notify.notify_peer("secretary", "hi"))
+
+    def test_argv_matches_frozen_contract(self) -> None:
+        """`claude-org-runtime broker send --to <id> --message <text>`."""
+        with self._patch_run(return_value=_FakeCompleted(0)) as run:
+            peer_notify.notify_peer("secretary", "a message")
+        argv = run.call_args.args[0]
+        self.assertEqual(
+            argv,
+            ["claude-org-runtime", "broker", "send",
+             "--to", "secretary", "--message", "a message"],
+        )
+
+    def test_broker_branch_does_not_spawn_renga(self) -> None:
+        """ORG_TRANSPORT=broker must never reach the renga Popen path,
+        even if RENGA_SOCKET happens to be set in the environment."""
+        with mock.patch.dict(os.environ, {"RENGA_SOCKET": "x"}, clear=False), \
+                mock.patch.object(peer_notify.subprocess, "Popen") as popen, \
+                self._patch_run(return_value=_FakeCompleted(0)):
+            self.assertTrue(peer_notify.notify_peer("secretary", "hi"))
+        popen.assert_not_called()
+
+
+class NotifyPeerDispatchTests(unittest.TestCase):
+    """ORG_TRANSPORT routing: only ``broker`` takes the broker branch."""
+
+    def _assert_renga_path(self, transport_env: dict) -> None:
+        """With a non-broker transport the broker CLI is never called and
+        the renga branch runs (and no-ops False when RENGA_SOCKET unset)."""
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("RENGA_SOCKET", "ORG_TRANSPORT")}
+        env.update(transport_env)
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch.object(peer_notify.subprocess, "run") as run:
+            self.assertFalse(peer_notify.notify_peer("secretary", "hi"))
+        run.assert_not_called()
+
+    def test_unset_transport_uses_renga(self) -> None:
+        self._assert_renga_path({})
+
+    def test_renga_transport_uses_renga(self) -> None:
+        self._assert_renga_path({"ORG_TRANSPORT": "renga"})
+
+    def test_unknown_transport_falls_back_to_renga(self) -> None:
+        self._assert_renga_path({"ORG_TRANSPORT": "something-else"})
 
 
 if __name__ == "__main__":
