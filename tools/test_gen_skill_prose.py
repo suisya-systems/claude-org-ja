@@ -555,7 +555,10 @@ class ProductionManifestTest(unittest.TestCase):
         missing = [e.source for e in m.entries if not (base / e.source).resolve().exists()]
         if missing:
             self.skipTest(f"G1 source .in not placed yet ({len(missing)} missing); drift gate inactive")
-        rc = g.main(["--manifest", str(_PROD_MANIFEST), "--check"])
+        # committed output は常に DEFAULT_TRANSPORT 面 (設計 §3.2)。transport を明示固定し、
+        # 実行環境の ORG_TRANSPORT に依存させない (renga 設定下で broker committed と
+        # 比較して false DRIFT になるのを防ぐ, Codex P2)。
+        rc = g.main(["--manifest", str(_PROD_MANIFEST), "--transport", transport.DEFAULT_TRANSPORT, "--check"])
         self.assertEqual(rc, 0, "production manifest drift: render(source) != committed output")
 
 
