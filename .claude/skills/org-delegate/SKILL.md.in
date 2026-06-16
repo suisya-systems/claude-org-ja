@@ -19,6 +19,8 @@ allowed-tools:
   - Bash(git log:*)
   - Bash(gh issue create:*)
   - mcp__renga-peers__send_message
+  - mcp__renga-peers__check_messages
+  - mcp__renga-peers__send_keys
   - mcp__renga-peers__inspect_pane
   - mcp__renga-peers__list_peers
   - mcp__renga-peers__list_panes

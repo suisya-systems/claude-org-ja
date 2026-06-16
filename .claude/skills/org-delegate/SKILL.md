@@ -19,6 +19,8 @@ allowed-tools:
   - Bash(git log:*)
   - Bash(gh issue create:*)
   - mcp__org-broker__send_message
+  - mcp__org-broker__check_messages
+  - mcp__org-broker__send_keys
   - mcp__org-broker__inspect_pane
   - mcp__org-broker__list_peers
   - mcp__org-broker__list_panes
