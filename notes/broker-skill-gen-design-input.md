@@ -38,7 +38,8 @@
 > frontmatter には使わない**（tier 拡大で過剰認可になるため。`rewrite_allow_entries` は permissions.md 素材テンプレ
 > 専用）。「renga byte 不変」は **「renga が恒等基底で、`ORG_TRANSPORT=renga` 再生成すると byte 等価な renga
 > frontmatter が得られる」= rollback byte 安定**の意味で honor する。**この per-transport 訂正は ratified 値（union）
-> からの変更のため §9.2 #9 で人間の再 ratify 待ち**。詳細は設計 doc §0.4 / §2.2 ※3-※5 / §4.2(2) / §5。
+> からの変更だったが、**2026-06-16 に人間が per-transport を再 ratify**（§9.2 #9。union は却下）。詳細は設計 doc
+> §0.4 / §2.2 ※3-※5 / §4.2(2) / §5。
 
 ## surgical 最難ファイル（generator 化で個別ハンドリングが要る）
 
