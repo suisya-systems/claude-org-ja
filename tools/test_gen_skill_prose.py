@@ -71,9 +71,24 @@ class FragmentInjectionTest(unittest.TestCase):
     def test_per_transport_fragment_selected_by_flag(self):
         broker = g.inject_fragments("{{> dual-system-header-short }}", "broker", _FRAGMENTS)
         renga = g.inject_fragments("{{> dual-system-header-short }}", "renga", _FRAGMENTS)
+        # 読みB (人間 ratified 2026-06-16): 既定宣言は両面共通で broker (DEFAULT_TRANSPORT
+        # = broker・env ベース rollback の実態と一致)。両面とも「既定 broker / opt-in renga」。
         self.assertIn("既定 `broker` / opt-in `renga`", broker)
-        self.assertIn("既定 `renga` / opt-in `broker`", renga)
+        self.assertIn("既定 `broker` / opt-in `renga`", renga)
+        # 面の違いはツールリテラルと framing: renga 面は opt-in renga 面として自己記述。
+        self.assertIn("opt-in `renga` 面", renga)
+        self.assertNotIn("opt-in `renga` 面", broker)
+        # renga 面は「無設定＝renga」と誤主張しない (Codex round5 / 読みB 修正)。
+        self.assertNotIn("無設定）で書いてあり", renga)
         self.assertNotEqual(broker, renga)
+
+    def test_renga_face_declares_broker_as_unset_default(self):
+        # 読みB: renga 面は無設定の既定を broker と宣言し、{{DEFAULT_TRANSPORT}} (broker)
+        # と self-consistent。「無設定の既定は broker」を明示する。
+        for name in ("dual-system-header-short", "dual-system-header-long"):
+            renga = g.inject_fragments("{{> %s }}" % name, "renga", _FRAGMENTS)
+            self.assertIn("無設定の既定は `broker`", renga)
+            self.assertNotIn("無設定＝既定 `renga`", renga)
 
     def test_neutral_fragment_same_on_both_faces(self):
         # surface-omissions は transport 非依存 = 両面同一 (設計 §5)。
