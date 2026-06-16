@@ -371,6 +371,44 @@ class DispatcherRetroGateTests(unittest.TestCase):
                 self.assertEqual(proc.returncode, 4, msg=proc.stderr)
                 self.assertEqual(_final(proc)["status"], "polling")
 
+    # --- Issue #594: _NEG_Q guard on the bare 届い/受領/受け取 tokens ------
+
+    def test_received_token_negation_does_not_ack(self) -> None:
+        # Regression (Issue #594): the receipt tokens 届い/受領/受け取 were
+        # bare (no _NEG_Q guard), so a negative reply that contains one of
+        # them in a negation clause wrongly acked — falsely passing the
+        # gate while the completion report is actually NOT yet received.
+        # The guarded form must keep polling at a non-final attempt.
+        for body in (
+            "完了報告はまだ届いておりません",        # 届い + polite negation
+            "完了報告はまだ届いていません",          # 届い + plain polite negation
+            "まだ受領しておりません",                # 受領 + polite negation
+            "まだ受領していません",                  # 受領 + plain polite negation
+            "完了報告を受け取っていません",          # 受け取 + negation
+            "完了報告は届いていますか？",            # 届い + question 助詞 か
+        ):
+            with self.subTest(body=body):
+                proc = _run({"messages": [{"from_id": "secretary",
+                                            "message": body}]},
+                            attempt=1, max_attempts=3)
+                self.assertEqual(proc.returncode, 4, msg=proc.stderr)
+                self.assertEqual(_final(proc)["status"], "polling")
+
+    def test_received_token_affirmative_still_acks(self) -> None:
+        # The _NEG_Q guard must not regress the affirmative receipt acks:
+        # plain "届きました" / "受領しました" / "受け取りました" still pass.
+        for body in (
+            "完了報告が届きました",                  # 届き affirmative
+            "完了報告は届いています",                # 届い affirmative
+            "完了報告を受領しました",                # 受領 affirmative
+            "完了報告を受け取りました",              # 受け取 affirmative
+        ):
+            with self.subTest(body=body):
+                proc = _run({"messages": [{"from_id": "secretary",
+                                            "message": body}]}, attempt=1)
+                self.assertEqual(proc.returncode, 0, msg=proc.stderr)
+                self.assertEqual(_final(proc)["status"], "acked")
+
     # --- --print-initial-prompt mode -----------------------------------
 
     def test_print_initial_prompt(self) -> None:
