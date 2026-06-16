@@ -30,7 +30,7 @@
         },
         "output": {
           "type": "string",
-          "description": "render 先 (commit される rendered ファイル) への相対パス。生成モードでは必須、identity-anchor では省略可。"
+          "description": "render 先 (commit される rendered ファイル) への相対パス。生成モード (template / template+fragment / surgical-fragment / code-literal) では必須、identity-anchor では省略可。条件付き required (mode 依存) は JSON スキーマで表現しないため generator の意味検証が強制する (設計 §7.2-1)。"
         },
         "mode": {
           "type": "string",

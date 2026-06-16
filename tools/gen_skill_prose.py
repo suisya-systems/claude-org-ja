@@ -604,6 +604,16 @@ def validate_manifest_obj(obj: dict) -> Manifest:
         role = raw.get("role")
         if role is not None and role not in ROLES:
             raise GenError(f"manifest entries[{i}] invalid role {role!r} (valid: {ROLES})")
+        # role-tier (rewrite_allow_entries) は permissions.md = identity-anchor 専用
+        # (設計 §2.2 ※3 / §4.2(2))。生成モードの skill frontmatter に role-tier を
+        # 当てると frontmatter が役割の全 tier へ拡大し、本 generator が防ぐべき
+        # per-skill 認可の過剰拡大を再生産する。よって組み合わせ自体を拒否する。
+        if allowlist == ALLOWLIST_ROLE_TIER and mode != MODE_IDENTITY_ANCHOR:
+            raise GenError(
+                f"manifest entries[{i}] allowlist 'role-tier' is reserved for "
+                f"identity-anchor (permissions.md); mode {mode!r} must use "
+                "'per-entry-rename' or 'none' (設計 §2.2 ※3 / §4.2(2))"
+            )
         # role 必須条件 (設計 §2.2 ※2 / §4.1): (a) role-tier (identity-anchor),
         # (b) ワイルドカードを含む skill。ここでは (a) を強制し、(b) は render 時に
         # source を見て検証 (wildcard 展開で role 不在なら GenError)。
@@ -612,12 +622,22 @@ def validate_manifest_obj(obj: dict) -> Manifest:
                 f"manifest entries[{i}] allowlist 'role-tier' requires 'role' "
                 "(permissions.md identity-anchor, 設計 §2.2 ※2)"
             )
+        # 生成モードは output 必須 (drift CI カバレッジから黙って漏れるのを防ぐ,
+        # 設計 §7.2-1)。スキーマも「生成モードでは output 必須」と記すが、
+        # JSON スキーマでは mode との条件付き required を表現しないため意味検証で強制。
+        output = raw.get("output")
+        if mode in GENERATING_MODES and not output:
+            raise GenError(
+                f"manifest entries[{i}] mode {mode!r} is a generating mode and "
+                "requires 'output' (drift CI が render(source)==committed を byte 比較する, "
+                "設計 §7.2-1)"
+            )
         entries.append(
             ManifestEntry(
                 source=source,
                 mode=mode,
                 allowlist=allowlist,
-                output=raw.get("output"),
+                output=output,
                 role=role,
             )
         )
@@ -724,7 +744,14 @@ def main(argv: Optional[list] = None) -> int:
         result = _render_entry(entry, base, fragments_dir, flag)
         _, output = _resolve_paths(entry, base)
         if output is None:
-            print(result.text)
+            # 生成モードは validate_manifest_obj で output 必須を強制済みなので
+            # ここに来ない想定。万一来たら check では drift 扱いにし、生成では
+            # stdout へ出して silent skip にしない (設計 §7.2-1 のカバレッジ漏れ防止)。
+            if args.check:
+                print(f"DRIFT: {entry.source} (generating mode) has no output to check", file=sys.stderr)
+                rc = 1
+            else:
+                print(result.text)
             continue
         if args.check:
             committed = output.read_text(encoding="utf-8") if output.exists() else None

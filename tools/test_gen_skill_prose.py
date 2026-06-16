@@ -330,6 +330,33 @@ class ManifestTest(unittest.TestCase):
                 {"entries": [{"source": "p.md", "mode": "identity-anchor", "allowlist": "role-tier"}]}
             )
 
+    def test_role_tier_rejected_on_generating_mode(self):
+        # §2.2 ※3: role-tier を生成モードに当てると frontmatter が役割の全 tier へ
+        # 拡大する過剰認可。組み合わせ自体を拒否する (Codex P2 修正)。
+        for mode in ("template", "template+fragment", "surgical-fragment", "code-literal"):
+            with self.assertRaises(g.GenError):
+                g.validate_manifest_obj(
+                    {"entries": [{"source": "s", "output": "o", "mode": mode,
+                                  "allowlist": "role-tier", "role": "secretary"}]}
+                )
+
+    def test_generating_mode_requires_output(self):
+        # §7.2-1: 生成モードで output を省くと drift CI カバレッジから漏れる。
+        # 検証時に拒否する (Codex P2 修正)。
+        for mode in ("template", "template+fragment", "surgical-fragment", "code-literal"):
+            with self.assertRaises(g.GenError):
+                g.validate_manifest_obj(
+                    {"entries": [{"source": "s", "mode": mode, "allowlist": "none"}]}
+                )
+
+    def test_identity_anchor_output_optional(self):
+        # identity-anchor は非生成アンカーなので output 省略可。
+        m = g.validate_manifest_obj(
+            {"entries": [{"source": "p.md", "mode": "identity-anchor",
+                          "allowlist": "role-tier", "role": "secretary"}]}
+        )
+        self.assertIsNone(m.entries[0].output)
+
     def test_schema_enums_match_module_constants(self):
         # スキーマの enum と module 定数の drift 防止。
         schema = g.load_manifest_schema()
