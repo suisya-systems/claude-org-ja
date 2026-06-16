@@ -493,5 +493,233 @@ class MarkUserRepliedTests(unittest.TestCase):
         self.assertIsNotNone(final.user_replied_at)
 
 
+class LatestForTaskAndStaleTraceTests(unittest.TestCase):
+    """Tests for Issue #603 latest_for_task / escalation_trace_is_stale."""
+
+    def setUp(self) -> None:
+        import tempfile
+
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self.store = Path(self._tmpdir.name) / "pending_decisions.json"
+
+    def _seed(self, entries: list[dict]) -> None:
+        self.store.parent.mkdir(parents=True, exist_ok=True)
+        self.store.write_text(json.dumps(entries), encoding="utf-8")
+
+    # latest_for_task -----------------------------------------------------
+    def test_latest_for_task_picks_greatest_received_at(self) -> None:
+        # Three entries for the same task with distinct received_at; the
+        # one with the greatest timestamp must be returned regardless of
+        # store order (newest seeded first, oldest last).
+        self._seed(
+            [
+                {
+                    "task_id": "t1",
+                    "received_at": "2026-05-05T06:00:00Z",
+                    "raw_message": "round2-pending",
+                    "status": "pending",
+                },
+                {
+                    "task_id": "t1",
+                    "received_at": "2026-05-05T05:00:00Z",
+                    "raw_message": "round1-resolved",
+                    "status": "resolved",
+                    "resolved_at": "2026-05-05T05:30:00Z",
+                    "resolution_kind": "to_worker",
+                },
+                {
+                    "task_id": "t1",
+                    "received_at": "2026-05-05T04:00:00Z",
+                    "raw_message": "round0-escalated",
+                    "status": "escalated",
+                    "resolved_at": "2026-05-05T04:10:00Z",
+                    "resolution_kind": "to_user",
+                },
+            ]
+        )
+        latest = pd.latest_for_task("t1", store_path=self.store)
+        self.assertIsNotNone(latest)
+        assert latest is not None
+        self.assertEqual(latest.received_at, "2026-05-05T06:00:00Z")
+        self.assertEqual(latest.raw_message, "round2-pending")
+
+    def test_latest_for_task_tie_breaks_by_append_order(self) -> None:
+        # Equal received_at: the later (append order) entry wins.
+        self._seed(
+            [
+                {
+                    "task_id": "t1",
+                    "received_at": "2026-05-05T05:00:00Z",
+                    "raw_message": "first-appended",
+                    "status": "escalated",
+                    "resolved_at": "2026-05-05T05:01:00Z",
+                    "resolution_kind": "to_user",
+                },
+                {
+                    "task_id": "t1",
+                    "received_at": "2026-05-05T05:00:00Z",
+                    "raw_message": "later-appended",
+                    "status": "resolved",
+                    "resolved_at": "2026-05-05T05:02:00Z",
+                    "resolution_kind": "to_worker",
+                },
+            ]
+        )
+        latest = pd.latest_for_task("t1", store_path=self.store)
+        assert latest is not None
+        self.assertEqual(latest.raw_message, "later-appended")
+
+    def test_latest_for_task_unknown_returns_none(self) -> None:
+        pd.append("t1", "ask", store_path=self.store)
+        self.assertIsNone(pd.latest_for_task("nope", store_path=self.store))
+
+    def test_latest_for_task_empty_store_returns_none(self) -> None:
+        self.assertIsNone(pd.latest_for_task("t1", store_path=self.store))
+
+    # escalation_trace_is_stale ------------------------------------------
+    def test_stale_true_for_resolved_to_worker(self) -> None:
+        pd.append("t1", "ask", store_path=self.store)
+        pd.resolve("t1", "to_user", store_path=self.store)
+        pd.resolve("t1", "to_worker", store_path=self.store)
+        self.assertTrue(
+            pd.escalation_trace_is_stale("t1", store_path=self.store)
+        )
+
+    def test_stale_false_for_pending(self) -> None:
+        pd.append("t1", "ask", store_path=self.store)
+        self.assertFalse(
+            pd.escalation_trace_is_stale("t1", store_path=self.store)
+        )
+
+    def test_stale_false_for_escalated_to_user(self) -> None:
+        pd.append("t1", "ask", store_path=self.store)
+        pd.resolve("t1", "to_user", store_path=self.store)
+        self.assertFalse(
+            pd.escalation_trace_is_stale("t1", store_path=self.store)
+        )
+
+    def test_stale_false_for_escalated_user_replied(self) -> None:
+        pd.append("t1", "ask", store_path=self.store)
+        pd.resolve("t1", "to_user", store_path=self.store)
+        pd.mark_user_replied("t1", store_path=self.store)
+        # status is still escalated (user replied but not yet relayed
+        # back to worker) -> open wait, not stale.
+        self.assertFalse(
+            pd.escalation_trace_is_stale("t1", store_path=self.store)
+        )
+
+    def test_stale_false_for_unknown_task(self) -> None:
+        self.assertFalse(
+            pd.escalation_trace_is_stale("nope", store_path=self.store)
+        )
+
+    def test_stale_false_after_reopen_pending_following_resolve(self) -> None:
+        # The crucial case: a prior round was resolved(to_worker), then a
+        # NEW judgment-request re-opened the wait (append -> pending). The
+        # latest decision is now pending, so the escalation trace is a
+        # live wait again -> NOT stale (acked must be restored).
+        pd.append("t1", "round1", store_path=self.store)
+        pd.resolve("t1", "to_user", store_path=self.store)
+        pd.resolve("t1", "to_worker", store_path=self.store)
+        # re-open
+        reopened = pd.append("t1", "round2", store_path=self.store)
+        self.assertEqual(reopened.status, "pending")
+        self.assertFalse(
+            pd.escalation_trace_is_stale("t1", store_path=self.store)
+        )
+
+    # CLI latest-resolution ----------------------------------------------
+    def _run_cli_capture(self, task_id: str) -> dict:
+        import contextlib
+        import io
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = pd.main(
+                [
+                    "--store",
+                    str(self.store),
+                    "latest-resolution",
+                    "--task-id",
+                    task_id,
+                ]
+            )
+        self.assertEqual(rc, 0)
+        lines = [ln for ln in buf.getvalue().splitlines() if ln.strip()]
+        self.assertEqual(len(lines), 1)
+        return json.loads(lines[0])
+
+    def test_cli_latest_resolution_stale_true(self) -> None:
+        pd.append("t1", "ask", store_path=self.store)
+        pd.resolve("t1", "to_user", store_path=self.store)
+        pd.resolve("t1", "to_worker", store_path=self.store)
+        out = self._run_cli_capture("t1")
+        self.assertEqual(out["status"], "resolved")
+        self.assertEqual(out["resolution_kind"], "to_worker")
+        self.assertTrue(out["escalation_trace_is_stale"])
+
+    def test_cli_latest_resolution_pending_not_stale(self) -> None:
+        pd.append("t1", "ask", store_path=self.store)
+        out = self._run_cli_capture("t1")
+        self.assertEqual(out["status"], "pending")
+        self.assertFalse(out["escalation_trace_is_stale"])
+
+    def test_cli_latest_resolution_none(self) -> None:
+        out = self._run_cli_capture("nope")
+        self.assertEqual(out["status"], "none")
+        self.assertIsNone(out["resolution_kind"])
+        self.assertFalse(out["escalation_trace_is_stale"])
+
+    # multi-task discrimination ------------------------------------------
+    def test_latest_for_task_discriminates_across_tasks(self) -> None:
+        # A newer resolved/to_worker entry for t2 must not leak into t1's
+        # latest_for_task / escalation_trace_is_stale: the task_id filter
+        # is what keeps Step 5's per-worker gate correct (Issue #603).
+        self.store.write_text(
+            json.dumps(
+                [
+                    {
+                        "task_id": "t1",
+                        "received_at": "2026-05-05T05:00:00Z",
+                        "raw_message": "t1-still-open",
+                        "status": "pending",
+                    },
+                    {
+                        "task_id": "t2",
+                        "received_at": "2026-05-05T06:00:00Z",
+                        "raw_message": "t2-relayed-back",
+                        "status": "resolved",
+                        "resolved_at": "2026-05-05T06:01:00Z",
+                        "resolution_kind": "to_worker",
+                    },
+                ]
+            ),
+            encoding="utf-8",
+        )
+        t1_latest = pd.latest_for_task("t1", store_path=self.store)
+        assert t1_latest is not None
+        self.assertEqual(t1_latest.task_id, "t1")
+        # t2's newer resolved/to_worker does not make t1 stale.
+        self.assertFalse(
+            pd.escalation_trace_is_stale("t1", store_path=self.store)
+        )
+        self.assertTrue(
+            pd.escalation_trace_is_stale("t2", store_path=self.store)
+        )
+
+    # malformed register through the new API -----------------------------
+    def test_latest_for_task_propagates_malformed_json(self) -> None:
+        # _load raises ValueError on malformed JSON; the new public API
+        # must propagate (not silently swallow) so the dispatcher's
+        # (c)(1-bis) gate falls back to register_unavailable rather than
+        # misreading a corrupt store as "no decision" (Issue #603).
+        self.store.write_text("not json{", encoding="utf-8")
+        with self.assertRaises(ValueError):
+            pd.latest_for_task("t1", store_path=self.store)
+        with self.assertRaises(ValueError):
+            pd.escalation_trace_is_stale("t1", store_path=self.store)
+
+
 if __name__ == "__main__":
     unittest.main()
