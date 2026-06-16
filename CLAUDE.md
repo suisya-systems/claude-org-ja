@@ -20,6 +20,8 @@
 
 契約面の正本は [`docs/contracts/backend-interface-contract.md`](./docs/contracts/backend-interface-contract.md) Surface 8（broker auth & delivery、ratified 2026-06-14。**push 一次への additive 改訂 S3 が ratified 済み（2026-06-15、「Ratified amendment」節）**・既存 ratified 本文は不変更）、設計 SoT は transport-lab `docs/design/broker-native-roles.md` §9（push 一次再設計）/ `docs/design/ja-migration-plan.md` §5・§8。**既定 `renga` は削除せず opt-in fallback として常時有効**（切戻しの安全装置）。broker 実走（dogfood）は Epic #6 Issue G スコープであり、本ファイルの既定運用経路ではない。
 
+**「既定」の二フレーム注記（Refs #604）**: 本節が「既定 `renga`」と書くのは**運用既定**フレーム（broker 実走 dogfood が Epic #6 Issue G まで未活性のため、運用上の既定経路が renga）。これとは別に**コード既定**フレームがあり、`tools/transport.py: DEFAULT_TRANSPORT` は runtime 0.1.28 (Epic #586) で `renga` → `broker` にフリップ済み — ja の生成器・`transport.resolve()` はこのコードフレームで render するため、生成面のスキルは「既定 `broker`」と表示する。両者は指す対象（運用経路 vs コード定数）が異なり矛盾しない（手保守 prose の「既定 renga」＝運用フレーム正 / 生成面の「既定 broker」＝コード定数フレーム正）。ただし `tools/peer_notify.py: notify_peer` のような raw env 判定の helper だけは `DEFAULT_TRANSPORT` を参照せず、`ORG_TRANSPORT==broker` 明示時のみ broker・無設定時 renga フォールバックとなる点に注意（pr-watch の peer 通知挙動。詳細は [`.claude/skills/org-pull-request/SKILL.md`](./.claude/skills/org-pull-request/SKILL.md) の輸送層注記）。
+
 ## PR 後の CI 監視
 - PR 作成直後に `tools/pr-watch.ps1 <PR番号>` (Windows) または `tools/pr-watch.sh <PR番号>` (POSIX) を実行すると、`gh pr checks --watch` をブロッキングで起動し、完了時に `.state/journal.jsonl` へ `ci_completed` イベントを 1 行追記する。`--repo OWNER/REPO` 省略時はカレントリポジトリを自動解決する。
 
