@@ -1,0 +1,1 @@
+- **全ペインを同一タブ内に配置する**: renga の `list_panes` / `focus_pane` / `send_message` / `inspect`（CLI） は現在フォーカス中のタブのペインしか扱えないため、ディスパッチャー・キュレーター・全ワーカーを同一タブ内に split で積む。`new_tab` でワーカーを別タブに置くとディスパッチャー側から addressable でなくなる (2026-04-20 判明。renga 本体での解決は suisya-systems/renga#71)

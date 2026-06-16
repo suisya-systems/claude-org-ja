@@ -18,12 +18,12 @@ allowed-tools:
   - Bash(git fetch:*)
   - Bash(git log:*)
   - Bash(gh issue create:*)
-  - mcp__org-broker__send_message
-  - mcp__org-broker__check_messages
-  - mcp__org-broker__send_keys
-  - mcp__org-broker__inspect_pane
-  - mcp__org-broker__list_peers
-  - mcp__org-broker__list_panes
+  - mcp__renga-peers__send_message
+  - mcp__renga-peers__check_messages
+  - mcp__renga-peers__send_keys
+  - mcp__renga-peers__inspect_pane
+  - mcp__renga-peers__list_peers
+  - mcp__renga-peers__list_panes
 ---
 
 # org-delegate: ワーカー派遣
@@ -39,13 +39,7 @@ allowed-tools:
 
 > **state-db cutover (M4, Issue #267 / #284)**: 構造化セクションの write は **必ず `StateWriter.transaction()` 経由**で行う。post-commit hook が `.state/org-state.md` / `.state/org-state.json` を DB から自動再生成し、`update_run_status('<task_id>', 'completed')` 呼び出しは `.state/workers/worker-<task_id>.md` を `.state/workers/archive/` へ自動 move する。markdown 直接編集は drift_check が検出する。events は DB の `events` テーブルが SoT (`tools/journal_append.sh` / `.py` は DB ルーティング済み)。DB 不在時は `python -m tools.state_db.importer --db .state/state.db --rebuild --no-strict` で構築する。
 
-> **輸送層（transport）両系 — 既定 `broker` / opt-in `renga`**: 本スキルの `mcp__org-broker__*` 呼び出しは **既定 `broker`**（`ORG_TRANSPORT` 無設定）で書いてあり、そのまま従えばよい（既定挙動）。`ORG_TRANSPORT=renga`（opt-in・切戻し可）では MCP サーバー名が `renga-peers` になり、ツールの **完全修飾名が `mcp__org-broker__*` → `mcp__renga-peers__*`** に機械置換される（引数形・セマンティクスは同一なので手順の論理は変わらない）。輸送依存で手順が変わる点だけ renga 併記する:
->
-> - **受信モデル（push 一次 = `claude/channel` / pull フォールバック）**: 既定 broker は worker からの進捗 / 完了 / 判断仰ぎが **push 一次**で届く（runtime push-first 0.1.24+、transport-lab `docs/design/broker-native-roles.md` §9）: 各ペイン同居の **channel sidecar**（`server:org-broker-channel`）が broker キューを ~1 秒間隔で claim→push し、`notifications/claude/channel` で本文を idle セッションへ注入する（「受けたら即応答」契機が生まれる）。**pull はフォールバック層**: sidecar 不在 / unhealthy（heartbeat timeout で `delivery_mode=PULL`）/ channel 非対応ペイン / claude.ai login 不在時は、各役割が自身の cadence で能動的に `check_messages`（`mcp__org-broker__check_messages`）する（§9.6 読み替え表の役割別 cadence。ナッジが出れば契機になりうるが idle を起こさないため能動 poll が受信の正路。**既存の「ナッジを見たら `check_messages`」prose は撤回せず**この fallback cadence として読む）。Step 5 の「ワーカーからのメッセージ受信時」は push 一次では channel 注入で起き、フォールバック時は窓口のターン冒頭の能動 `check_messages` で受ける（ack の `send_message` 等の手順は同型）。`ORG_TRANSPORT=renga`（opt-in）では、worker 報告が `<channel source="renga-peers" …>` として in-band で push される。契約面: Surface 8 で push 一次が **ratified 済み**（2026-06-15、S3。pull は fallback として retain・renga 不変）。
-> - **spawn 儀式（folder-trust 承認 + dev-channel sidecar 承認の 2 段）**: ワーカー起動はディスパッチャー専属（[`.dispatcher/references/spawn-flow.md`](../../../.dispatcher/references/spawn-flow.md)）だが、既定 broker では `--mcp-config <broker>` 注入（daemon・全ツール + agent token）と Claude Code の **folder-trust プロンプト**機械承認（`send_keys(enter=true)`）**に加えて**、push 一次のため channel sidecar を `--dangerously-load-development-channels server:org-broker-channel` で load し、dev-channel 承認プロンプト（spawn-flow 3-3b）を `send_keys(enter=true)` で機械承認する（broker-native-roles.md §9.5）。これは ratified §5/§8.5 の folder-trust フローへの **加算であり置換ではない**（※ `docs/design/renga-decoupling.md` §4.6「dev-channel prompt は存在しない」/ contract §5.1・§8.5 の dev-channel→`--mcp-config` 置換記述は、push 一次採用で channel sidecar 分の dev-channel load が additive に復活する＝S3 で 2026-06-15 に ratified・contract で amend 済み）。root `.claude/**` self-edit の `send_keys` 事前承認（下記 Step 5）も `mcp__org-broker__send_keys` で同じ手順を踏む。`ORG_TRANSPORT=renga`（opt-in）では `--dangerously-load-development-channels server:renga-peers` を注入し「Load development channel?」を Enter 承認する 1 段。
-> - **エラー分岐（既定 = broker 拡張コード込み）**: shared codes に加え既定 broker は `[token_invalid]` / `[session_invalid]` / `[tool_not_authorized]` / `[no_backend]`（= adapter_unavailable）/ `[nudge_failed]` / `[peer_not_found]` / `[name_taken]` を返しうる（未知コードは default-branch で escalate）。一覧は [`.claude/skills/org-delegate/references/renga-error-codes.md`](references/renga-error-codes.md) の broker 節を参照。`ORG_TRANSPORT=renga` 時は broker 固有コードは発生しない。
->
-> `new_tab` / `focus_pane` は broker surface に**無い**（意図的除外。本フローは元々使わない）。契約面の正本は [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) Surface 8（broker auth & delivery、ratified 2026-06-14。push 一次への additive 改訂 S3 が ratified 済み（2026-06-15、「Ratified amendment」節）・既存 ratified 本文不変更）、設計 SoT は transport-lab `docs/design/broker-native-roles.md` §9（push 一次再設計）/ `docs/design/ja-migration-plan.md` §5.2(ii)・§8。broker 実走（dogfood）は Epic #6 Issue G スコープで本スキルの既定経路ではない。
+{{> org-delegate-transport }}
 
 ## 窓口とディスパッチャーの役割分担
 
@@ -187,7 +181,7 @@ python tools/gen_delegate_payload.py apply \
 
 # 3. apply 出力の send_plan.json を MCP 呼び出しにコピペ
 #    cat <worker_dir>/send_plan.json
-#    → mcp__org-broker__send_message(to_id="dispatcher", message=<message>)
+#    → {{FQ}}send_message(to_id="dispatcher", message=<message>)
 ```
 
 `apply` は **T1 reservation のみ** (`runs.status='queued'`) を行う。Active Work Items への active 化はディスパッチャー T2 ([`docs/contracts/delegation-lifecycle-contract.md`](../../../docs/contracts/delegation-lifecycle-contract.md)) なので本 skill では触らない。失敗時はキューを残したまま Secretary に判断を仰ぐこと。
@@ -259,13 +253,13 @@ dogfood 対象判定 / 窓口責務 (A) 実装起票時の `registry/dogfood_pen
 
 ディスパッチャーから派遣完了報告を受け取ったら、各ワーカーに挨拶メッセージを送る:
 ```
-mcp__org-broker__send_message(
+{{FQ}}send_message(
   to_id="worker-{task_id}",
-  message="窓口です。{task_id} の作業をお願いしています。完了・進捗・ブロック、全ての報告は `to_id=\"secretary\"` で org-broker 送信してください。"
+  message="窓口です。{task_id} の作業をお願いしています。完了・進捗・ブロック、全ての報告は `to_id=\"secretary\"` で {{SERVER}} 送信してください。"
 )
 ```
 
-**`.claude/` 編集タスクの send_keys 事前承認（root `.claude/**` self-edit のみ）**: 委譲対象に claude-org root の `.claude/**` が含まれる場合（`.dispatcher/` / `.curator/`、worker dir 生成物の `.claude/settings.local.json` は対象外）、窓口は上記挨拶の送信に**続けて** `mcp__org-broker__send_keys` で承認文（対象ファイル列挙 + task_id + 「窓口経由のユーザー承認」の明記）を worker ペインへ入力しておく。worker 側は編集前にこの承認入力の存在を確認し、無ければ編集せず窓口に要求する（ハンドシェイク固定で deadlock / 空打ちを防止）。スコープ境界・背景（2 層ガード）・承認文テンプレート・worker brief 必須文言は [`.claude/skills/org-delegate/references/claude-org-self-edit.md`](references/claude-org-self-edit.md) §5 を一次参照。
+**`.claude/` 編集タスクの send_keys 事前承認（root `.claude/**` self-edit のみ）**: 委譲対象に claude-org root の `.claude/**` が含まれる場合（`.dispatcher/` / `.curator/`、worker dir 生成物の `.claude/settings.local.json` は対象外）、窓口は上記挨拶の送信に**続けて** `{{FQ}}send_keys` で承認文（対象ファイル列挙 + task_id + 「窓口経由のユーザー承認」の明記）を worker ペインへ入力しておく。worker 側は編集前にこの承認入力の存在を確認し、無ければ編集せず窓口に要求する（ハンドシェイク固定で deadlock / 空打ちを防止）。スコープ境界・背景（2 層ガード）・承認文テンプレート・worker brief 必須文言は [`.claude/skills/org-delegate/references/claude-org-self-edit.md`](references/claude-org-self-edit.md) §5 を一次参照。
 
 ### ワーカーからのメッセージ受信時
 
@@ -323,7 +317,7 @@ worker → Secretary peer message
 
 ### ワーカー監視と介入判定（窓口が実行）
 
-派遣後、ワーカーが深掘り・過剰検証ループに入っていないか定期的に確認する。**介入トリガー**（いずれか 1 つ以上該当したら `mcp__org-broker__inspect_pane` で状況確認）:
+派遣後、ワーカーが深掘り・過剰検証ループに入っていないか定期的に確認する。**介入トリガー**（いずれか 1 つ以上該当したら `{{FQ}}inspect_pane` で状況確認）:
 
 - 同一タスクで 30 分超経過、かつ同じフェーズ（実装 / レビュー / 検証）に 3 回目以降入っている
 - 1 時間以上進捗報告なしで静穏（入力待ちでもなく、progress ログも出ない）

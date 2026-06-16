@@ -2,11 +2,7 @@
 
 `.dispatcher/CLAUDE.md` の「ワーカーペイン監視」エントリポイントから参照される本体仕様。監視ループ 1 サイクルの手順、stall 検出、secretary relay gap 検出、設計メモ、cadence 設定の根拠を含む。
 
-> **輸送層 両系（`ORG_TRANSPORT`: 既定 `broker` / opt-in `renga`）**: 本ファイルの監視手順は **既定 `broker`** で書いてある（`ORG_TRANSPORT` 無設定ならそのまま従う。既定挙動）。`ORG_TRANSPORT=renga`（opt-in）では完全修飾名が **`mcp__org-broker__*` → `mcp__renga-peers__*`** に置換される（引数形・cursor / timeout セマンティクスは同一）。監視ループで輸送依存に**意味が変わる**のは次の 2 点:
-> 1. **受信モデル（push 一次 = `claude/channel` / pull フォールバック）**: Step 2 の `check_messages` でワーカー自己報告を受ける流れはどちらの transport でも**同じツール名・同じ drain セマンティクス**で動く。既定 broker は **push 一次**に設計済（runtime push-first 0.1.24+、transport-lab `docs/design/broker-native-roles.md` §9）で、各ペイン同居の **channel sidecar**（`server:org-broker-channel`）が `notifications/claude/channel` で本文を idle セッションへ注入する（ワーカー報告は channel push が一次）。**pull はフォールバック層**: sidecar 不在 / unhealthy / channel 非対応ペイン時は、ディスパッチャーが `/loop 3m` 各サイクルで能動的に `check_messages` する（§9.6 読み替え表の dispatcher cadence。ナッジが出れば契機になりうるが idle を起こさないため能動 poll が受信の正路。既存「ナッジを見たら `check_messages`」prose は撤回せずこの fallback cadence として読む）。`ORG_TRANSPORT=renga`（opt-in）ではワーカー報告が `<channel source="renga-peers" …>` として in-band で push される。**ただし `/loop 3m` 監視ループ自体は push 一次でも廃止しない** — Step 1 の `poll_events`（pane lifecycle）に依存し、かつ Step 2 の `check_messages` は push 失効時のフォールバック drain として機能するため。Step 5.2 のワーカーへの self-healing nudge / secretary への informational も既定 broker では channel push 一次・nudge + `check_messages` フォールバックの経路になる。
-> 2. **`poll_events` の生成元（native push → 差分 reconcile 合成）**: 既定 broker は端末 backend（tmux/WezTerm）に native push が無いため、**`list_panes` 差分 reconcile で `pane_started` / `pane_exited` / `events_dropped` を合成**する（設計 §6、exactly-once `pane_exited` / overflow 時 `events_dropped` + `list_panes` リコンサイル回復）。`ORG_TRANSPORT=renga`（opt-in）ではペイン lifecycle を native に push する。`poll_events` の API 形・最小 vocabulary・cursor / 30s cap は同一なので Step 1 / Step 3 の手順は不変。`events_dropped` 時に `list_panes` で突き合わせる Step 3 の保険はどちらも同じ（既定 broker の正準経路）。
->
-> エラーコードは shared codes（`[pane_not_found]` / `[shutting_down]` / `[io_error]` / `[app_timeout]` / `[internal]` 等、Step 4 のハンドリング参照）に加え、既定 broker は `[token_invalid]` / `[session_invalid]` / `[tool_not_authorized]` / `[no_backend]`(= adapter_unavailable) / `[nudge_failed]` / `[peer_not_found]` を返しうる（未知コードは default-branch）。`ORG_TRANSPORT=renga` 時は broker 固有コードは発生しない。契約面の正本は [`docs/contracts/backend-interface-contract.md`](../../docs/contracts/backend-interface-contract.md) Surface 8（ratified 2026-06-14。push 一次への additive 改訂 S3 が ratified 済み（2026-06-15）・既存 ratified 本文不変更）、設計 SoT は transport-lab `docs/design/broker-native-roles.md` §9（push 一次再設計）/ `docs/design/ja-migration-plan.md` §5.2(ii) / §6 / §8。broker 実走（dogfood）は Issue G スコープで本ファイルの既定経路ではない。
+{{> worker-monitoring-transport }}
 
 ### 監視ループ 1 サイクル (3 分おき)
 
@@ -25,9 +21,9 @@
 
 各サイクルで以下を順次実行する:
 
-1. **`mcp__org-broker__poll_events` で直近のペイン lifecycle を drain** (タイムアウト付きで 1 回だけ):
+1. **`{{FQ}}poll_events` で直近のペイン lifecycle を drain** (タイムアウト付きで 1 回だけ):
    ```
-   result = mcp__org-broker__poll_events(
+   result = {{FQ}}poll_events(
        since=<前サイクルの next_since、初回は省略>,
        timeout_ms=5000,
        types=["pane_exited", "events_dropped"]
@@ -43,13 +39,13 @@
      - `type == "events_dropped"` → `.state/journal.jsonl` に drop 件数を記録（監視が追いついていないシグナル）
      - それ以外（ディスパッチャー/キュレーター/窓口の終了） → 誤ってワーカー終了として扱わない
    - **filter 不一致イベント到着で long-poll 早期終了する仕様**なので、空応答時は次サイクルで再 poll（cursor 保持で重複なし）
-   - 絞り込んだ `pane_exited` 行の `name` (例: `worker-foo`) を拾い、`mcp__org-broker__send_message` で窓口に **ペインが閉じた** という事実だけを通知する:
+   - 絞り込んだ `pane_exited` 行の `name` (例: `worker-foo`) を拾い、`{{FQ}}send_message` で窓口に **ペインが閉じた** という事実だけを通知する:
      ```
      WORKER_PANE_EXITED: {name} (id={id}) のペインが閉じました。リコンサイル要。
      ```
      **重要**: これは「ペインが消えた」というライフサイクル事実のみ。タスクの完了判定ではない。
      窓口側は `.state/workers/worker-*.md` を `status=pane_closed` に遷移させ、タスクの完了/未完了は:
-       - 直近の org-broker メッセージ履歴 (進捗ログ) を確認
+       - 直近の {{SERVER}} メッセージ履歴 (進捗ログ) を確認
        - `COMPLETED` 報告が届いていれば task 完了扱い
        - 届いていなければ、未完了終了 (ワーカー事故) として扱い、再派遣 or 放棄をユーザーに確認
      のプロセスで判定する
@@ -58,7 +54,7 @@
    - `type == "heartbeat"` は 30 秒おきの keep-alive。既存 jq フィルタで暗黙に skip されるので何もしなくてよい
    - 5 秒以内に 1 件も来なければ次の Step へ進む (Phase 2.1 の `--timeout` で勝手に exit する)
 
-2. **`mcp__org-broker__check_messages` でワーカーからの自己報告を受信**:
+2. **`{{FQ}}check_messages` でワーカーからの自己報告を受信**:
    - 受信種別ごとに Step 4 (e) と同じシーケンスを適用してから窓口へ転送する:
      1. 観測記録: `anomaly_observed` を journal に追記 (`source=self_report`、confidence は `n/a`。worker が自発的に報告したので cursor 補強不要)
      2. 通知判定: 直近 30 秒以内の journal に `event=notify_sent` かつ `(worker, kind)` 一致のエントリがあればスキップ (Step 4 の inspect 通知と合算で de-dup)
@@ -74,17 +70,17 @@
      ```
    - 通常進捗は `.state/workers/worker-*.md` に追記のみ (journal / de-dup スキーマには乗せない)
 
-3. **`mcp__org-broker__list_panes` でペイン一覧を取得して突き合わせ**:
+3. **`{{FQ}}list_panes` でペイン一覧を取得して突き合わせ**:
    - `poll_events` (Step 1) を見逃した場合の保険 (`events_dropped` 発生時や events 未受信で pane 状態がズレた時)
    - `list_panes` の結果テキストには各 pane の `id / name / role / focused / x / y / width / height` が含まれる
    - events 経由で exit を把握していないのに `list_panes` で pane が消えているワーカーがあれば、**ペインが閉じた事実**として `.state/workers/worker-*.md` の status を `pane_closed` に遷移させ、Step 1 と同じく窓口に `WORKER_PANE_EXITED` を転送 (task 完了判定は同じ手順で窓口側が実施)
    - pane 上限は 16 なので結果は常に小さく、都度 full scan で問題なし
 
-4. **`mcp__org-broker__inspect_pane` でワーカーペインの画面内容を走査し異常検出**:
+4. **`{{FQ}}inspect_pane` でワーカーペインの画面内容を走査し異常検出**:
    - **目的**: ワーカー自己申告に依存せず、ディスパッチャー自身が画面内容から APPROVAL_BLOCKED / ERROR を検出する独立した観測チャネル
    - **実行**: Step 3 で得た `list_panes` の active worker (`role == "worker"`) それぞれに対し:
      ```
-     result = mcp__org-broker__inspect_pane(
+     result = {{FQ}}inspect_pane(
          target="worker-{task_id}",
          lines=<該当 worker pane の height>,   # Step 3 list_panes の height。取れなければ十分大きい固定値 (例 200)
          include_cursor=true,
@@ -95,7 +91,7 @@
      を順次実行 (16 ワーカー並列でも合計 1 秒未満)。`lines` は **Step 3 の `list_panes` で得た該当 worker pane の `height`** を渡し、pane の全 visible 行を取得して (d) の ERROR scan を全行対象にする (Issue #492 gap 1: `lines=10` の bottom-10 窓では row 15 のような scroll-up した error banner を取りこぼす。`inspect_pane` の `lines` は「末尾 N 行への trim」なので、固定値だと pane height がそれを超えた環境で上段を取りこぼす — 必ず実 height を使う)。`list_panes` の height が取れない場合のみ十分大きい固定値 (例 200) でフォールバックする。APPROVAL_BLOCKED の target line は (a) の通り「最後の非空行」なので返却行数を増やしても変わらない。
    - **エラー時の挙動**: tool result テキストに `[<code>] <msg>` 形式でエラーが埋まる。code で分岐する (詳細は `.claude/skills/org-delegate/references/renga-error-codes.md`):
      - `[pane_not_found]` / `[pane_vanished]` — ワーカーが既に閉じた。そのワーカーの inspect を skip して Step 3 の list 結果で `WORKER_PANE_EXITED` 経路に回す (二重検出は de-dup で吸収される)
-     - `[shutting_down]` — transport backend 停止中。監視ループを即停止し、`mcp__org-broker__send_message` で `FOREMAN_STOPPING` を窓口に通知
+     - `[shutting_down]` — transport backend 停止中。監視ループを即停止し、`{{FQ}}send_message` で `FOREMAN_STOPPING` を窓口に通知
      - `[io_error]` / `[app_timeout]` / `[internal]` — 一過性の可能性。`.state/journal.jsonl` に記録して次サイクルで再試行
      - 未知 code (将来の transport backend が追加) — journal 記録のみで続行
 
@@ -119,7 +115,7 @@
    - **high-confidence**: `cursor.visible == true` かつ `cursor.row == target_line.row` または `cursor.row == target_line.row + 1`
    - **low-confidence**: 上記以外 (cursor が離れた位置にある、または非表示)
 
-   **high-confidence のみ journal 記録 + `mcp__org-broker__send_message` 通知の両方を発行**。low-confidence は journal のみに記録し、窓口通知はスキップする (誤検出による窓口への偽通知を抑えるため)。
+   **high-confidence のみ journal 記録 + `{{FQ}}send_message` 通知の両方を発行**。low-confidence は journal のみに記録し、窓口通知はスキップする (誤検出による窓口への偽通知を抑えるため)。
 
    #### (d) ERROR 検出 — 全 visible 行 substring / regex / spinner-age
    **全 visible 行** ((a) で説明した `inspect_pane(lines=<pane height>)` の **返却行配列全体**。bottom 10 ではない — Issue #492 gap 1) のいずれかが以下に該当:
@@ -156,7 +152,7 @@
       - **de-dup チェック**: 直近 30 秒以内の journal に **`event == "notify_sent"`** かつ `(worker, kind)` 一致のエントリが存在しない
         - `anomaly_observed` エントリは de-dup キーに **含めない** (低 confidence や observation-only record が将来の通知を抑制しないため)
         - 今サイクルの step (1) で書いた `anomaly_observed` も de-dup 対象にならない
-   3. **通知送信** (step 2 を通過した場合): `mcp__org-broker__send_message` で窓口に通知 (フォーマットは (f) 参照)
+   3. **通知送信** (step 2 を通過した場合): `{{FQ}}send_message` で窓口に通知 (フォーマットは (f) 参照)
    4. **notify_sent 記録** (通知送信成功時): `confidence` は kind と source に一致させる (APPROVAL_BLOCKED かつ source=inspect のみ `"high"`、それ以外は `"n/a"`)。helper 経由で append:
       ```bash
       # APPROVAL_BLOCKED + source=inspect
@@ -170,7 +166,7 @@
    Journal 書き込み自体が失敗した場合はそのサイクルの通知を断念、次サイクルで再試行。
 
    #### (f) 通知フォーマット
-   (e) の step 3 に到達した場合のみ、`mcp__org-broker__send_message` で窓口に通知。既存 `APPROVAL_BLOCKED` / `ERROR_DETECTED` フォーマットに `source=inspect` + `confidence=<high|n/a>` を付与:
+   (e) の step 3 に到達した場合のみ、`{{FQ}}send_message` で窓口に通知。既存 `APPROVAL_BLOCKED` / `ERROR_DETECTED` フォーマットに `source=inspect` + `confidence=<high|n/a>` を付与:
    ```
    APPROVAL_BLOCKED: worker-{task_id} の承認プロンプトを検出 (source=inspect, confidence=high): {該当行}
    ERROR_DETECTED: worker-{task_id} にエラーを検出 (source=inspect, confidence=n/a): {該当行}
@@ -280,7 +276,7 @@
       # 1 件以上残れば「ヒット」。具体的な one-liner (PowerShell 環境での date 代替等) は dispatcher Claude の判断。
       ```
 
-   2. **org-broker poll_events (forward-compat、現状は補助のみ)**: 現状 `mcp__org-broker__poll_events` は pane lifecycle event のみを流し、`send_message` は流れない (`.claude/skills/org-delegate/references/renga-error-codes.md` の type 表参照)。さらに `since` は時刻ではなく前サイクルから受け取る **opaque cursor** で、初回省略時は「今以降」セマンティクス (過去履歴は返らない) なので、本判定で「過去 15 分」をピンポイント検索する用途には今は使えない。journal scan を **authoritative source** とする。将来 transport backend が `send_message` event を `poll_events` に流すようになれば、Step 1 で既に保持している `.state/dispatcher-event-cursor.txt` の cursor 経由で受信した worker→secretary の送信を `(worker, kind=stall_acked)` ledger に変換するルートを追加する想定 (本 PR ではプレースホルダとして記述するに留める)。
+   2. **{{SERVER}} poll_events (forward-compat、現状は補助のみ)**: 現状 `{{FQ}}poll_events` は pane lifecycle event のみを流し、`send_message` は流れない (`.claude/skills/org-delegate/references/renga-error-codes.md` の type 表参照)。さらに `since` は時刻ではなく前サイクルから受け取る **opaque cursor** で、初回省略時は「今以降」セマンティクス (過去履歴は返らない) なので、本判定で「過去 15 分」をピンポイント検索する用途には今は使えない。journal scan を **authoritative source** とする。将来 transport backend が `send_message` event を `poll_events` に流すようになれば、Step 1 で既に保持している `.state/dispatcher-event-cursor.txt` の cursor 経由で受信した worker→secretary の送信を `(worker, kind=stall_acked)` ledger に変換するルートを追加する想定 (本 PR ではプレースホルダとして記述するに留める)。
 
    #### (d) 分岐 (acked vs timeout)
    - **acked** — どちらかの系統で 1 件以上ヒット: 「Secretary 判断待ち idle」または「PR-pending-merge 待機 idle」とみなし、STALL_SUSPECTED を **発火しない**。Step 4 (e) と同じ `anomaly_observed` ledger に soft-note として記録 (新 event 名は導入せず既存 catalog を再利用)。`note` は (b-2) で選択した sub-state を反映する:
@@ -294,7 +290,7 @@
 
    - **timeout** — 両系統とも痕跡なし、idle 継続: 従来通り stall として扱い、窓口に通知 (lookback は (b-2) で選択した値、通知文に分単位で埋める):
      ```
-     mcp__org-broker__send_message(to_id="secretary", message="
+     {{FQ}}send_message(to_id="secretary", message="
        STALL_SUSPECTED: worker-{task_id} が直近 3 サイクル idle、
        過去 {lookback_min} 分以内に secretary 向け worker→secretary 送信痕跡
        (worker_escalation / worker_reported / worker_completed /
@@ -427,7 +423,7 @@
    secretary→worker の `send_message` 発生を journal だけで authoritative に観測する手段は **現状存在しない**:
 
    1. **journal scan**: 既存 event catalog (`docs/journal-events.md`) に「secretary→worker の send_message 受信時に secretary が書く event」は定義されていない。`worker_escalation` / `worker_reported` / `worker_completed` 等は **worker 起点の inbound** を secretary が記録する ledger であり、逆方向 (secretary→worker outbound) は ledger 化されていない。`user_decision_relayed` のような新 event を捏造して proxy にするのは event 名の確定を要し、本 PR スコープ外 (curator 領域)
-   2. **org-broker `poll_events` 経由**: Step 5 (c) と同じく現状の `poll_events` は pane lifecycle のみで `send_message` を流さない。将来 send_message が flow するようになれば、Step 1 の cursor (`.state/dispatcher-event-cursor.txt`) を再利用して `(actor=secretary, recipient=worker-{task_id})` を直接観測できる。プレースホルダ
+   2. **{{SERVER}} `poll_events` 経由**: Step 5 (c) と同じく現状の `poll_events` は pane lifecycle のみで `send_message` を流さない。将来 send_message が flow するようになれば、Step 1 の cursor (`.state/dispatcher-event-cursor.txt`) を再利用して `(actor=secretary, recipient=worker-{task_id})` を直接観測できる。プレースホルダ
 
    従って (b)(2) のうち「secretary→worker 痕跡なし」は、proxy 経路では **常に true** として扱う (痕跡を観測する手段が無いため、中継が動いているかどうかを判別できない)。これにより proxy 経路の絞り込みは事実上 (d) の secretary→user proxy だけに依存することになり、結果的に動機 (a)(2) の「user 答えた後に secretary が worker に転送し忘れ」ケースは proxy では **(d) の secretary 画面更新で擬陽性的に suppress** される。Issue #301 の (a-2) primary lookup (`user_replied_at` marker) で本ケースは deterministic 化済みであり、proxy 経路は legacy entry / 呼び忘れの (a-3) Fallback としてのみ機能する。
 
@@ -435,7 +431,7 @@
    user 向け visible output を直接捉える journal event は無い (user pane に届く文字は端末 backend の terminal レイヤーに流れるだけで journal を経由しない)。代替として **secretary pane の画面差分** を proxy として使う:
 
    ```
-   snapshot = mcp__org-broker__inspect_pane(
+   snapshot = {{FQ}}inspect_pane(
        target="secretary",
        lines=40,
        include_cursor=false,
@@ -463,7 +459,7 @@
    1. **dispatcher pane に "ALERT" として表示する** (採用): user は dispatcher pane を直接見ているか、最低でも端末上で確認可能。dispatcher pane は LLM session なので画面に直接書く API は無いが、dispatcher Claude が応答テキストとして "ALERT: SECRETARY_RELAY_GAP_SUSPECTED ..." を return すれば pane の最終行に表示される (= user の見えるところに残る)
    2. **secretary には並行で "user に直接通知してください" メッセージを送る** (採用): secretary が機能していれば中継、機能していなければ (1) で user 自身が dispatcher pane を見て認識する。fail-safe として両方の経路を保つ
       ```
-      mcp__org-broker__send_message(to_id="secretary", message="
+      {{FQ}}send_message(to_id="secretary", message="
         SECRETARY_RELAY_GAP_SUSPECTED (請求 user 直接通知): worker-{task_id} が
         過去 15 分判断仰ぎ / 進捗を上げたが secretary 側 outbound 痕跡なし。
         user に直接お知らせください。中継が機能していればこのメッセージは
@@ -471,7 +467,7 @@
         並行で alert 表示している。
       ")
       ```
-   3. **`mcp__org-broker__list_peers` で `client_kind` ベースに user pane を identify して直接送る案** (将来): `list_peers` には `client_kind` が含まれる (`docs/operations/renga-pane-conventions.md` 参照) が、user (人間) のターミナル pane は MCP peer として register していないのが通常で、現状の API 表面では direct send は不可。Issue 化候補 (本 PR では実装しない)
+   3. **`{{FQ}}list_peers` で `client_kind` ベースに user pane を identify して直接送る案** (将来): `list_peers` には `client_kind` が含まれる (`docs/operations/renga-pane-conventions.md` 参照) が、user (人間) のターミナル pane は MCP peer として register していないのが通常で、現状の API 表面では direct send は不可。Issue 化候補 (本 PR では実装しない)
 
    現状は (1) と (2) の **両方** を必ず発行する。どちらか一方が届かなくても他方で user が認識できる、という冗長性設計。
 
@@ -500,12 +496,12 @@
    - Step 5 の `worker-idle-state.json` は relay gap 評価でも参照される (idle streak ≥ 3 サイクルが (b)(4) の条件)。新規 state file は (d) の secretary pane snapshot のみ追加で、Step 5 の state とは独立
 
 <a id="step-5-2"></a>
-5.2. **PANE_OUTPUT_WITHOUT_PEER_MSG 検出** — Step 5 / 5.1 の sibling、ワーカーがペイン上に応答出力したのに secretary 宛 `mcp__org-broker__send_message` を発行し忘れた **silent dead-lock** を検知する独立チャネル:
+5.2. **PANE_OUTPUT_WITHOUT_PEER_MSG 検出** — Step 5 / 5.1 の sibling、ワーカーがペイン上に応答出力したのに secretary 宛 `{{FQ}}send_message` を発行し忘れた **silent dead-lock** を検知する独立チャネル:
 
    **定数**: `PANE_OUTPUT_SETTLE_SEC = 60` (ペイン content が静止してから fire 候補とするまでの最小経過秒数、(g) で根拠説明)、`PANE_OUTPUT_IDLE_STREAK_MIN = 2` (= `idle_streak_cycles` の最低値。`/loop 3m` cadence で実効 ~6 分の完全静止を要求。(g) で根拠説明)。**look-back window は持たない** (worker→secretary 痕跡の比較は `last_content_change_ts` 起点で行い、(g) Codex round 1 Blocker 対応で 15 分窓は意図的に削除)。値変更時は本ファイルのこの行を直接書き換える。
 
    #### (a) 動機
-   2026-05-09 の renga-ime-paste-routing タスクで実発生したインシデントパターン: worker は窓口の問い合わせに対しペイン上に長文回答を展開したが `mcp__org-broker__send_message(to_id="secretary", ...)` を呼び忘れたため、secretary 側は `mcp__org-broker__inspect_pane` で気づくまで待機し続けた。worker / secretary 間の peer message が SoT のため、これは **silent dead-lock** (どちらの pane も live、Step 4 / Step 5 / Step 5.1 のどの既存検知器にも該当しない) になる:
+   2026-05-09 の renga-ime-paste-routing タスクで実発生したインシデントパターン: worker は窓口の問い合わせに対しペイン上に長文回答を展開したが `{{FQ}}send_message(to_id="secretary", ...)` を呼び忘れたため、secretary 側は `{{FQ}}inspect_pane` で気づくまで待機し続けた。worker / secretary 間の peer message が SoT のため、これは **silent dead-lock** (どちらの pane も live、Step 4 / Step 5 / Step 5.1 のどの既存検知器にも該当しない) になる:
 
    - **Step 4 (画面 anomaly: APPROVAL_BLOCKED / ERROR)**: 規定の承認プロンプト / エラー banner が出ていなければ match しない。自由記述の長文回答は anchored regex (b) に乗らない
    - **Step 5 (STALL_SUSPECTED)**: idle_streak ≥ 3 サイクル (= ~9 分) が必要だが、worker がペインに出力を始めれば `idle_streak_cycles = 0` reset で stall 候補から外れる。output 自体が STALL を抑制してしまう
@@ -576,17 +572,17 @@
 
    1. **worker への self-healing nudge** (採用): dispatcher が worker pane に直接 nudge を送り、peer message 慣行を促す。承認・拒否の自動代行ではないので `.dispatcher/CLAUDE.md` 「ディスパッチャーが自動で承認・拒否することはしない」に抵触しない (構造の遵守を促すだけで内容判断はしない):
       ```
-      mcp__org-broker__send_message(to_id="worker-{task_id}", message="
+      {{FQ}}send_message(to_id="worker-{task_id}", message="
         PANE_OUTPUT_WITHOUT_PEER_MSG: 直近のペイン出力 (last_content_change_ts={ts}) 以降に
         secretary 宛の send_message 痕跡が観測できません。silent dead-lock を防ぐため、直前の応答内容を
-        `mcp__org-broker__send_message(to_id=\"secretary\", ...)` で secretary に送信してください。
+        `{{FQ}}send_message(to_id=\"secretary\", ...)` で secretary に送信してください。
         既に送信済みの場合は無視して構いません (`last_content_change_ts` 起点での痕跡走査で 0 件のため
         自動 nudge を発行しています)。
       ")
       ```
    2. **secretary への informational** (採用): silent dead-lock の検知事実と dispatcher の自動 nudge 発行を informational として secretary に届ける。secretary は人間応答待ちのつもりで idle になっているケースが想定されるため、worker が peer message を発行し忘れているシグナルとして受け取り、対応 (待つ / `inspect_pane` で内容を直接確認 / 人間にエスカレ) を判断する:
       ```
-      mcp__org-broker__send_message(to_id="secretary", message="
+      {{FQ}}send_message(to_id="secretary", message="
         PANE_OUTPUT_WITHOUT_PEER_MSG (informational): worker-{task_id} がペインに出力済みですが、
         last_content_change_ts={ts} 以降に worker→secretary の send_message 痕跡 (worker_escalation /
         worker_reported / worker_completed / plan_delivered / prep_delivered) が観測できないため、
@@ -633,12 +629,12 @@
 
    (a) **完了受領** (最初に評価): Step 2 の `check_messages` で本サイクルに受領済みのメッセージに curator からの `CURATE_DONE` / `CURATE_SKIPPED` / `CURATE_ERROR` が含まれていたら:
    - `CURATE_ERROR` の場合のみ内容を 1 行で窓口に informational 転送する
-   - `mcp__org-broker__close_pane(target="curator")` でペインを閉じる (`[pane_not_found]` / `[pane_vanished]` は既に閉じた扱いで skip — pane が先に消えていても受領済み CURATE_* の処理を優先する)
+   - `{{FQ}}close_pane(target="curator")` でペインを閉じる (`[pane_not_found]` / `[pane_vanished]` は既に閉じた扱いで skip — pane が先に消えていても受領済み CURATE_* の処理を優先する)
    - `curate-inflight.json` を削除して終了 (state.db への後始末は不要 — curator identity はそもそも書いていない)。(c)/(b) は評価しない
 
-   (c) **ペイン消失の検知** ((a) で CURATE_* を受領しなかったサイクルのみ): curator の生存を確認する。判定材料は (i) Step 1 の `poll_events` で curator の `pane_exited` を観測した、(ii) `list_panes` の結果に `name == "curator"` が不在 — の 2 系統。**worker 不在の reduced mode (下記 7) では Step 3 が skip されるため、(ii) は本 step 内で `mcp__org-broker__list_panes` を直接呼んで評価する** (Step 3 が走ったサイクルではその結果を再利用してよい)。これにより `events_dropped` / cursor ギャップで `pane_exited` を取り逃しても list_panes 側で必ず検知できる。消失を検知したら inflight を削除し、CURATE_* 未受領のまま消えた旨を窓口に informational 報告する (curator 側クラッシュの可能性。閾値超過分はファイルとして残るため、次回 worker close の閾値チェックで再評価され取りこぼしにはならない)
+   (c) **ペイン消失の検知** ((a) で CURATE_* を受領しなかったサイクルのみ): curator の生存を確認する。判定材料は (i) Step 1 の `poll_events` で curator の `pane_exited` を観測した、(ii) `list_panes` の結果に `name == "curator"` が不在 — の 2 系統。**worker 不在の reduced mode (下記 7) では Step 3 が skip されるため、(ii) は本 step 内で `{{FQ}}list_panes` を直接呼んで評価する** (Step 3 が走ったサイクルではその結果を再利用してよい)。これにより `events_dropped` / cursor ギャップで `pane_exited` を取り逃しても list_panes 側で必ず検知できる。消失を検知したら inflight を削除し、CURATE_* 未受領のまま消えた旨を窓口に informational 報告する (curator 側クラッシュの可能性。閾値超過分はファイルとして残るため、次回 worker close の閾値チェックで再評価され取りこぼしにはならない)
 
-   (b) **timeout 管理** (受領が無いサイクル): `now - started_at > CURATE_HARD_CAP_MIN` なら**無条件で**下記の打ち切り処理。そうでなく `now - started_at > CURATE_TIMEOUT_MIN` なら、`mcp__org-broker__inspect_pane(target="curator", lines=30)` の出力 hash を inflight の `last_inspect_hash` と突き合わせ、**サイクル間の hash 比較で決定的に**判定する (単発 inspect から「作業継続中か」を主観判定しない。hash 比較は Step 5.1 (d) の secretary-pane-snapshot と同じ idiom):
+   (b) **timeout 管理** (受領が無いサイクル): `now - started_at > CURATE_HARD_CAP_MIN` なら**無条件で**下記の打ち切り処理。そうでなく `now - started_at > CURATE_TIMEOUT_MIN` なら、`{{FQ}}inspect_pane(target="curator", lines=30)` の出力 hash を inflight の `last_inspect_hash` と突き合わせ、**サイクル間の hash 比較で決定的に**判定する (単発 inspect から「作業継続中か」を主観判定しない。hash 比較は Step 5.1 (d) の secretary-pane-snapshot と同じ idiom):
    - `last_inspect_hash == null` (timeout 後の初回観測) → 現 inspect 出力の hash / 現在時刻 (UTC、本サイクルの `date -u` 由来 `now`) を `last_inspect_hash` / `last_inspect_ts` に書いて継続 (このサイクルでは閉じない。次サイクル以降の比較基準になる)
    - 現 hash ≠ `last_inspect_hash` (前回観測から画面が変化 = 作業継続中) → `extended: true` と現 hash / 現在時刻 (UTC) を書いて継続 (hard cap 到達まで同様に再評価)
    - 現 hash == `last_inspect_hash` (1 サイクル ≈ 3 分以上完全静止 = stall / エラー表示 / 入力待ち) → **打ち切り処理**: 観測内容を添えて窓口に informational 報告 → `close_pane(target="curator")` → inflight 削除。curate は途中終了でも knowledge/ は move-then-mark 設計のため破壊的な中間状態は残らない
@@ -655,8 +651,8 @@
 
 - **なぜ `poll_events` を `timeout_ms=5000` で回すか**: 3 分のサイクル間隔の中で 5 秒分は long-poll する。5 秒経過で return して残りの時間は check_messages + list_panes + inspect_pane で補完。これにより pane 終了検知の平均遅延が cadence 非依存に 2.5 秒程度になる
 - **cursor 管理**: `.state/dispatcher-event-cursor.txt` に前回 `next_since` を保存する。初回 (cursor 無し) は `since` 省略で「今以降」セマンティクス。crash recovery 時は cursor 消失 = 過去 5 秒分のイベントを取りこぼす可能性があるが、list_panes 突き合わせで回復可能
-- **events と list_panes の二重カバー**: events は best-effort (EventsDropped あり得る) なので、`mcp__org-broker__list_panes` による突き合わせを保険として併用
-- **inspect を独立した観測チャネルにする理由**: ワーカーが承認待ちで止まった時、worker 自己申告 (org-broker) だけに頼ると worker が通知を送る前に停止してしまう。inspect はディスパッチャー側から能動的に観測するので、worker 側の通知忘れ/遅延を補完する。自己申告と inspect は「同じ事象を 2 チャネルで観測できれば確度が上がる」という冗長性設計
+- **events と list_panes の二重カバー**: events は best-effort (EventsDropped あり得る) なので、`{{FQ}}list_panes` による突き合わせを保険として併用
+- **inspect を独立した観測チャネルにする理由**: ワーカーが承認待ちで止まった時、worker 自己申告 ({{SERVER}}) だけに頼ると worker が通知を送る前に停止してしまう。inspect はディスパッチャー側から能動的に観測するので、worker 側の通知忘れ/遅延を補完する。自己申告と inspect は「同じ事象を 2 チャネルで観測できれば確度が上がる」という冗長性設計
 - **anchored regex の意図**: 本文中に "Allow this tool use" が偶然出てもプロンプト自体の行フォーマット (末尾に `(y/n)`) まで揃うことは稀。末尾 non-empty 行に絞ることで誤検出をさらに減らす
 - **エラーは message ではなく code で分岐する**: MCP tool result テキストの `[<code>] <msg>` 形式で返る。message 文字列は human-facing で将来変更あり得るので、`[pane_not_found]` / `[shutting_down]` 等の code で case 分岐する。詳細は `.claude/skills/org-delegate/references/renga-error-codes.md`
 

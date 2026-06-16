@@ -137,16 +137,26 @@ GENERATING_MODES = frozenset(
     {MODE_TEMPLATE, MODE_TEMPLATE_FRAGMENT, MODE_SURGICAL_FRAGMENT, MODE_CODE_LITERAL}
 )
 ALL_MODES = GENERATING_MODES | {MODE_IDENTITY_ANCHOR}
-# G0 で render 実装が揃っている生成モード (full token + {{> }} フラグメント
-# パイプラインで安全に render できる)。``code-literal`` は {{DEFAULT_TRANSPORT}}
-# トークンを含む点以外 template と同一パイプラインで成立する。
-G0_IMPLEMENTED_MODES = frozenset({MODE_TEMPLATE, MODE_CODE_LITERAL})
-# スキーマには定義済みだが G0 では render 未実装の生成モード (設計 §4.1 / §7.1)。
-# それぞれ固有の surgical 処理 (マーカー区画注入 / token-body 除外) が要り、full
-# パイプラインを当てると本文を誤って書き換える / 例外になるため、誤レンダリングせず
-# 明示拒否する (silent な不完全生成を防ぐ)。manifest 宣言自体は許可する。
-G0_UNIMPLEMENTED_MODES = {
-    MODE_TEMPLATE_FRAGMENT: "G2 (本文トークン + 個別 surgical 領域のマーカー区画注入, 設計 §4.1 / §4.2)",
+# render 実装が揃っている生成モード (full token + {{> }} フラグメントパイプラインで
+# 安全に render できる)。
+#
+# - ``template`` (G0): 全文をトークン + 共有 canonical フラグメントで render。
+# - ``code-literal`` (G0): {{DEFAULT_TRANSPORT}} トークンを含む点以外 template と同一。
+# - ``template+fragment`` (G2): 本文トークン + **個別 surgical 領域を file-specific
+#   フラグメント区画で注入**。template と **同一の render パイプライン**を通る — surgical
+#   領域を本文から *除外* せず ``{{> <file-specific> }}`` マーカーへ括り出すだけなので、
+#   inject_fragments → render_tokens の標準経路で正しく render される (設計 §4.1)。
+#   ``surgical-fragment`` (G3) が body を token-body から *除外* するのと対照的で、
+#   template+fragment は body を除外しない (本文トークンは render する)。mode を分けるのは
+#   manifest 分類 (drift CI の精査レベル §7.1) と「file-specific surgical 区画を持つ」明示の
+#   ため (設計 §4.1)。共有 canonical フラグメントも file-specific フラグメントも同一の
+#   fragments_dir から ``<name>.<flag>.md`` で解決されるので loader は不変。
+IMPLEMENTED_MODES = frozenset({MODE_TEMPLATE, MODE_TEMPLATE_FRAGMENT, MODE_CODE_LITERAL})
+# スキーマには定義済みだが render 未実装の生成モード (設計 §4.1 / §7.1)。固有の surgical
+# 処理 (token-body 除外 + per-transport 区画注入) が要り、標準パイプラインを当てると本文を
+# 誤って書き換える / 例外になるため、誤レンダリングせず明示拒否する (silent な不完全生成を
+# 防ぐ)。manifest 宣言自体は許可する。
+UNIMPLEMENTED_MODES = {
     MODE_SURGICAL_FRAGMENT: "G3 (token-body 除外 + per-transport フラグメント区画注入, 設計 §4.2(1))",
 }
 
@@ -632,20 +642,24 @@ def render_source(
         # render 対象外 = 構造的に触らない (恒等射影で renga byte 不変を保証)。
         return RenderResult(text=source_text)
 
-    if mode in G0_UNIMPLEMENTED_MODES:
-        # スキーマ定義済みだが G0 では render 未実装の生成モード。full token + {{> }}
-        # パイプラインを当てると surgical 処理 (マーカー区画 / token-body 除外) を
-        # 飛ばして不完全な生成物を silent に作る / 例外になるため、誤レンダリングせず
-        # 明示拒否する (実装は各 G バッチ, 設計 §4.1 / §7.1)。
+    if mode in UNIMPLEMENTED_MODES:
+        # スキーマ定義済みだが render 未実装の生成モード。標準 token + {{> }} パイプライン
+        # を当てると surgical 処理 (token-body 除外 + 区画注入) を飛ばして不完全な生成物を
+        # silent に作る / 例外になるため、誤レンダリングせず明示拒否する (実装は後続 G
+        # バッチ, 設計 §4.1 / §7.1)。
         raise GenError(
-            f"mode {mode!r} is schema-defined but not implemented in G0 "
-            f"(deferred to {G0_UNIMPLEMENTED_MODES[mode]})"
+            f"mode {mode!r} is schema-defined but not implemented yet "
+            f"(deferred to {UNIMPLEMENTED_MODES[mode]})"
         )
 
-    if mode not in G0_IMPLEMENTED_MODES:
+    if mode not in IMPLEMENTED_MODES:
         # 想定外の生成モード (新モード追加時の取りこぼし防止 = fail-closed)。
-        raise GenError(f"mode {mode!r} has no G0 render path")
+        raise GenError(f"mode {mode!r} has no render path")
 
+    # template / template+fragment / code-literal は **同一の標準パイプライン**を通る。
+    # template+fragment は本文 surgical 領域を file-specific フラグメント区画 ({{> ... }})
+    # へ括り出すだけで、body を除外しない (surgical-fragment との差, 設計 §4.1)。フラグメント
+    # 注入 → トークン render の順で、共有 canonical も file-specific も同じ機構で展開される。
     fm = split_frontmatter(source_text)
 
     # 本文: フラグメント注入 -> トークン render。
@@ -805,9 +819,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="gen_skill_prose",
         description=(
-            "transport-neutral skill prose generator (Epic #586 Phase 3' G0). "
+            "transport-neutral skill prose generator (Epic #586 Phase 3'). "
             "Renders neutral source (tokens + per-transport fragments) for a "
-            "transport flag. G0 ships the tool only - no skill source is migrated."
+            "transport flag. Modes: template / template+fragment / code-literal "
+            "(generating), identity-anchor (non-generating); surgical-fragment is "
+            "schema-defined but not implemented yet."
         ),
     )
     p.add_argument(

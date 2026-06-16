@@ -1,0 +1,1 @@
+- `--target-largest` / `--direction auto` 等の backend 側自動 target 選出 (現状はディスパッチャー側で `list_panes` rect から算出。upstream backend に移譲できれば balanced split ロジックを MCP 側に畳める。broker の upstream は renga ではなく broker adapter / runtime なので、移譲先も broker 側になる)
