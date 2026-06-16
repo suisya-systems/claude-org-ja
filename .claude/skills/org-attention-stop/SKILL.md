@@ -3,7 +3,7 @@ name: org-attention-stop
 description: >
   `/org-attention-start` で起動した attention watcher ペインを停止する。
   `.state/attention_pane.json` に記録された pane_id を参照して
-  `mcp__renga-peers__close_pane` で破棄し、sidecar を削除する。
+  `close_pane`（pane 破棄）で破棄し、sidecar を削除する。
   「attention 止めて」「通知監視を停止」「watcher 落として」等で発動。
 effort: low
 allowed-tools:
@@ -12,7 +12,18 @@ allowed-tools:
   - Bash(del:*)
   - Bash(bash tools/journal_append.sh:*)
   - Bash(py -3 tools/journal_append.py:*)
-  - mcp__renga-peers__*
+  - mcp__org-broker__check_messages
+  - mcp__org-broker__close_pane
+  - mcp__org-broker__inspect_pane
+  - mcp__org-broker__list_panes
+  - mcp__org-broker__list_peers
+  - mcp__org-broker__poll_events
+  - mcp__org-broker__send_keys
+  - mcp__org-broker__send_message
+  - mcp__org-broker__set_pane_identity
+  - mcp__org-broker__set_summary
+  - mcp__org-broker__spawn_claude_pane
+  - mcp__org-broker__spawn_pane
 ---
 
 # org-attention-stop: attention watcher の停止
@@ -20,11 +31,17 @@ allowed-tools:
 [`/org-attention-start`](../org-attention-start/SKILL.md) で起動した watcher ペインを閉じ、
 sidecar (`.state/attention_pane.json`) をクリアする。
 
-> **輸送層 両系（`ORG_TRANSPORT`: 既定 `renga` / opt-in `broker`）**: 本スキルの `mcp__renga-peers__*`（`list_panes` / `close_pane`）は **既定 `renga`** で書いてあり、`ORG_TRANSPORT` 無設定ならそのまま従えばよい（既定挙動不変）。`ORG_TRANSPORT=broker`（opt-in・切戻し可）では完全修飾名が **`mcp__renga-peers__*` → `mcp__org-broker__*`** に機械置換される（引数形・セマンティクスは同一）。ペインを閉じる側なので spawn 承認の差は無関係。エラーは broker 追加コード（`[no_backend]` / `[token_invalid]` 等、[`.claude/skills/org-delegate/references/renga-error-codes.md`](../org-delegate/references/renga-error-codes.md) の broker 節）が加わる。契約面は [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) Surface 8（ratified 2026-06-14）、設計 SoT は transport-lab `docs/design/ja-migration-plan.md` §5.2(ii)。既定 renga の手順は不変（broker は加算）。
+> **輸送層（transport）両系 — 既定 `broker` / opt-in `renga`**: 本ファイル（および各スキル）の peer message・pane 操作は `mcp__org-broker__*` で書いてあり、**`ORG_TRANSPORT` 無設定＝既定 `broker`** ではそのまま従えばよい。`ORG_TRANSPORT=renga`（opt-in、切戻し可）では MCP サーバー名が `renga-peers` になり、**完全修飾名が `mcp__org-broker__*` → `mcp__renga-peers__*`** に機械置換される（引数形・セマンティクスは同一なので操作の論理は変わらない）。輸送依存で手順が変わる差は次の 3 点:
+>
+> - **受信モデル（既定 = push 一次 = `claude/channel` / pull フォールバック）**: 既定 broker は **push 一次**に設計されている（runtime push-first 0.1.24+、設計 SoT は transport-lab `docs/design/broker-native-roles.md` §9）: 各ペイン同居の **channel sidecar**（`server:org-broker-channel`）が broker キューを ~1 秒間隔で claim→push し、`notifications/claude/channel` で本文を idle セッションへ注入する（「受けたら即応答」契機が生まれる）。ワーカー ack（`to_id="worker-{task_id}"`）・retro gate ack（`to_id="dispatcher"`）・ディスパッチャー handover 経路の `send_message` / `check_messages` / `send_keys` / `inspect_pane` は同じツール名（`mcp__org-broker__*`）で動く。**pull はフォールバック層**: sidecar 不在 / unhealthy（heartbeat timeout で `delivery_mode=PULL`）/ channel 非対応ペイン（codex pull-peer）/ claude.ai login 不在時は、各役割が自身の cadence で能動的に `check_messages` する（役割別 cadence: worker=ターン境界 / 完了後 bounded `/loop`・dispatcher=`/loop 3m`・secretary=ターン冒頭。「ナッジを見たら `check_messages`」prose は**撤回せず**この fallback cadence として読む）。`ORG_TRANSPORT=renga`（opt-in）では、ワーカー報告・ディスパッチャー応答が `<channel source="renga-peers" …>` として in-band で push される（renga の in-band push と broker push 一次は同じ即応契機）。契約面は Surface 8 + push-primary amendment で push 一次が **ratified 済み**（2026-06-15、S3。pull は fallback として retain・renga 不変）。
+> - **spawn 儀式（既定 = folder-trust 承認 + dev-channel sidecar 承認の 2 段）**: 子ペイン起動時、既定 broker は `--mcp-config <broker>` を注入し Claude Code の **folder-trust プロンプト**を `send_keys(enter=true)` で機械承認する**のに加えて**、push 一次のため channel sidecar を `--dangerously-load-development-channels server:org-broker-channel` で load し dev-channel 承認プロンプト（spawn-flow 3-3b）を `send_keys(enter=true)` で機械承認する（folder-trust + dev-channel の 2 段承認。詳細は [`.dispatcher/references/spawn-flow.md`](../../../.dispatcher/references/spawn-flow.md) 3-2 / 3-3b、設計は broker-native-roles.md §9.5）。`ORG_TRANSPORT=renga`（opt-in）では `--dangerously-load-development-channels server:renga-peers` を注入し「Load development channel?」を Enter 承認する 1 段。**注: attention watcher は transport 非依存の CLI ペインであり、folder-trust / dev-channel いずれの 2 段承認の対象外**（spawn 儀式の反転に巻き込まない）。
+> - **エラー分岐（既定 = broker 拡張コード込み）**: 既定 broker は shared codes（`pane_not_found` / `last_pane` / `invalid-params`、Surface 6）に加え broker 固有 `[token_invalid]` / `[session_invalid]` / `[tool_not_authorized]` / `[no_backend]`（= adapter_unavailable）/ `[nudge_failed]` / `[peer_not_found]` / `[name_taken]` / `[unknown_tool]` を返しうる（未知コードは default-branch で escalate）。`ORG_TRANSPORT=renga` 時は broker 固有コードは発生せず shared codes + renga 固有コードのみ。
+>
+> 契約面の正本は [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) Surface 8（broker auth & delivery、ratified 2026-06-14）+ 末尾「Ratified amendment (2026-06-15): push-primary delivery」（S3。**broker push 一次が既定の契約**、pull は structural fallback として retain）、設計 SoT は transport-lab `docs/design/broker-native-roles.md` §9（push 一次）/ `docs/design/ja-migration-plan.md` §5・§8。**opt-in `renga` は削除せず常時有効な fallback として維持する**（切戻しの安全装置）。broker 実走は既定運用経路である。
 
 ## Step 1: sidecar と live pane の状態確認
 
-1. `mcp__renga-peers__list_panes` を呼び、`name="attention"` または `role="attention"` の
+1. `mcp__org-broker__list_panes` を呼び、`name="attention"` または `role="attention"` の
    live pane があれば pane_id を控える（**name と role の両方を見る**: 手動起動の孤児ペインは
    name を付けずに role だけ持っている可能性がある）
 2. `.state/attention_pane.json` を `Read` で開けたら `pane_id` を読み取る。存在しなければ skip
@@ -38,7 +55,7 @@ sidecar (`.state/attention_pane.json`) をクリアする。
 ### 2-a: 記録された pane_id で close
 
 ```
-mcp__renga-peers__close_pane(target="<sidecar の pane_id>")
+mcp__org-broker__close_pane(target="<sidecar の pane_id>")
 ```
 
 - 成功時: `"Closed pane id=N."` テキストが返る
@@ -55,7 +72,7 @@ Step 1 で得た「list_panes 上の attention ペイン」と sidecar の pane_
 Step 1 で `list_panes` から得た **pane_id（name ではなく数値 id）** で close する:
 
 ```
-mcp__renga-peers__close_pane(target="<list_panes から取得した数値 pane_id>")
+mcp__org-broker__close_pane(target="<list_panes から取得した数値 pane_id>")
 ```
 
 `target="attention"` のような name 指定は、role だけ持って name を持たない孤児ペインに当たらない
