@@ -15,6 +15,8 @@
 > - [`docs/design/renga-decoupling.md`](./renga-decoupling.md)（renga 依存解消の上位設計。本設計はその UX 層）
 > - [`docs/contracts/backend-interface-contract.md`](../contracts/backend-interface-contract.md)（Set D / Surface 8 案。broker auth & delivery）
 > - [`.claude/skills/org-start/SKILL.md`](../../.claude/skills/org-start/SKILL.md)（起動報告の所在。§6 の可視化提案の対象）
+>
+> **二フレーム注記（Refs #586 #604、2026-06-17 追加 — design only の本文は変更しない）**: 本設計書は 2026-06-11 執筆時点の **運用フレーム**で書かれており、随所の「既定 `renga`（`ORG_TRANSPORT` 無設定）」、および [§2](#2-不可侵の前提制約の明文化)-1 / [§5.5](#55-非破壊不変条件の因果連鎖) の「env 無し → `resolve()` は既定 renga → `rewrite_allow_entries` 恒等 → bit 等価」という非破壊不変条件は、執筆時 runtime（0.1.27、`DEFAULT_TRANSPORT = "renga"`）の **運用既定経路**を指す表現である。これとは別に **コード定数フレーム**があり、`DEFAULT_TRANSPORT` は runtime 0.1.28（Epic #586 Phase 2）で `renga` → `broker` にフリップ済みで、コード上は `resolve(env={})` が `broker` を返す。両フレームは指す対象（運用既定経路 vs コード定数）が異なり矛盾しない。本設計が提案する持続選択機構（[§5.4](#54-提案する持続選択機構persisted-choice)）/ 会話 IF は **どちらが組込み既定でも成立する**薄い層であり（[§5.1](#51-会話トリガ意図--輸送系の選択) L97 が「反転の前後どちらでも成立する」と明示）、運用上の既定経路（broker dogfood が Epic #6 Issue G で活性化するまで renga）は持続選択が `ORG_TRANSPORT` を代行設定することで実現される。したがって本注記は設計本体を改訂せず、上記の「既定 renga」prose を運用フレームの表現として読むための整合注記である（flip / revert はしない）。
 
 ---
 
