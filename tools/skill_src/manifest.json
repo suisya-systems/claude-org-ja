@@ -1,0 +1,73 @@
+{
+  "entries": [
+    {
+      "source": "../../.claude/skills/dispatcher-handover/SKILL.md.in",
+      "output": "../../.claude/skills/dispatcher-handover/SKILL.md",
+      "mode": "template",
+      "allowlist": "per-entry-rename"
+    },
+    {
+      "source": "../../.claude/skills/dispatcher-resume/SKILL.md.in",
+      "output": "../../.claude/skills/dispatcher-resume/SKILL.md",
+      "mode": "template",
+      "allowlist": "per-entry-rename"
+    },
+    {
+      "source": "../../.claude/skills/org-attention-stop/SKILL.md.in",
+      "output": "../../.claude/skills/org-attention-stop/SKILL.md",
+      "mode": "template",
+      "allowlist": "per-entry-rename",
+      "role": "secretary"
+    },
+    {
+      "source": "../../.claude/skills/org-curate/SKILL.md.in",
+      "output": "../../.claude/skills/org-curate/SKILL.md",
+      "mode": "template",
+      "allowlist": "per-entry-rename"
+    },
+    {
+      "source": "../../.claude/skills/org-escalation/SKILL.md.in",
+      "output": "../../.claude/skills/org-escalation/SKILL.md",
+      "mode": "template",
+      "allowlist": "per-entry-rename"
+    },
+    {
+      "source": "../../.claude/skills/org-retro/SKILL.md.in",
+      "output": "../../.claude/skills/org-retro/SKILL.md",
+      "mode": "template",
+      "allowlist": "per-entry-rename"
+    },
+    {
+      "source": "../../.claude/skills/org-suspend/SKILL.md.in",
+      "output": "../../.claude/skills/org-suspend/SKILL.md",
+      "mode": "template",
+      "allowlist": "per-entry-rename",
+      "role": "secretary"
+    },
+    {
+      "source": "../../.claude/skills/secretary-resume/SKILL.md.in",
+      "output": "../../.claude/skills/secretary-resume/SKILL.md",
+      "mode": "template",
+      "allowlist": "per-entry-rename"
+    },
+    {
+      "source": "../../.claude/skills/skill-audit/SKILL.md.in",
+      "output": "../../.claude/skills/skill-audit/SKILL.md",
+      "mode": "template",
+      "allowlist": "per-entry-rename"
+    },
+    {
+      "source": "../../.claude/skills/org-delegate/references/ack-template.md.in",
+      "output": "../../.claude/skills/org-delegate/references/ack-template.md",
+      "mode": "template",
+      "allowlist": "none"
+    },
+    {
+      "source": "../../.claude/skills/org-delegate/references/instruction-template.md.in",
+      "output": "../../.claude/skills/org-delegate/references/instruction-template.md",
+      "mode": "template",
+      "allowlist": "none"
+    }
+  ],
+  "exclude": []
+}
