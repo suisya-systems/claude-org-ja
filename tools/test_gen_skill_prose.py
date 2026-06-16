@@ -347,34 +347,93 @@ class GoldenRenderTest(unittest.TestCase):
             out = _render_fixture("sample_codeliteral", flag, mode="code-literal", allowlist="none")
             self.assertIn(f"${{ORG_TRANSPORT:-{_DEFAULT}}}", out)
 
-    def test_unimplemented_generating_modes_rejected_in_g0(self):
-        # Codex P2 修正: スキーマ定義済みだが G0 未実装の生成モード (template+fragment
-        # = G2 / surgical-fragment = G3) は full パイプラインへ fall-through せず明示
-        # 拒否する (silent な不完全生成を防ぐ, 設計 §4.1 / §7.1)。
+    def test_unimplemented_generating_modes_rejected(self):
+        # スキーマ定義済みだが render 未実装の生成モード (surgical-fragment = G3) は full
+        # パイプラインへ fall-through せず明示拒否する (silent な不完全生成を防ぐ, 設計
+        # §4.1 / §7.1)。template+fragment は G2 で実装済みなのでここには含めない。
         src = "# x\n\n本文に {{> surface-omissions }} と {{FQ}}send_message。\n"
-        for mode in ("template+fragment", "surgical-fragment"):
+        for mode in ("surgical-fragment",):
             with self.subTest(mode=mode):
                 with self.assertRaises(g.GenError):
                     g.render_source(src, "broker", fragments_dir=_FRAGMENTS, mode=mode, allowlist="none")
 
-    def test_g0_implemented_modes_render(self):
-        # G0 で実装済みの生成モードは render が成立する (網羅性の対称確認)。
+    def test_implemented_modes_render(self):
+        # 実装済みの生成モードは render が成立する (網羅性の対称確認)。template+fragment
+        # は template と同一パイプラインを通り、本文トークン + フラグメントが展開される。
         src = "# x\n\n{{FQ}}send_message / 既定 {{DEFAULT_TRANSPORT}}\n"
-        for mode in ("template", "code-literal"):
+        for mode in ("template", "template+fragment", "code-literal"):
             with self.subTest(mode=mode):
                 out = g.render_source(src, "broker", fragments_dir=_FRAGMENTS, mode=mode, allowlist="none").text
                 self.assertIn("mcp__org-broker__send_message", out)
 
     def test_mode_partition_is_exhaustive(self):
-        # 全生成モードが「実装済み」か「G0 未実装(拒否)」のどちらかに分類され、
+        # 全生成モードが「実装済み」か「未実装(拒否)」のどちらかに分類され、
         # 取りこぼし (fall-through) が無いこと。
         self.assertEqual(
-            set(g.G0_IMPLEMENTED_MODES) | set(g.G0_UNIMPLEMENTED_MODES),
+            set(g.IMPLEMENTED_MODES) | set(g.UNIMPLEMENTED_MODES),
             set(g.GENERATING_MODES),
         )
         self.assertEqual(
-            set(g.G0_IMPLEMENTED_MODES) & set(g.G0_UNIMPLEMENTED_MODES),
+            set(g.IMPLEMENTED_MODES) & set(g.UNIMPLEMENTED_MODES),
             set(),
+        )
+
+    def test_template_fragment_injects_file_specific_per_transport(self):
+        # template+fragment の核: 本文トークン render + **file-specific** フラグメント区画の
+        # per-transport 注入が同一パイプラインで成立する。共有 canonical と file-specific を
+        # 同じ fragments_dir から解決し、broker/renga それぞれの面が出ることを固定する。
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            frags = Path(d)
+            (frags / "case-specific.broker.md").write_text(
+                "> file-specific broker 面: {{FQ}}send_message を使う。\n", encoding="utf-8"
+            )
+            (frags / "case-specific.renga.md").write_text(
+                "> file-specific renga 面: {{FQ}}send_message を使う。\n", encoding="utf-8"
+            )
+            src = (
+                "# x\n\n本文 {{FQ}}check_messages。\n\n"
+                "{{> case-specific }}\n"
+            )
+            broker = g.render_source(
+                src, "broker", fragments_dir=frags, mode="template+fragment", allowlist="none"
+            ).text
+            renga = g.render_source(
+                src, "renga", fragments_dir=frags, mode="template+fragment", allowlist="none"
+            ).text
+            # 本文トークンは render 面に追従。
+            self.assertIn("mcp__org-broker__check_messages", broker)
+            self.assertIn("mcp__renga-peers__check_messages", renga)
+            # file-specific フラグメントは per-transport 面が選ばれ、内部トークンも render。
+            self.assertIn("file-specific broker 面: mcp__org-broker__send_message", broker)
+            self.assertIn("file-specific renga 面: mcp__renga-peers__send_message", renga)
+            self.assertNotIn("renga 面", broker)
+            self.assertNotIn("broker 面", renga)
+            # 未解決トークン / フラグメント参照は残らない。
+            for out in (broker, renga):
+                self.assertNotIn("{{", out)
+
+    def test_template_fragment_frontmatter_per_transport_render(self):
+        # template+fragment でも frontmatter allowed-tools は per-transport render される
+        # (template と同一機構)。ワイルドカード展開 + broker 省略ツール drop を固定。
+        src = (_TESTDATA / "sample_wildcard.md.in").read_text(encoding="utf-8")
+        broker = g.render_source(
+            src, "broker", fragments_dir=_FRAGMENTS, mode="template+fragment",
+            role="secretary", allowlist="per-entry-rename", root_prefix=_ROOT_PREFIX,
+        ).text
+        broker_fm = g.split_frontmatter(broker)
+        # broker 面に renga ワイルドカードも broker ワイルドカードも残らない (subset 保存)。
+        self.assertNotIn("mcp__renga-peers__*", broker_fm.allowed_tools)
+        self.assertNotIn("mcp__org-broker__*", broker_fm.allowed_tools)
+        # renga 再生成は frontmatter byte 安定 (恒等基底)。
+        renga = g.render_source(
+            src, "renga", fragments_dir=_FRAGMENTS, mode="template+fragment",
+            role="secretary", allowlist="per-entry-rename", root_prefix=_ROOT_PREFIX,
+        ).text
+        self.assertEqual(
+            g.split_frontmatter(renga).allowed_tools,
+            g.split_frontmatter(src).allowed_tools,
         )
 
     def test_identity_anchor_returns_source_unchanged(self):
@@ -541,8 +600,13 @@ class ProductionManifestTest(unittest.TestCase):
         m = g.load_manifest(_PROD_MANIFEST)
         self.assertTrue(m.entries, "production manifest has no entries")
         for e in m.entries:
-            # G1 は全件 template モード (surgical/identity-anchor は G2+)。
-            self.assertEqual(e.mode, "template", f"{e.source} is not template (G1 = template only)")
+            # G1 = template、G2 = template+fragment (本文 surgical 併存)。最難4 (surgical-
+            # fragment / code-literal / identity-anchor) は G3+。
+            self.assertIn(
+                e.mode,
+                ("template", "template+fragment"),
+                f"{e.source} mode {e.mode!r} is beyond G2 scope (G1/G2 = template / template+fragment)",
+            )
             self.assertIn(e.allowlist, ("per-entry-rename", "none"))
             # 生成モードは output 必須 (load_manifest が強制済みだが明示確認)。
             self.assertTrue(e.output)
