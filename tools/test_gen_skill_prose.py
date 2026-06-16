@@ -190,6 +190,18 @@ class FrontmatterRenderTest(unittest.TestCase):
         self.assertEqual(r.entries, entries)
         self.assertEqual(r.dropped, [])
 
+    def test_renga_identity_preserves_inline_comment(self):
+        # コメント付きエントリも renga 恒等で byte 保存される (Codex P2 修正)。
+        entries = ["Read", "mcp__renga-peers__* # 機械置換先"]
+        r = g.render_frontmatter_allowlist(entries, "renga", role="secretary", allowlist="per-entry-rename")
+        self.assertEqual(r.entries, entries)
+
+    def test_broker_rename_strips_comment_from_tool_name(self):
+        # broker リネーム時はコメントを除去して bare ツール名でリネーム/展開する。
+        entries = ["mcp__renga-peers__send_message # 報告用"]
+        r = g.render_frontmatter_allowlist(entries, "broker", allowlist="per-entry-rename")
+        self.assertEqual(r.entries, ["mcp__org-broker__send_message"])
+
     def test_no_role_tier_expansion_for_skill_frontmatter(self):
         # ※3: send_message のみのスキルに ops tier が付かない (過剰認可なし)。
         r = g.render_frontmatter_allowlist(
@@ -320,11 +332,23 @@ class FrontmatterParserTest(unittest.TestCase):
         self.assertEqual(fm.allowed_tools, ["Read", "mcp__renga-peers__*"])
         self.assertEqual(g.reassemble_frontmatter(fm, fm.allowed_tools), text)
 
-    def test_inline_comment_stripped_from_allowlist(self):
-        # org-start の `mcp__org-broker__* # opt-in 注記` 形を素片化できる。
-        text = "---\nallowed-tools:\n  - mcp__renga-peers__*\n  - Bash(echo # not a comment:*)\n---\nbody\n"
+    def test_allowlist_entries_kept_raw_with_comments(self):
+        # raw 保持 (コメント除去しない)。コメント除去は broker リネーム時のみ
+        # (renga 恒等の byte 安定性を守る, Codex P2 修正)。
+        text = (
+            "---\nallowed-tools:\n  - mcp__renga-peers__* # 機械置換先\n"
+            "  - Bash(echo # not a comment:*)\n---\nbody\n"
+        )
         fm = g.split_frontmatter(text)
-        self.assertEqual(fm.allowed_tools, ["mcp__renga-peers__*", "Bash(echo # not a comment:*)"])
+        self.assertEqual(
+            fm.allowed_tools,
+            ["mcp__renga-peers__* # 機械置換先", "Bash(echo # not a comment:*)"],
+        )
+
+    def test_strip_inline_comment_respects_brackets(self):
+        # 括弧外の # のみコメント。Bash(...) 内の # は誤除去しない。
+        self.assertEqual(g._strip_inline_comment("mcp__renga-peers__* # note"), "mcp__renga-peers__*")
+        self.assertEqual(g._strip_inline_comment("Bash(echo # x:*)"), "Bash(echo # x:*)")
 
     def test_no_frontmatter(self):
         fm = g.split_frontmatter("# just body\n")

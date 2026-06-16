@@ -285,7 +285,12 @@ def assert_source_allowlist_normalized(
     を生成時にも前倒しで強制)。
     """
     broker_prefix = transport.surface("broker", env=env).fq_prefix
-    bad = [e for e in entries if isinstance(e, str) and e.startswith(broker_prefix)]
+    # raw エントリにはインラインコメントが付きうるので bare 値で判定する。
+    bad = [
+        e
+        for e in entries
+        if isinstance(e, str) and _strip_inline_comment(e).startswith(broker_prefix)
+    ]
     if bad:
         raise GenError(
             "source allowlist must be authored on the renga/template surface "
@@ -377,9 +382,11 @@ def _render_per_entry_broker(
         if not isinstance(entry, str):
             out.append(entry)
             continue
-        parsed = _split_server_prefix(entry)
+        # bare 値 (インラインコメント除去後) で server/tool を判定する。MCP でない
+        # エントリ (Bash(...) / Read 等) は raw のまま順序保存で素通しし、コメントも温存。
+        bare = _strip_inline_comment(entry)
+        parsed = _split_server_prefix(bare)
         if parsed is None:
-            # 非 MCP エントリ (Bash(...) / Read 等) は順序保存で素通し。
             out.append(entry)
             continue
         server, tool = parsed
@@ -473,7 +480,10 @@ def split_frontmatter(text: str) -> Frontmatter:
         m = _LIST_ITEM_RE.match(fm_lines[j])
         if m is None:
             break
-        items.append(_strip_inline_comment(m.group(2)))
+        # エントリは **raw のまま** 保持する (インラインコメント込み)。コメント除去は
+        # broker リネーム時に bare ツール名を取り出す箇所でのみ行う。renga 恒等パスで
+        # コメントを剥がすと byte 安定性 / rollback 等価が壊れる (Codex P2 修正)。
+        items.append(m.group(2))
         j += 1
     pre = fm_lines[: at_idx + 1]
     post = fm_lines[j:]
