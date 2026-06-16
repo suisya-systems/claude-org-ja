@@ -122,7 +122,7 @@ renga --layout ops                                       # 窓口（Secretary）
 | 比較対象 | 立ち位置 | claude-org-ja との違い |
 |---|---|---|
 | **Claude Code Agent View（公式）** | 複数 Claude Code を**1 画面で見渡す可視化機能**。指示先の選択は人間が担う | claude-org-ja は**取りまとめ役（起動・指示・分配の判断）を窓口 AI に移す**。窓口で `/remote-connect` すれば Web / モバイル / デスクトップからも操作できる |
-| **ヘッドレス型エージェントループ（`claude -p` / Agent SDK farm）** | エージェントを headless 実行で大規模並列・自動ループさせる構成 | claude-org-ja は**全エージェントが対話型 TUI** で headless 従量課金系を採らず、**プラン定額枠内で回り続ける**（課金中立。2026-06-15 の課金分離は第一の柱を参照） |
+| **ヘッドレス型エージェントループ（`claude -p` / Agent SDK farm）** | エージェントを headless 実行で大規模並列・自動ループさせる構成 | claude-org-ja は**全エージェントが対話型 TUI** で headless 従量課金系を採らず、**プラン定額枠内で回り続ける**（課金中立。詳細は第一の柱を参照） |
 | **Claude Code Subagents / Agent Teams（公式）** | Anthropic 公式の「リード / チームメイト」階層 + 自動メモリ + フック | claude-org-ja は公式の上に乗る運用層。**競合せず共存**する。公式が提供しない「タスクごとの作業ディレクトリ境界の強制」「スキーマ駆動の設定 drift 検出」「生の知見 → 整理済み知見への昇華パイプライン」「閾値駆動のオンデマンド自動整理」を上乗せする |
 | **ccswarm / Ruflo / oh-my-claudecode 等の Claude 系協調基盤** | 固定ロールプール + 大規模並列志向 | claude-org-ja は**タスクごとに作業ディレクトリと `CLAUDE.md` を都度生成**する（事前のロールプールは持たない）。3〜5 ワーカーで品質重視（farm 系とは方向が逆） |
 | **tmux / zellij + 手動でのプロンプト分割** | 汎用の端末多重化器 + 人間によるペインの手動運用 | claude-org-ja は専用 MCP サーバー（`renga-peers`）で**ペイン間 P2P メッセージ + 構造化ペイン生成 + 状態の中断・再開**を提供する（輸送層は両系。既定 renga は同一タブ前提で、opt-in broker では detached も可）。手動運用には無い「役割契約」「自動知見整理」「ロール別の許可配布」が中核 |
@@ -158,14 +158,16 @@ flowchart TB
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/assets/org-start-fresh.png" alt="/org-start 直後のペインレイアウト: 窓口（Secretary）とディスパッチャーが起動し、ワーカーは未派生の状態（スクリーンショットは常駐キュレーター時代のもので、現在キュレーターはオンデマンド起動）"></td>
-    <td width="50%"><img src="docs/assets/org-start-pane-layout.png" alt="動作中のペインレイアウト: 窓口（Secretary）・ディスパッチャーに加え、タスク委譲で派生した並列ワーカーが同一タブ内で稼働している様子（スクリーンショットは常駐キュレーター時代のもの）"></td>
+    <td width="50%"><img src="docs/assets/org-start-fresh.png" alt="/org-start 直後のペインレイアウト: 窓口（Secretary）とディスパッチャーが起動し、ワーカーは未派生の状態"></td>
+    <td width="50%"><img src="docs/assets/org-start-pane-layout.png" alt="動作中のペインレイアウト: 窓口（Secretary）・ディスパッチャーに加え、タスク委譲で派生した並列ワーカーが同一タブ内で稼働している様子"></td>
   </tr>
   <tr>
-    <td><em>直後 (Just started): <code>/org-start</code> 実行直後。窓口とディスパッチャーが立ち上がり、ワーカーはまだ存在しない（スクリーンショットは常駐キュレーター時代のもの。現在キュレーターはオンデマンド起動のため、この時点では存在しない）。</em></td>
+    <td><em>直後 (Just started): <code>/org-start</code> 実行直後。窓口とディスパッチャーが立ち上がり、ワーカーはまだ存在しない。</em></td>
     <td><em>動作中 (In action with workers): タスク委譲によりディスパッチャーが並列ワーカーを派生させ、4 ロール構成で稼働している状態。</em></td>
   </tr>
 </table>
+
+> *両スクリーンショットは常駐キュレーター時代のものです。現在キュレーターはオンデマンド起動のため、`/org-start` 直後の時点では存在しません。*
 
 - **窓口（Secretary）— 人間が話す相手はここだけ**: タスク分解・委譲判断・結果報告を担い、実作業は持たない。運用責務は内部で 3 スキル（[`/org-delegate`](.claude/skills/org-delegate/SKILL.md) / [`/org-escalation`](.claude/skills/org-escalation/SKILL.md) / [`/org-pull-request`](.claude/skills/org-pull-request/SKILL.md)）に分割されている。context が肥大しても [`/secretary-handover`](.claude/skills/secretary-handover/SKILL.md) → `/clear` → [`/secretary-resume`](.claude/skills/secretary-resume/SKILL.md) で組織を止めずに窓口だけ入れ替えられる（ディスパッチャー・ワーカーのペインは生かしたまま）
 - **ディスパッチャー（Dispatcher）— 人間も窓口も待たされない**: ペイン起動・指示送信を肩代わりし、窓口がブロックされる時間を最小化する
