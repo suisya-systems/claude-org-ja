@@ -9,11 +9,16 @@ unit test。**render 面 broker / renga 両方を golden 固定**し、設計 §
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 
 from tools import gen_skill_prose as g
 from tools import transport
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_CLI = _REPO_ROOT / "tools" / "gen_skill_prose.py"
 
 _TESTDATA = Path(__file__).resolve().parent / "testdata" / "gen_skill_prose"
 _FRAGMENTS = Path(__file__).resolve().parent / "skill_src" / "fragments"
@@ -364,6 +369,39 @@ class ManifestTest(unittest.TestCase):
         self.assertEqual(set(entry["mode"]["enum"]), set(g.ALL_MODES))
         self.assertEqual(set(entry["allowlist"]["enum"]), set(g.ALLOWLIST_KINDS))
         self.assertEqual(set(entry["role"]["enum"]), set(g.ROLES))
+
+
+class CliInvocationTest(unittest.TestCase):
+    """直接スクリプト実行で import が成立すること (Codex P2 修正の回帰固定)。
+
+    既存 tool CLI と同じく ``python tools/gen_skill_prose.py`` 形でも動くこと。
+    repo root が ``sys.path`` に無い状態 (= ``tools/`` だけが載る直接実行) を
+    再現するため ``cwd`` を repo root 外に置き、引数なしのスクリプトパスで起動する。
+    """
+
+    def _run(self, *args, cwd=None):
+        return subprocess.run(
+            [sys.executable, str(_CLI), *args],
+            cwd=str(cwd or _REPO_ROOT),
+            capture_output=True,
+            text=True,
+        )
+
+    def test_direct_script_print_schema(self):
+        proc = self._run("--print-schema", cwd=_REPO_ROOT.parent)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn('"title": "skill-prose-generator manifest"', proc.stdout)
+
+    def test_direct_script_no_manifest_is_noop(self):
+        proc = self._run(cwd=_REPO_ROOT.parent)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("nothing to do", proc.stderr)
+
+    def test_help_is_ascii_only(self):
+        # cp932 コンソールでの --help クラッシュ防止 (CLAUDE.local.md Windows 注意)。
+        proc = self._run("--help")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        proc.stdout.encode("cp932")  # raises UnicodeEncodeError if non-cp932 char present
 
 
 if __name__ == "__main__":

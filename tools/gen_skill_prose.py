@@ -79,6 +79,15 @@ per-skill 認可の過剰拡大)。
 """
 from __future__ import annotations
 
+import sys as _sys
+from pathlib import Path as _Path
+
+# 直接スクリプト実行 (``python tools/gen_skill_prose.py``) では Python が ``tools/``
+# を ``sys.path`` に載せるため ``import tools.transport`` が失敗する。既存 tool CLI
+# (``gen_worker_brief.py`` / ``gen_delegate_payload.py``) と同じく repo root を
+# ``sys.path`` 先頭へ挿入し、``-m`` 起動・直接実行のどちらでも import を成立させる。
+_sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
+
 import argparse
 import json
 import re
