@@ -276,10 +276,28 @@
       # 1 件以上残れば「ヒット」。具体的な one-liner (PowerShell 環境での date 代替等) は dispatcher Claude の判断。
       ```
 
+   **(c)(1-bis) decision-register gate (Issue #603)**: (c)(1) で `worker_escalation` がヒットした場合に限り、それを acked に数える **前に** pending-decisions register を照会する。journal の `worker_escalation` 行は judgment request 受信時点の痕跡として残り続けるが、その後ユーザー返答が secretary 経由で worker へ転送済み (= 判断待ちが解消済み) でも 15 分窓内に古い行が残っていると acked 抑制が続き、転送後に 529 / stuck で idle な worker を取りこぼす。lifecycle の真値は journal ではなく register が持つので、register を **primary lookup source** として照会する:
+
+      ```bash
+      # ディスパッチャーの cwd は .dispatcher/ なので 1 階層上の tools/ を呼ぶ。
+      # task_id は bare 値で渡す (worker- prefix 無し)。PowerShell 環境は py -3。
+      python3 ../tools/pending_decisions.py latest-resolution --task-id {task_id}
+      ```
+
+      出力は 1 行 JSON。`escalation_trace_is_stale` が `true` (= その task_id の最新 decision が `status == "resolved"` かつ `resolution_kind == "to_worker"`、ユーザー返答後に secretary が `resolve --kind to_worker` で worker へ回答転送済) なら、`worker_escalation` 行はもはや open な判断待ちを表さないので **(c)(1) のヒット集合から `worker_escalation` を除外する**。他 4 event (`worker_reported` / `worker_completed` / `plan_delivered` / `prep_delivered`) はこの gate の影響を受けない (除外対象は `worker_escalation` のみ)。
+
+      register は `.state/pending_decisions.json` (dispatcher cwd から `../.state/pending_decisions.json`)。`worker_escalation` 行が journal に残り続けても、judgment-escalation の lifecycle (pending → escalated → resolved) の authoritative な真値は register が持つ、という SoT 注記である (Step 5.1 (a-0) / (a-2) と同じ register を別軸で照会する)。
+
+      **register-unavailable fallback** (Step 5.1 (a-0) / (a-2) と同じ degraded-mode 規約): CLI が非ゼロ終了する / 出力 JSON が読めない (helper not found / file corrupted で `ValueError`) 場合は、`escalation_trace_is_stale` を取得できないので **gate を適用しない** (= `worker_escalation` を従来どおり acked に数える、fail-safe 側)。これにより register 故障時に判断待ち idle を誤って timeout 経路へ落として false STALL を撃つことはない (代償として、register が壊れている間は #603 の取りこぼし修正が無効化され修正前の挙動に戻る)。観測性のため journal に `anomaly_observed source=stall_check kind=register_unavailable` を残す:
+      ```bash
+      bash ../tools/journal_append.sh anomaly_observed source=stall_check worker=worker-{task_id} kind=register_unavailable confidence=n/a
+      ```
+
    2. **{{SERVER}} poll_events (forward-compat、現状は補助のみ)**: 現状 `{{FQ}}poll_events` は pane lifecycle event のみを流し、`send_message` は流れない (`.claude/skills/org-delegate/references/renga-error-codes.md` の type 表参照)。さらに `since` は時刻ではなく前サイクルから受け取る **opaque cursor** で、初回省略時は「今以降」セマンティクス (過去履歴は返らない) なので、本判定で「過去 15 分」をピンポイント検索する用途には今は使えない。journal scan を **authoritative source** とする。将来 transport backend が `send_message` event を `poll_events` に流すようになれば、Step 1 で既に保持している `.state/dispatcher-event-cursor.txt` の cursor 経由で受信した worker→secretary の送信を `(worker, kind=stall_acked)` ledger に変換するルートを追加する想定 (本 PR ではプレースホルダとして記述するに留める)。
 
    #### (d) 分岐 (acked vs timeout)
-   - **acked** — どちらかの系統で 1 件以上ヒット: 「Secretary 判断待ち idle」または「PR-pending-merge 待機 idle」とみなし、STALL_SUSPECTED を **発火しない**。Step 4 (e) と同じ `anomaly_observed` ledger に soft-note として記録 (新 event 名は導入せず既存 catalog を再利用)。`note` は (b-2) で選択した sub-state を反映する:
+   - **acked の判定** ((c)(1-bis) の gate 込み): acked ⟺ (`worker_reported` / `worker_completed` / `plan_delivered` / `prep_delivered` のいずれかが lookback 窓内) **OR** (`worker_escalation` が lookback 窓内 **AND NOT** `escalation_trace_is_stale`)。`worker_escalation` が窓内でも (c)(1-bis) で `escalation_trace_is_stale == true` と判定された場合は acked に数えず、かつ他 4 event のヒットも無ければ **timeout 経路へ落ち**、(従来は古い `worker_escalation` 痕跡で抑制されていた) STALL_SUSPECTED が正しく発火する (Issue #603)。soft-note の `note` 値は既存 (`awaiting_secretary_lookback_15m` / `awaiting_pr_merge_lookback_60m`) を維持する。
+   - **acked** — 上記判定で 1 件以上ヒット: 「Secretary 判断待ち idle」または「PR-pending-merge 待機 idle」とみなし、STALL_SUSPECTED を **発火しない**。Step 4 (e) と同じ `anomaly_observed` ledger に soft-note として記録 (新 event 名は導入せず既存 catalog を再利用)。`note` は (b-2) で選択した sub-state を反映する:
      ```bash
      # 通常 sub-state (lookback 15m)
      bash ../tools/journal_append.sh anomaly_observed source=stall_check worker=worker-{task_id} kind=stall_acked confidence=n/a note=awaiting_secretary_lookback_15m
@@ -311,9 +329,14 @@
    - **60 分超過時の挙動 (Issue #304 long-tail)**: PR が 60 分以上 open のまま (週末越え / レビュー長期化) で `worker_completed` が window から外れると timeout 経路で再び STALL_SUSPECTED が発火する。これは仕様上「60 分を越えたら sticky な PR-pending-merge は人間判断対象として再通知する」設計で、Issue #304 の指定どおり。30 秒 de-dup のため 3 分サイクルごとに再通知される点はノイズだが、`org-pull-request` SKILL の close condition (24–48h レビュー idle で人間判断、参照: [`.claude/skills/org-pull-request/SKILL.md`](../../.claude/skills/org-pull-request/SKILL.md)) と組み合わせて運用判断する。長期 PR を完全 silence したい場合は将来 Issue で「`pr_opened` 済 task は STALL を一切上げない」へ変更する選択肢があるが、本 PR では「60 分まで猶予」の lookback 延長に留める (Issue 仕様準拠)
    - **journal scan を primary にした理由**: `poll_events` は現状 pane lifecycle event (`pane_started` / `pane_exited` / `events_dropped` / `heartbeat`) のみで `send_message` を流さない (`.claude/skills/org-delegate/references/renga-error-codes.md` の type 表参照)。一方、secretary 受信時の `worker_escalation` / `worker_reported` は authoritative な ledger として既に永続化されている。再利用が正解
    - **soft-note を残す意味**: 後で「なぜ STALL_SUSPECTED が発火しなかったか」を retro / debug で再現できる。silent skip にすると、誤検出疑いが起きたとき journal だけでは判別不能になる。Step 4 と同じ `anomaly_observed` event を再利用するので、event catalog (`docs/journal-events.md`) への新規追記は不要 (kind は `stall_acked`、sub-state は `note` field で `awaiting_secretary_lookback_15m` / `awaiting_pr_merge_lookback_60m` を区別)
+   - **decision-register gate を入れた理由 (Issue #603)**: journal の `worker_escalation` 行だけでは「判断待ち継続中」と「ユーザー返答が worker へ転送済みでもう idle」を区別できない (どちらも同じ行が 15 分窓内に残るため)。register の `resolution_kind == "to_worker"` (status `resolved`) が転送完了を表す authoritative signal なので、これを照会して stale な痕跡を acked から外す。これにより転送後に 529 / stuck で idle 化した worker が誤って acked 抑制されず STALL/ERROR 評価に戻る
+   - **決定的判定を tools CLI に寄せた理由 (Issue #603)**: stale 判定 (最新 decision の選定 = `received_at` 最大、status / resolution_kind 照合) を prose の jq 直書きにせず `tools/pending_decisions.py latest-resolution` の CLI に寄せた。register schema を直接知る既存 helper (`list_pending_older_than` / `list_escalated_user_replied_older_than` 等) と同じ層分離を維持し、register の内部表現変更に prose が追従しなくて済む (決定的判定はコード側、prose は契約面のみ)
    - **想定シナリオ (Issue #304 acceptance)**:
      - regression: worker が `worker_completed` 報告 → secretary が PR 作成 (`pr_opened`) → CI green → user が 30 分後に merge 承認。30 分時点で (b-2) は PR-pending-merge sub-state (60m lookback)、`worker_completed` は 30 分 < 60 分で acked 経路、STALL_SUSPECTED は **発火しない** ✓
      - inverse: worker が完全停止 (PR 未 open、`worker_completed` も無し)。(b-2) は通常 sub-state (15m lookback)、journal scan で痕跡 0 件、idle streak ≥ 3 サイクルで timeout 経路、STALL_SUSPECTED **従来通り発火する** ✓
+   - **想定シナリオ (Issue #603 acceptance)**:
+     - regression (誤分類の修正): worker が判断仰ぎ → secretary が user へ escalate → user 返答 → secretary が `resolve --kind to_worker` で worker へ転送 → 直後 worker が 529 で stuck・idle 継続。旧挙動: `worker_escalation` 行が 15 分窓内 → acked → STALL 抑制 → stuck 取りこぼし。新挙動: (c)(1-bis) で register 最新 decision = `resolved` / `to_worker` → `escalation_trace_is_stale == true` → `worker_escalation` 除外 → 他痕跡なし → timeout 経路で STALL_SUSPECTED **発火する** ✓
+     - 非該当 (再 escalation で誤発火しない): 転送後に worker が再び判断仰ぎ → secretary が register に新 pending を `append` → 最新 decision = `pending` → `escalation_trace_is_stale == false` → `worker_escalation` は acked に復活し STALL_SUSPECTED は **発火しない** (再判断待ちを stuck と誤判定しない) ✓
 
 <a id="step-5-1"></a>
 5.1. **secretary relay gap 検出 (SECRETARY_RELAY_GAP_SUSPECTED)** — Step 5 の sibling、worker→secretary→user の relay の **secretary 側中継漏れ** を検知する独立チャネル:

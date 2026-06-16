@@ -378,6 +378,64 @@ def list_escalated_user_replied_older_than(
     return out
 
 
+def latest_for_task(
+    task_id: str,
+    store_path: Path = DEFAULT_PATH,
+) -> Optional[PendingDecision]:
+    """Return the most recent entry for ``task_id`` (by ``received_at``).
+
+    Issue #603. The dispatcher's worker-monitoring Step 5 stall judgement
+    needs to decide whether an idle worker is genuinely "awaiting a
+    judgment-reply" (acked, suppress STALL) or whether its journal
+    worker_escalation trace is stale because the escalation has already
+    been resolved back to the worker (re-evaluate as a stuck candidate).
+    This helper locates the decision that matters for that judgement: the
+    latest entry for the task.
+
+    "Latest" is the entry whose ``received_at`` is greatest. ISO-8601 UTC
+    timestamps sort lexicographically in time order, so a string compare
+    suffices. Ties (equal ``received_at``) are broken by append order —
+    the later entry in the store wins. Returns ``None`` when no entry
+    exists for ``task_id``.
+    """
+    latest: Optional[PendingDecision] = None
+    for entry in _load(store_path):
+        if entry.task_id != task_id:
+            continue
+        # ">=" so that, on an exact received_at tie, the later (append
+        # order) entry wins — matches the resolve()/mark side semantics.
+        if latest is None or entry.received_at >= latest.received_at:
+            latest = entry
+    return latest
+
+
+def escalation_trace_is_stale(
+    task_id: str,
+    store_path: Path = DEFAULT_PATH,
+) -> bool:
+    """Whether ``task_id``'s worker_escalation journal trace is stale.
+
+    Issue #603. Returns ``True`` only when the latest decision for
+    ``task_id`` exists and is in the terminal ``resolved`` /
+    ``to_worker`` shape — i.e. the user's answer has already been relayed
+    back to the worker. In that state, any worker_escalation trace the
+    dispatcher sees in the journal is no longer an *open* judgment-wait:
+    the worker is expected to be working, so the dispatcher must NOT count
+    its idle as "awaiting decision (acked)". Instead the idle should fall
+    back into STALL / ERROR re-evaluation as a stuck candidate.
+
+    Returns ``False`` when the latest decision is still ``pending`` (a
+    fresh judgment-request re-opened the wait), ``escalated`` (awaiting
+    human reply), or absent — in those states the escalation trace is a
+    legitimate open wait and the dispatcher should keep treating the idle
+    as acked.
+    """
+    latest = latest_for_task(task_id, store_path=store_path)
+    if latest is None:
+        return False
+    return latest.status == "resolved" and latest.resolution_kind == "to_worker"
+
+
 # --------------------------------------------------------------------- CLI
 
 
@@ -429,6 +487,30 @@ def _cmd_mark_user_replied(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_latest_resolution(args: argparse.Namespace) -> int:
+    store_path = Path(args.store) if args.store else DEFAULT_PATH
+    latest = latest_for_task(args.task_id, store_path=store_path)
+    if latest is None:
+        print(
+            json.dumps(
+                {
+                    "task_id": args.task_id,
+                    "status": "none",
+                    "resolution_kind": None,
+                    "escalation_trace_is_stale": False,
+                },
+                ensure_ascii=False,
+            )
+        )
+        return 0
+    out = latest.to_dict()
+    out["escalation_trace_is_stale"] = (
+        latest.status == "resolved" and latest.resolution_kind == "to_worker"
+    )
+    print(json.dumps(out, ensure_ascii=False))
+    return 0
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         prog="tools/pending_decisions.py",
@@ -476,6 +558,16 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     p_mark.add_argument("--task-id", required=True)
     p_mark.set_defaults(func=_cmd_mark_user_replied)
+
+    p_latest = sub.add_parser(
+        "latest-resolution",
+        help=(
+            "emit the latest decision for a task plus escalation_trace_is_stale "
+            "(Issue #603, dispatcher Step 5 stall judgement)"
+        ),
+    )
+    p_latest.add_argument("--task-id", required=True)
+    p_latest.set_defaults(func=_cmd_latest_resolution)
 
     args = parser.parse_args(argv)
     return args.func(args)
