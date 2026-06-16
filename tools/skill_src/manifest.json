@@ -67,6 +67,30 @@
       "output": "../../.claude/skills/org-delegate/references/instruction-template.md",
       "mode": "template",
       "allowlist": "none"
+    },
+    {
+      "source": "../../.claude/skills/org-pull-request/SKILL.md.in",
+      "output": "../../.claude/skills/org-pull-request/SKILL.md",
+      "mode": "template+fragment",
+      "allowlist": "per-entry-rename"
+    },
+    {
+      "source": "../../.claude/skills/org-delegate/references/pane-layout.md.in",
+      "output": "../../.claude/skills/org-delegate/references/pane-layout.md",
+      "mode": "template+fragment",
+      "allowlist": "none"
+    },
+    {
+      "source": "../../.claude/skills/org-delegate/SKILL.md.in",
+      "output": "../../.claude/skills/org-delegate/SKILL.md",
+      "mode": "template+fragment",
+      "allowlist": "per-entry-rename"
+    },
+    {
+      "source": "../../.dispatcher/references/worker-monitoring.md.in",
+      "output": "../../.dispatcher/references/worker-monitoring.md",
+      "mode": "template+fragment",
+      "allowlist": "none"
     }
   ],
   "exclude": []

@@ -27,8 +27,8 @@ allowed-tools:
   - Bash(bash tools/pr-watch.sh:*)
   - Bash(pwsh tools/pr-watch.ps1:*)
   - Bash(powershell tools/pr-watch.ps1:*)
-  - mcp__org-broker__send_message
-  - mcp__org-broker__check_messages
+  - mcp__renga-peers__send_message
+  - mcp__renga-peers__check_messages
 ---
 
 # org-pull-request: PR 作成・レビュー・マージ後クローズ
@@ -42,7 +42,7 @@ allowed-tools:
 
 > **ack ≠ user 承認**: 本スキルが発動した時点で ack は既に発行済み（`.claude/skills/org-delegate/SKILL.md` Step 5 step 1 / [`.claude/skills/org-delegate/references/ack-template.md`](../org-delegate/references/ack-template.md)）。push / `gh pr create` / `tools/pr-watch.*` はユーザー承認後にのみ発行する。
 
-> **輸送層 両系（`ORG_TRANSPORT`: 既定 `broker` / opt-in `renga`）**: 本スキルの `mcp__org-broker__*`（worker への修正指示 `send_message` 等）と pr-watch の peer 通知は **既定 `broker`**（`ORG_TRANSPORT` 無設定）で書いてあり、そのまま従えばよい（既定挙動）。**CI_COMPLETED / PR_MERGED 等の受信は push 一次**（各ペイン同居の channel sidecar `server:org-broker-channel` が `notifications/claude/channel` で窓口の idle セッションへ注入。runtime push-first 0.1.24+、設計 SoT は transport-lab `docs/design/broker-native-roles.md` §9）で、**push 失効時のフォールバック**は窓口がターン冒頭で能動 `mcp__org-broker__check_messages`（下記 2b-i の受信モデル注記を参照。§9.6）、エラーは broker 拡張コード（[`.claude/skills/org-delegate/references/renga-error-codes.md`](../org-delegate/references/renga-error-codes.md) の broker 節）が加わる。`ORG_TRANSPORT=renga`（opt-in・切戻し可）では完全修飾名が **`mcp__org-broker__*` → `mcp__renga-peers__*`** に機械置換され、CI_COMPLETED 等は `<channel source="renga-peers">` の in-band push で届く（手順は同型・renga は削除せず常時有効な切戻しの安全装置）。詳細は CLAUDE.md「輸送層（transport）両系」節と [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) Surface 8（ratified 2026-06-14。push 一次への additive 改訂 S3 が ratified 済み（2026-06-15）・既存 ratified 本文不変更）を参照。
+{{> org-pull-request-transport }}
 
 ## 2b-i. PR 作成段階（即時実行）
 
@@ -56,8 +56,7 @@ allowed-tools:
   これは `gh pr view <PR> --json url,headRefName` を 1 度引いて、`StateWriter.set_run_pr` 経由で `runs.pr_url` と `runs.branch` を上書きする。再呼び出しは idempotent（同じ値の上書き、events への追記なし）。これを行わないと後段の `tools/run_complete_on_merge.py` が `runs.pr_url` を引けず `no_run`（exit 3）で落ち、`-MergeWatch` の自動完了が失敗する
 - DB の events テーブルにイベント追記 (push / PR open など、`bash tools/journal_append.sh ...`)
 - PR 番号が確定したら `tools/pr-watch.ps1 <PR>` (Windows) / `tools/pr-watch.sh <PR>` (POSIX) で CI を監視する。完了時に `ci_completed` が自動で events に記録される。CI 完了で pr-watch は **return** する（review feedback loop 2c や手動 close 2b-ii に進めるよう同期占有しない）
-- **pr-watch が CI 完了 / merge 検出 / 24h タイムアウトの瞬間に Secretary へ peer message を送る**（Issue #326）。既定 broker では `CI_COMPLETED` / `PR_MERGED` / `PR_MERGE_WATCH_TIMEOUT` / `PR_MERGED_NO_RUN` は **push 一次**で届く（各ペイン同居の channel sidecar `server:org-broker-channel` が `notifications/claude/channel` で窓口の idle セッションへ注入。runtime push-first 0.1.24+、transport-lab `docs/design/broker-native-roles.md` §9。channel source は `org-broker`）。窓口は events テーブルをポーリングせず、`CI_COMPLETED: PR #<n> ...`（および `PR_MERGED: PR #<n>` / `PR_MERGE_WATCH_TIMEOUT: PR #<n>` / `PR_MERGED_NO_RUN: PR #<n>`）の到着で次のステップへ進める。`CI_COMPLETED` 受信 → ユーザーに merge 承認を仰ぐ → ユーザー承認 → `PR_MERGED` 受信で 2b-ii の post-merge cleanup へ。`PR_MERGED_NO_RUN` は merge は観測したが対応 run 行が見つからなかった失敗系（`tools/run_complete_on_merge.py` の `no_run` 終端）で、post-merge cleanup には進めず人間判断で対処する。**push 失効時のフォールバック**は窓口がターン冒頭で能動的に `mcp__org-broker__check_messages` で本文を pull してから次のステップへ進む（ナッジが出れば契機になりうるが idle を起こさないため能動 poll が正路。§9.6）。さらに broker daemon 未起動の plain shell / CI では peer/channel 配送自体が成立しないため、従来どおり events テーブルのポーリングにフォールバックする
-  - **`ORG_TRANSPORT=renga`（opt-in）の場合**: pr-watch は同じ瞬間に `<channel source="renga-peers"> CI_COMPLETED: PR #<n> ...`（および `PR_MERGED: PR #<n>` / `PR_MERGE_WATCH_TIMEOUT: PR #<n>` / `PR_MERGED_NO_RUN: PR #<n>`）を in-band push する。メッセージ本文の semantics・分岐は broker と同一。RENGA_SOCKET 未設定の plain shell / CI では peer-send は silent noop となり、従来どおり events テーブルのポーリングにフォールバックする
+{{> org-pull-request-recv-model }}
 - **CI_COMPLETED 受信 → ユーザーに merge 承認を仰ぐ直前で awaiting_user 通知を emit する（Issue #28）**: attention watcher にユーザーが merge 承認待ちで stop していることを知らせる:
   ```bash
   bash tools/journal_append.sh notify_sent kind=awaiting_user task_id=<task_id> gate=ci_green_merge_gate note="PR #<PR> CI green, awaiting merge approval"
@@ -82,7 +81,7 @@ allowed-tools:
 
 人間がフィードバック・修正指示を出した場合、または CI が失敗してユーザーが「直してもらって」と指示した場合:
 
-- ワーカーに org-broker で追加指示を送る (`to_id="worker-{task_id}"`)
+- ワーカーに {{SERVER}} で追加指示を送る (`to_id="worker-{task_id}"`)
 - 追加指示が trivial fix（CI 出力整形 / typo / コメント修正等）なら **検証深度 `minimal`** を明示し、完了報告は `done: {commit SHA 短縮形} {変更ファイル名}` の 1 行だけで返すよう伝える（フォーマットは [`.claude/skills/org-delegate/references/instruction-template.md`](../org-delegate/references/instruction-template.md) / [`.claude/skills/org-delegate/references/worker-claude-template.md`](../org-delegate/references/worker-claude-template.md) に従う）
 - **DB 経由で run を IN_PROGRESS に戻す**（`run.status='in_use'`、markdown 直接編集禁止。post-commit hook が `.state/org-state.md` を再生成）:
   ```bash
