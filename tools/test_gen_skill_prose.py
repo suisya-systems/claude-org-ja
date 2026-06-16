@@ -61,6 +61,39 @@ class TokenRenderTest(unittest.TestCase):
         with self.assertRaises(g.GenError):
             g.render_tokens("{{BOGUS}}", "broker")
 
+    def test_root_token_resolves_with_prefix(self):
+        # {{ROOT}} は root_prefix に解決され、cross-tree href が出力位置に合う。
+        text = "[`docs/x.md`]({{ROOT}}docs/x.md)"
+        out = g.render_tokens(text, "broker", root_prefix="../../../")
+        self.assertEqual(out, "[`docs/x.md`](../../../docs/x.md)")
+
+    def test_root_token_is_transport_independent(self):
+        # {{ROOT}} は render 面に依存しない (出力位置のみ)。
+        text = "{{ROOT}}docs/x.md"
+        self.assertEqual(
+            g.render_tokens(text, "broker", root_prefix="../"),
+            g.render_tokens(text, "renga", root_prefix="../"),
+        )
+
+    def test_root_token_without_prefix_fails_closed(self):
+        # root_prefix 未指定で {{ROOT}} に遭遇 = 解決できないリンクを通さず GenError。
+        with self.assertRaises(g.GenError):
+            g.render_tokens("{{ROOT}}docs/x.md", "broker")
+
+    def test_root_prefix_for_depths(self):
+        # 出力位置からの repo-root 相対プレフィックス。深さ d -> "../"*d、root 直下 -> ""。
+        repo = Path(g.__file__).resolve().parent.parent
+        self.assertEqual(g.root_prefix_for(repo / "CLAUDE.md"), "")
+        self.assertEqual(g.root_prefix_for(repo / "docs" / "x.md"), "../")
+        self.assertEqual(
+            g.root_prefix_for(repo / ".claude" / "skills" / "foo" / "SKILL.md"),
+            "../../../",
+        )
+        self.assertEqual(
+            g.root_prefix_for(repo / ".claude" / "skills" / "foo" / "references" / "r.md"),
+            "../../../../",
+        )
+
 
 # ---------------------------------------------------------------------------
 # フラグメント注入 (設計 §1.3 (c))
@@ -267,8 +300,15 @@ class FrontmatterRenderTest(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
+# フラグメントは cross-tree リンク href を中立化した {{ROOT}} を含むため、render に
+# は出力位置由来の root_prefix が要る。golden fixture は深さ 3 の skill
+# (.claude/skills/foo/SKILL.md) を模した代表値で byte 固定する。
+_ROOT_PREFIX = "../../../"
+
+
 def _render_fixture(stem: str, flag: str, **kw) -> str:
     src = (_TESTDATA / f"{stem}.md.in").read_text(encoding="utf-8")
+    kw.setdefault("root_prefix", _ROOT_PREFIX)
     return g.render_source(src, flag, fragments_dir=_FRAGMENTS, **kw).text
 
 
@@ -348,7 +388,8 @@ class GoldenRenderTest(unittest.TestCase):
         src = (_TESTDATA / "sample_wildcard.md.in").read_text(encoding="utf-8")
         src_fm = g.split_frontmatter(src)
         rendered = g.render_source(
-            src, "renga", fragments_dir=_FRAGMENTS, mode="template", role="secretary", allowlist="per-entry-rename"
+            src, "renga", fragments_dir=_FRAGMENTS, mode="template", role="secretary",
+            allowlist="per-entry-rename", root_prefix=_ROOT_PREFIX,
         ).text
         out_fm = g.split_frontmatter(rendered)
         self.assertEqual(out_fm.allowed_tools, src_fm.allowed_tools)
@@ -483,6 +524,44 @@ class ManifestTest(unittest.TestCase):
         self.assertEqual(set(entry["role"]["enum"]), set(g.ROLES))
 
 
+# ---------------------------------------------------------------------------
+# 本番 manifest (Epic #586 Phase 3' G1) の検証 + drift ゲート
+# ---------------------------------------------------------------------------
+
+
+_PROD_MANIFEST = Path(__file__).resolve().parent / "skill_src" / "manifest.json"
+
+
+class ProductionManifestTest(unittest.TestCase):
+    """G1 本番 manifest (tools/skill_src/manifest.json) の構造 + drift 固定。"""
+
+    def test_production_manifest_loads_and_is_consistent(self):
+        # 構造検証 (load_manifest = 設計固有の意味検証込み)。.in が未配置でも
+        # JSON 読みだけなので成立する。
+        m = g.load_manifest(_PROD_MANIFEST)
+        self.assertTrue(m.entries, "production manifest has no entries")
+        for e in m.entries:
+            # G1 は全件 template モード (surgical/identity-anchor は G2+)。
+            self.assertEqual(e.mode, "template", f"{e.source} is not template (G1 = template only)")
+            self.assertIn(e.allowlist, ("per-entry-rename", "none"))
+            # 生成モードは output 必須 (load_manifest が強制済みだが明示確認)。
+            self.assertTrue(e.output)
+
+    def test_production_manifest_no_drift(self):
+        # drift ゲート (設計 §7.2-1): render(source, DEFAULT_TRANSPORT) == committed output。
+        # .in source / rendered output が未配置 (G1 着手前) の間は skip し、配置後に有効化する。
+        m = g.load_manifest(_PROD_MANIFEST)
+        base = _PROD_MANIFEST.resolve().parent
+        missing = [e.source for e in m.entries if not (base / e.source).resolve().exists()]
+        if missing:
+            self.skipTest(f"G1 source .in not placed yet ({len(missing)} missing); drift gate inactive")
+        # committed output は常に DEFAULT_TRANSPORT 面 (設計 §3.2)。transport を明示固定し、
+        # 実行環境の ORG_TRANSPORT に依存させない (renga 設定下で broker committed と
+        # 比較して false DRIFT になるのを防ぐ, Codex P2)。
+        rc = g.main(["--manifest", str(_PROD_MANIFEST), "--transport", transport.DEFAULT_TRANSPORT, "--check"])
+        self.assertEqual(rc, 0, "production manifest drift: render(source) != committed output")
+
+
 class CliInvocationTest(unittest.TestCase):
     """直接スクリプト実行で import が成立すること (Codex P2 修正の回帰固定)。
 
@@ -514,6 +593,54 @@ class CliInvocationTest(unittest.TestCase):
         proc = self._run("--help")
         self.assertEqual(proc.returncode, 0, proc.stderr)
         proc.stdout.encode("cp932")  # raises UnicodeEncodeError if non-cp932 char present
+
+
+class RootTokenCliWiringTest(unittest.TestCase):
+    """manifest 経由の render が出力位置から {{ROOT}} を解決し --check が round-trip。"""
+
+    def test_manifest_render_resolves_root_from_output_and_checks(self):
+        import contextlib
+        import io
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            base = Path(d)
+            src = base / "SKILL.md.in"
+            # フラグメント由来の cross-tree リンクを模した {{ROOT}} を本文に持つ source。
+            src.write_text(
+                "---\nname: t\nallowed-tools:\n  - Read\n---\n\n"
+                "# t\n\n本文 {{FQ}}send_message / [`docs/x.md`]({{ROOT}}docs/x.md)\n",
+                encoding="utf-8",
+            )
+            out = base / "SKILL.md"
+            manifest = base / "manifest.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "entries": [
+                            {
+                                "source": "SKILL.md.in",
+                                "output": "SKILL.md",
+                                "mode": "template",
+                                "allowlist": "none",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with contextlib.redirect_stdout(io.StringIO()):
+                rc = g.main(["--manifest", str(manifest), "--transport", "broker"])
+            self.assertEqual(rc, 0)
+            rendered = out.read_text(encoding="utf-8")
+            # {{ROOT}} は出力位置 (out) から repo root への相対に解決され未解決トークンは残らない。
+            self.assertNotIn("{{", rendered)
+            expected_prefix = g.root_prefix_for(out)
+            self.assertIn(f"]({expected_prefix}docs/x.md)", rendered)
+            self.assertIn("mcp__org-broker__send_message", rendered)
+            # 直後の --check は drift なし (round-trip)。
+            rc_check = g.main(["--manifest", str(manifest), "--transport", "broker", "--check"])
+            self.assertEqual(rc_check, 0)
 
 
 if __name__ == "__main__":

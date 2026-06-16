@@ -48,6 +48,22 @@ consume する。
 
     {{DEFAULT_TRANSPORT}} -> transport.DEFAULT_TRANSPORT
 
+(b') 出力位置トークン (transport 非依存, 出力ファイルから repo root への相対):
+
+    {{ROOT}} -> 出力ファイルのディレクトリから repo root への document-relative
+               プレフィックス ("../../../" 等。root 直下のファイルは "")。
+
+    共有フラグメントが repo-root 表示の cross-tree リンク
+    (``[`docs/contracts/x.md`](...)``) を持つとき、href (TARGET) は
+    markdown-conventions 上 **document-relative** でなければならない
+    (``tools/audit_link_paths.py`` が DISPLAY=repo-root / TARGET=document-relative
+    を assert)。単一の共有フラグメントを深さの異なる出力 (深さ 2-4 の skill /
+    references / root の CLAUDE.md) へ inject すると href の ``../`` 段数が出力
+    ごとに変わるため、フラグメントは ``[`docs/x.md`]({{ROOT}}docs/x.md)`` と
+    中立に書き、generator が出力位置から ``{{ROOT}}`` を解決する。これにより
+    フラグメント SoT を 1 つに保ったまま全出力でリンクが正しく解決する。
+    DISPLAY (code span) は repo-root 形のまま不変なので token は href にのみ効く。
+
 (c) 名前付きフラグメント (4 局所差異, per-transport):
 
     {{> dual-system-header-short }}  {{> dual-system-header-long }}
@@ -90,6 +106,7 @@ _sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
 
 import argparse
 import json
+import os
 import re
 import sys
 from dataclasses import dataclass, field
@@ -157,15 +174,21 @@ def render_tokens(
     flag: str,
     *,
     env: Optional[Mapping[str, str]] = None,
+    root_prefix: Optional[str] = None,
 ) -> str:
-    """render 面 / 既定値トークンを解決する。
+    """render 面 / 既定値 / 出力位置トークンを解決する。
 
     ``{{FQ}}`` / ``{{SERVER}}`` / ``{{CHANNEL_SRC}}`` は render transport (``flag``)
     に追従し、``{{DEFAULT_TRANSPORT}}`` は ``transport.DEFAULT_TRANSPORT`` (既定値
-    そのもの) に追従する (§1.3 (c) の混同防止 = 別系統トークン)。
+    そのもの) に追従する (§1.3 (c) の混同防止 = 別系統トークン)。``{{ROOT}}`` は
+    ``root_prefix`` (出力ファイルから repo root への document-relative プレフィックス)
+    に解決する — transport 非依存で、共有フラグメントの cross-tree リンク href を
+    出力位置に合わせて正しくする (上記モジュール docstring (b'))。
 
     未知の ``{{UPPER}}`` トークンが残れば :class:`GenError` (silent な穴を作らない)。
-    フラグメント参照 ``{{> name }}`` は本関数の対象外 (先に注入済みである前提)。
+    ``{{ROOT}}`` が本文にあるのに ``root_prefix`` 未指定なら :class:`GenError`
+    (fail-closed — 解決できないリンクを silent に通さない)。フラグメント参照
+    ``{{> name }}`` は本関数の対象外 (先に注入済みである前提)。
     """
     surf = transport.surface(flag, env=env)
     values = {
@@ -177,14 +200,43 @@ def render_tokens(
         "CHANNEL_SRC": surf.server,
         "DEFAULT_TRANSPORT": transport.DEFAULT_TRANSPORT,
     }
+    if root_prefix is not None:
+        values["ROOT"] = root_prefix
 
     def _sub(match: re.Match) -> str:
         name = match.group(1)
         if name not in values:
+            if name == "ROOT":
+                # root_prefix 未指定で {{ROOT}} に遭遇 = 出力位置が不明 (manifest
+                # の output 無し / render_source を root_prefix なしで直接呼んだ等)。
+                # 解決できないリンクを通すと audit_link_paths で落ちる broken href に
+                # なるため、fail-closed で拒否する。
+                raise GenError(
+                    "token {{ROOT}} requires an output-relative root prefix; "
+                    "render via the manifest (entry needs an 'output') or pass "
+                    "root_prefix to render_source/render_tokens"
+                )
             raise GenError(f"unknown render token {{{{{name}}}}}")
         return values[name]
 
     return _TOKEN_RE.sub(_sub, text)
+
+
+def root_prefix_for(output: Path) -> str:
+    """出力ファイル ``output`` のディレクトリから repo root への ``{{ROOT}}`` 値。
+
+    repo root = 本モジュール (``tools/gen_skill_prose.py``) の親の親。深さ d の
+    出力には ``"../" * d`` (例: ``.claude/skills/foo/SKILL.md`` -> ``"../../../"``)、
+    repo root 直下の出力 (``CLAUDE.md``) には ``""`` を返す。href は document-
+    relative ゆえ trailing slash 込みで返し、``{{ROOT}}docs/x.md`` がそのまま
+    正しい相対 href になる。
+    """
+    repo_root = Path(__file__).resolve().parent.parent
+    rel = os.path.relpath(repo_root, output.resolve().parent)
+    rel_posix = Path(rel).as_posix()
+    if rel_posix == ".":
+        return ""
+    return rel_posix + "/"
 
 
 # ---------------------------------------------------------------------------
@@ -560,13 +612,16 @@ def render_source(
     role: Optional[str] = None,
     allowlist: str = ALLOWLIST_PER_ENTRY,
     env: Optional[Mapping[str, str]] = None,
+    root_prefix: Optional[str] = None,
 ) -> RenderResult:
     """中立 source 1 件を ``flag`` 面へ render する (本文 + frontmatter を 1 パス)。
 
     本文: フラグメント注入 -> トークン render (ヘッダと本文が同一 flag から展開され
     自己矛盾不可能, §0.2)。frontmatter ``allowed-tools``: ``allowlist`` 機構で
     per-transport render (§0.4)。``identity-anchor`` モードは render 対象外として
-    入力をそのまま返す (permissions.md の renga byte 不変, §4.2(2))。
+    入力をそのまま返す (permissions.md の renga byte 不変, §4.2(2))。``root_prefix``
+    は ``{{ROOT}}`` トークン (共有フラグメントの cross-tree リンク href) の解決値で、
+    CLI は出力位置から :func:`root_prefix_for` で算出して渡す。
     """
     if mode not in ALL_MODES:
         raise GenError(f"unknown manifest mode {mode!r} (valid: {sorted(ALL_MODES)})")
@@ -595,7 +650,7 @@ def render_source(
 
     # 本文: フラグメント注入 -> トークン render。
     body = inject_fragments(fm.body, flag, fragments_dir)
-    body = render_tokens(body, flag, env=env)
+    body = render_tokens(body, flag, env=env, root_prefix=root_prefix)
 
     # frontmatter allowed-tools の per-transport render。
     rendered_tools = fm.allowed_tools
@@ -730,8 +785,11 @@ def _resolve_paths(entry: ManifestEntry, base: Path):
 
 
 def _render_entry(entry: ManifestEntry, base: Path, fragments_dir: Path, flag: str) -> RenderResult:
-    source, _ = _resolve_paths(entry, base)
+    source, output = _resolve_paths(entry, base)
     text = source.read_text(encoding="utf-8")
+    # {{ROOT}} は出力位置に依存するので output から解決 (output 無しは None =
+    # {{ROOT}} 使用時に fail-closed)。生成モードは output 必須を検証済み。
+    root_prefix = root_prefix_for(output) if output is not None else None
     return render_source(
         text,
         flag,
@@ -739,6 +797,7 @@ def _render_entry(entry: ManifestEntry, base: Path, fragments_dir: Path, flag: s
         mode=entry.mode,
         role=entry.role,
         allowlist=entry.allowlist,
+        root_prefix=root_prefix,
     )
 
 
