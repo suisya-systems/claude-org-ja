@@ -120,6 +120,18 @@ GENERATING_MODES = frozenset(
     {MODE_TEMPLATE, MODE_TEMPLATE_FRAGMENT, MODE_SURGICAL_FRAGMENT, MODE_CODE_LITERAL}
 )
 ALL_MODES = GENERATING_MODES | {MODE_IDENTITY_ANCHOR}
+# G0 で render 実装が揃っている生成モード (full token + {{> }} フラグメント
+# パイプラインで安全に render できる)。``code-literal`` は {{DEFAULT_TRANSPORT}}
+# トークンを含む点以外 template と同一パイプラインで成立する。
+G0_IMPLEMENTED_MODES = frozenset({MODE_TEMPLATE, MODE_CODE_LITERAL})
+# スキーマには定義済みだが G0 では render 未実装の生成モード (設計 §4.1 / §7.1)。
+# それぞれ固有の surgical 処理 (マーカー区画注入 / token-body 除外) が要り、full
+# パイプラインを当てると本文を誤って書き換える / 例外になるため、誤レンダリングせず
+# 明示拒否する (silent な不完全生成を防ぐ)。manifest 宣言自体は許可する。
+G0_UNIMPLEMENTED_MODES = {
+    MODE_TEMPLATE_FRAGMENT: "G2 (本文トークン + 個別 surgical 領域のマーカー区画注入, 設計 §4.1 / §4.2)",
+    MODE_SURGICAL_FRAGMENT: "G3 (token-body 除外 + per-transport フラグメント区画注入, 設計 §4.2(1))",
+}
 
 # frontmatter allowlist の処理機構 (設計 §2.2 / §4.1)。
 ALLOWLIST_PER_ENTRY = "per-entry-rename"  # skill frontmatter (subset 保存, ※3)
@@ -538,16 +550,19 @@ def render_source(
         # render 対象外 = 構造的に触らない (恒等射影で renga byte 不変を保証)。
         return RenderResult(text=source_text)
 
-    if mode == MODE_SURGICAL_FRAGMENT:
-        # surgical-fragment は token-body パイプラインから除外し、マーカー区画のみを
-        # 注入する非対称モード (renga-error-codes, 設計 §4.2(1))。full フラグメント
-        # 注入 + 全文トークン render をそのまま当てると、触るべきでない本文が書き換わる
-        # / 付随する {{UPPER}} 様テキストで例外になる。**G0 はスキーマ定義のみで実装は
-        # G3**（brief / 設計 §4.2 / §7.1）。誤レンダリングを避けるため明示的に拒否する。
+    if mode in G0_UNIMPLEMENTED_MODES:
+        # スキーマ定義済みだが G0 では render 未実装の生成モード。full token + {{> }}
+        # パイプラインを当てると surgical 処理 (マーカー区画 / token-body 除外) を
+        # 飛ばして不完全な生成物を silent に作る / 例外になるため、誤レンダリングせず
+        # 明示拒否する (実装は各 G バッチ, 設計 §4.1 / §7.1)。
         raise GenError(
-            "mode 'surgical-fragment' is schema-defined but not implemented in G0 "
-            "(token-body 除外 + マーカー区画注入は G3 スコープ, 設計 §4.2(1) / §7.1)"
+            f"mode {mode!r} is schema-defined but not implemented in G0 "
+            f"(deferred to {G0_UNIMPLEMENTED_MODES[mode]})"
         )
+
+    if mode not in G0_IMPLEMENTED_MODES:
+        # 想定外の生成モード (新モード追加時の取りこぼし防止 = fail-closed)。
+        raise GenError(f"mode {mode!r} has no G0 render path")
 
     fm = split_frontmatter(source_text)
 

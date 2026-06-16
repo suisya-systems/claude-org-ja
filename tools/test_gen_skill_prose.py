@@ -261,12 +261,35 @@ class GoldenRenderTest(unittest.TestCase):
             out = _render_fixture("sample_codeliteral", flag, mode="code-literal", allowlist="none")
             self.assertIn(f"${{ORG_TRANSPORT:-{_DEFAULT}}}", out)
 
-    def test_surgical_fragment_rejected_in_g0(self):
-        # Codex P2 修正: surgical-fragment は G0 ではスキーマ定義のみ。render は誤適用
-        # せず明示拒否 (実装は G3, 設計 §4.2(1) / §7.1)。
+    def test_unimplemented_generating_modes_rejected_in_g0(self):
+        # Codex P2 修正: スキーマ定義済みだが G0 未実装の生成モード (template+fragment
+        # = G2 / surgical-fragment = G3) は full パイプラインへ fall-through せず明示
+        # 拒否する (silent な不完全生成を防ぐ, 設計 §4.1 / §7.1)。
         src = "# x\n\n本文に {{> surface-omissions }} と {{FQ}}send_message。\n"
-        with self.assertRaises(g.GenError):
-            g.render_source(src, "broker", fragments_dir=_FRAGMENTS, mode="surgical-fragment", allowlist="none")
+        for mode in ("template+fragment", "surgical-fragment"):
+            with self.subTest(mode=mode):
+                with self.assertRaises(g.GenError):
+                    g.render_source(src, "broker", fragments_dir=_FRAGMENTS, mode=mode, allowlist="none")
+
+    def test_g0_implemented_modes_render(self):
+        # G0 で実装済みの生成モードは render が成立する (網羅性の対称確認)。
+        src = "# x\n\n{{FQ}}send_message / 既定 {{DEFAULT_TRANSPORT}}\n"
+        for mode in ("template", "code-literal"):
+            with self.subTest(mode=mode):
+                out = g.render_source(src, "broker", fragments_dir=_FRAGMENTS, mode=mode, allowlist="none").text
+                self.assertIn("mcp__org-broker__send_message", out)
+
+    def test_mode_partition_is_exhaustive(self):
+        # 全生成モードが「実装済み」か「G0 未実装(拒否)」のどちらかに分類され、
+        # 取りこぼし (fall-through) が無いこと。
+        self.assertEqual(
+            set(g.G0_IMPLEMENTED_MODES) | set(g.G0_UNIMPLEMENTED_MODES),
+            set(g.GENERATING_MODES),
+        )
+        self.assertEqual(
+            set(g.G0_IMPLEMENTED_MODES) & set(g.G0_UNIMPLEMENTED_MODES),
+            set(),
+        )
 
     def test_identity_anchor_returns_source_unchanged(self):
         # identity-anchor は render 対象外 = 入力をそのまま返す (§4.2(2))。
