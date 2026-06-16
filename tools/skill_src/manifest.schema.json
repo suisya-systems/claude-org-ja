@@ -1,0 +1,59 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://claude-org-ja/tools/skill_src/manifest.schema.json",
+  "title": "skill-prose-generator manifest",
+  "description": "transport-neutral skill prose generator (Epic #586 Phase 3' G0) の manifest スキーマ。各 source ファイルの処理モード (mode)・frontmatter allowlist 機構 (allowlist)・role を宣言する。設計 SoT: notes/broker-skill-generator-design.md §4.1。構造はこのスキーマで検証し、mode/allowlist と role の連動 (§2.2 ※2) は generator の意味検証が担う。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["entries"],
+  "properties": {
+    "entries": {
+      "type": "array",
+      "description": "render / アンカー対象ファイルの宣言。",
+      "items": { "$ref": "#/definitions/entry" }
+    },
+    "exclude": {
+      "type": "array",
+      "description": "generator 対象外として明示除外する据え置きファイル (設計 §7.1)。README 公開文書・renga-decoupling・transport-switch-ux 等の end-state 既述 docs。manifest 網羅 assert (§7.2-5) はこの列挙分を取りこぼし 0 から除く。",
+      "items": { "type": "string" }
+    }
+  },
+  "definitions": {
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "mode", "allowlist"],
+      "properties": {
+        "source": {
+          "type": "string",
+          "description": "中立 source ファイルへの (manifest からの) 相対パス (例: skill-src/.../SKILL.md.in)。"
+        },
+        "output": {
+          "type": "string",
+          "description": "render 先 (commit される rendered ファイル) への相対パス。生成モードでは必須、identity-anchor では省略可。"
+        },
+        "mode": {
+          "type": "string",
+          "description": "処理モード (設計 §4.1)。template=全文トークン+フラグメント / template+fragment=本文トークン+surgical マーカー区画 / surgical-fragment=token-body 除外しフラグメント手当 (renga-error-codes) / code-literal=既定値リテラルを {{DEFAULT_TRANSPORT}} で render (org-start L66) / identity-anchor=render 対象外で renga byte 不変を構造保証 (permissions.md)。",
+          "enum": [
+            "template",
+            "template+fragment",
+            "surgical-fragment",
+            "code-literal",
+            "identity-anchor"
+          ]
+        },
+        "allowlist": {
+          "type": "string",
+          "description": "frontmatter allowed-tools の処理機構 (設計 §2.2 / §0.4)。per-entry-rename=skill frontmatter の server 接頭辞リネーム (skill 固有サブセット保存・ワイルドカード展開・broker 省略ツール drop, ※3-※5) / role-tier=permissions.md の rewrite_allow_entries (役割の全 tier 認可, identity-anchor 専用) / none=frontmatter allowlist を持たない (references / CLAUDE.md 等)。skill frontmatter に role-tier を当ててはならない (過剰認可, ※3)。",
+          "enum": ["per-entry-rename", "role-tier", "none"]
+        },
+        "role": {
+          "type": "string",
+          "description": "role-tier 解決 / ワイルドカード source-surface 展開に使う役割 (設計 §2.2 ※2)。必須なのは (a) allowlist=role-tier (permissions.md, identity-anchor)、(b) source frontmatter にワイルドカード mcp__renga-peers__* を含む skill (※5 の展開で tools_for_role(role) が要る)。明示 per-tool エントリのみの skill は省略可 (接頭辞リネーム + descriptor 検証で決定的)。role は列挙・tier 解決にのみ使い、skill frontmatter で tier ブロック置換には使わない (※3 の過剰認可を作らない)。user_common は org-setup の user-common permissions ブロックに対応。",
+          "enum": ["user_common", "worker", "curator", "dispatcher", "secretary"]
+        }
+      }
+    }
+  }
+}

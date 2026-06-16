@@ -1,0 +1,25 @@
+---
+name: sample-wildcard
+description: >
+  ワイルドカード frontmatter を持つ synthetic skill (golden 固定用)。
+  実在スキルではなく generator の render 面を両系で固定するためのフィクスチャ。
+effort: low
+allowed-tools:
+  - Read
+  - Bash(bash tools/journal_append.sh:*)
+  - mcp__renga-peers__*
+---
+
+# sample-wildcard
+
+{{> dual-system-header-short }}
+
+## 手順
+
+1. ワーカーへ `{{FQ}}send_message(to_id="worker-{task_id}", ...)` で ack を返す。
+2. 受信は `<channel source="{{CHANNEL_SRC}}" …>` で push される（MCP サーバーは `{{SERVER}}`）。
+3. 既定 transport は `{{DEFAULT_TRANSPORT}}`。
+
+{{> spawn-ritual }}
+
+{{> surface-omissions }}

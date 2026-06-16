@@ -1,0 +1,21 @@
+---
+name: sample-pertool
+description: >
+  明示 per-tool frontmatter を持つ synthetic skill (golden 固定用・role 不要)。
+  broker 省略ツール (focus_pane / new_tab) の drop と subset 保存を固定する。
+effort: low
+allowed-tools:
+  - Read
+  - Write
+  - mcp__renga-peers__send_message
+  - mcp__renga-peers__check_messages
+  - mcp__renga-peers__inspect_pane
+  - mcp__renga-peers__focus_pane
+  - mcp__renga-peers__new_tab
+---
+
+# sample-pertool
+
+{{> dual-system-header-long }}
+
+ペイン観測は `{{FQ}}inspect_pane`、報告は `{{FQ}}send_message` で行う。

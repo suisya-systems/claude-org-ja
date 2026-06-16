@@ -1,0 +1,34 @@
+{
+  "entries": [
+    {
+      "source": "../testdata/gen_skill_prose/sample_wildcard.md.in",
+      "output": "../testdata/gen_skill_prose/sample_wildcard.broker.golden.md",
+      "mode": "template",
+      "allowlist": "per-entry-rename",
+      "role": "secretary"
+    },
+    {
+      "source": "../testdata/gen_skill_prose/sample_pertool.md.in",
+      "output": "../testdata/gen_skill_prose/sample_pertool.broker.golden.md",
+      "mode": "template",
+      "allowlist": "per-entry-rename"
+    },
+    {
+      "source": "../testdata/gen_skill_prose/sample_codeliteral.md.in",
+      "output": "../testdata/gen_skill_prose/sample_codeliteral.broker.golden.md",
+      "mode": "code-literal",
+      "allowlist": "none"
+    },
+    {
+      "source": "../../.claude/skills/org-setup/references/permissions.md",
+      "mode": "identity-anchor",
+      "allowlist": "role-tier",
+      "role": "secretary"
+    }
+  ],
+  "exclude": [
+    "README.md",
+    "docs/design/renga-decoupling.md",
+    "docs/design/transport-switch-ux.md"
+  ]
+}

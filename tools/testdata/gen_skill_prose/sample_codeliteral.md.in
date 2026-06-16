@@ -1,0 +1,9 @@
+# sample-codeliteral
+
+Step 0: transport 判定。
+
+```bash
+echo "${ORG_TRANSPORT:-{{DEFAULT_TRANSPORT}}}"
+```
+
+既定値は `{{DEFAULT_TRANSPORT}}`（render 面トークン `{{SERVER}}` とは別系統）。
