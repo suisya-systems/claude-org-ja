@@ -325,6 +325,23 @@ def render_frontmatter_allowlist(
     assert_source_allowlist_normalized(src, env=env)
 
     if allowlist == ALLOWLIST_NONE:
+        # ``none`` は **MCP ツール allowlist を持たないファイル** (references / CLAUDE.md
+        # 等) 用。allowed-tools に MCP エントリがあるのに ``none`` を当てると、broker
+        # render が renga エントリを素通しして broker 面に ``mcp__renga-peers__*`` を
+        # 漏らし per-transport auth 分離 (§0.4) を破る。誤設定なので fail-closed する
+        # — MCP エントリ持ちは ``per-entry-rename`` / ``role-tier`` を使うべき。
+        mcp = [
+            e
+            for e in src
+            if isinstance(e, str) and _strip_inline_comment(e).startswith("mcp__")
+        ]
+        if mcp:
+            raise GenError(
+                "allowlist 'none' is for files without an MCP tool allowlist, but "
+                f"allowed-tools contains MCP entries {mcp}; use 'per-entry-rename' "
+                "(skill frontmatter) or 'role-tier' (permissions.md) so broker render "
+                "does not leak renga tools onto the broker surface (設計 §0.4)"
+            )
         return AllowlistRender(entries=src)
 
     if allowlist == ALLOWLIST_ROLE_TIER:

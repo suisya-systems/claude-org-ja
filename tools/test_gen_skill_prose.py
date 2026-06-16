@@ -242,6 +242,25 @@ class FrontmatterRenderTest(unittest.TestCase):
         with self.assertRaises(g.GenError):
             g.render_frontmatter_allowlist(["mcp__renga-peers__*"], "broker", allowlist="role-tier")
 
+    def test_allowlist_none_rejects_mcp_entries(self):
+        # Codex P2: allowlist=none で MCP エントリがあると broker 面に renga ツールが
+        # 漏れる。fail-closed (auth 分離保護, §0.4)。コメント付きも検出。
+        for entries in (
+            ["Read", "mcp__renga-peers__send_message"],
+            ["mcp__renga-peers__* # 機械置換先"],
+        ):
+            with self.subTest(entries=entries):
+                with self.assertRaises(g.GenError):
+                    g.render_frontmatter_allowlist(entries, "broker", allowlist="none")
+
+    def test_allowlist_none_passes_non_mcp_entries(self):
+        # MCP を含まない allowed-tools (Read / Bash のみ) は transport 非依存なので
+        # none で素通し可 (両面同一)。
+        entries = ["Read", "Bash(echo:*)"]
+        for flag in transport.TRANSPORTS:
+            r = g.render_frontmatter_allowlist(entries, flag, allowlist="none")
+            self.assertEqual(r.entries, entries)
+
 
 # ---------------------------------------------------------------------------
 # render_source オーケストレーション + golden 固定 (G0 の核)
