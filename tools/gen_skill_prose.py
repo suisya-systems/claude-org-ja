@@ -241,17 +241,6 @@ def _broker_tool_universe(*, env: Optional[Mapping[str, str]] = None) -> frozens
     return frozenset(universe)
 
 
-def _broker_tools_for(role: Optional[str], *, env: Optional[Mapping[str, str]] = None) -> frozenset:
-    """drop 判定に使う broker ツール集合。
-
-    role 指定時はそのロールの broker tier、role 不在時 (明示 per-tool only skill)
-    は全ロール和集合 (設計 §2.2 ※4: 明示エントリは role 非依存で決定的)。
-    """
-    if role is None:
-        return _broker_tool_universe(env=env)
-    return frozenset(transport.surface("broker", env=env).tools_for_role(role))
-
-
 @dataclass
 class AllowlistRender:
     """frontmatter allowlist の per-transport render 結果。"""
@@ -344,12 +333,24 @@ def _render_per_entry_broker(
     role: Optional[str],
     env: Optional[Mapping[str, str]],
 ) -> AllowlistRender:
-    """broker 面の per-entry リネーム (§2.2 ※3-※5)。subset を保存し ``*`` を出さない。"""
+    """broker 面の per-entry リネーム (§2.2 ※3-※5)。subset を保存し ``*`` を出さない。
+
+    keep set は 2 種に分かれる (設計 §4.1):
+
+    - **明示 per-tool エントリ**: broker tool **universe** (全ロール和集合) で存在検証。
+      role 非依存で決定的 (§4.1「明示 per-tool エントリのみの skill は role 不要」)。
+      broker が省くツール (``focus_pane`` / ``new_tab``) のみ drop し、role tier に
+      無いだけのツール (例: dispatcher skill が明示する secretary 限定 ``spawn_pane``)
+      は source の明示認可なので保存する (subset 保存)。
+    - **ワイルドカード ``*``**: ``broker.tools_for_role(role)`` で展開。``*`` は「その
+      role の全ツール」を意味するので broker の役割 tier に従う (role 必須, ※5)。
+    """
     renga_surf = transport.surface("renga", env=env)
     broker_surf = transport.surface("broker", env=env)
     renga_server = renga_surf.server
     broker_prefix = broker_surf.fq_prefix
-    keep_set = _broker_tools_for(role, env=env)
+    # 明示エントリは universe で存在検証 (role 非依存)。ワイルドカードのみ role tier。
+    explicit_keep = _broker_tool_universe(env=env)
 
     out: list = []
     dropped: list = []
@@ -381,14 +382,18 @@ def _render_per_entry_broker(
                     "wildcard 'mcp__renga-peers__*' requires a role for source-surface "
                     "expansion (設計 §2.2 ※5 / §4.1 (b))"
                 )
+            # ``*`` = その role の全ツール。broker の役割 tier に従って展開する。
+            wildcard_keep = frozenset(broker_surf.tools_for_role(role))
             for src_tool in sorted(renga_surf.tools_for_role(role)):
-                if src_tool in keep_set:
+                if src_tool in wildcard_keep:
                     _emit(f"{broker_prefix}{src_tool}")
                 else:
-                    dropped.append((src_tool, "omitted from broker surface"))
+                    dropped.append((src_tool, "not in broker role tier"))
         else:
-            # 明示 per-tool: 接頭辞リネーム + descriptor 検証 (※4)。
-            if tool in keep_set:
+            # 明示 per-tool: 接頭辞リネーム + descriptor 存在検証 (※4)。role 非依存の
+            # universe で判定 — broker が省くツール (focus_pane/new_tab) のみ drop し、
+            # role tier に無いだけの明示ツールは source の認可として保存する (subset 保存)。
+            if tool in explicit_keep:
                 _emit(f"{broker_prefix}{tool}")
             else:
                 dropped.append((tool, "omitted from broker surface"))
@@ -532,6 +537,17 @@ def render_source(
     if mode == MODE_IDENTITY_ANCHOR:
         # render 対象外 = 構造的に触らない (恒等射影で renga byte 不変を保証)。
         return RenderResult(text=source_text)
+
+    if mode == MODE_SURGICAL_FRAGMENT:
+        # surgical-fragment は token-body パイプラインから除外し、マーカー区画のみを
+        # 注入する非対称モード (renga-error-codes, 設計 §4.2(1))。full フラグメント
+        # 注入 + 全文トークン render をそのまま当てると、触るべきでない本文が書き換わる
+        # / 付随する {{UPPER}} 様テキストで例外になる。**G0 はスキーマ定義のみで実装は
+        # G3**（brief / 設計 §4.2 / §7.1）。誤レンダリングを避けるため明示的に拒否する。
+        raise GenError(
+            "mode 'surgical-fragment' is schema-defined but not implemented in G0 "
+            "(token-body 除外 + マーカー区画注入は G3 スコープ, 設計 §4.2(1) / §7.1)"
+        )
 
     fm = split_frontmatter(source_text)
 

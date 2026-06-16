@@ -159,6 +159,30 @@ class FrontmatterRenderTest(unittest.TestCase):
                 ["mcp__renga-peers__*"], "broker", role=None, allowlist="per-entry-rename"
             )
 
+    def test_explicit_entry_kept_against_universe_not_role_tier(self):
+        # Codex P2 修正: 明示 per-tool は role tier ではなく broker universe で判定。
+        # dispatcher skill が明示する secretary 限定 spawn_pane は broker に存在する
+        # ので保存する (source の明示認可 = subset 保存)。role tier で判定すると誤 drop。
+        entries = ["mcp__renga-peers__spawn_pane", "mcp__renga-peers__send_message"]
+        r = g.render_frontmatter_allowlist(
+            entries, "broker", role="dispatcher", allowlist="per-entry-rename"
+        )
+        self.assertIn("mcp__org-broker__spawn_pane", r.entries)  # 明示 → 保存
+        self.assertIn("mcp__org-broker__send_message", r.entries)
+        self.assertEqual(r.dropped, [])
+
+    def test_wildcard_follows_role_tier_not_universe(self):
+        # ワイルドカードは role tier に従う: worker の `*` は broker messaging 4 のみ
+        # (pane 制御は付かない = broker auth tiering を尊重)。
+        r = g.render_frontmatter_allowlist(
+            ["mcp__renga-peers__*"], "broker", role="worker", allowlist="per-entry-rename"
+        )
+        broker_worker = set(transport.surface("broker").tools_for_role("worker"))
+        prefix = transport.surface("broker").fq_prefix
+        got = {e[len(prefix):] for e in r.entries if e.startswith(prefix)}
+        self.assertEqual(got, broker_worker)
+        self.assertNotIn("mcp__org-broker__spawn_pane", r.entries)  # worker tier に無い
+
     def test_renga_face_is_identity(self):
         # renga (TEMPLATE_TRANSPORT) は恒等 = rollback byte 安定 (§3.2)。
         entries = ["Read", "mcp__renga-peers__*", "mcp__renga-peers__send_message"]
@@ -236,6 +260,13 @@ class GoldenRenderTest(unittest.TestCase):
         for flag in transport.TRANSPORTS:
             out = _render_fixture("sample_codeliteral", flag, mode="code-literal", allowlist="none")
             self.assertIn(f"${{ORG_TRANSPORT:-{_DEFAULT}}}", out)
+
+    def test_surgical_fragment_rejected_in_g0(self):
+        # Codex P2 修正: surgical-fragment は G0 ではスキーマ定義のみ。render は誤適用
+        # せず明示拒否 (実装は G3, 設計 §4.2(1) / §7.1)。
+        src = "# x\n\n本文に {{> surface-omissions }} と {{FQ}}send_message。\n"
+        with self.assertRaises(g.GenError):
+            g.render_source(src, "broker", fragments_dir=_FRAGMENTS, mode="surgical-fragment", allowlist="none")
 
     def test_identity_anchor_returns_source_unchanged(self):
         # identity-anchor は render 対象外 = 入力をそのまま返す (§4.2(2))。
