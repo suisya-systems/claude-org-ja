@@ -75,14 +75,19 @@ for _stream_name in ("stdout", "stderr", "stdin"):
     except (AttributeError, io.UnsupportedOperation):
         pass
 
-# ``完了`` / ``マージ済み`` are the two completion-phrasing acks added for
-# Issue #584. Both are guarded to fire ONLY on an affirmative assertion,
-# never on a negation/question/noun, so the retro gate keeps its safe-side
-# "completion report not yet received" judgement (a false positive here
-# would wrongly pass the gate; a false negative merely keeps polling).
+# Every receipt/completion-phrasing ack token — ``届い`` / ``受領`` /
+# ``受け取`` (the receipt tokens) and ``完了`` / ``マージ済み`` (the
+# completion-phrasing tokens added for Issue #584) — is guarded to fire
+# ONLY on an affirmative assertion, never on a negation/question/noun, so
+# the retro gate keeps its safe-side "completion report not yet received"
+# judgement (a false positive here would wrongly pass the gate; a false
+# negative merely keeps polling). The receipt tokens were originally bare
+# (no guard), which let a negative reply like "完了報告はまだ届いており
+# ません" wrongly ack on the unguarded ``届い`` — Issue #594 fixes that by
+# extending the same ``_NEG_Q`` guard to all of them.
 #
-# Rather than enumerate every negation/question phrasing, BOTH tokens
-# share one CLAUSE-SCOPED negative lookahead (``_NEG_Q``): the token is
+# Rather than enumerate every negation/question phrasing, EVERY token
+# shares one CLAUSE-SCOPED negative lookahead (``_NEG_Q``): the token is
 # rejected if a question 助詞 ``か`` or a negation (``ない`` / ``ませ``)
 # appears before the next sentence terminator (``。．！？!?`` / newline).
 # ``_CLAUSE`` is that "rest of the current clause" character class — note
@@ -112,16 +117,21 @@ for _stream_name in ("stdout", "stderr", "stdin"):
 #     問題あれば連絡します", Issue #591 false-negative fix). A clause-terminal
 #     何か (何か？, optionally with trailing spaces before the terminator) is
 #     re-rejected as a question via ``何か(?=[ \t　]*(?:[。．！？!?\n]|$))``.
-# These are deliberately stricter than the bare ``受領``/``届い`` tokens
-# above because the completion wording collides with the gate's own
-# ``完了報告`` prompt noun; erring toward extra polling is the safe side.
+# The completion-phrasing tokens are additionally strict (未-prefix /
+# 完了報告-noun exclusions) because the completion wording collides with
+# the gate's own ``完了報告`` prompt noun; the receipt tokens carry the
+# same clause-scoped ``_NEG_Q`` guard so a negated 届い/受領/受け取 (e.g.
+# "まだ受領しておりません") also keeps polling. Erring toward extra polling
+# is the safe side for all of them.
 _CLAUSE = r"[^。．！？!?\n]*"
 _NEG_Q = (
     r"(?!" + _CLAUSE +
     r"(?:(?<!何)か|何か(?=[ \t　]*(?:[。．！？!?\n]|$))|ない|ませ))"
 )
 DEFAULT_ACK_PATTERN = (
-    r"(届[いきけくこ]|受領|受け取"
+    r"(届[いきけくこ]" + _NEG_Q +
+    r"|受領" + _NEG_Q +
+    r"|受け取" + _NEG_Q +
     r"|マージ済み" + _NEG_Q +
     r"|(?<!未)完了(?:しました|しています|した(?![いくな])|です|でした|済)" + _NEG_Q +
     r"|ack|received|got it)"
