@@ -1,0 +1,1 @@
+- `--target-largest` / `--direction auto` 等の renga 側自動 target 選出 (現状はディスパッチャー側で `list_panes` rect から算出。upstream に移譲できれば balanced split ロジックを MCP 側に畳める)
