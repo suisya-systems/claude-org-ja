@@ -4,6 +4,8 @@
 
 > **スコープ注記（Phase 0 = 計画のみ）**: Phase 0 では prose 33 ファイル・既定値の実体（runtime / ja コード）・contract のいずれも変更しない。**成果物は本ファイル（`notes/broker-promotion-plan-586.md`）の新規作成 1 件のみ**。`.claude/**` には触れない。実体の反転は Phase 1 以降。push / `gh pr create` / merge は全フェーズで窓口の人間承認後に限る（subagent / worker の自動 push 禁止）。
 
+> **時点性注記（Refs #586 #604、2026-06-17 追加 — planning snapshot）**: 本ファイルは 2026-06-15 時点の **Phase 0 計画スナップショット**である。下記 §1 の「反転後 canonical 文言テンプレ」は当初構想した *全面反転後* の目標状態を示すが、Epic #586 の実際の完了は **frame C の二フレームモデル**で行われた — すなわち **コード定数フレーム**（`DEFAULT_TRANSPORT` = 既定 broker、runtime 0.1.28 で flip 済み）と **運用フレーム**（broker dogfood が Epic #6 Issue G で活性化するまで運用上の既定経路は renga）を併記し、手保守 prose は「既定 renga（運用フレーム）」を保ったまま二フレーム注記で整合した（§1 テンプレの全面 prose 置換は適用していない）。本ファイルは当時の計画記録として据え置く。
+
 - **関連 Issue**: Refs #586
 - **生成日**: 2026-06-15
 - **既定解決 SoT**: `claude_org_runtime.transport`（`DEFAULT_TRANSPORT`、runtime 0.1.27 時点で `"renga"`）。ja は [`tools/transport.py`](../tools/transport.py) の `resolve()` が runtime の `resolve_transport()` へ委譲して consume するのみ（ja はハードコードしない単一 SoT 設計）。
