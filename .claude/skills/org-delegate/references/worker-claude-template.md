@@ -82,6 +82,17 @@ probe / 検証 / fuzzing 系タスク（sandbox 探索・hook 動作確認・フ
 
 背景: 過去 probe タスクで `cat ~/.config/gh/hosts.yml` の実 oauth_token を dispatcher stdout に露出した事故あり。probe 系タスクは「読み取りそのもの」が攻撃面になるため、testbed への切替を実行前ゲートとして強制する。
 
+## 生成物 prose（生成元あり）の編集タスク
+
+編集対象に `.dispatcher/` または `.claude/skills/` 配下の prose ファイル（`.md` 等）を含む場合、**そのファイルが生成物（生成元から自動生成される output）かどうかを着手時に実測してから編集する**。生成物本体を直接編集すると、次回の生成で上書きされ変更が消える（drift）。
+
+実装の目安:
+1. **着手時に生成物か実測**: `grep <編集対象ファイルのパス> tools/skill_src/manifest.json` を実行する。manifest の `output` にヒットすればそのファイルは生成物（生成元あり）。ヒットしなければ手保守ファイルなので直接編集してよい
+2. **生成物なら生成元を編集**: ヒットした場合は対応する `source`（`.md.in` / fragment 側）を編集する。生成物本体（`output` 側の `.md`）は直接編集しない
+3. **drift ゼロを確認**: 編集後に `python3 tools/gen_skill_prose.py --check` を実行し、生成元と生成物が一致（drift ゼロ）していることを確認してから完了報告する
+
+背景: 過去に生成物 prose を直接編集して生成元との drift を生む事故を複数回踏んでいる。生成元から render し直して `--check` で照合することで再発を防ぐ。
+
 ## Codex セルフレビュー手順
 
 派遣指示に**必ず含まれる「検証深度」行**（`full` または `minimal`）に従うこと。指示に値が無い・不明瞭な場合は勝手に決めず窓口（`secretary`）に確認すること。
