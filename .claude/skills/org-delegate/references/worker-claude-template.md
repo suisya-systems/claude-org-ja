@@ -89,7 +89,7 @@ probe / 検証 / fuzzing 系タスク（sandbox 探索・hook 動作確認・フ
 実装の目安:
 1. **着手時に生成物か実測**: `grep <編集対象ファイルのパス> tools/skill_src/manifest.json` を実行する。manifest の `output` にヒットすればそのファイルは生成物（生成元あり）。ヒットしなければ手保守ファイルなので直接編集してよい
 2. **生成物なら生成元を編集**: ヒットした場合は対応する `source`（`.md.in` / fragment 側）を編集する。生成物本体（`output` 側の `.md`）は直接編集しない
-3. **drift ゼロを確認**: 編集後に `python3 tools/gen_skill_prose.py --check` を実行し、生成元と生成物が一致（drift ゼロ）していることを確認してから完了報告する
+3. **drift ゼロを確認**: 編集後に `python3 tools/gen_skill_prose.py --manifest tools/skill_src/manifest.json --check` を実行し、生成元と生成物が一致（drift ゼロ、exit 0）していることを確認してから完了報告する（`--manifest` を省くと「nothing to do」で何も検査せず exit 0 になり、ゲートが no-op になる点に注意）
 
 背景: 過去に生成物 prose を直接編集して生成元との drift を生む事故を複数回踏んでいる。生成元から render し直して `--check` で照合することで再発を防ぐ。
 
