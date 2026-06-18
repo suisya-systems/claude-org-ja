@@ -26,6 +26,12 @@ core-harness>=0.3.2,<0.4
 # PyPI via Trusted Publisher; pinned to the 0.1.x range. 0.x bumps may be
 # breaking per the runtime's compatibility policy, so widen this pin
 # deliberately when adopting a new minor.
+# Floor bumped to 0.1.29 for the runtime 0.1.29 BREAKING rename
+# (claude-org-spike->claude-org-broker socket / SPIKE_SOCKET->BROKER_SOCKET /
+# SPIKE_BACKEND->ORG_BACKEND, session prefix spike-{pid}-{n}->claude-org-broker-{pid}-{n}).
+# 0.1.28 still builds the old-name socket, so it is incompatible after the hard
+# cut and must be excluded from the floor (upper bound stays <0.2). The earlier
+# 0.1.28 floor (Epic #586 default-transport flip) is subsumed below.
 # Floor bumped to 0.1.28 to activate the Epic #586 default-transport flip:
 # 0.1.28 ships DEFAULT_TRANSPORT=broker, so with ORG_TRANSPORT unset the ja
 # default flips renga->broker (renga retained as the opt-in fallback). The
@@ -41,7 +47,7 @@ core-harness>=0.3.2,<0.4
 # (transport surface descriptor claude_org_runtime.transport consumed by
 # tools/transport.py — Epic #6 next-stage D / ja#513) are subsumed by 0.1.28.
 # Keep in sync with pyproject.toml.
-claude-org-runtime>=0.1.28,<0.2
+claude-org-runtime>=0.1.29,<0.2
 
 # tools/gen_worker_brief.py reads TOML config. tomllib is stdlib in 3.11+,
 # but ja still supports 3.10 (CLAUDE.local.md template recommends 3.10).
