@@ -252,6 +252,40 @@ if ((Test-Path -LiteralPath $pyprojectFile) -and $pyCmd) {
 
 # --- Done ----------------------------------------------------------------
 
+# Pick the launch step. `org up` (broker, the default transport since Epic
+# #586 Phase 2) is the primary path, but a pinned CLAUDE_ORG_REF may clone a
+# ref whose runtime predates that subcommand; for those the renga launcher is
+# the instruction that actually works. Only advertise `org up` when the
+# installed runtime can provide it (probe via the detected python). Under
+# -DryRun nothing was installed, so keep the forward (broker) default.
+# Build the broker launch command from the detected interpreter so the
+# printed step matches whatever python the runtime was installed/verified
+# with (e.g. `python` on a box without the `py` launcher). Fall back to the
+# documented `py -3` Windows default when no interpreter was detected.
+$pyInvoke = if ($pyCmd) { ($pyCmd -join ' ') } else { 'py -3' }
+$launchStep = "$pyInvoke -m claude_org_runtime.cli org up                       # launch the org (broker daemon + Secretary pane)"
+$launchNote = @"
+
+To fall back to renga, set ORG_TRANSPORT=renga and run 'renga --layout ops'
+instead (see docs/getting-started.md).
+"@
+if (-not $DryRun) {
+    $orgUpOk = $false
+    if ($pyCmd) {
+        $rest = if ($pyCmd.Length -gt 1) { $pyCmd[1..($pyCmd.Length - 1)] } else { @() }
+        try {
+            & $pyCmd[0] @($rest + @('-m', 'claude_org_runtime.cli', 'org', 'up', '--help')) > $null 2>&1
+            if ($LASTEXITCODE -eq 0) { $orgUpOk = $true }
+        } catch {
+            # runtime not importable / lacks the org subcommand; keep broker off
+        }
+    }
+    if (-not $orgUpOk) {
+        $launchStep = "renga --layout ops                                           # launch the Secretary pane (this ref predates 'claude-org-runtime org up')"
+        $launchNote = ''
+    }
+}
+
 @"
 
 Done. Next steps:
@@ -259,7 +293,8 @@ Done. Next steps:
   cd $Dir
   bash scripts/install-hooks.sh                                # enable pre-commit secret scanner (run from Git Bash / WSL)
   py -3 tools/org_setup_prune.py --user-common-sandbox         # required after main pull (Issue #429 Task B/C + Issue #433 denyWrite)
-  renga --layout ops                                           # launch the Secretary pane
+  $launchStep
+$launchNote
 
 Inside the Secretary's Claude Code pane, run:
 

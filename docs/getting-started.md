@@ -14,29 +14,32 @@ claude-orgの使い方ガイド。
 |---|---|---|---|
 | **`git`** | 2.x 系の任意の安定版 | リポジトリ取得（`git clone`）・コミット・ワーカー作業ディレクトリ管理 | [git-scm.com/downloads](https://git-scm.com/downloads) |
 | **GitHub CLI (`gh`)** | 2.x 系の任意の安定版 | プルリクエスト作成・Issue 操作・CI 監視（`gh pr checks --watch`） | [cli.github.com](https://cli.github.com/) |
-| **Node.js** | v18+ | `renga` を npm 経由で導入するためのランタイム | [nodejs.org](https://nodejs.org/) |
-| **Python** | 3.10+ | `core-harness` / `claude-org-runtime` の `pip install -e .` 実行（`pyproject.toml` の `requires-python` に整合） | [python.org/downloads](https://www.python.org/downloads/) |
+| **Node.js** | v18+ | フォールバック輸送層 `renga` を npm 経由で導入するためのランタイム | [nodejs.org](https://nodejs.org/) |
+| **Python** | 3.10+ | `core-harness` / `claude-org-runtime` の `pip install -e .` 実行（既定 broker 起動 `claude-org-runtime org up` の本体。`pyproject.toml` の `requires-python` に整合） | [python.org/downloads](https://www.python.org/downloads/) |
 | **`jq`** | 1.6+ | `.state/` JSON / `gh api` 出力の整形・抽出（フック内・ツール内で使用） | [jqlang.org/download](https://jqlang.org/download/) |
 | **Claude Code CLI (`claude`)** | 最新安定版 | 各ロールペイン本体。初回ログインも `claude` 起動時に行う | [claude.ai/code](https://claude.ai/code) |
-| **`renga`** | 0.18.0+ | Layer 3 の端末多重化器 + `renga-peers` MCP サーバー（`npm install -g @suisya-systems/renga@0.18.0`） | [github.com/suisya-systems/renga](https://github.com/suisya-systems/renga) |
+| **`renga`** | 0.18.0+ | **フォールバック輸送層**。Layer 3 の端末多重化器 + `renga-peers` MCP サーバー（`npm install -g @suisya-systems/renga@0.18.0`）。既定 broker から切り戻すとき使用 | [github.com/suisya-systems/renga](https://github.com/suisya-systems/renga) |
 
 加えて以下の Claude Code 設定が必要:
 
-- **renga-peers MCP** — 同タブ内インスタンス間通信とペイン操作（`renga mcp install` で登録）
+- **renga-peers MCP（切り戻し用）** — renga フォールバック時の同タブ内インスタンス間通信とペイン操作（`renga mcp install` で登録）。既定 broker では `claude-org-runtime org up` が窓口の MCP 設定（`org-broker`）を自動配布する
 - **GitHub CLI 認証** — `gh auth status` が Logged in を返す状態
+
+> **起動の輸送層 — 既定 broker / フォールバック renga**: 本ガイドの起動主経路は `claude-org-runtime org up`（broker daemon を確保し窓口 TUI を起動）。broker は runtime 0.1.28（Epic #586 Phase 2）以降の既定 transport で、`renga` は **削除されず opt-in のフォールバック（切り戻し）として常時利用可能**（`ORG_TRANSPORT=renga` を設定して `renga --layout ops`）。このためインストーラは `renga` / Node.js も前提チェックに残している。切り戻しの具体手順は後述の「起動 transport の切り戻し（renga フォールバック）」節を参照。
 
 ### インストール
 
-依存ツール（`git` / `claude` / `renga` / `gh` / `jq`）が揃っていれば、ワンライナーでクローン + `renga mcp install` までを一括実行できる。
+依存ツール（`git` / `claude` / `renga` / `gh` / `jq`）が揃っていれば、ワンライナーでクローン + Python 依存（`claude-org-runtime` / `core-harness`）の導入 + 切り戻し用 `renga mcp install` までを一括実行できる。
 
 **macOS / Linux（bash）**:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/suisya-systems/claude-org-ja/main/scripts/install.sh | bash
 cd claude-org-ja
+source .venv/bin/activate                               # claude-org-runtime を venv から使う
 bash scripts/install-hooks.sh
 python tools/org_setup_prune.py --user-common-sandbox   # main pull 後に 1 回必須 (Issue #429 Task B/C + Issue #433 denyWrite)
-renga --layout ops
+claude-org-runtime org up                               # broker daemon を確保し窓口（Secretary）ペインを起動
 ```
 
 **Windows（PowerShell 7+）**:
@@ -46,7 +49,7 @@ iwr -useb https://raw.githubusercontent.com/suisya-systems/claude-org-ja/main/sc
 cd claude-org-ja
 bash scripts/install-hooks.sh                            # Git Bash / WSL 上で実行
 py -3 tools/org_setup_prune.py --user-common-sandbox     # main pull 後に 1 回必須 (Issue #429 Task B/C + Issue #433 denyWrite)
-renga --layout ops
+py -3 -m claude_org_runtime.cli org up                   # broker daemon を確保し窓口（Secretary）ペインを起動
 ```
 
 スクリプトは前提コマンドの導入有無を確認し、未導入があれば導入手順を案内して終了する（自動インストールはしない）。
@@ -70,17 +73,19 @@ pwsh -NoProfile -File $env:TEMP\install.ps1 -Dir my-claude-org
 ```bash
 git clone https://github.com/suisya-systems/claude-org-ja.git
 cd claude-org-ja
-renga mcp install                                            # 初回のみ。renga-peers MCP を user-scope 登録
+python -m venv .venv && source .venv/bin/activate            # Python venv を作成・有効化
+pip install -e .                                             # claude-org-runtime（org up）+ core-harness を導入
+renga mcp install                                            # 切り戻し用 renga-peers MCP を user-scope 登録（renga フォールバック時に使用）
 bash scripts/install-hooks.sh                                # pre-commit secret scanner を有効化
 python tools/org_setup_prune.py --user-common-sandbox        # main pull 後に 1 回必須 (Issue #429 Task B/C + Issue #433 denyWrite)
-renga --layout ops
+claude-org-runtime org up                                    # broker daemon を確保し窓口（Secretary）ペインを起動
 ```
 
-`renga-layouts/ops.toml` の定義に従って窓口 (Secretary) ペインが立ち上がる。
+`claude-org-runtime org up` が broker daemon を確保（健全なら再利用、無ければ起動）し、窓口 (Secretary) ペインを起動する（`--state-dir` 既定 `.state/broker`、`--root-cwd` 既定＝実行ディレクトリ、`--name` 既定 `secretary`）。Windows で console script が PATH に無い場合は等価の `py -3 -m claude_org_runtime.cli org up` を使う。停止は `claude-org-runtime org down`。
 窓口の Claude Code が立ち上がったら、**順に以下を実行する**:
 
-1. `/org-setup` — ロール別 `settings.local.json`（窓口・ディスパッチャー・キュレーター・ワーカー）と必須 hook を配置。**初回のみ必須**。未実行だと renga-peers MCP / git / gh で大量の許可プロンプトが出る。
-2. `/org-start` — 組織を起動。ディスパッチャーが同一タブ内に派生する（キュレーターは知見が溜まったときにオンデマンドで一時起動される）。
+1. `/org-setup` — ロール別 `settings.local.json`（窓口・ディスパッチャー・キュレーター・ワーカー）と必須 hook を配置。**初回のみ必須**。未実行だと broker（renga フォールバック時は renga-peers）MCP / git / gh で大量の許可プロンプトが出る。
+2. `/org-start` — 組織を起動。ディスパッチャーが派生する（既定 broker では独立した detached ペイン、renga フォールバックでは同一タブ内 split として。走行中のペインを read-only で覗く attach 導線は [`docs/operations/broker-dogfood-runbook.md`](operations/broker-dogfood-runbook.md) §8 を参照）。キュレーターは知見が溜まったときにオンデマンドで一時起動される。
 
 `/org-setup` は **additive-only**（不足分を追加するだけで既存を消さない）。drift を baseline に戻したい場合は [`.claude/skills/org-setup/references/permissions.md`](../.claude/skills/org-setup/references/permissions.md) のロール別サンプル JSON で `settings.local.json` を手動置換する。
 
@@ -94,9 +99,9 @@ renga --layout ops
 > python tools/org_setup_prune.py --user-common-sandbox
 > ```
 
-### 互換性プリフライト（任意、推奨）
+### 互換性プリフライト（renga フォールバック使用時、任意）
 
-`/org-start` を実行する前に、renga のバージョンと MCP ツール surface が claude-org の要件を満たすか検証できる:
+`renga` 経路へ切り戻す場合に限り、`/org-start` を実行する前に renga のバージョンと MCP ツール surface が claude-org の要件を満たすか検証できる（既定の broker 経路では不要）:
 
 ```bash
 py -3 tools/check_renga_compat.py            # Windows
@@ -113,7 +118,19 @@ python3 tools/check_renga_compat.py          # macOS / Linux
 py -3 tools/check_renga_compat.py --json
 ```
 
-このスクリプトは live renga セッションを必要としない（静的 + MCP stdio probe のみ）ので、`renga --layout ops` の前にも後にも実行できる。
+このスクリプトは live renga セッションを必要としない（静的 + MCP stdio probe のみ）ので、renga フォールバック起動（`renga --layout ops`）の前後どちらでも実行できる。
+
+### 起動 transport の切り戻し（renga フォールバック）
+
+既定の broker 経路から `renga` 経路へ切り戻すには、輸送層 flag を切り替えてから renga の launcher で起動する。`renga` は削除されず opt-in のフォールバックとして常時利用可能（切り戻しの安全装置）。
+
+```bash
+export ORG_TRANSPORT=renga                  # 次に spawn されるペインから renga に向く
+python tools/org_setup_prune.py --all       # ロール別 settings.local.json を renga allowlist へ再生成（事前に --dry-run で差分確認）
+renga --layout ops                          # renga の窓口（Secretary）ペインを起動（org up の代わり）
+```
+
+起動後は broker 経路と同じく窓口 Claude Code で（初回のみ）`/org-setup` → `/org-start` を実行する。実行中の broker ペインの respawn・broker daemon の停止・旧 token / queue の破棄まで含む完全な切り戻し 5 条件は [`docs/operations/broker-dogfood-runbook.md`](operations/broker-dogfood-runbook.md) §5、輸送両系の窓口運用差は [`CLAUDE.md`](../CLAUDE.md)「輸送層（transport）両系」を参照。
 
 ---
 
@@ -121,9 +138,9 @@ py -3 tools/check_renga_compat.py --json
 
 ### 起動する
 
-初回 clone 後は、上の「インストール」節に従って `/org-setup` → `/org-start` の順で 1 回だけ実行する（`/org-setup` 未実行だと許可プロンプトが多発する）。
+初回 clone 後は、上の「インストール」節に従って `claude-org-runtime org up` で窓口ペインを起動し、Claude Code で `/org-setup` → `/org-start` の順で 1 回だけ実行する（`/org-setup` 未実行だと許可プロンプトが多発する）。
 
-2 回目以降は `renga --layout ops` で窓口ペインを開き、Claude Code で `/org-start` を実行するだけでよい。
+2 回目以降は `claude-org-runtime org up` で窓口ペインを開き、Claude Code で `/org-start` を実行するだけでよい（`org up` は健全な broker daemon があれば再利用し、無ければ起動する）。
 前回の状態があれば報告され、ディスパッチャー（作業割り当て担当）が自動で起動する。キュレーター（知見整理担当）は常駐せず、知見が溜まったときに自動で一時起動される。
 
 ```
@@ -184,11 +201,11 @@ py -3 tools/check_renga_compat.py --json
 窓口:   組織を中断しました。状態は保存済みです。
 ```
 
-端末を安全に閉じてよい。
+端末を安全に閉じてよい。broker daemon はすぐ再開できるよう走り続ける。daemon ごと完全に停止したいときは `claude-org-runtime org down` を実行する（renga フォールバック時は不要）。
 
 ### 再開する
 
-次に本リポジトリのディレクトリで `renga --layout ops` を起動して窓口の Claude Code に入ると、自動的に前回の状態を報告する。
+次に本リポジトリのディレクトリで `claude-org-runtime org up`（renga フォールバック時は `renga --layout ops`）を起動して窓口の Claude Code に入ると、自動的に前回の状態を報告する。
 
 ```
 窓口:   前回の状態（4/5 18:30に中断）:
@@ -206,7 +223,7 @@ py -3 tools/check_renga_compat.py --json
 
 ### 起動時に大量の許可プロンプトが出る
 
-**症状**: 窓口・ディスパッチャー・ワーカーのいずれかで `mcp__renga-peers__*` / `git` / `gh` 系ツール呼び出しのたびに許可ダイアログが立つ。
+**症状**: 窓口・ディスパッチャー・ワーカーのいずれかで `mcp__org-broker__*`（renga フォールバック時は `mcp__renga-peers__*`） / `git` / `gh` 系ツール呼び出しのたびに許可ダイアログが立つ。
 
 **診断**: まず該当ロールの `settings.local.json` の状態を確認する。
 
