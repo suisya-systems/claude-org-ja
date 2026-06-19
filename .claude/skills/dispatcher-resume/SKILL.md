@@ -51,6 +51,60 @@ allowed-tools:
 >
 > `new_tab` / `focus_pane` は broker surface に**無い**（意図的除外）。契約面の正本は [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) Surface 8 + push-primary amendment（broker push 一次が **既定の契約**、pull は fallback として retain）。**opt-in `renga` は削除せず常時有効な切戻しの安全装置**として維持する。broker 実走（dogfood）は Epic #6 Issue G スコープで本ファイルの既定運用経路ではない（**二フレーム注記（Refs #604）**: ここの「既定 `broker`」は**コード既定**（`tools/transport.py: DEFAULT_TRANSPORT`、生成面はこれで render）。**運用既定**は broker dogfood が Epic #6 Issue G まで未活性のため `renga` で、両者は指す対象が異なり矛盾しない。総説は root [`CLAUDE.md`](../../../CLAUDE.md)。）
 
+## Step 0 の前: 残存 loop 予約 / stale 再発火ガード（重複起動の早期遮断）
+
+`/dispatcher-resume` は **handover を 1 回だけ消費する one-shot** である（Step 7 で
+`.state/dispatcher-handover.md` を `.consumed.md` に rename する）。だが Step 5 で起動する
+`/loop 3m` の予約が、過去のバグや手動操作で `/dispatcher-resume` 自身を反復対象に握って
+いると、監視サイクルのたびに本 skill が再発火する。この **stale 再発火 / 重複起動** を
+Step 0 に入る前に遮断する（恒久対策の経緯は
+[`knowledge/raw/2026-06-19-dispatcher-resume-loop-recursion.md`](../../../knowledge/raw/2026-06-19-dispatcher-resume-loop-recursion.md)）。
+
+1. live / consumed の handover 状態を **存在ベース**で判定する（`now` との時刻比較に
+   依存しない。cold-start vs resume の分岐が live `.md` のみを対象とする
+   `.dispatcher/CLAUDE.md` の規約と揃える）:
+   ```bash
+   python3 -c "
+   import os
+   md = '../.state/dispatcher-handover.md'
+   cm = '../.state/dispatcher-handover.consumed.md'
+   if os.path.exists(md):
+       print('resume')            # 正規の resume: live handover あり
+   elif os.path.exists(cm):
+       print('already_consumed')  # 既に消費済み: 残存 loop / 重複起動の疑い
+   else:
+       print('no_handover')       # handover が一度も無い: 真の cold-start 候補
+   "
+   ```
+2. **`already_consumed`（live `.md` なし・`.consumed.md` あり）**: live handover が無い
+   resume 起動だが `.consumed.md` が残っている。これは「(i) 直前に成功した resume の残存
+   loop 予約による再発火 / 重複起動（組織は健全・監視ループ稼働中）」か「(ii) 組織が止まって
+   いて本来 cold-start が要る状況での誤起動」のいずれか。**存在判定だけで no-op に倒すと (ii)
+   の cold-start 案内を恒久的に隠す**ので、監視対象が実際に live かを観測して分岐する:
+   - `mcp__org-broker__list_panes` / `mcp__org-broker__list_peers` で **監視対象が live か**を確認する: active な
+     worker ペイン（`role == "worker"`）が 1 つ以上ある、または
+     `.state/dispatcher/curate-inflight.json` が存在する（= 監視ループが回っているべき状態）。
+   - **(i) 監視対象が live = stale 再発火 / 重複起動**: 組織は健全で cold-start 不要。
+     `DISPATCHER_RESUME_FAILED` を **送らず**（誤った `/org-start` 案内を出さない）、
+     Step 1 以降に進まず早期 exit する。**残存予約を空のまま放置しない**: 監視 `/loop` が
+     `/dispatcher-resume` を反復対象に握っている兆候があれば、Step 5 の monitoring 専用
+     ディレクティブ（INVARIANT(loop-prompt) 準拠の `/loop 3m ...`）で loop を明示的に再 arm
+     して予約を上書きする（重複起動はしない＝単一 loop に収束）。既に monitoring ディレクティブ
+     で回っていれば当該サイクルは **no-op heartbeat**（何も出力しない）。どちらの分岐でも予約を
+     skill 自身に握らせたまま放置しない。再発火の事実だけ journal に残す:
+     ```bash
+     bash ../tools/journal_append.sh anomaly_observed \
+         source=dispatcher_resume worker=dispatcher kind=stale_loop_refire confidence=n/a \
+         note=handover_already_consumed
+     ```
+   - **(ii) 監視対象が無い = 本来 cold-start が要る誤起動**: stale 再発火ではない。no-op に
+     倒さず **Step 1 の「handover ファイルなし」分岐へフォールスルーし `DISPATCHER_RESUME_FAILED`
+     → cold-start 案内を出す**（cold-start 案内を隠さない）。
+3. **`resume`（live `.md` あり）**: 通常どおり Step 0 へ進む。
+4. **`no_handover`（live `.md` も `.consumed.md` も無し）**: 通常どおり Step 0 → Step 1 へ
+   進み、Step 1 の「handover ファイルなし」分岐で `DISPATCHER_RESUME_FAILED` → cold-start
+   案内に落ちる。
+
 ## Step 0: 自分の identity を確認する
 
 1. `mcp__org-broker__set_summary` で「Dispatcher: 監視（resumed）」をセット
@@ -159,10 +213,21 @@ secretary に **報告して** 判断を仰ぐ（勝手に再 spawn / status 変
    active worker dirs が非空、**または `curate-inflight.json` が存在する**
    （1 の再生成分を含む。オンデマンド curate の完了監視が引き継ぎ対象。
    `.dispatcher/references/worker-monitoring.md` Step 5.3）のいずれかを満たせば
-   `/loop 3m` で worker monitoring を再開する:
+   下記の monitoring 専用ディレクティブを渡して `/loop 3m` で worker monitoring を
+   再開する（**prompt を省略しない**）:
+
+<!--
+INVARIANT(loop-prompt): `/loop` の prompt 引数に skill 自身（`/dispatcher-resume`）や
+他のスラッシュコマンドを渡さない。skill 実行ターン内で prompt を省略して `/loop` を
+起動すると、反復対象としてアクティブな slash command が捕捉され、本 skill が 3 分ごとに
+自己再帰する（2026-06-19 incident。詳細は
+knowledge/raw/2026-06-19-dispatcher-resume-loop-recursion.md）。必ず monitoring 専用の
+自然文ディレクティブを明示的に渡すこと。tests/test_dispatcher_resume_loop_invariant.py が
+この不変条件を pin する。
+-->
 
 ```
-/loop 3m
+/loop 3m references/worker-monitoring.md（ディスパッチャー cwd .dispatcher/ 基準）の「監視ループ 1 サイクル」を 1 回だけ実行する（poll_events → check_messages → list_panes → inspect_pane → stall / relay-gap / pane_output 評価）。anomaly / stall / relay-gap / pane_exited を検出したサイクルのみ secretary へ通知し、検出が無ければ何も出力しない（毎サイクルの状況サマリや自然言語の状況描写を書かない）。cadence は 3 分以上を保ち短縮しない。スラッシュコマンドや本 skill を反復対象にしない。
 ```
 
 - 監視ループの 1 サイクル目で `mcp__org-broker__poll_events` は
@@ -231,3 +296,6 @@ bash ../tools/journal_append.sh dispatcher_resumed \
 - handover の内容と state.db の現状が食い違うときに、勝手にどちらかへ寄せる
   （必ず secretary に報告して判断を仰ぐ）
 - atomic 更新を分割して書く（必ず `StateWriter.transaction()` 1 ブロックで完結させる）
+- Step 5 の `/loop 3m` を prompt 省略で起動する / `/dispatcher-resume`（本 skill 自身）や
+  他のスラッシュコマンドを `/loop` の反復対象に渡す（skill が 3 分ごとに自己再帰する。
+  必ず monitoring 専用ディレクティブを明示的に渡す。Step 5 の INVARIANT(loop-prompt) 参照）
