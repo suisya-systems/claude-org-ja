@@ -87,6 +87,7 @@ claude-org-runtime org up                                # 窓口（Secretary）
 - [`docs/non-goals.md`](docs/non-goals.md) — 意図的に持たない機能
 - [`docs/oss-comparison.md`](docs/oss-comparison.md) — 関連プロジェクトとの比較
 - [`docs/verification.md`](docs/verification.md) — テストと安全性（攻撃ベクトル × 防御層）
+- [`docs/operations/dispatcher-view.md`](docs/operations/dispatcher-view.md) — 窓口の隣で dispatcher を常時可視化する手順（WezTerm / tmux）
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — コントリビュートガイド
 
 困ったときは [Issues](https://github.com/suisya-systems/claude-org-ja/issues) へ。
