@@ -459,6 +459,61 @@ if [[ "$USED_VENV" == "1" ]]; then
   VENV_HINT="
   source .venv/bin/activate       # activate Python venv (this terminal)"
 fi
+
+# Pick the launch step. `claude-org-runtime org up` (broker, the default
+# transport since Epic #586 Phase 2) is the primary path, but a pinned
+# CLAUDE_ORG_REF can clone a ref whose runtime predates that subcommand;
+# for those the renga launcher is the instruction that actually works.
+# Probe the installed runtime and fall back when `org up` is missing.
+# Under --dry-run nothing was installed, so keep the forward (broker)
+# default rather than probing a possibly-stale system runtime.
+#
+# Build the broker command from the install location: the venv path exposes
+# the `claude-org-runtime` console script (on PATH after the activate step
+# above), while the Windows / Git-Bash --user path may not, so advertise the
+# module form via the detected interpreter there (matches what the probe
+# verifies).
+if [[ "$USED_VENV" == "1" ]]; then
+  BROKER_LAUNCH="claude-org-runtime org up"
+elif [[ -n "$PY" ]]; then
+  BROKER_LAUNCH="$PY${PY_LAUNCHER:+ $PY_LAUNCHER} -m claude_org_runtime.cli org up"
+else
+  BROKER_LAUNCH="claude-org-runtime org up"
+fi
+LAUNCH_STEP="$BROKER_LAUNCH                                    # launch the org (broker daemon + Secretary pane)"
+LAUNCH_NOTE="
+To fall back to renga, set ORG_TRANSPORT=renga and run 'renga --layout ops'
+instead (see docs/getting-started.md)."
+if [[ "$DRY_RUN" != "1" ]]; then
+  # Real install: only advertise `org up` if the installed runtime can
+  # actually provide it. Otherwise (legacy pinned ref, or no runtime
+  # because Python was missing) print the renga launcher, which works.
+  if [[ ! -f "$PYPROJECT_FILE" && ! -f "$REQ_FILE" ]]; then
+    # Legacy checkout that predates packaged deps (ships neither
+    # pyproject.toml nor requirements.txt): no runtime was installed for
+    # *this* tree, and any global claude-org-runtime is unrelated to this
+    # old checkout. Don't probe it — use the renga launcher this ref
+    # shipped with. (install.ps1 gets this for free: it only detects a
+    # python when a dep file exists.)
+    LAUNCH_STEP="renga --layout ops                                           # launch the Secretary pane (this ref predates 'claude-org-runtime org up')"
+    LAUNCH_NOTE=""
+  else
+    # Probe the runtime we just installed for this checkout (venv on
+    # Linux/macOS, --user interpreter on Windows / Git Bash).
+    PROBE_PY=""
+    if [[ "$USED_VENV" == "1" ]]; then
+      PROBE_PY="$VENV_PY"
+    elif [[ -n "$PY" ]]; then
+      PROBE_PY="$PY"
+    fi
+    if ! { [[ -n "$PROBE_PY" ]] \
+           && "$PROBE_PY" $PY_LAUNCHER -m claude_org_runtime.cli org up --help >/dev/null 2>&1; }; then
+      LAUNCH_STEP="renga --layout ops                                           # launch the Secretary pane (this ref predates 'claude-org-runtime org up')"
+      LAUNCH_NOTE=""
+    fi
+  fi
+fi
+
 cat <<MSG
 
 Done. Next steps:
@@ -466,7 +521,8 @@ Done. Next steps:
   cd $TARGET_DIR$VENV_HINT
   bash scripts/install-hooks.sh                                # enable pre-commit secret scanner
   python tools/org_setup_prune.py --user-common-sandbox        # required after main pull (Issue #429 Task B/C + Issue #433 denyWrite)
-  renga --layout ops                                           # launch the Secretary pane
+  $LAUNCH_STEP
+$LAUNCH_NOTE
 
 Inside the Secretary's Claude Code pane, run:
 
@@ -492,8 +548,9 @@ if [[ "$IS_WINDOWS_BASH" == "1" && -n "${RENGA_BIN:-}" \
 Note (Windows / Git Bash): bash on this shell can't find 'renga' on
 PATH. The installer resolved it via fallback to:
   $RENGA_BIN
-Before running 'renga --layout ops' interactively, either invoke it by
-full path or add its directory to your bash PATH (e.g. in ~/.bashrc):
+Before using the renga fallback ('renga --layout ops') interactively,
+either invoke it by full path or add its directory to your bash PATH
+(e.g. in ~/.bashrc):
   export PATH="$renga_dir:\$PATH"
 MSG
 fi

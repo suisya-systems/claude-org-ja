@@ -4,6 +4,8 @@
 
 **前提**: renga 0.18.0+ （`npm install -g @suisya-systems/renga@0.18.0` 後、`renga mcp install --force` で `renga-peers` MCP サーバを user-scope 登録済み）。structured `cwd` (0.16.0) / `set_pane_identity` (0.17.0) / `spawn_claude_pane` (0.18.0) すべてを前提とする。
 
+> **起動 transport の注記（既定 broker / renga フォールバック）**: 既定の起動主経路は `claude-org-runtime org up`（broker daemon を確保し窓口 TUI を起動）。本書の各テストの起動ステップは **`claude-org-runtime org up`（既定 broker）/ `renga --layout ops`（renga フォールバック、`ORG_TRANSPORT=renga` 設定時）** の併記で読む。以下の `mcp__renga-peers__*` ツール群・`renga-peers` MCP・`renga-layouts/ops.toml` への言及は **renga 経路の検証 surface** を記述したもので、broker 経路では対応する `mcp__org-broker__*`（tier 別 surface）に読み替える。検証マトリクスの本旨（各テストの目的・期待結果）は両系で不変。broker 運用の詳細は [`docs/operations/broker-dogfood-runbook.md`](operations/broker-dogfood-runbook.md) を参照。
+
 ---
 
 ## 0. リグレッションチェック（起動テンプレートの退行防止）
@@ -60,8 +62,8 @@ py -3 tools/check_renga_compat.py --json     # 機械可読出力
 
 **手順**:
 1. 任意の場所に本リポジトリを `git clone`
-2. clone先で `renga --layout ops` を実行 (窓口ペインが立ち上がる)
-3. 窓口の Claude Code で `mcp__renga-peers__list_panes` が疎通するか確認（Step 0 の MCP 有効性 chk）
+2. clone先で `claude-org-runtime org up`（既定 broker。renga フォールバック時は `renga --layout ops`）を実行 (窓口ペインが立ち上がる)
+3. 窓口の Claude Code で `mcp__org-broker__list_panes`（renga フォールバック時は `mcp__renga-peers__list_panes`）が疎通するか確認（Step 0 の MCP 有効性 chk）
 4. 窓口の Claude Code で `/org-start` を実行
 
 **期待結果**:
@@ -84,7 +86,7 @@ py -3 tools/check_renga_compat.py --json     # 機械可読出力
 
 **目的**: ワーカーが正しく派遣され、作業を完了し、結果が報告されるか確認。
 
-**前提**: `renga --layout ops` で起動していること、`renga-peers` MCP が有効なこと（`claude mcp list` で Connected 確認）。テスト1で `/org-start` 済み。
+**前提**: `claude-org-runtime org up`（renga フォールバック時は `renga --layout ops`）で起動していること、輸送層 MCP が有効なこと（broker は `org up` が窓口 MCP を自動配布、renga は `claude mcp list` で `renga-peers` Connected 確認）。テスト1で `/org-start` 済み。
 
 **手順**:
 1. 窓口Claudeにタスクを依頼する（例:「ブログに新しい記事を追加して」）
@@ -210,7 +212,7 @@ cat .state/journal.jsonl | tail -1  # suspend イベントを確認
 
 **手順**:
 1. 窓口Claudeの端末を**完全に閉じる**
-2. clone先で再度 `renga --layout ops` で起動する
+2. clone先で再度 `claude-org-runtime org up`（renga フォールバック時は `renga --layout ops`）で起動する
 3. `/org-start` を実行する
 
 **期待結果**:
@@ -238,7 +240,7 @@ cat .state/journal.jsonl | tail -1  # suspend イベントを確認
 
 **手順**:
 1. テスト2の状態（ワーカー稼働中）で、**suspendせずに**端末を閉じる
-2. 再度 `renga --layout ops` で起動する
+2. 再度 `claude-org-runtime org up`（renga フォールバック時は `renga --layout ops`）で起動する
 3. `/org-start` を実行する
 
 **期待結果**:
@@ -367,7 +369,7 @@ head -1 knowledge/raw/archive/*.md  # <!-- curated --> マーカー確認
 **目的**: 起動→作業→中断→再開→知見整理の全サイクルが機能するか確認。
 
 **手順**:
-1. clone先でClaudeCodeを起動（`renga --layout ops`）
+1. clone先でClaudeCodeを起動（`claude-org-runtime org up`。renga フォールバック時は `renga --layout ops`）
 2. `/org-start` を実行（初回起動）
 3. タスクを3つ依頼（ワーカー派遣が発生するもの）
 4. 各タスク完了後に振り返りが記録されることを確認
