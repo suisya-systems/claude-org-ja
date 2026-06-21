@@ -924,15 +924,34 @@ def _build_settings_generate_cmd(
     without subprocess mocking.
 
     The mandatory flags (``--role`` / ``--worker-dir`` / ``--claude-org-path``
-    / ``--out``) are always emitted in a stable order. The optional
-    dispatch-context flags are emitted only when the corresponding key is
-    present and non-None in ``settings_args`` — the runtime CLI accepts
+    / ``--out`` / ``--schema``) are always emitted in a stable order. The
+    optional dispatch-context flags are emitted only when the corresponding
+    key is present and non-None in ``settings_args`` — the runtime CLI accepts
     each independently and errors only if the rendered body references a
     placeholder for which the corresponding context is missing (that
     loud-failure surface is intentional: Pattern A / C without
     ``--base-clone`` must NOT silently substitute an empty string into a
     ``{base_clone}``-using sandbox body).
+
+    Issue #625: ``--schema`` is always pinned to ja's
+    ``tools/org_extension_schema.json`` (the absolute path derived from
+    ``--claude-org-path``). Without it the runtime falls back to its bundled
+    ``role_configs_schema.json``, which lacks ja's worker
+    ``sandbox_by_pattern`` policy (Layer 3 bwrap path isolation + ja-specific
+    ``denyRead`` for ``.env`` / ``**/credentials*`` / ``**/*.pem`` etc.), so
+    the generated worker ``.claude/settings.local.json`` silently ships
+    without a ``sandbox`` block. The path is absolute-ized from
+    ``claude-org-path`` because the runtime resolves ``--schema`` relative to
+    its cwd, and apply may run from an arbitrary directory. ja's schema
+    defines exactly the three roles in ``resolve_worker_layout.VALID_ROLES``
+    (``default`` / ``claude-org-self-edit`` / ``doc-audit``), so every
+    dispatchable role is covered — no fallback is required.
     """
+    schema_path = (
+        Path(settings_args["claude-org-path"]).resolve()
+        / "tools"
+        / "org_extension_schema.json"
+    )
     cmd = [
         runtime_cmd,
         "settings",
@@ -945,6 +964,8 @@ def _build_settings_generate_cmd(
         settings_args["claude-org-path"],
         "--out",
         settings_args["out"],
+        "--schema",
+        str(schema_path),
     ]
     for flag, key in (
         ("--pattern", "pattern"),
