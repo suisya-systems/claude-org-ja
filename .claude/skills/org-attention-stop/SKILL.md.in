@@ -2,8 +2,9 @@
 name: org-attention-stop
 description: >
   `/org-attention-start` で起動した attention watcher ペインを停止する。
-  `.state/attention_pane.json` に記録された pane_id を参照して
-  `close_pane`（pane 破棄）で破棄し、sidecar を削除する。
+  `.state/attention_pane.json` に記録された pane_id を `list_panes` の name/role で
+  identity 確認し、いまも attention watcher を指している場合だけ `close_pane`（pane 破棄）で
+  破棄する（pane_id が別ペインへ再割当て済みなら close せず stale sidecar として削除）。
   「attention 止めて」「通知監視を停止」「watcher 落として」等で発動。
 effort: low
 allowed-tools:
@@ -22,46 +23,71 @@ sidecar (`.state/attention_pane.json`) をクリアする。
 
 {{> dual-system-header-long }}
 
-## Step 1: sidecar と live pane の状態確認
+## Step 1: ライブペインと sidecar の照合（close 前に identity を確定する）
 
-1. `{{FQ}}list_panes` を呼び、`name="attention"` または `role="attention"` の
-   live pane があれば pane_id を控える（**name と role の両方を見る**: 手動起動の孤児ペインは
-   name を付けずに role だけ持っている可能性がある）
-2. `.state/attention_pane.json` を `Read` で開けたら `pane_id` を読み取る。存在しなければ skip
-3. 分岐:
-   - **sidecar あり** → 2-a へ
-   - **sidecar 無し + 孤児 pane 検出** → 2-b へ
-   - **sidecar 無し + 孤児 pane 無し** → 「attention watcher は既に停止しています」と報告して終了
+> **なぜ identity 確認が必要か（Issue #468）**: renga 0.18+ / broker は pane id を
+> lifecycle 跨ぎで **recycle** する。watcher がクラッシュすると、その pane_id が
+> 別ペイン（新規 spawn された worker 等）へ再割当てされることがある。このとき sidecar
+> (`.state/attention_pane.json`) に残った pane_id を**無検証で `close_pane` すると、
+> 無関係なペインを kill する**。よって本 skill は **`list_panes` の name/role で identity を
+> 確認したペインだけを close 対象**とし、sidecar の pane_id を close の直接の根拠にしない。
 
-## Step 2: ペインを閉じる
+1. `{{FQ}}list_panes` を呼び、`name="attention"` **または** `role="attention"` の
+   live pane を**全て**収集する（複数あれば全部）。これを「**確認済み attention ペイン集合**」と
+   呼び、各 pane の **数値 pane_id** を控える（**name と role の両方を見る**: 手動起動の孤児
+   ペインは name を付けず role だけ持っていることがある）
+2. `.state/attention_pane.json` を `Read` で開けたら `pane_id` を読み取る（= **sidecar pane_id**）。
+   存在しなければ「sidecar 無し」として扱う
+3. sidecar pane_id の identity を `list_panes` の結果に照らして分類する（**sidecar に記録された
+   name は信用せず、いま list_panes が返す name/role で判定する**）:
+   - **verified**: sidecar pane_id が「確認済み attention ペイン集合」に含まれる
+     → その pane はいまも本物の watcher。close 対象
+   - **recycled**: sidecar pane_id が list_panes に存在するが、その pane の name/role が
+     attention では**ない** → pane_id が無関係なペイン（worker 等）へ再割当てされている。
+     **絶対に close しない**
+   - **gone**: sidecar pane_id が list_panes に存在しない → watcher は既に消えている
+   - **sidecar 無し**: 上記判定はスキップ（孤児ペインの掃除のみ検討する）
 
-### 2-a: 記録された pane_id で close
+   判定が紛らわしい場合（list_panes の name/role が空・曖昧）は
+   `{{FQ}}inspect_pane(target="<sidecar pane_id>")` で内容を確認して補強してよいが、
+   **一次の identity ソースは list_panes が返す name/role** である。
+
+## Step 2: close 対象の決定と実行
+
+**close してよいのは「確認済み attention ペイン集合」のペインだけ**である（identity を確認した
+ペインのみ）。sidecar pane_id は **verified のとき（=その id が確認済み集合に入っているとき）に
+限り** close 対象になる。recycled / gone の sidecar pane_id は close 対象にしない。
+
+確認済み attention ペイン集合の各 pane を、**list_panes から得た数値 pane_id** で順に close する:
 
 ```
-{{FQ}}close_pane(target="<sidecar の pane_id>")
+{{FQ}}close_pane(target="<確認済み集合の数値 pane_id>")
 ```
 
 - 成功時: `"Closed pane id=N."` テキストが返る
-- `[pane_not_found]` / `[pane_vanished]`: 既に閉じている。sidecar が stale。Step 3 へ進む
+- `[pane_not_found]` / `[pane_vanished]`: 直前に消えた。skip 扱いで次へ
 - `[last_pane]`: タブの唯一のペインが attention だった（通常発生しない、dispatcher / secretary が
   残っているはず）。状況をユーザーに報告して abort（手動対応に委ねる）
 
-Step 1 で得た「list_panes 上の attention ペイン」と sidecar の pane_id が一致しない場合は、
-**sidecar の id を優先して close した後**、`list_panes` を再取得して残っていれば 2-b に進む
-（drift / orphan の追加掃除）。
+`target="attention"` のような **name 指定は使わない**（role だけ持って name を持たない孤児ペインに
+当たらないため）。必ず数値 pane_id で指定する。
 
-### 2-b: sidecar 無し / drift で孤児ペインを掃除する場合
+分類別の挙動:
 
-Step 1 で `list_panes` から得た **pane_id（name ではなく数値 id）** で close する:
-
-```
-{{FQ}}close_pane(target="<list_panes から取得した数値 pane_id>")
-```
-
-`target="attention"` のような name 指定は、role だけ持って name を持たない孤児ペインに当たらない
-ため使用しない。`[pane_not_found]` / `[pane_vanished]` は skip 扱い。
+- **verified**: sidecar pane_id は確認済み集合に含まれるので、上記の close で一緒に閉じられる。
+  集合に他の attention ペイン（drift / 二重起動の孤児）が居れば、それらも同じく数値 pane_id で
+  close する
+- **recycled / gone**: sidecar pane_id は **close しない**。ただし確認済み集合に
+  （sidecar とは別 id の）孤児 watcher が居れば、それは数値 pane_id で close する。
+  sidecar が指していた watcher 本体は既に消えている → Step 4 で「watcher は既に消えていた
+  （sidecar が stale）」と報告する
+- **sidecar 無し**: 確認済み集合に孤児 attention ペインが居ればそれを数値 pane_id で close する。
+  集合が空なら close は何もしない（Step 4 で「既に停止しています」と報告）
 
 ## Step 3: sidecar の削除
+
+sidecar が存在した場合は **分類によらず必ず削除する**（verified で close した後も、
+recycled / gone で stale と判定した場合も削除する）:
 
 ```bash
 rm -f .state/attention_pane.json
@@ -69,22 +95,43 @@ rm -f .state/attention_pane.json
 
 Windows native: `del .state\attention_pane.json` （既に削除済みでも無害化のため `2>nul` 等で抑制）。
 
-journal event を 1 行追記する:
+journal event を 1 行追記する。**実際に close したペインがある場合のみ** `attention_watch_stopped`
+を記録する（recycled / gone で close を 1 つも行わなかった場合は、無関係なペインを停めた誤記録に
+ならないよう `<N>` を省き `reason=stale_sidecar` を付ける）:
 
 ```bash
+# 確認済み attention ペインを close した場合（verified / 孤児掃除）
 bash tools/journal_append.sh attention_watch_stopped pane_id=<N>
+
+# sidecar が recycled / gone で close を行わなかった場合
+bash tools/journal_append.sh attention_watch_stopped reason=stale_sidecar
 ```
 
-Windows native では `py -3 tools/journal_append.py attention_watch_stopped pane_id=<N>`。
+Windows native では `py -3 tools/journal_append.py attention_watch_stopped ...`。
 
 ## Step 4: 報告
+
+**verified（記録された watcher を停止した）/ 孤児掃除した場合**:
 
 ```
 attention watcher を停止しました（pane id={N}）。
 再開するときは /org-attention-start を実行してください。
 ```
 
-sidecar が無く孤児ペインも無かった場合は:
+**recycled / gone（sidecar が stale で、watcher 本体は既に消えていた）場合** — 無関係なペインを
+close していないことを明示して報告する:
+
+```
+attention watcher は既に消えていました（sidecar が stale）。
+記録されていた pane id={sidecar pane_id} は別のペインに再割当て済み / 既に消滅していたため、
+無関係なペインを閉じないよう close は行わず、stale な sidecar だけを削除しました。
+再開するときは /org-attention-start を実行してください。
+```
+
+（recycled で別 id の孤児 watcher も掃除した場合は、上に「孤児 attention ペイン id={M} も
+併せて掃除しました」を 1 行添える。）
+
+**sidecar が無く孤児ペインも無かった場合**:
 
 ```
 attention watcher は既に停止しています。
