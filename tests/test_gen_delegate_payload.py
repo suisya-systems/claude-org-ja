@@ -380,7 +380,9 @@ class TestSettingsGenerateCmd(unittest.TestCase):
         # Backward compatibility: a settings_args dict that lacks the
         # PR4-added keys (e.g. an old caller that constructs the dict by
         # hand) must still render a runnable cmd — the runtime CLI's
-        # required args are only the four mandatory ones.
+        # required args are only the mandatory ones. Issue #625 added
+        # --schema to that mandatory set (always pinned to ja's
+        # org_extension_schema.json), so it appears here too.
         cmd = self._build()
         self.assertEqual(
             cmd,
@@ -396,8 +398,40 @@ class TestSettingsGenerateCmd(unittest.TestCase):
                 "/co",
                 "--out",
                 "/wd/.claude/settings.local.json",
+                "--schema",
+                "/co/tools/org_extension_schema.json",
             ],
         )
+
+    def test_schema_pinned_to_ja_extension_schema_absolute(self):
+        # Issue #625: --schema must always be emitted, pointing at ja's
+        # tools/org_extension_schema.json so the runtime emits the worker
+        # sandbox_by_pattern policy (Layer 3 bwrap isolation + ja denyRead)
+        # instead of falling back to its bundled role_configs_schema.json.
+        cmd = self._build(pattern="A", **{"task-id": "t-1"})
+        self.assertIn("--schema", cmd)
+        schema = cmd[cmd.index("--schema") + 1]
+        self.assertEqual(schema, "/co/tools/org_extension_schema.json")
+        # cwd-independent: the path is absolute, derived from
+        # --claude-org-path, not from the runtime's working directory.
+        self.assertTrue(Path(schema).is_absolute())
+
+    def test_schema_absolutized_from_relative_claude_org_path(self):
+        # The runtime resolves --schema relative to its cwd, and apply may
+        # run from an arbitrary directory, so a relative claude-org-path
+        # must still yield an absolute --schema.
+        cmd = gdp._build_settings_generate_cmd(
+            {
+                "role": "default",
+                "worker-dir": "/wd",
+                "claude-org-path": "relative/co",
+                "out": "/wd/.claude/settings.local.json",
+            },
+            runtime_cmd="claude-org-runtime",
+        )
+        schema = cmd[cmd.index("--schema") + 1]
+        self.assertTrue(Path(schema).is_absolute())
+        self.assertTrue(schema.endswith("/tools/org_extension_schema.json"))
 
 
 # ---------------------------------------------------------------------------
