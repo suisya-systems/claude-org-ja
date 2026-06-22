@@ -891,6 +891,14 @@ class MergeWatchTests(unittest.TestCase):
                     and cmd[cmd.index("--json") + 1] == "number"):
                 seen_existence_probe["v"] = True
                 return mock.Mock(returncode=0, stdout="{}", stderr="")
+            # Issue #636 head probe: `gh pr view <pr> --json headRefOid`.
+            # Return an empty object so `_fetch_head_oid` resolves to None
+            # (no head-change detection) WITHOUT consuming a view_sequence
+            # entry — these legacy fixtures retain mergedAt-only behavior.
+            if (cmd[:3] == ["gh", "pr", "view"]
+                    and "--json" in cmd
+                    and cmd[cmd.index("--json") + 1] == "headRefOid"):
+                return mock.Mock(returncode=0, stdout="{}", stderr="")
             # Merge-watch probe: `gh pr view <pr> --json number,url,...`
             if cmd[:3] == ["gh", "pr", "view"] and "--json" in cmd:
                 idx = view_idx["i"]
@@ -1185,6 +1193,7 @@ class PeerNotifyTests(unittest.TestCase):
                 "mergedAt": "2026-05-06T03:21:00Z",
                 "mergeCommit": {"oid": "f" * 40},
                 "headRefName": "feat/merge-watch",
+                "headRefOid": "c" * 40,
             }
             fake_run = mw_tests._build_run_with_view_sequence(
                 watch_exit=0, view_sequence=[view_merged],
@@ -1203,8 +1212,10 @@ class PeerNotifyTests(unittest.TestCase):
             # Expect both CI_COMPLETED and PR_MERGED in captured.
             self.assertTrue(any("CI_COMPLETED" in m for m in captured),
                             f"missing CI_COMPLETED: {captured}")
-            self.assertTrue(any("PR_MERGED: PR #777" in m for m in captured),
-                            f"missing PR_MERGED: {captured}")
+            # Issue #636: PR_MERGED carries the merged head's short sha.
+            self.assertTrue(
+                any("PR_MERGED: PR #777 (head=ccccccc)" in m for m in captured),
+                f"missing PR_MERGED w/ head: {captured}")
 
     def test_merge_watch_timeout_dispatches_peer_message(self) -> None:
         with TempDir() as tmp:
@@ -1214,6 +1225,7 @@ class PeerNotifyTests(unittest.TestCase):
                 "number": 555, "url": "https://github.com/octo/repo/pull/555",
                 "state": "OPEN", "mergedAt": None,
                 "mergeCommit": None, "headRefName": "feat/x",
+                "headRefOid": "d" * 40,
             }
             from tools.state_db import apply_schema, connect
             apply_schema(connect(db))
@@ -1230,14 +1242,20 @@ class PeerNotifyTests(unittest.TestCase):
             with mock.patch.object(pr_watch, "_notify_peer",
                                    side_effect=lambda msg, *a, **kw: captured.append(msg) or True), \
                  mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run):
+                # Issue #636: baseline_head matches the polled headRefOid
+                # (no head change), so the loop times out and the message
+                # carries the short head sha.
                 result = pr_watch._watch_for_merge(
                     pr=555, repo="octo/repo", interval=0,
                     db_path=db, max_seconds=60,
                     sleeper=lambda _s: None,
                     monotonic=mock.Mock(side_effect=[0.0, 100.0, 100.0]),
+                    baseline_head="d" * 40,
                 )
             self.assertEqual(result, "timeout")
-            self.assertEqual(captured, ["PR_MERGE_WATCH_TIMEOUT: PR #555"])
+            self.assertEqual(
+                captured, ["PR_MERGE_WATCH_TIMEOUT: PR #555 (head=ddddddd)"]
+            )
 
     def test_no_run_dispatches_distinct_message(self) -> None:
         """When complete_on_merge returns no_run, pr-watch must NOT
@@ -1255,6 +1273,7 @@ class PeerNotifyTests(unittest.TestCase):
                 "mergedAt": "2026-05-06T03:21:00Z",
                 "mergeCommit": {"oid": "a" * 40},
                 "headRefName": "feat/x",
+                "headRefOid": "e" * 40,
             }
 
             def fake_run(cmd, *args, **kwargs):
@@ -1270,6 +1289,7 @@ class PeerNotifyTests(unittest.TestCase):
                                    side_effect=lambda msg, *a, **kw: captured.append(msg) or True), \
                  mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run):
                 # No seeded run for PR #444 → complete_on_merge → no_run.
+                # Issue #636: the head sha comes from the merged view.
                 result = pr_watch._watch_for_merge(
                     pr=444, repo="octo/repo", interval=0,
                     db_path=db, max_seconds=60,
@@ -1277,7 +1297,9 @@ class PeerNotifyTests(unittest.TestCase):
                     monotonic=mock.Mock(side_effect=[0.0, 0.0, 100.0]),
                 )
             self.assertEqual(result, "no_run")
-            self.assertEqual(captured, ["PR_MERGED_NO_RUN: PR #444"])
+            self.assertEqual(
+                captured, ["PR_MERGED_NO_RUN: PR #444 (head=eeeeeee)"]
+            )
 
     def test_no_renga_socket_silent_fallback(self) -> None:
         """With RENGA_SOCKET unset, _notify_peer must return False
@@ -1305,6 +1327,477 @@ class PeerNotifyTests(unittest.TestCase):
                 rc = pr_watch.main(["--pr", "10", "--repo", "octo/repo"])
             self.assertEqual(rc, 0)
             self.assertEqual(_count_ci_events(db), 1)
+
+
+def _read_ci_events(db_path: Path) -> "list[dict]":
+    """Return all ci_completed events (payload dicts, ordered by id)."""
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            "SELECT payload_json FROM events WHERE kind = 'ci_completed' "
+            "ORDER BY id"
+        ).fetchall()
+    finally:
+        conn.close()
+    return [json.loads(r["payload_json"]) if r["payload_json"] else {}
+            for r in rows]
+
+
+class HeadPollLoopbackTests(unittest.TestCase):
+    """Issue #636: merge-watch polls headRefOid and loops back to ci-watch
+    when the PR head moves, re-emitting CI_COMPLETED for the new head."""
+
+    HEAD_A = "a" * 40
+    HEAD_B = "b" * 40
+    PR_URL = "https://github.com/octo/repo/pull/636"
+
+    def setUp(self) -> None:
+        _assert_peer_isolation()
+
+    # -- direct _watch_for_merge unit coverage -----------------------------
+
+    def test_head_change_returns_head_changed(self) -> None:
+        """A new headRefOid (≠ baseline) makes _watch_for_merge return
+        ``head_changed`` without merging, timing out, or notifying."""
+        with TempDir() as tmp:
+            db = tmp / ".state" / "state.db"
+            db.parent.mkdir(parents=True)
+            from tools.state_db import apply_schema, connect
+            apply_schema(connect(db))
+
+            view_a = {
+                "number": 636, "url": self.PR_URL, "state": "OPEN",
+                "mergedAt": None, "mergeCommit": None,
+                "headRefName": "feat/hp", "headRefOid": self.HEAD_A,
+            }
+            view_b = dict(view_a, headRefOid=self.HEAD_B)
+            views = [view_a, view_b]
+            idx = {"i": 0}
+
+            def fake_run(cmd, *args, **kwargs):
+                if cmd[:3] == ["gh", "pr", "view"]:
+                    i = idx["i"]
+                    payload = views[i] if i < len(views) else views[-1]
+                    if i < len(views) - 1:
+                        idx["i"] = i + 1
+                    return mock.Mock(
+                        returncode=0, stdout=json.dumps(payload), stderr="",
+                    )
+                raise AssertionError(f"unexpected cmd: {cmd}")
+
+            captured: list[str] = []
+            with mock.patch.object(pr_watch, "_notify_peer",
+                                   side_effect=lambda msg, *a, **kw: captured.append(msg) or True), \
+                 mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run):
+                # poll0 = HEAD_A (no change), poll1 = HEAD_B (change).
+                result = pr_watch._watch_for_merge(
+                    pr=636, repo="octo/repo", interval=0,
+                    db_path=db, max_seconds=60,
+                    sleeper=lambda _s: None,
+                    monotonic=mock.Mock(side_effect=[0.0, 1.0, 2.0]),
+                    baseline_head=self.HEAD_A,
+                )
+            self.assertEqual(result, "head_changed")
+            # No peer notification on a head change (the ci-watch loopback
+            # re-emits CI_COMPLETED instead).
+            self.assertEqual(captured, [])
+            # And no timeout event was written.
+            conn = sqlite3.connect(str(db))
+            try:
+                cnt = conn.execute(
+                    "SELECT COUNT(*) FROM events "
+                    "WHERE kind = 'pr_merge_watch_timeout'"
+                ).fetchone()[0]
+            finally:
+                conn.close()
+            self.assertEqual(cnt, 0)
+
+    def test_none_baseline_disables_head_change_detection(self) -> None:
+        """Compat (Issue #636 #7): when baseline_head is None, a moving
+        headRefOid must NOT trigger head_changed — the loop falls through
+        to its pre-#636 mergedAt/timeout behavior (None-safe)."""
+        with TempDir() as tmp:
+            db = tmp / ".state" / "state.db"
+            db.parent.mkdir(parents=True)
+            from tools.state_db import apply_schema, connect
+            apply_schema(connect(db))
+
+            view = {
+                "number": 636, "url": self.PR_URL, "state": "OPEN",
+                "mergedAt": None, "mergeCommit": None,
+                "headRefName": "feat/hp", "headRefOid": self.HEAD_B,
+            }
+
+            def fake_run(cmd, *args, **kwargs):
+                if cmd[:3] == ["gh", "pr", "view"]:
+                    return mock.Mock(
+                        returncode=0, stdout=json.dumps(view), stderr="",
+                    )
+                raise AssertionError(f"unexpected cmd: {cmd}")
+
+            with mock.patch.object(pr_watch, "_notify_peer", return_value=False), \
+                 mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run):
+                result = pr_watch._watch_for_merge(
+                    pr=636, repo="octo/repo", interval=0,
+                    db_path=db, max_seconds=60,
+                    sleeper=lambda _s: None,
+                    monotonic=mock.Mock(side_effect=[0.0, 100.0]),
+                    baseline_head=None,  # detection disabled
+                )
+            # Falls through to timeout rather than head_changed.
+            self.assertEqual(result, "timeout")
+
+    # -- end-to-end main() loopback ----------------------------------------
+
+    def test_main_loops_back_to_ci_watch_on_head_change(self) -> None:
+        """ci-watch → merge-watch → head moves → ci-watch loopback → second
+        CI_COMPLETED → merge. Proves the one-shot trap is fixed."""
+        with TempDir() as tmp:
+            db = tmp / ".state" / "state.db"
+            db.parent.mkdir(parents=True)
+            # Seed a run so the final complete_on_merge resolves to MERGED.
+            MergeWatchTests()._seed_run_for_merge(db, pr_url=self.PR_URL)
+
+            head_calls = {"i": 0}
+            mw_calls = {"i": 0}
+            mw_seq = [
+                # round-1 merge-watch poll: head already moved to HEAD_B.
+                {"number": 636, "url": self.PR_URL, "state": "OPEN",
+                 "mergedAt": None, "mergeCommit": None,
+                 "headRefName": "feat/hp", "headRefOid": self.HEAD_B},
+                # round-2 merge-watch poll: merged at HEAD_B.
+                {"number": 636, "url": self.PR_URL, "state": "MERGED",
+                 "mergedAt": "2026-06-23T00:00:00Z",
+                 "mergeCommit": {"oid": "c" * 40},
+                 "headRefName": "feat/hp", "headRefOid": self.HEAD_B},
+            ]
+
+            def fake_run(cmd, *args, **kwargs):
+                if cmd[:3] == ["gh", "pr", "view"] and "--json" in cmd:
+                    jval = cmd[cmd.index("--json") + 1]
+                    if jval == "number":
+                        return mock.Mock(returncode=0, stdout="{}", stderr="")
+                    if jval == "headRefOid":
+                        # Two head probes per ci-watch round (pre/post
+                        # resolution). Head sits at HEAD_A through round 1
+                        # (probes 0,1) and at HEAD_B through round 2
+                        # (probes 2,3) — stable within each round so no
+                        # spurious mid-resolution-advance is logged.
+                        i = head_calls["i"]
+                        head_calls["i"] = i + 1
+                        oid = self.HEAD_A if i < 2 else self.HEAD_B
+                        return mock.Mock(
+                            returncode=0,
+                            stdout=json.dumps({"headRefOid": oid}),
+                            stderr="",
+                        )
+                    # merge-watch poll (long --json field list).
+                    i = mw_calls["i"]
+                    payload = mw_seq[i] if i < len(mw_seq) else mw_seq[-1]
+                    if i < len(mw_seq) - 1:
+                        mw_calls["i"] = i + 1
+                    return mock.Mock(
+                        returncode=0, stdout=json.dumps(payload), stderr="",
+                    )
+                if "checks" in cmd and "--json" in cmd:
+                    return mock.Mock(
+                        returncode=0,
+                        stdout=json.dumps(
+                            [{"name": "ci", "state": "COMPLETED",
+                              "bucket": "pass"}]
+                        ),
+                        stderr="",
+                    )
+                # The watched `gh pr checks --watch` run (both rounds pass).
+                return mock.Mock(returncode=0)
+
+            captured: list[str] = []
+            with mock.patch.object(pr_watch, "JOURNAL_PATH", db), \
+                 mock.patch.object(pr_watch, "_notify_peer",
+                                   side_effect=lambda msg, *a, **kw: captured.append(msg) or True), \
+                 mock.patch.object(pr_watch.shutil, "which", return_value="/usr/bin/gh"), \
+                 mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run), \
+                 mock.patch.object(pr_watch.time, "monotonic",
+                                   side_effect=[0.0, 1.0, 2.0, 3.0]):
+                rc = pr_watch.main([
+                    "--pr", "636", "--repo", "octo/repo", "--interval", "1",
+                    "--merge-watch",
+                ])
+            self.assertEqual(rc, 0)
+
+            # Two CI_COMPLETED messages — one per head — re-emitted across
+            # the loopback. This is the core of the Issue #636 fix.
+            ci_msgs = [m for m in captured if m.startswith("CI_COMPLETED")]
+            self.assertEqual(len(ci_msgs), 2, f"captured={captured}")
+            self.assertIn("head=aaaaaaa", ci_msgs[0])
+            self.assertIn("head=bbbbbbb", ci_msgs[1])
+            # The merge is announced against the new head.
+            self.assertTrue(
+                any("PR_MERGED: PR #636 (head=bbbbbbb)" in m for m in captured),
+                f"captured={captured}")
+
+            # Two ci_completed events, each tagged with its head sha.
+            events = _read_ci_events(db)
+            self.assertEqual(len(events), 2)
+            self.assertEqual(events[0]["head"], "aaaaaaa")
+            self.assertEqual(events[1]["head"], "bbbbbbb")
+            self.assertEqual(events[0]["status"], "passed")
+            self.assertEqual(events[1]["status"], "passed")
+
+    def test_ci_completed_message_and_event_carry_head(self) -> None:
+        """Acceptance: the CI_COMPLETED peer message and the ci_completed
+        event both carry the short head sha (CI-only, no merge-watch)."""
+        def fake_run(cmd, *args, **kwargs):
+            if cmd[:3] == ["gh", "pr", "view"] and "--json" in cmd:
+                jval = cmd[cmd.index("--json") + 1]
+                if jval == "number":
+                    return mock.Mock(returncode=0, stdout="{}", stderr="")
+                if jval == "headRefOid":
+                    return mock.Mock(
+                        returncode=0,
+                        stdout=json.dumps({"headRefOid": self.HEAD_A}),
+                        stderr="",
+                    )
+            if "checks" in cmd and "--json" in cmd:
+                return mock.Mock(
+                    returncode=0,
+                    stdout=json.dumps(
+                        [{"name": "ci", "state": "COMPLETED", "bucket": "pass"}]
+                    ),
+                    stderr="",
+                )
+            return mock.Mock(returncode=0)
+
+        captured: list[str] = []
+        with TempDir() as tmp:
+            db = tmp / ".state" / "state.db"
+            with mock.patch.object(pr_watch, "JOURNAL_PATH", db), \
+                 mock.patch.object(pr_watch, "_notify_peer",
+                                   side_effect=lambda msg, *a, **kw: captured.append(msg) or True), \
+                 mock.patch.object(pr_watch.shutil, "which", return_value="/usr/bin/gh"), \
+                 mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run), \
+                 mock.patch.object(pr_watch.time, "monotonic", side_effect=[0.0, 5.0]):
+                rc = pr_watch.main(["--pr", "636", "--repo", "octo/repo"])
+            self.assertEqual(rc, 0)
+            self.assertEqual(len(captured), 1)
+            self.assertIn("CI_COMPLETED: PR #636 passed", captured[0])
+            self.assertIn("head=aaaaaaa", captured[0])
+            rec = _read_ci_event(db)
+            self.assertEqual(rec["head"], "aaaaaaa")
+            self.assertEqual(rec["status"], "passed")
+
+    def test_merge_at_unconfirmed_head_is_distinct_signal_not_pr_merged(self) -> None:
+        """Codex review: if a PR merges at a head different from the last
+        CI-confirmed head (a push + merge slipped in before the next
+        merge-watch poll), pr_watch must NOT emit a clean PR_MERGED. The
+        merge is terminal (no loopback possible), so it emits a DISTINCT
+        prefix (PR_MERGED_HEAD_UNCONFIRMED — fails closed so the secretary
+        escalates instead of auto-advancing) and returns a sentinel main
+        maps to a non-zero exit."""
+        with TempDir() as tmp:
+            db = tmp / ".state" / "state.db"
+            db.parent.mkdir(parents=True)
+            MergeWatchTests()._seed_run_for_merge(db, pr_url=self.PR_URL)
+
+            # Merged at HEAD_B while the CI baseline was HEAD_A.
+            view_merged = {
+                "number": 636, "url": self.PR_URL, "state": "MERGED",
+                "mergedAt": "2026-06-23T00:00:00Z",
+                "mergeCommit": {"oid": "c" * 40},
+                "headRefName": "feat/hp", "headRefOid": self.HEAD_B,
+            }
+
+            def fake_run(cmd, *args, **kwargs):
+                if cmd[:3] == ["gh", "pr", "view"]:
+                    return mock.Mock(
+                        returncode=0, stdout=json.dumps(view_merged), stderr="",
+                    )
+                raise AssertionError(f"unexpected cmd: {cmd}")
+
+            captured: list[str] = []
+            with mock.patch.object(pr_watch, "JOURNAL_PATH", db), \
+                 mock.patch.object(pr_watch, "_notify_peer",
+                                   side_effect=lambda msg, *a, **kw: captured.append(msg) or True), \
+                 mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run):
+                result = pr_watch._watch_for_merge(
+                    pr=636, repo="octo/repo", interval=0,
+                    db_path=db, max_seconds=60,
+                    sleeper=lambda _s: None,
+                    monotonic=mock.Mock(side_effect=[0.0, 0.0, 100.0]),
+                    baseline_head=self.HEAD_A,  # CI was confirmed for HEAD_A
+                )
+            self.assertEqual(result, pr_watch.MERGE_RESULT_HEAD_UNCONFIRMED)
+            self.assertEqual(len(captured), 1)
+            msg = captured[0]
+            # Distinct prefix — NOT the clean "PR_MERGED: " consumers act on.
+            self.assertTrue(msg.startswith("PR_MERGED_HEAD_UNCONFIRMED: PR #636"))
+            self.assertIn("head=bbbbbbb", msg)
+            # Names the stale CI-confirmed head for the human.
+            self.assertIn("aaaaaaa", msg)
+
+    def test_unconfirmed_head_merge_exits_nonzero_through_main(self) -> None:
+        """End-to-end: a merge at an unconfirmed head makes main exit 9 (not
+        0), so shell callers don't treat it as a confirmed-CI success."""
+        with TempDir() as tmp:
+            db = tmp / ".state" / "state.db"
+            db.parent.mkdir(parents=True)
+            MergeWatchTests()._seed_run_for_merge(db, pr_url=self.PR_URL)
+
+            head_calls = {"i": 0}
+            # ci-watch round confirms HEAD_A; merge-watch then observes a
+            # merge already at HEAD_B (push+merge slipped in).
+            view_merged = {
+                "number": 636, "url": self.PR_URL, "state": "MERGED",
+                "mergedAt": "2026-06-23T00:00:00Z",
+                "mergeCommit": {"oid": "c" * 40},
+                "headRefName": "feat/hp", "headRefOid": self.HEAD_B,
+            }
+
+            def fake_run(cmd, *args, **kwargs):
+                if cmd[:3] == ["gh", "pr", "view"] and "--json" in cmd:
+                    jval = cmd[cmd.index("--json") + 1]
+                    if jval == "number":
+                        return mock.Mock(returncode=0, stdout="{}", stderr="")
+                    if jval == "headRefOid":
+                        # Both ci-watch head probes (pre/post) see HEAD_A.
+                        head_calls["i"] += 1
+                        return mock.Mock(
+                            returncode=0,
+                            stdout=json.dumps({"headRefOid": self.HEAD_A}),
+                            stderr="",
+                        )
+                    # merge-watch poll: merged at HEAD_B.
+                    return mock.Mock(
+                        returncode=0, stdout=json.dumps(view_merged), stderr="",
+                    )
+                if "checks" in cmd and "--json" in cmd:
+                    return mock.Mock(
+                        returncode=0,
+                        stdout=json.dumps(
+                            [{"name": "ci", "state": "COMPLETED",
+                              "bucket": "pass"}]
+                        ),
+                        stderr="",
+                    )
+                return mock.Mock(returncode=0)
+
+            captured: list[str] = []
+            with mock.patch.object(pr_watch, "JOURNAL_PATH", db), \
+                 mock.patch.object(pr_watch, "_notify_peer",
+                                   side_effect=lambda msg, *a, **kw: captured.append(msg) or True), \
+                 mock.patch.object(pr_watch.shutil, "which", return_value="/usr/bin/gh"), \
+                 mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run), \
+                 mock.patch.object(pr_watch.time, "monotonic", side_effect=[0.0, 1.0]):
+                rc = pr_watch.main([
+                    "--pr", "636", "--repo", "octo/repo", "--interval", "1",
+                    "--merge-watch",
+                ])
+            self.assertEqual(rc, 9)
+            self.assertTrue(
+                any(m.startswith("PR_MERGED_HEAD_UNCONFIRMED") for m in captured),
+                f"captured={captured}")
+            self.assertFalse(
+                any(m.startswith("PR_MERGED:") for m in captured),
+                f"clean PR_MERGED must not be sent: {captured}")
+
+    def test_merge_at_confirmed_head_has_no_warning(self) -> None:
+        """The flag fires ONLY on a head mismatch: merging at the same head
+        the CI baseline confirmed is a clean PR_MERGED with no warning."""
+        with TempDir() as tmp:
+            db = tmp / ".state" / "state.db"
+            db.parent.mkdir(parents=True)
+            MergeWatchTests()._seed_run_for_merge(db, pr_url=self.PR_URL)
+
+            view_merged = {
+                "number": 636, "url": self.PR_URL, "state": "MERGED",
+                "mergedAt": "2026-06-23T00:00:00Z",
+                "mergeCommit": {"oid": "c" * 40},
+                "headRefName": "feat/hp", "headRefOid": self.HEAD_A,
+            }
+
+            def fake_run(cmd, *args, **kwargs):
+                if cmd[:3] == ["gh", "pr", "view"]:
+                    return mock.Mock(
+                        returncode=0, stdout=json.dumps(view_merged), stderr="",
+                    )
+                raise AssertionError(f"unexpected cmd: {cmd}")
+
+            captured: list[str] = []
+            with mock.patch.object(pr_watch, "JOURNAL_PATH", db), \
+                 mock.patch.object(pr_watch, "_notify_peer",
+                                   side_effect=lambda msg, *a, **kw: captured.append(msg) or True), \
+                 mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run):
+                result = pr_watch._watch_for_merge(
+                    pr=636, repo="octo/repo", interval=0,
+                    db_path=db, max_seconds=60,
+                    sleeper=lambda _s: None,
+                    monotonic=mock.Mock(side_effect=[0.0, 0.0, 100.0]),
+                    baseline_head=self.HEAD_A,
+                )
+            self.assertEqual(result, "merged")
+            self.assertEqual(captured, ["PR_MERGED: PR #636 (head=aaaaaaa)"])
+
+    def test_head_advance_during_resolution_restarts_ci_watch(self) -> None:
+        """Codex review: if the branch advances during verdict resolution
+        (pre-resolution head != post-resolution head), pr_watch records NO
+        verdict for that round and restarts the full ci-watch for the new
+        head — so a new head whose CI is still pending is properly waited
+        on via `gh pr checks --watch`, not short-circuited to incomplete.
+        The recorded verdict/head is the stabilized HEAD_B."""
+        head_calls = {"i": 0}
+
+        def fake_run(cmd, *args, **kwargs):
+            if cmd[:3] == ["gh", "pr", "view"] and "--json" in cmd:
+                jval = cmd[cmd.index("--json") + 1]
+                if jval == "number":
+                    return mock.Mock(returncode=0, stdout="{}", stderr="")
+                if jval == "headRefOid":
+                    # Round 1: pre=HEAD_A (probe 0), post=HEAD_B (probe 1)
+                    # → advanced mid-resolution → head_changed → restart.
+                    # Round 2: pre=HEAD_B (probe 2), post=HEAD_B (probe 3)
+                    # → stable → record HEAD_B.
+                    i = head_calls["i"]
+                    head_calls["i"] = i + 1
+                    oid = self.HEAD_A if i == 0 else self.HEAD_B
+                    return mock.Mock(
+                        returncode=0,
+                        stdout=json.dumps({"headRefOid": oid}),
+                        stderr="",
+                    )
+            if "checks" in cmd and "--json" in cmd:
+                return mock.Mock(
+                    returncode=0,
+                    stdout=json.dumps(
+                        [{"name": "ci", "state": "COMPLETED", "bucket": "pass"}]
+                    ),
+                    stderr="",
+                )
+            return mock.Mock(returncode=0)
+
+        captured: list[str] = []
+        with TempDir() as tmp:
+            db = tmp / ".state" / "state.db"
+            # CI-only (no --merge-watch): even here a mid-resolution advance
+            # restarts ci-watch, so the recorded verdict is for a stable head.
+            # monotonic: round-1 consumes only `started` (head_changed returns
+            # before the duration calc); round-2 consumes started + duration.
+            with mock.patch.object(pr_watch, "JOURNAL_PATH", db), \
+                 mock.patch.object(pr_watch, "_notify_peer",
+                                   side_effect=lambda msg, *a, **kw: captured.append(msg) or True), \
+                 mock.patch.object(pr_watch.shutil, "which", return_value="/usr/bin/gh"), \
+                 mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run), \
+                 mock.patch.object(pr_watch.time, "monotonic", side_effect=[0.0, 1.0, 5.0]):
+                rc = pr_watch.main(["--pr", "636", "--repo", "octo/repo"])
+            self.assertEqual(rc, 0)
+            # Exactly one ci_completed event — the head_changed round records
+            # nothing — tagged with the stabilized HEAD_B (never HEAD_A).
+            rec = _read_ci_event(db)
+            self.assertEqual(rec["head"], "bbbbbbb")
+            self.assertEqual(rec["status"], "passed")
+            self.assertEqual(len(captured), 1)
+            self.assertIn("head=bbbbbbb", captured[0])
+            self.assertNotIn("aaaaaaa", captured[0])
 
 
 if __name__ == "__main__":

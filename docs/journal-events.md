@@ -177,9 +177,15 @@ dedupe_key=<sha256>`); direct DB INSERTs are forbidden per
 
 | Event          | Typical fields                                            | Writer    | Emitted by | Required for |
 |----------------|-----------------------------------------------------------|-----------|------------|--------------|
-| `ci_completed` | `pr`, `repo`, `status`, `duration_sec`                    | secretary | secretary  | E4           |
+| `ci_completed` | `pr`, `repo`, `status`, `duration_sec`, `head`            | secretary | secretary  | E4           |
 
-`status` ∈ `{passed, failed, incomplete, canceled}`. As of Issue #224
+`status` ∈ `{passed, failed, incomplete, canceled}`. `head` (Issue #636)
+is the short (7-char) sha of the head whose CI verdict this event
+records, or `null` when it could not be resolved; with `--merge-watch`
+a new commit pushed to the PR branch makes `tools/pr_watch.py` loop back
+to ci-watch and emit a fresh `ci_completed` (and `CI_COMPLETED` peer
+message) for the new `head`, so the secretary never approves a merge
+against a stale verdict. As of Issue #224
 the value is derived from `gh pr checks <pr> --json bucket,state,name`
 (per-check `bucket`, whose documented values are
 `{pass, fail, pending, skipping, cancel}`) rather than the gh process'

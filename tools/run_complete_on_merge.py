@@ -202,16 +202,21 @@ def _resolve_repo() -> str:
 def fetch_pr_view(pr: int, repo: str) -> dict:
     """Return the parsed `gh pr view` payload for the given PR.
 
-    Fields requested: ``number,url,state,mergedAt,mergeCommit,headRefName``.
-    Raises ``RuntimeError`` if gh fails or the JSON is unparseable —
-    callers (CLI / merge-watch) are expected to surface that and retry
-    or exit.
+    Fields requested:
+    ``number,url,state,mergedAt,mergeCommit,headRefName,headRefOid``.
+    Issue #636 added ``headRefOid`` so pr_watch's merge-watch loop can
+    detect a new commit pushed to the PR branch (the head moving) and
+    loop back to ci-watch instead of silently sitting on a stale CI
+    verdict. Raises ``RuntimeError`` if gh fails or the JSON is
+    unparseable — callers (CLI / merge-watch) are expected to surface
+    that and retry or exit.
     """
     proc = subprocess.run(
         [
             "gh", "pr", "view", str(pr),
             "--repo", repo,
-            "--json", "number,url,state,mergedAt,mergeCommit,headRefName",
+            "--json",
+            "number,url,state,mergedAt,mergeCommit,headRefName,headRefOid",
         ],
         capture_output=True, text=True, encoding="utf-8", check=False,  # gh emits UTF-8; locale decode (cp932) corrupts/crashes (#537)
     )
@@ -308,6 +313,10 @@ def complete_on_merge(
 
     pr_url = pr_view.get("url") or ""
     head_ref = pr_view.get("headRefName")
+    # Issue #636: the head commit OID (PR branch tip at merge time). Distinct
+    # from the merge commit below — recorded short on the pr_merged event so
+    # the secretary can tell which head the merge corresponds to.
+    head_short = _short_sha(pr_view.get("headRefOid"))
     merge_commit = pr_view.get("mergeCommit") or {}
     commit_full = (merge_commit.get("oid") if isinstance(merge_commit, dict)
                    else None)
@@ -408,6 +417,8 @@ def complete_on_merge(
                     "repo": repo,
                     "pr_url": pr_url,
                     "merge_commit": commit_full,
+                    # Issue #636: short head sha (branch tip that was merged).
+                    "head": head_short,
                     "merged_at": merged_at,
                     "pattern": pattern,
                     "auto_completed": False,
