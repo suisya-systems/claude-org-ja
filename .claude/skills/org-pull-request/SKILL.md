@@ -87,9 +87,9 @@ pr-watch から `PR_MERGED_HEAD_UNCONFIRMED: PR #<n> (head=<merged_short>, last 
 - **人間提示文（例）**: `PR #<n> は CI 未確認 head (<merged_short>) でマージされました。最後に CI で確認された head は <baseline_short> です。手動で head sha を確認し、post-merge cleanup を進めて良いか判断してください。`
 - **journal イベント追記**（attention 通知用、CLAUDE.md「secretary が user の判断を待っている状態を通知する」節と同 emit 形）:
   ```bash
-  bash tools/journal_append.sh notify_sent kind=pr_merged_head_unconfirmed task_id=<task_id> gate=ci_unconfirmed_head_gate note="PR #<PR> merged at unconfirmed head <merged_short> (last CI-confirmed <baseline_short>)"
+  bash tools/journal_append.sh notify_sent kind=awaiting_user task_id=<task_id> gate=ci_unconfirmed_head_gate note="PR #<PR> merged at unconfirmed head <merged_short> (last CI-confirmed <baseline_short>)"
   ```
-  attention watcher classifier はこの emit を **severity `urgent`（即時ビープ）** として拾う（fail-closed シグナルのため `PR_MERGE_WATCH_TIMEOUT` 等の失敗系と同等の即時通知扱い。`ci_green_merge_gate` の awaiting_user とは別経路で、CI green を根拠とした merge 承認ではなく「マージ済みだが CI 未確認 head」の事後確認 gate）
+  attention watcher classifier はこの emit を `kind=awaiting_user` → `secretary_awaiting_user` subkind として認識し **severity `urgent`（即時ビープ）** として拾う（CLAUDE.md「secretary が user の判断を待っている状態を通知する」節の canonical 形）。`gate` 値が `ci_unconfirmed_head_gate` であることで `worker_completed` / `ci_green_merge_gate` / `escalation_to_user` / `escalation_reply_forward` の既存 4 gate と区別される（CI green 根拠の merge 承認ではなく「マージ済みだが CI 未確認 head」の事後確認 gate）
 - ユーザーが head 確認の結果「進めて良い」と明示判断したら、その時点で 2b-ii の post-merge cleanup へ手動で進む（`tools/run_complete_on_merge.py --pr <PR>` を含む通常の手順。`PR_MERGED` を受領しないまま進めるため、pattern B / C の StateWriter ブロックも窓口側で明示的に走らせる）。ユーザーが「マージを取り消す」「revert する」等の指示を出した場合は通常の `gh pr` 操作で対処し、cleanup は実行しない
 - **既存の `PR_MERGED` / `PR_MERGED_NO_RUN` 経路は本節の影響を受けない**: 通常の clean merge は `PR_MERGED` プレフィックスで届き 2b-ii へ進む。`PR_MERGED_NO_RUN` は run 行未解決の失敗系で従来どおり人間判断（本節は CI 未確認 head の新規プレフィックスのみを追加するもので、既存 2 経路を変更しない）
 
