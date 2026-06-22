@@ -21,7 +21,7 @@ claude-org-ja は、Claude Code を 1 つの窓口から複数のワーカーへ
 
 ## すぐ試す
 
-前提ツール（git / claude / gh / jq / Python）が入っていれば、1 行のコマンドでクローンとセットアップができます。Node.js は renga（オプションのフォールバック経路）を入れて使う場合にのみ必要です。
+前提ツール（git / claude / gh / jq / Python）が入っていれば、1 行のコマンドでクローンとセットアップができます。
 
 ```bash
 # macOS / Linux
@@ -47,7 +47,7 @@ claude-org-runtime org up                                # 窓口（Secretary）
 
 ### renga で起動する場合
 
-通常は `claude-org-runtime org up` で起動します。renga は、claude-org-ja に合わせて開発された、Windows・Linux・macOS 対応のターミナル作業環境です（[GitHub](https://github.com/suisya-systems/renga) / [npm](https://www.npmjs.com/package/@suisya-systems/renga)）。複数の Claude Code ペインを 1 つの画面に並べ、窓口・ディスパッチャー・ワーカーのペイン管理と、ペイン同士の連絡を扱います。画面全体でペインの動きを見ながら起動したい場合は、renga を使って起動できます。クローン後のディレクトリで次を実行します。
+通常は `claude-org-runtime org up` で起動します。renga は、claude-org-ja に合わせて開発された、Windows・Linux・macOS 対応のターミナル作業環境です（[GitHub](https://github.com/suisya-systems/renga) / [npm](https://www.npmjs.com/package/@suisya-systems/renga)）。複数の Claude Code ペインを 1 つの画面に並べ、窓口・ディスパッチャー・ワーカーのペイン管理と、ペイン同士の連絡を扱います。画面全体でペインの動きを見ながら起動したい場合は、renga を使って起動できます。renga は npm パッケージなので、別途 Node.js（LTS 推奨）のインストールが必要です。クローン後のディレクトリで次を実行します。
 
 ```bash
 # macOS / Linux
