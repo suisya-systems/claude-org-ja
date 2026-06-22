@@ -216,9 +216,9 @@ $reqFile = Join-Path $Dir 'requirements.txt'
 $pyCmd = $null
 if ((Test-Path -LiteralPath $pyprojectFile) -or (Test-Path -LiteralPath $reqFile)) {
     $pyCandidates = @(
-        ,@('python'),
-        ,@('python3'),
-        ,@('py', '-3')
+        @('python'),
+        @('python3'),
+        @('py', '-3')
     )
     foreach ($cand in $pyCandidates) {
         if (-not (Get-Command $cand[0] -ErrorAction SilentlyContinue)) { continue }
