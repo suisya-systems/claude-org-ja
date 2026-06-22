@@ -91,6 +91,12 @@
       "output": "../../.dispatcher/references/worker-monitoring.md",
       "mode": "template+fragment",
       "allowlist": "none"
+    },
+    {
+      "source": "../../.claude/skills/pr-watch-pane/SKILL.md.in",
+      "output": "../../.claude/skills/pr-watch-pane/SKILL.md",
+      "mode": "template",
+      "allowlist": "per-entry-rename"
     }
   ],
   "exclude": []
