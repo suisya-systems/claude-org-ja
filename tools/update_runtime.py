@@ -86,7 +86,7 @@ def _is_already_current(installed: str, latest: str) -> bool:
 
 def _pip_install_target(pin: str | None) -> str:
     """Build the ``<package><pin-spec>`` install target, e.g.
-    ``claude-org-runtime>=0.1.29,<0.2``. Single source of truth so the
+    ``claude-org-runtime>=0.1.30,<0.2``. Single source of truth so the
     dry-run echo and the real pip argv use the identical string. This
     mirrors check_runtime_version.main()'s upgrade_target construction
     so pip resolves within the pin window."""
