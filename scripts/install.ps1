@@ -122,6 +122,44 @@ Install the listed tools, then re-run this installer.
     exit 1
 }
 
+# Shared Python 3.10+ probe (the runtime's pyproject pins
+# `requires-python = ">=3.10"`). Asking Python itself via version_info -- not
+# parsing a bare `--version` -- exactly rejects Python 2.x / <3.10, and also
+# rejects the Microsoft Store python stub (which fails the probe), so an
+# unusable interpreter never counts as a working broker launcher.
+$pyVersionProbe = 'import sys; sys.exit(0 if sys.version_info[:2] >= (3, 10) else 1)'
+
+# No-usable-launcher guard: the org starts via either the broker (needs a
+# Python 3.10+ interpreter for `claude-org-runtime org up`) or renga. renga is
+# optional and Python is only soft-handled below, so a box with NEITHER would
+# otherwise reach a "success" whose final step points at an uninstalled
+# launcher. Only probe Python when renga is absent (so a renga-present box
+# never touches the Microsoft Store python stub), then fail fast if neither
+# launcher exists. The later $pyCmd probe can't be reused here: it runs after
+# the clone and only when a dep file exists (never under -DryRun).
+if (-not $rengaPresent) {
+    $pythonAvailable = $false
+    foreach ($cand in @(@('python'), @('python3'), @('py', '-3'))) {
+        if (-not (Get-Command $cand[0] -ErrorAction SilentlyContinue)) { continue }
+        $rest = if ($cand.Length -gt 1) { $cand[1..($cand.Length - 1)] } else { @() }
+        try {
+            & $cand[0] @($rest + @('-c', $pyVersionProbe)) > $null 2>&1
+            if ($LASTEXITCODE -eq 0) { $pythonAvailable = $true; break }
+        } catch {
+            # candidate is on PATH but failed to launch; try the next one
+        }
+    }
+    if (-not $pythonAvailable) {
+        [Console]::Error.WriteLine('install.ps1: no usable launcher found. The org starts via either:')
+        [Console]::Error.WriteLine("  - the broker (default): needs a Python 3.10+ interpreter for 'claude-org-runtime org up', or")
+        [Console]::Error.WriteLine("  - renga: set ORG_TRANSPORT=renga and run 'renga --layout ops'.")
+        [Console]::Error.WriteLine('No Python 3.10+ interpreter and no renga are available. Install at least one and re-run:')
+        [Console]::Error.WriteLine('  - Python 3.10+ (broker): https://www.python.org/downloads/')
+        [Console]::Error.WriteLine('  - renga (fallback):      npm install -g @suisya-systems/renga@0.18.0')
+        exit 1
+    }
+}
+
 # --- Clone ---------------------------------------------------------------
 
 if (Test-Path -LiteralPath $Dir) {
@@ -234,12 +272,13 @@ $reqFile = Join-Path $Dir 'requirements.txt'
 # boxes still carrying 2.7. Each candidate is its own token list so
 # the launcher flag rides with the executable through Invoke-Step.
 #
-# Each candidate is then probed with `--version` to weed out the
-# Microsoft Store App Execution Alias stub — Windows preinstalls
-# `python.exe` under `...\WindowsApps\` even without a real Python,
-# and that stub exits non-zero (or pops the Store) on any real call.
-# A successful `--version` proves a working interpreter is on the
-# other end while still accepting genuine Store-installed Pythons.
+# Each candidate is then probed with the shared $pyVersionProbe (Python
+# 3.10+ via version_info) to weed out both the Microsoft Store App Execution
+# Alias stub — Windows preinstalls `python.exe` under `...\WindowsApps\` even
+# without a real Python, and that stub exits non-zero (or pops the Store) on
+# any real call — and any Python 2.x / <3.10 that couldn't install the
+# runtime anyway. A successful probe proves a usable interpreter is on the
+# other end. (Same probe the no-usable-launcher guard above uses.)
 $pyCmd = $null
 if ((Test-Path -LiteralPath $pyprojectFile) -or (Test-Path -LiteralPath $reqFile)) {
     $pyCandidates = @(
@@ -251,7 +290,7 @@ if ((Test-Path -LiteralPath $pyprojectFile) -or (Test-Path -LiteralPath $reqFile
         if (-not (Get-Command $cand[0] -ErrorAction SilentlyContinue)) { continue }
         $rest = if ($cand.Length -gt 1) { $cand[1..($cand.Length - 1)] } else { @() }
         try {
-            & $cand[0] @($rest + @('--version')) > $null 2>&1
+            & $cand[0] @($rest + @('-c', $pyVersionProbe)) > $null 2>&1
             if ($LASTEXITCODE -eq 0) { $pyCmd = $cand; break }
         } catch {
             # candidate is on PATH but failed to launch; try the next one

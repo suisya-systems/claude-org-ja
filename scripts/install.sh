@@ -286,6 +286,51 @@ MSG
   exit 1
 fi
 
+# Detect a Python 3.10+ interpreter up front: it is both the broker launcher
+# (`claude-org-runtime org up`) and what installs the runtime below, whose
+# pyproject pins `requires-python = ">=3.10"`. Ask Python itself via
+# version_info rather than parsing a bare `--version`: that exactly rejects
+# Python 2.x / <3.10, and also rejects the Microsoft Store App Execution
+# Alias stub on Windows (`python.exe` under `WindowsApps\` that exits
+# non-zero or pops the Store on real calls), so an unusable interpreter never
+# counts as a working broker launcher. `py -3` is the Windows-specific
+# fallback for stock boxes that ship only the launcher. PY_LAUNCHER carries
+# the optional `-3` so the unquoted expansion in `run $PY $PY_LAUNCHER ...`
+# drops empty when not needed.
+PY=""
+PY_LAUNCHER=""
+PY_MIN_CHECK='import sys; sys.exit(0 if sys.version_info[:2] >= (3, 10) else 1)'
+for cand in python3 python; do
+  if command -v "$cand" >/dev/null 2>&1 && "$cand" -c "$PY_MIN_CHECK" >/dev/null 2>&1; then
+    PY="$cand"; break
+  fi
+done
+if [[ -z "$PY" && "$IS_WINDOWS_BASH" == "1" ]]; then
+  if command -v py >/dev/null 2>&1 && py -3 -c "$PY_MIN_CHECK" >/dev/null 2>&1; then
+    PY="py"; PY_LAUNCHER="-3"
+  fi
+fi
+
+# No-usable-launcher guard: the org starts via either the broker (needs a
+# Python 3.10+ interpreter for `claude-org-runtime org up`) or renga. renga
+# is optional and Python is only soft-warned below, so a box with NEITHER
+# would otherwise sail past every check to a "success" whose final step
+# points at an uninstalled launcher. Fail fast here, mirroring the prereq
+# abort above.
+if [[ -z "$RENGA_BIN" && -z "$PY" ]]; then
+  cat <<'MSG' >&2
+install.sh: no usable launcher found. The org starts via either:
+  - the broker (default): needs a Python 3.10+ interpreter for
+    'claude-org-runtime org up', or
+  - renga: set ORG_TRANSPORT=renga and run 'renga --layout ops'.
+No Python 3.10+ interpreter and no renga are available. Install at least one
+and re-run this installer:
+  - Python 3.10+ (broker): https://www.python.org/downloads/ or your OS package manager
+  - renga (fallback):      npm install -g @suisya-systems/renga@0.18.0
+MSG
+  exit 1
+fi
+
 # --- Clone -----------------------------------------------------------------
 
 if [[ -e "$TARGET_DIR" ]]; then
@@ -368,25 +413,8 @@ fi
 # claude-org-runtime package. Phase 5c (Issue #130) moved the install
 # path from `requirements.txt` to `pyproject.toml`; we prefer the
 # editable install so the dep set comes from the canonical source.
-# Probe each candidate with `--version` so the Microsoft Store App
-# Execution Alias stub on Windows (`python.exe` under `WindowsApps\`
-# that exits non-zero or pops the Store on real calls) doesn't get
-# selected. `py -3` is the Windows-specific fallback for stock boxes
-# that ship only the launcher; pinning `-3` skips any leftover 2.7.
-# PY_LAUNCHER carries the optional `-3` so the unquoted expansion in
-# `run $PY $PY_LAUNCHER ...` drops empty when not needed.
-PY=""
-PY_LAUNCHER=""
-for cand in python3 python; do
-  if command -v "$cand" >/dev/null 2>&1 && "$cand" --version >/dev/null 2>&1; then
-    PY="$cand"; break
-  fi
-done
-if [[ -z "$PY" && "$IS_WINDOWS_BASH" == "1" ]]; then
-  if command -v py >/dev/null 2>&1 && py -3 --version >/dev/null 2>&1; then
-    PY="py"; PY_LAUNCHER="-3"
-  fi
-fi
+# PY / PY_LAUNCHER were detected up front (alongside the no-usable-launcher
+# guard); reuse them here.
 PYPROJECT_FILE="$TARGET_DIR/pyproject.toml"
 REQ_FILE="$TARGET_DIR/requirements.txt"
 
