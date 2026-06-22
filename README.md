@@ -21,7 +21,7 @@ claude-org-ja は、Claude Code を 1 つの窓口から複数のワーカーへ
 
 ## すぐ試す
 
-前提ツール（git / claude / gh / jq / Node.js / Python）が入っていれば、1 行のコマンドでクローンとセットアップができます。
+前提ツール（git / claude / gh / jq / Python）が入っていれば、1 行のコマンドでクローンとセットアップができます。Node.js は renga（オプションのフォールバック経路）を入れて使う場合にのみ必要です。
 
 ```bash
 # macOS / Linux

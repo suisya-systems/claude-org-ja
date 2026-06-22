@@ -7,7 +7,8 @@
 # This script:
 #   1. Checks for required commands (git, claude, gh, jq) and prints
 #      installation hints when something is missing. renga is optional
-#      (only needed for ORG_TRANSPORT=renga) and is skipped when absent.
+#      (only needed for ORG_TRANSPORT=renga), as are the node/npm used
+#      only to install it; all are skipped when absent.
 #   2. Clones suisya-systems/claude-org-ja (asks before reusing an
 #      existing directory).
 #   3. Runs `renga mcp install` (user-scope) when renga is present, so the
@@ -243,21 +244,22 @@ fi
 missing=0
 require_or_warn git    "https://git-scm.com/downloads" || missing=1
 require_or_warn claude "https://claude.ai/code (Claude Code CLI)" || missing=1
-# Surface node + npm as prereqs on Linux/macOS so a fresh WSL2 /
-# Ubuntu / macOS box doesn't follow the renga "npm install -g ..."
-# hint into a "command not found: npm" wall. On Windows / Git Bash,
-# renga can ship via npm shims, scoop, cargo, or standalone
-# installers (resolve_command's fallback ladder handles all of
-# those), so a global node/npm requirement there would be a
-# regression for working installs — leave that path's prereqs alone.
+# Probe node + npm on Linux/macOS, but treat them as OPTIONAL: their only
+# purpose here is to let a fresh WSL2 / Ubuntu / macOS box follow the renga
+# "npm install -g ..." hint, and renga itself is optional (the default
+# broker transport is pure Python and needs neither). So a missing node/npm
+# must not abort a broker-only install -- soft-warn and continue. On Windows
+# / Git Bash, renga can ship via npm shims, scoop, cargo, or standalone
+# installers (resolve_command's fallback ladder handles all of those), so
+# node/npm aren't probed there at all.
 if [[ "$IS_LINUX" == "1" || "$IS_MAC" == "1" ]]; then
   if [[ "$IS_LINUX" == "1" ]]; then
     NODE_HINT='install Node 20 LTS via nvm — https://github.com/nvm-sh/nvm (then: nvm install --lts)'
   else
     NODE_HINT='brew install node  (or use nvm: https://github.com/nvm-sh/nvm)'
   fi
-  require_or_warn node "$NODE_HINT" || missing=1
-  require_or_warn npm  "ships with Node — install Node first ($NODE_HINT)" || missing=1
+  optional_or_warn node "$NODE_HINT" "optional; only needed to install renga (ORG_TRANSPORT=renga)"
+  optional_or_warn npm  "ships with Node — install Node first ($NODE_HINT)" "optional; only needed to install renga (ORG_TRANSPORT=renga)"
 fi
 # renga is optional: the code-default broker transport never needs it, so
 # an absent renga must not abort the install. Probe it (a present renga is
