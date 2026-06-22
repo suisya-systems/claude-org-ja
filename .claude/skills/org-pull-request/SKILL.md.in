@@ -77,6 +77,19 @@ allowed-tools:
 
 窓口が Claude Code 内から `tools/pr-watch.sh` / `tools/pr-watch.ps1` を起動するときは、必ず Bash tool の `run_in_background: true` で投げる。`nohup ... &` + `disown` だけだと Claude Code の bash sub-shell が短命なため呼び出し終了と同時に pr-watch ごと kill され、CI 完了 event も peer 通知も一切飛ばなくなる（プロセスが消えていることに気付きづらく、ログファイルだけが空のまま残る）。特に `/clear` / [`/secretary-resume`](../secretary-resume/SKILL.md) 直後の fresh session ではこの罠を踏みやすい。`run_in_background: true` で投げれば完了通知（exit code 付き）が自動で届くので、CI 完了の検出経路がそちらでも担保される。
 
+### `PR_MERGED_HEAD_UNCONFIRMED` 受信時（人間確認 gate, Issue #639 / pr-watch #638）
+
+pr-watch から `PR_MERGED_HEAD_UNCONFIRMED: PR #<n> (head=<merged_short>, last CI-confirmed head=<baseline_short>)` を受け取ったら、**post-merge cleanup（2b-ii）に進まず人間確認を仰ぐ**。これは push と merge が pr-watch の poll 間に同時に滑り込み、CI 未確認の head で PR がマージされた終端ケース（merge は不可逆のため loopback 不能、pr-watch は fail-closed exit 9 で発信する。設計は PR #638）で、`PR_MERGED` / `PR_MERGED_NO_RUN` と並列の独立シグナル — `PR_MERGED` プレフィックスで auto-advance してはならない。
+
+- **人間提示文（例）**: `PR #<n> は CI 未確認 head (<merged_short>) でマージされました。最後に CI で確認された head は <baseline_short> です。手動で head sha を確認し、post-merge cleanup を進めて良いか判断してください。`
+- **journal イベント追記**（attention 通知用、CLAUDE.md「secretary が user の判断を待っている状態を通知する」節と同 emit 形）:
+  ```bash
+  bash tools/journal_append.sh notify_sent kind=pr_merged_head_unconfirmed task_id=<task_id> gate=ci_unconfirmed_head_gate note="PR #<PR> merged at unconfirmed head <merged_short> (last CI-confirmed <baseline_short>)"
+  ```
+  attention watcher classifier はこの emit を **severity `urgent`（即時ビープ）** として拾う（fail-closed シグナルのため `PR_MERGE_WATCH_TIMEOUT` 等の失敗系と同等の即時通知扱い。`ci_green_merge_gate` の awaiting_user とは別経路で、CI green を根拠とした merge 承認ではなく「マージ済みだが CI 未確認 head」の事後確認 gate）
+- ユーザーが head 確認の結果「進めて良い」と明示判断したら、その時点で 2b-ii の post-merge cleanup へ手動で進む（`tools/run_complete_on_merge.py --pr <PR>` を含む通常の手順。`PR_MERGED` を受領しないまま進めるため、pattern B / C の StateWriter ブロックも窓口側で明示的に走らせる）。ユーザーが「マージを取り消す」「revert する」等の指示を出した場合は通常の `gh pr` 操作で対処し、cleanup は実行しない
+- **既存の `PR_MERGED` / `PR_MERGED_NO_RUN` 経路は本節の影響を受けない**: 通常の clean merge は `PR_MERGED` プレフィックスで届き 2b-ii へ進む。`PR_MERGED_NO_RUN` は run 行未解決の失敗系で従来どおり人間判断（本節は CI 未確認 head の新規プレフィックスのみを追加するもので、既存 2 経路を変更しない）
+
 ## 2c. レビュー指摘 / CI 失敗のフィードバックループ
 
 人間がフィードバック・修正指示を出した場合、または CI が失敗してユーザーが「直してもらって」と指示した場合:
