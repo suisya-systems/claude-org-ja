@@ -16,12 +16,80 @@ param(
     [switch]$MergeWatch,
 
     [Parameter(Mandatory = $false)]
-    [switch]$NoMergeWatch
+    [switch]$NoMergeWatch,
+
+    # Wrapper-only flag (Issue #641): run in the foreground instead of
+    # self-re-execing into a detached process. Used for tests / debugging.
+    [Parameter(Mandatory = $false)]
+    [switch]$NoDetach
 )
 
 $ErrorActionPreference = 'Stop'
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ScriptPath = Join-Path $ScriptDir 'pr_watch.py'
+
+# Detach behavior (Issue #641) — mirror of tools/pr-watch.sh.
+# ----------------------------------------------------------------------
+# By default, self-re-exec into an independent, hidden process and return
+# immediately so the watcher survives the parent session closing (the
+# Windows analogue of the POSIX SIGHUP trap: a closing console sends
+# CTRL_CLOSE to attached children). The child re-runs this script with
+# PR_WATCH_DETACHED=1 set, which routes it down the foreground branch. The
+# re-exec is idempotent, so an outer background launch becomes a no-op.
+#
+#   -NoDetach           Run in the foreground (tests / debugging).
+#   $env:PR_WATCH_LOG   Override the log path. Default:
+#                       <repo-root>\.state\pr-watch-<PR>.log
+#   $env:PR_WATCH_DETACHED  Internal re-entry guard set by the re-exec.
+if (-not $env:PR_WATCH_DETACHED -and -not $NoDetach) {
+    $RepoRoot = Split-Path -Parent $ScriptDir
+    if ($env:PR_WATCH_LOG) {
+        $LogPath = $env:PR_WATCH_LOG
+    }
+    else {
+        $LogPath = Join-Path (Join-Path $RepoRoot '.state') "pr-watch-$PR.log"
+    }
+    $LogDir = Split-Path -Parent $LogPath
+    if ($LogDir -and -not (Test-Path -LiteralPath $LogDir)) {
+        New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+    }
+
+    # Rebuild the child argument list, dropping -NoDetach (never re-passed).
+    $childArgs = @('-NoProfile', '-File', $PSCommandPath, '-PR', $PR)
+    if ($PSBoundParameters.ContainsKey('Repo') -and $Repo) {
+        $childArgs += @('-Repo', $Repo)
+    }
+    if ($PSBoundParameters.ContainsKey('Interval')) {
+        $childArgs += @('-Interval', $Interval)
+    }
+    if ($MergeWatch) { $childArgs += '-MergeWatch' }
+    if ($NoMergeWatch) { $childArgs += '-NoMergeWatch' }
+
+    # Resolve the running PowerShell host so the child uses the same engine.
+    $pwshExe = (Get-Process -Id $PID).Path
+    if (-not $pwshExe) { $pwshExe = 'pwsh' }
+
+    # The child inherits this env var and so takes the foreground branch.
+    $env:PR_WATCH_DETACHED = '1'
+    # Start-Process spawns an independent process that outlives this one;
+    # a hidden window detaches it from the parent console. stdout goes to
+    # the log; stderr goes to "<log>.err" because Start-Process refuses to
+    # point both streams at the same file.
+    $errPath = "$LogPath.err"
+    # Build one explicitly double-quoted command line: passing a string[]
+    # to -ArgumentList joins the elements with spaces WITHOUT re-quoting
+    # them, so a -File path containing spaces (e.g. C:\Users\First Last\..)
+    # would be split and the child would fail to launch while the parent
+    # still reports "detached".
+    $argLine = ($childArgs | ForEach-Object {
+        '"' + ([string]$_ -replace '"', '""') + '"'
+    }) -join ' '
+    $proc = Start-Process -FilePath $pwshExe -ArgumentList $argLine `
+        -WindowStyle Hidden -PassThru `
+        -RedirectStandardOutput $LogPath -RedirectStandardError $errPath
+    Write-Output "pr-watch detached: pid=$($proc.Id) log=$LogPath"
+    exit 0
+}
 
 # Probe interpreters by actually running `--version`, not just by checking
 # Get-Command. Some Windows boxes have a stale `py.exe` whose default 3.x
