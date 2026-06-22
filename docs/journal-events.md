@@ -175,9 +175,10 @@ dedupe_key=<sha256>`); direct DB INSERTs are forbidden per
 
 ### CI
 
-| Event          | Typical fields                                            | Writer    | Emitted by | Required for |
-|----------------|-----------------------------------------------------------|-----------|------------|--------------|
-| `ci_completed` | `pr`, `repo`, `status`, `duration_sec`, `head`            | secretary | secretary  | E4           |
+| Event                  | Typical fields                                            | Writer    | Emitted by | Required for |
+|------------------------|-----------------------------------------------------------|-----------|------------|--------------|
+| `ci_completed`         | `pr`, `repo`, `status`, `duration_sec`, `head`            | secretary | secretary  | E4           |
+| `pr_watch_pane_started`| `pr`, `repo`, `pane_id`                                   | secretary | secretary  | —            |
 
 `status` ∈ `{passed, failed, incomplete, canceled}`. `head` (Issue #636)
 is the short (7-char) sha of the head whose CI verdict this event
@@ -195,6 +196,13 @@ with a real CI failure. `failed` requires at least one `fail` or
 still `pending` (or has an unrecognized bucket, or the JSON probe
 itself errored — see the fallback rules in `tools/pr_watch.py`);
 `canceled` is emitted only when the parent receives SIGINT.
+
+`pr_watch_pane_started` is a best-effort audit row written by the
+`/pr-watch-pane` skill (secretary) when it spawns a CI/merge-watch pane
+(`name="pr-watch-<PR>"`, `role="watcher"`) running `tools/pr-watch.sh`.
+It records that the watcher pane was launched; the actual CI verdict
+still arrives later as `ci_completed` from `tools/pr_watch.py` inside
+that pane.
 
 ### Session lifecycle
 
