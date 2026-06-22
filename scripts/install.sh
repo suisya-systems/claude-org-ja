@@ -5,12 +5,14 @@
 #   bash scripts/install.sh [--dir <path>] [--dry-run] [--skip-mcp]
 #
 # This script:
-#   1. Checks for required commands (git, claude, renga, gh, jq) and prints
-#      installation hints when something is missing.
+#   1. Checks for required commands (git, claude, gh, jq) and prints
+#      installation hints when something is missing. renga is optional
+#      (only needed for ORG_TRANSPORT=renga), as are the node/npm used
+#      only to install it; all are skipped when absent.
 #   2. Clones suisya-systems/claude-org-ja (asks before reusing an
 #      existing directory).
-#   3. Runs `renga mcp install` (user-scope) so the renga-peers MCP
-#      server is registered with Claude Code.
+#   3. Runs `renga mcp install` (user-scope) when renga is present, so the
+#      renga-peers MCP server is registered with Claude Code.
 #   4. Prints next steps.
 #
 # It never auto-installs missing tools and never bypasses Claude Code's
@@ -198,6 +200,29 @@ require_or_warn() {
   return 1
 }
 
+optional_or_warn() {
+  # Soft variant of require_or_warn for tools the default (broker)
+  # transport never needs. Resolves with the same Windows fallback ladder
+  # and PATH-prepend so a *present* tool stays usable by the later
+  # `renga mcp install` step, but an *absent* tool prints a soft [skip]
+  # note and NEVER flips `missing` — the install proceeds without it.
+  # $1 = command name, $2 = install hint, $3 = short reason it's optional.
+  local cmd="$1" hint="$2" why="$3" resolved="" parent
+  if resolved=$(resolve_command "$cmd"); then
+    echo "  [ok]   $cmd: $resolved"
+    if [[ "$IS_WINDOWS_BASH" == "1" ]]; then
+      parent=$(dirname -- "$resolved")
+      case ":$PATH:" in
+        *":$parent:"*) ;;
+        *) PATH="$parent:$PATH" ;;
+      esac
+    fi
+    return 0
+  fi
+  echo "  [skip] $cmd not found - $why. Install hint: $hint"
+  return 0
+}
+
 echo "== claude-org-ja installer =="
 echo
 
@@ -219,23 +244,27 @@ fi
 missing=0
 require_or_warn git    "https://git-scm.com/downloads" || missing=1
 require_or_warn claude "https://claude.ai/code (Claude Code CLI)" || missing=1
-# Surface node + npm as prereqs on Linux/macOS so a fresh WSL2 /
-# Ubuntu / macOS box doesn't follow the renga "npm install -g ..."
-# hint into a "command not found: npm" wall. On Windows / Git Bash,
-# renga can ship via npm shims, scoop, cargo, or standalone
-# installers (resolve_command's fallback ladder handles all of
-# those), so a global node/npm requirement there would be a
-# regression for working installs — leave that path's prereqs alone.
+# Probe node + npm on Linux/macOS, but treat them as OPTIONAL: their only
+# purpose here is to let a fresh WSL2 / Ubuntu / macOS box follow the renga
+# "npm install -g ..." hint, and renga itself is optional (the default
+# broker transport is pure Python and needs neither). So a missing node/npm
+# must not abort a broker-only install -- soft-warn and continue. On Windows
+# / Git Bash, renga can ship via npm shims, scoop, cargo, or standalone
+# installers (resolve_command's fallback ladder handles all of those), so
+# node/npm aren't probed there at all.
 if [[ "$IS_LINUX" == "1" || "$IS_MAC" == "1" ]]; then
   if [[ "$IS_LINUX" == "1" ]]; then
     NODE_HINT='install Node 20 LTS via nvm — https://github.com/nvm-sh/nvm (then: nvm install --lts)'
   else
     NODE_HINT='brew install node  (or use nvm: https://github.com/nvm-sh/nvm)'
   fi
-  require_or_warn node "$NODE_HINT" || missing=1
-  require_or_warn npm  "ships with Node — install Node first ($NODE_HINT)" || missing=1
+  optional_or_warn node "$NODE_HINT" "optional; only needed to install renga (ORG_TRANSPORT=renga)"
+  optional_or_warn npm  "ships with Node — install Node first ($NODE_HINT)" "optional; only needed to install renga (ORG_TRANSPORT=renga)"
 fi
-require_or_warn renga  "npm install -g @suisya-systems/renga@0.18.0" || missing=1
+# renga is optional: the code-default broker transport never needs it, so
+# an absent renga must not abort the install. Probe it (a present renga is
+# still wired into `renga mcp install` below) but never set `missing`.
+optional_or_warn renga "npm install -g @suisya-systems/renga@0.18.0" "optional; only needed when ORG_TRANSPORT=renga"
 require_or_warn gh     "https://cli.github.com/" || missing=1
 require_or_warn jq     "apt install jq / brew install jq / https://jqlang.org/download/" || missing=1
 # Capture the absolute path so the later `run renga mcp install` can
@@ -253,6 +282,51 @@ if [[ "$missing" == "1" ]]; then
 install.sh: one or more prerequisites are missing.
 Install the listed tools, then re-run this installer.
 (This script intentionally does not auto-install dependencies.)
+MSG
+  exit 1
+fi
+
+# Detect a Python 3.10+ interpreter up front: it is both the broker launcher
+# (`claude-org-runtime org up`) and what installs the runtime below, whose
+# pyproject pins `requires-python = ">=3.10"`. Ask Python itself via
+# version_info rather than parsing a bare `--version`: that exactly rejects
+# Python 2.x / <3.10, and also rejects the Microsoft Store App Execution
+# Alias stub on Windows (`python.exe` under `WindowsApps\` that exits
+# non-zero or pops the Store on real calls), so an unusable interpreter never
+# counts as a working broker launcher. `py -3` is the Windows-specific
+# fallback for stock boxes that ship only the launcher. PY_LAUNCHER carries
+# the optional `-3` so the unquoted expansion in `run $PY $PY_LAUNCHER ...`
+# drops empty when not needed.
+PY=""
+PY_LAUNCHER=""
+PY_MIN_CHECK='import sys; sys.exit(0 if sys.version_info[:2] >= (3, 10) else 1)'
+for cand in python3 python; do
+  if command -v "$cand" >/dev/null 2>&1 && "$cand" -c "$PY_MIN_CHECK" >/dev/null 2>&1; then
+    PY="$cand"; break
+  fi
+done
+if [[ -z "$PY" && "$IS_WINDOWS_BASH" == "1" ]]; then
+  if command -v py >/dev/null 2>&1 && py -3 -c "$PY_MIN_CHECK" >/dev/null 2>&1; then
+    PY="py"; PY_LAUNCHER="-3"
+  fi
+fi
+
+# No-usable-launcher guard: the org starts via either the broker (needs a
+# Python 3.10+ interpreter for `claude-org-runtime org up`) or renga. renga
+# is optional and Python is only soft-warned below, so a box with NEITHER
+# would otherwise sail past every check to a "success" whose final step
+# points at an uninstalled launcher. Fail fast here, mirroring the prereq
+# abort above.
+if [[ -z "$RENGA_BIN" && -z "$PY" ]]; then
+  cat <<'MSG' >&2
+install.sh: no usable launcher found. The org starts via either:
+  - the broker (default): needs a Python 3.10+ interpreter for
+    'claude-org-runtime org up', or
+  - renga: set ORG_TRANSPORT=renga and run 'renga --layout ops'.
+No Python 3.10+ interpreter and no renga are available. Install at least one
+and re-run this installer:
+  - Python 3.10+ (broker): https://www.python.org/downloads/ or your OS package manager
+  - renga (fallback):      npm install -g @suisya-systems/renga@0.18.0
 MSG
   exit 1
 fi
@@ -315,6 +389,14 @@ fi
 
 if [[ "$SKIP_MCP" == "1" ]]; then
   echo "Skipping 'renga mcp install' (--skip-mcp)."
+elif [[ -z "$RENGA_BIN" ]]; then
+  # renga is optional and not installed: the default broker transport
+  # doesn't use it, so this is not an error. Skip the MCP registration and
+  # tell the user how to enable it later if they want the renga transport.
+  echo
+  echo "Skipping 'renga mcp install': renga is not installed (optional)."
+  echo "It is only needed for the renga transport (ORG_TRANSPORT=renga)."
+  echo "To enable it later: npm install -g @suisya-systems/renga@0.18.0 && renga mcp install"
 else
   echo
   echo "Registering renga-peers MCP with Claude Code (user-scope)..."
@@ -331,25 +413,8 @@ fi
 # claude-org-runtime package. Phase 5c (Issue #130) moved the install
 # path from `requirements.txt` to `pyproject.toml`; we prefer the
 # editable install so the dep set comes from the canonical source.
-# Probe each candidate with `--version` so the Microsoft Store App
-# Execution Alias stub on Windows (`python.exe` under `WindowsApps\`
-# that exits non-zero or pops the Store on real calls) doesn't get
-# selected. `py -3` is the Windows-specific fallback for stock boxes
-# that ship only the launcher; pinning `-3` skips any leftover 2.7.
-# PY_LAUNCHER carries the optional `-3` so the unquoted expansion in
-# `run $PY $PY_LAUNCHER ...` drops empty when not needed.
-PY=""
-PY_LAUNCHER=""
-for cand in python3 python; do
-  if command -v "$cand" >/dev/null 2>&1 && "$cand" --version >/dev/null 2>&1; then
-    PY="$cand"; break
-  fi
-done
-if [[ -z "$PY" && "$IS_WINDOWS_BASH" == "1" ]]; then
-  if command -v py >/dev/null 2>&1 && py -3 --version >/dev/null 2>&1; then
-    PY="py"; PY_LAUNCHER="-3"
-  fi
-fi
+# PY / PY_LAUNCHER were detected up front (alongside the no-usable-launcher
+# guard); reuse them here.
 PYPROJECT_FILE="$TARGET_DIR/pyproject.toml"
 REQ_FILE="$TARGET_DIR/requirements.txt"
 
@@ -481,9 +546,31 @@ else
   BROKER_LAUNCH="claude-org-runtime org up"
 fi
 LAUNCH_STEP="$BROKER_LAUNCH                                    # launch the org (broker daemon + Secretary pane)"
-LAUNCH_NOTE="
+# Tailor the renga fallback note to whether renga is actually installed.
+# renga is optional, so when it's absent the note must say how to install
+# it first rather than implying it's ready to use.
+if [[ -n "$RENGA_BIN" ]]; then
+  LAUNCH_NOTE="
 To fall back to renga, set ORG_TRANSPORT=renga and run 'renga --layout ops'
 instead (see docs/getting-started.md)."
+else
+  LAUNCH_NOTE="
+renga (optional) is not installed. To use the renga transport, first install it
+(npm install -g @suisya-systems/renga@0.18.0 && renga mcp install), then set
+ORG_TRANSPORT=renga and run 'renga --layout ops' (see docs/getting-started.md)."
+fi
+# When the runtime probe below falls back to the renga launcher (legacy ref or
+# a missing runtime), renga becomes the *only* working launcher for this
+# checkout. renga is now optional, so if it's absent we must not print a bare
+# 'renga --layout ops' with an empty note — surface an install hint instead.
+if [[ -n "$RENGA_BIN" ]]; then
+  RENGA_LAUNCHER_NOTE=""
+else
+  RENGA_LAUNCHER_NOTE="
+renga is not installed, but this checkout's runtime predates
+'claude-org-runtime org up', so renga is the launcher here. Install it first:
+  npm install -g @suisya-systems/renga@0.18.0 && renga mcp install"
+fi
 if [[ "$DRY_RUN" != "1" ]]; then
   # Real install: only advertise `org up` if the installed runtime can
   # actually provide it. Otherwise (legacy pinned ref, or no runtime
@@ -496,7 +583,7 @@ if [[ "$DRY_RUN" != "1" ]]; then
     # shipped with. (install.ps1 gets this for free: it only detects a
     # python when a dep file exists.)
     LAUNCH_STEP="renga --layout ops                                           # launch the Secretary pane (this ref predates 'claude-org-runtime org up')"
-    LAUNCH_NOTE=""
+    LAUNCH_NOTE="$RENGA_LAUNCHER_NOTE"
   else
     # Probe the runtime we just installed for this checkout (venv on
     # Linux/macOS, --user interpreter on Windows / Git Bash).
@@ -509,7 +596,7 @@ if [[ "$DRY_RUN" != "1" ]]; then
     if ! { [[ -n "$PROBE_PY" ]] \
            && "$PROBE_PY" $PY_LAUNCHER -m claude_org_runtime.cli org up --help >/dev/null 2>&1; }; then
       LAUNCH_STEP="renga --layout ops                                           # launch the Secretary pane (this ref predates 'claude-org-runtime org up')"
-      LAUNCH_NOTE=""
+      LAUNCH_NOTE="$RENGA_LAUNCHER_NOTE"
     fi
   fi
 fi

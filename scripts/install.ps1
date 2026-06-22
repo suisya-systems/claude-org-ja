@@ -4,12 +4,13 @@
 #   pwsh -NoProfile -File scripts/install.ps1 [-Dir <path>] [-DryRun] [-SkipMcp]
 #
 # This script:
-#   1. Checks for required commands (git, claude, renga, gh, jq) and prints
-#      installation hints when something is missing.
+#   1. Checks for required commands (git, claude, gh, jq) and prints
+#      installation hints when something is missing. renga is optional
+#      (only needed for ORG_TRANSPORT=renga) and is skipped when absent.
 #   2. Clones suisya-systems/claude-org-ja (asks before reusing an
 #      existing directory).
-#   3. Runs `renga mcp install` (user-scope) so the renga-peers MCP
-#      server is registered with Claude Code.
+#   3. Runs `renga mcp install` (user-scope) when renga is present, so the
+#      renga-peers MCP server is registered with Claude Code.
 #   4. Prints next steps.
 #
 # It never auto-installs missing tools and never bypasses Claude Code's
@@ -67,6 +68,21 @@ function Test-Prerequisite {
     return $false
 }
 
+function Test-OptionalCommand {
+    # Soft variant of Test-Prerequisite for tools the default (broker)
+    # transport never needs. Reports presence (so a present tool can still
+    # drive the later `renga mcp install` step) but the caller does NOT
+    # flip $missing on absence, so the install proceeds without it.
+    param([string]$Name, [string]$Hint, [string]$Why)
+    $cmd = Get-Command $Name -ErrorAction SilentlyContinue
+    if ($null -ne $cmd) {
+        Write-Host "  [ok]   $Name`: $($cmd.Source)"
+        return $true
+    }
+    Write-Host "  [skip] $Name not found - $Why. Install hint: $Hint"
+    return $false
+}
+
 function Read-YesNo {
     param([string]$Prompt, [string]$Default = 'Y')
     $hint = if ($Default -eq 'Y') { '[Y/n]' } else { '[y/N]' }
@@ -89,7 +105,10 @@ Write-Host 'Checking prerequisites...'
 $missing = $false
 if (-not (Test-Prerequisite 'git'    'https://git-scm.com/downloads'))                          { $missing = $true }
 if (-not (Test-Prerequisite 'claude' 'https://claude.ai/code (Claude Code CLI)'))               { $missing = $true }
-if (-not (Test-Prerequisite 'renga'  'npm install -g @suisya-systems/renga@0.18.0'))            { $missing = $true }
+# renga is optional: the code-default broker transport never needs it, so an
+# absent renga must not abort the install. Capture presence (a present renga
+# still drives `renga mcp install` below) but never set $missing.
+$rengaPresent = Test-OptionalCommand 'renga' 'npm install -g @suisya-systems/renga@0.18.0' 'optional; only needed when ORG_TRANSPORT=renga'
 if (-not (Test-Prerequisite 'gh'     'https://cli.github.com/'))                                { $missing = $true }
 if (-not (Test-Prerequisite 'jq'     'https://jqlang.org/download/'))                           { $missing = $true }
 Write-Host ''
@@ -101,6 +120,44 @@ Install the listed tools, then re-run this installer.
 (This script intentionally does not auto-install dependencies.)
 '@
     exit 1
+}
+
+# Shared Python 3.10+ probe (the runtime's pyproject pins
+# `requires-python = ">=3.10"`). Asking Python itself via version_info -- not
+# parsing a bare `--version` -- exactly rejects Python 2.x / <3.10, and also
+# rejects the Microsoft Store python stub (which fails the probe), so an
+# unusable interpreter never counts as a working broker launcher.
+$pyVersionProbe = 'import sys; sys.exit(0 if sys.version_info[:2] >= (3, 10) else 1)'
+
+# No-usable-launcher guard: the org starts via either the broker (needs a
+# Python 3.10+ interpreter for `claude-org-runtime org up`) or renga. renga is
+# optional and Python is only soft-handled below, so a box with NEITHER would
+# otherwise reach a "success" whose final step points at an uninstalled
+# launcher. Only probe Python when renga is absent (so a renga-present box
+# never touches the Microsoft Store python stub), then fail fast if neither
+# launcher exists. The later $pyCmd probe can't be reused here: it runs after
+# the clone and only when a dep file exists (never under -DryRun).
+if (-not $rengaPresent) {
+    $pythonAvailable = $false
+    foreach ($cand in @(@('python'), @('python3'), @('py', '-3'))) {
+        if (-not (Get-Command $cand[0] -ErrorAction SilentlyContinue)) { continue }
+        $rest = if ($cand.Length -gt 1) { $cand[1..($cand.Length - 1)] } else { @() }
+        try {
+            & $cand[0] @($rest + @('-c', $pyVersionProbe)) > $null 2>&1
+            if ($LASTEXITCODE -eq 0) { $pythonAvailable = $true; break }
+        } catch {
+            # candidate is on PATH but failed to launch; try the next one
+        }
+    }
+    if (-not $pythonAvailable) {
+        [Console]::Error.WriteLine('install.ps1: no usable launcher found. The org starts via either:')
+        [Console]::Error.WriteLine("  - the broker (default): needs a Python 3.10+ interpreter for 'claude-org-runtime org up', or")
+        [Console]::Error.WriteLine("  - renga: set ORG_TRANSPORT=renga and run 'renga --layout ops'.")
+        [Console]::Error.WriteLine('No Python 3.10+ interpreter and no renga are available. Install at least one and re-run:')
+        [Console]::Error.WriteLine('  - Python 3.10+ (broker): https://www.python.org/downloads/')
+        [Console]::Error.WriteLine('  - renga (fallback):      npm install -g @suisya-systems/renga@0.18.0')
+        exit 1
+    }
 }
 
 # --- Clone ---------------------------------------------------------------
@@ -175,6 +232,14 @@ if (Test-Path -LiteralPath $Dir) {
 
 if ($SkipMcp) {
     Write-Host 'Skipping `renga mcp install` (-SkipMcp).'
+} elseif (-not $rengaPresent) {
+    # renga is optional and not installed: the default broker transport does
+    # not use it, so this is not an error. Skip the MCP registration and tell
+    # the user how to enable it later if they want the renga transport.
+    Write-Host ''
+    Write-Host 'Skipping `renga mcp install`: renga is not installed (optional).'
+    Write-Host 'It is only needed for the renga transport (ORG_TRANSPORT=renga).'
+    Write-Host 'To enable it later: npm install -g @suisya-systems/renga@0.18.0; renga mcp install'
 } else {
     Write-Host ''
     Write-Host 'Registering renga-peers MCP with Claude Code (user-scope)...'
@@ -207,12 +272,13 @@ $reqFile = Join-Path $Dir 'requirements.txt'
 # boxes still carrying 2.7. Each candidate is its own token list so
 # the launcher flag rides with the executable through Invoke-Step.
 #
-# Each candidate is then probed with `--version` to weed out the
-# Microsoft Store App Execution Alias stub — Windows preinstalls
-# `python.exe` under `...\WindowsApps\` even without a real Python,
-# and that stub exits non-zero (or pops the Store) on any real call.
-# A successful `--version` proves a working interpreter is on the
-# other end while still accepting genuine Store-installed Pythons.
+# Each candidate is then probed with the shared $pyVersionProbe (Python
+# 3.10+ via version_info) to weed out both the Microsoft Store App Execution
+# Alias stub — Windows preinstalls `python.exe` under `...\WindowsApps\` even
+# without a real Python, and that stub exits non-zero (or pops the Store) on
+# any real call — and any Python 2.x / <3.10 that couldn't install the
+# runtime anyway. A successful probe proves a usable interpreter is on the
+# other end. (Same probe the no-usable-launcher guard above uses.)
 $pyCmd = $null
 if ((Test-Path -LiteralPath $pyprojectFile) -or (Test-Path -LiteralPath $reqFile)) {
     $pyCandidates = @(
@@ -224,7 +290,7 @@ if ((Test-Path -LiteralPath $pyprojectFile) -or (Test-Path -LiteralPath $reqFile
         if (-not (Get-Command $cand[0] -ErrorAction SilentlyContinue)) { continue }
         $rest = if ($cand.Length -gt 1) { $cand[1..($cand.Length - 1)] } else { @() }
         try {
-            & $cand[0] @($rest + @('--version')) > $null 2>&1
+            & $cand[0] @($rest + @('-c', $pyVersionProbe)) > $null 2>&1
             if ($LASTEXITCODE -eq 0) { $pyCmd = $cand; break }
         } catch {
             # candidate is on PATH but failed to launch; try the next one
@@ -264,11 +330,23 @@ if ((Test-Path -LiteralPath $pyprojectFile) -and $pyCmd) {
 # documented `py -3` Windows default when no interpreter was detected.
 $pyInvoke = if ($pyCmd) { ($pyCmd -join ' ') } else { 'py -3' }
 $launchStep = "$pyInvoke -m claude_org_runtime.cli org up                       # launch the org (broker daemon + Secretary pane)"
-$launchNote = @"
+# Tailor the renga fallback note to whether renga is actually installed.
+# renga is optional, so when it's absent the note must say how to install it
+# first rather than implying it's ready to use.
+$launchNote = if ($rengaPresent) {
+    @"
 
 To fall back to renga, set ORG_TRANSPORT=renga and run 'renga --layout ops'
 instead (see docs/getting-started.md).
 "@
+} else {
+    @"
+
+renga (optional) is not installed. To use the renga transport, first install it
+(npm install -g @suisya-systems/renga@0.18.0; renga mcp install), then set
+ORG_TRANSPORT=renga and run 'renga --layout ops' (see docs/getting-started.md).
+"@
+}
 if (-not $DryRun) {
     $orgUpOk = $false
     if ($pyCmd) {
@@ -281,8 +359,21 @@ if (-not $DryRun) {
         }
     }
     if (-not $orgUpOk) {
+        # Falling back to the renga launcher: renga is now the *only* working
+        # launcher for this checkout. renga is optional, so when it's absent we
+        # must not print a bare 'renga --layout ops' with an empty note --
+        # surface an install hint instead.
         $launchStep = "renga --layout ops                                           # launch the Secretary pane (this ref predates 'claude-org-runtime org up')"
-        $launchNote = ''
+        $launchNote = if ($rengaPresent) {
+            ''
+        } else {
+            @"
+
+renga is not installed, but this checkout's runtime predates
+'claude-org-runtime org up', so renga is the launcher here. Install it first:
+  npm install -g @suisya-systems/renga@0.18.0; renga mcp install
+"@
+        }
     }
 }
 
