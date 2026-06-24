@@ -69,6 +69,28 @@ allowed-tools:
 - PR レビューで指摘が来た場合は 2c のフローで同ワーカーに `send_message` 追指示を送り、同ペインで修正コミットを積ませる（新ワーカー再派遣は避ける — Issue / diff / 判断境界の再構築コストを払うことになる）
 - **dogfood 対象 PR の場合（Issue #338）**: `registry/dogfood_pending.md` で当該 task_id の `status=pending` 行を探し、(a) `impl_pr=#<PR>` を埋め、(b) `gh issue create --title "dogfood follow-up: <surface>" --body-file <rendered template>` で paired follow-up issue を作成（template: [`.claude/skills/org-delegate/references/dogfood-issue-template.md`](../org-delegate/references/dogfood-issue-template.md)）、(c) 作成された issue 番号を `dogfood_issue=#<MMM>` に埋め、`status` を `pending → open` に遷移、(d) PR 本文末に `Paired dogfood issue: #<MMM>` を追記する。protocol 全体は [`.claude/skills/org-delegate/SKILL.md`](../org-delegate/SKILL.md) Step 1.8 を SoT とする
 
+### CI 完了検知の正路: events DB poll が canonical、push は best-effort 補助（Issue #653）
+
+CI 完了の **canonical 信号は events テーブルの `ci_completed` 行**（`payload_json` に対象 PR が一致し、`head` が push した SHA と一致、`status='passed'|'failed'`）であって、上の 2b-i 受信モデルで触れた `CI_COMPLETED` peer push（`<channel source="renga-peers">` の in-band push / broker channel sidecar の `notifications/claude/channel` 注入）ではない。peer push は **best-effort 補助**で、`tools/peer_notify.py: notify_peer` は raw env 判定の helper のため `ORG_TRANSPORT` 無設定（運用既定）かつ `RENGA_SOCKET` 不在の plain shell / broker daemon 未起動 / channel sidecar unhealthy 等で **silent no-op** になる経路がある（SKILL 冒頭の輸送層注記と同じ事情）。push が来たことを ground truth にすると no-op 経路で CI green を取りこぼし、人間に「CI 監視また失敗しただろ」と指摘されるまで放置する終端ケースに落ちる（本 Issue の動機）。
+
+**ground truth の poll 推奨手順**:
+
+- `git push origin <branch>` 直後から **~60s 経過した時点で events テーブルを定期 poll する**（推奨 60-90s 間隔。本リポジトリの CI は概ね 60-80s で確定する）。pr-watch pane が生きていれば watcher は push 通知の有無に関わらず `ci_completed` 行を events に書く（`tools/pr-watch.sh` / `tools/pr-watch.ps1` の `ci_completed` 書き出し経路）。
+- 判定クエリ例（`PR_NUMBER` は窓口が把握している自局の int 値であり、ユーザー入力経路では渡らない。f-string の literal 展開で済ませる）:
+  ```python
+  from tools.state_db import connect
+  conn = connect('.state/state.db')
+  row = conn.execute(
+      "SELECT payload_json FROM events WHERE kind='ci_completed' AND payload_json LIKE ? ORDER BY id DESC LIMIT 1",
+      (f'%\"pr\": {PR_NUMBER}%',)
+  ).fetchone()
+  # row の payload_json を json.loads して head / status を取り出す:
+  #   head が push した SHA と一致し status='passed' なら merge gate 通過 → 上の awaiting_user emit へ
+  #   一致しない（前 CI 行）/ status='failed' なら原因を取得して fix → 再 push（2c のループへ）
+  ```
+- **push 通知が来た場合の扱い**: 補助的な早期通知として扱い、来た時点で events テーブルを引いて head 一致と status を確認する。push が来ない前提で events DB poll は止めない。peer push と events 行が両者 landed したら、判定は events DB の `head` + `status` を ground truth とする（受信モデル注記の「events テーブルのポーリングが最終フォールバック」と同じ姿勢を一次に倒したもの）。
+- `PR_MERGE_WATCH_TIMEOUT` / `PR_MERGED_NO_RUN` / `PR_MERGED_HEAD_UNCONFIRMED` の人間 gate は本節の影響を受けない（これらは merge 観測側 / fail-closed gate であり、events DB poll は CI 完了検知のみ canonical 化する）。merge 観測自体の canonical 検知は従来どおり `pr-watch --merge-watch` の `pr_merged` イベントと `tools/run_complete_on_merge.py` の組み合わせで行う。
+
 ### ⚠️ cwd 注意: pr-watch 起動時
 
 `tools/pr-watch.sh` / `tools/pr-watch.ps1` / `tools/pr_watch.py` は `state.db` を相対パスで開くため、起動時の cwd が ja root でないと CI 完了 event 書き込みでクラッシュし、peer 通知 (`CI_COMPLETED` / `PR_MERGED` 等) が飛ばない。直前に `cd .worktrees/...` していた場合は必ず `cd <ja-root> && nohup bash tools/pr-watch.sh <PR> ...` の形で起動すること。Issue #398 で根本対応中（cwd 非依存化）。
