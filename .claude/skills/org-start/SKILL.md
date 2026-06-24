@@ -277,6 +277,17 @@ curator の spawn / boot 失敗モードは org-start には存在しない（sp
 
 **Block C2 の runtime drift 出力の扱い**: Block C2 で `tools/check_runtime_version.py` の stdout に `[runtime drift] ...` の 1 行が出ていれば、下記いずれのテンプレートでも **末尾に空行を 1 つ挟んだ上でその 1 行をそのまま転記する**。stdout が空であれば warning 行は付けない（installed == latest / 未インストール / オフライン / parse 失敗 / pin 範囲内 release 無し はすべて silent）。
 
+> **Sidebar: dispatcher の自己修復ビュー起動案内（broker フレーム時のみ、optional）**
+>
+> broker(tmux) backend では dispatcher ペインは detached tmux session として独立して存在する。窓口の隣のターミナルでこれを 1 回起動しておくと control plane を常に視界に保てる（restart / auto-compact fork でセッション名が変わっても自己修復で再 attach し直す）:
+>
+> ```bash
+> tools/org-dispatcher-view.sh          # read-only attach（既定・安全）
+> tools/org-dispatcher-view.sh --rw     # 読み書き attach（誤入力で dispatcher に直接打鍵されるので注意）
+> ```
+>
+> read-only で十分だが、attach 中に **`Ctrl-b s`** で同 socket 上の他のセッション（= worker / curator のペイン）に切り替えて覗ける。終了は `Ctrl-b d` で detach してからプロンプトで `Ctrl-C`。renga フレームでは tmux session モデルが写像しないので案内しない（renga なら画面そのものを見ればよい）。詳細は [`tools/org-dispatcher-view.sh`](../../../tools/org-dispatcher-view.sh) の `--help`。
+
 **前回の状態がある場合**:
 ```
 組織を起動しました。
