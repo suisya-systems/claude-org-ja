@@ -123,7 +123,7 @@ mcp__org-broker__spawn_pane(
   role="watcher",
   name="pr-watch-<PR>",
   cwd="<JA_ROOT 絶対パス>",
-  command="mkdir -p .state; bash tools/pr-watch.sh <PR> --repo <OWNER/REPO> --merge-watch 2>&1 | tee -a .state/pr-watch-<PR>.log; tmux kill-pane 2>/dev/null || true"
+  command="mkdir -p .state; bash tools/pr-watch.sh <PR> --repo <OWNER/REPO> --merge-watch --no-detach 2>&1 | tee -a .state/pr-watch-<PR>.log; tmux kill-pane 2>/dev/null || true"
 )
 ```
 
@@ -135,6 +135,11 @@ mcp__org-broker__spawn_pane(
   は spawn 時に固定で、role ラベルは tier を変えない — Surface 8）。
 - `cwd`: **Step 1 で解決した JA_ROOT 絶対パス**。これにより pane 内の `tools/pr-watch.sh` /
   `.state/pr-watch-<PR>.log` が ja-root 基点で resolve される（cwd trap 吸収）。
+- **`--no-detach` 必須（Issue #650）**: `tools/pr-watch.sh` は Issue #641 対策で既定
+  setsid + nohup の自己 detach をするため、`--no-detach` を付けないと spawn 直後に親 bash が
+  exit して broker pane が即時掃除され、watcher が孤児化する（pane が無いので `/org-attach` /
+  `Ctrl-b s` でも覗けない）。`--no-detach` で前景動作させ、`tee` と末尾 `tmux kill-pane` の
+  自己終了サイクルを成立させる。
 - `command`: pr-watch を前景実行し、stdout/stderr を `.state/pr-watch-<PR>.log` に `tee -a`
   （tmux スクロールバッファにも出る二段）。先頭 `mkdir -p .state` で fresh clone でも tee の
   出力先を確保する。pr-watch 終了後に `tmux kill-pane` で **ペインを自己 close**（監視終了で
