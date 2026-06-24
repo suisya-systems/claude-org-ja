@@ -9,9 +9,11 @@
 set -uo pipefail
 
 if [[ "${SKIP_SECRET_SCAN:-0}" == "1" ]]; then
+  # 注: SKIP_SECRET_SCAN は secret scan のみを止める。後続の他ガード
+  # (skill drift guard / Issue #652 等) はそのまま実行する。フックを全部
+  # 黙らせたい場合は `git commit --no-verify` を使うこと (humans only)。
   echo "pre-commit: SKIP_SECRET_SCAN=1 set; secret scan skipped." >&2
-  exit 0
-fi
+else
 
 # Directories whose files are excluded from scanning. Only code directories
 # whose sole purpose is to host hook implementations or secret-shaped test
@@ -136,6 +138,78 @@ if (( ${#violations[@]} > 0 )); then
     echo "permissions.deny + PreToolUse hooks): git commit --no-verify"
   } >&2
   exit 1
+fi
+
+fi  # /SKIP_SECRET_SCAN gate (Issue #652: 後続ガードを bypass しないため if/else 化)
+
+# --- skill drift guard (Issue #652) -----------------------------------------
+# rendered SKILL.md だけが staged されているのに源泉 SKILL.md.in が同時 staging
+# されていない場合、CI gate (test_production_manifest_no_drift) が落ちる前に
+# pre-commit で止める。
+#
+# Bypass: SKIP_SKILL_DRIFT_CHECK=1 git commit ...
+#
+# 判定ロジック:
+# - staged から ".claude/skills/<skill>/SKILL.md" にマッチする path を列挙
+#   (Add / Copy / Modify / Rename。Delete のみ・Type-change は drift 対象外)
+# - 各々について sibling ".claude/skills/<skill>/SKILL.md.in" がリポジトリ内
+#   (= git ls-files ヒット) に存在するか確認
+# - 存在し、かつその ".in" が同 commit に staged されていない → drift
+# - 1 件でも drift があれば全 drift パスを列挙してエラーを出し exit 1
+# - ".in" が存在しない skill (手書き skill) は影響を受けない (skip)
+#
+# 注: --diff-filter には R/C も含める。git の rename 検出が効いた状態で
+# 別パスから ".claude/skills/<skill>/SKILL.md" にリネームされた場合も
+# drift 判定対象にしないと guard が空振りするため (Refs #652 codex review)。
+
+if [[ "${SKIP_SKILL_DRIFT_CHECK:-0}" != "1" ]]; then
+  # staged 集合 (Add / Copy / Modify / Rename)。--name-only は rename/copy の
+  # 新側パスを返すので、現在の SKILL.md / SKILL.md.in の在り処をそのまま
+  # ルックアップに使える。NUL 区切りで読み配列化し path 内の空白に耐える。
+  mapfile -t staged_files < <(git diff --cached --name-only --diff-filter=ACMR -z \
+    | tr '\0' '\n' | sed '/^$/d')
+
+  # staged かどうかの O(1) ルックアップ用に associative array へ詰める。
+  declare -A staged_set=()
+  for f in "${staged_files[@]}"; do
+    staged_set["$f"]=1
+  done
+
+  drift_paths=()
+  for f in "${staged_files[@]}"; do
+    # ".claude/skills/<skill>/SKILL.md" だけを対象に。
+    # SKILL.md.in / その他の .md (references/*.md など) は素通し。
+    [[ "$f" == .claude/skills/*/SKILL.md ]] || continue
+
+    src="${f}.in"
+
+    # 源泉 ".in" がリポジトリに存在しない skill (手書き skill) は対象外。
+    # git ls-files に -- を渡し、終了コードだけ拾う。
+    if ! git ls-files --error-unmatch -- "$src" >/dev/null 2>&1; then
+      continue
+    fi
+
+    # 源泉が staged 集合に含まれていなければ drift。
+    if [[ -z "${staged_set[$src]:-}" ]]; then
+      drift_paths+=("$f")
+    fi
+  done
+
+  if (( ${#drift_paths[@]} > 0 )); then
+    {
+      echo ""
+      echo "pre-commit: skill SKILL.md / SKILL.md.in の drift を検出:"
+      for p in "${drift_paths[@]}"; do
+        echo "  - $p (源泉 ${p}.in が同 commit に staging されていません)"
+      done
+      echo ""
+      echo "SKILL.md は生成物です。源泉 SKILL.md.in を編集し"
+      echo "  python3 tools/gen_skill_prose.py --manifest tools/skill_src/manifest.json --apply"
+      echo "で再 render してから .md と .md.in を一緒に staging してください。"
+      echo "bypass: SKIP_SKILL_DRIFT_CHECK=1 git commit ..."
+    } >&2
+    exit 1
+  fi
 fi
 
 exit 0
