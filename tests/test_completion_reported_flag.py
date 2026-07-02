@@ -111,6 +111,26 @@ class WorkerMonitoringContract(unittest.TestCase):
                 self.assertIn("WORKER_REOPENED", text)
                 self.assertIn("CLOSE_PANE", text)
 
+    def test_reopened_has_deterministic_runs_status_backstop(self):
+        """P2 (Codex): best-effort な WORKER_REOPENED 取りこぼしを runs.status backstop で救う。
+
+        skip gate は completion_reported_at != null に加え runs.status == 'review' を
+        要求し、runs.status == 'in_use' 観測時は flag を self-heal clear する。
+        """
+        for label, text in self._both():
+            with self.subTest(source=label):
+                self.assertIn("runs.status", text,
+                              f"{label}: runs.status backstop の言及が無い")
+                self.assertIn("reopen-self-heal", text,
+                              f"{label}: reopen-self-heal 分岐が無い")
+                self.assertIn("pane_output_reopen_self_heal", text,
+                              f"{label}: self-heal soft-note kind が無い")
+                # skip gate が review 状態を要求し、in_use で解除される非対称設計。
+                self.assertIn("'review'", text,
+                              f"{label}: skip gate の runs.status == 'review' 要件が無い")
+                self.assertIn("'in_use'", text,
+                              f"{label}: in_use 観測での self-heal 記述が無い")
+
     def test_not_a_completion_determination(self):
         """Minor: 完了判定ではなく監視抑止用の受領通知だと明文化。"""
         for label, text in self._both():
@@ -149,6 +169,9 @@ class SecretaryEmissionContract(unittest.TestCase):
                 # clear が無いと sticky skip で silent dead-lock を見逃す旨の根拠。
                 self.assertIn("silent dead-lock", text,
                               "2c: clear 契約の根拠 (見逃しリスク) が無い")
+                # P2: run.status='in_use' backstop で best-effort 取りこぼしを救う。
+                self.assertIn("in_use", text,
+                              "2c: runs.status backstop の言及が無い (P2)")
 
     def test_delegate_2c_crossrefs_reopened(self):
         """§2c (org-delegate) が再指示時の WORKER_REOPENED 解除を cross-ref する。"""
@@ -176,6 +199,9 @@ class ContractAdditiveNotes(unittest.TestCase):
         self.assertIn("Monitoring-suppression release", text)
         self.assertIn("WORKER_COMPLETION_NOTED", text)
         self.assertIn("WORKER_REOPENED", text)
+        # P2: deterministic runs.status backstop in T6.
+        self.assertIn("runs.status", text,
+                      "lifecycle T6: runs.status backstop の言及が無い (P2)")
 
     def test_dispatcher_claude_entrypoint_mentions_gate(self):
         text = _read(DISPATCHER_CLAUDE_MD)
