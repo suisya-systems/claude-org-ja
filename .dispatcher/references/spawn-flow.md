@@ -35,8 +35,10 @@
 
 balanced split の判定 (target / direction の選択、MIN_PANE / secretary 保険 / role priority によるソート、rect 隣接判定) は **dispatcher が `claude-org-runtime` の `delegate-plan` helper 経由で実行する**。Claude 側で再実装するロジックではない。helper は `mcp__renga-peers__list_panes` の rect スナップショットと task JSON を入力に取り、`spawn` ターゲット名と direction を含む action plan を返す（候補が空なら `split_capacity_exceeded` で escalate を指示）。
 
+> **輸送層で capacity 機構が分岐する (runtime 0.1.31 / #104、backend-aware worker capacity)**: 上記 rect ベース balanced split は **renga 面** の律速。**broker 面**（`ORG_TRANSPORT=broker` / コード既定）では helper が `choose_split` / rect geometry を**バイパス**し、`--max-concurrent-workers N`（既定 8 / `unlimited` opt-in）による capacity gate に切り替わる（「アクティブ worker 数 < `N` なら固定 spawn target で spawn / 到達で `split_capacity_exceeded`」）。dispatcher は `ORG_TRANSPORT` を解決して `--transport` を helper へ**明示で渡す**（runtime は panes snapshot から transport を推定しない契約）。`.dispatcher/CLAUDE.md` の delegate-plan helper 節の CLI 例と `registry/org-config.md` の `max_concurrent_workers` 導線を参照。
+
 仕様詳細・定数値・ソートキー・rect 隣接の正確な定義は **runtime SoT** を参照する:
-- CLI (運用上の標準呼び出し): `claude-org-runtime dispatcher delegate-plan --task-json ... --panes-json ... --state-dir ... [--template-repo ...] [--locale-json ...]`。`.dispatcher/CLAUDE.md` の delegate-plan helper 節が一次手順
+- CLI (運用上の標準呼び出し): `claude-org-runtime dispatcher delegate-plan --task-json ... --panes-json ... --state-dir ... --transport {broker|renga} [--max-concurrent-workers N] [--template-repo ...] [--locale-json ...]`。`--transport` は `ORG_TRANSPORT` 解決値を明示で渡す（runtime は panes snapshot から transport を推定しない、runtime 0.1.31 / #104）。broker 面では `--max-concurrent-workers N`（既定 8 / `unlimited` opt-in）が capacity を gate する。`.dispatcher/CLAUDE.md` の delegate-plan helper 節が一次手順
 - ライブラリ: `claude_org_runtime.dispatcher.runner` モジュールの `build_plan()` (action plan 全体: `spawn` / `after_spawn` / `escalate` / `state_writes` / `status`) と、その内部で呼ばれる `choose_split()` (target / direction 選択) / `rect_adjacent()` / `_ROLE_PRIORITY` / `MIN_PANE_*` / `SECRETARY_MIN_*` 定数
 
 dispatcher が helper を経由しない degraded mode に入った場合、判定再現は `claude_org_runtime.dispatcher.runner` モジュール (インストール先は `python -c "import claude_org_runtime.dispatcher.runner; print(claude_org_runtime.dispatcher.runner.__file__)"` で解決可能) を一次参照する。

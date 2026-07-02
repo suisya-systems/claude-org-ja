@@ -26,6 +26,17 @@ core-harness>=0.3.2,<0.4
 # PyPI via Trusted Publisher; pinned to the 0.1.x range. 0.x bumps may be
 # breaking per the runtime's compatibility policy, so widen this pin
 # deliberately when adopting a new minor.
+# Floor bumped to 0.1.31 for the backend-aware worker-capacity surface
+# (runtime #104): under broker the dispatcher's worker parallelism is gated by
+# a max_concurrent_workers policy (default 8, unlimited opt-in) that bypasses
+# choose_split / rect geometry and spawns at a fixed target, while renga keeps
+# the rect-geometry balanced split. delegate-plan takes an explicit
+# --transport / --max-concurrent-workers (the runtime does not infer transport
+# from the panes snapshot). Also bundles HerdrAdapter (#101), resolve_target
+# (#105), and binding reap (#106). No schema shape change, but the paired ja
+# docs (pane-layout / org-config / spawn-flow / work-discovery) are synced to
+# match, so pin the floor to the release that ships the surface. The earlier
+# 0.1.30 floor (below) is subsumed.
 # Floor bumped to 0.1.30 to match the PR #97 sandbox output normalization:
 # 0.1.30 renders sandbox denyRead/denyWrite as contract-§2.1 resolved string
 # arrays (was dict entries). ja's semantic-drift goldens under
@@ -54,7 +65,7 @@ core-harness>=0.3.2,<0.4
 # (transport surface descriptor claude_org_runtime.transport consumed by
 # tools/transport.py — Epic #6 next-stage D / ja#513) are subsumed by 0.1.28.
 # Keep in sync with pyproject.toml.
-claude-org-runtime>=0.1.30,<0.2
+claude-org-runtime>=0.1.31,<0.2
 
 # tools/gen_worker_brief.py reads TOML config. tomllib is stdlib in 3.11+,
 # but ja still supports 3.10 (CLAUDE.local.md template recommends 3.10).

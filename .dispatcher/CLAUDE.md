@@ -41,13 +41,21 @@ DELEGATE メッセージを受信して Step 3 の「3-1 balanced split で targ
 ```bash
 # ディスパッチャーの cwd は .dispatcher/ なので相対パスはリポジトリルートから
 # 1 段上に解決する（journal_append.sh と同じ規約）。
+# --transport は ORG_TRANSPORT を解決して明示で渡す (runtime 0.1.31 / #104。
+# runtime は panes snapshot から transport を推定しない契約)。broker 面では
+# --max-concurrent-workers で worker capacity を gate する (既定 8 / unlimited opt-in)。
 claude-org-runtime dispatcher delegate-plan \
   --task-json ../.state/dispatcher/inbox/{task_id}.json \
   --panes-json {list_panes スナップショットの JSON} \
+  --transport "${ORG_TRANSPORT:-broker}" \
+  --max-concurrent-workers 8 \
   --locale-json ../tools/ja_locale.json \
   --template-repo .. \
   --state-dir ../.state
 ```
+
+- **`--transport`（必須・明示）**: dispatcher が `ORG_TRANSPORT` を解決した値（無設定はコード既定 `broker`）をそのまま渡す。runtime は `--panes-json` の snapshot から transport を推定しないため、明示しないと backend-aware な capacity 判定が正しく効かない（runtime 0.1.31 / #104、backend-aware worker capacity）。
+- **`--max-concurrent-workers N`（broker 面で load-bearing）**: broker 面では helper が rect geometry の `choose_split` を**バイパス**し、「アクティブ worker 数 < `N` なら固定 spawn target で spawn / 到達で `split_capacity_exceeded`」を返す。既定 8（`registry/org-config.md` の `max_concurrent_workers` が運用値の導線）、`unlimited` は opt-in。**renga 面では効かない**（renga は MIN_PANE まで分割し続ける rect ベース balanced split が律速するため無視される）ので、`--transport renga` 実行時は省略しても挙動は変わらない。
 
 task JSON の最低フィールド:
 ```json
