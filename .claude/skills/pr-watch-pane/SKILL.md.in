@@ -73,8 +73,10 @@ context リセットと無関係）に監視が継続し、人間が tmux ペイ
   側で吸収する**（Step 1 で `git rev-parse --show-toplevel` の絶対パスを spawn_pane の
   `cwd` に明示。窓口 cwd が何らかの理由で ja-root を外れていても正しく解決される）。
 - **前提環境は POSIX/tmux broker（WSL2 / Linux / macOS）**。Step 3 の `command` は `bash`
-  実行と、自己 close の `tmux kill-pane`（broker の `claude-org-broker` socket 上の tmux
-  ペインを `$TMUX` 経由で kill）に依存する。Windows native broker（WezTerm の別 GUI
+  実行と、自己 close の `tmux kill-pane -t "$TMUX_PANE"`（**自ペインを `$TMUX_PANE` で明示
+  指定して** kill。socket は `$TMUX` 継承をそのまま使い `-L` で固定しない ＝ broker /
+  renga / 非既定 socket いずれの transport でも正しい server に当たる。Issue #647 提案 1 の
+  「明示 target 指定」を transport-neutral に実装した形）に依存する。Windows native broker（WezTerm の別 GUI
   ウィンドウ・tmux 非経由）では本 skill の自己 close は効かないため、その環境では従来どおり
   人間が `tools/pr-watch.ps1 <PR>` を `!` 経由で起動する手動経路を使う（本 skill はその経路を
   遮断しない＝既存の手動起動経路は不変）。
@@ -117,7 +119,7 @@ context リセットと無関係）に監視が継続し、人間が tmux ペイ
   role="watcher",
   name="pr-watch-<PR>",
   cwd="<JA_ROOT 絶対パス>",
-  command="mkdir -p .state; bash tools/pr-watch.sh <PR> --repo <OWNER/REPO> --merge-watch --no-detach 2>&1 | tee -a .state/pr-watch-<PR>.log; tmux kill-pane 2>/dev/null || true"
+  command="mkdir -p .state; bash tools/pr-watch.sh <PR> --repo <OWNER/REPO> --merge-watch --no-detach 2>&1 | tee -a .state/pr-watch-<PR>.log; tmux kill-pane -t \"$TMUX_PANE\" 2>/dev/null || true"
 )
 ```
 
@@ -132,12 +134,29 @@ context リセットと無関係）に監視が継続し、人間が tmux ペイ
 - **`--no-detach` 必須（Issue #650）**: `tools/pr-watch.sh` は Issue #641 対策で既定
   setsid + nohup の自己 detach をするため、`--no-detach` を付けないと spawn 直後に親 bash が
   exit して broker pane が即時掃除され、watcher が孤児化する（pane が無いので `/org-attach` /
-  `Ctrl-b s` でも覗けない）。`--no-detach` で前景動作させ、`tee` と末尾 `tmux kill-pane` の
+  `Ctrl-b s` でも覗けない）。`--no-detach` で前景動作させ、`tee` と末尾 self-close の
   自己終了サイクルを成立させる。
 - `command`: pr-watch を前景実行し、stdout/stderr を `.state/pr-watch-<PR>.log` に `tee -a`
   （tmux スクロールバッファにも出る二段）。先頭 `mkdir -p .state` で fresh clone でも tee の
-  出力先を確保する。pr-watch 終了後に `tmux kill-pane` で **ペインを自己 close**（監視終了で
-  自動 close。`|| true` で tmux 不在環境でも握り潰す）。
+  出力先を確保する。pr-watch 終了後に `tmux kill-pane -t "$TMUX_PANE"`
+  で **ペインを自己 close**（監視終了で自動 close。`|| true` で tmux 不在環境でも握り潰す）。
+  - **`$TMUX_PANE` は placeholder ではなく実行時 env**: `<PR>` / `<OWNER/REPO>` と違い
+    `$TMUX_PANE` は窓口が値に置換してはならない。spawn されたペインの shell に自動露出する
+    自ペイン id（例 `%16`）で、self-close 時に **その pane 自身**を明示 target 解決する。
+    旧形 `tmux kill-pane`（target 無指定）は現在ペインを暗黙推定するが、`-t "$TMUX_PANE"` で
+    明示することで曖昧さを排す（Issue #647 提案 1 の「明示 target 指定」）。
+  - **socket は `$TMUX` 継承をそのまま使う（`-L` で固定しない）**: `tmux` を `-L` 無しで
+    起動すると、ペインが属する tmux server の socket を `$TMUX` から自動解決する。broker では
+    それが `claude-org-broker` socket、opt-in renga や非既定 socket 構成では別 socket になる
+    が、いずれも `$TMUX` が正しい server を指すので kill が当たる。ここで `-L claude-org-broker`
+    と固定すると renga / 非既定 socket 下で **別 server に当たって self-close が無言で失敗**
+    するため、socket は固定せず transport-neutral に保つ。
+  - **self-close は tmux 層だけを掃除する**: `kill-pane` は broker socket 上の実 tmux ペイン
+    を消すので、直後から `list_panes` には現れなくなる。ただし broker daemon の pane 登録簿
+    （name binding）は self-close では pop されず **stale に残りうる**（daemon は自 pane の外部
+    kill を検知しないため）。stale binding が残ると同名 `pr-watch-<PR>` の再 spawn が
+    `[name_taken]` で弾かれる（`list_panes` には出ないのに、が症状）。この掃除は Step 5 の
+    手動 fallback（`{{FQ}}close_pane(target="pr-watch-<PR>")` が登録簿を pop）で行う。
   - `--merge-watch`: CI green で `CI_COMPLETED` を出した後もマージまで poll し続け（最大
     24h）、マージで `PR_MERGED`、timeout で `PR_MERGE_WATCH_TIMEOUT` を出してから自己 close
     する。CI 確定だけで止めたい場合は呼び出し時に `--merge-watch` を外す（その場合は CI green
@@ -155,8 +174,17 @@ context リセットと無関係）に監視が継続し、人間が tmux ペイ
   再実行してください」と報告して中断。
 - `[pane_not_found]`（`target="dispatcher"` 不在）→「dispatcher ペインが見つかりません。
   `/org-start` を先に実行してください」と報告して中断。
-- `[name_in_use]` / `[name_taken]`（冪等チェックを取りこぼした race）→ 既に監視中として
-  Step 2 の「既に稼働中」報告に倒す。
+- `[name_in_use]` / `[name_taken]` → **live pane と stale 登録簿を切り分ける**（前 watcher の
+  self-close で tmux ペインは消えたが broker 登録簿に name binding が残る「二層の不整合」を
+  自己回復する）:
+  1. `{{FQ}}list_panes` で `name="pr-watch-<PR>"` の **live pane が実在するか**再確認する。
+  2. **live pane が在る** → 冪等チェックを取りこぼした真の race。既に監視中として Step 2 の
+     「既に稼働中」報告に倒す（新規 spawn しない）。
+  3. **live pane が無い**（`list_panes` に出ない）→ self-close 済みの **stale 登録簿 binding**。
+     `{{FQ}}close_pane(target="pr-watch-<PR>")` で name 解決させて登録簿を pop し
+     （`ok closed=%N` が返る。`[pane_not_found]` は既に掃除済みで OK）、**Step 3 の spawn を
+     1 度だけ再試行**する。再試行でも `[name_taken]` が続く場合はユーザーに報告して中断
+     （想定外の登録簿状態）。
 - broker 固有（`[no_backend]` / `[token_invalid]` / `[session_invalid]` /
   `[tool_not_authorized]` / `[peer_not_found]` 等）/ その他未知コード → 状況をユーザーに
   報告して中断（default-branch escalate）。
@@ -201,8 +229,20 @@ context リセットと無関係）に監視が継続し、人間が tmux ペイ
    - tmux で直接見るには `/org-attach` のコマンドを使ってください。
    ```
 
-3. **手動 close（自動 close されないケースの掃除）**: 監視を途中で止めたい / 自己 close が
-   不発でペインが残った場合は、`{{FQ}}list_panes` で `name="pr-watch-<PR>"` の live pane を
-   確認し、その **数値 pane_id** で `{{FQ}}close_pane(target=<N>)` する
-   （`[pane_not_found]` / `[pane_vanished]` は既に閉じた扱いで skip）。name 指定ではなく
-   list_panes で identity を確認した数値 pane_id を使う（id recycle 時の誤 close を避ける）。
+3. **手動 close（自動 close されないケースの掃除、Issue #647 提案 3）**: self-close は tmux
+   ペインを消すだけで broker 登録簿の name binding は残りうる（前掲「self-close は tmux 層
+   だけを掃除する」）。二つのケースに分けて掃除する:
+
+   - **(a) tmux ペインが live のまま残った / 監視を途中で止めたい**: `{{FQ}}list_panes` で
+     `name="pr-watch-<PR>"` の live pane を確認し、その **数値 pane_id** で
+     `{{FQ}}close_pane(target=<N>)` する（`[pane_not_found]` / `[pane_vanished]` は既に
+     閉じた扱いで skip）。live pane が在るこのケースでは、name 指定ではなく list_panes で
+     identity を確認した数値 pane_id を使う（id recycle 時の誤 close を避ける）。
+
+   - **(b) stale 登録簿 binding（`list_panes` には出ないのに再 spawn が `[name_taken]`）**:
+     self-close で tmux ペインは消えたが broker 登録簿に name binding が残っている状態。
+     数値 pane_id は list_panes に出ないので取得できないため、**name 指定**で
+     `{{FQ}}close_pane(target="pr-watch-<PR>")` する（broker が name → stale pane_id を解決し
+     登録簿を pop、`ok closed=%N` が返る。`[pane_not_found]` は既に掃除済みで OK）。掃除後は
+     同名 spawn が通る。Step 3 の `[name_taken]` 分岐はこの (b) を自己回復するが、手動でも
+     同手順で掃除できる。
