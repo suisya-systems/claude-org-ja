@@ -308,6 +308,11 @@ worker → Secretary peer message
   "
   ```
 - DB の events テーブルにイベント追記 (`bash tools/journal_append.sh ...`)
+- **dispatcher へ完了受領を通知（監視抑止、Issue #658）**: worker ack と上記状態更新（REVIEW 遷移・events 追記）を終えた後、**best-effort・非 blocking** で dispatcher へ `WORKER_COMPLETION_NOTED` を送る。dispatcher はこれを `/loop 3m` の通常 `check_messages` で受けて `worker-idle-state.json` の `completion_reported_at` に反映し、PANE_OUTPUT_WITHOUT_PEER_MSG 検知（完了報告済み worker の正常な review 待ち idle を silent dead-lock と誤判定する false positive、[`.dispatcher/references/worker-monitoring.md`](../../../.dispatcher/references/worker-monitoring.md) Step 5.2）を抑止する。**これは「完了判定」ではなく「監視抑止用の受領通知」**（完了遷移 T4 は secretary の責務、dispatcher は自分で完了を判定しない）。**dispatcher 応答を待たない**（blocking wait は T4 の human review 移行に新しい停止点を作るため禁止）。本文に task_id と received_at（ISO-8601 UTC）を含める:
+  ```
+  mcp__org-broker__send_message(to_id="dispatcher", message="WORKER_COMPLETION_NOTED: worker-<task_id> (task_id=<task_id>, received_at=<ISO-8601 UTC>)")
+  ```
+  対の解除は T6 再指示時の `WORKER_REOPENED`（[`.claude/skills/org-pull-request/SKILL.md`](../org-pull-request/SKILL.md) 2c）。minimal / full どちらの完了報告でも送る（silent dead-lock 抑止は検証深度に依らない）
 - **dogfood pass 完了時の register 更新（Issue #338）**: 完了したタスクが `registry/dogfood_pending.md` の `dogfood_run_task_id` 列に earmark されていた場合、該当行の `status` を `open → consumed` に遷移する。defect は paired follow-up issue (`dogfood_issue` 列) に既に集約されている前提（dogfood pass worker の brief で format 指定済）。protocol 全体は本 SKILL Step 1.8 を SoT
 - **人間向け理解サマリを承認提示の土台にし永続化する（検証深度 `full` 限定）**: full モード完了報告には worker が「人間向け理解サマリ」（(1) 最重要の変更点 N 個、(2) 要確認ファイル / hunk、(3) 設計判断と理由）を含める（スキーマ SoT は [`.claude/skills/org-delegate/references/worker-claude-template.md`](references/worker-claude-template.md)）。窓口は自分でコードを精読せず、このサマリをユーザーへの承認提示の土台にする（必要なら業務言語に整える）。受領したサマリは `.state/workers/worker-{task_id}.md` の Progress Log に `Human Understanding Summary:` 見出し + 直下の fenced code block でそのまま追記する（merge 承認時に再掲する元。full 完了報告が複数回ある場合は最新ブロックを正とする）。PR 作成時は PR 本文にも要約を載せてよい。**full でサマリが欠落していたら通常の review feedback として同ペインの worker に補完を依頼する**（[`.claude/skills/org-pull-request/SKILL.md`](../org-pull-request/SKILL.md) 2c の review-feedback 手順で扱う）。これは手順レイヤの完了報告フォーマット拡張であり、contract（T4 `worker_completed`）の遷移条件は変えない。minimal の 1 行 `done:` 報告にはサマリは付かない
 - **awaiting_user 通知の emit（Issue #28）**: 人間への報告 → 承認待ち停止に入る直前で、attention watcher に「Secretary が user の判断待ちで停止する」ことを知らせる:
@@ -320,6 +325,8 @@ worker → Secretary peer message
 #### 2b / 2c. ユーザー承認後・レビュー指摘・マージ後クローズ
 
 → [`.claude/skills/org-pull-request/SKILL.md`](../org-pull-request/SKILL.md) を発動する。
+
+- **再指示時の監視フラグ解除（Issue #658）**: 完了報告済み（§2a で dispatcher へ `WORKER_COMPLETION_NOTED` 送信済み）の worker に、review feedback / CI 失敗の追指示を送るときは、追指示の**前に** dispatcher へ `WORKER_REOPENED: worker-<task_id> (task_id=<task_id>, reopened_at=<ISO-8601 UTC>)` を best-effort・非 blocking で送り、`completion_reported_at` を clear させる。再指示は secretary→worker 直送で dispatcher が経路上に居ないため、この明示解除が無いと dispatcher の PANE_OUTPUT_WITHOUT_PEER_MSG 検知が sticky skip のままレビュー修正中の本物の silent dead-lock を見逃す。操作 SoT は [`.claude/skills/org-pull-request/SKILL.md`](../org-pull-request/SKILL.md) 2c
 
 ### ワーカー監視と介入判定（窓口が実行）
 
