@@ -271,6 +271,10 @@ curator の spawn / boot 失敗モードは org-start には存在しない（sp
 | Stage A+B 後 | 上に加え、Step 0 完了直後に Block A の spawn を発火、Block B (state 復元) / Block C (dashboard 起動) と並列に Claude の boot wait を overlap | 〜35s |
 | curator オンデマンド化後 | 起動対象は dispatcher のみ（curator の spawn / Enter / poll / greet が消滅） | さらに短縮 |
 
+### 起動後の裏取り: dispatcher の /loop 監視宣言は実 invoke を打鍵で確認する
+
+dispatcher は初回 DELEGATE 完了報告で「/loop 3m で監視します」と宣言したまま実 invoke せず idle に落ちることがある（宣言はターン終了と同時に失効し、次の契機がなければ実行されない）。窓口は初回 DELEGATE 完了報告や監視宣言を信用せず、使用中 transport の `inspect_pane(target="dispatcher")` で /loop の実行痕跡（loop 予約 / 監視サイクル出力）を確認し、無ければ `send_keys` で `/loop 3m <監視ディレクティブ>` を user turn として打鍵し再点火する。打鍵は text と Enter を**別呼び出し**に分ける 2 段（`send_keys(target="dispatcher", text="/loop 3m ...")` → `inspect_pane` で入力欄に乗ったことを確認 → `send_keys(target="dispatcher", enter=true)`。text+enter 同時送は draft 残りで未武装が再発しやすい。[`.dispatcher/references/spawn-flow.md`](../../../.dispatcher/references/spawn-flow.md) 3-5a と同じ手順）で行う（いずれも Step 0 で判定した transport の完全修飾名で呼ぶ。監視ディレクティブは placeholder のまま打鍵せず、[`.claude/skills/dispatcher-resume/SKILL.md`](../dispatcher-resume/SKILL.md) Step 5 のコードブロック正文をそのまま使う。手順詳細は [`.dispatcher/references/worker-monitoring.md`](../../../.dispatcher/references/worker-monitoring.md)）。`send_message` / `check_messages` 経由の指示では武装しない — 打鍵による user turn 注入が確実な武装手段である（ultracode 武装と同型の構造）。
+
 ## Step 4: 準備完了の報告
 
 人間に簡潔に報告する。起動するのはディスパッチャーのみ（キュレーターはオンデマンド）。

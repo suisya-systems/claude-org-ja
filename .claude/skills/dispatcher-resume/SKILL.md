@@ -214,7 +214,10 @@ secretary に **報告して** 判断を仰ぐ（勝手に再 spawn / status 変
    （1 の再生成分を含む。オンデマンド curate の完了監視が引き継ぎ対象。
    `.dispatcher/references/worker-monitoring.md` Step 5.3）のいずれかを満たせば
    下記の monitoring 専用ディレクティブを渡して `/loop 3m` で worker monitoring を
-   再開する（**prompt を省略しない**）:
+   再開する（**prompt を省略しない**）。この再開は「/loop で監視を再開します」と
+   **宣言するだけでは武装されない** — 宣言はターン終了と同時に失効するため、必ず
+   本ターン内で `/loop` を実 invoke すること（窓口側も `inspect_pane` で実行痕跡を
+   裏取りし、無ければ `send_keys` で再点火する運用である）:
 
 <!--
 INVARIANT(loop-prompt): `/loop` の prompt 引数に skill 自身（`/dispatcher-resume`）や
