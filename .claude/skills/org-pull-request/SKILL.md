@@ -119,6 +119,10 @@ pr-watch から `PR_MERGED_HEAD_UNCONFIRMED: PR #<n> (head=<merged_short>, last 
 
 人間がフィードバック・修正指示を出した場合、または CI が失敗してユーザーが「直してもらって」と指示した場合:
 
+- **再指示の前に dispatcher の監視フラグを解除する（Issue #658、T6 監視再開契約）**: worker が完了報告済み（完了時に §2a で secretary が dispatcher へ `WORKER_COMPLETION_NOTED` を送り `completion_reported_at` が立っている）の場合、追指示を送る**前に** dispatcher へ `WORKER_REOPENED` を **best-effort・非 blocking** で送り、`completion_reported_at` を `null` に clear させる。再指示は secretary→worker 直送で dispatcher が経路上に居ないため、この明示解除が無いと dispatcher の PANE_OUTPUT_WITHOUT_PEER_MSG 検知（[`.dispatcher/references/worker-monitoring.md`](../../../.dispatcher/references/worker-monitoring.md) Step 5.2）が sticky skip のまま、awaiting_review→in_progress のレビュー修正中に発生する本物の silent dead-lock を永久に見逃す。dispatcher 応答は待たない（dispatcher は `/loop 3m` の通常 `check_messages` で反映）。本文に task_id と reopened_at（ISO-8601 UTC）を含める:
+  ```
+  mcp__org-broker__send_message(to_id="dispatcher", message="WORKER_REOPENED: worker-<task_id> (task_id=<task_id>, reopened_at=<ISO-8601 UTC>)")
+  ```
 - ワーカーに org-broker で追加指示を送る (`to_id="worker-{task_id}"`)
 - 追加指示が trivial fix（CI 出力整形 / typo / コメント修正等）なら **検証深度 `minimal`** を明示し、完了報告は `done: {commit SHA 短縮形} {変更ファイル名}` の 1 行だけで返すよう伝える（フォーマットは [`.claude/skills/org-delegate/references/instruction-template.md`](../org-delegate/references/instruction-template.md) / [`.claude/skills/org-delegate/references/worker-claude-template.md`](../org-delegate/references/worker-claude-template.md) に従う）
 - **DB 経由で run を IN_PROGRESS に戻す**（`run.status='in_use'`、markdown 直接編集禁止。post-commit hook が `.state/org-state.md` を再生成）:
