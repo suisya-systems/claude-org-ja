@@ -59,8 +59,14 @@ python3 tools/work_discovery_scan.py --trigger manual
 ```
 
 - `--trigger` は文脈ラベル。手動起動は `manual`、PR マージ後の proactive next-dispatch から呼ぶ場合は
-  `--trigger post_merge` を付け、可能なら `--free-panes <空き pane 数>` も渡す（空き枠があると
+  `--trigger post_merge` を付け、可能なら `--free-panes <空き worker slot 数>` も渡す（空き枠があると
   `parallelizable` 候補のランクが上がる）。
+- `--free-panes` の意味は **空き worker slot 数**（＝ dispatch 可能な空き capacity の単位）であり、物理的な空き
+  ターミナルペイン数ではない（runtime 0.1.31 / #104、backend-aware worker capacity 以降の読み替え）。broker 面
+  （`ORG_TRANSPORT=broker` / コード既定）では `max_concurrent_workers`（既定 8, `registry/org-config.md`）から
+  アクティブ worker 数を引いた残り、renga 面（opt-in）では rect ベース balanced split が受け入れ可能な空き split 枠。
+  scan の計算ロジックはこの読み替えで変わらない（数を受け取るだけ）ので、窓口 / dispatcher が現行の輸送層に応じて
+  空き slot 数を算出して渡す。
 - 既定の候補上限は `--top-n 3`。`--repo OWNER/REPO` 省略時は gh のカレントリポジトリ解決。
 - ツールは stdout に**単一 JSON オブジェクト**を出し、**exit code で分岐**する（JSON パース成否ではなく exit code を見る）。
 - ツールは read-only（`gh` の読み取りサブコマンドのみ）。本スキルがツール以外の副作用を出してはならない。

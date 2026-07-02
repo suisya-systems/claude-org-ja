@@ -13,11 +13,13 @@
 |---|---|---|
 | ディスパッチャー | 窓口ペインを水平分割して下半分 | `{{FQ}}spawn_claude_pane(target="focused", direction="horizontal", role="dispatcher", name="dispatcher", cwd=".dispatcher", permission_mode="bypassPermissions", model="sonnet")` (org-start Block A-1) |
 | キュレーター（オンデマンド時のみ） | ディスパッチャーペインを垂直分割して右半分 | `{{FQ}}spawn_claude_pane(target="dispatcher", direction="vertical", role="curator", name="curator", cwd="../.curator", permission_mode="auto")` (pane-close.md Step 5-3。常駐廃止につき org-start からは spawn しない) |
-| 各ワーカー | **balanced split**: `list_panes` が返す現在の rect から target と direction を動的に選び、同一タブ内に積む | 詳細は下記「ワーカーの balanced split 戦略」セクション。`{{FQ}}spawn_claude_pane(target={target}, direction={direction}, role="worker", name="worker-{task_id}", cwd="{workers_dir}/{task_id}", permission_mode="auto")` (org-delegate Step 3) |
+| 各ワーカー | **capacity は backend 依存** (runtime 0.1.31 / #104): broker は `max_concurrent_workers`（既定 8）以内で helper が返す**固定 spawn target**、renga は `list_panes` の rect から target/direction を動的に選ぶ **balanced split**。どちらも同一タブ内に積む | 詳細は下記「ワーカーの balanced split 戦略」セクション。target/direction は helper の action plan がどちらの面でも `spawn` に載せる。`{{FQ}}spawn_claude_pane(target={target}, direction={direction}, role="worker", name="worker-{task_id}", cwd="{workers_dir}/{task_id}", permission_mode="auto")` (org-delegate Step 3) |
 
 {{> pane-layout-spawn-rationale }}
 
 ## ワーカーの balanced split 戦略
+
+> **輸送層で capacity 機構が分岐する（runtime 0.1.31 / #104、backend-aware worker capacity）**: 既定 broker では**ワーカー並列度は `max_concurrent_workers` ポリシー**が律速する（既定 8 / `unlimited` opt-in / `choose_split` バイパス / spawn target 固定値）。dispatcher は下記の rect ベース balanced split を**実行せず**、`delegate-plan` helper へ解決済み `--transport broker` と `--max-concurrent-workers <N>` を明示で渡すと、helper は geometry を見ずに「アクティブ worker 数 < `N` なら固定 spawn target で spawn / 到達で `split_capacity_exceeded`」を返す（runtime は panes snapshot から transport を推定しない契約なので dispatcher が `ORG_TRANSPORT` を解決して明示で渡す）。**以下 §「なぜ balanced split が必要か」〜§「アルゴリズム」の rect ベース記述は `ORG_TRANSPORT=renga`（opt-in）面**として読む — renga では geometry から動的に target/direction を選ぶ balanced split がそのまま効く（renga 記述は不変）。broker 面の capacity 判定は runtime の backend-aware helper が SoT（設計 transport-lab `docs/design/broker-native-roles.md`）。
 
 ### なぜ balanced split が必要か
 
@@ -25,13 +27,13 @@
 
 固定 target や序数 `k` ベースの lookup table では、dispatcher 幅の累積半減や、ワーカーが途中で閉じた後の再派遣で想定レイアウトと実レイアウトが乖離し、早期に `split_refused` を誘発していた。
 
-現設計は `{{FQ}}list_panes` が返す各ペインの **rect 情報 (`x / y / width / height`, cell 単位)** を使い、**現状のレイアウトから動的に target と direction を選ぶ**。ワーカー退役順の揺れや途中クローズに強く、固定的な「N 並列上限」は持たず、ターミナルサイズと MIN_PANE 制約が許す限り分割し続け、限界に達したら自動 escalate する。
+現設計は `{{FQ}}list_panes` が返す各ペインの **rect 情報 (`x / y / width / height`, cell 単位)** を使い、**現状のレイアウトから動的に target と direction を選ぶ**。ワーカー退役順の揺れや途中クローズに強く、固定的な「N 並列上限」は持たず、ターミナルサイズと MIN_PANE 制約が許す限り分割し続け、限界に達したら自動 escalate する（この「固定上限を持たず MIN_PANE まで分割」は **renga 面の性質**。broker 面は上記の輸送層注記のとおり `max_concurrent_workers` の固定上限を持つ）。
 
 ### アルゴリズム
 
 balanced split の判定ロジック (target / direction 選択、MIN_PANE 制約、secretary 保険、role priority ソート、rect 隣接判定、`split_capacity_exceeded` 検出) は **`claude-org-runtime` の helper が SoT**。dispatcher は `{{FQ}}list_panes` のスナップショットと task JSON を入力にして以下のいずれかを呼び、返却された action plan (`spawn` / `after_spawn` / `escalate` / `state_writes` / `status`) に従って `spawn_claude_pane` / escalate を実行する:
 
-- CLI (運用上の標準呼び出し): `claude-org-runtime dispatcher delegate-plan --task-json ... --panes-json ... --state-dir ... [--template-repo ...] [--locale-json ...]`。dispatcher 側の手順は `.dispatcher/CLAUDE.md` の delegate-plan helper 節を一次参照
+- CLI (運用上の標準呼び出し): `claude-org-runtime dispatcher delegate-plan --task-json ... --panes-json ... --state-dir ... --transport {broker|renga} [--max-concurrent-workers N] [--template-repo ...] [--locale-json ...]`。dispatcher は `ORG_TRANSPORT` を解決して `--transport` を明示で渡す（runtime は panes snapshot から transport を推定しない契約、runtime 0.1.31 / #104）。broker 面では `--max-concurrent-workers N`（既定 8。`unlimited` は opt-in）で worker capacity を gate する（renga 面は rect ベース balanced split が律速するため `--max-concurrent-workers` は効かない）。dispatcher 側の手順は `.dispatcher/CLAUDE.md` の delegate-plan helper 節を一次参照
 - ライブラリ: `claude_org_runtime.dispatcher.runner` モジュールの `build_plan(...)` (action plan 全体) と `choose_split(panes)` (target / direction だけ欲しい場合の low-level helper)
 
 定数値 (MIN_PANE_WIDTH / MIN_PANE_HEIGHT / SECRETARY_MIN_WIDTH / SECRETARY_MIN_HEIGHT / role priority マップ) と判定順序、rect 隣接の厳密な定義は **`claude_org_runtime.dispatcher.runner` モジュール本体** (`_ROLE_PRIORITY` / `MIN_PANE_*` / `SECRETARY_MIN_*` / `choose_split()` / `rect_adjacent()`) を一次参照とする。本ドキュメントから定数値の prose を削除したのは、runtime と doc の drift が `[split_refused]` 等の不可解な失敗を生む原因になるため (Issue #307 cleanup)。

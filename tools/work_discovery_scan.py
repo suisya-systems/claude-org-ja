@@ -75,6 +75,14 @@ Calibration of the three §11 open points against this repo's real Issues
 * **N default (§11-1)**: fixed ``N=3`` (``--top-n``), configurable.
   ``--free-panes`` is accepted and, when > 0, boosts ``parallelizable``
   candidates in the ranking, but does not change N in Phase 1.
+  Semantics: ``--free-panes`` is a count of **free worker slots**, not
+  physical terminal panes. A worker slot is one unit of free dispatch
+  capacity: under broker (runtime 0.1.31 / #104, backend-aware worker
+  capacity) it is ``max_concurrent_workers`` minus the active worker count;
+  under renga it is a rect-available balanced-split pane. The scan's
+  ranking math is unchanged by this reinterpretation - it only reads the
+  count; the caller (secretary / dispatcher) computes the free-slot number
+  per the active transport.
 
 Estimated axes (design §4.4) — ``effort`` / ``parallelizable`` /
 ``unblocked_by_recent_merge`` — always carry a ``*_estimated`` flag and
@@ -958,7 +966,9 @@ def estimate_parallelizable(
     """Estimate whether the Issue is a dependency-graph leaf (design §4.2).
 
     Parallelizable iff it has no blocking ref to a still-open Issue — i.e.
-    it can be picked up independently to fill a free pane. Always an
+    it can be picked up independently to fill a free worker slot (a unit of
+    free dispatch capacity, not necessarily a physical pane; see the
+    ``--free-panes`` semantics note in the module docstring). Always an
     estimate (implicit conflicts not expressed as refs are invisible), so
     ``estimated=True`` is implied by the caller's ``*_estimated`` flag.
 
@@ -1182,11 +1192,14 @@ def _sort_key(cand: dict, free_panes: int | None) -> tuple:
     """
     prio = _PRIORITY_RANK.get(cand["priority"], 1)
     unblocked = 1 if cand["unblocked_by_recent_merge"] else 0
-    # parallelizable only earns rank weight when there is a *known* free pane
-    # to fill (design §4.2 「空き pane があるとき」); unknown (`--free-panes`
-    # unspecified → None) and zero are both neutral, matching the documented
-    # contract. (In practice every candidate is parallelizable by
-    # construction, so this term only discriminates when free_panes > 0.)
+    # parallelizable only earns rank weight when there is a *known* free
+    # worker slot to fill (design §4.2 「空き pane があるとき」; a free worker
+    # slot = one free dispatch-capacity unit, not necessarily a physical pane
+    # -- under broker it is max_concurrent_workers minus active workers, see
+    # the --free-panes semantics note in the module docstring); unknown
+    # (`--free-panes` unspecified → None) and zero are both neutral, matching
+    # the documented contract. (In practice every candidate is parallelizable
+    # by construction, so this term only discriminates when free_panes > 0.)
     par = 1 if (cand["parallelizable"] and (free_panes or 0) > 0) else 0
     effort_small = -_EFFORT_RANK.get(cand["effort"], 1)  # S best
     has_ms = 1 if cand.get("_has_milestone") else 0
@@ -2140,8 +2153,11 @@ def main(argv=None) -> int:
         "--free-panes",
         type=int,
         default=None,
-        help="Free worker pane count; when > 0, boosts parallelizable "
-        "candidates in ranking (does not change --top-n in Phase 1).",
+        help="Free worker slot count; when > 0, boosts parallelizable "
+        "candidates in ranking (does not change --top-n in Phase 1). "
+        "A worker slot is a free dispatch-capacity unit, not a physical "
+        "pane: under broker it is max_concurrent_workers minus active "
+        "workers (runtime 0.1.31); under renga a rect-available split pane.",
     )
     parser.add_argument(
         "--trigger",
@@ -2192,8 +2208,9 @@ def main(argv=None) -> int:
         # and break the "直近 K 件" contract. Require a positive integer.
         if args.recent_merges < 1:
             raise ValueError("--recent-merges must be >= 1")
-        # `--free-panes` is a count of free worker panes; 0 is valid (none
-        # free → no parallelizable boost), but a negative count is nonsense.
+        # `--free-panes` is a count of free worker slots (free dispatch-capacity
+        # units, not physical panes; see the module docstring semantics note);
+        # 0 is valid (none free → no parallelizable boost), negative is nonsense.
         if args.free_panes is not None and args.free_panes < 0:
             raise ValueError("--free-panes must be >= 0")
         # `--effort-history` is a count of merged PRs to learn from; 0 disables
