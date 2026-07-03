@@ -54,9 +54,15 @@ Counting rules (Codex review M4 / m9):
   Codex review B3: their mere existence fires the
   ``legacy_marker_sweep`` reason so the sweep can't starve).
 * ``skill_candidates_pending`` — lines matching exactly
-  ``- **status**: pending`` in ``knowledge/skill-candidates.md``
-  (the same ``grep -c '^- \\*\\*status\\*\\*: pending'`` the
-  skill-audit Step 1 uses).
+  ``- **status**: pending`` in ``knowledge/skill-candidates.md``,
+  **excluding lines inside code fences** (blocks opened/closed by a
+  line starting with three backticks or ``~~~``) so the entry-format
+  template example at the head of the file can never inflate the
+  count. This fence-excluding semantics is kept in three-way sync
+  with the skill-audit Step 1 count command and the operational note
+  at the head of ``knowledge/skill-candidates.md`` — change one,
+  change all three (``tools/test_check_curate_threshold.py`` asserts
+  parity).
 * ``work_skill`` — ``SKILL.md`` files at ``.claude/skills/*/SKILL.md``
   whose skill directory does **not** start with ``org-``. This matches
   skill-audit Step 1's
@@ -97,7 +103,13 @@ LEGACY_MARKER = "<!-- curated -->"
 # tolerates a BOM / leading blank line without reading whole files.
 _HEAD_BYTES = 256
 
-_PENDING_RE = re.compile(r"^- \*\*status\*\*: pending\s*$", re.MULTILINE)
+# Matched per line (not MULTILINE over the whole text) because fence
+# state is tracked line by line in count_pending.
+_PENDING_RE = re.compile(r"^- \*\*status\*\*: pending\s*$")
+# A code fence opens/closes on a line *starting* with ``` or ~~~
+# (three-way sync: skill-audit Step 1 awk command and the operational
+# note in knowledge/skill-candidates.md use the same rule).
+_FENCE_RE = re.compile(r"^(```|~~~)")
 
 
 def _has_legacy_marker(path: Path) -> bool:
@@ -146,6 +158,12 @@ def count_raw(root: Path) -> tuple[int, int]:
 def count_pending(root: Path) -> int:
     """Count ``- **status**: pending`` lines in skill-candidates.md.
 
+    Lines inside code fences (blocks delimited by lines starting with
+    ``` or ``~~~``) are excluded: the entry-format template example at
+    the head of the file must never count as a real pending entry
+    (it once did, spuriously spawning the on-demand curator on every
+    worker close).
+
     A missing file counts as 0 (normal in fresh checkouts); any other
     read error propagates so ``main`` reports ``status=error`` / exit 2
     rather than masking a real queue behind a false 0.
@@ -155,7 +173,15 @@ def count_pending(root: Path) -> int:
         text = candidates.read_text(encoding="utf-8")
     except FileNotFoundError:
         return 0
-    return len(_PENDING_RE.findall(text))
+    count = 0
+    in_fence = False
+    for line in text.splitlines():
+        if _FENCE_RE.match(line):
+            in_fence = not in_fence
+            continue
+        if not in_fence and _PENDING_RE.match(line):
+            count += 1
+    return count
 
 
 def count_work_skills(root: Path) -> int:

@@ -18,16 +18,23 @@
 - **関連 raw ファイル**: {raw_files のパス列}
 - **呼び出し元**: {post_retro | curation}
 - **提案 skill 名**: {kebab-case 名}
-- **status**: pending
+- **status**: {pending | approved | rejected | merged-into-*}
 - **決定日**: 未定
 - **却下理由**: （status が `rejected` に遷移したとき記入、それ以外は省略）
 - **統合先**: （status が `merged-into-*` のとき記入、それ以外は省略）
 ```
 
 > **status 行の形式は厳守**: pending のカウントは `- **status**: pending` の**行形式
-> 完全一致**（`grep '^- \*\*status\*\*: pending'`）で行われる（`skill-audit` Step 1 /
-> `tools/check_curate_threshold.py`）。インデント・スペース数・大文字小文字を変える
-> とカウントから漏れ、skill-audit / オンデマンド curate が発火しなくなる。
+> 完全一致**で行われる（`skill-audit` Step 1 / `tools/check_curate_threshold.py`）。
+> インデント・スペース数・大文字小文字を変えるとカウントから漏れ、skill-audit /
+> オンデマンド curate が発火しなくなる。
+>
+> **コードフェンス内は数えない**: カウントはコードフェンス（行頭 `` ``` `` /
+> `~~~` で開閉するブロック）の**外側の行のみ**が対象。上の「エントリフォーマット」の
+> テンプレ例文が誤カウントされない防御であり、このセマンティクスは
+> `tools/check_curate_threshold.py` の `count_pending` / `skill-audit` Step 1 の
+> カウントコマンド / 本節の 3 者で完全一致させること（変更時は 3 箇所同時更新。
+> `tools/test_check_curate_threshold.py` の parity テストが drift を検出する）。
 
 ## status の遷移
 
