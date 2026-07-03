@@ -117,7 +117,9 @@ class OptionalSections(unittest.TestCase):
     def test_optional_sections_omitted_when_absent(self):
         cfg = _base_config(self_edit=False)
         out = gwb.render(cfg)
-        self.assertNotIn("実装ガイダンス", out)
+        # section header (not the bare word, which the Codex full block now
+        # references when explaining the round-cap override)
+        self.assertNotIn("### 実装ガイダンス", out)
         self.assertNotIn("並列タスクとの干渉", out)
         self.assertNotIn("ナレッジ参照", out)
         self.assertNotIn("Issue URL", out)
@@ -132,7 +134,7 @@ class OptionalSections(unittest.TestCase):
         cfg["references"] = {"knowledge": ["/k/curated/x.md"]}
         cfg["parallel"] = {"notes": "並列ワーカーは無し"}
         out = gwb.render(cfg)
-        self.assertIn("実装ガイダンス", out)
+        self.assertIn("### 実装ガイダンス", out)
         self.assertIn("- `a.md`", out)
         self.assertIn("- `b.py`", out)
         self.assertIn("do the thing", out)
@@ -147,7 +149,7 @@ class OptionalSections(unittest.TestCase):
         cfg = _base_config(self_edit=False)
         cfg["implementation"] = {"guidance": "guidance only"}
         out = gwb.render(cfg)
-        self.assertIn("実装ガイダンス", out)
+        self.assertIn("### 実装ガイダンス", out)
         self.assertIn("guidance only", out)
 
 
@@ -159,7 +161,7 @@ class VerificationDepth(unittest.TestCase):
         self.assertIn("検証深度 minimal", out)
         self.assertIn("done: {commit SHA", out)
         # full-mode marker text must NOT be present
-        self.assertNotIn("3 ラウンド消せない場合は設計問題", out)
+        self.assertNotIn("上限に達したら round N+1 に自走で入らない", out)
 
     def test_minimal_self_edit_uses_one_liner(self):
         cfg = _base_config(self_edit=True)

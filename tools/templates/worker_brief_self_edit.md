@@ -55,7 +55,8 @@ ${references_knowledge_block}
 # --base はブランチのベース（通常 main）。前景実行して出力を読んでから次へ進む。
 codex exec review --base main -m gpt-5.5 -c model_reasoning_effort=medium < /dev/null
 ```
-- **前景実行する**（背景化 `&` はゲート素通り事故を招く）。Blocker/Major 修正、3 ラウンド上限
+- **前景実行する**（背景化 `&` はゲート素通り事故を招く）。Blocker/Major 修正、**round 既定上限 3**（brief の実装ガイダンスで別値指定があればそちら優先）
+- **上限到達で自走継続せず**、残指摘 + 自己評価（設計問題化か収束途中か）を窓口に報告して停止。**同一指摘が 3 round 消えない場合は上限前でも即設計問題として報告**（別問題が各 1 round で順に解消する健全な収束とは区別）
 - Minor/Nit 残置可
 - **large diff では effort を上げない**（high-effort review は大 diff でスケールしない）。review surface は危険側 Major は守るが benign safe-side false-negative / ReDoS 級を取りこぼしうる（詳細: claude-org リポジトリの `knowledge/curated/codex.md`）
 - `codex:rescue` skill 禁止、`codex exec review` / `codex exec` 系直打ちのみ。`gpt-5.5-codex` / API キー surface は不可（`-m gpt-5.5` 明示）
