@@ -41,7 +41,10 @@ context リセットと無関係）に監視が継続し、人間が tmux ペイ
 > **peer push は best-effort**: `pr_watch.py` は CI 確定・マージ時に窓口へ `CI_COMPLETED` /
 > `PR_MERGED` の peer message を送ろうとするが、これは `tools/peer_notify.py` 経由の
 > best-effort（broker send CLI 不在 / `ORG_TRANSPORT`・`RENGA_SOCKET` 未設定の pane では
-> no-op）。**待つべき正路は上記 events DB 行と可視ペイン**であり、push の到達を merge gate の
+> no-op）。daemon が非既定 state dir（herdr dogfood 等）で動く環境では、pane env に
+> `ORG_BROKER_STATE_DIR` が無いと broker send が既定 `.state/broker` を掴んで push が欠落する
+> （欠落しても canonical の events DB 行には影響しない）。**待つべき正路は上記 events DB 行と
+> 可視ペイン**であり、push の到達を merge gate の
 > 前提にしない（org-pull-request の CI/merge gate は events DB を一次ソースにする）。
 
 > **輸送層（transport）両系 — 既定 `broker` / opt-in `renga`**: 本ファイル（および各スキル）の peer message・pane 操作は `mcp__org-broker__*` で書いてあり、**`ORG_TRANSPORT` 無設定＝既定 `broker`** ではそのまま従えばよい。`ORG_TRANSPORT=renga`（opt-in、切戻し可）では MCP サーバー名が `renga-peers` になり、**完全修飾名が `mcp__org-broker__*` → `mcp__renga-peers__*`** に機械置換される（引数形・セマンティクスは同一なので操作の論理は変わらない）。輸送依存で手順が変わる差は次の 3 点:

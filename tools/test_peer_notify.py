@@ -269,9 +269,13 @@ class NotifyPeerBrokerTests(unittest.TestCase):
     """ORG_TRANSPORT=broker branch — shells out to the runtime CLI."""
 
     def setUp(self) -> None:
-        self._env = mock.patch.dict(
-            os.environ, {"ORG_TRANSPORT": "broker"}, clear=False,
-        )
+        # Pin ORG_TRANSPORT=broker and drop any ORG_BROKER_STATE_DIR
+        # leaking in from a real broker session env so the frozen-argv
+        # tests exercise the default (no --state-dir) command shape.
+        env = {k: v for k, v in os.environ.items()
+               if k != "ORG_BROKER_STATE_DIR"}
+        env["ORG_TRANSPORT"] = "broker"
+        self._env = mock.patch.dict(os.environ, env, clear=True)
         self._env.start()
 
     def tearDown(self) -> None:
@@ -314,6 +318,41 @@ class NotifyPeerBrokerTests(unittest.TestCase):
             ["claude-org-runtime", "broker", "send",
              "--to", "secretary", "--message", "a message"],
         )
+
+    def test_state_dir_env_appends_flag(self) -> None:
+        """ORG_BROKER_STATE_DIR set + non-empty → `--state-dir <value>`
+        is appended so the CLI reaches a daemon on a non-default state
+        dir (paired contract, claude-org-runtime #122)."""
+        with mock.patch.dict(
+            os.environ,
+            {"ORG_BROKER_STATE_DIR": "/abs/.state/broker-herdr-dogfood-33"},
+            clear=False,
+        ), self._patch_run(return_value=_FakeCompleted(0)) as run:
+            self.assertTrue(peer_notify.notify_peer("secretary", "hi"))
+        argv = run.call_args.args[0]
+        self.assertEqual(
+            argv,
+            ["claude-org-runtime", "broker", "send",
+             "--to", "secretary", "--message", "hi",
+             "--state-dir", "/abs/.state/broker-herdr-dogfood-33"],
+        )
+
+    def test_state_dir_env_unset_keeps_legacy_argv(self) -> None:
+        """No ORG_BROKER_STATE_DIR → historical argv, no --state-dir
+        (backward compatible with runtimes that predate the flag)."""
+        with self._patch_run(return_value=_FakeCompleted(0)) as run:
+            self.assertTrue(peer_notify.notify_peer("secretary", "hi"))
+        argv = run.call_args.args[0]
+        self.assertNotIn("--state-dir", argv)
+
+    def test_state_dir_env_empty_keeps_legacy_argv(self) -> None:
+        """Empty ORG_BROKER_STATE_DIR is treated as unset."""
+        with mock.patch.dict(
+            os.environ, {"ORG_BROKER_STATE_DIR": ""}, clear=False,
+        ), self._patch_run(return_value=_FakeCompleted(0)) as run:
+            self.assertTrue(peer_notify.notify_peer("secretary", "hi"))
+        argv = run.call_args.args[0]
+        self.assertNotIn("--state-dir", argv)
 
     def test_broker_branch_does_not_spawn_renga(self) -> None:
         """ORG_TRANSPORT=broker must never reach the renga Popen path,

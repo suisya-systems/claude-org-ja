@@ -96,12 +96,23 @@ def _notify_peer_broker(
 
         claude-org-runtime broker send --to <to_id> --message <message>
 
+    When ``ORG_BROKER_STATE_DIR`` is set and non-empty (the runtime
+    launcher injects it into pane envs when the daemon runs on a
+    non-default state dir — paired contract, claude-org-runtime #122),
+    ``--state-dir <value>`` is appended so the CLI talks to the live
+    daemon instead of picking up a stale default ``.state/broker``.
+    Unset / empty keeps the historical argv, so this stays safe against
+    runtimes that predate the flag.
+
     Returns ``True`` iff the subprocess exits 0. ``FileNotFoundError``
     (CLI not installed — the common case until runtime#93 ships),
     non-zero exit, timeout, and any other exception all map to ``False``.
     Never raises.
     """
     cmd = [runtime_bin, "broker", "send", "--to", to_id, "--message", message]
+    state_dir = os.environ.get("ORG_BROKER_STATE_DIR")
+    if state_dir:
+        cmd += ["--state-dir", state_dir]
     try:
         proc = subprocess.run(cmd, capture_output=True, timeout=timeout)
     except Exception:  # noqa: BLE001 — best-effort; CLI absent, timeout, etc.
