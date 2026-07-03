@@ -45,6 +45,12 @@ claude-org-runtime org up                                # 窓口（Secretary）
 
 窓口が立ち上がったら、初回だけ `/org-setup`（許可設定の配置）→ `/org-start`（組織の起動）の順に実行します。2 回目以降は `claude-org-runtime org up` → `/org-start` だけで再開できます。前提条件・手動手順・困ったときは [`docs/getting-started.md`](docs/getting-started.md) を参照してください。
 
+### herdr で起動する場合
+
+```bash
+claude-org-runtime org up --backend herdr
+```
+
 ### renga で起動する場合
 
 通常は `claude-org-runtime org up` で起動します。renga は、claude-org-ja に合わせて開発された、Windows・Linux・macOS 対応のターミナル作業環境です（[GitHub](https://github.com/suisya-systems/renga) / [npm](https://www.npmjs.com/package/@suisya-systems/renga)）。複数の Claude Code ペインを 1 つの画面に並べ、窓口・ディスパッチャー・ワーカーのペイン管理と、ペイン同士の連絡を扱います。画面全体でペインの動きを見ながら起動したい場合は、renga を使って起動できます。renga は npm パッケージなので、別途 Node.js（LTS 推奨）のインストールが必要です。クローン後のディレクトリで次を実行します。
