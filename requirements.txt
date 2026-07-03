@@ -26,6 +26,11 @@ core-harness>=0.3.2,<0.4
 # PyPI via Trusted Publisher; pinned to the 0.1.x range. 0.x bumps may be
 # breaking per the runtime's compatibility policy, so widen this pin
 # deliberately when adopting a new minor.
+# Floor bumped to 0.1.33 for the herdr agent.start placement/liveness fix
+# (runtime #115, Closes runtime #114): herdr's focus-driven pane placement
+# collapsed spawn isolation and false-reaped live bindings, so pin the floor to
+# the release that fixes it. No schema / DEFAULT_NOTIFY / attention change —
+# pin-only bump on the ja side. The earlier 0.1.32 floor (below) is subsumed.
 # Floor bumped to 0.1.32 for the send_keys raw-key vocabulary (runtime #111):
 # org-delegate's intervention procedure assumes raw-key send_keys, so pin the
 # floor to the release that ships it. Also bundles the herdr reap fix
@@ -70,7 +75,7 @@ core-harness>=0.3.2,<0.4
 # (transport surface descriptor claude_org_runtime.transport consumed by
 # tools/transport.py — Epic #6 next-stage D / ja#513) are subsumed by 0.1.28.
 # Keep in sync with pyproject.toml.
-claude-org-runtime>=0.1.32,<0.2
+claude-org-runtime>=0.1.33,<0.2
 
 # tools/gen_worker_brief.py reads TOML config. tomllib is stdlib in 3.11+,
 # but ja still supports 3.10 (CLAUDE.local.md template recommends 3.10).
