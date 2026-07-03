@@ -36,8 +36,10 @@ skill 数増加そのものよりも「検索面のノイズ」が本丸。
 以下をいずれも満たさない場合は **即終了**（ログも残さない）。
 
 ```bash
-# 候補キュー pending エントリ数
-cand_count=$(grep -c '^- \*\*status\*\*: pending' knowledge/skill-candidates.md 2>/dev/null || echo 0)
+# 候補キュー pending エントリ数（コードフェンス内のテンプレ例文は数えない）
+cand_count=$(awk '/^(```|~~~)/ { fence = !fence; next }
+  !fence && /^- \*\*status\*\*: pending[ \t]*$/ { n++ }
+  END { print n + 0 }' knowledge/skill-candidates.md 2>/dev/null || echo 0)
 
 # work-skill 数（org-* は除外。ノイズ源となる work-skill 検索対象に合わせる）
 work_skill_count=$(find .claude/skills -maxdepth 2 -name SKILL.md \
@@ -52,10 +54,14 @@ work_skill_count=$(find .claude/skills -maxdepth 2 -name SKILL.md \
 `org-*` の増減は検索ノイズに直接影響しない。
 
 > **カウント定義の同期（重要）**: 上記 2 つのカウント定義（pending は
-> `^- \*\*status\*\*: pending` の行一致、work-skill は `find .claude/skills -maxdepth 2
+> `^- \*\*status\*\*: pending` の行一致 **かつコードフェンス外**（行頭 `` ``` `` /
+> `~~~` で開閉するブロック内は除外）、work-skill は `find .claude/skills -maxdepth 2
 > -name SKILL.md | grep -v '/org-'`）は、オンデマンド curator の起動判定
 > [`tools/check_curate_threshold.py`](../../../tools/check_curate_threshold.py) と
-> **完全一致**させること。どちらかを変更する場合は両方を更新する
+> **完全一致**させること。pending カウントのセマンティクスはさらに
+> [`knowledge/skill-candidates.md`](../../../knowledge/skill-candidates.md)
+> 冒頭の運用ルール記載と合わせた **3 者同期**（本 Step 1 / check_curate_threshold.py /
+> skill-candidates.md 冒頭）。いずれかを変更する場合は 3 箇所同時に更新する
 > （`tools/test_check_curate_threshold.py` の parity テストが drift を検出する）。
 
 ## Step 2: 廃止候補の洗い出し

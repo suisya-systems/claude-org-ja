@@ -9,7 +9,9 @@ pane close, and org-curate consumes its ``reasons[]``. It must:
 * fire ``legacy_marker_sweep`` when any ``<!-- curated -->`` remnant
   sits directly under ``knowledge/raw/`` (B3)
 * fire ``skill_candidates_pending`` on >= 5 ``- **status**: pending``
-  lines, matching skill-audit's grep exactly (m9)
+  lines **outside code fences** (the entry-format template example in
+  the fenced block at the head of skill-candidates.md must never
+  count), matching skill-audit Step 1's count command exactly (m9)
 * fire ``work_skill_count`` with the same count skill-audit Step 1
   computes — parity asserted against the literal shell pipeline (M4)
 * exit 0 / 10 so the dispatcher can branch without JSON parsing (m8)
@@ -34,6 +36,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import check_curate_threshold as cct  # noqa: E402
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# The pending-count command skill-audit Step 1 documents, verbatim
+# (three-way sync: check_curate_threshold.count_pending / skill-audit
+# Step 1 / the operational note in knowledge/skill-candidates.md).
+_SKILL_AUDIT_PENDING_AWK = (
+    "awk '/^(```|~~~)/ { fence = !fence; next }\n"
+    "  !fence && /^- \\*\\*status\\*\\*: pending[ \\t]*$/ { n++ }\n"
+    "  END { print n + 0 }' knowledge/skill-candidates.md 2>/dev/null"
+    " || echo 0"
+)
 
 
 class _TreeCase(unittest.TestCase):
@@ -162,6 +174,117 @@ class TestPendingCandidates(_TreeCase):
     def test_missing_file_counts_zero(self):
         _, out = self.run_main(self.root)
         self.assertEqual(out["counts"]["skill_candidates_pending"], 0)
+
+    def test_fenced_template_is_not_counted(self):
+        # The head of the real skill-candidates.md carries an
+        # entry-format template inside a fenced block. A literal
+        # `- **status**: pending` line in there (as the template read
+        # before its defusal) must not inflate the count: 4 real
+        # entries count as 4, not 5.
+        real_entries = "".join(
+            f"### 2026-07-03 pat-{i}\n- **status**: pending\n"
+            for i in range(4)
+        )
+        (self.root / "knowledge" / "skill-candidates.md").write_text(
+            "# queue\n"
+            "\n"
+            "```markdown\n"
+            "### {YYYY-MM-DD} {pattern-name}\n"
+            "- **status**: pending\n"
+            "```\n"
+            "\n" + real_entries,
+            encoding="utf-8",
+        )
+        code, out = self.run_main(self.root)
+        self.assertEqual(out["counts"]["skill_candidates_pending"], 4)
+        self.assertEqual(code, cct.EXIT_BELOW_THRESHOLD)
+
+    def test_tilde_fences_also_excluded(self):
+        (self.root / "knowledge" / "skill-candidates.md").write_text(
+            "~~~\n"
+            "- **status**: pending\n"
+            "~~~\n"
+            "- **status**: pending\n",
+            encoding="utf-8",
+        )
+        _, out = self.run_main(self.root)
+        self.assertEqual(out["counts"]["skill_candidates_pending"], 1)
+
+    def test_pending_after_closed_fence_counts_again(self):
+        # Fence state must toggle closed, not stick open forever.
+        (self.root / "knowledge" / "skill-candidates.md").write_text(
+            "- **status**: pending\n"
+            "```bash\n"
+            "- **status**: pending\n"
+            "```\n"
+            "- **status**: pending\n",
+            encoding="utf-8",
+        )
+        _, out = self.run_main(self.root)
+        self.assertEqual(out["counts"]["skill_candidates_pending"], 2)
+
+    def test_repo_template_head_has_no_countable_pending(self):
+        """The committed skill-candidates.md head (format template +
+        operational notes, i.e. everything above the entry list) must
+        contribute 0 to the count — both template defusal (the example
+        line no longer reads ``- **status**: pending``) and fence
+        exclusion defend this."""
+        real = (
+            _REPO_ROOT / "knowledge" / "skill-candidates.md"
+        ).read_text(encoding="utf-8")
+        head = real.split("## エントリ一覧")[0]
+        (self.root / "knowledge" / "skill-candidates.md").write_text(
+            head, encoding="utf-8"
+        )
+        _, out = self.run_main(self.root)
+        self.assertEqual(out["counts"]["skill_candidates_pending"], 0)
+
+    def test_parity_with_skill_audit_count_command(self):
+        """Three-way sync (fence-excluding semantics): the literal awk
+        command skill-audit Step 1 documents must (a) appear verbatim
+        in the committed SKILL.md and (b) produce the same count as
+        ``count_pending`` on a fixture exercising fences + real
+        entries."""
+        skill_md = (
+            _REPO_ROOT / ".claude" / "skills" / "skill-audit" / "SKILL.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            _SKILL_AUDIT_PENDING_AWK,
+            skill_md,
+            "skill-audit Step 1 count command drifted from the one "
+            "this parity test runs — update both together",
+        )
+        fixture = (
+            "```markdown\n"
+            "- **status**: pending\n"
+            "```\n"
+            "- **status**: pending\n"
+            "- **status**: pending  \n"  # trailing spaces still match
+            "- **status**: approved\n"
+            "~~~\n"
+            "- **status**: pending\n"
+            "~~~\n"
+            "- **status**: pending\n"
+        )
+        (self.root / "knowledge" / "skill-candidates.md").write_text(
+            fixture, encoding="utf-8"
+        )
+        if not shutil.which("bash"):
+            self.skipTest("bash not on PATH — shell parity untestable")
+        try:
+            proc = subprocess.run(
+                ["bash", "-c", _SKILL_AUDIT_PENDING_AWK],
+                cwd=self.root,
+                capture_output=True,
+                encoding="utf-8",
+                errors="replace",
+                check=True,
+                timeout=60,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            self.skipTest(f"bash unusable here ({exc!r}) — parity skipped")
+        self.assertEqual(cct.count_pending(self.root), int(proc.stdout.strip()))
+        self.assertEqual(cct.count_pending(self.root), 3)
 
 
 class TestWorkSkillCount(_TreeCase):
