@@ -33,6 +33,37 @@ PANE_OUTPUT_WITHOUT_PEER_MSG の 3 ラウンドレビューで指摘されたバ
 
 出典: `2026-05-09-pane-output-without-peer-msg-race.md`
 
+## screen-change 判定は単点比較でなく全可視行ハッシュにする（STALL 誤検知、Issue #680）
+
+Step 5 の stall 検出は当初 `(target_line_text = 最後の非空行, cursor 位置)` の単点比較で idle/active を判定していた。しかし Claude Code の TUI はツール呼び出し中も末尾 footer (`⏵⏵ auto mode on …`) を静的に表示し、cursor は常に空の入力欄 (row 0, col 0, visible) に留まる。このため ultracode / 長時間 Bash 実行ワーカーで scrollback（Read/Edit/Bash 出力・thinking spinner）が大きく変化していても比較 2 値が不変のまま観測され、`idle_streak` が機械的に加算されて STALL_SUSPECTED を誤発火した（1 セッションで 2 件連続）。
+
+### 解法: 正規化済み全可視行の SHA-256 ハッシュ
+
+`inspect_pane` の全可視行を正規化してハッシュ化し、ハッシュ変化＝active とみなす。単点ではなく画面全体を見るので、footer/cursor が不変でも scrollback が動いていれば正しく active になる。実装は helper `tools/inspect_pane_state.py` に集約（`extract_pane_state()` / `compute_idle_transition()`、test は `tests/test_inspect_pane_state.py`）。prose 手製ハッシュは行順・空行・spinner 数値・token counter・ANSI 残骸の扱いが実装ごとにブレて決定性が弱いので禁止し、prose は helper 出力を state に反映するだけにした。
+
+## spinner は hash から除外するが active-spinner 抑止には使う（Issue #680 + #671 の合わせ技）
+
+一見矛盾する 2 つの要件を別軸で両立させる設計:
+
+- **hash からは spinner を除外する**: spinner の glyph はフレームごとに回転し、elapsed も毎秒増える。これを hash に含めると「画面は静止しているのに hash が毎サイクル変わる」＝ active 誤判定になり、#680 の狙い（scrollback の実変化だけを active とする）が壊れる。よって正規化で spinner 行（新旧両形式）を定数プレースホルダに潰し、glyph/elapsed/token を hash から排除する。→ 純粋に spinner が回っているだけの画面は hash 不変＝idle。
+- **その同じ spinner の elapsed を、抑止シグナルとしては使う**: deep-research / ultracode の 1 model turn は scrollback を動かさず（hash 不変＝idle 加算）に新形式 spinner (`{Verb}… (1h 1m 42s · ↓ 121.5k tokens)`) だけを回し続ける。hash 判定だけだと正常な長考を STALL 誤発火する。そこで helper が前サイクルの spinner elapsed と比較して「増加中＝生きている」を判定し、`suppress_stall` で STALL/PANE_OUTPUT の**発火だけ**を保留する（`idle_streak` は加算し続ける）。
+
+つまり「hash＝scrollback が動いたか」と「spinner elapsed＝モデルが 1 turn を進めているか」を **独立した 2 軸** で観測し、前者を active 判定に、後者を抑止判定に使う。同じ spinner 行を hash では捨て、elapsed では読む、という非対称な扱いが要点。
+
+### cap で永久マスクを防ぐ（Blocker 対応）
+
+「elapsed が増える限り抑止」を無条件にすると、API dead でクライアント側タイマーだけ伸び続けるケースを永久にマスクしうる。そこで `SPINNER_ACTIVE_SUPPRESS_CAP_MIN = 90` を導入し、`elapsed 増加 && elapsed < cap` の間だけ抑止、cap 到達で抑止解除して anomaly 経路に戻す。90 分は観測済み ~61 分級の正常 turn を許容しつつ永久マスクを避ける値。elapsed が前サイクルと同値（凍結）なら hung の signal として即抑止解除するのも同じ趣旨（生きている＝増加、を厳密に要求する）。
+
+### 新旧 spinner の 2 分類（既存 ERROR 経路との衝突回避）
+
+旧形式 `{glyph} {verb} for {Xm Ys}` は API retry / hang の signal として Step 4 の 5 分 ERROR 経路を維持。新形式 `{Verb}… (...)` は上記 active-spinner 抑止で扱い cap 超過時のみ anomaly。両 regex は ` for ` と `… (` で **disjoint** なので、健全な新形式 active spinner が 5 分で ERROR 化する衝突は起きない。「新形式を無条件 not-stall」にせず cap で頭打ちにするのが Blocker 対応の肝。
+
+### 旧 state record の migration はしない（初回観測リセット、Blocker 対応）
+
+新 hash 判定の導入時、旧 record は `last_visible_content_hash` を持たず `idle_streak_cycles` が旧ロジックで積まれている（実測 13）。この streak を新判定へ持ち越すと初回から STALL/PANE_OUTPUT 条件を満たして即誤発火する。よって hash 欠損 record は migration せず**初回観測**として扱い、hash を保存して `idle_streak_cycles=0` / `last_content_change_ts=null` にリセットする。旧 `last_target_line_text` は読まない（deprecated 残置）。`compute_idle_transition()` が hash 欠損を検出して自動リセットする。
+
+出典: `knowledge/raw/2026-07-04-delegation-stall-detection-static-footer-false-positive.md`
+
 ## dispatcher_retro_gate と channel 通知の不整合
 
 `tools/dispatcher_retro_gate.py --attempt N` は内部で `check_messages` をポーリングして secretary の ack を検出する設計。しかし secretary が `send_message(to_id="dispatcher", ...)` ではなく **renga-peers の channel broadcast 形式**（dispatcher の system-reminder として届く形式）で返答した場合、gate は `check_messages` キューに何も入らないため検出できず、`status: "polling"` のまま全 10 attempt を消費する。
