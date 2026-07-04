@@ -55,6 +55,13 @@ REQUIRED_STRING_KEYS = {
     "paths": ("claude_org",),
 }
 
+# Issue #676: Python src-layout detection. A repo counts as "Python
+# src-layout" when it has a ``src/`` directory AND a Python packaging
+# marker at its root. The marker requirement keeps non-Python repos that
+# happen to use ``src/`` (Rust's Cargo layout, JS bundler conventions)
+# from tripping the brief rule.
+_PYTHON_PROJECT_MARKERS = ("pyproject.toml", "setup.py", "setup.cfg")
+
 _BLOCK_RE = re.compile(
     r"<!--BEGIN:(?P<name>[a-z_]+)-->(?P<body>.*?)<!--END:(?P=name)-->\n?",
     re.DOTALL,
@@ -103,6 +110,11 @@ def validate(config: dict[str, Any]) -> None:
         raise ConfigError("missing required key worker.self_edit")
     if not isinstance(config["worker"]["self_edit"], bool):
         raise ConfigError("worker.self_edit must be a boolean")
+
+    if "python_src_layout" in config["project"] and not isinstance(
+        config["project"]["python_src_layout"], bool
+    ):
+        raise ConfigError("project.python_src_layout must be a boolean")
 
     task = config["task"]
     if "issue_url" in task and not isinstance(task["issue_url"], str):
@@ -174,12 +186,57 @@ def _references_knowledge_block(items: list[str]) -> str:
     return "\n".join(f"- `{p}`" for p in items)
 
 
+def is_python_src_layout(repo_dir: Path) -> bool:
+    """True iff ``repo_dir`` looks like a Python src-layout project root.
+
+    Requires BOTH a ``src/`` directory and a Python packaging marker
+    (pyproject.toml / setup.py / setup.cfg) so Rust / JS repos that use a
+    ``src/`` directory don't match. Filesystem errors are treated as
+    "not detected" — the rule is a safety net, not a hard gate.
+    """
+    try:
+        if not (repo_dir / "src").is_dir():
+            return False
+        return any((repo_dir / m).is_file() for m in _PYTHON_PROJECT_MARKERS)
+    except OSError:
+        return False
+
+
+def _detect_python_src_layout(
+    worker_dir: Path, project_path: Optional[str]
+) -> bool:
+    """Probe the delegation's repo candidates for a Python src-layout.
+
+    Brief generation runs BEFORE the worktree is created, so the probe
+    targets are (any hit wins):
+
+    - ``<base>`` when worker_dir has the unified ``<base>/.worktrees/<task>``
+      shape (Pattern A/B on an existing clone — the claude-org-runtime case);
+    - ``worker_dir`` itself (Pattern A legacy direct on an existing clone,
+      Pattern C gitignored_repo_root where worker_dir IS the repo root);
+    - the registry row's path when it is a local directory (URL rows and
+      the ``-`` placeholder are skipped).
+
+    When none of the candidates exist on disk yet (first dispatch before
+    any clone), detection returns False and the brief simply omits the
+    rule — the pre-#676 status quo.
+    """
+    candidates: list[Path] = []
+    if worker_dir.parent.name == ".worktrees":
+        candidates.append(worker_dir.parent.parent)
+    candidates.append(worker_dir)
+    if project_path and project_path != "-" and "://" not in project_path:
+        candidates.append(Path(project_path))
+    return any(is_python_src_layout(c) for c in candidates)
+
+
 def _select_blocks(config: dict[str, Any]) -> dict[str, bool]:
     """Decide which optional <!--BEGIN:name--> blocks to keep."""
     task = config["task"]
     depth = task["verification_depth"]
     blocks = {
         "issue_url": bool(task.get("issue_url")),
+        "python_src_layout": bool(config["project"].get("python_src_layout")),
         "implementation": "implementation" in config
         and (
             config["implementation"].get("target_files")
@@ -371,6 +428,7 @@ def build_config_from_task(
     )
     project_name = project_slug
     project_description = project_description_override or ""
+    match = None
     if registry_for_meta.exists():
         rows = rwl.parse_projects(registry_for_meta)
         match = rwl.find_project(rows, project_slug)
@@ -420,6 +478,17 @@ def build_config_from_task(
     # --write-toml cleanly. Codex Round 2 Major.
     if layout.pattern_variant is not None:
         config["worker"]["pattern_variant"] = layout.pattern_variant
+    # Issue #676: Python src-layout projects (claude-org-runtime being the
+    # motivating case — 3 workers independently re-discovered the venv
+    # shadow trap) get a standing verification rule baked into the brief:
+    # pytest runs with PYTHONPATH=src, editable installs into the shared
+    # venv are forbidden. Added only when detected so the key stays out of
+    # the minimal [project] schema (mirrors pattern_variant above).
+    if _detect_python_src_layout(
+        Path(layout.worker_dir),
+        match.path if match is not None else None,
+    ):
+        config["project"]["python_src_layout"] = True
     if issue_url:
         config["task"]["issue_url"] = issue_url
     if closes_issue is not None:
