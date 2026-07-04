@@ -27,26 +27,72 @@ export CORE_HARNESS_BLOCK_PREFIX="${CORE_HARNESS_BLOCK_PREFIX:-ブロック: }"
 # importable we fail closed (echo + exit 2) — same pattern as the
 # pre-extraction "missing jq/awk" guard, so behaviour is unchanged
 # for misconfigured environments.
+#
+# Sets two globals rather than printing to stdout so the accumulated
+# interpreter-attempt list survives into the rejection message (a
+# command-substitution subshell would discard it):
+#   __CORE_HARNESS_LIB_DIR  — resolved lib dir on success, "" otherwise
+#   __CORE_HARNESS_TRIED    — interpreters attempted, for diagnostics
 __core_harness_resolve_lib() {
+  __CORE_HARNESS_LIB_DIR=""
+  __CORE_HARNESS_TRIED=()
+  local prog='import core_harness.hooks, sys; sys.stdout.write(str(core_harness.hooks.lib_path()))'
+
+  # Repo-local virtualenv first (Issue #679). requirements.txt exact-pins
+  # core-harness into <repo_root>/.venv, and that install is reachable from
+  # this shim's own location even in panes that did NOT inherit VIRTUAL_ENV
+  # or .venv/bin on PATH — runtime-spawned panes rebuild PATH through a
+  # login shell and drop the venv, so the on-PATH `python3` cannot import
+  # core_harness and every Bash call fails closed. Deriving <repo_root> from
+  # $BASH_SOURCE keeps this independent of the caller's CWD. Trying the venv
+  # first also keeps the healthy path at a single interpreter spawn (no perf
+  # regression vs. the previous python3-first order, since the venv resolves
+  # on the first attempt when present).
+  local script_dir repo_root venv_py
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)" || script_dir=""
+  if [[ -n "$script_dir" ]]; then
+    repo_root="$(cd "$script_dir/../.." 2>/dev/null && pwd)" || repo_root=""
+    if [[ -n "$repo_root" ]]; then
+      for venv_py in "$repo_root/.venv/bin/python3" "$repo_root/.venv/Scripts/python.exe"; do
+        if [[ -x "$venv_py" ]]; then
+          __CORE_HARNESS_TRIED+=("$venv_py")
+          # Accept only on a clean exit (assignment status == interpreter
+          # status) AND non-empty output, so a noisy interpreter that writes
+          # to stdout then fails does not masquerade as a resolved lib path.
+          if __CORE_HARNESS_LIB_DIR="$("$venv_py" -c "$prog" 2>/dev/null)" && [[ -n "$__CORE_HARNESS_LIB_DIR" ]]; then
+            return 0
+          fi
+        fi
+      done
+    fi
+  fi
+
   # Detection order aligned with tools/journal_append.sh (cross-review
   # Minor 5): try the Windows `py -3` launcher first, then `python3`,
   # then `python`, so Git-for-Windows shells without python3 on PATH
   # still resolve the lib.
   if command -v py >/dev/null 2>&1; then
-    py -3 -c 'import core_harness.hooks, sys; sys.stdout.write(str(core_harness.hooks.lib_path()))' 2>/dev/null && return 0
+    __CORE_HARNESS_TRIED+=("py -3")
+    if __CORE_HARNESS_LIB_DIR="$(py -3 -c "$prog" 2>/dev/null)" && [[ -n "$__CORE_HARNESS_LIB_DIR" ]]; then
+      return 0
+    fi
   fi
   local py
   for py in python3 python; do
     if command -v "$py" >/dev/null 2>&1; then
-      "$py" -c 'import core_harness.hooks, sys; sys.stdout.write(str(core_harness.hooks.lib_path()))' 2>/dev/null && return 0
+      __CORE_HARNESS_TRIED+=("$py")
+      if __CORE_HARNESS_LIB_DIR="$("$py" -c "$prog" 2>/dev/null)" && [[ -n "$__CORE_HARNESS_LIB_DIR" ]]; then
+        return 0
+      fi
     fi
   done
+  __CORE_HARNESS_LIB_DIR=""
   return 1
 }
 
-__CORE_HARNESS_LIB_DIR="$(__core_harness_resolve_lib || true)"
+__core_harness_resolve_lib || true
 if [[ -z "$__CORE_HARNESS_LIB_DIR" || ! -f "$__CORE_HARNESS_LIB_DIR/core_harness_hooks.sh" ]]; then
-  echo "ブロック: core-harness パッケージが見つかりません (pip install -e . が必要)。" >&2
+  echo "ブロック: core-harness パッケージが見つかりません (pip install -e . または <repo>/.venv の作成が必要)。試行した interpreter: ${__CORE_HARNESS_TRIED[*]:-none}" >&2
   exit 2
 fi
 
