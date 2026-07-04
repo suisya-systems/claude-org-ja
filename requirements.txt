@@ -26,6 +26,16 @@ core-harness>=0.3.2,<0.4
 # PyPI via Trusted Publisher; pinned to the 0.1.x range. 0.x bumps may be
 # breaking per the runtime's compatibility policy, so widen this pin
 # deliberately when adopting a new minor.
+# Floor bumped to 0.1.36 for three broker/herdr delivery fixes: broker observer
+# lease so a background-hosted duplicate sidecar no longer claims-then-drops
+# messages, exposing per-agent receive_mode via list_peers (runtime #132);
+# Herdr pane-id parsing hardening (runtime #134); and pane venv inheritance so
+# spawned panes resolve the org's interpreter/venv (runtime #135, #137). No
+# schema / DEFAULT_NOTIFY / classifier-vocabulary / attention change — pin-only
+# bump on the ja side (list_peers.receive_mode is now per-agent runtime state
+# rather than a constant "push", and new journal event kinds such as
+# delivery_suppressed_bg_hosted may appear; ja asserts neither as a closed set).
+# The earlier 0.1.35 floor (below) is subsumed.
 # Floor bumped to 0.1.35 for three broker/herdr delivery fixes: native Windows
 # fail-fast for `org up --backend herdr` (runtime #120, PR #121);
 # session-scoped delivery credential fencing so fork-spawned duplicate sidecars
@@ -88,7 +98,7 @@ core-harness>=0.3.2,<0.4
 # (transport surface descriptor claude_org_runtime.transport consumed by
 # tools/transport.py — Epic #6 next-stage D / ja#513) are subsumed by 0.1.28.
 # Keep in sync with pyproject.toml.
-claude-org-runtime>=0.1.35,<0.2
+claude-org-runtime>=0.1.36,<0.2
 
 # tools/gen_worker_brief.py reads TOML config. tomllib is stdlib in 3.11+,
 # but ja still supports 3.10 (CLAUDE.local.md template recommends 3.10).
