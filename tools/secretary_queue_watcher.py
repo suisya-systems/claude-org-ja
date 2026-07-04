@@ -136,7 +136,9 @@ def main(argv: list[str] | None = None) -> int:
     pre_chunk, offset = read_new_chunk(queue, 0)
     pre_enqueued = 0
     pre_delivered = 0
-    old_claimed: set[str] = set()  # 起動前に claim され未配達のまま lease 中の id
+    # 起動前に claim され未配達のまま lease 中の id（挿入順を保持する dict-as-set。
+    # 逆順窓トリムで「古い claim から pre_backlog 件」を残すために順序が要る）
+    old_claimed: dict[str, None] = {}
     for line in pre_chunk.splitlines():
         try:
             rec = json.loads(line)
@@ -156,15 +158,22 @@ def main(argv: list[str] | None = None) -> int:
         elif ev == "claimed" and rec.get("owner") == args.owner:
             ids = rec.get("ids")
             if isinstance(ids, list):
-                old_claimed.update(str(i) for i in ids)
+                for i in ids:
+                    old_claimed[str(i)] = None
         elif ev == "lease_reaped":
-            old_claimed.discard(str(rec.get("id")))
+            old_claimed.pop(str(rec.get("id")), None)
         elif ev == "delivered" and rec.get("owner") == args.owner:
-            old_claimed.discard(str(rec.get("id")))
+            old_claimed.pop(str(rec.get("id")), None)
             pre_delivered += 1
         elif ev == "queue_drained" and rec.get("agent_id") == args.owner:
             pre_delivered += drained_count(rec)
     pre_backlog = max(0, pre_enqueued - pre_delivered)
+    # 逆順窓トリム: claimed が対応する message_enqueued より先に journal に落ちる
+    # 小窓を pre-scan が跨ぐと、live で現れる enqueue の分の claim が旧扱いに紛れる。
+    # 旧 in-flight は高々 pre_backlog 件しか存在しえないので、claim の古い順に
+    # pre_backlog 件までへ絞る（あふれた新しい claim は live 側の会計に委ねる）
+    if len(old_claimed) > pre_backlog:
+        old_claimed = dict.fromkeys(list(old_claimed)[:pre_backlog])
     # 旧 backlog を「claim 済み in-flight（id 追跡、drain にスキップされる）」と
     # 「unclaimed（drain / 新規配達の FIFO 充当対象）」に分ける
     old_unclaimed = max(0, pre_backlog - len(old_claimed))
@@ -213,13 +222,13 @@ def main(argv: list[str] | None = None) -> int:
                 if rid in old_claimed:
                     # 旧 in-flight の lease が失効し UNDELIVERED に戻った:
                     # 以後は drain / 配達の FIFO 充当対象（unclaimed 側）になる
-                    old_claimed.discard(rid)
+                    old_claimed.pop(rid, None)
                     old_unclaimed += 1
             elif ev == "delivered" and rec.get("owner") == args.owner:
                 rid = str(rec.get("id"))
                 if rid in old_claimed:
                     # 起動前から lease 中だった旧 in-flight の完了。新規会計に触れない
-                    old_claimed.discard(rid)
+                    old_claimed.pop(rid, None)
                 elif old_unclaimed > 0:
                     old_unclaimed -= 1  # 旧 unclaimed 分の配達に充当（FIFO 前提）
                 else:
