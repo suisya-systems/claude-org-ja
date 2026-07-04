@@ -177,10 +177,11 @@ dedupe_key=<sha256>`); direct DB INSERTs are forbidden per
 
 | Event                  | Typical fields                                            | Writer    | Emitted by | Required for |
 |------------------------|-----------------------------------------------------------|-----------|------------|--------------|
-| `ci_completed`         | `pr`, `repo`, `status`, `duration_sec`, `head`            | secretary | secretary  | E4           |
+| `ci_completed`         | `pr`, `repo`, `status`, `duration_sec`, `head`, `fail_count`?, `pending_count`?, `total_checks`?, `retry_recommended`?, `retry_after_sec`?, `probe_attempts`? | secretary | secretary  | E4           |
 | `pr_watch_pane_started`| `pr`, `repo`, `pane_id`                                   | secretary | secretary  | —            |
 
-`status` ∈ `{passed, failed, incomplete, canceled}`. `head` (Issue #636)
+`status` ∈ `{passed, failed, incomplete, indeterminate, canceled}`.
+`head` (Issue #636)
 is the short (7-char) sha of the head whose CI verdict this event
 records, or `null` when it could not be resolved; with `--merge-watch`
 a new commit pushed to the PR branch makes `tools/pr_watch.py` loop back
@@ -192,10 +193,34 @@ the value is derived from `gh pr checks <pr> --json bucket,state,name`
 `{pass, fail, pending, skipping, cancel}`) rather than the gh process'
 exit code, so a transient watch-loop error is no longer conflated
 with a real CI failure. `failed` requires at least one `fail` or
-`cancel` bucket; `incomplete` is emitted when at least one check is
-still `pending` (or has an unrecognized bucket, or the JSON probe
-itself errored — see the fallback rules in `tools/pr_watch.py`);
-`canceled` is emitted only when the parent receives SIGINT.
+`cancel` bucket; `incomplete` is emitted when at least one check was
+read but is still `pending` (or has an unrecognized bucket, or the
+checks list came back empty). Issue #685 splits the old
+overloaded `incomplete`: `indeterminate` is emitted when the
+`gh pr checks --json` probe never returned a parseable response within
+the retry budget (a gh outage — the verdict could not be read at all),
+so a genuine pending CI is distinguishable from a fetch failure and a
+real red is no longer degraded to a stalled `incomplete` when its probe
+happens to blip. `canceled` is emitted only when the parent receives
+SIGINT.
+
+Issue #685 additive payload keys (base keys above are unchanged):
+
+* When the verdict came from a parseable probe, `fail_count`,
+  `pending_count`, and `total_checks` record the per-bucket tallies
+  (`fail_count` counts `fail`+`cancel`; `pending_count` counts
+  `pending`/empty/unrecognized) so a consumer can tell a single-check
+  red from a broad failure without re-querying gh.
+* When `status == "indeterminate"`, the event instead carries
+  `retry_recommended: true`, `retry_after_sec` (the initial retry
+  interval), and `probe_attempts` (how many `gh pr checks --json`
+  calls were made). This makes the retry schedule explicit so the
+  monitoring side reads it as "verdict not yet knowable — re-invoke
+  pr_watch" rather than a stalled merge gate.
+
+The probe is retried with exponential backoff (initial 5s, doubling to
+a 30s cap) inside `tools/pr_watch.py`, so a transient gh failure
+resolves to a definitive `passed`/`failed` before the budget is spent.
 
 `pr_watch_pane_started` is a best-effort audit row written by the
 `/pr-watch-pane` skill (secretary) when it spawns a CI/merge-watch pane

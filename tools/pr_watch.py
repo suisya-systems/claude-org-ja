@@ -23,16 +23,22 @@ Behavior:
   exit code (gh exits non-zero on a transient watch error too, and
   exit 8 specifically means "Checks pending", not "failed").
   Classifies as ``passed`` (all pass/skipping), ``failed``
-  (≥1 fail/cancel), ``incomplete`` (any pending / unknown bucket /
-  empty list), or ``canceled`` (parent SIGINT). Falls back to
-  exit-code-based classification only if the JSON probe itself
-  fails. Appends one row to the ``events`` table in
-  ``<repo_root>/.state/state.db`` (anchored to ``tools/..`` so cwd
-  doesn't matter).
+  (≥1 fail/cancel), ``incomplete`` (checks parseable but at least one
+  still pending / unknown bucket / empty list), ``indeterminate``
+  (Issue #685: the ``gh pr checks --json`` probe never returned a
+  parseable response within the retry budget, so no CI verdict could
+  be read), or ``canceled`` (parent SIGINT). The JSON probe is retried
+  with exponential backoff so a transient ``gh`` failure resolves to a
+  definitive ``passed`` / ``failed`` instead of degrading; only a
+  persistent probe failure lands on ``indeterminate``. Appends one row
+  to the ``events`` table in ``<repo_root>/.state/state.db`` (anchored
+  to ``tools/..`` so cwd doesn't matter).
 * Prints the final status as a single line on stdout and exits with
   a deterministic exit code derived from the *resolved* status
   (Issue #413 / Codex round-1 Major): ``passed``→0, ``failed``→1,
-  ``canceled``→2, ``incomplete``→8. The original ``gh`` exit code
+  ``canceled``→2, ``incomplete``→8, ``indeterminate``→8 (Issue #685:
+  like ``incomplete`` it is not a clean pass/fail for ``$?`` callers).
+  The original ``gh`` exit code
   is intentionally NOT propagated, because the resolver may upgrade
   ``gh exit 8`` ("Checks pending") to a final ``passed`` verdict
   via retry — returning 8 in that case would mislead shell callers
@@ -48,8 +54,19 @@ The event payload shape is::
 
     {"event": "ci_completed", "ts": "<ISO8601>",
      "pr": <int>, "repo": "<owner/repo>",
-     "status": "passed|failed|incomplete|canceled",
+     "status": "passed|failed|incomplete|indeterminate|canceled",
      "duration_sec": <int>, "head": "<short-sha|null>"}
+
+Issue #685: when the verdict was derived from a parseable
+``gh pr checks --json`` response, the payload additionally carries
+``fail_count`` / ``pending_count`` / ``total_checks`` (so a consumer
+can tell a single-check red from a broad outage without re-querying
+gh). An ``indeterminate`` verdict instead carries
+``retry_recommended: true`` / ``retry_after_sec`` / ``probe_attempts``,
+making the retry schedule explicit so the monitoring side can
+distinguish "verdict not yet knowable, re-invoke pr_watch" from a
+genuinely stalled merge gate. The base keys above are unchanged, so
+existing consumers keep working.
 
 Issue #636: ``--merge-watch`` no longer assumes the head is frozen
 after CI passes. Each merge-watch iteration polls ``headRefOid`` (via
@@ -96,6 +113,15 @@ MERGE_RESULT_HEAD_UNCONFIRMED = "merged_head_unconfirmed"
 # `incomplete` once, capturing the elapsed time honestly).
 RETRY_BUDGET_SEC = 60
 RETRY_INTERVAL_SEC = 5
+
+# Issue #685: back off between JSON-probe retries so a persistently
+# flaky `gh pr checks --json` doesn't hammer the API. The sleep starts
+# at RETRY_INTERVAL_SEC and multiplies by RETRY_BACKOFF_FACTOR after
+# each attempt, capped at RETRY_MAX_INTERVAL_SEC. The overall retry
+# window is still bounded by RETRY_BUDGET_SEC, so backoff only changes
+# how the attempts are spaced, not how long we keep trying.
+RETRY_BACKOFF_FACTOR = 2.0
+RETRY_MAX_INTERVAL_SEC = 30
 
 # Make `tools.state_db.*` importable when running this script directly.
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -182,15 +208,36 @@ def _fetch_head_oid(pr: int, repo: str) -> "str | None":
 
 def _record_ci_completed(*, db_path: Path, pr: int, repo: str,
                          status: str, duration: int,
-                         head: "str | None" = None) -> None:
+                         head: "str | None" = None,
+                         extra: "dict | None" = None) -> None:
     """Append a ``ci_completed`` event to the DB events table.
 
     ``head`` (Issue #636) is the short sha of the head whose CI verdict
     this event records; ``None`` when the head could not be resolved.
+
+    ``extra`` (Issue #685) carries optional additive payload keys —
+    per-bucket counts (``fail_count`` / ``pending_count`` /
+    ``total_checks``) and, for an ``indeterminate`` verdict, the retry
+    schedule (``retry_recommended`` / ``retry_after_sec`` /
+    ``probe_attempts``). The base keys (``pr`` / ``repo`` / ``status`` /
+    ``duration_sec`` / ``head``) always win, so a stray ``extra`` key
+    can never clobber them and existing consumers keep working.
     """
     from tools.state_db import apply_schema, connect
     from tools.state_db.discover import verify_or_exit
     from tools.state_db.writer import StateWriter
+
+    payload = {
+        "pr": pr,
+        "repo": repo,
+        "status": status,
+        "duration_sec": duration,
+        "head": head,
+    }
+    if extra:
+        # Additive only: never let extra shadow a base key.
+        for key, value in extra.items():
+            payload.setdefault(key, value)
 
     db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -205,13 +252,7 @@ def _record_ci_completed(*, db_path: Path, pr: int, repo: str,
         writer.append_event(
             kind="ci_completed",
             actor="pr_watch",
-            payload={
-                "pr": pr,
-                "repo": repo,
-                "status": status,
-                "duration_sec": duration,
-                "head": head,
-            },
+            payload=payload,
         )
         writer.commit()
     finally:
@@ -275,11 +316,20 @@ def _classify(exit_code: int) -> str:
     blocks until pending checks resolve and then returns 0 (all
     checks passed). Exit code 2 is gh's standard cancellation code
     (e.g. user interrupt). Exit code 8 means "Checks pending" per
-    gh's docs (NOT failure). Other non-zero values most likely
-    indicate an internal gh error rather than a CI verdict, so they
-    map to the conservative ``incomplete`` status — refusing to
-    silently turn a transient error into "passed" while also not
-    libelling green CI as "failed".
+    gh's docs (NOT failure).
+
+    Issue #685: exit 0 (definitively "all passed") and exit 2
+    (cancellation) are honoured, but exit 8 ("Checks pending") and any
+    other non-zero code reach this function only when the JSON probe
+    never yielded a parseable response within the retry budget — so we
+    literally could not read whether CI passed, failed, or is still
+    running. Those map to ``indeterminate`` (verdict undetermined /
+    fetch failure) rather than ``incomplete``: ``incomplete`` now means
+    "we DID read the checks and at least one is still pending", while
+    ``indeterminate`` means "we could not read the checks at all". The
+    split lets the events table distinguish a genuinely pending CI from
+    a gh outage, and keeps a real red (``failed``) from being libelled
+    as merely pending when its probe happened to fail transiently.
 
     SIGINT raised in the parent (Python ``KeyboardInterrupt``) is
     normalized to 2 in :func:`main` before reaching this function.
@@ -292,9 +342,47 @@ def _classify(exit_code: int) -> str:
         return "passed"
     if exit_code == 2:
         return "canceled"
-    if exit_code == 8:
-        return "incomplete"
-    return "incomplete"
+    return "indeterminate"
+
+
+def _summarize_checks(checks: "list[dict]") -> "tuple[str, int, int, int]":
+    """Return ``(status, fail_count, pending_count, total)`` for a checks list.
+
+    Issue #685: the counts are threaded into the ``ci_completed`` payload
+    so a consumer can tell a single-check red from a broad failure — and
+    an ``incomplete`` with 1 pending check from one with 20 — without
+    re-querying gh. ``status`` follows the same rules as
+    :func:`_classify_from_checks`:
+
+    * ``fail_count`` counts :data:`_FAILED_BUCKETS` (``fail``/``cancel``).
+    * ``pending_count`` counts everything that is neither a failure nor a
+      pass: :data:`_PENDING_BUCKETS` plus empty / unrecognized buckets
+      (all treated conservatively as "not yet decided").
+    * ``total`` is ``len(checks)``.
+
+    Status: any failure → ``failed``; else an empty list or any
+    pending/unknown → ``incomplete``; else (all pass/skipping) →
+    ``passed``.
+    """
+    total = len(checks)
+    fail_count = 0
+    pending_count = 0
+    for chk in checks:
+        bucket = (chk.get("bucket") or "").lower()
+        if bucket in _FAILED_BUCKETS:
+            fail_count += 1
+        elif bucket in _PASSED_BUCKETS:
+            continue
+        else:
+            # pending, empty, or any unrecognized bucket → not yet decided.
+            pending_count += 1
+    if fail_count > 0:
+        status = "failed"
+    elif total == 0 or pending_count > 0:
+        status = "incomplete"
+    else:
+        status = "passed"
+    return status, fail_count, pending_count, total
 
 
 def _classify_from_checks(checks: "list[dict]") -> str:
@@ -311,19 +399,11 @@ def _classify_from_checks(checks: "list[dict]") -> str:
       → ``passed``.
     * Anything else (unrecognized bucket) → ``incomplete``
       (conservative).
+
+    Thin wrapper over :func:`_summarize_checks` (which also returns the
+    per-bucket counts used in the ``ci_completed`` payload, Issue #685).
     """
-    if not checks:
-        return "incomplete"
-    has_pending_or_unknown = False
-    for chk in checks:
-        bucket = (chk.get("bucket") or "").lower()
-        if bucket in _FAILED_BUCKETS:
-            return "failed"
-        if bucket in _PASSED_BUCKETS:
-            continue
-        # pending, empty, or any unrecognized bucket → conservative incomplete.
-        has_pending_or_unknown = True
-    return "incomplete" if has_pending_or_unknown else "passed"
+    return _summarize_checks(checks)[0]
 
 
 def _fetch_checks(pr: int, repo: str) -> "list[dict] | None":
@@ -373,7 +453,9 @@ def _resolve_final_status(
     *,
     budget_sec: "float | None" = None,
     retry_interval_sec: "float | None" = None,
-) -> str:
+    backoff_factor: "float | None" = None,
+    max_interval_sec: "float | None" = None,
+) -> dict:
     """Drive `_fetch_checks` until a final CI verdict is observed.
 
     Issue #413: ``gh pr checks --watch`` occasionally returns
@@ -389,7 +471,10 @@ def _resolve_final_status(
     * ``passed`` / ``failed`` → return immediately (deterministic).
     * ``incomplete`` (empty list, ``pending`` bucket, or
       ``gh exit 8``) → enter a bounded retry loop. Each iteration
-      sleeps ``retry_interval_sec`` and re-queries.
+      sleeps and re-queries; the sleep grows by ``backoff_factor``
+      each attempt (Issue #685: exponential backoff, capped at
+      ``max_interval_sec``) so a persistently flaky gh doesn't hammer
+      the API.
     * ``_fetch_checks`` returns ``None`` (probe was unparseable —
       empty / malformed stdout, JSON parse error, unexpected
       shape) → also retried within the same budget (Codex round-2
@@ -400,11 +485,21 @@ def _resolve_final_status(
     * Budget exhausted with at least one parseable response →
       return the last observed ``incomplete`` verdict (recorded as
       a single, honest final event whose ``duration_sec`` reflects
-      the full observation window).
+      the full observation window), carrying the per-bucket counts.
     * Budget exhausted with NO parseable response → fall back to
-      :func:`_classify` against ``exit_code`` so the recorded
-      status still reflects what gh believed about CI even when
-      the JSON probe never succeeded.
+      :func:`_classify` against ``exit_code``. On exit 0 that is a
+      definitive ``passed``; otherwise it is ``indeterminate``
+      (Issue #685: verdict undetermined / fetch failure — kept
+      distinct from ``incomplete`` so the events table separates a
+      genuine pending CI from a gh outage).
+
+    Returns a dict verdict::
+
+        {"status": str,           # passed|failed|incomplete|indeterminate
+         "fail_count": int|None,  # None when derived from the exit-code fallback
+         "pending_count": int|None,
+         "total_checks": int|None,
+         "probe_attempts": int}   # how many gh pr checks --json calls were made
 
     Time / sleep are referenced via the ``time`` module attribute
     lookup so existing tests (``mock.patch.object(pr_watch.time,
@@ -414,6 +509,10 @@ def _resolve_final_status(
         budget_sec = RETRY_BUDGET_SEC
     if retry_interval_sec is None:
         retry_interval_sec = RETRY_INTERVAL_SEC
+    if backoff_factor is None:
+        backoff_factor = RETRY_BACKOFF_FACTOR
+    if max_interval_sec is None:
+        max_interval_sec = RETRY_MAX_INTERVAL_SEC
 
     # Codex round-2 Major: a transient JSON parse failure (the
     # subprocess succeeded but stdout was empty / malformed for a
@@ -424,7 +523,9 @@ def _resolve_final_status(
     # ``incomplete`` (transient empty / pending) as retryable, and
     # only fall back to the exit-code classifier if NO parseable
     # response is observed within the budget.
-    last_verdict: "str | None" = None
+    last_summary: "tuple[str, int, int, int] | None" = None
+    probe_attempts = 0
+    interval = retry_interval_sec
     deadline_set = False
     deadline = 0.0
 
@@ -436,30 +537,52 @@ def _resolve_final_status(
 
     while True:
         checks = _fetch_checks(pr, repo)
+        probe_attempts += 1
         if checks is not None:
-            verdict = _classify_from_checks(checks)
-            if verdict in ("passed", "failed"):
-                return verdict
-            last_verdict = verdict
+            summary = _summarize_checks(checks)
+            if summary[0] in ("passed", "failed"):
+                return {
+                    "status": summary[0],
+                    "fail_count": summary[1],
+                    "pending_count": summary[2],
+                    "total_checks": summary[3],
+                    "probe_attempts": probe_attempts,
+                }
+            last_summary = summary
         # Either probe was unparseable (checks is None) or the verdict
         # is `incomplete`. Initialise the budget on the first observed
         # need to wait, then back off and try again.
         _set_deadline_once()
         if time.monotonic() >= deadline:
             break
-        time.sleep(retry_interval_sec)
+        time.sleep(interval)
+        # Issue #685: exponential backoff between probes, capped.
+        interval = min(interval * backoff_factor, max_interval_sec)
 
-    if last_verdict is None:
+    if last_summary is None:
         # Never got a parseable probe response. Catastrophic-end:
         # honour the exit-code fallback so the recorded status still
-        # reflects what gh believed the watched PR's CI was doing.
+        # reflects what gh believed the watched PR's CI was doing —
+        # `passed` on exit 0, else `indeterminate` (Issue #685).
         sys.stderr.write(
             "tools/pr_watch.py: warning: could not query check results "
             "via `gh pr checks --json` within the retry budget; falling "
             "back to exit-code classification.\n"
         )
-        return _classify(exit_code)
-    return last_verdict
+        return {
+            "status": _classify(exit_code),
+            "fail_count": None,
+            "pending_count": None,
+            "total_checks": None,
+            "probe_attempts": probe_attempts,
+        }
+    return {
+        "status": last_summary[0],
+        "fail_count": last_summary[1],
+        "pending_count": last_summary[2],
+        "total_checks": last_summary[3],
+        "probe_attempts": probe_attempts,
+    }
 
 
 def _watch_for_merge(
@@ -716,6 +839,13 @@ def _run_ci_watch_phase(
     # subprocess-side Ctrl-C). Honor it directly so we don't overwrite a
     # genuine cancellation with whatever the JSON probe returns.
     head_oid: "str | None" = None
+    # Issue #685: per-bucket counts (parseable probe) and probe attempts,
+    # threaded into the payload / peer message below. Stay None for the
+    # cancellation path (no verdict was resolved).
+    fail_count: "int | None" = None
+    pending_count: "int | None" = None
+    total_checks: "int | None" = None
+    probe_attempts = 0
     if canceled or exit_code == 2:
         status = "canceled"
         # Skip the head probe on cancellation: the user is aborting, so a
@@ -730,7 +860,12 @@ def _run_ci_watch_phase(
         # --watch returns, so an empty / pending JSON response is "still
         # observing" rather than the final verdict — _resolve_final_status
         # drives the resolver until a final verdict (or its retry budget).
-        status = _resolve_final_status(pr, repo, exit_code)
+        verdict = _resolve_final_status(pr, repo, exit_code)
+        status = verdict["status"]
+        fail_count = verdict["fail_count"]
+        pending_count = verdict["pending_count"]
+        total_checks = verdict["total_checks"]
+        probe_attempts = verdict["probe_attempts"]
         head_after = _fetch_head_oid(pr, repo)
         if (head_before is not None and head_after is not None
                 and head_before != head_after):
@@ -766,15 +901,32 @@ def _run_ci_watch_phase(
     # ``passed`` state — returning ``8`` to the caller would falsely
     # signal "incomplete" to shell-script consumers checking `$?`. The
     # mapping below mirrors :func:`_classify` (gh's documented codes:
-    # 0=passed, 2=canceled, 8=incomplete) and adds 1 for failed. The
-    # later merge-watch block can still override ``0`` → ``9`` when
+    # 0=passed, 2=canceled, 8=incomplete) and adds 1 for failed. Issue
+    # #685: `indeterminate` (verdict undetermined) maps to 8 as well —
+    # like `incomplete` it is not a clean pass/fail for `$?` callers.
+    # The later merge-watch block can still override ``0`` → ``9`` when
     # the post-CI loop itself fails.
     exit_code = {
         "passed": 0,
         "failed": 1,
         "canceled": 2,
         "incomplete": 8,
+        "indeterminate": 8,
     }.get(status, exit_code)
+
+    # Issue #685: additive payload enrichment. Per-bucket counts ride
+    # along whenever the verdict came from a parseable probe; an
+    # `indeterminate` verdict instead carries the retry schedule so the
+    # monitoring side can tell "re-invoke pr_watch" from a stalled gate.
+    extra: dict = {}
+    if total_checks is not None:
+        extra["fail_count"] = fail_count
+        extra["pending_count"] = pending_count
+        extra["total_checks"] = total_checks
+    if status == "indeterminate":
+        extra["retry_recommended"] = True
+        extra["retry_after_sec"] = RETRY_INTERVAL_SEC
+        extra["probe_attempts"] = probe_attempts
 
     _record_ci_completed(
         db_path=db_path,
@@ -783,6 +935,7 @@ def _run_ci_watch_phase(
         status=status,
         duration=duration,
         head=head_short,
+        extra=extra,
     )
 
     # Issue #326: nudge secretary as soon as the CI verdict is recorded
@@ -795,10 +948,18 @@ def _run_ci_watch_phase(
     # new head from the original one. If a progress channel is ever
     # wanted, route it through a distinct event/message name (e.g.
     # `ci_progress`) rather than overloading `CI_COMPLETED`.
-    _notify_peer(
+    ci_msg = (
         f"CI_COMPLETED: PR #{pr} {status} "
         f"(head={head_short or 'unknown'}, duration {duration}s, repo {repo})"
     )
+    # Issue #685: give the human-facing message the same disambiguation
+    # the payload got — name the fail count on a red, and flag an
+    # undetermined verdict as retry-recommended (not a stall).
+    if status == "indeterminate":
+        ci_msg += " [verdict undetermined; retry recommended]"
+    elif status == "failed" and fail_count:
+        ci_msg += f" [{fail_count} of {total_checks} checks failed]"
+    _notify_peer(ci_msg)
 
     sys.stdout.write(
         f"pr_watch: PR #{pr} {status} "
