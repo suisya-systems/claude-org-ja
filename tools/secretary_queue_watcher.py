@@ -217,6 +217,19 @@ def main(argv: list[str] | None = None) -> int:
             elif ev == "message_enqueued" and rec.get("to_id") == args.owner:
                 ts = rec.get("ts")
                 pending.append(ts if isinstance(ts, (int, float)) else time.time())
+            elif ev == "claimed" and rec.get("owner") == args.owner:
+                # live claim は FIFO で最古の UNDELIVERED 行から掴む。旧 unclaimed が
+                # 残っていればそれが対象なので old_claimed（id 追跡）へ移す。
+                # これをしないと claim された旧行は drain にスキップされるのに
+                # old_unclaimed に残り、新規メッセージの drain を横取りして誤発報する。
+                # 旧 unclaimed が尽きていれば新規 pending への claim であり、その
+                # delivered は通常の新規配達として数えられるため何もしない
+                ids = rec.get("ids")
+                if isinstance(ids, list):
+                    for i in ids:
+                        if old_unclaimed > 0:
+                            old_unclaimed -= 1
+                            old_claimed[str(i)] = None
             elif ev == "lease_reaped":
                 rid = str(rec.get("id"))
                 if rid in old_claimed:
