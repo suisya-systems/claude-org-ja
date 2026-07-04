@@ -153,6 +153,112 @@ class OptionalSections(unittest.TestCase):
         self.assertIn("guidance only", out)
 
 
+class PythonSrcLayoutRule(unittest.TestCase):
+    """Issue #676: Python src-layout projects carry the PYTHONPATH=src /
+    no-editable-install verification rule as a standing brief section."""
+
+    RULE_HEADER = "Python 検証規約（src-layout）"
+
+    def test_omitted_by_default(self):
+        cfg = _base_config(self_edit=False)
+        out = gwb.render(cfg)
+        self.assertNotIn(self.RULE_HEADER, out)
+        self.assertNotIn("PYTHONPATH=src", out)
+        self.assertNotIn("pip install -e", out)
+
+    def test_normal_brief_carries_rule_when_flagged(self):
+        cfg = _base_config(self_edit=False)
+        cfg["project"]["python_src_layout"] = True
+        out = gwb.render(cfg)
+        self.assertIn(self.RULE_HEADER, out)
+        self.assertIn("`PYTHONPATH=src` を前置", out)
+        self.assertIn("editable install（`pip install -e`）は禁止", out)
+        self.assertNotIn("<!--BEGIN:", out)
+
+    def test_self_edit_brief_carries_rule_when_flagged(self):
+        cfg = _base_config(self_edit=True)
+        cfg["project"]["python_src_layout"] = True
+        out = gwb.render(cfg)
+        self.assertIn(self.RULE_HEADER, out)
+        self.assertIn("`PYTHONPATH=src` を前置", out)
+        self.assertIn("editable install（`pip install -e`）は禁止", out)
+
+    def test_explicit_false_omits_rule(self):
+        cfg = _base_config(self_edit=False)
+        cfg["project"]["python_src_layout"] = False
+        out = gwb.render(cfg)
+        self.assertNotIn(self.RULE_HEADER, out)
+
+    def test_non_bool_flag_rejected(self):
+        cfg = _base_config(self_edit=False)
+        cfg["project"]["python_src_layout"] = "yes"
+        with self.assertRaises(gwb.ConfigError):
+            gwb.render(cfg)
+
+
+class PythonSrcLayoutDetection(unittest.TestCase):
+    """Filesystem detection helpers behind the Issue #676 rule."""
+
+    def setUp(self) -> None:
+        self._td = tempfile.TemporaryDirectory()
+        self.td = Path(self._td.name)
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def _make_repo(self, name: str, *, src: bool, markers: tuple[str, ...]) -> Path:
+        repo = self.td / name
+        repo.mkdir(parents=True)
+        if src:
+            (repo / "src").mkdir()
+        for m in markers:
+            (repo / m).write_text("", encoding="utf-8")
+        return repo
+
+    def test_src_plus_pyproject_detected(self):
+        repo = self._make_repo("runtime", src=True, markers=("pyproject.toml",))
+        self.assertTrue(gwb.is_python_src_layout(repo))
+
+    def test_setup_py_and_setup_cfg_also_count(self):
+        for marker in ("setup.py", "setup.cfg"):
+            repo = self._make_repo(f"proj-{marker}", src=True, markers=(marker,))
+            self.assertTrue(gwb.is_python_src_layout(repo), marker)
+
+    def test_src_without_python_marker_not_detected(self):
+        # Rust-style layout: src/ + Cargo.toml, no Python packaging marker.
+        repo = self._make_repo("rusty", src=True, markers=("Cargo.toml",))
+        self.assertFalse(gwb.is_python_src_layout(repo))
+
+    def test_python_marker_without_src_not_detected(self):
+        # Flat-layout Python project — PYTHONPATH=src would be wrong advice.
+        repo = self._make_repo("flat", src=False, markers=("pyproject.toml",))
+        self.assertFalse(gwb.is_python_src_layout(repo))
+
+    def test_missing_dir_not_detected(self):
+        self.assertFalse(gwb.is_python_src_layout(self.td / "nope"))
+
+    def test_worktree_shaped_worker_dir_probes_base_clone(self):
+        # The unified <base>/.worktrees/<task>/ layout: the worktree does
+        # not exist yet at brief-gen time, so detection must probe <base>.
+        base = self._make_repo("base-clone", src=True, markers=("pyproject.toml",))
+        worker_dir = base / ".worktrees" / "task-1"  # intentionally not created
+        self.assertTrue(gwb._detect_python_src_layout(worker_dir, None))
+
+    def test_registry_local_path_probed_as_fallback(self):
+        repo = self._make_repo("registered", src=True, markers=("pyproject.toml",))
+        worker_dir = self.td / "workers" / "registered"  # does not exist
+        self.assertTrue(gwb._detect_python_src_layout(worker_dir, str(repo)))
+
+    def test_url_and_placeholder_registry_paths_skipped(self):
+        worker_dir = self.td / "workers" / "some-proj"  # does not exist
+        self.assertFalse(
+            gwb._detect_python_src_layout(
+                worker_dir, "https://github.com/example/some-proj"
+            )
+        )
+        self.assertFalse(gwb._detect_python_src_layout(worker_dir, "-"))
+
+
 class VerificationDepth(unittest.TestCase):
     def test_minimal_replaces_codex_section(self):
         cfg = _base_config(self_edit=False)
@@ -463,6 +569,115 @@ class FromTaskSubcommand(unittest.TestCase):
         self.assertIn("knowledge/curated/notes.md", text)
         self.assertIn("Closes #9", text)
         self.assertIn("https://example.com/issues/9", text)
+
+
+class FromTaskPythonSrcLayout(unittest.TestCase):
+    """Issue #676 end-to-end: the from-task path detects a Python
+    src-layout base clone (the claude-org-runtime deployment shape) and
+    bakes the PYTHONPATH=src / no-editable-install rule into the brief."""
+
+    RULE_HEADER = "Python 検証規約（src-layout）"
+
+    def setUp(self) -> None:
+        import subprocess as _sp
+        self._td = tempfile.TemporaryDirectory()
+        td = Path(self._td.name)
+        self.claude_org_root = td / "claude-org"
+        (self.claude_org_root / ".state").mkdir(parents=True)
+        (self.claude_org_root / "registry").mkdir()
+        _sp.run(["git", "init", "-q", str(self.claude_org_root)], check=True)
+        _sp.run(
+            ["git", "-C", str(self.claude_org_root), "remote", "add",
+             "origin", "https://github.com/suisya-systems/claude-org-ja.git"],
+            check=True,
+        )
+        (self.claude_org_root / "registry" / "org-config.md").write_text(
+            "## Workers Directory\nworkers_dir: ../workers\n",
+            encoding="utf-8",
+        )
+        # URL-only registry rows: claude-org-runtime (Python src-layout)
+        # and renga (Rust — src/ but no Python packaging marker).
+        (self.claude_org_root / "registry" / "projects.md").write_text(
+            "# Projects\n\n"
+            "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 |\n"
+            "|---|---|---|---|---|\n"
+            "| ランタイム | claude-org-runtime | "
+            "https://github.com/suisya-systems/claude-org-runtime | runtime | release |\n"
+            "| renga | renga | https://github.com/suisya-systems/renga "
+            "| TUI | 機能追加 |\n",
+            encoding="utf-8",
+        )
+        workers = td / "workers"
+        workers.mkdir()
+        # Base clone at workers/claude-org-runtime with matching origin URL
+        # (the trust gate find_workers_dir_clone requires) + src-layout.
+        runtime = workers / "claude-org-runtime"
+        (runtime / "src" / "claude_org_runtime").mkdir(parents=True)
+        (runtime / "pyproject.toml").write_text(
+            "[project]\nname = 'claude-org-runtime'\n", encoding="utf-8"
+        )
+        _sp.run(["git", "init", "-q", str(runtime)], check=True)
+        _sp.run(
+            ["git", "-C", str(runtime), "remote", "add", "origin",
+             "https://github.com/suisya-systems/claude-org-runtime.git"],
+            check=True,
+        )
+        # Rust-shaped clone: src/ + Cargo.toml only.
+        renga = workers / "renga"
+        (renga / "src").mkdir(parents=True)
+        (renga / "Cargo.toml").write_text("[package]\n", encoding="utf-8")
+        _sp.run(["git", "init", "-q", str(renga)], check=True)
+        _sp.run(
+            ["git", "-C", str(renga), "remote", "add", "origin",
+             "https://github.com/suisya-systems/renga.git"],
+            check=True,
+        )
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def _render(self, slug: str, task_id: str) -> str:
+        out = Path(self._td.name) / f"{task_id}-CLAUDE.md"
+        rc = gwb.main([
+            "from-task",
+            "--task-id", task_id,
+            "--project-slug", slug,
+            "--description", f"work on {slug}",
+            "--claude-org-root", str(self.claude_org_root),
+            "--out", str(out),
+        ])
+        self.assertEqual(rc, 0)
+        return out.read_text(encoding="utf-8")
+
+    def test_runtime_brief_carries_rule(self):
+        text = self._render("claude-org-runtime", "runtime-676")
+        self.assertIn(self.RULE_HEADER, text)
+        self.assertIn("`PYTHONPATH=src` を前置", text)
+        self.assertIn("editable install（`pip install -e`）は禁止", text)
+
+    def test_rust_src_dir_brief_has_no_rule(self):
+        text = self._render("renga", "renga-676")
+        self.assertNotIn(self.RULE_HEADER, text)
+        self.assertNotIn("PYTHONPATH=src", text)
+
+    def test_write_toml_round_trips_flag(self):
+        toml_path = Path(self._td.name) / "audit.toml"
+        out = Path(self._td.name) / "rt-CLAUDE.md"
+        rc = gwb.main([
+            "from-task",
+            "--task-id", "runtime-audit-676",
+            "--project-slug", "claude-org-runtime",
+            "--description", "work on runtime",
+            "--claude-org-root", str(self.claude_org_root),
+            "--out", str(out),
+            "--write-toml", str(toml_path),
+        ])
+        self.assertEqual(rc, 0)
+        body = toml_path.read_text(encoding="utf-8")
+        self.assertIn("python_src_layout = true", body)
+        # And the dumped TOML renders back to a brief with the rule.
+        cfg = gwb.load_config(toml_path)
+        self.assertIn(self.RULE_HEADER, gwb.render(cfg))
 
 
 class LegacyCLIPreserved(unittest.TestCase):

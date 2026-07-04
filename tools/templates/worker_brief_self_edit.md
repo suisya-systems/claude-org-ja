@@ -44,6 +44,11 @@ ${parallel_notes}
 ## ナレッジ参照
 ${references_knowledge_block}
 <!--END:references-->
+<!--BEGIN:python_src_layout-->
+
+## Python 検証規約（src-layout）
+検証（pytest 等）は `PYTHONPATH=src` を前置して実行する（例: `PYTHONPATH=src python -m pytest`。stale install の shadow による phantom FAIL 防止）。共有 venv への editable install（`pip install -e`）は禁止（worktree 削除後に venv 残骸の `.pth` が ModuleNotFoundError を起こす）。
+<!--END:python_src_layout-->
 
 ## 権限
 - git commit 可、push 不可、PR 不可、`rm -rf` 不可

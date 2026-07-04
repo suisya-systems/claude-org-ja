@@ -47,6 +47,15 @@ ${parallel_notes}
 ## ナレッジ参照
 ${references_knowledge_block}
 <!--END:references-->
+<!--BEGIN:python_src_layout-->
+
+## Python 検証規約（src-layout）
+
+このプロジェクトは Python の src-layout（パッケージ本体が `src/` 配下）である。venv に残った stale install が `src/` を shadow して古いコードを import する罠（phantom FAIL・新メソッドの AttributeError・「main が赤い」誤診断）を避けるため、以下を必ず守ること:
+
+- 検証（pytest 等）は `PYTHONPATH=src` を前置して実行する（例: `PYTHONPATH=src python -m pytest`）
+- 共有 venv への editable install（`pip install -e`）は禁止（venv の `.pth` に worktree 絶対パスが焼き込まれ、worktree 削除後に他ツールが ModuleNotFoundError で壊れる）
+<!--END:python_src_layout-->
 
 ## 権限
 - git commit: 可
