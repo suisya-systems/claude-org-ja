@@ -15,6 +15,8 @@ allowed-tools:
   - Bash(python3 dashboard/org_state_converter.py:*)
   - Bash(py -3 tools/check_runtime_version.py:*)
   - Bash(python3 tools/check_runtime_version.py:*)
+  - Bash(py -3 tools/secretary_queue_watcher.py:*)
+  - Bash(python3 tools/secretary_queue_watcher.py:*)
   - mcp__renga-peers__*
   - mcp__org-broker__* # ORG_TRANSPORT=broker（opt-in）時の機械置換先
 ---
