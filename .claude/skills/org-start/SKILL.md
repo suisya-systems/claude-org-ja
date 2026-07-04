@@ -363,10 +363,10 @@ renga 0.18.0+ では `mcp__renga-peers__spawn_claude_pane` が役割別の構造
 
 ### ワーカー（org-delegate の Step 3 で使用）
 
-**`model="opus"` は必須（sonnet 禁止）。**
-理由: ワーカーの既定 permission_mode は `auto`（分類器ベース）。この safety classifier は Opus でのみ安定動作する。sonnet だと分類器が誤判定を多発し、承認フローが崩れて作業が詰まる。ディスパッチャーだけは `bypassPermissions` 固定なので分類器を経由せず、sonnet 運用で問題ない（ディスパッチャーを sonnet にしているのはコスト最適化のため、ワーカーには適用しない）。
+**既定は `model="opus"`（品質優先）。Sonnet 5 は軽量・機械的タスクに限り、窓口が明示指定したときだけ許可する。**
+理由: かつては「ワーカーの既定 permission_mode `auto` の safety classifier が Opus でのみ安定動作し、sonnet では誤判定を多発して承認フローが崩れる」ため sonnet 禁止としていたが、これは更新する。auto mode の分類器はワーカーのセッションモデルとは独立した専用モデル（Sonnet 4.6）で動作し、承認判定はワーカーが opus か sonnet かに依存しない（公式: https://www.anthropic.com/engineering/claude-code-auto-mode。2026-07-05 の canary 実測でも Sonnet 5 ワーカーで分類器由来のブロックは 0 件だった）。それでも**既定を opus に据える**のは品質最優先の方針で、実装・デバッグ・設計判断を伴う通常タスクではベンチで Opus 4.8 が優位なため。定型置換・単純な文字列修正のような軽量・機械的タスクに限り、窓口が明示指定すれば Sonnet 5 ワーカーを許可する。ディスパッチャーだけは `bypassPermissions` 固定なので分類器を経由せず、コスト最適化として sonnet 運用（この判断はワーカーには自動適用しない）。
 
 通常:
 - `cwd="{workers_dir}/{task_id}"`（絶対パス推奨）
 - `permission_mode=auto`
-- `model="opus"`
+- `model="opus"`（既定。軽量・機械的タスクで窓口が明示指定した場合のみ Sonnet 5）
