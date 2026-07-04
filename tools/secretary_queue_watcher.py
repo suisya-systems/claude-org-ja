@@ -158,7 +158,12 @@ def main(argv: list[str] | None = None) -> int:
     pre_backlog = max(0, pre_enqueued - pre_delivered)
 
     pending: list[float] = []  # 新規の owner 宛 enqueue の ts（enqueue 順）
-    delivered = 0  # 新規の owner への delivered 件数（既存 backlog 充当後）
+    # broker は queue 反映後にロック外で journal するため、配達記録
+    # (delivered / queue_drained) が対応する message_enqueued より先に journal に
+    # 落ちる小窓がある。その窓を跨いで起動した場合の余剰配達分
+    # (pre_delivered > pre_enqueued) を live 会計に引き継ぎ、直後に現れる
+    # enqueue 記録を「配達済み」として相殺できるようにする（捨てると誤発報になる）
+    delivered = max(0, pre_delivered - pre_enqueued)
 
     while True:
         time.sleep(args.poll_sec)
