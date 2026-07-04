@@ -623,7 +623,7 @@ claude-org-ja 本体は Issue #429 Task C（本 addendum と同 PR）で共有 `
 **期待結果**:
 
 - exit code 0 で JSON が返る。`.state/state.db` に該当する `notify_sent kind=approval_blocked` event があれば `kind: "approval_blocked"`, `severity: "urgent"` で出る
-- `ci_completed` で `status` が `failed` / `canceled` / `incomplete` のいずれかなら `kind: "ci_failed"`, `severity: "urgent"`
+- `ci_completed` で `status` が `failed` / `canceled` / `incomplete` のいずれかなら `kind: "ci_failed"`, `severity: "urgent"`（Issue #685 の `indeterminate` は「CI 失敗」ではなく「取得失敗で判定不能・pr_watch 再起動推奨」を意味するため、この `ci_failed` 集合には**含めない**。payload の `retry_recommended` を監視側が読んで再試行する informational 扱い）
 - `worker_completed` / `pr_merged` は `severity: "normal"`、それ以外の上記分類は ja default で `urgent`
 - pending decision が `pending_decision_min`（既定 15 分）を超えていれば `kind: "pending_decision"`, `severity: "urgent"`
 - `notify_sent kind=awaiting_user`（Secretary が user の判断待ちで停止する 4 ゲート）は `kind: "secretary_awaiting_user"`, `severity: "urgent"`

@@ -185,6 +185,16 @@ class AttentionEvent:
 | `events` | `event='notify_sent'` and `kind='relay_gap_suspected'` | `relay_gap_suspected` | urgent |
 | `events` | `event='notify_sent'` and `kind='pane_output_without_peer_msg'` | `silent_worker_output` | urgent |
 | `events` | `event='ci_completed'` and `status in ('failed','canceled','incomplete')` | `ci_failed` | urgent |
+
+> Issue #685: `ci_completed.status` gained a new value `indeterminate`
+> (the `gh pr checks --json` probe never returned a readable verdict —
+> a gh outage, not a CI failure). It is deliberately **excluded** from
+> the `ci_failed` set above: it is informational, and its payload
+> carries an explicit retry schedule (`retry_recommended` /
+> `retry_after_sec` / `probe_attempts`) telling the monitoring side to
+> re-invoke pr_watch rather than treat the merge gate as failed or
+> stalled. Assigning it a dedicated non-urgent attention kind is a
+> possible follow-up; today it simply does not match `ci_failed`.
 | `events` | `event='worker_completed'` | `worker_completed` | normal |
 | `events` | `event='pr_merged'` | `pr_merged` | normal |
 | `pending_decisions.json` | pending older than threshold | `pending_decision` | urgent |

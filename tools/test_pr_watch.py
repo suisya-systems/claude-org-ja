@@ -99,24 +99,31 @@ class ClassifyTests(unittest.TestCase):
     """Fallback classifier (used only when JSON probe is unavailable).
 
     Per `gh help exit-codes`, exit 8 is "Checks pending" — NOT failure.
-    Issue #224 corrects the prior mapping.
+    Issue #224 corrects the prior mapping. Issue #685: this fallback is
+    reached only when the JSON probe never parsed, so exit 8 / other
+    non-zero codes (we could not read the checks at all) map to
+    ``indeterminate`` rather than ``incomplete`` — keeping "checks
+    parseable but pending" distinct from "verdict unreadable".
     """
 
     def test_zero_is_passed(self) -> None:
+        # gh --watch exit 0 is a definitive "all passed", honoured even
+        # when the JSON probe was unavailable.
         self.assertEqual(pr_watch._classify(0), "passed")
 
-    def test_eight_is_incomplete(self) -> None:
-        # gh exit 8 = "Checks pending", per gh's help text.
-        self.assertEqual(pr_watch._classify(8), "incomplete")
+    def test_eight_is_indeterminate(self) -> None:
+        # gh exit 8 = "Checks pending"; reached here only when we could
+        # not read the checks, so the verdict is undetermined (#685).
+        self.assertEqual(pr_watch._classify(8), "indeterminate")
 
     def test_two_is_canceled(self) -> None:
         self.assertEqual(pr_watch._classify(2), "canceled")
 
-    def test_other_nonzero_is_incomplete(self) -> None:
-        # Conservative: treat unknown gh errors as incomplete rather
-        # than libelling the PR as failed.
-        self.assertEqual(pr_watch._classify(1), "incomplete")
-        self.assertEqual(pr_watch._classify(127), "incomplete")
+    def test_other_nonzero_is_indeterminate(self) -> None:
+        # Unknown gh errors with no readable checks → indeterminate
+        # (verdict undetermined), never a libellous "failed".
+        self.assertEqual(pr_watch._classify(1), "indeterminate")
+        self.assertEqual(pr_watch._classify(127), "indeterminate")
 
 
 def _make_fake_run(
@@ -692,6 +699,250 @@ class ClassifyFromChecksTests(unittest.TestCase):
             pr_watch._classify_from_checks([{"bucket": "PASS"}]),
             "passed",
         )
+
+
+class SummarizeChecksTests(unittest.TestCase):
+    """Issue #685: _summarize_checks returns per-bucket counts alongside
+    the status word (both feed the enriched ci_completed payload)."""
+
+    def test_all_pass_counts(self) -> None:
+        self.assertEqual(
+            pr_watch._summarize_checks(
+                [{"bucket": "pass"}, {"bucket": "skipping"}]
+            ),
+            ("passed", 0, 0, 2),
+        )
+
+    def test_fail_and_cancel_counted_as_failures(self) -> None:
+        self.assertEqual(
+            pr_watch._summarize_checks(
+                [{"bucket": "pass"}, {"bucket": "fail"}, {"bucket": "cancel"}]
+            ),
+            ("failed", 2, 0, 3),
+        )
+
+    def test_pending_and_unknown_counted_as_pending(self) -> None:
+        self.assertEqual(
+            pr_watch._summarize_checks(
+                [{"bucket": "pass"}, {"bucket": "pending"}, {"bucket": "mystery"}]
+            ),
+            ("incomplete", 0, 2, 3),
+        )
+
+    def test_empty_list(self) -> None:
+        self.assertEqual(pr_watch._summarize_checks([]), ("incomplete", 0, 0, 0))
+
+    def test_status_matches_classify_from_checks(self) -> None:
+        # The status element must stay in lockstep with the legacy
+        # single-value classifier across every fixture shape.
+        for checks in (
+            [],
+            [{"bucket": "pass"}],
+            [{"bucket": "pass"}, {"bucket": "fail"}],
+            [{"bucket": "pass"}, {"bucket": "pending"}],
+            [{"bucket": "cancel"}],
+            [{"bucket": "mystery"}],
+        ):
+            self.assertEqual(
+                pr_watch._summarize_checks(checks)[0],
+                pr_watch._classify_from_checks(checks),
+                f"mismatch for {checks!r}",
+            )
+
+
+class Issue685Tests(unittest.TestCase):
+    """Issue #685: transient `gh pr checks --json` failure must not
+    degrade a real verdict to a stalled `incomplete`.
+
+    * A persistent probe failure records the NEW `indeterminate`
+      status (verdict undetermined / fetch failure), distinct from
+      `incomplete` (checks parseable but still pending).
+    * A real red survives a transient probe failure as `failed`.
+    * The payload gains per-bucket counts, and `indeterminate` gains
+      an explicit retry schedule.
+    * Retries are spaced with exponential backoff.
+    """
+
+    def setUp(self) -> None:
+        _assert_peer_isolation()
+
+    def _run(self, argv, fake_run, monotonic, *, sleep=True):
+        with TempDir() as tmp:
+            journal = tmp / ".state" / "state.db"
+            patches = [
+                mock.patch.object(pr_watch, "JOURNAL_PATH", journal),
+                mock.patch.object(pr_watch, "_notify_peer", return_value=False),
+                mock.patch.object(pr_watch.shutil, "which",
+                                  return_value="/usr/bin/gh"),
+                mock.patch.object(pr_watch.subprocess, "run",
+                                  side_effect=fake_run),
+                mock.patch.object(pr_watch.time, "monotonic",
+                                  side_effect=monotonic),
+            ]
+            if sleep:
+                patches.append(
+                    mock.patch.object(pr_watch.time, "sleep", return_value=None)
+                )
+            for p in patches:
+                p.start()
+            try:
+                rc = pr_watch.main(argv)
+            finally:
+                for p in reversed(patches):
+                    p.stop()
+            return rc, _read_ci_event(journal)
+
+    def test_persistent_probe_failure_records_indeterminate(self) -> None:
+        """gh --watch exits 8 (pending) and every `--json` probe raises
+        (binary hiccup): after the retry budget we record the NEW
+        `indeterminate` status with an explicit retry schedule, and
+        main exits 8 (not a clean pass/fail)."""
+        fake_run = _make_fake_run(
+            watch_exit=8,
+            checks_raises=FileNotFoundError("gh transient outage"),
+        )
+        # started, set_deadline, deadline-check (past → break), duration.
+        rc, rec = self._run(
+            ["--pr", "685", "--repo", "octo/repo", "--interval", "5"],
+            fake_run,
+            monotonic=[0.0, 0.5, 9999.0, 9999.5],
+        )
+        self.assertEqual(rec["status"], "indeterminate")
+        self.assertEqual(rc, 8)
+        # Retry schedule is explicit so the monitoring side can tell an
+        # undetermined verdict from a stalled merge gate.
+        self.assertTrue(rec["retry_recommended"])
+        self.assertEqual(rec["retry_after_sec"], pr_watch.RETRY_INTERVAL_SEC)
+        self.assertGreaterEqual(rec["probe_attempts"], 1)
+        # No per-bucket counts on the fetch-failure path (nothing read).
+        self.assertNotIn("total_checks", rec)
+
+    def test_persistent_probe_failure_exit1_is_indeterminate_not_failed(self) -> None:
+        """gh --watch exit 1 with an unreadable probe must NOT be
+        guessed as `failed` — we could not read which (if any) check
+        is red, so the honest verdict is `indeterminate`."""
+        fake_run = _make_fake_run(
+            watch_exit=1,
+            checks_raises=FileNotFoundError("gh transient outage"),
+        )
+        rc, rec = self._run(
+            ["--pr", "685", "--repo", "octo/repo", "--interval", "5"],
+            fake_run,
+            monotonic=[0.0, 0.5, 9999.0, 9999.5],
+        )
+        self.assertEqual(rec["status"], "indeterminate")
+
+    def test_real_red_survives_transient_probe_failure(self) -> None:
+        """Acceptance: a real red (fail >=1) that follows a single
+        transient probe failure is recorded as `failed`, not degraded
+        to `incomplete`/`indeterminate`."""
+        call_state = {"i": 0}
+
+        def fake_run(cmd, *args, **kwargs):
+            if "view" in cmd and "--json" in cmd and "number" in cmd:
+                return mock.Mock(returncode=0, stdout="{}", stderr="")
+            if "checks" in cmd and "--json" in cmd:
+                i = call_state["i"]
+                call_state["i"] = i + 1
+                if i == 0:
+                    raise FileNotFoundError("transient")
+                return mock.Mock(
+                    returncode=1,
+                    stdout=json.dumps(
+                        [{"name": "lint", "bucket": "pass"},
+                         {"name": "test", "bucket": "fail"}]
+                    ),
+                    stderr="",
+                )
+            return mock.Mock(returncode=8)  # gh --watch exit 8 (pending)
+
+        # started, probe-fail set_deadline, check(<deadline)->sleep,
+        # probe-fail-then-fail returns, duration.
+        rc, rec = self._run(
+            ["--pr", "685", "--repo", "octo/repo", "--interval", "5"],
+            fake_run,
+            monotonic=[0.0, 0.1, 0.2, 3.0],
+        )
+        self.assertEqual(rec["status"], "failed")
+        self.assertEqual(rc, 1)
+        self.assertEqual(rec["fail_count"], 1)
+        self.assertEqual(rec["total_checks"], 2)
+
+    def test_failed_payload_carries_counts(self) -> None:
+        fake_run = _make_fake_run(
+            watch_exit=1,
+            checks_json=[
+                {"name": "lint", "bucket": "pass"},
+                {"name": "unit", "bucket": "fail"},
+                {"name": "e2e", "bucket": "cancel"},
+            ],
+        )
+        rc, rec = self._run(
+            ["--pr", "685", "--repo", "octo/repo"],
+            fake_run,
+            monotonic=[0.0, 5.0],
+        )
+        self.assertEqual(rec["status"], "failed")
+        self.assertEqual(rec["fail_count"], 2)
+        self.assertEqual(rec["pending_count"], 0)
+        self.assertEqual(rec["total_checks"], 3)
+
+    def test_passed_payload_carries_counts(self) -> None:
+        fake_run = _make_fake_run(
+            watch_exit=0,
+            checks_json=[
+                {"name": "lint", "bucket": "pass"},
+                {"name": "unit", "bucket": "skipping"},
+            ],
+        )
+        rc, rec = self._run(
+            ["--pr", "685", "--repo", "octo/repo"],
+            fake_run,
+            monotonic=[0.0, 5.0],
+        )
+        self.assertEqual(rec["status"], "passed")
+        self.assertEqual(rec["fail_count"], 0)
+        self.assertEqual(rec["pending_count"], 0)
+        self.assertEqual(rec["total_checks"], 2)
+        # `passed` is not an indeterminate verdict — no retry schedule.
+        self.assertNotIn("retry_recommended", rec)
+
+    def test_incomplete_is_distinct_from_indeterminate(self) -> None:
+        """A parseable-but-pending verdict stays `incomplete` (with
+        counts, no retry schedule) — the fetch-failure `indeterminate`
+        is a different word. This is the core 3-value split."""
+        fake_run = _make_fake_run(
+            watch_exit=8,
+            checks_json=[
+                {"name": "lint", "bucket": "pass"},
+                {"name": "deploy", "bucket": "pending"},
+            ],
+        )
+        # Always-pending: retry budget exhausts, then record incomplete.
+        rc, rec = self._run(
+            ["--pr", "685", "--repo", "octo/repo", "--interval", "5"],
+            fake_run,
+            monotonic=[0.0, 0.5, 9999.0, 9999.5],
+        )
+        self.assertEqual(rec["status"], "incomplete")
+        self.assertEqual(rec["pending_count"], 1)
+        self.assertEqual(rec["total_checks"], 2)
+        # `incomplete` (checks read, still pending) is NOT the
+        # fetch-failure path, so it carries no retry schedule.
+        self.assertNotIn("retry_recommended", rec)
+
+    def test_exponential_backoff_between_probes(self) -> None:
+        """Retry sleeps grow geometrically (5 -> 10 -> 20) and cap at
+        RETRY_MAX_INTERVAL_SEC (30)."""
+        sleeps: list = []
+        with mock.patch.object(pr_watch, "_fetch_checks", return_value=[]), \
+             mock.patch.object(pr_watch.time, "sleep",
+                               side_effect=lambda s: sleeps.append(s)), \
+             mock.patch.object(pr_watch.time, "monotonic",
+                               side_effect=[0.0, 1.0, 2.0, 3.0, 4.0, 100.0]):
+            verdict = pr_watch._resolve_final_status(1, "octo/repo", 8)
+        self.assertEqual(verdict["status"], "incomplete")
+        self.assertEqual(sleeps, [5, 10, 20, 30])
 
 
 class PowerShellInterpreterProbeTests(unittest.TestCase):
