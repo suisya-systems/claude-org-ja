@@ -133,7 +133,7 @@
    - **status code (語境界 + エラー文脈ゲート)**: `429`, `500`, `502`, `503`, `504`, `529` のいずれかが **語境界トークン** (`(?<!#)\b...\b`) として現れ、**かつ同一行に error 文脈キーワード** (`error` / `overload` / `unavailable` / `rate limit` / `too many requests` / `retry`(ing) / `gateway` / `server error` / `throttl`) がある場合のみ発火
      - `529` は Anthropic overload、`502/503/504` は transient gateway 系 (Issue #492 gap 2)。全行 scan に広げたことで bare 数字 substring の誤検出 (`localhost:5000` / `500 passed` / issue ref `#529` 等) が増えるため、語境界 + 文脈ゲート + `#` 接頭の issue ref 除外 (`(?<!#)`) で絞る (Codex review 対応)。主信号は `API Error` substring と spinner-age で、status code は文言変更への futureproof な補足
    - **anchored regex (大文字小文字区別)**: `^Error: `, `^ERROR: `
-   - **spinner-age (Issue #492 gap 3)**: `^\s*[spinner glyphs]+\s+\w+\s+for\s+(\d+)m\s+(\d+)s` に該当し、かつ捕捉した分が **threshold (default 5 分) 以上**。Claude Code の `{glyph} {動詞} for {Xm Ys}` スピナーが 5 分以上回り続けるのは API retry loop / hang の signal で、substring とは独立に **ERROR 同等** として扱う (観測 case: `✻ Sautéed for 9m 12s`)
+   - **spinner-age (Issue #492 gap 3、旧形式のみ)**: `^\s*[spinner glyphs]+\s+\w+\s+for\s+(\d+)m\s+(\d+)s` に該当し、かつ捕捉した分が **threshold (default 5 分) 以上**。Claude Code の **旧形式** `{glyph} {動詞} for {Xm Ys}` スピナーが 5 分以上回り続けるのは API retry loop / hang の signal で、substring とは独立に **ERROR 同等** として扱う (観測 case: `✻ Sautéed for 9m 12s`)。**新形式 active spinner (`{glyph} {Verb}… (Xm Ys · ...)` / `(Xh Xm Xs · ...)`) はここでは ERROR にしない** — 新形式は deep-research / ultracode の正常な長考でも数十分回るため、Step 5 (b-3) の active-spinner suppress (`tools/inspect_pane_state.py`、cap 90 分) 側で扱う。新旧 regex は ` for ` と `… (` で disjoint なので本 ERROR 経路は新形式を拾わない (Issue #671 Major: spinner 2 分類)
 
    ERROR / spinner-age は cursor 補強なしで journal + 通知の両方を発行する (error banner / 停止スピナーは cursor 位置と相関しないため)。spinner-age 検出も notify フォーマット上は `ERROR_DETECTED` 経路に乗せる (kind=error)。
 
@@ -194,42 +194,84 @@
 
    **定数 (PR-pending-merge 用)**: `STALL_PR_MERGE_LOOKBACK_MIN = 60` (PR が open 済みかつ未 merge の worker に対する補助シグナル look-back window、分単位)。Issue #304。`pr_opened` を出してから user が merge 承認するまで 15–60 分かかるのが典型で、その間 worker は完了済みで idle のまま正しく待機する。15 分の通常 lookback では `worker_completed` が window から外れて誤発火 (session #12 で実測)。値変更が必要な場合は本ファイルのこの行を直接書き換える。
 
+   **定数 (active-spinner suppress 用、Issue #671)**: `SPINNER_ACTIVE_SUPPRESS_CAP_MIN = 90` (新形式 active spinner が回り続けている間 STALL_SUSPECTED / PANE_OUTPUT を抑止する上限、分単位)。正準値は helper `tools/inspect_pane_state.py: SPINNER_ACTIVE_SUPPRESS_CAP_MIN` にあり、prose は helper の判定 (`suppress_stall` / `cap_exceeded`) を消費するだけ。elapsed が伸び続ける限り抑止するのを**無条件にはしない**: cap 到達で抑止を解除し anomaly 経路へ戻す (API dead で client 側タイマーだけ伸び続けるケースの永久マスクを防ぐ、Blocker 1)。観測済み ~61 分級の正常 turn を許容しつつ、90 分で頭打ちにする。値変更は helper 側の定数を書き換える (prose は追従不要)。
+
    #### (a) 動機
    Step 4 の inspect_pane 単独では、ワーカーが「Secretary に判断仰ぎを送って人間応答を待っている」状態と「stuck (異常停止)」を区別できない。判断仰ぎ中は worker pane の Claude session は継続中で画面 idle、APPROVAL_BLOCKED の regex にも該当しない。誤って STALL_SUSPECTED を発火すると、判断待ちワーカーに対してサイクル毎に窓口 escalation を投げ続ける。Issue #287 で実インシデント発覚 (session #12 / `worker-issue-283-delegate-payload`)。
    
    #### (b) いつ stall を疑うか
-   Step 4 の inspect_pane で worker pane の target line が APPROVAL_BLOCKED / ERROR どちらの regex にも該当せず、かつ `cursor.visible == false` または cursor 位置が前サイクルから動いていない状態が **連続 3 サイクル以上** (= 9 分相当、`/loop 3m` cadence 前提) 続いた worker を **stall 候補** とする。サイクル数は本ファイルでこの 3 を目安として扱う。
+   Step 4 の inspect_pane で worker pane が APPROVAL_BLOCKED / ERROR どちらの regex にも該当せず、かつ **正規化済み全可視行のコンテンツハッシュが前サイクルから変化していない** 状態が **連続 3 サイクル以上** (= 9 分相当、`/loop 3m` cadence 前提) 続いた worker を **stall 候補** とする。サイクル数は本ファイルでこの 3 を目安として扱う。
+
+   **screen-change 判定は content hash で行う (Issue #680)**: 旧実装は `(target_line_text, 最後の非空行)` + cursor 位置の単点比較で idle/active を判定していたが、Claude Code の TUI はツール実行中も末尾 footer と cursor を静的に保つため、scrollback (Read/Edit/Bash 出力・thinking spinner) が動いていても単点比較では不変と観測され `idle_streak` が機械的に加算されて STALL を誤発火した (`worker-runtime-129-observed-session-binding` 等で 1 セッション 2 件連続、`knowledge/raw/2026-07-04-delegation-stall-detection-static-footer-false-positive.md`)。**全可視行を正規化してハッシュ化**し、実 scrollback の変化だけを active とみなす。ハッシュの算出・spinner 正規化・active-spinner 判定は helper `tools/inspect_pane_state.py` に codify 済みで、prose は helper 出力を state に反映するだけ (prose 手製ハッシュは決定性が弱く禁止、Major 対応)。
+
+   **helper 呼び出し (record モード)** — Step 4 の inspect_pane 結果と worker-idle-state.json の該当 record 全体を渡すと、helper が観測 (`observation`) と**次の record** (`record`) と遷移種別 (`decision`) を返す。dispatcher は返ってきた `record` を worker-idle-state.json に**そのまま書く** (hash / streak / last_content_change_ts を手計算しない)。dispatcher cwd は `.dispatcher/` なので `../tools/`:
+   ```bash
+   # $inspect_json = inspect_pane の structuredContent を JSON 化したもの
+   # $prev_record  = worker-idle-state.json の worker-{task_id} record (無ければ 'null')
+   # $now          = 本サイクルの inspect 時刻 (date -u +%Y-%m-%dT%H:%M:%SZ)
+   # --anomaly-fired は Step 4 (e) で APPROVAL_BLOCKED / ERROR が本サイクル通知に進んだ場合のみ付ける
+   echo "$inspect_json" | py -3 ../tools/inspect_pane_state.py \
+       --prev-record "$prev_record" --now-ts "$now"
+   # 出力 JSON: {
+   #   observation: {content_hash, normalized_lines, spinner_present, spinner_signature,
+   #                 spinner_elapsed_sec, spinner_elapsed_increased, cap_exceeded, suppress_stall},
+   #   record: {last_visible_content_hash, idle_streak_cycles, last_content_change_ts,
+   #            last_check_ts, last_spinner_signature, last_spinner_elapsed_sec,
+   #            last_spinner_seen_ts, completion_reported_at, …(既存 key は保全)},
+   #   decision: {transition, suppress_stall, cap_exceeded}
+   # }
+   # exit 4 = suppress_stall (active-spinner 抑止すべき) / exit 0 = 抑止不要
+   ```
+   前サイクルの spinner signature / elapsed は `--prev-record` の中の `last_spinner_signature` / `last_spinner_elapsed_sec` から helper が読む (null 安全 — 前サイクルに spinner が無くても crash しない)。`decision.suppress_stall == true` の間は (c)〜(d) の STALL 発火を抑止する (下記 (b-3))。`decision.transition` は `first_observation` / `idle` / `active` / `active_continuation` / `anomaly_reset` のいずれか。
+
+   > **観測だけ欲しい場合 (record モードを使わない)**: `--now-ts` / `--prev-record` を省くと helper は `observation` フラット JSON のみを返す。この場合 `--prev-spinner-signature` / `--prev-spinner-elapsed-sec` で前サイクル spinner を渡す (どちらも `''` / `null` を None として受けるので null 安全)。record 更新は下記 update 規則を手で適用することになる。
 
    **idle streak の保持** (worker ごとに per-pane で永続化):
    - 保存先: `.state/dispatcher/worker-idle-state.json` (1 ファイルに全 worker を JSON object でまとめる、key は `worker-{task_id}`)
-   - 各 worker のレコード形式 (例):
+   - 各 worker のレコード形式 (例、Issue #680 / #671 併設スキーマ):
      ```json
      {
        "worker-issue-287-stall-signal": {
-         "last_target_line_text": "...",
-         "last_cursor_row": 12,
-         "last_cursor_col": 0,
-         "last_cursor_visible": false,
+         "last_visible_content_hash": "9f2c…",
+         "last_spinner_signature": "Gesticulating",
+         "last_spinner_elapsed_sec": 3702,
+         "last_spinner_seen_ts": "2026-07-04T05:48:56Z",
          "idle_streak_cycles": 2,
-         "last_check_ts": "2026-05-05T05:48:56Z",
-         "last_content_change_ts": "2026-05-05T05:42:30Z",
-         "completion_reported_at": null
+         "last_check_ts": "2026-07-04T05:48:56Z",
+         "last_content_change_ts": "2026-07-04T05:42:30Z",
+         "completion_reported_at": null,
+         "last_target_line_text": "…(deprecated: 新ロジックでは参照しない、後方互換の残置のみ)"
        }
      }
      ```
+   - **新フィールド (Issue #680 / #671)**: `last_visible_content_hash` (前サイクルの正規化済み全可視行ハッシュ、screen-change 判定の基準) / `last_spinner_signature` (前サイクルの新形式 spinner の verb、null 可) / `last_spinner_elapsed_sec` (同 elapsed 秒、null 可) / `last_spinner_seen_ts` (最後に spinner を観測した UTC ts、null 可)。`last_target_line_text` / `last_cursor_*` は **deprecated** — 残置してよいが新ロジックでは読まない。
    - **`completion_reported_at` schema (Issue #658)**: `null | ISO-8601 UTC`。worker が完了報告を出し secretary が `WORKER_COMPLETION_NOTED` を送った時刻 (`received_at`) を保持する review-待ち印。既存 record で **field 欠損は `null` 扱い** (= 完了未報告) とし migration は不要。set は Step 2 の `WORKER_COMPLETION_NOTED` 処理、clear は Step 2 の `WORKER_REOPENED` (fast-path) または Step 5.2 (b)(6) の `runs.status == 'in_use'` self-heal (reliable backstop)、削除は下記更新規則 (4) の record 削除に従う (timeout による自然失効は持たない、(g) 参照)
-   - 更新規則 (Step 4 の inspect 直後に評価。`last_check_ts` は本サイクルの inspect_pane 呼び出し時刻 = `now` に常に更新される。`last_content_change_ts` の更新は idle→active 遷移時のみで、値は **前サイクルの `last_check_ts`** を採用する — Codex round 3 Major 対応。同サイクル内で `check_messages` (Step 2) が `inspect_pane` (Step 4) より先に実行されるため、現サイクルの inspect 時刻を `last_content_change_ts` に入れると同サイクルで届いた正当な worker→secretary peer-msg の `occurred_at` が cutoff に弾かれて (c)(ii) で空集合になり Step 5.2 が誤発火する。前サイクルの `last_check_ts` を起点にすれば「最後に画面が idle と確認できた時点」が cutoff になり、同サイクル中に届いた peer-msg は確実にその cutoff 以降になるので acked として正しく拾える):
-     1. `(target_line_text, cursor_row, cursor_col, cursor_visible)` が前回値と完全一致 → `idle_streak_cycles += 1` (`last_content_change_ts` は据え置き)
-     2. いずれかが変化 (= 画面に動きあり = アクティブ):
+   - 更新規則 (Step 4 の inspect 直後に評価。**規則 (1)(2)(2-bis)(3)(5) は helper `tools/inspect_pane_state.py: compute_idle_transition()` が record モードで決定的に生成する** — dispatcher は返ってきた `record` をそのまま書き、hash / streak / last_content_change_ts を手計算しない。規則 (3) の anomaly reset は helper に `--anomaly-fired` を渡した時のみ適用される。**規則 (4) (pane 消失で record 削除) と (6) (`completion_reported_at` の lifecycle 更新) は inspect スコープ外なので helper record に**乗らず**、dispatcher が helper record を書いた後に別途適用する** (削除は key ごと消す / lifecycle は Step 2 の監視制御メッセージ処理)。以下は契約面の記述。`last_check_ts` は本サイクルの inspect_pane 呼び出し時刻 = `now` に常に更新される。`last_content_change_ts` の更新は idle→active 遷移時のみで、値は **前サイクルの `last_check_ts`** を採用する — Codex round 3 Major 対応。同サイクル内で `check_messages` (Step 2) が `inspect_pane` (Step 4) より先に実行されるため、現サイクルの inspect 時刻を `last_content_change_ts` に入れると同サイクルで届いた正当な worker→secretary peer-msg の `occurred_at` が cutoff に弾かれて (c)(ii) で空集合になり Step 5.2 が誤発火する。前サイクルの `last_check_ts` を起点にすれば「最後に画面が idle と確認できた時点」が cutoff になり、同サイクル中に届いた peer-msg は確実にその cutoff 以降になるので acked として正しく拾える):
+     1. `content_hash` が `last_visible_content_hash` と一致 → `idle_streak_cycles += 1` (`last_content_change_ts` は据え置き)。`last_visible_content_hash` は本サイクルの `content_hash` に更新 (同値なので実質不変)
+     2. `content_hash` が変化 (= 画面 scrollback に動きあり = アクティブ) → `last_visible_content_hash` を本サイクルの `content_hash` に更新した上で:
         - **idle→active 遷移時** (前サイクルの `idle_streak_cycles >= 1` から本サイクルで変化を観測) → `idle_streak_cycles = 0` で reset、`last_content_change_ts = (前サイクルの) last_check_ts` に更新 (= 直前まで idle と確認できていた時刻、本サイクルで届く peer-msg より必ず古い)。Step 5.2 (PANE_OUTPUT_WITHOUT_PEER_MSG) がこの ts を起点に worker→secretary 痕跡を scan して fire / acked 判定する
         - **active 継続時** (前サイクルの `idle_streak_cycles == 0` から本サイクルでも変化を観測、出力が連続している間) → `idle_streak_cycles = 0` のまま、`last_content_change_ts` は **据え置き** (active 期間の START 時刻を保持し、active 期間中に届く peer-msg を全部 acked 経路に乗せる)
-     3. APPROVAL_BLOCKED / ERROR のどちらかが (e) の通知に進んだ場合も reset (anomaly が独立して扱われたので stall 評価を巻き戻す)、`last_content_change_ts = (前サイクルの) last_check_ts` に更新 (anomaly 通知後は再観測扱いで、(2) の遷移時規則と同じ起点を使う)
+     2-bis. **spinner フィールドは毎サイクル更新** (Issue #671): helper 出力の `spinner_signature` / `spinner_elapsed_sec` を `last_spinner_signature` / `last_spinner_elapsed_sec` に書き、spinner を観測したサイクルは `last_spinner_seen_ts = now`。spinner 不在 (`spinner_present == false`) なら両値 null (次サイクルの increased 判定を新規 turn 扱いにリセット)。この spinner 更新は hash 判定 (1)/(2) と独立 (spinner は hash から正規化除外されるので active/idle 判定を左右しない — active 継続は scrollback、active-spinner 抑止は elapsed という別軸)
+     3. APPROVAL_BLOCKED / ERROR のどちらかが (e) の通知に進んだ場合も reset (anomaly が独立して扱われたので stall 評価を巻き戻す)、`idle_streak_cycles = 0` / `last_content_change_ts = (前サイクルの) last_check_ts` に更新 (anomaly 通知後は再観測扱いで、(2) の遷移時規則と同じ起点を使う)。この reset は hash 変化の有無に依らず適用される (静的な承認プロンプトが複数サイクル残って hash 不変でも、通知が出たサイクルは streak を巻き戻す)。**helper に `--anomaly-fired` を渡すと `decision.transition == "anomaly_reset"` として record にこの規則が織り込まれる** (pane 観測だけからは Step 4 の発火有無が分からないため、発火有無は dispatcher が flag で渡す)
      4. `pane_exited` を Step 1 で受信、または `list_panes` で消失検知 → 該当 key をファイルから削除 (record ごと消えるので `completion_reported_at` も同時に破棄される = CLOSE_PANE / pane 消失時の解除はこの規則が担う、Issue #658)
-     5. 既存 record に `last_content_change_ts` フィールドが無い (本 PR 以前の永続化、または新規 worker の初回観測で前サイクル `last_check_ts` が無い) 場合は **`null` 扱い**。Step 5.2 (b)(1) の前提条件 (ts 存在) を満たさず fire しないので、初回観測直後の false positive を構造的に抑止する。次サイクル以降で前サイクル `last_check_ts` が確定した上での idle→active 遷移を待ってから初めて ts が値を持つ。**同様に `completion_reported_at` field が無い場合も `null` 扱い** (= 完了未報告、migration 不要)
+     5. **既存 record に `last_visible_content_hash` フィールドが無い場合は migration せず「初回観測」として扱う (Issue #680 Blocker 2)**: 本サイクルの `content_hash` を保存し、`idle_streak_cycles = 0` / `last_content_change_ts = null` に**リセット**する。旧実装の `last_target_line_text` と cursor 由来で積まれた `idle_streak_cycles` (実測 13 まで到達) を新ハッシュ判定へ**持ち越さない** (持ち越すと初回から STALL/PANE_OUTPUT 条件を満たして即誤発火する)。旧 `last_target_line_text` は読まない (deprecated 残置のみ)。この初回観測は `compute_idle_transition()` が `prev_record` の hash 欠損を検出して自動でリセットする。次サイクル以降、前サイクル `last_check_ts` が確定した上での idle→active 遷移を待ってから初めて `last_content_change_ts` が値を持つので、Step 5.2 (b)(1) の前提 (ts 存在) を満たさず初回直後の false positive を構造的に抑止する。**同様に `completion_reported_at` field が無い場合も `null` 扱い** (= 完了未報告、migration 不要)
      6. `completion_reported_at` の set / clear (Issue #658): **lifecycle-event ベース**で更新する — Step 2 の監視制御メッセージ処理が `WORKER_COMPLETION_NOTED` 受信で `received_at` を set / `WORKER_REOPENED` 受信で `null` に clear (fast-path)、Step 5.2 (b)(6) の gate が `runs.status == 'in_use'` を観測したとき `null` に self-heal clear (reliable backstop、`WORKER_REOPENED` 取りこぼし対策 = P2)、record 削除 ((4)) で破棄。上記 (1)〜(3) の inspect ベース更新 (idle_streak / last_content_change_ts) は `completion_reported_at` を **触らない** (完了報告済み worker がレビュー中に画面出力しても completion 印は維持され、review 待ち idle の false positive を抑止し続ける)。**timeout による自然失効は持たない** (レビューが長い正常ケースを false positive に戻さないため、(g) 参照)
-   - 再起動時の挙動: ファイルが消失/読めない場合は全 worker `idle_streak_cycles = 0` から再観測する (誤検出より見逃しを優先、stall は数サイクル後に再評価される)。`completion_reported_at` も消えるが、消失中に PANE_OUTPUT が誤発火しても secretary への informational + worker への nudge に留まり (承認・拒否の自動代行はしない)、次の完了受領 / 再指示で再セットされる安全側挙動
-   - 本 PR では JSON ファイル経由の prose 契約に留め、helper script 化 (`tools/journal_append.sh` 相当) は将来課題
-   
+   - 再起動時の挙動: ファイルが消失/読めない場合は全 worker `idle_streak_cycles = 0` から再観測する (誤検出より見逃しを優先、stall は数サイクル後に再評価される)。`last_visible_content_hash` も消えるので次の初回観測は上記 (5) の初回リセット経路に自然に落ちる。`completion_reported_at` も消えるが、消失中に PANE_OUTPUT が誤発火しても secretary への informational + worker への nudge に留まり (承認・拒否の自動代行はしない)、次の完了受領 / 再指示で再セットされる安全側挙動
+   - screen-change 判定・spinner 解析・active-spinner 抑止/cap 判定・idle-state 遷移の決定的コアは helper `tools/inspect_pane_state.py` に codify 済み (`extract_pane_state()` / `compute_idle_transition()`、regression test は `tests/test_inspect_pane_state.py`)。dispatcher Claude は helper 出力を JSON で受けて worker-idle-state.json に反映するだけで、hash / streak を手計算しない (Major 対応)
+
+   #### (b-3) active-spinner suppress (Issue #671)
+   stall 候補 ((b) で `content_hash` 不変が 3 サイクル継続) であっても、helper 出力の **`suppress_stall == true`** の間は STALL_SUSPECTED を発火せず、Step 5.2 の PANE_OUTPUT_WITHOUT_PEER_MSG も抑止する。動機: deep-research / ultracode の 1 model turn は scrollback を動かさず (= hash 不変) に新形式 spinner (`{glyph} {Verb}… (1h 1m 42s · ↓ 121.5k tokens)` / `(Xm Ys · ...)`) だけを回し続けることがあり、hash 判定だけでは正常な長考を誤 STALL する。helper は前サイクルの `last_spinner_signature` / `last_spinner_elapsed_sec` と比較して spinner の elapsed が **増加中** (= 生きている) を判定し、`suppress_stall` を返す。
+
+   - **suppress の解除は無条件にしない (Blocker 1)**: `suppress_stall` は「spinner present **かつ** cap 未到達 **かつ** elapsed 増加」の AND。`cap_exceeded == true` (= `spinner_elapsed_sec >= SPINNER_ACTIVE_SUPPRESS_CAP_MIN * 60`) になると helper は `suppress_stall = false` を返し、抑止が解ける。cap 到達後は通常の (c)〜(d) 評価に戻り、hash 不変が続いていれば STALL_SUSPECTED が発火する (API dead で client 側タイマーだけ伸び続けるケースの永久マスク防止)
+   - **spinner が凍結したら抑止しない**: elapsed が前サイクルと同値 (= ~3 分サイクルを跨いで進んでいない = 凍結 / hang) なら `spinner_elapsed_increased == false` で `suppress_stall = false`。凍結 spinner は hung の signal なので STALL 評価に戻す
+   - **spinner 非表示なら抑止しない**: `spinner_present == false` の worker は本抑止の対象外。hash 判定のみで通常の stall 評価に入る
+   - **旧形式 spinner (`{glyph} {verb} for {Xm Ys}`) はここでは扱わない**: 旧形式は Step 4 (d) の spinner-age ERROR (5 分閾値) 側で ERROR として扱う。新旧の regex は ` for ` と `… (` で **disjoint** なので、健全な新形式 active spinner が 5 分で ERROR 化することはない (Major: spinner 2 分類)
+   - **suppress 中の soft-note** (retro / debug 用): 抑止したサイクルは journal に記録して silent skip にしない:
+     ```bash
+     bash ../tools/journal_append.sh anomaly_observed source=stall_check worker=worker-{task_id} kind=spinner_active_suppress confidence=n/a note=spinner_elapsed_{spinner_elapsed_sec}s
+     ```
+   `idle_streak_cycles` は抑止中も (b) の hash 判定に従って加算し続ける (spinner は hash から除外されるため hash 不変 = idle 加算)。よって cap 到達で抑止が解けた瞬間に streak が既に閾値以上なら即 STALL_SUSPECTED が発火する (抑止は「発火の保留」であって streak の巻き戻しではない)。
+
    #### (b-2) PR-pending-merge sub-state 判定 (Issue #304)
    stall 候補について、(c) の補助シグナル取得に進む **前に** PR-pending-merge sub-state を判定し、(c)(1) で使う lookback window を選択する。これは「worker が完了報告を出した後、Secretary が PR を open し、user が merge 承認するまでの待機」を通常 stall と区別するためのカテゴリ (Issue #304、session #12 で誤発火実測)。
 
@@ -318,7 +360,7 @@
      ```
      以降のサイクルで journal entry が lookback window から外れて 0 件になれば、改めて (c) → (d) を再評価する (持続的 stuck の検出が遅れる代償として、判断待ちの誤発火を避ける trade-off)。
 
-   - **timeout** — 両系統とも痕跡なし、idle 継続: 従来通り stall として扱い、窓口に通知 (lookback は (b-2) で選択した値、通知文に分単位で埋める):
+   - **timeout** — 両系統とも痕跡なし、idle 継続: 従来通り stall として扱い、窓口に通知 (lookback は (b-2) で選択した値、通知文に分単位で埋める)。**ただし (b-3) の active-spinner suppress が有効 (`suppress_stall == true`) の間は本 timeout 通知も保留する** — helper が cap 未到達の increasing spinner を検出している間は正常な長考なので発火せず、`kind=spinner_active_suppress` の soft-note のみ残す。cap 到達で `suppress_stall == false` に転じたサイクルで初めて発火する:
      ```
      mcp__org-broker__send_message(to_id="secretary", message="
        STALL_SUSPECTED: worker-{task_id} が直近 3 サイクル idle、
@@ -550,6 +592,7 @@
    1. Step 5 (b) の `worker-idle-state.json` に `last_content_change_ts` (Step 5 (b) 更新規則 (2)/(3) で更新される ISO-8601 UTC ts) が **存在し** (= `null` でない)、かつ `now - last_content_change_ts >= PANE_OUTPUT_SETTLE_SEC` (= ペインが少なくとも 60 秒静止)
    2. かつ `idle_streak_cycles >= PANE_OUTPUT_IDLE_STREAK_MIN` (= 直近 2 サイクル ≈ 6 分は内容変化なし、出力が完全に一段落している)。`/loop 3m` cadence で 6 分の完全静止を要求することで、worker が長時間コマンドを走らせて画面が連続的に shift しているケース (= idle_streak が 0 に reset され続ける) を構造的に除外し、Codex round 1 Major で指摘された「通常作業の途中出力」を nudge する誤検知を抑制する
    3. かつ Step 4 (e) の APPROVAL_BLOCKED / ERROR がこのサイクルで通知経路に乗っていない (= 画面に承認プロンプトやエラー banner が無い)。あれば Step 4 が優先され、PANE_OUTPUT は同サイクルで evaluate しない (規定パターン anomaly と自由出力 anomaly を 1 つの worker に対して二重通知しない)
+   3-bis. **かつ Step 5 (b-3) の active-spinner suppress が有効でない** (`suppress_stall == false`、Issue #671)。helper が cap 未到達の increasing 新形式 spinner を検出している間 (= 正常な長考 1 turn で scrollback が動かず peer-msg も出ないのが正常) は本検知を skip する。新形式 spinner の 1 turn 中は worker→secretary の追加 peer-msg が無いのが正常なので、これを silent dead-lock と誤判定しない。cap 到達で `suppress_stall == false` になれば通常評価に戻る
    4. かつ worker の事前 peer-msg 履歴が **存在する** ((c)(i) の existence check)。worker が起動以来一度も worker→secretary 送信を発行していない record は本検知から除外する (Issue #312 の起動 ack を未発行な状態は別検知 (起動失敗 / instruction 未受領) のスコープで、PANE_OUTPUT の対象ではない。「peer-msg 慣行を確立済の worker が以後の活動で peer-msg を漏らした」という silent dead-lock の典型 signature に絞る)
    5. かつ (c)(ii) のクエリ返却が **NULL** (= `last_content_change_ts` 以降に worker→secretary 痕跡が 0 件、ペイン活動後に peer-msg を発行していない)。`last_content_change_ts` を WHERE 句に直接埋め込んでいるため非 NULL 値は必然的に `>= last_content_change_ts` (= acked) を意味し、両者は構造上 disjoint。「(c)(ii) returns NULL」を fire 条件、「(c)(ii) returns 非 NULL」を acked 条件として (d) で分岐する
    6. **かつ completion-review 状態ではない (Issue #658)**。「completion-review 状態」= `completion_reported_at != null` **かつ** DB `runs.status == 'review'` の両立で、この worker は完了報告済み・review 待ちの正常 idle なので本検知の対象外。この gate は最優先で評価し、completion-review 状態なら (c) の SQL query を **発行せず** (d) の completion-review-skip 経路へ直行する (完了報告後に review 待ちで idle な worker を silent dead-lock と誤判定していた false positive の直接原因を断つ)。`runs.status` は `sqlite3 ../.state/state.db "SELECT status FROM runs WHERE task_id = '{task_id}'"` で取得する ((c) と同じ SQLite one-liner idiom、task_id は slug 規約で補間安全):
