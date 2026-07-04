@@ -186,6 +186,23 @@ Block A の spawn 発火と並列。`claude-org-runtime` の installed バージ
 > - 警告コマンドには `pyproject.toml` から読み取った pin 制約をそのまま埋め込むので、ユーザーが警告コマンドをそのまま貼り付けても窓外への upgrade にはならない
 > - スクリプト本体: [`tools/check_runtime_version.py`](../../../tools/check_runtime_version.py)
 
+### Block C3: secretary 滞留 watcher の常駐（broker のみ）
+
+`ORG_TRANSPORT=broker` のときのみ実行する。renga では起動しない（broker の queue.jsonl が存在しないため。Step 0 の transport 判定が `renga` なら本 Block はまるごと skip する）。
+
+broker transport では過去に「secretary 宛メッセージが claimed/delivered 記録付きで silent 消失する」障害があった（channel sidecar の二重走行レースが根因。runtime 側の observer lease で修正済み）。その再発・類似滞留に対する運用ガードとして、broker セッションでは org-start 直後に queue.jsonl の滞留 watcher を常駐させる。
+
+1. Claude Code の Bash tool で **`run_in_background=true`** を付けて 1 回呼ぶだけ:
+   ```bash
+   python3 tools/secretary_queue_watcher.py   # Mac/Linux
+   py -3 tools/secretary_queue_watcher.py     # Windows
+   ```
+2. 動作: watcher は起動時点の `$ORG_BROKER_STATE_DIR/queue.jsonl` 末尾を起点に live-tail し、それ以降の secretary 宛 `message_enqueued` が `delivered` されないまま閾値（default 120 秒）を超えたら、滞留件数と経過秒を 1 行 print して **exit する**。background Bash の終了イベントで窓口が再起床するので、その出力を見たら使用中 transport の `check_messages`（broker では `mcp__org-broker__check_messages`）で drain する。過去ログの通算 gap は数えない（既知の過去消失分が混入して誤検知になるため、本セッション中の新規レコードのみを対象にする）。
+
+> **sandbox 注記**: 常駐プロセスなので Block C と同様 sandbox 内起動は不可、`run_in_background` によるホスト実行を使う。
+
+> スクリプト本体: [`tools/secretary_queue_watcher.py`](../../../tools/secretary_queue_watcher.py)（`--owner` / `--stale-sec` / `--poll-sec` で調整可。`ORG_BROKER_STATE_DIR` 未設定なら exit 1 で即終了する broker 専用ツール）
+
 > **Sidebar: attention watcher の起動案内（optional, 明示起動推奨）**
 >
 > 承認待ち / 判断待ち / CI 失敗 / silent stop / PR merged 等を OS notification + 音 + terminal bell で能動的に通知する watcher を別途常駐させられる。**`/org-start` からの自動起動はしない**（OS 通知 backend は環境依存が強く、勝手に音が鳴ると不快になりやすいため。設計 [`docs/design/attention-notification.md`](../../../docs/design/attention-notification.md) §11 Q1）。
