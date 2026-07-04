@@ -1,6 +1,6 @@
 # Contract Set A — Role Contract
 
-> **Status**: Ratified (2026-05-03); amended 2026-06-07 (Q10 — curator residency replaced by the on-demand worker-close trigger, human-approved in the curator-on-demand change; see § Role: curator). Lead-confirmed decisions for all open questions. This document specifies the four roles (`secretary`, `dispatcher`, `curator`, `worker`) as they exist in the current `claude-org` implementation.
+> **Status**: Ratified (2026-05-03); amended 2026-06-07 (Q10 — curator residency replaced by the on-demand worker-close trigger, human-approved in the curator-on-demand change; see § Role: curator); amended 2026-07-05 (curator spawn model `opus` → `sonnet` — auto mode's safety classifier runs on a dedicated model independent of the session model, and the curation workload is lightweight/mechanical; see § Role: curator). Lead-confirmed decisions for all open questions. This document specifies the four roles (`secretary`, `dispatcher`, `curator`, `worker`) as they exist in the current `claude-org` implementation.
 >
 > **Scope**: Phase 1 Contract Set A only. Contract Sets B–E (state, messaging, lifecycle, knowledge) are tracked in #122–#125 and out of scope here.
 >
@@ -177,7 +177,7 @@
 
 ### Constraints
 
-- **Permission mode**: `auto` (hardcoded literal at spawn sites; `registry/org-config.md` value is reference-only — see its sync-warning). Model: `opus`.
+- **Permission mode**: `auto` (hardcoded literal at spawn sites; `registry/org-config.md` value is reference-only — see its sync-warning). Model: `sonnet` (auto mode's safety classifier runs on a dedicated model independent of the session model — https://www.anthropic.com/engineering/claude-code-auto-mode — and the curation workload is lightweight/mechanical; independent of the worker-default-opus policy).
 - **Path discipline** — curator's cwd is `.curator/`, but knowledge directories live in the parent repo. Must use parent-repo-relative or absolute paths; using cwd-relative `knowledge/raw/` would target a non-existent directory.
 - **Glob fallback** — when `Glob` returns 0 results, must verify with `Bash ls` to detect missing-directory vs. genuinely empty.
 - **No human dialogue** — `.curator/CLAUDE.md` "人間と直接対話することはない". Communication only via secretary.
@@ -188,7 +188,7 @@
 
 ### Lifecycle / boundaries
 
-- **Spawn**: By the **dispatcher** during CLOSE_PANE handling (`.dispatcher/references/pane-close.md` Step 5-3), only when `tools/check_curate_threshold.py` exits 10. `cwd="../.curator"` (dispatcher-relative), `permission_mode=auto`, `model="opus"`. Stable name `curator`, role `curator`. Single-flight: the dispatcher checks `list_panes` first and coalesces onto an already-running curator instead of re-spawning. `/org-start` does **not** spawn a curator and clears `curator_pane_id` / `curator_peer_id` via `StateWriter.CLEAR` — the curator's identity is never recorded in state.db; `list_panes` is the only liveness source, and null DB fields are the normal steady state.
+- **Spawn**: By the **dispatcher** during CLOSE_PANE handling (`.dispatcher/references/pane-close.md` Step 5-3), only when `tools/check_curate_threshold.py` exits 10. `cwd="../.curator"` (dispatcher-relative), `permission_mode=auto`, `model="sonnet"`. Stable name `curator`, role `curator`. Single-flight: the dispatcher checks `list_panes` first and coalesces onto an already-running curator instead of re-spawning. `/org-start` does **not** spawn a curator and clears `curator_pane_id` / `curator_peer_id` via `StateWriter.CLEAR` — the curator's identity is never recorded in state.db; `list_panes` is the only liveness source, and null DB fields are the normal steady state.
 - **Activation**: Receives the dispatcher's instruction message carrying the threshold-check JSON; runs `/org-curate` once with those reasons.
 - **Steady state**: None — the pane exists only for the duration of one curation cycle.
 - **Termination**: Pane closed by the dispatcher's monitoring loop after receiving `CURATE_DONE` / `CURATE_SKIPPED` / `CURATE_ERROR` (or on the loop-side timeout guard), or by org shutdown if a cycle happens to be in flight. The dispatcher never blocks waiting for completion.

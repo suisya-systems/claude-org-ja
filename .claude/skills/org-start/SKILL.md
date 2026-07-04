@@ -359,7 +359,9 @@ renga 0.18.0+ では `mcp__renga-peers__spawn_claude_pane` が役割別の構造
 
 - `cwd="../.curator"`（caller は dispatcher、cwd=`.dispatcher/` 基準の相対解決）
 - `permission_mode=auto`
-- `model="opus"`
+- `model="sonnet"`
+
+理由: auto モードの safety classifier はセッションモデルと独立した専用モデルで動作し、承認判定はセッションモデルに依存しない（公式: https://www.anthropic.com/engineering/claude-code-auto-mode）。キュレーターの知見整理ワークロードは軽量・機械的側に分類できるため Sonnet で十分（ワーカーの既定 opus 方針とは独立の判断）。
 
 ### ワーカー（org-delegate の Step 3 で使用）
 
