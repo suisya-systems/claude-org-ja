@@ -83,6 +83,8 @@ allowed-tools:
 
 `gen_delegate_payload.py` の専用フラグ化はスコープ外（許可は `--impl-guidance` の brief 文言、武装は dispatcher の send_keys が担う分担で足りる）。**位置づけ**: ultracode は実装と Codex 前のセルフレビュー収束に使う**前段**であって、最終 Codex ゲート（別モデルによる独立レビュー、Blocker / Major ゼロ）の置き換えではない。軽量レーンや単一ファイルの小タスクでは ultracode を許可しない。
 
+**段別モデル指定（推奨）**: ultracode workflow を許可するタスクでは、workflow の段ごとにモデルを使い分けるよう brief で促してよい。機械的なファンアウト段（定型置換・多数ファイルへの同一変換・単純収集など判断を伴わない並列作業）は `agent(..., {model: 'sonnet'})` で Sonnet 5 に振ってコスト・速度を最適化し、判断・検証・統合の段（レビュー・設計判断・adversarial verify・synthesis）はセッションモデル（既定 opus）を継承させて品質を確保する。粒度は Workflow tool の `agent()` opts.model で制御する（段別注記は [`.dispatcher/references/spawn-flow.md`](../../../.dispatcher/references/spawn-flow.md) 3-5a と一致させる）。
+
 ## 委譲前チェックリスト（窓口が実行）
 
 タスク分解に入る前に、依頼内容を以下の観点で確認する。該当する場合はユーザーに聞き返す。
