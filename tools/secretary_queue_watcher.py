@@ -88,10 +88,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def read_new_chunk(queue: Path, offset: int) -> tuple[str, int]:
-    """offset 以降の新規バイトを読み、(テキスト, 新オフセット) を返す。
+    """offset 以降の完結行（末尾が改行の行）だけを読み、(テキスト, 新オフセット) を返す。
 
-    truncation / rotation でファイルサイズが offset を下回ったら offset を 0 に
-    リセットして先頭から読み直す。ファイル不在は「まだ何も来ていない」として扱う。
+    - broker が追記中の未完行（末尾に改行が無い断片）は消費せず、オフセットも
+      進めない（次回 poll で完結してから読む）。断片を parse-skip して offset を
+      進めると、そのレコードを恒久的に取りこぼす。
+    - truncation / rotation でファイルサイズが offset を下回ったら offset を 0 に
+      リセットして先頭から読み直す。ファイル不在は「まだ何も来ていない」として扱う。
+    - バイト単位で読み、オフセットもバイト位置で管理する（text モードの tell() に
+      依存しない）。
     """
     try:
         size = queue.stat().st_size
@@ -99,10 +104,14 @@ def read_new_chunk(queue: Path, offset: int) -> tuple[str, int]:
         return "", 0
     if size < offset:
         offset = 0
-    with queue.open(encoding="utf-8", errors="replace") as f:
+    with queue.open("rb") as f:
         f.seek(offset)
-        chunk = f.read()
-        return chunk, f.tell()
+        data = f.read()
+    nl = data.rfind(b"\n")
+    if nl < 0:
+        return "", offset  # 完結行なし（未完断片のみ）: 持ち越し
+    complete = data[: nl + 1]
+    return complete.decode("utf-8", errors="replace"), offset + len(complete)
 
 
 def drained_count(rec: dict) -> int:
