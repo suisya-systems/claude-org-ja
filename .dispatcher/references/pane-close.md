@@ -165,11 +165,12 @@ mcp__renga-peers__spawn_claude_pane(
   name="curator",
   cwd="../.curator",
   permission_mode="auto",
-  model="opus"
+  model="sonnet"
 )
 ```
 
 - `cwd` は caller（dispatcher、cwd=`.dispatcher/`）基準の相対解決なので `../.curator`
+- `model="sonnet"` の理由: auto モードの safety classifier はセッションモデルと独立した専用モデルで動作し、承認判定はセッションモデルに依存しない（公式: https://www.anthropic.com/engineering/claude-code-auto-mode）。キュレーターの知見整理ワークロードは軽量・機械的側に分類できるため Sonnet で十分（ワーカーの既定 opus 方針とは独立の判断）
 - `[name_in_use]` が返った場合は 5-2 とのレース（直前に別トリガーが spawn した）なので
   **coalesce 扱い**でよい（再 spawn せず Step 6 へ進む）
 - その他の `[<code>]` エラーは窓口に informational として報告し、curate をスキップして Step 6 へ進む

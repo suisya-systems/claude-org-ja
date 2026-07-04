@@ -1,6 +1,6 @@
 # Contract Set A — Role Contract
 
-> **Status**: Ratified (2026-05-03); amended 2026-06-07 (Q10 — curator residency replaced by the on-demand worker-close trigger, human-approved in the curator-on-demand change; see § Role: curator). Lead-confirmed decisions for all open questions. This document specifies the four roles (`secretary`, `dispatcher`, `curator`, `worker`) as they exist in the current `claude-org` implementation.
+> **Status**: Ratified (2026-05-03); amended 2026-06-07 (Q10 — curator residency replaced by the on-demand worker-close trigger, human-approved in the curator-on-demand change; see § Role: curator); amended 2026-07-05 (curator spawn model `opus` → `sonnet` — auto mode's safety classifier runs on a dedicated model independent of the session model, and the curation workload is lightweight/mechanical; worker model wording synced to the current default-opus / lightweight-Sonnet policy; see § Role: curator and § Role: worker). Lead-confirmed decisions for all open questions. This document specifies the four roles (`secretary`, `dispatcher`, `curator`, `worker`) as they exist in the current `claude-org` implementation.
 >
 > **Scope**: Phase 1 Contract Set A only. Contract Sets B–E (state, messaging, lifecycle, knowledge) are tracked in #122–#125 and out of scope here.
 >
@@ -105,7 +105,7 @@
 
 ### Outputs
 
-- **MCP calls** — `spawn_claude_pane` (workers, `model="opus"` mandatory, `permission_mode=auto`), `send_keys(enter=true)` for the dev-channel prompt, `list_peers` polling, `send_message` for the instruction, `inspect_pane` for the watch loop, `close_pane` for teardown.
+- **MCP calls** — `spawn_claude_pane` (workers, `model="opus"` by default — `sonnet` only for lightweight/mechanical tasks the secretary explicitly designates — `permission_mode=auto`), `send_keys(enter=true)` for the dev-channel prompt, `list_peers` polling, `send_message` for the instruction, `inspect_pane` for the watch loop, `close_pane` for teardown.
 - **`DELEGATE_COMPLETE`** to secretary (one per worker spawned).
 - **`WORKER_PANE_EXITED`** to secretary (lifecycle event; not a completion claim).
 - **`APPROVAL_BLOCKED`** / **`ERROR_DETECTED`** to secretary, tagged with `source=inspect|self_report` and `confidence=high|n/a`.
@@ -177,7 +177,7 @@
 
 ### Constraints
 
-- **Permission mode**: `auto` (hardcoded literal at spawn sites; `registry/org-config.md` value is reference-only — see its sync-warning). Model: `opus`.
+- **Permission mode**: `auto` (hardcoded literal at spawn sites; `registry/org-config.md` value is reference-only — see its sync-warning). Model: `sonnet` (auto mode's safety classifier runs on a dedicated model independent of the session model — https://www.anthropic.com/engineering/claude-code-auto-mode — and the curation workload is lightweight/mechanical; independent of the worker-default-opus policy).
 - **Path discipline** — curator's cwd is `.curator/`, but knowledge directories live in the parent repo. Must use parent-repo-relative or absolute paths; using cwd-relative `knowledge/raw/` would target a non-existent directory.
 - **Glob fallback** — when `Glob` returns 0 results, must verify with `Bash ls` to detect missing-directory vs. genuinely empty.
 - **No human dialogue** — `.curator/CLAUDE.md` "人間と直接対話することはない". Communication only via secretary.
@@ -188,7 +188,7 @@
 
 ### Lifecycle / boundaries
 
-- **Spawn**: By the **dispatcher** during CLOSE_PANE handling (`.dispatcher/references/pane-close.md` Step 5-3), only when `tools/check_curate_threshold.py` exits 10. `cwd="../.curator"` (dispatcher-relative), `permission_mode=auto`, `model="opus"`. Stable name `curator`, role `curator`. Single-flight: the dispatcher checks `list_panes` first and coalesces onto an already-running curator instead of re-spawning. `/org-start` does **not** spawn a curator and clears `curator_pane_id` / `curator_peer_id` via `StateWriter.CLEAR` — the curator's identity is never recorded in state.db; `list_panes` is the only liveness source, and null DB fields are the normal steady state.
+- **Spawn**: By the **dispatcher** during CLOSE_PANE handling (`.dispatcher/references/pane-close.md` Step 5-3), only when `tools/check_curate_threshold.py` exits 10. `cwd="../.curator"` (dispatcher-relative), `permission_mode=auto`, `model="sonnet"`. Stable name `curator`, role `curator`. Single-flight: the dispatcher checks `list_panes` first and coalesces onto an already-running curator instead of re-spawning. `/org-start` does **not** spawn a curator and clears `curator_pane_id` / `curator_peer_id` via `StateWriter.CLEAR` — the curator's identity is never recorded in state.db; `list_panes` is the only liveness source, and null DB fields are the normal steady state.
 - **Activation**: Receives the dispatcher's instruction message carrying the threshold-check JSON; runs `/org-curate` once with those reasons.
 - **Steady state**: None — the pane exists only for the duration of one curation cycle.
 - **Termination**: Pane closed by the dispatcher's monitoring loop after receiving `CURATE_DONE` / `CURATE_SKIPPED` / `CURATE_ERROR` (or on the loop-side timeout guard), or by org shutdown if a cycle happens to be in flight. The dispatcher never blocks waiting for completion.
@@ -234,7 +234,7 @@
 
 ### Constraints
 
-- **Permission mode**: `auto` (hardcoded literal at spawn sites; `registry/org-config.md` value is reference-only — see its sync-warning). Model: **`opus` mandatory** — `sonnet` is forbidden because `auto` mode's safety classifier is only stable on Opus.
+- **Permission mode**: `auto` (hardcoded literal at spawn sites; `registry/org-config.md` value is reference-only — see its sync-warning). Model: **`opus` by default** (quality-first) — `sonnet` is permitted only for lightweight/mechanical tasks the secretary explicitly designates. The former rationale ("`auto` mode's safety classifier is only stable on Opus") is obsolete: the classifier runs on a dedicated model independent of the session model (https://www.anthropic.com/engineering/claude-code-auto-mode), so the opus default is a quality decision, not a classifier constraint (see `.dispatcher/references/spawn-flow.md` Step 3-2).
 - **Working directory is enforced**: First action on launch is `pwd` to verify `worker_dir`. Mismatch → halt and report to secretary.
 - **Hard-blocked operations** (via `permissions.deny` + PreToolUse hooks):
   - Cannot reproduce claude-org structure (`.claude/`, `.dispatcher/`, `.curator/`, `.state/`, `registry/`, `dashboard/`, `knowledge/`) inside `worker_dir`.
@@ -260,7 +260,7 @@
 
 ### Lifecycle / boundaries
 
-- **Spawn**: By the dispatcher in `org-delegate` Step 3, via `mcp__renga-peers__spawn_claude_pane(role="worker", name="worker-{task_id}", cwd={worker_dir}, permission_mode=auto, model="opus")` after balanced-split target/direction selection. CLAUDE.md and `settings.local.json` are placed by the secretary in Step 1.5 *before* spawn.
+- **Spawn**: By the dispatcher in `org-delegate` Step 3, via `mcp__renga-peers__spawn_claude_pane(role="worker", name="worker-{task_id}", cwd={worker_dir}, permission_mode=auto, model="opus")` (model is the opus default; `sonnet` only when the secretary explicitly designates a lightweight/mechanical task) after balanced-split target/direction selection. CLAUDE.md and `settings.local.json` are placed by the secretary in Step 1.5 *before* spawn.
 - **Activation**: After spawn, the dispatcher approves the "Load development channel?" prompt on the worker's pane via `send_keys(enter=true)`; the worker is then detected via `list_peers` and receives its instruction message. It greets back when secretary sends the `DELEGATE_COMPLETE` follow-up.
 - **Steady state**: Executes the task; reports progress to secretary; if blocked on approval, halts (dispatcher detects via inspect or self-report and notifies secretary).
 - **Completion handoff**:
