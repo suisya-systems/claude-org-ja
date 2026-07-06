@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "claude-org-ja"
-version = "0.1.0"
+version = "1.0.0"
 description = "Claude Code multi-role AI organization harness (Japanese edition)"
 readme = "README.md"
 # CLAUDE.local.md worker template recommends Python 3.10; CI runs 3.11.
