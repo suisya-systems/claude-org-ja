@@ -26,6 +26,11 @@ core-harness>=0.3.2,<0.4
 # PyPI via Trusted Publisher; pinned to the 0.1.x range. 0.x bumps may be
 # breaking per the runtime's compatibility policy, so widen this pin
 # deliberately when adopting a new minor.
+# Floor bumped to 0.1.36 for the herdr delegate-plan pane-id parse fix
+# (runtime #133 / #134): herdr previously rejected `w<N>:p<N>` delegate-plan
+# pane ids (runtime #119, closed as a duplicate of #133), so pin the floor to
+# the release that fixes it. No schema / DEFAULT_NOTIFY / attention change —
+# pin-only bump on the ja side. The earlier 0.1.34 floor (below) is subsumed.
 # Floor bumped to 0.1.34 for the herdr workspace layout policy (runtime #117,
 # Closes runtime #110): herdr now isolates each org into its own workspace,
 # routes panes by space, and generationally reaps stale panes, so pin the floor
@@ -80,7 +85,7 @@ core-harness>=0.3.2,<0.4
 # (transport surface descriptor claude_org_runtime.transport consumed by
 # tools/transport.py — Epic #6 next-stage D / ja#513) are subsumed by 0.1.28.
 # Keep in sync with pyproject.toml.
-claude-org-runtime>=0.1.34,<0.2
+claude-org-runtime>=0.1.36,<0.2
 
 # tools/gen_worker_brief.py reads TOML config. tomllib is stdlib in 3.11+,
 # but ja still supports 3.10 (CLAUDE.local.md template recommends 3.10).
