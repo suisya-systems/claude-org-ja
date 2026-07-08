@@ -343,25 +343,61 @@ class JournalEmitTests(unittest.TestCase):
             rec = _read_ci_event(journal)
             self.assertEqual(rec["status"], "passed")
 
-    def test_pending_check_after_retry_exhaustion_is_incomplete(self) -> None:
-        """Issue #413: a still-running check now drives the retry
-        loop; only after the retry budget is exhausted do we record
-        a final ``incomplete`` event.
-
-        Pre-#413, this test asserted ``status=incomplete`` on the
-        first ``pending`` observation. That path is exactly the
-        race the fix addresses — a pending bucket must be retried,
-        not journaled immediately. We keep the bucket→status
-        coverage by exercising the exhaustion path here (the
-        per-bucket mapping itself is unit-tested in
-        :class:`ClassifyFromChecksTests`).
+    def test_pass_plus_skipping_mix_emits_ci_completed(self) -> None:
+        """Issue #695 end-to-end repro: kura PR #38 had 4 passed + 2
+        skipping + 0 pending checks. `gh pr checks --watch` never
+        treats `skipping` as terminal, so it never returned and
+        `ci_completed` was never journaled -- the secretary's
+        auto-merge gate never fired and a human had to merge manually.
+        `main()` must record a `passed` `ci_completed` event for this
+        shape without hanging.
         """
-        # Always-pending stub: every fetch returns the same payload.
-        fake_run = _make_fake_run(
-            watch_exit=8,  # gh exits 8 ("Checks pending") with this payload
-            checks_json=[
-                {"name": "lint", "state": "COMPLETED", "bucket": "pass"},
-                {"name": "deploy", "state": "IN_PROGRESS", "bucket": "pending"},
+        with TempDir() as tmp:
+            journal = tmp / ".state" / "state.db"
+            self._run(
+                journal,
+                gh_exit=0,
+                checks_json=(
+                    [{"name": f"pass-{i}", "state": "COMPLETED", "bucket": "pass"}
+                     for i in range(4)]
+                    + [{"name": f"skip-{i}", "state": "COMPLETED", "bucket": "skipping"}
+                       for i in range(2)]
+                ),
+            )
+            rec = _read_ci_event(journal)
+            self.assertEqual(rec["status"], "passed")
+            self.assertEqual(rec["fail_count"], 0)
+            self.assertEqual(rec["pending_count"], 0)
+            self.assertEqual(rec["total_checks"], 6)
+
+    def test_pending_then_passes_via_self_poll(self) -> None:
+        """Issue #695: a still-running (``pending`` bucket) check must
+        keep the self-poll loop going, unbounded, at ``--interval``
+        cadence -- mirroring the indefinite block ``gh pr checks
+        --watch`` used to perform while CI was genuinely still running.
+        Once the check transitions to a decided bucket, the self-poll
+        loop returns that verdict directly (no bounded-retry timeout
+        applies to a genuinely-running check).
+
+        Pre-#695, `gh pr checks --watch` handled this blocking itself,
+        and a stray ``pending`` observation reaching the JSON-probe
+        resolver after `--watch` returned was retried only within a
+        60s budget before giving up as ``incomplete`` (see
+        ``test_retry_budget_exhausted_records_incomplete_once`` for
+        that still-valid empty-list race). With `--watch` removed, a
+        genuinely pending check must never be prematurely declared
+        ``incomplete`` -- self-poll keeps polling until it is actually
+        decided, however long that takes.
+        """
+        fake_run = _make_stateful_fake_run(
+            watch_exit=8,
+            checks_sequence=[
+                [{"name": "lint", "state": "COMPLETED", "bucket": "pass"},
+                 {"name": "deploy", "state": "IN_PROGRESS", "bucket": "pending"}],
+                [{"name": "lint", "state": "COMPLETED", "bucket": "pass"},
+                 {"name": "deploy", "state": "IN_PROGRESS", "bucket": "pending"}],
+                [{"name": "lint", "state": "COMPLETED", "bucket": "pass"},
+                 {"name": "deploy", "state": "COMPLETED", "bucket": "pass"}],
             ],
         )
         with TempDir() as tmp:
@@ -372,12 +408,14 @@ class JournalEmitTests(unittest.TestCase):
                  mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run), \
                  mock.patch.object(pr_watch.time, "sleep", return_value=None), \
                  mock.patch.object(pr_watch.time, "monotonic",
-                                   side_effect=[100.0, 100.5, 9999.0, 9999.5]):
-                pr_watch.main([
+                                   side_effect=[100.0, 142.0]):
+                rc = pr_watch.main([
                     "--pr", "205", "--repo", "octo/repo", "--interval", "5",
                 ])
+            self.assertEqual(rc, 0)
             rec = _read_ci_event(journal)
-            self.assertEqual(rec["status"], "incomplete")
+            self.assertEqual(rec["status"], "passed")
+            self.assertEqual(_count_ci_events(journal), 1)
 
     def test_transient_empty_then_passes_emits_one_final_event(self) -> None:
         """Issue #413 regression-prevention fixture.
@@ -395,10 +433,16 @@ class JournalEmitTests(unittest.TestCase):
         fake_run = _make_stateful_fake_run(
             watch_exit=0,
             checks_sequence=[
-                [],  # transient empty (first fetch after watch returns)
+                [],  # transient empty (self-poll hands off on this one)
                 [{"name": "ci", "state": "COMPLETED", "bucket": "pass"}],
             ],
         )
+        # Issue #695: self-poll's own first fetch consumes the `[]` entry
+        # and hands off immediately (no monotonic call); the resolver's
+        # first fetch then sees the `pass` entry and returns immediately
+        # too (also no monotonic call) — so only `started` / `duration`
+        # are consumed here, unlike the pre-#695 4-value sequence that
+        # accounted for the resolver's own retry-budget bookkeeping.
         with TempDir() as tmp:
             journal = tmp / ".state" / "state.db"
             with mock.patch.object(pr_watch, "JOURNAL_PATH", journal), \
@@ -407,7 +451,7 @@ class JournalEmitTests(unittest.TestCase):
                  mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run), \
                  mock.patch.object(pr_watch.time, "sleep", return_value=None), \
                  mock.patch.object(pr_watch.time, "monotonic",
-                                   side_effect=[100.0, 100.5, 101.0, 142.0]):
+                                   side_effect=[100.0, 142.0]):
                 rc = pr_watch.main([
                     "--pr", "413", "--repo", "octo/repo", "--interval", "5",
                 ])
@@ -535,26 +579,40 @@ class JournalEmitTests(unittest.TestCase):
             rec = _read_ci_event(journal)
             self.assertEqual(rec["status"], "failed")
 
-    def test_gh_exit_2_is_canceled(self) -> None:
-        """gh exit 2 = cancellation. Must NOT be overwritten by JSON probe.
+    def test_keyboard_interrupt_during_self_poll_is_canceled(self) -> None:
+        """SIGINT (Python ``KeyboardInterrupt``) during the self-poll loop
+        must be recorded as ``canceled``, not re-classified by whatever
+        the JSON probe would otherwise say.
 
-        Regression: an earlier draft only honored Python-side
-        KeyboardInterrupt, so a Ctrl-C delivered to gh itself (exit 2)
-        would have been re-classified as passed/failed/incomplete by
-        the JSON probe. The journal must reflect cancellation so the
-        secretary can distinguish "user aborted" from "CI verdict".
+        Issue #695: since the self-poll loop replaced the blocking
+        ``gh pr checks --watch`` subprocess, there is no longer a gh
+        process exit code that can itself signal cancellation (the old
+        "gh exit 2" regression fixture no longer applies) -- the only
+        cancellation source is a KeyboardInterrupt raised inside Python
+        (e.g. from ``time.sleep`` on Ctrl-C), which
+        :func:`_run_ci_watch_phase` must still convert to a ``canceled``
+        verdict without ever consulting ``_fetch_checks`` again after
+        the interrupt.
         """
         with TempDir() as tmp:
             journal = tmp / ".state" / "state.db"
-            self._run(
-                journal,
-                gh_exit=2,
-                checks_json=[{"name": "ci", "state": "COMPLETED", "bucket": "pass"}],
-            )
+            with mock.patch.object(pr_watch, "JOURNAL_PATH", journal), \
+                 mock.patch.object(pr_watch, "_notify_peer", return_value=False), \
+                 mock.patch.object(pr_watch.shutil, "which", return_value="/usr/bin/gh"), \
+                 mock.patch.object(pr_watch, "_pr_exists", return_value=True), \
+                 mock.patch.object(pr_watch, "_fetch_head_oid", return_value=None), \
+                 mock.patch.object(pr_watch, "_self_poll_watch",
+                                   side_effect=KeyboardInterrupt), \
+                 mock.patch.object(pr_watch.time, "monotonic",
+                                   side_effect=[100.0, 101.0]):
+                rc = pr_watch.main([
+                    "--pr", "42", "--repo", "octo/repo", "--interval", "5",
+                ])
+            self.assertEqual(rc, 2)
             rec = _read_ci_event(journal)
             self.assertEqual(rec["status"], "canceled")
 
-    def test_json_probe_failure_falls_back_to_exit_code(self) -> None:
+    def test_json_probe_failure_falls_back_to_indeterminate(self) -> None:
         """If every `gh pr checks --json` probe fails (binary missing /
         malformed stdout), the resolver retries within its budget and
         only after exhaustion does it fall back to the exit-code
@@ -564,6 +622,13 @@ class JournalEmitTests(unittest.TestCase):
         short-circuit the retry budget and bypass the resolver
         entirely; the fix unifies the retry path so probe failures
         and ``incomplete`` observations are both retryable.
+
+        Issue #695: pre-fix, this fixture's ``watch_exit=0`` fed a real
+        `gh pr checks --watch` exit code into the fallback classifier,
+        so total probe failure degraded to an (arguably too-optimistic)
+        ``passed``. With `--watch` removed there is no gh exit code to
+        consult at all -- the fallback is always ``indeterminate``
+        (verdict undetermined), never a guessed ``passed``.
         """
         # Always-FileNotFoundError stub: `_fetch_checks` returns None
         # for every call.
@@ -589,8 +654,7 @@ class JournalEmitTests(unittest.TestCase):
                     "--pr", "205", "--repo", "octo/repo", "--interval", "5",
                 ])
             rec = _read_ci_event(journal)
-            # exit 0 → passed via _classify fallback (post-exhaustion).
-            self.assertEqual(rec["status"], "passed")
+            self.assertEqual(rec["status"], "indeterminate")
 
     def test_transient_probe_failure_then_passes(self) -> None:
         """Codex round-2 Major regression test: a single transient
@@ -908,25 +972,32 @@ class Issue685Tests(unittest.TestCase):
         self.assertNotIn("retry_recommended", rec)
 
     def test_incomplete_is_distinct_from_indeterminate(self) -> None:
-        """A parseable-but-pending verdict stays `incomplete` (with
+        """A parseable-but-empty verdict stays `incomplete` (with
         counts, no retry schedule) — the fetch-failure `indeterminate`
-        is a different word. This is the core 3-value split."""
+        is a different word. This is the core 3-value split.
+
+        Issue #695: a *non-empty* persistently-pending checks list is
+        no longer reachable as a final `incomplete` verdict — the
+        self-poll loop now polls it unbounded until it decides (see
+        ``test_pending_then_passes_via_self_poll``), matching
+        `gh --watch`'s own indefinite block while CI is genuinely
+        running. The empty-list race (no check rows visible at all)
+        is the remaining path that legitimately exhausts the retry
+        budget into `incomplete`.
+        """
         fake_run = _make_fake_run(
             watch_exit=8,
-            checks_json=[
-                {"name": "lint", "bucket": "pass"},
-                {"name": "deploy", "bucket": "pending"},
-            ],
+            checks_json=[],
         )
-        # Always-pending: retry budget exhausts, then record incomplete.
+        # Always-empty: retry budget exhausts, then record incomplete.
         rc, rec = self._run(
             ["--pr", "685", "--repo", "octo/repo", "--interval", "5"],
             fake_run,
             monotonic=[0.0, 0.5, 9999.0, 9999.5],
         )
         self.assertEqual(rec["status"], "incomplete")
-        self.assertEqual(rec["pending_count"], 1)
-        self.assertEqual(rec["total_checks"], 2)
+        self.assertEqual(rec["pending_count"], 0)
+        self.assertEqual(rec["total_checks"], 0)
         # `incomplete` (checks read, still pending) is NOT the
         # fetch-failure path, so it carries no retry schedule.
         self.assertNotIn("retry_recommended", rec)
@@ -943,6 +1014,90 @@ class Issue685Tests(unittest.TestCase):
             verdict = pr_watch._resolve_final_status(1, "octo/repo", 8)
         self.assertEqual(verdict["status"], "incomplete")
         self.assertEqual(sleeps, [5, 10, 20, 30])
+
+
+class SelfPollWatchTests(unittest.TestCase):
+    """Issue #695: unit coverage for `_self_poll_watch`, the self-poll
+    loop that replaced the blocking `gh pr checks --watch` subprocess.
+
+    Root-cause repro (kura PR #38): a PR with 4 passed + 2 skipping + 0
+    pending checks never made `gh pr checks --watch` return, because gh
+    does not treat `skipping` as terminal even though our own
+    classifier does -- so `CI_COMPLETED` was never recorded and the
+    secretary's auto-merge gate never fired.
+    """
+
+    def test_all_pass_resolves_immediately(self) -> None:
+        checks = [{"bucket": "pass"}, {"bucket": "pass"}]
+        with mock.patch.object(pr_watch, "_fetch_checks", return_value=checks), \
+             mock.patch.object(pr_watch.time, "sleep") as sleep_mock:
+            verdict = pr_watch._self_poll_watch(1, "octo/repo", 30)
+        self.assertEqual(verdict["status"], "passed")
+        self.assertEqual(verdict["total_checks"], 2)
+        self.assertEqual(verdict["probe_attempts"], 1)
+        sleep_mock.assert_not_called()
+
+    def test_fail_resolves_immediately(self) -> None:
+        checks = [{"bucket": "pass"}, {"bucket": "fail"}]
+        with mock.patch.object(pr_watch, "_fetch_checks", return_value=checks), \
+             mock.patch.object(pr_watch.time, "sleep") as sleep_mock:
+            verdict = pr_watch._self_poll_watch(1, "octo/repo", 30)
+        self.assertEqual(verdict["status"], "failed")
+        self.assertEqual(verdict["fail_count"], 1)
+        sleep_mock.assert_not_called()
+
+    def test_pass_plus_skipping_mix_resolves_immediately(self) -> None:
+        """The literal Issue #695 repro fixture: 4 pass + 2 skipping, 0
+        pending. `gh --watch` never returned for this shape; the
+        self-poll loop must resolve on the very first observation
+        (no sleep / extra poll needed) since every bucket is already
+        decided."""
+        checks = (
+            [{"bucket": "pass"}] * 4 + [{"bucket": "skipping"}] * 2
+        )
+        with mock.patch.object(pr_watch, "_fetch_checks", return_value=checks), \
+             mock.patch.object(pr_watch.time, "sleep") as sleep_mock:
+            verdict = pr_watch._self_poll_watch(1, "octo/repo", 30)
+        self.assertEqual(verdict["status"], "passed")
+        self.assertEqual(verdict["fail_count"], 0)
+        self.assertEqual(verdict["pending_count"], 0)
+        self.assertEqual(verdict["total_checks"], 6)
+        self.assertEqual(verdict["probe_attempts"], 1)
+        sleep_mock.assert_not_called()
+
+    def test_pending_then_passed_polls_at_interval(self) -> None:
+        """A genuinely pending check keeps the loop going, sleeping
+        `interval` seconds between polls, until it decides."""
+        sequence = [
+            [{"bucket": "pending"}],
+            [{"bucket": "pending"}],
+            [{"bucket": "pass"}],
+        ]
+        with mock.patch.object(pr_watch, "_fetch_checks",
+                               side_effect=sequence), \
+             mock.patch.object(pr_watch.time, "sleep") as sleep_mock:
+            verdict = pr_watch._self_poll_watch(1, "octo/repo", 15)
+        self.assertEqual(verdict["status"], "passed")
+        self.assertEqual(verdict["probe_attempts"], 3)
+        self.assertEqual(sleep_mock.call_args_list, [mock.call(15), mock.call(15)])
+
+    def test_empty_list_hands_off_without_sleeping_in_loop(self) -> None:
+        """An empty check list (no rows visible yet) is inconclusive,
+        not "still running" -- returns None immediately so the caller's
+        bounded `_resolve_final_status` retry/backoff handles it,
+        rather than polling unbounded here."""
+        with mock.patch.object(pr_watch, "_fetch_checks", return_value=[]), \
+             mock.patch.object(pr_watch.time, "sleep") as sleep_mock:
+            verdict = pr_watch._self_poll_watch(1, "octo/repo", 30)
+        self.assertIsNone(verdict)
+        sleep_mock.assert_not_called()
+
+    def test_unparseable_probe_hands_off_without_sleeping_in_loop(self) -> None:
+        with mock.patch.object(pr_watch, "_fetch_checks", return_value=None), \
+             mock.patch.object(pr_watch.time, "sleep") as sleep_mock:
+            verdict = pr_watch._self_poll_watch(1, "octo/repo", 30)
+        self.assertIsNone(verdict)
+        sleep_mock.assert_not_called()
 
 
 class PowerShellInterpreterProbeTests(unittest.TestCase):
