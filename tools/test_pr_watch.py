@@ -1103,6 +1103,44 @@ class Issue685Tests(unittest.TestCase):
         self.assertEqual(verdict["status"], "incomplete")
         self.assertEqual(sleeps, [5, 10, 20, 30])
 
+    def test_ci_watch_phase_widens_budget_for_empty_race_handoff(self) -> None:
+        """Codex review (Issue #695 round 3, P2): the self-poll handoff
+        into `_resolve_final_status` (on an empty/unparseable first
+        observation) must use the wider
+        `CI_WATCH_EMPTY_RACE_BUDGET_SEC`, not the narrow
+        `RETRY_BUDGET_SEC` the post-`--watch` race was originally
+        built for -- otherwise a CI system that takes longer than
+        `RETRY_BUDGET_SEC` (but well under
+        `CI_WATCH_EMPTY_RACE_BUDGET_SEC`) to publish its first check
+        row would be wrongly finalized as `incomplete` before it ever
+        got a chance to run."""
+        captured_kwargs: list = []
+        real_resolve = pr_watch._resolve_final_status
+
+        def spy(*args, **kwargs):
+            captured_kwargs.append(kwargs)
+            return real_resolve(*args, **kwargs)
+
+        with mock.patch.object(pr_watch, "_fetch_head_oid", return_value=None), \
+             mock.patch.object(pr_watch, "_self_poll_watch", return_value=None), \
+             mock.patch.object(pr_watch, "_resolve_final_status", side_effect=spy), \
+             mock.patch.object(pr_watch, "_fetch_checks", return_value=[]), \
+             mock.patch.object(pr_watch, "_record_ci_completed"), \
+             mock.patch.object(pr_watch, "_notify_peer", return_value=False), \
+             mock.patch.object(pr_watch.time, "sleep", return_value=None), \
+             mock.patch.object(pr_watch.time, "monotonic",
+                               side_effect=[0.0, 0.5, 999999.0, 999999.5]):
+            pr_watch._run_ci_watch_phase(
+                pr=1, repo="octo/repo", interval=5, db_path=Path("/dev/null"),
+            )
+        self.assertEqual(len(captured_kwargs), 1)
+        self.assertEqual(
+            captured_kwargs[0].get("budget_sec"),
+            pr_watch.CI_WATCH_EMPTY_RACE_BUDGET_SEC,
+        )
+        self.assertGreater(pr_watch.CI_WATCH_EMPTY_RACE_BUDGET_SEC,
+                           pr_watch.RETRY_BUDGET_SEC)
+
 
 class SelfPollWatchTests(unittest.TestCase):
     """Issue #695: unit coverage for `_self_poll_watch`, the self-poll

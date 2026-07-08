@@ -130,6 +130,21 @@ MERGE_RESULT_HEAD_UNCONFIRMED = "merged_head_unconfirmed"
 RETRY_BUDGET_SEC = 60
 RETRY_INTERVAL_SEC = 5
 
+# Issue #695 (Codex review round 3, P2): the self-poll loop's own
+# handoff to `_resolve_final_status` (`_run_ci_watch_phase`, on an empty
+# / unparseable first observation) uses a WIDER budget than
+# `RETRY_BUDGET_SEC`. Pre-#695, `gh pr checks --watch` itself blocked
+# until check rows were visible before the JSON-probe race ever mattered
+# — that race was a narrow post-watch API-propagation lag, genuinely
+# bounded to a few seconds. With `--watch` removed, the very FIRST
+# observation for every freshly opened PR can be empty simply because no
+# CI system has registered a check yet (not a lag, an honest "hasn't
+# started"), and some external CI integrations can take longer than
+# `RETRY_BUDGET_SEC` to publish their first check row. Widening this
+# specific handoff's budget gives such integrations room without
+# resorting to unbounded polling on data that has never once appeared.
+CI_WATCH_EMPTY_RACE_BUDGET_SEC = 300
+
 # Issue #685: back off between JSON-probe retries so a persistently
 # flaky `gh pr checks --json` doesn't hammer the API. The sleep starts
 # at RETRY_INTERVAL_SEC and multiplies by RETRY_BACKOFF_FACTOR after
@@ -960,7 +975,16 @@ def _run_ci_watch_phase(
             verdict = _self_poll_watch(pr, repo, interval)
             if verdict is not None:
                 break
-            verdict = _resolve_final_status(pr, repo, exit_code=8)
+            # Issue #695 round 3 (Codex review, P2): use the wider
+            # CI_WATCH_EMPTY_RACE_BUDGET_SEC here rather than the
+            # RETRY_BUDGET_SEC default -- see that constant's docstring
+            # for why the self-poll handoff needs more room than the
+            # narrow post-watch race `_resolve_final_status` was
+            # originally built for.
+            verdict = _resolve_final_status(
+                pr, repo, exit_code=8,
+                budget_sec=CI_WATCH_EMPTY_RACE_BUDGET_SEC,
+            )
             if verdict["pending_count"]:
                 # Real, still-pending checks exist -- not an empty-race
                 # artifact, and not fully decided even if a sibling
