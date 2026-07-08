@@ -96,12 +96,14 @@ probe / 検証 / fuzzing 系タスク（sandbox 探索・hook 動作確認・フ
 
 ## 完了報告前の rebase（必須・`full` 限定、`minimal` では不要）
 
+**適用範囲**: この節は「既存リポジトリで `origin/main`（= このブランチの PR ベース）を親に PR を出す `full` タスク」に適用する。上記「正しい作業手順」の `git init` 新規プロジェクトや、`origin` remote が無い / PR のベースが `origin/main` 以外（`origin/develop` 等）のリポジトリでは、`origin/main` を**そのブランチの実際のベース upstream** に読み替える。upstream remote 自体が存在しない（`git remote` が空）場合はこの rebase ゲート自体が適用外（skip して次の Codex セルフレビューに進む）。以下は既定ケース（ベース = `origin/main`）の手順:
+
 完了報告（および下記 Codex セルフレビュー）の前に、以下を必ず実行する（検証深度 `minimal` の trivial fix には過剰なので適用外）:
 
-1. `git fetch origin main`
-2. `git rebase origin/main`（branch policy が merge 運用なら `git merge origin/main`。既定は rebase）
+1. `git fetch origin`（`git fetch origin main` は `FETCH_HEAD` に取るだけで `origin/main` 追跡 ref を確実には更新せず、stale な `origin/main` に対して behind=0 と誤判定しうる。remote 名 / ベースが異なる場合は該当 upstream を fetch する）
+2. `git rebase origin/main`（branch policy が merge 運用なら `git merge origin/main`。既定は rebase。ベースが異なる場合は該当 upstream に読み替える）
 3. Conflict があれば worker が解決する（他の並列 PR が同じ integration point = registry / CLI --source routing / `pyproject.toml` extras・markers / README / docs を触った結果）。conflict resolution 中もローカルテスト（`pytest` / `make demo` / `make test-local` 等リポジトリで定義された検証）が引き続き green を維持することを確認する
-4. Rebase 後、branch が `origin/main` の descendant で clean（behind=0）であることを確認する: `git rev-list --count HEAD..origin/main` が `0`
+4. Rebase 後、branch が `origin/main`（= ベース upstream）の descendant で clean（behind=0）であることを確認する: `git rev-list --count HEAD..origin/main` が `0`
 5. 完了報告に「rebase clean: HEAD=`<sha>` on top of origin/main `<sha>`」の 1 行を含める
 
 背景（Refs: 2026-07-08 kura conveyor PR #46/#47 conflict fest）: 並列 dispatch で複数 worker が dispatch 時点の main から同じ integration point（`source/__init__.py` registry / CLI `--source` routing / `pyproject.toml` extras・markers / README / docs）を編集すると、先に merge した方が勝ち残りは GitHub 上で CONFLICTING になり CI すら起動しない。worker 段階で rebase → conflict 解決 → clean push まで済ませることで、窓口側の rebase コスト（意味的マージが worker context 無しに解けず二度手間になる）と、CI 未起動による遅延を防ぐ。
