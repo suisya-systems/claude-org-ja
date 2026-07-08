@@ -94,6 +94,18 @@ probe / 検証 / fuzzing 系タスク（sandbox 探索・hook 動作確認・フ
 
 背景: 過去に生成物 prose を直接編集して生成元との drift を生む事故を複数回踏んでいる。生成元から render し直して `--check` で照合することで再発を防ぐ。
 
+## 完了報告前の rebase（必須・`full` 限定、`minimal` では不要）
+
+完了報告（および下記 Codex セルフレビュー）の前に、以下を必ず実行する（検証深度 `minimal` の trivial fix には過剰なので適用外）:
+
+1. `git fetch origin main`
+2. `git rebase origin/main`（branch policy が merge 運用なら `git merge origin/main`。既定は rebase）
+3. Conflict があれば worker が解決する（他の並列 PR が同じ integration point = registry / CLI --source routing / `pyproject.toml` extras・markers / README / docs を触った結果）。conflict resolution 中もローカルテスト（`pytest` / `make demo` / `make test-local` 等リポジトリで定義された検証）が引き続き green を維持することを確認する
+4. Rebase 後、branch が `origin/main` の descendant で clean（behind=0）であることを確認する: `git rev-list --count HEAD..origin/main` が `0`
+5. 完了報告に「rebase clean: HEAD=`<sha>` on top of origin/main `<sha>`」の 1 行を含める
+
+背景（Refs: 2026-07-08 kura conveyor PR #46/#47 conflict fest）: 並列 dispatch で複数 worker が dispatch 時点の main から同じ integration point（`source/__init__.py` registry / CLI `--source` routing / `pyproject.toml` extras・markers / README / docs）を編集すると、先に merge した方が勝ち残りは GitHub 上で CONFLICTING になり CI すら起動しない。worker 段階で rebase → conflict 解決 → clean push まで済ませることで、窓口側の rebase コスト（意味的マージが worker context 無しに解けず二度手間になる）と、CI 未起動による遅延を防ぐ。
+
 ## Codex セルフレビュー手順
 
 派遣指示に**必ず含まれる「検証深度」行**（`full` または `minimal`）に従うこと。指示に値が無い・不明瞭な場合は勝手に決めず窓口（`secretary`）に確認すること。
@@ -163,6 +175,7 @@ done: {commit SHA 短縮形} {変更ファイル名}
    - **フォールバック**: `to_id="secretary"` が `[pane_not_found]` で返る場合は、`renga --layout ops` 以外の経路で窓口ペインが起動された可能性がある。その場合は DELEGATE メッセージ本文で指定された numeric pane id（例: `to_id="1"`）を使って送信する。窓口側で `/org-start` Step 0 の `set_pane_identity` 自動修復が走れば、以降は `to_id="secretary"` が使える
    - 何を完了したか
    - 作成したファイル、コミット、PR等の成果物
+   - **rebase clean 確認（必須）**: 上記「完了報告前の rebase」で確認した「rebase clean: HEAD=`<sha>` on top of origin/main `<sha>`」の 1 行（`behind=0` である旨）
    - 残作業や注意点があれば
    - **人間向け理解サマリ（必須）**: 窓口がコードを精読せずに「何を承認しようとしているか」を把握し、そのままユーザーへの承認提示に使えるよう、完了報告に以下 3 点を必ず含める。これは完了報告が起こす `awaiting_review` (REVIEW) 遷移・`worker_completed` の入力であり、報告フォーマットを拡張するもの（lifecycle の不変条件は変えない）:
      1. **最重要の変更点（N 個）**: このタスクで実際に変えたことを効果の大きい順に N 個（目安 3〜5 個）。1 項目 1〜2 行で、diff を開かなくても要旨が掴めるように書く
