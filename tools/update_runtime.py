@@ -20,8 +20,10 @@ idempotent: when the installed version already equals the in-window
 latest, it is a no-op and never shells out to pip, even under
 ``--apply``.
 
-Exit-code convention (consistent with check_runtime_version.py, which
-returns 0 in every informational/skip/no-op/drift case):
+Exit-code convention (update_runtime's own two-value scheme -- it does
+NOT mirror check_runtime_version.py's 0/1/2/3 reporting contract, since
+for an *actor* a non-zero code is reserved for a real ``--apply``
+failure, not for merely reporting drift/offline):
 
     * 0  -- dry-run report, no-op (already up to date), and every
             non-fatal skip (offline / PyPI unreachable / package not
