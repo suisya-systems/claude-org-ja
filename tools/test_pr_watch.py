@@ -464,6 +464,47 @@ class JournalEmitTests(unittest.TestCase):
             self.assertEqual(rec["status"], "passed")
             self.assertEqual(_count_ci_events(journal), 1)
 
+    def test_empty_then_failed_with_pending_sibling_waits_for_sibling(self) -> None:
+        """Codex review (Issue #695 round 2, P2), exercised through the
+        `_resolve_final_status` handoff composition: the resolver's own
+        probe can observe a check that already failed while a sibling
+        is still pending. `_summarize_checks` reports `status="failed"`
+        immediately in that shape, but CI is not actually done -- the
+        composition loop in `_run_ci_watch_phase` must key off
+        `pending_count` (not `status`) to decide whether to resume
+        self-poll, so the pending sibling is watched to completion
+        rather than an early `failed` verdict being recorded while it
+        is still running.
+        """
+        fake_run = _make_stateful_fake_run(
+            watch_exit=8,
+            checks_sequence=[
+                [],  # self-poll's first fetch: empty-race -> hand off
+                [{"name": "unit", "state": "COMPLETED", "bucket": "fail"},
+                 {"name": "deploy", "state": "IN_PROGRESS", "bucket": "pending"}],
+                [{"name": "unit", "state": "COMPLETED", "bucket": "fail"},
+                 {"name": "deploy", "state": "COMPLETED", "bucket": "pass"}],
+            ],
+        )
+        with TempDir() as tmp:
+            journal = tmp / ".state" / "state.db"
+            with mock.patch.object(pr_watch, "JOURNAL_PATH", journal), \
+                 mock.patch.object(pr_watch, "_notify_peer", return_value=False), \
+                 mock.patch.object(pr_watch.shutil, "which", return_value="/usr/bin/gh"), \
+                 mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run), \
+                 mock.patch.object(pr_watch.time, "sleep", return_value=None), \
+                 mock.patch.object(pr_watch.time, "monotonic",
+                                   side_effect=[0.0, 0.5, 9999.0, 9999.5]):
+                rc = pr_watch.main([
+                    "--pr", "205", "--repo", "octo/repo", "--interval", "5",
+                ])
+            self.assertEqual(rc, 1)
+            rec = _read_ci_event(journal)
+            self.assertEqual(rec["status"], "failed")
+            self.assertEqual(rec["fail_count"], 1)
+            self.assertEqual(rec["pending_count"], 0)
+            self.assertEqual(_count_ci_events(journal), 1)
+
     def test_transient_empty_then_passes_emits_one_final_event(self) -> None:
         """Issue #413 regression-prevention fixture.
 
@@ -1125,6 +1166,31 @@ class SelfPollWatchTests(unittest.TestCase):
              mock.patch.object(pr_watch.time, "sleep") as sleep_mock:
             verdict = pr_watch._self_poll_watch(1, "octo/repo", 15)
         self.assertEqual(verdict["status"], "passed")
+        self.assertEqual(verdict["probe_attempts"], 3)
+        self.assertEqual(sleep_mock.call_args_list, [mock.call(15), mock.call(15)])
+
+    def test_failed_check_with_sibling_still_pending_keeps_polling(self) -> None:
+        """Codex review (Issue #695 round 2, P2): a check that has
+        already failed must NOT short-circuit the loop while a sibling
+        check is still pending -- `_summarize_checks` reports
+        `status="failed"` the moment any bucket is a failure, regardless
+        of `pending_count`, so the termination gate must key off
+        `pending_count == 0` rather than `status != "incomplete"`.
+        `gh pr checks --watch` itself waits for every check to leave
+        pending before returning, even after one has already gone red.
+        """
+        sequence = [
+            [{"bucket": "fail"}, {"bucket": "pending"}],
+            [{"bucket": "fail"}, {"bucket": "pending"}],
+            [{"bucket": "fail"}, {"bucket": "pass"}],
+        ]
+        with mock.patch.object(pr_watch, "_fetch_checks",
+                               side_effect=sequence), \
+             mock.patch.object(pr_watch.time, "sleep") as sleep_mock:
+            verdict = pr_watch._self_poll_watch(1, "octo/repo", 15)
+        self.assertEqual(verdict["status"], "failed")
+        self.assertEqual(verdict["fail_count"], 1)
+        self.assertEqual(verdict["pending_count"], 0)
         self.assertEqual(verdict["probe_attempts"], 3)
         self.assertEqual(sleep_mock.call_args_list, [mock.call(15), mock.call(15)])
 

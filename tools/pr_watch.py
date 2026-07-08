@@ -635,7 +635,17 @@ def _self_poll_watch(pr: int, repo: str, interval: int) -> "dict | None":
       here, unbounded, at ``interval`` cadence — mirroring the
       indefinite block ``gh --watch`` performed while checks were
       pending, so a CI run that legitimately takes many minutes is
-      never prematurely declared ``incomplete``.
+      never prematurely declared ``incomplete``. Codex review (Issue
+      #695 round 2, P2): this holds even when a check has ALREADY
+      failed while a sibling check is still pending —
+      :func:`_summarize_checks` reports ``status="failed"`` the moment
+      any bucket is in :data:`_FAILED_BUCKETS`, regardless of
+      ``pending_count``, so the termination gate below checks
+      ``pending_count == 0`` directly rather than ``status !=
+      "incomplete"``. Otherwise a fast-failing check would make this
+      function return before ``gh pr checks --watch``'s own
+      wait-for-everything contract would have, missing whatever the
+      still-running sibling check goes on to report.
     * An empty list (no check rows visible yet) or an unparseable probe
       (:func:`_fetch_checks` returns ``None`` — a gh/network hiccup) is
       inconclusive rather than "still running": this function returns
@@ -647,10 +657,12 @@ def _self_poll_watch(pr: int, repo: str, interval: int) -> "dict | None":
     Returns a verdict dict shaped like :func:`_resolve_final_status`'s
     return value (``status`` / ``fail_count`` / ``pending_count`` /
     ``total_checks`` / ``probe_attempts``) once a decided verdict is
-    observed, or ``None`` to signal "inconclusive, hand off". May raise
-    ``KeyboardInterrupt`` (propagated from ``time.sleep`` or the
-    ``gh`` subprocess on SIGINT) — the caller treats that as
-    cancellation, matching the previous ``gh --watch`` Ctrl-C behavior.
+    observed (every check's bucket is outside
+    :data:`_PENDING_BUCKETS`), or ``None`` to signal "inconclusive,
+    hand off". May raise ``KeyboardInterrupt`` (propagated from
+    ``time.sleep`` or the ``gh`` subprocess on SIGINT) — the caller
+    treats that as cancellation, matching the previous ``gh --watch``
+    Ctrl-C behavior.
     """
     probe_attempts = 0
     while True:
@@ -658,7 +670,11 @@ def _self_poll_watch(pr: int, repo: str, interval: int) -> "dict | None":
         probe_attempts += 1
         if checks:
             status, fail_count, pending_count, total = _summarize_checks(checks)
-            if status != "incomplete":
+            if pending_count == 0:
+                # Every check has left the "not yet decided" bucket set
+                # (pass / skipping / fail / cancel only) -- fully
+                # decided, whether that nets out to `passed` or
+                # `failed`.
                 return {
                     "status": status,
                     "fail_count": fail_count,
@@ -666,8 +682,9 @@ def _self_poll_watch(pr: int, repo: str, interval: int) -> "dict | None":
                     "total_checks": total,
                     "probe_attempts": probe_attempts,
                 }
-            # Non-empty but still pending (or an unrecognized bucket):
-            # genuinely still running. Fall through to the unbounded
+            # At least one check is still pending (or an unrecognized
+            # bucket) -- genuinely still running, even if another check
+            # already failed. Fall through to the unbounded
             # interval-cadence poll below.
         else:
             # checks is None (unparseable probe) or [] (no check rows
@@ -924,25 +941,30 @@ def _run_ci_watch_phase(
         # empty check list / an unparseable probe — the Issue #413
         # freshly-created-PR race), handing off to
         # `_resolve_final_status`'s bounded retry/backoff. That resolver
-        # applies the SAME bounded budget to any `incomplete` verdict it
-        # sees, including a REAL pending check that appears mid-budget
-        # (Codex review, Issue #695 round 1 P1): without the loop below,
-        # a PR whose checks start out invisible and then take longer
-        # than the budget to finish would be wrongly declared
-        # `incomplete` instead of watched to completion. So: only accept
-        # the resolver's `incomplete` verdict as final when it reflects
-        # the empty-race itself (`total_checks` is 0 / unknown); once
-        # real, still-pending check rows are observed
-        # (`total_checks > 0`), hand control back to the unbounded
-        # self-poll loop instead of giving up.
+        # applies the SAME bounded budget to any non-empty verdict it
+        # sees while a check is still pending -- including one where
+        # another check has already failed, since `_summarize_checks`
+        # reports `status="failed"` the moment any bucket is in
+        # `_FAILED_BUCKETS`, regardless of `pending_count` (Codex
+        # review, Issue #695 round 1 P1 / round 2 P2): without the loop
+        # below, a PR whose checks start out invisible and then take
+        # longer than the budget to finish -- or where one check fails
+        # fast while a sibling is still running -- would be wrongly
+        # finalized instead of watched to completion. So: only accept
+        # the resolver's verdict as final when `pending_count` is 0 (or
+        # unknown, i.e. the exit-code fallback with no parseable
+        # response at all); whenever real, still-pending check rows are
+        # observed, hand control back to the unbounded self-poll loop
+        # instead of giving up.
         while True:
             verdict = _self_poll_watch(pr, repo, interval)
             if verdict is not None:
                 break
             verdict = _resolve_final_status(pr, repo, exit_code=8)
-            if verdict["status"] == "incomplete" and verdict["total_checks"]:
+            if verdict["pending_count"]:
                 # Real, still-pending checks exist -- not an empty-race
-                # artifact. Resume unbounded polling for them.
+                # artifact, and not fully decided even if a sibling
+                # check already failed. Resume unbounded polling.
                 continue
             break
     except KeyboardInterrupt:
