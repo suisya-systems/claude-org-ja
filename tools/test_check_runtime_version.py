@@ -1,14 +1,17 @@
-"""Unit tests for tools/check_runtime_version.py (Issue #472).
+"""Unit tests for tools/check_runtime_version.py (Issue #472 + the
+#119 follow-up that surfaces the sandbox/offline silent skip).
 
-The script is invoked by /org-start Block C2. It must:
+The script is invoked by /org-start Block C2. Its outcome contract:
 
-* print one warning line when installed != latest-in-pin-window
-* print nothing (and exit 0) when installed == latest
-* print nothing on every "can't tell" branch — package missing,
-  PyPI unreachable, JSON parse failure, no pin-compatible release
-* respect ja's pin window declared in pyproject.toml so the warning
-  never steers users to an out-of-window upgrade (Codex review,
-  Issue #472)
+* stdout carries the single ``[runtime drift]`` line ONLY on drift
+  (exit 1); every other non-OK outcome puts its diagnostic on stderr,
+  keeping stdout empty and spliceable.
+* exit codes distinguish the outcomes so a sandboxed/offline run is no
+  longer read as "up to date": 0 up-to-date, 1 drift, 2 could-not-
+  verify (offline / PyPI error / JSON parse / no in-window release /
+  packaging missing / pin parse failure), 3 package not installed.
+* ja's pin window declared in pyproject.toml is respected so the
+  warning never steers users to an out-of-window upgrade.
 """
 
 from __future__ import annotations
@@ -68,57 +71,96 @@ def _payload(*versions: str, yanked: tuple[str, ...] = ()) -> dict:
 
 
 class MainCliTest(unittest.TestCase):
-    def _run_main(self) -> tuple[int, str]:
-        buf = io.StringIO()
-        with mock.patch.object(sys, "stdout", buf):
+    def _run_main(self) -> tuple[int, str, str]:
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(sys, "stdout", out), mock.patch.object(
+            sys, "stderr", err
+        ):
             code = check_runtime_version.main()
-        return code, buf.getvalue()
+        return code, out.getvalue(), err.getvalue()
 
-    def test_drift_prints_one_warning_line(self):
+    def test_drift_prints_one_warning_line_to_stdout(self):
         with mock.patch.object(
             check_runtime_version, "_installed_version", return_value="0.1.2"
         ), mock.patch.object(
-            check_runtime_version, "_latest_version", return_value="0.1.11"
+            check_runtime_version,
+            "_latest_version_with_reason",
+            return_value=("0.1.11", None),
         ):
-            code, out = self._run_main()
-        self.assertEqual(code, 0)
+            code, out, err = self._run_main()
+        self.assertEqual(code, check_runtime_version.EXIT_DRIFT)
         lines = [ln for ln in out.splitlines() if ln.strip()]
         self.assertEqual(len(lines), 1)
         self.assertIn("[runtime drift]", lines[0])
         self.assertIn("installed=0.1.2", lines[0])
         self.assertIn("latest=0.1.11", lines[0])
+        # drift is a clean result: nothing on stderr.
+        self.assertEqual(err, "")
 
-    def test_match_is_silent(self):
+    def test_match_is_ok_and_silent(self):
         with mock.patch.object(
             check_runtime_version, "_installed_version", return_value="0.1.11"
         ), mock.patch.object(
-            check_runtime_version, "_latest_version", return_value="0.1.11"
+            check_runtime_version,
+            "_latest_version_with_reason",
+            return_value=("0.1.11", None),
         ):
-            code, out = self._run_main()
-        self.assertEqual(code, 0)
+            code, out, err = self._run_main()
+        self.assertEqual(code, check_runtime_version.EXIT_OK)
         self.assertEqual(out, "")
+        self.assertEqual(err, "")
 
-    def test_package_not_installed_is_silent(self):
+    def test_package_not_installed_reports_on_stderr(self):
         with mock.patch.object(
             check_runtime_version, "_installed_version", return_value=None
         ), mock.patch.object(
-            check_runtime_version, "_latest_version"
+            check_runtime_version, "_latest_version_with_reason"
         ) as latest_mock:
-            code, out = self._run_main()
-        self.assertEqual(code, 0)
+            code, out, err = self._run_main()
+        self.assertEqual(code, check_runtime_version.EXIT_NOT_INSTALLED)
+        # stdout stays clean; the reason is surfaced on stderr, not swallowed.
         self.assertEqual(out, "")
+        self.assertNotEqual(err.strip(), "")
         latest_mock.assert_not_called()
 
-    def test_offline_is_silent(self):
+    def test_offline_is_reported_not_silent(self):
+        """#119 regression guard: an unreachable PyPI must NOT be a
+        silent exit 0. It surfaces as EXIT_UNVERIFIED with a stderr
+        diagnostic, while stdout stays empty (no drift line)."""
         with mock.patch.object(
             check_runtime_version, "_installed_version", return_value="0.1.2"
         ), mock.patch(
             "urllib.request.urlopen",
             side_effect=urllib.error.URLError("offline"),
         ):
-            code, out = self._run_main()
-        self.assertEqual(code, 0)
+            code, out, err = self._run_main()
+        self.assertEqual(code, check_runtime_version.EXIT_UNVERIFIED)
         self.assertEqual(out, "")
+        self.assertIn("PyPI", err)
+
+    def test_unverified_reason_goes_to_stderr(self):
+        """Every non-offline "could not determine latest" reason also
+        yields EXIT_UNVERIFIED + a stderr diagnostic, stdout empty."""
+        for reason in (
+            check_runtime_version.REASON_PYPI_ERROR,
+            check_runtime_version.REASON_NO_IN_WINDOW_RELEASE,
+            check_runtime_version.REASON_PACKAGING_MISSING,
+            check_runtime_version.REASON_PIN_PARSE_FAILED,
+        ):
+            with self.subTest(reason=reason):
+                with mock.patch.object(
+                    check_runtime_version,
+                    "_installed_version",
+                    return_value="0.1.2",
+                ), mock.patch.object(
+                    check_runtime_version,
+                    "_latest_version_with_reason",
+                    return_value=(None, reason),
+                ):
+                    code, out, err = self._run_main()
+                self.assertEqual(code, check_runtime_version.EXIT_UNVERIFIED)
+                self.assertEqual(out, "")
+                self.assertNotEqual(err.strip(), "")
 
 
 class LatestVersionTest(unittest.TestCase):
@@ -221,6 +263,35 @@ class LatestVersionTest(unittest.TestCase):
                 check_runtime_version._latest_version(pin=">=0.1.9,<0.2")
             )
 
+    def test_with_reason_reports_offline(self):
+        """_latest_version_with_reason surfaces REASON_OFFLINE when the
+        host can't reach PyPI -- the channel that drives main()'s
+        EXIT_UNVERIFIED + stderr diagnostic instead of a silent skip."""
+        with mock.patch(
+            "urllib.request.urlopen",
+            side_effect=urllib.error.URLError("offline"),
+        ):
+            version, reason = (
+                check_runtime_version._latest_version_with_reason(pin=None)
+            )
+        self.assertIsNone(version)
+        self.assertEqual(reason, check_runtime_version.REASON_OFFLINE)
+
+    @requires_packaging
+    def test_with_reason_success_has_no_reason(self):
+        """On success the reason channel is None and the version is the
+        pin-window latest (keeps the wrapper and the reason function in
+        agreement)."""
+        payload = _payload("0.1.9", "0.1.11", "0.2.0")
+        with mock.patch("urllib.request.urlopen", _fake_urlopen(payload)):
+            version, reason = (
+                check_runtime_version._latest_version_with_reason(
+                    pin=">=0.1.9,<0.2"
+                )
+            )
+        self.assertEqual(version, "0.1.11")
+        self.assertIsNone(reason)
+
 
 class ReadPinSpecTest(unittest.TestCase):
     def test_reads_pin_from_real_pyproject(self):
@@ -246,7 +317,9 @@ class UpgradeCommandShapeTest(unittest.TestCase):
         ), mock.patch.object(
             check_runtime_version, "_read_pin_spec", return_value=pin
         ), mock.patch.object(
-            check_runtime_version, "_latest_version", return_value="0.1.11"
+            check_runtime_version,
+            "_latest_version_with_reason",
+            return_value=("0.1.11", None),
         ), mock.patch.object(sys, "stdout", buf):
             check_runtime_version.main()
         return buf.getvalue()
