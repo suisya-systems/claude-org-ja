@@ -417,6 +417,53 @@ class JournalEmitTests(unittest.TestCase):
             self.assertEqual(rec["status"], "passed")
             self.assertEqual(_count_ci_events(journal), 1)
 
+    def test_empty_then_real_pending_outlasting_budget_still_resolves(self) -> None:
+        """Codex review (Issue #695 round 1, P1): the empty-list handoff
+        from `_self_poll_watch` to `_resolve_final_status` must NOT
+        inherit the resolver's 60s budget for a REAL pending check that
+        shows up afterward.
+
+        Repro: the first probe is `[]` (no check rows yet -- the
+        Issue #413 race), so self-poll hands off to the bounded
+        resolver. The resolver's own probe then sees a genuine
+        `pending` check, but the retry budget is exhausted before it
+        decides (simulated here by jumping `time.monotonic()` straight
+        past the deadline). Without the fix, this would be recorded as
+        a final `incomplete` even though CI was still legitimately
+        running. With the fix, `_run_ci_watch_phase` recognizes the
+        resolver's `incomplete` verdict carries a non-zero
+        `total_checks` (a real check row, not an empty-race artifact)
+        and hands control back to the unbounded self-poll loop, which
+        keeps polling until the check actually decides.
+        """
+        fake_run = _make_stateful_fake_run(
+            watch_exit=8,
+            checks_sequence=[
+                [],  # self-poll's first fetch: empty-race -> hand off
+                [{"name": "deploy", "state": "IN_PROGRESS", "bucket": "pending"}],
+                [{"name": "deploy", "state": "COMPLETED", "bucket": "pass"}],
+            ],
+        )
+        with TempDir() as tmp:
+            journal = tmp / ".state" / "state.db"
+            with mock.patch.object(pr_watch, "JOURNAL_PATH", journal), \
+                 mock.patch.object(pr_watch, "_notify_peer", return_value=False), \
+                 mock.patch.object(pr_watch.shutil, "which", return_value="/usr/bin/gh"), \
+                 mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run), \
+                 mock.patch.object(pr_watch.time, "sleep", return_value=None), \
+                 mock.patch.object(pr_watch.time, "monotonic",
+                                   # started, resolver set_deadline,
+                                   # resolver deadline-check (jumps past
+                                   # budget -> exhausted), duration.
+                                   side_effect=[0.0, 0.5, 9999.0, 9999.5]):
+                rc = pr_watch.main([
+                    "--pr", "205", "--repo", "octo/repo", "--interval", "5",
+                ])
+            self.assertEqual(rc, 0)
+            rec = _read_ci_event(journal)
+            self.assertEqual(rec["status"], "passed")
+            self.assertEqual(_count_ci_events(journal), 1)
+
     def test_transient_empty_then_passes_emits_one_final_event(self) -> None:
         """Issue #413 regression-prevention fixture.
 

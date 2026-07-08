@@ -918,7 +918,33 @@ def _run_ci_watch_phase(
         # Issue #695: self-poll replaces the blocking `gh pr checks
         # --watch` subprocess. Raises KeyboardInterrupt on SIGINT, same
         # as the previous blocking subprocess.run(cmd) did.
-        verdict = _self_poll_watch(pr, repo, interval)
+        #
+        # `_self_poll_watch` polls unbounded while genuinely pending, but
+        # bails out (returns None) on an *inconclusive* observation (an
+        # empty check list / an unparseable probe — the Issue #413
+        # freshly-created-PR race), handing off to
+        # `_resolve_final_status`'s bounded retry/backoff. That resolver
+        # applies the SAME bounded budget to any `incomplete` verdict it
+        # sees, including a REAL pending check that appears mid-budget
+        # (Codex review, Issue #695 round 1 P1): without the loop below,
+        # a PR whose checks start out invisible and then take longer
+        # than the budget to finish would be wrongly declared
+        # `incomplete` instead of watched to completion. So: only accept
+        # the resolver's `incomplete` verdict as final when it reflects
+        # the empty-race itself (`total_checks` is 0 / unknown); once
+        # real, still-pending check rows are observed
+        # (`total_checks > 0`), hand control back to the unbounded
+        # self-poll loop instead of giving up.
+        while True:
+            verdict = _self_poll_watch(pr, repo, interval)
+            if verdict is not None:
+                break
+            verdict = _resolve_final_status(pr, repo, exit_code=8)
+            if verdict["status"] == "incomplete" and verdict["total_checks"]:
+                # Real, still-pending checks exist -- not an empty-race
+                # artifact. Resume unbounded polling for them.
+                continue
+            break
     except KeyboardInterrupt:
         canceled = True
 
@@ -941,18 +967,13 @@ def _run_ci_watch_phase(
         # pairing note above). Issue #413: a freshly created PR may have
         # no check rows yet, so an empty / unparseable JSON response is
         # "still observing" rather than the final verdict.
-        # Issue #695: `_self_poll_watch` already returns a decided verdict
-        # directly when it observed one (no gh exit code involved
-        # anymore); it only returns `None` on an inconclusive
-        # observation (empty list / unparseable probe), in which case
-        # `_resolve_final_status` drives its bounded retry/backoff.
-        # `exit_code=8` is a neutral "Checks pending" placeholder: there
-        # is no longer a real `gh --watch` exit code to consult, so on
-        # total probe exhaustion this degrades to `indeterminate`
-        # (Issue #685 intent) rather than fabricating a passed/failed
-        # guess.
-        if verdict is None:
-            verdict = _resolve_final_status(pr, repo, exit_code=8)
+        # Issue #695: the loop above already drove `verdict` to a
+        # decided, non-None result — either directly from
+        # `_self_poll_watch`, or from `_resolve_final_status` (whose
+        # `exit_code=8` neutral "Checks pending" placeholder degrades a
+        # totally-unparseable probe to `indeterminate` rather than
+        # fabricating a passed/failed guess, per Issue #685 intent).
+        assert verdict is not None
         status = verdict["status"]
         fail_count = verdict["fail_count"]
         pending_count = verdict["pending_count"]
