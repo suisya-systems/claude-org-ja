@@ -115,15 +115,6 @@ allowed-tools:
 
 背景: cp で destination の修正を機械的に巻き戻す事故が過去に発生（destination 側の credential 露出対策 Blocker fix を revert 寸前まで進んだ）。ワーカーへの brief で「初手 cp 禁止 / 取り込み戦略を明示」を要求する。
 
-### pin 管理された内部パッケージのバグらしき挙動時の事前確認
-
-pin 管理された内部パッケージ（`claude-org-runtime` 等、`pyproject.toml` に version 窓で pin される内部依存）の「バグらしき挙動」を worker への委譲・Issue 化で潰そうとする場合、**タスク分解の前に、窓口が自分で installed pin と upstream の最新版・CHANGELOG を突き合わせ、既に upstream で修正済みでないかを確認する**（この節冒頭の「ユーザーに聞き返す」チェック表と違い、窓口が自分で検証して分岐する verify-and-branch）。ja の venv が古い pin のまま upstream 既修正のバグを踏むと、実在しないバグの調査に 1 ワーカー分を溶かす（phantom dispatch。根拠: 2026-07-08 #119）。
-
-- **既修正**（installed < latest かつ CHANGELOG / closed issue に該当バグ修正がある）→ 委譲を止め、バグ Issue も立てず、「venv upgrade + pin 窓 bump」の in-place 修正（軽量レーン相当）に倒す。
-- **未修正**（installed == latest、または latest でも該当挙動が CHANGELOG に無い）→ 委譲に進む。ただし「既修正でない」エビデンス（確認した installed / latest・CHANGELOG）を worker brief に明記する。
-
-確認手順 (a)-(e)・**判定表（決定則の SoT）**・drift 検出雛形（`tools/check_runtime_version.py`）・sandbox 内 PyPI 不達の落とし穴・episode 背景は [`.claude/skills/org-delegate/references/pin-managed-package-precheck.md`](references/pin-managed-package-precheck.md) を一次参照（本体の 2 行判定はその判定表の要約であり、決定則の正本は reference doc 側）。
-
 ## Step 0: プロジェクト名前解決（窓口が実行）
 
 ユーザーの依頼からプロジェクトを特定する:
