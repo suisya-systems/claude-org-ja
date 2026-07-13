@@ -67,8 +67,22 @@ class StateWriter:
         # if this writer attaches to an M0 / M1 DB that was created before
         # the schema bump. ensure_m2_schema is idempotent and seeds the
         # singleton row when it's absent.
-        from tools.state_db import ensure_m2_schema
+        from tools.state_db import ensure_event_deliveries_schema, ensure_m2_schema
         ensure_m2_schema(conn)
+        # ensure_m2_schema's trailing INSERT OR IGNOREs leave sqlite in an
+        # open implicit transaction (Python sqlite3 auto-begins on DML).
+        # Commit it so the next ensure_*'s "outside a transaction" guard
+        # sees a clean connection. Safe here: __init__ is never entered
+        # with caller writes pending (ensure_m2_schema's own guard already
+        # rejects that on entry), so this only persists the migration's
+        # own seeding — exactly what it intends.
+        conn.commit()
+        # Forward-migrate pre-event_deliveries DBs in place too (Refs
+        # #653 #658): the outbox delivery ledger may be absent if this
+        # writer attaches to a DB created before the ledger was added.
+        # Idempotent; must run outside a transaction (guaranteed by the
+        # commit above).
+        ensure_event_deliveries_schema(conn)
         # claude_org_root is the repo root that contains `.state/`. When
         # set, ``transaction()`` regenerates `.state/org-state.md` and
         # `.state/journal.jsonl` from the DB after each successful commit
@@ -663,6 +677,161 @@ class StateWriter:
                 (actor, kind, run_id, workstream_id, project_id, payload_json),
             )
         return cur.lastrowid
+
+    # ------------------------------------------------------------------
+    # event_deliveries outbox ledger (CI-watch zero-miss, Refs #653 #658)
+    # ------------------------------------------------------------------
+    #
+    # The ledger backs the dispatcher's outbox relay: ``events`` is the
+    # source of truth, this ledger records whether each terminal event
+    # has been relayed to a recipient. De-dup / exactly-once-relay is the
+    # ``UNIQUE (source_event_id, recipient)`` idempotency key — NOT a
+    # send-side marker — so a lost peer push can never leave a terminal
+    # event silently undelivered.
+
+    def pending_deliveries(
+        self,
+        *,
+        recipient: str,
+        kinds: Iterable[str],
+        since: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> list[sqlite3.Row]:
+        """Return terminal events not yet ``delivered`` to ``recipient``.
+
+        Scans ``events`` for rows whose ``kind`` is in ``kinds`` that
+        lack a ``delivered`` ledger row for ``recipient``. ``since`` (an
+        ISO-8601 string, compared against ``occurred_at``) bounds the
+        scan so ancient history is not re-examined every cycle; omit for
+        an unbounded scan. Rows are returned oldest-first (ascending
+        ``events.id``) so relays preserve emission order. A ``failed`` or
+        ``pending`` ledger row does NOT exclude an event — only a
+        ``delivered`` row does — so a stuck delivery keeps being retried.
+
+        The returned rows expose ``id`` (= events.id / source_event_id),
+        ``kind``, ``occurred_at``, ``payload_json`` and ``attempt`` (the
+        current ledger attempt count, 0 when never surfaced).
+        """
+        kinds = list(kinds)
+        if not kinds:
+            return []
+        placeholders = ",".join("?" for _ in kinds)
+        params: list[Any] = [recipient, *kinds]
+        sql = (
+            "SELECT e.id AS id, e.kind AS kind, e.occurred_at AS occurred_at, "
+            "e.payload_json AS payload_json, "
+            "COALESCE(d.attempt, 0) AS attempt "
+            "FROM events e "
+            "LEFT JOIN event_deliveries d "
+            "  ON d.source_event_id = e.id AND d.recipient = ? "
+            f"WHERE e.kind IN ({placeholders}) "
+            "  AND NOT EXISTS ("
+            "    SELECT 1 FROM event_deliveries dd "
+            "    WHERE dd.source_event_id = e.id AND dd.recipient = ? "
+            "      AND dd.status = 'delivered') "
+        )
+        params.append(recipient)
+        if since is not None:
+            sql += "  AND e.occurred_at >= ? "
+            params.append(since)
+        sql += "ORDER BY e.id ASC"
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(int(limit))
+        return list(self.conn.execute(sql, params).fetchall())
+
+    def begin_delivery_attempt(
+        self, *, source_event_id: int, recipient: str
+    ) -> int:
+        """Record that a relay of ``source_event_id`` is being attempted.
+
+        Idempotently upserts the ledger row keyed by
+        ``(source_event_id, recipient)``: creates it as ``pending`` with
+        ``attempt = 1`` on first sight, or increments ``attempt`` and
+        refreshes ``last_attempt_at`` on subsequent cycles. A row already
+        ``delivered`` is left untouched (its status stays ``delivered``
+        but ``attempt`` still increments for observability). Returns the
+        new ``attempt`` count.
+
+        Call this BEFORE the send so an attempt is durably recorded even
+        if the process dies mid-send; the matching :meth:`mark_delivered`
+        (called only AFTER a confirmed send) is what makes delivery
+        terminal. This ordering yields at-least-once relay: a crash
+        between attempt and mark simply re-surfaces the event next cycle.
+        """
+        self.conn.execute(
+            "INSERT INTO event_deliveries "
+            "(source_event_id, recipient, status, attempt, "
+            " first_attempt_at, last_attempt_at) "
+            "VALUES (?, ?, 'pending', 1, "
+            " strftime('%Y-%m-%dT%H:%M:%fZ','now'), "
+            " strftime('%Y-%m-%dT%H:%M:%fZ','now')) "
+            "ON CONFLICT(source_event_id, recipient) DO UPDATE SET "
+            "  attempt = attempt + 1, "
+            "  last_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')",
+            (source_event_id, recipient),
+        )
+        row = self.conn.execute(
+            "SELECT attempt FROM event_deliveries "
+            "WHERE source_event_id = ? AND recipient = ?",
+            (source_event_id, recipient),
+        ).fetchone()
+        return int(row["attempt"]) if row is not None else 0
+
+    def mark_delivered(
+        self, *, source_event_id: int, recipient: str
+    ) -> None:
+        """Mark a relay of ``source_event_id`` to ``recipient`` delivered.
+
+        Terminal transition: sets ``status = 'delivered'`` and stamps
+        ``delivered_at``. Idempotent — creates the ledger row if a caller
+        skipped :meth:`begin_delivery_attempt` (e.g. a fast confirmed
+        send), and re-marking an already-delivered row is a no-op refresh.
+        Once delivered, :meth:`pending_deliveries` will never surface the
+        event again for this recipient (the idempotency key at work).
+        """
+        self.conn.execute(
+            "INSERT INTO event_deliveries "
+            "(source_event_id, recipient, status, attempt, "
+            " first_attempt_at, last_attempt_at, delivered_at) "
+            "VALUES (?, ?, 'delivered', 1, "
+            " strftime('%Y-%m-%dT%H:%M:%fZ','now'), "
+            " strftime('%Y-%m-%dT%H:%M:%fZ','now'), "
+            " strftime('%Y-%m-%dT%H:%M:%fZ','now')) "
+            "ON CONFLICT(source_event_id, recipient) DO UPDATE SET "
+            "  status = 'delivered', "
+            "  delivered_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'), "
+            "  last_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')",
+            (source_event_id, recipient),
+        )
+
+    def mark_delivery_failed(
+        self, *, source_event_id: int, recipient: str, error: str
+    ) -> None:
+        """Record a non-fatal delivery failure for retry next cycle.
+
+        Sets ``status = 'failed'`` and stores ``error`` in ``last_error``
+        WITHOUT excluding the event from future :meth:`pending_deliveries`
+        scans — ``failed`` is a retryable state, only ``delivered`` is
+        terminal. Idempotently upserts so it is safe to call whether or
+        not :meth:`begin_delivery_attempt` ran first. Never overwrites a
+        row already ``delivered`` (a late failure report must not undo a
+        confirmed delivery).
+        """
+        self.conn.execute(
+            "INSERT INTO event_deliveries "
+            "(source_event_id, recipient, status, attempt, "
+            " first_attempt_at, last_attempt_at, last_error) "
+            "VALUES (?, ?, 'failed', 1, "
+            " strftime('%Y-%m-%dT%H:%M:%fZ','now'), "
+            " strftime('%Y-%m-%dT%H:%M:%fZ','now'), ?) "
+            "ON CONFLICT(source_event_id, recipient) DO UPDATE SET "
+            "  status = CASE WHEN status = 'delivered' "
+            "                THEN 'delivered' ELSE 'failed' END, "
+            "  last_error = excluded.last_error, "
+            "  last_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')",
+            (source_event_id, recipient, error),
+        )
 
 
 def _detect_claude_org_root(conn: sqlite3.Connection) -> Optional[Path]:

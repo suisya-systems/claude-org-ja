@@ -112,6 +112,37 @@ CREATE INDEX idx_events_occurred ON events(occurred_at);
 CREATE INDEX idx_events_kind ON events(kind);
 CREATE INDEX idx_events_run ON events(run_id);
 
+-- event_deliveries (outbox delivery ledger) ───────────────
+-- CI-watch zero-miss (Refs #653 #658). ``events`` is the source of
+-- truth for terminal signals (ci_completed / pr_merged / …); this
+-- ledger is the outbox that records whether each terminal event has
+-- been relayed to a given recipient (secretary). The dispatcher's
+-- /loop 3m cycle scans for events lacking a ``delivered`` row here and
+-- relays them via send_message, then records the outcome. De-dup /
+-- exactly-once-relay is enforced by the ``UNIQUE (source_event_id,
+-- recipient)`` idempotency key, NOT by a send-side marker — so a lost
+-- peer push can never leave a terminal event silently undelivered
+-- (the observed failure mode on PR #73). ``attempt`` counts relay
+-- cycles the event was surfaced for; ``status`` transitions
+-- pending → delivered (terminal) with ``failed`` retained for the last
+-- non-fatal error so a stuck delivery is visible rather than silent.
+CREATE TABLE event_deliveries (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_event_id   INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+  recipient         TEXT NOT NULL,
+  status            TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending','delivered','failed')),
+  attempt           INTEGER NOT NULL DEFAULT 0,
+  first_attempt_at  TEXT,
+  last_attempt_at   TEXT,
+  delivered_at      TEXT,
+  last_error        TEXT,
+  created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  UNIQUE (source_event_id, recipient)
+);
+CREATE INDEX idx_event_deliveries_status ON event_deliveries(status);
+CREATE INDEX idx_event_deliveries_recipient ON event_deliveries(recipient);
+
 -- tags ─────────────────────────────────────────────────────
 CREATE TABLE tags (
   id              INTEGER PRIMARY KEY,
@@ -171,3 +202,5 @@ INSERT INTO schema_migrations (version, description)
 VALUES (1, 'M0: initial schema (Issue #267)');
 INSERT INTO schema_migrations (version, description)
 VALUES (2, 'M2: org_sessions singleton (Issue #267)');
+INSERT INTO schema_migrations (version, description)
+VALUES (3, 'event_deliveries outbox delivery ledger (Refs #653 #658)');

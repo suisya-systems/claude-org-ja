@@ -99,6 +99,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -190,6 +191,81 @@ def _notify_peer(message: str, to_id: str = _PEER_NOTIFY_TARGET) -> bool:
         return notify_peer(to_id, message)
     except Exception:  # noqa: BLE001
         return False
+
+
+def _configured_transport() -> "str | None":
+    """Return the configured transport name, or None if none is set.
+
+    ``broker`` when ``ORG_TRANSPORT=broker`` (raw env, matching
+    ``tools/peer_notify.notify_peer``'s dispatch), ``renga`` when
+    ``RENGA_SOCKET`` is set, else None. Used to decide whether a failed
+    peer push is a genuine delivery failure worth recording (fail-loud)
+    versus an expected no-op in a plain shell / CI where no transport is
+    configured by design.
+    """
+    if os.environ.get("ORG_TRANSPORT") == "broker":
+        return "broker"
+    if os.environ.get("RENGA_SOCKET"):
+        return "renga"
+    return None
+
+
+def _notify_or_record(
+    message: str,
+    *,
+    db_path: Path,
+    failed_kind: str,
+    pr: int,
+    to_id: str = _PEER_NOTIFY_TARGET,
+) -> bool:
+    """Push a terminal peer message, recording a ``notify_failed`` event
+    on failure (Refs #653 #658 — silent no-op elimination).
+
+    The historical bug (PR #73): a terminal peer push silently no-op'd in
+    a pane with no transport env, the ``bool`` return was discarded, and
+    nothing recorded the miss — so the secretary sat idle. This wrapper
+    keeps the low-latency push (path A) but makes a *configured*-transport
+    failure fail-loud: it writes a ``notify_failed`` event that the
+    dispatcher's outbox relay (path B) and the attention watcher (path C)
+    both surface. When NO transport is configured (plain shell / CI, the
+    documented best-effort no-op), it records nothing — that is expected
+    behavior, not a delivery gap. Either way the canonical terminal event
+    was already written before this call, so the dispatcher relay
+    guarantees delivery regardless of this push.
+
+    Never raises: a fail-loud recording error must not abort the watch.
+    """
+    ok = _notify_peer(message, to_id)
+    if ok:
+        return True
+    transport = _configured_transport()
+    if transport is None:
+        return False
+    try:
+        _record_event(
+            db_path=db_path,
+            kind="notify_failed",
+            payload={
+                "pr": pr,
+                "failed_kind": failed_kind,
+                "target": to_id,
+                "transport": transport,
+                "message": message,
+                # Diagnostic: which env the pane actually had, so a
+                # spawn-time injection regression is reverse-derivable
+                # from the recorded event (pairs with the pr-watch-pane
+                # env-prefix fix).
+                "env_present": {
+                    "ORG_TRANSPORT": bool(os.environ.get("ORG_TRANSPORT")),
+                    "ORG_BROKER_STATE_DIR": bool(
+                        os.environ.get("ORG_BROKER_STATE_DIR")),
+                    "RENGA_SOCKET": bool(os.environ.get("RENGA_SOCKET")),
+                },
+            },
+        )
+    except Exception:  # noqa: BLE001 — fail-loud must not itself abort the watch
+        pass
+    return False
 
 
 def _short_head(oid: "str | None") -> "str | None":
@@ -813,16 +889,43 @@ def _watch_for_merge(
                         f"{_short_head(baseline_head)}; the merged head's CI "
                         "was never separately confirmed by pr_watch.\n"
                     )
-                    _notify_peer(
+                    # Refs #653 #658: write a canonical DB event BEFORE the
+                    # peer push so this terminal signal is never peer-only
+                    # (the dispatcher outbox relay reads the event; a lost
+                    # push can't strand it).
+                    _record_event(
+                        db_path=db_path,
+                        kind="pr_merged_head_unconfirmed",
+                        payload={
+                            "pr": pr, "repo": repo, "head": head_tag,
+                            "baseline_head": _short_head(baseline_head),
+                        },
+                    )
+                    _notify_or_record(
                         f"PR_MERGED_HEAD_UNCONFIRMED: PR #{pr} "
                         f"(head={head_tag}, last CI-confirmed head="
-                        f"{_short_head(baseline_head)})"
+                        f"{_short_head(baseline_head)})",
+                        db_path=db_path,
+                        failed_kind="pr_merged_head_unconfirmed",
+                        pr=pr,
                     )
                     return MERGE_RESULT_HEAD_UNCONFIRMED
                 if result == RESULT_NO_RUN:
-                    _notify_peer(f"PR_MERGED_NO_RUN: PR #{pr} (head={head_tag})")
+                    # Refs #653 #658: canonical event first (was peer-only).
+                    _record_event(
+                        db_path=db_path,
+                        kind="pr_merged_no_run",
+                        payload={"pr": pr, "repo": repo, "head": head_tag},
+                    )
+                    _notify_or_record(
+                        f"PR_MERGED_NO_RUN: PR #{pr} (head={head_tag})",
+                        db_path=db_path, failed_kind="pr_merged_no_run", pr=pr)
                 else:
-                    _notify_peer(f"PR_MERGED: PR #{pr} (head={head_tag})")
+                    # pr_merged canonical event is written by
+                    # run_complete_on_merge.py; here we only push + fail-loud.
+                    _notify_or_record(
+                        f"PR_MERGED: PR #{pr} (head={head_tag})",
+                        db_path=db_path, failed_kind="pr_merged", pr=pr)
                 return result
             # RESULT_NOT_YET shouldn't occur once mergedAt is set; treat
             # defensively as "keep polling".
@@ -853,11 +956,13 @@ def _watch_for_merge(
                 },
             )
             # Issue #326: surface the 24h bound to secretary so a stuck
-            # PR doesn't sit silently after the loop releases.
-            _notify_peer(
+            # PR doesn't sit silently after the loop releases. The
+            # pr_merge_watch_timeout event was already recorded above, so
+            # the dispatcher relay backstops a lost push (Refs #653 #658).
+            _notify_or_record(
                 f"PR_MERGE_WATCH_TIMEOUT: PR #{pr} "
-                f"(head={timeout_head or 'unknown'})"
-            )
+                f"(head={timeout_head or 'unknown'})",
+                db_path=db_path, failed_kind="pr_merge_watch_timeout", pr=pr)
             sys.stdout.write(
                 f"pr_watch: PR #{pr} merge-watch timed out after "
                 f"{max_seconds}s\n"
@@ -1117,7 +1222,11 @@ def _run_ci_watch_phase(
         ci_msg += " [verdict undetermined; retry recommended]"
     elif status == "failed" and fail_count:
         ci_msg += f" [{fail_count} of {total_checks} checks failed]"
-    _notify_peer(ci_msg)
+    # Path A (low-latency push) with fail-loud recording; path B (the
+    # dispatcher outbox relay) guarantees delivery of the ci_completed
+    # event above regardless of whether this push lands.
+    _notify_or_record(ci_msg, db_path=db_path, failed_kind="ci_completed",
+                      pr=pr)
 
     sys.stdout.write(
         f"pr_watch: PR #{pr} {status} "
@@ -1213,9 +1322,44 @@ def main(argv: "list[str] | None" = None) -> int:
     # _watch_for_merge recomputes its own deadline on entry (a moving head
     # is a sign of active work, so resetting the human-intervention grace
     # is correct — Issue #636 design note 6).
+    merge_watch = bool(args.merge_watch and not args.no_merge_watch)
+    try:
+        return _watch_loop(pr=args.pr, repo=repo, interval=args.interval,
+                           merge_watch=merge_watch)
+    except Exception as exc:  # noqa: BLE001
+        # Refs #653 #658: a watcher that dies on an unexpected exception
+        # would otherwise leave no terminal record — the secretary never
+        # learns the watch stopped. Record a canonical pr_watch_aborted
+        # event (the dispatcher outbox relay surfaces it) and best-effort
+        # push, then re-raise so exit behavior is unchanged. KeyboardInterrupt
+        # (BaseException) is intentional cancel and propagates untouched —
+        # the canceled verdict is already recorded as ci_completed.
+        try:
+            _record_event(
+                db_path=JOURNAL_PATH,
+                kind="pr_watch_aborted",
+                payload={
+                    "pr": args.pr, "repo": repo,
+                    "error": f"{type(exc).__name__}: {exc}",
+                },
+            )
+            _notify_or_record(
+                f"PR_WATCH_ABORTED: PR #{args.pr} "
+                f"({type(exc).__name__}: {exc})",
+                db_path=JOURNAL_PATH, failed_kind="pr_watch_aborted",
+                pr=args.pr)
+        except Exception:  # noqa: BLE001 — never mask the original failure
+            pass
+        raise
+
+
+def _watch_loop(*, pr: int, repo: str, interval: int,
+                merge_watch: bool) -> int:
+    """The ci-watch → merge-watch loop, extracted so :func:`main` can wrap
+    it with pr_watch_aborted recording (Refs #653 #658)."""
     while True:
         status, exit_code, head_oid = _run_ci_watch_phase(
-            pr=args.pr, repo=repo, interval=args.interval,
+            pr=pr, repo=repo, interval=interval,
             db_path=JOURNAL_PATH,
         )
 
@@ -1233,14 +1377,13 @@ def main(argv: "list[str] | None" = None) -> int:
         # the downstream actor for the green-PR path and is invoked only
         # when `status == "passed"`. `incomplete` / `failed` /
         # `canceled` results never trigger merge-watch.
-        if not (status == "passed" and args.merge_watch
-                and not args.no_merge_watch):
+        if not (status == "passed" and merge_watch):
             return exit_code
 
         merge_result = _watch_for_merge(
-            pr=args.pr,
+            pr=pr,
             repo=repo,
-            interval=args.interval,
+            interval=interval,
             db_path=JOURNAL_PATH,
             baseline_head=head_oid,
         )
