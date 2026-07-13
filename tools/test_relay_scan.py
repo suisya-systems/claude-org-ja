@@ -151,6 +151,67 @@ class TestRelayScanCli(unittest.TestCase):
         finally:
             td.cleanup()
 
+    def test_ledger_epoch_default_survives_long_outage(self):
+        """Codex P2: the DEFAULT scan floor is the ledger epoch (a FIXED
+        instant), not a moving now-N h window. A terminal event emitted
+        after the ledger existed must stay relay-eligible no matter how
+        long the dispatcher was down — even years — while pre-ledger
+        history stays excluded (anti-flood)."""
+        td = tempfile.TemporaryDirectory()
+        db = Path(td.name) / "state.db"
+        conn = connect(db)
+        apply_schema(conn)
+        # Pin the ledger epoch to a fixed past instant so we can place
+        # events unambiguously before/after it AND far in the past
+        # relative to "now" (simulating a multi-year outage).
+        conn.execute(
+            "UPDATE schema_migrations SET applied_at = "
+            "'2010-01-01T00:00:00.000Z' WHERE version = 3")
+        # post-epoch but ancient relative to now (the outage case):
+        conn.execute(
+            "INSERT INTO events (kind, occurred_at, payload_json) "
+            "VALUES ('ci_completed','2015-06-01T00:00:00.000Z','{\"pr\":1}')")
+        # pre-epoch history: must never be relayed.
+        conn.execute(
+            "INSERT INTO events (kind, occurred_at, payload_json) "
+            "VALUES ('ci_completed','2005-01-01T00:00:00.000Z','{\"pr\":2}')")
+        conn.commit()
+        self.assertEqual(relay_scan._ledger_epoch(conn),
+                         "2010-01-01T00:00:00.000Z")
+        conn.close()
+        try:
+            # DEFAULT (no --since-hours): epoch floor. pr=1 (post-epoch,
+            # decade-old relative to "now") surfaces despite its age —
+            # this is the outage case; pr=2 (pre-epoch) stays excluded.
+            rc, out = self._run(db, "--list")
+            prs = {i["payload"]["pr"] for i in json.loads(out)}
+            self.assertEqual(prs, {1})
+            # Explicit unbounded backfill surfaces pre-epoch history too.
+            rc, out = self._run(db, "--list", "--since-hours", "0")
+            prs = {i["payload"]["pr"] for i in json.loads(out)}
+            self.assertEqual(prs, {1, 2})
+        finally:
+            td.cleanup()
+
+    def test_wall_clock_override_ages_out_unattempted(self):
+        """A wall-clock --since-hours N>0 (operator override) DOES age out
+        a never-attempted event older than the window — the behavior the
+        epoch default deliberately avoids. Contrast with the epoch default
+        test above."""
+        td = tempfile.TemporaryDirectory()
+        db = Path(td.name) / "state.db"
+        conn = connect(db)
+        apply_schema(conn)
+        conn.execute(
+            "INSERT INTO events (kind, occurred_at, payload_json) "
+            "VALUES ('ci_completed','2005-01-01T00:00:00.000Z','{\"pr\":9}')")
+        conn.commit(); conn.close()
+        try:
+            rc, out = self._run(db, "--list", "--since-hours", "72")
+            self.assertEqual(json.loads(out), [])
+        finally:
+            td.cleanup()
+
     def test_missing_db_is_empty_not_error(self):
         td = tempfile.TemporaryDirectory()
         db = Path(td.name) / "nope" / "state.db"

@@ -73,12 +73,35 @@ TERMINAL_KINDS = (
 # Default recipient for relays.
 DEFAULT_RECIPIENT = "secretary"
 
-# Default lookback window (hours). Bounds the scan cost and, critically,
-# stops the FIRST post-deploy cycle from relaying the entire historical
-# backlog of terminal events (all of which look "undelivered" before the
-# ledger existed). Terminal events are acted on well within this window;
-# a merge-watch itself is bounded at 24h.
-DEFAULT_SINCE_HOURS = 72
+# Schema version whose migration timestamp defines the "ledger epoch"
+# (when the outbox ledger first existed in this DB). See _ledger_epoch.
+_LEDGER_SCHEMA_VERSION = 3
+
+
+def _ledger_epoch(conn) -> Optional[str]:
+    """Return the ISO-8601 UTC instant the outbox ledger came into being.
+
+    The ``event_deliveries`` ledger landed as ``schema_migrations`` row
+    ``version = 3``; that row's ``applied_at`` is stamped when the table
+    was created in THIS DB (fresh ``apply_schema`` at DB birth, or the
+    in-place ``ensure_event_deliveries_schema`` migration). It cleanly
+    separates **pre-ledger history** (events emitted before the ledger,
+    ``occurred_at < epoch`` — never to be relayed, the anti-flood floor)
+    from **post-ledger events** (``occurred_at >= epoch`` — relay-eligible
+    until delivered, and crucially NEVER aged out by wall-clock: an event
+    emitted after the epoch stays eligible even if the dispatcher was down
+    for weeks, closing the outage gap a moving ``now - N h`` window would
+    open). Returns None if the migration row is absent (very old/corrupt
+    DB) — the caller then falls back to an unbounded scan.
+    """
+    try:
+        row = conn.execute(
+            "SELECT applied_at FROM schema_migrations WHERE version = ?",
+            (_LEDGER_SCHEMA_VERSION,),
+        ).fetchone()
+    except Exception:  # noqa: BLE001 — schema_migrations absent on a corrupt DB
+        return None
+    return row["applied_at"] if row and row["applied_at"] else None
 
 
 def _iso_since(hours: float) -> Optional[str]:
@@ -87,7 +110,9 @@ def _iso_since(hours: float) -> Optional[str]:
     ``hours <= 0`` disables the bound (unbounded scan). Computed in SQL
     (``strftime`` on ``now``) rather than Python so the cutoff matches
     the ``occurred_at`` format exactly and the tool stays free of the
-    project's ``Date.now()`` concerns.
+    project's ``Date.now()`` concerns. This is the operator's explicit
+    wall-clock override; the DEFAULT floor is the ledger epoch, not a
+    moving window (see :func:`_ledger_epoch`).
     """
     if hours <= 0:
         return None
@@ -200,9 +225,12 @@ def _main(argv: Optional[list[str]] = None) -> int:
     p.add_argument("--kinds", default=None,
                    help="comma-separated terminal kinds to scan "
                         "(default: the built-in terminal set)")
-    p.add_argument("--since-hours", type=float, default=DEFAULT_SINCE_HOURS,
-                   help="lookback window in hours; <=0 disables the bound "
-                        f"(default: {DEFAULT_SINCE_HOURS})")
+    p.add_argument("--since-hours", type=float, default=None,
+                   help="scan floor override. Omitted (default) uses the "
+                        "ledger epoch (relay every post-ledger event until "
+                        "delivered, never aged out by wall-clock). 0 = "
+                        "unbounded (also relays pre-ledger history; manual "
+                        "backfill). N>0 = wall-clock floor now-N hours.")
     p.add_argument("--limit", type=int, default=None,
                    help="cap the number of events returned by --list")
     action = p.add_mutually_exclusive_group(required=True)
@@ -234,11 +262,20 @@ def _main(argv: Optional[list[str]] = None) -> int:
 
     kinds = (tuple(k.strip() for k in args.kinds.split(",") if k.strip())
              if args.kinds else TERMINAL_KINDS)
-    since = _iso_since(args.since_hours)
 
     conn = connect(db_path)
     try:
         writer = StateWriter(conn)
+        # Resolve the scan floor (only meaningful for --list):
+        #   omitted        -> ledger epoch (safe default: post-ledger events
+        #                     stay eligible until delivered, immune to
+        #                     dispatcher outages of any length)
+        #   --since-hours 0 -> unbounded (relays pre-ledger history too)
+        #   --since-hours N -> wall-clock floor now-N h (operator override)
+        if args.since_hours is None:
+            since = _ledger_epoch(conn)
+        else:
+            since = _iso_since(args.since_hours)
         if args.list:
             items = cmd_list(writer, conn, recipient=args.recipient,
                              kinds=kinds, since=since, limit=args.limit)
