@@ -290,11 +290,17 @@ worker → Secretary peer message
 
 → [`.claude/skills/org-escalation/SKILL.md`](../org-escalation/SKILL.md) を発動する。Secretary は一次承認しない。
 
-#### 1. 進捗報告
+#### 1. 進捗報告（完了以外の中間ハンドオフ報告すべて — 進捗・rebase 報告・依頼 等）
+
+本サブセクションは「進捗」という語に限らず、**完了報告 (2a) / 判断仰ぎ・ブロッカー (0) / plan・prep 引き渡し以外の worker→secretary peer message 全種**（進捗共有・rebase 完了報告・確認依頼等の中間ハンドオフ報告）に適用する。plan / prep の引き渡しは専用 kind（`plan_delivered` / `prep_delivered`、[`docs/journal-events.md`](../../../docs/journal-events.md)）で記帳する既存フローのままとし、`worker_reported` に付け替えない（design-flow 消費側は専用 kind を参照している）。
 
 - worker へ ack を返す（[`.claude/skills/org-delegate/references/ack-template.md`](references/ack-template.md) の「進捗報告 ack」節。Progress Log 追記より前）。**進捗報告は user に上げない・承認待ちもしない**
 - `.state/workers/worker-{task_id}.md` の Progress Log に追記
-- DB の events テーブルにイベント追記 (`bash tools/journal_append.sh ...`)
+- **DB の events テーブルへ `worker_reported` を必ず追記する（省略不可、Issue #699）**:
+  ```bash
+  bash tools/journal_append.sh worker_reported worker=worker-{task_id} task={task_id} summary="<要約>"
+  ```
+  payload key は event catalog（[`docs/journal-events.md`](../../../docs/journal-events.md) の `worker_reported` 行: `worker`, `task`, `summary`）に合わせる。kind は `worker_reported` に統一（`worker_progress` 等の別名を使わない）。dispatcher の PANE_OUTPUT_WITHOUT_PEER_MSG 判定（[`.dispatcher/references/worker-monitoring.md`](../../../.dispatcher/references/worker-monitoring.md) Step 5.2）は events テーブルの `worker_reported` 痕跡を SQL で参照するため、中間ハンドオフ報告の記帳漏れは「peer message は届いているのに events に痕跡が無い」状態を作り、正常稼働中の worker を silent dead-lock と誤検知する false positive の直接原因になる（2026-07-08 kura conveyor で実例）
 
 #### 2a. 完了報告
 
