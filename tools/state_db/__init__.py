@@ -137,6 +137,88 @@ def ensure_m2_schema(conn: sqlite3.Connection) -> bool:
     return changed
 
 
+# ---------------------------------------------------------------------------
+# Forward migration for pre-event_deliveries DBs (Refs #653 #658)
+# ---------------------------------------------------------------------------
+
+# Standalone DDL for the event_deliveries outbox ledger.
+#
+# **Must stay in sync with the event_deliveries block in schema.sql.**
+# schema.sql is the SoT for fresh-DB construction; this constant is the
+# only path used to add the table to an *existing* DB without wiping its
+# contents. Column list, types, CHECKs and DEFAULT clauses must match
+# exactly. ``test_writer`` asserts the column shape stays in lockstep so
+# an accidental drift breaks tests instead of silently producing two
+# divergent schemas.
+_M3_EVENT_DELIVERIES_DDL = """
+CREATE TABLE IF NOT EXISTS event_deliveries (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_event_id   INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+  recipient         TEXT NOT NULL,
+  status            TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending','delivered','failed')),
+  attempt           INTEGER NOT NULL DEFAULT 0,
+  first_attempt_at  TEXT,
+  last_attempt_at   TEXT,
+  delivered_at      TEXT,
+  last_error        TEXT,
+  created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  UNIQUE (source_event_id, recipient)
+);
+CREATE INDEX IF NOT EXISTS idx_event_deliveries_status ON event_deliveries(status);
+CREATE INDEX IF NOT EXISTS idx_event_deliveries_recipient ON event_deliveries(recipient);
+"""
+
+
+def ensure_event_deliveries_schema(conn: sqlite3.Connection) -> bool:
+    """Idempotently add the ``event_deliveries`` outbox ledger.
+
+    Adds the table + indexes and a ``schema_migrations`` version-3 row
+    when missing. Safe to call repeatedly and on freshly-applied schema
+    (everything is ``CREATE TABLE / INDEX IF NOT EXISTS`` /
+    ``INSERT OR IGNORE``).
+
+    **Must be called outside an open transaction** (same constraint as
+    :func:`ensure_m2_schema`): ``Connection.executescript`` issues an
+    implicit ``COMMIT`` before running, which would silently commit any
+    pending writes from the caller. We fail fast with ``RuntimeError``.
+
+    Returns True if a migration step actually ran, False if the DB was
+    already at the event_deliveries shape.
+    """
+    if _conn_in_transaction(conn):
+        raise RuntimeError(
+            "ensure_event_deliveries_schema must be called outside an "
+            "active transaction; got conn.in_transaction=True. "
+            "sqlite3.Connection.executescript() issues an implicit "
+            "COMMIT before running, which would silently commit any "
+            "pending writes from the caller. COMMIT or ROLLBACK first, "
+            "or construct the StateWriter before opening the transaction."
+        )
+
+    changed = False
+    had_table = conn.execute(
+        "SELECT 1 FROM sqlite_master "
+        "WHERE type='table' AND name='event_deliveries'"
+    ).fetchone() is not None
+    if not had_table:
+        conn.executescript(_M3_EVENT_DELIVERIES_DDL)
+        changed = True
+    try:
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations "
+            "(version, description) "
+            "VALUES (3, 'event_deliveries outbox delivery ledger "
+            "(Refs #653 #658)')"
+        )
+        if cur.rowcount > 0:
+            changed = True
+    except sqlite3.OperationalError:
+        # schema_migrations table absent (very old / corrupt DB).
+        pass
+    return changed
+
+
 @contextmanager
 def with_db(db_path: PathLike) -> Iterator[sqlite3.Connection]:
     conn = connect(db_path)
@@ -154,6 +236,7 @@ __all__ = [
     "SCHEMA_PATH",
     "apply_schema",
     "connect",
+    "ensure_event_deliveries_schema",
     "ensure_m2_schema",
     "with_db",
 ]

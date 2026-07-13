@@ -2357,5 +2357,196 @@ class HeadPollLoopbackTests(unittest.TestCase):
             self.assertNotIn("aaaaaaa", captured[0])
 
 
+def _read_events_of_kind(db_path: Path, kind: str) -> "list[dict]":
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            "SELECT payload_json FROM events WHERE kind = ? ORDER BY id",
+            (kind,),
+        ).fetchall()
+    finally:
+        conn.close()
+    return [json.loads(r["payload_json"]) if r["payload_json"] else {}
+            for r in rows]
+
+
+class TransportDetectionTests(unittest.TestCase):
+    """_configured_transport: raw-env dispatch matching peer_notify."""
+
+    def test_broker_when_org_transport_broker(self) -> None:
+        with mock.patch.dict(os.environ, {"ORG_TRANSPORT": "broker"},
+                             clear=True):
+            self.assertEqual(pr_watch._configured_transport(), "broker")
+
+    def test_renga_when_socket_set(self) -> None:
+        with mock.patch.dict(os.environ, {"RENGA_SOCKET": "/tmp/s"},
+                             clear=True):
+            self.assertEqual(pr_watch._configured_transport(), "renga")
+
+    def test_none_when_unset(self) -> None:
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("ORG_TRANSPORT", "RENGA_SOCKET")}
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertIsNone(pr_watch._configured_transport())
+
+
+class FailLoudNotifyTests(unittest.TestCase):
+    """Refs #653 #658: _notify_or_record records notify_failed only when a
+    transport is configured and the push failed (silent no-op elimination)."""
+
+    def _db(self, tmp: Path) -> Path:
+        db = tmp / ".state" / "state.db"
+        db.parent.mkdir(parents=True)
+        from tools.state_db import apply_schema, connect
+        apply_schema(connect(db))
+        return db
+
+    def test_records_notify_failed_when_configured_and_push_fails(self) -> None:
+        with TempDir() as tmp:
+            db = self._db(tmp)
+            with mock.patch.dict(os.environ, {"ORG_TRANSPORT": "broker"},
+                                 clear=True), \
+                 mock.patch.object(pr_watch, "_notify_peer",
+                                   return_value=False):
+                ok = pr_watch._notify_or_record(
+                    "CI_COMPLETED: PR #7 passed", db_path=db,
+                    failed_kind="ci_completed", pr=7)
+            self.assertFalse(ok)
+            rows = _read_events_of_kind(db, "notify_failed")
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["pr"], 7)
+            self.assertEqual(rows[0]["failed_kind"], "ci_completed")
+            self.assertEqual(rows[0]["transport"], "broker")
+            self.assertIn("env_present", rows[0])
+
+    def test_no_record_when_no_transport(self) -> None:
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("ORG_TRANSPORT", "RENGA_SOCKET")}
+        with TempDir() as tmp:
+            db = self._db(tmp)
+            with mock.patch.dict(os.environ, env, clear=True), \
+                 mock.patch.object(pr_watch, "_notify_peer",
+                                   return_value=False):
+                ok = pr_watch._notify_or_record(
+                    "CI_COMPLETED: PR #7 passed", db_path=db,
+                    failed_kind="ci_completed", pr=7)
+            self.assertFalse(ok)
+            self.assertEqual(_read_events_of_kind(db, "notify_failed"), [])
+
+    def test_no_record_when_push_succeeds(self) -> None:
+        with TempDir() as tmp:
+            db = self._db(tmp)
+            with mock.patch.dict(os.environ, {"ORG_TRANSPORT": "broker"},
+                                 clear=True), \
+                 mock.patch.object(pr_watch, "_notify_peer",
+                                   return_value=True):
+                ok = pr_watch._notify_or_record(
+                    "CI_COMPLETED: PR #7 passed", db_path=db,
+                    failed_kind="ci_completed", pr=7)
+            self.assertTrue(ok)
+            self.assertEqual(_read_events_of_kind(db, "notify_failed"), [])
+
+
+class CanonicalTerminalEventTests(unittest.TestCase):
+    """Refs #653 #658: peer-only terminal signals now write a canonical DB
+    event BEFORE the push, so a lost push can't strand them."""
+
+    def _db(self, tmp: Path) -> Path:
+        db = tmp / ".state" / "state.db"
+        db.parent.mkdir(parents=True)
+        from tools.state_db import apply_schema, connect
+        apply_schema(connect(db))
+        return db
+
+    def test_no_run_writes_canonical_event(self) -> None:
+        with TempDir() as tmp:
+            db = self._db(tmp)
+            view_merged = {
+                "number": 444, "state": "MERGED",
+                "mergedAt": "2026-05-06T03:21:00Z",
+                "mergeCommit": {"oid": "a" * 40},
+                "headRefName": "feat/x", "headRefOid": "e" * 40,
+            }
+
+            def fake_run(cmd, *args, **kwargs):
+                if cmd[:3] == ["gh", "pr", "view"]:
+                    return mock.Mock(returncode=0,
+                                     stdout=json.dumps(view_merged), stderr="")
+                raise AssertionError(f"unexpected cmd: {cmd}")
+
+            with mock.patch.object(pr_watch, "_notify_peer", return_value=True), \
+                 mock.patch.object(pr_watch.subprocess, "run",
+                                   side_effect=fake_run):
+                result = pr_watch._watch_for_merge(
+                    pr=444, repo="octo/repo", interval=0, db_path=db,
+                    max_seconds=60, sleeper=lambda _s: None,
+                    monotonic=mock.Mock(side_effect=[0.0, 0.0, 100.0]))
+            self.assertEqual(result, "no_run")
+            rows = _read_events_of_kind(db, "pr_merged_no_run")
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["pr"], 444)
+
+    def test_head_unconfirmed_writes_canonical_event(self) -> None:
+        with TempDir() as tmp:
+            db = self._db(tmp)
+            # PR merged at a head that differs from the CI-confirmed baseline.
+            view_merged = {
+                "number": 636, "state": "MERGED",
+                "mergedAt": "2026-05-06T03:21:00Z",
+                "mergeCommit": {"oid": "f" * 40},
+                "headRefName": "feat/x", "headRefOid": "b" * 40,
+            }
+
+            def fake_run(cmd, *args, **kwargs):
+                if cmd[:3] == ["gh", "pr", "view"]:
+                    return mock.Mock(returncode=0,
+                                     stdout=json.dumps(view_merged), stderr="")
+                raise AssertionError(f"unexpected cmd: {cmd}")
+
+            with mock.patch.object(pr_watch, "_notify_peer", return_value=True), \
+                 mock.patch.object(pr_watch.subprocess, "run",
+                                   side_effect=fake_run):
+                result = pr_watch._watch_for_merge(
+                    pr=636, repo="octo/repo", interval=0, db_path=db,
+                    max_seconds=60, baseline_head="a" * 40,
+                    sleeper=lambda _s: None,
+                    monotonic=mock.Mock(side_effect=[0.0, 0.0, 100.0]))
+            self.assertEqual(result, pr_watch.MERGE_RESULT_HEAD_UNCONFIRMED)
+            rows = _read_events_of_kind(db, "pr_merged_head_unconfirmed")
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["pr"], 636)
+            self.assertEqual(rows[0]["baseline_head"], "aaaaaaa")
+
+
+class WatchAbortedTests(unittest.TestCase):
+    """Refs #653 #658: a watcher that dies on an unexpected exception
+    records a canonical pr_watch_aborted event and re-raises."""
+
+    def test_records_pr_watch_aborted_and_reraises(self) -> None:
+        with TempDir() as tmp:
+            db = tmp / ".state" / "state.db"
+            db.parent.mkdir(parents=True)
+            from tools.state_db import apply_schema, connect
+            apply_schema(connect(db))
+            env = {k: v for k, v in os.environ.items()
+                   if k not in ("ORG_TRANSPORT", "RENGA_SOCKET")}
+            with mock.patch.dict(os.environ, env, clear=True), \
+                 mock.patch.object(pr_watch, "JOURNAL_PATH", db), \
+                 mock.patch.object(pr_watch, "_ensure_gh_installed",
+                                   return_value=None), \
+                 mock.patch.object(pr_watch, "_resolve_repo",
+                                   return_value="octo/repo"), \
+                 mock.patch.object(pr_watch, "_pr_exists", return_value=True), \
+                 mock.patch.object(pr_watch, "_watch_loop",
+                                   side_effect=RuntimeError("boom")):
+                with self.assertRaises(RuntimeError):
+                    pr_watch.main(["--pr", "5", "--repo", "octo/repo"])
+            rows = _read_events_of_kind(db, "pr_watch_aborted")
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["pr"], 5)
+            self.assertIn("RuntimeError", rows[0]["error"])
+
+
 if __name__ == "__main__":
     unittest.main()

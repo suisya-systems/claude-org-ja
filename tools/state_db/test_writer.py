@@ -978,5 +978,281 @@ class TestPostCommitWorkerArchive(unittest.TestCase):
             td.cleanup()
 
 
+class TestEventDeliveriesDDLSync(unittest.TestCase):
+    """event_deliveries: schema.sql and __init__._M3_EVENT_DELIVERIES_DDL
+    must stay in lockstep (fresh DB vs. forward migration), mirroring the
+    org_sessions lockstep test. Refs #653 #658."""
+
+    def _columns(self, conn, table):
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        return [
+            (r["name"], r["type"].upper(), bool(r["notnull"]), bool(r["pk"]))
+            for r in rows
+        ]
+
+    def _master_sql(self, conn, name):
+        import re
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name = ?", (name,)
+        ).fetchone()
+        sql = row["sql"] if row else ""
+        sql = re.sub(r"--[^\n]*", "", sql)
+        sql = re.sub(r"CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS",
+                     "CREATE TABLE", sql, flags=re.IGNORECASE)
+        return re.sub(r"\s+", " ", sql).strip()
+
+    def test_schema_sql_and_m3_ddl_produce_identical_columns(self):
+        from tools.state_db import _M3_EVENT_DELIVERIES_DDL
+        td = tempfile.TemporaryDirectory()
+        try:
+            db_a = Path(td.name) / "a.db"
+            conn_a = connect(db_a)
+            apply_schema(conn_a)
+            cols_a = self._columns(conn_a, "event_deliveries")
+            sql_a = self._master_sql(conn_a, "event_deliveries")
+            conn_a.close()
+            db_b = Path(td.name) / "b.db"
+            conn_b = connect(db_b)
+            # event_deliveries FKs events(id); create a minimal events
+            # table first so the standalone DDL applies in isolation.
+            conn_b.executescript(
+                "CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT);"
+            )
+            conn_b.executescript(_M3_EVENT_DELIVERIES_DDL)
+            cols_b = self._columns(conn_b, "event_deliveries")
+            sql_b = self._master_sql(conn_b, "event_deliveries")
+            conn_b.close()
+            self.assertEqual(cols_a, cols_b)
+            self.assertEqual(sql_a, sql_b)
+        finally:
+            td.cleanup()
+
+
+class TestPreEventDeliveriesMigration(unittest.TestCase):
+    """A DB created before the event_deliveries ledger must be migrated
+    forward in place when a StateWriter attaches to it. Refs #653 #658."""
+
+    _PRE_LEDGER_SCHEMA = TestPreM2Migration._M1_SCHEMA + """
+    CREATE TABLE org_sessions (id INTEGER PRIMARY KEY CHECK (id = 1),
+                                status TEXT NOT NULL DEFAULT 'IDLE',
+                                last_writer_at TEXT NOT NULL DEFAULT '');
+    INSERT OR IGNORE INTO org_sessions (id, status, last_writer_at)
+      VALUES (1, 'IDLE', '');
+    INSERT INTO schema_migrations (version, applied_at, description)
+      VALUES (2, '2026-01-01T00:00:00.000Z', 'M2');
+    """
+
+    def test_writer_init_migrates_pre_ledger_db(self):
+        td = tempfile.TemporaryDirectory()
+        try:
+            db = Path(td.name) / "pre.db"
+            conn = connect(db)
+            conn.executescript(self._PRE_LEDGER_SCHEMA)
+            conn.commit()
+            self.assertIsNone(conn.execute(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type='table' AND name='event_deliveries'"
+            ).fetchone())
+            StateWriter(conn)
+            self.assertIsNotNone(conn.execute(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type='table' AND name='event_deliveries'"
+            ).fetchone())
+            v3 = conn.execute(
+                "SELECT 1 FROM schema_migrations WHERE version = 3"
+            ).fetchone()
+            self.assertIsNotNone(v3)
+            conn.close()
+        finally:
+            td.cleanup()
+
+    def test_ensure_ledger_raises_when_called_in_open_tx(self):
+        from tools.state_db import ensure_event_deliveries_schema
+        td = tempfile.TemporaryDirectory()
+        try:
+            db = Path(td.name) / "pre.db"
+            conn = connect(db)
+            conn.executescript(self._PRE_LEDGER_SCHEMA)
+            conn.commit()
+            conn.execute("BEGIN")
+            conn.execute(
+                "INSERT INTO projects (slug, display_name) VALUES ('p', 'P')"
+            )
+            with self.assertRaises(RuntimeError):
+                ensure_event_deliveries_schema(conn)
+            conn.close()
+        finally:
+            td.cleanup()
+
+
+class TestEventDeliveriesLedger(unittest.TestCase):
+    """Behaviour of the outbox ledger API: idempotency key, at-least-once
+    relay, retryable failed state. Refs #653 #658."""
+
+    def _seed_event(self, conn, kind="ci_completed", payload='{"pr": 1}'):
+        cur = conn.execute(
+            "INSERT INTO events (kind, payload_json) VALUES (?, ?)",
+            (kind, payload),
+        )
+        return cur.lastrowid
+
+    def test_pending_then_delivered_is_excluded(self):
+        td, conn = _fresh_db()
+        try:
+            w = StateWriter(conn)
+            eid = self._seed_event(conn)
+            pend = w.pending_deliveries(
+                recipient="secretary", kinds=["ci_completed"])
+            self.assertEqual([r["id"] for r in pend], [eid])
+            self.assertEqual(pend[0]["attempt"], 0)
+            # Attempt then deliver.
+            self.assertEqual(
+                w.begin_delivery_attempt(source_event_id=eid,
+                                         recipient="secretary"), 1)
+            w.mark_delivered(source_event_id=eid, recipient="secretary")
+            # Now excluded for this recipient.
+            self.assertEqual(
+                w.pending_deliveries(recipient="secretary",
+                                     kinds=["ci_completed"]), [])
+            # But NOT for a different recipient (per-recipient ledger).
+            self.assertEqual(
+                [r["id"] for r in w.pending_deliveries(
+                    recipient="human", kinds=["ci_completed"])],
+                [eid])
+        finally:
+            conn.close(); td.cleanup()
+
+    def test_idempotency_key_no_duplicate_rows(self):
+        td, conn = _fresh_db()
+        try:
+            w = StateWriter(conn)
+            eid = self._seed_event(conn)
+            w.begin_delivery_attempt(source_event_id=eid, recipient="secretary")
+            a2 = w.begin_delivery_attempt(source_event_id=eid,
+                                          recipient="secretary")
+            self.assertEqual(a2, 2)  # attempt incremented, not a new row
+            n = conn.execute(
+                "SELECT COUNT(*) AS n FROM event_deliveries "
+                "WHERE source_event_id = ? AND recipient = ?",
+                (eid, "secretary")).fetchone()["n"]
+            self.assertEqual(n, 1)
+        finally:
+            conn.close(); td.cleanup()
+
+    def test_failed_is_retryable_delivered_is_terminal(self):
+        td, conn = _fresh_db()
+        try:
+            w = StateWriter(conn)
+            eid = self._seed_event(conn)
+            w.begin_delivery_attempt(source_event_id=eid, recipient="secretary")
+            w.mark_delivery_failed(source_event_id=eid, recipient="secretary",
+                                   error="broker unreachable")
+            # failed does NOT exclude — still surfaced for retry.
+            self.assertEqual(
+                [r["id"] for r in w.pending_deliveries(
+                    recipient="secretary", kinds=["ci_completed"])],
+                [eid])
+            row = conn.execute(
+                "SELECT status, last_error FROM event_deliveries "
+                "WHERE source_event_id = ?", (eid,)).fetchone()
+            self.assertEqual(row["status"], "failed")
+            self.assertEqual(row["last_error"], "broker unreachable")
+            # A later confirmed delivery makes it terminal...
+            w.mark_delivered(source_event_id=eid, recipient="secretary")
+            self.assertEqual(
+                w.pending_deliveries(recipient="secretary",
+                                     kinds=["ci_completed"]), [])
+            # ...and a late failure report must NOT undo a delivered row.
+            w.mark_delivery_failed(source_event_id=eid, recipient="secretary",
+                                   error="late error")
+            self.assertEqual(
+                conn.execute("SELECT status FROM event_deliveries "
+                             "WHERE source_event_id = ?",
+                             (eid,)).fetchone()["status"],
+                "delivered")
+        finally:
+            conn.close(); td.cleanup()
+
+    def test_since_bound_and_kind_filter(self):
+        td, conn = _fresh_db()
+        try:
+            w = StateWriter(conn)
+            old = conn.execute(
+                "INSERT INTO events (kind, occurred_at, payload_json) "
+                "VALUES ('ci_completed', '2020-01-01T00:00:00.000Z', '{}')"
+            ).lastrowid
+            new = conn.execute(
+                "INSERT INTO events (kind, occurred_at, payload_json) "
+                "VALUES ('ci_completed', '2030-01-01T00:00:00.000Z', '{}')"
+            ).lastrowid
+            other = self._seed_event(conn, kind="worker_reported")
+            # since bound excludes the ancient row.
+            pend = w.pending_deliveries(
+                recipient="secretary", kinds=["ci_completed"],
+                since="2025-01-01T00:00:00.000Z")
+            self.assertEqual([r["id"] for r in pend], [new])
+            # kind filter excludes non-terminal kinds.
+            allk = w.pending_deliveries(
+                recipient="secretary", kinds=["ci_completed"])
+            self.assertNotIn(other, [r["id"] for r in allk])
+            self.assertEqual(set([r["id"] for r in allk]), {old, new})
+        finally:
+            conn.close(); td.cleanup()
+
+    def test_since_bound_does_not_abandon_attempted_undelivered(self):
+        """Cross-review: an event already attempted (has a ledger row) but
+        never delivered must keep being surfaced even after it ages past
+        the since bound — otherwise a stuck delivery is silently dropped,
+        breaking the zero-miss guarantee."""
+        td, conn = _fresh_db()
+        try:
+            w = StateWriter(conn)
+            # Ancient undelivered event that we DID attempt (failed).
+            old = conn.execute(
+                "INSERT INTO events (kind, occurred_at, payload_json) "
+                "VALUES ('ci_completed','2000-01-01T00:00:00.000Z','{\"pr\":1}')"
+            ).lastrowid
+            w.begin_delivery_attempt(source_event_id=old, recipient="secretary")
+            w.mark_delivery_failed(source_event_id=old, recipient="secretary",
+                                   error="down")
+            # Ancient event we NEVER attempted (no ledger row).
+            never = conn.execute(
+                "INSERT INTO events (kind, occurred_at, payload_json) "
+                "VALUES ('ci_completed','2000-01-01T00:00:00.000Z','{\"pr\":2}')"
+            ).lastrowid
+            # With a since bound well after both events: the attempted-but-
+            # -undelivered one survives (retried indefinitely); the never-
+            # attempted ancient one stays excluded (anti-flood preserved).
+            pend = w.pending_deliveries(
+                recipient="secretary", kinds=["ci_completed"],
+                since="2025-01-01T00:00:00.000Z")
+            ids = [r["id"] for r in pend]
+            self.assertIn(old, ids)
+            self.assertNotIn(never, ids)
+            # Once delivered, it drops out for good.
+            w.mark_delivered(source_event_id=old, recipient="secretary")
+            pend = w.pending_deliveries(
+                recipient="secretary", kinds=["ci_completed"],
+                since="2025-01-01T00:00:00.000Z")
+            self.assertNotIn(old, [r["id"] for r in pend])
+        finally:
+            conn.close(); td.cleanup()
+
+    def test_mark_delivered_without_prior_attempt(self):
+        td, conn = _fresh_db()
+        try:
+            w = StateWriter(conn)
+            eid = self._seed_event(conn)
+            # Fast path: a confirmed send may mark delivered directly.
+            w.mark_delivered(source_event_id=eid, recipient="secretary")
+            row = conn.execute(
+                "SELECT status, delivered_at FROM event_deliveries "
+                "WHERE source_event_id = ?", (eid,)).fetchone()
+            self.assertEqual(row["status"], "delivered")
+            self.assertIsNotNone(row["delivered_at"])
+        finally:
+            conn.close(); td.cleanup()
+
+
 if __name__ == "__main__":
     unittest.main()

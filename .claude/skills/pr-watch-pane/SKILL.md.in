@@ -92,12 +92,23 @@ context リセットと無関係）に監視が継続し、人間が tmux ペイ
    ```bash
    git rev-parse --show-toplevel                          # -> JA_ROOT（絶対パス）
    gh repo view --json nameWithOwner -q .nameWithOwner    # -> OWNER/REPO
+   printenv ORG_TRANSPORT ORG_BROKER_STATE_DIR PATH       # -> transport env（Refs #653 #658）
    ```
 
    - `gh repo view` が失敗する場合はユーザーに「リポジトリを自動解決できません。
      `--repo OWNER/REPO` を指定してください」と報告して中断。pr-watch.sh 自身も `--repo`
      省略時は auto-resolve するが、ここで明示することで **pane の cwd に依らず repo を固定**
      する（cwd trap が repo 解決にも波及しないようにする）。
+   - **transport env の捕捉（Refs #653 #658 — env trap 吸収）**: `printenv` で窓口
+     （secretary）ペインの `ORG_TRANSPORT` / `ORG_BROKER_STATE_DIR` / `PATH` を確定させる。
+     `{{FQ}}spawn_pane` は **汎用 CLI ペイン**を env 注入なしで立てるため（本 skill 上部の
+     注記）、これらを Step 3 の `command` に**前置注入しないと** spawn されたペインの
+     `tools/peer_notify.py` が `ORG_TRANSPORT` 未設定で silent no-op に落ちる（PR #73 障害の
+     直接原因: broker queue に `CI_COMPLETED` が 1 件も入らず窓口が idle のまま気付かなかった）。
+     `cwd` が cwd trap を吸収するのと同じ理屈で、この env 捕捉が **env trap** を吸収する。
+     `ORG_TRANSPORT` が空 / 未設定（renga 運用既定 or 無設定）なら Step 3 で `export
+     ORG_TRANSPORT` を**省く**（未設定のまま → `peer_notify` が renga にフォールバック ＝
+     renga opt-in 経路を壊さない）。`ORG_BROKER_STATE_DIR` も set のときだけ前置する。
 
 ## Step 2: 冪等チェック（同一 PR の二重監視を防ぐ）
 
@@ -122,9 +133,28 @@ context リセットと無関係）に監視が継続し、人間が tmux ペイ
   role="watcher",
   name="pr-watch-<PR>",
   cwd="<JA_ROOT 絶対パス>",
-  command="mkdir -p .state; bash tools/pr-watch.sh <PR> --repo <OWNER/REPO> --merge-watch --no-detach 2>&1 | tee -a .state/pr-watch-<PR>.log; tmux kill-pane -t \"$TMUX_PANE\" 2>/dev/null || true"
+  command="export ORG_TRANSPORT='<ORG_TRANSPORT>'; export ORG_BROKER_STATE_DIR='<ORG_BROKER_STATE_DIR>'; export PATH='<PATH>'; mkdir -p .state; bash tools/pr-watch.sh <PR> --repo <OWNER/REPO> --merge-watch --no-detach 2>&1 | tee -a .state/pr-watch-<PR>.log; tmux kill-pane -t \"$TMUX_PANE\" 2>/dev/null || true"
 )
 ```
+
+- **env 前置注入（Refs #653 #658 — 必須。PR #73 障害の根治）**: `command` 先頭の
+  `export ORG_TRANSPORT=...; export ORG_BROKER_STATE_DIR=...; export PATH=...;` は Step 1 で
+  `printenv` 捕捉した窓口ペインの実値に置換する。これが無いと汎用 spawn ペインは transport
+  env を継承せず、`peer_notify` の broker/renga 経路がどちらも未設定分岐に落ちて **push が
+  silent no-op** になる（events テーブルへの `ci_completed` 書き込みは成功するのに窓口へ届かない
+  ＝ まさに PR #73 の障害）。`PATH` 注入は broker 経路が shell out する `claude-org-runtime
+  broker send` CLI（venv 内）を pane の PATH で解決可能にするため。
+  - **条件付き前置（renga opt-in を壊さない）**: `ORG_TRANSPORT` が空 / 未設定なら
+    `export ORG_TRANSPORT=...` を**丸ごと省く**（未設定のまま渡す ＝ `peer_notify` が renga に
+    フォールバック）。`ORG_BROKER_STATE_DIR` も set のときだけ前置する。空値を `''` で明示
+    export すると broker 経路が既定 state dir を掴む誤動作を招くため、**空なら export 文自体を
+    書かない**。
+  - **多層防御の位置づけ**: この env 注入は **path A（低遅延 push）の修理**であって単独の保証では
+    ない。仮に注入漏れ / push 失敗が起きても、(B) ディスパッチャーの `event_deliveries` outbox
+    relay が `ci_completed` 等の canonical event を直接 scan して窓口へ確実に relay するため
+    「見逃しゼロ」は成立する（[`.dispatcher/references/worker-monitoring.md`](../../../.dispatcher/references/worker-monitoring.md) の relay scan ステップ参照）。
+    さらに push が失敗した場合は `pr_watch` が `notify_failed` イベントを fail-loud で記録する
+    （silent no-op の全廃）。
 
 - `target="dispatcher"`: 同一タブ scope の安定アンカー（attention watcher と同じく
   dispatcher を split 起点にする）。broker では各ペインが detached 独立セッションだが、

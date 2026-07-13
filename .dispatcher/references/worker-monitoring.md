@@ -722,6 +722,41 @@
    - **`WORKER_COMPLETION_NOTED` / `WORKER_REOPENED` は完了判定ではなく監視抑止用の受領通知 (Codex Minor 対応)**: 現行契約では worker 完了報告は secretary 宛が正で、dispatcher は自分で完了を判定しない (`docs/contracts/role-contract.md` dispatcher inputs、`delegation-lifecycle-contract.md` T4)。本 peer message はその原則を変えず、dispatcher の監視 loop の false positive を抑止するためだけの受領通知として additive に追加する (contract への追記も additive に留め、既存 ratified 記述は書き換えない)
    - **secretary は non-blocking で送る (Codex Major 対応)**: secretary は worker ack と状態更新 (REVIEW 遷移) を終えた後、best-effort で `WORKER_COMPLETION_NOTED` を送るだけで dispatcher 応答を待たない。dispatcher は `/loop 3m` の通常 `check_messages` で非同期に反映する。blocking wait にすると T4 の human review 移行に新しい停止点を作るため禁止 (secretary 側手順は `.claude/skills/org-delegate/SKILL.md` Step 5 §2a、再指示は `.claude/skills/org-pull-request/SKILL.md` 2c)
 
+5.25. **未配送終端イベントの relay scan (CI-watch zero-miss, Refs #653 #658)** — `events` を正本とする outbox 型 relay。`pr_watch` が書いた終端イベント (`ci_completed` / `pr_merged` / `pr_merge_watch_timeout` / `pr_merged_no_run` / `pr_merged_head_unconfirmed` / `pr_watch_aborted` / `notify_failed`) のうち、まだ窓口へ配送されていないものを `event_deliveries` 配送台帳と突き合わせて scan し、ディスパッチャー (broker token 保有) が窓口へ確実に relay する。**pr-watch ペインからの低遅延 peer push (path A) は best-effort で silent no-op しうる** (PR #73 障害: 汎用 spawn ペインの env 欠如で broker queue に `CI_COMPLETED` が 1 件も入らず窓口 idle) ため、この relay が **見逃しゼロの主保証 (path B)** になる。
+
+   **実行手順** (dispatcher cwd は `.dispatcher/` なので `../tools/`):
+
+   1. 未配送の終端イベントを列挙する (各行に relay 試行を記帳する):
+
+      ```bash
+      python ../tools/relay_scan.py --recipient secretary --list
+      ```
+
+      出力は JSON 配列。各要素は `{source_event_id, kind, occurred_at, attempt, message, payload}`。空配列 (`[]`) なら本ステップは何もせず終了。DB 不在時も `[]` (エラーにしない)。
+
+   2. 各要素について、`message` フィールドをそのまま窓口へ送る:
+
+      ```
+      mcp__org-broker__send_message(to_id="secretary", message="<各要素の message>")
+      ```
+
+      `message` は `CI_COMPLETED: PR #<n> (status=..., head=...) [relay]` 等、窓口の CI 検知節が認識する形式に整形済み (末尾 `[relay]` で直 push と区別可能)。
+
+   3. **send_message が成功したら**、その配送を台帳に確定する (以後 relay されない):
+
+      ```bash
+      python ../tools/relay_scan.py --recipient secretary --mark-delivered --source-event-id <source_event_id>
+      ```
+
+      送信が `[pane_not_found]` 等で失敗した場合は `--mark-failed --source-event-id <id> --error "<code>"` を記帳する (台帳上は `failed` = 再試行可能。次サイクルで再 surface される)。
+
+   **設計上の不変条件**:
+   - **at-least-once・冪等**: 重複抑止は「送信マーカー」ではなく `event_deliveries` の `UNIQUE (source_event_id, recipient)` idempotency key で行う。Step 2 で確認した send を先に投げ、成功後に `--mark-delivered` する順序なので、send と mark の間で dispatcher が落ちても次サイクルで再 relay される (窓口は終端信号の二重受信を冪等に扱う)。一度 delivered になった event は二度と surface されない。
+   - **この台帳 dedup は Step 4/5/5.1/5.2 の 30 秒 anomaly 通知 dedup とは別レイヤー**: 前者は「配送成功済みイベントの再配送防止」、後者は「同一異常の再通知抑制」で目的が異なる。両者を混同しない。
+   - **worker 不在でも実行する**: PR merge 後などで worker pane が既に閉じていても `ci_completed` 等の配送漏れをカバーする必要があるため、本ステップは pane 存在に依らず走る (下記 Step 7 の reduced-mode 例外リストに含める)。
+   - **escalation は対象外**: `worker_escalation` は Step 5.1 の SECRETARY_RELAY_GAP 経路が relay owner なので本 relay set から除外する (二重 relay 防止)。`notify_failed` は含める (push 失敗そのものが窓口に伝えるべき配送ギャップ = fail-loud end-to-end)。
+   - **scan floor は「配送台帳エポック」**（`event_deliveries` 台帳が生成された瞬間 = schema version 3 migration の適用時刻）を既定にする（`relay_scan.py` は `--since-hours` 省略時にこのエポックを floor にする）。エポックは **pre-ledger history（台帳導入前の過去イベント）を除外**（初回デプロイの一斉 relay flood を防ぐ anti-flood 境界）しつつ、**エポック以降のイベントは配送されるまで age に依らず eligible** に保つ。これは wall-clock の移動窓（`now - N h`）と違い、ディスパッチャーが数週間停止しても post-ledger の終端イベントを取りこぼさない（wall-clock 窓だと停止が窓長を超えると一度も試行していないイベントが窓外に落ちて見逃す — Codex P2）。手動 backfill が要る特殊時のみ `--since-hours 0`（unbounded、pre-ledger history も relay）を明示する。
+
 5.3. **オンデマンド curate の完了監視 (curate-inflight)** — CLOSE_PANE Step 5-3 ([`.dispatcher/references/pane-close.md`](pane-close.md)) が spawn 直後に書いた `.state/dispatcher/curate-inflight.json` が存在する場合のみ実行する (無ければ skip)。curator の完了待ちを CLOSE_PANE ハンドラでブロッキングせず、本監視ループの通常サイクルに載せるための受け口。判定順序は **(a) → (c) → (b)** ((a) が最優先。pane 消失より先に同サイクル受信済みの CURATE_* を処理しないと、curator が CURATE_DONE 送信後に消えたケースを「未受領のまま消えた」と誤報告して情報が欠落する):
 
    **定数**: `CURATE_TIMEOUT_MIN = 20` (curate 開始からの初回観測閾値) / `CURATE_HARD_CAP_MIN = 40` (延長を含む絶対上限)。
@@ -742,7 +777,9 @@
 
 6. **重要**: ディスパッチャーが自動で承認・拒否することはしない (ユーザー判断が必要)
 
-7. ワーカーペインがない場合は `poll_events` / `check_messages` / `inspect_pane` をすべてスキップし、監視ループを停止する。**ただし `.state/dispatcher/curate-inflight.json` が存在する間は停止しない**: Step 1 (`poll_events`) / Step 2 (`check_messages`) / Step 5.3 だけを継続し (worker 向けの Step 3〜5.2 は対象が無いので skip)、inflight 解消 (Step 5.3 (a)/(b)/(c) のいずれか) 後のサイクルで停止する
+7. ワーカーペインがない場合は `poll_events` / `check_messages` / `inspect_pane` をすべてスキップし、監視ループを停止する。**ただし次のいずれかが存在する間は停止しない**:
+   - `.state/dispatcher/curate-inflight.json` が存在する間: Step 1 (`poll_events`) / Step 2 (`check_messages`) / Step 5.3 だけを継続し (worker 向けの Step 3〜5.2 は対象が無いので skip)、inflight 解消 (Step 5.3 (a)/(b)/(c) のいずれか) 後のサイクルで停止する
+   - **未配送の終端イベントが残っている間 (Refs #653 #658)**: `python ../tools/relay_scan.py --recipient secretary --list` が非空を返す間は Step 5.25 だけを継続する。PR merge 後に worker pane が閉じても `ci_completed` 等の配送漏れをカバーするため、pane 不在でも relay を走らせる。空配列 (`[]`) を返したサイクルで (curate-inflight も無ければ) 停止する
 
 監視対象のペイン名は `.state/workers/worker-{peer_id}.md` の Pane Name (`worker-{task_id}`) から取得する。
 

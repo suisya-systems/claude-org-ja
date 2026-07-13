@@ -523,6 +523,10 @@ class _Importer:
 # ---------------------------------------------------------------------------
 
 _DROP_ORDER = (
+    # event_deliveries references events(id); drop the child first
+    # (Refs #653 #658). FKs are OFF during reset, but keep child-before-
+    # parent order for correctness regardless.
+    "event_deliveries",
     "tag_assignments", "tags", "events", "runs", "worker_dirs",
     "workstreams", "projects", "unparsed_legacy", "org_sessions",
     "schema_migrations",
