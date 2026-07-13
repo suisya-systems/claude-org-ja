@@ -34,6 +34,8 @@ mcp__org-broker__send_message(
 )
 ```
 
+進捗に限らず、rebase 報告・確認依頼など完了 (2a) / 判断仰ぎ (0) / plan・prep 引き渡し（専用 kind `plan_delivered` / `prep_delivered` で記帳する既存フロー）以外の中間ハンドオフ報告はすべてこの ack を使う。ack 後は SKILL.md Step 5 (1) に従い、Progress Log 追記に加えて `worker_reported` の journal 追記（`bash tools/journal_append.sh worker_reported worker=worker-{task_id} task={task_id} summary="<要約>"`）を必ず行う（記帳漏れは dispatcher の PANE_OUTPUT_WITHOUT_PEER_MSG 誤検知の原因、Issue #699）。
+
 ### 完了報告 ack（PR 未作成時）
 
 ```
