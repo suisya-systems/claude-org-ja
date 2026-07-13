@@ -83,6 +83,15 @@ class StateWriter:
         # Idempotent; must run outside a transaction (guaranteed by the
         # commit above).
         ensure_event_deliveries_schema(conn)
+        # ensure_event_deliveries_schema's own trailing INSERT OR IGNORE
+        # (the version-3 migration marker) opens another implicit
+        # transaction. Commit so __init__ leaves the connection with NO
+        # open write transaction — otherwise a writer constructed and held
+        # without an immediate commit would keep a WAL write lock and the
+        # migration marker could be rolled back if the connection is closed
+        # before any later commit (Codex P2). Safe for the same reason as
+        # the commit above (no caller writes are ever pending in __init__).
+        conn.commit()
         # claude_org_root is the repo root that contains `.state/`. When
         # set, ``transaction()`` regenerates `.state/org-state.md` and
         # `.state/journal.jsonl` from the DB after each successful commit
