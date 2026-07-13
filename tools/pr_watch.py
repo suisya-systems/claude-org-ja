@@ -1332,8 +1332,13 @@ def main(argv: "list[str] | None" = None) -> int:
         # learns the watch stopped. Record a canonical pr_watch_aborted
         # event (the dispatcher outbox relay surfaces it) and best-effort
         # push, then re-raise so exit behavior is unchanged. KeyboardInterrupt
-        # (BaseException) is intentional cancel and propagates untouched —
-        # the canceled verdict is already recorded as ci_completed.
+        # (BaseException) is an intentional cancel and propagates untouched
+        # past this ``except Exception`` — a user Ctrl-C is not an abnormal
+        # watcher death, so we deliberately record nothing for it (any
+        # verdict resolved before the interrupt was already written as its
+        # own ci_completed row; an interrupt during the initial poll simply
+        # leaves no terminal record, which is the correct "user cancelled"
+        # outcome).
         try:
             _record_event(
                 db_path=JOURNAL_PATH,

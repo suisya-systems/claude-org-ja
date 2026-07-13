@@ -1199,6 +1199,45 @@ class TestEventDeliveriesLedger(unittest.TestCase):
         finally:
             conn.close(); td.cleanup()
 
+    def test_since_bound_does_not_abandon_attempted_undelivered(self):
+        """Cross-review: an event already attempted (has a ledger row) but
+        never delivered must keep being surfaced even after it ages past
+        the since bound — otherwise a stuck delivery is silently dropped,
+        breaking the zero-miss guarantee."""
+        td, conn = _fresh_db()
+        try:
+            w = StateWriter(conn)
+            # Ancient undelivered event that we DID attempt (failed).
+            old = conn.execute(
+                "INSERT INTO events (kind, occurred_at, payload_json) "
+                "VALUES ('ci_completed','2000-01-01T00:00:00.000Z','{\"pr\":1}')"
+            ).lastrowid
+            w.begin_delivery_attempt(source_event_id=old, recipient="secretary")
+            w.mark_delivery_failed(source_event_id=old, recipient="secretary",
+                                   error="down")
+            # Ancient event we NEVER attempted (no ledger row).
+            never = conn.execute(
+                "INSERT INTO events (kind, occurred_at, payload_json) "
+                "VALUES ('ci_completed','2000-01-01T00:00:00.000Z','{\"pr\":2}')"
+            ).lastrowid
+            # With a since bound well after both events: the attempted-but-
+            # -undelivered one survives (retried indefinitely); the never-
+            # attempted ancient one stays excluded (anti-flood preserved).
+            pend = w.pending_deliveries(
+                recipient="secretary", kinds=["ci_completed"],
+                since="2025-01-01T00:00:00.000Z")
+            ids = [r["id"] for r in pend]
+            self.assertIn(old, ids)
+            self.assertNotIn(never, ids)
+            # Once delivered, it drops out for good.
+            w.mark_delivered(source_event_id=old, recipient="secretary")
+            pend = w.pending_deliveries(
+                recipient="secretary", kinds=["ci_completed"],
+                since="2025-01-01T00:00:00.000Z")
+            self.assertNotIn(old, [r["id"] for r in pend])
+        finally:
+            conn.close(); td.cleanup()
+
     def test_mark_delivered_without_prior_attempt(self):
         td, conn = _fresh_db()
         try:

@@ -700,13 +700,23 @@ class StateWriter:
         """Return terminal events not yet ``delivered`` to ``recipient``.
 
         Scans ``events`` for rows whose ``kind`` is in ``kinds`` that
-        lack a ``delivered`` ledger row for ``recipient``. ``since`` (an
-        ISO-8601 string, compared against ``occurred_at``) bounds the
-        scan so ancient history is not re-examined every cycle; omit for
-        an unbounded scan. Rows are returned oldest-first (ascending
-        ``events.id``) so relays preserve emission order. A ``failed`` or
+        lack a ``delivered`` ledger row for ``recipient``. A ``failed`` or
         ``pending`` ledger row does NOT exclude an event — only a
         ``delivered`` row does — so a stuck delivery keeps being retried.
+
+        ``since`` (an ISO-8601 string, compared against ``occurred_at``)
+        bounds the scan so ancient history is not re-examined every cycle;
+        omit for an unbounded scan. **The bound only gates events we have
+        never attempted**: an event is surfaced when it is within the
+        window ``occurred_at >= since`` OR it already has any ledger row
+        for ``recipient`` (i.e. we began a relay attempt before but never
+        reached ``delivered``). This keeps a persistently-failing / long-
+        idle terminal event retried **indefinitely** (never aged out —
+        the zero-miss guarantee), while still preventing a first-deploy
+        flood: pre-ledger historical events are old AND have no ledger
+        row, so the bound excludes them. (Cross-review: without the OR an
+        undelivered event dropped out permanently once wall-clock passed
+        ``since`` beyond its ``occurred_at``.)
 
         The returned rows expose ``id`` (= events.id / source_event_id),
         ``kind``, ``occurred_at``, ``payload_json`` and ``attempt`` (the
@@ -732,7 +742,11 @@ class StateWriter:
         )
         params.append(recipient)
         if since is not None:
-            sql += "  AND e.occurred_at >= ? "
+            # Surface if within the window OR already attempted (has any
+            # ledger row) — the latter overrides the age bound so a stuck
+            # delivery is never abandoned. ``d`` is the LEFT JOIN row for
+            # this recipient; d.id NOT NULL ⇒ an attempt was recorded.
+            sql += "  AND (e.occurred_at >= ? OR d.id IS NOT NULL) "
             params.append(since)
         sql += "ORDER BY e.id ASC"
         if limit is not None:
