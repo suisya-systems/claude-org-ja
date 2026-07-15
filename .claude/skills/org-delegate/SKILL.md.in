@@ -277,7 +277,7 @@ worker → Secretary peer message
   5. CI watch / next instruction → [`.claude/skills/org-pull-request/SKILL.md`](../org-pull-request/SKILL.md)
 ```
 
-- ack の最低内容と種別ごとの例文は [`.claude/skills/org-delegate/references/ack-template.md`](references/ack-template.md) を参照。**ack ≠ user 承認**: `git push` / `gh pr create` / `tools/pr-watch.*` は user の明示的 OK 後にのみ発行
+- ack の最低内容と種別ごとの例文は [`.claude/skills/org-delegate/references/ack-template.md`](references/ack-template.md) を参照。**ack ≠ user 承認**: `git push` / `gh pr create` / `/pr-watch-pane` は user の明示的 OK 後にのみ発行
 - 2 → 3 の順序は「内部状態を先に整合させてから user に報告する」原則
 
 #### 0. 判断仰ぎ・スコープ拡張・ブロッカー（最優先で識別）
