@@ -45,7 +45,7 @@ import re
 import shutil
 import subprocess
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Optional
 
@@ -78,6 +78,19 @@ class WorktreeApplyError(RuntimeError):
     """
 
 
+class BaseCloneApplyError(WorktreeApplyError):
+    """Raised by ``apply`` when the Issue #709 base clone cannot be
+    materialized (``git clone`` failed — network / auth / bad URL — or the
+    target directory turned out to be non-empty and non-git).
+
+    Subclasses :class:`WorktreeApplyError` so existing ``except
+    WorktreeApplyError`` callers still catch it, while tests can assert the
+    more specific type. Like the worktree-creation errors, it fires BEFORE
+    any DB reservation, so it never leaks a ``queued`` run row; the message
+    is the BLOCKING stop-and-instruct-the-human surface the task calls for.
+    """
+
+
 class BlockingPreviewWarningError(RuntimeError):
     """Raised by ``apply`` when the plan carries one or more
     ``blocking_warnings`` (Issue #489 surface). Distinct from
@@ -100,6 +113,26 @@ _PATTERN_A_RESIDUE_FILENAMES: tuple[str, ...] = (
     "send_plan.json",
     ".claude",
 )
+
+
+@dataclass(frozen=True)
+class PendingClone:
+    """A base clone that ``apply`` must materialize before cutting the
+    worktree (Issue #709).
+
+    The planner sets this when a project is registered with a *remote URL*
+    (not a local path) and no local clone exists yet at the canonical
+    ``workers_dir/<slug>/`` location. ``build_delegate_plan`` stays pure —
+    it only records the intent — and ``apply`` runs ``git clone <url>
+    <target>`` (then ``git worktree add`` off the fresh clone). Without
+    this, a first dispatch onto a URL-only project left the worker in a
+    non-git ``workers_dir/<slug>/`` directory that had only the brief
+    files, so every git operation failed with a permission / not-a-repo
+    error (the 2026-07-16 real-world block this fix removes).
+    """
+
+    url: str
+    target: str
 
 
 @dataclass(frozen=True)
@@ -135,6 +168,16 @@ class DelegatePlan:
     # ``apply`` raises :class:`BlockingPreviewWarningError` rather than
     # touching the DB / filesystem.
     blocking_warnings: list[str] = field(default_factory=list)
+    # Issue #709: base clone ``apply`` must ``git clone`` before cutting the
+    # worktree (URL-only registered project, no local clone yet). None for
+    # every existing layout (clone already present, ``-`` placeholder,
+    # ephemeral C, self-edit). See :class:`PendingClone`.
+    pending_clone: Optional[PendingClone] = None
+    # Registry ``project.path`` for this slug (URL or local path), carried so
+    # ``apply`` can re-render the DELEGATE body if the post-clone brief
+    # placement flips to CLAUDE.local.md (Issue #712 interaction). None when
+    # the project has no registry row.
+    project_path: Optional[str] = None
 
     def to_summary_dict(self) -> dict[str, Any]:
         return {
@@ -154,6 +197,11 @@ class DelegatePlan:
             "base_repo": str(self.base_repo) if self.base_repo else None,
             "warnings": list(self.warnings),
             "blocking_warnings": list(self.blocking_warnings),
+            "pending_clone": (
+                {"url": self.pending_clone.url, "target": self.pending_clone.target}
+                if self.pending_clone is not None
+                else None
+            ),
         }
 
 
@@ -202,8 +250,89 @@ def _summarize_description(description: str, limit: int = 120) -> str:
     return one_line[: limit - 1].rstrip() + "…"
 
 
-def _brief_filename(self_edit: bool) -> str:
-    return "CLAUDE.local.md" if self_edit else "CLAUDE.md"
+def _repo_tracks_claude_md(repo_dir: Path) -> bool:
+    """True iff ``CLAUDE.md`` is a git-tracked file in ``repo_dir``.
+
+    Issue #712 general rule: when the repo a worker will land in already
+    tracks a ``CLAUDE.md`` (the project's own checked-in brief/agent file),
+    the generated worker brief MUST go to ``CLAUDE.local.md`` so it never
+    clobbers that tracked file — exactly the breakage that forced *this*
+    task's own brief onto ``CLAUDE.local.md`` after a manual recovery.
+
+    Fail-safe: returns ``False`` when ``repo_dir`` is absent, is not a git
+    repo, or git is unavailable, so non-git / ephemeral dirs fall through to
+    the plain ``CLAUDE.md`` name. This is a read-only probe (same class as
+    the resolver's ``git check-ignore`` Step 0.7 probe), so the planner
+    stays side-effect free.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo_dir), "ls-files", "--error-unmatch",
+             "--", "CLAUDE.md"],
+            capture_output=True,
+        )
+    except (FileNotFoundError, OSError):
+        return False
+    return proc.returncode == 0
+
+
+def _resolve_brief_filename(*, self_edit: bool, repo_dir: Path) -> str:
+    """Decide the worker brief filename (Issue #712 generalization).
+
+    Two independent signals push the brief to ``CLAUDE.local.md``:
+
+    - ``self_edit`` (the ``config["worker"]["self_edit"]`` flag, which also
+      covers the Pattern C ``gitignored_repo_root`` sub-mode) — the historical
+      trigger; and
+    - ``repo_dir`` already git-tracks a ``CLAUDE.md`` — the new general rule:
+      any project whose repo ships its own CLAUDE.md, not just self-edit.
+
+    The two are decoupled from the brief *template* selection (still driven
+    by ``self_edit`` inside :func:`tools.gen_worker_brief.render`): a normal
+    project that merely happens to track a CLAUDE.md gets the *normal* brief
+    body, only written under the ``.local.md`` name.
+    """
+    if self_edit or _repo_tracks_claude_md(repo_dir):
+        return "CLAUDE.local.md"
+    return "CLAUDE.md"
+
+
+def _is_clone_url(path: Optional[str]) -> bool:
+    """True iff a registry ``project.path`` is a remote/clonable URL rather
+    than a local git repo or a ``-`` placeholder (Issue #709).
+
+    A local *working* git repo (``is_local_git_repo`` True) is handled by the
+    existing local-path base derivation and is not a clone URL. ``-`` / empty
+    are placeholders that stay on the legacy direct layout (no URL to clone).
+    Everything else — https / ssh / scp-style / ``file://`` / a local *bare*
+    repo used as an origin (the hermetic-test stand-in for a real remote) —
+    is treated as clonable; ``git clone`` itself validates it at apply time.
+    """
+    if not path or path.strip() in ("", "-"):
+        return False
+    return not rwl.is_local_git_repo(path)
+
+
+def _dir_is_empty_or_absent(path: Path) -> bool:
+    """True iff ``path`` does not exist or is an empty directory.
+
+    The Issue #709 safety gate: apply only auto-clones a base into
+    ``workers_dir/<slug>/`` when nothing is there yet. A directory holding
+    any entry (Pattern-A residue, loose notes, a partial clone) is left to
+    the existing residue-BLOCKING / legacy-direct handling so auto-clone
+    never clobbers pre-existing content.
+    """
+    if not path.exists():
+        return True
+    if not path.is_dir():
+        return False
+    try:
+        next(iter(path.iterdir()))
+    except StopIteration:
+        return True
+    except OSError:
+        return False
+    return False
 
 
 def _has_pattern_a_residue(workers_slug_dir: Path) -> bool:
@@ -413,8 +542,6 @@ def build_delegate_plan(
     )
 
     self_edit = bool(config["worker"]["self_edit"])
-    brief_filename = _brief_filename(self_edit)
-    brief_out_path = Path(layout.worker_dir) / brief_filename
 
     # Issue #370: the claude-org mirror's registry-display alias
     # ``claude-org-en`` (the 通称 column) and the canonical project slug
@@ -444,21 +571,6 @@ def build_delegate_plan(
         match = rwl.find_project(rows, project_slug)
         if match is not None:
             project_path = match.path
-
-    delegate_body = _format_delegate_body(
-        layout=layout,
-        task_id=task_id,
-        description=description,
-        project_path=project_path,
-        permission_mode=permission_mode,
-        verification_depth=verification_depth,
-        brief_filename=brief_filename,
-    )
-
-    artifacts = [
-        brief_out_path,
-        Path(layout.worker_dir) / ".claude" / "settings.local.json",
-    ]
 
     # Pattern B: figure out which repo `git worktree add` should be run from.
     # live_repo_worktree → Secretary's live claude-org repo;
@@ -530,6 +642,87 @@ def build_delegate_plan(
                 project_slug, project_path, Path(workers_dir_for_norm)
             )
 
+    # Issue #709: URL-only registered project, first dispatch, no local clone.
+    # The resolver landed on the legacy Pattern A direct path
+    # (``workers_dir/<slug>/``) because no clone was found — but the registry
+    # carries a *remote URL*, so the fix is to materialize the canonical base
+    # clone at apply time and route the worker into
+    # ``<clone>/.worktrees/<task>/`` (the Issue #489 unified layout), instead
+    # of dropping the brief into a non-git directory the worker can't commit
+    # from. We only *plan* the clone here (pure); ``apply`` runs ``git clone``.
+    #
+    # Gates (each preserves an existing behavior):
+    #   - ``base_repo is None``  → an already-detected clone (canonical /
+    #     legacy ``_repo_clone`` / registered local path) is reused unchanged.
+    #   - ``pattern == "A"``     → Pattern B without a base still fails loudly
+    #     in ``_ensure_worktree`` (that surface is intentional); a brand-new
+    #     project has no active run so it always resolves to Pattern A anyway.
+    #   - ``_is_clone_url``      → ``-`` / empty placeholders and local-path
+    #     rows stay on the legacy direct layout (no URL to clone).
+    #   - worker_dir == target AND empty/absent → residue in
+    #     ``workers_dir/<slug>/`` keeps the existing Issue #489 residue-BLOCKING
+    #     / legacy handling; auto-clone never clobbers pre-existing content.
+    pending_clone: Optional[PendingClone] = None
+    if (
+        layout.pattern == "A"
+        and base_repo is None
+        and _is_clone_url(project_path)
+    ):
+        clone_target = (Path(workers_dir_for_norm) / project_slug).resolve()
+        try:
+            wd_resolved = Path(layout.worker_dir).resolve()
+        except OSError:
+            wd_resolved = Path(layout.worker_dir)
+        if wd_resolved == clone_target and _dir_is_empty_or_absent(clone_target):
+            new_worker_dir = (clone_target / ".worktrees" / task_id).resolve()
+            new_settings = dict(layout.settings_args)
+            new_settings["worker-dir"] = str(new_worker_dir)
+            new_settings["out"] = str(
+                new_worker_dir / ".claude" / "settings.local.json"
+            )
+            layout = replace(
+                layout,
+                worker_dir=str(new_worker_dir),
+                settings_args=new_settings,
+            )
+            # Keep the render config in lock-step: the brief template renders
+            # ``${worker_dir}`` from ``config["worker"]["dir"]`` (built above
+            # off the pre-rewrite layout). Without this the generated brief
+            # would tell the worker to work in the old non-git base-clone root
+            # instead of the worktree we route them into (Codex review).
+            config["worker"]["dir"] = str(new_worker_dir)
+            base_repo = clone_target
+            pending_clone = PendingClone(
+                url=project_path, target=str(clone_target)  # type: ignore[arg-type]
+            )
+
+    # Issue #712: brief placement is a general rule now — CLAUDE.local.md when
+    # self_edit OR the repo the worker lands in already tracks a CLAUDE.md.
+    # Check the base clone for worktree layouts (the worktree inherits the
+    # clone's tracked files) and the worker_dir itself otherwise. For a
+    # pending clone the base isn't cloned yet, so this returns CLAUDE.md now
+    # and ``apply`` re-evaluates against the freshly checked-out worktree.
+    brief_repo_dir = base_repo if base_repo is not None else Path(layout.worker_dir)
+    brief_filename = _resolve_brief_filename(
+        self_edit=self_edit, repo_dir=brief_repo_dir
+    )
+    brief_out_path = Path(layout.worker_dir) / brief_filename
+
+    delegate_body = _format_delegate_body(
+        layout=layout,
+        task_id=task_id,
+        description=description,
+        project_path=project_path,
+        permission_mode=permission_mode,
+        verification_depth=verification_depth,
+        brief_filename=brief_filename,
+    )
+
+    artifacts = [
+        brief_out_path,
+        Path(layout.worker_dir) / ".claude" / "settings.local.json",
+    ]
+
     # Phase 1 PR4: surface base_clone into settings_args for Pattern B so the
     # runtime can substitute `{base_clone}` in
     # `worker_roles.<role>.sandbox_by_pattern.B.filesystem`. resolve_worker_layout
@@ -587,6 +780,8 @@ def build_delegate_plan(
         base_repo=base_repo,
         warnings=warnings,
         blocking_warnings=blocking_warnings,
+        pending_clone=pending_clone,
+        project_path=project_path,
     )
 
 
@@ -796,6 +991,107 @@ def _is_registered_worktree(base_repo: Path, worker_dir: Path) -> bool:
             if p == target:
                 return True
     return False
+
+
+def _ensure_base_clone(plan: DelegatePlan) -> None:
+    """Materialize the Issue #709 pending base clone before the worktree.
+
+    No-op unless ``plan.pending_clone`` is set (URL-only registered project,
+    first dispatch, no local clone yet). Runs ``git clone <url> <target>`` so
+    the subsequent :func:`_ensure_worktree` has a real local base to
+    ``git worktree add`` from — instead of dropping the brief into a non-git
+    ``workers_dir/<slug>/`` directory the worker cannot commit from.
+
+    Idempotent: if ``target`` is already a git repo (a partial-retry re-run),
+    returns quietly. Fails closed (:class:`BaseCloneApplyError`) when the
+    clone cannot complete or the target is non-empty and non-git — the
+    BLOCKING stop-and-instruct surface. Runs BEFORE any DB reservation, so an
+    abort leaks no ``queued`` run row.
+    """
+    pc = plan.pending_clone
+    if pc is None:
+        return
+    target = Path(pc.target)
+    if rwl.is_local_git_repo(str(target)):
+        # Idempotent re-run — but only when the repo already sitting at the
+        # target is genuinely the intended clone. Validate its origin against
+        # the registered URL exactly like the mainline discovery path
+        # (``find_workers_dir_clone`` → ``_origin_matches_registered``), so a
+        # different repo that appeared at ``workers/<slug>/`` between plan and
+        # apply cannot silently redirect dispatch at the wrong project
+        # (Issue #370 precedent for "別 repo への誤派遣").
+        if rwl._origin_matches_registered(target, pc.url):
+            return
+        raise BaseCloneApplyError(
+            f"pending base clone target {target} is already a git repo, but "
+            f"its origin does not match the registered clone URL {pc.url!r} "
+            f"for project {plan.project_slug!r}. Refusing to dispatch against "
+            f"a possibly-unrelated repo (Issue #370). Secretary must reconcile "
+            f"the directory (remove it to re-clone, or fix its origin) and "
+            f"retry apply."
+        )
+    if target.exists() and any(target.iterdir()):
+        raise BaseCloneApplyError(
+            f"pending base clone target {target} exists with content but is "
+            f"not a git repo; refusing to `git clone` into it. Secretary must "
+            f"clean the directory (or clone {pc.url} there manually) and retry."
+        )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    proc = subprocess.run(
+        ["git", "clone", pc.url, str(target)], capture_output=True
+    )
+    if proc.returncode != 0:
+        stderr = (proc.stderr or b"").decode("utf-8", errors="replace").strip()
+        raise BaseCloneApplyError(
+            f"`git clone {pc.url}` into {target} failed (rc={proc.returncode}): "
+            f"{stderr}. The registry registers {plan.project_slug!r} with a "
+            f"remote URL but no local clone exists yet, so apply attempted the "
+            f"canonical base clone and could not complete it (network / auth / "
+            f"bad URL?). Fix connectivity or clone the base manually at "
+            f"{target} and retry apply."
+        )
+
+
+def _finalize_pending_clone_brief(plan: DelegatePlan) -> DelegatePlan:
+    """Re-evaluate brief placement after a pending clone materialized.
+
+    At plan time the Issue #709 clone did not exist, so
+    :func:`build_delegate_plan` defaulted the brief name to ``CLAUDE.md``. Now
+    that the worktree is checked out we can apply the Issue #712 general rule
+    against real contents: if the freshly cloned repo tracks a ``CLAUDE.md``,
+    move the brief to ``CLAUDE.local.md`` (and re-render the DELEGATE body so
+    ``send_plan.json`` points the worker at the right file) rather than
+    clobbering the project's own tracked CLAUDE.md.
+
+    No-op for non-pending plans, for plans that already chose
+    ``CLAUDE.local.md`` (self-edit), or when the clone tracks no CLAUDE.md.
+    """
+    if plan.pending_clone is None:
+        return plan
+    if plan.brief_out_path.name != "CLAUDE.md":
+        return plan
+    worker_dir = Path(plan.layout.worker_dir)
+    if not _repo_tracks_claude_md(worker_dir):
+        return plan
+    new_brief = worker_dir / "CLAUDE.local.md"
+    new_body = _format_delegate_body(
+        layout=plan.layout,
+        task_id=plan.task_id,
+        description=plan.description,
+        project_path=plan.project_path,
+        permission_mode=plan.permission_mode,
+        verification_depth=plan.verification_depth,
+        brief_filename="CLAUDE.local.md",
+    )
+    return replace(
+        plan,
+        brief_out_path=new_brief,
+        delegate_body=new_body,
+        artifacts_to_create=[
+            new_brief,
+            worker_dir / ".claude" / "settings.local.json",
+        ],
+    )
 
 
 def _ensure_worktree(plan: DelegatePlan) -> None:
@@ -1090,12 +1386,23 @@ def apply_delegate_plan(
             "apply refused: preview emitted blocking warnings:\n  - "
             + "\n  - ".join(plan.blocking_warnings)
         )
+    # Issue #709: materialize the base clone FIRST for a URL-only registered
+    # project's first dispatch (no local clone yet). Runs before the worktree
+    # add and before any DB write, so a clone failure leaks no queued row.
+    # No-op unless the plan carries a pending clone.
+    _ensure_base_clone(plan)
     # Issue #309: create the worktree FIRST. If this fails (dirty dir,
     # git error, etc.) we must not leak a `runs.status='queued'` row,
     # because resolve_worker_layout treats `queued` as an active run and
     # would silently steer the next delegation onto another Pattern B
-    # branch (Codex Major 2026-05-06). No-op for Pattern A / C.
+    # branch (Codex Major 2026-05-06). No-op for Pattern A / C without a
+    # base clone; fires for the Issue #709 pending-clone worktree too.
     _ensure_worktree(plan)
+    # Issue #712 interaction: with the clone now checked out, re-evaluate the
+    # brief placement against real contents (a pending clone couldn't be
+    # inspected at plan time). May flip brief_out_path / delegate_body to
+    # CLAUDE.local.md; a no-op for every non-pending plan.
+    plan = _finalize_pending_clone_brief(plan)
     db_reservation = _reserve_in_db(
         plan, state_db_path=state_db_path, claude_org_root=claude_org_root
     )

@@ -228,16 +228,37 @@ class TestIssue484AliasRemoteRow(unittest.TestCase):
         self.assertEqual(plan.layout.pattern, "A")
         self.assertIsNone(plan.layout.pattern_variant)
         self.assertFalse(plan.layout.self_edit)
+        # Issue #709: a URL-only registered project with no local clone yet
+        # now routes into the canonical ``<clone>/.worktrees/<task>/`` layout
+        # and carries a pending base clone that apply will ``git clone``
+        # first — instead of the old legacy-direct ``workers/<slug>/`` path
+        # that left the worker in a non-git dir (the #709 bug). The clone
+        # target is the canonical ``workers/<slug>/`` location.
+        clone_target = (self.sb.workers / "claude-org-en").resolve()
         self.assertEqual(
             Path(plan.layout.worker_dir),
-            (self.sb.workers / "claude-org-en").resolve(),
+            (clone_target / ".worktrees" / "en-translation-sync-v2").resolve(),
         )
+        self.assertIsNotNone(plan.base_repo)
+        self.assertEqual(Path(plan.base_repo).resolve(), clone_target)
+        self.assertIsNotNone(plan.pending_clone)
+        self.assertEqual(
+            plan.pending_clone.url,
+            "https://github.com/suisya-systems/claude-org",
+        )
+        self.assertEqual(Path(plan.pending_clone.target).resolve(), clone_target)
+        # Pattern A worktree carve-out: sandbox pattern flips to B, base-clone
+        # is surfaced for the runtime (Issue #489 parity).
+        self.assertEqual(plan.settings_args["pattern"], "B")
+        self.assertEqual(plan.settings_args["base-clone"], str(clone_target))
         # The DELEGATE body advertises a clone source (Pattern A label).
         self.assertIn("clone or reuse:", plan.delegate_body)
         self.assertIn(
             "https://github.com/suisya-systems/claude-org", plan.delegate_body
         )
-        # bug 1: non-self-edit brief, no in-place-edit directive.
+        # bug 1: non-self-edit brief, no in-place-edit directive. Brief name
+        # stays CLAUDE.md at plan time (the clone isn't present to inspect);
+        # apply re-evaluates against the real checkout (Issue #712).
         self.assertEqual(plan.brief_out_path.name, "CLAUDE.md")
         brief = gwb.render(plan.config)
         self.assertNotIn("直接編集すること", brief)
@@ -2646,6 +2667,523 @@ class TestIssue489AtomicApplyRollback(unittest.TestCase):
         )
         match = [r for r in self.sb.list_runs() if r["task_id"] == "happy-task"]
         self.assertEqual(match[0]["status"], "queued")
+
+
+# ---------------------------------------------------------------------------
+# Issue #709: apply materializes the base clone for URL-only new projects
+# ---------------------------------------------------------------------------
+
+
+class TestIssue709BaseCloneMaterialization(unittest.TestCase):
+    """Issue #709: a registry row with a remote URL and no local clone yet
+    used to dispatch Pattern A *legacy-direct* — the brief landed in a non-git
+    ``workers/<slug>/`` dir and the worker was blocked on the first git op.
+    apply must now ``git clone`` the base into the canonical
+    ``workers/<slug>/`` and cut ``<clone>/.worktrees/<task>/`` off it. The
+    hermetic ``URL`` is a local *bare* repo (no network)."""
+
+    def setUp(self) -> None:
+        try:
+            subprocess.run(["git", "--version"], capture_output=True, check=True)
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            self.skipTest("git not available")
+        self._td = tempfile.TemporaryDirectory()
+        # with_claude_org_origin=False so the sandbox git-init doesn't race
+        # our per-test seeds (matches the other worktree-creation classes).
+        self.sb = _Sandbox(Path(self._td.name), with_claude_org_origin=False)
+        import os
+        self._git_env = os.environ.copy()
+        self._git_env.update(
+            {
+                "GIT_AUTHOR_NAME": "test",
+                "GIT_AUTHOR_EMAIL": "test@example.com",
+                "GIT_COMMITTER_NAME": "test",
+                "GIT_COMMITTER_EMAIL": "test@example.com",
+            }
+        )
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def _git(self, repo: Path, *args: str) -> None:
+        subprocess.run(
+            ["git", "-C", str(repo), *args], check=True, capture_output=True,
+            env=self._git_env,
+        )
+
+    def _make_bare_remote(
+        self, name: str, *, claude_md: str | None = None
+    ) -> Path:
+        """Build a bare repo (stands in for the registered remote URL) with
+        one commit on ``main``; optionally seed a tracked ``CLAUDE.md``."""
+        src = Path(self._td.name) / f"{name}-src"
+        src.mkdir()
+        self._git(src, "init", "-q", "-b", "main")
+        (src / "README.md").write_text("hi\n", encoding="utf-8")
+        if claude_md is not None:
+            (src / "CLAUDE.md").write_text(claude_md, encoding="utf-8")
+        self._git(src, "add", "-A")
+        self._git(src, "commit", "-q", "-m", "init")
+        bare = Path(self._td.name) / f"{name}.git"
+        subprocess.run(
+            ["git", "clone", "-q", "--bare", str(src), str(bare)],
+            check=True, capture_output=True, env=self._git_env,
+        )
+        return bare
+
+    def _set_url_registry(self, slug: str, url: str) -> None:
+        (self.sb.claude_org_root / "registry" / "projects.md").write_text(
+            "# Projects\n\n"
+            "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 |\n"
+            "|---|---|---|---|---|\n"
+            f"| {slug} | {slug} | {url} | Remote proj | dev |\n",
+            encoding="utf-8",
+        )
+
+    def _build(self, *, task_id: str, slug: str = "newproj"):
+        return gdp.build_delegate_plan(
+            task_id=task_id,
+            project_slug=slug,
+            description="first dispatch",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+
+    def test_plan_records_pending_clone_and_canonical_worktree_layout(self):
+        bare = self._make_bare_remote("newproj")
+        self._set_url_registry("newproj", str(bare))
+        plan = self._build(task_id="np-plan")
+        # Legacy-direct is gone: worker_dir is the canonical worktree layout.
+        clone_target = (self.sb.workers / "newproj").resolve()
+        self.assertEqual(plan.layout.pattern, "A")
+        self.assertEqual(
+            Path(plan.layout.worker_dir),
+            (clone_target / ".worktrees" / "np-plan").resolve(),
+        )
+        self.assertIsNotNone(plan.base_repo)
+        self.assertEqual(Path(plan.base_repo).resolve(), clone_target)
+        # Pending clone points at the registered URL + canonical target.
+        self.assertIsNotNone(plan.pending_clone)
+        self.assertEqual(plan.pending_clone.url, str(bare))
+        self.assertEqual(
+            Path(plan.pending_clone.target).resolve(), clone_target
+        )
+        # Sandbox pattern flips to B (worktree carve-outs) like Issue #489.
+        self.assertEqual(plan.settings_args["pattern"], "B")
+        self.assertEqual(
+            plan.settings_args["base-clone"], str(clone_target)
+        )
+        # The render config's worker dir tracks the rewritten worktree path
+        # (not the pre-rewrite base-clone root), so the brief tells the worker
+        # to work in the worktree, and the rendered brief agrees.
+        self.assertEqual(
+            Path(plan.config["worker"]["dir"]),
+            (clone_target / ".worktrees" / "np-plan").resolve(),
+        )
+        brief = gwb.render(plan.config)
+        self.assertIn(
+            str((clone_target / ".worktrees" / "np-plan").resolve()), brief
+        )
+        self.assertNotIn(f"作業ディレクトリ: `{clone_target}`", brief)
+
+    def test_plan_is_pure_no_clone_placed(self):
+        bare = self._make_bare_remote("newproj")
+        self._set_url_registry("newproj", str(bare))
+        self._build(task_id="np-pure")
+        # build_delegate_plan must not clone — the target stays absent.
+        self.assertFalse((self.sb.workers / "newproj").exists())
+
+    def test_apply_clones_base_and_creates_worktree(self):
+        bare = self._make_bare_remote("newproj")
+        self._set_url_registry("newproj", str(bare))
+        plan = self._build(task_id="np-apply")
+        result = gdp.apply_delegate_plan(
+            plan,
+            state_db_path=self.sb.db_path,
+            claude_org_root=self.sb.claude_org_root,
+            skip_settings=True,
+        )
+        clone_target = self.sb.workers / "newproj"
+        # The base clone was materialized as a real git repo.
+        self.assertTrue((clone_target / ".git").exists())
+        # The worktree is a real checkout (has a .git file) registered
+        # against the clone.
+        worker_dir = Path(plan.layout.worker_dir)
+        self.assertTrue(worker_dir.exists())
+        self.assertTrue((worker_dir / ".git").exists())
+        out = subprocess.check_output(
+            ["git", "-C", str(clone_target),
+             "worktree", "list", "--porcelain"],
+        ).decode("utf-8", errors="replace")
+        registered = {
+            Path(line[len("worktree "):].strip()).resolve()
+            for line in out.splitlines() if line.startswith("worktree ")
+        }
+        self.assertIn(worker_dir.resolve(), registered)
+        # Brief landed inside the worktree; the run is queued Pattern A.
+        self.assertTrue(result.brief_path.exists())
+        self.assertEqual(result.brief_path.parent.resolve(), worker_dir.resolve())
+        row = [r for r in self.sb.list_runs() if r["task_id"] == "np-apply"][0]
+        self.assertEqual(row["status"], "queued")
+        self.assertEqual(row["pattern"], "A")
+
+    def test_apply_is_idempotent_on_reapply(self):
+        bare = self._make_bare_remote("newproj")
+        self._set_url_registry("newproj", str(bare))
+        plan = self._build(task_id="np-idem")
+        gdp.apply_delegate_plan(
+            plan, state_db_path=self.sb.db_path,
+            claude_org_root=self.sb.claude_org_root, skip_settings=True,
+        )
+        # Second apply must not re-clone or duplicate the worktree.
+        gdp.apply_delegate_plan(
+            plan, state_db_path=self.sb.db_path,
+            claude_org_root=self.sb.claude_org_root, skip_settings=True,
+        )
+        clone_target = self.sb.workers / "newproj"
+        out = subprocess.check_output(
+            ["git", "-C", str(clone_target),
+             "worktree", "list", "--porcelain"],
+        ).decode("utf-8", errors="replace")
+        worktrees = [
+            line for line in out.splitlines() if line.startswith("worktree ")
+        ]
+        # main clone + the one task worktree = 2 entries, no duplicate.
+        self.assertEqual(len(worktrees), 2)
+
+    def test_apply_clone_failure_is_blocking_and_leaks_no_db_row(self):
+        # A bogus (non-existent) local repo path is a clone URL that git
+        # cannot resolve — hermetic, no network.
+        bogus = str(Path(self._td.name) / "does-not-exist.git")
+        self._set_url_registry("newproj", bogus)
+        plan = self._build(task_id="np-fail")
+        self.assertIsNotNone(plan.pending_clone)
+        with self.assertRaises(gdp.BaseCloneApplyError) as cm:
+            gdp.apply_delegate_plan(
+                plan, state_db_path=self.sb.db_path,
+                claude_org_root=self.sb.claude_org_root, skip_settings=True,
+            )
+        self.assertIn("git clone", str(cm.exception))
+        # BaseCloneApplyError is a WorktreeApplyError subclass (callers that
+        # catch the base type keep working).
+        self.assertIsInstance(cm.exception, gdp.WorktreeApplyError)
+        # No queued row leaked (clone failed before the DB reservation).
+        self.assertFalse(
+            any(r["task_id"] == "np-fail" for r in self.sb.list_runs())
+        )
+
+    def test_apply_rejects_unrelated_repo_appearing_at_target(self):
+        # Race guard (Issue #370): a plan is built while the target is absent
+        # (pending clone), then an UNRELATED github-origin repo appears at
+        # workers/<slug>/ before apply. The idempotent-reuse path must revalidate
+        # the origin against the registered URL and refuse, not dispatch against
+        # the wrong repo. Registered URL is github so the origin gate is strict;
+        # apply never reaches a network clone because the target is a git repo.
+        self._set_url_registry(
+            "newproj", "https://github.com/suisya-systems/newproj.git"
+        )
+        plan = self._build(task_id="np-race")
+        self.assertIsNotNone(plan.pending_clone)
+        # An unrelated repo lands at the canonical target after planning.
+        target = self.sb.workers / "newproj"
+        target.mkdir(parents=True)
+        self._git(target, "init", "-q", "-b", "main")
+        self._git(target, "remote", "add", "origin",
+                  "https://github.com/some-other-org/unrelated.git")
+        with self.assertRaises(gdp.BaseCloneApplyError) as cm:
+            gdp.apply_delegate_plan(
+                plan, state_db_path=self.sb.db_path,
+                claude_org_root=self.sb.claude_org_root, skip_settings=True,
+            )
+        self.assertIn("does not match", str(cm.exception))
+        self.assertFalse(
+            any(r["task_id"] == "np-race" for r in self.sb.list_runs())
+        )
+
+    def test_placeholder_dash_path_stays_legacy_direct_no_pending_clone(self):
+        # ``-`` is a placeholder, not a URL — must NOT trigger auto-clone
+        # (existing legacy-direct behavior preserved).
+        self._set_url_registry("newproj", "-")
+        plan = self._build(task_id="np-dash")
+        self.assertEqual(plan.layout.pattern, "A")
+        self.assertIsNone(plan.pending_clone)
+        self.assertIsNone(plan.base_repo)
+        self.assertEqual(
+            Path(plan.layout.worker_dir),
+            (self.sb.workers / "newproj").resolve(),
+        )
+
+    def test_url_registry_with_residue_stays_blocking_no_pending_clone(self):
+        # Residue in workers/<slug>/ must keep the Issue #489 BLOCKING path
+        # (auto-clone only fires into an empty/absent target).
+        bare = self._make_bare_remote("newproj")
+        self._set_url_registry("newproj", str(bare))
+        slug_dir = self.sb.workers / "newproj"
+        slug_dir.mkdir()
+        (slug_dir / "CLAUDE.md").write_text("old brief", encoding="utf-8")
+        (slug_dir / "send_plan.json").write_text("{}", encoding="utf-8")
+        plan = self._build(task_id="np-residue")
+        self.assertIsNone(plan.pending_clone)
+        self.assertIsNone(plan.base_repo)
+        self.assertTrue(plan.blocking_warnings)
+        self.assertTrue(
+            any("Pattern-A residue" in w for w in plan.blocking_warnings)
+        )
+
+    def test_unknown_slug_stays_ephemeral_c_no_pending_clone(self):
+        # No registry row at all → Pattern C ephemeral, never a pending clone.
+        plan = self._build(task_id="np-unknown", slug="totally-unregistered")
+        self.assertEqual(plan.layout.pattern, "C")
+        self.assertIsNone(plan.pending_clone)
+
+
+# ---------------------------------------------------------------------------
+# Issue #712: brief placement generalized to "repo tracks CLAUDE.md"
+# ---------------------------------------------------------------------------
+
+
+class TestIssue712BriefPlacement(unittest.TestCase):
+    """Issue #712: the worker brief must go to ``CLAUDE.local.md`` whenever the
+    repo the worker lands in already tracks a ``CLAUDE.md`` — not only for
+    self-edit — so the generated brief never clobbers the project's own
+    checked-in CLAUDE.md. The brief *template* stays normal (decoupled from
+    the placement)."""
+
+    def setUp(self) -> None:
+        try:
+            subprocess.run(["git", "--version"], capture_output=True, check=True)
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            self.skipTest("git not available")
+        self._td = tempfile.TemporaryDirectory()
+        self.sb = _Sandbox(Path(self._td.name), with_claude_org_origin=False)
+        import os
+        self._git_env = os.environ.copy()
+        self._git_env.update(
+            {
+                "GIT_AUTHOR_NAME": "test",
+                "GIT_AUTHOR_EMAIL": "test@example.com",
+                "GIT_COMMITTER_NAME": "test",
+                "GIT_COMMITTER_EMAIL": "test@example.com",
+            }
+        )
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def _git(self, repo: Path, *args: str) -> None:
+        subprocess.run(
+            ["git", "-C", str(repo), *args], check=True, capture_output=True,
+            env=self._git_env,
+        )
+
+    # --- helper unit tests -------------------------------------------------
+
+    def test_repo_tracks_claude_md_helper(self):
+        repo = Path(self._td.name) / "r"
+        repo.mkdir()
+        self._git(repo, "init", "-q", "-b", "main")
+        # No CLAUDE.md yet.
+        self.assertFalse(gdp._repo_tracks_claude_md(repo))
+        (repo / "CLAUDE.md").write_text("proj\n", encoding="utf-8")
+        # Untracked file does not count.
+        self.assertFalse(gdp._repo_tracks_claude_md(repo))
+        self._git(repo, "add", "CLAUDE.md")
+        self._git(repo, "commit", "-q", "-m", "add claude")
+        self.assertTrue(gdp._repo_tracks_claude_md(repo))
+        # Non-git dir and absent dir → False (fail-safe).
+        plain = Path(self._td.name) / "plain"
+        plain.mkdir()
+        self.assertFalse(gdp._repo_tracks_claude_md(plain))
+        self.assertFalse(gdp._repo_tracks_claude_md(Path(self._td.name) / "nope"))
+
+    def test_resolve_brief_filename_rule(self):
+        repo = Path(self._td.name) / "r2"
+        repo.mkdir()
+        self._git(repo, "init", "-q", "-b", "main")
+        (repo / "CLAUDE.md").write_text("proj\n", encoding="utf-8")
+        self._git(repo, "add", "CLAUDE.md")
+        self._git(repo, "commit", "-q", "-m", "c")
+        # self_edit short-circuit → local regardless of repo contents.
+        self.assertEqual(
+            gdp._resolve_brief_filename(self_edit=True, repo_dir=Path("/nope")),
+            "CLAUDE.local.md",
+        )
+        # Non-self-edit but repo tracks CLAUDE.md → local (the #712 rule).
+        self.assertEqual(
+            gdp._resolve_brief_filename(self_edit=False, repo_dir=repo),
+            "CLAUDE.local.md",
+        )
+        # Non-self-edit, no tracked CLAUDE.md → plain.
+        empty = Path(self._td.name) / "empty"
+        empty.mkdir()
+        self._git(empty, "init", "-q", "-b", "main")
+        self.assertEqual(
+            gdp._resolve_brief_filename(self_edit=False, repo_dir=empty),
+            "CLAUDE.md",
+        )
+
+    # --- integration: existing local clone that tracks CLAUDE.md -----------
+
+    def test_pattern_b_local_repo_tracking_claude_md_uses_local_md(self):
+        # A registered LOCAL project repo that tracks CLAUDE.md, forced to
+        # Pattern B via an active run → base_repo is that repo → brief is
+        # placed at CLAUDE.local.md, but the brief *body* stays the normal
+        # (non-self-edit) template.
+        project_repo = Path(self._td.name) / "clock-repo"
+        project_repo.mkdir()
+        self._git(project_repo, "init", "-q", "-b", "main")
+        (project_repo / "CLAUDE.md").write_text(
+            "# project agent file\n", encoding="utf-8"
+        )
+        self._git(project_repo, "add", "CLAUDE.md")
+        self._git(project_repo, "commit", "-q", "-m", "seed")
+        self._git(project_repo, "update-ref",
+                  "refs/remotes/origin/HEAD", "refs/heads/main")
+        (self.sb.claude_org_root / "registry" / "projects.md").write_text(
+            "# Projects\n\n"
+            "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 |\n"
+            "|---|---|---|---|---|\n"
+            f"| 時計 | clock-app | {project_repo} | Clock | - |\n",
+            encoding="utf-8",
+        )
+        self.sb.add_active_run(
+            task_id="prev-clock",
+            project_slug="clock-app",
+            worker_dir=str(self.sb.workers / "clock-app"),
+        )
+        plan = gdp.build_delegate_plan(
+            task_id="clock-712",
+            project_slug="clock-app",
+            description="add feature",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(plan.layout.pattern, "B")
+        self.assertEqual(Path(plan.base_repo).resolve(), project_repo.resolve())
+        # #712: brief placed at CLAUDE.local.md because the base tracks CLAUDE.md.
+        self.assertEqual(plan.brief_out_path.name, "CLAUDE.local.md")
+        # Decoupled from the template: config self_edit stays False, so the
+        # rendered body is the normal brief (no in-place-edit directive).
+        self.assertFalse(plan.config["worker"]["self_edit"])
+        brief = gwb.render(plan.config)
+        self.assertNotIn("直接編集すること", brief)
+        # DELEGATE body advertises the CLAUDE.local.md path.
+        self.assertIn("CLAUDE.local.md", plan.delegate_body)
+
+    def test_pattern_b_local_repo_without_claude_md_uses_plain_md(self):
+        project_repo = Path(self._td.name) / "clock-repo2"
+        project_repo.mkdir()
+        self._git(project_repo, "init", "-q", "-b", "main")
+        (project_repo / "README.md").write_text("hi\n", encoding="utf-8")
+        self._git(project_repo, "add", "README.md")
+        self._git(project_repo, "commit", "-q", "-m", "seed")
+        (self.sb.claude_org_root / "registry" / "projects.md").write_text(
+            "# Projects\n\n"
+            "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 |\n"
+            "|---|---|---|---|---|\n"
+            f"| 時計 | clock-app | {project_repo} | Clock | - |\n",
+            encoding="utf-8",
+        )
+        self.sb.add_active_run(
+            task_id="prev-clock2",
+            project_slug="clock-app",
+            worker_dir=str(self.sb.workers / "clock-app"),
+        )
+        plan = gdp.build_delegate_plan(
+            task_id="clock-712b",
+            project_slug="clock-app",
+            description="add feature",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(plan.layout.pattern, "B")
+        self.assertEqual(plan.brief_out_path.name, "CLAUDE.md")
+
+    # --- interaction: #709 pending clone whose source tracks CLAUDE.md -----
+
+    def _make_bare_remote(self, name: str, *, claude_md: str | None) -> Path:
+        src = Path(self._td.name) / f"{name}-src"
+        src.mkdir()
+        self._git(src, "init", "-q", "-b", "main")
+        (src / "README.md").write_text("hi\n", encoding="utf-8")
+        if claude_md is not None:
+            (src / "CLAUDE.md").write_text(claude_md, encoding="utf-8")
+        self._git(src, "add", "-A")
+        self._git(src, "commit", "-q", "-m", "init")
+        bare = Path(self._td.name) / f"{name}.git"
+        subprocess.run(
+            ["git", "clone", "-q", "--bare", str(src), str(bare)],
+            check=True, capture_output=True, env=self._git_env,
+        )
+        return bare
+
+    def _set_url_registry(self, slug: str, url: str) -> None:
+        (self.sb.claude_org_root / "registry" / "projects.md").write_text(
+            "# Projects\n\n"
+            "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 |\n"
+            "|---|---|---|---|---|\n"
+            f"| {slug} | {slug} | {url} | Remote proj | dev |\n",
+            encoding="utf-8",
+        )
+
+    def test_pending_clone_brief_flips_to_local_when_source_tracks_claude_md(self):
+        bare = self._make_bare_remote(
+            "trackedproj", claude_md="# UPSTREAM PROJECT CLAUDE\n"
+        )
+        self._set_url_registry("trackedproj", str(bare))
+        plan = gdp.build_delegate_plan(
+            task_id="tracked-apply",
+            project_slug="trackedproj",
+            description="first dispatch",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        # At plan time the clone is absent → CLAUDE.md is the best guess.
+        self.assertEqual(plan.brief_out_path.name, "CLAUDE.md")
+        result = gdp.apply_delegate_plan(
+            plan,
+            state_db_path=self.sb.db_path,
+            claude_org_root=self.sb.claude_org_root,
+            skip_settings=True,
+        )
+        worker_dir = Path(plan.layout.worker_dir)
+        # apply re-evaluated post-clone → brief moved to CLAUDE.local.md.
+        self.assertEqual(result.brief_path.name, "CLAUDE.local.md")
+        self.assertTrue((worker_dir / "CLAUDE.local.md").exists())
+        # The project's own tracked CLAUDE.md is intact (NOT clobbered).
+        tracked = worker_dir / "CLAUDE.md"
+        self.assertTrue(tracked.exists())
+        self.assertEqual(
+            tracked.read_text(encoding="utf-8"), "# UPSTREAM PROJECT CLAUDE\n"
+        )
+        # send_plan.json points the worker at the corrected file.
+        send_plan = json.loads(
+            result.send_plan_path.read_text(encoding="utf-8")
+        )
+        self.assertIn("CLAUDE.local.md", send_plan["message"])
+        self.assertNotIn("CLAUDE.md・設定配置済み", send_plan["message"])
+
+    def test_pending_clone_brief_stays_md_when_source_has_no_claude_md(self):
+        bare = self._make_bare_remote("plainproj", claude_md=None)
+        self._set_url_registry("plainproj", str(bare))
+        plan = gdp.build_delegate_plan(
+            task_id="plain-apply",
+            project_slug="plainproj",
+            description="first dispatch",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        result = gdp.apply_delegate_plan(
+            plan,
+            state_db_path=self.sb.db_path,
+            claude_org_root=self.sb.claude_org_root,
+            skip_settings=True,
+        )
+        # No tracked CLAUDE.md in the source → brief stays CLAUDE.md.
+        self.assertEqual(result.brief_path.name, "CLAUDE.md")
+        self.assertTrue(
+            (Path(plan.layout.worker_dir) / "CLAUDE.md").exists()
+        )
 
 
 if __name__ == "__main__":
