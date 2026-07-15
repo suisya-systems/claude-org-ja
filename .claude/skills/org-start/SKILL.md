@@ -205,6 +205,7 @@ broker transport では過去に「secretary 宛メッセージが claimed/deliv
    py -3 tools/secretary_queue_watcher.py     # Windows
    ```
 2. 動作: watcher は起動時点の `$ORG_BROKER_STATE_DIR/queue.jsonl` 末尾を起点に live-tail し、それ以降の secretary 宛 `message_enqueued` が `delivered` されないまま閾値（default 120 秒）を超えたら、滞留件数と経過秒を 1 行 print して **exit する**。background Bash の終了イベントで窓口が再起床するので、その出力を見たら使用中 transport の `check_messages`（broker では `mcp__org-broker__check_messages`）で drain する。過去ログの通算 gap は数えない（既知の過去消失分が混入して誤検知になるため、本セッション中の新規レコードのみを対象にする）。
+3. **停止経路**: watcher は起動時に `.state/secretary_queue_watcher.json`（pid / cwd / cmdline / broker_state_dir を記録した sidecar）を書き、`/org-suspend`（Phase 3.6）/ `/org-down` がこれを identity 照合して停止する（pid recycle / 別 broker 誤停止を避けるため pid 単独では kill しない）。滞留検知で自 exit した場合や SIGTERM で停止した場合は watcher 自身が sidecar を掃除する。
 
 > **sandbox 注記**: 常駐プロセスなので Block C と同様 sandbox 内起動は不可、`run_in_background` によるホスト実行を使う。
 

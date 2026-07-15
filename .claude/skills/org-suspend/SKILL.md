@@ -9,6 +9,10 @@ allowed-tools:
   - Bash(bash tools/journal_append.sh:*)
   - Bash(py -3 tools/journal_append.py:*)
   - Bash(python -m tools.state_db.importer:*)
+  - Bash(python3 tools/secretary_queue_watcher.py:*)
+  - Bash(py -3 tools/secretary_queue_watcher.py:*)
+  - Bash(rm -f .state/attention_pane.json)
+  - Bash(del .state\attention_pane.json)
   - mcp__org-broker__check_messages
   - mcp__org-broker__close_pane
   - mcp__org-broker__inspect_pane
@@ -32,6 +36,14 @@ allowed-tools:
 > curator が見えないことは異常ではない。curator ペインが存在するのは「worker クローズ起点の
 > オンデマンド curate が実行中に suspend が重なった」一時的なケースのみで、その場合だけ
 > Phase 4 の停止対象に含める。
+
+> **責務境界（/org-suspend と [`/org-down`](../org-down/SKILL.md)）**: /org-suspend は
+> 「状態保存 + ja 管理下の補助プロセス（dashboard / secretary_queue_watcher / attention
+> watcher）とペインの停止」までを担い、**`claude-org-runtime org down`（broker daemon の停止）は
+> 呼ばない**。suspend 単体は「また `/org-start` で再開する」前提の中断であり、broker daemon は
+> 走らせたままにする（端末を閉じても daemon はすぐ再開できるよう生存する）。daemon ごと完全に
+> 落とすのは [`/org-down`](../org-down/SKILL.md) の責務で、/org-down が suspend の成功を確認した
+> 後にのみ `org down` を実行する。
 
 ペイン操作は `mcp__org-broker__*` MCP ツール経由で行う。pane_exited
 相当の lifecycle イベントは `mcp__org-broker__poll_events` で long-poll、画面スクレイプ
@@ -125,6 +137,97 @@ allowed-tools:
 ```bash
 kill $(cat .state/dashboard.pid 2>/dev/null) 2>/dev/null || true
 ```
+
+> **注**: この blind kill は「/org-start で再開する前提の中断」なので簡素なまま残す。daemon ごと
+> 落とす [`/org-down`](../org-down/SKILL.md) では、pid recycle による誤 kill を避ける stale-pid-safe な
+> 停止（`/proc` / `Get-CimInstance` の CommandLine 照合）に差し替える。
+
+## Phase 3.6: secretary_queue_watcher の停止（broker のみ）
+
+broker 面（`ORG_TRANSPORT=broker`）で org-start Block C3 が `run_in_background` で
+常駐させた滞留 watcher を停止する。**renga では watcher が存在しない**（queue.jsonl 非依存）ので、
+transport が `renga` なら本 Phase は**まるごと skip**する。
+
+watcher は起動時に `.state/secretary_queue_watcher.json` へ自分の pid / cwd / cmdline / started_at /
+broker_state_dir を記録している。停止は **pid 単独で kill せず**、(a) 記録された broker_state_dir が
+現在の `ORG_BROKER_STATE_DIR` と一致し（別 org / 別 broker の watcher 誤停止防止）、かつ (b) pid が
+生存し live argv（Linux/WSL は `/proc/<pid>/cmdline`、macOS/BSD は `ps -p <pid> -o args=` フォールバック）が
+本 watcher であることを照合できたときだけ SIGTERM する。照合が外れたら kill せず sidecar を stale として
+削除する（誤 kill 防止）。この照合ロジックは helper に入っているので、POSIX では 1 行呼ぶだけでよい:
+
+**Mac / Linux / WSL**:
+```bash
+python3 tools/secretary_queue_watcher.py --stop   # Windows で console python を使う場合は py -3 ...
+```
+出力の 1 行（`STOP: ...`）で結果を確認する（`SIGTERM を送信し停止` / `stale sidecar を削除` /
+`既に停止済み`）。exit 0 が正常系（停止・stale 掃除・既停止のいずれも 0）。macOS は `ps` フォールバックで
+identity 照合できるので `--stop` がそのまま効く。exit 2（identity 未確認）は `/proc` も `ps` も無い環境
+（Windows native）でのみ出るシグナルで、その場合は次の PowerShell 手順を使う。
+
+**Windows native（PowerShell）** — `/proc` が無く helper の argv 照合が使えないので、
+`Get-CimInstance Win32_Process` の CommandLine で identity を照合してから `Stop-Process` する
+（`kill -0` / `kill -TERM` の直訳ではなく Windows 別手順）:
+```powershell
+$pf = ".state\secretary_queue_watcher.json"
+if (Test-Path $pf) {
+  $rec = Get-Content $pf -Raw | ConvertFrom-Json
+  $wpid = [int]$rec.pid
+  $ownOk = $false
+  try {
+    if ($env:ORG_BROKER_STATE_DIR) {
+      $ownOk = ((Resolve-Path $rec.broker_state_dir).Path -eq (Resolve-Path $env:ORG_BROKER_STATE_DIR).Path)
+    } else {
+      $ownOk = ((Resolve-Path $rec.cwd).Path -eq (Get-Location).Path)
+    }
+  } catch { $ownOk = $false }
+  $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$wpid" -ErrorAction SilentlyContinue
+  $idOk = $proc -and ($proc.CommandLine -match 'secretary_queue_watcher\.py')
+  if ($ownOk -and $idOk) {
+    Stop-Process -Id $wpid -Force
+    Write-Output "secretary_queue_watcher (pid=$wpid) stopped"
+  } else {
+    Write-Output "watcher pid stale / different org / not running; not killing, removing stale sidecar"
+  }
+  Remove-Item $pf -ErrorAction SilentlyContinue
+}
+```
+
+## Phase 3.7: attention watcher の停止（ペイン teardown の前）
+
+attention watcher は dispatcher ペインの右 split に常駐する CLI ペインなので、**Phase 4 のペイン
+一括 teardown より前に**停止する（dispatcher を先に閉じると attention ペインが孤児化 / pane_id
+recycle され、後続の識別を壊すため）。attention watcher を起動していないセッションでは sidecar も
+live pane も無く、本 Phase は no-op。
+
+停止は [`/org-attention-stop`](../org-attention-stop/SKILL.md) と同じ **identity 照合**を使う
+（sidecar の pane_id を無検証で `close_pane` しない。pane_id が別ペインへ再割当てされていると
+無関係なペインを kill する — Issue #468）:
+
+1. `mcp__org-broker__list_panes` で `name="attention"` **または** `role="attention"` の live pane を
+   **全て**集める（= 確認済み attention ペイン集合。各 **数値 pane_id** を控える）
+2. `.state/attention_pane.json` を `Read` で開けたら `pane_id` を読む（= sidecar pane_id）。無ければ
+   「sidecar 無し」
+3. sidecar pane_id を **list_panes が返す name/role** で分類する（sidecar 記録の name は信用しない）:
+   - **verified**（確認済み集合に含まれる）→ その pane はいまも本物の watcher。close 対象
+   - **recycled**（list_panes にあるが name/role が attention でない）→ pane_id が別ペインへ再割当て済み。
+     **絶対に close しない**
+   - **gone**（list_panes に無い）→ 既に消滅。close しない
+4. 確認済み集合の各ペインを **数値 pane_id** で `mcp__org-broker__close_pane(target="<id>")` する
+   （`target="attention"` の name 指定はしない — role だけ持つ孤児に当たらないため）。
+   `[pane_not_found]` / `[pane_vanished]` は既に閉じた扱いで skip
+5. sidecar があれば **分類によらず必ず削除**する:
+   ```bash
+   rm -f .state/attention_pane.json     # Windows native は del .state\attention_pane.json
+   ```
+6. journal に 1 行追記する。**実際に close したペインがある場合のみ** pane_id を載せ、recycled / gone で
+   close を 1 つも行わなかった場合は `reason=stale_sidecar` にする（無関係なペインを停めた誤記録を防ぐ）:
+   ```bash
+   bash tools/journal_append.sh attention_watch_stopped pane_id=<N>          # close した場合
+   bash tools/journal_append.sh attention_watch_stopped reason=stale_sidecar # close しなかった場合
+   ```
+
+分類別の詳細な挙動と報告文は [`/org-attention-stop`](../org-attention-stop/SKILL.md) を参照（本 Phase は
+その要点を suspend フローに埋め込んだもの）。
 
 ## Phase 4: 全ペイン停止
 
