@@ -330,6 +330,14 @@ def _wait_gone(pid: int, timeout: float = 5.0) -> bool:
     return not _pid_alive(pid)
 
 
+# 兄弟 teardown CLI（tools/stop_dashboard.py）が同じ「live プロセス identity 照合で
+# 誤 kill を避ける」プリミティブを再利用するための public 別名（underscore シンボルを
+# import させないため）。実体は上の identity 照合ヘルパ。
+pid_alive = _pid_alive
+live_cmdline = _live_cmdline
+wait_gone = _wait_gone
+
+
 def run_stop(pid_file: Path) -> int:
     """PID file を ownership+identity 照合して watcher を停止する（誤 kill 防止）。
 
