@@ -7,6 +7,36 @@
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-07-15
+
+窓口の CI 監視・完了報告経路と、worker 委譲まわりの取りこぼしを塞ぐ運用改善リリース。
+
+### Added
+
+- worker brief テンプレートに「完了報告前 rebase」を焼き込み (#700)。並列 dispatch で
+  複数 worker が同じ integration point (registry / CLI routing / pyproject / README / docs) を
+  編集した際の CONFLICTING 連鎖 (先勝ち残りが conflict で CI すら起動しない) を、worker 段階の
+  `git fetch origin` → rebase → clean push で予防する (full タスク限定・Codex review 前)。
+
+### Changed
+
+- CI 監視パイプラインを見逃しゼロに多層再設計 (#703, Refs #653 #658)。events テーブルを正本と
+  する outbox 型 relay (`event_deliveries` 配送台帳 + dispatcher の `/loop 3m` relay scan) を導入し、
+  pr-watch の secretary push が env 欠如で silent no-op に陥っても終端信号を取りこぼさないようにした。
+  relay scan の floor を配送台帳エポックに固定し、長時間 outage 中の終端イベントも取りこぼさない。
+- `pr_watch` の CI watch を `gh pr checks --watch` 非依存の自前ポーリングに置換 (#701, Closes #695)。
+  skipping バケットを terminal と認識せず watch loop が抜けない不具合を解消し、終了条件を
+  `pending_count == 0` に統一 (fail が pending 共存時の早期終了も是正)。
+
+### Fixed
+
+- 中間ハンドオフ報告受信時にも `worker_reported` を journal するよう修正 (#704, Closes #699)。
+  dispatcher の PANE_OUTPUT_WITHOUT_PEER_MSG 誤検知を防止する。
+- runtime drift check の sandbox silent-skip を根治 (#696, #119)。`check_runtime_version.py` に
+  exit code 契約 (0=up-to-date / 1=drift / 2=unverified / 3=not-installed) を導入し、offline / PyPI
+  不達を silent skip でなく exit 2 + stderr で顕在化。pin ラグを「最新」と誤読して既修正バグを
+  委譲する phantom dispatch を防ぐ。
+
 ## [1.0.0] - 2026-07-06
 
 v0.1.0 (2026-04-30) 公開以降の 301 コミットを集約した最初の安定版リリース。
@@ -111,5 +141,6 @@ sandbox / ワーカー Git ガードレールの整備、(4) 横断 work-discove
 - 共有 `settings.json` からの personal-path leak を停止し、registry のローカルパスを redaction。
   sandbox の `denyRead` に credential セットを設定。
 
-[Unreleased]: https://github.com/suisya-systems/claude-org-ja/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/suisya-systems/claude-org-ja/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/suisya-systems/claude-org-ja/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/suisya-systems/claude-org-ja/releases/tag/v1.0.0
