@@ -13,6 +13,17 @@ Behavior:
 
 * Resolves the repo via ``gh repo view --json nameWithOwner`` when
   ``--repo`` is omitted.
+* Issue #719: BEFORE the transition-observing watch loop, evaluates the
+  PR's absolute CI state once via ``gh pr view --json statusCheckRollup``
+  (:func:`_evaluate_startup_state`). When CI already finished before the
+  watcher spawned — every check terminal — it records ``ci_completed``
+  (passed/failed) immediately and proceeds to merge-watch, instead of
+  waiting for a running→completed transition that already happened. Such
+  already-decided PRs previously degraded to a ~306s ``indeterminate``
+  via the empty-race resolver handoff (5x reproduced 2026-07-16). A
+  non-terminal / empty / unreadable startup rollup falls through to the
+  existing self-poll path below (additive, not a replacement), and
+  ``indeterminate`` stays reserved for a *continued* fetch failure.
 * Issue #695: watches CI via a **self-poll loop** over
   ``gh pr checks <PR> --json bucket,state,name`` (:func:`_fetch_checks`
   / :func:`_self_poll_watch`) at ``--interval`` cadence, instead of
@@ -557,6 +568,161 @@ def _fetch_checks(pr: int, repo: str) -> "list[dict] | None":
     return [c for c in data if isinstance(c, dict)]
 
 
+def _rollup_entry_bucket(entry: dict) -> str:
+    """Map one ``gh pr view --json statusCheckRollup`` node to a
+    ``gh pr checks``-style bucket (Issue #719).
+
+    ``statusCheckRollup`` returns two node shapes:
+
+    * ``CheckRun`` (GitHub Actions / app check) — keyed on ``status`` (the
+      lifecycle: ``QUEUED`` / ``IN_PROGRESS`` / ``COMPLETED`` / ``PENDING``
+      / ``WAITING`` / ``REQUESTED``) plus ``conclusion`` (the result once
+      ``COMPLETED``: ``SUCCESS`` / ``FAILURE`` / ``SKIPPED`` / ``NEUTRAL``
+      / ``CANCELLED`` / ``TIMED_OUT`` / ``ACTION_REQUIRED`` /
+      ``STARTUP_FAILURE`` / ``STALE``).
+    * ``StatusContext`` (legacy commit status) — keyed on ``state``
+      (``SUCCESS`` / ``FAILURE`` / ``ERROR`` / ``PENDING`` / ``EXPECTED``).
+
+    Both are normalized into the same ``pass`` / ``skipping`` / ``fail`` /
+    ``pending`` vocabulary :func:`_summarize_checks` already classifies, so
+    the startup evaluation reuses that tested aggregation verbatim. Any
+    node we cannot read conclusively degrades to ``pending`` (conservative:
+    never fabricate a ``pass``, fall through to the polling path instead).
+    """
+    # StatusContext: a single `state` field.
+    state = (entry.get("state") or "").upper()
+    if state:
+        if state == "SUCCESS":
+            return "pass"
+        if state in ("FAILURE", "ERROR"):
+            return "fail"
+        # PENDING / EXPECTED / anything unrecognized → not yet decided.
+        return "pending"
+    # CheckRun: `status` (lifecycle) + `conclusion` (result once COMPLETED).
+    status = (entry.get("status") or "").upper()
+    if status and status != "COMPLETED":
+        # QUEUED / IN_PROGRESS / PENDING / WAITING / REQUESTED → running.
+        return "pending"
+    conclusion = (entry.get("conclusion") or "").upper()
+    if conclusion == "SUCCESS":
+        return "pass"
+    if conclusion in ("SKIPPED", "NEUTRAL"):
+        return "skipping"
+    if conclusion in ("FAILURE", "CANCELLED", "TIMED_OUT",
+                      "ACTION_REQUIRED", "STARTUP_FAILURE", "STALE"):
+        return "fail"
+    # COMPLETED with an empty / unknown conclusion, or a node we cannot
+    # read at all → conservatively "not yet decided".
+    return "pending"
+
+
+def _summarize_rollup(rollup: "list[dict]") -> "tuple[str, int, int, int]":
+    """Aggregate a ``statusCheckRollup`` list into
+    ``(status, fail_count, pending_count, total)`` (Issue #719).
+
+    Delegates to :func:`_summarize_checks` after normalizing each rollup
+    node to a synthetic ``bucket`` (see :func:`_rollup_entry_bucket`), so
+    the startup evaluation and the ``gh pr checks`` polling path classify
+    identically.
+    """
+    return _summarize_checks(
+        [{"bucket": _rollup_entry_bucket(e)}
+         for e in rollup if isinstance(e, dict)]
+    )
+
+
+def _fetch_status_rollup(pr: int, repo: str) -> "list[dict] | None":
+    """Return the PR's aggregate ``statusCheckRollup``, or ``None`` (Issue #719).
+
+    Reads the PR's *absolute* CI state in one shot via
+    ``gh pr view <pr> --json statusCheckRollup`` — the aggregate of every
+    check run + commit status attached to the head commit. This is the
+    whole-state snapshot the startup evaluation consults, distinct from the
+    incremental ``gh pr checks`` probe the self-poll loop uses: on a PR
+    whose CI finished *before* the watcher spawned, ``gh pr checks`` can
+    momentarily report "no checks reported" (an empty / unparseable probe)
+    while the rollup already carries the decided verdict, which is exactly
+    the race that degraded such PRs to a ~306s ``indeterminate``.
+
+    Best-effort: any gh / parse failure (binary missing, non-zero exit
+    with no JSON, unparseable stdout, unexpected shape) degrades to
+    ``None`` so the caller falls through to the existing polling path
+    rather than aborting.
+    """
+    try:
+        result = subprocess.run(
+            ["gh", "pr", "view", str(pr), "--repo", repo,
+             "--json", "statusCheckRollup"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",  # gh emits UTF-8; locale decode (cp932) corrupts/crashes (#537)
+            check=False,
+        )
+    except OSError:
+        return None
+    try:
+        # ``ValueError`` covers json.JSONDecodeError; ``TypeError`` covers a
+        # non-string stdout (e.g. a Mock in tests that don't stub this call).
+        data = json.loads(result.stdout or "")
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    rollup = data.get("statusCheckRollup")
+    if not isinstance(rollup, list):
+        return None
+    return [e for e in rollup if isinstance(e, dict)]
+
+
+def _evaluate_startup_state(pr: int, repo: str) -> "dict | None":
+    """One-shot absolute-state evaluation run before the watch loop (Issue #719).
+
+    The self-poll loop is transition-oriented: it watches CI move from
+    running to completed. When the watcher spawns *after* CI already
+    finished there is no such transition left to observe, and an empty /
+    unparseable first ``gh pr checks`` probe used to hand off to the
+    bounded empty-race resolver — which, when the probe never became
+    parseable, degraded to a ~306s ``indeterminate`` even though the
+    verdict was already decided (5x reproduced 2026-07-16:
+    en#504/505/506, ja#718, en#509).
+
+    This reads the PR's aggregate status check rollup once and, when every
+    check has ALREADY reached a terminal state, returns a decided verdict
+    (same shape as :func:`_resolve_final_status`) so the caller records
+    ``ci_completed`` (passed/failed) immediately and proceeds to
+    merge-watch. It returns ``None`` — "no terminal verdict at startup,
+    use the existing polling path" — when the rollup is unreadable (a fetch
+    failure), empty (no checks visible yet), or still has at least one
+    pending check. That keeps the change strictly additive: a non-terminal
+    or unobservable startup state behaves exactly as before, and
+    ``indeterminate`` stays reserved for a *continued* fetch failure
+    (distinguished from this completed-observation short-circuit).
+    """
+    rollup = _fetch_status_rollup(pr, repo)
+    if not rollup:
+        # None (fetch failure) or [] (no checks visible yet): not a
+        # terminal observation. Defer to the self-poll + resolver path,
+        # which owns the freshly-created-PR empty-race and the continued
+        # fetch-failure → indeterminate classification.
+        return None
+    status, fail_count, pending_count, total = _summarize_rollup(rollup)
+    if pending_count:
+        # At least one check still running: let the self-poll loop observe
+        # the transition to completion (existing behavior, unchanged).
+        return None
+    # Every check is already decided (pass / skipping / fail / cancel) →
+    # record the verdict now instead of waiting for a transition that
+    # already happened. `status` here is only ever `passed` or `failed`
+    # (an empty rollup / any pending check returned None above).
+    return {
+        "status": status,
+        "fail_count": fail_count,
+        "pending_count": pending_count,
+        "total_checks": total,
+        "probe_attempts": 1,
+    }
+
+
 def _resolve_final_status(
     pr: int,
     repo: str,
@@ -1052,6 +1218,18 @@ def _run_ci_watch_phase(
     canceled = False
     verdict: "dict | None" = None
     try:
+        # Issue #719: startup absolute-state evaluation. BEFORE entering
+        # the transition-observing self-poll loop, read the PR's aggregate
+        # status check rollup once. If CI already finished before the
+        # watcher spawned (every check terminal), record that verdict
+        # immediately instead of waiting for a running→completed
+        # transition that already happened — which otherwise degraded such
+        # PRs to a ~306s `indeterminate` via the empty-race resolver
+        # handoff. A non-terminal / empty / unreadable startup state
+        # returns None and falls through to the existing self-poll +
+        # resolver path below, unchanged (additive, not a replacement).
+        verdict = _evaluate_startup_state(pr, repo)
+        #
         # Issue #695: self-poll replaces the blocking `gh pr checks
         # --watch` subprocess. Raises KeyboardInterrupt on SIGINT, same
         # as the previous blocking subprocess.run(cmd) did.
@@ -1076,7 +1254,10 @@ def _run_ci_watch_phase(
         # response at all); whenever real, still-pending check rows are
         # observed, hand control back to the unbounded self-poll loop
         # instead of giving up.
-        while True:
+        #
+        # Issue #719: skipped entirely when the startup evaluation above
+        # already produced a terminal verdict (CI was done before spawn).
+        while verdict is None:
             verdict = _self_poll_watch(pr, repo, interval)
             if verdict is not None:
                 break
@@ -1094,6 +1275,7 @@ def _run_ci_watch_phase(
                 # Real, still-pending checks exist -- not an empty-race
                 # artifact, and not fully decided even if a sibling
                 # check already failed. Resume unbounded polling.
+                verdict = None
                 continue
             break
     except KeyboardInterrupt:
