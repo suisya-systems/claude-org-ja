@@ -40,11 +40,21 @@ import sqlite3
 from pathlib import Path
 from typing import Optional
 
-# String marker we look for in pyproject.toml. Doing a substring search
-# is intentional — it avoids pulling tomllib (3.11+) / tomli (3.10) into
-# every tool just to read one field, and the marker is a stable canary
-# string in this repo's own pyproject.
-_PROJECT_NAME_MARKER = 'name = "claude-org-ja"'
+# Package names that identify a claude-org repo root. ``claude-org-ja`` is
+# this (ja) upstream's own name; ``claude-org`` is the EN mirror's name after
+# the package rename (en#489 / en#506). Accepting both keeps discovery working
+# in the auto-mirrored EN checkout without changing ja's behavior — same
+# two-name shape as ``resolve_worker_layout._CLAUDE_ORG_REPO_NAMES`` (ja#717).
+_CLAUDE_ORG_REPO_NAMES: tuple[str, ...] = ("claude-org-ja", "claude-org")
+
+# String markers we look for in pyproject.toml. Doing a substring search is
+# intentional — it avoids pulling tomllib (3.11+) / tomli (3.10) into every
+# tool just to read one field, and the marker is a stable canary string in
+# this repo's own pyproject. The closing quote is part of each marker so the
+# ``claude-org`` marker does NOT spuriously match ``name = "claude-org-ja"``.
+_PROJECT_NAME_MARKERS: tuple[str, ...] = tuple(
+    f'name = "{name}"' for name in _CLAUDE_ORG_REPO_NAMES
+)
 
 # Required tables for state.db to be usable by event-recording tools.
 # The schema has more (projects, workstreams, …) but `runs` + `events`
@@ -57,7 +67,7 @@ def _pyproject_has_marker(pyproject: Path) -> bool:
         text = pyproject.read_text(encoding="utf-8")
     except OSError:
         return False
-    return _PROJECT_NAME_MARKER in text
+    return any(marker in text for marker in _PROJECT_NAME_MARKERS)
 
 
 def _resolve_main_checkout_from_worktree(git_file: Path) -> Optional[Path]:
@@ -76,7 +86,7 @@ def _resolve_main_checkout_from_worktree(git_file: Path) -> Optional[Path]:
 
     Returns None if the file is not a valid worktree pointer or the
     inferred main checkout doesn't itself look like the right project
-    (sanity-check via :data:`_PROJECT_NAME_MARKER`).
+    (sanity-check via :data:`_PROJECT_NAME_MARKERS`).
     """
     try:
         text = git_file.read_text(encoding="utf-8").strip()
@@ -133,8 +143,8 @@ def discover_repo_root(start: Optional[Path] = None) -> Path:
         return candidate
 
     raise RuntimeError(
-        "could not locate claude-org-ja repo root (no pyproject.toml with "
-        f'{_PROJECT_NAME_MARKER!r} found walking up from {start})'
+        "could not locate claude-org repo root (no pyproject.toml with "
+        f'any of {list(_PROJECT_NAME_MARKERS)!r} found walking up from {start})'
     )
 
 
