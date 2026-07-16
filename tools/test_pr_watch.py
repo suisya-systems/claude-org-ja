@@ -1122,6 +1122,7 @@ class Issue685Tests(unittest.TestCase):
             return real_resolve(*args, **kwargs)
 
         with mock.patch.object(pr_watch, "_fetch_head_oid", return_value=None), \
+             mock.patch.object(pr_watch, "_evaluate_startup_state", return_value=None), \
              mock.patch.object(pr_watch, "_self_poll_watch", return_value=None), \
              mock.patch.object(pr_watch, "_resolve_final_status", side_effect=spy), \
              mock.patch.object(pr_watch, "_fetch_checks", return_value=[]), \
@@ -1456,6 +1457,19 @@ class MergeWatchTests(unittest.TestCase):
                     and "--json" in cmd
                     and cmd[cmd.index("--json") + 1] == "headRefOid"):
                 return mock.Mock(returncode=0, stdout="{}", stderr="")
+            # Issue #719 startup probe: `gh pr view <pr> --json
+            # statusCheckRollup`. Return an empty rollup so
+            # `_evaluate_startup_state` defers to the self-poll path
+            # WITHOUT consuming a view_sequence entry (these fixtures drive
+            # the CI verdict through `gh pr checks`, not the rollup).
+            if (cmd[:3] == ["gh", "pr", "view"]
+                    and "--json" in cmd
+                    and cmd[cmd.index("--json") + 1] == "statusCheckRollup"):
+                return mock.Mock(
+                    returncode=0,
+                    stdout=json.dumps({"statusCheckRollup": []}),
+                    stderr="",
+                )
             # Merge-watch probe: `gh pr view <pr> --json number,url,...`
             if cmd[:3] == ["gh", "pr", "view"] and "--json" in cmd:
                 idx = view_idx["i"]
@@ -2049,6 +2063,17 @@ class HeadPollLoopbackTests(unittest.TestCase):
                             stdout=json.dumps({"headRefOid": oid}),
                             stderr="",
                         )
+                    if jval == "statusCheckRollup":
+                        # Issue #719 startup probe: empty rollup so
+                        # `_evaluate_startup_state` defers to the self-poll
+                        # path WITHOUT consuming an mw_seq entry (this
+                        # fixture drives the verdict + head loopback through
+                        # `gh pr checks` + headRefOid, not the rollup).
+                        return mock.Mock(
+                            returncode=0,
+                            stdout=json.dumps({"statusCheckRollup": []}),
+                            stderr="",
+                        )
                     # merge-watch poll (long --json field list).
                     i = mw_calls["i"]
                     payload = mw_seq[i] if i < len(mw_seq) else mw_seq[-1]
@@ -2546,6 +2571,216 @@ class WatchAbortedTests(unittest.TestCase):
             self.assertEqual(len(rows), 1)
             self.assertEqual(rows[0]["pr"], 5)
             self.assertIn("RuntimeError", rows[0]["error"])
+
+
+class StartupStateEvalTests(unittest.TestCase):
+    """Issue #719: the startup absolute-state evaluation.
+
+    When the watcher spawns *after* CI already finished, there is no
+    running→completed transition left to observe. Before entering the
+    self-poll loop, `_evaluate_startup_state` reads the PR's aggregate
+    `gh pr view --json statusCheckRollup` once; if every check is already
+    terminal it records `ci_completed` (passed/failed) immediately instead
+    of degrading to a ~306s `indeterminate` via the empty-race resolver
+    handoff (5x reproduced 2026-07-16: en#504/505/506, ja#718, en#509).
+
+    Four systems: startup already-passed / already-failed /
+    running→completed / continued fetch-failure.
+    """
+
+    def setUp(self) -> None:
+        _assert_peer_isolation()
+
+    @staticmethod
+    def _fake_run(
+        *,
+        rollup_stdout: "str | None",
+        rollup_returncode: int = 0,
+        checks_sequence: "list | None" = None,
+        checks_raises: "Exception | None" = None,
+        checks_calls: "list | None" = None,
+    ):
+        """Build a `subprocess.run` stub for the startup-eval tests.
+
+        * `gh pr view --json number` → PR exists.
+        * `gh pr view --json headRefOid` → `{}` (head detection off).
+        * `gh pr view --json statusCheckRollup` → `rollup_stdout`
+          (``None`` simulates an unparseable / no-checks probe).
+        * `gh pr checks --json ...` → next entry of `checks_sequence`
+          (last entry reused), or raises `checks_raises`. Each such call
+          is appended to `checks_calls` so a test can assert whether the
+          polling path ran at all.
+        """
+        idx = {"i": 0}
+
+        def fake_run(cmd, *args, **kwargs):
+            if cmd[:3] == ["gh", "pr", "view"] and "--json" in cmd:
+                jval = cmd[cmd.index("--json") + 1]
+                if jval == "number":
+                    return mock.Mock(returncode=0, stdout="{}", stderr="")
+                if jval == "headRefOid":
+                    return mock.Mock(returncode=0, stdout="{}", stderr="")
+                if jval == "statusCheckRollup":
+                    return mock.Mock(
+                        returncode=rollup_returncode,
+                        stdout="" if rollup_stdout is None else rollup_stdout,
+                        stderr="",
+                    )
+            if "checks" in cmd and "--json" in cmd:
+                if checks_calls is not None:
+                    checks_calls.append(list(cmd))
+                if checks_raises is not None:
+                    raise checks_raises
+                seq = checks_sequence or [[]]
+                i = idx["i"]
+                payload = seq[i] if i < len(seq) else seq[-1]
+                if i < len(seq) - 1:
+                    idx["i"] = i + 1
+                return mock.Mock(
+                    returncode=_gh_exit_for_payload(payload),
+                    stdout=json.dumps(payload),
+                    stderr="",
+                )
+            return mock.Mock(returncode=0)
+
+        return fake_run
+
+    def test_startup_already_passed_records_immediately(self) -> None:
+        """A rollup that is entirely terminal + green at spawn records
+        `passed` immediately, WITHOUT ever polling `gh pr checks` (proving
+        the transition-observation path was short-circuited)."""
+        rollup = {"statusCheckRollup": [
+            {"__typename": "CheckRun", "name": "build",
+             "status": "COMPLETED", "conclusion": "SUCCESS"},
+            {"__typename": "CheckRun", "name": "lint",
+             "status": "COMPLETED", "conclusion": "SKIPPED"},
+            {"__typename": "StatusContext", "context": "ci/legacy",
+             "state": "SUCCESS"},
+        ]}
+        checks_calls: list = []
+        fake_run = self._fake_run(
+            rollup_stdout=json.dumps(rollup), checks_calls=checks_calls,
+        )
+        with TempDir() as tmp:
+            journal = tmp / ".state" / "state.db"
+            with mock.patch.object(pr_watch, "JOURNAL_PATH", journal), \
+                 mock.patch.object(pr_watch, "_notify_peer", return_value=False), \
+                 mock.patch.object(pr_watch.shutil, "which", return_value="/usr/bin/gh"), \
+                 mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run), \
+                 mock.patch.object(pr_watch.time, "monotonic",
+                                   side_effect=[0.0, 3.0]):
+                rc = pr_watch.main(["--pr", "719", "--repo", "octo/repo"])
+            self.assertEqual(rc, 0)
+            self.assertEqual(_count_ci_events(journal), 1)
+            rec = _read_ci_event(journal)
+            self.assertEqual(rec["status"], "passed")
+            self.assertEqual(rec["fail_count"], 0)
+            self.assertEqual(rec["pending_count"], 0)
+            self.assertEqual(rec["total_checks"], 3)
+            self.assertEqual(rec["duration_sec"], 3)
+            # The whole point of #719: no transition polling was needed.
+            self.assertEqual(checks_calls, [])
+
+    def test_startup_already_failed_records_immediately(self) -> None:
+        """A rollup with a terminal failure at spawn records `failed`
+        immediately (exit 1), again without polling `gh pr checks`."""
+        rollup = {"statusCheckRollup": [
+            {"__typename": "CheckRun", "name": "build",
+             "status": "COMPLETED", "conclusion": "SUCCESS"},
+            {"__typename": "CheckRun", "name": "test",
+             "status": "COMPLETED", "conclusion": "FAILURE"},
+        ]}
+        checks_calls: list = []
+        fake_run = self._fake_run(
+            rollup_stdout=json.dumps(rollup), checks_calls=checks_calls,
+        )
+        with TempDir() as tmp:
+            journal = tmp / ".state" / "state.db"
+            with mock.patch.object(pr_watch, "JOURNAL_PATH", journal), \
+                 mock.patch.object(pr_watch, "_notify_peer", return_value=False), \
+                 mock.patch.object(pr_watch.shutil, "which", return_value="/usr/bin/gh"), \
+                 mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run), \
+                 mock.patch.object(pr_watch.time, "monotonic",
+                                   side_effect=[0.0, 2.0]):
+                rc = pr_watch.main(["--pr", "719", "--repo", "octo/repo"])
+            self.assertEqual(rc, 1)
+            rec = _read_ci_event(journal)
+            self.assertEqual(rec["status"], "failed")
+            self.assertEqual(rec["fail_count"], 1)
+            self.assertEqual(rec["total_checks"], 2)
+            self.assertEqual(checks_calls, [])
+
+    def test_startup_running_then_completed_uses_polling(self) -> None:
+        """A rollup that still has a pending check at spawn is NON-terminal:
+        `_evaluate_startup_state` returns None and the existing self-poll
+        path observes the running→completed transition via `gh pr checks`
+        and records `passed`."""
+        rollup = {"statusCheckRollup": [
+            {"__typename": "CheckRun", "name": "build",
+             "status": "COMPLETED", "conclusion": "SUCCESS"},
+            {"__typename": "CheckRun", "name": "deploy",
+             "status": "IN_PROGRESS", "conclusion": None},
+        ]}
+        checks_calls: list = []
+        fake_run = self._fake_run(
+            rollup_stdout=json.dumps(rollup),
+            checks_sequence=[
+                [{"name": "build", "state": "COMPLETED", "bucket": "pass"},
+                 {"name": "deploy", "state": "IN_PROGRESS", "bucket": "pending"}],
+                [{"name": "build", "state": "COMPLETED", "bucket": "pass"},
+                 {"name": "deploy", "state": "COMPLETED", "bucket": "pass"}],
+            ],
+            checks_calls=checks_calls,
+        )
+        with TempDir() as tmp:
+            journal = tmp / ".state" / "state.db"
+            with mock.patch.object(pr_watch, "JOURNAL_PATH", journal), \
+                 mock.patch.object(pr_watch, "_notify_peer", return_value=False), \
+                 mock.patch.object(pr_watch.shutil, "which", return_value="/usr/bin/gh"), \
+                 mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run), \
+                 mock.patch.object(pr_watch.time, "sleep", return_value=None), \
+                 mock.patch.object(pr_watch.time, "monotonic",
+                                   side_effect=[0.0, 4.0]):
+                rc = pr_watch.main([
+                    "--pr", "719", "--repo", "octo/repo", "--interval", "5",
+                ])
+            self.assertEqual(rc, 0)
+            rec = _read_ci_event(journal)
+            self.assertEqual(rec["status"], "passed")
+            self.assertEqual(_count_ci_events(journal), 1)
+            # Non-terminal startup → the polling path DID run.
+            self.assertGreaterEqual(len(checks_calls), 1)
+
+    def test_continued_fetch_failure_is_indeterminate(self) -> None:
+        """When the startup rollup is unreadable AND every `gh pr checks`
+        probe also fails, the verdict is `indeterminate` (continued fetch
+        failure) — distinct from a completed observation. This is the ONLY
+        route to `indeterminate` after #719."""
+        checks_calls: list = []
+        fake_run = self._fake_run(
+            # Rollup probe returns empty stdout → unparseable → None.
+            rollup_stdout=None, rollup_returncode=1,
+            checks_raises=FileNotFoundError("gh transient outage"),
+            checks_calls=checks_calls,
+        )
+        with TempDir() as tmp:
+            journal = tmp / ".state" / "state.db"
+            with mock.patch.object(pr_watch, "JOURNAL_PATH", journal), \
+                 mock.patch.object(pr_watch, "_notify_peer", return_value=False), \
+                 mock.patch.object(pr_watch.shutil, "which", return_value="/usr/bin/gh"), \
+                 mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run), \
+                 mock.patch.object(pr_watch.time, "sleep", return_value=None), \
+                 mock.patch.object(pr_watch.time, "monotonic",
+                                   side_effect=[0.0, 0.5, 9999.0, 9999.5]):
+                rc = pr_watch.main([
+                    "--pr", "719", "--repo", "octo/repo", "--interval", "5",
+                ])
+            self.assertEqual(rc, 8)
+            rec = _read_ci_event(journal)
+            self.assertEqual(rec["status"], "indeterminate")
+            self.assertTrue(rec["retry_recommended"])
+            # No per-bucket counts on the fetch-failure path (nothing read).
+            self.assertNotIn("total_checks", rec)
 
 
 if __name__ == "__main__":
