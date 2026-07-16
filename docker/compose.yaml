@@ -1,0 +1,67 @@
+# claude-org-ja org-in-a-box（設計: docs/design/org-docker-distribution.md）
+# 起動:   docker compose -f docker/compose.yaml up -d
+# 対話面: docker exec -it claude-org org-shell   （初回は org-shell --setup）
+name: claude-org
+
+services:
+  org:
+    container_name: claude-org
+    image: "ghcr.io/suisya-systems/claude-org-ja:${ORG_IMAGE_TAG:-local}"
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        # host bind mount を使う場合はホスト UID に合わせる（設計 §8）
+        ORG_UID: "${ORG_UID:-1000}"
+        ORG_GID: "${ORG_GID:-1000}"
+        RUNTIME_VERSION: "${RUNTIME_VERSION:-0.1.36}"
+        INSTALL_HERDR: "${INSTALL_HERDR:-1}"
+        REPO_REF: "${REPO_REF:-dev}"
+    # PID1 は image 内の tini（init: true と等価の機能を image 側で自己完結。設計 §5）
+    init: false
+    environment:
+      # 設計 §4: transport は broker 固定既定（README と一致させること — Minor 対応）
+      ORG_TRANSPORT: broker
+      # tmux | herdr（設計 §9。切替は再作成: up -d --force-recreate）
+      ORG_BACKEND: "${ORG_BACKEND:-tmux}"
+      ORG_BROKER_PORT: "${ORG_BROKER_PORT:-48720}"
+      # Pi 5 16GB 向け控えめ既定（設計 §11）
+      ORG_MAX_WORKERS: "${ORG_MAX_WORKERS:-3}"
+      ORG_DASHBOARD_EXPOSE: "${ORG_DASHBOARD_EXPOSE:-1}"
+    volumes:
+      # 認証 + ユーザー設定（~/.claude, ~/.claude.json, gh, codex, gog。設計 §6）
+      - org_home:/home/org
+      # 組織運用状態（state.db, workers md, role-config。設計 §6.2）
+      - org_state:/workspace/claude-org-ja/.state
+      # ワーカー成果物（workers_dir: ../workers の解決先。設計 §7.2）
+      - org_workers:/workspace/workers
+    ports:
+      # 注意: socat はコンテナ内 0.0.0.0:18099 で受けるため、このコンテナと同じ
+      # Docker network に他コンテナを attach すると認証なしで到達できる。本
+      # compose の project network には org 単独で置き、同居させないこと。
+      # dashboard はホストの loopback にのみ公開（認証なしのため LAN 公開不可。
+      # 設計 §7.4。コンテナ内 localhost:8099 → socat 0.0.0.0:18099 → host loopback。
+      # ホスト側で 8099 が使用中（ホスト直の org 併走等）なら ORG_DASHBOARD_HOST_PORT で変更）
+      - "127.0.0.1:${ORG_DASHBOARD_HOST_PORT:-8099}:18099"
+    security_opt:
+      # Claude Code の Bash sandbox（bubblewrap）が user namespace を作るために
+      # 必要（Docker 既定 seccomp は unshare/clone をブロック）。トレードオフと
+      # 検証マトリクスは設計 §7.5 参照。
+      - "seccomp=unconfined"
+      # setuid バイナリ経由の権限昇格を封じる（gosu の root→org 降格は setuid
+      # 昇格ではないので影響しない）
+      - "no-new-privileges:true"
+    # seccomp を緩める代わりに capability は最小集合へ絞る（設計 §7.5 S5。
+    # 残すのは entrypoint の one-time chown と gosu 降格に必要な分のみ）
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID, KILL]
+    # ホストの Docker socket は既定で渡さない（設計 §7.6）。worker に Docker が
+    # 必要な場合のみ compose.docker-optin.yaml を明示で重ねる:
+    #   docker compose -f docker/compose.yaml -f docker/compose.docker-optin.yaml up -d
+    restart: unless-stopped
+    stop_grace_period: 30s
+
+volumes:
+  org_home:
+  org_state:
+  org_workers:
