@@ -37,18 +37,20 @@ from tools.state_db.discover import (  # noqa: E402
 )
 
 
-def _make_fake_repo(root: Path) -> Path:
-    """Lay out a minimal fake claude-org-ja checkout under ``root``.
+def _make_fake_repo(root: Path, name: str = "claude-org-ja") -> Path:
+    """Lay out a minimal fake claude-org checkout under ``root``.
 
-    Includes pyproject.toml with the recognised marker, a real ``.git``
-    directory (so the worktree-redirect path doesn't trigger), and an
-    empty ``.state/`` directory ready for state.db.
+    Includes pyproject.toml with a recognised ``name`` marker, a real
+    ``.git`` directory (so the worktree-redirect path doesn't trigger),
+    and an empty ``.state/`` directory ready for state.db. ``name``
+    defaults to ``claude-org-ja`` (this ja upstream's own name); pass
+    ``claude-org`` to model the renamed EN mirror (en#489 / en#506).
     """
     root.mkdir(parents=True, exist_ok=True)
     (root / "pyproject.toml").write_text(
-        textwrap.dedent('''
+        textwrap.dedent(f'''
             [project]
-            name = "claude-org-ja"
+            name = "{name}"
             version = "0.0.1"
         ''').strip() + "\n",
         encoding="utf-8",
@@ -94,6 +96,27 @@ class DiscoverRepoRootTests(unittest.TestCase):
 
     def test_finds_marker_via_walk_up(self) -> None:
         repo = _make_fake_repo(self.tmp / "fake-repo")
+        nested = repo / "tools" / "state_db"
+        nested.mkdir(parents=True)
+        result = discover_repo_root(start=nested)
+        self.assertEqual(result, repo)
+
+    def test_finds_claude_org_marker(self) -> None:
+        # EN mirror renamed its package to ``claude-org`` (en#489 /
+        # en#506). Discovery must anchor on that name too, otherwise the
+        # auto-mirrored EN checkout can't locate its repo root and every
+        # state.db import (pr_watch etc.) breaks.
+        repo = _make_fake_repo(self.tmp / "en-repo", name="claude-org")
+        nested = repo / "tools" / "state_db"
+        nested.mkdir(parents=True)
+        result = discover_repo_root(start=nested)
+        self.assertEqual(result, repo)
+
+    def test_ja_name_still_anchors_unchanged(self) -> None:
+        # ja behavior is invariant: the ``claude-org`` marker (a substring
+        # of ``claude-org-ja``) must NOT cause the ja checkout to resolve
+        # anywhere different — the closing quote keeps the markers distinct.
+        repo = _make_fake_repo(self.tmp / "ja-repo", name="claude-org-ja")
         nested = repo / "tools" / "state_db"
         nested.mkdir(parents=True)
         result = discover_repo_root(start=nested)
