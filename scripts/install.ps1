@@ -7,6 +7,8 @@
 #   1. Checks for required commands (git, claude, gh, jq) and prints
 #      installation hints when something is missing. renga is optional
 #      (only needed for ORG_TRANSPORT=renga) and is skipped when absent.
+#      WezTerm (the default broker transport's terminal backend on Windows)
+#      is soft-warned when absent.
 #   2. Clones suisya-systems/claude-org-ja (asks before reusing an
 #      existing directory).
 #   3. Runs `renga mcp install` (user-scope) when renga is present, so the
@@ -111,6 +113,12 @@ if (-not (Test-Prerequisite 'claude' 'https://claude.ai/code (Claude Code CLI)')
 $rengaPresent = Test-OptionalCommand 'renga' 'npm install -g @suisya-systems/renga@0.18.0' 'optional; only needed when ORG_TRANSPORT=renga'
 if (-not (Test-Prerequisite 'gh'     'https://cli.github.com/'))                                { $missing = $true }
 if (-not (Test-Prerequisite 'jq'     'https://jqlang.org/download/'))                           { $missing = $true }
+# WezTerm is the terminal backend the code-default broker transport spawns its
+# panes in on Windows (see docs/design/renga-decoupling.md), so it is
+# effectively required for the default `org up` path. It is NOT needed when
+# falling back to the renga transport (ORG_TRANSPORT=renga), so its absence
+# must not abort the install — soft-warn and continue, same as renga above.
+$null = Test-OptionalCommand 'wezterm' 'https://wezterm.org/' 'needed by the default broker transport (terminal backend); only unnecessary when ORG_TRANSPORT=renga'
 Write-Host ''
 
 if ($missing) {

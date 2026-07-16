@@ -8,7 +8,8 @@
 #   1. Checks for required commands (git, claude, gh, jq) and prints
 #      installation hints when something is missing. renga is optional
 #      (only needed for ORG_TRANSPORT=renga), as are the node/npm used
-#      only to install it; all are skipped when absent.
+#      only to install it; all are skipped when absent. tmux (the default
+#      broker transport's terminal backend) is soft-warned when absent.
 #   2. Clones suisya-systems/claude-org-ja (asks before reusing an
 #      existing directory).
 #   3. Runs `renga mcp install` (user-scope) when renga is present, so the
@@ -267,6 +268,20 @@ fi
 optional_or_warn renga "npm install -g @suisya-systems/renga@0.18.0" "optional; only needed when ORG_TRANSPORT=renga"
 require_or_warn gh     "https://cli.github.com/" || missing=1
 require_or_warn jq     "apt install jq / brew install jq / https://jqlang.org/download/" || missing=1
+# tmux is the terminal backend the code-default broker transport spawns its
+# panes in (POSIX / WSL; see docs/design/renga-decoupling.md), so it is
+# effectively required for the default `claude-org-runtime org up` path. It
+# is NOT needed when falling back to the renga transport (ORG_TRANSPORT=renga),
+# so its absence must not abort the install — soft-warn and continue, same as
+# renga above. Windows uses WezTerm instead, and the direct Git-Bash-on-
+# Windows flow lands here (not in install.ps1), so probe WezTerm on that
+# branch too — resolve_command's fallback ladder covers `.exe` shims and
+# per-user install prefixes just like it does for renga.
+if [[ "$IS_WINDOWS_BASH" == "1" ]]; then
+  optional_or_warn wezterm "https://wezterm.org/" "needed by the default broker transport (terminal backend); only unnecessary when ORG_TRANSPORT=renga"
+else
+  optional_or_warn tmux "apt install tmux / brew install tmux" "needed by the default broker transport (terminal backend); only unnecessary when ORG_TRANSPORT=renga"
+fi
 # Capture the absolute path so the later `run renga mcp install` can
 # bypass bash's PATH-extension blind spot for `.cmd` shims (Git Bash
 # on Windows tries `.exe` but not `.cmd` / `.bat`, so a PATH-only
