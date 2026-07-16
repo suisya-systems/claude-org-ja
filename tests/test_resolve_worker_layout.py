@@ -355,6 +355,31 @@ class TestRoleDetection(unittest.TestCase):
         self.assertEqual(layout.role, "claude-org-self-edit")
         self.assertTrue(layout.self_edit)
 
+    def test_claude_org_self_edit_role_for_en_mirror_origin(self):
+        """EN mirror clones carry an ``origin`` named ``claude-org`` (no
+        ``-ja`` suffix), while the self-edit task still runs under the
+        canonical ``claude-org-ja`` slug. Self-edit detection must recognize
+        that origin repo name too, else EN self-edit tasks misclassify as
+        ephemeral Pattern C and need a manual override (observed in the EN
+        v1.0.0 release). Build a fresh sandbox whose git origin is the EN
+        mirror URL."""
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        sb = _Sandbox(Path(td.name))
+        _Sandbox.init_git_with_origin(
+            sb.claude_org_root,
+            "https://github.com/suisya-systems/claude-org.git",
+        )
+        layout = rwl.resolve(
+            task_id="t-en",
+            project_slug="claude-org-ja",
+            mode="edit",
+            claude_org_root=sb.claude_org_root,
+            state_db_path=sb.db_path,
+        )
+        self.assertEqual(layout.role, "claude-org-self-edit")
+        self.assertTrue(layout.self_edit)
+
     def test_audit_mode_forces_doc_audit_even_for_claude_org(self):
         layout = rwl.resolve(
             task_id="t-3",

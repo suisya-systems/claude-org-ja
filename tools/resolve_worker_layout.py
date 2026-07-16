@@ -266,7 +266,7 @@ _CLAUDE_ORG_SELF_EDIT_SLUG = "claude-org-ja"
 # ``git@github.com:<user>/claude-org-ja.git``), not at suisya-systems'.
 # Tuple constant so adding additional self-edit repo names is a one-line
 # change.
-_CLAUDE_ORG_REPO_NAMES: tuple[str, ...] = ("claude-org-ja",)
+_CLAUDE_ORG_REPO_NAMES: tuple[str, ...] = ("claude-org-ja", "claude-org")
 
 # Capture <owner>/<repo> from common github URL forms:
 #   https://github.com/owner/repo(.git)
