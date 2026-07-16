@@ -22,6 +22,7 @@ claude-org-ja は、Claude Code を 1 つの窓口から複数のワーカーへ
 ## すぐ試す
 
 前提ツール（git / claude / gh / jq / Python）が入っていれば、1 行のコマンドでクローンとセットアップができます。
+既定の起動方式（broker）は端末バックエンドとして tmux（Linux / WSL / macOS）または WezTerm（Windows）を使うため、あわせてインストールしておいてください。renga で起動する場合（後述の `ORG_TRANSPORT=renga`）は不要です。
 
 ```bash
 # macOS / Linux
