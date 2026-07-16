@@ -1,0 +1,40 @@
+# docker/Dockerfile 用の build context 除外（BuildKit per-Dockerfile ignore）。
+# `docker build -f docker/Dockerfile <repo-root>` で自動適用される。
+# 設計: docs/design/org-docker-distribution.md §3（image に含めないもの）/ §7.3。
+# ここで除外し損ねても Dockerfile の secret-scan stage が build を落とす（二層目）。
+
+# 組織運用状態・秘匿物
+.state
+**/settings.local.json
+**/settings.local.override.json
+**/settings.local.json.bak
+CLAUDE.local.md
+.env
+.env.*
+knowledge/raw
+
+# ローカル環境の生成物
+.venv
+.worktrees
+tmp
+__pycache__
+**/__pycache__
+*.pyc
+*.egg-info
+build
+dist
+err.log
+.dispatcher/.state
+.dispatcher/panes-snapshot-tmp.json
+dashboard/data.json
+
+# VCS / CI（image 実行に不要）。
+# .git はローカル reflog / stash / dangling object 経由の秘匿物持ち込み経路に
+# なるため image に含めない（secret-scan では履歴内容を検査できない）。
+# image 内 repo は「実行体」であり、コンテナ内での ja 自己編集タスクは
+# workers ディレクトリへの fresh clone で行う（設計 §7.3）。
+.git
+.github
+
+# docker/ 自身（COPY 対象は個別指定しているため context 圧縮）
+docker/README.md

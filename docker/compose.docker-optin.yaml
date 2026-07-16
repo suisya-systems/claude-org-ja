@@ -1,0 +1,16 @@
+# ホスト Docker socket の明示 opt-in オーバーレイ（設計 §7.6）。
+#
+# !!! 警告 !!!
+# /var/run/docker.sock の mount は「コンテナ内の誰でもホスト root 相当」を意味する。
+# worker がホストの全コンテナ・全 volume・ホストファイルシステム（privileged
+# コンテナ経由）に到達できるようになる。組織の worker はリモート由来の Issue /
+# PR テキストを処理するため、これはホスト全体を prompt injection の被害半径に
+# 入れる選択である。本当に必要な場合のみ、以下で明示的に重ねること:
+#   docker compose -f docker/compose.yaml -f docker/compose.docker-optin.yaml up -d
+#
+# DinD（docker:dind サイドカー）は Raspberry Pi 5 では storage / memory コストが
+# 高く採用しない（設計 §7.6）。
+services:
+  org:
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
