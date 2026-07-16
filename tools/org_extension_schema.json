@@ -610,7 +610,11 @@
           "Bash(git stash:*)",
           "Bash(git fetch:*)",
           "Bash(git merge:*)",
-          "Bash(sleep:*)"
+          "Bash(sleep:*)",
+          "Bash(docker build:*)",
+          "Bash(docker buildx build:*)",
+          "Bash(docker images:*)",
+          "Bash(docker image inspect:*)"
         ],
         "deny": [
           "Bash(git push *)",
@@ -776,7 +780,11 @@
           "Bash(git stash:*)",
           "Bash(git fetch:*)",
           "Bash(git merge:*)",
-          "Bash(sleep:*)"
+          "Bash(sleep:*)",
+          "Bash(docker build:*)",
+          "Bash(docker buildx build:*)",
+          "Bash(docker images:*)",
+          "Bash(docker image inspect:*)"
         ],
         "deny": [
           "Bash(git push *)",

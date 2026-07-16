@@ -26,6 +26,16 @@ core-harness>=0.3.2,<0.4
 # PyPI via Trusted Publisher; pinned to the 0.1.x range. 0.x bumps may be
 # breaking per the runtime's compatibility policy, so widen this pin
 # deliberately when adopting a new minor.
+# Floor bumped to 0.1.37 for the narrow Docker build allow set in the worker
+# role templates: role_configs_schema.json appends Bash(docker build:*) /
+# Bash(docker buildx build:*) / Bash(docker images:*) /
+# Bash(docker image inspect:*) to worker_roles.default and
+# worker_roles.claude-org-self-edit permissions.allow, so Docker-project
+# workers no longer trip APPROVAL_BLOCKED on repeated docker builds
+# (runtime PR #148; ja #723 mirrors the same four entries into
+# tools/org_extension_schema.json in this paired commit). Schema-only change —
+# no DEFAULT_NOTIFY / classifier-vocabulary / attention change. The earlier
+# 0.1.36 floor (below) is subsumed.
 # Floor bumped to 0.1.36 for three broker/herdr delivery fixes: broker observer
 # lease so a background-hosted duplicate sidecar no longer claims-then-drops
 # messages, exposing per-agent receive_mode via list_peers (runtime #132);
@@ -98,7 +108,7 @@ core-harness>=0.3.2,<0.4
 # (transport surface descriptor claude_org_runtime.transport consumed by
 # tools/transport.py — Epic #6 next-stage D / ja#513) are subsumed by 0.1.28.
 # Keep in sync with pyproject.toml.
-claude-org-runtime>=0.1.36,<0.2
+claude-org-runtime>=0.1.37,<0.2
 
 # tools/gen_worker_brief.py reads TOML config. tomllib is stdlib in 3.11+,
 # but ja still supports 3.10 (CLAUDE.local.md template recommends 3.10).
