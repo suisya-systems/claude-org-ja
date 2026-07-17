@@ -722,6 +722,13 @@ def build_delegate_plan(
         brief_out_path,
         Path(layout.worker_dir) / ".claude" / "settings.local.json",
     ]
+    # Issue #725: Pattern A with no base clone (the new-project the worker
+    # ``git init``s) also gets a worker_dir/.gitignore written at apply time
+    # to keep the org-internal artifacts out of the deliverable. Surface it in
+    # the plan's artifact list so ``preview`` discloses the same side effect
+    # apply performs (same predicate as ``_ensure_worker_dir_gitignore``).
+    if layout.pattern == "A" and base_repo is None:
+        artifacts.append(Path(layout.worker_dir) / ".gitignore")
 
     # Phase 1 PR4: surface base_clone into settings_args for Pattern B so the
     # runtime can substitute `{base_clone}` in
@@ -798,6 +805,11 @@ class ApplyResult:
     settings_skipped_reason: Optional[str]
     send_plan_path: Path
     db_reservation: dict[str, Any]
+    # Issue #725: worker_dir/.gitignore path when apply wrote/updated it to
+    # keep org-internal delivery artifacts out of a Pattern A new-project's
+    # git history. ``None`` for every other pattern (they inherit a base
+    # repo's .gitignore) and when the managed lines were already present.
+    gitignore_path: Optional[Path] = None
 
 
 def _reserve_in_db(
@@ -1207,6 +1219,119 @@ def _write_brief(plan: DelegatePlan) -> Path:
     return out
 
 
+# Marks the block apply appends to a Pattern A new-project's ``.gitignore``
+# (Issue #725). The header lets a human / re-run recognise the org-managed
+# lines and keeps the append idempotent (we never duplicate the header).
+_GITIGNORE_MANAGED_HEADER = (
+    "# --- claude-org delegation artifacts (Issue #725) — not part of the "
+    "deliverable ---"
+)
+
+
+def _worker_dir_anchored(worker_dir: Path, target: Path) -> Optional[str]:
+    """Return ``target`` as a root-anchored .gitignore pattern relative to
+    ``worker_dir`` (e.g. ``/send_plan.json`` or ``/sub/send_plan.json``), or
+    ``None`` when ``target`` resolves outside ``worker_dir``.
+
+    ``None`` means "do not add an ignore line": a manifest written outside the
+    delivery tree cannot leak into it, and adding a placeholder like
+    ``/send_plan.json`` would instead wrongly exclude a legitimate root-level
+    ``send_plan.json`` the delivered project itself creates. POSIX-normalized
+    so the pattern stays valid on Windows-authored paths too.
+    """
+    try:
+        rel = target.resolve().relative_to(worker_dir.resolve())
+    except (ValueError, OSError):
+        return None
+    return "/" + rel.as_posix()
+
+
+def _managed_gitignore_lines(plan: DelegatePlan, *, send_plan_path: Path) -> list[str]:
+    """The org-internal artifact paths apply keeps out of a Pattern A
+    new-project's git history (Issue #725).
+
+    Anchored to the worker_dir root with a leading ``/`` so only the
+    top-level brief / send_plan / settings are ignored — a subdirectory the
+    delivered project legitimately creates with the same basename (e.g. a
+    real ``docs/CLAUDE.md``) is left tracked. The brief basename is taken
+    from ``plan.brief_out_path`` so the rule follows whichever name the
+    resolver chose (``CLAUDE.md`` or ``CLAUDE.local.md``). The send_plan line
+    follows the *actual* output path (``--send-plan-out`` may relocate it
+    inside worker_dir), and is omitted entirely when the manifest is written
+    outside worker_dir (it can't leak there, and a placeholder would wrongly
+    ignore a project-authored ``send_plan.json``).
+    """
+    worker_dir = Path(plan.layout.worker_dir)
+    lines = [f"/{plan.brief_out_path.name}"]
+    send_plan_line = _worker_dir_anchored(worker_dir, send_plan_path)
+    if send_plan_line is not None:
+        lines.append(send_plan_line)
+    lines.append("/.claude/settings.local.json")
+    return lines
+
+
+def _ensure_worker_dir_gitignore(
+    plan: DelegatePlan, *, send_plan_path: Path
+) -> Optional[Path]:
+    """Create/append ``worker_dir/.gitignore`` so the org-internal delivery
+    artifacts never enter a Pattern A new-project's git history (Issue #725).
+
+    Design decision — approach (a) ``.gitignore`` over approach (b) "rename
+    the brief to ``CLAUDE.local.md``" (both floated in Issue #725):
+
+    - (a) is the structural root fix. It covers all three leaking artifacts
+      (brief, ``send_plan.json``, ``.claude/settings.local.json``) in one
+      place and is independent of the brief filename.
+    - (b) alone does NOT stop the leak: ``CLAUDE.local.md`` is only untracked
+      when a ``.gitignore`` lists it, and a brand-new ``git init``-ed
+      delivery dir has no such ``.gitignore``. So (b) would still commit the
+      brief (plus send_plan / settings), i.e. it needs (a) anyway. Its only
+      extra benefit — freeing the ``CLAUDE.md`` *name* for the delivered
+      project — is not worth the added blast radius (it would change the
+      Pattern A brief filename, delegate body, and existing apply tests). We
+      therefore keep the current ``CLAUDE.md`` placement for backward compat
+      and ignore whatever basename the brief actually has. If a delivered
+      project later wants its own tracked root ``CLAUDE.md``, a human removes
+      the one anchored line under the marked header.
+
+    Scope — Pattern A with no base clone only (``base_repo is None``): the
+    "new project the worker will ``git init``" case, where worker_dir is a
+    fresh non-git directory with no inherited .gitignore. Pattern B and the
+    Issue #489 Pattern-A-with-worktree layout both carry ``base_repo`` and
+    inherit the base repo's ``.gitignore`` (out of scope per Issue #725).
+    Pattern C edits an existing registered repo, whose tracked ``.gitignore``
+    must not be polluted.
+
+    Idempotent: managed lines already present are not re-added, the header is
+    never duplicated, and a pre-existing ``.gitignore`` is appended to (not
+    overwritten). Returns the ``.gitignore`` path when written/updated, else
+    ``None`` (out of scope, or every managed line already present).
+    """
+    if plan.layout.pattern != "A" or plan.base_repo is not None:
+        return None
+    worker_dir = Path(plan.layout.worker_dir)
+    gitignore = worker_dir / ".gitignore"
+    wanted = _managed_gitignore_lines(plan, send_plan_path=send_plan_path)
+    existing_text = ""
+    existing_lines: set[str] = set()
+    if gitignore.exists():
+        existing_text = gitignore.read_text(encoding="utf-8")
+        existing_lines = {ln.strip() for ln in existing_text.splitlines()}
+    missing = [ln for ln in wanted if ln not in existing_lines]
+    if not missing:
+        return None
+    header_present = _GITIGNORE_MANAGED_HEADER in existing_lines
+    block = missing if header_present else [_GITIGNORE_MANAGED_HEADER, *missing]
+    worker_dir.mkdir(parents=True, exist_ok=True)
+    if existing_text:
+        sep = "" if existing_text.endswith("\n") else "\n"
+        new_text = existing_text + sep + "\n".join(block) + "\n"
+    else:
+        new_text = "\n".join(block) + "\n"
+    gitignore.write_text(new_text, encoding="utf-8")
+    return gitignore
+
+
 def _build_settings_generate_cmd(
     settings_args: dict[str, Any],
     *,
@@ -1415,6 +1540,18 @@ def apply_delegate_plan(
     # failure so the next dispatch sees Pattern A as free.
     try:
         brief_path = _write_brief(plan)
+        # Resolve the send_plan output path up-front so the delivery guard can
+        # ignore the manifest's *actual* location (``--send-plan-out`` may
+        # relocate it inside worker_dir), not just the default basename.
+        if send_plan_out is None:
+            send_plan_out = brief_path.with_name("send_plan.json")
+        # Issue #725: keep the org-internal delivery artifacts out of a
+        # Pattern A new-project's git history via a worker_dir/.gitignore.
+        # No-op (returns None) for every pattern that inherits a base repo's
+        # .gitignore. Anchors on the final brief basename + send_plan path.
+        gitignore_path = _ensure_worker_dir_gitignore(
+            plan, send_plan_path=send_plan_out
+        )
         settings_path: Optional[Path] = None
         skipped_reason: Optional[str] = None
         if skip_settings:
@@ -1423,8 +1560,6 @@ def apply_delegate_plan(
             settings_path, skipped_reason = _run_settings_generate(
                 plan, runtime_cmd=runtime_cmd
             )
-        if send_plan_out is None:
-            send_plan_out = brief_path.with_name("send_plan.json")
         send_plan_path = _write_send_plan(plan, out_path=send_plan_out)
     except BaseException:
         _abandon_queued_run(state_db_path, plan.task_id)
@@ -1436,6 +1571,7 @@ def apply_delegate_plan(
         settings_skipped_reason=skipped_reason,
         send_plan_path=send_plan_path,
         db_reservation=db_reservation,
+        gitignore_path=gitignore_path,
     )
 
 
@@ -1794,6 +1930,8 @@ def _cmd_apply(args: argparse.Namespace) -> int:
     elif result.settings_skipped_reason:
         print(f"settings: SKIPPED ({result.settings_skipped_reason})")
     print(f"send_plan: {result.send_plan_path}")
+    if result.gitignore_path is not None:
+        print(f"gitignore: {result.gitignore_path} (Issue #725 delivery guard)")
     print(_next_step_hint())
     return 0
 

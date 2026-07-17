@@ -150,6 +150,13 @@ class TestBuildDelegatePlan(unittest.TestCase):
         self.assertIn("窓口ペイン名: `secretary`", body)
         # Brief path uses CLAUDE.md (not self_edit)
         self.assertEqual(plan.brief_out_path.name, "CLAUDE.md")
+        # Issue #725: preview/plan must disclose the delivery-guard .gitignore
+        # that apply writes for a Pattern A new-project (base_repo None).
+        self.assertIsNone(plan.base_repo)
+        self.assertIn(
+            Path(plan.layout.worker_dir) / ".gitignore",
+            plan.artifacts_to_create,
+        )
 
     def test_pattern_b_when_concurrent_active_run(self):
         self.sb.add_active_run(
@@ -337,6 +344,140 @@ class TestApplyDelegatePlan(unittest.TestCase):
         # Only the queued reservation; no in_use/review (= Active Work Items)
         # rows were created by apply.
         self.assertEqual(statuses, {"queued"})
+
+    # ---- Issue #725: Pattern A new-project delivery guard ----
+
+    def test_apply_pattern_a_writes_delivery_gitignore(self):
+        """Issue #725: a Pattern A new-project (base_repo None, worker
+        ``git init``s the delivery dir) gets a worker_dir/.gitignore that
+        ignores the org-internal artifacts."""
+        plan, result = self._apply()
+        self.assertIsNone(plan.base_repo)  # precondition: new-project path
+        worker_dir = Path(plan.layout.worker_dir)
+        gitignore = worker_dir / ".gitignore"
+        self.assertEqual(result.gitignore_path, gitignore)
+        self.assertTrue(gitignore.exists())
+        lines = {ln.strip() for ln in gitignore.read_text(encoding="utf-8").splitlines()}
+        # Anchored to root so a subdir with the same basename stays tracked.
+        self.assertIn(f"/{plan.brief_out_path.name}", lines)
+        self.assertIn("/send_plan.json", lines)
+        self.assertIn("/.claude/settings.local.json", lines)
+        self.assertIn(gdp._GITIGNORE_MANAGED_HEADER, lines)
+
+    def test_apply_pattern_a_gitignore_prevents_leak(self):
+        """The end-to-end regression for the #725 incident: after the worker
+        ``git init``s and ``git add -A``s the delivery tree, the brief /
+        send_plan / settings must NOT be staged, while a genuine project file
+        is."""
+        plan, result = self._apply()
+        worker_dir = Path(plan.layout.worker_dir)
+        # Simulate the worker's first-commit sequence on the delivered project.
+        settings = worker_dir / ".claude" / "settings.local.json"
+        settings.parent.mkdir(parents=True, exist_ok=True)
+        settings.write_text("{}\n", encoding="utf-8")
+        real_file = worker_dir / "app.py"
+        real_file.write_text("print('hello')\n", encoding="utf-8")
+        env = {**__import__("os").environ,
+               "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e",
+               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e"}
+        subprocess.run(["git", "-C", str(worker_dir), "init", "-q"],
+                       check=True, env=env)
+        subprocess.run(["git", "-C", str(worker_dir), "add", "-A"],
+                       check=True, env=env)
+        staged = subprocess.check_output(
+            ["git", "-C", str(worker_dir), "diff", "--cached", "--name-only"],
+            env=env,
+        ).decode("utf-8").split()
+        self.assertNotIn(plan.brief_out_path.name, staged)
+        self.assertNotIn("send_plan.json", staged)
+        self.assertNotIn(".claude/settings.local.json", staged)
+        # The real deliverable is unaffected; .gitignore itself is fine to ship.
+        self.assertIn("app.py", staged)
+        self.assertIn(".gitignore", staged)
+
+    def test_ensure_gitignore_idempotent_and_appends(self):
+        """Re-running the guard never duplicates lines, preserves a
+        pre-existing .gitignore, and only adds the header once."""
+        plan, _ = self._apply()
+        worker_dir = Path(plan.layout.worker_dir)
+        gitignore = worker_dir / ".gitignore"
+        send_plan = worker_dir / "send_plan.json"
+        # Second call is a no-op (everything already present).
+        self.assertIsNone(
+            gdp._ensure_worker_dir_gitignore(plan, send_plan_path=send_plan)
+        )
+        # Rewrite with unrelated pre-existing content, then re-run: the guard
+        # appends its block under one header without clobbering the original.
+        gitignore.write_text("node_modules/\n", encoding="utf-8")
+        out = gdp._ensure_worker_dir_gitignore(plan, send_plan_path=send_plan)
+        self.assertEqual(out, gitignore)
+        text = gitignore.read_text(encoding="utf-8")
+        self.assertIn("node_modules/", text)
+        self.assertIn("/send_plan.json", text)
+        self.assertEqual(text.count(gdp._GITIGNORE_MANAGED_HEADER), 1)
+        # And now idempotent again.
+        self.assertIsNone(
+            gdp._ensure_worker_dir_gitignore(plan, send_plan_path=send_plan)
+        )
+
+    def test_apply_gitignore_follows_custom_send_plan_out(self):
+        """Issue #725 (Codex P2): ``--send-plan-out`` relocating the manifest
+        inside worker_dir must still be ignored — the guard anchors on the
+        actual output path, not the default basename."""
+        plan = gdp.build_delegate_plan(
+            task_id="apply-test",
+            project_slug="clock-app",
+            description="implement something",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        worker_dir = Path(plan.layout.worker_dir)
+        custom_send_plan = worker_dir / "meta" / "delegate.json"
+        result = gdp.apply_delegate_plan(
+            plan,
+            state_db_path=self.sb.db_path,
+            claude_org_root=self.sb.claude_org_root,
+            skip_settings=True,
+            send_plan_out=custom_send_plan,
+        )
+        self.assertEqual(result.send_plan_path, custom_send_plan)
+        lines = {
+            ln.strip()
+            for ln in (worker_dir / ".gitignore").read_text(encoding="utf-8").splitlines()
+        }
+        self.assertIn("/meta/delegate.json", lines)
+
+    def test_apply_gitignore_omits_send_plan_when_written_outside_worker_dir(self):
+        """Issue #725 (Codex P2 follow-up): a send_plan written OUTSIDE the
+        delivery tree must not add any send_plan ignore line — otherwise a
+        legitimate project-authored root ``send_plan.json`` would be silently
+        excluded from the worker's first commit."""
+        plan = gdp.build_delegate_plan(
+            task_id="apply-test",
+            project_slug="clock-app",
+            description="implement something",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        worker_dir = Path(plan.layout.worker_dir)
+        outside_send_plan = self.sb.root / "external_send_plan.json"
+        result = gdp.apply_delegate_plan(
+            plan,
+            state_db_path=self.sb.db_path,
+            claude_org_root=self.sb.claude_org_root,
+            skip_settings=True,
+            send_plan_out=outside_send_plan,
+        )
+        self.assertEqual(result.send_plan_path, outside_send_plan)
+        lines = {
+            ln.strip()
+            for ln in (worker_dir / ".gitignore").read_text(encoding="utf-8").splitlines()
+        }
+        self.assertNotIn("/send_plan.json", lines)
+        self.assertFalse(any("send_plan" in ln for ln in lines))
+        # Brief + settings guards are unaffected.
+        self.assertIn(f"/{plan.brief_out_path.name}", lines)
+        self.assertIn("/.claude/settings.local.json", lines)
 
 
 # ---------------------------------------------------------------------------
@@ -981,7 +1122,7 @@ class TestPatternBWorktreeCreation(unittest.TestCase):
         self.assertEqual(
             Path(plan.base_repo).resolve(), self.sb.claude_org_root.resolve()
         )
-        gdp.apply_delegate_plan(
+        result = gdp.apply_delegate_plan(
             plan,
             state_db_path=self.sb.db_path,
             claude_org_root=self.sb.claude_org_root,
@@ -996,6 +1137,10 @@ class TestPatternBWorktreeCreation(unittest.TestCase):
         # Brief landed inside the worktree
         brief = worker_dir / "CLAUDE.local.md"
         self.assertTrue(brief.exists())
+        # Issue #725: worktree layouts inherit the base repo's .gitignore, so
+        # the delivery guard is out of scope and writes nothing here.
+        self.assertIsNone(result.gitignore_path)
+        self.assertFalse((worker_dir / ".gitignore").exists())
 
     def test_apply_idempotent_when_worktree_already_registered(self):
         plan = self._build_self_edit_b(task_id="idem-task")
