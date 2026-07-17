@@ -28,7 +28,7 @@ case "${mode}" in
   3. codex login           # 任意（Codex ゲートを使う場合）
   4. Slack / Google MCP 接続  # 任意（Slack は Claude Code 内の plugin 接続、
                              #  Google は gog セットアップ → ~/.config/gogcli/）
-  5. python tools/org_setup_prune.py --all
+  5. python tools/org_setup_prune.py --all --claude-org-path /workspace/claude-org-ja
      python tools/org_setup_prune.py --user-common-sandbox
   6. exit → docker exec -it <container> org-shell   # 通常導線へ
 
