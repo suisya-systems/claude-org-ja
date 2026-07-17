@@ -137,9 +137,15 @@
    ```bash
    # inspect_pane の structuredContent を JSON 化して渡す。
    # exit 3 = anomaly 検出、exit 0 = clean。detections[] に {kind, reason, row, matched}。
-   echo "$inspect_json" | py -3 ../tools/inspect_anomaly_scan.py --spinner-threshold-min 5
+   # --spinner-state-file は worker ごとに 1 ファイル。旧形式 spinner-age の
+   # 前サイクル差分抑止 (Issue #698) に使う。省略すると従来どおり stateless scan。
+   echo "$inspect_json" | py -3 ../tools/inspect_anomaly_scan.py \
+       --spinner-threshold-min 5 \
+       --spinner-state-file ../.state/dispatcher/spinner-age-seen/worker-{task_id}.json
    ```
    threshold やパターンの単一定義はこの module 側にあり、regression test (`tests/test_inspect_anomaly_scan.py`、観測 case = row 15 の 529 banner + 9m spinner + bottom 10 空) が契約を pin する。手で判定する場合も上記リストと同義。
+
+   **旧形式 spinner-age の false positive 抑止 (Issue #698)**: Claude Code は完了ターンの所要時間サマリ (`✻ Cooked for 31m 40s` 等) を live な旧形式 spinner と**同一の shape** で描画する。これが idle worker のスクロールバックに残ると、毎サイクル「5 分以上回る stuck spinner」として再マッチし false positive alert を繰り返していた。単一フレームでは凍結サマリと本物の stuck spinner を内容・位置だけで区別できないため、helper は「live spinner の `for Xm Ys` counter は毎サイクル進むが、凍結サマリは byte 一致で不変」という不変条件で差分を取る。`--spinner-state-file` を worker ごとに渡すと、前サイクルと同一の旧形式 spinner 行は凍結サマリとみなして検知を抑止する。初回観測は必ず発火 (差分対象が無い) し、完全凍結した live pane は hash ベースの STALL 経路 (`tools/inspect_pane_state.py`) が拾うので signal は失われない。state file 欠落 / 破損時は「前サイクル無し」扱いで再発火する安全側フォールバック (本物の stuck spinner を state file の不備で黙殺しない)。
 
    #### (e) 実行シーケンス (journal + de-dup + notify)
    以下の順番で厳密に実行する:

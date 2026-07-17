@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -196,6 +197,108 @@ class SpinnerAgeTests(unittest.TestCase):
         self.assertEqual(ias.scan_lines(["working for 9m on the task"]), [])
 
 
+class SpinnerCrossCycleDiffTests(unittest.TestCase):
+    """Issue #698: suppress a frozen scrollback summary re-matched each cycle.
+
+    A completed turn renders ``✻ Cooked for 31m 40s`` in the same shape as a
+    live old-form spinner; parked in an idle worker's scrollback it tripped a
+    recurring false-positive ERROR every dispatcher cycle. The diff keys on the
+    invariant that separates them: a live spinner's counter advances, a frozen
+    summary is byte-identical.
+    """
+
+    NOTE = "✻ Cooked for 31m 40s"
+
+    def test_first_observation_still_fires(self) -> None:
+        # No prior state (None) — pre-#698 behaviour, the aged spinner fires.
+        dets = ias.scan_lines([self.NOTE])
+        self.assertEqual([d.reason for d in dets], ["spinner_age:31m"])
+        # An explicitly empty prev set is also "not seen last cycle" → fires.
+        dets = ias.scan_lines([self.NOTE], prev_spinner_keys=set())
+        self.assertEqual([d.reason for d in dets], ["spinner_age:31m"])
+
+    def test_recurring_identical_note_suppressed(self) -> None:
+        prev = ias.spinner_age_keys([self.NOTE])
+        dets = ias.scan_lines([self.NOTE], prev_spinner_keys=prev)
+        self.assertEqual(dets, [])
+
+    def test_rotated_glyph_same_note_still_suppressed(self) -> None:
+        # The glyph rotates frame-to-frame; a frozen summary must stay
+        # suppressed regardless of which glyph it is drawn with.
+        prev = ias.spinner_age_keys(["✻ Cooked for 31m 40s"])
+        dets = ias.scan_lines(["✺ Cooked for 31m 40s"], prev_spinner_keys=prev)
+        self.assertEqual(dets, [])
+
+    def test_live_spinner_counter_advance_still_fires(self) -> None:
+        # Same verb, advanced counter → different key → real live spinner fires.
+        prev = ias.spinner_age_keys(["✻ Cogitating for 9m 12s"])
+        dets = ias.scan_lines(
+            ["✻ Cogitating for 9m 45s"], prev_spinner_keys=prev
+        )
+        self.assertEqual([d.reason for d in dets], ["spinner_age:9m"])
+
+    def test_prev_keys_do_not_suppress_other_error_classes(self) -> None:
+        # The diff only gates spinner_age; substring / status / regex ERRORs
+        # are never suppressed by prior spinner state.
+        prev = {"Cooked for 31m 40s"}
+        for line, expect in (
+            ("API Error: 529 Overloaded", "substring:API Error"),
+            ("Overloaded (529), retrying…", "status_code:529"),
+            ("Error: boom", "regex:^Error: "),
+        ):
+            with self.subTest(line=line):
+                dets = ias.scan_lines([line], prev_spinner_keys=prev)
+                self.assertIn(expect, {d.reason for d in dets})
+
+    def test_scrollback_note_suppressed_but_live_spinner_kept(self) -> None:
+        # A pane carrying BOTH a frozen scrollback note and a genuinely live
+        # spinner: the note (seen last cycle) is suppressed, the live spinner
+        # (advanced counter) fires. Exercises the #698 target scenario.
+        prev = {
+            ias.spinner_identity_key("✻ Cooked for 31m 40s"),
+            ias.spinner_identity_key("✻ Sautéed for 9m 0s"),
+        }
+        pane = [
+            {"row": 12, "text": "✻ Cooked for 31m 40s"},   # frozen scrollback
+            {"row": 30, "text": "✻ Sautéed for 9m 20s"},   # live: counter moved
+        ]
+        dets = ias.scan_lines(pane, prev_spinner_keys=prev)
+        self.assertEqual(
+            [(d.row, d.reason) for d in dets], [(30, "spinner_age:9m")]
+        )
+
+    def test_below_threshold_never_tracked_or_fired(self) -> None:
+        # A 2m spinner is below threshold: no detection, and not tracked as a
+        # key (so it cannot suppress a later above-threshold match).
+        self.assertEqual(ias.spinner_age_keys(["✻ Cogitating for 2m 30s"]), [])
+        self.assertEqual(
+            ias.scan_lines(
+                ["✻ Cogitating for 2m 30s"], prev_spinner_keys=set()
+            ),
+            [],
+        )
+
+
+class SpinnerIdentityKeyTests(unittest.TestCase):
+    def test_glyph_and_indent_normalized(self) -> None:
+        self.assertEqual(
+            ias.spinner_identity_key("   ✻  Cooked for 31m 40s  "),
+            "Cooked for 31m 40s",
+        )
+
+    def test_different_glyphs_same_key(self) -> None:
+        self.assertEqual(
+            ias.spinner_identity_key("✻ Cooked for 31m 40s"),
+            ias.spinner_identity_key("✺ Cooked for 31m 40s"),
+        )
+
+    def test_advancing_counter_changes_key(self) -> None:
+        self.assertNotEqual(
+            ias.spinner_identity_key("✻ Cooked for 31m 40s"),
+            ias.spinner_identity_key("✻ Cooked for 31m 43s"),
+        )
+
+
 class NormalizationTests(unittest.TestCase):
     def test_accepts_bare_strings(self) -> None:
         dets = ias.scan_lines(["API Error: 529"])
@@ -232,6 +335,53 @@ class CliTests(unittest.TestCase):
         payload = {"lines": ["✻ Working for 3m 0s"]}
         proc = self._run(payload, "--spinner-threshold-min", "2")
         self.assertEqual(proc.returncode, 3)
+
+    def test_cli_spinner_state_file_round_trip(self) -> None:
+        # Issue #698 end-to-end: first cycle fires and persists the key; a
+        # second cycle over the *same* frozen pane reads it back and suppresses.
+        payload = {"lines": ["✻ Cooked for 31m 40s"]}
+        with tempfile.TemporaryDirectory() as td:
+            state = str(Path(td) / "sub" / "worker-x.json")  # parent auto-made
+
+            first = self._run(payload, "--spinner-state-file", state)
+            self.assertEqual(first.returncode, 3)
+            self.assertIn(
+                "spinner_age:31m",
+                {d["reason"] for d in json.loads(first.stdout)["detections"]},
+            )
+            written = json.loads(Path(state).read_text(encoding="utf-8"))
+            self.assertEqual(written["spinner_keys"], ["Cooked for 31m 40s"])
+
+            second = self._run(payload, "--spinner-state-file", state)
+            self.assertEqual(second.returncode, 0)
+            self.assertEqual(json.loads(second.stdout)["detections"], [])
+
+    def test_cli_spinner_state_file_live_counter_keeps_firing(self) -> None:
+        # A live spinner advances its counter each cycle, so it fires every
+        # time even with a state file threaded through.
+        with tempfile.TemporaryDirectory() as td:
+            state = str(Path(td) / "worker-y.json")
+            c1 = self._run(
+                {"lines": ["✻ Cogitating for 9m 12s"]},
+                "--spinner-state-file",
+                state,
+            )
+            self.assertEqual(c1.returncode, 3)
+            c2 = self._run(
+                {"lines": ["✻ Cogitating for 9m 45s"]},
+                "--spinner-state-file",
+                state,
+            )
+            self.assertEqual(c2.returncode, 3)
+
+    def test_cli_missing_state_file_treated_as_first_cycle(self) -> None:
+        # A non-existent state path is "nothing seen last cycle": fire + create.
+        payload = {"lines": ["✻ Cooked for 31m 40s"]}
+        with tempfile.TemporaryDirectory() as td:
+            state = str(Path(td) / "absent.json")
+            proc = self._run(payload, "--spinner-state-file", state)
+            self.assertEqual(proc.returncode, 3)
+            self.assertTrue(Path(state).exists())
 
 
 if __name__ == "__main__":
