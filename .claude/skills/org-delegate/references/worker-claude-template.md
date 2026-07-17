@@ -137,8 +137,12 @@ Get-Command codex -ErrorAction SilentlyContinue
 codex exec review --base main -m gpt-5.5 -c model_reasoning_effort=medium < /dev/null
 ```
 
-- review surface は内蔵レビュープロンプトで Blocker/Major 相当（P1/P2 等）を返す。**前景で出力を読んでから次に進む**（応答が長く来ない稀なケースのみ中断して skip 可）。**large diff（100 行超目安）では effort を上げない**（high-effort review は大 diff でスケールせず直打ちより遅くなる）。**large diff（100 行超目安）では effort を上げない**（high-effort review は大 diff でスケールせず直打ちより遅くなる）。
+- review surface は内蔵レビュープロンプトで Blocker/Major 相当（P1/P2 等）を返す。**前景で出力を読んでから次に進む**（応答が長く来ない稀なケースのみ中断して skip 可）。**large diff（100 行超目安）では effort を上げない**（high-effort review は大 diff でスケールせず直打ちより遅くなる）。
 - review surface は危険側 Major（false positive で gate 誤通過する系）は守るが、benign な safe-side Major（過剰 polling 方向の false negative）や ReDoS 級の付加バグを取りこぼしうる。設計に近い変更で深掘りが要る場合は窓口に design review 併用を相談する。詳細・実測根拠の SoT は [`knowledge/curated/codex.md`](../../../../knowledge/curated/codex.md)。
+
+**安全機構に掛かって review 処理が進められない場合（`available` だが safety block）**: diff 内容（セキュリティ検証タスク等）がモデルの安全分類器に掛かり、`codex exec review` の処理自体を完了できないことがある。**この skip は上記「`unavailable` の skip」とは意味が異なる** — codex は available なのにゲートが**未成立**の状態であり、「codex clean」ではない。安全機構を回避する言い換え・プロンプト改変は**しない**（モデル安全機構に掛かる処理は回避せずスキップして報告するのが原則）。正式なリカバリは以下:
+- **正式リカバリ = 新規セッション化（continuation spawn）**: 同一 worktree・同一ブランチで、既に積んだ commit を引き継いだ新しい worker セッションを起こし、そのクリーンな context で `codex exec review` を再実行する（窓口にセッション再起動を依頼する）。完了報告には引き継いだ **HEAD SHA** を明記し、どの commit に対して review が成立したかを追跡可能にする
+- **リカバリ不能時**: 上記でも review が通らない場合、「codex clean」と**報告しない**。「Codex ゲート未成立（safety block により review 未完了、HEAD=`<sha>`）」と明示して完了報告し、窓口の判断を仰ぐ。gate 未成立を clean と偽らないこと（safety block を「codex 未導入 skip」と同一視して素通りさせない）
 
 `codex` を実行した場合のみ以下が適用される:
 - Blocker / Major は修正コミットを積み、再レビュー
