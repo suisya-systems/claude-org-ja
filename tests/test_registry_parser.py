@@ -205,6 +205,153 @@ class TestMirrorOfColumn(unittest.TestCase):
         self.assertEqual(projects[0].mirror_of, "")
 
 
+class TestHeaderNameParsing(unittest.TestCase):
+    """Issue #729: columns are resolved by header *name*, not position, so
+    reordering columns or inserting a new `triage` column does not shift the
+    meaning of existing columns. Headerless / alias-less tables still fall
+    back to positional parsing for backwards compatibility."""
+
+    def test_triage_column_populates_raw_value(self):
+        text = (
+            "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 | triage |\n"
+            "|---|---|---|---|---|---|\n"
+            "| 時計 | clock-app | - | Demo | tasks | yes |\n"
+            "| ブログ | blog | https://github.com/x/blog | B | t | no |\n"
+        )
+        projects = parse_projects_text(text)
+        self.assertEqual(len(projects), 2)
+        # Raw cell value is preserved verbatim; the parser does NOT interpret
+        # opt-in semantics (that lives in the resolver).
+        self.assertEqual(projects[0].triage, "yes")
+        self.assertEqual(projects[1].triage, "no")
+
+    def test_triage_absent_defaults_to_empty(self):
+        # A 5-column header with no `triage` column leaves triage="".
+        text = _build("| 時計 | clock-app | - | Demo | tasks |")
+        projects = parse_projects_text(text)
+        self.assertEqual(len(projects), 1)
+        self.assertEqual(projects[0].triage, "")
+
+    def test_triage_raw_values_preserved_various(self):
+        # The parser keeps the literal cell — case, `-`, and empty are all
+        # passed through unchanged; interpretation is the resolver's job.
+        text = (
+            "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 | triage |\n"
+            "|---|---|---|---|---|---|\n"
+            "| a | slug-a | - | d | t | TRUE |\n"
+            "| b | slug-b | - | d | t | On |\n"
+            "| c | slug-c | - | d | t | - |\n"
+            "| d | slug-d | - | d | t |  |\n"
+        )
+        projects = parse_projects_text(text)
+        self.assertEqual(
+            [p.triage for p in projects], ["TRUE", "On", "-", ""]
+        )
+
+    def test_column_reorder_resilience(self):
+        # triage first, description before path — header mode must map each
+        # column by name regardless of order.
+        text = (
+            "| triage | 通称 | 説明 | プロジェクト名 | パス | よくある作業例 |\n"
+            "|---|---|---|---|---|---|\n"
+            "| yes | 時計 | Demo | clock-app | https://github.com/x/c | t |\n"
+        )
+        projects = parse_projects_text(text)
+        self.assertEqual(len(projects), 1)
+        p = projects[0]
+        self.assertEqual(p.nickname, "時計")
+        self.assertEqual(p.name, "clock-app")
+        self.assertEqual(p.path, "https://github.com/x/c")
+        self.assertEqual(p.description, "Demo")
+        self.assertEqual(p.common_tasks, "t")
+        self.assertEqual(p.triage, "yes")
+
+    def test_english_header_aliases(self):
+        text = (
+            "| 通称 | name | path | description | よくある作業例 | triage |\n"
+            "|---|---|---|---|---|---|\n"
+            "| nn | slug | /p | desc | t | on |\n"
+        )
+        projects = parse_projects_text(text)
+        self.assertEqual(len(projects), 1)
+        self.assertEqual(projects[0].name, "slug")
+        self.assertEqual(projects[0].path, "/p")
+        self.assertEqual(projects[0].description, "desc")
+        self.assertEqual(projects[0].triage, "on")
+
+    def test_fully_english_header_falls_back_to_positional(self):
+        # Regression (Codex P2): a legacy/fork English header with no 通称
+        # column must NOT enter header mode — its `Name` alias would grab the
+        # slug field from column 0 and drop the real nickname. The header map
+        # lacks the nickname identity column, so we fall back to positional
+        # parsing, preserving the pre-#729 column meaning (col1 = slug).
+        text = (
+            "| Name | Project | Path | Description | Tasks |\n"
+            "|---|---|---|---|---|\n"
+            "| Clock App | clock-app | /tmp/clock | Demo | task |\n"
+        )
+        projects = parse_projects_text(text)
+        self.assertEqual(len(projects), 1)
+        p = projects[0]
+        self.assertEqual(p.nickname, "Clock App")
+        self.assertEqual(p.name, "clock-app")  # slug from col1, not "Clock App"
+        self.assertEqual(p.path, "/tmp/clock")
+        self.assertEqual(p.description, "Demo")
+
+    def test_header_alias_case_insensitive(self):
+        text = (
+            "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 | TRIAGE |\n"
+            "|---|---|---|---|---|---|\n"
+            "| nn | slug | - | d | t | yes |\n"
+        )
+        projects = parse_projects_text(text)
+        self.assertEqual(projects[0].triage, "yes")
+
+    def test_positional_fallback_when_header_matches_no_alias(self):
+        # Header row uses no known alias -> positional mode. triage is never
+        # populated positionally, even for a 6th column.
+        text = (
+            "| a | b | c | d | e | f |\n"
+            "|---|---|---|---|---|---|\n"
+            "| 時計 | clock-app | - | Demo | tasks | ignored |\n"
+        )
+        projects = parse_projects_text(text)
+        self.assertEqual(len(projects), 1)
+        p = projects[0]
+        self.assertEqual(p.nickname, "時計")
+        self.assertEqual(p.name, "clock-app")
+        self.assertEqual(p.path, "-")
+        self.assertEqual(p.description, "Demo")
+        self.assertEqual(p.common_tasks, "tasks")
+        # 6th positional column is mirror_of, NOT triage.
+        self.assertEqual(p.mirror_of, "ignored")
+        self.assertEqual(p.triage, "")
+
+    def test_triage_and_mirror_of_coexist_by_name(self):
+        # When both columns are present, each is mapped by its own header,
+        # so triage does not leak into mirror_of (the position-collision bug
+        # that motivated header-name parsing).
+        text = (
+            "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 | mirror_of | triage |\n"
+            "|---|---|---|---|---|---|---|\n"
+            "| nn | slug | - | d | t | upstream | yes |\n"
+        )
+        projects = parse_projects_text(text)
+        self.assertEqual(projects[0].mirror_of, "upstream")
+        self.assertEqual(projects[0].triage, "yes")
+
+    def test_live_registry_triage_column_parses(self):
+        # The live registry now carries a triage column; every data row must
+        # parse and expose a triage value (default "no").
+        path = PROJECT_ROOT / "registry" / "projects.md"
+        if not path.exists():  # pragma: no cover
+            self.skipTest("live registry/projects.md not present")
+        projects = parse_projects(path)
+        for p in projects:
+            # Every live row is currently opted-out.
+            self.assertEqual(p.triage.strip().lower(), "no")
+
+
 class TestIterRows(unittest.TestCase):
 
     def test_classifies_lines(self):
