@@ -182,7 +182,7 @@ triage を「**計算（どの Issue がどう triage されるか）**」と「
 - 工数が機械推定なら `(推定)` を必ず付す。
 - 「提案のみ / 着手はあなたの判断」を毎回明示する（INV-1 の運用上の現れ）。
 - 除外枠を必ず見せる（監査性 + 「全部見たうえで N 件」という安心）。
-- **クロスリポジトリ scan（[§10](#10-クロスリポジトリ-triage実装済み)）時**: 候補の `repo` が `null` でない（複数 repo 横断）なら、`#N` の代わりに `repo#N`（例 `runtime#531`）で表示し、出自 repo の曖昧さを無くす。単一 repo scan（`repo: null`）では従来どおり `#N`。delivery 層（窓口 skill）でこのレンダリング分岐を実装する（[§9](#9-段階導入と検証提案) と同様に `.claude/` 編集を伴うため計算層ワーカーのスコープ外・別タスク）。
+- **クロスリポジトリ scan（[§10](#10-クロスリポジトリ-triage実装済み)）時**: 候補の `repo` が `null` でない（複数 repo 横断）なら、`#N` の代わりに `repo#N`（例 `runtime#531`）で表示し、出自 repo の曖昧さを無くす。単一 repo scan（`repo: null`）では従来どおり `#N`。delivery 層（窓口 skill）でこのレンダリング分岐を実装する（[§9](#9-段階導入と検証提案) と同様に `.claude/` 編集を伴うため計算層ワーカーのスコープ外・別タスク）。**実装済み**: この repo 修飾レンダリングは、delivery 層が `registry/projects.md` の triage opt-in 列から scan 対象 repo セットを解決する経路（[§10.4](#104-registry-駆動の-repo-セット解決)）と組で有効になる。opt-in 行が複数 repo にわたるときに `repo` が `null` でなくなり、この分岐が発火する。resolver（[`tools/work_discovery_repos.py`](../../tools/work_discovery_repos.py)）の `skipped` / `signals` も併せて人間提示に添え、「どの repo を見た結果の候補か」を監査可能にする。
 
 ## 6. delivery 方式 3 案比較
 
@@ -251,7 +251,7 @@ triage を「**計算（どの Issue がどう triage されるか）**」と「
 
 ### 7.1 不変条件の検証可能性
 
-- **監査ログ**: scan 実行・候補件数・推奨を journal イベント（proposed kind 例: `work_discovery_scanned` / payload に `candidate_count` / `recommendation_issue` / `trigger`）として残し、「いつ・何件・何を推奨したか」を後追いできるようにする。記帳するのは **delivery 層（窓口 / dispatcher）であって read-only な計算層ツールではない**（INV-3 例外の分離）。[`docs/journal-events.md`](../journal-events.md) のとおり events の SoT は `.state/state.db` の events table であり、emit は DB-routed helper（`tools/journal_append.sh` / `tools/journal_append.py`）経由で行う（旧 `.state/journal.jsonl` 直書きや直接 DB INSERT はしない）。**proposed イベントの台帳追記と実体配線は本設計のスコープ外**（別タスク）。
+- **監査ログ**: scan 実行・候補件数・推奨を journal イベント（proposed kind 例: `work_discovery_scanned` / payload に `candidate_count` / `recommendation_ref`（owner/repo#N 形、[§10.4](#104-registry-駆動の-repo-セット解決) で統一）/ `trigger`）として残し、「いつ・何件・何を推奨したか」を後追いできるようにする。記帳するのは **delivery 層（窓口 / dispatcher）であって read-only な計算層ツールではない**（INV-3 例外の分離）。[`docs/journal-events.md`](../journal-events.md) のとおり events の SoT は `.state/state.db` の events table であり、emit は DB-routed helper（`tools/journal_append.sh` / `tools/journal_append.py`）経由で行う（旧 `.state/journal.jsonl` 直書きや直接 DB INSERT はしない）。**proposed イベントの台帳追記と実体配線は本設計のスコープ外**（別タスク）。
 - **副作用ゼロの担保**: 計算層ツールは `gh issue list` / `rtk gh issue view` 等の**読み取り API のみ**を使い、書き込み系 API・git 操作を一切呼ばないことをツールの契約（および将来のユニットテスト）で固定する。
 
 ## 8. post-merge proactive-next-dispatch との統合
@@ -314,13 +314,25 @@ triage を「**計算（どの Issue がどう triage されるか）**」と「
 
 - `--repo` を繰り返して複数 repo を渡す: `python3 tools/work_discovery_scan.py --repo suisya-systems/claude-org-ja --repo suisya-systems/claude-org-runtime`。省略 or 1 回なら従来どおり単一 repo。
 - 候補識別性（`repo`+`issue`）・正準 `blocking_refs`・推奨の `repo` は [§5.1](#51-機械可読-jsonツール-stdout)。INV-1（read-only / propose-only）は維持: gh の**読み取りサブコマンドのみ**を使い、横断でも書き込み・git 操作・spawn を一切しない。
+- **`--repo` セットの供給源（registry 駆動、[§10.4](#104-registry-駆動の-repo-セット解決)）**: delivery 層は `--repo` を即興で手打ちせず、resolver [`tools/work_discovery_repos.py`](../../tools/work_discovery_repos.py) を通して `registry/projects.md` の triage opt-in 列 + home repo 常時包含から決定的に導出する。窓口 skill（[`.claude/skills/work-discovery/SKILL.md`](../../.claude/skills/work-discovery/SKILL.md)）と dispatcher の worker_close 経路（[`.dispatcher/references/pane-close.md`](../../.dispatcher/references/pane-close.md) Step 6）の双方が `resolver --format flags` の出力を scan コマンドへ splice する。
+
+### 10.4 registry 駆動の repo セット解決
+
+`--repo` セットを誰がどう決めるかを決定的にし、opt-in の監査可能性を担保する層。engine（scan）は `--repo` を受け取るだけで、その供給は delivery 層の責務（[§7.1](#71-不変条件の検証可能性) の計算層 / delivery 層の分離）。resolver [`tools/work_discovery_repos.py`](../../tools/work_discovery_repos.py) は read-only（`git remote get-url` と任意の `gh repo view` 読み取りのみ。書き込み・spawn・git 変更なし）で、INV-1〜5 を崩さない。
+
+- **triage 列セマンティクス**: [`registry/projects.md`](../../registry/projects.md) の表に末尾列 `triage` を持つ。値 `yes` / `true` / `on`（case-insensitive, trim 後）だけが opt-in。それ以外（`no` / 空 / `-`）・列そのものが無い legacy テーブルは非 opt-in（後方互換で全行 `no` 扱い）。opt-in 行の `パス` 列 GitHub URL から `owner/repo` を導いて `--repo` セットに加える。
+- **home repo 常時包含（二段解決）**: claude-org-ja 自身は registry に載らない契約（[`registry/projects.md`](../../registry/projects.md) 冒頭注記）のため、resolver が git origin から常時 scan 対象へ含める。解決は (1) 一次 `git -C <root> remote get-url origin` の URL から `owner/repo` 抽出、(2) 一次失敗時のみ `gh repo view --json nameWithOwner` にフォールバック、(3) 両方失敗なら home を明示追加できない旨の loud signal を emit（非 fatal。通常は必ず解決する前提）。home は `--repo` セットの**先頭**、以降 opt-in 行を順序保持で重複除去して続ける。
+- **ローカルパス・`-` 行の skip signal**: triage opt-in なのに `パス` が GitHub URL でない（ローカルパス / `-`）行は owner/repo を導けないため scan 対象から外し、`skipped` エントリ + `signals` に理由（`triage opt-in row '<nickname>' has non-URL path '<path>' -- skipped`）を残す。silent に落とさず監査可能にするのが目的で、delivery 層（窓口 skill / dispatcher）はこれを人間提示に添える。
+- **owner/repo の正規化**: resolver 出力は lowercase 統一（engine の closing-issue join が `.lower()` 比較を混在させるため、resolver 側で揃えて整合を取る）。
+- **出力**: `--format json`（既定、`repos` / `home_repo` / `opted_in` / `skipped` / `signals`）と `--format flags`（`--repo a/b --repo c/d` の 1 行、`$(...)` splice 用。skip / signal は stderr に出し stdout は flags 純粋）。exit code は `0`（repos に最低 home を含む）/ `2`（error）。
+- **`recommendation_ref` の journal 統一**: dispatcher の worker_close 経路は journal イベント `work_discovery_scanned` の payload を `recommendation_issue=<番号>` から **`recommendation_ref=owner/repo#N`** に統一する（`recommendation.repo` が null＝単一 repo scan で home に畳まれた場合は resolver の `home_repo` で補完）。cross-repo で `ja#60` と `runtime#60` が journal 上で衝突しないようにするため。
 
 ## 10'. スコープ外 / 将来課題
 
 - **着手の自動化**: 本設計の対象外（INV-1 / INV-2 で恒久的に禁止）。assessment §5 が言うとおり「人間をループ頂点に残す」のが本組織の確定方針。
 - **リリース/バージョン依存の解決**: [§10.1](#101-依存記法と較正2026-06-12-実-issue-ベース) の散文リリース依存（`runtime>=0.1.11` 等）の自動解決は対象外（スコープ A 確定: Issue 参照の横断解決まで）。`gh release` 横断照合は将来課題。
 - **工数見積もりの高度化（実装済み・本リポジトリではゲート OFF）**: §4.1 の静的ヒューリスティックに加え、[`tools/work_discovery_scan.py`](../../tools/work_discovery_scan.py) は直近マージ PR の**実工数**（変更行数 / ファイル数。review ラウンド数・着手〜マージ所要時間は退化シグナルのため composite から除外しコンテキストとしてのみ記録）から repo 較正された effort モデルを学習する（`--effort-history`、既定 60 / `0` で無効化）。`closingIssuesReferences` で PR↔Issue を橋渡しし、トリアージ時に観測できる唯一の予測子（Issue body 長）が実工数と相関するかを測る。**データ駆動ゲート**（十分なサンプル数 AND Spearman ≥ 閾値）を超えた時のみ静的推定を上書きし、それ以外は静的推定を維持して理由＋実工数コンテキストを `signals[]` に明示する。本リポジトリの実データでは body 長は実工数と相関しない（ρ ≈ 0、n≈23 — body 長は spec の詳細さを反映し、コード変更量を反映しない）ため、ゲートは正しく上書きを見送り、モデルは「機械が断定した」誤認（認知的降伏、§4.4）を避けつつ監査コンテキストのみ付与する。将来 size ラベル運用や body 長相関が現れた repo では同一フレームワークが自動で学習 cutpoint を適用する。学習フェッチは **non-fatal**（gh 失敗時は静的ヒューリスティックへ縮退、triage は中断しない）。`effort_estimated` + `signals[]` の不確実性明示契約は学習経路でも維持。モデル要約は出力の `effort_model` に echo される。**既知の限界（明示）**: 予測子に使う body は closed issue の *現在の* body であり、merge / triage 時点のスナップショットではない（gh から履歴 body を安価に取得できないため）。閉鎖後の本文編集は学習相関 / cutpoint を動かしうる（spec issue は閉鎖後ほとんど編集されないが、ノイズ源として `coverage` で網羅性を監査可能にしている）。
-- **`.claude/` skill・`.dispatcher/` prose の実体実装**: クロスリポジトリ対応の delivery 層配線（窓口 skill の多 repo 起動・dispatcher 拡張）と effort 学習ゲートの運用配線は別タスク。
+- **`.claude/` skill・`.dispatcher/` prose の実体実装**: クロスリポジトリ対応の delivery 層配線（窓口 skill の多 repo 起動・dispatcher 拡張）は **実装済み**（[§10.4](#104-registry-駆動の-repo-セット解決)、resolver `tools/work_discovery_repos.py` + 窓口 skill / dispatcher worker_close 経路の配線）。effort 学習ゲートの運用配線は引き続き別タスク。
 - **proposed journal イベントの台帳追記と配線**: `work_discovery_scanned` 等の [`docs/journal-events.md`](../journal-events.md) 追記・emit 配線は実装タスク側。
 
 ## 11. 未解決の論点（実装前に人間判断が要る点）
