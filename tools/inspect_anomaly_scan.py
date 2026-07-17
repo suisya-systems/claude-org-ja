@@ -27,6 +27,22 @@ Scope: this module covers the ERROR-class detections (substring + anchored
 regex + spinner age). APPROVAL_BLOCKED detection stays in the prose §4(b)
 because it is target-line + cursor-position sensitive and not part of
 Issue #492.
+
+**Spinner false-positive suppression (Issue #698)**: Claude Code renders a
+completed turn's summary in the *same* ``{glyph} {verb} for {Xm Ys}`` shape
+as a live old-form spinner (e.g. ``✻ Cooked for 31m 40s``). Such a summary
+lingers in the scrollback of an idle worker, so every dispatcher cycle
+re-matched it as a "5-minute stuck spinner" and emitted a recurring
+false-positive ERROR alert. A single pane frame cannot tell a frozen
+summary from a genuinely stuck spinner by content or position alone, so this
+module keys on the invariant that actually separates them: a **live** spinner's
+``for Xm Ys`` counter advances every cycle, while a frozen scrollback summary
+is byte-identical. When the caller threads the previous cycle's spinner
+identity keys back in (CLI ``--spinner-state-file``), an unchanged old-form
+spinner is suppressed. The first observation of any spinner still fires (no
+prior state to diff against), and a fully-frozen *live* pane is still caught
+by the hash-based STALL path (``tools/inspect_pane_state.py``), so no real
+signal is lost. Without prior state the scan behaves exactly as before.
 """
 
 from __future__ import annotations
@@ -36,7 +52,8 @@ import json
 import re
 import sys
 from dataclasses import asdict, dataclass
-from typing import Iterable, Optional, Sequence, Union
+from pathlib import Path
+from typing import Collection, Iterable, Optional, Sequence, Union
 
 # Default spinner-age threshold in minutes. A Claude Code spinner that has
 # been counting for this many minutes or more is treated as a stuck run.
@@ -91,6 +108,26 @@ SPINNER_AGE_PATTERN = (
 )
 _SPINNER_AGE_RE = re.compile(SPINNER_AGE_PATTERN)
 
+# Leading spinner glyphs + surrounding whitespace, stripped to form a stable
+# cross-cycle identity for an old-form spinner line (Issue #698). The glyph
+# rotates frame-to-frame even on a frozen summary line, and the indent can
+# shift, so both are normalized away; what remains (``verb for Xm Ys``) is
+# constant for a frozen scrollback summary and changes for a live spinner
+# whose counter advances.
+_SPINNER_GLYPH_PREFIX_RE = re.compile(
+    r"^\s*[✻✺✶✷✸✹✦✧✱✲✳·∙▪●○◍◌◐◑◒◓*]+\s*"
+)
+
+
+def spinner_identity_key(text: str) -> str:
+    """Glyph/indent-normalized identity for an old-form spinner line.
+
+    Used by the cross-cycle diff suppression (Issue #698): a frozen scrollback
+    summary (``✻ Cooked for 31m 40s``) maps to a constant key across cycles,
+    while a live spinner's key changes as its ``for Xm Ys`` counter advances.
+    """
+    return _SPINNER_GLYPH_PREFIX_RE.sub("", text).rstrip()
+
 
 @dataclass(frozen=True)
 class Detection:
@@ -133,12 +170,23 @@ def scan_lines(
     lines: Iterable[Union[str, dict]],
     *,
     spinner_threshold_min: int = SPINNER_AGE_THRESHOLD_MIN,
+    prev_spinner_keys: Optional[Collection[str]] = None,
 ) -> list[Detection]:
     """Scan **all** visible pane lines for ERROR-class anomalies.
 
     Returns a list of :class:`Detection`, one per matching line/trigger.
     An empty list means the pane looks clean. The scan deliberately covers
     every row (Issue #492 gap 1) rather than only the bottom N.
+
+    ``prev_spinner_keys`` (Issue #698): identity keys
+    (:func:`spinner_identity_key`) of the old-form spinner lines that reached
+    the threshold on the *previous* cycle for this same worker. An aged
+    spinner whose key is in this set is a frozen scrollback summary (its
+    ``for Xm Ys`` counter did not advance) and its ``spinner_age`` detection
+    is suppressed. ``None`` (the default) means "no prior state" — every aged
+    spinner fires, so callers that do not thread state keep the pre-#698
+    behaviour exactly. Only ``spinner_age`` detections are affected; substring
+    / status-code / anchored-regex ERROR detections are never suppressed.
     """
     detections: list[Detection] = []
     for row, text in _normalize(lines):
@@ -191,6 +239,14 @@ def scan_lines(
         if m:
             minutes = int(m.group(1))
             if minutes >= spinner_threshold_min:
+                # Cross-cycle diff (Issue #698): an identical old-form spinner
+                # line already seen last cycle is a frozen scrollback summary,
+                # not a live spinner (whose counter would have advanced), so
+                # skip the recurring false positive. The first observation
+                # (prev_spinner_keys None/absent) still fires.
+                key = spinner_identity_key(text)
+                if prev_spinner_keys is not None and key in prev_spinner_keys:
+                    continue
                 detections.append(
                     Detection(
                         kind="error",
@@ -201,6 +257,29 @@ def scan_lines(
                 )
 
     return detections
+
+
+def spinner_age_keys(
+    lines: Iterable[Union[str, dict]],
+    *,
+    spinner_threshold_min: int = SPINNER_AGE_THRESHOLD_MIN,
+) -> list[str]:
+    """Identity keys of every threshold-reaching old-form spinner line.
+
+    This is the set the caller persists after a cycle so the next cycle can
+    diff against it (Issue #698). Keys are collected for **all** aged spinner
+    lines regardless of whether their detection was suppressed, so a summary
+    that fired once (first observation) is remembered and suppressed next
+    cycle.
+    """
+    keys: list[str] = []
+    for _, text in _normalize(lines):
+        if not text:
+            continue
+        m = _SPINNER_AGE_RE.match(text)
+        if m and int(m.group(1)) >= spinner_threshold_min:
+            keys.append(spinner_identity_key(text))
+    return keys
 
 
 def _load_lines(payload: dict) -> Sequence[Union[str, dict]]:
@@ -221,6 +300,47 @@ def _load_lines(payload: dict) -> Sequence[Union[str, dict]]:
         "input JSON must be a list of lines or contain a 'lines' / "
         "'structuredContent.lines' array"
     )
+
+
+def _read_spinner_state(path: Optional[str]) -> Optional[list[str]]:
+    """Load the previous cycle's aged-spinner keys from ``path``.
+
+    Returns ``None`` when no state file was requested (so :func:`scan_lines`
+    keeps its stateless pre-#698 behaviour), or an empty list when the file is
+    absent / unreadable / malformed (treat as "nothing seen last cycle" — the
+    first cycle after a corrupt or missing file re-fires, which is the safe
+    side: a real stuck spinner is never silently masked by a bad state file).
+    """
+    if path is None:
+        return None
+    p = Path(path)
+    if not p.exists():
+        return []
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    keys = data.get("spinner_keys") if isinstance(data, dict) else data
+    if not isinstance(keys, list):
+        return []
+    return [str(k) for k in keys]
+
+
+def _write_spinner_state(path: str, keys: Sequence[str]) -> None:
+    """Persist this cycle's aged-spinner keys to ``path`` (best effort).
+
+    Creates the parent directory if needed. A write failure is swallowed: the
+    next cycle then reads no prior state and re-fires, which is the safe side.
+    """
+    p = Path(path)
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(
+            json.dumps({"spinner_keys": list(keys)}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -245,12 +365,35 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             f"many minutes is an ERROR-equivalent (default: {SPINNER_AGE_THRESHOLD_MIN})."
         ),
     )
+    parser.add_argument(
+        "--spinner-state-file",
+        default=None,
+        help=(
+            "Per-worker JSON file holding the previous cycle's aged-spinner "
+            "identity keys (Issue #698). When given, an old-form spinner whose "
+            "line is unchanged from last cycle is a frozen scrollback summary "
+            "and its detection is suppressed; the file is then rewritten with "
+            "this cycle's keys. Omit for a stateless scan (pre-#698 behaviour)."
+        ),
+    )
     args = parser.parse_args(argv)
 
     payload = json.load(args.input)
+    lines = list(_load_lines(payload))
+
+    prev_keys = _read_spinner_state(args.spinner_state_file)
     detections = scan_lines(
-        _load_lines(payload), spinner_threshold_min=args.spinner_threshold_min
+        lines,
+        spinner_threshold_min=args.spinner_threshold_min,
+        prev_spinner_keys=prev_keys,
     )
+    if args.spinner_state_file is not None:
+        _write_spinner_state(
+            args.spinner_state_file,
+            spinner_age_keys(
+                lines, spinner_threshold_min=args.spinner_threshold_min
+            ),
+        )
     json.dump(
         {"detections": [asdict(d) for d in detections]},
         sys.stdout,
