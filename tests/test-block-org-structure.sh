@@ -419,6 +419,13 @@ json='{"tool_name":"Write","tool_input":{"file_path":"'"$TRACKED_WORKER_DIR"'/.s
 ec=$(run_hook_tracked "$json" "$stderr")
 assert_exit 2 "$ec" "Write(tracked): NEW file under .state/ is still blocked"
 
+# 45b. out-of-org Write to untracked path with pathspec metachars (block — :(literal)
+#      keeps "registry/*" from glob-matching tracked files under registry/)
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json='{"tool_name":"Write","tool_input":{"file_path":"'"$TRACKED_WORKER_DIR"'/registry/*"}}'
+ec=$(run_hook_tracked "$json" "$stderr")
+assert_exit 2 "$ec" "Write(tracked): untracked glob-metachar path registry/* is blocked"
+
 # 46. in-org Write to tracked registry/projects.md (block — relaxation is out-of-org only)
 #     WORKER_DIR=$REPO_ROOT is inside CLAUDE_ORG_PATH and registry/projects.md is
 #     tracked in this repo, so this asserts the in-org guard is NOT weakened.

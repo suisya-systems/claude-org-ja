@@ -35,10 +35,12 @@ normalize_slashes() {
 
 # Helper: WORKER_DIR の git repo に既に track されているファイルかを判定する（Issue #736）。
 # git 不在 / repo 外 / untracked はすべて非 0（＝従来どおりブロック側に倒れる fail-closed）。
+# :(literal) で pathspec の glob 解釈を無効化する（例: 未 tracked の「registry/*」という
+# パスが tracked ファイルへ glob マッチして誤許可されるのを防ぐ）。
 is_tracked_in_worker_repo() {
   local file="$1"
   command -v git &>/dev/null || return 1
-  git -C "$WORKER_DIR" ls-files --error-unmatch -- "$file" &>/dev/null
+  git -C "$WORKER_DIR" ls-files --error-unmatch -- ":(literal)$file" &>/dev/null
 }
 
 # Helper: ドライブレター表記を統一（Git Bash /c/ → C:/ 変換 + 大文字統一）
