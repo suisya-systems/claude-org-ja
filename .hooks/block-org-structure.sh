@@ -33,6 +33,14 @@ normalize_slashes() {
   echo "$1" | tr '\\' '/'
 }
 
+# Helper: WORKER_DIR の git repo に既に track されているファイルかを判定する（Issue #736）。
+# git 不在 / repo 外 / untracked はすべて非 0（＝従来どおりブロック側に倒れる fail-closed）。
+is_tracked_in_worker_repo() {
+  local file="$1"
+  command -v git &>/dev/null || return 1
+  git -C "$WORKER_DIR" ls-files --error-unmatch -- "$file" &>/dev/null
+}
+
 # Helper: ドライブレター表記を統一（Git Bash /c/ → C:/ 変換 + 大文字統一）
 normalize_drive_letter() {
   local p="$1"
@@ -121,6 +129,16 @@ if [[ "$TOOL_NAME" == "Write" || "$TOOL_NAME" == "Edit" ]]; then
     if [[ "$CANONICAL_FILE" == "$CLAUDE_DIR/"* || "$CANONICAL_FILE" == "$CLAUDE_DIR" ]]; then
       exit 0
     fi
+  fi
+
+  # 例外 (Issue #736): out-of-org worker の対象リポジトリが registry/ や .dispatcher/ 等を
+  # 正当に含む場合（例: EN ミラー repo の registry/projects.md）、既存 tracked ファイルの
+  # 編集は「worker dir への org 構造の新規作成」ではないため許可する。判定は WORKER_DIR の
+  # git index 照合（git ls-files）。untracked / repo 外 / git 不在は従来どおりブロック側に
+  # 落ちる。in-org worker（WORKER_DIR が claude-org 内）には適用しない — claude-org 本体の
+  # tracked な組織構造ファイル編集をこの緩和で許してしまわないため。
+  if [[ "$WORKER_IN_ORG" == "0" ]] && is_tracked_in_worker_repo "$CANONICAL_FILE"; then
+    exit 0
   fi
 
   # 全深度ブロック: パスコンポーネントに含まれるかチェック

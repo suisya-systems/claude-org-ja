@@ -35,7 +35,11 @@ OOO_WORKER_DIR="$(portable_realpath "$CLAUDE_ORG_PATH/../target-repo-test")"
 
 PASS=0; FAIL=0; TEST_NUM=0
 TMPFILES=()
-cleanup() { rm -f "${TMPFILES[@]}"; }
+TMPDIRS=()
+cleanup() {
+  rm -f "${TMPFILES[@]}"
+  [[ ${#TMPDIRS[@]} -gt 0 ]] && rm -rf "${TMPDIRS[@]}"
+}
 trap cleanup EXIT
 
 assert_exit() {
@@ -352,6 +356,76 @@ stderr=$(mktemp); TMPFILES+=("$stderr")
 json='{"tool_name":"Bash","tool_input":{"command":"cp foo ${CLAUDE_ORG_PATH}/.claude/skills/x/SKILL.md"}}'
 ec=$(run_hook_ooo "$json" "$stderr")
 assert_exit 2 "$ec" "Bash(out-of-org): variable \${CLAUDE_ORG_PATH}/.claude/ is blocked"
+
+# ========== Tracked-file Edit Tests (Issue #736: new-creation vs existing-tracked-edit) ==========
+# Models the EN mirror repo case: an out-of-org target repository that itself
+# legitimately tracks org-structure paths (registry/projects.md, .dispatcher/ etc.).
+# Editing an EXISTING tracked file must be allowed (it is not "worker dir への
+# org 構造の新規作成"), while NEW file creation in those dirs stays blocked.
+# The relaxation is out-of-org only: in-org workers keep the original blocking.
+
+TRACKED_WORKER_DIR="$(mktemp -d)"
+TMPDIRS+=("$TRACKED_WORKER_DIR")
+TRACKED_WORKER_DIR="$(portable_realpath "$TRACKED_WORKER_DIR")"
+git -C "$TRACKED_WORKER_DIR" init -q
+mkdir -p "$TRACKED_WORKER_DIR/registry" "$TRACKED_WORKER_DIR/.dispatcher"
+echo "# projects" > "$TRACKED_WORKER_DIR/registry/projects.md"
+echo "# task" > "$TRACKED_WORKER_DIR/.dispatcher/task.md"
+git -C "$TRACKED_WORKER_DIR" add registry/projects.md .dispatcher/task.md
+# Existing but UNTRACKED file: must stay blocked (git ls-files check, not mere existence)
+echo "# untracked" > "$TRACKED_WORKER_DIR/registry/untracked.md"
+
+run_hook_tracked() {
+  local json="$1" stderr_file="$2"
+  local exit_code=0
+  echo "$json" | env WORKER_DIR="$TRACKED_WORKER_DIR" CLAUDE_ORG_PATH="$CLAUDE_ORG_PATH" bash "$HOOK" 2>"$stderr_file" || exit_code=$?
+  echo "$exit_code"
+}
+
+# 40. out-of-org Write to EXISTING tracked registry/projects.md (allow)
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json='{"tool_name":"Write","tool_input":{"file_path":"'"$TRACKED_WORKER_DIR"'/registry/projects.md"}}'
+ec=$(run_hook_tracked "$json" "$stderr")
+assert_exit 0 "$ec" "Write(tracked): existing tracked registry/projects.md is allowed"
+
+# 41. out-of-org Edit to EXISTING tracked registry/projects.md (allow)
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json='{"tool_name":"Edit","tool_input":{"file_path":"'"$TRACKED_WORKER_DIR"'/registry/projects.md"}}'
+ec=$(run_hook_tracked "$json" "$stderr")
+assert_exit 0 "$ec" "Edit(tracked): existing tracked registry/projects.md is allowed"
+
+# 42. out-of-org Write to NEW file under registry/ (block — new creation)
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json='{"tool_name":"Write","tool_input":{"file_path":"'"$TRACKED_WORKER_DIR"'/registry/new-file.md"}}'
+ec=$(run_hook_tracked "$json" "$stderr")
+assert_exit 2 "$ec" "Write(tracked): NEW file under registry/ is still blocked"
+assert_stderr_contains "組織構造ディレクトリ" "$stderr" "Write(tracked): new registry/ file stderr mentions 組織構造ディレクトリ"
+
+# 43. out-of-org Write to EXISTING but UNTRACKED registry file (block — not in git index)
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json='{"tool_name":"Write","tool_input":{"file_path":"'"$TRACKED_WORKER_DIR"'/registry/untracked.md"}}'
+ec=$(run_hook_tracked "$json" "$stderr")
+assert_exit 2 "$ec" "Write(tracked): existing but untracked registry file is blocked"
+
+# 44. out-of-org Write to EXISTING tracked .dispatcher/task.md (allow — ALWAYS_BLOCKED dirs too)
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json='{"tool_name":"Write","tool_input":{"file_path":"'"$TRACKED_WORKER_DIR"'/.dispatcher/task.md"}}'
+ec=$(run_hook_tracked "$json" "$stderr")
+assert_exit 0 "$ec" "Write(tracked): existing tracked .dispatcher/task.md is allowed"
+
+# 45. out-of-org Write to NEW file under .state/ (block — new creation)
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json='{"tool_name":"Write","tool_input":{"file_path":"'"$TRACKED_WORKER_DIR"'/.state/state.json"}}'
+ec=$(run_hook_tracked "$json" "$stderr")
+assert_exit 2 "$ec" "Write(tracked): NEW file under .state/ is still blocked"
+
+# 46. in-org Write to tracked registry/projects.md (block — relaxation is out-of-org only)
+#     WORKER_DIR=$REPO_ROOT is inside CLAUDE_ORG_PATH and registry/projects.md is
+#     tracked in this repo, so this asserts the in-org guard is NOT weakened.
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json='{"tool_name":"Write","tool_input":{"file_path":"'"$WORKER_DIR"'/registry/projects.md"}}'
+ec=$(run_hook "$json" "$stderr")
+assert_exit 2 "$ec" "Write(in-org): tracked registry/projects.md is still blocked"
 
 # --- Summary ---
 echo "# $PASS passed, $FAIL failed out of $TEST_NUM tests"
