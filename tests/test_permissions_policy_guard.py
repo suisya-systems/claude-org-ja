@@ -26,17 +26,30 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SETTINGS_PATH = REPO_ROOT / ".claude" / "settings.json"
 
-# 不可逆・高影響のため allow に決して現れてはならないコマンド接頭辞。
-# `Bash(gh pr merge:*)` / `Bash(git -C x push:*)` のような変種も拾えるよう、
-# Bash(...) の中身を取り出して先頭一致で検査する。
-IRREVERSIBLE_COMMAND_RES = [
-    ("gh pr merge", re.compile(r"^gh\s+pr\s+merge\b")),
-    ("gh pr create", re.compile(r"^gh\s+pr\s+create\b")),
-    ("gh pr close", re.compile(r"^gh\s+pr\s+close\b")),
-    ("git push", re.compile(r"^git\s+(-C\s+\S+\s+)?push\b")),
-    ("gh api", re.compile(r"^gh\s+api\b")),
-    ("gh repo", re.compile(r"^gh\s+repo\b")),
+# 不可逆・高影響のため allow が許可を与えてはならない操作の代表インスタンス。
+# allow ルールを glob として展開し、これらのプローブのいずれかにマッチしたら
+# 「そのルールは不可逆操作を包含している」と判定する。`Bash(gh pr merge:*)` の
+# ような明示形だけでなく、`Bash(gh:*)` / `Bash(gh *)` / `Bash(git *)` /
+# `Bash(*)` のような広域パターン（Codex round 1 指摘のギャップ）も検出できる。
+IRREVERSIBLE_COMMAND_PROBES = [
+    ("gh pr merge", ["gh pr merge", "gh pr merge 123 --admin"]),
+    ("gh pr create", ["gh pr create", "gh pr create -f"]),
+    ("gh pr close", ["gh pr close", "gh pr close 123"]),
+    ("git push", ["git push", "git push origin main", "git -C /x push origin main"]),
+    ("gh api", ["gh api", "gh api repos/o/r -X DELETE"]),
+    ("gh repo", ["gh repo", "gh repo delete o/r --yes"]),
 ]
+
+
+def _rule_pattern_regex(cmd_pattern: str) -> re.Pattern[str]:
+    """Bash allow ルールの中身（例 ``gh issue create:*``）を包含判定用 regex にする。
+
+    Claude Code の permission ルールで使われる末尾 ``:*`` / ``*`` を「任意の
+    続き」として展開し、それ以外はリテラル一致として扱う。
+    """
+    normalized = cmd_pattern.replace(":*", "*")
+    parts = [re.escape(p) for p in normalized.split("*")]
+    return re.compile("^" + ".*".join(parts) + "$")
 
 # deny 行の実在を確認する族。settings.json の網羅バリアント全部ではなく、
 # 各族の正準形（素の git commit / git push 形）を pin する。
@@ -70,7 +83,7 @@ class PermissionsPolicyGuard(unittest.TestCase):
         self.permissions = self.settings.get("permissions", {})
 
     def test_allow_has_no_irreversible_operations(self) -> None:
-        """不変条件 1: allow に不可逆操作パターンが存在したら該当行名で fail。"""
+        """不変条件 1: allow に不可逆操作を包含するパターンが存在したら該当行名で fail。"""
         allow = self.permissions.get("allow", [])
         self.assertIsInstance(allow, list, "permissions.allow が list でない")
         violations: list[str] = []
@@ -78,9 +91,11 @@ class PermissionsPolicyGuard(unittest.TestCase):
             cmd = _bash_command_of(rule)
             if cmd is None:
                 continue
-            for label, pattern in IRREVERSIBLE_COMMAND_RES:
-                if pattern.match(cmd):
-                    violations.append(f"{rule!r} (matches irreversible op: {label})")
+            rule_re = _rule_pattern_regex(cmd)
+            for label, probes in IRREVERSIBLE_COMMAND_PROBES:
+                if any(rule_re.match(probe) for probe in probes):
+                    violations.append(f"{rule!r} (covers irreversible op: {label})")
+                    break
         self.assertEqual(
             violations,
             [],
