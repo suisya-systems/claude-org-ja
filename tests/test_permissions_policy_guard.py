@@ -26,11 +26,16 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SETTINGS_PATH = REPO_ROOT / ".claude" / "settings.json"
 
-# 不可逆・高影響のため allow が許可を与えてはならない操作の代表インスタンス。
-# allow ルールを glob として展開し、これらのプローブのいずれかにマッチしたら
-# 「そのルールは不可逆操作を包含している」と判定する。`Bash(gh pr merge:*)` の
-# ような明示形だけでなく、`Bash(gh:*)` / `Bash(gh *)` / `Bash(git *)` /
-# `Bash(*)` のような広域パターン（Codex round 1 指摘のギャップ）も検出できる。
+# 不可逆操作の検出は 2 方向で行う（どちらか一方だけでは漏れる）:
+#
+# (A) 広域パターン検出 — allow ルールを glob 展開し、下記プローブ（不可逆操作の
+#     代表インスタンス）のいずれかを包含したら violation。`Bash(gh:*)` /
+#     `Bash(gh *)` / `Bash(git *)` / `Bash(*)` を拾う（Codex round 1 指摘）。
+# (B) 狭域パターン検出 — ルールのリテラル接頭辞（最初のワイルドカードより前）が
+#     不可逆操作コマンドで始まっていたら violation。`Bash(gh pr merge --auto:*)` /
+#     `Bash(git push --tags:*)` のようなオプション先行の狭い形を拾う
+#     （Codex round 2 指摘。プローブ包含は rule ⊇ probe の一方向なので、
+#     probe より狭いルールは (A) では検出できない）。
 IRREVERSIBLE_COMMAND_PROBES = [
     ("gh pr merge", ["gh pr merge", "gh pr merge 123 --admin"]),
     ("gh pr create", ["gh pr create", "gh pr create -f"]),
@@ -38,6 +43,18 @@ IRREVERSIBLE_COMMAND_PROBES = [
     ("git push", ["git push", "git push origin main", "git -C /x push origin main"]),
     ("gh api", ["gh api", "gh api repos/o/r -X DELETE"]),
     ("gh repo", ["gh repo", "gh repo delete o/r --yes"]),
+]
+
+# (B) 用: ルールのリテラル接頭辞が不可逆操作コマンドで始まるかの判定。
+# 語境界は lookahead (空白 / 終端 / ':') で取り、`gh pr merge-helper` のような
+# 別コマンドへの誤検出を避ける。git push は `git -C <dir> push` 変種も拾う。
+IRREVERSIBLE_PREFIX_RES = [
+    ("gh pr merge", re.compile(r"^gh\s+pr\s+merge(?=\s|:|$)")),
+    ("gh pr create", re.compile(r"^gh\s+pr\s+create(?=\s|:|$)")),
+    ("gh pr close", re.compile(r"^gh\s+pr\s+close(?=\s|:|$)")),
+    ("git push", re.compile(r"^git\s+(-C\s+\S+\s+)?push(?=\s|:|$)")),
+    ("gh api", re.compile(r"^gh\s+api(?=\s|:|$)")),
+    ("gh repo", re.compile(r"^gh\s+repo(?=\s|:|$)")),
 ]
 
 
@@ -92,10 +109,18 @@ class PermissionsPolicyGuard(unittest.TestCase):
             if cmd is None:
                 continue
             rule_re = _rule_pattern_regex(cmd)
+            literal_prefix = cmd.replace(":*", "*").split("*")[0].strip()
             for label, probes in IRREVERSIBLE_COMMAND_PROBES:
                 if any(rule_re.match(probe) for probe in probes):
                     violations.append(f"{rule!r} (covers irreversible op: {label})")
                     break
+            else:
+                for label, prefix_re in IRREVERSIBLE_PREFIX_RES:
+                    if prefix_re.match(literal_prefix):
+                        violations.append(
+                            f"{rule!r} (narrow rule granting irreversible op: {label})"
+                        )
+                        break
         self.assertEqual(
             violations,
             [],
