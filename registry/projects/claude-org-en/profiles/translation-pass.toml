@@ -1,0 +1,25 @@
+# 類型: docs / skills の翻訳パス
+#
+# 実測 2 件。2026-07-16 の初期 catch-up は verification_depth=minimal・feat/ ブランチ
+# だったが、2026-07-18 のバッチで full・docs/ に収束したため後発値を採用する
+# （経緯は notes/translation-pass-repo-quirks.md）。
+
+[task]
+verification_depth = "full"
+commit_prefix = "docs:"
+branch_style = "docs/{task_id}"
+
+[implementation]
+guidance = """
+重なるドキュメントに触る複数 Issue は、diff を順に再生せず後のマージ SHA の
+最終状態を 1 回だけ翻訳する。
+unknown-class ファイル（docker/**, pyproject.toml, requirements.txt）には解決ルールが
+無いため即エスカレーションし、判断待ちの間も翻訳クラスの作業は並行継続してよい。
+audit_link_paths.py は green ではなく違反数の前後差分で確認する。
+"""
+
+[parallel]
+notes = "対象ファイルが重なる複数 Issue は並列化せず 1 ワーカー / 1 ブランチ / 1 PR に束ねる"
+
+[dossier]
+embed_notes = ["translation-pass-repo-quirks.md"]

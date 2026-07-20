@@ -193,20 +193,25 @@ def parse_profile_ref(ref: str) -> tuple[str, Optional[str]]:
     raw = (ref or "").strip()
     if not raw:
         raise DossierError("--profile requires <slug> or <slug>/<class>")
-    parts = raw.split("/")
-    if len(parts) > 2:
+    raw_parts = raw.split("/")
+    if len(raw_parts) > 2:
         raise DossierError(
             f"--profile takes <slug> or <slug>/<class>, got {ref!r}"
         )
-    slug = parts[0].strip()
+    # Validate the STRIPPED components, because the stripped values are what
+    # get used to build the path. Checking the raw ones let `--profile ' .. '`
+    # through: the guard saw " .. " (not in the reject set) while the lookup
+    # used "..", escaping registry/projects/ into registry/ itself.
+    parts = [p.strip() for p in raw_parts]
+    slug = parts[0]
     if not slug:
         raise DossierError(f"--profile has an empty slug: {ref!r}")
-    for part in parts:
-        if part in {".", ".."} or "\\" in part:
-            raise DossierError(f"--profile has an invalid path component: {ref!r}")
-    class_name = parts[1].strip() if len(parts) == 2 else None
-    if len(parts) == 2 and not class_name:
+    if len(parts) == 2 and not parts[1]:
         raise DossierError(f"--profile has an empty class: {ref!r}")
+    for part in parts:
+        if part in {".", ".."} or "\\" in part or "\0" in part:
+            raise DossierError(f"--profile has an invalid path component: {ref!r}")
+    class_name = parts[1] if len(parts) == 2 else None
     return slug, class_name
 
 
@@ -613,6 +618,21 @@ def resolve_profile(
     )
     if block is not None:
         plan_kwargs["project_dossier"] = block
+
+    # INV-4 at the profile level: an empty (or wholly deferred-axis) profile
+    # resolves successfully and produces a brief that LOOKS profiled while
+    # applying nothing. That is the same "silently does nothing" failure the
+    # per-key classification exists to prevent, one level up. ``project_slug``
+    # is the identity seed every resolution sets, so it does not count as a
+    # contribution.
+    contributed = set(plan_kwargs) - {"project_slug"}
+    if not contributed:
+        ref_label = f"{slug}/{class_name}" if class_name else slug
+        warnings.append(
+            f"dossier: profile '{ref_label}' resolved but set nothing "
+            f"(no wired axis, no charter/notes embedded); the brief is "
+            f"unchanged from an unprofiled dispatch"
+        )
 
     return ProfileResolution(
         slug=slug,

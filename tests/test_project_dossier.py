@@ -87,6 +87,17 @@ class TestParseProfileRef(unittest.TestCase):
         with self.assertRaises(pdoss.DossierError):
             pdoss.parse_profile_ref("en/")
 
+    def test_rejects_whitespace_padded_traversal(self):
+        # The stripped value is what builds the path, so the guard must
+        # inspect the stripped component: " .. " -> ".." escapes the
+        # registry/projects/ root.
+        for ref in (" .. ", " . ", "\t..\t", " .. /ci-fix", "en/ .. "):
+            with self.assertRaises(pdoss.DossierError, msg=ref):
+                pdoss.parse_profile_ref(ref)
+
+    def test_strips_whitespace_around_valid_components(self):
+        self.assertEqual(pdoss.parse_profile_ref(" en / ci-fix "), ("en", "ci-fix"))
+
 
 # ---------------------------------------------------------------------------
 # Inheritance and fallback
@@ -140,6 +151,37 @@ class TestResolution(_Base):
         with self.assertRaises(pdoss.DossierError) as ctx:
             self.sb.resolve(self.sb.slug)
         self.assertIn("has no", str(ctx.exception))
+
+    def test_empty_profile_warns_that_it_set_nothing(self):
+        # A zero-byte profile resolves fine and yields a brief that looks
+        # profiled but is not - the INV-4 failure mode one level up.
+        self.sb.profile("base", "")
+        res = self.sb.resolve(self.sb.slug)
+        self.assertTrue(
+            any("set nothing" in w for w in res.warnings), res.warnings
+        )
+
+    def test_profile_with_only_deferred_axes_warns_that_it_set_nothing(self):
+        self.sb.profile("base", '[profile]\nmodel = "opus"\n')
+        res = self.sb.resolve(self.sb.slug)
+        self.assertTrue(
+            any("set nothing" in w for w in res.warnings), res.warnings
+        )
+
+    def test_profile_that_sets_something_does_not_warn(self):
+        self.sb.profile("base", '[task]\nverification_depth = "full"\n')
+        res = self.sb.resolve(self.sb.slug)
+        self.assertFalse(
+            [w for w in res.warnings if "set nothing" in w], res.warnings
+        )
+
+    def test_charter_only_profile_counts_as_contributing(self):
+        self.sb.charter("warm start body\n")
+        self.sb.profile("base", "")
+        res = self.sb.resolve(self.sb.slug)
+        self.assertFalse(
+            [w for w in res.warnings if "set nothing" in w], res.warnings
+        )
 
     def test_project_slug_defaults_from_the_profile(self):
         self.sb.profile("base", "")
