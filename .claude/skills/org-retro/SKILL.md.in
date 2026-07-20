@@ -92,6 +92,10 @@ allowed-tools:
 プロファイルと charter の更新は窓口が行う。キュレーターは `registry/` に書けないため、
 キュレーター経路でプロファイルを更新しないこと。
 
+キュレーター側から上がってきたプロジェクト固有ノートの提案（`org-curate` Step 3.5）も同じ扱いで、
+受け取った窓口が provenance と privacy review を付して `registry/projects/<slug>/notes/` へ適用する。
+キュレーターが `registry/` 配下に下書きを置くことは、下書きであっても許されない。
+
 ## Step 4: work-skill 化の判定
 
 完了したタスクの作業パターンについて `skill-eligibility-check` を呼び出し、

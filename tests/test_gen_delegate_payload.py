@@ -3491,6 +3491,33 @@ class TestProfileWiring(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self._kwargs(profile="no-such-project")
 
+    def test_slug_mismatch_with_toml_exits(self):
+        # Otherwise the worker is told they are on project X while the brief
+        # carries project Y's charter, description and commit prefix.
+        self._profile("base", '[task]\ncommit_prefix = "fix(clock):"\n')
+        toml = self._task_toml()
+        toml.write_text(
+            toml.read_text(encoding="utf-8").replace(
+                'name = "clock-app"', 'name = "claude-org-ja"'
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaises(SystemExit) as ctx:
+            self._kwargs(profile="clock-app", from_toml=toml)
+        self.assertIn("clock-app", str(ctx.exception))
+        self.assertIn("claude-org-ja", str(ctx.exception))
+
+    def test_slug_mismatch_with_cli_flag_exits(self):
+        self._profile("base", "")
+        with self.assertRaises(SystemExit):
+            self._kwargs(profile="clock-app", project_slug="renga")
+
+    def test_matching_explicit_slug_is_accepted(self):
+        self._profile("base", '[task]\ncommit_prefix = "fix(clock):"\n')
+        kwargs = self._kwargs(profile="clock-app", project_slug="clock-app")
+        self.assertEqual(kwargs["project_slug"], "clock-app")
+        self.assertEqual(kwargs["commit_prefix"], "fix(clock):")
+
     def test_forbidden_axis_exits(self):
         self._profile("base", "[task]\nmerge_preapproved = true\n")
         with self.assertRaises(SystemExit):

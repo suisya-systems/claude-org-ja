@@ -1912,6 +1912,25 @@ def _gather_plan_kwargs(
     # still have changed them), and it must lose to any explicit branch that a
     # TOML or --branch supplied.
     if resolution is not None:
+        # Identity check. The profile layer seeds ``project_slug`` from the
+        # --profile ref, but a stronger layer (--from-toml [project].name or
+        # --project-slug) can overwrite it while every OTHER profile-derived
+        # value - the embedded charter/notes, the description, the commit
+        # prefix, the branch style - still belongs to the dossier's project.
+        # That mix ships one project's charter to a worker who is told they
+        # are working on another, and the brief does not name the source, so
+        # it is not self-evident. Every sibling failure (missing dossier,
+        # unknown class, forbidden key) is loud; this one must be too.
+        final_slug = base.get("project_slug")
+        if final_slug and final_slug != resolution.slug:
+            raise SystemExit(
+                f"error: --profile resolves the dossier for "
+                f"'{resolution.slug}', but the effective project slug is "
+                f"'{final_slug}'. The profile's charter, description and "
+                f"commit prefix belong to '{resolution.slug}'. Use "
+                f"--profile {final_slug}[/<class>], or drop the conflicting "
+                f"--project-slug / TOML [project].name."
+            )
         if resolution.branch_style and not base.get("branch_override"):
             try:
                 base["branch_override"] = pdoss.render_branch_style(
