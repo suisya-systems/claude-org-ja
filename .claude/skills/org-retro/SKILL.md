@@ -64,6 +64,40 @@ allowed-tools:
 
 `.claude/skills/org-curate/references/knowledge-standards.md` の「記録フォーマット」を参照すること。
 
+## Step 3.5: 実行プロファイルの成長則（プロジェクト台帳）
+
+委譲で得た知見のうち「実行設定」に当たるものは、プロジェクト台帳
+`registry/projects/<slug>/` の実行プロファイルへ育てる。三分を維持すること:
+
+- **スキル** = 手順書（何をどの順でやるか）
+- **プロファイル** = 実行設定（どの検証深度・どの commit prefix・どのブランチ様式で走らせるか）
+- **ノート** = 知見（何が起きるか・なぜそうなるか）
+
+### 成長則: 同一類型の 2 回目の実測でプロファイル化する
+
+先回りで書かない。`skill-eligibility-check` の `raw_reappearance` と同じ規律である。
+
+- **1 回目**: プロファイルを作らない。`registry/projects/<slug>/charter.md` に「観測済み・未プロファイル」として類型名だけ残す。
+- **2 回目**: 同じ類型で実行設定が前回と同じ形に収束したことを確認してから
+  `registry/projects/<slug>/profiles/<class>.toml` を作る。収束していない（毎回違う）なら、それは
+  プロファイル化できる軸ではないので作らない。
+- **書くのは実測で変動した軸だけ**。使われないまま形骸化したプロファイルは削除してよい。
+
+### プロファイルに入れてはいけないもの
+
+- **承認に相当するもの**: マージ事前承認の類は持たせない。プロファイルが設定するのは実行であって承認ではない。常設スコープ契約は人間承認つきの独立文書とし、参照のみに留める。
+- **Lead / PR ゲートの計画コンテキスト**: 例「マージ直列制約」「並列度」「CI 監視の扱い」。1 タスクを実行するワーカーは観測も行動もできない。charter の散文か、窓口側の段取りに置く。
+- **まだ配線されていない軸**: `model` / `codex_round_max` / `pr_shape` / `codex_review` は第 1 段では受け口が無い。書くなら `[profile]` テーブルに置くこと（警告つきで受理され、「黙って何もしない設定」にはならない）。
+
+軸と配管の対応表・埋め込み仕様は [`docs/design/project-dossier.md`](../../../docs/design/project-dossier.md) を参照。
+
+### 書き込み主体
+
+台帳は `registry/` 配下にあり、`registry/` の所有者は窓口である
+（[`docs/contracts/role-contract.md`](../../../docs/contracts/role-contract.md) § Role: secretary）。
+プロファイルと charter の更新は窓口が行う。キュレーターは `registry/` に書けないため、
+キュレーター経路でプロファイルを更新しないこと。
+
 ## Step 4: work-skill 化の判定
 
 完了したタスクの作業パターンについて `skill-eligibility-check` を呼び出し、

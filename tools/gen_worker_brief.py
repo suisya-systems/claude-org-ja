@@ -116,6 +116,11 @@ def validate(config: dict[str, Any]) -> None:
     ):
         raise ConfigError("project.python_src_layout must be a boolean")
 
+    if "dossier" in config["project"] and not isinstance(
+        config["project"]["dossier"], str
+    ):
+        raise ConfigError("project.dossier must be a string")
+
     task = config["task"]
     if "issue_url" in task and not isinstance(task["issue_url"], str):
         raise ConfigError("task.issue_url must be a string")
@@ -237,6 +242,7 @@ def _select_blocks(config: dict[str, Any]) -> dict[str, bool]:
     blocks = {
         "issue_url": bool(task.get("issue_url")),
         "python_src_layout": bool(config["project"].get("python_src_layout")),
+        "project_dossier": bool(config["project"].get("dossier")),
         "implementation": "implementation" in config
         and (
             config["implementation"].get("target_files")
@@ -287,6 +293,7 @@ def _build_substitutions(config: dict[str, Any]) -> dict[str, str]:
         "claude_org_path": paths["claude_org"],
         "project_name": project["name"],
         "project_description": project["description"],
+        "project_dossier_block": (project.get("dossier") or "").strip(),
         "task_id": task["id"],
         "task_description": task["description"].strip(),
         "task_branch": task["branch"],
@@ -384,6 +391,7 @@ def build_config_from_task(
     claude_org_root: Path,
     workers_dir: Optional[Path] = None,
     layout_overrides: Optional[dict[str, Any]] = None,
+    project_dossier: Optional[str] = None,
 ) -> tuple[dict[str, Any], "object"]:
     """Resolve layout + assemble a render-ready config.
 
@@ -489,6 +497,12 @@ def build_config_from_task(
         match.path if match is not None else None,
     ):
         config["project"]["python_src_layout"] = True
+    # Issue #744: the project dossier excerpt (charter + profile-selected
+    # notes) already rendered by tools.project_dossier. Added only when a
+    # profile resolved one, so unprofiled briefs keep the pre-#744 schema and
+    # byte-identical output.
+    if project_dossier:
+        config["project"]["dossier"] = project_dossier
     if issue_url:
         config["task"]["issue_url"] = issue_url
     if closes_issue is not None:
