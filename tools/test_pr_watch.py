@@ -2783,5 +2783,214 @@ class StartupStateEvalTests(unittest.TestCase):
             self.assertNotIn("total_checks", rec)
 
 
+class ChecksJsonFallbackTests(unittest.TestCase):
+    """Issue #739: gh < 2.50.0 has no `gh pr checks --json` flag.
+
+    Real-world shape (gh 2.45.0, Ubuntu 24.04 archive): the probe exits
+    1 with "unknown flag: --json" on stderr and EMPTY stdout — an
+    unparseable probe on every attempt. Pre-#739 that made every
+    ci-watch round burn the full CI_WATCH_EMPTY_RACE_BUDGET_SEC
+    resolver budget (13 probes, ~306s) and record `indeterminate` with
+    `retry_recommended`, even though CI was green (reproduced on all 8
+    PRs of 2026-07-18/19 + ja#743, each with a single green check
+    named 'test'). #719's startup evaluation didn't cover it because
+    at spawn time — right after PR creation — the rollup is still
+    pending, so the whole watch rode on the broken probe.
+
+    The fix: `_fetch_checks` detects the unknown-flag failure, caches
+    the incapability, and serves this and all later probes from
+    `gh pr view --json statusCheckRollup` (supported on old gh),
+    normalized through the #719 rollup→bucket mapping.
+    """
+
+    # Verbatim gh 2.45.0 behavior for `gh pr checks ... --json ...`.
+    _UNKNOWN_FLAG_STDERR = (
+        "unknown flag: --json\n"
+        "\n"
+        "Usage:  gh pr checks [<number> | <url> | <branch>] [flags]\n"
+    )
+
+    def setUp(self) -> None:
+        _assert_peer_isolation()
+
+    def _fake_run(
+        self,
+        *,
+        rollup_sequence: "list | None",
+        checks_calls: "list | None" = None,
+    ):
+        """`subprocess.run` stub for an old-gh environment.
+
+        * `gh pr checks ... --json ...` → exit 1, empty stdout,
+          "unknown flag: --json" on stderr (recorded in `checks_calls`).
+        * `gh pr view --json statusCheckRollup` → next entry of
+          `rollup_sequence` (last entry reused); an entry of ``None``
+          simulates an unreadable rollup (empty stdout, exit 1).
+        * `gh pr view --json number` / `headRefOid` → benign defaults.
+        """
+        idx = {"i": 0}
+
+        def fake_run(cmd, *args, **kwargs):
+            if "checks" in cmd and "--json" in cmd:
+                if checks_calls is not None:
+                    checks_calls.append(list(cmd))
+                return mock.Mock(
+                    returncode=1,
+                    stdout="",
+                    stderr=self._UNKNOWN_FLAG_STDERR,
+                )
+            if cmd[:3] == ["gh", "pr", "view"] and "--json" in cmd:
+                jval = cmd[cmd.index("--json") + 1]
+                if jval in ("number", "headRefOid"):
+                    return mock.Mock(returncode=0, stdout="{}", stderr="")
+                if jval == "statusCheckRollup":
+                    seq = rollup_sequence or [None]
+                    i = idx["i"]
+                    entry = seq[i] if i < len(seq) else seq[-1]
+                    if i < len(seq) - 1:
+                        idx["i"] = i + 1
+                    if entry is None:
+                        return mock.Mock(returncode=1, stdout="", stderr="")
+                    return mock.Mock(
+                        returncode=0,
+                        stdout=json.dumps({"statusCheckRollup": entry}),
+                        stderr="",
+                    )
+            return mock.Mock(returncode=0)
+
+        return fake_run
+
+    # -- unit level: _fetch_checks ------------------------------------
+
+    def test_unknown_json_flag_falls_back_to_rollup(self) -> None:
+        """The unknown-flag probe is answered from the rollup, in the
+        same bucket vocabulary the native probe would have used."""
+        rollup = [{"__typename": "CheckRun", "name": "test",
+                   "status": "COMPLETED", "conclusion": "SUCCESS"}]
+        fake_run = self._fake_run(rollup_sequence=[rollup])
+        with mock.patch.object(pr_watch, "_CHECKS_JSON_SUPPORTED", None), \
+             mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run):
+            checks = pr_watch._fetch_checks(739, "octo/repo")
+            self.assertEqual(
+                checks,
+                [{"bucket": "pass", "state": "COMPLETED", "name": "test"}],
+            )
+            self.assertIs(pr_watch._CHECKS_JSON_SUPPORTED, False)
+
+    def test_fallback_is_cached_after_first_unknown_flag(self) -> None:
+        """After the first unknown-flag failure the broken subprocess is
+        never spawned again — later probes go straight to the rollup."""
+        rollup = [{"__typename": "CheckRun", "name": "test",
+                   "status": "COMPLETED", "conclusion": "SUCCESS"}]
+        checks_calls: list = []
+        fake_run = self._fake_run(
+            rollup_sequence=[rollup], checks_calls=checks_calls,
+        )
+        with mock.patch.object(pr_watch, "_CHECKS_JSON_SUPPORTED", None), \
+             mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run):
+            pr_watch._fetch_checks(739, "octo/repo")
+            pr_watch._fetch_checks(739, "octo/repo")
+            pr_watch._fetch_checks(739, "octo/repo")
+        self.assertEqual(len(checks_calls), 1)
+
+    def test_unknown_flag_with_unreadable_rollup_is_none(self) -> None:
+        """Fallback active but the rollup is ALSO unreadable → ``None``
+        (the continued-fetch-failure → `indeterminate` path is kept for
+        genuine outages)."""
+        fake_run = self._fake_run(rollup_sequence=[None])
+        with mock.patch.object(pr_watch, "_CHECKS_JSON_SUPPORTED", None), \
+             mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run):
+            self.assertIsNone(pr_watch._fetch_checks(739, "octo/repo"))
+
+    def test_transient_unparseable_probe_does_not_flip_cache(self) -> None:
+        """An unparseable probe WITHOUT the unknown-flag signature (a
+        network blip / malformed stdout) keeps the existing transient
+        semantics: ``None`` now, native probe retried next time."""
+        def fake_run(cmd, *args, **kwargs):
+            if "checks" in cmd and "--json" in cmd:
+                return mock.Mock(returncode=1, stdout="", stderr="HTTP 502")
+            return mock.Mock(returncode=0, stdout="{}", stderr="")
+
+        with mock.patch.object(pr_watch, "_CHECKS_JSON_SUPPORTED", None), \
+             mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run):
+            self.assertIsNone(pr_watch._fetch_checks(739, "octo/repo"))
+            self.assertIsNone(pr_watch._CHECKS_JSON_SUPPORTED)
+
+    # -- end to end: the pinned 306s reproduction, now green ----------
+
+    def test_old_gh_green_ci_resolves_passed_not_indeterminate(self) -> None:
+        """The exact field failure, pinned: single check 'test', CI goes
+        green, gh has no `pr checks --json`. Pre-#739 this recorded
+        `indeterminate` after burning the full 300s resolver budget
+        (duration_sec=306 / probe_attempts=13 / retry_recommended on
+        all observed PRs). It must now resolve `passed` via the rollup
+        fallback, with exactly ONE doomed native-probe spawn."""
+        pending = [{"__typename": "CheckRun", "name": "test",
+                    "status": "IN_PROGRESS", "conclusion": None}]
+        green = [{"__typename": "CheckRun", "name": "test",
+                  "status": "COMPLETED", "conclusion": "SUCCESS"}]
+        checks_calls: list = []
+        sleeps: list = []
+        # Startup eval sees pending (watcher spawns right after PR
+        # creation — the reason #719 alone could not cover this bug),
+        # one fallback poll still pending, then green.
+        fake_run = self._fake_run(
+            rollup_sequence=[pending, pending, green],
+            checks_calls=checks_calls,
+        )
+        with TempDir() as tmp:
+            journal = tmp / ".state" / "state.db"
+            with mock.patch.object(pr_watch, "_CHECKS_JSON_SUPPORTED", None), \
+                 mock.patch.object(pr_watch, "JOURNAL_PATH", journal), \
+                 mock.patch.object(pr_watch, "_notify_peer", return_value=False), \
+                 mock.patch.object(pr_watch.shutil, "which", return_value="/usr/bin/gh"), \
+                 mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run), \
+                 mock.patch.object(pr_watch.time, "sleep", sleeps.append), \
+                 mock.patch.object(pr_watch.time, "monotonic",
+                                   side_effect=[0.0, 40.0]):
+                rc = pr_watch.main([
+                    "--pr", "739", "--repo", "octo/repo", "--interval", "30",
+                ])
+            self.assertEqual(rc, 0)
+            self.assertEqual(_count_ci_events(journal), 1)
+            rec = _read_ci_event(journal)
+            self.assertEqual(rec["status"], "passed")
+            self.assertEqual(rec["total_checks"], 1)
+            self.assertEqual(rec["fail_count"], 0)
+            self.assertEqual(rec["pending_count"], 0)
+            self.assertNotIn("retry_recommended", rec)
+            # One unknown-flag spawn, then cached: never retried.
+            self.assertEqual(len(checks_calls), 1)
+            # Still-pending fallback observation polls at --interval
+            # cadence (the self-poll loop, not the bounded resolver).
+            self.assertEqual(sleeps, [30])
+
+    def test_old_gh_red_ci_resolves_failed(self) -> None:
+        """Same environment, red CI: the fallback must report an honest
+        `failed`, not `indeterminate`."""
+        pending = [{"__typename": "CheckRun", "name": "test",
+                    "status": "IN_PROGRESS", "conclusion": None}]
+        red = [{"__typename": "CheckRun", "name": "test",
+                "status": "COMPLETED", "conclusion": "FAILURE"}]
+        fake_run = self._fake_run(rollup_sequence=[pending, red])
+        with TempDir() as tmp:
+            journal = tmp / ".state" / "state.db"
+            with mock.patch.object(pr_watch, "_CHECKS_JSON_SUPPORTED", None), \
+                 mock.patch.object(pr_watch, "JOURNAL_PATH", journal), \
+                 mock.patch.object(pr_watch, "_notify_peer", return_value=False), \
+                 mock.patch.object(pr_watch.shutil, "which", return_value="/usr/bin/gh"), \
+                 mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run), \
+                 mock.patch.object(pr_watch.time, "sleep", return_value=None), \
+                 mock.patch.object(pr_watch.time, "monotonic",
+                                   side_effect=[0.0, 35.0]):
+                rc = pr_watch.main([
+                    "--pr", "739", "--repo", "octo/repo", "--interval", "30",
+                ])
+            self.assertEqual(rc, 1)
+            rec = _read_ci_event(journal)
+            self.assertEqual(rec["status"], "failed")
+            self.assertEqual(rec["fail_count"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

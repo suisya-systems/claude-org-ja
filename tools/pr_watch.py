@@ -38,6 +38,18 @@ Behavior:
   :func:`_classify_from_checks` already treats as decided. gh's
   documented ``bucket`` values are ``{pass, fail, pending, skipping,
   cancel}``.
+* Issue #739: ``gh pr checks --json`` requires gh >= 2.50.0. On an
+  older gh (Ubuntu 24.04 archive ships 2.45.0) the flag is unknown, so
+  every probe returned empty stdout and each ci-watch round burned the
+  full empty-race resolver budget (13 probes, ~306s) before landing on
+  ``indeterminate`` — even though CI was green (reproduced on all 8
+  PRs of 2026-07-18/19 + ja#743; #719's startup evaluation didn't help
+  because at spawn time the rollup was still pending, routing the
+  whole watch onto the broken probe). :func:`_fetch_checks` now
+  detects the unknown-flag failure, caches the incapability, and
+  serves all probes from ``gh pr view --json statusCheckRollup``
+  (supported on old gh) normalized through the #719 rollup→bucket
+  mapping, so classification is identical to the native probe.
 * Once the self-poll loop observes a decided verdict, or bails out on
   an inconclusive observation (an empty check list / an unparseable
   probe — the Issue #413 freshly-created-PR race), the result is
@@ -528,6 +540,50 @@ def _classify_from_checks(checks: "list[dict]") -> str:
     return _summarize_checks(checks)[0]
 
 
+# Issue #739: capability cache for `gh pr checks --json`. The `--json`
+# flag was only added in gh 2.50.0; on an older gh (e.g. the Ubuntu
+# 24.04 archive still ships 2.45.0) every probe exits non-zero with
+# "unknown flag: --json" on stderr and an EMPTY stdout — an unparseable
+# probe, every time. Pre-#739 that made every ci-watch round burn the
+# full CI_WATCH_EMPTY_RACE_BUDGET_SEC resolver budget (13 probes,
+# ~306s) and land on `indeterminate` even though CI was green — the
+# startup rollup evaluation (#719) didn't help because at spawn time
+# (right after PR creation) the rollup is still pending, so the whole
+# watch rode on the broken probe. Once the unknown-flag failure is
+# seen, we cache ``False`` here and route every subsequent probe
+# through `gh pr view --json statusCheckRollup` (supported on old gh —
+# the same normalized read #719 already uses) instead of re-spawning a
+# subprocess that can never succeed. ``None`` = not yet determined.
+_CHECKS_JSON_SUPPORTED: "bool | None" = None
+
+
+def _fetch_checks_via_rollup(pr: int, repo: str) -> "list[dict] | None":
+    """Checks-shaped probe over ``statusCheckRollup`` (Issue #739).
+
+    Fallback used when the installed gh predates ``pr checks --json``
+    (< 2.50.0). Reads the same aggregate rollup as the startup
+    evaluation (:func:`_fetch_status_rollup`) and normalizes each node
+    to a ``gh pr checks``-style ``bucket`` dict
+    (:func:`_rollup_entry_bucket`), so every downstream consumer
+    (:func:`_self_poll_watch` / :func:`_resolve_final_status` /
+    :func:`_summarize_checks`) classifies identically to the native
+    probe. Returns ``None`` on a fetch/parse failure and ``[]`` when
+    the rollup is empty (no checks visible yet) — preserving the
+    caller-visible tri-state (verdict list / empty / unreadable).
+    """
+    rollup = _fetch_status_rollup(pr, repo)
+    if rollup is None:
+        return None
+    return [
+        {
+            "bucket": _rollup_entry_bucket(entry),
+            "state": entry.get("state") or entry.get("status"),
+            "name": entry.get("name") or entry.get("context"),
+        }
+        for entry in rollup
+    ]
+
+
 def _fetch_checks(pr: int, repo: str) -> "list[dict] | None":
     """Return parsed `gh pr checks <pr> --json` results, or ``None`` on error.
 
@@ -544,7 +600,23 @@ def _fetch_checks(pr: int, repo: str) -> "list[dict] | None":
     output is unparseable or the binary is missing entirely — that's
     the only condition under which downgrading to the exit-code
     classifier is appropriate.
+
+    Issue #739: when the probe fails because the installed gh does not
+    know the ``--json`` flag at all (added in gh 2.50.0; "unknown flag"
+    on stderr + empty stdout), that is a *permanent* capability gap,
+    not a transient outage — retrying can never succeed. We log it
+    once, cache the incapability in :data:`_CHECKS_JSON_SUPPORTED`,
+    and serve this and every later probe from the rollup fallback
+    (:func:`_fetch_checks_via_rollup`). Any other unparseable probe
+    (network blip, malformed stdout) keeps the existing ``None`` →
+    bounded-retry semantics unchanged, now with a diagnostic line
+    naming gh's exit code and stderr so a future probe failure is
+    attributable from the pane log instead of surfacing only as a
+    306s ``indeterminate`` (the way this bug class hid).
     """
+    global _CHECKS_JSON_SUPPORTED
+    if _CHECKS_JSON_SUPPORTED is False:
+        return _fetch_checks_via_rollup(pr, repo)
     try:
         result = subprocess.run(
             [
@@ -562,6 +634,21 @@ def _fetch_checks(pr: int, repo: str) -> "list[dict] | None":
     try:
         data = json.loads(result.stdout or "")
     except json.JSONDecodeError:
+        stderr = result.stderr if isinstance(result.stderr, str) else ""
+        if result.returncode != 0 and "unknown flag" in stderr:
+            _CHECKS_JSON_SUPPORTED = False
+            sys.stderr.write(
+                "tools/pr_watch.py: warning: this gh does not support "
+                "`gh pr checks --json` (added in gh 2.50.0); falling back "
+                "to `gh pr view --json statusCheckRollup` for all CI "
+                "probes. Consider upgrading gh.\n"
+            )
+            return _fetch_checks_via_rollup(pr, repo)
+        sys.stderr.write(
+            "tools/pr_watch.py: warning: unparseable `gh pr checks "
+            f"--json` probe (exit {result.returncode}"
+            f"{', stderr: ' + stderr.strip().splitlines()[0] if stderr.strip() else ''})\n"
+        )
         return None
     if not isinstance(data, list):
         return None
