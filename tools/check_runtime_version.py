@@ -27,10 +27,15 @@ Outcome contract:
                            newer preview build); PyPI was reached.
     1  EXIT_DRIFT          installed != latest-in-window; stdout has
                            the ``[runtime drift]`` line.
-    2  EXIT_UNVERIFIED     latest could not be determined (offline /
-                           PyPI error / JSON parse / no in-window
-                           release / packaging missing / pin parse
-                           failure); stderr has a reason diagnostic.
+    2  EXIT_UNVERIFIED     drift could not be verified -- either the
+                           latest is undeterminable (offline / PyPI
+                           error / JSON parse / no in-window release /
+                           packaging missing / pin parse failure), or
+                           the installed came from a local source
+                           (file:// path / VCS / editable per PEP 610
+                           direct_url.json) whose version need not match
+                           any PyPI release; stderr has a reason
+                           diagnostic.
     3  EXIT_NOT_INSTALLED  package not importable from this Python;
                            stderr note.
 
@@ -125,6 +130,63 @@ def _installed_version() -> str | None:
         return None
     except Exception:
         return None
+
+
+def _direct_url_local_reason() -> str | None:
+    """Return a short human label when the installed distribution came
+    from a **local source** -- a ``file://`` path, a VCS checkout, or an
+    editable install -- as recorded in PEP 610 ``direct_url.json``. Such
+    an install's ``version`` string can't be trusted to correspond to a
+    PyPI release (a local build may advertise any version), so drift
+    against PyPI is meaningless.
+
+    Returns None for a normal PyPI/index install: pip writes no
+    ``direct_url.json`` for those, and a direct URL that isn't a local
+    source (e.g. a plain https archive) is left to the usual PyPI path.
+
+    Read via ``importlib.metadata.Distribution.read_text`` rather than
+    globbing dist-info so the resolution matches whichever distribution
+    this Python actually imports."""
+    try:
+        from importlib.metadata import PackageNotFoundError, distribution
+    except ImportError:
+        return None
+    try:
+        dist = distribution(PACKAGE)
+    except PackageNotFoundError:
+        return None
+    except Exception:
+        return None
+    try:
+        raw = dist.read_text("direct_url.json")
+    except Exception:
+        raw = None
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    url = data.get("url")
+    url_label = url if isinstance(url, str) and url else "(url 不明)"
+    # VCS install (git/hg/...): version reflects the checked-out ref,
+    # not a released artifact.
+    vcs_info = data.get("vcs_info")
+    if isinstance(vcs_info, dict):
+        vcs = vcs_info.get("vcs")
+        vcs = vcs if isinstance(vcs, str) and vcs else "vcs"
+        return f"VCS install ({vcs}: {url_label})"
+    # Editable install: an in-place checkout; its version is whatever the
+    # working tree declares.
+    dir_info = data.get("dir_info")
+    if isinstance(dir_info, dict) and dir_info.get("editable"):
+        return f"editable install ({url_label})"
+    # Plain local path / local archive install (file:// scheme).
+    if isinstance(url, str) and url.startswith("file:"):
+        return f"file:// install ({url_label})"
+    return None
 
 
 def _read_pin_spec() -> str | None:
@@ -299,6 +361,23 @@ def main() -> int:
             file=sys.stderr,
         )
         return EXIT_NOT_INSTALLED
+    # A local install (file:// path / VCS checkout / editable) advertises
+    # a version that need not match any PyPI release, so comparing it
+    # against latest is meaningless -- surface it as "unverified" rather
+    # than let a locally-built version read as up-to-date (Issue #747:
+    # a file:// install was mis-reported as "最新・drift なし"). Checked
+    # before the PyPI fetch since the verdict doesn't depend on the
+    # network.
+    local_reason = _direct_url_local_reason()
+    if local_reason is not None:
+        print(
+            f"[runtime drift-check] {PACKAGE}: local install -- PyPI 照合不能"
+            f"（installed={installed} は {local_reason}。installed の実体が"
+            "リリース版とは限らないため drift を判定しません。PyPI 由来の"
+            "インストールで再確認してください）。",
+            file=sys.stderr,
+        )
+        return EXIT_UNVERIFIED
     pin = _read_pin_spec()
     latest, reason = _latest_version_with_reason(pin)
     if latest is None:
