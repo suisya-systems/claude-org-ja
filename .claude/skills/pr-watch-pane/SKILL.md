@@ -81,14 +81,30 @@ context リセットと無関係）に監視が継続し、人間が tmux ペイ
   `tools/pr-watch.sh` を ja-root 基点で resolve する必要があるため、**cwd trap を skill
   側で吸収する**（Step 1 で `git rev-parse --show-toplevel` の絶対パスを spawn_pane の
   `cwd` に明示。窓口 cwd が何らかの理由で ja-root を外れていても正しく解決される）。
-- **前提環境は POSIX/tmux broker（WSL2 / Linux / macOS）**。Step 3 の `command` は `bash`
-  実行と、自己 close の `tmux kill-pane -t "$TMUX_PANE"`（**自ペインを `$TMUX_PANE` で明示
-  指定して** kill。socket は `$TMUX` 継承をそのまま使い `-L` で固定しない ＝ broker /
-  renga / 非既定 socket いずれの transport でも正しい server に当たる。Issue #647 提案 1 の
-  「明示 target 指定」を transport-neutral に実装した形）に依存する。Windows native broker（WezTerm の別 GUI
-  ウィンドウ・tmux 非経由）では本 skill の自己 close は効かないため、その環境では従来どおり
-  人間が `tools/pr-watch.ps1 <PR>` を `!` 経由で起動する手動経路を使う（本 skill はその経路を
-  遮断しない＝既存の手動起動経路は不変）。
+- **自己 close の実装は tmux backend 前提**。Step 3 の `command` は `bash` 実行と、自己
+  close の `tmux kill-pane -t "$TMUX_PANE"`（**自ペインを `$TMUX_PANE` で明示指定して** kill。
+  socket は `$TMUX` 継承をそのまま使い `-L` で固定しない ＝ broker / renga / 非既定 socket
+  いずれの transport でも正しい server に当たる。Issue #647 提案 1 の「明示 target 指定」を
+  transport-neutral に実装した形）に依存する。
+- **自己 close は tmux backend の低遅延経路であり、backend 依存で効き方が変わる（herdr
+  ゾンビ残留の根治, Issue #751）**。broker は backend として tmux / herdr / wezterm を取りうる
+  （解決済み backend は `daemon.json` sidecar が持つ。renga opt-in は常に tmux。契約は
+  [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md)
+  Surface 8）:
+  - **tmux backend**: Step 3 末尾の `tmux kill-pane -t "$TMUX_PANE"` が実ペインを即座に消す
+    ＝ **監視終端で watcher ペインが自動 close される低遅延経路**（従来挙動。温存する）。
+  - **herdr / wezterm backend（Windows native broker の別 GUI ウィンドウ・tmux 非経由を含む）**:
+    watcher ペインは tmux ペインではないため `tmux kill-pane` が **no-op**（`|| true` で握り潰され
+    silent）。self-close が効かず、**監視終了後もペインがゾンビとして残留する**（実測: 2026-07-22
+    に PR #154 / #749 / #750 の watcher 3 枚が herdr backend で残留し、`close_pane`(id 指定) で
+    掃除した）。この backend では自己 close に頼れないため、**監視終端で窓口がイベント駆動で
+    watcher ペインを close する経路が正路**になる
+    （[`.claude/skills/org-pull-request/SKILL.md`](../org-pull-request/SKILL.md) の post-merge
+    cleanup / `PR_MERGE_WATCH_TIMEOUT` / CI 失敗確定の各終端で窓口が発火。掃除手順は下記 Step 5 の
+    (a)/(b) split に従う ＝ live pane は list_panes 確認済みの数値 pane_id で close、stale binding
+    のみ name 指定）。`close_pane` は transport 抽象上 tmux / herdr 両対応で、tmux backend で既に
+    self-close 済みなら `[pane_not_found]` が返る（自己クローズ済みで正常）。Windows native の手動起動経路
+    （人間が `tools/pr-watch.ps1 <PR>` を `!` 経由で起動）も従来どおり遮断しない（既存経路は不変）。
 
 ## Step 1: 引数解決と cwd / repo の確定
 
@@ -262,15 +278,27 @@ mcp__org-broker__spawn_pane(
    ```
    PR #<PR> の CI / マージ監視ペイン pr-watch-<PR> (id={N}) を起動しました。
    - ログ: .state/pr-watch-<PR>.log（tmux スクロールバッファにも出力）
-   - 監視終了（マージ / CI 失敗確定 / timeout のいずれか）でペインは自動で閉じます。
+   - 監視終了（マージ / CI 失敗確定 / timeout のいずれか）で、tmux backend ではペインが
+     自動で閉じます。herdr / wezterm backend では自己 close が効かず残留するため、窓口が
+     監視終端でイベント駆動 close します（org-pull-request の各終端処理）。
      確定した CI 判定は `.state/state.db` の `ci_completed` 行とログに残るので、
      ペインが閉じても判定は失われません（merge gate はそこを読む）。
    - tmux で直接見るには `/org-attach` のコマンドを使ってください。
    ```
 
-3. **手動 close（自動 close されないケースの掃除、Issue #647 提案 3）**: self-close は tmux
-   ペインを消すだけで broker 登録簿の name binding は残りうる（前掲「self-close は tmux 層
-   だけを掃除する」）。二つのケースに分けて掃除する:
+3. **監視終端クローズ / 手動 close（Issue #647 提案 3 / Issue #751）**: self-close の効き方は
+   backend 依存（前掲「前提」節）。**herdr / wezterm backend では self-close が no-op で watcher
+   ペインが必ず残留する**ため、監視終端（PR_MERGED / PR_MERGE_WATCH_TIMEOUT / CI 失敗確定）で
+   窓口がイベント駆動で watcher ペインを掃除するのが正路になる
+   （[`.claude/skills/org-pull-request/SKILL.md`](../org-pull-request/SKILL.md) の各終端処理で発火）。
+   tmux backend では self-close が tmux ペインを消すが broker 登録簿の name binding は残りうる
+   （前掲「self-close は tmux 層だけを掃除する」）。掃除は下記 (a)/(b) の split に従う。**窓口の
+   イベント駆動 close（監視終端）では、下記に加えて「spawn 時に控えた pane_id + 監視対象 head に束縛し、
+   終端イベントの head が追跡中 instance と一致するときだけ close する」freshness gate を必ず併用する**
+   （終端イベントが遅延 / 重複配送されて同一 PR の watcher が既に再起動済みの場合、`name` で live pane を
+   再導出すると新 watcher を解決してその数値 pane_id を close しても replacement monitor を誤 close する。
+   束縛の SoT は [`.claude/skills/org-pull-request/SKILL.md`](../org-pull-request/SKILL.md) の該当節）。
+   人間が現ペインを手動 close する (a)/(b) は現 instance が対象で自明なので freshness gate は不要:
 
    - **(a) tmux ペインが live のまま残った / 監視を途中で止めたい**: `mcp__org-broker__list_panes` で
      `name="pr-watch-<PR>"` の live pane を確認し、その **数値 pane_id** で
