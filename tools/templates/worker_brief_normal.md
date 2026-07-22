@@ -42,6 +42,15 @@ ${implementation_target_files_block}${implementation_guidance_block}
 ## 並列タスクとの干渉
 ${parallel_notes}
 <!--END:parallel-->
+<!--BEGIN:project_dossier-->
+
+## プロジェクト台帳（warm start）
+
+このプロジェクトの憲章と、本タスク類型で参照すべき運用ノートの抜粋である。全文は
+`registry/projects/<slug>/` を参照すること。
+
+${project_dossier_block}
+<!--END:project_dossier-->
 <!--BEGIN:references-->
 
 ## ナレッジ参照

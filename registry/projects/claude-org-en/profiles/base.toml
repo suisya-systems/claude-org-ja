@@ -1,0 +1,15 @@
+# claude-org-en 実行プロファイル基底
+#
+# 実測で変動した軸だけを書く（過剰パラメータ化禁止）。
+# 意図的に書いていないもの:
+#   - permission_mode : 実測 7/7 が auto で変動ゼロ。かつ org 全体設定であり
+#                       プロファイルでは禁止（docs/design/project-dossier.md 4.3）。
+#   - pattern         : 同一類型が A と B に割れており類型安定でない。リゾルバに任せる。
+#   - model           : EN の archived worker 7 件のいずれにも記録が無い。書けば発明になる。
+
+[project]
+description = "ja 本家の英語 auto-mirror。runtime は機械ミラー、docs/skills は翻訳パスで追随する"
+
+[dossier]
+# 憲章は常に温める。notes は類型ごとに <class>.toml 側で選ぶ（グロブしない）。
+embed_charter = true

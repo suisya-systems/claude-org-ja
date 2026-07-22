@@ -1,0 +1,23 @@
+# 類型: auto-mirror PR の CI red 修正
+#
+# 実測 3 件（en-mirror-test-fix / en-pr511-smoke-fix / en-mirror-url-restore）が
+# いずれも verification_depth=full。commit prefix は fix(installer): から
+# fix(mirror): へ収束した。
+#
+# branch_style は意図的に持たない: この類型は既存の auto-mirror/ja-pr-<N> ブランチ
+# 上で作業するため、ブランチはタスク側が渡す。架空のリテラルを置くと能動的に誤りになる。
+
+[task]
+verification_depth = "full"
+commit_prefix = "fix(mirror):"
+
+[implementation]
+guidance = """
+まず失敗が 3 系統のどれかを切り分けること（notes/mirror-ci-failure-triage.md）。
+系統 1（stale-base × schema drift）はコード変更不要で origin/main のマージのみで直る。
+系統 3（installer clone-URL）の定型修正は 2 行のみ。ja PR の機能変更は保持すること。
+ランブック外の事象は即エスカレーションする。
+"""
+
+[dossier]
+embed_notes = ["mirror-ci-failure-triage.md"]

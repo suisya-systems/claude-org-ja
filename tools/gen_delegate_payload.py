@@ -55,6 +55,7 @@ except ModuleNotFoundError:  # pragma: no cover - 3.10 fallback
     import tomli as tomllib  # type: ignore[no-redef]
 
 from tools import gen_worker_brief as gwb
+from tools import project_dossier as pdoss
 from tools import resolve_worker_layout as rwl
 from tools import transport as _transport
 
@@ -511,6 +512,8 @@ def build_delegate_plan(
     claude_org_root: Path,
     workers_dir: Optional[Path] = None,
     layout_overrides: Optional[dict[str, Any]] = None,
+    project_dossier: Optional[str] = None,
+    profile_warnings: Optional[list[str]] = None,
 ) -> DelegatePlan:
     """Resolve the layout, assemble the brief config, format the DELEGATE body.
 
@@ -539,6 +542,7 @@ def build_delegate_plan(
         claude_org_root=claude_org_root,
         workers_dir=workers_dir,
         layout_overrides=layout_overrides,
+        project_dossier=project_dossier,
     )
 
     self_edit = bool(config["worker"]["self_edit"])
@@ -769,6 +773,12 @@ def build_delegate_plan(
         pattern=layout.pattern,
         base_repo=base_repo,
     )
+    # Issue #744: profile-resolution notices (unwired axis declared, note
+    # missing, embed truncated, contracts/ holding a body rather than
+    # references) ride the existing non-blocking warning channel so they show
+    # up in preview / preview --json without gating apply.
+    if profile_warnings:
+        warnings = [*profile_warnings, *warnings]
 
     return DelegatePlan(
         task_id=task_id,
@@ -1625,6 +1635,21 @@ def _add_task_args(p: argparse.ArgumentParser) -> None:
         default=None,
         help="Load task arguments from a worker_brief-style TOML instead of CLI flags.",
     )
+    # Issue #744 Stage 1: project dossier execution profiles. Resolution order
+    # is profiles/base.toml < profiles/<class>.toml < --from-toml < CLI flags,
+    # i.e. the profile is the WEAKEST layer (project-wide defaults), a
+    # per-task TOML beats it, and an explicit flag beats everything. An
+    # undefined class is an error, not a silent fallback to base - see
+    # tools/project_dossier.resolve_profile.
+    p.add_argument(
+        "--profile",
+        default=None,
+        help=(
+            "Apply a project dossier execution profile: <slug>/<class>, or "
+            "<slug> for the base profile only. Reads "
+            "registry/projects/<slug>/profiles/."
+        ),
+    )
     # Issue #374: Secretary-side pattern override. The resolver enforces a
     # strict contract (B requires a usable base, A forbidden on self-edit,
     # C always permitted); see ``ResolveError`` raised from
@@ -1779,17 +1804,60 @@ def _load_task_args_from_toml(path: Path) -> dict[str, Any]:
     }
 
 
-def _gather_plan_kwargs(args: argparse.Namespace) -> dict[str, Any]:
-    """Merge --from-toml defaults with CLI flags (CLI wins).
+def _gather_plan_kwargs(
+    args: argparse.Namespace, claude_org_root: Optional[Path] = None
+) -> dict[str, Any]:
+    """Merge profile / --from-toml defaults with CLI flags (CLI wins).
+
+    Resolution order, weakest first (Issue #744 Stage 1)::
+
+        profiles/base.toml < profiles/<class>.toml < --from-toml < CLI flags
+
+    A profile carries *project-wide* defaults, so a per-task ``--from-toml``
+    beats it and an explicit flag beats everything. The mechanism is the same
+    ``is not None`` sentinel the CLI overlay already used — the profile just
+    seeds ``base`` before the TOML layer lands on top of it.
 
     Defaults for ``mode`` (``edit``) and ``verification_depth`` (``full``)
     are applied **after** the merge so a TOML-supplied value survives a
     bare CLI invocation. Otherwise argparse's defaults would always win
     and TOML round-trip would silently flatten ``doc-audit`` / ``minimal``.
+
+    ``claude_org_root`` is optional so hand-built ``argparse.Namespace``
+    callers (and the pre-#744 call shape) keep working; ``--profile`` needs
+    it to locate ``registry/projects/`` and errors when it is absent.
     """
     base: dict[str, Any] = {}
+
+    # Profile layer (weakest). ``getattr`` because existing tests build the
+    # Namespace by hand without the newer attributes.
+    profile_ref = getattr(args, "profile", None)
+    resolution: Optional[pdoss.ProfileResolution] = None
+    if profile_ref is not None:
+        if claude_org_root is None:
+            raise SystemExit(
+                "error: --profile requires the claude-org root to be resolvable"
+            )
+        try:
+            resolution = pdoss.resolve_profile(
+                claude_org_root=Path(claude_org_root), ref=profile_ref
+            )
+        except pdoss.DossierError as exc:
+            raise SystemExit(f"error: {exc}") from exc
+        base.update(resolution.plan_kwargs)
+
     if args.from_toml is not None:
-        base.update(_load_task_args_from_toml(args.from_toml))
+        toml_layer = _load_task_args_from_toml(args.from_toml)
+        # ``_load_task_args_from_toml`` returns every key unconditionally, so
+        # absent TOML fields come back as None. With a profile underneath, a
+        # blind update() would let a TOML that simply doesn't mention
+        # ``commit_prefix`` erase the profile's value — the same "explicit
+        # value only" rule the CLI overlay uses has to apply here too. Guarded
+        # on ``resolution`` so the no-profile path stays byte-identical to the
+        # pre-#744 behaviour.
+        if resolution is not None:
+            toml_layer = {k: v for k, v in toml_layer.items() if v is not None}
+        base.update(toml_layer)
     # Issue #374: ``--pattern`` is a layout override, not a task field, so
     # merge it into ``layout_overrides`` rather than into the top-level
     # kwargs. CLI wins over a TOML [worker].pattern of the same key, matching
@@ -1838,6 +1906,43 @@ def _gather_plan_kwargs(args: argparse.Namespace) -> dict[str, Any]:
     base.setdefault("mode", "edit")
     base.setdefault("verification_depth", "full")
     base.setdefault("description", "")
+
+    # ``branch_style`` is a template, not a value, so it is resolved AFTER the
+    # merge: it needs the final task_id / project_slug (stronger layers may
+    # still have changed them), and it must lose to any explicit branch that a
+    # TOML or --branch supplied.
+    if resolution is not None:
+        # Identity check. The profile layer seeds ``project_slug`` from the
+        # --profile ref, but a stronger layer (--from-toml [project].name or
+        # --project-slug) can overwrite it while every OTHER profile-derived
+        # value - the embedded charter/notes, the description, the commit
+        # prefix, the branch style - still belongs to the dossier's project.
+        # That mix ships one project's charter to a worker who is told they
+        # are working on another, and the brief does not name the source, so
+        # it is not self-evident. Every sibling failure (missing dossier,
+        # unknown class, forbidden key) is loud; this one must be too.
+        final_slug = base.get("project_slug")
+        if final_slug and final_slug != resolution.slug:
+            raise SystemExit(
+                f"error: --profile resolves the dossier for "
+                f"'{resolution.slug}', but the effective project slug is "
+                f"'{final_slug}'. The profile's charter, description and "
+                f"commit prefix belong to '{resolution.slug}'. Use "
+                f"--profile {final_slug}[/<class>], or drop the conflicting "
+                f"--project-slug / TOML [project].name."
+            )
+        if resolution.branch_style and not base.get("branch_override"):
+            try:
+                base["branch_override"] = pdoss.render_branch_style(
+                    resolution.branch_style,
+                    task_id=str(base.get("task_id") or ""),
+                    project_slug=str(base.get("project_slug") or ""),
+                )
+            except pdoss.DossierError as exc:
+                raise SystemExit(f"error: {exc}") from exc
+        if resolution.warnings:
+            base["profile_warnings"] = list(resolution.warnings)
+
     if not base.get("task_id"):
         raise SystemExit("error: --task-id is required (or supply --from-toml)")
     if not base.get("project_slug"):
@@ -1850,7 +1955,7 @@ def _gather_plan_kwargs(args: argparse.Namespace) -> dict[str, Any]:
 def _cmd_preview(args: argparse.Namespace) -> int:
     claude_org_root = _resolve_claude_org_root(args)
     state_db_path = _resolve_state_db_path(args, claude_org_root)
-    kwargs = _gather_plan_kwargs(args)
+    kwargs = _gather_plan_kwargs(args, claude_org_root)
     plan = build_delegate_plan(
         claude_org_root=claude_org_root,
         state_db_path=state_db_path if state_db_path.exists() else None,
@@ -1909,7 +2014,7 @@ def _cmd_preview(args: argparse.Namespace) -> int:
 def _cmd_apply(args: argparse.Namespace) -> int:
     claude_org_root = _resolve_claude_org_root(args)
     state_db_path = _resolve_state_db_path(args, claude_org_root)
-    kwargs = _gather_plan_kwargs(args)
+    kwargs = _gather_plan_kwargs(args, claude_org_root)
     plan = build_delegate_plan(
         claude_org_root=claude_org_root,
         state_db_path=state_db_path if state_db_path.exists() else None,

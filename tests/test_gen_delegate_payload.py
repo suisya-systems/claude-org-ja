@@ -13,12 +13,15 @@ Coverage:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import re
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -3329,6 +3332,287 @@ class TestIssue712BriefPlacement(unittest.TestCase):
         self.assertTrue(
             (Path(plan.layout.worker_dir) / "CLAUDE.md").exists()
         )
+
+
+# ---------------------------------------------------------------------------
+# Issue #744 Stage 1 — project dossier execution profiles
+#
+# The resolution contract under test (docs/design/project-dossier.md §4.1):
+#
+#     profiles/base.toml < profiles/<class>.toml < --from-toml < CLI flags
+#
+# Unit-level dossier behaviour (key classification, embedding budget,
+# contracts/ guard) lives in tests/test_project_dossier.py; these tests cover
+# the wiring into the payload generator.
+# ---------------------------------------------------------------------------
+
+
+class TestProfileWiring(unittest.TestCase):
+    def setUp(self) -> None:
+        self._td = tempfile.TemporaryDirectory()
+        self.sb = _Sandbox(Path(self._td.name))
+        self.dossier = (
+            self.sb.claude_org_root / "registry" / "projects" / "clock-app"
+        )
+        (self.dossier / "profiles").mkdir(parents=True)
+        (self.dossier / "notes").mkdir()
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    # -- helpers ----------------------------------------------------------
+
+    def _profile(self, name: str, body: str) -> None:
+        (self.dossier / "profiles" / f"{name}.toml").write_text(
+            body, encoding="utf-8"
+        )
+
+    def _task_toml(self, **over: str) -> Path:
+        path = Path(self._td.name) / "task.toml"
+        fields = {
+            "verification_depth": "minimal",
+            "commit_prefix": "chore(toml):",
+        }
+        fields.update(over)
+        path.write_text(
+            "[task]\n"
+            'id = "profile-task"\n'
+            'description = "d"\n'
+            f'verification_depth = "{fields["verification_depth"]}"\n'
+            'branch = "toml/branch"\n'
+            f'commit_prefix = "{fields["commit_prefix"]}"\n'
+            "\n[worker]\n"
+            'dir = "X:/dummy"\n'
+            'pattern = "A"\n'
+            'role = "default"\n'
+            "self_edit = false\n"
+            "\n[project]\n"
+            'name = "clock-app"\n'
+            'description = "Web 時計"\n'
+            "\n[paths]\n"
+            'claude_org = "."\n',
+            encoding="utf-8",
+        )
+        return path
+
+    def _kwargs(self, **ns: object) -> dict:
+        base = dict(
+            profile=None, from_toml=None, task_id="profile-task",
+            project_slug=None, target=[], description="d", mode=None,
+            branch_override=None, commit_prefix=None, verification_depth=None,
+            issue_url=None, closes_issue=None, refs_issues=None,
+            project_description_override=None, impl_target=[],
+            impl_guidance=None, knowledge=[], parallel_notes=None,
+            registry_path=None, state_db_path=None, claude_org_root=None,
+            workers_dir=None, pattern=None,
+        )
+        base.update(ns)
+        return gdp._gather_plan_kwargs(
+            argparse.Namespace(**base), self.sb.claude_org_root
+        )
+
+    # -- precedence -------------------------------------------------------
+
+    def test_profile_supplies_values_when_nothing_stronger_does(self):
+        self._profile(
+            "base",
+            '[task]\nverification_depth = "minimal"\ncommit_prefix = "fix(mirror):"\n',
+        )
+        kwargs = self._kwargs(profile="clock-app")
+        self.assertEqual(kwargs["verification_depth"], "minimal")
+        self.assertEqual(kwargs["commit_prefix"], "fix(mirror):")
+
+    def test_class_layer_beats_base_layer(self):
+        self._profile("base", '[task]\ncommit_prefix = "chore(base):"\n')
+        self._profile("ci-fix", '[task]\ncommit_prefix = "fix(mirror):"\n')
+        kwargs = self._kwargs(profile="clock-app/ci-fix")
+        self.assertEqual(kwargs["commit_prefix"], "fix(mirror):")
+
+    def test_from_toml_beats_the_profile(self):
+        self._profile("base", '[task]\ncommit_prefix = "fix(mirror):"\n')
+        kwargs = self._kwargs(
+            profile="clock-app", from_toml=self._task_toml()
+        )
+        self.assertEqual(kwargs["commit_prefix"], "chore(toml):")
+        self.assertEqual(kwargs["verification_depth"], "minimal")
+
+    def test_cli_flag_beats_both(self):
+        self._profile("base", '[task]\ncommit_prefix = "fix(mirror):"\n')
+        kwargs = self._kwargs(
+            profile="clock-app",
+            from_toml=self._task_toml(),
+            commit_prefix="docs(cli):",
+            verification_depth="full",
+        )
+        self.assertEqual(kwargs["commit_prefix"], "docs(cli):")
+        self.assertEqual(kwargs["verification_depth"], "full")
+
+    def test_toml_silence_does_not_erase_a_profile_value(self):
+        # _load_task_args_from_toml returns every key (None when absent); a
+        # blind update() would let a TOML that never mentions parallel_notes
+        # wipe the profile's. Explicit-value-only must hold on this layer too.
+        self._profile("base", '[parallel]\nnotes = "from profile"\n')
+        kwargs = self._kwargs(
+            profile="clock-app", from_toml=self._task_toml()
+        )
+        self.assertEqual(kwargs["parallel_notes"], "from profile")
+
+    # -- branch_style -----------------------------------------------------
+
+    def test_branch_style_renders_with_the_final_task_id(self):
+        self._profile("base", '[task]\nbranch_style = "docs/{task_id}"\n')
+        kwargs = self._kwargs(profile="clock-app", task_id="en-batch")
+        self.assertEqual(kwargs["branch_override"], "docs/en-batch")
+
+    def test_explicit_branch_flag_beats_branch_style(self):
+        self._profile("base", '[task]\nbranch_style = "docs/{task_id}"\n')
+        kwargs = self._kwargs(
+            profile="clock-app", branch_override="fix/manual"
+        )
+        self.assertEqual(kwargs["branch_override"], "fix/manual")
+
+    def test_toml_branch_beats_branch_style(self):
+        self._profile("base", '[task]\nbranch_style = "docs/{task_id}"\n')
+        kwargs = self._kwargs(
+            profile="clock-app", from_toml=self._task_toml()
+        )
+        self.assertEqual(kwargs["branch_override"], "toml/branch")
+
+    # -- failure modes ----------------------------------------------------
+
+    def test_undefined_class_exits_rather_than_falling_back(self):
+        self._profile("base", '[task]\ncommit_prefix = "fix(mirror):"\n')
+        self._profile("ci-fix", "")
+        with self.assertRaises(SystemExit) as ctx:
+            self._kwargs(profile="clock-app/typo")
+        self.assertIn("ci-fix", str(ctx.exception))
+
+    def test_missing_dossier_exits(self):
+        with self.assertRaises(SystemExit):
+            self._kwargs(profile="no-such-project")
+
+    def test_slug_mismatch_with_toml_exits(self):
+        # Otherwise the worker is told they are on project X while the brief
+        # carries project Y's charter, description and commit prefix.
+        self._profile("base", '[task]\ncommit_prefix = "fix(clock):"\n')
+        toml = self._task_toml()
+        toml.write_text(
+            toml.read_text(encoding="utf-8").replace(
+                'name = "clock-app"', 'name = "claude-org-ja"'
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaises(SystemExit) as ctx:
+            self._kwargs(profile="clock-app", from_toml=toml)
+        self.assertIn("clock-app", str(ctx.exception))
+        self.assertIn("claude-org-ja", str(ctx.exception))
+
+    def test_slug_mismatch_with_cli_flag_exits(self):
+        self._profile("base", "")
+        with self.assertRaises(SystemExit):
+            self._kwargs(profile="clock-app", project_slug="renga")
+
+    def test_matching_explicit_slug_is_accepted(self):
+        self._profile("base", '[task]\ncommit_prefix = "fix(clock):"\n')
+        kwargs = self._kwargs(profile="clock-app", project_slug="clock-app")
+        self.assertEqual(kwargs["project_slug"], "clock-app")
+        self.assertEqual(kwargs["commit_prefix"], "fix(clock):")
+
+    def test_forbidden_axis_exits(self):
+        self._profile("base", "[task]\nmerge_preapproved = true\n")
+        with self.assertRaises(SystemExit):
+            self._kwargs(profile="clock-app")
+
+    # -- warnings / brief embedding ---------------------------------------
+
+    def test_unwired_axis_warning_reaches_plan_warnings(self):
+        self._profile("base", '[profile]\nmodel = "opus"\n')
+        kwargs = self._kwargs(profile="clock-app")
+        plan = gdp.build_delegate_plan(
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+            **kwargs,
+        )
+        self.assertTrue(
+            any("not wired in Stage 1" in w for w in plan.warnings), plan.warnings
+        )
+        self.assertEqual(plan.blocking_warnings, [])
+
+    def test_dossier_content_is_embedded_in_the_rendered_brief(self):
+        (self.dossier / "charter.md").write_text(
+            "# 憲章\n\nEN ミラーは機械ミラーである。\n", encoding="utf-8"
+        )
+        (self.dossier / "notes" / "ci.md").write_text(
+            "stale-base は origin/main を merge するだけで直る。\n",
+            encoding="utf-8",
+        )
+        self._profile("base", '[dossier]\nembed_notes = ["ci.md"]\n')
+        kwargs = self._kwargs(profile="clock-app")
+        plan = gdp.build_delegate_plan(
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+            **kwargs,
+        )
+        brief = gwb.render(plan.config)
+        self.assertIn("プロジェクト台帳", brief)
+        self.assertIn("EN ミラーは機械ミラーである。", brief)
+        self.assertIn("stale-base は origin/main を merge するだけで直る。", brief)
+
+    def test_no_profile_leaves_the_brief_without_a_dossier_section(self):
+        plan = gdp.build_delegate_plan(
+            task_id="plain",
+            project_slug="clock-app",
+            description="d",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        brief = gwb.render(plan.config)
+        self.assertNotIn("プロジェクト台帳", brief)
+        self.assertNotIn("dossier", plan.config["project"])
+
+    def test_preview_cli_surfaces_the_profile_warning(self):
+        self._profile("base", '[profile]\npr_shape = "single"\n')
+        buf = StringIO()
+        err = StringIO()
+        with redirect_stdout(buf), contextlib.redirect_stderr(err):
+            rc = gdp.main([
+                "preview",
+                "--task-id", "profile-cli",
+                "--profile", "clock-app",
+                "--description", "d",
+                "--claude-org-root", str(self.sb.claude_org_root),
+                "--state-db-path", str(self.sb.db_path),
+            ])
+        self.assertEqual(rc, 0)
+        self.assertIn("not wired in Stage 1", err.getvalue())
+
+    def test_preview_cli_derives_project_slug_from_the_profile(self):
+        self._profile("base", '[task]\ncommit_prefix = "fix(mirror):"\n')
+        buf = StringIO()
+        with redirect_stdout(buf), contextlib.redirect_stderr(StringIO()):
+            rc = gdp.main([
+                "preview", "--json",
+                "--task-id", "profile-cli",
+                "--profile", "clock-app",
+                "--description", "d",
+                "--claude-org-root", str(self.sb.claude_org_root),
+                "--state-db-path", str(self.sb.db_path),
+            ])
+        self.assertEqual(rc, 0)
+        payload = json.loads(buf.getvalue())
+        self.assertEqual(payload["summary"]["project_slug"], "clock-app")
+
+    def test_undefined_class_via_cli_exits_nonzero(self):
+        self._profile("ci-fix", "")
+        with self.assertRaises(SystemExit):
+            gdp.main([
+                "preview",
+                "--task-id", "t",
+                "--profile", "clock-app/typo",
+                "--description", "d",
+                "--claude-org-root", str(self.sb.claude_org_root),
+                "--state-db-path", str(self.sb.db_path),
+            ])
 
 
 if __name__ == "__main__":
