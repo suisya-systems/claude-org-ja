@@ -71,6 +71,17 @@ def _payload(*versions: str, yanked: tuple[str, ...] = ()) -> dict:
 
 
 class MainCliTest(unittest.TestCase):
+    def setUp(self):
+        # Neutralise the PEP 610 local-install short-circuit for the
+        # generic main() paths: whether the runtime happens to be
+        # installed editable/local in the test venv must not change these
+        # outcomes. The local-install branch has its own test class below.
+        patcher = mock.patch.object(
+            check_runtime_version, "_direct_url_local_reason", return_value=None
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def _run_main(self) -> tuple[int, str, str]:
         out, err = io.StringIO(), io.StringIO()
         with mock.patch.object(sys, "stdout", out), mock.patch.object(
@@ -315,6 +326,8 @@ class UpgradeCommandShapeTest(unittest.TestCase):
         with mock.patch.object(
             check_runtime_version, "_installed_version", return_value="0.1.2"
         ), mock.patch.object(
+            check_runtime_version, "_direct_url_local_reason", return_value=None
+        ), mock.patch.object(
             check_runtime_version, "_read_pin_spec", return_value=pin
         ), mock.patch.object(
             check_runtime_version,
@@ -336,6 +349,138 @@ class UpgradeCommandShapeTest(unittest.TestCase):
         out = self._drive_main_with_pin(None)
         self.assertIn("'claude-org-runtime'", out)
         self.assertNotIn("<", out.split("install --upgrade")[-1])
+
+
+class _FakeDist:
+    """Minimal stand-in for importlib.metadata.Distribution exposing
+    only the read_text used by _direct_url_local_reason."""
+
+    def __init__(self, direct_url_json: str | None):
+        self._direct_url_json = direct_url_json
+
+    def read_text(self, name: str):
+        if name == "direct_url.json":
+            return self._direct_url_json
+        return None
+
+
+class DirectUrlLocalInstallTest(unittest.TestCase):
+    """PEP 610 direct_url.json detection (Issue #747): a file:// path /
+    VCS / editable install advertises a version that need not match any
+    PyPI release, so it must be surfaced as unverified rather than read
+    as up-to-date. Background: on 2026-07-22 a file:// install was
+    mis-reported as ``最新・drift なし``."""
+
+    def _reason_for(self, direct_url_obj):
+        raw = None if direct_url_obj is None else json.dumps(direct_url_obj)
+        with mock.patch(
+            "importlib.metadata.distribution",
+            return_value=_FakeDist(raw),
+        ):
+            return check_runtime_version._direct_url_local_reason()
+
+    def test_file_url_is_local(self):
+        reason = self._reason_for(
+            {"url": "file:///home/x/claude-org-runtime", "dir_info": {}}
+        )
+        self.assertIsNotNone(reason)
+        self.assertIn("file://", reason)
+
+    def test_vcs_install_is_local(self):
+        reason = self._reason_for(
+            {
+                "url": "https://github.com/o/claude-org-runtime.git",
+                "vcs_info": {"vcs": "git", "commit_id": "abc123"},
+            }
+        )
+        self.assertIsNotNone(reason)
+        self.assertIn("VCS", reason)
+        self.assertIn("git", reason)
+
+    def test_editable_install_is_local(self):
+        reason = self._reason_for(
+            {"url": "file:///home/x/src", "dir_info": {"editable": True}}
+        )
+        self.assertIsNotNone(reason)
+        self.assertIn("editable", reason)
+
+    def test_editable_takes_precedence_over_bare_file(self):
+        """An editable install also has a file:// url; the label should
+        name it editable (the more specific source), not classify it as
+        a plain ``file:// install``."""
+        reason = self._reason_for(
+            {"url": "file:///home/x/src", "dir_info": {"editable": True}}
+        )
+        self.assertTrue(reason.startswith("editable install"))
+        self.assertNotIn("file:// install", reason)
+
+    def test_https_archive_direct_url_is_not_local(self):
+        """A direct URL that is a plain https archive (not file://, not
+        VCS, not editable) is left to the normal PyPI comparison path."""
+        reason = self._reason_for(
+            {
+                "url": "https://example.com/claude-org-runtime-0.1.2.tar.gz",
+                "archive_info": {},
+            }
+        )
+        self.assertIsNone(reason)
+
+    def test_no_direct_url_is_not_local(self):
+        """A normal PyPI/index install writes no direct_url.json."""
+        self.assertIsNone(self._reason_for(None))
+
+    def test_malformed_direct_url_json_is_not_local(self):
+        with mock.patch(
+            "importlib.metadata.distribution",
+            return_value=_FakeDist("not-json"),
+        ):
+            self.assertIsNone(
+                check_runtime_version._direct_url_local_reason()
+            )
+
+    def test_package_not_found_is_not_local(self):
+        from importlib.metadata import PackageNotFoundError
+
+        with mock.patch(
+            "importlib.metadata.distribution",
+            side_effect=PackageNotFoundError(),
+        ):
+            self.assertIsNone(
+                check_runtime_version._direct_url_local_reason()
+            )
+
+
+class MainLocalInstallTest(unittest.TestCase):
+    """main() must short-circuit a local install to EXIT_UNVERIFIED with
+    a stderr diagnostic BEFORE touching PyPI, keeping stdout empty so the
+    spliceable drift-line contract is preserved."""
+
+    def _run_main(self):
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(sys, "stdout", out), mock.patch.object(
+            sys, "stderr", err
+        ):
+            code = check_runtime_version.main()
+        return code, out.getvalue(), err.getvalue()
+
+    def test_local_install_is_unverified_and_skips_pypi(self):
+        with mock.patch.object(
+            check_runtime_version, "_installed_version", return_value="0.1.2"
+        ), mock.patch.object(
+            check_runtime_version,
+            "_direct_url_local_reason",
+            return_value="file:// install (file:///home/x/rt)",
+        ), mock.patch.object(
+            check_runtime_version, "_latest_version_with_reason"
+        ) as latest_mock:
+            code, out, err = self._run_main()
+        self.assertEqual(code, check_runtime_version.EXIT_UNVERIFIED)
+        # stdout stays clean (no drift line); reason on stderr only.
+        self.assertEqual(out, "")
+        self.assertIn("local install", err)
+        self.assertIn("照合不能", err)
+        # The verdict doesn't depend on the network: PyPI is never hit.
+        latest_mock.assert_not_called()
 
 
 if __name__ == "__main__":
