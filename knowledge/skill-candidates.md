@@ -5,6 +5,14 @@
 
 都度問い合わせよりバッチの方が意思決定コストが低い（Issue #68 方針）。
 
+> **このファイルはフォーマット定義のみ・エントリ常に空（Issue #755）**: 実エントリは
+> operator-private な作業知見であり OSS リポジトリに載せない。実エントリは machine-local な
+> **`knowledge/skill-candidates.local.md`**（.gitignore 済み）に追記する。本公開ファイルは
+> エントリフォーマット・status 語彙・運用ルールの**定義**を保持し、`## エントリ一覧` は空のまま保つ。
+> `skill-eligibility-check` Step 4 の追記先・status 遷移の編集先はすべて `.local.md` 側。
+> 閾値カウント（`tools/check_curate_threshold.py` / `skill-audit`）は公開 + local の**両ファイルを合算**して読む
+> （読む 2 ファイルと順序は `check_curate_threshold.py` の `CANDIDATE_ENTRY_PATHS` が SoT）。
+
 ## エントリフォーマット
 
 各候補は 3 レベル見出し `### {YYYY-MM-DD} {pattern-name}` で始まるブロックとする。
@@ -35,6 +43,9 @@
 > `tools/check_curate_threshold.py` の `count_pending` / `skill-audit` Step 1 の
 > カウントコマンド / 本節の 3 者で完全一致させること（変更時は 3 箇所同時更新。
 > `tools/test_check_curate_threshold.py` の parity テストが drift を検出する）。
+> **カウントは本公開ファイル + `knowledge/skill-candidates.local.md` の 2 ファイルを合算**
+> （Issue #755。読む 2 ファイルと順序は `check_curate_threshold.py` の `CANDIDATE_ENTRY_PATHS` が SoT。
+> 各ファイルは独立してフェンス状態を持つ）。
 
 ## status の遷移
 

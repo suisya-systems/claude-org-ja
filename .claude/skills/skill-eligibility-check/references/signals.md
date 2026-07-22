@@ -76,5 +76,5 @@ skill 化しても再利用が発生しない。
 - 1 点以下: `curated_only`
 
 各シグナルの 0/1 は `matched_signals` として呼び出し元に返し、
-候補キュー `knowledge/skill-candidates.md` にも残る。
+候補キューの実エントリファイル `knowledge/skill-candidates.local.md`（machine-local・Issue #755）にも残る。
 これにより後の棚卸し（`skill-audit`）で「どのシグナルが弱かったか」を追跡できる。
