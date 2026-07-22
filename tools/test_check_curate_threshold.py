@@ -40,11 +40,23 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 # The pending-count command skill-audit Step 1 documents, verbatim
 # (three-way sync: check_curate_threshold.count_pending / skill-audit
 # Step 1 / the operational note in knowledge/skill-candidates.md).
+# Issue #755: it reads BOTH candidate-entry files (public format-only +
+# machine-local entries) in the same order as CANDIDATE_ENTRY_PATHS.
+# Existing files are pushed onto the positional parameters (set -- /
+# "$@") rather than an unquoted ``$files`` var: "$@" word-splits into
+# separate awk args in bash, zsh AND sh, whereas an unquoted ``$files``
+# is NOT split by zsh (the harness shell) — it would reach awk as one
+# filename, the fatal error would be swallowed by 2>/dev/null, and the
+# count would silently become empty. Guarding with [ -f ] means a
+# missing .local.md on a clean tree neither hangs (zero-arg awk reading
+# stdin) nor clobbers the public count.
 _SKILL_AUDIT_PENDING_AWK = (
-    "awk '/^(```|~~~)/ { fence = !fence; next }\n"
-    "  !fence && /^- \\*\\*status\\*\\*: pending[ \\t]*$/ { n++ }\n"
-    "  END { print n + 0 }' knowledge/skill-candidates.md 2>/dev/null"
-    " || echo 0"
+    "set --; for f in knowledge/skill-candidates.md "
+    "knowledge/skill-candidates.local.md; do [ -f \"$f\" ] && "
+    "set -- \"$@\" \"$f\"; done; if [ \"$#\" -gt 0 ]; then awk "
+    "'FNR==1 { fence=0 } /^(```|~~~)/ { fence=!fence; next } "
+    "!fence && /^- \\*\\*status\\*\\*: pending[ \\t]*$/ { n++ } "
+    "END { print n+0 }' \"$@\" 2>/dev/null; else echo 0; fi"
 )
 
 
@@ -68,16 +80,24 @@ class _TreeCase(unittest.TestCase):
         d.mkdir(parents=True)
         (d / "SKILL.md").write_text("---\nname: x\n---\n", encoding="utf-8")
 
-    def add_candidates(self, pending: int, other: int = 0):
+    def _candidates_text(self, pending: int, other: int, tag: str) -> str:
         lines = ["# queue", ""]
         for i in range(pending):
-            lines.append(f"### 2026-06-07 pat-{i}")
+            lines.append(f"### 2026-06-07 {tag}-pat-{i}")
             lines.append("- **status**: pending")
         for i in range(other):
-            lines.append(f"### 2026-06-07 done-{i}")
+            lines.append(f"### 2026-06-07 {tag}-done-{i}")
             lines.append("- **status**: approved")
+        return "\n".join(lines) + "\n"
+
+    def add_candidates(self, pending: int, other: int = 0):
         (self.root / "knowledge" / "skill-candidates.md").write_text(
-            "\n".join(lines) + "\n", encoding="utf-8"
+            self._candidates_text(pending, other, "pub"), encoding="utf-8"
+        )
+
+    def add_candidates_local(self, pending: int, other: int = 0):
+        (self.root / "knowledge" / "skill-candidates.local.md").write_text(
+            self._candidates_text(pending, other, "loc"), encoding="utf-8"
         )
 
     def run_main(self, root: Path):
@@ -175,6 +195,52 @@ class TestPendingCandidates(_TreeCase):
         _, out = self.run_main(self.root)
         self.assertEqual(out["counts"]["skill_candidates_pending"], 0)
 
+    def test_local_file_entries_are_counted(self):
+        # Issue #755: real entries live in the machine-local sibling.
+        # Five pending there (public absent) must fire on their own.
+        self.add_candidates_local(pending=5)
+        code, out = self.run_main(self.root)
+        self.assertEqual(out["counts"]["skill_candidates_pending"], 5)
+        self.assertEqual(code, cct.EXIT_CURATE_NEEDED)
+        self.assertIn("skill_candidates_pending", out["reasons"])
+
+    def test_public_and_local_are_summed(self):
+        # 3 in the (format-only) public file + 2 in the local file = 5,
+        # crossing the threshold only when both are counted.
+        self.add_candidates(pending=3)
+        self.add_candidates_local(pending=2)
+        code, out = self.run_main(self.root)
+        self.assertEqual(out["counts"]["skill_candidates_pending"], 5)
+        self.assertEqual(code, cct.EXIT_CURATE_NEEDED)
+
+    def test_fence_state_does_not_bleed_between_files(self):
+        # An unclosed fence at the end of the public file must not
+        # suppress a real pending entry in the local file: fence state
+        # is per-file (independent scan per CANDIDATE_ENTRY_PATHS entry).
+        (self.root / "knowledge" / "skill-candidates.md").write_text(
+            "```\n- **status**: pending\n", encoding="utf-8"  # fence left open
+        )
+        (self.root / "knowledge" / "skill-candidates.local.md").write_text(
+            "- **status**: pending\n", encoding="utf-8"
+        )
+        _, out = self.run_main(self.root)
+        # public: the one line is inside the (open) fence -> 0; local: 1.
+        self.assertEqual(out["counts"]["skill_candidates_pending"], 1)
+
+    def test_deferred_in_local_is_excluded(self):
+        # The Issue #753 exclusion holds for the local file too.
+        (self.root / "knowledge" / "skill-candidates.local.md").write_text(
+            "".join(
+                f"### 2026-07-22 shelved-{i}\n- **status**: deferred\n"
+                for i in range(6)
+            )
+            + "### 2026-07-22 live-0\n- **status**: pending\n",
+            encoding="utf-8",
+        )
+        code, out = self.run_main(self.root)
+        self.assertEqual(out["counts"]["skill_candidates_pending"], 1)
+        self.assertEqual(code, cct.EXIT_BELOW_THRESHOLD)
+
     def test_deferred_entries_are_excluded(self):
         # Issue #753: a candidate the human shelved is marked
         # ``deferred`` — a non-terminal hold status that must NOT count
@@ -263,11 +329,15 @@ class TestPendingCandidates(_TreeCase):
         self.assertEqual(out["counts"]["skill_candidates_pending"], 0)
 
     def test_parity_with_skill_audit_count_command(self):
-        """Three-way sync (fence-excluding semantics): the literal awk
-        command skill-audit Step 1 documents must (a) appear verbatim
-        in the committed SKILL.md and (b) produce the same count as
-        ``count_pending`` on a fixture exercising fences + real
-        entries."""
+        """Three-way sync (fence-excluding semantics): the literal count
+        command skill-audit Step 1 documents must (a) appear verbatim in
+        the committed SKILL.md and (b) produce the same count as
+        ``count_pending`` — across BOTH candidate files and under EVERY
+        available shell. The last part is load-bearing: the snippet uses
+        positional-parameter word-splitting (``set --`` / ``"$@"``)
+        precisely because an unquoted ``$var`` is not split by zsh, the
+        harness shell; a bash-only parity run would mask that regression
+        (Issue #755, review blocker)."""
         skill_md = (
             _REPO_ROOT / ".claude" / "skills" / "skill-audit" / "SKILL.md"
         ).read_text(encoding="utf-8")
@@ -277,7 +347,8 @@ class TestPendingCandidates(_TreeCase):
             "skill-audit Step 1 count command drifted from the one "
             "this parity test runs — update both together",
         )
-        fixture = (
+        # Public file: 3 countable pending (fenced/tilde examples excluded).
+        (self.root / "knowledge" / "skill-candidates.md").write_text(
             "```markdown\n"
             "- **status**: pending\n"
             "```\n"
@@ -287,27 +358,94 @@ class TestPendingCandidates(_TreeCase):
             "~~~\n"
             "- **status**: pending\n"
             "~~~\n"
-            "- **status**: pending\n"
+            "- **status**: pending\n",
+            encoding="utf-8",
         )
-        (self.root / "knowledge" / "skill-candidates.md").write_text(
-            fixture, encoding="utf-8"
+        # Local file exercises the two-file summation path: +2 pending
+        # (deferred excluded). Expected combined count = 5.
+        (self.root / "knowledge" / "skill-candidates.local.md").write_text(
+            "### 2026-07-22 a\n- **status**: pending\n"
+            "### 2026-07-22 b\n- **status**: pending\n"
+            "### 2026-07-22 c\n- **status**: deferred\n",
+            encoding="utf-8",
         )
-        if not shutil.which("bash"):
-            self.skipTest("bash not on PATH — shell parity untestable")
-        try:
-            proc = subprocess.run(
-                ["bash", "-c", _SKILL_AUDIT_PENDING_AWK],
-                cwd=self.root,
-                capture_output=True,
-                encoding="utf-8",
-                errors="replace",
-                check=True,
-                timeout=60,
+        self.assertEqual(cct.count_pending(self.root), 5)
+
+        shells = [s for s in ("sh", "bash", "zsh") if shutil.which(s)]
+        if not shells:
+            self.skipTest("no POSIX shell on PATH — shell parity untestable")
+        ran_any = False
+        for shell in shells:
+            try:
+                proc = subprocess.run(
+                    [shell, "-c", _SKILL_AUDIT_PENDING_AWK],
+                    cwd=self.root,
+                    capture_output=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    check=True,
+                    timeout=60,
+                )
+            except (OSError, subprocess.SubprocessError):
+                # A shell on PATH that cannot actually launch/exec here
+                # (sandbox Win32 error 5 etc.) — skip that shell, not the
+                # whole test.
+                continue
+            ran_any = True
+            self.assertEqual(
+                int(proc.stdout.strip()),
+                5,
+                f"skill-audit count command gave the wrong result under "
+                f"{shell!r} — likely a shell-portability regression",
             )
-        except (OSError, subprocess.SubprocessError) as exc:
-            self.skipTest(f"bash unusable here ({exc!r}) — parity skipped")
-        self.assertEqual(cct.count_pending(self.root), int(proc.stdout.strip()))
-        self.assertEqual(cct.count_pending(self.root), 3)
+        if not ran_any:
+            self.skipTest("no shell could launch here — parity skipped")
+
+
+class TestCandidateEntryPaths(unittest.TestCase):
+    """Issue #755: CANDIDATE_ENTRY_PATHS is the SoT for which files hold
+    skill-candidate entries; the skill-audit awk must read exactly those
+    files, and the committed public file must stay entry-empty."""
+
+    def test_paths_are_public_then_local_in_order(self):
+        self.assertEqual(
+            [p.as_posix() for p in cct.CANDIDATE_ENTRY_PATHS],
+            [
+                "knowledge/skill-candidates.md",
+                "knowledge/skill-candidates.local.md",
+            ],
+        )
+
+    def test_awk_command_references_exactly_candidate_entry_paths(self):
+        """Divergence guard: the file list the skill-audit awk iterates
+        must equal CANDIDATE_ENTRY_PATHS (same files, same order). Any
+        drift — a third file, a renamed file, a reordering — fails here
+        and in the committed SKILL.md check below."""
+        import re
+
+        tokens = re.findall(
+            r"knowledge/skill-candidates(?:\.local)?\.md",
+            _SKILL_AUDIT_PENDING_AWK,
+        )
+        # The awk mentions each path once in its ``for f in ...`` list.
+        self.assertEqual(
+            tokens, [p.as_posix() for p in cct.CANDIDATE_ENTRY_PATHS]
+        )
+
+    def test_committed_skill_audit_reads_both_files(self):
+        """The rendered SKILL.md must embed the exact two-file count
+        snippet (three-way sync anchor)."""
+        skill_md = (
+            _REPO_ROOT / ".claude" / "skills" / "skill-audit" / "SKILL.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn(_SKILL_AUDIT_PENDING_AWK, skill_md)
+
+    def test_committed_public_file_has_zero_entries(self):
+        """The tracked public skill-candidates.md carries the format
+        definition only — its entry list must always count 0 pending so
+        that operator-private entries never live in the OSS repo."""
+        public = _REPO_ROOT / "knowledge" / "skill-candidates.md"
+        self.assertEqual(cct._count_pending_in(public), 0)
 
 
 class TestWorkSkillCount(_TreeCase):

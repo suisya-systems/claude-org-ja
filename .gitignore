@@ -5,9 +5,18 @@
 .state/workers/*
 !.state/workers/.gitkeep
 
-# Raw knowledge (curated versions are tracked)
+# Knowledge: operator-private assets are machine-local, not shared (Issue #755).
+# - Raw learnings (knowledge/raw/) are machine-local scratch, never committed.
+# - The skill-candidate queue's real entries live in the .local.md sibling; the
+#   tracked knowledge/skill-candidates.md carries the entry-FORMAT definition
+#   only (its entry list is always empty).
+# - Operator-private curated notes use the .local.md suffix; the shared
+#   operational curated docs (knowledge/curated/*.md without .local) stay tracked.
+# See docs/contracts/knowledge-curation-contract.md §3.4.
 knowledge/raw/*
 !knowledge/raw/.gitkeep
+knowledge/skill-candidates.local.md
+knowledge/curated/*.local.md
 
 # Dashboard generated data (replaced by live server)
 dashboard/data.json
