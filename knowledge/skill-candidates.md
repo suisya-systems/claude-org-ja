@@ -18,7 +18,7 @@
 - **関連 raw ファイル**: {raw_files のパス列}
 - **呼び出し元**: {post_retro | curation}
 - **提案 skill 名**: {kebab-case 名}
-- **status**: {pending | approved | rejected | merged-into-*}
+- **status**: {pending | deferred | approved | rejected | merged-into-*}
 - **決定日**: 未定
 - **却下理由**: （status が `rejected` に遷移したとき記入、それ以外は省略）
 - **統合先**: （status が `merged-into-*` のとき記入、それ以外は省略）
@@ -39,17 +39,21 @@
 ## status の遷移
 
 - `pending`: 人間に未問い合わせ。`skill-audit` の発火条件 N=5 でカウントされる
+- `deferred`: **人間に提示済みで、人間が「今は見送り（保留）」と判断した**状態。terminal（承認 / 却下）ではないが、**閾値カウント対象外**であり**再問い合わせもしない**。`pending` と違い `- **status**: pending` の行形式に一致しないため、`tools/check_curate_threshold.py` の `count_pending` / `skill-audit` Step 1 の pending カウントから自動的に除外される（見送り済み候補が worker クローズのたびに閾値を再発火させて curator を無駄起動する問題への対策。Issue #753）
 - `approved`: 人間が skill 化を承認。対応する `.claude/skills/{name}/SKILL.md` を作成
 - `rejected`: 人間が却下。却下理由を「却下理由」フィールドで追記
 - `merged-into-{existing-skill}`: 既存 skill に統合された。新規作成はしない
 
-`approved` 以降のエントリは履歴として**削除せず保持**する。
+**`deferred` は `pending` に戻さない**（再問い合わせ対象外）。見送りは一度で確定し、同じ候補を蒸し返さないための状態である。人間が後日あらためて skill 化したくなった場合は、`deferred` を書き換えるのではなく**新しい日付で別エントリ**を起こす（`approved` / `rejected` と同じく履歴を残す運用）。
+
+`deferred` / `approved` 以降のエントリは履歴として**削除せず保持**する。
 同じ `pattern_name` が再び上がってきた時の参考になる。
 
 ## 運用メモ
 
 - `skill-eligibility-check` は判定時にこのファイルを自動追記する（同スキル Step 4）
 - 同 `pattern_name` で既に `pending` エントリがある場合は新規追加せずマージ（関連タスク・raw ファイルの追記のみ）
+- 同 `pattern_name` で既に `deferred` エントリがある場合は**再追加しない**（`deferred` を `pending` に戻さない・新規 `pending` も起こさない）。見送り済み候補は蒸し返さないのが原則。人間が明示的に再検討したいときのみ新しい日付で別エントリを起こす
 - 既に `approved` / `rejected` / `merged-into-*` のエントリがある場合は、新しい日付で別エントリを作る（過去の決定を履歴として残すため）
 
 ## エントリ一覧

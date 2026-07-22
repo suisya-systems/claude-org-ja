@@ -71,8 +71,8 @@ ${references_knowledge_block}
 追加ゲート: commit 完了後・完了報告前に **`codex` CLI が available なら** `codex exec review`（review surface）で差分セルフレビューを実行する（`codex exec` 直打ちの長文プロンプト形は廃止。review surface は中小 diff で約 2 倍速・安全側 Blocker/Major のパリティは同等）。未導入環境では skip して通常の完了報告に進む。
 
 ```bash
-# --base はブランチのベース（通常 main）。前景実行して出力（Blocker/Major 相当）を読んでから次へ進む。
-codex exec review --base main -m gpt-5.5 -c model_reasoning_effort=medium < /dev/null
+# --base はブランチのベース（通常 origin/main）。ローカル main は古いと別タスク差分を巻き込むため remote-tracking の origin/main を使う。参照前に git fetch origin を 1 回（fetch 不能でも review は継続）。前景実行して出力（Blocker/Major 相当）を読んでから次へ進む。
+codex exec review --base origin/main -m gpt-5.5 -c model_reasoning_effort=medium < /dev/null
 ```
 
 - **前景実行する**（背景化 `&` + ログ redirect は、完了を待たず指摘を読まずに完了報告してゲートを素通りする事故を招く）。応答が長く来ない稀なケースのみ中断して skip 可。

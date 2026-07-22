@@ -131,10 +131,10 @@ Get-Command codex -ErrorAction SilentlyContinue
 ```
 
 - `unavailable` の場合: セルフレビューを skip し、commit 後そのまま完了報告に進む（このセクション以下のラウンド規律・修正ループは適用しない）
-- `available` の場合: 以下のコマンドを**前景実行**する（`--base` にはこのブランチのベース（通常 `main`）を渡す。stdin は `< /dev/null` で明示クローズ。背景化 `&` + ログ redirect は完了を待たず指摘を読まずに完了報告してゲートを素通りする事故を招くため避ける）
+- `available` の場合: 以下のコマンドを**前景実行**する（`--base` にはこのブランチのベース（通常 `origin/main`）を渡す。**ローカル `main` ではなく remote-tracking の `origin/main`** を使うのは、共有 clone のローカル `main` が古いと別タスク差分を巻き込む誤レビューになるため。参照前に `git fetch origin` を 1 回（着手時 pull 済みでも review 直前に最新化。fetch 不能でも review は継続）。stdin は `< /dev/null` で明示クローズ。背景化 `&` + ログ redirect は完了を待たず指摘を読まずに完了報告してゲートを素通りする事故を招くため避ける）
 
 ```bash
-codex exec review --base main -m gpt-5.5 -c model_reasoning_effort=medium < /dev/null
+codex exec review --base origin/main -m gpt-5.5 -c model_reasoning_effort=medium < /dev/null
 ```
 
 - review surface は内蔵レビュープロンプトで Blocker/Major 相当（P1/P2 等）を返す。**前景で出力を読んでから次に進む**（応答が長く来ない稀なケースのみ中断して skip 可）。**large diff（100 行超目安）では effort を上げない**（high-effort review は大 diff でスケールせず直打ちより遅くなる）。

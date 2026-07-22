@@ -63,6 +63,18 @@ Counting rules (Codex review M4 / m9):
   at the head of ``knowledge/skill-candidates.md`` — change one,
   change all three (``tools/test_check_curate_threshold.py`` asserts
   parity).
+
+  **Only ``pending`` counts — every other status is excluded by the
+  exact-match design (invariant relied on by Issue #753).** Because
+  the regex requires the literal ``pending`` token, entries carrying
+  ``deferred`` / ``approved`` / ``rejected`` / ``merged-into-*`` never
+  match and so never fire this reason. ``deferred`` in particular is
+  the "presented to the human, human chose to hold" state: marking a
+  candidate ``deferred`` is exactly how a shelved candidate stops
+  re-firing the threshold on every worker close (previously such
+  candidates, left ``pending``, spawned the on-demand curator
+  repeatedly). Do **not** relax the match to a prefix / substring on
+  ``status`` — that would recount ``deferred`` and reopen the bug.
 * ``work_skill`` — ``SKILL.md`` files at ``.claude/skills/*/SKILL.md``
   whose skill directory does **not** start with ``org-``. This matches
   skill-audit Step 1's
@@ -104,7 +116,11 @@ LEGACY_MARKER = "<!-- curated -->"
 _HEAD_BYTES = 256
 
 # Matched per line (not MULTILINE over the whole text) because fence
-# state is tracked line by line in count_pending.
+# state is tracked line by line in count_pending. The literal
+# ``pending`` token is load-bearing: it is what excludes ``deferred``
+# (and approved / rejected / merged-into-*) from the count so shelved
+# candidates stop re-firing the threshold (Issue #753). Keep it exact
+# — do not widen to a prefix/substring match on ``status``.
 _PENDING_RE = re.compile(r"^- \*\*status\*\*: pending\s*$")
 # A code fence opens/closes on a line *starting* with ``` or ~~~
 # (three-way sync: skill-audit Step 1 awk command and the operational
@@ -163,6 +179,12 @@ def count_pending(root: Path) -> int:
     the head of the file must never count as a real pending entry
     (it once did, spuriously spawning the on-demand curator on every
     worker close).
+
+    Only the literal ``pending`` status counts. ``deferred`` (a
+    presented-then-shelved candidate), ``approved``, ``rejected`` and
+    ``merged-into-*`` all fail the exact match and are excluded — that
+    is precisely how a shelved candidate stops re-firing the threshold
+    (Issue #753).
 
     A missing file counts as 0 (normal in fresh checkouts); any other
     read error propagates so ``main`` reports ``status=error`` / exit 2

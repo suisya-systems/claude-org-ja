@@ -58,6 +58,14 @@ work_skill_count=$(find .claude/skills -maxdepth 2 -name SKILL.md \
 > skill-candidates.md 冒頭）。いずれかを変更する場合は 3 箇所同時に更新する
 > （`tools/test_check_curate_threshold.py` の parity テストが drift を検出する）。
 
+> **`deferred` は数えない（Issue #753）**: 上の awk は `- **status**: pending` の行形式
+> **完全一致**でカウントするため、`deferred`（人間が提示を受けて見送った候補）は自動的に
+> 除外される。見送り済み候補を `pending` のまま残すと worker クローズのたびに `cand_count >= 5`
+> を再発火させ curator を無駄起動するため、**バッチ問い合わせで人間が見送った候補は
+> `pending` → `deferred` に更新**する（更新自体は Set E §1.4 の owner 定義に従いワーカー委譲経由）。
+> **`deferred` を `pending` に戻さない・再問い合わせしない**（本 Step 1 の閾値にも再登場させない）。
+> 人間が後日あらためて検討したいときのみ新しい日付で別エントリを起こす。
+
 ## Step 2: 廃止候補の洗い出し
 
 各 skill について以下を評価する。**現時点で観測可能な項目のみ**を機械判定に使い、

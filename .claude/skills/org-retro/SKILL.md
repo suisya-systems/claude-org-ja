@@ -135,6 +135,14 @@ output_format: <成果物の構造>
      `knowledge/skill-candidates.md` 該当エントリの status を `merged-into-{existing-skill}` に
      更新（`統合先` フィールドに既存 skill 名を記入）。
    - 新規 skill ファイルは作成しない。窓口・ディスパッチャーは直接編集しない。
+4. 人間が「今は見送り（保留）」を選択した場合（status `deferred`。Issue #753）:
+   - `knowledge/skill-candidates.md` 該当エントリの status を `pending` → `deferred` に更新する
+     作業をワーカーへの委譲（`org-delegate`）経由で行う（窓口・ディスパッチャーは直接編集しない、
+     Set E §1.4 の owner 定義に従う）。
+   - `deferred` は terminal ではないが**閾値カウント対象外・再問い合わせ対象外**。以後この候補を
+     `pending` に戻さず、バッチ問い合わせ / `/skill-audit` で蒸し返さない（見送り済み候補が
+     worker クローズのたびに curator を無駄起動する問題への対策）。人間が後日あらためて検討したい
+     ときのみ新しい日付で別エントリを起こす。
 
 #### decision == candidate_queue
 
