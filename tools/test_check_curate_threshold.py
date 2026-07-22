@@ -175,6 +175,29 @@ class TestPendingCandidates(_TreeCase):
         _, out = self.run_main(self.root)
         self.assertEqual(out["counts"]["skill_candidates_pending"], 0)
 
+    def test_deferred_entries_are_excluded(self):
+        # Issue #753: a candidate the human shelved is marked
+        # ``deferred`` — a non-terminal hold status that must NOT count
+        # (only the literal ``pending`` token counts). Here 6 deferred
+        # entries alongside 2 pending must yield a count of 2 (below the
+        # threshold of 5), so shelved candidates never re-fire curator.
+        (self.root / "knowledge" / "skill-candidates.md").write_text(
+            "# queue\n\n"
+            + "".join(
+                f"### 2026-07-22 shelved-{i}\n- **status**: deferred\n"
+                for i in range(6)
+            )
+            + "".join(
+                f"### 2026-07-22 live-{i}\n- **status**: pending\n"
+                for i in range(2)
+            ),
+            encoding="utf-8",
+        )
+        code, out = self.run_main(self.root)
+        self.assertEqual(out["counts"]["skill_candidates_pending"], 2)
+        self.assertEqual(code, cct.EXIT_BELOW_THRESHOLD)
+        self.assertNotIn("skill_candidates_pending", out["reasons"])
+
     def test_fenced_template_is_not_counted(self):
         # The head of the real skill-candidates.md carries an
         # entry-format template inside a fenced block. A literal
