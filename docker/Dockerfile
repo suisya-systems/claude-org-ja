@@ -60,8 +60,9 @@ FROM ${BASE_IMAGE} AS org
 
 ARG ORG_UID=1000
 ARG ORG_GID=1000
-# runtime pin（設計 §7.7: 起動時 upgrade はせず、更新は image rebuild）
-ARG RUNTIME_VERSION=0.1.36
+# runtime pin（設計 §7.7: 起動時 upgrade はせず、更新は image rebuild）。
+# 既定値は pyproject.toml の claude-org-runtime floor（下限 pin）と同期させること。
+ARG RUNTIME_VERSION=0.1.37
 # Claude Code ネイティブインストーラに渡すバージョン（stable | latest | x.y.z）
 ARG CLAUDE_CODE_VERSION=stable
 ARG INSTALL_HERDR=1
@@ -129,7 +130,14 @@ RUN mkdir -p /opt/claude-home \
 
 COPY --chmod=755 docker/entrypoint.sh docker/org-shell.sh /usr/local/bin/
 
-ENV ORG_TRANSPORT=broker \
+# HOME は org ユーザーの home に焼き込む（Issue #735 根治）。base image 既定の
+# 空/未設定だと Claude Code・gh・codex 等が認証・設定の保存先を決められず落ちる。
+# entrypoint の gosu 降格経路だけでなく docker exec の org-shell --setup 経路
+# （子プロセスに entrypoint の export が伝わらない）にも効かせるため image ENV
+# に置く。build 中に HOME=/opt/claude-home を要する RUN は各行で inline override
+# 済みなので、この runtime 既定は build を汚さない。
+ENV HOME=/home/org \
+    ORG_TRANSPORT=broker \
     ORG_BACKEND=tmux \
     ORG_BROKER_PORT=48720 \
     ORG_MAX_WORKERS=3 \

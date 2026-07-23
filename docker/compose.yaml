@@ -14,7 +14,7 @@ services:
         # host bind mount を使う場合はホスト UID に合わせる（設計 §8）
         ORG_UID: "${ORG_UID:-1000}"
         ORG_GID: "${ORG_GID:-1000}"
-        RUNTIME_VERSION: "${RUNTIME_VERSION:-0.1.36}"
+        RUNTIME_VERSION: "${RUNTIME_VERSION:-0.1.37}"
         INSTALL_HERDR: "${INSTALL_HERDR:-1}"
         REPO_REF: "${REPO_REF:-dev}"
     # PID1 は image 内の tini（init: true と等価の機能を image 側で自己完結。設計 §5）

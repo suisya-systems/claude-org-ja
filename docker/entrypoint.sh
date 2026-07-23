@@ -28,6 +28,11 @@ if [ "$(id -u)" = "0" ]; then
             echo "${want}" > "$d/.org-owned" && chown org:org "$d/.org-owned"
         fi
     done
+    # gosu は sudo -H と違い HOME を org の home へ切り替えず呼び出し元 env を
+    # 引き継ぐ。root で HOME 未設定/=/root のまま降格すると daemon・dashboard の
+    # 子プロセスが誤った HOME を掴むため、降格直前に明示 export する（Issue #735。
+    # image ENV の HOME=/home/org と二重の明示契約。ORG_HOME と一致させること）。
+    export HOME="${ORG_HOME}"
     exec gosu org "$0" "$@"
 fi
 
