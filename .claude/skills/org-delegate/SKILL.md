@@ -118,6 +118,19 @@ allowed-tools:
 
 背景: cp で destination の修正を機械的に巻き戻す事故が過去に発生（destination 側の credential 露出対策 Blocker fix を revert 寸前まで進んだ）。ワーカーへの brief で「初手 cp 禁止 / 取り込み戦略を明示」を要求する。
 
+### 並列委譲で同一ファイルを編集するケースの brief 事前文言
+
+複数 worker を並列派遣し、それらが**同一ファイル（特に同一領域）を編集する**ことが brief 組み立て時点で分かっている場合、`gen_delegate_payload.py` の `--impl-guidance` に次の趣旨の文言をあらかじめ入れる:
+
+> 並走タスク {parallel_task_id} が同じファイル {path} を編集中。窓口が merge 順序の続報を送るので、その続報を受けてから base upstream（通常 `origin/main`）へ rebase して完了報告すること
+
+運用上の注意 2 点:
+
+- **窓口の続報は merge 順序の決定だけでは送らない**。先行 PR が merge され base upstream に反映されたことを確認してから後続 worker に送る（順序決定直後に送ると、先行変更を含まない upstream へ rebase してしまい conflict 防止が成立しない）
+- **rebase 先と適用範囲の読み替え**は [`.claude/skills/org-delegate/references/worker-claude-template.md`](references/worker-claude-template.md) の「完了報告前の rebase」規定に従う（`full` 限定・PR ベースが `origin/main` 以外なら実際の base upstream に読み替え）
+
+事後の追指示（peer message での追送）でも救えるが（2026-07-22 の ja#747 / ja#748 並列編集の実例）、brief 段階で入れておけば窓口→worker の 1 往復が減り、integration point conflict を事前に防げる。完了報告前に base upstream へ rebase してから報告する既存運用と組み合わせると、窓口の残作業は merge 順序の決定と続報通知だけに縮退する。
+
 ## Step 0: プロジェクト名前解決（窓口が実行）
 
 ユーザーの依頼からプロジェクトを特定する:
