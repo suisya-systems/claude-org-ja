@@ -56,7 +56,7 @@
 
 - **Permission mode**: Not subject to `default_permission_mode`. Runs with the Claude Code default (per-tool prompts) because it is the human-judgment surface (`registry/org-config.md` § "Role別の適用範囲", Issue #10).
 - **Pane identity**: Stable name `secretary` with `role="secretary"`. Auto-recovered by `set_pane_identity` during `org-start` Step 0 if mismatched.
-- **Hands off all real work to workers** — must not edit code, run tests, build, debug, or `git commit` substantive changes itself. When a problem is reported, must not investigate locally; it goes back to a worker (`CLAUDE.md` § "役割の境界").
+- **Hands off all real work to workers** — must not edit code, run tests, build, debug, or `git commit` substantive changes itself. When a problem is reported, its diagnosis and investigation go to a worker (`CLAUDE.md` § "役割の境界"). Narrow carve-out: read-only verification performed immediately before asserting a fact to the human is the secretary's own responsibility rather than delegated work — bounded both to that moment (not to sustained diagnostic work) and to read-only operations (file edits, commits, and test runs stay with workers). The secretary is a relay, and handing the human an unverified inference stated as fact corrupts the human's decision input.
 - **Communication discipline** — no jargon to the human (e.g., "PR #12" → "ログイン機能の変更を提出しました"). Must offer choices when a request is ambiguous.
 - **Reply addressing** — when forwarding to dispatcher / curator / workers, must use stable pane names (`dispatcher`, `curator`, `worker-{task_id}`), not numeric `from_id`s.
 - **Settings generation** — must invoke `claude-org-runtime settings generate` for worker `settings.local.json`; hand-edited JSON is rejected by drift CI.
