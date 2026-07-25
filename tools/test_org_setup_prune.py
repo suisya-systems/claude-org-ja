@@ -69,6 +69,10 @@ SAMPLE_PERMISSIONS_MD = """# perms
 SAMPLE_SCHEMA = {
     "version": 1,
     "global": {"forbidden_allow_exact": [], "forbidden_allow_regex": []},
+    "required_hook_scripts": [
+        "block-workers-delete.sh",
+        "block-no-verify.sh",
+    ],
     "roles": {
         "user_common": {"docs_section": "ユーザー共通", "settings_paths": []},
         "secretary": {"docs_section": "窓口", "settings_paths": [".claude/settings.local.json"]},
@@ -143,8 +147,13 @@ class EndToEndTests(unittest.TestCase):
         self.root = Path(self.td.name)
         (self.root / ".claude").mkdir()
         # The {claude_org_path} root fallback only fires when the root looks
-        # like an org checkout, i.e. carries a .hooks/ directory.
+        # like an org checkout: a .hooks/ directory holding every
+        # required_hook_scripts entry.
         (self.root / ".hooks").mkdir()
+        for name in SAMPLE_SCHEMA["required_hook_scripts"]:
+            (self.root / ".hooks" / name).write_text(
+                "#!/usr/bin/env bash\n", encoding="utf-8"
+            )
         # Stale current settings with drift entries.
         self.cur_path = self.root / ".claude" / "settings.local.json"
         self.cur_path.write_text(json.dumps({
@@ -296,6 +305,25 @@ class EndToEndTests(unittest.TestCase):
         rc = p.main([
             "--role", "secretary",
             "--root", str(bare),
+            "--schema", str(self._schema_file()),
+            "--permissions-md", str(self._md_file()),
+            "--no-backup",
+        ])
+        self.assertNotEqual(rc, 0)
+
+    def test_root_with_hooks_dir_but_no_org_scripts_is_rejected(self) -> None:
+        # An unrelated project that happens to carry a .hooks/ directory must
+        # not be accepted as the org root: the generated hook commands would
+        # point at scripts that do not exist, i.e. a guard dead on arrival.
+        foreign = self.root / "foreign"
+        (foreign / ".claude").mkdir(parents=True)
+        (foreign / ".hooks").mkdir()
+        (foreign / ".hooks" / "unrelated-lint.sh").write_text(
+            "#!/usr/bin/env bash\n", encoding="utf-8"
+        )
+        rc = p.main([
+            "--role", "secretary",
+            "--root", str(foreign),
             "--schema", str(self._schema_file()),
             "--permissions-md", str(self._md_file()),
             "--no-backup",

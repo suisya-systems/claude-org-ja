@@ -315,45 +315,63 @@ def _iter_hook_commands(config: dict):
                     yield event, sub["command"]
 
 
-def _check_template_hook_paths(
+def _anchored_at(normalized: str, script: str, anchor: Path) -> bool:
+    """True iff ``normalized`` is ``<anchor>/.hooks/<script>``."""
+    expected = posixpath.normpath(
+        anchor.as_posix() + "/" + ".hooks" + "/" + script
+    )
+    if normalized == expected:
+        return True
+    if not _is_absolute_posixish(normalized):
+        # Resolving a relative path would silently anchor it at the CWD --
+        # precisely the defect being audited. Never accept one.
+        return False
+    # A checkout reached through a symlink is lexically different but names
+    # the same script; compare canonical targets before rejecting.
+    try:
+        return Path(normalized).resolve() == Path(expected).resolve()
+    except OSError:
+        return False
+
+
+def _check_hook_paths(
     source: str,
     role: str,
     config: dict,
-    source_root: Path,
+    anchors: tuple,
     required_scripts: frozenset,
-    placeholders: tuple = ("{claude_org_path}",),
+    placeholders: dict,
 ) -> list:
     """Report hook commands in ``config`` that are not root-anchored.
 
-    ``placeholders`` names the tokens substituted with the org root
-    before normalization. Templates resolve ``{claude_org_path}``; a
-    *generated* settings file must not still contain it, so the on-disk
-    caller passes a different set and the surviving literal is reported
-    (that is the "pasted the sample without resolving it" case).
+    ``anchors`` are the roots under whose ``.hooks/`` a command may
+    legitimately live; a command is accepted when it resolves under any
+    of them AND the script exists there. ``placeholders`` maps each
+    substitutable token to the root it expands to -- they differ, so
+    they cannot share one value: ``{claude_org_path}`` is a prune-time
+    placeholder resolved to the org root, while ``${CLAUDE_PROJECT_DIR}``
+    is expanded by Claude Code to the *project* directory holding the
+    settings file. A generated settings file must not still contain
+    ``{claude_org_path}``, so the on-disk caller omits it and the
+    surviving literal is reported (the "pasted the sample without
+    resolving it" case).
     """
     findings: list = []
-    resolved_root = Path(source_root).resolve()
-    root_posix = resolved_root.as_posix()
     for event, command in _iter_hook_commands(config):
         for ref in _hook_script_refs(command, required_scripts):
             resolved = ref
-            for token in placeholders:
-                resolved = resolved.replace(token, root_posix)
+            for token, value in placeholders.items():
+                resolved = resolved.replace(token, value)
             normalized = posixpath.normpath(resolved.replace("\\", "/"))
             script = posixpath.basename(normalized)
-            expected = posixpath.normpath(root_posix + "/" + ".hooks" + "/" + script)
-            if normalized != expected and _is_absolute_posixish(normalized):
-                # A checkout reached through a symlink yields a valid but
-                # lexically different path; compare canonical targets before
-                # rejecting. Only for already-absolute paths -- resolving a
-                # relative one would silently anchor it at the CWD, which is
-                # precisely the defect being audited.
-                try:
-                    if Path(normalized).resolve() == Path(expected).resolve():
-                        normalized = expected
-                except OSError:
-                    pass
-            if normalized != expected:
+            matched = next(
+                (a for a in anchors if _anchored_at(normalized, script, a)),
+                None,
+            )
+            if matched is None:
+                expected = posixpath.normpath(
+                    anchors[0].as_posix() + "/" + ".hooks" + "/" + script
+                )
                 findings.append(
                     Finding(
                         source,
@@ -370,7 +388,7 @@ def _check_template_hook_paths(
                     )
                 )
                 continue
-            if not (resolved_root / ".hooks" / script).is_file():
+            if not (matched / ".hooks" / script).is_file():
                 findings.append(
                     Finding(
                         source,
@@ -378,7 +396,10 @@ def _check_template_hook_paths(
                         "ERROR",
                         (
                             f"{event} hook command references a script that "
-                            f"does not exist: {expected!r}"
+                            "does not exist: "
+                            + posixpath.normpath(
+                                matched.as_posix() + "/.hooks/" + script
+                            )
                         ),
                     )
                 )
@@ -433,12 +454,13 @@ def check_hook_command_paths(
                 # check_docs already reports missing / unparsable blocks.
                 continue
             findings.extend(
-                _check_template_hook_paths(
+                _check_hook_paths(
                     f"permissions.md[{role_schema['docs_section']}]",
                     role_name,
                     config,
-                    resolved_root,
+                    (resolved_root,),
                     required_scripts,
+                    {"{claude_org_path}": resolved_root.as_posix()},
                 )
             )
     schema_name = Path(schema_path).name
@@ -446,21 +468,19 @@ def check_hook_command_paths(
         if not isinstance(template, dict):
             continue  # ``$comment*`` string entries
         findings.extend(
-            _check_template_hook_paths(
+            _check_hook_paths(
                 f"{schema_name}[worker_roles.{wr_name}]",
                 wr_name,
                 template,
-                resolved_root,
+                (resolved_root,),
                 required_scripts,
+                {"{claude_org_path}": resolved_root.as_posix()},
             )
         )
     return findings
 
 
-# ``${CLAUDE_PROJECT_DIR}`` is expanded by Claude Code itself, so a
-# generated settings file may legitimately carry it; ``{claude_org_path}``
-# is a prune-time placeholder and must already be resolved on disk.
-_ON_DISK_PLACEHOLDERS = ("${CLAUDE_PROJECT_DIR}",)
+_CLAUDE_PROJECT_DIR = "${CLAUDE_PROJECT_DIR}"
 
 
 def check_on_disk_hook_paths(
@@ -479,28 +499,54 @@ def check_on_disk_hook_paths(
     sees whether an installed terminal still carries the relative form
     that Issue #768 shipped.
 
-    The anchor is the org root the file itself declares in
-    ``env.CLAUDE_ORG_PATH``, falling back to ``root``. A worker running
-    inside a worktree has ``root`` set to that worktree while its hooks
-    correctly point at the central checkout, so anchoring on ``root``
-    there would report every valid hook as unanchored.
+    Two roots are legitimate here and they are NOT interchangeable: the
+    org root the file declares in ``env.CLAUDE_ORG_PATH`` (falling back
+    to ``root``), and the project directory holding the settings file,
+    which is what Claude Code expands ``${CLAUDE_PROJECT_DIR}`` to. A
+    worker in a worktree has ``root`` set to that worktree while its
+    hooks correctly point at the central checkout, so collapsing the two
+    would either flag every valid hook or accept a dead
+    ``${CLAUDE_PROJECT_DIR}`` path that only exists centrally.
     """
     env = (config or {}).get("env") or {}
     declared = env.get("CLAUDE_ORG_PATH") if isinstance(env, dict) else None
-    anchor = declared if isinstance(declared, str) and declared else root
+    declared = declared if isinstance(declared, str) and declared else None
     try:
-        resolved_root = Path(anchor).resolve()
+        org_root = Path(declared).resolve() if declared else Path(root).resolve()
+        project_dir = Path(settings_path).resolve().parent.parent
     except OSError:
         return []
-    if not (resolved_root / ".hooks").is_dir():
+    if not (org_root / ".hooks").is_dir():
+        if declared is not None:
+            # An explicitly declared root with no .hooks/ is a broken
+            # installation (e.g. the checkout was moved or deleted): every
+            # absolute hook command in this file is dead. Only the silent
+            # ``root`` fallback may be skipped.
+            return [
+                Finding(
+                    str(settings_path),
+                    role,
+                    "ERROR",
+                    (
+                        "env.CLAUDE_ORG_PATH points at "
+                        f"{org_root.as_posix()!r}, which has no .hooks/ "
+                        "directory; every hook command anchored there is "
+                        "dead. Repoint it at the org checkout and "
+                        "regenerate via tools/org_setup_prune.py."
+                    ),
+                )
+            ]
         return []
-    return _check_template_hook_paths(
+    anchors = (org_root,)
+    if project_dir != org_root and (project_dir / ".hooks").is_dir():
+        anchors = (org_root, project_dir)
+    return _check_hook_paths(
         str(settings_path),
         role,
         config,
-        resolved_root,
+        anchors,
         frozenset(schema.get("required_hook_scripts") or ()),
-        placeholders=_ON_DISK_PLACEHOLDERS,
+        {_CLAUDE_PROJECT_DIR: project_dir.as_posix()},
     )
 
 

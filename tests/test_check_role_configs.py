@@ -903,6 +903,56 @@ class OnDiskHookPathTests(unittest.TestCase):
         )
         self.assertEqual(len(findings), 1, [f.format() for f in findings])
 
+    def test_project_dir_variable_resolves_to_the_project_not_the_org_root(self):
+        # ${CLAUDE_PROJECT_DIR} expands to the directory holding the settings
+        # file. When that differs from the org root, a script that exists only
+        # centrally makes this command dead and it must be reported.
+        worktree = self.root / ".worktrees" / "task"
+        (worktree / ".claude").mkdir(parents=True)
+        config = self._config(
+            'bash "${CLAUDE_PROJECT_DIR}/.hooks/block-workers-delete.sh"'
+        )
+        config["env"] = {"CLAUDE_ORG_PATH": self.root.resolve().as_posix()}
+        findings = crc.check_on_disk_hook_paths(
+            HOOK_PATH_SCHEMA,
+            worktree / ".claude" / "settings.local.json",
+            "worker",
+            config,
+            worktree,
+        )
+        self.assertEqual(len(findings), 1, [f.format() for f in findings])
+
+    def test_project_dir_variable_passes_when_script_is_present(self):
+        worktree = self.root / ".worktrees" / "task"
+        (worktree / ".claude").mkdir(parents=True)
+        (worktree / ".hooks").mkdir()
+        (worktree / ".hooks" / "block-workers-delete.sh").write_text(
+            "#!/usr/bin/env bash\n", encoding="utf-8"
+        )
+        config = self._config(
+            'bash "${CLAUDE_PROJECT_DIR}/.hooks/block-workers-delete.sh"'
+        )
+        config["env"] = {"CLAUDE_ORG_PATH": self.root.resolve().as_posix()}
+        findings = crc.check_on_disk_hook_paths(
+            HOOK_PATH_SCHEMA,
+            worktree / ".claude" / "settings.local.json",
+            "worker",
+            config,
+            worktree,
+        )
+        self.assertEqual(findings, [], [f.format() for f in findings])
+
+    def test_stale_declared_org_path_is_reported(self):
+        # A moved / deleted checkout leaves every absolute hook command dead;
+        # silently skipping would hide a broken installation.
+        config = self._config("bash /gone/.hooks/block-workers-delete.sh")
+        config["env"] = {"CLAUDE_ORG_PATH": str(self.root / "gone")}
+        findings = crc.check_on_disk_hook_paths(
+            HOOK_PATH_SCHEMA, self.settings, "worker", config, self.root
+        )
+        self.assertEqual(len(findings), 1, [f.format() for f in findings])
+        self.assertIn("no .hooks/", findings[0].message)
+
     def test_skipped_when_root_ships_no_hooks_dir(self):
         with tempfile.TemporaryDirectory() as bare:
             findings = crc.check_on_disk_hook_paths(
