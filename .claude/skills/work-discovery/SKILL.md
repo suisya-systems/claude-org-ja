@@ -42,8 +42,13 @@ open Issue を triage し、依存解決済みの候補を「N 件 + 推奨 1 �
 - **INV-1 propose-only**: 本スキルの出力は「候補リスト + 提示」のみ。生成後に**停止する**。
   spawn / delegate / ブランチ作成 / commit / PR / Issue・PR への書き込みを**一切しない**。
   （allowed-tools が repo 解決（`tools/work_discovery_repos.py`）と scan（`tools/work_discovery_scan.py`）の
-  read-only コマンドだけに絞られているのは、この不変条件の機械的担保でもある。resolver も scan と同じく
-  read-only で、`git remote get-url` と任意の `gh repo view` 読み取りのみを行い、書き込み・spawn・git 変更をしない。）
+  read-only コマンドだけに絞られているのは、この不変条件の**宣言的な意図表明**であって機械的強制ではない。
+  `allowed-tools` は列挙したツールを起動ターンに限って事前承認するフィールドで、列挙外のツールを禁じない
+  （列挙外は通常の permission 設定に従い確認プロンプトが出るだけ）。絞り込みの実利は正路の明示と
+  プロンプト削減であり、正路を外れたときに確認という摩擦が立つこと。不変条件を機械的に強制したい場合は
+  `PreToolUse` フック（例: [`.hooks/block-foreground-subagent.sh`](../../../.hooks/block-foreground-subagent.sh)）を
+  別途置く。resolver も scan と同じく read-only で、`git remote get-url` と任意の `gh repo view` 読み取りのみを
+  行い、書き込み・spawn・git 変更をしない。）
 - **INV-2 着手判断は人間ゲート必須**: 候補の選択は人間のみ。選ばれた候補は
   **既存の [`/org-delegate`](../org-delegate/SKILL.md) の Step 0 から**通常委譲フローに入る。
   本スキルが org-delegate を自分で呼ぶことは禁止。推奨（rank 1）の自動着手も禁止。
