@@ -214,6 +214,30 @@ def detect_claude_org_path(current: dict | None) -> str | None:
     return None
 
 
+def _root_as_claude_org_path(root: Path) -> str | None:
+    """Last-resort ``{claude_org_path}`` source: the audit root itself.
+
+    Only consulted when neither ``--claude-org-path`` nor the existing
+    settings file yields a value. The secretary template carries no
+    ``env.CLAUDE_ORG_PATH``, and on the first run after the template
+    gained the placeholder the on-disk file still holds the old relative
+    hook command, so ``detect_claude_org_path`` has nothing to infer
+    from and prune would abort on an unresolved placeholder.
+
+    Guarded on ``<root>/.hooks`` being a real directory so a ``--root``
+    that is not an org checkout still hits the unresolved-placeholder
+    abort in ``build_target`` rather than silently generating hook
+    commands anchored at a directory that holds no hook scripts.
+    """
+    try:
+        resolved = root.resolve()
+    except OSError:
+        return None
+    if not (resolved / ".hooks").is_dir():
+        return None
+    return resolved.as_posix()
+
+
 # ---------- merge ----------
 
 def deep_merge(base: dict, overlay: dict) -> dict:
@@ -998,7 +1022,11 @@ def process_role(
             print(f"[org_setup_prune] role={role}: override file has invalid shape: {ov_path} ({shape_err}); aborting.", file=sys.stderr)
             return 2
 
-    cop = claude_org_path_arg or detect_claude_org_path(current)
+    cop = (
+        claude_org_path_arg
+        or detect_claude_org_path(current)
+        or _root_as_claude_org_path(root)
+    )
     role_schema = schema["roles"].get(role, {})
     try:
         target = build_target(

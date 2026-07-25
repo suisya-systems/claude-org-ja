@@ -204,7 +204,7 @@ python tools/org_setup_prune.py --user-common-sandbox  # → "no changes"
         "hooks": [
           {
             "type": "command",
-            "command": "bash .hooks/block-workers-delete.sh"
+            "command": "bash \"{claude_org_path}/.hooks/block-workers-delete.sh\""
           }
         ]
       }
@@ -212,6 +212,8 @@ python tools/org_setup_prune.py --user-common-sandbox  # → "no changes"
   }
 }
 ```
+
+**注意**: `{claude_org_path}` は settings.local.json 生成時に解決済みの絶対パスに置換すること。Hook command 内のパスはスペース対策のためクォートされている。相対パス（`bash .hooks/...`）で書くと、cwd が org ルート以外のロール（ディスパッチャーの cwd は `.dispatcher/`）では hook が解決されず、ガードが**エラーも出さずに無効化**する。
 
 **mcp__renga-peers__\* の重複**: ユーザー共通 settings.json と重複するが、窓口は run 直後に renga-peers MCP を必ず使うため、窓口スコープでも明示的に列挙して source-of-truth として固定する（user settings の drift でも窓口が動くことを保証）。
 

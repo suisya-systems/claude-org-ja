@@ -87,7 +87,7 @@ claude-org-runtime org up                                    # broker daemon を
 1. `/org-setup` — ロール別 `settings.local.json`（窓口・ディスパッチャー・キュレーター・ワーカー）と必須 hook を配置。**初回のみ必須**。未実行だと broker（renga フォールバック時は renga-peers）MCP / git / gh で大量の許可プロンプトが出る。
 2. `/org-start` — 組織を起動。ディスパッチャーが派生する（既定 broker では独立した detached ペイン、renga フォールバックでは同一タブ内 split として。走行中のペインを read-only で覗く attach 導線は [`docs/operations/broker-dogfood-runbook.md`](operations/broker-dogfood-runbook.md) §8 を参照）。キュレーターは知見が溜まったときにオンデマンドで一時起動される。
 
-`/org-setup` は **additive-only**（不足分を追加するだけで既存を消さない）。drift を baseline に戻したい場合は [`.claude/skills/org-setup/references/permissions.md`](../.claude/skills/org-setup/references/permissions.md) のロール別サンプル JSON で `settings.local.json` を手動置換する。
+`/org-setup` は **additive-only**（不足分を追加するだけで既存を消さない）。drift を baseline に戻したい場合は `python tools/org_setup_prune.py --role <role>` を使う（[`.claude/skills/org-setup/references/permissions.md`](../.claude/skills/org-setup/references/permissions.md) のロール別サンプル JSON を SoT として書き戻し、`{claude_org_path}` / `{worker_dir}` プレースホルダを絶対パスへ自動解決する）。サンプル JSON を手でコピーする場合は、**プレースホルダを必ず実環境の絶対パスへ解決すること**（未解決のまま貼ると hook のパスが存在せず、ガードがエラーも出さずに無効化する）。
 
 > **⚠️ main pull 後の 1 回必須（Issue #429 Task B / C + Issue #433）**: 共有 `.claude/settings.json` から個人パスエントリを除去したため（denyRead 系: `Read(~/.ssh/*)` / `Read(~/.aws/*)` 等、denyWrite 系: `~/.claude/settings.json`）、初回 / pull 後に **`python tools/org_setup_prune.py --user-common-sandbox` を 1 回実行**してください（単一フラグで denyRead + denyWrite 両系統を補完）。未実行だと個人環境の sandbox 防御が一時的に弱くなります（[README §個人 sandbox の補強](../README.md) と [`.claude/skills/org-setup/references/permissions.md`](../.claude/skills/org-setup/references/permissions.md) 参照）。なお `~/.config/gh` は gh CLI が窓口業務動線で必須のため候補から除外しており、過去のリビジョンで個人 settings.json に残っていれば次回実行時に自動的に prune されます。
 >
@@ -257,7 +257,8 @@ git diff .claude/skills/org-setup/references/permissions.md
 
 - **schema に未登録の allow が `permissions.md` または実 settings に混入している場合**: 必要なエントリなら schema にまず追記してから permissions.md / settings.local.json に展開する。不要なら該当エントリを削除する。
 - **`permissions.md` のサンプル JSON が schema と乖離している場合**: schema を正と見なし、`permissions.md` 側を schema に合わせて書き直す。
-- **`/org-setup` 再実行後も `settings.local.json` に drift が残る場合**: additive-only なので自動では消えない。`.claude/skills/org-setup/references/permissions.md` のロール別サンプル JSON で該当ロールの `settings.local.json` を**丸ごと置換**して baseline に戻す（**last resort**）。worker サンプルの `{worker_dir}` / `{claude_org_path}` プレースホルダは置換時に実環境の絶対パスへ手で解決する必要がある。ローカル独自に追加していた override があれば事前に控えておくこと。
+- **`/org-setup` 再実行後も `settings.local.json` に drift が残る場合**: additive-only なので自動では消えない。`python tools/org_setup_prune.py --role <role>` で該当ロールの `settings.local.json` を baseline へ**丸ごと置換**する（`.bak` が自動生成される。`--dry-run` で先に diff を確認できる）。`.claude/skills/org-setup/references/permissions.md` のサンプル JSON を手でコピーする経路は **last resort** であり、その場合は**窓口・ディスパッチャー・ワーカーいずれのサンプルでも** `{claude_org_path}` / `{worker_dir}` プレースホルダを実環境の絶対パスへ手で解決する必要がある（未解決のまま貼ると hook のパスが存在せず、ガードがエラーも出さずに無効化する）。ローカル独自に追加していた override があれば事前に控えておくこと。
+- **`hook command is not anchored at the org root` / `hook command references a script that does not exist` が出る場合**: hook command が相対パス（`bash .hooks/...`）や裸のファイル名（`bash block-workers-delete.sh`）になっている。cwd が org ルート以外のロール（ディスパッチャーの cwd は `.dispatcher/`）では hook が解決されず、**ガードがエラーも出さずに無効化する**。`permissions.md` 側を `bash "{claude_org_path}/.hooks/<script>"` 形式へ直し、既存端末の `settings.local.json` は `python tools/org_setup_prune.py --role <role>` で再生成する。
 
 ### schema の JSON parse エラー / 読み込み失敗
 
