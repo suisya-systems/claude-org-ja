@@ -145,11 +145,14 @@ hook が解決されず、ガードが無言で無効化する）。prune ツー
 1. `--claude-org-path <abs>` 引数
 2. 既存 `settings.local.json` の `env.CLAUDE_ORG_PATH`
 3. 既存 hook command 内の `bash "<abs>/.hooks/..."` の `<abs>`
-4. audit root（`--root`、既定はリポジトリルート）。`<root>/.hooks/` が実在する場合のみ採用する
+4. audit root（`--root`、既定はリポジトリルート）。`<root>/.hooks/` に schema の
+   `required_hook_scripts` が**全て実在する場合のみ**採用する
 
 窓口テンプレートには `env.CLAUDE_ORG_PATH` が無いため、初回実行では 2 も 3 も取れず 4 で解決される。
-`<root>/.hooks/` が無い（org checkout ではない）場合は 4 も発火せず、
-`unresolved placeholders` で中断するので、誤った `--root` の内容が黙って書き込まれることはない。
+4 の条件を満たさない（org checkout ではない）場合は `unresolved placeholders` で中断するので、
+誤った `--root` の内容が黙って書き込まれることはない。`.hooks/` ディレクトリの実在だけを条件に
+すると、たまたま同名ディレクトリを持つ無関係なプロジェクトを org root として受理し、
+存在しないスクリプトを指す hook（＝生成時点で死んでいるガード）を書いてしまうため。
 
 いずれも取れない場合（fresh install など）は `--claude-org-path` を明示する:
 
