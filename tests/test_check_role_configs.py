@@ -721,6 +721,44 @@ class HookCommandPathTests(unittest.TestCase):
         # Not a required hook script and not under .hooks/: operator-owned.
         self._assert_clean('bash "{claude_org_path}/mytools/my-own-lint.sh"')
 
+    def test_suffix_glued_to_quoted_path_is_flagged(self):
+        # The shell joins the quote to what abuts it, so this really runs
+        # ...block-workers-delete.sh.bak, which does not exist -> guard dead.
+        # Validating the quoted segment alone would call this anchored.
+        self._assert_flagged(
+            'bash "{claude_org_path}/.hooks/block-workers-delete.sh".bak',
+            needle="does not exist",
+        )
+
+    def test_prefix_glued_to_quoted_path_is_flagged(self):
+        self._assert_flagged(
+            'bash /wrong"{claude_org_path}/.hooks/block-workers-delete.sh"'
+        )
+
+    def test_symlinked_root_is_accepted(self):
+        # A checkout reached through a symlink is lexically different but
+        # identifies the same script; it must not be reported.
+        link = Path(self.td.name).parent / (self.root.name + "-link")
+        try:
+            link.symlink_to(self.root, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks unavailable")
+        try:
+            md = self.root / "permissions.md"
+            md.write_text(
+                _md_with_secretary_hook(
+                    'bash "' + link.as_posix()
+                    + '/.hooks/block-workers-delete.sh"'
+                ),
+                encoding="utf-8",
+            )
+            findings = crc.check_hook_command_paths(
+                HOOK_PATH_SCHEMA, md, self.root
+            )
+        finally:
+            link.unlink()
+        self.assertEqual(findings, [], [f.format() for f in findings])
+
     def test_worker_roles_template_is_checked(self):
         schema = dict(HOOK_PATH_SCHEMA)
         schema["worker_roles"] = {
@@ -836,6 +874,34 @@ class OnDiskHookPathTests(unittest.TestCase):
         )
         self.assertEqual(len(findings), 1, [f.format() for f in findings])
         self.assertIn("not anchored at the org root", findings[0].message)
+
+    def test_declared_org_path_anchors_a_worktree_worker(self):
+        # A worker in a worktree has root=<worktree> but its hooks correctly
+        # point at the central checkout named by env.CLAUDE_ORG_PATH.
+        # Anchoring on root would flag every valid hook.
+        worktree = self.root / ".worktrees" / "task"
+        (worktree / ".claude").mkdir(parents=True)
+        config = self._config(
+            'bash "' + self.root.resolve().as_posix()
+            + '/.hooks/block-workers-delete.sh"'
+        )
+        config["env"] = {"CLAUDE_ORG_PATH": self.root.resolve().as_posix()}
+        findings = crc.check_on_disk_hook_paths(
+            HOOK_PATH_SCHEMA,
+            worktree / ".claude" / "settings.local.json",
+            "worker",
+            config,
+            worktree,
+        )
+        self.assertEqual(findings, [], [f.format() for f in findings])
+
+    def test_declared_org_path_still_flags_a_relative_command(self):
+        config = self._config("bash .hooks/block-workers-delete.sh")
+        config["env"] = {"CLAUDE_ORG_PATH": self.root.resolve().as_posix()}
+        findings = crc.check_on_disk_hook_paths(
+            HOOK_PATH_SCHEMA, self.settings, "worker", config, self.root
+        )
+        self.assertEqual(len(findings), 1, [f.format() for f in findings])
 
     def test_skipped_when_root_ships_no_hooks_dir(self):
         with tempfile.TemporaryDirectory() as bare:

@@ -231,43 +231,74 @@ def check_docs(schema: dict, permissions_md: Path) -> list:
 
 
 _HOOKS_DIR_MARKER = ".hooks/"
+_SHELL_WORD_BREAKS = frozenset(" \t\r\n;|&<>()")
+_WINDOWS_ABS_RE = re.compile(r"^[A-Za-z]:/")
+
+
+def _shell_words(command: str) -> list:
+    """Split ``command`` into shell words, honouring quote concatenation.
+
+    Quoted segments must NOT be validated on their own: the shell joins
+    a quote to whatever abuts it, so ``bash "<root>/.hooks/x.sh".bak``
+    is the single word ``<root>/.hooks/x.sh.bak`` and actually executes
+    a file that does not exist -- leaving the guard dead, which is the
+    very failure mode Issue #768 is about. Treating the quoted part
+    alone would report that command as correctly anchored.
+    """
+    words: list = []
+    current: list = []
+    started = False
+    quote = None
+    for ch in command:
+        if quote is not None:
+            if ch == quote:
+                quote = None
+            else:
+                current.append(ch)
+            continue
+        if ch in ('"', "'"):
+            quote = ch
+            started = True
+            continue
+        if ch in _SHELL_WORD_BREAKS:
+            if started:
+                words.append("".join(current))
+                current = []
+                started = False
+            continue
+        current.append(ch)
+        started = True
+    if started:
+        words.append("".join(current))
+    return words
+
+
+def _is_absolute_posixish(path: str) -> bool:
+    """True for ``/unix/abs`` and ``C:/windows/abs`` alike."""
+    return path.startswith("/") or bool(_WINDOWS_ABS_RE.match(path))
 
 
 def _hook_script_refs(command: str, required_scripts: frozenset) -> list:
-    """Path-like tokens in ``command`` that should resolve to a hook script.
-
-    Double-quoted segments are taken whole (hook commands quote the path
-    so it survives spaces in the org root); the unquoted remainder is
-    split on whitespace.
+    """Shell words in ``command`` that should resolve to a hook script.
 
     The selection test deliberately does NOT key off the ``.hooks/``
     literal alone. Issue #768 is a *cwd-dependent hook command* defect,
     and the cheapest way to reintroduce it is to drop the directory from
     the path entirely (``bash block-workers-delete.sh``). A ``.hooks/``
-    -only trigger would skip exactly those commands, so a token also
+    -only trigger would skip exactly those commands, so a word also
     qualifies when it names -- or ends with -- one of the schema's
-    ``required_hook_scripts``. Tokens that match none of the three tests
+    ``required_hook_scripts``. Words matching none of the three tests
     are operator-owned commands and are left alone.
     """
-    refs: list = []
-    remainder: list = []
-    pos = 0
-    for m in re.finditer(r'"([^"]*)"', command):
-        remainder.append(command[pos:m.start()])
-        refs.append(m.group(1))
-        pos = m.end()
-    remainder.append(command[pos:])
-    for token in " ".join(remainder).split():
-        refs.append(token.strip("'"))
     selected: list = []
-    for ref in refs:
-        slashed = ref.replace("\\", "/")
+    for word in _shell_words(command):
+        slashed = word.replace("\\", "/")
         if (
             _HOOKS_DIR_MARKER in slashed
             or posixpath.basename(slashed) in required_scripts
             or any(slashed.endswith(s) for s in required_scripts)
         ):
-            selected.append(ref)
+            selected.append(word)
     return selected
 
 
@@ -311,6 +342,17 @@ def _check_template_hook_paths(
             normalized = posixpath.normpath(resolved.replace("\\", "/"))
             script = posixpath.basename(normalized)
             expected = posixpath.normpath(root_posix + "/" + ".hooks" + "/" + script)
+            if normalized != expected and _is_absolute_posixish(normalized):
+                # A checkout reached through a symlink yields a valid but
+                # lexically different path; compare canonical targets before
+                # rejecting. Only for already-absolute paths -- resolving a
+                # relative one would silently anchor it at the CWD, which is
+                # precisely the defect being audited.
+                try:
+                    if Path(normalized).resolve() == Path(expected).resolve():
+                        normalized = expected
+                except OSError:
+                    pass
             if normalized != expected:
                 findings.append(
                     Finding(
@@ -436,8 +478,20 @@ def check_on_disk_hook_paths(
     -- real ``settings.local.json`` files are gitignored, so CI never
     sees whether an installed terminal still carries the relative form
     that Issue #768 shipped.
+
+    The anchor is the org root the file itself declares in
+    ``env.CLAUDE_ORG_PATH``, falling back to ``root``. A worker running
+    inside a worktree has ``root`` set to that worktree while its hooks
+    correctly point at the central checkout, so anchoring on ``root``
+    there would report every valid hook as unanchored.
     """
-    resolved_root = Path(root).resolve()
+    env = (config or {}).get("env") or {}
+    declared = env.get("CLAUDE_ORG_PATH") if isinstance(env, dict) else None
+    anchor = declared if isinstance(declared, str) and declared else root
+    try:
+        resolved_root = Path(anchor).resolve()
+    except OSError:
+        return []
     if not (resolved_root / ".hooks").is_dir():
         return []
     return _check_template_hook_paths(
