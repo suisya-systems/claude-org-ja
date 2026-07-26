@@ -118,6 +118,23 @@ run_test "コメントに renga を書いた rm -rf workers" \
   "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"rm -rf ${WORKERS_DIR}/WI-016 # renga cleanup\"}}" \
   2
 
+# コマンド置換 / プロセス置換は renga 起動前にシェルが実行するため、renga 例外の内側でも
+# 破壊的コマンドの実行経路になる。展開が起きる形では例外を成立させない。
+SUBST_CMD="renga new-tab --cwd ${WORKERS_DIR}/dummy-test -p \"\$(rm -rf ${WORKERS_DIR}/dummy-test)\""
+run_test "renga 起動の引数内 \$( ) コマンド置換" \
+  "$(jq -n --arg cmd "$SUBST_CMD" '{"tool_name":"Bash","tool_input":{"command":$cmd}}')" \
+  2
+
+BACKTICK_CMD="renga new-tab --cwd ${WORKERS_DIR}/dummy-test -p \"\`rm -rf ${WORKERS_DIR}/dummy-test\`\""
+run_test "renga 起動の引数内バッククォート置換" \
+  "$(jq -n --arg cmd "$BACKTICK_CMD" '{"tool_name":"Bash","tool_input":{"command":$cmd}}')" \
+  2
+
+PROCSUB_CMD="renga new-tab --cwd ${WORKERS_DIR}/dummy-test -p x <(rm -rf ${WORKERS_DIR}/dummy-test)"
+run_test "renga 起動の <( ) プロセス置換" \
+  "$(jq -n --arg cmd "$PROCSUB_CMD" '{"tool_name":"Bash","tool_input":{"command":$cmd}}')" \
+  2
+
 echo ""
 
 # --- 許可されるべきケース ---
@@ -159,6 +176,12 @@ run_test "renga 起動を renga コマンドのみで連結 (全セグメント 
 
 run_test "環境変数プレフィックス付き renga 起動 (VAR=value renga ...)" \
   "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ORG_TRANSPORT=broker renga new-tab --cwd ${WORKERS_DIR}/dummy-test -p 'rm -rf tmp'\"}}" \
+  0
+
+# シングルクォート内の $( ) はシェルに展開されないため不活性 = 例外は成立する
+SQ_SUBST_CMD="renga new-tab --cwd ${WORKERS_DIR}/dummy-test -p 'echo \$(rm -rf ${WORKERS_DIR}/dummy-test)'"
+run_test "renga 起動のシングルクォート内 \$( ) (不活性なので許可)" \
+  "$(jq -n --arg cmd "$SQ_SUBST_CMD" '{"tool_name":"Bash","tool_input":{"command":$cmd}}')" \
   0
 
 run_test "ls workers ディレクトリ (削除ではない)" \

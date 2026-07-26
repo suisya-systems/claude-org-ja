@@ -112,8 +112,50 @@ segment_is_renga() {
   return 1
 }
 
+# コマンド置換 / プロセス置換が「シェルに評価される形」で含まれるかを判定する
+# $(...) / `...` / <(...) / >(...) は renga が起動される前にシェルが実行するため、
+# renga 例外の内側であっても破壊的コマンドの実行経路になる。
+# シングルクォートの内側は展開されないので不活性として扱う。
+has_active_substitution() {
+  local cmd="$1"
+  local len=${#cmd}
+  local state="none" ch next i
+  for ((i = 0; i < len; i++)); do
+    ch="${cmd:i:1}"
+    next="${cmd:i+1:1}"
+    case "$state" in
+      single)
+        [[ "$ch" == "'" ]] && state="none"
+        continue
+        ;;
+      double)
+        if [[ "$ch" == '\' ]]; then
+          i=$((i + 1))
+          continue
+        fi
+        [[ "$ch" == '"' ]] && state="none"
+        ;;
+      none)
+        case "$ch" in
+          "'") state="single"; continue ;;
+          '"') state="double"; continue ;;
+          '\') i=$((i + 1)); continue ;;
+          '<'|'>')
+            [[ "$next" == "(" ]] && return 0
+            continue
+            ;;
+        esac
+        ;;
+    esac
+    # single 以外（none / double）では $( と ` がシェルに評価される
+    [[ "$ch" == '`' ]] && return 0
+    [[ "$ch" == '$' && "$next" == "(" ]] && return 0
+  done
+  return 1
+}
+
 RENGA_ONLY=false
-if [[ "$COMMAND" == *renga* ]]; then
+if [[ "$COMMAND" == *renga* ]] && ! has_active_substitution "$COMMAND"; then
   RENGA_ONLY=true
   HAS_SEGMENT=false
   while IFS= read -r SEGMENT; do
@@ -160,13 +202,15 @@ WORKERS_CANONICAL=$(portable_realpath "$WORKERS_ABS")
 #
 # 既知���限界: シェル変数経由の間接パス（例: x=../workers; rm -rf "$x"）は
 # 文字列マッチでは検知できない。スキルの文言による指示レベルの保護で補完する。
+# コマンド開始位置の直前に来うる文字。制御演算子・空白に加えて、コマンド置換 /
+# プロセス置換 / サブシェルの開始（$( 、`、<( 、( ）も rm の先頭境界として扱う。
 HAS_RECURSIVE=false
 # 短オプション内の -r/-R
-if echo "$COMMAND" | grep -qE '(^|[|&;[:space:]])rm[[:space:]]+-[a-zA-Z]*[rR]|(^|[|&;[:space:]])rm[[:space:]].*[[:space:]]-[a-zA-Z]*[rR]'; then
+if echo "$COMMAND" | grep -qE '(^|[|&;()`$[:space:]])rm[[:space:]]+-[a-zA-Z]*[rR]|(^|[|&;()`$[:space:]])rm[[:space:]].*[[:space:]]-[a-zA-Z]*[rR]'; then
   HAS_RECURSIVE=true
 fi
 # 長オプション --recursive
-if echo "$COMMAND" | grep -qE '(^|[|&;[:space:]])rm[[:space:]].*--recursive'; then
+if echo "$COMMAND" | grep -qE '(^|[|&;()`$[:space:]])rm[[:space:]].*--recursive'; then
   HAS_RECURSIVE=true
 fi
 if [[ "$HAS_RECURSIVE" != "true" ]]; then
