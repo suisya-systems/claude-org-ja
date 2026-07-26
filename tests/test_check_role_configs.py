@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -589,6 +590,445 @@ class IsGitTrackedFailClosedTests(unittest.TestCase):
             )
 
 
+HOOK_PATH_SCHEMA: dict = {
+    "version": 1,
+    "global": {"forbidden_allow_exact": [], "forbidden_allow_regex": []},
+    "required_hook_scripts": ["block-workers-delete.sh"],
+    "roles": {"secretary": {"docs_section": "窓口", "settings_paths": []}},
+}
+
+
+def _md_with_secretary_hook(command: str) -> str:
+    block = {
+        "permissions": {"allow": []},
+        "hooks": {
+            "PreToolUse": [
+                {
+                    "matcher": "Bash",
+                    "hooks": [{"type": "command", "command": command}],
+                }
+            ]
+        },
+    }
+    return (
+        "# perms\n\n## 窓口 (`<repo>/.claude/settings.local.json`)\n\n"
+        "```json\n" + json.dumps(block, indent=2) + "\n```\n"
+    )
+
+
+class HookCommandPathTests(unittest.TestCase):
+    """Hook commands must normalize to ``<org root>/.hooks/<script>``.
+
+    Issue #768: ``required_hooks.command_contains`` matches the bare
+    script basename anywhere in the command string, so a relative
+    ``bash .hooks/x.sh`` and the absolute quoted form are the same to
+    it -- but the relative form silently no-ops for any role whose cwd
+    is not the org root. Every ``_flagged`` case below passes
+    ``command_contains``; only this check rejects them.
+    """
+
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        self.root = Path(self.td.name)
+        (self.root / ".hooks").mkdir()
+        (self.root / ".hooks" / "block-workers-delete.sh").write_text(
+            "#!/usr/bin/env bash\n", encoding="utf-8"
+        )
+
+    def tearDown(self):
+        self.td.cleanup()
+
+    def _run(self, command, schema=None):
+        md = self.root / "permissions.md"
+        md.write_text(_md_with_secretary_hook(command), encoding="utf-8")
+        return crc.check_hook_command_paths(
+            schema or HOOK_PATH_SCHEMA, md, self.root
+        )
+
+    def _assert_flagged(self, command, needle="not anchored at the org root"):
+        findings = self._run(command)
+        self.assertEqual(len(findings), 1, [f.format() for f in findings])
+        self.assertEqual(findings[0].severity, "ERROR")
+        self.assertIn(needle, findings[0].message)
+
+    def _assert_clean(self, command):
+        findings = self._run(command)
+        self.assertEqual(findings, [], [f.format() for f in findings])
+
+    def test_relative_hooks_dir_is_flagged(self):
+        # The literal Issue #768 shape.
+        self._assert_flagged("bash .hooks/block-workers-delete.sh")
+
+    def test_bare_filename_is_flagged(self):
+        # Cheapest reintroduction of #768, and the case a ``.hooks/``-keyed
+        # trigger would skip entirely.
+        self._assert_flagged("bash block-workers-delete.sh")
+
+    def test_dot_slash_filename_is_flagged(self):
+        self._assert_flagged("bash ./block-workers-delete.sh")
+
+    def test_other_directory_is_flagged(self):
+        self._assert_flagged("bash scripts/block-workers-delete.sh")
+
+    def test_quoted_bare_filename_is_flagged(self):
+        self._assert_flagged('bash "block-workers-delete.sh"')
+
+    def test_cd_then_bare_filename_is_flagged(self):
+        self._assert_flagged(
+            'cd "{claude_org_path}" && bash block-workers-delete.sh'
+        )
+
+    def test_anchored_command_with_unanchored_fallback_is_flagged(self):
+        self._assert_flagged(
+            'bash "{claude_org_path}/.hooks/block-workers-delete.sh"'
+            " || bash block-workers-delete.sh"
+        )
+
+    def test_missing_separator_is_flagged(self):
+        self._assert_flagged('bash "{claude_org_path}block-workers-delete.sh"')
+
+    def test_foreign_absolute_root_is_flagged(self):
+        # A leading-slash ``command_contains`` fragment would pass this.
+        self._assert_flagged(
+            'bash "/some/other/root/.hooks/block-workers-delete.sh"'
+        )
+
+    def test_parent_traversal_is_flagged(self):
+        self._assert_flagged(
+            'bash "{claude_org_path}/.hooks/../../etc/block-workers-delete.sh"'
+        )
+
+    def test_missing_script_is_flagged(self):
+        self._assert_flagged(
+            'bash "{claude_org_path}/.hooks/block-does-not-exist.sh"',
+            needle="does not exist",
+        )
+
+    def test_placeholder_absolute_form_passes(self):
+        self._assert_clean(
+            'bash "{claude_org_path}/.hooks/block-workers-delete.sh"'
+        )
+
+    def test_windows_backslash_form_passes(self):
+        self._assert_clean(
+            'bash "{claude_org_path}\\.hooks\\block-workers-delete.sh"'
+        )
+
+    def test_command_without_hook_reference_is_ignored(self):
+        self._assert_clean("echo hello")
+
+    def test_operator_custom_hook_is_ignored(self):
+        # Not a required hook script and not under .hooks/: operator-owned.
+        self._assert_clean('bash "{claude_org_path}/mytools/my-own-lint.sh"')
+
+    def test_suffix_glued_to_quoted_path_is_flagged(self):
+        # The shell joins the quote to what abuts it, so this really runs
+        # ...block-workers-delete.sh.bak, which does not exist -> guard dead.
+        # Validating the quoted segment alone would call this anchored.
+        self._assert_flagged(
+            'bash "{claude_org_path}/.hooks/block-workers-delete.sh".bak',
+            needle="does not exist",
+        )
+
+    def test_prefix_glued_to_quoted_path_is_flagged(self):
+        self._assert_flagged(
+            'bash /wrong"{claude_org_path}/.hooks/block-workers-delete.sh"'
+        )
+
+    def test_symlinked_root_is_accepted(self):
+        # A checkout reached through a symlink is lexically different but
+        # identifies the same script; it must not be reported.
+        link = Path(self.td.name).parent / (self.root.name + "-link")
+        try:
+            link.symlink_to(self.root, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks unavailable")
+        try:
+            md = self.root / "permissions.md"
+            md.write_text(
+                _md_with_secretary_hook(
+                    'bash "' + link.as_posix()
+                    + '/.hooks/block-workers-delete.sh"'
+                ),
+                encoding="utf-8",
+            )
+            findings = crc.check_hook_command_paths(
+                HOOK_PATH_SCHEMA, md, self.root
+            )
+        finally:
+            link.unlink()
+        self.assertEqual(findings, [], [f.format() for f in findings])
+
+    def test_worker_roles_template_is_checked(self):
+        schema = dict(HOOK_PATH_SCHEMA)
+        schema["worker_roles"] = {
+            "$comment": "string entries must be skipped, not crashed on",
+            "default": {
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "matcher": "Bash",
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": "bash .hooks/block-workers-delete.sh",
+                                }
+                            ],
+                        }
+                    ]
+                }
+            },
+        }
+        findings = self._run(
+            'bash "{claude_org_path}/.hooks/block-workers-delete.sh"', schema
+        )
+        self.assertEqual(len(findings), 1, [f.format() for f in findings])
+        self.assertIn("worker_roles.default", findings[0].source)
+
+    def test_non_org_source_root_returns_no_findings(self):
+        # Guard against a false-positive storm: pointing the check at a
+        # directory that ships no .hooks/ must not flag every template.
+        with tempfile.TemporaryDirectory() as bare:
+            md = self.root / "permissions.md"
+            md.write_text(
+                _md_with_secretary_hook("bash .hooks/block-workers-delete.sh"),
+                encoding="utf-8",
+            )
+            findings = crc.check_hook_command_paths(
+                HOOK_PATH_SCHEMA, md, Path(bare)
+            )
+        self.assertEqual(findings, [])
+
+
+class OnDiskHookPathTests(unittest.TestCase):
+    """Root-anchoring check for *generated* settings files.
+
+    Opt-in: only the ``--include-local`` / ``--role`` paths run it, so
+    the CI invocation stays byte-identical. Real ``settings.local.json``
+    files are gitignored, so this is the only mechanical way to confirm
+    an installed terminal was actually migrated.
+    """
+
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        self.root = Path(self.td.name)
+        (self.root / ".hooks").mkdir()
+        (self.root / ".hooks" / "block-workers-delete.sh").write_text(
+            "#!/usr/bin/env bash\n", encoding="utf-8"
+        )
+        self.settings = self.root / ".claude" / "settings.local.json"
+        self.settings.parent.mkdir()
+
+    def tearDown(self):
+        self.td.cleanup()
+
+    def _config(self, command):
+        return {
+            "permissions": {"allow": []},
+            "hooks": {
+                "PreToolUse": [
+                    {
+                        "matcher": "Bash",
+                        "hooks": [{"type": "command", "command": command}],
+                    }
+                ]
+            },
+        }
+
+    def _run(self, command):
+        return crc.check_on_disk_hook_paths(
+            HOOK_PATH_SCHEMA,
+            self.settings,
+            "secretary",
+            self._config(command),
+            self.root,
+        )
+
+    def test_relative_command_on_disk_is_flagged(self):
+        findings = self._run("bash .hooks/block-workers-delete.sh")
+        self.assertEqual(len(findings), 1, [f.format() for f in findings])
+        self.assertIn("not anchored at the org root", findings[0].message)
+
+    def test_resolved_absolute_command_passes(self):
+        cmd = (
+            'bash "' + self.root.resolve().as_posix()
+            + '/.hooks/block-workers-delete.sh"'
+        )
+        self.assertEqual(self._run(cmd), [])
+
+    def test_claude_project_dir_variable_passes(self):
+        # Claude Code expands this itself; tracked .claude/settings.json
+        # legitimately uses it.
+        self.assertEqual(
+            self._run(
+                'bash "${CLAUDE_PROJECT_DIR}/.hooks/block-workers-delete.sh"'
+            ),
+            [],
+        )
+
+    def test_unresolved_prune_placeholder_on_disk_is_flagged(self):
+        # The "pasted the permissions.md sample without resolving it" case:
+        # the literal placeholder is not a real path, so the guard is dead.
+        findings = self._run(
+            'bash "{claude_org_path}/.hooks/block-workers-delete.sh"'
+        )
+        self.assertEqual(len(findings), 1, [f.format() for f in findings])
+        self.assertIn("not anchored at the org root", findings[0].message)
+
+    def test_declared_org_path_anchors_a_worktree_worker(self):
+        # A worker in a worktree has root=<worktree> but its hooks correctly
+        # point at the central checkout named by env.CLAUDE_ORG_PATH.
+        # Anchoring on root would flag every valid hook.
+        worktree = self.root / ".worktrees" / "task"
+        (worktree / ".claude").mkdir(parents=True)
+        config = self._config(
+            'bash "' + self.root.resolve().as_posix()
+            + '/.hooks/block-workers-delete.sh"'
+        )
+        config["env"] = {"CLAUDE_ORG_PATH": self.root.resolve().as_posix()}
+        findings = crc.check_on_disk_hook_paths(
+            HOOK_PATH_SCHEMA,
+            worktree / ".claude" / "settings.local.json",
+            "worker",
+            config,
+            worktree,
+        )
+        self.assertEqual(findings, [], [f.format() for f in findings])
+
+    def test_declared_org_path_still_flags_a_relative_command(self):
+        config = self._config("bash .hooks/block-workers-delete.sh")
+        config["env"] = {"CLAUDE_ORG_PATH": self.root.resolve().as_posix()}
+        findings = crc.check_on_disk_hook_paths(
+            HOOK_PATH_SCHEMA, self.settings, "worker", config, self.root
+        )
+        self.assertEqual(len(findings), 1, [f.format() for f in findings])
+
+    def test_project_dir_variable_resolves_to_the_project_not_the_org_root(self):
+        # ${CLAUDE_PROJECT_DIR} expands to the directory holding the settings
+        # file. When that differs from the org root, a script that exists only
+        # centrally makes this command dead and it must be reported.
+        worktree = self.root / ".worktrees" / "task"
+        (worktree / ".claude").mkdir(parents=True)
+        config = self._config(
+            'bash "${CLAUDE_PROJECT_DIR}/.hooks/block-workers-delete.sh"'
+        )
+        config["env"] = {"CLAUDE_ORG_PATH": self.root.resolve().as_posix()}
+        findings = crc.check_on_disk_hook_paths(
+            HOOK_PATH_SCHEMA,
+            worktree / ".claude" / "settings.local.json",
+            "worker",
+            config,
+            worktree,
+        )
+        self.assertEqual(len(findings), 1, [f.format() for f in findings])
+
+    def test_project_dir_variable_passes_when_script_is_present(self):
+        worktree = self.root / ".worktrees" / "task"
+        (worktree / ".claude").mkdir(parents=True)
+        (worktree / ".hooks").mkdir()
+        (worktree / ".hooks" / "block-workers-delete.sh").write_text(
+            "#!/usr/bin/env bash\n", encoding="utf-8"
+        )
+        config = self._config(
+            'bash "${CLAUDE_PROJECT_DIR}/.hooks/block-workers-delete.sh"'
+        )
+        config["env"] = {"CLAUDE_ORG_PATH": self.root.resolve().as_posix()}
+        findings = crc.check_on_disk_hook_paths(
+            HOOK_PATH_SCHEMA,
+            worktree / ".claude" / "settings.local.json",
+            "worker",
+            config,
+            worktree,
+        )
+        self.assertEqual(findings, [], [f.format() for f in findings])
+
+    def test_stale_declared_org_path_is_reported(self):
+        # A moved / deleted checkout leaves every absolute hook command dead;
+        # silently skipping would hide a broken installation.
+        config = self._config("bash /gone/.hooks/block-workers-delete.sh")
+        config["env"] = {"CLAUDE_ORG_PATH": str(self.root / "gone")}
+        findings = crc.check_on_disk_hook_paths(
+            HOOK_PATH_SCHEMA, self.settings, "worker", config, self.root
+        )
+        self.assertEqual(len(findings), 1, [f.format() for f in findings])
+        self.assertIn("no .hooks/", findings[0].message)
+
+    def test_skipped_when_root_ships_no_hooks_dir(self):
+        with tempfile.TemporaryDirectory() as bare:
+            findings = crc.check_on_disk_hook_paths(
+                HOOK_PATH_SCHEMA,
+                self.settings,
+                "secretary",
+                self._config("bash .hooks/block-workers-delete.sh"),
+                Path(bare),
+            )
+        self.assertEqual(findings, [])
+
+    def _check_on_disk(self, include_untracked):
+        schema = {
+            **HOOK_PATH_SCHEMA,
+            "roles": {
+                "secretary": {
+                    "docs_section": "窓口",
+                    "settings_paths": [".claude/settings.local.json"],
+                }
+            },
+        }
+        self.settings.write_text(
+            json.dumps(self._config("bash .hooks/block-workers-delete.sh")),
+            encoding="utf-8",
+        )
+        return crc.check_on_disk(
+            schema,
+            self.root,
+            include_untracked=include_untracked,
+            role_override="secretary",
+        )
+
+    def test_opt_in_path_reports_the_finding(self):
+        messages = [f.message for f in self._check_on_disk(True)]
+        self.assertTrue(
+            any("not anchored at the org root" in m for m in messages),
+            messages,
+        )
+
+    def test_default_path_does_not_report_the_finding(self):
+        # CI does not pass --include-local / --role, so its result must be
+        # unchanged by this feature.
+        messages = [f.message for f in self._check_on_disk(False)]
+        self.assertFalse(
+            any("not anchored at the org root" in m for m in messages),
+            messages,
+        )
+
+
+class NonOrgAuditRootTests(unittest.TestCase):
+    """``--root`` pointing outside an org checkout must stay non-fatal.
+
+    ``check_hook_command_paths`` validates the SoT templates, which ship
+    next to ``.hooks/``, so ``run()`` anchors it at ``REPO_ROOT`` rather
+    than the audit root. Without that, every template command would be
+    reported as a missing script whenever ``--root`` is elsewhere.
+    """
+
+    def test_docs_only_run_with_foreign_root_is_clean(self):
+        with tempfile.TemporaryDirectory() as bare:
+            findings = crc.run(
+                schema_path=crc.DEFAULT_SCHEMA,
+                permissions_md=crc.DEFAULT_PERMISSIONS_MD,
+                root=Path(bare),
+                include_on_disk=False,
+            )
+        self.assertEqual(
+            findings, [], msg="\n".join(f.format() for f in findings)
+        )
+
+    def test_main_docs_only_with_foreign_root_exits_zero(self):
+        with tempfile.TemporaryDirectory() as bare:
+            rc = crc.main(["--docs-only", "--root", bare])
+        self.assertEqual(rc, 0)
+
+
 class RealRepoSmokeTests(unittest.TestCase):
     """Sanity check: the real schema + real permissions.md must pass.
 
@@ -602,6 +1042,18 @@ class RealRepoSmokeTests(unittest.TestCase):
             permissions_md=crc.DEFAULT_PERMISSIONS_MD,
             root=crc.REPO_ROOT,
             include_on_disk=True,
+        )
+        self.assertEqual(
+            findings, [], msg="\n".join(f.format() for f in findings)
+        )
+
+    def test_real_repo_hook_commands_are_root_anchored(self):
+        # Named regression lock for Issue #768: a reintroduced relative hook
+        # command fails here with a legible test name, not only inside the
+        # aggregate projection smoke above.
+        schema = crc.load_schema(crc.DEFAULT_SCHEMA)
+        findings = crc.check_hook_command_paths(
+            schema, crc.DEFAULT_PERMISSIONS_MD, crc.REPO_ROOT
         )
         self.assertEqual(
             findings, [], msg="\n".join(f.format() for f in findings)

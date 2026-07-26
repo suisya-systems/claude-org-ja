@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import posixpath
 import re
 import subprocess
 import sys
@@ -153,6 +154,8 @@ __all__ = [
     "extract_role_blocks",
     "check_worker_settings",
     "check_docs",
+    "check_hook_command_paths",
+    "check_on_disk_hook_paths",
     "check_on_disk",
     "run",
     "main",
@@ -225,6 +228,326 @@ def check_docs(schema: dict, permissions_md: Path) -> list:
             )
         )
     return findings
+
+
+_HOOKS_DIR_MARKER = ".hooks/"
+_SHELL_WORD_BREAKS = frozenset(" \t\r\n;|&<>()")
+_WINDOWS_ABS_RE = re.compile(r"^[A-Za-z]:/")
+
+
+def _shell_words(command: str) -> list:
+    """Split ``command`` into shell words, honouring quote concatenation.
+
+    Quoted segments must NOT be validated on their own: the shell joins
+    a quote to whatever abuts it, so ``bash "<root>/.hooks/x.sh".bak``
+    is the single word ``<root>/.hooks/x.sh.bak`` and actually executes
+    a file that does not exist -- leaving the guard dead, which is the
+    very failure mode Issue #768 is about. Treating the quoted part
+    alone would report that command as correctly anchored.
+    """
+    words: list = []
+    current: list = []
+    started = False
+    quote = None
+    for ch in command:
+        if quote is not None:
+            if ch == quote:
+                quote = None
+            else:
+                current.append(ch)
+            continue
+        if ch in ('"', "'"):
+            quote = ch
+            started = True
+            continue
+        if ch in _SHELL_WORD_BREAKS:
+            if started:
+                words.append("".join(current))
+                current = []
+                started = False
+            continue
+        current.append(ch)
+        started = True
+    if started:
+        words.append("".join(current))
+    return words
+
+
+def _is_absolute_posixish(path: str) -> bool:
+    """True for ``/unix/abs`` and ``C:/windows/abs`` alike."""
+    return path.startswith("/") or bool(_WINDOWS_ABS_RE.match(path))
+
+
+def _hook_script_refs(command: str, required_scripts: frozenset) -> list:
+    """Shell words in ``command`` that should resolve to a hook script.
+
+    The selection test deliberately does NOT key off the ``.hooks/``
+    literal alone. Issue #768 is a *cwd-dependent hook command* defect,
+    and the cheapest way to reintroduce it is to drop the directory from
+    the path entirely (``bash block-workers-delete.sh``). A ``.hooks/``
+    -only trigger would skip exactly those commands, so a word also
+    qualifies when it names -- or ends with -- one of the schema's
+    ``required_hook_scripts``. Words matching none of the three tests
+    are operator-owned commands and are left alone.
+    """
+    selected: list = []
+    for word in _shell_words(command):
+        slashed = word.replace("\\", "/")
+        if (
+            _HOOKS_DIR_MARKER in slashed
+            or posixpath.basename(slashed) in required_scripts
+            or any(slashed.endswith(s) for s in required_scripts)
+        ):
+            selected.append(word)
+    return selected
+
+
+def _iter_hook_commands(config: dict):
+    hooks = (config or {}).get("hooks") or {}
+    if not isinstance(hooks, dict):
+        return
+    for event, entries in hooks.items():
+        for entry in entries or []:
+            if not isinstance(entry, dict):
+                continue
+            for sub in entry.get("hooks") or []:
+                if isinstance(sub, dict) and isinstance(sub.get("command"), str):
+                    yield event, sub["command"]
+
+
+def _anchored_at(normalized: str, script: str, anchor: Path) -> bool:
+    """True iff ``normalized`` is ``<anchor>/.hooks/<script>``."""
+    expected = posixpath.normpath(
+        anchor.as_posix() + "/" + ".hooks" + "/" + script
+    )
+    if normalized == expected:
+        return True
+    if not _is_absolute_posixish(normalized):
+        # Resolving a relative path would silently anchor it at the CWD --
+        # precisely the defect being audited. Never accept one.
+        return False
+    # A checkout reached through a symlink is lexically different but names
+    # the same script; compare canonical targets before rejecting.
+    try:
+        return Path(normalized).resolve() == Path(expected).resolve()
+    except OSError:
+        return False
+
+
+def _check_hook_paths(
+    source: str,
+    role: str,
+    config: dict,
+    anchors: tuple,
+    required_scripts: frozenset,
+    placeholders: dict,
+) -> list:
+    """Report hook commands in ``config`` that are not root-anchored.
+
+    ``anchors`` are the roots under whose ``.hooks/`` a command may
+    legitimately live; a command is accepted when it resolves under any
+    of them AND the script exists there. ``placeholders`` maps each
+    substitutable token to the root it expands to -- they differ, so
+    they cannot share one value: ``{claude_org_path}`` is a prune-time
+    placeholder resolved to the org root, while ``${CLAUDE_PROJECT_DIR}``
+    is expanded by Claude Code to the *project* directory holding the
+    settings file. A generated settings file must not still contain
+    ``{claude_org_path}``, so the on-disk caller omits it and the
+    surviving literal is reported (the "pasted the sample without
+    resolving it" case).
+    """
+    findings: list = []
+    for event, command in _iter_hook_commands(config):
+        for ref in _hook_script_refs(command, required_scripts):
+            resolved = ref
+            for token, value in placeholders.items():
+                resolved = resolved.replace(token, value)
+            normalized = posixpath.normpath(resolved.replace("\\", "/"))
+            script = posixpath.basename(normalized)
+            matched = next(
+                (a for a in anchors if _anchored_at(normalized, script, a)),
+                None,
+            )
+            if matched is None:
+                expected = posixpath.normpath(
+                    anchors[0].as_posix() + "/" + ".hooks" + "/" + script
+                )
+                findings.append(
+                    Finding(
+                        source,
+                        role,
+                        "ERROR",
+                        (
+                            f"{event} hook command is not anchored at the org "
+                            f"root: {ref!r} normalizes to {normalized!r}, "
+                            f"expected {expected!r}. A relative or otherwise "
+                            "unanchored hook path silently no-ops for any role "
+                            "whose cwd is not the org root; use: "
+                            'bash "{claude_org_path}/.hooks/<script>"'
+                        ),
+                    )
+                )
+                continue
+            if not (matched / ".hooks" / script).is_file():
+                findings.append(
+                    Finding(
+                        source,
+                        role,
+                        "ERROR",
+                        (
+                            f"{event} hook command references a script that "
+                            "does not exist: "
+                            + posixpath.normpath(
+                                matched.as_posix() + "/.hooks/" + script
+                            )
+                        ),
+                    )
+                )
+    return findings
+
+
+def check_hook_command_paths(
+    schema: dict,
+    permissions_md: Path,
+    source_root: Path = REPO_ROOT,
+    *,
+    schema_path: Path = DEFAULT_SCHEMA,
+) -> list:
+    """Every org-role hook command must resolve to ``<root>/.hooks/<script>``.
+
+    ``required_hooks.command_contains`` only asserts that the script
+    *basename* appears somewhere in the command string, so the relative
+    ``bash .hooks/x.sh`` and the absolute ``bash "<root>/.hooks/x.sh"``
+    are indistinguishable to it -- yet the relative form is a silent
+    no-op for every role whose cwd is not the org root (the dispatcher
+    runs in ``.dispatcher/``). That is how Issue #768 passed CI.
+
+    This check normalizes rather than matching substrings: placeholders
+    are substituted with the org root, ``\\`` is folded to ``/`` for
+    Windows-form commands, the result is ``normpath``-ed and compared
+    for *equality* against the root-anchored path, and the script must
+    exist on disk. Equality rejects the four cases a path-fragment
+    substring test would still pass: a foreign absolute root, a ``..``
+    escape, a nonexistent script, and a bare relative filename.
+
+    ``source_root`` is the checkout that ships ``.hooks/`` -- NOT the
+    audit ``--root``. The sources validated here are the SoT *templates*
+    (permissions.md role blocks and the schema's ``worker_roles``), which
+    always travel next to the hook scripts they name, so anchoring them
+    at an unrelated audit root would emit one spurious finding per
+    template command. Returns ``[]`` when ``source_root`` has no
+    ``.hooks/`` directory, mirroring the prune tool's guard.
+    """
+    resolved_root = Path(source_root).resolve()
+    if not (resolved_root / ".hooks").is_dir():
+        return []
+    required_scripts = frozenset(schema.get("required_hook_scripts") or ())
+    findings: list = []
+    if Path(permissions_md).is_file():
+        text = Path(permissions_md).read_text(encoding="utf-8")
+        blocks = extract_role_blocks(text, schema["roles"])
+        for role_name, role_schema in schema["roles"].items():
+            if not role_schema.get("docs_section"):
+                continue
+            config = blocks.get(role_name)
+            if not isinstance(config, dict) or "__parse_error__" in config:
+                # check_docs already reports missing / unparsable blocks.
+                continue
+            findings.extend(
+                _check_hook_paths(
+                    f"permissions.md[{role_schema['docs_section']}]",
+                    role_name,
+                    config,
+                    (resolved_root,),
+                    required_scripts,
+                    {"{claude_org_path}": resolved_root.as_posix()},
+                )
+            )
+    schema_name = Path(schema_path).name
+    for wr_name, template in (schema.get("worker_roles") or {}).items():
+        if not isinstance(template, dict):
+            continue  # ``$comment*`` string entries
+        findings.extend(
+            _check_hook_paths(
+                f"{schema_name}[worker_roles.{wr_name}]",
+                wr_name,
+                template,
+                (resolved_root,),
+                required_scripts,
+                {"{claude_org_path}": resolved_root.as_posix()},
+            )
+        )
+    return findings
+
+
+_CLAUDE_PROJECT_DIR = "${CLAUDE_PROJECT_DIR}"
+
+
+def check_on_disk_hook_paths(
+    schema: dict,
+    settings_path: Path,
+    role: str,
+    config: dict,
+    root: Path,
+) -> list:
+    """Root-anchoring check for one *generated* settings file.
+
+    Opt-in counterpart to ``check_hook_command_paths``: wired only into
+    the ``--include-local`` / ``--role`` paths, which already read
+    on-disk files. Without it a merged fix is unverifiable in the field
+    -- real ``settings.local.json`` files are gitignored, so CI never
+    sees whether an installed terminal still carries the relative form
+    that Issue #768 shipped.
+
+    Two roots are legitimate here and they are NOT interchangeable: the
+    org root the file declares in ``env.CLAUDE_ORG_PATH`` (falling back
+    to ``root``), and the project directory holding the settings file,
+    which is what Claude Code expands ``${CLAUDE_PROJECT_DIR}`` to. A
+    worker in a worktree has ``root`` set to that worktree while its
+    hooks correctly point at the central checkout, so collapsing the two
+    would either flag every valid hook or accept a dead
+    ``${CLAUDE_PROJECT_DIR}`` path that only exists centrally.
+    """
+    env = (config or {}).get("env") or {}
+    declared = env.get("CLAUDE_ORG_PATH") if isinstance(env, dict) else None
+    declared = declared if isinstance(declared, str) and declared else None
+    try:
+        org_root = Path(declared).resolve() if declared else Path(root).resolve()
+        project_dir = Path(settings_path).resolve().parent.parent
+    except OSError:
+        return []
+    if not (org_root / ".hooks").is_dir():
+        if declared is not None:
+            # An explicitly declared root with no .hooks/ is a broken
+            # installation (e.g. the checkout was moved or deleted): every
+            # absolute hook command in this file is dead. Only the silent
+            # ``root`` fallback may be skipped.
+            return [
+                Finding(
+                    str(settings_path),
+                    role,
+                    "ERROR",
+                    (
+                        "env.CLAUDE_ORG_PATH points at "
+                        f"{org_root.as_posix()!r}, which has no .hooks/ "
+                        "directory; every hook command anchored there is "
+                        "dead. Repoint it at the org checkout and "
+                        "regenerate via tools/org_setup_prune.py."
+                    ),
+                )
+            ]
+        return []
+    anchors = (org_root,)
+    if project_dir != org_root and (project_dir / ".hooks").is_dir():
+        anchors = (org_root, project_dir)
+    return _check_hook_paths(
+        str(settings_path),
+        role,
+        config,
+        anchors,
+        frozenset(schema.get("required_hook_scripts") or ()),
+        {_CLAUDE_PROJECT_DIR: project_dir.as_posix()},
+    )
 
 
 class _GitTrackedError(Exception):
@@ -372,6 +695,12 @@ def check_on_disk(
                     extra_allowed=_load_override_allow(path),
                 )
             )
+            if include_untracked:
+                findings.extend(
+                    check_on_disk_hook_paths(
+                        schema, path, role_override, config, Path(root)
+                    )
+                )
         if not checked_any:
             findings.append(
                 Finding(
@@ -432,6 +761,12 @@ def check_on_disk(
                     extra_allowed=_load_override_allow(path),
                 )
             )
+            if include_untracked:
+                findings.extend(
+                    check_on_disk_hook_paths(
+                        schema, path, role_name, config, Path(root)
+                    )
+                )
     return findings
 
 
@@ -448,6 +783,13 @@ def run(
     findings: list = []
     findings.extend(validate_schema_integrity(schema))
     findings.extend(check_docs(schema, permissions_md))
+    # Anchored at REPO_ROOT (the checkout shipping .hooks/), not ``root``:
+    # this validates the SoT templates, which are not root-dependent.
+    findings.extend(
+        check_hook_command_paths(
+            schema, permissions_md, REPO_ROOT, schema_path=schema_path
+        )
+    )
     if include_on_disk:
         findings.extend(
             check_on_disk(

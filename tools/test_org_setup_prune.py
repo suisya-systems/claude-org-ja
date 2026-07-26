@@ -34,7 +34,7 @@ SAMPLE_PERMISSIONS_MD = """# perms
     "PreToolUse": [
       {
         "matcher": "Bash",
-        "hooks": [{"type": "command", "command": "bash .hooks/block-workers-delete.sh"}]
+        "hooks": [{"type": "command", "command": "bash \\"{claude_org_path}/.hooks/block-workers-delete.sh\\""}]
       }
     ]
   }
@@ -69,6 +69,10 @@ SAMPLE_PERMISSIONS_MD = """# perms
 SAMPLE_SCHEMA = {
     "version": 1,
     "global": {"forbidden_allow_exact": [], "forbidden_allow_regex": []},
+    "required_hook_scripts": [
+        "block-workers-delete.sh",
+        "block-no-verify.sh",
+    ],
     "roles": {
         "user_common": {"docs_section": "ユーザー共通", "settings_paths": []},
         "secretary": {"docs_section": "窓口", "settings_paths": [".claude/settings.local.json"]},
@@ -142,6 +146,14 @@ class EndToEndTests(unittest.TestCase):
         self.td = tempfile.TemporaryDirectory()
         self.root = Path(self.td.name)
         (self.root / ".claude").mkdir()
+        # The {claude_org_path} root fallback only fires when the root looks
+        # like an org checkout: a .hooks/ directory holding every
+        # required_hook_scripts entry.
+        (self.root / ".hooks").mkdir()
+        for name in SAMPLE_SCHEMA["required_hook_scripts"]:
+            (self.root / ".hooks" / name).write_text(
+                "#!/usr/bin/env bash\n", encoding="utf-8"
+            )
         # Stale current settings with drift entries.
         self.cur_path = self.root / ".claude" / "settings.local.json"
         self.cur_path.write_text(json.dumps({
@@ -228,15 +240,104 @@ class EndToEndTests(unittest.TestCase):
         self.assertIn("C:/from-existing/.hooks/block-no-verify.sh", cmd)
 
     def test_dispatcher_aborts_when_placeholder_unresolvable(self) -> None:
-        # Fresh dispatcher dir with no existing settings.
+        # Fresh dispatcher dir with no existing settings, and a root that is
+        # not an org checkout (no .hooks/), so the root fallback stays out of
+        # the way and the unresolved-placeholder abort is still reachable.
+        bare = self.root / "bare"
+        bare.mkdir()
         rc = p.main([
             "--role", "dispatcher",
-            "--root", str(self.root),
+            "--root", str(bare),
             "--schema", str(self._schema_file()),
             "--permissions-md", str(self._md_file()),
         ])
         # Should exit non-zero (SystemExit string -> exit code 1 from argparse).
         self.assertNotEqual(rc, 0)
+
+    # ---- Issue #768: {claude_org_path} resolution precedence -------------
+    # The secretary template carries the placeholder but no env.CLAUDE_ORG_PATH,
+    # so on a first run there is nothing to detect it from. These pin the full
+    # chain: explicit arg > detected from existing settings > audit root.
+
+    def _prune_secretary(self, *extra: str) -> int:
+        return p.main([
+            "--role", "secretary",
+            "--root", str(self.root),
+            "--schema", str(self._schema_file()),
+            "--permissions-md", str(self._md_file()),
+            "--no-backup",
+            *extra,
+        ])
+
+    def _written_hook_command(self) -> str:
+        cfg = json.loads(self.cur_path.read_text(encoding="utf-8"))
+        return cfg["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+
+    def test_secretary_placeholder_falls_back_to_root(self) -> None:
+        self.assertEqual(self._prune_secretary(), 0)
+        expected = (
+            'bash "' + self.root.resolve().as_posix()
+            + '/.hooks/block-workers-delete.sh"'
+        )
+        self.assertEqual(self._written_hook_command(), expected)
+
+    def test_explicit_arg_beats_root_fallback(self) -> None:
+        self.assertEqual(
+            self._prune_secretary("--claude-org-path", "C:/explicit"), 0
+        )
+        cmd = self._written_hook_command()
+        self.assertIn("C:/explicit/.hooks/block-workers-delete.sh", cmd)
+        self.assertNotIn(self.root.resolve().as_posix(), cmd)
+
+    def test_detected_env_beats_root_fallback(self) -> None:
+        self.cur_path.write_text(json.dumps({
+            "env": {"CLAUDE_ORG_PATH": "C:/from-existing"},
+            "permissions": {"allow": []},
+        }), encoding="utf-8")
+        self.assertEqual(self._prune_secretary(), 0)
+        cmd = self._written_hook_command()
+        self.assertIn("C:/from-existing/.hooks/block-workers-delete.sh", cmd)
+        self.assertNotIn(self.root.resolve().as_posix(), cmd)
+
+    def test_secretary_aborts_when_root_is_not_an_org_checkout(self) -> None:
+        bare = self.root / "bare2"
+        (bare / ".claude").mkdir(parents=True)
+        rc = p.main([
+            "--role", "secretary",
+            "--root", str(bare),
+            "--schema", str(self._schema_file()),
+            "--permissions-md", str(self._md_file()),
+            "--no-backup",
+        ])
+        self.assertNotEqual(rc, 0)
+
+    def test_root_with_hooks_dir_but_no_org_scripts_is_rejected(self) -> None:
+        # An unrelated project that happens to carry a .hooks/ directory must
+        # not be accepted as the org root: the generated hook commands would
+        # point at scripts that do not exist, i.e. a guard dead on arrival.
+        foreign = self.root / "foreign"
+        (foreign / ".claude").mkdir(parents=True)
+        (foreign / ".hooks").mkdir()
+        (foreign / ".hooks" / "unrelated-lint.sh").write_text(
+            "#!/usr/bin/env bash\n", encoding="utf-8"
+        )
+        rc = p.main([
+            "--role", "secretary",
+            "--root", str(foreign),
+            "--schema", str(self._schema_file()),
+            "--permissions-md", str(self._md_file()),
+            "--no-backup",
+        ])
+        self.assertNotEqual(rc, 0)
+
+    def test_second_prune_run_is_content_stable(self) -> None:
+        # Run 1 writes the absolute form; run 2 must re-detect that exact value
+        # (detect_claude_org_path reads the quoted hook command) and produce a
+        # byte-identical file, so the fallback cannot drift the anchor.
+        self.assertEqual(self._prune_secretary(), 0)
+        first = self.cur_path.read_text(encoding="utf-8")
+        self.assertEqual(self._prune_secretary(), 0)
+        self.assertEqual(self.cur_path.read_text(encoding="utf-8"), first)
 
 
 class SafetyGateTests(unittest.TestCase):

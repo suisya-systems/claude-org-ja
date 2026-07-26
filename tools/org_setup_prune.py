@@ -214,6 +214,37 @@ def detect_claude_org_path(current: dict | None) -> str | None:
     return None
 
 
+def _root_as_claude_org_path(root: Path, schema: dict) -> str | None:
+    """Last-resort ``{claude_org_path}`` source: the audit root itself.
+
+    Only consulted when neither ``--claude-org-path`` nor the existing
+    settings file yields a value. The secretary template carries no
+    ``env.CLAUDE_ORG_PATH``, and on the first run after the template
+    gained the placeholder the on-disk file still holds the old relative
+    hook command, so ``detect_claude_org_path`` has nothing to infer
+    from and prune would abort on an unresolved placeholder.
+
+    Accepted only when every ``required_hook_scripts`` entry really
+    exists under ``<root>/.hooks/``. A bare ``.hooks/`` directory test
+    would accept an unrelated project that happens to have one and then
+    write hook commands pointing at scripts that do not exist -- a
+    generated guard that is dead on arrival. Failing the test leaves the
+    unresolved-placeholder abort in ``build_target`` reachable, which is
+    the documented fail-safe for a mistaken ``--root``.
+    """
+    try:
+        resolved = root.resolve()
+    except OSError:
+        return None
+    hooks_dir = resolved / ".hooks"
+    if not hooks_dir.is_dir():
+        return None
+    required = schema.get("required_hook_scripts") or ()
+    if not all((hooks_dir / name).is_file() for name in required):
+        return None
+    return resolved.as_posix()
+
+
 # ---------- merge ----------
 
 def deep_merge(base: dict, overlay: dict) -> dict:
@@ -998,7 +1029,11 @@ def process_role(
             print(f"[org_setup_prune] role={role}: override file has invalid shape: {ov_path} ({shape_err}); aborting.", file=sys.stderr)
             return 2
 
-    cop = claude_org_path_arg or detect_claude_org_path(current)
+    cop = (
+        claude_org_path_arg
+        or detect_claude_org_path(current)
+        or _root_as_claude_org_path(root, schema)
+    )
     role_schema = schema["roles"].get(role, {})
     try:
         target = build_target(
