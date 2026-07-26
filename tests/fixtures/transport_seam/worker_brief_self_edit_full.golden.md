@@ -35,13 +35,13 @@
 検証深度 full。`codex` available なら commit 後、`codex exec review`（review surface）で差分セルフレビュー（直打ち長文プロンプト形は廃止。中小 diff で約 2 倍速・安全側パリティ同等）:
 ```bash
 # --base はブランチのベース（通常 origin/main）。ローカル main は古いと別タスク差分を巻き込むため remote-tracking の origin/main を使う。参照前に git fetch origin を 1 回（fetch 不能でも review は継続）。前景実行して出力を読んでから次へ進む。
-codex exec review --base origin/main -m gpt-5.5 -c model_reasoning_effort=medium < /dev/null
+codex exec review --base origin/main -m gpt-5.6-sol -c model_reasoning_effort=medium < /dev/null
 ```
 - **前景実行する**（背景化 `&` はゲート素通り事故を招く）。Blocker/Major 修正、**round 既定上限 3**（brief の実装ガイダンスで別値指定があればそちら優先）
 - **上限到達で自走継続せず**、残指摘 + 自己評価（設計問題化か収束途中か）を窓口に報告して停止。**同一指摘が 3 round 消えない場合は上限前でも即設計問題として報告**（別問題が各 1 round で順に解消する健全な収束とは区別）
 - Minor/Nit 残置可
 - **large diff では effort を上げない**（high-effort review は大 diff でスケールしない）。review surface は危険側 Major は守るが benign safe-side false-negative / ReDoS 級を取りこぼしうる（詳細: claude-org リポジトリの `knowledge/curated/codex.md`）
-- `codex:rescue` skill 禁止、`codex exec review` / `codex exec` 系直打ちのみ。`gpt-5.5-codex` / API キー surface は不可（`-m gpt-5.5` 明示）
+- `codex:rescue` skill 禁止、`codex exec review` / `codex exec` 系直打ちのみ。ChatGPT アカウントで通るモデル名は限られ、素の `gpt-5.6` / `gpt-5.6-codex` / `gpt-5.5-codex` は 400・API キー surface も不可（現行世代の `-m gpt-5.6-sol` 明示）
 
 **完了報告に人間向け理解サマリを必須化（full）**: 窓口がコードを精読せず、そのままユーザーへの承認提示に使えるよう、完了報告に以下 3 点を必ず含める:
 1. **最重要の変更点（N 個）**: 効果の大きい順に N 個（目安 3〜5 個、各 1〜2 行、diff を開かず要旨が掴める粒度）
