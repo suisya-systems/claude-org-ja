@@ -40,7 +40,7 @@
    - `types=["pane_exited", "events_dropped"]` フィルタで heartbeat / pane_started 等を除外。cursor は filter と無関係に advance するので重複 scan なし
    - `result.events[]` を順に処理:
      - `type == "pane_exited"` かつ `role == "worker"` → 窓口に `WORKER_PANE_EXITED` 通知
-     - `type == "events_dropped"` → `.state/journal.jsonl` に drop 件数を記録（監視が追いついていないシグナル）
+     - `type == "events_dropped"` → journal helper (`../tools/journal_append.sh`) 経由で `.state/state.db` の `events` テーブルに drop 件数を記録（監視が追いついていないシグナル）
      - それ以外（ディスパッチャー/キュレーター/窓口の終了） → 誤ってワーカー終了として扱わない
    - **filter 不一致イベント到着で long-poll 早期終了する仕様**なので、空応答時は次サイクルで再 poll（cursor 保持で重複なし）
    - 絞り込んだ `pane_exited` 行の `name` (例: `worker-foo`) を拾い、`mcp__org-broker__send_message` で窓口に **ペインが閉じた** という事実だけを通知する:
@@ -54,7 +54,7 @@
        - 届いていなければ、未完了終了 (ワーカー事故) として扱い、再派遣 or 放棄をユーザーに確認
      のプロセスで判定する
    - `type == "pane_started"` は現状 use case なしなので無視して良い (将来必要になれば追加)
-   - `type == "events_dropped"` は drop 件数を `.state/journal.jsonl` に記録 (監視が追いついていないシグナル)
+   - `type == "events_dropped"` は drop 件数を journal helper (`../tools/journal_append.sh`) 経由で `.state/state.db` の `events` テーブルに記録 (監視が追いついていないシグナル)
    - `type == "heartbeat"` は 30 秒おきの keep-alive。既存 jq フィルタで暗黙に skip されるので何もしなくてよい
    - 5 秒以内に 1 件も来なければ次の Step へ進む (Phase 2.1 の `--timeout` で勝手に exit する)
 
@@ -101,7 +101,7 @@
    - **エラー時の挙動**: tool result テキストに `[<code>] <msg>` 形式でエラーが埋まる。code で分岐する (詳細は `.claude/skills/org-delegate/references/renga-error-codes.md`):
      - `[pane_not_found]` / `[pane_vanished]` — ワーカーが既に閉じた。そのワーカーの inspect を skip して Step 3 の list 結果で `WORKER_PANE_EXITED` 経路に回す (二重検出は de-dup で吸収される)
      - `[shutting_down]` — transport backend 停止中。監視ループを即停止し、`mcp__org-broker__send_message` で `FOREMAN_STOPPING` を窓口に通知
-     - `[io_error]` / `[app_timeout]` / `[internal]` — 一過性の可能性。`.state/journal.jsonl` に記録して次サイクルで再試行
+     - `[io_error]` / `[app_timeout]` / `[internal]` — 一過性の可能性。journal helper (`../tools/journal_append.sh`) 経由で `.state/state.db` の `events` テーブルに記録して次サイクルで再試行
      - 未知 code (将来の transport backend が追加) — journal 記録のみで続行
 
    #### (a) マッチ対象の定義
@@ -281,20 +281,32 @@
    #### (b-2) PR-pending-merge sub-state 判定 (Issue #304)
    stall 候補について、(c) の補助シグナル取得に進む **前に** PR-pending-merge sub-state を判定し、(c)(1) で使う lookback window を選択する。これは「worker が完了報告を出した後、Secretary が PR を open し、user が merge 承認するまでの待機」を通常 stall と区別するためのカテゴリ (Issue #304、session #12 で誤発火実測)。
 
-   `.state/journal.jsonl` を一度走査し、`task == "{task_id}"` (= bare task_id、`worker-` prefix を **含まない**。`pr_opened` / `pr_merged` は `docs/journal-events.md` の "PR / push" 表で Writer = secretary、Emitted by = secretary、payload field `task` 値は task_id 本体と定義済) で次 2 件の **存在有無のみ** を取得 (timestamp は判定に使わない):
-   - `event == "pr_opened"` で同 task_id の行が 1 件以上ある
-   - `event == "pr_merged"` で同 task_id の行が 1 件以上ある
+   `.state/state.db` の `events` テーブルを query し、`json_extract(payload_json, '$.task') == "{task_id}"` (= bare task_id、`worker-` prefix を **含まない**。`pr_opened` / `pr_merged` は `docs/journal-events.md` の "PR / push" 表で Writer = secretary、Emitted by = secretary、payload field `task` 値は task_id 本体と定義済) で次 2 件の **存在有無のみ** を取得 (timestamp は判定に使わない):
+   - `kind == "pr_opened"` で同 task_id の行が 1 件以上ある
+   - `kind == "pr_merged"` で同 task_id の行が 1 件以上ある
+
+   **payload key は event 種別ごとに固定する**: `pr_opened` / `pr_merged` は `payload_json` の `$.task` が bare task_id、(c)(1) で使う worker 起点 event (`worker_escalation` / `worker_reported` / `worker_completed` / `plan_delivered` / `prep_delivered`) は `payload_json` の `$.worker` が `worker-{task_id}` 形式。両者を一律の key に揃えると PR-pending 判定か STALL 抑制のどちらかが常に空になる。
 
    分岐:
    - `pr_opened` あり かつ `pr_merged` なし → **PR-pending-merge sub-state**。(c)(1) の lookback に `STALL_PR_MERGE_LOOKBACK_MIN = 60` を採用する。`pr_opened` / `pr_merged` は同一 task に対して各 1 件しか記録されない契約 (`tools/run_complete_on_merge.py` 等の helper が idempotent 化) なので、複数行を時系列比較する必要はない (= 「最新の行」を選ぶ必要なし、存在有無で十分)
    - 上記以外 (PR 未 open、または既に merge 済み) → 通常 sub-state。(c)(1) の lookback は `STALL_SECRETARY_LOOKBACK_MIN = 15` のまま
 
    ```bash
-   # ディスパッチャーの cwd は .dispatcher/ なので 1 階層上の .state/journal.jsonl を読む。
-   # task_id を bare 値で渡す (worker- prefix 無し)。
-   has_pr_opened=$(jq -c --arg t "{task_id}" 'select(.event == "pr_opened" and .task == $t)' ../.state/journal.jsonl | head -1)
-   has_pr_merged=$(jq -c --arg t "{task_id}" 'select(.event == "pr_merged" and .task == $t)' ../.state/journal.jsonl | head -1)
-   if [ -n "$has_pr_opened" ] && [ -z "$has_pr_merged" ]; then
+   # ディスパッチャーの cwd は .dispatcher/ なので 1 階層上の .state/state.db を読む
+   # (Step 5.2 (c) と同じ SQLite one-liner idiom)。
+   # task_id を bare 値で渡す (worker- prefix 無し。pr_opened / pr_merged の payload key は $.task)。
+   # EXISTS で 0/1 の真偽値を返す (行の有無を CLI 出力の空/非空や NULL に依存させない)。
+   has_pr_opened=$(sqlite3 ../.state/state.db "
+     SELECT EXISTS(SELECT 1 FROM events
+                   WHERE kind = 'pr_opened'
+                     AND json_extract(payload_json, '\$.task') = '{task_id}')
+   ")
+   has_pr_merged=$(sqlite3 ../.state/state.db "
+     SELECT EXISTS(SELECT 1 FROM events
+                   WHERE kind = 'pr_merged'
+                     AND json_extract(payload_json, '\$.task') = '{task_id}')
+   ")
+   if [ "$has_pr_opened" = "1" ] && [ "$has_pr_merged" = "0" ]; then
      lookback_min=60   # PR-pending-merge
    else
      lookback_min=15   # default
@@ -311,29 +323,34 @@
    #### (c) 補助シグナル取得 — 直近の worker→secretary コミュニケーション
    stall 候補が見つかったら、STALL_SUSPECTED を発火する **前に** 補助シグナルを取得する。lookback は (b-2) で選択した値 (`STALL_SECRETARY_LOOKBACK_MIN = 15` または `STALL_PR_MERGE_LOOKBACK_MIN = 60`) を使う:
 
-   1. **journal scan (primary, authoritative)**: `.state/journal.jsonl` を読み、`.ts >= now - lookback_min minutes` ((b-2) で選択した値) でフィルタし、以下のいずれかの event を持つ行が 1 件でもあるか確認する:
-      - `event == "worker_escalation"` かつ `worker == "worker-{task_id}"` (judgment request の受信)
-      - `event == "worker_reported"` かつ `worker == "worker-{task_id}"` (mid-task progress の受信)
-      - `event == "worker_completed"` かつ `worker == "worker-{task_id}"` (完了報告の受信、`REVIEW` 待機中の idle 区別用)
-      - `event == "plan_delivered"` かつ `worker == "worker-{task_id}"` (plan 引き渡しの受信)
-      - `event == "prep_delivered"` かつ `worker == "worker-{task_id}"` (prep 引き渡しの受信)
+   1. **events scan (primary, authoritative)**: `.state/state.db` の `events` テーブルを読み、`occurred_at >= now - lookback_min minutes` ((b-2) で選択した値) でフィルタし、以下のいずれかの event を持つ行が 1 件でもあるか確認する。これらの worker 起点 event は `payload_json` の `$.worker` が `worker-{task_id}` 形式 ((b-2) の `pr_opened` / `pr_merged` が使う `$.task` = bare task_id とは **別 key**):
+      - `kind == "worker_escalation"` かつ `json_extract(payload_json, '$.worker') == "worker-{task_id}"` (judgment request の受信)
+      - `kind == "worker_reported"` かつ `json_extract(payload_json, '$.worker') == "worker-{task_id}"` (mid-task progress の受信)
+      - `kind == "worker_completed"` かつ `json_extract(payload_json, '$.worker') == "worker-{task_id}"` (完了報告の受信、`REVIEW` 待機中の idle 区別用)
+      - `kind == "plan_delivered"` かつ `json_extract(payload_json, '$.worker') == "worker-{task_id}"` (plan 引き渡しの受信)
+      - `kind == "prep_delivered"` かつ `json_extract(payload_json, '$.worker') == "worker-{task_id}"` (prep 引き渡しの受信)
 
       これらはいずれも worker 起点の `send_message` を secretary が受信した時点で append される ledger なので、worker→secretary コミュニケーションの authoritative な痕跡になる。`worker_reported` / `worker_completed` / `plan_delivered` / `prep_delivered` は `docs/journal-events.md` の **Emitted by = worker** + **Writer = secretary** 行で定義されている。`worker_escalation` は同 catalog 未掲載だが本 `CLAUDE.md` 「ワーカーからの判断仰ぎは人間にエスカレーションする」節および `.claude/skills/org-delegate/SKILL.md` Step 5 で書き込み手順が明文化されている (catalog への追記は curator 領域、本 PR スコープ外)。将来 catalog に **Emitted by = worker** な event が追加された場合は本リストにも追加する (catalog と同期する宣言的リスト)。
 
       ```bash
-      # ディスパッチャーの cwd は .dispatcher/ なので 1 階層上の .state/journal.jsonl を読む。
-      # 時間窓ベースの抽出 (行数 cap で打ち切らないこと、journal が長期間追記され続けても lookback 窓は ts で正確に区切る)。
+      # ディスパッチャーの cwd は .dispatcher/ なので 1 階層上の .state/state.db を読む
+      # (Step 5.2 (c) と同じ SQLite one-liner idiom)。
+      # 時間窓ベースの抽出 (行数 cap で打ち切らないこと、events が長期間追記され続けても
+      # lookback 窓は occurred_at で正確に区切る)。
       # 通常時 lookback_min=15、PR-pending-merge sub-state では lookback_min=60 ((b-2) で決定)。
-      jq -c --arg cutoff "$(date -u -d "${lookback_min} minutes ago" +%Y-%m-%dT%H:%M:%SZ)" '
-        select(.ts >= $cutoff) |
-        select(.event == "worker_escalation"
-            or .event == "worker_reported"
-            or .event == "worker_completed"
-            or .event == "plan_delivered"
-            or .event == "prep_delivered") |
-        select(.worker == "worker-{task_id}")
-      ' ../.state/journal.jsonl
-      # 1 件以上残れば「ヒット」。具体的な one-liner (PowerShell 環境での date 代替等) は dispatcher Claude の判断。
+      # cutoff は shell の date ではなく SQLite の strftime で計算する: occurred_at は
+      # sub-second 精度 ('%Y-%m-%dT%H:%M:%fZ') が正本なので、秒精度 cutoff と文字列比較すると
+      # 境界秒を辞書順で取りこぼす。SQLite 側計算なら精度が揃い、shell 差分 (PowerShell の
+      # date 代替等) も不要になる。
+      sqlite3 ../.state/state.db "
+        SELECT DISTINCT kind FROM events
+        WHERE occurred_at >= strftime('%Y-%m-%dT%H:%M:%fZ','now','-${lookback_min} minutes')
+          AND kind IN ('worker_escalation','worker_reported','worker_completed','plan_delivered','prep_delivered')
+          AND json_extract(payload_json, '\$.worker') = 'worker-{task_id}'
+        ORDER BY kind
+      "
+      # 1 行以上返れば「ヒット」。返却された kind の集合は (c)(1-bis) の gate で
+      # worker_escalation だけを除外する際の入力にもなる。
       ```
 
    **(c)(1-bis) decision-register gate (Issue #603)**: (c)(1) で `worker_escalation` がヒットした場合に限り、それを acked に数える **前に** pending-decisions register を照会する。journal の `worker_escalation` 行は judgment request 受信時点の痕跡として残り続けるが、その後ユーザー返答が secretary 経由で worker へ転送済み (= 判断待ちが解消済み) でも 15 分窓内に古い行が残っていると acked 抑制が続き、転送後に 529 / stuck で idle な worker を取りこぼす。lifecycle の真値は journal ではなく register が持つので、register を **primary lookup source** として照会する:
@@ -353,7 +370,7 @@
       bash ../tools/journal_append.sh anomaly_observed source=stall_check worker=worker-{task_id} kind=register_unavailable confidence=n/a
       ```
 
-   2. **org-broker poll_events (forward-compat、現状は補助のみ)**: 現状 `mcp__org-broker__poll_events` は pane lifecycle event のみを流し、`send_message` は流れない (`.claude/skills/org-delegate/references/renga-error-codes.md` の type 表参照)。さらに `since` は時刻ではなく前サイクルから受け取る **opaque cursor** で、初回省略時は「今以降」セマンティクス (過去履歴は返らない) なので、本判定で「過去 15 分」をピンポイント検索する用途には今は使えない。journal scan を **authoritative source** とする。将来 transport backend が `send_message` event を `poll_events` に流すようになれば、Step 1 で既に保持している `.state/dispatcher-event-cursor.txt` の cursor 経由で受信した worker→secretary の送信を `(worker, kind=stall_acked)` ledger に変換するルートを追加する想定 (本 PR ではプレースホルダとして記述するに留める)。
+   2. **org-broker poll_events (forward-compat、現状は補助のみ)**: 現状 `mcp__org-broker__poll_events` は pane lifecycle event のみを流し、`send_message` は流れない (`.claude/skills/org-delegate/references/renga-error-codes.md` の type 表参照)。さらに `since` は時刻ではなく前サイクルから受け取る **opaque cursor** で、初回省略時は「今以降」セマンティクス (過去履歴は返らない) なので、本判定で「過去 15 分」をピンポイント検索する用途には今は使えない。events scan を **authoritative source** とする。将来 transport backend が `send_message` event を `poll_events` に流すようになれば、Step 1 で既に保持している `.state/dispatcher-event-cursor.txt` の cursor 経由で受信した worker→secretary の送信を `(worker, kind=stall_acked)` ledger に変換するルートを追加する想定 (本 PR ではプレースホルダとして記述するに留める)。
 
    #### (d) 分岐 (acked vs timeout)
    - **acked の判定** ((c)(1-bis) の gate 込み): acked ⟺ (`worker_reported` / `worker_completed` / `plan_delivered` / `prep_delivered` のいずれかが lookback 窓内) **OR** (`worker_escalation` が lookback 窓内 **AND NOT** `escalation_trace_is_stale`)。`worker_escalation` が窓内でも (c)(1-bis) で `escalation_trace_is_stale == true` と判定された場合は acked に数えず、かつ他 4 event のヒットも無ければ **timeout 経路へ落ち**、(従来は古い `worker_escalation` 痕跡で抑制されていた) STALL_SUSPECTED が正しく発火する (Issue #603)。soft-note の `note` 値は既存 (`awaiting_secretary_lookback_15m` / `awaiting_pr_merge_lookback_60m`) を維持する。
@@ -364,7 +381,7 @@
      # PR-pending-merge sub-state (lookback 60m, Issue #304)
      bash ../tools/journal_append.sh anomaly_observed source=stall_check worker=worker-{task_id} kind=stall_acked confidence=n/a note=awaiting_pr_merge_lookback_60m
      ```
-     以降のサイクルで journal entry が lookback window から外れて 0 件になれば、改めて (c) → (d) を再評価する (持続的 stuck の検出が遅れる代償として、判断待ちの誤発火を避ける trade-off)。
+     以降のサイクルで events エントリが lookback window から外れて 0 件になれば、改めて (c) → (d) を再評価する (持続的 stuck の検出が遅れる代償として、判断待ちの誤発火を避ける trade-off)。
 
    - **timeout** — 両系統とも痕跡なし、idle 継続: 従来通り stall として扱い、窓口に通知 (lookback は (b-2) で選択した値、通知文に分単位で埋める)。**ただし (b-3) の active-spinner suppress が有効 (`suppress_stall == true`) の間は本 timeout 通知も保留する** — helper が cap 未到達の increasing spinner を検出している間は正常な長考なので発火せず、`kind=spinner_active_suppress` の soft-note のみ残す。cap 到達で `suppress_stall == false` に転じたサイクルで初めて発火する:
      ```
@@ -388,13 +405,13 @@
    - **`STALL_PR_MERGE_LOOKBACK_MIN = 60` の根拠 (Issue #304)**: PR open 後の merge 承認は user の手動操作で 15–60 分かかるのが典型。worker は完了報告済みで idle のまま正しく待機している (= stuck ではない) が、15 分 lookback では `worker_completed` が window から外れて誤 STALL 発火する (session #12 で実測)。`pr_opened` 済 / `pr_merged` 未の sub-state を event ledger だけで判定し、その期間だけ lookback を 60 分に拡張する。merge 後は `pr_merged` が記録されて即座に通常 sub-state に戻る
    - **60 分超過時の挙動 (Issue #304 long-tail)**: PR が 60 分以上 open のまま (週末越え / レビュー長期化) で `worker_completed` が window から外れると timeout 経路で再び STALL_SUSPECTED が発火する。これは仕様上「60 分を越えたら sticky な PR-pending-merge は人間判断対象として再通知する」設計で、Issue #304 の指定どおり。30 秒 de-dup のため 3 分サイクルごとに再通知される点はノイズだが、`org-pull-request` SKILL の close condition (24–48h レビュー idle で人間判断、参照: [`.claude/skills/org-pull-request/SKILL.md`](../../.claude/skills/org-pull-request/SKILL.md)) と組み合わせて運用判断する。長期 PR を完全 silence したい場合は将来 Issue で「`pr_opened` 済 task は STALL を一切上げない」へ変更する選択肢があるが、本 PR では「60 分まで猶予」の lookback 延長に留める (Issue 仕様準拠)
    - **60 分超過 + `ci_completed` の `status="incomplete"` playbook**: PR-pending-merge sub-state の worker が拡張 lookback (60 分) を超過して timeout 経路に入り、かつ events の `ci_completed` payload が `status="incomplete"` のとき、`incomplete` は CI red では **なく判定不能** である (`tools/pr_watch.py` の `gh pr checks --json` クエリが final verdict を取得できないまま retry budget を使い切り、exit-code fallback として記録した値。`status` の値域は event catalog `docs/journal-events.md` を参照)。dispatcher は自分で `gh pr checks` 等を叩いて調査・再試行 **しない** (役割境界: dispatcher は調査しない)。やることは状態の記録 (通常の timeout 経路の soft-note / `notify_sent` に留める) と、secretary への informational 報告 (「`ci_completed` が `status="incomplete"` で CI 判定不能のまま。merge / pane 自動クローズが進んでいない可能性あり」の趣旨) のみ。実例: runtime PR #126 / #127 で 2 連続観測 (merge / pane 自動クローズが進まない事象)。恒久修正 (`tools/pr_watch.py` 側の取得リトライ / 分類改善) は別 Issue で追跡する
-   - **journal scan を primary にした理由**: `poll_events` は現状 pane lifecycle event (`pane_started` / `pane_exited` / `events_dropped` / `heartbeat`) のみで `send_message` を流さない (`.claude/skills/org-delegate/references/renga-error-codes.md` の type 表参照)。一方、secretary 受信時の `worker_escalation` / `worker_reported` は authoritative な ledger として既に永続化されている。再利用が正解
+   - **events scan を primary にした理由**: `poll_events` は現状 pane lifecycle event (`pane_started` / `pane_exited` / `events_dropped` / `heartbeat`) のみで `send_message` を流さない (`.claude/skills/org-delegate/references/renga-error-codes.md` の type 表参照)。一方、secretary 受信時の `worker_escalation` / `worker_reported` は authoritative な ledger として既に永続化されている。再利用が正解
    - **soft-note を残す意味**: 後で「なぜ STALL_SUSPECTED が発火しなかったか」を retro / debug で再現できる。silent skip にすると、誤検出疑いが起きたとき journal だけでは判別不能になる。Step 4 と同じ `anomaly_observed` event を再利用するので、event catalog (`docs/journal-events.md`) への新規追記は不要 (kind は `stall_acked`、sub-state は `note` field で `awaiting_secretary_lookback_15m` / `awaiting_pr_merge_lookback_60m` を区別)
    - **decision-register gate を入れた理由 (Issue #603)**: journal の `worker_escalation` 行だけでは「判断待ち継続中」と「ユーザー返答が worker へ転送済みでもう idle」を区別できない (どちらも同じ行が 15 分窓内に残るため)。register の `resolution_kind == "to_worker"` (status `resolved`) が転送完了を表す authoritative signal なので、これを照会して stale な痕跡を acked から外す。これにより転送後に 529 / stuck で idle 化した worker が誤って acked 抑制されず STALL/ERROR 評価に戻る
    - **決定的判定を tools CLI に寄せた理由 (Issue #603)**: stale 判定 (最新 decision の選定 = `received_at` 最大、status / resolution_kind 照合) を prose の jq 直書きにせず `tools/pending_decisions.py latest-resolution` の CLI に寄せた。register schema を直接知る既存 helper (`list_pending_older_than` / `list_escalated_user_replied_older_than` 等) と同じ層分離を維持し、register の内部表現変更に prose が追従しなくて済む (決定的判定はコード側、prose は契約面のみ)
    - **想定シナリオ (Issue #304 acceptance)**:
      - regression: worker が `worker_completed` 報告 → secretary が PR 作成 (`pr_opened`) → CI green → user が 30 分後に merge 承認。30 分時点で (b-2) は PR-pending-merge sub-state (60m lookback)、`worker_completed` は 30 分 < 60 分で acked 経路、STALL_SUSPECTED は **発火しない** ✓
-     - inverse: worker が完全停止 (PR 未 open、`worker_completed` も無し)。(b-2) は通常 sub-state (15m lookback)、journal scan で痕跡 0 件、idle streak ≥ 3 サイクルで timeout 経路、STALL_SUSPECTED **従来通り発火する** ✓
+     - inverse: worker が完全停止 (PR 未 open、`worker_completed` も無し)。(b-2) は通常 sub-state (15m lookback)、events scan で痕跡 0 件、idle streak ≥ 3 サイクルで timeout 経路、STALL_SUSPECTED **従来通り発火する** ✓
    - **想定シナリオ (Issue #603 acceptance)**:
      - regression (誤分類の修正): worker が判断仰ぎ → secretary が user へ escalate → user 返答 → secretary が `resolve --kind to_worker` で worker へ転送 → 直後 worker が 529 で stuck・idle 継続。旧挙動: `worker_escalation` 行が 15 分窓内 → acked → STALL 抑制 → stuck 取りこぼし。新挙動: (c)(1-bis) で register 最新 decision = `resolved` / `to_worker` → `escalation_trace_is_stale == true` → `worker_escalation` 除外 → 他痕跡なし → timeout 経路で STALL_SUSPECTED **発火する** ✓
      - 非該当 (再 escalation で誤発火しない): 転送後に worker が再び判断仰ぎ → secretary が register に新 pending を `append` → 最新 decision = `pending` → `escalation_trace_is_stale == false` → `worker_escalation` は acked に復活し STALL_SUSPECTED は **発火しない** (再判断待ちを stuck と誤判定しない) ✓
@@ -489,7 +506,19 @@
    **proxy 経路の歴史的スコープ (旧 PR #298)**: 以下 (b)〜(f) は PR #298 当時の proxy-only 実装を記述しており、(1) 「secretary が人間に上げ忘れ」のみを対象としていた。(2) 「user 回答を worker に転送し忘れ」は当時 journal に secretary→worker outbound の ledger が無く検知できなかった。Issue #297 (PR #302) で (a-0) primary lookup により (1) は register 経由で deterministic 化、Issue #301 で (a-2) primary lookup により (2) も `user_replied_at` marker 経由で deterministic 化済み。proxy 経路 (b)〜(f) は legacy entry / Secretary が CLI 呼び忘れ / register 不通の degraded mode の (a-3) Fallback として残置されている。
 
    #### (b) いつ relay gap を疑うか
-   起点は **直近の worker→secretary event** に固定する。`.state/journal.jsonl` から `event ∈ {worker_escalation, worker_reported}` かつ `worker == "worker-{task_id}"` を満たすエントリの最新 1 件を取り、その `ts` を `T_last_worker_in` とする。`worker_completed` / `plan_delivered` / `prep_delivered` は **対象外** (これらは「完了 / 中間引き渡し」で、secretary が直ちに user に上げる契約ではない。判断仰ぎ・進捗共有のみが relay gap の対象)。
+   起点は **直近の worker→secretary event** に固定する。`.state/state.db` の `events` テーブルから `kind ∈ {worker_escalation, worker_reported}` かつ `json_extract(payload_json, '$.worker') == "worker-{task_id}"` を満たすエントリの最新 1 件を取り、その `occurred_at` を `T_last_worker_in` とする。`worker_completed` / `plan_delivered` / `prep_delivered` は **対象外** (これらは「完了 / 中間引き渡し」で、secretary が直ちに user に上げる契約ではない。判断仰ぎ・進捗共有のみが relay gap の対象)。**Step 5 (c)(1) の acked 集合 (5 種) と混同して `worker_completed` / `plan_delivered` / `prep_delivered` を kind 集合に含めてはならない** — 対象外 event を起点にすると relay gap を誤検知する:
+
+   ```bash
+   # ディスパッチャーの cwd は .dispatcher/ なので 1 階層上の .state/state.db を読む
+   # (Step 5.2 (c) と同じ SQLite one-liner idiom)。
+   # kind は worker_escalation / worker_reported の 2 種のみ (Step 5 (c)(1) の 5 種ではない)。
+   sqlite3 ../.state/state.db "
+     SELECT MAX(occurred_at) FROM events
+     WHERE kind IN ('worker_escalation','worker_reported')
+       AND json_extract(payload_json, '\$.worker') = 'worker-{task_id}'
+   "
+   # 空 (NULL) なら T_last_worker_in なし → (b)(1) 不成立で候補から除外。
+   ```
 
    以下を **すべて** 満たす worker を **relay gap 候補** とする:
 
@@ -506,7 +535,7 @@
    #### (c) secretary→worker 観測手段 — 現状は不可、(d)+register で代替
    secretary→worker の `send_message` 発生を journal だけで authoritative に観測する手段は **現状存在しない**:
 
-   1. **journal scan**: 既存 event catalog (`docs/journal-events.md`) に「secretary→worker の send_message 受信時に secretary が書く event」は定義されていない。`worker_escalation` / `worker_reported` / `worker_completed` 等は **worker 起点の inbound** を secretary が記録する ledger であり、逆方向 (secretary→worker outbound) は ledger 化されていない。`user_decision_relayed` のような新 event を捏造して proxy にするのは event 名の確定を要し、本 PR スコープ外 (curator 領域)
+   1. **events scan**: 既存 event catalog (`docs/journal-events.md`) に「secretary→worker の send_message 受信時に secretary が書く event」は定義されていない。`worker_escalation` / `worker_reported` / `worker_completed` 等は **worker 起点の inbound** を secretary が記録する ledger であり、逆方向 (secretary→worker outbound) は ledger 化されていない。`user_decision_relayed` のような新 event を捏造して proxy にするのは event 名の確定を要し、本 PR スコープ外 (curator 領域)
    2. **org-broker `poll_events` 経由**: Step 5 (c) と同じく現状の `poll_events` は pane lifecycle のみで `send_message` を流さない。将来 send_message が flow するようになれば、Step 1 の cursor (`.state/dispatcher-event-cursor.txt`) を再利用して `(actor=secretary, recipient=worker-{task_id})` を直接観測できる。プレースホルダ
 
    従って (b)(2) のうち「secretary→worker 痕跡なし」は、proxy 経路では **常に true** として扱う (痕跡を観測する手段が無いため、中継が動いているかどうかを判別できない)。これにより proxy 経路の絞り込みは事実上 (d) の secretary→user proxy だけに依存することになり、結果的に動機 (a)(2) の「user 答えた後に secretary が worker に転送し忘れ」ケースは proxy では **(d) の secretary 画面更新で擬陽性的に suppress** される。Issue #301 の (a-2) primary lookup (`user_replied_at` marker) で本ケースは deterministic 化済みであり、proxy 経路は legacy entry / 呼び忘れの (a-3) Fallback としてのみ機能する。
