@@ -383,21 +383,45 @@ class TestPendingCandidates(_TreeCase):
                     capture_output=True,
                     encoding="utf-8",
                     errors="replace",
-                    check=True,
                     timeout=60,
                 )
-            except (OSError, subprocess.SubprocessError):
+            except OSError:
                 # A shell on PATH that cannot actually launch/exec here
                 # (sandbox Win32 error 5 etc.) — skip that shell, not the
-                # whole test.
+                # whole test. ONLY launch failure may land here: a shell
+                # that did start and then misbehaved (non-zero exit, wrong
+                # count, hang) is the regression this test exists to catch,
+                # so it must fail below. Catching subprocess.SubprocessError
+                # here instead swallowed exactly that — CalledProcessError
+                # is a SubprocessError, so ``check=True`` turned a real
+                # dialect break into ``continue`` and any other shell's
+                # success then made the whole test green (Issue #766).
+                # ``check=True`` is deliberately not used: the returncode is
+                # asserted explicitly below so the failure message can carry
+                # stderr, and TimeoutExpired (a hung zero-arg awk reading
+                # stdin — see _SKILL_AUDIT_PENDING_AWK) propagates as an
+                # error rather than being mistaken for an unusable shell.
                 continue
             ran_any = True
-            self.assertEqual(
-                int(proc.stdout.strip()),
-                5,
-                f"skill-audit count command gave the wrong result under "
-                f"{shell!r} — likely a shell-portability regression",
-            )
+            # subTest per shell: one broken dialect neither aborts the sweep
+            # nor hides the others, and the failure is reported with the
+            # shell that produced it — zsh coverage is the load-bearing part
+            # (see docstring), so it must never be masked by bash passing.
+            with self.subTest(shell=shell):
+                self.assertEqual(
+                    proc.returncode,
+                    0,
+                    f"skill-audit count command exited "
+                    f"{proc.returncode} under {shell!r} — likely a "
+                    f"shell-portability regression (stderr: "
+                    f"{proc.stderr.strip()!r})",
+                )
+                self.assertEqual(
+                    int(proc.stdout.strip()),
+                    5,
+                    f"skill-audit count command gave the wrong result under "
+                    f"{shell!r} — likely a shell-portability regression",
+                )
         if not ran_any:
             self.skipTest("no shell could launch here — parity skipped")
 
@@ -485,7 +509,7 @@ class TestWorkSkillCount(_TreeCase):
         try:
             # bash being on PATH does not guarantee it can run (e.g.
             # sandboxes where process creation fails with Win32 error
-            # 5) — probe by running and skip on any launch/exec error.
+            # 5) — probe by running and skip on a launch/exec error only.
             # encoding/errors explicit so a failed bash launch can't
             # leak a _readerthread UnicodeDecodeError into the test log
             # before the skip fires (Codex round 2 Minor).
@@ -495,12 +519,181 @@ class TestWorkSkillCount(_TreeCase):
                 capture_output=True,
                 encoding="utf-8",
                 errors="replace",
-                check=True,
                 timeout=60,
             )
-        except (OSError, subprocess.SubprocessError) as exc:
-            self.skipTest(f"bash unusable here ({exc!r}) — parity skipped")
+        except OSError as exc:
+            # Launch failure only. A bash that started and then failed
+            # must NOT be skipped: catching subprocess.SubprocessError
+            # here swallowed CalledProcessError from ``check=True``, i.e.
+            # the exact "pipeline broke" signal (Issue #766). The
+            # returncode is asserted explicitly instead.
+            self.skipTest(f"bash could not launch here ({exc!r}) — parity skipped")
+        self.assertEqual(
+            proc.returncode,
+            0,
+            f"skill-audit Step 1 pipeline exited {proc.returncode} "
+            f"(stderr: {proc.stderr.strip()!r})",
+        )
         self.assertEqual(cct.count_work_skills(_REPO_ROOT), int(proc.stdout.strip()))
+
+
+class TestShellParityFailuresAreNotSwallowed(unittest.TestCase):
+    """Issue #766 guard: the two shell-parity tests above must classify a
+    subprocess outcome as *launch failure -> skip* and *anything else ->
+    red*. They previously caught ``subprocess.SubprocessError``, whose
+    subclass ``CalledProcessError`` is what ``check=True`` raises on the
+    non-zero exit those tests exist to detect — so a genuine dialect
+    break was reported as a skip, and in the multi-shell loop as a PASS
+    as soon as any other shell succeeded.
+
+    Both parity tests are green on a healthy machine, which means a
+    regression here is invisible by construction: reverting the fix
+    would not turn the suite red. So the classification is asserted
+    directly — each parity test is executed against a faked
+    ``subprocess.run`` and its unittest result inspected."""
+
+    _PARITY_TESTS = (
+        (TestPendingCandidates, "test_parity_with_skill_audit_count_command"),
+        (
+            TestWorkSkillCount,
+            "test_parity_with_skill_audit_pipeline_on_real_tree",
+        ),
+    )
+
+    @staticmethod
+    def _fake_shell(returncode, stdout="", stderr="", only_shell=None):
+        """Build a ``subprocess.run`` stand-in for a shell that *did*
+        launch and then behaved badly.
+
+        It honours ``check`` exactly as the real ``subprocess.run`` does.
+        That is what makes this guard discriminating rather than
+        decorative: under a handler that passes ``check=True`` the bad
+        outcome arrives as CalledProcessError (the swallowed shape), and
+        under one that inspects the returncode it arrives as a
+        CompletedProcess. A fake that always returned a CompletedProcess
+        would let the old swallowing handler pass by accident.
+
+        ``only_shell`` limits the misbehaviour to one shell; the others
+        answer correctly."""
+
+        def fake_run(cmd, *args, check=False, **kwargs):
+            if only_shell is not None and cmd[0] != only_shell:
+                return subprocess.CompletedProcess(cmd, 0, stdout="5\n", stderr="")
+            if check and returncode != 0:
+                raise subprocess.CalledProcessError(
+                    returncode, cmd, output=stdout, stderr=stderr
+                )
+            return subprocess.CompletedProcess(
+                cmd, returncode, stdout=stdout, stderr=stderr
+            )
+
+        return fake_run
+
+    @staticmethod
+    def _run_parity(case_cls, name, fake_run):
+        """Run one parity test with the shell layer faked; return its
+        ``unittest.TestResult``. ``shutil.which`` is faked too so the
+        outcome does not depend on which shells this machine has."""
+        result = unittest.TestResult()
+        with mock.patch.object(subprocess, "run", fake_run), mock.patch.object(
+            shutil, "which", lambda cmd: f"/usr/bin/{cmd}"
+        ):
+            case_cls(name).run(result)
+        return result
+
+    def _assert_red(self, fake_run, label):
+        """Every parity test must go red — never skip, never pass."""
+        for case_cls, name in self._PARITY_TESTS:
+            with self.subTest(parity_test=name, misbehaviour=label):
+                result = self._run_parity(case_cls, name, fake_run)
+                self.assertEqual(
+                    result.skipped,
+                    [],
+                    f"{name} turned {label} into a skip — the Issue #766 "
+                    f"swallowing is back",
+                )
+                self.assertFalse(
+                    result.wasSuccessful(),
+                    f"{name} passed despite {label} — the parity assertion "
+                    f"is not reaching the shell result",
+                )
+
+    def test_launch_failure_is_still_skipped(self):
+        """The escape hatch stays: a shell that cannot exec here (sandbox
+        Win32 error 5 etc.) must skip, not fail."""
+
+        def fake_run(*args, **kwargs):
+            raise PermissionError(13, "process creation blocked here")
+
+        for case_cls, name in self._PARITY_TESTS:
+            with self.subTest(parity_test=name):
+                result = self._run_parity(case_cls, name, fake_run)
+                self.assertTrue(
+                    result.wasSuccessful(),
+                    f"{name} failed on a pure launch error — the skip "
+                    f"escape hatch for unusable shells was lost",
+                )
+                self.assertEqual(
+                    len(result.skipped),
+                    1,
+                    f"{name} did not skip when no shell could launch",
+                )
+
+    def test_nonzero_exit_fails(self):
+        """awk failing to open its files exits non-zero with empty stdout
+        (its stderr is eaten by the snippet's 2>/dev/null) — the shape a
+        word-splitting regression actually takes."""
+
+        self._assert_red(self._fake_shell(2), "a non-zero exit")
+
+    def test_wrong_count_fails(self):
+        """Ran fine, answered wrong. Unlike the cases above this one is
+        red under any handler — it guards the count assertion itself
+        against being dropped, not the launch/failure classification."""
+
+        self._assert_red(
+            self._fake_shell(0, stdout="-1\n"), "an impossible count"
+        )
+
+    def test_called_process_error_fails(self):
+        """Direct guard on the swallowed exception type: if ``check=True``
+        is ever reintroduced, its CalledProcessError must not be caught by
+        the launch-failure handler."""
+
+        def fake_run(cmd, *args, **kwargs):
+            raise subprocess.CalledProcessError(2, cmd, output="", stderr="")
+
+        self._assert_red(fake_run, "a CalledProcessError")
+
+    def test_timeout_fails(self):
+        """The other SubprocessError subclass the old handler swallowed: a
+        hung shell (zero-arg awk blocking on stdin) is a defect, not an
+        unusable shell."""
+
+        def fake_run(cmd, *args, **kwargs):
+            raise subprocess.TimeoutExpired(cmd, 60)
+
+        self._assert_red(fake_run, "a timeout")
+
+    def test_one_bad_shell_is_not_masked_by_the_others(self):
+        """Issue #766's headline symptom, loop-specific: zsh breaks while
+        sh and bash succeed. The old handler continued past zsh and the
+        test reported green — which is precisely the regression the
+        docstring calls load-bearing."""
+
+        result = self._run_parity(
+            TestPendingCandidates,
+            "test_parity_with_skill_audit_count_command",
+            self._fake_shell(2, only_shell="zsh"),
+        )
+        self.assertFalse(
+            result.wasSuccessful(),
+            "a broken zsh was masked by sh/bash succeeding — the whole "
+            "point of sweeping every shell is lost",
+        )
+        self.assertEqual(
+            result.skipped, [], "a broken zsh was reported as a skip"
+        )
 
 
 class TestErrorPath(_TreeCase):
