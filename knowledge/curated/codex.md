@@ -13,7 +13,7 @@ codex CLI（セルフレビュー / デザインレビュー用）の標準方�
 # 別タスク差分を巻き込む誤レビューになるため remote-tracking の origin/main を使い、参照前に
 # git fetch origin を 1 回（fetch 不能でも review は継続）。review surface は高速なので前景実行し、
 # 出力（Blocker/Major 相当）を見てから次に進む。stdin は < /dev/null で閉じる（背景化時の stdin 待ちハング回避）。
-codex exec review --base origin/main -m gpt-5.5 -c model_reasoning_effort=medium < /dev/null
+codex exec review --base origin/main -m gpt-5.6-sol -c model_reasoning_effort=medium < /dev/null
 ```
 
 - **前景実行を既定にする**: 背景化（`&`）+ ログ redirect は、worker が完了を待たず・指摘を読まずに完了報告してゲートを素通りする事故を招く。fast な review surface は前景で待てば自然にゲートが効く。コピペするコマンドにシェルのリダイレクト記号を含む `<main>` / `<N>` 等のプレースホルダを残さない（`< main` 等と誤解釈され落ちる）。背景化+ログ監視が要るのは下記の重い `codex exec` プロンプト（デザインレビュー等、長時間ハングしうる）に限る。
@@ -23,14 +23,26 @@ codex exec review --base origin/main -m gpt-5.5 -c model_reasoning_effort=medium
 
 ### 採用時に必ず保持する注記（ベンチマーク実測, 出典末尾参照）
 
+下記注記 1 / 2 の速度・カバレッジの数値は **gpt-5.5 世代で取得した実測値**（出典の方式ベンチマーク時点の計測条件）。方式間の相対比較として引き続き有効だが、現行の指定モデル（注記 3）で取り直した値ではない。
+
 1. **約2倍速は「中小 diff × low/medium effort」限定**。**high-effort review は大 diff（例 100 行超）でスケールせず**、`codex exec` 直打ちより遅くなる（実測: 127 行 diff で high≈138s vs exec-heavy≈87s）。large diff では effort を上げない。
 2. **review surface は危険側 Major（false positive で gate 誤通過する系）は守れるが、benign な safe-side Major（過剰 polling 方向の false negative）や ReDoS 級の付加バグを取りこぼしうる**。実測では、ある guard の `か` clause 全域拒否による false-negative と可変長 lookahead の二乗時間 ReDoS を 3/3 で拾えたのは**重い多観点 `codex exec` プロンプトのみ**で、review surface は low/high とも取りこぼした。深掘りが要る局面（後述のデザインレビュー、設計に近い変更）では重い多観点 exec を併用する。
-3. **model は実質 gpt-5.5 固定**。ChatGPT アカウントでは `gpt-5.5` のみ実行可で、**`gpt-5.5-codex` は 400（not supported with ChatGPT account）/ API キー surface は OPENAI_API_KEY 不在で実行不能 / reasoning effort `minimal` は 400（image_gen/web_search ツールと併用不可）**。`-m gpt-5.5 -c model_reasoning_effort=medium` を明示する。
+3. **model は `-m` で明示する**（ChatGPT アカウントで通るモデル名が限られるため）。現行世代の実行可能名は **`gpt-5.6-sol`**（`~/.codex/config.toml` の既定値でもある）。**通る名前は「世代番号を上げれば通る」ものではなく、サフィックス込みで個別に決まる** — 素の `gpt-5.6` も `gpt-5.6-codex` も 400 で弾かれる。したがって世代交代時は、置換前に実際に 1 回叩いて実行可能な名前を確認すること（下表の取り直し）。API キー surface は `OPENAI_API_KEY` 不在（`codex login status` は ChatGPT ログイン）で実行不能。reasoning effort は `minimal` が 400（`unsupported_value`。許容値は `none` / `low` / `medium` / `high` / `xhigh`）。以上より **`-m gpt-5.6-sol -c model_reasoning_effort=medium`** を明示する。
+
+   実測（2026-07-27 / codex-cli 0.144.4 / ChatGPT アカウント。`codex exec --skip-git-repo-check -s read-only -m <model> -c model_reasoning_effort=medium` で 1 回ずつ確認）:
+
+   | モデル名 | 結果 |
+   |---|---|
+   | `gpt-5.6-sol` | 実行可（現行世代の指定先） |
+   | `gpt-5.6` | 400 `The 'gpt-5.6' model is not supported when using Codex with a ChatGPT account.` |
+   | `gpt-5.6-codex` | 400（同上メッセージの `gpt-5.6-codex` 版） |
+   | `gpt-5.5` | 実行可（一世代前。まだ通るが指定先ではない） |
+   | `gpt-5.5-codex` | 400（同上メッセージの `gpt-5.5-codex` 版） |
 4. **`codex:rescue` skill は引き続き禁止**（過去に 18 分超ハングの実害。`codex exec` 系直打ちに切り替えると正常動作）。
 
 ### デザインレビュー（実装前）は review surface ではなく exec プロンプト形を維持
 
-デザインレビュー（`apply` 前の事前設計レビュー）は **diff が存在しない**ため `codex exec review --base` は使えない。設計内容 + 対象ファイル + 契約参照を渡す **`codex exec` のプロンプト形を維持**する。上記注記 2 のとおり、重い多観点プロンプトは subtle / 設計レベルの Blocker を拾う breadth に優れ、デザインレビューはまさにその breadth が要る用途であるため、ここでは exec プロンプト形が適切。model/effort（`-m gpt-5.5 -c model_reasoning_effort=medium`）と下記ハングガード・`codex:rescue` 禁止は同様に適用する。詳細トリガーと手順は [`.claude/skills/org-delegate/references/codex-design-review.md`](../../.claude/skills/org-delegate/references/codex-design-review.md) を参照。
+デザインレビュー（`apply` 前の事前設計レビュー）は **diff が存在しない**ため `codex exec review --base` は使えない。設計内容 + 対象ファイル + 契約参照を渡す **`codex exec` のプロンプト形を維持**する。上記注記 2 のとおり、重い多観点プロンプトは subtle / 設計レベルの Blocker を拾う breadth に優れ、デザインレビューはまさにその breadth が要る用途であるため、ここでは exec プロンプト形が適切。model/effort（`-m gpt-5.6-sol -c model_reasoning_effort=medium`）と下記ハングガード・`codex:rescue` 禁止は同様に適用する。詳細トリガーと手順は [`.claude/skills/org-delegate/references/codex-design-review.md`](../../.claude/skills/org-delegate/references/codex-design-review.md) を参照。
 
 ## ハングガード（review / exec 両形に共通）
 

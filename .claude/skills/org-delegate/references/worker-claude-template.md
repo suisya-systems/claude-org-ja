@@ -134,7 +134,7 @@ Get-Command codex -ErrorAction SilentlyContinue
 - `available` の場合: 以下のコマンドを**前景実行**する（`--base` にはこのブランチのベース（通常 `origin/main`）を渡す。**ローカル `main` ではなく remote-tracking の `origin/main`** を使うのは、共有 clone のローカル `main` が古いと別タスク差分を巻き込む誤レビューになるため。参照前に `git fetch origin` を 1 回（着手時 pull 済みでも review 直前に最新化。fetch 不能でも review は継続）。stdin は `< /dev/null` で明示クローズ。背景化 `&` + ログ redirect は完了を待たず指摘を読まずに完了報告してゲートを素通りする事故を招くため避ける）
 
 ```bash
-codex exec review --base origin/main -m gpt-5.5 -c model_reasoning_effort=medium < /dev/null
+codex exec review --base origin/main -m gpt-5.6-sol -c model_reasoning_effort=medium < /dev/null
 ```
 
 - review surface は内蔵レビュープロンプトで Blocker/Major 相当（P1/P2 等）を返す。**前景で出力を読んでから次に進む**（応答が長く来ない稀なケースのみ中断して skip 可）。**large diff（100 行超目安）では effort を上げない**（high-effort review は大 diff でスケールせず直打ちより遅くなる）。
@@ -166,7 +166,7 @@ done: {commit SHA 短縮形} {変更ファイル名}
 - 振り返り記録（`knowledge/raw/`）も minimal では **不要**（trivial fix に再利用可能な学びはない前提）。非自明な発見があれば `full` と同じ手順で 1 件作ってよい
 
 ### 禁止事項（両モード共通・codex を使う場合）
-`codex:rescue` スキルは使用しないこと（過去に 18 分超ハングした実害あり。`codex exec review` / `codex exec` 系の直打ちは正常動作する）。`gpt-5.5-codex` モデルおよび API キー surface は ChatGPT アカウントでは実行不可（`-m gpt-5.5` を明示する）。codex 未導入環境ではこの注記は無関係。
+`codex:rescue` スキルは使用しないこと（過去に 18 分超ハングした実害あり。`codex exec review` / `codex exec` 系の直打ちは正常動作する）。ChatGPT アカウントで実行できるモデル名は限られる（現行世代は `gpt-5.6-sol`。素の `gpt-5.6` / `gpt-5.6-codex` / `gpt-5.5-codex` はいずれも 400、API キー surface も実行不可）ため `-m gpt-5.6-sol` を明示する。codex 未導入環境ではこの注記は無関係。
 
 ## 作業完了時（必須・検証深度 `full` のみ）
 
