@@ -66,6 +66,12 @@ split_top_level_segments() {
   for ((i = 0; i < len; i++)); do
     ch="${cmd:i:1}"
     if [[ -n "$quote" ]]; then
+      # ダブルクォート内の \" は閉じ引用符ではない（シングルクォート内の \ はただの文字）
+      if [[ "$quote" == '"' && "$ch" == '\' ]] && ((i + 1 < len)); then
+        seg+="$ch${cmd:i+1:1}"
+        i=$((i + 1))
+        continue
+      fi
       seg+="$ch"
       [[ "$ch" == "$quote" ]] && quote=""
       continue

@@ -193,6 +193,12 @@ run_test "renga 起動 + &> リダイレクト (& を区切りにしない)" \
   "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"renga new-tab --cwd ${WORKERS_DIR}/dummy-test -p 'rm -rf tmp' &> /dev/null\"}}" \
   0
 
+# ダブルクォート内のエスケープ済み引用符 \" で引用符状態を誤って閉じない
+ESCQ_CMD="renga new-tab --cwd ${WORKERS_DIR}/dummy-test -p \"echo \\\"x\\\" && rm -rf build\""
+run_test "renga 起動の -p 内にエスケープ済み引用符 + && (偽陽性防止)" \
+  "$(jq -n --arg cmd "$ESCQ_CMD" '{"tool_name":"Bash","tool_input":{"command":$cmd}}')" \
+  0
+
 run_test "ls workers ディレクトリ (削除ではない)" \
   "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ls ${WORKERS_DIR}/\"}}" \
   0
