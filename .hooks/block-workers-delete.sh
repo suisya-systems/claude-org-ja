@@ -50,7 +50,144 @@ fi
 
 # renga コマンドは除外する
 # ワーカー起動時に --cwd workers/... と -p "...rm..." が共存し偽陽性を起こすため
-if echo "$COMMAND" | grep -qE '(^|[|&;[:space:]])renga[[:space:]]'; then
+#
+# 例外の成立条件は「コマンド列のどこかに renga トークンがある」ではなく
+# 「トップレベルの全セグメントが renga 起動である」こと。
+# 前者だと `echo renga ; rm -rf workers/` のように無害な renga トークンを 1 つ混ぜるだけで
+# ガード全体がスキップされる（回避経路）。
+# セグメント分割は引用符を尊重するため、renga の -p / --command 引数に含まれる
+# `;` や `&&` では分割されず、正当なワーカー起動は従来どおり通過する。
+
+# コマンドをトップレベル（引用符の外）の制御演算子 ; & | 改行 で分割し、1 行 1 セグメントで出力する
+split_top_level_segments() {
+  local cmd="$1"
+  local len=${#cmd}
+  local seg="" quote="" ch prev i
+  for ((i = 0; i < len; i++)); do
+    ch="${cmd:i:1}"
+    if [[ -n "$quote" ]]; then
+      # ダブルクォート内の \" は閉じ引用符ではない（シングルクォート内の \ はただの文字）
+      if [[ "$quote" == '"' && "$ch" == '\' ]] && ((i + 1 < len)); then
+        seg+="$ch${cmd:i+1:1}"
+        i=$((i + 1))
+        continue
+      fi
+      seg+="$ch"
+      [[ "$ch" == "$quote" ]] && quote=""
+      continue
+    fi
+    case "$ch" in
+      "'"|'"')
+        quote="$ch"
+        seg+="$ch"
+        ;;
+      '\')
+        # エスケープ: 次の 1 文字は区切りとして解釈しない
+        seg+="$ch"
+        if ((i + 1 < len)); then
+          seg+="${cmd:i+1:1}"
+          i=$((i + 1))
+        fi
+        ;;
+      '&')
+        # リダイレクトの & （2>&1 / &>file 等）は区切りではない
+        prev=""
+        ((i > 0)) && prev="${cmd:i-1:1}"
+        if [[ "$prev" == ">" || "$prev" == "<" || "${cmd:i+1:1}" == ">" ]]; then
+          seg+="$ch"
+        else
+          printf '%s\n' "$seg"
+          seg=""
+        fi
+        ;;
+      ';'|'|'|$'\n')
+        printf '%s\n' "$seg"
+        seg=""
+        ;;
+      *)
+        seg+="$ch"
+        ;;
+    esac
+  done
+  printf '%s\n' "$seg"
+}
+
+# セグメントの実行コマンドが renga かを判定する
+# 先頭の環境変数代入（VAR=value）と env / command プレフィックスは読み飛ばす
+segment_is_renga() {
+  local seg="$1" word
+  local words=()
+  read -ra words <<< "$seg"
+  for word in "${words[@]}"; do
+    case "$word" in
+      *=*) continue ;;
+      env|command) continue ;;
+      renga|*/renga) return 0 ;;
+      *) return 1 ;;
+    esac
+  done
+  return 1
+}
+
+# コマンド置換 / プロセス置換が「シェルに評価される形」で含まれるかを判定する
+# $(...) / `...` / <(...) / >(...) は renga が起動される前にシェルが実行するため、
+# renga 例外の内側であっても破壊的コマンドの実行経路になる。
+# シングルクォートの内側は展開されないので不活性として扱う。
+has_active_substitution() {
+  local cmd="$1"
+  local len=${#cmd}
+  local state="none" ch next i
+  for ((i = 0; i < len; i++)); do
+    ch="${cmd:i:1}"
+    next="${cmd:i+1:1}"
+    case "$state" in
+      single)
+        [[ "$ch" == "'" ]] && state="none"
+        continue
+        ;;
+      double)
+        if [[ "$ch" == '\' ]]; then
+          i=$((i + 1))
+          continue
+        fi
+        [[ "$ch" == '"' ]] && state="none"
+        ;;
+      none)
+        case "$ch" in
+          "'") state="single"; continue ;;
+          '"') state="double"; continue ;;
+          '\') i=$((i + 1)); continue ;;
+          '<'|'>')
+            [[ "$next" == "(" ]] && return 0
+            continue
+            ;;
+        esac
+        ;;
+    esac
+    # single 以外（none / double）では $( と ` がシェルに評価される
+    [[ "$ch" == '`' ]] && return 0
+    [[ "$ch" == '$' && "$next" == "(" ]] && return 0
+  done
+  return 1
+}
+
+RENGA_ONLY=false
+if [[ "$COMMAND" == *renga* ]] && ! has_active_substitution "$COMMAND"; then
+  RENGA_ONLY=true
+  HAS_SEGMENT=false
+  while IFS= read -r SEGMENT; do
+    # 空白のみのセグメント（区切り文字の連続 && / || 等）は無視
+    [[ -z "${SEGMENT//[[:space:]]/}" ]] && continue
+    HAS_SEGMENT=true
+    if ! segment_is_renga "$SEGMENT"; then
+      RENGA_ONLY=false
+      break
+    fi
+  done < <(split_top_level_segments "$COMMAND")
+  [[ "$HAS_SEGMENT" == "true" ]] || RENGA_ONLY=false
+fi
+
+if [[ "$RENGA_ONLY" == "true" ]]; then
   exit 0
 fi
 
@@ -82,13 +219,15 @@ WORKERS_CANONICAL=$(portable_realpath "$WORKERS_ABS")
 #
 # 既知���限界: シェル変数経由の間接パス（例: x=../workers; rm -rf "$x"）は
 # 文字列マッチでは検知できない。スキルの文言による指示レベルの保護で補完する。
+# コマンド開始位置の直前に来うる文字。制御演算子・空白に加えて、コマンド置換 /
+# プロセス置換 / サブシェルの開始（$( 、`、<( 、( ）も rm の先頭境界として扱う。
 HAS_RECURSIVE=false
 # 短オプション内の -r/-R
-if echo "$COMMAND" | grep -qE '(^|[|&;[:space:]])rm[[:space:]]+-[a-zA-Z]*[rR]|(^|[|&;[:space:]])rm[[:space:]].*[[:space:]]-[a-zA-Z]*[rR]'; then
+if echo "$COMMAND" | grep -qE '(^|[|&;()`$[:space:]])rm[[:space:]]+-[a-zA-Z]*[rR]|(^|[|&;()`$[:space:]])rm[[:space:]].*[[:space:]]-[a-zA-Z]*[rR]'; then
   HAS_RECURSIVE=true
 fi
 # 長オプション --recursive
-if echo "$COMMAND" | grep -qE '(^|[|&;[:space:]])rm[[:space:]].*--recursive'; then
+if echo "$COMMAND" | grep -qE '(^|[|&;()`$[:space:]])rm[[:space:]].*--recursive'; then
   HAS_RECURSIVE=true
 fi
 if [[ "$HAS_RECURSIVE" != "true" ]]; then

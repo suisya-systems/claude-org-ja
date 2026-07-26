@@ -97,6 +97,46 @@ run_test "rm --force --recursive (長オプション複数)" \
 
 echo ""
 
+# --- renga 例外の回避経路 (Issue #777) ---
+# 「コマンド列のどこかに renga トークンがある」だけで例外が成立していた頃の回避を固定する。
+# 例外はトップレベルの全セグメントが renga 起動である場合にのみ成立する。
+echo "[renga 例外の回避防止]"
+
+run_test "echo renga ; rm -rf workers (無害な renga トークン混入)" \
+  "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"echo renga ; rm -rf ${WORKERS_DIR}\"}}" \
+  2
+
+run_test "renga 起動に破壊的コマンドを後続連結 (renga ... && rm -rf workers)" \
+  "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"renga new-tab --cwd ${WORKERS_DIR}/dummy-test && rm -rf ${WORKERS_DIR}/dummy-test\"}}" \
+  2
+
+run_test "renga 起動をパイプ後段に置いた rm -rf workers" \
+  "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"renga list | grep -q x ; rm -rf ${WORKERS_DIR}/WI-016\"}}" \
+  2
+
+run_test "コメントに renga を書いた rm -rf workers" \
+  "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"rm -rf ${WORKERS_DIR}/WI-016 # renga cleanup\"}}" \
+  2
+
+# コマンド置換 / プロセス置換は renga 起動前にシェルが実行するため、renga 例外の内側でも
+# 破壊的コマンドの実行経路になる。展開が起きる形では例外を成立させない。
+SUBST_CMD="renga new-tab --cwd ${WORKERS_DIR}/dummy-test -p \"\$(rm -rf ${WORKERS_DIR}/dummy-test)\""
+run_test "renga 起動の引数内 \$( ) コマンド置換" \
+  "$(jq -n --arg cmd "$SUBST_CMD" '{"tool_name":"Bash","tool_input":{"command":$cmd}}')" \
+  2
+
+BACKTICK_CMD="renga new-tab --cwd ${WORKERS_DIR}/dummy-test -p \"\`rm -rf ${WORKERS_DIR}/dummy-test\`\""
+run_test "renga 起動の引数内バッククォート置換" \
+  "$(jq -n --arg cmd "$BACKTICK_CMD" '{"tool_name":"Bash","tool_input":{"command":$cmd}}')" \
+  2
+
+PROCSUB_CMD="renga new-tab --cwd ${WORKERS_DIR}/dummy-test -p x <(rm -rf ${WORKERS_DIR}/dummy-test)"
+run_test "renga 起動の <( ) プロセス置換" \
+  "$(jq -n --arg cmd "$PROCSUB_CMD" '{"tool_name":"Bash","tool_input":{"command":$cmd}}')" \
+  2
+
+echo ""
+
 # --- 許可されるべきケース ---
 echo "[許可対象]"
 
@@ -122,6 +162,41 @@ run_test "rm -rf /tmp/workers/cache (P2: 無関係パスの偽陽性防止)" \
 
 run_test "renga new-tab で workers パスを含むコマンド (偽陽性防止)" \
   "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"renga new-tab --command \\\"cd ${WORKERS_DIR}/dummy-test && claude -p 'rm -rf test'\\\"\"}}" \
+  0
+
+# 正当なワーカー起動: 先頭が renga で、引用符の内側に workers パスと rm が同居する形。
+# 引用符内の ; / && では分割しないため、1 セグメント = renga 起動として例外が成立する。
+run_test "renga 起動 (--cwd workers/... + -p 内に rm、引用符内に区切り文字)" \
+  "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"renga new-tab --cwd ${WORKERS_DIR}/dummy-test -p 'cd ${WORKERS_DIR}/dummy-test && rm -rf build; make'\"}}" \
+  0
+
+run_test "renga 起動を renga コマンドのみで連結 (全セグメント renga)" \
+  "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"renga list && renga new-tab --cwd ${WORKERS_DIR}/dummy-test -p 'rm -rf tmp'\"}}" \
+  0
+
+run_test "環境変数プレフィックス付き renga 起動 (VAR=value renga ...)" \
+  "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ORG_TRANSPORT=broker renga new-tab --cwd ${WORKERS_DIR}/dummy-test -p 'rm -rf tmp'\"}}" \
+  0
+
+# シングルクォート内の $( ) はシェルに展開されないため不活性 = 例外は成立する
+SQ_SUBST_CMD="renga new-tab --cwd ${WORKERS_DIR}/dummy-test -p 'echo \$(rm -rf ${WORKERS_DIR}/dummy-test)'"
+run_test "renga 起動のシングルクォート内 \$( ) (不活性なので許可)" \
+  "$(jq -n --arg cmd "$SQ_SUBST_CMD" '{"tool_name":"Bash","tool_input":{"command":$cmd}}')" \
+  0
+
+# リダイレクトの & は区切りではない (2>&1 で余計なセグメントを作らない)
+run_test "renga 起動 + 2>&1 リダイレクト (& を区切りにしない)" \
+  "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"renga new-tab --cwd ${WORKERS_DIR}/dummy-test -p 'rm -rf tmp' > /dev/null 2>&1\"}}" \
+  0
+
+run_test "renga 起動 + &> リダイレクト (& を区切りにしない)" \
+  "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"renga new-tab --cwd ${WORKERS_DIR}/dummy-test -p 'rm -rf tmp' &> /dev/null\"}}" \
+  0
+
+# ダブルクォート内のエスケープ済み引用符 \" で引用符状態を誤って閉じない
+ESCQ_CMD="renga new-tab --cwd ${WORKERS_DIR}/dummy-test -p \"echo \\\"x\\\" && rm -rf build\""
+run_test "renga 起動の -p 内にエスケープ済み引用符 + && (偽陽性防止)" \
+  "$(jq -n --arg cmd "$ESCQ_CMD" '{"tool_name":"Bash","tool_input":{"command":$cmd}}')" \
   0
 
 run_test "ls workers ディレクトリ (削除ではない)" \
