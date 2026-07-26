@@ -1,6 +1,6 @@
 # Contract Set C — State Schema
 
-> **Status**: Ratified (2026-05-03). Lead-confirmed decisions for all 14 open questions. This contract defines the on-disk state surface that the `claude-org` harness reads and writes.
+> **Status**: Ratified (2026-05-03); amended 2026-07-27 (journal-surface cutover — §1.3 restated against the `events` table in `.state/state.db`, with the retired `.state/journal.jsonl` kept as an explicitly historical note; §2, §3.5 and the §5 digest entries 3 and 6 re-pointed to the same surface. The obligations are unchanged in substance, with one human-approved mechanism change forced by the substrate: the `/org-retro` correction allowance, which pre-M4 was exercised by editing the offending JSONL line in place, is now exercised by appending a superseding `_correction` event through the journal helper — SQLite rows are never edited. See §1.3). Lead-confirmed decisions for all 14 open questions. This contract defines the on-disk state surface that the `claude-org` harness reads and writes.
 >
 > **Scope**: Phase 1 Contract Set C only. Sets A (roles), B (delegation lifecycle), D (backend interface), and E (knowledge) are tracked in #121 / #122 / #123 / #125 and out of scope here.
 >
@@ -54,15 +54,18 @@ The harness's persistent state surface comprises the files listed below. Each en
 - **Update cadence**: regenerated after every `org-state.md` write, per `docs/org-state-schema.md` § "更新ポイント" and `/org-suspend` Phase 3 step 3.
 - **Normativity**: DERIVED. Set C inherits the `docs/org-state-schema.md` ruling that Markdown (`org-state.md`) is canonical and the JSON projection is derived. Set C does NOT separately normativize the JSON projection; the converter's `SCHEMA_VERSION = 1` is informational for downstream consumers (e.g., `dashboard/server.py`) only. Migration policy (§4) applies to the JSON shape solely insofar as it tracks the canonical Markdown.
 
-### 1.3 `.state/journal.jsonl`
+### 1.3 Journal events — the `events` table in `.state/state.db`
 
-- **Path**: `.state/journal.jsonl`
-- **Format**: JSON Lines (one JSON object per line, `\n`-terminated). UTF-8.
-- **Schema**: Reserved envelope keys `ts` (ISO-8601 UTC, second precision) and `event` (snake_case string). All other keys are event-specific and catalogued in `docs/journal-events.md`. Field shapes there are described as "descriptive" (consumers tolerate unknown fields).
+> **Amended (journal-surface cutover).** The ratified 2026-05-03 text of this entry described `.state/journal.jsonl`, the flat JSON Lines file that was the journal surface at ratification time. The M4 cutover (Issue #267) moved journal events into the `events` table of `.state/state.db`; the jsonl file is retired and is **not** appended to (`docs/journal-events.md` header; `tools/journal_append.py` module docstring). The entry below is restated against the current surface — the obligations it carries (helper-mediated writes only, append-only, deliberately loose per-event schema) are unchanged in substance; only their target changed. §6 covers the DB's schema and migration layer; the retired file is recorded under "Pre-M4" at the end of this entry.
+
+- **Path**: `.state/state.db`, `events` table (runtime-created SQLite DB).
+- **Format**: SQLite rows. Column DDL SoT is `tools/state_db/schema.sql` (see §6).
+- **Schema**: Reserved envelope = the `occurred_at` column (ISO-8601 UTC, sub-second precision) and the `kind` column (snake_case event name), plus the optional `actor` / `run_id` / `workstream_id` / `project_id` join columns. All event-specific fields live in the `payload_json` column (JSON object) and are catalogued in `docs/journal-events.md`. Field shapes there are described as "descriptive" (consumers tolerate unknown fields), and `kind` is an open TEXT vocabulary.
 - **Owner**: secretary, dispatcher, and `org-start` identity recovery (per `docs/journal-events.md` § Writers). Workers do NOT write the journal directly.
-- **Readers**: retros (`/org-retro`, `org-curate`), ad-hoc `tail` / `jq`, `tools/pr_watch.py` consumers (read-after-append for CI signaling), future dashboard readers.
-- **Update cadence**: append-only, per event. Writes MUST go through `tools/journal_append.sh` or `tools/journal_append.py` (raw `>>` is forbidden by Set A constraints).
-- **Append-only obligation**: CONVENTION-ONLY. Appends MUST go through `tools/journal_append.{sh,py}`; raw `>>` is forbidden. Manual edits during `/org-retro` are permitted ONLY to correct factual errors, and the corrected line MUST add a reserved `_correction` field (JSON string) on the same line recording the rationale, so the line remains valid JSON consumable by `dashboard/server.py` and `jq` (no JSONL-illegal inline comments). The contract does NOT impose filesystem-level enforcement (no chattr `+a`, no checksum chain). Per-line schema versioning beyond the `ts` / `event` envelope is not introduced; see §4.1.
+- **Readers**: retros (`/org-retro`, `org-curate`), ad-hoc `sqlite3 .state/state.db` / `tools/state_db/queries.py`, `tools/pr_watch.py` consumers (read-after-append for CI signaling), the dashboard (`dashboard.server.build_state`).
+- **Update cadence**: append-only, per event. Writes MUST go through `tools/journal_append.sh` or `tools/journal_append.py` (both a raw `>>` append and a hand-crafted `INSERT INTO events` are forbidden by Set A constraints — the helper owns `occurred_at` generation, payload JSON encoding, DB-path resolution, and the schema-compatibility check on the target DB).
+- **Append-only obligation**: CONVENTION-ONLY. Appends MUST go through `tools/journal_append.{sh,py}`; hand-written appends / inserts are forbidden, and an existing row is never edited or deleted. Corrections during `/org-retro` are permitted ONLY to correct factual errors, and are made by **appending a new event through the same helper** rather than by rewriting the erroneous record: the appended event MUST carry a reserved `_correction` field (JSON string) in its `payload_json` recording the rationale, together with a reference to the record being corrected (its `events.id`, or its `kind` + `occurred_at` when the id is not to hand). The erroneous record survives as history and readers reconcile the two. (Pre-M4 the surface was a flat JSONL file, whose substrate permitted editing the offending line in place; the clause was therefore phrased as adding `_correction` to that same line, and append-based supersession was unnecessary. What carries over unchanged is the requirement that a correction record its rationale in-band and leave the journal machine-readable to `dashboard/server.py` and to SQL readers; only the mechanism it rides on changed with the substrate.) The contract does NOT impose storage-level enforcement (no chattr `+a`, no checksum chain, no DB trigger). Per-record schema versioning beyond the `occurred_at` / `kind` envelope is not introduced; see §4.1.
+- **Pre-M4 (historical, migration-only)**: before the M4 cutover this entry's surface was `.state/journal.jsonl` — JSON Lines, UTF-8, one object per line, with `ts` / `event` as the reserved envelope keys. That file is retired: any remnant present in a repo is migration-only and is never appended to. It survives as a named fixture era (`pre-phase3` / `mid-phase3`) in [`docs/contracts/state-fixture-scrub-policy.md`](./state-fixture-scrub-policy.md) §3.1, which is the only context in which the flat-file shape is still normative.
 
 ### 1.4 `.state/workers/worker-{task_id}.md`
 
@@ -143,7 +146,7 @@ The contract picks ONE normative schema-language per file, or accepts heterogene
 
 - `org-state.json` — JSON Schema-shaped narrative in `docs/org-state-schema.md` (prose, not a machine-checkable JSON Schema document).
 - `worker-{task_id}.md` — implicit, defined only by the `delegate-plan` helper's template.
-- `journal.jsonl` — descriptive prose in `docs/journal-events.md` (deliberately loose so consumers tolerate unknown fields).
+- journal events (the `events` table in `.state/state.db`; pre-M4 `journal.jsonl` — see §1.3) — descriptive prose in `docs/journal-events.md` (deliberately loose so consumers tolerate unknown fields).
 - `inbox/{task_id}.json` — declared by the runtime package's helper, not by an in-repo schema doc.
 - `tools/role_configs_schema.json` — actual machine-readable JSON Schema (draft-07-style), but lives in `claude-org-runtime`, not this repo.
 
@@ -181,7 +184,7 @@ The harness uses three identifier kinds (per `docs/org-state-schema.md` § dispa
 
 - **Decision**: enumerated as follows.
   - MUST be tempfile + rename (atomic): `.state/org-state.md`, `.state/org-state.json` (already atomic via `tempfile` in the converter), `.state/workers/worker-{task_id}.md`.
-  - APPEND-only is acceptable (POSIX line-atomicity for short lines via the journal helpers): `.state/journal.jsonl`.
+  - APPEND-only is acceptable: journal events (§1.3). Pre-M4 the guarantee came from POSIX line-atomicity for short lines appended by the journal helpers to `.state/journal.jsonl`; post-M4 the appended row is committed by a single SQLite transaction inside those same helpers (`tools/journal_append.{sh,py}` → `StateWriter`), which supplies the same atomic-per-record property. Neither surface may be written by hand (raw `>>` / direct `INSERT`).
   - In-place rewrite is acceptable: `.state/dispatcher-event-cursor.txt` (single-line transient cursor; partial-write risk is bounded by the small fixed-size payload, and the dispatcher reconciles via `list_panes` after restart).
 
 ### 3.6 Encoding and line endings
@@ -226,10 +229,10 @@ Lead-confirmed decisions for the 14 questions raised in the outline (2026-05-03 
 
 1. **In-scope vs. out-of-scope artifacts** (§1.2, §1.7, §1.8, §1.9, §1.10) — `org-state.json` is DERIVED (Markdown is canonical, inheriting the `docs/org-state-schema.md` ruling). The dispatcher event cursor is IN scope (its loss measurably degrades recovery). `dashboard.pid` / `dashboard.log` are OUT of scope (operational ephemera). `registry/projects.md` and `registry/org-config.md` are IN scope as state-adjacent configuration, dual-listed in Set A as config inputs.
 2. **Schema-language uniformity** (§2) — Heterogeneity is accepted as deliberate. Markdown for human-edited files, JSON Schema-shaped prose for runtime-helper-managed files, descriptive prose for the journal. No single normative schema language.
-3. **Append-only obligation for `journal.jsonl`** (§1.3) — Convention-only. Helper-mediated appends are mandatory; retro corrections are permitted with an inline marker. No filesystem-level enforcement.
+3. **Append-only obligation for journal events** (§1.3 — the `events` table in `.state/state.db` since the M4 cutover; `.state/journal.jsonl` pre-M4) — Convention-only. Helper-mediated appends are mandatory; retro corrections are permitted, made by appending a superseding record that carries an in-band marker (`_correction`) rather than by rewriting the erroneous one. No storage-level enforcement.
 4. **Per-worker state file shape** (§1.4) — Free-form Markdown enforced by the `delegate-plan` helper template; no separate generator required.
 5. **Inbox lifecycle** (§1.5) — Retained as audit trail; `SPLIT_CAPACITY_EXCEEDED` retry falls out naturally.
-6. **Atomic-write requirements** (§3.5) — Enumerated: tempfile + rename for `org-state.md`, `org-state.json`, `worker-{task_id}.md`; append for `journal.jsonl`; in-place rewrite acceptable for the dispatcher event cursor.
+6. **Atomic-write requirements** (§3.5) — Enumerated: tempfile + rename for `org-state.md`, `org-state.json`, `worker-{task_id}.md`; append for journal events (§1.3 / §3.5); in-place rewrite acceptable for the dispatcher event cursor.
 7. **Encoding / line endings** (§3.6) — UTF-8 universally; LF on writes; readers tolerate CRLF in legacy inputs.
 8. **Migration policy** (§4) — Hybrid versioning (per-file top-level `version` integer for JSON, preserving the `org-state.json` precedent; implicit for Markdown). Deprecation window N = 2 minor versions. Tolerant readers (ignore unknown keys, default missing keys). Centralized `tools/state_migrate.py` as the long-term migration entry point (skeleton landed; per-reader shims permitted transitionally). Simultaneous-readable bound: N-1 and N.
 

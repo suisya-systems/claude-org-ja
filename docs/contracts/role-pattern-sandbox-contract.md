@@ -151,7 +151,8 @@ enumerate:
   top-level `required_hook_scripts` and are validated by
   [`tools/check_role_configs.py`](../../tools/check_role_configs.py). This
   contract assumes those invariants hold.
-- **`.state/journal.jsonl` schema** — see
+- **Journal-event schema** (the `events` table in `.state/state.db`; the
+  flat `.state/journal.jsonl` was retired at the M4 cutover) — see
   [`docs/contracts/state-schema-contract.md`](./state-schema-contract.md)
   and [`docs/journal-events.md`](../journal-events.md).
 - **Per-role MCP tool allowlists** — those are filesystem-adjacent (some MCP

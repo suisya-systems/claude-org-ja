@@ -1,6 +1,6 @@
 # Contract Set A — Role Contract
 
-> **Status**: Ratified (2026-05-03); amended 2026-06-07 (Q10 — curator residency replaced by the on-demand worker-close trigger, human-approved in the curator-on-demand change; see § Role: curator); amended 2026-07-05 (curator spawn model `opus` → `sonnet` — auto mode's safety classifier runs on a dedicated model independent of the session model, and the curation workload is lightweight/mechanical; worker model wording synced to the current default-opus / lightweight-Sonnet policy; see § Role: curator and § Role: worker). Lead-confirmed decisions for all open questions. This document specifies the four roles (`secretary`, `dispatcher`, `curator`, `worker`) as they exist in the current `claude-org` implementation.
+> **Status**: Ratified (2026-05-03); amended 2026-06-07 (Q10 — curator residency replaced by the on-demand worker-close trigger, human-approved in the curator-on-demand change; see § Role: curator); amended 2026-07-05 (curator spawn model `opus` → `sonnet` — auto mode's safety classifier runs on a dedicated model independent of the session model, and the curation workload is lightweight/mechanical; worker model wording synced to the current default-opus / lightweight-Sonnet policy; see § Role: curator and § Role: worker); amended 2026-07-27 (journal surface — the retired `.state/journal.jsonl` replaced by the `events` table in `.state/state.db` per the M4 cutover; the helper-only write obligation is unchanged and now also forbids direct `INSERT`; see § Role: secretary Inputs / Outputs / Hard prohibitions and § Role: dispatcher Outputs). Lead-confirmed decisions for all open questions. This document specifies the four roles (`secretary`, `dispatcher`, `curator`, `worker`) as they exist in the current `claude-org` implementation.
 >
 > **Scope**: Phase 1 Contract Set A only. Contract Sets B–E (state, messaging, lifecycle, knowledge) are tracked in #122–#125 and out of scope here.
 >
@@ -36,7 +36,7 @@
 - **Worker reports via renga-peers** — `to_id="secretary"` messages from workers (progress, completion, `APPROVAL_BLOCKED`, `ERROR`, blockers).
 - **Dispatcher reports via renga-peers** — `DELEGATE_COMPLETE`, `WORKER_PANE_EXITED`, `APPROVAL_BLOCKED`/`ERROR_DETECTED` (forwarded from dispatcher's inspect channel), `SPLIT_CAPACITY_EXCEEDED`, `FOREMAN_STOPPING`, `RETRO_RECORDED`.
 - **Curator notifications via renga-peers** — improvement suggestions / curated-knowledge availability.
-- **Local files (read)** — `registry/projects.md`, `registry/org-config.md`, `.state/org-state.md`, `.state/workers/worker-*.md`, `.state/journal.jsonl`, `knowledge/curated/`, CI signals (`ci_completed` events written by `tools/pr-watch.*`).
+- **Local files (read)** — `registry/projects.md`, `registry/org-config.md`, `.state/org-state.md`, `.state/workers/worker-*.md`, `.state/state.db` (journal events live in its `events` table; the flat `.state/journal.jsonl` was retired at the M4 cutover), `knowledge/curated/`, CI signals (`ci_completed` events written by `tools/pr-watch.*`).
 
 ### Outputs
 
@@ -48,7 +48,7 @@
   - `.state/org-state.md` (Current Objective, Active Work Items, Worker Directory Registry)
   - JSON snapshot regeneration via `dashboard/org_state_converter.py`
   - `registry/projects.md` updates when registering new projects
-  - `.state/journal.jsonl` entries (push / PR open / status transitions / approvals) — must go through the helper (`tools/journal_append.sh|py`), never raw `>>` append
+  - Journal events (push / PR open / status transitions / approvals) into the `events` table of `.state/state.db` — must go through the helper (`tools/journal_append.sh|py`), never a raw `>>` append nor a hand-crafted `INSERT INTO events`
   - Worker `CLAUDE.md` and `.claude/settings.local.json` placement during Step 1.5 of `org-delegate` (via `claude-org-runtime settings generate`; manual JSON forbidden)
 - **Side effects** — `git push`, `gh pr create`, `tools/pr-watch.*` invocation (worker has no push permission, so secretary executes these).
 
@@ -74,7 +74,7 @@
   - Must NOT silently delete worker directories during `org-start` (they may hold reusable project state — `org-start` Step 0.4 explicit ban).
   - Must NOT spawn workers directly via `spawn_claude_pane` for ordinary delegations; must go through `DELEGATE` to the dispatcher.
   - Must NOT respond to worker reports by acting locally (no in-pane code edits, no `git commit` of worker output) — auto-mode classifier blocks this anyway as scope-exceeded.
-  - Must NOT write `.state/journal.jsonl` with raw `>>` append; must use the helper.
+  - Must NOT write journal events by hand — neither a raw `>>` append to the retired `.state/journal.jsonl` nor a direct `INSERT INTO events` against `.state/state.db`; must use the helper.
 - **`/org-suspend` contract** — The authoritative flush list (which files must be persisted and their schemas) is defined by the `/org-suspend` skill at `.claude/skills/org-suspend/SKILL.md`. This contract does not enumerate files itself; the skill is the single source of truth.
 
 ---
@@ -116,7 +116,7 @@
   - `.state/workers/worker-{task_id}.md` (Status: planned → active, progress log)
   - `.state/dispatcher/outbox/{task_id}-instruction.md` (instruction body, written by the helper)
   - `.state/dispatcher-event-cursor.txt` (advancing cursor)
-  - `.state/journal.jsonl` (events `worker_spawned`, `anomaly_observed`, `notify_sent`, `events_dropped`, `retro_deferred`, ...) — only via `tools/journal_append.sh|py` (raw `>>` forbidden).
+  - Journal events (`worker_spawned`, `anomaly_observed`, `notify_sent`, `events_dropped`, `retro_deferred`, ...) into the `events` table of `.state/state.db` — only via `tools/journal_append.sh|py` (raw `>>` to the retired `.state/journal.jsonl` and direct `INSERT INTO events` both forbidden).
   - `knowledge/raw/{YYYY-MM-DD}-delegation-{topic}.md` (only when retro produced reusable learnings).
 
 ### Constraints
