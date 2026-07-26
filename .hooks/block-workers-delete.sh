@@ -62,7 +62,7 @@ fi
 split_top_level_segments() {
   local cmd="$1"
   local len=${#cmd}
-  local seg="" quote="" ch i
+  local seg="" quote="" ch prev i
   for ((i = 0; i < len; i++)); do
     ch="${cmd:i:1}"
     if [[ -n "$quote" ]]; then
@@ -83,7 +83,18 @@ split_top_level_segments() {
           i=$((i + 1))
         fi
         ;;
-      ';'|'&'|'|'|$'\n')
+      '&')
+        # リダイレクトの & （2>&1 / &>file 等）は区切りではない
+        prev=""
+        ((i > 0)) && prev="${cmd:i-1:1}"
+        if [[ "$prev" == ">" || "$prev" == "<" || "${cmd:i+1:1}" == ">" ]]; then
+          seg+="$ch"
+        else
+          printf '%s\n' "$seg"
+          seg=""
+        fi
+        ;;
+      ';'|'|'|$'\n')
         printf '%s\n' "$seg"
         seg=""
         ;;

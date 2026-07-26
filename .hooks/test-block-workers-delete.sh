@@ -184,6 +184,15 @@ run_test "renga 起動のシングルクォート内 \$( ) (不活性なので�
   "$(jq -n --arg cmd "$SQ_SUBST_CMD" '{"tool_name":"Bash","tool_input":{"command":$cmd}}')" \
   0
 
+# リダイレクトの & は区切りではない (2>&1 で余計なセグメントを作らない)
+run_test "renga 起動 + 2>&1 リダイレクト (& を区切りにしない)" \
+  "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"renga new-tab --cwd ${WORKERS_DIR}/dummy-test -p 'rm -rf tmp' > /dev/null 2>&1\"}}" \
+  0
+
+run_test "renga 起動 + &> リダイレクト (& を区切りにしない)" \
+  "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"renga new-tab --cwd ${WORKERS_DIR}/dummy-test -p 'rm -rf tmp' &> /dev/null\"}}" \
+  0
+
 run_test "ls workers ディレクトリ (削除ではない)" \
   "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ls ${WORKERS_DIR}/\"}}" \
   0
