@@ -1,16 +1,36 @@
 #!/usr/bin/env bash
 # block-workers-delete.sh のテスト
-# 実行: bash .hooks/test-block-workers-delete.sh
+# 実行: bash tests/test-block-workers-delete.sh
 
 set -euo pipefail
 
-HOOK=".hooks/block-workers-delete.sh"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+HOOK="$REPO_ROOT/.hooks/block-workers-delete.sh"
 PASS=0
 FAIL=0
+
+# Portable realpath -m (matches hook fallback: GNU realpath → python3 → python)
+portable_realpath() {
+  local target="$1"
+  if result=$(command realpath -m "$target" 2>/dev/null); then
+    echo "$result"
+  elif result=$(python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$target" 2>/dev/null); then
+    echo "$result"
+  elif result=$(python -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$target" 2>/dev/null); then
+    echo "$result"
+  else
+    echo "FATAL: realpath -m も python も利用できません" >&2
+    exit 1
+  fi
+}
+
 # hook と同じ流儀で workers パスを解決する（registry/org-config.md の workers_dir は
-# ORG_ROOT 起点の相対パスとして定義されているため、CLAUDE_ORG_PATH があれば優先する）
-TEST_ORG_ROOT="${CLAUDE_ORG_PATH:-$(pwd)}"
-WORKERS_DIR=$(realpath -m "$TEST_ORG_ROOT/../workers")
+# ORG_ROOT 起点の相対パスとして定義されている）。既定は REPO_ROOT で、hook 側にも
+# 同じ値を CLAUDE_ORG_PATH として明示的に渡すことで、ランナーの cwd に依存せず
+# テストと hook の workers パス解決を一致させる。
+TEST_ORG_ROOT="${CLAUDE_ORG_PATH:-$REPO_ROOT}"
+WORKERS_DIR=$(portable_realpath "$TEST_ORG_ROOT/../workers")
 
 run_test() {
   local description="$1"
@@ -18,7 +38,7 @@ run_test() {
   local expected_exit="$3"  # 0=許可, 2=ブロック
 
   actual_exit=0
-  echo "$input_json" | bash "$HOOK" >/dev/null 2>&1 || actual_exit=$?
+  echo "$input_json" | CLAUDE_ORG_PATH="$TEST_ORG_ROOT" bash "$HOOK" >/dev/null 2>&1 || actual_exit=$?
 
   if [[ "$actual_exit" -eq "$expected_exit" ]]; then
     echo "  PASS: $description"
@@ -224,10 +244,11 @@ echo ""
 # CLAUDE_ORG_PATH 起点で config / workers パスを解決していることを担保する。
 echo "[cwd 非依存性 (CLAUDE_ORG_PATH 起点解決)]"
 
-HOOK_ABS="$(realpath "$HOOK")"
+# HOOK は REPO_ROOT 起点で組み立て済みなので既に絶対パス。
 # .dispatcher 配下を擬似 cwd として使う。ORG_ROOT は TEST_ORG_ROOT に揃える
 # （WORKERS_DIR と整合した workers パス解決を hook 側で起こすため）
-ALT_CWD="$(pwd)/.dispatcher"
+HOOK_ABS="$HOOK"
+ALT_CWD="$REPO_ROOT/.dispatcher"
 
 if [[ ! -d "$ALT_CWD" ]]; then
   echo "  SKIP: .dispatcher ディレクトリが無いため cwd 非依存テストを省略"
@@ -268,5 +289,5 @@ else
 fi
 
 echo ""
-echo "=== Results: $PASS passed, $FAIL failed ==="
+echo "# $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]] && exit 0 || exit 1

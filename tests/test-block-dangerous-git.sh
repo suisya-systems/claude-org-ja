@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # block-dangerous-git.sh のテスト（Issue #470）
-# 実行: bash .hooks/test-block-dangerous-git.sh
+# 実行: bash tests/test-block-dangerous-git.sh
 #
 # 主な確認観点:
 #   - 素の git push --force / -f / バンドル短オプション → deny
@@ -14,7 +14,9 @@
 
 set -euo pipefail
 
-HOOK=".hooks/block-dangerous-git.sh"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+HOOK="$REPO_ROOT/.hooks/block-dangerous-git.sh"
 PASS=0
 FAIL=0
 
@@ -302,5 +304,5 @@ run_test "git status && git push --force-with-lease origin main (後続セグメ
   "$(mk_bash_json "git status && git push --force-with-lease origin main")" 2
 
 echo ""
-echo "=== Results: $PASS passed, $FAIL failed ==="
+echo "# $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]] && exit 0 || exit 1

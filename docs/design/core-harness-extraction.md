@@ -173,7 +173,7 @@ inventory §6 の段階分割を、本 design の Lead 決定を反映して確�
   - hook framework wire-up 規約 doc を `core_harness/docs/hook-contract.md` として明文化（exit code / stdin JSON / stderr format）
 - **ja 側変更**:
   - `worker_roles[*].hooks` の `command` 文字列を `bash "{core_harness_path}/hooks/<script>"` に書き換え（generic hook のみ）。org-specific hooks (`block-org-structure.sh`, `block-git-push.sh` 等) は引き続き `{claude_org_path}/.hooks/...` を指す
-  - `.hooks/` には org-specific hooks (`block-workers-delete.sh`, `block-dispatcher-out-of-scope.sh`, `block-org-structure.sh`, `block-git-push.sh`) と test harness 用の `test-always-block.sh` が残る
+  - `.hooks/` には org-specific hooks (`block-workers-delete.sh`, `block-dispatcher-out-of-scope.sh`, `block-org-structure.sh`, `block-git-push.sh`) と test harness 用の hook fixture `fixture-always-block.sh` が残る
 - **依存**: Step B（schema 側で `{core_harness_path}` placeholder が定義済であること）
 - **AC**:
   - 既存の hook test 8 本が ja 側で green（test 自体は §5 に従い ja 残置）
