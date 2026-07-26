@@ -37,22 +37,34 @@ bash tests/run-all.sh
 ```
 tests/
   __init__.py              # パッケージ初期化（空）
-  test_parsers.py          # dashboard/server.py のパーサーテスト
-  test_org_state_converter.py
-  run-all.sh               # shell hook テストランナー
-  test-block-git-push.sh
-  test-block-org-structure.sh
-  test-check-worker-boundary.sh
-  fixtures/
-    org-state-sample.md    # org-state パーサー用サンプル
-    journal-sample.jsonl   # journal パーサー用サンプル
-    projects-sample.md     # projects パーサー用サンプル
-    workers/
-      worker-abc12345.md   # workers パーサー用サンプル
-    curated/
-      .gitkeep             # スキップ対象の確認用
-      sample-topic.md      # knowledge パーサー用サンプル
+  run-all.sh               # shell hook テストランナー（収集の SoT）
+  test_*.py                # Python テスト（unittest discover が収集）
+  test-*.sh                # shell hook テスト（run-all.sh が収集）
+  sandbox/
+    test_*.sh              # sandbox smoke テスト（run-all.sh が収集）
+  fixtures/                # 各テストのサンプルデータ
 ```
+
+### shell テストの置き場所ルール
+
+**shell テストは必ず `tests/` 直下（または `tests/sandbox/`）に置く。** `.hooks/` 配下に
+テストを置くと `tests/run-all.sh` の収集対象から外れ、CI で実行されないまま気付かれない
+（Issue #787 の実体）。
+
+この置き場所のズレは `tests/run-all.sh` の収集漏れ検出ガードが検出する。ガードは git 追跡
+ファイルから「テストに見える命名」（`test-*.sh` / `test_*.sh` / `*-test.sh` / `*_test.sh`）を
+列挙し、ランナーが実際に実行した集合と突き合わせて、未収集があれば fail する。
+
+- テストでないファイル（hook の fixture 等）は、`test` に見えない名前を付けて収集対象から
+  外す。例: `.hooks/fixture-always-block.sh` は hook 配線の手動確認用 fixture であって
+  テストスイートではないため `fixture-` を名乗る。
+- どうしても例外が必要な場合のみ、`run-all.sh` の `COVERAGE_EXEMPT` に repo root 相対パスを
+  理由コメント付きで追加する。ガードごと削除しないこと。
+
+検出を CI の workflow ではなくランナー側に置いているのは、手元実行と CI の判定基準を
+1 つに保つため。
+
+なお shell テストは実行時の cwd に依存しない（スクリプト自身の位置から repo root を導出する）。
 
 ## テスト結果の保存
 
