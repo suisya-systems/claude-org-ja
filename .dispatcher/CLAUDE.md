@@ -209,8 +209,9 @@ direct send は監視ループの通常サイクル（`check_messages`）で受�
 ### work-discovery triage scan（worker クローズ時 = pane 枠が空いた契機）
 
 CLOSE_PANE 処理の Step 6 で、worker クローズ（= pane 枠が空いた瞬間）ごとに、まず
-`tools/work_discovery_repos.py --format flags` で `--repo` セット（`registry/projects.md` の triage opt-in 列 +
-home repo 常時包含）を解決し、その flags を付けて `tools/work_discovery_scan.py` を 1 回実行し、着手可能な
+`tools/work_discovery_repos.py --format flags` で `--repo` セット（`registry/projects.md` の triage 列（既定
+include / 明示 opt-out）と `registry/org-config.md` の `triage_home`（既定 off）から決定的に導出）を解決し、
+その flags を付けて `tools/work_discovery_scan.py` を 1 回実行し、着手可能な
 候補（open Issue の triage 結果）があれば候補 JSON を**窓口へ転送する**。on-demand curator と同じ
 「worker クローズ時に条件チェック → 該当時のみ起動 / 転送」パターンに乗せた定常トリガ（設計 §6.3 案 C /
 §8 post-merge トリガ点の合流。cross-repo 解決は §10 / §10.4）。
@@ -224,7 +225,7 @@ home repo 常時包含）を解決し、その flags を付けて `tools/work_di
   エラー通知。送信先は必ず安定名 `to_id="secretary"`
 - scan 実行は journal イベント `work_discovery_scanned`（payload: `candidate_count` /
   `recommendation_ref` / `trigger`）として **delivery 層（dispatcher）が記帳**する。`recommendation_ref` は
-  `owner/repo#N` 形に統一（`recommendation.repo` が null なら resolver の home_repo で補完。cross-repo で
+  `owner/repo#N` 形に統一（`recommendation.repo` が null なら resolver の `repos[0]` で補完。cross-repo で
   `ja#60` と `runtime#60` を区別可能にするため。旧 `recommendation_issue` は廃止）。計算層ツール
   自身は state.db に書かない（read-only・副作用ゼロ、設計 §7.1 の層分離）
 - 候補 JSON は窓口へ**そのまま**渡す（人間可読 §5.2 形式へのレンダリングは窓口の責務。dispatcher は
