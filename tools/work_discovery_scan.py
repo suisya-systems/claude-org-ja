@@ -2229,11 +2229,14 @@ def main(argv=None) -> int:
             repos = list(dict.fromkeys(args.repo)) if args.repo else [None]
             # Back-compat (design §5.1 / §10): a *single*-repo scan keys by the
             # real repo (so a self-reference by full name resolves) but is
-            # *displayed* as the home repo (`repo: null`, int blocking_refs),
-            # identical to the original single-repo contract — even when the one
-            # repo was named explicitly via `--repo`. `collapse_repo` carries
-            # that display directive; a genuine multi-repo scan (2+) keeps real
-            # repo strings in the output.
+            # *displayed* in the collapsed single-repo form (`repo: null`, int
+            # blocking_refs), identical to the original single-repo contract —
+            # even when the one repo was named explicitly via `--repo`. The
+            # fold target is that one repo (`repos[0]`), which is not
+            # necessarily the home repo: since Issue #801 the home repo joins
+            # a scan only when `triage_home` opts it in. `collapse_repo`
+            # carries that display directive; a genuine multi-repo scan (2+)
+            # keeps real repo strings in the output.
             if len(repos) == 1:
                 collapse_repo = repos[0]
             bundles = []

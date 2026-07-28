@@ -7,6 +7,14 @@
 
 ## [Unreleased]
 
+### Changed
+
+- work-discovery triage の repo セット解決を反転 (#801)。`registry/projects.md` の GitHub URL 行を
+  既定 scan 対象とし (`no` / `off` / `false` の明示 opt-out のみ除外)、home repo (claude-org-ja 自身) の
+  常時包含を廃して `registry/org-config.md` の `triage_home` (既定 off) による opt-in へ移行した。
+  resolver JSON の `opted_in` は `included` / `opted_out` へ改称し、`recommendation_ref` の補完元を
+  `home_repo` から `repos[0]` へ変更した。
+
 ## [1.1.0] - 2026-07-15
 
 窓口の CI 監視・完了報告経路と、worker 委譲まわりの取りこぼしを塞ぐ運用改善リリース。

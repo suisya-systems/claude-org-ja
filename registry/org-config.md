@@ -38,3 +38,17 @@ broker 面（`ORG_TRANSPORT=broker` / コード既定）でのワーカー同時
 - **既定 8**。`unlimited`（上限なし）は opt-in。
 - **renga 面（`ORG_TRANSPORT=renga`, opt-in）では効かない**: renga はターミナルサイズと MIN_PANE 制約が許す限り分割し続ける rect ベース balanced split が律速するため、`max_concurrent_workers` は参照されない。詳細は [`.claude/skills/org-delegate/references/pane-layout.md`](../.claude/skills/org-delegate/references/pane-layout.md)「ワーカーの balanced split 戦略」と [`.dispatcher/CLAUDE.md`](../.dispatcher/CLAUDE.md) の delegate-plan helper 節を参照。
 - 判定ロジック・定数の正準 SoT は `claude_org_runtime.dispatcher.runner`（runtime 側）。本ファイルの値は dispatcher が helper へ渡す運用値の導線。
+
+## Triage Home
+triage_home: off
+
+work-discovery の cross-repo triage で home repo（claude-org-ja 自身）を scan 対象に含めるかどうかの設定。
+
+- **既定 off**。キー欠落も off、不正値も off として扱う（`signals[]` に記録して fatal にはしない）。
+- `on` / `yes` / `true`（case-insensitive）で opt-in、`off` / `no` / `false` で明示 off。
+- **off のとき resolver は home repo の解決自体を行わない**（`git remote get-url origin` も `gh repo view` も呼ばない）。
+- 設定行は**行頭（列 0）から `triage_home:` で始める**こと。resolver は列 0 固定で読むため、引用や箇条書きの中に書いた `triage_home: ...` は設定として拾われない。
+
+**注意**: 散文中に `triage_home: on` のような文字列を**行頭から**書かないこと（パーサが拾う）。箇条書き（`- ...`）やバッククォート内は列 0 でないので安全。
+
+解決の実装は [`tools/work_discovery_repos.py`](../tools/work_discovery_repos.py)、設計は [`docs/design/work-discovery-triage.md`](../docs/design/work-discovery-triage.md) §10.4 を参照。

@@ -282,7 +282,8 @@ worker クローズは pane 枠が空く瞬間であり、設計上「次の仕�
 #### 6-1. repo セット解決 → scan の実行
 
 worker クローズ時の scan も、まず resolver で `--repo` セットを解決してから scan に渡す（`registry/projects.md`
-の triage opt-in 列 + home repo 常時包含から `--repo owner/repo` を決定的に導出。設計 §10.4）。resolver は
+の triage 列（既定 include / 明示 opt-out）と `registry/org-config.md` の `triage_home`（既定 off）から
+`--repo owner/repo` を決定的に導出。設計 §10.4）。resolver は
 read-only（`git remote get-url` と任意の `gh repo view` 読み取りのみ）で INV-1〜5 を崩さない。
 
 ```bash
@@ -290,7 +291,7 @@ read-only（`git remote get-url` と任意の `gh repo view` 読み取りのみ�
 # resolver 成功 (exit 0) のときだけ scan へ進む。exit 2 (repos 空) では
 # scan を実行せず 6-2 の error 経路で窓口へエラー通知する（空 flags のまま
 # scan すると --repo 無し = gh カレントリポジトリの暗黙 scan に無言フォール
-# バックし home repo 解決失敗が隠れるため）。
+# バックし解決失敗が隠れるため）。
 # Windows
 if REPO_FLAGS=$(py -3 ../tools/work_discovery_repos.py --format flags); then
   py -3 ../tools/work_discovery_scan.py --trigger worker_close $REPO_FLAGS
@@ -306,16 +307,19 @@ fi
 ```
 
 - resolver の `--format flags` は stdout に `--repo a/b --repo c/d` を 1 行で出す（`$(...)` で scan へそのまま
-  splice する）。triage opt-in 行が無い既定状態では home repo 1 つだけ（`--repo <home>` = 従来の単一 repo scan と
-  同一挙動）。skip 情報・signal は resolver の **stderr** に出る（stdout は flags 純粋）。
+  splice する）。既定状態では registry の GitHub URL 行が全て並ぶ（home repo は `registry/org-config.md` の
+  `triage_home: on` のときだけ先頭に付く）。単一 repo scan になるのは scan 対象が 1 件のときだけ。skip 情報・
+  signal は resolver の **stderr** に出る（stdout は flags 純粋）。
 - **resolver が exit 2（repos 空）を返したら scan を実行せず、6-2 の error 経路と同じく窓口へ 1 行エラー通知を
   送って終える**（`recommendation_ref` は組めないので journal は candidate_count なしのエラー記帳）。上の
   `if … then scan else …` は resolver 成功時だけ scan へ進む構造で、exit 2 では `else` 枝に入り scan をスキップ
   する。空の `REPO_FLAGS` のまま scan すると `--repo` 無し = gh カレントリポジトリの暗黙 scan に無言フォール
-  バックし home repo 解決失敗が隠れるため、この分岐で必ず止める。
-- **home_repo を控える（6-3 の ref 用）**: flags の**先頭** `--repo <home>` が resolver の home_repo（= 単一 repo
-  scan で `recommendation.repo` が `null` に畳まれる場合の補完値）。厳密に取りたい場合は resolver を
-  `--format json` でもう一度走らせて `home_repo` フィールドを読む（read-only なので二度呼んでも副作用ゼロ）。
+  バックし解決失敗が隠れるため、この分岐で必ず止める。
+- **`repos[0]` を控える（6-3 の ref 用）**: flags の**先頭** `--repo <first>` が resolver の `repos[0]`（= scan
+  対象が 1 件のときに `recommendation.repo` が `null` に畳まれる場合の補完値）。厳密に取りたい場合は resolver を
+  `--format json` でもう一度走らせて `repos[0]` を読む（`home_repo` ではない。read-only なので二度呼んでも
+  副作用ゼロ）。`recommendation.repo` が null に畳まれるのは scan 対象が 1 件のときで、その実 repo が
+  `repos[0]` である。
 - `--trigger worker_close` は出力 JSON の `generated_for` に載る文脈ラベル（監査用、設計 §8）。
 - 空き worker pane 数を把握していれば `--free-panes <n>` を添えてよい（任意）。`parallelizable` 候補の
   ランキングを押し上げるだけで、候補上限 N は変えない（計算層の Phase 1 契約）。
@@ -347,8 +351,8 @@ bash ../tools/journal_append.sh work_discovery_scanned trigger=worker_close cand
 
 - **`recommendation_ref` は `owner/repo#N` 形に統一**（cross-repo triage で `ja#60` と `runtime#60` を
   区別可能にするため。旧 `recommendation_issue=<番号>` は廃止）。組み立て:
-  `{JSON.recommendation.repo}` が非 null ならその値、`null`（単一 repo scan で home に畳まれた場合）なら
-  6-1 で控えた resolver の **home_repo** を使い、`#` + `{JSON.recommendation.issue}` を続ける。
+  `{JSON.recommendation.repo}` が非 null ならその値、`null`（scan 対象が 1 件で単一 repo 形に畳まれた場合）なら
+  6-1 で控えた resolver の **`repos[0]`** を使い、`#` + `{JSON.recommendation.issue}` を続ける。
   例: `recommendation_ref=suisya-systems/claude-org-ja#531` / `recommendation_ref=aainc/token-tracking#42`。
 - 候補ゼロ（exit 0）や `recommendation` が `null` のときは `recommendation_ref` を省略する。
 

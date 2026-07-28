@@ -89,11 +89,12 @@ class Project:
     # this empty and the resolver falls through to the conventional A/B/C
     # decision tree.
     mirror_of: str = ""
-    # Issue #729: raw value of the `triage` opt-in column (header mode only;
-    # positional fallback always leaves this empty). Kept verbatim — the
-    # opt-in interpretation (`yes`/`true`/`on` after case-fold + trim) lives
-    # in the work-discovery repo resolver, not here, so the parser stays a
-    # dumb SoT and forks/tests can assert on the literal cell value.
+    # Issue #729 / #801: raw value of the `triage` opt-out column (header
+    # mode only; positional fallback always leaves this empty). Kept
+    # verbatim -- the opt-out interpretation (`no`/`off`/`false` after
+    # case-fold + trim mark a row as excluded; anything else is included)
+    # lives in the work-discovery repo resolver, not here, so the parser
+    # stays a dumb SoT and forks/tests can assert on the literal cell value.
     triage: str = ""
 
 

@@ -1,35 +1,44 @@
 """Resolve the ``--repo owner/repo`` set for a work-discovery triage scan.
 
-Read-only helper (Issue #729). Turns the ``registry/projects.md`` triage
-opt-in column plus the always-included home repo (claude-org-ja itself)
-into a deterministic list of ``owner/repo`` slugs for
-``tools/work_discovery_scan.py --repo``.
+Read-only helper (Issue #729; the default was inverted in Issue #801).
+Turns the ``registry/projects.md`` project rows plus the ``triage_home``
+opt-in in ``registry/org-config.md`` into a deterministic list of
+``owner/repo`` slugs for ``tools/work_discovery_scan.py --repo``.
 
 Two inputs drive the set:
 
-- **home repo (always included, first)** — resolved in two stages:
+- **registry rows (scanned by default)** -- every row in
+  ``registry/projects.md`` is in the scan set unless its ``triage`` cell
+  reads ``no`` / ``off`` / ``false`` (case-insensitive, trimmed), which
+  opts that row out. Empty / ``-`` / ``yes`` / ``true`` / ``on`` mean
+  included; any other value is still included but leaves an audit signal.
+  An included row's ``パス`` (path) column must be a GitHub URL so an
+  ``owner/repo`` can be derived; local paths / ``-`` cannot back a
+  ``--repo`` slug and land in ``skipped`` with a signal. Rows opted out
+  explicitly land in ``opted_out`` and emit no skip signal.
+- **home repo (opt-in, off by default)** -- claude-org-ja itself never
+  appears in the registry table, so ``triage_home`` in
+  ``registry/org-config.md`` decides whether it joins the set (missing
+  file / missing key / unrecognised value all mean off, never fatal).
+  Only when it is on does the resolver run the two-stage lookup:
   1. ``git -C <claude_org_root> remote get-url origin`` -> owner/repo.
   2. fallback ``gh repo view --json nameWithOwner`` when (1) fails.
-  Both failing emits a loud signal (non-fatal) and the home repo is
-  simply absent from the set.
-- **triage opt-in rows** — rows in ``registry/projects.md`` whose
-  ``triage`` column reads ``yes`` / ``true`` / ``on`` (case-insensitive,
-  trimmed). The row's ``パス`` (path) column must be a GitHub URL so an
-  ``owner/repo`` can be derived; local paths / ``-`` are skipped and left
-  in a ``skipped`` audit signal (they cannot back a ``--repo`` slug).
+  Both failing emits a loud signal (non-fatal). When included, the home
+  repo comes first in the set.
 
 Output (stdout):
 
 - ``--format json`` (default): one JSON object with ``repos``,
-  ``home_repo``, ``opted_in``, ``skipped``, ``signals`` (and ``error`` on
-  failure).
+  ``home_repo``, ``triage_home``, ``included``, ``opted_out``,
+  ``skipped``, ``signals`` (and ``error`` on failure).
 - ``--format flags``: ``--repo a/b --repo c/d`` on a single line for shell
   splicing; ``skipped`` / ``signals`` go to stderr so stdout stays pure.
 
-Exit code: ``0`` when the set contains at least the home repo, ``2`` on
-error (empty set / read failure). The output is deterministic and this
-tool performs no writes / spawns / git mutations (read-only ``git remote
-get-url`` and optional ``gh repo view`` only).
+Exit code: ``0`` when at least one repo resolved, ``2`` on error (empty
+set / read failure). The output is deterministic and this tool performs
+no writes / spawns / git mutations (read-only ``git remote get-url`` and
+optional ``gh repo view`` only -- and neither runs while ``triage_home``
+is off).
 """
 from __future__ import annotations
 
@@ -43,6 +52,7 @@ _sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -54,9 +64,24 @@ from tools.resolve_worker_layout import (
     _git_origin_url,
 )
 
-# triage cell values (case-folded, trimmed) that count as opt-in. Anything
-# else -- ``no`` / empty / ``-`` -- is treated as not opted in.
-_OPT_IN_VALUES = frozenset({"yes", "true", "on"})
+# triage cell values (case-folded, trimmed) that opt a row OUT of the scan set.
+_OPT_OUT_VALUES = frozenset({"no", "off", "false"})
+# triage cell values that are recognised as "include" (the default). Anything
+# outside both sets is still included but leaves an audit signal.
+_INCLUDE_VALUES = frozenset({"", "-", "yes", "true", "on"})
+# org-config triage_home values.
+_TRIAGE_HOME_ON_VALUES = frozenset({"yes", "true", "on"})
+_TRIAGE_HOME_OFF_VALUES = frozenset({"no", "false", "off"})
+
+# Anchored at column 0 on purpose (no leading ``\s*``): registry/org-config.md
+# prose quotes forms like `triage_home: on` inside bullets / backticks, and
+# only a real setting line -- which starts at column 0 -- may be picked up.
+# The inner whitespace classes are *horizontal only* (``[ \t]``) so the match
+# can never cross a line break: with ``\s*`` a bare ``triage_home:`` would
+# swallow the following blank line and capture the next prose line as its
+# value (silently turning the home repo on when that line reads ``on``).
+# Trailing whitespace is left to the caller's ``.strip()``.
+_TRIAGE_HOME_RE = re.compile(r"^triage_home[ \t]*:[ \t]*(.*)$", re.MULTILINE)
 
 
 def _owner_repo_from_url(url: Optional[str]) -> Optional[str]:
@@ -82,6 +107,46 @@ def _owner_repo_from_url(url: Optional[str]) -> Optional[str]:
     if not m:
         return None
     return f"{m.group(1)}/{m.group(2)}"
+
+
+def _read_triage_home(org_config_path: Path, signals: list[str]) -> bool:
+    """Return True only when org-config opts the home repo into the scan set.
+
+    Every failure mode falls back to ``False`` (off) rather than raising:
+    the home repo is an opt-in extra, so an unreadable / malformed config
+    must not take the whole registry-driven scan down with it. A missing
+    key is the documented default and stays silent; a missing file or an
+    unrecognised value leaves an audit signal.
+    """
+    if not org_config_path.exists():
+        signals.append(
+            f"org-config not found at {org_config_path} -- triage_home "
+            "defaults to off (home repo not scanned)"
+        )
+        return False
+    try:
+        text = org_config_path.read_text(encoding="utf-8")
+    except OSError as e:
+        signals.append(
+            f"could not read org-config at {org_config_path}: {e} -- "
+            "triage_home defaults to off"
+        )
+        return False
+    m = _TRIAGE_HOME_RE.search(text)
+    if m is None:
+        # Documented default, not an anomaly -- no signal.
+        return False
+    raw = m.group(1).strip()
+    val = raw.lower()
+    if val in _TRIAGE_HOME_ON_VALUES:
+        return True
+    if val in _TRIAGE_HOME_OFF_VALUES:
+        return False
+    signals.append(
+        f"org-config triage_home value '{raw}' is not recognised -- treated "
+        "as off (expected on/yes/true or off/no/false)"
+    )
+    return False
 
 
 def _gh_home_repo(claude_org_root: Path) -> Optional[str]:
@@ -117,9 +182,10 @@ def _resolve_home_repo(
 ) -> Optional[str]:
     """Two-stage home-repo resolution (git origin, then ``gh repo view``).
 
-    Appends a loud signal and returns ``None`` when both stages fail. The
-    home repo is meant to always resolve; a ``None`` here is an anomaly the
-    caller should surface, not silently swallow.
+    Only called when ``triage_home`` is on. Appends a loud signal and
+    returns ``None`` when both stages fail: the operator asked for the home
+    repo, so failing to produce it is an anomaly the caller should surface
+    rather than silently swallow.
     """
     origin = _git_origin_url(claude_org_root)
     home = _owner_repo_from_url(origin)
@@ -134,21 +200,33 @@ def _resolve_home_repo(
         return home
     signals.append(
         "could not resolve home repo from git origin or 'gh repo view' -- "
-        "home repo NOT included in the --repo set (scan will be "
-        "home-relative or empty)"
+        "triage_home is on but the home repo is NOT included in the --repo "
+        "set"
     )
     return None
 
 
 def resolve_repos(
-    *, registry_path: Path, claude_org_root: Path
+    *,
+    registry_path: Path,
+    claude_org_root: Path,
+    org_config_path: Optional[Path] = None,
 ) -> dict:
     """Build the repo-set result dict. Pure read-only computation."""
     signals: list[str] = []
-    opted_in: list[dict[str, str]] = []
-    skipped: list[dict[str, str]] = []
+    included: list[dict] = []
+    opted_out: list[dict] = []
+    skipped: list[dict] = []
 
-    home_repo = _resolve_home_repo(claude_org_root, signals)
+    if org_config_path is None:
+        org_config_path = claude_org_root / "registry" / "org-config.md"
+
+    triage_home = _read_triage_home(Path(org_config_path), signals)
+    # Home resolution is skipped entirely while triage_home is off: neither
+    # `git remote get-url origin` nor `gh repo view` runs.
+    home_repo = (
+        _resolve_home_repo(claude_org_root, signals) if triage_home else None
+    )
 
     if registry_path.exists():
         text = registry_path.read_text(encoding="utf-8")
@@ -156,17 +234,35 @@ def resolve_repos(
     else:
         projects = []
         signals.append(
-            f"registry not found at {registry_path} -- only the home repo "
-            "will be scanned"
+            f"registry not found at {registry_path} -- no registry rows to "
+            "scan"
         )
 
     for proj in projects:
-        if proj.triage.strip().lower() not in _OPT_IN_VALUES:
+        raw = proj.triage.strip()
+        val = raw.lower()
+        if val in _OPT_OUT_VALUES:
+            # Checked before the URL derivation so an explicitly opted-out
+            # non-URL row stays quiet (no skip signal to triage).
+            opted_out.append(
+                {
+                    "nickname": proj.nickname,
+                    "path": proj.path,
+                    "repo": _owner_repo_from_url(proj.path),
+                    "value": raw,
+                }
+            )
             continue
+        if val not in _INCLUDE_VALUES:
+            signals.append(
+                f"registry row '{proj.nickname}' triage value '{raw}' is not "
+                "recognised -- treated as included (opt-out values are: no / "
+                "off / false)"
+            )
         repo = _owner_repo_from_url(proj.path)
         if repo is None:
             reason = (
-                f"triage opt-in row '{proj.nickname}' path '{proj.path}' -- "
+                f"registry row '{proj.nickname}' path '{proj.path}' -- "
                 "skipped (cannot derive owner/repo; expected a bare "
                 "https://github.com/OWNER/REPO clone URL)"
             )
@@ -175,15 +271,15 @@ def resolve_repos(
             )
             signals.append(reason)
             continue
-        opted_in.append(
+        included.append(
             {"nickname": proj.nickname, "repo": repo, "path": proj.path}
         )
 
-    # Dedup preserving order; home first.
+    # Dedup preserving order; home first when it is included at all.
     repos: list[str] = []
     seen: set[str] = set()
     for candidate in ([home_repo] if home_repo else []) + [
-        row["repo"] for row in opted_in
+        row["repo"] for row in included
     ]:
         if candidate not in seen:
             seen.add(candidate)
@@ -192,14 +288,17 @@ def resolve_repos(
     result: dict = {
         "repos": repos,
         "home_repo": home_repo,
-        "opted_in": opted_in,
+        "triage_home": triage_home,
+        "included": included,
+        "opted_out": opted_out,
         "skipped": skipped,
         "signals": signals,
     }
     if not repos:
         result["error"] = (
-            "no repos resolved (home repo unresolvable and no valid triage "
-            "opt-in rows)"
+            "no repos resolved (no scannable GitHub URL rows in the registry "
+            "and the home repo is not included; set 'triage_home: on' in "
+            "registry/org-config.md or add a GitHub URL project row)"
         )
     return result
 
@@ -230,8 +329,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description=(
             "Resolve the --repo owner/repo set for a work-discovery triage "
-            "scan from registry/projects.md triage opt-in rows plus the "
-            "always-included home repo. Read-only."
+            "scan. registry/projects.md rows are scanned by default ('no' / "
+            "'off' / 'false' in the triage column opts a row out); the home "
+            "repo joins only when registry/org-config.md sets triage_home to "
+            "on (off by default). Read-only."
         ),
     )
     p.add_argument(
@@ -245,6 +346,12 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         type=Path,
         help="Path to the claude-org repo root (default: repo root / cwd).",
+    )
+    p.add_argument(
+        "--org-config",
+        default=None,
+        type=Path,
+        help="Path to registry/org-config.md (default: <root>/registry/org-config.md).",
     )
     p.add_argument(
         "--format",
@@ -275,12 +382,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         result = resolve_repos(
             registry_path=Path(registry_path),
             claude_org_root=claude_org_root,
+            org_config_path=args.org_config,
         )
     except OSError as e:  # registry read failure etc.
         err = {
             "repos": [],
             "home_repo": None,
-            "opted_in": [],
+            "triage_home": False,
+            "included": [],
+            "opted_out": [],
             "skipped": [],
             "signals": [],
             "error": f"failed to resolve repos: {e}",
