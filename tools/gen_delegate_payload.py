@@ -1079,6 +1079,39 @@ def _materialize_origin_branch(base_repo: Path, branch: str) -> bool:
     return subprocess.run(local_probe, capture_output=True).returncode == 0
 
 
+def _missing_base_branch_error(
+    base_repo: Path,
+    *,
+    base_branch: str,
+    base_branch_source: str,
+    project_slug: Optional[str],
+) -> "BaseBranchApplyError":
+    """Build the fail-loud error for a configured branch the remote doesn't have.
+
+    Shared by the creation path (:func:`_resolve_base_ref`) and the reuse path
+    (:func:`_assert_reused_worktree_base`) so both give the operator the same
+    diagnosis and recovery, instead of only failing when a worktree happens to
+    be created (Codex Round 2 Major).
+    """
+    ref = f"{_ORIGIN_REF_PREFIX}{base_branch}"
+    source_hint = {
+        "cli": "the --base-ref flag passed to this dispatch",
+        "registry": (
+            "the `base_branch` column of registry/projects.md for project "
+            f"{project_slug!r}"
+        ),
+    }.get(base_branch_source, f"base_branch_source={base_branch_source!r}")
+    return BaseBranchApplyError(
+        f"configured base branch {base_branch!r} does not exist on the "
+        f"remote: {ref} could not be resolved against origin in {base_repo}. "
+        f"It was configured by {source_hint}. Refusing to fall back to "
+        "origin/HEAD, because silently using the default branch is exactly "
+        "the diff pollution a per-project base branch exists to prevent "
+        "(Issue #808). Fix the configured name (typo?), push the branch to "
+        "origin, or drop the setting to use origin/HEAD, then retry apply."
+    )
+
+
 def _resolve_base_ref(
     base_repo: Path,
     *,
@@ -1128,25 +1161,11 @@ def _resolve_base_ref(
         ref = f"{_ORIGIN_REF_PREFIX}{base_branch}"
         if _materialize_origin_branch(base_repo, base_branch):
             return ref
-        origin_head = "origin/HEAD"
-        source_hint = {
-            "cli": "the --base-ref flag passed to this dispatch",
-            "registry": (
-                "the `base_branch` column of "
-                f"registry/projects.md for project "
-                f"{project_slug!r}"
-            ),
-        }.get(base_branch_source, f"base_branch_source={base_branch_source!r}")
-        raise BaseBranchApplyError(
-            f"configured base branch {base_branch!r} does not exist on the "
-            f"remote: {ref} is not a remote-tracking ref in {base_repo} (even "
-            f"after `git fetch origin`). It was configured by {source_hint}. "
-            "Refusing to fall back to origin/HEAD, because silently cutting "
-            "the worktree from the default branch is exactly the diff "
-            "pollution a per-project base branch exists to prevent (Issue "
-            "#808). Fix the configured name (typo?), push the branch to "
-            f"origin, or drop the setting to use {origin_head}, then retry "
-            "apply."
+        raise _missing_base_branch_error(
+            base_repo,
+            base_branch=base_branch,
+            base_branch_source=base_branch_source,
+            project_slug=project_slug,
         )
     proc = subprocess.run(
         ["git", "-C", str(base_repo), "symbolic-ref", "--short",
@@ -1275,23 +1294,42 @@ def _assert_reused_worktree_base(plan: DelegatePlan, branch: str) -> None:
     (``origin/main`` is typically an ancestor of a develop-cut branch, so
     narrowing develop → main would slip through).
 
-    No record (worktree predates Issue #808, or was created by hand) means we
-    cannot verify, so reuse proceeds unchanged — this check only ever adds a
-    refusal where an authoritative record disagrees.
+    No record (worktree predates Issue #808, or was created by hand) means the
+    recorded-vs-configured comparison cannot run, so reuse proceeds — this
+    check only ever adds a refusal where an authoritative record disagrees.
+    The existence check below runs either way, because a configured branch
+    that has since been deleted from origin must fail on the reuse path too
+    (Codex Round 2 Major: otherwise apply only fails loud when it happens to
+    create a worktree, and an unusable PR base is advertised on retries).
     """
+    # Existence first: an advertised PR base that no longer exists on the
+    # remote is broken regardless of what the branch was cut from.
+    if plan.base_branch is not None and not _materialize_origin_branch(
+        plan.base_repo, plan.base_branch
+    ):
+        raise _missing_base_branch_error(
+            plan.base_repo,
+            base_branch=plan.base_branch,
+            base_branch_source=plan.base_branch_source,
+            project_slug=plan.project_slug,
+        )
     recorded = _recorded_worktree_base(plan.base_repo, branch)
     if recorded is None:
         return
-    expected = (
-        f"{_ORIGIN_REF_PREFIX}{plan.base_branch}"
-        if plan.base_branch is not None
-        else None
-    )
+    if plan.base_branch is not None:
+        expected: Optional[str] = f"{_ORIGIN_REF_PREFIX}{plan.base_branch}"
+    else:
+        # Unconfigured dispatch: the cut point would be origin/HEAD, so
+        # resolve it to the concrete branch it points at and compare against
+        # that. Accepting every unconfigured retry (Codex Round 2 Blocker)
+        # would let "first apply cut from develop, retry drops the override"
+        # keep the develop-based branch while the send plan advertises the
+        # repo default — the very mismatch this guard exists for.
+        expected = _resolve_base_ref(plan.base_repo)
     if expected is None or recorded == expected:
-        # ``expected is None`` = this dispatch is unconfigured (origin/HEAD).
-        # origin/HEAD is a moving symbolic ref, so a recorded concrete branch
-        # is not evidence of disagreement; stay silent rather than churn every
-        # pre-existing worktree.
+        # ``expected is None`` = origin/HEAD is unset, so there is nothing
+        # authoritative to compare against. The creation path raises on that
+        # separately; reuse has no cut point to redo, so stay silent.
         return
     raise BaseBranchApplyError(
         f"worker_dir {plan.layout.worker_dir} is an existing worktree whose "

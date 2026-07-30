@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -3629,6 +3630,22 @@ class TestBaseBranchReachesTheBrief(unittest.TestCase):
         # Every pre-#808 brief must render byte-identically.
         self.assertIn("codex exec review --base origin/main", self._render())
 
+    def test_shell_metacharacters_in_the_ref_are_quoted(self):
+        """Codex Round 2 Blocker: git permits `;` / `$( )` in ref names and
+        this value lands in a ```bash fence the worker copy-pastes, so a raw
+        interpolation would be command execution, not a ref."""
+        out = self._render("origin/foo$(id);whoami")
+        self.assertNotIn("--base origin/foo$(id);whoami", out)
+        self.assertIn(
+            "--base " + shlex.quote("origin/foo$(id);whoami"), out
+        )
+        # Round-trips back to the literal ref when the shell parses it.
+        line = next(
+            l for l in out.splitlines() if l.startswith("codex exec review")
+        )
+        argv = shlex.split(line.split("<")[0])
+        self.assertEqual(argv[argv.index("--base") + 1], "origin/foo$(id);whoami")
+
     def test_non_string_base_ref_is_rejected(self):
         config = {
             "task": {
@@ -3899,6 +3916,18 @@ class TestReusedWorktreeBaseGuard(unittest.TestCase):
         self.assertIn("origin/main", msg)      # what this dispatch wants
         self.assertIn("worktree remove", msg)  # the recovery instruction
 
+    def test_reuse_refuses_when_the_configured_branch_vanished_from_origin(self):
+        """Codex Round 2 Major: the reuse path must run the same existence
+        check as creation, or a branch deleted from origin after the first
+        apply is silently advertised as the PR base."""
+        self._apply(self._plan(task_id="vanished", base_ref_override="develop"))
+        # Simulate the branch disappearing from the remote. This fixture has no
+        # real origin, so the local remote-tracking ref IS the authority here.
+        self._git("update-ref", "-d", "refs/remotes/origin/develop")
+        with self.assertRaises(gdp.BaseBranchApplyError) as cm:
+            self._apply(self._plan(task_id="vanished", base_ref_override="develop"))
+        self.assertIn("does not exist on the remote", str(cm.exception))
+
     def test_reuse_without_a_record_proceeds(self):
         # Worktrees created before Issue #808 carry no record; the guard must
         # only ever add a refusal where an authoritative record disagrees.
@@ -3908,11 +3937,25 @@ class TestReusedWorktreeBaseGuard(unittest.TestCase):
                   f"branch.{plan.layout.planned_branch}.claudeOrgBase")
         self._apply(self._plan(task_id="norec", base_ref_override="main"))
 
-    def test_unconfigured_dispatch_does_not_churn_a_recorded_worktree(self):
-        # origin/HEAD is a moving symbolic ref, so a recorded concrete branch
-        # is not evidence of disagreement.
-        self._apply(self._plan(task_id="unconf", base_ref_override="develop"))
-        self._apply(self._plan(task_id="unconf"))
+    def test_reuse_refuses_when_the_override_is_dropped(self):
+        """Codex Round 2 Blocker: dropping the override on a retry is the same
+        mismatch as changing it — origin/HEAD resolves to a concrete branch
+        (main) that disagrees with the recorded develop."""
+        self._apply(self._plan(task_id="dropped", base_ref_override="develop"))
+        with self.assertRaises(gdp.BaseBranchApplyError) as cm:
+            self._apply(self._plan(task_id="dropped"))
+        msg = str(cm.exception)
+        self.assertIn("origin/develop", msg)
+        self.assertIn("origin/main", msg)
+
+    def test_unconfigured_reuse_of_an_unconfigured_worktree_is_idempotent(self):
+        # The genuine no-churn case: recorded base == resolved origin/HEAD.
+        self._apply(self._plan(task_id="plain"))
+        self.assertEqual(
+            gdp._recorded_worktree_base(self.sb.claude_org_root, "feat/plain"),
+            "origin/main",
+        )
+        self._apply(self._plan(task_id="plain"))
 
 
 class TestBaseRefCliFlag(unittest.TestCase):

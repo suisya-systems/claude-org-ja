@@ -31,6 +31,7 @@ _sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
 
 import argparse
 import re
+import shlex
 import sys
 from pathlib import Path
 from string import Template
@@ -298,7 +299,14 @@ def _build_substitutions(config: dict[str, Any]) -> dict[str, str]:
         # ``origin/<base_branch>`` when the project (or --base-ref) configures
         # a different cut point, otherwise the review would treat all of the
         # base branch's own commits as this task's diff.
-        "task_base_ref": task.get("base_ref") or "origin/main",
+        #
+        # ``shlex.quote`` because this lands inside a ```bash fence the worker
+        # copy-pastes, and git permits shell metacharacters in ref names
+        # (``foo;id``, ``foo$(id)`` are valid branch names), so a raw
+        # interpolation would turn a registry cell into command execution
+        # (Codex Round 2 Blocker). Ordinary names quote to themselves, so the
+        # default rendering is unchanged.
+        "task_base_ref": shlex.quote(task.get("base_ref") or "origin/main"),
         "task_verification_depth": task["verification_depth"],
         "task_commit_prefix": task["commit_prefix"],
         "task_issue_url": task.get("issue_url", ""),
