@@ -91,6 +91,23 @@ class BaseCloneApplyError(WorktreeApplyError):
     """
 
 
+class BaseBranchApplyError(WorktreeApplyError):
+    """Raised by ``apply`` when the configured base branch (Issue #808) does
+    not exist on the base repo's ``origin`` remote.
+
+    The branch comes from either ``--base-ref`` or the registry's
+    ``base_branch`` column, so a typo (``develp``) or a branch that was never
+    pushed would otherwise silently fall back to the wrong cut point. Failing
+    loud here matches the Issue #480 stale-base guard: both refuse to branch a
+    worktree off a ref we cannot prove is the live remote tip.
+
+    Subclasses :class:`WorktreeApplyError` so existing ``except
+    WorktreeApplyError`` callers still catch it. Like the other worktree
+    errors it fires inside :func:`_ensure_worktree`, i.e. BEFORE the DB
+    reservation, so it never leaks a ``queued`` run row.
+    """
+
+
 class BlockingPreviewWarningError(RuntimeError):
     """Raised by ``apply`` when the plan carries one or more
     ``blocking_warnings`` (Issue #489 surface). Distinct from
@@ -178,6 +195,17 @@ class DelegatePlan:
     # placement flips to CLAUDE.local.md (Issue #712 interaction). None when
     # the project has no registry row.
     project_path: Optional[str] = None
+    # Issue #808: the effective base branch for this dispatch, already
+    # normalized by :func:`normalize_base_branch`. ``None`` means "unconfigured"
+    # and ``_resolve_base_ref`` keeps the historical ``origin/HEAD`` behaviour;
+    # a value means the worktree is cut from ``origin/<base_branch>`` and that
+    # same branch is the default ``gh pr create --base`` for the PR flow.
+    base_branch: Optional[str] = None
+    # Where ``base_branch`` came from: ``"cli"`` (--base-ref), ``"registry"``
+    # (the project's base_branch column), or ``"origin_head"`` (unconfigured).
+    # Carried so the apply-time failure message can name the input the operator
+    # has to fix, and so ``preview`` discloses which precedence tier won.
+    base_branch_source: str = "origin_head"
 
     def to_summary_dict(self) -> dict[str, Any]:
         return {
@@ -195,6 +223,16 @@ class DelegatePlan:
             "settings_args": dict(self.settings_args),
             "artifacts_to_create": [str(p) for p in self.artifacts_to_create],
             "base_repo": str(self.base_repo) if self.base_repo else None,
+            # Issue #808: expose the resolved cut point so Secretary can read
+            # the PR base off the preview instead of re-deriving it. The
+            # ``base_ref`` value is exactly what ``git worktree add`` will use.
+            "base_branch": self.base_branch,
+            "base_branch_source": self.base_branch_source,
+            "base_ref": (
+                f"origin/{self.base_branch}"
+                if self.base_branch is not None
+                else "origin/HEAD"
+            ),
             "warnings": list(self.warnings),
             "blocking_warnings": list(self.blocking_warnings),
             "pending_clone": (
@@ -295,6 +333,57 @@ def _resolve_brief_filename(*, self_edit: bool, repo_dir: Path) -> str:
     if self_edit or _repo_tracks_claude_md(repo_dir):
         return "CLAUDE.local.md"
     return "CLAUDE.md"
+
+
+# Accepted (and stripped) prefix on a configured base branch value, so
+# ``origin/develop`` and ``develop`` mean the same thing (Issue #808). Only
+# ``origin`` is special-cased: the worktree cut point is always resolved
+# against ``refs/remotes/origin/<branch>`` — the single remote the Issue #480
+# freshness guard fetches — so another remote's name would not be a valid
+# branch there and must fail loud rather than be silently rewritten.
+_ORIGIN_REF_PREFIX = "origin/"
+
+
+def normalize_base_branch(value: Optional[str]) -> Optional[str]:
+    """Normalize a configured base-branch value to a bare branch name.
+
+    Issue #808. Applied identically to the ``--base-ref`` CLI flag and the
+    registry ``base_branch`` column so the two inputs cannot disagree on what
+    ``develop`` means:
+
+    - surrounding whitespace is trimmed (markdown table cells are padded);
+    - a leading ``origin/`` is stripped, so an operator who writes the ref the
+      way git prints it (``origin/develop``) gets the same result as the bare
+      branch name;
+    - ``""`` / ``-`` (the registry's "unset" placeholder, matching the ``パス``
+      column's convention) map to ``None`` = "not configured", which keeps the
+      historical ``origin/HEAD`` behaviour for every pre-#808 row.
+
+    Returns the bare branch name, or ``None`` when nothing is configured.
+    Note that this deliberately does NOT validate the branch's existence —
+    that is an apply-time git question handled by :func:`_resolve_base_ref`,
+    so the planner stays pure.
+
+    Raises :class:`TypeError` on a non-string, non-None input. Registry cells
+    are always strings, but ``--from-toml`` can carry ``base_ref = 5``; the
+    CLI catches that earlier with a friendlier message (see
+    :func:`_load_task_args_from_toml`), and this guard keeps a direct
+    :func:`build_delegate_plan` caller from failing later with an opaque
+    ``AttributeError`` inside ``.strip()`` (Codex Round 3 Major).
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise TypeError(
+            f"base branch must be a string, got {type(value).__name__} "
+            f"({value!r})"
+        )
+    v = value.strip()
+    if not v or v == "-":
+        return None
+    if v.startswith(_ORIGIN_REF_PREFIX):
+        v = v[len(_ORIGIN_REF_PREFIX):].strip()
+    return v or None
 
 
 def _is_clone_url(path: Optional[str]) -> bool:
@@ -456,8 +545,17 @@ def _format_delegate_body(
     permission_mode: str,
     verification_depth: str,
     brief_filename: str,
+    base_branch: Optional[str] = None,
+    base_branch_source: str = "origin_head",
 ) -> str:
-    """Format the DELEGATE message body per org-delegate Step 2 template."""
+    """Format the DELEGATE message body per org-delegate Step 2 template.
+
+    Issue #808: when a base branch is configured, an extra ``ベース`` line
+    names the cut point and where it came from, so the dispatcher and worker
+    both see the non-default PR base without re-reading the registry. The
+    line is omitted entirely when nothing is configured, keeping the body
+    byte-identical to the pre-#808 output for every existing project.
+    """
     instr_summary = _summarize_description(description)
     branch_line = (
         layout.planned_branch
@@ -467,6 +565,16 @@ def _format_delegate_body(
     # Use the platform-native joiner to avoid the mixed `\\…/CLAUDE.md`
     # output the literal-`/` template produced on Windows (Codex Round 1 Nit).
     brief_full_path = str(Path(layout.worker_dir) / brief_filename)
+    base_line = ""
+    if base_branch is not None:
+        source_label = {
+            "cli": "--base-ref 指定",
+            "registry": "registry base_branch",
+        }.get(base_branch_source, base_branch_source)
+        base_line = (
+            f"\n  - ベース: origin/{base_branch}"
+            f"（{source_label}。PR も `--base {base_branch}` を既定とする）"
+        )
     body = f"""DELEGATE: 以下のワーカーを派遣してください。
 
 タスク一覧:
@@ -474,7 +582,7 @@ def _format_delegate_body(
   - ワーカーディレクトリ: {layout.worker_dir}（{brief_filename}・設定配置済み）
   - ディレクトリパターン: {_pattern_label(layout)}
   - プロジェクト: {_project_label(layout, project_path)}
-  - ブランチ (planned): {branch_line}
+  - ブランチ (planned): {branch_line}{base_line}
   - Permission Mode: {permission_mode}
   - 検証深度: {verification_depth}
   - 指示内容: 詳細は `{brief_full_path}` を参照。要約: {instr_summary or '(none)'}
@@ -496,6 +604,7 @@ def build_delegate_plan(
     description: str = "",
     mode: str = "edit",
     branch_override: Optional[str] = None,
+    base_ref_override: Optional[str] = None,
     commit_prefix: Optional[str] = None,
     verification_depth: str = "full",
     issue_url: Optional[str] = None,
@@ -561,8 +670,10 @@ def build_delegate_plan(
 
     permission_mode = parse_permission_mode(Path(claude_org_root))
 
-    # Look up project.path for the DELEGATE body label.
+    # Look up project.path for the DELEGATE body label, and the Issue #808
+    # ``base_branch`` column for the worktree cut point / PR base default.
     project_path: Optional[str] = None
+    registry_base_branch: Optional[str] = None
     registry_for_meta = registry_path or (
         Path(claude_org_root) / "registry" / "projects.md"
     )
@@ -571,6 +682,26 @@ def build_delegate_plan(
         match = rwl.find_project(rows, project_slug)
         if match is not None:
             project_path = match.path
+            registry_base_branch = normalize_base_branch(match.base_branch)
+
+    # Issue #808 precedence: --base-ref > registry base_branch > origin/HEAD.
+    # Recording the winning tier (not just the value) lets the apply-time
+    # failure point the operator at the input they actually have to fix, and
+    # keeps the three tiers auditable in ``preview --json``.
+    base_branch = normalize_base_branch(base_ref_override)
+    base_branch_source = "cli"
+    if base_branch is None:
+        base_branch = registry_base_branch
+        base_branch_source = "registry" if base_branch is not None else "origin_head"
+    # Feed the effective ref into the brief so the worker's Codex self-review
+    # (``codex exec review --base ...``) diffs against the branch this task was
+    # actually cut from. Without this the rendered brief keeps saying
+    # ``origin/main``, and a develop-based task would review every develop-only
+    # commit as if it were its own change (Codex Round 1 Major). Left unset
+    # when unconfigured so the template default (``origin/main``) still renders
+    # byte-identically for every pre-#808 dispatch.
+    if base_branch is not None:
+        config["task"]["base_ref"] = f"{_ORIGIN_REF_PREFIX}{base_branch}"
 
     # Pattern B: figure out which repo `git worktree add` should be run from.
     # live_repo_worktree → Secretary's live claude-org repo;
@@ -716,6 +847,8 @@ def build_delegate_plan(
         permission_mode=permission_mode,
         verification_depth=verification_depth,
         brief_filename=brief_filename,
+        base_branch=base_branch,
+        base_branch_source=base_branch_source,
     )
 
     artifacts = [
@@ -789,6 +922,8 @@ def build_delegate_plan(
         blocking_warnings=blocking_warnings,
         pending_clone=pending_clone,
         project_path=project_path,
+        base_branch=base_branch,
+        base_branch_source=base_branch_source,
     )
 
 
@@ -880,7 +1015,122 @@ def _reserve_in_db(
         conn.close()
 
 
-def _resolve_base_ref(base_repo: Path) -> Optional[str]:
+def _has_origin_remote(base_repo: Path) -> bool:
+    """True iff ``base_repo`` has an ``origin`` remote configured.
+
+    Purely-local repos (and the hermetic test fixtures that synthesize
+    ``refs/remotes/origin/*`` with ``update-ref`` and no real remote) have
+    none; :func:`_fetch_base_origin` already treats that as its quiet path,
+    and :func:`_materialize_origin_branch` mirrors the same rule.
+    """
+    probe = subprocess.run(
+        ["git", "-C", str(base_repo), "remote", "get-url", "origin"],
+        capture_output=True,
+    )
+    return probe.returncode == 0
+
+
+def _materialize_origin_branch(base_repo: Path, branch: str) -> bool:
+    """Ensure ``refs/remotes/origin/<branch>`` exists and matches the remote.
+
+    Returns True when the cut point is usable, False when the branch does not
+    exist on the remote (the caller then raises
+    :class:`BaseBranchApplyError`).
+
+    Why this is not just a local ``rev-parse`` on the remote-tracking ref
+    (Codex Round 1 Major): ``refs/remotes/origin/<branch>`` is a *cache* of
+    the remote, and the plain ``git fetch origin`` run by
+    :func:`_fetch_base_origin` keeps it wrong in two opposite ways —
+
+    - **false negative**: a clone made with a restricted fetch refspec
+      (``git clone --single-branch``) never creates ``origin/develop`` even
+      though ``develop`` exists on the remote, so a local-only probe would
+      refuse a perfectly valid dispatch; and
+    - **false positive**: the fetch does not prune, so a branch deleted on the
+      remote leaves a stale local ``origin/develop`` behind and the worktree
+      would be cut from a branch that no longer exists.
+
+    So the remote itself is the authority (``git ls-remote --heads``), and the
+    ref is then fetched explicitly with an exact refspec — which both defeats
+    a restricted refspec and force-updates a stale ref to the live tip.
+
+    When no ``origin`` remote is configured there is nothing to ask, so we
+    fall back to the local remote-tracking ref (same quiet path as
+    :func:`_fetch_base_origin`).
+    """
+    local_probe = ["git", "-C", str(base_repo), "rev-parse", "--verify",
+                   "--quiet", f"refs/remotes/{_ORIGIN_REF_PREFIX}{branch}"]
+    if not _has_origin_remote(base_repo):
+        return subprocess.run(local_probe, capture_output=True).returncode == 0
+    ls = subprocess.run(
+        ["git", "-C", str(base_repo), "ls-remote", "--exit-code", "--heads",
+         "origin", f"refs/heads/{branch}"],
+        capture_output=True,
+    )
+    if ls.returncode != 0:
+        # rc=2 is ls-remote's "no matching refs"; any other non-zero is a
+        # transport failure. Both mean "we could not prove the branch is
+        # there", and the caller's fail-loud message covers both (it names
+        # the configured input and tells the operator to fix / push it) —
+        # degrading to origin/HEAD is never an option here.
+        return False
+    fetch = subprocess.run(
+        ["git", "-C", str(base_repo), "fetch", "origin",
+         f"+refs/heads/{branch}:refs/remotes/{_ORIGIN_REF_PREFIX}{branch}"],
+        capture_output=True,
+    )
+    if fetch.returncode != 0:
+        stderr = (fetch.stderr or b"").decode("utf-8", errors="replace").strip()
+        raise WorktreeApplyError(
+            f"`git fetch origin {branch}` failed (rc={fetch.returncode}) in "
+            f"{base_repo}: {stderr}. The branch exists on the remote but its "
+            "remote-tracking ref could not be updated, so the worktree would "
+            "be cut from a possibly-stale commit (Issue #480 / #808). Fix the "
+            "network / remote and retry apply."
+        )
+    return subprocess.run(local_probe, capture_output=True).returncode == 0
+
+
+def _missing_base_branch_error(
+    base_repo: Path,
+    *,
+    base_branch: str,
+    base_branch_source: str,
+    project_slug: Optional[str],
+) -> "BaseBranchApplyError":
+    """Build the fail-loud error for a configured branch the remote doesn't have.
+
+    Shared by the creation path (:func:`_resolve_base_ref`) and the reuse path
+    (:func:`_assert_reused_worktree_base`) so both give the operator the same
+    diagnosis and recovery, instead of only failing when a worktree happens to
+    be created (Codex Round 2 Major).
+    """
+    ref = f"{_ORIGIN_REF_PREFIX}{base_branch}"
+    source_hint = {
+        "cli": "the --base-ref flag passed to this dispatch",
+        "registry": (
+            "the `base_branch` column of registry/projects.md for project "
+            f"{project_slug!r}"
+        ),
+    }.get(base_branch_source, f"base_branch_source={base_branch_source!r}")
+    return BaseBranchApplyError(
+        f"configured base branch {base_branch!r} does not exist on the "
+        f"remote: {ref} could not be resolved against origin in {base_repo}. "
+        f"It was configured by {source_hint}. Refusing to fall back to "
+        "origin/HEAD, because silently using the default branch is exactly "
+        "the diff pollution a per-project base branch exists to prevent "
+        "(Issue #808). Fix the configured name (typo?), push the branch to "
+        "origin, or drop the setting to use origin/HEAD, then retry apply."
+    )
+
+
+def _resolve_base_ref(
+    base_repo: Path,
+    *,
+    base_branch: Optional[str] = None,
+    base_branch_source: str = "origin_head",
+    project_slug: Optional[str] = None,
+) -> Optional[str]:
     """Pick the starting ref for ``git worktree add -b <branch> <path> <ref>``.
 
     Pattern B is triggered precisely when another active run is occupying
@@ -888,7 +1138,17 @@ def _resolve_base_ref(base_repo: Path) -> Optional[str]:
     other task's feature branch. Branching off it would mix unmerged
     commits into the new worktree.
 
-    The only ref we treat as authoritative is ``origin/HEAD`` (the
+    Issue #808 — when ``base_branch`` is set (``--base-ref`` or the registry
+    ``base_branch`` column, already normalized by
+    :func:`normalize_base_branch`), the cut point is ``origin/<base_branch>``
+    instead of ``origin/HEAD``. That branch must actually exist as a
+    remote-tracking ref: a project on a two-track flow (main = hotfix,
+    develop = feature) that silently fell back to ``origin/HEAD`` would cut
+    every worktree from the wrong trunk and pollute each PR's diff. So a
+    missing branch raises :class:`BaseBranchApplyError` rather than degrading
+    — the same fail-loud stance as the Issue #480 stale-base guard.
+
+    Otherwise the only ref we treat as authoritative is ``origin/HEAD`` (the
     project's default branch as the remote knows it). We deliberately do
     NOT fall back to local ``main`` / ``master`` / ``HEAD`` because:
 
@@ -900,11 +1160,25 @@ def _resolve_base_ref(base_repo: Path) -> Optional[str]:
 
     Returns ``None`` when ``origin/HEAD`` is not set — apply then aborts
     with a recovery hint pointing to ``git remote set-head origin --auto``.
+    (The configured-branch path never returns ``None``: it either resolves or
+    raises, because "unset origin/HEAD" and "configured branch missing" need
+    different recovery instructions.)
 
     Freshness of the returned ref is the caller's job: :func:`_ensure_worktree`
     runs :func:`_fetch_base_origin` immediately before this, so ``origin/HEAD``
-    reflects the live remote tip rather than a stale local clone (Issue #480).
+    — and the existence check below — reflect the live remote tip rather than
+    a stale local clone (Issue #480).
     """
+    if base_branch is not None:
+        ref = f"{_ORIGIN_REF_PREFIX}{base_branch}"
+        if _materialize_origin_branch(base_repo, base_branch):
+            return ref
+        raise _missing_base_branch_error(
+            base_repo,
+            base_branch=base_branch,
+            base_branch_source=base_branch_source,
+            project_slug=project_slug,
+        )
     proc = subprocess.run(
         ["git", "-C", str(base_repo), "symbolic-ref", "--short",
          "refs/remotes/origin/HEAD"],
@@ -940,11 +1214,7 @@ def _fetch_base_origin(base_repo: Path) -> None:
     repos (and the test fixtures that synthesize ``refs/remotes/origin/*``
     without a real remote) have nothing to fetch.
     """
-    probe = subprocess.run(
-        ["git", "-C", str(base_repo), "remote", "get-url", "origin"],
-        capture_output=True,
-    )
-    if probe.returncode != 0:
+    if not _has_origin_remote(base_repo):
         return  # no origin remote — nothing to refresh
     proc = subprocess.run(
         ["git", "-C", str(base_repo), "fetch", "origin"],
@@ -976,6 +1246,114 @@ def _worktree_branch(worker_dir: Path) -> Optional[str]:
     if not name or name == "HEAD":
         return None
     return name
+
+
+# git-config key (under ``branch.<name>.``) where apply records the ref a
+# task branch was cut from, so a later reuse can detect that the configured
+# base changed underneath it (Issue #808 / Codex Round 1 Major). Stored
+# per-branch rather than per-worktree because the branch is what carries the
+# commits, and ``git branch -d`` cleans the entry up automatically.
+_BRANCH_BASE_CONFIG_KEY = "claudeOrgBase"
+
+
+def _branch_base_config_name(branch: str) -> str:
+    return f"branch.{branch}.{_BRANCH_BASE_CONFIG_KEY}"
+
+
+def _record_worktree_base(base_repo: Path, branch: str, base_ref: str) -> None:
+    """Record the ref ``branch`` was cut from (best-effort).
+
+    A config write failure must not fail an otherwise-successful dispatch —
+    the recorded value only powers the *extra* reuse check in
+    :func:`_assert_reused_worktree_base`, which treats "no record" as
+    "cannot verify, proceed" for backwards compatibility with worktrees
+    created before Issue #808.
+    """
+    subprocess.run(
+        ["git", "-C", str(base_repo), "config",
+         _branch_base_config_name(branch), base_ref],
+        capture_output=True,
+    )
+
+
+def _recorded_worktree_base(base_repo: Path, branch: str) -> Optional[str]:
+    """Read back the ref recorded by :func:`_record_worktree_base`, or None."""
+    proc = subprocess.run(
+        ["git", "-C", str(base_repo), "config", "--get",
+         _branch_base_config_name(branch)],
+        capture_output=True,
+    )
+    if proc.returncode != 0:
+        return None
+    value = proc.stdout.decode("utf-8", errors="replace").strip()
+    return value or None
+
+
+def _assert_reused_worktree_base(plan: DelegatePlan, branch: str) -> None:
+    """Refuse to reuse a worktree whose branch was cut from a different base.
+
+    Issue #808 / Codex Round 1 Major: :func:`_ensure_worktree` returns early
+    when ``worker_dir`` is already a registered worktree on the planned
+    branch, so the base-branch resolution below it never runs on a retry. If
+    the first attempt cut the branch from ``origin/develop`` and the retry
+    changes ``--base-ref`` (or the registry) to ``main``, the stale branch
+    would be accepted while the fresh ``send_plan.json`` advertises ``main``
+    as the PR base — reintroducing exactly the base/PR mismatch this feature
+    exists to prevent.
+
+    Comparing recorded-vs-configured is what makes both directions of the
+    change detectable; a merge-base heuristic only catches one of them
+    (``origin/main`` is typically an ancestor of a develop-cut branch, so
+    narrowing develop → main would slip through).
+
+    No record (worktree predates Issue #808, or was created by hand) means the
+    recorded-vs-configured comparison cannot run, so reuse proceeds — this
+    check only ever adds a refusal where an authoritative record disagrees.
+    The existence check below runs either way, because a configured branch
+    that has since been deleted from origin must fail on the reuse path too
+    (Codex Round 2 Major: otherwise apply only fails loud when it happens to
+    create a worktree, and an unusable PR base is advertised on retries).
+    """
+    # Existence first: an advertised PR base that no longer exists on the
+    # remote is broken regardless of what the branch was cut from.
+    if plan.base_branch is not None and not _materialize_origin_branch(
+        plan.base_repo, plan.base_branch
+    ):
+        raise _missing_base_branch_error(
+            plan.base_repo,
+            base_branch=plan.base_branch,
+            base_branch_source=plan.base_branch_source,
+            project_slug=plan.project_slug,
+        )
+    recorded = _recorded_worktree_base(plan.base_repo, branch)
+    if recorded is None:
+        return
+    if plan.base_branch is not None:
+        expected: Optional[str] = f"{_ORIGIN_REF_PREFIX}{plan.base_branch}"
+    else:
+        # Unconfigured dispatch: the cut point would be origin/HEAD, so
+        # resolve it to the concrete branch it points at and compare against
+        # that. Accepting every unconfigured retry (Codex Round 2 Blocker)
+        # would let "first apply cut from develop, retry drops the override"
+        # keep the develop-based branch while the send plan advertises the
+        # repo default — the very mismatch this guard exists for.
+        expected = _resolve_base_ref(plan.base_repo)
+    if expected is None or recorded == expected:
+        # ``expected is None`` = origin/HEAD is unset, so there is nothing
+        # authoritative to compare against. The creation path raises on that
+        # separately; reuse has no cut point to redo, so stay silent.
+        return
+    raise BaseBranchApplyError(
+        f"worker_dir {plan.layout.worker_dir} is an existing worktree whose "
+        f"branch {branch!r} was cut from {recorded}, but this dispatch is "
+        f"configured for {expected} (source={plan.base_branch_source}). "
+        "Refusing to reuse it: the branch would carry the old base's commits "
+        "while the PR targets the new one, which is the diff pollution "
+        "Issue #808 exists to prevent. Remove the worktree (`git -C "
+        f"{plan.base_repo} worktree remove {plan.layout.worker_dir}` plus "
+        f"`git -C {plan.base_repo} branch -D {branch}`) so apply recreates it "
+        f"from {expected}, or restore the original base setting and retry."
+    )
 
 
 def _is_registered_worktree(base_repo: Path, worker_dir: Path) -> bool:
@@ -1094,6 +1472,8 @@ def _finalize_pending_clone_brief(plan: DelegatePlan) -> DelegatePlan:
         permission_mode=plan.permission_mode,
         verification_depth=plan.verification_depth,
         brief_filename="CLAUDE.local.md",
+        base_branch=plan.base_branch,
+        base_branch_source=plan.base_branch_source,
     )
     return replace(
         plan,
@@ -1167,6 +1547,11 @@ def _ensure_worktree(plan: DelegatePlan) -> None:
                     "(or remove the worktree and let apply recreate it) "
                     "and retry."
                 )
+            # Issue #808: the branch name matching is not enough — the branch
+            # must also have been cut from the base this dispatch is
+            # configured for, or the PR would target a base the branch never
+            # branched from.
+            _assert_reused_worktree_base(plan, actual)
         return
     if worker_dir.exists() and any(worker_dir.iterdir()):
         raise WorktreeApplyError(
@@ -1183,8 +1568,20 @@ def _ensure_worktree(plan: DelegatePlan) -> None:
         )
     # Issue #480: refresh remote-tracking refs first so we branch off the
     # *current* origin/HEAD, not a stale local clone's old origin/main.
-    _fetch_base_origin(plan.base_repo)
-    base_ref = _resolve_base_ref(plan.base_repo)
+    # Issue #808: a configured base branch takes the targeted path instead —
+    # ``_resolve_base_ref`` -> ``_materialize_origin_branch`` asks the remote
+    # for that one branch and fetches it with an exact refspec. That is both
+    # fail-closed (same stance as the blanket fetch) and strictly stronger for
+    # the configured ref, so running the blanket fetch first would only pay
+    # for a second round-trip that nothing downstream reads.
+    if plan.base_branch is None:
+        _fetch_base_origin(plan.base_repo)
+    base_ref = _resolve_base_ref(
+        plan.base_repo,
+        base_branch=plan.base_branch,
+        base_branch_source=plan.base_branch_source,
+        project_slug=plan.project_slug,
+    )
     if base_ref is None:
         raise WorktreeApplyError(
             f"could not resolve `origin/HEAD` in {plan.base_repo}. Refusing "
@@ -1209,6 +1606,9 @@ def _ensure_worktree(plan: DelegatePlan) -> None:
             f"`git worktree add` failed (rc={proc.returncode}) for "
             f"{worker_dir} from {plan.base_repo}: {stderr}"
         )
+    # Issue #808: remember the actual cut point so a later partial-retry apply
+    # can detect a changed base instead of silently reusing the old branch.
+    _record_worktree_base(plan.base_repo, branch, base_ref)
 
 
 def _write_brief(plan: DelegatePlan) -> Path:
@@ -1596,6 +1996,21 @@ def _add_task_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--description", default=None)
     p.add_argument("--mode", choices=("edit", "audit"), default=None)
     p.add_argument("--branch", dest="branch_override", default=None)
+    # Issue #808: hotfix escape hatch over the registry's per-project
+    # base_branch. Help text stays ASCII-only so `--help` does not crash a
+    # cp932 Windows console (repo convention).
+    p.add_argument(
+        "--base-ref",
+        dest="base_ref_override",
+        default=None,
+        help=(
+            "Branch on origin to cut the worktree from, e.g. 'develop' "
+            "(an 'origin/' prefix is accepted). Also becomes the default "
+            "`gh pr create --base`. Precedence: this flag > the project's "
+            "base_branch column in registry/projects.md > origin/HEAD. "
+            "Apply fails loud if the branch does not exist on origin."
+        ),
+    )
     p.add_argument("--commit-prefix", default=None)
     p.add_argument(
         "--verification-depth", choices=("full", "minimal"), default=None
@@ -1736,6 +2151,18 @@ def _load_task_args_from_toml(path: Path) -> dict[str, Any]:
     role = (worker.get("role") or "").strip()
     mode_from_toml = "audit" if role == "doc-audit" else "edit"
 
+    # Issue #808 / Codex Round 3 Major: a TOML ``base_ref = 5`` used to reach
+    # ``normalize_base_branch`` and abort preview / apply with a raw
+    # AttributeError traceback. Report it as the configuration error it is,
+    # naming the file and the offending value (mirrors
+    # ``gen_worker_brief.validate``'s type checks on the other task fields).
+    base_ref = task.get("base_ref")
+    if base_ref is not None and not isinstance(base_ref, str):
+        raise SystemExit(
+            f"error: {path}: [task].base_ref must be a string branch name "
+            f"(e.g. \"develop\"), got {type(base_ref).__name__} ({base_ref!r})"
+        )
+
     # Issue #290 defect 1: surface explicit [worker] fields so the resolver
     # honors them instead of silently re-deriving pattern/role/dir/self_edit.
     layout_overrides: dict[str, Any] = {}
@@ -1764,6 +2191,10 @@ def _load_task_args_from_toml(path: Path) -> dict[str, Any]:
         "project_slug": project.get("name"),
         "description": task.get("description"),
         "branch_override": task.get("branch"),
+        # Issue #808: keep the TOML and CLI input forms at parity so a
+        # ``--from-toml`` dispatch can pin the base branch too (``--base-ref``
+        # still wins per the merge order in ``_gather_plan_kwargs``).
+        "base_ref_override": base_ref,
         "commit_prefix": task.get("commit_prefix"),
         "verification_depth": task.get("verification_depth"),
         "issue_url": task.get("issue_url"),
@@ -1819,6 +2250,9 @@ def _gather_plan_kwargs(args: argparse.Namespace) -> dict[str, Any]:
         "description": args.description,
         "mode": args.mode,
         "branch_override": args.branch_override,
+        # ``getattr`` (not attribute access) for the same reason ``--pattern``
+        # uses it above: callers synthesize partial Namespaces.
+        "base_ref_override": getattr(args, "base_ref_override", None),
         "commit_prefix": args.commit_prefix,
         "verification_depth": args.verification_depth,
         "issue_url": args.issue_url,
@@ -1924,6 +2358,13 @@ def _cmd_apply(args: argparse.Namespace) -> int:
         send_plan_out=args.send_plan_out,
     )
     print(f"reserved (queued) task_id={plan.task_id} pattern={plan.layout.pattern}")
+    # Issue #808: only announced when a non-default cut point is in play, so
+    # the common origin/HEAD dispatch keeps its existing output.
+    if plan.base_branch is not None:
+        print(
+            f"base: origin/{plan.base_branch} "
+            f"(source={plan.base_branch_source}; PR base default)"
+        )
     print(f"brief: {result.brief_path}")
     if result.settings_path is not None:
         print(f"settings: {result.settings_path}")

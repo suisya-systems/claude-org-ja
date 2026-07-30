@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -3329,6 +3330,698 @@ class TestIssue712BriefPlacement(unittest.TestCase):
         self.assertTrue(
             (Path(plan.layout.worker_dir) / "CLAUDE.md").exists()
         )
+
+
+class TestNormalizeBaseBranch(unittest.TestCase):
+    """Issue #808: one normalizer for both inputs (--base-ref and the registry
+    ``base_branch`` column) so they cannot disagree on what a value means."""
+
+    def test_bare_branch_name_passes_through(self):
+        self.assertEqual(gdp.normalize_base_branch("develop"), "develop")
+
+    def test_origin_prefix_is_stripped(self):
+        # An operator writing the ref the way git prints it must land on the
+        # same branch as the bare name.
+        self.assertEqual(gdp.normalize_base_branch("origin/develop"), "develop")
+
+    def test_surrounding_whitespace_is_trimmed(self):
+        # Markdown table cells arrive padded.
+        self.assertEqual(gdp.normalize_base_branch("  develop  "), "develop")
+        self.assertEqual(gdp.normalize_base_branch(" origin/ develop "), "develop")
+
+    def test_unset_forms_map_to_none(self):
+        # None == "not configured" == keep the historical origin/HEAD path.
+        for value in (None, "", "   ", "-", " - ", "origin/"):
+            with self.subTest(value=value):
+                self.assertIsNone(gdp.normalize_base_branch(value))
+
+    def test_slashed_branch_name_survives(self):
+        # Only a leading ``origin/`` is special; a real hierarchical branch
+        # name must not be mangled.
+        self.assertEqual(
+            gdp.normalize_base_branch("release/2026-Q3"), "release/2026-Q3"
+        )
+        self.assertEqual(
+            gdp.normalize_base_branch("origin/release/2026-Q3"), "release/2026-Q3"
+        )
+
+
+class TestBaseBranchResolution(unittest.TestCase):
+    """Issue #808: per-project default base branch + --base-ref override.
+
+    Covers the precedence chain (CLI > registry > origin/HEAD), the worktree
+    actually being cut from the configured branch, and the fail-loud refusal
+    when the configured branch does not exist on origin.
+    """
+
+    def setUp(self) -> None:
+        try:
+            subprocess.run(["git", "--version"], capture_output=True, check=True)
+        except FileNotFoundError:
+            self.skipTest("git not available")
+        self._td = tempfile.TemporaryDirectory()
+        # This class drives its own git init (needs a controlled main/develop
+        # divergence), so it opts out of the sandbox-level init.
+        self.sb = _Sandbox(Path(self._td.name), with_claude_org_origin=False)
+        import os
+        self._git_env = os.environ.copy()
+        self._git_env.update(
+            {
+                "GIT_AUTHOR_NAME": "test",
+                "GIT_AUTHOR_EMAIL": "test@example.com",
+                "GIT_COMMITTER_NAME": "test",
+                "GIT_COMMITTER_EMAIL": "test@example.com",
+            }
+        )
+        base = self.sb.claude_org_root
+        self._git("init", "-q", "-b", "main")
+        self._git("commit", "--allow-empty", "-m", "main-1", "-q")
+        self.main_sha = self._rev_parse("main")
+        self._git("update-ref", "refs/remotes/origin/main", self.main_sha)
+        self._git("symbolic-ref", "refs/remotes/origin/HEAD",
+                  "refs/remotes/origin/main")
+        # A develop branch that is genuinely AHEAD of main, so a test can tell
+        # "cut from develop" apart from "cut from origin/HEAD" by SHA alone.
+        self._git("commit", "--allow-empty", "-m", "develop-1", "-q")
+        self.develop_sha = self._rev_parse("HEAD")
+        self._git("update-ref", "refs/remotes/origin/develop", self.develop_sha)
+        # Leave the checkout back on main so HEAD is not itself develop.
+        self._git("reset", "--hard", "-q", self.main_sha)
+        self.assertNotEqual(self.main_sha, self.develop_sha)
+        self.base = base
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    # -- helpers ----------------------------------------------------------
+    def _git(self, *args: str) -> None:
+        subprocess.run(
+            ["git", "-C", str(self.sb.claude_org_root), *args],
+            check=True, env=self._git_env, capture_output=True,
+        )
+
+    def _rev_parse(self, ref: str) -> str:
+        return subprocess.check_output(
+            ["git", "-C", str(self.sb.claude_org_root), "rev-parse", ref],
+        ).decode().strip()
+
+    def _write_registry(self, base_branch: str) -> None:
+        """Rewrite the sandbox registry with the Issue #808 column."""
+        (self.sb.claude_org_root / "registry" / "projects.md").write_text(
+            "# Projects\n\n"
+            "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 "
+            "| base_branch |\n"
+            "|---|---|---|---|---|---|\n"
+            f"| claude-org-ja | claude-org-ja | {self.sb.claude_org_root} "
+            f"| Self | スキル改善 | {base_branch} |\n",
+            encoding="utf-8",
+        )
+
+    def _plan(self, *, task_id: str = "bb-task", base_ref_override=None):
+        return gdp.build_delegate_plan(
+            task_id=task_id,
+            project_slug="claude-org-ja",
+            description="base branch dispatch",
+            base_ref_override=base_ref_override,
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+            layout_overrides={
+                "pattern": "B",
+                "pattern_variant": "live_repo_worktree",
+                "role": "claude-org-self-edit",
+                "self_edit": True,
+            },
+        )
+
+    def _apply(self, plan):
+        return gdp.apply_delegate_plan(
+            plan,
+            state_db_path=self.sb.db_path,
+            claude_org_root=self.sb.claude_org_root,
+            skip_settings=True,
+        )
+
+    # -- precedence -------------------------------------------------------
+    def test_registry_base_branch_is_used_when_no_cli_override(self):
+        self._write_registry("develop")
+        plan = self._plan()
+        self.assertEqual(plan.base_branch, "develop")
+        self.assertEqual(plan.base_branch_source, "registry")
+        self.assertEqual(plan.to_summary_dict()["base_ref"], "origin/develop")
+
+    def test_cli_base_ref_beats_registry(self):
+        # The hotfix escape hatch: registry says develop, this dispatch cuts
+        # from main.
+        self._write_registry("develop")
+        plan = self._plan(base_ref_override="main")
+        self.assertEqual(plan.base_branch, "main")
+        self.assertEqual(plan.base_branch_source, "cli")
+
+    def test_cli_base_ref_used_when_registry_column_absent(self):
+        # The sandbox default registry has no base_branch column at all.
+        plan = self._plan(base_ref_override="develop")
+        self.assertEqual(plan.base_branch, "develop")
+        self.assertEqual(plan.base_branch_source, "cli")
+
+    def test_unset_registry_column_falls_back_to_origin_head(self):
+        for cell in ("", "-"):
+            with self.subTest(cell=cell):
+                self._write_registry(cell)
+                plan = self._plan()
+                self.assertIsNone(plan.base_branch)
+                self.assertEqual(plan.base_branch_source, "origin_head")
+                self.assertEqual(
+                    plan.to_summary_dict()["base_ref"], "origin/HEAD"
+                )
+
+    def test_no_registry_column_falls_back_to_origin_head(self):
+        # Backwards compatibility: the pre-#808 registry shape.
+        plan = self._plan()
+        self.assertIsNone(plan.base_branch)
+        self.assertEqual(plan.base_branch_source, "origin_head")
+
+    def test_origin_prefixed_registry_value_is_normalized(self):
+        self._write_registry("origin/develop")
+        self.assertEqual(self._plan().base_branch, "develop")
+
+    # -- DELEGATE body ----------------------------------------------------
+    def test_delegate_body_announces_the_configured_base(self):
+        self._write_registry("develop")
+        body = self._plan().delegate_body
+        self.assertIn("ベース: origin/develop", body)
+        self.assertIn("registry base_branch", body)
+
+    def test_delegate_body_names_the_cli_flag_as_source(self):
+        self._write_registry("develop")
+        body = self._plan(base_ref_override="main").delegate_body
+        self.assertIn("ベース: origin/main", body)
+        self.assertIn("--base-ref", body)
+
+    def test_delegate_body_unchanged_when_unconfigured(self):
+        # Every pre-#808 project must keep its byte-identical body.
+        body = self._plan().delegate_body
+        self.assertNotIn("ベース:", body)
+
+    # -- apply: the worktree is actually cut from the configured branch ----
+    def test_apply_cuts_worktree_from_configured_base_branch(self):
+        self._write_registry("develop")
+        plan = self._plan(task_id="cut-develop")
+        self._apply(plan)
+        worker_dir = Path(plan.layout.worker_dir)
+        head = subprocess.check_output(
+            ["git", "-C", str(worker_dir), "rev-parse", "HEAD"],
+        ).decode().strip()
+        self.assertEqual(head, self.develop_sha)
+        # ...and specifically NOT the origin/HEAD default the pre-#808 code
+        # would have used.
+        self.assertNotEqual(head, self.main_sha)
+
+    def test_apply_cuts_from_origin_head_when_unconfigured(self):
+        plan = self._plan(task_id="cut-default")
+        self._apply(plan)
+        head = subprocess.check_output(
+            ["git", "-C", str(plan.layout.worker_dir), "rev-parse", "HEAD"],
+        ).decode().strip()
+        self.assertEqual(head, self.main_sha)
+
+    def test_apply_honours_cli_override_at_the_git_level(self):
+        self._write_registry("develop")
+        plan = self._plan(task_id="cut-hotfix", base_ref_override="main")
+        self._apply(plan)
+        head = subprocess.check_output(
+            ["git", "-C", str(plan.layout.worker_dir), "rev-parse", "HEAD"],
+        ).decode().strip()
+        self.assertEqual(head, self.main_sha)
+
+    # -- apply: fail loud on a missing branch ------------------------------
+    def test_apply_fails_loud_when_registry_branch_missing_on_origin(self):
+        self._write_registry("develp")  # typo, never pushed
+        plan = self._plan(task_id="missing-registry")
+        with self.assertRaises(gdp.BaseBranchApplyError) as cm:
+            self._apply(plan)
+        msg = str(cm.exception)
+        self.assertIn("develp", msg)
+        # The message must name the input the operator has to fix.
+        self.assertIn("base_branch", msg)
+        self.assertIn("claude-org-ja", msg)
+        # It must NOT have degraded to the default branch.
+        self.assertFalse(Path(plan.layout.worker_dir).exists())
+
+    def test_apply_fails_loud_when_cli_branch_missing_on_origin(self):
+        plan = self._plan(task_id="missing-cli", base_ref_override="nope")
+        with self.assertRaises(gdp.BaseBranchApplyError) as cm:
+            self._apply(plan)
+        self.assertIn("--base-ref", str(cm.exception))
+
+    def test_missing_base_branch_is_a_worktree_apply_error_subclass(self):
+        # Existing `except WorktreeApplyError` callers must keep catching it.
+        self.assertTrue(
+            issubclass(gdp.BaseBranchApplyError, gdp.WorktreeApplyError)
+        )
+
+    def test_missing_base_branch_leaks_no_queued_run_row(self):
+        # Same invariant as the other pre-reservation aborts: a leaked
+        # `queued` row makes the next dispatch see the pattern as occupied.
+        self._write_registry("does-not-exist")
+        plan = self._plan(task_id="no-leak")
+        with self.assertRaises(gdp.BaseBranchApplyError):
+            self._apply(plan)
+        self.assertEqual(
+            [r for r in self.sb.list_runs() if r["task_id"] == "no-leak"], []
+        )
+
+
+class TestBaseBranchReachesTheBrief(unittest.TestCase):
+    """Issue #808 / Codex Round 1 Major: the effective base must reach the
+    rendered worker brief, or the worker's `codex exec review --base ...`
+    would diff a develop-based task against origin/main and treat every
+    develop-only commit as part of the task's own change."""
+
+    def _render(self, base_ref=None):
+        config = {
+            "task": {
+                "id": "t1",
+                "description": "d",
+                "verification_depth": "full",
+                "branch": "feat/t1",
+                "commit_prefix": "feat:",
+            },
+            "worker": {
+                "dir": "/tmp/w",
+                "pattern": "B",
+                "role": "default",
+                "self_edit": False,
+            },
+            "project": {"name": "p", "description": "pd"},
+            "paths": {"claude_org": "/tmp/org"},
+        }
+        if base_ref is not None:
+            config["task"]["base_ref"] = base_ref
+        return gwb.render(config)
+
+    def test_configured_base_ref_lands_in_the_review_command(self):
+        out = self._render("origin/develop")
+        self.assertIn(
+            "codex exec review --base origin/develop", out
+        )
+        self.assertNotIn("--base origin/main", out)
+
+    def test_default_stays_origin_main(self):
+        # Every pre-#808 brief must render byte-identically.
+        self.assertIn("codex exec review --base origin/main", self._render())
+
+    def test_shell_metacharacters_in_the_ref_are_quoted(self):
+        """Codex Round 2 Blocker: git permits `;` / `$( )` in ref names and
+        this value lands in a ```bash fence the worker copy-pastes, so a raw
+        interpolation would be command execution, not a ref."""
+        out = self._render("origin/foo$(id);whoami")
+        self.assertNotIn("--base origin/foo$(id);whoami", out)
+        self.assertIn(
+            "--base " + shlex.quote("origin/foo$(id);whoami"), out
+        )
+        # Round-trips back to the literal ref when the shell parses it.
+        line = next(
+            l for l in out.splitlines() if l.startswith("codex exec review")
+        )
+        argv = shlex.split(line.split("<")[0])
+        self.assertEqual(argv[argv.index("--base") + 1], "origin/foo$(id);whoami")
+
+    def test_non_string_base_ref_is_rejected(self):
+        config = {
+            "task": {
+                "id": "t1", "description": "d", "verification_depth": "full",
+                "branch": "b", "commit_prefix": "p:", "base_ref": 5,
+            },
+            "worker": {
+                "dir": "/tmp/w", "pattern": "B", "role": "default",
+                "self_edit": False,
+            },
+            "project": {"name": "p", "description": "pd"},
+            "paths": {"claude_org": "/tmp/org"},
+        }
+        with self.assertRaises(gwb.ConfigError):
+            gwb.validate(config)
+
+    def test_planner_injects_the_effective_base_into_the_config(self):
+        with tempfile.TemporaryDirectory() as td:
+            sb = _Sandbox(Path(td))
+            plan = gdp.build_delegate_plan(
+                task_id="brief-base",
+                project_slug="claude-org-ja",
+                description="d",
+                base_ref_override="develop",
+                claude_org_root=sb.claude_org_root,
+                state_db_path=sb.db_path,
+                layout_overrides={
+                    "pattern": "B",
+                    "pattern_variant": "live_repo_worktree",
+                    "role": "claude-org-self-edit",
+                    "self_edit": True,
+                },
+            )
+            self.assertEqual(plan.config["task"]["base_ref"], "origin/develop")
+            self.assertIn(
+                "codex exec review --base origin/develop", gwb.render(plan.config)
+            )
+
+    def test_planner_leaves_base_ref_unset_when_unconfigured(self):
+        with tempfile.TemporaryDirectory() as td:
+            sb = _Sandbox(Path(td))
+            plan = gdp.build_delegate_plan(
+                task_id="brief-default",
+                project_slug="claude-org-ja",
+                description="d",
+                claude_org_root=sb.claude_org_root,
+                state_db_path=sb.db_path,
+                layout_overrides={
+                    "pattern": "B",
+                    "pattern_variant": "live_repo_worktree",
+                    "role": "claude-org-self-edit",
+                    "self_edit": True,
+                },
+            )
+            self.assertNotIn("base_ref", plan.config["task"])
+
+
+class TestBaseBranchAgainstRealRemote(unittest.TestCase):
+    """Issue #808 / Codex Round 1 Major: the remote-tracking ref is a cache,
+    so existence must be decided against the remote itself.
+
+    Uses a local bare repo as ``origin`` -- the same hermetic stand-in for a
+    real remote the rest of this module uses.
+    """
+
+    def setUp(self) -> None:
+        try:
+            subprocess.run(["git", "--version"], capture_output=True, check=True)
+        except FileNotFoundError:
+            self.skipTest("git not available")
+        self._td = tempfile.TemporaryDirectory()
+        root = Path(self._td.name)
+        import os
+        self._env = os.environ.copy()
+        self._env.update({
+            "GIT_AUTHOR_NAME": "test", "GIT_AUTHOR_EMAIL": "t@example.com",
+            "GIT_COMMITTER_NAME": "test", "GIT_COMMITTER_EMAIL": "t@example.com",
+        })
+        # origin: a bare repo carrying main + develop.
+        self.origin = root / "origin.git"
+        self._run(["git", "init", "-q", "--bare", "-b", "main", str(self.origin)])
+        seed = root / "seed"
+        self._run(["git", "init", "-q", "-b", "main", str(seed)])
+        self._run(["git", "-C", str(seed), "commit", "--allow-empty", "-m", "m1", "-q"])
+        self._run(["git", "-C", str(seed), "checkout", "-q", "-b", "develop"])
+        self._run(["git", "-C", str(seed), "commit", "--allow-empty", "-m", "d1", "-q"])
+        self._run(["git", "-C", str(seed), "remote", "add", "origin", str(self.origin)])
+        self._run(["git", "-C", str(seed), "push", "-q", "origin", "main", "develop"])
+        self.seed = seed
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def _run(self, cmd, check=True):
+        return subprocess.run(cmd, check=check, env=self._env, capture_output=True)
+
+    def _clone(self, name: str, *extra: str) -> Path:
+        target = Path(self._td.name) / name
+        self._run(["git", "clone", "-q", *extra, str(self.origin), str(target)])
+        return target
+
+    def test_single_branch_clone_still_resolves_the_configured_branch(self):
+        """False-negative guard: a restricted fetch refspec means plain
+        `git fetch origin` never creates origin/develop, but develop DOES
+        exist on the remote, so the dispatch must not be refused."""
+        clone = self._clone("single", "--single-branch", "--branch", "main")
+        # Precondition: the local remote-tracking ref genuinely is absent.
+        probe = subprocess.run(
+            ["git", "-C", str(clone), "rev-parse", "--verify", "--quiet",
+             "refs/remotes/origin/develop"],
+            capture_output=True,
+        )
+        self.assertNotEqual(probe.returncode, 0, "fixture did not restrict the refspec")
+        self.assertTrue(gdp._materialize_origin_branch(clone, "develop"))
+        # ...and the ref is now materialized, so `git worktree add` can use it.
+        self.assertEqual(
+            subprocess.run(
+                ["git", "-C", str(clone), "rev-parse", "--verify", "--quiet",
+                 "refs/remotes/origin/develop"],
+                capture_output=True,
+            ).returncode,
+            0,
+        )
+
+    def test_stale_remote_tracking_ref_of_a_deleted_branch_is_refused(self):
+        """False-positive guard: `git fetch origin` does not prune, so a
+        branch deleted on the remote leaves a stale local ref behind."""
+        clone = self._clone("stale")
+        self._run(["git", "-C", str(clone), "fetch", "-q", "origin"])
+        # Delete develop on the remote; the clone's stale ref survives.
+        self._run(["git", "-C", str(self.seed), "push", "-q", "origin",
+                   "--delete", "develop"])
+        self._run(["git", "-C", str(clone), "fetch", "-q", "origin"])
+        self.assertEqual(
+            subprocess.run(
+                ["git", "-C", str(clone), "rev-parse", "--verify", "--quiet",
+                 "refs/remotes/origin/develop"],
+                capture_output=True,
+            ).returncode,
+            0,
+            "fixture expected a surviving stale ref",
+        )
+        self.assertFalse(gdp._materialize_origin_branch(clone, "develop"))
+
+    def test_existing_branch_resolves_and_refreshes_to_the_remote_tip(self):
+        clone = self._clone("fresh")
+        # Advance develop on the remote after the clone.
+        self._run(["git", "-C", str(self.seed), "checkout", "-q", "develop"])
+        self._run(["git", "-C", str(self.seed), "commit", "--allow-empty",
+                   "-m", "d2", "-q"])
+        self._run(["git", "-C", str(self.seed), "push", "-q", "origin", "develop"])
+        remote_tip = subprocess.check_output(
+            ["git", "-C", str(self.seed), "rev-parse", "develop"],
+        ).decode().strip()
+        self.assertTrue(gdp._materialize_origin_branch(clone, "develop"))
+        local = subprocess.check_output(
+            ["git", "-C", str(clone), "rev-parse", "refs/remotes/origin/develop"],
+        ).decode().strip()
+        self.assertEqual(local, remote_tip)
+
+    def test_missing_branch_on_the_remote_is_refused(self):
+        clone = self._clone("missing")
+        self.assertFalse(gdp._materialize_origin_branch(clone, "no-such-branch"))
+
+    def test_no_origin_remote_falls_back_to_the_local_ref(self):
+        # Purely-local repos (and this module's other fixtures) synthesize
+        # refs/remotes/origin/* with update-ref and have no real remote.
+        local = Path(self._td.name) / "local"
+        self._run(["git", "init", "-q", "-b", "main", str(local)])
+        self._run(["git", "-C", str(local), "commit", "--allow-empty",
+                   "-m", "c", "-q"])
+        sha = subprocess.check_output(
+            ["git", "-C", str(local), "rev-parse", "main"],
+        ).decode().strip()
+        self._run(["git", "-C", str(local), "update-ref",
+                   "refs/remotes/origin/develop", sha])
+        self.assertTrue(gdp._materialize_origin_branch(local, "develop"))
+        self.assertFalse(gdp._materialize_origin_branch(local, "absent"))
+
+
+class TestReusedWorktreeBaseGuard(unittest.TestCase):
+    """Issue #808 / Codex Round 1 Major: `_ensure_worktree` returns early for
+    an already-registered worktree, so a retry that changes the base would
+    otherwise keep the old branch while advertising the new PR base."""
+
+    def setUp(self) -> None:
+        try:
+            subprocess.run(["git", "--version"], capture_output=True, check=True)
+        except FileNotFoundError:
+            self.skipTest("git not available")
+        self._td = tempfile.TemporaryDirectory()
+        self.sb = _Sandbox(Path(self._td.name), with_claude_org_origin=False)
+        import os
+        self._env = os.environ.copy()
+        self._env.update({
+            "GIT_AUTHOR_NAME": "test", "GIT_AUTHOR_EMAIL": "t@example.com",
+            "GIT_COMMITTER_NAME": "test", "GIT_COMMITTER_EMAIL": "t@example.com",
+        })
+        self._git("init", "-q", "-b", "main")
+        self._git("commit", "--allow-empty", "-m", "m1", "-q")
+        main_sha = self._out("rev-parse", "main")
+        self._git("update-ref", "refs/remotes/origin/main", main_sha)
+        self._git("symbolic-ref", "refs/remotes/origin/HEAD",
+                  "refs/remotes/origin/main")
+        self._git("commit", "--allow-empty", "-m", "d1", "-q")
+        self._git("update-ref", "refs/remotes/origin/develop",
+                  self._out("rev-parse", "HEAD"))
+        self._git("reset", "--hard", "-q", main_sha)
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def _git(self, *args):
+        subprocess.run(["git", "-C", str(self.sb.claude_org_root), *args],
+                       check=True, env=self._env, capture_output=True)
+
+    def _out(self, *args) -> str:
+        return subprocess.check_output(
+            ["git", "-C", str(self.sb.claude_org_root), *args],
+        ).decode().strip()
+
+    def _plan(self, *, task_id, base_ref_override=None):
+        return gdp.build_delegate_plan(
+            task_id=task_id,
+            project_slug="claude-org-ja",
+            description="d",
+            base_ref_override=base_ref_override,
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+            layout_overrides={
+                "pattern": "B",
+                "pattern_variant": "live_repo_worktree",
+                "role": "claude-org-self-edit",
+                "self_edit": True,
+            },
+        )
+
+    def _apply(self, plan):
+        return gdp.apply_delegate_plan(
+            plan, state_db_path=self.sb.db_path,
+            claude_org_root=self.sb.claude_org_root, skip_settings=True,
+        )
+
+    def test_creation_records_the_base_it_cut_from(self):
+        plan = self._plan(task_id="rec", base_ref_override="develop")
+        self._apply(plan)
+        self.assertEqual(
+            gdp._recorded_worktree_base(
+                self.sb.claude_org_root, plan.layout.planned_branch
+            ),
+            "origin/develop",
+        )
+
+    def test_reuse_with_the_same_base_is_still_idempotent(self):
+        plan = self._plan(task_id="same", base_ref_override="develop")
+        self._apply(plan)
+        # Second apply of an identical plan must not raise.
+        self._apply(self._plan(task_id="same", base_ref_override="develop"))
+
+    def test_reuse_refuses_when_the_configured_base_changed(self):
+        # First dispatch cuts from develop; the retry says main.
+        self._apply(self._plan(task_id="changed", base_ref_override="develop"))
+        retry = self._plan(task_id="changed", base_ref_override="main")
+        with self.assertRaises(gdp.BaseBranchApplyError) as cm:
+            self._apply(retry)
+        msg = str(cm.exception)
+        self.assertIn("origin/develop", msg)   # what the branch was cut from
+        self.assertIn("origin/main", msg)      # what this dispatch wants
+        self.assertIn("worktree remove", msg)  # the recovery instruction
+
+    def test_reuse_refuses_when_the_configured_branch_vanished_from_origin(self):
+        """Codex Round 2 Major: the reuse path must run the same existence
+        check as creation, or a branch deleted from origin after the first
+        apply is silently advertised as the PR base."""
+        self._apply(self._plan(task_id="vanished", base_ref_override="develop"))
+        # Simulate the branch disappearing from the remote. This fixture has no
+        # real origin, so the local remote-tracking ref IS the authority here.
+        self._git("update-ref", "-d", "refs/remotes/origin/develop")
+        with self.assertRaises(gdp.BaseBranchApplyError) as cm:
+            self._apply(self._plan(task_id="vanished", base_ref_override="develop"))
+        self.assertIn("does not exist on the remote", str(cm.exception))
+
+    def test_reuse_without_a_record_proceeds(self):
+        # Worktrees created before Issue #808 carry no record; the guard must
+        # only ever add a refusal where an authoritative record disagrees.
+        plan = self._plan(task_id="norec", base_ref_override="develop")
+        self._apply(plan)
+        self._git("config", "--unset",
+                  f"branch.{plan.layout.planned_branch}.claudeOrgBase")
+        self._apply(self._plan(task_id="norec", base_ref_override="main"))
+
+    def test_reuse_refuses_when_the_override_is_dropped(self):
+        """Codex Round 2 Blocker: dropping the override on a retry is the same
+        mismatch as changing it — origin/HEAD resolves to a concrete branch
+        (main) that disagrees with the recorded develop."""
+        self._apply(self._plan(task_id="dropped", base_ref_override="develop"))
+        with self.assertRaises(gdp.BaseBranchApplyError) as cm:
+            self._apply(self._plan(task_id="dropped"))
+        msg = str(cm.exception)
+        self.assertIn("origin/develop", msg)
+        self.assertIn("origin/main", msg)
+
+    def test_unconfigured_reuse_of_an_unconfigured_worktree_is_idempotent(self):
+        # The genuine no-churn case: recorded base == resolved origin/HEAD.
+        self._apply(self._plan(task_id="plain"))
+        self.assertEqual(
+            gdp._recorded_worktree_base(self.sb.claude_org_root, "feat/plain"),
+            "origin/main",
+        )
+        self._apply(self._plan(task_id="plain"))
+
+
+class TestBaseRefCliFlag(unittest.TestCase):
+    """Issue #808: the --base-ref flag is wired through both subcommands and
+    the --from-toml input form."""
+
+    def test_flag_parses_on_preview_and_apply(self):
+        parser = gdp._build_parser()
+        for cmd in ("preview", "apply"):
+            with self.subTest(cmd=cmd):
+                args = parser.parse_args(
+                    [cmd, "--task-id", "t", "--project-slug", "p",
+                     "--base-ref", "develop"]
+                )
+                self.assertEqual(args.base_ref_override, "develop")
+
+    def test_flag_defaults_to_none(self):
+        args = gdp._build_parser().parse_args(
+            ["preview", "--task-id", "t", "--project-slug", "p"]
+        )
+        self.assertIsNone(args.base_ref_override)
+
+    def test_toml_base_ref_is_read_and_cli_wins(self):
+        with tempfile.TemporaryDirectory() as td:
+            toml_path = Path(td) / "worker_brief.toml"
+            toml_path.write_text(
+                '[task]\nid = "t1"\nbase_ref = "develop"\n'
+                '[project]\nname = "p1"\n',
+                encoding="utf-8",
+            )
+            loaded = gdp._load_task_args_from_toml(toml_path)
+            self.assertEqual(loaded["base_ref_override"], "develop")
+
+            # TOML alone wins when the flag is absent...
+            args = gdp._build_parser().parse_args(
+                ["preview", "--from-toml", str(toml_path)]
+            )
+            self.assertEqual(
+                gdp._gather_plan_kwargs(args)["base_ref_override"], "develop"
+            )
+            # ...and the CLI flag overrides it when both are given.
+            args = gdp._build_parser().parse_args(
+                ["preview", "--from-toml", str(toml_path), "--base-ref", "main"]
+            )
+            self.assertEqual(
+                gdp._gather_plan_kwargs(args)["base_ref_override"], "main"
+            )
+
+    def test_non_string_toml_base_ref_is_a_config_error_not_a_traceback(self):
+        """Codex Round 3 Major: `base_ref = 5` used to reach
+        normalize_base_branch and abort with a raw AttributeError."""
+        with tempfile.TemporaryDirectory() as td:
+            toml_path = Path(td) / "worker_brief.toml"
+            toml_path.write_text(
+                '[task]\nid = "t1"\nbase_ref = 5\n[project]\nname = "p1"\n',
+                encoding="utf-8",
+            )
+            with self.assertRaises(SystemExit) as cm:
+                gdp._load_task_args_from_toml(toml_path)
+            self.assertIn("base_ref must be a string", str(cm.exception))
+
+    def test_normalize_rejects_non_strings_with_a_clear_type_error(self):
+        # Guard for direct build_delegate_plan callers, which bypass the CLI.
+        with self.assertRaises(TypeError) as cm:
+            gdp.normalize_base_branch(5)
+        self.assertIn("must be a string", str(cm.exception))
 
 
 if __name__ == "__main__":

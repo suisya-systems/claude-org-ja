@@ -28,19 +28,20 @@ from typing import Iterator, Optional, Union
 logger = logging.getLogger(__name__)
 
 # The projects table grew from 5 columns (legacy) to 6 columns (Issue #374
-# `mirror_of`) and, in header-mode registries (Issue #729), now carries a
-# trailing `triage` opt-in column too. These positional constants are only
-# consulted by the *positional fallback* path (headerless snippets); when a
-# recognised header row is present the parser maps columns by name instead,
-# so column order and extra columns no longer matter. We still parse 4-column
-# hand-edited tables ('legacy' resolver leniency) and ignore extra trailing
-# columns rather than rejecting the whole row, so a future addition doesn't
-# silently drop registered projects.
+# `mirror_of`) and, in header-mode registries (Issue #729 `triage`, Issue
+# #808 `base_branch`), carries further trailing opt-in columns too. These
+# positional constants are only consulted by the *positional fallback* path
+# (headerless snippets); when a recognised header row is present the parser
+# maps columns by name instead, so column order and extra columns no longer
+# matter. We still parse 4-column hand-edited tables ('legacy' resolver
+# leniency) and ignore extra trailing columns rather than rejecting the whole
+# row, so a future addition doesn't silently drop registered projects.
 #   positional layout: [0]=nickname [1]=name [2]=path [3]=description
 #                       [4]=common_tasks [5]=mirror_of
-# The live registry/projects.md places `triage` as its 6th visible column
-# (there is no mirror_of column in the ja registry); positional mode never
-# populates `triage` — only header mode does.
+# The live registry/projects.md places `triage` as its 6th visible column and
+# `base_branch` as its 7th (there is no mirror_of column in the ja registry);
+# positional mode never populates `triage` / `base_branch` — only header mode
+# does.
 COLUMN_COUNT = 6
 LEGACY_COLUMN_COUNT = 5
 
@@ -62,6 +63,7 @@ _FIELD_ALIASES: dict[str, tuple[str, ...]] = {
     "common_tasks": ("よくある作業例",),
     "mirror_of": ("mirror_of",),
     "triage": ("triage",),
+    "base_branch": ("base_branch", "base branch"),
 }
 _ALIAS_TO_FIELD: dict[str, str] = {
     alias.lower(): field
@@ -96,6 +98,16 @@ class Project:
     # lives in the work-discovery repo resolver, not here, so the parser
     # stays a dumb SoT and forks/tests can assert on the literal cell value.
     triage: str = ""
+    # Issue #808: raw value of the `base_branch` column (header mode only;
+    # positional fallback always leaves this empty). Declares the project's
+    # standard cut point / merge target, e.g. `develop` for a two-track
+    # (main = hotfix, develop = feature) repo. Empty / `-` means "unset" and
+    # the delegation pipeline keeps its historical `origin/HEAD` behaviour,
+    # so every pre-#808 row stays valid with zero edits. Kept verbatim --
+    # normalization (trim, tolerated `origin/` prefix, `-` placeholder) lives
+    # in ``tools.gen_delegate_payload.normalize_base_branch``, not here, so
+    # the parser stays a dumb SoT.
+    base_branch: str = ""
 
 
 # Per-line classification. ``kind`` values:
@@ -156,8 +168,8 @@ def iter_rows(text: str) -> Iterator[ParsedRow]:
       does not shift the meaning of existing columns.
     - **positional fallback** — headerless snippets and legacy/fork tables
       whose header matches no alias fall back to fixed positions
-      (``cells[0]=nickname … cells[5]=mirror_of``). ``triage`` is never
-      populated in this mode.
+      (``cells[0]=nickname … cells[5]=mirror_of``). ``triage`` (Issue #729)
+      and ``base_branch`` (Issue #808) are never populated in this mode.
     """
     text = text.lstrip("﻿")
     in_table = False
@@ -194,8 +206,9 @@ def iter_rows(text: str) -> Iterator[ParsedRow]:
             yield ParsedRow(line_no, raw_line, "header")
             continue
         # Schema check: at least 4 cells (通称/slug/パス/説明) and the slug
-        # column populated. The 5th 「よくある作業例」, 6th `mirror_of`, and
-        # `triage` columns are optional — the legacy resolver accepted
+        # column populated. The 5th 「よくある作業例」, 6th `mirror_of`,
+        # `triage`, and `base_branch` columns are optional — the legacy
+        # resolver accepted
         # 4-column tables, the pre-Issue-#374 registry was 5-column, and a
         # fork that hasn't adopted a new column yet must keep parsing. Extra
         # trailing cells are ignored rather than treated as schema breakage
@@ -213,6 +226,7 @@ def iter_rows(text: str) -> Iterator[ParsedRow]:
                 common_tasks=_cell_by_field(cells, header_map, "common_tasks"),
                 mirror_of=_cell_by_field(cells, header_map, "mirror_of"),
                 triage=_cell_by_field(cells, header_map, "triage"),
+                base_branch=_cell_by_field(cells, header_map, "base_branch"),
             )
             yield ParsedRow(line_no, raw_line, "data", project)
             continue

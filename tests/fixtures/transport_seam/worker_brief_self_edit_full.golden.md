@@ -34,7 +34,7 @@
 ## Codex セルフレビュー
 検証深度 full。`codex` available なら commit 後、`codex exec review`（review surface）で差分セルフレビュー（直打ち長文プロンプト形は廃止。中小 diff で約 2 倍速・安全側パリティ同等）:
 ```bash
-# --base はブランチのベース（通常 origin/main）。ローカル main は古いと別タスク差分を巻き込むため remote-tracking の origin/main を使う。参照前に git fetch origin を 1 回（fetch 不能でも review は継続）。前景実行して出力を読んでから次へ進む。
+# --base はこのブランチのベース upstream（origin/main）。ローカルの追跡なしブランチは古いと別タスク差分を巻き込むため remote-tracking ref を使う。参照前に git fetch origin を 1 回（fetch 不能でも review は継続）。前景実行して出力を読んでから次へ進む。
 codex exec review --base origin/main -m gpt-5.6-sol -c model_reasoning_effort=medium < /dev/null
 ```
 - **前景実行する**（背景化 `&` はゲート素通り事故を招く）。Blocker/Major 修正、**round 既定上限 3**（brief の実装ガイダンスで別値指定があればそちら優先）

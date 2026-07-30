@@ -372,6 +372,95 @@ class TestHeaderNameParsing(unittest.TestCase):
             self.assertIn(p.triage.strip().lower(), recognised)
 
 
+class TestBaseBranchColumn(unittest.TestCase):
+    """Issue #808: optional `base_branch` column declares a project's standard
+    cut point / merge target (e.g. `develop` on a two-track repo). The header
+    is the live ja registry's shape: `triage` then `base_branch`.
+
+    The load-bearing property under test is backwards compatibility: every row
+    written before the column existed must keep parsing, unedited, with
+    ``base_branch == ""`` (= "unset", which the delegation pipeline maps back
+    to the historical ``origin/HEAD`` behaviour).
+    """
+
+    _LIVE_HEADER = (
+        "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 | triage "
+        "| base_branch |\n"
+        "|---|---|---|---|---|---|---|\n"
+    )
+
+    def test_base_branch_column_populates_raw_value(self):
+        text = self._LIVE_HEADER + (
+            "| くら | kura | https://github.com/x/kura | K | t |  | develop |\n"
+        )
+        projects = parse_projects_text(text)
+        self.assertEqual(len(projects), 1)
+        self.assertEqual(projects[0].name, "kura")
+        self.assertEqual(projects[0].base_branch, "develop")
+        # The neighbouring column must not be shifted by the addition.
+        self.assertEqual(projects[0].triage, "")
+
+    def test_raw_value_is_preserved_verbatim(self):
+        # Normalization (trim / `origin/` prefix / `-` placeholder) belongs to
+        # gen_delegate_payload.normalize_base_branch, not to the parser, so a
+        # fork can assert on the literal cell. Only the generic cell-level
+        # strip applies.
+        text = self._LIVE_HEADER + (
+            "| n | slug | / | d | t |  | origin/develop |\n"
+        )
+        self.assertEqual(parse_projects_text(text)[0].base_branch, "origin/develop")
+
+    def test_empty_cell_normalizes_to_empty(self):
+        text = self._LIVE_HEADER + "| n | slug | / | d | t | no |  |\n"
+        projects = parse_projects_text(text)
+        self.assertEqual(projects[0].base_branch, "")
+        self.assertEqual(projects[0].triage, "no")
+
+    def test_row_short_of_the_column_still_parses(self):
+        """The no-edit compatibility contract: a pre-#808 row that simply
+        stops before the new column is valid, not a mismatch."""
+        text = self._LIVE_HEADER + "| n | slug | / | d | t | no |\n"
+        projects = parse_projects_text(text)
+        self.assertEqual(len(projects), 1)
+        self.assertEqual(projects[0].name, "slug")
+        self.assertEqual(projects[0].triage, "no")
+        self.assertEqual(projects[0].base_branch, "")
+
+    def test_header_without_the_column_leaves_base_branch_empty(self):
+        # A fork registry that hasn't adopted the column at all.
+        text = (
+            "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 | triage |\n"
+            "|---|---|---|---|---|---|\n"
+            "| n | slug | / | d | t | no |\n"
+        )
+        self.assertEqual(parse_projects_text(text)[0].base_branch, "")
+
+    def test_column_order_does_not_matter_in_header_mode(self):
+        # Header mode maps by name, so an operator who inserts base_branch
+        # before triage gets the same result.
+        text = (
+            "| 通称 | プロジェクト名 | パス | 説明 | base_branch | triage |\n"
+            "|---|---|---|---|---|---|\n"
+            "| n | slug | / | d | develop | no |\n"
+        )
+        project = parse_projects_text(text)[0]
+        self.assertEqual(project.base_branch, "develop")
+        self.assertEqual(project.triage, "no")
+
+    def test_positional_fallback_never_populates_base_branch(self):
+        # Alias-less header -> positional mode, which owns cells[0..5] only and
+        # must not mistake a 7th cell for base_branch.
+        text = (
+            "| a | b | c | d | e | f | g |\n"
+            "|---|---|---|---|---|---|---|\n"
+            "| n | slug | / | d | t | upstream | develop |\n"
+        )
+        projects = parse_projects_text(text)
+        self.assertEqual(len(projects), 1)
+        self.assertEqual(projects[0].mirror_of, "upstream")
+        self.assertEqual(projects[0].base_branch, "")
+
+
 class TestIterRows(unittest.TestCase):
 
     def test_classifies_lines(self):
