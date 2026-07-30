@@ -156,7 +156,23 @@ assert_eq "" "$(git -C "$RECIPE" status --porcelain registry/projects.md)" \
 assert_eq "present" "$(file_state "$CLEAN/registry/projects.example.md")" \
   "clean checkout: the tracked template is present after pull"
 
-# 7. This repo's real .gitignore must cover BOTH the registry and the backup
+# 7. The hazard is not specific to `pull`: any operation that moves HEAD
+#    across the migration commit materializes the deletion. Pinned because it
+#    was hit for real during this task's own rebase onto the migrated main,
+#    and the runbook's advice ("back up first") only holds if operators know
+#    it applies to rebase / branch switching too.
+SWITCH="$SB/switch-checkout"
+git_q "$SB" clone -q "$ORIGIN" "$SWITCH"
+git -C "$SWITCH" config user.email test@example.com
+git -C "$SWITCH" config user.name test
+git_q "$SWITCH" checkout -q HEAD~1          # pre-migration commit: file tracked
+assert_eq "present" "$(file_state "$SWITCH/registry/projects.md")" \
+  "branch switch: projects.md is present on the pre-migration commit"
+git_q "$SWITCH" checkout -q main            # cross the migration commit
+assert_eq "absent" "$(file_state "$SWITCH/registry/projects.md")" \
+  "branch switch: crossing the migration commit ALSO deletes projects.md"
+
+# 8. This repo's real .gitignore must cover BOTH the registry and the backup
 #    the runbook tells operators to make. The backup holds the same operator
 #    data, so leaving it commitable would re-open the disclosure this change
 #    closes — a later `git add -A` would stage it.

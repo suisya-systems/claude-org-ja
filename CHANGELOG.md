@@ -18,10 +18,11 @@
   読むためインターフェース変更は無い。テンプレートの列が増えた場合は起動時に header drift 警告
   (非 fatal) が出る。
 
-  > **既存 checkout の移行が必要**: gitignore はローカルファイルを守らない。この変更を pull すると、
-  > `registry/projects.md` が clean な checkout では**ファイルが削除される**
-  > (dirty な checkout では git が pull 自体を拒否するのでファイルは無傷)。pull 前に
-  > `cp registry/projects.md registry/projects.md.bak` で退避すること。手順の詳細は
+  > **既存 checkout の移行が必要**: gitignore はローカルファイルを守らない。移行コミットを跨いで
+  > HEAD が動く操作 (pull / rebase / ブランチ切替 / merge) を行うと、`registry/projects.md` が
+  > clean な checkout では**ファイルが削除される** (dirty な checkout では git が操作自体を拒否する
+  > のでファイルは無傷)。取り込み前に `cp registry/projects.md registry/projects.md.bak` で
+  > 退避すること (`registry/projects.md.bak*` も gitignore 済み)。手順の詳細は
   > [`docs/operations/registry-projects-migration.md`](docs/operations/registry-projects-migration.md)。
 
 - work-discovery triage の repo セット解決を反転 (#801)。`registry/projects.md` の GitHub URL 行を
