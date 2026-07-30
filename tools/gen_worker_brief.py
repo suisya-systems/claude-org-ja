@@ -119,6 +119,8 @@ def validate(config: dict[str, Any]) -> None:
     task = config["task"]
     if "issue_url" in task and not isinstance(task["issue_url"], str):
         raise ConfigError("task.issue_url must be a string")
+    if "base_ref" in task and not isinstance(task["base_ref"], str):
+        raise ConfigError("task.base_ref must be a string")
     if "closes_issue" in task:
         v = task["closes_issue"]
         if isinstance(v, bool) or not isinstance(v, int):
@@ -290,6 +292,13 @@ def _build_substitutions(config: dict[str, Any]) -> dict[str, str]:
         "task_id": task["id"],
         "task_description": task["description"].strip(),
         "task_branch": task["branch"],
+        # Issue #808: the ref the worker's Codex self-review diffs against.
+        # Defaults to ``origin/main`` so every pre-#808 brief renders
+        # byte-identically; ``gen_delegate_payload`` overwrites it with
+        # ``origin/<base_branch>`` when the project (or --base-ref) configures
+        # a different cut point, otherwise the review would treat all of the
+        # base branch's own commits as this task's diff.
+        "task_base_ref": task.get("base_ref") or "origin/main",
         "task_verification_depth": task["verification_depth"],
         "task_commit_prefix": task["commit_prefix"],
         "task_issue_url": task.get("issue_url", ""),

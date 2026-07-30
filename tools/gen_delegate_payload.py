@@ -681,6 +681,15 @@ def build_delegate_plan(
     if base_branch is None:
         base_branch = registry_base_branch
         base_branch_source = "registry" if base_branch is not None else "origin_head"
+    # Feed the effective ref into the brief so the worker's Codex self-review
+    # (``codex exec review --base ...``) diffs against the branch this task was
+    # actually cut from. Without this the rendered brief keeps saying
+    # ``origin/main``, and a develop-based task would review every develop-only
+    # commit as if it were its own change (Codex Round 1 Major). Left unset
+    # when unconfigured so the template default (``origin/main``) still renders
+    # byte-identically for every pre-#808 dispatch.
+    if base_branch is not None:
+        config["task"]["base_ref"] = f"{_ORIGIN_REF_PREFIX}{base_branch}"
 
     # Pattern B: figure out which repo `git worktree add` should be run from.
     # live_repo_worktree → Secretary's live claude-org repo;
@@ -994,6 +1003,82 @@ def _reserve_in_db(
         conn.close()
 
 
+def _has_origin_remote(base_repo: Path) -> bool:
+    """True iff ``base_repo`` has an ``origin`` remote configured.
+
+    Purely-local repos (and the hermetic test fixtures that synthesize
+    ``refs/remotes/origin/*`` with ``update-ref`` and no real remote) have
+    none; :func:`_fetch_base_origin` already treats that as its quiet path,
+    and :func:`_materialize_origin_branch` mirrors the same rule.
+    """
+    probe = subprocess.run(
+        ["git", "-C", str(base_repo), "remote", "get-url", "origin"],
+        capture_output=True,
+    )
+    return probe.returncode == 0
+
+
+def _materialize_origin_branch(base_repo: Path, branch: str) -> bool:
+    """Ensure ``refs/remotes/origin/<branch>`` exists and matches the remote.
+
+    Returns True when the cut point is usable, False when the branch does not
+    exist on the remote (the caller then raises
+    :class:`BaseBranchApplyError`).
+
+    Why this is not just a local ``rev-parse`` on the remote-tracking ref
+    (Codex Round 1 Major): ``refs/remotes/origin/<branch>`` is a *cache* of
+    the remote, and the plain ``git fetch origin`` run by
+    :func:`_fetch_base_origin` keeps it wrong in two opposite ways —
+
+    - **false negative**: a clone made with a restricted fetch refspec
+      (``git clone --single-branch``) never creates ``origin/develop`` even
+      though ``develop`` exists on the remote, so a local-only probe would
+      refuse a perfectly valid dispatch; and
+    - **false positive**: the fetch does not prune, so a branch deleted on the
+      remote leaves a stale local ``origin/develop`` behind and the worktree
+      would be cut from a branch that no longer exists.
+
+    So the remote itself is the authority (``git ls-remote --heads``), and the
+    ref is then fetched explicitly with an exact refspec — which both defeats
+    a restricted refspec and force-updates a stale ref to the live tip.
+
+    When no ``origin`` remote is configured there is nothing to ask, so we
+    fall back to the local remote-tracking ref (same quiet path as
+    :func:`_fetch_base_origin`).
+    """
+    local_probe = ["git", "-C", str(base_repo), "rev-parse", "--verify",
+                   "--quiet", f"refs/remotes/{_ORIGIN_REF_PREFIX}{branch}"]
+    if not _has_origin_remote(base_repo):
+        return subprocess.run(local_probe, capture_output=True).returncode == 0
+    ls = subprocess.run(
+        ["git", "-C", str(base_repo), "ls-remote", "--exit-code", "--heads",
+         "origin", f"refs/heads/{branch}"],
+        capture_output=True,
+    )
+    if ls.returncode != 0:
+        # rc=2 is ls-remote's "no matching refs"; any other non-zero is a
+        # transport failure. Both mean "we could not prove the branch is
+        # there", and the caller's fail-loud message covers both (it names
+        # the configured input and tells the operator to fix / push it) —
+        # degrading to origin/HEAD is never an option here.
+        return False
+    fetch = subprocess.run(
+        ["git", "-C", str(base_repo), "fetch", "origin",
+         f"+refs/heads/{branch}:refs/remotes/{_ORIGIN_REF_PREFIX}{branch}"],
+        capture_output=True,
+    )
+    if fetch.returncode != 0:
+        stderr = (fetch.stderr or b"").decode("utf-8", errors="replace").strip()
+        raise WorktreeApplyError(
+            f"`git fetch origin {branch}` failed (rc={fetch.returncode}) in "
+            f"{base_repo}: {stderr}. The branch exists on the remote but its "
+            "remote-tracking ref could not be updated, so the worktree would "
+            "be cut from a possibly-stale commit (Issue #480 / #808). Fix the "
+            "network / remote and retry apply."
+        )
+    return subprocess.run(local_probe, capture_output=True).returncode == 0
+
+
 def _resolve_base_ref(
     base_repo: Path,
     *,
@@ -1041,12 +1126,7 @@ def _resolve_base_ref(
     """
     if base_branch is not None:
         ref = f"{_ORIGIN_REF_PREFIX}{base_branch}"
-        probe = subprocess.run(
-            ["git", "-C", str(base_repo), "rev-parse", "--verify", "--quiet",
-             f"refs/remotes/{ref}"],
-            capture_output=True,
-        )
-        if probe.returncode == 0:
+        if _materialize_origin_branch(base_repo, base_branch):
             return ref
         origin_head = "origin/HEAD"
         source_hint = {
@@ -1103,11 +1183,7 @@ def _fetch_base_origin(base_repo: Path) -> None:
     repos (and the test fixtures that synthesize ``refs/remotes/origin/*``
     without a real remote) have nothing to fetch.
     """
-    probe = subprocess.run(
-        ["git", "-C", str(base_repo), "remote", "get-url", "origin"],
-        capture_output=True,
-    )
-    if probe.returncode != 0:
+    if not _has_origin_remote(base_repo):
         return  # no origin remote — nothing to refresh
     proc = subprocess.run(
         ["git", "-C", str(base_repo), "fetch", "origin"],
@@ -1139,6 +1215,95 @@ def _worktree_branch(worker_dir: Path) -> Optional[str]:
     if not name or name == "HEAD":
         return None
     return name
+
+
+# git-config key (under ``branch.<name>.``) where apply records the ref a
+# task branch was cut from, so a later reuse can detect that the configured
+# base changed underneath it (Issue #808 / Codex Round 1 Major). Stored
+# per-branch rather than per-worktree because the branch is what carries the
+# commits, and ``git branch -d`` cleans the entry up automatically.
+_BRANCH_BASE_CONFIG_KEY = "claudeOrgBase"
+
+
+def _branch_base_config_name(branch: str) -> str:
+    return f"branch.{branch}.{_BRANCH_BASE_CONFIG_KEY}"
+
+
+def _record_worktree_base(base_repo: Path, branch: str, base_ref: str) -> None:
+    """Record the ref ``branch`` was cut from (best-effort).
+
+    A config write failure must not fail an otherwise-successful dispatch —
+    the recorded value only powers the *extra* reuse check in
+    :func:`_assert_reused_worktree_base`, which treats "no record" as
+    "cannot verify, proceed" for backwards compatibility with worktrees
+    created before Issue #808.
+    """
+    subprocess.run(
+        ["git", "-C", str(base_repo), "config",
+         _branch_base_config_name(branch), base_ref],
+        capture_output=True,
+    )
+
+
+def _recorded_worktree_base(base_repo: Path, branch: str) -> Optional[str]:
+    """Read back the ref recorded by :func:`_record_worktree_base`, or None."""
+    proc = subprocess.run(
+        ["git", "-C", str(base_repo), "config", "--get",
+         _branch_base_config_name(branch)],
+        capture_output=True,
+    )
+    if proc.returncode != 0:
+        return None
+    value = proc.stdout.decode("utf-8", errors="replace").strip()
+    return value or None
+
+
+def _assert_reused_worktree_base(plan: DelegatePlan, branch: str) -> None:
+    """Refuse to reuse a worktree whose branch was cut from a different base.
+
+    Issue #808 / Codex Round 1 Major: :func:`_ensure_worktree` returns early
+    when ``worker_dir`` is already a registered worktree on the planned
+    branch, so the base-branch resolution below it never runs on a retry. If
+    the first attempt cut the branch from ``origin/develop`` and the retry
+    changes ``--base-ref`` (or the registry) to ``main``, the stale branch
+    would be accepted while the fresh ``send_plan.json`` advertises ``main``
+    as the PR base — reintroducing exactly the base/PR mismatch this feature
+    exists to prevent.
+
+    Comparing recorded-vs-configured is what makes both directions of the
+    change detectable; a merge-base heuristic only catches one of them
+    (``origin/main`` is typically an ancestor of a develop-cut branch, so
+    narrowing develop → main would slip through).
+
+    No record (worktree predates Issue #808, or was created by hand) means we
+    cannot verify, so reuse proceeds unchanged — this check only ever adds a
+    refusal where an authoritative record disagrees.
+    """
+    recorded = _recorded_worktree_base(plan.base_repo, branch)
+    if recorded is None:
+        return
+    expected = (
+        f"{_ORIGIN_REF_PREFIX}{plan.base_branch}"
+        if plan.base_branch is not None
+        else None
+    )
+    if expected is None or recorded == expected:
+        # ``expected is None`` = this dispatch is unconfigured (origin/HEAD).
+        # origin/HEAD is a moving symbolic ref, so a recorded concrete branch
+        # is not evidence of disagreement; stay silent rather than churn every
+        # pre-existing worktree.
+        return
+    raise BaseBranchApplyError(
+        f"worker_dir {plan.layout.worker_dir} is an existing worktree whose "
+        f"branch {branch!r} was cut from {recorded}, but this dispatch is "
+        f"configured for {expected} (source={plan.base_branch_source}). "
+        "Refusing to reuse it: the branch would carry the old base's commits "
+        "while the PR targets the new one, which is the diff pollution "
+        "Issue #808 exists to prevent. Remove the worktree (`git -C "
+        f"{plan.base_repo} worktree remove {plan.layout.worker_dir}` plus "
+        f"`git -C {plan.base_repo} branch -D {branch}`) so apply recreates it "
+        f"from {expected}, or restore the original base setting and retry."
+    )
 
 
 def _is_registered_worktree(base_repo: Path, worker_dir: Path) -> bool:
@@ -1332,6 +1497,11 @@ def _ensure_worktree(plan: DelegatePlan) -> None:
                     "(or remove the worktree and let apply recreate it) "
                     "and retry."
                 )
+            # Issue #808: the branch name matching is not enough — the branch
+            # must also have been cut from the base this dispatch is
+            # configured for, or the PR would target a base the branch never
+            # branched from.
+            _assert_reused_worktree_base(plan, actual)
         return
     if worker_dir.exists() and any(worker_dir.iterdir()):
         raise WorktreeApplyError(
@@ -1348,11 +1518,14 @@ def _ensure_worktree(plan: DelegatePlan) -> None:
         )
     # Issue #480: refresh remote-tracking refs first so we branch off the
     # *current* origin/HEAD, not a stale local clone's old origin/main.
-    # Issue #808: the configured branch (if any) is validated inside
-    # ``_resolve_base_ref`` — after the fetch above, so a branch that only
-    # exists on the remote resolves instead of spuriously failing, and a
-    # branch that exists nowhere raises BaseBranchApplyError.
-    _fetch_base_origin(plan.base_repo)
+    # Issue #808: a configured base branch takes the targeted path instead —
+    # ``_resolve_base_ref`` -> ``_materialize_origin_branch`` asks the remote
+    # for that one branch and fetches it with an exact refspec. That is both
+    # fail-closed (same stance as the blanket fetch) and strictly stronger for
+    # the configured ref, so running the blanket fetch first would only pay
+    # for a second round-trip that nothing downstream reads.
+    if plan.base_branch is None:
+        _fetch_base_origin(plan.base_repo)
     base_ref = _resolve_base_ref(
         plan.base_repo,
         base_branch=plan.base_branch,
@@ -1383,6 +1556,9 @@ def _ensure_worktree(plan: DelegatePlan) -> None:
             f"`git worktree add` failed (rc={proc.returncode}) for "
             f"{worker_dir} from {plan.base_repo}: {stderr}"
         )
+    # Issue #808: remember the actual cut point so a later partial-retry apply
+    # can detect a changed base instead of silently reusing the old branch.
+    _record_worktree_base(plan.base_repo, branch, base_ref)
 
 
 def _write_brief(plan: DelegatePlan) -> Path:
