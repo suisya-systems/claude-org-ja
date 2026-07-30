@@ -118,11 +118,12 @@ The harness's persistent state surface comprises the files listed below. Each en
 
 - **Path**: `registry/projects.md`
 - **Format**: Markdown, prose-with-table.
-- **Schema**: Per-project entries documenting common name, repo URL, default `worker_dir` pattern, and project-specific notes. Authoritative shape lives in the file itself; no external schema.
+- **Schema**: Per-project entries documenting common name, repo URL, default `worker_dir` pattern, and project-specific notes. The authoritative column schema lives in the tracked template `registry/projects.example.md`; no external schema.
 - **Owner**: secretary (registers new projects on user request).
 - **Readers**: secretary (resolves user-mentioned common names to projects per `CLAUDE.md` § Communication).
 - **Update cadence**: at project registration / update.
-- **Scope**: IN SCOPE for Set C as "state-adjacent configuration". `registry/projects.md` and `registry/org-config.md` are version-controlled alongside state artifacts, and the §4 migration policy applies to them. They are NOT moved to Set A; Set A retains them only as Set A's "config inputs" reference. This dual-listing is intentional.
+- **Version control**: NOT version-controlled since Issue #811. The file is operator-local (`.gitignore`d) and generated from the tracked template `registry/projects.example.md` by `tools/ensure_projects_registry.py`, which `/org-start` invokes on every startup (create-if-absent; an existing file is never overwritten). Its rows carry operator-specific data — customer names, private repo URLs — that must not enter public history. The template is the version-controlled artifact and is where §4 migration policy for the *schema* now applies; migrating an operator's live file to a new schema is a warn-and-let-the-operator-edit flow, not a rewrite (see `docs/operations/registry-projects-migration.md`).
+- **Scope**: IN SCOPE for Set C as "state-adjacent configuration". `registry/org-config.md` remains version-controlled; `registry/projects.md` is now generated but stays in scope as state-adjacent configuration (its loss degrades project name resolution). They are NOT moved to Set A; Set A retains them only as Set A's "config inputs" reference. This dual-listing is intentional.
 
 ### 1.10 `registry/org-config.md`
 
@@ -227,7 +228,7 @@ Per Issue #124's acceptance criterion, the contract must declare how state schem
 
 Lead-confirmed decisions for the 14 questions raised in the outline (2026-05-03 Q&A session #11). The detail lives inline at each section above; this digest summarizes the rationale by cluster.
 
-1. **In-scope vs. out-of-scope artifacts** (§1.2, §1.7, §1.8, §1.9, §1.10) — `org-state.json` is DERIVED (Markdown is canonical, inheriting the `docs/org-state-schema.md` ruling). The dispatcher event cursor is IN scope (its loss measurably degrades recovery). `dashboard.pid` / `dashboard.log` are OUT of scope (operational ephemera). `registry/projects.md` and `registry/org-config.md` are IN scope as state-adjacent configuration, dual-listed in Set A as config inputs.
+1. **In-scope vs. out-of-scope artifacts** (§1.2, §1.7, §1.8, §1.9, §1.10) — `org-state.json` is DERIVED (Markdown is canonical, inheriting the `docs/org-state-schema.md` ruling). The dispatcher event cursor is IN scope (its loss measurably degrades recovery). `dashboard.pid` / `dashboard.log` are OUT of scope (operational ephemera). `registry/projects.md` and `registry/org-config.md` are IN scope as state-adjacent configuration, dual-listed in Set A as config inputs. (Issue #811 later made `registry/projects.md` operator-local / generated — it stays in scope, but the version-controlled artifact is now its template `registry/projects.example.md`; see §1.9.)
 2. **Schema-language uniformity** (§2) — Heterogeneity is accepted as deliberate. Markdown for human-edited files, JSON Schema-shaped prose for runtime-helper-managed files, descriptive prose for the journal. No single normative schema language.
 3. **Append-only obligation for journal events** (§1.3 — the `events` table in `.state/state.db` since the M4 cutover; `.state/journal.jsonl` pre-M4) — Convention-only. Helper-mediated appends are mandatory; retro corrections are permitted, made by appending a superseding record that carries an in-band marker (`_correction`) rather than by rewriting the erroneous one. No storage-level enforcement.
 4. **Per-worker state file shape** (§1.4) — Free-form Markdown enforced by the `delegate-plan` helper template; no separate generator required.

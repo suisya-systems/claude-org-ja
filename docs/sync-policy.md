@@ -28,7 +28,7 @@ ja 側で直接行った編集を en 側へバックポートできるのは、�
 
 以下は意図的に乖離してよい。翻訳パリティの対象 **外**。
 
-- `registry/projects.md` — ローカル運用状態（`docs/canonical-ownership.md` で ja-canonical 指定。en 側は無関係な en 用 projects リストを保持）。
+- `registry/projects.md` — ローカル運用状態（`docs/canonical-ownership.md` で ja-canonical 指定。en 側は無関係な en 用 projects リストを保持）。**ja 側では Issue #811 以降 git 管理外**（`.gitignore` 済みの生成ファイル）なので、そもそも同期の対象に載らない。コミットされるテンプレート `registry/projects.example.md` は翻訳パリティ対象外（列スキーマの意味は両側で一致させるが、サンプル行と散文は乖離してよい）。
 - `knowledge/curated/*.md` — キュレーション知見は ja-canonical。en 翻訳はベストエフォートで、リリースをブロックしない。
 - `.state/`, `.curator/`, `.dispatcher/` — ランタイム/オペレータ状態。リポジトリ毎にスコープされる。
 - en-only: `bootstrap-cherry-picks.md`, `docs/translation-manifest.md` — メタ/プロセス成果物。
@@ -64,7 +64,7 @@ Lead は 2026-04-30 に **Option A (ja = SoT, en = auto-mirror runtime)** を確
 スコープ **外**（既存の翻訳 / 乖離許容ルールを継続）:
 
 - `.claude/skills/**`, `docs/**`, `README.md`, `CLAUDE.md` — 翻訳パイプライン経由
-- `knowledge/curated/**`, `registry/projects.md`, `.state/`, `.curator/`, `.dispatcher/` — 乖離許容
+- `knowledge/curated/**`, `registry/projects.md`（ja では git 管理外、Issue #811）, `registry/projects.example.md`, `.state/`, `.curator/`, `.dispatcher/` — 乖離許容
 
 分類の正本は en 側 `tools/sync_classifier.py`（pytest 完備）。
 

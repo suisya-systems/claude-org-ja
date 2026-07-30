@@ -47,20 +47,12 @@ class TestParseProjects(unittest.TestCase):
             self.assertTrue(p.nickname)
             self.assertTrue(p.name)
 
-    def test_live_registry_smoke(self):
-        # Smoke check: the live registry/projects.md (which may diverge per
-        # repo/fork) must remain parseable and yield at least one well-formed
-        # row. We do NOT assert specific project names here — that is the
-        # fixture-based test's job.
-        path = PROJECT_ROOT / "registry" / "projects.md"
-        if not path.exists():  # pragma: no cover - safety for fork checkouts
-            self.skipTest("live registry/projects.md not present")
+    def _assert_registry_parses_cleanly(self, path):
         # parse_projects must not raise and must not emit malformed-row
-        # warnings against the live file. An empty registry is valid (fresh
-        # checkout / fork) — but if the file *contains* table data rows, at
-        # least one must parse cleanly, otherwise the registry is silently
-        # corrupt (e.g. separator dropped → every row classified as
-        # non_table and parser returns []).
+        # warnings. An empty registry is valid (fresh checkout / fork) — but
+        # if the file *contains* table data rows, at least one must parse
+        # cleanly, otherwise the registry is silently corrupt (e.g. separator
+        # dropped → every row classified as non_table and parser returns []).
         text = path.read_text(encoding="utf-8")
         with self.assertNoLogs("tools.registry_parser", level="WARNING"):
             projects = parse_projects(path)
@@ -79,9 +71,37 @@ class TestParseProjects(unittest.TestCase):
         if pipe_lines >= 2:
             self.assertGreater(
                 len(projects), 0,
-                "live registry has pipe-table lines but none parsed — "
+                f"{path.name} has pipe-table lines but none parsed — "
                 "likely separator/header corruption",
             )
+        return projects
+
+    def test_template_registry_smoke(self):
+        # Issue #811: registry/projects.md is now operator-local and
+        # gitignored, so on CI it does not exist and the live-file test below
+        # skips. The tracked template is what every fresh checkout generates
+        # the live registry FROM, so it is the artifact that must stay
+        # parseable — assert against it so this coverage runs in CI instead
+        # of silently evaporating.
+        path = PROJECT_ROOT / "registry" / "projects.example.md"
+        projects = self._assert_registry_parses_cleanly(path)
+        self.assertTrue(
+            projects, "the shipped template must carry sample rows"
+        )
+
+    def test_live_registry_smoke(self):
+        # Smoke check on the operator's generated registry when present. It
+        # is absent on CI and on fresh clones (Issue #811 — gitignored,
+        # created by /org-start), and divergence-allowed per
+        # docs/sync-policy.md, so we assert shape only, never names.
+        path = PROJECT_ROOT / "registry" / "projects.md"
+        if not path.exists():
+            self.skipTest(
+                "registry/projects.md not present (operator-local, generated "
+                "by /org-start) — template coverage lives in "
+                "test_template_registry_smoke"
+            )
+        self._assert_registry_parses_cleanly(path)
 
     def test_happy_path(self):
         text = _build(
@@ -355,21 +375,36 @@ class TestHeaderNameParsing(unittest.TestCase):
         self.assertEqual(projects[0].triage, "")
         self.assertEqual(projects[0].path, "https://github.com/o/r")
 
-    def test_live_registry_triage_column_parses(self):
-        # The live registry carries a triage column; every data row must
-        # parse and expose a value the resolver recognises. We assert the
-        # vocabulary rather than a fixed per-row state, which would break on
-        # every legitimate registry edit (opting a project in or out is a
-        # policy change, not a parser regression). The empty-cell form is
-        # pinned content-independently by the synthetic test above.
-        path = PROJECT_ROOT / "registry" / "projects.md"
-        if not path.exists():  # pragma: no cover
-            self.skipTest("live registry/projects.md not present")
+    _RECOGNISED_TRIAGE = {
+        "", "-", "no", "off", "false", "yes", "true", "on",
+    }
+
+    def test_template_registry_triage_column_parses(self):
+        # Issue #811: the tracked template is the CI-visible carrier of the
+        # triage column, so pin the vocabulary here. We assert the vocabulary
+        # rather than a fixed per-row state, which would break on every
+        # legitimate registry edit (opting a project in or out is a policy
+        # change, not a parser regression). The empty-cell form is pinned
+        # content-independently by the synthetic test above.
+        path = PROJECT_ROOT / "registry" / "projects.example.md"
         projects = parse_projects(path)
         self.assertTrue(projects)
-        recognised = {"", "-", "no", "off", "false", "yes", "true", "on"}
         for p in projects:
-            self.assertIn(p.triage.strip().lower(), recognised)
+            self.assertIn(p.triage.strip().lower(), self._RECOGNISED_TRIAGE)
+
+    def test_live_registry_triage_column_parses(self):
+        # Same assertion against the operator's generated registry when it
+        # exists (absent on CI / fresh clones — see Issue #811).
+        path = PROJECT_ROOT / "registry" / "projects.md"
+        if not path.exists():
+            self.skipTest(
+                "registry/projects.md not present (operator-local, generated "
+                "by /org-start)"
+            )
+        projects = parse_projects(path)
+        self.assertTrue(projects)
+        for p in projects:
+            self.assertIn(p.triage.strip().lower(), self._RECOGNISED_TRIAGE)
 
 
 class TestBaseBranchColumn(unittest.TestCase):

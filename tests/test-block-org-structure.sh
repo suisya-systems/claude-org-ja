@@ -426,9 +426,12 @@ json='{"tool_name":"Write","tool_input":{"file_path":"'"$TRACKED_WORKER_DIR"'/re
 ec=$(run_hook_tracked "$json" "$stderr")
 assert_exit 2 "$ec" "Write(tracked): untracked glob-metachar path registry/* is blocked"
 
-# 46. in-org Write to tracked registry/projects.md (block — relaxation is out-of-org only)
-#     WORKER_DIR=$REPO_ROOT is inside CLAUDE_ORG_PATH and registry/projects.md is
-#     tracked in this repo, so this asserts the in-org guard is NOT weakened.
+# 46. in-org Write to registry/projects.md (block — relaxation is out-of-org only)
+#     WORKER_DIR=$REPO_ROOT is inside CLAUDE_ORG_PATH, so this asserts the in-org
+#     guard is NOT weakened. The in-org path reaches ROOT_ONLY_BLOCKED without
+#     consulting the git index, so the block holds regardless of whether the file
+#     is tracked — which matters since Issue #811 made registry/projects.md an
+#     untracked, operator-local generated file in this repo.
 stderr=$(mktemp); TMPFILES+=("$stderr")
 json='{"tool_name":"Write","tool_input":{"file_path":"'"$WORKER_DIR"'/registry/projects.md"}}'
 ec=$(run_hook "$json" "$stderr")

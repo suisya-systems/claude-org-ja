@@ -9,6 +9,21 @@
 
 ### Changed
 
+- `registry/projects.md` を operator-local な生成ファイルへ移行 (#811)。コミット対象は列スキーマ・
+  仕様説明・一般サンプル行だけを持つテンプレート `registry/projects.example.md` になり、実体は
+  `.gitignore` 対象。`/org-start` (Step 0) と `/org-setup` (Step 3.5) が
+  `tools/ensure_projects_registry.py` で未配置時のみ生成する (既存ファイルは絶対に上書きしない)。
+  読み手ツール (registry_parser / gen_delegate_payload / work_discovery_repos /
+  resolve_worker_layout / state_db importer / dashboard) は従来どおり `registry/projects.md` を
+  読むためインターフェース変更は無い。テンプレートの列が増えた場合は起動時に header drift 警告
+  (非 fatal) が出る。
+
+  > **既存 checkout の移行が必要**: gitignore はローカルファイルを守らない。この変更を pull すると、
+  > `registry/projects.md` が clean な checkout では**ファイルが削除される**
+  > (dirty な checkout では git が pull 自体を拒否するのでファイルは無傷)。pull 前に
+  > `cp registry/projects.md registry/projects.md.bak` で退避すること。手順の詳細は
+  > [`docs/operations/registry-projects-migration.md`](docs/operations/registry-projects-migration.md)。
+
 - work-discovery triage の repo セット解決を反転 (#801)。`registry/projects.md` の GitHub URL 行を
   既定 scan 対象とし (`no` / `off` / `false` の明示 opt-out のみ除外)、home repo (claude-org-ja 自身) の
   常時包含を廃して `registry/org-config.md` の `triage_home` (既定 off) による opt-in へ移行した。
