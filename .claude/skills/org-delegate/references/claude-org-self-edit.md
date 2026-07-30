@@ -113,15 +113,24 @@ claude-org 自己編集タスクで Pattern B（worktree）を採る場合、wor
 
 deadlock（worker が届かない承認を待ち続ける）と空打ち Enter（承認文の無い送信）を防ぐため、以下に固定する:
 
-1. **窓口**: ディスパッチャーから `DELEGATE_COMPLETE` を受信したら、SKILL.md Step 5 の挨拶送信に**続けて**、承認文を send_keys で worker ペインへ入力しておく:
+1. **窓口**: ディスパッチャーから `DELEGATE_COMPLETE` を受信したら、SKILL.md Step 5 の挨拶送信に**続けて**、承認文を send_keys で worker ペインへ入力しておく。打鍵は **text と Enter を別呼び出しに分ける 2 段**で行う（打鍵注入手順の共有 SoT は [`.dispatcher/references/spawn-flow.md`](../../../../.dispatcher/references/spawn-flow.md) 3-5a 手順 2。org-start の /loop 再点火と同じ規律）:
    ```
+   # (1) 承認文の text のみを送る（enter を付けない）:
    mcp__renga-peers__send_keys(
      target="worker-{task_id}",
-     text="承認します: 本タスク ({task_id}) における {対象ファイルの列挙} の編集を承認します。これは窓口経由のユーザー承認です。",
-     enter=true
+     text="承認します: 本タスク ({task_id}) における {対象ファイルの列挙} の編集を承認します。これは窓口経由のユーザー承認です。"
    )
+   # (2) inspect_pane で承認文が worker の入力欄（❯ 行）に乗ったことを確認する:
+   mcp__renga-peers__inspect_pane(target="worker-{task_id}", lines=10)
+   # (3) 確認できたら、Enter を単独の別呼び出しで送る:
+   mcp__renga-peers__send_keys(target="worker-{task_id}", enter=true)
    ```
    承認文の必須 3 要素: **対象ファイルの列挙** / **task_id** / **「窓口経由のユーザー承認」の明記**。
+
+   > **失敗モード 2 つ（必読）**:
+   >
+   > - **text と `enter=true` を同一呼び出しに載せると submit されない**: text が貼り付け扱いになり末尾 Enter が貼り付けに吸収されるため、承認文は worker 入力欄に**未送信 draft として滞留**する（2026-07-31 実害: task ja-registry-template-001 で承認が届かず worker が待機停止）。必ず上記のとおり text 送信と Enter を別呼び出しに分ける。
+   > - **実行中ペインへの Escape はターン中断になる**: draft 滞留からの復旧などで打鍵し直す前に、必ず `inspect_pane` で worker が **idle** であることを確認する。busy（ターン実行中）のペインへ Escape を送ると走行中のターンを中断させてしまう。
 2. **worker brief**: root `.claude/**`（深さ不問。`.claude/skills/**/references/**` の brief 規範 prose を含む）を対象に含む委譲の brief（`CLAUDE.local.md` / 指示メッセージ）には次の趣旨を必ず書く:
    > 本タスクは `.claude/` 編集を含む。**編集前に、承認入力（対象ファイル列挙 + task_id + 「窓口経由のユーザー承認」）が会話に user message として存在することを確認**せよ。存在しなければ編集を開始せず、`send_message(to_id="secretary")` で窓口に承認入力を要求して待機せよ。
 3. **worker**: 上記の確認が取れてから編集を開始する。承認文に列挙されていないファイルへの `.claude/` 編集が必要になった場合はスコープ拡張として扱い、[`.claude/skills/org-escalation/SKILL.md`](../../org-escalation/SKILL.md) 経由でエスカレーションする。

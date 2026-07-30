@@ -172,3 +172,5 @@ mcp__renga-peers__send_keys(
 | Shift+Tab（permission mode 切替） | `send_keys(target="X", keys=["Shift+Tab"])` |
 | Esc（モーダル escape） | `send_keys(target="X", keys=["Esc"])` |
 | Ctrl+C（走行中プロセス中断） | `send_keys(target="X", keys=["Ctrl+C"])` |
+
+> **注意 — Claude Code の入力欄（❯ 行）へは text + `enter=true` の同一呼び出しを使わない**: 上表の「"yes" + Enter」型は raw CLI の確認プロンプト等に対する用法。Claude Code ペインの入力欄に対して text と `enter=true` を同一呼び出しに載せると、text が貼り付け扱いになり末尾 Enter が貼り付けに吸収されて **submit されず、未送信 draft として滞留する**。Claude Code ペインへの打鍵は (1) `send_keys(text=...)` のみ → (2) `inspect_pane` で入力欄に乗ったことを確認 → (3) 単独 `send_keys(enter=true)` の 2 段に分ける（打鍵注入手順の共有 SoT: [`.dispatcher/references/spawn-flow.md`](../../../../.dispatcher/references/spawn-flow.md) 3-5a）。また復旧打鍵の前の Escape は、対象ペインが busy だと走行中ターンを中断させるため、必ず `inspect_pane` で idle を確認してから送る。
