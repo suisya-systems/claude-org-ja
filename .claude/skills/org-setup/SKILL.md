@@ -14,6 +14,8 @@ allowed-tools:
   - Bash(py -3 tools/org_setup_prune.py:*)
   - Bash(python tools/check_role_configs.py:*)
   - Bash(py -3 tools/check_role_configs.py:*)
+  - Bash(py -3 tools/ensure_projects_registry.py:*)
+  - Bash(python3 tools/ensure_projects_registry.py:*)
 ---
 
 # org-setup: 組織の許可設定を一括配置
@@ -61,6 +63,26 @@ Claude Code は**起動ディレクトリの `.claude/` 配下**から設定を�
 不足分を追加する。既存の設定は**絶対に削除しない**。
 `permissions.allow` は配列なので、既存エントリを保持しつつ新規エントリを追加する。
 `env` はオブジェクトなので、既存キーを保持しつつ新規キーを追加する。
+
+### Step 3.5: operator-local な生成ファイルを配置する（未配置時のみ）
+
+許可設定と同じく、fresh clone 直後に無い operator-local ファイルをここで揃える。
+いずれも**既存があれば上書きしない**（operator の実データが入っているため）。
+
+`registry/projects.md`（プロジェクトレジストリ、Issue #811）— コミットされているのは
+テンプレート `registry/projects.example.md` の方で、実体は git 管理外:
+
+```bash
+python3 tools/ensure_projects_registry.py     # Mac/Linux
+py -3 tools/ensure_projects_registry.py       # Windows native
+```
+
+- 冪等。`created:` なら新規生成、`ok:` なら既存のまま
+- `header drift:` はテンプレートに増えた列が手元ファイルに無い warning（exit 0、非 fatal）。
+  表示された列名をユーザーに伝え、手元ファイルの表ヘッダーへの追記を案内する
+- [`/org-start`](../org-start/SKILL.md) の Step 0 でも同じコマンドが走るので、
+  どちらを先に実行しても実体は揃う。既存 checkout の移行手順は
+  [`docs/operations/registry-projects-migration.md`](../../../docs/operations/registry-projects-migration.md)
 
 ### Step 4: 結果を報告する
 

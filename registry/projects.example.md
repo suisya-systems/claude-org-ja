@@ -1,7 +1,33 @@
+# Projects Registry (Template)
+
+**これはテンプレートである。組織が実際に読むのは `registry/projects.md`（本ファイルの隣）で、そちらは operator-local な生成ファイルであり git 管理下に無い（Issue #811）。**
+
+- **本ファイル（`registry/projects.example.md`）** — リポジトリにコミットされる。列スキーマ・仕様説明・一般サンプル行だけを持ち、operator 固有のプロジェクト行は**決して入れない**。
+- **`registry/projects.md`** — operator-local。`.gitignore` 済みで、初回の [`/org-start`](../.claude/skills/org-start/SKILL.md) が本テンプレートから生成する（生成器は [`tools/ensure_projects_registry.py`](../tools/ensure_projects_registry.py)）。既に存在する場合は**絶対に上書きされない**。
+
+読み手ツール（`dashboard/server.py` / [`tools/registry_parser.py`](../tools/registry_parser.py) / [`tools/gen_delegate_payload.py`](../tools/gen_delegate_payload.py) / [`tools/work_discovery_repos.py`](../tools/work_discovery_repos.py) / [`tools/resolve_worker_layout.py`](../tools/resolve_worker_layout.py) / [`tools/state_db/importer.py`](../tools/state_db/importer.py)）は従来どおり `registry/projects.md` を読む。本テンプレートの導入でインターフェースは変わっていない。
+
+既存 checkout を移行する手順（pull でローカルの登録行を失わないための退避・復元）は [`docs/operations/registry-projects-migration.md`](../docs/operations/registry-projects-migration.md) を参照。
+
+## 生成範囲のマーカー
+
+下の `<!-- BEGIN-LIVE-REGISTRY -->` **より後ろだけ**が `registry/projects.md` へコピーされる。ここまでのテンプレート説明は実体ファイルに混入しない。マーカー行そのものも出力されない。
+
+マーカーが見つからない場合、生成器は fail loud で停止する（テンプレート全体を黙ってコピーして実体ファイルにテンプレート説明を埋め込む事故を避けるため）。
+
+## スキーマを更新するとき
+
+列を足す / 意味を変える変更は、マーカーより後ろの表ヘッダーを編集して commit する。既に `registry/projects.md` を持っている operator の手元ファイルは**自動では書き換わらない**（上書きしない契約のため）。代わりに、`/org-start` が毎回 [`tools/ensure_projects_registry.py`](../tools/ensure_projects_registry.py) を呼び、手元ファイルのヘッダーが本テンプレートより古いと **warning を出す**（非 fatal）。operator はその警告を見て手元の表ヘッダーへ列を追記する。
+
+列の追加は後方互換であること（未記入セル = 従来動作）を保つこと。パーサー（[`tools/registry_parser.py`](../tools/registry_parser.py)）は header 名で列を対応付け、未知の追加列を無視し、列が足りない旧行も legacy として読むため、既存行を編集せずに列を足せる。
+
+<!-- BEGIN-LIVE-REGISTRY -->
 # Projects Registry
 
 既知のプロジェクト一覧。窓口Claudeがユーザーの依頼からプロジェクトを特定するために使う。
 ワーカー派遣時に自動登録される。手動で追記・編集してもよい。
+
+このファイルは operator-local であり git 管理下に無い（Issue #811）。列スキーマを変更したい場合は、本ファイルではなく `registry/projects.example.md` を編集して commit する。
 
 「パス」列はプロジェクトの clone ソースを記録する。値によってワーカー派遣時の初期化手順が分岐する:
 
@@ -29,10 +55,10 @@ claude-org-ja 自身（self-edit）は本レジストリに載せない。`tools
 - 単発の逸脱（hotfix を `main` から切る等）は本列を書き換えず `gen_delegate_payload.py --base-ref main` で上書きする。**優先順位は `--base-ref` > 本列 > `origin/HEAD`**。
 - 設定したブランチが `origin` に存在しない場合、派遣は apply 時に fail loud で停止する（既定ブランチへ黙って落ちない。Issue #480 の stale-base ガードと同じ立場）。
 
+下の行は列の書き方を示すサンプルである。実際の運用では自分のプロジェクトに置き換えてよい（サンプル行を全て削除しても、パーサーは 0 行の表を有効として扱う）。
+
 | 通称 | プロジェクト名 | パス | 説明 | よくある作業例 | triage | base_branch |
 |---|---|---|---|---|---|---|
-| 時計アプリ | clock-app | - | Webブラウザで動くデジタル時計 | デザイン変更、機能追加 | no | |
-| renga | renga | https://github.com/suisya-systems/renga | Rust 製の Claude Code 用ターミナルマルチプレクサ（TUI） | 機能追加、バグ修正、Issue 対応 | | |
-| サンドボックス検証 | sandbox-probe | - | Issue #376 / #377 用の sandbox profile / hook / settings 配備の実測検証エリア。candidate profile を handcraft して probe を回し allow/deny matrix を作る | Pre-Phase 0 spike、probe 反復、profile validation | no | |
-| ランタイム | claude-org-runtime | https://github.com/suisya-systems/claude-org-runtime | Layer 2 = org-runtime: claude-org-ja から抽出された Python runtime (dispatcher / state schema / reference role prompts)。ja は pin で参照する | role_configs_schema.json 同期、release 駆動、dispatcher / settings.generator のメンテ | | |
-| token-tracking | token-tracking | https://github.com/aainc/token-tracking | Claude Code OTel ローカル監視スタック (otel-collector + Prometheus + Grafana)。個人 (Pro/Max) ローカル構成 + Team plan スケール拡張ガイド付き | dashboard 改修、collector / Grafana 設定更新、export スクリプト機能追加、Team 化作業 | no | |
+| 時計アプリ | clock-app | - | Webブラウザで動くデジタル時計。「パス」が `-` = clone 元なしの新規プロジェクト | デザイン変更、機能追加 | no | |
+| renga | renga | https://github.com/suisya-systems/renga | Rust 製の Claude Code 用ターミナルマルチプレクサ（TUI）。GitHub URL 行なので triage 既定 include | 機能追加、バグ修正、Issue 対応 | | |
+| 二系統サンプル | sample-two-track | https://github.com/example/sample-two-track | `develop` に feature を溜め `main` へは直接マージしない運用のサンプル行（base_branch 列の記入例） | 機能追加、リリース準備 | no | develop |

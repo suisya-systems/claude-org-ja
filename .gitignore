@@ -18,6 +18,21 @@ knowledge/raw/*
 knowledge/skill-candidates.local.md
 knowledge/curated/*.local.md
 
+# Project registry: operator-local, generated (Issue #811).
+# The tracked artifact is registry/projects.example.md (column schema + spec
+# + generic sample rows). The live registry/projects.md carries the
+# operator's real roster — customer names, private repo URLs — so it stays
+# out of history; /org-start generates it from the template on first run via
+# tools/ensure_projects_registry.py.
+# Migrating an existing checkout: see docs/operations/registry-projects-migration.md
+# (a clean checkout LOSES this file on pull — gitignore does not protect a
+# path that was previously tracked).
+registry/projects.md
+# Migration backups hold the same operator data as the registry itself, so
+# they must never be commitable either (the runbook has operators create
+# registry/projects.md.bak before pulling the migration).
+registry/projects.md.bak*
+
 # Dashboard generated data (replaced by live server)
 dashboard/data.json
 .state/dashboard.pid

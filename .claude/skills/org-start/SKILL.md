@@ -17,6 +17,8 @@ allowed-tools:
   - Bash(python3 tools/check_runtime_version.py:*)
   - Bash(py -3 tools/check_herdr_compat.py:*)
   - Bash(python3 tools/check_herdr_compat.py:*)
+  - Bash(py -3 tools/ensure_projects_registry.py:*)
+  - Bash(python3 tools/ensure_projects_registry.py:*)
   - Bash(py -3 tools/secretary_queue_watcher.py:*)
   - Bash(python3 tools/secretary_queue_watcher.py:*)
   - mcp__renga-peers__*
@@ -100,14 +102,32 @@ ClaudeCode起動後に最初に実行するスキル。前回の状態復元と�
      > - `inspect_pane` は adapter 不在のため失敗する（socket close を観測する）。調査目的で叩かない
      > - `close_pane` は `[logical_pane] cannot close a human-driven logical pane` で**拒否される**。残骸と決めつけて close を試みない
      > - このエントリの `name` / `role` が期待値（`secretary` / `secretary`）とずれたまま残っている場合（手動テストの名残等）は、`mcp__org-broker__set_pane_identity(target="<そのエントリの id>", name="secretary", role="secretary")` で**改名修復**して続行する。broker では `target="focused"` を解決できないため、必ずそのエントリの id を指定する
-4. `registry/org-config.md` の `workers_dir` を読み、ワーカーディレクトリの存在を確認する。
+4. **プロジェクトレジストリの配置（未配置時のみ生成・既存は上書きしない、Issue #811）**:
+   `registry/projects.md` は operator-local な生成ファイル（`.gitignore` 済み）で、
+   コミットされているのはテンプレート `registry/projects.example.md` の方である。
+   fresh clone 直後は実体が無いので、ここで生成する:
+   ```bash
+   python3 tools/ensure_projects_registry.py     # Mac/Linux
+   py -3 tools/ensure_projects_registry.py       # Windows native
+   ```
+   - **既存ファイルは絶対に上書きされない**（operator の登録行がここにあるため）。冪等なので毎回実行してよい
+   - 出力が `created:` なら新規生成、`ok:` なら既存のまま
+   - 出力が `header drift:` の場合、テンプレートに増えた列が手元ファイルに無い。
+     **警告であり org-start は止めない**（exit 0）。表示された列名をユーザーに伝え、
+     手元の `registry/projects.md` の表ヘッダー行とセパレーター行へ追記するよう案内する
+     （既存データ行は編集不要。空セルは従来動作を保つ）
+   - `error:` で exit 1 の場合はテンプレート自体が壊れている。ユーザーに報告して続行する
+     （後続の Block B / D はレジストリを読まないので org-start 自体は継続できるが、
+     ワーカー派遣前に解消が必要）
+   - 既存 checkout の移行手順は [`docs/operations/registry-projects-migration.md`](../../../docs/operations/registry-projects-migration.md) を参照
+5. `registry/org-config.md` の `workers_dir` を読み、ワーカーディレクトリの存在を確認する。
    存在するディレクトリがあれば一覧をユーザーに報告する（削除は絶対にしない）。
    **禁止事項**: ワーカーディレクトリは過去の作業成果や再利用可能なプロジェクトを含むため、
    org-start 時に削除してはならない。org-delegate のディレクトリ保持ポリシーに従うこと。
 
 ## Step 0.5: herdr backend 互換性 preflight (broker+herdr のみ・spawn 前 fatal gate、Issue #748)
 
-> **位置の不変条件 (Block C2 と混同しない)**: 本ゲートは **Step 0 の 5 サブステップがすべて完了した後、かつ Block A の dispatcher `spawn_claude_pane` を発火する前**に、**同期実行する fatal gate** である。Block C2（runtime drift）は Block A spawn と並列に回る warning で「未確認でも org-start は継続」する責務だが、本ゲートは真逆で、**exit 1/2 なら Block A の spawn を発火せずに停止**する。目的は herdr の self-update による無言の窓外昇格（daemon が runtime の対応 protocol 窓を超えて昇格）を dispatcher spawn 前に fail loud で検出し、protocol 不一致による `agent.start` の wedge（Issue #151 の主症状。原因が「daemon 停止」と誤診断される）を未然に止めることにある。C2 と並列 warning にすると事故を再導入するので、必ず spawn の**前**で同期ブロックする。
+> **位置の不変条件 (Block C2 と混同しない)**: 本ゲートは **Step 0 の 6 サブステップがすべて完了した後、かつ Block A の dispatcher `spawn_claude_pane` を発火する前**に、**同期実行する fatal gate** である。Block C2（runtime drift）は Block A spawn と並列に回る warning で「未確認でも org-start は継続」する責務だが、本ゲートは真逆で、**exit 1/2 なら Block A の spawn を発火せずに停止**する。目的は herdr の self-update による無言の窓外昇格（daemon が runtime の対応 protocol 窓を超えて昇格）を dispatcher spawn 前に fail loud で検出し、protocol 不一致による `agent.start` の wedge（Issue #151 の主症状。原因が「daemon 停止」と誤診断される）を未然に止めることにある。C2 と並列 warning にすると事故を再導入するので、必ず spawn の**前**で同期ブロックする。
 
 `ORG_TRANSPORT` の値だけでは発動判定にならない（renga/broker のフレーム差があり、broker でも backend は herdr とは限らない）。ゲートは `$ORG_BROKER_STATE_DIR`（未設定時 `.state/broker`）の `daemon.json` sidecar に runtime が書く**解決済み backend** を読み、`backend == "herdr"` のとき**だけ**発動する。非 broker（sidecar 不在）や非 herdr backend（tmux / wezterm / null）は skip（exit 0）で即通過する。
 
@@ -131,7 +151,7 @@ ClaudeCode起動後に最初に実行するスキル。前回の状態復元と�
 
 ## Step 1〜3: 並列起動フェーズ
 
-> **Issue #410 / Stage B**: Step 0 (transport 判定 / set_summary / MCP 疎通 / identity 検証 / workers_dir 確認の 5 サブステップすべて) が完了し、**Step 0.5 の herdr 互換性 preflight が exit 0（compatible / skip）で通過した後**に dispatcher の `spawn_claude_pane` を発火し、Claude 起動待ち (〜30〜60s) と並列に Block B (前回状態の DB 読み込み) / Block C (ダッシュボード server 起動) を進める。serial 実行時の wall-clock 〜3 分を ~35s まで短縮する目的。**Step 0.5 が exit 1/2 の場合は Block A を発火しない**（spawn wedge 防止のための同期 fatal gate）。
+> **Issue #410 / Stage B**: Step 0 (transport 判定 / set_summary / MCP 疎通 / identity 検証 / projects レジストリ配置 / workers_dir 確認の 6 サブステップすべて) が完了し、**Step 0.5 の herdr 互換性 preflight が exit 0（compatible / skip）で通過した後**に dispatcher の `spawn_claude_pane` を発火し、Claude 起動待ち (〜30〜60s) と並列に Block B (前回状態の DB 読み込み) / Block C (ダッシュボード server 起動) を進める。serial 実行時の wall-clock 〜3 分を ~35s まで短縮する目的。**Step 0.5 が exit 1/2 の場合は Block A を発火しない**（spawn wedge 防止のための同期 fatal gate）。
 >
 > **実行モデル**: Secretary が以下の 3 ブロック (A/B/C) を発火し、最後に block D で合流する。block A は I/O bound（renga MCP の応答は数百 ms、その後は別プロセスである Claude の boot を待つだけ）なので B/C と wall-clock を完全に overlap できる。
 

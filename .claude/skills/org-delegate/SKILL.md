@@ -12,6 +12,8 @@ allowed-tools:
   - Write
   - Bash(python tools/gen_delegate_payload.py:*)
   - Bash(py -3 tools/gen_delegate_payload.py:*)
+  - Bash(py -3 tools/ensure_projects_registry.py:*)
+  - Bash(python3 tools/ensure_projects_registry.py:*)
   - Bash(bash tools/journal_append.sh:*)
   - Bash(py -3 tools/journal_append.py:*)
   - Bash(python -m tools.state_db.importer:*)
@@ -135,7 +137,7 @@ allowed-tools:
 
 ユーザーの依頼からプロジェクトを特定する:
 
-1. `registry/projects.md` を読む
+1. `registry/projects.md` を読む。**未生成なら `python3 tools/ensure_projects_registry.py`（Windows native は `py -3 ...`）でテンプレートから生成してから読む**（Issue #811 で operator-local な生成ファイルになった。通常は `/org-start` の Step 0 が生成済みなのでこの分岐には入らない。既存ファイルは上書きされないので実行は無害）
 2. 依頼に含まれるキーワードから該当プロジェクトを特定する（通称・プロジェクト名・説明から照合）
 3. 特定できた場合はそのパスを使う
 4. 特定できない場合は登録済みプロジェクトの通称一覧を提示し、選ばせる

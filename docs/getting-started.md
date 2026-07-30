@@ -325,7 +325,8 @@ claude-org-ja/
     raw/                 <- 生の学び（git管理外）
     curated/             <- 整理済み知見（git管理）
   registry/
-    projects.md          <- プロジェクト一覧（自動登録）
+    projects.example.md  <- プロジェクト一覧のテンプレート（git管理）
+    projects.md          <- プロジェクト一覧（自動登録・git管理外・初回起動時に生成）
   docs/                  <- ドキュメント
 ```
 
@@ -333,7 +334,7 @@ claude-org-ja/
 - `knowledge/curated/` — 整理された知見を確認する（自動生成される）
 
 ### 触らなくていいもの
-- `registry/projects.md` — 作業依頼時に自動登録される
+- `registry/projects.md` — 作業依頼時に自動登録される。git 管理外の operator-local ファイルで、初回 `/org-start` が [`registry/projects.example.md`](../registry/projects.example.md) から生成する（既存があれば上書きしない）。既存 checkout の移行手順は [`docs/operations/registry-projects-migration.md`](./operations/registry-projects-migration.md) を参照
 - `dashboard/` — ダッシュボードのデザインとデータ。自動管理される
 - `.claude/skills/` — スキル定義。組織の成長に伴い自動改善提案される
 - `.state/` — セッション状態。自動管理される
