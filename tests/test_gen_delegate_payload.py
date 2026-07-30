@@ -4004,6 +4004,25 @@ class TestBaseRefCliFlag(unittest.TestCase):
                 gdp._gather_plan_kwargs(args)["base_ref_override"], "main"
             )
 
+    def test_non_string_toml_base_ref_is_a_config_error_not_a_traceback(self):
+        """Codex Round 3 Major: `base_ref = 5` used to reach
+        normalize_base_branch and abort with a raw AttributeError."""
+        with tempfile.TemporaryDirectory() as td:
+            toml_path = Path(td) / "worker_brief.toml"
+            toml_path.write_text(
+                '[task]\nid = "t1"\nbase_ref = 5\n[project]\nname = "p1"\n',
+                encoding="utf-8",
+            )
+            with self.assertRaises(SystemExit) as cm:
+                gdp._load_task_args_from_toml(toml_path)
+            self.assertIn("base_ref must be a string", str(cm.exception))
+
+    def test_normalize_rejects_non_strings_with_a_clear_type_error(self):
+        # Guard for direct build_delegate_plan callers, which bypass the CLI.
+        with self.assertRaises(TypeError) as cm:
+            gdp.normalize_base_branch(5)
+        self.assertIn("must be a string", str(cm.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

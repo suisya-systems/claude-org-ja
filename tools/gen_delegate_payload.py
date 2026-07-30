@@ -363,9 +363,21 @@ def normalize_base_branch(value: Optional[str]) -> Optional[str]:
     Note that this deliberately does NOT validate the branch's existence —
     that is an apply-time git question handled by :func:`_resolve_base_ref`,
     so the planner stays pure.
+
+    Raises :class:`TypeError` on a non-string, non-None input. Registry cells
+    are always strings, but ``--from-toml`` can carry ``base_ref = 5``; the
+    CLI catches that earlier with a friendlier message (see
+    :func:`_load_task_args_from_toml`), and this guard keeps a direct
+    :func:`build_delegate_plan` caller from failing later with an opaque
+    ``AttributeError`` inside ``.strip()`` (Codex Round 3 Major).
     """
     if value is None:
         return None
+    if not isinstance(value, str):
+        raise TypeError(
+            f"base branch must be a string, got {type(value).__name__} "
+            f"({value!r})"
+        )
     v = value.strip()
     if not v or v == "-":
         return None
@@ -2139,6 +2151,18 @@ def _load_task_args_from_toml(path: Path) -> dict[str, Any]:
     role = (worker.get("role") or "").strip()
     mode_from_toml = "audit" if role == "doc-audit" else "edit"
 
+    # Issue #808 / Codex Round 3 Major: a TOML ``base_ref = 5`` used to reach
+    # ``normalize_base_branch`` and abort preview / apply with a raw
+    # AttributeError traceback. Report it as the configuration error it is,
+    # naming the file and the offending value (mirrors
+    # ``gen_worker_brief.validate``'s type checks on the other task fields).
+    base_ref = task.get("base_ref")
+    if base_ref is not None and not isinstance(base_ref, str):
+        raise SystemExit(
+            f"error: {path}: [task].base_ref must be a string branch name "
+            f"(e.g. \"develop\"), got {type(base_ref).__name__} ({base_ref!r})"
+        )
+
     # Issue #290 defect 1: surface explicit [worker] fields so the resolver
     # honors them instead of silently re-deriving pattern/role/dir/self_edit.
     layout_overrides: dict[str, Any] = {}
@@ -2170,7 +2194,7 @@ def _load_task_args_from_toml(path: Path) -> dict[str, Any]:
         # Issue #808: keep the TOML and CLI input forms at parity so a
         # ``--from-toml`` dispatch can pin the base branch too (``--base-ref``
         # still wins per the merge order in ``_gather_plan_kwargs``).
-        "base_ref_override": task.get("base_ref"),
+        "base_ref_override": base_ref,
         "commit_prefix": task.get("commit_prefix"),
         "verification_depth": task.get("verification_depth"),
         "issue_url": task.get("issue_url"),
