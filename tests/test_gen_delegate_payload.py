@@ -3331,5 +3331,311 @@ class TestIssue712BriefPlacement(unittest.TestCase):
         )
 
 
+class TestNormalizeBaseBranch(unittest.TestCase):
+    """Issue #808: one normalizer for both inputs (--base-ref and the registry
+    ``base_branch`` column) so they cannot disagree on what a value means."""
+
+    def test_bare_branch_name_passes_through(self):
+        self.assertEqual(gdp.normalize_base_branch("develop"), "develop")
+
+    def test_origin_prefix_is_stripped(self):
+        # An operator writing the ref the way git prints it must land on the
+        # same branch as the bare name.
+        self.assertEqual(gdp.normalize_base_branch("origin/develop"), "develop")
+
+    def test_surrounding_whitespace_is_trimmed(self):
+        # Markdown table cells arrive padded.
+        self.assertEqual(gdp.normalize_base_branch("  develop  "), "develop")
+        self.assertEqual(gdp.normalize_base_branch(" origin/ develop "), "develop")
+
+    def test_unset_forms_map_to_none(self):
+        # None == "not configured" == keep the historical origin/HEAD path.
+        for value in (None, "", "   ", "-", " - ", "origin/"):
+            with self.subTest(value=value):
+                self.assertIsNone(gdp.normalize_base_branch(value))
+
+    def test_slashed_branch_name_survives(self):
+        # Only a leading ``origin/`` is special; a real hierarchical branch
+        # name must not be mangled.
+        self.assertEqual(
+            gdp.normalize_base_branch("release/2026-Q3"), "release/2026-Q3"
+        )
+        self.assertEqual(
+            gdp.normalize_base_branch("origin/release/2026-Q3"), "release/2026-Q3"
+        )
+
+
+class TestBaseBranchResolution(unittest.TestCase):
+    """Issue #808: per-project default base branch + --base-ref override.
+
+    Covers the precedence chain (CLI > registry > origin/HEAD), the worktree
+    actually being cut from the configured branch, and the fail-loud refusal
+    when the configured branch does not exist on origin.
+    """
+
+    def setUp(self) -> None:
+        try:
+            subprocess.run(["git", "--version"], capture_output=True, check=True)
+        except FileNotFoundError:
+            self.skipTest("git not available")
+        self._td = tempfile.TemporaryDirectory()
+        # This class drives its own git init (needs a controlled main/develop
+        # divergence), so it opts out of the sandbox-level init.
+        self.sb = _Sandbox(Path(self._td.name), with_claude_org_origin=False)
+        import os
+        self._git_env = os.environ.copy()
+        self._git_env.update(
+            {
+                "GIT_AUTHOR_NAME": "test",
+                "GIT_AUTHOR_EMAIL": "test@example.com",
+                "GIT_COMMITTER_NAME": "test",
+                "GIT_COMMITTER_EMAIL": "test@example.com",
+            }
+        )
+        base = self.sb.claude_org_root
+        self._git("init", "-q", "-b", "main")
+        self._git("commit", "--allow-empty", "-m", "main-1", "-q")
+        self.main_sha = self._rev_parse("main")
+        self._git("update-ref", "refs/remotes/origin/main", self.main_sha)
+        self._git("symbolic-ref", "refs/remotes/origin/HEAD",
+                  "refs/remotes/origin/main")
+        # A develop branch that is genuinely AHEAD of main, so a test can tell
+        # "cut from develop" apart from "cut from origin/HEAD" by SHA alone.
+        self._git("commit", "--allow-empty", "-m", "develop-1", "-q")
+        self.develop_sha = self._rev_parse("HEAD")
+        self._git("update-ref", "refs/remotes/origin/develop", self.develop_sha)
+        # Leave the checkout back on main so HEAD is not itself develop.
+        self._git("reset", "--hard", "-q", self.main_sha)
+        self.assertNotEqual(self.main_sha, self.develop_sha)
+        self.base = base
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    # -- helpers ----------------------------------------------------------
+    def _git(self, *args: str) -> None:
+        subprocess.run(
+            ["git", "-C", str(self.sb.claude_org_root), *args],
+            check=True, env=self._git_env, capture_output=True,
+        )
+
+    def _rev_parse(self, ref: str) -> str:
+        return subprocess.check_output(
+            ["git", "-C", str(self.sb.claude_org_root), "rev-parse", ref],
+        ).decode().strip()
+
+    def _write_registry(self, base_branch: str) -> None:
+        """Rewrite the sandbox registry with the Issue #808 column."""
+        (self.sb.claude_org_root / "registry" / "projects.md").write_text(
+            "# Projects\n\n"
+            "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 "
+            "| base_branch |\n"
+            "|---|---|---|---|---|---|\n"
+            f"| claude-org-ja | claude-org-ja | {self.sb.claude_org_root} "
+            f"| Self | スキル改善 | {base_branch} |\n",
+            encoding="utf-8",
+        )
+
+    def _plan(self, *, task_id: str = "bb-task", base_ref_override=None):
+        return gdp.build_delegate_plan(
+            task_id=task_id,
+            project_slug="claude-org-ja",
+            description="base branch dispatch",
+            base_ref_override=base_ref_override,
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+            layout_overrides={
+                "pattern": "B",
+                "pattern_variant": "live_repo_worktree",
+                "role": "claude-org-self-edit",
+                "self_edit": True,
+            },
+        )
+
+    def _apply(self, plan):
+        return gdp.apply_delegate_plan(
+            plan,
+            state_db_path=self.sb.db_path,
+            claude_org_root=self.sb.claude_org_root,
+            skip_settings=True,
+        )
+
+    # -- precedence -------------------------------------------------------
+    def test_registry_base_branch_is_used_when_no_cli_override(self):
+        self._write_registry("develop")
+        plan = self._plan()
+        self.assertEqual(plan.base_branch, "develop")
+        self.assertEqual(plan.base_branch_source, "registry")
+        self.assertEqual(plan.to_summary_dict()["base_ref"], "origin/develop")
+
+    def test_cli_base_ref_beats_registry(self):
+        # The hotfix escape hatch: registry says develop, this dispatch cuts
+        # from main.
+        self._write_registry("develop")
+        plan = self._plan(base_ref_override="main")
+        self.assertEqual(plan.base_branch, "main")
+        self.assertEqual(plan.base_branch_source, "cli")
+
+    def test_cli_base_ref_used_when_registry_column_absent(self):
+        # The sandbox default registry has no base_branch column at all.
+        plan = self._plan(base_ref_override="develop")
+        self.assertEqual(plan.base_branch, "develop")
+        self.assertEqual(plan.base_branch_source, "cli")
+
+    def test_unset_registry_column_falls_back_to_origin_head(self):
+        for cell in ("", "-"):
+            with self.subTest(cell=cell):
+                self._write_registry(cell)
+                plan = self._plan()
+                self.assertIsNone(plan.base_branch)
+                self.assertEqual(plan.base_branch_source, "origin_head")
+                self.assertEqual(
+                    plan.to_summary_dict()["base_ref"], "origin/HEAD"
+                )
+
+    def test_no_registry_column_falls_back_to_origin_head(self):
+        # Backwards compatibility: the pre-#808 registry shape.
+        plan = self._plan()
+        self.assertIsNone(plan.base_branch)
+        self.assertEqual(plan.base_branch_source, "origin_head")
+
+    def test_origin_prefixed_registry_value_is_normalized(self):
+        self._write_registry("origin/develop")
+        self.assertEqual(self._plan().base_branch, "develop")
+
+    # -- DELEGATE body ----------------------------------------------------
+    def test_delegate_body_announces_the_configured_base(self):
+        self._write_registry("develop")
+        body = self._plan().delegate_body
+        self.assertIn("ベース: origin/develop", body)
+        self.assertIn("registry base_branch", body)
+
+    def test_delegate_body_names_the_cli_flag_as_source(self):
+        self._write_registry("develop")
+        body = self._plan(base_ref_override="main").delegate_body
+        self.assertIn("ベース: origin/main", body)
+        self.assertIn("--base-ref", body)
+
+    def test_delegate_body_unchanged_when_unconfigured(self):
+        # Every pre-#808 project must keep its byte-identical body.
+        body = self._plan().delegate_body
+        self.assertNotIn("ベース:", body)
+
+    # -- apply: the worktree is actually cut from the configured branch ----
+    def test_apply_cuts_worktree_from_configured_base_branch(self):
+        self._write_registry("develop")
+        plan = self._plan(task_id="cut-develop")
+        self._apply(plan)
+        worker_dir = Path(plan.layout.worker_dir)
+        head = subprocess.check_output(
+            ["git", "-C", str(worker_dir), "rev-parse", "HEAD"],
+        ).decode().strip()
+        self.assertEqual(head, self.develop_sha)
+        # ...and specifically NOT the origin/HEAD default the pre-#808 code
+        # would have used.
+        self.assertNotEqual(head, self.main_sha)
+
+    def test_apply_cuts_from_origin_head_when_unconfigured(self):
+        plan = self._plan(task_id="cut-default")
+        self._apply(plan)
+        head = subprocess.check_output(
+            ["git", "-C", str(plan.layout.worker_dir), "rev-parse", "HEAD"],
+        ).decode().strip()
+        self.assertEqual(head, self.main_sha)
+
+    def test_apply_honours_cli_override_at_the_git_level(self):
+        self._write_registry("develop")
+        plan = self._plan(task_id="cut-hotfix", base_ref_override="main")
+        self._apply(plan)
+        head = subprocess.check_output(
+            ["git", "-C", str(plan.layout.worker_dir), "rev-parse", "HEAD"],
+        ).decode().strip()
+        self.assertEqual(head, self.main_sha)
+
+    # -- apply: fail loud on a missing branch ------------------------------
+    def test_apply_fails_loud_when_registry_branch_missing_on_origin(self):
+        self._write_registry("develp")  # typo, never pushed
+        plan = self._plan(task_id="missing-registry")
+        with self.assertRaises(gdp.BaseBranchApplyError) as cm:
+            self._apply(plan)
+        msg = str(cm.exception)
+        self.assertIn("develp", msg)
+        # The message must name the input the operator has to fix.
+        self.assertIn("base_branch", msg)
+        self.assertIn("claude-org-ja", msg)
+        # It must NOT have degraded to the default branch.
+        self.assertFalse(Path(plan.layout.worker_dir).exists())
+
+    def test_apply_fails_loud_when_cli_branch_missing_on_origin(self):
+        plan = self._plan(task_id="missing-cli", base_ref_override="nope")
+        with self.assertRaises(gdp.BaseBranchApplyError) as cm:
+            self._apply(plan)
+        self.assertIn("--base-ref", str(cm.exception))
+
+    def test_missing_base_branch_is_a_worktree_apply_error_subclass(self):
+        # Existing `except WorktreeApplyError` callers must keep catching it.
+        self.assertTrue(
+            issubclass(gdp.BaseBranchApplyError, gdp.WorktreeApplyError)
+        )
+
+    def test_missing_base_branch_leaks_no_queued_run_row(self):
+        # Same invariant as the other pre-reservation aborts: a leaked
+        # `queued` row makes the next dispatch see the pattern as occupied.
+        self._write_registry("does-not-exist")
+        plan = self._plan(task_id="no-leak")
+        with self.assertRaises(gdp.BaseBranchApplyError):
+            self._apply(plan)
+        self.assertEqual(
+            [r for r in self.sb.list_runs() if r["task_id"] == "no-leak"], []
+        )
+
+
+class TestBaseRefCliFlag(unittest.TestCase):
+    """Issue #808: the --base-ref flag is wired through both subcommands and
+    the --from-toml input form."""
+
+    def test_flag_parses_on_preview_and_apply(self):
+        parser = gdp._build_parser()
+        for cmd in ("preview", "apply"):
+            with self.subTest(cmd=cmd):
+                args = parser.parse_args(
+                    [cmd, "--task-id", "t", "--project-slug", "p",
+                     "--base-ref", "develop"]
+                )
+                self.assertEqual(args.base_ref_override, "develop")
+
+    def test_flag_defaults_to_none(self):
+        args = gdp._build_parser().parse_args(
+            ["preview", "--task-id", "t", "--project-slug", "p"]
+        )
+        self.assertIsNone(args.base_ref_override)
+
+    def test_toml_base_ref_is_read_and_cli_wins(self):
+        with tempfile.TemporaryDirectory() as td:
+            toml_path = Path(td) / "worker_brief.toml"
+            toml_path.write_text(
+                '[task]\nid = "t1"\nbase_ref = "develop"\n'
+                '[project]\nname = "p1"\n',
+                encoding="utf-8",
+            )
+            loaded = gdp._load_task_args_from_toml(toml_path)
+            self.assertEqual(loaded["base_ref_override"], "develop")
+
+            # TOML alone wins when the flag is absent...
+            args = gdp._build_parser().parse_args(
+                ["preview", "--from-toml", str(toml_path)]
+            )
+            self.assertEqual(
+                gdp._gather_plan_kwargs(args)["base_ref_override"], "develop"
+            )
+            # ...and the CLI flag overrides it when both are given.
+            args = gdp._build_parser().parse_args(
+                ["preview", "--from-toml", str(toml_path), "--base-ref", "main"]
+            )
+            self.assertEqual(
+                gdp._gather_plan_kwargs(args)["base_ref_override"], "main"
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

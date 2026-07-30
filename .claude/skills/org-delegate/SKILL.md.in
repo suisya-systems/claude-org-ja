@@ -208,6 +208,7 @@ python tools/gen_delegate_payload.py apply \
 
 - `--mode edit|audit` (default `edit`): claude-org 上の **読み取り専用** 監査タスクは `--mode audit` を明示する
 - `--branch <name>`: planned_branch を上書き。default は `feat/<task-id>` (description に "fix"/"bug"/"修正" を含むと `fix/<task-id>`)
+- `--base-ref <branch>`: worktree の**起点ブランチ**を単発で上書き (Issue #808)。既定は [`registry/projects.md`](../../../registry/projects.md) の `base_branch` 列、それも空欄なら `origin/HEAD`。**優先順位は `--base-ref` > `base_branch` 列 > `origin/HEAD`**。プロジェクトの常態（例 `develop` に feature を溜める）は列に書き、本フラグは hotfix を `main` から切る等の**逸脱時のみ**使う。値はブランチ名（`origin/develop` 表記も可）。`origin` に存在しないブランチを指定した `apply` は既定ブランチへ黙って落ちず fail loud で止まる。解決結果は `preview --json` の `summary.base_branch` / `summary.base_ref` と DELEGATE 本文の「ベース:」行に出る。この値は後続の `gh pr create --base` の既定でもある（[`.claude/skills/org-pull-request/SKILL.md`](../org-pull-request/SKILL.md) 2b-i）ので、起点とマージ先は常に一致する
 - `--commit-prefix "<prefix>"`: 省略時は project_slug の頭部から推論 (例: `claude-org-ja` → `feat(claude):`)
 - `--closes-issue N` / `--refs-issues N1 N2`: 「Closes #N」「Refs #N1 #N2」を brief に埋め込む
 - `--impl-target <path>` / `--impl-guidance "<text>"` / `--knowledge <path>`: optional な `[implementation]` / `[references]` セクション

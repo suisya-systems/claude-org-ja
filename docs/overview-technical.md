@@ -203,6 +203,7 @@ Curator (org-curate) → knowledge/curated/ に整理・統合
 
 - ユーザーが作業を依頼すると、`registry/projects.md` に自動登録される
 - 手動で `registry/projects.md` を編集してもよい
+- `main` に直接マージしない運用（feature を `develop` に溜める等）のプロジェクトは、`base_branch` 列に既定の起点 / マージ先ブランチを書く（Issue #808）。派遣時の worktree は `origin/<base_branch>` から切られ、同じ値が `gh pr create --base` の既定になる。**空欄の行は従来どおり `origin/HEAD`** なので既存行の編集は不要。単発の逸脱は `gen_delegate_payload.py --base-ref <branch>` で上書きする（優先順位は `--base-ref` > `base_branch` 列 > `origin/HEAD`）。列の意味と失敗時の挙動は [`registry/projects.md`](../registry/projects.md) 冒頭を参照
 
 ### ダッシュボードのカスタマイズ
 

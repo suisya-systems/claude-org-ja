@@ -21,10 +21,18 @@ claude-org-ja 自身（self-edit）は本レジストリに載せない。`tools
 - 「パス」が GitHub URL でない行（ローカルパス / `-`）は owner/repo を導けず構造的に scan 対象外（`skipped` + signal）。明示 opt-out しておくとその skip signal も出ない。
 - claude-org-ja 自身（home repo）はこの表に載らない契約は不変。home を scan 対象に含めるかは `registry/org-config.md` の `triage_home`（既定 off）で決める。
 
-| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 | triage |
-|---|---|---|---|---|---|
-| 時計アプリ | clock-app | - | Webブラウザで動くデジタル時計 | デザイン変更、機能追加 | no |
-| renga | renga | https://github.com/suisya-systems/renga | Rust 製の Claude Code 用ターミナルマルチプレクサ（TUI） | 機能追加、バグ修正、Issue 対応 | |
-| サンドボックス検証 | sandbox-probe | - | Issue #376 / #377 用の sandbox profile / hook / settings 配備の実測検証エリア。candidate profile を handcraft して probe を回し allow/deny matrix を作る | Pre-Phase 0 spike、probe 反復、profile validation | no |
-| ランタイム | claude-org-runtime | https://github.com/suisya-systems/claude-org-runtime | Layer 2 = org-runtime: claude-org-ja から抽出された Python runtime (dispatcher / state schema / reference role prompts)。ja は pin で参照する | role_configs_schema.json 同期、release 駆動、dispatcher / settings.generator のメンテ | |
-| token-tracking | token-tracking | https://github.com/aainc/token-tracking | Claude Code OTel ローカル監視スタック (otel-collector + Prometheus + Grafana)。個人 (Pro/Max) ローカル構成 + Team plan スケール拡張ガイド付き | dashboard 改修、collector / Grafana 設定更新、export スクリプト機能追加、Team 化作業 | no |
+「base_branch」列（Issue #808）はそのプロジェクトの**既定の起点ブランチ兼 PR マージ先**を宣言する。`main` に直接マージせず `develop` に feature を溜める二系統運用のリポジトリのための設定:
+
+- **空欄 / `-` = 未設定**。従来どおり `origin/HEAD`（リモートが知る既定ブランチ）から worktree を切り、PR も repo の既定ブランチ宛になる。**本列の追加前から在る行は 1 文字も編集せずそのまま有効**。
+- 値を書いた行は、派遣時に `origin/<base_branch>` から worktree を切り（[`tools/gen_delegate_payload.py`](../tools/gen_delegate_payload.py) の `_resolve_base_ref`）、`gh pr create --base <base_branch>` が PR フローの既定になる（[`.claude/skills/org-pull-request/SKILL.md`](../.claude/skills/org-pull-request/SKILL.md) 2a）。
+- 値はブランチ名（`develop`）。git が表示する形の `origin/develop` と書いても同じものとして扱う（前後空白は trim）。
+- 単発の逸脱（hotfix を `main` から切る等）は本列を書き換えず `gen_delegate_payload.py --base-ref main` で上書きする。**優先順位は `--base-ref` > 本列 > `origin/HEAD`**。
+- 設定したブランチが `origin` に存在しない場合、派遣は apply 時に fail loud で停止する（既定ブランチへ黙って落ちない。Issue #480 の stale-base ガードと同じ立場）。
+
+| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 | triage | base_branch |
+|---|---|---|---|---|---|---|
+| 時計アプリ | clock-app | - | Webブラウザで動くデジタル時計 | デザイン変更、機能追加 | no | |
+| renga | renga | https://github.com/suisya-systems/renga | Rust 製の Claude Code 用ターミナルマルチプレクサ（TUI） | 機能追加、バグ修正、Issue 対応 | | |
+| サンドボックス検証 | sandbox-probe | - | Issue #376 / #377 用の sandbox profile / hook / settings 配備の実測検証エリア。candidate profile を handcraft して probe を回し allow/deny matrix を作る | Pre-Phase 0 spike、probe 反復、profile validation | no | |
+| ランタイム | claude-org-runtime | https://github.com/suisya-systems/claude-org-runtime | Layer 2 = org-runtime: claude-org-ja から抽出された Python runtime (dispatcher / state schema / reference role prompts)。ja は pin で参照する | role_configs_schema.json 同期、release 駆動、dispatcher / settings.generator のメンテ | | |
+| token-tracking | token-tracking | https://github.com/aainc/token-tracking | Claude Code OTel ローカル監視スタック (otel-collector + Prometheus + Grafana)。個人 (Pro/Max) ローカル構成 + Team plan スケール拡張ガイド付き | dashboard 改修、collector / Grafana 設定更新、export スクリプト機能追加、Team 化作業 | no | |
