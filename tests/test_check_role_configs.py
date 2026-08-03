@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
@@ -1088,6 +1089,22 @@ class ExitCodeContractTests(unittest.TestCase):
         self.assertEqual(rc, crc.EXIT_UNVERIFIED)
         self.assertEqual(out, "", msg=out)
         self.assertIn("FileNotFoundError", err)
+
+    def test_rerun_hint_quoting_is_platform_correct(self):
+        # ja is supported on Windows (the skill documents a `py -3`
+        # variant). shlex would emit 'C:\\Python311\\python.exe' there,
+        # and cmd.exe takes those single quotes literally -- an unusable
+        # hint on every drift result. Both branches are exercised here
+        # since CI only ever runs one of the two platforms.
+        parts = [r"C:\Python311\python.exe", r"tools\check_role_configs.py"]
+        with unittest.mock.patch.object(sys, "platform", "win32"):
+            windows = crc._join_command(parts)
+        self.assertEqual(windows, r"C:\Python311\python.exe tools\check_role_configs.py")
+        self.assertNotIn("'", windows)
+
+        with unittest.mock.patch.object(sys, "platform", "linux"):
+            posix = crc._join_command(["/usr/bin/python3", "a b.py"])
+        self.assertEqual(posix, "/usr/bin/python3 'a b.py'")
 
     def test_missing_role_config_is_drift_under_include_local(self):
         # The worst case Block C4 must catch: a role whose settings file

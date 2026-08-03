@@ -875,6 +875,22 @@ def run(
     return findings
 
 
+def _join_command(parts: list) -> str:
+    """Serialise an argv list into a command the *local* shell can run.
+
+    ja is supported on Windows too, where ``shlex.join`` is wrong: it
+    applies POSIX rules and wraps an ordinary ``C:\\Python311\\python.exe``
+    in single quotes, which cmd.exe passes through literally (and which
+    PowerShell will not invoke without ``&``). ``subprocess.list2cmdline``
+    is the Windows counterpart -- it emits the quoting CreateProcess
+    actually parses. Either way the rerun hint stays pasteable, including
+    for interpreter paths containing spaces.
+    """
+    if sys.platform == "win32":
+        return subprocess.list2cmdline(parts)
+    return shlex.join(parts)
+
+
 def _print_encodable(line: str) -> None:
     """Print to stdout, degrading gracefully on a console that cannot
     encode the text (cp932 / ``PYTHONIOENCODING=ascii`` / a legacy
@@ -989,7 +1005,7 @@ def main(argv: list | None = None) -> int:
     # them; Windows goes through ``py -3``).
     invocation = list(sys.argv[1:] if argv is None else argv)
     script = sys.argv[0] if argv is None else str(Path(__file__))
-    rerun = shlex.join([sys.executable, script, *invocation])
+    rerun = _join_command([sys.executable, script, *invocation])
     _print_encodable(
         f"[role config drift] {errors} error(s) / {len(findings)} finding(s) "
         f"-- see the [ERROR] lines above; rerun: {rerun}"
