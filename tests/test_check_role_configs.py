@@ -1097,6 +1097,31 @@ class ExitCodeContractTests(unittest.TestCase):
         self.assertEqual(rc, crc.EXIT_DRIFT)
         self.assertIn("settings file not found", out)
 
+    def test_unstattable_role_config_is_unverified_not_drift(self):
+        # A settings file that exists but cannot be stat'd must not be
+        # reported as "not found". Python 3.14 made Path.is_file() return
+        # False for *any* OSError (3.10-3.13 propagate non-ENOENT ones),
+        # and ja supports >=3.10 -- so under 3.14 a permission-denied
+        # config would read as measured drift (exit 1) instead of
+        # unverified (exit 2), inverting the distinction Block C4 exists
+        # to make.
+        if os.geteuid() == 0:
+            self.skipTest("root bypasses the directory permission bit")
+        with tempfile.TemporaryDirectory() as tmp:
+            locked = Path(tmp) / ".claude"
+            locked.mkdir()
+            (locked / "settings.local.json").write_text("{}", encoding="utf-8")
+            os.chmod(locked, 0o000)
+            try:
+                rc, out, err = self._run_main(
+                    ["--root", tmp, "--include-local"]
+                )
+            finally:
+                os.chmod(locked, 0o755)
+        self.assertEqual(rc, crc.EXIT_UNVERIFIED, msg=out)
+        self.assertNotIn("settings file not found", out)
+        self.assertIn("PermissionError", err)
+
     def test_missing_role_config_is_silent_without_include_local(self):
         # Backward-compat lock for the CI invocation
         # (.github/workflows/tests.yml): it passes neither --include-local

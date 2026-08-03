@@ -38,9 +38,9 @@ module is a thin CLI shim that:
   worker-tracked settings file walk).
 
 Exit codes: 0 = OK, 1 = drift detected, 2 = the checker itself could
-not run (schema unreadable, merge failure, ``core_harness`` missing).
-1 and 2 are kept distinct
-so callers can branch on "config drift" versus "the guard never ran"
+not run (schema unreadable, merge failure, ``core_harness`` missing, a
+settings file that cannot be stat'd). 1 and 2 are kept distinct so
+callers can branch on "config drift" versus "the guard never ran"
 -- conflating them is how a broken checker reads as a clean org
 (Issue #818, which wires this into ``/org-start``'s startup preflight).
 
@@ -53,6 +53,7 @@ import argparse
 import json
 import posixpath
 import re
+import stat
 import subprocess
 import sys
 import traceback
@@ -210,6 +211,25 @@ def load_schema(path: Path) -> dict:
         org_extension = json.load(fh)
     framework = load_framework_schema()
     return merge_schemas(framework, org_extension)
+
+
+def _is_regular_file(path: Path) -> bool:
+    """``Path.is_file()`` that refuses to hide an access failure.
+
+    Python 3.14 changed ``is_file()`` (and ``exists()`` and friends) to
+    return False for *any* OSError, where 3.10-3.13 let non-ENOENT errors
+    propagate. ja supports ``>=3.10`` (pyproject.toml), so both behaviours
+    are in range -- and under the 3.14 rule a settings file that exists but
+    cannot be stat'd (permissions, a sandboxed path, an I/O error) would be
+    reported as ``settings file not found``: measured drift (exit 1) rather
+    than unverified (exit 2). That inverts the very distinction Block C4
+    consumes, so classify explicitly instead: genuinely absent is False,
+    anything else propagates to main() and becomes EXIT_UNVERIFIED.
+    """
+    try:
+        return stat.S_ISREG(path.stat().st_mode)
+    except (FileNotFoundError, NotADirectoryError):
+        return False
 
 
 def _load_override_allow(settings_path: Path) -> set:
@@ -703,7 +723,7 @@ def check_on_disk(
         checked_any = False
         for rel in candidate_paths:
             path = Path(root) / rel
-            if not path.is_file():
+            if not _is_regular_file(path):
                 continue
             checked_any = True
             try:
@@ -751,7 +771,7 @@ def check_on_disk(
     for role_name, role_schema in schema["roles"].items():
         for rel in role_schema.get("settings_paths", []):
             path = Path(root) / rel
-            if not path.is_file():
+            if not _is_regular_file(path):
                 # An entirely absent config is the most severe form of the
                 # drift this checker exists to catch: the role runs with no
                 # hook layer at all (the dispatcher's only enforcement, given
