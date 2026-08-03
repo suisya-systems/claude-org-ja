@@ -753,6 +753,34 @@ def check_on_disk(
         for rel in role_schema.get("settings_paths", []):
             path = Path(root) / rel
             if not path.is_file():
+                # An entirely absent config is the most severe form of the
+                # drift this checker exists to catch: the role runs with no
+                # hook layer at all (the dispatcher's only enforcement, given
+                # bypassPermissions). Silently skipping it let /org-start's
+                # Block C4 preflight report "OK" for an org whose guards were
+                # never installed. ``--role`` already errors on this; the
+                # sweep now agrees with it (Issue #818), and
+                # docs/getting-started.md already documents a missing
+                # settings.local.json as expected checker output.
+                #
+                # Gated on include_untracked: without --include-local the
+                # sweep deliberately audits git-tracked files only, and every
+                # settings.local.json is gitignored -- so "missing" is the
+                # normal state in CI and a fresh clone. Reporting it there
+                # would break the CI invocation, which passes neither
+                # --include-local nor --role.
+                if include_untracked:
+                    findings.append(
+                        Finding(
+                            str(path),
+                            role_name,
+                            "ERROR",
+                            (
+                                "settings file not found; run /org-setup to "
+                                "distribute it"
+                            ),
+                        )
+                    )
                 continue
             if not include_untracked:
                 try:

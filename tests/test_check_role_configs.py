@@ -1089,6 +1089,32 @@ class ExitCodeContractTests(unittest.TestCase):
         self.assertEqual(out, "", msg=out)
         self.assertIn("FileNotFoundError", err)
 
+    def test_missing_role_config_is_drift_under_include_local(self):
+        # The worst case Block C4 must catch: a role whose settings file
+        # was never distributed runs with no hook layer at all. Skipping
+        # it silently made an org with zero guards report "OK".
+        with tempfile.TemporaryDirectory() as tmp:
+            rc, out, _ = self._run_main(["--root", tmp, "--include-local"])
+        self.assertEqual(rc, crc.EXIT_DRIFT)
+        self.assertIn("settings file not found", out)
+
+    def test_missing_role_config_is_silent_without_include_local(self):
+        # Backward-compat lock for the CI invocation
+        # (.github/workflows/tests.yml): it passes neither --include-local
+        # nor --role, and every settings.local.json is gitignored, so a
+        # missing one is the normal state in a fresh checkout. Reporting it
+        # there would turn CI permanently red.
+        with tempfile.TemporaryDirectory() as tmp:
+            findings = crc.run(
+                schema_path=crc.DEFAULT_SCHEMA,
+                permissions_md=crc.DEFAULT_PERMISSIONS_MD,
+                root=Path(tmp),
+                include_on_disk=True,
+            )
+        self.assertEqual(
+            findings, [], msg="\n".join(f.format() for f in findings)
+        )
+
     def test_summary_line_survives_an_ascii_only_stdout(self):
         # The summary line is the Block C4 contract: if it dies on a
         # cp932 / PYTHONIOENCODING=ascii console, drift is detected but
