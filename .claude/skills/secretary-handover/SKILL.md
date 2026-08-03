@@ -1,5 +1,6 @@
 ---
 name: secretary-handover
+owner: secretary
 description: >
   窓口のコンテキストを圧迫したまま session を続けるのを避けるため、
   直近のやり取り・進行中ワーク・組織状態を handover ファイルに書き出し、

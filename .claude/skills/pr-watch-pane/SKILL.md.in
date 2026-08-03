@@ -1,5 +1,6 @@
 ---
 name: pr-watch-pane
+owner: secretary
 description: >
   PR の CI / マージ監視 (tools/pr-watch.sh) を broker tmux セッション内の専用ペイン
   pr-watch-<PR> で回す。窓口が PR 作成直後に `/pr-watch-pane <PR>` で起動すると、

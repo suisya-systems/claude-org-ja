@@ -1,5 +1,6 @@
 ---
 name: dispatcher-resume
+owner: dispatcher
 description: >
   /dispatcher-handover で書き出した handover ファイルを読み込み、
   ディスパッチャーを新しい session で復帰させる。/clear 直後の最初のターンで使う。

@@ -1,5 +1,6 @@
 ---
 name: skill-audit
+owner: curator
 description: >
   skill の棚卸し（廃止候補 / 重複統合 / owner 明記チェック）。
   状態ベースで発火する: 候補キュー knowledge/skill-candidates.md の pending が 5 件以上、

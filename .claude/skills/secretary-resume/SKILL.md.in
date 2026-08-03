@@ -1,5 +1,6 @@
 ---
 name: secretary-resume
+owner: secretary
 description: >
   /secretary-handover で書き出した handover ファイルを読み込み、
   窓口を新しいセッションで復帰させる。/clear 直後の最初のターンで使う。
