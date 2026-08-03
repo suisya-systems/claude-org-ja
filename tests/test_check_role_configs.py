@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import io
 import json
+import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -1085,6 +1087,32 @@ class ExitCodeContractTests(unittest.TestCase):
         self.assertEqual(rc, crc.EXIT_UNVERIFIED)
         self.assertEqual(out, "", msg=out)
         self.assertIn("FileNotFoundError", err)
+
+    def test_unimportable_core_harness_exits_two(self):
+        # Regression lock: the dependency import sits at module level, so
+        # it fails *before* main()'s try block. Left unguarded, a missing
+        # core_harness exits 1 with empty stdout -- which Block C4 would
+        # read as "drift detected" while the guard never actually ran.
+        # Shadow the package with one that raises on import so the check
+        # holds regardless of how core_harness is installed here.
+        with tempfile.TemporaryDirectory() as tmp:
+            shadow = Path(tmp) / "core_harness"
+            shadow.mkdir()
+            (shadow / "__init__.py").write_text(
+                'raise ImportError("simulated missing dependency")',
+                encoding="utf-8",
+            )
+            env = dict(os.environ)
+            env["PYTHONPATH"] = tmp + os.pathsep + env.get("PYTHONPATH", "")
+            proc = subprocess.run(
+                [sys.executable, str(REPO_ROOT / "tools" / "check_role_configs.py")],
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+        self.assertEqual(proc.returncode, crc.EXIT_UNVERIFIED, msg=proc.stderr)
+        self.assertEqual(proc.stdout, "", msg=proc.stdout)
+        self.assertIn("core_harness", proc.stderr)
 
     def test_malformed_schema_exits_two(self):
         with tempfile.TemporaryDirectory() as tmp:

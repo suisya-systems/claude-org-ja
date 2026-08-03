@@ -38,7 +38,8 @@ module is a thin CLI shim that:
   worker-tracked settings file walk).
 
 Exit codes: 0 = OK, 1 = drift detected, 2 = the checker itself could
-not run (schema unreadable / merge failure). 1 and 2 are kept distinct
+not run (schema unreadable, merge failure, ``core_harness`` missing).
+1 and 2 are kept distinct
 so callers can branch on "config drift" versus "the guard never ran"
 -- conflating them is how a broken checker reads as a clean org
 (Issue #818, which wires this into ``/org-start``'s startup preflight).
@@ -57,13 +58,40 @@ import sys
 import traceback
 from pathlib import Path
 
-from core_harness.schema import load_framework_schema, merge_schemas
-from core_harness.validator import (
-    Finding,
-    check_worker_settings,
-    validate_config,
-    validate_schema_integrity,
-)
+EXIT_OK = 0
+EXIT_DRIFT = 1
+EXIT_UNVERIFIED = 2
+
+try:
+    from core_harness.schema import load_framework_schema, merge_schemas
+    from core_harness.validator import (
+        Finding,
+        check_worker_settings,
+        validate_config,
+        validate_schema_integrity,
+    )
+except ImportError:
+    # An unresolvable ``core_harness`` is the checker failing to run, not
+    # drift: as a CLI it must exit EXIT_UNVERIFIED so /org-start's Block
+    # C4 can say "the guard never ran" instead of misreading a broken
+    # install as measured drift (the whole point of Issue #818). Without
+    # this the failure lands on the module-level import, before main()'s
+    # try block, and Python exits 1 -- indistinguishable from drift.
+    #
+    # As an imported module (tools/org_setup_prune.py, the test suite)
+    # the ImportError must still propagate, so callers fail loudly at
+    # import time rather than hitting NameError on the re-exported
+    # symbols much later.
+    if __name__ != "__main__":
+        raise
+    traceback.print_exc()
+    print(
+        "role_configs: 検証不能 -- core_harness を解決できませんでした"
+        "（ja repo で `pip install -e .` を実行して依存を入れてください。"
+        "上の traceback を参照）",
+        file=sys.stderr,
+    )
+    raise SystemExit(EXIT_UNVERIFIED)
 
 
 # Issue #340: ja → en heading aliases. Keys are the ja heading strings
@@ -816,11 +844,6 @@ def run(
             )
         )
     return findings
-
-
-EXIT_OK = 0
-EXIT_DRIFT = 1
-EXIT_UNVERIFIED = 2
 
 
 def main(argv: list | None = None) -> int:
