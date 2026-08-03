@@ -21,6 +21,8 @@ allowed-tools:
   - Bash(python3 tools/ensure_projects_registry.py:*)
   - Bash(py -3 tools/secretary_queue_watcher.py:*)
   - Bash(python3 tools/secretary_queue_watcher.py:*)
+  - Bash(py -3 tools/check_role_configs.py:*)
+  - Bash(python3 tools/check_role_configs.py:*)
   - mcp__renga-peers__*
   - mcp__org-broker__* # ORG_TRANSPORT=broker（opt-in）時の機械置換先
 ---
@@ -413,12 +415,12 @@ dispatcher は初回 DELEGATE 完了報告で「/loop 3m で監視します」�
 [runtime drift] claude-org-runtime: installed={installed} latest={latest_in_window} -- `python -m pip install --upgrade 'claude-org-runtime{pin}'` で更新できます
 ```
 
-**role config drift 検出時の warning 添付例** (Block C4 exit 1。`{errors}` / `{findings}` は実行時にスクリプトが決定するもので、本ファイルには hard-code しない。Block C2 の行と両方出るときは 1 行ずつ並べる):
+**role config drift 検出時の warning 添付例** (Block C4 exit 1。`{errors}` / `{findings}` / `{python}` は実行時にスクリプトが決定するもので、本ファイルには hard-code しない。`{python}` は実行に使われた interpreter の実パス（`sys.executable`）がそのまま入る — ホストによって `python` / `python3` / `py -3` のどれが解決するかが違い、貼って動かない再実行コマンドを出さないため。Block C2 の行と両方出るときは 1 行ずつ並べる):
 ```
 ...
 何をしますか？
 
-[role config drift] {errors} error(s) / {findings} finding(s) -- 詳細は上の [ERROR] 行。再実行: python tools/check_role_configs.py --include-local
+[role config drift] {errors} error(s) / {findings} finding(s) -- 詳細は上の [ERROR] 行。再実行: {python} tools/check_role_configs.py --include-local
 ```
 
 ## Appendix: ClaudeCode 起動コマンド（役割別）

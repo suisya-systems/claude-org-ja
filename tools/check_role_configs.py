@@ -934,11 +934,16 @@ def main(argv: list | None = None) -> int:
     # One-line spliceable summary, mirroring check_runtime_version.py's
     # ``[runtime drift]`` line: /org-start Step 4 transcribes exactly
     # this line into the startup report rather than the (in practice
-    # dozens of) per-finding lines above.
+    # dozens of) per-finding lines above. The rerun hint uses
+    # sys.executable rather than a hard-coded ``python``/``python3``:
+    # ja runs on hosts where only one of those names resolves (Windows
+    # goes through ``py -3``, and plenty of Linux boxes ship no bare
+    # ``python``), and a remediation command that fails on paste is
+    # worse than no hint.
     print(
         f"[role config drift] {errors} error(s) / {len(findings)} finding(s) "
         "-- 詳細は上の [ERROR] 行。再実行: "
-        "python tools/check_role_configs.py --include-local"
+        f"{sys.executable} tools/check_role_configs.py --include-local"
     )
     print(f"role_configs: {errors} error(s)", file=sys.stderr)
     return EXIT_DRIFT if errors else EXIT_OK
