@@ -11,6 +11,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -1087,6 +1088,53 @@ class ExitCodeContractTests(unittest.TestCase):
         self.assertEqual(rc, crc.EXIT_UNVERIFIED)
         self.assertEqual(out, "", msg=out)
         self.assertIn("FileNotFoundError", err)
+
+    def test_summary_line_survives_an_ascii_only_stdout(self):
+        # The summary line is the Block C4 contract: if it dies on a
+        # cp932 / PYTHONIOENCODING=ascii console, drift is detected but
+        # /org-start attaches no warning -- worse than not checking.
+        env = dict(os.environ, PYTHONIOENCODING="ascii")
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = Path(tmp) / ".claude" / "settings.local.json"
+            settings.parent.mkdir(parents=True)
+            settings.write_text(
+                json.dumps({"permissions": {"allow": ["Bash(rm -rf /:*)"]}}),
+                encoding="utf-8",
+            )
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(REPO_ROOT / "tools" / "check_role_configs.py"),
+                    "--root",
+                    tmp,
+                    "--role",
+                    "secretary",
+                ],
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+        self.assertEqual(proc.returncode, crc.EXIT_DRIFT, msg=proc.stderr)
+        self.assertIn("[role config drift]", proc.stdout)
+
+    def test_rerun_hint_reproduces_the_actual_invocation(self):
+        # A hint that drops --root/--role reruns against the repo default,
+        # can come back clean, and reads as "the drift went away".
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = Path(tmp) / ".claude" / "settings.local.json"
+            settings.parent.mkdir(parents=True)
+            settings.write_text(
+                json.dumps({"permissions": {"allow": ["Bash(rm -rf /:*)"]}}),
+                encoding="utf-8",
+            )
+            rc, out, _ = self._run_main(["--root", tmp, "--role", "secretary"])
+        self.assertEqual(rc, crc.EXIT_DRIFT)
+        summary = out.splitlines()[-1]
+        self.assertIn("--root", summary)
+        self.assertIn("--role", summary)
+        self.assertIn(shlex.quote(tmp), summary)
+        # Quoted so an interpreter path containing spaces stays pasteable.
+        self.assertIn(shlex.quote(sys.executable), summary)
 
     def test_unimportable_core_harness_exits_two(self):
         # Regression lock: the dependency import sits at module level, so

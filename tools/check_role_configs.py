@@ -53,6 +53,7 @@ import argparse
 import json
 import posixpath
 import re
+import shlex
 import subprocess
 import sys
 import traceback
@@ -846,6 +847,23 @@ def run(
     return findings
 
 
+def _print_encodable(line: str) -> None:
+    """Print to stdout, degrading gracefully on a console that cannot
+    encode the text (cp932 / ``PYTHONIOENCODING=ascii`` / a legacy
+    non-Japanese terminal).
+
+    Block C4 treats the ``[role config drift]`` line as the contract:
+    if that print raises, the drift is detected but never surfaced and
+    /org-start attaches no warning. Everything written to stdout goes
+    through here so an unencodable character degrades to ``?`` instead
+    of taking the whole run down.
+    """
+    try:
+        print(line)
+    except UnicodeEncodeError:
+        print(line.encode("ascii", "replace").decode("ascii"))
+
+
 def main(argv: list | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Validate per-role settings.local.json against the schema."
@@ -926,24 +944,27 @@ def main(argv: list | None = None) -> int:
         return EXIT_OK
 
     for f in findings:
-        try:
-            print(f.format())
-        except UnicodeEncodeError:
-            print(f.format().encode("ascii", "replace").decode("ascii"))
+        _print_encodable(f.format())
     errors = sum(1 for f in findings if f.severity == "ERROR")
     # One-line spliceable summary, mirroring check_runtime_version.py's
     # ``[runtime drift]`` line: /org-start Step 4 transcribes exactly
     # this line into the startup report rather than the (in practice
-    # dozens of) per-finding lines above. The rerun hint uses
-    # sys.executable rather than a hard-coded ``python``/``python3``:
-    # ja runs on hosts where only one of those names resolves (Windows
-    # goes through ``py -3``, and plenty of Linux boxes ship no bare
-    # ``python``), and a remediation command that fails on paste is
-    # worse than no hint.
-    print(
+    # dozens of) per-finding lines above.
+    #
+    # The rerun hint is rebuilt from the invocation that produced these
+    # findings instead of a fixed ``--include-local`` string: a run that
+    # passed --root/--role/--schema audits a different target, and a hint
+    # that silently reruns against the repo default could come back clean
+    # and read as "the drift went away". shlex.join also keeps an
+    # interpreter path with spaces pasteable, and sys.executable avoids
+    # hard-coding ``python`` vs ``python3`` (ja hosts resolve only one of
+    # them; Windows goes through ``py -3``).
+    invocation = list(sys.argv[1:] if argv is None else argv)
+    script = sys.argv[0] if argv is None else str(Path(__file__))
+    rerun = shlex.join([sys.executable, script, *invocation])
+    _print_encodable(
         f"[role config drift] {errors} error(s) / {len(findings)} finding(s) "
-        "-- 詳細は上の [ERROR] 行。再実行: "
-        f"{sys.executable} tools/check_role_configs.py --include-local"
+        f"-- see the [ERROR] lines above; rerun: {rerun}"
     )
     print(f"role_configs: {errors} error(s)", file=sys.stderr)
     return EXIT_DRIFT if errors else EXIT_OK

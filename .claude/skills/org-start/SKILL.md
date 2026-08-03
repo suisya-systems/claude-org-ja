@@ -291,7 +291,7 @@ Block A の spawn 発火と並列。各ロールの `settings.local.json` を sc
 > **必ず窓口の cwd（ja live repo root）で実行する**: `--root` の既定はスクリプト位置から導出される repo root なので、worktree 内から叩くとその worktree の `.claude/settings.local.json`（= ワーカー用の設定）を **secretary の schema で**検証してしまい、数十件の false positive になる。ロール別に個別検証したい場合は当該 worktree で `--role worker` を付ける（`--role` は `--include-local` の意味を含む）。
 
 > 設計メモ:
-> - **stdout は転記用の 1 行と `[ERROR]` 明細のみ**（spliceable に保つ）。件数サマリ `role_configs: N error(s)` と exit 2 の traceback / 診断はすべて **stderr** に出す
+> - **stdout は転記用の 1 行と `[ERROR]` 明細のみ**（spliceable に保つ）。件数サマリ `role_configs: N error(s)` と exit 2 の traceback / 診断はすべて **stderr** に出す。stdout への出力は cp932 / `PYTHONIOENCODING=ascii` 等の非 UTF-8 コンソールでも落ちないよう ASCII 置換フォールバックを通す（転記用の 1 行が `UnicodeEncodeError` で消えると drift を検出したのに warning が付かない、という最悪形になるため）
 > - **exit 1 と exit 2 を分けている理由**: 分けないと「checker が壊れて動かなかった」が「drift を検出した」と同じ signal になり、逆に traceback を素通りさせると壊れた guard が clean と読まれる。#818 が塞ぎたい失敗モードそのものなので、契約として [`tests/test_check_role_configs.py`](../../../tests/test_check_role_configs.py) の `ExitCodeContractTests` で lock している
 > - ネットワークに触れないので Block C2 と違い sandbox 内実行でも判定自体は正しい。ただし読み取りが sandbox の deny に掛かる環境では exit 2 に落ちうるので、その場合は `dangerouslyDisableSandbox: true` でホスト再実行する
 > - スクリプト本体: [`tools/check_role_configs.py`](../../../tools/check_role_configs.py)。drift の修復は [`/org-setup`](../org-setup/SKILL.md)（additive-only なので既存設定を壊さない）、個別の drift 種別ごとの対処は [`docs/getting-started.md`](../../../docs/getting-started.md) の該当節を参照
@@ -415,12 +415,12 @@ dispatcher は初回 DELEGATE 完了報告で「/loop 3m で監視します」�
 [runtime drift] claude-org-runtime: installed={installed} latest={latest_in_window} -- `python -m pip install --upgrade 'claude-org-runtime{pin}'` で更新できます
 ```
 
-**role config drift 検出時の warning 添付例** (Block C4 exit 1。`{errors}` / `{findings}` / `{python}` は実行時にスクリプトが決定するもので、本ファイルには hard-code しない。`{python}` は実行に使われた interpreter の実パス（`sys.executable`）がそのまま入る — ホストによって `python` / `python3` / `py -3` のどれが解決するかが違い、貼って動かない再実行コマンドを出さないため。Block C2 の行と両方出るときは 1 行ずつ並べる):
+**role config drift 検出時の warning 添付例** (Block C4 exit 1。`{errors}` / `{findings}` / `{rerun}` は実行時にスクリプトが決定するもので、本ファイルには hard-code しない。`{rerun}` は **その drift を出した実際の invocation** を `sys.executable` + 渡された引数から再構成したもの — ホストによって `python` / `python3` / `py -3` のどれが解決するかが違い、また `--root` / `--role` 付きで出た drift を既定引数で再実行させると「clean に戻った」と誤読されるため。Block C2 の行と両方出るときは 1 行ずつ並べる):
 ```
 ...
 何をしますか？
 
-[role config drift] {errors} error(s) / {findings} finding(s) -- 詳細は上の [ERROR] 行。再実行: {python} tools/check_role_configs.py --include-local
+[role config drift] {errors} error(s) / {findings} finding(s) -- see the [ERROR] lines above; rerun: {rerun}
 ```
 
 ## Appendix: ClaudeCode 起動コマンド（役割別）
