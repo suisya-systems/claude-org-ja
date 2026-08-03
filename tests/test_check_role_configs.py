@@ -8,10 +8,14 @@ the real schema + real permissions.md still agree lives in
 
 from __future__ import annotations
 
+import io
 import json
+import os
+import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -1027,6 +1031,195 @@ class NonOrgAuditRootTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as bare:
             rc = crc.main(["--docs-only", "--root", bare])
         self.assertEqual(rc, 0)
+
+
+class ExitCodeContractTests(unittest.TestCase):
+    """``main()``'s exit codes are a consumed contract (Issue #818).
+
+    ``/org-start``'s Block C4 preflight branches on them: 0 = clean (no
+    warning line in the startup report), 1 = drift (transcribe the
+    ``[role config drift]`` stdout line), 2 = the checker never ran. If
+    2 collapses back into 1, a broken checker reports as measured drift
+    and the whole point of the preflight -- surfacing a guard that died
+    silently -- is lost. stdout must stay spliceable, so the exit-2
+    diagnosis belongs on stderr only.
+    """
+
+    def _run_main(self, argv):
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            rc = crc.main(argv)
+        return rc, out.getvalue(), err.getvalue()
+
+    def test_clean_run_exits_zero_without_drift_line(self):
+        rc, out, _ = self._run_main(["--docs-only"])
+        self.assertEqual(rc, crc.EXIT_OK)
+        self.assertNotIn("[role config drift]", out)
+
+    def test_drift_exits_one_with_spliceable_summary_line(self):
+        # A settings file whose allow list is pure garbage relative to the
+        # schema guarantees findings without depending on any particular
+        # real-world drift.
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = Path(tmp) / ".claude" / "settings.local.json"
+            settings.parent.mkdir(parents=True)
+            settings.write_text(
+                json.dumps({"permissions": {"allow": ["Bash(rm -rf /:*)"]}}),
+                encoding="utf-8",
+            )
+            rc, out, err = self._run_main(
+                ["--root", tmp, "--role", "secretary"]
+            )
+        self.assertEqual(rc, crc.EXIT_DRIFT)
+        summary = [
+            ln for ln in out.splitlines() if ln.startswith("[role config drift]")
+        ]
+        self.assertEqual(len(summary), 1, msg=out)
+        # Step 4 transcribes the last stdout line verbatim.
+        self.assertEqual(out.splitlines()[-1], summary[0])
+        self.assertIn("error(s)", summary[0])
+        self.assertIn("role_configs:", err)
+
+    def test_unreadable_schema_exits_two_with_clean_stdout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "does-not-exist.json"
+            rc, out, err = self._run_main(["--schema", str(missing)])
+        self.assertEqual(rc, crc.EXIT_UNVERIFIED)
+        self.assertEqual(out, "", msg=out)
+        self.assertIn("FileNotFoundError", err)
+
+    def test_missing_role_config_is_drift_under_include_local(self):
+        # The worst case Block C4 must catch: a role whose settings file
+        # was never distributed runs with no hook layer at all. Skipping
+        # it silently made an org with zero guards report "OK".
+        with tempfile.TemporaryDirectory() as tmp:
+            rc, out, _ = self._run_main(["--root", tmp, "--include-local"])
+        self.assertEqual(rc, crc.EXIT_DRIFT)
+        self.assertIn("settings file not found", out)
+
+    def test_unstattable_role_config_is_unverified_not_drift(self):
+        # A settings file that exists but cannot be stat'd must not be
+        # reported as "not found". Python 3.14 made Path.is_file() return
+        # False for *any* OSError (3.10-3.13 propagate non-ENOENT ones),
+        # and ja supports >=3.10 -- so under 3.14 a permission-denied
+        # config would read as measured drift (exit 1) instead of
+        # unverified (exit 2), inverting the distinction Block C4 exists
+        # to make.
+        if os.geteuid() == 0:
+            self.skipTest("root bypasses the directory permission bit")
+        with tempfile.TemporaryDirectory() as tmp:
+            locked = Path(tmp) / ".claude"
+            locked.mkdir()
+            (locked / "settings.local.json").write_text("{}", encoding="utf-8")
+            os.chmod(locked, 0o000)
+            try:
+                rc, out, err = self._run_main(
+                    ["--root", tmp, "--include-local"]
+                )
+            finally:
+                os.chmod(locked, 0o755)
+        self.assertEqual(rc, crc.EXIT_UNVERIFIED, msg=out)
+        self.assertNotIn("settings file not found", out)
+        self.assertIn("PermissionError", err)
+
+    def test_missing_role_config_is_silent_without_include_local(self):
+        # Backward-compat lock for the CI invocation
+        # (.github/workflows/tests.yml): it passes neither --include-local
+        # nor --role, and every settings.local.json is gitignored, so a
+        # missing one is the normal state in a fresh checkout. Reporting it
+        # there would turn CI permanently red.
+        with tempfile.TemporaryDirectory() as tmp:
+            findings = crc.run(
+                schema_path=crc.DEFAULT_SCHEMA,
+                permissions_md=crc.DEFAULT_PERMISSIONS_MD,
+                root=Path(tmp),
+                include_on_disk=True,
+            )
+        self.assertEqual(
+            findings, [], msg="\n".join(f.format() for f in findings)
+        )
+
+    def test_summary_line_survives_an_ascii_only_stdout(self):
+        # The summary line is the Block C4 contract: if it dies on a
+        # cp932 / PYTHONIOENCODING=ascii console, drift is detected but
+        # /org-start attaches no warning -- worse than not checking.
+        env = dict(os.environ, PYTHONIOENCODING="ascii")
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = Path(tmp) / ".claude" / "settings.local.json"
+            settings.parent.mkdir(parents=True)
+            settings.write_text(
+                json.dumps({"permissions": {"allow": ["Bash(rm -rf /:*)"]}}),
+                encoding="utf-8",
+            )
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(REPO_ROOT / "tools" / "check_role_configs.py"),
+                    "--root",
+                    tmp,
+                    "--role",
+                    "secretary",
+                ],
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+        self.assertEqual(proc.returncode, crc.EXIT_DRIFT, msg=proc.stderr)
+        self.assertIn("[role config drift]", proc.stdout)
+
+    def test_summary_line_carries_no_rerun_command(self):
+        # The summary deliberately stops at counts. A rerun command cannot
+        # be made correct here: the pasteable form depends on the shell the
+        # reader happens to use (cmd.exe / PowerShell / Git Bash all want
+        # incompatible quoting) and the process cannot know which. The
+        # canonical command is fixed text in org-start's SKILL.md instead.
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = Path(tmp) / ".claude" / "settings.local.json"
+            settings.parent.mkdir(parents=True)
+            settings.write_text(
+                json.dumps({"permissions": {"allow": ["Bash(rm -rf /:*)"]}}),
+                encoding="utf-8",
+            )
+            rc, out, _ = self._run_main(["--root", tmp, "--role", "secretary"])
+        self.assertEqual(rc, crc.EXIT_DRIFT)
+        summary = out.splitlines()[-1]
+        self.assertNotIn("rerun", summary)
+        self.assertNotIn(sys.executable, summary)
+        self.assertNotIn("--include-local", summary)
+
+    def test_unimportable_core_harness_exits_two(self):
+        # Regression lock: the dependency import sits at module level, so
+        # it fails *before* main()'s try block. Left unguarded, a missing
+        # core_harness exits 1 with empty stdout -- which Block C4 would
+        # read as "drift detected" while the guard never actually ran.
+        # Shadow the package with one that raises on import so the check
+        # holds regardless of how core_harness is installed here.
+        with tempfile.TemporaryDirectory() as tmp:
+            shadow = Path(tmp) / "core_harness"
+            shadow.mkdir()
+            (shadow / "__init__.py").write_text(
+                'raise ImportError("simulated missing dependency")',
+                encoding="utf-8",
+            )
+            env = dict(os.environ)
+            env["PYTHONPATH"] = tmp + os.pathsep + env.get("PYTHONPATH", "")
+            proc = subprocess.run(
+                [sys.executable, str(REPO_ROOT / "tools" / "check_role_configs.py")],
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+        self.assertEqual(proc.returncode, crc.EXIT_UNVERIFIED, msg=proc.stderr)
+        self.assertEqual(proc.stdout, "", msg=proc.stdout)
+        self.assertIn("core_harness", proc.stderr)
+
+    def test_malformed_schema_exits_two(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            broken = Path(tmp) / "broken.json"
+            broken.write_text("{not json", encoding="utf-8")
+            rc, out, _ = self._run_main(["--schema", str(broken)])
+        self.assertEqual(rc, crc.EXIT_UNVERIFIED)
+        self.assertEqual(out, "", msg=out)
 
 
 class RealRepoSmokeTests(unittest.TestCase):

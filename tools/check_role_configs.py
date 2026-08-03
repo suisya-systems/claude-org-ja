@@ -37,7 +37,12 @@ module is a thin CLI shim that:
   read from the ja repo layout (permissions.md docs projection, the
   worker-tracked settings file walk).
 
-Exit codes: 0 = OK, non-zero = drift detected.
+Exit codes: 0 = OK, 1 = drift detected, 2 = the checker itself could
+not run (schema unreadable, merge failure, ``core_harness`` missing, a
+settings file that cannot be stat'd). 1 and 2 are kept distinct so
+callers can branch on "config drift" versus "the guard never ran"
+-- conflating them is how a broken checker reads as a clean org
+(Issue #818, which wires this into ``/org-start``'s startup preflight).
 
 Run ``python tools/check_role_configs.py --help`` for options.
 """
@@ -48,17 +53,46 @@ import argparse
 import json
 import posixpath
 import re
+import stat
 import subprocess
 import sys
+import traceback
 from pathlib import Path
 
-from core_harness.schema import load_framework_schema, merge_schemas
-from core_harness.validator import (
-    Finding,
-    check_worker_settings,
-    validate_config,
-    validate_schema_integrity,
-)
+EXIT_OK = 0
+EXIT_DRIFT = 1
+EXIT_UNVERIFIED = 2
+
+try:
+    from core_harness.schema import load_framework_schema, merge_schemas
+    from core_harness.validator import (
+        Finding,
+        check_worker_settings,
+        validate_config,
+        validate_schema_integrity,
+    )
+except ImportError:
+    # An unresolvable ``core_harness`` is the checker failing to run, not
+    # drift: as a CLI it must exit EXIT_UNVERIFIED so /org-start's Block
+    # C4 can say "the guard never ran" instead of misreading a broken
+    # install as measured drift (the whole point of Issue #818). Without
+    # this the failure lands on the module-level import, before main()'s
+    # try block, and Python exits 1 -- indistinguishable from drift.
+    #
+    # As an imported module (tools/org_setup_prune.py, the test suite)
+    # the ImportError must still propagate, so callers fail loudly at
+    # import time rather than hitting NameError on the re-exported
+    # symbols much later.
+    if __name__ != "__main__":
+        raise
+    traceback.print_exc()
+    print(
+        "role_configs: 検証不能 -- core_harness を解決できませんでした"
+        "（ja repo で `pip install -e .` を実行して依存を入れてください。"
+        "上の traceback を参照）",
+        file=sys.stderr,
+    )
+    raise SystemExit(EXIT_UNVERIFIED)
 
 
 # Issue #340: ja → en heading aliases. Keys are the ja heading strings
@@ -177,6 +211,25 @@ def load_schema(path: Path) -> dict:
         org_extension = json.load(fh)
     framework = load_framework_schema()
     return merge_schemas(framework, org_extension)
+
+
+def _is_regular_file(path: Path) -> bool:
+    """``Path.is_file()`` that refuses to hide an access failure.
+
+    Python 3.14 changed ``is_file()`` (and ``exists()`` and friends) to
+    return False for *any* OSError, where 3.10-3.13 let non-ENOENT errors
+    propagate. ja supports ``>=3.10`` (pyproject.toml), so both behaviours
+    are in range -- and under the 3.14 rule a settings file that exists but
+    cannot be stat'd (permissions, a sandboxed path, an I/O error) would be
+    reported as ``settings file not found``: measured drift (exit 1) rather
+    than unverified (exit 2). That inverts the very distinction Block C4
+    consumes, so classify explicitly instead: genuinely absent is False,
+    anything else propagates to main() and becomes EXIT_UNVERIFIED.
+    """
+    try:
+        return stat.S_ISREG(path.stat().st_mode)
+    except (FileNotFoundError, NotADirectoryError):
+        return False
 
 
 def _load_override_allow(settings_path: Path) -> set:
@@ -670,7 +723,7 @@ def check_on_disk(
         checked_any = False
         for rel in candidate_paths:
             path = Path(root) / rel
-            if not path.is_file():
+            if not _is_regular_file(path):
                 continue
             checked_any = True
             try:
@@ -718,7 +771,35 @@ def check_on_disk(
     for role_name, role_schema in schema["roles"].items():
         for rel in role_schema.get("settings_paths", []):
             path = Path(root) / rel
-            if not path.is_file():
+            if not _is_regular_file(path):
+                # An entirely absent config is the most severe form of the
+                # drift this checker exists to catch: the role runs with no
+                # hook layer at all (the dispatcher's only enforcement, given
+                # bypassPermissions). Silently skipping it let /org-start's
+                # Block C4 preflight report "OK" for an org whose guards were
+                # never installed. ``--role`` already errors on this; the
+                # sweep now agrees with it (Issue #818), and
+                # docs/getting-started.md already documents a missing
+                # settings.local.json as expected checker output.
+                #
+                # Gated on include_untracked: without --include-local the
+                # sweep deliberately audits git-tracked files only, and every
+                # settings.local.json is gitignored -- so "missing" is the
+                # normal state in CI and a fresh clone. Reporting it there
+                # would break the CI invocation, which passes neither
+                # --include-local nor --role.
+                if include_untracked:
+                    findings.append(
+                        Finding(
+                            str(path),
+                            role_name,
+                            "ERROR",
+                            (
+                                "settings file not found; run /org-setup to "
+                                "distribute it"
+                            ),
+                        )
+                    )
                 continue
             if not include_untracked:
                 try:
@@ -813,6 +894,23 @@ def run(
     return findings
 
 
+def _print_encodable(line: str) -> None:
+    """Print to stdout, degrading gracefully on a console that cannot
+    encode the text (cp932 / ``PYTHONIOENCODING=ascii`` / a legacy
+    non-Japanese terminal).
+
+    Block C4 treats the ``[role config drift]`` line as the contract:
+    if that print raises, the drift is detected but never surfaced and
+    /org-start attaches no warning. Everything written to stdout goes
+    through here so an unencodable character degrades to ``?`` instead
+    of taking the whole run down.
+    """
+    try:
+        print(line)
+    except UnicodeEncodeError:
+        print(line.encode("ascii", "replace").decode("ascii"))
+
+
 def main(argv: list | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Validate per-role settings.local.json against the schema."
@@ -861,28 +959,61 @@ def main(argv: list | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    findings = run(
-        schema_path=args.schema,
-        permissions_md=args.permissions_md,
-        root=args.root,
-        include_on_disk=not args.docs_only,
-        include_untracked=args.include_local or args.role is not None,
-        role_override=args.role,
-        worker_settings_base=args.include_worker_settings,
-    )
+    try:
+        findings = run(
+            schema_path=args.schema,
+            permissions_md=args.permissions_md,
+            root=args.root,
+            include_on_disk=not args.docs_only,
+            include_untracked=args.include_local or args.role is not None,
+            role_override=args.role,
+            worker_settings_base=args.include_worker_settings,
+        )
+    except Exception:
+        # The checker could not complete -- missing or malformed schema
+        # JSON, a framework-schema merge failure, an unreadable
+        # permissions.md. These used to escape as a traceback plus
+        # SystemExit(1), indistinguishable from real drift. Callers that
+        # branch on the exit code (``/org-start`` Block C4) must be able
+        # to say "the guard never ran" instead of reporting drift that
+        # was never actually measured. The traceback stays on stderr so
+        # CI keeps full diagnosability and stdout stays spliceable.
+        traceback.print_exc()
+        print(
+            "role_configs: 検証不能 -- checker 自体が完走できませんでした"
+            "（schema 不在 / JSON 構文エラー等。上の traceback を参照）",
+            file=sys.stderr,
+        )
+        return EXIT_UNVERIFIED
 
     if not findings:
         print("role_configs: OK")
-        return 0
+        return EXIT_OK
 
     for f in findings:
-        try:
-            print(f.format())
-        except UnicodeEncodeError:
-            print(f.format().encode("ascii", "replace").decode("ascii"))
+        _print_encodable(f.format())
     errors = sum(1 for f in findings if f.severity == "ERROR")
+    # One-line spliceable summary, mirroring check_runtime_version.py's
+    # ``[runtime drift]`` line: /org-start Step 4 transcribes exactly
+    # this line into the startup report rather than the (in practice
+    # dozens of) per-finding lines above.
+    #
+    # Deliberately carries no rerun command. Earlier revisions emitted one
+    # and it could not be made correct: the interpreter name differs per
+    # host (python / python3 / py -3), the arguments differ per invocation,
+    # and the quoting a pasteable command needs depends on the shell the
+    # reader pastes into -- cmd.exe, PowerShell and Git Bash all want
+    # mutually incompatible forms, and the process cannot know which one
+    # it is being read in. Counts plus the exit code are the whole Block
+    # C4 contract; the canonical command lives as fixed text in
+    # .claude/skills/org-start/SKILL.md, where the platform variants are
+    # already written out.
+    _print_encodable(
+        f"[role config drift] {errors} error(s) / {len(findings)} finding(s) "
+        "-- see the [ERROR] lines above"
+    )
     print(f"role_configs: {errors} error(s)", file=sys.stderr)
-    return 1 if errors else 0
+    return EXIT_DRIFT if errors else EXIT_OK
 
 
 if __name__ == "__main__":
