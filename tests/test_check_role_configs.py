@@ -8,10 +8,12 @@ the real schema + real permissions.md still agree lives in
 
 from __future__ import annotations
 
+import io
 import json
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -1027,6 +1029,70 @@ class NonOrgAuditRootTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as bare:
             rc = crc.main(["--docs-only", "--root", bare])
         self.assertEqual(rc, 0)
+
+
+class ExitCodeContractTests(unittest.TestCase):
+    """``main()``'s exit codes are a consumed contract (Issue #818).
+
+    ``/org-start``'s Block C4 preflight branches on them: 0 = clean (no
+    warning line in the startup report), 1 = drift (transcribe the
+    ``[role config drift]`` stdout line), 2 = the checker never ran. If
+    2 collapses back into 1, a broken checker reports as measured drift
+    and the whole point of the preflight -- surfacing a guard that died
+    silently -- is lost. stdout must stay spliceable, so the exit-2
+    diagnosis belongs on stderr only.
+    """
+
+    def _run_main(self, argv):
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            rc = crc.main(argv)
+        return rc, out.getvalue(), err.getvalue()
+
+    def test_clean_run_exits_zero_without_drift_line(self):
+        rc, out, _ = self._run_main(["--docs-only"])
+        self.assertEqual(rc, crc.EXIT_OK)
+        self.assertNotIn("[role config drift]", out)
+
+    def test_drift_exits_one_with_spliceable_summary_line(self):
+        # A settings file whose allow list is pure garbage relative to the
+        # schema guarantees findings without depending on any particular
+        # real-world drift.
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = Path(tmp) / ".claude" / "settings.local.json"
+            settings.parent.mkdir(parents=True)
+            settings.write_text(
+                json.dumps({"permissions": {"allow": ["Bash(rm -rf /:*)"]}}),
+                encoding="utf-8",
+            )
+            rc, out, err = self._run_main(
+                ["--root", tmp, "--role", "secretary"]
+            )
+        self.assertEqual(rc, crc.EXIT_DRIFT)
+        summary = [
+            ln for ln in out.splitlines() if ln.startswith("[role config drift]")
+        ]
+        self.assertEqual(len(summary), 1, msg=out)
+        # Step 4 transcribes the last stdout line verbatim.
+        self.assertEqual(out.splitlines()[-1], summary[0])
+        self.assertIn("error(s)", summary[0])
+        self.assertIn("role_configs:", err)
+
+    def test_unreadable_schema_exits_two_with_clean_stdout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "does-not-exist.json"
+            rc, out, err = self._run_main(["--schema", str(missing)])
+        self.assertEqual(rc, crc.EXIT_UNVERIFIED)
+        self.assertEqual(out, "", msg=out)
+        self.assertIn("FileNotFoundError", err)
+
+    def test_malformed_schema_exits_two(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            broken = Path(tmp) / "broken.json"
+            broken.write_text("{not json", encoding="utf-8")
+            rc, out, _ = self._run_main(["--schema", str(broken)])
+        self.assertEqual(rc, crc.EXIT_UNVERIFIED)
+        self.assertEqual(out, "", msg=out)
 
 
 class RealRepoSmokeTests(unittest.TestCase):

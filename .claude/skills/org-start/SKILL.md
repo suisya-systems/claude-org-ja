@@ -270,6 +270,30 @@ broker transport では過去に「secretary 宛メッセージが claimed/deliv
 >
 > 1 回限りの動作確認は `claude-org-runtime attention scan --state-dir .state --config .state/attention.json --dry-run --json`（`--config` を外すと runtime 中立の英語 default が出るので、ja テンプレートの導通確認には必ず付ける）。OS 別 backend 挙動・トラブルシューティング・別ターミナルからの素 CLI 起動手順は [`docs/operations/attention-watch.md`](../../../docs/operations/attention-watch.md) を参照。
 
+### Block C4: role config drift 検出 (Issue #818)
+
+Block A の spawn 発火と並列。各ロールの `settings.local.json` を schema に対して検証し、drift があれば Step 4 の起動完了報告に 1 行 warning を添える。自動修復は行わず通知のみ（修復は `/org-setup`）。Block C2 と同列の **非 fatal な warning ブロック**であり、drift を検出しても org-start は止めない（Step 0.5 の fatal gate とは責務が違う）。
+
+> **なぜ起動時に見る必要があるのか（guard の無言死）**: `settings.local.json` は gitignored なので、CI の [`.github/workflows/tests.yml`](../../../.github/workflows/tests.yml) が回す `python tools/check_role_configs.py --include-worker-settings .` は `--include-local` を付けておらず、**tracked ファイルしか検証しない**。したがって hook パスのドリフト（`.hooks/*.sh` の rename / 移動で hook command が実在しないパスを指し、guard が発火しないまま無言で無効化される）や必須 allow / deny の欠落は **CI では一切検出されない**。この盲点を塞ぐ唯一の定期的な契機が org-start なので、起動のたびに `--include-local` で 1 回検証する。
+
+1. drift チェックを実行する:
+   ```bash
+   py -3 tools/check_role_configs.py --include-local   # Windows
+   python3 tools/check_role_configs.py --include-local # Mac/Linux
+   ```
+2. **exit code で分岐**する（stdout **最終行**が転記用の 1 行、診断は stderr）:
+   - **exit 0**（clean）: schema と一致。**warning 行なし**。
+   - **exit 1**（drift）: stdout 最終行の `[role config drift] ...` 1 行を **そのまま Step 4 起動完了報告の末尾に warning として転記する**。個別の `[ERROR] <path> :: <role> :: <理由>` 行は同じ stdout の上部に出ているので、ユーザーが詳細を求めたらそこから提示する（起動報告に全件は貼らない。実測で数十行になりうる）。
+   - **exit 2**（検証不能）: checker 自体が完走できなかった（schema 不在 / JSON 構文エラー / `core_harness` 解決失敗等）。stderr に traceback と `role_configs: 検証不能 -- ...` 診断が出る。**silent にせず**「role config: 検証不能（guard 未検証・要確認）」の 1 行を報告に添える。drift の有無は **未測定**であって clean ではない、という区別が本 exit code の存在意義である。
+
+> **必ず窓口の cwd（ja live repo root）で実行する**: `--root` の既定はスクリプト位置から導出される repo root なので、worktree 内から叩くとその worktree の `.claude/settings.local.json`（= ワーカー用の設定）を **secretary の schema で**検証してしまい、数十件の false positive になる。ロール別に個別検証したい場合は当該 worktree で `--role worker` を付ける（`--role` は `--include-local` の意味を含む）。
+
+> 設計メモ:
+> - **stdout は転記用の 1 行と `[ERROR]` 明細のみ**（spliceable に保つ）。件数サマリ `role_configs: N error(s)` と exit 2 の traceback / 診断はすべて **stderr** に出す
+> - **exit 1 と exit 2 を分けている理由**: 分けないと「checker が壊れて動かなかった」が「drift を検出した」と同じ signal になり、逆に traceback を素通りさせると壊れた guard が clean と読まれる。#818 が塞ぎたい失敗モードそのものなので、契約として [`tests/test_check_role_configs.py`](../../../tests/test_check_role_configs.py) の `ExitCodeContractTests` で lock している
+> - ネットワークに触れないので Block C2 と違い sandbox 内実行でも判定自体は正しい。ただし読み取りが sandbox の deny に掛かる環境では exit 2 に落ちうるので、その場合は `dangerouslyDisableSandbox: true` でホスト再実行する
+> - スクリプト本体: [`tools/check_role_configs.py`](../../../tools/check_role_configs.py)。drift の修復は [`/org-setup`](../org-setup/SKILL.md)（additive-only なので既存設定を壊さない）、個別の drift 種別ごとの対処は [`docs/getting-started.md`](../../../docs/getting-started.md) の該当節を参照
+
 ### Block D: dispatcher の合流 (Enter / list_peers poll / 挨拶 / DB write / snapshot)
 
 Block A の spawn 成功後、dispatcher ペインで Claude が boot している。
@@ -353,6 +377,8 @@ dispatcher は初回 DELEGATE 完了報告で「/loop 3m で監視します」�
 
 **Block C2 の runtime drift 出力の扱い**: Block C2 は **exit code** で結果を返す（stdout は drift 行専用、診断は stderr）。**exit 1**（drift）なら stdout の `[runtime drift] ...` 1 行を、下記いずれのテンプレートでも **末尾に空行を 1 つ挟んだ上でそのまま転記する**。**exit 0**（PyPI 到達確認済・drift 無し）は warning 行を付けない。**exit 2**（PyPI 未確認 = オフライン / sandbox 内 / 応答異常 / pin 窓外 / `packaging` 欠如、**または installed が local install（`file://` / VCS / editable）で PyPI 照合不能**）は **silent にせず** 「runtime drift: PyPI 未確認（要ホスト再実行）」の 1 行を報告に添える（#119 の silent 誤読を防ぐため）。**ただし stderr 診断が `local install -- PyPI 照合不能` を示す場合はホスト再実行では解消しない**ので「runtime: local install のため PyPI 照合不能（要 PyPI 由来インストールで再確認）」と読み替えて添える（#747: `file://` install が「最新・drift なし」と誤報告された事故の根治）。**exit 3**（runtime 未インストール）は「runtime 未インストール（要確認）」を添える。sandbox 内実行だと exit 2 になりやすいので Block C2 は `dangerouslyDisableSandbox: true` でホスト実行すること。
 
+**Block C4 の role config drift 出力の扱い**: Block C4 も **exit code** で結果を返す（stdout 最終行が転記用、診断は stderr）。**exit 1**（drift）なら stdout 最終行の `[role config drift] ...` 1 行を、下記いずれのテンプレートでも **末尾に空行を 1 つ挟んだ上でそのまま転記する**（Block C2 の warning 行と両方出る場合は 1 行ずつ並べる）。**exit 0**（clean）は warning 行を付けない。**exit 2**（検証不能 = checker 自体が完走できなかった）は **silent にせず**「role config: 検証不能（guard 未検証・要確認）」の 1 行を添える — drift 無しではなく **未測定**なので、clean と読ませてはならない。個別の `[ERROR]` 明細は起動報告には貼らず、ユーザーが詳細を求めたときに stdout 上部から提示する。
+
 > **Sidebar: dispatcher の自己修復ビュー起動案内（broker フレーム時のみ、optional）**
 >
 > broker(tmux) backend では dispatcher ペインは detached tmux session として独立して存在する。窓口の隣のターミナルでこれを 1 回起動しておくと control plane を常に視界に保てる（restart / auto-compact fork でセッション名が変わっても自己修復で再 attach し直す）:
@@ -385,6 +411,14 @@ dispatcher は初回 DELEGATE 完了報告で「/loop 3m で監視します」�
 何をしますか？
 
 [runtime drift] claude-org-runtime: installed={installed} latest={latest_in_window} -- `python -m pip install --upgrade 'claude-org-runtime{pin}'` で更新できます
+```
+
+**role config drift 検出時の warning 添付例** (Block C4 exit 1。`{errors}` / `{findings}` は実行時にスクリプトが決定するもので、本ファイルには hard-code しない。Block C2 の行と両方出るときは 1 行ずつ並べる):
+```
+...
+何をしますか？
+
+[role config drift] {errors} error(s) / {findings} finding(s) -- 詳細は上の [ERROR] 行。再実行: python tools/check_role_configs.py --include-local
 ```
 
 ## Appendix: ClaudeCode 起動コマンド（役割別）

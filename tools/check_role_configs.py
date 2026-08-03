@@ -37,7 +37,11 @@ module is a thin CLI shim that:
   read from the ja repo layout (permissions.md docs projection, the
   worker-tracked settings file walk).
 
-Exit codes: 0 = OK, non-zero = drift detected.
+Exit codes: 0 = OK, 1 = drift detected, 2 = the checker itself could
+not run (schema unreadable / merge failure). 1 and 2 are kept distinct
+so callers can branch on "config drift" versus "the guard never ran"
+-- conflating them is how a broken checker reads as a clean org
+(Issue #818, which wires this into ``/org-start``'s startup preflight).
 
 Run ``python tools/check_role_configs.py --help`` for options.
 """
@@ -50,6 +54,7 @@ import posixpath
 import re
 import subprocess
 import sys
+import traceback
 from pathlib import Path
 
 from core_harness.schema import load_framework_schema, merge_schemas
@@ -813,6 +818,11 @@ def run(
     return findings
 
 
+EXIT_OK = 0
+EXIT_DRIFT = 1
+EXIT_UNVERIFIED = 2
+
+
 def main(argv: list | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Validate per-role settings.local.json against the schema."
@@ -861,19 +871,36 @@ def main(argv: list | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    findings = run(
-        schema_path=args.schema,
-        permissions_md=args.permissions_md,
-        root=args.root,
-        include_on_disk=not args.docs_only,
-        include_untracked=args.include_local or args.role is not None,
-        role_override=args.role,
-        worker_settings_base=args.include_worker_settings,
-    )
+    try:
+        findings = run(
+            schema_path=args.schema,
+            permissions_md=args.permissions_md,
+            root=args.root,
+            include_on_disk=not args.docs_only,
+            include_untracked=args.include_local or args.role is not None,
+            role_override=args.role,
+            worker_settings_base=args.include_worker_settings,
+        )
+    except Exception:
+        # The checker could not complete -- missing or malformed schema
+        # JSON, a framework-schema merge failure, an unreadable
+        # permissions.md. These used to escape as a traceback plus
+        # SystemExit(1), indistinguishable from real drift. Callers that
+        # branch on the exit code (``/org-start`` Block C4) must be able
+        # to say "the guard never ran" instead of reporting drift that
+        # was never actually measured. The traceback stays on stderr so
+        # CI keeps full diagnosability and stdout stays spliceable.
+        traceback.print_exc()
+        print(
+            "role_configs: 検証不能 -- checker 自体が完走できませんでした"
+            "（schema 不在 / JSON 構文エラー等。上の traceback を参照）",
+            file=sys.stderr,
+        )
+        return EXIT_UNVERIFIED
 
     if not findings:
         print("role_configs: OK")
-        return 0
+        return EXIT_OK
 
     for f in findings:
         try:
@@ -881,8 +908,17 @@ def main(argv: list | None = None) -> int:
         except UnicodeEncodeError:
             print(f.format().encode("ascii", "replace").decode("ascii"))
     errors = sum(1 for f in findings if f.severity == "ERROR")
+    # One-line spliceable summary, mirroring check_runtime_version.py's
+    # ``[runtime drift]`` line: /org-start Step 4 transcribes exactly
+    # this line into the startup report rather than the (in practice
+    # dozens of) per-finding lines above.
+    print(
+        f"[role config drift] {errors} error(s) / {len(findings)} finding(s) "
+        "-- 詳細は上の [ERROR] 行。再実行: "
+        "python tools/check_role_configs.py --include-local"
+    )
     print(f"role_configs: {errors} error(s)", file=sys.stderr)
-    return 1 if errors else 0
+    return EXIT_DRIFT if errors else EXIT_OK
 
 
 if __name__ == "__main__":
