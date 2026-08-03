@@ -417,13 +417,15 @@ dispatcher は初回 DELEGATE 完了報告で「/loop 3m で監視します」�
 [runtime drift] claude-org-runtime: installed={installed} latest={latest_in_window} -- `python -m pip install --upgrade 'claude-org-runtime{pin}'` で更新できます
 ```
 
-**role config drift 検出時の warning 添付例** (Block C4 exit 1。`{errors}` / `{findings}` / `{rerun}` は実行時にスクリプトが決定するもので、本ファイルには hard-code しない。`{rerun}` は **その drift を出した実際の invocation** を `sys.executable` + 渡された引数から再構成したもの — ホストによって `python` / `python3` / `py -3` のどれが解決するかが違い、また `--root` / `--role` 付きで出た drift を既定引数で再実行させると「clean に戻った」と誤読されるため。Block C2 の行と両方出るときは 1 行ずつ並べる):
+**role config drift 検出時の warning 添付例** (Block C4 exit 1。`{errors}` / `{findings}` は実行時にスクリプトが決定するもので、本ファイルには hard-code しない。Block C2 の行と両方出るときは 1 行ずつ並べる):
 ```
 ...
 何をしますか？
 
-[role config drift] {errors} error(s) / {findings} finding(s) -- see the [ERROR] lines above; rerun: {rerun}
+[role config drift] {errors} error(s) / {findings} finding(s) -- see the [ERROR] lines above
 ```
+
+ユーザーが再実行コマンドを求めたら、上の手順 1 のコマンド（`py -3` / `python3` のプラットフォーム別）をそのまま案内する。**スクリプトは再実行コマンドを出力しない**: 貼って動く形は読み手のシェル（cmd.exe / PowerShell / Git Bash）ごとに quoting が非互換で、プロセス側からはどれで読まれるか知りようがないため、誤った形を出すより窓口が固定文で案内する方が確実。
 
 ## Appendix: ClaudeCode 起動コマンド（役割別）
 

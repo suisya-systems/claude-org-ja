@@ -53,7 +53,6 @@ import argparse
 import json
 import posixpath
 import re
-import shlex
 import subprocess
 import sys
 import traceback
@@ -875,22 +874,6 @@ def run(
     return findings
 
 
-def _join_command(parts: list) -> str:
-    """Serialise an argv list into a command the *local* shell can run.
-
-    ja is supported on Windows too, where ``shlex.join`` is wrong: it
-    applies POSIX rules and wraps an ordinary ``C:\\Python311\\python.exe``
-    in single quotes, which cmd.exe passes through literally (and which
-    PowerShell will not invoke without ``&``). ``subprocess.list2cmdline``
-    is the Windows counterpart -- it emits the quoting CreateProcess
-    actually parses. Either way the rerun hint stays pasteable, including
-    for interpreter paths containing spaces.
-    """
-    if sys.platform == "win32":
-        return subprocess.list2cmdline(parts)
-    return shlex.join(parts)
-
-
 def _print_encodable(line: str) -> None:
     """Print to stdout, degrading gracefully on a console that cannot
     encode the text (cp932 / ``PYTHONIOENCODING=ascii`` / a legacy
@@ -995,20 +978,19 @@ def main(argv: list | None = None) -> int:
     # this line into the startup report rather than the (in practice
     # dozens of) per-finding lines above.
     #
-    # The rerun hint is rebuilt from the invocation that produced these
-    # findings instead of a fixed ``--include-local`` string: a run that
-    # passed --root/--role/--schema audits a different target, and a hint
-    # that silently reruns against the repo default could come back clean
-    # and read as "the drift went away". shlex.join also keeps an
-    # interpreter path with spaces pasteable, and sys.executable avoids
-    # hard-coding ``python`` vs ``python3`` (ja hosts resolve only one of
-    # them; Windows goes through ``py -3``).
-    invocation = list(sys.argv[1:] if argv is None else argv)
-    script = sys.argv[0] if argv is None else str(Path(__file__))
-    rerun = _join_command([sys.executable, script, *invocation])
+    # Deliberately carries no rerun command. Earlier revisions emitted one
+    # and it could not be made correct: the interpreter name differs per
+    # host (python / python3 / py -3), the arguments differ per invocation,
+    # and the quoting a pasteable command needs depends on the shell the
+    # reader pastes into -- cmd.exe, PowerShell and Git Bash all want
+    # mutually incompatible forms, and the process cannot know which one
+    # it is being read in. Counts plus the exit code are the whole Block
+    # C4 contract; the canonical command lives as fixed text in
+    # .claude/skills/org-start/SKILL.md, where the platform variants are
+    # already written out.
     _print_encodable(
         f"[role config drift] {errors} error(s) / {len(findings)} finding(s) "
-        f"-- see the [ERROR] lines above; rerun: {rerun}"
+        "-- see the [ERROR] lines above"
     )
     print(f"role_configs: {errors} error(s)", file=sys.stderr)
     return EXIT_DRIFT if errors else EXIT_OK

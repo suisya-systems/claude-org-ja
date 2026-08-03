@@ -11,12 +11,10 @@ from __future__ import annotations
 import io
 import json
 import os
-import shlex
 import subprocess
 import sys
 import tempfile
 import unittest
-import unittest.mock
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
@@ -1090,22 +1088,6 @@ class ExitCodeContractTests(unittest.TestCase):
         self.assertEqual(out, "", msg=out)
         self.assertIn("FileNotFoundError", err)
 
-    def test_rerun_hint_quoting_is_platform_correct(self):
-        # ja is supported on Windows (the skill documents a `py -3`
-        # variant). shlex would emit 'C:\\Python311\\python.exe' there,
-        # and cmd.exe takes those single quotes literally -- an unusable
-        # hint on every drift result. Both branches are exercised here
-        # since CI only ever runs one of the two platforms.
-        parts = [r"C:\Python311\python.exe", r"tools\check_role_configs.py"]
-        with unittest.mock.patch.object(sys, "platform", "win32"):
-            windows = crc._join_command(parts)
-        self.assertEqual(windows, r"C:\Python311\python.exe tools\check_role_configs.py")
-        self.assertNotIn("'", windows)
-
-        with unittest.mock.patch.object(sys, "platform", "linux"):
-            posix = crc._join_command(["/usr/bin/python3", "a b.py"])
-        self.assertEqual(posix, "/usr/bin/python3 'a b.py'")
-
     def test_missing_role_config_is_drift_under_include_local(self):
         # The worst case Block C4 must catch: a role whose settings file
         # was never distributed runs with no hook layer at all. Skipping
@@ -1160,9 +1142,12 @@ class ExitCodeContractTests(unittest.TestCase):
         self.assertEqual(proc.returncode, crc.EXIT_DRIFT, msg=proc.stderr)
         self.assertIn("[role config drift]", proc.stdout)
 
-    def test_rerun_hint_reproduces_the_actual_invocation(self):
-        # A hint that drops --root/--role reruns against the repo default,
-        # can come back clean, and reads as "the drift went away".
+    def test_summary_line_carries_no_rerun_command(self):
+        # The summary deliberately stops at counts. A rerun command cannot
+        # be made correct here: the pasteable form depends on the shell the
+        # reader happens to use (cmd.exe / PowerShell / Git Bash all want
+        # incompatible quoting) and the process cannot know which. The
+        # canonical command is fixed text in org-start's SKILL.md instead.
         with tempfile.TemporaryDirectory() as tmp:
             settings = Path(tmp) / ".claude" / "settings.local.json"
             settings.parent.mkdir(parents=True)
@@ -1173,11 +1158,9 @@ class ExitCodeContractTests(unittest.TestCase):
             rc, out, _ = self._run_main(["--root", tmp, "--role", "secretary"])
         self.assertEqual(rc, crc.EXIT_DRIFT)
         summary = out.splitlines()[-1]
-        self.assertIn("--root", summary)
-        self.assertIn("--role", summary)
-        self.assertIn(shlex.quote(tmp), summary)
-        # Quoted so an interpreter path containing spaces stays pasteable.
-        self.assertIn(shlex.quote(sys.executable), summary)
+        self.assertNotIn("rerun", summary)
+        self.assertNotIn(sys.executable, summary)
+        self.assertNotIn("--include-local", summary)
 
     def test_unimportable_core_harness_exits_two(self):
         # Regression lock: the dependency import sits at module level, so
