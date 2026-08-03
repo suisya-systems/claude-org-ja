@@ -119,6 +119,27 @@
 
    **新しいプロンプト形が観測されたら、この regex リストに追記**。Claude Code の version 更新で形が変わる可能性があるため、網羅は前提にしない。
 
+   #### (b-fp) 既知の取りこぼしパターンと見分け方 — 数字選択メニュー形式 (2026-07-27 実測)
+   (b) の regex リストは **単一行の y/n 確認**を前提に設計されているため、Claude Code の **数字選択メニュー UI** を取りこぼす (false negative)。破壊的 DB 操作 (`DELETE`) を含む委譲で、ワーカーが実行方法を確認する場面に以下の形が出た:
+
+   ```
+   DELETE の実行をどう進めますか？（対象: documents 155,612 行 + cascade。バックアップ検証済み・取り消し不可）
+
+   ❯ 1. 自分で実行する（推奨）
+     2. 権限を付与して私が実行
+     3. 中止する
+     4. Type something.
+   ──────────────────────────────────────
+     5. Chat about this
+
+   Enter to select · ↑/↓ to navigate · Esc to cancel
+   ```
+
+   - **なぜ漏れるか**: target line ((a) の「最後の非空行」) は `Enter to select · ↑/↓ to navigate · Esc to cancel` になる。(b) の `^\s*Esc to cancel` は **行頭 anchored** なので、`Esc to cancel` が行**末**に来るこの形には一致しない。`^❯\s*1\.\s*Yes\s*$` も選択肢文言が `Yes` 以外 (上例では `自分で実行する（推奨）`) なので一致しない。結果 `tools/inspect_anomaly_scan.py` は `{"detections": []}` を返し、承認待ちを素通りする
+   - **見分け方**: `❯ N. <選択肢>` の複数行 + 末尾行が `Enter to select · ↑/↓ to navigate · Esc to cancel`。y/n 確認とは別系統の Claude Code インタラクティブ選択 UI で、**破壊的・取り消し不可能な操作の実行方法選択で現れやすい**。見逃すと人間承認が必要な重大な分岐点で dispatcher が気づけない
+   - **当座の運用**: 破壊的操作 (DB 削除、ファイル削除等) を含む委譲では、helper が clean (`detections: []`) を返しても target line を目視確認する。目視で承認待ちと判断したら APPROVAL_BLOCKED 相当として (e) の journal → de-dup → notify 手順にそのまま乗せる。ただし **判定根拠が regex 一致ではなく目視である事実を journal に残す** (`matched=` に該当行、`note=manual_visual` 等)。実測時は `confidence=high` で通知したため、後から journal だけを見ると自動 regex 一致と区別できなくなっていた
+   - **恒久対応案 (未実装)**: (b) の regex リストに `^\s*❯\s*\d+\.` (複数選択肢の先頭行パターン) または `Enter to select · ↑/↓ to navigate · Esc to cancel` の**末尾行 anchored** 形を追加する。次に (b) を更新する機会に併せて検討する
+
    #### (c) cursor 補強による confidence 分岐
    regex に一致した target line について:
    - **high-confidence**: `cursor.visible == true` かつ `cursor.row == target_line.row` または `cursor.row == target_line.row + 1`
@@ -150,6 +171,15 @@
    threshold やパターンの単一定義はこの module 側にあり、regression test (`tests/test_inspect_anomaly_scan.py`、観測 case = row 15 の 529 banner + 9m spinner + bottom 10 空) が契約を pin する。手で判定する場合も上記リストと同義。
 
    **旧形式 spinner-age の false positive 抑止 (Issue #698)**: Claude Code は完了ターンの所要時間サマリ (`✻ Cooked for 31m 40s` 等) を live な旧形式 spinner と**同一の shape** で描画する。これが idle worker のスクロールバックに残ると、毎サイクル「5 分以上回る stuck spinner」として再マッチし false positive alert を繰り返していた。単一フレームでは凍結サマリと本物の stuck spinner を内容・位置だけで区別できないため、helper は「live spinner の `for Xm Ys` counter は毎サイクル進むが、凍結サマリは byte 一致で不変」という不変条件で差分を取る。`--spinner-state-file` を worker ごとに渡すと、前サイクルと同一の旧形式 spinner 行は凍結サマリとみなして検知を抑止する。初回観測は必ず発火 (差分対象が無い) し、完全凍結した live pane は hash ベースの STALL 経路 (`tools/inspect_pane_state.py`) が拾うので signal は失われない。state file 欠落 / 破損時は「前サイクル無し」扱いで再発火する安全側フォールバック (本物の stuck spinner を state file の不備で黙殺しない)。
+
+   #### (d-fp) 既知の誤検知パターンと見分け方 — doc / コードコメント中の status code (2026-07-29 実測)
+   (d) の status-code ゲート (`(?<!#)\b(429|500|502|503|504|529)\b` + 同一行の error 文脈キーワード) は、**その行が「実際に発生したエラーの記録」か「エラーの意味を説明する文書」かを区別できない**。ワーカーが `README.md` のトラブルシューティング表と `.py` のコードコメントに「`temporarily_unavailable` (503) が返る」「retry 可能な 503 になる」と書いた委譲で、**同一サイクル内に 5 回連続の false positive** が出た。該当行はいずれもライブエラーではなく、ワーカーの文書化作業そのものだった。
+
+   - **見分け方 (文体で判別する)**: target 行の前後文脈が「〜が返る」「〜になる」「説明」「表の 1 行」等の**解説・ドキュメント文体**なら false positive の可能性が高い。実際のコマンド出力 (`$ curl ...` の応答、pytest 失敗ログ等) に status code が含まれる場合とは文体が明確に異なる
+   - **繰り返し発火は仕様どおり**: 同じ 503 系の行が複数サイクルにわたって画面内に留まり続ける (scroll で流れる速度が遅いだけ) 場合、毎サイクル再検出されるのは (d) の設計どおりの動作。都度 journal に理由を書いて抑制すればよい
+   - **起きやすい委譲**: API のエラーハンドリングを実装・文書化するタスク。この種の説明文が大量に書かれるため、**同一ワーカーに対して同じ false positive が繰り返し発生しやすい**
+   - **当座の運用**: 発生ごとに `anomaly_observed` へ理由付きで記録し、**通知は送らない** ((e) の step 2 で dispatcher が抑制判断する)。実測時は誤通知として窓口へ一度も送っていない
+   - **恒久対応案 (未実装、別 Issue)**: `tools/inspect_anomaly_scan.py` 側に「diff の追加行 (`+` prefix) やコメント記号 (`#`, `--`, docstring 内) にある status code は除外する」ヒューリスティックを足せば自動的に減らせる。現行の `(?<!#)` は `#529` のような **issue ref に直接隣接する `#` のみ**を除外するもので、`# retry 可能な 503 になる` のような**コメント行**は除外できない
 
    #### (e) 実行シーケンス (journal + de-dup + notify)
    以下の順番で厳密に実行する:
@@ -319,6 +349,30 @@
    - PR-pending-merge を別 event ではなく lookback の延長で扱う理由: (c)(1) の補助シグナル軸 (`worker_completed` を含む 5 種) はそのまま再利用でき、acked 経路に乗せれば既存の de-dup / 通知抑制と整合する。新カテゴリ追加は最小差分
    - merge 後 `pr_merged` event が記録されると次サイクルで sub-state が解け、lookback は 15 分に戻る。merge 後 `worker_completed` の `ts` が 15 分窓から外れた状態で worker pane がまだ open していれば通常 stall として扱われる (運用上は merge と同時に CLOSE_PANE が走るので実質的にこの経路には乗らない)
    - `T_pr_opened` 自体の経過時間は判定に使わない (PR open から 60 分以内/超過の評価は不要)。代わりに (c)(1) の lookback を 60 分に拡張することで、`worker_completed` 等の最新 worker→secretary event が 60 分以内であれば acked、超えれば timeout という同一フォーマットの判定を維持する
+
+   #### (b-fp) 既知の誤検知パターンと見分け方 — STALL の誤発火 (2026-07-28 実測 2 件)
+   (b) の hash 不変判定 + (b-2) の lookback 選択でも捕まえきれない構造的 false positive が 2 型ある。いずれも **STALL_SUSPECTED が出ても即座に異常と断定せず、下記の見分け方で確認してから窓口へ上げる**。
+
+   **型 1: 長時間バッチジョブの完了待ち (lookback 不足による構造的誤発火)**
+
+   実環境デプロイ委譲で、formatter バッチジョブ (約 41 分) の完了待ち中に画面が 26 分以上静止し、`STALL_SECRETARY_LOOKBACK_MIN = 15` の通常 lookback で STALL_SUSPECTED が発火した。窓口が実環境側 (GCS 出力オブジェクト数の増加推移) を直接確認したところ、バッチは正常に進行中で false positive だった。
+
+   - **なぜ (b-2) に乗らないか**: PR-pending-merge sub-state は `pr_opened` / `pr_merged` という **event ledger 上の痕跡**から待機パターンを検知して lookback を延ばす。一方「実行環境側の長時間バッチ完了待ち」は worker が能動的に待っているだけで **worker→secretary event を一切出さない**ため、同種の判定材料が events テーブルに存在せず既存 sub-state 判定に乗らない
+   - **見分け方**: 対象ワーカーの brief が実環境デプロイ / データ処理ジョブ (formatter 再実行、バッチ ETL、Cloud Run 実行等) を含むか。含む場合は画面静止だけで stuck と断定せず、**実環境側 (実行ログ、出力オブジェクト数等) を直接確認**してから判断する。40 分級のバッチ待ちが本務のワーカーは、15 分 lookback では構造的に誤検知する
+   - **当座の運用**: 窓口の指示で当該ワーカーに限り STALL 通知を抑止し、dispatcher は journal に `stall_suppressed_by_secretary` を記録して次の報告まで通知を止める
+   - **恒久対応案 (未実装)**: ワーカー自身が事前に「X ブロックの完了予定 Y 分」を `worker_reported` 等で申告し、その分 lookback を動的に延長する「**長時間バッチ待ち sub-state**」を (b-2) と同じ仕組みで追加する。実測 1 件のみのため一般化は時期尚早で、**同種の委譲が繰り返された時点で起票を検討する**
+
+   **型 2: ultracode Workflow ステータス行の再描画停止 (観測タイミング由来の誤発火)**
+
+   ultracode 武装ペインの監視で、ペイン下部の Workflow ステータス行 (例: `4/5 agents done · 20m 58s · ↓ 597.4k tokens`) が 3 分間隔の監視サイクルで 2〜3 回連続「不変」に見えたため STALL_SUSPECTED を複数回発火した。窓口が同時刻に直接 `inspect_pane` で確認すると、経過時間・トークン数とも実際には進んでいた (**dispatcher 観測=不変 → 窓口観測=前進、が 3 回連続**)。
+
+   - **なぜ起きるか**: このステータス行は**出力バーストのタイミングでしか再描画されない** UI で、長時間走る単一エージェントの最中は表示自体が固まって見える。dispatcher と secretary の観測タイミングの差 (同一 3 分窓内でも数十秒〜1 分ずれる) で描画更新の直前 / 直後を引くと不変に見える。ultracode 実行中はワーカー本体のターンが「1 個の長時間 dynamic workflow 呼び出しを待っている」状態で、**本体スクロールバックが変化しないのが正常**であり、(b) の「画面が変化しなければ idle」というモデルに反する
+   - **(b-3) の active-spinner suppress ではカバーされない**: Workflow 待機中の親ターンには新形式 spinner が出ない (または出ても親ターン自体は本当に何もしていない) ため、`suppress_stall` 経路に乗らない
+   - **ultracode 武装ペインの報告基準 (2026-07-28 方針変更)**: `Workflow(...)` 呼び出し後 `Waiting for N dynamic workflow to finish` 表示になっているペインでは、**ステータス行の数値 (agents done / 経過時間 / トークン数) による STALL 判定を行わない**。代わりに次の 2 つのみを報告基準とする:
+     1. worker→secretary peer message が **60 分以上**途絶
+     2. ペイン本体が Waiting 表示から離れ、Step 4 の APPROVAL_BLOCKED / ERROR パターンに入った
+   - **非 ultracode ペインは従来どおり**: (b) の 15 分 lookback + content hash 比較による STALL 判定を継続する
+   - **恒久対応案 (未実装)**: 監視ツール側での正式な ultracode sub-state 追加を Issue 化検討中 (窓口起票予定)。2026-07-28 に 3 回連続の false positive を実測済み
 
    #### (c) 補助シグナル取得 — 直近の worker→secretary コミュニケーション
    stall 候補が見つかったら、STALL_SUSPECTED を発火する **前に** 補助シグナルを取得する。lookback は (b-2) で選択した値 (`STALL_SECRETARY_LOOKBACK_MIN = 15` または `STALL_PR_MERGE_LOOKBACK_MIN = 60`) を使う:
