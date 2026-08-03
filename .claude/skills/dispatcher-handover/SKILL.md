@@ -1,5 +1,6 @@
 ---
 name: dispatcher-handover
+owner: dispatcher
 description: >
   ディスパッチャーのコンテキストを圧迫したまま session を続けるのを避けるため、
   monitoring 状態（active workers / 直近 polling cursor / pending escalations）を

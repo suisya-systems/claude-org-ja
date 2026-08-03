@@ -1,5 +1,6 @@
 ---
 name: work-discovery
+owner: secretary
 description: >
   open Issue を triage して「次の仕事候補（N 件 + 推奨 1 件）」を窓口が人間へ提示する。
   決定的ツール tools/work_discovery_scan.py を 1 回実行し、その候補 JSON を

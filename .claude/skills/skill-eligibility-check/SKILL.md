@@ -1,5 +1,6 @@
 ---
 name: skill-eligibility-check
+owner: curator
 description: >
   作業パターンを skill 化すべきか判定する共通スキル。org-retro と org-curate から呼ばれ、
   「skill 化推奨 / 候補止まり / curated ノートのまま」の 3 値と根拠を返す。
