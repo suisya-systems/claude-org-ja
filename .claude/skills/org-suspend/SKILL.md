@@ -189,8 +189,14 @@ capability 広告 backend をいま駆動しているということなので、
 - **人間の確認を得てから** capability 経路で先へ進む。確認前は 1 通も出さない
 - 他タブピアは † のとおり**そもそも broadcast 対象に入らない**。gate の役割は「他タブに何が見えているか」を
   人間に見せて、停止対象外にした集合が妥当か判断してもらうことにある
-- gate は 1 回の `/org-suspend` につき 1 度（最初に 2.0 系と判定した列挙＝通常は Phase 1 手順 1）でよい。
-  Phase 4 の再列挙で**他タブ判定のピアが増えていた**場合だけ、その差分を報告して再確認する
+- **gate は「capability 広告 backend の初回駆動」に対して 1 度だけ**であって、`/org-suspend` の実行ごとでは
+  ない（契約 T-§ratification が課しているのは first drive の dogfood 報告）。**通過したら記録する** —
+  `bash tools/journal_append.sh notify_sent kind=capability_first_drive note=<backend/tab 概要>` を
+  events テーブルに残し、以後の `/org-suspend`（[`.claude/skills/org-down/SKILL.md`](../org-down/SKILL.md) 経由の suspend を
+  含む）では**この記録があれば gate を発動せず先へ進む**。記録を見ずに毎回止めると、dogfood 承認後も
+  中断のたびに人手確認が要る運用になる
+- 記録がある場合でも、**他タブ判定のピアが前回より増えていた**ときはその差分を報告する（gate の
+  再発動ではなく、停止対象外にした集合の変化を人間に見せるため）
 - **旧版 fallback（行 #11 / #12。現在配備されている全 backend — `org-broker` を含む — はここを通る）では
   この gate を発動しない**。従来どおり無停止で broadcast に進む（既存運用は一切変わらない）
 
