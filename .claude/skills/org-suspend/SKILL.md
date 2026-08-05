@@ -196,10 +196,13 @@ capability 広告 backend をいま駆動しているということなので、
   dogfood 承認後も中断のたびに人手確認が要る運用になる。**記録と参照の両方を行う**:
   - **参照（gate に入る前）**: events テーブルに過去の通過記録があるかを見る。あれば gate を発動しない
     ```bash
-    python3 -c "from tools.state_db import connect; from tools.state_db.queries import list_recent_events; \
-    print(any(e['kind']=='notify_sent' and 'capability_first_drive' in (e['payload_json'] or '') \
-    for e in list_recent_events(connect('.state/state.db'), limit=500)))"
+    python3 -c "from tools.state_db import connect; \
+    print(bool(connect('.state/state.db').execute(\"SELECT 1 FROM events WHERE kind='notify_sent' \
+    AND payload_json LIKE '%capability_first_drive%' LIMIT 1\").fetchone()))"
     ```
+    **直接クエリで引く（直近 N 件の走査で代用しない）**。件数を区切って走査すると、通過記録より後に
+    イベントが N 件積まれた時点で `False` に戻り、一度きりのはずの gate が再発動する（イベントの多い
+    組織ほど早く再発動する）
     `True` なら通過済み。`False`（または照会に失敗した）なら未通過として gate を発動する
     （**照会できないときは安全側 = gate を発動する**。黙って素通りさせない）
   - **記録（gate を通過した直後）**:
@@ -475,9 +478,16 @@ live pane も無く、本 Phase は no-op。
      送りうる**。次の優先順で 1 件に絞る（[`.claude/skills/org-delegate/references/renga-error-codes.md`](../org-delegate/references/renga-error-codes.md)
      の messaging 分岐と同一規則）:
      - a. 台帳に控えてある **`peer_id` がまだ列挙に在れば、その id をそのまま使う**
-     - b. その `peer_id` が消えている場合、名前一致レコードは候補にすぎない。
-       **`same_tab: true` を確認できたものだけ**を採用する（同一タブ内でのみ名前は一意 — 契約 §1.8）
-     - c. 一意に絞れる候補が無い（他タブの同名しか無い / 複数残る）→ **再送しない**。
+     - b. その `peer_id` が消えている場合（再接続で id が振り直された等）、名前一致レコードは
+       候補にすぎない。採用してよいのは**名前が一意に定まる範囲に閉じていると分かっている**
+       ときだけで、次のどちらかを満たす場合:
+       - **`same_tab: true` を確認できたレコード**（同一タブ内でのみ名前は一意 — 契約 §1.8）
+       - **旧版 fallback の列挙**（全レコードで marker 欠落）で、**その名前のレコードが 1 件だけ**の場合。
+         marker 無し列挙は caller のタブに閉じていることが契約 T-§cap の conformance MUST で保証され、
+         そのタブが窓口のタブであることは手順 1 のフォーカス前提で確認済みなので、名前は一意に働く。
+         **現在配備の backend（`org-broker` / renga 1.x）はここを通る** — この枝が無いと、再接続で
+         id が変わった生存ワーカーを retarget できず indeterminate に落として取り逃がす
+     - c. 上のどちらも満たさない（他タブの同名しか無い / 同名が複数残る）→ **再送しない**。
        lifecycle 確認（次項）へ進む
   3. 絞れた **`peer_id`** で **1 回だけ**再送する（ループにしない — 2 回目以降も結果は同じで、
      本当に閉じていた場合の検知が遅れるだけ）
