@@ -65,7 +65,16 @@ allowed-tools:
    証拠にならない）:
    - `mcp__org-broker__list_peers` — **messaging 用の peer id**。各レコードの `id` / `name` / `role` / `cwd` と、
      マルチタブ対応 backend が返す optional な `same_tab` / `tab` / `tab_name` を控える（この 3 つは
-     `cross_tab_peers` capability を広告する backend でのみ載る。非広告 backend では欠落する）
+     `cross_tab_peers` capability を広告する backend でのみ載る。非広告 backend では欠落する）。
+     **`list_panes` と同じフォーカス前提が掛かる**: `caller_scope` を広告しない backend（旧版・
+     renga 1.x を含む）では、`list_peers` も他の pane 操作と同様に**フォーカス中のタブ**に追随する。
+     marker が全欠落していることが保証するのは「その列挙が単一タブに閉じている」ことだけで
+     （契約 T-§cap の conformance MUST）、**それが窓口のタブであることまでは保証しない**。
+     `/org-suspend` を走らせる前にフォーカスが窓口ペインのタブにあることを確認する。列挙されたタブを
+     呼び出し側に紐付けられない場合は **broadcast しない**（別 org のタブへ SUSPEND / SHUTDOWN を
+     撃つ経路になる）。紐付けの確認は、`list_panes`（同じフォーカス前提で引ける）に窓口ペイン自身が
+     居ること、あるいは列挙に自組織の既知 identity（state.db の `dispatcher_peer_id` 等）が
+     含まれることで足りる
    - `mcp__org-broker__list_panes` — **ペイン制御用の pane id**。各レコードの `id` / `name` / `role` を控える。
      **どのタブが返るかは capability による**（契約 T-§cap は `caller_scope` と `cross_tab_peers` を
      独立と規定する）: `caller_scope` を広告する backend では **caller のタブ**が返る。広告しない
@@ -150,7 +159,7 @@ allowed-tools:
 | 8 | `False` | `None` | ∉ `R` | 2.0 系（片方欠落） | **しない** | 役割で除外 |
 | 9 | `None` | 値あり | ∈ `R` | 2.0 系（片方欠落） | **原則 しない**（行 5 と同じ）。`tab` が caller 自身のタブ値と一致すると確認できたときだけ行 1 と同じ扱い（‡） | `tab` が載る時点で 2.0 系。`same_tab` 欠落は unknown であり、`name` 一致で同タブと結論してはならない（‡） |
 | 10 | `None` | 値あり | ∉ `R` | 2.0 系（片方欠落） | **しない** | 役割で除外 |
-| 11 | `None` | `None` | ∈ `R` | **旧版 fallback**（`cross_tab_peers` 非広告。renga 1.4 系および現行 `org-broker` はここ） | **する**（`peer_id` 宛・† 単一タブ = 所属 signal） | tab 情報が無い＝列挙が単一タブに閉じているので、従来どおり role gate だけで決める（現行挙動と同一） |
+| 11 | `None` | `None` | ∈ `R` | **旧版 fallback**（`cross_tab_peers` 非広告。renga 1.4 系および現行 `org-broker` はここ） | **する**（`peer_id` 宛・† 単一タブ = 所属 signal。**フォーカス前提の確認が済んでいること**） | tab 情報が無い＝列挙が単一タブに閉じている（契約 T-§cap の conformance MUST）ので、従来どおり role gate だけで決める（現行挙動と同一）。ただしその単一タブが窓口のタブであることは手順 1 のフォーカス確認で担保する |
 | 12 | `None` | `None` | ∉ `R` | 旧版 fallback | **しない** | 旧版経路でも未知 role は対象に含めない。役割が判定できないペインへの broadcast は org 外プロセスへの誤爆になる |
 
 **旧版 fallback の発動条件は 1 つだけ**: 列挙内の**全レコード**で `same_tab` と `tab` が **両方 `None`**
@@ -185,7 +194,8 @@ capability 広告 backend をいま駆動しているということなので、
 他タブのピアには**送らず、人間に報告する**。根拠は identity 照合ではなく**構造**である:
 
 - **同タブのピア（`same_tab=True`、および旧版 fallback の列挙全体）は自組織のもの**。caller のタブの
-  ペイン群は、この org が組み上げたレイアウトである。契約 T-§4.2 は ratified §4.2 の
+  ペイン群は、この org が組み上げたレイアウトである（旧版 fallback では、その単一タブが窓口のタブで
+  あることを手順 1 のフォーカス前提の確認で担保したうえで成り立つ）。契約 T-§4.2 は ratified §4.2 の
   「harnesses MUST launch every orchestrator-spawned pane in the same tab」を **retained（非 supersede）**
   として維持しており、この org が spawn したペインは**全て同一タブに居る**ことが契約上保証されている。
   したがってここは **role gate だけで判定し、追加の identity 一致を要求しない**（要求すると、identity を
