@@ -68,15 +68,36 @@ allowed-tools:
      `cross_tab_peers` capability を広告する backend でのみ載る。非広告 backend では欠落する）
    - `mcp__org-broker__list_panes` — **ペイン制御用の pane id**。各レコードの `id` / `name` / `role` を控える
      （caller のタブのペインだけが返る）
-   - 2 つを `name`（無ければ `role`）で突合し、1 エントリ =
-     `{peer_id, pane_id（同タブに無ければ未設定）, name, role, cwd, same_tab, tab}` の台帳にする。
+   - 2 つを突合して 1 エントリ =
+     `{peer_id, pane_id（割り当てられない場合は未設定）, name, role, cwd, same_tab, tab}` の台帳にする。
      **`to_id` には必ず `peer_id`、`target` には必ず `pane_id`** を渡す。2 つの `id` が同じ値空間だとは
      仮定しない（backend 定義。契約 §4.1 は id を "opaque" と規定しており、面をまたいだ流用は契約が
      保証していない）
+   - **突合（join）キーは `name` だけで、`role` は使わない**。`role` は非一意で（worker が複数居れば
+     必ず衝突する）join キーとして成立しない。`name` も**全タブ列挙では一意ではない**ので
+     （契約 T-§2.2: §1.8 の名前一意性は "this tab" 限定。`worker-{task_id}` 等の予約名は 2 org 並走で
+     構造的に衝突する）、`name` で `pane_id` を割り当てられるのは**同タブであることが確定したエントリに
+     限る**。2.0 系の `list_peers` は**全タブ**を返す一方 `list_panes` は**caller のタブだけ**を返す
+     （契約 §1.5、本 amendment で非 supersede）ため、ここを誤ると別タブのピアのレコードに自タブの同名
+     ペインの `pane_id` が付き、Phase 2 が**別ワーカーのコンソールをスクレイプ**し Phase 4 の lifecycle
+     追跡が壊れる:
+     - `same_tab == True` が確定したレコード → `name` で `pane_id` を割り当ててよい
+     - `same_tab == False` のレコード → **`pane_id` を絶対に割り当てない**（pane 制御面では到達できない。
+       契約 T-§4.2）
+     - 2.0 系だが `same_tab` 欠落（‡ のケース）→ 「判定できない場合は他タブ扱いに倒す」規則どおり
+       **`pane_id` を割り当てない**
+     - 旧版 fallback の列挙（全レコードで `same_tab` / `tab` が両方欠落）→ `name` join は安全。
+       **ただしその安全性は「この列挙が単一タブに閉じているから」であって、`name` join が無条件に
+       安全だからではない**（契約 §2.2 ratified の現在タブ列挙。列挙がタブ横断になった瞬間に前提が消える）
+     - `pane_id` が**未設定のエントリは「pane 制御では触れない」**ことを意味する。Phase 2 ではスクレイプを
+       諦めて git 情報に倒し、Phase 4 では `close_pane` を撃たずに pending に残す（各 Phase の該当箇所と
+       同じ結論）
    - この台帳を **Phase 2 / Phase 4 まで引き回す**。宛先解決・pending 集合はすべて台帳エントリを
      primary key にし、`name` は人間可読の補助ラベルに留める
 2. 直後の「**宛先選定の真理値表（Phase 1 / Phase 4 共通）**」で broadcast 対象を決める
-   （Phase 1 の対象 role 集合は `R = {worker, dispatcher}`）
+   （Phase 1 の対象 role 集合は `R = {worker, dispatcher}`）。**版判定が 2.0 系だった場合は、同節の
+   operational gate に従って手順 3 の送信前に人間へ報告し、確認を得てから進む**（旧版 fallback では
+   gate を発動せず、そのまま手順 3 へ進む）
 3. 対象ピアの **`peer_id`** を `to_id` に渡して `mcp__org-broker__send_message` で以下を送信:
    ```
    SUSPEND: 現在の状態を報告してください。
@@ -130,6 +151,24 @@ allowed-tools:
 「他タブに居ることが分かっている」という 2.0 系の積極的な情報であり、旧版扱いして role 判定だけに
 戻してはならない（他タブのピアを名前宛で取りこぼす）。
 
+**2.0 系と判定したら、broadcast の前に人間へ報告して確認を取る（operational gate）**: 契約
+T-§ratification は「**capability 広告 backend を実際に駆動する初回**は dogfood step として実施し
+人間へ報告する」ことを harness 側の MUST にしている。列挙を 2.0 系と判定したということは、その
+capability 広告 backend をいま駆動しているということなので、`/org-suspend` は**黙って先に進まない**。
+`/org-suspend` は人間が起動する flow なので、人間は画面の前に居る（この gate は現実的に成立する）。
+
+- 報告に必ず含める: **見えているタブ数**（レコードの `tab` の相異なる値の数。`tab` が欠落する列挙では
+  「不明」と書く）、**列挙されたピア総数**、**うち他タブ判定（`same_tab=False`、または ‡ で他タブと
+  導出）の件数**、および broadcast 対象に選んだピアの `name` / `peer_id` / `cwd` の一覧。人間が誤爆
+  リスク（別 org を巻き込まないか）を判断できる材料にする
+- **人間の確認を得てから** capability 経路で先へ進む。特に **`same_tab=False` のピア（別タブ＝別 org の
+  可能性がある宛先）へ SUSPEND / SHUTDOWN を送る前の確認は必須**で、確認前は 1 通も出さない
+- 人間が他タブ分を除外した場合は、同タブ確定のピアだけを対象に続行する
+- gate は 1 回の `/org-suspend` につき 1 度（最初に 2.0 系と判定した列挙＝通常は Phase 1 手順 1）でよい。
+  Phase 4 の再列挙で**他タブ判定のピアが増えていた**場合だけ、その差分を報告して再確認する
+- **旧版 fallback（行 #11 / #12。現在配備されている全 backend — `org-broker` を含む — はここを通る）では
+  この gate を発動しない**。従来どおり無停止で broadcast に進む（既存運用は一切変わらない）
+
 **宛先は必ず `peer_id`**: broadcast 対象に決まったピアへは `send_message(to_id="<peer_id>")` で送る。
 `to_id` に `name` を渡すと 2.0 系では**名前解決が送信者タブ内に限定される**ため、他タブのピアは
 `[pane_not_found]` になる（`list_peers` 由来の id 宛はタブ横断で解決される）。旧版 fallback の行でも
@@ -141,18 +180,46 @@ allowed-tools:
 あっても `list_peers` が他タブ（＝他組織）のピアを返す可能性は排除できず、「旧版と判定した」という
 結論が正当化するのは**アドレス規則の選択だけ**だからである（契約 T-§cap）。確認は次の順で行う:
 
-- **`cwd` 一致（第一次）**: ピアレコードの `cwd` が、この org の Worker Directory Registry
-  （`.state/state.db` 由来の構造化セクション。`tools/state_db/snapshotter.py` が `.state/org-state.md` へ
-  再生成する）に載るディレクトリ配下、または ja root 配下にあること。org を跨いだピアは cwd が
-  別ツリーになるので、これが最も強い識別子になる
-- **worker（補強）**: `name` の `worker-{task_id}` が `.state/workers/` に存在し、かつ state.db の
-  `runs` でその task_id が**稼働中の status**（`in_use` / `review` 等の非終端）であること。
-  `.state/workers/` には完了済みワーカーのファイルも残るので、存在チェック単独では自組織の
-  **稼働中**ワーカーの証明にならない
-- **dispatcher（補強）**: state.db の **`dispatcher_peer_id`** が当該 `peer_id` と一致すること
-  （`list_peers` 由来の id を格納する列はこちら。`dispatcher_pane_id` は `list_panes` 由来なので、
-  pane 制御側の id と照合したいときにそちらを使う）
-- いずれも取れない場合は **broadcast しない**（安全側）
+**`cwd` が「この org のツリーの配下にある」ことは自組織の証明にならない**（第一次の識別子に使っては
+ならない）。ja root 配下には、この org のワーカー以外にも人間が手で開いたペインや pr-watch ペインが
+生えるし、**別 checkout の org のワーカーが、たまたま似た階層構造の配下に居る**こともある。真理値表は
+`same_tab=False` のピアにも broadcast するので、「ツリー配下だから自組織」と判定すると
+**`/org-suspend` が別 org を停止させる**。したがって第一次は「**このセッションが `.state/state.db` に
+記録した identity との一致**」で、`cwd` は補強に降格する。
+
+> **この確認が守れる範囲（前提の明示）**: state.db は **1 org につき 1 つ**である。
+> `tools/state_db/discover.py` は worktree を main checkout に解決し直し（"The canonical state.db lives
+> in the main checkout, not in worktree-private `.state/` directories"）、`org_sessions` は
+> `CHECK (id = 1)` の singleton（`tools/state_db/schema.sql` の「the org never has multiple concurrent
+> sessions」）だからである。したがって identity 一致が排除できるのは **別 checkout で走る別 org のピア**
+> — マルチタブで現実に混ざる相手 — であり、そこでは相手の task_id はこちらの `runs` に無く、相手の
+> ディスパッチャーの `peer_id` は `dispatcher_peer_id` と一致しない。
+> **逆に「同一 checkout から 2 つの org を同時に走らせる」構成は state.db のデータモデルが表現できない**
+> （`runs.task_id` は org 所有者列を持たない globally UNIQUE、`org_sessions` は 1 行のみ）。その構成では
+> 他 org のワーカーも*こちらの* `runs` に載るため、本節の確認では区別できない。**org-suspend はこの構成を
+> 区別できると主張しない** — 対応が要るなら schema に所有者列を足す別作業になる。
+
+役割ごとに次を確認する:
+
+- **worker（第一次）**: `name` の `worker-{task_id}` から取り出した task_id が、この org の
+  `.state/state.db` の `runs` に**非終端 status**（`in_use` / `review`。`tools/state_db/schema.sql` の
+  CHECK は `queued/in_use/review/completed/failed/suspended/abandoned` の 7 値で、active 集合は
+  `tools/state_db/queries.py` の `_ACTIVE_STATUSES`）で存在すること
+- **worker（cwd による棄却）**: その task_id に worker ディレクトリが登録されている場合は、ピアレコードの
+  `cwd` がその登録エントリと**一致**しなければ broadcast しない（Worker Directory Registry の Directory 列。
+  `tools/state_db/snapshotter.py` が DB から `.state/org-state.md` へ再生成する）。**配下に含まれることでは
+  なく登録エントリとの一致**を見る。ただし `runs.worker_dir_id` は nullable（`tools/state_db/schema.sql`）
+  なので、**登録が無いときは cwd 一致を要求しない** — 要求すると自組織の稼働ワーカーを取りこぼす。
+  cwd はここでは「積極的に食い違ったら弾く」棄却条件であって、存在必須の合致条件ではない
+- **dispatcher（第一次）**: `.state/state.db` の **`dispatcher_peer_id`**（`org_sessions` の TEXT 列。
+  定義は `tools/state_db/__init__.py`）が当該 `peer_id` と一致すること（`list_peers` 由来の id を格納する列はこちら。
+  `dispatcher_pane_id` は `list_panes` 由来なので、pane 制御側の id と照合したいときにそちらを使う）
+- **curator（第一次）**: 同様に **`curator_peer_id`**（同じ `org_sessions` の TEXT 列）が当該 `peer_id` と
+  一致すること。curator は常駐しないので**記録が無いのが通常**で、記録が無ければ broadcast しない
+- **`cwd` の位置づけ**: `cwd` は**棄却にだけ**使う（記録と積極的に食い違ったら弾く）。**単独では自組織の
+  証明にならない**ので、identity 一致が取れていないピアを `cwd` だけを根拠に broadcast してはならない
+- **記録された identity と一致しないピアには broadcast しない**（安全側）。この規則は版によらず全行に
+  適用する。`role` が対象でも identity が取れなければ送らない
 
 **§（他タブピアの停止確認に関する注記）**: `same_tab=False` と判定されたピアは、messaging では到達
 できても**ペイン制御では到達できない**（契約 T-§4.2: pane 制御は caller のタブ内に留まる）。Phase 4 で
@@ -381,7 +448,11 @@ live pane も無く、本 Phase は no-op。
 ### 停止手順
 
 1. `mcp__org-broker__list_peers` と `mcp__org-broker__list_panes` を取り直し、Phase 1 の**台帳を最新化**する（Phase 1 から
-   時間が経っているため、`peer_id` / `pane_id` の両方を取り直す）
+   時間が経っているため、`peer_id` / `pane_id` の両方を取り直す）。再構築でも Phase 1 手順 1 の
+   **join 規則をそのまま適用する**（`role` は join キーにしない / `name` join は同タブ確定エントリだけ /
+   他タブ・`same_tab` 欠落のエントリには `pane_id` を割り当てない）。**他タブ判定のピアが Phase 1 から
+   増えていた場合は、真理値表の operational gate に従ってその差分を人間に報告し、確認を得てから
+   停止指示へ進む**
 2. **ワーカーを先に停止**: Phase 1 の**宛先選定の真理値表**を `R = {worker}` で適用し、選ばれた
    ワーカーの **`peer_id`** を `to_id` に渡して `mcp__org-broker__send_message` で終了を指示:
    「SHUTDOWN: 作業を終了してください。」
