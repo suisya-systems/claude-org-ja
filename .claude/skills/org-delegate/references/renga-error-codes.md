@@ -45,7 +45,7 @@ mcp__renga-peers__send_message(to_id="worker-nonexistent", message="hi")
 |---|---|---|
 | `caller_scope` | pane 操作 7 ツールの対象が「**フォーカス中のタブ**」から「**caller のペインが属するタブ**」に変わる（フォーカス非依存）。`list_panes` は自タブのみ返す。旧 server へは fail closed | `suisya-systems/renga#288` |
 | `cross_tab_peers` | peer messaging がタブ横断になる。**名前解決は送信者のタブ内限定**／**数値 peer id 宛はタブ横断可**／`list_peers` は**全タブ列挙**。解決できない宛先は `pane_not_found` を返す（silent 成功をやめた fail loud 化）。`PeerInfo` に optional の `tab` / `tab_name` / `same_tab` が載る | `suisya-systems/renga#289` |
-| spawn の tab 指定（`CAP_SPAWN_TAB`） | `spawn_*` が tagged tab selector で配置先タブを取れる（背景タブ生成を含む）。tab 系エラー 4 種はここで出る | `suisya-systems/renga#290` |
+| `spawn_tab` | `spawn_*` が tagged tab selector で配置先タブを取れる（背景タブ生成を含む）。tab 系エラー 4 種はここで出る。**capability query に使う正式名は `spawn_tab`**（契約 T-§cap）— renga の内部定数 `CAP_SPAWN_TAB` は実装詳細であって広告される識別子ではない。定数名で照会すると備えている backend でも「非対応」と誤判定し、`server_too_old` 経路へ誤って落とす | `suisya-systems/renga#290` |
 
 `#291`（org サイドバー、`Ctrl+B` / `[ui] org_sidebar`）は UI 機能でエラーコード面の影響はない。
 
