@@ -143,18 +143,28 @@ MCP ツール呼び出し結果テキスト (`content[0].text` or JSON-RPC error
 # $ctx = 呼び出し文脈: "messaging" (send_message) /
 #        "pane_ctl" (close_pane / inspect_pane / focus_pane / send_keys / list_panes の target)
 # $same_tab = そのピアの list_peers 上の same_tab ("true" / "false" / "" = 不明)
+# $legacy_single_tab = その列挙が marker 全欠落 (= 契約 T-§cap により単一タブ) で、かつ
+#                      それが呼び出し側のタブだとフォーカス前提を確認できた場合に "true"
 case "$out" in
   *"[pane_not_found]"*|*"[peer_not_found]"*)   # peer_not_found は broker の messaging 綴り
     case "$ctx" in
       pane_ctl)
-        if [ "$same_tab" = "false" ]; then
+        # 分岐は「同タブと確認できた (true)」を条件にする。not-"false" で括ると
+        # 不明 ("") が閉鎖側に落ち、他タブで生存中のワーカーを誤って retire する
+        if [ "$same_tab" = "true" ] || [ "$legacy_single_tab" = "true" ]; then
+          # 同タブと確認できた (または marker 無し列挙 = 契約 T-§cap の conformance MUST により
+          # 単一タブ、かつフォーカス前提を確認済み) → 従来どおり閉鎖扱いで lifecycle 処理へ
+          mark_worker_pane_closed worker-foo
+        elif [ "$same_tab" = "false" ]; then
           # 他タブのピアはタブ横断 pane 制御が原理的に不可 (契約 T-§4.2)。
           # 生存中でも同じコードが返るので、閉鎖の証拠にしない
           log_journal "cross-tab pane control refused (not a closure signal): $out"
           escalate_secretary "worker left running in another tab (cannot close): $out"
         else
-          # 同タブは従来どおり: 既に閉じた扱いで lifecycle 処理に回す
-          mark_worker_pane_closed worker-foo
+          # same_tab 不明 ("")。契約 T-§2.2-fields は欠落を unknown と規定しており
+          # legacy の証拠ではない。他タブで生存している可能性があるので閉鎖に倒さない
+          log_journal "tab scope unknown — not treating pane_not_found as closure: $out"
+          escalate_secretary "worker lifecycle indeterminate (tab scope unknown): $out"
         fi
         ;;
       messaging|*)
