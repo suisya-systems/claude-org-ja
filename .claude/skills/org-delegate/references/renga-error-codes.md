@@ -35,7 +35,9 @@ mcp__renga-peers__send_message(to_id="worker-nonexistent", message="hi")
 
 ## renga 2.0 系 — 追加コードと意味論の変更
 
-> **適用範囲**: 本節は、pane / peer ツールの意味論を作り替えた renga の epic `suisya-systems/renga#287`（2026-08-05 実装）**以降の server** にだけ適用する。renga 側 CHANGELOG は BREAKING 扱いで、リリース番号は 2.0.0 が見込まれる（番号は未確定なので本節では「2.0 系」と呼ぶ）。**0.14.0〜0.16.x（1.x 系）に繋がっている間、本節のコードは 1 つも発生しない** — その場合は上の `## Known codes` だけを読めばよい。
+> **適用範囲**: 本節は、pane / peer ツールの意味論を作り替えた renga の epic `suisya-systems/renga#287`（2026-08-05 実装）**以降の server** にだけ適用する。renga 側 CHANGELOG は BREAKING 扱いで、リリース番号は 2.0.0 が見込まれる（番号は未確定なので本節では「2.0 系」と呼ぶ）。**`server_too_old` を除き、0.14.0〜0.16.x（1.x 系）に繋がっている間は本節のコードが 1 つも発生しない** — その場合は上の `## Known codes` と本節の `server_too_old` 行だけを読めばよい。
+>
+> **`server_too_old` だけは 1.x 系に繋いでいるときにこそ出る**（発行元が backend ではなく **client 側の capability gate** だからで、2.0 対応クライアントが 1.x server に capability を要求した瞬間に fail closed する）。「本節は 2.0 系専用」と読んで本節ごと読み飛ばすと、**このコードが実際に出る唯一の環境で**非再試行 / escalate の分岐を落とすことになる。
 
 ### 2.0 系の capability と、それが変える前提
 

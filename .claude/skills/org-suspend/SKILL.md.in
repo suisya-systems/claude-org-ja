@@ -8,6 +8,8 @@ allowed-tools:
   - Read
   - Bash(bash tools/journal_append.sh:*)
   - Bash(py -3 tools/journal_append.py:*)
+  - Bash(python -c "from tools.state_db import connect;*)
+  - Bash(python3 -c "from tools.state_db import connect;*)
   - Bash(python -m tools.state_db.importer:*)
   - Bash(python3 tools/secretary_queue_watcher.py:*)
   - Bash(py -3 tools/secretary_queue_watcher.py:*)
@@ -173,11 +175,22 @@ capability 広告 backend をいま駆動しているということなので、
 - 他タブピアは † のとおり**そもそも broadcast 対象に入らない**。gate の役割は「他タブに何が見えているか」を
   人間に見せて、停止対象外にした集合が妥当か判断してもらうことにある
 - **gate は「capability 広告 backend の初回駆動」に対して 1 度だけ**であって、`/org-suspend` の実行ごとでは
-  ない（契約 T-§ratification が課しているのは first drive の dogfood 報告）。**通過したら記録する** —
-  `bash tools/journal_append.sh notify_sent kind=capability_first_drive note=<backend/tab 概要>` を
-  events テーブルに残し、以後の `/org-suspend`（[`.claude/skills/org-down/SKILL.md`](../org-down/SKILL.md) 経由の suspend を
-  含む）では**この記録があれば gate を発動せず先へ進む**。記録を見ずに毎回止めると、dogfood 承認後も
-  中断のたびに人手確認が要る運用になる
+  ない（契約 T-§ratification が課しているのは first drive の dogfood 報告）。記録を見ずに毎回止めると、
+  dogfood 承認後も中断のたびに人手確認が要る運用になる。**記録と参照の両方を行う**:
+  - **参照（gate に入る前）**: events テーブルに過去の通過記録があるかを見る。あれば gate を発動しない
+    ```bash
+    python3 -c "from tools.state_db import connect; from tools.state_db.queries import list_recent_events; \
+    print(any(e['kind']=='notify_sent' and 'capability_first_drive' in (e['payload_json'] or '') \
+    for e in list_recent_events(connect('.state/state.db'), limit=500)))"
+    ```
+    `True` なら通過済み。`False`（または照会に失敗した）なら未通過として gate を発動する
+    （**照会できないときは安全側 = gate を発動する**。黙って素通りさせない）
+  - **記録（gate を通過した直後）**:
+    ```bash
+    bash tools/journal_append.sh notify_sent kind=capability_first_drive note=<backend/tab 概要>
+    ```
+  - 以後の `/org-suspend`（[`.claude/skills/org-down/SKILL.md`](../org-down/SKILL.md) 経由の suspend を含む）は
+    この記録に従う
 - 記録がある場合でも、**他タブ判定のピアが前回より増えていた**ときはその差分を報告する（gate の
   再発動ではなく、停止対象外にした集合の変化を人間に見せるため）
 - **旧版 fallback（行 #11 / #12。現在配備されている全 backend — `org-broker` を含む — はここを通る）では
