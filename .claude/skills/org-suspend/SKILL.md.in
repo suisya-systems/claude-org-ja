@@ -127,11 +127,11 @@ allowed-tools:
 | 2 | `True` | 値あり | ∉ `R` | 2.0 系 | **しない** | 役割が対象外 / 不明。SUSPEND・SHUTDOWN は org の役割にだけ意味を持つ |
 | 3 | `True` | `None` | ∈ `R` | 2.0 系（片方欠落） | **する**（`peer_id` 宛・† 同タブ = 所属 signal） | `same_tab=True` だけで同タブが確定する。`tab` 欠落は旧版の徴候ではない |
 | 4 | `True` | `None` | ∉ `R` | 2.0 系（片方欠落） | **しない** | 役割で除外（版判定より役割判定が優先） |
-| 5 | `False` | 値あり | ∈ `R` | 2.0 系 | **identity が取れたときだけする**（`peer_id` 宛・† 他タブ確認・§ 他タブ注記） | 他タブでも `peer_id` 宛なら到達する。名前宛は送信者タブ内でしか解決されないので使わない |
+| 5 | `False` | 値あり | ∈ `R` | 2.0 系 | **しない**（† 他タブは対象外・人間に報告） | 他タブのピアは、この org が spawn したものではない（T-§4.2 retained の同一タブ launch 規則の対偶）。所属を証明する signal も無いので送らない |
 | 6 | `False` | 値あり | ∉ `R` | 2.0 系 | **しない** | 他タブの無関係ペインである可能性が最も高い |
-| 7 | `False` | `None` | ∈ `R` | 2.0 系（片方欠落） | **identity が取れたときだけする**（`peer_id` 宛・† 他タブ確認・§ 他タブ注記） | `same_tab=False` だけで他タブが確定する。`peer_id` 宛は `tab` 不明でも成立する |
+| 7 | `False` | `None` | ∈ `R` | 2.0 系（片方欠落） | **しない**（† 他タブは対象外・人間に報告） | `same_tab=False` だけで他タブが確定する。行 5 と同じ理由 |
 | 8 | `False` | `None` | ∉ `R` | 2.0 系（片方欠落） | **しない** | 役割で除外 |
-| 9 | `None` | 値あり | ∈ `R` | 2.0 系（片方欠落） | **原則 行 5 と同じ**（identity 必須 + §）。`tab` が caller 自身のタブ値と一致すると確認できたときだけ行 1 と同じ扱い（‡） | `tab` が載る時点で 2.0 系。`same_tab` 欠落は unknown であり、`name` 一致で同タブと結論してはならない（‡） |
+| 9 | `None` | 値あり | ∈ `R` | 2.0 系（片方欠落） | **原則 しない**（行 5 と同じ）。`tab` が caller 自身のタブ値と一致すると確認できたときだけ行 1 と同じ扱い（‡） | `tab` が載る時点で 2.0 系。`same_tab` 欠落は unknown であり、`name` 一致で同タブと結論してはならない（‡） |
 | 10 | `None` | 値あり | ∉ `R` | 2.0 系（片方欠落） | **しない** | 役割で除外 |
 | 11 | `None` | `None` | ∈ `R` | **旧版 fallback**（`cross_tab_peers` 非広告。renga 1.4 系および現行 `org-broker` はここ） | **する**（`peer_id` 宛・† 単一タブ = 所属 signal） | tab 情報が無い＝列挙が単一タブに閉じているので、従来どおり role gate だけで決める（現行挙動と同一） |
 | 12 | `None` | `None` | ∉ `R` | 旧版 fallback | **しない** | 旧版経路でも未知 role は対象に含めない。役割が判定できないペインへの broadcast は org 外プロセスへの誤爆になる |
@@ -151,9 +151,9 @@ capability 広告 backend をいま駆動しているということなので、
   「不明」と書く）、**列挙されたピア総数**、**うち他タブ判定（`same_tab=False`、または ‡ で他タブと
   導出）の件数**、および broadcast 対象に選んだピアの `name` / `peer_id` / `cwd` の一覧。人間が誤爆
   リスク（別 org を巻き込まないか）を判断できる材料にする
-- **人間の確認を得てから** capability 経路で先へ進む。特に **`same_tab=False` のピア（別タブ＝別 org の
-  可能性がある宛先）へ SUSPEND / SHUTDOWN を送る前の確認は必須**で、確認前は 1 通も出さない
-- 人間が他タブ分を除外した場合は、同タブ確定のピアだけを対象に続行する
+- **人間の確認を得てから** capability 経路で先へ進む。確認前は 1 通も出さない
+- 他タブピアは † のとおり**そもそも broadcast 対象に入らない**。gate の役割は「他タブに何が見えているか」を
+  人間に見せて、停止対象外にした集合が妥当か判断してもらうことにある
 - gate は 1 回の `/org-suspend` につき 1 度（最初に 2.0 系と判定した列挙＝通常は Phase 1 手順 1）でよい。
   Phase 4 の再列挙で**他タブ判定のピアが増えていた**場合だけ、その差分を報告して再確認する
 - **旧版 fallback（行 #11 / #12。現在配備されている全 backend — `org-broker` を含む — はここを通る）では
@@ -164,65 +164,44 @@ capability 広告 backend をいま駆動しているということなので、
 `[pane_not_found]` になる（`list_peers` 由来の id 宛はタブ横断で解決される）。旧版 fallback の行でも
 `peer_id` 宛は同じく有効なので、経路を 1 本に揃えるため版によらず常に `peer_id` を使う。
 
-**†（broadcast 対象の自組織確認）**: SUSPEND / SHUTDOWN を送る前に、そのピアが**自組織のもの**である
-ことを確認する。**確認の手段はピアが同タブか他タブかで変わる**:
+**†（broadcast 対象の所属判定 — 同タブのみが自組織）**: SUSPEND / SHUTDOWN は**同タブのピアにだけ送る**。
+他タブのピアには**送らず、人間に報告する**。根拠は identity 照合ではなく**構造**である:
 
-- **同タブのピア（`same_tab=True`、および旧版 fallback の列挙全体）— タブ所属そのものが所属の signal**。
-  caller のタブのペイン群は、この org が組み上げたレイアウトである。これは ratified の SINGLE-TAB 規則が
-  encode していた前提そのもので、**現行の `/org-suspend` が依拠しているのもこれ**。したがってここでは
-  **role gate だけで判定し、追加の identity 一致を要求しない**（要求すると、identity を state.db に記録
-  しない役割 — 後述の on-demand curator — を永久に取りこぼす。現在配備の backend の挙動も変わってしまう）
-- **他タブのピア（`same_tab=False`、および 2.0 系で同タブと確定できないもの）— identity 一致を要求する**。
-  マルチタブ化で初めて「タブ所属が所属を意味しない」相手が列挙に混ざるようになった。ここが本節の
-  本題であり、**確認できないピアには送らない**（他組織を巻き込んで中断させないため）
+- **同タブのピア（`same_tab=True`、および旧版 fallback の列挙全体）は自組織のもの**。caller のタブの
+  ペイン群は、この org が組み上げたレイアウトである。契約 T-§4.2 は ratified §4.2 の
+  「harnesses MUST launch every orchestrator-spawned pane in the same tab」を **retained（非 supersede）**
+  として維持しており、この org が spawn したペインは**全て同一タブに居る**ことが契約上保証されている。
+  したがってここは **role gate だけで判定し、追加の identity 一致を要求しない**（要求すると、identity を
+  state.db に記録しない役割 — 後述の on-demand curator — を永久に取りこぼし、現在配備の backend の挙動も
+  変わってしまう）
+- **他タブのピアは、同じ契約規則の対偶により、この org が spawn したものではない**。よって
+  **broadcast 対象から外す**。`role` が対象役割でも送らない
 
-**`cwd` が「この org のツリーの配下にある」ことは自組織の証明にならない**（他タブピアの第一次の識別子に
-使ってはならない）。ja root 配下には、この org のワーカー以外にも人間が手で開いたペインや pr-watch ペインが
-生えるし、**別 checkout の org のワーカーが、たまたま似た階層構造の配下に居る**こともある。真理値表は
-`same_tab=False` のピアにも broadcast するので、「ツリー配下だから自組織」と判定すると
-**`/org-suspend` が別 org を停止させる**。したがって他タブピアの第一次は「**このセッションが
-`.state/state.db` に記録した identity との一致**」で、`cwd` は補強に降格する。
+> **なぜ identity 照合で他タブピアを「自組織」と認定しないのか**: **他タブピアの所属を証明できる signal が
+> 現状存在しない**ためである。`worker-{task_id}` の task_id は人間が付ける slug で、**別 checkout の org が
+> 独立に同じ値を使いうる**（`runs.task_id` の UNIQUE 制約はその DB の中だけの話で、org を跨いで一意で
+> あることは何も保証しない）。`cwd` も証明にならない — ja root 配下には人間が開いたペインや pr-watch
+> ペインが生えるし、別 checkout の org が似た階層構造を持つこともある。`runs.worker_dir_id` は nullable
+> （`tools/state_db/schema.sql`）なので cwd 照合を必須にもできない。**証明できない以上、送らないのが唯一の
+> 安全な選択**であり、「たぶん自組織だろう」で SUSPEND / SHUTDOWN を撃つと別 org を止める。
+>
+> **将来この規則を再訪する条件**: worker を意図的に別タブへ配置する運用（マルチタブ配置ポリシー）を
+> 導入するときは、本規則と併せて **session スコープの identity をピアに刻む仕組み**が必要になる。
+> それが無いまま他タブへ broadcast を許すと、上の証明不能性がそのまま誤爆になる。
 
-> **この確認が守れる範囲（前提の明示）**: state.db は **1 org につき 1 つ**である。
-> `tools/state_db/discover.py` は worktree を main checkout に解決し直し（"The canonical state.db lives
-> in the main checkout, not in worktree-private `.state/` directories"）、`org_sessions` は
-> `CHECK (id = 1)` の singleton（`tools/state_db/schema.sql` の「the org never has multiple concurrent
-> sessions」）だからである。したがって identity 一致が排除できるのは **別 checkout で走る別 org のピア**
-> — マルチタブで現実に混ざる相手 — であり、そこでは相手の task_id はこちらの `runs` に無く、相手の
-> ディスパッチャーの `peer_id` は `dispatcher_peer_id` と一致しない。
-> **逆に「同一 checkout から 2 つの org を同時に走らせる」構成は state.db のデータモデルが表現できない**
-> （`runs.task_id` は org 所有者列を持たない globally UNIQUE、`org_sessions` は 1 行のみ）。その構成では
-> 他 org のワーカーも*こちらの* `runs` に載るため、本節の確認では区別できない。**org-suspend はこの構成を
-> 区別できると主張しない** — 対応が要るなら schema に所有者列を足す別作業になる。
+**他タブピアの扱い**（役割共通）:
 
-**他タブピア**について、役割ごとに次を確認する（同タブピアには適用しない — 上記のとおりタブ所属が
-signal になる）:
-
-- **worker（第一次）**: `name` の `worker-{task_id}` から取り出した task_id が、この org の
-  `.state/state.db` の `runs` に**非終端 status**（`in_use` / `review`。`tools/state_db/schema.sql` の
-  CHECK は `queued/in_use/review/completed/failed/suspended/abandoned` の 7 値で、active 集合は
-  `tools/state_db/queries.py` の `_ACTIVE_STATUSES`）で存在すること
-- **worker（cwd による棄却）**: その task_id に worker ディレクトリが登録されている場合は、ピアレコードの
-  `cwd` がその登録エントリと**一致**しなければ broadcast しない（Worker Directory Registry の Directory 列。
-  `tools/state_db/snapshotter.py` が DB から `.state/org-state.md` へ再生成する）。**配下に含まれることでは
-  なく登録エントリとの一致**を見る。ただし `runs.worker_dir_id` は nullable（`tools/state_db/schema.sql`）
-  なので、**登録が無いときは cwd 一致を要求しない** — 要求すると自組織の稼働ワーカーを取りこぼす。
-  cwd はここでは「積極的に食い違ったら弾く」棄却条件であって、存在必須の合致条件ではない
-- **dispatcher（第一次）**: `.state/state.db` の **`dispatcher_peer_id`**（`org_sessions` の TEXT 列。
-  定義は `tools/state_db/__init__.py`）が当該 `peer_id` と一致すること（`list_peers` 由来の id を格納する列はこちら。
-  `dispatcher_pane_id` は `list_panes` 由来なので、pane 制御側の id と照合したいときにそちらを使う）
-- **curator（確認不能 — 他タブでは送らない）**: on-demand curator の identity は **state.db に書かれない**
+- **broadcast しない**。SUSPEND も SHUTDOWN も送らない
+- **`close_pane` も撃たない**（そもそも pane 制御面では到達できない。契約 T-§4.2 と下記 §）
+- **人間に報告する**: 「他タブに `role` が {worker,dispatcher,curator} のピアが N 件見えているが、
+  自組織のものと確認できないため停止操作の対象外にした」ことを、`name` / `peer_id` / `cwd` 付きで
+  提示する。人間がそれを自組織のものだと判断した場合の対応（手動停止など）は人間の判断に委ねる
+- **curator の補足**: on-demand curator の identity は設計上 **state.db に書かれない**
   （`org-start` は `curator_pane_id` / `curator_peer_id` を `StateWriter.CLEAR` で明示クリアし、
   [`.dispatcher/CLAUDE.md`](../../../.dispatcher/CLAUDE.md) は「state.db に**書かない**（null が正常系。
-  生存確認は `list_panes` のみ）」と規定する）。したがって**他タブの curator は原理的に自組織確認が
-  できない**ので broadcast しない。**同タブの curator はタブ所属で確認できるので通常どおり SHUTDOWN を
-  受け取る**（`list_panes` に `role == "curator"` として現れる。オンデマンド curate と suspend が
-  重なったケースはこの経路で従来どおり graceful に停止する）。他タブに curator が見えた場合は
-  停止できない残存として人間に報告する
-- **`cwd` の位置づけ**: `cwd` は**棄却にだけ**使う（記録と積極的に食い違ったら弾く）。**単独では自組織の
-  証明にならない**ので、identity 一致が取れていない他タブピアを `cwd` だけを根拠に broadcast してはならない
-- **identity が取れない他タブピアには broadcast しない**（安全側）。`role` が対象でも送らず、
-  停止できない残存として人間に報告する
+  生存確認は `list_panes` のみ）」と規定する）。**同タブの curator はタブ所属で自組織と判定できるので
+  従来どおり graceful に SHUTDOWN を受け取る**（オンデマンド curate と suspend が重なったケースは
+  この経路で停止する）
 
 **§（他タブピアの停止確認に関する注記）**: `same_tab=False` と判定されたピアは、messaging では到達
 できても**ペイン制御では到達できない**（契約 T-§4.2: pane 制御は caller のタブ内に留まる）。Phase 4 で
@@ -486,9 +465,9 @@ live pane も無く、本 Phase は no-op。
        )
        cursor = result.next_since
        for ev in result.events:
-           # 突合は id で行う。フィールド名は backend 差があるので候補を順に見る
-           ev_pane = ev.id ?? ev.pane_id          # list_panes と同じ id 空間
-           ev_peer = ev.agent_id ?? ev.peer_id    # list_peers と同じ id 空間
+           # 突合は id で行う。契約 T-§3.1 が canonical 名を固定している
+           ev_pane = ev.id ?? ev.pane_id          # canonical: ev.id (list_panes と同じ id 空間)
+           ev_peer = ev.peer_id ?? ev.agent_id    # canonical: ev.peer_id (list_peers と同じ id 空間)
            hit = pending の中で entry.pane_id == ev_pane または entry.peer_id == ev_peer
            if hit is None and ev.name is not None:
                # name フォールバックは「同タブ確定エントリ」に限定する（下記）
@@ -496,10 +475,11 @@ live pane も無く、本 Phase は no-op。
            if hit: pending.remove(hit)
    # deadline 到達 or pending が空で抜ける
    ```
-   - **突合キーは id**。ただし `poll_events` の per-event フィールド名は契約 §3.1 が規定しておらず
-     backend 差がある（renga 面は `type` / `role` / `name` / `id` / `ts`、`pane_id` / `agent_id` を
-     載せる backend もある）ので、**pane 側 id と peer 側 id の候補を順に見て、どちらか一方でも
-     一致したら hit** とする。契約側の規定は proposed amendment T-§3.1
+   - **突合キーは id**。ratified §3.1 は per-event フィールド名を規定していないが、proposed amendment
+     **T-§3.1 が canonical 名を `id`（pane 側）/ `peer_id`（peer 側）に固定**している。上の疑似コードが
+     `ev.pane_id` / `ev.agent_id` も見るのは、canonical 名を出さない backend への**寛容（tolerance）**で
+     あって、これらが正の名前だという意味ではない。**pane 側 id と peer 側 id のどちらか一方でも
+     一致したら hit** とする（他タブピアは `list_panes` に出ないので pane 側だけでは join できない）
    - **`name` 単独を突合キーにしてはならない**。2.0 系の名前はタブ内一意でしかないので、別タブの
      同名ペインの `pane_exited` で自組織の**生存**ワーカーを誤って retire する。`name` フォールバックは
      `same_tab=True` / 旧版 fallback で**同タブと確定しているエントリ**に限って使う（他タブ対象が

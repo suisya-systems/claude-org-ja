@@ -64,8 +64,17 @@ mcp__renga-peers__send_message(to_id="worker-nonexistent", message="hi")
 ```
 1. send_message(名前宛) が [pane_not_found] を返す（broker では [peer_not_found]）
 2. list_peers を引き直す（2.0 の list_peers は全タブ列挙）
-3. 目的のワーカーが居れば、その数値 peer id で 1 回だけ再送する
-   → 成功したら lifecycle は動かさない（別タブに居ただけ）。以後そのワーカーへは数値 id を使う
+3. **名前だけで宛先を選び直してはならない**。2.0 の全タブ列挙では `name` が一意でなく
+   （契約 T-§2.2。`worker-{task_id}` 等の予約名は 2 org 並走で構造的に衝突する）、
+   **別 org の同名ワーカーを掴んで再送しうる**。同定は次の順で行う:
+   a. 送信時に控えていた **peer id が list_peers に残っていれば、その id で** 1 回だけ再送する
+      （id はこの列挙の中で一意 — 契約 T-§2.1 のタブ横断一意性）
+   b. peer id が消えている場合、名前が一致するレコードは**候補にすぎない**。
+      `same_tab: true` であることを確認できたレコードだけを採用する
+      （同一タブ内では名前が一意 — 契約 §1.8）
+   c. 名前一致が他タブのレコードしか無い場合は**再送しない**。それは別 org のワーカーでありうる
+   → 再送に成功したら lifecycle は動かさない（別タブではなく同タブ内で id が変わっただけ）。
+      以後そのワーカーへは数値 id を使う
 4. list_peers に居ない、または数値 id 宛の再送も [pane_not_found] で失敗した
    → ここで lifecycle "確認" に進む。**この時点ではまだ閉鎖確定にしない**:
       a. 同タブのピア: list_panes（caller のタブ）に居ないこと、または poll_events の
@@ -154,9 +163,11 @@ case "$out" in
         # 2.0 系: 名前解決は送信者タブ内限定。別タブ生存の可能性があるので閉鎖確定しない。
         # list_peers 再取得 → 数値 peer id で 1 回だけ再送 → それも駄目なら消滅の裏取り。
         # (1.x 系でも安全に実行できる: 救済が効かないだけで誤閉鎖はしない)
-        peer_id=$(resolve_peer_id_via_list_peers worker-foo)
+        # 名前ではなく「控えておいた peer id」で引き直す。id が消えていれば same_tab:true の
+        # レコードだけを候補にする (名前一致は他タブの別 org を掴みうる — 上記 3-a/b/c)
+        peer_id=$(reresolve_peer_id --prefer-known-id "$known_peer_id" --name worker-foo --require-same-tab)
         if [ -n "$peer_id" ] && retry_send_by_numeric_id "$peer_id"; then
-          : # 別タブに居ただけ — lifecycle は動かさない。以後このワーカーへは数値 id を使う
+          : # 同タブ内で id が変わっただけ — lifecycle は動かさない。以後このワーカーへは数値 id を使う
         elif confirm_pane_gone worker-foo; then
           # list_panes 不在 (同タブ) / pane_exited 観測 / list_peers からの消失 で裏取りできた
           mark_worker_pane_closed worker-foo
