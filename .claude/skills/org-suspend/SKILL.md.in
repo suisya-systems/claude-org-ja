@@ -188,10 +188,13 @@ capability 広告 backend をいま駆動しているということなので、
   dogfood 承認後も中断のたびに人手確認が要る運用になる。**記録と参照の両方を行う**:
   - **参照（gate に入る前）**: events テーブルに過去の通過記録があるかを見る。あれば gate を発動しない
     ```bash
-    python3 -c "from tools.state_db import connect; \
-    print(bool(connect('.state/state.db').execute(\"SELECT 1 FROM events WHERE kind='notify_sent' \
+    python3 -c "from tools.state_db import connect; from tools.state_db.discover import resolve_state_db_path; \
+    print(bool(connect(resolve_state_db_path()).execute(\"SELECT 1 FROM events WHERE kind='notify_sent' \
     AND payload_json LIKE '%capability_first_drive%' LIMIT 1\").fetchone()))"
     ```
+    **DB のパスは `resolve_state_db_path()` で解決する**（`.state/state.db` 直書きにしない）。記録側の
+    `tools/journal_append.py` が同じ解決を使うので、`STATE_DB_PATH` 等で別 DB に向いている環境では
+    直書きだと**記録した DB と照会する DB がずれ**、通過記録が永久に見つからず gate が毎回発動する。
     **直接クエリで引く（直近 N 件の走査で代用しない）**。件数を区切って走査すると、通過記録より後に
     イベントが N 件積まれた時点で `False` に戻り、一度きりのはずの gate が再発動する（イベントの多い
     組織ほど早く再発動する）
