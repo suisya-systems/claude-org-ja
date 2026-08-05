@@ -513,7 +513,12 @@ live pane も無く、本 Phase は no-op。
            # 突合は id で行う。契約 T-§3.1 が canonical 名を固定している
            ev_pane = ev.id ?? ev.pane_id          # canonical: ev.id (list_panes と同じ id 空間)
            ev_peer = ev.peer_id ?? ev.agent_id    # canonical: ev.peer_id (list_peers と同じ id 空間)
-           hit = pending の中で entry.pane_id == ev_pane または entry.peer_id == ev_peer
+           # id 突合は「両辺が非 null」を前提にする。name のみのイベントでは ev_pane / ev_peer が
+           # どちらも null になり、pane_id 未設定 (他タブ) のエントリと null == null で誤一致して
+           # 無関係な生存ワーカーを pending から external してしまう
+           hit = pending の中で
+                   (ev_pane is not None かつ entry.pane_id == ev_pane) または
+                   (ev_peer is not None かつ entry.peer_id == ev_peer)
            if hit is None and ev.name is not None:
                # name フォールバックは「同タブ確定エントリ」に限定する（下記）
                hit = pending の中で entry.name == ev.name かつ entry が同タブ確定
@@ -588,10 +593,28 @@ live pane も無く、本 Phase は no-op。
 保護されるかは 2.0 系では未確認である（保護されない読みが素直だが、いずれにせよ当てにしない）。
 自己 close をしない根拠は上の 2 つだけである。
 
-7. 人間に報告:
+7. 人間に報告。**`pending` と `unresolved` が両方空のときだけ「中断しました」と言い切る**。
+   どちらかに残りがあれば**部分中断**として報告し、完了を偽らない:
+
+   **全て停止できた場合**:
    ```
    組織を中断しました。
    - 保存済み: {N}件の作業アイテム
    - 状態ファイル: .state/org-state.md
    /org-start で再開できます。
    ```
+
+   **停止できなかった / 判定できなかったピアが残る場合**（`pending` が空でない、`unresolved` が
+   空でない、他タブの対象 role ピアを検出した、のいずれか）:
+   ```
+   組織を部分的に中断しました（停止しきれていないペインがあります）。
+   - 保存済み: {N}件の作業アイテム
+   - 状態ファイル: .state/org-state.md
+   - 停止できなかったワーカー: {peer_id / name / cwd を列挙}
+   - role が判定できず対象外にしたピア: {peer_id / name / cwd を列挙}
+   - 他タブに見えたが自組織と確認できずに対象外にしたピア: {peer_id / name / cwd を列挙}
+   これらは走り続けている可能性があります。手動での確認 / 停止をお願いします。
+   /org-start で再開できますが、上記のペインが残っている前提でご判断ください。
+   ```
+   - 該当が無いセクションは行ごと省く。**1 件でも残っていれば「組織を中断しました」の文面は使わない**
+     （全ペイン停止を偽って報告しないこと自体が本フェーズの目的）

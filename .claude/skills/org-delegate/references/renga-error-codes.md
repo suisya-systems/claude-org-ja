@@ -77,8 +77,12 @@ mcp__renga-peers__send_message(to_id="worker-nonexistent", message="hi")
       以後そのワーカーへは数値 id を使う
 4. list_peers に居ない、または数値 id 宛の再送も [pane_not_found] で失敗した
    → ここで lifecycle "確認" に進む。**この時点ではまだ閉鎖確定にしない**:
-      a. 同タブのピア: list_panes（caller のタブ）に居ないこと、または poll_events の
-         pane_exited を観測できたことをもって消滅を確定する
+      a. 同タブのピア: pane_exited の観測をもって消滅を確定する。list_panes の不在を
+         根拠にする場合は、その列挙が呼び出し側のものだと確認できているときに限る —
+         caller_scope 非広告の backend (renga 1.x を含む) では list_panes は
+         フォーカス中のタブに追随するので、確認シーケンスの途中でフォーカスが別タブへ
+         移ると、生存中のピアでも「不在」になり誤って閉鎖確定する。確認できなければ
+         pane_exited の観測を待つか、c の indeterminate に倒す
       b. 他タブのピア（same_tab: false）: list_panes には原理的に出ないので不在は証拠に
          ならない。pane_exited の観測か、後続 list_peers からの消失のどちらかで確定する
       c. a / b のどちらも取れない → **indeterminate** として journal + 窓口 escalate。
