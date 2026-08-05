@@ -51,15 +51,21 @@ allowed-tools:
    - `{{FQ}}list_peers` — **messaging 用の peer id**。各レコードの `id` / `name` / `role` / `cwd` と、
      マルチタブ対応 backend が返す optional な `same_tab` / `tab` / `tab_name` を控える（この 3 つは
      `cross_tab_peers` capability を広告する backend でのみ載る。非広告 backend では欠落する）。
-     **`list_panes` と同じフォーカス前提が掛かる**: `caller_scope` を広告しない backend（旧版・
-     renga 1.x を含む）では、`list_peers` も他の pane 操作と同様に**フォーカス中のタブ**に追随する。
-     marker が全欠落していることが保証するのは「その列挙が単一タブに閉じている」ことだけで
-     （契約 T-§cap の conformance MUST）、**それが窓口のタブであることまでは保証しない**。
-     `/org-suspend` を走らせる前にフォーカスが窓口ペインのタブにあることを確認する。列挙されたタブを
-     呼び出し側に紐付けられない場合は **broadcast しない**（別 org のタブへ SUSPEND / SHUTDOWN を
-     撃つ経路になる）。紐付けの確認は、`list_panes`（同じフォーカス前提で引ける）に窓口ペイン自身が
-     居ること、あるいは列挙に自組織の既知 identity（state.db の `dispatcher_peer_id` 等）が
-     含まれることで足りる
+     **`list_peers` のタブ範囲を決めるのは `cross_tab_peers` であって `caller_scope` ではない**
+     （契約 T-§cap は 2 つを独立と規定する。`caller_scope` が変えるのは `list_panes` と pane 制御
+     呼び出しだけで、`list_peers` には影響しない）:
+     - **`cross_tab_peers` を広告する backend**: `list_peers` は**全タブを列挙**し、`same_tab` は
+       **呼び出し側から見た**値として返る（契約 T-§2.2 / T-§2.2-fields）。フォーカスに依存しないので
+       フォーカスの確認は不要
+     - **`cross_tab_peers` を広告しない backend**（旧版・renga 1.x・現行 `org-broker`、および
+       **`caller_scope` だけを広告する backend**）: ratified の messaging 規則どおり
+       **フォーカス中のタブ**に追随する。marker 全欠落が保証するのは「その列挙が単一タブに閉じて
+       いる」ことだけで（契約 T-§cap の conformance MUST）、**それが窓口のタブであることまでは
+       保証しない**。`/org-suspend` を走らせる前にフォーカスが窓口ペインのタブにあることを確認する。
+       列挙されたタブを呼び出し側に紐付けられない場合は **broadcast しない**（別 org のタブへ
+       SUSPEND / SHUTDOWN を撃つ経路になる）。紐付けの確認は、`list_panes` に窓口ペイン自身が
+       居ること、あるいは列挙に自組織の既知 identity（state.db の `dispatcher_peer_id` 等）が
+       含まれることで足りる
    - `{{FQ}}list_panes` — **ペイン制御用の pane id**。各レコードの `id` / `name` / `role` を控える。
      **どのタブが返るかは capability による**（契約 T-§cap は `caller_scope` と `cross_tab_peers` を
      独立と規定する）: `caller_scope` を広告する backend では **caller のタブ**が返る。広告しない
@@ -281,10 +287,14 @@ SUSPEND / SHUTDOWN が飛ぶ（本節が防ごうとしている事象そのも�
 1. `.state/workers/` から該当ワーカーの状態ファイルを読み、Pane Name と Directory を取得
 2. Pane Name を Phase 1 の**台帳**で **`pane_id`** に解決する。`inspect_pane` はペイン制御面なので、
    使うのは `list_panes` 由来の `pane_id` であって `peer_id` ではない:
-   - 台帳に `pane_id` が無い（＝ `list_panes` に居ない）ピアは、**同タブに存在しないか、F-1 により見えていないだけ**。
-     `same_tab=False` / ‡ で他タブと導出されたピアなら「他タブに居るのでスクレイプ不能」、
-     それ以外なら「消滅済み」。いずれもスクレイプは諦め、Step 4 の git 情報だけで状態を推定する
-     （**他タブ = 消滅と読み替えない**。前者は生存している可能性がある）
+   - 台帳に `pane_id` が無い（＝ `list_panes` に居ない）ピアは 3 通りに分かれる。**いずれもスクレイプは
+     諦め、Step 4 の git 情報だけで状態を推定する**が、**記録する状態が違う**:
+     - `same_tab=False` / ‡ で他タブと導出されたピア → 「他タブに居るのでスクレイプ不能」。生存して
+       いる可能性があるので**消滅と読み替えない**
+     - それ以外で、**F-1 の (i) `pane_exited` 観測 or (ii) 列挙が窓口タブのものと確認済み** →「消滅済み」
+     - それ以外で **F-1 のどちらも取れない** → **indeterminate**。フォーカスが別タブへ移っただけで
+       生存中のピアが不在に見えている可能性があるので、消滅済みとして記録せず判定不能のまま残し、
+       Phase 4 の最終報告に載せる
    - Phase 1 から時間が経っているので、使う直前に `{{FQ}}list_panes` を取り直し、その
      `pane_id` の `name` / `role` が台帳と一致することを確認してから叩く。**一致しなければ
      pane_id が別ペインへ再割当てされている**ので、そのペインには触れずスクレイプを諦める
