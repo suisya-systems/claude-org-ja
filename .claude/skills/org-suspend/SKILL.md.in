@@ -49,8 +49,14 @@ allowed-tools:
    - `{{FQ}}list_peers` — **messaging 用の peer id**。各レコードの `id` / `name` / `role` / `cwd` と、
      マルチタブ対応 backend が返す optional な `same_tab` / `tab` / `tab_name` を控える（この 3 つは
      `cross_tab_peers` capability を広告する backend でのみ載る。非広告 backend では欠落する）
-   - `{{FQ}}list_panes` — **ペイン制御用の pane id**。各レコードの `id` / `name` / `role` を控える
-     （caller のタブのペインだけが返る）
+   - `{{FQ}}list_panes` — **ペイン制御用の pane id**。各レコードの `id` / `name` / `role` を控える。
+     **どのタブが返るかは capability による**（契約 T-§cap は `caller_scope` と `cross_tab_peers` を
+     独立と規定する）: `caller_scope` を広告する backend では **caller のタブ**が返る。広告しない
+     backend（旧版、および `cross_tab_peers` だけを広告する backend）では ratified §4.3 の
+     visibility consequence どおり**フォーカス中のタブ**が返るので、`/org-suspend` を走らせる窓口ペインの
+     タブがフォーカスされていることが前提になる。フォーカスが別タブにあると**別タブのペイン id を
+     台帳に取り込み、後段で無関係なペインを `inspect_pane` / `close_pane` しうる**。前提が成り立つか
+     確認できない場合は pane 制御を行わず、pending として人間に報告する
    - 2 つを突合して 1 エントリ =
      `{peer_id, pane_id（割り当てられない場合は未設定）, name, role, cwd, same_tab, tab}` の台帳にする。
      **`to_id` には必ず `peer_id`、`target` には必ず `pane_id`** を渡す。2 つの `id` が同じ値空間だとは
@@ -60,8 +66,9 @@ allowed-tools:
      必ず衝突する）join キーとして成立しない。`name` も**全タブ列挙では一意ではない**ので
      （契約 T-§2.2: §1.8 の名前一意性は "this tab" 限定。`worker-{task_id}` 等の予約名は 2 org 並走で
      構造的に衝突する）、`name` で `pane_id` を割り当てられるのは**同タブであることが確定したエントリに
-     限る**。2.0 系の `list_peers` は**全タブ**を返す一方 `list_panes` は**caller のタブだけ**を返す
-     （契約 §1.5、本 amendment で非 supersede）ため、ここを誤ると別タブのピアのレコードに自タブの同名
+     限る**。2.0 系の `list_peers` は**全タブ**を返す一方 `list_panes` は**単一タブ分しか返さない**
+     （契約 §1.5 は本 amendment で非 supersede。どのタブかは上記のとおり capability 依存）ため、
+     ここを誤ると別タブのピアのレコードに自タブの同名
      ペインの `pane_id` が付き、Phase 2 が**別ワーカーのコンソールをスクレイプ**し Phase 4 の lifecycle
      追跡が壊れる:
      - `same_tab == True` が確定したレコード → `name` で `pane_id` を割り当ててよい
@@ -124,7 +131,7 @@ allowed-tools:
 | 6 | `False` | 値あり | ∉ `R` | 2.0 系 | **しない** | 他タブの無関係ペインである可能性が最も高い |
 | 7 | `False` | `None` | ∈ `R` | 2.0 系（片方欠落） | **identity が取れたときだけする**（`peer_id` 宛・† 他タブ確認・§ 他タブ注記） | `same_tab=False` だけで他タブが確定する。`peer_id` 宛は `tab` 不明でも成立する |
 | 8 | `False` | `None` | ∉ `R` | 2.0 系（片方欠落） | **しない** | 役割で除外 |
-| 9 | `None` | 値あり | ∈ `R` | 2.0 系（片方欠落） | **‡ の導出結果による**（同タブなら行 1 と同じ / 他タブなら行 5 と同じ = identity 必須 + §） | `tab` が載る時点で 2.0 系。`same_tab` 欠落は `list_panes` で代替判定できる |
+| 9 | `None` | 値あり | ∈ `R` | 2.0 系（片方欠落） | **原則 行 5 と同じ**（identity 必須 + §）。`tab` が caller 自身のタブ値と一致すると確認できたときだけ行 1 と同じ扱い（‡） | `tab` が載る時点で 2.0 系。`same_tab` 欠落は unknown であり、`name` 一致で同タブと結論してはならない（‡） |
 | 10 | `None` | 値あり | ∉ `R` | 2.0 系（片方欠落） | **しない** | 役割で除外 |
 | 11 | `None` | `None` | ∈ `R` | **旧版 fallback**（`cross_tab_peers` 非広告。renga 1.4 系および現行 `org-broker` はここ） | **する**（`peer_id` 宛・† 単一タブ = 所属 signal） | tab 情報が無い＝列挙が単一タブに閉じているので、従来どおり role gate だけで決める（現行挙動と同一） |
 | 12 | `None` | `None` | ∉ `R` | 旧版 fallback | **しない** | 旧版経路でも未知 role は対象に含めない。役割が判定できないペインへの broadcast は org 外プロセスへの誤爆になる |
@@ -222,9 +229,18 @@ signal になる）:
 このピアの `close_pane` が `[pane_not_found]` を返しても**閉鎖の証拠にはならない**ので、Phase 4 の
 「`[pane_not_found]` の扱い」節の他タブ例外に従う。
 
-**‡（`same_tab` 欠落時の代替導出）**: `same_tab` が無く `tab` だけ載る backend では、`{{FQ}}list_panes`
-（caller のタブのペインだけを返す）に当該ピアが `name` / `role` で見つかるかで同タブ / 他タブを判定する。
-判定できない場合は**他タブ扱いに倒す**（§ の制約を適用する安全側）。
+**‡（`same_tab` 欠落時の扱い — 名前一致で「同タブ」と結論してはならない）**: 2.0 系と判定した列挙で
+`same_tab` が載らないレコードは **unknown** であり、**他タブ扱いに倒す**（§ の制約と † の identity 確認を
+両方適用する安全側）。
+
+`{{FQ}}list_panes` に同じ `name` / `role` のペインが在ることを「同タブである」の根拠に**使ってはならない**。
+`name` は全タブ列挙では一意でなく（契約 T-§2.2。予約名は 2 org 並走で構造的に衝突する）、`role` はさらに
+非一意なので、**他タブのピアが自タブのペインと `name` / `role` を共有していても矛盾しない**。この一致を
+同タブの証拠に使うと、他タブのピアが同タブと誤分類され、† の identity 確認を**素通り**して別 org へ
+SUSPEND / SHUTDOWN が飛ぶ（本節が防ごうとしている事象そのもの）。
+
+同タブと積極的に結論してよいのは、`same_tab == True` が載っているか、`tab` の値が **caller 自身のタブの
+値と一致**することを確認できた場合だけである。どちらも取れなければ unknown のまま他タブ扱いにする。
 
 ## Phase 2: 未応答ワーカーのスクレイプ
 
