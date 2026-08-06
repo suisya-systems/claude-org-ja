@@ -26,12 +26,15 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-# **予約台帳が存在するバージョン下限**。ja の依存 floor (0.1.37,
-# pyproject.toml:30 / requirements.txt:111) や docker/Dockerfile の既定
-# ``RUNTIME_VERSION=0.1.37`` とは別物である点に注意 — ``_seed_status`` /
+# **予約台帳が存在するバージョン下限**。``_seed_status`` /
 # ``count_unbound_reservations`` / ``WORKER_BIND_WINDOW_SECONDS`` は 0.1.39 で
-# 初めて入った (0.1.37 / 0.1.38 の wheel を展開して不在を実測)。下限未満の
-# runtime では読み手がそもそも居ないので契約に守るべき対象が無く、skip する。
+# 初めて入った (0.1.37 / 0.1.38 の wheel を展開して不在を実測)。ja の依存
+# floor は #841 で 0.1.37 → 0.1.39 に上がり (pyproject.toml:30 /
+# requirements.txt:123 / docker/Dockerfile:65) 現時点では一致するが、**この
+# 下限は pin ではなく runtime の性質**なので独立に持つ。下限未満の runtime
+# では読み手がそもそも居ないので契約に守るべき対象が無く、skip する
+# (pin が admit しなくなった今も、古い runtime が入った手元環境で hard fail
+# させないための防御として分岐を残す)。
 _LEDGER_MIN = (0, 1, 39)
 # ja の pin 窓の上限 (< 0.2)。窓の外はこの契約の妥当性が保証外なので skip
 # する (tools/check_runtime_schema_drift.py と同じ流儀)。
