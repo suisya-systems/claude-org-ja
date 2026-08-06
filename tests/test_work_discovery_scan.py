@@ -2748,6 +2748,25 @@ class TestBaseBranchCompletion(unittest.TestCase):
         self.assertEqual(entry["issue"], 77)
         self.assertEqual(entry["closed_by_pr"], f"{KURA}#232")
 
+    def test_cross_repo_close_matches_case_insensitively(self):
+        # GitHub slugs are case-insensitive and a PR author writes whatever
+        # casing they like, while the registry-driven scan set is lowercased.
+        # Missing on case alone would leave finished work in the list.
+        pr = dict(KURA_PR_232, body="Closes Suisya-Systems/Claude-Org-JA#77\n")
+        other = {
+            "repo": "suisya-systems/claude-org-ja",
+            "issues": [_issue(77, body="b")],
+            "open_pr_numbers": set(),
+            "recent_merges": [],
+        }
+        result = self._scan(
+            [_kura_bundle(issues=[], base_merges=[pr], recent_merges=[]), other]
+        )
+        self.assertEqual(result["candidates"], [])
+        self.assertEqual(
+            result["excluded_merged"][0]["repo"], "suisya-systems/claude-org-ja"
+        )
+
     def test_origin_prefixed_and_padded_base_branch_cell(self):
         # Registry cells are padded and an operator may write the ref the way
         # git prints it; the scan compares against baseRefName either way.
@@ -2812,6 +2831,29 @@ class TestBaseBranchCompletionCli(unittest.TestCase):
         data = json.loads(proc.stdout)
         self.assertEqual(data["candidates"], [])
         self.assertEqual(data["excluded_merged"][0]["issue"], 231)
+
+    def test_base_merges_zero_also_disables_the_offline_path(self):
+        # "0 disables the check" has to mean the same thing offline: a bundle
+        # carrying its own base inputs must stop excluding once the caller
+        # switched the check off, or the flag lies about what it does.
+        bundle = {
+            "repos": [
+                {
+                    "repo": KURA,
+                    "issues": [KURA_ISSUE_231],
+                    "open_pr_numbers": [],
+                    "recent_merges": [],
+                    "base_branch": "develop",
+                    "base_merges": [KURA_PR_232],
+                }
+            ]
+        }
+        proc = self._run(bundle, ["--base-merges", "0"])
+        self.assertEqual(proc.returncode, wds.EXIT_CANDIDATES_FOUND)
+        data = json.loads(proc.stdout)
+        self.assertEqual([c["issue"] for c in data["candidates"]], [231])
+        self.assertEqual(data["excluded_merged"], [])
+        self.assertEqual(data["base_branch_scan"], [])
 
     def test_non_string_base_branch_is_a_pinpointed_error(self):
         bundle = {"issues": [], "base_branch": 5}

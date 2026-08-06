@@ -1504,6 +1504,7 @@ def scan_repos(
     # Issue #830: refs finished by a merge into a declared non-default base
     # branch, plus the per-repo audit of which base branches were applied.
     base_done_refs: dict[QualRef, dict] = {}
+    raw_base_done: list[dict] = []
     base_branch_scan: list[dict] = []
     base_signals: list[str] = []
 
@@ -1546,10 +1547,7 @@ def scan_repos(
             repo, base_branch, bundle.get("base_merges") or []
         )
         base_signals.extend(sigs)
-        for ref, info in done.items():
-            prev = base_done_refs.get(ref)
-            if prev is None or info["_key"] > prev["_key"]:
-                base_done_refs[ref] = info
+        raw_base_done.append(done)
         base_branch_scan.append(
             {
                 "repo": None if _is_home_disp(repo, collapse_repo) else repo,
@@ -1558,6 +1556,23 @@ def scan_repos(
                 "closed_issue_count": len(done),
             }
         )
+
+    # A cross-repo closing keyword carries whatever casing the PR author
+    # typed (`Closes Owner/CamelRepo#77`), while the registry-driven scan set
+    # is lowercased — so the join would miss on case alone and leave finished
+    # work in the candidate list. Fold each closing ref's repo onto the
+    # scanned repo it case-insensitively names (GitHub slugs are
+    # case-insensitive); a ref naming an un-scanned repo keeps its own casing
+    # and simply matches nothing, as before.
+    canonical_repo = {r.lower(): r for r in scanned_repos if isinstance(r, str)}
+    for done in raw_base_done:
+        for (ref_repo, num), info in done.items():
+            if isinstance(ref_repo, str):
+                ref_repo = canonical_repo.get(ref_repo.lower(), ref_repo)
+            ref = (ref_repo, num)
+            prev = base_done_refs.get(ref)
+            if prev is None or info["_key"] > prev["_key"]:
+                base_done_refs[ref] = info
 
     # Drop links the sanity guard rejects (an Issue created after the merge
     # that allegedly closed it) *before* anything consumes the map, so the
@@ -2759,6 +2774,16 @@ def main(argv=None) -> int:
         base_branch_signals: list[str] = []
         if args.from_file:
             bundles, effort_model = _load_bundle(args.from_file)
+            # `--base-merges 0` is documented as "disables the check", so it
+            # has to mean the same thing offline: a bundle that carries its
+            # own base_branch / base_merges must not keep excluding Issues
+            # after the caller switched the check off (the gh path simply
+            # skips the fetch). Cleared here rather than inside scan_repos so
+            # the pure core stays a function of the bundles it is handed.
+            if args.base_merges == 0:
+                for bundle in bundles:
+                    bundle["base_branch"] = None
+                    bundle["base_merges"] = []
         else:
             if args.all_registry_repos:
                 # Registry-driven set (Issue #829): resolved in-process, so no
