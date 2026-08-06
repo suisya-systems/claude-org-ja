@@ -2426,6 +2426,25 @@ class TestAllRegistryRepos(unittest.TestCase):
         self.assertEqual(rc, wds.EXIT_ERROR)
         self.assertIn("--from-file", data["error"])
 
+    def test_unreadable_registry_keeps_the_audited_shape(self):
+        # `resolve_repos()` *raises* when the registry exists but cannot be
+        # read (permission denied / undecodable bytes / a directory in its
+        # place). Propagating that would land in main's generic handler with
+        # repo_resolution still None — the fixed schema broken on exactly the
+        # failure that needs explaining. A directory reproduces it portably
+        # (read_text -> IsADirectoryError, an OSError) without chmod, which
+        # is a no-op for root and on Windows.
+        (self.root / "registry" / "projects.md").mkdir()
+        rc, data, fetched = self._run(
+            ["--all-registry-repos", "--claude-org-root", str(self.root)]
+        )
+        self.assertEqual(rc, wds.EXIT_ERROR)
+        self.assertEqual(fetched, [])
+        self.assertIsNotNone(data["repo_resolution"])
+        self.assertEqual(data["repo_resolution"]["repos"], [])
+        self.assertIn("failed to resolve repos", data["repo_resolution"]["error"])
+        self.assertIn("failed to resolve repos", data["error"])
+
     def test_repo_resolution_is_null_without_the_flag(self):
         # One shape for the delivery layer: the key is always present.
         rc, data, _ = self._run(["--repo", JA])

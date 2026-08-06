@@ -2114,6 +2114,14 @@ def _resolve_registry_repos(claude_org_root=None) -> dict:
     ``--repo`` run keeps working even from a checkout layout where the
     ``tools`` package is not importable: only the registry-driven path
     depends on it. Read-only, like the resolver itself.
+
+    Always returns a resolver-shaped dict, never raises: an unreadable
+    registry (permission denied, undecodable bytes, a directory in place of
+    the file) makes ``resolve_repos()`` raise, and letting that propagate
+    would land in main's generic handler with ``repo_resolution`` still
+    ``None`` — losing the audit on exactly the failure that needs
+    explaining. This mirrors ``work_discovery_repos.main()``'s own
+    error-to-result conversion so the envelope keeps one shape.
     """
     root = Path(__file__).resolve().parent.parent
     if str(root) not in sys.path:
@@ -2121,10 +2129,22 @@ def _resolve_registry_repos(claude_org_root=None) -> dict:
     from tools.work_discovery_repos import resolve_repos
 
     org_root = Path(claude_org_root).resolve() if claude_org_root else root
-    return resolve_repos(
-        registry_path=org_root / "registry" / "projects.md",
-        claude_org_root=org_root,
-    )
+    try:
+        return resolve_repos(
+            registry_path=org_root / "registry" / "projects.md",
+            claude_org_root=org_root,
+        )
+    except OSError as exc:  # registry read failure etc.
+        return {
+            "repos": [],
+            "home_repo": None,
+            "triage_home": False,
+            "included": [],
+            "opted_out": [],
+            "skipped": [],
+            "signals": [],
+            "error": f"failed to resolve repos: {exc}",
+        }
 
 
 class _JsonErrorParser(argparse.ArgumentParser):
