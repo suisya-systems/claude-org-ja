@@ -26,6 +26,18 @@ core-harness>=0.3.2,<0.4
 # PyPI via Trusted Publisher; pinned to the 0.1.x range. 0.x bumps may be
 # breaking per the runtime's compatibility policy, so widen this pin
 # deliberately when adopting a new minor.
+# Floor bumped to 0.1.39 to match the regenerated semantic-drift goldens:
+# 0.1.39 adds a `rewrites` array to SandboxMetadata.to_jsonable() (the record of
+# kept deny paths canonicalized across an absolute symlink), and ja's goldens
+# under tests/fixtures/runtime_schema_drift/sandbox_intent/ were regenerated for
+# that shape. A 0.1.37 / 0.1.38 install emits the key-less shape and fails all 14
+# fixtures in tests/test_runtime_schema_drift_semantic.py, so exclude them from
+# the floor (upper bound stays <0.2). The byte-check window constant
+# RUNTIME_PIN_LOWER_INCLUSIVE in tools/check_runtime_schema_drift.py is
+# deliberately NOT raised in step: it gates only the byte-identical schema check,
+# which 0.1.37 / 0.1.38 still pass, and raising it would downgrade those installs
+# to a skip-with-warning for no benefit. The earlier 0.1.37 floor (below) is
+# subsumed.
 # Floor bumped to 0.1.37 for the narrow Docker build allow set in the worker
 # role templates: role_configs_schema.json appends Bash(docker build:*) /
 # Bash(docker buildx build:*) / Bash(docker images:*) /
@@ -108,7 +120,7 @@ core-harness>=0.3.2,<0.4
 # (transport surface descriptor claude_org_runtime.transport consumed by
 # tools/transport.py — Epic #6 next-stage D / ja#513) are subsumed by 0.1.28.
 # Keep in sync with pyproject.toml.
-claude-org-runtime>=0.1.37,<0.2
+claude-org-runtime>=0.1.39,<0.2
 
 # tools/gen_worker_brief.py reads TOML config. tomllib is stdlib in 3.11+,
 # but ja still supports 3.10 (CLAUDE.local.md template recommends 3.10).
