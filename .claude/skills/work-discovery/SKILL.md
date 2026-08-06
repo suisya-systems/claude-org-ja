@@ -61,37 +61,32 @@ open Issue を triage し、依存解決済みの候補を「N 件 + 推奨 1 �
 
 ## 手順
 
-### Step 1 — repo セットを解決してから scan を 1 回実行する
+### Step 1 — scan を 1 回実行する（1 コマンド）
 
-本スキルは Claude が 2 つのコマンドを**順に**実行する（シェルスクリプトではないので `$(...)` 代入形は
-使わない — allowed-tools は各コマンドの先頭 prefix で許可判定するため、`REPO_FLAGS=$(python3 …)` の
-代入ラップは `python3 tools/work_discovery_repos.py:*` / `py -3 …` の許可 prefix にマッチしない）。POSIX は
-`python3`、Windows は `py -3`。
-
-**1a. resolver で `--repo` flags を得る**（`registry/projects.md` の triage 列（既定 include / 明示 opt-out）と
-`registry/org-config.md` の `triage_home`（既定 off）から `--repo owner/repo` の並びを決定的に導出。設計 §10.4）:
+本スキルは Claude が**コマンドを 1 つ**実行する。POSIX は `python3`、Windows は `py -3`。
 
 ```bash
-python3 tools/work_discovery_repos.py --format flags
+python3 tools/work_discovery_scan.py --trigger manual --all-registry-repos
 ```
 
-- stdout は `--repo a/b --repo c/d` の 1 行。既定状態では registry の GitHub URL 行が全て並ぶ（home repo は
-  `registry/org-config.md` の `triage_home: on` のときだけ先頭に付く）。**skip 情報・signal は stderr** に出る
-  （stdout は flags 純粋）。`--format json` でもう一度走らせて `included` / `opted_out` / `skipped` / `signals` を
-  控えておくと Step 3 の監査提示に使える。
-- **resolver が exit 2 を返したら 1b の scan を実行しない**。exit 2 は「scan 可能な GitHub URL 行が registry に無く、
-  home repo も `triage_home` で opt-in されていない（または opt-in だが解決に失敗した）ため repos が空」の異常系。
-  この場合は stderr の `error:` 行をそのまま人間へ伝えて停止する（**空の flags で scan を走らせると `--repo` 無し =
-  gh カレントリポジトリの暗黙 scan に無言フォールバックし解決失敗が隠れる**ため）。exit 0 のとき**だけ** 1b へ進む。
-
-**1b. 1a の stdout（`--repo …`）を貼って scan を実行する**（exit 0 のときのみ）:
-
-```bash
-python3 tools/work_discovery_scan.py --trigger manual --repo suisya-systems/renga --repo suisya-systems/claude-org-runtime
-```
-
-（`--repo …` の部分は 1a の stdout をそのまま貼る。scan 対象が複数 repo にわたるときは `--repo` が複数並ぶ。）
+- `--all-registry-repos` を付けると、scan が repo セット解決ツール
+  [`tools/work_discovery_repos.py`](../../../tools/work_discovery_repos.py) を**プロセス内で呼んで** `--repo` セットを
+  決定的に導出する（`registry/projects.md` の triage 列（既定 include / 明示 opt-out）と `registry/org-config.md` の
+  `triage_home`（既定 off）から。設計 §10.4）。既定状態では registry の GitHub URL 行が全て scan 対象に並ぶ
+  （home repo は `triage_home: on` のときだけ先頭に付く）。単一 repo scan になるのは scan 対象が 1 件のときだけ。
+- **resolver を別コマンドで走らせてフラグ文字列を貼る旧手順は使わない**（Issue #829）。フラグ列が複数引数に
+  なるかは呼び出し元シェルの単語分割次第で、zsh は既定 `SH_WORD_SPLIT` off のため未クォート展開を分割せず
+  `--repo a/b --repo c/d` が 1 引数として argparse に届いて失敗する（bash では分割されるので bash だけ見ていると
+  気付けない）。1 コマンド形はシェルを経由しないので zsh / bash / Windows `py -3` で同一に動く。
+- **解決の監査情報は scan 出力の `repo_resolution`** に載る（`repos` / `home_repo` / `triage_home` / `included` /
+  `opted_out` / `skipped` / `signals`）。Step 3 の監査提示はここから読む（resolver を二度目に走らせる必要はない）。
+  `--all-registry-repos` を付けなかった場合は `null`。
+- **repo セット解決の失敗は scan の exit 2**（Step 2 の error 行）になる。`--repo` 無しの
+  gh カレントリポジトリ暗黙 scan へ無言フォールバックしないので、解決失敗が候補ゼロに化けることはない。
+  この場合 `error` に理由が、`repo_resolution.signals` / `skipped` に詳細が入る。
 - resolver は read-only（`git remote get-url` と任意の `gh repo view` 読み取りのみ。書き込み・spawn・git 変更なし）。
+- **特定 repo だけを狙って scan したい場合**のみ `--all-registry-repos` の代わりに `--repo owner/repo` を明示する
+  （両者は排他。同時指定は exit 2）。既定の起動経路は `--all-registry-repos`。
 - `--trigger` は文脈ラベル。手動起動は `manual`、PR マージ後の proactive next-dispatch から呼ぶ場合は
   `--trigger post_merge` を付け、可能なら `--free-panes <空き worker slot 数>` も渡す（空き枠があると
   `parallelizable` 候補のランクが上がる）。
@@ -101,9 +96,8 @@ python3 tools/work_discovery_scan.py --trigger manual --repo suisya-systems/reng
   アクティブ worker 数を引いた残り、renga 面（opt-in）では rect ベース balanced split が受け入れ可能な空き split 枠。
   scan の計算ロジックはこの読み替えで変わらない（数を受け取るだけ）ので、窓口 / dispatcher が現行の輸送層に応じて
   空き slot 数を算出して渡す。
-- 既定の候補上限は `--top-n 3`。`--repo` は resolver の flags で明示的に渡す（cross-repo scan が既定であり、
-  登録 URL 行が複数あれば `--repo` は自然に複数並ぶ）。scan 対象が複数 repo にわたる場合は `--repo` が複数並び、
-  cross-repo triage になる（設計 §10 / §10.4）。
+- 既定の候補上限は `--top-n 3`。scan 対象は `--all-registry-repos` が導出する（cross-repo scan が既定であり、
+  登録 URL 行が複数あれば自然に複数 repo の cross-repo triage になる。設計 §10 / §10.4）。
 - ツールは stdout に**単一 JSON オブジェクト**を出し、**exit code で分岐**する（JSON パース成否ではなく exit code を見る）。
 - ツールは read-only（`gh` の読み取りサブコマンドのみ）。本スキルがツール以外の副作用を出してはならない。
 
@@ -113,7 +107,7 @@ python3 tools/work_discovery_scan.py --trigger manual --repo suisya-systems/reng
 |---|---|---|
 | `0` | `no_candidates` | 候補ゼロ。「いま着手可能な（依存解決済みの）候補はありません」と人間に伝える。`excluded_blocked[]` が非空なら Step 3 と同じ「除外（依存未解決）: #<issue>（<note>）」の形で**必ず列挙する**（「何を見た結果ゼロなのか」を人間が監査できるように。設計 §5.2「除外枠を必ず見せる」/ §5.1）。さらに `input_truncated.open_issues` / `open_prs` が `true`（取得上限到達）なら Step 3 と同じ「Issue/PR の取得が上限到達のため候補が網羅的でない可能性があります」を**必ず添える**（非網羅な scan を「網羅した結果ゼロ」と誤読させないため）。**ここで停止**。 |
 | `10` | `candidates_found` | Step 3 で §5.2 形式にレンダリングして提示。 |
-| `2` | `error` | JSON の `error` フィールドの内容をそのまま人間へ伝え、「triage を実行できませんでした」と報告。候補を捏造しない。**ここで停止**。 |
+| `2` | `error` | JSON の `error` フィールドの内容をそのまま人間へ伝え、「triage を実行できませんでした」と報告。候補を捏造しない。**候補ゼロと言い換えない**（失敗を silent skip にすると「候補が出ないのが普通」と受け取られ、次タスク提案の仕組みが事実上死ぬ。Issue #829）。repo セット解決の失敗もここに来るので、`repo_resolution.signals` / `skipped` があれば理由（registry 行が無い / `triage_home` off / パスが GitHub URL でない等）も併せて伝える。**ここで停止**。 |
 
 > exit `1` には意味を割り当てない（Python 未捕捉例外の既定 exit と衝突し、クラッシュが「候補なし」に誤読されるのを防ぐため）。`0/10/2` 以外が返ったら error 扱いで人間に上げる。
 
@@ -148,7 +142,7 @@ JSON を SoT として、設計 §5.2 の人間可読フォーマットへ整形
 - **サイレント truncation をしない**: `truncated_count` が 1 以上なら
   「（他に依存解決済みだが順位外の候補が <truncated_count> 件あります）」の 1 行を添える。
   `input_truncated` の `open_issues` / `open_prs` が `true`（取得上限到達）なら「Issue/PR の取得が上限到達のため候補が網羅的でない可能性があります」も添える。
-- **resolver の skip / opt-out / signal を監査のため添える（cross-repo）**: Step 1 で控えた resolver JSON の `skipped[]`（scan 対象なのに `パス` が GitHub URL でなく owner/repo を導けず scan 対象から外れた行）や `signals[]`（`triage_home` 由来の org-config 不在 / 不正値、home repo 解決が fallback / 失敗した等）が非空なら、候補提示の末尾に「scan 対象の解決メモ:」として 1〜数行で添える（例「登録行『<通称>』はパスが GitHub URL でないため scan 対象外（skip）」）。**`opted_out[]` が非空なら「opt-out 中の repo」も 1 行添える**（例「opt-out 中: aainc/token-tracking（明示 no）」）。どの repo を意図的に見ていないか・どの repo を見た結果の候補なのかを人間が監査できるようにするため。空なら省略。
+- **resolver の skip / opt-out / signal を監査のため添える（cross-repo）**: scan 出力の `repo_resolution` の `skipped[]`（scan 対象なのに `パス` が GitHub URL でなく owner/repo を導けず scan 対象から外れた行）や `signals[]`（`triage_home` 由来の org-config 不在 / 不正値、home repo 解決が fallback / 失敗した等）が非空なら、候補提示の末尾に「scan 対象の解決メモ:」として 1〜数行で添える（例「登録行『<通称>』はパスが GitHub URL でないため scan 対象外（skip）」）。**`opted_out[]` が非空なら「opt-out 中の repo」も 1 行添える**（例「opt-out 中: aainc/token-tracking（明示 no）」）。どの repo を意図的に見ていないか・どの repo を見た結果の候補なのかを人間が監査できるようにするため。空なら省略。
 - **毎回必ず**「提案のみ / 着手はあなたの判断です」を出す（INV-1 の運用上の現れ）と、末尾に「番号で指定 → 着手判断後に /org-delegate」を出す。
 
 ### Step 4 — 停止する

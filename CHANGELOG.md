@@ -31,6 +31,24 @@
   resolver JSON の `opted_in` は `included` / `opted_out` へ改称し、`recommendation_ref` の補完元を
   `home_repo` から `repos[0]` へ変更した。
 
+### Fixed
+
+- worker クローズ時の triage scan が zsh で常に失敗し、候補提示が黙ってスキップされていた問題を根治 (#829)。
+  旧手順は `REPO_FLAGS=$(tools/work_discovery_repos.py --format flags)` の結果を未クォートで
+  `tools/work_discovery_scan.py` へ渡していたが、フラグ列が複数引数になるかは呼び出し元シェルの単語分割次第で、
+  ペインの login shell である zsh は既定 `SH_WORD_SPLIT` off のため 1 引数として argparse に届いていた
+  (bash では 4 引数に分割されるため bash では再現しない)。`tools/work_discovery_scan.py` に
+  **`--all-registry-repos`** を追加し、scan 自身が `work_discovery_repos.resolve_repos()` を
+  プロセス内で呼んで repo セットを解決するようにした (呼び出しは 1 コマンド・シェル非依存)。
+  repo セット解決の失敗は **exit 2** で、`--repo` 無し = gh カレントリポジトリの暗黙 scan へ
+  フォールバックしない (解決失敗が「候補ゼロ」に化けるのを機構で塞ぐ)。resolver の監査情報
+  (`repos` / `included` / `opted_out` / `skipped` / `signals`) は scan 出力の新キー
+  **`repo_resolution`** に載る (未使用時 `null`、error envelope にも載る)。
+  `--format flags` は対話用に残したうえで、docstring / `--help` / 設計書にシェル依存 (zsh では
+  `${=VAR}` が必要) である旨を明記した。窓口 skill `/work-discovery`・dispatcher の worker_close 手順
+  (`.dispatcher/references/pane-close.md` Step 6) も 1 コマンド形へ更新し、exit 2 時の窓口通知 +
+  journal 記帳を「省略不可」として明文化した。
+
 ## [1.1.0] - 2026-07-15
 
 窓口の CI 監視・完了報告経路と、worker 委譲まわりの取りこぼしを塞ぐ運用改善リリース。

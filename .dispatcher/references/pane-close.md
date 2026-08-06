@@ -279,47 +279,39 @@ worker クローズは pane 枠が空く瞬間であり、設計上「次の仕�
 > - **INV-5 dispatcher は調査しない**: scan は決定的ツール実行であって「調査」ではない。dispatcher は候補の
 >   中身を自前で精査・実装しない。深掘りが要る候補は人間ゲートを通った後の委譲ワーカータスクになる。
 
-#### 6-1. repo セット解決 → scan の実行
+#### 6-1. scan の実行（1 コマンド・シェル非依存）
 
-worker クローズ時の scan も、まず resolver で `--repo` セットを解決してから scan に渡す（`registry/projects.md`
-の triage 列（既定 include / 明示 opt-out）と `registry/org-config.md` の `triage_home`（既定 off）から
-`--repo owner/repo` を決定的に導出。設計 §10.4）。resolver は
-read-only（`git remote get-url` と任意の `gh repo view` 読み取りのみ）で INV-1〜5 を崩さない。
+`--all-registry-repos` を付けて scan を **1 回** 実行する。repo セット解決（`registry/projects.md` の triage 列
+（既定 include / 明示 opt-out）と `registry/org-config.md` の `triage_home`（既定 off）から `--repo owner/repo`
+を決定的に導出。設計 §10.4）は scan が `tools/work_discovery_repos.py` を **プロセス内で呼んで**行うので、
+resolver を別コマンドで走らせる必要はない。resolver は read-only（`git remote get-url` と任意の `gh repo view`
+読み取りのみ）で INV-1〜5 を崩さない。
 
 ```bash
 # ディスパッチャー cwd は .dispatcher/ なので 1 段上がリポジトリルート。
-# resolver 成功 (exit 0) のときだけ scan へ進む。exit 2 (repos 空) では
-# scan を実行せず 6-2 の error 経路で窓口へエラー通知する（空 flags のまま
-# scan すると --repo 無し = gh カレントリポジトリの暗黙 scan に無言フォール
-# バックし解決失敗が隠れるため）。
 # Windows
-if REPO_FLAGS=$(py -3 ../tools/work_discovery_repos.py --format flags); then
-  py -3 ../tools/work_discovery_scan.py --trigger worker_close $REPO_FLAGS
-else
-  echo "resolver exit 2: repos 空。scan せず 6-2 の error 経路で窓口へ通知" >&2
-fi
+py -3 ../tools/work_discovery_scan.py --trigger worker_close --all-registry-repos
 # Mac/Linux
-if REPO_FLAGS=$(python3 ../tools/work_discovery_repos.py --format flags); then
-  python3 ../tools/work_discovery_scan.py --trigger worker_close $REPO_FLAGS
-else
-  echo "resolver exit 2: repos 空。scan せず 6-2 の error 経路で窓口へ通知" >&2
-fi
+python3 ../tools/work_discovery_scan.py --trigger worker_close --all-registry-repos
 ```
 
-- resolver の `--format flags` は stdout に `--repo a/b --repo c/d` を 1 行で出す（`$(...)` で scan へそのまま
-  splice する）。既定状態では registry の GitHub URL 行が全て並ぶ（home repo は `registry/org-config.md` の
-  `triage_home: on` のときだけ先頭に付く）。単一 repo scan になるのは scan 対象が 1 件のときだけ。skip 情報・
-  signal は resolver の **stderr** に出る（stdout は flags 純粋）。
-- **resolver が exit 2（repos 空）を返したら scan を実行せず、6-2 の error 経路と同じく窓口へ 1 行エラー通知を
-  送って終える**（`recommendation_ref` は組めないので journal は candidate_count なしのエラー記帳）。上の
-  `if … then scan else …` は resolver 成功時だけ scan へ進む構造で、exit 2 では `else` 枝に入り scan をスキップ
-  する。空の `REPO_FLAGS` のまま scan すると `--repo` 無し = gh カレントリポジトリの暗黙 scan に無言フォール
-  バックし解決失敗が隠れるため、この分岐で必ず止める。
-- **`repos[0]` を控える（6-3 の ref 用）**: flags の**先頭** `--repo <first>` が resolver の `repos[0]`（= scan
-  対象が 1 件のときに `recommendation.repo` が `null` に畳まれる場合の補完値）。厳密に取りたい場合は resolver を
-  `--format json` でもう一度走らせて `repos[0]` を読む（`home_repo` ではない。read-only なので二度呼んでも
-  副作用ゼロ）。`recommendation.repo` が null に畳まれるのは scan 対象が 1 件のときで、その実 repo が
-  `repos[0]` である。
+- **`REPO_FLAGS=$(… --format flags)` を経由する旧手順は使わない**（Issue #829）。フラグ文字列が複数引数に
+  なるかは**呼び出し元シェルの単語分割**次第で、ペインの login shell である zsh は既定 `SH_WORD_SPLIT` off の
+  ため未クォートの `$REPO_FLAGS` を分割せず、argparse には 1 引数として届いて **worker クローズ時の scan が
+  毎回 exit 2 で失敗していた**（bash では 4 引数に分割されるので bash では気付けない）。zsh 専用の
+  `${=REPO_FLAGS}` も対症療法なので使わない。上の 1 コマンド形はシェルを一切経由しないので zsh / bash /
+  Windows `py -3` で同一に動く。
+- **解決失敗は scan 自身が exit 2 にする**（`--repo` 無し = gh カレントリポジトリの暗黙 scan へ無言
+  フォールバックしない）。呼び出し側の `if … then … else` 分岐は不要になった。exit 2 の扱いは 6-2 / 6-3 /
+  6-4 の error 経路に一本化されている。
+- 既定状態では registry の GitHub URL 行が全て scan 対象に並ぶ（home repo は `registry/org-config.md` の
+  `triage_home: on` のときだけ先頭に付く）。単一 repo scan になるのは scan 対象が 1 件のときだけ。
+- **監査情報は scan の出力に載る**: 解決結果は stdout JSON の `repo_resolution`（`repos` / `home_repo` /
+  `triage_home` / `included` / `opted_out` / `skipped` / `signals`）にそのまま入る（`--all-registry-repos` を
+  付けなかった場合は `null`）。**exit 2 の error envelope にも載る**ので、解決失敗の理由もそのまま窓口へ渡せる。
+  resolver を `--format json` で二度目に走らせる必要はない。
+- **`repos[0]` を控える（6-3 の ref 用）**: `repo_resolution.repos[0]` が resolver の先頭 repo（= scan 対象が
+  1 件のときに `recommendation.repo` が `null` に畳まれる場合の補完値）。`home_repo` ではない。
 - `--trigger worker_close` は出力 JSON の `generated_for` に載る文脈ラベル（監査用、設計 §8）。
 - 空き worker pane 数を把握していれば `--free-panes <n>` を添えてよい（任意）。`parallelizable` 候補の
   ランキングを押し上げるだけで、候補上限 N は変えない（計算層の Phase 1 契約）。
@@ -333,7 +325,10 @@ fi
 - **exit 10 (candidates_found)** → stdout の JSON を控えて 6-3（記帳）→ 6-4（窓口へ転送）。
 - **exit 2 (error)** → 窓口に informational として 1 行のエラー通知を送る（6-4 のエラー形）。scan 失敗で
   worker クローズを止めない（CLOSE_PANE フロー自体は完了扱い。候補ゼロと誤読させず、scan のクラッシュを
-  握り潰さないため窓口へ届ける）。
+  握り潰さないため窓口へ届ける）。repo セット解決の失敗もこの枝に入る（6-1）。
+  **exit 2 を握り潰さない（Issue #829）**: 「候補が出ないのが普通」と受け取られると次タスク提案の仕組みが
+  事実上死ぬ。exit 2 では **6-3 の error 記帳と 6-4 の窓口通知を必ず両方行う**（片方だけで済ませない）。
+  エラー本文は stdout JSON の `error` と `repo_resolution`（あれば `signals` / `skipped`）から要約する。
 
 #### 6-3. 監査ログ（journal 記帳）
 
@@ -347,6 +342,10 @@ bash ../tools/journal_append.sh work_discovery_scanned \
     trigger=worker_close candidate_count={JSON.candidate_count} recommendation_ref={owner/repo#N}
 # exit 0 の例（候補ゼロ。recommendation は無いので省略）。
 bash ../tools/journal_append.sh work_discovery_scanned trigger=worker_close candidate_count=0
+# exit 2 の例（失敗。candidate_count / recommendation_ref は組めないので載せず、
+# 代わりに outcome=error と 1 行要約を残す。silent skip にしないための記帳＝省略不可）。
+bash ../tools/journal_append.sh work_discovery_scanned \
+    trigger=worker_close outcome=error note="{JSON.error の 1 行要約}"
 ```
 
 - **`recommendation_ref` は `owner/repo#N` 形に統一**（cross-repo triage で `ja#60` と `runtime#60` を
@@ -380,6 +379,11 @@ mcp__renga-peers__send_message(to_id="secretary", message="WORK_DISCOVERY_CANDID
 ```
 mcp__renga-peers__send_message(to_id="secretary", message="WORK_DISCOVERY_SCAN_ERROR: worker {task_id} クローズ時の triage scan が失敗しました（exit 2）。候補提示はスキップします。{stdout JSON の error 要約}")
 ```
+
+- **exit 2 の通知は省略しない**（Issue #829）。scan の失敗が窓口に届かないと「候補が出ないのが普通」と
+  受け取られ、次タスク提案が黙って死ぬ。repo セット解決の失敗なら `repo_resolution.signals` /
+  `repo_resolution.skipped` の 1 行要約を添えると窓口が原因（registry 行が無い / `triage_home` off / パスが
+  GitHub URL でない等）まで人間へ伝えられる。
 
 - 送信先は **必ず安定名 `to_id="secretary"`**（`.dispatcher/CLAUDE.md`「窓口への返信方法」参照）。
 - dispatcher は窓口へ送って終わりで、人間 / GitHub の人間可視面へは触れない（INV-4）。

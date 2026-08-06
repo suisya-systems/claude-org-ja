@@ -22,6 +22,22 @@ at a repo *not* in the scan set is treated resolved (誤除外<誤包含) but em
 an auditable ``signals[]`` entry; bare ``repo#N`` shorthand and release/version
 prose (``runtime>=0.1.11``) are deliberately not resolved (see ``_OWNER_REPO``).
 
+Registry-driven repo set (``--all-registry-repos``, Issue #829): instead of
+passing the repos explicitly, ask the scan to resolve the whole registry set
+itself. It calls ``tools/work_discovery_repos.resolve_repos()`` **in-process**
+and scans the repos it returns, so the caller's command line is one line with
+no variable to expand. That removes the previous
+``REPO_FLAGS=$(… --format flags)`` … ``scan $REPO_FLAGS`` hop, which was not
+shell-portable: zsh (the org panes' login shell) has ``SH_WORD_SPLIT`` off by
+default, so the unquoted ``$REPO_FLAGS`` reached argparse as **one** argument
+and every worker-close scan failed with exit 2. Resolution failure is fatal
+(exit 2 with the resolver's error) — it never degrades to the implicit
+gh-current-repo scan, which would hide the failure behind a plausible-looking
+single-repo result. The resolver's audit fields (``repos`` / ``included`` /
+``opted_out`` / ``skipped`` / ``signals``) are echoed in the output's
+``repo_resolution`` (``null`` when the flag was not used) so the delivery layer
+gets them without a second resolver call — success and failure alike.
+
 Invariants enforced here (design §7):
 
 * **INV-1 / INV-3 — read-only, side effects zero.** Only ``gh`` *read*
@@ -121,6 +137,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 
 try:
     sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
@@ -2057,9 +2074,16 @@ def _load_bundle(path: str) -> tuple[list[dict], dict | None]:
     return [_validate_repo_bundle(bundle, "")], effort_model
 
 
-def _error_payload(trigger: str, message: str) -> dict:
+def _error_payload(
+    trigger: str, message: str, repo_resolution: dict | None = None
+) -> dict:
     """The fixed-schema error envelope (design §5.1), used by every error
-    path so the delivery layer parses one shape regardless of cause."""
+    path so the delivery layer parses one shape regardless of cause.
+
+    ``repo_resolution`` carries whatever the registry resolver produced
+    before the failure (Issue #829). It is deliberately reported on the
+    error path too: when the failure *is* the resolution, its ``skipped`` /
+    ``signals`` are the only explanation of why no repo could be scanned."""
     return {
         "status": "error",
         "generated_for": trigger,
@@ -2070,8 +2094,37 @@ def _error_payload(trigger: str, message: str) -> dict:
         "candidates": [],
         "recommendation": None,
         "excluded_blocked": [],
+        "repo_resolution": repo_resolution,
         "error": message,
     }
+
+
+def _resolve_registry_repos(claude_org_root=None) -> dict:
+    """Resolve the ``--repo`` set from the registry, in-process (Issue #829).
+
+    Calls ``tools/work_discovery_repos.resolve_repos()`` directly rather than
+    shelling out for ``--format flags``: a flag *string* only becomes several
+    argv entries if the calling shell word-splits it, which zsh does not do
+    (``SH_WORD_SPLIT`` is off by default) — so the string form silently
+    broke every scan launched from an org pane. An in-process call has no
+    shell in the path at all, so the same one-line command works under zsh,
+    bash and Windows ``py -3`` alike.
+
+    The import is lazy (and re-bootstraps ``sys.path``) so a plain
+    ``--repo`` run keeps working even from a checkout layout where the
+    ``tools`` package is not importable: only the registry-driven path
+    depends on it. Read-only, like the resolver itself.
+    """
+    root = Path(__file__).resolve().parent.parent
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+    from tools.work_discovery_repos import resolve_repos
+
+    org_root = Path(claude_org_root).resolve() if claude_org_root else root
+    return resolve_repos(
+        registry_path=org_root / "registry" / "projects.md",
+        claude_org_root=org_root,
+    )
 
 
 class _JsonErrorParser(argparse.ArgumentParser):
@@ -2141,7 +2194,25 @@ def main(argv=None) -> int:
         "Repeat for cross-repo triage, e.g. `--repo suisya-systems/claude-org-ja "
         "--repo suisya-systems/claude-org-runtime`; candidates from all repos "
         "are ranked into one list and `Blocked by owner/repo#N` is resolved "
-        "across the scanned set (design §10).",
+        "across the scanned set (design §10). Mutually exclusive with "
+        "--all-registry-repos.",
+    )
+    parser.add_argument(
+        "--all-registry-repos",
+        action="store_true",
+        help="Resolve the repo set from registry/projects.md + "
+        "registry/org-config.md in-process (tools/work_discovery_repos.py) "
+        "instead of listing --repo by hand, and scan all of them. Shell-"
+        "independent: no flag string has to be word-split by the caller "
+        "(Issue #829). A resolution failure is fatal (exit 2) - it never "
+        "falls back to the implicit current-repo scan. The resolver's audit "
+        "fields are echoed in the output's repo_resolution.",
+    )
+    parser.add_argument(
+        "--claude-org-root",
+        default=None,
+        help="Repo root the registry is read from with --all-registry-repos "
+        "(default: this tool's own repo root). Ignored otherwise.",
     )
     parser.add_argument(
         "--top-n",
@@ -2194,6 +2265,9 @@ def main(argv=None) -> int:
     config = ScanConfig(
         top_n=args.top_n, free_panes=args.free_panes, trigger=args.trigger
     )
+    # Kept outside the try so the error envelope can carry whatever the
+    # registry resolver produced, including when the resolution itself failed.
+    repo_resolution: dict | None = None
 
     try:
         # `--top-n 0` (or negative) would silently return an empty `top` even
@@ -2217,16 +2291,56 @@ def main(argv=None) -> int:
         # learning, negative is nonsense.
         if args.effort_history < 0:
             raise ValueError("--effort-history must be >= 0")
+        # `--all-registry-repos` *is* the repo-set source; combining it with an
+        # explicit set (or with an offline bundle that carries its own repos)
+        # is ambiguous, and silently letting one win would hide half of what
+        # the caller asked for. Reject it here rather than via parser.error so
+        # the envelope keeps the real `--trigger` in `generated_for`.
+        if args.all_registry_repos and args.repo:
+            raise ValueError(
+                "--all-registry-repos and --repo are mutually exclusive "
+                "(the registry resolver already supplies the repo set)"
+            )
+        if args.all_registry_repos and args.from_file:
+            raise ValueError(
+                "--all-registry-repos cannot be combined with --from-file "
+                "(the bundle already carries its own repos)"
+            )
         input_truncated = {"open_issues": False, "open_prs": False}
         effort_model: dict | None = None
         collapse_repo = None
         if args.from_file:
             bundles, effort_model = _load_bundle(args.from_file)
         else:
-            # `--repo` may be given 0..N times (action=append). De-dup while
-            # preserving order so `--repo ja --repo ja` is not fetched (and
-            # ranked) twice. None / no `--repo` → a single gh-current-repo scan.
-            repos = list(dict.fromkeys(args.repo)) if args.repo else [None]
+            if args.all_registry_repos:
+                # Registry-driven set (Issue #829): resolved in-process, so no
+                # shell has to word-split a flag string on the way in.
+                repo_resolution = _resolve_registry_repos(args.claude_org_root)
+                if repo_resolution.get("error") or not repo_resolution.get(
+                    "repos"
+                ):
+                    # Fatal on purpose: falling through to the implicit
+                    # gh-current-repo scan would turn a resolution failure into
+                    # a plausible-looking single-repo result and hide it.
+                    detail = repo_resolution.get("error") or (
+                        "resolver returned an empty repo set"
+                    )
+                    signals = repo_resolution.get("signals") or []
+                    if signals:
+                        detail += " | signals: " + "; ".join(signals)
+                    raise ValueError(
+                        f"--all-registry-repos: repo resolution failed: "
+                        f"{detail}"
+                    )
+                # De-dup defensively; the resolver already dedups, but the
+                # invariant "one fetch per repo" lives here.
+                repos = list(dict.fromkeys(repo_resolution["repos"]))
+            else:
+                # `--repo` may be given 0..N times (action=append). De-dup while
+                # preserving order so `--repo ja --repo ja` is not fetched (and
+                # ranked) twice. None / no `--repo` → a single gh-current-repo
+                # scan.
+                repos = list(dict.fromkeys(args.repo)) if args.repo else [None]
             # Back-compat (design §5.1 / §10): a *single*-repo scan keys by the
             # real repo (so a self-reference by full name resolves) but is
             # *displayed* in the collapsed single-repo form (`repo: null`, int
@@ -2283,13 +2397,18 @@ def main(argv=None) -> int:
             bundles, config, input_truncated, collapse_repo,
             effort_model=effort_model,
         )
+        # Always present (``null`` unless `--all-registry-repos` was used) so
+        # the delivery layer reads one shape, and so "which repos did this
+        # scan actually look at, and which did it deliberately skip" is
+        # answerable from the scan output alone — no second resolver call.
+        result["repo_resolution"] = repo_resolution
     except Exception as exc:  # noqa: BLE001 — report any failure as error/exit 2
         # Keep the fixed schema (design §5.1) so the delivery layer parses
         # the error branch the same way; the audit fields are present (empty)
         # rather than absent, and `error` carries the cause.
         print(
             json.dumps(
-                _error_payload(config.trigger, str(exc)),
+                _error_payload(config.trigger, str(exc), repo_resolution),
                 ensure_ascii=False,
                 indent=2,
             )
