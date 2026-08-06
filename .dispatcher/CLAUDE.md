@@ -185,7 +185,7 @@ resume 時に「監視に gap が出ない」ことの根拠はこれらが前 s
 エントリポイント要約:
 
 - **Step 1〜2 の振り返りが完全に終わるまで、絶対にペインを閉じない**（出力消失で retro 不能になるため）
-- 順序: (1) 振り返り（`tools/dispatcher_retro_gate.py` で secretary ack を待ってから結論を書く） → (2) 知見記録（該当時のみ `knowledge/raw/`） → (3) `mcp__renga-peers__close_pane` でペイン破棄 → (4) 知見記録した場合のみ窓口に `RETRO_RECORDED` 報告 → (5) curate 閾値チェック（`py -3 ../tools/check_curate_threshold.py`、exit 10 のときだけ curator をオンデマンド起動） → (6) work-discovery triage scan（`py -3 ../tools/work_discovery_repos.py --format flags` で `--repo` セットを解決してから `py -3 ../tools/work_discovery_scan.py --trigger worker_close $REPO_FLAGS`、exit 10 のときだけ候補 JSON を窓口へ転送）
+- 順序: (1) 振り返り（`tools/dispatcher_retro_gate.py` で secretary ack を待ってから結論を書く） → (2) 知見記録（該当時のみ `knowledge/raw/`） → (3) `mcp__renga-peers__close_pane` でペイン破棄 → (4) 知見記録した場合のみ窓口に `RETRO_RECORDED` 報告 → (5) curate 閾値チェック（`py -3 ../tools/check_curate_threshold.py`、exit 10 のときだけ curator をオンデマンド起動） → (6) work-discovery triage scan（`py -3 ../tools/work_discovery_scan.py --trigger worker_close --all-registry-repos` の 1 コマンド。exit 10 のときだけ候補 JSON を窓口へ転送し、exit 2 は必ず窓口へエラー通知 + journal 記帳）
 - secretary unreachable 時は retro に「未着」と書かず、`retro_deferred` を journal に追記してペインは閉じない（後続の `/org-resume` で再試行）
 
 ### オンデマンド curator（worker クローズ時のみ）
@@ -208,11 +208,13 @@ direct send は監視ループの通常サイクル（`check_messages`）で受�
 
 ### work-discovery triage scan（worker クローズ時 = pane 枠が空いた契機）
 
-CLOSE_PANE 処理の Step 6 で、worker クローズ（= pane 枠が空いた瞬間）ごとに、まず
-`tools/work_discovery_repos.py --format flags` で `--repo` セット（`registry/projects.md` の triage 列（既定
-include / 明示 opt-out）と `registry/org-config.md` の `triage_home`（既定 off）から決定的に導出）を解決し、
-その flags を付けて `tools/work_discovery_scan.py` を 1 回実行し、着手可能な
-候補（open Issue の triage 結果）があれば候補 JSON を**窓口へ転送する**。on-demand curator と同じ
+CLOSE_PANE 処理の Step 6 で、worker クローズ（= pane 枠が空いた瞬間）ごとに
+`tools/work_discovery_scan.py --trigger worker_close --all-registry-repos` を 1 回実行し、着手可能な
+候補（open Issue の triage 結果）があれば候補 JSON を**窓口へ転送する**。`--repo` セット
+（`registry/projects.md` の triage 列（既定 include / 明示 opt-out）と `registry/org-config.md` の
+`triage_home`（既定 off）から決定的に導出）は scan が `tools/work_discovery_repos.py` をプロセス内で
+呼んで解決するので、**フラグ文字列を変数経由で渡す旧手順（`$REPO_FLAGS`）は使わない**（zsh は未クォート
+展開を単語分割しないため毎回 exit 2 で失敗していた。Issue #829）。on-demand curator と同じ
 「worker クローズ時に条件チェック → 該当時のみ起動 / 転送」パターンに乗せた定常トリガ（設計 §6.3 案 C /
 §8 post-merge トリガ点の合流。cross-repo 解決は §10 / §10.4）。
 
@@ -222,7 +224,8 @@ include / 明示 opt-out）と `registry/org-config.md` の `triage_home`（既�
   spawn / commit / PR をしない＝ **INV-1 propose-only**）。着手判断は人間（**INV-2**）。dispatcher は候補の
   中身を自前で調査・実装しない（**INV-5**）
 - exit code 分岐: `0`（候補なし）→ 何もしない / `10`（候補あり）→ 窓口へ転送 / `2`（error）→ 窓口へ
-  エラー通知。送信先は必ず安定名 `to_id="secretary"`
+  エラー通知（**省略不可**。repo セット解決の失敗も exit 2 に含まれ、暗黙のカレントリポジトリ scan へ
+  フォールバックしない）。送信先は必ず安定名 `to_id="secretary"`
 - scan 実行は journal イベント `work_discovery_scanned`（payload: `candidate_count` /
   `recommendation_ref` / `trigger`）として **delivery 層（dispatcher）が記帳**する。`recommendation_ref` は
   `owner/repo#N` 形に統一（`recommendation.repo` が null なら resolver の `repos[0]` で補完。cross-repo で

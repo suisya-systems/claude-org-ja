@@ -691,6 +691,26 @@ class FormatOutputTest(unittest.TestCase):
         self.assertEqual(data["repos"], [])
         self.assertIn("error:", err)
 
+    def test_undecodable_registry_exits_2_with_envelope(self) -> None:
+        # Regression (Issue #829 review): `UnicodeDecodeError` is a
+        # ValueError, NOT an OSError, so a registry with undecodable bytes
+        # escaped main()'s handler and exited 1 with a traceback — breaking
+        # the documented "exit 0 / 2" contract the delivery layer branches on
+        # (and exit 1 is reserved for crashes elsewhere in this contract).
+        reg = self.root / "registry"
+        reg.mkdir(exist_ok=True)
+        path = reg / "projects.md"
+        path.write_bytes(bytes([255]))
+        out, err, rc = self._run_cli(
+            ["--registry", str(path), "--claude-org-root", str(self.root),
+             "--format", "json"]
+        )
+        self.assertEqual(rc, 2)
+        data = json.loads(out)
+        self.assertEqual(data["repos"], [])
+        self.assertIn("codec", data["error"])
+        self.assertIn("error:", err)
+
     def _run_cli(self, argv: list[str]) -> tuple[str, str, int]:
         out, err = io.StringIO(), io.StringIO()
         with redirect_stdout(out), redirect_stderr(err):

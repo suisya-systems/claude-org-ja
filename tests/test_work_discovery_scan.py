@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -2277,6 +2278,214 @@ class TestDuplicateRepoBundleDedup(unittest.TestCase):
         self.assertEqual(result["candidate_count"], len(set(keys)))
         excl_keys = [(e["repo"], e["issue"]) for e in result["excluded_blocked"]]
         self.assertEqual(excl_keys.count((JA, 2)), 1)  # excluded not duplicated
+
+
+class TestAllRegistryRepos(unittest.TestCase):
+    """`--all-registry-repos` resolves the repo set in-process (Issue #829).
+
+    The flag exists so no caller has to word-split a `--format flags`
+    string: zsh (the org panes' login shell) leaves an unquoted expansion
+    intact, so the old `scan $REPO_FLAGS` reached argparse as ONE argument
+    and every worker-close scan died with exit 2. These lock the three
+    properties that make the new path shell-proof and non-silent: the repos
+    come from the registry, a resolution failure is fatal (never a
+    fall-through to the implicit current-repo scan), and the resolver's
+    audit lands in the output on both the success and the failure path."""
+
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        self.root = Path(self._td.name)
+        (self.root / "registry").mkdir()
+
+    def tearDown(self):
+        self._td.cleanup()
+
+    def _write_registry(self, rows):
+        lines = [
+            "# Projects Registry",
+            "",
+            "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 | triage |",
+            "|---|---|---|---|---|---|",
+        ]
+        lines += [f"| {row} |" for row in rows]
+        (self.root / "registry" / "projects.md").write_text(
+            "\n".join(lines) + "\n", encoding="utf-8"
+        )
+
+    def _run(self, argv, issues_by_repo=None):
+        """Run main() with the fetchers mocked; return (rc, json, fetched)."""
+        fetched = []
+
+        def _issues(repo, limit=wds.DEFAULT_OPEN_LIMIT):
+            fetched.append(repo)
+            return (issues_by_repo or {}).get(repo, [])
+
+        import io
+        from contextlib import redirect_stdout
+
+        buf = io.StringIO()
+        with mock.patch.object(wds, "fetch_open_issues", _issues), \
+             mock.patch.object(
+                 wds, "fetch_open_pr_numbers",
+                 lambda r, limit=wds.DEFAULT_OPEN_LIMIT: set()), \
+             mock.patch.object(wds, "fetch_recent_merges", lambda r, k: []):
+            with redirect_stdout(buf):
+                rc = wds.main(argv)
+        return rc, json.loads(buf.getvalue()), fetched
+
+    def test_registry_repos_are_scanned(self):
+        self._write_registry(
+            [
+                f"ja | ja | https://github.com/{JA} | d | x |",
+                f"rt | rt | https://github.com/{RT} | d | x |",
+            ]
+        )
+        rc, data, fetched = self._run(
+            ["--all-registry-repos", "--claude-org-root", str(self.root)],
+            {JA: [_issue(1, body="b")]},
+        )
+        self.assertEqual(fetched, [JA, RT])  # one fetch per resolved repo
+        self.assertEqual(rc, wds.EXIT_CANDIDATES_FOUND)
+        self.assertEqual(data["repo_resolution"]["repos"], [JA, RT])
+        # 2+ repos → a genuine cross-repo scan, so candidates keep real names.
+        self.assertEqual(data["candidates"][0]["repo"], JA)
+
+    def test_opted_out_row_is_not_scanned_but_is_audited(self):
+        self._write_registry(
+            [
+                f"ja | ja | https://github.com/{JA} | d | x |",
+                f"rt | rt | https://github.com/{RT} | d | x | no",
+            ]
+        )
+        rc, data, fetched = self._run(
+            ["--all-registry-repos", "--claude-org-root", str(self.root)]
+        )
+        self.assertEqual(fetched, [JA])
+        self.assertEqual(
+            [r["repo"] for r in data["repo_resolution"]["opted_out"]], [RT]
+        )
+
+    def test_resolution_failure_is_fatal_and_never_falls_back(self):
+        # Empty registry → resolver error. The scan must NOT quietly degrade
+        # to the implicit gh-current-repo scan (that is exactly the silent
+        # skip Issue #829 is about): no fetch, exit 2, error explains why.
+        self._write_registry([])
+        rc, data, fetched = self._run(
+            ["--all-registry-repos", "--claude-org-root", str(self.root)]
+        )
+        self.assertEqual(fetched, [])
+        self.assertEqual(rc, wds.EXIT_ERROR)
+        self.assertEqual(data["status"], "error")
+        self.assertIn("repo resolution failed", data["error"])
+        # The audit survives onto the error envelope.
+        self.assertEqual(data["repo_resolution"]["repos"], [])
+        self.assertIn("error", data["repo_resolution"])
+
+    def test_trigger_is_preserved_on_resolution_failure(self):
+        # The delivery layer records `generated_for`; a resolution failure
+        # must not relabel a worker_close scan as "manual".
+        self._write_registry([])
+        rc, data, _ = self._run(
+            [
+                "--all-registry-repos",
+                "--claude-org-root", str(self.root),
+                "--trigger", "worker_close",
+            ]
+        )
+        self.assertEqual(rc, wds.EXIT_ERROR)
+        self.assertEqual(data["generated_for"], "worker_close")
+
+    def test_conflicts_with_explicit_repo(self):
+        self._write_registry([f"ja | ja | https://github.com/{JA} | d | x |"])
+        rc, data, fetched = self._run(
+            [
+                "--all-registry-repos",
+                "--claude-org-root", str(self.root),
+                "--repo", RT,
+            ]
+        )
+        self.assertEqual(rc, wds.EXIT_ERROR)
+        self.assertEqual(fetched, [])
+        self.assertIn("mutually exclusive", data["error"])
+
+    def test_conflicts_with_from_file(self):
+        self._write_registry([f"ja | ja | https://github.com/{JA} | d | x |"])
+        fd, name = tempfile.mkstemp(suffix=".json", prefix="wds_reg_")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write('{"issues": [], "open_pr_numbers": [], "recent_merges": []}')
+            rc, data, _ = self._run(
+                [
+                    "--all-registry-repos",
+                    "--claude-org-root", str(self.root),
+                    "--from-file", name,
+                ]
+            )
+        finally:
+            os.unlink(name)
+        self.assertEqual(rc, wds.EXIT_ERROR)
+        self.assertIn("--from-file", data["error"])
+
+    def test_unreadable_registry_keeps_the_audited_shape(self):
+        # `resolve_repos()` *raises* when the registry exists but cannot be
+        # read (permission denied / undecodable bytes / a directory in its
+        # place). Propagating that would land in main's generic handler with
+        # repo_resolution still None — the fixed schema broken on exactly the
+        # failure that needs explaining. A directory reproduces it portably
+        # (read_text -> IsADirectoryError, an OSError) without chmod, which
+        # is a no-op for root and on Windows.
+        (self.root / "registry" / "projects.md").mkdir()
+        rc, data, fetched = self._run(
+            ["--all-registry-repos", "--claude-org-root", str(self.root)]
+        )
+        self.assertEqual(rc, wds.EXIT_ERROR)
+        self.assertEqual(fetched, [])
+        self.assertIsNotNone(data["repo_resolution"])
+        self.assertEqual(data["repo_resolution"]["repos"], [])
+        self.assertIn("failed to resolve repos", data["repo_resolution"]["error"])
+        self.assertIn("failed to resolve repos", data["error"])
+
+    def test_undecodable_registry_keeps_the_audited_shape(self):
+        # `UnicodeDecodeError` is a ValueError, NOT an OSError — so a catch
+        # listing only OSError still let this one through and produced
+        # `repo_resolution: null`. The wrapper's catch is class-wide for
+        # exactly this reason; this pins the case that proved it.
+        (self.root / "registry" / "projects.md").write_bytes(bytes([255]))
+        rc, data, fetched = self._run(
+            ["--all-registry-repos", "--claude-org-root", str(self.root)]
+        )
+        self.assertEqual(rc, wds.EXIT_ERROR)
+        self.assertEqual(fetched, [])
+        self.assertIsNotNone(data["repo_resolution"])
+        self.assertIn("UnicodeDecodeError", data["repo_resolution"]["error"])
+
+    def test_repo_resolution_is_null_without_the_flag(self):
+        # One shape for the delivery layer: the key is always present.
+        rc, data, _ = self._run(["--repo", JA])
+        self.assertIsNone(data["repo_resolution"])
+
+    def test_flag_is_shell_independent_end_to_end(self):
+        # The regression itself: the same one-line command must resolve the
+        # same repo set under zsh and bash. Only the *argv shape* is under
+        # test, so the fetchers are skipped by asserting on the resolver
+        # (an empty registry → deterministic exit 2 with no network).
+        self._write_registry([])
+        cmd = (
+            f'{sys.executable} {SCRIPT} --all-registry-repos '
+            f'--claude-org-root {self.root} --trigger worker_close'
+        )
+        seen = {}
+        for shell in ("zsh", "bash"):
+            if shutil.which(shell) is None:
+                self.skipTest(f"{shell} not available")
+            proc = subprocess.run(
+                [shell, "-c", cmd], capture_output=True, text=True,
+                encoding="utf-8",
+            )
+            self.assertEqual(proc.returncode, wds.EXIT_ERROR, shell)
+            seen[shell] = json.loads(proc.stdout)
+        self.assertEqual(seen["zsh"], seen["bash"])
+        self.assertEqual(seen["zsh"]["generated_for"], "worker_close")
 
 
 if __name__ == "__main__":

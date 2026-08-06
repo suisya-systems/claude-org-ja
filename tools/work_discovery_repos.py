@@ -34,6 +34,17 @@ Output (stdout):
 - ``--format flags``: ``--repo a/b --repo c/d`` on a single line for shell
   splicing; ``skipped`` / ``signals`` go to stderr so stdout stays pure.
 
+  **Shell-dependent — do not use it to drive a scan** (Issue #829). The
+  string only becomes several argv entries if the calling shell word-splits
+  an unquoted expansion, and zsh (the org panes' login shell) has
+  ``SH_WORD_SPLIT`` off by default: ``FLAGS=$(… --format flags); scan
+  $FLAGS`` reaches argparse as **one** argument under zsh (it needs the
+  zsh-only ``${=FLAGS}``) while bash splits it into four. The portable way
+  to scan the registry set is ``work_discovery_scan.py
+  --all-registry-repos``, which calls ``resolve_repos()`` in-process with no
+  shell in the path. ``--format flags`` is retained for interactive use
+  (eyeballing the set, pasting the flags into a command by hand).
+
 Exit code: ``0`` when at least one repo resolved, ``2`` on error (empty
 set / read failure). The output is deterministic and this tool performs
 no writes / spawns / git mutations (read-only ``git remote get-url`` and
@@ -359,7 +370,10 @@ def _build_parser() -> argparse.ArgumentParser:
         default="json",
         help=(
             "'json' (default) prints the full result object; 'flags' prints "
-            "'--repo a/b --repo c/d' for shell splicing (signals to stderr)."
+            "'--repo a/b --repo c/d' for shell splicing (signals to stderr). "
+            "'flags' is shell-dependent - an unquoted expansion is NOT split "
+            "by zsh (needs ${=VAR}), so do not pipe it into a scan; use "
+            "work_discovery_scan.py --all-registry-repos instead (Issue 829)."
         ),
     )
     return p
@@ -384,7 +398,11 @@ def main(argv: Optional[list[str]] = None) -> int:
             claude_org_root=claude_org_root,
             org_config_path=args.org_config,
         )
-    except OSError as e:  # registry read failure etc.
+    except (OSError, UnicodeError) as e:  # registry read / decode failure
+        # ``UnicodeDecodeError`` is a ``ValueError``, NOT an ``OSError``: a
+        # registry with undecodable bytes used to escape this handler and
+        # exit 1 with a traceback, breaking the documented "exit 0 / 2"
+        # contract that the delivery layer branches on.
         err = {
             "repos": [],
             "home_repo": None,
