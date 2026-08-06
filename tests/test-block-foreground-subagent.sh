@@ -9,7 +9,7 @@
 #   - top-level run_in_background (tool_input 外) -> block (.tool_input.* のみ参照)
 #   - legacy Task の前景 / 背景                    -> block / allow
 #   - 非 subagent ツール / 近接 tool_name          -> passthrough (exact match)
-#   - 不正 JSON / 空 stdin                         -> block (fail-closed)
+#   - 不正 JSON / 空 stdin / 非 object payload     -> block (fail-closed)
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -169,10 +169,23 @@ stderr=$(mktemp); TMPFILES+=("$stderr")
 ec=$(run_hook '{"tool_name":"Agent","tool_input":{' "$stderr")
 assert_exit 2 "$ec" "truncated JSON is blocked (fail-closed)"
 
-# 19. Empty stdin -> block (fail-closed; not valid JSON)
+# 19. Empty stdin -> block (fail-closed)
+#     jq は「JSON 値がゼロ個」の入力を parse error にせず exit 0 で返すため、
+#     `type == "object"` の型ガードでは捕まらない。型ガードより前の明示的な
+#     空判定が deny 理由になっていることを stderr でも確認する (Issue #834)。
 stderr=$(mktemp); TMPFILES+=("$stderr")
 ec=$(run_hook '' "$stderr")
 assert_exit 2 "$ec" "empty stdin is blocked (fail-closed)"
+assert_stderr_contains "PreToolUse payload が空でした" "$stderr" \
+  "empty stdin is denied by the empty-payload guard (not the type guard)"
+
+# 19b. Whitespace-only stdin -> block (fail-closed)
+#      改行だけの入力も jq から見れば同じ「値ゼロ個」なので同じ穴になる。
+stderr=$(mktemp); TMPFILES+=("$stderr")
+ec=$(run_hook $'  \n\t \n' "$stderr")
+assert_exit 2 "$ec" "whitespace-only stdin is blocked (fail-closed)"
+assert_stderr_contains "PreToolUse payload が空でした" "$stderr" \
+  "whitespace-only stdin is denied by the empty-payload guard"
 
 # 20. tool_input is a string (JSON-valid but not an object) -> block
 #     Without a type guard, .tool_input.run_in_background would make jq
@@ -190,6 +203,17 @@ assert_exit 2 "$ec" "Agent with array tool_input is blocked"
 stderr=$(mktemp); TMPFILES+=("$stderr")
 ec=$(run_hook '{"tool_name":"Agent","tool_input":true}' "$stderr")
 assert_exit 2 "$ec" "Agent with boolean tool_input is blocked"
+
+# 22b. 非 subagent ツールでも tool_input が非 object なら block (Issue #834)
+#      以前は tool_name の exact match で先に passthrough していたため、壊れた
+#      payload が Bash 等の名前を持つだけで exit 0 に落ちていた。tool_name を見る
+#      前に payload の形を確定させる方針に変更したので、ここは deny になる。
+#      (正常な object tool_input の Bash / Edit は test 11-13 のとおり passthrough)
+stderr=$(mktemp); TMPFILES+=("$stderr")
+ec=$(run_hook '{"tool_name":"Bash","tool_input":[1,2,3]}' "$stderr")
+assert_exit 2 "$ec" "non-subagent tool with array tool_input is blocked (malformed payload)"
+assert_stderr_contains "JSON object として解析できませんでした" "$stderr" \
+  "malformed tool_input is denied by the payload guard"
 
 # 23. Top-level JSON is an array (valid JSON, not an object) -> block (fail-closed)
 #     Without a top-level type guard, .tool_name indexing would jq-error (exit 5)

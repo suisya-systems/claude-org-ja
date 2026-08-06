@@ -30,8 +30,9 @@
 # 既知の制限:
 #   - jq が無い環境では fail-closed で全 Agent/Task 呼び出しを deny する
 #     (既存 block-no-verify.sh / block-git-push.sh と同じ安全側挙動)。
-#   - stdin が不正な JSON の場合も fail-closed で deny する。enforcement
-#     フックとして parse 不能な payload を素通り(fail-open)させない
+#   - stdin が空 / 空白のみ / 不正な JSON / 非 object / JSON 値が 2 個以上 の
+#     場合も fail-closed で deny する。
+#     enforcement フックとして parse 不能な payload を素通り(fail-open)させない
 #     (本フックには permissions.deny の backstop が無いため、兄弟フックより
 #     fail-open の影響が大きい)。実運用ではハーネスが整形済み JSON のみを
 #     PreToolUse へ渡すため、この経路は理論上のもの。
@@ -56,23 +57,53 @@ fi
 # stdin から JSON を読み取り
 INPUT=$(cat)
 
+# 空 payload の fail-closed ガード (Issue #834)。
+# jq は「JSON 値がゼロ個」の入力を parse error にせず、出力なしで exit 0 を返す:
+#     printf ''      | jq -e 'type == "object"'  -> exit 0 (出力なし)
+#     printf 'x{'    | jq -e 'type == "object"'  -> exit 4 (parse error)
+# そのため空 stdin は下の型ガードの `if !` 分岐を発火させずにすり抜け、続く
+# `.tool_name // empty` が空文字になって「Agent/Task 以外」と判定され、
+# passthrough の exit 0 に落ちていた。不正 JSON は deny されるのに空 payload
+# だけが素通りする穴だったため、型ガードより前に明示的に空判定して deny する。
+# 空白のみ (改行だけ等) の入力も jq から見れば同じ「値ゼロ個」なので併せて弾く。
+if [[ -z "${INPUT//[[:space:]]/}" ]]; then
+  deny_with_reason "PreToolUse payload が空でした。subagent ツール呼び出しは安全側 (fail-closed) で拒否します。"
+fi
+
 # top-level が JSON object か検証する (fail closed)。
-# set -euo pipefail 下で `VAR=$(echo "$INPUT" | jq ...)` 形式は、jq の parse
+# set -euo pipefail 下で `VAR=$(printf '%s\n' "$INPUT" | jq ...)` 形式は、jq の parse
 # error や非 object への index error 時に exit 5 でスクリプトを中断し、
 # PreToolUse では exit!=2 が非ブロッキング扱い = fail-open になる。これを避ける
 # ため、deny ロジック前に明示的な `if !` 条件で「parse 可能 かつ top-level が
 # object」を一括検査し、満たさなければ exit 2 で deny する。
-#   - `jq -e 'type == "object"'`: object なら true 出力 exit 0、配列/文字列/
-#     数値/bool/null なら false 出力 exit 1、不正 JSON なら parse error exit 5。
-#     いずれの非 object/不正系も非ゼロ → fail-closed deny。
+#   - `jq -e '<述語>'`: 真なら exit 0、偽なら exit 1、不正 JSON なら parse error
+#     (exit 4/5)。いずれの非 object/不正系も非ゼロ → fail-closed deny。
 # これにより後続の `.tool_name` / `.tool_input` の index は top-level が object
 # である前提で安全に評価できる。
-if ! echo "$INPUT" | jq -e 'type == "object"' >/dev/null 2>&1; then
-  deny_with_reason "PreToolUse payload が JSON object として解析できませんでした。subagent ツール呼び出しは安全側 (fail-closed) で拒否します。"
+#
+# tool_input が object でない (文字列・配列等) payload も同じ「不正 payload」の族なので
+# ここで併せて弾く。本フックは Agent/Task 以外を tool_name で passthrough させるため、
+# tool_input の型検査が下の IS_BACKGROUND 式だけだと `{"tool_name":"Bash","tool_input":[1]}`
+# のような壊れた payload が passthrough exit 0 に落ちていた (Issue #834 の横断点検で実測)。
+# 兄弟フックと同じ判定式に揃え、tool_name を見る前に payload の形を確定させる。
+# tool_input 欠落 (null) は正常な payload の一形態なので許容し、Agent/Task であれば
+# 下の IS_BACKGROUND 式が「前景」とみなして deny する (test 8 の契約)。
+# jq の `and` は短絡評価なので、左が false のとき右の index は評価されず error にならない。
+#
+# 入力は `echo` ではなく `printf '%s\n'` で渡す。`echo "$INPUT"` は INPUT が "-n" / "-e"
+# / "-E" 等の echo オプションと完全一致すると 1 バイトも出力せず、jq が「JSON 値ゼロ個」
+# として exit 0 を返してガードを素通りする (実測で確認)。
+# また `-s` (slurp) で入力ストリーム全体を 1 つの配列にまとめ `length == 1` を要求する。
+# jq は既定で「JSON 値の連なり」を受け付けるため、slurp しないと JSON object を 2 個
+# 並べた payload で述語が各値について真になり exit 0 になる。その後の抽出は値を改行で
+# 連結して返す (例: tool_name が "Edit\nEdit") ので、ツール名の一致判定を外して
+# passthrough に落ちる。PreToolUse payload は常に単一 object なので 1 個だけを受け付ける。
+if ! printf '%s\n' "$INPUT" | jq -e -s 'length == 1 and (.[0] | type) == "object" and (.[0].tool_input == null or (.[0].tool_input | type) == "object")' >/dev/null 2>&1; then
+  deny_with_reason "PreToolUse payload を JSON object として解析できませんでした (tool_input が object でない場合を含む)。subagent ツール呼び出しは安全側 (fail-closed) で拒否します。"
 fi
 
 # tool_name を取得。subagent ツール以外は passthrough。
-TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty')
+TOOL_NAME=$(printf '%s\n' "$INPUT" | jq -r '.tool_name // empty')
 if [[ "$TOOL_NAME" != "Agent" && "$TOOL_NAME" != "Task" ]]; then
   exit 0
 fi
@@ -84,7 +115,7 @@ fi
 # `.tool_input.run_in_background` の index が jq error(exit 5)になり
 # fail-open するため、先に `type == "object"` で型ガードする。jq の `and` は
 # 短絡評価で、左が false なら右の index は評価されないので error にならない。
-IS_BACKGROUND=$(echo "$INPUT" | jq -r 'if ((.tool_input | type) == "object") and (.tool_input.run_in_background == true) then "yes" else "no" end')
+IS_BACKGROUND=$(printf '%s\n' "$INPUT" | jq -r 'if ((.tool_input | type) == "object") and (.tool_input.run_in_background == true) then "yes" else "no" end')
 
 if [[ "$IS_BACKGROUND" != "yes" ]]; then
   deny_with_reason "subagent (${TOOL_NAME}) の前景(同期)起動は禁止です。run_in_background=true を指定して非同期で起動してください。前景起動は呼び出し元(窓口・ワーカー)をブロックし、人間接点や窓口からの差し込みへの即応を止めるため、ハーネスで一律に拒否しています。"
