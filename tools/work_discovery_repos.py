@@ -30,7 +30,7 @@ Output (stdout):
 
 - ``--format json`` (default): one JSON object with ``repos``,
   ``home_repo``, ``triage_home``, ``included``, ``opted_out``,
-  ``skipped``, ``signals`` (and ``error`` on failure).
+  ``skipped``, ``base_branches``, ``signals`` (and ``error`` on failure).
 - ``--format flags``: ``--repo a/b --repo c/d`` on a single line for shell
   splicing; ``skipped`` / ``signals`` go to stderr so stdout stays pure.
 
@@ -118,6 +118,67 @@ def _owner_repo_from_url(url: Optional[str]) -> Optional[str]:
     if not m:
         return None
     return f"{m.group(1)}/{m.group(2)}"
+
+
+def _normalize_base_branch(value: Optional[str]) -> Optional[str]:
+    """Normalize a registry ``base_branch`` cell to a bare branch name.
+
+    Delegates to :func:`tools.gen_delegate_payload.normalize_base_branch` —
+    the single source of truth for that normalization since Issue #808 (trim,
+    tolerated ``origin/`` prefix, ``""`` / ``-`` = unset) — so the triage scan
+    and the delegation pipeline can never disagree on what ``develop`` means.
+
+    The import is **lazy** on purpose: ``gen_delegate_payload`` is the heavy
+    delegation planner (it pulls in the brief generator, the layout resolver
+    and the transport module), and this file is a read-only resolver imported
+    by the scan on every run. Importing it at module scope would make the
+    triage path depend on the whole delegation stack loading cleanly for a
+    three-line string normalization.
+    """
+    from tools.gen_delegate_payload import normalize_base_branch
+
+    return normalize_base_branch(value)
+
+
+def _base_branches_from_projects(projects) -> dict[str, str]:
+    """Map ``owner/repo`` -> normalized ``base_branch`` over parsed rows.
+
+    Issue #830. Only rows that (a) yield an ``owner/repo`` from their path and
+    (b) declare a non-empty ``base_branch`` appear; every other row is absent,
+    which is what "unset = historical behaviour" means downstream.
+
+    Rows opted out of triage are **still** mapped: the ``triage`` column
+    governs whether a repo is auto-scanned, not what its base branch *is*, so
+    an explicit ``--repo`` scan of an opted-out repo still gets the correct
+    base branch. The first row for a repo wins (deterministic on duplicates).
+    """
+    out: dict[str, str] = {}
+    for proj in projects:
+        repo = _owner_repo_from_url(proj.path)
+        if repo is None or repo in out:
+            continue
+        branch = _normalize_base_branch(proj.base_branch)
+        if branch:
+            out[repo] = branch
+    return out
+
+
+def resolve_base_branches(registry_path: Path) -> dict[str, str]:
+    """Read ``registry/projects.md`` and return ``{owner/repo: base_branch}``.
+
+    Issue #830. Standalone entry point for callers that already know their
+    repo set (``work_discovery_scan.py --repo …``) and only need the base
+    branches; ``resolve_repos`` computes the same map from the rows it has
+    already parsed. A missing registry yields ``{}`` (no base branches
+    configured), matching the resolver's own "no registry rows" degradation.
+    Read-only.
+    """
+    path = Path(registry_path)
+    if not path.exists():
+        return {}
+    return _base_branches_from_projects(
+        parse_projects_text(path.read_text(encoding="utf-8"))
+    )
 
 
 def _read_triage_home(org_config_path: Path, signals: list[str]) -> bool:
@@ -249,6 +310,9 @@ def resolve_repos(
             "scan"
         )
 
+    # Issue #830: computed from the rows already parsed above (no second read).
+    base_branches = _base_branches_from_projects(projects)
+
     for proj in projects:
         raw = proj.triage.strip()
         val = raw.lower()
@@ -283,7 +347,16 @@ def resolve_repos(
             signals.append(reason)
             continue
         included.append(
-            {"nickname": proj.nickname, "repo": repo, "path": proj.path}
+            {
+                "nickname": proj.nickname,
+                "repo": repo,
+                "path": proj.path,
+                # Issue #830: the row's declared cut point / merge target
+                # (``None`` when unset). Carried per row so the audit shows
+                # *which registration* supplied a base branch, not just that
+                # one exists somewhere.
+                "base_branch": base_branches.get(repo),
+            }
         )
 
     # Dedup preserving order; home first when it is included at all.
@@ -303,6 +376,12 @@ def resolve_repos(
         "included": included,
         "opted_out": opted_out,
         "skipped": skipped,
+        # Issue #830: {owner/repo: base_branch} for every registry row that
+        # declares one (including opted-out rows — see
+        # ``_base_branches_from_projects``). The triage scan uses it to detect
+        # Issues already closed by a PR merged into a non-default base branch,
+        # which GitHub's auto-close never fires for.
+        "base_branches": base_branches,
         "signals": signals,
     }
     if not repos:
@@ -410,6 +489,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             "included": [],
             "opted_out": [],
             "skipped": [],
+            "base_branches": {},
             "signals": [],
             "error": f"failed to resolve repos: {e}",
         }

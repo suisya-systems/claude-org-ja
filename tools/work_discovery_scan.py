@@ -38,6 +38,23 @@ single-repo result. The resolver's audit fields (``repos`` / ``included`` /
 ``repo_resolution`` (``null`` when the flag was not used) so the delivery layer
 gets them without a second resolver call — success and failure alike.
 
+Two-track (``base_branch``) completion, Issue #830: a project whose
+``registry/projects.md`` row declares a ``base_branch`` (Issue #808 — e.g.
+kura's ``develop``) merges feature PRs into that branch, and GitHub's
+``Closes #N`` auto-close **only fires for merges into the default branch**.
+Finished Issues therefore stay ``open`` until the next promotion, and the
+pre-#830 triage read them as untouched — worse, the recent merge that
+finished one lit up ``unblocked_by_recent_merge``, so completed work ranked
+*first* right after it was completed (the reported symptom: kura#231 ranked 1
+the same day PR #232 closed it into ``develop``). The scan now reads the
+merged PRs targeting each such base branch and drops the Issues their closing
+keywords name into ``excluded_merged``, citing the PR; those refs also stop
+counting as open blockers, so their dependents unblock. Repos with no
+``base_branch`` behave exactly as before. Measured constraint behind the
+design: ``closingIssuesReferences`` and ``gh pr list --search linked:N`` are
+both empty for non-default-branch PRs, so the PR's own closing keyword is the
+only usable evidence (see ``base_merge_closed_refs``).
+
 Invariants enforced here (design §7):
 
 * **INV-1 / INV-3 — read-only, side effects zero.** Only ``gh`` *read*
@@ -156,6 +173,12 @@ DEFAULT_RECENT_MERGES = 10
 # this many rows the result may be truncated, which is surfaced via the
 # output's `input_truncated` flags (never silent — design §5.1).
 DEFAULT_OPEN_LIMIT = 500
+# How many merged PRs targeting a project's `base_branch` are inspected for
+# closing keywords (Issue #830). Configurable via --base-merges; 0 disables
+# the base-branch completion check entirely. The window has to cover
+# "merged into develop but not yet promoted to main", i.e. one release
+# cadence, so it is much larger than DEFAULT_RECENT_MERGES.
+DEFAULT_BASE_MERGE_LIMIT = 100
 
 # --- dependency notation (design §4.1, calibrated §11-3) ---------------
 # Match a blocking *keyword* (anywhere — body or comment, inline or list-led,
@@ -1075,6 +1098,118 @@ def estimate_unblocked_by_recent_merge(
     )
 
 
+def base_merge_closed_refs(
+    repo: str | None, base_branch: str, base_merges: list[dict]
+) -> tuple[dict[QualRef, dict], list[str]]:
+    """Issues already *done* via a merge into a non-default base branch (#830).
+
+    On a two-track repo (``base_branch=develop`` in ``registry/projects.md``)
+    feature PRs are merged into ``develop``, and GitHub's ``Closes #N``
+    auto-close **only fires for merges into the repository's default branch**.
+    Such an Issue therefore stays ``open`` until the next develop→main
+    promotion, and a triage that reads only open/closed calls finished work
+    "untouched".
+
+    Measured on ``aainc/kura-data-aggregator-trial`` (2026-08-06, gh 2.74.0):
+    PR #232 (``base=develop``, merged, body contains ``Closes #231``) reports
+    ``closingIssuesReferences: []``, while #219/#222 (``base=main``) report
+    populated ones — GitHub does not even create the *link* off the default
+    branch. ``gh pr list --search "linked:231"`` likewise returns ``[]`` and
+    Issue #231's timeline carries only a weak ``cross-referenced`` event. So
+    the linked-issue API cannot answer this question; the closing keyword in
+    the merged PR's own title/body is the only reliable evidence, and it is
+    read here with the same extractors the recent-merge axis already uses
+    (``_pr_close_refs`` / ``_cross_keyword_refs``) — never ``Refs``/``Re``,
+    which are mentions, not completions.
+
+    Returns ``({closed_ref: {"pr": QualRef, "merged_at": str,
+    "base_branch": str}}, signals)``. When two merged PRs close the same
+    Issue the newest merge wins (``mergedAt`` then PR number), so the note a
+    human reads names the merge that actually finished it. A PR whose
+    ``baseRefName`` contradicts ``base_branch`` is not counted and says so in
+    a signal (the gh fetch filters server-side; an offline ``--from-file``
+    bundle might not). Pure function — no I/O.
+    """
+    out: dict[QualRef, dict] = {}
+    signals: list[str] = []
+    mismatched = 0
+    unnamed = 0
+    for pr in base_merges or []:
+        if not isinstance(pr, dict):
+            continue
+        base_ref = pr.get("baseRefName")
+        # Absent baseRefName = trusted (the gh fetch already filtered by
+        # --base); a *present* one that disagrees is a bundle/fetch bug and
+        # must not silently widen the exclusion.
+        if isinstance(base_ref, str) and base_ref.strip() != base_branch:
+            mismatched += 1
+            continue
+        number = pr.get("number")
+        if not _is_int(number):
+            # An exclusion has to name the merge that justifies it (§5.1
+            # 「除外は理由付きで」); a PR we cannot cite is dropped, loudly.
+            unnamed += 1
+            continue
+        merged_at = pr.get("mergedAt") or ""
+        text = f"{pr.get('title') or ''}\n{pr.get('body') or ''}"
+        pr_ref: QualRef = (repo, number)
+        closed: set[QualRef] = {(repo, n) for n in _pr_close_refs(text)}
+        # A develop PR that closes *another* repo's Issue keeps that repo.
+        closed |= _cross_keyword_refs(text, _PR_CLOSE_KEYWORD_RE)
+        for ref in closed:
+            prev = out.get(ref)
+            key = (merged_at, number)
+            if prev is None or key > prev["_key"]:
+                out[ref] = {
+                    "pr": pr_ref,
+                    "merged_at": merged_at,
+                    "base_branch": base_branch,
+                    "_key": key,
+                }
+    if mismatched:
+        signals.append(
+            f"{mismatched} merged PR(s) supplied for base branch "
+            f"'{base_branch}' target a different branch — not counted"
+        )
+    if unnamed:
+        signals.append(
+            f"{unnamed} merged PR(s) for base branch '{base_branch}' had no "
+            f"integer number — not counted (an exclusion must cite its PR)"
+        )
+    return out, signals
+
+
+def _base_merge_survives_issue(issue: dict, done: dict) -> bool:
+    """False when the merge cannot possibly have completed ``issue`` (#830).
+
+    Guard against a stale/mis-parsed link closing the wrong Issue: an Issue
+    *created after* the merge that supposedly closed it was not closed by it
+    (number reuse across a fork, a hand-written ``Closes`` typo). Both
+    timestamps are ISO-8601 UTC (``gh`` emits ``Z``), so a lexicographic
+    compare is chronological. When either timestamp is missing the guard
+    abstains (returns True) rather than inventing an ordering.
+
+    Deliberately NOT covered: an Issue reopened after a genuine closing merge
+    — the exclusion still fires, which is why it is reported with the closing
+    PR named rather than dropped silently, so a human can overrule it.
+    """
+    created = issue.get("createdAt")
+    merged_at = done.get("merged_at")
+    if not isinstance(created, str) or not created or not merged_at:
+        return True
+    return created <= merged_at
+
+
+def _merged_note(done: dict, collapse_repo=None) -> str:
+    """Visible exclusion reason for a base-branch-completed Issue (#830)."""
+    return (
+        f"{_ref_to_disp(done['pr'], collapse_repo)} が "
+        f"{done['base_branch']} にマージ済み"
+        f"（既定ブランチ外のマージなので GitHub の自動クローズが発火せず "
+        f"Issue が open のまま残っている）"
+    )
+
+
 def extract_summary(body: str | None, title: str) -> str:
     """One-line machine summary from the body (design §5.1 `summary`).
 
@@ -1114,6 +1249,7 @@ def build_candidate(
     scanned_repos: set,
     collapse_repo=None,
     effort_model: dict | None = None,
+    base_done_refs: dict[QualRef, dict] | None = None,
 ) -> dict | None:
     """Build one candidate dict, or ``None`` if the Issue is blocked.
 
@@ -1163,9 +1299,23 @@ def build_candidate(
         if repo is not None and repo not in scanned_repos
     ]
 
+    # Issue #830: a blocker that a base-branch merge already finished is not
+    # an open blocker, but it is still *open* on GitHub — so say why it was
+    # treated resolved instead of letting the dependency silently look clean.
+    base_signals = [
+        f"blocker {_ref_to_disp(ref, collapse_repo)} closed by "
+        f"{_ref_to_disp((base_done_refs or {})[ref]['pr'], collapse_repo)} "
+        f"merged into {(base_done_refs or {})[ref]['base_branch']} "
+        f"— treated resolved"
+        for ref in sorted(
+            (r for r in all_blocking if r in (base_done_refs or {})),
+            key=_ref_sort_key,
+        )
+    ]
+
     signals = (
         prio_signals + effort_signals + par_signals + merge_signals
-        + cross_signals
+        + cross_signals + base_signals
     )
 
     # Coerce `title` to a string here so the candidate JSON always satisfies
@@ -1313,7 +1463,19 @@ def scan_repos(
         {"repo": "owner/repo" | None,   # None = gh current-repo (single-repo)
          "issues": [...],               # open Issues for that repo
          "open_pr_numbers": [...]|set,  # open PR numbers for that repo
-         "recent_merges": [...]}        # recent merged PRs for that repo
+         "recent_merges": [...],        # recent merged PRs for that repo
+         "base_branch": "develop"|None, # registry base_branch (Issue #830)
+         "base_merges": [...]}          # merged PRs targeting base_branch
+
+    Base-branch completion (Issue #830): on a repo whose registry row declares
+    a ``base_branch``, an Issue closed by a PR merged into that branch stays
+    ``open`` on GitHub (auto-close only fires on the default branch), so it
+    would be triaged as untouched — and the ``unblocked_by_recent_merge`` axis
+    would push it *up* the ranking precisely because the merge that finished
+    it was recent. Such Issues are removed from the candidate pool into
+    ``excluded_merged`` with the closing PR named, and are dropped from the
+    open-blocker set so their dependents unblock (each dependent says so in
+    ``signals[]``). Repos with no ``base_branch`` are untouched.
 
     Every open Issue/PR, blocker and recent-merge link is keyed by a
     qualified ``(repo, number)`` ref — always the *real* repo name — so a ja
@@ -1339,6 +1501,15 @@ def scan_repos(
     recent_merge_pr_refs: set[QualRef] = set()
     recent_merge_closed_refs: set[QualRef] = set()
     recent_merge_referenced_refs: set[QualRef] = set()
+    # Issue #830: refs finished by a merge into a declared non-default base
+    # branch, plus the per-repo audit of which base branches were applied.
+    base_done_refs: dict[QualRef, dict] = {}
+    base_branch_scan: list[dict] = []
+    base_signals: list[str] = []
+
+    # First open Issue seen per ref, for the base-merge sanity guard below
+    # (the candidate loop's `seen` de-dup uses the same first-wins rule).
+    issue_by_ref: dict[QualRef, dict] = {}
 
     for bundle in repo_bundles:
         repo = bundle.get("repo")
@@ -1346,6 +1517,7 @@ def scan_repos(
         for issue in bundle.get("issues") or []:
             if _is_int(issue.get("number")):
                 open_refs_q.add((repo, issue["number"]))
+                issue_by_ref.setdefault((repo, issue["number"]), issue)
         for num in bundle.get("open_pr_numbers") or ():
             if _is_int(num):
                 open_refs_q.add((repo, num))
@@ -1366,9 +1538,53 @@ def scan_repos(
             recent_merge_referenced_refs.update(
                 _cross_keyword_refs(text, _PR_REF_KEYWORD_RE)
             )
+        raw_base = bundle.get("base_branch")
+        base_branch = raw_base.strip() if isinstance(raw_base, str) else ""
+        if not base_branch:
+            continue
+        done, sigs = base_merge_closed_refs(
+            repo, base_branch, bundle.get("base_merges") or []
+        )
+        base_signals.extend(sigs)
+        for ref, info in done.items():
+            prev = base_done_refs.get(ref)
+            if prev is None or info["_key"] > prev["_key"]:
+                base_done_refs[ref] = info
+        base_branch_scan.append(
+            {
+                "repo": None if _is_home_disp(repo, collapse_repo) else repo,
+                "base_branch": base_branch,
+                "merged_prs_scanned": len(bundle.get("base_merges") or []),
+                "closed_issue_count": len(done),
+            }
+        )
+
+    # Drop links the sanity guard rejects (an Issue created after the merge
+    # that allegedly closed it) *before* anything consumes the map, so the
+    # exclusion and the open-blocker removal below can never disagree about
+    # which Issues are done.
+    for ref in [
+        r
+        for r, info in base_done_refs.items()
+        if r in issue_by_ref
+        and not _base_merge_survives_issue(issue_by_ref[r], info)
+    ]:
+        info = base_done_refs.pop(ref)
+        base_signals.append(
+            f"{_ref_to_disp(ref, collapse_repo)} is newer than "
+            f"{_ref_to_disp(info['pr'], collapse_repo)} "
+            f"({info['merged_at']}) — closing link ignored"
+        )
+
+    # A ref a base-branch merge already finished is *done*, not an open
+    # blocker — leaving it in `open_refs_q` would keep its dependents excluded
+    # as blocked by work that is complete. Dependents disclose the swap in
+    # their own `signals[]` (see build_candidate).
+    open_refs_q -= set(base_done_refs)
 
     candidates: list[dict] = []
     excluded_blocked: list[dict] = []
+    excluded_merged: list[dict] = []
     # Identity is (repo, number); de-dup so a repo appearing twice (a duplicate
     # bundle in `--from-file`'s `repos[]`, or the same Issue listed twice) never
     # double-counts a candidate / excluded entry (which would corrupt
@@ -1384,6 +1600,29 @@ def scan_repos(
                 if key in seen:
                     continue
                 seen.add(key)
+                # Issue #830: already finished by a base-branch merge. Checked
+                # before the dependency classification because "done" outranks
+                # "blocked" — a completed Issue is not a candidate either way,
+                # and its exclusion reason must name the merge, not a blocker.
+                done = base_done_refs.get(key)
+                if done is not None:
+                    excluded_merged.append(
+                        {
+                            "repo": (
+                                None
+                                if _is_home_disp(repo, collapse_repo)
+                                else repo
+                            ),
+                            "issue": number,
+                            "base_branch": done["base_branch"],
+                            "closed_by_pr": _ref_to_json(
+                                done["pr"], collapse_repo
+                            ),
+                            "merged_at": done["merged_at"],
+                            "note": _merged_note(done, collapse_repo),
+                        }
+                    )
+                    continue
             status, open_blocking, _all = _classify_dependency_q(
                 issue, repo, open_refs_q
             )
@@ -1413,6 +1652,7 @@ def scan_repos(
                 scanned_repos=scanned_repos,
                 collapse_repo=collapse_repo,
                 effort_model=effort_model,
+                base_done_refs=base_done_refs,
             )
             if cand is not None:
                 candidates.append(cand)
@@ -1427,14 +1667,19 @@ def scan_repos(
 
     # Deterministic order on (repo, issue) — repo string disambiguates a
     # cross-repo issue-number collision; a None issue number sorts last.
-    excluded_blocked.sort(
-        key=lambda e: (
-            e.get("repo") or "",
-            (e["issue"] is None, e["issue"] if _is_int(e["issue"]) else 0),
+    def _excl_sort_key(entry: dict) -> tuple:
+        return (
+            entry.get("repo") or "",
+            (
+                entry["issue"] is None,
+                entry["issue"] if _is_int(entry["issue"]) else 0,
+            ),
         )
-    )
 
-    truncation = {"open_issues": False, "open_prs": False}
+    excluded_blocked.sort(key=_excl_sort_key)
+    excluded_merged.sort(key=_excl_sort_key)
+
+    truncation = {"open_issues": False, "open_prs": False, "base_merges": False}
     if input_truncated:
         truncation.update(
             {k: bool(v) for k, v in input_truncated.items() if k in truncation}
@@ -1458,6 +1703,17 @@ def scan_repos(
         "candidates": top,
         "recommendation": recommendation,
         "excluded_blocked": excluded_blocked,
+        # Issue #830. Always present (``[]`` when nothing was excluded this
+        # way, and on every repo without a configured `base_branch`) so the
+        # delivery layer reads one shape. Each entry names the merged PR and
+        # the base branch, so "why isn't this in the list any more" is
+        # answerable from the scan output alone.
+        "excluded_merged": excluded_merged,
+        # Which repos had a base_branch applied, how many merged PRs were
+        # inspected, and any anomaly found while reading them — so a scan that
+        # excluded nothing can be told apart from one that never looked.
+        "base_branch_scan": base_branch_scan,
+        "base_branch_signals": base_signals,
     }
 
 
@@ -1468,6 +1724,8 @@ def scan(
     config: ScanConfig,
     input_truncated: dict | None = None,
     effort_model: dict | None = None,
+    base_branch: str | None = None,
+    base_merges: list[dict] | None = None,
 ) -> dict:
     """Single-repo triage core (design §5.1).
 
@@ -1478,7 +1736,10 @@ def scan(
     numbers to resolve blocking refs); ``recent_merges`` — recent merged PRs
     for the unblocked-by-recent-merge heuristic; ``input_truncated`` — optional
     ``{"open_issues": bool, "open_prs": bool}``; ``effort_model`` — optional
-    learned effort model (Issue #529). Candidates carry ``repo: null``.
+    learned effort model (Issue #529); ``base_branch`` / ``base_merges`` —
+    optional two-track completion inputs (Issue #830; omitted = the repo has
+    no configured base branch and nothing is excluded that way).
+    Candidates carry ``repo: null``.
     Cross-repo blockers (if any) resolve against the empty cross set, i.e.
     treated resolved — matching the prior single-repo behaviour. No I/O.
     """
@@ -1489,6 +1750,8 @@ def scan(
                 "issues": issues,
                 "open_pr_numbers": open_pr_numbers,
                 "recent_merges": recent_merges,
+                "base_branch": base_branch,
+                "base_merges": base_merges or [],
             }
         ],
         config,
@@ -1655,6 +1918,49 @@ def fetch_recent_merges(repo: str | None, limit: int) -> list[dict]:
     # (treated as oldest). The slice takes the genuine 直近 K 件.
     merges.sort(key=lambda p: p.get("mergedAt") or "", reverse=True)
     return merges[:limit]
+
+
+def fetch_base_branch_merges(
+    repo: str | None, base_branch: str, limit: int
+) -> list[dict]:
+    """Merged PRs that targeted ``base_branch`` (Issue #830). Read-only.
+
+    Server-side filtered with ``--base`` (verified against
+    ``aainc/kura-data-aggregator-trial`` on 2026-08-06, gh 2.74.0: the flag
+    returns exactly the ``baseRefName == develop`` merges). ``baseRefName`` is
+    still requested and re-checked in ``base_merge_closed_refs`` so the pure
+    core does not have to trust the fetch.
+
+    ``closingIssuesReferences`` is deliberately NOT requested: GitHub only
+    creates that link for PRs targeting the *default* branch, so on exactly
+    the repos this feature exists for it comes back empty (measured; see
+    ``base_merge_closed_refs``). The closing keyword in the PR's own
+    title/body is the signal, so only ``title`` / ``body`` are needed.
+
+    Newest-first by ``mergedAt``, mirroring ``fetch_recent_merges``' exact
+    client-side ordering (the server's ``sort:updated-desc`` only
+    approximates merge recency), so the ``limit`` window is the genuinely
+    most-recent merges into the base branch.
+    """
+    merges = _run_gh_json_list(
+        [
+            "pr",
+            "list",
+            *_repo_args(repo),
+            "--state",
+            "merged",
+            "--base",
+            base_branch,
+            "--search",
+            "sort:updated-desc",
+            "--limit",
+            str(limit),
+            "--json",
+            "number,title,body,baseRefName,mergedAt",
+        ]
+    )
+    merges.sort(key=lambda p: p.get("mergedAt") or "", reverse=True)
+    return merges
 
 
 # ----------------------------------------------------------------------
@@ -1949,8 +2255,16 @@ def _validate_repo_bundle(src: dict, prefix: str) -> dict:
             f"{type(repo).__name__}"
         )
 
+    base_branch = src.get("base_branch")
+    if base_branch is not None and not isinstance(base_branch, str):
+        raise GhError(
+            f"--from-file `{prefix}base_branch` must be a string or null, got "
+            f"{type(base_branch).__name__}"
+        )
+
     issues = _list_field("issues")
     recent_merges = _list_field("recent_merges")
+    base_merges = _list_field("base_merges")
     pr_raw = _list_field("open_pr_numbers")
     for i, item in enumerate(issues):
         if not isinstance(item, dict):
@@ -1966,12 +2280,16 @@ def _validate_repo_bundle(src: dict, prefix: str) -> dict:
             raise GhError(
                 f"--from-file {prefix}issues[{i}] must have an integer `number`"
             )
-    for i, item in enumerate(recent_merges):
-        if not isinstance(item, dict):
-            raise GhError(
-                f"--from-file {prefix}recent_merges[{i}] must be an object, got "
-                f"{type(item).__name__}"
-            )
+    for name, rows in (
+        ("recent_merges", recent_merges),
+        ("base_merges", base_merges),
+    ):
+        for i, item in enumerate(rows):
+            if not isinstance(item, dict):
+                raise GhError(
+                    f"--from-file {prefix}{name}[{i}] must be an object, got "
+                    f"{type(item).__name__}"
+                )
     open_pr_numbers: set[int] = set()
     for i, n in enumerate(pr_raw):
         if not isinstance(n, int) or isinstance(n, bool):
@@ -1985,6 +2303,8 @@ def _validate_repo_bundle(src: dict, prefix: str) -> dict:
         "issues": issues,
         "open_pr_numbers": open_pr_numbers,
         "recent_merges": recent_merges,
+        "base_branch": base_branch,
+        "base_merges": base_merges,
     }
 
 
@@ -2089,11 +2409,18 @@ def _error_payload(
         "generated_for": trigger,
         "candidate_count": 0,
         "truncated_count": 0,
-        "input_truncated": {"open_issues": False, "open_prs": False},
+        "input_truncated": {
+            "open_issues": False,
+            "open_prs": False,
+            "base_merges": False,
+        },
         "effort_model": None,
         "candidates": [],
         "recommendation": None,
         "excluded_blocked": [],
+        "excluded_merged": [],
+        "base_branch_scan": [],
+        "base_branch_signals": [],
         "repo_resolution": repo_resolution,
         "error": message,
     }
@@ -2151,6 +2478,74 @@ def _resolve_registry_repos(claude_org_root=None) -> dict:
             "signals": [],
             "error": f"failed to resolve repos: {type(exc).__name__}: {exc}",
         }
+
+
+def _resolve_base_branches(
+    claude_org_root=None, repo_resolution: dict | None = None
+) -> tuple[dict[str, str], list[str]]:
+    """``{owner/repo: base_branch}`` for the two-track completion check (#830).
+
+    ``registry/projects.md`` is the single source of truth for a project's
+    base branch (Issue #808), so the map is read from there for **both** repo-
+    set modes: ``--all-registry-repos`` reuses the ``base_branches`` the
+    resolver already produced (no second read), and an explicit ``--repo`` run
+    reads the registry directly — otherwise naming the same repo by hand would
+    silently reintroduce the bug this check exists to fix.
+
+    Keys are lowercased (the resolver lowercases derived slugs) so a
+    differently-cased ``--repo aainc/Kura`` still matches.
+
+    Never raises and never fatal: a repo whose base branch cannot be resolved
+    simply keeps the pre-#830 behaviour. The reason is returned as a signal
+    and echoed in ``base_branch_signals`` rather than swallowed — a scan that
+    silently stopped consulting the registry would look exactly like a scan
+    that found nothing to exclude.
+    """
+    if repo_resolution is not None:
+        mapping = repo_resolution.get("base_branches")
+        if isinstance(mapping, dict):
+            return (
+                {
+                    str(k).lower(): v
+                    for k, v in mapping.items()
+                    if isinstance(v, str) and v
+                },
+                [],
+            )
+        return {}, [
+            "registry resolver returned no base_branches map — base-branch "
+            "completion check skipped"
+        ]
+    root = Path(__file__).resolve().parent.parent
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+    org_root = Path(claude_org_root).resolve() if claude_org_root else root
+    registry = org_root / "registry" / "projects.md"
+    if not registry.exists():
+        # Not fatal (an explicit `--repo` run needs no registry to triage),
+        # but not silent either: "no base branch configured anywhere" and "the
+        # file that declares them was not found" look identical in the output
+        # otherwise, and the second one is how this check quietly dies.
+        return {}, [
+            f"registry not found at {registry} — base-branch completion "
+            f"check skipped (no base_branch column to read)"
+        ]
+    try:
+        from tools.work_discovery_repos import resolve_base_branches
+
+        return (
+            {
+                k.lower(): v
+                for k, v in resolve_base_branches(registry).items()
+            },
+            [],
+        )
+    except Exception as exc:  # noqa: BLE001 — degrade, but say so
+        return {}, [
+            f"could not read base_branch column from {registry}: "
+            f"{type(exc).__name__}: {exc} — base-branch completion check "
+            f"skipped"
+        ]
 
 
 class _JsonErrorParser(argparse.ArgumentParser):
@@ -2237,8 +2632,9 @@ def main(argv=None) -> int:
     parser.add_argument(
         "--claude-org-root",
         default=None,
-        help="Repo root the registry is read from with --all-registry-repos "
-        "(default: this tool's own repo root). Ignored otherwise.",
+        help="Repo root the registry is read from, both for "
+        "--all-registry-repos and for the base_branch column used by the "
+        "two-track completion check (default: this tool's own repo root).",
     )
     parser.add_argument(
         "--top-n",
@@ -2276,6 +2672,17 @@ def main(argv=None) -> int:
         help=f"How many recent merged PRs to learn realized effort from "
         f"(design §10); 0 disables effort learning (static heuristic only). "
         f"Default {DEFAULT_EFFORT_HISTORY}.",
+    )
+    parser.add_argument(
+        "--base-merges",
+        type=int,
+        default=DEFAULT_BASE_MERGE_LIMIT,
+        help=f"How many merged PRs targeting a project's registry "
+        f"base_branch are inspected for closing keywords, so Issues already "
+        f"finished on a non-default branch are excluded instead of ranked "
+        f"first (Issue #830); 0 disables the check. Only repos whose "
+        f"registry/projects.md row sets base_branch are affected. "
+        f"Default {DEFAULT_BASE_MERGE_LIMIT}.",
     )
     parser.add_argument(
         "--from-file",
@@ -2317,6 +2724,10 @@ def main(argv=None) -> int:
         # learning, negative is nonsense.
         if args.effort_history < 0:
             raise ValueError("--effort-history must be >= 0")
+        # `--base-merges` feeds `gh pr list --limit`; 0 disables the check,
+        # negative is nonsense.
+        if args.base_merges < 0:
+            raise ValueError("--base-merges must be >= 0")
         # `--all-registry-repos` *is* the repo-set source; combining it with an
         # explicit set (or with an offline bundle that carries its own repos)
         # is ambiguous, and silently letting one win would hide half of what
@@ -2332,9 +2743,14 @@ def main(argv=None) -> int:
                 "--all-registry-repos cannot be combined with --from-file "
                 "(the bundle already carries its own repos)"
             )
-        input_truncated = {"open_issues": False, "open_prs": False}
+        input_truncated = {
+            "open_issues": False,
+            "open_prs": False,
+            "base_merges": False,
+        }
         effort_model: dict | None = None
         collapse_repo = None
+        base_branch_signals: list[str] = []
         if args.from_file:
             bundles, effort_model = _load_bundle(args.from_file)
         else:
@@ -2379,17 +2795,42 @@ def main(argv=None) -> int:
             # keeps real repo strings in the output.
             if len(repos) == 1:
                 collapse_repo = repos[0]
+            # Issue #830: registry base_branch per repo. Resolved once, from
+            # the resolver's own map when the registry drove the repo set.
+            base_branches: dict[str, str] = {}
+            if args.base_merges > 0:
+                base_branches, base_branch_signals = _resolve_base_branches(
+                    args.claude_org_root, repo_resolution
+                )
             bundles = []
             for repo in repos:
                 issues = fetch_open_issues(repo)
                 open_pr_numbers = fetch_open_pr_numbers(repo)
                 recent_merges = fetch_recent_merges(repo, args.recent_merges)
+                # `repo is None` = the implicit gh-current-repo scan: there is
+                # no slug to look up, so no base branch applies (name the repo
+                # with --repo / --all-registry-repos to get the check).
+                base_branch = (
+                    base_branches.get(repo.lower()) if repo else None
+                )
+                base_merges: list[dict] = []
+                if base_branch:
+                    base_merges = fetch_base_branch_merges(
+                        repo, base_branch, args.base_merges
+                    )
+                    # Full page = the window may have cut off older merges, so
+                    # an Issue finished before it could be mis-triaged as
+                    # untouched. Never silent (design §5.1).
+                    if len(base_merges) >= args.base_merges:
+                        input_truncated["base_merges"] = True
                 bundles.append(
                     {
                         "repo": repo,
                         "issues": issues,
                         "open_pr_numbers": open_pr_numbers,
                         "recent_merges": recent_merges,
+                        "base_branch": base_branch,
+                        "base_merges": base_merges,
                     }
                 )
                 # A full page (== cap) means a fetch may have dropped rows; the
@@ -2428,6 +2869,12 @@ def main(argv=None) -> int:
         # scan actually look at, and which did it deliberately skip" is
         # answerable from the scan output alone — no second resolver call.
         result["repo_resolution"] = repo_resolution
+        # Resolution-side notes (registry unreadable, no base_branches map)
+        # join the core's own reading anomalies; both must reach the human.
+        if base_branch_signals:
+            result["base_branch_signals"] = (
+                base_branch_signals + result["base_branch_signals"]
+            )
     except Exception as exc:  # noqa: BLE001 — report any failure as error/exit 2
         # Keep the fixed schema (design §5.1) so the delivery layer parses
         # the error branch the same way; the audit fields are present (empty)

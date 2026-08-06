@@ -85,6 +85,24 @@ def _write_registry(
     return path
 
 
+def _write_base_branch_registry(root: Path, data_rows: list[str]) -> Path:
+    """Write a registry whose header carries the Issue #808 ``base_branch``
+    column (7 columns), for the Issue #830 base-branch tests."""
+    reg_dir = root / "registry"
+    reg_dir.mkdir(exist_ok=True)
+    lines = [
+        "# Projects Registry",
+        "",
+        "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 | triage "
+        "| base_branch |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    lines += [f"| {body} |" for body in data_rows]
+    path = reg_dir / "projects.md"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
 def _write_org_config(root: Path, body: str) -> Path:
     """Write ``root/registry/org-config.md`` with ``body`` verbatim."""
     reg_dir = root / "registry"
@@ -129,7 +147,9 @@ class ResolveReposTest(unittest.TestCase):
         self.assertEqual(result["repos"], ["o/ok"])
         self.assertEqual(
             result["included"],
-            [{"nickname": "ok", "repo": "o/ok", "path": url}],
+            # `base_branch: None` = the row declares no base branch (Issue
+            # #830); the key is always present so the shape is fixed.
+            [{"nickname": "ok", "repo": "o/ok", "path": url, "base_branch": None}],
         )
 
     def test_explicit_no_is_opted_out(self) -> None:
@@ -716,6 +736,86 @@ class FormatOutputTest(unittest.TestCase):
         with redirect_stdout(out), redirect_stderr(err):
             rc = wdr.main(argv)
         return out.getvalue(), err.getvalue(), rc
+
+
+class BaseBranchesTest(unittest.TestCase):
+    """The ``base_branch`` column feeds the triage scan's two-track
+    completion check (Issue #830, over the Issue #808 column)."""
+
+    def setUp(self) -> None:
+        self._td = tempfile.TemporaryDirectory()
+        self.root = Path(self._td.name)
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def test_declared_base_branch_is_mapped(self) -> None:
+        reg = _write_base_branch_registry(
+            self.root,
+            [
+                "kura | kura | https://github.com/aainc/kura | d | x |  "
+                "| develop |",
+                "ja | ja | https://github.com/o/ja | d | x |  |  |",
+            ],
+        )
+        self.assertEqual(
+            wdr.resolve_base_branches(reg), {"aainc/kura": "develop"}
+        )
+        result = wdr.resolve_repos(
+            registry_path=reg, claude_org_root=self.root
+        )
+        self.assertEqual(result["base_branches"], {"aainc/kura": "develop"})
+        rows = {row["repo"]: row["base_branch"] for row in result["included"]}
+        self.assertEqual(rows, {"aainc/kura": "develop", "o/ja": None})
+
+    def test_origin_prefix_and_placeholder_are_normalized(self) -> None:
+        # Same normalization as the delegation pipeline (Issue #808): the ref
+        # may be written the way git prints it, and `-` means "unset".
+        reg = _write_base_branch_registry(
+            self.root,
+            [
+                "a | a | https://github.com/o/a | d | x |  | origin/develop |",
+                "b | b | https://github.com/o/b | d | x |  | - |",
+                "c | c | https://github.com/o/c | d | x |  |   main   |",
+            ],
+        )
+        self.assertEqual(
+            wdr.resolve_base_branches(reg),
+            {"o/a": "develop", "o/c": "main"},
+        )
+
+    def test_opted_out_row_still_reports_its_base_branch(self) -> None:
+        # `triage` governs auto-scanning, not what the branch *is*: an
+        # explicit `--repo` scan of an opted-out repo must still get it.
+        reg = _write_base_branch_registry(
+            self.root,
+            ["k | k | https://github.com/o/k | d | x | no | develop |"],
+        )
+        result = wdr.resolve_repos(
+            registry_path=reg, claude_org_root=self.root
+        )
+        self.assertEqual(result["repos"], [])
+        self.assertEqual(result["base_branches"], {"o/k": "develop"})
+
+    def test_legacy_table_has_no_base_branches(self) -> None:
+        # Positional fallback never populates base_branch, so pre-#808 forks
+        # keep the historical behaviour with zero edits.
+        reg = _write_registry(
+            self.root,
+            ["ok | okproj | https://github.com/o/ok | d | x"],
+            with_triage_column=False,
+        )
+        self.assertEqual(wdr.resolve_base_branches(reg), {})
+        result = wdr.resolve_repos(
+            registry_path=reg, claude_org_root=self.root
+        )
+        self.assertEqual(result["base_branches"], {})
+
+    def test_missing_registry_yields_empty_map(self) -> None:
+        self.assertEqual(
+            wdr.resolve_base_branches(self.root / "registry" / "projects.md"),
+            {},
+        )
 
 
 if __name__ == "__main__":
