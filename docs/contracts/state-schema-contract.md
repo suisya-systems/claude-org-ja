@@ -75,7 +75,7 @@ The harness's persistent state surface comprises the files listed below. Each en
 - **Owner**: dispatcher (creation at T2, Status transitions, final update on T7 / CLOSE_PANE) and secretary (Progress Log appends on each report — per Set B T3, T4).
 - **Readers**: secretary (resume / progress review), dispatcher (close-pane retro), `/org-resume` and `/org-suspend` (state collection).
 - **Update cadence**: per delegation transition (Set B T2, T3, T4, T5, T7) and each progress / suspend / resume message.
-- **Authoritative format**: FREE-FORM Markdown enforced by helper convention. The `delegate-plan` helper output template is the de facto shape; no separate generator analogous to `tools/gen_worker_brief.py` is required for the per-worker state file. Format-language uniformity is addressed in §2; versioning in §4.1.
+- **Authoritative format**: FREE-FORM Markdown enforced by helper convention. The `delegate-plan` helper output template is the de facto shape; no separate generator analogous to `tools/gen_worker_brief.py` is required for the per-worker state file. Format-language uniformity is addressed in §2; versioning in §4.1. **Exception**: the header `Status:` line is NOT free-form — it is machine-read by `claude-org-runtime` as the overflow reservation ledger, and its byte-level shape is contracted in §7.
 
 ### 1.5 `.state/dispatcher/inbox/{task_id}.json`
 
@@ -248,3 +248,57 @@ The `.state/state.db` **SQLite** database is the machine-tractable projection of
 - **Migration mechanism (additive to §4)**: adding a table means (a) appending its `CREATE TABLE` to `schema.sql` + a `schema_migrations` INSERT for the next integer version, and (b) adding a matching idempotent `_M{N}_..._DDL` constant + `ensure_*_schema()` in `__init__.py` (`CREATE TABLE IF NOT EXISTS` / `INSERT OR IGNORE`, called outside an open transaction). A DDL-lockstep test (`tools/state_db/test_writer.py`) asserts the two paths produce column-identical tables so drift breaks tests, not production.
 - **`event_deliveries` (this amendment)**: an append-mostly **outbox delivery ledger** backing the CI-watch zero-miss relay. `events` remains the source of truth for terminal signals; `event_deliveries` records whether each terminal event has been relayed to a recipient. Columns: `id`, `source_event_id` (FK → `events(id)` ON DELETE CASCADE), `recipient`, `status ∈ {pending, delivered, failed}`, `attempt`, `first_attempt_at`, `last_attempt_at`, `delivered_at`, `last_error`, `created_at`, with `UNIQUE (source_event_id, recipient)` as the idempotency key. Exactly-once-relay / de-dup is enforced by that key (not a send-side marker); `delivered` is terminal, `failed`/`pending` are retryable. Writers: `StateWriter.{pending_deliveries, begin_delivery_attempt, mark_delivered, mark_delivery_failed}`; the dispatcher relay CLI is `tools/relay_scan.py`. Schema version: `schema_migrations` row 3 (`event_deliveries outbox delivery ledger (Refs #653 #658)`).
 - **New `events.kind` values (additive)**: `pr_merged_no_run`, `pr_merged_head_unconfirmed`, `pr_watch_aborted`, `notify_failed` — canonical rows written by `tools/pr_watch.py` so terminal signals that were previously peer-only now always have a DB event that the dispatcher relay can scan (the "peer-only terminal signal is abolished" invariant). `events.kind` is an open TEXT vocabulary (§1.3 journal-event catalog is convention-only), so these are additive and require no reader changes.
+
+---
+
+## 7. Amendment — worker-seed `Status:` header as a runtime-read field (Refs #835)
+
+> **Status**: Additive amendment (2026-08-06). Does NOT rewrite any ratified §1–§6 text above. It narrows exactly one clause of §1.4 — the `Status:` header line is carved out of "FREE-FORM Markdown enforced by helper convention" — because `claude-org-runtime` 0.1.39 began machine-reading that line. Every other field of the worker seed stays free-form, and the `Status` vocabulary and transition ownership of §1.4 / §3.1 / Set B §1 are unchanged.
+
+### 7.1 What reads it, and when
+
+`claude-org-runtime` parses the `Status:` header of `.state/workers/*.md` as an **overflow reservation ledger** — the seed file stands in for a worker that has been spawned into its own renga tab but has not yet bound as a peer, and is therefore invisible to both `list_panes` (caller-tab-scoped after renga#288) and `list_peers`.
+
+- Parser: `_seed_status()` — `claude_org_runtime/dispatcher/runner.py:1265-1286` (installed 0.1.39).
+- Consumer: `count_unbound_reservations()` — `runner.py:1175-1263`.
+- Single call site: `runner.py:2796`, inside the `tab is None` branch of overflow placement (`runner.py:2751-2752`, "Overflow mode -- and ONLY overflow mode"). It does **not** run on an ordinary delegation.
+- Effect: `plan.capacity.reserved_workers` / `reserved_worker_names` / `free_worker_slots`, and the `split_capacity_exceeded` verdict (`runner.py:2820-2832`).
+
+### 7.2 The parse rule ja MUST write against
+
+Read as literal behavior of `runner.py:1277-1284`, not as a paraphrase:
+
+1. The file is scanned top-to-bottom; the **first** line whose `strip()`ed form starts with `status:` **case-insensitively** wins. A later `Status:` inside `## Progress Log` is never read (`runner.py:1272-1276`).
+2. The value is everything after the first `:`, `strip()`ed and **lowercased**. An empty value yields `None`.
+3. No line matches, or the file is unreadable → `None`.
+4. A seed counts as an outstanding reservation iff its status is `None` **or** `planned` (`runner.py:1255-1260`) **and** its mtime is younger than `WORKER_BIND_WINDOW_SECONDS = 45` (`runner.py:305`, checked at `runner.py:1253`). Any other status is treated as newer evidence than the clock and releases the slot.
+
+### 7.3 ja-side obligations
+
+- **MUST**: every worker seed ja creates carries a `Status:` header line, in the bare `Status: <value>` form, before `## Assignment`. This holds for every writer, including prose-driven fallback templates followed by hand ([`.dispatcher/references/spawn-flow.md`](../../.dispatcher/references/spawn-flow.md) Step 4).
+- **MUST**: once the pane is spawned and instructed, the seed's status is flipped off `planned` (Set B §1 T2 / spawn-flow Step 4). `planned` is the one reserved word here — to the runtime, `active` / `review` / `closed` / `completed` / `pane_closed` are all the same answer ("no longer pending"), so the granularity of the post-`planned` vocabulary is a ja-internal concern (§1.4, Set B §1) and carries no runtime meaning.
+- **MUST NOT**: bullet-prefixed (`- Status: active`), heading-prefixed, or otherwise decorated forms. `strip()` does not remove the `-`, so `startswith("status:")` is false and the line is invisible to the parser (`runner.py:1281-1283`). Five archived seeds from the pre-2026 `wp-*` era use this shape; they are out of the ledger's reach (§7.4) and are not migrated.
+- **SHOULD**: a single lowercase token as the value. Trailing parenthetical notes (observed once: `Status: closed (abandoned)`) still satisfy rule 4, but they defeat any future exact-match reader.
+- **Scope of the glob**: `workers_dir.glob("*.md")` (`runner.py:1238`) is **non-recursive** — `.state/workers/archive/` is out of reach — and `pathlib` `*.md` **does match dotfiles** (verified: the glob returns `.state/workers/.secretary-notes.md`). Therefore anything placed directly in `.state/workers/` is ledger input. Non-seed files SHOULD NOT live there; one does today (`.secretary-notes.md`, no `Status:` line, no ja writer found), and it would hold a phantom reservation slot for 45s after any touch. Moving it is a live-state decision left to the operator.
+
+### 7.4 Why this is a ja-side obligation, not a joint contract
+
+The runtime declines to make it one, in as many words: "a consumer may template these files differently; `write_worker_seed` is the runtime's shape, **not a contract every writer signed**" (`runner.py:1268-1271`). So the asymmetry is deliberate and this section MUST NOT be read as a bilateral agreement:
+
+- the runtime provides a tolerant reader with a **documented degradation** (no `Status:` line ⇒ fall back to the mtime clock);
+- ja binds *itself* to a superset — always emit the header — so that the degradation never fires;
+- the binding is valid for the pinned runtime window `claude-org-runtime>=0.1.37,<0.2` ([`pyproject.toml`](../../pyproject.toml):30, [`requirements.txt`](../../requirements.txt):111; installed 0.1.39). A runtime upgrade that moves the reader is a trigger to re-read this section, not an automatic contract change.
+
+### 7.5 Silent-degradation warning
+
+**Losing this format raises no error anywhere.** A seed without a parseable `Status:` line is read as `None`, which means "still pending", which means an already-active worker holds a capacity slot for up to 45 seconds. The only symptom is an overflow delegation that is refused as `split_capacity_exceeded`, or a `free_worker_slots` smaller than reality — inside a 45-second window, so it barely reproduces by hand.
+
+The regression guard is [`tests/test_worker_seed_status_contract.py`](../../tests/test_worker_seed_status_contract.py), which runs in CI (`python -m unittest discover -s tests`, [`.github/workflows/tests.yml`](../../.github/workflows/tests.yml):32). It pins the parse rules of §7.2 against the installed runtime, and feeds the fallback template embedded in `.dispatcher/references/spawn-flow.md` Step 4 through the real parser so that a prose edit which drops the header breaks the build instead of the ledger. **Any change to the worker-seed header shape MUST be made against that test.**
+
+### 7.6 Known deviations, deliberately out of scope
+
+Measured over the 373 seeds present on 2026-08-06 (23 in `.state/workers/`, 350 in `archive/`):
+
+- The `Status` enum of §1.4 is `{planned, active, pane_closed, completed}`, but live values also include `closed` (37), `review` (11), and the singletons `in_use`, `pane_gone`, `pending_close`, `stale_pane_not_found`. All of them are equivalent to the runtime (≠ `planned`), so this amendment records the divergence and does not reconcile it; vocabulary cleanup belongs to a separate Issue against §1.4 / Set B §1.
+- Twelve seeds carry no header `Status:` at all (eleven in `archive/`, plus `.secretary-notes.md`). Only the latter is inside the glob.
+- `Status: completed` and `Status: pane_closed` are contracted by Set B §1 T5 / T6 but no writer — in ja or in the runtime — emits either today. That gap is Set B's to close, not this amendment's.
