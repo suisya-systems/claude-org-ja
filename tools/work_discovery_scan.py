@@ -1937,11 +1937,17 @@ def fetch_base_branch_merges(
     ``base_merge_closed_refs``). The closing keyword in the PR's own
     title/body is the signal, so only ``title`` / ``body`` are needed.
 
-    Newest-first by ``mergedAt``, mirroring ``fetch_recent_merges``' exact
-    client-side ordering (the server's ``sort:updated-desc`` only
-    approximates merge recency), so the ``limit`` window is the genuinely
-    most-recent merges into the base branch.
+    Two-layer ordering, exactly as ``fetch_recent_merges`` does it, and for a
+    sharper reason here: the server applies its ``--limit`` page under
+    ``sort:updated-desc``, which is merge recency only *approximately* — an
+    old merged PR that later gets a comment has its ``updatedAt`` bumped and
+    can crowd a genuinely-recent merge off the page. Slicing the returned page
+    by ``mergedAt`` cannot recover a PR the server never sent, and the one it
+    would drop is precisely a just-merged closing PR — i.e. the bug this
+    function exists to prevent. So over-fetch a few × the window first, then
+    take the exact ``mergedAt`` top-K client-side.
     """
+    fetch_limit = max(limit, limit * _RECENT_MERGE_OVERFETCH)
     merges = _run_gh_json_list(
         [
             "pr",
@@ -1954,13 +1960,13 @@ def fetch_base_branch_merges(
             "--search",
             "sort:updated-desc",
             "--limit",
-            str(limit),
+            str(fetch_limit),
             "--json",
             "number,title,body,baseRefName,mergedAt",
         ]
     )
     merges.sort(key=lambda p: p.get("mergedAt") or "", reverse=True)
-    return merges
+    return merges[:limit]
 
 
 # ----------------------------------------------------------------------

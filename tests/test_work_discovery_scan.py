@@ -2845,6 +2845,43 @@ class TestBaseBranchCompletionCli(unittest.TestCase):
         self.assertIn("base_merges", data["input_truncated"])
 
 
+class TestFetchBaseBranchMerges(unittest.TestCase):
+    """The fetch window is merge-time-exact, not update-time-approximate."""
+
+    def test_overfetches_then_slices_by_merged_at(self):
+        # `gh pr list --limit` pages under `sort:updated-desc`, so an old
+        # merged PR with a fresh comment can crowd a just-merged closing PR
+        # off the page — and that is exactly the PR this check needs. Mirror
+        # fetch_recent_merges: over-fetch, then take the mergedAt top-K.
+        page = [
+            {"number": 1, "mergedAt": "2026-01-01T00:00:00Z"},
+            {"number": 2, "mergedAt": "2026-08-06T00:00:00Z"},
+            {"number": 3, "mergedAt": "2026-05-01T00:00:00Z"},
+        ]
+        seen = {}
+
+        def _fake(args):
+            seen["args"] = args
+            return list(page)
+
+        with mock.patch.object(wds, "_run_gh_json_list", _fake):
+            out = wds.fetch_base_branch_merges(KURA, "develop", 2)
+        self.assertEqual([p["number"] for p in out], [2, 3])
+        args = seen["args"]
+        self.assertIn("--base", args)
+        self.assertEqual(args[args.index("--base") + 1], "develop")
+        # The requested page is larger than the window it returns.
+        self.assertEqual(
+            args[args.index("--limit") + 1],
+            str(2 * wds._RECENT_MERGE_OVERFETCH),
+        )
+        # closingIssuesReferences is deliberately not requested (empty for
+        # non-default-branch PRs — measured; the closing keyword is the SoT).
+        self.assertNotIn(
+            "closingIssuesReferences", args[args.index("--json") + 1]
+        )
+
+
 class TestBaseBranchFromRegistry(unittest.TestCase):
     """The registry (`base_branch` column) drives which repos get the check."""
 
