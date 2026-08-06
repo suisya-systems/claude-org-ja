@@ -37,6 +37,7 @@
       "/home/u/repo/.git",
       "/home/u/repo/.git/worktrees/T123"
     ],
-    "suppressions": []
+    "suppressions": [],
+    "rewrites": []
   }
 }

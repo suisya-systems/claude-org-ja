@@ -31,6 +31,7 @@
     "enabled": true,
     "wsl_detected": false,
     "sandbox_read_roots": ["/home/u/work/wd"],
-    "suppressions": []
+    "suppressions": [],
+    "rewrites": []
   }
 }

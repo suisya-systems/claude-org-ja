@@ -83,7 +83,8 @@
           "/home/u/co/knowledge/raw"
         ]
       }
-    ]
+    ],
+    "rewrites": []
   },
   "expected_rendered_sandbox": {
     "enabled": true,

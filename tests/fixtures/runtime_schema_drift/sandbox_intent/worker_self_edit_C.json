@@ -60,7 +60,8 @@
           "/home/u/co"
         ]
       }
-    ]
+    ],
+    "rewrites": []
   },
   "expected_rendered_sandbox": {
     "enabled": true,
