@@ -30,8 +30,8 @@
 # 既知の制限:
 #   - jq が無い環境では fail-closed で全 Agent/Task 呼び出しを deny する
 #     (既存 block-no-verify.sh / block-git-push.sh と同じ安全側挙動)。
-#   - stdin が不正な JSON の場合も fail-closed で deny する。enforcement
-#     フックとして parse 不能な payload を素通り(fail-open)させない
+#   - stdin が空 / 空白のみ / 不正な JSON の場合も fail-closed で deny する。
+#     enforcement フックとして parse 不能な payload を素通り(fail-open)させない
 #     (本フックには permissions.deny の backstop が無いため、兄弟フックより
 #     fail-open の影響が大きい)。実運用ではハーネスが整形済み JSON のみを
 #     PreToolUse へ渡すため、この経路は理論上のもの。
@@ -55,6 +55,19 @@ fi
 
 # stdin から JSON を読み取り
 INPUT=$(cat)
+
+# 空 payload の fail-closed ガード (Issue #834)。
+# jq は「JSON 値がゼロ個」の入力を parse error にせず、出力なしで exit 0 を返す:
+#     printf ''      | jq -e 'type == "object"'  -> exit 0 (出力なし)
+#     printf 'x{'    | jq -e 'type == "object"'  -> exit 4 (parse error)
+# そのため空 stdin は下の型ガードの `if !` 分岐を発火させずにすり抜け、続く
+# `.tool_name // empty` が空文字になって「Agent/Task 以外」と判定され、
+# passthrough の exit 0 に落ちていた。不正 JSON は deny されるのに空 payload
+# だけが素通りする穴だったため、型ガードより前に明示的に空判定して deny する。
+# 空白のみ (改行だけ等) の入力も jq から見れば同じ「値ゼロ個」なので併せて弾く。
+if [[ -z "${INPUT//[[:space:]]/}" ]]; then
+  deny_with_reason "PreToolUse payload が空でした。subagent ツール呼び出しは安全側 (fail-closed) で拒否します。"
+fi
 
 # top-level が JSON object か検証する (fail closed)。
 # set -euo pipefail 下で `VAR=$(echo "$INPUT" | jq ...)` 形式は、jq の parse

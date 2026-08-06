@@ -42,6 +42,16 @@ fi
 
 # stdin から JSON を読み取り
 INPUT=$(cat)
+
+# 空 payload の fail-closed ガード (Issue #834)。jq は「JSON 値がゼロ個」の入力を
+# parse error にせず exit 0 + 出力なしで返す。本フックは FILE_PATH 空を既に deny
+# しているため空 stdin でも結果的に exit 2 だが、それは「file_path が取れなかった」
+# という別条件への相乗りにすぎない。抽出ロジックが将来変わっても payload 不正が
+# 素通りしないよう、意図を明示したガードを jq の前に置く。
+if [[ -z "${INPUT//[[:space:]]/}" ]]; then
+  deny_with_reason "PreToolUse payload が空でした。安全側 (fail-closed) で拒否します。"
+fi
+
 FILE_PATH=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty')
 
 if [[ -z "$FILE_PATH" ]]; then

@@ -169,10 +169,23 @@ stderr=$(mktemp); TMPFILES+=("$stderr")
 ec=$(run_hook '{"tool_name":"Agent","tool_input":{' "$stderr")
 assert_exit 2 "$ec" "truncated JSON is blocked (fail-closed)"
 
-# 19. Empty stdin -> block (fail-closed; not valid JSON)
+# 19. Empty stdin -> block (fail-closed)
+#     jq は「JSON 値がゼロ個」の入力を parse error にせず exit 0 で返すため、
+#     `type == "object"` の型ガードでは捕まらない。型ガードより前の明示的な
+#     空判定が deny 理由になっていることを stderr でも確認する (Issue #834)。
 stderr=$(mktemp); TMPFILES+=("$stderr")
 ec=$(run_hook '' "$stderr")
 assert_exit 2 "$ec" "empty stdin is blocked (fail-closed)"
+assert_stderr_contains "PreToolUse payload が空でした" "$stderr" \
+  "empty stdin is denied by the empty-payload guard (not the type guard)"
+
+# 19b. Whitespace-only stdin -> block (fail-closed)
+#      改行だけの入力も jq から見れば同じ「値ゼロ個」なので同じ穴になる。
+stderr=$(mktemp); TMPFILES+=("$stderr")
+ec=$(run_hook $'  \n\t \n' "$stderr")
+assert_exit 2 "$ec" "whitespace-only stdin is blocked (fail-closed)"
+assert_stderr_contains "PreToolUse payload が空でした" "$stderr" \
+  "whitespace-only stdin is denied by the empty-payload guard"
 
 # 20. tool_input is a string (JSON-valid but not an object) -> block
 #     Without a type guard, .tool_input.run_in_background would make jq

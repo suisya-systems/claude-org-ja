@@ -37,6 +37,18 @@ fi
 
 # stdin から JSON を読み取り
 INPUT=$(cat)
+
+# 空 payload の fail-closed ガード (Issue #834)。jq は「JSON 値がゼロ個」の入力を
+# parse error にせず exit 0 + 出力なしで返すため、空 stdin では TOOL_NAME が空文字に
+# なり、`!= "Bash"` の passthrough に落ちて enforcement が素通りする。
+# 上の jq 未インストール時 fail-open は「環境全体で常に成立し、窓口の全 Bash を
+# 止めてしまう」条件なので許容しているが、空 payload は個々の呼び出しが壊れている
+# ケースであり正規のツール呼び出しではありえない。両者は別条件なので、ここは
+# 兄弟フックと同じく fail-closed に倒す。
+if [[ -z "${INPUT//[[:space:]]/}" ]]; then
+  deny_with_reason "PreToolUse payload が空でした。安全側 (fail-closed) で拒否します。"
+fi
+
 TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty')
 
 if [[ "$TOOL_NAME" != "Bash" ]]; then

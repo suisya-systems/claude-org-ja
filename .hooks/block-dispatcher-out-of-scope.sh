@@ -68,6 +68,15 @@ if [[ -z "${CLAUDE_ORG_PATH:-}" ]]; then
 fi
 
 INPUT=$(cat)
+
+# 空 payload の fail-closed ガード (Issue #834)。jq は「JSON 値がゼロ個」の入力を
+# parse error にせず exit 0 + 出力なしで返すため、空 stdin では TOOL_NAME が空文字に
+# なり、下の case が対象外扱いの passthrough に落ちて enforcement が素通りする。
+# jq に渡す前に明示的に弾く。導出の詳細は block-foreground-subagent.sh の同じガード。
+if [[ -z "${INPUT//[[:space:]]/}" ]]; then
+  deny_with_reason "PreToolUse payload が空でした。安全側 (fail-closed) で拒否します。"
+fi
+
 TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty')
 
 # Edit / Write / NotebookEdit 以外はこのフックの対象外
