@@ -147,7 +147,8 @@
           "/home/u/co/knowledge"
         ]
       }
-    ]
+    ],
+    "rewrites": []
   },
   "expected_rendered_sandbox": {
     "enabled": true,

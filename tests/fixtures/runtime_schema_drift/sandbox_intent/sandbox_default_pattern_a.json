@@ -40,6 +40,7 @@
         "realpath": "/mnt/c/Users/u/wd/secrets.env",
         "sandbox_read_roots": ["/home/u/work/wd"]
       }
-    ]
+    ],
+    "rewrites": []
   }
 }

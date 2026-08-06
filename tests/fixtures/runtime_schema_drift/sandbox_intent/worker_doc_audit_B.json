@@ -83,7 +83,8 @@
           "/home/u/workers/proj/.git/packed-refs"
         ]
       }
-    ]
+    ],
+    "rewrites": []
   },
   "expected_rendered_sandbox": {
     "enabled": true,

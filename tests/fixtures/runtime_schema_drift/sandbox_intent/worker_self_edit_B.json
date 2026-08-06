@@ -79,7 +79,8 @@
           "/home/u/co/.git/packed-refs"
         ]
       }
-    ]
+    ],
+    "rewrites": []
   },
   "expected_rendered_sandbox": {
     "enabled": true,

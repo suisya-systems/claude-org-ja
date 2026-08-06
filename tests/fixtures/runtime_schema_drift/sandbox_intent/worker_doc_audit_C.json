@@ -64,7 +64,8 @@
           "/home/u/workers/T123/.claude/plans"
         ]
       }
-    ]
+    ],
+    "rewrites": []
   },
   "expected_rendered_sandbox": {
     "enabled": true,

@@ -98,6 +98,49 @@ exception cannot leak the fake `$HOME` into other tests.
 
 Fixtures that do not use `anchor: "home"` should omit `home_dir`.
 
+### `rewrites` is empty here by construction, not by definition
+
+`claude-org-runtime` 0.1.39 added a `rewrites` array to
+`SandboxMetadata.to_jsonable()`, so every `expected_explain` in this
+directory carries one. It is **not** a field that is always empty.
+`claude_org_runtime/settings/generator.py` (`SandboxPathRewrite`,
+`_canonicalize_escaping_path`, `_canonicalize_sandbox_deny`,
+`_canonicalize_permission_deny`) records there every *kept* deny path
+whose leading literal prefix crosses an **absolute symlink**: the
+runtime rewrites the path to its realpath — otherwise the unbindable
+path aborts bwrap and takes the whole sandbox down, which is the
+2026-08-06 WSL2 `~/.aws` symlink incident — and reports the
+`(layer, original, rewritten, symlink, realpath)` tuple. Both Layer 3
+(`sandbox.filesystem.deny{Read,Write}`) and Layer 2
+(`permissions.deny` `Read` / `Edit` rules) feed it. Note this is the
+*complement* of suppression: an entry that escapes the read roots is
+suppressed and never reaches the rewrite branch, so a fixture can hold
+suppressions and rewrites only for different entries.
+
+Every fixture here nonetheless renders `"rewrites": []`, and the reason
+is a property of the harness rather than of the runtime:
+`_render_fixture_result()` in
+[`tools/check_runtime_schema_drift.py`](../../../../tools/check_runtime_schema_drift.py)
+injects the fixture's fake `realpath_fn` but leaves `symlink_probe_fn`
+at its default `_absolute_symlink_in_chain`, which reads the **real**
+filesystem through `os.path.islink`. The fixture paths (`/home/u/...`)
+exist on no host, so the probe reports no symlink and the rewrite
+branch is never entered, whatever `realpath_map` claims. (The runtime's
+own docstring calls this half-real seam out: both halves "must describe
+the same world".)
+
+What that means for drift detection:
+
+- A runtime change that emits a rewrite where no symlink exists **is**
+  caught — the committed `[]` stops matching.
+- A regression *inside* the canonicalization (a wrong `rewritten` path,
+  or rewriting silently ceasing) is **not** caught, because no fixture
+  exercises the positive path. Closing that needs a `symlink_probe_fn`
+  seam in `_render_fixture_result` plus a fixture input (e.g.
+  `inputs.symlink_map`) — deliberately out of scope for the Issue #840
+  regeneration, and to be added as coverage rather than by relaxing the
+  comparison.
+
 ## Out-of-scope intentionally
 
 - **`verification_depth`**: this is a delegate-payload / brief

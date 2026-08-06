@@ -64,7 +64,8 @@
           "/home/u/work/wd/.claude/plans"
         ]
       }
-    ]
+    ],
+    "rewrites": []
   },
   "expected_rendered_sandbox": {
     "enabled": true,
