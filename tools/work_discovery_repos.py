@@ -398,7 +398,11 @@ def main(argv: Optional[list[str]] = None) -> int:
             claude_org_root=claude_org_root,
             org_config_path=args.org_config,
         )
-    except OSError as e:  # registry read failure etc.
+    except (OSError, UnicodeError) as e:  # registry read / decode failure
+        # ``UnicodeDecodeError`` is a ``ValueError``, NOT an ``OSError``: a
+        # registry with undecodable bytes used to escape this handler and
+        # exit 1 with a traceback, breaking the documented "exit 0 / 2"
+        # contract that the delivery layer branches on.
         err = {
             "repos": [],
             "home_repo": None,

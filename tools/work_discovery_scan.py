@@ -2115,13 +2115,19 @@ def _resolve_registry_repos(claude_org_root=None) -> dict:
     ``tools`` package is not importable: only the registry-driven path
     depends on it. Read-only, like the resolver itself.
 
-    Always returns a resolver-shaped dict, never raises: an unreadable
-    registry (permission denied, undecodable bytes, a directory in place of
-    the file) makes ``resolve_repos()`` raise, and letting that propagate
-    would land in main's generic handler with ``repo_resolution`` still
-    ``None`` — losing the audit on exactly the failure that needs
-    explaining. This mirrors ``work_discovery_repos.main()``'s own
-    error-to-result conversion so the envelope keeps one shape.
+    Always returns a resolver-shaped dict, **never raises**: an unreadable
+    registry (permission denied, a directory in place of the file,
+    undecodable bytes) makes ``resolve_repos()`` raise, and letting that
+    propagate would land in main's generic handler with ``repo_resolution``
+    still ``None`` — losing the audit on exactly the failure that needs
+    explaining. The catch is deliberately class-wide rather than a list of
+    the failure modes seen so far (``OSError`` for read errors,
+    ``UnicodeDecodeError`` — a ``ValueError``, not an ``OSError`` — for
+    undecodable bytes): enumerating them is how this contract springs a leak
+    again on the next unlisted exception type. Nothing is hidden by the
+    breadth, because main's own ``except Exception`` already turns any
+    resolver failure into the same exit-2 envelope with the same message —
+    the only difference here is whether ``repo_resolution`` survives.
     """
     root = Path(__file__).resolve().parent.parent
     if str(root) not in sys.path:
@@ -2134,7 +2140,7 @@ def _resolve_registry_repos(claude_org_root=None) -> dict:
             registry_path=org_root / "registry" / "projects.md",
             claude_org_root=org_root,
         )
-    except OSError as exc:  # registry read failure etc.
+    except Exception as exc:  # noqa: BLE001 — see docstring: shape > breadth
         return {
             "repos": [],
             "home_repo": None,
@@ -2143,7 +2149,7 @@ def _resolve_registry_repos(claude_org_root=None) -> dict:
             "opted_out": [],
             "skipped": [],
             "signals": [],
-            "error": f"failed to resolve repos: {exc}",
+            "error": f"failed to resolve repos: {type(exc).__name__}: {exc}",
         }
 
 

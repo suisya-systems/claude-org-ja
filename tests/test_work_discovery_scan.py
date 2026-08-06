@@ -2445,6 +2445,20 @@ class TestAllRegistryRepos(unittest.TestCase):
         self.assertIn("failed to resolve repos", data["repo_resolution"]["error"])
         self.assertIn("failed to resolve repos", data["error"])
 
+    def test_undecodable_registry_keeps_the_audited_shape(self):
+        # `UnicodeDecodeError` is a ValueError, NOT an OSError — so a catch
+        # listing only OSError still let this one through and produced
+        # `repo_resolution: null`. The wrapper's catch is class-wide for
+        # exactly this reason; this pins the case that proved it.
+        (self.root / "registry" / "projects.md").write_bytes(bytes([255]))
+        rc, data, fetched = self._run(
+            ["--all-registry-repos", "--claude-org-root", str(self.root)]
+        )
+        self.assertEqual(rc, wds.EXIT_ERROR)
+        self.assertEqual(fetched, [])
+        self.assertIsNotNone(data["repo_resolution"])
+        self.assertIn("UnicodeDecodeError", data["repo_resolution"]["error"])
+
     def test_repo_resolution_is_null_without_the_flag(self):
         # One shape for the delivery layer: the key is always present.
         rc, data, _ = self._run(["--repo", JA])
