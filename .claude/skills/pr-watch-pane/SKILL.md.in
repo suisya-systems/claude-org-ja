@@ -150,11 +150,40 @@ context リセットと無関係）に監視が継続し、人間が tmux ペイ
   role="watcher",
   name="pr-watch-<PR>",
   cwd="<JA_ROOT 絶対パス>",
-  command="export ORG_TRANSPORT='<ORG_TRANSPORT>'; export ORG_BROKER_STATE_DIR='<ORG_BROKER_STATE_DIR>'; export PATH='<PATH>'; mkdir -p .state; bash tools/pr-watch.sh <PR> --repo <OWNER/REPO> --merge-watch --no-detach 2>&1 | tee -a .state/pr-watch-<PR>.log; tmux kill-pane -t \"$TMUX_PANE\" 2>/dev/null || true"
+  command="nocorrect true 2>/dev/null || true; export ORG_TRANSPORT='<ORG_TRANSPORT>'; export ORG_BROKER_STATE_DIR='<ORG_BROKER_STATE_DIR>'; export PATH='<PATH>'; mkdir -p .state; bash tools/pr-watch.sh <PR> --repo <OWNER/REPO> --merge-watch --no-detach 2>&1 | tee -a .state/pr-watch-<PR>.log; tmux kill-pane -t \"$TMUX_PANE\" 2>/dev/null || true"
 )
 ```
 
-- **env 前置注入（Refs #653 #658 — 必須。PR #73 障害の根治）**: `command` 先頭の
+- **`nocorrect true 2>/dev/null || true;` 前置（Issue #825 — zsh correctall 無言停止の根治。必須・置換禁止）**:
+  `command` は対話シェルに打鍵される形で実行されるため、pane の login shell が zsh で
+  スペル自動訂正（`setopt correctall`）が有効だと、残留 `.state/pr-watch-*.log` に類似した
+  新規ログ名が `zsh: correct '...' to '...' [nyae]?` の確認プロンプトを発火させ、
+  **パイプライン全体が一度も走らないまま無言停止**する（2026-08-06 の PR #824 監視で実発生・
+  再現確認済み）。行頭の `nocorrect` は zsh の precommand modifier（reserved word）で、
+  パース前に解釈され**その行全体の全 word のスペル訂正を無効化**する（`;` 連結の後続コマンド
+  にも効く。zshmisc PRECOMMAND MODIFIERS「interpreted immediately, before any parsing is
+  done」。tmux 上の対話 zsh 5.9 で `;` 越しの抑止を実機確認済み）。
+  - **payload を持たない犠牲文として独立させる理由（非 zsh 互換）**: `nocorrect` は zsh 以外の
+    シェルにコマンドとして存在しない。`nocorrect export ...` と payload に直結すると、bash 等が
+    login shell の pane では `nocorrect: command not found` で **export 文ごと失敗**し、transport
+    env 注入（次項）が silent に失われる（bash 実機で export 消失を確認済み）。単独文
+    `nocorrect true 2>/dev/null || true;` なら zsh では行全体の訂正抑止・bash 等では犠牲文
+    だけが無音で失敗し、`;` 以降の後続は全て実行される。非対話シェル実行（`zsh -c` 等）でも
+    no-op で副作用はない（zshmisc「It has no effect in non-interactive shells」）。
+  - **`2>/dev/null` は省略不可（Step 4 の誤殺防止）**: 非 zsh シェルでは犠牲文が
+    `nocorrect: command not found` を stderr に出す。この行が画面に残ると Step 4 の
+    negative-signal 判定（`command not found` = 起動失敗）に誤マッチし、**正常起動した
+    watcher を健全なまま close する false positive** になるため、犠牲文の stderr は行内で
+    捨てる（bash で無音 + 後続 export 生存、zsh 対話で correctall 抑止に影響なしを実機確認済み）。
+  - **`|| true` も省略不可（errexit 耐性）**: 非 zsh シェルの rc で `set -e`（errexit）が
+    有効だと、犠牲文の失敗（status 127）でシェルごと終了し **export / mkdir / watcher 本体が
+    一切走らないまま pane が死ぬ**。`|| true` で犠牲文を非致命化する（errexit 有効 bash で
+    後続実行の生存、zsh 対話で correctall 抑止に影響なしをともに実機確認済み）。
+  - `<...>` placeholder ではない**固定文字列**であり、窓口は値に置換せずそのまま残す。下記の
+    条件付き前置で export 文を省いた場合も、`nocorrect true 2>/dev/null || true;` は
+    **常に行頭に残す**。
+
+- **env 前置注入（Refs #653 #658 — 必須。PR #73 障害の根治）**: 犠牲文に続く
   `export ORG_TRANSPORT=...; export ORG_BROKER_STATE_DIR=...; export PATH=...;` は Step 1 で
   `printenv` 捕捉した窓口ペインの実値に置換する。これが無いと汎用 spawn ペインは transport
   env を継承せず、`peer_notify` の broker/renga 経路がどちらも未設定分岐に落ちて **push が
@@ -248,15 +277,42 @@ context リセットと無関係）に監視が継続し、人間が tmux ペイ
    - 本ペインは Claude セッションではなく CLI プロセスなので **Claude peer（peer_id）は
      持たない**。ここでの「peer 登録」= pane registry への name + role=watcher の登録
      （spawn_pane / set_pane_identity が行う）を指す。MCP peer / dev-channel 登録は発生しない。
-2. **即時クラッシュ検出（negative-signal のみ）**: `{{FQ}}inspect_pane(target=<N>,
-   format="text", lines=40)` で出力を覗き、以下のいずれかを検出した場合のみ「起動失敗」と判定:
+2. **即時クラッシュ / 対話プロンプト停止の検出（negative-signal のみ）**:
+   `{{FQ}}inspect_pane(target=<N>, format="text", lines=<ペイン高さ以上>, include_cursor=true)`
+   で出力を**全画面**読む（Issue #825）。`lines` は `{{FQ}}list_panes` の geometry で分かる
+   ペイン高さ以上、高さが取れなければ余裕を取って `lines=200` を指定する。末尾 15-40 行だけの
+   読み取りは、画面**上部**に出た確認プロンプト + 下部空白を「静かな正常起動」と誤読する
+   （2026-08-06 の correctall 停止はこの誤読で見逃された）。`include_cursor=true` は下記
+   「行末 `?` + 入力待ち」判定に必要なカーソル位置を返させるため必須（既定 false では
+   カーソル情報が返らず、ブロック中のプロンプトと通常出力を区別できない）。
+   以下のいずれかを検出した場合のみ「起動失敗」と判定:
    - `command not found` / `is not recognized` / `No such file or directory`
    - `gh: ... not found` 等 gh 不在 / `Traceback (most recent call last)` / `ModuleNotFoundError`
    - 出力末尾に shell prompt（`$ ` / `% ` 末尾露出）= command が即時終了して shell に戻った
+   - **対話プロンプト形跡（Issue #825 で追加）**: `[nyae]?`（zsh correctall の
+     `zsh: correct '...' to '...' [nyae]?`）/ `(y/n)` / `[y/N]` のリテラル、または行末が `?` で
+     終わる行に `cursor` が乗ったまま（= その行で入力待ち）後続出力が無い。いずれもコマンドが
+     **一度も走らないまま**シェル層の確認プロンプトで停止している形跡で、放置すると監視ゼロの
+     無言死になる（correctall 停止なら Step 3 の `nocorrect` 前置漏れを疑う）。
    - 上記いずれも無ければ（pr-watch の watch ループ出力 / 空 / 起動直後の静止）**起動成功扱い**
      とし、固定 sleep を入れて再 inspect する経路は持たない（健全な quiet start を誤殺しない）。
    - 起動失敗時は `{{FQ}}close_pane(target=<N>)` で死んだペインを掃除し、原因（`tools/pr-watch.sh`
-     / `gh` の導入、cwd）をユーザーに報告して中断。
+     / `gh` の導入、cwd、対話プロンプト停止）をユーザーに報告して中断。
+
+3. **生存確認は副作用ベースで行う（`pgrep -f` 単独判定の禁止、Issue #825）**: 起動後に
+   「監視が本当に走っているか」を確かめるときは、プロセス一覧ではなく**副作用**を見る:
+   - **`pgrep -f "pr-watch"` 単独を生存判定に使わない**。spawn されたペインのラッパーシェルの
+     argv にはコマンド全文（`pr-watch.sh` を含む）が乗るため、確認プロンプト停止中で
+     パイプラインが一度も走っていなくても**シェル自身にマッチして偽陽性**になる（2026-08-06 に
+     この誤認で「監視本体が稼働中」と誤読した）。
+   - 一次の副作用は **`.state/pr-watch-<PR>.log` の生成**: Step 3 の `tee -a` はパイプライン
+     開始と同時にログファイルを open/生成するため、fresh なログ名なら「ファイルが出来ている」＝
+     パイプラインが実際に走った確証になる（プロンプト停止ではコマンド自体が実行されないので
+     ログは生成されない）。同名の残留ログがある再監視では生成有無で判別できないため、上記 2 の
+     全画面 inspect（プロンプト形跡なし）と組み合わせて判定する。
+   - 判定確定の副作用は `.state/state.db` events テーブルの `ci_completed` 等の canonical
+     event 行（本 skill 冒頭の二経路）。なお `pr_watch.py` は起動 banner を出力しないため、
+     ログが空のまま静止していても quiet start でありうる（誤殺しない）。
 
 ## Step 5: 監査記録と報告 / 手動 close
 
