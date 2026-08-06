@@ -292,6 +292,29 @@ class WorkerSeedStatusContractTest(unittest.TestCase):
                     f"{where} の worker seed テンプレートに runtime が読める "
                     f"`Status:` 行が無い。{_CONTRACT_HINT}",
                 )
+                # ja の prose に載る seed テンプレートは今日すべて **spawn 後**
+                # に手で書き起こすものなので、`planned` を残すと「まだ bind
+                # 待ち」を意味してしまい、行が無いのと同じ枠占有バグになる
+                # (§7.3 の flip 義務)。将来 pre-spawn テンプレートを prose に
+                # 置くなら、ここで落ちるのが正しい合図。
+                self.assertNotEqual(
+                    status,
+                    "planned",
+                    f"{where} の post-spawn テンプレートが `planned` のまま。"
+                    f"予約枠を握り続ける (§7.2 rule 4)。{_CONTRACT_HINT}",
+                )
+
+        # 実バグが出た当の 1 件は、走査ロジックの綻びで取りこぼされないよう
+        # 名指しでも固定する。
+        by_file = {where: block for where, block in found}
+        spawn_flow = ".dispatcher/references/spawn-flow.md"
+        self.assertIn(spawn_flow, by_file, "Step 4 のテンプレートが消えた")
+        self.assertEqual(
+            self._status_of(by_file[spawn_flow]),
+            "active",
+            f"{spawn_flow} Step 4 (MCP spawn 成功後) のテンプレートは "
+            f"`Status: active` であること。{_CONTRACT_HINT}",
+        )
 
 
 if __name__ == "__main__":  # pragma: no cover
