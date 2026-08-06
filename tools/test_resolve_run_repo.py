@@ -12,6 +12,7 @@ repo's metadata -- and that ja's own run was left alone.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import subprocess
 import sys
@@ -293,6 +294,58 @@ class TestResolveRepoForTask(unittest.TestCase):
     def test_missing_run_row_raises_run_not_found(self):
         with self.assertRaises(resolve_run_repo.RunNotFound):
             self._resolve("no-such-task")
+
+    def test_noncanonical_db_path_still_finds_the_checkout(self):
+        """Codex P2: ``--db-path`` / ``STATE_DB_PATH`` may point outside
+        ``<root>/.state/``. The grandparent is then an arbitrary directory,
+        so root discovery must fall back to the cwd walk instead of turning
+        every self-edit run (registry-absent by contract) into an exit 2."""
+        stray = Path(self._td.name) / "elsewhere"
+        stray.mkdir()
+        stray_db = stray / "state.db"
+        conn = connect(stray_db)
+        apply_schema(conn)
+        conn.close()
+
+        cwd_root = Path(self._td.name) / "cwd-checkout"
+        (cwd_root / ".state").mkdir(parents=True)
+        (cwd_root / "registry").mkdir()
+        (cwd_root / "registry" / "projects.md").write_text(
+            REGISTRY_MD, encoding="utf-8",
+        )
+        (cwd_root / "pyproject.toml").write_text(
+            '[project]\nname = "claude-org-ja"\nversion = "0.0.1"\n',
+            encoding="utf-8",
+        )
+        (cwd_root / ".git").mkdir()
+
+        conn = connect(stray_db)
+        try:
+            with StateWriter(conn).transaction() as w:
+                w.upsert_run(
+                    task_id=RENGA_TASK, project_slug="renga", pattern="B",
+                    title=RENGA_TASK, status="review", branch=RENGA_BRANCH,
+                )
+        finally:
+            conn.close()
+
+        self.assertEqual(
+            resolve_run_repo.infer_claude_org_root(self.root.db),
+            self.root.path,
+        )
+        prior = os.getcwd()
+        try:
+            os.chdir(str(cwd_root))
+            self.assertEqual(
+                resolve_run_repo.infer_claude_org_root(stray_db), cwd_root,
+            )
+            res = resolve_run_repo.resolve_repo_for_task_at(
+                stray_db, RENGA_TASK,
+            )
+        finally:
+            os.chdir(prior)
+        self.assertEqual(res.repo, RENGA_REPO)
+        self.assertEqual(res.source, resolve_run_repo.SOURCE_REGISTRY)
 
     def test_ambiguous_registry_rows_refuse_to_guess(self):
         registry = (

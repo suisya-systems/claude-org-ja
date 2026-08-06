@@ -229,6 +229,34 @@ def resolve_repo_for_task(
     )
 
 
+def infer_claude_org_root(db_path: Path) -> Path:
+    """Locate the claude-org checkout that ``db_path`` belongs to.
+
+    In the canonical ``<root>/.state/state.db`` layout the DB's grandparent
+    *is* the root, and using it keeps resolution self-consistent with the DB
+    actually being written (the convention ``run_complete_on_merge`` already
+    follows for its Pattern C cleanup).
+
+    ``--db-path`` / ``STATE_DB_PATH`` may point anywhere, though, and then
+    the grandparent is an arbitrary directory -- looking for
+    ``registry/projects.md`` and a git origin there would find neither and
+    turn every claude-org-ja self-edit run into a hard exit 2 (self-edit runs
+    are absent from the registry by contract and normally have no
+    ``projects.origin_url``, so the home-repo branch is the only one that can
+    resolve them). Fall back to the same cwd-walk discovery the rest of the
+    tooling uses in that case.
+    """
+    db_path = Path(db_path)
+    if db_path.parent.name == ".state":
+        return db_path.parent.parent
+    from tools.state_db.discover import discover_repo_root
+
+    try:
+        return discover_repo_root(start=Path.cwd())
+    except (RuntimeError, OSError):
+        return db_path.parent.parent
+
+
 def resolve_repo_for_task_at(
     db_path: Path,
     task_id: str,
@@ -238,13 +266,11 @@ def resolve_repo_for_task_at(
 ) -> RepoResolution:
     """:func:`resolve_repo_for_task` against a state.db path.
 
-    ``claude_org_root`` defaults to ``db_path.parent.parent`` -- the same
-    ``<root>/.state/state.db`` convention ``run_complete_on_merge`` already
-    uses to locate the repo root from an open connection.
+    ``claude_org_root`` defaults to :func:`infer_claude_org_root`.
     """
     db_path = Path(db_path)
     if claude_org_root is None:
-        claude_org_root = db_path.parent.parent
+        claude_org_root = infer_claude_org_root(db_path)
     if not db_path.exists():
         raise RunNotFound(
             f"no state.db at {db_path}; cannot resolve the repo for "
