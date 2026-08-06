@@ -54,6 +54,25 @@ if ! command -v jq &>/dev/null; then
   exit 0
 fi
 
+# 不正 JSON / 非 object payload の fail-closed ガード (Issue #834)。
+# `VAR=$(echo "$INPUT" | jq ...)` は parse error (exit 4) や非 object への index
+# error (exit 5) で set -e により script ごと中断し、PreToolUse では exit != 2 が
+# 非ブロッキング扱い = fail-open になる。top-level が null のときは jq が index を
+# 許すため error にすらならず、抽出結果が空になって passthrough に落ちる。
+# そこで抽出の前に「top-level が object」かつ「tool_input が object または欠落」を
+# 一括検査する。jq の `and` は短絡評価なので、左が false のとき右の index は評価
+# されず error にならない。tool_input 欠落 (null) は正常な payload の一形態なので
+# 従来どおり許容し、フィールド抽出が空になる既存の passthrough 経路に任せる。
+# 導出の詳細は block-foreground-subagent.sh の同じガード。
+#
+# 上の空 payload ガードと違い、こちらは jq チェックより「後ろ」に置く。判定に jq 自身が
+# 要るので前に出せないため。jq なし環境ではこの Hook 全体が意図的に無効化される設計
+# （上の jq チェックのコメント参照）なので、これは新たな穴ではなくその設計の帰結である。
+# 一方、空 payload ガードは jq 不要なので前に置き、jq の有無に依らない不変条件にしてある。
+if ! echo "$INPUT" | jq -e 'type == "object" and (.tool_input == null or (.tool_input | type) == "object")' >/dev/null 2>&1; then
+  deny_with_reason "PreToolUse payload を JSON object として解析できませんでした (tool_input が object でない場合を含む)。安全側 (fail-closed) で拒否します。"
+fi
+
 TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty')
 
 if [[ "$TOOL_NAME" != "Bash" ]]; then

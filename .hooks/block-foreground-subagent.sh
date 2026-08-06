@@ -80,8 +80,17 @@ fi
 #     いずれの非 object/不正系も非ゼロ → fail-closed deny。
 # これにより後続の `.tool_name` / `.tool_input` の index は top-level が object
 # である前提で安全に評価できる。
-if ! echo "$INPUT" | jq -e 'type == "object"' >/dev/null 2>&1; then
-  deny_with_reason "PreToolUse payload が JSON object として解析できませんでした。subagent ツール呼び出しは安全側 (fail-closed) で拒否します。"
+#
+# tool_input が object でない (文字列・配列等) payload も同じ「不正 payload」の族なので
+# ここで併せて弾く。本フックは Agent/Task 以外を tool_name で passthrough させるため、
+# tool_input の型検査が下の IS_BACKGROUND 式だけだと `{"tool_name":"Bash","tool_input":[1]}`
+# のような壊れた payload が passthrough exit 0 に落ちていた (Issue #834 の横断点検で実測)。
+# 兄弟フックと同じ判定式に揃え、tool_name を見る前に payload の形を確定させる。
+# tool_input 欠落 (null) は正常な payload の一形態なので許容し、Agent/Task であれば
+# 下の IS_BACKGROUND 式が「前景」とみなして deny する (test 8 の契約)。
+# jq の `and` は短絡評価なので、左が false のとき右の index は評価されず error にならない。
+if ! echo "$INPUT" | jq -e 'type == "object" and (.tool_input == null or (.tool_input | type) == "object")' >/dev/null 2>&1; then
+  deny_with_reason "PreToolUse payload を JSON object として解析できませんでした (tool_input が object でない場合を含む)。subagent ツール呼び出しは安全側 (fail-closed) で拒否します。"
 fi
 
 # tool_name を取得。subagent ツール以外は passthrough。
