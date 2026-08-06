@@ -208,7 +208,20 @@ class TestSetRunPrOpenCrossRepoCli(unittest.TestCase):
 
     def setUp(self) -> None:
         self._td = tempfile.TemporaryDirectory()
-        self.db = Path(self._td.name) / "state.db"
+        # Issue #828: the repo resolver reads `<root>/registry/projects.md`
+        # relative to the DB (`<root>/.state/state.db`), so the DB has to sit
+        # in the real layout rather than loose in the temp dir.
+        self.root = Path(self._td.name) / "claude-org"
+        (self.root / ".state").mkdir(parents=True)
+        (self.root / "registry").mkdir()
+        (self.root / "registry" / "projects.md").write_text(
+            "| 通称 | プロジェクト名 | パス | 説明 |\n"
+            "|---|---|---|---|\n"
+            f"| renga | renga | https://github.com/{self.FOREIGN_REPO} | "
+            "TUI |\n",
+            encoding="utf-8",
+        )
+        self.db = self.root / ".state" / "state.db"
         conn = connect(self.db)
         apply_schema(conn)
         with StateWriter(conn).transaction() as w:
@@ -241,6 +254,7 @@ class TestSetRunPrOpenCrossRepoCli(unittest.TestCase):
                 payload = json.dumps({
                     "url": self.FOREIGN_URL,
                     "headRefName": self.FOREIGN_BRANCH,
+                    "title": "files pane handle",
                 })
                 return _Result(payload)
             if argv[:3] == ["gh", "repo", "view"]:
@@ -274,7 +288,7 @@ class TestSetRunPrOpenCrossRepoCli(unittest.TestCase):
             [
                 "gh", "pr", "view", str(self.FOREIGN_PR),
                 "--repo", self.FOREIGN_REPO,
-                "--json", "url,headRefName",
+                "--json", "url,headRefName,title",
             ],
         )
         # No cwd-resolution call should have been made when --repo is set.
@@ -294,7 +308,10 @@ class TestSetRunPrOpenCrossRepoCli(unittest.TestCase):
         self.assertEqual(row["pr_url"], self.FOREIGN_URL)
         self.assertEqual(row["branch"], self.FOREIGN_BRANCH)
 
-    def test_no_repo_flag_falls_back_to_cwd_resolution(self):
+    def test_no_repo_flag_resolves_repo_from_the_runs_project(self):
+        """Issue #828: ``--repo`` omitted must resolve run -> project -> repo,
+        NOT fall back to the cwd repo (which for the secretary is always ja).
+        """
         captured: list = []
         argv = [
             "--task-id", self.FOREIGN_TASK_ID,
@@ -310,21 +327,81 @@ class TestSetRunPrOpenCrossRepoCli(unittest.TestCase):
             rc = set_run_pr_open.main(argv)
         self.assertEqual(rc, 0)
 
-        # cwd auto-resolve must run, then pr view uses the resolved repo.
-        repo_view_calls = [
-            a for a in captured if a[:3] == ["gh", "repo", "view"]
-        ]
-        self.assertEqual(len(repo_view_calls), 1)
+        # The cwd repo must never be consulted -- that is the whole bug.
+        self.assertEqual(
+            [a for a in captured if a[:3] == ["gh", "repo", "view"]], [],
+        )
         pr_view_calls = [a for a in captured if a[:3] == ["gh", "pr", "view"]]
         self.assertEqual(len(pr_view_calls), 1)
         self.assertEqual(
             pr_view_calls[0],
             [
                 "gh", "pr", "view", str(self.FOREIGN_PR),
-                "--repo", "octo/cwd-repo",
-                "--json", "url,headRefName",
+                "--repo", self.FOREIGN_REPO,
+                "--json", "url,headRefName,title",
             ],
         )
+
+    def test_unresolvable_project_exits_non_zero_without_touching_gh_pr(self):
+        """A project with no GitHub URL anywhere must stop the helper rather
+        than silently resolving to some other repo's PR of the same number."""
+        conn = connect(self.db)
+        with StateWriter(conn).transaction() as w:
+            w.upsert_run(
+                task_id="clock-001",
+                project_slug="clock-app",   # absent from the test registry
+                pattern="A",
+                title="clock-001",
+                status="review",
+            )
+        conn.close()
+
+        captured: list = []
+        argv = [
+            "--task-id", "clock-001",
+            "--pr", str(self.FOREIGN_PR),
+            "--db-path", str(self.db),
+        ]
+        with mock.patch.object(
+            set_run_pr_open.subprocess, "run",
+            side_effect=self._fake_run_factory(captured),
+        ), mock.patch.object(
+            set_run_pr_open.shutil, "which", return_value="/usr/bin/gh",
+        ):
+            rc = set_run_pr_open.main(argv)
+        self.assertEqual(rc, 2)
+        self.assertEqual(captured, [])
+
+        conn = sqlite3.connect(str(self.db))
+        conn.row_factory = sqlite3.Row
+        try:
+            row = conn.execute(
+                "SELECT pr_url FROM runs WHERE task_id = ?", ("clock-001",),
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertIsNone(row["pr_url"])
+
+    def test_missing_run_row_reports_no_run_and_exits_3(self):
+        """The pre-existing ``no_run`` terminal survives the Issue #828
+        reordering: the repo can no longer be resolved without a run row, so
+        the helper must still report ``no_run`` / exit 3 rather than a
+        generic resolution error."""
+        captured: list = []
+        argv = [
+            "--task-id", "task-that-does-not-exist",
+            "--pr", str(self.FOREIGN_PR),
+            "--db-path", str(self.db),
+        ]
+        with mock.patch.object(
+            set_run_pr_open.subprocess, "run",
+            side_effect=self._fake_run_factory(captured),
+        ), mock.patch.object(
+            set_run_pr_open.shutil, "which", return_value="/usr/bin/gh",
+        ):
+            rc = set_run_pr_open.main(argv)
+        self.assertEqual(rc, 3)
+        self.assertEqual(captured, [])
 
 
 # ---------------------------------------------------------------------------
