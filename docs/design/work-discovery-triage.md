@@ -148,6 +148,13 @@ triage を「**計算（どの Issue がどう triage されるか）**」と「
   "excluded_blocked": [
     { "repo": "suisya-systems/claude-org-ja", "issue": 540, "blocking_refs": [537], "note": "#537 が open のため除外" }
   ],
+  "excluded_merged": [
+    { "repo": "aainc/kura-data-aggregator-trial", "issue": 231, "base_branch": "develop", "closed_by_pr": 232, "merged_at": "2026-08-06T02:33:45Z", "note": "#232 が develop にマージ済み（既定ブランチ外のマージなので GitHub の自動クローズが発火せず Issue が open のまま残っている）" }
+  ],
+  "base_branch_scan": [
+    { "repo": "aainc/kura-data-aggregator-trial", "base_branch": "develop", "merged_prs_scanned": 37, "closed_issue_count": 4 }
+  ],
+  "base_branch_signals": [],
   "repo_resolution": null
 }
 ```
@@ -160,6 +167,7 @@ triage を「**計算（どの Issue がどう triage されるか）**」と「
 - `candidate_count`: `candidates[]` の実件数。`truncated_count`: N 件上限で `candidates[]` から落とした「依存解決済みだが順位外」の候補数（**必須フィールド**。`0` でも省略しない。サイレント truncation を禁じるため）。
 - exit code で delivery 側が分岐する。[`tools/check_curate_threshold.py`](../../tools/check_curate_threshold.py) に倣い、**`1` を意味付けに使わない**（Python が未捕捉例外時に既定で返す exit `1` と衝突し、scan のクラッシュが「候補なし」に誤読されて error が窓口に届かなくなるのを防ぐ）。割り当ては `0` = 候補なし（`no_candidates`）、`10` = 候補あり（`candidates_found`）、`2` = error。delivery 層は JSON パース失敗に依存せず exit code で挙動を決める（curator threshold ツールと同方針）。
 - `excluded_blocked` は「依存未解決で除外した Issue」を理由付きで残す。**サイレント truncation をしない**（`truncated_count` で順位外候補の存在も、`excluded_blocked` で依存除外も、ともに人間が監査できるようにする）。
+- `excluded_merged` / `base_branch_scan` / `base_branch_signals`（Issue #830、[§10.5](#105-二系統base_branch運用リポジトリの完了判定)）: `base_branch` 宣言済みリポジトリで「その base ブランチへマージ済み = 完了」と判定して候補から外した Issue を、**閉じた PR 名 + base ブランチ名付き**で残す（`excluded_blocked` とは別枠 — 除外理由の種類が違う）。`base_branch_scan` は「どの repo にどの base ブランチを適用し、マージ済み PR を何件読んだか」の監査で、**何も除外しなかった scan と、そもそも見ていない scan を区別できる**ようにする。`base_branch_signals` は読み取り時の異常（registry 不在 / 別ブランチ宛 PR の混入 / 整合しない closing link）。3 キーとも**固定スキーマ前提**で常に存在し、非該当時は `[]`。`input_truncated` にも `base_merges`（base ブランチのマージ窓が上限到達）が加わる。
 - `repo_resolution`（Issue #829）: `--all-registry-repos` で registry から repo セットを解決した場合、resolver の結果（`repos` / `home_repo` / `triage_home` / `included` / `opted_out` / `skipped` / `signals`、失敗時は `error` も）をそのまま echo する。`--repo` 明示 / `--from-file` では `null`。**固定スキーマ前提**なのでキーは常に存在し、`null | object` の 2 値を取る。error envelope（exit 2）にも同じキーが載るので、「どの repo を見た結果か / なぜ 1 つも解決できなかったのか」を scan 出力だけで監査できる（delivery 層が resolver を二度呼ぶ必要がない）。
 - `effort_model`: 学習された effort モデルの要約（[§10](#10-スコープ外--将来課題) 工数見積もりの高度化）、または学習無効 / オフライン時は `null`。**固定スキーマ前提**なので `effort_model: null | object` の 2 値を常に取り、object 形では `sample_size` / `applies`（データ駆動ゲートの上書き可否）/ `predictor_correlation` / `realized_cutpoints` / `realized_median_lines` / `coverage`（学習データの網羅性: single-issue-linked PR 数・採用サンプル数・body 欠落で落とした数）/ `reason` などを持つ。`applies==false` の時は静的ヒューリスティックが維持され、各候補の `signals[]` に理由＋実工数コンテキストが明示される。本リポジトリでは body 長が実工数と相関しないため常に `applies==false`（gated OFF）。
 
@@ -176,6 +184,7 @@ triage を「**計算（どの Issue がどう triage されるか）**」と「
 3. #529 ...（優先度 medium / 工数 S / 依存解決済み / 並列可）
 
 除外（依存未解決）: #540（#537 が open のため）
+除外（マージ済み）: kura#231（#232 が develop にマージ済み・GitHub の自動クローズ未発火）
 
 着手するものを番号で指定してください。着手判断後に /org-delegate を回します。
 ```
@@ -183,7 +192,7 @@ triage を「**計算（どの Issue がどう triage されるか）**」と「
 - 推奨は先頭に `[推奨]` を付け 1 件だけ。
 - 工数が機械推定なら `(推定)` を必ず付す。
 - 「提案のみ / 着手はあなたの判断」を毎回明示する（INV-1 の運用上の現れ）。
-- 除外枠を必ず見せる（監査性 + 「全部見たうえで N 件」という安心）。
+- 除外枠を必ず見せる（監査性 + 「全部見たうえで N 件」という安心）。依存未解決（`excluded_blocked`）とマージ済み（`excluded_merged`、[§10.5](#105-二系統base_branch運用リポジトリの完了判定)）は**別行**で出す — 前者は「まだ着手できない」、後者は「もう終わっている」で、人間の次の一手が真逆になるため。
 - **クロスリポジトリ scan（[§10](#10-クロスリポジトリ-triage実装済み)）時**: 候補の `repo` が `null` でない（複数 repo 横断）なら、`#N` の代わりに `repo#N`（例 `runtime#531`）で表示し、出自 repo の曖昧さを無くす。単一 repo scan（`repo: null`）では従来どおり `#N`。delivery 層（窓口 skill）でこのレンダリング分岐を実装する（[§9](#9-段階導入と検証提案) と同様に `.claude/` 編集を伴うため計算層ワーカーのスコープ外・別タスク）。**実装済み**: この repo 修飾レンダリングは、delivery 層が [`registry/projects.md`](../../registry/projects.md) の triage 列（既定 include / 明示 opt-out）と [`registry/org-config.md`](../../registry/org-config.md) の `triage_home`（既定 off）から scan 対象 repo セットを解決する経路（[§10.4](#104-registry-駆動の-repo-セット解決)）と組で有効になる。登録された GitHub URL 行は既定で scan 対象なので、複数の登録 repo が並ぶ既定状態で `repo` が `null` でなくなり、この分岐が発火する（`repo: null` に畳まれるのは scan 対象が 1 件のときだけ）。resolver（[`tools/work_discovery_repos.py`](../../tools/work_discovery_repos.py)）の `opted_out` / `skipped` / `signals` も併せて人間提示に添え、「どの repo を見た結果の候補か・どの repo を意図的に見ていないか」を監査可能にする。
 
 ## 6. delivery 方式 3 案比較
@@ -330,6 +339,37 @@ triage を「**計算（どの Issue がどう triage されるか）**」と「
 - **供給経路（Issue #829）**: delivery 層は resolver を**別コマンドとして起動しない**。scan の `--all-registry-repos` が `resolve_repos()` をプロセス内で呼び、解決結果（`repos` / `home_repo` / `triage_home` / `included` / `opted_out` / `skipped` / `signals`）を scan 出力の **`repo_resolution`** に echo する（フラグ未使用時は `null`）。**解決失敗は scan の exit 2**（error envelope にも `repo_resolution` が載る）で、`--repo` 無し＝gh カレントリポジトリの暗黙 scan へフォールバック**しない**（解決失敗が「候補ゼロ」に化けて silent skip になるのを機構で塞ぐ。従来はこの分岐を呼び出し側 prose の `if … else` に依存していた）。層分離は保たれる: 供給を決めるのは依然 registry + org-config であって engine のランキング計算ではなく、engine は解決済み repo 列を受け取って走るだけである。
 - **出力**: `--format json`（既定、`repos` / `home_repo` / `triage_home` / `included` / `opted_out` / `skipped` / `signals`）と `--format flags`（`--repo a/b --repo c/d` の 1 行。skip / signal は stderr に出し stdout は flags 純粋）。**`--format flags` を scan の起動に使ってはならない**（上記のシェル単語分割依存。zsh では `${=VAR}` が要る＝可搬でない）。対話での確認・手貼り用に残している。旧キー `opted_in` は**廃止**し、`included`（scan 対象に入った登録行）と `opted_out`（明示 opt-out された登録行）へ分割した（意味が反転したキーを別名で残すと誤読を生むため後方互換エイリアスは置かない）。`triage_home` は home を見たか見なかったかを出力だけで監査できるようにする真偽値。exit code は `0`（repos が 1 件以上）/ `2`（error）。
 - **`recommendation_ref` の journal 統一**: dispatcher の worker_close 経路は journal イベント `work_discovery_scanned` の payload を `recommendation_issue=<番号>` から **`recommendation_ref=owner/repo#N`** に統一する（`recommendation.repo` が null＝scan 対象が 1 件で表示が畳まれた場合は scan 出力の **`repo_resolution.repos[0]`** で補完する）。補完元が `home_repo` ではなく `repos[0]` なのは、[`tools/work_discovery_scan.py`](../../tools/work_discovery_scan.py) が単一 repo scan のとき `collapse_repo = repos[0]` として**表示だけ**を単一 repo 形（`repo: null`）に畳む（`tools/work_discovery_scan.py:2237-2238`）ため、`recommendation.repo` が null になるのは「`--repo` が 1 つだけのとき」であり、その実 repo は常に resolver の `repos[0]` だからである（home が既定で先頭に来なくなった以上、`home_repo` での補完は誤った repo 名を生む）。cross-repo で `ja#60` と `runtime#60` が journal 上で衝突しないようにするのが本統一の目的。
+
+### 10.5 二系統（base_branch）運用リポジトリの完了判定
+
+> ステータス: **実装済み**（Issue #830）。`base_branch` 未設定のプロジェクトの挙動は完全に不変。
+
+**症状**: `base_branch=develop` を宣言した kura（[§10.4](#104-registry-駆動の-repo-セット解決) の registry 行）で、**完了済みの Issue が候補の第 1 位に出た**（2026-08-06 の worker_close scan: `aainc/kura-data-aggregator-trial#231` が rank 1、同日 PR #232 を develop へマージ済み）。
+
+**原因の連鎖**:
+
+1. feature PR は `develop` 宛にマージされる。GitHub の `Closes #N` **自動クローズは既定ブランチ（main）へのマージでしか発火しない**ので、Issue は次の develop→main 昇格まで open のまま残る。
+2. triage は Issue の open / closed しか見ていないため、これを「未着手」と読む。
+3. さらに `unblocked_by_recent_merge`（[§4.2](#42-補助軸ランク付けに使う)）が**逆に効く**: その Issue を閉じる PR が直近マージされたことで「直近マージ起点の follow-up」と判定され、**完了直後ほどランクが上がる**。post-merge の next-dispatch はまさにマージ直後に走るので、最も踏みやすいタイミングで最悪の候補が推奨される。
+
+**判定手段の実測（2026-08-06 / gh 2.74.0 / `aainc/kura-data-aggregator-trial`）** — Issue 本文が挙げた `closingIssuesReferences` / `linked:` 検索は**いずれも使えない**ことが実測で判明した:
+
+| 手段 | 実測結果 |
+|---|---|
+| `gh pr view 232 --json closingIssuesReferences`（base=develop） | `[]` — GitHub は既定ブランチ外の PR に対して**リンク自体を作らない**（同 repo の base=main の PR #219 / #222 は populated） |
+| `gh pr list --search "linked:231"` | `[]` |
+| Issue #231 の timeline | `cross-referenced` イベント 1 件のみ（単なる言及と区別できない） |
+| PR #232 の body 本文 | `Closes #231` を含む ← **唯一の確かな証拠** |
+
+したがって判定は **マージ済み PR 自身の title / body の closing キーワード**で行う。既存の直近マージ軸が使っている抽出器（`_pr_close_refs` / `_cross_keyword_refs`、[§11-3](#11-未解決の論点実装前に人間判断が要る点) のキーワードゲート + leading-run anchored + 否定ガード）をそのまま再利用するので、`Refs` / `Re`（単なる言及）や `does not close #N` は完了と読まない。
+
+**機構**:
+
+- 対象は **`registry/projects.md` の `base_branch` 列（Issue #808）が設定された行だけ**。未設定行は fetch すら行わず、挙動は 1 ビットも変わらない。base ブランチの解決は `--all-registry-repos`（resolver の `base_branches`）と `--repo` 明示の**両方**で行う（同じ repo を手打ちしただけでバグが復活しては根治にならない）。registry を読めなかった場合は非 fatal に縮退し、理由を `base_branch_signals` に残す（「除外対象ゼロ」と「そもそも見ていない」を出力から区別できるようにする）。
+- fetch は `gh pr list --base <base_branch> --state merged --limit <--base-merges>`（既定 100、`0` で無効化）。`closingIssuesReferences` は上表の理由で**要求しない**。窓は「develop にマージ済みだが main へ未昇格」の期間 = 1 リリースサイクルを覆う必要があるため、直近マージ軸の K（既定 10）より大きく取る。上限到達は `input_truncated.base_merges` で開示する。
+- 完了と判定した Issue は候補から外し、**`excluded_merged` に「閉じた PR 名 + base ブランチ名」付きで出す**（silent 除外にしない）。同一 Issue を複数の PR が閉じている場合は**最新のマージ**を引用する。
+- 完了した ref は **open blocker 集合からも外す**。GitHub 上はまだ open なので、放置すると「完了済みの作業にブロックされている」扱いで依存側が誤除外され続ける。依存側の候補は `signals[]` に「ブロッカー #N は #M（develop マージ）で解決済み」と明示する。
+- **サニティガード**: 「マージより後に作成された Issue」はそのマージでは閉じられ得ないので除外しない（番号再利用・`Closes` の書き間違い対策）。両タイムスタンプが揃わないときはガードを棄権する（順序を捏造しない）。**意図的な非カバレッジ**: 正当なクローズ後に再オープンされた Issue は除外されたままになる — だからこそ黙って落とさず PR 名付きで提示し、人間が覆せる形にしている。
 
 ## 10'. スコープ外 / 将来課題
 

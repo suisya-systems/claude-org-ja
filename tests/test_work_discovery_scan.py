@@ -927,7 +927,10 @@ class TestCliWiring(unittest.TestCase):
         data = json.loads(proc.stdout)
         self.assertIn("input_truncated", data)
         self.assertEqual(
-            data["input_truncated"], {"open_issues": False, "open_prs": False}
+            data["input_truncated"],
+            # `base_merges` joined the coverage flags with Issue #830 (the
+            # base-branch completion window can cut off older merges).
+            {"open_issues": False, "open_prs": False, "base_merges": False},
         )
 
     def test_top_n_zero_rejected_as_error(self):
@@ -2486,6 +2489,597 @@ class TestAllRegistryRepos(unittest.TestCase):
             seen[shell] = json.loads(proc.stdout)
         self.assertEqual(seen["zsh"], seen["bash"])
         self.assertEqual(seen["zsh"]["generated_for"], "worker_close")
+
+
+# ----------------------------------------------------------------------
+# Two-track base_branch completion (Issue #830)
+# ----------------------------------------------------------------------
+
+KURA = "aainc/kura-data-aggregator-trial"
+
+# The real shapes behind Issue #830, captured from GitHub on 2026-08-06
+# (gh 2.74.0). Kept verbatim-ish so the regression reproduces the reported
+# case rather than an idealized version of it: PR #232 targets `develop`,
+# carries `Closes #231` in its body, and reports NO closingIssuesReferences
+# (GitHub only links closing issues for default-branch PRs) — which is why
+# Issue #231 was still `open` and got triaged as untouched.
+KURA_ISSUE_231 = {
+    "number": 231,
+    "title": "MCP トークン TTL 暫定値 (8h) を既定 900s へ戻す (refresh rotation の本番確認後)",
+    "body": "refresh token が本番で回ることを確認してから暫定 TTL を外す。",
+    "labels": [],
+    "createdAt": "2026-08-05T01:20:00Z",
+    "updatedAt": "2026-08-06T02:33:45Z",
+}
+KURA_PR_232 = {
+    "number": 232,
+    "title": "fix(kura): MCP アクセストークン TTL の暫定 8 時間を外し既定 900s へ戻す",
+    "body": (
+        "## 概要\n\n"
+        "#226 の後始末。refresh token (#228) が本番稼働していることを確認できたので、"
+        "#227 で入れた暫定 TTL を削除し、アプリ側の既定 900s へ戻す。\n\n"
+        "Closes #231\n"
+    ),
+    "baseRefName": "develop",
+    "mergedAt": "2026-08-06T02:33:45Z",
+}
+
+
+def _kura_bundle(**over):
+    bundle = {
+        "repo": KURA,
+        "issues": [KURA_ISSUE_231],
+        "open_pr_numbers": set(),
+        # The merge that finished #231 is also in the recent-merge window —
+        # that is what made `unblocked_by_recent_merge` fire and pushed the
+        # finished Issue to rank 1 (the reported symptom).
+        "recent_merges": [KURA_PR_232],
+        "base_branch": "develop",
+        "base_merges": [KURA_PR_232],
+    }
+    bundle.update(over)
+    return bundle
+
+
+class TestBaseBranchCompletion(unittest.TestCase):
+    """Issues finished by a merge into a declared non-default base branch are
+    excluded with a reason, not ranked first (Issue #830).
+
+    On a `base_branch=develop` repo GitHub's auto-close never fires, so the
+    Issue stays `open`; the pre-#830 scan read that as untouched AND lit up
+    `unblocked_by_recent_merge` off the very merge that completed it. Every
+    test here drives the pure core with fixture data — no `gh`, no network.
+    """
+
+    def _scan(self, bundles, **cfg):
+        config = wds.ScanConfig(
+            top_n=cfg.pop("top_n", 3),
+            free_panes=cfg.pop("free_panes", None),
+            trigger=cfg.pop("trigger", "post_merge"),
+        )
+        return wds.scan_repos(bundles, config, **cfg)
+
+    def test_pre_fix_symptom_without_base_branch(self):
+        # Pins the bug being fixed: with no base_branch configured, the
+        # completed Issue is not just present — it is rank 1, boosted by the
+        # merge that finished it. This is the state kura#231 was reported in.
+        result = self._scan(
+            [_kura_bundle(base_branch=None, base_merges=[])],
+            collapse_repo=KURA,
+        )
+        self.assertEqual(result["status"], "candidates_found")
+        top = result["candidates"][0]
+        self.assertEqual(top["issue"], 231)
+        self.assertEqual(top["rank"], 1)
+        self.assertTrue(top["unblocked_by_recent_merge"])
+        self.assertEqual(result["excluded_merged"], [])
+
+    def test_kura_231_is_excluded_with_a_reason(self):
+        # The fix: same input + `base_branch=develop` → not a candidate, and
+        # the exclusion names PR #232 and the branch it landed on.
+        result = self._scan([_kura_bundle()], collapse_repo=KURA)
+        self.assertEqual([c["issue"] for c in result["candidates"]], [])
+        self.assertEqual(result["status"], "no_candidates")
+        self.assertEqual(len(result["excluded_merged"]), 1)
+        entry = result["excluded_merged"][0]
+        self.assertEqual(entry["issue"], 231)
+        self.assertIsNone(entry["repo"])  # collapsed single-repo display
+        self.assertEqual(entry["base_branch"], "develop")
+        self.assertEqual(entry["closed_by_pr"], 232)
+        self.assertEqual(entry["merged_at"], "2026-08-06T02:33:45Z")
+        self.assertIn("#232", entry["note"])
+        self.assertIn("develop", entry["note"])
+        # Not silent, and not conflated with the dependency exclusion枠.
+        self.assertEqual(result["excluded_blocked"], [])
+
+    def test_excluded_issue_is_not_recommended(self):
+        # The recommendation is derived from the ranked list, so a completed
+        # Issue must not reappear there either.
+        result = self._scan([_kura_bundle()], collapse_repo=KURA)
+        self.assertIsNone(result["recommendation"])
+
+    def test_base_branch_scan_audit_is_emitted(self):
+        result = self._scan([_kura_bundle()], collapse_repo=KURA)
+        self.assertEqual(
+            result["base_branch_scan"],
+            [
+                {
+                    "repo": None,
+                    "base_branch": "develop",
+                    "merged_prs_scanned": 1,
+                    "closed_issue_count": 1,
+                }
+            ],
+        )
+        self.assertEqual(result["base_branch_signals"], [])
+
+    def test_repo_without_base_branch_is_unchanged(self):
+        # Acceptance criterion: projects with no base_branch behave exactly
+        # as before, even when a merged PR closing the Issue is in the data.
+        result = self._scan(
+            [
+                {
+                    "repo": "o/plain",
+                    "issues": [_issue(7, body="b")],
+                    "open_pr_numbers": set(),
+                    "recent_merges": [{"number": 8, "body": "Closes #7"}],
+                }
+            ],
+            collapse_repo="o/plain",
+        )
+        self.assertEqual([c["issue"] for c in result["candidates"]], [7])
+        self.assertEqual(result["excluded_merged"], [])
+        self.assertEqual(result["base_branch_scan"], [])
+
+    def test_mere_reference_does_not_exclude(self):
+        # `Refs #N` is a mention, not a completion — excluding on it would
+        # drop live work (the §11-3 over-matching risk, applied to merges).
+        pr = dict(KURA_PR_232, body="Refs #231\n")
+        result = self._scan(
+            [_kura_bundle(base_merges=[pr], recent_merges=[pr])],
+            collapse_repo=KURA,
+        )
+        self.assertEqual([c["issue"] for c in result["candidates"]], [231])
+        self.assertEqual(result["excluded_merged"], [])
+
+    def test_negated_close_keyword_does_not_exclude(self):
+        pr = dict(KURA_PR_232, body="This does not close #231 yet.\n")
+        result = self._scan(
+            [_kura_bundle(base_merges=[pr], recent_merges=[])],
+            collapse_repo=KURA,
+        )
+        self.assertEqual([c["issue"] for c in result["candidates"]], [231])
+        self.assertEqual(result["excluded_merged"], [])
+
+    def test_merge_targeting_another_branch_is_not_counted(self):
+        # An offline bundle can carry unfiltered merges; a baseRefName that
+        # contradicts the configured branch must not widen the exclusion, and
+        # the mismatch is reported rather than dropped.
+        pr = dict(KURA_PR_232, baseRefName="feature/x")
+        result = self._scan(
+            [_kura_bundle(base_merges=[pr], recent_merges=[])],
+            collapse_repo=KURA,
+        )
+        self.assertEqual([c["issue"] for c in result["candidates"]], [231])
+        self.assertEqual(result["excluded_merged"], [])
+        self.assertTrue(
+            any("target a different branch" in s
+                for s in result["base_branch_signals"]),
+            result["base_branch_signals"],
+        )
+
+    def test_issue_created_after_the_merge_is_not_excluded(self):
+        # Sanity guard: a merge cannot have completed an Issue that did not
+        # exist yet (number reuse / a hand-written `Closes` typo).
+        issue = dict(KURA_ISSUE_231, createdAt="2026-08-07T00:00:00Z")
+        result = self._scan(
+            [_kura_bundle(issues=[issue], recent_merges=[])],
+            collapse_repo=KURA,
+        )
+        self.assertEqual([c["issue"] for c in result["candidates"]], [231])
+        self.assertEqual(result["excluded_merged"], [])
+        self.assertTrue(
+            any("closing link ignored" in s
+                for s in result["base_branch_signals"]),
+            result["base_branch_signals"],
+        )
+
+    def test_missing_created_at_still_excludes(self):
+        # The guard abstains when it cannot compare, rather than inventing an
+        # ordering that would resurrect the bug.
+        issue = {k: v for k, v in KURA_ISSUE_231.items() if k != "createdAt"}
+        result = self._scan(
+            [_kura_bundle(issues=[issue], recent_merges=[])],
+            collapse_repo=KURA,
+        )
+        self.assertEqual(result["candidates"], [])
+        self.assertEqual(result["excluded_merged"][0]["issue"], 231)
+
+    def test_newest_closing_merge_is_the_one_cited(self):
+        older = {
+            "number": 100,
+            "title": "t",
+            "body": "Closes #231",
+            "baseRefName": "develop",
+            "mergedAt": "2026-07-01T00:00:00Z",
+        }
+        result = self._scan(
+            [_kura_bundle(base_merges=[older, KURA_PR_232], recent_merges=[])],
+            collapse_repo=KURA,
+        )
+        self.assertEqual(result["excluded_merged"][0]["closed_by_pr"], 232)
+
+    def test_dependent_unblocks_when_its_blocker_was_merged(self):
+        # A completed Issue is still `open` on GitHub, so leaving it in the
+        # open-blocker set would keep its dependents excluded as blocked by
+        # finished work. It unblocks — and says why.
+        dependent = _issue(240, body="Blocked by #231")
+        result = self._scan(
+            [_kura_bundle(issues=[KURA_ISSUE_231, dependent])],
+            collapse_repo=KURA,
+        )
+        self.assertEqual([c["issue"] for c in result["candidates"]], [240])
+        self.assertEqual(result["excluded_blocked"], [])
+        signals = result["candidates"][0]["signals"]
+        self.assertTrue(
+            any("#231" in s and "#232" in s and "develop" in s
+                for s in signals),
+            signals,
+        )
+
+    def test_cross_repo_close_from_a_base_branch_merge(self):
+        # A develop PR that closes another scanned repo's Issue keeps that
+        # Issue's repo, and the exclusion cites the merging repo's PR.
+        pr = dict(
+            KURA_PR_232, body=f"Closes suisya-systems/claude-org-ja#77\n"
+        )
+        other = {
+            "repo": "suisya-systems/claude-org-ja",
+            "issues": [_issue(77, body="b")],
+            "open_pr_numbers": set(),
+            "recent_merges": [],
+        }
+        result = self._scan(
+            [_kura_bundle(issues=[], base_merges=[pr], recent_merges=[]), other]
+        )
+        self.assertEqual(result["candidates"], [])
+        entry = result["excluded_merged"][0]
+        self.assertEqual(entry["repo"], "suisya-systems/claude-org-ja")
+        self.assertEqual(entry["issue"], 77)
+        self.assertEqual(entry["closed_by_pr"], f"{KURA}#232")
+
+    def test_cross_repo_close_matches_case_insensitively(self):
+        # GitHub slugs are case-insensitive and a PR author writes whatever
+        # casing they like, while the registry-driven scan set is lowercased.
+        # Missing on case alone would leave finished work in the list.
+        pr = dict(KURA_PR_232, body="Closes Suisya-Systems/Claude-Org-JA#77\n")
+        other = {
+            "repo": "suisya-systems/claude-org-ja",
+            "issues": [_issue(77, body="b")],
+            "open_pr_numbers": set(),
+            "recent_merges": [],
+        }
+        result = self._scan(
+            [_kura_bundle(issues=[], base_merges=[pr], recent_merges=[]), other]
+        )
+        self.assertEqual(result["candidates"], [])
+        self.assertEqual(
+            result["excluded_merged"][0]["repo"], "suisya-systems/claude-org-ja"
+        )
+
+    def test_origin_prefixed_and_padded_base_branch_cell(self):
+        # Registry cells are padded and an operator may write the ref the way
+        # git prints it; the scan compares against baseRefName either way.
+        result = self._scan(
+            [_kura_bundle(base_branch="  develop  ")], collapse_repo=KURA
+        )
+        self.assertEqual(result["excluded_merged"][0]["issue"], 231)
+
+    def test_scan_shim_accepts_base_branch_inputs(self):
+        result = wds.scan(
+            [KURA_ISSUE_231],
+            set(),
+            [KURA_PR_232],
+            wds.ScanConfig(top_n=3, free_panes=None, trigger="manual"),
+            base_branch="develop",
+            base_merges=[KURA_PR_232],
+        )
+        self.assertEqual(result["candidates"], [])
+        self.assertEqual(result["excluded_merged"][0]["closed_by_pr"], 232)
+
+    def test_scan_is_still_pure(self):
+        # Same input → same output (design §4 再現性契約).
+        a = self._scan([_kura_bundle()], collapse_repo=KURA)
+        b = self._scan([_kura_bundle()], collapse_repo=KURA)
+        self.assertEqual(a, b)
+
+
+class TestBaseBranchCompletionCli(unittest.TestCase):
+    """The `--from-file` / CLI surface of Issue #830."""
+
+    def _run(self, bundle, extra_argv=()):
+        fd, name = tempfile.mkstemp(suffix=".json", prefix="wds_bb_")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(bundle, f)
+            proc = subprocess.run(
+                [sys.executable, str(SCRIPT), "--from-file", name,
+                 *extra_argv],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            )
+        finally:
+            os.unlink(name)
+        return proc
+
+    def test_from_file_bundle_excludes_and_exits_0(self):
+        bundle = {
+            "repos": [
+                {
+                    "repo": KURA,
+                    "issues": [KURA_ISSUE_231],
+                    "open_pr_numbers": [],
+                    "recent_merges": [KURA_PR_232],
+                    "base_branch": "develop",
+                    "base_merges": [KURA_PR_232],
+                }
+            ]
+        }
+        proc = self._run(bundle)
+        self.assertEqual(proc.returncode, wds.EXIT_NO_CANDIDATES)
+        data = json.loads(proc.stdout)
+        self.assertEqual(data["candidates"], [])
+        self.assertEqual(data["excluded_merged"][0]["issue"], 231)
+
+    def test_base_merges_zero_also_disables_the_offline_path(self):
+        # "0 disables the check" has to mean the same thing offline: a bundle
+        # carrying its own base inputs must stop excluding once the caller
+        # switched the check off, or the flag lies about what it does.
+        bundle = {
+            "repos": [
+                {
+                    "repo": KURA,
+                    "issues": [KURA_ISSUE_231],
+                    "open_pr_numbers": [],
+                    "recent_merges": [],
+                    "base_branch": "develop",
+                    "base_merges": [KURA_PR_232],
+                }
+            ]
+        }
+        proc = self._run(bundle, ["--base-merges", "0"])
+        self.assertEqual(proc.returncode, wds.EXIT_CANDIDATES_FOUND)
+        data = json.loads(proc.stdout)
+        self.assertEqual([c["issue"] for c in data["candidates"]], [231])
+        self.assertEqual(data["excluded_merged"], [])
+        self.assertEqual(data["base_branch_scan"], [])
+
+    def test_non_string_base_branch_is_a_pinpointed_error(self):
+        bundle = {"issues": [], "base_branch": 5}
+        proc = self._run(bundle)
+        self.assertEqual(proc.returncode, wds.EXIT_ERROR)
+        data = json.loads(proc.stdout)
+        self.assertIn("base_branch", data["error"])
+
+    def test_non_object_base_merge_row_is_a_pinpointed_error(self):
+        bundle = {"issues": [], "base_branch": "develop", "base_merges": ["x"]}
+        proc = self._run(bundle)
+        self.assertEqual(proc.returncode, wds.EXIT_ERROR)
+        data = json.loads(proc.stdout)
+        self.assertIn("base_merges[0]", data["error"])
+
+    def test_negative_base_merges_rejected(self):
+        proc = self._run({"issues": []}, ["--base-merges", "-1"])
+        self.assertEqual(proc.returncode, wds.EXIT_ERROR)
+        self.assertIn("--base-merges must be >= 0", json.loads(proc.stdout)["error"])
+
+    def test_error_envelope_carries_the_new_keys(self):
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "--from-file", "/no/such/file.json"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        data = json.loads(proc.stdout)
+        for key in ("excluded_merged", "base_branch_scan", "base_branch_signals"):
+            self.assertIn(key, data)
+        self.assertIn("base_merges", data["input_truncated"])
+
+
+class TestFetchBaseBranchMerges(unittest.TestCase):
+    """The fetch window is merge-time-exact, not update-time-approximate."""
+
+    def test_overfetches_then_slices_by_merged_at(self):
+        # `gh pr list --limit` pages under `sort:updated-desc`, so an old
+        # merged PR with a fresh comment can crowd a just-merged closing PR
+        # off the page — and that is exactly the PR this check needs. Mirror
+        # fetch_recent_merges: over-fetch, then take the mergedAt top-K.
+        page = [
+            {"number": 1, "mergedAt": "2026-01-01T00:00:00Z"},
+            {"number": 2, "mergedAt": "2026-08-06T00:00:00Z"},
+            {"number": 3, "mergedAt": "2026-05-01T00:00:00Z"},
+        ]
+        seen = {}
+
+        def _fake(args):
+            seen["args"] = args
+            return list(page)
+
+        with mock.patch.object(wds, "_run_gh_json_list", _fake):
+            out = wds.fetch_base_branch_merges(KURA, "develop", 2)
+        self.assertEqual([p["number"] for p in out], [2, 3])
+        args = seen["args"]
+        self.assertIn("--base", args)
+        self.assertEqual(args[args.index("--base") + 1], "develop")
+        # The requested page is larger than the window it returns.
+        self.assertEqual(
+            args[args.index("--limit") + 1],
+            str(2 * wds._RECENT_MERGE_OVERFETCH),
+        )
+        # closingIssuesReferences is deliberately not requested (empty for
+        # non-default-branch PRs — measured; the closing keyword is the SoT).
+        self.assertNotIn(
+            "closingIssuesReferences", args[args.index("--json") + 1]
+        )
+
+
+class TestBaseBranchFromRegistry(unittest.TestCase):
+    """The registry (`base_branch` column) drives which repos get the check."""
+
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        self.root = Path(self._td.name)
+        (self.root / "registry").mkdir()
+
+    def tearDown(self):
+        self._td.cleanup()
+
+    def _write_registry(self, rows):
+        lines = [
+            "# Projects Registry",
+            "",
+            "| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 | triage "
+            "| base_branch |",
+            "|---|---|---|---|---|---|---|",
+        ]
+        lines += [f"| {row} |" for row in rows]
+        (self.root / "registry" / "projects.md").write_text(
+            "\n".join(lines) + "\n", encoding="utf-8"
+        )
+
+    def _run(self, argv, issues_by_repo=None):
+        """main() with every fetcher mocked; returns (rc, json, base_calls)."""
+        base_calls = []
+
+        def _base(repo, branch, limit):
+            base_calls.append((repo, branch, limit))
+            return [KURA_PR_232] if branch == "develop" else []
+
+        import io
+        from contextlib import redirect_stdout
+
+        buf = io.StringIO()
+        with mock.patch.object(
+                 wds, "fetch_open_issues",
+                 lambda r, limit=wds.DEFAULT_OPEN_LIMIT:
+                     (issues_by_repo or {}).get(r, [])), \
+             mock.patch.object(
+                 wds, "fetch_open_pr_numbers",
+                 lambda r, limit=wds.DEFAULT_OPEN_LIMIT: set()), \
+             mock.patch.object(wds, "fetch_recent_merges", lambda r, k: []), \
+             mock.patch.object(wds, "fetch_base_branch_merges", _base), \
+             mock.patch.object(wds, "build_effort_model", lambda r, n: None):
+            with redirect_stdout(buf):
+                rc = wds.main(argv)
+        return rc, json.loads(buf.getvalue()), base_calls
+
+    def test_explicit_repo_still_gets_the_registry_base_branch(self):
+        # Naming the repo by hand must not reintroduce the bug: the registry
+        # is the SoT for base_branch regardless of how the repo set was built.
+        self._write_registry(
+            [f"kura | kura | https://github.com/{KURA} | d | x |  | develop |"]
+        )
+        rc, data, calls = self._run(
+            ["--repo", KURA, "--claude-org-root", str(self.root)],
+            {KURA: [KURA_ISSUE_231]},
+        )
+        self.assertEqual(rc, wds.EXIT_NO_CANDIDATES)
+        self.assertEqual(calls, [(KURA, "develop", wds.DEFAULT_BASE_MERGE_LIMIT)])
+        self.assertEqual(data["excluded_merged"][0]["issue"], 231)
+
+    def test_all_registry_repos_uses_the_resolver_map(self):
+        self._write_registry(
+            [
+                f"kura | kura | https://github.com/{KURA} | d | x |  | develop |",
+                f"ja | ja | https://github.com/{JA} | d | x |  |  |",
+            ]
+        )
+        rc, data, calls = self._run(
+            ["--all-registry-repos", "--claude-org-root", str(self.root)],
+            {KURA: [KURA_ISSUE_231]},
+        )
+        # Only the base_branch row is fetched; the unset row is untouched.
+        self.assertEqual(calls, [(KURA, "develop", wds.DEFAULT_BASE_MERGE_LIMIT)])
+        self.assertEqual(rc, wds.EXIT_NO_CANDIDATES)
+        self.assertEqual(data["excluded_merged"][0]["repo"], KURA)
+        self.assertEqual(
+            data["repo_resolution"]["base_branches"], {KURA: "develop"}
+        )
+
+    def test_origin_prefixed_registry_cell_is_normalized(self):
+        self._write_registry(
+            [f"kura | kura | https://github.com/{KURA} | d | x |  | origin/develop |"]
+        )
+        _, _, calls = self._run(
+            ["--repo", KURA, "--claude-org-root", str(self.root)],
+            {KURA: [KURA_ISSUE_231]},
+        )
+        self.assertEqual(calls, [(KURA, "develop", wds.DEFAULT_BASE_MERGE_LIMIT)])
+
+    def test_base_merges_zero_disables_the_check(self):
+        self._write_registry(
+            [f"kura | kura | https://github.com/{KURA} | d | x |  | develop |"]
+        )
+        rc, data, calls = self._run(
+            ["--repo", KURA, "--claude-org-root", str(self.root),
+             "--base-merges", "0"],
+            {KURA: [KURA_ISSUE_231]},
+        )
+        self.assertEqual(calls, [])
+        self.assertEqual(rc, wds.EXIT_CANDIDATES_FOUND)
+        self.assertEqual(data["excluded_merged"], [])
+
+    def test_unset_base_branch_column_scans_nothing(self):
+        self._write_registry(
+            [f"kura | kura | https://github.com/{KURA} | d | x |  | - |"]
+        )
+        rc, data, calls = self._run(
+            ["--repo", KURA, "--claude-org-root", str(self.root)],
+            {KURA: [KURA_ISSUE_231]},
+        )
+        self.assertEqual(calls, [])
+        self.assertEqual(rc, wds.EXIT_CANDIDATES_FOUND)
+
+    def test_missing_registry_degrades_without_failing(self):
+        # No registry at all: the scan still runs (pre-#830 behaviour), it
+        # just cannot exclude anything this way — and says so, because
+        # "nothing to exclude" and "never looked" must not read the same.
+        rc, data, calls = self._run(
+            ["--repo", KURA, "--claude-org-root", str(self.root)],
+            {KURA: [KURA_ISSUE_231]},
+        )
+        self.assertEqual(calls, [])
+        self.assertEqual(rc, wds.EXIT_CANDIDATES_FOUND)
+        self.assertTrue(
+            any("registry not found" in s for s in data["base_branch_signals"]),
+            data["base_branch_signals"],
+        )
+
+    def test_unreadable_registry_is_reported_not_swallowed(self):
+        (self.root / "registry" / "projects.md").write_bytes(bytes([255]))
+        rc, data, calls = self._run(
+            ["--repo", KURA, "--claude-org-root", str(self.root)],
+            {KURA: [KURA_ISSUE_231]},
+        )
+        self.assertEqual(calls, [])
+        self.assertEqual(rc, wds.EXIT_CANDIDATES_FOUND)
+        self.assertTrue(
+            any("base-branch completion check skipped" in s
+                for s in data["base_branch_signals"]),
+            data["base_branch_signals"],
+        )
+
+    def test_truncated_base_merge_window_is_flagged(self):
+        self._write_registry(
+            [f"kura | kura | https://github.com/{KURA} | d | x |  | develop |"]
+        )
+        rc, data, _ = self._run(
+            ["--repo", KURA, "--claude-org-root", str(self.root),
+             "--base-merges", "1"],
+            {KURA: [KURA_ISSUE_231]},
+        )
+        self.assertTrue(data["input_truncated"]["base_merges"])
 
 
 if __name__ == "__main__":

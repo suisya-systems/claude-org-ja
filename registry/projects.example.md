@@ -54,6 +54,7 @@ claude-org-ja 自身（self-edit）は本レジストリに載せない。`tools
 - 値はブランチ名（`develop`）。git が表示する形の `origin/develop` と書いても同じものとして扱う（前後空白は trim）。
 - 単発の逸脱（hotfix を `main` から切る等）は本列を書き換えず `gen_delegate_payload.py --base-ref main` で上書きする。**優先順位は `--base-ref` > 本列 > `origin/HEAD`**。
 - 設定したブランチが `origin` に存在しない場合、派遣は apply 時に fail loud で停止する（既定ブランチへ黙って落ちない。Issue #480 の stale-base ガードと同じ立場）。
+- **work-discovery triage の完了判定にも使われる（Issue #830）**: 値を書いた行は、triage scan がそのブランチ宛のマージ済み PR を読み、`Closes #N` で閉じられた Issue を候補から外して `excluded_merged` に理由付きで出す。GitHub の自動クローズは既定ブランチへのマージでしか発火しないため、develop にマージ済みの Issue は open のまま残り、これが無いと完了済みの作業が「次の仕事」の第 1 位に出る。未設定行はこの判定を一切行わない（挙動不変）。
 
 下の行は列の書き方を示すサンプルである。実際の運用では自分のプロジェクトに置き換えてよい（サンプル行を全て削除しても、パーサーは 0 行の表を有効として扱う）。
 
