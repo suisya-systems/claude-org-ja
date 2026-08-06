@@ -26,12 +26,15 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-# ja の pin 窓 (pyproject.toml:30 / requirements.txt:111)。窓の外の runtime が
-# 入っている環境ではこの契約の妥当性そのものが保証外なので skip する
-# (tools/check_runtime_schema_drift.py と同じ流儀)。窓の**内側**での import
-# 失敗は skip ではなく失敗にする — reader が動いたこと自体が検出対象であり、
-# skip にすると #835 が防ごうとしている silent 化を検出器側で再発させる。
-_PIN_MIN = (0, 1, 37)
+# **予約台帳が存在するバージョン下限**。ja の依存 floor (0.1.37,
+# pyproject.toml:30 / requirements.txt:111) や docker/Dockerfile の既定
+# ``RUNTIME_VERSION=0.1.37`` とは別物である点に注意 — ``_seed_status`` /
+# ``count_unbound_reservations`` / ``WORKER_BIND_WINDOW_SECONDS`` は 0.1.39 で
+# 初めて入った (0.1.37 / 0.1.38 の wheel を展開して不在を実測)。下限未満の
+# runtime では読み手がそもそも居ないので契約に守るべき対象が無く、skip する。
+_LEDGER_MIN = (0, 1, 39)
+# ja の pin 窓の上限 (< 0.2)。窓の外はこの契約の妥当性が保証外なので skip
+# する (tools/check_runtime_schema_drift.py と同じ流儀)。
 _PIN_MAX_EXCLUSIVE = (0, 2)
 
 
@@ -51,12 +54,30 @@ def _installed_runtime_version() -> tuple[int, ...] | None:
     return tuple(parts) or None
 
 
-def _runtime_in_pin_window() -> bool:
+def _skip_reason() -> str | None:
+    """契約が適用されない runtime なら skip 理由を返す。
+
+    適用される版 (``_LEDGER_MIN`` 以上・pin 窓の内側) での import 失敗は
+    skip ではなく**失敗**にする — reader が動いたこと自体が検出対象であり、
+    skip にすると #835 が防ごうとしている silent 化を検出器側で再発させる。
+    """
     v = _installed_runtime_version()
     if v is None:
-        # バージョンが読めないなら「窓の内側」と扱って厳格側に倒す。
-        return True
-    return _PIN_MIN <= v and v[:2] < _PIN_MAX_EXCLUSIVE
+        # バージョンが読めないなら「適用される」と扱って厳格側に倒す。
+        return None
+    if v < _LEDGER_MIN:
+        return (
+            f"installed claude-org-runtime {'.'.join(map(str, v))} predates "
+            f"the overflow reservation ledger (introduced in "
+            f"{'.'.join(map(str, _LEDGER_MIN))}); "
+            "§7 の読み手が存在しないため守るべき契約が無い"
+        )
+    if v[:2] >= _PIN_MAX_EXCLUSIVE:
+        return (
+            f"installed claude-org-runtime {'.'.join(map(str, v))} is outside "
+            "ja's pin window (< 0.2); 契約の妥当性が保証外"
+        )
+    return None
 
 
 _CONTRACT_HINT = (
@@ -82,12 +103,9 @@ class WorkerSeedStatusContractTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        if not _runtime_in_pin_window():
-            raise unittest.SkipTest(
-                "installed claude-org-runtime is outside ja's pin window "
-                f"(>= {'.'.join(map(str, _PIN_MIN))}, < 0.2); "
-                f"{_CONTRACT_HINT}"
-            )
+        skip = _skip_reason()
+        if skip is not None:
+            raise unittest.SkipTest(f"{skip}; {_CONTRACT_HINT}")
         try:
             from claude_org_runtime.dispatcher.runner import (  # noqa: F401
                 WORKER_BIND_WINDOW_SECONDS,
