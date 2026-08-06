@@ -323,6 +323,13 @@ class _SubprocessFixture:
             "set_run_pr_open.py",
             "run_complete_on_merge.py",
             "peer_notify.py",
+            # Issue #828: the two PR-recording CLIs resolve OWNER/REPO from
+            # the run's project through resolve_run_repo, which in turn pulls
+            # the registry parser and the layout resolver's github-URL /
+            # self-edit helpers.
+            "resolve_run_repo.py",
+            "registry_parser.py",
+            "resolve_worker_layout.py",
         ):
             shutil.copy2(src_tools / name, dst_tools / name)
         # Initialise an empty schema'd state.db at the canonical path.
