@@ -55,7 +55,7 @@ if ! command -v jq &>/dev/null; then
 fi
 
 # 不正 JSON / 非 object payload の fail-closed ガード (Issue #834)。
-# `VAR=$(echo "$INPUT" | jq ...)` は parse error (exit 4) や非 object への index
+# `VAR=$(printf '%s\n' "$INPUT" | jq ...)` は parse error (exit 4) や非 object への index
 # error (exit 5) で set -e により script ごと中断し、PreToolUse では exit != 2 が
 # 非ブロッキング扱い = fail-open になる。top-level が null のときは jq が index を
 # 許すため error にすらならず、抽出結果が空になって passthrough に落ちる。
@@ -69,17 +69,26 @@ fi
 # 要るので前に出せないため。jq なし環境ではこの Hook 全体が意図的に無効化される設計
 # （上の jq チェックのコメント参照）なので、これは新たな穴ではなくその設計の帰結である。
 # 一方、空 payload ガードは jq 不要なので前に置き、jq の有無に依らない不変条件にしてある。
-if ! echo "$INPUT" | jq -e 'type == "object" and (.tool_input == null or (.tool_input | type) == "object")' >/dev/null 2>&1; then
+#
+# 入力は `echo` ではなく `printf '%s\n'` で渡す。`echo "$INPUT"` は INPUT が "-n" / "-e"
+# / "-E" 等の echo オプションと完全一致すると 1 バイトも出力せず、jq が「JSON 値ゼロ個」
+# として exit 0 を返してガードを素通りする (実測で確認)。
+# また `-s` (slurp) で入力ストリーム全体を 1 つの配列にまとめ `length == 1` を要求する。
+# jq は既定で「JSON 値の連なり」を受け付けるため、slurp しないと JSON object を 2 個
+# 並べた payload で述語が各値について真になり exit 0 になる。その後の抽出は値を改行で
+# 連結して返す (例: tool_name が "Edit\nEdit") ので、ツール名の一致判定を外して
+# passthrough に落ちる。PreToolUse payload は常に単一 object なので 1 個だけを受け付ける。
+if ! printf '%s\n' "$INPUT" | jq -e -s 'length == 1 and (.[0] | type) == "object" and (.[0].tool_input == null or (.[0].tool_input | type) == "object")' >/dev/null 2>&1; then
   deny_with_reason "PreToolUse payload を JSON object として解析できませんでした (tool_input が object でない場合を含む)。安全側 (fail-closed) で拒否します。"
 fi
 
-TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty')
+TOOL_NAME=$(printf '%s\n' "$INPUT" | jq -r '.tool_name // empty')
 
 if [[ "$TOOL_NAME" != "Bash" ]]; then
   exit 0
 fi
 
-COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command // empty')
+COMMAND=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.command // empty')
 if [[ -z "$COMMAND" ]]; then
   exit 0
 fi

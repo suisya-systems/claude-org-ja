@@ -7,6 +7,8 @@
 #     (b) 不正 JSON (parse 不能)
 #     (c) 有効 JSON だが top-level が object でない (配列 / 文字列 / 数値 / bool / null)
 #     (d) 有効な object だが tool_input が object でない (文字列 / 配列 / bool)
+#     (e) echo のオプション文字列そのもの ("-n" / "-e" / "-E")
+#     (f) JSON 値が 2 個以上並んだ入力 (jq が既定で受け付ける「値の連なり」)
 #   PreToolUse では exit 2 以外がすべて「非ブロッキング」= fail-open 扱いになるため、
 #   payload を解釈できない時点で通してしまうと enforcement 層としての保証が崩れる。
 #
@@ -20,6 +22,13 @@
 #       index error (exit 5) で set -e により script ごと中断し、exit != 2 = fail-open に
 #       なっていた。top-level が null の場合は jq が index を許すので error にすらならず、
 #       抽出結果が空になって passthrough していた。
+#   (e) bash の `echo "$INPUT"` は INPUT が "-n" / "-e" / "-E" 等のオプションと完全一致
+#       すると 1 バイトも出力しない。jq は「値ゼロ個」で exit 0 を返すため (a) と同じ穴に
+#       なる。hook 側は `printf '%s\n'` に統一して塞いである。
+#   (f) jq は既定で「JSON 値の連なり」を受け付ける。object を 2 個並べると型ガードの述語が
+#       各値について真になり exit 0、続く抽出は値を改行連結して返す (例: "Edit\nEdit") ので
+#       ツール名の一致判定を外して passthrough していた。hook 側は `-s` + `length == 1` で
+#       単一 object のみを受け付けるようにして塞いである。
 #
 # 本テストの立て付け:
 #   個別の hook テストに 1 件ずつ書くのではなく、.hooks/*.sh を動的に列挙して一括検査する。
@@ -121,6 +130,14 @@ add_payload "top-level null"          "$PARSE_MARKER" 'null'
 add_payload "tool_input is a string"  "$PARSE_MARKER" '{"tool_name":"Agent","tool_input":"not-object"}'
 add_payload "tool_input is an array"  "$PARSE_MARKER" '{"tool_name":"Bash","tool_input":[1,2,3]}'
 add_payload "tool_input is a boolean" "$PARSE_MARKER" '{"tool_name":"Edit","tool_input":true}'
+# (e) echo のオプション文字列そのもの (bash の echo が 1 バイトも出力しない値)
+add_payload "echo option -n"          "$PARSE_MARKER" '-n'
+add_payload "echo option -e"          "$PARSE_MARKER" '-e'
+add_payload "echo option -neE"        "$PARSE_MARKER" '-neE'
+# (f) JSON 値が 2 個以上 (jq が既定で受け付ける「値の連なり」)
+add_payload "two JSON objects" "$PARSE_MARKER" \
+  '{"tool_name":"Edit","tool_input":{"file_path":"/x"}} {"tool_name":"Edit","tool_input":{"file_path":"/x"}}'
+add_payload "object followed by scalar" "$PARSE_MARKER" '{"tool_name":"Bash","tool_input":{"command":"ls"}} 42'
 
 hook_count=0
 for hook in "$HOOKS_DIR"/*.sh; do
