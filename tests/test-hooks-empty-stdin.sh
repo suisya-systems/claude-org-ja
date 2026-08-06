@@ -101,6 +101,41 @@ for hook in "$HOOKS_DIR"/*.sh; do
   check_hook "$hook" "whitespace-only" $'  \n\t \n'
 done
 
+# --- jq が無い環境でも空 payload は deny される (ガード順序の回帰検査) ---
+#
+# 他の hook は jq 未インストール時に exit 2 で fail-closed するので、空 payload が
+# 素通りする余地がない。block-workers-delete.sh だけは「窓口の全 Bash を止めるのは
+# 過剰」という明示的な判断で jq 未インストール時に exit 0 してスキップする。そのため
+# 空 payload ガードをその分岐より後ろに置くと、jq なし環境で空 stdin がガードに
+# 到達せず素通りする。ガードが jq チェックより前にあることを実行で固定する。
+#
+# 検査用 PATH には cat だけを symlink する。ガード到達までに要る外部コマンドは cat のみ
+# （echo / command -v / [[ ]] は bash builtin）で、jq を「存在しない」状態にできる。
+# bash 自身は PATH 解決に頼れないので絶対パスで起動する。
+jq_less_bin="$TMPDIR_TEST/bin-without-jq"
+mkdir -p "$jq_less_bin"
+bash_abs="$(command -v bash || true)"
+cat_abs="$(command -v cat || true)"
+[[ -n "$cat_abs" ]] && ln -sf "$cat_abs" "$jq_less_bin/cat"
+
+((TEST_NUM++))
+if [[ -z "$bash_abs" || -z "$cat_abs" ]]; then
+  # 検査環境を組めない場合は静かに pass させず、その旨を fail として可視化する。
+  echo "not ok $TEST_NUM - jq-less PATH probe could not be set up (bash/cat not resolvable)"
+  ((FAIL++))
+else
+  wd_hook="$HOOKS_DIR/block-workers-delete.sh"
+  exit_code=0
+  printf '' | env PATH="$jq_less_bin" "$bash_abs" "$wd_hook" >/dev/null 2>&1 || exit_code=$?
+  if [[ $exit_code -eq 2 ]]; then
+    echo "ok $TEST_NUM - block-workers-delete.sh: empty stdin is blocked even without jq on PATH"
+    ((PASS++))
+  else
+    echo "not ok $TEST_NUM - block-workers-delete.sh: empty stdin is blocked even without jq on PATH (got exit $exit_code)"
+    ((FAIL++))
+  fi
+fi
+
 # hook を 1 本も拾えていないと全 assert がスキップされ、空の green で通ってしまう。
 ((TEST_NUM++))
 if [[ $hook_count -gt 0 ]]; then

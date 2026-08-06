@@ -27,26 +27,31 @@ portable_realpath() {
   fi
 }
 
-# jq チェック（jq がなければこの Hook をスキップして許可する）
-# 他の Hook（check-worker-boundary 等）は fail-closed だが、この Hook は窓口の全 Bash コマンドに
-# 適用されるため、jq 未イ��ストール時に全コマンドをブロックするのは過剰。
-# jq なし環境でもスキルの文言による指示レベルの保護は残る。
-if ! command -v jq &>/dev/null; then
-  exit 0
-fi
-
 # stdin から JSON を読み取り
 INPUT=$(cat)
 
 # 空 payload の fail-closed ガード (Issue #834)。jq は「JSON 値がゼロ個」の入力を
 # parse error にせず exit 0 + 出力なしで返すため、空 stdin では TOOL_NAME が空文字に
 # なり、`!= "Bash"` の passthrough に落ちて enforcement が素通りする。
-# 上の jq 未インストール時 fail-open は「環境全体で常に成立し、窓口の全 Bash を
+# 下の jq 未インストール時 fail-open は「環境全体で常に成立し、窓口の全 Bash を
 # 止めてしまう」条件なので許容しているが、空 payload は個々の呼び出しが壊れている
 # ケースであり正規のツール呼び出しではありえない。両者は別条件なので、ここは
 # 兄弟フックと同じく fail-closed に倒す。
+#
+# このガードは jq チェックより「前」に置く必要がある。後ろに置くと jq なし環境で
+# `exit 0` が先に走り、空 payload がガードに到達せず素通りしてしまう
+# （jq の有無に依存しない不変条件にするための順序であり、jq がある環境での
+# 挙動は前後どちらでも同じ）。
 if [[ -z "${INPUT//[[:space:]]/}" ]]; then
   deny_with_reason "PreToolUse payload が空でした。安全側 (fail-closed) で拒否します。"
+fi
+
+# jq チェック（jq がなければこの Hook をスキップして許可する）
+# 他の Hook（check-worker-boundary 等）は fail-closed だが、この Hook は窓口の全 Bash コマンドに
+# 適用されるため、jq 未インストール時に全コマンドをブロックするのは過剰。
+# jq なし環境でもスキルの文言による指示レベルの保護は残る。
+if ! command -v jq &>/dev/null; then
+  exit 0
 fi
 
 TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty')
