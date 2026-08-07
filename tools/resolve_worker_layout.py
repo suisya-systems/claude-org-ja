@@ -240,6 +240,13 @@ def infer_branch(task_id: str, description: str) -> str:
     """Return ``feat/<task-id>`` or ``fix/<task-id>`` based on description.
 
     If the task_id already carries a feat/ or fix/ prefix, return as-is.
+
+    NOTE: the prefix branch below is no longer reachable through
+    :func:`resolve`. :func:`validate_task_id` rejects ``/`` (outside the
+    renga 2.0 pane-name charset), so a slash-carrying task_id fails before
+    branch inference runs; the branch survives only for direct importers of
+    this function. It is left in place deliberately — removing it is a
+    behavior change for those callers and belongs in its own change.
     """
     if task_id.startswith(("feat/", "fix/", "chore/", "docs/")):
         return task_id
@@ -489,6 +496,76 @@ def decide_role(
 
 
 # ---------------------------------------------------------------------------
+# task_id validation (renga 2.0 pane-name charset)
+# ---------------------------------------------------------------------------
+
+
+# renga 2.0.0 made the pane ``name`` rule enforced rather than documented-only:
+# non-empty after trim, not all-digits, charset ``[A-Za-z0-9_-]``; names with
+# spaces, dots or non-ASCII characters are now rejected with ``name_invalid``
+# where they were previously accepted, and a name is stored trimmed
+# (renga CHANGELOG.md, ``## [2.0.0]`` -> "### Changed" item 1, flagged
+# BREAKING). The org worker pane is named ``worker-{task_id}``
+# (`.dispatcher/references/spawn-flow.md`), so the ``worker-`` prefix already
+# satisfies the not-all-digits half and the task_id must satisfy the charset.
+# This is the same rule the state schema contract already states in prose
+# (`docs/contracts/state-schema-contract.md:74` "task_id kebab-case English",
+# `:180` pane ``name`` follows the ``[A-Za-z0-9_-]`` alphabet); renga 2.0 turns
+# it from convention into a runtime failure, which is why it is machine-checked
+# here rather than left to the dispatcher agent at spawn time.
+_TASK_ID_RE = re.compile(r"\A[A-Za-z0-9_-]+\Z")
+_TASK_ID_CHAR_RE = re.compile(r"\A[A-Za-z0-9_-]\Z")
+_TASK_ID_ALL_DIGITS_RE = re.compile(r"\A[0-9]+\Z")
+
+
+def validate_task_id(task_id: str) -> None:
+    """Raise :class:`ResolveError` when ``task_id`` cannot become a pane name.
+
+    Called from :func:`resolve`, i.e. before any state.db reservation and long
+    before the dispatcher assembles ``worker-{task_id}`` for ``spawn_*``, so an
+    unusable id fails at plan time with a readable error instead of at spawn
+    time with renga's ``name_invalid``.
+
+    All message text is ASCII (non-ASCII input is echoed through :func:`ascii`)
+    so the CLI stays printable on a cp932 console.
+    """
+    if not task_id or not task_id.strip():
+        # Preserves the pre-existing "task_id is required" wording for the
+        # empty case; whitespace-only is folded in because renga trims first
+        # and a trimmed-empty name is rejected as name_invalid.
+        raise ResolveError("task_id is required (non-empty after trim)")
+
+    if not _TASK_ID_RE.match(task_id):
+        offenders = sorted({c for c in task_id if not _TASK_ID_CHAR_RE.match(c)})
+        detail = ", ".join(ascii(c) for c in offenders)
+        hint = ""
+        if task_id != task_id.strip():
+            hint = (
+                " Leading/trailing whitespace is rejected here rather than"
+                " trimmed: renga 2.0 stores the name trimmed, so accepting it"
+                " would silently diverge the pane name from the task_id."
+            )
+        raise ResolveError(
+            f"task_id {ascii(task_id)} contains characters outside the pane-name"
+            f" charset [A-Za-z0-9_-]: {detail}."
+            " The worker pane is named 'worker-<task_id>' and renga 2.0 rejects"
+            " such names with name_invalid; use kebab-case English"
+            " (docs/contracts/state-schema-contract.md:74,180)." + hint
+        )
+
+    if _TASK_ID_ALL_DIGITS_RE.match(task_id):
+        raise ResolveError(
+            f"task_id {ascii(task_id)} must not be all digits."
+            " The pane name 'worker-<task_id>' would itself clear renga's"
+            " not-all-digits rule (that rule exists because all-digit names"
+            " collide with numeric pane ids), but the harness contract"
+            " independently requires a kebab-case English task_id"
+            " (docs/contracts/state-schema-contract.md:74,180), and the id is"
+            " also used bare in worker-state filenames and registry rows."
+        )
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -508,8 +585,13 @@ def resolve(
     layout_overrides: Optional[dict[str, Any]] = None,
 ) -> WorkerLayout:
     """Resolve worker layout for one delegation. See module docstring."""
-    if not task_id:
-        raise ResolveError("task_id is required")
+    # Every ja-side delegation path funnels through here before the state.db
+    # reservation (``gen_delegate_payload.build_delegate_plan`` ->
+    # ``gen_worker_brief.build_config_from_task`` -> this call; the DB write
+    # happens later in ``apply_delegate_plan``), so this is the last
+    # machine-enforceable point at which a task_id that renga 2.0 would reject
+    # as a pane name can be stopped.
+    validate_task_id(task_id)
     if not project_slug:
         raise ResolveError("project_slug is required")
     if mode not in VALID_MODES:

@@ -129,7 +129,7 @@ mcp__renga-peers__send_message(to_id="secretary", message="...")
 アクティブなワーカーペインがある間、以下の監視を行う。
 **実現方法**: 最初のワーカー派遣完了後、`/loop 3m` で監視ループを開始する。全ワーカーペインが閉じたらループを停止する（ただし `.state/dispatcher/curate-inflight.json` が存在する間はオンデマンド curate の完了監視のため継続する）。
 
-> **役割分担** (renga 0.14.0+ で全機能 MCP 化済み):
+> **役割分担** (renga 0.14.0+ で全機能 MCP 化済み。現行 org の renga transport サポート下限は 2.0.0):
 > - **pane ライフサイクル (起動・終了)** は `mcp__renga-peers__poll_events` で cursor-based long-poll
 > - **task 状態遷移 (APPROVAL_BLOCKED / ERROR / 進捗)** は `mcp__renga-peers__check_messages` で受信 (ワーカーの自己報告)
 > - **pane 内容スクレイプ** は `mcp__renga-peers__inspect_pane` で画面グリッド取得

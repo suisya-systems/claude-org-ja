@@ -2,7 +2,27 @@
 
 各機能の動作確認手順。問題が見つかったらスキルやCLAUDE.mdを修正し、再テストする。
 
-**前提**: renga 0.18.0+ （`npm install -g @suisya-systems/renga@0.18.0` 後、`renga mcp install --force` で `renga-peers` MCP サーバを user-scope 登録済み）。structured `cwd` (0.16.0) / `set_pane_identity` (0.17.0) / `spawn_claude_pane` (0.18.0) すべてを前提とする。
+**前提**: 本書の renga 経路テストは `renga mcp install --force` で `renga-peers` MCP サーバを user-scope 登録済みであることを前提とする。機能の導入履歴は structured `cwd` (0.16.0) / `set_pane_identity` (0.17.0) / `spawn_claude_pane` (0.18.0) であり、これらは「いつ入ったか」の記録である。
+
+**renga 経路のサポート下限は 2.0.0**（`npm install -g @suisya-systems/renga@2.0.0`）。これは導入履歴とは別の命題で、`ORG_TRANSPORT=renga` で動かす場合にのみ要求される条件付き前提である（既定 broker 経路では renga 自体が不要）。2.0 の mcp-peer は `close_pane` / `set_pane_identity` を `caller_scope_close_identity` capability でクライアント側 gate し、非広告のサーバーには要求自体を送らず fail-closed するため（renga `docs/api-surface-v1.0.md:576-582`）、旧 daemon で org のペイン lifecycle を動かし続ける経路は存在しない。renga 経路のサポート下限を上げる breaking operational change であり、後方互換の緩和ではない。
+
+**版数は 2 つの半分を個別に確認する**: renga *サーバー*プロセスと `renga-peers` *mcp-peer* クライアントは独立に版付けされ、両方が 2.0 系である必要がある。サーバー側は版数文字列を一切公開せず capability トークンだけを返すため、版数ではなく capability で判定する。`server_info.client.version` は **mcp-peer の版でありサーバーの版ではない**（renga `docs/api-surface-v1.0.md:341`）。mcp-peer 側の版数確認手順は次節「版数確認の正しい手順」に従う（**素の `renga --version` は使わない**）。
+
+### 版数確認の正しい手順（素の `renga --version` を使わない理由つき）
+
+**手順**（この 3 つだけを使う。順に）:
+
+1. **mcp-peer の版**: `claude mcp list` の `renga-peers:` 行に出る**絶対パス**に対して `--version` を実行する（例: 行が `renga-peers: <cargo-bin>/renga mcp-peer - ✔ Connected` なら `<cargo-bin>/renga --version` を叩く。`<cargo-bin>` のような具体パスは環境ごとに違うので、自分の `claude mcp list` 出力に出た絶対パスをそのまま使う）。Claude Code はこの登録行のコマンドをそのまま起動するので、**この実体だけが「org が実際に走らせる mcp-peer」**である。
+2. **サーバーの capability**: `server_info` を呼び、`status` が `connected` のときに限り `server.capabilities` / `effective_capabilities` を読む。判定に使うのは `effective_capabilities`（renga `docs/api-surface-v1.0.md:352-357`）。
+3. **`client.version` を版数 gate に使わない**: これは mcp-peer バイナリの `CARGO_PKG_VERSION` であってサーバーの版ではない（renga `docs/api-surface-v1.0.md:341`）。サーバーは版数文字列を公開しないので、サーバー側は capability でしか判定できない。
+
+**なぜ素の `renga --version` を使わないのか**（3 つの独立した理由。1 つでも成立すれば答えが信用できない）:
+
+- **理由 1 — 登録実体と PATH 実体が別物になりうる**: Claude Code が起動するのは `claude mcp list` の登録行に記録された**絶対パスの実体**であって、PATH 先頭で `renga` を名乗る実体ではない。両者が別インストールになっている環境（例: PATH 先頭が `<volta-bin>/renga` で 1.4.0、登録実体は `<cargo-bin>/renga` で 2.0.0）では、**素の `renga --version` は org が起動しないバイナリの版を答える**ので、実際には下限を満たしていても「下限未満」という偽の判定が出る。この乖離は `tools/check_renga_compat.py` が `VERSION SKEW` 警告として検出する。
+- **理由 2 — 同じマシンでもシェルによって答えが変わる**: どちらの実体が PATH 先頭に立つかはシェル初期化ファイルの合成順で決まる。例えば `~/.profile:3` が volta を PATH 先頭に置いた**後**で `~/.profile:4` の `. "$HOME/.cargo/env"` が走ると、`~/.cargo/env:9` の `export PATH="$HOME/.cargo/bin:$PATH"` が cargo をさらに前へ差し込み、順位が入れ替わる（行番号・構成は環境ごとに違うので `cat -n ~/.profile` で自分の合成順を確認する）。結果として **その初期化ファイルを経たシェルと経ないシェル（ツールが起動する非ログインシェル等）で `renga --version` の答えが変わる**。同一マシン・同一時刻で答えが 2 通りある以上、再現性のある確認手順にはならない。
+- **理由 3 — バイナリの自称版とパッケージマネージャの pin が食い違いうる**: バージョンマネージャの shim は pin した版と一致しない実体を起動しうる（実測例: `volta list renga` は `@suisya-systems/renga@1.3.2` を pin と表示するのに、その shim が起動するバイナリは `renga 1.4.0` と名乗る）。自称版と pin のどちらも単独では実体を特定できない。
+
+**確認を機械化する**: `tools/check_renga_compat.py` はこの手順をそのまま実装している。登録行の絶対パスを probe 対象（`mcp-peer binary:` 行に出力）に使い、PATH 先頭の実体と版数が食い違えば `VERSION SKEW` 警告で明示する（握り潰さない）。登録行からパスが取れない環境でのみ PATH にフォールバックし、その場合も `source: PATH fallback` と明記される。フォールバック時は登録実体との比較ができないので、代わりに **PATH 上の候補どうし**の版数不一致を `VERSION SKEW` として検出する（「今測った版は複数ある答えのうちの 1 つにすぎない」ことを黙らせないため）。
 
 > **起動 transport の注記（既定 broker / renga フォールバック）**: 既定の起動主経路は `claude-org-runtime org up`（broker daemon を確保し窓口 TUI を起動）。本書の各テストの起動ステップは **`claude-org-runtime org up`（既定 broker）/ `renga --layout ops`（renga フォールバック、`ORG_TRANSPORT=renga` 設定時）** の併記で読む。以下の `mcp__renga-peers__*` ツール群・`renga-peers` MCP・`renga-layouts/ops.toml` への言及は **renga 経路の検証 surface** を記述したもので、broker 経路では対応する `mcp__org-broker__*`（tier 別 surface）に読み替える。検証マトリクスの本旨（各テストの目的・期待結果）は両系で不変。broker 運用の詳細は [`docs/operations/broker-dogfood-runbook.md`](operations/broker-dogfood-runbook.md) を参照。
 
@@ -36,23 +56,62 @@ grep -En '^[[:space:]]*command[[:space:]]*=.*dangerously-load-development-channe
 
 ## 0. 互換性プリフライト
 
-**目的**: `/org-start` 実行前に renga バージョンと MCP ツール surface が claude-org の要件を満たすか確認する（Issue #61）。
+**目的**: `/org-start` 実行前に renga バージョンと MCP ツール surface、および稼働中サーバーの capability が claude-org の要件を満たすか確認する（Issue #61 / Issue #823）。`ORG_TRANSPORT=renga` で運用する場合のみ必要（既定 broker 経路では対象外）。
 
 **手順**:
 ```bash
 py -3 tools/check_renga_compat.py            # Windows
 python3 tools/check_renga_compat.py          # macOS / Linux
 py -3 tools/check_renga_compat.py --json     # 機械可読出力
+py -3 tools/check_renga_compat.py --require-live  # detached / probe skip を失敗扱いにする（CI 向け）
 ```
 
-**期待結果**: `Result: OK` で終了コード 0。renga バージョン・`renga-peers` MCP 登録・必須 14 ツールすべてが揃っていれば合格。
+**まず probe 対象バイナリを決める（layer 2 が最初に走る）**: `claude mcp list` の `renga-peers:` 行に出る絶対パスを、以降の全 layer の probe 対象にする。Claude Code はこの登録行のコマンドをそのまま起動するので、PATH 先頭の `renga` を叩くと **org が起動しないバイナリ**を測ることになる（前掲「版数確認の正しい手順」理由 1 の実測）。出力の `mcp-peer binary:` 行に実体と選択理由（`claude mcp list registration` / `PATH fallback`）が出る。
+
+**検査は 2 層に分かれる**:
+- **静的 tool surface 検査（layer 3）**: 上で決めた実体の `mcp-peer` stdio に `tools/list` を投げて読む。**必須 15 ツール**（`server_info` を含む）が揃っているかを **subset** で判定する。余剰ツールは設計上許容する（実測: mcp-peer 1.4.0 は 15 ツール、2.0.0 は 16 ツールを返し、どちらも org が要求しない `spawn_codex_pane` を含む）。これは mcp-peer *ビルド*の性質しか見ない。
+- **live capability 検査（layer 3b）**: `server_info` ツールを実際に呼び、稼働中 renga *サーバー*が広告する capability を読む。判定に使うのは `effective_capabilities`（サーバー広告 ∩ クライアント理解）だけで、版数比較は使わない（renga `docs/api-surface-v1.0.md:352-357`）。ツール一覧に出ることはサーバーが要件を満たす証明にならないため、静的検査とは**別ステータス**として報告される。
+
+**capability は「必須 3 + 観測のみ 1」に分かれる**（renga の広告集合は `src/ipc/mod.rs:123-128` の `SERVER_CAPABILITIES` の 4 トークン）:
+
+| トークン | 扱い | 根拠 |
+|---|---|---|
+| `caller_scope` | **必須** | #288 の 7 ツール（`list_panes` / `spawn_*` / `focus_pane` / `inspect_pane` / `send_keys`）の解決タブを caller 側に固定する。無いと**ユーザーが見ているタブ**基準になり、focus 変化を pane 退出と誤読しうる（[`docs/contracts/backend-interface-contract.md`](contracts/backend-interface-contract.md) T-§4.2） |
+| `cross_tab_peers` | **必須** | 2.0 の mcp-peer が `list_peers` / `send_message` をこのトークンで gate し、非広告なら要求自体を送らない（renga `docs/api-surface-v1.0.md:561-566`）。両操作は本契約で REQUIRED（[`docs/contracts/backend-interface-contract.md`](contracts/backend-interface-contract.md) Surface 2: Messaging） |
+| `caller_scope_close_identity` | **必須** | `close_pane` / `set_pane_identity` の gate（renga #296、`docs/api-surface-v1.0.md:576-582`）。`caller_scope` から導出してはならない（[`docs/contracts/backend-interface-contract.md`](contracts/backend-interface-contract.md) T-§cap の "Independence" bullet） |
+| `spawn_tab` | **観測のみ**（欠落しても失敗にしない） | gate 対象は `tab` セレクタ付きの `spawn_*` **だけ**で、セレクタ無しの呼び出しは `caller_scope` しか要求しない（renga `docs/api-surface-v1.0.md:568-574`）。org は SINGLE-TAB MUST により全ペインを同一タブに置くので `tab` を一度も渡さない（[`docs/contracts/backend-interface-contract.md`](contracts/backend-interface-contract.md) §4.2）。つまり org が到達しうる経路をこのトークンは 1 つも gate しない、というのが観測のみに落とす理由の全部である |
+
+**4 トークンは互いに独立で、どれか 1 つから他を導いてはならない**。リリース時期・issue 番号の前後関係を根拠に「片方を必須にしたから他方も担保される」と推論することは契約が明示的に禁じている（[`docs/contracts/backend-interface-contract.md`](contracts/backend-interface-contract.md) T-§cap の "Independence" bullet）。各 gate は自分自身のトークンだけで判定する。
+
+**期待結果**: `Result: OK` で終了コード 0（`server_info` が `connected` を返し必須 3 トークンが揃った状態）。
+
+**終了コード**:
+
+| 終了コード | 意味 |
+|---|---|
+| 0 | 全必須検査に合格し、live capability も検証済み |
+| 1 | いずれかの必須検査が失敗 |
+| 2 | 必須検査は失敗していないが**未検証**の項目がある。占有者は 2 つ: (a) live capability 未検証（代表例: `server_info` が `detached`。renga ペイン外から実行した通常ケース）、(b) **probe 対象そのものが未確定**（`claude mcp list` が答えず、layer 1 / 3 / 3b が PATH フォールバックを測った） |
+
+**「未確定」は失敗ではないが成功でもない（fail-open にしない）**: `claude mcp list` が実行不能 / 異常終了 / タイムアウトした場合、読めたのは登録行ではなく「何も読めなかった」という事実だけである。この状態は **`registered: false`（未登録）ではない** — 問いを立てられていない。スクリプトはこの区別を `--json` の `mcp.registration_resolved`（tri-state）に出し、`mcp.registered` を `null` のままにする。probe 対象が確定していない以上、layer 1 / 3 / 3b の判定は「org が起動しないかもしれないバイナリ」についての言及なので、確定 FAIL にはせず `UNVERIFIED (probe target undetermined ...)` 付きの警告へ落とし、終了コードは **2**（`Result: OK (probe target UNVERIFIED)`）にする。**終了コード 0 にはしない**ので、0 だけを成功とみなす呼び出し側は先へ進まない。`--require-live` はこの未確定も失敗として扱う。なお `claude mcp list` はリモート MCP サーバの health check を含むため実行時間がネットワーク依存で伸びる（本機実測 3.15-3.66s）。タイムアウト上限は 45 秒に取ってあり、それでも答えないときだけ上記の未確定分岐に入る。
+
+renga ペイン外の素のシェルから実行すると `detached` になり **終了コード 2**（`Result: OK (live capability readiness UNVERIFIED)`）になる。これは失敗ではなく「サーバー半分を確認できていない」の意である。
+
+**`detached` の意味を取り違えない**: `detached` は **クライアント側の事実**であって、サーバーの有無・能力については情報がゼロである。mcp-peer が renga ペイン内から起動されておらず（上流の `reason` は `RENGA_PANE_ID not set`）ソケットを解決する起点が無いので、**誰にも聞いていない**状態を指す。「サーバーが居ない」「capability が空」と読んではならない（`server.capabilities` は `[]` ではなく `null` になる）。対して `unreachable` は **ソケットは特定できたが接続に失敗した**状態で、こちらは失敗扱いになる。
+
+**`--require-live` は「live 検査が実際に走って通った」ことを要求する**フラグなので、live 検査を走らせない `--skip-capability-probe` / `--skip-mcp-probe` とは併用できない（併用すると `Result: FAIL` / 終了コード 1 になる）。**skip した probe は何も検証しない**ため、`--require-live` は skip を `detached` と同じ「未検証」として扱い、fail 側に倒す — そうしないと「厳格にする」ためのフラグが、live 検査を 1 度も走らせないまま `Result: OK` を返すことになる。この扱いは `--require-live` を付けたときだけ有効で、skip フラグを単独で使う静的検査のみの呼び出しは終了コード 0 のままである。`--require-live` は上表 (b) の probe 対象未確定も同様に失敗として扱う。**失敗メッセージは原因ごとに分岐する**（skip フラグを渡していない `detached` / `unreachable` の実行に対して「skip フラグを外せ」と案内しないため）: `skipped` なら skip フラグの併用解消、`detached` なら renga ペイン内からの再実行、`unreachable` なら socket 到達性 / sandbox 外での再実行、probe 対象未確定なら `claude mcp list` を答えられる状態にすること、をそれぞれ案内する。
 
 **失敗パターン**:
-- renga バージョン不足 → `npm update -g @suisya-systems/renga`
-- MCP 未登録 → `renga mcp install`
-- ツール欠如 → `renga mcp install --force` で stale 登録を更新
+- renga バージョン不足 → `npm install -g @suisya-systems/renga@2.0.0`（以降）。**両方の半分**を上げる必要があるので、mcp-peer を更新したうえで稼働中サーバーも再起動する
+- MCP 未登録（`claude mcp list` は答えたが `renga-peers` 行が無い） → `renga mcp install`。これは確定した観測なので終了コード 1
+- `claude mcp list` が答えない（`claude` CLI 不在 / 異常終了 / タイムアウト） → **未登録ではなく未確定**。`[WARN] renga-peers MCP registration: UNDETERMINED` と出て、以降の層の判定は `UNVERIFIED (probe target undetermined ...)` の警告に落ち、終了コード 2 になる。`claude mcp list` が答える状態にしてから再実行し、それまでは版数・ツール surface のいずれも結論として使わない
+- ツール欠如（`tools/list` に `server_info` が無い） → これは **mcp-peer クライアント側**の性質であって、サーバー半分についての観測ではない。`tools/list` が返すのは登録実体の**ビルド**が公開するツール一覧なので、`server_info` の不在は「その mcp-peer が 2.0 未満（capability 露出以前 / renga #304）」を意味する。対処は**クライアント半分の更新**（`npm install -g @suisya-systems/renga@2.0.0` 以降 → `renga mcp install --force`）。**サーバー半分はこの観測では何も分かっていない**ので、クライアント更新後に改めて `server_info` を呼び capability で判定する（サーバーが古ければそちらは capability 欠落として次の行に落ちる）
+- capability 欠落（`connected` だが `caller_scope_close_identity` などが無い） → **稼働中 daemon を 2.0 系へ更新して再起動し、再 probe する**。非広告経路へ fallback して旧挙動を継続することはできない（2.0 の mcp-peer がクライアント側で gate し要求自体を送らないため）
+- `unreachable` → renga のソケットが無いか別インスタンスのもの。capability は「空」ではなく**不明**なので capability 上の結論は出さない。sandbox 内で実行すると unix socket が塞がれて `unreachable` になりうるので、sandbox 外で再実行してから判断する。sandbox 外で再実行できない場合に限り、`server.endpoint` のパスが**実在する**（＝サーバーは居て接続だけが失敗した）ケースを「未検証」（終了コード 2）へ落とす opt-in として `--tolerate-blocked-socket` がある。パスが実在しないときはこのフラグを付けても FAIL のままで、既定は fail-closed のまま変わらない
+- capability 欠落だが欠けているのが `spawn_tab` だけ → **失敗ではない**。`missing (observed only, not a failure)` として報告されるだけで、org はこのトークンを行使しない（上表参照）
+- `renga --version` が想定と違う版を返す → 前掲「版数確認の正しい手順」を参照。素の `renga --version` は判定に使わない。スクリプトは `mcp-peer binary:` 行に probe 対象の実体を、`renga on PATH:` 行（`--json` では `renga.path_candidates`）に PATH 上の全実体と版数を出す。登録実体と PATH 先頭実体で版が食い違う場合は `VERSION SKEW` 警告（`--json` では `renga.binary_version_skew`）が立つので、そちらを一次情報にする
 
-このスクリプトは live renga セッションを必要としない（`renga mcp-peer` stdio 経由で tools/list を取得する静的 probe）。
+layer 3（静的）は live renga セッションを必要としない。layer 3b（capability）は稼働中サーバーへの接続を要し、renga ペイン外では `detached` として「未検証」に落ちる。
 
 ---
 
@@ -555,19 +614,31 @@ claude-org-ja 本体は Issue #429 Task C（本 addendum と同 PR）で共有 `
 
 ## 11. MCP 疎通テスト（環境確認）
 
-**目的**: `renga-peers` MCP サーバが Claude Code に接続済みで、14 ツール全てが tool surface として登録されていることを確認し、副作用なしで呼び出せるツールについてはサンプル呼び出しで応答を検証する。副作用の大きいツール（`send_keys` / `spawn_pane` / `spawn_claude_pane` / `close_pane` / `focus_pane` / `new_tab` / `set_pane_identity`）の実動作確認は Test 1-10 の E2E フローでカバーされるため、本テストでは登録確認のみに留める。
+**目的**: `renga-peers` MCP サーバが Claude Code に接続済みで、必須 15 ツール全てが tool surface として登録されていることを確認し、副作用なしで呼び出せるツールについてはサンプル呼び出しで応答を検証する。副作用の大きいツール（`send_keys` / `spawn_pane` / `spawn_claude_pane` / `close_pane` / `focus_pane` / `new_tab` / `set_pane_identity`）の実動作確認は Test 1-10 の E2E フローでカバーされるため、本テストでは登録確認のみに留める。
 
 **手順**:
 
-### 11-a. 登録確認（14 ツール）
+### 11-a. 登録確認（必須 15 ツール、subset 判定）
 1. `claude mcp list` で `renga-peers` が Connected を表示することを確認
-2. `renga --version` で 0.18.0 以上であることを確認
-3. 以下 14 ツールが Claude Code の tool surface に出現するか確認（MCP サーバが tools/list で返すツール名と一致する）:
-   - 副作用なし / 軽 side-effect: `list_panes` / `list_peers` / `set_summary` / `check_messages` / `send_message` / `poll_events` / `inspect_pane`
+2. **版数は 2 つの半分を個別に確認する**。**素の `renga --version` は使わない**（登録実体と PATH 実体の乖離 / シェル依存 / volta pin 不一致の 3 点。理由は冒頭「版数確認の正しい手順」）。手順は「1 で見た `renga-peers:` 行の**絶対パス**に `--version` を掛け、2.0.0 以上であることを確認する」。サーバー側は版数文字列を公開しないので、次の 11-a' の capability 検査で判定する（`tools/check_renga_compat.py` は `mcp-peer binary:` 行に probe 対象を、`renga on PATH:` 行に PATH 上の全実体を出す）
+3. 以下 15 ツールが Claude Code の tool surface に出現するか確認（MCP サーバが tools/list で返すツール名と一致する）。**必須集合の subset 判定**であり、これ以外のツール（例: `spawn_codex_pane`）が返ることは正常:
+   - 副作用なし / 軽 side-effect: `list_panes` / `list_peers` / `set_summary` / `check_messages` / `send_message` / `poll_events` / `inspect_pane` / `server_info`
    - 副作用大（ペイン / PTY 操作）: `spawn_pane` / `spawn_claude_pane` / `close_pane` / `focus_pane` / `new_tab` / `send_keys` / `set_pane_identity`
 
-### 11-b. 副作用なしツールの応答確認（7 ツール）
-以下の 7 ツールを順次呼び出し、エラーなく応答が返るか確認:
+### 11-a'. live capability 確認（`server_info`）
+
+> **注意（承認プロンプトが出る）**: `mcp__renga-peers__server_info` は現時点でどの role の permission allowlist にも入っていない。`tools/org_extension_schema.json` が claude-org-runtime の同梱 schema とバイト一致を要求されるため、追加には runtime 側のリリースが先に必要である（[`docs/design/renga-decoupling.md`](design/renga-decoupling.md) 参照）。したがって本手順を MCP ツールとして実行すると許可プロンプトで止まる。**プロンプトを伴わない同等の観測経路は [`tools/check_renga_compat.py`](../tools/check_renga_compat.py)** で、こちらは `renga mcp-peer` を subprocess として起動するため allowlist の影響を受けない。
+
+`server_info`（引数なし）を呼び、`structuredContent` を読む:
+1. `status` を最初に読む（判別子）。`connected` / `detached` / `unreachable` の 3 値
+2. `connected` のとき `effective_capabilities` に **必須 3 トークン**（`caller_scope` / `cross_tab_peers` / `caller_scope_close_identity`）が揃っていることを確認する。判定に使うのはこの欄だけで、`server.capabilities` 単独でも版数比較でもない。`spawn_tab` は**観測のみ**で、欠けていても失敗にしない（§0 の表を参照）
+3. `server.capabilities` の `[]` と `null` を混同しない。`[]` は「聞いた上で何も無い」（＝要件不足の実答）、`null` は「聞けていない」（＝不明）で結論が変わる。`detached` / `unreachable` では両方 `null` になり、トークン欠落と読んではならない
+4. `detached` は**クライアントが renga ペイン内で起動されていない**という client 側の事実であり、サーバーの有無・能力については情報ゼロ（`unreachable` は「ソケットは特定できたが接続に失敗」で別物）
+5. `client.version` は **mcp-peer の版でありサーバーの版ではない**（renga `docs/api-surface-v1.0.md:341`）。ここでサーバー版を読んだつもりにならない
+6. `-32601 unknown tool: server_info` が返る場合、それは **mcp-peer クライアント半分**が capability 露出以前（2.0.0 / renga #304）でサポート下限を下回るという観測である（`server_info` はサーバー側でエラーを返さない設計 — renga `docs/api-surface-v1.0.md:359-364`）。**サーバー半分についてはこの時点で何も分かっていない**ので、クライアントを更新してから改めて capability を読む。`server_too_old` 文字列から capability を推測する経路には戻さない（同文字列は実呼び出し時の TOCTOU 最終防衛としてのみ意味を持つ）
+
+### 11-b. 副作用なしツールの応答確認（8 ツール）
+以下の 8 ツールを順次呼び出し、エラーなく応答が返るか確認（11-a の「副作用なし / 軽 side-effect」群と同じ 8 本。`server_info` はここでは**応答が返ること**だけを見て、返ってきた値の読み方は 11-a' に従う）:
 
 | ツール | 呼び出し例 | 期待応答 |
 |---|---|---|
@@ -578,18 +649,22 @@ claude-org-ja 本体は Issue #429 Task C（本 addendum と同 PR）で共有 `
 | `send_message` | `to_id=<self の pane id or name>, message="ping"` | `Delivered to <target>.` or `(message dropped — …)` |
 | `poll_events` | `timeout_ms=0`（非ブロッキング drain） | `{next_since, events}` の JSON |
 | `inspect_pane` | `target="focused", lines=5, format="text"` | 画面末尾 5 行 + `structuredContent` |
+| `server_info` | 引数なし | `status` / `server` / `client` / `effective_capabilities` を含む `structuredContent`。**JSON-RPC エラーは返らない**設計なので、`detached` / `unreachable` であっても「応答が返る」ことは満たす（renga `docs/api-surface-v1.0.md:359-364`）。値の判定は 11-a' |
 
 ### 11-c. 副作用大ツールは E2E テストに委譲
 `spawn_pane` / `spawn_claude_pane` / `close_pane` / `focus_pane` / `new_tab` / `set_pane_identity` は Test 1 / 2 / 3 / 4 の中で実動作確認される。`send_keys` は Test 1（開発チャネル確認 Enter 注入）で確認される。
 
 **期待結果**:
-- 11-a: `claude mcp list` の出力に `renga-peers: … ✓ Connected` があり、14 ツールすべてが Claude Code の tool list に登録されている
-- 11-b: 7 ツールがすべてエラーなく応答、エラー時は `[<code>] <msg>` 形式のテキストが得られる（例: `list_panes` が renga 未起動なら `[shutting_down]` 等）
+- 11-a: `claude mcp list` の出力に `renga-peers: … ✓ Connected` があり、必須 15 ツールすべてが Claude Code の tool list に登録されている（余剰ツールの存在は正常）
+- 11-a': `server_info` が `status: "connected"` を返し、`effective_capabilities` に必須 3 トークンが載っている（2.0.0 サーバーなら `spawn_tab` も併せて 4 つ載るが、その 1 つは観測のみで合否には効かない）
+- 11-b: 8 ツールがすべてエラーなく応答、エラー時は `[<code>] <msg>` 形式のテキストが得られる（例: `list_panes` が renga 未起動なら `[shutting_down]` 等）。`server_info` だけは renga 未起動でもエラーにならず `status: "unreachable"` を返す（これも「応答が返る」に含める）
 - 11-c: 副作用大ツールは本テストでは実行せず、E2E テストでのカバレッジに委ねる
 
 **失敗パターンと対処**:
 - `claude mcp list` に `renga-peers` が出ない → `renga mcp install --force` 再実行
-- `list_panes` が error → `renga --version` で 0.14.0 以上か確認、古ければ `npm install -g @suisya-systems/renga@0.14.0`
+- `list_panes` が error → `claude mcp list` の `renga-peers:` 行が示す絶対パスに `--version` を掛けて確認し（素の `renga --version` ではない）、2.0.0 未満なら `npm install -g @suisya-systems/renga@2.0.0` で mcp-peer 側を更新したうえで稼働中サーバーも再起動する
+- `server_info` が `-32601` を返す → **mcp-peer クライアント半分**がサポート下限（2.0.0）を下回る。クライアントを 2.0.0 以降にして `renga mcp install --force`、その後に改めて `server_info` を呼びサーバー半分を capability で判定する（この時点ではサーバー側は未判定）
+- `server_info` が `connected` だが必須 3 トークンが揃わない → **稼働中 daemon を 2.0 系へ更新して再起動し、再 probe する**。旧挙動での継続運転はできない（`spawn_tab` だけが欠ける場合は失敗ではない）
 - `poll_events` が JSON を返さない → `mcp_peer/mod.rs` の実装に不整合、renga バージョン確認
 
 ---

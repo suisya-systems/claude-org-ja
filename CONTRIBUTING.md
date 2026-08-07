@@ -14,9 +14,9 @@ claude-org は Claude Code をベースにした自己組織化マルチエー�
 開発に着手する前に [README.md](README.md) の「前提条件」と「インストール」セクションを満たしてください。最低限必要なのは:
 
 - Claude Code
-- renga 0.18.0 以上
 - Python 3.8+
 - Git / GitHub CLI
+- renga — 既定の broker 輸送層を使う場合は不要。`ORG_TRANSPORT=renga` で renga 輸送層に切り戻す場合のみ、renga サーバー・`renga-peers` MCP クライアント（mcp-peer）の双方が 2.0.0 以上であること
 
 初回 clone 後は `claude-org-runtime org up`（broker 主経路。renga へ切り戻す場合は `ORG_TRANSPORT=renga` を設定して `renga --layout ops`）で窓口ペインを起動した上で、Claude Code 上で **`/org-setup` を一度実行** してロール別 `settings.local.json` を生成してください（未実行だと開発中に許可プロンプトが多発します）。詳細は [docs/getting-started.md](docs/getting-started.md#インストール) を参照。
 

@@ -631,6 +631,11 @@ def _main_from_task(argv: list[str]) -> int:
         candidate = claude_org_root / ".state" / "state.db"
         state_db_path = candidate if candidate.exists() else None
 
+    # Imported lazily (same rationale as build_config_from_task's own
+    # import): legacy --config callers shouldn't pay for it. Needed here
+    # only to name ResolveError in the except clause below.
+    from tools import resolve_worker_layout as rwl
+
     try:
         config, layout = build_config_from_task(
             task_id=args.task_id,
@@ -655,7 +660,15 @@ def _main_from_task(argv: list[str]) -> int:
             workers_dir=args.workers_dir,
         )
         output = render(config)
-    except (ConfigError, FileNotFoundError) as e:
+    except (ConfigError, FileNotFoundError, rwl.ResolveError) as e:
+        # ResolveError is validate_task_id()'s (and the rest of the layout
+        # resolver's) input-rejection channel -- operator error, not a bug.
+        # Without this in the except tuple, a bad --task-id (e.g. containing
+        # a space) surfaced as a raw traceback instead of the same one-line
+        # ``error: ...`` shape ConfigError/FileNotFoundError already get
+        # here. gen_delegate_payload.py's ``_cmd_preview``/``_cmd_apply``
+        # already give ResolveError this same one-line treatment (there via
+        # ``raise SystemExit(f"error: {e}")``).
         print(f"error: {e}", file=sys.stderr)
         return 2
 

@@ -12,6 +12,9 @@
 # `--dangerously-load-development-channels server:renga-peers` flag
 # is injected by renga itself, so we don't write it here.
 #
+# The current supported floor for the renga transport in this org is 2.0.0
+# (server and renga-peers MCP client both).
+#
 # Override the Secretary startup command by editing `command` below
 # or setting a shell alias pointing at your preferred `claude` invocation.
 

@@ -47,7 +47,11 @@ ClaudeCode起動後に最初に実行するスキル。前回の状態復元と�
 > `list_panes` / `new_tab` / `send_message` / `list_peers` / `set_summary` /
 > `check_messages` / `inspect_pane` / `poll_events` / `send_keys` /
 > `set_pane_identity`）で同タブ内のペイン操作・ピア通信・画面スクレイプ・lifecycle
-> event 購読・raw キー入力まですべてカバーできる（**renga 0.18.0+ 前提**）。
+> event 購読・raw キー入力まですべてカバーできる（renga 0.18.0+ で導入された構造。**現行 org の renga transport サポート下限は 2.0.0**）。
+> ここでの 14 種は **org が運用で行使する surface** であって、プリフライトの必須集合とは別の数である:
+> [`tools/check_renga_compat.py`](../../../tools/check_renga_compat.py) は capability probe 用の `server_info` を加えた
+> **15 種**を必須（subset 判定、余剰ツールは正常）として検査する。`server_info` は probe 専用で、
+> `.claude/settings.json` の allowlist には意図的に未追加である（理由は [`docs/design/renga-decoupling.md`](../../../docs/design/renga-decoupling.md) を参照）。
 >
 > **state DB 前提 (Issue #267 / M4)**: `.state/state.db` が唯一の SoT。
 > read 経路は DB のみ (markdown fallback は M4 で撤去)、構造化セクション

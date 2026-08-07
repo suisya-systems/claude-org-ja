@@ -671,6 +671,83 @@ class TestCLI(unittest.TestCase):
         self.assertTrue(send_plan.exists())
 
 
+class TestCLIRejectsUnusableTaskId(unittest.TestCase):
+    """``ResolveError`` must reach the CLI as one line, never as a traceback.
+
+    ``resolve_worker_layout.validate_task_id`` rejects task_ids that cannot
+    become a ``worker-<task_id>`` pane name. A human's first encounter with
+    that rule is almost always through ``gen_delegate_payload``, so an
+    unhandled ``ResolveError`` there reads as a crash rather than as input
+    rejection. These tests pin the ``error: ...`` shape already used by the
+    ``--task-id is required`` check and pin that ``apply`` rejects *before*
+    reserving anything.
+    """
+
+    # Whitespace / dot / non-ASCII: the three shapes the pane-name charset
+    # [A-Za-z0-9_-] rejects that an operator plausibly types.
+    BAD_TASK_IDS = ("ja 823 bad", "ja.823.bad", "ja-823-日本語")
+
+    def setUp(self) -> None:
+        self._td = tempfile.TemporaryDirectory()
+        self.sb = _Sandbox(Path(self._td.name))
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def _args(self, task_id: str) -> list[str]:
+        return [
+            "--task-id", task_id,
+            "--project-slug", "clock-app",
+            "--description", "do the thing",
+            "--claude-org-root", str(self.sb.claude_org_root),
+            "--state-db-path", str(self.sb.db_path),
+        ]
+
+    def test_preview_reports_one_line_error_not_traceback(self):
+        for task_id in self.BAD_TASK_IDS:
+            with self.subTest(task_id=task_id):
+                with self.assertRaises(SystemExit) as cm:
+                    gdp.main(["preview", *self._args(task_id)])
+                msg = str(cm.exception.code)
+                self.assertTrue(
+                    msg.startswith("error: "),
+                    f"expected 'error: ' prefix, got {msg!r}",
+                )
+                self.assertNotIn("Traceback", msg)
+                # The message must stay ASCII so a cp932 console can print it
+                # (validate_task_id echoes non-ASCII input through ascii()).
+                msg.encode("ascii")
+
+    def test_apply_rejects_before_reserving_or_writing(self):
+        runs_before = len(self.sb.list_runs())
+        worker_dir = self.sb.workers / "clock-app"
+        for task_id in self.BAD_TASK_IDS:
+            with self.subTest(task_id=task_id):
+                with self.assertRaises(SystemExit) as cm:
+                    gdp.main(["apply", *self._args(task_id), "--skip-settings"])
+                self.assertTrue(str(cm.exception.code).startswith("error: "))
+        self.assertEqual(len(self.sb.list_runs()), runs_before)
+        self.assertFalse(worker_dir.exists())
+
+    def test_all_digit_task_id_is_rejected_the_same_way(self):
+        with self.assertRaises(SystemExit) as cm:
+            gdp.main(["preview", *self._args("823")])
+        msg = str(cm.exception.code)
+        self.assertTrue(msg.startswith("error: "))
+        self.assertIn("all digits", msg)
+
+    def test_valid_task_id_still_previews(self):
+        # Guards against the except-clause swallowing the happy path.
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        buf = StringIO()
+        with redirect_stdout(buf):
+            rc = gdp.main(["preview", *self._args("ja-823-ok")])
+        self.assertEqual(rc, 0)
+        self.assertIn("DELEGATE body (preview, no writes)", buf.getvalue())
+
+
 # ---------------------------------------------------------------------------
 # Snapshot tests against goldens
 # ---------------------------------------------------------------------------
@@ -1997,16 +2074,21 @@ class TestPatternOverrideCLI(unittest.TestCase):
         """Resolver rejects pattern=A on a self-edit slug — the error must
         propagate out of ``preview`` rather than letting the bad layout
         slip through."""
-        # ResolveError is raised inside build_delegate_plan, which runs
-        # under preview without reaching apply.
-        from tools.resolve_worker_layout import ResolveError as _RE
-
-        with self.assertRaises(_RE):
+        # ResolveError is raised inside build_delegate_plan, which runs under
+        # preview without reaching apply. ``_cmd_preview`` converts it to the
+        # CLI's one-line ``error: ...`` form (no traceback), so the assertion
+        # is on SystemExit carrying the resolver's own message rather than on
+        # the bare exception type; the invariant under test is unchanged —
+        # preview must fail, not emit a body for the bad layout.
+        with self.assertRaises(SystemExit) as cm:
             gdp.main([
                 "preview",
                 *self._common_args(slug="claude-org-ja"),
                 "--pattern", "A",
             ])
+        msg = str(cm.exception.code)
+        self.assertTrue(msg.startswith("error: "), msg)
+        self.assertIn("is incompatible with role='claude-org-self-edit'", msg)
 
 
 # ---------------------------------------------------------------------------

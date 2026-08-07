@@ -8,7 +8,7 @@ claude-orgの使い方ガイド。
 
 ### 前提条件
 
-ワンライナー / 手動手順のいずれを使う場合も、以下のツールを事前に導入しておく必要がある。インストーラ（`scripts/install.sh` / `scripts/install.ps1`）は `git` / `claude` / `renga` / `gh` / `jq` の 5 つを fail-close で検証し、Python は警告のみ、Node.js は Linux / macOS のみ検証する（自動インストールはしない）。表中の用途を満たすには 7 つすべての導入が必要。
+ワンライナー / 手動手順のいずれを使う場合も、以下のツールを事前に導入しておく必要がある。インストーラ（`scripts/install.sh` / `scripts/install.ps1`）は `git` / `claude` / `gh` / `jq` の 4 つを fail-close で検証する（欠けていれば install を中断する）。`renga` と Node.js（Linux / macOS のみ検証）は soft-warn で検出するのみで、欠けていても install は中断しない（`scripts/install.sh` の `optional_or_warn` ヘルパー、`scripts/install.ps1` の `Test-OptionalCommand` に対応）。Python は警告のみ。表中の用途を満たすには 7 つすべての導入が必要だが、**`renga`（およびその npm 導入に使う Node.js）だけは条件付き**である: 既定の broker 輸送層で動かす限り不要で、`ORG_TRANSPORT=renga` で renga 輸送層へ切り戻す場合にのみ必要になる（その場合は renga サーバーと `renga-peers` MCP クライアント（mcp-peer）の双方が 2.0.0 以上であること）。インストーラが `renga` / Node.js を fail-close ではなく soft-warn で検出しているのは、この切り戻し経路を常時使える状態に保ちつつ、既定 broker 運用でのインストール中断を避けるためである。
 
 | ツール | 最小バージョン | 用途 | 導入リンク |
 |---|---|---|---|
@@ -18,7 +18,7 @@ claude-orgの使い方ガイド。
 | **Python** | 3.10+ | `core-harness` / `claude-org-runtime` の `pip install -e .` 実行（既定 broker 起動 `claude-org-runtime org up` の本体。`pyproject.toml` の `requires-python` に整合） | [python.org/downloads](https://www.python.org/downloads/) |
 | **`jq`** | 1.6+ | `.state/` JSON / `gh api` 出力の整形・抽出（フック内・ツール内で使用） | [jqlang.org/download](https://jqlang.org/download/) |
 | **Claude Code CLI (`claude`)** | 最新安定版 | 各ロールペイン本体。初回ログインも `claude` 起動時に行う | [claude.ai/code](https://claude.ai/code) |
-| **`renga`** | 0.18.0+ | **フォールバック輸送層**。Layer 3 の端末多重化器 + `renga-peers` MCP サーバー（`npm install -g @suisya-systems/renga@0.18.0`）。既定 broker から切り戻すとき使用 | [github.com/suisya-systems/renga](https://github.com/suisya-systems/renga) |
+| **`renga`** | 2.0.0+ | **フォールバック輸送層**。Layer 3 の端末多重化器 + `renga-peers` MCP サーバー（`npm install -g @suisya-systems/renga@2.0.0`）。既定 broker から切り戻すとき使用。renga サーバーと `renga-peers` MCP クライアント（mcp-peer）の双方が 2.0.0 以上である必要があり、`renga --version` はどちらを指すか PATH 次第で分からないため両者を個別に確認する | [github.com/suisya-systems/renga](https://github.com/suisya-systems/renga) |
 
 加えて以下の Claude Code 設定が必要:
 
@@ -29,7 +29,7 @@ claude-orgの使い方ガイド。
 
 ### インストール
 
-依存ツール（`git` / `claude` / `renga` / `gh` / `jq`）が揃っていれば、ワンライナーでクローン + Python 依存（`claude-org-runtime` / `core-harness`）の導入 + 切り戻し用 `renga mcp install` までを一括実行できる。
+fail-close の依存ツール（`git` / `claude` / `gh` / `jq`）が揃っていれば、ワンライナーでクローン + Python 依存（`claude-org-runtime` / `core-harness`）の導入 + 切り戻し用 `renga mcp install` までを一括実行できる。`renga` は `ORG_TRANSPORT=renga` に切り戻すときだけ必要で、欠けていても install は中断しない（soft-warn）。
 
 **macOS / Linux（bash）**:
 
@@ -52,7 +52,7 @@ py -3 tools/org_setup_prune.py --user-common-sandbox     # main pull 後に 1 �
 py -3 -m claude_org_runtime.cli org up                   # broker daemon を確保し窓口（Secretary）ペインを起動
 ```
 
-スクリプトは前提コマンドの導入有無を確認し、未導入があれば導入手順を案内して終了する（自動インストールはしない）。
+スクリプトは前提コマンドの導入有無を確認し、自動インストールはしない。**終了するのは fail-close の 4 つ（`git` / `claude` / `gh` / `jq`）が欠けたときだけ**で、`renga` / Node.js / tmux / WezTerm が欠けている場合は導入手順を警告として案内したうえで install を続行する（`scripts/install.sh` の `require_or_warn` と `optional_or_warn` の使い分け）。
 
 クローン先のディレクトリ名を変えたい場合は、ワンライナーではなくスクリプトを直接実行してフラグを渡す（パイプ実行ではフラグを転送できない）:
 
@@ -108,9 +108,10 @@ py -3 tools/check_renga_compat.py            # Windows
 python3 tools/check_renga_compat.py          # macOS / Linux
 ```
 
-- renga バージョン（0.18.0 以上を要求）
+- renga バージョン（2.0.0 以上を要求。renga サーバーと `renga-peers` MCP クライアントの双方を個別に確認すること）
 - `renga-peers` MCP 登録 (`claude mcp list` で Connected)
-- 必須 14 ツールが tools/list に出現するか
+- 必須 15 ツール（`server_info` を含む）が tools/list に出現するか（**subset 判定**。これ以外のツールが返ることは正常）
+- 稼働中 renga サーバーの live capability（`server_info` を呼び、`effective_capabilities` に `caller_scope` / `cross_tab_peers` / `caller_scope_close_identity` が揃うか。`spawn_tab` は観測のみで合否に効かない）
 
 機械可読 JSON が欲しい場合は `--json`。フェイルを終了コードで扱いたいスクリプトはこちらを使う:
 
@@ -118,7 +119,17 @@ python3 tools/check_renga_compat.py          # macOS / Linux
 py -3 tools/check_renga_compat.py --json
 ```
 
-このスクリプトは live renga セッションを必要としない（静的 + MCP stdio probe のみ）ので、renga フォールバック起動（`renga --layout ops`）の前後どちらでも実行できる。
+**終了コードは 3 値**なので、`!= 0` を一律に失敗として扱うと健全な実行を失敗と誤判定する:
+
+| 終了コード | 意味 |
+|---|---|
+| 0 | 全必須検査に合格し、live capability も検証済み |
+| 1 | いずれかの必須検査が失敗 |
+| 2 | 必須検査は合格したが**未検証**が残る。2 つの場合がある: (a) live capability 未検証（代表例: `server_info` が `detached`。renga ペイン外の素のシェルから実行した通常ケース）、(b) probe 対象そのものが未確定（`claude mcp list` が失敗し、どのバイナリを検査したか確定できなかった場合） |
+
+2 も失敗として扱いたい呼び出し側（CI 等）は `--require-live` を付ける。これを付けると `detached` / probe skip / probe 対象未確定のいずれも失敗（終了コード 1）になる。各値の詳細は [`docs/verification.md`](verification.md) の「0. 互換性プリフライト」を参照（そちらが正本）。
+
+静的検査（renga 版数 / MCP 登録 / tools/list）は live renga セッションを必要とせず、renga フォールバック起動（`renga --layout ops`）の前後どちらでも実行できる。live capability 検査だけは稼働中サーバーへの接続を要し、renga ペイン外では `detached`（＝未検証、終了コード 2）に落ちる。
 
 ### 起動 transport の切り戻し（renga フォールバック）
 

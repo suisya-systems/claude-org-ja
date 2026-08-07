@@ -2021,5 +2021,148 @@ class TestIssue489ResolverPatternAWorktree(unittest.TestCase):
         )
 
 
+# ---------------------------------------------------------------------------
+# task_id / pane-name charset (renga 2.0, Issue #823)
+# ---------------------------------------------------------------------------
+
+
+class TestTaskIdPaneNameCharset(unittest.TestCase):
+    """renga 2.0 enforces the pane ``name`` rule it had only documented.
+
+    Per the renga CHANGELOG ``## [2.0.0]`` -> "### Changed" item 1 (flagged
+    BREAKING), ``split`` / ``new_tab`` now require a name that is non-empty
+    after trim, not all-digits, and drawn from ``[A-Za-z0-9_-]``; names with
+    spaces, dots or non-ASCII characters are rejected with ``name_invalid``
+    where the implementation previously accepted them. The org worker pane is
+    ``worker-{task_id}`` (`.dispatcher/references/spawn-flow.md:67,77`), so a
+    bad task_id would fail at spawn time, after the state.db reservation. These
+    tests pin that it fails at plan time instead.
+    """
+
+    def test_accepts_kebab_case_english(self) -> None:
+        rwl.validate_task_id("ja-823-renga2-followup")
+
+    def test_accepts_underscore_and_digits(self) -> None:
+        for ok in ("fix_823", "issue-823", "renga2", "A", "x-1_y"):
+            with self.subTest(task_id=ok):
+                rwl.validate_task_id(ok)
+
+    def test_rejects_internal_whitespace(self) -> None:
+        for bad in ("ja 823", "ja\t823", "ja\n823"):
+            with self.subTest(task_id=bad):
+                with self.assertRaises(rwl.ResolveError) as cm:
+                    rwl.validate_task_id(bad)
+                self.assertIn("[A-Za-z0-9_-]", str(cm.exception))
+
+    def test_rejects_leading_or_trailing_whitespace(self) -> None:
+        # renga stores the name trimmed, so silently accepting a padded id
+        # would diverge the pane name from the task_id. Fail loudly instead.
+        for bad in (" ja-823", "ja-823 ", "\tja-823"):
+            with self.subTest(task_id=bad):
+                with self.assertRaises(rwl.ResolveError) as cm:
+                    rwl.validate_task_id(bad)
+                self.assertIn("whitespace", str(cm.exception))
+
+    def test_rejects_dot(self) -> None:
+        with self.assertRaises(rwl.ResolveError) as cm:
+            rwl.validate_task_id("ja.823")
+        self.assertIn("'.'", str(cm.exception))
+
+    def test_rejects_non_ascii(self) -> None:
+        for bad in ("タスク-823", "ja-823-ﬁx"):
+            with self.subTest(task_id=bad):
+                with self.assertRaises(rwl.ResolveError):
+                    rwl.validate_task_id(bad)
+
+    def test_rejects_slash(self) -> None:
+        # ``infer_branch`` (tools/resolve_worker_layout.py, "If the task_id
+        # already carries a feat/ or fix/ prefix") accepts slash-prefixed ids,
+        # but ``worker-fix/ja-823`` is not a legal renga pane name (and would
+        # nest the worktree path), so ``resolve`` must reject it.
+        with self.assertRaises(rwl.ResolveError) as cm:
+            rwl.validate_task_id("fix/ja-823")
+        self.assertIn("'/'", str(cm.exception))
+
+    def test_rejects_all_digits(self) -> None:
+        with self.assertRaises(rwl.ResolveError) as cm:
+            rwl.validate_task_id("823")
+        msg = str(cm.exception)
+        self.assertIn("all digits", msg)
+        # The message must explain that the pane name itself would have been
+        # fine, so the reader does not go looking for a renga bug.
+        self.assertIn("worker-<task_id>", msg)
+
+    def test_rejects_empty_and_whitespace_only(self) -> None:
+        for bad in ("", "   ", "\t"):
+            with self.subTest(task_id=bad):
+                with self.assertRaises(rwl.ResolveError) as cm:
+                    rwl.validate_task_id(bad)
+                self.assertIn("task_id is required", str(cm.exception))
+
+    def test_error_message_names_offending_characters(self) -> None:
+        with self.assertRaises(rwl.ResolveError) as cm:
+            rwl.validate_task_id("ja 823.x/y")
+        msg = str(cm.exception)
+        for shown in ("' '", "'.'", "'/'"):
+            self.assertIn(shown, msg)
+
+    def test_error_message_is_ascii(self) -> None:
+        # ResolveError text reaches the CLI stderr; a cp932 console must be
+        # able to print it even when the offending task_id is not ASCII.
+        with self.assertRaises(rwl.ResolveError) as cm:
+            rwl.validate_task_id("タスク-823")
+        str(cm.exception).encode("ascii")
+
+
+class TestTaskIdValidationBlocksReservation(unittest.TestCase):
+    """The check must fire on the canonical reservation path, not just as a
+    standalone helper.
+
+    ``gen_delegate_payload.build_delegate_plan`` ->
+    ``gen_worker_brief.build_config_from_task`` -> ``rwl.resolve`` runs before
+    ``apply_delegate_plan`` touches state.db, so rejecting inside ``resolve``
+    means no ``runs`` row is ever created for an unusable task_id.
+    """
+
+    def setUp(self) -> None:
+        self._td = tempfile.TemporaryDirectory()
+        self.sb = _Sandbox(Path(self._td.name))
+        self.sb.write_registry(
+            [("時計アプリ", "clock-app", "-", "clock")]
+        )
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def _run_count(self) -> int:
+        conn = connect(self.sb.db_path)
+        try:
+            return conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0]
+        finally:
+            conn.close()
+
+    def test_resolve_rejects_invalid_task_id_before_db_reservation(self) -> None:
+        before = self._run_count()
+        for bad in ("ja 823", "ja.823", "タスク-823", "823", ""):
+            with self.subTest(task_id=bad):
+                with self.assertRaises(rwl.ResolveError):
+                    rwl.resolve(
+                        task_id=bad,
+                        project_slug="clock-app",
+                        claude_org_root=self.sb.claude_org_root,
+                        state_db_path=self.sb.db_path,
+                    )
+        self.assertEqual(self._run_count(), before)
+
+    def test_resolve_accepts_valid_task_id(self) -> None:
+        layout = rwl.resolve(
+            task_id="clock-app-fix-1",
+            project_slug="clock-app",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertTrue(layout.worker_dir)
+
+
 if __name__ == "__main__":
     unittest.main()

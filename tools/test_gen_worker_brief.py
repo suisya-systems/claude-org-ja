@@ -1,6 +1,8 @@
 """Tests for tools/gen_worker_brief.py."""
 from __future__ import annotations
 
+import contextlib
+import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -569,6 +571,32 @@ class FromTaskSubcommand(unittest.TestCase):
         self.assertIn("knowledge/curated/notes.md", text)
         self.assertIn("Closes #9", text)
         self.assertIn("https://example.com/issues/9", text)
+
+    def test_from_task_bad_task_id_reports_one_line_error_not_traceback(self):
+        # resolve_worker_layout.validate_task_id() rejects task_ids that
+        # cannot become a `worker-<task_id>` pane name (renga 2.0 rejects
+        # such names with name_invalid). Before this fix, ResolveError
+        # wasn't in the from-task handler's except tuple, so a bad
+        # --task-id surfaced as a raw traceback here even though
+        # gen_delegate_payload.py's CLI already turns the same
+        # ResolveError into a one-line `error: ...` message.
+        out = Path(self._td.name) / "should-not-be-written.md"
+        argv = [
+            "from-task",
+            "--task-id", "bad id",
+            "--project-slug", "clock-app",
+            "--description", "demo",
+            "--claude-org-root", str(self.claude_org_root),
+            "--out", str(out),
+        ]
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            rc = gwb.main(argv)
+        self.assertEqual(rc, 2)
+        self.assertFalse(out.exists())
+        msg = stderr.getvalue()
+        self.assertTrue(msg.startswith("error: "), f"expected 'error: ' prefix, got {msg!r}")
+        self.assertNotIn("Traceback", msg)
 
 
 class FromTaskPythonSrcLayout(unittest.TestCase):
