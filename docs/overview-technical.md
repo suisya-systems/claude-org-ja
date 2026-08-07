@@ -29,7 +29,7 @@ Claude Codeの複数インスタンスを協調させる、自己成長型AI組�
 ### 通信
 
 - **インスタンス間**: `renga-peers` MCP（同タブ内 Claude 間の双方向メッセージング、プッシュ型チャネル通知）。`send_message` / `list_peers` / `check_messages` / `set_summary` を用い、peer ID にはペイン名（`secretary` / `dispatcher` / `curator` / `worker-{task_id}`）を使う
-- **ペイン管理**: `renga-peers` MCP（`spawn_pane` / `spawn_claude_pane` / `close_pane` / `list_panes` / `new_tab` / `focus_pane` / `inspect_pane` / `send_keys` / `poll_events` / `set_pane_identity` 等、renga 0.18.0+ で 14 ツール）。役割/ワーカー起動は `spawn_claude_pane` の構造化フィールド（`cwd` / `permission_mode` / `model` / `args[]`）に統一（Issue #58）。`cd X && claude ...` 合成パターンは撤去済み
+- **ペイン管理**: `renga-peers` MCP（`spawn_pane` / `spawn_claude_pane` / `close_pane` / `list_panes` / `new_tab` / `focus_pane` / `inspect_pane` / `send_keys` / `poll_events` / `set_pane_identity` 等、renga 0.18.0+ で 14 ツール）。現行 org の renga transport サポート下限は 2.0.0（ツール数の変動は capability probe 側の別スコープ）。役割/ワーカー起動は `spawn_claude_pane` の構造化フィールド（`cwd` / `permission_mode` / `model` / `args[]`）に統一（Issue #58）。`cd X && claude ...` 合成パターンは撤去済み
 - **指示の二重化**: CLAUDE.md（永続・ベースライン）+ `renga-peers` メッセージ（リアルタイム・補足）
 
 ### 状態管理

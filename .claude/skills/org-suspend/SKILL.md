@@ -69,8 +69,9 @@ allowed-tools:
      マルチタブ対応 backend が返す optional な `same_tab` / `tab` / `tab_name` を控える（この 3 つは
      `cross_tab_peers` capability を広告する backend でのみ載る。非広告 backend では欠落する）。
      **`list_peers` のタブ範囲を決めるのは `cross_tab_peers` であって `caller_scope` ではない**
-     （契約 T-§cap は 2 つを独立と規定する。`caller_scope` が変えるのは `list_panes` と pane 制御
-     呼び出しだけで、`list_peers` には影響しない）:
+     （契約 T-§cap は capability を互いに独立と規定する。`caller_scope` が変えるのは `list_panes` と
+     **Group A の** pane 制御呼び出しだけで、`list_peers` には影響しない。`close_pane` /
+     `set_pane_identity` は `caller_scope` の管轄外＝別 token — 下記 (G) を参照）:
      - **`cross_tab_peers` を広告する backend**: `list_peers` は**全タブを列挙**し、`same_tab` は
        **呼び出し側から見た**値として返る（契約 T-§2.2 / T-§2.2-fields）。フォーカスに依存しないので
        フォーカスの確認は不要
@@ -85,12 +86,52 @@ allowed-tools:
        含まれることで足りる
    - `mcp__org-broker__list_panes` — **ペイン制御用の pane id**。各レコードの `id` / `name` / `role` を控える。
      **どのタブが返るかは capability による**（契約 T-§cap は `caller_scope` と `cross_tab_peers` を
-     独立と規定する）: `caller_scope` を広告する backend では **caller のタブ**が返る。広告しない
+     独立と規定する）: `caller_scope` を広告する backend では **caller のタブ**が返る（`list_panes` は
+     Group A なのでこの token だけで足りる）。広告しない
      backend（旧版、および `cross_tab_peers` だけを広告する backend）では ratified §4.3 の
      visibility consequence どおり**フォーカス中のタブ**が返るので、`/org-suspend` を走らせる窓口ペインの
      タブがフォーカスされていることが前提になる。フォーカスが別タブにあると**別タブのペイン id を
      台帳に取り込み、後段で無関係なペインを `inspect_pane` / `close_pane` しうる**。前提が成り立つか
      確認できない場合は pane 制御を行わず、pending として人間に報告する
+   - > **pane 制御の 2 グループ（G）— 以降この記号で参照する**: 契約 T-§4.2 は pane 制御ツールを
+     > **管轄 capability の異なる 2 群**に分ける。分ける理由は**リリース時期ではなくサーバー世代の
+     > スキュー**である（4 トークンは 1 リリースで出ており renga `src/ipc/mod.rs`:123-128 の
+     > `SERVER_CAPABILITIES` は 4 定数を並べる。それでもトークンが別なのは、先行 3 トークンを
+     > 広告する `#290` 世代の server が未知の `from_pane` を落として `close` /
+     > `set_pane_identity` を**ユーザーが見ているタブ**に解決し不可逆にペインを閉じるからで、
+     > 上流は `caller_scope_close_identity` を "a token of its own" と書いている
+     > — renga `docs/api-surface-v1.0.md`:576-582）。契約 T-§cap
+     > "Independence" は `caller_scope` から `caller_scope_close_identity` を推論することを
+     > MUST NOT としている。**「`caller_scope` があるからあらゆる pane 制御がフォーカス非依存」
+     > という推論をしてはならない**:
+     > - **Group A — `caller_scope` 管轄**（suisya-systems/renga#288 の 7 ツール）:
+     >   `list_panes` / `spawn_pane` / `spawn_claude_pane` / `spawn_codex_pane` / `focus_pane` /
+     >   `inspect_pane` / `send_keys`。この token を広告する backend では相対セレクタ
+     >   （リテラル `"focused"` / 裸の `name`）が **caller のタブ**に解決され、フォーカス非依存になる
+     > - **Group B — `caller_scope_close_identity` 管轄**（suisya-systems/renga#296）:
+     >   `close_pane` / `set_pane_identity` の 2 本。**`caller_scope` はこの 2 本を覆わない**。
+     >   `caller_scope`（さらに `cross_tab_peers` / `spawn_tab`）を広告する backend であっても、
+     >   この token が無ければ `"focused"` は **user が見ているタブ**に解決され、裸の `name` は
+     >   **アクティブタブを最初に探し、そこで見つからなかったときだけ他タブを index 順に走査して
+     >   最初の一致を採る**（無差別の全タブ検索ではない。危険なのはこのフォールスルーと、優先される
+     >   タブが caller ではなく **user の**タブである点。契約 T-§4.2 "Pane-control scope, Group B"）
+     > - **(G-SHOULD)** `caller_scope_close_identity` が確立していない間は、`close_pane` /
+     >   `set_pane_identity` に**相対セレクタ（リテラル `"focused"` / 裸の `name`）を使わないことが
+     >   望ましい**（契約 T-§4.2 "Fail-safe consequence for Group B (SHOULD)"）。**自タブのものだと
+     >   独立に確認済みの列挙から得た数値 pane id で**アドレスする。誤爆した場合、`close_pane` は
+     >   不可逆で（人間が入力中のペインを落とす / 並走する別 org の同名 `worker-*` を閉じる）、しかも
+     >   **エラーを返さない**
+     > - **MUST ではなく SHOULD である理由（2026-08-07 の人間判断、ja#823）**: 危険は実在するが
+     >   **本 amendment が持ち込んだものではなく以前から存在**しており、かつ org 自身の正準手順が
+     >   Group B を相対セレクタで撃つ箇所を 6 箇所ほど抱えている（`pane-close.md` / `org-start` /
+     >   `secretary-resume` / `dispatcher-resume` / `pr-watch-pane` / `org-attention-start`）。
+     >   不可逆操作の手順を未検証のまま変える方がリスクが高いと人間が判断した。**コード既定の輸送層
+     >   `org-broker` にはこの失敗モードが無い**（capability を広告せず単一タブ規約で解決する）。
+     >   呼び出し箇所が移行されれば MUST への引き上げが想定される（契約 T-§4.2 "Why SHOULD and not MUST"）
+     > - capability gate 実装済みクライアントでは、Group B の呼び出しが token 欠落時に
+     >   `[server_too_old]` で **fail-closed** する。これは黙って握り潰さず、未実行として
+     >   pending に残し人間へ報告する（契約 T-§6 clause (b)。renga では回復手順は「daemon を
+     >   2.0.0 以降へ更新して**再起動**し `server_info` で再 probe」であり、旧挙動での継続ではない）
    - > **フォーカス前提（F）— 以降この記号で参照する**: `caller_scope` を広告しない backend では
      > `list_panes` と pane 制御呼び出しは**フォーカス中のタブ**に向く。したがって
      > **(F-1)** `list_panes` にピアが**居ないこと**は、それ単独では消滅の証拠にならない
@@ -98,7 +139,12 @@ allowed-tools:
      > **(F-2)** pane 制御呼び出しが返す `[pane_not_found]` も、同じ理由で単独では閉鎖の証拠にならない。
      > 消滅を確定してよいのは **(i) `pane_exited` を観測した**、または
      > **(ii) 列挙が窓口のタブのものだと確認できている**ときだけで、どちらも取れなければ
-     > **indeterminate** として残す（`caller_scope` 広告 backend ではフォーカス非依存なので F は効かない）。
+     > **indeterminate** として残す。**F の解除も (G) のグループ別**である: `caller_scope` 広告 backend
+     > では Group A（`list_panes` / `inspect_pane` / `send_keys` 等）がフォーカス非依存になるので
+     > **F-1 は効かない**。一方 **F-2 は `close_pane` について残る** — `caller_scope_close_identity`
+     > が未確立なら `close_pane` の `[pane_not_found]` は依然フォーカス（user 可視タブ）由来でありうる。
+     > 契約 T-§4.3 の visibility supersession が完全になるのは **2 token 揃ったとき**だけで、
+     > `caller_scope` 単独では §4.3 の文言が Group B に対して verbatim で立つ。
 
    - 2 つを突合して 1 エントリ =
      `{peer_id, pane_id（割り当てられない場合は未設定）, name, role, cwd, same_tab, tab}` の台帳にする。
@@ -207,7 +253,11 @@ capability 広告 backend をいま駆動しているということなので、
 - 他タブピアは † のとおり**そもそも broadcast 対象に入らない**。gate の役割は「他タブに何が見えているか」を
   人間に見せて、停止対象外にした集合が妥当か判断してもらうことにある
 - **gate は「capability 広告 backend の初回駆動」に対して 1 度だけ**であって、`/org-suspend` の実行ごとでは
-  ない（契約 T-§ratification が課しているのは first drive の dogfood 報告）。記録を見ずに毎回止めると、
+  ない（契約 T-§ratification の operational gate が課しているのは first drive の dogfood 報告）。
+  **ただし T-§ratification には第 3 の gate（production-activation）がある**: capability branch を
+  実運用で有効なまま残す前に、**server と mcp-peer の双方が 2.0 系**である実機 dogfood と人間確認が
+  必要で、これは first drive の報告では免責されない。この production-activation 記録が無い間は、
+  probe 結果に関わらず**非広告経路へ倒す**（capability 経路で自走しない）。記録を見ずに毎回止めると、
   dogfood 承認後も中断のたびに人手確認が要る運用になる。**記録と参照の両方を行う**:
   - **参照（gate に入る前）**: events テーブルに過去の通過記録があるかを見る。あれば gate を発動しない
     ```bash
@@ -532,6 +582,10 @@ live pane も無く、本 Phase は no-op。
     このコードを「閉じた」と読むと、稼働中のワーカーを残したまま「全ペイン停止」を完了報告する。
     該当ピアは pending に残し、journal に記録して人間に報告する（停止できない残存）
   - 名前宛で受けた場合はこの結論を出さず、`pane_id` に解決し直してから判断する
+  - **`close_pane` / `set_pane_identity` はそもそも名前宛・`"focused"` 宛で撃たない**（(G-SHOULD)）。
+    この 2 本は Group B なので、`caller_scope` が広告されていても
+    `caller_scope_close_identity` が確立していなければ相対セレクタが user 可視タブ / 全タブに
+    解決されうる。数値 `pane_id` でのみアドレスする
 
 ### 停止手順
 

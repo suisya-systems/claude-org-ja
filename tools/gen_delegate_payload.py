@@ -2285,11 +2285,20 @@ def _cmd_preview(args: argparse.Namespace) -> int:
     claude_org_root = _resolve_claude_org_root(args)
     state_db_path = _resolve_state_db_path(args, claude_org_root)
     kwargs = _gather_plan_kwargs(args)
-    plan = build_delegate_plan(
-        claude_org_root=claude_org_root,
-        state_db_path=state_db_path if state_db_path.exists() else None,
-        **kwargs,
-    )
+    try:
+        plan = build_delegate_plan(
+            claude_org_root=claude_org_root,
+            state_db_path=state_db_path if state_db_path.exists() else None,
+            **kwargs,
+        )
+    except rwl.ResolveError as e:
+        # ``ResolveError`` is the layout resolver's *input-rejection* channel
+        # (bad task_id / project_slug / mode), i.e. operator error, not a bug.
+        # Surface it in the same one-line ``error: ...`` shape the argument
+        # checks in ``_gather_plan_kwargs`` already use, instead of letting a
+        # Python traceback out of the CLI: this path is how a human first meets
+        # ``validate_task_id``, and a traceback reads as a crash.
+        raise SystemExit(f"error: {e}") from None
 
     if args.json_out:
         json.dump(
@@ -2344,11 +2353,17 @@ def _cmd_apply(args: argparse.Namespace) -> int:
     claude_org_root = _resolve_claude_org_root(args)
     state_db_path = _resolve_state_db_path(args, claude_org_root)
     kwargs = _gather_plan_kwargs(args)
-    plan = build_delegate_plan(
-        claude_org_root=claude_org_root,
-        state_db_path=state_db_path if state_db_path.exists() else None,
-        **kwargs,
-    )
+    try:
+        plan = build_delegate_plan(
+            claude_org_root=claude_org_root,
+            state_db_path=state_db_path if state_db_path.exists() else None,
+            **kwargs,
+        )
+    except rwl.ResolveError as e:
+        # Same contract as ``_cmd_preview``: reject bad input with one line and
+        # no traceback. Raised before ``apply_delegate_plan`` runs, so nothing
+        # has been reserved / written when this fires.
+        raise SystemExit(f"error: {e}") from None
     result = apply_delegate_plan(
         plan,
         state_db_path=state_db_path,

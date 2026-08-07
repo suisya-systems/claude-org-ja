@@ -265,7 +265,7 @@ fi
 # renga is optional: the code-default broker transport never needs it, so
 # an absent renga must not abort the install. Probe it (a present renga is
 # still wired into `renga mcp install` below) but never set `missing`.
-optional_or_warn renga "npm install -g @suisya-systems/renga@0.18.0" "optional; only needed when ORG_TRANSPORT=renga"
+optional_or_warn renga "npm install -g @suisya-systems/renga@2.0.0" "optional; only needed when ORG_TRANSPORT=renga"
 require_or_warn gh     "https://cli.github.com/" || missing=1
 require_or_warn jq     "apt install jq / brew install jq / https://jqlang.org/download/" || missing=1
 # tmux is the terminal backend the code-default broker transport spawns its
@@ -341,7 +341,7 @@ install.sh: no usable launcher found. The org starts via either:
 No Python 3.10+ interpreter and no renga are available. Install at least one
 and re-run this installer:
   - Python 3.10+ (broker): https://www.python.org/downloads/ or your OS package manager
-  - renga (fallback):      npm install -g @suisya-systems/renga@0.18.0
+  - renga (fallback):      npm install -g @suisya-systems/renga@2.0.0
 MSG
   exit 1
 fi
@@ -411,7 +411,16 @@ elif [[ -z "$RENGA_BIN" ]]; then
   echo
   echo "Skipping 'renga mcp install': renga is not installed (optional)."
   echo "It is only needed for the renga transport (ORG_TRANSPORT=renga)."
-  echo "To enable it later: npm install -g @suisya-systems/renga@0.18.0 && renga mcp install"
+  echo "To enable it later: npm install -g @suisya-systems/renga@2.0.0 && renga mcp install"
+  echo "Note: the renga transport now requires 2.0.0+ on BOTH halves -- the"
+  echo "running renga server and the renga-peers MCP client (mcp-peer) -- and"
+  echo "each half must be verified separately. A bare 'renga --version' is"
+  echo "evidence for NEITHER half: it answers for whichever binary is first on"
+  echo "PATH, and the server publishes no version string at all (capability"
+  echo "tokens only). Client half: run --version on the absolute path printed"
+  echo "by 'claude mcp list'. Server half: read effective_capabilities from the"
+  echo "server_info MCP tool. Both at once, from this checkout:"
+  echo "  python3 tools/check_renga_compat.py"
 else
   echo
   echo "Registering renga-peers MCP with Claude Code (user-scope)..."
@@ -567,12 +576,23 @@ LAUNCH_STEP="$BROKER_LAUNCH                                    # launch the org 
 if [[ -n "$RENGA_BIN" ]]; then
   LAUNCH_NOTE="
 To fall back to renga, set ORG_TRANSPORT=renga and run 'renga --layout ops'
-instead (see docs/getting-started.md)."
+instead (see docs/getting-started.md). The renga transport now requires
+2.0.0+ on BOTH halves -- the running renga server and the renga-peers MCP
+client (mcp-peer) -- and each half must be verified separately. A bare
+'renga --version' is evidence for NEITHER half: PATH decides which binary
+answers it, and the server publishes no version string at all (capability
+tokens only). Verify both from this checkout with
+'python3 tools/check_renga_compat.py' -- it runs --version against the
+absolute path printed by 'claude mcp list' for the client half, and reads
+effective_capabilities from the server_info MCP tool for the server half."
 else
   LAUNCH_NOTE="
 renga (optional) is not installed. To use the renga transport, first install it
-(npm install -g @suisya-systems/renga@0.18.0 && renga mcp install), then set
-ORG_TRANSPORT=renga and run 'renga --layout ops' (see docs/getting-started.md)."
+(npm install -g @suisya-systems/renga@2.0.0 && renga mcp install), then set
+ORG_TRANSPORT=renga and run 'renga --layout ops' (see docs/getting-started.md).
+Note: the renga transport requires 2.0.0+ on BOTH halves (the running server
+and the mcp-peer client), verified separately; a bare 'renga --version' is
+evidence for neither. 'python3 tools/check_renga_compat.py' checks both."
 fi
 # When the runtime probe below falls back to the renga launcher (legacy ref or
 # a missing runtime), renga becomes the *only* working launcher for this
@@ -584,7 +604,10 @@ else
   RENGA_LAUNCHER_NOTE="
 renga is not installed, but this checkout's runtime predates
 'claude-org-runtime org up', so renga is the launcher here. Install it first:
-  npm install -g @suisya-systems/renga@0.18.0 && renga mcp install"
+  npm install -g @suisya-systems/renga@2.0.0 && renga mcp install
+Note: the renga transport requires 2.0.0+ on BOTH halves (the running server
+and the mcp-peer client), verified separately; a bare 'renga --version' is
+evidence for neither. 'python3 tools/check_renga_compat.py' checks both."
 fi
 if [[ "$DRY_RUN" != "1" ]]; then
   # Real install: only advertise `org up` if the installed runtime can

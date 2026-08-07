@@ -46,7 +46,7 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
 }
 ```
 
-**Bash permission 方針**: 旧 `Bash(renga:*)` glob は撤去済み（renga 0.14.0+ でペイン操作・ピア通信・event 購読・スクレイプ・raw キー送信がすべて MCP 化されたため）。残している `Bash(renga …)` は **運用コマンド限定**:
+**Bash permission 方針**: 旧 `Bash(renga:*)` glob は撤去済み（renga 0.14.0+ でペイン操作・ピア通信・event 購読・スクレイプ・raw キー送信がすべて MCP 化されたため）。残している `Bash(renga …)` は **運用コマンド限定**（現行 org の renga transport サポート下限は 2.0.0）:
 
 - `renga --version` / `renga --help`: 環境確認
 - `renga --layout ops` 相当 (`--layout:*`): 初回レイアウト起動（`renga-layouts/ops.toml` 参照）
@@ -230,7 +230,7 @@ python tools/org_setup_prune.py --user-common-sandbox  # → "no changes"
 **書いてはいけないもの**:
 - wide allow (`Bash(git *)`, `Bash(git push *)`, `Bash(git fetch *)`, `Bash(git branch *)`, `Bash(git pull *)`, `Bash(gh:*)`, `Bash(gh *)`)
 - 旧 `mcp__claude-peers__*`（2026 年に renga-peers へ移行済み）
-- 旧 `renga list/split/send/events/close/inspect *` の Bash allow（renga 0.14.0+ で MCP 化）
+- 旧 `renga list/split/send/events/close/inspect *` の Bash allow（renga 0.14.0+ で MCP 化。現行 org の renga transport サポート下限は 2.0.0）
 - 過去の一発コマンド（特定 PR 番号・branch 名・PID を含むコマンド、`gh pr create --repo ... --head feat/xxx ...` 等）
 - user-specific absolute path（`Read(//c/Users/<you>/Documents/work/**)` のような）
 
