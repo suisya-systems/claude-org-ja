@@ -256,8 +256,23 @@ capability 広告 backend をいま駆動しているということなので、
   ない（契約 T-§ratification の operational gate が課しているのは first drive の dogfood 報告）。
   **ただし T-§ratification には第 3 の gate（production-activation）がある**: capability branch を
   実運用で有効なまま残す前に、**server と mcp-peer の双方が 2.0 系**である実機 dogfood と人間確認が
-  必要で、これは first drive の報告では免責されない。この production-activation 記録が無い間は、
-  probe 結果に関わらず**非広告経路へ倒す**（capability 経路で自走しない）。記録を見ずに毎回止めると、
+  必要で、これは first drive の報告では免責されない。**2 つの gate は別々の記録で管理する**（同じ
+  イベント種別で兼ねない。first drive を通しただけで production-activation まで通ったことにすると、
+  契約が分けた 2 つの承認が 1 つに潰れる）:
+
+  | gate | イベント種別（`kind=`） | 何を承認したか |
+  |---|---|---|
+  | operational（first drive） | `capability_first_drive` | capability 広告 backend を**初めて駆動した**ことの報告と、停止対象集合の妥当性確認 |
+  | production-activation | `capability_production_activation` | **server × mcp-peer 双方 2.0 系**での実機 dogfood と、capability branch を有効なまま残してよいという人間確認 |
+
+  **`capability_production_activation` の記録が無い間は、probe 結果に関わらず非広告経路へ倒す**
+  （capability 経路で自走しない）。参照クエリは下の first drive 用と同形で、`LIKE` の文字列を
+  `%capability_production_activation%` に差し替える。記録は
+  `bash tools/journal_append.sh notify_sent kind=capability_production_activation note=<server 版 / mcp-peer 版 / dogfood 概要>`。
+  この gate は `/org-suspend` が自分で通せるものではない（実機 dogfood と人間確認が要る）ので、
+  未記録なら**発動して止まるのではなく、非広告経路へ倒して続行**する。止まるのは first drive gate だけである。
+
+  first drive gate の側は、記録を見ずに毎回止めると、
   dogfood 承認後も中断のたびに人手確認が要る運用になる。**記録と参照の両方を行う**:
   - **参照（gate に入る前）**: events テーブルに過去の通過記録があるかを見る。あれば gate を発動しない
     ```bash
