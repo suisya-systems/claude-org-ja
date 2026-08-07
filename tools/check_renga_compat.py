@@ -736,12 +736,31 @@ def check_renga_version(report: CheckReport, binary: str = "renga") -> None:
     if cmp_version(v, MIN_REQUIRED_VERSION) < 0:
         report.ok = False
         _record_path_skew(report)
+        # Remediation must act on THIS binary, not on some other copy. The
+        # path here came from the `claude mcp list` registration, and that
+        # registration is what Claude Code actually launches. A bare
+        # `npm install -g ...` installs into whichever prefix npm owns, which
+        # is a different file whenever the registered binary was built or
+        # installed another way (a cargo build, a distro package, a manual
+        # copy). Prescribing it alone produces the worst outcome available:
+        # the operator runs the command, sees it succeed, re-runs the
+        # preflight, and gets the identical failure - because Claude Code is
+        # still launching the old registered file. So name the file and give
+        # both halves of the fix.
         report.failures.append(
             f"{binary} is {report.renga_version}, older than the required "
-            f"floor {report.renga_min_required}. Run: "
-            "`npm install -g @suisya-systems/renga@2.0.0` (or later), then "
-            "restart the running renga server so both halves are 2.0 series. "
-            + TWO_HALVES_SHORT
+            f"floor {report.renga_min_required}. Upgrade THIS file - it is "
+            "the one named by the `claude mcp list` registration, so it is "
+            "the binary Claude Code launches; installing a different copy "
+            "elsewhere will not clear this failure. Either (a) update it "
+            "through whatever installed it (for an npm install: "
+            "`npm install -g @suisya-systems/renga@2.0.0` or later; for a "
+            "cargo build: rebuild/reinstall from a 2.0 series source), or "
+            "(b) install 2.0 series wherever you prefer and then re-point "
+            "the registration at it with `renga mcp install --force`, "
+            "verifying with `claude mcp list` that the path changed. "
+            "Then restart the running renga server so both halves are 2.0 "
+            "series. " + TWO_HALVES_SHORT
         )
         return
     report.version_check_ok = True
