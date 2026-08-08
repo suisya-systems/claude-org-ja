@@ -198,7 +198,8 @@ claude-org-runtime attention watch --state-dir .state --config .state/attention.
 
 - journal は末尾から window 分だけ遡って読む。この値を上げると走査範囲もそれに追随して広がるので、busy な daemon でも継続中の incident が視界外へ押し出されることはない
 - dedup key は owner ではなく **競合している instance pair** に対して張られる。片方のセッションを終了させた後に別の instance が入れ替わりで競合を始めた場合は別 incident として扱われ、直前の pair の cooldown に飲まれない
-- 手元の runtime がこの経路を持つかは `claude-org-runtime attention scan --help` に `--broker-state-dir` が出るかで判別できる（出ない版では journal を読まないので、この kind は発火しない）
+
+**runtime 版の前提（この kind だけの注意）**: broker journal reader は runtime 側でこの経路が入った版以降にしかない。手元の runtime が持つかは `claude-org-runtime attention scan --help` に `--broker-state-dir` が出るかで判別でき、**出ない版では journal を読まないのでこの kind は発火しない**（テンプレートに `notify.duplicate_sidecar` / `templates.duplicate_sidecar` を置いてあっても no-op になるだけで、config load エラーにはならない）。ja 側の下限 pin（`pyproject.toml` / `requirements.txt` の `claude-org-runtime` floor と `docker/Dockerfile` の `RUNTIME_VERSION`）がこの版に達するまでは、§4.1 の `duplicate_sidecar` 行は「runtime を上げたら鳴る」予約であって、現に鳴っている保証ではない。二重 sidecar を疑う状況で通知が来ない場合は、まず上記 `--help` で経路の有無を確かめる。
 
 ## 5. トラブルシューティング
 

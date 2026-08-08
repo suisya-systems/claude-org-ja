@@ -20,7 +20,12 @@
   `--broker-state-dir` (既定 `<state-dir>/broker`、非既定 state dir の daemon でのみ明示が要る)・
   `duplicate_sidecar_window_sec` (既定 300s、継続中の incident だけを鳴らす freshness 判定) を説明した。
   テンプレートは現行 pin (`claude-org-runtime>=0.1.39`) でもそのまま読み込める (未知 kind は
-  config loader の検証対象外)。
+  config loader の検証対象外)。**ただし発火はしない**: broker journal reader は runtime の後続版で
+  入る経路で、現行 floor には無いため、この kind は runtime pin
+  (`pyproject.toml` / `requirements.txt` の floor と `docker/Dockerfile` の `RUNTIME_VERSION`) を
+  上げるまで no-op のまま待機する (pin 引き上げは runtime リリース側とペアの別変更)。
+  手元の runtime が経路を持つかは `claude-org-runtime attention scan --help` に
+  `--broker-state-dir` が出るかで判別できる。
 
 ### Changed
 
