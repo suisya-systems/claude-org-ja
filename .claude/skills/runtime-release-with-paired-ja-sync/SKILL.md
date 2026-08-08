@@ -59,8 +59,11 @@ attention watcher integration test に必ず波及する。
   との整合で検証する。CI 配線は `--include-worker-settings`
   （[`.github/workflows/tests.yml`](../../../.github/workflows/tests.yml)）で、machine-local
   settings（`~/.claude/settings.json` 等）は CI 対象外。CI green でも local は stale に
-  なり得るため、merge 後に `/org-setup` で反映し `--include-local` 実行で検証する
-  （post-merge の別ゲート）。
+  なり得るため、merge 後に `/org-setup` で反映する。なお `--include-local` は schema に
+  `settings_paths` が宣言された role の settings.local.json しか見ず（`user_common` は
+  `settings_paths: []`）、参照 schema も checked-in の ja ミラーなので、home レベル
+  （`~/.claude/settings.json`）の allowlist 検証ゲートにはならない — user_common の
+  現物反映は `/org-setup` 適用後に settings 現物を直接確認する。
   (b) `tools/check_runtime_schema_drift.py` — ja の `tools/org_extension_schema.json` と
   runtime 同梱 `role_configs_schema.json` の、ja 固有節を strip した上でのバイト比較
   （CI で実行。installed runtime が pin window 内なら skip されない）。
