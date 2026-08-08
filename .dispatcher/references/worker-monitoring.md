@@ -167,7 +167,8 @@ bash ../tools/journal_append.sh anomaly_observed source={面} worker=worker-{tas
 
    **(3-a-1) まず「自分の `list_panes` が org のタブを解決できているか」を見る** (同じ応答から読める最初の弁別子):
    - 応答に org の他メンバー (`secretary` / 他の worker / `curator` / watcher 等) が**残っている** → `list_panes` は org のタブを解決できている。消失は当該ペイン固有の事象なので (3-a-2) へ進む
-   - 応答に **自分以外の org のペインが 1 つも出てこない** (一斉に消えた) → ペインの一斉終了より「自分の `list_panes` が別タブを解決している」ほうが桁違いに起こりやすい (可視範囲は current tab のみ・フォーカス移動で前タブが不可視になりうる、(P3) の contract §1.5 / §4.3)。これは異常ではなく **観測不能**: `WORKER_PANE_EXITED` を送らず、(P4) の `OBSERVATION_UNAVAILABLE` を 1 回報告し、peer 経路 (`mcp__org-broker__list_peers` + events テーブルの worker→secretary 報告痕跡) にフォールバックして監視を続ける。**フォーカスが別タブにある間、pane-addressed 呼び出しが `[pane_not_found]` を返すのは正常であり異常ではない** (contract §4.2)
+   - 応答に **自分以外の org のペインが 1 つも出てこない** (一斉に消えた) → ペインの一斉終了より「自分の `list_panes` が別タブを解決している」ほうが桁違いに起こりやすい (可視範囲は current tab のみ・フォーカス移動で前タブが不可視になりうる、(P3) の contract §1.5 / §4.3)。これは異常ではなく **観測不能**: `WORKER_PANE_EXITED` を送らず、(P4) の `OBSERVATION_UNAVAILABLE` を 1 回報告し、peer 経路 (`mcp__org-broker__list_peers` + events テーブルの worker→secretary 報告痕跡) にフォールバックして監視を続ける。**フォーカスが別タブにある間、pane-addressed 呼び出しが `[pane_not_found]` を返すのは正常であり異常ではない** (contract §4.2)。
+     ただし **このフォールバックが常に成立するとは限らない**: ratified 契約では `send_message` (§2.1) も `list_peers` (§2.2) も current tab スコープで、`org-broker` は cross-tab を持たない (§4.2)。フォーカス移動が原因のときは**観測不能の報告そのものが届かず、`list_peers` も対象を列挙できない**ことがある。その場合でも `.state/` のローカル台帳 (journal / events テーブル) は読み書きできるので、(P4) の journal 記録だけは必ず残し、通知は次サイクル以降に再送する。**自分の送信経路が届かないことを「対象が異常だ」の根拠にしてはならない** — (P1) は観測面だけでなく**自分の報告経路にも適用される**
 
    **(3-a-2) 当該ペイン固有の消失を、独立面で突き合わせる**:
 
@@ -489,6 +490,8 @@ bash ../tools/journal_append.sh anomaly_observed source={面} worker=worker-{tas
    **「報告痕跡が無い＝止まっている」ではない**: worker の報告は**ターン境界**で出るため、1 ターンが長い作業 (実装 → セルフレビュー → codex ゲートを 1 ターン内で連続実行) の最中に痕跡が出ないのは正常である。台帳面 1 面だけを見て発火したのが 2026-08-08 の実誤検知 2 件の型で (Issue #869)、これは (b-fp) 型 1 / 型 2 と同じ族に属する。画面面が「動いている」または「観測できていない」なら、台帳面が 0 件でも申告しない。
 
    **観測不能な面が 1 つでもあれば STALL を申告しない**: (b-4-i) の 1 が満たせない (inspect が使えない) 間は台帳面だけで stuck を推測せず、(b-4-ii) の 3 で query が失敗した場合も「痕跡 0 件」として扱わず、いずれも (P4) の `OBSERVATION_UNAVAILABLE` を該当 `source` で 1 回報告して次サイクルへ送る。**この保留は「代わりに自分で対処してよい」ではない** ((P5)) — やることは報告と再評価であって、ペインへの介入ではない。
+
+   **残余ケースと通知の書き方**: 3 面すべてが「活動を観測できない」で一致しても、それは *stuck の確定* ではない — 出力が凍り新形式 spinner も出ないまま正常な長い 1 ターンを回している worker は (b-4) を通過しうる ((b-fp) の型 1 = 長時間バッチ完了待ち / 型 2 = ultracode Workflow 待機がその実例で、**これらは (b-fp) 側の報告基準が優先する**)。したがって STALL_SUSPECTED は「worker が壊れている」という診断ではなく「**どの観測面にも活動が見えない**」という観測の申告として送る: 通知本文には観測した内容 (どの面を・どの窓で見て・何件だったか) を書き、原因の断定や復旧の提案を書かない。窓口が人間に上げる判断材料はこの観測であって、dispatcher の推測ではない ((P5))。
 
    #### (c) 補助シグナル取得 — 直近の worker→secretary コミュニケーション
    stall 候補が (b-4-i) の画面側 2 点を通ったら、STALL_SUSPECTED を発火する **前に** 補助シグナルを取得する ((b-4-ii) の台帳面はこの scan 結果で評価する)。lookback は (b-2) で選択した値 (`STALL_SECRETARY_LOOKBACK_MIN = 15` または `STALL_PR_MERGE_LOOKBACK_MIN = 60`) を使う:
