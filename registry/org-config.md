@@ -37,7 +37,7 @@ broker 面（`ORG_TRANSPORT=broker` / コード既定）でのワーカー同時
 
 - **既定 8**。`unlimited`（上限なし）は opt-in。
 - **renga 面（`ORG_TRANSPORT=renga`, opt-in）で参照されないのは、caller タブ内に配置する既定経路のときだけ**: renga はターミナルサイズと MIN_PANE 制約が許す限り分割し続ける rect ベース balanced split が律速するため、この経路では `max_concurrent_workers` は参照されない。
-- **例外 — overflow 時は renga 面でもこの値が live になる**（runtime 0.1.39 以降）: dispatcher が `--overflow-to-new-tab` を armed にすると rect 上限が消える代わりに本値が **fleet ceiling** として効き、`--peers-json`（全タブを跨ぐ worker census）が**必須**になる（欠落は `input_invalid` / exit 1）。このとき本値は「同時ワーカー数の上限」であると同時に「**overflow が発行してよい新規タブ数の上限**」でもある。**現行 ja はこのフラグを渡していない**（repo 全体で出現 0 件）ため、今日の運用値としては broker 面のみ load-bearing。詳細は [`.claude/skills/org-delegate/references/pane-layout.md`](../.claude/skills/org-delegate/references/pane-layout.md)「ワーカーの balanced split 戦略」と [`.dispatcher/CLAUDE.md`](../.dispatcher/CLAUDE.md) の delegate-plan helper 節を参照。
+- **例外 — overflow 時は renga 面でもこの値が live になる**（runtime 0.1.39 以降）: dispatcher が `--overflow-to-new-tab` を armed にし、**かつ `--server-capability spawn_tab` を宣言した**場合に限り、rect 上限が消える代わりに本値が **fleet ceiling** として効き、`--peers-json`（全タブを跨ぐ worker census）が**必須**になる（欠落は `input_invalid` / exit 1）。`spawn_tab` 未宣言なら overflow は発火せず caller タブ配置に降格する。このとき本値は「同時ワーカー数の上限」であると同時に「**overflow が発行してよい新規タブ数の上限**」でもある。**現行 ja はこのフラグを渡していない**（repo 全体で出現 0 件）ため、今日の運用値としては broker 面のみ load-bearing。詳細は [`.claude/skills/org-delegate/references/pane-layout.md`](../.claude/skills/org-delegate/references/pane-layout.md)「ワーカーの balanced split 戦略」と [`.dispatcher/CLAUDE.md`](../.dispatcher/CLAUDE.md) の delegate-plan helper 節を参照。
 - 判定ロジック・定数の正準 SoT は `claude_org_runtime.dispatcher.runner`（runtime 側）。本ファイルの値は dispatcher が helper へ渡す運用値の導線。
 
 ## Triage Home
