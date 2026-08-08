@@ -64,7 +64,7 @@ renga 2.0 の org サイドバーは **既定で有効**（`OrgSidebarMode::Coex
 
 ### 4.2 回避策 (i): renga の org サイドバーを無効化する
 
-renga の設定ファイル（Unix は `${XDG_CONFIG_HOME:-~/.config}/renga/config.toml`、Windows は `%APPDATA%/renga/config.toml`。renga `src/config.rs:2-3`, `:329-330`）に次を書く。**値は引用符付きの文字列**である:
+renga の設定ファイルに次を書く。パスは Unix が `$XDG_CONFIG_HOME/renga/config.toml`（`XDG_CONFIG_HOME` 未設定なら `$HOME/.config/renga/config.toml`）、Windows が `%APPDATA%\renga\config.toml`（renga `src/config.rs:2-3`, `:329-330`）。**値は引用符付きの文字列**である:
 
 ```toml
 [ui]
@@ -77,14 +77,27 @@ org_sidebar = "off"
 
 ### 4.3 回避策 (ii): 内側 tmux の prefix を変更する
 
-サイドバーを残したい場合は、内側 tmux 側の prefix を `Ctrl-b` 以外へ動かして物理キーの衝突自体を無くす。`~/.tmux.conf` に:
+サイドバーを残したい場合は、内側 tmux（= attach 先の broker socket 上の tmux server）の prefix を `Ctrl-b` 以外へ動かして物理キーの衝突自体を無くす。
 
-```tmux
-set -g prefix C-a
-bind C-a send-prefix
-```
+prefix は **tmux server ごとの設定**なので、2 段階で入れる。
 
-以後、本ドキュメントおよび `tools/org-dispatcher-view.sh` の出力に出てくる `Ctrl-b` は、**設定した prefix**（上例なら `Ctrl-a`）に読み替える。
+1. 今後起動する server 向けに `~/.tmux.conf` へ永続化する:
+
+   ```tmux
+   set -g prefix C-a
+   bind C-a send-prefix
+   ```
+
+2. **既に走っている broker server には上記の編集は反映されない。** 衝突に気付くのは大抵 server が走っている最中なので、その場で効かせるには socket を指定して直接設定する（attach していない別のペイン / 端末から実行してよい）:
+
+   ```bash
+   /usr/bin/tmux -L claude-org-broker set -g prefix C-a
+   /usr/bin/tmux -L claude-org-broker bind C-a send-prefix
+   ```
+
+   `ORG_BROKER_SOCKET` で socket 名を変えている場合はその名前に読み替える。既に attach して抜けられなくなっている場合も、この経路なら別端末から prefix を差し替えて detach できる。
+
+読み替えの範囲: 以後 **内側 tmux（broker socket 側）を指す** `Ctrl-b` — 本ドキュメントの detach / セッション切替、および `tools/org-dispatcher-view.sh` の出力 — を、設定した prefix（上例なら `Ctrl-a`）に読み替える。**§5 の外側 tmux 用のキー**（ペイン分割、および 2 回押しの 1 回目）は別 server の prefix なので、外側を変更していない限り `Ctrl-b` のままである。
 
 ### 4.4 runtime の capacity escalation が案内する `Ctrl+B` について
 
@@ -147,7 +160,7 @@ ORG_BROKER_SOCKET=my-broker tools/org-dispatcher-view.sh
 - **socket 不通時の再試行**: broker daemon が未起動などで tmux socket に繋がらない場合、「broker tmux socket (...) に繋がりません」と出て 2 秒ごとに再試行する
 - **attach 後の自動復帰**: dispatcher が restart / auto-compact fork して session 名が変わると、tmux 側で attach が切れる。本ビューアはそれを検知してループ先頭に戻り、新しい session 名を再解決して再 attach する
 - **複数候補警告**: 同一 broker socket 上に複数 org / 複数 `.dispatcher` ペインが居る稀ケースでは、「dispatcher 候補が N 件見つかりました」と警告し 1 件目を採用する。意図しない dispatcher に attach しうるので broker daemon の状態を確認すること
-- **終了動作の注意**: attach 中の `Ctrl-C` は tmux クライアント / dispatcher ペイン側に渡るので、本ビューアの SIGINT trap には届かない（`--rw` では dispatcher へ `^C` を送ってしまう）。終了は必ず **detach（`Ctrl-b d` または `Ctrl-b Ctrl-b d`）→ 再探索プロンプト → `Ctrl-C`** の順で行う。ここの `Ctrl-b` は tmux prefix の既定値であり、prefix を変更している場合は **設定した prefix** に読み替える。外側フレームが renga の場合は、この detach 打鍵自体が届かないので先に §4 の回避策を適用すること（適用しないとビューアから抜ける手段が無くなる）
+- **終了動作の注意**: attach 中の `Ctrl-C` は tmux クライアント / dispatcher ペイン側に渡るので、本ビューアの SIGINT trap には届かない（`--rw` では dispatcher へ `^C` を送ってしまう）。終了は必ず **detach（`Ctrl-b d` または `Ctrl-b Ctrl-b d`）→ 再探索プロンプト → `Ctrl-C`** の順で行う。ここの `Ctrl-b` は各 tmux server の prefix の既定値であり、変更している場合は §4.3 の読み替え範囲に従う（入れ子形 `Ctrl-b Ctrl-b d` は 1 回目が外側 server、2 回目以降が内側 server の prefix）。外側フレームが renga の場合は、この detach 打鍵自体が届かないので先に §4 の回避策を適用すること（適用しないとビューアから抜ける手段が無くなる）
 
 ## 8. トラブルシューティング
 
