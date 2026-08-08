@@ -538,6 +538,17 @@ org-suspend 自身の宛先真理値表、#9 は
 | [`.claude/skills/org-delegate/references/renga-error-codes.md`](renga-error-codes.md) の messaging 復旧手順への**同趣旨の追記** | **規範自体は §3-B-2 で先に置いてある**（縮退は復旧手順に伝播する = 引き直した列挙の数値 id で他タブへ再送しない / 消失を死亡確定の根拠にしない）。復旧手順は spawn / readiness の再送という常用経路から入るので、未配線のまま残すと縮退が最も効いてほしい局面で抜けるため。残っているのは `renga-error-codes.md` 本体側にも同じ注記を置いて二重管理を解消する作業 |
 | [`.claude/skills/org-attach/SKILL.md`](../../org-attach/SKILL.md) の表示ラベル突き合わせ | 結果は attach コマンドの**ラベル生成にしか使わない**（join key は `list_panes` の pane_id）。ゲート判定には使わないので危険度は最も低いが、全タブ列挙では他 org のペインに自 org のラベルを付けて人間に提示しうる |
 
+**§1-2 の per-site 適用行がまだ無い経路（#7 / #8）**: 上表の owner 規定により **§1-2 は #7 / #8 にも
+規範として掛かっており**（両経路とも呼び出し直前に本ファイルを Read する義務があるので、§1-2-c の
+「登録待ち型は 在 のときだけゲートを開ける（MUST）」に到達する）、**規範の穴ではない**。ただし
+[`.dispatcher/references/spawn-flow.md`](../../../../.dispatcher/references/spawn-flow.md) 3-4 と
+[`.dispatcher/references/pane-close.md`](../../../../.dispatcher/references/pane-close.md) 5-4 の
+**本文には承認済み路の適用結果 1 行がまだ置かれていない**ので、そちら**だけ**を読んだ役割は
+name 一致の poll 記述をそのまま実行しうる（§3-B-2 の renga-error-codes.md と同型の
+discoverability gap）。両ファイルは本タスクの承認編集対象外なので配線していない。**この 2 経路は
+一度きりのタスク割り当て / `/org-curate` 指示を運ぶため影響が大きい**ので、follow-up で per-site 行を
+置くこと。それまでの間、#7 / #8 を実行する役割は当該ファイルと本節を**セットで**読む。
+
 runtime 側（`claude_org_runtime` の delegate-plan helper が `list_peers` 再実行を指示する
 `target_tab_mismatch` / `tab_ambiguous` / `pane_not_found` の復旧文言）は ja リポジトリの外なので、
 本 reference では配線できない。

@@ -94,8 +94,13 @@ Step 0 に入る前に遮断する（恒久対策の経緯は
      `curate-inflight.json` の有無だけで分岐する（停止しない・待ち時間 0 分）。
      **承認済み（同 reference §2 の `first_drive` が `recorded`）のときは §1-2 の三値判定を通し、
      「在」と出たワーカーだけを live として数える** — 他タブの別 org のワーカーを live と誤認すると
-     (ii) の cold-start 経路が抑止される。「unknown」は live に数えず、(ii) にも倒さず
-     secretary へ判定不能として報告する。
+     (ii) の cold-start 経路が抑止される。**「unknown」は live に数えないが、(ii) にも倒さない**:
+     判定不能を「監視対象なし」と読み替えると誤った `/org-start` 案内で健全な組織を壊しうる
+     （不可逆側）。**終端処理は (i) と同じ**（早期 exit + Step 5 の monitoring ディレクティブで
+     `/loop` を再 arm し、残存予約を空のまま放置しない）とし、secretary には
+     `DISPATCHER_RESUME_INDETERMINATE: 監視対象の同タブ性を確定できず（unknown N 件）。
+     live 判定を保留して監視ループのみ再開しました。` を送って判断を仰ぐ。
+     **どの分岐にも落ちないまま skill を終えない**（一度きりの skill が loop に再発火され続ける）。
    - **(i) 監視対象が live = stale 再発火 / 重複起動**: 組織は健全で cold-start 不要。
      `DISPATCHER_RESUME_FAILED` を **送らず**（誤った `/org-start` 案内を出さない）、
      Step 1 以降に進まず早期 exit する。**残存予約を空のまま放置しない**: 監視 `/loop` が
