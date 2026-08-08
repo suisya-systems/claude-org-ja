@@ -174,7 +174,14 @@ python3 ../tools/capability_gate.py --gate first_drive
      窓口側は次の人間向け報告に載せる。§3-A と同じ 3 項目（タブ数 / ピア総数 / 他タブ判定数）を含める。
      `notify_sent` の記録だけでは人間に届かない（attention watcher の classifier はこの kind を
      知らないのでビープは鳴らない）。
-   - **重複抑止の印を残す**（記録側も cwd でパスが変わる）:
+   - **印を残すのは送達を確認できたときだけ（MUST）**。送信が
+     `[pane_not_found]` / `[peer_not_found]` / `[nudge_failed]` 等で失敗したまま印だけ書くと、
+     以後のサイクルは `recorded` を見て報告を抑止し、**一度も人間に届いていない報告が恒久的に
+     握り潰される**。送達できなかったサイクルでは**印を書かず、次サイクルで再送する**
+     （縮退継続そのものは変わらない。報告が滞留していること自体は
+     `.state/` のローカル台帳に残る journal からは分からないので、印の有無＝送達の有無に
+     一致させておくことが唯一の再送契機になる）。
+   - 送達を確認できたら、**そのあとで**重複抑止の印を残す（記録側も cwd でパスが変わる）:
      ```bash
      bash tools/journal_append.sh notify_sent kind=capability_first_drive_pending note=<backend/tab 概要>     # cwd = リポジトリ root
      bash ../tools/journal_append.sh notify_sent kind=capability_first_drive_pending note=<backend/tab 概要>  # cwd = .dispatcher/
@@ -307,7 +314,7 @@ server × mcp-peer 双方 2.0 系での実機 dogfood と人間確認を要求�
 | # | 経路 | 役割 / cwd | 分岐 | capability 形かつ未承認のときの縮退先 |
 |---|---|---|---|---|
 | 1 | [`.claude/skills/org-suspend/SKILL.md`](../../org-suspend/SKILL.md) Phase 1 手順 1（id 台帳を作る） | secretary / root | **interactive-action** | 送信前に停止し人間確認。確認後も他タブピアは対象外のまま |
-| 1b | 同 Phase 4 の再列挙（台帳の最新化 / Pass 2 残存確認 / curator 存在確認 / `[pane_not_found]` messaging 復旧） | secretary / root | **interactive-action**（#1 で適用済み） | **同一実行内で #1 の版判定と確認結果に従う**。Phase 4 は必ず Phase 1 の後に走るので gate を再適用しない。ただし**他タブ判定のピアが Phase 1 から増えていたら差分を人間に報告する** |
+| 1b | 同 Phase 4 の再列挙（台帳の最新化 / Pass 2 残存確認 / curator 存在確認 / `[pane_not_found]` messaging 復旧） | secretary / root | **interactive-action** | **Phase 1 が capability 形と判定していた場合に限り**、同一実行内で #1 の確認結果に従い gate を再適用しない（そのとき**他タブ判定のピアが Phase 1 から増えていたら差分を人間に報告する**）。**Phase 1 が旧版 fallback だった場合は再適用する**（§1 の版判定を Phase 4 の列挙に対して引き直す）— Phase 1 と Phase 4 の間に backend が upgrade / 再接続して**Phase 4 が最初の capability 観測になりうる**ので、Phase 1 の判定を持ち回すと初回駆動が無停止で通る |
 | 2 | [`.claude/skills/org-start/SKILL.md`](../../org-start/SKILL.md) Block D-2（dispatcher の peer 登録 poll） | secretary / root | monitoring-read-only | 列挙を登録確認に使わない（§3-B-1: `name` 一致でゲートを開けない）。readiness は §3-B-1 の send-as-probe で判定する（手順 3 の挨拶送信そのものを probe にし再送。プロンプト表示で代用しない）。**「peer 未登録」を根拠に失敗モードの fatal 分岐（`close_pane` + `StateWriter.CLEAR`）へ進んではならない** — 縮退中の列挙は未登録の証拠にならず、健全な dispatcher ペインを破棄することになる |
 | 2b | 同 Step 0-3 の broker 分岐（secretary 自身の identity 検証） | secretary / root | monitoring-read-only | 列挙を identity 検証の充足根拠にしない。`list_panes` の `focused` ペインで確認できなければ、identity 未確認のまま人間に報告して続行判断を仰ぐ（勝手に fatal にしない） |
 | 3 | [`.claude/skills/secretary-resume/SKILL.md`](../../secretary-resume/SKILL.md) Step 3（ペイン生存確認） | secretary / root | monitoring-read-only | 列挙を生存判定に使わない。`list_panes` と state DB の `active_runs[]` で突き合わせ、差分は人間に報告 |
