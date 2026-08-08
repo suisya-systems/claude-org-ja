@@ -107,10 +107,12 @@ done: {commit SHA 短縮形} {変更ファイル名}
 ## 作業完了時
 
 1. **完了報告**: `${transport_send_message}(to_id="secretary", message="...")` で窓口に報告する。**ディスパッチャーではなく窓口に送ること**。宛先解決に失敗しても（renga: `[pane_not_found]` / broker: `[peer_not_found]`）**窓口が消えたとは解釈しない**。次の順で復旧する:
-   - `list_peers` を引き直し、送信時に控えた**数値 peer id** が残っていればその id で **1 回だけ**再送する（数値 id はタブ横断で有効な唯一の宛先形式）。
-   - 数値 id が残っていない場合、`secretary` と名前が一致するレコードは**候補にすぎない**。`same_tab: true` を確認できたレコードだけを採用する（`same_tab` / `tab` フィールドをどのレコードも持たない列挙は単一タブ保証なので、そのまま採用してよい）。
-   - 名前一致が**他タブのレコードしか無い場合は再送しない** — 別 org の同名ペインを掴みうる。
-   - 数値 id 宛の再送も失敗したら**ループさせず**、`to_id="dispatcher"` で状況を報告して escalate する。
+   - **誤送信は別 org へ完了報告を漏らす**ので、宛先が自分と同じ org だと確認できないうちは再送しない。確認できなければ再送より escalate を選ぶ。
+   - `list_peers` を引き直し、送信時に控えた**数値 peer id** が残っていればその id で **1 回だけ**再送する（ループにしない）。
+   - 数値 id が残っていない場合、`secretary` と名前が一致するレコードは**候補にすぎない**。`same_tab: true` を確認できたレコードだけを採用し、**他タブのレコードしか無ければ再送しない**（別 org の同名ペインを掴みうる）。
+   - `same_tab` / `tab` をどのレコードも持たない列挙は、**単一タブであることしか保証せず「どのタブか」は保証しない**（focused タブでありうる）。自分のタブだと別途確認できない限り、名前一致だけで採用しない。
+   - **他タブの数値 id 宛に依拠する前に** `${claude_org_path}/.claude/skills/org-delegate/references/capability-first-drive-operational-gate.md` の gate を適用する（この復旧手順の `list_peers` 自体が gate 対象の call site で、縮退中は他タブへ再送しない）。
+   - 宛先を確定できない / 再送も失敗した場合は**ループさせず**、`to_id="dispatcher"` で状況を報告して escalate する。
    - 手順の正本: `${claude_org_path}/.claude/skills/org-delegate/references/renga-error-codes.md` の「`pane_not_found` の messaging 分岐」節。
 2. **PR 作成後はペインを保持してレビュー指摘待機**: 「閉じてよい」「マージ済み」など窓口からの明示クローズ指示が来るまで待機状態を維持する。
 3. **振り返り記録**: 再利用可能な学びがあれば `${claude_org_path}/knowledge/raw/{YYYY-MM-DD}-{topic}.md` に記録する（topic は英語 kebab-case）。記録基準: 再現性がある / 非自明 / コードを読むだけではわからない。
