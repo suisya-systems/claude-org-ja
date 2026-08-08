@@ -1,5 +1,6 @@
 ---
 name: runtime-release-with-paired-ja-sync
+owner: secretary
 description: >
   claude-org-runtime のリリース (release-* タスク / vX.Y.Z タグ発行) を、
   同 PyPI 発行を受ける claude-org-ja 側の expectation 同期と
@@ -51,15 +52,18 @@ attention watcher integration test に必ず波及する。
   `required_hook_scripts` / `required_hooks` への追加・変更を含むリリース。
   これらは「settings ファイルに必ず存在すべき項目」を増やす変更であり、runtime 側 CI が
   full green・Codex 指摘ゼロでも ja 側の安全性は証明されない。ja は floating pin
-  （`>=X,<0.2`）のため PyPI 公開の瞬間から ja 側の 2 チェックが赤くなる:
-  (a) `tools/check_role_configs.py --include-local`（settings 現物に新しい必須項目が無い）、
-  (b) `tools/check_runtime_schema_drift.py`（ja の `tools/org_extension_schema.json` と
-  runtime 同梱 `role_configs_schema.json` の、ja 固有節を strip した上でのバイト比較。
-  installed runtime が pin window 内なら skip されない）。
-  両チェックの CI 配線は [`.github/workflows/tests.yml`](../../../.github/workflows/tests.yml) を参照。
-  実例: renga capability probe `server_info` の `required_allow` 追加（2026-08-08,
-  runtime Issue #161）で露見。経緯の curated note は
-  [`knowledge/curated/release-process.md`](../../../knowledge/curated/release-process.md) を参照
+  （`>=X,<0.2`）のため PyPI 公開の瞬間から ja 側の 2 系統のチェックが赤くなる:
+  (a) `tools/check_role_configs.py` — permissions projection と tracked settings を schema
+  との整合で検証する。CI 配線は `--include-worker-settings`
+  （[`.github/workflows/tests.yml`](../../../.github/workflows/tests.yml)）で、machine-local
+  settings（`~/.claude/settings.json` 等）は CI 対象外。CI green でも local は stale に
+  なり得るため、merge 後に `/org-setup` で反映し `--include-local` 実行で検証する
+  （post-merge の別ゲート）。
+  (b) `tools/check_runtime_schema_drift.py` — ja の `tools/org_extension_schema.json` と
+  runtime 同梱 `role_configs_schema.json` の、ja 固有節を strip した上でのバイト比較
+  （CI で実行。installed runtime が pin window 内なら skip されない）。
+  実例: renga capability probe `server_info` の `required_allow` 追加
+  （2026-08-08, runtime Issue #161）で露見
 
 ## Step 1: pre-fetch（リリース worker 派遣前）
 
@@ -125,23 +129,25 @@ ja-side 同期 PR を起票する。後回しにしない:
 
 | runtime 側の変更 | ja-side 同期対象 |
 |---|---|
-| `DEFAULT_NOTIFY` の値変更 / 追加 / 削除 | `tests/test_attention_runtime_integration.py` の expectation 更新 |
+| `DEFAULT_NOTIFY` の値変更 / 追加 / 削除 | `tests/test_attention_runtime_integration.py` の expectation と golden fixture `tests/fixtures/attention/expected_scan.json` の更新（新ポリシーを ja が採用する場合は `tools/templates/attention.example.json` も） |
 | `org_extension_schema` のフィールド改廃 | `tools/org_extension_schema.json` の共有面を runtime 同梱 schema に同期（ja 固有節は保持。下記注意点参照） |
-| classifier vocabulary の追加 / 改名 | `.claude/skills/org-setup/references/permissions.md` の projection 更新 |
+| classifier vocabulary の追加 / 改名 | attention 系 artifacts の更新 — `tests/fixtures/attention/` の fixture / golden・`tests/test_attention_runtime_integration.py` の expectation・`tools/templates/attention.example.json`（permissions projection は classifier 語彙を持たないため対象外） |
 | attention payload の severity / TTL ladder 変更 | `tools/templates/attention.example.json` の severity / TTL 同期 |
-| ja が新 runtime 版の挙動・新 required 項目に依存する場合 | `pyproject.toml` / `requirements.txt` / `docker/Dockerfile` の runtime version floor を atomic に引き上げ |
+| ja が新 runtime 版の挙動・新 required 項目に依存する場合 | `pyproject.toml` / `requirements.txt` / `docker/Dockerfile` / `docker/compose.yaml`（`RUNTIME_VERSION` 既定値。Dockerfile の ARG を上書きするためここが古いと旧版が焼かれる）の runtime version floor を atomic に引き上げ |
 
 paired ja-sync は **複数 worker 並列**で派遣して構わない（むしろ推奨）。
 4 つの同期対象は互いに独立しているため、1 worker 1 PR で並走できる。
 窓口は org-delegate の並列委譲ガイダンスに従って分割する（[[parallelize_delegation]]）。
 
-**例外 — `required_allow` / `required_deny` / `required_hook_scripts` / `required_hooks`
-の追加・変更を含む場合は並列分割しない**: schema ミラー
-（`tools/org_extension_schema.json`）・permissions projection
-（`.claude/skills/org-setup/references/permissions.md`）・tracked settings は
-`tools/check_role_configs.py` が相互整合を検証するため独立には land できない
-（片方だけの中間 PR は CI red になる）。この一式は **1 本の atomic PR** にまとめ、
-machine-local settings（`~/.claude/settings.json` 等）は merge 後に `/org-setup` で反映する。
+**例外 — permissions projection が変わる schema 変更は並列分割しない**:
+`tools/check_role_configs.py` は permissions projection
+（`.claude/skills/org-setup/references/permissions.md`）を schema との整合で常時検証し
+CI でも走るため、projection に影響する schema 変更（`required_allow` / `required_deny` /
+`required_hook_scripts` / `required_hooks` の追加・変更を含む）では、schema ミラー
+（`tools/org_extension_schema.json`）・permissions projection・tracked settings は
+独立には land できない（片方だけの中間 PR は CI red になる）。この一式は
+**1 本の atomic PR** にまとめ、machine-local settings（`~/.claude/settings.json` 等）は
+merge 後に `/org-setup` で反映する。
 
 ## Step 5: CI cascade の予測と委譲
 
@@ -166,10 +172,11 @@ gh api / log / diff / source 読解は worker の責務。
 ## Step 6: 同一セッションでの land
 
 Secretary 自身のセッションが context 上限に達すると、paired ja-sync の意図が
-[`/secretary-handover`](../secretary-handover/SKILL.md) を経ても暗黙化しやすい。
+[`.claude/skills/secretary-handover/SKILL.md`](../secretary-handover/SKILL.md) を経ても暗黙化しやすい。
 本 skill の全 Step は**できる限り同一 Secretary セッション内で完了**させる:
 
-- リリース worker 完了 → tag push → ja-sync worker 4 並列派遣 → 各 PR レビュー & merge
+- リリース worker 派遣と並走で ja-sync worker を起票（Step 4）→ リリース PR merge →
+  tag push → ja-sync PR を release.yml 完了前後で land・merge
 - 1 セッションで land しきれない場合は handover に「runtime vX.Y.Z リリース後の paired ja-sync が
   残タスク」と明示し、resume 後の最初のターンで本 skill を再読する
 
