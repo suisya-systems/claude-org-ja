@@ -86,6 +86,10 @@ Step 0 に入る前に遮断する（恒久対策の経緯は
      を Read し、`monitoring-read-only` の分岐を適用する**（同 reference §6 の表 #5）。capability 形
      かつ未承認なら列挙を live 判定に使わず破棄し、`list_panes` の `role == "worker"` と
      `curate-inflight.json` の有無だけで分岐する（停止しない・待ち時間 0 分）。
+     **承認済み（同 reference §2 の `first_drive` が `recorded`）のときは §1-2 の三値判定を通し、
+     「在」と出たワーカーだけを live として数える** — 他タブの別 org のワーカーを live と誤認すると
+     (ii) の cold-start 経路が抑止される。「unknown」は live に数えず、(ii) にも倒さず
+     secretary へ判定不能として報告する。
    - **(i) 監視対象が live = stale 再発火 / 重複起動**: 組織は健全で cold-start 不要。
      `DISPATCHER_RESUME_FAILED` を **送らず**（誤った `/org-start` 案内を出さない）、
      Step 1 以降に進まず早期 exit する。**残存予約を空のまま放置しない**: 監視 `/loop` が
@@ -181,6 +185,28 @@ with StateWriter(conn, claude_org_root=Path('..')).transaction() as w:
     )
 "
 ```
+
+**Step 0 で `peer_id` が未確定だった場合（capability gate の縮退中、または承認済み路で名前引きから
+自 peer を同定できなかった場合）は、`dispatcher_peer_id` を渡さない形で呼ぶ**。上の例をそのまま
+使うと観測していない値を書き込むことになる:
+
+```bash
+python3 -c "
+import sys, os
+sys.path.insert(0, os.path.abspath('..'))
+from pathlib import Path
+from tools.state_db import connect
+from tools.state_db.writer import StateWriter
+conn = connect('../.state/state.db')
+with StateWriter(conn, claude_org_root=Path('..')).transaction() as w:
+    w.update_session(
+        dispatcher_pane_id='<observed_pane_id>',
+    )
+"
+```
+
+`update_session()` は未指定を「保持」と解釈する契約なので、既存値がそのまま残る（生きた同一ペインを
+引き継ぐ resume ではこれが正しい。詳細は Step 0 手順 4 と共有 reference §1-2-d）。
 
 - `dispatcher_pane_id` / `dispatcher_peer_id` は **文字列**で書く（schema は TEXT、
   既存 `/org-start` も文字列を入れているので型を揃える）
