@@ -112,13 +112,52 @@ brief で明示しない場合 worker は bump 対象を pyproject 系のみと�
 実施前に必ずユーザーに「v-タグを push して release.yml を起動します」という
 明示的 OS 承認を取る（チャットの「OK」「進めて」で十分。 [[chat_auth_is_enough]]）。
 
+### tag 前の fail-closed 検証（省略不可）
+
+runtime の release workflow（`.github/workflows/release.yml`）は `on: push: tags: ["v*"]`
+でタグ付き commit を checkout してビルドするだけで、**タグ名と版数の一致も、その commit が
+main の先端かどうかも検証しない**。版数の SoT は `src/claude_org_runtime/__about__.py` の
+`__version__`（`pyproject.toml` が `dynamic = ["version"]` で
+`claude_org_runtime.__about__.__version__` を読む）。fetch だけでは ancestry も内容も
+確かめられないため、検証を挟まずに tag すると次の 2 つが起きうる:
+
+- **版数不一致**（タグ `vX.Y.Z` / `__about__.py` は旧版）: publish が既発行版の再アップロードとして
+  PyPI に弾かれ job は red になるが、**タグ番号は焼かれる**
+- **stale SHA**（版数は合っているが main の先端ではない）: 古い内容のまま publish が
+  **成功**する。PyPI yank はできても版番号は再利用できない＝実質撤回不可
+
+以下を上から順に実行し、**1 つでも条件を外したら tag を打たずに人間へ報告する**:
+
 ```bash
 # Secretary 側で実行（user の明示承認後）
-# squash / rebase merge の merge commit はローカル未取得の新規オブジェクトなので
-# tag の前に必ず fetch する（Step 1 の fetch は PR 前なので古い）
-git -C <runtime workers_dir> fetch origin
-git -C <runtime workers_dir> tag vX.Y.Z <merge commit sha>
-git -C <runtime workers_dir> push origin vX.Y.Z
+WD=<runtime workers_dir>
+VER=X.Y.Z   # 発行する版数（タグ名から先頭の "v" を除いたもの）
+
+# (a) 最新化。squash / rebase merge の merge commit はローカル未取得の新規オブジェクトなので
+#     tag の前に必ず fetch する（Step 1 の fetch は PR 前なので古い）。
+#     --tags で remote 側の既存タグも取り込む
+git -C "$WD" fetch origin --tags
+
+# (b) 同名タグが未使用であること。remote が正（ローカルに無くても remote にあれば push は reject）
+git -C "$WD" ls-remote --tags origin "refs/tags/v$VER"
+#     → 出力が空でなければ中止
+
+# (c) tag 対象は常に origin/main の先端。stale SHA を掴まないよう rev-parse で解決し、
+#     リリース PR の merge commit がそこに含まれていることを確認する
+SHA="$(git -C "$WD" rev-parse origin/main)"; echo "$SHA"
+git -C "$WD" merge-base --is-ancestor <リリース PR の merge commit sha> "$SHA" && echo included
+#     → "included" が出なければ中止（リリース内容が main に入っていない）
+#     → $SHA が merge commit sha と一致しない場合は、後続の別 PR が相乗りする状態。
+#       中止して人間に報告し、その相乗りを含めて発行してよいか確認してから進む
+
+# (d) その commit の版数がタグと一致すること。作業ツリーではなく commit から直接読む
+#     （worktree 側が未 commit / 別ブランチの状態でも欺かれないため）
+git -C "$WD" show "$SHA:src/claude_org_runtime/__about__.py"
+#     → __version__ が "X.Y.Z" でなければ中止
+
+# (e) (b)(c)(d) が全て通ってから tag + push
+git -C "$WD" tag "v$VER" "$SHA"
+git -C "$WD" push origin "v$VER"
 ```
 
 push 後は GitHub Actions の release.yml ジョブを `gh run watch` 等で監視する。
@@ -138,7 +177,9 @@ ja-side 同期 PR を起票する。後回しにしない:
 | runtime `role_configs_schema.json` のフィールド改廃 | ja 側ミラー `tools/org_extension_schema.json` の共有面を runtime 同梱 schema に同期（ja 固有節は保持。下記注意点参照） |
 | classifier vocabulary の追加 / 改名 | attention 系 artifacts の更新 — `tests/fixtures/attention/` の fixture / golden・`tests/test_attention_runtime_integration.py` の expectation・`tools/templates/attention.example.json`（permissions projection は classifier 語彙を持たないため対象外） |
 | attention payload の severity / TTL ladder 変更 | `tools/templates/attention.example.json` の severity / TTL 同期＋`tests/test_attention_runtime_integration.py` の TTL 前提（fixture の経過時間セットアップ・severity 期待）と golden の整合 |
-| ja が新 runtime 版の挙動・新 required 項目に依存する場合 | `pyproject.toml` / `requirements.txt` / `docker/Dockerfile` / `docker/compose.yaml`（`RUNTIME_VERSION` 既定値。Dockerfile の ARG を上書きするためここが古いと旧版が焼かれる）の runtime version floor を atomic に引き上げ |
+| runtime の sandbox 評価器（`render_role_with_metadata()` / `SandboxMetadata.to_jsonable()`）の出力形が変わる（schema JSON は不変） | `tests/fixtures/runtime_schema_drift/sandbox_intent/` の `expected_explain` / `expected_rendered_sandbox` golden を新 runtime で再生成＋floor 引き上げ。schema バイトが動かないので byte check は素通りするが、`tests/test_runtime_schema_drift_semantic.py` は pin window を意図的にバイパスして installed runtime に**無条件で hard fail** する（skip-with-warning の逃げ道が無い唯一の drift 次元） |
+| attention event の `title` / `body` 文言・フィールドの追加 / 改名（severity / TTL は不変） | golden `tests/fixtures/attention/expected_scan.json` を再生成。`test_scan_output_matches_golden` は `desktop_dispatched` / `bell_dispatched` / `delivered`（`_DISPATCH_ONLY_KEYS`）を除く**全キーを比較**するため、severity 系のどの行にも当たらない文言変更だけでも fail する |
+| ja が新 runtime 版の挙動・新 required 項目に依存する場合 | runtime version floor を **5 ファイル atomic** に引き上げ: `pyproject.toml` / `requirements.txt` / `docker/Dockerfile`（`ARG RUNTIME_VERSION`）/ `docker/compose.yaml`（`RUNTIME_VERSION` 既定値。Dockerfile の ARG を上書きするためここが古いと旧版が焼かれる）/ `docker/README.md`（マルチアーキビルド例の image tag。tag 規約 `<repo-ref>-r<runtime-version>` の `-r` suffix が唯一ここに書かれている）。共有 schema 面が動く場合は `RUNTIME_PIN_LOWER_INCLUSIVE` も同時に（下記「pin window 定数」） |
 
 paired ja-sync は **複数 worker 並列**で派遣して構わない（むしろ推奨）。
 ただし並列分割してよいのは**行間で対象ファイルが重ならない場合に限る**。
@@ -157,15 +198,36 @@ CI でも走るため、projection に影響する schema 変更（`required_all
 **1 本の atomic PR** にまとめ、machine-local settings（`~/.claude/settings.json` 等）は
 merge 後に `/org-setup` で反映する。さらに:
 
-- `required_*` の追加はそれ自体が新 runtime 版への依存なので、**version floor 4 ファイル
-  （上表の `pyproject.toml` / `requirements.txt` / `docker/Dockerfile` /
-  `docker/compose.yaml`）も同じ atomic PR に含める**。floor だけ先行させると CI が
-  新 runtime を解決して旧ミラーとの drift red になり、schema 側だけ先行させると
-  旧 floor が旧 runtime を許容したまま残る — どちらの順でも中間状態が壊れる
+- 共有 schema 面が動く変更はそれ自体が新 runtime 版への依存なので、**version floor 5 ファイル
+  （上表）も同じ atomic PR に含める**。floor だけ先行させると CI が新 runtime を解決して
+  旧ミラーとの drift red になり、schema 側だけ先行させると旧 floor が旧 runtime を
+  許容したまま残る — どちらの順でも中間状態が壊れる。
+  **`required_*` の追加はこの条件の一例であって限定ではない**: projection に出ない
+  フィールドの改廃でも共有面のバイトが動く以上、floor は同じ PR で動かす
 - `required_hook_scripts` / `required_hooks` が新規 guard を導入する場合は、
   `.hooks/` の実体 script（とその test）も同 PR スコープに含める
   （`tools/check_role_configs.py` は hook command を `.hooks/<script>` の実ファイルに
   解決し、欠落・相対パス形を報告する）
+
+### pin window 定数 `RUNTIME_PIN_LOWER_INCLUSIVE` の bump 条件
+
+`tools/check_runtime_schema_drift.py` の `RUNTIME_PIN_LOWER_INCLUSIVE` は floor 5 ファイルとは
+別物で、**byte check を走らせる window の下限**を決める（`_runtime_in_pin_window()`。window の
+外では skip-with-warning になる）。floor bump に機械的に連動させると両方向に間違えるので、
+判定は floor の有無ではなく **共有 schema 面のバイト内容が動くか**で行う:
+
+- **動く**（`required_*` 追加を含む共有面の改廃全般）→ **同じ atomic PR で floor と同時に bump**。
+  上げないと、旧 runtime が入った環境で byte check が skip ではなく **hard fail** になる
+  （新ミラー vs 旧同梱 schema）。window を上げることで意図どおりの skip-with-warning に戻る
+- **動かない**（pin-only の floor bump / evaluator drift / attention golden 再生成）→ **据え置く**。
+  上げても byte check を通っていた旧 install を skip-with-warning に落とすだけで益が無い
+
+どちらに倒したかと理由は `requirements.txt` の floor コメントに 1 行残す（過去の bump / 据え置きの
+判断がそこに蓄積されており、次回の判断材料になる）。
+
+floor bump の波及はこの 5 ファイル + 1 定数で閉じない点にも注意する。現行 floor の**値そのものを
+本文に埋めている prose doc** が複数あるため、bump 時は `grep -rn "<旧 floor 版数>"` で洗い出して
+同じ PR で追随させる（floor を宣言するファイルと、floor を説明するファイルは別物）。
 
 ## Step 5: CI cascade の予測と委譲
 
@@ -185,9 +247,15 @@ gh api / log / diff / source 読解は worker の責務。
 
 予測される red の代表例:
 
-- `tests/test_attention_runtime_integration.py` が `DEFAULT_NOTIFY` の旧値を期待して fail
-- `tools/org_extension_schema.json` の hash mismatch
-- attention template の severity 不一致による smoke test fail
+- `tests/test_attention_runtime_integration.py` が golden `tests/fixtures/attention/expected_scan.json`
+  との比較で fail（旧 `DEFAULT_NOTIFY` の severity だけでなく、title / body 文言や
+  フィールド形状の変化でも落ちる）
+- `tools/check_runtime_schema_drift.py` の byte check が `tools/org_extension_schema.json` と
+  runtime 同梱 schema の差分で fail（installed runtime が pin window 内のとき）
+- `tests/test_runtime_schema_drift_semantic.py` が evaluator 出力形の変化で fail
+  （pin window に関係なく無条件に走る）
+- `tools/check_role_configs.py` が schema ミラーと permissions projection / tracked settings の
+  不整合で fail
 
 これらは Step 4 で同期 PR が先行 land していれば回避可能。先行できないリリーススケジュール
 の場合は、Step 5 で worker に投げる前提で release.yml 完了直後にスタンバイ。
@@ -206,9 +274,10 @@ Secretary 自身のセッションが context 上限に達すると、paired ja-
 ## 成果物
 
 - runtime 側: リリース PR + v-タグ + PyPI 発行 + release.yml ジョブ green
-- ja-side: 4 種の paired sync PR（DEFAULT_NOTIFY expectation / schema 共有面同期 /
-  permissions projection / attention template。required_* 系は atomic 1 PR、
-  必要時は version floor bump を追加）
+- ja-side: paired sync PR（DEFAULT_NOTIFY expectation と attention golden / schema 共有面同期 /
+  permissions projection と tracked settings / attention template / version floor）。
+  **本数は固定ではなく Step 4 の overlap ルールで決まる** — attention 系は 1 本、
+  schema ミラー × projection × settings × floor は 1 本の atomic PR にまとまる
 - CI: ja-side main の CI が new runtime 版で green
 
 ## 判断基準・閾値
@@ -221,11 +290,20 @@ Secretary 自身のセッションが context 上限に達すると、paired ja-
 
 ## 応用・バリエーション
 
-- **schema 変更のみ・DEFAULT_NOTIFY 不変**: Step 4 の対象は schema / permissions 同期の
-  2 系統のみで足りる（test expectation は影響しない場合がある）
-- **DEFAULT_NOTIFY だけ動く・schema 不変**: test expectation 更新のみで完結することが多い
-- **classifier vocabulary を新規追加**: 4 系統全てに波及する典型ケース。Step 4 のうち
-  4 worker 並列を強く推奨
+- **schema 変更のみ・DEFAULT_NOTIFY 不変**: attention 系の test expectation は影響しないことが
+  多いが、**schema / permissions 同期の 2 系統では閉じない** — 共有面のバイトが動く以上、
+  floor 5 ファイルと `RUNTIME_PIN_LOWER_INCLUSIVE` まで含めた 1 本の atomic PR になる
+- **DEFAULT_NOTIFY だけ動く・schema 不変**: attention golden と test expectation の更新で
+  完結することが多い（schema 面が動かないので `RUNTIME_PIN_LOWER_INCLUSIVE` は据え置き。
+  新 kind が新 runtime 経路に依存するなら floor 5 ファイルは要る）
+- **classifier vocabulary を新規追加**: attention 系 artifacts（`tests/fixtures/attention/` の
+  fixture / golden・`tests/test_attention_runtime_integration.py`・
+  `tools/templates/attention.example.json`）が丸ごと動くケース。ただしこれらは Step 4 の
+  overlap ルールにそのまま当たるので **並列分割せず 1 本の PR にまとめる**
+  （permissions projection は classifier 語彙を持たないため対象外で、そもそも系統が割れない）。
+  新 kind が新しい runtime 経路に依存するなら floor 5 ファイルも同じ PR に入れる。
+  直近の実例は `duplicate_sidecar` の追随で、attention artifacts と floor が 1 commit に
+  収まっている（`git log --oneline -- tests/fixtures/attention/expected_scan.json` で辿れる）
 
 ## 注意点
 
@@ -239,6 +317,12 @@ Secretary 自身のセッションが context 上限に達すると、paired ja-
   credential mirror の deny は ja 側 org policy であり、`tools/check_runtime_schema_drift.py`
   はこれら（と `$comment` キー）を strip した上で残りの共有面をバイト比較する。
   共有面のみを追加位置・順序まで runtime に揃え、ja 固有節は保持する
+- `tools/templates/attention.example.json` は **どのテストからも読まれない**。
+  `tests/test_attention_runtime_integration.py` は `--state-dir <tmpdir>` だけを渡して
+  config 無しの runtime 既定文言を golden と突き合わせるため、テンプレの severity / 文面の
+  更新漏れは **CI では一切検出されない**。CI green のまま `/org-attention-start` が配る
+  運用既定だけが古くなる silent gap になるので、Step 4 でテンプレ行に当たったら CI ではなく
+  人間のチェックリストで担保する
 - 本 skill は窓口専属。worker 側 SKILL ではない
 
 ## 履歴的背景
