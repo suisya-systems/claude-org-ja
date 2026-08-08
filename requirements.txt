@@ -26,6 +26,16 @@ core-harness>=0.3.2,<0.4
 # PyPI via Trusted Publisher; pinned to the 0.1.x range. 0.x bumps may be
 # breaking per the runtime's compatibility policy, so widen this pin
 # deliberately when adopting a new minor.
+# Floor bumped to 0.1.41 for the renga 2.0.0 capability probe
+# `mcp__renga-peers__server_info`: 0.1.41 adds that entry to
+# role_configs_schema.json's `user_common` / `secretary` required_allow, and ja
+# mirrors it into tools/org_extension_schema.json in this paired commit. Unlike
+# the two floor bumps below, RUNTIME_PIN_LOWER_INCLUSIVE in
+# tools/check_runtime_schema_drift.py IS raised in step to (0, 1, 41) this time:
+# the schema itself changed, so a 0.1.40-or-older install would now *fail* the
+# byte-identical check rather than pass it. Raising the window floor turns that
+# hard failure into the intended skip-with-warning until the environment
+# catches up. The earlier 0.1.40 floor (below) is subsumed.
 # Floor bumped to 0.1.40 for the attention watcher's `duplicate_sidecar` kind:
 # 0.1.40 adds the broker-journal reader (`attention scan/watch --broker-state-dir`,
 # `duplicate_sidecar_window_sec`) and the `duplicate_sidecar` DEFAULT_NOTIFY entry.
@@ -132,7 +142,7 @@ core-harness>=0.3.2,<0.4
 # (transport surface descriptor claude_org_runtime.transport consumed by
 # tools/transport.py — Epic #6 next-stage D / ja#513) are subsumed by 0.1.28.
 # Keep in sync with pyproject.toml.
-claude-org-runtime>=0.1.40,<0.2
+claude-org-runtime>=0.1.41,<0.2
 
 # tools/gen_worker_brief.py reads TOML config. tomllib is stdlib in 3.11+,
 # but ja still supports 3.10 (CLAUDE.local.md template recommends 3.10).

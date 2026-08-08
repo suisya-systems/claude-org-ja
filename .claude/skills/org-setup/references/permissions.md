@@ -37,7 +37,8 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
       "mcp__renga-peers__poll_events",
       "mcp__renga-peers__send_keys",
       "mcp__renga-peers__spawn_claude_pane",
-      "mcp__renga-peers__set_pane_identity"
+      "mcp__renga-peers__set_pane_identity",
+      "mcp__renga-peers__server_info"
     ]
   },
   "env": {
@@ -54,7 +55,7 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
 
 ペイン操作（`renga split` / `close` / `list` / `send` / `events` / `inspect` / `new-tab` 等）は MCP ツール (`mcp__renga-peers__*`) 経由で実施する。該当 Bash permission は含めない。
 
-**注意**: `renga-peers` MCP ツール 14 種は `renga mcp install` を一度実行して user-scope に MCP サーバーを登録した後に利用可能になる。登録手順は README「インストール」セクションを参照。
+**注意**: `renga-peers` MCP ツール 15 種は `renga mcp install` を一度実行して user-scope に MCP サーバーを登録した後に利用可能になる。登録手順は README「インストール」セクションを参照。
 
 ### ユーザー共通の sandbox denyRead / denyWrite 補強（`--user-common-sandbox`、Issue #429 Task B + Issue #433）
 
@@ -142,6 +143,7 @@ python tools/org_setup_prune.py --user-common-sandbox  # → "no changes"
       "mcp__renga-peers__poll_events",
       "mcp__renga-peers__send_keys",
       "mcp__renga-peers__set_pane_identity",
+      "mcp__renga-peers__server_info",
 
       "Bash(git add:*)",
       "Bash(git commit:*)",
