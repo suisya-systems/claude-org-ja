@@ -201,8 +201,42 @@ spawn / boot 直後に「目的のピアが `list_peers` に現れるまで poll
 - **登録確認を `list_peers` の name 一致で行わない**（縮退中は列挙そのものを破棄するので、そもそも使わない）。
 - **「列挙に出てこない」を未登録の証拠にしない**。これは §1-1 の non-reliance の帰結だが、
   **未登録判定が破壊的な後段（ペイン破棄 / identity クリア / 停止確定）に繋がる経路では特に重要**で、
-  縮退中にその後段へ進んではならない（§6 の表 #2 の脚注）。
-- 代わりに `list_panes` の pane 生存と `inspect_pane` のプロンプト表示で boot を判定する。
+  その判定を根拠にその後段へ進んではならない（§6 の表 #2 の脚注）。
+- **代わりの readiness 判定は「その経路が次に送る `send_message` そのもの」で行う。`list_panes` の
+  pane 生存と `inspect_pane` のプロンプト表示で代用してはならない**（MUST）。プロンプトが見えることは
+  Claude が起動したことしか示さず、**MCP の peer 登録が済んだことを示さない**。登録前に「boot 完了」と
+  みなして先へ進むと、その直後の**一度きりのメッセージ**（ワーカーへのタスク割り当て / dispatcher への
+  挨拶 / curator への `/org-curate`）が `[pane_not_found]`（broker では `[peer_not_found]`）で消える。
+  手順は:
+  1. `list_panes` でペイン生存だけ確認する（死んでいれば通常の spawn 失敗処理へ）。
+  2. **その経路が本来送る 1 通を送る**。未登録なら送信が失敗するので、失敗が「まだ登録していない」の
+     証拠になる（列挙と違い、この判定は他タブの同名ピアに汚染されない）。
+  3. 失敗したら各経路の既定予算で**再送**する（spawn / org-start は 2 秒間隔・最大 30 秒、
+     pane-close は既存の最大 3 回 retry）。Enter の再送も従来どおり併用する。
+  4. **送達成功をもって「起動・登録・送信」が同時に確定する。その 1 通は消化済みなので、後段の送信
+     step に戻って同じメッセージを二度送らないこと**（二重実行になる）。
+  5. 予算を使い切っても送達できなければ、**その経路の従来のタイムアウト / 失敗処理に落とす**
+     （縮退は「失敗を握り潰す」ことではない。到達不能なペインを正常として報告してはならない）。
+
+#### 3-B-2. 送信失敗後の復旧手順にも縮退が伝播する（MUST）
+
+上の probe や通常の `send_message` が `[pane_not_found]` / `[peer_not_found]` を返すと、
+[`.claude/skills/org-delegate/references/renga-error-codes.md`](renga-error-codes.md) の messaging
+復旧手順に入り、そこは**新しい `list_peers` を引き直して**宛先を選び直し、さらに「後続 `list_peers`
+からの消失」を死亡確定の根拠に使う。これは呼び出し元が gate を適用した列挙とは別の、**後から発行される
+列挙**である。
+
+**縮退中の経路からこの復旧手順に入った場合、縮退はそのまま引き継がれる**:
+
+- 引き直した列挙も §1-1 の non-reliance の対象。**そこから採った数値 id で他タブへ再送しない**
+  （承認前に cross-tab addressing へ依拠する行動そのもの）。
+- **「後続 `list_peers` から消えた」を死亡確定の根拠にしない**。同手順の `indeterminate`
+  （journal + 窓口 escalate、「閉じた」に倒さない）へ倒す。
+- 同タブの `pane_exited` を観測できた場合だけ、従来どおり lifecycle を進めてよい。
+
+（`renga-error-codes.md` 本体への同趣旨の追記は follow-up Issue で行う。本節が先に規範を置くのは、
+復旧手順が **spawn / readiness の再送という常用経路**から入るためで、そこを未配線のまま残すと
+縮退が最も効いてほしい局面で抜ける。）
 
 > **`capability_first_drive_pending` は承認記録ではない。** 「報告は済ませた」ことだけを表す
 > 重複抑止の印であり、これがあっても capability 経路で行動してよいことにはならない。承認は
@@ -274,14 +308,14 @@ server × mcp-peer 双方 2.0 系での実機 dogfood と人間確認を要求�
 |---|---|---|---|---|
 | 1 | [`.claude/skills/org-suspend/SKILL.md`](../../org-suspend/SKILL.md) Phase 1 手順 1（id 台帳を作る） | secretary / root | **interactive-action** | 送信前に停止し人間確認。確認後も他タブピアは対象外のまま |
 | 1b | 同 Phase 4 の再列挙（台帳の最新化 / Pass 2 残存確認 / curator 存在確認 / `[pane_not_found]` messaging 復旧） | secretary / root | **interactive-action**（#1 で適用済み） | **同一実行内で #1 の版判定と確認結果に従う**。Phase 4 は必ず Phase 1 の後に走るので gate を再適用しない。ただし**他タブ判定のピアが Phase 1 から増えていたら差分を人間に報告する** |
-| 2 | [`.claude/skills/org-start/SKILL.md`](../../org-start/SKILL.md) Block D-2（dispatcher の peer 登録 poll） | secretary / root | monitoring-read-only | 列挙を登録確認に使わない（§3-B-1: `name` 一致でゲートを開けない）。`list_panes` の生存 + `inspect_pane` のプロンプト確認で boot を判定する。**「peer 未登録」を根拠に失敗モードの fatal 分岐（`close_pane` + `StateWriter.CLEAR`）へ進んではならない** — 縮退中の列挙は未登録の証拠にならず、健全な dispatcher ペインを破棄することになる |
+| 2 | [`.claude/skills/org-start/SKILL.md`](../../org-start/SKILL.md) Block D-2（dispatcher の peer 登録 poll） | secretary / root | monitoring-read-only | 列挙を登録確認に使わない（§3-B-1: `name` 一致でゲートを開けない）。readiness は §3-B-1 の send-as-probe で判定する（手順 3 の挨拶送信そのものを probe にし再送。プロンプト表示で代用しない）。**「peer 未登録」を根拠に失敗モードの fatal 分岐（`close_pane` + `StateWriter.CLEAR`）へ進んではならない** — 縮退中の列挙は未登録の証拠にならず、健全な dispatcher ペインを破棄することになる |
 | 2b | 同 Step 0-3 の broker 分岐（secretary 自身の identity 検証） | secretary / root | monitoring-read-only | 列挙を identity 検証の充足根拠にしない。`list_panes` の `focused` ペインで確認できなければ、identity 未確認のまま人間に報告して続行判断を仰ぐ（勝手に fatal にしない） |
 | 3 | [`.claude/skills/secretary-resume/SKILL.md`](../../secretary-resume/SKILL.md) Step 3（ペイン生存確認） | secretary / root | monitoring-read-only | 列挙を生存判定に使わない。`list_panes` と state DB の `active_runs[]` で突き合わせ、差分は人間に報告 |
 | 4 | [`.claude/skills/dispatcher-resume/SKILL.md`](../../dispatcher-resume/SKILL.md) Step 0 手順 4（自分の `peer_id` 取得） | dispatcher / `.dispatcher/` | monitoring-read-only | 列挙から `peer_id` を採らない。`list_panes` の `focused: true` の pane_id で identity を確定し、`peer_id` は未取得のまま進む |
 | 5 | 同 `already_consumed` 分岐（監視対象が live か） | dispatcher / `.dispatcher/` | monitoring-read-only | 列挙を live 判定に使わない。`list_panes` の `role == "worker"` と `.state/dispatcher/curate-inflight.json` の有無だけで分岐する |
 | 6 | 同 Step 4（ワーカーのペイン生存確認） | dispatcher / `.dispatcher/` | monitoring-read-only | 列挙を不存在の根拠にしない。`list_panes` + events テーブルの報告痕跡で判定し、確定できなければ `WORKER_PANE_EXITED` を送らない |
-| 7 | [`.dispatcher/references/spawn-flow.md`](../../../../.dispatcher/references/spawn-flow.md) 3-4（新ピア出現待機） | dispatcher / `.dispatcher/` | monitoring-read-only | 列挙を peer 登録の ground truth にしない（§3-B-1: `worker-{task_id}` は別 org の並走タブに同名で実在しうる）。`list_panes` の pane 生存 + `inspect_pane` のプロンプト確認に切り替え、以後はワーカーからの最初の peer message を到達確認とする |
-| 8 | [`.dispatcher/references/pane-close.md`](../../../../.dispatcher/references/pane-close.md) 5-4（curator の boot 確認 poll） | dispatcher / `.dispatcher/` | monitoring-read-only | 列挙を登録確認に使わない（§3-B-1）。`list_panes` の `name="curator"` + `inspect_pane` で確認する。既存の 3 回 retry で確認できなければ従来どおり破棄して curate を skip |
+| 7 | [`.dispatcher/references/spawn-flow.md`](../../../../.dispatcher/references/spawn-flow.md) 3-4（新ピア出現待機） | dispatcher / `.dispatcher/` | monitoring-read-only | 列挙を peer 登録の ground truth にしない（§3-B-1: `worker-{task_id}` は別 org の並走タブに同名で実在しうる）。readiness は §3-B-1 の send-as-probe で判定する（3-5 の指示送信そのものを probe にし再送。送達成功で 3-5 は消化済み＝二度送らない） |
+| 8 | [`.dispatcher/references/pane-close.md`](../../../../.dispatcher/references/pane-close.md) 5-4（curator の boot 確認 poll） | dispatcher / `.dispatcher/` | monitoring-read-only | 列挙を登録確認に使わない（§3-B-1）。readiness は §3-B-1 の send-as-probe で判定する（5-5 の `/org-curate` 指示そのものを probe にし既存の 3 回 retry で再送。送達成功で 5-5 は消化済み）。retry を使い切れば従来どおり破棄して curate を skip |
 | 9 | [`.dispatcher/references/worker-monitoring.md`](../../../../.dispatcher/references/worker-monitoring.md) (3-a-1) 観測不能フォールバック / (3-a-2) 裏取り真理値表 | dispatcher / `.dispatcher/` | monitoring-read-only | (3-a-2) の `list_peers` 列は **unknown** として読む（在/不在のどちらとしても数えない）。(3-a-1) の peer 経路フォールバックからも `list_peers` を外し、**events テーブルの報告痕跡のみ**で継続する |
 
 [`.claude/skills/org-down/SKILL.md`](../../org-down/SKILL.md) は `/org-suspend` の全 Phase を実行するので
@@ -295,7 +329,7 @@ server × mcp-peer 双方 2.0 系での実機 dogfood と人間確認を要求�
 | 経路 | なぜ配線が要るか |
 |---|---|
 | `.dispatcher/CLAUDE.md` の delegate-plan `after_spawn[]` 要約 | `claude-org-runtime` の delegate-plan helper が `list_peers` 待ちを**機械生成した plan 要素として emit する**ため、helper 経路に乗ったディスパッチャーは [`.dispatcher/references/spawn-flow.md`](../../../../.dispatcher/references/spawn-flow.md) 3-4（表 #7）を読まずに列挙する。emitter は ja の外にあるので、**ja 内で唯一の介入点がこの要約**である（当初「索引だから対象外」と判断したが、それは誤り） |
-| [`.claude/skills/org-delegate/references/renga-error-codes.md`](renga-error-codes.md) の messaging 復旧手順（`pane_not_found` / `peer_not_found` の「`list_peers` を引き直す」step とその後段の生存判定） | 呼び出し元が gate を適用した列挙とは**別の、後から発行される新しい列挙**。縮退を指示された経路でも、この復旧手順に入った時点で列挙を採り直して宛先解決・死亡判定に使ってしまう |
+| [`.claude/skills/org-delegate/references/renga-error-codes.md`](renga-error-codes.md) の messaging 復旧手順への**同趣旨の追記** | **規範自体は §3-B-2 で先に置いてある**（縮退は復旧手順に伝播する = 引き直した列挙の数値 id で他タブへ再送しない / 消失を死亡確定の根拠にしない）。復旧手順は spawn / readiness の再送という常用経路から入るので、未配線のまま残すと縮退が最も効いてほしい局面で抜けるため。残っているのは `renga-error-codes.md` 本体側にも同じ注記を置いて二重管理を解消する作業 |
 | [`.claude/skills/org-attach/SKILL.md`](../../org-attach/SKILL.md) の表示ラベル突き合わせ | 結果は attach コマンドの**ラベル生成にしか使わない**（join key は `list_panes` の pane_id）。ゲート判定には使わないので危険度は最も低いが、全タブ列挙では他 org のペインに自 org のラベルを付けて人間に提示しうる |
 
 runtime 側（`claude_org_runtime` の delegate-plan helper が `list_peers` 再実行を指示する
