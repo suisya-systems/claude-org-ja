@@ -239,7 +239,8 @@ category, that flag is named in the "Adverse flag" column.
 | `git commit` | (B1)(B2)(B3) | (B1)(B2) | – | **(V)** `--no-verify` | `--no-verify` | **allow w/ flag deny** ([`.hooks/block-no-verify.sh`](../../.hooks/block-no-verify.sh) — §5) |
 | `git restore` (worktree only) | (B1)(B2) | (B1) (current worktree files only via index) | – | – | `--source=<other-ref>` is read-only against (B3) | **allow** |
 | `git restore --staged` | (B1) | (B1) (index only) | – | – | – | **allow** |
-| `git stash` (push / pop / list / show / drop) | (B1)(B2) | (B1)(B2) (refs/stash for the current worktree) | – | – | – | **allow** |
+| `git stash list` / `git stash show` | (B1)(B2) | – | – | – | – | **allow** (read-only inspection of the stash stack) |
+| `git stash` (bare) / `push` / `save` / `pop` / `apply` / `branch` / `drop` / `clear` | (B1)(B2) | (B1)(B2) (`refs/stash` in the base clone's *common* git dir, plus this worktree's working tree) | – | – | `-u` / `--include-untracked` | **deny** ([`.hooks/block-dangerous-git.sh`](../../.hooks/block-dangerous-git.sh) — §5). `git rev-parse --git-path refs/stash` resolves into `--git-common-dir`, not `.git/worktrees/<task_id>/`, so every worktree of one base clone shares a single stash stack and a `pop` here can restore an entry another worktree pushed. The `-u` form additionally aborts when the worktree root holds untracked non-regular files (character devices), and an operator who misses that abort believes work was saved when no stash entry exists |
 | `git branch` (list) | (B2)(B3) | – | – | – | – | **allow** |
 | `git branch <new>` (create) | (B2)(B3) | (B2) (new ref under `refs/heads/`) | – | – | – | **allow** (but see (B3) write below) |
 | `git branch -d / -D / --delete --force` | (B2)(B3) | (B2)(B3) (mutates refs of *other* branches) | – | – | `-D`, `--delete --force` | **deny** ([`.hooks/block-dangerous-git.sh`](../../.hooks/block-dangerous-git.sh) — §5) |
@@ -306,7 +307,7 @@ states (a) what is allowed, (b) what is denied, (c) which Layer enforces,
 **Scope.** `<base_clone>/.git/worktrees/<task_id>/{HEAD,index,ORIG_HEAD,logs,*.lock}`.
 
 **Policy.** All reads and all writes are allowed. Every routine
-worker subcommand (`commit`, `add`, `status`, `stash`, `restore`) writes
+worker subcommand (`commit`, `add`, `status`, `restore`) writes
 here.
 
 **Layer.** Layer 3 `additionalDirectories` must include this path. Phase 0
@@ -319,7 +320,12 @@ Phase 0 §4.2.1's prescription.
 **Why allow.** Phase 0 §4.2.1 row 3 directly: *Git operations from inside
 `<worker_dir>` (commit, branch, status, stash) need to read and write
 HEAD, index, refs, etc. for this worktree.* No deny is consistent with the
-worker doing its job.
+worker doing its job. The path-level allow is not a subcommand-level
+allow: the quoted row licenses writes to the per-worktree files under
+`.git/worktrees/<task_id>/`, and the mutating `git stash` forms are
+denied one layer up for a reason outside this category — the stash stack
+itself lives in the common git dir, not here (see the `git stash` rows in
+§3.2 and the (B2) deny list in §4.2).
 
 ### 4.2 (B2) Shared base metadata (write-needed) — *allow w/ subcommand-level flag deny*
 
@@ -328,7 +334,7 @@ worker doing its job.
 `<base_clone>/.git/refs/tags/`.
 
 **Policy.** Reads always allowed. Writes allowed when initiated by an
-in-scope subcommand (`commit`, `branch <new>`, `tag`, `stash`, `merge`,
+in-scope subcommand (`commit`, `branch <new>`, `tag`, `merge`,
 `cherry-pick`, `revert`). Writes **denied** when initiated by:
 
 - `git gc` — concurrent-worktree race risk; **Layer 2 deny** recommended
@@ -337,6 +343,13 @@ in-scope subcommand (`commit`, `branch <new>`, `tag`, `stash`, `merge`,
   `git update-ref` (write form), `git reflog expire/delete`, mass
   `git notes` mutation — history-rewrite family; **Layer 2 deny**
   recommended (§5.2).
+- `git stash` mutating forms (bare / `push` / `save` / `pop` / `apply` /
+  `branch` / `drop` / `clear`) — `refs/stash` resolves into the base
+  clone's common git dir, so one stash stack is shared by every worktree
+  of that clone and a `pop` from this worktree can restore an entry a
+  sibling worktree pushed; **Layer 4 deny**
+  ([`.hooks/block-dangerous-git.sh`](../../.hooks/block-dangerous-git.sh)).
+  `git stash list` / `git stash show` stay allowed (read-only).
 - `git fetch` writing to `refs/remotes/` — see §4.3 below; treated as
   (B3) write because fetch is the only legitimate writer.
 

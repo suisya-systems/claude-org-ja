@@ -11,6 +11,7 @@
 1. claude-org 構造を `${worker_dir}` 内に再現しない
 2. claude-org リポジトリ（`${claude_org_path}`）を別途 clone しない（直接編集）
 3. `git push` 不可
+4. `git stash` の変更系（引数なし `git stash` / `push` / `save` / `pop` / `apply` / `branch` / `drop` / `clear` / `store`）不可（hook で deny。キャラクタデバイス等の未追跡ファイルで `git stash -u` が途中失敗し、気づかず別の stash を pop して作業を壊す事故が実際に起きている）。退避は `git diff > /tmp/<name>.patch` か別ブランチ / 別 worktree への commit、比較は `git show HEAD:<path>`。調査用の `git stash list` / `git stash show` は可
 
 ### Windows
 - Python は `py -3` または `python`（3.10 推奨。どちらも別の Python 環境を指す場合があるため `--version` で確認し、動作する方を使う）

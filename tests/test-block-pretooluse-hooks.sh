@@ -32,10 +32,11 @@ test_hook() {
   fi
 }
 
-# Helper: substitute g_it -> git, p_ush -> push, then run.
-# This indirection is required because the OUTER worker hook block-git-push.sh
-# would block the entire test driver itself if the literal "git push" appeared
-# in the script source. The hook under test never sees the obfuscated form.
+# Helper: substitute g_it -> git, p_ush -> push, s_tash -> stash, then run.
+# This indirection is required because the OUTER worker hooks (block-git-push.sh
+# for "git push", block-dangerous-git.sh for "git stash" mutating forms) would
+# block the entire test driver itself if the literal appeared in the script
+# source. The hook under test never sees the obfuscated form.
 substitute_run() {
   local hook="$1"
   local cmd_template="$2"
@@ -43,6 +44,7 @@ substitute_run() {
   local label="${4:-}"
   local cmd="${cmd_template//g_it/git}"
   cmd="${cmd//p_ush/push}"
+  cmd="${cmd//s_tash/stash}"
   test_hook "$hook" "$cmd" "$expected" "$label"
 }
 
@@ -237,6 +239,20 @@ substitute_run "$DG_HOOK" 'g_it update-ref --stdin' block 'update-ref-stdin'
 substitute_run "$DG_HOOK" 'g_it reflog expire --all --expire=now' block 'reflog-expire-all-now'
 substitute_run "$DG_HOOK" 'g_it reflog expire --expire-unreachable=now --all' block 'reflog-expire-unreachable-now'
 substitute_run "$DG_HOOK" 'g_it reflog delete --all' block 'reflog-delete-all'
+# Issue #880: git stash の変更系。既存の bypass 経路（変数展開 / コマンド置換 /
+# eval / bash -c / 空白入りパス）を通っても deny に到達することの回帰。
+substitute_run "$DG_HOOK" 'V=pop; g_it s_tash $V' block 'stash-var-expansion-simple'
+substitute_run "$DG_HOOK" 'V=pop; g_it s_tash ${V}' block 'stash-var-expansion-braces'
+substitute_run "$DG_HOOK" 'export V=drop; g_it s_tash "$V"' block 'stash-var-export-prefix'
+substitute_run "$DG_HOOK" 'g_it s_tash $(printf pop)' block 'stash-cmd-sub-dollar-paren'
+substitute_run "$DG_HOOK" 'g_it s_tash `printf pop`' block 'stash-cmd-sub-backtick'
+substitute_run "$DG_HOOK" 'bash -c "g_it s_tash pop"' block 'stash-bash-c-double-quoted'
+substitute_run "$DG_HOOK" "sh -c 'g_it s_tash drop'" block 'stash-sh-c-single-quoted'
+substitute_run "$DG_HOOK" 'eval "g_it s_tash pop"' block 'stash-eval-double-quoted'
+substitute_run "$DG_HOOK" 'eval g_it s_tash pop' block 'stash-eval-unquoted-multitoken'
+substitute_run "$DG_HOOK" "bash -c \"eval 'g_it s_tash pop'\"" block 'stash-nested-bash-eval'
+substitute_run "$DG_HOOK" 'g_it commit -m x $(g_it s_tash pop)' block 'stash-hidden-in-other-git-cmd-sub'
+substitute_run "$DG_HOOK" 'g_it -C "C:/Program Files/repo" s_tash pop' block 'stash-spaces-in-path'
 
 echo ""
 echo "--- false-positive guard ---"
@@ -263,6 +279,11 @@ substitute_run "$DG_HOOK" 'g_it reflog' pass 'reflog-read-must-pass'
 substitute_run "$DG_HOOK" 'g_it reflog show' pass 'reflog-show-must-pass'
 substitute_run "$DG_HOOK" 'g_it clean -n' pass 'clean-dry-run-must-pass'
 substitute_run "$DG_HOOK" 'g_it update-ref refs/heads/topic HEAD' pass 'update-ref-write-must-pass'
+# Issue #880 false-positive guard: read-only stash と commit メッセージ中の
+# リテラル語 stash は止めない
+substitute_run "$DG_HOOK" 'g_it s_tash list' pass 'stash-list-read-only-must-pass'
+substitute_run "$DG_HOOK" 'g_it s_tash show' pass 'stash-show-read-only-must-pass'
+substitute_run "$DG_HOOK" 'g_it commit -m "s_tash"' pass 'stash-literal-in-message-must-pass'
 
 total=$((pass_count + fail_count))
 echo ""
