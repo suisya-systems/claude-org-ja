@@ -25,6 +25,8 @@
 #   - git tag -d / --delete                         （共有タグ namespace 改変）
 #   - git update-ref -d                             （任意 ref 削除）
 #   - git reflog expire/delete --all/--expire=now   （audit trail 改変）
+#   - git stash の変更系                            （bare / push / save / pop /
+#     apply / branch / drop / clear / store / create。read-only の list / show のみ allow）
 #
 # 補足:
 #   - git push そのものはワーカーでは block-git-push.sh が先に止める。
@@ -36,6 +38,17 @@
 #   - Phase 2 (Refs claude-org-ja#379): clean -fd / checkout -- . / tag -d /
 #     update-ref -d / reflog expire 等のカバレッジを追加した。
 #     詳細は docs/contracts/worker-git-guardrails-design.md §5.2.2 参照。
+#   - git stash: このリポジトリの worktree root には /dev/null を指すキャラクタ
+#     デバイス（.bashrc / .gitconfig / .claude/hooks 等）が多数あり、`git stash -u`
+#     はそれらを stash できず途中失敗する。失敗に気付かないまま `git stash pop` を
+#     叩くと **別の** stash が pop され、modify/delete 衝突で不完全復元になる事故が
+#     複数のワーカーで独立に再現した（Issue #880）。許可するのは調査用の read-only
+#     サブコマンド（list / show）のみで、それ以外は未知トークンも含め既定 deny。
+#     `git stash --help` / `-h` も allowlist 外なので deny になるが、ドキュメントは
+#     `git help stash`（サブコマンドが help なので判定対象外）で読めるため実害は無い。
+#   - stash の判定だけは他ブロックの loose match（segment_has_git_subcmd）ではなく
+#     extract_stash_subcommands による「git サブコマンド位置の厳密判定」を使う。
+#     "stash" は commit メッセージ等にリテラル語として現れやすいため。
 #
 # 入力: stdin から PreToolUse JSON
 # 出力: 拒否時 exit 2 + stderr。許可時 exit 0。
@@ -59,6 +72,23 @@
 #     その場合は別表現に書き換えること。
 #   - $(...) や `...` のサブシェル境界、バックスラッシュエスケープは
 #     扱わない。
+#   - stash 判定は git 呼び出しの形をした文字列を引数に含むセグメントも拾う。
+#     `echo 'git stash pop'` や `grep -rn "git stash pop" tests/` は deny になる
+#     （`echo 'git push --force'` が既に deny されるのと同じ性質）。
+#     文字列検索は `git` トークンを外す（例: `grep -rn "stash pop"`）と通る。
+#   - `git <alias> stash`（未知の alias 名 + 引数に stash）は alias 名を
+#     パス断片と誤認するため deny になる。alias は使わず正式名で叩くこと。
+#   - **alias 経由の残存ギャップ**: git config に定義済みの alias（例
+#     `st = stash`）を使った `git st pop` は検出できない。コマンド文字列に
+#     stash の痕跡が 1 文字も無く、alias の実体は config 側にあるため、
+#     静的解析では原理的に解決できない（解決するには hook から
+#     `git config --get alias.<name>` を引く必要があり、hook の判定が実行
+#     マシンの config 依存になって drift 検出が効かなくなる。protected branch
+#     名を env override 不可にしているのと同じ理由で採らない）。
+#     コマンド文字列に alias 本体が載るインライン形
+#     （`git -c alias.s=stash s pop`）は上の __alias__ 検出で deny する。
+#     本フックは多層防御の最後の壁であって、意図的な回避の防止ではない
+#     ——本来の対象は「うっかり stash を叩く」事故（Issue #880）である。
 
 set -euo pipefail
 
@@ -277,6 +307,82 @@ segment_has_git_subcmd() {
   return 1
 }
 
+# セグメント内の各 `git` 呼び出しについて、global option と（引用符除去で複数に
+# 割れた）パス値を読み飛ばしてサブコマンドを決め、それが `stash` のときだけ
+# 「stash の直後トークン」を 1 行出力する。サブサブコマンドが無い bare 形
+# （`git stash` / `git stash -u`）は空行を出力し、呼び出し側で deny 対象にする。
+#
+# 他ブロックの segment_has_git_subcmd（loose match）を使わないのは、"stash" が
+# commit メッセージ等にリテラル語として現れやすく（例: `git commit -m "stash guard"`）、
+# loose match だと日常操作を巻き込むため。ここだけサブコマンド位置を厳密に取る。
+#
+# 走査規則:
+#   - `-` 始まりは option。`-C` / `-c` / `--git-dir` 等の値を取る global option は
+#     続く値トークンも読み飛ばす（`git -C repo stash pop` 対応）。
+#   - サブコマンドの字面（^[a-z][a-z0-9-]*$）でないトークンは読み飛ばす。
+#     flatten_substitutions が引用符を空白へ潰すため、
+#     `git -C "C:/Program Files/r" stash pop` のパスが複数トークンに割れる。
+#   - 既知の別サブコマンド（KNOWN）に当たったらその git 呼び出しは対象外として打ち切る。
+#     未知語は「割れたパス断片」とみなして読み飛ばすので、
+#     `git -C "my dir" stash pop` のような空白入りパスでも stash に到達できる。
+#   - セグメント内の `git` トークンは全て走査する。flatten_substitutions が
+#     $(...) / `...` 本体を同一行へ連結するので `$(git stash pop)` もここで拾える。
+extract_stash_subcommands() {
+  awk '
+    BEGIN {
+      KNOWN = " add am annotate apply archive bisect blame branch bundle cat-file check-attr check-ignore checkout cherry-pick clean clone column commit commit-tree config count-objects credential describe diff difftool fetch filter-branch filter-repo for-each-ref format-patch fsck gc grep hash-object help init interpret-trailers lfs log ls-files ls-remote ls-tree maintenance merge merge-base mergetool mv name-rev notes p4 patch-id prune pull push range-diff read-tree rebase reflog remote repack replace request-pull reset restore rev-list rev-parse revert rm send-email shortlog show show-branch sparse-checkout status stripspace submodule svn switch symbolic-ref tag update-index update-ref var verify-commit verify-tag whatchanged worktree write-tree "
+    }
+    function takes_value(t) {
+      return (t == "-C" || t == "-c" || t == "--git-dir" || t == "--work-tree" \
+              || t == "--namespace" || t == "--exec-path" || t == "--super-prefix" \
+              || t == "--config-env" || t == "--attr-source")
+    }
+    function is_known(t) { return index(KNOWN, " " t " ") > 0 }
+    {
+      # インライン alias 定義（`git -c alias.s=stash s pop`）は、alias 本体が
+      # コマンド文字列に載っているので静的に判定できる。alias 値に stash を
+      # 含む形は「stash を別名で叩く」意図なので、サブコマンド位置の走査とは
+      # 別に検出して deny 側へ倒す（走査側は alias 名 s を未知トークンとして
+      # 読み飛ばすため、この検出が無いと素通りする）。
+      for (i = 1; i <= NF; i++) {
+        if ($i ~ /^alias\.[^=]*=/ && index($i, "stash") > 0) { print "__alias__"; }
+      }
+      for (i = 1; i <= NF; i++) {
+        # Git for Windows は git.exe。ワーカー brief に Windows 環境の節がある
+        # 以上、実行形式のスペリング差で deny が外れると事故がそのまま再発する。
+        # 大文字混じり（GIT.EXE）と、パス区切りが / でも \ でも拾う。
+        gitname = tolower($i)
+        if (gitname != "git" && gitname != "git.exe" \
+            && gitname !~ /[\/\\]git(\.exe)?$/) continue
+        j = i + 1
+        # split_segments が引用符を空白へ正規化した後なので、値を取る global
+        # option の値に空白が入っていると 1 つの値が複数トークンへ割れる。その
+        # 断片がたまたま既知サブコマンド名（`git -C "/tmp/my status repo" stash
+        # pop` の status）だと、下の is_known 打ち切りが本物の stash より手前で
+        # 走査を止めて deny をすり抜ける。値が割れうる形を見たら打ち切りを諦め、
+        # セグメント内の stash トークンを素直に探す permissive 走査へ落とす
+        # （安全側 = false positive 寄り。本ファイル冒頭の方針どおり）。
+        loose = 0
+        while (j <= NF) {
+          if (substr($j, 1, 1) == "-") {
+            if (takes_value($j)) { j++; loose = 1 }
+            else if ($j ~ /^--(git-dir|work-tree|namespace|exec-path|super-prefix|config-env|attr-source)=/) loose = 1
+            j++
+            continue
+          }
+          if ($j !~ /^[a-z][a-z0-9-]*$/) { j++; continue }
+          if ($j == "stash") break
+          if (is_known($j) && loose == 0) { j = NF + 1; break }
+          j++
+        }
+        if (j <= NF && $j == "stash") {
+          if (j < NF) print $(j + 1); else print ""
+        }
+      }
+    }
+  '
+}
+
 # 全セグメントを 1 度収集してから既知の代入を抽出し、各セグメントで展開する。
 SEGMENTS=()
 while IFS= read -r seg; do
@@ -345,7 +451,7 @@ for segment in "${SEGMENTS[@]}"; do
   # 2) git reset --hard
   if segment_has_git_subcmd "$flat" "reset"; then
     if echo "$flat" | grep -qE '(^|[[:space:]])--hard([[:space:]=]|$)'; then
-      deny_with_reason "git reset --hard は禁止です。未コミット変更が失われます。git stash か別ブランチへの退避を検討してください。"
+      deny_with_reason "git reset --hard は禁止です。未コミット変更が失われます。退避したいときは作業ブランチへ一時 commit してください（git add -u で確定し、戻すときは git reset --soft HEAD~1）。git diff > <name>.patch は staged / 未追跡ファイルを取りこぼすため単独の退避手段にはなりません。git stash はこのリポジトリでは使えません（変更系は本フックが deny します）。"
     fi
   fi
 
@@ -378,7 +484,7 @@ for segment in "${SEGMENTS[@]}"; do
   # 5) git checkout -- <path> / git checkout -- . （未コミット変更の破棄）
   if segment_has_git_subcmd "$flat" "checkout"; then
     if echo "$flat" | grep -qE '(^|[[:space:]])--([[:space:]]|$)'; then
-      deny_with_reason "git checkout -- <path> は禁止です。未コミット変更が失われます。git stash / git diff で退避を検討してください。"
+      deny_with_reason "git checkout -- <path> は禁止です。未コミット変更が失われます。退避したいときは作業ブランチへ一時 commit してください（git add -u で確定し、戻すときは git reset --soft HEAD~1）。HEAD 時点の内容を見たいだけなら git show HEAD:<path> を使ってください。git stash はこのリポジトリでは使えません（変更系は本フックが deny します）。"
     fi
   fi
 
@@ -431,6 +537,21 @@ for segment in "${SEGMENTS[@]}"; do
       fi
     fi
   fi
+
+  # 10) git stash の変更系（Issue #880）
+  # allowlist 方式: 調査用の read-only（list / show）だけ通し、それ以外は
+  # bare / push / save / pop / apply / branch / drop / clear / store / create も
+  # 未知トークンも既定 deny にする。
+  while IFS= read -r stash_sub; do
+    case "$stash_sub" in
+      list|show)
+        : # 調査用 read-only: worktree も refs/stash も変えない
+        ;;
+      *)
+        deny_with_reason "git stash の変更系（bare stash / push / save / pop / apply / branch / drop / clear / store / create）は禁止です。このリポジトリの worktree root には /dev/null 由来のキャラクタデバイスがあり、git stash -u が途中失敗したまま別の stash を pop して不完全復元になる事故が起きています。代替: 退避は作業ブランチへの一時 commit（git add -u で確定し、戻すときは git reset --soft HEAD~1）、HEAD 時点の内容参照は git show HEAD:<path>、並行作業は別 worktree を使ってください。git diff > <name>.patch は staged / 未追跡ファイルを取りこぼすため単独の退避手段にはなりません。調査用の git stash list / git stash show は許可しています。なお stash を実行していないのにこれが出た場合は、コマンド文字列中のリテラル（commit メッセージ / grep パターン / PR 本文など）が git + stash の並びに一致しています。その場合は文字列から git トークンを外して再実行してください（例: grep -rn \"stash pop\"）。"
+        ;;
+    esac
+  done < <(printf '%s\n' "$flat" | extract_stash_subcommands)
 done
 
 exit 0

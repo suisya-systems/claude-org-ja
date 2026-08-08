@@ -283,7 +283,7 @@ git diff tools/org_extension_schema.json
 python -c "import json; json.load(open('tools/org_extension_schema.json'))"
 ```
 
-**対処**: 直近の編集で壊しているなら `git restore tools/org_extension_schema.json` で戻すか、未コミットの変更を一旦 `git stash push tools/org_extension_schema.json` で退避してから再挑戦する。schema 構文を修正したら必ず `python tools/check_role_configs.py --include-local` を通してから commit する。
+**対処**: 直近の編集で壊しているなら `git restore tools/org_extension_schema.json` で戻す。編集途中の内容を捨てたくないときは作業ツリーの外へコピーして退避し（例: `cp tools/org_extension_schema.json ~/schema-wip.json`）、HEAD 版と見比べたいだけなら `git show HEAD:tools/org_extension_schema.json` を使う。**このリポジトリでは退避に `git stash` を使わない**（[`.hooks/block-dangerous-git.sh`](../.hooks/block-dangerous-git.sh) が変更系 stash を deny する。理由は [`docs/contracts/worker-git-guardrails-design.md`](./contracts/worker-git-guardrails-design.md) §3.2 の `git stash` 行）。schema 構文を修正したら必ず `python tools/check_role_configs.py --include-local` を通してから commit する。
 
 ---
 
