@@ -137,7 +137,17 @@ mcp__renga-peers__send_keys(target="worker-{task_id}", enter=true)
 
 pane は live でも Claude がまだ起動中の場合があるため二重確認。`mcp__renga-peers__list_peers` を呼び、`worker-{task_id}` が peer 一覧に現れるまで短い間隔（例: 2 秒）でリトライする（最大 30 秒程度）。タイムアウトした場合は `list_panes` でペイン状態を再確認し、必要なら窓口に escalate する。
 
-> **capability 形かつ未承認のときの縮退（停止しない・待ち時間 0 分）**: 列挙を peer 登録の ground truth にせず破棄し、`list_panes` の pane 生存 + `inspect_pane` のプロンプト表示で boot を判定する。以後はワーカーからの最初の peer message を到達確認とする。**`worker-{task_id}` の name 一致で登録ゲートを開けてはならない** — 予約名は別 org の並走タブに同名で実在しうるので、name 一致は「まだ登録していない自分の子」のゲートを他 org のピアで開けてしまう（契約 T-§2.2 の「MUST NOT key a lookup … on `name` alone」。共有 reference §3-B-1）。報告は共有 reference §3-B の手順で窓口へ 1 度だけ上げ、監視は止めない。
+> **capability 形かつ未承認のときの縮退（停止しない・待ち時間 0 分）**: 列挙を peer 登録の ground truth にせず破棄する。**`worker-{task_id}` の name 一致で登録ゲートを開けてはならない** — 予約名は別 org の並走タブに同名で実在しうるので、name 一致は「まだ登録していない自分の子」のゲートを他 org のピアで開けてしまう（契約 T-§2.2 の「MUST NOT key a lookup … on `name` alone」。共有 reference §3-B-1）。
+>
+> **代替の readiness 判定は「送信そのもの」で行う（pane 生存 + プロンプト表示では足りない）**: ペインが live でプロンプトが出ていることは Claude が起動したことしか示さず、**MCP の peer 登録が済んだことを示さない**。3-4 は本来そこを二重確認する step なので、縮退時にこれを「boot 確認」で置き換えると、**登録前のワーカーに 3-5 の指示を撃って唯一のタスク割り当てを取りこぼす**。したがって縮退時は次のようにする:
+>
+> 1. `list_panes` の pane 生存を確認する（ペインが死んでいれば spawn 失敗として通常の失敗処理へ）。
+> 2. **3-5 の `send_message` 自体を readiness probe として使う**。peer が未登録なら送信は `[pane_not_found]`（broker では `[peer_not_found]`）で失敗するので、**失敗は「まだ登録していない」の証拠として読める**（列挙と違い、この判定は他タブの同名ピアに汚染されない — 送信先は自分が spawn した `target` 名の解決結果であり、失敗コードは送達不成立そのものを表す）。
+> 3. 失敗したら 2 秒間隔で最大 30 秒まで**再送**する（3-4 の元の poll 予算と同じ）。この間 `send_keys(enter=true)` の再送も従来どおり行う。
+> 4. 30 秒を過ぎても送達できなければ、従来のタイムアウト処理と同じく `list_panes` でペイン状態を再確認し、窓口に escalate する。
+> 5. 送達成功をもって「起動・登録・指示送信」が同時に確定する。ultracode 武装 kickoff（3-5a）が要るタスクでは、その `send_keys` は送達成功の**後**に行う。
+>
+> 報告は共有 reference §3-B の手順で窓口へ 1 度だけ上げ、監視は止めない。
 
 ### 3-5. ワーカーに指示を送信
 
