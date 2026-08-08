@@ -7,6 +7,29 @@
 
 ## [Unreleased]
 
+### Added
+
+- attention watcher の `duplicate_sidecar` kind に ja 側を追随 (#868)。
+  `tools/templates/attention.example.json` に `notify.duplicate_sidecar: "urgent"` と日本語文面を追加した
+  (未追加だとこの kind だけ runtime 中立の英語 default が出る)。この通知は「同じ owner 宛のメッセージを
+  2 つの channel sidecar が取り合っている」状態を指し、放置すると報告が読まれない側のセッションへ配送されて
+  沈黙する。runtime 側は自力で復旧できず、余分なセッションを終了できるのは人間だけなので severity は
+  `urgent` で、文面もその行動 (余分なセッションを探して終了する) が読み取れる形にした。
+  `docs/operations/attention-watch.md` には severity 表の 1 行に加えて §4.3 を新設し、この kind だけが
+  `.state/state.db` ではなく org-broker の journal (`<state-dir>/broker/queue.jsonl`) を入力にすること・
+  `--broker-state-dir` (既定 `<state-dir>/broker`、非既定 state dir の daemon でのみ明示が要る)・
+  `duplicate_sidecar_window_sec` (既定 300s、継続中の incident だけを鳴らす freshness 判定) を説明した。
+  broker journal reader は runtime 0.1.40 で入った経路なので、**同 PR で runtime の下限 pin を
+  0.1.39 → 0.1.40 へ引き上げた** (`pyproject.toml` / `requirements.txt` / `docker/Dockerfile` /
+  `docker/compose.yaml`)。pin を満たす環境ではこの kind は実際に発火する。手元の runtime に
+  経路があるかは `claude-org-runtime attention scan --help` に `--broker-state-dir` が出るかで
+  判別できる (出ない場合は pin より古い runtime が入っている。設定は正しいのに黙る形になる)。
+  `/org-attention-start` は watch 起動時に `ORG_BROKER_STATE_DIR` を確認し、値があれば
+  `--broker-state-dir` をリテラルで渡すようになった (watcher 自身はこの env を読まないため、
+  非既定 state dir では誰かが渡す必要がある)。`tests/test_attention_runtime_integration.py` は
+  broker journal の fixture 行を追加して golden に載せ、`duplicate_sidecar` を drift canary
+  (`_EXPECTED_URGENT_KINDS`) に加えた。
+
 ### Changed
 
 - `registry/projects.md` を operator-local な生成ファイルへ移行 (#811)。コミット対象は列スキーマ・

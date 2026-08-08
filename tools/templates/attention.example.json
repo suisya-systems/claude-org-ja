@@ -23,7 +23,8 @@
     "worker_error": "normal",
     "worker_completed": "normal",
     "pr_merged": "normal",
-    "secretary_awaiting_user": "urgent"
+    "secretary_awaiting_user": "urgent",
+    "duplicate_sidecar": "urgent"
   },
   "templates": {
     "approval_blocked": {
@@ -81,6 +82,10 @@
     "secretary_awaiting_user": {
       "title": "窓口が判断待ちです",
       "body": "{task_id} で窓口がユーザー入力を待っています。"
+    },
+    "duplicate_sidecar": {
+      "title": "channel sidecar が二重に走っています",
+      "body": "{worker} 宛のメッセージを 2 つのセッションが取り合っています。報告が読まれない側へ流れて沈黙するので、余分なセッションを探して終了してください ({summary})。"
     }
   }
 }

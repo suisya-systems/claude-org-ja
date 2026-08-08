@@ -7,6 +7,7 @@
 - **入力**:
   - `.state/state.db` の `events` テーブル（`notify_sent` / `ci_completed` / `worker_completed` / `pr_merged` など）
   - `.state/pending_decisions.json`（人間判断仰ぎ register）
+  - org-broker の journal `.state/broker/queue.jsonl` の `duplicate_sidecar_detected` 行（既定の参照先は `<state-dir>/broker`、`--broker-state-dir` で上書き。§4.3 参照）
   - optional config: `.state/attention.json`（`tools/templates/attention.example.json` を雛形にする）
 - **出力**:
   - desktop notification（OS 別 backend は §3 参照）
@@ -40,6 +41,32 @@ cp tools/templates/attention.example.json .state/attention.json
 ```
 
 OS 通知や音の挙動を変えたい場合は `.state/attention.json` を編集する（template strings の上書き、`sound` の切替、`cooldown_sec` の調整など）。テンプレートの placeholder allowlist は `{task_id}` / `{worker}` / `{kind}` / `{status}` / `{pr}` / `{summary}` の 6 種で、未知 placeholder は literal のまま残るか runtime の fallback template で補われる（設計 §6 参照）。
+
+#### 既に `.state/attention.json` がある場合の追随（新しい kind が増えたとき）
+
+`cp` も [`/org-attention-start`](../../.claude/skills/org-attention-start/SKILL.md) も **既存の `.state/attention.json` は上書きしない**（skill は未配置時のみコピーする）。ユーザー個別の overlay を守るための挙動だが、裏返すと **tracked template に新しい kind が追加されても、既存 overlay には入らない**。その kind だけ runtime 中立の英語 default 文面が出るようになる（ja 文面が消えるのではなく、新しい kind が最初から英語で来る）。
+
+overlay の自分の設定を保ったまま、**不足しているキーだけ**足すには次を実行する（既にあるキーには一切触らない）:
+
+```bash
+python3 - <<'PY'
+import json, pathlib
+tmpl = json.loads(pathlib.Path("tools/templates/attention.example.json").read_text(encoding="utf-8"))
+path = pathlib.Path(".state/attention.json")
+cfg = json.loads(path.read_text(encoding="utf-8"))
+added = []
+for section in ("notify", "templates"):
+    dst = cfg.setdefault(section, {})
+    for key, value in tmpl.get(section, {}).items():
+        if key not in dst:
+            dst[key] = value
+            added.append(f"{section}.{key}")
+path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+print("added:", added or "(none)")
+PY
+```
+
+追加後は §2.3 の `scan --dry-run --json` で構文を確認する。**`watch` を常駐させている場合は再起動が必要**: runtime は config を watch ループ開始前に 1 回だけ読み、ループ内で再読み込みしないため、編集しただけでは反映されない（[`/org-attention-stop`](../../.claude/skills/org-attention-stop/SKILL.md) → [`/org-attention-start`](../../.claude/skills/org-attention-start/SKILL.md)、手動起動なら Ctrl-C → 再実行）。
 
 ### 2.3 1 回限りの動作確認 (`scan`)
 
@@ -130,6 +157,7 @@ Issue #25 / PR #27 以前は、WSL / Windows native とも「PowerShell `Write-H
 | `pending_decision_max` | `1440` | urgent 期間の上限（分）。これを超えた pending は normal に降格する（24h） |
 | `pending_decision_drop` | `10080` | normal 通知の終端（分）。これを超えた pending は通知抑止され `--json` 出力にのみ残る（7d） |
 | `user_replied_min` | `15` | user replied だが worker 未転送の状態を urgent と判定する経過分 |
+| `duplicate_sidecar_window_sec` | `300` | broker journal の `duplicate_sidecar_detected` 行を「いま起きている」とみなす freshness window（秒）。§4.3 参照 |
 | `max_title_chars` / `max_body_chars` | `80` / `240` | template 出力の truncation 上限（secret-safe formatting の一環） |
 | `notify.<kind>` | §4.1 参照 | event kind ごとの severity（`urgent` / `normal` の 2 値のみ、`off` は不可。完全に止めたい場合は全体 `desktop: false` を使う） |
 | `templates.<kind>.{title,body}` | ja 既定文面 | placeholder allowlist は `{task_id} {worker} {kind} {status} {pr} {summary}` |
@@ -145,6 +173,7 @@ Issue #25 / PR #27 以前は、WSL / Windows native とも「PowerShell `Write-H
 | `pending_decision` | urgent | action-required | worker から判断仰ぎ。Secretary は人間に上げる責務（CLAUDE.md 参照） |
 | `user_reply_not_forwarded` | urgent | action-required | ユーザーは返答済みだが worker に未転送。Secretary の運用ギャップ |
 | `pane_crashed` | urgent | action-required | ペインが予期せず終了。再起動判断にユーザーが必要 |
+| `duplicate_sidecar` | urgent | action-required | 同じ owner の channel を 2 つの sidecar が取り合っている。runtime 側は復旧できず、余分なセッションを終了できるのは人間だけ（§4.3 参照） |
 | `relay_gap_suspected` | normal | anomaly / 予兆 | dispatcher monitoring の予兆検出。自己復旧する場合が多く urgent muting の主因だったため demote |
 | `silent_worker_output` | normal | anomaly / 予兆 | ペイン出力ありだが peer message 未着。同上 |
 | `pane_silent` | normal | anomaly / 予兆 | ペインが無反応。dispatcher 側で自己復旧する場合あり |
@@ -175,6 +204,32 @@ Issue #25 / PR #27 以前は、WSL / Windows native とも「PowerShell `Write-H
 - **長い audit trail を残したい**: `pending_decision_drop` を上げる（例: 7d → 30d）。完全 suppress までの猶予を伸ばし、長期 backlog を `attention scan --json` で監査可能にする
 - **判断仰ぎが頻繁で 15 分の grace が短い**: `pending_decision_min` を伸ばす（例: 15 → 60）。Secretary の relay 余裕を見たい運用で urgent 過多を抑える
 - `pending_decision_drop = pending_decision_max` に揃えると normal/visual 段が消え、超過時に即 suppressed になる。短い lifecycle の運用で「降格中の表示」が要らないチーム向け
+
+### 4.3 duplicate_sidecar — broker journal 経路（`--broker-state-dir` / `duplicate_sidecar_window_sec`）
+
+`duplicate_sidecar` だけは `.state/state.db` ではなく **org-broker の journal** を入力にする。broker daemon は、同じ owner（`secretary` / `dispatcher` / `worker-<task_id>`）のキューを 2 つの channel sidecar instance が poll している状態を検出して `duplicate_sidecar_detected` 行を journal に書く。watcher はその行を拾って通知にする。
+
+放置したときの実害は「静かに壊れる」型である。owner 宛のメッセージが 2 つの読み手に分割され、報告が誰も見ていない側のセッションへ配送されて沈黙する。runtime 側は自力で復旧できない（どちらが本物かを知っているのは人間だけ）ため既定 severity は `urgent` で、**オペレータの取るべき行動は「余分なセッションを見つけて終了させる」**。通知本文には owner (`{worker}`) と競合している 2 つの instance id (`{summary}`) が載るので、journal を開かずにどのセッションを見ればよいかが分かる。
+
+**`--broker-state-dir`**: journal (`queue.jsonl`) を置く broker の state dir を指すフラグ。既定は `<state-dir>/broker`（= `--state-dir .state` なら `.state/broker/queue.jsonl`）で、broker daemon の既定 state dir と一致するため通常運用では指定不要。**非既定の state dir で daemon を起動している場合のみ**明示する:
+
+```bash
+claude-org-runtime attention watch --state-dir .state --config .state/attention.json \
+  --broker-state-dir /path/to/broker-state
+```
+
+指定先に journal が無い / 読めない場合は「duplicate は無い」に degrade するだけで watcher は落ちない。裏を返すと、**broker を非既定 state dir で動かしていてこのフラグを付け忘れると、この kind だけが黙って鳴らない**（他の kind は `.state/state.db` 経由なので影響を受けず、欠落に気付きにくい）。
+
+**推奨経路 (§2.1) での扱い**: attention watcher は broker の `ORG_BROKER_STATE_DIR` env を自分では読まない（解決順は flag → `<state-dir>/broker` のみ）ため、非既定 state dir では誰かがフラグを渡す必要がある。[`/org-attention-start`](../../.claude/skills/org-attention-start/SKILL.md) は Step 3 でこの env を確認し、値があれば `--broker-state-dir <値>` を watch コマンドに**リテラルで**足す（`${VAR:+...}` のシェル展開を command 文字列に埋めると、ペインの login shell が zsh のとき 1 引数に潰れて argparse error になるため）。env が未設定なら足さず、runtime 既定の `.state/broker` に解決される。
+
+したがって skill 経由・手動起動のどちらでも非既定 state dir に追随できる。**ただし env が未設定のまま broker だけを非既定 state dir で起動している環境**（例: daemon の起動側だけにパスを直書きしている）では、skill も値を復元できないので §2.4 の手動起動でフラグを明示する。
+
+**`duplicate_sidecar_window_sec`（既定 300）**: journal 行を「いま起きている incident」とみなす freshness window（秒）。この window より古い行は捨てる。broker は競合が続いている限り instance pair ごとに lease window 周期で同じ行を再 emit するので、window を lease window より十分大きく取っておけば **継続中の incident は鳴り続け、解消済みの incident は自然に黙る**。既定 300 は `cooldown_sec` と同値で、「1 回の通知 cooldown の間 1 度も再発していない incident は終わっている」という読みに対応する。
+
+- journal は末尾から window 分だけ遡って読む。この値を上げると走査範囲もそれに追随して広がるので、busy な daemon でも継続中の incident が視界外へ押し出されることはない
+- dedup key は owner ではなく **競合している instance pair** に対して張られる。片方のセッションを終了させた後に別の instance が入れ替わりで競合を始めた場合は別 incident として扱われ、直前の pair の cooldown に飲まれない
+
+**runtime 版の前提（この kind だけの注意）**: broker journal reader は runtime 0.1.40 で入った経路で、ja の下限 pin もこれに合わせて 0.1.40 に上げてある（`pyproject.toml` / `requirements.txt` の `claude-org-runtime` floor、`docker/Dockerfile` の `RUNTIME_VERSION`）。したがって pin を満たす環境では**この kind は実際に発火する**。手元の runtime に経路があるかを直接確かめたい場合は `claude-org-runtime attention scan --help` に `--broker-state-dir` が出るかを見る。**出ない場合は pin より古い runtime が入っている**（floor は下限であって、環境に実際に入っている版とは別物）。その状態ではテンプレートに `notify.duplicate_sidecar` / `templates.duplicate_sidecar` があっても no-op になるだけで、config load エラーにはならない — つまり「設定は正しいのに黙っている」形になるので、二重 sidecar を疑う状況で通知が来ないときは、まずこの `--help` で経路の有無を確かめる。
 
 ## 5. トラブルシューティング
 

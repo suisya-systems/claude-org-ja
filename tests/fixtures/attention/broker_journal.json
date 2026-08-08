@@ -1,0 +1,43 @@
+{
+  "_comment": [
+    "org-broker journal (queue.jsonl) rows for the attention integration test.",
+    "The runtime reader (attention/readers.py read_broker_duplicates) keeps only",
+    "rows whose 'ts' falls inside duplicate_sidecar_window_sec (300s by default),",
+    "so 'ts' cannot be checked in as a literal - it would age out and the golden",
+    "would silently lose the event. The test stamps it in setUp from",
+    "'age_sec' (seconds before now) instead; everything else here is verbatim",
+    "what the daemon writes via broker/store.py _journal().",
+    "'noise' rows exercise the reader's filters and must NOT reach the output."
+  ],
+  "rows": [
+    {
+      "age_sec": 60,
+      "event": "duplicate_sidecar_detected",
+      "owner": "worker-T-duplicate",
+      "instances": ["b2c3d4e5f6a7b8c9", "a1b2c3d4e5f6a7b8"]
+    },
+    {
+      "age_sec": 60,
+      "event": "lease_reaped",
+      "id": "row-1",
+      "reclaim": 1,
+      "_why": "noise: a different journal event kind, filtered by the reader"
+    },
+    {
+      "age_sec": 4000,
+      "event": "duplicate_sidecar_detected",
+      "owner": "secretary",
+      "instances": ["deadbeefdeadbeef", "cafebabecafebabe"],
+      "_why": "noise: older than the 300s freshness window, so it is stale and dropped"
+    }
+  ],
+  "override_rows": [
+    {
+      "age_sec": 60,
+      "event": "duplicate_sidecar_detected",
+      "owner": "dispatcher",
+      "instances": ["1111222233334444", "5555666677778888"],
+      "_why": "written to a NON-default broker state dir; only reachable via --broker-state-dir"
+    }
+  ]
+}
