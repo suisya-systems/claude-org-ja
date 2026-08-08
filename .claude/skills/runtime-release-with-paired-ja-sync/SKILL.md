@@ -5,8 +5,9 @@ description: >
   claude-org-runtime のリリース (release-* タスク / vX.Y.Z タグ発行) を、
   同 PyPI 発行を受ける claude-org-ja 側の expectation 同期と
   ペアで設計・委譲・完了させるためのワークフロー。
-  DEFAULT_NOTIFY 値・classifier vocabulary・org_extension_schema・
-  attention.example.json テンプレ等が変わるリリースで発動する。
+  DEFAULT_NOTIFY 値・classifier vocabulary・role_configs_schema
+  (ja 側ミラー: org_extension_schema)・attention.example.json テンプレ等が
+  変わるリリースで発動する。
   CI cascade を予測・予防し、ja-side の red を回避することを目的とする。
 ---
 
@@ -22,8 +23,9 @@ attention watcher integration test に必ず波及する。
 
 ## なぜこの skill が必要か
 
-`claude-org-runtime` 側で `DEFAULT_NOTIFY` の値や classifier 語彙・`org_extension_schema.json`
-の項目を更新してリリースすると、PyPI publish 後に `claude-org-ja` 側の以下が同時に古くなる:
+`claude-org-runtime` 側で `DEFAULT_NOTIFY` の値や classifier 語彙・`role_configs_schema.json`
+（runtime 同梱 schema。ja 側ミラーが `tools/org_extension_schema.json`）の項目を
+更新してリリースすると、PyPI publish 後に `claude-org-ja` 側の以下が同時に古くなる:
 
 - `tests/test_attention_runtime_integration.py` の expectation
 - `tools/org_extension_schema.json` のバイト一致コピー
@@ -46,8 +48,8 @@ attention watcher integration test に必ず波及する。
 
 - task_id に `release` を含む、または `vX.Y.Z` 形式のタグを発行するリリース系タスク
 - chore release 系のユーザー指示プロンプト（「runtime のリリース」「PyPI 上げ」等）
-- runtime 側の `DEFAULT_NOTIFY` / classifier mapping / `org_extension_schema` / attention テンプレ
-  のいずれかを触る変更が land 寸前
+- runtime 側の `DEFAULT_NOTIFY` / classifier mapping / `role_configs_schema.json` /
+  attention テンプレのいずれかを触る変更が land 寸前
 - runtime 側の `role_configs_schema.json` にある `required_allow` / `required_deny` /
   `required_hook_scripts` / `required_hooks` への追加・変更を含むリリース。
   これらは「settings ファイルに必ず存在すべき項目」を増やす変更であり、runtime 側 CI が
@@ -130,13 +132,16 @@ ja-side 同期 PR を起票する。後回しにしない:
 | runtime 側の変更 | ja-side 同期対象 |
 |---|---|
 | `DEFAULT_NOTIFY` の値変更 / 追加 / 削除 | `tests/test_attention_runtime_integration.py` の expectation と golden fixture `tests/fixtures/attention/expected_scan.json` の更新（新ポリシーを ja が採用する場合は `tools/templates/attention.example.json` も） |
-| `org_extension_schema` のフィールド改廃 | `tools/org_extension_schema.json` の共有面を runtime 同梱 schema に同期（ja 固有節は保持。下記注意点参照） |
+| runtime `role_configs_schema.json` のフィールド改廃 | ja 側ミラー `tools/org_extension_schema.json` の共有面を runtime 同梱 schema に同期（ja 固有節は保持。下記注意点参照） |
 | classifier vocabulary の追加 / 改名 | attention 系 artifacts の更新 — `tests/fixtures/attention/` の fixture / golden・`tests/test_attention_runtime_integration.py` の expectation・`tools/templates/attention.example.json`（permissions projection は classifier 語彙を持たないため対象外） |
-| attention payload の severity / TTL ladder 変更 | `tools/templates/attention.example.json` の severity / TTL 同期 |
+| attention payload の severity / TTL ladder 変更 | `tools/templates/attention.example.json` の severity / TTL 同期＋`tests/test_attention_runtime_integration.py` の TTL 前提（fixture の経過時間セットアップ・severity 期待）と golden の整合 |
 | ja が新 runtime 版の挙動・新 required 項目に依存する場合 | `pyproject.toml` / `requirements.txt` / `docker/Dockerfile` / `docker/compose.yaml`（`RUNTIME_VERSION` 既定値。Dockerfile の ARG を上書きするためここが古いと旧版が焼かれる）の runtime version floor を atomic に引き上げ |
 
 paired ja-sync は **複数 worker 並列**で派遣して構わない（むしろ推奨）。
-4 つの同期対象は互いに独立しているため、1 worker 1 PR で並走できる。
+ただし並列分割してよいのは**行間で対象ファイルが重ならない場合に限る**。
+classifier kind と `DEFAULT_NOTIFY` が同時に動くリリースでは attention 系 artifacts
+（integration test / golden / template）が行をまたいで重なるため、attention 系は
+まとめて 1 本の PR にする。重ならない対象は 1 worker 1 PR で並走してよく、
 窓口は org-delegate の並列委譲ガイダンスに従って分割する（[[parallelize_delegation]]）。
 
 **例外 — permissions projection が変わる schema 変更は並列分割しない**:
@@ -147,13 +152,28 @@ CI でも走るため、projection に影響する schema 変更（`required_all
 （`tools/org_extension_schema.json`）・permissions projection・tracked settings は
 独立には land できない（片方だけの中間 PR は CI red になる）。この一式は
 **1 本の atomic PR** にまとめ、machine-local settings（`~/.claude/settings.json` 等）は
-merge 後に `/org-setup` で反映する。
+merge 後に `/org-setup` で反映する。さらに:
+
+- `required_*` の追加はそれ自体が新 runtime 版への依存なので、**version floor 4 ファイル
+  （上表の `pyproject.toml` / `requirements.txt` / `docker/Dockerfile` /
+  `docker/compose.yaml`）も同じ atomic PR に含める**。floor だけ先行させると CI が
+  新 runtime を解決して旧ミラーとの drift red になり、schema 側だけ先行させると
+  旧 floor が旧 runtime を許容したまま残る — どちらの順でも中間状態が壊れる
+- `required_hook_scripts` / `required_hooks` が新規 guard を導入する場合は、
+  `.hooks/` の実体 script（とその test）も同 PR スコープに含める
+  （`tools/check_role_configs.py` は hook command を `.hooks/<script>` の実ファイルに
+  解決し、欠落・相対パス形を報告する）
 
 ## Step 5: CI cascade の予測と委譲
 
-PyPI publish が完了してから 1〜数時間以内に、ja-side リポジトリの CI が新 runtime 版を
-解決しに行く。Step 4 の paired PR が間に合わずに main にマージされた古い ja-side が
-CI red になることが多い。
+ja の CI（`.github/workflows/tests.yml`）は push / pull_request でのみ走り、
+**PyPI publish では再実行されない**。このため 2 つの帰結がある:
+
+- Step 4 の paired PR を publish 前に開いた場合、初回 CI run は旧 runtime を解決した
+  ままで、放置しても新版で再検証されない。publish 確認後に明示的な rerun
+  （`gh run rerun` / head 更新）で新版を解決させてから merge する
+- publish 後に走る他の ja PR / main push の CI run は新版を解決するため、
+  paired PR が未 land のままだとそれらが red になる
 
 このとき **Secretary は CI failure を自分で調査しない**。
 [[secretary_does_not_investigate_ci]] に従い、paired ja-sync worker に
