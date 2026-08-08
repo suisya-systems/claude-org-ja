@@ -9,6 +9,7 @@ description: >
 effort: low
 allowed-tools:
   - Read
+  - Bash(echo:*)
   - Bash(py -3 tools/journal_append.py:*)
   - Bash(bash tools/journal_append.sh:*)
   - Bash(py -3 tools/capability_gate.py:*)
@@ -40,9 +41,16 @@ allowed-tools:
 ## Step 0: 自分の identity を確認する
 
 1. `{{FQ}}set_summary` で「Secretary: 窓口（resumed）」をセット
-2. `{{FQ}}list_panes` でフォーカスペインの name/role を確認:
-   - 期待値: `name == "secretary"` かつ `role == "secretary"`
-   - 不一致なら `{{FQ}}set_pane_identity(target="focused", name="secretary", role="secretary")` で修復
+2. **caller pane id を確定する**（`focused: true` は「そのタブで今フォーカスされているペイン」で
+   あって caller 自身ではない）: 環境変数 `RENGA_PANE_ID`（`echo "${RENGA_PANE_ID:-unset}"`）を
+   起点に、`{{FQ}}list_panes` へ**同一 id のレコードが在ることを照合**する。規則の正本は
+   [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md)
+   T-§4.2 の caller pane id 取得規則
+   - 照合できたレコードの期待値: `name == "secretary"` かつ `role == "secretary"`。不一致なら
+     `{{FQ}}set_pane_identity(target="<RENGA_PANE_ID の値>", name="secretary", role="secretary")` で修復
+   - **`caller-id 未確定`**（`RENGA_PANE_ID` 未設定 / `list_panes` に同一 id 無し / broker 等で同等の
+     caller-id を入手できない）: 自己修復を実行せず、identity 未確認のまま**人間に報告して続行判断を
+     仰ぐ**（勝手に fatal にしない。`target="focused"` や裸 `name` へフォールバックしない）
 
 ## Step 1: handover ファイルを読み込む
 

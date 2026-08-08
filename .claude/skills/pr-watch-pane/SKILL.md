@@ -103,7 +103,7 @@ context リセットと無関係）に監視が継続し、人間が tmux ペイ
     （[`.claude/skills/org-pull-request/SKILL.md`](../org-pull-request/SKILL.md) の post-merge
     cleanup / `PR_MERGE_WATCH_TIMEOUT` / CI 失敗確定の各終端で窓口が発火。掃除手順は下記 Step 5 の
     (a)/(b) split に従う ＝ live pane は list_panes 確認済みの数値 pane_id で close、stale binding
-    のみ name 指定）。`close_pane` は transport 抽象上 tmux / herdr 両対応で、tmux backend で既に
+    のみ broker 条件付き allowlist で name 指定）。`close_pane` は transport 抽象上 tmux / herdr 両対応で、tmux backend で既に
     self-close 済みなら `[pane_not_found]` が返る（自己クローズ済みで正常）。Windows native の手動起動経路
     （人間が `tools/pr-watch.ps1 <PR>` を `!` 経由で起動）も従来どおり遮断しない（既存経路は不変）。
 
@@ -248,7 +248,10 @@ mcp__org-broker__spawn_pane(
     （name binding）は self-close では pop されず **stale に残りうる**（daemon は自 pane の外部
     kill を検知しないため）。stale binding が残ると同名 `pr-watch-<PR>` の再 spawn が
     `[name_taken]` で弾かれる（`list_panes` には出ないのに、が症状）。この掃除は Step 5 の
-    手動 fallback（`mcp__org-broker__close_pane(target="pr-watch-<PR>")` が登録簿を pop）で行う。
+    手動 fallback で行う。**そこで撃つ `mcp__org-broker__close_pane(target="pr-watch-<PR>")` は、
+    数値 pane_id を列挙から取り直せないこの状態に限って裸 name を許可する transport 条件付きの
+    allowlist 経路**であり、無条件の name 指定ではない（3 条件と broker 以外での扱いは Step 5 の
+    (b) が SoT）。
   - `--merge-watch`: CI green で `CI_COMPLETED` を出した後もマージまで poll し続け（最大
     24h）、マージで `PR_MERGED`、timeout で `PR_MERGE_WATCH_TIMEOUT` を出してから自己 close
     する。CI 確定だけで止めたい場合は呼び出し時に `--merge-watch` を外す（その場合は CI green
@@ -273,10 +276,34 @@ mcp__org-broker__spawn_pane(
   2. **live pane が在る** → 冪等チェックを取りこぼした真の race。既に監視中として Step 2 の
      「既に稼働中」報告に倒す（新規 spawn しない）。
   3. **live pane が無い**（`list_panes` に出ない）→ self-close 済みの **stale 登録簿 binding**。
-     `mcp__org-broker__close_pane(target="pr-watch-<PR>")` で name 解決させて登録簿を pop し
-     （`ok closed=%N` が返る。`[pane_not_found]` は既に掃除済みで OK）、**Step 3 の spawn を
-     1 度だけ再試行**する。再試行でも `[name_taken]` が続く場合はユーザーに報告して中断
-     （想定外の登録簿状態）。
+     この状態は列挙にペインが出ないため **数値 pane_id を取得できず**、Group B の
+     「数値 pane_id で撃つ」原則をそのまま適用できない。よってこの掃除だけは **transport 条件付きの
+     allowlist** として裸 name の `close_pane` を許可する（契約
+     [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md)
+     T-§4.2 の Group B 台帳が stale-binding 行に求める「使った mechanism」がこれ。条件の並びと
+     根拠の SoT は下記 Step 5 の (b)）。**以下 3 条件がすべて成立するときだけ許可される**:
+     - **(1) いま Group B を駆動している backend が `close_pane` / `set_pane_identity` を自身の
+       single-tab モデル内で解決する**（＝ `org-broker`）— 誤タブ hazard が構造的に生じない
+       （契約 §8.1 / §8.10）。判定は本 skill の transport 解決（`ORG_TRANSPORT` の明示値 >
+       既定 `DEFAULT_TRANSPORT`。[`tools/transport.py`](../../../tools/transport.py)）に従い、
+       **Step 1 で `printenv` した raw env 文字列の有無では判定しない**（`DEFAULT_TRANSPORT` は
+       runtime 0.1.28 で broker にフリップ済みなので、無設定は broker に解決する）。
+       確定できない場合は不成立として扱う（判定規則と根拠の SoT は下記 Step 5 の (b)）
+     - **(2) 再 spawn が `[name_in_use]` / `[name_taken]` で弾かれている** — stale binding の症状
+       （本分岐の発火条件そのもの）
+     - **(3) その name が `mcp__org-broker__list_panes` に現れない** — live pane 不在（上記 1. の再確認結果）
+     - **3 条件が揃う場合**: `mcp__org-broker__close_pane(target="pr-watch-<PR>")` で name 解決させて登録簿を
+       pop し（`ok closed=%N` が返る。`[pane_not_found]` は既に掃除済みで OK）、**Step 3 の spawn を
+       1 度だけ再試行**する。再試行でも `[name_taken]` が続く場合はユーザーに報告して中断
+       （想定外の登録簿状態）。
+     - **broker 以外に解決する場合（`ORG_TRANSPORT=renga` の opt-in など）では close せず
+       報告して中断する**: pre-capability
+       renga の legacy 解決は active タブ（＝ユーザーが見ているタブ）を先に引き、miss したら
+       他タブを index 順にフォールスルーして先勝ちする。「live pane が無い」という前提は
+       `list_panes`（＝ユーザー可視タブ）からしか立てられないため、別タブに同名の live pane が
+       居ると前提が偽のまま close が当たる（`close_pane` は不可逆）。自動再試行もせず、
+       stale binding を検出したが transport が broker でないため自動掃除しない旨をユーザーに
+       報告して指示を仰ぐ。
 - broker 固有（`[no_backend]` / `[token_invalid]` / `[session_invalid]` /
   `[tool_not_authorized]` / `[peer_not_found]` 等）/ その他未知コード → 状況をユーザーに
   報告して中断（default-branch escalate）。
@@ -372,8 +399,45 @@ mcp__org-broker__spawn_pane(
 
    - **(b) stale 登録簿 binding（`list_panes` には出ないのに再 spawn が `[name_taken]`）**:
      self-close で tmux ペインは消えたが broker 登録簿に name binding が残っている状態。
-     数値 pane_id は list_panes に出ないので取得できないため、**name 指定**で
-     `mcp__org-broker__close_pane(target="pr-watch-<PR>")` する（broker が name → stale pane_id を解決し
-     登録簿を pop、`ok closed=%N` が返る。`[pane_not_found]` は既に掃除済みで OK）。掃除後は
-     同名 spawn が通る。Step 3 の `[name_taken]` 分岐はこの (b) を自己回復するが、手動でも
-     同手順で掃除できる。
+     ペインが列挙に出ないので **数値 pane_id を取得できず**、(a) の「list_panes で identity 照合
+     した数値 pane_id で撃つ」形が原理的に取れない。この一点に限り **transport 条件付きの
+     allowlist** として裸 name の `close_pane` を許可する（**本節が 3 条件と根拠の SoT**。
+     契約 [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md)
+     T-§4.2 の Group B 台帳は stale-binding 行を「数値化だけでは discharge できない」とし、
+     follow-up が **使った mechanism を台帳に記録する**ことを求めている。本 skill が採る mechanism が
+     この allowlist）。**以下 3 条件がすべて成立するときだけ許可される**:
+     - **(1) いま Group B を駆動している backend が `close_pane` / `set_pane_identity` を
+       自身の single-tab モデル内で解決する**（＝ `org-broker`）— そのモデル内で name も
+       解決されるため誤タブ hazard が構造的に生じない（契約 §8.1 / §8.10。契約 T-§4.2 の
+       carve-out 自体も条件を "the backend resolves Group B in a single-tab model" と
+       **backend の性質**で書いており、env 変数の綴りでは書いていない）。**判定は本 skill が
+       既に持つ transport 解決に従う**: `ORG_TRANSPORT` の明示値 > 既定 `DEFAULT_TRANSPORT`
+       （[`tools/transport.py`](../../../tools/transport.py) の `resolve()` と冒頭 docstring。
+       `DEFAULT_TRANSPORT` は runtime 0.1.28 で `renga` → `broker` にフリップ済みなので、
+       **`ORG_TRANSPORT` 無設定のデプロイは broker に解決する**）。**raw env 文字列の有無で
+       判定しない** — 「空 / 未設定だから renga」と読むと、いちばん一般的な無設定構成で
+       この自己回復経路が原理的に発火せず毎回人手待ちになる。Step 1 が `printenv` の結果で
+       `export ORG_TRANSPORT` を省くのは [`tools/peer_notify.py`](../../../tools/peer_notify.py)
+       が raw env で分岐する helper だから（`ORG_TRANSPORT == "broker"` のときだけ broker 経路、
+       それ以外は未設定を含めて renga 経路）で、判定基準の異なる別論点である
+     - **確定できないときは carve-out を取らない**（fail-safe）: `ORG_TRANSPORT` に未知値が
+       入っていて解決が `ValueError` になる等で「いま何が駆動しているか」を確定できない場合は、
+       条件 (1) を**不成立**として扱い、下の「broker 以外」と同じくユーザーに報告して指示を仰ぐ
+     - **(2) 再 spawn が `[name_in_use]` / `[name_taken]` で弾かれている** — stale binding の症状
+     - **(3) その name が `mcp__org-broker__list_panes` に現れない** — live pane 不在（＝列挙から数値
+       pane_id を取れない、この allowlist が必要になっている当の条件）
+     - **3 条件が揃う場合**: `mcp__org-broker__close_pane(target="pr-watch-<PR>")` する（broker が name →
+       stale pane_id を解決し登録簿を pop、`ok closed=%N` が返る。`[pane_not_found]` は既に
+       掃除済みで OK）。掃除後は同名 spawn が通る。Step 3 の `[name_taken]` 分岐はこの (b) を
+       自己回復するが、手動でも同手順で掃除できる。
+     - **broker 以外に解決する場合（`ORG_TRANSPORT=renga` の opt-in など）では裸 name に
+       フォールバックしない**: pre-capability
+       renga の legacy 解決は active タブ（＝ユーザーが見ているタブ）を先に引き、miss したら
+       他タブを index 順にフォールスルーして先勝ちする。したがって「live pane が無いので誤 close の
+       余地が無い」という前提自体が `list_panes`（＝ユーザー可視タブ）からしか立てられず、別タブに
+       同名の live pane が居れば前提は偽で、close はそのペインに当たる（`close_pane` は不可逆で
+       エラーも出ない）。この経路では close せず、stale binding を検出した旨と `pr-watch-<PR>` の
+       再 spawn が弾かれる状態であることをユーザーに報告して指示を仰ぐ。
+     - **控えた pane_id での close にも倒さない**: `list_panes` で再確認できない retained id を
+       close に使うのは (a) が防いでいる pane_id recycle hazard を素通りさせるため、本 skill は
+       採らない（`[name_taken]` が続く場合と同じくユーザー報告に倒す）。

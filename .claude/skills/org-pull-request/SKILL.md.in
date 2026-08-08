@@ -150,9 +150,52 @@ close は低遅延経路として温存し、二重掃除にならないよう `
     recycle 対策。別ペインに再割当てされていれば close しない）、合致したら
     `{{FQ}}close_pane(target=<控えた pane_id>)` で閉じて追跡をクリアする。`[pane_not_found]` /
     `[pane_vanished]` は tmux backend で既に self-close 済み / herdr でも掃除済みの正常応答で skip。
-  - **stale 登録簿 binding のみ name 指定**: 控えた pane_id が既に消え、かつ同名 spawn が `[name_taken]`
-    で弾かれるときだけ **name 指定**で `{{FQ}}close_pane(target="pr-watch-<PR>")` して登録簿を pop する
-    （このケースは live pane が無いので誤 close の余地が無い）。
+  - **stale 登録簿 binding のみ name 指定（transport 条件付き allowlist）**: 控えた pane_id が既に消え、
+    数値 id を `{{FQ}}list_panes` から取り直せない stale binding のときだけ、裸 name の
+    `{{FQ}}close_pane(target="pr-watch-<PR>")` で登録簿を pop する。列挙にペインが出ない以上、上の
+    識別子束縛 close が使う「list_panes で照合した数値 pane_id」が原理的に取れないための例外で、
+    **以下 3 条件がすべて成立するときだけ許可される**:
+    - **(1) いま Group B を駆動している backend が `close_pane` / `set_pane_identity` を自身の
+      single-tab モデル内で解決する**（＝ `org-broker`）— そのモデル内で name も解決されるため
+      誤タブ hazard が構造的に生じない（契約
+      [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md)
+      §8.1 / §8.10。T-§4.2 の carve-out も条件を "the backend resolves Group B in a single-tab
+      model" と **backend の性質**で書いており、env 変数の綴りでは書いていない）。**判定は窓口が
+      既に持つ transport 解決に従う**: `ORG_TRANSPORT` の明示値 > 既定 `DEFAULT_TRANSPORT`
+      （[`tools/transport.py`](../../../tools/transport.py) の `resolve()` と冒頭 docstring。
+      `DEFAULT_TRANSPORT` は runtime 0.1.28 で `renga` → `broker` にフリップ済みなので、
+      **`ORG_TRANSPORT` 無設定のデプロイは broker に解決する**）。**raw env 文字列の有無で
+      判定しない** — 「空 / 未設定だから renga」と読むと、いちばん一般的な無設定構成でこの
+      掃除が原理的に発火しなくなる（§「CI 完了検知の正路」が触れる
+      [`tools/peer_notify.py`](../../../tools/peer_notify.py) の raw env 判定は、helper 側の
+      分岐仕様であって backend の同定規則ではない）。**確定できないときは carve-out を取らない**
+      （fail-safe。未知値で解決が `ValueError` になる等で「いま何が駆動しているか」を確定
+      できない場合は条件 (1) を**不成立**として扱い、下記の報告に倒す）
+    - **(2) 再 spawn が `[name_in_use]` / `[name_taken]` で弾かれている** — stale binding の症状。
+      契約 T-§4.2 の carve-out は 3 条件を "MUST gate it on all three conditions together" と
+      normative に固定しているので、**harness 側でこの条件を別の証拠に差し替えない**。post-merge
+      cleanup は watcher を掃除するだけで**再 spawn しない**ため、この経路が自前でこの観測を
+      作ることはない。同一 name の再 spawn が弾かれた観測が手元にある場合
+      （[`/pr-watch-pane`](../pr-watch-pane/SKILL.md) Step 3 の分岐で現に観測した場合）に限り
+      成立し、**観測が無ければ条件 (2) は不成立**として carve-out を取らない（＝ close せず
+      下記の報告に倒す）。「この経路では観測できないから別の証拠でよい」とは読まない —
+      **観測できないなら条件不成立**、が契約に忠実な扱いである
+    - **(3) その name が `{{FQ}}list_panes` に現れない** — live pane 不在（＝列挙から数値 pane_id を取れない）
+    - **契約の 3 条件に加えた harness 側の追加要件**（狭めるだけで、3 条件を置き換えない）: 上の
+      識別子束縛 close が「控えた pane_id のレコードなし」または `[pane_not_found]` で終わっており、
+      かつ freshness gate を通っていま追跡中の watcher instance に束縛されていること。superseded と
+      判定した終端イベントや追跡を既に消してある場合は撃たない（別 instance の binding を pop しうる）
+
+    **broker 以外に解決する場合（`ORG_TRANSPORT=renga` の opt-in など）では裸 name に
+    フォールバックしない**: 「live pane が無いので
+    誤 close の余地が無い」という前提は `list_panes`（＝ユーザー可視タブ）からしか立てられず、
+    pre-capability renga の legacy 解決は active タブを先に引き、miss したら他タブを index 順に
+    フォールスルーして先勝ちするため、別タブに同名の live pane が居れば前提は偽で close がそのペインに
+    当たる（`close_pane` は不可逆でエラーも出ない）。この経路では close せず、stale binding を検出した旨を
+    ユーザーに報告する。この allowlist が契約
+    [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md)
+    T-§4.2 の Group B 台帳が stale-binding 行に求める「使った mechanism」であり、3 条件と根拠の SoT は
+    [`/pr-watch-pane`](../pr-watch-pane/SKILL.md) Step 5 の (b)。
   - `close_pane` は transport 抽象上 **tmux / herdr 両対応**。ケース分岐の SoT は
     [`/pr-watch-pane`](../pr-watch-pane/SKILL.md) Step 5。
 - **worker ペインの `CLOSE_PANE` とは別操作**: 2b-ii の worker Claude ペイン close はディスパッチャー宛

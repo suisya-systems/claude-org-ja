@@ -11,6 +11,7 @@ description: >
 effort: low
 allowed-tools:
   - Read
+  - Bash(echo:*)
   - Bash(py -3 ../tools/journal_append.py:*)
   - Bash(bash ../tools/journal_append.sh:*)
   - Bash(py -3 ../tools/capability_gate.py:*)
@@ -123,20 +124,32 @@ Step 0 に入る前に遮断する（恒久対策の経緯は
 ## Step 0: 自分の identity を確認する
 
 1. `{{FQ}}set_summary` で「Dispatcher: 監視（resumed）」をセット
-2. `{{FQ}}list_panes` でフォーカスペインの name/role を確認:
+2. **caller pane id を確定する**（`focused: true` は「そのタブで今フォーカスされているペイン」で
+   あって caller 自身ではない。人間がフォーカスを移した瞬間、別ペインを `dispatcher` に改名し、
+   その id を `dispatcher_pane_id` として DB に焼き付けてしまう）: 環境変数 `RENGA_PANE_ID`
+   （`echo "${RENGA_PANE_ID:-unset}"`）を起点に、`{{FQ}}list_panes` へ**同一 id のレコードが
+   在ることを照合**する。ここで確定した id が Step 2 で書く `dispatcher_pane_id` であり、以後の
+   routing はこれを掴む。規則の正本は
+   [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md)
+   T-§4.2 の caller pane id 取得規則
+3. 照合できたレコードの name/role を確認:
    - 期待値: `name == "dispatcher"` かつ `role == "dispatcher"`
-   - 不一致なら `{{FQ}}set_pane_identity(target="focused", name="dispatcher", role="dispatcher")` で修復
-3. 自分の `pane_id` を `list_panes` から取得（`focused: true` の id）
+   - 不一致なら `{{FQ}}set_pane_identity(target="<RENGA_PANE_ID の値>", name="dispatcher", role="dispatcher")` で修復（相対セレクタでは撃たない）
+   - **`caller-id 未確定`**（`RENGA_PANE_ID` 未設定 / `list_panes` に同一 id 無し / broker 等で同等の
+     caller-id を入手できない）: 自己修復を実行せず、**`dispatcher_pane_id` も渡さない**まま
+     （Step 2 の `update_session()` は未指定を「保持」と解釈するので既存値が温存され、これ自体が
+     fail-closed になる）Step 1 へ進み、identity 未確認であることを Step 6 のブリーフィングで
+     secretary に明示して続行判断を仰ぐ（`target="focused"` や裸 `name` へフォールバックしない）
 4. `{{FQ}}list_peers` で `name == "dispatcher"` の `peer_id` を取得。
    **呼び出しの直前に
    [`.claude/skills/org-delegate/references/capability-first-drive-operational-gate.md`](../org-delegate/references/capability-first-drive-operational-gate.md)
    を Read し、`monitoring-read-only` の分岐を適用する**（同 reference §6 の表 #4）。capability 形
-   かつ未承認なら列挙から `peer_id` を採らず破棄し、3 で得た `focused: true` の pane_id で identity を
+   かつ未承認なら列挙から `peer_id` を採らず破棄し、2 で確定した caller pane id で identity を
    確定して進む（停止しない・待ち時間 0 分）。
    **このとき Step 2 の DB 書き込みでは `dispatcher_peer_id` を渡さない**（`update_session()` は
    None / 未指定を「保持」と解釈する契約なので、**既存値がそのまま残る**）。placeholder や
    観測できなかった値を書くと、以後の routing が壊れた id を掴む。`dispatcher_pane_id` は
-   `list_panes` から確定できるので通常どおり書く。Step 6 のブリーフィングでは
+   2 で確定した caller pane id をそのまま書く（`caller-id 未確定` のときは渡さない）。Step 6 のブリーフィングでは
    `peer=<未取得: capability gate 縮退中>` と明示して secretary に伝える。
 
    **capability 形かつ承認済み（同 reference §2 の `first_drive` が `recorded`）のときも、自分の
@@ -146,7 +159,7 @@ Step 0 に入る前に遮断する（恒久対策の経緯は
    何であれ `peer_id` は未確定のまま**先へ進む。**したがって Step 2 の DB 書き込みでは
    `dispatcher_peer_id` を渡さない**（`update_session()` の「未指定 = 保持」で既存値を温存する。
    生きた同一ペインを引き継ぐ resume では保持が正しく、渡さないこと自体が fail-closed になる）。
-   更新するのは 3 で得た `focused: true` の `dispatcher_pane_id` だけである。Step 6 の
+   更新するのは 2 で確定した caller pane id（`dispatcher_pane_id`）だけである。Step 6 の
    ブリーフィングでは `peer=<未取得: 名前引きでは自 peer を同定できない>` と明示して secretary に伝える。
 
 ## Step 1: handover ファイルを読み込む
@@ -214,8 +227,13 @@ with StateWriter(conn, claude_org_root=Path('..')).transaction() as w:
 "
 ```
 
+**Step 0 が `caller-id 未確定` に落ちていた場合は、同じ理由で `dispatcher_pane_id` も渡さない**
+（両方とも未確定で `update_session()` に渡す引数が残らないなら、この Step 2 自体を skip する）。
+`focused` から採った id で埋めてはならない — 人間のフォーカス位置に依存した別ペインの id を、
+以後の routing の宛先として恒久的に焼き付けることになる。
+
 `update_session()` は未指定を「保持」と解釈する契約なので、既存値がそのまま残る（生きた同一ペインを
-引き継ぐ resume ではこれが正しい。詳細は Step 0 手順 4 と共有 reference §1-2-d）。
+引き継ぐ resume ではこれが正しい。詳細は Step 0 手順 3 / 手順 4 と共有 reference §1-2-d）。
 
 - `dispatcher_pane_id` / `dispatcher_peer_id` は **文字列**で書く（schema は TEXT、
   既存 `/org-start` も文字列を入れているので型を揃える）
@@ -272,13 +290,31 @@ secretary に報告する。**（判定条件・三値の定義・評価順の�
 1. **inflight 再生成（先に実行）**: Step 4 の `list_peers` / `list_panes` に
    `name == "curator"` のペインが生きているのに `.state/dispatcher/curate-inflight.json`
    が無い場合（前 session が spawn 直後の inflight 書き込み前に途切れた等）、untracked
-   curator を放置しないよう `started_at = <決定的 UTC>` / `reasons: []` / `extended: false` /
-   `last_inspect_hash: null` / `last_inspect_ts: null` で inflight を**再生成する**。
+   curator を放置しないよう `started_at = <決定的 UTC>` / `pane_id = <下記の数値 pane id>` /
+   `reasons: []` / `extended: false` / `curate_result: null` / `last_inspect_hash: null` /
+   `last_inspect_ts: null` で
+   inflight を**再生成する**（フィールドの正本は
+   [`.dispatcher/references/pane-close.md` 5-3](../../../.dispatcher/references/pane-close.md) の
+   JSON。`trigger_task_id` は inflight を失った前 session の CLOSE_PANE 対象を指すフィールドで
+   resume 側に値の出所が無いため書かない — Step 5.3 の完了受領 / timeout 判定はこの
+   フィールドを読まない。`curate_result` は受領した `CURATE_*` を次サイクルへ持ち越す
+   フィールドで、resume 時点では何も受領していないので**初期値 `null` を明示して書く** —
+   Step 5.3 (a) が close できないまま inflight を保持するときだけ `"done"` / `"skipped"` /
+   `"error"` に更新される）。
    `started_at` は **`date -u +%Y-%m-%dT%H:%M:%SZ`**（PowerShell 環境は
    `(Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")`）の出力をそのまま埋め、
    **手書きの local(JST)時刻を `Z` で書かない**（再生成 started_at が未来時刻になると Step 5.3 の
-   `now - started_at` が負値となり curator が永久に孤立する。決定的取得の正本は
-   [`.dispatcher/references/pane-close.md` 5-3](../../../.dispatcher/references/pane-close.md)）。
+   `now - started_at` が負値となり curator が永久に孤立する。決定的取得の正本は同 5-3）。
+   `pane_id` は**生存確認に使った `{{FQ}}list_panes` の列挙で `name == "curator"` かつ
+   `role == "curator"` を指しているレコードの数値 `id`** を、引用符で囲まず数値で書く（列挙が
+   手元にあるのでその場で採れる）。**`pane_id` を欠いた形で再生成しない** — Step 5.3 (a)/(b) の
+   curator close はこの `pane_id` を identity 照合の起点にするので、欠けると schema 追加前の
+   旧形式ファイルと同じ扱いになり、close が列挙引き直しの fallback 経路に落ちる
+   （[`.dispatcher/references/worker-monitoring.md` Step 5.3](../../../.dispatcher/references/worker-monitoring.md)）。
+   `list_peers` にのみ `curator` 名があり `{{FQ}}list_panes` の列挙に該当レコードが無い場合は
+   **再生成せず** secretary に informational として報告する（数値 pane id を採れないうえ、
+   messaging 面の名前一致は同タブの pane 生存の根拠にならない。Step 4 と同じ規律で、
+   契約 T-§4.2 が pane 制御可能性の推論を禁じている）。
    以降の判定はこの再生成後の状態で行う（= このケースは必ず 2 の再開条件を満たす）
 2. **`/loop 3m` 再開条件**: handover の `active_worker_count > 0`、state.db の
    active worker dirs が非空、**または `curate-inflight.json` が存在する**
@@ -336,6 +372,9 @@ DISPATCHER_RESUMED: ディスパッチャー復帰完了。
 - handover との差分: <あれば 1 行、無ければ「なし」>
 - 監視ループ: /loop 3m 再開 (or idle)
 ```
+
+- Step 0 が `caller-id 未確定` に落ちていた場合は `pane=<未確定: caller pane id を同定できない>` と
+  書き、`(state.db 更新済)` は付けない（前値保持のままであることを secretary に伝える）
 
 ## Step 7: handover ファイルを consumed 状態に切り替える
 

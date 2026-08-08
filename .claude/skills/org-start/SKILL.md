@@ -8,6 +8,7 @@ description: >
 effort: low
 allowed-tools:
   - Read
+  - Bash(echo:*)
   - Bash(bash tools/journal_append.sh:*)
   - Bash(py -3 tools/journal_append.py:*)
   - Bash(python -m tools.state_db.importer:*)
@@ -116,16 +117,34 @@ ClaudeCode起動後に最初に実行するスキル。前回の状態復元と�
        broker daemon の起動状態と `--mcp-config` に渡す broker 設定をユーザーに
        確認してもらう
 3. **secretary ペイン identity の検証と自動リカバリ**:
-   - `mcp__renga-peers__list_panes`（broker では `mcp__org-broker__list_panes`）の結果から `focused=true` のペイン（= 自分）を特定する
+   - **caller pane id を先に確定する（`focused=true` を「自分」と読まない）**: `list_panes` の
+     `focused` は「そのタブで今フォーカスされているペイン」であって caller 自身ではない。人間が
+     フォーカスを移した瞬間 `focused` は別ペインを指すので、そこを起点にすると無関係のペインを
+     `secretary` に改名しうる。identity の検証も修復も、契約
+     [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md)
+     T-§4.2 の **caller pane id 取得規則**に従って caller pane id 起点で行う:
+     1. 環境変数 `RENGA_PANE_ID` を caller pane id の起点にする（renga が起動したペイン内でのみ
+        継承される。冒頭「前提」で挙げた環境変数で、未設定は `detached` 相当）:
+        ```bash
+        echo "${RENGA_PANE_ID:-unset}"
+        ```
+     2. `mcp__renga-peers__list_panes`（broker では `mcp__org-broker__list_panes`）を列挙し、
+        **同一 id のレコードが存在することを照合する**（id recycle / 列挙不能の検出）。照合できた
+        そのレコードが caller 自身であり、以降の期待値判定と修復はこのレコードだけを対象にする
    - 期待値: `name == "secretary"` かつ `role == "secretary"`
+   - **`caller-id 未確定` の場合** — `RENGA_PANE_ID` が未設定 / `list_panes` に同一 id のレコードが
+     無い / broker 等そもそも同等の caller-id を入手できない transport: **自己修復（下の自動リカバリ）を
+     実行せず、identity 未確認のまま人間に報告して続行判断を仰ぐ**（勝手に fatal にしない）。`target="focused"`
+     や裸 `name` のような相対セレクタへフォールバックしてはならない（契約 T-§4.2 Group B。誤タブの
+     別ペインを改名する経路になる）。broker の縮退の具体は下の broker 分岐を参照
    - **不一致の場合** — `renga --layout ops` 以外の経路で起動された / 旧ops.tomlで起動された既存セッションに attach 等:
-     1. `mcp__renga-peers__set_pane_identity(target="focused", name="secretary", role="secretary")` を呼んで自動修復（broker では `mcp__org-broker__set_pane_identity` を使うが、`target="focused"` を解決できないため、`list_panes` で特定した自ペインの id を `target` に指定する）
+     1. `mcp__renga-peers__set_pane_identity(target="<RENGA_PANE_ID の値>", name="secretary", role="secretary")` を呼んで自動修復（照合済みの数値 pane id で撃つ。`target="focused"` は使わない）
      2. 成功すれば警告ログを events テーブルに残して続行（`bash tools/journal_append.sh secretary_identity_restored note=auto_recovered`）
      3. 失敗ケースの分岐:
         - `name_in_use`（broker では `name_taken`）エラー: 既存の別ペインが `secretary` を占有している。ユーザーに状況を報告し、「現セッション継続なら全ワーカーに `to_id="{numeric_pane_id}"` で送信させる」「永続修復なら `/org-suspend` → 終了 → `renga --layout ops` で再起動」の選択肢を提示
         - `name_invalid` / その他: ユーザーに原因を報告
    - **一致している場合**: そのまま続行
-   - **broker（`ORG_TRANSPORT=broker`）の場合**: secretary 自身の pane record が存在しないことがあり、`list_panes` に `focused=true` のペインが見つからない / `set_pane_identity(target="focused", ...)` が `[pane_not_found] no pane for target 'focused'` を返しうる。**どちらかが起きた時点で上記の不一致リカバリの再試行はせず、この分岐に進む**。 `mcp__org-broker__list_peers` で自分のエージェント登録（`name="secretary"` かつ `role="secretary"`）が確認できれば **identity 検証は満たされたとみなして続行してよい**（broker の `send_message` ルーティングは peer 登録で成立し、secretary の pane record を要求しない）。**この `list_peers` の直前にも [`.claude/skills/org-delegate/references/capability-first-drive-operational-gate.md`](../org-delegate/references/capability-first-drive-operational-gate.md) を Read し、`monitoring-read-only` の分岐を適用する**（同 reference §6 の表 #2b）。capability 形かつ未承認なら列挙を identity 検証の充足根拠にせず破棄し、`name="secretary"` の一致で満たされたとみなさない（予約名 `secretary` は別 org の並走タブに同名で実在しうる。共有 reference §3-B-1）。その場合は identity 未確認のまま**人間に報告して続行判断を仰ぐ**（勝手に fatal にしない）。**承認済み（同 reference §2 の `first_drive` が `recorded`）のときも同じ結論になる**: §1-2-d のとおり `list_peers` は caller を除外するので、`name="secretary"` に一致したレコードは**同タブに 1 件だけ在っても自分ではありえず**、自 identity の検証根拠にできない（承認の有無によらず、この経路が列挙から得られるものは無い）。なお現行 `org-broker` は本 amendment の capability を 1 つも広告しないので、broker 面でこの縮退が発火することは無い
+   - **broker（`ORG_TRANSPORT=broker`）の場合**: broker には `RENGA_PANE_ID` に相当する caller pane id が無く、secretary 自身の pane record が存在しないこともある。したがって broker では上の caller pane id 取得規則が最初から **`caller-id 未確定`** に落ち、`set_pane_identity` による自動修復は行わない（相対セレクタで撃てば `[pane_not_found] no pane for target 'focused'` になるが、そもそも撃たない）。**上記の不一致リカバリは再試行せず、この分岐に進む**。 `mcp__org-broker__list_peers` で自分のエージェント登録（`name="secretary"` かつ `role="secretary"`）が確認できれば **identity 検証は満たされたとみなして続行してよい**（broker の `send_message` ルーティングは peer 登録で成立し、secretary の pane record を要求しない）。**この `list_peers` の直前にも [`.claude/skills/org-delegate/references/capability-first-drive-operational-gate.md`](../org-delegate/references/capability-first-drive-operational-gate.md) を Read し、`monitoring-read-only` の分岐を適用する**（同 reference §6 の表 #2b）。capability 形かつ未承認なら列挙を identity 検証の充足根拠にせず破棄し、`name="secretary"` の一致で満たされたとみなさない（予約名 `secretary` は別 org の並走タブに同名で実在しうる。共有 reference §3-B-1）。その場合は identity 未確認のまま**人間に報告して続行判断を仰ぐ**（勝手に fatal にしない）。**承認済み（同 reference §2 の `first_drive` が `recorded`）のときも同じ結論になる**: §1-2-d のとおり `list_peers` は caller を除外するので、`name="secretary"` に一致したレコードは**同タブに 1 件だけ在っても自分ではありえず**、自 identity の検証根拠にできない（承認の有無によらず、この経路が列挙から得られるものは無い）。なお現行 `org-broker` は本 amendment の capability を 1 つも広告しないので、broker 面でこの縮退が発火することは無い
      > **broker 論理エントリ注記**: broker の `list_panes` に geometry が全て 0（w=0 h=0）で `kind` が null のエントリが現れることがある。これは残骸とは限らず、**adapter 実体を持たない論理エントリ（human-driven logical pane）**でありうる。典型は root secretary（窓口）自身の bookkeeping entry。扱いは次のとおり:
      > - `inspect_pane` は adapter 不在のため失敗する（socket close を観測する）。調査目的で叩かない
      > - `close_pane` は `[logical_pane] cannot close a human-driven logical pane` で**拒否される**。残骸と決めつけて close を試みない
