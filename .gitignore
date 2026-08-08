@@ -67,6 +67,33 @@ dist/
 .DS_Store
 Thumbs.db
 
+# Machine-local shell / editor / git dotfiles that land in the repo root
+# (Issue #880). These are the operator's environment, never repo content.
+# On some WSL setups the harness materialises them at the worktree root as
+# /dev/null character devices; while untracked they make a working-tree
+# stash with -u abort on a non-regular file — the failure that started the
+# "stash saved nothing, the following pop restored another entry" incident.
+# Root-anchored (leading /) on purpose: an unanchored pattern would also
+# swallow same-named files in subdirectories, and the delegation pattern
+# probe (git check-ignore, tools/resolve_worker_layout.py Step 0.7) would
+# then misroute a legitimate target into the gitignored sub-mode.
+# Deliberately NOT listed: .gitmodules, .mcp.json and .claude/* — this repo
+# may legitimately track those (it already tracks .claude/settings.json and
+# .claude/skills/), so ignoring them would silently drop a future commit.
+# The deny that actually closes the stash accident path lives in
+# .hooks/block-dangerous-git.sh; this block only quiets `git status`.
+# No trailing slash on /.idea and /.vscode: here they are character devices,
+# which git reports as files, so a directory-only pattern would not match.
+/.bash_profile
+/.bashrc
+/.profile
+/.zprofile
+/.zshrc
+/.gitconfig
+/.ripgreprc
+/.idea
+/.vscode
+
 # Environment variables
 .env
 .env.*

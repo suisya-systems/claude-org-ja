@@ -11,6 +11,9 @@
 #   - その他の既存破壊的コマンド（reset --hard / branch -D / clean -f /
 #     checkout -- . / restore --source / tag -d / update-ref -d /
 #     reflog expire --all）が引き続き deny されること
+#   - git stash の変更系（bare / push / save / pop / apply / branch / drop /
+#     clear / store / create / 未知トークン）→ deny、調査用の
+#     read-only（list / show）→ allow（Issue #880）
 
 set -euo pipefail
 
@@ -302,6 +305,212 @@ run_test "git status && git push --force-with-lease origin feat/foo (後続セ�
 
 run_test "git status && git push --force-with-lease origin main (後続セグメントの with-lease protected)" \
   "$(mk_bash_json "git status && git push --force-with-lease origin main")" 2
+
+echo ""
+
+# =====================================================================
+# [git stash の変更系は deny（Issue #880）]
+# allowlist 方式なので、read-only の list / show 以外は未知トークンも既定 deny。
+# =====================================================================
+echo "[git stash の変更系は deny（Issue #880）]"
+
+run_test "git stash (bare, push 相当)" \
+  "$(mk_bash_json "git stash")" 2
+
+run_test "git stash -u (Issue #880 の事故の起点)" \
+  "$(mk_bash_json "git stash -u")" 2
+
+run_test "git stash --include-untracked (-u の長形式)" \
+  "$(mk_bash_json "git stash --include-untracked")" 2
+
+run_test "git stash push" \
+  "$(mk_bash_json "git stash push")" 2
+
+run_test "git stash push -u -m wip (フラグ後続でも deny)" \
+  "$(mk_bash_json "git stash push -u -m wip")" 2
+
+run_test "git stash save wip (deprecated だが有効な変更系)" \
+  "$(mk_bash_json "git stash save wip")" 2
+
+run_test "git stash pop (Issue #880 の事故の第 2 段)" \
+  "$(mk_bash_json "git stash pop")" 2
+
+run_test "git stash apply" \
+  "$(mk_bash_json "git stash apply")" 2
+
+run_test "git stash apply 'stash@{1}' (stash ref 引数付き)" \
+  "$(mk_bash_json "git stash apply 'stash@{1}'")" 2
+
+run_test "git stash branch tmp" \
+  "$(mk_bash_json "git stash branch tmp")" 2
+
+run_test "git stash drop" \
+  "$(mk_bash_json "git stash drop")" 2
+
+run_test "git stash clear" \
+  "$(mk_bash_json "git stash clear")" 2
+
+run_test "git stash store deadbeef (refs/stash を直接書く低レベル形)" \
+  "$(mk_bash_json "git stash store deadbeef")" 2
+
+run_test "git stash create (allowlist 外の既定 deny)" \
+  "$(mk_bash_json "git stash create")" 2
+
+run_test "git stash --help (allowlist 外は option 形でも安全側 deny)" \
+  "$(mk_bash_json "git stash --help")" 2
+
+run_test "git stash -h (--help の短形式)" \
+  "$(mk_bash_json "git stash -h")" 2
+
+run_test "git -C /tmp/repo stash pop (値取り global option 介在形)" \
+  "$(mk_bash_json "git -C /tmp/repo stash pop")" 2
+
+run_test "git -C \"C:/Program Files/repo\" stash pop (空白入りパスで割れても到達)" \
+  "$(mk_bash_json 'git -C "C:/Program Files/repo" stash pop')" 2
+
+run_test "git --git-dir=/tmp/r/.git stash pop (attached 値の global option)" \
+  "$(mk_bash_json "git --git-dir=/tmp/r/.git stash pop")" 2
+
+run_test "git -c core.pager=cat stash pop (-c 介在形)" \
+  "$(mk_bash_json "git -c core.pager=cat stash pop")" 2
+
+run_test "/usr/bin/git stash pop (絶対パス起動)" \
+  "$(mk_bash_json "/usr/bin/git stash pop")" 2
+
+run_test "git status && git stash pop (複合コマンド &&)" \
+  "$(mk_bash_json "git status && git stash pop")" 2
+
+run_test "git status ; git stash drop (複合コマンド ;)" \
+  "$(mk_bash_json "git status ; git stash drop")" 2
+
+run_test "git stash list && git stash pop (allow と deny の混在)" \
+  "$(mk_bash_json "git stash list && git stash pop")" 2
+
+run_test "git stash push tools/org_extension_schema.json (旧 doc の案内手順)" \
+  "$(mk_bash_json "git stash push tools/org_extension_schema.json")" 2
+
+run_test "git stash \$VAR (未展開の変数 → allowlist 外 deny)" \
+  "$(mk_bash_json 'git stash $VAR')" 2
+
+# Git for Windows の実行形式スペリング。brief に Windows 環境の節がある以上、
+# ここが抜けると同じ事故が hook 素通りで再発する。
+run_test "git.exe stash pop (Git for Windows のスペリング)" \
+  "$(mk_bash_json "git.exe stash pop")" 2
+
+run_test "git.exe stash drop" \
+  "$(mk_bash_json "git.exe stash drop")" 2
+
+run_test "GIT.EXE stash pop (Windows は実行形式名が大小無差別)" \
+  "$(mk_bash_json "GIT.EXE stash pop")" 2
+
+run_test "/usr/bin/git.exe stash pop (絶対パス + .exe)" \
+  "$(mk_bash_json "/usr/bin/git.exe stash pop")" 2
+
+run_test "C:/Git/bin/git.exe stash pop (Windows 絶対パス)" \
+  "$(mk_bash_json "C:/Git/bin/git.exe stash pop")" 2
+
+run_test "echo safe && git.exe stash pop (複合コマンド + .exe)" \
+  "$(mk_bash_json "echo safe && git.exe stash pop")" 2
+
+# 値を取る global option の値に空白が入ると、split_segments が引用符を空白へ
+# 正規化した後で値が複数トークンへ割れる。その断片が既知サブコマンド名だと
+# 走査が本物の stash より手前で打ち切られ deny をすり抜けていた（Codex round 1）。
+run_test "git -C \"/tmp/my status repo\" stash pop (値に status を含む -C)" \
+  "$(mk_bash_json 'git -C "/tmp/my status repo" stash pop')" 2
+
+run_test "git -C \"/tmp/a show b\" stash clear (値に show を含む -C)" \
+  "$(mk_bash_json 'git -C "/tmp/a show b" stash clear')" 2
+
+run_test "git --git-dir \"/tmp/a status repo/.git\" stash drop (detached --git-dir)" \
+  "$(mk_bash_json 'git --git-dir "/tmp/a status repo/.git" stash drop')" 2
+
+run_test "git --git-dir=\"/tmp/a status repo/.git\" stash drop (attached --git-dir)" \
+  "$(mk_bash_json 'git --git-dir="/tmp/a status repo/.git" stash drop')" 2
+
+run_test "git --work-tree \"/tmp/a commit b\" stash apply (値に commit を含む)" \
+  "$(mk_bash_json 'git --work-tree "/tmp/a commit b" stash apply')" 2
+
+run_test "git -C \"/tmp/my status repo\" stash list (割れた値でも read-only は allow)" \
+  "$(mk_bash_json 'git -C "/tmp/my status repo" stash list')" 0
+
+run_test "git -C \"/tmp/my status repo\" status (stash 不在なら allow)" \
+  "$(mk_bash_json 'git -C "/tmp/my status repo" status')" 0
+
+# インライン alias 定義は alias 本体がコマンド文字列に載るので静的に拾える
+# （Codex round 2）。config に定義済みの alias 経由は原理的に検出できないため
+# 本フックの残存ギャップとしてファイル冒頭に明記してある。
+run_test "git -c alias.s=stash s pop (インライン alias 定義)" \
+  "$(mk_bash_json 'git -c alias.s=stash s pop')" 2
+
+run_test "git -c alias.s=stash s drop (インライン alias 定義)" \
+  "$(mk_bash_json 'git -c alias.s=stash s drop')" 2
+
+run_test "git -c alias.st=\"stash pop\" st (値に空白入り alias)" \
+  "$(mk_bash_json 'git -c alias.st="stash pop" st')" 2
+
+run_test "git -c alias.lg=log lg (stash を含まない alias は allow)" \
+  "$(mk_bash_json 'git -c alias.lg=log lg')" 0
+
+run_test "git config --get alias.st (alias 定義の参照は allow)" \
+  "$(mk_bash_json 'git config --get alias.st')" 0
+
+# 既知の false positive を挙動として固定しておく（黙って変わらないように）。
+# 値を取る global option があると値の分割を判別できないため permissive 走査へ
+# 落ちる。その結果、引数に stash というリテラル語を置いた検索系まで deny になる。
+# 安全側に倒した意図的な選択で、根治には引用符境界を保つトークナイズが要る
+# （現状は split_segments が引用符を空白へ正規化した後の文字列しか見えない）。
+# 回避策は deny メッセージが案内するとおり git トークンを外すこと（rg / grep）。
+run_test "git -C /repo grep stash (既知の false positive: 安全側 deny)" \
+  "$(mk_bash_json 'git -C /repo grep stash')" 2
+
+run_test "git -c color.ui=false grep stash (同上)" \
+  "$(mk_bash_json 'git -c color.ui=false grep stash')" 2
+
+run_test "git grep stash -- src/ (global option 無しなら allow のまま)" \
+  "$(mk_bash_json 'git grep stash -- src/')" 0
+
+echo ""
+
+# =====================================================================
+# [git stash の read-only と stash リテラル語の false positive guard]
+# =====================================================================
+echo "[git stash の read-only allow / リテラル語の false positive guard]"
+
+run_test "git stash list (調査用 read-only)" \
+  "$(mk_bash_json "git stash list")" 0
+
+run_test "git stash list --date=iso (list + フラグ)" \
+  "$(mk_bash_json "git stash list --date=iso")" 0
+
+run_test "git stash show (調査用 read-only)" \
+  "$(mk_bash_json "git stash show")" 0
+
+run_test "git stash show -p 'stash@{0}' (show + フラグ + stash ref)" \
+  "$(mk_bash_json "git stash show -p 'stash@{0}'")" 0
+
+run_test "git -C /tmp/repo stash list (介在形でも allow は通る)" \
+  "$(mk_bash_json "git -C /tmp/repo stash list")" 0
+
+run_test "git help stash (--help の代替ドキュメント経路)" \
+  "$(mk_bash_json "git help stash")" 0
+
+run_test "git commit -m \"stash\" (メッセージ中のリテラル語)" \
+  "$(mk_bash_json 'git commit -m "stash"')" 0
+
+run_test "git commit -m \"add stash guard\" (本 PR 自身の commit message 形)" \
+  "$(mk_bash_json 'git commit -m "add stash guard"')" 0
+
+run_test "git grep stash -- src/ (別サブコマンドの引数)" \
+  "$(mk_bash_json "git grep stash -- src/")" 0
+
+run_test "git log --grep=stash (attached 値に stash)" \
+  "$(mk_bash_json "git log --grep=stash")" 0
+
+run_test "git branch feat/stash-guard (branch 名に stash)" \
+  "$(mk_bash_json "git branch feat/stash-guard")" 0
+
+run_test "git stashx pop (トークン完全一致でないので allow)" \
+  "$(mk_bash_json "git stashx pop")" 0
 
 echo ""
 echo "# $PASS passed, $FAIL failed"

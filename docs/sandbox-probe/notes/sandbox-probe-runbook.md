@@ -173,7 +173,7 @@ Claude Code を再起動し、追加で (`$SCRATCH_BASE_REPO` は `probes/checkl
 
 ## 6. 想定リスクと回避
 
-- **誤って `git reset --hard` 等が通り、worker dir のデータが消失**: worker dir は probe 専用に新設し、本物のリポジトリと混在させない。`git stash` で必要な変更は退避してから走らせる。
+- **誤って `git reset --hard` 等が通り、worker dir のデータが消失**: worker dir は probe 専用に新設し、本物のリポジトリと混在させない。残したい変更は probe 実行前に commit しておく（作業ツリーの退避に `git stash` は使わない — `.hooks/block-dangerous-git.sh` が変更系 stash を deny する。HEAD 版を取り出すだけなら `git show HEAD:<path>` で足りる）。
 - **dispatcher が誤って `git push --force` を発火**: dispatcher は permissions.deny が無効化されている。**本 runbook では dispatcher 上で push 系を試行しない**。push 系の検証は worker でのみ行う。
 - **bubblewrap 起動失敗で sandbox が silent fallback**: 必ず `/sandbox` で status を先に確認。Disabled なら手順を止めて bubblewrap を導入。
 - **`additionalDirectories` の path にユーザー名が含まれて他環境に持ち出せない**: profile JSON は placeholder 形式で commit し、適用時のみ `sed` で置換。本 spike の handcraft profile はそうなっている。
