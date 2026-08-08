@@ -110,8 +110,11 @@ mcp__renga-peers__spawn_pane(
 ```
 
 - 上の `echo` が**空でない値**を返した場合だけ、`command` の末尾に `--broker-state-dir <その値>` を
-  **リテラルで**足す（例: `... --config .state/attention.json --broker-state-dir /srv/org/broker`）。
-  空なら足さない（runtime 既定の `.state/broker` に解決される）
+  **リテラルで**足す。値は必ず**シングルクォートで囲む**（例:
+  `... --config .state/attention.json --broker-state-dir '/srv/org/broker'`）。空白や `$` などを
+  含むパスを裸で埋めると、ペインのシェルが分割・展開して別のパスが argparse に渡る。値自体に
+  `'` が含まれる場合は `'\''` へ置換してから埋める。空なら足さない（runtime 既定の
+  `.state/broker` に解決される）
 - `${ORG_BROKER_STATE_DIR:+--broker-state-dir "$ORG_BROKER_STATE_DIR"}` のようなシェル展開を
   `command` 文字列に埋め込まないこと。ペインの login shell が zsh だと既定 `SH_WORD_SPLIT` off で
   1 引数に潰れ、argparse error で watcher が起動しない（#829 と同型の罠）。値は呼び出し側で解決して
