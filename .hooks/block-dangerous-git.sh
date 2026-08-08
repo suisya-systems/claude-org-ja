@@ -78,6 +78,17 @@
 #     文字列検索は `git` トークンを外す（例: `grep -rn "stash pop"`）と通る。
 #   - `git <alias> stash`（未知の alias 名 + 引数に stash）は alias 名を
 #     パス断片と誤認するため deny になる。alias は使わず正式名で叩くこと。
+#   - **alias 経由の残存ギャップ**: git config に定義済みの alias（例
+#     `st = stash`）を使った `git st pop` は検出できない。コマンド文字列に
+#     stash の痕跡が 1 文字も無く、alias の実体は config 側にあるため、
+#     静的解析では原理的に解決できない（解決するには hook から
+#     `git config --get alias.<name>` を引く必要があり、hook の判定が実行
+#     マシンの config 依存になって drift 検出が効かなくなる。protected branch
+#     名を env override 不可にしているのと同じ理由で採らない）。
+#     コマンド文字列に alias 本体が載るインライン形
+#     （`git -c alias.s=stash s pop`）は上の __alias__ 検出で deny する。
+#     本フックは多層防御の最後の壁であって、意図的な回避の防止ではない
+#     ——本来の対象は「うっかり stash を叩く」事故（Issue #880）である。
 
 set -euo pipefail
 
@@ -328,6 +339,14 @@ extract_stash_subcommands() {
     }
     function is_known(t) { return index(KNOWN, " " t " ") > 0 }
     {
+      # インライン alias 定義（`git -c alias.s=stash s pop`）は、alias 本体が
+      # コマンド文字列に載っているので静的に判定できる。alias 値に stash を
+      # 含む形は「stash を別名で叩く」意図なので、サブコマンド位置の走査とは
+      # 別に検出して deny 側へ倒す（走査側は alias 名 s を未知トークンとして
+      # 読み飛ばすため、この検出が無いと素通りする）。
+      for (i = 1; i <= NF; i++) {
+        if ($i ~ /^alias\.[^=]*=/ && index($i, "stash") > 0) { print "__alias__"; }
+      }
       for (i = 1; i <= NF; i++) {
         # Git for Windows は git.exe。ワーカー brief に Windows 環境の節がある
         # 以上、実行形式のスペリング差で deny が外れると事故がそのまま再発する。

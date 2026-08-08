@@ -436,6 +436,24 @@ run_test "git -C \"/tmp/my status repo\" stash list (割れた値でも read-onl
 run_test "git -C \"/tmp/my status repo\" status (stash 不在なら allow)" \
   "$(mk_bash_json 'git -C "/tmp/my status repo" status')" 0
 
+# インライン alias 定義は alias 本体がコマンド文字列に載るので静的に拾える
+# （Codex round 2）。config に定義済みの alias 経由は原理的に検出できないため
+# 本フックの残存ギャップとしてファイル冒頭に明記してある。
+run_test "git -c alias.s=stash s pop (インライン alias 定義)" \
+  "$(mk_bash_json 'git -c alias.s=stash s pop')" 2
+
+run_test "git -c alias.s=stash s drop (インライン alias 定義)" \
+  "$(mk_bash_json 'git -c alias.s=stash s drop')" 2
+
+run_test "git -c alias.st=\"stash pop\" st (値に空白入り alias)" \
+  "$(mk_bash_json 'git -c alias.st="stash pop" st')" 2
+
+run_test "git -c alias.lg=log lg (stash を含まない alias は allow)" \
+  "$(mk_bash_json 'git -c alias.lg=log lg')" 0
+
+run_test "git config --get alias.st (alias 定義の参照は allow)" \
+  "$(mk_bash_json 'git config --get alias.st')" 0
+
 echo ""
 
 # =====================================================================

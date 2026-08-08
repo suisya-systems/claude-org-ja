@@ -25,7 +25,7 @@ org-delegate の Step 1.5 でワーカー専用ディレクトリ（`{workers_di
 1. `{worker_dir}` 内に claude-org の構造（.claude/, .dispatcher/, .curator/, .state/, registry/, dashboard/, knowledge/ 等）を再現してはならない
 2. claude-org リポジトリ（`{claude_org_path}`）を `{worker_dir}` 内へ clone してはならない（claude-org 本体は参照専用。編集対象は本ワーカーディレクトリのプロジェクトのみ）
 3. `git push` は実行できない（完了報告で窓口に依頼すること）
-4. `git stash` の変更系は実行できない（PreToolUse hook で deny される。引数なしの `git stash` / `push` / `save` / `pop` / `apply` / `branch` / `drop` / `clear` / `store` / `create` に加え、**許可リスト方式なのでここに挙げていないサブコマンドも deny される**）。キャラクタデバイス等の未追跡ファイルを stash できずに `git stash -u` が途中失敗し、それに気づかないまま `git stash pop` で別の stash を復元して作業を壊す事故が実際に起きているため。未コミット変更を退避したいときは作業ブランチへ一時 commit する（`git add -u` して commit し、戻すときは `git reset --soft HEAD~1`）。`git diff > <name>.patch` は staged / 未追跡ファイルを取りこぼすため、単独の退避手段にはしないこと。HEAD 版との比較は `git show HEAD:<path>` を使うこと。調査目的の `git stash list` / `git stash show` は許可されている
+4. `git stash` の変更系は実行できない（PreToolUse hook で deny される。引数なしの `git stash` / `push` / `save` / `pop` / `apply` / `branch` / `drop` / `clear` / `store` / `create` に加え、**許可リスト方式なのでここに挙げていないサブコマンドも deny される**）。キャラクタデバイス等の未追跡ファイルを stash できずに `git stash -u` が途中失敗し、それに気づかないまま `git stash pop` で別の stash を復元して作業を壊す事故が実際に起きているため。未コミット変更を退避したいときは作業ブランチへ一時 commit する（`git add -u` して commit し、戻すときは `git reset --soft HEAD~1`）。`git diff > <name>.patch` は staged / 未追跡ファイルを取りこぼすため、単独の退避手段にはしないこと。HEAD 版との比較は `git show HEAD:<path>` を使うこと。調査目的の `git stash list` / `git stash show` は許可されている。**alias 経由でも実行しないこと**（config に定義済みの alias は hook が静的に解決できず素通りするが、事故の中身は同じ）
 
 ### 正しい作業手順
 - 新規プロジェクト: `{worker_dir}` 内で `git init` し、直接ファイルを作成
