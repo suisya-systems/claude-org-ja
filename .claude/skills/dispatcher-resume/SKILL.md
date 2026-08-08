@@ -265,8 +265,10 @@ secretary に **報告して** 判断を仰ぐ（勝手に再 spawn / status 変
 列挙に 1 件も無い）でも、それだけでは lifecycle を断定しない** — 契約 T-§4.2 は messaging 面の到達性から
 pane 制御可能性を推論することを禁じ、`caller_scope` 未確立下では Group-A 列挙（`mcp__org-broker__list_panes`）からの
 不在も終了の証拠にならないと書く。`WORKER_PANE_EXITED` を送ってよいのは **(i) 同タブの `pane_exited` を
-観測した、または (ii) 以前 在 と観測した名前が後続の `mcp__org-broker__list_peers` から消えた**場合だけである
-（§1-2-c）。**「unknown」では送らず、indeterminate として secretary に報告する**（§1-2-b）。
+観測した、または (ii) 以前 在 と観測したレコードの数値 `id` が後続の `mcp__org-broker__list_peers` から消えた**
+場合だけである（§1-2-c）。**(ii) を `name` の消失で判定しない** — 並走タブの同名ピアが残り続けると
+永久に偽のままになり reconcile が滞留する。**「unknown」では送らず、indeterminate として secretary に
+報告する**（§1-2-b）。
 
 ## Step 5: 監視ループの再開
 

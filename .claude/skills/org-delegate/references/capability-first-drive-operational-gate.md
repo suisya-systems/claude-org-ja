@@ -182,9 +182,17 @@ caller のタブ値だと確定できるとき、欠落レコードの `tab` を
 > `list_peers` record existing, or from a successful `send_message`.
 
 と書く。したがって **不在 → lifecycle 断定へ進むには pane 面の裏取りを別に取る**: (i) 同タブの
-`pane_exited` を観測した、または (ii) **以前この経路が 在 と観測した名前**が後続の `list_peers` から
-消えた。契約 T-§2.1 はこの 2 つを列挙したうえで「If neither is available the harness MUST record the
-outcome as **indeterminate** and escalate it」と書く。**Group-A 列挙（`list_panes` など）からの不在は
+`pane_exited` を観測した、または (ii) **以前この経路が 在 と観測したレコードの数値 `id`** が後続の
+`list_peers` から消えた。契約 T-§2.1 はこの 2 つを列挙したうえで「If neither is available the harness
+MUST record the outcome as **indeterminate** and escalate it」と書く。
+
+> **(ii) の消失判定は `name` ではなく数値 `id` で行う（MUST）。** 並走タブに同名のピアが居ると、
+> **自タブのワーカーが終了したあとも他タブの同名ピアが列挙に残り続ける**ので、「その名前が消えたか」は
+> 永久に偽のままになり、`WORKER_PANE_EXITED` が発火せず run が滞留する（不在側に倒れないので
+> 安全ではあるが、reconcile が永久に止まる別の障害になる）。T-§2.2 の
+> 「MUST NOT key a lookup, a **set-membership test**, or a reverse map on `name` alone」は
+> まさにこの集合所属判定を名指しで禁じている。**在 と判定した時点でそのレコードの数値 `id` を控え、
+> 以後の消失判定はその id で行う**（T-§2.1: 数値 id だけが tab-stable な address form）。**Group-A 列挙（`list_panes` など）からの不在は
 裏取りにならない** — T-§4.2 は `caller_scope` 未確立下について「**MUST NOT read absence from such an
 enumeration, or a `pane_not_found` from such a call, as evidence that a pane has exited**」と書く
 （フォーカス変更だけで両方が起きるため）。どちらも取れなければ **indeterminate** に倒し、unknown と
