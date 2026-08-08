@@ -46,6 +46,11 @@ allowed-tools:
    起点に、`{{FQ}}list_panes` へ**同一 id のレコードが在ることを照合**する。規則の正本は
    [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md)
    T-§4.2 の caller pane id 取得規則
+   - **broker（`ORG_TRANSPORT=broker`）では `RENGA_PANE_ID` を読まず、最初から `caller-id 未確定` に
+     倒す**: broker には `RENGA_PANE_ID` に相当する caller pane id を out of band で供給する surface が
+     無いので、この取得規則は broker では常に未確定に落ちる。`list_panes` に数値 id のエントリが在って
+     手元で掴めていても例外にならない（数値 id は MUST の**片方**＝相対セレクタでないことしか満たさず、
+     **もう片方**＝自タブと確立済みの列挙から採った id でありその対象が caller であること、を満たさない）
    - 照合できたレコードの期待値: `name == "secretary"` かつ `role == "secretary"`。不一致なら
      `{{FQ}}set_pane_identity(target="<RENGA_PANE_ID の値>", name="secretary", role="secretary")` で修復
    - **`caller-id 未確定`**（`RENGA_PANE_ID` 未設定 / `list_panes` に同一 id 無し / broker 等で同等の

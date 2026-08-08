@@ -138,6 +138,12 @@ Step 0 に入る前に遮断する（恒久対策の経緯は
    routing はこれを掴む。規則の正本は
    [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md)
    T-§4.2 の caller pane id 取得規則
+   - **broker（`ORG_TRANSPORT=broker`）では `RENGA_PANE_ID` を読まず、最初から `caller-id 未確定` に
+     倒す**: broker には `RENGA_PANE_ID` に相当する caller pane id を out of band で供給する surface が
+     無いので、この取得規則は broker では常に未確定に落ちる。`list_panes` に数値 id のエントリが在って
+     手元で掴めていても例外にならない（数値 id は MUST の**片方**＝相対セレクタでないことしか満たさず、
+     **もう片方**＝自タブと確立済みの列挙から採った id でありその対象が caller であること、を満たさない）。
+     したがって broker では下の `caller-id 未確定` 分岐へそのまま進み、`dispatcher_pane_id` を渡さない
 3. 照合できたレコードの name/role を確認:
    - 期待値: `name == "dispatcher"` かつ `role == "dispatcher"`
    - 不一致なら `mcp__org-broker__set_pane_identity(target="<RENGA_PANE_ID の値>", name="dispatcher", role="dispatcher")` で修復（相対セレクタでは撃たない）
