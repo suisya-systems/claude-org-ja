@@ -227,6 +227,34 @@ _NUMERIC_RE = re.compile(r"%?\d+")
 #: 全体が <...> で括られたプレースホルダ。
 _PLACEHOLDER_RE = re.compile(r"<[^<>]*>")
 
+#: プレースホルダの中身が**数値 pane id を指している**ことを示すトークン。
+#: ``<pane_id>`` / ``<照合済みの数値 pane_id>`` / ``<RENGA_PANE_ID の値>`` /
+#: ``<そのエントリの id>`` / ``<N>`` を適合形として通す。
+_ID_TOKEN_RE = re.compile(
+    r"pane_id|(?:^|[^0-9A-Za-z_])id(?:$|[^0-9A-Za-z_])|^%?\d+$|^N$",
+    re.IGNORECASE,
+)
+
+#: id トークンを含んでいても**相対セレクタを指している**プレースホルダ。
+#: ``<focused pane>`` / ``<worker name>`` のように、宛先が名前や focus で
+#: 決まる形は、括弧で括られていても契約が禁じる相対セレクタである。
+_NON_ID_TOKEN_RE = re.compile(r"focused|name", re.IGNORECASE)
+
+
+def _is_pane_id_placeholder(inner: str) -> bool:
+    """``<...>`` の中身が数値 pane id を指しているか。
+
+    中身を見ずに ``<...>`` を一律適合とすると、``target="<worker name>"`` や
+    ``target=<focused pane>`` のような**相対セレクタのプレースホルダ**が
+    guard を素通りする（Group B の不変条件そのものが検査できなくなる）。
+    """
+    inner = inner.strip()
+    if not inner:
+        return False
+    if _NON_ID_TOKEN_RE.search(inner):
+        return False
+    return bool(_ID_TOKEN_RE.search(inner))
+
 
 @dataclass(frozen=True)
 class Finding:
@@ -277,7 +305,9 @@ def is_relative_selector(raw_value: str) -> bool:
     if _NUMERIC_RE.fullmatch(value):
         return False
     if _PLACEHOLDER_RE.fullmatch(value):
-        return False
+        # 中身が数値 pane id を指しているものだけ適合。名前 / focus を指す
+        # プレースホルダは括弧で括られていても相対セレクタ。
+        return not _is_pane_id_placeholder(value[1:-1])
     return bool(re.search(r"[A-Za-z]", value))
 
 

@@ -294,6 +294,33 @@ class CompliantFormTest(TmpRootTestCase):
         result = self.scan()
         self.assertEqual(result.violations, [])
 
+    def test_placeholder_naming_a_relative_selector_is_a_violation(self) -> None:
+        # <...> で括られていても、中身が名前 / focus を指すなら相対セレクタ。
+        # 中身を見ずに一律適合とすると Group B の不変条件が検査できなくなる。
+        _write(
+            self.root,
+            "a.md",
+            'close_pane(target="<worker name>")\n'
+            "set_pane_identity(target=<focused pane>, name=\"secretary\")\n"
+            "close_pane(target=<curator>)\n",
+        )
+        result = self.scan()
+        self.assertEqual(
+            [f.value for f in result.violations],
+            ["<worker name>", "<focused pane>", "<curator>"],
+        )
+
+    def test_id_placeholder_wording_variants_stay_compliant(self) -> None:
+        # 手順 doc が実際に使う「数値 pane id を指す」言い回しは通す。
+        _write(
+            self.root,
+            "a.md",
+            "close_pane(target=<spawn 戻り値の pane_id>)\n"
+            'close_pane(target="<sidecar pane_id>")\n'
+            '{{FQ}}set_pane_identity(target="<そのエントリの id>", name="x")\n',
+        )
+        self.assertEqual(self.scan().violations, [])
+
     def test_prose_mentioning_the_form_without_a_call_is_ignored(self) -> None:
         # 「相対セレクタでは撃たない」と書くための引用形は call ではない。
         _write(
