@@ -263,6 +263,7 @@ class MultiLineCallTest(TmpRootTestCase):
             cgs.AllowlistEntry(
                 path="skill/SKILL.md.in",
                 context="して登録簿を pop する",
+                target="pr-watch-<PR>",
                 reason="test",
             ),
         )
@@ -379,6 +380,7 @@ class AllowlistTest(TmpRootTestCase):
         entry = cgs.AllowlistEntry(
             path="s/SKILL.md.in",
             context="で name 解決させて登録簿を",
+            target="pr-watch-<PR>",
             reason="stale binding: no numeric id is derivable from list_panes",
         )
         result = self.scan(allowlist=(entry,))
@@ -399,10 +401,52 @@ class AllowlistTest(TmpRootTestCase):
         entry = cgs.AllowlistEntry(
             path="s/SKILL.md.in",
             context="で name 解決させて登録簿を",
+            target="pr-watch-<PR>",
             reason="stale binding carve-out",
         )
         result = self.scan(allowlist=(entry,))
         self.assertEqual([f.lineno for f in result.violations], [2])
+
+    def test_a_second_call_on_the_allowlisted_line_is_still_a_violation(
+        self,
+    ) -> None:
+        # 文脈文字列は行全体への部分一致なので、許可済み呼び出しの隣に危険な
+        # 呼び出しを書き足すと巻き添えで免除されうる。entry を selector 値で
+        # 束縛し 1 回だけ消費することで、混入した方を違反として拾う。
+        _write(
+            self.root,
+            "s/SKILL.md.in",
+            "- **3 条件が揃う場合**: `close_pane(target=\"pr-watch-<PR>\")`"
+            ' で name 解決させて登録簿を pop する。ついでに'
+            ' `close_pane(target="curator")` も閉じる\n',
+        )
+        entry = cgs.AllowlistEntry(
+            path="s/SKILL.md.in",
+            context="で name 解決させて登録簿を",
+            target="pr-watch-<PR>",
+            reason="stale binding carve-out",
+        )
+        result = self.scan(allowlist=(entry,))
+        self.assertEqual([f.value for f in result.violations], ["curator"])
+        self.assertEqual([e for _, e in result.allowed], [entry])
+
+    def test_an_allowlist_entry_is_consumed_only_once(self) -> None:
+        # 同じ selector を同じ文脈で 2 度書いても、entry 1 件で免除できるのは
+        # 1 件だけ (免罪符の使い回しを塞ぐ)。
+        line = (
+            "`close_pane(target=\"pr-watch-<PR>\")`"
+            " で name 解決させて登録簿を pop する\n"
+        )
+        _write(self.root, "s/SKILL.md.in", line + line)
+        entry = cgs.AllowlistEntry(
+            path="s/SKILL.md.in",
+            context="で name 解決させて登録簿を",
+            target="pr-watch-<PR>",
+            reason="stale binding carve-out",
+        )
+        result = self.scan(allowlist=(entry,))
+        self.assertEqual([f.lineno for f in result.violations], [2])
+        self.assertEqual(len(result.allowed), 1)
 
     def test_stale_allowlist_entry_is_reported(self) -> None:
         # 当該箇所が数値化された (= 免罪符が実体を失った) 状態。
@@ -415,6 +459,7 @@ class AllowlistTest(TmpRootTestCase):
         entry = cgs.AllowlistEntry(
             path="s/SKILL.md.in",
             context="で name 解決させて登録簿を",
+            target="pr-watch-<PR>",
             reason="stale binding carve-out",
         )
         result = self.scan(allowlist=(entry,))
@@ -426,6 +471,7 @@ class AllowlistTest(TmpRootTestCase):
         entry = cgs.AllowlistEntry(
             path="gone/SKILL.md.in",
             context="で name 解決させて登録簿を",
+            target="pr-watch-<PR>",
             reason="stale binding carve-out",
         )
         result = self.scan(allowlist=(entry,))
@@ -433,7 +479,7 @@ class AllowlistTest(TmpRootTestCase):
 
     def test_report_names_the_stale_entry(self) -> None:
         entry = cgs.AllowlistEntry(
-            path="gone/SKILL.md.in", context="ctx", reason="r"
+            path="gone/SKILL.md.in", context="ctx", target="x", reason="r"
         )
         report = cgs._format_report(cgs.ScanResult(stale=[(entry, "missing")]))
         self.assertIn("Stale allowlist", report)

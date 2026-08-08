@@ -137,6 +137,15 @@ class AllowlistEntry:
     context: str
     """違反行に含まれていなければならない文脈文字列。"""
 
+    target: str
+    """許す呼び出しの selector 値。**1 entry = 1 呼び出し**に束縛するための鍵。
+
+    文脈文字列だけで束縛すると、許可済み呼び出しと同じ行に別の危険な呼び出しを
+    書き足したときに巻き添えで免除されてしまう（``close_pane(target="curator")``
+    を許可済みの ``pr-watch-<PR>`` の隣に置く形）。selector 値まで一致を要求し、
+    かつ entry は 1 回しか消費しないことで、その混入を違反として拾う。
+    """
+
     reason: str
     """なぜ許すか（ASCII で書く: cp932 コンソールへ出るため）。"""
 
@@ -152,6 +161,7 @@ ALLOWLIST: tuple[AllowlistEntry, ...] = (
     AllowlistEntry(
         path=".claude/skills/pr-watch-pane/SKILL.md.in",
         context="そこで撃つ",
+        target="pr-watch-<PR>",
         reason=(
             "sync prose for the --self-close note: it quotes the stale-binding "
             "carve-out call form and defers to Step 5 (b) for the conditions"
@@ -160,6 +170,7 @@ ALLOWLIST: tuple[AllowlistEntry, ...] = (
     AllowlistEntry(
         path=".claude/skills/pr-watch-pane/SKILL.md.in",
         context="で name 解決させて登録簿を",
+        target="pr-watch-<PR>",
         reason=(
             "Step 3 [name_taken] self-recovery: the pane is gone from list_panes, "
             "so no numeric pane_id can be re-derived from the enumeration"
@@ -168,6 +179,7 @@ ALLOWLIST: tuple[AllowlistEntry, ...] = (
     AllowlistEntry(
         path=".claude/skills/pr-watch-pane/SKILL.md.in",
         context="する（broker が name →",
+        target="pr-watch-<PR>",
         reason=(
             "Step 5 case (b) manual stale-binding cleanup: harness-side SoT of "
             "the three conditions the other carve-out sites defer to"
@@ -176,6 +188,7 @@ ALLOWLIST: tuple[AllowlistEntry, ...] = (
     AllowlistEntry(
         path=".claude/skills/org-pull-request/SKILL.md.in",
         context="で登録簿を pop する",
+        target="pr-watch-<PR>",
         reason=(
             "post-merge cleanup, stale-binding-only branch: the retained pane_id "
             "is already gone and list_panes cannot supply a numeric id"
@@ -389,7 +402,7 @@ def scan(
         rel_path = path.relative_to(root).as_posix()
         seen_paths.add(rel_path)
         for finding in scan_text(rel_path, text):
-            entry = _match_entry(finding, by_path.get(rel_path, ()))
+            entry = _match_entry(finding, by_path.get(rel_path, ()), used)
             if entry is None:
                 result.violations.append(finding)
             else:
@@ -404,9 +417,22 @@ def scan(
 
 
 def _match_entry(
-    finding: Finding, entries: Iterable[AllowlistEntry]
+    finding: Finding,
+    entries: Iterable[AllowlistEntry],
+    used: set[AllowlistEntry],
 ) -> AllowlistEntry | None:
+    """違反 1 件に対応する allowlist entry を 1 つだけ返す。
+
+    **entry は 1 回しか消費しない**（``used`` に入ったものは再利用しない）。
+    文脈文字列は行全体に対する部分一致なので、同じ行に別の呼び出しを書き足すと
+    2 件目も同じ entry に一致してしまう。selector 値の一致も要求したうえで
+    1 対 1 に束縛することで、その混入を違反として拾う。
+    """
     for entry in entries:
+        if entry in used:
+            continue
+        if entry.target != finding.value:
+            continue
         if entry.context in finding.text:
             return entry
     return None
