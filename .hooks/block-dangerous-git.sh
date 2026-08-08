@@ -336,11 +336,24 @@ extract_stash_subcommands() {
         if (gitname != "git" && gitname != "git.exe" \
             && gitname !~ /[\/\\]git(\.exe)?$/) continue
         j = i + 1
+        # split_segments が引用符を空白へ正規化した後なので、値を取る global
+        # option の値に空白が入っていると 1 つの値が複数トークンへ割れる。その
+        # 断片がたまたま既知サブコマンド名（`git -C "/tmp/my status repo" stash
+        # pop` の status）だと、下の is_known 打ち切りが本物の stash より手前で
+        # 走査を止めて deny をすり抜ける。値が割れうる形を見たら打ち切りを諦め、
+        # セグメント内の stash トークンを素直に探す permissive 走査へ落とす
+        # （安全側 = false positive 寄り。本ファイル冒頭の方針どおり）。
+        loose = 0
         while (j <= NF) {
-          if (substr($j, 1, 1) == "-") { if (takes_value($j)) j++; j++; continue }
+          if (substr($j, 1, 1) == "-") {
+            if (takes_value($j)) { j++; loose = 1 }
+            else if ($j ~ /^--(git-dir|work-tree|namespace|exec-path|super-prefix|config-env|attr-source)=/) loose = 1
+            j++
+            continue
+          }
           if ($j !~ /^[a-z][a-z0-9-]*$/) { j++; continue }
           if ($j == "stash") break
-          if (is_known($j)) { j = NF + 1; break }
+          if (is_known($j) && loose == 0) { j = NF + 1; break }
           j++
         }
         if (j <= NF && $j == "stash") {
@@ -419,7 +432,7 @@ for segment in "${SEGMENTS[@]}"; do
   # 2) git reset --hard
   if segment_has_git_subcmd "$flat" "reset"; then
     if echo "$flat" | grep -qE '(^|[[:space:]])--hard([[:space:]=]|$)'; then
-      deny_with_reason "git reset --hard は禁止です。未コミット変更が失われます。git diff > <name>.patch で差分を保存するか、別ブランチへの一時 commit で退避してください。git stash はこのリポジトリでは使えません（変更系は本フックが deny します）。"
+      deny_with_reason "git reset --hard は禁止です。未コミット変更が失われます。退避したいときは作業ブランチへ一時 commit してください（git add -u で確定し、戻すときは git reset --soft HEAD~1）。git diff > <name>.patch は staged / 未追跡ファイルを取りこぼすため単独の退避手段にはなりません。git stash はこのリポジトリでは使えません（変更系は本フックが deny します）。"
     fi
   fi
 
@@ -452,7 +465,7 @@ for segment in "${SEGMENTS[@]}"; do
   # 5) git checkout -- <path> / git checkout -- . （未コミット変更の破棄）
   if segment_has_git_subcmd "$flat" "checkout"; then
     if echo "$flat" | grep -qE '(^|[[:space:]])--([[:space:]]|$)'; then
-      deny_with_reason "git checkout -- <path> は禁止です。未コミット変更が失われます。git diff > <name>.patch で差分を保存するか、HEAD 時点の内容を見たいだけなら git show HEAD:<path> を使ってください。git stash はこのリポジトリでは使えません（変更系は本フックが deny します）。"
+      deny_with_reason "git checkout -- <path> は禁止です。未コミット変更が失われます。退避したいときは作業ブランチへ一時 commit してください（git add -u で確定し、戻すときは git reset --soft HEAD~1）。HEAD 時点の内容を見たいだけなら git show HEAD:<path> を使ってください。git stash はこのリポジトリでは使えません（変更系は本フックが deny します）。"
     fi
   fi
 
@@ -516,7 +529,7 @@ for segment in "${SEGMENTS[@]}"; do
         : # 調査用 read-only: worktree も refs/stash も変えない
         ;;
       *)
-        deny_with_reason "git stash の変更系（bare stash / push / save / pop / apply / branch / drop / clear / store / create）は禁止です。このリポジトリの worktree root には /dev/null 由来のキャラクタデバイスがあり、git stash -u が途中失敗したまま別の stash を pop して不完全復元になる事故が起きています。代替: 差分の退避は git diff > <name>.patch、HEAD 時点の内容参照は git show HEAD:<path>、並行作業は別 worktree か作業ブランチへの一時 commit を使ってください。調査用の git stash list / git stash show は許可しています。なお stash を実行していないのにこれが出た場合は、コマンド文字列中のリテラル（commit メッセージ / grep パターン / PR 本文など）が git + stash の並びに一致しています。その場合は文字列から git トークンを外して再実行してください（例: grep -rn \"stash pop\"）。"
+        deny_with_reason "git stash の変更系（bare stash / push / save / pop / apply / branch / drop / clear / store / create）は禁止です。このリポジトリの worktree root には /dev/null 由来のキャラクタデバイスがあり、git stash -u が途中失敗したまま別の stash を pop して不完全復元になる事故が起きています。代替: 退避は作業ブランチへの一時 commit（git add -u で確定し、戻すときは git reset --soft HEAD~1）、HEAD 時点の内容参照は git show HEAD:<path>、並行作業は別 worktree を使ってください。git diff > <name>.patch は staged / 未追跡ファイルを取りこぼすため単独の退避手段にはなりません。調査用の git stash list / git stash show は許可しています。なお stash を実行していないのにこれが出た場合は、コマンド文字列中のリテラル（commit メッセージ / grep パターン / PR 本文など）が git + stash の並びに一致しています。その場合は文字列から git トークンを外して再実行してください（例: grep -rn \"stash pop\"）。"
         ;;
     esac
   done < <(printf '%s\n' "$flat" | extract_stash_subcommands)

@@ -412,6 +412,30 @@ run_test "C:/Git/bin/git.exe stash pop (Windows 絶対パス)" \
 run_test "echo safe && git.exe stash pop (複合コマンド + .exe)" \
   "$(mk_bash_json "echo safe && git.exe stash pop")" 2
 
+# 値を取る global option の値に空白が入ると、split_segments が引用符を空白へ
+# 正規化した後で値が複数トークンへ割れる。その断片が既知サブコマンド名だと
+# 走査が本物の stash より手前で打ち切られ deny をすり抜けていた（Codex round 1）。
+run_test "git -C \"/tmp/my status repo\" stash pop (値に status を含む -C)" \
+  "$(mk_bash_json 'git -C "/tmp/my status repo" stash pop')" 2
+
+run_test "git -C \"/tmp/a show b\" stash clear (値に show を含む -C)" \
+  "$(mk_bash_json 'git -C "/tmp/a show b" stash clear')" 2
+
+run_test "git --git-dir \"/tmp/a status repo/.git\" stash drop (detached --git-dir)" \
+  "$(mk_bash_json 'git --git-dir "/tmp/a status repo/.git" stash drop')" 2
+
+run_test "git --git-dir=\"/tmp/a status repo/.git\" stash drop (attached --git-dir)" \
+  "$(mk_bash_json 'git --git-dir="/tmp/a status repo/.git" stash drop')" 2
+
+run_test "git --work-tree \"/tmp/a commit b\" stash apply (値に commit を含む)" \
+  "$(mk_bash_json 'git --work-tree "/tmp/a commit b" stash apply')" 2
+
+run_test "git -C \"/tmp/my status repo\" stash list (割れた値でも read-only は allow)" \
+  "$(mk_bash_json 'git -C "/tmp/my status repo" stash list')" 0
+
+run_test "git -C \"/tmp/my status repo\" status (stash 不在なら allow)" \
+  "$(mk_bash_json 'git -C "/tmp/my status repo" status')" 0
+
 echo ""
 
 # =====================================================================
