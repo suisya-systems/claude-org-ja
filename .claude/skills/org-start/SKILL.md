@@ -46,8 +46,28 @@ ClaudeCode起動後に最初に実行するスキル。前回の状態復元と�
 > ツール 14 種（`spawn_pane` / `spawn_claude_pane` / `close_pane` / `focus_pane` /
 > `list_panes` / `new_tab` / `send_message` / `list_peers` / `set_summary` /
 > `check_messages` / `inspect_pane` / `poll_events` / `send_keys` /
-> `set_pane_identity`）で同タブ内のペイン操作・ピア通信・画面スクレイプ・lifecycle
+> `set_pane_identity`）でペイン操作・ピア通信・画面スクレイプ・lifecycle
 > event 購読・raw キー入力まですべてカバーできる（renga 0.18.0+ で導入された構造。**現行 org の renga transport サポート下限は 2.0.0**）。
+> ただし**この 14 種はタブ scope が一様ではない**ので、主分類 3 つ + 例外で読む（各 capability
+> トークンは独立判定 = 契約 T-§cap の independence rule。分類の正本は
+> [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) T-§cap / T-§4.2）:
+>
+> - **Group A（`caller_scope`）= pane 制御**: `spawn_pane` / `spawn_claude_pane` / `focus_pane` /
+>   `list_panes` / `inspect_pane` / `send_keys`。この capability を確立できた経路では **caller のタブ内**
+>   （フォーカス非依存）に解決され、`list_panes` は caller のタブのみを返す（契約 T-§cap の Group A は
+>   `spawn_codex_pane` を含む 7 種。ここでは org の 14 種に現れる 6 種を挙げている）
+> - **Group B（`caller_scope_close_identity`）= 別ゲート**: `close_pane` / `set_pane_identity`。
+>   `caller_scope` からは**導出してはならない**（`close_pane` は不可逆なので特に混同しない）
+> - **messaging（`cross_tab_peers`）= タブ横断**: `send_message` / `list_peers`。`list_peers` は全タブ列挙、
+>   `send_message` は**数値 id 宛ならタブ横断**・**stable name は送信側タブ内でのみ**解決する。契約 T-§4.2 は
+>   messaging 到達性から pane 制御到達性を推論することを **MUST** で禁じている
+> - **上記 3 分類に入らない 4 種（例外）**: `new_tab` は Group A ではなく独立 capability **`spawn_tab`**
+>   側（tab 生成 / tab 指定 spawn）。`poll_events` は pane 制御でも messaging でもなく **lifecycle surface**
+>   で、そのタブ scope は契約 T-§3.1 が別に固定する。`set_summary` / `check_messages` は自ペイン / 自キューに
+>   対する操作であって、**タブ横断 addressing の話ではない**
+>
+> 誤読時の分岐手順（`pane_not_found` の pane 制御文脈 / messaging 文脈）は
+> [`.claude/skills/org-delegate/references/renga-error-codes.md`](../../../.claude/skills/org-delegate/references/renga-error-codes.md) を参照。
 > ここでの 14 種は **org が運用で行使する surface** であって、プリフライトの必須集合とは別の数である:
 > [`tools/check_renga_compat.py`](../../../tools/check_renga_compat.py) は capability probe 用の `server_info` を加えた
 > **15 種**を必須（subset 判定、余剰ツールは正常）として検査する。`server_info` は probe 専用で、
