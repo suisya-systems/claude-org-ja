@@ -181,8 +181,18 @@ join できた各ペインについて、role + name(task_id) ラベル付きで
   → `/usr/bin/tmux -L claude-org-broker attach -t <session>`
 - **デタッチ**: attach 中に `Ctrl-b d` を押すと、ペインを動かしたまま自分だけ抜ける
   （ペインは生き続ける ― close ではない）
+  - **`Ctrl-b` は tmux prefix の既定値**: prefix を変更している場合は設定した prefix に読み替える。
+    さらに、**attach する端末が renga の場合はこの打鍵が届かない** — renga の org サイドバーは既定で
+    有効なあいだ `Ctrl+B`（tmux prefix `Ctrl-b` と同じ物理入力）を消費して PTY へ渡さないため、
+    detach できず抜けられなくなる。attach する前に
+    [`docs/operations/dispatcher-view.md`](../../../docs/operations/dispatcher-view.md) の
+    「外側フレームが renga の場合」の回避策（renga 設定 `[ui] org_sidebar = "off"`、または tmux prefix
+    の変更）を適用すること。
 
-出力末尾に「`tmux` は zsh で alias 化けするため、必ず実体パス `/usr/bin/tmux` を使うこと」を 1 行添える。
+出力末尾に「`tmux` は zsh で alias 化けするため、必ず実体パス `/usr/bin/tmux` を使うこと」と、上記
+`Ctrl-b` の読み替え（tmux prefix の既定値であること・renga の画面から attach する場合は先に
+[`docs/operations/dispatcher-view.md`](../../../docs/operations/dispatcher-view.md)「外側フレームが renga の
+場合」の回避策が要ること）を添える。
 
 ## 出力フォーマット（worked example）
 
@@ -225,6 +235,11 @@ logical pane 除外 → `%N` を持つ dispatcher / worker のみ join → 生�
 - まず読取専用（-r）で入るのを推奨。自分で打ちたい時だけ -r を外す。
 - 抜けるとき: Ctrl-b d（デタッチ。ペインは動いたまま自分だけ抜ける）。
 - 別セッションへ切替: Ctrl-b s（attach 中にセッション一覧から選ぶ。現状は per-session attach）。
+- 上記 Ctrl-b は tmux prefix の既定値。変更していれば設定した prefix に読み替える。
+  renga の画面から attach する場合は、org サイドバー（既定で有効）が Ctrl+B（tmux prefix Ctrl-b と
+  同じ物理入力）を消費して PTY へ渡さないため上の打鍵が届かない（detach できず抜けられなくなる）。
+  先に docs/operations/dispatcher-view.md「外側フレームが renga の場合」の回避策
+  （renga 設定 [ui] org_sidebar = "off"、または tmux prefix の変更）を適用すること。
 - tmux は zsh で alias 化けするため、必ず実体パス /usr/bin/tmux を使うこと。
 ```
 

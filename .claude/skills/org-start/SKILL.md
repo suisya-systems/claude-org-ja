@@ -429,6 +429,8 @@ dispatcher は初回 DELEGATE 完了報告で「/loop 3m で監視します」�
 > ```
 >
 > read-only で十分だが、attach 中に **`Ctrl-b s`** で同 socket 上の他のセッション（= worker / curator のペイン）に切り替えて覗ける。終了は `Ctrl-b d` で detach してからプロンプトで `Ctrl-C`。renga フレームでは tmux session モデルが写像しないので案内しない（renga なら画面そのものを見ればよい）。詳細は [`tools/org-dispatcher-view.sh`](../../../tools/org-dispatcher-view.sh) の `--help`。
+>
+> **打鍵の読み替え**: 上記 `Ctrl-b` は tmux prefix の既定値なので、prefix を変更している場合は設定した prefix に読み替える。さらに、**この broker フレームのビューアを renga の画面の中で起動する場合はこの打鍵が届かない** — renga の org サイドバーは既定で有効なあいだ `Ctrl+B`（tmux prefix `Ctrl-b` と同じ物理入力）を消費して PTY へ渡さないため、`Ctrl-b s` での切替も `Ctrl-b d` での detach もできなくなる（抜けられなくなるので起動前に対処する）。回避策（renga 設定 `[ui] org_sidebar = "off"`、または内側 tmux prefix の変更）は [`docs/operations/dispatcher-view.md`](../../../docs/operations/dispatcher-view.md)「外側フレームが renga の場合」を参照。
 
 **前回の状態がある場合**:
 ```
