@@ -346,7 +346,10 @@ Block A の spawn 成功後、dispatcher ペインで Claude が boot してい�
    # 結果に name="dispatcher" が現れるまで poll
    ```
    - 現れない場合、(a) Enter を再送、(b) `[pane_not_found]` 等 fatal なら「失敗モード」セクションへ
-   - **capability 形かつ未承認のときの縮退（停止しない・待ち時間 0 分）**: 列挙を登録確認に使わず破棄し、`list_panes` の dispatcher ペイン生存 + `inspect_pane` のプロンプト表示で boot を判定する。**`name="dispatcher"` の一致だけで登録ゲートを開けない** — 予約名は別 org の並走タブに同名で実在しうるので、name 一致は「まだ登録していない自分の子」のゲートを他 org のピアで開けてしまう（契約 T-§2.2「MUST NOT key a lookup … on `name` alone」／共有 reference §3-B-1）。**この縮退中は「peer 未登録」を根拠に失敗モードの fatal 分岐へ進んではならない**（後述の「spawn 成功・boot 中に peer 登録されない」参照）。報告は共有 reference §3-B の手順で 1 度だけ人間に上げる
+   - **capability 形かつ未承認のときの縮退（停止しない・待ち時間 0 分）**: 列挙を登録確認に使わず破棄する。**`name="dispatcher"` の一致だけで登録ゲートを開けない** — 予約名は別 org の並走タブに同名で実在しうるので、name 一致は「まだ登録していない自分の子」のゲートを他 org のピアで開けてしまう（契約 T-§2.2「MUST NOT key a lookup … on `name` alone」／共有 reference §3-B-1）
+     - **代替の readiness 判定は「次の手順 3 の挨拶送信そのもの」で行う**。`list_panes` の生存と `inspect_pane` のプロンプト表示は Claude が起動したことしか示さず、**MCP の peer 登録が済んだことを示さない**。プロンプトが見えた時点で boot 完了とみなすと、手順 3 の**一度きりの挨拶が `[pane_not_found]` で消える**。したがって: (a) `list_panes` でペイン生存だけ確認し、(b) 手順 3 の `send_message` を送り、(c) `[pane_not_found]`（broker では `[peer_not_found]`）で失敗したら **2 秒間隔・最大 30 秒で再送**する（その間 Enter の再送も従来どおり行う）、(d) 送達成功をもって「起動・登録・挨拶送信」が同時に確定する
+     - **この縮退中は「peer 未登録」を根拠に失敗モードの fatal 分岐へ進んではならない**（後述の「spawn 成功・boot 中に peer 登録されない」参照）。30 秒の再送予算を使い切っても送達できないときだけ、従来のタイムアウト処理に落とす
+     - 報告は共有 reference §3-B の手順で 1 度だけ人間に上げる
 3. **挨拶メッセージを送信**:
    - dispatcher:
      「あなたはディスパッチャーです。窓口からの DELEGATE メッセージを受け取り、ワーカーのペイン起動・指示送信・状態記録を代行してください。CLOSE_PANE メッセージを受けたらペインを閉じてください。」
@@ -367,6 +370,7 @@ Block A の spawn 成功後、dispatcher ペインで Claude が boot してい�
    "
    ```
    curator フィールドが null であることは**正常系**であり、suspend / handover / resume / dashboard はこれを前提に動く。
+   - **capability gate の縮退中（Block D-2 の列挙を破棄した場合）は `dispatcher_peer_id` に `StateWriter.CLEAR` を渡す**。縮退中は `<d_peer>` を観測できていないので、推測値や他タブ由来の id を書くと以後の routing が壊れた宛先を掴む。**ここで「未指定 = 保持」に倒してはならない**: `/org-start` は dispatcher ペインを**新規 spawn** するので、DB に残っている値は前セッションの死んだペインのものであり、保持は stale の温存になる（生きたペインを引き継ぐ [`.claude/skills/dispatcher-resume/SKILL.md`](../dispatcher-resume/SKILL.md) Step 0 とはここが逆になる。あちらは同じペインが生きているので保持が正しい）。`dispatcher_pane_id` は `list_panes` から確定できるので通常どおり書く。peer_id が null の間、dispatcher への送信は安定名 `to_id="dispatcher"` で行う（root `CLAUDE.md` の既定の宛先指定と同じ）。この状態はユーザー報告に含める。
 6. JSON スナップショットを 1 回だけ再生成する（dashboard 用、state-db cutover とは別経路）:
    `py -3 dashboard/org_state_converter.py`
 
