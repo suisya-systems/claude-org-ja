@@ -58,8 +58,8 @@ done: {commit SHA 短縮形} {変更ファイル名}
    - **承認が無い（縮退中）なら、列挙結果を宛先解決に使わない** — 数値 id・`same_tab: true` 候補を含め**一切再送せず**、下の escalate に進む。
    - 承認済みの場合のみ `list_peers` を引き直す。送信時に控えた**数値 peer id** が残っていれば、その id で **1 回だけ**再送する（ループにしない）。
    - 数値 id が残っていない場合、`secretary` と名前が一致するレコードは**候補にすぎない**。`same_tab: true` を確認できたレコードだけを採用し、**他タブのレコードしか無ければ再送しない**（別 org の同名ペインを掴みうる）。`same_tab` / `tab` をどのレコードも持たない列挙は**単一タブであることしか保証せず「どのタブか」は保証しない**（focused タブでありうる）ので、自タブだと別途確認できない限り名前一致だけで採用しない。
-   - 宛先を確定できない / 再送も失敗した場合は**ループさせず**、`to_id="dispatcher"` で状況を報告して escalate する。
-   - 手順の正本: `/home/user/work/claude-org/.claude/skills/org-delegate/references/renga-error-codes.md` の「`pane_not_found` の messaging 分岐」節。
+   - 宛先を確定できない / 再送も失敗した場合は**ループさせず** `to_id="dispatcher"` へ escalate する。ただし **`dispatcher` も同じ同一 org 確認の対象**（名前解決は focused タブに落ちうるので、未確認のまま送ると別 org の dispatcher に完了内容を渡す）。同一 org と確認できないときは**何も送らず、ペインを保持したまま停止する** — 報告内容はペインに残し、ディスパッチャーの監視 / 人間の回収に委ねる。
+   - 手順の正本は `/home/user/work/claude-org/.claude/skills/org-delegate/references/renga-error-codes.md` の「`pane_not_found` の messaging 分岐」節だが、**上記 gate と必ずセットで読む**（復旧手順側には gate へのポインタがまだ無いので、そちらだけを読むと gate を通らずに列挙を採り直しうる）。
 2. **PR 作成後はペインを保持してレビュー指摘待機**: 「閉じてよい」「マージ済み」など窓口からの明示クローズ指示が来るまで待機状態を維持する。
 3. **振り返り記録**: 再利用可能な学びがあれば `/home/user/work/claude-org/knowledge/raw/{YYYY-MM-DD}-{topic}.md` に記録する（topic は英語 kebab-case）。記録基準: 再現性がある / 非自明 / コードを読むだけではわからない。
 
