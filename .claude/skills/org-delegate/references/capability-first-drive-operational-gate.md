@@ -225,7 +225,7 @@ spawn / boot 直後に「目的のピアが `list_peers` に現れるまで poll
   5. 予算を使い切っても送達できなければ、**その経路の従来のタイムアウト / 失敗処理に落とす**
      （縮退は「失敗を握り潰す」ことではない。到達不能なペインを正常として報告してはならない）。
 
-#### 3-B-2. 送信失敗後の復旧手順にも縮退が伝播する（MUST）
+#### 3-B-2. 送信失敗後の復旧手順は、それ自体が gate 対象の call site（MUST）
 
 上の probe や通常の `send_message` が `[pane_not_found]` / `[peer_not_found]` を返すと、
 [`.claude/skills/org-delegate/references/renga-error-codes.md`](renga-error-codes.md) の messaging
@@ -233,7 +233,17 @@ spawn / boot 直後に「目的のピアが `list_peers` に現れるまで poll
 からの消失」を死亡確定の根拠に使う。これは呼び出し元が gate を適用した列挙とは別の、**後から発行される
 列挙**である。
 
-**縮退中の経路からこの復旧手順に入った場合、縮退はそのまま引き継がれる**:
+**この復旧手順の `list_peers` は、それ自体が独立した gate 対象の call site である**（§6 の表と
+同格に扱う）。入り方で 2 つに分かれ、**どちらでも結論は同じ**:
+
+- **縮退中の経路から入った場合**: 縮退がそのまま引き継がれる。
+- **gate を通っていない `send_message` の失敗から入った場合**（監視中の通常の peer 送信など、直前に
+  `list_peers` を呼んでいない経路）: **この列挙が「初回の capability 観測」になりうる**。その場合は
+  §1 の版判定 → §2 の記録照会 → 本 §3-B を**この場で新規に適用する**（`monitoring-read-only` として
+  扱う。復旧手順は無人経路から入るので止まらない）。「呼び出し元が既に縮退していたか」は
+  条件ではない。
+
+いずれの入り方でも、縮退中は次を守る:
 
 - 引き直した列挙も §1-1 の non-reliance の対象。**そこから採った数値 id で他タブへ再送しない**
   （承認前に cross-tab addressing へ依拠する行動そのもの）。
@@ -241,9 +251,13 @@ spawn / boot 直後に「目的のピアが `list_peers` に現れるまで poll
   （journal + 窓口 escalate、「閉じた」に倒さない）へ倒す。
 - 同タブの `pane_exited` を観測できた場合だけ、従来どおり lifecycle を進めてよい。
 
-（`renga-error-codes.md` 本体への同趣旨の追記は follow-up Issue で行う。本節が先に規範を置くのは、
-復旧手順が **spawn / readiness の再送という常用経路**から入るためで、そこを未配線のまま残すと
-縮退が最も効いてほしい局面で抜ける。）
+> **未解消の discoverability gap（follow-up Issue で塞ぐ）**: 規範は本節にあるが、
+> [`.claude/skills/org-delegate/references/renga-error-codes.md`](renga-error-codes.md) の復旧手順
+> **本体には本ファイルへのポインタがまだ無い**。したがって `[pane_not_found]` を受けて
+> そちらだけを読んだ役割は、本節に到達しないまま列挙を採り直しうる。**規範の所在と参照の所在が
+> ずれている状態**であり、follow-up ではポインタ 1 行を復旧手順側に置いて解消する
+> （本 PR のスコープ外＝人間判断）。それまでの間、`send_message` の失敗を扱う役割は
+> renga-error-codes.md と本節を**セットで**読むこと。
 
 > **`capability_first_drive_pending` は承認記録ではない。** 「報告は済ませた」ことだけを表す
 > 重複抑止の印であり、これがあっても capability 経路で行動してよいことにはならない。承認は
