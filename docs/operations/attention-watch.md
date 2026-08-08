@@ -42,6 +42,32 @@ cp tools/templates/attention.example.json .state/attention.json
 
 OS 通知や音の挙動を変えたい場合は `.state/attention.json` を編集する（template strings の上書き、`sound` の切替、`cooldown_sec` の調整など）。テンプレートの placeholder allowlist は `{task_id}` / `{worker}` / `{kind}` / `{status}` / `{pr}` / `{summary}` の 6 種で、未知 placeholder は literal のまま残るか runtime の fallback template で補われる（設計 §6 参照）。
 
+#### 既に `.state/attention.json` がある場合の追随（新しい kind が増えたとき）
+
+`cp` も [`/org-attention-start`](../../.claude/skills/org-attention-start/SKILL.md) も **既存の `.state/attention.json` は上書きしない**（skill は未配置時のみコピーする）。ユーザー個別の overlay を守るための挙動だが、裏返すと **tracked template に新しい kind が追加されても、既存 overlay には入らない**。その kind だけ runtime 中立の英語 default 文面が出るようになる（ja 文面が消えるのではなく、新しい kind が最初から英語で来る）。
+
+overlay の自分の設定を保ったまま、**不足しているキーだけ**足すには次を実行する（既にあるキーには一切触らない）:
+
+```bash
+python3 - <<'PY'
+import json, pathlib
+tmpl = json.loads(pathlib.Path("tools/templates/attention.example.json").read_text(encoding="utf-8"))
+path = pathlib.Path(".state/attention.json")
+cfg = json.loads(path.read_text(encoding="utf-8"))
+added = []
+for section in ("notify", "templates"):
+    dst = cfg.setdefault(section, {})
+    for key, value in tmpl.get(section, {}).items():
+        if key not in dst:
+            dst[key] = value
+            added.append(f"{section}.{key}")
+path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+print("added:", added or "(none)")
+PY
+```
+
+追加後は §2.3 の `scan --dry-run --json` で構文を確認する。**`watch` を常駐させている場合は再起動が必要**: runtime は config を watch ループ開始前に 1 回だけ読み、ループ内で再読み込みしないため、編集しただけでは反映されない（[`/org-attention-stop`](../../.claude/skills/org-attention-stop/SKILL.md) → [`/org-attention-start`](../../.claude/skills/org-attention-start/SKILL.md)、手動起動なら Ctrl-C → 再実行）。
+
 ### 2.3 1 回限りの動作確認 (`scan`)
 
 `watch` を常駐させる前に、現状の `.state/` から想定どおりに attention event が抽出されるか確認する:
