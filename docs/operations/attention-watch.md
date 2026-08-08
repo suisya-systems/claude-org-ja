@@ -7,6 +7,7 @@
 - **入力**:
   - `.state/state.db` の `events` テーブル（`notify_sent` / `ci_completed` / `worker_completed` / `pr_merged` など）
   - `.state/pending_decisions.json`（人間判断仰ぎ register）
+  - org-broker の journal `.state/broker/queue.jsonl` の `duplicate_sidecar_detected` 行（既定の参照先は `<state-dir>/broker`、`--broker-state-dir` で上書き。§4.3 参照）
   - optional config: `.state/attention.json`（`tools/templates/attention.example.json` を雛形にする）
 - **出力**:
   - desktop notification（OS 別 backend は §3 参照）
@@ -130,6 +131,7 @@ Issue #25 / PR #27 以前は、WSL / Windows native とも「PowerShell `Write-H
 | `pending_decision_max` | `1440` | urgent 期間の上限（分）。これを超えた pending は normal に降格する（24h） |
 | `pending_decision_drop` | `10080` | normal 通知の終端（分）。これを超えた pending は通知抑止され `--json` 出力にのみ残る（7d） |
 | `user_replied_min` | `15` | user replied だが worker 未転送の状態を urgent と判定する経過分 |
+| `duplicate_sidecar_window_sec` | `300` | broker journal の `duplicate_sidecar_detected` 行を「いま起きている」とみなす freshness window（秒）。§4.3 参照 |
 | `max_title_chars` / `max_body_chars` | `80` / `240` | template 出力の truncation 上限（secret-safe formatting の一環） |
 | `notify.<kind>` | §4.1 参照 | event kind ごとの severity（`urgent` / `normal` の 2 値のみ、`off` は不可。完全に止めたい場合は全体 `desktop: false` を使う） |
 | `templates.<kind>.{title,body}` | ja 既定文面 | placeholder allowlist は `{task_id} {worker} {kind} {status} {pr} {summary}` |
@@ -145,6 +147,7 @@ Issue #25 / PR #27 以前は、WSL / Windows native とも「PowerShell `Write-H
 | `pending_decision` | urgent | action-required | worker から判断仰ぎ。Secretary は人間に上げる責務（CLAUDE.md 参照） |
 | `user_reply_not_forwarded` | urgent | action-required | ユーザーは返答済みだが worker に未転送。Secretary の運用ギャップ |
 | `pane_crashed` | urgent | action-required | ペインが予期せず終了。再起動判断にユーザーが必要 |
+| `duplicate_sidecar` | urgent | action-required | 同じ owner の channel を 2 つの sidecar が取り合っている。runtime 側は復旧できず、余分なセッションを終了できるのは人間だけ（§4.3 参照） |
 | `relay_gap_suspected` | normal | anomaly / 予兆 | dispatcher monitoring の予兆検出。自己復旧する場合が多く urgent muting の主因だったため demote |
 | `silent_worker_output` | normal | anomaly / 予兆 | ペイン出力ありだが peer message 未着。同上 |
 | `pane_silent` | normal | anomaly / 予兆 | ペインが無反応。dispatcher 側で自己復旧する場合あり |
@@ -175,6 +178,27 @@ Issue #25 / PR #27 以前は、WSL / Windows native とも「PowerShell `Write-H
 - **長い audit trail を残したい**: `pending_decision_drop` を上げる（例: 7d → 30d）。完全 suppress までの猶予を伸ばし、長期 backlog を `attention scan --json` で監査可能にする
 - **判断仰ぎが頻繁で 15 分の grace が短い**: `pending_decision_min` を伸ばす（例: 15 → 60）。Secretary の relay 余裕を見たい運用で urgent 過多を抑える
 - `pending_decision_drop = pending_decision_max` に揃えると normal/visual 段が消え、超過時に即 suppressed になる。短い lifecycle の運用で「降格中の表示」が要らないチーム向け
+
+### 4.3 duplicate_sidecar — broker journal 経路（`--broker-state-dir` / `duplicate_sidecar_window_sec`）
+
+`duplicate_sidecar` だけは `.state/state.db` ではなく **org-broker の journal** を入力にする。broker daemon は、同じ owner（`secretary` / `dispatcher` / `worker-<task_id>`）のキューを 2 つの channel sidecar instance が poll している状態を検出して `duplicate_sidecar_detected` 行を journal に書く。watcher はその行を拾って通知にする。
+
+放置したときの実害は「静かに壊れる」型である。owner 宛のメッセージが 2 つの読み手に分割され、報告が誰も見ていない側のセッションへ配送されて沈黙する。runtime 側は自力で復旧できない（どちらが本物かを知っているのは人間だけ）ため既定 severity は `urgent` で、**オペレータの取るべき行動は「余分なセッションを見つけて終了させる」**。通知本文には owner (`{worker}`) と競合している 2 つの instance id (`{summary}`) が載るので、journal を開かずにどのセッションを見ればよいかが分かる。
+
+**`--broker-state-dir`**: journal (`queue.jsonl`) を置く broker の state dir を指すフラグ。既定は `<state-dir>/broker`（= `--state-dir .state` なら `.state/broker/queue.jsonl`）で、broker daemon の既定 state dir と一致するため通常運用では指定不要。**非既定の state dir で daemon を起動している場合のみ**明示する:
+
+```bash
+claude-org-runtime attention watch --state-dir .state --config .state/attention.json \
+  --broker-state-dir /path/to/broker-state
+```
+
+指定先に journal が無い / 読めない場合は「duplicate は無い」に degrade するだけで watcher は落ちない。裏を返すと、**broker を非既定 state dir で動かしていてこのフラグを付け忘れると、この kind だけが黙って鳴らない**（他の kind は `.state/state.db` 経由なので影響を受けず、欠落に気付きにくい）。
+
+**`duplicate_sidecar_window_sec`（既定 300）**: journal 行を「いま起きている incident」とみなす freshness window（秒）。この window より古い行は捨てる。broker は競合が続いている限り instance pair ごとに lease window 周期で同じ行を再 emit するので、window を lease window より十分大きく取っておけば **継続中の incident は鳴り続け、解消済みの incident は自然に黙る**。既定 300 は `cooldown_sec` と同値で、「1 回の通知 cooldown の間 1 度も再発していない incident は終わっている」という読みに対応する。
+
+- journal は末尾から window 分だけ遡って読む。この値を上げると走査範囲もそれに追随して広がるので、busy な daemon でも継続中の incident が視界外へ押し出されることはない
+- dedup key は owner ではなく **競合している instance pair** に対して張られる。片方のセッションを終了させた後に別の instance が入れ替わりで競合を始めた場合は別 incident として扱われ、直前の pair の cooldown に飲まれない
+- 手元の runtime がこの経路を持つかは `claude-org-runtime attention scan --help` に `--broker-state-dir` が出るかで判別できる（出ない版では journal を読まないので、この kind は発火しない）
 
 ## 5. トラブルシューティング
 

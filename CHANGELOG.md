@@ -7,6 +7,21 @@
 
 ## [Unreleased]
 
+### Added
+
+- attention watcher の `duplicate_sidecar` kind に ja 側を追随 (#868)。
+  `tools/templates/attention.example.json` に `notify.duplicate_sidecar: "urgent"` と日本語文面を追加した
+  (未追加だとこの kind だけ runtime 中立の英語 default が出る)。この通知は「同じ owner 宛のメッセージを
+  2 つの channel sidecar が取り合っている」状態を指し、放置すると報告が読まれない側のセッションへ配送されて
+  沈黙する。runtime 側は自力で復旧できず、余分なセッションを終了できるのは人間だけなので severity は
+  `urgent` で、文面もその行動 (余分なセッションを探して終了する) が読み取れる形にした。
+  `docs/operations/attention-watch.md` には severity 表の 1 行に加えて §4.3 を新設し、この kind だけが
+  `.state/state.db` ではなく org-broker の journal (`<state-dir>/broker/queue.jsonl`) を入力にすること・
+  `--broker-state-dir` (既定 `<state-dir>/broker`、非既定 state dir の daemon でのみ明示が要る)・
+  `duplicate_sidecar_window_sec` (既定 300s、継続中の incident だけを鳴らす freshness 判定) を説明した。
+  テンプレートは現行 pin (`claude-org-runtime>=0.1.39`) でもそのまま読み込める (未知 kind は
+  config loader の検証対象外)。
+
 ### Changed
 
 - `registry/projects.md` を operator-local な生成ファイルへ移行 (#811)。コミット対象は列スキーマ・
