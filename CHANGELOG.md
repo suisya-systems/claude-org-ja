@@ -33,6 +33,18 @@
 
 ### Fixed
 
+- runtime drift 報告が「どの interpreter で測ったか」を伏せていたため、片側だけの測定が
+  「更新が遅れている」と誤読された問題を根治 (#863)。`tools/check_runtime_version.py` は
+  **毎回・全 outcome で** stderr の 1 行目に
+  `[runtime drift-check] 測定 interpreter: <sys.executable> (installed=<version>)` を出すようになった。
+  この script が報告する installed は常に「実行した Python が解決したバージョン」であって
+  ホストの状態ではなく、ホストにはプロジェクトの `.venv` とシステム `python3` が別バージョンで
+  同居しうる (CLI shim の shebang はそのどちらか片方に束ねられる)。exit 0 (up to date) でも
+  出すのは、「最新」判定も drift 判定と同じく測った Python に相対で、片方だけ silent にすると
+  同じ取り違えが exit 0 側で起きるため。**開示専用の変更**であり、stdout は drift 行専用のまま
+  (spliceable)、exit code 契約 (0/1/2/3) も不変。`/org-start` Block C2 には、installed / 未インストールに
+  言及する際に interpreter を併記する手順を追記した。
+
 - worker クローズ時の triage scan が zsh で常に失敗し、候補提示が黙ってスキップされていた問題を根治 (#829)。
   旧手順は `REPO_FLAGS=$(tools/work_discovery_repos.py --format flags)` の結果を未クォートで
   `tools/work_discovery_scan.py` へ渡していたが、フラグ列が複数引数になるかは呼び出し元シェルの単語分割次第で、

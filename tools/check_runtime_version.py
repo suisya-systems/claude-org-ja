@@ -21,6 +21,16 @@ Outcome contract:
 * Every "couldn't verify" and "not installed" outcome prints a human
   diagnostic to **stderr** (never stdout) so the reason is visible
   without polluting the spliceable stdout line.
+* Every run -- every outcome, including the silent-stdout OK one --
+  first prints an **interpreter provenance** line to stderr naming
+  ``sys.executable`` and the version that particular interpreter
+  resolves. Every version this script reports is relative to the Python
+  it runs under, and a host can carry more than one install of the
+  package: a project ``.venv`` and the system ``python3`` can sit on
+  different versions, with the CLI shim's shebang binding the entry
+  point to one of them. Without the provenance line a drift report
+  reads as "the install is behind" when it actually means "the other
+  interpreter was measured" -- the misread this line exists to prevent.
 * The process exit code distinguishes the outcomes:
 
     0  EXIT_OK             installed is the pin-window latest (or a
@@ -130,6 +140,38 @@ def _installed_version() -> str | None:
         return None
     except Exception:
         return None
+
+
+def _interpreter_label() -> str:
+    """Return the path of the running interpreter for the provenance
+    line. ``sys.executable`` is an empty string (or absent) when Python
+    cannot determine its own binary -- an embedded interpreter, say --
+    so fall back to a label rather than printing a blank path."""
+    executable = getattr(sys, "executable", None)
+    if not isinstance(executable, str) or not executable:
+        return "(不明)"
+    return executable
+
+
+def _emit_interpreter_diagnostic(installed: str | None) -> None:
+    """Print the interpreter provenance line to stderr (never stdout,
+    which stays reserved for the drift line).
+
+    Every version this script reports is whatever *this* Python
+    resolves, so the measurement is only interpretable together with the
+    interpreter that produced it. Emitted on every outcome, including
+    the OK one: "up to date" is just as interpreter-relative as a drift
+    verdict, and a reader who cannot see which Python was measured can
+    misread either verdict as a statement about the host."""
+    if installed is None:
+        seen = "なし -- この Python から import 不可"
+    else:
+        seen = installed or "(不明)"
+    print(
+        f"[runtime drift-check] 測定 interpreter: {_interpreter_label()} "
+        f"(installed={seen})",
+        file=sys.stderr,
+    )
 
 
 def _direct_url_local_reason() -> str | None:
@@ -353,6 +395,10 @@ def _emit_diagnostic(reason: str | None, pin: str | None) -> None:
 
 def main() -> int:
     installed = _installed_version()
+    # Provenance first, before any outcome branch: whichever verdict
+    # follows on stdout/stderr, the reader sees which interpreter (and
+    # which install) produced it.
+    _emit_interpreter_diagnostic(installed)
     if installed is None:
         print(
             f"[runtime drift-check] {PACKAGE} をこの Python から import できません"

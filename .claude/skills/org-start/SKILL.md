@@ -232,9 +232,11 @@ Block A の spawn 発火と並列。`claude-org-runtime` の installed バージ
    ```
 2. **exit code で分岐**する（stdout は drift 行専用、診断は stderr に出る）:
    - **exit 0**（up to date）: installed == pin 窓内 latest。PyPI 到達確認済・drift 無し。**warning 行なし**。
-   - **exit 1**（drift）: stdout の `[runtime drift] ...` 1 行を **そのまま Step 4 起動完了報告の末尾に warning として転記する**。
+   - **exit 1**（drift）: stdout の `[runtime drift] ...` 1 行を **そのまま Step 4 起動完了報告の末尾に warning として転記する**。あわせて stderr の `測定 interpreter:` 行が示す Python パスを転記行に添える（下記「interpreter の併記」を参照）。
    - **exit 2**（未確認）: PyPI 到達不能 / 応答異常 / pin 窓外 / `packaging` 欠如、**または installed が local install（`file://` パス / VCS / editable。PEP 610 `direct_url.json` で判定）で PyPI 照合不能** の場合。stderr に理由診断が出る。**drift は未検証**なので Step 4 報告に「runtime drift: PyPI 未確認（要ホスト再実行）」を明示する（silent にしない）。**local install 起因の場合はホスト再実行では解消しない**（installed の実体がリリース版と限らないため）ので、stderr の診断が `local install -- PyPI 照合不能` を示すときは「runtime: local install のため PyPI 照合不能（要 PyPI 由来インストールで再確認）」と読み替えて報告する。それ以外（オフライン / sandbox 内）は `dangerouslyDisableSandbox: true` で再実行する。
    - **exit 3**（未インストール）: この Python から runtime を import できない（別 venv / 未インストール）。stderr に note。Step 4 報告に「runtime 未インストール（要確認）」を出す。
+
+> **interpreter の併記（バージョン報告は測った Python に相対）**: 本 Block が報告する installed は「このコマンドを実行した Python が解決したバージョン」であって、ホストの状態ではない。ホストには runtime が複数入りうる（プロジェクトの `.venv` とシステム `python3` が別バージョンで同居し、CLI shim `claude-org-runtime` の shebang はそのどちらか片方に束ねられる）。そのため drift 行を interpreter 抜きで転記すると「更新が遅れている」と読めてしまうが、実際には「もう片方を測った」だけということが起こる。script は **毎回・全 outcome で** stderr の 1 行目に `[runtime drift-check] 測定 interpreter: <sys.executable> (installed=<version>)` を出すので、**Step 4 報告で installed / 未インストールに言及するときは必ずこの Python パスを併記する**（例:「system python3 で測って installed=X」）。上の実行例が `python3` / `py -3` である以上、測っているのは既定でシステム側であって ja の `.venv` ではない点に注意する。
 
 > 設計メモ:
 > - latest 取得は PyPI JSON API (`https://pypi.org/pypi/claude-org-runtime/json`) を urllib.request で叩く (timeout 8s)。`pip index versions` は experimental で stderr に warning を吐くため採用しない
@@ -242,7 +244,8 @@ Block A の spawn 発火と並列。`claude-org-runtime` の installed バージ
 > - **local install 検出 (Issue #747)**: installed が `file://` パス / VCS チェックアウト / editable から入っている場合、その version はリリース版と対応する保証がない（ローカルビルドは任意の version を名乗れる）。PEP 610 `direct_url.json`（`importlib.metadata.Distribution.read_text` で読む。dist-info の直接 glob ではない）で判定し、該当時は PyPI 到達前に **exit 2 + stderr 診断（`local install -- PyPI 照合不能`）** に落とす。`file://` install を「最新・drift なし」と誤報告した事故の根治。https アーカイブ等の非ローカル direct URL は通常の PyPI 照合に委ねる
 > - yanked release / prerelease は候補から除外する（pip が通常選ばないバージョンを latest にしないため）
 > - 「drift = 古い」も「drift = preview 入り (installed > latest の release channel ずれ)」も同じく **exit 1** の 1 行で通知する。auto-upgrade はせず、対応はユーザー判断に委ねる
-> - **stdout は drift 行のみ**（Step 4 へ verbatim 転記できる）。offline / 未確認 / 未インストールの診断はすべて **stderr** に出す（spliceable な stdout を汚さない）
+> - **stdout は drift 行のみ**（Step 4 へ verbatim 転記できる）。offline / 未確認 / 未インストールの診断、および `測定 interpreter` の provenance 行はすべて **stderr** に出す（spliceable な stdout を汚さない）
+> - **interpreter provenance**: `測定 interpreter` 行は outcome に依らず毎回 stderr の先頭に出る（exit 0 も含む）。up to date も drift と同じく「測った Python に相対な判定」なので、片方だけ silent にすると同じ取り違えが exit 0 側で起きるため。判定そのものには影響しない開示専用の 1 行で、exit code 契約は不変
 > - 警告コマンドには `pyproject.toml` から読み取った pin 制約をそのまま埋め込むので、ユーザーが貼り付けても窓外への upgrade にはならない
 > - スクリプト本体: [`tools/check_runtime_version.py`](../../../tools/check_runtime_version.py)
 
