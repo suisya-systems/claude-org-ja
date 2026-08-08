@@ -54,7 +54,7 @@ claude-org-runtime org up --backend herdr
 
 ### renga で起動する場合
 
-通常は `claude-org-runtime org up` で起動します。renga は、claude-org-ja に合わせて開発された、Windows・Linux・macOS 対応のターミナル作業環境です（[GitHub](https://github.com/suisya-systems/renga) / [npm](https://www.npmjs.com/package/@suisya-systems/renga)）。複数の Claude Code ペインを 1 つの画面に並べ、窓口・ディスパッチャー・ワーカーのペイン管理と、ペイン同士の連絡を扱います。画面全体でペインの動きを見ながら起動したい場合は、renga を使って起動できます。renga は npm パッケージなので、別途 Node.js（LTS 推奨）のインストールが必要です。クローン後のディレクトリで次を実行します。
+通常は `claude-org-runtime org up` で起動します。renga は、claude-org-ja に合わせて開発された、Windows・Linux・macOS 対応のターミナル作業環境です（[GitHub](https://github.com/suisya-systems/renga) / [npm](https://www.npmjs.com/package/@suisya-systems/renga)）。複数の Claude Code ペインを 1 つのタブに並べ、窓口・ディスパッチャー・ワーカーのペイン管理と、ペイン同士の連絡を扱います。renga はタブを複数持てますが、組織のペインはすべて同じタブに置かれるので、そのタブを表示している間は 1 画面で全体を見渡せます。画面全体でペインの動きを見ながら起動したい場合は、renga を使って起動できます。renga は npm パッケージなので、別途 Node.js（LTS 推奨）のインストールが必要です。クローン後のディレクトリで次を実行します。
 
 ```bash
 # macOS / Linux
@@ -95,7 +95,7 @@ renga で窓口を開いた場合も、Claude Code 上で実行する手順は�
   </tr>
 </table>
 
-上の画像は、renga で組織を起動したときの画面例です。左は起動直後、右は窓口・ディスパッチャー・ワーカーが並んで動いている状態です。
+上の画像は、renga で組織を起動したときの画面例です（いずれも組織のタブを表示した状態です）。左は起動直後、右は窓口・ディスパッチャー・ワーカーが並んで動いている状態です。
 
 ## 主な特長
 
@@ -138,7 +138,7 @@ renga で窓口を開いた場合も、Claude Code 上で実行する手順は�
 | 通知監視を使う | `/org-attention-start` / `/org-attention-stop` | 承認待ちや停止を別ペインで監視し、必要に応じて通知音を鳴らす |
 | スキル構成を点検する | `/skill-eligibility-check` / `/skill-audit` | 蓄積した知見からスキル化候補や棚卸しを確認する |
 
-`tools/org-dispatcher-view.sh` と `/org-attach` は broker/tmux 用の読み取り専用の補助ツールです。renga を代替手段として使う場合は 1 つの画面に各ペインが並ぶため、attach ではなくその画面を直接見ます。ディスパッチャーを表示し続けたい場合の詳しい手順は [`docs/operations/dispatcher-view.md`](docs/operations/dispatcher-view.md) を参照してください。
+`tools/org-dispatcher-view.sh` と `/org-attach` は broker/tmux 用の読み取り専用の補助ツールです。renga を代替手段として使う場合、組織のペインはすべて同じタブに並ぶため、attach ではなくそのタブを表示して直接見ます（別のタブを表示している間は見えないので、組織のタブに切り替えるか、renga のサイドバーから選びます）。ディスパッチャーを表示し続けたい場合の詳しい手順は [`docs/operations/dispatcher-view.md`](docs/operations/dispatcher-view.md) を参照してください。
 
 ## もっと知る
 

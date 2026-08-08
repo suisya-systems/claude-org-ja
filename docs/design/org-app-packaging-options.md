@@ -20,6 +20,8 @@
 > - [`docs/contracts/sandbox-launcher-contract.md`](../contracts/sandbox-launcher-contract.md)（権限モデルの外部依存）
 > - [`docs/contracts/state-fixture-scrub-policy.md`](../contracts/state-fixture-scrub-policy.md)（公開資産と operator 固有情報の境界）
 > - [`renga`](https://github.com/suisya-systems/renga) v1.4.0 のソース（[§4.4](#44-案-d--org-native-な専用マルチプレクサrenga-の-org-native-化) 案 D の棚卸し対象。読み取りのみ・変更なし。パスは renga リポジトリのルート相対で示す）
+>
+> **renga の版に関する読み方の境界**: 上の v1.4.0 は **§4.4 の棚卸しが対象にした版**であって、本ドキュメント全体がその版を前提にしているという意味ではない。[§2.8.3](#283-operator-が-worker-の作業画面を直接覗ける可視性) の可視性の記述（および [§5.3](#53-可視性の保全--最重要要件) の backend 比較表の renga 行）は**現行 renga 2.0 の運用事実**に更新済みだが、§4.4 の機能棚卸しは 2.0 に対して**再調査していない**。
 
 ---
 
@@ -176,14 +178,14 @@ attention watcher（`claude-org-runtime attention watch`）は `state.db` と `p
 
 **これはユーザーが明示的に重視した要件である。** 現状の実体は次の 2 経路:
 
-- **broker / tmux フレーム** — 各ペインは `claude-org-broker-{pid}-{seq}` という独立した detached tmux session（1 ペイン = 1 session）として存在し、人間が自分の端末から `/usr/bin/tmux -L claude-org-broker attach -r -t <session>` で入る。`-r` は read-only attach、`Ctrl-b d` でデタッチ（ペインは動いたまま。`Ctrl-b` は tmux prefix の既定値で、変更していれば設定した prefix に読み替える。**attach する端末が renga の場合は org サイドバーが `Ctrl+B` を消費してこの打鍵が届かない** — 回避策は [`docs/operations/dispatcher-view.md`](../operations/dispatcher-view.md) の「外側フレームが renga の場合」）。[`.claude/skills/org-attach/SKILL.md`](../../.claude/skills/org-attach/SKILL.md):33-42, :161-172 がこの attach コマンド**文字列を生成するだけ**の read-only スキル。
-- **renga フレーム** — 単一画面のタイリングモデルで、ペインは 1 つのライブウィンドウ内のタイル。「detached session へ attach し直す」概念が写像せず、**画面をそのまま見ればよい**（同 :37-41）。
+- **broker / tmux フレーム** — 各ペインは `claude-org-broker-{pid}-{seq}` という独立した detached tmux session（1 ペイン = 1 session）として存在し、人間が自分の端末から `/usr/bin/tmux -L claude-org-broker attach -r -t <session>` で入る。`-r` は read-only attach、`Ctrl-b d` でデタッチ（ペインは動いたまま。`Ctrl-b` は tmux prefix の既定値で、変更していれば設定した prefix に読み替える。**attach する端末が renga の場合は org サイドバーが `Ctrl+B` を消費してこの打鍵が届かない** — 回避策は [`docs/operations/dispatcher-view.md`](../operations/dispatcher-view.md) の「外側フレームが renga の場合」）。[`.claude/skills/org-attach/SKILL.md`](../../.claude/skills/org-attach/SKILL.md):33-53, :174-185 がこの attach コマンド**文字列を生成するだけ**の read-only スキル。
+- **renga フレーム**（transport が renga = `ORG_TRANSPORT=renga` のケース） — ペインは**所属タブ内のタイル**であって独立した detached session ではなく、「detached session へ attach し直す」概念が写像しない。org は全ペインを同一タブへ置くので（これは renga の性質ではなく org 側の配置規則で、規範の正本は契約 [`docs/contracts/backend-interface-contract.md`](../contracts/backend-interface-contract.md) §4.2 の SINGLE-TAB MUST）、**その org のタブを表示している間は画面をそのまま見ればよい**。別のタブを表示している間は org のペインが視界に入らないため、org のタブへ切り替えるか、renga の org サイドバー（全タブ横断でタブとペインを一覧する cross-tab パネル）から該当ペインを選ぶ（同 :37-53）。
 
 加えて [`tools/org-dispatcher-view.sh`](../../tools/org-dispatcher-view.sh):195-236 が「dispatcher の自己修復する read-only ビュー」を提供し、dispatcher の restart / auto-compact fork でセッション名が変わっても自動再探索・再 attach する。
 
-> **重要な例外 — 窓口（root secretary）は attach 対象外**。窓口は broker 起動時に logical pane（bookkeeping entry）として登録されるだけで **adapter 実ペインを持たず `pane_id` が `null`** であり、broker socket の detached session に出現しない（[`.claude/skills/org-attach/SKILL.md`](../../.claude/skills/org-attach/SKILL.md):101-107）。これは `org up` が対話型 `claude` TUI を **`os.execvpe` で呼び出し元プロセスに置換して**起動するためで（`claude_org_runtime/broker/launcher.py:342-344`）、窓口は「org を起動した人間の手元 terminal」そのものに住んでいる。**つまり `worker` / `dispatcher` は埋め込めても、人間が最も長く見る窓口セッションだけは既存の tmux 経路では埋め込めない。** [§6.2](#62-段階ロードマップ) Phase 4 はこの穴を明示的に埋める必要がある。
+> **重要な例外 — 窓口（root secretary）は attach 対象外**。窓口は broker 起動時に logical pane（bookkeeping entry）として登録されるだけで **adapter 実ペインを持たず `pane_id` が `null`** であり、broker socket の detached session に出現しない（[`.claude/skills/org-attach/SKILL.md`](../../.claude/skills/org-attach/SKILL.md):114-119）。これは `org up` が対話型 `claude` TUI を **`os.execvpe` で呼び出し元プロセスに置換して**起動するためで（`claude_org_runtime/broker/launcher.py:342-344`）、窓口は「org を起動した人間の手元 terminal」そのものに住んでいる。**つまり `worker` / `dispatcher` は埋め込めても、人間が最も長く見る窓口セッションだけは既存の tmux 経路では埋め込めない。** [§6.2](#62-段階ロードマップ) Phase 4 はこの穴を明示的に埋める必要がある。
 
-> **backend による差**: 上記の「1 ペイン = 1 detached tmux session」は **broker × tmux backend に固有**である。Windows 正準の WezTerm backend と herdr backend は tmux socket を持たないため `tmux attach` の経路が存在せず、renga は単一画面タイリングで detached session の概念自体がない。可視性の実装は backend ごとに別の話になる（[§5.3](#53-可視性の保全--最重要要件)）。
+> **backend による差**: 上記の「1 ペイン = 1 detached tmux session」は **broker × tmux backend に固有**である。Windows 正準の WezTerm backend と herdr backend は tmux socket を持たないため `tmux attach` の経路が存在せず、renga transport もペインが所属タブ内のタイルであって detached session の概念自体を持たない。可視性の実装は backend ごとに別の話になる（[§5.3](#53-可視性の保全--最重要要件)）。
 
 **この可視性が実際に人間へ与えているもの**を分解すると:
 
@@ -406,7 +408,7 @@ claude-org の中核と重なる機能が、公式側で相次いで提供され
 
 #### 4.4.1 renga が既に持っているもの（実コード棚卸し）
 
-以下は renga v1.4.0（`Cargo.toml` の `version = "1.4.0"`、Rust 実装・全 43 ファイル 28,864 LOC）の実ソースを読んで確認したもの。パスは renga リポジトリのルート相対。
+以下は renga v1.4.0（`Cargo.toml` の `version = "1.4.0"`、Rust 実装・全 43 ファイル 28,864 LOC）の実ソースを読んで確認したもの。パスは renga リポジトリのルート相対。**この棚卸しは v1.4.0 時点のままで、renga 2.0 に対しては再調査していない**（2.0 の実体に合わせて更新したのは [§2.8.3](#283-operator-が-worker-の作業画面を直接覗ける可視性) と [§5.3](#53-可視性の保全--最重要要件) の可視性の記述だけである）。
 
 - **MCP peer サーバ 15 ツール**（`src/mcp_peer/mod.rs:444-737` のツールカタログ、同 :967-981 のディスパッチ）— `list_peers` / `send_message` / `set_summary` / `check_messages` / `list_panes` / `spawn_pane` / `spawn_claude_pane` / `spawn_codex_pane` / `close_pane` / `focus_pane` / `new_tab` / `inspect_pane` / `send_keys` / `set_pane_identity` / `poll_events`。**[§2.5](#25-layer-3--輸送層と端末-backend) の Surface 1-6 に相当する面は既に全部ある。**
 - **role 付き spawn** — ただし現状は**自由記述のラベル**であり、「UI と `list_panes` の出力に表示される」だけで権限や振る舞いを持たない（`src/mcp_peer/mod.rs:544-547` の `role` フィールド説明: "Optional free-form role label (e.g. 'worker', 'foreman', 'curator'). Shown in the UI and in list_panes output."）。
@@ -596,7 +598,7 @@ attention watcher は既に `state.db` / `pending_decisions.json` を読む独�
 | broker × tmux（POSIX 正準） | あり（`tmux attach -r -t <session>`） | 既存 session に PTY ブリッジを噛ませる。最も安い | **Phase 4 の第一対象** |
 | broker × WezTerm（Windows 正準） | tmux socket なし | `TerminalAdapter` の `get_text` / `type_text` を streaming 化するか、WezTerm 側の multiplexer 機能に乗る。**未検証** | Phase 4 の第二対象。実現性は要スパイク |
 | broker × herdr | tmux socket なし | 同上（herdr の adapter 面を streaming 化） | Phase 4 の第三対象 |
-| renga | 概念が非適用（単一画面タイリング） | **適用外**。renga 利用者は従来どおり画面を直接見る | 対象外と明示 |
+| renga（transport） | 概念が非適用（ペインは所属タブ内のタイルで detached session を持たない） | **適用外**。renga 利用者は従来どおり、org のペインが並ぶ org のタブを表示して直接見る（org 同一タブ規則の下で。[§2.8.3](#283-operator-が-worker-の作業画面を直接覗ける可視性)） | 対象外と明示 |
 
 **この差を放置すると「Windows では中が見えないアプリ」になる**。Phase 4 は tmux から着手してよいが、**「A は tmux 専用」で終わらせるなら、アプリの対応 backend を broker+tmux に明示的に絞る**（= Windows は Phase 4 の対象外と宣言する）判断が要る。どちらを取るかは Phase 4 着手前の設計判断であり、[§8](#8-未確認事項と次の検証) の未確認事項に挙げる。
 

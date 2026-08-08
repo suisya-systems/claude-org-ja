@@ -35,11 +35,22 @@ role + name(task_id) ラベル付きで印字するだけ。コピーした人�
 > 前提とする。**broker フレーム**: 各 broker ペインは `claude-org-broker-{pid}-{seq}` という独立した detached
 > tmux session（1 ペイン = 1 session）として存在し、`tmux attach -t <session>` で入れる ―
 > 本スキルの attach モデルが意味を持つ主フレームはこちら。**renga フレーム（opt-in,
-> `ORG_TRANSPORT=renga`）は概念が異なる**: renga は**単一画面のタイリング**モデルで、ペインは 1 つの
-> 生きたウィンドウ内の**タイル**であって、独立した detached session ではない。「detached session へ
-> attach し直す」概念がそのまま写像せず、ペイン単位の `tmux attach -t <session>` は存在しない。
-> よって renga 下では本スキルの attach 形は**適用外**で、画面そのものを直接見ればよい（attach 不要）。
-> 本スキルは renga フレームでは「broker(tmux) 専用ツールです」と明示して停止する（下記 Step 0）。
+> `ORG_TRANSPORT=renga`）は概念が異なる**: renga のペインは**所属タブ内のタイル**であって、独立した
+> detached session ではない。「detached session へ attach し直す」概念がそのまま写像せず、ペイン単位の
+> `tmux attach -t <session>` は存在しない。よって **`ORG_TRANSPORT=renga` では**本スキルの broker/tmux
+> attach 形は**適用外**で、org のペインが並ぶタブを表示して直接見る。org が全ペインを同一タブへ置くのは
+> org 側の配置規則であり、規範の正本は契約
+> [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md)
+> §4.2 の SINGLE-TAB MUST（本スキルはこれを再掲せず参照する）。したがって**その org のタブを表示している
+> 間は** 1 画面で全ペインが見えるが、別のタブを表示している間は org のペインは視界に入らない。そのときは
+> org のタブへ切り替えるか、renga の org サイドバー（全タブ横断でタブとペインを一覧する cross-tab パネル。
+> renga `src/app/org_sidebar.rs:1-3`）から該当ペインを選ぶ。
+> **この適用外は transport が renga の場合に限る**: 外側フレームが renga でも `ORG_TRANSPORT` が broker の
+> 構成では detached tmux session が実在するので本スキルは**適用される**（その場合に必要なのは attach 打鍵の
+> `Ctrl+B` 衝突回避で、手順は
+> [`docs/operations/dispatcher-view.md`](../../../docs/operations/dispatcher-view.md)「外側フレームが renga の
+> 場合」）。本スキルは `ORG_TRANSPORT=renga` のときだけ「broker(tmux) 専用ツールです」と明示して停止する
+> （下記 Step 0）。
 >
 > （**既定の二フレーム注記（Refs #604）**: org-attach は本質的に broker/tmux ツールなので header を
 > **broker 主軸**で書く。輸送層全体の既定は二つのフレームで指す対象が異なる ― **運用既定**は renga
@@ -73,12 +84,14 @@ _zsh_tmux_plugin_run`）。素の `tmux ...` を出力すると、人間の zsh 
 printenv ORG_TRANSPORT
 ```
 
-renga フレームならこのスキルは適用外なので attach コマンドを生成せず停止する。
+renga transport（`ORG_TRANSPORT=renga`）ならこのスキルは適用外なので attach コマンドを生成せず停止する。
 
 - **`ORG_TRANSPORT=renga`（明示）の場合** → 次の旨を伝えて停止する（attach コマンドは生成しない）:
-  「現在は renga（単一画面タイリング）で稼働しています。renga ではペインは 1 つのライブウィンドウ内の
-  タイルで、detached tmux session への attach という概念がそのまま適用されません。ペイン状況の一覧は
-  [`/org-dashboard`](../org-dashboard/SKILL.md) を使ってください。」
+  「現在は renga transport（`ORG_TRANSPORT=renga`）で稼働しています。renga のペインは所属タブ内のタイルで、
+  detached tmux session への attach という概念がそのまま適用されません。組織のペインはすべて同じタブに
+  置かれるので、その組織のタブを表示している間はそのまま画面で見られます。別のタブを表示中なら、組織の
+  タブへ切り替えるか、renga の org サイドバー（全タブ横断でタブとペインを一覧するパネル）から該当ペインを
+  選んでください。ペイン状況の一覧は [`/org-dashboard`](../org-dashboard/SKILL.md) を使ってください。」
 - **それ以外（無設定 / `broker`）** → broker(tmux) フレームとして Step 1 へ進む。
 
 ## Step 1: 論理ペイン一覧を取得（broker）

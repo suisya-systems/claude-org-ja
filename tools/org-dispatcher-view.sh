@@ -30,8 +30,17 @@
 #     **wezterm**（tmux ではない）ので本スクリプトは適用外。wezterm 版の同等品は
 #     follow-up とする（本スクリプトでは実装しない）。
 #   - broker daemon の HTTP / MCP は一切叩かない（純 tmux で役割解決する）。
-#   - renga フレーム（単一画面タイリング）では「detached session へ attach し直す」
-#     概念が写像しないので適用外。renga では画面そのものを直接見ればよい。
+#   - renga transport（ORG_TRANSPORT=renga）では、ペインが所属タブ内のタイルで別々の
+#     detached tmux session に分かれず「detached session へ attach し直す」概念が
+#     写像しないので適用外。org は全ペインを同一タブへ置くので（これは renga の性質では
+#     なく org 側の配置規則で、規範の正本は契約
+#     docs/contracts/backend-interface-contract.md の §4.2 SINGLE-TAB MUST）、その org の
+#     タブを表示している間は画面をそのまま見ればよい。別のタブを表示している間は org の
+#     ペインが視界に入らないため、タブを切り替えるか renga の org サイドバー（全タブ横断で
+#     タブとペインを一覧するパネル）から該当ペインを選ぶ。
+#     この適用外は transport が renga の場合に限る: 外側フレームが renga でも
+#     ORG_TRANSPORT が broker の構成では detached tmux session が実在するため本スクリプトは
+#     適用される（その場合に必要なのは下記「注意」の Ctrl+B 衝突回避）。
 #
 # 注意:
 #   `tmux` は zsh + oh-my-zsh の tmux プラグインで alias 化けするため、本スクリプト内の
