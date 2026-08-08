@@ -65,10 +65,10 @@ codex exec review --base origin/main -m gpt-5.6-sol -c model_reasoning_effort=me
 
 1. **完了報告**: `mcp__renga-peers__send_message(to_id="secretary", message="...")` で窓口に報告する。**ディスパッチャーではなく窓口に送ること**。宛先解決に失敗しても（renga: `[pane_not_found]` / broker: `[peer_not_found]`）**窓口が消えたとは解釈しない**。次の順で復旧する:
    - **誤送信は別 org へ完了報告を漏らす**ので、宛先が自分と同じ org だと確認できないうちは再送しない。確認できなければ再送より escalate を選ぶ。
-   - `list_peers` を引き直し、送信時に控えた**数値 peer id** が残っていればその id で **1 回だけ**再送する（ループにしない）。
-   - 数値 id が残っていない場合、`secretary` と名前が一致するレコードは**候補にすぎない**。`same_tab: true` を確認できたレコードだけを採用し、**他タブのレコードしか無ければ再送しない**（別 org の同名ペインを掴みうる）。
-   - `same_tab` / `tab` をどのレコードも持たない列挙は、**単一タブであることしか保証せず「どのタブか」は保証しない**（focused タブでありうる）。自分のタブだと別途確認できない限り、名前一致だけで採用しない。
-   - **他タブの数値 id 宛に依拠する前に** `/home/user/work/claude-org/.claude/skills/org-delegate/references/capability-first-drive-operational-gate.md` の gate を適用する（この復旧手順の `list_peers` 自体が gate 対象の call site で、縮退中は他タブへ再送しない）。
+   - **まず gate を適用する**: `/home/user/work/claude-org/.claude/skills/org-delegate/references/capability-first-drive-operational-gate.md`。この復旧手順の `list_peers` 自体が独立した gate 対象の call site で、gate を通っていない送信失敗から入った場合は**この列挙が初回の capability 観測になりうる**（`monitoring-read-only` としてその場で適用する）。
+   - **承認が無い（縮退中）なら、列挙結果を宛先解決に使わない** — 数値 id・`same_tab: true` 候補を含め**一切再送せず**、下の escalate に進む。
+   - 承認済みの場合のみ `list_peers` を引き直す。送信時に控えた**数値 peer id** が残っていれば、その id で **1 回だけ**再送する（ループにしない）。
+   - 数値 id が残っていない場合、`secretary` と名前が一致するレコードは**候補にすぎない**。`same_tab: true` を確認できたレコードだけを採用し、**他タブのレコードしか無ければ再送しない**（別 org の同名ペインを掴みうる）。`same_tab` / `tab` をどのレコードも持たない列挙は**単一タブであることしか保証せず「どのタブか」は保証しない**（focused タブでありうる）ので、自タブだと別途確認できない限り名前一致だけで採用しない。
    - 宛先を確定できない / 再送も失敗した場合は**ループさせず**、`to_id="dispatcher"` で状況を報告して escalate する。
    - 手順の正本: `/home/user/work/claude-org/.claude/skills/org-delegate/references/renga-error-codes.md` の「`pane_not_found` の messaging 分岐」節。
 2. **PR 作成後はペインを保持してレビュー指摘待機**: 「閉じてよい」「マージ済み」など窓口からの明示クローズ指示が来るまで待機状態を維持する。
