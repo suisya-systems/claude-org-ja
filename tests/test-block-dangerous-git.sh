@@ -454,6 +454,21 @@ run_test "git -c alias.lg=log lg (stash を含まない alias は allow)" \
 run_test "git config --get alias.st (alias 定義の参照は allow)" \
   "$(mk_bash_json 'git config --get alias.st')" 0
 
+# 既知の false positive を挙動として固定しておく（黙って変わらないように）。
+# 値を取る global option があると値の分割を判別できないため permissive 走査へ
+# 落ちる。その結果、引数に stash というリテラル語を置いた検索系まで deny になる。
+# 安全側に倒した意図的な選択で、根治には引用符境界を保つトークナイズが要る
+# （現状は split_segments が引用符を空白へ正規化した後の文字列しか見えない）。
+# 回避策は deny メッセージが案内するとおり git トークンを外すこと（rg / grep）。
+run_test "git -C /repo grep stash (既知の false positive: 安全側 deny)" \
+  "$(mk_bash_json 'git -C /repo grep stash')" 2
+
+run_test "git -c color.ui=false grep stash (同上)" \
+  "$(mk_bash_json 'git -c color.ui=false grep stash')" 2
+
+run_test "git grep stash -- src/ (global option 無しなら allow のまま)" \
+  "$(mk_bash_json 'git grep stash -- src/')" 0
+
 echo ""
 
 # =====================================================================
