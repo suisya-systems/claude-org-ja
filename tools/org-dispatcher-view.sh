@@ -42,6 +42,14 @@
 #   しまう）。本ビューワーを止めるには、まず `Ctrl-b d` で **detach** してから、再探索プロンプト
 #   に戻ったところで Ctrl-C を押す（detach 中 / degraded 中 / socket 不通中の sleep ループでは
 #   Ctrl-C が trap に届きクリーンに終了する）。busy-loop は各分岐の sleep で防いでいる。
+#
+#   キー表記: 本スクリプトが案内する `Ctrl-b` は tmux prefix の **既定値** であり、prefix を
+#   変更している場合は設定した prefix に読み替える。加えて、**本ビューワーを renga の画面の中で
+#   動かす場合は先に回避策が要る**: renga の org サイドバーは既定で有効なあいだ `Ctrl+B`
+#   （tmux prefix `Ctrl-b` と同じ物理入力）を消費して PTY へ渡さないため、detach 打鍵が内側
+#   tmux に届かず、上記の終了手順が実行不能になる。回避策は renga 設定 `[ui] org_sidebar = "off"`
+#   か内側 tmux の prefix 変更の 2 つ。詳細は docs/operations/dispatcher-view.md の
+#   「外側フレームが renga の場合」を参照。
 # ============================================================================
 
 set -u
@@ -156,6 +164,11 @@ attach 中のキー操作 / 終了:
   終了するには   まず Ctrl-b d で detach し、再探索プロンプトに戻ってから Ctrl-C を押す。
                 （attach 中の Ctrl-C は tmux / dispatcher ペイン側に渡り、本ビューワーは
                  止まらない。--rw では dispatcher へ ^C を送ってしまうので特に注意）
+  Ctrl-b は tmux prefix の既定値。変更している場合は設定した prefix に読み替える。
+  renga の中で本ビューワーを動かす場合は、org サイドバー（既定で有効）が Ctrl+B を
+  消費して detach 打鍵が内側 tmux に届かないため、先に renga 設定 [ui] org_sidebar = "off"
+  か tmux prefix の変更が要る。詳細は docs/operations/dispatcher-view.md の
+  「外側フレームが renga の場合」。
 
 注意:
   broker の Windows backend は wezterm（tmux でない）ため本スクリプトは tmux backend 専用。
@@ -197,6 +210,7 @@ if [ "$ATTACH_RO" -eq 0 ]; then
 fi
 printf 'org-dispatcher-view 起動（socket=%s, mode=%s）。終了は detach (Ctrl-b d) 後にプロンプトで Ctrl-C。\n' \
 	"$SOCKET" "$([ "$ATTACH_RO" -eq 1 ] && echo read-only || echo read-write)" >&2
+printf '   ※ Ctrl-b は tmux prefix の既定値。変更時は設定した prefix に読み替え（renga の中で使う場合は --help の注記を参照）。\n' >&2
 
 while [ "$RUNNING" -eq 1 ]; do
 	session="$(discover_dispatcher)"
@@ -219,7 +233,7 @@ while [ "$RUNNING" -eq 1 ]; do
 
 	# attach 直前のヘッダ（何に attach しているか）。
 	mode_label="$([ "$ATTACH_RO" -eq 1 ] && echo 'read-only' || echo 'read-write')"
-	printf '>>> dispatcher を発見: session=%s に %s attach します（抜ける: Ctrl-b d、その後プロンプトで Ctrl-C で終了）\n' \
+	printf '>>> dispatcher を発見: session=%s に %s attach します（抜ける: Ctrl-b d、その後プロンプトで Ctrl-C で終了。Ctrl-b は既定 prefix）\n' \
 		"$session" "$mode_label" >&2
 
 	# read-only attach は detach / セッション死亡までブロックする。

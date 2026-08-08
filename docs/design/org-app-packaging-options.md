@@ -176,7 +176,7 @@ attention watcher（`claude-org-runtime attention watch`）は `state.db` と `p
 
 **これはユーザーが明示的に重視した要件である。** 現状の実体は次の 2 経路:
 
-- **broker / tmux フレーム** — 各ペインは `claude-org-broker-{pid}-{seq}` という独立した detached tmux session（1 ペイン = 1 session）として存在し、人間が自分の端末から `/usr/bin/tmux -L claude-org-broker attach -r -t <session>` で入る。`-r` は read-only attach、`Ctrl-b d` でデタッチ（ペインは動いたまま）。[`.claude/skills/org-attach/SKILL.md`](../../.claude/skills/org-attach/SKILL.md):33-42, :161-172 がこの attach コマンド**文字列を生成するだけ**の read-only スキル。
+- **broker / tmux フレーム** — 各ペインは `claude-org-broker-{pid}-{seq}` という独立した detached tmux session（1 ペイン = 1 session）として存在し、人間が自分の端末から `/usr/bin/tmux -L claude-org-broker attach -r -t <session>` で入る。`-r` は read-only attach、`Ctrl-b d` でデタッチ（ペインは動いたまま。`Ctrl-b` は tmux prefix の既定値で、変更していれば設定した prefix に読み替える。**attach する端末が renga の場合は org サイドバーが `Ctrl+B` を消費してこの打鍵が届かない** — 回避策は [`docs/operations/dispatcher-view.md`](../operations/dispatcher-view.md) の「外側フレームが renga の場合」）。[`.claude/skills/org-attach/SKILL.md`](../../.claude/skills/org-attach/SKILL.md):33-42, :161-172 がこの attach コマンド**文字列を生成するだけ**の read-only スキル。
 - **renga フレーム** — 単一画面のタイリングモデルで、ペインは 1 つのライブウィンドウ内のタイル。「detached session へ attach し直す」概念が写像せず、**画面をそのまま見ればよい**（同 :37-41）。
 
 加えて [`tools/org-dispatcher-view.sh`](../../tools/org-dispatcher-view.sh):195-236 が「dispatcher の自己修復する read-only ビュー」を提供し、dispatcher の restart / auto-compact fork でセッション名が変わっても自動再探索・再 attach する。
