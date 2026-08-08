@@ -10,6 +10,9 @@ effort: low
 allowed-tools:
   - Read
   - Bash(py -3 tools/journal_append.py:*)
+  - Bash(bash tools/journal_append.sh:*)
+  - Bash(py -3 tools/capability_gate.py:*)
+  - Bash(python3 tools/capability_gate.py:*)
   - mcp__org-broker__set_summary
   - mcp__org-broker__list_panes
   - mcp__org-broker__set_pane_identity
@@ -83,6 +86,12 @@ print(json.dumps(get_org_state_summary(conn), ensure_ascii=False, indent=2, defa
 - `active_runs[]` が handover の「進行中のワーク」セクションと整合するか
 
 ## Step 3: ペイン生存確認
+
+**`list_peers` の直前に
+[`.claude/skills/org-delegate/references/capability-first-drive-operational-gate.md`](../org-delegate/references/capability-first-drive-operational-gate.md)
+を Read し、`monitoring-read-only` の分岐を適用する**（同 reference §6 の表 #3）。capability 形かつ
+未承認なら列挙を生存判定に使わず破棄し、`mcp__org-broker__list_panes` と state DB の `active_runs[]` の突き合わせで
+代替して、差分は人間に報告する（停止しない・待ち時間 0 分。勝手に再 spawn しないのは従来どおり）。
 
 ```
 mcp__org-broker__list_peers

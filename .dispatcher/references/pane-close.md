@@ -244,7 +244,15 @@ mcp__renga-peers__spawn_claude_pane(
 1. `mcp__renga-peers__send_keys(target="curator", enter=true)` で
    「Load development channel? (Y/n)」プロンプトを承認する
 2. `mcp__renga-peers__list_peers` で `name="curator"` の peer 登録を poll する。
-   未登録なら Enter を再送して再 poll（最大 3 回 retry）
+   未登録なら Enter を再送して再 poll（最大 3 回 retry）。
+   **`list_peers` の直前に
+   [`.claude/skills/org-delegate/references/capability-first-drive-operational-gate.md`](../../.claude/skills/org-delegate/references/capability-first-drive-operational-gate.md)
+   を Read し、`monitoring-read-only` の分岐を適用する**（同 reference §6 の表 #8）。
+   capability 形かつ未承認なら列挙を登録確認に使わず破棄し、`list_panes` の
+   `name="curator"` と `inspect_pane` のプロンプト表示で確認する（停止しない・待ち時間 0 分）。
+   **`name="curator"` の一致だけで登録ゲートを開けない**（予約名は別 org の並走タブに
+   同名で実在しうる。契約 T-§2.2 / 共有 reference §3-B-1）。3 回 retry しても確認できなければ
+   従来どおり次項の破棄・skip へ進む
 3. 3 回 retry しても登録されない場合は `close_pane(target="curator")` で破棄し、
    **5-3 で書いた `curate-inflight.json` を削除して**、窓口に informational として
    報告して curate をスキップし、Step 6 へ進む（inflight を残すと監視ループ Step 5.3 が

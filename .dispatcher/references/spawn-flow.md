@@ -133,7 +133,11 @@ mcp__renga-peers__send_keys(target="worker-{task_id}", enter=true)
 
 ### 3-4. `mcp__renga-peers__list_peers` で新ピア出現を待機
 
+**`list_peers` の直前に [`.claude/skills/org-delegate/references/capability-first-drive-operational-gate.md`](../../.claude/skills/org-delegate/references/capability-first-drive-operational-gate.md) を Read し、`monitoring-read-only` の分岐を適用する**（同 reference §6 の表 #7）。ここは spawn のたびに走るので、**実運用で capability 広告列挙を最初に観測するのはこの経路である公算が高い**。
+
 pane は live でも Claude がまだ起動中の場合があるため二重確認。`mcp__renga-peers__list_peers` を呼び、`worker-{task_id}` が peer 一覧に現れるまで短い間隔（例: 2 秒）でリトライする（最大 30 秒程度）。タイムアウトした場合は `list_panes` でペイン状態を再確認し、必要なら窓口に escalate する。
+
+> **capability 形かつ未承認のときの縮退（停止しない・待ち時間 0 分）**: 列挙を peer 登録の ground truth にせず破棄し、`list_panes` の pane 生存 + `inspect_pane` のプロンプト表示で boot を判定する。以後はワーカーからの最初の peer message を到達確認とする。**`worker-{task_id}` の name 一致で登録ゲートを開けてはならない** — 予約名は別 org の並走タブに同名で実在しうるので、name 一致は「まだ登録していない自分の子」のゲートを他 org のピアで開けてしまう（契約 T-§2.2 の「MUST NOT key a lookup … on `name` alone」。共有 reference §3-B-1）。報告は共有 reference §3-B の手順で窓口へ 1 度だけ上げ、監視は止めない。
 
 ### 3-5. ワーカーに指示を送信
 

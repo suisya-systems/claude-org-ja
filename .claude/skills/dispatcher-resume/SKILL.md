@@ -13,6 +13,8 @@ allowed-tools:
   - Read
   - Bash(py -3 ../tools/journal_append.py:*)
   - Bash(bash ../tools/journal_append.sh:*)
+  - Bash(py -3 ../tools/capability_gate.py:*)
+  - Bash(python3 ../tools/capability_gate.py:*)
   - Bash(python3 -c:*)
   - Bash(py -3 -c:*)
   - Bash(ls:*)
@@ -85,6 +87,11 @@ Step 0 に入る前に遮断する（恒久対策の経緯は
    - `mcp__org-broker__list_panes` / `mcp__org-broker__list_peers` で **監視対象が live か**を確認する: active な
      worker ペイン（`role == "worker"`）が 1 つ以上ある、または
      `.state/dispatcher/curate-inflight.json` が存在する（= 監視ループが回っているべき状態）。
+     **`list_peers` の直前に
+     [`.claude/skills/org-delegate/references/capability-first-drive-operational-gate.md`](../org-delegate/references/capability-first-drive-operational-gate.md)
+     を Read し、`monitoring-read-only` の分岐を適用する**（同 reference §6 の表 #5）。capability 形
+     かつ未承認なら列挙を live 判定に使わず破棄し、`list_panes` の `role == "worker"` と
+     `curate-inflight.json` の有無だけで分岐する（停止しない・待ち時間 0 分）。
    - **(i) 監視対象が live = stale 再発火 / 重複起動**: 組織は健全で cold-start 不要。
      `DISPATCHER_RESUME_FAILED` を **送らず**（誤った `/org-start` 案内を出さない）、
      Step 1 以降に進まず早期 exit する。**残存予約を空のまま放置しない**: 監視 `/loop` が
@@ -113,7 +120,12 @@ Step 0 に入る前に遮断する（恒久対策の経緯は
    - 期待値: `name == "dispatcher"` かつ `role == "dispatcher"`
    - 不一致なら `mcp__org-broker__set_pane_identity(target="focused", name="dispatcher", role="dispatcher")` で修復
 3. 自分の `pane_id` を `list_panes` から取得（`focused: true` の id）
-4. `mcp__org-broker__list_peers` で `name == "dispatcher"` の `peer_id` を取得
+4. `mcp__org-broker__list_peers` で `name == "dispatcher"` の `peer_id` を取得。
+   **呼び出しの直前に
+   [`.claude/skills/org-delegate/references/capability-first-drive-operational-gate.md`](../org-delegate/references/capability-first-drive-operational-gate.md)
+   を Read し、`monitoring-read-only` の分岐を適用する**（同 reference §6 の表 #4）。capability 形
+   かつ未承認なら列挙から `peer_id` を採らず破棄し、3 で得た `focused: true` の pane_id で identity を
+   確定して `peer_id` 未取得のまま進む（停止しない・待ち時間 0 分）。
 
 ## Step 1: handover ファイルを読み込む
 
@@ -194,6 +206,13 @@ secretary に **報告して** 判断を仰ぐ（勝手に再 spawn / status 変
 `mcp__org-broker__list_peers` を再度呼び、handover に記載のワーカー名が現存するか
 確認する。消えていれば secretary に `WORKER_PANE_EXITED: worker-{task_id} (resume
 時点で不存在)` を通知（reconcile は窓口の責務）。
+
+**`list_peers` の直前に
+[`.claude/skills/org-delegate/references/capability-first-drive-operational-gate.md`](../org-delegate/references/capability-first-drive-operational-gate.md)
+を Read し、`monitoring-read-only` の分岐を適用する**（同 reference §6 の表 #6）。capability 形かつ
+未承認なら列挙を不存在の根拠にせず破棄し、`mcp__org-broker__list_panes` と events テーブルの報告痕跡で判定する。
+**確定できなければ `WORKER_PANE_EXITED` を送らない**（縮退中の「列挙に居ない」は死亡の証拠ではなく、
+別 org の同名ピアと取り違えうる。同 reference §3-B-1）。停止しない・待ち時間 0 分。
 
 ## Step 5: 監視ループの再開
 
