@@ -35,10 +35,15 @@
 
 balanced split の判定 (target / direction の選択、MIN_PANE / secretary 保険 / role priority によるソート、rect 隣接判定) は **dispatcher が `claude-org-runtime` の `delegate-plan` helper 経由で実行する**。Claude 側で再実装するロジックではない。helper は `mcp__renga-peers__list_panes` の rect スナップショットと task JSON を入力に取り、`spawn` ターゲット名と direction を含む action plan を返す（候補が空なら `split_capacity_exceeded` で escalate を指示）。
 
-> **輸送層で capacity 機構が分岐する (runtime 0.1.31 / #104、backend-aware worker capacity)**: 上記 rect ベース balanced split は **renga 面** の律速。**broker 面**（`ORG_TRANSPORT=broker` / コード既定）では helper が `choose_split` / rect geometry を**バイパス**し、`--max-concurrent-workers N`（既定 8 / `unlimited` opt-in）による capacity gate に切り替わる（「アクティブ worker 数 < `N` なら固定 spawn target で spawn / 到達で `split_capacity_exceeded`」）。dispatcher は `ORG_TRANSPORT` を解決して `--transport` を helper へ**明示で渡す**（runtime は panes snapshot から transport を推定しない契約）。`.dispatcher/CLAUDE.md` の delegate-plan helper 節の CLI 例と `registry/org-config.md` の `max_concurrent_workers` 導線を参照。
+> **輸送層で capacity 機構が分岐する (runtime 0.1.31 / #104、backend-aware worker capacity)**: 上記 rect ベース balanced split は **renga 面の既定経路（caller タブ内に配置する場合）** の律速。**broker 面**（`ORG_TRANSPORT=broker` / コード既定）では helper が `choose_split` / rect geometry を**バイパス**し、`--max-concurrent-workers N`（既定 8 / `unlimited` opt-in）による capacity gate に切り替わる（「アクティブ worker 数 < `N` なら固定 spawn target で spawn / 到達で `split_capacity_exceeded`」）。dispatcher は `ORG_TRANSPORT` を解決して `--transport` を helper へ**明示で渡す**（runtime は panes snapshot から transport を推定しない契約）。`.dispatcher/CLAUDE.md` の delegate-plan helper 節の CLI 例と `registry/org-config.md` の `max_concurrent_workers` 導線を参照。
+>
+> **renga 面で `max_concurrent_workers` が無視されるのは caller タブ内に配置する既定経路のときだけ** (runtime 0.1.39 以降): **`--overflow-to-new-tab` を armed にし、かつ `--server-capability spawn_tab` を宣言した**場合（明示 `--tab` が無く、`choose_split` も候補ゼロで実際に新規タブへ overflow する場合）に限り、rect 上限が消える代わりに **fleet ceiling が live になり**、`--peers-json` が必須になる（欠落は `input_invalid` / exit 1 で拒否。overflow で置いたワーカーは自分のタブに居て `--panes-json` に二度と現れないため、census 無しでは上限が 0 のままタブを無制限に増やす）。
+> - **`spawn_tab` を宣言せずに `--overflow-to-new-tab` だけ渡しても overflow は発火しない**: capability 未宣言は fail closed で、overflow は「無視した」旨を `reasons` に記録して caller タブ配置に降格し、従来どおりの rect escalate に戻る（`--peers-json` 欠落も拒否されない）。この分岐を「必須なのに拒否されない」と誤読しないこと
+> - **現行 ja はこれらのフラグを渡していない**（dispatcher の実呼び出し経路 — `.dispatcher/CLAUDE.md` の CLI 例・`tools/` のスクリプト — のいずれにも配線されていない。以下の説明文中の言及を除き、実行される呼び出しは存在しない）ので、今日の運用では従来どおり無視される
+> - なお runtime CLI の `ceiling_applies`（`transport == "broker" or (transport == "renga" and --overflow-to-new-tab and --tab 未指定)`）は **`--max-concurrent-workers` の値を検証するかどうか**の条件であって、ceiling が実際に binding になる条件そのものではない（後者は上記のとおり `spawn_tab` と overflow 到達も要る）
 
 仕様詳細・定数値・ソートキー・rect 隣接の正確な定義は **runtime SoT** を参照する:
-- CLI (運用上の標準呼び出し): `claude-org-runtime dispatcher delegate-plan --task-json ... --panes-json ... --state-dir ... --transport {broker|renga} [--max-concurrent-workers N] [--template-repo ...] [--locale-json ...]`。`--transport` は `ORG_TRANSPORT` 解決値を明示で渡す（runtime は panes snapshot から transport を推定しない、runtime 0.1.31 / #104）。broker 面では `--max-concurrent-workers N`（既定 8 / `unlimited` opt-in）が capacity を gate する。`.dispatcher/CLAUDE.md` の delegate-plan helper 節が一次手順
+- CLI (運用上の標準呼び出し): `claude-org-runtime dispatcher delegate-plan --task-json ... --panes-json ... --state-dir ... --transport {broker|renga} [--max-concurrent-workers N] [--template-repo ...] [--locale-json ...]`。`--transport` は `ORG_TRANSPORT` 解決値を明示で渡す（runtime は panes snapshot から transport を推定しない、runtime 0.1.31 / #104）。broker 面では `--max-concurrent-workers N`（既定 8 / `unlimited` opt-in）が capacity を gate する。`.dispatcher/CLAUDE.md` の delegate-plan helper 節が一次手順。**この CLI 例は現行 ja の運用形であって helper の完全なフラグ集合ではない**: runtime 0.1.39 は `--peers-json` / `--overflow-to-new-tab` / `--server-capability` / `--tab` も受け取るが、ja はいずれも渡していない（実配線は未着手）。フラグの網羅は `claude-org-runtime dispatcher delegate-plan --help` を参照
 - ライブラリ: `claude_org_runtime.dispatcher.runner` モジュールの `build_plan()` (action plan 全体: `spawn` / `after_spawn` / `escalate` / `state_writes` / `status`) と、その内部で呼ばれる `choose_split()` (target / direction 選択) / `rect_adjacent()` / `_ROLE_PRIORITY` / `MIN_PANE_*` / `SECRETARY_MIN_*` 定数
 
 dispatcher が helper を経由しない degraded mode に入った場合、判定再現は `claude_org_runtime.dispatcher.runner` モジュール (インストール先は `python -c "import claude_org_runtime.dispatcher.runner; print(claude_org_runtime.dispatcher.runner.__file__)"` で解決可能) を一次参照する。
@@ -47,13 +52,13 @@ dispatcher が helper を経由しない degraded mode に入った場合、判�
 
 `$target` が空（候補セットが空）の場合、ディスパッチャー Claude は **`spawn_pane` を発行せず**、代わりに renga-peers で窓口 (`secretary`) に escalate メッセージを送信する:
 
-1. `mcp__renga-peers__send_message(to_id="secretary", message=...)` を呼び、本文を以下にする:
-   ```
-   SPLIT_CAPACITY_EXCEEDED: {task_id} のワーカー分割対象が見つからない。
-   rect ベース balanced split の MIN_PANE / 隣接条件を満たす候補が 0。
-   ターミナルサイズ不足または想定外のレイアウトが疑われる。人間判断が必要です。
-   ```
-2. 3-2 以降（`spawn_pane` / 起動確認 / `list_peers` 待ち / instruction 送信）は **skip** する。該当ワーカー 1 件だけ派遣を中止し、ディスパッチャー本体の監視ループは **継続**させる。`exit` / `return` などでディスパッチャーを落とさないこと
+1. `mcp__renga-peers__send_message(to_id=..., message=...)` を呼び、**helper が返した `escalate.to_id` / `escalate.message` をそのまま渡す**。本文は **runtime 生成物の verbatim 転送**であり、ディスパッチャーが自前の文面を組み立てる余地はない:
+   - **言い換え・要約・翻訳・再構成をしない**（1 文字も変えない）。runtime 側は `runner.py: _renga_rect_escalation_message` の docstring で「claude-org-ja forwards this text to the secretary verbatim」と明記し、その前提で **診断を本文に merge せず append** している（`explain_left_panels` の docstring も同じ前提を置く）。ja が言い換えると、実測されたペイン領域・左パネルが食っている桁数と回収案内（`Ctrl+B` / `[ui] org_sidebar = "off"`）・新規タブ見積もり・tabs_seen が窓口に 1 つも届かない
+   - **文面は英語で届くが、英語のまま転送する**。escalate 文面を日本語化する経路は runtime に無い（`LocaleConfig` のフィールドは `constraints_default` / `report_target_default` / `claude_md_filename_default` / `instruction_template` の 4 つだけで、ja が渡す `tools/ja_locale.json` も同じ 4 キー。escalate 文面は locale の対象外）
+   - **日本語の文脈を添えたい場合は、見出しを「別の `send_message`」として先に送る**。`escalate.message` を載せる `send_message` の本文には**前置きも後置きも足さない**（例: 1 通目に `SPLIT_CAPACITY_EXCEEDED: runtime の原文をそのまま転送します`、2 通目に `escalate.message` を単独で）。runtime は **1 文目が結果の prefix であり続けること**を保って診断を append しているので、同じ本文に 1 行足すだけでもこの prefix 性が壊れる。ペイロードに触らない限り日本語の補足は自由
+   - この verbatim 規律は本ステップ（rect 候補ゼロ）だけでなく、**helper が `status="split_capacity_exceeded"` で返す全分岐に適用する**。0.1.39 以降 escalate 文面は 5 種類あり内容が異なる（renga 面 4 種: rect 候補ゼロ / タブ上限 `tab_limit_reached` / overflow 時の fleet ceiling 到達 / overflow しても新規タブが `MIN_PANE` 未満で助けにならない。broker 面 1 種: `max_concurrent_workers` 到達）。ja 側に literal を持つとこのうち 1 種の旧形しか表現できない
+2. 併せて **`plan.layout`（診断）を窓口報告に添える**（`.dispatcher/CLAUDE.md`「出力の扱い」参照）。renga 面の `split_capacity_exceeded` では `layout` が実測診断オブジェクトになる
+3. 3-2 以降（`spawn_pane` / 起動確認 / `list_peers` 待ち / instruction 送信）は **skip** する。該当ワーカー 1 件だけ派遣を中止し、ディスパッチャー本体の監視ループは **継続**させる。`exit` / `return` などでディスパッチャーを落とさないこと
 
 ### 3-2. ワーカーペインを起動する
 

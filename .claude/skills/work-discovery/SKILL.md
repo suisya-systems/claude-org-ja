@@ -93,9 +93,29 @@ python3 tools/work_discovery_scan.py --trigger manual --all-registry-repos
 - `--free-panes` の意味は **空き worker slot 数**（＝ dispatch 可能な空き capacity の単位）であり、物理的な空き
   ターミナルペイン数ではない（runtime 0.1.31 / #104、backend-aware worker capacity 以降の読み替え）。broker 面
   （`ORG_TRANSPORT=broker` / コード既定）では `max_concurrent_workers`（既定 8, `registry/org-config.md`）から
-  アクティブ worker 数を引いた残り、renga 面（opt-in）では rect ベース balanced split が受け入れ可能な空き split 枠。
-  scan の計算ロジックはこの読み替えで変わらない（数を受け取るだけ）ので、窓口 / dispatcher が現行の輸送層に応じて
-  空き slot 数を算出して渡す。
+  アクティブ worker 数を引いた残り、renga 面（opt-in）では rect ベース balanced split が受け入れ可能な空き split 枠
+  （renga 面の overflow 時の扱いは下記の注記を参照。**現行 ja は当該フラグを渡していない**）。scan の計算ロジックは
+  この読み替えで変わらない（数を受け取るだけ。`free_panes` は
+  `_sort_key` のランキング項に使われるだけで、`tools/work_discovery_scan.py` 自身は `list_panes` / `list_peers` を
+  一切呼ばない）ので、窓口 / dispatcher が現行の輸送層に応じて空き slot 数を算出して渡す。
+- **アクティブ worker 数の数え方は caller タブ限定ではない**（runtime 0.1.39 / renga 2.0 以降）: renga 2.0 の
+  `list_panes` は **caller のタブにスコープされる**ため、別タブに置かれたワーカーは pane スナップショットに現れない。
+  別タブ配置を使う場合、アクティブ worker 数は `list_panes`（caller タブ限定）ではなく **`list_peers`（全タブを跨ぐ）**
+  から数える。定義は runtime の `count_worker_population`（panes と peers を **name で union** する。peers 未指定の
+  fallback は panes だけを数え `scope="caller_tab"` になる）に合わせる。数え落とすと空き slot を過大申告し、
+  `parallelizable` 候補のランクを不当に押し上げる。
+- **renga overflow を配線したら手計算をやめて `plan.capacity.free_worker_slots` を使う**: overflow 時の空き slot は
+  「`max_concurrent_workers` − peers ∪ panes の union」では**求まらない**。理由は 2 つあり、どちらも手計算では
+  再現しにくい —
+  (1) **fleet ceiling が binding になるのは overflow が armed なときではなく、`choose_split` が caller タブに候補を
+  見つけられず実際に新規タブへ overflow するときだけ**（overflow はあくまで fallback で、caller タブに空きがあれば
+  そちらが優先される）。armed だけを条件に slot を数えると、まだ使える in-tab 容量を過小申告する。
+  (2) runtime が上限に突き合わせるのは **アクティブ worker 数 + 未 bind の予約数**（`count_unbound_reservations`。
+  新規タブへ spawn した直後の worker は自分のタブに居て `list_panes` に出ず、まだ peer にも bind していないため
+  どちらのスナップショットにも現れない）。union だけを数えると bind 待ちの間だけ容量を過大申告する。
+  したがって overflow を配線する時点で、窓口 / dispatcher の手計算ではなく **`delegate-plan` が返す
+  `plan.capacity.free_worker_slots` をそのまま `--free-panes` に渡す**（runtime の `ActionPlan.capacity` の doc が
+  本スキルの `--free-panes` をその消費者として名指ししている、runtime 側の一次的な free-capacity 報告）。
 - 既定の候補上限は `--top-n 3`。scan 対象は `--all-registry-repos` が導出する（cross-repo scan が既定であり、
   登録 URL 行が複数あれば自然に複数 repo の cross-repo triage になる。設計 §10 / §10.4）。
 - ツールは stdout に**単一 JSON オブジェクト**を出し、**exit code で分岐**する（JSON パース成否ではなく exit code を見る）。
