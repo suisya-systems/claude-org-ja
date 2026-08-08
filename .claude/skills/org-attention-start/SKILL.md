@@ -128,7 +128,7 @@ mcp__renga-peers__spawn_pane(
 - `cwd="."`: Secretary の cwd（= repo root）基点で相対 resolve され、`.state/` パスが正しく当たる。
   省略すると dispatcher の cwd (`.dispatcher`) を継承して `.state` が `.dispatcher/.state` に解決され
   watcher が空の state を見ることになる
-- `name="attention"`: 後続の [`/org-attention-stop`](../org-attention-stop/SKILL.md) が「どのペインが
+- `name="attention"`: 後続の `/org-attention-stop` が「どのペインが
   watcher か」を identity 照合するためのラベル（`list_panes` が返す `name` / `role` から
   「確認済み attention ペイン集合」を組む）。**close 自体は照合済みの数値 pane_id で行う**
   （`target="attention"` のような name 指定は使わない）
