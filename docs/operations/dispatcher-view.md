@@ -97,7 +97,9 @@ prefix は **tmux server ごとの設定**なので、2 段階で入れる。
 
    `ORG_BROKER_SOCKET` で socket 名を変えている場合はその名前に読み替える。既に attach して抜けられなくなっている場合も、この経路なら別端末から prefix を差し替えて detach できる。
 
-読み替えの範囲: 以後 **内側 tmux（broker socket 側）を指す** `Ctrl-b` — 本ドキュメントの detach / セッション切替、および `tools/org-dispatcher-view.sh` の出力 — を、設定した prefix（上例なら `Ctrl-a`）に読み替える。**§5 の外側 tmux 用のキー**（ペイン分割、および 2 回押しの 1 回目）は別 server の prefix なので、外側を変更していない限り `Ctrl-b` のままである。
+読み替えの範囲: 変更したのは **内側 tmux（broker socket 側）の prefix だけ**なので、読み替えるのも内側を指すキーに限る — 本ドキュメントの detach / セッション切替、および `tools/org-dispatcher-view.sh` の出力に出てくる `Ctrl-b` である。**§5 の外側 tmux 用のキー**（ペイン分割など）は別 server の設定なので、外側を変更していない限り `Ctrl-b` のままである。
+
+**入れ子運用では 2 回押しが不要になる**（§5 の手順からの差分）。内側だけを `Ctrl-a` にした場合、`Ctrl-a` は外側 tmux の prefix ではないため通常入力として素通しされ、内側 tmux にそのまま届く。したがって detach は **`Ctrl-a d` の 1 回**でよい。`Ctrl-b Ctrl-a d` は誤りで、外側が 1 回目の `Ctrl-b` を自分の prefix として食ったうえで、続く `Ctrl-a` を自分の prefix key table で解釈してしまうため内側には届かない。
 
 ### 4.4 runtime の capacity escalation が案内する `Ctrl+B` について
 
@@ -160,7 +162,7 @@ ORG_BROKER_SOCKET=my-broker tools/org-dispatcher-view.sh
 - **socket 不通時の再試行**: broker daemon が未起動などで tmux socket に繋がらない場合、「broker tmux socket (...) に繋がりません」と出て 2 秒ごとに再試行する
 - **attach 後の自動復帰**: dispatcher が restart / auto-compact fork して session 名が変わると、tmux 側で attach が切れる。本ビューアはそれを検知してループ先頭に戻り、新しい session 名を再解決して再 attach する
 - **複数候補警告**: 同一 broker socket 上に複数 org / 複数 `.dispatcher` ペインが居る稀ケースでは、「dispatcher 候補が N 件見つかりました」と警告し 1 件目を採用する。意図しない dispatcher に attach しうるので broker daemon の状態を確認すること
-- **終了動作の注意**: attach 中の `Ctrl-C` は tmux クライアント / dispatcher ペイン側に渡るので、本ビューアの SIGINT trap には届かない（`--rw` では dispatcher へ `^C` を送ってしまう）。終了は必ず **detach（`Ctrl-b d` または `Ctrl-b Ctrl-b d`）→ 再探索プロンプト → `Ctrl-C`** の順で行う。ここの `Ctrl-b` は各 tmux server の prefix の既定値であり、変更している場合は §4.3 の読み替え範囲に従う（入れ子形 `Ctrl-b Ctrl-b d` は 1 回目が外側 server、2 回目以降が内側 server の prefix）。外側フレームが renga の場合は、この detach 打鍵自体が届かないので先に §4 の回避策を適用すること（適用しないとビューアから抜ける手段が無くなる）
+- **終了動作の注意**: attach 中の `Ctrl-C` は tmux クライアント / dispatcher ペイン側に渡るので、本ビューアの SIGINT trap には届かない（`--rw` では dispatcher へ `^C` を送ってしまう）。終了は必ず **detach → 再探索プロンプト → `Ctrl-C`** の順で行う。detach の打鍵は prefix 設定で変わる: 内外とも既定なら WezTerm 等からの単独 attach で `Ctrl-b d`、外側 tmux からの入れ子で `Ctrl-b Ctrl-b d`（1 回目を外側が食い、2 回目が内側へ送られる）。§4.3 で内側 prefix だけを変えた場合は入れ子でも 2 回押しは不要になり、変更後の prefix + `d`（例 `Ctrl-a d`）になる。外側フレームが renga の場合は、この detach 打鍵自体が届かないので先に §4 の回避策を適用すること（適用しないとビューアから抜ける手段が無くなる）
 
 ## 8. トラブルシューティング
 
