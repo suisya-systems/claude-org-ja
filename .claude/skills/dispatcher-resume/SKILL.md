@@ -132,6 +132,17 @@ Step 0 に入る前に遮断する（恒久対策の経緯は
    `list_panes` から確定できるので通常どおり書く。Step 6 のブリーフィングでは
    `peer=<未取得: capability gate 縮退中>` と明示して secretary に伝える。
 
+   **capability 形かつ承認済み（同 reference §2 の `first_drive` が `recorded`）のときも、自分の
+   `peer_id` は名前引きで確定しない**（§1-2-d: `mcp__org-broker__list_peers` は caller を除外するので、
+   `name == "dispatcher"` に一致したレコードが自分である保証が無い）。**以下 3 分岐はいずれも
+   fail-closed で `peer_id` 未確定に落ちる**: (i) 他タブの `dispatcher` しか居ない（§1-2-c #4）、
+   (ii) `same_tab` 欠落で同タブ性が unknown（§1-2-c #3）、(iii) `same_tab=True` が複数の ambiguity
+   （§1-2-c #2）。**未確定のときは Step 2 の DB 書き込みで `dispatcher_peer_id` を渡さず**
+   （`update_session()` の「未指定 = 保持」で既存値を温存する。生きた同一ペインを引き継ぐ resume では
+   保持が正しく、渡さないこと自体が fail-closed になる）、3 で得た `focused: true` の
+   `dispatcher_pane_id` だけを更新する。Step 6 のブリーフィングでは
+   `peer=<未取得: 同タブ性を一意に確定できず>` と明示して secretary に伝える。
+
 ## Step 1: handover ファイルを読み込む
 
 ディスパッチャーの cwd は `.dispatcher/` なので、リポジトリ root のパスを 1 階層上に解決する。
@@ -218,6 +229,14 @@ secretary に **報告して** 判断を仰ぐ（勝手に再 spawn / status 変
 未承認なら列挙を不存在の根拠にせず破棄し、`mcp__org-broker__list_panes` と events テーブルの報告痕跡で判定する。
 **確定できなければ `WORKER_PANE_EXITED` を送らない**（縮退中の「列挙に居ない」は死亡の証拠ではなく、
 別 org の同名ピアと取り違えうる。同 reference §3-B-1）。停止しない・待ち時間 0 分。
+
+**capability 形かつ承認済み（同 reference §2 の `first_drive` が `recorded`）のとき**は、§1-2 の
+三値判定を handover 記載の各ワーカー名に適用する。**「在」は生存**として扱う。**「不在」（他タブのみ /
+列挙に 1 件も無い）でも、それだけでは lifecycle を断定しない** — 契約 T-§4.2 は messaging 面の到達性から
+pane 制御可能性を推論することを禁じ、`caller_scope` 未確立下では Group-A 列挙（`mcp__org-broker__list_panes`）からの
+不在も終了の証拠にならないと書く。`WORKER_PANE_EXITED` を送ってよいのは **(i) 同タブの `pane_exited` を
+観測した、または (ii) 以前 在 と観測した名前が後続の `mcp__org-broker__list_peers` から消えた**場合だけである
+（§1-2-c）。**「unknown」では送らず、indeterminate として secretary に報告する**（§1-2-b）。
 
 ## Step 5: 監視ループの再開
 
