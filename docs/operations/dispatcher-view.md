@@ -79,27 +79,29 @@ org_sidebar = "off"
 
 サイドバーを残したい場合は、内側 tmux（= attach 先の broker socket 上の tmux server）の prefix を `Ctrl-b` 以外へ動かして物理キーの衝突自体を無くす。
 
-prefix は **tmux server ごとの設定**なので、2 段階で入れる。
+prefix は **tmux server ごとの設定**である。broker server だけを狙って変えるには socket を指定する（attach していない別のペイン / 端末から実行してよい。既に attach して抜けられなくなっている場合も、別端末からこれを打てば detach できるようになる）:
 
-1. 今後起動する server 向けに `~/.tmux.conf` へ永続化する:
+```bash
+/usr/bin/tmux -L claude-org-broker set -g prefix C-a
+/usr/bin/tmux -L claude-org-broker bind C-a send-prefix
+```
 
-   ```tmux
-   set -g prefix C-a
-   bind C-a send-prefix
-   ```
+`ORG_BROKER_SOCKET` で socket 名を変えている場合はその名前に読み替える。この形は **走っている broker server に即時反映され、他の tmux server には触らない**ので、入れ子運用でも副作用が無い。
 
-2. **既に走っている broker server には上記の編集は反映されない。** 衝突に気付くのは大抵 server が走っている最中なので、その場で効かせるには socket を指定して直接設定する（attach していない別のペイン / 端末から実行してよい）:
+永続化する場合の注意: `~/.tmux.conf` に `set -g prefix C-a` を書くと **以後起動するすべての tmux server** に効く。外側 tmux をその後に起動すると内外とも `Ctrl-a` になり、下記の「1 回で届く」前提が崩れる（外側が食ってしまう）。永続化するなら、broker 用の別 conf を `-f` で読ませるか、外側と内側で **必ず異なる prefix になるようにする**。
 
-   ```bash
-   /usr/bin/tmux -L claude-org-broker set -g prefix C-a
-   /usr/bin/tmux -L claude-org-broker bind C-a send-prefix
-   ```
+#### 打鍵の読み替え
 
-   `ORG_BROKER_SOCKET` で socket 名を変えている場合はその名前に読み替える。既に attach して抜けられなくなっている場合も、この経路なら別端末から prefix を差し替えて detach できる。
+**満たすべき不変条件は「内側 tmux の prefix が外側 tmux の prefix と異なること」**である。これが満たされている限り、内側 prefix は外側にとって通常入力なので素通しされ、内側へ直接届く:
 
-読み替えの範囲: 変更したのは **内側 tmux（broker socket 側）の prefix だけ**なので、読み替えるのも内側を指すキーに限る — 本ドキュメントの detach / セッション切替、および `tools/org-dispatcher-view.sh` の出力に出てくる `Ctrl-b` である。**§5 の外側 tmux 用のキー**（ペイン分割など）は別 server の設定なので、外側を変更していない限り `Ctrl-b` のままである。
+| 構成 | detach の打鍵 |
+|---|---|
+| 内外とも既定（WezTerm 等からの単独 attach） | `Ctrl-b d` |
+| 内外とも既定（外側 tmux からの入れ子） | `Ctrl-b Ctrl-b d`（1 回目を外側が食い、2 回目が内側へ送られる） |
+| 内側のみ `Ctrl-a` に変更（外側は `Ctrl-b`） | **`Ctrl-a d`** — 2 回押しは不要。`Ctrl-b Ctrl-a d` は誤り（外側が 1 回目の `Ctrl-b` を自分の prefix として食い、続く `Ctrl-a` も自分の prefix key table で解釈するため内側に届かない） |
+| 内外とも同じ値に変更してしまった場合 | 入れ子では再び 2 回押しが要る（`Ctrl-a Ctrl-a d`）。不変条件が崩れているので、どちらかを別の値にするのが望ましい |
 
-**入れ子運用では 2 回押しが不要になる**（§5 の手順からの差分）。内側だけを `Ctrl-a` にした場合、`Ctrl-a` は外側 tmux の prefix ではないため通常入力として素通しされ、内側 tmux にそのまま届く。したがって detach は **`Ctrl-a d` の 1 回**でよい。`Ctrl-b Ctrl-a d` は誤りで、外側が 1 回目の `Ctrl-b` を自分の prefix として食ったうえで、続く `Ctrl-a` を自分の prefix key table で解釈してしまうため内側には届かない。
+読み替えの対象は **内側 tmux（broker socket 側）を指すキー**に限る — 本ドキュメントの detach / セッション切替、および `tools/org-dispatcher-view.sh` の出力に出てくる `Ctrl-b` である。**§5 の外側 tmux 用のキー**（ペイン分割など）は別 server の設定なので、外側を変更していない限り `Ctrl-b` のままである。
 
 ### 4.4 runtime の capacity escalation が案内する `Ctrl+B` について
 
@@ -162,7 +164,7 @@ ORG_BROKER_SOCKET=my-broker tools/org-dispatcher-view.sh
 - **socket 不通時の再試行**: broker daemon が未起動などで tmux socket に繋がらない場合、「broker tmux socket (...) に繋がりません」と出て 2 秒ごとに再試行する
 - **attach 後の自動復帰**: dispatcher が restart / auto-compact fork して session 名が変わると、tmux 側で attach が切れる。本ビューアはそれを検知してループ先頭に戻り、新しい session 名を再解決して再 attach する
 - **複数候補警告**: 同一 broker socket 上に複数 org / 複数 `.dispatcher` ペインが居る稀ケースでは、「dispatcher 候補が N 件見つかりました」と警告し 1 件目を採用する。意図しない dispatcher に attach しうるので broker daemon の状態を確認すること
-- **終了動作の注意**: attach 中の `Ctrl-C` は tmux クライアント / dispatcher ペイン側に渡るので、本ビューアの SIGINT trap には届かない（`--rw` では dispatcher へ `^C` を送ってしまう）。終了は必ず **detach → 再探索プロンプト → `Ctrl-C`** の順で行う。detach の打鍵は prefix 設定で変わる: 内外とも既定なら WezTerm 等からの単独 attach で `Ctrl-b d`、外側 tmux からの入れ子で `Ctrl-b Ctrl-b d`（1 回目を外側が食い、2 回目が内側へ送られる）。§4.3 で内側 prefix だけを変えた場合は入れ子でも 2 回押しは不要になり、変更後の prefix + `d`（例 `Ctrl-a d`）になる。外側フレームが renga の場合は、この detach 打鍵自体が届かないので先に §4 の回避策を適用すること（適用しないとビューアから抜ける手段が無くなる）
+- **終了動作の注意**: attach 中の `Ctrl-C` は tmux クライアント / dispatcher ペイン側に渡るので、本ビューアの SIGINT trap には届かない（`--rw` では dispatcher へ `^C` を送ってしまう）。終了は必ず **detach → 再探索プロンプト → `Ctrl-C`** の順で行う。detach の打鍵は prefix 設定で変わる（構成別の一覧は §4.3 の「打鍵の読み替え」表）。内外とも既定なら単独 attach で `Ctrl-b d`、外側 tmux からの入れ子で `Ctrl-b Ctrl-b d`。外側フレームが renga の場合は、この detach 打鍵自体が届かないので先に §4 の回避策を適用すること（適用しないとビューアから抜ける手段が無くなる）
 
 ## 8. トラブルシューティング
 
