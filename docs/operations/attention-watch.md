@@ -220,6 +220,8 @@ claude-org-runtime attention watch --state-dir .state --config .state/attention.
 
 指定先に journal が無い / 読めない場合は「duplicate は無い」に degrade するだけで watcher は落ちない。裏を返すと、**broker を非既定 state dir で動かしていてこのフラグを付け忘れると、この kind だけが黙って鳴らない**（他の kind は `.state/state.db` 経由なので影響を受けず、欠落に気付きにくい）。
 
+**非既定 state dir では推奨経路 (§2.1) を使えない点に注意**: [`/org-attention-start`](../../.claude/skills/org-attention-start/SKILL.md) が起動する watch コマンドは固定文字列で `--broker-state-dir` を渡さず、attention watcher 自身も broker の `ORG_BROKER_STATE_DIR` env を読まない（解決順は flag → `<state-dir>/broker` のみ）。したがって broker daemon を非既定 state dir で動かしている環境では、skill 経由で起動した watcher はこの kind を拾わない。この場合は §2.4 の手動起動でフラグを明示する。
+
 **`duplicate_sidecar_window_sec`（既定 300）**: journal 行を「いま起きている incident」とみなす freshness window（秒）。この window より古い行は捨てる。broker は競合が続いている限り instance pair ごとに lease window 周期で同じ行を再 emit するので、window を lease window より十分大きく取っておけば **継続中の incident は鳴り続け、解消済みの incident は自然に黙る**。既定 300 は `cooldown_sec` と同値で、「1 回の通知 cooldown の間 1 度も再発していない incident は終わっている」という読みに対応する。
 
 - journal は末尾から window 分だけ遡って読む。この値を上げると走査範囲もそれに追随して広がるので、busy な daemon でも継続中の incident が視界外へ押し出されることはない
