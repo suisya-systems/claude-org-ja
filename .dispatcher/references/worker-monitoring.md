@@ -69,7 +69,7 @@ bash ../tools/journal_append.sh notify_sent source={面} worker=worker-{task_id}
 bash ../tools/journal_append.sh anomaly_observed source={面} worker=worker-{task_id} kind=observation_recovered confidence=n/a
 ```
 
-- **再通知 cadence は「劣化区間あたり 1 回」**: 観測不能は数サイクル継続するのが普通なので、Step 4 (e) の 30 秒窓 (毎サイクル抜ける) を使わない。`(worker, kind=observation_unavailable)` の `notify_sent` が既にあり、それ以降に同じ面の `observation_recovered` を書いていない間は再通知しない。判定を保留している同じ 1 事実で窓口の受信箱を埋めないため
+- **再通知 cadence は「面ごとに劣化区間あたり 1 回」**: 観測不能は数サイクル継続するのが普通なので、Step 4 (e) の 30 秒窓 (毎サイクル抜ける) を使わない。de-dup キーは **`(worker, source, kind=observation_unavailable)`** で、`source` (どの観測面か) を**必ず含める** — キーを `(worker, kind)` にすると、先に劣化した面の通知が後から劣化した別の面 (例: `inspect` の次に events テーブル) を覆い隠し、2 つ目の劣化が無期限に未報告になる。同キーの `notify_sent` が既にあり、それ以降に**同じ `source`** の `observation_recovered` を書いていない間だけ再通知を抑える。判定を保留している同じ 1 事実で窓口の受信箱を埋めないため
 - **観測不能サイクルでは state を進めない**: 画面を観測できなかった worker について `worker-idle-state.json` の record を更新しない (`idle_streak_cycles` を加算せず、`last_check_ts` / `last_visible_content_hash` も書き換えない)。`last_content_change_ts` の意味は「最後に画面が idle と**確認できた**時点」(Step 5 (b) 更新規則) なので、確認できていないサイクルで時計を進めると、後続の Step 5 / Step 5.2 が**観測していない区間を「静止していた」と読む**
 - **観測不能は「異常なし」ではない**: 判定を保留しただけなので、次サイクルで面が回復したら通常評価に戻す。回復しないまま worker の消息が分からない状態が続く場合も、やることは (P5) のとおり報告の継続であって復旧ではない
 
@@ -78,7 +78,7 @@ bash ../tools/journal_append.sh anomaly_observed source={面} worker=worker-{tas
 本節は**異常と申告する条件を厳しくするだけ**で、申告後の振る舞いも dispatcher の権限も一切変えない。次を明示する:
 
 - (P1)(P2) を通って「異常ではない」と判定したときの正しい行動は **通知を出さない (観測を続ける)** ことであって、**自分で直すことではない**。「異常ではないと切り分けられたのだから自分で復旧してよい」という読み方は**誤り**
-- ペインの再 spawn / レイアウト再構築 / 承認・拒否の代行を dispatcher が自己判断で行わないのは従来どおり (本ファイル 6、[`.dispatcher/CLAUDE.md`](../CLAUDE.md) 「ディスパッチャーが自動で承認・拒否することはしない」)。`close_pane` も、窓口の `CLOSE_PANE` 指示 ([`.dispatcher/references/pane-close.md`](pane-close.md)) と Step 5.3 の curate 完了受領という**明文化された経路でのみ**呼ぶ (監視判定の結論として自分で呼ぶ経路は無い)。**「観測不能」と判定した対象にも同じ**で、見えないペインを「壊れているかもしれないから作り直す」のは禁止
+- ペインの再 spawn / レイアウト再構築 / 承認・拒否の代行を dispatcher が自己判断で行わないのは従来どおり (本ファイル 6、[`.dispatcher/CLAUDE.md`](../CLAUDE.md) 「ディスパッチャーが自動で承認・拒否することはしない」)。`close_pane` も、**既に明文化されている 3 経路でのみ**呼ぶ — 窓口の `CLOSE_PANE` 指示 ([`.dispatcher/references/pane-close.md`](pane-close.md))、Step 5.3 (a) の curate 完了受領 (`CURATE_DONE` / `CURATE_SKIPPED` / `CURATE_ERROR`)、Step 5.3 (b) の curate timeout / hard cap 打ち切り。**本節はこの 3 経路を一切変更しない**し、ここに worker ペインの監視判定を結論として自分で閉じる経路は無い (本節が新設した観測不能判定も close の理由にならない)。**「観測不能」と判定した対象にも同じ**で、見えないペインを「壊れているかもしれないから作り直す」のは禁止
 - この禁止は実績で担保されている: 2026-08-08 にペイン消失を観測したケースは、**人間が別タブで開いていた生きているセッション**だった。`list_panes` からの消失を「消えた = 死んだ」と解釈してペイン再構築を始めていれば、人間の作業セッションを壊していた。3 件の誤検知が実害ゼロで済んだのは、dispatcher が**観測結果だけを報告し、自己判断で復旧作業・再 spawn・`close_pane` をしなかった**からである (Issue #869)
 - 判定が付かないことは**行動を増やす理由にならない**。安全側は常に「報告して止まる」
 
@@ -152,7 +152,8 @@ bash ../tools/journal_append.sh anomaly_observed source={面} worker=worker-{tas
      - `WORKER_COMPLETION_NOTED: worker-{task_id} (task_id={task_id}, received_at={ISO-8601 UTC})` → 該当 record の `completion_reported_at` を本文の `received_at` に **set** する (record 未存在なら key を作って set)。worker が完了報告済みで review 待ち idle に入る合図で、Step 5.2 の PANE_OUTPUT_WITHOUT_PEER_MSG false positive (完了報告済み worker の正常な review 待ち idle を silent dead-lock と誤判定) を抑止する。**これは「完了判定」ではなく「監視抑止用の受領通知」** — dispatcher は依然として自分でタスク完了を判定しない (T4 の完了遷移は secretary の責務、`docs/contracts/delegation-lifecycle-contract.md` T4)
      - `WORKER_REOPENED: worker-{task_id} (task_id={task_id}, reopened_at={ISO-8601 UTC})` → 該当 record の `completion_reported_at` を **`null` に clear** する (**fast-path 解除**)。T6 (awaiting_review→in_progress、レビュー修正の追指示) で secretary が worker へ**直送**で再指示するとき送られる。再指示は secretary→worker 直送で dispatcher が経路上に居ないため、この明示 clear が解除の速報になる
      - **解除は best-effort な `WORKER_REOPENED` だけに依存しない (P2 対応、非対称性の解消)**: `WORKER_COMPLETION_NOTED` の取りこぼしは「監視が過剰に働く」安全側に倒れるが、`WORKER_REOPENED` の取りこぼしは「監視が止まったまま」= **危険側**に倒れる (レビュー修正中の本物の silent dead-lock を見逃す)。両者を同じ best-effort semantics で扱ってはならない。そこで **決定的 backstop** として、Step 5.2 (b)(6) の skip gate は `completion_reported_at != null` に加えて DB の `runs.status == 'review'` を要求する。T6 再指示で secretary は StateWriter 経由で `runs.status` を `review → in_use` に**確定的に**書く (`.claude/skills/org-pull-request/SKILL.md` 2c、peer message に依らない DB 遷移) ので、`WORKER_REOPENED` が落ちても `runs.status == 'in_use'` を観測した dispatcher が flag を self-heal clear して監視を再開できる (下記 (b)(6) / (d))。`WORKER_REOPENED` は fast-path、`runs.status` は reliable backstop の二段構え
-     - **受領記録がある問いを再送しない ([観測の原則](#observation-principle) (P1) の適用)**: `completion_reported_at != null` は「secretary が worker の完了報告を受領済み」という**陽性の記録**である。この記録を持つ task について、CLOSE_PANE の完了報告ゲート ([`.dispatcher/references/pane-close.md`](pane-close.md) 1) の問い合わせ (`{task_id} の完了報告は届いていますか？`) を**再送しない** — 答えは既に手元にあり、聞き直しは窓口の受信箱を同じ 1 事実で埋めるだけになる (2026-08-08 に同一 task へ 3 回再送した実誤検知、Issue #869)。逆に **記録が無いことは「未着」の証拠にならない**: `WORKER_COMPLETION_NOTED` は best-effort・非 blocking で取りこぼしうる (次項)。記録が無い場合は従来どおりゲートを回す — ゲートの存在理由そのものが「dispatcher の受信キューに無い ≠ システム上に無い」だからである
+     - **受領記録がある問いを再送しない ([観測の原則](#observation-principle) (P1) の適用)**: `completion_reported_at != null` は「secretary が worker の完了報告を受領済み」という**陽性の記録**である。CLOSE_PANE の完了報告ゲート ([`.dispatcher/references/pane-close.md`](pane-close.md) 1) は「『完了報告未着』と結論する前に secretary へ確認する」ためのゲートなので、この記録を持つ task では**その前提が記録によって既に満たされている**: 初回送信 (`{task_id} の完了報告は届いていますか？`) を発行せず、ゲートを acked 相当として通過してよい。答えは既に手元にあり、聞き直しは窓口の受信箱を同じ 1 事実で埋めるだけになる (2026-08-08 に同一 task へ 3 回再送した実誤検知、Issue #869)。逆に **記録が無いことは「未着」の証拠にならない**: `WORKER_COMPLETION_NOTED` は best-effort・非 blocking で取りこぼしうる (次項)。記録が無い場合は従来どおりゲートを回す — ゲートの存在理由そのものが「dispatcher の受信キューに無い ≠ システム上に無い」だからである。
+       **cross-file 追補は未適用**: [`.dispatcher/references/pane-close.md`](pane-close.md) 1 の手順本文は「必ず初回送信する」と読める書き方のままで、この skip 条件を持たない (同ファイルの編集は本変更のスコープ外)。**両方を読む dispatcher は本項を優先する** — 記録がある場合に送信を省いても、当該ゲートの目的 (未着という誤った結論を retro に残さない) は損なわれないため。pane-close.md 側に同条件を明記するのが恒久形
      - `WORKER_COMPLETION_NOTED` は secretary が **best-effort・非 blocking** で送る (secretary は dispatcher ack を待たない)。push 一次では channel 注入、フォールバック時は本 Step 2 の能動 `check_messages` で受ける。取りこぼしても次の完了受領で再送・再セットされる (record が無ければ Step 5.2 (b)(6) は `completion_reported_at` を欠損 = `null` 扱いで評価するため、取りこぼしは「監視が過剰に働く」安全側に倒れる)
 
 3. **`mcp__org-broker__list_panes` でペイン一覧を取得して突き合わせ**:
@@ -472,18 +473,25 @@ bash ../tools/journal_append.sh anomaly_observed source={面} worker=worker-{tas
    - **恒久対応案 (未実装)**: 監視ツール側での正式な ultracode sub-state 追加を Issue 化検討中 (窓口起票予定)。2026-07-28 に 3 回連続の false positive を実測済み
 
    #### (b-4) 発火前の観測面チェック — 報告痕跡の不在だけで STALL を申告しない ([観測の原則](#observation-principle) の適用)
-   `STALL_SUSPECTED` は「worker が異常停止している」という**対象の状態**の申告なので、(P2) により独立した複数面の一致を要求する。(c)〜(d) の acked / timeout 判定に進む前に、次の 3 点を確認する:
+   `STALL_SUSPECTED` は「worker が異常停止している」という**対象の状態**の申告なので、(P2) により独立した複数面の一致を要求する。チェックは 2 段に分かれ、**評価順は (b-4-i) → (b-2) → (c) → (b-4-ii) → (d)** である (台帳面は (c) の scan を回さないと値が出ないので、(c) より前に判定しない):
 
-   1. **台帳面**: (c)(1) の worker→secretary 痕跡が lookback 窓内に 0 件であること — **かつ `.state/state.db` を実際に読めていること**。読めなかったなら「0 件」ではなく観測不能である ((P3): 「痕跡が無い」は「読めなかった」を含意しない)
-   2. **画面面**: (b) の `content_hash` が 3 サイクル不変であること — **かつその 3 サイクルとも `inspect_pane` が実際に成功していること**。エラーで画面を観測できなかったサイクルは Step 4 のエラー分岐と (P4) のとおり record を更新しないので streak には積まれない (観測できなかった時間が「静止していた」に化けない)
-   3. **busy の陰性確認**: (b-3) の `suppress_stall == false` であること。新形式 active spinner が生きている間は busy の**陽性証拠**なので発火しない。ただし spinner が**無いこと**は idle の証拠ではない ((P3)) ので、これは 3 点目の面であって画面面 (2) の代替にはならない
+   **(b-4-i) (c) に進む前に確認する (画面側 2 点)**:
+
+   1. **画面面**: (b) の `content_hash` が 3 サイクル不変であること — **かつその 3 サイクルとも `inspect_pane` が実際に成功していること**。エラーで画面を観測できなかったサイクルは Step 4 のエラー分岐と (P4) のとおり record を更新しないので streak には積まれない (観測できなかった時間が「静止していた」に化けない)
+   2. **busy の陰性確認**: (b-3) の `suppress_stall == false` であること。新形式 active spinner が生きている間は busy の**陽性証拠**なので発火しない。ただし spinner が**無いこと**は idle の証拠ではない ((P3)) ので、これは独立した 1 面であって画面面 (1) の代替にはならない
+
+   どちらかが欠けたら (c) の補助シグナル取得を回さずに打ち切る (画面が観測不能なら (P4) を報告、busy なら (b-3) の soft-note を残して次サイクルへ)。
+
+   **(b-4-ii) (c) の scan 後、(d) の timeout 分岐に入る直前に確認する (台帳側 1 点)**:
+
+   3. **台帳面**: (c)(1) の worker→secretary 痕跡が lookback 窓内に 0 件であること — **かつ (c)(1) の SQLite query が実際に成功していること**。`.state/state.db` が読めずに 0 行だったなら、それは「痕跡が無い」ではなく観測不能である ((P3): 「痕跡が無い」は「読めなかった」を含意しない)
 
    **「報告痕跡が無い＝止まっている」ではない**: worker の報告は**ターン境界**で出るため、1 ターンが長い作業 (実装 → セルフレビュー → codex ゲートを 1 ターン内で連続実行) の最中に痕跡が出ないのは正常である。台帳面 1 面だけを見て発火したのが 2026-08-08 の実誤検知 2 件の型で (Issue #869)、これは (b-fp) 型 1 / 型 2 と同じ族に属する。画面面が「動いている」または「観測できていない」なら、台帳面が 0 件でも申告しない。
 
-   **画面面が観測不能なら STALL を申告しない**: 上記 2 を満たせない (inspect が使えない) 間は、台帳面だけで stuck を推測せず、(P4) の `OBSERVATION_UNAVAILABLE` を 1 回報告して次サイクルへ送る。**この保留は「代わりに自分で対処してよい」ではない** ((P5)) — やることは報告と再評価であって、ペインへの介入ではない。
+   **観測不能な面が 1 つでもあれば STALL を申告しない**: (b-4-i) の 1 が満たせない (inspect が使えない) 間は台帳面だけで stuck を推測せず、(b-4-ii) の 3 で query が失敗した場合も「痕跡 0 件」として扱わず、いずれも (P4) の `OBSERVATION_UNAVAILABLE` を該当 `source` で 1 回報告して次サイクルへ送る。**この保留は「代わりに自分で対処してよい」ではない** ((P5)) — やることは報告と再評価であって、ペインへの介入ではない。
 
    #### (c) 補助シグナル取得 — 直近の worker→secretary コミュニケーション
-   stall 候補が (b-4) を通ったら、STALL_SUSPECTED を発火する **前に** 補助シグナルを取得する。lookback は (b-2) で選択した値 (`STALL_SECRETARY_LOOKBACK_MIN = 15` または `STALL_PR_MERGE_LOOKBACK_MIN = 60`) を使う:
+   stall 候補が (b-4-i) の画面側 2 点を通ったら、STALL_SUSPECTED を発火する **前に** 補助シグナルを取得する ((b-4-ii) の台帳面はこの scan 結果で評価する)。lookback は (b-2) で選択した値 (`STALL_SECRETARY_LOOKBACK_MIN = 15` または `STALL_PR_MERGE_LOOKBACK_MIN = 60`) を使う:
 
    1. **events scan (primary, authoritative)**: `.state/state.db` の `events` テーブルを読み、`occurred_at >= now - lookback_min minutes` ((b-2) で選択した値) でフィルタし、以下のいずれかの event を持つ行が 1 件でもあるか確認する。これらの worker 起点 event は `payload_json` の `$.worker` が `worker-{task_id}` 形式 ((b-2) の `pr_opened` / `pr_merged` が使う `$.task` = bare task_id とは **別 key**):
       - `kind == "worker_escalation"` かつ `json_extract(payload_json, '$.worker') == "worker-{task_id}"` (judgment request の受信)
@@ -545,7 +553,7 @@ bash ../tools/journal_append.sh anomaly_observed source={面} worker=worker-{tas
      ```
      以降のサイクルで events エントリが lookback window から外れて 0 件になれば、改めて (c) → (d) を再評価する (持続的 stuck の検出が遅れる代償として、判断待ちの誤発火を避ける trade-off)。
 
-   - **timeout** — 両系統とも痕跡なし、idle 継続: **(b-4) の 3 点をすべて満たしていることを確認した上で** (1 つでも欠けるなら発火せず (P4) の観測不能に倒す)、従来通り stall として扱い、窓口に通知 (lookback は (b-2) で選択した値、通知文に分単位で埋める)。**ただし (b-3) の active-spinner suppress が有効 (`suppress_stall == true`) の間は本 timeout 通知も保留する** — helper が cap 未到達の increasing spinner を検出している間は正常な長考なので発火せず、`kind=spinner_active_suppress` の soft-note のみ残す。cap 到達で `suppress_stall == false` に転じたサイクルで初めて発火する:
+   - **timeout** — 両系統とも痕跡なし、idle 継続: **(b-4-i) の 2 点と (b-4-ii) の 1 点をすべて満たしていることを確認した上で** (1 つでも欠けるなら発火せず (P4) の観測不能に倒す)、従来通り stall として扱い、窓口に通知 (lookback は (b-2) で選択した値、通知文に分単位で埋める)。**ただし (b-3) の active-spinner suppress が有効 (`suppress_stall == true`) の間は本 timeout 通知も保留する** — helper が cap 未到達の increasing spinner を検出している間は正常な長考なので発火せず、`kind=spinner_active_suppress` の soft-note のみ残す。cap 到達で `suppress_stall == false` に転じたサイクルで初めて発火する:
      ```
      mcp__org-broker__send_message(to_id="secretary", message="
        STALL_SUSPECTED: worker-{task_id} が直近 3 サイクル idle、
