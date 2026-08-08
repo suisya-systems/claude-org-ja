@@ -93,9 +93,20 @@ python3 tools/work_discovery_scan.py --trigger manual --all-registry-repos
 - `--free-panes` の意味は **空き worker slot 数**（＝ dispatch 可能な空き capacity の単位）であり、物理的な空き
   ターミナルペイン数ではない（runtime 0.1.31 / #104、backend-aware worker capacity 以降の読み替え）。broker 面
   （`ORG_TRANSPORT=broker` / コード既定）では `max_concurrent_workers`（既定 8, `registry/org-config.md`）から
-  アクティブ worker 数を引いた残り、renga 面（opt-in）では rect ベース balanced split が受け入れ可能な空き split 枠。
-  scan の計算ロジックはこの読み替えで変わらない（数を受け取るだけ）ので、窓口 / dispatcher が現行の輸送層に応じて
-  空き slot 数を算出して渡す。
+  アクティブ worker 数を引いた残り、renga 面（opt-in）では rect ベース balanced split が受け入れ可能な空き split 枠
+  （renga 面でも `--overflow-to-new-tab` armed 時は `max_concurrent_workers` の残りが上限になるが、**現行 ja は
+  このフラグを渡していない**）。scan の計算ロジックはこの読み替えで変わらない（数を受け取るだけ。`free_panes` は
+  `_sort_key` のランキング項に使われるだけで、`tools/work_discovery_scan.py` 自身は `list_panes` / `list_peers` を
+  一切呼ばない）ので、窓口 / dispatcher が現行の輸送層に応じて空き slot 数を算出して渡す。
+- **アクティブ worker 数の数え方は caller タブ限定ではない**（runtime 0.1.39 / renga 2.0 以降）: renga 2.0 の
+  `list_panes` は **caller のタブにスコープされる**ため、別タブに置かれたワーカーは pane スナップショットに現れない。
+  別タブ配置を使う場合、アクティブ worker 数は `list_panes`（caller タブ限定）ではなく **`list_peers`（全タブを跨ぐ）**
+  から数える。定義は runtime の `count_worker_population`（panes と peers を **name で union** する。peers 未指定の
+  fallback は panes だけを数え `scope="caller_tab"` になる）に合わせる。数え落とすと空き slot を過大申告し、
+  `parallelizable` 候補のランクを不当に押し上げる。
+- **将来経路**: `delegate-plan` helper が返す **`plan.capacity.free_worker_slots`** が runtime 側の一次的な
+  free-capacity 報告であり（runtime の `ActionPlan.capacity` の doc が本スキルの `--free-panes` をその消費者として
+  名指ししている）、将来はこの値を窓口 / dispatcher の手計算に代えて直接消費する。
 - 既定の候補上限は `--top-n 3`。scan 対象は `--all-registry-repos` が導出する（cross-repo scan が既定であり、
   登録 URL 行が複数あれば自然に複数 repo の cross-repo triage になる。設計 §10 / §10.4）。
 - ツールは stdout に**単一 JSON オブジェクト**を出し、**exit code で分岐**する（JSON パース成否ではなく exit code を見る）。
