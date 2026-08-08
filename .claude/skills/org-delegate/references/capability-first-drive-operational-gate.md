@@ -372,7 +372,7 @@ python3 ../tools/capability_gate.py --gate first_drive
 
 #### 3-B-1. 「登録待ち」型の経路が特に危ない — `name` 一致だけで開けてはならない（MUST）
 
-spawn / boot 直後に「目的のピアが `list_peers` に現れるまで poll する」型の経路（§6 の表 #2 / #8 / #9）は、
+spawn / boot 直後に「目的のピアが `list_peers` に現れるまで poll する」型の経路（§6 の表 #2 / #7 / #8）は、
 **`name` 一致でゲートを開ける**構造になっている。全タブ列挙ではこれが壊れる。契約 T-§2.2 は
 
 > **`name` is not unique across an all-tab enumeration.** … The §4.1 reserved names (`secretary`,
@@ -507,16 +507,26 @@ server × mcp-peer 双方 2.0 系での実機 dogfood と人間確認を要求�
 ```
 
 下表の「縮退先」列は **capability 形かつ未承認のときだけ**を規定する。**承認が揃ったあとの判定は、
-`monitoring-read-only` の全経路（表 #2 / #2b / #3 / #4 / #5 / #6 / #7 / #8）について §1-2 が owner
-である** — いずれも `name` 一致で identity / 登録 / 生存 / live 判定を決める構造なので、全タブ列挙では
-例外なく §1-2 の三値判定を通す必要がある。**owner から外れるのは 3 つだけ**: #1 / #1b は §3-A と
-org-suspend 自身の宛先真理値表、#9 は
+`monitoring-read-only` の全経路（表 #2 / #2b / #3 / #4 / #5 / #6 / #7 / #8 / #9）について §1-2 が
+owner である** — いずれも `name` 一致で identity / 登録 / 生存 / live 判定を決める構造なので、全タブ
+列挙では例外なく §1-2 の三値判定を通す必要がある。**owner から外れるのは 2 つだけ**: #1 / #1b は §3-A と
+org-suspend 自身の宛先真理値表が引き続き owner である（自前の同タブ規範を持つので §1-2 は掛からない）。
+
+**#9 の責務分割**: 「対象名 N が自タブに 在 / 不在 / unknown か」の判定は §1-2 が owner であり、
 [`.dispatcher/references/worker-monitoring.md`](../../../../.dispatcher/references/worker-monitoring.md)
-の裏取り真理値表が引き続き owner である（いずれも自前の同タブ規範を持つので §1-2 は掛からない）。
+(3-a-2) の裏取り表はその**適用結果を受ける表**である（同表の 3 列目（`list_peers` 由来の同タブ生存
+判定）に入るのは §1-2-c が返した三値であって、そちらで同タブ性を定め直したものではない）。同ファイルが
+owner なのは `list_panes` / `pane_exited` / `list_peers` という**独立した観測面どうしの突合規律** —
+**§1-2-c が要求する pane 面裏取り (i) / (ii) を満たしたうえで**どの組み合わせが揃えば
+`WORKER_PANE_EXITED` を申告してよいか、および「連続 2 サイクル同じ形が続いた時点で」という
+継続要件（同 (3-a-2)）— だけである。**「#9 には（承認済み路でも）§1-2 が掛からない」と読んではならない。**
+逆に掛かる範囲も広げない: 本責務分割が効くのは capability 形かつ §2 の `first_drive` が `recorded` の
+列挙だけで、旧版 fallback（現行配備の全 backend。§1-2-a 段 5）では従来の `name` 一致のまま今日の挙動は
+変わらない。
 
 **自分自身の identity を名前で引く経路（#2b / #4）には §1-2-d が掛かる**（`list_peers` は caller を
-除外するので、自役割名に一致したレコードは自分ではありえない）。**他の経路には §1-2-b / §1-2-c の
-同タブ選別が掛かる**。
+除外するので、自役割名に一致したレコードは自分ではありえない）。**#9 を含む他の経路には §1-2-b /
+§1-2-c の同タブ選別が掛かる**。
 
 | # | 経路 | 役割 / cwd | 分岐 | capability 形かつ未承認のときの縮退先 |
 |---|---|---|---|---|
@@ -530,7 +540,7 @@ org-suspend 自身の宛先真理値表、#9 は
 | 6 | 同 Step 4（ワーカーのペイン生存確認） | dispatcher / `.dispatcher/` | monitoring-read-only | 列挙を不存在の根拠にしない。`list_panes` + events テーブルの報告痕跡で判定し、確定できなければ `WORKER_PANE_EXITED` を送らない |
 | 7 | [`.dispatcher/references/spawn-flow.md`](../../../../.dispatcher/references/spawn-flow.md) 3-4（新ピア出現待機） | dispatcher / `.dispatcher/` | monitoring-read-only | 列挙を peer 登録の ground truth にしない（§3-B-1: `worker-{task_id}` は別 org の並走タブに同名で実在しうる）。readiness は §3-B-1 の send-as-probe で判定する（3-5 の指示送信そのものを probe にし再送。送達成功で 3-5 は消化済み＝二度送らない） |
 | 8 | [`.dispatcher/references/pane-close.md`](../../../../.dispatcher/references/pane-close.md) 5-4（curator の boot 確認 poll） | dispatcher / `.dispatcher/` | monitoring-read-only | 列挙を登録確認に使わない（§3-B-1）。readiness は §3-B-1 の send-as-probe で判定する（5-5 の `/org-curate` 指示そのものを probe にし既存の 3 回 retry で再送。送達成功で 5-5 は消化済み）。retry を使い切れば従来どおり破棄して curate を skip |
-| 9 | [`.dispatcher/references/worker-monitoring.md`](../../../../.dispatcher/references/worker-monitoring.md) (3-a-1) 観測不能フォールバック / (3-a-2) 裏取り真理値表 | dispatcher / `.dispatcher/` | monitoring-read-only | (3-a-2) の `list_peers` 列は **unknown** として読む（在/不在のどちらとしても数えない）。(3-a-1) の peer 経路フォールバックからも `list_peers` を外し、**events テーブルの報告痕跡のみ**で継続する |
+| 9 | [`.dispatcher/references/worker-monitoring.md`](../../../../.dispatcher/references/worker-monitoring.md) (3-a-1) 観測不能フォールバック / (3-a-2) 裏取り表 | dispatcher / `.dispatcher/` | monitoring-read-only | (3-a-2) の `list_peers` 列は **unknown** として読む（在/不在のどちらとしても数えない）。(3-a-1) の peer 経路フォールバックからも `list_peers` を外し、**events テーブルの報告痕跡のみ**で継続する |
 
 [`.claude/skills/org-down/SKILL.md`](../../org-down/SKILL.md) は `/org-suspend` の全 Phase を実行するので
 #1 / #1b に推移的に到達する。org-down も人間が起動する flow なので分岐は同じ **interactive-action**。

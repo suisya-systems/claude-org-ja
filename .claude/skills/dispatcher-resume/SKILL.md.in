@@ -94,6 +94,10 @@ Step 0 に入る前に遮断する（恒久対策の経緯は
      `/loop` を再 arm し、残存予約を空のまま放置しない）とし、secretary には
      `DISPATCHER_RESUME_INDETERMINATE: 監視対象の同タブ性を確定できず（unknown N 件）。
      live 判定を保留して監視ループのみ再開しました。` を送って判断を仰ぐ。
+     **unknown のワーカーは監視対象・active のまま残す**（`.state/workers/worker-*.md` を
+     `Status: pane_closed` にせず `WORKER_PANE_EXITED` も送らず
+     `.state/dispatcher/worker-idle-state.json` の record も消さない）。再評価は再 arm した
+     `/loop 3m` の通常サイクルが行う。
      **どの分岐にも落ちないまま skill を終えない**（一度きりの skill が loop に再発火され続ける）。
    - **(i) 監視対象が live = stale 再発火 / 重複起動**: 組織は健全で cold-start 不要。
      `DISPATCHER_RESUME_FAILED` を **送らず**（誤った `/org-start` 案内を出さない）、
@@ -254,15 +258,12 @@ secretary に **報告して** 判断を仰ぐ（勝手に再 spawn / status 変
 **確定できなければ `WORKER_PANE_EXITED` を送らない**（縮退中の「列挙に居ない」は死亡の証拠ではなく、
 別 org の同名ピアと取り違えうる。同 reference §3-B-1）。停止しない・待ち時間 0 分。
 
-**capability 形かつ承認済み（同 reference §2 の `first_drive` が `recorded`）のとき**は、§1-2 の
-三値判定を handover 記載の各ワーカー名に適用する。**「在」は生存**として扱う。**「不在」（他タブのみ /
-列挙に 1 件も無い）でも、それだけでは lifecycle を断定しない** — 契約 T-§4.2 は messaging 面の到達性から
-pane 制御可能性を推論することを禁じ、`caller_scope` 未確立下では Group-A 列挙（`{{FQ}}list_panes`）からの
-不在も終了の証拠にならないと書く。`WORKER_PANE_EXITED` を送ってよいのは **(i) 同タブの `pane_exited` を
-観測した、または (ii) 以前 在 と観測したレコードの数値 `id` が後続の `{{FQ}}list_peers` から消えた**
-場合だけである（§1-2-c）。**(ii) を `name` の消失で判定しない** — 並走タブの同名ピアが残り続けると
-永久に偽のままになり reconcile が滞留する。**「unknown」では送らず、indeterminate として secretary に
-報告する**（§1-2-b）。
+**capability 形かつ承認済み（同 reference §2 の `first_drive` が `recorded`）のときは、§1-2 の三値判定を
+handover 記載の各ワーカー名に適用する。「在」は生存として扱う。「不在」だけでは `WORKER_PANE_EXITED` を
+送らず、送信可否は §1-2-c の pane 面裏取りが取れたかに従う。「unknown」でも送らず、indeterminate として
+secretary に報告する。**（判定条件・三値の定義・評価順の正本は §1-2。ここに重ねて書かない）
+**unknown / indeterminate のワーカーは監視対象・active のまま残し**、Step 5 で再開する `/loop 3m` の
+通常サイクルが再評価する。
 
 ## Step 5: 監視ループの再開
 
