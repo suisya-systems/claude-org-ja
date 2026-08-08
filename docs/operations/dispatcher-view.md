@@ -86,7 +86,14 @@ prefix は **tmux server ごとの設定**である。broker server だけを狙
 /usr/bin/tmux -L claude-org-broker bind C-a send-prefix
 ```
 
-`ORG_BROKER_SOCKET` で socket 名を変えている場合はその名前に読み替える。この形は **走っている broker server に即時反映され、他の tmux server には触らない**ので、入れ子運用でも副作用が無い。
+この形は **指定した server に即時反映され、他の tmux server には触らない**ので、入れ子運用でも副作用が無い。
+
+**`-L` には「自分が attach している server の socket」を渡すこと**（上例は本ビューアの対象である broker server）。socket は経路ごとに異なるので、本節を他の運用手順から参照した場合は読み替える:
+
+| 経路 | socket |
+|---|---|
+| 本ビューア / broker セッションへの attach | `claude-org-broker`（`ORG_BROKER_SOCKET` で変更可） |
+| コンテナ配布の `org-shell`（[`docker/README.md`](../../docker/README.md)） | `org-shell`（broker socket とは別。[`docker/org-shell.sh`](../../docker/org-shell.sh):39, :49-54） |
 
 永続化する場合の注意: `~/.tmux.conf` に `set -g prefix C-a` を書くと **以後起動するすべての tmux server** に効く。外側 tmux をその後に起動すると内外とも `Ctrl-a` になり、下記の「1 回で届く」前提が崩れる（外側が食ってしまう）。永続化するなら、broker 用の別 conf を `-f` で読ませるか、外側と内側で **必ず異なる prefix になるようにする**。
 
