@@ -175,7 +175,15 @@ inspect 自体のラウンドトリップ（数百 ms）で shell が即時終�
 （quiet な健全起動を誤殺する経路を作らないため）。
 
 **起動失敗時**:
-1. `mcp__renga-peers__close_pane(target="<spawn 返り値の pane_id>")` で死んだペインを掃除
+1. **自タブ確立を先に判定してから**、`mcp__renga-peers__close_pane(target="<spawn 返り値の pane_id>")`
+   で死んだペインを掃除する。契約 T-§4.2「Fail-safe consequence for Group B」は `close_pane` の
+   宛先を「**自タブと独立に確立済みの列挙**から得た数値 pane id」に限っており、**id が spawn の
+   戻り値として手元にあることは免除にならない**（未確立の列挙では、close 直前の identity 照合の
+   結果そのものを信用できないため）。確立手段は 2 つで、いずれか 1 つが成立すればよい:
+   **(i) backend が Group B を自身の単一タブモデル内で解決する**（`org-broker`。契約 §8.1 / §8.10）/
+   **(ii) `caller_scope` を確立できている**（契約 T-§cap）。**どちらも成立しないなら close を
+   撃たず**、死んだペインが残っている旨を 4 の報告に含めて手動掃除に委ねる（相対セレクタへは
+   フォールバックしない）。詳細は [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) T-§4.2
 2. sidecar は **書き込まない**
 3. journal に `attention_watch_start_failed` を記録:
    ```bash
