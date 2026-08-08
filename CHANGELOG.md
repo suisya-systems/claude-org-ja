@@ -9,6 +9,29 @@
 
 ### Added
 
+- renga 2.0.0 の capability probe `mcp__renga-peers__server_info` を ja の許可面へ同期 (#854)。
+  `tools/org_extension_schema.json` の `user_common` / `secretary` の `required_allow` に
+  `set_pane_identity` 直後の位置で追加し (14 → 15 / 12 → 13)、同じエントリを
+  `.claude/settings.json` と `.claude/skills/org-setup/references/permissions.md` の
+  ユーザー共通 / 窓口ブロックへ反映した (permissions.md の「14 種」表記も 15 種へ)。
+  schema と permissions.md は `tools/check_role_configs.py` の `check_docs` が突き合わせるため
+  同一 commit で入れる必要がある。これで `docs/verification.md` 11-a' の live capability 確認
+  (`effective_capabilities` の `caller_scope` / `cross_tab_peers` / `caller_scope_close_identity`
+  を読む唯一の一次経路) と `renga-error-codes.md` の `server_too_old` 復旧手順 step 3 の再 probe が、
+  窓口ロールで承認プロンプトなしに実行できるようになった。`server_info` は runtime 0.1.41 の
+  bundled `role_configs_schema.json` で追加された項目で、ja 側の schema は
+  `tools/check_runtime_schema_drift.py` によりバイト一致を要求されるため、**同 PR で runtime の
+  下限 pin を 0.1.40 → 0.1.41 へ引き上げた** (`pyproject.toml` / `requirements.txt` /
+  `docker/Dockerfile` / `docker/compose.yaml` / `docker/README.md` の image tag 例)。
+  今回は `tools/check_runtime_schema_drift.py` の `RUNTIME_PIN_LOWER_INCLUSIVE` も
+  `(0, 1, 41)` へ同時に引き上げている — 直近 2 回の floor bump では据え置いていたが、
+  今回は schema 自体が変わるため 0.1.40 以下の環境では byte check が skip ではなく
+  **hard fail** になるからである (窓を上げることで意図どおりの skip-with-warning に戻る)。
+  なお同定数は `(0, 1, 17)` のまま長く放置されており、今回の引き上げで pin との既存のずれも解消した。
+  上限 `RUNTIME_PIN_UPPER_EXCLUSIVE = (0, 2, 0)` は 0.1.41 を含むので不変。
+  `docs/verification.md` / `docs/design/renga-decoupling.md` の「allowlist 未追加・runtime リリース待ち」
+  という記述は解決済みの内容へ書き換え、`docs/design/renga-decoupling.md` / `docs/non-goals.md` の
+  「14 ツール / 14 種」表記も 15 へ揃えた (`docs/operations/attention-watch.md` の下限 pin 記述も追随)。
 - attention watcher の `duplicate_sidecar` kind に ja 側を追随 (#868)。
   `tools/templates/attention.example.json` に `notify.duplicate_sidecar: "urgent"` と日本語文面を追加した
   (未追加だとこの kind だけ runtime 中立の英語 default が出る)。この通知は「同じ owner 宛のメッセージを

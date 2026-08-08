@@ -31,7 +31,7 @@
 
 ## 2. 現状とこの設計の関係
 
-**現行動作（実装済み・運用中）**: 本リポジトリの組織運用は renga-peers MCP サーバー（renga 0.18.0+、14 ツール）を唯一の輸送層として動作している（現行 org の renga transport サポート下限は 2.0.0）。エージェント間メッセージングは renga のチャネル注入（`<channel source="renga-peers">` の in-band 配達）、ペイン操作・観測は `spawn_claude_pane` / `list_panes` / `inspect_pane` / `send_keys` / `poll_events` / `close_pane` 等で行われる。この現行面は [`docs/contracts/backend-interface-contract.md`](../contracts/backend-interface-contract.md)（Set D）が抽象バックエンド契約として批准済みである。
+**現行動作（実装済み・運用中）**: 本リポジトリの組織運用は renga-peers MCP サーバー（renga 0.18.0+、15 ツール）を唯一の輸送層として動作している（現行 org の renga transport サポート下限は 2.0.0）。エージェント間メッセージングは renga のチャネル注入（`<channel source="renga-peers">` の in-band 配達）、ペイン操作・観測は `spawn_claude_pane` / `list_panes` / `inspect_pane` / `send_keys` / `poll_events` / `close_pane` 等で行われる。この現行面は [`docs/contracts/backend-interface-contract.md`](../contracts/backend-interface-contract.md)（Set D）が抽象バックエンド契約として批准済みである。
 
 **この設計（未実装の提案）**: 輸送層を org-broker デーモン + terminal adapter に置き換える計画。本リポジトリに broker / adapter の実装は存在せず、`.claude/skills/` / `.dispatcher/` / `tools/` の現行 prose・コードは引き続き renga-peers を呼ぶ。フォークでの実験が成功し、フェーズ単位の取り込み判断（[§7](#7-phase-計画と移行完了判定基準)）を通過するまで、本体の挙動は一切変わらない。
 
@@ -78,7 +78,7 @@ Phase 2（棚卸し・契約整合）の先行実施として、リポジトリ�
 
 ツール名が allowlist エントリとして列挙されているだけのもの。配線替え時は broker ツール名での再宣言が必要:
 
-- `.claude/settings.json`（14 ツールを allow 宣言。renga 2.0.0 の `server_info` は未追加 — `tools/org_extension_schema.json` が claude-org-runtime の bundled schema とバイト一致を要求されるため、追加には runtime 側のリリースが要る。Refs #823）
+- `.claude/settings.json`（15 ツールを allow 宣言。renga 2.0.0 の `server_info` は claude-org-runtime 0.1.41 の bundled schema 追加を受けて同期済み）
 - `tools/org_extension_schema.json`（ロール別 allow 宣言）
 - `.claude/skills/org-setup/references/permissions.md`（スキーマの文書化）
 

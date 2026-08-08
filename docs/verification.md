@@ -627,7 +627,7 @@ claude-org-ja 本体は Issue #429 Task C（本 addendum と同 PR）で共有 `
 
 ### 11-a'. live capability 確認（`server_info`）
 
-> **注意（承認プロンプトが出る）**: `mcp__renga-peers__server_info` は現時点でどの role の permission allowlist にも入っていない。`tools/org_extension_schema.json` が claude-org-runtime の同梱 schema とバイト一致を要求されるため、追加には runtime 側のリリースが先に必要である（[`docs/design/renga-decoupling.md`](design/renga-decoupling.md) 参照）。したがって本手順を MCP ツールとして実行すると許可プロンプトで止まる。**プロンプトを伴わない同等の観測経路は [`tools/check_renga_compat.py`](../tools/check_renga_compat.py)** で、こちらは `renga mcp-peer` を subprocess として起動するため allowlist の影響を受けない。
+> **allowlist 状況**: `mcp__renga-peers__server_info` は `user_common` / `secretary` の permission allowlist に入っており（[`tools/org_extension_schema.json`](../tools/org_extension_schema.json) の同名 role `required_allow`）、この 2 role では本手順を MCP ツールとして承認プロンプトなしで実行できる。同ファイルは claude-org-runtime の同梱 schema とバイト一致を要求されるため、このエントリは runtime 0.1.41 の同梱 schema 追加に追随したものである（下限 pin も 0.1.41）。**allowlist を持たない role（`dispatcher` / `worker` / `curator`）や、プロンプトを伴わない観測経路が要る場面では [`tools/check_renga_compat.py`](../tools/check_renga_compat.py)** を使う。こちらは `renga mcp-peer` を subprocess として起動するため allowlist の影響を受けない。
 
 `server_info`（引数なし）を呼び、`structuredContent` を読む:
 1. `status` を最初に読む（判別子）。`connected` / `detached` / `unreachable` の 3 値

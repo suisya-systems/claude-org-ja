@@ -90,7 +90,7 @@ bypass モードでも (2) の PreToolUse フックは有効に作動するた�
 
 **理由**: PTY や端末多重化の層は **Layer 3 = `renga`**（`suisya-systems/renga`）に分離されています（ここでの `renga` は**既定運用フレームの** Layer 3。輸送層は両系で、opt-in `broker` では runtime 内蔵の `org-broker` が同じ Layer 3 を担う。両系は併存・切戻し可、§12 host-local 例外を参照）。claude-org-ja は Layer 4 = 「Claude Code を素で叩く運用層」であり、低レイヤの端末制御は依存先に責務を譲ります。同一リポジトリで両方を抱えると、運用規律の改修と PTY 層のバグ修正が干渉してリリース速度が落ちます。
 
-**代替手段**: ペイン操作・構造化ペイン生成・ピア通信は `renga-peers` MCP サーバー（Layer 3 が提供、14 種のツール）を通じて利用してください（既定運用フレーム。opt-in `broker` 選択時は `mcp__org-broker__*` が同等の面を提供する）。
+**代替手段**: ペイン操作・構造化ペイン生成・ピア通信は `renga-peers` MCP サーバー（Layer 3 が提供、15 種のツール）を通じて利用してください（既定運用フレーム。opt-in `broker` 選択時は `mcp__org-broker__*` が同等の面を提供する）。
 
 ---
 
