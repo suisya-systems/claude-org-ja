@@ -39,6 +39,14 @@ codex exec --skip-git-repo-check -m gpt-5.6-sol -c model_reasoning_effort=medium
 
 brief に載せる必須文言（ブロッキング待ち禁止・spawn 後即時復帰・完了通知はループ通常サイクル・timeout はループ側管理）は [`.claude/skills/org-delegate/references/instruction-template.md`](instruction-template.md) の「監視ロール待ち合わせ設計を含む委譲の brief 必須文言」節を参照。
 
+### リリースライン判定の追加観点（versioning / compatibility policy を持つ repo）
+
+対象 repo に versioning / compatibility policy 文書（semver policy / frozen surface 宣言等）がある場合は、上記プロンプトに以下を必ず追記し、review に回答を求める:
+
+> 対象 repo の versioning / compatibility policy（<policy doc パス>）に照らし、この変更がどのリリースライン（patch / minor / major）に落ちるか、または policy 上どのラインにも載らない（frozen surface 違反等でこのままではリリース不可）かの判定と、その根拠となる policy の該当節を必ず含める。
+
+機構レベルの review は互換パスの欠落を指摘しても、semver 帰結（変更がどのリリースラインに載るか）までは踏み込まないことがある。fail-closed 設計を完成させた後に対象 repo の semver policy を精読して初めて破壊的変更（major 行き）と判明し、非破壊化でほぼ全面やり直しになった実例（renga PR #325 / Issue #306）に基づく観点。リリースライン判定は設計フェーズで確定させるべき事項であり、実装後に気付くと doc・テスト名まで含めた巻き戻しがコード本体より大きくなる。
+
 ## review 要約の組み込み
 
 - 要約を `tmp/codex-review-{task-id}.md` に保存
