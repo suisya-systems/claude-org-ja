@@ -2,7 +2,8 @@
 
 `list_peers` の列挙が **capability 広告 backend のもの**だと分かった瞬間に、各経路が何をするかを
 定める共有 reference。**`list_peers` を呼ぶ経路は、呼び出しの直前に本ファイルを Read し、下の
-§1 → §2 → §3 を順に適用する**。適用先の一覧は §6。
+§1 → §2 → §3 を順に適用する**（承認が揃った経路が**同タブ生存**を判定する評価順と真理値表は
+**§1-2 が正本**）。適用先の一覧は §6。
 
 > **本ファイルが担うのは 3 ゲートのうち operational gate 1 つだけ**。
 > [`docs/contracts/backend-interface-contract.md`](../../../../docs/contracts/backend-interface-contract.md)
@@ -75,6 +76,186 @@ non-advertising path」と明記している。
 3. どちらの場合も、列挙を「旧版形＝単一タブに閉じている」と読み替えることは**しない**（契約 T-§cap の
    単一タブ保証は marker の**無い**列挙にしか掛かっていないので、marker のある列挙に流用すると
    別 org のピアを自 org のものとして扱う誤りになる）。
+
+### 1-2. 同タブ生存の三値判定と、評価順の正本
+
+**本節は「対象名 N のピアが *自タブに生存しているか*」を判定する規範の正本である。** §1 の版判定と
+§2 の照会の結果を受け、**承認が揃った経路だけ**が本節を適用する。
+
+**call site（§6 の表）側には *適用結果* だけを書く（MUST）。** 各スキルに独自の same-tab poll 規範・
+生存判定規範・再送予算を置いてはならない。二重規範化すると、未承認時の縮退（§3-B / §3-B-1）と
+承認済み時の受理条件が 2 箇所で別々に育ち、「probe にした 1 通」と「経路本来の 1 通」の二重送信が
+どちらの文書からも読み取れなくなる。
+
+#### 1-2-a. 評価順 — 列挙 1 回につき、上から 1 度だけ
+
+1. **列挙全体で版判定する**（§1）。レコード単位で切り替えない。
+2. **§2 で `first_drive` を照会する**。
+3. **capability 形 かつ `first_drive` が未承認**（`not_recorded` / `undetermined`）→ **本節を適用しない**。
+   列挙を破棄し §3 の分岐（§6 の表の「縮退先」）に従う。登録待ち型の readiness は §3-B-1 の
+   send-as-probe が唯一の代替であり、**この段では same-tab 選別に踏み込まない**（§1-1 の non-reliance:
+   解釈は capability 形のまま、行動だけを控える）。
+4. **capability 形 かつ `first_drive` が `recorded`** → 1-2-b / 1-2-c を適用する。
+   **`capability_production_activation` の未記録は本節を止めない。** §4 は「**このゲートで止まる経路は
+   無い**」「他タブピアを対象外にしたまま同タブ集合で続行する」「**止まるのは first drive gate だけで
+   ある**」と定める。未記録の間に控えるのは cross-tab addressing（他タブピアへの送信・他タブ由来 id の
+   使用）であって、**同タブへ絞り込む本節の選別そのものではない**。本節の後段はすべて同タブ集合にしか
+   作用しない（＝行動を狭める操作である）ので、`first_drive` の承認だけで到達する。
+5. **旧版 fallback**（§1 の下段。現在配備の全 backend — `org-broker` を含む — はここ）→ **従来の
+   `name` 一致のまま**で、本節は適用しない。契約 T-§ratification は「The operational gate is **not**
+   triggered on the non-advertising path」と書き、同節は「A harness whose enumerations are all
+   legacy-shaped — which is every currently deployed backend, `org-broker` included — proceeds exactly
+   as it does today; nothing about existing operation changes」と続ける。
+
+**この 5 段が評価順の正本である。各 call site にこれと別の順序を書いてはならない（MUST NOT）。**
+
+#### 1-2-b. 真理値表（レコード単位）— 対象名 N の同タブ性
+
+**`name` は絞り込みの前段にしか使わない。** 契約 T-§2.2 は
+
+> Harnesses MUST disambiguate by `same_tab` / `tab` or by the record `id`, and **MUST NOT key a lookup,
+> a set-membership test, or a reverse map on `name` alone.**
+
+と書く。名前で候補を集めること自体は禁じていないが、**判定を `name` で終わらせること**を禁じている。
+列の並びは [`.claude/skills/org-suspend/SKILL.md`](../../org-suspend/SKILL.md) の「宛先選定の真理値表」と
+揃えてあるので、往復して読める。
+
+| # | `same_tab` | `tab` | 自タブ `tab` 照合 | 判定 | 理由 |
+|---|---|---|---|---|---|
+| 1 | `True` | 値あり | 不要 | **在**（同タブ） | `same_tab=True` だけで同タブが確定する（org-suspend 表の同条件行と同じ） |
+| 2 | `True` | `None` | 不要 | **在** | `tab` 欠落は旧版の徴候ではない（契約 T-§2.2-fields の検出規則） |
+| 3 | `False` | 値あり | 不要 | **他タブ** | この org が spawn したペインは全て同一タブに居る（T-§4.2 retained の対偶） |
+| 4 | `False` | `None` | 不要 | **他タブ** | 「`same_tab: false` is a **positive** statement … and **MUST NOT** be conflated with `same_tab` being absent/null」（T-§2.2-fields） |
+| 5 | `None` | 値あり | **一致を確認できた** | **在** | org-suspend の ‡ の例外形（`tab` 値の一致だけが `same_tab` の代替になりうる） |
+| 6 | `None` | 値あり | **照合不能** | **unknown** | `tab` が載る時点で capability 形。`same_tab` 欠落は unknown であり、`name` 一致で同タブと結論してはならない |
+| 7 | `None` | `None` | 照合対象が無い | **unknown** | 片方欠落でも列挙が capability 形なら capability 規則で扱う（欠落は legacy marker ではない） |
+
+**行 5 は形式上の余地であり、既定の着地ではない（重要）**: 契約には **caller 自身の `tab` 値を得る
+surface が無い**。T-§2.2 は「the §2.2 distinction from `list_panes` (excludes the caller, hides
+geometry)」を Unchanged として維持するので自分のレコードは列挙に現れず、`tab` は T-§2.2-fields が
+
+> It is meaningful **only** for equality comparison within a single enumeration.
+
+と書くので、比較すべき自分側の値が同一列挙内に無い。T-§cap も legacy determination について
+「the conformance requirement above, warrants that the enumeration is confined to the caller's tab.
+It licenses nothing beyond that」と書き、単一タブ保証を marker の**無い**列挙に限っている。
+**行 5 が成立する唯一の形**は、同じ列挙の中に `same_tab == True` のレコードが在り、その `tab` 値が
+caller のタブ値だと確定できるとき、欠落レコードの `tab` を**その値と等値比較**して一致した場合である
+（MAY）。それ以外の方法で自タブ値を推定してはならない（MUST NOT）。とくに **`list_panes` に同じ
+`name` / `role` のペインが在ることを「同タブである」の根拠に使ってはならない**（org-suspend ‡: 予約名も
+`role` も全タブでは非一意なので、他タブのピアが自タブのペインと一致していても矛盾しない）。したがって
+**`same_tab` 欠落の既定の着地は行 6 / 7 の unknown** である。
+
+> **unknown で禁じられること（上位形）**: **その unknown を根拠にした作用を一切起こさない。在にも不在
+> にも数えない。** 具体的には (i) 登録待ちゲートを開けない、(ii) lifecycle（`WORKER_PANE_EXITED` /
+> 「消滅済み」記録）を断定しない、(iii) 列挙から `peer_id` を採らない、(iv) identity を DB に書かない、
+> (v) `close_pane` / `StateWriter.CLEAR` / fatal 分岐へ進まない。契約 T-§2.1 は判定不能な lifecycle に
+> ついて「the harness MUST record the outcome as **indeterminate** and escalate it; it MUST NOT resolve
+> it as "closed"」と書く。**unknown を不在に潰すことが契約違反**であり、誤 `WORKER_PANE_EXITED` の
+> 直接の原因になる。unknown は journal に残し、人間（窓口）へ上げる。
+
+> **org-suspend の ‡ との対応（往復して読むための注）**: org-suspend は unknown を「**他タブ扱いに
+> 倒す**」と書く。あちらは broadcast の宛先選定なので、他タブ扱い＝送らない＝**不作為**が安全側になる。
+> **本節は生存判定なので、unknown を「他タブ扱い」に潰すと *不在* に化け、安全側が反転する**。両者は
+> 上位形「unknown では *その unknown を根拠にした作用* を起こさない」で一致しており、帰結だけが経路
+> ごとに違う。**経路ごとの帰結を、もう一方の文面からコピーしないこと。** org-suspend 自身も生存判定の
+> 面では本節と同じ向きに倒しており（Phase 2 / Phase 4 の「消滅済みとして記録せず判定不能のまま残す」
+> `indeterminate`）、矛盾しているのは字面だけである。
+
+#### 1-2-c. 集約 — 名前 N に一致するレコード集合 `S(N)` で決める
+
+`S(N)` = 列挙のうち `name == N` のレコード全体。全タブ列挙では複数件になりうる（T-§2.2: 予約名
+`secretary` / `dispatcher` / `curator` / `worker-{task_id}` は 2 org 並走で **by construction** に衝突する）。
+
+| # | `S(N)` の内訳 | 判定 | 許される後段 |
+|---|---|---|---|
+| 1 | 在（行 1 / 2 / 5）が **ちょうど 1 件**（unknown の併存は問わない） | **在** | その 1 件の**数値 `id`** を宛先 / 生存の根拠に使う |
+| 2 | 在が **2 件以上** | **unknown**（ambiguous・fail-closed） | どの id も採らない。同一タブ内の name 一意性を破る非適合 backend なので人間に報告する |
+| 3 | 在 0 件・unknown（行 6 / 7）が 1 件以上 | **unknown** | 1-2-b の「unknown で禁じられること」 |
+| 4 | 在 0・unknown 0・他タブ（行 3 / 4）が 1 件以上 | **不在**（自タブに居ない） | 下記。**他タブの同名ピアを代用の宛先にしない** |
+| 5 | `S(N)` = ∅ | **不在** | #4 と同じ。ただし**人間への報告では #4 と区別する**（他タブに同名が居たかは誤爆リスク判断の材料） |
+
+**「不在」が licence するのは messaging 面だけである（MUST）。** T-§4.2 は
+
+> a peer MAY be addressable for messaging and simultaneously **not** addressable for pane control.
+> Harnesses **MUST NOT** infer pane-control reachability from messaging reachability, from a
+> `list_peers` record existing, or from a successful `send_message`.
+
+と書く。したがって **不在 → lifecycle 断定へ進むには pane 面の裏取りを別に取る**: (i) 同タブの
+`pane_exited` を観測した、または (ii) **以前この経路が 在 と観測したレコードの数値 `id`** が後続の
+`list_peers` から消えた。契約 T-§2.1 はこの 2 つを列挙したうえで「If neither is available the harness
+MUST record the outcome as **indeterminate** and escalate it」と書く。
+
+> **(ii) の消失判定は `name` ではなく数値 `id` で行う（MUST）。** 並走タブに同名のピアが居ると、
+> **自タブのワーカーが終了したあとも他タブの同名ピアが列挙に残り続ける**ので、「その名前が消えたか」は
+> 永久に偽のままになり、`WORKER_PANE_EXITED` が発火せず run が滞留する（不在側に倒れないので
+> 安全ではあるが、reconcile が永久に止まる別の障害になる）。T-§2.2 の
+> 「MUST NOT key a lookup, a **set-membership test**, or a reverse map on `name` alone」は
+> まさにこの集合所属判定を名指しで禁じている。**在 と判定した時点でそのレコードの数値 `id` を控え、
+> 以後の消失判定はその id で行う**（T-§2.1: 数値 id だけが tab-stable な address form）。**Group-A 列挙（`list_panes` など）からの不在は
+裏取りにならない** — T-§4.2 は `caller_scope` 未確立下について「**MUST NOT read absence from such an
+enumeration, or a `pane_not_found` from such a call, as evidence that a pane has exited**」と書く
+（フォーカス変更だけで両方が起きるため）。どちらも取れなければ **indeterminate** に倒し、unknown と
+同じ扱いで報告する。lifecycle event 側も同じで、T-§3.1 は「a harness MUST NOT match a lifecycle event
+to a tracked pane by `name` alone」と書く。
+
+**登録待ち型（spawn / boot 直後）は 在 のときだけゲートを開ける（MUST）。** T-§2.2 は
+
+> the gate MUST require `same_tab: true` before accepting a record as the child the caller just spawned,
+> because an unfiltered name match can be satisfied by a same-named peer in another tab and open the gate
+> before the child has registered.
+
+と書く。**不在・unknown はどちらもゲートを開けない**（poll を継続する）。**承認済み路では §3-B-1 の
+send-as-probe へ切り替えない**（あれは未承認縮退の代替であり、両者は排他）。受理後、経路本来の 1 通
+（挨拶 / タスク指示 / `/org-curate`）は**通常どおり 1 回だけ**送る。**poll の継続条件・再送予算・予算切れ
+後の失敗処理は各経路の従来手順のままで、本節が差し替えるのは受理条件だけである。**
+
+**宛先は必ず数値 id。** T-§2.1 は「Numeric ids obtained from `list_peers` are the **only** tab-stable
+address form」、T-§2.2-fields は `same_tab` について「Never used as an address」と書く。`same_tab` は
+**選別述語**であって宛先ではない。
+
+#### 1-2-d. 自分自身の identity を名前引きで確定してはならない（MUST NOT）
+
+**適用範囲**: capability 形かつ 1-2-a の段 4 に到達した列挙にのみ適用する。**旧版 fallback では従来
+どおり**（§1 / 段 5。現行配備は全てこちらで、挙動は変わらない）。
+
+T-§2.2 は「the §2.2 distinction from `list_panes` (excludes the caller, hides geometry)」を Unchanged
+として維持する。**したがって自分の `name` に一致したレコードが自分である保証は無い**（caller を除外
+しない非適合実装もありうるが、その場合も同名の別ピアと区別する手段が無いので結論は変わらない）。よって:
+
+- **自分の `peer_id` を名前引きで確定しない。** 自 identity は `list_panes` の `focused: true` の
+  pane_id で確定する。
+- 名前引きの結果が 在 / 不在 / unknown の**いずれであっても、自 `peer_id` は未確定のまま先へ進む**。
+  未確定の identity を DB に書かない（推測値・placeholder・他タブ由来の id を書くと、以後の routing が
+  壊れた宛先を恒久的に掴む）。**未確定であることを人間 / 窓口への報告に明示する。**
+
+> **導出 — 「自 `peer_id` が未確定になる」分岐は本節から出る**（call site 側に独自規範を置かなくてよい）:
+>
+> | 分岐 | 本節のどこから出るか | 帰結 |
+> |---|---|---|
+> | 他タブの同名ピアしか居ない | 1-2-c #4（不在）／行 3・4 | `peer_id` 未確定 |
+> | 同タブ性が unknown | 1-2-c #3 →「列挙から `peer_id` を採らない」 | `peer_id` 未確定 |
+> | `same_tab=True` が複数（ambiguity） | 1-2-c #2（fail-closed） | `peer_id` 未確定 |
+> | 在 1 件だが、それが自役割名である | 本項の caller 除外 | `peer_id` 未確定 |
+>
+> **4 分岐すべてが未確定に落ちる**ので、DB 更新には pane_id だけを渡す。「未指定 = 保持」と「明示
+> クリア」のどちらが正しいかは経路の性質で決まる: **生きた同一ペインを引き継ぐ resume 系は保持**
+> （渡さないこと自体が fail-closed になる）、**ペインを新規 spawn する起動系は残値が前セッションの
+> 死んだペインを指すので明示クリア**。どちらであれ、推測値を書かない点は共通である。
+
+#### 1-2-e. call site 側に書く形
+
+§6 の表の規範文と既存の未承認縮退段落は**そのまま残し**、その直後に**適用結果だけ**を 2〜5 行で書く。
+判定条件・評価順・三値の定義を再掲しない（MUST NOT）:
+
+```text
+**capability 形かつ承認済み（§2 の `first_drive` が `recorded`）のときは、共有 reference §1-2 の
+三値判定を <対象名> に適用する。「在」のときだけ <この経路の後段>。「不在」は <経路の既定処理>、
+「unknown」は <作用を起こさずに報告>。**（判定手順と評価順の正本は §1-2。ここに重ねて書かない）
+```
+
+**書いてはならないもの（MUST NOT）**: 独自の same-tab poll 規範 / 独自の再送予算 / 三値表・版判定条件・
+承認条件の複製 / 未承認のまま 1-2-b へ抜ける記述。
 
 ---
 
@@ -325,6 +506,18 @@ server × mcp-peer 双方 2.0 系での実機 dogfood と人間確認を要求�
 を Read し、<分岐名> の分岐を適用する。**
 ```
 
+下表の「縮退先」列は **capability 形かつ未承認のときだけ**を規定する。**承認が揃ったあとの判定は、
+`monitoring-read-only` の全経路（表 #2 / #2b / #3 / #4 / #5 / #6 / #7 / #8）について §1-2 が owner
+である** — いずれも `name` 一致で identity / 登録 / 生存 / live 判定を決める構造なので、全タブ列挙では
+例外なく §1-2 の三値判定を通す必要がある。**owner から外れるのは 3 つだけ**: #1 / #1b は §3-A と
+org-suspend 自身の宛先真理値表、#9 は
+[`.dispatcher/references/worker-monitoring.md`](../../../../.dispatcher/references/worker-monitoring.md)
+の裏取り真理値表が引き続き owner である（いずれも自前の同タブ規範を持つので §1-2 は掛からない）。
+
+**自分自身の identity を名前で引く経路（#2b / #4）には §1-2-d が掛かる**（`list_peers` は caller を
+除外するので、自役割名に一致したレコードは自分ではありえない）。**他の経路には §1-2-b / §1-2-c の
+同タブ選別が掛かる**。
+
 | # | 経路 | 役割 / cwd | 分岐 | capability 形かつ未承認のときの縮退先 |
 |---|---|---|---|---|
 | 1 | [`.claude/skills/org-suspend/SKILL.md`](../../org-suspend/SKILL.md) Phase 1 手順 1（id 台帳を作る） | secretary / root | **interactive-action** | 送信前に停止し人間確認。確認後も他タブピアは対象外のまま |
@@ -352,6 +545,17 @@ server × mcp-peer 双方 2.0 系での実機 dogfood と人間確認を要求�
 | `.dispatcher/CLAUDE.md` の delegate-plan `after_spawn[]` 要約 | `claude-org-runtime` の delegate-plan helper が `list_peers` 待ちを**機械生成した plan 要素として emit する**ため、helper 経路に乗ったディスパッチャーは [`.dispatcher/references/spawn-flow.md`](../../../../.dispatcher/references/spawn-flow.md) 3-4（表 #7）を読まずに列挙する。emitter は ja の外にあるので、**ja 内で唯一の介入点がこの要約**である（当初「索引だから対象外」と判断したが、それは誤り） |
 | [`.claude/skills/org-delegate/references/renga-error-codes.md`](renga-error-codes.md) の messaging 復旧手順への**同趣旨の追記** | **規範自体は §3-B-2 で先に置いてある**（縮退は復旧手順に伝播する = 引き直した列挙の数値 id で他タブへ再送しない / 消失を死亡確定の根拠にしない）。復旧手順は spawn / readiness の再送という常用経路から入るので、未配線のまま残すと縮退が最も効いてほしい局面で抜けるため。残っているのは `renga-error-codes.md` 本体側にも同じ注記を置いて二重管理を解消する作業 |
 | [`.claude/skills/org-attach/SKILL.md`](../../org-attach/SKILL.md) の表示ラベル突き合わせ | 結果は attach コマンドの**ラベル生成にしか使わない**（join key は `list_panes` の pane_id）。ゲート判定には使わないので危険度は最も低いが、全タブ列挙では他 org のペインに自 org のラベルを付けて人間に提示しうる |
+
+**§1-2 の per-site 適用行がまだ無い経路（#7 / #8）**: 上表の owner 規定により **§1-2 は #7 / #8 にも
+規範として掛かっており**（両経路とも呼び出し直前に本ファイルを Read する義務があるので、§1-2-c の
+「登録待ち型は 在 のときだけゲートを開ける（MUST）」に到達する）、**規範の穴ではない**。ただし
+[`.dispatcher/references/spawn-flow.md`](../../../../.dispatcher/references/spawn-flow.md) 3-4 と
+[`.dispatcher/references/pane-close.md`](../../../../.dispatcher/references/pane-close.md) 5-4 の
+**本文には承認済み路の適用結果 1 行がまだ置かれていない**ので、そちら**だけ**を読んだ役割は
+name 一致の poll 記述をそのまま実行しうる（§3-B-2 の renga-error-codes.md と同型の
+discoverability gap）。両ファイルは本タスクの承認編集対象外なので配線していない。**この 2 経路は
+一度きりのタスク割り当て / `/org-curate` 指示を運ぶため影響が大きい**ので、follow-up で per-site 行を
+置くこと。それまでの間、#7 / #8 を実行する役割は当該ファイルと本節を**セットで**読む。
 
 runtime 側（`claude_org_runtime` の delegate-plan helper が `list_peers` 再実行を指示する
 `target_tab_mismatch` / `tab_ambiguous` / `pane_not_found` の復旧文言）は ja リポジトリの外なので、

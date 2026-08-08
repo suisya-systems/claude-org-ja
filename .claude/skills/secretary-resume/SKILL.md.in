@@ -87,6 +87,12 @@ print(json.dumps(get_org_state_summary(conn), ensure_ascii=False, indent=2, defa
 未承認なら列挙を生存判定に使わず破棄し、`{{FQ}}list_panes` と state DB の `active_runs[]` の突き合わせで
 代替して、差分は人間に報告する（停止しない・待ち時間 0 分。勝手に再 spawn しないのは従来どおり）。
 
+**capability 形かつ承認済み（同 reference §2 の `first_drive` が `recorded`）のとき**は、§1-2 の
+三値判定を dispatcher / handover 記載の各ワーカー名に適用し、**「在」（同タブ・一意）だけを現存として
+数える**。他タブに同名のディスパッチャー / ワーカーが見えていても自組織の生存根拠にしない。
+**「不在」は差分として、「unknown」は判定不能として区別して人間に報告する**（unknown を不在に数えない。
+§1-2-b）。差分があっても勝手に再 spawn しないのは従来どおり。
+
 ```
 {{FQ}}list_peers
 ```

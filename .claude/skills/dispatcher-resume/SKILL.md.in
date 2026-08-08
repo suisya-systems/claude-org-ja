@@ -86,6 +86,15 @@ Step 0 に入る前に遮断する（恒久対策の経緯は
      を Read し、`monitoring-read-only` の分岐を適用する**（同 reference §6 の表 #5）。capability 形
      かつ未承認なら列挙を live 判定に使わず破棄し、`list_panes` の `role == "worker"` と
      `curate-inflight.json` の有無だけで分岐する（停止しない・待ち時間 0 分）。
+     **承認済み（同 reference §2 の `first_drive` が `recorded`）のときは §1-2 の三値判定を通し、
+     「在」と出たワーカーだけを live として数える** — 他タブの別 org のワーカーを live と誤認すると
+     (ii) の cold-start 経路が抑止される。**「unknown」は live に数えないが、(ii) にも倒さない**:
+     判定不能を「監視対象なし」と読み替えると誤った `/org-start` 案内で健全な組織を壊しうる
+     （不可逆側）。**終端処理は (i) と同じ**（早期 exit + Step 5 の monitoring ディレクティブで
+     `/loop` を再 arm し、残存予約を空のまま放置しない）とし、secretary には
+     `DISPATCHER_RESUME_INDETERMINATE: 監視対象の同タブ性を確定できず（unknown N 件）。
+     live 判定を保留して監視ループのみ再開しました。` を送って判断を仰ぐ。
+     **どの分岐にも落ちないまま skill を終えない**（一度きりの skill が loop に再発火され続ける）。
    - **(i) 監視対象が live = stale 再発火 / 重複起動**: 組織は健全で cold-start 不要。
      `DISPATCHER_RESUME_FAILED` を **送らず**（誤った `/org-start` 案内を出さない）、
      Step 1 以降に進まず早期 exit する。**残存予約を空のまま放置しない**: 監視 `/loop` が
@@ -125,6 +134,16 @@ Step 0 に入る前に遮断する（恒久対策の経緯は
    観測できなかった値を書くと、以後の routing が壊れた id を掴む。`dispatcher_pane_id` は
    `list_panes` から確定できるので通常どおり書く。Step 6 のブリーフィングでは
    `peer=<未取得: capability gate 縮退中>` と明示して secretary に伝える。
+
+   **capability 形かつ承認済み（同 reference §2 の `first_drive` が `recorded`）のときも、自分の
+   `peer_id` は名前引きで確定しない**（§1-2-d）。`{{FQ}}list_peers` は caller を除外するので、
+   `name == "dispatcher"` に一致したレコードは**同タブに 1 件だけ在っても自分ではありえず**、
+   他タブのみ / 同タブ性 unknown / `same_tab=True` が複数の各分岐と合わせて、**名前引きの結果が
+   何であれ `peer_id` は未確定のまま**先へ進む。**したがって Step 2 の DB 書き込みでは
+   `dispatcher_peer_id` を渡さない**（`update_session()` の「未指定 = 保持」で既存値を温存する。
+   生きた同一ペインを引き継ぐ resume では保持が正しく、渡さないこと自体が fail-closed になる）。
+   更新するのは 3 で得た `focused: true` の `dispatcher_pane_id` だけである。Step 6 の
+   ブリーフィングでは `peer=<未取得: 名前引きでは自 peer を同定できない>` と明示して secretary に伝える。
 
 ## Step 1: handover ファイルを読み込む
 
@@ -172,6 +191,28 @@ with StateWriter(conn, claude_org_root=Path('..')).transaction() as w:
 "
 ```
 
+**Step 0 で `peer_id` が未確定だった場合（capability gate の縮退中、または承認済み路で名前引きから
+自 peer を同定できなかった場合）は、`dispatcher_peer_id` を渡さない形で呼ぶ**。上の例をそのまま
+使うと観測していない値を書き込むことになる:
+
+```bash
+python3 -c "
+import sys, os
+sys.path.insert(0, os.path.abspath('..'))
+from pathlib import Path
+from tools.state_db import connect
+from tools.state_db.writer import StateWriter
+conn = connect('../.state/state.db')
+with StateWriter(conn, claude_org_root=Path('..')).transaction() as w:
+    w.update_session(
+        dispatcher_pane_id='<observed_pane_id>',
+    )
+"
+```
+
+`update_session()` は未指定を「保持」と解釈する契約なので、既存値がそのまま残る（生きた同一ペインを
+引き継ぐ resume ではこれが正しい。詳細は Step 0 手順 4 と共有 reference §1-2-d）。
+
 - `dispatcher_pane_id` / `dispatcher_peer_id` は **文字列**で書く（schema は TEXT、
   既存 `/org-start` も文字列を入れているので型を揃える）
 - `transaction()` 内なので片方だけ書いて失敗しても DB は半端な状態にならない
@@ -212,6 +253,16 @@ secretary に **報告して** 判断を仰ぐ（勝手に再 spawn / status 変
 未承認なら列挙を不存在の根拠にせず破棄し、`{{FQ}}list_panes` と events テーブルの報告痕跡で判定する。
 **確定できなければ `WORKER_PANE_EXITED` を送らない**（縮退中の「列挙に居ない」は死亡の証拠ではなく、
 別 org の同名ピアと取り違えうる。同 reference §3-B-1）。停止しない・待ち時間 0 分。
+
+**capability 形かつ承認済み（同 reference §2 の `first_drive` が `recorded`）のとき**は、§1-2 の
+三値判定を handover 記載の各ワーカー名に適用する。**「在」は生存**として扱う。**「不在」（他タブのみ /
+列挙に 1 件も無い）でも、それだけでは lifecycle を断定しない** — 契約 T-§4.2 は messaging 面の到達性から
+pane 制御可能性を推論することを禁じ、`caller_scope` 未確立下では Group-A 列挙（`{{FQ}}list_panes`）からの
+不在も終了の証拠にならないと書く。`WORKER_PANE_EXITED` を送ってよいのは **(i) 同タブの `pane_exited` を
+観測した、または (ii) 以前 在 と観測したレコードの数値 `id` が後続の `{{FQ}}list_peers` から消えた**
+場合だけである（§1-2-c）。**(ii) を `name` の消失で判定しない** — 並走タブの同名ピアが残り続けると
+永久に偽のままになり reconcile が滞留する。**「unknown」では送らず、indeterminate として secretary に
+報告する**（§1-2-b）。
 
 ## Step 5: 監視ループの再開
 
