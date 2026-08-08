@@ -127,15 +127,14 @@ Step 0 に入る前に遮断する（恒久対策の経緯は
    `peer=<未取得: capability gate 縮退中>` と明示して secretary に伝える。
 
    **capability 形かつ承認済み（同 reference §2 の `first_drive` が `recorded`）のときも、自分の
-   `peer_id` は名前引きで確定しない**（§1-2-d: `{{FQ}}list_peers` は caller を除外するので、
-   `name == "dispatcher"` に一致したレコードが自分である保証が無い）。**以下 3 分岐はいずれも
-   fail-closed で `peer_id` 未確定に落ちる**: (i) 他タブの `dispatcher` しか居ない（§1-2-c #4）、
-   (ii) `same_tab` 欠落で同タブ性が unknown（§1-2-c #3）、(iii) `same_tab=True` が複数の ambiguity
-   （§1-2-c #2）。**未確定のときは Step 2 の DB 書き込みで `dispatcher_peer_id` を渡さず**
-   （`update_session()` の「未指定 = 保持」で既存値を温存する。生きた同一ペインを引き継ぐ resume では
-   保持が正しく、渡さないこと自体が fail-closed になる）、3 で得た `focused: true` の
-   `dispatcher_pane_id` だけを更新する。Step 6 のブリーフィングでは
-   `peer=<未取得: 同タブ性を一意に確定できず>` と明示して secretary に伝える。
+   `peer_id` は名前引きで確定しない**（§1-2-d）。`{{FQ}}list_peers` は caller を除外するので、
+   `name == "dispatcher"` に一致したレコードは**同タブに 1 件だけ在っても自分ではありえず**、
+   他タブのみ / 同タブ性 unknown / `same_tab=True` が複数の各分岐と合わせて、**名前引きの結果が
+   何であれ `peer_id` は未確定のまま**先へ進む。**したがって Step 2 の DB 書き込みでは
+   `dispatcher_peer_id` を渡さない**（`update_session()` の「未指定 = 保持」で既存値を温存する。
+   生きた同一ペインを引き継ぐ resume では保持が正しく、渡さないこと自体が fail-closed になる）。
+   更新するのは 3 で得た `focused: true` の `dispatcher_pane_id` だけである。Step 6 の
+   ブリーフィングでは `peer=<未取得: 名前引きでは自 peer を同定できない>` と明示して secretary に伝える。
 
 ## Step 1: handover ファイルを読み込む
 
