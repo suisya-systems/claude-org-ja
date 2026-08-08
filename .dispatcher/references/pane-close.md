@@ -18,6 +18,25 @@
 
 CLI は **1 attempt あたり 1 回起動する単発判定**（Issue #285、Claude Code の Bash tool が一往復であるため、長寿命の双方向プロセスは想定しない）。各 attempt の cadence（30 秒スリープ）はディスパッチャー側が `Bash sleep 30` で挟む。
 
+#### 0. 受領記録の確認（初回送信の前に必ず実行）
+
+問い合わせを出す前に、答えが既に手元にないかを見る。`.state/dispatcher/worker-idle-state.json` の該当 record の `completion_reported_at` は、secretary が `WORKER_COMPLETION_NOTED` を送った時刻を保持する **受領済みの陽性記録** である（set / clear の契約は [`.dispatcher/references/worker-monitoring.md`](worker-monitoring.md) Step 2）:
+
+記録だけでは足りない。`WORKER_REOPENED`（T6 再指示の解除通知）は best-effort で取りこぼしうるため、再指示が入った後も前回完了時の `completion_reported_at` が残りうる。そこで **DB の `runs.status` を authoritative な lifecycle として併せて見る**（[`.dispatcher/references/worker-monitoring.md`](worker-monitoring.md) Step 5.2 (b)(6) が同じ理由で `runs.status` を要求しているのと同じ非対称性への対処）:
+
+```bash
+# ディスパッチャー cwd は .dispatcher/ なので 1 段上がリポジトリルート。
+# 記録が無い / ファイルが読めない場合は空文字になる（= 下の分岐でゲートを回す側に倒れる）。
+completion_reported_at=$(python -c 'import json;d=json.load(open("../.state/dispatcher/worker-idle-state.json"));print((d.get("worker-<task_id>") or {}).get("completion_reported_at") or "")' 2>/dev/null)
+run_status=$(sqlite3 ../.state/state.db "SELECT status FROM runs WHERE task_id = '<task_id>'" 2>/dev/null)
+```
+
+- **値があり、かつ `run_status` が `in_use` **でない**（`review` / `completed`）** → 完了報告は既に secretary に届いており、その記録は現在の lifecycle のものである。**初回送信を発行せず**、本ゲートを acked 相当として通過し（「2. polling ループ」も回さない）retro を続行する。答えが手元にあるのに聞き直すと、窓口の受信箱を同じ 1 事実で埋めることになる（2026-08-08 に同一 task へ 4 回再送した実誤検知、Issue #869）。CLOSE_PANE 時点では merge 済みで `completed` になっているのが典型なので、`review` だけに絞らない
+- **値はあるが `run_status == 'in_use'`** → T6 再指示が landed 済みで、記録は**前回の完了を指す stale な marker** である（`WORKER_REOPENED` の取りこぼし）。skip せず従来どおりゲートを回す。flag の self-heal clear は監視ループ側の責務なので**ここでは触らない**（worker-monitoring.md Step 5.2 (d) reopen-self-heal が担う）
+- **値が無い / record が無い / ファイルが読めない / `run_status` が取れない** → **記録の不在は「未着」の証拠にならない**（`WORKER_COMPLETION_NOTED` は secretary が best-effort・非 blocking で送るので取りこぼしうる）。従来どおり下の「1. 初回送信」から本ゲートを回す。ゲートの存在理由そのものが「dispatcher の受信キューに無い ≠ システム上に無い」だからである（下の「理由」節）
+
+この skip は初回送信の有無だけを変えるもので、polling ループ・secretary unreachable fallback・exit code 分岐は一切変えない。判定の一般形は [`.dispatcher/references/worker-monitoring.md`](worker-monitoring.md) の「観測の原則」(P1)（観測できないことは起きていないことの証拠にならない）に対応する。
+
 #### 1. 初回送信（attempt=1 の前に 1 度だけ）
 
 `--print-initial-prompt` で task_id 込みの定型文を取り出し、`mcp__renga-peers__send_message` で secretary に送る:
