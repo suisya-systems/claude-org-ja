@@ -126,12 +126,16 @@ main の先端かどうかも検証しない**。版数の SoT は `src/claude_o
 - **stale SHA**（版数は合っているが main の先端ではない）: 古い内容のまま publish が
   **成功**する。PyPI yank はできても版番号は再利用できない＝実質撤回不可
 
-以下を上から順に実行し、**1 つでも条件を外したら tag を打たずに人間へ報告する**:
+以下は **1 ブロックまとめて実行する**。各 gate は目視確認ではなく非ゼロ終了で表現してあり、
+`set -euo pipefail` と合わせて 1 つでも外れれば `git tag` に到達せず止まる（「出力を見て判断する」
+形にすると、貼り付け実行でそのまま tag まで走り抜けてしまう）:
 
 ```bash
 # Secretary 側で実行（user の明示承認後）
+set -euo pipefail
 WD=<runtime workers_dir>
-VER=X.Y.Z   # 発行する版数（タグ名から先頭の "v" を除いたもの）
+VER=X.Y.Z                    # 発行する版数（タグ名から先頭の "v" を除いたもの）
+MERGE_SHA=<リリース PR の merge commit sha>
 
 # (a) 最新化。squash / rebase merge の merge commit はローカル未取得の新規オブジェクトなので
 #     tag の前に必ず fetch する（Step 1 の fetch は PR 前なので古い）。
@@ -139,26 +143,45 @@ VER=X.Y.Z   # 発行する版数（タグ名から先頭の "v" を除いたも�
 git -C "$WD" fetch origin --tags
 
 # (b) 同名タグが未使用であること。remote が正（ローカルに無くても remote にあれば push は reject）
-git -C "$WD" ls-remote --tags origin "refs/tags/v$VER"
-#     → 出力が空でなければ中止
+[ -z "$(git -C "$WD" ls-remote --tags origin "refs/tags/v$VER")" ] \
+  || { echo "FAIL: tag v$VER is already on origin"; exit 1; }
 
-# (c) tag 対象は常に origin/main の先端。stale SHA を掴まないよう rev-parse で解決し、
-#     リリース PR の merge commit がそこに含まれていることを確認する
-SHA="$(git -C "$WD" rev-parse origin/main)"; echo "$SHA"
-git -C "$WD" merge-base --is-ancestor <リリース PR の merge commit sha> "$SHA" && echo included
-#     → "included" が出なければ中止（リリース内容が main に入っていない）
-#     → $SHA が merge commit sha と一致しない場合は、後続の別 PR が相乗りする状態。
-#       中止して人間に報告し、その相乗りを含めて発行してよいか確認してから進む
+# (c) tag 対象は origin/main の先端。リリース内容がそこに含まれることを ancestry で確認する
+SHA="$(git -C "$WD" rev-parse origin/main)"
+git -C "$WD" merge-base --is-ancestor "$MERGE_SHA" "$SHA" \
+  || { echo "FAIL: $MERGE_SHA is not contained in origin/main"; exit 1; }
+[ "$SHA" = "$MERGE_SHA" ] \
+  || { echo "STOP: origin/main advanced past the release merge ($SHA)"; exit 1; }
 
-# (d) その commit の版数がタグと一致すること。作業ツリーではなく commit から直接読む
-#     （worktree 側が未 commit / 別ブランチの状態でも欺かれないため）
-git -C "$WD" show "$SHA:src/claude_org_runtime/__about__.py"
-#     → __version__ が "X.Y.Z" でなければ中止
+# (d) その commit の版数がタグと一致すること。作業ツリーではなく commit から直接読み、
+#     目視ではなく文字列比較する（worktree 側が未 commit / 別ブランチでも欺かれない）。
+#     revspec の変数は必ず ${SHA} と波括弧で書く: zsh では $SHA:src/... の ":s/.../.../" が
+#     パラメータ修飾子として食われ、別 revspec に化けたまま静かに落ちる
+ACTUAL="$(git -C "$WD" show "${SHA}:src/claude_org_runtime/__about__.py" \
+          | sed -n 's/^__version__ = "\(.*\)"$/\1/p')"
+[ "$ACTUAL" = "$VER" ] \
+  || { echo "FAIL: __about__.py at $SHA says '$ACTUAL', expected '$VER'"; exit 1; }
 
-# (e) (b)(c)(d) が全て通ってから tag + push
+# (e) push 直前に origin/main を取り直し、検証中に動いていないかを再確認する
+git -C "$WD" fetch origin main
+[ "$SHA" = "$(git -C "$WD" rev-parse origin/main)" ] \
+  || { echo "STOP: origin/main moved during verification; 最初からやり直す"; exit 1; }
+
+# (f) 全 gate 通過。tag は不変の SHA に対して打つ
 git -C "$WD" tag "v$VER" "$SHA"
 git -C "$WD" push origin "v$VER"
 ```
+
+(c) / (e) で `STOP` になった場合は、その場で tag を打ち直さず人間に報告する。「先端に乗り換えて
+発行する」のか「相乗りする別 PR を含めずに切る」のかは人間の判断であり、Secretary が一次判断で
+選んでよい種類の選択ではない。
+
+> **残余レースの扱い**: (e) と `push` の間には原理的に窓が残る（GitHub の tag push には
+> 「main が `$SHA` のままなら通す」という compare-and-swap が無いため、これは手順で閉じられない）。
+> ただし **tag は不変の SHA に対して打つ**ので、この窓で main が進んでも発行される artifact は
+> (c)(d) で検証した内容そのままであり、壊れた版が出ることはない。窓で起こりうるのは
+> 「直後にマージされた別 PR がこの版に入らない」だけで、これは release の通常挙動である。
+> したがって対策は「main を止める」ではなく、**(e) を push の直前に置き、外したらやり直す**で足りる。
 
 push 後は GitHub Actions の release.yml ジョブを `gh run watch` 等で監視する。
 このとき **`--repo` で runtime リポジトリを必ず明示**する
