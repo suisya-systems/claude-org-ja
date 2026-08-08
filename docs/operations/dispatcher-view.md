@@ -17,9 +17,13 @@
 |---|---|---|
 | broker の **tmux backend**（Linux / macOS / WSL） | 適用 | 本スクリプトの想定環境 |
 | broker の **Windows backend (wezterm)** | 非適用 | broker の Windows backend は tmux ではなく wezterm のため、本スクリプトは動かない。同等品は follow-up |
-| **renga** フレーム | 不要 | renga は単一画面タイリングで、各ペインが別 tmux session に分かれず「detached session へ attach し直す」概念が写像しないため不要 |
+| **renga** transport（`ORG_TRANSPORT=renga`） | 条件付きで不要 | renga のペインは所属タブ内のタイルで、各ペインが別 tmux session に分かれず「detached session へ attach し直す」概念が写像しないため、本ビューアは適用外。ただし本ビューアの目的である「常に視界に保つ」が自動で満たされるのは **org のタブを表示している間だけ**である。別タブで作業している間は org のペインが視界に入らないので、org のタブへ切り替えるか org サイドバー（§4.2 の cross-tab パネル）で確認する |
 
 「見る側の端末」が WezTerm / tmux のどちらでも本ビューアは動く。スコープ外なのは **broker backend 自体が wezterm のケース** のみ。
+
+> **表の renga 行は transport が renga のケース（`ORG_TRANSPORT=renga`）に限る。** 外側フレームが renga でも transport が broker の構成では detached tmux session が実在するため、本ビューアは**適用される**（不要ではない）。その構成で必要なのは §4 の `Ctrl+B` 衝突回避である。
+>
+> なお org のペインがすべて同一タブに置かれるのは renga の性質ではなく **org 側の配置規則**で、規範の正本は契約 [`docs/contracts/backend-interface-contract.md`](../contracts/backend-interface-contract.md) §4.2 の SINGLE-TAB MUST である（本ドキュメントは規範を再掲せず参照する）。
 
 ## 3. WezTerm 手順（推奨）
 
