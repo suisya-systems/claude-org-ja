@@ -54,13 +54,12 @@ attention watcher integration test に必ず波及する。
   （`>=X,<0.2`）のため PyPI 公開の瞬間から ja 側の 2 チェックが赤くなる:
   (a) `tools/check_role_configs.py --include-local`（settings 現物に新しい必須項目が無い）、
   (b) `tools/check_runtime_schema_drift.py`（ja の `tools/org_extension_schema.json` と
-  runtime 同梱 `role_configs_schema.json` のバイト比較。installed runtime が pin window 内
-  なら skip されない。CI でも実行される）。
+  runtime 同梱 `role_configs_schema.json` の、ja 固有節を strip した上でのバイト比較。
+  installed runtime が pin window 内なら skip されない）。
+  両チェックの CI 配線は [`.github/workflows/tests.yml`](../../../.github/workflows/tests.yml) を参照。
   実例: renga capability probe `server_info` の `required_allow` 追加（2026-08-08,
-  runtime Issue #161）で露見。詳細は
-  [`knowledge/curated/release-process.md`](../../../knowledge/curated/release-process.md)
-  の「runtime の `required_allow` 等 schema 追加は、runtime 側 green だけでは ja 側の
-  安全性を証明しない」節を参照
+  runtime Issue #161）で露見。経緯の curated note は
+  [`knowledge/curated/release-process.md`](../../../knowledge/curated/release-process.md) を参照
 
 ## Step 1: pre-fetch（リリース worker 派遣前）
 
@@ -106,11 +105,17 @@ brief で明示しない場合 worker は bump 対象を pyproject 系のみと�
 
 ```bash
 # Secretary 側で実行（user の明示承認後）
+# squash / rebase merge の merge commit はローカル未取得の新規オブジェクトなので
+# tag の前に必ず fetch する（Step 1 の fetch は PR 前なので古い）
+git -C <runtime workers_dir> fetch origin
 git -C <runtime workers_dir> tag vX.Y.Z <merge commit sha>
 git -C <runtime workers_dir> push origin vX.Y.Z
 ```
 
-push 後は GitHub Actions の release.yml ジョブを `gh run watch` 等で監視。
+push 後は GitHub Actions の release.yml ジョブを `gh run watch` 等で監視する。
+このとき **`--repo` で runtime リポジトリを必ず明示**する
+（Secretary の cwd は ja root のため、無指定の `gh run watch` は ja 側リポジトリの
+run に解決される）。
 PyPI publish 完了までは Step 4 の ja-side 派遣を待機しない（並走可。むしろ並走推奨）。
 
 ## Step 4: paired ja-sync の計画（並走で起票）
@@ -121,13 +126,22 @@ ja-side 同期 PR を起票する。後回しにしない:
 | runtime 側の変更 | ja-side 同期対象 |
 |---|---|
 | `DEFAULT_NOTIFY` の値変更 / 追加 / 削除 | `tests/test_attention_runtime_integration.py` の expectation 更新 |
-| `org_extension_schema` のフィールド改廃 | `tools/org_extension_schema.json` のバイト一致コピー差し替え |
+| `org_extension_schema` のフィールド改廃 | `tools/org_extension_schema.json` の共有面を runtime 同梱 schema に同期（ja 固有節は保持。下記注意点参照） |
 | classifier vocabulary の追加 / 改名 | `.claude/skills/org-setup/references/permissions.md` の projection 更新 |
 | attention payload の severity / TTL ladder 変更 | `tools/templates/attention.example.json` の severity / TTL 同期 |
+| ja が新 runtime 版の挙動・新 required 項目に依存する場合 | `pyproject.toml` / `requirements.txt` / `docker/Dockerfile` の runtime version floor を atomic に引き上げ |
 
 paired ja-sync は **複数 worker 並列**で派遣して構わない（むしろ推奨）。
 4 つの同期対象は互いに独立しているため、1 worker 1 PR で並走できる。
 窓口は org-delegate の並列委譲ガイダンスに従って分割する（[[parallelize_delegation]]）。
+
+**例外 — `required_allow` / `required_deny` / `required_hook_scripts` / `required_hooks`
+の追加・変更を含む場合は並列分割しない**: schema ミラー
+（`tools/org_extension_schema.json`）・permissions projection
+（`.claude/skills/org-setup/references/permissions.md`）・tracked settings は
+`tools/check_role_configs.py` が相互整合を検証するため独立には land できない
+（片方だけの中間 PR は CI red になる）。この一式は **1 本の atomic PR** にまとめ、
+machine-local settings（`~/.claude/settings.json` 等）は merge 後に `/org-setup` で反映する。
 
 ## Step 5: CI cascade の予測と委譲
 
@@ -162,8 +176,9 @@ Secretary 自身のセッションが context 上限に達すると、paired ja-
 ## 成果物
 
 - runtime 側: リリース PR + v-タグ + PyPI 発行 + release.yml ジョブ green
-- ja-side: 4 種の paired sync PR（DEFAULT_NOTIFY expectation / schema バイト同期 /
-  permissions projection / attention template）
+- ja-side: 4 種の paired sync PR（DEFAULT_NOTIFY expectation / schema 共有面同期 /
+  permissions projection / attention template。required_* 系は atomic 1 PR、
+  必要時は version floor bump を追加）
 - CI: ja-side main の CI が new runtime 版で green
 
 ## 判断基準・閾値
@@ -189,8 +204,11 @@ Secretary 自身のセッションが context 上限に達すると、paired ja-
 - `tests/test_attention_runtime_integration.py` は paired PR が main に入る前に
   runtime 新版を解決しに行く可能性があるため、ja-side の同期 PR は release.yml 完了直前
   〜直後の数時間でランドさせる時間圧がある
-- `tools/org_extension_schema.json` はバイト一致が前提。手書きの format 差で diff が出ると
-  worker レビューで弾かれる
+- `tools/org_extension_schema.json` は runtime 同梱 schema の**丸ごと byte コピーで
+  差し替えてはならない**。ja 固有の `sandbox` / `sandbox_by_pattern` ボディと Layer-2
+  credential mirror の deny は ja 側 org policy であり、`tools/check_runtime_schema_drift.py`
+  はこれら（と `$comment` キー）を strip した上で残りの共有面をバイト比較する。
+  共有面のみを追加位置・順序まで runtime に揃え、ja 固有節は保持する
 - 本 skill は窓口専属。worker 側 SKILL ではない
 
 ## 履歴的背景
