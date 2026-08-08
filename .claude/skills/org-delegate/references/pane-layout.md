@@ -33,7 +33,7 @@ broker では各ペインが **tmux の detached 独立セッション**（POSIX
 
 > **輸送層で capacity 機構が分岐する（runtime 0.1.31 / #104、backend-aware worker capacity）**: 既定 broker では**ワーカー並列度は `max_concurrent_workers` ポリシー**が律速する（既定 8 / `unlimited` opt-in / `choose_split` バイパス / spawn target 固定値）。dispatcher は下記の rect ベース balanced split を**実行せず**、`delegate-plan` helper へ解決済み `--transport broker` と `--max-concurrent-workers <N>` を明示で渡すと、helper は geometry を見ずに「アクティブ worker 数 < `N` なら固定 spawn target で spawn / 到達で `split_capacity_exceeded`」を返す（runtime は panes snapshot から transport を推定しない契約なので dispatcher が `ORG_TRANSPORT` を解決して明示で渡す）。**以下 §「なぜ balanced split が必要か」〜§「アルゴリズム」の rect ベース記述は `ORG_TRANSPORT=renga`（opt-in）面の既定経路（caller タブ内に配置する場合）**として読む — renga のこの経路では geometry から動的に target/direction を選ぶ balanced split がそのまま効く（renga 記述は不変）。broker 面の capacity 判定は runtime の backend-aware helper が SoT（設計 transport-lab `docs/design/broker-native-roles.md`）。
 >
-> **例外 — renga 面でも overflow 時は `max_concurrent_workers` が live になる**（runtime 0.1.39 以降）: `--overflow-to-new-tab` を armed にし、**かつ `--server-capability spawn_tab` を宣言した**場合に限り、rect 上限が消える代わりに fleet ceiling が効き、`--peers-json` が必須になる（欠落は `input_invalid` / exit 1）。`spawn_tab` 未宣言なら overflow は発火せず caller タブ配置に降格する。**現行 ja はこれらのフラグを渡していない**（repo 全体で出現 0 件）ので、今日の renga 運用では下記 rect 記述がそのまま律速する。
+> **例外 — renga 面でも overflow 時は `max_concurrent_workers` が live になる**（runtime 0.1.39 以降）: `--overflow-to-new-tab` を armed にし、**かつ `--server-capability spawn_tab` を宣言した**場合に限り、rect 上限が消える代わりに fleet ceiling が効き、`--peers-json` が必須になる（欠落は `input_invalid` / exit 1）。`spawn_tab` 未宣言なら overflow は発火せず caller タブ配置に降格する。**現行 ja はこれらのフラグを渡していない**（dispatcher の実呼び出し経路に配線されていない。説明文中の言及を除き、実行される呼び出しは存在しない）ので、今日の renga 運用では下記 rect 記述がそのまま律速する。
 
 ### なぜ balanced split が必要か
 
