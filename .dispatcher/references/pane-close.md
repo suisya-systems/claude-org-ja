@@ -244,7 +244,24 @@ mcp__renga-peers__spawn_claude_pane(
 1. `mcp__renga-peers__send_keys(target="curator", enter=true)` で
    「Load development channel? (Y/n)」プロンプトを承認する
 2. `mcp__renga-peers__list_peers` で `name="curator"` の peer 登録を poll する。
-   未登録なら Enter を再送して再 poll（最大 3 回 retry）
+   未登録なら Enter を再送して再 poll（最大 3 回 retry）。
+   **`list_peers` の直前に
+   [`.claude/skills/org-delegate/references/capability-first-drive-operational-gate.md`](../../.claude/skills/org-delegate/references/capability-first-drive-operational-gate.md)
+   を Read し、`monitoring-read-only` の分岐を適用する**（同 reference §6 の表 #8）。
+   capability 形かつ未承認なら列挙を登録確認に使わず破棄する（停止しない・待ち時間 0 分）。
+   **`name="curator"` の一致だけで登録ゲートを開けない**（予約名は別 org の並走タブに
+   同名で実在しうる。契約 T-§2.2 / 共有 reference §3-B-1）。
+   **代替の readiness 判定は 5-5 の起動指示の送信そのもので行う**: `list_panes` の生存と
+   `inspect_pane` のプロンプト表示は Claude の起動しか示さず peer 登録を示さないので、
+   これを登録確認に代用すると 5-5 の**一度きりの `/org-curate` 指示が
+   `[pane_not_found]`（broker では `[peer_not_found]`）で消え**、`curate-inflight.json` が
+   timeout まで残る。したがって `list_panes` でペイン生存だけ確認したら 5-5 の
+   `send_message` を送り、失敗したら Enter 再送とあわせて **retry する**（既存の
+   最大 3 回 retry の予算をそのまま使う）。送達成功をもって boot と登録を同時に確定する。
+   **送達に成功した時点で 5-5 は消化済みである。5-5 に戻って `/org-curate` をもう一度
+   送らないこと** — 縮退経路の probe は 5-5 の送信「そのもの」であって別立ての試し送信では
+   なく、二度送ると curate が二重に走る。そのまま 5-6 以降へ進む。
+   3 回 retry しても送達できなければ従来どおり次項の破棄・skip へ進む
 3. 3 回 retry しても登録されない場合は `close_pane(target="curator")` で破棄し、
    **5-3 で書いた `curate-inflight.json` を削除して**、窓口に informational として
    報告して curate をスキップし、Step 6 へ進む（inflight を残すと監視ループ Step 5.3 が

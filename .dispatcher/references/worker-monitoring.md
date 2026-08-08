@@ -167,7 +167,7 @@ bash ../tools/journal_append.sh anomaly_observed source={面} worker=worker-{tas
 
    **(3-a-1) まず「自分の `list_panes` が org のタブを解決できているか」を見る** (同じ応答から読める最初の弁別子):
    - 応答に org の他メンバー (`secretary` / 他の worker / `curator` / watcher 等) が**残っている** → `list_panes` は org のタブを解決できている。消失は当該ペイン固有の事象なので (3-a-2) へ進む
-   - 応答に **自分以外の org のペインが 1 つも出てこない** (一斉に消えた) → ペインの一斉終了より「自分の `list_panes` が別タブを解決している」ほうが桁違いに起こりやすい (可視範囲は current tab のみ・フォーカス移動で前タブが不可視になりうる、(P3) の contract §1.5 / §4.3)。これは異常ではなく **観測不能**: `WORKER_PANE_EXITED` を送らず、(P4) の `OBSERVATION_UNAVAILABLE` を 1 回報告し、peer 経路 (`mcp__org-broker__list_peers` + events テーブルの worker→secretary 報告痕跡) にフォールバックして監視を続ける。**フォーカスが別タブにある間、pane-addressed 呼び出しが `[pane_not_found]` を返すのは正常であり異常ではない** (contract §4.2)。
+   - 応答に **自分以外の org のペインが 1 つも出てこない** (一斉に消えた) → ペインの一斉終了より「自分の `list_panes` が別タブを解決している」ほうが桁違いに起こりやすい (可視範囲は current tab のみ・フォーカス移動で前タブが不可視になりうる、(P3) の contract §1.5 / §4.3)。これは異常ではなく **観測不能**: `WORKER_PANE_EXITED` を送らず、(P4) の `OBSERVATION_UNAVAILABLE` を 1 回報告し、peer 経路 (`mcp__org-broker__list_peers` + events テーブルの worker→secretary 報告痕跡) にフォールバックして監視を続ける。**`list_peers` の直前に [`.claude/skills/org-delegate/references/capability-first-drive-operational-gate.md`](../../.claude/skills/org-delegate/references/capability-first-drive-operational-gate.md) を Read し、`monitoring-read-only` の分岐を適用する** (同 reference §6 の表 #9)。capability 形かつ未承認なら**このフォールバックから `list_peers` を外し、events テーブルの報告痕跡だけ**で監視を継続する (停止しない・待ち時間 0 分。列挙を生存判定に使うと、別タブの同名ピアを当該ワーカーと取り違える — 予約名 `worker-{task_id}` は別 org の並走タブに同名で実在しうる)。**フォーカスが別タブにある間、pane-addressed 呼び出しが `[pane_not_found]` を返すのは正常であり異常ではない** (contract §4.2)。
      ただし **このフォールバックが常に成立するとは限らない**: ratified 契約では `send_message` (§2.1) も `list_peers` (§2.2) も current tab スコープで、`org-broker` は cross-tab を持たない (§4.2)。フォーカス移動が原因のときは**観測不能の報告そのものが届かず、`list_peers` も対象を列挙できない**ことがある。その場合でも `.state/` のローカル台帳 (journal / events テーブル) は読み書きできるので、(P4) の journal 記録だけは必ず残し、通知は次サイクル以降に再送する。**自分の送信経路が届かないことを「対象が異常だ」の根拠にしてはならない** — (P1) は観測面だけでなく**自分の報告経路にも適用される**
 
    **(3-a-2) 当該ペイン固有の消失を、独立面で突き合わせる**:
@@ -178,6 +178,8 @@ bash ../tools/journal_append.sh anomaly_observed source={面} worker=worker-{tas
    | 消えた | 無し | **在り** | **観測不能** (面が食い違う) → 送らない。(P4) を 1 回報告し次サイクルで再評価 |
    | 消えた | 無し (かつ同区間に `events_dropped` **在り**) | 問わず | **観測不能** (event 面が取りこぼしている) → 送らない。(P4) を 1 回報告し次サイクルで再評価 |
    | 消えた | 無し (`events_dropped` も無し) | **不在** | 2 面が一致するので**終了とみなす**。ただし単発サイクルでは断定せず、**連続 2 サイクル同じ形が続いた時点で** `WORKER_PANE_EXITED` を送る |
+
+   **capability 形かつ未承認のときの `list_peers` 列**: (3-a-1) と同じ縮退が本表にも及ぶ。列挙を破棄するので `list_peers` 列は **unknown** として読み、「在り」にも「不在」にも数えない。したがって 2 行目（`pane_exited` 無し・`list_peers` 在り）と 4 行目（`pane_exited` 無し・`list_peers` 不在）はどちらも成立せず、**`pane_exited` を観測した 1 行目以外はすべて「観測不能」**に落ちる（送らない・(P4) を 1 回報告し次サイクルで再評価）。これは判定を厳しくするだけで行動を増やさない ((P5)) 側の変化であり、生きているペインを「終了」と誤申告するより安全側。共有 reference §6 の表 #9。
 
    最終行で 1 サイクル待つ trade-off: Step 3 はそもそも `poll_events` の取りこぼしを拾う**保険**なので、~3 分の遅延は許容できる。逆に単発サイクルで断定すると、フォーカス移動やタイミング差で生きているペインを「終了」と申告することになる。
 

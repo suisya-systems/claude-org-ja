@@ -8,6 +8,8 @@ allowed-tools:
   - Read
   - Bash(bash tools/journal_append.sh:*)
   - Bash(py -3 tools/journal_append.py:*)
+  - Bash(py -3 tools/capability_gate.py:*)
+  - Bash(python3 tools/capability_gate.py:*)
   - Bash(python -c "from tools.state_db import connect;*)
   - Bash(python3 -c "from tools.state_db import connect;*)
   - Bash(python -m tools.state_db.importer:*)
@@ -222,63 +224,33 @@ allowed-tools:
 「他タブに居ることが分かっている」という 2.0 系の積極的な情報であり、旧版扱いして role 判定だけに
 戻してはならない（他タブのピアを名前宛で取りこぼす）。
 
-**2.0 系と判定したら、broadcast の前に人間へ報告して確認を取る（operational gate）**: 契約
-T-§ratification は「**capability 広告 backend を実際に駆動する初回**は dogfood step として実施し
-人間へ報告する」ことを harness 側の MUST にしている。列挙を 2.0 系と判定したということは、その
-capability 広告 backend をいま駆動しているということなので、`/org-suspend` は**黙って先に進まない**。
-`/org-suspend` は人間が起動する flow なので、人間は画面の前に居る（この gate は現実的に成立する）。
+**2.0 系と判定したら、broadcast の前に人間へ報告して確認を取る（operational gate）**: ゲート本文は
+`list_peers` を呼ぶ全経路の共有 reference に切り出してある。**`list_peers` の直前に
+[`.claude/skills/org-delegate/references/capability-first-drive-operational-gate.md`](../org-delegate/references/capability-first-drive-operational-gate.md)
+を Read し、`interactive-action` の分岐を適用する**（`/org-suspend` は人間が起動する flow なので
+人間が画面の前に居り、送信前に停止して確認を取れる。同 reference §6 の表 #1）。
 
-- 報告に必ず含める: **見えているタブ数**（レコードの `tab` の相異なる値の数。`tab` が欠落する列挙では
-  「不明」と書く）、**列挙されたピア総数**、**うち他タブ判定（`same_tab=False`、または ‡ で他タブと
-  導出）の件数**、および broadcast 対象に選んだピアの `name` / `peer_id` / `cwd` の一覧。人間が誤爆
-  リスク（別 org を巻き込まないか）を判断できる材料にする
-- **人間の確認を得てから** capability 経路で先へ進む。確認前は 1 通も出さない
+同 reference が定めることのうち、`/org-suspend` にとって要点だけ再掲する（正本は reference 側。
+ここに手順を複製しない）:
+
+- **版判定が capability 形なら、それを旧版形として読み替えない**（reference §1-1）。「未承認だから
+  非広告経路として解釈する」は契約が名指しで禁じている誤り。承認前に控えるのは cross-tab addressing に
+  **依拠した行動**であって、解釈ではない
+- **報告に必ず含める**: 見えているタブ数 / 列挙されたピア総数 / うち他タブ判定の件数、および broadcast
+  対象に選んだピアの `name` / `peer_id` / `cwd` の一覧（人間が誤爆リスク＝別 org を巻き込まないかを
+  判断できる材料にする）
+- **人間の確認を得てから先へ進む。確認前は 1 通も出さない**
 - 他タブピアは † のとおり**そもそも broadcast 対象に入らない**。gate の役割は「他タブに何が見えているか」を
   人間に見せて、停止対象外にした集合が妥当か判断してもらうことにある
-- **gate は「capability 広告 backend の初回駆動」に対して 1 度だけ**であって、`/org-suspend` の実行ごとでは
-  ない（契約 T-§ratification の operational gate が課しているのは first drive の dogfood 報告）。
-  **ただし T-§ratification には第 3 の gate（production-activation）がある**: capability branch を
-  実運用で有効なまま残す前に、**server と mcp-peer の双方が 2.0 系**である実機 dogfood と人間確認が
-  必要で、これは first drive の報告では免責されない。**2 つの gate は別々の記録で管理する**（同じ
-  イベント種別で兼ねない。first drive を通しただけで production-activation まで通ったことにすると、
-  契約が分けた 2 つの承認が 1 つに潰れる）:
-
-  | gate | イベント種別（`kind=`） | 何を承認したか |
-  |---|---|---|
-  | operational（first drive） | `capability_first_drive` | capability 広告 backend を**初めて駆動した**ことの報告と、停止対象集合の妥当性確認 |
-  | production-activation | `capability_production_activation` | **server × mcp-peer 双方 2.0 系**での実機 dogfood と、capability branch を有効なまま残してよいという人間確認 |
-
-  **`capability_production_activation` の記録が無い間は、probe 結果に関わらず非広告経路へ倒す**
-  （capability 経路で自走しない）。参照クエリは下の first drive 用と同形で、`LIKE` の文字列を
-  `%capability_production_activation%` に差し替える。記録は
-  `bash tools/journal_append.sh notify_sent kind=capability_production_activation note=<server 版 / mcp-peer 版 / dogfood 概要>`。
-  この gate は `/org-suspend` が自分で通せるものではない（実機 dogfood と人間確認が要る）ので、
-  未記録なら**発動して止まるのではなく、非広告経路へ倒して続行**する。止まるのは first drive gate だけである。
-
-  first drive gate の側は、記録を見ずに毎回止めると、
-  dogfood 承認後も中断のたびに人手確認が要る運用になる。**記録と参照の両方を行う**:
-  - **参照（gate に入る前）**: events テーブルに過去の通過記録があるかを見る。あれば gate を発動しない
-    ```bash
-    python3 -c "from tools.state_db import connect; from tools.state_db.discover import resolve_state_db_path; \
-    print(bool(connect(resolve_state_db_path()).execute(\"SELECT 1 FROM events WHERE kind='notify_sent' \
-    AND payload_json LIKE '%capability_first_drive%' LIMIT 1\").fetchone()))"
-    ```
-    **DB のパスは `resolve_state_db_path()` で解決する**（`.state/state.db` 直書きにしない）。記録側の
-    `tools/journal_append.py` が同じ解決を使うので、`STATE_DB_PATH` 等で別 DB に向いている環境では
-    直書きだと**記録した DB と照会する DB がずれ**、通過記録が永久に見つからず gate が毎回発動する。
-    **直接クエリで引く（直近 N 件の走査で代用しない）**。件数を区切って走査すると、通過記録より後に
-    イベントが N 件積まれた時点で `False` に戻り、一度きりのはずの gate が再発動する（イベントの多い
-    組織ほど早く再発動する）
-    `True` なら通過済み。`False`（または照会に失敗した）なら未通過として gate を発動する
-    （**照会できないときは安全側 = gate を発動する**。黙って素通りさせない）
-  - **記録（gate を通過した直後）**:
-    ```bash
-    bash tools/journal_append.sh notify_sent kind=capability_first_drive note=<backend/tab 概要>
-    ```
-  - 以後の `/org-suspend`（[`.claude/skills/org-down/SKILL.md`](../org-down/SKILL.md) 経由の suspend を含む）は
-    この記録に従う
+- **gate は初回駆動に対して 1 度だけ**で、`/org-suspend` の実行ごとではない。照会と記録は reference §2 /
+  §3-A のとおり [`tools/capability_gate.py`](../../../tools/capability_gate.py) と
+  `tools/journal_append.sh` で行う。以後の `/org-suspend`（[`.claude/skills/org-down/SKILL.md`](../org-down/SKILL.md)
+  経由の suspend を含む）はこの記録に従う
 - 記録がある場合でも、**他タブ判定のピアが前回より増えていた**ときはその差分を報告する（gate の
   再発動ではなく、停止対象外にした集合の変化を人間に見せるため）
+- **production-activation gate（reference §4）は `/org-suspend` を停止させない**。未記録の間は他タブ
+  ピアを対象外にしたまま同タブ集合で続行する（下の真理値表の行 5〜10 がまさにその形）。止まるのは
+  first drive gate だけである
 - **旧版 fallback（行 #11 / #12。現在配備されている全 backend — `org-broker` を含む — はここを通る）では
   この gate を発動しない**。従来どおり無停止で broadcast に進む（既存運用は一切変わらない）
 
