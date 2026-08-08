@@ -165,17 +165,19 @@ python3 ../tools/capability_gate.py --gate first_drive
    ものではない。
 3. **報告は 1 度だけ上げる**（契約 T-§ratification の人間報告 MUST を、重複なしで満たす）:
    ```bash
-   # 照会（未報告のときだけ報告する）
-   python3 ../tools/capability_gate.py --gate first_drive_pending   # cwd=.dispatcher/ の場合
+   # 照会（未報告のときだけ報告する）。§2 と同じく cwd でパスが変わる
+   python3 tools/capability_gate.py --gate first_drive_pending      # cwd = リポジトリ root
+   python3 ../tools/capability_gate.py --gate first_drive_pending   # cwd = .dispatcher/
    ```
    `not_recorded` / `undetermined` のときだけ、次を行う:
    - **人間に届く経路へ流す**: ディスパッチャー側は窓口へ `send_message(to_id="secretary", …)`、
      窓口側は次の人間向け報告に載せる。§3-A と同じ 3 項目（タブ数 / ピア総数 / 他タブ判定数）を含める。
      `notify_sent` の記録だけでは人間に届かない（attention watcher の classifier はこの kind を
      知らないのでビープは鳴らない）。
-   - **重複抑止の印を残す**:
+   - **重複抑止の印を残す**（記録側も cwd でパスが変わる）:
      ```bash
-     bash ../tools/journal_append.sh notify_sent kind=capability_first_drive_pending note=<backend/tab 概要>
+     bash tools/journal_append.sh notify_sent kind=capability_first_drive_pending note=<backend/tab 概要>     # cwd = リポジトリ root
+     bash ../tools/journal_append.sh notify_sent kind=capability_first_drive_pending note=<backend/tab 概要>  # cwd = .dispatcher/
      ```
 4. 以後この経路は `first_drive_pending` が `recorded` になるので、**サイクルごとに報告を撃たない**
    （縮退継続そのものは、承認が入るまで毎回続ける）。
@@ -218,8 +220,12 @@ server × mcp-peer 双方 2.0 系での実機 dogfood と人間確認を要求�
 したがって:
 
 - **`capability_production_activation` の記録が無い間は、first drive の承認があっても、
-  どの経路も capability 経路で行動しない**（§1-1 の non-reliance）。照会は
-  `python3 tools/capability_gate.py --gate production_activation`。
+  どの経路も capability 経路で行動しない**（§1-1 の non-reliance）。照会は §2 と同じく cwd で
+  パスが変わる — cwd = リポジトリ root なら
+  `python3 tools/capability_gate.py --gate production_activation`、cwd = `.dispatcher/` なら
+  `python3 ../tools/capability_gate.py --gate production_activation`。**dispatcher 側の経路
+  （§6 の表 #4〜#9）で root 形のパスを使うとファイルが見つからず常に `undetermined` に落ち、
+  dogfood 承認後も永久に縮退したままになる**ので、cwd に合う形を使うこと。
 - ここでも **「非広告経路として解釈する」のではない**（§1-1）。列挙は capability 形として読んだうえで、
   cross-tab addressing に依拠した行動を取らないだけである。
 - **このゲートで止まる経路は無い**。実機 dogfood と人間確認が要るので、どのスキルも自力では通せない。

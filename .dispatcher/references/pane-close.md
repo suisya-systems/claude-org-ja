@@ -258,6 +258,9 @@ mcp__renga-peers__spawn_claude_pane(
    timeout まで残る。したがって `list_panes` でペイン生存だけ確認したら 5-5 の
    `send_message` を送り、失敗したら Enter 再送とあわせて **retry する**（既存の
    最大 3 回 retry の予算をそのまま使う）。送達成功をもって boot と登録を同時に確定する。
+   **送達に成功した時点で 5-5 は消化済みである。5-5 に戻って `/org-curate` をもう一度
+   送らないこと** — 縮退経路の probe は 5-5 の送信「そのもの」であって別立ての試し送信では
+   なく、二度送ると curate が二重に走る。そのまま 5-6 以降へ進む。
    3 回 retry しても送達できなければ従来どおり次項の破棄・skip へ進む
 3. 3 回 retry しても登録されない場合は `close_pane(target="curator")` で破棄し、
    **5-3 で書いた `curate-inflight.json` を削除して**、窓口に informational として
