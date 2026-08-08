@@ -26,6 +26,18 @@ core-harness>=0.3.2,<0.4
 # PyPI via Trusted Publisher; pinned to the 0.1.x range. 0.x bumps may be
 # breaking per the runtime's compatibility policy, so widen this pin
 # deliberately when adopting a new minor.
+# Floor bumped to 0.1.40 for the attention watcher's `duplicate_sidecar` kind:
+# 0.1.40 adds the broker-journal reader (`attention scan/watch --broker-state-dir`,
+# `duplicate_sidecar_window_sec`) and the `duplicate_sidecar` DEFAULT_NOTIFY entry.
+# ja's template (tools/templates/attention.example.json) and the golden in
+# tests/test_attention_runtime_integration.py both depend on that path: a 0.1.39
+# install ignores the broker journal, so the fixture's duplicate row never reaches
+# the scan output and the golden comparison fails. Raising the floor also keeps
+# docs/operations/attention-watch.md §4.3 honest — it documents the kind as live
+# rather than as a reservation. The earlier 0.1.39 floor (below) is subsumed.
+# RUNTIME_PIN_LOWER_INCLUSIVE in tools/check_runtime_schema_drift.py is again NOT
+# raised in step, for the same reason recorded below: it gates only the
+# byte-identical schema check, which older installs still pass.
 # Floor bumped to 0.1.39 to match the regenerated semantic-drift goldens:
 # 0.1.39 adds a `rewrites` array to SandboxMetadata.to_jsonable() (the record of
 # kept deny paths canonicalized across an absolute symlink), and ja's goldens
@@ -120,7 +132,7 @@ core-harness>=0.3.2,<0.4
 # (transport surface descriptor claude_org_runtime.transport consumed by
 # tools/transport.py — Epic #6 next-stage D / ja#513) are subsumed by 0.1.28.
 # Keep in sync with pyproject.toml.
-claude-org-runtime>=0.1.39,<0.2
+claude-org-runtime>=0.1.40,<0.2
 
 # tools/gen_worker_brief.py reads TOML config. tomllib is stdlib in 3.11+,
 # but ja still supports 3.10 (CLAUDE.local.md template recommends 3.10).

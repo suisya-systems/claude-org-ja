@@ -19,13 +19,16 @@
   `.state/state.db` ではなく org-broker の journal (`<state-dir>/broker/queue.jsonl`) を入力にすること・
   `--broker-state-dir` (既定 `<state-dir>/broker`、非既定 state dir の daemon でのみ明示が要る)・
   `duplicate_sidecar_window_sec` (既定 300s、継続中の incident だけを鳴らす freshness 判定) を説明した。
-  テンプレートは現行 pin (`claude-org-runtime>=0.1.39`) でもそのまま読み込める (未知 kind は
-  config loader の検証対象外)。**ただし発火はしない**: broker journal reader は runtime の後続版で
-  入る経路で、現行 floor には無いため、この kind は runtime pin
-  (`pyproject.toml` / `requirements.txt` の floor と `docker/Dockerfile` の `RUNTIME_VERSION`) を
-  上げるまで no-op のまま待機する (pin 引き上げは runtime リリース側とペアの別変更)。
-  手元の runtime が経路を持つかは `claude-org-runtime attention scan --help` に
-  `--broker-state-dir` が出るかで判別できる。
+  broker journal reader は runtime 0.1.40 で入った経路なので、**同 PR で runtime の下限 pin を
+  0.1.39 → 0.1.40 へ引き上げた** (`pyproject.toml` / `requirements.txt` / `docker/Dockerfile` /
+  `docker/compose.yaml`)。pin を満たす環境ではこの kind は実際に発火する。手元の runtime に
+  経路があるかは `claude-org-runtime attention scan --help` に `--broker-state-dir` が出るかで
+  判別できる (出ない場合は pin より古い runtime が入っている。設定は正しいのに黙る形になる)。
+  `/org-attention-start` は watch 起動時に `ORG_BROKER_STATE_DIR` を確認し、値があれば
+  `--broker-state-dir` をリテラルで渡すようになった (watcher 自身はこの env を読まないため、
+  非既定 state dir では誰かが渡す必要がある)。`tests/test_attention_runtime_integration.py` は
+  broker journal の fixture 行を追加して golden に載せ、`duplicate_sidecar` を drift canary
+  (`_EXPECTED_URGENT_KINDS`) に加えた。
 
 ### Changed
 

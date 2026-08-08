@@ -220,14 +220,16 @@ claude-org-runtime attention watch --state-dir .state --config .state/attention.
 
 指定先に journal が無い / 読めない場合は「duplicate は無い」に degrade するだけで watcher は落ちない。裏を返すと、**broker を非既定 state dir で動かしていてこのフラグを付け忘れると、この kind だけが黙って鳴らない**（他の kind は `.state/state.db` 経由なので影響を受けず、欠落に気付きにくい）。
 
-**非既定 state dir では推奨経路 (§2.1) を使えない点に注意**: [`/org-attention-start`](../../.claude/skills/org-attention-start/SKILL.md) が起動する watch コマンドは固定文字列で `--broker-state-dir` を渡さず、attention watcher 自身も broker の `ORG_BROKER_STATE_DIR` env を読まない（解決順は flag → `<state-dir>/broker` のみ）。したがって broker daemon を非既定 state dir で動かしている環境では、skill 経由で起動した watcher はこの kind を拾わない。この場合は §2.4 の手動起動でフラグを明示する。
+**推奨経路 (§2.1) での扱い**: attention watcher は broker の `ORG_BROKER_STATE_DIR` env を自分では読まない（解決順は flag → `<state-dir>/broker` のみ）ため、非既定 state dir では誰かがフラグを渡す必要がある。[`/org-attention-start`](../../.claude/skills/org-attention-start/SKILL.md) は Step 3 でこの env を確認し、値があれば `--broker-state-dir <値>` を watch コマンドに**リテラルで**足す（`${VAR:+...}` のシェル展開を command 文字列に埋めると、ペインの login shell が zsh のとき 1 引数に潰れて argparse error になるため）。env が未設定なら足さず、runtime 既定の `.state/broker` に解決される。
+
+したがって skill 経由・手動起動のどちらでも非既定 state dir に追随できる。**ただし env が未設定のまま broker だけを非既定 state dir で起動している環境**（例: daemon の起動側だけにパスを直書きしている）では、skill も値を復元できないので §2.4 の手動起動でフラグを明示する。
 
 **`duplicate_sidecar_window_sec`（既定 300）**: journal 行を「いま起きている incident」とみなす freshness window（秒）。この window より古い行は捨てる。broker は競合が続いている限り instance pair ごとに lease window 周期で同じ行を再 emit するので、window を lease window より十分大きく取っておけば **継続中の incident は鳴り続け、解消済みの incident は自然に黙る**。既定 300 は `cooldown_sec` と同値で、「1 回の通知 cooldown の間 1 度も再発していない incident は終わっている」という読みに対応する。
 
 - journal は末尾から window 分だけ遡って読む。この値を上げると走査範囲もそれに追随して広がるので、busy な daemon でも継続中の incident が視界外へ押し出されることはない
 - dedup key は owner ではなく **競合している instance pair** に対して張られる。片方のセッションを終了させた後に別の instance が入れ替わりで競合を始めた場合は別 incident として扱われ、直前の pair の cooldown に飲まれない
 
-**runtime 版の前提（この kind だけの注意）**: broker journal reader は runtime 側でこの経路が入った版以降にしかない。手元の runtime が持つかは `claude-org-runtime attention scan --help` に `--broker-state-dir` が出るかで判別でき、**出ない版では journal を読まないのでこの kind は発火しない**（テンプレートに `notify.duplicate_sidecar` / `templates.duplicate_sidecar` を置いてあっても no-op になるだけで、config load エラーにはならない）。ja 側の下限 pin（`pyproject.toml` / `requirements.txt` の `claude-org-runtime` floor と `docker/Dockerfile` の `RUNTIME_VERSION`）がこの版に達するまでは、§4.1 の `duplicate_sidecar` 行は「runtime を上げたら鳴る」予約であって、現に鳴っている保証ではない。二重 sidecar を疑う状況で通知が来ない場合は、まず上記 `--help` で経路の有無を確かめる。
+**runtime 版の前提（この kind だけの注意）**: broker journal reader は runtime 0.1.40 で入った経路で、ja の下限 pin もこれに合わせて 0.1.40 に上げてある（`pyproject.toml` / `requirements.txt` の `claude-org-runtime` floor、`docker/Dockerfile` の `RUNTIME_VERSION`）。したがって pin を満たす環境では**この kind は実際に発火する**。手元の runtime に経路があるかを直接確かめたい場合は `claude-org-runtime attention scan --help` に `--broker-state-dir` が出るかを見る。**出ない場合は pin より古い runtime が入っている**（floor は下限であって、環境に実際に入っている版とは別物）。その状態ではテンプレートに `notify.duplicate_sidecar` / `templates.duplicate_sidecar` があっても no-op になるだけで、config load エラーにはならない — つまり「設定は正しいのに黙っている」形になるので、二重 sidecar を疑う状況で通知が来ないときは、まずこの `--help` で経路の有無を確かめる。
 
 ## 5. トラブルシューティング
 

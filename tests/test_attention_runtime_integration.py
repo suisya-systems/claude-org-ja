@@ -21,6 +21,7 @@ import shutil
 import sqlite3
 import subprocess
 import tempfile
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -28,7 +29,17 @@ from pathlib import Path
 FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "attention"
 STATE_EVENTS_JSON = FIXTURE_DIR / "state_events.json"
 PENDING_JSON = FIXTURE_DIR / "pending_decisions.json"
+BROKER_JOURNAL_JSON = FIXTURE_DIR / "broker_journal.json"
 GOLDEN_JSON = FIXTURE_DIR / "expected_scan.json"
+
+# Subdirectory of ``--state-dir`` the runtime scans for the org-broker
+# journal when ``--broker-state-dir`` is not given (runtime
+# ``attention/cli.py`` BROKER_SUBDIR). Hard-coding it here is the point:
+# if the runtime ever renames the default location, ja's normal
+# operation (which passes no flag) would stop seeing duplicate_sidecar
+# signals, and this fixture is what catches that.
+_BROKER_SUBDIR = "broker"
+_BROKER_JOURNAL_NAME = "queue.jsonl"
 
 # Mirrors the attention-relevant columns of tools/state_db/schema.sql.
 # Projecting only what the runtime reader touches keeps a non-attention
@@ -60,11 +71,16 @@ _DISPATCH_ONLY_KEYS = frozenset({
 # that keeps pending_decision / user_reply_not_forwarded urgent only
 # inside the min..max window. The fixture refreshes the latter pair's
 # timestamps in setUp() so they fall inside that window.
+# ``duplicate_sidecar`` (runtime 0.1.40) arrives from the broker journal
+# rather than the events table, so it also pins that second input path:
+# if the reader stops resolving ``<state-dir>/broker`` the kind vanishes
+# from the scan and this canary fails alongside the golden.
 _EXPECTED_URGENT_KINDS = frozenset({
     "approval_blocked",
     "ci_failed",
     "pending_decision",
     "user_reply_not_forwarded",
+    "duplicate_sidecar",
 })
 
 # Placeholder ``created_at`` value used in the golden file for events
@@ -93,6 +109,49 @@ def _build_state_db(db_path: Path, events: list[dict]) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+def _duplicate_key(row: dict) -> str:
+    """Rebuild the runtime's dedup key for a duplicate_sidecar row.
+
+    Mirrors ``classifier.classify_duplicate_sidecar``: the key is keyed
+    on the contesting *pair* (sorted), not just the owner, so replacing
+    one session starts a new incident instead of being swallowed by the
+    previous pair's cooldown.
+    """
+    instances = "+".join(sorted(row["instances"]))
+    return f"broker:duplicate_sidecar:{row['owner']}:{instances}"
+
+
+def _iso_from_epoch(epoch: float) -> str:
+    """Render epoch seconds the way the runtime classifier does."""
+    return datetime.fromtimestamp(epoch, timezone.utc).isoformat().replace(
+        "+00:00", "Z",
+    )
+
+
+def _write_broker_journal(
+    journal_dir: Path, rows: list[dict], now_epoch: float,
+) -> None:
+    """Write fixture rows as the broker's append-only ``queue.jsonl``.
+
+    ``age_sec`` becomes an absolute ``ts`` relative to *now* because the
+    reader's freshness window (``duplicate_sidecar_window_sec``, 300s)
+    would age out any literal timestamp checked into the fixture. Keys
+    starting with ``_`` are fixture annotations and are not written.
+    """
+    journal_dir.mkdir(parents=True, exist_ok=True)
+    lines = []
+    for row in rows:
+        rec = {"ts": now_epoch - row["age_sec"]}
+        rec.update({
+            k: v for k, v in row.items()
+            if k != "age_sec" and not k.startswith("_")
+        })
+        lines.append(json.dumps(rec, ensure_ascii=False))
+    (journal_dir / _BROKER_JOURNAL_NAME).write_text(
+        "\n".join(lines) + "\n", encoding="utf-8",
+    )
 
 
 def _normalize(events: list[dict]) -> list[dict]:
@@ -140,6 +199,9 @@ class AttentionRuntimeIntegrationTests(unittest.TestCase):
         cls.golden = json.loads(
             GOLDEN_JSON.read_text(encoding="utf-8"),
         )
+        cls.broker_journal = json.loads(
+            BROKER_JOURNAL_JSON.read_text(encoding="utf-8"),
+        )
 
     def setUp(self) -> None:
         self._tmpdir = tempfile.TemporaryDirectory()
@@ -147,6 +209,18 @@ class AttentionRuntimeIntegrationTests(unittest.TestCase):
         self.state_dir = Path(self._tmpdir.name) / ".state"
         self.state_dir.mkdir()
         _build_state_db(self.state_dir / "state.db", self.events_spec)
+
+        # Broker journal at the runtime's *default* location, so the
+        # scan below finds it without passing --broker-state-dir — that
+        # is how ja runs it in normal operation. Whole seconds keep the
+        # classifier's ISO rendering free of microseconds so the golden
+        # stays comparable.
+        self._now_epoch = float(int(time.time()))
+        _write_broker_journal(
+            self.state_dir / _BROKER_SUBDIR,
+            self.broker_journal["rows"],
+            self._now_epoch,
+        )
 
         # claude-org-runtime v0.1.11 enforces a TTL ladder on
         # pending_decision / user_reply_not_forwarded rows: only the
@@ -181,14 +255,31 @@ class AttentionRuntimeIntegrationTests(unittest.TestCase):
             json.dumps(pending, indent=2), encoding="utf-8",
         )
 
-    def _run_scan(self) -> list[dict]:
+        # The broker row's created_at is derived from the ts stamped
+        # above, so the golden carries the placeholder and the actual
+        # value is registered here alongside the pending ones.
+        for row in self.broker_journal["rows"]:
+            if row["event"] != "duplicate_sidecar_detected":
+                continue
+            self._fresh_created_at[_duplicate_key(row)] = _iso_from_epoch(
+                self._now_epoch - row["age_sec"],
+            )
+
+    def _run_scan(self, broker_state_dir: Path | None = None) -> list[dict]:
+        argv = [
+            "claude-org-runtime", "attention", "scan",
+            "--state-dir", str(self.state_dir),
+            "--dry-run", "--json",
+        ]
+        # No --broker-state-dir by default: the unflagged invocation is
+        # what /org-attention-start runs when ORG_BROKER_STATE_DIR is
+        # unset, so leaving it off here keeps the golden pinned to the
+        # default resolution. The flag is exercised separately by
+        # :meth:`test_broker_state_dir_flag_overrides_default`.
+        if broker_state_dir is not None:
+            argv += ["--broker-state-dir", str(broker_state_dir)]
         result = subprocess.run(
-            [
-                "claude-org-runtime", "attention", "scan",
-                "--state-dir", str(self.state_dir),
-                "--dry-run", "--json",
-            ],
-            check=False, capture_output=True, text=True, timeout=30,
+            argv, check=False, capture_output=True, text=True, timeout=30,
         )
         self.assertEqual(
             result.returncode, 0,
@@ -258,6 +349,40 @@ class AttentionRuntimeIntegrationTests(unittest.TestCase):
         self.assertEqual(ev["kind"], "user_reply_not_forwarded")
         self.assertEqual(ev["severity"], "urgent")
 
+    def test_duplicate_sidecar_from_broker_journal_is_urgent(self) -> None:
+        row = self.broker_journal["rows"][0]
+        ev = self._find_event(self._run_scan(), key=_duplicate_key(row))
+        self.assertEqual(ev["kind"], "duplicate_sidecar")
+        self.assertEqual(ev["severity"], "urgent")
+        self.assertEqual(ev["worker"], "worker-T-duplicate")
+        self.assertEqual(ev["source"], "broker.queue.jsonl")
+        # Both contesting instance ids ride into the text, sorted, so the
+        # operator can tell which sessions to end without opening the
+        # journal.
+        self.assertEqual(ev["summary"], ", ".join(sorted(row["instances"])))
+
+    def test_broker_state_dir_flag_overrides_default(self) -> None:
+        """``--broker-state-dir`` redirects the scan away from the default.
+
+        /org-attention-start passes this flag when ORG_BROKER_STATE_DIR is
+        set, because the watcher does not read that env var itself. The
+        override journal names a different owner, so a runtime that
+        ignored the flag would surface the default dir's owner instead
+        and fail here rather than passing by coincidence.
+        """
+        override_dir = Path(self._tmpdir.name) / "broker-elsewhere"
+        _write_broker_journal(
+            override_dir,
+            self.broker_journal["override_rows"],
+            self._now_epoch,
+        )
+        events = self._run_scan(broker_state_dir=override_dir)
+        owners = {
+            ev.get("worker") for ev in events
+            if ev.get("kind") == "duplicate_sidecar"
+        }
+        self.assertEqual(owners, {"dispatcher"})
+
     # ------------------------------------------------------------------
     # (3) Progress-only and below-threshold cases are dropped.
     # ------------------------------------------------------------------
@@ -269,6 +394,13 @@ class AttentionRuntimeIntegrationTests(unittest.TestCase):
         self.assertNotIn("event:3", keys)
         # ci_completed status=success (filtered by classifier)
         self.assertNotIn("event:7", keys)
+        # broker journal row older than duplicate_sidecar_window_sec
+        # (300s) — stale incidents must fall silent rather than re-alert
+        self.assertNotIn(
+            "broker:duplicate_sidecar:secretary"
+            ":cafebabecafebabe+deadbeefdeadbeef",
+            keys,
+        )
         # pending decision whose received_at is far in the future —
         # _minutes_since returns negative so the entry stays below the
         # urgent threshold; this exercises the negative-delta branch

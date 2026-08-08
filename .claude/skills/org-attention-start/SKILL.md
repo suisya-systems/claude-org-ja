@@ -90,6 +90,12 @@ sidecar だけ見ると Step 3 の `spawn_pane(..., name="attention")` が `[nam
 
 ## Step 3: dispatcher を split して watcher を起動
 
+まず broker の state dir を確定する（`duplicate_sidecar` 通知の入力。未設定なら runtime 既定の `<state-dir>/broker` = `.state/broker`）:
+
+```bash
+echo "${ORG_BROKER_STATE_DIR:-}"
+```
+
 dispatcher ペインの右半分（vertical split）に attention watcher 用の pane を作る:
 
 ```
@@ -102,6 +108,17 @@ mcp__renga-peers__spawn_pane(
   command="claude-org-runtime attention watch --state-dir .state --config .state/attention.json"
 )
 ```
+
+- 上の `echo` が**空でない値**を返した場合だけ、`command` の末尾に `--broker-state-dir <その値>` を
+  **リテラルで**足す（例: `... --config .state/attention.json --broker-state-dir /srv/org/broker`）。
+  空なら足さない（runtime 既定の `.state/broker` に解決される）
+- `${ORG_BROKER_STATE_DIR:+--broker-state-dir "$ORG_BROKER_STATE_DIR"}` のようなシェル展開を
+  `command` 文字列に埋め込まないこと。ペインの login shell が zsh だと既定 `SH_WORD_SPLIT` off で
+  1 引数に潰れ、argparse error で watcher が起動しない（#829 と同型の罠）。値は呼び出し側で解決して
+  リテラルに埋める
+- attention watcher は `ORG_BROKER_STATE_DIR` env を自分では読まない（解決順は flag →
+  `<state-dir>/broker` のみ）。非既定 state dir で broker を動かしている環境でフラグを省くと、
+  `duplicate_sidecar` だけが黙って鳴らない（他の kind は `.state/state.db` 経由なので影響を受けない）
 
 - `target="dispatcher"`: org-start Block A-1 で確立した安定名で解決
 - `direction="vertical"`: dispatcher ペイン = 左、attention ペイン = 右

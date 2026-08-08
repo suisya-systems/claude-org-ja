@@ -65,5 +65,16 @@
     "task_id": "T-relay-gap",
     "summary": "Codex review round 3 done; OK to merge?",
     "created_at": "__DYNAMIC__"
+  },
+  {
+    "key": "broker:duplicate_sidecar:worker-T-duplicate:a1b2c3d4e5f6a7b8+b2c3d4e5f6a7b8c9",
+    "kind": "duplicate_sidecar",
+    "severity": "urgent",
+    "title": "Duplicate channel sidecar",
+    "body": "worker-T-duplicate: two sessions are claiming the same channel (a1b2c3d4e5f6a7b8, b2c3d4e5f6a7b8c9).",
+    "source": "broker.queue.jsonl",
+    "worker": "worker-T-duplicate",
+    "summary": "a1b2c3d4e5f6a7b8, b2c3d4e5f6a7b8c9",
+    "created_at": "__DYNAMIC__"
   }
 ]

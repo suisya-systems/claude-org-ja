@@ -29,9 +29,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 # **予約台帳が存在するバージョン下限**。``_seed_status`` /
 # ``count_unbound_reservations`` / ``WORKER_BIND_WINDOW_SECONDS`` は 0.1.39 で
 # 初めて入った (0.1.37 / 0.1.38 の wheel を展開して不在を実測)。ja の依存
-# floor は #841 で 0.1.37 → 0.1.39 に上がり (pyproject.toml:30 /
-# requirements.txt:123 / docker/Dockerfile:65) 現時点では一致するが、**この
-# 下限は pin ではなく runtime の性質**なので独立に持つ。下限未満の runtime
+# floor は #841 で 0.1.37 → 0.1.39、#868 で 0.1.39 → 0.1.40 と上がっており
+# (pyproject.toml:30 / requirements.txt:135 / docker/Dockerfile:65) 現在は
+# floor の方が高い。**この下限は pin ではなく runtime の性質**なので pin に
+# 追随させず独立に持つ。下限未満の runtime
 # では読み手がそもそも居ないので契約に守るべき対象が無く、skip する
 # (pin が admit しなくなった今も、古い runtime が入った手元環境で hard fail
 # させないための防御として分岐を残す)。
