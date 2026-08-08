@@ -582,12 +582,14 @@ tmux -L claude-org-broker list-sessions
 tmux -L claude-org-broker attach -r -t claude-org-broker-12345-1
 ```
 
-attach 後の操作（prefix は既定 `Ctrl-b`）:
+attach 後の操作（prefix は既定 `Ctrl-b`。変更している場合は設定した prefix に読み替える）:
 
 | 操作 | キー | 用途 |
 |---|---|---|
 | detach（観察をやめて抜ける） | `Ctrl-b` → `d` | セッションは生かしたまま離脱（プロセスに影響しない） |
 | 別セッションへ切替 | `Ctrl-b` → `s` | セッション一覧から選択。**現状は per-session なので全体を見るには切替が要る** |
+
+> **attach する端末が renga の場合は先に回避策が要る**: renga の org サイドバーは既定で有効で `Ctrl+B`（= tmux prefix `Ctrl-b` と同じ物理入力）を消費し PTY へ渡さないため、上表の打鍵が attach 先の tmux に届かない。detach できず抜けられなくなるので、attach する前に [`docs/operations/dispatcher-view.md`](dispatcher-view.md) の「外側フレームが renga の場合」の回避策（renga 設定 `[ui] org_sidebar = "off"`、または tmux prefix の変更）を適用すること。
 
 > **read-only `-r` を既定にする理由**: 独立セッションへの attach は worker の生 TUI に直接つながる。`-r` なしで attach すると観察中の打鍵が worker セッションに入りうる（介入は窓口/ディスパッチャーの `send_keys` 経路に閉じる設計のため、人間の手 attach は観察に限定する）。
 

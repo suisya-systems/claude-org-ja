@@ -31,7 +31,9 @@ docker exec -it claude-org org-shell --setup
 docker exec -it claude-org org-shell
 ```
 
-デタッチは `Ctrl-b d`、再接続は `docker exec -it claude-org org-shell`。
+デタッチは `Ctrl-b d`、再接続は `docker exec -it claude-org org-shell`。`Ctrl-b` は tmux prefix の既定値なので、変更している場合は設定した prefix に読み替える。
+
+> **ホスト側の端末が renga の場合は先に回避策が要る**: renga の org サイドバーは既定で有効で `Ctrl+B`（= tmux prefix `Ctrl-b` と同じ物理入力）を消費するため、`Ctrl-b d` がコンテナ内の tmux まで届かない。回避策と原因は [`docs/operations/dispatcher-view.md`](../docs/operations/dispatcher-view.md) の「外側フレームが renga の場合」を参照。
 
 ## 環境変数（compose）
 
