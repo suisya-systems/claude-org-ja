@@ -13,7 +13,7 @@
 1. `/tmp/workers/demo-task` 内に claude-org の構造（.claude/, .dispatcher/, .curator/, .state/, registry/, dashboard/, knowledge/ 等）を再現してはならない
 2. claude-org リポジトリ（`/home/user/work/claude-org`）を `/tmp/workers/demo-task` 内へ clone してはならない（claude-org 本体は参照専用。編集対象は本ワーカーディレクトリのプロジェクトのみ）
 3. `git push` は実行できない（完了報告で窓口に依頼すること）
-4. `git stash` の変更系（引数なしの `git stash` / `push` / `save` / `pop` / `apply` / `branch` / `drop` / `clear` / `store`）は実行できない（PreToolUse hook で deny される。キャラクタデバイス等の未追跡ファイルを stash できずに `git stash -u` が途中失敗し、それに気づかないまま `git stash pop` で別の stash を復元して作業を壊す事故が実際に起きている）。未コミット変更の退避は `git diff > /tmp/<name>.patch` か別ブランチ / 別 worktree への commit、HEAD 版との比較は `git show HEAD:<path>` を使うこと。調査目的の `git stash list` / `git stash show` は許可されている
+4. `git stash` の変更系は実行できない（PreToolUse hook で deny される。引数なしの `git stash` / `push` / `save` / `pop` / `apply` / `branch` / `drop` / `clear` / `store` / `create` に加え、**許可リスト方式なのでここに挙げていないサブコマンドも deny される**）。キャラクタデバイス等の未追跡ファイルを stash できずに `git stash -u` が途中失敗し、それに気づかないまま `git stash pop` で別の stash を復元して作業を壊す事故が実際に起きているため。未コミット変更を退避したいときは作業ブランチへ一時 commit する（`git reset --soft HEAD~1` で戻せる）か、`git diff > <name>.patch` を作業ディレクトリ内に書く（`/tmp` 直下は sandbox の書込許可外になりうる）。HEAD 版との比較は `git show HEAD:<path>` を使うこと。調査目的の `git stash list` / `git stash show` は許可されている
 
 ### Windows 環境の注意事項
 - Python 実行時は `py -3` または `python` を使用すること（Windows では `python` がストアアプリにリダイレクトされる場合があり、`py -3` も py launcher が別の Python 環境を指す場合がある。起動直後に `--version` で意図したバージョンか確認し、動作する方を使うこと）

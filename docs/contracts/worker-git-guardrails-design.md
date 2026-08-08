@@ -240,7 +240,7 @@ category, that flag is named in the "Adverse flag" column.
 | `git restore` (worktree only) | (B1)(B2) | (B1) (current worktree files only via index) | – | – | `--source=<other-ref>` is read-only against (B3) | **allow** |
 | `git restore --staged` | (B1) | (B1) (index only) | – | – | – | **allow** |
 | `git stash list` / `git stash show` | (B1)(B2) | – | – | – | – | **allow** (read-only inspection of the stash stack) |
-| `git stash` (bare) / `push` / `save` / `pop` / `apply` / `branch` / `drop` / `clear` | (B1)(B2) | (B1)(B2) (`refs/stash` in the base clone's *common* git dir, plus this worktree's working tree) | – | – | `-u` / `--include-untracked` | **deny** ([`.hooks/block-dangerous-git.sh`](../../.hooks/block-dangerous-git.sh) — §5). `git rev-parse --git-path refs/stash` resolves into `--git-common-dir`, not `.git/worktrees/<task_id>/`, so every worktree of one base clone shares a single stash stack and a `pop` here can restore an entry another worktree pushed. The `-u` form additionally aborts when the worktree root holds untracked non-regular files (character devices), and an operator who misses that abort believes work was saved when no stash entry exists |
+| `git stash` (bare) / `push` / `save` / `pop` / `apply` / `branch` / `drop` / `clear` / `store` / `create` / any unrecognised subcommand | (B1)(B2) | (B1)(B2) (`refs/stash` in the base clone's *common* git dir, plus this worktree's working tree) | – | – | `-u` / `--include-untracked` | **deny** ([`.hooks/block-dangerous-git.sh`](../../.hooks/block-dangerous-git.sh) — §5.2.2). Enforced as an allowlist (everything except the read-only row above is denied), so the enumeration here is illustrative rather than exhaustive. `git rev-parse --git-path refs/stash` resolves into `--git-common-dir`, not `.git/worktrees/<task_id>/`, so every worktree of one base clone shares a single stash stack and a `pop` here can restore an entry another worktree pushed. The `-u` form additionally aborts when the worktree root holds untracked non-regular files (character devices), and an operator who misses that abort believes work was saved when no stash entry exists |
 | `git branch` (list) | (B2)(B3) | – | – | – | – | **allow** |
 | `git branch <new>` (create) | (B2)(B3) | (B2) (new ref under `refs/heads/`) | – | – | – | **allow** (but see (B3) write below) |
 | `git branch -d / -D / --delete --force` | (B2)(B3) | (B2)(B3) (mutates refs of *other* branches) | – | – | `-D`, `--delete --force` | **deny** ([`.hooks/block-dangerous-git.sh`](../../.hooks/block-dangerous-git.sh) — §5) |
@@ -344,7 +344,9 @@ in-scope subcommand (`commit`, `branch <new>`, `tag`, `merge`,
   `git notes` mutation — history-rewrite family; **Layer 2 deny**
   recommended (§5.2).
 - `git stash` mutating forms (bare / `push` / `save` / `pop` / `apply` /
-  `branch` / `drop` / `clear`) — `refs/stash` resolves into the base
+  `branch` / `drop` / `clear` / `store` / `create`, and any subcommand the
+  hook does not recognise — the check is an allowlist, so this list is
+  illustrative rather than exhaustive) — `refs/stash` resolves into the base
   clone's common git dir, so one stash stack is shared by every worktree
   of that clone and a `pop` from this worktree can restore an entry a
   sibling worktree pushed; **Layer 4 deny**
@@ -517,6 +519,17 @@ and to identify the (small) set of changes the existing scripts need.
   - `git tag -d` (mutates shared tag namespace — §3.2).
   - `git update-ref -d` (low-level ref deletion).
   - `git reflog expire / delete` with `--all` or `--expire-unreachable=now`.
+  - `git stash` mutating forms — **implemented**, and the one branch in
+    this script that does *not* use the loose `segment_has_git_subcmd`
+    match. The subcommand position is resolved strictly (skipping global
+    options and quote-split path fragments) because `stash` is a common
+    literal word in commit messages and grep patterns, so a loose match
+    would deny ordinary work. Policy is an allowlist: only the read-only
+    `list` / `show` pass; the bare form, every mutating form, and any
+    token the script does not recognise are denied. Denying by allowlist
+    rather than by enumeration is deliberate — a future git release that
+    adds a mutating `stash` subcommand is denied on arrival rather than
+    silently permitted.
   - `git filter-branch`, `git filter-repo`, `git replace`,
     `git submodule add / deinit / update --remote`,
     `git lfs *`, `git config --global / --local / --worktree` write
@@ -962,6 +975,7 @@ acceptance criteria are:
 | Add Layer 2 deny for fetch / pull / remote / submodule / lfs / gc / filter-branch family / config write / reflog mutation | 2 | Same | 2 (immediate) |
 | Extend `block-dangerous-git.sh` to cover `clean -fd`, `checkout -- .`, `tag -d`, `update-ref -d`, etc. | 4 | [`.hooks/block-dangerous-git.sh`](../../.hooks/block-dangerous-git.sh) | 2 (immediate) |
 | Extend `block-no-verify.sh` to cover `merge`, `pull`, `am`, env-var bypass | 4 | [`.hooks/block-no-verify.sh`](../../.hooks/block-no-verify.sh) | 2 (immediate) |
+| Deny the mutating `git stash` forms by allowlist (only `list` / `show` pass), strict subcommand-position match | 4 | [`.hooks/block-dangerous-git.sh`](../../.hooks/block-dangerous-git.sh) | 2 (immediate) |
 | Emit `sandbox.filesystem.{additionalDirectories,denyWrite,denyRead}` per Phase 0 §4.2.1 | 3 | Schema + runtime generator | 1 (blocking) |
 | Amend Phase 0 §4.2.1 to split (B3) for `refs/remotes/` carve-out (or leave as conservative deny) | 0 | [`docs/contracts/role-pattern-sandbox-contract.md`](./role-pattern-sandbox-contract.md) | 0 (amendment) |
 | Design and implement git-aware wrapper for cross-worktree ref operations | 4 | New script under `.hooks/` | 2.x (separate) |

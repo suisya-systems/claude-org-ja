@@ -11,7 +11,8 @@
 1. claude-org 構造を `${worker_dir}` 内に再現しない
 2. claude-org リポジトリ（`${claude_org_path}`）を別途 clone しない（直接編集）
 3. `git push` 不可
-4. `git stash` の変更系（引数なし `git stash` / `push` / `save` / `pop` / `apply` / `branch` / `drop` / `clear` / `store`）不可（hook で deny。キャラクタデバイス等の未追跡ファイルで `git stash -u` が途中失敗し、気づかず別の stash を pop して作業を壊す事故が実際に起きている）。退避は `git diff > /tmp/<name>.patch` か別ブランチ / 別 worktree への commit、比較は `git show HEAD:<path>`。調査用の `git stash list` / `git stash show` は可
+4. `git stash` の変更系不可（hook で deny。引数なし `git stash` / `push` / `save` / `pop` / `apply` / `branch` / `drop` / `clear` / `store` / `create`、**許可リスト方式なので未列挙のサブコマンドも deny**）。キャラクタデバイス等の未追跡ファイルで `git stash -u` が途中失敗し、気づかず別の stash を pop して作業を壊す事故が実際に起きているため。退避は作業ブランチへ一時 commit（`git reset --soft HEAD~1` で戻せる）か `git diff > <name>.patch` を作業ディレクトリ内へ、比較は `git show HEAD:<path>`。調査用の `git stash list` / `git stash show` は可
+5. この repo の worktree root には同じキャラクタデバイスが未追跡で存在するため `git add -A` も `can only add regular files` で失敗する。**staging は `git add -u`（追跡済みの変更）＋ 新規ファイルの明示 add を使うこと**
 
 ### Windows
 - Python は `py -3` または `python`（3.10 推奨。どちらも別の Python 環境を指す場合があるため `--version` で確認し、動作する方を使う）
