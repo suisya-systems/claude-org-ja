@@ -67,13 +67,39 @@ daemon まで含めて組織を完全に停止する統合終了スキルであ�
 **suspend 成功の確認（gate）** — 次を満たしたときのみ Step 2 / Step 3 へ進む:
 
 - `.state/state.db` の `session.status` が `SUSPENDED` になっている（Phase 3 の DB write が成立）
-- ワーカー / ディスパッチャーのペインが Phase 4 の 2-pass で停止済み（`list_panes` に残っていない。
-  最後の窓口ペインは残ってよい — 窓口は自分自身を close できない）
+- **Phase 4 が全対象ペイン（ワーカー / ディスパッチャー / 存在した場合のキュレーター）について停止を
+  「消滅済み」として確定している**。ここで確定と読んでよいのは
+  [`.claude/skills/org-suspend/SKILL.md`](../org-suspend/SKILL.md)
+  Phase 4 が **F-1**（同 Phase 1 手順 1 の「フォーカス前提（F）」）に従って自ら出した結論だけで、
+  **本 gate のために org-down 側で `list_panes` を引き直して判定をやり直さない** — 生存判定の正本は
+  org-suspend 側にあるので、その条件文をここに再掲せず**確定結果を読むだけ**にする（`list_panes` に
+  居ないことを単独で停止の根拠にする単段の読み替えを本スキルに置かない）。Phase 4 が自らの停止確認の
+  ために行う再列挙（同 Phase 4 停止手順 1 の台帳最新化 / Pass 2 の残存確認）は org-suspend 側の手順
+  なので、Step 1 の「全 Phase を順に実行する」どおりそのまま実行する
+- **Phase 4 が「停止できなかった / 判定できなかったピア」を 1 件も残していない**。生死を判定できなかった
+  ピアは、Phase 4 の停止手順が「**残存または判定不能なら**、閉鎖扱いにせず journal に記録して人間に報告
+  する」に従って `pending` に残すので、gate の入口は同 Phase 4 **手順 7** の最終報告になる —
+  **`pending` と `unresolved` が両方空で「組織を中断しました」と言い切れた形だけ**が gate 成立である。
+  「組織を部分的に中断しました（停止しきれていないペインがあります）」の形（停止できなかったワーカー /
+  `role` が判定できず対象外にしたピア / 他タブに見えたが自組織と確認できず対象外にしたピアのいずれかが
+  残る）は **gate 不成立**として扱う
+- 最後の窓口ペインが残っているのは gate の妨げにならない（窓口は自分自身を close できない。同 Phase 4
+  「最後のペイン (窓口) の扱い」）
 
-**suspend が abort / 失敗した場合**（DB が SUSPENDED にならない / ペイン停止が完了しない /
-ワーカーが SUSPEND 応答を返さず状態不明のまま等）は、**org down に進まず STOP**する。状況を人間に
-報告し、「状態が保存し切れていないため daemon は落とさなかった。原因解消後に /org-down を再実行するか、
-/org-suspend でいったん中断してください」と案内する。
+**suspend が abort / 失敗した場合、または生死を判定できないピアが 1 件でも `pending` に残った場合**
+（DB が SUSPENDED にならない / Phase 4 が「組織を部分的に中断しました」を出した / ワーカーが SUSPEND
+応答を返さず生死を判定できないまま等）は、**org down に進まず STOP**する。状況を人間に報告し、「状態が保存し切れていない
+/ ペインの停止を確認し切れていないため daemon は落とさなかった。原因解消後に /org-down を再実行するか、
+/org-suspend でいったん中断してください」と案内する（生死を判定できなかったピアが残っている場合は、
+Phase 4 手順 7 が列挙したその一覧もそのまま渡す）。
+
+> **判定不能は「継続」ではなく STOP に倒す**: ディスパッチャーの worker 監視
+> （[`.dispatcher/references/worker-monitoring.md`](../../../.dispatcher/references/worker-monitoring.md)）は
+> 観測不能なサイクルでも監視対象を保持して次サイクルで再評価する（人間が居ないので無停止継続が安全側）が、
+> 本スキルの後段は `claude-org-runtime org down` = broker daemon の kill であり向きが逆になる。生死を
+> 判定できないピアを抱えたまま daemon を落とすと、そのピアが走り続けていた場合に止める手段も、生死を
+> 後から確かめる経路（冒頭の責務境界で挙げた `check_messages` での drain 等）も同時に失われる。
+> 判定不能のまま不可逆操作へ進まない側が安全側である。
 
 ## Step 2: ダッシュボードの停止（stale-pid-safe）
 
@@ -165,5 +191,6 @@ if (Test-Path $pf) {
 再開するときは `renga --layout ops` → `/org-start` を実行してください。
 ```
 
-**suspend gate を満たせず STOP した場合**（Step 1 で分岐済み）: org down は実行せず、未保存の
-原因と復旧手順（再実行 or /org-suspend）を人間に報告する。
+**suspend gate を満たせず STOP した場合**（Step 1 で分岐済み）: org down は実行せず、未保存の原因、
+または停止を確定できなかった（`indeterminate` の）ピアの一覧と、復旧手順（再実行 or /org-suspend）を
+人間に報告する。
