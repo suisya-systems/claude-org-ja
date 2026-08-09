@@ -460,6 +460,19 @@ mcp__renga-peers__spawn_claude_pane(
    送らないこと** — 縮退経路の probe は 5-5 の送信「そのもの」であって別立ての試し送信では
    なく、二度送ると curate が二重に走る。そのまま 5-6 以降へ進む。
    3 回 retry しても送達できなければ従来どおり次項の破棄・skip へ進む
+
+   **capability 形かつ承認済み（同 reference §2 の `first_drive` が `recorded`）のときは、共有
+   reference §1-2 の三値判定を `curator` に適用する。「在」のときだけ登録ゲートを開け、その 1 件の
+   数値 `id` で 5-5 を送る（`to_id=<その数値 id>`。名前宛にしない）。「不在」「unknown」はゲートを
+   開けず、上記の poll をそのまま続ける。**（判定手順・評価順・宛先規則の正本は §1-2。ここに
+   重ねて書かない）**旧版 fallback（現行配備の全 backend）と未承認縮退では従来どおり
+   `to_id="curator"` の名前宛のままで、今日の挙動は変わらない。**
+   この枝で本節が足す帰結は 2 つだけである:
+   - **`unknown` を次項の破棄・skip の根拠にしない** — 次項へ進む条件は上記 retry 予算を使い
+     切ったことだけで、`unknown` はその条件を早めも遅らせもしない。
+   - **この数値 `id` を `close_pane` のセレクタに使わない** — `list_peers` 由来の peer id なので、
+     close は次項のとおり 5-3 の spawn 戻り値の pane_id を起点にする（契約 T-§4.2）。close の
+     可否そのものは次項がそのまま委ねる close 判定表が決める（本節は close の判断を持たない）。
 3. 3 回 retry しても登録されない場合はペインを破棄し、窓口に informational として報告して curate を
    スキップし、Step 6 へ進む。**close の可否と `curate-inflight.json` の始末は
    [`.dispatcher/references/worker-monitoring.md` Step 5.3](worker-monitoring.md#step-5-3-close) の

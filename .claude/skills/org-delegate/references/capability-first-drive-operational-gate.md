@@ -445,13 +445,12 @@ spawn / boot 直後に「目的のピアが `list_peers` に現れるまで poll
   （journal + 窓口 escalate、「閉じた」に倒さない）へ倒す。
 - 同タブの `pane_exited` を観測できた場合だけ、従来どおり lifecycle を進めてよい。
 
-> **未解消の discoverability gap（follow-up Issue で塞ぐ）**: 規範は本節にあるが、
-> [`.claude/skills/org-delegate/references/renga-error-codes.md`](renga-error-codes.md) の復旧手順
-> **本体には本ファイルへのポインタがまだ無い**。したがって `[pane_not_found]` を受けて
-> そちらだけを読んだ役割は、本節に到達しないまま列挙を採り直しうる。**規範の所在と参照の所在が
-> ずれている状態**であり、follow-up ではポインタ 1 行を復旧手順側に置いて解消する
-> （本 PR のスコープ外＝人間判断）。それまでの間、`send_message` の失敗を扱う役割は
-> renga-error-codes.md と本節を**セットで**読むこと。
+> **参照の所在（双方向に繋がっている）**: 規範は本節が持ち、
+> [`.claude/skills/org-delegate/references/renga-error-codes.md`](renga-error-codes.md) の messaging
+> 復旧手順は**その `list_peers` を引き直す step の前に本節へのポインタを置いている**。したがって
+> `[pane_not_found]` を受けてそちら**だけ**を読んだ役割も本節に到達する。復旧手順側が持つのは
+> 「先に §3-B-2 を適用し、その結果を本手順へ渡す」というポインタだけで、判定条件と縮退規則は
+> 本節に一元化してある（二重管理しない）。
 
 > **`capability_first_drive_pending` は承認記録ではない。** 「報告は済ませた」ことだけを表す
 > 重複抑止の印であり、これがあっても capability 経路で行動してよいことにはならない。承認は
@@ -551,34 +550,31 @@ owner なのは `list_panes` / `pane_exited` / `list_peers` という**独立し
 | 4 | [`.claude/skills/dispatcher-resume/SKILL.md`](../../dispatcher-resume/SKILL.md) Step 0 手順 4（自分の `peer_id` 取得） | dispatcher / `.dispatcher/` | monitoring-read-only | 列挙から `peer_id` を採らない。identity は §1-2-d の caller pane id 取得規則（`RENGA_PANE_ID` を起点に `list_panes` で同一 id を照合）で確定し、`peer_id` は未取得のまま進む。**`caller-id 未確定` なら `dispatcher_pane_id` も渡さず**（「未指定 = 保持」で既存値を温存）、identity 未確認を secretary へのブリーフィングに明示して続行判断を仰ぐ |
 | 5 | 同 `already_consumed` 分岐（監視対象が live か） | dispatcher / `.dispatcher/` | monitoring-read-only | 列挙を live 判定に使わない。`list_panes` の `role == "worker"` と `.state/dispatcher/curate-inflight.json` の有無だけで分岐する |
 | 6 | 同 Step 4（ワーカーのペイン生存確認） | dispatcher / `.dispatcher/` | monitoring-read-only | 列挙を不存在の根拠にしない。`list_panes` + events テーブルの報告痕跡で判定し、確定できなければ `WORKER_PANE_EXITED` を送らない |
-| 7 | [`.dispatcher/references/spawn-flow.md`](../../../../.dispatcher/references/spawn-flow.md) 3-4（新ピア出現待機） | dispatcher / `.dispatcher/` | monitoring-read-only | 列挙を peer 登録の ground truth にしない（§3-B-1: `worker-{task_id}` は別 org の並走タブに同名で実在しうる）。readiness は §3-B-1 の send-as-probe で判定する（3-5 の指示送信そのものを probe にし再送。送達成功で 3-5 は消化済み＝二度送らない） |
+| 7 | [`.dispatcher/references/spawn-flow.md`](../../../../.dispatcher/references/spawn-flow.md) 3-4（新ピア出現待機。**delegate-plan helper の `after_spawn[]` 経路も同じ call site** — 入口は下の追加 call site 表を見る） | dispatcher / `.dispatcher/` | monitoring-read-only | 列挙を peer 登録の ground truth にしない（§3-B-1: `worker-{task_id}` は別 org の並走タブに同名で実在しうる）。readiness は §3-B-1 の send-as-probe で判定する（3-5 の指示送信そのものを probe にし再送。送達成功で 3-5 は消化済み＝二度送らない） |
 | 8 | [`.dispatcher/references/pane-close.md`](../../../../.dispatcher/references/pane-close.md) 5-4（curator の boot 確認 poll） | dispatcher / `.dispatcher/` | monitoring-read-only | 列挙を登録確認に使わない（§3-B-1）。readiness は §3-B-1 の send-as-probe で判定する（5-5 の `/org-curate` 指示そのものを probe にし既存の 3 回 retry で再送。送達成功で 5-5 は消化済み）。retry を使い切れば従来どおり破棄して curate を skip |
 | 9 | [`.dispatcher/references/worker-monitoring.md`](../../../../.dispatcher/references/worker-monitoring.md) (3-a-1) 観測不能フォールバック / (3-a-2) 裏取り表 | dispatcher / `.dispatcher/` | monitoring-read-only | (3-a-2) の `list_peers` 列は **unknown** として読む（在/不在のどちらとしても数えない）。(3-a-1) の peer 経路フォールバックからも `list_peers` を外し、**events テーブルの報告痕跡のみ**で継続する |
 
 [`.claude/skills/org-down/SKILL.md`](../../org-down/SKILL.md) は `/org-suspend` の全 Phase を実行するので
 #1 / #1b に推移的に到達する。org-down も人間が起動する flow なので分岐は同じ **interactive-action**。
 
-### 未配線 — 本 Issue のスコープ外（窓口の判断待ち）
+### 上表に行を持たない追加 call site — 配線先の所在
 
-棚卸しで**追加の実行 call site が 3 つ見つかったが、本タスクで承認された編集対象ファイルに含まれない**
-ため配線していない。いずれも実在する経路なので、別途の判断が要る。
+棚卸しで見つかった**追加の実行 call site 3 つ**は、上表の行ではなく次の場所に配線してある。
+いずれも実在する経路なので、探すときはここを見る。
 
-| 経路 | なぜ配線が要るか |
+| 経路 | 規範の所在 / 配線先 |
 |---|---|
-| `.dispatcher/CLAUDE.md` の delegate-plan `after_spawn[]` 要約 | `claude-org-runtime` の delegate-plan helper が `list_peers` 待ちを**機械生成した plan 要素として emit する**ため、helper 経路に乗ったディスパッチャーは [`.dispatcher/references/spawn-flow.md`](../../../../.dispatcher/references/spawn-flow.md) 3-4（表 #7）を読まずに列挙する。emitter は ja の外にあるので、**ja 内で唯一の介入点がこの要約**である（当初「索引だから対象外」と判断したが、それは誤り） |
-| [`.claude/skills/org-delegate/references/renga-error-codes.md`](renga-error-codes.md) の messaging 復旧手順への**同趣旨の追記** | **規範自体は §3-B-2 で先に置いてある**（縮退は復旧手順に伝播する = 引き直した列挙の数値 id で他タブへ再送しない / 消失を死亡確定の根拠にしない）。復旧手順は spawn / readiness の再送という常用経路から入るので、未配線のまま残すと縮退が最も効いてほしい局面で抜けるため。残っているのは `renga-error-codes.md` 本体側にも同じ注記を置いて二重管理を解消する作業 |
-| [`.claude/skills/org-attach/SKILL.md`](../../org-attach/SKILL.md) の表示ラベル突き合わせ | 結果は attach コマンドの**ラベル生成にしか使わない**（join key は `list_panes` の pane_id）。ゲート判定には使わないので危険度は最も低いが、全タブ列挙では他 org のペインに自 org のラベルを付けて人間に提示しうる |
+| `.dispatcher/CLAUDE.md` の delegate-plan `after_spawn[]` 要約 | **表 #7 と同じ call site の別入口**。`claude-org-runtime` の delegate-plan helper が `list_peers` 待ちを**機械生成した plan 要素として emit する**ため、helper 経路に乗ったディスパッチャーは [`.dispatcher/references/spawn-flow.md`](../../../../.dispatcher/references/spawn-flow.md) 3-4 を読まずに列挙する。emitter は ja の外にあるので **ja 内の介入点はこの要約**で、同ファイルの `after_spawn[]` 節に §3-B の適用と §1-2 の適用結果（「在」でのみゲートを開け、数値 `id` を控える）を置いてある |
+| [`.claude/skills/org-delegate/references/renga-error-codes.md`](renga-error-codes.md) の messaging 復旧手順 | **規範の owner は §3-B-2**（縮退は復旧手順に伝播する = 引き直した列挙の数値 id で他タブへ再送しない / 消失を死亡確定の根拠にしない）。復旧手順側は `list_peers` を引き直す step の前に §3-B-2 へのポインタだけを持ち、規則を複製しない |
+| [`.claude/skills/org-attach/SKILL.md`](../../org-attach/SKILL.md) の表示ラベル突き合わせ | **分岐は `monitoring-read-only`**。結果は attach コマンドの**ラベル生成にしか使わない**（join key は `list_panes` の pane_id）ので危険度は最も低いが、全タブ列挙では他 org のペインに自 org のラベルを付けて人間に提示しうる。**縮退先**: 列挙を破棄し、pane-id join とラベル（`list_panes` 由来）だけで継続する — 落ちるのは peer 名 / cwd の補足だけで、attach 可否・join・lifecycle 判定には波及させない |
 
-**§1-2 の per-site 適用行がまだ無い経路（#7 / #8）**: 上表の owner 規定により **§1-2 は #7 / #8 にも
-規範として掛かっており**（両経路とも呼び出し直前に本ファイルを Read する義務があるので、§1-2-c の
-「登録待ち型は 在 のときだけゲートを開ける（MUST）」に到達する）、**規範の穴ではない**。ただし
-[`.dispatcher/references/spawn-flow.md`](../../../../.dispatcher/references/spawn-flow.md) 3-4 と
-[`.dispatcher/references/pane-close.md`](../../../../.dispatcher/references/pane-close.md) 5-4 の
-**本文には承認済み路の適用結果 1 行がまだ置かれていない**ので、そちら**だけ**を読んだ役割は
-name 一致の poll 記述をそのまま実行しうる（§3-B-2 の renga-error-codes.md と同型の
-discoverability gap）。両ファイルは本タスクの承認編集対象外なので配線していない。**この 2 経路は
-一度きりのタスク割り当て / `/org-curate` 指示を運ぶため影響が大きい**ので、follow-up で per-site 行を
-置くこと。それまでの間、#7 / #8 を実行する役割は当該ファイルと本節を**セットで**読む。
+**#7 / #8 の per-site 適用行**: 上表の owner 規定により §1-2 は #7 / #8 にも規範として掛かっており
+（両経路とも呼び出し直前に本ファイルを Read する義務があるので §1-2-c の「登録待ち型は 在 のときだけ
+ゲートを開ける（MUST）」に到達する）、**加えて両ファイルの本文にも承認済み路の適用結果行を置いてある**
+（[`.dispatcher/references/spawn-flow.md`](../../../../.dispatcher/references/spawn-flow.md) 3-4 /
+[`.dispatcher/references/pane-close.md`](../../../../.dispatcher/references/pane-close.md) 5-4）。
+そちら**だけ**を読んだ役割も適用結果に到達する。各 per-site 行が書くのは §1-2-e のとおり
+**適用結果だけ**で、在の件数・評価順・真理値表・再送予算はいずれも本ファイル側にしか無い。
 
 runtime 側（`claude_org_runtime` の delegate-plan helper が `list_peers` 再実行を指示する
 `target_tab_mismatch` / `tab_ambiguous` / `pane_not_found` の復旧文言）は ja リポジトリの外なので、
@@ -592,7 +588,7 @@ runtime 側（`claude_org_runtime` の delegate-plan helper が `list_peers` 再
 |---|---|
 | `.claude/skills/org-setup/references/permissions.md` の `mcp__renga-peers__list_peers` 行、および各スキル frontmatter の `allowed-tools` | 権限宣言であって呼び出しではない。実行時に列挙結果を受け取らないので、捨てるべき結果が存在しない |
 | [`docs/contracts/backend-interface-contract.md`](../../../../docs/contracts/backend-interface-contract.md) / `docs/verification.md` / `docs/overview-technical.md` の言及 | ツールの意味論・適合条件を**記述**する契約文および説明文。手順ではない |
-| [`.claude/skills/org-delegate/references/renga-error-codes.md`](renga-error-codes.md) の Known codes 表・capability 説明・シェル例のコメント | エラーコードの**意味**の記述。実行手順は同ファイルの messaging 復旧 step で、そちらは上の「未配線」表に挙げてある（対象外ではなく判断待ち） |
+| [`.claude/skills/org-delegate/references/renga-error-codes.md`](renga-error-codes.md) の Known codes 表・capability 説明・シェル例のコメント | エラーコードの**意味**の記述。実行手順は同ファイルの messaging 復旧 step で、そちらは対象外ではなく **§3-B-2 が owner**（上の「上表に行を持たない追加 call site」表を見る） |
 | `.dispatcher/CLAUDE.md` の「ワーカーは `list_peers` で窓口を自動発見する」 | ワーカー側の事実の記述。ディスパッチャーの手順ではない（ワーカーに `list_peers` を指示する文書はリポジトリ内に存在しない） |
 | `notes/**` / `docs/design/**` の設計メモ・監査メモ、`docs/operations/**` / `docs/sandbox-probe/**` の runbook | 運用手順ではない / 人間オペレーター向けの一回性 runbook であって役割の常設手順ではない（[`docs/contributing/markdown-conventions.md`](../../../../docs/contributing/markdown-conventions.md) の in-scope からも外れる） |
 | `tools/**` の定数・テスト fixture・generator golden | コード上の tool 名定数とテストデータ。実行時に列挙結果を受け取らない |
