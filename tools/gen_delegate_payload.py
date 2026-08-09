@@ -596,12 +596,20 @@ def _format_delegate_body(
             f"（{source_label}。PR も `--base {base_branch}` を既定とする）"
         )
     if placement == "background_tab":
+        # The brief is rendered here, before the dispatcher evaluates the
+        # 3-1d gates — so a fail-closed fallback to the same-tab path would
+        # leave the worker holding a brief that describes the other
+        # placement. The dispatcher cannot silently reuse it: say so in the
+        # body rather than letting the two artifacts drift apart.
         report_line = (
-            f"配置 (placement): background_tab（spawn-flow 3-1d。"
-            f"6 条件を満たさなくなったら既定の同一タブ経路に倒すこと）\n"
+            f"配置 (placement): background_tab（spawn-flow 3-1d）\n"
             f'窓口の報告先: `to_id="{report_target}"`（数値 pane id。'
             f"背景タブの worker からは pane 名 `secretary` が解決しないため、"
-            f"brief も同じ数値 id で生成済み）"
+            f"brief も同じ数値 id で生成済み）\n"
+            f"**6 条件のいずれかを満たさず同一タブ経路に倒す場合、この brief を"
+            f"そのまま使ってはならない**（背景タブ前提の報告先・報告規律が"
+            f"書かれている）。派遣を進めず窓口へ差し戻し、`--placement` 無しで "
+            f"brief を再生成させること"
         )
     else:
         report_line = "窓口ペイン名: `secretary`（renga layout で登録済み）"
