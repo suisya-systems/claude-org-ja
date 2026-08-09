@@ -308,6 +308,19 @@ context リセットと無関係）に監視が継続し、人間が tmux ペイ
    `{{FQ}}list_panes` で確認する。`name="pr-watch-<PR>"` かつ `role="watcher"` が付いて
    いれば登録済み。万一いずれかが欠ける backend では
    `{{FQ}}set_pane_identity(target=<N>, name="pr-watch-<PR>", role="watcher")` で補修する。
+   - **補修も Group B なので自タブ確立が先（契約 T-§4.2「Fail-safe consequence for Group B」。
+     [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md)）**:
+     `set_pane_identity` は `close_pane` と同じ Group B で、宛先は「**自タブと独立に確立済みの
+     列挙**から得た数値 pane id」に限られる。数値であることは MUST の**片方**にすぎず、**id が
+     spawn の戻り値として手元にあることも免除にならない**（未確立の列挙では、直前の `name` /
+     `role` 確認の結果そのものを信用できないため）。確立手段は 2 つだけで、いずれか 1 つが成立
+     すればよい: **(i) backend が Group B を自身の単一タブモデル内で解決する**（`org-broker`。
+     契約 §8.1 / §8.10）/ **(ii) `caller_scope` を確立できている**（契約 T-§cap。
+     `caller_scope_close_identity` から導出しない）。**どちらも成立しないなら補修を撃たず**、
+     identity が未登録のまま監視が走っていること（Step 2 の冪等チェックと Step 5 の cleanup が
+     `name` / `role` で引けなくなること）をユーザーに報告する。`target="focused"` や裸 name の
+     相対セレクタへは**フォールバックしない** — `set_pane_identity` の `target` は既定が
+     `"focused"` なので、人間がフォーカスを移していれば**別ペインを改名する**。
    - 本ペインは Claude セッションではなく CLI プロセスなので **Claude peer（peer_id）は
      持たない**。ここでの「peer 登録」= pane registry への name + role=watcher の登録
      （spawn_pane / set_pane_identity が行う）を指す。MCP peer / dev-channel 登録は発生しない。
@@ -330,8 +343,24 @@ context リセットと無関係）に監視が継続し、人間が tmux ペイ
      無言死になる（correctall 停止なら Step 3 の `nocorrect` 前置漏れを疑う）。
    - 上記いずれも無ければ（pr-watch の watch ループ出力 / 空 / 起動直後の静止）**起動成功扱い**
      とし、固定 sleep を入れて再 inspect する経路は持たない（健全な quiet start を誤殺しない）。
-   - 起動失敗時は `{{FQ}}close_pane(target=<N>)` で死んだペインを掃除し、原因（`tools/pr-watch.sh`
-     / `gh` の導入、cwd、対話プロンプト停止）をユーザーに報告して中断。
+   - 起動失敗時は死んだペインを掃除し、原因（`tools/pr-watch.sh` / `gh` の導入、cwd、対話プロンプト
+     停止）をユーザーに報告して中断する。掃除は **自タブ確立 → identity 再確認 → 数値 close** の
+     順で行う:
+     1. **自タブ確立**（契約 T-§4.2「Fail-safe consequence for Group B」。
+        [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md)）:
+        **(i) backend が Group B を自身の単一タブモデル内で解決する**（`org-broker`。契約
+        §8.1 / §8.10）/ **(ii) `caller_scope` を確立できている**（契約 T-§cap）のいずれか 1 つが
+        成立すればよい。**どちらも成立しないなら close を撃たず**、死んだペイン (id=`<N>`) が
+        残る旨を報告に含めて手動掃除に委ねる（相対セレクタへはフォールバックしない）。**id が
+        spawn の戻り値として手元にあることは免除にならない** — 未確立の列挙では次の identity
+        照合の結果そのものを信用できないため
+     2. **identity 再確認（pane_id recycle 対策。他の全経路と揃える）**: `{{FQ}}list_panes` で
+        `<N>` のレコードを引き、`name="pr-watch-<PR>"` かつ `role="watcher"` を**なお指している**
+        ことを確かめる。別ペインへ再割当て済み / 列挙に現れない場合は **close せず**、その旨を
+        報告に含める（本 Step の「identity 確定」で補修を撃てなかった backend ではこの照合が
+        通らないので、同じく close せず報告に倒す）
+     3. 両方を通ったときだけ `{{FQ}}close_pane(target=<N>)` する（`[pane_not_found]` /
+        `[pane_vanished]` は直前に消えた扱いで skip）
 
 3. **生存確認は副作用ベースで行う（`pgrep -f` 単独判定の禁止、Issue #825）**: 起動後に
    「監視が本当に走っているか」を確かめるときは、プロセス一覧ではなく**副作用**を見る:
@@ -385,11 +414,25 @@ context リセットと無関係）に監視が継続し、人間が tmux ペイ
    束縛の SoT は [`.claude/skills/org-pull-request/SKILL.md`](../org-pull-request/SKILL.md) の該当節）。
    人間が現ペインを手動 close する (a)/(b) は現 instance が対象で自明なので freshness gate は不要:
 
-   - **(a) tmux ペインが live のまま残った / 監視を途中で止めたい**: `{{FQ}}list_panes` で
-     `name="pr-watch-<PR>"` の live pane を確認し、その **数値 pane_id** で
+   - **(a) tmux ペインが live のまま残った / 監視を途中で止めたい**: **まず照合に使う
+     `{{FQ}}list_panes` の列挙を自タブのものと確立する**（契約
+     [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md)
+     T-§4.2「Fail-safe consequence for Group B」）。確立手段は 2 つだけで、いずれか 1 つが成立
+     すればよい: **(i) backend が Group B を自身の単一タブモデル内で解決する**（`org-broker`。
+     契約 §8.1 / §8.10）/ **(ii) `caller_scope` を確立できている**（契約 T-§cap。
+     `caller_scope_close_identity` から導出しない）。**どちらも成立しないなら close を撃たず**、
+     watcher ペインが残る旨をユーザーに報告して停止する（相対セレクタへはフォールバックしない）。
+     確立できたら `name="pr-watch-<PR>"` の live pane を確認し、その **数値 pane_id** で
      `{{FQ}}close_pane(target=<N>)` する（`[pane_not_found]` / `[pane_vanished]` は既に
-     閉じた扱いで skip）。live pane が在るこのケースでは、name 指定ではなく list_panes で
-     identity を確認した数値 pane_id を使う（id recycle 時の誤 close を避ける）。
+     閉じた扱いで skip）。name 指定ではなく list_panes で identity を確認した数値 pane_id を
+     使う（id recycle 時の誤 close を避ける）。
+     - **(a) は「live pane が列挙に出るから安全」ではない**: (b) が carve-out を要するのは
+       *列挙から数値 id を取り直せない*ためであって、(a) が数値 id を取れることは MUST の
+       **片方**（相対セレクタでないこと）を満たすにすぎない。もう片方の「その列挙が自タブの
+       ものか」は (a) でも別に確立しなければならず、未確立の列挙では `name` / `role` 照合の
+       **結果そのもの**を信用できない（pre-capability の renga では `list_panes` が
+       **フォーカス中**のタブに解決し、`pr-watch-<PR>` は 2 org 並走で構造的に衝突するので、
+       照合を通っても**別 org の同名 watcher**を閉じうる）。
 
    - **(b) stale 登録簿 binding（`list_panes` には出ないのに再 spawn が `[name_taken]`）**:
      self-close で tmux ペインは消えたが broker 登録簿に name binding が残っている状態。

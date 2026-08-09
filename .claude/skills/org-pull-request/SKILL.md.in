@@ -145,7 +145,20 @@ close は低遅延経路として温存し、二重掃除にならないよう `
       中ずっと herdr でゾンビが残る — この取り違えを避ける）。
     監視 head が一致しない古い / 重複イベントだけ superseded とみなし close しない（＝再起動済みの新
     watcher を殺さない）。一致すれば下記で close。追跡が既に消えている（該当 instance を掃除済み）なら no-op。
-  - **識別子束縛 close**: 一致したら、控えた **数値 pane_id** を `{{FQ}}list_panes` で
+  - **識別子束縛 close**: 一致したら、**まず照合に使う `{{FQ}}list_panes` の列挙を自タブのものと
+    確立する**（契約
+    [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md)
+    T-§4.2「Fail-safe consequence for Group B」）。確立手段は 2 つだけで、いずれか 1 つが成立すれば
+    よい: **(i) backend が Group B を自身の単一タブモデル内で解決する**（`org-broker`。契約
+    §8.1 / §8.10）/ **(ii) `caller_scope` を確立できている**（契約 T-§cap。
+    `caller_scope_close_identity` から導出しない）。**控えた pane_id が手元にあることは免除に
+    ならない** — 数値であることは MUST の**片方**にすぎず、未確立の列挙では下の identity 照合の
+    **結果そのもの**を信用できないためで（pre-capability の renga では `list_panes` が
+    **フォーカス中**のタブに解決し、`pr-watch-<PR>` は 2 org 並走で構造的に衝突する）、確立は
+    照合の前段に置く。**どちらも成立しないなら close を撃たず**（相対セレクタへもフォールバック
+    しない）、watcher ペインが残る旨をユーザー報告に含めて手動掃除に委ね、追跡はクリアしない
+    （次の終端イベント / 手動掃除で判定をやり直せるようにするため）。確立できたら、控えた
+    **数値 pane_id** を `{{FQ}}list_panes` で
     `name="pr-watch-<PR>"` かつ `role="watcher"` を **なお指しているか identity 照合**し（pane_id
     recycle 対策。別ペインに再割当てされていれば close しない）、合致したら
     `{{FQ}}close_pane(target=<控えた pane_id>)` で閉じて追跡をクリアする。`[pane_not_found]` /
