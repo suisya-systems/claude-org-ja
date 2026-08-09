@@ -141,7 +141,17 @@ res = mcp__renga-peers__spawn_claude_pane(
   model="opus"
 )
 bound_pane_id = res の数値 pane id      # ★ 直後に控える。以降の儀式は全てこの id 宛
+
+# ★★ ここで即座に永続化する（Step 4 まで持ち越さない。下記「spawn 直後に書く」）
+#     .state/dispatcher/worker-idle-state.json の worker-{task_id} record へ merge:
+#       placement="background_tab" / bound_pane_id / bound_server_pid /
+#       bound_server_endpoint / bound_cwd="{workers_dir}/{task_id}"
+#     bound_peer_id はまだ書かない（3-4b の受理後に merge する）
 ```
+
+> **spawn 直後に書く — 記録より先にペインを作らない (MUST)**: 背景ペインは `list_panes` に出ないので、**記録が無い背景ペインは以後どの経路からも発見できない**。永続化を Step 4 まで遅らせると、その間 (3-3 の起動確認 / 3-3b の承認 / 3-4b の最大 30 秒の登録待ち) に dispatcher がクラッシュしたり handover を跨いだりした場合、**すでに起動して作業を始めうる子ペインが完全に untracked のまま残る** — 同一タブ worker なら `list_panes` の突き合わせ (Step 3) が拾うが、背景ペインにはその保険が無い。したがって `bound_peer_id` 以外の 5 フィールドは **spawn 戻り値を得た直後に書き**、`bound_peer_id` だけを 3-4b の受理後に merge する（Step 4 の該当項）。
+>
+> **3-4b が受理できずに派遣を取り止めた場合も、この record は消さない**: ペインは実在するので、記録を消すと上記の untracked 状態を自分で作ることになる。`bound_peer_id` が `null` のまま残った record の扱いは [`.dispatcher/references/worker-monitoring.md`](worker-monitoring.md) (3-a-5) の三値表 1 行目（registration-timeout の着地）が定める。
 
 > **数値 pane id は backend session に閉じた識別子なので、session を必ず一緒に控える（MUST）**: 契約 T-§4.2-id は「the id counter is initialised unconditionally in the constructor … Nothing persists or restores it … **across a daemon restart they are reissued from the beginning**」と書き、restart を跨いで使った id について「is not addressing a stale pane — it is addressing **a different, live pane**, and the backend answers **successfully**. No error code marks this」と続ける。同節の proof obligation **(O1) Session provenance** は「the id was issued by, and still belongs to, the backend session **currently serving the call**」の確立を MUST にしており、**(O4)** は確立できないときの相対セレクタ / 裸 name への降格を MUST NOT にしている。したがって `bound_pane_id` は単独では使えず、**同じ record に `bound_server_pid` を並べて控え、使用前に毎回照合する**（照合手順は [`.dispatcher/references/worker-monitoring.md`](worker-monitoring.md) (3-a-5) の「session provenance を毎サイクル確かめる」）。
 
@@ -352,15 +362,17 @@ worker brief に **ultracode 使用許可**があるタスクでは、kickoff �
    >
    > **spawn を放棄する場合の始末**: 3-4 のタイムアウト / 3-5 の送達不能で窓口へ escalate して派遣を取り止める経路は**本 Step 4 に到達しない**ので、そもそも陽性履歴は書かれない（＝この producer に「書いてから取り消す」窓は無い）。**本項を通した後は、record の削除規則は [`.dispatcher/references/worker-monitoring.md`](worker-monitoring.md) Step 5 (b) 更新規則 (4) だけが持つ** — 本項は削除条件を足さない。とくに**「派遣後にタスクを取り止めた」ことを削除の根拠にしてはならない**: ペインがまだ生きているうちに record を消すと `tracked_pane_id` と `same_tab_peer_id` が失われ、以後 `pane_exited` の attribution も裏取り (ii) も成立しなくなって、当該 worker を恒久 indeterminate に固定する（規則 (4) が名指しで禁じている当の帰結）。ペインの退役は通常の退役経路を通し、削除はそこで規則 (4) が発火する。
 
-7. **背景タブに置いた worker のときだけ** (3-1d の 6 条件を満たして 3-2b / 3-4b を通った場合)、同じ `.state/dispatcher/worker-idle-state.json` の当該 record に **`placement="background_tab"` / `bound_pane_id` (3-2b で控えた spawn 戻り値の数値 pane id) / `bound_server_pid` + `bound_server_endpoint` (同 3-2b で控えた `server_info` の `server.pid` / `server.endpoint`) / `bound_peer_id` (3-4b の登録ゲートが受理した数値 id) / `bound_cwd` (spawn に渡した `{workers_dir}/{task_id}` の絶対パス)** を **merge する**。上記 6 と同じく既存 record の他フィールドは触らず、record が無ければこの 6 フィールドだけで新規に作る。schema・参照規則・消費側の正本は [`.dispatcher/references/worker-monitoring.md`](worker-monitoring.md) Step 3 (3-a-3) / (3-a-5) である。
+7. **背景タブに置いた worker のときだけ** (3-1d の 6 条件を満たして 3-2b / 3-4b を通った場合)、`.state/dispatcher/worker-idle-state.json` の当該 record に **`bound_peer_id` (3-4b の登録ゲートが受理した数値 id) を merge する**。上記 6 と同じく既存 record の他フィールドは触らず、schema・参照規則・消費側の正本は [`.dispatcher/references/worker-monitoring.md`](worker-monitoring.md) Step 3 (3-a-3) / (3-a-5) である。
 
-   > **`bound_pane_id` は `bound_server_pid` / `bound_server_endpoint` / `bound_cwd` と必ず一緒に書く (MUST)**: pane id の一意性保証は backend session に閉じており、daemon restart 後の同じ数値は**別の生きたペイン**を指す (契約 T-§4.2-id)。session 側 2 つを欠くと (O1) session provenance を、`bound_cwd` を欠くと (O2) の org 束縛を **監視サイクル側が discharge できなくなる** — spawn ターンが終わった後・dispatcher handover を跨いだ後の監視は、この record に書いてある値しか手元に持たない。
+   > **残り 5 フィールドは本項ではなく 3-2b が書く**: `placement="background_tab"` / `bound_pane_id` / `bound_server_pid` / `bound_server_endpoint` / `bound_cwd` は **spawn 戻り値を得た直後**に永続化済みである (3-2b の「spawn 直後に書く」)。本項に到達する頃には record は既に存在するので、ここでの操作は `bound_peer_id` 1 フィールドの merge だけになる。**この分割は必須である** — 5 フィールドを本項まで遅らせると、3-3 / 3-3b / 3-4b の間にクラッシュや handover が入った場合に、`list_panes` に出ない子ペインが記録なしで残る。
+
+   > **`bound_pane_id` は `bound_server_pid` / `bound_server_endpoint` / `bound_cwd` と必ず一緒に書く (MUST。だからこの 4 つは 3-2b で 1 度に書く)**: pane id の一意性保証は backend session に閉じており、daemon restart 後の同じ数値は**別の生きたペイン**を指す (契約 T-§4.2-id)。session 側 2 つを欠くと (O1) session provenance を、`bound_cwd` を欠くと (O2) の org 束縛を **監視サイクル側が discharge できなくなる** — spawn ターンが終わった後・dispatcher handover を跨いだ後の監視は、この record に書いてある値しか手元に持たない。
    >
-   > **同一タブ経路ではこの項を実行しない。** `placement` の欠損は `"same_tab"` 扱い (migration 不要) なので、通常委譲では 4 フィールドとも書かず、今日の record 形は変わらない。
+   > **同一タブ経路では 3-2b も本項も実行しない。** `placement` の欠損は `"same_tab"` 扱い (migration 不要) なので、通常委譲では 6 フィールドとも書かず、今日の record 形は変わらない。
    >
    > **`same_tab_peer_id` に背景 worker の id を書いてはならない (MUST NOT)**: あちらは「§1-2 が**自タブに**在と確定したレコードの id」という意味を持ち、(3-a-2) 4 行目の裏取り (ii) の入力になる。背景 worker の id を入れると同表が偽の裏取りで終了確定へ進み、**生きている worker を退役させうる**。背景 worker の id は `bound_peer_id` にだけ書く。
    >
-   > **3-4b で受理できずに派遣を取り止めた場合は本項に到達しない**ので、`bound_*` の陽性履歴はそもそも書かれない (上記 6 と同じ性質)。書いた後の record 削除規則は [`.dispatcher/references/worker-monitoring.md`](worker-monitoring.md) Step 5 (b) 更新規則 (4) だけが持ち、本項は削除条件を足さない。
+   > **3-4b で受理できずに派遣を取り止めた場合、本項には到達しないので `bound_peer_id` は `null` のまま残る。ただし 3-2b が書いた 5 フィールドは残す (record を消さない)** — ペインは実在するので、消すと `list_panes` に出ない untracked なペインを自分で作ることになる。`bound_peer_id` が `null` の record の着地は [`.dispatcher/references/worker-monitoring.md`](worker-monitoring.md) (3-a-5) の三値表 1 行目が定める (registration-timeout として窓口へ上げ、画面監視は `bound_pane_id` で継続する)。**この点だけが上記 6 (同一タブの `same_tab_peer_id` producer) と異なる**: あちらは「放棄経路は状態記録に到達しないので陽性履歴が書かれない」が成立するが、背景配置では記録のほうが先に必要になる。record 削除規則は [`.dispatcher/references/worker-monitoring.md`](worker-monitoring.md) Step 5 (b) 更新規則 (4) だけが持ち、本項も 3-2b も削除条件を足さない。
 
 ### Worker Directory Registry（DB 由来のセクション定義）
 
