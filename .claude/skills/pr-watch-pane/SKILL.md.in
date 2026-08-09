@@ -278,11 +278,10 @@ context リセットと無関係）に監視が継続し、人間が tmux ペイ
      根拠の SoT は下記 Step 5 の (b)）。**以下 3 条件がすべて成立するときだけ許可される**:
      - **(1) いま Group B を駆動している backend が `close_pane` / `set_pane_identity` を自身の
        single-tab モデル内で解決する**（＝ `org-broker`）— 誤タブ hazard が構造的に生じない
-       （契約 §8.1 / §8.10）。判定は本 skill の transport 解決（`ORG_TRANSPORT` の明示値 >
-       既定 `DEFAULT_TRANSPORT`。[`tools/transport.py`](../../../tools/transport.py)）に従い、
-       **Step 1 で `printenv` した raw env 文字列の有無では判定しない**（`DEFAULT_TRANSPORT` は
-       runtime 0.1.28 で broker にフリップ済みなので、無設定は broker に解決する）。
-       確定できない場合は不成立として扱う（判定規則と根拠の SoT は下記 Step 5 の (b)）
+       （契約 §8.1 / §8.10）。**判定は「いま Group B を撃つのに使っている MCP ツールの
+       完全修飾名が `mcp__org-broker__*` である」という積極的な証拠で行う**。
+       **`DEFAULT_TRANSPORT` から推定してはならない** — 判定規則と根拠の SoT は下記 Step 5 の (b)。
+       確定できない場合は不成立として扱う
      - **(2) 再 spawn が `[name_in_use]` / `[name_taken]` で弾かれている** — stale binding の症状
        （本分岐の発火条件そのもの）
      - **(3) その name が `{{FQ}}list_panes` に現れない** — live pane 不在（上記 1. の再確認結果）
@@ -447,13 +446,27 @@ context リセットと無関係）に監視が継続し、人間が tmux ペイ
        自身の single-tab モデル内で解決する**（＝ `org-broker`）— そのモデル内で name も
        解決されるため誤タブ hazard が構造的に生じない（契約 §8.1 / §8.10。契約 T-§4.2 の
        carve-out 自体も条件を "the backend resolves Group B in a single-tab model" と
-       **backend の性質**で書いており、env 変数の綴りでは書いていない）。**判定は本 skill が
-       既に持つ transport 解決に従う**: `ORG_TRANSPORT` の明示値 > 既定 `DEFAULT_TRANSPORT`
-       （[`tools/transport.py`](../../../tools/transport.py) の `resolve()` と冒頭 docstring。
-       `DEFAULT_TRANSPORT` は runtime 0.1.28 で `renga` → `broker` にフリップ済みなので、
-       **`ORG_TRANSPORT` 無設定のデプロイは broker に解決する**）。**raw env 文字列の有無で
-       判定しない** — 「空 / 未設定だから renga」と読むと、いちばん一般的な無設定構成で
-       この自己回復経路が原理的に発火せず毎回人手待ちになる。Step 1 が `printenv` の結果で
+       **backend の性質**で書いており、env 変数の綴りでは書いていない）。
+
+       **判定は積極的な証拠でのみ行う（MUST）**: いま Group B を撃つのに使っている MCP ツールの
+       **完全修飾名が `mcp__org-broker__*` であること**。これは呼び出しの直前に必ず確定している
+       （`{{FQ}}` は起動時に片方へ解決済み）ので、常に判定できる。
+
+       > **`DEFAULT_TRANSPORT` から推定してはならない（MUST NOT）**。`ORG_TRANSPORT` 無設定は
+       > **運用既定 renga の構成でもありうる**（root `CLAUDE.md`「輸送層（transport）両系」の
+       > 二フレーム注記 — 運用既定 renga / コード既定 broker は指す対象が違う）。一方
+       > [`tools/transport.py`](../../../tools/transport.py) の `resolve()` は無設定を
+       > **コード既定 `broker` に解決する**。したがって「無設定 → resolve() → broker」で
+       > この条件を通すと、**実際には renga が Group B を駆動している環境で裸 name の
+       > `close_pane` を撃つ**ことになり、pre-capability renga では他タブへフォールスルーして
+       > **別 org の同名 watcher を不可逆に閉じうる** — この carve-out がまさに防ぐための
+       > hazard を、carve-out 自身が引き起こす。
+       >
+       > **失敗方向が非対称なので積極証拠を要求する**: 証拠を要求して外すと
+       > 「自己回復が発火せず人手待ち」（不便・可逆）で済むが、推定して外すと
+       > 「別 org のペインを不可逆に close」になる。安全側は前者しかない。
+
+       Step 1 が `printenv` の結果で
        `export ORG_TRANSPORT` を省くのは [`tools/peer_notify.py`](../../../tools/peer_notify.py)
        が raw env で分岐する helper だから（`ORG_TRANSPORT == "broker"` のときだけ broker 経路、
        それ以外は未設定を含めて renga 経路）で、判定基準の異なる別論点である

@@ -180,13 +180,16 @@ close は低遅延経路として温存し、二重掃除にならないよう `
       誤タブ hazard が構造的に生じない（契約
       [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md)
       §8.1 / §8.10。T-§4.2 の carve-out も条件を "the backend resolves Group B in a single-tab
-      model" と **backend の性質**で書いており、env 変数の綴りでは書いていない）。**判定は窓口が
-      既に持つ transport 解決に従う**: `ORG_TRANSPORT` の明示値 > 既定 `DEFAULT_TRANSPORT`
-      （[`tools/transport.py`](../../../tools/transport.py) の `resolve()` と冒頭 docstring。
-      `DEFAULT_TRANSPORT` は runtime 0.1.28 で `renga` → `broker` にフリップ済みなので、
-      **`ORG_TRANSPORT` 無設定のデプロイは broker に解決する**）。**raw env 文字列の有無で
-      判定しない** — 「空 / 未設定だから renga」と読むと、いちばん一般的な無設定構成でこの
-      掃除が原理的に発火しなくなる（§「CI 完了検知の正路」が触れる
+      model" と **backend の性質**で書いており、env 変数の綴りでは書いていない）。
+      **判定は積極的な証拠でのみ行う（MUST）**: いま Group B を撃つのに使っている MCP ツールの
+      **完全修飾名が `mcp__org-broker__*` であること**。
+      **`DEFAULT_TRANSPORT` から推定してはならない（MUST NOT）** — `ORG_TRANSPORT` 無設定は
+      **運用既定 renga の構成でもありうる**のに
+      [`tools/transport.py`](../../../tools/transport.py) の `resolve()` は無設定を
+      コード既定 `broker` に解決するので、推定すると **renga が駆動している環境で裸 name の
+      close を撃ち、別 org の同名 watcher を不可逆に閉じうる**（判定規則と根拠の SoT は
+      [`/pr-watch-pane`](../pr-watch-pane/SKILL.md) Step 5 の (b)）。確定できなければ不成立
+      （§「CI 完了検知の正路」が触れる
       [`tools/peer_notify.py`](../../../tools/peer_notify.py) の raw env 判定は、helper 側の
       分岐仕様であって backend の同定規則ではない）。**確定できないときは carve-out を取らない**
       （fail-safe。未知値で解決が `ValueError` になる等で「いま何が駆動しているか」を確定
