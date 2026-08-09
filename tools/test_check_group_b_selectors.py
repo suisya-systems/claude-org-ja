@@ -158,6 +158,34 @@ class ArgumentOrderTest(TmpRootTestCase):
         self.assertEqual(self.scan().violations, [])
 
 
+class ToolNameBoundaryTest(TmpRootTestCase):
+    """別の関数名の一部として現れた綴りを Group B 呼び出しと誤検出しない。"""
+
+    def test_wrapper_named_functions_are_not_violations(self) -> None:
+        # 境界が無いと、こういう例を書いただけの doc がリポジトリ回帰テスト経由で
+        # CI を落とす（呼んでいるのは Group B ツールではない）。
+        _write(
+            self.root,
+            "a.md",
+            'safe_close_pane(target="curator")\n'
+            'disclose_pane(target="curator")\n'
+            'my_set_pane_identity(target="focused")\n',
+        )
+        self.assertEqual(self.scan().violations, [])
+
+    def test_mcp_and_template_prefixes_are_still_detected(self) -> None:
+        # 境界を厳しくしすぎて MCP プレフィックス形を取り逃さないこと。
+        _write(
+            self.root,
+            "a.md",
+            'mcp__renga-peers__close_pane(target="curator")\n'
+            'mcp__org-broker__set_pane_identity(target="focused")\n'
+            '{{FQ}}close_pane(target="curator")\n'
+            'close_pane(target="curator")\n',
+        )
+        self.assertEqual(len(self.scan().violations), 4)
+
+
 class ImplicitTargetTest(TmpRootTestCase):
     """``target=`` を書かない set_pane_identity は既定の "focused" に落ちる。"""
 
