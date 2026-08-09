@@ -466,10 +466,9 @@ mcp__renga-peers__spawn_claude_pane(
    進む。「不在」「unknown」はゲートを開けず、上記の poll をそのまま続ける**（判定手順と評価順の
    正本は §1-2。ここに重ねて書かない）。**`unknown` は「未登録が確定した」でも「消滅した」でも
    ないので、それ自体を次項の破棄・skip の根拠にしてはならない** — 次項へ進む条件は上記 retry
-   予算を使い切ったことだけであり、`unknown` のまま予算が尽きた場合も、尽きなかった場合と同じ
-   ように扱う（`unknown` は共有 reference §1-2-b のとおり作用を起こさず報告に載せる）。**予算が
-   尽きた後に実際にペインを閉じてよいかは、次項の identity 照合（5-3 の spawn 戻り値の数値
-   pane_id × 自タブと確立した列挙）だけが決める。**
+   予算を使い切ったことだけで、`unknown` はその条件を早めも遅らせもしない（`unknown` は共有
+   reference §1-2-b のとおり作用を起こさず報告に載せる）。**予算が尽きた後に実際にペインを
+   閉じてよいかは、次項がそのまま委ねる close 判定表が決める**（本節は close の判断を持たない）。
 3. 3 回 retry しても登録されない場合はペインを破棄し、窓口に informational として報告して curate を
    スキップし、Step 6 へ進む。**close の可否と `curate-inflight.json` の始末は
    [`.dispatcher/references/worker-monitoring.md` Step 5.3](worker-monitoring.md#step-5-3-close) の
