@@ -181,7 +181,7 @@ doc-audit role + write 成果物がある委譲では、以下の文言を「制
 - `branch_strategy` (必須): ブランチ戦略。worktree 配備で main 既定にすると誤誘導するため必須
 - `verification_depth` (必須): `full` または `minimal`
 - `constraints` (任意): 制約。省略時は "(なし)"
-- `report_target` (任意): 完了報告先 peer 名。省略時は `secretary`
+- `report_target` (任意): 完了報告先 peer 名。省略時は `secretary`。**背景タブ配置（spawn-flow 3-1d）の worker に対しては窓口ペインの数値 pane id を渡す** — peer 名は送信者と同じタブ内でしか解決せず、別タブの worker からは名前宛が届かないため（同じ数値 id が `gen_delegate_payload.py --placement background_tab --report-target <id>` で brief 側にも埋まっている）
 - `claude_md_filename` (任意): ワーカーが読む行動規範ファイル名。省略時は `CLAUDE.md`。claude-org 自己編集タスクでは `CLAUDE.local.md` を渡すこと（`references/claude-org-self-edit.md` 参照）
 
 未知の変数キーは input_invalid として弾く。`verification_depth` が `full` / `minimal` 以外でも input_invalid。

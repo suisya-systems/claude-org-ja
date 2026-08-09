@@ -79,8 +79,13 @@ codex exec review --base ${task_base_ref} -m gpt-5.6-sol -c model_reasoning_effo
 検証深度 minimal。minimal 用 1 行報告フォーマットを使用（`done: {SHA} {files}`）。Codex セルフレビュー・追加テスト・拡張された動作確認は一切禁止。
 
 <!--END:codex_minimal-->
+<!--BEGIN:background_tab_report-->
+## 報告先（背景タブ配置）
+窓口とは別タブに居るため、peer 名（`secretary` / `dispatcher`）は解決しない（名前は送信者と同じタブ内でのみ解決する。名前宛は `[pane_not_found]` / broker: `[peer_not_found]`）。報告・進捗・判断仰ぎは数値 pane id `to_id="${report_target}"`（窓口）宛に送る。届かないときは `list_peers`（タブ跨ぎで列挙）で `role=secretary` の数値 id を取り直す（`list_panes` は自タブ 1 行のみで使えない）。
+
+<!--END:background_tab_report-->
 ## 完了時
-1. `${transport_send_message}(to_id="secretary", ...)` で完了内容・変更ファイル・commit SHA・動作確認結果・残作業を報告
+1. `${transport_send_message}(to_id="${report_target}", ...)` で完了内容・変更ファイル・commit SHA・動作確認結果・残作業を報告
 2. PR 作成後ペイン保持
 3. 振り返り記録: 任意（非自明な学びがあれば `${claude_org_path}/knowledge/raw/{YYYY-MM-DD}-{topic}.md`）
 

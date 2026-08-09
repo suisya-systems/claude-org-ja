@@ -225,6 +225,17 @@ done: {commit SHA 短縮形} {変更ファイル名}
 
 ---
 
+## 条件付き追記: 背景タブに配置するワーカー
+
+ワーカーを**窓口と別のタブ**に置く派遣（spawn-flow 3-1d の例外経路）では、上記テンプレートの `to_id="{report_target}"` を**窓口ペインの数値 pane id**（例 `to_id="1"`）で生成し、「作業完了時」の直前に以下の節を追記する。peer 名は送信者と同じタブ内でしか解決しないため、名前宛の報告は `[pane_not_found]`（broker: `[peer_not_found]`）で落ち、ワーカーは送ったつもりで待機し窓口からは stall にしか見えない:
+
+> ## 報告先（背景タブ配置）
+> あなたは窓口とは別のタブに配置されている。peer 名（`secretary` / `dispatcher`）は送信者と同じタブ内でしか解決しないため、名前宛の送信は必ず失敗する。報告・進捗・判断仰ぎはすべて数値 pane id `to_id="{report_target}"`（窓口）宛に送ること。届かないときは `list_peers`（タブを跨いで列挙される）で `role=secretary` の数値 id を取り直す（`list_panes` は自分のタブしか映さない）。
+
+生成経路（`tools/gen_delegate_payload.py` / `tools/gen_worker_brief.py`）では `--placement background_tab --report-target <数値 pane id>` を渡すとこの分岐がそのまま出る。**同一タブ配置（既定）では何も渡さない** — 渡さなければ brief は従来どおり `to_id="secretary"` で生成される。
+
+---
+
 ## 条件付き追記: 監視ロール待ち合わせ設計を含むタスク
 
 委譲タスクが監視ロール（dispatcher / curator 等の /loop 常駐・定期 polling ロール）への待ち合わせ・spawn 連携・lifecycle を変更する場合、生成する CLAUDE.md（claude-org 自己編集タスクでは CLAUDE.local.md）の「現在のタスク」セクション直後に、以下の節を**そのまま**追記する（**ファイル変更が 1 件でも省略しない**。[`.claude/skills/org-delegate/references/instruction-template.md`](instruction-template.md) の brief 必須文言と同内容）:
@@ -248,3 +259,4 @@ done: {commit SHA 短縮形} {変更ファイル名}
 | `{claude_org_path}` | claude-org リポジトリの絶対パス | /home/user/work/claude-org |
 | `{worker_dir}` | ワーカー作業ディレクトリの絶対パス | /home/user/work/workers/data-analysis |
 | `{YYYY-MM-DD}` | 実行日 | 2026-04-05 |
+| `{report_target}` | 完了報告の宛先。既定（同一タブ配置）は `secretary`。背景タブ配置では窓口ペインの数値 pane id | secretary / 1 |
