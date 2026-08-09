@@ -230,7 +230,7 @@ done: {commit SHA 短縮形} {変更ファイル名}
 ワーカーを**窓口と別のタブ**に置く派遣（spawn-flow 3-1d の例外経路）では、上記テンプレートの `to_id="{report_target}"` を**窓口ペインの数値 pane id**（例 `to_id="1"`）で生成し、「作業完了時」の直前に以下の節を追記する。peer 名は送信者と同じタブ内でしか解決しないため、名前宛の報告は `[pane_not_found]`（broker: `[peer_not_found]`）で落ち、ワーカーは送ったつもりで待機し窓口からは stall にしか見えない:
 
 > ## 報告先（背景タブ配置）
-> あなたは窓口とは別のタブに配置されている。peer 名（`secretary` / `dispatcher`）は送信者と同じタブ内でしか解決しないため、名前宛の送信は必ず失敗する。報告・進捗・判断仰ぎはすべて数値 pane id `to_id="{report_target}"`（窓口）宛に送ること。届かないときは `list_peers`（タブを跨いで列挙される）で `role=secretary` の数値 id を取り直す（`list_panes` は自分のタブしか映さない）。
+> あなたは窓口とは別のタブに配置されている。peer 名（`secretary` / `dispatcher`）は送信者と同じタブ内でしか解決しないため、名前宛の送信は必ず失敗する。報告・進捗・判断仰ぎはすべて数値 pane id `to_id="{report_target}"`（窓口）宛に送ること。届かないときだけ `list_peers`（タブを跨いで列挙される）で取り直すが、`role=secretary` だけで選んではならない（列挙は他の org のタブも映すため、role 一致だけでは別 org の窓口へ完了報告を漏らす）。`name` / `role` / `cwd` の 3 属性が自分の org と一致する行に限って宛先にし、確定できないうちは何も送らずペインを保持したまま停止する。`list_panes` は自分のタブしか映さないので確認には使えない。
 
 生成経路（`tools/gen_delegate_payload.py` / `tools/gen_worker_brief.py`）では `--placement background_tab --report-target <数値 pane id>` を渡すとこの分岐がそのまま出る。**同一タブ配置（既定）では何も渡さない** — 渡さなければ brief は従来どおり `to_id="secretary"` で生成される。
 

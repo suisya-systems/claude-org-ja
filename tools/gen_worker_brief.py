@@ -197,6 +197,20 @@ def validate_report(report: Any) -> None:
     if target is not None and (not isinstance(target, str) or not target):
         raise ConfigError("report.target must be a non-empty string")
 
+    if placement == DEFAULT_PLACEMENT:
+        # Codex Round 1 P2: a custom target under the same-tab default would
+        # render the brief against that target while the DELEGATE body still
+        # advertises ``窓口ペイン名: secretary`` — two artifacts of the same
+        # dispatch disagreeing about where the worker reports. The field
+        # exists for the background-tab branch only, so reject the
+        # combination instead of silently producing the split.
+        if target is not None and target != DEFAULT_REPORT_TARGET:
+            raise ConfigError(
+                f"report.target={target!r} requires report.placement = "
+                "'background_tab'; the same-tab dispatch always reports to "
+                f"{DEFAULT_REPORT_TARGET!r}"
+            )
+
     if placement == "background_tab":
         if target is None:
             raise ConfigError(

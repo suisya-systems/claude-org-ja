@@ -81,7 +81,7 @@ codex exec review --base ${task_base_ref} -m gpt-5.6-sol -c model_reasoning_effo
 <!--END:codex_minimal-->
 <!--BEGIN:background_tab_report-->
 ## 報告先（背景タブ配置）
-窓口とは別タブに居るため、peer 名（`secretary` / `dispatcher`）は解決しない（名前は送信者と同じタブ内でのみ解決する。名前宛は `[pane_not_found]` / broker: `[peer_not_found]`）。報告・進捗・判断仰ぎは数値 pane id `to_id="${report_target}"`（窓口）宛に送る。届かないときは `list_peers`（タブ跨ぎで列挙）で `role=secretary` の数値 id を取り直す（`list_panes` は自タブ 1 行のみで使えない）。
+窓口とは別タブに居るため、peer 名（`secretary` / `dispatcher`）は解決しない（名前は送信者と同じタブ内でのみ解決する。名前宛は `[pane_not_found]` / broker: `[peer_not_found]`）。報告・進捗・判断仰ぎは数値 pane id `to_id="${report_target}"`（窓口）宛に送る。届かないときだけ `list_peers`（タブ跨ぎで列挙）で取り直すが、**`role=secretary` だけで選んではならない** — 列挙は他の org のタブも映すため、role 一致だけでは別 org の窓口へ完了報告を漏らす。`name` / `role` / `cwd` の 3 属性が自分の org と一致する行に限って宛先にし、確定できないうちは**何も送らずペインを保持したまま停止する**（復旧手順の正本は `${claude_org_path}/.claude/skills/org-delegate/references/renga-error-codes.md`。同節冒頭の capability gate も適用対象）。`list_panes` は自タブ 1 行のみで確認には使えない。
 
 <!--END:background_tab_report-->
 ## 完了時

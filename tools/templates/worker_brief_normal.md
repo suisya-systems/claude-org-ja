@@ -110,8 +110,9 @@ done: {commit SHA 短縮形} {変更ファイル名}
 
 あなたは窓口とは**別のタブ**に配置されている。peer 名（`secretary` / `dispatcher`）は**送信者と同じタブの中でしか解決しない**ため、名前宛の送信は `[pane_not_found]`（broker: `[peer_not_found]`）で必ず失敗する。完了・進捗・判断仰ぎのすべてを、下記「作業完了時」も含めて数値 pane id `to_id="${report_target}"`（窓口）宛に送ること。
 
-- 数値 id 宛でも届かないときは `list_peers`（タブを跨いで列挙される）で `role=secretary` の行の数値 id を取り直してから送る。名前宛へ切り替えるのは解決策にならない。
-- 下記の escalate 先 `dispatcher` も同じ理由で名前では解決しない。使うときは `list_peers` の `role=dispatcher` の数値 id を宛先にする。
+- 数値 id 宛でも届かないときだけ `list_peers`（タブを跨いで列挙される）で取り直す。**`role=secretary` だけで選んではならない** — 列挙は他の org のタブも映すため、role 一致だけでは別 org の窓口に完了報告を漏らす。`name` / `role` / `cwd` の 3 属性が自分の org のものと一致する行に限って宛先にすること（下記「作業完了時」の 2 rule と復旧手順の正本 `${claude_org_path}/.claude/skills/org-delegate/references/renga-error-codes.md` がそのまま適用される。同節冒頭の capability gate も同じく適用対象）。
+- 名前宛へ切り替えるのは解決策にならない（別タブでは原理的に解決しない）。3 属性一致で確定できないうちは**何も送らず、ペインを保持したまま停止する**。
+- 下記の escalate 先 `dispatcher` も同じ理由で名前では解決しない。使うときは `list_peers` の数値 id を、同じ 3 属性一致の確認を通してから宛先にする。
 - `list_panes` は自分のタブしか映さない（自ペイン 1 行だけが返る）ので、窓口・ディスパッチャーの確認には使えない。
 
 <!--END:background_tab_report-->

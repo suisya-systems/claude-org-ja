@@ -818,6 +818,21 @@ class Issue909ReportTargetPlacement(unittest.TestCase):
             )
         self.assertIn("numeric pane id", str(ctx.exception))
 
+    def test_same_tab_rejects_a_custom_target(self):
+        """Codex Round 1 P2: a custom target under same_tab would render the
+        brief against it while the DELEGATE body still names ``secretary``."""
+        with self.assertRaises(gwb.ConfigError) as ctx:
+            self._render(
+                self_edit=False,
+                report={"placement": "same_tab", "target": "dispatcher"},
+            )
+        self.assertIn("requires report.placement", str(ctx.exception))
+        # The explicit default pair stays legal (it renders identically).
+        self._render(
+            self_edit=False,
+            report={"placement": "same_tab", "target": "secretary"},
+        )
+
     def test_unknown_placement_is_rejected(self):
         with self.assertRaises(gwb.ConfigError):
             self._render(self_edit=False, report={"placement": "other_tab"})
