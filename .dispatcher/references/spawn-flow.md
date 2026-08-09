@@ -64,7 +64,7 @@ dispatcher が helper を経由しない degraded mode に入った場合、判�
 
 **既定は同一タブ配置で、それが MUST である**（3-2 の「同一タブ内 spawn で起動する理由」。契約 [`docs/contracts/backend-interface-contract.md`](../../docs/contracts/backend-interface-contract.md) §4.2「harnesses MUST launch every orchestrator-spawned pane in the same tab」）。本項が定めるのは、その MUST に対して契約 T-§4.2-place が **placement dogfood のためだけに**明示した狭い例外を、ディスパッチャーが**取り違えなく**発動するための機械的条件である。**通常委譲経路は 1 行も変わらない。**
 
-**5 条件を全て満たしたときだけ背景タブへ置く。1 つでも欠けたら、判断を保留せず既定の同一タブ経路（3-1a 以降そのまま）に倒す（fail closed）**:
+**6 条件を全て満たしたときだけ背景タブへ置く。1 つでも欠けたら、判断を保留せず既定の同一タブ経路（3-1a 以降そのまま）に倒す（fail closed）**:
 
 | # | 条件 | 確認方法 |
 |---|---|---|
@@ -73,6 +73,9 @@ dispatcher が helper を経由しない degraded mode に入った場合、判�
 | 3 | **`spawn_tab` capability を確認済み** | `mcp__renga-peers__server_info` を呼び、`status == "connected"` かつ `effective_capabilities` に `spawn_tab` が在ることを**事前に**確認する（`server.capabilities` ではなく `effective_capabilities` で gate する。`status` が `detached` / `unreachable` のときは両者が `null` = **不明**であって「無い」ではないので、条件 3 は**満たさない**扱いにする）。未確認のまま `tab` セレクタを撃たない |
 | 4 | **背景配置は 1 枚まで** | `.state/dispatcher/worker-idle-state.json` に `placement == "background_tab"` の record が **0 件**であること。1 件でも在れば既定の同一タブ経路に倒す |
 | 5 | **人間監督下の bounded run である** | 窓口からの `DELEGATE` が当該 dogfood の実施を明示しており、実走中は人間が監督して結果を確認する前提が立っていること。立っていなければ窓口へ確認する（ディスパッチャーが自分で dogfood と判断しない） |
+| 6 | **契約側の前提が実際に記録済みである** | 契約 T-§4.2-place の dogfood 例外は「this section is ratified」かつ「all four of (R1)–(R4) already hold」を要求する。したがって、**同節の status が `PROPOSED` のままである間、および R1–R4 の充足が契約本文に記録されていない間は、本経路を発動しない**（fail closed）|
+
+> **条件 6 の現状 — 今日この経路は 1 度も発動しない**: T-§4.2-place は 2026-08-09 時点で節レベル status が `PROPOSED` のままで、R1 / R3 / R4 の充足記録と placement gate（`placement_production_activation`）の状態同期は本タスクのスコープ外（下記の後送判断）である。**したがって本節が定めるのは「記録が揃ったあとに何をどう実行するか」の手順であって、記録が揃う前の発動許可ではない。** `tools/capability_gate.py` が照会できるゲート名は `first_drive` / `first_drive_pending` / `production_activation` の 3 つだけ（`tools/capability_gate.py:72-76`）で `placement_production_activation` は含まれないので、条件 6 は現状**機械照会できず、人間 / 窓口が契約本文を確認して明示的に GO を出すまで満たされない**。後送分を片付ける契約同期タスクで、この条件 6 を機械照会に置き換える。
 
 > **この経路は `delegate-plan` helper の `spawn` / `after_spawn[]` を使わない**: helper が返すのは rect ベース balanced split（3-1b）の同一タブ plan で、`tab` セレクタも `bound_pane_id` の束縛も生成しない。3-1d を通ったタスクではディスパッチャーが 3-2b / 3-4b を手順どおり実行し、helper の plan は**参照しない**（ja は `--tab` / `--overflow-to-new-tab` / `--server-capability` を helper に渡していないので、helper 側は今日この配置を知らない）。**3-1d に落ちなかったタスクの helper 経路は 1 行も変わらない。**
 
@@ -120,6 +123,9 @@ mcp__renga-peers__spawn_claude_pane(
 3-1d を通ったタスクでは、`target` / `direction`（= 3-1 の rect ベース balanced split）を**使わず** `tab` セレクタで背景タブへ置く。`{"new": {...}}` は**フォーカスを移さずに**新規タブを 1 枚起こすので、人間の見ているタブは変わらない:
 
 ```
+# 3-1d 条件 3 で呼んだ server_info の server.pid を控えておく（下記の session provenance 用）
+bound_server_pid = server_info().server.pid
+
 res = mcp__renga-peers__spawn_claude_pane(
   tab={"new": {"name": "worker-{task_id}"}},   # 背景タブを新規作成。target / direction は省略する
   role="worker",
@@ -130,6 +136,8 @@ res = mcp__renga-peers__spawn_claude_pane(
 )
 bound_pane_id = res の数値 pane id      # ★ 直後に控える。以降の儀式は全てこの id 宛
 ```
+
+> **数値 pane id は backend session に閉じた識別子なので、session を必ず一緒に控える（MUST）**: 契約 T-§4.2-id は「the id counter is initialised unconditionally in the constructor … Nothing persists or restores it … **across a daemon restart they are reissued from the beginning**」と書き、restart を跨いで使った id について「is not addressing a stale pane — it is addressing **a different, live pane**, and the backend answers **successfully**. No error code marks this」と続ける。同節の proof obligation **(O1) Session provenance** は「the id was issued by, and still belongs to, the backend session **currently serving the call**」の確立を MUST にしており、**(O4)** は確立できないときの相対セレクタ / 裸 name への降格を MUST NOT にしている。したがって `bound_pane_id` は単独では使えず、**同じ record に `bound_server_pid` を並べて控え、使用前に毎回照合する**（照合手順は [`.dispatcher/references/worker-monitoring.md`](worker-monitoring.md) (3-a-5) の「session provenance を毎サイクル確かめる」）。
 
 **戻り値の数値 pane id を直後に控え、以降の儀式を全てその id に固定する（MUST）**。控えは `.state/dispatcher/worker-idle-state.json` の当該 record の **`bound_pane_id`**（Step 4 の該当項で書く。schema は [`.dispatcher/references/worker-monitoring.md`](worker-monitoring.md) (3-a-3)）で、**peer id とは別フィールド**に持つ。理由は 2 つある:
 
@@ -174,7 +182,7 @@ while now < deadline:
 - `types=["pane_started"]` で他 type（`pane_exited` 等）を除外しつつ、cursor は全 type で advance（重複 scan なし）
 - **filter 不一致イベントが到着すると long-poll が早期終了し `events:[]` + 進んだ cursor が返る**ので、空応答のままループ継続（cursor 保持で重複なし）
 - `name == "worker-{task_id}"` の `pane_started` で break。deadline 超過で未検出なら `list_panes` で pane 存在を再確認
-- **背景タブ経路 (3-2b) では `ev.name` ではなく `ev` の pane 識別子 (canonical `ev.id` → alias `ev.pane_id`) が `bound_pane_id` に一致したときに break する**。deadline 超過時の再確認も `list_panes` ではなく `list_peers` の全タブ列挙で `bound_pane_id` を引く (背景ペインは `list_panes` に構造的に出ない)
+- **背景タブ経路 (3-2b) では `ev.name` ではなく `ev` の pane 識別子 (canonical `ev.id` → alias `ev.pane_id`) が `bound_pane_id` に一致したときに break する**。deadline 超過時の再確認は **`inspect_pane(target=<bound_pane_id>)` の pane 宛 probe** で行う (背景ペインは `list_panes` に構造的に出ないので `list_panes` は使えない)。**ここで `list_peers` を再確認に使ってはならない** — 3-3b の dev-channel 承認がまだなら peer 登録は原理的に成立しておらず (下記 3-3b「承認しないと … 3-4 の `list_peers` 待ちがタイムアウトし」)、**承認プロンプトで待っている生きたペインを「起動失敗」と誤判定して escalate する**。peer 登録の確認は承認後の 3-4b が owner である。probe が `[pane_not_found]` / `[pane_vanished]` 以外のコードで失敗した場合も起動失敗とは読まず、コードを添えて窓口へ escalate する
 
 ### 3-3b. 「Load development channel?」プロンプトを Enter で承認
 
@@ -215,9 +223,10 @@ pane は live でも Claude がまだ起動中の場合があるため二重確�
 3-4 の `list_peers` 待ちは、背景 child では **共有 reference §1-2 を適用しない**。§1-2 は「対象名 N のピアが**自タブに**生存しているか」を判定する規範で、背景 child は定義上つねに `same_tab == False`（= §1-2-c #4 の**不在**）なので、当てるとゲートが永久に開かない（判定の owner が違う。詳細と根拠は [`.dispatcher/references/worker-monitoring.md`](worker-monitoring.md) (3-a-5)）。代わりに:
 
 1. `mcp__renga-peers__list_peers` を 2 秒間隔でリトライする（**最大 30 秒。3-4 の元の poll 予算と同じで、新しい待ち合わせは足さない**）
-2. 列挙のうち **数値 `id` が `bound_pane_id` と完全一致**するレコードが**ちょうど 1 件**あることだけを受理条件にする。その `id` を `bound_peer_id` として控える（renga の `list_peers` は「always address a peer by its numeric pane id」と定めており、pane 面で得た id をそのまま引ける）
-3. **`name` 一致・`same_tab` / `tab` 値・`role` のいずれもゲートを開ける根拠にしない（MUST NOT）**。予約名は別タブに同名で実在し、タブ index は表示用でずれる
-4. 30 秒で受理できなければ、従来のタイムアウト処理と同じく状態を確認して窓口へ escalate する（**この経路は Step 4 に到達しないので、`bound_peer_id` の陽性履歴はそもそも書かれない**）
+2. 列挙のうち **数値 `id` が `bound_pane_id` と完全一致**するレコードが**ちょうど 1 件**あり、**かつそのレコードの `name` が `worker-{task_id}`・`role` が `worker`** であることを受理条件にする。その `id` を `bound_peer_id` として控える（renga の `list_peers` は「always address a peer by its numeric pane id」と定めており、pane 面で得た id をそのまま引ける）
+   - **`name` / `role` の照合を省かない理由（契約 T-§4.2-id の (O2) Identity binding）**: 同節は「verified — by an observation **independent of the id itself** — that the pane the id denotes is the pane intended, bound to the expected organisation and to the expected role or name」を MUST とし、「An id re-confirmed only against the record that supplied it discharges nothing: that is the same assertion made twice」と書く。id の等値だけでは spawn 戻り値を spawn 戻り値で確かめているだけになるので、**列挙側が持つ独立な属性 (`name` / `role`) と突き合わせる**ことで (O2) を discharge する
+3. **`name` 一致・`same_tab` / `tab` 値のどちらも、単独ではゲートを開ける根拠にしない（MUST NOT）**。予約名は別タブに同名で実在し、タブ index は表示用でずれる。**ゲートを開ける主キーはあくまで `bound_pane_id` の等値**で、`name` / `role` はその上に重ねる (O2) の識別子照合である
+4. 30 秒で受理できなければ、従来のタイムアウト処理と同じく状態を確認して窓口へ escalate する（**この経路は Step 4 に到達しないので、`bound_*` の陽性履歴はそもそも書かれない**）
 
 
 ### 3-5. ワーカーに指示を送信
@@ -336,9 +345,11 @@ worker brief に **ultracode 使用許可**があるタスクでは、kickoff �
    >
    > **spawn を放棄する場合の始末**: 3-4 のタイムアウト / 3-5 の送達不能で窓口へ escalate して派遣を取り止める経路は**本 Step 4 に到達しない**ので、そもそも陽性履歴は書かれない（＝この producer に「書いてから取り消す」窓は無い）。**本項を通した後は、record の削除規則は [`.dispatcher/references/worker-monitoring.md`](worker-monitoring.md) Step 5 (b) 更新規則 (4) だけが持つ** — 本項は削除条件を足さない。とくに**「派遣後にタスクを取り止めた」ことを削除の根拠にしてはならない**: ペインがまだ生きているうちに record を消すと `tracked_pane_id` と `same_tab_peer_id` が失われ、以後 `pane_exited` の attribution も裏取り (ii) も成立しなくなって、当該 worker を恒久 indeterminate に固定する（規則 (4) が名指しで禁じている当の帰結）。ペインの退役は通常の退役経路を通し、削除はそこで規則 (4) が発火する。
 
-7. **背景タブに置いた worker のときだけ** (3-1d の 5 条件を満たして 3-2b / 3-4b を通った場合)、同じ `.state/dispatcher/worker-idle-state.json` の当該 record に **`placement="background_tab"` / `bound_pane_id` (3-2b で控えた spawn 戻り値の数値 pane id) / `bound_peer_id` (3-4b の登録ゲートが受理した数値 id)** を **merge する**。上記 6 と同じく既存 record の他フィールドは触らず、record が無ければこの 3 フィールドだけで新規に作る。schema・参照規則・消費側の正本は [`.dispatcher/references/worker-monitoring.md`](worker-monitoring.md) Step 3 (3-a-3) / (3-a-5) である。
+7. **背景タブに置いた worker のときだけ** (3-1d の 6 条件を満たして 3-2b / 3-4b を通った場合)、同じ `.state/dispatcher/worker-idle-state.json` の当該 record に **`placement="background_tab"` / `bound_pane_id` (3-2b で控えた spawn 戻り値の数値 pane id) / `bound_server_pid` (同 3-2b で控えた `server_info` の `server.pid`) / `bound_peer_id` (3-4b の登録ゲートが受理した数値 id)** を **merge する**。上記 6 と同じく既存 record の他フィールドは触らず、record が無ければこの 4 フィールドだけで新規に作る。schema・参照規則・消費側の正本は [`.dispatcher/references/worker-monitoring.md`](worker-monitoring.md) Step 3 (3-a-3) / (3-a-5) である。
 
-   > **同一タブ経路ではこの項を実行しない。** `placement` の欠損は `"same_tab"` 扱い (migration 不要) なので、通常委譲では 3 フィールドとも書かず、今日の record 形は変わらない。
+   > **`bound_pane_id` と `bound_server_pid` は必ず一緒に書く (MUST)**: pane id の一意性保証は backend session に閉じており、daemon restart 後の同じ数値は**別の生きたペイン**を指す (契約 T-§4.2-id)。片方だけ書くと (O1) session provenance を discharge できない id が state に残る。
+   >
+   > **同一タブ経路ではこの項を実行しない。** `placement` の欠損は `"same_tab"` 扱い (migration 不要) なので、通常委譲では 4 フィールドとも書かず、今日の record 形は変わらない。
    >
    > **`same_tab_peer_id` に背景 worker の id を書いてはならない (MUST NOT)**: あちらは「§1-2 が**自タブに**在と確定したレコードの id」という意味を持ち、(3-a-2) 4 行目の裏取り (ii) の入力になる。背景 worker の id を入れると同表が偽の裏取りで終了確定へ進み、**生きている worker を退役させうる**。背景 worker の id は `bound_peer_id` にだけ書く。
    >
