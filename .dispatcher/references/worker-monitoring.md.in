@@ -116,6 +116,7 @@ bash ../tools/journal_append.sh anomaly_observed source={面} worker=worker-{tas
    - **どの追跡対象のイベントかを同定してから通知する (attribution)**: `pane_exited` の**受信**が終了の確定証拠であること ([`docs/contracts/backend-interface-contract.md`](../../docs/contracts/backend-interface-contract.md) §3.1: close 成功ごと / crash ごとに exactly once) は変わらない。変わるのは**そのイベントがどの追跡対象のものか**の同定方法で、同契約 T-§3.1 は「a harness MUST NOT match a lifecycle event to a tracked pane by `name` alone unless it has independently established that the pane is in the caller's tab」「Matching by name across an all-tab world can retire a live local pane on another tab's exit event」と書く:
      - **第一に控えてある数値 id で照合する**。契約 T-§3.1 は `pane_exited` が **`id`**（「the pane identifier, in the same id space as `list_panes`.`id`」）と、peer を持つペインでは **`peer_id`**（「the peer identifier, in the same id space as `list_peers`.`id`」）を**契約されたフィールド名で**載せると定める。突き合わせ先は 2 つあり、**どちらか一方でも一致すれば同定は確定する**:
        - イベントの pane 識別子 ↔ Step 3 (3-a-3) で控えた `tracked_pane_id`
+       - **`placement == "background_tab"` の worker では、突き合わせ先を `bound_pane_id` (pane 面) と `bound_peer_id` (peer 面) に読み替える** ((3-a-5))。背景 worker では `tracked_pane_id` が構造的に `null` で、`same_tab_peer_id` は意味が違うので使わない。**背景 worker の未同定イベントは `name` 一致へフォールバックせず、そのまま attribution 未確定として扱う** (全タブ世界で `name` は一意でない — T-§3.1)
        - イベントの peer 識別子 ↔ 同 (3-a-3) の `same_tab_peer_id`。**`list_panes` 側が使えないとき (resume 直後 / フォーカスが別タブ) でもこちらは効く** — T-§3.1 が `peer_id` を REQUIRED にしている理由がまさに「`list_panes` が一度も見せていない peer を追跡していることがある」ケースだからである
        **フィールド名は canonical を先に、次に alias を見る**: ratified §3.1 は per-event のフィールド名を規定していないので、canonical 名を載せない backend もありうる（pane 側 `ev.id` → `ev.pane_id`、peer 側 `ev.peer_id` → `ev.agent_id`）。**alias を先に読んではならない** — 両方載っている場合に backend 固有 / 古い `agent_id` が canonical 値を隠し、終了したピアが pending に残る（手順の一次参照は [`.claude/skills/org-delegate/references/renga-error-codes.md`](../../.claude/skills/org-delegate/references/renga-error-codes.md) の `poll_events` 節）。この照合は**版に依らず適用でき**、T-§3.1 が求める「`name` 単独に依らない同定」を満たす最も厳しい形である。`name` は通知本文の**表示用**にだけ使う
      - **上の id 照合がどちらも成立しなかったイベント** (控えが無い = Step 3 がまだ一度も当該ペインを列挙しておらず §1-2 の「在」確定も無い / イベントが canonical・alias いずれの識別子も載せていない) は `name` 一致しか取れない。**このとき Step 1 では attribution を決めない** — Step 1 が持つのは `poll_events` の応答だけで、版判定の材料 (`list_peers` の列挙) は Step 3 より後にしか来ないからである。**record の欠損を「旧版だから」と読んではならない**: capability 形の backend でも、初回の陽性観測より前 (spawn 直後 / resume 直後) は同じく欠損する。当該イベントは **未同定の `pane_exited` 候補**として同じサイクルの Step 3 (3-a) へ持ち越し、そこで版が確定してから同定する:
@@ -168,6 +169,8 @@ bash ../tools/journal_append.sh anomaly_observed source={面} worker=worker-{tas
    - `poll_events` (Step 1) を見逃した場合の保険 (`events_dropped` 発生時や events 未受信で pane 状態がズレた時)
    - `list_panes` の結果テキストには各 pane の `id / name / role / focused / x / y / width / height` が含まれる
    - **在るワーカーの数値 `id` をその場で控える**: 応答に出た `role == "worker"` の各ペインについて、`.state/dispatcher/worker-idle-state.json` の該当 record の `tracked_pane_id` を本サイクルの `id` に更新する (下記 (3-a-3))。Step 1 の lifecycle event attribution はこの控えを突き合わせ先にする
+   - **`placement == "background_tab"` の worker が 1 件でも居るサイクルでは、`{{FQ}}list_peers` を全 worker 共通に 1 回だけ引き、`{数値 id} → レコード` のローカル index を作る**。背景 worker の生存判定 ((3-a-5)) はこの index だけを参照し、per-worker の再取得も retry もしない (追加待ち時間 0 分)。背景 worker が 1 件も居なければ (= 通常運用) **この呼び出しは発生しない**ので、今日の 1 サイクルあたりの呼び出し回数は変わらない。列挙が引けなかった / 旧版形だったサイクルは (3-a-5) の 4 行目 (観測不能) に落とす
+   - **背景 worker は下記 (3-a) の裏取りゲートに掛けない**: `list_panes` に出ないのは配置上の定数であって消失ではないので、(3-a-1)〜(3-a-4) ではなく (3-a-5) が評価の owner になる。以下の 2 つの bullet は `placement` が `"same_tab"` (= 欠損含む) の worker だけを対象に読む
    - events 経由で exit を把握していないのに `list_panes` で pane が消えているワーカーがあれば、**下記 (3-a) の裏取りゲートを通してから**、**終了が確定した場合に限り** `.state/workers/worker-*.md` の status を `pane_closed` に遷移させ、Step 1 と同じく窓口に `WORKER_PANE_EXITED` を転送する (task 完了判定は同じ手順で窓口側が実施)。ゲートが **観測不能 / indeterminate / unknown** に倒したサイクルでは status 遷移も転送もせず、当該 worker を監視対象・active のまま次サイクルへ送る (下記 (3-a-4))
    - pane 上限は 16 なので結果は常に小さく、都度 full scan で問題なし
 
@@ -215,6 +218,9 @@ bash ../tools/journal_append.sh anomaly_observed source={面} worker=worker-{tas
    | `same_tab_peer_id` | `null \| 数値` | §1-2 の三値判定が「在」と確定したサイクル (監視サイクル / spawn 時受理の 2 producer。下記) | その「在」レコードの `list_peers` 上の数値 `id`。以後の消失判定 ((3-a-2) 4 行目の (ii)) はこの id だけで行う (`name` で集合所属を判定しない — 契約 T-§2.2「MUST NOT key a lookup, a **set-membership test**, or a reverse map on `name` alone」) |
    | `same_tab_observed_at` | `null \| ISO-8601 UTC` | 同上 | その観測時刻。**消失判定には使わない** (判定は `same_tab_peer_id` の id だけで行う) — 用途は窓口報告・journal 突合の監査値で、「いつの『在』を根拠に (ii) を評価しているか」を人間が追えるようにするためのもの。本ファイル冒頭の時刻規約どおり `date -u +%Y-%m-%dT%H:%M:%SZ` の決定的取得を使う (local-as-Z 厳禁) |
    | `tracked_pane_id` | `null \| 数値` | Step 3 の `list_panes` で当該 worker pane を観測したサイクル | `list_panes` 応答上の数値 `id`。Step 1 の lifecycle event attribution の突き合わせ先 |
+   | `placement` | `"same_tab" \| "background_tab"` | spawn 時に 1 度だけ ([`.dispatcher/references/spawn-flow.md`](spawn-flow.md) Step 4 の該当項) | この worker のペインをどこに置いたか。**欠損は `"same_tab"` 扱い**で migration 不要。`"background_tab"` の record だけが下記 (3-a-5) の判定に入り、それ以外は (3-a-1)〜(3-a-4) が従来どおり owner |
+   | `bound_pane_id` | `null \| 数値` | 同上 (spawn 戻り値をそのまま控える) | 背景タブ spawn が返した **session-bound な数値 pane id**。Group A の pane 操作 (`inspect_pane` / `send_keys`) の宛先と、`pane_exited` の pane 面 join に使う。**`tracked_pane_id` とは別フィールド** (あちらは `list_panes` に出た worker にしか値が入らず、背景 worker では構造的に `null` のまま) |
+   | `bound_peer_id` | `null \| 数値` | spawn-flow 3-4 の登録ゲートが `bound_pane_id` で受理したサイクル | 背景 worker の毎サイクル生存判定 ((3-a-5)) と `pane_exited` の peer 面 join に使う数値 id。**`same_tab_peer_id` とは別フィールド** (あちらは「自タブに 在 と確定した」意味を持ち (3-a-2) 4 行目の裏取り (ii) の入力になるので、背景 worker の id を入れてはならない — MUST NOT) |
 
    - **producer は 2 本ある。どちらも「§1-2 が『在』1 件と確定した `list_peers` レコードの数値 `id`」しか書かない**: **`list_panes` の pane id・旧版 fallback の `name` 一致 poll で得た id・縮退中の send-as-probe から推測した値は書かない (MUST NOT)**。誤った陽性履歴は (3-a-2) 4 行目の裏取り (ii) を偽で満たし、`pane_exited` の attribution を別 worker に結び付けて**生きている worker を退役させうる**。**受理条件・三値判定の正本は共有 reference §1-2-c であって本項ではない** (本項が定めるのは控え先と producer の所在だけである)。
      1. **監視サイクル producer**: この監視ループが `list_peers` を引いたサイクル ((3-a-1) の観測不能フォールバック / (3-a-2) の 3 列目評価) に §1-2 が「在」を返したとき。**通常サイクルの Step 3 は `list_peers` を引かない**ので、監視ループだけを回している間に新しく「在」が確定することは無い (呼び出しを増やさない = (P5))。裏取り (ii) はこれで成立する — ペインが消えても peer 登録が残っているサイクル ((3-a-2) の 2 行目) で `same_tab_peer_id` が入り、次サイクルで同じ id が列挙から消えれば 4 行目に落ちる
@@ -232,7 +238,7 @@ bash ../tools/journal_append.sh anomaly_observed source={面} worker=worker-{tas
    1. **worker を監視対象・active のまま保持する**: `.state/workers/worker-{task_id}.md` を `Status: pane_closed` にしない / `WORKER_PANE_EXITED` を送らない / `worker-idle-state.json` の該当 record を削除しない (Step 5 (b) 更新規則 (4) の「ゲートが『観測不能』に倒したサイクルでは record を**保持したまま**次サイクルへ送る」がそのまま適用される)
    2. **観測不能を journal + 窓口へ重複抑止付きで報告する**: (P4) の語彙を**そのまま再利用し、新しい event 名も新しい `kind` も導入しない** — journal は `anomaly_observed` / `notify_sent` に `kind=observation_unavailable`、de-dup キーは **`(worker, source, kind=observation_unavailable)`**、解除は同じ `source` の `observation_recovered`、窓口への本文は (P4) の `OBSERVATION_UNAVAILABLE:` 形。`source` には判定に使った面 (例: 同タブ生存判定なら `same_tab_judgement`、Step 1 の attribution 未確定なら `lifecycle_event`) を入れる — キーから `source` を落とすと、先に劣化した面の通知が後から劣化した別の面を覆い隠す ((P4))
    3. **次の `/loop 3m` サイクルで再評価する**: `poll_events` (Step 1) / peer message (Step 2) / events テーブルと state DB の痕跡 / §1-2 の三値判定を、次サイクルで改めて取り直す。判定は保留であって結論ではない ((P4)「観測不能は『異常なし』ではない」)
-   4. **画面監視の skip は当該 worker の Step 4 / Step 5 / Step 5.2 に限る**: ペインが列挙されない以上 `inspect_pane` は取れないので、その worker についてはこの 3 つを skip し、(P4)「観測不能サイクルでは state を進めない」に従って record も更新しない (`idle_streak_cycles` を加算せず、`last_check_ts` / `last_visible_content_hash` / `last_content_change_ts` も書き換えない)。**監視ループ全体・Step 1 / Step 2・Step 5.1 の relay gap scan は止めない** — いずれも当該 worker のペイン可視性に依存しない観測面である
+   4. **画面監視の skip は当該 worker の Step 4 / Step 5 / Step 5.2 に限る** (**`placement == "same_tab"` の worker のみ**。背景 worker は `bound_pane_id` で `inspect_pane` が届くので skip しない — (3-a-5) の「画面監視は数値 id 経由で維持する」): ペインが列挙されない以上 `inspect_pane` は取れないので、その worker についてはこの 3 つを skip し、(P4)「観測不能サイクルでは state を進めない」に従って record も更新しない (`idle_streak_cycles` を加算せず、`last_check_ts` / `last_visible_content_hash` / `last_content_change_ts` も書き換えない)。**監視ループ全体・Step 1 / Step 2・Step 5.1 の relay gap scan は止めない** — いずれも当該 worker のペイン可視性に依存しない観測面である
 
    これは (P5) の側の変化である: unknown / indeterminate を根拠にペインを再 spawn したり `close_pane` したりはしない (同節の禁止がそのまま掛かる)。判定が付かないことは行動を増やす理由にならず、安全側は常に「報告して止まる」。
 
@@ -247,12 +253,48 @@ bash ../tools/journal_append.sh anomaly_observed source={面} worker=worker-{tas
 
    (P4) の de-dup は「面ごとに劣化区間あたり 1 回」なので、この通知も 1 回しか出ない。取りこぼしても窓口の再起動 / handover で拾えるよう、**同じ 1 行を `.state/workers/worker-{task_id}.md` の Progress Log にも残す** (Step 2 の通常進捗と同じ追記経路)。窓口が判断して `.state/workers/worker-{task_id}.md` を終端状態へ遷移させれば、[Step 5.3](#step-5-3) の監視ループ停止条件がそのまま効いてループも降りられる。**dispatcher が代わりに終端状態を書くことはしない** (契約 [`docs/contracts/delegation-lifecycle-contract.md`](../../docs/contracts/delegation-lifecycle-contract.md) T7 / E1 の dated additive: unknown / indeterminate では遷移自体が発生しない)。
 
+   **(3-a-5) 背景タブに置いた worker の生存判定 — tracked-any-tab (id 束縛)**
+
+   **適用対象は `placement == "background_tab"` の record を持つ worker だけ**である ((3-a-3) の schema。欠損は `"same_tab"` 扱いなので、通常委譲で spawn した worker は 1 件も入らない)。この配置は [`.dispatcher/references/spawn-flow.md`](spawn-flow.md) 3-1d の 5 条件を全て満たす dogfood 指定タスクでのみ発生し、**通常委譲経路の同一タブ MUST は一切変わらない**。同タブ worker の消失評価は従来どおり (3-a-1)〜(3-a-4) が owner である。**本項は renga 面専用**でもある — 3-1d の条件 2 が transport を `renga` に限っており (broker surface に `tab` セレクタも `new_tab` も無い)、broker 運用では `placement == "background_tab"` の record がそもそも生まれないので本項は 1 度も評価されない。
+
+   **共有 reference §1-2 を背景 worker に流用してはならない (MUST NOT)**: [`.claude/skills/org-delegate/references/capability-first-drive-operational-gate.md`](../../.claude/skills/org-delegate/references/capability-first-drive-operational-gate.md) §1-2 は自身を「対象名 N のピアが **自タブに** 生存しているか」を判定する規範と定義しており、その真理値表は `same_tab == False` を「他タブ」→ §1-2-c #4 の**不在**に落とす。背景タブに置いた worker は定義上つねに `same_tab == False` なので、§1-2 を当てると毎サイクル「不在」と読まれ、spawn-flow 3-4 の登録ゲートは**永久に開かない**。同じ理由で **`same_tab_peer_id` を背景 worker に流用してはならない** — あのフィールドは「自タブに 在 と確定したレコードの id」という意味を持ち (3-a-2) 4 行目の裏取り (ii) の入力になるので、別の意味の id を入れると同表が誤って終了確定へ進む。背景 worker が使うのは別フィールドの `bound_pane_id` / `bound_peer_id` である。
+   （§1-2-e の「call site に独自の same-tab 規範を書いてはならない」は **同タブ生存判定** についての MUST NOT であり、本項は主語が違う = **背景タブに置いたペインの生存判定**なので抵触しない。同タブ判定の正本は引き続き §1-2 のみで、本項はそれを再掲も改変もしない。）
+
+   **判定の入力は 3 つだけ**:
+
+   | 入力 | 出どころ | 用途 |
+   |---|---|---|
+   | `bound_pane_id` | spawn-flow 3-2x の背景タブ spawn が返した**数値 pane id** | Group A の pane 操作 (`inspect_pane` / `send_keys`) の宛先と、`pane_exited` の pane 面 join |
+   | `bound_peer_id` | spawn-flow 3-4 の登録ゲートが `bound_pane_id` で受理したレコードの数値 `id` | 毎サイクルの生存判定と、`pane_exited` の peer 面 join |
+   | 本サイクルの `{{FQ}}list_peers` 全タブ列挙 | **Step 3 で全 worker 共通に 1 サイクル 1 回だけ**引き、`{数値 id} → レコード` のローカル index にする | 上記 id の在否 |
+
+   **タブ index を束縛キーにしない (MUST NOT)**: `list_peers` のタブメタデータは表示用で、タブが閉じるとずれる (renga の `list_peers` tool 契約:「tab indexes shift when tabs close, so always address a peer by its numeric pane id」)。契約側も `tab` を「meaningful **only** for equality comparison within a single enumeration」(T-§2.2-fields) に限っているので、サイクルを跨いで保持する期待値にはならない。「期待タブに束縛する」は **そのタブへ spawn したときに返った数値 id に束縛する**ことで満たす — 同じ束縛をより強い形 (タブ単位ではなくペイン単位) で行うので、タブ値を控える必要が無い。
+
+   **毎サイクルの三値**:
+
+   | # | 本サイクルの観測 | 判定 |
+   |---|---|---|
+   | 1 | `bound_peer_id` が `null` (登録ゲート未通過 = spawn 直後) | **initializing** — 在にも不在にも数えない。監視対象・active のまま次サイクルへ |
+   | 2 | `bound_peer_id` が本サイクルの index に**在る** | **在** (tracked-any-tab)。通常評価を続ける |
+   | 3 | `bound_peer_id` が index から**消えた** | **unknown** — 不在に潰さない (下記)。(3-a-4) の 4 点をそのまま適用する |
+   | 4 | `list_peers` を引けなかった / 列挙が旧版形に戻った (marker が 1 件も無い) | **観測不能** — (P4) を `source=tracked_any_tab` で 1 回報告し次サイクルで再評価 |
+
+   **3 行目を不在に潰さない理由**: 背景 worker が `list_panes` に出ないのは**配置上の定数**であって終了の証拠ではない ((P3) の contract §1.5「Visibility scope: current tab only」)。したがって背景 worker には (3-a-2) が要求する「独立した 2 面の一致」を組む材料が構造的に 1 面しか無く、`list_peers` からの消失 1 面だけで退役させると peer の登録遅延・一時 deregister をそのまま終了として扱うことになる。**在→消失は unknown であり、不在ではない。**
+
+   **終了確定は attribution 済みの `pane_exited` だけ (MUST)**: Step 1 の attribution で、イベントの pane 識別子 (canonical `ev.id` → alias `ev.pane_id`) が `bound_pane_id` に一致するか、peer 識別子 (canonical `ev.peer_id` → alias `ev.agent_id`) が `bound_peer_id` に一致したときに限り終了を確定し、`WORKER_PANE_EXITED` を送って Step 5 (b) 更新規則 (4) の record 削除に進む (canonical を先に、alias を後に読む規律は Step 1 と同じ)。**背景 worker では `name` 一致を同定に使わない** — 全タブ世界で `name` は一意でない (T-§2.2 / T-§3.1「a harness MUST NOT match a lifecycle event to a tracked pane by `name` alone」)。join が引けないまま 3 行目が続く形は **indeterminate** で、(3-a-4) の解消経路 (窓口の reconcile 判断) にそのまま乗せる。**背景 worker 専用の新しい escalation 経路・新しい event 名・新しい `kind` は作らない。**
+
+   **(3-a-2) の表は背景 worker には適用しない**: 同表の 1 列目 (`list_panes` から消えた) が定数で成立し、3 列目 (§1-2 の同タブ生存) が構造的に「不在」を返すので、そのまま当てると毎サイクル 4 行目 (終了とみなす) に落ちる。背景 worker の消失評価は本項が owner で、(3-a-2) は同タブ worker が owner である。
+
+   **画面監視は数値 id 経由で維持する**: 背景 worker は `list_panes` に出ないが、`inspect_pane` は Group A なので**自タブと確立した列挙に依らず数値 pane id なら他タブへ届く**（2026-08-09 に人間が批准した cross-tab pane control。契約 [`docs/contracts/backend-interface-contract.md`](../../docs/contracts/backend-interface-contract.md) T-§4.2 の Group A / 数値 id 規律）。したがって背景 worker では **Step 4 / Step 5 / Step 5.2 を skip しない** — Step 4 の inspect 宛先を `target=<bound_pane_id>` に切り替えて従来どおり評価する。skip したままにすると `APPROVAL_BLOCKED` / `ERROR_DETECTED` / `STALL_SUSPECTED` / `PANE_OUTPUT_WITHOUT_PEER_MSG` の 4 系統が背景配置でまとめて検出不能になる。Step 5.1 (relay gap) と Step 5.25 (relay scan) は元から pane 可視性に依存しないので本項の影響を受けない。
+
+   **追加の待ち時間は 0 分**: 増えるのは 3 分サイクルあたり全タブ `list_peers` **1 往復だけ**で、その 1 回の応答から作った index を全背景 worker が参照する。**per-worker の再取得・retry・新しい blocking wait を足さない** ((P5) と同じ向き: 精度は上がるが行動は増えない)。列挙が引けなかったサイクルは 4 行目 (観測不能) に落として次サイクルへ送る。
+
 4. **`{{FQ}}inspect_pane` でワーカーペインの画面内容を走査し異常検出**:
    - **目的**: ワーカー自己申告に依存せず、ディスパッチャー自身が画面内容から APPROVAL_BLOCKED / ERROR を検出する独立した観測チャネル
-   - **実行**: Step 3 で得た `list_panes` の active worker (`role == "worker"`) それぞれに対し:
+   - **実行**: Step 3 で得た `list_panes` の active worker (`role == "worker"`)、**および `placement == "background_tab"` で (3-a-5) が initializing 以外と判定した worker** それぞれに対し:
      ```
      result = {{FQ}}inspect_pane(
-         target="worker-{task_id}",
+         target="worker-{task_id}",              # 背景 worker は target=<bound_pane_id> (数値)。下記の宛先規則
          lines=<該当 worker pane の height>,   # Step 3 list_panes の height。取れなければ十分大きい固定値 (例 200)
          include_cursor=true,
          format="grid"
@@ -260,6 +302,7 @@ bash ../tools/journal_append.sh anomaly_observed source={面} worker=worker-{tas
      # result.structuredContent に {lines: [{row, text}], cursor: {visible, row, col}} が入る
      ```
      を順次実行 (16 ワーカー並列でも合計 1 秒未満)。`lines` は **Step 3 の `list_panes` で得た該当 worker pane の `height`** を渡し、pane の全 visible 行を取得して (d) の ERROR scan を全行対象にする (Issue #492 gap 1: `lines=10` の bottom-10 窓では row 15 のような scroll-up した error banner を取りこぼす。`inspect_pane` の `lines` は「末尾 N 行への trim」なので、固定値だと pane height がそれを超えた環境で上段を取りこぼす — 必ず実 height を使う)。`list_panes` の height が取れない場合のみ十分大きい固定値 (例 200) でフォールバックする。APPROVAL_BLOCKED の target line は (a) の通り「最後の非空行」なので返却行数を増やしても変わらない。
+   - **宛先規則 — 背景 worker は数値 id で撃つ ((3-a-5))**: `placement == "background_tab"` の worker には `target=<bound_pane_id>` (背景タブ spawn の戻り値の数値 pane id) を渡す。**name 宛にしない** — 予約名 `worker-{task_id}` は並走 org の別タブに同名で実在しうるうえ、相対セレクタ / 裸の name は自タブに解決するので背景タブには届かない (契約 T-§4.2)。背景 worker は `list_panes` に出ないので `height` も取れず、`lines` は上記フォールバック (十分大きい固定値、例 200) を使う。**エラー分岐と (a)〜(g) の判定は同タブ worker と完全に同じ**で、背景 worker 専用の判定パターン・通知 kind・de-dup キーは足さない
    - **エラー時の挙動**: tool result テキストに `[<code>] <msg>` 形式でエラーが埋まる。code で分岐する (詳細は `.claude/skills/org-delegate/references/renga-error-codes.md`):
      - `[pane_not_found]` / `[pane_vanished]` — **「ワーカーが閉じた」と読まない** ([観測の原則](#observation-principle) (P3))。この code は cross-tab addressing でも返る契約なので (contract §4.2)、フォーカスが別タブにある間は**生きているペインに対しても返る**。そのワーカーの inspect を skip した上で、Step 3 (3-a) の裏取りゲートに掛けて `WORKER_PANE_EXITED` を送るか観測不能に倒すかを決める (ゲートを通らずに exit 経路へ直行しない)
      - `[shutting_down]` — transport backend 停止中。監視ループを即停止し、`{{FQ}}send_message` で `FOREMAN_STOPPING` を窓口に通知
@@ -455,7 +498,7 @@ bash ../tools/journal_append.sh anomaly_observed source={面} worker=worker-{tas
      4. **Step 1 で受信した `pane_exited` が当該 worker のものと同定できた** (Step 1 の attribution)、または **Step 3 (3-a) の裏取りゲートで終了が確定した** → 該当 key をファイルから削除 (record ごと消えるので `completion_reported_at` も同時に破棄される = CLOSE_PANE / pane 消失時の解除はこの規則が担う、Issue #658)。**同定できていない `pane_exited` の受信は削除の根拠にならない** — attribution 未確定のまま record を消すと `same_tab_peer_id` / `tracked_pane_id` が失われ、以後どのサイクルでも id 照合も裏取り (ii) も成立しなくなって、まさに再評価が要る worker を恒久 indeterminate に固定してしまう ((3-a-4))。**`list_panes` から消えたことだけを削除の根拠にしない**のも同じ ([観測の原則](#observation-principle) (P2)、Issue #869): フォーカス移動による一時的な不可視で record を消すと `completion_reported_at` と観測履歴 (hash / streak / `last_content_change_ts`) が失われ、フォーカスが戻った後に Step 5.2 の false positive と完了確認の重複が再発する。ゲートが「観測不能」に倒したサイクル・attribution 未確定のサイクルはいずれも record を**保持したまま**次サイクルへ送る ((P4)「観測不能サイクルでは state を進めない」と同じ扱い)
      5. **既存 record に `last_visible_content_hash` フィールドが無い場合は migration せず「初回観測」として扱う (Issue #680 Blocker 2)**: 本サイクルの `content_hash` を保存し、`idle_streak_cycles = 0` / `last_content_change_ts = null` に**リセット**する。旧実装の `last_target_line_text` と cursor 由来で積まれた `idle_streak_cycles` (実測 13 まで到達) を新ハッシュ判定へ**持ち越さない** (持ち越すと初回から STALL/PANE_OUTPUT 条件を満たして即誤発火する)。旧 `last_target_line_text` は読まない (deprecated 残置のみ)。この初回観測は `compute_idle_transition()` が `prev_record` の hash 欠損を検出して自動でリセットする。次サイクル以降、前サイクル `last_check_ts` が確定した上での idle→active 遷移を待ってから初めて `last_content_change_ts` が値を持つので、Step 5.2 (b)(1) の前提 (ts 存在) を満たさず初回直後の false positive を構造的に抑止する。**同様に `completion_reported_at` field が無い場合も `null` 扱い** (= 完了未報告、migration 不要)
      6. `completion_reported_at` の set / clear (Issue #658): **lifecycle-event ベース**で更新する — Step 2 の監視制御メッセージ処理が `WORKER_COMPLETION_NOTED` 受信で `received_at` を set / `WORKER_REOPENED` 受信で `null` に clear (fast-path)、Step 5.2 (b)(6) の gate が `runs.status == 'in_use'` を観測したとき `null` に self-heal clear (reliable backstop、`WORKER_REOPENED` 取りこぼし対策 = P2)、record 削除 ((4)) で破棄。上記 (1)〜(3) の inspect ベース更新 (idle_streak / last_content_change_ts) は `completion_reported_at` を **触らない** (完了報告済み worker がレビュー中に画面出力しても completion 印は維持され、review 待ち idle の false positive を抑止し続ける)。**timeout による自然失効は持たない** (レビューが長い正常ケースを false positive に戻さないため、(g) 参照)
-     7. `same_tab_peer_id` / `same_tab_observed_at` / `tracked_pane_id` (同タブ生存の二段判定用、schema と set / 参照規則は Step 3 (3-a-3)): (4) / (6) と同じ **inspect スコープ外の caller-applied フィールド**なので (1)〜(3) の inspect ベース更新は触らず、helper は未知キーとして verbatim 保存する (`tools/inspect_pane_state.py: compute_idle_transition()` docstring)。set は Step 3 の `list_panes` 観測 (`tracked_pane_id`) と §1-2 の「在」確定 (`same_tab_peer_id` / `same_tab_observed_at`)、破棄は (4) の record 削除。**`same_tab_peer_id` / `same_tab_observed_at` は監視ループ外からも set されうる** — (3-a-3) の spawn producer は post-spawn の状態記録 ([`.dispatcher/references/spawn-flow.md`](spawn-flow.md) Step 4 の該当項) で書くので、監視ループが 1 サイクルも回っていない worker の record にこの 2 フィールドだけが載っている状態は正常である (残りのフィールドは初回サイクルの helper record が埋める。**merge であって上書きではない**ので、どちらの向きでも相手のフィールドを消さない)。
+     7. `same_tab_peer_id` / `same_tab_observed_at` / `tracked_pane_id` (同タブ生存の二段判定用) と `placement` / `bound_pane_id` / `bound_peer_id` (背景タブ配置の tracked-any-tab 判定用、Step 3 (3-a-5))。**schema と set / 参照規則は Step 3 (3-a-3)**: (4) / (6) と同じ **inspect スコープ外の caller-applied フィールド**なので (1)〜(3) の inspect ベース更新は触らず、helper は未知キーとして verbatim 保存する (`tools/inspect_pane_state.py: compute_idle_transition()` docstring)。set は Step 3 の `list_panes` 観測 (`tracked_pane_id`) と §1-2 の「在」確定 (`same_tab_peer_id` / `same_tab_observed_at`)、破棄は (4) の record 削除。**`same_tab_peer_id` / `same_tab_observed_at` は監視ループ外からも set されうる** — (3-a-3) の spawn producer は post-spawn の状態記録 ([`.dispatcher/references/spawn-flow.md`](spawn-flow.md) Step 4 の該当項) で書くので、監視ループが 1 サイクルも回っていない worker の record にこの 2 フィールドだけが載っている状態は正常である (残りのフィールドは初回サイクルの helper record が埋める。**merge であって上書きではない**ので、どちらの向きでも相手のフィールドを消さない)。
    - 再起動時の挙動: ファイルが消失/読めない場合は全 worker `idle_streak_cycles = 0` から再観測する (誤検出より見逃しを優先、stall は数サイクル後に再評価される)。`last_visible_content_hash` も消えるので次の初回観測は上記 (5) の初回リセット経路に自然に落ちる。`completion_reported_at` も消えるが、消失中に PANE_OUTPUT が誤発火しても secretary への informational + worker への nudge に留まり (承認・拒否の自動代行はしない)、次の完了受領 / 再指示で再セットされる安全側挙動
    - screen-change 判定・spinner 解析・active-spinner 抑止/cap 判定・idle-state 遷移の決定的コアは helper `tools/inspect_pane_state.py` に codify 済み (`extract_pane_state()` / `compute_idle_transition()`、regression test は `tests/test_inspect_pane_state.py`)。dispatcher Claude は helper 出力を JSON で受けて worker-idle-state.json に反映するだけで、hash / streak を手計算しない (Major 対応)
 
@@ -1122,6 +1165,7 @@ bash ../tools/journal_append.sh anomaly_observed source={面} worker=worker-{tas
    - `.state/dispatcher/curate-inflight.json` が存在する間: Step 1 (`poll_events`) / Step 2 (`check_messages`) / Step 5.3 だけを継続し (worker 向けの Step 3〜5.2 は対象が無いので skip)、inflight 解消 (Step 5.3 (a)/(b)/(c) のいずれか) 後のサイクルで停止する
    - **未配送の終端イベントが残っている間 (Refs #653 #658)**: `python ../tools/relay_scan.py --recipient secretary --list` が非空を返す間は Step 5.25 だけを継続する。PR merge 後に worker pane が閉じても `ci_completed` 等の配送漏れをカバーするため、pane 不在でも relay を走らせる。空配列 (`[]`) を返したサイクルで (curate-inflight も無ければ) 停止する
    - **unknown / indeterminate として保持している worker が居る間 ((3-a-4))**: `list_panes` に列挙されないだけで退役が**確定していない** worker は監視対象・active のままなので、**「ワーカーペインがない」に数えない**。当該 worker については Step 4 / Step 5 / Step 5.2 を skip するが、Step 1 / Step 2 / Step 3 / Step 5.1 は通常どおり回し、次サイクルで (3-a-2) を再評価する。停止できるのは、その worker が (3-a-2) の 1 行目 / 4 行目で**終了確定した**か、窓口が `.state/workers/worker-*.md` を終端状態へ遷移させたサイクル以降
+   - **`placement == "background_tab"` の worker が居る間 ((3-a-5))**: `list_panes` に出ないのは配置上の定数なので、同じく **「ワーカーペインがない」に数えない**。こちらは Step 4 / Step 5 / Step 5.2 も `bound_pane_id` 宛で**通常どおり回す** (skip しない)。停止できるのは、attribution 済みの `pane_exited` で**終了確定した**か、窓口が `.state/workers/worker-*.md` を終端状態へ遷移させたサイクル以降
 
 監視対象のペイン名は `.state/workers/worker-{peer_id}.md` の Pane Name (`worker-{task_id}`) から取得する。
 
