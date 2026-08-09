@@ -349,6 +349,21 @@ class CompliantFormTest(TmpRootTestCase):
         )
         self.assertEqual(self.scan().violations, [])
 
+    def test_names_without_ascii_letters_are_still_violations(self) -> None:
+        # backend の name 規則は英字を含まない安定 name も許す。「英字を含むもの
+        # だけ違反」に絞ると、これらが裸 name のまま素通りする。
+        _write(
+            self.root,
+            "a.md",
+            'close_pane(target="---")\n'
+            'close_pane(target="_")\n'
+            'close_pane(target="123-4")\n',
+        )
+        result = self.scan()
+        self.assertEqual(
+            [f.value for f in result.violations], ["---", "_", "123-4"]
+        )
+
     def test_prose_mentioning_the_form_without_a_call_is_ignored(self) -> None:
         # 「相対セレクタでは撃たない」と書くための引用形は call ではない。
         _write(

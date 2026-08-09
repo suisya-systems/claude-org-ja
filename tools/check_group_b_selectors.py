@@ -315,7 +315,12 @@ def is_relative_selector(raw_value: str) -> bool:
         # 中身が数値 pane id を指しているものだけ適合。名前 / focus を指す
         # プレースホルダは括弧で括られていても相対セレクタ。
         return not _is_pane_id_placeholder(value[1:-1])
-    return bool(re.search(r"[A-Za-z]", value))
+    # ここまでで弾かれなかった値は数値でもプレースホルダでもない = 安定 name。
+    # 「ASCII 英字を含むもの」に絞ると `target="---"` / `target="_"` /
+    # `target="123-4"` のような**英字を含まない安定 name** を見逃す（backend の
+    # name 規則はこれらを許す）。相対セレクタの再混入を防ぐのが目的なので、
+    # **適合形と積極的に判定できなかったものはすべて違反**にする。
+    return True
 
 
 def _span_text(text: str, start: int, end: int) -> str:
