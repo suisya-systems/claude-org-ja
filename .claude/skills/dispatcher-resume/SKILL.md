@@ -302,7 +302,7 @@ secretary に報告する。**（判定条件・三値の定義・評価順の�
 1. **inflight 再生成（先に実行）**: Step 4 の `list_peers` / `list_panes` に
    `name == "curator"` のペインが生きているのに `.state/dispatcher/curate-inflight.json`
    が無い場合（前 session が spawn 直後の inflight 書き込み前に途切れた等）、untracked
-   curator を放置しないよう `started_at = <決定的 UTC>` / `pane_id = <下記の数値 pane id>` /
+   curator を放置しないよう `started_at = <決定的 UTC>` / `pane_id = <下記の pane id（backend が返した型のまま）>` /
    `reasons: []` / `extended: false` / `curate_result: null` / `last_inspect_hash: null` /
    `last_inspect_ts: null` で
    inflight を**再生成する**（フィールドの正本は
@@ -318,8 +318,11 @@ secretary に報告する。**（判定条件・三値の定義・評価順の�
    **手書きの local(JST)時刻を `Z` で書かない**（再生成 started_at が未来時刻になると Step 5.3 の
    `now - started_at` が負値となり curator が永久に孤立する。決定的取得の正本は同 5-3）。
    `pane_id` は**生存確認に使った `mcp__org-broker__list_panes` の列挙で `name == "curator"` かつ
-   `role == "curator"` を指しているレコードの数値 `id`** を、引用符で囲まず数値で書く（列挙が
-   手元にあるのでその場で採れる）。**`pane_id` を欠いた形で再生成しない** — Step 5.3 (a)/(b) の
+   `role == "curator"` を指しているレコードの `id`** を、**`mcp__org-broker__list_panes` が返した JSON の型を
+   変えずに**書く（列挙が手元にあるのでその場で採れる）。tmux backend は `"%3"` のような**文字列**、
+   WezTerm backend は**整数**を返すので、**引用符の有無を型に合わせる** — 文字列を引用符無しで
+   書くと JSON が構文非妥当になり、Step 5.3 も次の resume もこのファイルを読めず curator の
+   追跡が失われる（正本は同 5-3 の注記）。**`pane_id` を欠いた形で再生成しない** — Step 5.3 (a)/(b) の
    curator close はこの `pane_id` を identity 照合の起点にするので、欠けると schema 追加前の
    旧形式ファイルと同じ扱いになり、close が列挙引き直しの fallback 経路に落ちる
    （[`.dispatcher/references/worker-monitoring.md` Step 5.3](../../../.dispatcher/references/worker-monitoring.md)）。

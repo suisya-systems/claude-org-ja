@@ -372,7 +372,7 @@ mcp__renga-peers__spawn_claude_pane(
 ```json
 {
   "started_at": "<上記 date -u コマンドの出力をそのまま。UTC のみ、JST-as-Z 禁止>",
-  "pane_id": <spawn 戻り値の数値 pane id。引用符で囲まず数値で書く>,
+  "pane_id": <spawn 戻り値の pane id を JSON の型どおりに書く。下記注意>,
   "reasons": ["<5-1 の JSON の reasons[] をそのまま>"],
   "trigger_task_id": "<本 CLOSE_PANE の対象だった task_id>",
   "extended": false,
@@ -381,6 +381,21 @@ mcp__renga-peers__spawn_claude_pane(
   "last_inspect_ts": null
 }
 ```
+
+> **`pane_id` は「数値で書く」ではなく「backend が返した型のまま書く」**: pane id の JSON 型は
+> **backend 依存**である — tmux backend（broker の既定）は `"%3"` のような**文字列**、
+> WezTerm backend は**整数**を返す（[`.claude/skills/org-attach/SKILL.md`](../../.claude/skills/org-attach/SKILL.md)
+> の `list_panes` 戻り値フィールド表、runtime `broker_queue_event.schema.json`: "Backend-native
+> pane id: int on WezTerm, string (e.g. `\"%3\"`) on tmux"）。したがって
+> **`"pane_id": %3` と引用符無しで書くと JSON として構文非妥当**になり、後続サイクルの
+> Step 5.3 も `/dispatcher-resume` もこのファイルを読めず、curator の追跡が失われる
+> （＝ live curator が inflight 無しで残り、5-2 の single-flight coalesce で以後の curate が
+> 恒久抑止される、この schema がまさに防ぐはずの状態）。**文字列で返ったなら引用符付きの
+> 文字列として、整数で返ったなら数値として**、戻り値の型をそのまま写すこと。
+> 読む側（Step 5.3 / resume）も同様に、`list_panes` の `id` とは**型を変換せずに**突き合わせる。
+>
+> 「数値 pane_id で撃つ」という契約 T-§4.2 の語の "numeric" は**相対セレクタでない
+> backend-native な id** の意であって、JSON の number 型を指してはいない。
 
 > **`pane_id` は非同期 close の identity 照合の起点**: curator の close は本ハンドラではなく監視ループ
 > [`.dispatcher/references/worker-monitoring.md` Step 5.3](worker-monitoring.md#step-5-3) が別サイクルで
