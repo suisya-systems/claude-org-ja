@@ -201,6 +201,14 @@ class DelegatePlan:
     # a value means the worktree is cut from ``origin/<base_branch>`` and that
     # same branch is the default ``gh pr create --base`` for the PR flow.
     base_branch: Optional[str] = None
+    # Issue #909: where the dispatcher will place the worker pane, and the
+    # address the brief tells the worker to report to. ``same_tab`` /
+    # ``secretary`` is the default dispatch and renders both the brief and
+    # the DELEGATE body byte-identically to pre-#909; ``background_tab``
+    # (spawn-flow 3-1d) carries the Secretary's numeric pane id because peer
+    # names only resolve inside the sender's tab.
+    placement: str = gwb.DEFAULT_PLACEMENT
+    report_target: str = gwb.DEFAULT_REPORT_TARGET
     # Where ``base_branch`` came from: ``"cli"`` (--base-ref), ``"registry"``
     # (the project's base_branch column), or ``"origin_head"`` (unconfigured).
     # Carried so the apply-time failure message can name the input the operator
@@ -228,6 +236,11 @@ class DelegatePlan:
             # ``base_ref`` value is exactly what ``git worktree add`` will use.
             "base_branch": self.base_branch,
             "base_branch_source": self.base_branch_source,
+            # Issue #909: disclose where the worker is planned to sit and the
+            # address its brief reports to, so Secretary can check the pair
+            # off ``preview --json`` before dispatching to a background tab.
+            "placement": self.placement,
+            "report_target": self.report_target,
             "base_ref": (
                 f"origin/{self.base_branch}"
                 if self.base_branch is not None
@@ -547,6 +560,8 @@ def _format_delegate_body(
     brief_filename: str,
     base_branch: Optional[str] = None,
     base_branch_source: str = "origin_head",
+    placement: str = gwb.DEFAULT_PLACEMENT,
+    report_target: str = gwb.DEFAULT_REPORT_TARGET,
 ) -> str:
     """Format the DELEGATE message body per org-delegate Step 2 template.
 
@@ -555,6 +570,11 @@ def _format_delegate_body(
     both see the non-default PR base without re-reading the registry. The
     line is omitted entirely when nothing is configured, keeping the body
     byte-identical to the pre-#808 output for every existing project.
+
+    Issue #909: a ``background_tab`` dispatch replaces the trailing
+    ``窓口ペイン名`` line with the Secretary's numeric pane id, because the
+    pane name it otherwise advertises is unreachable from another tab. The
+    default (``same_tab``) keeps that line exactly as before.
     """
     instr_summary = _summarize_description(description)
     branch_line = (
@@ -575,6 +595,25 @@ def _format_delegate_body(
             f"\n  - ベース: origin/{base_branch}"
             f"（{source_label}。PR も `--base {base_branch}` を既定とする）"
         )
+    if placement == "background_tab":
+        # The brief is rendered here, before the dispatcher evaluates the
+        # 3-1d gates — so a fail-closed fallback to the same-tab path would
+        # leave the worker holding a brief that describes the other
+        # placement. The dispatcher cannot silently reuse it: say so in the
+        # body rather than letting the two artifacts drift apart.
+        report_line = (
+            f"配置 (placement): background_tab（spawn-flow 3-1d）\n"
+            f'窓口の報告先: `to_id="{report_target}"`（数値 pane id。'
+            f"背景タブの worker からは pane 名 `secretary` が解決しないため、"
+            f"brief も同じ数値 id で生成済み）\n"
+            f"**6 条件のいずれかを満たさず同一タブ経路に倒す場合、この brief を"
+            f"そのまま使ってはならない**（背景タブ前提の報告先・報告規律が"
+            f"書かれている）。派遣を進めず窓口へ差し戻し、`--placement` 無しで "
+            f"brief を再生成させること"
+        )
+    else:
+        report_line = "窓口ペイン名: `secretary`（renga layout で登録済み）"
+
     body = f"""DELEGATE: 以下のワーカーを派遣してください。
 
 タスク一覧:
@@ -587,7 +626,7 @@ def _format_delegate_body(
   - 検証深度: {verification_depth}
   - 指示内容: 詳細は `{brief_full_path}` を参照。要約: {instr_summary or '(none)'}
 
-窓口ペイン名: `secretary`（renga layout で登録済み）"""
+{report_line}"""
     return body
 
 
@@ -615,6 +654,8 @@ def build_delegate_plan(
     implementation_guidance: Optional[str] = None,
     references_knowledge: Optional[list[str]] = None,
     parallel_notes: Optional[str] = None,
+    placement: Optional[str] = None,
+    report_target: Optional[str] = None,
     registry_path: Optional[Path] = None,
     state_db_path: Optional[Path] = None,
     claude_org_root: Path,
@@ -643,12 +684,21 @@ def build_delegate_plan(
         implementation_guidance=implementation_guidance,
         references_knowledge=references_knowledge,
         parallel_notes=parallel_notes,
+        placement=placement,
+        report_target=report_target,
         registry_path=registry_path,
         state_db_path=state_db_path,
         claude_org_root=claude_org_root,
         workers_dir=workers_dir,
         layout_overrides=layout_overrides,
     )
+
+    # Read the effective values back off the config the brief renders from,
+    # so the DELEGATE body and the brief can never disagree about where the
+    # worker reports (Issue #909). ``build_config_from_task`` has already
+    # validated the pair.
+    effective_placement = gwb._report_placement(config)
+    effective_report_target = gwb._report_target(config)
 
     self_edit = bool(config["worker"]["self_edit"])
 
@@ -849,6 +899,8 @@ def build_delegate_plan(
         brief_filename=brief_filename,
         base_branch=base_branch,
         base_branch_source=base_branch_source,
+        placement=effective_placement,
+        report_target=effective_report_target,
     )
 
     artifacts = [
@@ -924,6 +976,8 @@ def build_delegate_plan(
         project_path=project_path,
         base_branch=base_branch,
         base_branch_source=base_branch_source,
+        placement=effective_placement,
+        report_target=effective_report_target,
     )
 
 
@@ -1474,6 +1528,8 @@ def _finalize_pending_clone_brief(plan: DelegatePlan) -> DelegatePlan:
         brief_filename="CLAUDE.local.md",
         base_branch=plan.base_branch,
         base_branch_source=plan.base_branch_source,
+        placement=plan.placement,
+        report_target=plan.report_target,
     )
     return replace(
         plan,
@@ -2030,6 +2086,9 @@ def _add_task_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--impl-guidance", default=None)
     p.add_argument("--knowledge", action="append", default=[])
     p.add_argument("--parallel-notes", default=None)
+    # Issue #909: placement / report target. Shared with
+    # ``gen_worker_brief.py from-task`` so both input surfaces stay at parity.
+    gwb._add_report_args(p)
     p.add_argument("--registry-path", type=Path, default=None)
     p.add_argument("--state-db-path", type=Path, default=None)
     p.add_argument("--claude-org-root", type=Path, default=None)
@@ -2148,6 +2207,9 @@ def _load_task_args_from_toml(path: Path) -> dict[str, Any]:
     impl = cfg.get("implementation", {})
     refs = cfg.get("references", {})
     parallel = cfg.get("parallel", {})
+    report = cfg.get("report", {})
+    if not isinstance(report, dict):
+        raise SystemExit(f"error: {path}: [report] must be a TOML table")
     role = (worker.get("role") or "").strip()
     mode_from_toml = "audit" if role == "doc-audit" else "edit"
 
@@ -2205,6 +2267,11 @@ def _load_task_args_from_toml(path: Path) -> dict[str, Any]:
         "implementation_guidance": impl.get("guidance"),
         "references_knowledge": refs.get("knowledge"),
         "parallel_notes": parallel.get("notes"),
+        # Issue #909: keep the TOML input form at parity with the CLI flags,
+        # so a ``--write-toml`` audit trail round-trips a background-tab
+        # dispatch instead of silently flattening it back to same_tab.
+        "placement": report.get("placement"),
+        "report_target": report.get("target"),
         "mode": mode_from_toml,
         "layout_overrides": layout_overrides or None,
     }
@@ -2263,6 +2330,10 @@ def _gather_plan_kwargs(args: argparse.Namespace) -> dict[str, Any]:
         "implementation_guidance": args.impl_guidance,
         "references_knowledge": args.knowledge or None,
         "parallel_notes": args.parallel_notes,
+        # ``getattr`` for the same reason ``--pattern`` uses it: callers
+        # synthesize partial Namespaces (Issue #909).
+        "placement": getattr(args, "placement", None),
+        "report_target": getattr(args, "report_target", None),
         "registry_path": args.registry_path,
         "workers_dir": args.workers_dir,
     }
@@ -2291,9 +2362,12 @@ def _cmd_preview(args: argparse.Namespace) -> int:
             state_db_path=state_db_path if state_db_path.exists() else None,
             **kwargs,
         )
-    except rwl.ResolveError as e:
+    except (rwl.ResolveError, gwb.ConfigError) as e:
         # ``ResolveError`` is the layout resolver's *input-rejection* channel
         # (bad task_id / project_slug / mode), i.e. operator error, not a bug.
+        # ``ConfigError`` is the same channel for the brief config — Issue
+        # #909's ``--placement background_tab`` without a numeric
+        # ``--report-target`` lands here.
         # Surface it in the same one-line ``error: ...`` shape the argument
         # checks in ``_gather_plan_kwargs`` already use, instead of letting a
         # Python traceback out of the CLI: this path is how a human first meets
@@ -2359,7 +2433,7 @@ def _cmd_apply(args: argparse.Namespace) -> int:
             state_db_path=state_db_path if state_db_path.exists() else None,
             **kwargs,
         )
-    except rwl.ResolveError as e:
+    except (rwl.ResolveError, gwb.ConfigError) as e:
         # Same contract as ``_cmd_preview``: reject bad input with one line and
         # no traceback. Raised before ``apply_delegate_plan`` runs, so nothing
         # has been reserved / written when this fires.
@@ -2379,6 +2453,13 @@ def _cmd_apply(args: argparse.Namespace) -> int:
         print(
             f"base: origin/{plan.base_branch} "
             f"(source={plan.base_branch_source}; PR base default)"
+        )
+    # Issue #909: only announced for the background-tab exception, so the
+    # default same-tab dispatch keeps its existing output.
+    if plan.placement != gwb.DEFAULT_PLACEMENT:
+        print(
+            f"placement: {plan.placement} "
+            f"(brief reports to to_id=\"{plan.report_target}\")"
         )
     print(f"brief: {result.brief_path}")
     if result.settings_path is not None:

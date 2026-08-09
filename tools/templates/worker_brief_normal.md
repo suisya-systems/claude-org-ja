@@ -105,9 +105,21 @@ done: {commit SHA 短縮形} {変更ファイル名}
 - 振り返り記録（`knowledge/raw/`）も minimal では不要
 
 <!--END:codex_minimal-->
+<!--BEGIN:background_tab_report-->
+## 報告先（背景タブ配置）
+
+あなたは窓口とは**別のタブ**に配置されている。peer 名（`secretary` / `dispatcher`）は**送信者と同じタブの中でしか解決しない**ため、名前宛の送信は `[pane_not_found]`（broker: `[peer_not_found]`）で必ず失敗する。完了・進捗・判断仰ぎのすべてを、下記「作業完了時」も含めて数値 pane id `to_id="${report_target}"`（窓口）宛に送ること。
+
+- **送信の前に毎回 identity を照合する**（失敗したときだけではない）。数値 pane id は backend session に閉じた識別子で、daemon restart を跨ぐと先頭から振り直される。stale な id は**別の生きたペインに「成功」で届き、エラーコードは何も出ない**（契約 T-§4.2-id の session provenance）。送る前に `list_peers` で `id=${report_target}` の行を引き、`name` / `role` / `cwd` の 3 属性が自分の org の窓口と一致することを確認してから送ること。
+- 一致しない / その行が無いときは、**`role=secretary` だけで別の行を選んではならない** — 列挙は他の org のタブも映すため、role 一致だけでは別 org の窓口に完了報告を漏らす。3 属性一致で確定できないうちは**何も送らず、ペインを保持したまま停止する**（下記「作業完了時」の 2 rule と復旧手順の正本 `${claude_org_path}/.claude/skills/org-delegate/references/renga-error-codes.md` がそのまま適用される。同節冒頭の capability gate も同じく適用対象）。
+- 名前宛へ切り替えるのは解決策にならない（別タブでは原理的に解決しない）。
+- 下記の escalate 先 `dispatcher` も同じ理由で名前では解決しない。使うときは `list_peers` の数値 id を、同じ 3 属性一致の確認を通してから宛先にする。
+- `list_panes` は自分のタブしか映さない（自ペイン 1 行だけが返る）ので、窓口・ディスパッチャーの確認には使えない。
+
+<!--END:background_tab_report-->
 ## 作業完了時
 
-1. **完了報告**: `${transport_send_message}(to_id="secretary", message="...")` で窓口に報告する。**ディスパッチャーではなく窓口に送ること**。宛先解決に失敗しても（renga: `[pane_not_found]` / broker: `[peer_not_found]`）**窓口が消えたとは解釈しない**。復旧手順の正本は `${claude_org_path}/.claude/skills/org-delegate/references/renga-error-codes.md` の「`pane_not_found` の messaging 分岐」節（同節の冒頭が capability gate へのポインタを持つ）。そこを読む前も読んだ後も、次の 2 つは必ず守る:
+1. **完了報告**: `${transport_send_message}(to_id="${report_target}", message="...")` で窓口に報告する。**ディスパッチャーではなく窓口に送ること**。宛先解決に失敗しても（renga: `[pane_not_found]` / broker: `[peer_not_found]`）**窓口が消えたとは解釈しない**。復旧手順の正本は `${claude_org_path}/.claude/skills/org-delegate/references/renga-error-codes.md` の「`pane_not_found` の messaging 分岐」節（同節の冒頭が capability gate へのポインタを持つ）。そこを読む前も読んだ後も、次の 2 つは必ず守る:
    - **宛先が自分と同じ org だと確認できるまで一切再送しない**（誤送信は別 org へ完了報告を漏らす）。数値 id・`same_tab: true` 候補を含め、確認できていない宛先へは送らない。
    - **宛先を確定できない / 再送も失敗したときは `to_id="dispatcher"` へ 1 回だけ escalate する**（ループにしない）。**この escalate も同じ確認の対象**で、dispatcher も同一 org だと確認できないときは**何も送らず、ペインを保持したまま停止する** — 報告内容はペインに残し、ディスパッチャーの監視 / 人間の回収に委ねる。
 2. **PR 作成後はペインを保持してレビュー指摘待機**: 「閉じてよい」「マージ済み」など窓口からの明示クローズ指示が来るまで待機状態を維持する。

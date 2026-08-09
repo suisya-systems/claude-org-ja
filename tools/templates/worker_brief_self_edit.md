@@ -79,8 +79,13 @@ codex exec review --base ${task_base_ref} -m gpt-5.6-sol -c model_reasoning_effo
 検証深度 minimal。minimal 用 1 行報告フォーマットを使用（`done: {SHA} {files}`）。Codex セルフレビュー・追加テスト・拡張された動作確認は一切禁止。
 
 <!--END:codex_minimal-->
+<!--BEGIN:background_tab_report-->
+## 報告先（背景タブ配置）
+窓口とは別タブに居るため、peer 名（`secretary` / `dispatcher`）は解決しない（名前は送信者と同じタブ内でのみ解決する。名前宛は `[pane_not_found]` / broker: `[peer_not_found]`）。報告・進捗・判断仰ぎは数値 pane id `to_id="${report_target}"`（窓口）宛に送る。**送信前に毎回 identity を照合する**（失敗時だけではない）: 数値 pane id は backend session に閉じた識別子で daemon restart 後は振り直され、stale な id は**別の生きたペインに「成功」で届きエラーコードも出ない**（契約 T-§4.2-id の session provenance）。`list_peers` で `id=${report_target}` の行を引き、`name` / `role` / `cwd` の 3 属性が自分の org の窓口と一致してから送ること。一致しない / 行が無いときは **`role=secretary` だけで別の行を選ばない**（他 org のタブも列挙されるため完了報告を別 org へ漏らす）。確定できないうちは**何も送らずペインを保持したまま停止する**（復旧手順の正本は `${claude_org_path}/.claude/skills/org-delegate/references/renga-error-codes.md`。同節冒頭の capability gate も適用対象）。`list_panes` は自タブ 1 行のみで確認には使えない。
+
+<!--END:background_tab_report-->
 ## 完了時
-1. `${transport_send_message}(to_id="secretary", ...)` で完了内容・変更ファイル・commit SHA・動作確認結果・残作業を報告
+1. `${transport_send_message}(to_id="${report_target}", ...)` で完了内容・変更ファイル・commit SHA・動作確認結果・残作業を報告
 2. PR 作成後ペイン保持
 3. 振り返り記録: 任意（非自明な学びがあれば `${claude_org_path}/knowledge/raw/{YYYY-MM-DD}-{topic}.md`）
 

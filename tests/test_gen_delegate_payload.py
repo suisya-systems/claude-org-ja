@@ -598,6 +598,166 @@ class TestSettingsGenerateCmd(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Issue #909 — placement decides the report target
+# ---------------------------------------------------------------------------
+
+
+class TestIssue909Placement(unittest.TestCase):
+    """A background-tab dispatch must hand the worker a reachable address.
+
+    Peer names resolve only inside the sender's tab, so a worker placed in
+    a background tab (spawn-flow 3-1d) cannot reach ``to_id="secretary"``
+    at all — the completion report drops silently and the Secretary sees a
+    stall. The same-tab default must stay byte-identical.
+    """
+
+    def setUp(self) -> None:
+        self._td = tempfile.TemporaryDirectory()
+        self.sb = _Sandbox(Path(self._td.name))
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def _plan(self, **extra):
+        return gdp.build_delegate_plan(
+            task_id="place-task",
+            project_slug="clock-app",
+            description="do the thing",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+            **extra,
+        )
+
+    def test_default_body_and_plan_fields_unchanged(self):
+        plan = self._plan()
+        self.assertEqual(plan.placement, "same_tab")
+        self.assertEqual(plan.report_target, "secretary")
+        self.assertIn("窓口ペイン名: `secretary`", plan.delegate_body)
+        self.assertNotIn("placement", plan.delegate_body)
+        # An explicit same_tab must render the identical body.
+        self.assertEqual(self._plan(placement="same_tab").delegate_body,
+                         plan.delegate_body)
+
+    def test_background_tab_body_carries_numeric_pane_id(self):
+        plan = self._plan(placement="background_tab", report_target="1")
+        self.assertEqual(plan.placement, "background_tab")
+        self.assertEqual(plan.report_target, "1")
+        self.assertIn('窓口の報告先: `to_id="1"`', plan.delegate_body)
+        self.assertIn("background_tab", plan.delegate_body)
+        # The unreachable name line must be gone, not merely supplemented.
+        self.assertNotIn("窓口ペイン名: `secretary`", plan.delegate_body)
+
+    def test_background_tab_flows_into_the_rendered_brief(self):
+        plan = self._plan(placement="background_tab", report_target="1")
+        brief = gwb.render(plan.config)
+        self.assertIn('send_message(to_id="1"', brief)
+        self.assertNotIn('send_message(to_id="secretary"', brief)
+
+    def test_summary_dict_discloses_both_fields(self):
+        summary = self._plan(
+            placement="background_tab", report_target="1"
+        ).to_summary_dict()
+        self.assertEqual(summary["placement"], "background_tab")
+        self.assertEqual(summary["report_target"], "1")
+
+    def test_background_tab_without_numeric_target_is_rejected(self):
+        with self.assertRaises(gwb.ConfigError):
+            self._plan(placement="background_tab")
+        with self.assertRaises(gwb.ConfigError):
+            self._plan(placement="background_tab", report_target="secretary")
+
+    def test_cli_rejects_background_tab_without_target_before_writing(self):
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        runs_before = len(self.sb.list_runs())
+        buf = StringIO()
+        with self.assertRaises(SystemExit) as ctx, redirect_stdout(buf):
+            gdp.main([
+                "apply",
+                "--task-id", "place-cli",
+                "--project-slug", "clock-app",
+                "--description", "do the thing",
+                "--claude-org-root", str(self.sb.claude_org_root),
+                "--state-db-path", str(self.sb.db_path),
+                "--skip-settings",
+                "--placement", "background_tab",
+            ])
+        msg = str(ctx.exception)
+        self.assertTrue(msg.startswith("error: "), msg)
+        self.assertIn("report.target is required", msg)
+        self.assertEqual(len(self.sb.list_runs()), runs_before)
+        self.assertFalse((self.sb.workers / "clock-app" / "CLAUDE.md").exists())
+
+    def test_cli_apply_writes_a_reachable_brief(self):
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        buf = StringIO()
+        with redirect_stdout(buf):
+            rc = gdp.main([
+                "apply",
+                "--task-id", "place-cli-ok",
+                "--project-slug", "clock-app",
+                "--description", "do the thing",
+                "--claude-org-root", str(self.sb.claude_org_root),
+                "--state-db-path", str(self.sb.db_path),
+                "--skip-settings",
+                "--placement", "background_tab",
+                "--report-target", "1",
+            ])
+        self.assertEqual(rc, 0)
+        self.assertIn("placement: background_tab", buf.getvalue())
+        brief = self.sb.workers / "clock-app" / "CLAUDE.md"
+        self.assertIn('send_message(to_id="1"', brief.read_text(encoding="utf-8"))
+        send_plan = json.loads(
+            brief.with_name("send_plan.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(send_plan["summary"]["report_target"], "1")
+        self.assertIn('窓口の報告先: `to_id="1"`', send_plan["message"])
+
+    def test_from_toml_round_trips_the_report_table(self):
+        toml = Path(self._td.name) / "input.toml"
+        toml.write_text(
+            "[task]\n"
+            'id = "round-trip-909"\n'
+            'description = "round-trip via TOML"\n'
+            'verification_depth = "full"\n'
+            'branch = "round-trip-909"\n'
+            'commit_prefix = "feat(clock):"\n'
+            "\n[worker]\n"
+            'dir = "X:/dummy"\n'
+            'pattern = "A"\n'
+            'role = "default"\n'
+            "self_edit = false\n"
+            "\n[project]\n"
+            'name = "clock-app"\n'
+            'description = "Web 時計"\n'
+            "\n[paths]\n"
+            'claude_org = "."\n'
+            "\n[report]\n"
+            'placement = "background_tab"\n'
+            'target = "1"\n',
+            encoding="utf-8",
+        )
+        kwargs = gdp._gather_plan_kwargs(
+            argparse.Namespace(
+                from_toml=toml,
+                task_id=None, project_slug=None, target=[], description=None,
+                mode=None, branch_override=None, commit_prefix=None,
+                verification_depth=None, issue_url=None, closes_issue=None,
+                refs_issues=None, project_name_override=None,
+                project_description_override=None, impl_target=[],
+                impl_guidance=None, knowledge=[], parallel_notes=None,
+                registry_path=None, state_db_path=None, claude_org_root=None,
+                workers_dir=None,
+            )
+        )
+        self.assertEqual(kwargs["placement"], "background_tab")
+        self.assertEqual(kwargs["report_target"], "1")
+
+
+# ---------------------------------------------------------------------------
 # CLI smoke tests (preview + apply paths)
 # ---------------------------------------------------------------------------
 
@@ -802,6 +962,19 @@ class TestGoldenSnapshots(unittest.TestCase):
             state_db_path=self.sb.db_path,
         )
         self._check("pattern_a_default_full", plan.delegate_body)
+
+    def test_golden_pattern_a_background_tab(self):
+        """Issue #909: the background-tab body's report line, pinned."""
+        plan = gdp.build_delegate_plan(
+            task_id="snap-a-background",
+            project_slug="clock-app",
+            description="add a sparkline",
+            placement="background_tab",
+            report_target="1",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self._check("pattern_a_background_tab", plan.delegate_body)
 
     def test_golden_pattern_b_self_edit_full(self):
         # claude-org-ja with concurrent active run forces Pattern B
