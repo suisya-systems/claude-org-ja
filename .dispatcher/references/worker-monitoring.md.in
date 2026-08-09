@@ -37,7 +37,7 @@
 | `[pane_not_found]` が返った | 呼び出しが解決したタブにその名前のペインが無い | **ペインが終了した**とは言えない。cross-tab addressing はこの code を返す契約なので (同 §4.2 "All pane-addressed operations … Cross-tab addressing returns `pane_not_found`")、**フォーカスが別タブにある間に返る `[pane_not_found]` は正常であり、異常ではない** |
 | `poll_events` に `pane_exited` が在る | そのペインは終了した (close 成功ごと / crash ごとに exactly once、同 §3.1 minimum vocabulary) | — |
 | `poll_events` に `pane_exited` が無い | 通常の終了経路を**観測していない** | **ペインが生きている / 死んでいる**のどちらも言えない。cursor 消失や `events_dropped` の区間は取りこぼしうる (同 §3.1 "Cursor-loss recovery" は BEST-EFFORT + reconciliation)。同区間に `events_dropped` を受けていたら、この面は**観測不能**として扱う |
-| `list_peers` に居る | その peer は存在し、messaging で到達しうる | `list_panes` から見える / pane-control 操作が効く、とは言えない (列挙面 §2.2 と可視面 §1.5 は別サーフェスで、両者を突き合わせる規律は同 T-§2.2 "Deliberate asymmetry with `list_panes`" に明文化されている。status: PROPOSED) |
+| `list_peers` に居る | その peer は存在し、messaging で到達しうる | `list_panes` から見える / pane-control 操作が効く、とは言えない (列挙面 §2.2 と可視面 §1.5 は別サーフェスで、両者を突き合わせる規律は同 T-§2.2 "Deliberate asymmetry with `list_panes`" に明文化されている。status: RATIFIED 2026-08-09) |
 | `inspect_pane` の入力欄が空 | **何も言えない** | **idle とは言えない**。modern Claude Code は作業中も空の composer を出したままにする (2026-08-08 に renga 側で実ペインを採取して確定)。旧実装の `(target_line + cursor)` 単点比較を全可視行の content hash へ置き換えた根 (Step 5 (b)) と同じ誤りである |
 | フッタに新形式 active spinner (`{glyph} {Verb}… (Xm Ys · … · esc to interrupt)`、正準形は `tools/inspect_pane_state.py` の `_NEW_SPINNER_RE`) が在る | ターンが進行中 (**busy**) | — |
 | 同 spinner が**無い** | — | **idle とは言えない**。ステータス行は出力バーストのタイミングでしか再描画されず、長い単一ターンの最中は表示が固まって見える (Step 5 (b-fp) 型 2 の実測) |
