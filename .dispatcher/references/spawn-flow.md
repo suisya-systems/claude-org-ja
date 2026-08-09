@@ -70,7 +70,9 @@ dispatcher が helper を経由しない degraded mode に入った場合、判�
 |---|---|---|
 | 1 | **dogfood 台帳に earmark されている** | [`registry/dogfood_pending.md`](../../registry/dogfood_pending.md) の `dogfood_run_task_id` 列に、本タスクの `task_id` が**完全一致**で載っている行が**ちょうど 1 行**あり、その行の `status` が `open` である。前後空白を除いた文字列の完全一致で判定し、**部分一致・prefix 一致・`task_id` 列との照合で代用しない**（`task_id` 列は実装タスク側の id で、dogfood 実走タスクの id ではない — 台帳の列定義は [`.claude/skills/org-delegate/references/dogfood-protocol.md`](../../.claude/skills/org-delegate/references/dogfood-protocol.md) §register） |
 | 2 | **transport が `renga`** | `ORG_TRANSPORT` の解決値が `renga`。**broker には `tab` セレクタも `new_tab` も無い**（surface 意図的除外。冒頭の輸送層注記）ので broker 面ではこの経路自体が存在しない |
-| 3 | **`spawn_tab` capability を確認済み** | `mcp__renga-peers__server_info` を呼び、`status == "connected"` かつ `effective_capabilities` に `spawn_tab` が在ることを**事前に**確認する（`server.capabilities` ではなく `effective_capabilities` で gate する。`status` が `detached` / `unreachable` のときは両者が `null` = **不明**であって「無い」ではないので、条件 3 は**満たさない**扱いにする）。未確認のまま `tab` セレクタを撃たない |
+| 3 | **この経路が使う capability を 3 つとも確認済み** | `mcp__renga-peers__server_info` を呼び、`status == "connected"` かつ `effective_capabilities` に **`spawn_tab`（`tab` セレクタ）・`caller_scope`（Group A = `inspect_pane` / `send_keys` を数値 id で他タブへ撃つ）・`cross_tab_peers`（全タブ `list_peers` 列挙と数値 id 宛 `send_message`）が 3 つとも**在ることを**事前に**確認する（`server.capabilities` ではなく `effective_capabilities` で gate する。`status` が `detached` / `unreachable` のときは両者が `null` = **不明**であって「無い」ではないので、条件 3 は**満たさない**扱いにする）。未確認のまま `tab` セレクタを撃たない |
+
+> **3 つ全部を spawn 前に要求する理由**: capability トークンは**独立判定**で、一方から他方を導出できない（契約 T-§cap の independence rule、3-2 の「同一タブ内 spawn で起動する理由」bullet）。`spawn_tab` だけを見て spawn すると、**背景ペインは作れたのに直後の儀式が撃てない**状態が起こりうる — `caller_scope` を欠けば 3-3 の probe / 3-3b の承認 Enter / 3-5a の kickoff が `server_too_old` で fail closed になり、`cross_tab_peers` を欠けば 3-4b の全タブ列挙も 3-5 の数値 id 宛送信も成立しない。どちらの場合も**起動途中で放置された子ペインが残る**（`server_too_old` は非 transient なのでリトライで回復しない、契約 T-§6 clause (b)）。3 つを spawn 前にまとめて確認すれば、この経路は「全部できる」か「一切始めない」かの二択になる。
 | 4 | **背景配置は 1 枚まで** | `.state/dispatcher/worker-idle-state.json` に `placement == "background_tab"` の record が **0 件**であること。1 件でも在れば既定の同一タブ経路に倒す |
 | 5 | **人間監督下の bounded run である** | 窓口からの `DELEGATE` が当該 dogfood の実施を明示しており、実走中は人間が監督して結果を確認する前提が立っていること。立っていなければ窓口へ確認する（ディスパッチャーが自分で dogfood と判断しない） |
 | 6 | **契約側の前提が実際に記録済みである** | 契約 T-§4.2-place の dogfood 例外は「this section is ratified」かつ「all four of (R1)–(R4) already hold」を要求する。したがって、**同節の status が `PROPOSED` のままである間、および R1–R4 の充足が契約本文に記録されていない間は、本経路を発動しない**（fail closed）|
@@ -79,7 +81,9 @@ dispatcher が helper を経由しない degraded mode に入った場合、判�
 
 > **この経路は `delegate-plan` helper の `spawn` / `after_spawn[]` を使わない**: helper が返すのは rect ベース balanced split（3-1b）の同一タブ plan で、`tab` セレクタも `bound_pane_id` の束縛も生成しない。3-1d を通ったタスクではディスパッチャーが 3-2b / 3-4b を手順どおり実行し、helper の plan は**参照しない**（ja は `--tab` / `--overflow-to-new-tab` / `--server-capability` を helper に渡していないので、helper 側は今日この配置を知らない）。**3-1d に落ちなかったタスクの helper 経路は 1 行も変わらない。**
 
-> **契約側の対応**: T-§4.2-place は placement relief に運用準備条件 R1–R4 を課したうえで、「a placement dogfood **MAY** place orchestrator-spawned panes in a background tab **when all of** the following hold — this section is ratified; all four of (R1)–(R4) already hold; the run is **bounded** and declared as a dogfood in advance; and a **human is supervising it and confirms the result**」と例外を 1 つだけ置く。上表の条件 1 / 5 がこの「declared in advance」「bounded」「human supervising」に、条件 2 / 3 / 4 が「実際にその経路が成立し、1 枚に閉じている」ことに対応する。**R2（背景配置の生存判定）は [`.dispatcher/references/worker-monitoring.md`](worker-monitoring.md) (3-a-5) の tracked-any-tab 判定で充足する。R1 / R3 は同項の id 束縛と `pane_exited` join が実質を満たすが、契約本文への充足記録と placement gate 名（`placement_production_activation`）の同期は dogfood 実走後の契約同期に後送する。R4（全タブ容量会計）も dogfood 1 枚では binding にならないため同じく後送する** — これはリーン方針に基づく明示的な判断であり、上表の条件 4（1 枚まで）が後送中の安全弁になっている。
+> **契約側の対応**: T-§4.2-place は placement relief に運用準備条件 R1–R4 を課したうえで、「a placement dogfood **MAY** place orchestrator-spawned panes in a background tab **when all of** the following hold — this section is ratified; all four of (R1)–(R4) already hold; the run is **bounded** and declared as a dogfood in advance; and a **human is supervising it and confirms the result**」と例外を 1 つだけ置く。上表の条件 1 / 5 がこの「declared in advance」「bounded」「human supervising」に、条件 2 / 3 / 4 が「実際にその経路が成立し、1 枚に閉じている」ことに対応する。**R2（背景配置の生存判定）は [`.dispatcher/references/worker-monitoring.md`](worker-monitoring.md) (3-a-5) の tracked-any-tab 判定で充足する。R1（identity 付き全タブ列挙）と R3 の *終了検知* 半分は同項の id 束縛と `pane_exited` join が実質を満たすが、契約本文への充足記録と placement gate 名（`placement_production_activation`）の同期は dogfood 実走後の契約同期に後送する。R4（全タブ容量会計）も dogfood 1 枚では binding にならないため同じく後送する** — これはリーン方針に基づく明示的な判断であり、上表の条件 4（1 枚まで）が後送中の安全弁になっている。
+
+> **R3 の *close* 半分は本タスクでは配線しない（背景 worker の退役は人間監督者が行う）**: R3 は「An exit MUST be establishable … **and the close itself MUST satisfy** T-§4.2-id and the Group-B obligations」の 2 つを求めており、本タスクが満たすのは前半（終了検知）だけである。後半が未配線なのは、通常の `CLOSE_PANE` 手順 [`.dispatcher/references/pane-close.md`](pane-close.md) が close 直前の identity 照合を **caller タブに閉じた `list_panes`** で行う設計だからで、背景ペインはこの照合を**構造的に通過できない**（`list_panes` に出ない）。**したがって背景 worker に対する `CLOSE_PANE` は、ディスパッチャーが `close_pane` を撃たずに窓口へ escalate し、人間監督者が閉じる。** これは 3-1d 条件 5（bounded・人間監督下）と整合する終端であり、`close_pane` は不可逆なので**照合できないまま撃つより保持して上げるほうが安全側**である（契約 T-§4.2-id の (O3)/(O4)、T-§2.1 の indeterminate 規律と同じ向き）。**Group-B の背景 close 経路（session-safe な identity 照合を伴う `close_pane`）の配線は、上記の契約同期と同じ後送分に含める。** 監視側は人間が閉じた時点で `pane_exited` を join して通常どおり退役を確定する（(3-a-5)）ので、検知経路には穴が開かない。
 
 ### 3-2. ワーカーペインを起動する
 
@@ -124,7 +128,7 @@ mcp__renga-peers__spawn_claude_pane(
 
 ```
 # 3-1d 条件 3 で呼んだ server_info の server.pid を控えておく（下記の session provenance 用）
-bound_server_pid = server_info().server.pid
+bound_server_pid = server_info().server.pid        # endpoint も併せて控える (下記の注記: pid 単独では restart 一意でない)
 
 res = mcp__renga-peers__spawn_claude_pane(
   tab={"new": {"name": "worker-{task_id}"}},   # 背景タブを新規作成。target / direction は省略する
