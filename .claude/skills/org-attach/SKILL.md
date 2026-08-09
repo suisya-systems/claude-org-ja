@@ -134,8 +134,14 @@ mcp__org-broker__list_panes
 > **縮退時（capability 形かつ未承認）の帰結**: 列挙結果を破棄する。**破棄しても Step 3 の pane-id
 > join は継続し、表示するラベル（role / name(task_id)）は `list_panes` 由来のままである** — join key
 > も表示元も `list_panes` なので、落ちるのは peer 名 / cwd の**補足だけ**で本スキルの出力は成立する。
-> この列挙は表示補助にしか使わないため、**attach 可否・join・lifecycle 判定のいずれにも波及させない**
-> （本スキルは read-only であり、縮退が破壊的な後段に繋がる経路を持たない）。
+>
+> **承認済み（`first_drive` が `recorded`）のときの帰結**: 共有 reference §1-2 の三値判定を対象名に
+> 適用し、**「在」と確定したレコードの補足だけを表示に使う**。「不在」「unknown」のレコードは自 org の
+> ものとして表示しない（unknown はその旨を添えて出す）。判定手順と評価順の正本は §1-2。
+>
+> **どちらの帰結でも**、この列挙は表示補助にしか使わないため **attach 可否・join・lifecycle 判定の
+> いずれにも波及させない**（本スキルは read-only であり、縮退が破壊的な後段に繋がる経路を持たない）。
+> **旧版 fallback（現行配備の全 backend）では従来どおりで、今日の挙動は変わらない。**
 
 ## Step 2: tmux 側の pane_id ↔ session マッピングを取得
 

@@ -27,6 +27,7 @@ from tools import gen_worker_brief as gwb
 from tools import transport as t
 
 FIXTURES = Path(__file__).parent / "fixtures" / "transport_seam"
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # (fixture 名, self_edit, depth) — golden 生成時と同じ入力でなければ bit 等価
 # 検証が成立しないので、_base_config と対で固定する。
@@ -140,9 +141,14 @@ class WorkerBriefRecoverySafetyInvariants(unittest.TestCase):
 
     # (説明, その文が含むべき部分文字列) — 表記ゆれで空振りしないよう、
     # 意味を担う最小の連結片だけを見る。
+    #
+    # 各 needle は **その invariant を消す書き換えで実際に落ちる**ことを要求する。
+    # 「宛先の文字列が出てくる」程度の needle は、同じ宛先へ「確認なしで送って
+    # よい」と書き換えても素通りしてしまい、名前だけ invariant を騙る空の
+    # assertion になる (実際に mutation で素通りを確認したため差し替えた)。
     _INVARIANTS = (
         ("同一 org 確認前の再送禁止", "確認できるまで一切再送しない"),
-        ("dispatcher escalate も同じ確認の対象", 'to_id="dispatcher"'),
+        ("dispatcher escalate も同じ確認の対象", "escalate も同じ確認の対象"),
         ("確認不能時はペイン保持で停止", "何も送らず、ペインを保持したまま停止する"),
     )
 
@@ -163,6 +169,40 @@ class WorkerBriefRecoverySafetyInvariants(unittest.TestCase):
                             f"{name}: 安全 invariant「{label}」が brief 本体から消えている "
                             f"(縮約するならポインタだけでなくこの 1 文を残すこと)",
                         )
+
+    def test_pointed_at_recovery_procedure_carries_the_gate_pointer(self):
+        """brief が主張する **他ファイルの構造的事実** を裏取りする。
+
+        縮約後の brief は「復旧手順の正本は renga-error-codes.md の
+        `pane_not_found` の messaging 分岐 (同節の冒頭が capability gate への
+        ポインタを持つ)」と書いており、worker はこの 1 文を根拠に
+        renga-error-codes.md **だけ**を読んで復旧に入る。ポインタが向こう側から
+        消えると、worker は gate を通らずに `list_peers` を採り直す — brief の
+        文面は無傷なので、これは brief 側のどの assertion でも検出できない。
+        """
+        proc = (
+            REPO_ROOT
+            / ".claude/skills/org-delegate/references/renga-error-codes.md"
+        ).read_text(encoding="utf-8")
+        section = proc.split("### `pane_not_found` の messaging 分岐", 1)
+        self.assertEqual(
+            len(section), 2, "messaging 分岐の見出しが renga-error-codes.md に無い"
+        )
+        body = section[1]
+        pointer_at = body.find("capability-first-drive-operational-gate.md")
+        list_peers_at = body.find("list_peers を引き直す")
+        self.assertNotEqual(
+            pointer_at, -1, "messaging 分岐に capability gate へのポインタが無い"
+        )
+        self.assertNotEqual(
+            list_peers_at, -1, "messaging 分岐に list_peers を引き直す step が無い"
+        )
+        self.assertLess(
+            pointer_at,
+            list_peers_at,
+            "gate ポインタは list_peers を引き直す step より前に置くこと "
+            "(後ろだと gate を通らずに列挙を採り直す経路が開く)",
+        )
 
 
 class WorkerBriefBrokerSurface(unittest.TestCase):

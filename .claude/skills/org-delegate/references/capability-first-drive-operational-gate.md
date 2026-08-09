@@ -588,7 +588,7 @@ runtime 側（`claude_org_runtime` の delegate-plan helper が `list_peers` 再
 |---|---|
 | `.claude/skills/org-setup/references/permissions.md` の `mcp__renga-peers__list_peers` 行、および各スキル frontmatter の `allowed-tools` | 権限宣言であって呼び出しではない。実行時に列挙結果を受け取らないので、捨てるべき結果が存在しない |
 | [`docs/contracts/backend-interface-contract.md`](../../../../docs/contracts/backend-interface-contract.md) / `docs/verification.md` / `docs/overview-technical.md` の言及 | ツールの意味論・適合条件を**記述**する契約文および説明文。手順ではない |
-| [`.claude/skills/org-delegate/references/renga-error-codes.md`](renga-error-codes.md) の Known codes 表・capability 説明・シェル例のコメント | エラーコードの**意味**の記述。実行手順は同ファイルの messaging 復旧 step で、そちらは上の「未配線」表に挙げてある（対象外ではなく判断待ち） |
+| [`.claude/skills/org-delegate/references/renga-error-codes.md`](renga-error-codes.md) の Known codes 表・capability 説明・シェル例のコメント | エラーコードの**意味**の記述。実行手順は同ファイルの messaging 復旧 step で、そちらは対象外ではなく **§3-B-2 が owner**（上の「上表に行を持たない追加 call site」表を見る） |
 | `.dispatcher/CLAUDE.md` の「ワーカーは `list_peers` で窓口を自動発見する」 | ワーカー側の事実の記述。ディスパッチャーの手順ではない（ワーカーに `list_peers` を指示する文書はリポジトリ内に存在しない） |
 | `notes/**` / `docs/design/**` の設計メモ・監査メモ、`docs/operations/**` / `docs/sandbox-probe/**` の runbook | 運用手順ではない / 人間オペレーター向けの一回性 runbook であって役割の常設手順ではない（[`docs/contributing/markdown-conventions.md`](../../../../docs/contributing/markdown-conventions.md) の in-scope からも外れる） |
 | `tools/**` の定数・テスト fixture・generator golden | コード上の tool 名定数とテストデータ。実行時に列挙結果を受け取らない |
