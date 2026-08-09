@@ -49,13 +49,33 @@ sidecar (`.state/attention_pane.json`) をクリアする。
 > 無関係なペインを kill する**。よって本 skill は **`list_panes` の name/role で identity を
 > 確認したペインだけを close 対象**とし、sidecar の pane_id を close の直接の根拠にしない。
 
-1. `mcp__org-broker__list_panes` を呼び、`name="attention"` **または** `role="attention"` の
+> **列挙が自タブのものであることを先に確立する（契約 T-§4.2 の Group B MUST）**: 上の
+> identity 確認は「その id が期待どおりのペインか」しか見ておらず、**その列挙が自分のタブの
+> ものか**は見ていない。契約は `close_pane` の宛先を「**自タブと独立に確立済みの列挙**から
+> 得た数値 pane id」に限る（[`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md)
+> T-§4.2「Fail-safe consequence for Group B」）。数値であることは MUST の**片方**にすぎない。
+> 確立手段は 2 つだけで、**いずれか 1 つが成立すればよい**:
+>
+> 1. **backend が Group B を自身の単一タブモデル内で解決する**（`org-broker`。同契約 §8.1 / §8.10）
+> 2. **`caller_scope` を確立できている**（同契約 T-§cap。`caller_scope_close_identity` から導出しない）
+>
+> **どちらも成立しないなら close を撃たず、状況をユーザーに報告して停止する**（相対セレクタへは
+> フォールバックしない）。pre-capability の renga では `list_panes` が**フォーカス中**のタブに
+> 解決するので、確立できていない列挙から採った id は別タブのペインを指しうる。
+> `list_peers` の `same_tab` は確立手段に**数えない** — これは `list_peers` のレコードに載る
+> フィールドで `list_panes` には無く、messaging 到達性から pane 制御到達性を推論することは
+> 同契約が MUST で禁じている（「The two scopes are not interchangeable」）。
+
+1. **自タブ確立**（上記 2 手段）を判定する。どちらも成立しなければ **Step 2 へ進まず**、
+   「attention watcher のペインを安全に特定できないので停止した」旨を根拠付きでユーザーに
+   報告して終了する（sidecar ファイルも削除しない — 次回に判定をやり直せるようにするため）
+2. `mcp__org-broker__list_panes` を呼び、`name="attention"` **または** `role="attention"` の
    live pane を**全て**収集する（複数あれば全部）。これを「**確認済み attention ペイン集合**」と
    呼び、各 pane の **数値 pane_id** を控える（**name と role の両方を見る**: 手動起動の孤児
    ペインは name を付けず role だけ持っていることがある）
-2. `.state/attention_pane.json` を `Read` で開けたら `pane_id` を読み取る（= **sidecar pane_id**）。
+3. `.state/attention_pane.json` を `Read` で開けたら `pane_id` を読み取る（= **sidecar pane_id**）。
    存在しなければ「sidecar 無し」として扱う
-3. sidecar pane_id の identity を `list_panes` の結果に照らして分類する（**sidecar に記録された
+4. sidecar pane_id の identity を `list_panes` の結果に照らして分類する（**sidecar に記録された
    name は信用せず、いま list_panes が返す name/role で判定する**）:
    - **verified**: sidecar pane_id が「確認済み attention ペイン集合」に含まれる
      → その pane はいまも本物の watcher。close 対象

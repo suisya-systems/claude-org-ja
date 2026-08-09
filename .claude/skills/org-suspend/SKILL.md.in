@@ -100,19 +100,50 @@ allowed-tools:
      >   **アクティブタブを最初に探し、そこで見つからなかったときだけ他タブを index 順に走査して
      >   最初の一致を採る**（無差別の全タブ検索ではない。危険なのはこのフォールスルーと、優先される
      >   タブが caller ではなく **user の**タブである点。契約 T-§4.2 "Pane-control scope, Group B"）
-     > - **(G-SHOULD)** `caller_scope_close_identity` が確立していない間は、`close_pane` /
-     >   `set_pane_identity` に**相対セレクタ（リテラル `"focused"` / 裸の `name`）を使わないことが
-     >   望ましい**（契約 T-§4.2 "Fail-safe consequence for Group B (SHOULD)"）。**自タブのものだと
-     >   独立に確認済みの列挙から得た数値 pane id で**アドレスする。誤爆した場合、`close_pane` は
-     >   不可逆で（人間が入力中のペインを落とす / 並走する別 org の同名 `worker-*` を閉じる）、しかも
-     >   **エラーを返さない**
-     > - **MUST ではなく SHOULD である理由（2026-08-07 の人間判断、ja#823）**: 危険は実在するが
-     >   **本 amendment が持ち込んだものではなく以前から存在**しており、かつ org 自身の正準手順が
-     >   Group B を相対セレクタで撃つ箇所を 6 箇所ほど抱えている（`pane-close.md` / `org-start` /
-     >   `secretary-resume` / `dispatcher-resume` / `pr-watch-pane` / `org-attention-start`）。
-     >   不可逆操作の手順を未検証のまま変える方がリスクが高いと人間が判断した。**コード既定の輸送層
-     >   `org-broker` にはこの失敗モードが無い**（capability を広告せず単一タブ規約で解決する）。
-     >   呼び出し箇所が移行されれば MUST への引き上げが想定される（契約 T-§4.2 "Why SHOULD and not MUST"）
+     > - **(G-MUST)** `caller_scope_close_identity` が確立していない間は、`close_pane` /
+     >   `set_pane_identity` に**相対セレクタ（リテラル `"focused"` / 裸の `name`）を使ってはならない
+     >   （MUST NOT）**（契約 T-§4.2 "Fail-safe consequence for Group B (MUST)"）。**自タブのものだと
+     >   独立に確立済みの列挙から採った数値 pane id でのみ**アドレスする（MUST）。誤爆した場合、
+     >   `close_pane` は不可逆で（人間が入力中のペインを落とす / 並走する別 org の同名 `worker-*` を
+     >   閉じる）、しかも**エラーを返さない**。契約はこの MUST に carve-out を 1 つだけ置いているが
+     >   （stale-binding cleanup = 再 spawn が `[name_taken]` で弾かれるのに当の name が `list_panes` に
+     >   出ない状態）、**本スキルはその条件に当たらないので取らない** — /org-suspend が閉じるのは列挙に
+     >   居るペインだけで、`[name_taken]` 起点の再 spawn 経路を持たないため、数値 pane_id は常に列挙から
+     >   採れる
+     > - **(G-OWNTAB)** 上の MUST が言う「自タブのものだと独立に確立済みの列挙」は、**`{{FQ}}list_panes`
+     >   の列挙**を指す。`name` / `role` の一致が見るのは「その id が期待どおりのペインか」だけで、
+     >   **その列挙が自分のタブのものか**は見ていないので、確立は照合の前段に置く。**確立手段は次の 2 つ
+     >   だけ**で、いずれか 1 つが成立したときにその列挙を**自タブと確立済み**とみなす（規範の出所は
+     >   契約 T-§4.2 の MUST。同じ規則を harness 側で書き下したものが
+     >   [`.dispatcher/references/pane-close.md`](../../../.dispatcher/references/pane-close.md) の
+     >   「照合の前に「その列挙が自タブのものか」を確立する」節で、両者は同一規則であり片方だけを
+     >   緩めない）:
+     >   1. **backend が Group B を自身の単一タブモデル内で解決する** — `org-broker` は Group B も
+     >      単一タブモデル内で解決するので、列挙は構成上つねに自タブのもの（契約 §8.1 / §8.10）
+     >   2. **`caller_scope` を確立できている** — `list_panes` が caller のタブにフォーカス非依存で
+     >      解決する（契約 T-§cap。`caller_scope_close_identity` とは別トークンで、一方から他方を
+     >      導出しない）。**確立できたときだけ数える**: 広告を確かめられない / 確定できないときは
+     >      T-§cap の fail-safe default で**不成立**に倒れる（version 文字列やサーバー名から推定しない）
+     >
+     >   **`same_tab` は確立手段に数えない**。`same_tab` / `tab` は契約 T-§2.2-fields が
+     >   **`list_peers` のレコード**に足すフィールドで、pane 制御の起点である `list_panes` のレコードには
+     >   載らない。`list_peers` 側の `same_tab` を根拠に pane 制御を許すのは、契約が MUST で禁じる
+     >   「messaging 到達性から pane 制御到達性を推論する」ことそのものである（同契約
+     >   「The two scopes are not interchangeable (MUST)」）。**`same_tab` が使えるのは否定方向の
+     >   絞り込みだけ**で、`same_tab == False` のレコードに `pane_id` を割り当てないという**狭める**
+     >   使い方は正しく、「自タブと確立できた」と**広げる**使い方は license されない。
+     >   **2 つのいずれも成立しなければ Group B を撃たず**、pending として人間に報告する
+     >   （相対セレクタへフォールバックしない）
+     > - **かつて SHOULD だった経緯（2026-08-07 の人間判断、ja#823 — 記録として保持、discharge 済み）**:
+     >   当時この規則は SHOULD として書かれていた。危険は実在するが**本 amendment が持ち込んだもの
+     >   ではなく以前から存在**しており、かつ org 自身の正準手順が Group B を相対セレクタで撃つ箇所を
+     >   抱えていた（当時の実測は契約 T-§4.2 の台帳のとおり **8 ファイル 11 呼び出し**）。不可逆操作の
+     >   手順を未検証のまま変える方がリスクが高いと人間が判断し、**コード既定の輸送層 `org-broker` には
+     >   この失敗モードが無い**（capability を広告せず単一タブ規約で解決する）ことがその判断を可逆に
+     >   していた。**その呼び出し箇所の移行は 2026-08-09 に完了し、契約 T-§4.2 は同日 MUST へ in-place で
+     >   引き上げられた**（契約 T-§4.2 "Why SHOULD and not MUST" は当時の決定の記録として過去形で保持され、
+     >   台帳の全 row が discharge 済み）。したがって本スキルが従うのは上の (G-MUST) であって、この段落は
+     >   当時の状態を説明する記録である
      > - capability gate 実装済みクライアントでは、Group B の呼び出しが token 欠落時に
      >   `[server_too_old]` で **fail-closed** する。これは黙って握り潰さず、未実行として
      >   pending に残し人間へ報告する（契約 T-§6 clause (b)。renga では回復手順は「daemon を
@@ -136,24 +167,37 @@ allowed-tools:
      **`to_id` には必ず `peer_id`、`target` には必ず `pane_id`** を渡す。2 つの `id` が同じ値空間だとは
      仮定しない（backend 定義。契約 §4.1 は id を "opaque" と規定しており、面をまたいだ流用は契約が
      保証していない）
+   - **`pane_id` の出所は必ず `{{FQ}}list_panes`（pane 制御面）である**。`list_peers` の台帳は
+     messaging（`to_id`）用に保ち、そこから pane 制御用の id を導かない — 契約が MUST で禁じる
+     「messaging 到達性から pane 制御到達性を推論する」ことになるため（「The two scopes are not
+     interchangeable (MUST)」）。割り当ては**列挙面のゲート → レコード面の絞り込み**の 2 段で決める:
+     - **(i) 列挙面のゲート（(G-OWNTAB)）**: `{{FQ}}list_panes` の列挙を**自タブと確立できない**なら、
+       **どのエントリにも `pane_id` を割り当てない**。確立手段は単一タブ backend / `caller_scope` の
+       2 つだけで、`same_tab` はここに数えない。確立できないまま台帳に id を載せると、後段の
+       identity 照合が「期待どおりのペインか」しか見ないため、**別タブのペインを照合済みとして
+       `close_pane` しうる**
+     - **(ii) レコード面の絞り込み（`same_tab` は否定方向にだけ使う）**: (i) が成立した列挙の中で
+       `list_peers` のレコードと突合するとき、**`same_tab == False` / 欠落のレコードを除外する**
    - **突合（join）キーは `name` だけで、`role` は使わない**。`role` は非一意で（worker が複数居れば
      必ず衝突する）join キーとして成立しない。`name` も**全タブ列挙では一意ではない**ので
      （契約 T-§2.2: §1.8 の名前一意性は "this tab" 限定。`worker-{task_id}` 等の予約名は 2 org 並走で
-     構造的に衝突する）、`name` で `pane_id` を割り当てられるのは**同タブであることが確定したエントリに
-     限る**。2.0 系の `list_peers` は**全タブ**を返す一方 `list_panes` は**単一タブ分しか返さない**
-     （契約 §1.5 は本 amendment で非 supersede。どのタブかは上記のとおり capability 依存）ため、
-     ここを誤ると別タブのピアのレコードに自タブの同名
+     構造的に衝突する）、`name` join が効くのは **`list_panes` 側が単一タブに閉じている**からであって、
+     `name` が無条件に一意だからではない。2.0 系の `list_peers` は**全タブ**を返す一方 `list_panes` は
+     **単一タブ分しか返さない**（契約 §1.5 は本 amendment で非 supersede。どのタブかは上記のとおり
+     capability 依存）ため、(ii) を誤ると別タブのピアのレコードに自タブの同名
      ペインの `pane_id` が付き、Phase 2 が**別ワーカーのコンソールをスクレイプ**し Phase 4 の lifecycle
      追跡が壊れる:
-     - `same_tab == True` が確定したレコード → `name` で `pane_id` を割り当ててよい
      - `same_tab == False` のレコード → **`pane_id` を絶対に割り当てない**（pane 制御面では到達できない。
        契約 T-§4.2）
      - 2.0 系だが `same_tab` 欠落（‡ のケース）→ 「判定できない場合は他タブ扱いに倒す」規則どおり
        **`pane_id` を割り当てない**
-     - 旧版 fallback の列挙（全レコードで `same_tab` / `tab` が両方欠落）→ `name` join は安全。
-       **ただしその安全性は「この列挙が単一タブに閉じているから」であって、`name` join が無条件に
-       安全だからではない**（契約 §2.2 ratified の現在タブ列挙。列挙がタブ横断になった瞬間に前提が消える）
-     - `pane_id` が**未設定のエントリは「pane 制御では触れない」**ことを意味する。Phase 2 ではスクレイプを
+     - 上の 2 つで**除外されなかった**レコード（`same_tab == True` が確定した 2.0 系のレコード、および
+       旧版 fallback の列挙 = 全レコードで `same_tab` / `tab` が両方欠落）→ (i) が成立している列挙に
+       同名レコードが在れば、**その `list_panes` レコードの `id`** を `pane_id` として割り当てる。
+       **`same_tab == True` はこの割り当てを license する根拠ではない** — license するのは (i) であり、
+       `same_tab` はそこから他タブのピアを外す negative filter として働いているだけである
+     - `pane_id` が**未設定のエントリは「pane 制御では触れない」**ことを意味する（(i) が不成立で
+       台帳全体に id を載せなかった場合を含む）。Phase 2 ではスクレイプを
        諦めて git 情報に倒し、Phase 4 では `close_pane` を撃たずに pending に残す（各 Phase の該当箇所と
        同じ結論）
    - この台帳を **Phase 2 / Phase 4 まで引き回す**。宛先解決・pending 集合はすべて台帳エントリを
@@ -324,14 +368,16 @@ SUSPEND / SHUTDOWN が飛ぶ（本節が防ごうとしている事象そのも�
 1. `.state/workers/` から該当ワーカーの状態ファイルを読み、Pane Name と Directory を取得
 2. Pane Name を Phase 1 の**台帳**で **`pane_id`** に解決する。`inspect_pane` はペイン制御面なので、
    使うのは `list_panes` 由来の `pane_id` であって `peer_id` ではない:
-   - 台帳に `pane_id` が無い（＝ `list_panes` に居ない）ピアは 3 通りに分かれる。**いずれもスクレイプは
+   - 台帳に `pane_id` が無いピア（`list_panes` に居ない、または Phase 1 の**列挙面のゲート (i) が
+     不成立**で台帳全体に id を載せなかった）は 3 通りに分かれる。**いずれもスクレイプは
      諦め、Step 4 の git 情報だけで状態を推定する**が、**記録する状態が違う**:
      - `same_tab=False` / ‡ で他タブと導出されたピア → 「他タブに居るのでスクレイプ不能」。生存して
        いる可能性があるので**消滅と読み替えない**
      - それ以外で、**F-1 の (i) `pane_exited` 観測 or (ii) 列挙が窓口タブのものと確認済み** →「消滅済み」
      - それ以外で **F-1 のどちらも取れない** → **indeterminate**。フォーカスが別タブへ移っただけで
        生存中のピアが不在に見えている可能性があるので、消滅済みとして記録せず判定不能のまま残し、
-       Phase 4 の最終報告に載せる
+       Phase 4 の最終報告に載せる。**列挙面のゲート (i) が不成立のケースはここに落ちる** — 列挙を
+       自タブと確立できていない以上 F-1 の (ii) も同時に満たせないため
    - Phase 1 から時間が経っているので、使う直前に `{{FQ}}list_panes` を取り直し、その
      `pane_id` の `name` / `role` が台帳と一致することを確認してから叩く。**一致しなければ
      pane_id が別ペインへ再割当てされている**ので、そのペインには触れずスクレイプを諦める
@@ -467,7 +513,11 @@ live pane も無く、本 Phase は no-op。
 無関係なペインを kill する — Issue #468）:
 
 1. `{{FQ}}list_panes` で `name="attention"` **または** `role="attention"` の live pane を
-   **全て**集める（= 確認済み attention ペイン集合。各レコードの **`id`（= pane 制御用の pane_id）** を控える）
+   **全て**集める（= 確認済み attention ペイン集合。各レコードの **`id`（= pane 制御用の pane_id）** を控える）。
+   **この列挙も (G-OWNTAB) の 2 手段で自タブのものと確立してから使う** — 確立できなければ close へ
+   進まない（相対セレクタへフォールバックしない）。以降の手順 5 / 6 は gone / recycled と同じ
+   「close しなかった」経路として扱い、**attention watcher を停止できなかったことを人間への報告に
+   明記する**（Phase 4 手順 7 の部分中断報告に載せる）
 2. `.state/attention_pane.json` を `Read` で開けたら `pane_id` を読む（= sidecar pane_id）。無ければ
    「sidecar 無し」
 3. sidecar pane_id を **list_panes が返す name/role** で分類する（sidecar 記録の name は信用しない）:
@@ -477,7 +527,8 @@ live pane も無く、本 Phase は no-op。
    - **gone**（list_panes に無い）→ 既に消滅。close しない
 4. 確認済み集合の各ペインを **`list_panes` 由来の `pane_id`** で `{{FQ}}close_pane(target="<pane_id>")` する
    （`target="attention"` の name 指定はしない — role だけ持つ孤児に当たらないため）。
-   ここは **pane 制御文脈**で、かつ対象は `{{FQ}}list_panes` 由来＝ caller のタブに居ることが確定
+   ここは **pane 制御文脈**で、かつ対象は**自タブと確立済みの `{{FQ}}list_panes`**（手順 1）由来＝
+   caller のタブに居ることが確定
    しているので、`[pane_not_found]` / `[pane_vanished]` は既に閉じた扱いで skip してよい（close の
    目的は消滅であり、既に消えていれば結果は同じ。他タブのペインに対する例外と messaging 文脈での
    扱いは Phase 4 の「**`[pane_not_found]` の扱い — messaging と pane 制御で分岐する**」を参照）
@@ -552,19 +603,27 @@ live pane も無く、本 Phase は no-op。
     このコードを「閉じた」と読むと、稼働中のワーカーを残したまま「全ペイン停止」を完了報告する。
     該当ピアは pending に残し、journal に記録して人間に報告する（停止できない残存）
   - 名前宛で受けた場合はこの結論を出さず、`pane_id` に解決し直してから判断する
-  - **`close_pane` / `set_pane_identity` はそもそも名前宛・`"focused"` 宛で撃たない**（(G-SHOULD)）。
+  - **`close_pane` / `set_pane_identity` はそもそも名前宛・`"focused"` 宛で撃たない**（(G-MUST)）。
     この 2 本は Group B なので、`caller_scope` が広告されていても
     `caller_scope_close_identity` が確立していなければ相対セレクタが user 可視タブ / 全タブに
-    解決されうる。数値 `pane_id` でのみアドレスする
+    解決されうる。**(G-OWNTAB) の 2 手段で自タブと確立した `{{FQ}}list_panes` 由来の数値 `pane_id`**
+    でのみアドレスする
 
 ### 停止手順
 
 1. `{{FQ}}list_peers` と `{{FQ}}list_panes` を取り直し、Phase 1 の**台帳を最新化**する（Phase 1 から
    時間が経っているため、`peer_id` / `pane_id` の両方を取り直す）。再構築でも Phase 1 手順 1 の
-   **join 規則をそのまま適用する**（`role` は join キーにしない / `name` join は同タブ確定エントリだけ /
-   他タブ・`same_tab` 欠落のエントリには `pane_id` を割り当てない）。**他タブ判定のピアが Phase 1 から
-   増えていた場合は、真理値表の operational gate に従ってその差分を人間に報告し、確認を得てから
-   停止指示へ進む**
+   **join 規則をそのまま適用する**（`pane_id` の出所は `{{FQ}}list_panes` だけ / 列挙を自タブと
+   確立できなければどのエントリにも `pane_id` を割り当てない（(G-OWNTAB)） / `role` は join キーに
+   しない / 他タブ・`same_tab` 欠落のエントリには `pane_id` を割り当てない）。**他タブ判定のピアが
+   Phase 1 から増えていた場合は、真理値表の operational gate に従ってその差分を人間に報告し、
+   確認を得てから停止指示へ進む**
+   - **この取り直しが (G-OWNTAB) の確立段でもある**: 以降の `{{FQ}}close_pane` はすべてこの列挙から
+     採った数値 `pane_id` で撃つので、**列挙を自タブと確立できたかをここで判定して以降の全 close に
+     引き回す**（単一タブ backend = `org-broker` / `caller_scope` の 2 手段だけ。`list_peers` の
+     `same_tab` は確立手段に数えない）。**いずれも成立しなければ close を 1 つも撃たない** — 台帳の
+     全エントリが「`pane_id` を持たないエントリ」と同じ扱いになり、pending のまま手順 7 の**部分中断**
+     報告に載せる（相対セレクタへフォールバックしない）
 2. **ワーカーを先に停止**: Phase 1 の**宛先選定の真理値表**を `R = {worker}` で適用し、選ばれた
    ワーカーの **`peer_id`** を `to_id` に渡して `{{FQ}}send_message` で終了を指示:
    「SHUTDOWN: 作業を終了してください。」
@@ -616,13 +675,26 @@ live pane も無く、本 Phase は no-op。
    - 10 秒以内に閉じなかった残留ワーカーは Pass 2 へ
 
    **Pass 2 (残留ワーカーへのフォールバック + 再確認、最大 5 秒)**:
-   - `pending` に残っているエントリのうち、**`pane_id` を持つもの**（＝ caller のタブに居るペイン）
-     それぞれに対して:
+   - **close の前に (G-OWNTAB) が成立していることを確かめる**（手順 1 で判定済み。成立していなければ
+     この Pass 2 では 1 つも close せず、`pending` をそのまま次の再確認へ送る）
+   - **close の直前に identity 照合する**（Phase 3.7 の attention watcher 停止と同じ idiom。台帳を
+     取り直してから時間が経つと `pane_id` が別ペインへ再割当てされうるため、控えた id が期待どおりの
+     ペインをなお指していることを毎回確かめる）:
+     1. `{{FQ}}list_panes` を実行する
+     2. 控えた `pane_id` のレコードが `name == "worker-{task_id}"` かつ `role == "worker"` を**なお
+        指している** → その数値 id で close する
+     3. レコードはあるが `name` / `role` が一致しない（別ペインへ再割当て済み）→ **close しない**
+        （相対セレクタへフォールバックしない）。`pending` に残したまま次の再確認へ送る
+     4. レコードが列挙に無い → close 対象を確認できないので **close しない**。消滅の確定は F-1 の
+        (ii) を満たすときだけで、満たせなければ「判定不能」に倒す
+   - `pending` に残っているエントリのうち、**`pane_id` を持ち、上の照合を通ったもの**
+     （＝ caller のタブに居ることが確定したペイン）それぞれに対して:
      ```
-     {{FQ}}close_pane(target="<pane_id>")
+     {{FQ}}close_pane(target="<照合済みの数値 pane_id>")
      ```
-     でペインを明示破棄する（`target="worker-{task_id}"` の名前指定はしない）。成功時は `"Closed pane id=N."` テキストが返る。ここは **pane 制御文脈**なので `[pane_not_found]` / `[pane_vanished]` は既に閉じた扱いで skip してよい（[`.claude/skills/org-delegate/references/renga-error-codes.md`](../org-delegate/references/renga-error-codes.md) 参照）。`[last_pane]` はワーカー停止段階では通常発生しない（窓口/ディスパッチャー/キュレーターが残っているため）
-   - **`pane_id` を持たないエントリ（他タブのワーカー）には `close_pane` を撃たない**。タブ横断の
+     でペインを明示破棄する（`worker-{task_id}` のような相対セレクタでは撃たない — (G-MUST)）。成功時は `"Closed pane id=N."` テキストが返る。ここは **pane 制御文脈**なので `[pane_not_found]` / `[pane_vanished]` は既に閉じた扱いで skip してよい（[`.claude/skills/org-delegate/references/renga-error-codes.md`](../org-delegate/references/renga-error-codes.md) 参照）。`[last_pane]` はワーカー停止段階では通常発生しない（窓口/ディスパッチャー/キュレーターが残っているため）
+   - **`pane_id` を持たないエントリ（他タブのワーカー、および (G-OWNTAB) 不成立で id を割り当てられ
+     なかったエントリ）には `close_pane` を撃たない**。タブ横断の
      pane 制御は原理的に不可で、返る `[pane_not_found]` は閉鎖の証拠にならない（契約 T-§4.2）。
      このエントリは pending に残したまま次の再確認へ送る
    - その後、同じ `poll_events` ループを `timeout_ms=5000` / deadline 5 秒で再度回し、close_pane 由来の `pane_exited` を消化する
@@ -644,9 +716,13 @@ live pane も無く、本 Phase は no-op。
    pane 側 id / peer 側 id のいずれか一致で行い、`ev.role == "dispatcher"` / `"curator"` と
    `ev.name` は同タブ確定エントリに対する補助に留める:
    - Pass 1: `poll_events(types=["pane_exited"], timeout_ms=10000)` 相当ループ
-   - Pass 2: `pending` に残ったエントリのうち **`pane_id` を持つもの**に
-     `{{FQ}}close_pane(target="<pane_id>")` を送り（名前指定はしない）、`poll_events` ループ
-     (timeout_ms=5000) で再確認。`pane_id` を持たない（他タブの）エントリには撃たず、(3) と同じく
+   - Pass 2: **(3) と同じ前段**（(G-OWNTAB) の成立確認 → close 直前の identity 照合。期待する
+     `name` / `role` は `dispatcher` / `curator` に読み替える）を通したうえで、`pending` に残った
+     エントリのうち **`pane_id` を持ち照合を通ったもの**に
+     `{{FQ}}close_pane(target="<照合済みの数値 pane_id>")` を送り（相対セレクタでは撃たない）、
+     `poll_events` ループ
+     (timeout_ms=5000) で再確認。`pane_id` を持たない（他タブの / (G-OWNTAB) 不成立の）エントリや
+     照合が外れたエントリには撃たず、(3) と同じく
      残存として人間に報告する
 
 **最後のペイン (窓口) の扱い**: ディスパッチャー（と存在した場合のキュレーター）を閉じた時点で、
@@ -681,7 +757,8 @@ live pane も無く、本 Phase は no-op。
    ```
 
    **停止できなかった / 判定できなかったピアが残る場合**（`pending` が空でない、`unresolved` が
-   空でない、他タブの対象 role ピアを検出した、のいずれか）:
+   空でない、他タブの対象 role ピアを検出した、Phase 3.7 で attention watcher を停止できなかった、
+   のいずれか）:
    ```
    組織を部分的に中断しました（停止しきれていないペインがあります）。
    - 保存済み: {N}件の作業アイテム
@@ -689,6 +766,7 @@ live pane も無く、本 Phase は no-op。
    - 停止できなかったワーカー: {peer_id / name / cwd を列挙}
    - role が判定できず対象外にしたピア: {peer_id / name / cwd を列挙}
    - 他タブに見えたが自組織と確認できずに対象外にしたピア: {peer_id / name / cwd を列挙}
+   - 停止できなかった attention watcher: {pane_id を列挙}
    これらは走り続けている可能性があります。手動での確認 / 停止をお願いします。
    /org-start で再開できますが、上記のペインが残っている前提でご判断ください。
    ```

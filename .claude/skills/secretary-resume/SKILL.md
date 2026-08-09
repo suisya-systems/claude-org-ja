@@ -9,6 +9,7 @@ description: >
 effort: low
 allowed-tools:
   - Read
+  - Bash(echo:*)
   - Bash(py -3 tools/journal_append.py:*)
   - Bash(bash tools/journal_append.sh:*)
   - Bash(py -3 tools/capability_gate.py:*)
@@ -46,9 +47,21 @@ allowed-tools:
 ## Step 0: 自分の identity を確認する
 
 1. `mcp__org-broker__set_summary` で「Secretary: 窓口（resumed）」をセット
-2. `mcp__org-broker__list_panes` でフォーカスペインの name/role を確認:
-   - 期待値: `name == "secretary"` かつ `role == "secretary"`
-   - 不一致なら `mcp__org-broker__set_pane_identity(target="focused", name="secretary", role="secretary")` で修復
+2. **caller pane id を確定する**（`focused: true` は「そのタブで今フォーカスされているペイン」で
+   あって caller 自身ではない）: 環境変数 `RENGA_PANE_ID`（`echo "${RENGA_PANE_ID:-unset}"`）を
+   起点に、`mcp__org-broker__list_panes` へ**同一 id のレコードが在ることを照合**する。規則の正本は
+   [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md)
+   T-§4.2 の caller pane id 取得規則
+   - **broker（`ORG_TRANSPORT=broker`）では `RENGA_PANE_ID` を読まず、最初から `caller-id 未確定` に
+     倒す**: broker には `RENGA_PANE_ID` に相当する caller pane id を out of band で供給する surface が
+     無いので、この取得規則は broker では常に未確定に落ちる。`list_panes` に数値 id のエントリが在って
+     手元で掴めていても例外にならない（数値 id は MUST の**片方**＝相対セレクタでないことしか満たさず、
+     **もう片方**＝自タブと確立済みの列挙から採った id でありその対象が caller であること、を満たさない）
+   - 照合できたレコードの期待値: `name == "secretary"` かつ `role == "secretary"`。不一致なら
+     `mcp__org-broker__set_pane_identity(target="<RENGA_PANE_ID の値>", name="secretary", role="secretary")` で修復
+   - **`caller-id 未確定`**（`RENGA_PANE_ID` 未設定 / `list_panes` に同一 id 無し / broker 等で同等の
+     caller-id を入手できない）: 自己修復を実行せず、identity 未確認のまま**人間に報告して続行判断を
+     仰ぐ**（勝手に fatal にしない。`target="focused"` や裸 `name` へフォールバックしない）
 
 ## Step 1: handover ファイルを読み込む
 

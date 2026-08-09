@@ -175,7 +175,25 @@ inspect 自体のラウンドトリップ（数百 ms）で shell が即時終�
 （quiet な健全起動を誤殺する経路を作らないため）。
 
 **起動失敗時**:
-1. `mcp__renga-peers__close_pane(target="<spawn 返り値の pane_id>")` で死んだペインを掃除
+1. 死んだペインを **自タブ確立 → identity 再確認 → 数値 close** の順で掃除する:
+   1. **自タブ確立を先に判定する**。契約 T-§4.2「Fail-safe consequence for Group B」は
+      `close_pane` の宛先を「**自タブと独立に確立済みの列挙**から得た数値 pane id」に限っており、
+      **id が spawn の戻り値として手元にあることは免除にならない**（未確立の列挙では、close 直前の
+      identity 照合の結果そのものを信用できないため）。確立手段は 2 つで、いずれか 1 つが成立すれば
+      よい: **(i) backend が Group B を自身の単一タブモデル内で解決する**（`org-broker`。契約
+      §8.1 / §8.10）/ **(ii) `caller_scope` を確立できている**（契約 T-§cap）。**どちらも成立
+      しないなら close を撃たず**、死んだペインが残っている旨を 4 の報告に含めて手動掃除に委ねる
+      （相対セレクタへはフォールバックしない）。詳細は
+      [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) T-§4.2
+   2. **identity 再確認（pane_id recycle 対策）**: `mcp__renga-peers__list_panes` を呼び、
+      spawn 返り値の pane_id が `name="attention"` **または** `role="attention"` を**なお指して
+      いる**ことを確かめる（[`/org-attention-stop`](../org-attention-stop/SKILL.md) が組む
+      「確認済み attention ペイン集合」と同じ判定。**spawn 時に渡した name は信用せず、いま
+      `list_panes` が返す name/role で判定する**）。その id が別ペインへ再割当て済み（recycled）/
+      列挙に現れない（gone）なら **close せず**、死んだペインが残っている旨を 4 の報告に含める
+   3. 1 と 2 の両方を通ったときだけ
+      `mcp__renga-peers__close_pane(target="<spawn 返り値の pane_id>")` で掃除する
+      （`[pane_not_found]` / `[pane_vanished]` は直前に消えた扱いで skip）
 2. sidecar は **書き込まない**
 3. journal に `attention_watch_start_failed` を記録:
    ```bash

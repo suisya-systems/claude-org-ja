@@ -86,10 +86,13 @@ curator が MIN_PANE を割って脱落した後は priority 2 の worker 群に
 - **役割ラベル (`role`)**: `secretary` / `dispatcher` / `curator` / `worker` の 4 種
   - `list_panes` の出力で `role` フィールドが取得でき、組織状態の集計や balanced split の target 選出に使える
 - **ワーカー完了時**:
-  1. 窓口がディスパッチャーに `CLOSE_PANE` を依頼
-  2. ディスパッチャーは `mcp__org-broker__close_pane(target="worker-{task_id}")` でペインを明示破棄する
+  1. 窓口がディスパッチャーに `CLOSE_PANE: {pane_id}` を依頼（対象ペインの数値 pane_id を載せる）
+  2. ディスパッチャーは受け取った pane_id を `mcp__org-broker__list_panes` で照合し、そのレコードが
+     `name == "worker-{task_id}"` かつ `role == "worker"` を**なお指している**ことを確かめてから
+     `mcp__org-broker__close_pane(target=<照合済みの数値 pane_id>)` でペインを明示破棄する
      (pane が撤去される → `pane_exited` を 1 回 emit → `list_panes` からも消える。
      `[pane_not_found]` / `[pane_vanished]` は「既に閉じた扱い」として skip する)
+     - **相対セレクタ (`"focused"` / 裸の `name`) では撃たない**: 契約 [`docs/contracts/backend-interface-contract.md`](../../../../docs/contracts/backend-interface-contract.md) T-§4.2「Fail-safe consequence for Group B」。**ただし数値であることは MUST の片方にすぎず**、上の照合に使う列挙を先に「自タブのもの」と確立する必要がある (確立手段は **backend が Group B を自身の単一タブモデル内で解決する** = `org-broker` / **`caller_scope` を確立できている** の 2 つだけで、いずれか 1 つが成立すればよい)。窓口の依頼に載っていた `{pane_id}` もこの確立を免除しない (未確立の列挙では照合の結果そのものを信用できないため)。**2 つのいずれも成立しないときは close せず**窓口に informational として報告する (相対セレクタへフォールバックしない)。照合に失敗した場合 (pane_id が別ペインへ再割当て済み / 列挙に現れない) も同じく **close せず**報告する。手順の SoT は [`.dispatcher/references/pane-close.md`](../../../../.dispatcher/references/pane-close.md) Step 3
 - **org-suspend 時の停止順**: ワーカー → ディスパッチャー → キュレーター (いずれも `mcp__org-broker__close_pane` で破棄。最後の 1 ペインを閉じるときだけ `[last_pane]` が返るので、そのペインは自分自身で `exit` させる)
 
 ## split direction 慣習

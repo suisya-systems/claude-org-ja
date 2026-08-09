@@ -8,6 +8,7 @@ description: >
 effort: low
 allowed-tools:
   - Read
+  - Bash(echo:*)
   - Bash(bash tools/journal_append.sh:*)
   - Bash(py -3 tools/journal_append.py:*)
   - Bash(python -m tools.state_db.importer:*)
@@ -116,20 +117,38 @@ ClaudeCode起動後に最初に実行するスキル。前回の状態復元と�
        broker daemon の起動状態と `--mcp-config` に渡す broker 設定をユーザーに
        確認してもらう
 3. **secretary ペイン identity の検証と自動リカバリ**:
-   - `mcp__renga-peers__list_panes`（broker では `mcp__org-broker__list_panes`）の結果から `focused=true` のペイン（= 自分）を特定する
+   - **caller pane id を先に確定する（`focused=true` を「自分」と読まない）**: `list_panes` の
+     `focused` は「そのタブで今フォーカスされているペイン」であって caller 自身ではない。人間が
+     フォーカスを移した瞬間 `focused` は別ペインを指すので、そこを起点にすると無関係のペインを
+     `secretary` に改名しうる。identity の検証も修復も、契約
+     [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md)
+     T-§4.2 の **caller pane id 取得規則**に従って caller pane id 起点で行う:
+     1. 環境変数 `RENGA_PANE_ID` を caller pane id の起点にする（renga が起動したペイン内でのみ
+        継承される。冒頭「前提」で挙げた環境変数で、未設定は `detached` 相当）:
+        ```bash
+        echo "${RENGA_PANE_ID:-unset}"
+        ```
+     2. `mcp__renga-peers__list_panes`（broker では `mcp__org-broker__list_panes`）を列挙し、
+        **同一 id のレコードが存在することを照合する**（id recycle / 列挙不能の検出）。照合できた
+        そのレコードが caller 自身であり、以降の期待値判定と修復はこのレコードだけを対象にする
    - 期待値: `name == "secretary"` かつ `role == "secretary"`
+   - **`caller-id 未確定` の場合** — `RENGA_PANE_ID` が未設定 / `list_panes` に同一 id のレコードが
+     無い / broker 等そもそも同等の caller-id を入手できない transport: **自己修復（下の自動リカバリ）を
+     実行せず、identity 未確認のまま人間に報告して続行判断を仰ぐ**（勝手に fatal にしない）。`target="focused"`
+     や裸 `name` のような相対セレクタへフォールバックしてはならない（契約 T-§4.2 Group B。誤タブの
+     別ペインを改名する経路になる）。broker の縮退の具体は下の broker 分岐を参照
    - **不一致の場合** — `renga --layout ops` 以外の経路で起動された / 旧ops.tomlで起動された既存セッションに attach 等:
-     1. `mcp__renga-peers__set_pane_identity(target="focused", name="secretary", role="secretary")` を呼んで自動修復（broker では `mcp__org-broker__set_pane_identity` を使うが、`target="focused"` を解決できないため、`list_panes` で特定した自ペインの id を `target` に指定する）
+     1. `mcp__renga-peers__set_pane_identity(target="<RENGA_PANE_ID の値>", name="secretary", role="secretary")` を呼んで自動修復（照合済みの数値 pane id で撃つ。`target="focused"` は使わない）
      2. 成功すれば警告ログを events テーブルに残して続行（`bash tools/journal_append.sh secretary_identity_restored note=auto_recovered`）
      3. 失敗ケースの分岐:
         - `name_in_use`（broker では `name_taken`）エラー: 既存の別ペインが `secretary` を占有している。ユーザーに状況を報告し、「現セッション継続なら全ワーカーに `to_id="{numeric_pane_id}"` で送信させる」「永続修復なら `/org-suspend` → 終了 → `renga --layout ops` で再起動」の選択肢を提示
         - `name_invalid` / その他: ユーザーに原因を報告
    - **一致している場合**: そのまま続行
-   - **broker（`ORG_TRANSPORT=broker`）の場合**: secretary 自身の pane record が存在しないことがあり、`list_panes` に `focused=true` のペインが見つからない / `set_pane_identity(target="focused", ...)` が `[pane_not_found] no pane for target 'focused'` を返しうる。**どちらかが起きた時点で上記の不一致リカバリの再試行はせず、この分岐に進む**。 `mcp__org-broker__list_peers` で自分のエージェント登録（`name="secretary"` かつ `role="secretary"`）が確認できれば **identity 検証は満たされたとみなして続行してよい**（broker の `send_message` ルーティングは peer 登録で成立し、secretary の pane record を要求しない）。**この `list_peers` の直前にも [`.claude/skills/org-delegate/references/capability-first-drive-operational-gate.md`](../org-delegate/references/capability-first-drive-operational-gate.md) を Read し、`monitoring-read-only` の分岐を適用する**（同 reference §6 の表 #2b）。capability 形かつ未承認なら列挙を identity 検証の充足根拠にせず破棄し、`name="secretary"` の一致で満たされたとみなさない（予約名 `secretary` は別 org の並走タブに同名で実在しうる。共有 reference §3-B-1）。その場合は identity 未確認のまま**人間に報告して続行判断を仰ぐ**（勝手に fatal にしない）。**承認済み（同 reference §2 の `first_drive` が `recorded`）のときも同じ結論になる**: §1-2-d のとおり `list_peers` は caller を除外するので、`name="secretary"` に一致したレコードは**同タブに 1 件だけ在っても自分ではありえず**、自 identity の検証根拠にできない（承認の有無によらず、この経路が列挙から得られるものは無い）。なお現行 `org-broker` は本 amendment の capability を 1 つも広告しないので、broker 面でこの縮退が発火することは無い
+   - **broker（`ORG_TRANSPORT=broker`）の場合**: broker には `RENGA_PANE_ID` に相当する caller pane id が無く、secretary 自身の pane record が存在しないこともある。したがって broker では上の caller pane id 取得規則が最初から **`caller-id 未確定`** に落ち、`set_pane_identity` による自動修復は行わない（相対セレクタで撃てば `[pane_not_found] no pane for target 'focused'` になるが、そもそも撃たない）。**上記の不一致リカバリは再試行せず、この分岐に進む**。**この結論は下の「broker 論理エントリ注記」にも等しく及ぶ** — `list_panes` に数値 id のエントリが在って手元で掴めていても例外にならない。数値 id であることは契約 T-§4.2 Group B の MUST の**片方**（相対セレクタでないこと）しか満たさず、**もう片方**（自タブと確立済みの列挙から採った id であり、かつ対象が caller であること）を満たさないからである。 このとき **`mcp__org-broker__list_peers` を identity 検証の充足根拠にはしない**（下記のとおり、承認の有無によらずこの経路から得られるものは無い）。`list_peers` を引くのは **messaging 経路が生きていることの確認**までで、broker の `send_message` ルーティングは peer 登録で成立し secretary の pane record を要求しないので、その確認自体には意味がある — ただし**それは identity の検証ではない**（契約が MUST で禁じる「messaging 到達性から pane 制御到達性を推論する」に踏み込まないため、両者を明確に分ける）。**この `list_peers` の直前にも [`.claude/skills/org-delegate/references/capability-first-drive-operational-gate.md`](../org-delegate/references/capability-first-drive-operational-gate.md) を Read し、`monitoring-read-only` の分岐を適用する**（同 reference §6 の表 #2b）。capability 形かつ未承認なら列挙を identity 検証の充足根拠にせず破棄し、`name="secretary"` の一致で満たされたとみなさない（予約名 `secretary` は別 org の並走タブに同名で実在しうる。共有 reference §3-B-1）。その場合は identity 未確認のまま**人間に報告して続行判断を仰ぐ**（勝手に fatal にしない）。**承認済み（同 reference §2 の `first_drive` が `recorded`）のときも同じ結論になる**: §1-2-d のとおり `list_peers` は caller を除外するので、`name="secretary"` に一致したレコードは**同タブに 1 件だけ在っても自分ではありえず**、自 identity の検証根拠にできない（承認の有無によらず、この経路が列挙から得られるものは無い）。なお現行 `org-broker` は本 amendment の capability を 1 つも広告しないので、**この段落で言及した `monitoring-read-only` の縮退（capability 形かつ未承認のときの列挙破棄）**は broker 面では発火しない。**`caller-id 未確定` の方は別物で、broker では常に発火する** — capability の広告有無は first-drive gate を制御するだけで、欠けている out-of-band な caller pane id を供給しないからである。したがって broker 面でも上記の「自己修復せず人間へ報告して続行判断を仰ぐ」は**必ず通る**
      > **broker 論理エントリ注記**: broker の `list_panes` に geometry が全て 0（w=0 h=0）で `kind` が null のエントリが現れることがある。これは残骸とは限らず、**adapter 実体を持たない論理エントリ（human-driven logical pane）**でありうる。典型は root secretary（窓口）自身の bookkeeping entry。扱いは次のとおり:
      > - `inspect_pane` は adapter 不在のため失敗する（socket close を観測する）。調査目的で叩かない
      > - `close_pane` は `[logical_pane] cannot close a human-driven logical pane` で**拒否される**。残骸と決めつけて close を試みない
-     > - このエントリの `name` / `role` が期待値（`secretary` / `secretary`）とずれたまま残っている場合（手動テストの名残等）は、`mcp__org-broker__set_pane_identity(target="<そのエントリの id>", name="secretary", role="secretary")` で**改名修復**して続行する。broker では `target="focused"` を解決できないため、必ずそのエントリの id を指定する
+     > - このエントリの `name` / `role` が期待値（`secretary` / `secretary`）とずれたまま残っている場合（手動テストの名残等）でも、**`set_pane_identity` による改名修復はしない**。上の broker 分岐と同じ結論に落とし、**ずれを人間に報告して続行判断を仰ぐ**。理由は、そのエントリが caller である証明が**形状からは立たない**ためである — geometry 全 0 / `kind` が null / root secretary の bookkeeping entry という形が示すのは「adapter 実体を持たない論理エントリである」ことだけで、「それが自分である」ことではない。数値 id で撃てば相対セレクタは避けられるが、それは MUST の片方にすぎず、caller である裏付けを欠いたまま撃てば無関係のペインを `secretary` に改名しうる
 4. **プロジェクトレジストリの配置（未配置時のみ生成・既存は上書きしない、Issue #811）**:
    `registry/projects.md` は operator-local な生成ファイル（`.gitignore` 済み）で、
    コミットされているのはテンプレート `registry/projects.example.md` の方である。
@@ -394,8 +413,12 @@ spawn の引数の意味と落とし穴:
 Block A の spawn 段階で分類する:
 
 - **dispatcher spawn 失敗 (`[split_refused]` / `[cwd_invalid]` / その他 `[<code>]`)** — **失敗をユーザーに報告し、原因解消後 /org-start を再実行する**
-- **spawn 成功・boot 中に peer 登録されない** — Block D-2 の poll が timeout する。Enter を再送 → 再 poll。3 回 retry してダメなら fatal: dispatcher 無しでは org-delegate / SECRETARY_RELAY が機能しないため、ペインを `close_pane` で破棄し、**dispatcher / curator 両 identity を `StateWriter.CLEAR` で消した上でユーザー報告**し /org-start 再実行を促す
-  - **capability 形かつ未承認の縮退中は、fatal 分岐の判定材料を差し替える（分岐を無効化するのではない）**: 縮退中は Block D-2 の列挙を破棄しているので「`list_peers` に居ない = peer 未登録」という判定が成立せず（[共有 reference](../org-delegate/references/capability-first-drive-operational-gate.md) §1-1 / §3-B-1）、**それを根拠に** `close_pane` + `StateWriter.CLEAR` を撃つと健全な dispatcher ペインと 2 つの identity を破棄する。代わりに **Block D-2 の縮退手順で使う「挨拶 `send_message` の再送」が 30 秒の予算を使い切って一度も送達しなかったこと**を fatal の根拠にする（プロンプトが見えていても、送達できない dispatcher は org-delegate / SECRETARY_RELAY を担えないので起動失敗である）。その場合は従来どおり `close_pane` + 両 identity の `StateWriter.CLEAR` + ユーザー報告を行う。**「ペインが boot していれば fatal にしない」ではない** — 到達不能な dispatcher を抱えたまま `/org-start` を成功として報告してはならない
+- **spawn 成功・boot 中に peer 登録されない** — Block D-2 の poll が timeout する。Enter を再送 → 再 poll。3 回 retry してダメなら fatal: dispatcher 無しでは org-delegate / SECRETARY_RELAY が機能しないため、ペインを破棄し、**dispatcher / curator 両 identity を `StateWriter.CLEAR` で消した上でユーザー報告**し /org-start 再実行を促す
+  - **この破棄も Group B なので、下記 3 段を踏んでから撃つ**（契約 [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) T-§4.2「Fail-safe consequence for Group B」）。**spawn 戻り値で pane_id が手元にあることは免除にならない** — 未確立の列挙では、下の identity 照合の結果そのものを信用できないため:
+    1. **自タブ確立**: (i) backend が Group B を自身の単一タブモデル内で解決する（`org-broker`。同契約 §8.1 / §8.10）/ (ii) `caller_scope` を確立できている（同 T-§cap）の**いずれか 1 つ**が成立すること。**どちらも不成立なら `close_pane` を撃たない** — その場合はペインを残したまま `StateWriter.CLEAR` とユーザー報告だけを行い、「dispatcher ペイン (id={N}) が残っているので手動で閉じてほしい」を報告に含める（相対セレクタへはフォールバックしない）
+    2. **identity 照合**: `mcp__renga-peers__list_panes` で spawn 戻り値の pane_id が `name == "dispatcher"` かつ `role == "dispatcher"` を**なお指しているか**確認する。別ペインへ再割当て済み / 列挙に現れない場合は close せず、同じく `StateWriter.CLEAR` と報告に倒す（pane_id recycle 対策）
+    3. 1 と 2 の両方を通ったときだけ `mcp__renga-peers__close_pane(target=<照合済みの数値 pane_id>)` で破棄する
+  - **capability 形かつ未承認の縮退中は、fatal 分岐の判定材料を差し替える（分岐を無効化するのではない）**: 縮退中は Block D-2 の列挙を破棄しているので「`list_peers` に居ない = peer 未登録」という判定が成立せず（[共有 reference](../org-delegate/references/capability-first-drive-operational-gate.md) §1-1 / §3-B-1）、**それを根拠に** `close_pane` + `StateWriter.CLEAR` を撃つと健全な dispatcher ペインと 2 つの identity を破棄する。代わりに **Block D-2 の縮退手順で使う「挨拶 `send_message` の再送」が 30 秒の予算を使い切って一度も送達しなかったこと**を fatal の根拠にする（プロンプトが見えていても、送達できない dispatcher は org-delegate / SECRETARY_RELAY を担えないので起動失敗である）。その場合は従来どおり両 identity の `StateWriter.CLEAR` + ユーザー報告を行い、ペインの破棄は**上の 3 段（自タブ確立 → identity 照合 → 数値 close）を踏んでから**撃つ（踏めなければ close せず、ペインが残る旨を報告に含める）。**「ペインが boot していれば fatal にしない」ではない** — 到達不能な dispatcher を抱えたまま `/org-start` を成功として報告してはならない
 - **Enter 送信タイミングのずれ** — 「Load development channel?」プロンプト未表示の段階で Enter を送ると no-op になる。Block D-2 の peer 登録 poll が ground truth。peer 未登録なら Block D-1 に戻って再送する
 
 curator の spawn / boot 失敗モードは org-start には存在しない（spawn しないため）。オンデマンド起動時の失敗ハンドリングは [`.dispatcher/references/pane-close.md`](../../../.dispatcher/references/pane-close.md) Step 5-3 / 5-4 を参照。

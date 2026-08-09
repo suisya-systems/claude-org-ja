@@ -223,8 +223,20 @@ T-§2.2 は「the §2.2 distinction from `list_panes` (excludes the caller, hide
 として維持する。**したがって自分の `name` に一致したレコードが自分である保証は無い**（caller を除外
 しない非適合実装もありうるが、その場合も同名の別ピアと区別する手段が無いので結論は変わらない）。よって:
 
-- **自分の `peer_id` を名前引きで確定しない。** 自 identity は `list_panes` の `focused: true` の
-  pane_id で確定する。
+- **自分の `peer_id` を名前引きで確定しない。** 自 identity は **caller pane id 取得規則**で確定する。
+  **`list_panes` の `focused: true` のレコードで代用してはならない（MUST NOT）** — それは「そのタブで
+  今フォーカスされているペイン」であって caller 自身ではないので、人間がフォーカスを移した瞬間に
+  別ペインを自役割名として掴み、その id を DB へ焼き付ける。renga では環境変数 `RENGA_PANE_ID` を
+  起点にし、`list_panes` へ**同一 id のレコードが在ることを照合**してから使う（この照合が id の
+  再割り当てと列挙失敗を検出する）。規則の正本は
+  [`docs/contracts/backend-interface-contract.md`](../../../../docs/contracts/backend-interface-contract.md)
+  T-§4.2 の caller pane id 取得規則で、「`"focused"` resolves to the pane focused **in a tab**, never
+  to *the caller*」「MUST therefore start from a **caller pane id supplied by the backend out of
+  band**」と書く。
+- **`caller-id 未確定`**（`RENGA_PANE_ID` 未設定 / `list_panes` に同一 id のレコード無し / broker 等で
+  同等の caller-id を入手できない）**のときは自己修復を実行しない。** identity 未確認のまま人間 /
+  窓口へ**報告して続行判断を仰ぐ**（勝手に fatal にしない。`target="focused"` や裸 `name` へ
+  フォールバックしない — 同規則の「MUST NOT fall back to a relative selector」）。
 - 名前引きの結果が 在 / 不在 / unknown の**いずれであっても、自 `peer_id` は未確定のまま先へ進む**。
   未確定の identity を DB に書かない（推測値・placeholder・他タブ由来の id を書くと、以後の routing が
   壊れた宛先を恒久的に掴む）。**未確定であることを人間 / 窓口への報告に明示する。**
@@ -238,7 +250,8 @@ T-§2.2 は「the §2.2 distinction from `list_panes` (excludes the caller, hide
 > | `same_tab=True` が複数（ambiguity） | 1-2-c #2（fail-closed） | `peer_id` 未確定 |
 > | 在 1 件だが、それが自役割名である | 本項の caller 除外 | `peer_id` 未確定 |
 >
-> **4 分岐すべてが未確定に落ちる**ので、DB 更新には pane_id だけを渡す。「未指定 = 保持」と「明示
+> **4 分岐すべてが未確定に落ちる**ので、DB 更新には**照合済みの caller pane id** だけを渡す
+> （`caller-id 未確定` のときはそれも渡さない）。「未指定 = 保持」と「明示
 > クリア」のどちらが正しいかは経路の性質で決まる: **生きた同一ペインを引き継ぐ resume 系は保持**
 > （渡さないこと自体が fail-closed になる）、**ペインを新規 spawn する起動系は残値が前セッションの
 > 死んだペインを指すので明示クリア**。どちらであれ、推測値を書かない点は共通である。
@@ -533,9 +546,9 @@ owner なのは `list_panes` / `pane_exited` / `list_peers` という**独立し
 | 1 | [`.claude/skills/org-suspend/SKILL.md`](../../org-suspend/SKILL.md) Phase 1 手順 1（id 台帳を作る） | secretary / root | **interactive-action** | 送信前に停止し人間確認。確認後も他タブピアは対象外のまま |
 | 1b | 同 Phase 4 の再列挙（台帳の最新化 / Pass 2 残存確認 / curator 存在確認 / `[pane_not_found]` messaging 復旧） | secretary / root | **interactive-action** | **Phase 1 が capability 形と判定していた場合に限り**、同一実行内で #1 の確認結果に従い gate を再適用しない（そのとき**他タブ判定のピアが Phase 1 から増えていたら差分を人間に報告する**）。**Phase 1 が旧版 fallback だった場合は再適用する**（§1 の版判定を Phase 4 の列挙に対して引き直す）— Phase 1 と Phase 4 の間に backend が upgrade / 再接続して**Phase 4 が最初の capability 観測になりうる**ので、Phase 1 の判定を持ち回すと初回駆動が無停止で通る |
 | 2 | [`.claude/skills/org-start/SKILL.md`](../../org-start/SKILL.md) Block D-2（dispatcher の peer 登録 poll） | secretary / root | monitoring-read-only | 列挙を登録確認に使わない（§3-B-1: `name` 一致でゲートを開けない）。readiness は §3-B-1 の send-as-probe で判定する（手順 3 の挨拶送信そのものを probe にし再送。プロンプト表示で代用しない）。**「peer 未登録」を根拠に失敗モードの fatal 分岐（`close_pane` + `StateWriter.CLEAR`）へ進んではならない** — 縮退中の列挙は未登録の証拠にならず、健全な dispatcher ペインを破棄することになる |
-| 2b | 同 Step 0-3 の broker 分岐（secretary 自身の identity 検証） | secretary / root | monitoring-read-only | 列挙を identity 検証の充足根拠にしない。`list_panes` の `focused` ペインで確認できなければ、identity 未確認のまま人間に報告して続行判断を仰ぐ（勝手に fatal にしない） |
+| 2b | 同 Step 0-3 の broker 分岐（secretary 自身の identity 検証） | secretary / root | monitoring-read-only | 列挙を identity 検証の充足根拠にしない。identity は §1-2-d の caller pane id 取得規則で確認する（`focused` ペインで代用しない）。**broker には `RENGA_PANE_ID` に相当する caller-id が無いので、この分岐は最初から `caller-id 未確定`**: 自己修復を実行せず、identity 未確認のまま人間に報告して続行判断を仰ぐ（勝手に fatal にしない） |
 | 3 | [`.claude/skills/secretary-resume/SKILL.md`](../../secretary-resume/SKILL.md) Step 3（ペイン生存確認） | secretary / root | monitoring-read-only | 列挙を生存判定に使わない。`list_panes` と state DB の `active_runs[]` で突き合わせ、差分は人間に報告 |
-| 4 | [`.claude/skills/dispatcher-resume/SKILL.md`](../../dispatcher-resume/SKILL.md) Step 0 手順 4（自分の `peer_id` 取得） | dispatcher / `.dispatcher/` | monitoring-read-only | 列挙から `peer_id` を採らない。`list_panes` の `focused: true` の pane_id で identity を確定し、`peer_id` は未取得のまま進む |
+| 4 | [`.claude/skills/dispatcher-resume/SKILL.md`](../../dispatcher-resume/SKILL.md) Step 0 手順 4（自分の `peer_id` 取得） | dispatcher / `.dispatcher/` | monitoring-read-only | 列挙から `peer_id` を採らない。identity は §1-2-d の caller pane id 取得規則（`RENGA_PANE_ID` を起点に `list_panes` で同一 id を照合）で確定し、`peer_id` は未取得のまま進む。**`caller-id 未確定` なら `dispatcher_pane_id` も渡さず**（「未指定 = 保持」で既存値を温存）、identity 未確認を secretary へのブリーフィングに明示して続行判断を仰ぐ |
 | 5 | 同 `already_consumed` 分岐（監視対象が live か） | dispatcher / `.dispatcher/` | monitoring-read-only | 列挙を live 判定に使わない。`list_panes` の `role == "worker"` と `.state/dispatcher/curate-inflight.json` の有無だけで分岐する |
 | 6 | 同 Step 4（ワーカーのペイン生存確認） | dispatcher / `.dispatcher/` | monitoring-read-only | 列挙を不存在の根拠にしない。`list_panes` + events テーブルの報告痕跡で判定し、確定できなければ `WORKER_PANE_EXITED` を送らない |
 | 7 | [`.dispatcher/references/spawn-flow.md`](../../../../.dispatcher/references/spawn-flow.md) 3-4（新ピア出現待機） | dispatcher / `.dispatcher/` | monitoring-read-only | 列挙を peer 登録の ground truth にしない（§3-B-1: `worker-{task_id}` は別 org の並走タブに同名で実在しうる）。readiness は §3-B-1 の send-as-probe で判定する（3-5 の指示送信そのものを probe にし再送。送達成功で 3-5 は消化済み＝二度送らない） |

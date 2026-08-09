@@ -164,7 +164,7 @@ layer 3（静的）は live renga セッションを必要としない。layer 3
 - `.state/journal.jsonl` にイベントが記録される
 - ワーカー完了後、`renga-peers` 経由で**窓口に**報告が届く（ディスパッチャーではなく窓口）
 - 窓口が結果を業務言語で人間に伝える（技術用語を避ける）
-- 窓口がディスパッチャーにペインクローズを依頼する（ディスパッチャーは `mcp__renga-peers__close_pane(target="worker-{task_id}")` で破棄）
+- 窓口がディスパッチャーに `CLOSE_PANE: {pane_id}` でペインクローズを依頼する（ディスパッチャーは受け取った数値 pane_id を `mcp__renga-peers__list_panes` で `name == "worker-{task_id}"` かつ `role == "worker"` と照合してから `mcp__renga-peers__close_pane(target=<照合済みの数値 pane_id>)` で破棄する。相対セレクタ（`"focused"` / 裸の `name`）では撃たない。照合できなければ close せず窓口へ informational 報告）
 
 **確認コマンド**:
 ```bash
@@ -245,7 +245,7 @@ mcp__renga-peers__list_panes             # 各 k 到達時のスナップショ�
 - `.state/org-state.prev.md` にバックアップが作成される
 - `mcp__renga-peers__send_message` で全ピアに SHUTDOWN が送信される
 - `mcp__renga-peers__poll_events(types=["pane_exited"], timeout_ms=10000)` で pane_exited を待機、`role == "worker"` をまとめて消化
-- 残留ワーカーは `mcp__renga-peers__close_pane(target="worker-{task_id}")` でフォールバッククローズ
+- 残留ワーカーは Phase 1 の台帳が持つ**数値 `pane_id`** で `mcp__renga-peers__close_pane(target="<pane_id>")` してフォールバッククローズする（名前指定 `target="worker-{task_id}"` はしない）。`pane_id` を持たない（＝他タブ判定の）エントリには `close_pane` を撃たず、pending のまま残存として人間に報告する
 - 全ワーカーペインが先に閉じられ、次にディスパッチャー、最後にキュレーターが閉じられる
 - 窓口が中断完了を報告する
 
@@ -257,7 +257,7 @@ cat .state/journal.jsonl | tail -1  # suspend イベントを確認
 
 **失敗パターンと対処**:
 - ワーカーがSUSPENDに応答しない → `inspect_pane` で画面内容を確認、Phase 2 のスクレイプが機能するか確認
-- ペインが閉じない → `close_pane(target="X")` の結果テキストをチェック。`[pane_not_found]` / `[pane_vanished]` は skip 扱い
+- ペインが閉じない → `close_pane(target="<pane_id>")`（数値 pane_id 指定。名前指定はしない）の結果テキストをチェック。`[pane_not_found]` / `[pane_vanished]` は skip 扱い
 - `[last_pane]` が出た → 最後の窓口ペインは自己 exit で自然終了させる（org-suspend は閉じない）
 - 状態ファイルが不完全 → org-suspendの手順を見直し
 

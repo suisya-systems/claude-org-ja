@@ -179,7 +179,7 @@ resume 時に「監視に gap が出ない」ことの根拠はこれらが前 s
 
 - `../.state/dispatcher-event-cursor.txt` — `mcp__renga-peers__poll_events` の next_since cursor。resume 後の 1 サイクル目で前 cursor から再開する
 - `../.state/dispatcher/worker-idle-state.json` — stall 検出の per-worker `idle_streak_cycles` / `last_content_change_ts`
-- `../.state/dispatcher/curate-inflight.json` — オンデマンド curate の開始記録（`started_at` / `reasons` / `trigger_task_id` / `extended`）。監視ループ Step 5.3 の完了受領・timeout 管理の SoT。resume 後も `started_at` 起点で timeout 管理が継続する
+- `../.state/dispatcher/curate-inflight.json` — オンデマンド curate の開始記録（`started_at` / `reasons` / `trigger_task_id` / `extended` / `pane_id` = spawn 戻り値の数値 pane id。非同期 close の identity 照合の起点 / `curate_result` = 受領した `CURATE_*` の持ち越し。初期値 `null`、close できず inflight を保持するときだけ `"done"` / `"skipped"` / `"error"` を書く）。監視ループ Step 5.3 の完了受領・timeout 管理の SoT。resume 後も `started_at` 起点で timeout 管理が継続する
 - `../.state/pending_decisions.json` — 判断仰ぎ register。SECRETARY_RELAY_GAP_SUSPECTED の primary lookup source
 - `../.state/workers/worker-*.md` — 各ワーカー run state
 
@@ -201,12 +201,41 @@ resume 時に「監視に gap が出ない」ことの根拠はこれらが前 s
 書いて即座に（CURATE_* を待たず）後続の Step 6（triage scan）へ進み、それも終えてから `/loop 3m`
 監視ループへ復帰する。`CURATE_DONE` / `CURATE_SKIPPED` / `CURATE_ERROR` の
 direct send は監視ループの通常サイクル（`check_messages`）で受領 → 受領したサイクルで
-`close_pane(target="curator")` する。
+**inflight に控えた `pane_id`** を `list_panes` で `name == "curator"` / `role == "curator"` と
+identity 照合してから `close_pane(target=<pane_id>)` する（close は spawn と別サイクルの非同期
+なので、pane_id が別ペインへ再割当てされていないことを close 直前に確かめる）。
+**照合の前に、その列挙を自タブのものと確立する**（単一タブ backend =`org-broker` / `caller_scope` の
+2 手段だけで、いずれも成立しなければ手元の `pane_id` があっても close を撃たずに保持して窓口へ報告する。
+`name` / `role` の照合は「その id が期待どおりのペインか」しか見ておらず、その列挙が自タブのものかは
+見ていないため）。**`list_peers` の `same_tab` は確立手段に数えない** — このフィールドは契約 T-§2.2-fields が
+`list_peers` のレコードに足すもので `list_panes` には載らず、messaging 到達性から pane 制御到達性を
+推論することは契約が MUST で禁じている（`same_tab == False` に `pane_id` を割り当てないという否定方向の
+絞り込みにだけ使える）。2 つ目は確立できたときだけ数え（契約 T-§cap の fail-safe default。確定できなければ
+不成立）、踏んでいないサイクルでは事実上 `org-broker` 面でのみ close を撃てる。
+
+close するか / inflight を残すかの判定は
+[`.dispatcher/references/worker-monitoring.md` Step 5.3](references/worker-monitoring.md#step-5-3-close) の
+close 判定表 1 つに従う（経路ごとに別の分岐を足さない）。結論だけ要約すると: 照合が外れた（id recycle）
+場合は curator が既に消えていると現認できるので閉じずに inflight を削除し、**窓口へ informational
+報告する**（close を撃たずに追跡を捨てる判断は必ず窓口に見えるようにする）。**その id が列挙に無いだけでは
+消失を確定させず**、Step 3 (3-a) の裏取りゲートで確定するまで inflight を保持して次サイクルで再評価する
+（単発の列挙は同じ結論に対して裏取りゲートより弱い証拠なので、証拠バーをそちらに揃える）。**`pane_id` を欠く
+残存ファイルでも列挙に `name == "curator"` かつ `role == "curator"` のレコードが在ればその数値 `id` で
+閉じる**（`target="curator"` のような相対セレクタへは全行でフォールバックしない）。**inflight を保持するのは
+判定表の 2 行だけ**で、行 1（列挙を自タブと確立できない / 列挙が観測不能 = org のペインが一斉に出ない /
+消失の裏取りが確定しない）と、close が
+`[pane_not_found]` / `[pane_vanished]` **以外**のコード（`server_too_old` / `[no_backend]` /
+`[tool_not_authorized]` 等）で失敗した行 8 — 後者は契約 T-§4.2 が "MUST be surfaced, not swallowed" と
+書いている非 transient の失敗なので、再試行せずコードを添えて窓口へ上げる。保持した inflight は hard cap
+到達時に「**窓口へ escalate してから削除**」で終端する（人間に確認・close を依頼する形。閉じないと
+single-flight coalesce で以後の curate が抑止される）。**「close の可否によらず削除する」無条件削除はしない。**
 
 - spawn 前に `list_panes` で既存 curator を確認し、存在すれば coalesce（再 spawn しない、single-flight 規約）
 - 閉じ忘れ・暴走対策は監視ループ側の timeout 管理（開始から 20 分超で CURATE_* 未受領なら
   `inspect_pane` の出力 hash をサイクル間比較 → 変化している間は継続（絶対上限 40 分）、
-  静止していれば close + 窓口へ informational 報告）。詳細は
+  静止していれば close + 窓口へ informational 報告）。**絶対上限 40 分の hard cap は経過時間だけで
+  評価する**（観測不能に倒れたサイクルでも判定する。観測できない間 hard cap を保留すると、
+  「inflight が在る間は監視ループを停止しない」と噛み合って終端条件が消える）。詳細は
   [`.dispatcher/references/worker-monitoring.md` Step 5.3](references/worker-monitoring.md#step-5-3)
 - `curator_pane_id` / `curator_peer_id` は state.db に**書かない**（null が正常系。生存確認は `list_panes` のみ）
 - 詳細手順は [`.dispatcher/references/pane-close.md`](references/pane-close.md) Step 5 を参照
