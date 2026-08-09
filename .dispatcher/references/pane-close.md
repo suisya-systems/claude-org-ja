@@ -280,8 +280,10 @@ Step 5 の inflight 再生成（= 次の handover / resume）を待つしかな�
 
 1. **inflight を再取得する**（フィールドの正本は 5-3 の JSON。再生成の形は上記
    `/dispatcher-resume` Step 5 と揃える）。`pane_id` は**この生存確認に使った列挙で
-   `name == "curator"` かつ `role == "curator"` を指しているレコードの数値 `id`** を引用符で
-   囲まず数値で書き、`curate_result` は `null`、`started_at` は 5-3 と同じ決定的 UTC コマンドの
+   `name == "curator"` かつ `role == "curator"` を指しているレコードの `id`** を、
+   **列挙が返した JSON の型を変えずに**書き（tmux backend は `"%3"` のような文字列、
+   WezTerm backend は整数。引用符の有無を型に合わせる — 詳細と理由は 5-3 の
+   `pane_id` 注記）、`curate_result` は `null`、`started_at` は 5-3 と同じ決定的 UTC コマンドの
    出力をそのまま（手書きの local(JST) 時刻を `Z` で書かない）、`reasons` は **5-1 の JSON の
    `reasons[]`**（本サイクルの閾値チェック結果）、`extended: false` /
    `last_inspect_hash: null` / `last_inspect_ts: null` を初期値で書く。`trigger_task_id` は
