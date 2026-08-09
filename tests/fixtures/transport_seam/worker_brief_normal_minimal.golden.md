@@ -55,7 +55,7 @@ done: {commit SHA 短縮形} {変更ファイル名}
 
 1. **完了報告**: `mcp__renga-peers__send_message(to_id="secretary", message="...")` で窓口に報告する。**ディスパッチャーではなく窓口に送ること**。宛先解決に失敗しても（renga: `[pane_not_found]` / broker: `[peer_not_found]`）**窓口が消えたとは解釈しない**。復旧手順の正本は `/home/user/work/claude-org/.claude/skills/org-delegate/references/renga-error-codes.md` の「`pane_not_found` の messaging 分岐」節（同節の冒頭が capability gate へのポインタを持つ）。そこを読む前も読んだ後も、次の 2 つは必ず守る:
    - **宛先が自分と同じ org だと確認できるまで一切再送しない**（誤送信は別 org へ完了報告を漏らす）。数値 id・`same_tab: true` 候補を含め、確認できていない宛先へは送らない。
-   - **`to_id="dispatcher"` への escalate も同じ確認の対象**。dispatcher も同一 org だと確認できないときは**何も送らず、ペインを保持したまま停止する** — 報告内容はペインに残し、ディスパッチャーの監視 / 人間の回収に委ねる。
+   - **宛先を確定できない / 再送も失敗したときは `to_id="dispatcher"` へ 1 回だけ escalate する**（ループにしない）。**この escalate も同じ確認の対象**で、dispatcher も同一 org だと確認できないときは**何も送らず、ペインを保持したまま停止する** — 報告内容はペインに残し、ディスパッチャーの監視 / 人間の回収に委ねる。
 2. **PR 作成後はペインを保持してレビュー指摘待機**: 「閉じてよい」「マージ済み」など窓口からの明示クローズ指示が来るまで待機状態を維持する。
 3. **振り返り記録**: 再利用可能な学びがあれば `/home/user/work/claude-org/knowledge/raw/{YYYY-MM-DD}-{topic}.md` に記録する（topic は英語 kebab-case）。記録基準: 再現性がある / 非自明 / コードを読むだけではわからない。
 
