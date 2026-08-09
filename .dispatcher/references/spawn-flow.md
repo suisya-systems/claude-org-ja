@@ -154,6 +154,8 @@ pane は live でも Claude がまだ起動中の場合があるため二重確�
 >
 > 報告は共有 reference §3-B の手順で窓口へ 1 度だけ上げ、監視は止めない。
 
+**capability 形かつ承認済み（§2 の `first_drive` が `recorded`）のときは、共有 reference §1-2 の三値判定を `worker-{task_id}` に適用する。「在」のときだけ登録ゲートを開けて 3-5 へ進み、あわせてその「在」レコードの数値 `id` を控える（控えの書き込みは Step 4 で行う）。「不在」「unknown」はゲートを開けず、上記の poll をそのまま続ける（「unknown」はそれを根拠にした作用を起こさず報告する）。**（判定手順と評価順の正本は §1-2。ここに重ねて書かない）
+
 ### 3-5. ワーカーに指示を送信
 
 [`.claude/skills/org-delegate/references/instruction-template.md`](../../.claude/skills/org-delegate/references/instruction-template.md) のフォーマットに従い、**使用中 transport の `send_message`**（既定 renga なら `mcp__renga-peers__send_message`、`ORG_TRANSPORT=broker` なら `mcp__org-broker__send_message`）で `to_id="worker-{task_id}"` 宛に送る。
@@ -258,6 +260,16 @@ worker brief に **ultracode 使用許可**があるタスクでは、kickoff �
 
 5. ワーカーペインを監視対象として登録する:
    - 派遣後、そのペインを監視対象として記録し、`.dispatcher/CLAUDE.md` の「ワーカーペイン監視」に従って定期的に承認待ちを確認する
+
+6. **3-4 で「在」を確定して控えた数値 `id` があるときだけ**、`.state/dispatcher/worker-idle-state.json` の当該 worker record に `same_tab_peer_id` / `same_tab_observed_at` を **merge する**（cwd は `.dispatcher/` なので `../.state/dispatcher/worker-idle-state.json`）。既存 record の他フィールドは読み書きせずそのまま残し、record がまだ無ければこの 2 フィールドだけを持つ record を新規に作る。これは同タブ生存の裏取り (ii) の **producer 2 本目**であり、schema・参照規則・消費側の正本は [`.dispatcher/references/worker-monitoring.md`](worker-monitoring.md) Step 3 (3-a-3) である（ここで定めるのは「spawn 経路がいつ何を控えるか」だけ）。
+
+   > **書いてよい id は 1 つだけ（MUST）**: 3-4 が **capability 形・§2 の `first_drive` が `recorded`・共有 reference §1-2 が「在」1 件と確定**した `list_peers` レコードの数値 `id`。**`spawn_claude_pane` の戻り値 pane id / 旧版 fallback の `name` 一致 poll で得た id / 縮退中の send-as-probe から推測した値は書いてはならない（MUST NOT）** — pane id は別空間の識別子であり、後 2 者は「自タブの当該 worker である」ことを確定していない。誤った陽性履歴を残すと、後続サイクルで `pane_exited` の attribution が別 worker に結び付き、**生きている worker を退役させうる**。
+   >
+   > `same_tab_observed_at` は「在」を確定した時刻を `date -u +%Y-%m-%dT%H:%M:%SZ` の出力そのままで書く（local-as-Z 厳禁。[`.dispatcher/references/worker-monitoring.md`](worker-monitoring.md) 冒頭の時刻規約と同じ）。
+   >
+   > **控えが無いとき（旧版 fallback / 縮退中 / 判定が「不在」「unknown」）は 2 フィールドを書かない。** 欠損は `null` 扱いで migration 不要なので、`null` を明示的に書く必要も無い。現行配備の全 backend は旧版 fallback なので、**今日この producer は発火せず挙動は変わらない**。
+   >
+   > **spawn を放棄する場合の始末**: 3-4 のタイムアウト / 3-5 の送達不能で窓口へ escalate して派遣を取り止める経路は**本 Step 4 に到達しない**ので、そもそも陽性履歴は書かれない。**本項を通した後に当該ワーカーの spawn を放棄する場合は、`worker-idle-state.json` の該当 key を record ごと削除する**（[`.dispatcher/references/worker-monitoring.md`](worker-monitoring.md) Step 5 (b) 更新規則 (4) と同じ扱い。2 フィールドだけを消して record を残すと、`tracked_pane_id` など他フィールドの整合が取れない中途半端な record になる）。
 
 ### Worker Directory Registry（DB 由来のセクション定義）
 

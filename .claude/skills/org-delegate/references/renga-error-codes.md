@@ -99,6 +99,13 @@ bundled mcp-peer の実装もこの割り方どおりで、`renga/src/mcp_peer/m
 
 2.0 では **名前解決が送信者のタブ内に限定**された（`cross_tab_peers`、`suisya-systems/renga#289`）。したがって `send_message` の名前宛が `[pane_not_found]` で返っても、**そのワーカーが別タブで生きている**可能性がある。名前が同一タブ内に無いときのエラー化自体は 1.x 系でも起きていた（冒頭 Wire format の例）が、2.0 では解決範囲がタブに固定されたぶん、この誤検知クラスが新たに現実的になった。messaging で受けた `[pane_not_found]` を即 `pane_closed` に落とすと、**生きているワーカーを閉鎖済みと誤記録する**。
 
+> **手順 2 の `list_peers` を引く前に、先に
+> [`.claude/skills/org-delegate/references/capability-first-drive-operational-gate.md`](capability-first-drive-operational-gate.md)
+> §3-B-2 を適用し、その結果を本手順へ渡す（MUST）。** 同節は本復旧手順の `list_peers` を
+> **それ自体が独立した gate 対象の call site** と規定しており、gate を通っていない `send_message`
+> の失敗から入った場合は**この列挙が初回の capability 観測になりうる**。適用条件・縮退中に守る
+> ことの正本は §3-B-2 であり、ここには重ねて書かない。
+
 ```
 1. send_message(名前宛) が [pane_not_found] を返す（broker では [peer_not_found]）
 2. list_peers を引き直す（2.0 の list_peers は全タブ列挙）

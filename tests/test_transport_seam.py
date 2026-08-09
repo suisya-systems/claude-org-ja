@@ -119,6 +119,52 @@ class WorkerBriefBitEquivalence(unittest.TestCase):
                     self.assertNotIn("mcp__renga-peers__", out)
 
 
+class WorkerBriefRecoverySafetyInvariants(unittest.TestCase):
+    """完了報告の宛先解決が失敗したときの **安全側 invariant** が brief 本体に
+    残っていること。
+
+    復旧手順の判断ロジックは共有 reference (capability gate) と
+    ``renga-error-codes.md`` の messaging 分岐へ寄せてあり、brief 側はポインタ
+    + 2 行に縮約されている。ただし縮約は golden の再生成だけでも通ってしまう
+    ため、**「正本を読む前後で迷っても誤送信しない」局所 invariant 2 つ**は
+    語義 assertion で固定する:
+
+    1. 同一 org だと確認できるまで **一切再送しない** (誤送信は別 org へ完了
+       報告を漏らす)。
+    2. dispatcher への escalate も同じ確認の対象で、確認できないときは
+       **何も送らずペインを保持したまま停止する**。
+
+    どちらが消えても、縮退時に別 org の secretary / dispatcher へ完了内容を
+    渡す経路が開く。transport に依らず成立すべき性質なので両 flag で見る。
+    """
+
+    # (説明, その文が含むべき部分文字列) — 表記ゆれで空振りしないよう、
+    # 意味を担う最小の連結片だけを見る。
+    _INVARIANTS = (
+        ("同一 org 確認前の再送禁止", "確認できるまで一切再送しない"),
+        ("dispatcher escalate も同じ確認の対象", 'to_id="dispatcher"'),
+        ("確認不能時はペイン保持で停止", "何も送らず、ペインを保持したまま停止する"),
+    )
+
+    def test_recovery_invariants_survive_brief_shrink(self):
+        for flag in t.TRANSPORTS:
+            for name, self_edit, depth in _BRIEF_CASES:
+                if self_edit:
+                    # self_edit は別テンプレート (worker_brief_self_edit.md) で、
+                    # 本 invariant は normal brief の「作業完了時」節が持つ。
+                    continue
+                with _env_transport(flag):
+                    out = gwb.render(_base_config(self_edit, depth))
+                for label, needle in self._INVARIANTS:
+                    with self.subTest(flag=flag, fixture=name, invariant=label):
+                        self.assertIn(
+                            needle,
+                            out,
+                            f"{name}: 安全 invariant「{label}」が brief 本体から消えている "
+                            f"(縮約するならポインタだけでなくこの 1 文を残すこと)",
+                        )
+
+
 class WorkerBriefBrokerSurface(unittest.TestCase):
     """flag=broker で worker_brief が broker 面のみを指す。"""
 
