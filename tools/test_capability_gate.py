@@ -23,6 +23,20 @@ import capability_gate as mod  # noqa: E402
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
+# The six record identifiers the backend contract fixes for the pane-control
+# activation ladder (docs/contracts/backend-interface-contract.md, T-Sec
+# ratification-pc, "The distinct names are fixed here"). Spelled out literally
+# rather than derived from mod.GATES: this list is the contract's, and a test
+# that read it back out of the module under test could not catch a drop.
+_LADDER_RUNGS = (
+    "pane_control_canary_a_ro",
+    "pane_control_canary_a_mut",
+    "pane_control_canary_a_ui",
+    "pane_control_canary_b",
+    "pane_control_production_activation",
+    "placement_production_activation",
+)
+
 
 def _make_db(path: Path, events: "list[tuple[str, dict]]") -> None:
     """Create a minimal events table and insert (kind, payload) rows."""
@@ -98,17 +112,61 @@ class LookupTests(unittest.TestCase):
     def test_gates_are_independent(self) -> None:
         """Passing first_drive must not discharge production_activation.
 
-        The contract keeps the three gates separate and says satisfying one
-        does not satisfy another; collapsing them here would collapse them
-        operationally.
+        The contract keeps the three messaging gates separate and says
+        satisfying one does not satisfy another; collapsing them here would
+        collapse them operationally.
+
+        The second half is the executable form of the contract's MUST that a
+        recorded *messaging* gate discharges no rung of the pane-control
+        ladder: with both messaging records present, every one of the six
+        ladder kinds still looks up NOT_RECORDED.
         """
-        _make_db(self.db, [("notify_sent", {"kind": "capability_first_drive"})])
+        _make_db(self.db, [
+            ("notify_sent", {"kind": "capability_first_drive"}),
+            ("notify_sent", {"kind": "capability_production_activation"}),
+        ])
         self.assertEqual(mod.lookup("capability_first_drive", self.db)[0],
                          mod.RECORDED)
         self.assertEqual(mod.lookup("capability_production_activation", self.db)[0],
-                         mod.NOT_RECORDED)
+                         mod.RECORDED)
         self.assertEqual(mod.lookup("capability_first_drive_pending", self.db)[0],
                          mod.NOT_RECORDED)
+
+        for name in _LADDER_RUNGS:
+            with self.subTest(rung=name):
+                self.assertEqual(mod.lookup(mod.GATES[name], self.db)[0],
+                                 mod.NOT_RECORDED)
+
+    def test_a_record_under_a_different_gate_name_does_not_satisfy_a_rung(self) -> None:
+        """Exact-equality lookup: one rung's record satisfies only that rung.
+
+        The contract leans on this when it requires the ladder's rungs to be
+        recorded under distinct names - the tool matches `$.kind` by equality,
+        so a neighbouring rung's record, or a record whose kind merely has this
+        one as a prefix, must not be read as this rung's.
+        """
+        _make_db(self.db, [
+            ("notify_sent", {"kind": "pane_control_production_activation"}),
+            ("notify_sent", {"kind": "placement_production_activation_draft"}),
+        ])
+        self.assertEqual(
+            mod.lookup(mod.GATES["pane_control_production_activation"], self.db)[0],
+            mod.RECORDED)
+        self.assertEqual(
+            mod.lookup(mod.GATES["placement_production_activation"], self.db)[0],
+            mod.NOT_RECORDED)
+        self.assertEqual(mod.lookup(mod.GATES["production_activation"], self.db)[0],
+                         mod.NOT_RECORDED)
+        self.assertEqual(mod.lookup(mod.GATES["pane_control_canary_b"], self.db)[0],
+                         mod.NOT_RECORDED)
+
+    def test_each_ladder_rung_is_not_recorded_on_an_empty_db(self) -> None:
+        """Every rung is queryable, and answers not_recorded rather than raising."""
+        _make_db(self.db, [])
+        for name in _LADDER_RUNGS:
+            with self.subTest(rung=name):
+                self.assertEqual(mod.lookup(mod.GATES[name], self.db)[0],
+                                 mod.NOT_RECORDED)
 
     def test_pending_report_does_not_satisfy_the_approval(self) -> None:
         """The dedup marker is not an approval record."""
@@ -144,6 +202,26 @@ class GateTableTests(unittest.TestCase):
     def test_every_gate_maps_to_a_distinct_kind(self) -> None:
         self.assertEqual(len(set(mod.GATES.values())), len(mod.GATES))
 
+    def test_pane_control_ladder_names_are_present_and_identity_mapped(self) -> None:
+        """The contract fixes these six as the record identifiers themselves."""
+        ladder = set(_LADDER_RUNGS)
+        self.assertTrue(ladder <= set(mod.GATES),
+                        f"missing from GATES: {sorted(ladder - set(mod.GATES))}")
+        for name in _LADDER_RUNGS:
+            with self.subTest(rung=name):
+                self.assertEqual(mod.GATES[name], name)
+
+    def test_ratification_record_is_not_a_gate(self) -> None:
+        """Rung 1 is a decision about the contract text, not a ladder rung."""
+        self.assertNotIn("cross_tab_pane_control_ratified", mod.GATES)
+        self.assertNotIn("cross_tab_pane_control_ratified", set(mod.GATES.values()))
+
+    def test_every_gate_is_selectable_on_the_command_line(self) -> None:
+        """--gate derives its choices from GATES, so every name is queryable."""
+        action = next(a for a in mod._build_parser()._actions
+                      if a.dest == "gate")
+        self.assertEqual(sorted(action.choices), sorted(mod.GATES))
+
     def test_exit_codes_cover_every_status(self) -> None:
         self.assertEqual(
             set(mod.EXIT_CODES),
@@ -173,16 +251,39 @@ class CliTests(unittest.TestCase):
         self.assertEqual((code, out.strip()), (1, mod.NOT_RECORDED))
 
         code, out = self._run(
+            ["--gate", "placement_production_activation",
+             "--db-path", str(self.db)])
+        self.assertEqual((code, out.strip()), (1, mod.NOT_RECORDED))
+
+        code, out = self._run(
             ["--gate", "first_drive",
              "--db-path", str(Path(self._tmp.name) / "absent.db")])
         self.assertEqual((code, out.strip()), (2, mod.UNDETERMINED))
+
+    def test_every_ladder_rung_exits_one_on_a_db_with_no_rung_record(self) -> None:
+        """No rung has been walked, so each is queryable and reports not_recorded."""
+        _make_db(self.db, [("notify_sent", {"kind": "capability_first_drive"})])
+        for name in _LADDER_RUNGS:
+            with self.subTest(rung=name):
+                code, out = self._run(
+                    ["--gate", name, "--db-path", str(self.db)])
+                self.assertEqual((code, out.strip()), (1, mod.NOT_RECORDED))
 
     def test_all_gates_report_exits_zero(self) -> None:
         _make_db(self.db, [("notify_sent", {"kind": "capability_first_drive"})])
         code, out = self._run(["--db-path", str(self.db)])
         self.assertEqual(code, 0)
-        self.assertIn("first_drive: recorded", out)
-        self.assertIn("production_activation: not_recorded", out)
+        # Line-level, not substring: `production_activation: not_recorded` is a
+        # substring of both `placement_production_activation: not_recorded` and
+        # `pane_control_production_activation: not_recorded`, so a substring
+        # assertion would still pass if the messaging gate's own row vanished.
+        lines = out.splitlines()
+        self.assertIn("first_drive: recorded", lines)
+        self.assertIn("production_activation: not_recorded", lines)
+        self.assertIn("placement_production_activation: not_recorded", lines)
+        for name in _LADDER_RUNGS:
+            with self.subTest(rung=name):
+                self.assertIn(f"{name}: not_recorded", lines)
 
     def test_json_output_shape(self) -> None:
         _make_db(self.db, [("notify_sent", {"kind": "capability_first_drive"})])

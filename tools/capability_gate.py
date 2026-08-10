@@ -20,6 +20,10 @@ Why a script and not an inline `python3 -c`:
 
 Gate names (the ``kind=`` value recorded inside a ``notify_sent`` event):
 
+Messaging gates (contract T-Sec ratification node, "Three gates apply").
+These keep their historical ``capability_``-prefixed recorded kinds and a
+stripped short name.
+
   first_drive             ``capability_first_drive``
       Operational gate. The first drive of a capability-advertising backend
       was reported to a human and confirmed.
@@ -30,6 +34,40 @@ Gate names (the ``kind=`` value recorded inside a ``notify_sent`` event):
   production_activation   ``capability_production_activation``
       Production-activation gate. A 2.0-server x 2.0-mcp-peer dogfood was run
       and a human confirmed leaving the capability branch enabled.
+
+Pane-control ladder rungs (contract T-Sec ratification-pc). These six names are
+fixed by the contract as the record identifiers themselves, so the short name and
+the recorded ``kind`` are identical. A messaging gate record MUST NOT be read as
+evidence about pane control, and vice versa: the two families are held apart here
+for that reason. None of these rungs has been walked, so each reports
+``not_recorded`` - which is the truthful, fail-closed answer, not permission.
+
+  pane_control_canary_a_ro            read-only cross-tab inspect canary
+  pane_control_canary_a_mut           state-changing cross-tab keystroke canary
+  pane_control_canary_a_ui            cross-tab focus canary; its expected
+      discharge is a recorded *exclusion* rather than an exercise
+  pane_control_canary_b               set_pane_identity then close_pane, on two
+      separate disposable panes
+  pane_control_production_activation  leaving cross-tab pane control enabled
+      unattended
+  placement_production_activation     relief from the same-tab placement rule;
+      additionally requires all four operational-readiness conditions of the
+      contract's T-Sec 4.2-place, whose record shows one of the four satisfied
+
+Each rung records only the exercise its own line names, and nothing wider. A
+canary rung records that one hazard class was driven once under supervision; it
+does **not** record that the class may run unattended, and it does not record
+anything about the classes above or below it. The two ``production_activation``
+rungs are held apart for the same reason: the pane-control one records nothing
+about placement, and the placement one records nothing about the addressing
+canaries, which stay unwalked either way.
+
+Rung 1 of that ladder - ratification of the contract text - is deliberately NOT a
+gate here. It is a decision about the document, and its canonical expression is
+the amendment section's own ``Status:`` line. The journal does carry a record that
+the decision was taken, under a name that is not one of the six; adding it to this
+table would manufacture a queryable "gate" that a harness could misread as
+clearing a rung, which the ladder's ordering rule forbids.
 
 Exit codes (same shape as ``tools/check_renga_compat.py``):
 
@@ -48,6 +86,7 @@ Usage:
   python3 tools/capability_gate.py                        # all gates, exit 0
   python3 tools/capability_gate.py --gate first_drive     # one gate + status exit
   python3 tools/capability_gate.py --gate first_drive --json
+  python3 tools/capability_gate.py --gate placement_production_activation
   python3 ../tools/capability_gate.py --gate first_drive  # from .dispatcher/
 """
 from __future__ import annotations
@@ -69,10 +108,22 @@ if str(_REPO_ROOT) not in sys.path:
 from tools.state_db.discover import resolve_state_db_path  # noqa: E402
 
 # Gate short name -> the `kind=` value carried inside the notify_sent payload.
+# The three messaging gates keep their historical `capability_`-prefixed kinds and a
+# stripped short name. The six pane-control ladder rungs are identity-mapped (short
+# name == recorded kind) because the contract fixes those strings as the record
+# identifiers themselves - see the docstring above.
 GATES: "dict[str, str]" = {
+    # Messaging gates (contract T-Sec ratification node, "Three gates apply").
     "first_drive": "capability_first_drive",
     "first_drive_pending": "capability_first_drive_pending",
     "production_activation": "capability_production_activation",
+    # Pane-control activation ladder (contract T-Sec ratification-pc). None walked.
+    "pane_control_canary_a_ro": "pane_control_canary_a_ro",
+    "pane_control_canary_a_mut": "pane_control_canary_a_mut",
+    "pane_control_canary_a_ui": "pane_control_canary_a_ui",
+    "pane_control_canary_b": "pane_control_canary_b",
+    "pane_control_production_activation": "pane_control_production_activation",
+    "placement_production_activation": "placement_production_activation",
 }
 
 # Status tokens printed on stdout, and their exit codes.

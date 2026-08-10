@@ -491,7 +491,7 @@ server × mcp-peer 双方 2.0 系での実機 dogfood と人間確認を要求�
 
 ---
 
-## 5. イベント種別 — 3 つを別々の記録で管理する
+## 5. イベント種別 — messaging ゲートの 3 つを別々の記録で管理する
 
 契約が分けた承認を 1 つに潰さないため、**同じイベント種別で兼ねない**。
 
@@ -502,7 +502,12 @@ server × mcp-peer 双方 2.0 系での実機 dogfood と人間確認を要求�
 | production-activation | `capability_production_activation` | server × mcp-peer 双方 2.0 系での**実機 dogfood と人間確認** | 人間の作業。スキルは自動記録しない |
 
 いずれも `notify_sent` イベントの `kind=` フィールドとして記録し、照会は
-`tools/capability_gate.py --gate {first_drive,first_drive_pending,production_activation}` で行う。
+`tools/capability_gate.py --gate <name>` で行う（上表の 3 つが messaging ゲート）。**同じツールは契約
+[`docs/contracts/backend-interface-contract.md`](../../../../docs/contracts/backend-interface-contract.md)
+T-§ratification-pc が固定する pane-control ladder の rung 名も引ける**が、それは**別系統**である。同契約は
+「a harness … **MUST NOT** read an existing `first_drive` or `production_activation` record as evidence
+about pane control」と定めており、**どちらの系統も他方の証拠として読んではならない**ので、ladder の rung 名は
+上表に混ぜない（引ける名前の全一覧は `--help` の choices を見る）。
 
 ---
 

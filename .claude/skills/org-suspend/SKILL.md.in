@@ -47,7 +47,7 @@ allowed-tools:
 ## Phase 1: ワーカー状態収集
 
 1. **id 台帳を作る**。messaging とペイン制御は**別々の面**なので、id もそれぞれの面から取る
-   （契約 Surface 4 の proposed amendment T-§4.2 は「到達性は面ごとに別々に確立する」ことを MUST に
+   （契約 Surface 4 の批准済み amendment (2026-08-09) T-§4.2 は「到達性は面ごとに別々に確立する」ことを MUST に
    している。`list_peers` にレコードがあることは、そのピアがペイン制御で addressable であることの
    証拠にならない）:
    - `{{FQ}}list_peers` — **messaging 用の peer id**。各レコードの `id` / `name` / `role` / `cwd` と、
@@ -660,7 +660,7 @@ live pane も無く、本 Phase は no-op。
            if hit: pending.remove(hit)
    # deadline 到達 or pending が空で抜ける
    ```
-   - **突合キーは id**。ratified §3.1 は per-event フィールド名を規定していないが、proposed amendment
+   - **突合キーは id**。ratified §3.1 は per-event フィールド名を規定していないが、批准済み amendment (2026-08-09) の
      **T-§3.1 が canonical 名を `id`（pane 側）/ `peer_id`（peer 側）に固定**している。上の疑似コードが
      `ev.pane_id` / `ev.agent_id` も見るのは、canonical 名を出さない backend への**寛容（tolerance）**で
      あって、これらが正の名前だという意味ではない。**pane 側 id と peer 側 id のどちらか一方でも
