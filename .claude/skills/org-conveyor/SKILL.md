@@ -28,6 +28,10 @@ allowed-tools:
   # union は非アクティブ transport のツールまで認可し per-transport auth モデルを迂回するため不可
   # （設計 SoT: notes/broker-skill-generator-design.md #9。union 却下）。送受信機構はサブスキルへ委譲し、
   # conveyor 自身が直接使うのは free-pane 会計（list_panes）とループ event のドレイン（check_messages）だけ。
+  # ただし `list_panes` の worker 数は caller タブにスコープされるので、renga 面で worker を背景タブへ
+  # 置く配置を配線した deployment では free-pane 会計の一次ソースを `plan.capacity.free_worker_slots` に
+  # 置き換える（下記「cross-tab の free-pane 会計」注記）。この置き換えで allowed-tools は増やさない
+  # ＝ `list_peers` は許可せず、dispatcher / runtime 側の容量会計を消費する形を既定とする。
   - mcp__org-broker__list_panes # free-pane 会計（バックプレッシャー）
   - mcp__org-broker__check_messages # broker pull フォールバック時の semantic event ドレイン
 ---
@@ -89,6 +93,24 @@ render が要るなら他の transport 参照スキルと同じく `.md.in` + ma
 push / PR）の輸送依存差・二フレーム関係・spawn 儀式・エラー分岐は本スキルが呼ぶ各スキルが per-transport に持つので、総説
 [`CLAUDE.md`](../../../CLAUDE.md)「輸送層（transport）両系」節とフル版注記 [`/org-escalation`](../org-escalation/SKILL.md) 冒頭の
 同名 note を一次参照する（本スキルは重複コピーを置かない）。
+
+**cross-tab の free-pane 会計（renga 面で背景タブ配置を配線した場合にのみ効く条件付き注記）**: renga の `list_panes` は
+**caller のタブにスコープされる**ため、worker を背景タブへ置く配置を配線した deployment では別タブの worker が pane
+スナップショットに現れず、`list_panes` だけの free-pane 会計は**空き容量を過大申告する**。この条件下では窓口 / conveyor の
+手計算（`max_concurrent_workers` − `list_panes` の worker 数）をやめ、runtime の `delegate-plan` が返す
+**`plan.capacity.free_worker_slots` を一次ソース**にする。runtime 側の会計は `count_worker_population`（panes と peers を
+**name で union** し `role == "worker"` に絞る。`peers` 未指定時は panes だけを数え `scope="caller_tab"` に落ちる）に
+**未 bind の予約数**（`count_unbound_reservations`。新規タブへ spawn した直後の worker は自分のタブに居て `list_panes` に
+現れず、まだ peer にも bind していない）を加えた数を上限へ突き合わせるので、`list_peers` で単純に数え直すだけでは bind 待ち
+worker を数え落とす。同じ会計モデルの記述は [`.claude/skills/work-discovery/SKILL.md`](../work-discovery/SKILL.md) の
+`--free-panes` 節にあり、本注記はそれに合わせてある（`--free-panes` へ渡す数もこの `free_worker_slots` をそのまま使う）。
+
+- **実害の限定**: この過大申告が生むのは**誤ランキングと、runtime に拒否される派遣試行まで**。**実際の overspawn に至るのは
+  runtime の防止策を迂回する実装をした場合のみ**である（`delegate-plan` は overflow 配線時に `--peers-json` 欠落を
+  `input_invalid` で拒否し、fleet ceiling を census + 未 bind 予約で数える）。
+- **本リポジトリでは非該当**: active transport は broker（コード既定 `DEFAULT_TRANSPORT=broker`）でタブ概念を持たないため、
+  上記は renga 面で背景タブ配置を配線した deployment にだけ効く。conveyor 自身に peer census を叩かせる設計にはしない
+  （allowed-tools は `list_peers` を許可しない。容量会計は dispatcher / runtime 側の出力を消費する）。
 
 **受信は transport ツールに依存しない**: conveyor 固有の輸送依存は **完了 / CI 遷移の受信** に集約されるが、ここは
 worker 報告・pr-watch の `CI_COMPLETED` / `PR_MERGED` が **in-band push で注入される**（broker は channel sidecar、renga は
