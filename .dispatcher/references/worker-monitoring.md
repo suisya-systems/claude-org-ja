@@ -101,16 +101,54 @@ bash ../tools/journal_append.sh anomaly_observed source={面} worker=worker-{tas
 
 1. **`mcp__org-broker__poll_events` で直近のペイン lifecycle を drain** (タイムアウト付きで 1 回だけ):
    ```
+   # (1) cursor の session 束縛を確立する (下記「cursor は backend session に束縛する」)
+   binding = <現サイクルの session_key / session_key_source。導出規則は下記>
+   saved   = read_json(".state/dispatcher-event-cursor.txt")   # 非 JSON / 読めない → null
+
+   # (2) 束縛が一致したときだけ前 cursor を since に使う
+   if saved != null and binding.session_key != null and saved.session_key == binding.session_key:
+       since = saved.next_since
+   elif binding.session_key_source == "transport_has_no_server_info" and saved != null:
+       since = saved.next_since          # broker 面: 束縛を確立する surface が無いので従来どおり
+   else:
+       since = <省略>                     # 別 session の連番。使うと全ての pane_exited が空振りする
+
    result = mcp__org-broker__poll_events(
-       since=<前サイクルの next_since、初回は省略>,
+       since=since,
        timeout_ms=5000,
        types=["pane_exited", "events_dropped"]
    )
-   # cursor は .state/dispatcher-event-cursor.txt に保存して次サイクルで使う
-   write_file(".state/dispatcher-event-cursor.txt", result.next_since)
+   # cursor は session 束縛と揃えて .state/dispatcher-event-cursor.txt に保存し、次サイクルで使う
+   write_file(".state/dispatcher-event-cursor.txt", json({
+       "version": 1,
+       "session_key": binding.session_key,
+       "session_key_source": binding.session_key_source,
+       "next_since": result.next_since,
+   }))
    ```
    - 初回 (cursor ファイルが無い/空) は `since` 省略で「今以降」セマンティクス（過去イベントを flood しない）
-   - 2 サイクル目以降は前回の `next_since` を使って idempotent resume（重複通知なし）
+   - 2 サイクル目以降は **束縛が一致した session に限り** 前回の `next_since` を使って idempotent resume（重複通知なし）。**同一 session 内の挙動は従来と同一**で、変わるのは session を跨いだときだけ
+   - **cursor は backend session に束縛する (MUST)**: `next_since` は **daemon session 内のカウンタ**で、restart を跨いで復元されない。一方 cursor **ファイル**は restart を跨いで残るので、束縛せずに使うと「前 session の大きい連番」で poll し続け、**新 session のイベントが全て cursor より手前に落ちて永久に空振りする**（2026-08-09 実測: renga 2.0.0 → 2.1.0 再起動後、`.state/dispatcher-event-cursor.txt` = 64 に対し `since` 省略の `next_since` = 7。57 件以上積まれるまで全ての `pane_exited` が空振りし、最初の worker close で終了検知が無言で死んだ）。契約 [`docs/contracts/backend-interface-contract.md`](../../docs/contracts/backend-interface-contract.md) T-§4.2-place-rec (R3) も同じ事故を「a backend restart invalidated the `poll_events` cursor and `pane_exited` has no replay」と記録している。renga 2.1.0 の `mcp__renga-peers__server_info` ツール記述はこの規律を「`server.session_id` identifies the running renga PROCESS INSTANCE and changes on every restart … store `(session_id, pane_id)` together and discard the pane id when the session_id you read back differs」と pane id について書いており、**cursor は同じ理由で同じ規律に従う**（契約 T-§4.2-id が pane id に課す (O1) session provenance の cursor 版）。縮退の向きが安全側（ゲートは回り続ける）で症状が正常に見えるため、束縛と下記の fail loud をセットで置く
+   - **`session_key` の導出**（renga 面のみ `server_info` を 1 回引く。**この tool 名は輸送層の機械置換の対象外で `mcp__renga-peers__server_info` を literal で書く (MUST)** — (3-a-5) 末尾の同型注記と同じ理由に加え、**broker 面には当該 tool が存在しない**ため（dispatcher の tool 集合は [`tools/transport.py`](../../tools/transport.py) の descriptor が SoT で、`broker` 側に `server_info` は無い）。**(3-a-5) の session provenance 照合はこのサイクルで引いた同じ応答を再利用する**ので往復は増えない）:
+     - `status == "connected"` かつ `server.session_id != null` → `session_key = server.session_id` / `session_key_source = "server_info.session_id"`（**正確な形**。restart ごとに変わる process instance 識別子）
+     - `status == "connected"` だが `server.session_id == null`（当該フィールドを返さない版） → `session_key = "pid={server.pid};endpoint={server.endpoint}"` / `session_key_source = "pid_endpoint"`（**近似**。OS は pid を再利用しうるので (3-a-5) 第 1 面と同じ弱点を持つ）
+     - `status != "connected"`（`detached` / `unreachable`）/ 呼び出し自体が失敗 → `session_key = null` / `session_key_source = "unbindable"`。**provenance を確立できていないので保存済み cursor を使わない**（契約 T-§4.2-id の (O1) と同じ向き: 束縛を確かめられない値は使わない）
+     - **broker 面**（`server_info` が無い） → `session_key = null` / `session_key_source = "transport_has_no_server_info"`。**この値のときだけ読み側は従来どおり保存済み cursor をそのまま使う**（broker には backend restart を観測する surface が無く、ここで reset に倒すと毎サイクル cursor を捨てて逆に取りこぼしが増える）。**broker 面ではこの事故は未解決のまま残る** — 解消には broker 側に session 識別子を返す surface が要る（既知の穴として明示的に持つ。`unbindable` と別値にしてあるのは、「surface が無い」と「surface はあるが今引けなかった」を読み側が取り違えないため）
+   - **束縛が一致しなかったサイクル = cursor 破棄。黙って捨てない (MUST, fail loud)**:
+     1. `since` を省略して poll し（上記 (2)）、得た `next_since` を現 `session_key` と揃えて保存し直す（次サイクル以降は通常運用に戻る）
+     2. journal に 2 行残す（**新しい event 名は導入しない**。`kind` は 2026-08-09 の実走が既に使った `stale_event_cursor` を再利用する — 契約 T-§4.2-place-rec (R3) が同名で記録している）:
+        ```
+        bash ../tools/journal_append.sh anomaly_observed source=event_cursor kind=stale_event_cursor confidence=n/a note={reason}
+        bash ../tools/journal_append.sh notify_sent source=event_cursor kind=stale_event_cursor confidence=n/a
+        ```
+        `{reason}` は `session_mismatch`（保存値と現 `session_key` が違う） / `unbindable`（`server_info` が provenance を返さなかった） / `legacy_format`（JSON でない旧形式 = 束縛の無い cursor） のいずれか
+     3. 窓口へ 1 行通知する（`mcp__org-broker__send_message(to_id="secretary", ...)`）:
+        ```
+        EVENT_CURSOR_RESET: poll_events cursor を破棄し現在時点から再開しました (理由: {reason})。backend 再起動を跨いだ cursor は連番が復元されず、そのまま使うと以後の pane_exited が全て空振りします。破棄した区間に起きたペイン終了は回収不能です (poll_events に historical replay は無い)。追跡中ワーカーの退役確定は、以前「在」と観測した数値 id が後続の list_peers から消えたこと (契約 T-§2.1 step (3)) を窓口が reconcile する経路にフォールバックします。
+        ```
+     4. de-dup キーは **`(source=event_cursor, kind=stale_event_cursor, session_key)`**。手順 1 で新しい束縛を書くので、正常なら次サイクルは一致して再送は起きない。`unbindable` が続く間は同じ `session_key = null` として 1 回に抑える（毎サイクル同文を撃たない）
+     5. **破棄した区間の `pane_exited` は回収できない**（`poll_events` は初回省略時「今以降」semantics で historical replay を持たない — 契約 §3.1）。したがって reset したサイクル以降、**cursor だけを根拠に退役を確定しない**: 当該区間に終了した worker は Step 3 (3-a) で「列挙から消えている」形として現れるので、(3-a-4) の **indeterminate** に載せて (P4) を `source=lifecycle_event` で報告し、**窓口の reconcile 判断**に委ねる（契約 T-§2.1 step (3) の 2 つ目の手段 = 以前「在」と観測した数値 id が後続の `list_peers` から消えたこと。2026-08-09 の実走はこの経路で退役を確定させている — T-§4.2-place-rec (R3) の `secretary_reconcile_T2.1_ii_list_peers_vanish`）。**dispatcher 側で自動退役させる新しい経路は作らない**
+     6. record に保管済みの `pending_exit_event` ((3-a-5)) は **破棄しない** — 受信済みの確定証拠であって cursor に依存しないため
    - `types=["pane_exited", "events_dropped"]` フィルタで heartbeat / pane_started 等を除外。cursor は filter と無関係に advance するので重複 scan なし
    - `result.events[]` を順に処理:
      - `type == "pane_exited"` かつ `role == "worker"` → **直接通知せず、下記の attribution に回す**（同定できたものだけが `WORKER_PANE_EXITED` になる。capability 形の `poll_events` は他タブのペインの終了も流すので、`role == "worker"` だけで通知すると別 org の同名ワーカーの終了で自タブのワーカーを退役させる）
@@ -175,7 +213,7 @@ bash ../tools/journal_append.sh anomaly_observed source={面} worker=worker-{tas
    - `poll_events` (Step 1) を見逃した場合の保険 (`events_dropped` 発生時や events 未受信で pane 状態がズレた時)
    - `list_panes` の結果テキストには各 pane の `id / name / role / focused / x / y / width / height` が含まれる
    - **在るワーカーの数値 `id` をその場で控える**: 応答に出た `role == "worker"` の各ペインについて、`.state/dispatcher/worker-idle-state.json` の該当 record の `tracked_pane_id` を本サイクルの `id` に更新する (下記 (3-a-3))。Step 1 の lifecycle event attribution はこの控えを突き合わせ先にする
-   - **`placement == "background_tab"` の worker が 1 件でも居るサイクルでは、`mcp__renga-peers__server_info` と `mcp__renga-peers__list_peers` を全 worker 共通に 1 回ずつだけ引き、`server.pid` と `{数値 id} → レコード` のローカル index を作る** (`server_info` は (3-a-5) の session provenance 照合用、`list_peers` は生存判定用)。背景 worker の生存判定 ((3-a-5)) はこの index だけを参照し、per-worker の再取得も retry もしない (追加待ち時間 0 分)。背景 worker が 1 件も居なければ (= 通常運用) **この呼び出しは発生しない**ので、今日の 1 サイクルあたりの呼び出し回数は変わらない。列挙が引けなかった / 旧版形だったサイクルは (3-a-5) の 4 行目 (観測不能) に落とす
+   - **`placement == "background_tab"` の worker が 1 件でも居るサイクルでは、`mcp__renga-peers__list_peers` を全 worker 共通に 1 回だけ引き、`{数値 id} → レコード` のローカル index を作る** (生存判定用)。**session provenance 照合に使う `server.pid` は Step 1 が cursor 束縛のために既に引いた `mcp__renga-peers__server_info` の応答をそのまま再利用する** (同一サイクル内で 2 度引かない。Step 1 が `server_info` を引くのは renga 面だけだが、背景タブ配置自体が renga 面でしか成立しない ((3-a-5)) ので前提は常に揃う)。背景 worker の生存判定 ((3-a-5)) はこの index と再利用した応答だけを参照し、per-worker の再取得も retry もしない (追加待ち時間 0 分)。背景 worker が 1 件も居なければ (= 通常運用) **`list_peers` の呼び出しは発生しない**。列挙が引けなかった / 旧版形だったサイクルは (3-a-5) の 4 行目 (観測不能) に落とす
    - **背景 worker は下記 (3-a) の裏取りゲートに掛けない**: `list_panes` に出ないのは配置上の定数であって消失ではないので、(3-a-1)〜(3-a-4) ではなく (3-a-5) が評価の owner になる。以下の 2 つの bullet は `placement` が `"same_tab"` (= 欠損含む) の worker だけを対象に読む
    - events 経由で exit を把握していないのに `list_panes` で pane が消えているワーカーがあれば、**下記 (3-a) の裏取りゲートを通してから**、**終了が確定した場合に限り** `.state/workers/worker-*.md` の status を `pane_closed` に遷移させ、Step 1 と同じく窓口に `WORKER_PANE_EXITED` を転送する (task 完了判定は同じ手順で窓口側が実施)。ゲートが **観測不能 / indeterminate / unknown** に倒したサイクルでは status 遷移も転送もせず、当該 worker を監視対象・active のまま次サイクルへ送る (下記 (3-a-4))
    - pane 上限は 16 なので結果は常に小さく、都度 full scan で問題なし
@@ -294,7 +332,7 @@ bash ../tools/journal_append.sh anomaly_observed source={面} worker=worker-{tas
    - **pid + endpoint は一致したが、`bound_peer_id` のレコードが `name` / `role` / `cwd` のいずれかで食い違った** → **id が別のペインに再割り当てされている。** 束縛失効と同じ扱いで `bound_*` を一切使わず、**indeterminate** として (P4) を `source=session_provenance` で報告する (下表 3 行目の「消えた = unknown」とは区別する — こちらは「在るが別物」という陽性の不一致なので、窓口の reconcile 判断が要る形として通知文に明記する)
    - **`bound_peer_id` が index に無い** → identity 再照合の材料が無いだけなので、これは下表 3 行目 (unknown) であって不一致ではない
 
-   > **将来 `server_info` が restart 単位で一意な session 識別子 (nonce / 起動時刻) を返すようになれば、それを `bound_server_pid` の代わりに控えて第 1 面をその等値に置き換える** (pid + endpoint の対は、それが無い現行 surface での近似である)。第 2 面の identity 再照合は置き換え後も残す — (O2) は (O1) とは別の obligation なので、一方が強くなっても他方を免除しない。
+   > **restart 単位で一意な session 識別子は既に `server_info` の `server.session_id` として存在する** (renga 2.1.0 で確認。同ツール記述は「identifies the running renga PROCESS INSTANCE and changes on every restart」「Do NOT substitute `server.pid` or `server.endpoint` for it (the endpoint embeds the pid, and pids get recycled)」と書く)。Step 1 の cursor 束縛は**既にこの値を第一候補に使っている**が、**背景 worker の第 1 面 (`bound_server_pid` + `bound_server_endpoint` の等値) は現行手順では差し替えていない** — 差し替えは spawn 時に控える面 (3-2b) と照合面の両方を変える挙動変更で、cursor の束縛とは独立に取るべき変更だからである。差し替える場合は `bound_server_pid` の代わりに `server.session_id` を控えて第 1 面をその等値に置き換える (pid + endpoint の対は、それが無い版のための近似として残る)。第 2 面の identity 再照合は置き換え後も残す — (O2) は (O1) とは別の obligation なので、一方が強くなっても他方を免除しない。
 
    **毎サイクルの三値** (上の session provenance が一致したサイクルだけ評価する):
 
@@ -1207,7 +1245,8 @@ bash ../tools/journal_append.sh anomaly_observed source={面} worker=worker-{tas
 - **観測の原則を個別 patch ではなく判定より前に置いた理由 (Issue #869)**: 2026-08-08 の誤検知 3 種は発火した判定が別々 (pane 消失 / STALL / 完了確認) だったが、根は 1 つで「自分の観測手段が届いていない状態を、対象の異常と解釈した」だった。3 箇所を個別に直すと同じ誤りが**次に増える判定**で再発する。[観測の原則](#observation-principle) を監視ループの手前に置き、各判定がそこを参照する形にすると、新しい判定を足す人が「この観測面は何の証拠になるのか」を (P3) の表で先に決めることになる。表への行追加 (新しい観測面) と判定の追加は独立して行える
 - **精度向上と権限拡大を分けて書く理由 (Issue #869)**: 判定を厳しくする変更は「誤検知が減る」と同時に「異常ではないと切り分けられた」という判断を dispatcher に与えるため、放っておくと「異常ではないので自分で直してよい」へ滑りやすい。(P5) で**申告条件の変更は行動の変更を含まない**ことを否定形で固定してある。実際 2026-08-08 の pane 消失は人間が別タブで開いていた生きたセッションで、dispatcher が観測結果だけを報告して復旧に動かなかったことが事故を防いだ。精度が上がったからといってこの抑制を緩めてはならない
 - **なぜ `poll_events` を `timeout_ms=5000` で回すか**: 3 分のサイクル間隔の中で 5 秒分は long-poll する。5 秒経過で return して残りの時間は check_messages + list_panes + inspect_pane で補完。これにより pane 終了検知の平均遅延が cadence 非依存に 2.5 秒程度になる
-- **cursor 管理**: `.state/dispatcher-event-cursor.txt` に前回 `next_since` を保存する。初回 (cursor 無し) は `since` 省略で「今以降」セマンティクス。crash recovery 時は cursor 消失 = 過去 5 秒分のイベントを取りこぼす可能性があるが、list_panes 突き合わせで回復可能
+- **cursor 管理**: `.state/dispatcher-event-cursor.txt` に前回 `next_since` を **`session_key` と揃えて** 保存する (単一行 JSON。schema は [`docs/contracts/state-schema-contract.md`](../../docs/contracts/state-schema-contract.md) §1.7)。初回 (cursor 無し) は `since` 省略で「今以降」セマンティクス。crash recovery 時は cursor 消失 = 過去 5 秒分のイベントを取りこぼす可能性があるが、list_panes 突き合わせで回復可能
+- **なぜ cursor を session に束縛するか**: cursor の**値**は daemon session 内のカウンタで restart を跨いで復元されないのに、cursor **ファイル**は跨いで残る。この非対称を放置すると、restart 後は「前 session の大きい連番」で poll し続けて全ての `pane_exited` が空振りする — しかも**縮退の向きが安全側**（ゲートは回り続け、通知が出ないだけ）なので**症状が正常に見える**。2026-08-09 の実走ではこれが最初の worker close で顕在化し、終了検知が無言で死んだ。束縛 (Step 1) だけでは同じ静かさが残る（cursor を捨てたことに誰も気付かない）ので、**破棄を必ず窓口へ 1 行報告する fail loud** をセットにしてある。cursor を捨てた区間は原理的に回収不能なので、報告本文でフォールバック経路 (契約 T-§2.1 step (3) の `list_peers` 消失 + 窓口 reconcile) まで明示する
 - **events と list_panes の二重カバー**: events は best-effort (EventsDropped あり得る) なので、`mcp__org-broker__list_panes` による突き合わせを保険として併用
 - **inspect を独立した観測チャネルにする理由**: ワーカーが承認待ちで止まった時、worker 自己申告 (org-broker) だけに頼ると worker が通知を送る前に停止してしまう。inspect はディスパッチャー側から能動的に観測するので、worker 側の通知忘れ/遅延を補完する。自己申告と inspect は「同じ事象を 2 チャネルで観測できれば確度が上がる」という冗長性設計
 - **anchored regex の意図**: 本文中に "Allow this tool use" が偶然出てもプロンプト自体の行フォーマット (末尾に `(y/n)`) まで揃うことは稀。末尾 non-empty 行に絞ることで誤検出をさらに減らす

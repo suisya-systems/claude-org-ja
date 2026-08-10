@@ -98,9 +98,14 @@ The harness's persistent state surface comprises the files listed below. Each en
 
 ### 1.7 `.state/dispatcher-event-cursor.txt`
 
-- **Path**: `.state/dispatcher-event-cursor.txt` (runtime-created).
-- **Format**: Plain text — opaque cursor token returned by the backend's `poll_events.next_since` (per Set D §3.1).
-- **Schema**: Single line, opaque to the harness.
+- **Path**: `.state/dispatcher-event-cursor.txt` (runtime-created; the `.txt` extension is retained for path stability).
+- **Format**: Single-line JSON object. The cursor token itself stays opaque to the harness; it is stored **together with the identity of the backend session that issued it**.
+- **Schema**: `{"version": 1, "session_key": string|null, "session_key_source": string, "next_since": string}`.
+  - `next_since` — the opaque cursor token returned by the backend's `poll_events.next_since` (per Set D §3.1).
+  - `session_key` — identity of the backend session that issued `next_since`, or `null` when it could not be established this cycle.
+  - `session_key_source` — how `session_key` was derived, and therefore how a reader must treat a `null`: `"server_info.session_id"` (exact — the backend's per-process-instance identifier), `"pid_endpoint"` (approximation `pid={pid};endpoint={endpoint}` for backends whose `server_info` omits the session identifier), `"unbindable"` (the surface exists but returned no provenance this cycle), `"transport_has_no_server_info"` (the transport has no `server_info` at all — `org-broker` today).
+- **Binding rule (normative)**: `next_since` is a **counter internal to one backend session** — it is not restored across a daemon restart, while this file is. A reader MUST therefore use a stored `next_since` only when the stored `session_key` is non-`null` and equals the session key observed in the current cycle. The sole exception is `session_key_source == "transport_has_no_server_info"`, where no binding can be established at all and the stored cursor is used as before. On any other mismatch — including a legacy plain-text file with no JSON envelope — the reader MUST discard the cursor, restart from present-time semantics, and report the discard rather than absorb it (`anomaly_observed` / `notify_sent` with payload `kind` `stale_event_cursor`, plus an `EVENT_CURSOR_RESET` line to the secretary). Silently reusing a cross-session cursor makes every subsequent `pane_exited` miss while the watch loop keeps running, which is a safe-side degradation that looks healthy from outside. The procedure is `.dispatcher/references/worker-monitoring.md` § "監視ループ 1 サイクル" Step 1; the same discipline for pane ids is Set T's T-§4.2-id (O1).
+- **Migration**: a pre-binding file (bare cursor token, no JSON) is readable as version 0 and is deliberately **not** migrated forward — the only sound migration of an unbound cursor is to discard it, which the binding rule already prescribes. No `tools/state_migrate.py` entry is registered for it, and §4.2's dual-emit window does not apply because the legacy form carries no key that could be preserved.
 - **Owner**: dispatcher (advances each watch-loop cycle).
 - **Readers**: dispatcher (resume after pane restart).
 - **Update cadence**: each `poll_events` round (per Set A "Journal append discipline" — written via the helper-or-direct-rewrite pattern, NOT via the journal helper).
@@ -186,7 +191,7 @@ The harness uses three identifier kinds (per `docs/org-state-schema.md` § dispa
 - **Decision**: enumerated as follows.
   - MUST be tempfile + rename (atomic): `.state/org-state.md`, `.state/org-state.json` (already atomic via `tempfile` in the converter), `.state/workers/worker-{task_id}.md`.
   - APPEND-only is acceptable: journal events (§1.3). Pre-M4 the guarantee came from POSIX line-atomicity for short lines appended by the journal helpers to `.state/journal.jsonl`; post-M4 the appended row is committed by a single SQLite transaction inside those same helpers (`tools/journal_append.{sh,py}` → `StateWriter`), which supplies the same atomic-per-record property. Neither surface may be written by hand (raw `>>` / direct `INSERT`).
-  - In-place rewrite is acceptable: `.state/dispatcher-event-cursor.txt` (single-line transient cursor; partial-write risk is bounded by the small fixed-size payload, and the dispatcher reconciles via `list_panes` after restart).
+  - In-place rewrite is acceptable: `.state/dispatcher-event-cursor.txt` (single-line transient cursor; partial-write risk is bounded by the small fixed-size payload, and the dispatcher reconciles via `list_panes` after restart). The §1.7 binding envelope does not change this ruling: a torn write yields a line that does not parse as JSON, which §1.7 already routes to "discard and report" — the same branch a legacy file takes — so the failure mode of a partial write is a reported cursor reset, never a cursor silently reused against the wrong session.
 
 ### 3.6 Encoding and line endings
 

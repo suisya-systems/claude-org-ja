@@ -41,7 +41,8 @@ allowed-tools:
 >   `/clear` → `/dispatcher-resume` を打鍵した直後の状態。pane_id / peer_id は
 >   変わっていないはずだが、必ず観測して state.db を **atomic 更新する**。
 > - state DB (`.state/state.db`) はそのまま使う。
-> - 監視 gap を埋める内部状態ファイル（`.state/dispatcher-event-cursor.txt` /
+> - 監視 gap を埋める内部状態ファイル（`.state/dispatcher-event-cursor.txt`（backend
+>   session に束縛された poll_events cursor） /
 >   `.state/dispatcher/worker-idle-state.json` / `.state/dispatcher/curate-inflight.json`（存在時） /
 >   `.state/pending_decisions.json`）は
 >   前 session から残っている。新規作成・初期化しない（既存値からそのまま継続）。
@@ -358,7 +359,13 @@ knowledge/raw/2026-06-19-dispatcher-resume-loop-recursion.md）。必ず monitor
 - 監視ループの 1 サイクル目で `mcp__org-broker__poll_events` は
   `.state/dispatcher-event-cursor.txt` の前 cursor（前 session 終了時点）から resume
   する。これで「pane が閉じている間に来た pane_exited は次回 poll で必ず拾える」
-  semantics が維持される（cursor 仕様）
+  semantics が維持される（cursor 仕様）。**ただし resume するのは cursor に記録された
+  `session_key` が現 backend session と一致したときだけ**で、一致しなければ 1 サイクル目が
+  cursor を破棄して「今以降」から張り直し、窓口へ `EVENT_CURSOR_RESET` を 1 行報告する
+  （`/clear` を挟む間に renga / broker daemon が再起動していた場合がこれ。判定と手当ての
+  正本は [`.dispatcher/references/worker-monitoring.md`](../../../.dispatcher/references/worker-monitoring.md)
+  「監視ループ 1 サイクル」Step 1）。**本 skill は cursor ファイルを読まず・書かず・消さない**
+  — 束縛の照合は監視ループ側の責務で、resume 側で先回りして初期化してはならない
 - `mcp__org-broker__check_messages` の 1 サイクル目で前 session 中にキューに溜まった
   worker → dispatcher peer message を drain する（broker = `mcp__org-broker__check_messages`。
   broker は push 一次に再設計済だが、`/clear` 中に channel sidecar 経由で注入できなかった

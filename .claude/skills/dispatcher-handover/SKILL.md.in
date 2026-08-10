@@ -44,7 +44,8 @@ secretary に「ack を受けたら send_keys で /clear → /dispatcher-resume 
 > - state DB (`.state/state.db`) は唯一の SoT。pane/peer identity は handover に
 >   参考値として書くが、resume 時の真値は `list_panes` / `list_peers` の現観測。
 > - 監視ループに gap を生まないために、以下のファイルは **絶対に削除・編集しない**:
->   - `.state/dispatcher-event-cursor.txt`（次サイクルの poll_events cursor）
+>   - `.state/dispatcher-event-cursor.txt`（次サイクルの poll_events cursor。backend
+>     session に束縛されており、resume 後の 1 サイクル目が束縛を照合してから使う）
 >   - `.state/dispatcher/worker-idle-state.json`（stall 検出の idle streak）
 >   - `.state/dispatcher/curate-inflight.json`（オンデマンド curate の開始記録。存在する場合のみ）
 >   - `.state/pending_decisions.json`（判断仰ぎ register）
@@ -155,7 +156,7 @@ pending_decisions_count: <int>
 - ...
 
 ## 監視 gap を埋める参照ファイル（read-only、本 skill は触らない）
-- `.state/dispatcher-event-cursor.txt`: poll_events 次 cursor（resume 後そのまま使う）
+- `.state/dispatcher-event-cursor.txt`: poll_events 次 cursor（`session_key` と対で保存されており、resume 後の 1 サイクル目が現 backend session と照合してから使う。不一致なら監視ループが破棄して張り直し `EVENT_CURSOR_RESET` を窓口へ報告する）
 - `.state/dispatcher/worker-idle-state.json`: stall 検出の idle streak
 - `.state/dispatcher/curate-inflight.json`: オンデマンド curate の開始記録（存在する場合のみ。resume 後の Step 5.3 timeout 管理が `started_at` 起点で継続する）
 - `.state/pending_decisions.json`: 判断仰ぎ register
