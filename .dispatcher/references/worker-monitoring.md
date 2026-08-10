@@ -141,21 +141,22 @@ bash ../tools/journal_append.sh anomaly_observed source={面} worker=worker-{tas
      1. `since` を省略して poll し（上記 (2)）、得た `next_since` を現 `session_key` と揃えて保存し直す（次サイクル以降は通常運用に戻る）
      2. **観測記録** (常に、送信可否に関わらず): journal に `anomaly_observed` を 1 行追記する（**新しい event 名は導入しない**。`kind` は 2026-08-09 の実走が既に使った `stale_event_cursor` を再利用する — 契約 T-§4.2-place-rec (R3) が同名で記録している）。**`session_key` を payload に載せる** — 下記 de-dup キーはこの値で引くので、載せないと 2 回目以降の restart で「同じ `(source, kind)` が既に在る」と読めてしまい、fail loud が恒久的に沈黙する（`payload_json` は自由形の JSON なので追加キーを取れる: [`tools/state_db/schema.sql`](../../tools/state_db/schema.sql) の `events.payload_json`、消費側の unknown-field 許容は [`docs/journal-events.md`](../../docs/journal-events.md)）。確立できなかったサイクルは literal `none` を入れる:
         ```
-        bash ../tools/journal_append.sh anomaly_observed source=event_cursor kind=stale_event_cursor confidence=n/a session_key='{session_key|none}' note={reason}
+        bash ../tools/journal_append.sh anomaly_observed source=event_cursor kind=stale_event_cursor confidence=n/a session_key='{session_key|none}' discarded_session_key='{saved.session_key|none}' note={reason}
         ```
+        **`discarded_session_key`（捨てた側の束縛）も載せる (MUST)**: `session_key` だけを de-dup キーにすると、`unbindable` や broker 面のように `session_key = none` が繰り返し現れる形で、**2 回目以降のエピソードが 1 回目の行に吸収されて恒久的に黙る**（`none` はエピソードを識別しない）。捨てた側の値を併記すると、正常復帰を挟んだ次のエピソードは「実在の束縛を捨てた」形になってキーが変わり、必ず 1 回報告される。読めなかった cursor は `none` を入れる
         **`session_key` の値は必ずクォートする (MUST)**: `pid_endpoint` 形は `pid=...;endpoint=/run/...` のように `;` を含み、素で置換するとそこでコマンドが切れて **pid 部分しか記帳されない**（endpoint 面を失った key は de-dup の識別力が落ち、pid 再利用時に後続の restart を握り潰す）。`server_info.session_id` 形でも同じ規律で書く（値の形に依らずクォートを外さない）
         `{reason}` は `session_mismatch`（保存値と現 `session_key` が違う） / `transport_mismatch`（`session_key_source` が保存値と違う = 輸送層を跨いだ） / `unbindable`（`server_info` が provenance を返さなかった） / `legacy_format`（JSON として読めない旧形式 = 束縛の無い cursor） のいずれか
-     3. **de-dup 判定（送信の前に引く）**: journal に **`event == "notify_sent"`** かつ `(source=event_cursor, kind=stale_event_cursor, session_key)` 一致の行が既に在れば**送信しない**（手順 2 の `anomaly_observed` は de-dup キーに含めない — Step 4 (e) と同じ規約）。**`(source, kind)` だけで引いてはならない**: それでは 2 回目以降の restart が既存行に吸収されて黙る。この判定があるので、`unbindable` が何サイクル続いても報告は `session_key=none` について 1 回で、3 分ごとの同文連打にはならない。**`unbindable` が解けて別の `session_key` になった / 別の restart で別の `session_key` になった場合はキーが変わるので、必ず新しく 1 回報告される**
+     3. **de-dup 判定（送信の前に引く）**: journal に **`event == "notify_sent"`** かつ **`(source=event_cursor, kind=stale_event_cursor, session_key, discarded_session_key)`** 一致の行が既に在れば**送信しない**（手順 2 の `anomaly_observed` は de-dup キーに含めない — Step 4 (e) と同じ規約）。**`(source, kind)` だけで引いてはならない**（2 回目以降の restart が既存行に吸収されて黙る）。**`discarded_session_key` を落としてもならない**（`unbindable` / broker 面で `session_key = none` が繰り返す形が同じ理由で黙る）。この 4 つ組なら、`unbindable` が何サイクル続いても**同一エピソード内は 1 回**（捨てる側も `none` のまま変わらないため）で、3 分ごとの同文連打にはならない。**正常復帰を挟んで再び `unbindable` になった / 別の restart で別の `session_key` になった / 輸送層を跨いだ場合はキーが変わるので、必ず新しく 1 回報告される**
      4. **通知送信** (手順 3 を通過した場合): 窓口へ 1 行送る（`mcp__org-broker__send_message(to_id="secretary", ...)`）:
         ```
         EVENT_CURSOR_RESET: poll_events cursor を破棄し現在時点から再開しました (理由: {reason})。backend 再起動を跨いだ cursor は連番が復元されず、そのまま使うと以後の pane_exited が全て空振りします。破棄した区間に起きたペイン終了は回収不能です (poll_events に historical replay は無い)。追跡中ワーカーの退役確定は、以前「在」と観測した数値 id が後続の list_peers から消えたこと (契約 T-§2.1 step (3)) を窓口が reconcile する経路にフォールバックします。
         ```
      5. **`notify_sent` 記録** (送信成功時のみ):
         ```
-        bash ../tools/journal_append.sh notify_sent source=event_cursor kind=stale_event_cursor confidence=n/a session_key='{session_key|none}'
+        bash ../tools/journal_append.sh notify_sent source=event_cursor kind=stale_event_cursor confidence=n/a session_key='{session_key|none}' discarded_session_key='{saved.session_key|none}'
         ```
-        （`session_key` のクォートは手順 2 と同じ理由で必須。ここで欠けると de-dup の照合対象が壊れる）
-     6. **未達の持ち越し (MUST)**: 送信が失敗した回は手順 5 を書かないので、台帳に **`anomaly_observed` が在るのに対応する `notify_sent` が無い `session_key`** が残る。**毎サイクル Step 1 の冒頭でこの形を 1 回引き、在れば手順 4→5 だけを再実行する**（手順 1・2 は再実行しない。cursor は既に張り直され、観測記録も既に在る）。この再試行が唯一の持ち越し手段である — cursor 側は既に一致しているので、mismatch 枝は二度と発火しない
+        （2 フィールドとも手順 2 と同じ値・同じクォート規律で書く。片方でも欠けると de-dup の照合対象が壊れる）
+     6. **未達の持ち越し (MUST)**: 送信が失敗した回は手順 5 を書かないので、台帳に **`anomaly_observed` が在るのに対応する `notify_sent` が無い `(session_key, discarded_session_key)`** が残る。**毎サイクル Step 1 の冒頭でこの形を 1 回引き、在れば手順 4→5 だけを再実行する**（手順 1・2 は再実行しない。cursor は既に張り直され、観測記録も既に在る）。この再試行が唯一の持ち越し手段である — cursor 側は既に一致しているので、mismatch 枝は二度と発火しない
      7. **破棄した区間の `pane_exited` は回収できない**（`poll_events` は初回省略時「今以降」semantics で historical replay を持たない — 契約 §3.1）。したがって reset したサイクル以降、**cursor だけを根拠に退役を確定しない**: 当該区間に終了した worker は Step 3 (3-a) で「列挙から消えている」形として現れるので、(3-a-4) の **indeterminate** に載せて (P4) を `source=lifecycle_event` で報告し、**窓口の reconcile 判断**に委ねる（契約 T-§2.1 step (3) の 2 つ目の手段 = 以前「在」と観測した数値 id が後続の `list_peers` から消えたこと。2026-08-09 の実走はこの経路で退役を確定させている — T-§4.2-place-rec (R3) の `secretary_reconcile_T2.1_ii_list_peers_vanish`）。**dispatcher 側で自動退役させる新しい経路は作らない**
      8. record に保管済みの `pending_exit_event` ((3-a-5)) は **破棄しない** — 受信済みの確定証拠であって cursor に依存しないため
    - `types=["pane_exited", "events_dropped"]` フィルタで heartbeat / pane_started 等を除外。cursor は filter と無関係に advance するので重複 scan なし
