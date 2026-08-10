@@ -313,6 +313,7 @@ cat .state/journal.jsonl | tail -1  # suspend イベントを確認
 - journal.jsonl の最後のエントリ以降の情報は失われる
 - git commitされていない作業は状態が不明確になる可能性がある
 - Dispatcher の `poll_events` cursor (`.state/dispatcher-event-cursor.txt`) 消失時は過去 5 秒分のイベントを取りこぼす可能性があるが、`list_panes` 突き合わせで回復可能
+- backend daemon が再起動した場合、cursor は現 session に束縛されていないものとして破棄され「今以降」から張り直される。破棄した区間のペイン終了イベントは回収不能（`poll_events` に historical replay は無い）で、当該ワーカーの退役確定は「以前『在』と観測した数値 id が後続の `list_peers` から消えたこと」を窓口が reconcile する経路にフォールバックする。破棄は無言では起こらず、窓口へ `EVENT_CURSOR_RESET` が 1 行報告される（[`docs/contracts/state-schema-contract.md`](./contracts/state-schema-contract.md) §1.7 / [`.dispatcher/references/worker-monitoring.md`](../.dispatcher/references/worker-monitoring.md) 「監視ループ 1 サイクル」Step 1）
 
 **失敗パターンと対処**:
 - org-state.md が古すぎる → 定期スナップショットの頻度を上げる（org-delegateの進捗管理を強化）
