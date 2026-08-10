@@ -120,13 +120,15 @@ bash ../tools/journal_append.sh anomaly_observed source={面} worker=worker-{tas
        timeout_ms=5000,
        types=["pane_exited", "events_dropped"]
    )
-   # cursor は session 束縛と揃えて .state/dispatcher-event-cursor.txt に保存し、次サイクルで使う
-   write_file(".state/dispatcher-event-cursor.txt", json({
-       "version": 1,
-       "session_key": binding.session_key,
-       "session_key_source": binding.session_key_source,
-       "next_since": result.next_since,
-   }))
+   # cursor は session 束縛と揃えて .state/dispatcher-event-cursor.txt に保存し、次サイクルで使う。
+   # ただし unbindable のサイクルは書き換えない (有効だったかもしれない束縛を自分で潰さない)
+   if binding.session_key_source != "unbindable":
+       write_file(".state/dispatcher-event-cursor.txt", json({
+           "version": 1,
+           "session_key": binding.session_key,
+           "session_key_source": binding.session_key_source,
+           "next_since": result.next_since,
+       }))
    ```
    - 初回 (cursor ファイルが無い/空) は `since` 省略で「今以降」セマンティクス（過去イベントを flood しない）
    - 2 サイクル目以降は **束縛が一致した session に限り** 前回の `next_since` を使って idempotent resume（重複通知なし）。**同一 session 内の挙動は従来と同一**で、変わるのは session を跨いだときだけ
@@ -134,7 +136,7 @@ bash ../tools/journal_append.sh anomaly_observed source={面} worker=worker-{tas
    - **`session_key` の導出**（renga 面のみ `server_info` を 1 回引く。**この tool 名は輸送層の機械置換の対象外で `mcp__renga-peers__server_info` を literal で書く (MUST)** — (3-a-5) 末尾の同型注記と同じ理由に加え、**broker 面には当該 tool が存在しない**ため（dispatcher の tool 集合は [`tools/transport.py`](../../tools/transport.py) の descriptor が SoT で、`broker` 側に `server_info` は無い）。**(3-a-5) の session provenance 照合はこのサイクルで引いた同じ応答を再利用する**ので往復は増えない）:
      - `status == "connected"` かつ `server.session_id != null` → `session_key = server.session_id` / `session_key_source = "server_info.session_id"`（**正確な形**。restart ごとに変わる process instance 識別子）
      - `status == "connected"` だが `server.session_id == null`（当該フィールドを返さない版） → `session_key = "pid={server.pid};endpoint={server.endpoint}"` / `session_key_source = "pid_endpoint"`（**近似**。OS は pid を再利用しうるので (3-a-5) 第 1 面と同じ弱点を持つ）
-     - `status != "connected"`（`detached` / `unreachable`）/ 呼び出し自体が失敗 → `session_key = null` / `session_key_source = "unbindable"`。**provenance を確立できていないので保存済み cursor を使わない**（契約 T-§4.2-id の (O1) と同じ向き: 束縛を確かめられない値は使わない）
+     - `status != "connected"`（`detached` / `unreachable`）/ 呼び出し自体が失敗 → `session_key = null` / `session_key_source = "unbindable"`。**provenance を確立できていないので保存済み cursor を使わず、かつ cursor ファイルを書き換えない (MUST)**。このサイクルは `since` 省略で poll するだけにして、**lifecycle 面が観測不能だったサイクルとして扱う**（(P4) を `source=lifecycle_event` で報告し、次サイクルで再評価する）。**破棄扱いにしない**理由は 2 つある: (i) 束縛を確かめられないだけで前 session の cursor が壊れたとは限らず、上書きすると**確かに有効だった cursor を自分で捨てる**ことになる（`server_info` が引けない状況は多くの場合 backend 自体に届いていない状況で、そのとき `poll_events` も同様に届いていない）; (ii) 上書きすると保存値も `null` になり、**「捨てた側」と「今回」の区別が消えて**下記 de-dup がエピソードを識別できなくなる。したがって cursor の破棄 = fail loud の対象は、**実在の束縛と実在の現束縛が食い違った形**（`session_mismatch` / `transport_mismatch` / `legacy_format`）に限られる
      - **broker 面**（`server_info` が無い） → `session_key = null` / `session_key_source = "transport_has_no_server_info"`。**保存側の `session_key_source` も同じ値だったときに限り、読み側は従来どおり保存済み cursor をそのまま使う**（broker には backend restart を観測する surface が無く、ここで reset に倒すと毎サイクル cursor を捨てて逆に取りこぼしが増える。**保存側が別の source だった場合 = `ORG_TRANSPORT` を跨いで同じファイルを引き継いだ場合は、renga の連番を broker へ渡すことになるので通常どおり破棄する** — 別 backend の cursor は別 session の cursor より安全ではない）。**broker 面ではこの事故は未解決のまま残る** — 解消には broker 側に session 識別子を返す surface が要る（既知の穴として明示的に持つ。`unbindable` と別値にしてあるのは、「surface が無い」と「surface はあるが今引けなかった」を読み側が取り違えないため）
    - **束縛が一致しなかったサイクル = cursor 破棄。黙って捨てない (MUST, fail loud)**。**適用条件は「捨てるべき cursor が実在したこと」**: cursor ファイルが**存在して中身が空でない**サイクルだけが本手順の対象で、**初回（ファイルが無い / 空）は破棄ではなく開始なので報告しない**（従来どおり `since` 省略で始めるだけ）。ファイルが在って JSON として読めないケースは「壊れた cursor を捨てた」なので対象に**含める**（`legacy_format`）:
      **順序は Step 4 (e) の通知シーケンスと同型にする（観測記録 → de-dup 判定 → 送信 → 送信成功時に `notify_sent`）。`notify_sent` を送信前に書いてはならない (MUST NOT)** — cursor は手順 1 で既に張り直されており次サイクルは一致してこの枝に入らないので、送信前に `notify_sent` を書くと送信が失敗した回の報告が**恒久的に失われる**（台帳も成功と読めてしまう）:
@@ -145,11 +147,11 @@ bash ../tools/journal_append.sh anomaly_observed source={面} worker=worker-{tas
         ```
         **`discarded_session_key`（捨てた側の束縛）も載せる (MUST)**: `session_key` だけを de-dup キーにすると、`unbindable` や broker 面のように `session_key = none` が繰り返し現れる形で、**2 回目以降のエピソードが 1 回目の行に吸収されて恒久的に黙る**（`none` はエピソードを識別しない）。捨てた側の値を併記すると、正常復帰を挟んだ次のエピソードは「実在の束縛を捨てた」形になってキーが変わり、必ず 1 回報告される。読めなかった cursor は `none` を入れる
         **`session_key` の値は必ずクォートする (MUST)**: `pid_endpoint` 形は `pid=...;endpoint=/run/...` のように `;` を含み、素で置換するとそこでコマンドが切れて **pid 部分しか記帳されない**（endpoint 面を失った key は de-dup の識別力が落ち、pid 再利用時に後続の restart を握り潰す）。`server_info.session_id` 形でも同じ規律で書く（値の形に依らずクォートを外さない）
-        `{reason}` は `session_mismatch`（保存値と現 `session_key` が違う） / `transport_mismatch`（`session_key_source` が保存値と違う = 輸送層を跨いだ） / `unbindable`（`server_info` が provenance を返さなかった） / `legacy_format`（JSON として読めない旧形式 = 束縛の無い cursor） のいずれか
-     3. **de-dup 判定（送信の前に引く）**: journal に **`event == "notify_sent"`** かつ **`(source=event_cursor, kind=stale_event_cursor, session_key, discarded_session_key)`** 一致の行が既に在れば**送信しない**（手順 2 の `anomaly_observed` は de-dup キーに含めない — Step 4 (e) と同じ規約）。**`(source, kind)` だけで引いてはならない**（2 回目以降の restart が既存行に吸収されて黙る）。**`discarded_session_key` を落としてもならない**（`unbindable` / broker 面で `session_key = none` が繰り返す形が同じ理由で黙る）。この 4 つ組なら、`unbindable` が何サイクル続いても**同一エピソード内は 1 回**（捨てる側も `none` のまま変わらないため）で、3 分ごとの同文連打にはならない。**正常復帰を挟んで再び `unbindable` になった / 別の restart で別の `session_key` になった / 輸送層を跨いだ場合はキーが変わるので、必ず新しく 1 回報告される**
+        `{reason}` は `session_mismatch`（保存値と現 `session_key` が違う） / `transport_mismatch`（`session_key_source` が保存値と違う = 輸送層を跨いだ） / `legacy_format`（JSON として読めない旧形式 = 束縛の無い cursor） のいずれか。**`unbindable` はここに含まれない** — 上記のとおり cursor を書き換えず破棄もしないので、観測不能サイクル ((P4)) として扱う
+     3. **de-dup 判定（送信の前に引く）**: journal に **`event == "notify_sent"`** かつ **`(source=event_cursor, kind=stale_event_cursor, session_key, discarded_session_key)`** 一致の行が既に在れば**送信しない**（手順 2 の `anomaly_observed` は de-dup キーに含めない — Step 4 (e) と同じ規約）。**`(source, kind)` だけで引いてはならない**（2 回目以降の restart が既存行に吸収されて黙る）。**`discarded_session_key` を落としてもならない**（`unbindable` / broker 面で `session_key = none` が繰り返す形が同じ理由で黙る）。**この 4 つ組が「エピソードごとに 1 回」を満たすのは、破棄が `session_mismatch` / `transport_mismatch` / `legacy_format` の 3 形に限られているから**である（`unbindable` は破棄しないので入ってこない）: いずれの形でも捨てる側・今回側の両方が**実在の値**で、次に破棄が起きるのは実際に別の restart / 別の輸送層を跨いだときだけなのでキーが必ず変わる。逆に `unbindable` を破棄扱いにすると両側が `none` に潰れてエピソードを識別できなくなる — これが上記で cursor を書き換えない設計上の理由でもある
      4. **通知送信** (手順 3 を通過した場合): 窓口へ 1 行送る（`mcp__org-broker__send_message(to_id="secretary", ...)`）:
         ```
-        EVENT_CURSOR_RESET: poll_events cursor を破棄し現在時点から再開しました (理由: {reason})。backend 再起動を跨いだ cursor は連番が復元されず、そのまま使うと以後の pane_exited が全て空振りします。破棄した区間に起きたペイン終了は回収不能です (poll_events に historical replay は無い)。追跡中ワーカーの退役確定は、以前「在」と観測した数値 id が後続の list_peers から消えたこと (契約 T-§2.1 step (3)) を窓口が reconcile する経路にフォールバックします。
+        EVENT_CURSOR_RESET: poll_events cursor を破棄し現在時点から再開しました (理由: {reason})。backend 再起動を跨いだ cursor は連番が復元されず、そのまま使うと以後の pane_exited が全て空振りします。破棄した区間に起きたペイン終了は回収不能です (poll_events に historical replay は無い)。同一タブのワーカーは列挙の突き合わせで従来どおり退役を確定できますが、背景タブ配置のワーカーは終了確定手段が pane_exited だけなので indeterminate として上げます。その退役確定は、以前「在」と観測した数値 id が後続の list_peers から消えたこと (契約 T-§2.1 step (3)) を窓口が reconcile する経路にフォールバックします。
         ```
      5. **`notify_sent` 記録** (送信成功時のみ):
         ```
@@ -157,7 +159,10 @@ bash ../tools/journal_append.sh anomaly_observed source={面} worker=worker-{tas
         ```
         （2 フィールドとも手順 2 と同じ値・同じクォート規律で書く。片方でも欠けると de-dup の照合対象が壊れる）
      6. **未達の持ち越し (MUST)**: 送信が失敗した回は手順 5 を書かないので、台帳に **`anomaly_observed` が在るのに対応する `notify_sent` が無い `(session_key, discarded_session_key)`** が残る。**毎サイクル Step 1 の冒頭でこの形を 1 回引き、在れば手順 4→5 だけを再実行する**（手順 1・2 は再実行しない。cursor は既に張り直され、観測記録も既に在る）。この再試行が唯一の持ち越し手段である — cursor 側は既に一致しているので、mismatch 枝は二度と発火しない
-     7. **破棄した区間の `pane_exited` は回収できない**（`poll_events` は初回省略時「今以降」semantics で historical replay を持たない — 契約 §3.1）。したがって reset したサイクル以降、**cursor だけを根拠に退役を確定しない**: 当該区間に終了した worker は Step 3 (3-a) で「列挙から消えている」形として現れるので、(3-a-4) の **indeterminate** に載せて (P4) を `source=lifecycle_event` で報告し、**窓口の reconcile 判断**に委ねる（契約 T-§2.1 step (3) の 2 つ目の手段 = 以前「在」と観測した数値 id が後続の `list_peers` から消えたこと。2026-08-09 の実走はこの経路で退役を確定させている — T-§4.2-place-rec (R3) の `secretary_reconcile_T2.1_ii_list_peers_vanish`）。**dispatcher 側で自動退役させる新しい経路は作らない**
+     7. **破棄した区間の `pane_exited` は回収できない**（`poll_events` は初回省略時「今以降」semantics で historical replay を持たない — 契約 §3.1）。**新しい分岐も per-worker の reset マーカーも足さない**（Step 3 の判定は変えない）。何が失われ何が失われないかは worker の配置で違うので、そこだけを正確に押さえる:
+        - **同タブ worker**: 影響は無い。(3-a-2) の退役確定はもともと `pane_exited` に依存しておらず、2 サイクル連続の列挙消失 + 4 行目の裏取りという**独立の証拠**で立つ。cursor 破棄はこの経路を弱めないので、従来どおり dispatcher が `WORKER_PANE_EXITED` を出してよい
+        - **`placement == "background_tab"` の worker**: ここが失われる面である。(3-a-5) は列挙からの消失を **unknown であって不在ではない**と扱うので、終了の確定手段は attribution 済みの `pane_exited` **だけ**であり、破棄区間にそれが落ちた worker は 3 行目が続く形 = **indeterminate** として (3-a-4) に載り、(P4) を `source=lifecycle_event` で報告して**窓口の reconcile 判断**に委ねる（既存の解消経路そのままで、新設ではない）。これが契約 T-§2.1 step (3) の 2 つ目の手段 = 以前「在」と観測した数値 id が後続の `list_peers` から消えたことを窓口が突き合わせる形で、2026-08-09 の実走はこの経路で退役を確定させている（T-§4.2-place-rec (R3) の `secretary_reconcile_T2.1_ii_list_peers_vanish`）。**dispatcher 側で自動退役させる新しい経路は作らない**
+        窓口への通知本文（手順 4）が「退役確定は窓口 reconcile へフォールバックする」と書くのは**この背景 worker の面**を指す
      8. record に保管済みの `pending_exit_event` ((3-a-5)) は **破棄しない** — 受信済みの確定証拠であって cursor に依存しないため
    - `types=["pane_exited", "events_dropped"]` フィルタで heartbeat / pane_started 等を除外。cursor は filter と無関係に advance するので重複 scan なし
    - `result.events[]` を順に処理:
