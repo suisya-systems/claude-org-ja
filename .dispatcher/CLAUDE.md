@@ -180,7 +180,7 @@ mcp__renga-peers__send_message(to_id="secretary", message="...")
 
 resume 時に「監視に gap が出ない」ことの根拠はこれらが前 session から残り続けることに依存する。**handover / resume / `/clear` のいずれでも編集 / 削除しない**:
 
-- `../.state/dispatcher-event-cursor.txt` — `mcp__renga-peers__poll_events` の next_since cursor。resume 後の 1 サイクル目で前 cursor から再開する
+- `../.state/dispatcher-event-cursor.txt` — `mcp__renga-peers__poll_events` の next_since cursor（**backend session に束縛**して保存する: `session_key` と対の単一行 JSON）。resume 後の 1 サイクル目は**束縛が現 backend session と一致したときだけ**前 cursor から再開し、一致しなければ cursor を破棄して「今以降」から張り直し、窓口へ `EVENT_CURSOR_RESET` を 1 行報告する（`next_since` は daemon session 内のカウンタで restart を跨いで復元されないのに、このファイルは跨いで残るため。無条件に再開すると再起動後の `pane_exited` が全て空振りする）。判定・導出・fail loud 手順の正本は [`.dispatcher/references/worker-monitoring.md`](references/worker-monitoring.md) 「監視ループ 1 サイクル」Step 1、schema は [`docs/contracts/state-schema-contract.md`](../docs/contracts/state-schema-contract.md) §1.7
 - `../.state/dispatcher/worker-idle-state.json` — stall 検出の per-worker `idle_streak_cycles` / `last_content_change_ts`
 - `../.state/dispatcher/curate-inflight.json` — オンデマンド curate の開始記録（`started_at` / `reasons` / `trigger_task_id` / `extended` / `pane_id` = spawn 戻り値の数値 pane id。非同期 close の identity 照合の起点 / `curate_result` = 受領した `CURATE_*` の持ち越し。初期値 `null`、close できず inflight を保持するときだけ `"done"` / `"skipped"` / `"error"` を書く）。監視ループ Step 5.3 の完了受領・timeout 管理の SoT。resume 後も `started_at` 起点で timeout 管理が継続する
 - `../.state/pending_decisions.json` — 判断仰ぎ register。SECRETARY_RELAY_GAP_SUSPECTED の primary lookup source

@@ -104,7 +104,9 @@ bash ../tools/journal_append.sh anomaly_observed source={面} worker=worker-{tas
    # (2) 束縛が一致したときだけ前 cursor を since に使う
    if saved != null and binding.session_key != null and saved.session_key == binding.session_key:
        since = saved.next_since
-   elif binding.session_key_source == "transport_has_no_server_info" and saved != null:
+   elif (binding.session_key_source == "transport_has_no_server_info"
+         and saved != null
+         and saved.session_key_source == "transport_has_no_server_info"):
        since = saved.next_since          # broker 面: 束縛を確立する surface が無いので従来どおり
    else:
        since = <省略>                     # 別 session の連番。使うと全ての pane_exited が空振りする
@@ -129,20 +131,20 @@ bash ../tools/journal_append.sh anomaly_observed source={面} worker=worker-{tas
      - `status == "connected"` かつ `server.session_id != null` → `session_key = server.session_id` / `session_key_source = "server_info.session_id"`（**正確な形**。restart ごとに変わる process instance 識別子）
      - `status == "connected"` だが `server.session_id == null`（当該フィールドを返さない版） → `session_key = "pid={server.pid};endpoint={server.endpoint}"` / `session_key_source = "pid_endpoint"`（**近似**。OS は pid を再利用しうるので (3-a-5) 第 1 面と同じ弱点を持つ）
      - `status != "connected"`（`detached` / `unreachable`）/ 呼び出し自体が失敗 → `session_key = null` / `session_key_source = "unbindable"`。**provenance を確立できていないので保存済み cursor を使わない**（契約 T-§4.2-id の (O1) と同じ向き: 束縛を確かめられない値は使わない）
-     - **broker 面**（`server_info` が無い） → `session_key = null` / `session_key_source = "transport_has_no_server_info"`。**この値のときだけ読み側は従来どおり保存済み cursor をそのまま使う**（broker には backend restart を観測する surface が無く、ここで reset に倒すと毎サイクル cursor を捨てて逆に取りこぼしが増える）。**broker 面ではこの事故は未解決のまま残る** — 解消には broker 側に session 識別子を返す surface が要る（既知の穴として明示的に持つ。`unbindable` と別値にしてあるのは、「surface が無い」と「surface はあるが今引けなかった」を読み側が取り違えないため）
-   - **束縛が一致しなかったサイクル = cursor 破棄。黙って捨てない (MUST, fail loud)**:
+     - **broker 面**（`server_info` が無い） → `session_key = null` / `session_key_source = "transport_has_no_server_info"`。**保存側の `session_key_source` も同じ値だったときに限り、読み側は従来どおり保存済み cursor をそのまま使う**（broker には backend restart を観測する surface が無く、ここで reset に倒すと毎サイクル cursor を捨てて逆に取りこぼしが増える。**保存側が別の source だった場合 = `ORG_TRANSPORT` を跨いで同じファイルを引き継いだ場合は、renga の連番を broker へ渡すことになるので通常どおり破棄する** — 別 backend の cursor は別 session の cursor より安全ではない）。**broker 面ではこの事故は未解決のまま残る** — 解消には broker 側に session 識別子を返す surface が要る（既知の穴として明示的に持つ。`unbindable` と別値にしてあるのは、「surface が無い」と「surface はあるが今引けなかった」を読み側が取り違えないため）
+   - **束縛が一致しなかったサイクル = cursor 破棄。黙って捨てない (MUST, fail loud)**。**適用条件は「捨てるべき cursor が実在したこと」**: cursor ファイルが**存在して中身が空でない**サイクルだけが本手順の対象で、**初回（ファイルが無い / 空）は破棄ではなく開始なので報告しない**（従来どおり `since` 省略で始めるだけ）。ファイルが在って JSON として読めないケースは「壊れた cursor を捨てた」なので対象に**含める**（`legacy_format`）:
      1. `since` を省略して poll し（上記 (2)）、得た `next_since` を現 `session_key` と揃えて保存し直す（次サイクル以降は通常運用に戻る）
-     2. journal に 2 行残す（**新しい event 名は導入しない**。`kind` は 2026-08-09 の実走が既に使った `stale_event_cursor` を再利用する — 契約 T-§4.2-place-rec (R3) が同名で記録している）:
+     2. journal に 2 行残す（**新しい event 名は導入しない**。`kind` は 2026-08-09 の実走が既に使った `stale_event_cursor` を再利用する — 契約 T-§4.2-place-rec (R3) が同名で記録している）。**`session_key` を payload に載せる** — 下記 de-dup キーはこの値で引くので、載せないと 2 回目以降の restart で「同じ `(source, kind)` が既に在る」と読めてしまい、fail loud が恒久的に沈黙する（`payload_json` は自由形の JSON なので追加キーを取れる: [`tools/state_db/schema.sql`](../../tools/state_db/schema.sql) の `events.payload_json`、消費側の unknown-field 許容は [`docs/journal-events.md`](../../docs/journal-events.md)）。確立できなかったサイクルは literal `none` を入れる:
         ```
-        bash ../tools/journal_append.sh anomaly_observed source=event_cursor kind=stale_event_cursor confidence=n/a note={reason}
-        bash ../tools/journal_append.sh notify_sent source=event_cursor kind=stale_event_cursor confidence=n/a
+        bash ../tools/journal_append.sh anomaly_observed source=event_cursor kind=stale_event_cursor confidence=n/a session_key={session_key|none} note={reason}
+        bash ../tools/journal_append.sh notify_sent source=event_cursor kind=stale_event_cursor confidence=n/a session_key={session_key|none}
         ```
-        `{reason}` は `session_mismatch`（保存値と現 `session_key` が違う） / `unbindable`（`server_info` が provenance を返さなかった） / `legacy_format`（JSON でない旧形式 = 束縛の無い cursor） のいずれか
+        `{reason}` は `session_mismatch`（保存値と現 `session_key` が違う） / `transport_mismatch`（`session_key_source` が保存値と違う = 輸送層を跨いだ） / `unbindable`（`server_info` が provenance を返さなかった） / `legacy_format`（JSON として読めない旧形式 = 束縛の無い cursor） のいずれか
      3. 窓口へ 1 行通知する（`{{FQ}}send_message(to_id="secretary", ...)`）:
         ```
         EVENT_CURSOR_RESET: poll_events cursor を破棄し現在時点から再開しました (理由: {reason})。backend 再起動を跨いだ cursor は連番が復元されず、そのまま使うと以後の pane_exited が全て空振りします。破棄した区間に起きたペイン終了は回収不能です (poll_events に historical replay は無い)。追跡中ワーカーの退役確定は、以前「在」と観測した数値 id が後続の list_peers から消えたこと (契約 T-§2.1 step (3)) を窓口が reconcile する経路にフォールバックします。
         ```
-     4. de-dup キーは **`(source=event_cursor, kind=stale_event_cursor, session_key)`**。手順 1 で新しい束縛を書くので、正常なら次サイクルは一致して再送は起きない。`unbindable` が続く間は同じ `session_key = null` として 1 回に抑える（毎サイクル同文を撃たない）
+     4. de-dup キーは **`(source=event_cursor, kind=stale_event_cursor, session_key)`** で、`session_key` は手順 2 で payload に載せた値を引く（**`(source, kind)` だけで引かない** — それでは 2 回目の restart が既存行に吸収されて黙る）。手順 1 で新しい束縛を書くので、正常なら次サイクルは一致して再送は起きない。`unbindable` が続く間は同じ `session_key=none` の行が既に在るので 1 回に抑えられる（毎サイクル同文を撃たない）。**`unbindable` が解けて別の `session_key` になった / 別の restart で別の `session_key` になった場合は、キーが変わるので必ず新しく 1 回報告される**
      5. **破棄した区間の `pane_exited` は回収できない**（`poll_events` は初回省略時「今以降」semantics で historical replay を持たない — 契約 §3.1）。したがって reset したサイクル以降、**cursor だけを根拠に退役を確定しない**: 当該区間に終了した worker は Step 3 (3-a) で「列挙から消えている」形として現れるので、(3-a-4) の **indeterminate** に載せて (P4) を `source=lifecycle_event` で報告し、**窓口の reconcile 判断**に委ねる（契約 T-§2.1 step (3) の 2 つ目の手段 = 以前「在」と観測した数値 id が後続の `list_peers` から消えたこと。2026-08-09 の実走はこの経路で退役を確定させている — T-§4.2-place-rec (R3) の `secretary_reconcile_T2.1_ii_list_peers_vanish`）。**dispatcher 側で自動退役させる新しい経路は作らない**
      6. record に保管済みの `pending_exit_event` ((3-a-5)) は **破棄しない** — 受信済みの確定証拠であって cursor に依存しないため
    - `types=["pane_exited", "events_dropped"]` フィルタで heartbeat / pane_started 等を除外。cursor は filter と無関係に advance するので重複 scan なし
