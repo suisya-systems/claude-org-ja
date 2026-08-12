@@ -198,8 +198,9 @@ python tools/gen_delegate_payload.py preview \
 #      該当する場合のみ codex exec で design review を実行し、要約を
 #      --impl-guidance または --knowledge で apply に渡す（下節 Step 1.7 参照）
 
-# 2. apply: state.db に runs.status='queued' で予約 + CLAUDE.md/CLAUDE.local.md 配置
-#    + claude-org-runtime settings generate 実行 + send_plan.json 出力
+# 2. apply: CLAUDE.md/CLAUDE.local.md 配置 + claude-org-runtime settings generate 実行
+#    + send_plan.json 出力 を先に済ませ、最後に state.db へ runs.status='queued' 予約と
+#    T1 の delegate_sent イベントを同一トランザクションで記録する (Issue #928)
 python tools/gen_delegate_payload.py apply \
     --task-id <task-id> --project-slug <slug> \
     --target <path>... --description "<desc>" \
@@ -210,7 +211,12 @@ python tools/gen_delegate_payload.py apply \
 #    → mcp__org-broker__send_message(to_id="dispatcher", message=<message>)
 ```
 
-`apply` は **T1 reservation のみ** (`runs.status='queued'`) を行う。Active Work Items への active 化はディスパッチャー T2 ([`docs/contracts/delegation-lifecycle-contract.md`](../../../docs/contracts/delegation-lifecycle-contract.md)) なので本 skill では触らない。失敗時はキューを残したまま Secretary に判断を仰ぐこと。
+`apply` は **T1 を丸ごと** 記録する: `runs.status='queued'` の予約と `delegate_sent` イベントを**同一トランザクションで commit** するので、窓口が手で `journal_append` を打つ必要はない（打つと二重記録になるので打たないこと）。Active Work Items への active 化はディスパッチャー T2 ([`docs/contracts/delegation-lifecycle-contract.md`](../../../docs/contracts/delegation-lifecycle-contract.md)) なので本 skill では触らない。
+
+- `delegate_sent` は「送信直前の委譲確定記録」であって**送達証明ではない**。実際に届いてワーカーが立ったことは T2 の `worker_spawned` が証明する。
+- apply が途中で失敗した場合は予約もイベントも残らない（生成物を全て作り終えてから最後に commit するため）。**同じ task_id でそのまま再実行してよい**。
+- 予約済み (`queued`) の task_id への再 apply は「まだ送っていない委譲の作り直し」として通り、`delegate_sent` は重複記録されない。**`queued` 以外**（`in_use` / `review` / `completed` / `failed` / `suspended` / `abandoned`）の run に対する apply は fail loud で止まる — 別の仕事は**新しい task_id** で委譲する。
+- 失敗が上記いずれにも当たらない場合はキューを残したまま Secretary に判断を仰ぐこと。
 
 ### よく使うフラグ
 

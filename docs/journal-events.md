@@ -102,9 +102,11 @@ addition to its writer / payload shape:
 
 | Event                | Typical fields                                              | Writer    | Emitted by | Required for |
 |----------------------|-------------------------------------------------------------|-----------|------------|--------------|
-| `delegate_sent`      | `task`, `worker`, `dir`                                     | secretary | secretary  | T1           |
+| `delegate_sent`      | `task`, `worker`, `dir`                                     | secretary | `gen_delegate_payload.py apply` | T1 |
 | `delegate_resume`    | `task`, `worker`                                            | secretary | secretary  | —            |
 | `delegate_resume_r2` | `task`, `worker`, `round`                                   | secretary | secretary  | —            |
+
+`delegate_sent` is written by `tools/gen_delegate_payload.py apply` in the same transaction as the T1 reservation (`runs.status='queued'`), not by a hand-typed `journal_append` — see [`docs/contracts/delegation-lifecycle-contract.md`](./contracts/delegation-lifecycle-contract.md) §2 T1. It records the commitment to delegate, immediately before the `DELEGATE` message is sent; it is **not** proof of delivery, which is what T2's `worker_spawned` records. It is emitted exactly once per run row: re-applying a still-`queued` delegation updates the reservation without appending a second event.
 
 ### Plan / design
 

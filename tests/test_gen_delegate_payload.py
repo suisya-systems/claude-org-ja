@@ -1,8 +1,9 @@
 """Tests for tools/gen_delegate_payload.py (Issue #283 Stage 3).
 
 Coverage:
-- preview is non-destructive (no DB / no files)
-- apply reserves a runs.status='queued' row (Codex Blocker B-1)
+- preview is non-destructive (no DB rows, no events, no files)
+- apply reserves a runs.status='queued' row (Codex Blocker B-1) and records
+  the contract-T1 ``delegate_sent`` event in the same transaction (#928)
 - apply does NOT write Active Work Items (no writes outside the queued row)
 - DELEGATE body contains all required rows: pattern / role / Permission Mode
   / 検証深度 / planned_branch
@@ -21,6 +22,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Optional
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
@@ -112,6 +114,55 @@ class _Sandbox:
             return [dict(r) for r in rows]
         finally:
             conn.close()
+
+
+def _events(db_path: Path, *, kind: Optional[str] = None) -> list[dict]:
+    """All event rows (optionally one kind), payload decoded, oldest first.
+
+    Issue #928: ``apply`` now writes the contract-T1 ``delegate_sent``
+    event, so several tests need to assert on the ``events`` table -
+    including the negative "preview writes none" direction.
+    """
+    conn = connect(db_path)
+    try:
+        sql = (
+            "SELECT e.id, e.kind, e.actor, e.payload_json, e.run_id, "
+            "r.task_id AS run_task_id FROM events e "
+            "LEFT JOIN runs r ON e.run_id = r.id"
+        )
+        params: tuple = ()
+        if kind is not None:
+            sql += " WHERE e.kind = ?"
+            params = (kind,)
+        sql += " ORDER BY e.id"
+        rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
+    finally:
+        conn.close()
+    for row in rows:
+        row["payload"] = json.loads(row.pop("payload_json") or "{}")
+    return rows
+
+
+def _delegate_sent_events(db_path: Path) -> list[dict]:
+    return _events(db_path, kind="delegate_sent")
+
+
+def _set_run_status(db_path: Path, task_id: str, status: str) -> None:
+    """Force a run into an arbitrary lifecycle status.
+
+    Written with raw SQL on purpose: ``StateWriter.update_run_status``
+    carries side effects (worker-state-file archiving) that are irrelevant
+    here - these tests only need the ``runs.status`` value the Issue #928
+    re-apply guard reads.
+    """
+    conn = connect(db_path)
+    try:
+        conn.execute(
+            "UPDATE runs SET status = ? WHERE task_id = ?", (status, task_id)
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -787,12 +838,18 @@ class TestCLI(unittest.TestCase):
         # Pre-condition: the worker dir doesn't exist yet
         self.assertFalse(worker_dir.exists())
         runs_before = len(self.sb.list_runs())
+        events_before = len(_events(self.sb.db_path))
         buf = StringIO()
         with redirect_stdout(buf):
             rc = gdp.main(["preview", *self._common_args()])
         self.assertEqual(rc, 0)
         self.assertFalse(worker_dir.exists())
         self.assertEqual(len(self.sb.list_runs()), runs_before)
+        # Issue #928 (Codex Major): apply records ``delegate_sent``, so the
+        # non-destructive claim now has to be checked against ``events`` too
+        # - a preview that journalled a delegation would be a false T1.
+        self.assertEqual(len(_events(self.sb.db_path)), events_before)
+        self.assertEqual(_delegate_sent_events(self.sb.db_path), [])
         out = buf.getvalue()
         self.assertIn("DELEGATE body (preview, no writes)", out)
         self.assertIn("Permission Mode: auto", out)
@@ -2989,14 +3046,19 @@ class TestIssue489OverrideWorkerDirAlignment(unittest.TestCase):
 
 
 class TestIssue489AtomicApplyRollback(unittest.TestCase):
-    """Issue #489 Blocker 2: ``_reserve_in_db`` commits the queued run
-    row before ``_write_brief`` / ``_run_settings_generate`` /
-    ``_write_send_plan`` run. A failure in any of those post-reservation
-    steps leaves the queued row in place; resolver then sees Pattern A
-    as occupied on the next dispatch and silently flips to Pattern B.
-    The atomic-rollback layer wraps the post-reservation block and
-    compensates with ``status='abandoned'`` on failure so the leak is
-    closed."""
+    """Issue #489 Blocker 2: a generation failure inside ``apply`` must not
+    leave an active reservation behind — the resolver treats ``queued`` as
+    occupied and would silently flip the next dispatch onto another
+    pattern / branch.
+
+    Issue #928 strengthened HOW that guarantee is met. The reservation used
+    to commit first and a post-commit compensating UPDATE flipped the row to
+    ``abandoned``; now every failure-prone step runs before the single
+    transaction, so a failure leaves **no run row at all** (and no
+    ``delegate_sent`` event). That is strictly stronger than the
+    compensation it replaces: there is no window in which a queued row
+    exists without a sendable payload, and no ``delegate_sent + abandoned``
+    pair that reads as "sent, then aborted"."""
 
     def setUp(self) -> None:
         self._td = tempfile.TemporaryDirectory()
@@ -3014,11 +3076,10 @@ class TestIssue489AtomicApplyRollback(unittest.TestCase):
             state_db_path=self.sb.db_path,
         )
 
-    def test_write_brief_failure_compensates_queued_run(self):
-        """Patch ``_write_brief`` to raise after the DB reservation
-        commits. Expect: the exception propagates, and the queued run
-        row is flipped to ``abandoned`` so a follow-up dispatch sees
-        Pattern A as free."""
+    def test_write_brief_failure_leaves_no_run_row(self):
+        """Patch ``_write_brief`` to raise. Expect: the exception
+        propagates and NO run row exists, so a follow-up dispatch sees the
+        pattern as free and the same task_id stays re-appliable."""
         plan = self._build_plain_a()
         boom = RuntimeError("simulated disk failure during brief write")
         from unittest.mock import patch
@@ -3033,13 +3094,11 @@ class TestIssue489AtomicApplyRollback(unittest.TestCase):
                 )
         self.assertIs(cm.exception, boom)
         runs = self.sb.list_runs()
-        match = [r for r in runs if r["task_id"] == "atomic-task"]
-        self.assertEqual(len(match), 1, runs)
-        self.assertEqual(match[0]["status"], "abandoned")
+        self.assertEqual([r for r in runs if r["task_id"] == "atomic-task"], [], runs)
 
-    def test_send_plan_write_failure_compensates_queued_run(self):
-        """Same contract for ``_write_send_plan`` — the last
-        post-reservation side effect must also be guarded."""
+    def test_send_plan_write_failure_leaves_no_run_row(self):
+        """Same contract for ``_write_send_plan`` — the last generation
+        step before the transaction."""
         plan = self._build_plain_a(task_id="send-plan-fail")
         boom = OSError("permission denied")
         from unittest.mock import patch
@@ -3052,13 +3111,30 @@ class TestIssue489AtomicApplyRollback(unittest.TestCase):
                     claude_org_root=self.sb.claude_org_root,
                     skip_settings=True,
                 )
-        match = [r for r in self.sb.list_runs() if r["task_id"] == "send-plan-fail"]
-        self.assertEqual(match[0]["status"], "abandoned")
+        self.assertEqual(
+            [r for r in self.sb.list_runs() if r["task_id"] == "send-plan-fail"], []
+        )
+
+    def test_generation_failure_records_no_delegate_sent(self):
+        """Issue #928 Blocker 1: the whole point of committing the event
+        with the reservation is that a half-finished apply must never leave
+        a ``delegate_sent`` claiming a delegation that has no payload."""
+        plan = self._build_plain_a(task_id="no-event-on-failure")
+        from unittest.mock import patch
+
+        with patch.object(gdp, "_write_send_plan", side_effect=OSError("nope")):
+            with self.assertRaises(OSError):
+                gdp.apply_delegate_plan(
+                    plan,
+                    state_db_path=self.sb.db_path,
+                    claude_org_root=self.sb.claude_org_root,
+                    skip_settings=True,
+                )
+        self.assertEqual(_delegate_sent_events(self.sb.db_path), [])
 
     def test_successful_apply_leaves_queued_run_intact(self):
-        """Sanity guard: on the happy path the queued row stays queued
-        (the rollback layer must be a no-op when nothing fails). The
-        next dispatcher T2 promotes it to ``in_use``."""
+        """Sanity guard: on the happy path the queued row stays queued.
+        The next dispatcher T2 promotes it to ``in_use``."""
         plan = self._build_plain_a(task_id="happy-task")
         gdp.apply_delegate_plan(
             plan,
@@ -3068,6 +3144,194 @@ class TestIssue489AtomicApplyRollback(unittest.TestCase):
         )
         match = [r for r in self.sb.list_runs() if r["task_id"] == "happy-task"]
         self.assertEqual(match[0]["status"], "queued")
+
+
+# ---------------------------------------------------------------------------
+# Issue #928: apply records the contract-T1 delegate_sent event
+# ---------------------------------------------------------------------------
+
+
+class TestIssue928DelegateSentEvent(unittest.TestCase):
+    """Issue #928: contract T1 requires both a state write and a
+    ``delegate_sent`` journal event, but only the state write lived in
+    code - the event was a hand-typed command nobody was reminded to run,
+    so it silently stopped being emitted. ``apply`` now writes both in one
+    transaction."""
+
+    def setUp(self) -> None:
+        try:
+            subprocess.run(["git", "--version"], capture_output=True, check=True)
+        except FileNotFoundError:
+            self.skipTest("git not available")
+        self._td = tempfile.TemporaryDirectory()
+        # Pattern B (live-repo worktree) rather than Pattern A: re-apply is
+        # the central case here, and a Pattern A worker dir picks up the
+        # Issue #489 residue guard on the second plan build.
+        self.sb = _Sandbox(Path(self._td.name), with_claude_org_origin=False)
+        import os
+        self._env = os.environ.copy()
+        self._env.update({
+            "GIT_AUTHOR_NAME": "test", "GIT_AUTHOR_EMAIL": "t@example.com",
+            "GIT_COMMITTER_NAME": "test", "GIT_COMMITTER_EMAIL": "t@example.com",
+        })
+        self._git("init", "-q", "-b", "main")
+        self._git("commit", "--allow-empty", "-m", "m1", "-q")
+        self._git("update-ref", "refs/remotes/origin/main",
+                  self._out("rev-parse", "main"))
+        self._git("symbolic-ref", "refs/remotes/origin/HEAD",
+                  "refs/remotes/origin/main")
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def _git(self, *args):
+        subprocess.run(["git", "-C", str(self.sb.claude_org_root), *args],
+                       check=True, env=self._env, capture_output=True)
+
+    def _out(self, *args) -> str:
+        return subprocess.check_output(
+            ["git", "-C", str(self.sb.claude_org_root), *args],
+        ).decode().strip()
+
+    def _plan(self, task_id: str = "evt-task", **kwargs) -> gdp.DelegatePlan:
+        return gdp.build_delegate_plan(
+            task_id=task_id,
+            project_slug="claude-org-ja",
+            description="record the event",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+            layout_overrides={
+                "pattern": "B",
+                "pattern_variant": "live_repo_worktree",
+                "role": "claude-org-self-edit",
+                "self_edit": True,
+            },
+            **kwargs,
+        )
+
+    def _apply(self, plan: gdp.DelegatePlan) -> gdp.ApplyResult:
+        return gdp.apply_delegate_plan(
+            plan,
+            state_db_path=self.sb.db_path,
+            claude_org_root=self.sb.claude_org_root,
+            skip_settings=True,
+        )
+
+    def test_apply_records_delegate_sent_with_catalog_payload(self):
+        """Payload keys are fixed by ``docs/journal-events.md`` (task /
+        worker / dir) and the actor by the contract (secretary)."""
+        plan = self._plan()
+        result = self._apply(plan)
+        events = _delegate_sent_events(self.sb.db_path)
+        self.assertEqual(len(events), 1, events)
+        evt = events[0]
+        self.assertEqual(evt["actor"], "secretary")
+        self.assertEqual(
+            evt["payload"],
+            {
+                "task": "evt-task",
+                "worker": "worker-evt-task",
+                "dir": str(plan.layout.worker_dir),
+            },
+        )
+        # Linked to the run row reserved in the same transaction.
+        self.assertEqual(evt["run_task_id"], "evt-task")
+        self.assertEqual(result.delegate_sent_event_id, evt["id"])
+
+    def test_reapply_of_a_queued_run_does_not_duplicate_the_event(self):
+        """Blocker 2 branch 1: re-running apply corrects a not-yet-sent
+        delegation. T1 fires once per delegation, not once per apply."""
+        self._apply(self._plan(task_id="twice"))
+        result = self._apply(self._plan(task_id="twice"))
+        self.assertEqual(len(_delegate_sent_events(self.sb.db_path)), 1)
+        self.assertIsNone(result.delegate_sent_event_id)
+
+    def test_reapply_with_a_revised_brief_still_records_one_event(self):
+        """A corrected re-apply rewrites the payload on disk but stays a
+        single delegation, so it must not append a second event."""
+        self._apply(self._plan(task_id="revised"))
+        result = self._apply(
+            self._plan(task_id="revised",
+                       implementation_guidance="round 2 guidance")
+        )
+        self.assertIn("round 2 guidance", result.brief_path.read_text(encoding="utf-8"))
+        self.assertEqual(len(_delegate_sent_events(self.sb.db_path)), 1)
+
+    def test_apply_refuses_a_run_that_already_left_t1(self):
+        """Blocker 2 branch 2: ``upsert_run`` would happily reset a live or
+        terminal run back to ``queued`` and append a second event."""
+        for status in ("in_use", "review", "completed", "failed",
+                       "suspended", "abandoned"):
+            with self.subTest(status=status):
+                task_id = f"live-{status}"
+                self._apply(self._plan(task_id=task_id))
+                _set_run_status(self.sb.db_path, task_id, status)
+                with self.assertRaises(gdp.RunAlreadyDispatchedError) as cm:
+                    self._apply(self._plan(task_id=task_id))
+                self.assertIn(status, str(cm.exception))
+                self.assertIn(task_id, str(cm.exception))
+                # Refused, so nothing was reset and nothing was appended.
+                match = [
+                    r for r in self.sb.list_runs() if r["task_id"] == task_id
+                ]
+                self.assertEqual(match[0]["status"], status)
+                self.assertEqual(
+                    len([
+                        e for e in _delegate_sent_events(self.sb.db_path)
+                        if e["run_task_id"] == task_id
+                    ]),
+                    1,
+                )
+
+    def test_refusal_happens_before_any_filesystem_write(self):
+        """The preflight exists so a rejected dispatch does not leave a
+        rewritten brief / send_plan behind for the live worker to read."""
+        plan = self._plan(task_id="no-fs-writes")
+        self._apply(plan)
+        _set_run_status(self.sb.db_path, "no-fs-writes", "in_use")
+        brief = plan.brief_out_path
+        brief.write_text("worker edited this", encoding="utf-8")
+        with self.assertRaises(gdp.RunAlreadyDispatchedError):
+            self._apply(self._plan(task_id="no-fs-writes"))
+        self.assertEqual(brief.read_text(encoding="utf-8"), "worker edited this")
+
+    def test_failed_apply_can_be_retried_with_the_same_task_id(self):
+        """Blocker 2 branch 3: a failure before the final transaction
+        reserves nothing, so the guard must not lock that task_id out."""
+        from unittest.mock import patch
+
+        with patch.object(gdp, "_write_send_plan", side_effect=OSError("nope")):
+            with self.assertRaises(OSError):
+                self._apply(self._plan(task_id="retry-me"))
+        self.assertEqual(
+            [r for r in self.sb.list_runs() if r["task_id"] == "retry-me"], []
+        )
+        self._apply(self._plan(task_id="retry-me"))
+        match = [r for r in self.sb.list_runs() if r["task_id"] == "retry-me"]
+        self.assertEqual(match[0]["status"], "queued")
+        self.assertEqual(len(_delegate_sent_events(self.sb.db_path)), 1)
+
+    def test_cli_apply_reports_the_recorded_event(self):
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        args = [
+            "--task-id", "cli-evt",
+            "--project-slug", "claude-org-ja",
+            "--description", "do the thing",
+            "--claude-org-root", str(self.sb.claude_org_root),
+            "--state-db-path", str(self.sb.db_path),
+            "--skip-settings",
+        ]
+        buf = StringIO()
+        with redirect_stdout(buf):
+            self.assertEqual(gdp.main(["apply", *args]), 0)
+        self.assertIn("delegate_sent: recorded (events.id=", buf.getvalue())
+        buf = StringIO()
+        with redirect_stdout(buf):
+            self.assertEqual(gdp.main(["apply", *args]), 0)
+        self.assertIn("delegate_sent: already recorded", buf.getvalue())
+        self.assertEqual(len(_delegate_sent_events(self.sb.db_path)), 1)
 
 
 # ---------------------------------------------------------------------------
