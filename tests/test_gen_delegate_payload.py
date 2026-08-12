@@ -3182,6 +3182,16 @@ class TestIssue928DelegateSentEvent(unittest.TestCase):
                   self._out("rev-parse", "main"))
         self._git("symbolic-ref", "refs/remotes/origin/HEAD",
                   "refs/remotes/origin/main")
+        # Self-edit detection keys on a github.com origin URL, so this
+        # sandbox has to advertise one - but a *configured* origin makes
+        # ``_ensure_worktree`` run a real ``git fetch origin`` (fail-closed
+        # by design, Issue #480), which would make every test here depend on
+        # network access to github.com. The refs above already stand in for
+        # the remote, and nothing in this class asserts on fetch freshness.
+        from unittest.mock import patch
+        fetch_patch = patch.object(gdp, "_fetch_base_origin", lambda base_repo: None)
+        fetch_patch.start()
+        self.addCleanup(fetch_patch.stop)
 
     def tearDown(self) -> None:
         self._td.cleanup()

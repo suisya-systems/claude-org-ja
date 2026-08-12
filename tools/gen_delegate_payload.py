@@ -2130,6 +2130,19 @@ def apply_delegate_plan(
     ``delegate_sent`` records "the delegation is confirmed and the
     ``DELEGATE`` message is about to be sent". It is NOT proof of
     delivery — that is T2's ``worker_spawned``, written by the dispatcher.
+
+    Known residual window (not introduced here): the re-apply preflight
+    reads ``runs.status`` outside the transaction, so a dispatcher that
+    flips ``queued`` → ``in_use`` *while* generation is running can have
+    its worker's brief rewritten under it before the final transaction
+    notices and refuses. That race is strictly narrower than the previous
+    ordering, where the reservation committed first and reset a live
+    ``in_use`` run back to ``queued`` before rewriting the same files with
+    no status check at all. Closing it completely means holding a DB write
+    lock across a subprocess (``settings generate``) or publishing files
+    from inside the transaction — both trade this narrow window for a
+    worse failure mode, so the guard is deliberately left at "refuse, one
+    step late" rather than "serialize".
     """
     # Issue #928 Blocker 2 preflight: refuse a re-apply onto a run that has
     # already left T1 (or is terminal) before touching the filesystem. The
