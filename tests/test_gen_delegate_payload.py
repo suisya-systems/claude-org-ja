@@ -3164,18 +3164,20 @@ class TestIssue928DelegateSentEvent(unittest.TestCase):
         except FileNotFoundError:
             self.skipTest("git not available")
         self._td = tempfile.TemporaryDirectory()
-        # Pattern B (live-repo worktree) rather than Pattern A: re-apply is
-        # the central case here, and a Pattern A worker dir picks up the
-        # Issue #489 residue guard on the second plan build.
-        self.sb = _Sandbox(Path(self._td.name), with_claude_org_origin=False)
+        # Self-edit sandbox: the claude-org-ja origin URL makes every plan
+        # resolve to the same Pattern B live-repo worktree, so re-apply -
+        # the central case here - keeps a stable reservation identity. A
+        # Pattern A worker dir cannot: its own queued reservation makes the
+        # next resolve flip to another pattern (Codex Round 1 P2).
+        self.sb = _Sandbox(Path(self._td.name))
         import os
         self._env = os.environ.copy()
         self._env.update({
             "GIT_AUTHOR_NAME": "test", "GIT_AUTHOR_EMAIL": "t@example.com",
             "GIT_COMMITTER_NAME": "test", "GIT_COMMITTER_EMAIL": "t@example.com",
         })
-        self._git("init", "-q", "-b", "main")
         self._git("commit", "--allow-empty", "-m", "m1", "-q")
+        self._git("branch", "-M", "main")
         self._git("update-ref", "refs/remotes/origin/main",
                   self._out("rev-parse", "main"))
         self._git("symbolic-ref", "refs/remotes/origin/HEAD",
@@ -3200,12 +3202,6 @@ class TestIssue928DelegateSentEvent(unittest.TestCase):
             description="record the event",
             claude_org_root=self.sb.claude_org_root,
             state_db_path=self.sb.db_path,
-            layout_overrides={
-                "pattern": "B",
-                "pattern_variant": "live_repo_worktree",
-                "role": "claude-org-self-edit",
-                "self_edit": True,
-            },
             **kwargs,
         )
 
@@ -3294,6 +3290,52 @@ class TestIssue928DelegateSentEvent(unittest.TestCase):
         with self.assertRaises(gdp.RunAlreadyDispatchedError):
             self._apply(self._plan(task_id="no-fs-writes"))
         self.assertEqual(brief.read_text(encoding="utf-8"), "worker edited this")
+
+    def test_apply_refuses_to_repoint_a_queued_reservation(self):
+        """Codex Round 1 P2: a re-apply whose plan resolved elsewhere would
+        leave the run row pointing at a new worker dir while the recorded
+        ``delegate_sent`` still names the old one."""
+        import dataclasses
+
+        plan = self._plan(task_id="moved")
+        self._apply(plan)
+        retry = self._plan(task_id="moved")
+        moved = dataclasses.replace(
+            retry,
+            layout=dataclasses.replace(
+                retry.layout,
+                worker_dir=str(Path(plan.layout.worker_dir).parent / "elsewhere"),
+            ),
+        )
+        with self.assertRaises(gdp.ReservationIdentityMismatchError) as cm:
+            self._apply(moved)
+        msg = str(cm.exception)
+        self.assertIn("worker_dir", msg)
+        self.assertIn(str(plan.layout.worker_dir), msg)   # what is reserved
+        self.assertIn("elsewhere", msg)                   # what this apply wants
+        # Untouched: still one event, still the original dir.
+        events = _delegate_sent_events(self.sb.db_path)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["payload"]["dir"], str(plan.layout.worker_dir))
+
+    def test_a_hand_written_delegate_sent_is_not_duplicated(self):
+        """Codex Round 1 P2: ``journal_append`` and the legacy-journal
+        importer write ``delegate_sent`` with a payload but no ``run_id``,
+        so the exactly-once check cannot key on the run link alone."""
+        conn = connect(self.sb.db_path)
+        try:
+            conn.execute(
+                "INSERT INTO events (kind, payload_json) VALUES (?, ?)",
+                ("delegate_sent", json.dumps({"task": "hand-written"})),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        result = self._apply(self._plan(task_id="hand-written"))
+        self.assertIsNone(result.delegate_sent_event_id)
+        events = _delegate_sent_events(self.sb.db_path)
+        self.assertEqual(len(events), 1, events)
+        self.assertIsNone(events[0]["run_id"])
 
     def test_failed_apply_can_be_retried_with_the_same_task_id(self):
         """Blocker 2 branch 3: a failure before the final transaction

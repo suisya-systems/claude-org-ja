@@ -216,6 +216,7 @@ python tools/gen_delegate_payload.py apply \
 - `delegate_sent` は「送信直前の委譲確定記録」であって**送達証明ではない**。実際に届いてワーカーが立ったことは T2 の `worker_spawned` が証明する。
 - apply が途中で失敗した場合は予約もイベントも残らない（生成物を全て作り終えてから最後に commit するため）。**同じ task_id でそのまま再実行してよい**。
 - 予約済み (`queued`) の task_id への再 apply は「まだ送っていない委譲の作り直し」として通り、`delegate_sent` は重複記録されない。**`queued` 以外**（`in_use` / `review` / `completed` / `failed` / `suspended` / `abandoned`）の run に対する apply は fail loud で止まる — 別の仕事は**新しい task_id** で委譲する。
+- 再 apply で **project / pattern / branch / worker_dir が予約と食い違う**場合も fail loud で止まる。予約済み run は次の layout 解決で「使用中」と数えられるため、**同じコマンドを打ち直しただけでも別 pattern に倒れることがある**（例: Pattern A → B）。黙って予約を付け替えると記録済み `delegate_sent` の `dir` と食い違うので拒否する。新しい task_id を使うか、既存予約を先に解放すること。
 - 失敗が上記いずれにも当たらない場合はキューを残したまま Secretary に判断を仰ぐこと。
 
 ### よく使うフラグ

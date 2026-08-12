@@ -136,6 +136,18 @@ class RunAlreadyDispatchedError(RuntimeError):
     """
 
 
+class ReservationIdentityMismatchError(RuntimeError):
+    """Raised by ``apply`` when a still-``queued`` run is re-applied with a
+    plan that resolved to a different project / pattern / branch / worker
+    dir than the one already reserved (Issue #928).
+
+    Re-apply exists to correct a delegation that has not been sent yet, in
+    place. Letting it move the reservation instead would desynchronize the
+    run row from the ``delegate_sent`` already recorded for it — the event
+    payload's ``dir`` would name a directory the run no longer points at.
+    """
+
+
 # Filenames whose presence in a non-git ``workers/<slug>/`` is treated as a
 # tell-tale leftover from an earlier Pattern A dispatch (the layout Issue
 # #489 sunsets). Used by :func:`_compute_layout_warnings` to decide whether
@@ -1032,8 +1044,30 @@ _REAPPLIABLE_RUN_STATUS = "queued"
 _DELEGATE_SENT_KIND = "delegate_sent"
 
 
-def _existing_run_status(state_db_path: Path, task_id: str) -> Optional[str]:
-    """``runs.status`` for ``task_id``, or None when the DB / row is absent.
+def _fetch_run_reservation(conn, task_id: str) -> Optional[dict[str, Any]]:
+    """The existing reservation for ``task_id`` (status + identity), or None.
+
+    "Identity" is the set of columns the reservation itself pins down and
+    that the ``delegate_sent`` payload describes: which project, which
+    pattern, which branch, which worker dir. A re-apply that changes any
+    of them is a *different* reservation wearing the same task_id, not a
+    correction of the existing one — see :func:`_assert_reappliable`.
+    """
+    row = conn.execute(
+        "SELECT r.status AS status, r.pattern AS pattern, r.branch AS branch, "
+        "p.slug AS project_slug, wd.abs_path AS worker_dir "
+        "FROM runs r JOIN projects p ON r.project_id = p.id "
+        "LEFT JOIN worker_dirs wd ON r.worker_dir_id = wd.id "
+        "WHERE r.task_id = ?",
+        (task_id,),
+    ).fetchone()
+    return None if row is None else dict(row)
+
+
+def _existing_run_reservation(
+    state_db_path: Path, task_id: str
+) -> Optional[dict[str, Any]]:
+    """:func:`_fetch_run_reservation` against a not-yet-open DB file.
 
     Read-only preflight for :func:`apply_delegate_plan`, so a refusal
     (Issue #928 Blocker 2) happens before any filesystem side effect —
@@ -1047,9 +1081,7 @@ def _existing_run_status(state_db_path: Path, task_id: str) -> Optional[str]:
 
     conn = connect(state_db_path)
     try:
-        row = conn.execute(
-            "SELECT status FROM runs WHERE task_id = ?", (task_id,)
-        ).fetchone()
+        return _fetch_run_reservation(conn, task_id)
     except Exception:  # noqa: BLE001 — schema-less / unreadable DB
         # A DB file with no ``runs`` table yet is indistinguishable from
         # "no prior run" for this guard's purpose; the reservation step
@@ -1057,16 +1089,74 @@ def _existing_run_status(state_db_path: Path, task_id: str) -> Optional[str]:
         return None
     finally:
         conn.close()
-    return None if row is None else str(row["status"])
 
 
-def _reapply_refusal_message(task_id: str, status: str) -> str:
-    return (
-        f"apply refused: run task_id={task_id!r} already exists with "
-        f"status={status!r}; only {_REAPPLIABLE_RUN_STATUS!r} (reserved but "
-        "not yet dispatched) may be re-applied. Dispatch new work under a "
-        "new task_id, or fix the run row first if this status is stale."
-    )
+def _assert_reappliable(prior: Optional[dict[str, Any]], plan: DelegatePlan) -> None:
+    """Refuse an ``apply`` that would overwrite somebody else's reservation.
+
+    Two distinct refusals (Issue #928 Blocker 2):
+
+    - the run has left ``queued`` — re-queuing it would resurrect a live or
+      terminal delegation (:class:`RunAlreadyDispatchedError`);
+    - the run is still ``queued`` but this plan resolved to a different
+      project / pattern / branch / worker dir
+      (:class:`ReservationIdentityMismatchError`). This is not theoretical:
+      the first reservation counts as *active* for the next
+      ``resolve_worker_layout``, so a plain re-run of the same command can
+      legitimately resolve onto another pattern. Silently upserting it
+      would leave the run row pointing at the new dir while the already
+      recorded ``delegate_sent`` still names the old one.
+    """
+    if prior is None:
+        return
+    status = str(prior["status"])
+    if status != _REAPPLIABLE_RUN_STATUS:
+        raise RunAlreadyDispatchedError(
+            f"apply refused: run task_id={plan.task_id!r} already exists with "
+            f"status={status!r}; only {_REAPPLIABLE_RUN_STATUS!r} (reserved "
+            "but not yet dispatched) may be re-applied. Dispatch new work "
+            "under a new task_id, or fix the run row first if this status is "
+            "stale."
+        )
+    wanted = {
+        "project_slug": plan.project_slug,
+        "pattern": plan.layout.pattern,
+        "branch": plan.layout.planned_branch,
+        "worker_dir": str(plan.layout.worker_dir),
+    }
+    drift = [
+        f"{key}: reserved={prior[key]!r} -> this apply={value!r}"
+        for key, value in wanted.items()
+        if prior[key] is not None and str(prior[key]) != str(value)
+    ]
+    if drift:
+        raise ReservationIdentityMismatchError(
+            f"apply refused: task_id={plan.task_id!r} is already reserved "
+            "(queued) with a different identity, so re-applying would "
+            "silently re-point the reservation away from the delegation "
+            "already recorded for it:\n  - " + "\n  - ".join(drift)
+            + "\nRe-apply is only for correcting a not-yet-sent delegation "
+            "in place. Use a new task_id, or release the existing "
+            "reservation first."
+        )
+
+
+def _has_delegate_sent(conn, task_id: str) -> bool:
+    """True iff a ``delegate_sent`` event already exists for ``task_id``.
+
+    Matches on BOTH the ``run_id`` link and the payload's ``task`` field.
+    The link alone is not enough: every other writer of this event inserts
+    ``payload_json`` with no ``run_id`` — ``tools/journal_append.{sh,py}``
+    (the hand-typed path this change replaces) and the legacy-journal
+    importer both do — so a link-only lookup would miss a pre-existing
+    event and append a duplicate on the next re-apply.
+    """
+    return conn.execute(
+        "SELECT 1 FROM events e LEFT JOIN runs r ON e.run_id = r.id "
+        "WHERE e.kind = ? AND (r.task_id = ? "
+        "OR json_extract(e.payload_json, '$.task') = ?) LIMIT 1",
+        (_DELEGATE_SENT_KIND, task_id, task_id),
+    ).fetchone() is not None
 
 
 def _reserve_in_db(
@@ -1116,18 +1206,8 @@ def _reserve_in_db(
             # Authoritative re-apply guard (the preflight in
             # ``apply_delegate_plan`` only fails earlier / cheaper). Raising
             # inside the context manager rolls the whole transaction back.
-            prior = conn.execute(
-                "SELECT status FROM runs WHERE task_id = ?", (plan.task_id,)
-            ).fetchone()
-            if prior is not None and prior["status"] != _REAPPLIABLE_RUN_STATUS:
-                raise RunAlreadyDispatchedError(
-                    _reapply_refusal_message(plan.task_id, str(prior["status"]))
-                )
-            already_sent = prior is not None and conn.execute(
-                "SELECT 1 FROM events e JOIN runs r ON e.run_id = r.id "
-                "WHERE r.task_id = ? AND e.kind = ? LIMIT 1",
-                (plan.task_id, _DELEGATE_SENT_KIND),
-            ).fetchone() is not None
+            _assert_reappliable(_fetch_run_reservation(conn, plan.task_id), plan)
+            already_sent = _has_delegate_sent(conn, plan.task_id)
             tx.register_worker_dir(
                 abs_path=plan.layout.worker_dir,
                 layout="flat",
@@ -2056,11 +2136,7 @@ def apply_delegate_plan(
     # authoritative check lives inside ``_reserve_in_db``'s transaction;
     # doing it here too means a rejected dispatch creates no worktree,
     # brief or settings file.
-    prior_status = _existing_run_status(state_db_path, plan.task_id)
-    if prior_status is not None and prior_status != _REAPPLIABLE_RUN_STATUS:
-        raise RunAlreadyDispatchedError(
-            _reapply_refusal_message(plan.task_id, prior_status)
-        )
+    _assert_reappliable(_existing_run_reservation(state_db_path, plan.task_id), plan)
     # Issue #489 (d): preview-time layout integrity check. ``blocking_warnings``
     # surfaces deployments that have a non-git ``workers/<slug>/`` with
     # Pattern-A residue and no usable base clone — apply would either rewrite
