@@ -118,6 +118,36 @@ class BlockingPreviewWarningError(RuntimeError):
     """
 
 
+class RunAlreadyDispatchedError(RuntimeError):
+    """Raised by ``apply`` when ``runs.task_id`` already exists in a state
+    other than ``queued`` (Issue #928 Blocker 2).
+
+    ``queued`` is the only re-appliable state: it means "reserved but not
+    yet handed to the dispatcher", so re-running apply is a *correction of
+    a not-yet-sent delegation*. Every other value (``in_use`` / ``review``
+    / ``completed`` / ``failed`` / ``suspended`` / ``abandoned``) means the
+    delegation already left T1 or already reached a terminal state, and
+    ``upsert_run(status='queued')`` would silently resurrect it while
+    appending a second ``delegate_sent``. A new delegation for the same
+    work needs a new ``task_id``.
+
+    The guard is an allow-list (only ``queued`` passes) so a status added
+    to the schema later fails closed rather than falling through.
+    """
+
+
+class ReservationIdentityMismatchError(RuntimeError):
+    """Raised by ``apply`` when a still-``queued`` run is re-applied with a
+    plan that resolved to a different project / pattern / branch / worker
+    dir than the one already reserved (Issue #928).
+
+    Re-apply exists to correct a delegation that has not been sent yet, in
+    place. Letting it move the reservation instead would desynchronize the
+    run row from the ``delegate_sent`` already recorded for it — the event
+    payload's ``dir`` would name a directory the run no longer points at.
+    """
+
+
 # Filenames whose presence in a non-git ``workers/<slug>/`` is treated as a
 # tell-tale leftover from an earlier Pattern A dispatch (the layout Issue
 # #489 sunsets). Used by :func:`_compute_layout_warnings` to decide whether
@@ -999,6 +1029,134 @@ class ApplyResult:
     # git history. ``None`` for every other pattern (they inherit a base
     # repo's .gitignore) and when the managed lines were already present.
     gitignore_path: Optional[Path] = None
+    # Issue #928: ``events.id`` of the ``delegate_sent`` row committed in the
+    # same transaction as the reservation. ``None`` on a re-apply of a run
+    # that already carries one (the event is exactly-once per run row).
+    delegate_sent_event_id: Optional[int] = None
+
+
+# The only ``runs.status`` an ``apply`` may re-apply onto (Issue #928
+# Blocker 2). See :class:`RunAlreadyDispatchedError` for the rationale.
+_REAPPLIABLE_RUN_STATUS = "queued"
+
+# Journal event recorded by ``apply`` for contract T1
+# (``docs/contracts/delegation-lifecycle-contract.md`` §2 T1).
+_DELEGATE_SENT_KIND = "delegate_sent"
+
+
+def _fetch_run_reservation(conn, task_id: str) -> Optional[dict[str, Any]]:
+    """The existing reservation for ``task_id`` (status + identity), or None.
+
+    "Identity" is the set of columns the reservation itself pins down and
+    that the ``delegate_sent`` payload describes: which project, which
+    pattern, which branch, which worker dir. A re-apply that changes any
+    of them is a *different* reservation wearing the same task_id, not a
+    correction of the existing one — see :func:`_assert_reappliable`.
+    """
+    row = conn.execute(
+        "SELECT r.status AS status, r.pattern AS pattern, r.branch AS branch, "
+        "p.slug AS project_slug, wd.abs_path AS worker_dir "
+        "FROM runs r JOIN projects p ON r.project_id = p.id "
+        "LEFT JOIN worker_dirs wd ON r.worker_dir_id = wd.id "
+        "WHERE r.task_id = ?",
+        (task_id,),
+    ).fetchone()
+    return None if row is None else dict(row)
+
+
+def _existing_run_reservation(
+    state_db_path: Path, task_id: str
+) -> Optional[dict[str, Any]]:
+    """:func:`_fetch_run_reservation` against a not-yet-open DB file.
+
+    Read-only preflight for :func:`apply_delegate_plan`, so a refusal
+    (Issue #928 Blocker 2) happens before any filesystem side effect —
+    no worktree, brief or settings file is written for a dispatch that
+    is going to be rejected anyway. The authoritative check is repeated
+    inside the final transaction; this one only moves the failure earlier.
+    """
+    if not state_db_path.exists():
+        return None
+    from tools.state_db import connect
+
+    conn = connect(state_db_path)
+    try:
+        return _fetch_run_reservation(conn, task_id)
+    except Exception:  # noqa: BLE001 — schema-less / unreadable DB
+        # A DB file with no ``runs`` table yet is indistinguishable from
+        # "no prior run" for this guard's purpose; the reservation step
+        # applies the schema and the in-transaction check runs there.
+        return None
+    finally:
+        conn.close()
+
+
+def _assert_reappliable(prior: Optional[dict[str, Any]], plan: DelegatePlan) -> None:
+    """Refuse an ``apply`` that would overwrite somebody else's reservation.
+
+    Two distinct refusals (Issue #928 Blocker 2):
+
+    - the run has left ``queued`` — re-queuing it would resurrect a live or
+      terminal delegation (:class:`RunAlreadyDispatchedError`);
+    - the run is still ``queued`` but this plan resolved to a different
+      project / pattern / branch / worker dir
+      (:class:`ReservationIdentityMismatchError`). This is not theoretical:
+      the first reservation counts as *active* for the next
+      ``resolve_worker_layout``, so a plain re-run of the same command can
+      legitimately resolve onto another pattern. Silently upserting it
+      would leave the run row pointing at the new dir while the already
+      recorded ``delegate_sent`` still names the old one.
+    """
+    if prior is None:
+        return
+    status = str(prior["status"])
+    if status != _REAPPLIABLE_RUN_STATUS:
+        raise RunAlreadyDispatchedError(
+            f"apply refused: run task_id={plan.task_id!r} already exists with "
+            f"status={status!r}; only {_REAPPLIABLE_RUN_STATUS!r} (reserved "
+            "but not yet dispatched) may be re-applied. Dispatch new work "
+            "under a new task_id, or fix the run row first if this status is "
+            "stale."
+        )
+    wanted = {
+        "project_slug": plan.project_slug,
+        "pattern": plan.layout.pattern,
+        "branch": plan.layout.planned_branch,
+        "worker_dir": str(plan.layout.worker_dir),
+    }
+    drift = [
+        f"{key}: reserved={prior[key]!r} -> this apply={value!r}"
+        for key, value in wanted.items()
+        if prior[key] is not None and str(prior[key]) != str(value)
+    ]
+    if drift:
+        raise ReservationIdentityMismatchError(
+            f"apply refused: task_id={plan.task_id!r} is already reserved "
+            "(queued) with a different identity, so re-applying would "
+            "silently re-point the reservation away from the delegation "
+            "already recorded for it:\n  - " + "\n  - ".join(drift)
+            + "\nRe-apply is only for correcting a not-yet-sent delegation "
+            "in place. Use a new task_id, or release the existing "
+            "reservation first."
+        )
+
+
+def _has_delegate_sent(conn, task_id: str) -> bool:
+    """True iff a ``delegate_sent`` event already exists for ``task_id``.
+
+    Matches on BOTH the ``run_id`` link and the payload's ``task`` field.
+    The link alone is not enough: every other writer of this event inserts
+    ``payload_json`` with no ``run_id`` — ``tools/journal_append.{sh,py}``
+    (the hand-typed path this change replaces) and the legacy-journal
+    importer both do — so a link-only lookup would miss a pre-existing
+    event and append a duplicate on the next re-apply.
+    """
+    return conn.execute(
+        "SELECT 1 FROM events e LEFT JOIN runs r ON e.run_id = r.id "
+        "WHERE e.kind = ? AND (r.task_id = ? "
+        "OR json_extract(e.payload_json, '$.task') = ?) LIMIT 1",
+        (_DELEGATE_SENT_KIND, task_id, task_id),
+    ).fetchone() is not None
 
 
 def _reserve_in_db(
@@ -1007,11 +1165,26 @@ def _reserve_in_db(
     state_db_path: Path,
     claude_org_root: Optional[Path],
 ) -> dict[str, Any]:
-    """Reserve the worker_dir + queue the run row.
+    """Commit the T1 reservation and its ``delegate_sent`` event atomically.
 
-    Per Codex Design Blocker B-1 + Set B contract, this writes
-    ``runs.status='queued'`` only. Active Work Items remains the
+    Per Codex Design Blocker B-1 + Set B contract, the run row is written
+    with ``runs.status='queued'`` only. Active Work Items remains the
     dispatcher's T2 responsibility and is *not* touched here.
+
+    Issue #928: the contract's T1 journal event is committed in the SAME
+    transaction as the reservation, so the state write and the event can
+    never disagree. It is the last thing ``apply`` does — every
+    failure-prone artifact (worktree, brief, settings, send_plan) is
+    already on disk by the time we get here, so a committed
+    ``delegate_sent`` always has a sendable payload behind it.
+
+    Two rules keep re-apply honest (Issue #928 Blocker 2):
+
+    - only ``queued`` may be re-applied (:class:`RunAlreadyDispatchedError`);
+    - ``delegate_sent`` is exactly-once per run row, so correcting a
+      not-yet-sent delegation (re-running apply with a revised brief)
+      updates the reservation without appending a second event. T1 fires
+      once per delegation, not once per apply invocation.
     """
     from tools.state_db import apply_schema, connect
     from tools.state_db.writer import StateWriter
@@ -1028,7 +1201,13 @@ def _reserve_in_db(
     conn = connect(state_db_path)
     try:
         writer = StateWriter(conn, claude_org_root=claude_org_root)
+        event_id: Optional[int] = None
         with writer.transaction() as tx:
+            # Authoritative re-apply guard (the preflight in
+            # ``apply_delegate_plan`` only fails earlier / cheaper). Raising
+            # inside the context manager rolls the whole transaction back.
+            _assert_reappliable(_fetch_run_reservation(conn, plan.task_id), plan)
+            already_sent = _has_delegate_sent(conn, plan.task_id)
             tx.register_worker_dir(
                 abs_path=plan.layout.worker_dir,
                 layout="flat",
@@ -1059,11 +1238,27 @@ def _reserve_in_db(
                 ),
                 worker_dir_abs_path=plan.layout.worker_dir,
             )
+            if not already_sent:
+                # Payload keys are fixed by the catalog + contract
+                # (``docs/journal-events.md`` "Delegate flow" row,
+                # ``delegation-lifecycle-contract.md`` §2 T1).
+                event_id = tx.append_event(
+                    kind=_DELEGATE_SENT_KIND,
+                    actor="secretary",
+                    payload={
+                        "task": plan.task_id,
+                        "worker": f"worker-{plan.task_id}",
+                        "dir": str(plan.layout.worker_dir),
+                    },
+                    run_task_id=plan.task_id,
+                    project_slug=plan.project_slug,
+                )
         return {
             "task_id": plan.task_id,
             "project_slug": plan.project_slug,
             "worker_dir": plan.layout.worker_dir,
             "status": "queued",
+            "delegate_sent_event_id": event_id,
         }
     finally:
         conn.close()
@@ -1907,45 +2102,6 @@ def _write_send_plan(plan: DelegatePlan, *, out_path: Path) -> Path:
     return out_path
 
 
-def _abandon_queued_run(state_db_path: Path, task_id: str) -> None:
-    """Compensating UPDATE that flips a same-task queued run to
-    ``abandoned`` so it stops counting as an active reservation.
-
-    Used by :func:`apply_delegate_plan` when a post-reservation step fails
-    after the DB transaction has already committed (Issue #489 Blocker 2:
-    a leaked queued row makes the next dispatch see Pattern A as
-    occupied and silently flips it onto Pattern B). Best-effort: a
-    compensation failure is logged to stderr but not re-raised, because
-    we are already on the exception path and the original failure
-    should be what the caller observes.
-    """
-    from tools.state_db import connect
-    from tools.state_db.writer import StateWriter
-
-    try:
-        conn = connect(state_db_path)
-        try:
-            writer = StateWriter(conn)
-            with writer.transaction() as tx:
-                tx.update_run_status(
-                    task_id,
-                    "abandoned",
-                    outcome_note=(
-                        "apply post-reservation failed; compensated by "
-                        "tools.gen_delegate_payload (Issue #489 Blocker 2)"
-                    ),
-                )
-        finally:
-            conn.close()
-    except Exception as exc:  # noqa: BLE001 — best-effort compensation
-        sys.stderr.write(
-            "tools.gen_delegate_payload: failed to compensate queued run "
-            f"task_id={task_id!r} ({type(exc).__name__}: {exc}). Manually "
-            f"`UPDATE runs SET status='abandoned' WHERE task_id='{task_id}'` "
-            "to unblock subsequent dispatch.\n"
-        )
-
-
 def apply_delegate_plan(
     plan: DelegatePlan,
     *,
@@ -1955,7 +2111,45 @@ def apply_delegate_plan(
     runtime_cmd: str = "claude-org-runtime",
     send_plan_out: Optional[Path] = None,
 ) -> ApplyResult:
-    """Execute the side effects: reserve in DB, write brief, settings, send_plan."""
+    """Execute the side effects: write brief / settings / send_plan, then
+    commit the T1 reservation + ``delegate_sent`` event.
+
+    Ordering is load-bearing (Issue #928). Every failure-prone step runs
+    FIRST and the single DB transaction runs LAST, so the two halves of
+    contract T1 — ``runs.status='queued'`` and the ``delegate_sent``
+    journal event — become all-or-nothing together with a sendable
+    payload on disk:
+
+    - a failure before the transaction leaves no run row and no event, so
+      the same ``task_id`` can simply be re-applied (this replaces the
+      Issue #489 post-commit ``abandoned`` compensation, which existed
+      only because the reservation used to commit first);
+    - a failure of the transaction itself leaves the generated files
+      behind, which the idempotent re-apply overwrites.
+
+    ``delegate_sent`` records "the delegation is confirmed and the
+    ``DELEGATE`` message is about to be sent". It is NOT proof of
+    delivery — that is T2's ``worker_spawned``, written by the dispatcher.
+
+    Known residual window (not introduced here): the re-apply preflight
+    reads ``runs.status`` outside the transaction, so a dispatcher that
+    flips ``queued`` → ``in_use`` *while* generation is running can have
+    its worker's brief rewritten under it before the final transaction
+    notices and refuses. That race is strictly narrower than the previous
+    ordering, where the reservation committed first and reset a live
+    ``in_use`` run back to ``queued`` before rewriting the same files with
+    no status check at all. Closing it completely means holding a DB write
+    lock across a subprocess (``settings generate``) or publishing files
+    from inside the transaction — both trade this narrow window for a
+    worse failure mode, so the guard is deliberately left at "refuse, one
+    step late" rather than "serialize".
+    """
+    # Issue #928 Blocker 2 preflight: refuse a re-apply onto a run that has
+    # already left T1 (or is terminal) before touching the filesystem. The
+    # authoritative check lives inside ``_reserve_in_db``'s transaction;
+    # doing it here too means a rejected dispatch creates no worktree,
+    # brief or settings file.
+    _assert_reappliable(_existing_run_reservation(state_db_path, plan.task_id), plan)
     # Issue #489 (d): preview-time layout integrity check. ``blocking_warnings``
     # surfaces deployments that have a non-git ``workers/<slug>/`` with
     # Pattern-A residue and no usable base clone — apply would either rewrite
@@ -1984,42 +2178,35 @@ def apply_delegate_plan(
     # inspected at plan time). May flip brief_out_path / delegate_body to
     # CLAUDE.local.md; a no-op for every non-pending plan.
     plan = _finalize_pending_clone_brief(plan)
+    # Issue #928: all failure-prone generation happens BEFORE the DB
+    # transaction. A failure here leaves no reservation and no event to
+    # compensate — the same task_id is simply re-appliable.
+    brief_path = _write_brief(plan)
+    # Resolve the send_plan output path up-front so the delivery guard can
+    # ignore the manifest's *actual* location (``--send-plan-out`` may
+    # relocate it inside worker_dir), not just the default basename.
+    if send_plan_out is None:
+        send_plan_out = brief_path.with_name("send_plan.json")
+    # Issue #725: keep the org-internal delivery artifacts out of a
+    # Pattern A new-project's git history via a worker_dir/.gitignore.
+    # No-op (returns None) for every pattern that inherits a base repo's
+    # .gitignore. Anchors on the final brief basename + send_plan path.
+    gitignore_path = _ensure_worker_dir_gitignore(
+        plan, send_plan_path=send_plan_out
+    )
+    settings_path: Optional[Path] = None
+    skipped_reason: Optional[str] = None
+    if skip_settings:
+        skipped_reason = "skip_settings flag set"
+    else:
+        settings_path, skipped_reason = _run_settings_generate(
+            plan, runtime_cmd=runtime_cmd
+        )
+    send_plan_path = _write_send_plan(plan, out_path=send_plan_out)
+    # Final step: reservation + ``delegate_sent`` in one transaction.
     db_reservation = _reserve_in_db(
         plan, state_db_path=state_db_path, claude_org_root=claude_org_root
     )
-    # Issue #489 Blocker 2: ``_reserve_in_db`` already committed the queued
-    # row. Anything that fails *after* this commit (brief write hitting a
-    # full disk, send_plan write losing permissions, settings subprocess
-    # raising unexpectedly) leaks an active reservation. ``StateWriter``
-    # rollback can't help — its transaction is already closed. Wrap the
-    # remaining steps and run the compensating ``abandoned`` update on
-    # failure so the next dispatch sees Pattern A as free.
-    try:
-        brief_path = _write_brief(plan)
-        # Resolve the send_plan output path up-front so the delivery guard can
-        # ignore the manifest's *actual* location (``--send-plan-out`` may
-        # relocate it inside worker_dir), not just the default basename.
-        if send_plan_out is None:
-            send_plan_out = brief_path.with_name("send_plan.json")
-        # Issue #725: keep the org-internal delivery artifacts out of a
-        # Pattern A new-project's git history via a worker_dir/.gitignore.
-        # No-op (returns None) for every pattern that inherits a base repo's
-        # .gitignore. Anchors on the final brief basename + send_plan path.
-        gitignore_path = _ensure_worker_dir_gitignore(
-            plan, send_plan_path=send_plan_out
-        )
-        settings_path: Optional[Path] = None
-        skipped_reason: Optional[str] = None
-        if skip_settings:
-            skipped_reason = "skip_settings flag set"
-        else:
-            settings_path, skipped_reason = _run_settings_generate(
-                plan, runtime_cmd=runtime_cmd
-            )
-        send_plan_path = _write_send_plan(plan, out_path=send_plan_out)
-    except BaseException:
-        _abandon_queued_run(state_db_path, plan.task_id)
-        raise
     return ApplyResult(
         plan=plan,
         brief_path=brief_path,
@@ -2028,6 +2215,7 @@ def apply_delegate_plan(
         send_plan_path=send_plan_path,
         db_reservation=db_reservation,
         gitignore_path=gitignore_path,
+        delegate_sent_event_id=db_reservation.get("delegate_sent_event_id"),
     )
 
 
@@ -2469,6 +2657,13 @@ def _cmd_apply(args: argparse.Namespace) -> int:
     print(f"send_plan: {result.send_plan_path}")
     if result.gitignore_path is not None:
         print(f"gitignore: {result.gitignore_path} (Issue #725 delivery guard)")
+    # Issue #928: make the T1 journal event visible at the surface the
+    # Secretary actually reads, so a missing event is noticed here rather
+    # than months later in an audit. ASCII only (cp932 console safe).
+    if result.delegate_sent_event_id is not None:
+        print(f"delegate_sent: recorded (events.id={result.delegate_sent_event_id})")
+    else:
+        print("delegate_sent: already recorded for this run (re-apply, not duplicated)")
     print(_next_step_hint())
     return 0
 
