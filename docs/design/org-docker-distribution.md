@@ -43,7 +43,7 @@
 7. **Claude Code CLI**: npm ではなくネイティブインストーラ（`~/.local/bin/claude` → versions ディレクトリへの symlink）。認証スキップには `~/.claude/.credentials.json` **と** `~/.claude.json`（HOME 直下）の両方の永続化が必要。
 8. **Anthropic 公式 devcontainer**: 非 root ユーザー・`/home/node/.claude` の named volume・`--cap-add NET_ADMIN/NET_RAW`（egress firewall 用）という構成の先例。
 9. **コンテナ内 bubblewrap**: Claude Code の Bash sandbox（bwrap）は user namespace 作成を使うため、Docker 既定 seccomp プロファイルでブロックされる。実務上 `--security-opt seccomp=unconfined`（または unshare/clone 許可のカスタムプロファイル）が必要。Ubuntu 24.04+ の AppArmor userns 制限・`kernel.unprivileged_userns_clone=0` ホストという既知の失敗パターンがある。
-10. **Raspberry Pi 5**: 既定カーネルが 16KB page size で、jemalloc 系バイナリ（Rust 製等）が「unsupported system page size」でクラッシュする既知問題。回避は `kernel=kernel8.img`（4KB）切替。
+10. **Raspberry Pi 5**: 既定カーネルが 16KB page size で、jemalloc 系バイナリ（Rust 製等）が「unsupported system page size」でクラッシュする既知問題。回避は `kernel=kernel8.img`（4KB）切替。**ただし本 image が同梱する Rust バイナリ（herdr / Claude Code 同梱 ripgrep）は 16KB で動作すると実機実測で確定済み**なので、切替は他バイナリを持ち込んだ場合の退避に留まる（§12 A1）。
 
 ## 3. image に含めないもの（チェックリスト）
 

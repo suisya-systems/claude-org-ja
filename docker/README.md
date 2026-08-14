@@ -229,4 +229,4 @@ docker exec claude-org org-shell --sandbox-check
 | Claude Code が `sandbox required but unavailable` で起動しない | `failIfUnavailable: true`（managed settings）が効いている。sandbox 依存が欠けた image を使っている可能性が高い（正規 image には `bubblewrap` が同梱されている）。`docker exec claude-org bwrap --version` で確認 |
 | sandbox が効いている確証がほしい | `docker exec claude-org org-sandbox-canary` を回す（上の「Bash sandbox の実効状態」）。**警告が出ないことは根拠にならない** — bwrap が在るが機能しない構成では Claude Code の起動時チェックが素通りする（設計 §12 S6-d）。canary が `skipped` の場合も合格ではなく未判定 |
 | `docker restart` 後に古い pane が見える | entrypoint の reconcile が `.state/broker` を毎起動で破棄する設計。見えるなら reconcile ログを確認 |
-| Pi 5 で herdr / ripgrep が即死 | 16KB page size 問題。4KB カーネルへ切替（上記） |
+| Pi 5 で herdr / ripgrep が即死 | **まず page size を疑わないこと**。この image の herdr / bundled ripgrep は 16KB カーネルでの動作を実測確認済み（設計 §12 A1）。`herdr` が `No such device or address` で panic するのは PTY 不在（`docker exec` に `-it` を付け忘れ）が典型。持ち込んだ別の Rust バイナリが「unsupported system page size」で落ちる場合に限り 4KB カーネルへ切替（上記） |
