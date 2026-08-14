@@ -103,14 +103,16 @@ docker buildx build -f docker/Dockerfile \
 1. **package へのアクセス付与**（token 発行より先）。この package は repository に link されていない（`gh api /orgs/suisya-systems/packages/container/claude-org-ja` の `repository` が `null`）ため、権限は repository ではなく **package 単位**で決まる。**publish した本人と組織の owner ロールは自動で admin**（[GitHub Docs: Configuring a package's access control and visibility](https://docs.github.com/en/packages/learn-github-packages/configuring-a-packages-access-control-and-visibility) — "When you publish a package, you automatically get admin permissions to the package. If you publish a package to an organization, anyone with the `owner` role in the organization also gets admin permissions"）なので、**実機に置く token が publish 者本人（または org owner）のものならこの手順は不要**。別アカウントの token を使う場合のみ、package landing page → **Package settings** → **Manage access** → **Invite teams or people** で read を付与する。付与漏れは `docker login` は成功するのに pull だけ `denied` になる形で出る。
 2. **token 発行**。GitHub の Settings → Developer settings → Personal access tokens (classic) で **`read:packages` のみ**にチェックした token を発行する。
 
-Pi 5 側の前提（Docker 未導入なら先に 1 回。Raspberry Pi OS 64-bit は `ID=debian` / `VERSION_CODENAME=trixie` なので Debian 手順がそのまま使える。[Docker Docs: Install Docker Engine on Debian](https://docs.docker.com/engine/install/debian/)）:
+Pi 5 側の前提（Docker 未導入なら先に 1 回。Raspberry Pi OS 64-bit は `/etc/os-release` が `ID=debian` を名乗るので Debian 手順がそのまま使える。[Docker Docs: Install Docker Engine on Debian](https://docs.docker.com/engine/install/debian/)）:
 
 ```bash
 sudo apt-get update && sudo apt-get install -y ca-certificates curl
 sudo install -m 0755 -d /etc/apt/keyrings
 sudo curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
 sudo chmod a+r /etc/apt/keyrings/docker.asc
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian trixie stable" \
+# suite は決め打ちせず /etc/os-release から取る（bookworm 機と trixie 機が混在するため）
+CODENAME="$(. /etc/os-release && echo "$VERSION_CODENAME")"
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian $CODENAME stable" \
   | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
 sudo apt-get update
 sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
