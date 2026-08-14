@@ -323,7 +323,7 @@ claude-org の中核と重なる機能が、公式側で相次いで提供され
 **リスク**:
 - **低**。既存構造に触らないため回帰リスクがほぼない。
 - ただし**価値の天井が低い**。前提ツールを減らし手順を畳んでも、利用者は依然としてターミナルで tmux セッションを見る。「ターミナルを使える人」という対象読者は変わらない。
-- Docker 経路には環境固有の落とし穴が残る（コンテナ内 bwrap のため `seccomp=unconfined` が必要、Raspberry Pi 5 は 16KB page size カーネルで Rust バイナリがクラッシュするため `kernel=kernel8.img` への切替が必要。同 :45-46, :180）。
+- Docker 経路には環境固有の落とし穴が残る（コンテナ内 bwrap のため `seccomp=unconfined` が必要。同 :180）。なお Raspberry Pi 5 の 16KB page size については、**当初懸念した `kernel=kernel8.img`（4KB）切替は publish 済み tag では不要と実機実測で確定**（herdr 0.7.4 / Claude Code 2.1.223 内蔵 ripgrep 14.1.1 とも 16KB カーネルで動作。ただし `CLAUDE_CODE_VERSION` 既定が可変 `stable` のため免除は測った版限り。`docs/design/org-docker-distribution.md` §12 A1）。
 
 **移行経路**: 完全に加算的。既存利用者は何もしなくてよい。
 
