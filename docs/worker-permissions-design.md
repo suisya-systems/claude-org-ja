@@ -57,10 +57,11 @@ python tools/generate_worker_settings.py \
 
 ### 3. Secretary PreToolUse hook（と静的 deny）
 
-`workers/*/.claude/settings.local.json`（および worktree 配下）への Claude の `Write` / `Edit` ツール経由の直接編集を **deny** する:
+`workers/*/.claude/settings.local.json`（および worktree 配下）への Claude の `Edit` ツール経由の直接編集を **deny** する:
 
 - 窓口の `.claude/settings.local.json` `permissions.deny` に追加
 - 主たる誤付与経路（窓口が `Edit` で手書き）を塞ぐのが目的
+- **`Write(...)` は宣言しない**。Claude Code の file permission check は `Edit(path)` のみを評価するため `Write(path)` の deny は実効せず、宣言すると起動のたびに「is not matched by file permission checks -- only Edit(path) rules are」という警告が 1 エントリにつき 1 行出る。防御が死んでいるという誤読を招くだけなので、runtime 0.1.42（suisya-systems/claude-org-runtime#178）と ja の同期で削除した
 - Bash/PowerShell からのファイル書き出し（`Bash(python:*)` 等）は別途 allow に残るため、Bash 経由の改変は技術的には可能。完全な generator-only 化は Phase 3 で `block-secretary-write-worker-settings.sh` 相当の hook と併せて行う想定
 
 ### 4. `org-delegate` Step 1.5 移行
@@ -113,7 +114,7 @@ python tools/generate_worker_settings.py \
 * [x] `tools/role_configs_schema.json` に `worker_roles` セクションを追加（Phase 1）
 * [x] `tools/generate_worker_settings.py` を実装（unit test 込み）（Phase 1）
 * [x] `org-delegate` Step 1.5 の手書き JSON 部分を generator 呼び出しに置換（Phase 2）
-* [x] 窓口設定に `Write(*/workers/*/.claude/settings.local.json)` deny ルールを追加（Phase 2）
+* [x] 窓口設定に `Write(*/workers/*/.claude/settings.local.json)` deny ルールを追加（Phase 2）（※ Write は実効しないため #178 / 0.1.42 で削除、Edit のみ有効）
 * [x] `tools/check_role_configs.py` が `--include-worker-settings` でワーカー `settings.local.json` を schema 検証（Phase 1）。ただし現状は `<BASE_DIR>/*/.claude/...` のみで、Pattern B worktree 配下は Phase 3 で追加予定
 * [x] README / 内部ドキュメントに 7 メリット / 7 デメリットを明示（本ドキュメント）
 

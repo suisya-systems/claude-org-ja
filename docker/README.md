@@ -80,7 +80,7 @@ socket mount はホスト root 相当の権限付与である。オーバーレ�
 docker buildx build -f docker/Dockerfile \
   --platform linux/amd64,linux/arm64 \
   --build-arg REPO_REF="$(git describe --always)" \
-  -t ghcr.io/suisya-systems/claude-org-ja:$(git describe --always)-r0.1.41 \
+  -t ghcr.io/suisya-systems/claude-org-ja:$(git describe --always)-r0.1.42 \
   --push .
 ```
 

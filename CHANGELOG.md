@@ -55,6 +55,34 @@
 
 ### Changed
 
+- 窓口の `required_deny` から実効しない `Write(...)` 3 行を削除し、起動時の警告 3 行を解消した
+  (suisya-systems/claude-org-runtime#178)。Claude Code の file permission check は `Edit(path)` のみを
+  評価するため `Write(path)` の deny は発火せず、宣言されている間は 1 エントリにつき 1 行
+  `Permission deny rule (.claude/settings.local.json): Write(...) is not matched by file permission
+  checks -- only Edit(path) rules are. Use Edit(...) instead` がセッション起動のたびに出ていた。
+  同一 glob の `Edit(...)` が防御を全て担っているため穴ではないが、警告を読んだ運用者が
+  「settings ファイルの防御が死んでいる」と誤読する事故が実際に起きたため落とした。
+  `tools/org_extension_schema.json` の `roles.secretary.required_deny` と
+  `.claude/skills/org-setup/references/permissions.md` から 3 行ずつ削除し、対になる `Edit(...)` 3 行は残置。
+  同ファイルは `tools/check_runtime_schema_drift.py` によりバイト一致を要求されるため、
+  **同 PR で runtime の下限 pin を 0.1.41 → 0.1.42 へ引き上げた**
+  (`pyproject.toml` / `requirements.txt` / `docker/Dockerfile` / `docker/compose.yaml` /
+  `docker/README.md` の image tag 例)。`RUNTIME_PIN_LOWER_INCLUSIVE` も `(0, 1, 42)` へ同時に引き上げている —
+  前回 (#854) と同じく schema 自体が変わるため、0.1.41 以下の環境では byte check が skip ではなく
+  **hard fail** になるからである。上限 `RUNTIME_PIN_UPPER_EXCLUSIVE = (0, 2, 0)` は不変。
+  docker 側の `RUNTIME_VERSION` を据え置くと `claude-org-runtime==${RUNTIME_VERSION}` の完全一致指定により
+  コンテナ内 runtime が ja 自身の floor を下回り、byte check が pin 窓外として黙って skip したうえで
+  今回潰した起動時警告がコンテナでだけ再発するため、5 箇所を 1 単位として引き上げている。
+  あわせて `Write` deny の存在を前提にしていた記述を実態へ揃えた
+  (`docs/contracts/role-pattern-sandbox-contract.md` §3.1.2 の 2 行と「Denied writes (prescriptive)」一覧・
+  §3.1.3 の attribution 表、`docs/worker-permissions-design.md` §3、
+  `.claude/skills/org-setup/references/permissions.md` の散文、`docs/verification.md` /
+  `docs/operations/attention-watch.md` の下限 pin 記述)。`docs/worker-permissions-design.md` の
+  Acceptance Criteria は Phase 2 時点の履歴なので書き換えず注記のみ追記した。
+  なお `role-pattern-sandbox-contract.md` §3.1.2 が live-repo worktree
+  (`<claude_org_path>/.worktrees/<task>/.claude/settings.local.json`) を「Layer 2 未カバー、Gap → Phase 1」と
+  記述していた点は本件と独立した既存の誤りで、`Edit(*/.worktrees/*/.claude/settings.local.json)` は
+  以前から `required_deny` に存在する。同 PR で「Gap 解消済み」へ訂正した。
 - `registry/projects.md` を operator-local な生成ファイルへ移行 (#811)。コミット対象は列スキーマ・
   仕様説明・一般サンプル行だけを持つテンプレート `registry/projects.example.md` になり、実体は
   `.gitignore` 対象。`/org-start` (Step 0) と `/org-setup` (Step 3.5) が
