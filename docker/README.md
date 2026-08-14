@@ -109,7 +109,7 @@ Claude Code の Bash sandbox は Linux では **bubblewrap（`bwrap`）＋非特
 
 `.claude/settings.json` の `sandbox.failIfUnavailable` を `true` にすると、この条件は警告ではなく**起動拒否**になる（`Error: sandbox required but unavailable: … refusing to start without a working sandbox.`、exit 1）。なお `sandbox.allowUnsandboxedCommands: false` は**この用途には効かない** — あれは per-command の `dangerouslyDisableSandbox` 再試行を殺す設定で、依存欠落のゲートではない（設計 §12 S6 実測）。
 
-**2. bwrap が実際に namespace を作れるか。** ここが落とし穴で、**`bwrap` が存在しさえすれば Claude Code は起動時チェックを通してしまう**。user namespace の作成が外側で禁じられていると、警告なしに「sandbox 有効のつもり」で走る（`failIfUnavailable: true` でも捕まらない。設計 §12 S6-d 実測）。典型的な原因は `seccomp=unconfined` が効いていないこと:
+**2. bwrap が実際に namespace を作れるか。** ここが落とし穴で、**`bwrap` が存在しさえすれば Claude Code は起動時チェックを通してしまう**。user namespace の作成が外側で禁じられていても、起動時には 1. のような警告が出ず `failIfUnavailable: true` でも止まらない（設計 §12 S6-d 実測。起動時チェックは bwrap の実在だけを見て機能性を見ない）。この条件で個々の Bash 実行がどうなるか（非 sandbox で走るのか、コマンド自体が失敗するのか）はコンテナ内 Claude Code の認証が要るため未測定だが、いずれにせよ**起動が静かなことは sandbox が効いている証拠にならない**。典型的な原因は `seccomp=unconfined` が効いていないこと:
 
 ```
 bwrap: No permissions to create new namespace, likely because the kernel does not allow non-privileged user namespaces.
@@ -119,13 +119,15 @@ bwrap: No permissions to create new namespace, likely because the kernel does no
 
 ```bash
 # canary が pass なら sandbox は実際に起動できる。fail / exit 1 なら効いていない。
-docker exec claude-org claude-org-runtime sandbox doctor \
+# -u org は必須: image の既定ユーザーは root だが Claude Code は org(UID 1000) で
+# 走るため、root で測ると実際の実行主体と違う条件を測ってしまう。
+docker exec -u org claude-org claude-org-runtime sandbox doctor \
   --settings /workspace/claude-org-ja/.claude/settings.json --verbose
 ```
 
 `bwrap not found on PATH; live canary not run` と出た場合は canary が**走っていない**（= 判定していない）。`ok: true` でも sandbox が効いている証拠にはならないので、上記 1. の依存確認と併せて読む。
 
-**compose を経由しない起動に注意。** `seccomp=unconfined` は compose の `security_opt` で付いている。素の `docker run` や、`security_opt` を落とす環境（一部のオーケストレータ / PaaS）で起動すると Docker 既定 seccomp が userns 作成をブロックし、上の 2. の無警告フォールバックに落ちる。
+**compose を経由しない起動に注意。** `seccomp=unconfined` は compose の `security_opt` で付いている。素の `docker run` や、`security_opt` を落とす環境（一部のオーケストレータ / PaaS）で起動すると Docker 既定 seccomp が userns 作成をブロックし、上の 2.（起動時に検出されない失敗）に落ちる。
 
 ## トラブルシュート
 
@@ -134,6 +136,6 @@ docker exec claude-org claude-org-runtime sandbox doctor \
 | `org-shell` が「Claude 認証が見つかりません」 | `org-shell --setup` から初回セットアップ |
 | broker `no_backend` | `ORG_BACKEND` の値と daemon.json の backend 一致を確認。herdr の場合は `herdr --version` がコンテナ内で動くか確認 |
 | bwrap / sandbox エラー | compose の `seccomp=unconfined` が効いているか、rootless Docker / Ubuntu 24.04 AppArmor 制限でないかを確認（設計 §7.5）。Ubuntu 24.04+ ホストでは `sysctl kernel.apparmor_restrict_unprivileged_userns` が `1` を返すなら要対処（`0` または key 不在なら無関係） |
-| sandbox が効いている確証がほしい | `sandbox doctor` の canary を見る（上の「Bash sandbox の実効状態」）。**警告が出ないことは根拠にならない** — bwrap が在るが機能しない構成では Claude Code は無警告で非 sandbox 実行に落ちる |
+| sandbox が効いている確証がほしい | `sandbox doctor` の canary を見る（上の「Bash sandbox の実効状態」）。**警告が出ないことは根拠にならない** — bwrap が在るが機能しない構成では Claude Code の起動時チェックが素通りする（設計 §12 S6-d） |
 | `docker restart` 後に古い pane が見える | entrypoint の reconcile が `.state/broker` を毎起動で破棄する設計。見えるなら reconcile ログを確認 |
 | Pi 5 で herdr / ripgrep が即死 | 16KB page size 問題。4KB カーネルへ切替（上記） |
