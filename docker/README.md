@@ -86,7 +86,7 @@ docker buildx build -f docker/Dockerfile \
 
 - image tag 規約は `<repo-ref>-r<runtime-version>`（設計 §7.7）。runtime を更新したいときは**起動時 upgrade ではなく rebuild**。コンテナ内で runtime drift 警告（org-start Block C2）が出たら「新しい tag に pull / rebuild」が正しい対処。
 - 単一アーキだけをビルドするときは `--platform linux/arm64` と `-t …-r<runtime>-arm64`（tag 末尾に arch）にする。マルチアーキ manifest が無いぶん arch は tag が示す（設計 §7.7）。
-- **Raspberry Pi 5 の注意**: 既定カーネルは 16KB page size で、Rust 製バイナリ（herdr、Claude Code 同梱 ripgrep）がクラッシュする既知問題がある。起動しない場合は `/boot/firmware/config.txt` に `kernel=kernel8.img` を追記して 4KB カーネルに切り替える（設計 §11）。
+- **Raspberry Pi 5 の注意**: 既定カーネルは 16KB page size で、Rust 製バイナリ（herdr、Claude Code 同梱 ripgrep）がクラッシュする既知問題がある。**ただしこの image については実機実測で切替不要と確定済み**（2026-08-14、Pi 5 + kernel `6.18.34+rpt-rpi-2712` / `PAGESIZE` = 16384 で herdr 0.7.4 の TUI 起動と bundled ripgrep 14.1.1 の実検索がいずれも成功。設計 §12 A1）。他の Rust バイナリを持ち込んで「unsupported system page size」等で落ちた場合のみ、`/boot/firmware/config.txt` に `kernel=kernel8.img` を追記して 4KB カーネルに切り替える（設計 §11）。
 
 ## 公開済み image を pull して使う（Raspberry Pi 5 導線）
 
@@ -102,6 +102,21 @@ docker buildx build -f docker/Dockerfile \
 
 1. **package へのアクセス付与**（token 発行より先）。この package は repository に link されていない（`gh api /orgs/suisya-systems/packages/container/claude-org-ja` の `repository` が `null`）ため、権限は repository ではなく **package 単位**で決まる。**publish した本人と組織の owner ロールは自動で admin**（[GitHub Docs: Configuring a package's access control and visibility](https://docs.github.com/en/packages/learn-github-packages/configuring-a-packages-access-control-and-visibility) — "When you publish a package, you automatically get admin permissions to the package. If you publish a package to an organization, anyone with the `owner` role in the organization also gets admin permissions"）なので、**実機に置く token が publish 者本人（または org owner）のものならこの手順は不要**。別アカウントの token を使う場合のみ、package landing page → **Package settings** → **Manage access** → **Invite teams or people** で read を付与する。付与漏れは `docker login` は成功するのに pull だけ `denied` になる形で出る。
 2. **token 発行**。GitHub の Settings → Developer settings → Personal access tokens (classic) で **`read:packages` のみ**にチェックした token を発行する。
+
+Pi 5 側の前提（Docker 未導入なら先に 1 回。Raspberry Pi OS 64-bit は `ID=debian` / `VERSION_CODENAME=trixie` なので Debian 手順がそのまま使える。[Docker Docs: Install Docker Engine on Debian](https://docs.docker.com/engine/install/debian/)）:
+
+```bash
+sudo apt-get update && sudo apt-get install -y ca-certificates curl
+sudo install -m 0755 -d /etc/apt/keyrings
+sudo curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
+sudo chmod a+r /etc/apt/keyrings/docker.asc
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian trixie stable" \
+  | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+sudo apt-get update
+sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+sudo systemctl enable --now docker
+sudo usermod -aG docker "$USER"   # 反映は再ログイン後
+```
 
 Pi 5 で叩くコマンド列:
 
