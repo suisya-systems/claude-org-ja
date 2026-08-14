@@ -62,7 +62,7 @@ ARG ORG_UID=1000
 ARG ORG_GID=1000
 # runtime pin（設計 §7.7: 起動時 upgrade はせず、更新は image rebuild）。
 # 既定値は pyproject.toml の claude-org-runtime floor（下限 pin）と同期させること。
-ARG RUNTIME_VERSION=0.1.41
+ARG RUNTIME_VERSION=0.1.42
 # Claude Code ネイティブインストーラに渡すバージョン（stable | latest | x.y.z）
 ARG CLAUDE_CODE_VERSION=stable
 ARG INSTALL_HERDR=1

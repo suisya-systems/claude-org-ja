@@ -229,7 +229,7 @@ claude-org-runtime attention watch --state-dir .state --config .state/attention.
 - journal は末尾から window 分だけ遡って読む。この値を上げると走査範囲もそれに追随して広がるので、busy な daemon でも継続中の incident が視界外へ押し出されることはない
 - dedup key は owner ではなく **競合している instance pair** に対して張られる。片方のセッションを終了させた後に別の instance が入れ替わりで競合を始めた場合は別 incident として扱われ、直前の pair の cooldown に飲まれない
 
-**runtime 版の前提（この kind だけの注意）**: broker journal reader は runtime 0.1.40 で入った経路で、ja の下限 pin は現行 0.1.41 とこれを上回っている（`pyproject.toml` / `requirements.txt` の `claude-org-runtime` floor、`docker/Dockerfile` の `RUNTIME_VERSION`）。したがって pin を満たす環境では**この kind は実際に発火する**。手元の runtime に経路があるかを直接確かめたい場合は `claude-org-runtime attention scan --help` に `--broker-state-dir` が出るかを見る。**出ない場合は pin より古い runtime が入っている**（floor は下限であって、環境に実際に入っている版とは別物）。その状態ではテンプレートに `notify.duplicate_sidecar` / `templates.duplicate_sidecar` があっても no-op になるだけで、config load エラーにはならない — つまり「設定は正しいのに黙っている」形になるので、二重 sidecar を疑う状況で通知が来ないときは、まずこの `--help` で経路の有無を確かめる。
+**runtime 版の前提（この kind だけの注意）**: broker journal reader は runtime 0.1.40 で入った経路で、ja の下限 pin は現行 0.1.42 とこれを上回っている（`pyproject.toml` / `requirements.txt` の `claude-org-runtime` floor、`docker/Dockerfile` の `RUNTIME_VERSION`）。したがって pin を満たす環境では**この kind は実際に発火する**。手元の runtime に経路があるかを直接確かめたい場合は `claude-org-runtime attention scan --help` に `--broker-state-dir` が出るかを見る。**出ない場合は pin より古い runtime が入っている**（floor は下限であって、環境に実際に入っている版とは別物）。その状態ではテンプレートに `notify.duplicate_sidecar` / `templates.duplicate_sidecar` があっても no-op になるだけで、config load エラーにはならない — つまり「設定は正しいのに黙っている」形になるので、二重 sidecar を疑う状況で通知が来ないときは、まずこの `--help` で経路の有無を確かめる。
 
 ## 5. トラブルシューティング
 

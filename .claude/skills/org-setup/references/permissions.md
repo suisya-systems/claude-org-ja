@@ -191,11 +191,8 @@ python tools/org_setup_prune.py --user-common-sandbox  # → "no changes"
       "PowerShell(Out-File *)"
     ],
     "deny": [
-      "Write(*/workers/*/.claude/settings.local.json)",
       "Edit(*/workers/*/.claude/settings.local.json)",
-      "Write(*/workers/*/.worktrees/*/.claude/settings.local.json)",
       "Edit(*/workers/*/.worktrees/*/.claude/settings.local.json)",
-      "Write(*/.worktrees/*/.claude/settings.local.json)",
       "Edit(*/.worktrees/*/.claude/settings.local.json)"
     ]
   },
@@ -219,9 +216,11 @@ python tools/org_setup_prune.py --user-common-sandbox  # → "no changes"
 
 **mcp__renga-peers__\* の重複**: ユーザー共通 settings.json と重複するが、窓口は run 直後に renga-peers MCP を必ず使うため、窓口スコープでも明示的に列挙して source-of-truth として固定する（user settings の drift でも窓口が動くことを保証）。
 
-**`permissions.deny` (Issue #99 Phase 2 で追加)**: ワーカー設定ファイル（`workers/<project>/.claude/settings.local.json` および worktree パス `workers/<project>/.worktrees/<task>/.claude/settings.local.json`）への **Claude の `Write` / `Edit` ツール経由の直接編集**を窓口に対して禁止する。窓口は通常モード起動（`bypassPermissions` ではない）なので、この `permissions.deny` は静的パターンマッチで常に効く。
+**`permissions.deny` (Issue #99 Phase 2 で追加)**: ワーカー設定ファイル（`workers/<project>/.claude/settings.local.json` および worktree パス `workers/<project>/.worktrees/<task>/.claude/settings.local.json`、加えて live-repo worktree の `.worktrees/<task>/.claude/settings.local.json`）への **Claude の `Edit` ツール経由の直接編集**を窓口に対して禁止する。窓口は通常モード起動（`bypassPermissions` ではない）なので、この `permissions.deny` は静的パターンマッチで常に効く。
 
-ただしこの deny は Claude のファイル編集ツール（Write/Edit）系のゲートに限定される。窓口は引き続き `Bash(python:*)` / `Bash(python3:*)` / `PowerShell(Out-File *)` を allow しているため、Bash/PowerShell から `cat > settings.local.json` のように書き出すことは技術的に可能。本 deny は **「窓口が手作業で `Edit` ツールを開いて settings を書き換える」** という主要な誤付与経路を塞ぐためのもので、`claude-org-runtime settings generate` 以外の経路を完全に遮断するものではない。完全な generator-only 化（Bash 側の遮断を含む）は Phase 3 の課題（drift CI 拡張・escape hatch と併走）。
+**`Write(...)` を併記しない理由**: Claude Code の file permission check は `Edit(path)` のみを評価し、`Write(path)` の deny は実効しない。宣言すると 1 エントリにつき 1 行、起動のたびに `Permission deny rule (.claude/settings.local.json): Write(...) is not matched by file permission checks -- only Edit(path) rules are. Use Edit(...) instead` という警告が出るだけで、防御が死んでいるという誤読を招く。同一 glob の `Edit(...)` が防御を全て担っているため、runtime 0.1.42（suisya-systems/claude-org-runtime#178）と ja の同期で `Write(...)` 3 行を削除した。**ここに `Write(...)` を足し戻さないこと。**
+
+ただしこの deny は Claude のファイル編集ツール（`Edit`）のゲートに限定される。窓口は引き続き `Bash(python:*)` / `Bash(python3:*)` / `PowerShell(Out-File *)` を allow しているため、Bash/PowerShell から `cat > settings.local.json` のように書き出すことは技術的に可能。本 deny は **「窓口が手作業で `Edit` ツールを開いて settings を書き換える」** という主要な誤付与経路を塞ぐためのもので、`claude-org-runtime settings generate` 以外の経路を完全に遮断するものではない。完全な generator-only 化（Bash 側の遮断を含む）は Phase 3 の課題（drift CI 拡張・escape hatch と併走）。
 
 **renga bootstrap の重複**: 同じ理由でユーザー共通と重複するが、窓口が初回レイアウト起動やペイン制御で即時使うため明示列挙。
 

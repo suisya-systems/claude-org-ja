@@ -26,6 +26,23 @@ core-harness>=0.3.2,<0.4
 # PyPI via Trusted Publisher; pinned to the 0.1.x range. 0.x bumps may be
 # breaking per the runtime's compatibility policy, so widen this pin
 # deliberately when adopting a new minor.
+# Floor bumped to 0.1.42 for the removal of the inert `Write(...)` deny rules
+# from role_configs_schema.json's `roles.secretary.required_deny`: Claude Code
+# evaluates file permission rules on `Edit(path)` only, so the three
+# `Write(*/...settings.local.json)` twins never fired and only emitted a
+# "not matched by file permission checks" warning per entry at every session
+# start (suisya-systems/claude-org-runtime#178). ja drops the same three lines
+# from tools/org_extension_schema.json in this paired commit, so a
+# 0.1.41-or-older install would now *fail* the byte-identical check.
+# RUNTIME_PIN_LOWER_INCLUSIVE in tools/check_runtime_schema_drift.py IS raised
+# in step to (0, 1, 42) for that reason — same rule as the 0.1.41 bump below:
+# raise the window floor whenever the schema itself changed, so the mismatch
+# degrades to skip-with-warning instead of a hard failure until the environment
+# catches up. docker/Dockerfile's `RUNTIME_VERSION` ARG and the
+# docker/compose.yaml default are raised in step too (the Dockerfile installs
+# `claude-org-runtime==${RUNTIME_VERSION}` exactly, so leaving it behind would
+# ship a container below ja's own floor). The earlier 0.1.41 floor (below) is
+# subsumed.
 # Floor bumped to 0.1.41 for the renga 2.0.0 capability probe
 # `mcp__renga-peers__server_info`: 0.1.41 adds that entry to
 # role_configs_schema.json's `user_common` / `secretary` required_allow, and ja
@@ -142,7 +159,7 @@ core-harness>=0.3.2,<0.4
 # (transport surface descriptor claude_org_runtime.transport consumed by
 # tools/transport.py — Epic #6 next-stage D / ja#513) are subsumed by 0.1.28.
 # Keep in sync with pyproject.toml.
-claude-org-runtime>=0.1.41,<0.2
+claude-org-runtime>=0.1.42,<0.2
 
 # tools/gen_worker_brief.py reads TOML config. tomllib is stdlib in 3.11+,
 # but ja still supports 3.10 (CLAUDE.local.md template recommends 3.10).

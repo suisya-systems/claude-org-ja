@@ -229,18 +229,28 @@ worker briefs and `settings.local.json` files.
 | `<claude_org_path>/registry/**` | Direct | `registry/projects.md`, `registry/org-config.md`. |
 | `<claude_org_path>/dashboard/**` | Direct | Snapshot regeneration via [`dashboard/org_state_converter.py`](../../dashboard/org_state_converter.py). |
 | `<claude_org_path>/knowledge/skill-candidates.md` | Direct | Per [`docs/contracts/knowledge-curation-contract.md`](./knowledge-curation-contract.md) the secretary may write the skill-candidate queue. **`<claude_org_path>/knowledge/raw/**` and `<claude_org_path>/knowledge/curated/**` are NOT secretary-writeable** in the normal flow — see same contract §1.1 and §3.1; scrub of operator-private content is delegated, not edited in place. |
-| `<workers_dir>/<task>/CLAUDE.md` and `<task>/.claude/settings.local.json` | Generator-only | Worker brief + settings file placement during the org-delegate skill's worker-dir-prep step. **`Edit` / `Write` to `*/workers/*/.claude/settings.local.json` is denied at Layer 2** (`required_deny` in [`tools/org_extension_schema.json`](../../tools/org_extension_schema.json) `roles.secretary`); the canonical generator is `claude-org-runtime settings generate`. Manual JSON authoring is rejected by drift CI. |
+| `<workers_dir>/<task>/CLAUDE.md` and `<task>/.claude/settings.local.json` | Generator-only | Worker brief + settings file placement during the org-delegate skill's worker-dir-prep step. **`Edit` to `*/workers/*/.claude/settings.local.json` is denied at Layer 2** (`required_deny` in [`tools/org_extension_schema.json`](../../tools/org_extension_schema.json) `roles.secretary`); the canonical generator is `claude-org-runtime settings generate`. Manual JSON authoring is rejected by drift CI. A `Write(...)` twin is not declared because Claude Code evaluates file permission rules on `Edit(path)` only — see the "Denied writes (prescriptive)" list below. |
 | `<workers_dir>/<task>/.worktrees/.../.claude/settings.local.json` | Generator-only | Same constraint; required_deny rule covers the worktree path too. |
-| `<claude_org_path>/.worktrees/<task>/.claude/settings.local.json` | Generator-only (convention) | **NOT covered by the secretary's current Layer 2 `required_deny`** — those rules glob only `*/workers/*/.claude/settings.local.json` and `*/workers/*/.worktrees/*/.claude/settings.local.json`, neither of which matches the live repo's `.worktrees/` subtree. The generator-only discipline is enforced for this variant by *convention* (the org-delegate skill calls `claude-org-runtime settings generate`); there is no Layer 2 rule that would block a manual `Edit`/`Write` here today. **Gap → Phase 1**: extend `roles.secretary.required_deny` with a glob that matches `<claude_org_path>/.worktrees/*/.claude/settings.local.json` so the live_repo_worktree variant has the same hard guarantee. |
+| `<claude_org_path>/.worktrees/<task>/.claude/settings.local.json` | Generator-only | **Covered at Layer 2 — the Phase 1 gap is closed.** `roles.secretary.required_deny` carries `Edit(*/.worktrees/*/.claude/settings.local.json)` ([`tools/org_extension_schema.json`](../../tools/org_extension_schema.json)), whose glob matches the live repo's `.worktrees/` subtree, so the `live_repo_worktree` variant now has the same hard guarantee as the two `workers_dir` rows above. Earlier revisions of this row described the variant as convention-only, from a time when `required_deny` globbed `*/workers/*/...` exclusively. As with the other two rows the guarantee is `Edit`-scoped, and the Bash / PowerShell write path remains uncovered by Layer 2 (§3.1.3). |
 
 **Denied writes (prescriptive)**:
 
-- `Write(*/workers/*/.claude/settings.local.json)` — secretary must call
+- `Edit(*/workers/*/.claude/settings.local.json)` — secretary must call
   `claude-org-runtime settings generate` instead. Layer 2 `required_deny`
   enforces.
-- `Edit(*/workers/*/.claude/settings.local.json)` — same as above.
-- `Write(*/workers/*/.worktrees/*/.claude/settings.local.json)` and the
-  `Edit` twin — same.
+- `Edit(*/workers/*/.worktrees/*/.claude/settings.local.json)` — same as
+  above.
+- `Edit(*/.worktrees/*/.claude/settings.local.json)` — same as above, for
+  the `live_repo_worktree` variant.
+- **`Write(...)` twins are deliberately NOT declared.** Claude Code matches
+  file permission rules on `Edit(path)` only, so a `Write(path)` deny never
+  fires — it merely emits a startup warning per entry ("is not matched by
+  file permission checks -- only Edit(path) rules are"), which reads as if
+  the guard were dead. The three `Write(...)` entries that used to sit
+  beside these were removed in claude-org-runtime 0.1.42
+  (suisya-systems/claude-org-runtime#178) and the paired ja sync. The
+  `Edit` rules above carry the whole Layer 2 guarantee; the Bash / PowerShell
+  write path was never covered by either tool rule (see §3.1.3).
 - `git push` (raw or via `eval`/`bash -c`) — Layer 4
   [`.hooks/block-git-push.sh`](../../.hooks/block-git-push.sh) is **NOT**
   installed on the secretary because the secretary is the role that *does*
@@ -253,7 +263,7 @@ worker briefs and `settings.local.json` files.
 
 | Surface | Layer 2 | Layer 3 | Layer 4 |
 |---|---|---|---|
-| `*/workers/*/.claude/settings.local.json` write | `required_deny` ✔ | n/a (Phase 1) | none |
+| `*/workers/*/.claude/settings.local.json` write | `required_deny` ✔ — **`Edit` tool only**. `Write(...)` twins are not declared because Claude Code evaluates file permission rules on `Edit(path)` alone, and the Bash / PowerShell write path (`Bash(python:*)`, `PowerShell(Out-File *)`) is outside every file permission rule, so `cat > settings.local.json` stays reachable. | n/a (Phase 1) | none |
 | `<claude_org_path>/.state/**` write | allowed via `Bash(python:*)` etc. | n/a | [`.hooks/block-no-verify.sh`](../../.hooks/block-no-verify.sh) (Bash) covers `git commit --no-verify` only |
 | `~/.aws/**` read | `Read(~/.aws/*)` ✔ (when added; not in default secretary template) | adaptive (see §1.3); not currently emitted for secretary | none |
 | Org-structure dir creation under workers | n/a (secretary is *not* a worker) | n/a | [`.hooks/block-workers-delete.sh`](../../.hooks/block-workers-delete.sh) (`Bash` matcher) for workers_dir delete only |
