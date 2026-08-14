@@ -191,11 +191,8 @@ python tools/org_setup_prune.py --user-common-sandbox  # → "no changes"
       "PowerShell(Out-File *)"
     ],
     "deny": [
-      "Write(*/workers/*/.claude/settings.local.json)",
       "Edit(*/workers/*/.claude/settings.local.json)",
-      "Write(*/workers/*/.worktrees/*/.claude/settings.local.json)",
       "Edit(*/workers/*/.worktrees/*/.claude/settings.local.json)",
-      "Write(*/.worktrees/*/.claude/settings.local.json)",
       "Edit(*/.worktrees/*/.claude/settings.local.json)"
     ]
   },
