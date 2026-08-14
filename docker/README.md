@@ -85,7 +85,65 @@ docker buildx build -f docker/Dockerfile \
 ```
 
 - image tag 規約は `<repo-ref>-r<runtime-version>`（設計 §7.7）。runtime を更新したいときは**起動時 upgrade ではなく rebuild**。コンテナ内で runtime drift 警告（org-start Block C2）が出たら「新しい tag に pull / rebuild」が正しい対処。
+- 単一アーキだけをビルドするときは `--platform linux/arm64` と `-t …-r<runtime>-arm64`（tag 末尾に arch）にする。マルチアーキ manifest が無いぶん arch は tag が示す（設計 §7.7）。
 - **Raspberry Pi 5 の注意**: 既定カーネルは 16KB page size で、Rust 製バイナリ（herdr、Claude Code 同梱 ripgrep）がクラッシュする既知問題がある。起動しない場合は `/boot/firmware/config.txt` に `kernel=kernel8.img` を追記して 4KB カーネルに切り替える（設計 §11）。
+
+## 公開済み image を pull して使う（Raspberry Pi 5 導線）
+
+配布先は GHCR の **private** パッケージ [`ghcr.io/suisya-systems/claude-org-ja`](https://github.com/orgs/suisya-systems/packages/container/package/claude-org-ja)。image には Claude Code CLI / herdr / gh といった第三者バイナリが焼き込まれており再配布条件を確認していないため、**public にはしない**。
+
+| tag | arch | runtime | digest |
+|---|---|---|---|
+| `v1.1.0-97-g6603478-r0.1.42-arm64` | linux/arm64 | 0.1.42 | `sha256:2a5272b0a7ca0dd01eae7ffa1b1238de14929f9499a8e7f3f67c1a189214844d` |
+
+実機には **`read:packages` だけ**を持つトークンを置く（push 権限 `write:packages` は実機に持ち込まない）。GHCR は fine-grained PAT を受け付けず、**classic PAT のみ**を受け付ける（[GitHub Docs: Working with the Container registry](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry) — "GitHub Packages only supports authentication using a personal access token (classic)"）。
+
+事前準備（母艦側で 1 回、順に）:
+
+1. **package へのアクセス付与**（token 発行より先）。この package は repository に link されていない（`gh api /orgs/suisya-systems/packages/container/claude-org-ja` の `repository` が `null`）ため、権限は repository ではなく **package 単位**で決まる。**publish した本人と組織の owner ロールは自動で admin**（[GitHub Docs: Configuring a package's access control and visibility](https://docs.github.com/en/packages/learn-github-packages/configuring-a-packages-access-control-and-visibility) — "When you publish a package, you automatically get admin permissions to the package. If you publish a package to an organization, anyone with the `owner` role in the organization also gets admin permissions"）なので、**実機に置く token が publish 者本人（または org owner）のものならこの手順は不要**。別アカウントの token を使う場合のみ、package landing page → **Package settings** → **Manage access** → **Invite teams or people** で read を付与する。付与漏れは `docker login` は成功するのに pull だけ `denied` になる形で出る。
+2. **token 発行**。GitHub の Settings → Developer settings → Personal access tokens (classic) で **`read:packages` のみ**にチェックした token を発行する。
+
+Pi 5 で叩くコマンド列:
+
+```bash
+# 1. GHCR ログイン（token をシェル履歴に残さないため read -rs で受ける）
+read -rs CR_PAT   # 発行した classic PAT を貼り付けて Enter（エコーなし）
+echo "$CR_PAT" | docker login ghcr.io -u <github-username> --password-stdin
+unset CR_PAT
+
+# 2. repo を取得（compose.yaml / entrypoint 群が要る。repo は public なので認証不要）
+git clone https://github.com/suisya-systems/claude-org-ja.git
+cd claude-org-ja
+
+# 3. image を pull（ビルドはしない。tag は上表のもの）
+export ORG_IMAGE_TAG=v1.1.0-97-g6603478-r0.1.42-arm64
+docker compose -f docker/compose.yaml pull
+
+# 4. 起動（--no-build で「pull した image 以外は使わない」を明示）
+docker compose -f docker/compose.yaml up -d --no-build
+docker compose -f docker/compose.yaml ps
+
+# 5. 初回のみ: 認証セットアップ（Claude /login → gh auth login → …）
+docker exec -it claude-org org-shell --setup
+
+# 6. 通常導線
+docker exec -it claude-org org-shell
+```
+
+`ORG_IMAGE_TAG` を省くと compose は `:local`（未 pull）を見に行くので、**手順 3-4 では毎回 export しておくこと**（`.env` に書いてもよい）。
+
+**手順 4 でコンテナが起動しない場合**（arm64 実機での最初の関門は Bash sandbox canary。設計 §12 A1）:
+
+```bash
+# canary を warn に落として起動し、単体実行で原因を切り分ける。
+# 単体実行側は -e で enforce に戻すこと: docker exec はコンテナの環境変数
+# （warn）を継承し、warn の canary は失敗しても exit 0 を返すため（docker/sandbox-canary.sh:68-73）
+ORG_SANDBOX_CANARY=warn docker compose -f docker/compose.yaml up -d --no-build
+docker exec -e ORG_SANDBOX_CANARY=enforce claude-org org-sandbox-canary; echo "exit=$?"
+docker compose -f docker/compose.yaml logs --tail=50
+```
+
+`bwrap: ... Invalid argument`（EINVAL）は QEMU 特有の症状で実機では出ない想定、`No permissions to create new namespace`（EPERM）なら seccomp / userns 側の設定を疑う（設計 §12 S1 / A2-q）。切り分けが済んだら `ORG_SANDBOX_CANARY` を外して `enforce` 既定に戻す。
 
 ## セキュリティ境界の要点
 
