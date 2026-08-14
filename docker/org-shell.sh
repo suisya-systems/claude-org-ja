@@ -3,6 +3,7 @@
 #   docker exec -it claude-org org-shell            # 通常: org up → secretary TUI
 #   docker exec -it claude-org org-shell --setup    # 初回: 認証 + org-setup ガイド
 #   docker exec -it claude-org org-shell --attach   # 既存 tmux セッションに attach
+#   docker exec claude-org org-shell --sandbox-check # Bash sandbox の実効状態を診断
 set -euo pipefail
 
 # docker exec は root で入るため、対話面は必ず org に自己降格する（設計 §8）
@@ -38,6 +39,21 @@ EOS
 --attach)
     exec tmux -L org-shell attach -t "${SESSION}"
     ;;
+--sandbox-check)
+    # 運用時の sandbox 診断（設計 §7.5 / §12 S6-d）。
+    # 起動時 canary（org-sandbox-canary）は「bwrap が userns を作れるか」だけを
+    # 決定的に測る専用 settings で回している。こちらは実運用の settings スコープ
+    # （repo の .claude/settings.json + ~/.claude/settings.json + managed settings）
+    # を Claude Code と同じ規則でマージして deny パスまで含めて診断する。
+    # 注意: canary が `skipped` なら「合格」ではなく「未判定」（deny に実在する
+    # 絶対パスが 1 件も無い / bwrap 不在）。判定が要るときは起動時 canary を見る。
+    echo "=== 1. startup canary (bwrap が実際に userns を作れるか) ==="
+    /usr/local/bin/org-sandbox-canary || true
+    echo
+    echo "=== 2. merged settings scopes (deny パスが bwrap で bind できるか) ==="
+    exec "${VENV}/bin/claude-org-runtime" sandbox doctor \
+        --settings "${REPO}/.claude/settings.json" --verbose
+    ;;
 up)
     # 認証未了なら通常導線に入れない（fail-fast + 案内。設計 §10）
     if [ ! -f "${HOME}/.claude/.credentials.json" ]; then
@@ -58,7 +74,7 @@ up)
             --root-cwd ${REPO}"
     ;;
 *)
-    echo "usage: org-shell [--setup|--attach]" >&2
+    echo "usage: org-shell [--setup|--attach|--sandbox-check]" >&2
     exit 2
     ;;
 esac

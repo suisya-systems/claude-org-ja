@@ -102,6 +102,20 @@ if [ -n "${ORG_MAX_WORKERS:-}" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# 段 3e: Bash sandbox の実起動テスト（canary。設計 §7.5 / §12 S6-d）
+# ここは既に gosu で org に降格済みなので、Claude Code と同じ実行主体で測れる
+# （root で測ると実行主体と違う条件を測ることになる）。
+# 既定 enforce では canary 失敗で組織を起動しない: bwrap が「在るが機能しない」
+# 条件は Claude Code 側の failIfUnavailable でも捕まらず、黙って非 sandbox の
+# 組織が立ち上がるため。ORG_SANDBOX_CANARY=warn|off で緩められる。
+# ---------------------------------------------------------------------------
+log "sandbox canary (mode=${ORG_SANDBOX_CANARY:-enforce})"
+if ! /usr/local/bin/org-sandbox-canary; then
+    log "FATAL: Bash sandbox canary failed - refusing to start the org"
+    exit 1
+fi
+
+# ---------------------------------------------------------------------------
 # 段 4: broker daemon（設計 §5 段 4。失敗は fail-fast）
 # ---------------------------------------------------------------------------
 log "starting broker daemon (backend=${ORG_BACKEND:-tmux}, port=${ORG_BROKER_PORT:-48720})"

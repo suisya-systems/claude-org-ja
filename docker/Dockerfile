@@ -79,8 +79,16 @@ LABEL org.claude-org.repo-ref="${REPO_REF}" \
       org.opencontainers.image.title="claude-org-ja" \
       org.opencontainers.image.description="claude-org-ja org-in-a-box (Claude Code + broker + tmux/herdr + dashboard)"
 
+# bubblewrap は Claude Code の Bash sandbox 本体（Linux では bwrap + 非特権 user
+# namespace で成立する。socat も同 sandbox の依存で、ripgrep は Claude Code 同梱。
+# https://code.claude.com/docs/en/sandboxing）。同梱していないと compose の
+# `seccomp=unconfined` は「コンテナ境界を緩める対価だけ払って内側 sandbox が無い」
+# 状態になる（設計 §12 S0 実測）。下の managed-settings.json の
+# `failIfUnavailable: true` は bwrap 不在で Claude Code の起動拒否になるため、
+# この 2 つは必ず同一 image に載せること（分割すると org が起動しなくなる）。
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl git jq tmux sqlite3 socat procps \
+        bubblewrap \
         python3 python3-venv \
         tini gosu \
     && rm -rf /var/lib/apt/lists/*
@@ -128,7 +136,46 @@ RUN mkdir -p /opt/claude-home \
     && chmod -R a+rX /opt/claude-home \
     && /opt/claude-home/.local/bin/claude --version
 
-COPY --chmod=755 docker/entrypoint.sh docker/org-shell.sh /usr/local/bin/
+# コピー先の名前は明示する。`/usr/local/bin/` へ束でコピーすると拡張子付きの
+# `org-shell.sh` が置かれ、README / 設計 §10 が一次導線として案内している
+# `docker exec -it claude-org org-shell` が PATH 解決に失敗する（実測で確認）。
+COPY --chmod=755 docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY --chmod=755 docker/org-shell.sh /usr/local/bin/org-shell
+COPY --chmod=755 docker/sandbox-canary.sh /usr/local/bin/org-sandbox-canary
+
+# コンテナ既定の sandbox ポリシー（設計 §7.5）。repo の .claude/settings.json は
+# ホストとコンテナで共有される実行体なので触らず、コンテナ限定の既定は managed
+# settings に焼く。managed は最上位スコープで、`enabled` / `failIfUnavailable`
+# のような boolean キーはローカル設定で上書きできない（公式 docs
+# https://code.claude.com/docs/en/settings 優先順位表 /
+# https://code.claude.com/docs/en/sandboxing "Keep developers from widening the
+# policy"）。したがって repo 側の `failIfUnavailable: false` を打ち消せる。
+# volume 外に置くので更新は image rebuild（設計 §7.7 と同じ契約）。
+COPY docker/managed-settings.json /etc/claude-code/managed-settings.json
+
+# 起動時 canary が使う専用 settings（設計 §7.5 / §12 S6-d）。
+# runtime の canary は deny に「実在する絶対パス」が 1 つも無いと probe 0 件で
+# status=skipped / ok:true / exit 0 を返す。出荷 image の .claude/settings.json は
+# deny が全て相対パスなのでそれをそのまま渡すと canary が走らず常に緑になる。
+# ここでは image が必ず持つ不変の絶対パスを deny に置いて probe を保証する。
+COPY docker/sandbox-canary-settings.json /opt/org-sandbox/canary-settings.json
+
+# build 時の二重確認（実行時の canary は entrypoint 段 3e）:
+#   (a) bwrap が実際に image に入ったか
+#   (b) canary settings の deny に実在する絶対パスが最低 1 件あるか
+# (b) を欠くと canary が skipped のまま「常に pass するゲート」になる。
+# 実起動 probe 自体はここでは回さない（BuildKit の build コンテナは userns を
+# 作れず spurious fail になるため。機能性の判定は起動時の canary が受け持つ）。
+RUN set -eu; \
+    command -v bwrap >/dev/null || { echo "FATAL: bubblewrap not installed" >&2; exit 1; }; \
+    bwrap --version; \
+    found=0; \
+    for p in $(jq -r '.sandbox.filesystem.denyRead[]' /opt/org-sandbox/canary-settings.json); do \
+        case "$p" in /*) ;; *) echo "FATAL: canary deny path is not absolute: $p" >&2; exit 1 ;; esac; \
+        if [ -e "$p" ]; then found=$((found + 1)); fi; \
+    done; \
+    [ "$found" -gt 0 ] || { echo "FATAL: no canary deny path exists in this image; the canary would report skipped and pass unconditionally" >&2; exit 1; }; \
+    echo "sandbox canary settings: ${found} concrete deny path(s) present"
 
 # HOME は org ユーザーの home に焼き込む（Issue #735 根治）。base image 既定の
 # 空/未設定だと Claude Code・gh・codex 等が認証・設定の保存先を決められず落ちる。

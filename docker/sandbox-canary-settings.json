@@ -1,0 +1,12 @@
+{
+  "sandbox": {
+    "enabled": true,
+    "filesystem": {
+      "denyRead": [
+        "/etc/shadow",
+        "/etc/gshadow",
+        "/etc/ssl/private"
+      ]
+    }
+  }
+}
