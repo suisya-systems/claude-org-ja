@@ -28,6 +28,11 @@ services:
       # Pi 5 16GB 向け控えめ既定（設計 §11）
       ORG_MAX_WORKERS: "${ORG_MAX_WORKERS:-3}"
       ORG_DASHBOARD_EXPOSE: "${ORG_DASHBOARD_EXPOSE:-1}"
+      # Bash sandbox の起動時 canary（設計 §7.5 / §12 S6-d）。
+      # enforce（既定）= canary 失敗でコンテナを起動しない / warn = 警告のみ /
+      # off = 検査しない。warn・off でも Claude Code 側の failIfUnavailable:true
+      # （image 内 managed settings）は生きているので、依存欠落は依然止まる。
+      ORG_SANDBOX_CANARY: "${ORG_SANDBOX_CANARY:-enforce}"
     volumes:
       # 認証 + ユーザー設定（~/.claude, ~/.claude.json, gh, codex, gog。設計 §6）
       - org_home:/home/org
@@ -46,7 +51,9 @@ services:
     security_opt:
       # Claude Code の Bash sandbox（bubblewrap）が user namespace を作るために
       # 必要（Docker 既定 seccomp は unshare/clone をブロック）。トレードオフと
-      # 検証マトリクスは設計 §7.5 参照。
+      # 検証マトリクスは設計 §7.5 参照。これを落とすと bwrap は「在るが機能しない」
+      # 状態になり、Claude Code はそれを検出しない（§12 S6-d）。起動時 canary が
+      # その条件を捕まえてコンテナの起動を止める。
       - "seccomp=unconfined"
       # setuid バイナリ経由の権限昇格を封じる（gosu の root→org 降格は setuid
       # 昇格ではないので影響しない）
