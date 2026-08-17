@@ -89,7 +89,8 @@ addition to its writer / payload shape:
 
 | Event                    | Typical fields                                              | Writer       | Emitted by | Required for | Notes |
 |--------------------------|-------------------------------------------------------------|--------------|------------|--------------|-------|
-| `worker_spawned`         | `worker`, `dir`, `task`                                     | dispatcher   | dispatcher | T2           | After MCP `spawn_pane`. |
+| `worker_spawned`         | `worker`, `dir`, `task`                                     | dispatcher   | dispatcher | T2           | After MCP `spawn_pane`. Records that a pane was created — **not** that the spawn ceremony (approval Enter / `list_peers` registration / instruction send) succeeded; that is `worker_spawn_verified`. |
+| `worker_spawn_verified`  | `task`, `worker`, `pane_id`, `peer_id`, `peer_cwd`, `approval`, `instruction`, `transport` | dispatcher | `tools/spawn_gate.py verify` | — | Written by the Step 5 gate in `.dispatcher/references/spawn-flow.md`, immediately before `DELEGATE_COMPLETE`. `peer_cwd` is machine-checked against the worker dir the secretary recorded at T1; `approval` / `instruction` are dispatcher attestations. A `worker_spawned` with no later `worker_spawn_verified` is what `tools/spawn_gate.py audit` reports — the 2026-08-18 false-completion incidents left exactly that gap. |
 | `worker_completed`       | `worker`, `task`                                            | secretary    | worker     | T4           | Worker reported done. |
 | `worker_closed`          | `worker`, `pane_id`                                         | dispatcher   | dispatcher | T5, T7       | Pane closed, registry updated. |
 | `worker_reported`        | `worker`, `task`, `summary`                                 | secretary    | worker     | T3           | Mid-task report received. |

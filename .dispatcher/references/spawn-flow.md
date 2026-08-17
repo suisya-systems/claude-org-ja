@@ -219,6 +219,8 @@ mcp__renga-peers__send_keys(target="worker-{task_id}", enter=true)
 
 承認しないと `server:renga-peers` チャネルが有効化されず、3-4 の `list_peers` 待ちがタイムアウトし、3-5 の `send_message` も届かない。Enter は CR (0x0D) として PTY に書き込まれる（byte-identical to renga `append_enter`）。
 
+> **この Enter は痕跡を残さない**（PTY への生バイト書き込みで `.state/` に何も書かない）。**「撃ったつもり」を成立させないための ground truth は 3-4 の `list_peers` 登録**であり、その観測値を Step 5 のゲートに渡すまで `DELEGATE_COMPLETE` は出せない。2026-08-18 にここを飛ばしたまま「承認済み」と報告した事故が 2 件続いている（経緯は Step 5 冒頭）。
+
 **背景タブ経路 (3-2b) では `target=<bound_pane_id>` で撃つ**（`send_keys` も表示確認の `inspect_pane` も。裸の name は caller のタブに解決するので背景ペインに当たらない）。ground truth は 3-4b の登録ゲートで、未登録なら Enter を再送する点は同じ。
 
 > **broker（`ORG_TRANSPORT=broker`）の場合 — push 一次採用で承認は 2 段（folder-trust + dev-channel sidecar の再導入）**: `spawn_claude_pane` は `--mcp-config <broker>`（daemon）を注入し、初回に Claude Code の **folder-trust プロンプト**（「Do you trust the files in this folder?」相当）が出る。これを `mcp__org-broker__send_keys(target="worker-{task_id}", enter=true)` で機械承認する。**加えて push 一次のため**、`spawn_claude_pane` は channel sidecar を `--dangerously-load-development-channels server:org-broker-channel` で load するため、**「Load development channel?」プロンプトが再出現**する（`--mcp-config`-only 設計で一旦消えた 3-3b 承認の **broker 枝での再導入**）。これも `mcp__org-broker__send_keys(target="worker-{task_id}", enter=true)` で機械承認する。両プロンプトの順序は boot タイミング依存なので、`inspect_pane` で各プロンプトの表示を確認しつつ順に Enter 承認する（renga と同じく未表示段階の Enter は no-op になりうるため、3-4 の `list_peers` 登録 poll を ground truth とし、未登録なら再送する）。承認しないと broker token のバインド／channel sidecar の登録が完了せず、`list_peers` 待ち・`send_message`（push 配送）・フォールバックの `check_messages` が成立しない。これは ratified §5/§8.5 の folder-trust フローへの **加算であり置換ではない**（設計 transport-lab `docs/design/broker-native-roles.md` §9.5。S3 で contract §5.1/§8.5 を amend 済み・2026-06-15 ratified）。
@@ -228,6 +230,8 @@ mcp__renga-peers__send_keys(target="worker-{task_id}", enter=true)
 **`list_peers` の直前に [`.claude/skills/org-delegate/references/capability-first-drive-operational-gate.md`](../../.claude/skills/org-delegate/references/capability-first-drive-operational-gate.md) を Read し、`monitoring-read-only` の分岐を適用する**（同 reference §6 の表 #7）。ここは spawn のたびに走るので、**実運用で capability 広告列挙を最初に観測するのはこの経路である公算が高い**。
 
 pane は live でも Claude がまだ起動中の場合があるため二重確認。`mcp__renga-peers__list_peers` を呼び、`worker-{task_id}` が peer 一覧に現れるまで短い間隔（例: 2 秒）でリトライする（最大 30 秒程度）。タイムアウトした場合は `list_panes` でペイン状態を再確認し、必要なら窓口に escalate する。
+
+> **在を確定したレコードの `id` / `name` / `cwd` を 3 つとも控える（Step 5 のゲート入力）。** 控えは記憶や期待値ではなく列挙の実値であること。`cwd` は窓口が T1 で書いた `runs.worker_dir_id` と Step 5 で照合され、食い違えばゲートが exit 10 で `DELEGATE_COMPLETE` を止める。ここで登録が確認できないまま先へ進むと、3-3b の承認が実際には通っていない可能性が残ったまま報告に至る（2026-08-18 の 2 件がこの形）。
 
 > **capability 形かつ未承認のときの縮退（停止しない・待ち時間 0 分）**: 列挙を peer 登録の ground truth にせず破棄する。**`worker-{task_id}` の name 一致で登録ゲートを開けてはならない** — 予約名は別 org の並走タブに同名で実在しうるので、name 一致は「まだ登録していない自分の子」のゲートを他 org のピアで開けてしまう（契約 T-§2.2 の「MUST NOT key a lookup … on `name` alone」。共有 reference §3-B-1）。
 >
@@ -383,6 +387,10 @@ worker brief に **ultracode 使用許可**があるタスクでは、kickoff �
    >
    > **3-4b で受理できずに派遣を取り止めた場合、本項には到達しないので `bound_peer_id` は `null` のまま残る。ただし 3-2b が書いた 5 フィールドは残す (record を消さない)** — ペインは実在するので、消すと `list_panes` に出ない untracked なペインを自分で作ることになる。`bound_peer_id` が `null` の record の着地は [`.dispatcher/references/worker-monitoring.md`](worker-monitoring.md) (3-a-5) の三値表 1 行目が定める (registration-timeout として窓口へ上げ、画面監視は `bound_pane_id` で継続する)。**この点だけが上記 6 (同一タブの `same_tab_peer_id` producer) と異なる**: あちらは「放棄経路は状態記録に到達しないので陽性履歴が書かれない」が成立するが、背景配置では記録のほうが先に必要になる。record 削除規則は [`.dispatcher/references/worker-monitoring.md`](worker-monitoring.md) Step 5 (b) 更新規則 (4) だけが持ち、本項も 3-2b も削除条件を足さない。
 
+8. **本ファイル末尾の「Step 5: 派遣完了ゲート」へ進む。** 窓口への `DELEGATE_COMPLETE` は Step 5 のゲート出力だけが正本で、ここで自分で書いて送ってはならない。
+
+   > 以下の「Worker Directory Registry」は Step 4 の DB 書き込みが生成するセクションの**定義（参照用の付録）**であって、手順の続きではない。かつて派遣完了報告がこの付録の**後ろ**に番号 `5.` で置かれており（本 Step 4 の項番 5 と重複していた）、手順を上から追う読み手が報告ステップに辿り着けない配置になっていた。番号を継いだ本項でその落差を塞いでいる。
+
 ### Worker Directory Registry（DB 由来のセクション定義）
 
 > **M2.1 cutover (Issue #272)**: このセクションは DB の `worker_dirs` × `runs` から
@@ -414,8 +422,35 @@ worker brief に **ultracode 使用許可**があるタスクでは、kickoff �
 - 窓口の `.claude/skills/org-pull-request/SKILL.md` 2b-ii でクローズ条件（PR マージ / 明示クローズ指示 / 長期 idle 判断）を満たした時にステータス更新・エントリ削除を行う（2b-i の PR 作成段階では触らない）
 - `gen_delegate_payload.py` の Pattern 判定フローでこのテーブルを参照し、再利用可能なディレクトリや並行作業の有無を判定する
 
-5. 窓口 (`secretary`) に renga-peers で派遣完了を報告:
-   ```
-   DELEGATE_COMPLETE: {task_id} のワーカーを派遣しました。
-   Pane: worker-{task_id} (id={pane_id})
-   ```
+## Step 5: 派遣完了ゲート — `DELEGATE_COMPLETE` は自分で書かない
+
+> **この節の由来（2026-08-18）**: 同日に 2 件連続で、ディスパッチャーが 3-3b の承認 Enter・3-4 の `list_peers` 登録確認・3-5 の指示送信を**実行しないまま**「承認済み・peer 登録確認済み・指示送信済み」と窓口へ報告した（`cert-questions-ingest-20260818` / `interlock-founding-docs-20260818`。どちらも実際にはペインが承認プロンプトで停止し入力欄は空で、窓口が `inspect_pane` で実見して手で復旧した）。
+>
+> **手順は当時も正しく書かれていた。** 壊れていたのは検証の側である。3-3b / 3-4 / 3-5 は**どれも痕跡を残さない**（`send_keys` は PTY への生バイト、`list_peers` は読み取り、`send_message` は MCP 呼び出しで、いずれも `.state/` に何も書かない）。Step 3 + Step 4 を通して残る唯一の行は `worker_spawned` 1 件で、これは [`docs/journal-events.md`](../../docs/journal-events.md) の Worker lifecycle 表が "After MCP `spawn_pane`." と定めるとおり**儀式が始まる前**に打たれる。実際、2 件とも state.db に残ったのは `delegate_sent` → `worker_spawned` だけで、正しく派遣した回と**バイト単位で同じ痕跡**だった。つまり儀式を省くほうが実行するより安く、しかも露見しなかった。本 Step はその 2 つを同時に潰す。
+
+**`DELEGATE_COMPLETE` の本文を自分で組み立ててはならない（MUST NOT）。** 下記ゲートを通し、その stdout の `delegate_complete` を**そのまま** `send_message` の本文にする:
+
+```bash
+# ディスパッチャーの cwd は .dispatcher/ なので 1 段上に解決する
+python3 ../tools/spawn_gate.py verify \
+  --task {task_id} \
+  --pane-id <spawn_claude_pane の戻り値の数値 pane id> \
+  --peer-id <3-4 の list_peers で実際に観測した数値 id> \
+  --peer-name <同じレコードの name> \
+  --peer-cwd <同じレコードの cwd> \
+  --approval {sent|not_shown} \
+  --instruction {send_message|send_keys|both}
+```
+
+- **exit 0** → stdout の `delegate_complete` を `mcp__renga-peers__send_message(to_id="secretary", ...)` でそのまま送る（前置き・後置きを足さない）
+- **exit 10** → **報告しない。** `failures[]` / `remedy[]` が戻るべきステップを名指しするので、3-3b の承認 Enter 再送 → 3-4 の登録 poll へ戻り、通ってから再実行する
+- **exit 2** → 窓口へエラー通知（ゲート自体が壊れている。派遣は止めるが監視ループは継続する）
+
+**`--peer-*` の 3 つは 3-4 の `list_peers` で自分が実際に見たレコードの値を書く。** 期待値・記憶・spawn 引数の再掲で埋めない。`--peer-cwd` は state.db の `runs.worker_dir_id`（＝窓口の `gen_delegate_payload.py apply` が T1 で `delegate_sent` と同一トランザクションで書く値で、**ディスパッチャーは書けない**）と照合され、食い違えば exit 10 になる。これは 3-4b が背景タブ経路に課しているのと同じ org 束縛の弁別（契約 T-§4.2-id (O2)「id 自身とは独立な観測」）を、同一タブ経路にも最小コストで効かせるものである。
+
+**`--approval` / `--instruction` は attest であって検証ではない**（PTY 打鍵と MCP 送信は事後にこのホストから観測できない）。ゲートが保証するのは次の 2 点だけで、それ以上を主張しない:
+
+1. **機械照合できる半分**（`peer_cwd` / `peer_name` / `worker_spawned` の存在 / id が正整数）は assert では通せない
+2. **省略が事後に必ず検出される**: ゲートを通ると `worker_spawn_verified` が記帳される。ゲートを通さずに報告すると記帳が無いので、`python3 ../tools/spawn_gate.py audit` が `worker_spawned` との差分として検出する（監視ループ 1 サイクルの一部。[`.dispatcher/CLAUDE.md`](../CLAUDE.md)「ワーカーペイン監視」参照）。2026-08-18 の 2 件はまさにこの差分の形で残っている
+
+> **これは v1 の止血であって、儀式そのものの決定論化ではない。** spawn → 承認 Enter → 登録 poll → 指示送信 を LLM の散文再演から外してコードに落とす設計は Interlock (v2) 側の担当で、v1 (claude-org-ja + runtime 0.1 系) へは逆移植しないことが Issue [#740](https://github.com/suisya-systems/claude-org-ja/issues/740) の 2026-08-17 追補で決定済みである（同追補の「移行方式」は "dual-write は行わず run 境界で切り替える / v1 で開始済みの run は v1 で完走させる" と定め、"常駐 Dispatcher AI loop と handover / resume のための大量の prompt prose" を Discard 側に置いている）。本 Step が変えるのは「省略が安くて露見しない」という**誘因と検出可能性**であって、儀式の実行主体ではない。
