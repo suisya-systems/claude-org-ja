@@ -43,14 +43,21 @@ v1 explicitly does not receive a back-port of that design).
 **Machine-verified** (the dispatcher cannot satisfy these by asserting
 them):
 
-* ``--peer-cwd`` must equal the worker directory recorded on the
-  ``runs`` row for the task. That path is written by the *secretary*'s
-  ``gen_delegate_payload.py apply`` at T1, in the same transaction as
-  ``delegate_sent`` — strictly before the dispatcher is involved. A cwd
-  invented from a stale or mismatched pane fails here. This is the same
-  org-binding discriminator that spawn-flow 3-4b already requires for
-  the background-tab gate (contract T-§4.2-id (O2): identity must be
-  established "by an observation independent of the id itself").
+* ``--peer-cwd`` must equal the worker directory in the ``delegate_sent``
+  event, which the *secretary*'s ``gen_delegate_payload.py apply`` writes
+  at T1 — strictly before the dispatcher is involved, into an append-only
+  table nothing downstream can rewrite. A cwd invented from a stale or
+  mismatched pane fails here. This is the same org-binding discriminator
+  that spawn-flow 3-4b already requires for the background-tab gate
+  (contract T-§4.2-id (O2): identity must be established "by an
+  observation independent of the id itself").
+
+  ``runs.worker_dir_id`` is deliberately **not** the reference: spawn-flow
+  Step 4 item 2 calls ``upsert_run(..., worker_dir_abs_path=...)`` before
+  this gate runs, and that overwrites the column — so comparing against it
+  would let the dispatcher validate a value it had just written. ``runs``
+  serves only as a fallback when no ``delegate_sent`` event exists, and a
+  divergence between the two is itself a gate failure.
 * ``--peer-name`` must equal ``worker-{task_id}``.
 * A ``worker_spawned`` event for the task must already exist, so the
   gate cannot run ahead of the spawn it is gating.
@@ -62,6 +69,18 @@ process on this host can observe a PTY keystroke or an MCP
 values means the dispatcher must make a specific, dated, on-the-record
 claim rather than a vague sentence — and a wrong claim is now a
 falsifiable artifact rather than an unrecoverable one.
+
+**Two evidence modes.** ``--evidence list_peers`` (default) is the normal
+3-4 enumeration and gets the machine-checked half above.
+``--evidence send_delivery`` is the documented 3-4 degraded path
+(capability-shaped backend, ``first_drive`` unapproved): there the
+enumeration is discarded as untrustworthy and a successful
+``send_message`` *is* the readiness probe, so no peer record exists to
+quote. That mode requires the ``--peer-*`` flags to be **absent** — a
+discarded enumeration must not ride back in under the weaker mode's name
+— and has no machine-checked half at all, which is why the mode is
+recorded on the event and named in the report body. Every currently
+deployed backend takes the legacy fallback path, i.e. the default mode.
 
 Machine-readable contract
 -------------------------
@@ -129,8 +148,18 @@ _REMEDY = {
         "窓口へ escalate する。"
     ),
     "worker_dir_known": (
-        "runs 行にも delegate_sent イベントにも worker dir が無い。"
+        "delegate_sent イベントにも runs 行にも worker dir が無い。"
         "照合対象が取れないので窓口へ escalate する。"
+    ),
+    "worker_dir_divergence": (
+        "delegate_sent (窓口が T1 で書いた不変値) と runs.worker_dir_id "
+        "(Step 4 の upsert_run が上書きしうる値) が食い違っている。"
+        "独立照合の基準が失われているので、どちらが誤りかを窓口へ escalate する。"
+    ),
+    "evidence_mismatch": (
+        "--evidence send_delivery では list_peers 列挙を破棄しているので "
+        "--peer-id / --peer-name / --peer-cwd を渡してはならない。"
+        "列挙を実際に見たなら --evidence list_peers を使う。"
     ),
     "peer_cwd": (
         "list_peers レコードの cwd が窓口の記録した worker dir と一致しない。"
@@ -195,24 +224,15 @@ def _norm_path(value: "str | None") -> "str | None":
     return os.path.normpath(stripped).rstrip(os.sep) or os.sep
 
 
-def _expected_worker_dir(conn: sqlite3.Connection, task_id: str) -> "str | None":
-    """The worker dir the *secretary* recorded for this task.
+def _delegate_sent_dir(conn: sqlite3.Connection, task_id: str) -> "str | None":
+    """Worker dir from the ``delegate_sent`` event — the immutable source.
 
-    Primary source is the ``runs`` row (written at T1 by
-    ``gen_delegate_payload.py apply``). Post-merge cleanup clears
-    ``worker_dir_id``, so fall back to the ``delegate_sent`` payload,
-    which is written in the same T1 transaction and is never cleared.
-    Both are dispatcher-independent, which is the point of the check.
+    ``gen_delegate_payload.py apply`` writes this in the same T1
+    transaction as the ``runs`` reservation, and the ``events`` table is
+    append-only, so nothing downstream can rewrite it. That is precisely
+    what makes it usable as the independent side of the ``--peer-cwd``
+    comparison.
     """
-    row = conn.execute(
-        "SELECT w.abs_path AS abs_path "
-        "FROM runs r LEFT JOIN worker_dirs w ON w.id = r.worker_dir_id "
-        "WHERE r.task_id = ?",
-        (task_id,),
-    ).fetchone()
-    if row is not None and row["abs_path"]:
-        return row["abs_path"]
-
     for ev in conn.execute(
         "SELECT payload_json FROM events WHERE kind = ? "
         "ORDER BY occurred_at DESC, id DESC",
@@ -224,6 +244,27 @@ def _expected_worker_dir(conn: sqlite3.Connection, task_id: str) -> "str | None"
             continue
         if payload.get("task") == task_id and payload.get("dir"):
             return str(payload["dir"])
+    return None
+
+
+def _runs_dir(conn: sqlite3.Connection, task_id: str) -> "str | None":
+    """Worker dir currently on the ``runs`` row.
+
+    Weaker than :func:`_delegate_sent_dir`: spawn-flow Step 4 item 2 calls
+    ``upsert_run(..., worker_dir_abs_path=...)`` *before* this gate runs,
+    and ``StateWriter.upsert_run`` overwrites ``runs.worker_dir_id`` when
+    the argument is supplied. So the dispatcher can move this value. It is
+    used only as a fallback when the ``delegate_sent`` event is absent,
+    and any divergence between the two is itself a gate failure.
+    """
+    row = conn.execute(
+        "SELECT w.abs_path AS abs_path "
+        "FROM runs r LEFT JOIN worker_dirs w ON w.id = r.worker_dir_id "
+        "WHERE r.task_id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is not None and row["abs_path"]:
+        return str(row["abs_path"])
     return None
 
 
@@ -279,13 +320,25 @@ def _append_verified_event(payload: dict, db_override: "str | None") -> None:
 
 
 def _delegate_complete_body(
-    task_id: str, worker: str, pane_id: int, peer_id: int
+    task_id: str, worker: str, pane_id: int, peer_id: "int | None", evidence: str
 ) -> str:
-    """The canonical report body. Assembled here, never by the dispatcher."""
+    """The canonical report body. Assembled here, never by the dispatcher.
+
+    The readiness line names *which* evidence established registration, so
+    the secretary can see at a glance whether the enumeration was used or
+    the weaker degraded probe (spawn-flow 3-4 の縮退) stood in for it.
+    """
+    if evidence == "list_peers":
+        readiness = f"Peer: list_peers 登録確認済み (id={peer_id})"
+    else:
+        readiness = (
+            "Peer: list_peers 列挙は未承認縮退のため破棄。"
+            "send_message 送達成功を readiness probe とした (spawn-flow 3-4 縮退経路)"
+        )
     return (
         f"DELEGATE_COMPLETE: {task_id} のワーカーを派遣しました。\n"
         f"Pane: {worker} (id={pane_id})\n"
-        f"Peer: list_peers 登録確認済み (id={peer_id})\n"
+        f"{readiness}\n"
         f"Gate: {VERIFIED_EVENT} 記帳済み (tools/spawn_gate.py verify)"
     )
 
@@ -301,29 +354,56 @@ def cmd_verify(args) -> int:
         checks: "dict[str, object]" = {}
 
         pane_id = _positive_int(args.pane_id)
-        peer_id = _positive_int(args.peer_id)
         if pane_id is None:
             failures.append("pane_id")
-        if peer_id is None:
-            failures.append("peer_id")
+
+        peer_id = None
+        if args.evidence == "list_peers":
+            peer_id = _positive_int(args.peer_id)
+            if peer_id is None:
+                failures.append("peer_id")
+        elif args.peer_id is not None or args.peer_name or args.peer_cwd:
+            # `send_delivery` means the enumeration was discarded, so there
+            # is no peer record to quote. Accepting one anyway would let a
+            # fabricated record ride in under the weaker mode's name.
+            failures.append("evidence_mismatch")
 
         has_run = _has_run_row(conn, task_id)
         checks["run_row"] = has_run
         if not has_run:
             failures.append("run_row")
 
-        expected_dir = _expected_worker_dir(conn, task_id)
+        sent_dir = _delegate_sent_dir(conn, task_id)
+        runs_dir = _runs_dir(conn, task_id)
+        expected_dir = sent_dir if sent_dir is not None else runs_dir
+        checks["delegate_sent_worker_dir"] = sent_dir
+        checks["runs_worker_dir"] = runs_dir
         checks["expected_worker_dir"] = expected_dir
-        checks["observed_peer_cwd"] = args.peer_cwd
+        checks["expected_worker_dir_source"] = (
+            DELEGATE_SENT_EVENT if sent_dir is not None else "runs"
+        )
         if expected_dir is None:
             failures.append("worker_dir_known")
-        elif _norm_path(expected_dir) != _norm_path(args.peer_cwd):
-            failures.append("peer_cwd")
+        elif (
+            sent_dir is not None
+            and runs_dir is not None
+            and _norm_path(sent_dir) != _norm_path(runs_dir)
+        ):
+            # Step 4 moved runs.worker_dir_id off the T1 value. Whichever
+            # side is wrong, the gate has lost its independent reference
+            # and must not certify the dispatch.
+            failures.append("worker_dir_divergence")
 
-        checks["expected_peer_name"] = worker
-        checks["observed_peer_name"] = args.peer_name
-        if args.peer_name.strip() != worker:
-            failures.append("peer_name")
+        if args.evidence == "list_peers":
+            checks["observed_peer_cwd"] = args.peer_cwd
+            checks["expected_peer_name"] = worker
+            checks["observed_peer_name"] = args.peer_name
+            if expected_dir is not None and _norm_path(
+                expected_dir
+            ) != _norm_path(args.peer_cwd):
+                failures.append("peer_cwd")
+            if (args.peer_name or "").strip() != worker:
+                failures.append("peer_name")
 
         spawned_at = _latest_event_at(conn, SPAWNED_EVENT, task_id)
         checks["worker_spawned_at"] = spawned_at
@@ -362,16 +442,25 @@ def cmd_verify(args) -> int:
         "worker": worker,
         "pane_id": pane_id,
         "peer_id": peer_id,
-        "peer_cwd": args.peer_cwd.strip(),
+        "peer_cwd": (args.peer_cwd or "").strip() or None,
+        "evidence": args.evidence,
         "approval": args.approval,
         "instruction": args.instruction,
         "transport": args.transport,
     }
 
-    # Idempotent: a re-run after a delivery hiccup must not double-record.
-    # Re-emitting the body is safe and is what the dispatcher needs.
+    # Idempotent within one spawn: a re-run after a delivery hiccup must not
+    # double-record. But a verification that predates the latest
+    # `worker_spawned` belongs to an *earlier* dispatch of the same task, and
+    # `audit` (rightly) demands one at or after the current spawn — so a
+    # redispatch must append a fresh event or it stays unverified forever.
+    covers_current_spawn = (
+        already_at is not None
+        and spawned_at is not None
+        and already_at >= spawned_at
+    )
     status = "verified"
-    if already_at is None:
+    if not covers_current_spawn:
         try:
             _append_verified_event(payload, args.db_path)
         except SystemExit:
@@ -401,7 +490,7 @@ def cmd_verify(args) -> int:
                 "recorded": payload,
                 "checks": checks,
                 "delegate_complete": _delegate_complete_body(
-                    task_id, worker, pane_id, peer_id
+                    task_id, worker, pane_id, peer_id, args.evidence
                 ),
             },
             ensure_ascii=False,
@@ -559,15 +648,35 @@ def build_parser() -> argparse.ArgumentParser:
         "--pane-id", required=True, help="numeric pane id returned by spawn_claude_pane"
     )
     verify.add_argument(
+        "--evidence",
+        default="list_peers",
+        choices=("list_peers", "send_delivery"),
+        help=(
+            "how worker readiness was established. list_peers (default) = the "
+            "normal 3-4 enumeration; requires --peer-id/--peer-name/--peer-cwd "
+            "and gets the machine-checked cwd comparison. send_delivery = the "
+            "documented 3-4 degraded path, where the enumeration is discarded "
+            "and a successful send_message is the readiness probe; the --peer-* "
+            "flags MUST be omitted and no machine check is possible."
+        ),
+    )
+    verify.add_argument(
         "--peer-id",
-        required=True,
-        help="numeric id of the record actually observed in list_peers (3-4)",
+        default=None,
+        help=(
+            "numeric id of the record actually observed in list_peers (3-4). "
+            "Required for --evidence list_peers, forbidden for send_delivery."
+        ),
     )
     verify.add_argument(
-        "--peer-name", required=True, help="name field of that same list_peers record"
+        "--peer-name",
+        default=None,
+        help="name field of that same list_peers record (list_peers evidence only)",
     )
     verify.add_argument(
-        "--peer-cwd", required=True, help="cwd field of that same list_peers record"
+        "--peer-cwd",
+        default=None,
+        help="cwd field of that same list_peers record (list_peers evidence only)",
     )
     verify.add_argument(
         "--approval",

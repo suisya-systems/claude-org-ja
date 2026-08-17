@@ -32,6 +32,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import spawn_gate  # noqa: E402
 
 WORKER_DIR = "/tmp/org/workers/login-fix"
+#: Seeded spawn time for VerifyTests. Must be in the past relative to the
+#: real clock, because `verify` compares the verification it writes (stamped
+#: `now` by SQLite) against the latest `worker_spawned`.
+_PAST = "2000-01-01T00:00:00.000Z"
 TASK = "login-fix"
 
 
@@ -103,7 +107,7 @@ class VerifyTests(unittest.TestCase):
             self.db,
             "worker_spawned",
             {"task": TASK, "worker": f"worker-{TASK}", "dir": WORKER_DIR},
-            "2026-08-18T00:00:00.000Z",
+            _PAST,
         )
 
     def tearDown(self) -> None:
@@ -185,22 +189,105 @@ class VerifyTests(unittest.TestCase):
         self.assertEqual(code, spawn_gate.EXIT_FIRE)
         self.assertIn("run_row", out["failures"])
 
-    def test_delegate_sent_payload_is_the_fallback_dir_source(self) -> None:
-        """Post-merge cleanup clears runs.worker_dir_id; delegate_sent stays."""
-        conn = sqlite3.connect(self.db)
-        try:
-            conn.execute("UPDATE runs SET worker_dir_id = NULL")
-            conn.commit()
-        finally:
-            conn.close()
+    def test_runs_row_is_the_fallback_when_delegate_sent_is_absent(self) -> None:
+        """No delegate_sent (older run): runs.worker_dir_id still serves."""
+        code, out = _run(self._argv())
+        self.assertEqual(code, spawn_gate.EXIT_OK)
+        self.assertEqual(out["checks"]["expected_worker_dir_source"], "runs")
+
+    def test_delegate_sent_is_preferred_over_the_mutable_runs_row(self) -> None:
+        """Step 4's upsert_run can move runs.worker_dir_id; events cannot."""
         _seed_event(
             self.db,
             "delegate_sent",
             {"task": TASK, "worker": f"worker-{TASK}", "dir": WORKER_DIR},
-            "2026-08-17T23:00:00.000Z",
+            _PAST,
         )
-        code, _ = _run(self._argv())
+        code, out = _run(self._argv())
         self.assertEqual(code, spawn_gate.EXIT_OK)
+        self.assertEqual(
+            out["checks"]["expected_worker_dir_source"], "delegate_sent"
+        )
+
+    def test_runs_row_moved_away_from_the_t1_value_is_a_failure(self) -> None:
+        """The gate must not certify once its independent reference is gone."""
+        _seed_event(
+            self.db,
+            "delegate_sent",
+            {"task": TASK, "worker": f"worker-{TASK}", "dir": WORKER_DIR},
+            _PAST,
+        )
+        conn = sqlite3.connect(self.db)
+        try:
+            conn.execute(
+                "INSERT INTO worker_dirs (abs_path, layout) VALUES (?, 'flat')",
+                ("/tmp/org/workers/moved",),
+            )
+            conn.execute(
+                "UPDATE runs SET worker_dir_id = "
+                "(SELECT id FROM worker_dirs WHERE abs_path = ?)",
+                ("/tmp/org/workers/moved",),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        code, out = _run(self._argv())
+        self.assertEqual(code, spawn_gate.EXIT_FIRE)
+        self.assertIn("worker_dir_divergence", out["failures"])
+
+    def test_degraded_send_delivery_evidence_is_accepted(self) -> None:
+        """spawn-flow 3-4 縮退: enumeration discarded, delivery is the probe."""
+        code, out = _run(
+            [
+                "--db-path",
+                str(self.db),
+                "verify",
+                "--task",
+                TASK,
+                "--pane-id",
+                "5",
+                "--evidence",
+                "send_delivery",
+                "--approval",
+                "sent",
+                "--instruction",
+                "send_message",
+            ]
+        )
+        self.assertEqual(code, spawn_gate.EXIT_OK)
+        self.assertIn("DELEGATE_COMPLETE", out["delegate_complete"])
+        self.assertIn("縮退", out["delegate_complete"])
+        self.assertEqual(out["recorded"]["evidence"], "send_delivery")
+        self.assertIsNone(out["recorded"]["peer_id"])
+
+    def test_degraded_mode_rejects_a_quoted_peer_record(self) -> None:
+        """A discarded enumeration must not ride in under the weaker mode."""
+        code, out = _run(self._argv(**{"--evidence": "send_delivery"}))
+        self.assertEqual(code, spawn_gate.EXIT_FIRE)
+        self.assertIn("evidence_mismatch", out["failures"])
+
+    def test_redispatch_appends_a_second_verification(self) -> None:
+        """A stale verification must not silently cover a later respawn."""
+        self.assertEqual(_run(self._argv())[0], spawn_gate.EXIT_OK)
+        _seed_event(
+            self.db,
+            "worker_spawned",
+            {"task": TASK, "worker": f"worker-{TASK}", "dir": WORKER_DIR},
+            "2099-01-01T00:00:00.000Z",
+        )
+        code, out = _run(self._argv())
+        self.assertEqual(code, spawn_gate.EXIT_OK)
+        self.assertEqual(out["status"], "verified")
+
+        conn = sqlite3.connect(self.db)
+        try:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM events WHERE kind = ?",
+                (spawn_gate.VERIFIED_EVENT,),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(count, 2)
 
     def test_rerun_is_idempotent(self) -> None:
         self.assertEqual(_run(self._argv())[0], spawn_gate.EXIT_OK)

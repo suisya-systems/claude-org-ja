@@ -446,11 +446,13 @@ python3 ../tools/spawn_gate.py verify \
 - **exit 10** → **報告しない。** `failures[]` / `remedy[]` が戻るべきステップを名指しするので、3-3b の承認 Enter 再送 → 3-4 の登録 poll へ戻り、通ってから再実行する
 - **exit 2** → 窓口へエラー通知（ゲート自体が壊れている。派遣は止めるが監視ループは継続する）
 
-**`--peer-*` の 3 つは 3-4 の `list_peers` で自分が実際に見たレコードの値を書く。** 期待値・記憶・spawn 引数の再掲で埋めない。`--peer-cwd` は state.db の `runs.worker_dir_id`（＝窓口の `gen_delegate_payload.py apply` が T1 で `delegate_sent` と同一トランザクションで書く値で、**ディスパッチャーは書けない**）と照合され、食い違えば exit 10 になる。これは 3-4b が背景タブ経路に課しているのと同じ org 束縛の弁別（契約 T-§4.2-id (O2)「id 自身とは独立な観測」）を、同一タブ経路にも最小コストで効かせるものである。
+**`--peer-*` の 3 つは 3-4 の `list_peers` で自分が実際に見たレコードの値を書く。** 期待値・記憶・spawn 引数の再掲で埋めない。`--peer-cwd` は窓口の `gen_delegate_payload.py apply` が T1 で書いた **`delegate_sent` イベントの `dir`** と照合され、食い違えば exit 10 になる。**照合の基準に `runs.worker_dir_id` ではなく `delegate_sent` を使うのは意図的である** — Step 4 項番 2 の `upsert_run(..., worker_dir_abs_path=...)` は `runs.worker_dir_id` を**上書きしうる**（つまりディスパッチャー自身が本ゲートの直前に動かせる値なので、独立照合にならない）のに対し、events テーブルは append-only で書き換えられない。両者が食い違う場合は `worker_dir_divergence` として exit 10 になる（どちらが誤りであれ独立基準が失われているため）。これは 3-4b が背景タブ経路に課しているのと同じ org 束縛の弁別（契約 T-§4.2-id (O2)「id 自身とは独立な観測」）を、同一タブ経路にも最小コストで効かせるものである。
+
+**3-4 の縮退経路（capability 形かつ未承認）を通った場合は `--evidence send_delivery` を使う。** 縮退では `list_peers` の列挙を ground truth にせず破棄し、`send_message` の送達成功そのものを readiness probe にする（3-4 の縮退注記 2〜5）ので、引用できる peer レコードが存在しない。このモードでは `--peer-*` を**渡してはならない**（渡すと `evidence_mismatch` で exit 10。破棄したはずの列挙が弱いモードの名前で紛れ込むのを防ぐ）。**代わりに機械照合できる半分が無くなる**ので、ゲート出力の報告本文はその旨を明示し、`worker_spawn_verified` にも `evidence=send_delivery` が残る（窓口が証拠の強さを一目で区別できる）。現行配備の全 backend は旧版 fallback で通常経路（`--evidence list_peers`、既定）に乗るため、今日この分岐には到達しない。
 
 **`--approval` / `--instruction` は attest であって検証ではない**（PTY 打鍵と MCP 送信は事後にこのホストから観測できない）。ゲートが保証するのは次の 2 点だけで、それ以上を主張しない:
 
-1. **機械照合できる半分**（`peer_cwd` / `peer_name` / `worker_spawned` の存在 / id が正整数）は assert では通せない
+1. **機械照合できる半分**（`peer_cwd` / `peer_name` / `worker_spawned` の存在 / id が正整数 / `delegate_sent` と `runs` の非乖離）は assert では通せない
 2. **省略が事後に必ず検出される**: ゲートを通ると `worker_spawn_verified` が記帳される。ゲートを通さずに報告すると記帳が無いので、`python3 ../tools/spawn_gate.py audit` が `worker_spawned` との差分として検出する（監視ループ 1 サイクルの一部。[`.dispatcher/CLAUDE.md`](../CLAUDE.md)「ワーカーペイン監視」参照）。2026-08-18 の 2 件はまさにこの差分の形で残っている
 
 > **これは v1 の止血であって、儀式そのものの決定論化ではない。** spawn → 承認 Enter → 登録 poll → 指示送信 を LLM の散文再演から外してコードに落とす設計は Interlock (v2) 側の担当で、v1 (claude-org-ja + runtime 0.1 系) へは逆移植しないことが Issue [#740](https://github.com/suisya-systems/claude-org-ja/issues/740) の 2026-08-17 追補で決定済みである（同追補の「移行方式」は "dual-write は行わず run 境界で切り替える / v1 で開始済みの run は v1 で完走させる" と定め、"常駐 Dispatcher AI loop と handover / resume のための大量の prompt prose" を Discard 側に置いている）。本 Step が変えるのは「省略が安くて露見しない」という**誘因と検出可能性**であって、儀式の実行主体ではない。
