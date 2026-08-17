@@ -140,6 +140,23 @@ VERIFIED_EVENT = "worker_spawn_verified"
 SPAWNED_EVENT = "worker_spawned"
 DELEGATE_SENT_EVENT = "delegate_sent"
 
+#: Deployment cutoff for ``audit``. Spawns before this predate the gate, so
+#: their missing ``worker_spawn_verified`` proves nothing and would bury the
+#: live findings (the DB carries ~380 such rows back to 2026-05).
+#:
+#: This is a **fixed** date on purpose, not a rolling window. A rolling
+#: horizon would be correct only during the first day after rollout: after
+#: that it silently drops a still-active unverified spawn out of the report
+#: the moment it ages past the window, and every later monitoring cycle
+#: would say "clean" while the gap is still actionable.
+#:
+#: **UTC**, like every ``occurred_at``. Note the offset: the 2026-08-18 JST
+#: incidents are stamped ``2026-08-17T17:07Z`` / ``…T19:01Z`` and therefore
+#: fall *before* this cutoff. That is correct — the gate did not exist when
+#: they happened, so their missing event is expected, not a finding. They
+#: are the shape the detector looks for, not rows it should report now.
+GATE_EPOCH = "2026-08-18T00:00:00.000Z"
+
 #: Where a failing check sends the dispatcher back to. Keyed by check id.
 _REMEDY = {
     "run_row": (
@@ -160,6 +177,12 @@ _REMEDY = {
         "--evidence send_delivery では list_peers 列挙を破棄しているので "
         "--peer-id / --peer-name / --peer-cwd を渡してはならない。"
         "列挙を実際に見たなら --evidence list_peers を使う。"
+    ),
+    "bound_pane_id": (
+        "背景タブ経路 (placement=background_tab) では、list_peers の数値 id が "
+        "spawn_claude_pane の戻り値 (bound_pane_id) と完全一致することが受理条件 "
+        "(spawn-flow 3-4b)。一致しないレコードは別ペイン (並走 org の同名 worker や "
+        "退役し損ねた前回分) なので、ゲートを開けずに 3-4b の登録 poll を続ける。"
     ),
     "peer_cwd": (
         "list_peers レコードの cwd が窓口の記録した worker dir と一致しない。"
@@ -394,6 +417,16 @@ def cmd_verify(args) -> int:
             peer_id = _positive_int(args.peer_id)
             if peer_id is None:
                 failures.append("peer_id")
+            elif (
+                args.placement == "background_tab"
+                and pane_id is not None
+                and peer_id != pane_id
+            ):
+                # spawn-flow 3-4b opens the background gate only on an exact
+                # `bound_pane_id` match. Accepting any positive id here would
+                # let a stale same-name/same-cwd worker's peer record certify
+                # the freshly spawned pane while that pane stays blocked.
+                failures.append("bound_pane_id")
         elif args.peer_id is not None or args.peer_name or args.peer_cwd:
             # `send_delivery` means the enumeration was discarded, so there
             # is no peer record to quote. Accepting one anyway would let a
@@ -476,6 +509,7 @@ def cmd_verify(args) -> int:
         "peer_id": peer_id,
         "peer_cwd": (args.peer_cwd or "").strip() or None,
         "evidence": args.evidence,
+        "placement": args.placement,
         "approval": args.approval,
         "instruction": args.instruction,
         "transport": _resolve_transport(args.transport),
@@ -583,9 +617,9 @@ def cmd_audit(args) -> int:
                 verified[task] = ev["occurred_at"]
 
         cutoff = _cutoff_iso(args.older_than_min)
-        horizon = _cutoff_iso(args.within_hours * 60)
+        since = (args.since or "").strip() or None
         findings = []
-        skipped = {"in_grace": 0, "before_horizon": 0, "terminal_run": 0}
+        skipped = {"in_grace": 0, "before_gate_epoch": 0, "terminal_run": 0}
         for task, spawned_at in sorted(spawned.items(), key=lambda kv: kv[1]):
             verified_at = verified.get(task)
             if verified_at is not None and verified_at >= spawned_at:
@@ -595,10 +629,11 @@ def cmd_audit(args) -> int:
                 # mid-ceremony. Not a finding yet.
                 skipped["in_grace"] += 1
                 continue
-            if horizon is not None and spawned_at < horizon:
-                # Predates the gate's deployment (or is simply old); the
-                # missing event says nothing about that dispatch.
-                skipped["before_horizon"] += 1
+            if since is not None and spawned_at < since:
+                # Predates the gate's deployment, so the missing event says
+                # nothing about that dispatch. Fixed cutoff, not a rolling
+                # window: anything after it stays reportable forever.
+                skipped["before_gate_epoch"] += 1
                 continue
             if task in terminal_tasks:
                 skipped["terminal_run"] += 1
@@ -627,7 +662,7 @@ def cmd_audit(args) -> int:
             {
                 "status": "unverified_spawns" if findings else "clean",
                 "grace_minutes": args.older_than_min,
-                "horizon_hours": args.within_hours,
+                "since": since,
                 "finding_count": len(findings),
                 # Surfaced, never silent: a reader must be able to tell
                 # "nothing is wrong" from "the filters ate everything".
@@ -679,6 +714,16 @@ def build_parser() -> argparse.ArgumentParser:
     verify.add_argument("--task", required=True, help="task_id")
     verify.add_argument(
         "--pane-id", required=True, help="numeric pane id returned by spawn_claude_pane"
+    )
+    verify.add_argument(
+        "--placement",
+        default="same_tab",
+        choices=("same_tab", "background_tab"),
+        help=(
+            "where the pane was placed. background_tab (spawn-flow 3-1d/3-2b) "
+            "additionally requires --peer-id to equal --pane-id, which is the "
+            "bound_pane_id equality 3-4b makes the sole gate-opening key."
+        ),
     )
     verify.add_argument(
         "--evidence",
@@ -755,13 +800,13 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     audit.add_argument(
-        "--within-hours",
-        type=int,
-        default=24,
+        "--since",
+        default=GATE_EPOCH,
         help=(
-            "Look-back horizon in hours. Spawns older than this predate the "
-            "gate and their missing event proves nothing, so they are "
-            "skipped and counted under skipped.before_horizon. 0 disables."
+            "Fixed deployment cutoff (ISO-8601 UTC). Spawns before it predate "
+            "the gate and are counted under skipped.before_gate_epoch; "
+            "everything after it stays reportable no matter how old it gets. "
+            "Pass an empty string to disable."
         ),
     )
     audit.set_defaults(func=cmd_audit)

@@ -440,6 +440,9 @@ python3 ../tools/spawn_gate.py verify \
   --peer-cwd <同じレコードの cwd> \
   --approval {sent|not_shown} \
   --instruction {send_message|send_keys|both}
+  # 背景タブ経路 (3-1d/3-2b) を通った場合のみ --placement background_tab を足す
+  # (--peer-id == --pane-id の完全一致を要求する。3-4b の受理条件と同じ)
+  # 3-4 の縮退経路を通った場合は --evidence send_delivery（--peer-* は渡さない）
 ```
 
 - **exit 0** → stdout の `delegate_complete` を `mcp__renga-peers__send_message(to_id="secretary", ...)` でそのまま送る（前置き・後置きを足さない）
@@ -453,6 +456,6 @@ python3 ../tools/spawn_gate.py verify \
 **`--approval` / `--instruction` は attest であって検証ではない**（PTY 打鍵と MCP 送信は事後にこのホストから観測できない）。ゲートが保証するのは次の 2 点だけで、それ以上を主張しない:
 
 1. **機械照合できる半分**（`peer_cwd` / `peer_name` / `worker_spawned` の存在 / id が正整数 / `delegate_sent` と `runs` の非乖離）は assert では通せない
-2. **省略が事後に必ず検出される**: ゲートを通ると `worker_spawn_verified` が記帳される。ゲートを通さずに報告すると記帳が無いので、`python3 ../tools/spawn_gate.py audit` が `worker_spawned` との差分として検出する（監視ループ 1 サイクルの一部。[`.dispatcher/CLAUDE.md`](../CLAUDE.md)「ワーカーペイン監視」参照）。2026-08-18 の 2 件はまさにこの差分の形で残っている
+2. **省略が事後に必ず検出される**: ゲートを通ると `worker_spawn_verified` が記帳される。ゲートを通さずに報告すると記帳が無いので、`python3 ../tools/spawn_gate.py audit`（固定の deployment cutoff `--since` 以降の spawn は、何日経っても報告対象から消えない） が `worker_spawned` との差分として検出する（監視ループ 1 サイクルの一部。[`.dispatcher/CLAUDE.md`](../CLAUDE.md)「ワーカーペイン監視」参照）。2026-08-18 の 2 件はまさにこの差分の形で残っている
 
 > **これは v1 の止血であって、儀式そのものの決定論化ではない。** spawn → 承認 Enter → 登録 poll → 指示送信 を LLM の散文再演から外してコードに落とす設計は Interlock (v2) 側の担当で、v1 (claude-org-ja + runtime 0.1 系) へは逆移植しないことが Issue [#740](https://github.com/suisya-systems/claude-org-ja/issues/740) の 2026-08-17 追補で決定済みである（同追補の「移行方式」は "dual-write は行わず run 境界で切り替える / v1 で開始済みの run は v1 で完走させる" と定め、"常駐 Dispatcher AI loop と handover / resume のための大量の prompt prose" を Discard 側に置いている）。本 Step が変えるのは「省略が安くて露見しない」という**誘因と検出可能性**であって、儀式の実行主体ではない。

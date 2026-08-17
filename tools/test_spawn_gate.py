@@ -177,6 +177,24 @@ class VerifyTests(unittest.TestCase):
         code, _ = _run(self._argv(**{"--peer-cwd": WORKER_DIR + "/"}))
         self.assertEqual(code, spawn_gate.EXIT_OK)
 
+    def test_background_tab_requires_peer_id_to_equal_pane_id(self) -> None:
+        """3-4b opens the background gate only on exact bound_pane_id match."""
+        code, out = _run(
+            self._argv(**{"--placement": "background_tab", "--peer-id": "9"})
+        )
+        self.assertEqual(code, spawn_gate.EXIT_FIRE)
+        self.assertIn("bound_pane_id", out["failures"])
+
+    def test_background_tab_accepts_the_bound_pane_id(self) -> None:
+        code, out = _run(self._argv(**{"--placement": "background_tab"}))
+        self.assertEqual(code, spawn_gate.EXIT_OK)
+        self.assertEqual(out["recorded"]["placement"], "background_tab")
+
+    def test_same_tab_does_not_impose_id_equality(self) -> None:
+        """broker peer ids need not equal pane ids on the default path."""
+        code, _ = _run(self._argv(**{"--peer-id": "9"}))
+        self.assertEqual(code, spawn_gate.EXIT_OK)
+
     def test_wrong_peer_name_blocks_the_report(self) -> None:
         code, out = _run(self._argv(**{"--peer-name": "worker-other"}))
         self.assertEqual(code, spawn_gate.EXIT_FIRE)
@@ -336,8 +354,8 @@ class AuditTests(unittest.TestCase):
         # Tests seed fixed 2026-08 timestamps, so the default 24h horizon
         # would filter everything out; disable it unless a case sets it.
         argv = ["--db-path", str(self.db), "audit", *extra]
-        if "--within-hours" not in extra:
-            argv += ["--within-hours", "0"]
+        if "--since" not in extra:
+            argv += ["--since", ""]
         return _run(argv)
 
     def test_clean_when_every_spawn_is_verified(self) -> None:
@@ -399,14 +417,25 @@ class AuditTests(unittest.TestCase):
         self.assertEqual(code, spawn_gate.EXIT_FIRE)
         self.assertEqual(out["findings"][0]["last_verified_at"], "2026-08-18T00:00:30.000Z")
 
-    def test_horizon_excludes_spawns_that_predate_the_gate(self) -> None:
+    def test_gate_epoch_excludes_spawns_that_predate_the_gate(self) -> None:
         """383 pre-deployment spawns must not drown the live signal."""
         _seed_event(
             self.db, "worker_spawned", {"task": "ancient"}, "2026-05-11T07:40:30.206Z"
         )
-        code, out = self._audit("--older-than-min", "0", "--within-hours", "24")
+        code, out = self._audit(
+            "--older-than-min", "0", "--since", spawn_gate.GATE_EPOCH
+        )
         self.assertEqual(code, spawn_gate.EXIT_OK)
-        self.assertEqual(out["skipped"]["before_horizon"], 1)
+        self.assertEqual(out["skipped"]["before_gate_epoch"], 1)
+
+    def test_an_old_unverified_spawn_is_never_forgotten(self) -> None:
+        """A rolling window would drop this once it aged past 24h."""
+        _seed_event(
+            self.db, "worker_spawned", {"task": TASK}, "2026-08-19T00:00:00.000Z"
+        )
+        code, out = self._audit("--older-than-min", "0", "--since", spawn_gate.GATE_EPOCH)
+        self.assertEqual(code, spawn_gate.EXIT_FIRE)
+        self.assertEqual(out["finding_count"], 1)
 
     def test_completed_run_is_not_a_finding(self) -> None:
         """A run that finished is no longer actionable, and is counted."""
