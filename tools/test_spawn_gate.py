@@ -149,6 +149,22 @@ class VerifyTests(unittest.TestCase):
         self.assertEqual(payload["peer_id"], 5)
         self.assertEqual(payload["peer_cwd"], WORKER_DIR)
 
+    def test_transport_comes_from_the_shared_resolver(self) -> None:
+        """Not a literal: Epic #586 flipped DEFAULT_TRANSPORT to broker."""
+        from tools.transport import resolve as _resolve
+
+        _, out = _run(self._argv())
+        self.assertEqual(out["recorded"]["transport"], str(_resolve()))
+
+    def test_explicit_transport_wins(self) -> None:
+        _, out = _run(self._argv(**{"--transport": "renga"}))
+        self.assertEqual(out["recorded"]["transport"], "renga")
+
+    def test_limitations_travel_with_the_evidence(self) -> None:
+        """The attested/verified boundary must not live only in prose."""
+        _, out = _run(self._argv())
+        self.assertIn("機械検証", out["limitations"])
+
     def test_cwd_mismatch_blocks_the_report(self) -> None:
         """The one check the dispatcher cannot satisfy by asserting it."""
         code, out = _run(self._argv(**{"--peer-cwd": "/tmp/org/workers/other"}))

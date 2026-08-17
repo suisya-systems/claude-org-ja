@@ -183,8 +183,40 @@ _REMEDY = {
 }
 
 
+#: Restated on every ``verify`` result so the boundary travels with the
+#: evidence instead of living only in prose that a reader may not open.
+#: See the module docstring for why the tool cannot close this in v1.
+_ATTESTED_ONLY = (
+    "approval / instruction、および evidence=list_peers の peer_* は "
+    "dispatcher の申告であり、本ツールからは MCP を観測できないため機械検証"
+    "できない。ゲートが保証するのは (a) delegate_sent との cwd 照合等の"
+    "機械照合可能な半分と、(b) 記帳が無い報告を audit が必ず検出することの 2 点。"
+    "儀式そのものの決定論化は Interlock (v2) の担当 (Issue #740 2026-08-17 追補)。"
+)
+
+
 class GateError(Exception):
     """Unrecoverable problem: report status=error / exit 2."""
+
+
+def _resolve_transport(explicit: "str | None") -> str:
+    """Shared resolver first; a literal only if runtime import is unavailable.
+
+    ``tools.transport`` re-exports runtime's ``DEFAULT_TRANSPORT``, which
+    Epic #586 flipped renga -> broker. Hard-coding a default here would
+    silently stamp every verification event with the wrong transport in
+    the default configuration.
+    """
+    if explicit:
+        return explicit
+    try:
+        from tools.transport import resolve as _resolve
+
+        return str(_resolve())
+    except Exception:
+        # runtime not importable (fresh checkout / CI without the pin):
+        # fall back to the env var alone and say so via the literal.
+        return os.environ.get("ORG_TRANSPORT") or "unresolved"
 
 
 def _resolve_db(cli_override: "str | None") -> Path:
@@ -446,7 +478,7 @@ def cmd_verify(args) -> int:
         "evidence": args.evidence,
         "approval": args.approval,
         "instruction": args.instruction,
-        "transport": args.transport,
+        "transport": _resolve_transport(args.transport),
     }
 
     # Idempotent within one spawn: a re-run after a delivery hiccup must not
@@ -489,6 +521,7 @@ def cmd_verify(args) -> int:
                 "worker": worker,
                 "recorded": payload,
                 "checks": checks,
+                "limitations": _ATTESTED_ONLY,
                 "delegate_complete": _delegate_complete_body(
                     task_id, worker, pane_id, peer_id, args.evidence
                 ),
@@ -698,8 +731,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     verify.add_argument(
         "--transport",
-        default=os.environ.get("ORG_TRANSPORT", "renga"),
-        help="ORG_TRANSPORT resolved value, recorded on the event.",
+        default=None,
+        help=(
+            "Transport to record on the event. Defaults to the shared "
+            "resolver (tools.transport.resolve: explicit > $ORG_TRANSPORT > "
+            "DEFAULT_TRANSPORT), not to a literal, so the recorded evidence "
+            "cannot drift from the code default that Epic #586 flipped."
+        ),
     )
     verify.set_defaults(func=cmd_verify)
 
