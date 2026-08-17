@@ -351,8 +351,8 @@ class AuditTests(unittest.TestCase):
         self._tmp.cleanup()
 
     def _audit(self, *extra: str) -> "tuple[int, dict]":
-        # Tests seed fixed 2026-08 timestamps, so the default 24h horizon
-        # would filter everything out; disable it unless a case sets it.
+        # Tests seed fixed timestamps around GATE_EPOCH, so the default cutoff
+        # would filter some of them out; disable it unless a case sets it.
         argv = ["--db-path", str(self.db), "audit", *extra]
         if "--since" not in extra:
             argv += ["--since", ""]
