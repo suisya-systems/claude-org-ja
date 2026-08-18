@@ -92,13 +92,22 @@ helper が実ファイル書き出しを行うもの (ready_to_spawn 時):
 - `.state/workers/worker-{task_id}.md` (Status: planned)
 - `.state/dispatcher/outbox/{task_id}-instruction.md` (send_message の本文)
 
-ディスパッチャーは MCP 呼び出し後に `.state/workers/worker-{task_id}.md` の Status を `active` に遷移させ、`.state/journal.jsonl` に `worker_spawned` を追記する。**`list_peers` 待ちで「在」を確定して控えた数値 `id` がある場合は、同じ post-spawn 状態記録の中で `../.state/dispatcher/worker-idle-state.json` へ `same_tab_peer_id` / `same_tab_observed_at` を merge する**（helper 経路・spawn-flow 3-4 経路のどちらから来てもここに合流する。書いてよい id の限定と spawn 放棄時の始末を含む手順は [`.dispatcher/references/spawn-flow.md`](references/spawn-flow.md) Step 4 の該当項が正本）。journal 追記は **必ず helper 経由** で行うこと（Bash で生 JSON を `>>` で append しない）:
+ディスパッチャーは MCP 呼び出し後に `.state/workers/worker-{task_id}.md` の Status を `active` に遷移させ、events テーブル（`.state/state.db`）へ `worker_spawned` を追記する。**その直後に [`.dispatcher/references/spawn-flow.md`](references/spawn-flow.md) Step 5 の派遣完了ゲート（`python3 ../tools/spawn_gate.py verify ...`）を通し、その stdout の `delegate_complete` をそのまま窓口へ送る**（`DELEGATE_COMPLETE` を自分の文で書かない。ゲートが exit 10 なら報告せず 3-3b / 3-4 へ戻る）。**この 1 行は helper 経路にも等しく効く** — helper の `after_spawn[]` に乗ると spawn-flow 3-4 / Step 5 の散文を読まずに列挙が走るので、ゲートの適用はここで宣言する。**`list_peers` 待ちで「在」を確定して控えた数値 `id` がある場合は、同じ post-spawn 状態記録の中で `../.state/dispatcher/worker-idle-state.json` へ `same_tab_peer_id` / `same_tab_observed_at` を merge する**（helper 経路・spawn-flow 3-4 経路のどちらから来てもここに合流する。書いてよい id の限定と spawn 放棄時の始末を含む手順は [`.dispatcher/references/spawn-flow.md`](references/spawn-flow.md) Step 4 の該当項が正本）。journal 追記は **必ず helper 経由** で行うこと（Bash で生 JSON を `>>` で append しない）:
 
 ```bash
 # ディスパッチャーの cwd は .dispatcher/ なので相対パスに注意。
-# helper は自身の位置から repo root を解決し、<repo_root>/.state/journal.jsonl
-# に書く（cwd-relative ではない）。
+# helper は自身の位置から repo root を解決し、<repo_root>/.state/state.db の
+# events テーブルへ書く（cwd-relative ではない。jsonl 側は M4 / Issue #267 で
+# 廃止済みで、tools/journal_append.py の docstring が DB を唯一の書き先と定める）。
 bash ../tools/journal_append.sh worker_spawned worker=worker-{task_id} dir={dir} task={task_id}
+
+# 続けて派遣完了ゲート。--peer-* は 3-4 の list_peers で実際に観測した値を渡す
+# （--peer-cwd は窓口が T1 で書いた runs.worker_dir_id と照合される）。
+# exit 0 のときだけ stdout の delegate_complete をそのまま窓口へ送る。
+python3 ../tools/spawn_gate.py verify \
+  --task {task_id} --pane-id {pane_id} \
+  --peer-id {list_peers の数値 id} --peer-name {同 name} --peer-cwd {同 cwd} \
+  --approval sent --instruction send_message
 ```
 
 helper（`tools/journal_append.sh` / `tools/journal_append.py`）は core-harness 0.3.0 の `core_harness.audit` を呼び出し、`ts` (ISO-8601 UTC) の自動付与、JSON エスケープ、`fcntl/flock` による並行書き込みロックを担う。event 名と payload key の規約は [`docs/journal-events.md`](../docs/journal-events.md) を参照。
@@ -150,6 +159,7 @@ mcp__renga-peers__send_message(to_id="secretary", message="...")
 
 - 最初のワーカー派遣完了後 `/loop 3m` で監視ループを開始、全ワーカーペインが閉じたら停止（curate-inflight 存在中は継続、[Step 5.3](references/worker-monitoring.md#step-5-3)）
 - 各サイクルで `poll_events` → `check_messages` → `list_panes` → `inspect_pane` → stall / relay gap / pane_output_without_peer_msg 評価の順
+- **各サイクルの冒頭で `python3 ../tools/spawn_gate.py audit` を 1 回叩く**（spawn 儀式の未検証検出。exit 0 = clean で何もしない / exit 10 = `findings[]` の worker を `inspect_pane` で実見し、承認プロンプトで停止していれば [`.dispatcher/references/spawn-flow.md`](references/spawn-flow.md) 3-3b から復旧してから Step 5 のゲートを通し直す / exit 2 は窓口へエラー通知）。既定の grace window は 5 分（儀式の途中で誤発火しない）、除外は固定の deployment cutoff `--since`（既定 `GATE_EPOCH` = 2026-08-18）だけで、ゲート導入前の spawn は「記帳が無い」ことに意味が無いので落とす一方、**それ以降の未検証 spawn は何日経っても報告され続ける**（rolling window にすると、まだ生きている未検証 worker が一定時間で勝手に報告から消えて「異常なし」に見えてしまう）。除外した件数は `skipped.{in_grace,before_gate_epoch,terminal_run}` に必ず出るので、「異常なし」と「フィルタが全部食った」は取り違えられない。**これは 2026-08-18 の 2 件（承認 Enter・登録確認・指示送信のいずれも未実行のまま「完了」と報告し、窓口が `inspect_pane` するまで誰も気付けなかった）に対する唯一の自動検出経路**である — 当該ワーカーはまだ 1 度も peer message を出していないため、Step 5.2 の pane_output_without_peer_msg（`worker が過去に peer-msg 履歴あり` を要件にする）では構造的に拾えない
 - stall 検出 (Step 5) の screen-change 判定は **正規化済み全可視行のコンテンツハッシュ** で行う (Issue #680)。旧 `(target_line + cursor)` 単点比較は footer/cursor が静的なまま scrollback が動く ultracode/長時間ツール実行 worker を idle と誤観測して STALL を誤発火していた。ハッシュ算出・spinner 解析・active-spinner 抑止/cap 判定・idle-state 遷移は helper `tools/inspect_pane_state.py` に codify (prose は出力を state に反映するだけ)。詳細は [`.dispatcher/references/worker-monitoring.md` Step 5 (b)](references/worker-monitoring.md)
 - 新形式 active spinner (`{glyph} {Verb}… (Xm Ys · ...)` / `(Xh Xm Xs · ...)`) を回し続けている worker は `SPINNER_ACTIVE_SUPPRESS_CAP_MIN = 90` 分まで STALL/PANE_OUTPUT を抑止する (Issue #671、deep-research/ultracode の正常な長考 1 turn を誤 STALL しない)。elapsed 増加中かつ cap 未到達の間だけ抑止し、cap 到達 / spinner 凍結で抑止解除して anomaly 経路に戻す (API dead の永久マスク防止)。旧形式 `for Xm Ys` spinner は従来どおり Step 4 の 5 分 ERROR 経路 (新旧 regex は disjoint)。詳細は [`.dispatcher/references/worker-monitoring.md` Step 5 (b-3)](references/worker-monitoring.md)
 - stall 検出 (Step 5) は通常 lookback `STALL_SECRETARY_LOOKBACK_MIN = 15` 分で評価するが、対象 worker の task に対して `pr_opened` event が journal に記録済みかつ `pr_merged` が未記録の **PR-pending-merge sub-state** では `STALL_PR_MERGE_LOOKBACK_MIN = 60` 分に拡張する (Issue #304、session #12 の merge 承認待ち誤発火を抑制)。`pr_opened` / `pr_merged` は Secretary が emit する event (`docs/journal-events.md` 参照) で、worker が直接書く event ではない。詳細は [`.dispatcher/references/worker-monitoring.md` Step 5 (b-2)](references/worker-monitoring.md)
