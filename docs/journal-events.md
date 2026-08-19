@@ -182,6 +182,7 @@ dedupe_key=<sha256>`); direct DB INSERTs are forbidden per
 |------------------------|-----------------------------------------------------------|-----------|------------|--------------|
 | `ci_completed`         | `pr`, `repo`, `status`, `duration_sec`, `head`, `fail_count`?, `pending_count`?, `total_checks`?, `retry_recommended`?, `retry_after_sec`?, `probe_attempts`? | secretary | secretary  | E4           |
 | `pr_watch_pane_started`| `pr`, `repo`, `pane_id`                                   | secretary | secretary  | —            |
+| `pr_conflict_detected` | `pr`, `repo`, `head`, `mergeable`, `merge_state_status`    | secretary | secretary  | —            |
 
 `status` ∈ `{passed, failed, incomplete, indeterminate, canceled}`.
 `head` (Issue #636)
@@ -224,6 +225,32 @@ Issue #685 additive payload keys (base keys above are unchanged):
 The probe is retried with exponential backoff (initial 5s, doubling to
 a 30s cap) inside `tools/pr_watch.py`, so a transient gh failure
 resolves to a definitive `passed`/`failed` before the budget is spent.
+
+`pr_conflict_detected` (Issue #946) is written by `tools/pr_watch.py`
+when its ci-watch poll observes `gh pr view --json mergeable` reporting
+`CONFLICTING` for the PR's current head. A conflicting head cannot be
+merged into base, so GitHub never builds the merge ref and **no
+`pull_request` workflow fires at all** — the PR sits at zero checks,
+which every check-arrival probe reads as "CI has not started yet". That
+is what left kura PR #248 silent on 2026-08-19 until a human noticed.
+`head` is the short sha the conflict was observed on (or `"unknown"`
+when `headRefOid` was unreadable), `mergeable` is always `CONFLICTING`,
+and `merge_state_status` carries GitHub's `mergeStateStatus` (typically
+`DIRTY`) for triage. A `PR_CONFLICT: PR #<n> (head=<sha>, ...)` peer
+message is pushed alongside it on the same best-effort
+`_notify_or_record` path as the other pr-watch signals, so a dropped
+push still surfaces as `notify_failed` with
+`failed_kind: "pr_conflict_detected"`.
+
+The event is **not terminal**: a conflict is cleared by a re-push, and
+the new head's CI is exactly what the watcher should go on to observe,
+so `tools/pr_watch.py` keeps polling and emits the usual `ci_completed`
+for the head that resolves it. It is emitted **at most once per head** —
+a conflict persists across every poll until someone pushes, and the head
+moving is precisely the event that makes it worth re-announcing.
+`mergeable: UNKNOWN` (GitHub computes mergeability asynchronously, so a
+freshly pushed head reports it for a few seconds) and an unreadable
+probe are both silent: neither records an event nor pushes a message.
 
 `pr_watch_pane_started` is a best-effort audit row written by the
 `/pr-watch-pane` skill (secretary) when it spawns a CI/merge-watch pane
