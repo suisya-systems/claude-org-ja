@@ -2,11 +2,13 @@
 # Tests for block-foreground-subagent.sh
 # Validates: exit code (0=allow/passthrough, 2=block) and stderr messages.
 #
-# 確認観点:
-#   - Agent + run_in_background=true (boolean)   -> allow (exit 0)
-#   - Agent + false / 欠落 / 非 boolean true      -> block (exit 2, 前景扱い)
-#   - Agent + tool_input 欠落                     -> block
-#   - top-level run_in_background (tool_input 外) -> block (.tool_input.* のみ参照)
+# 確認観点 (Issue #942 でハーネス仕様変更に追随):
+#   - Agent + run_in_background 欠落              -> allow (現行ハーネス = 常時背景)
+#   - Task  + run_in_background 欠落              -> block (旧仕様の既定前景を維持)
+#   - Agent/Task + run_in_background=true         -> allow (旧ハーネス互換)
+#   - Agent/Task + false / 非 boolean true        -> block (exit 2, 前景ないし不明指定)
+#   - Agent + tool_input 欠落                     -> block (fail-closed)
+#   - top-level run_in_background (tool_input 外) -> 無視 (.tool_input.* のみ参照)
 #   - legacy Task の前景 / 背景                    -> block / allow
 #   - 非 subagent ツール / 近接 tool_name          -> passthrough (exact match)
 #   - 不正 JSON / 空 stdin / 非 object payload     -> block (fail-closed)
@@ -73,13 +75,20 @@ stderr=$(mktemp); TMPFILES+=("$stderr")
 json='{"tool_name":"Agent","tool_input":{"description":"x","prompt":"y","run_in_background":false}}'
 ec=$(run_hook "$json" "$stderr")
 assert_exit 2 "$ec" "Agent run_in_background=false is blocked"
-assert_stderr_contains "run_in_background=true" "$stderr" "deny stderr guides run_in_background=true"
+assert_stderr_contains "run_in_background に true 以外が指定されています" "$stderr" \
+  "deny stderr names the offending run_in_background value"
 
-# 4. Agent + run_in_background omitted (default foreground) -> block
+# 4. Agent + run_in_background omitted -> allow (Issue #942)
+#    現行ハーネスは Agent の入力スキーマから run_in_background を廃止し subagent を
+#    常時背景実行にした。2026-08-19 の実測 payload は
+#      {"description":...,"prompt":...,"subagent_type":...}
+#    でキー自体が無く、明示指定しても additionalProperties:false で除去される。
+#    旧判定 (`== true` を要求) はこの形を deny してしまい、全 subagent が
+#    誤ブロックされていた。これが本テストの回帰対象。
 stderr=$(mktemp); TMPFILES+=("$stderr")
-json='{"tool_name":"Agent","tool_input":{"description":"x","prompt":"y"}}'
+json='{"tool_name":"Agent","tool_input":{"description":"x","prompt":"y","subagent_type":"general-purpose"}}'
 ec=$(run_hook "$json" "$stderr")
-assert_exit 2 "$ec" "Agent run_in_background omitted is blocked"
+assert_exit 0 "$ec" "Agent with no run_in_background key is allowed (harness always-background)"
 
 # 5. Agent + run_in_background="true" (string, not strict boolean) -> block
 stderr=$(mktemp); TMPFILES+=("$stderr")
@@ -104,20 +113,42 @@ stderr=$(mktemp); TMPFILES+=("$stderr")
 json='{"tool_name":"Agent"}'
 ec=$(run_hook "$json" "$stderr")
 assert_exit 2 "$ec" "Agent with no tool_input is blocked"
+assert_stderr_contains "object 形式の tool_input がありませんでした" "$stderr" \
+  "missing tool_input is denied by the subagent payload guard (not the bg check)"
 
-# 9. run_in_background at TOP level (outside tool_input) -> block
-#    The hook reads .tool_input.run_in_background only; a top-level key must
-#    NOT be treated as background (guards against an over-broad fallback).
+# 9. run_in_background at TOP level (outside tool_input) is IGNORED.
+#    The hook reads .tool_input.run_in_background only. Scoping is asserted from
+#    both sides so the test still fails if the lookup ever widens to top-level:
+#    (a) a top-level false must NOT cause a block, and
+#    (b) a tool_input false must block even when top-level says true.
 stderr=$(mktemp); TMPFILES+=("$stderr")
-json='{"tool_name":"Agent","run_in_background":true,"tool_input":{}}'
+json='{"tool_name":"Agent","run_in_background":false,"tool_input":{"description":"x","prompt":"y"}}'
 ec=$(run_hook "$json" "$stderr")
-assert_exit 2 "$ec" "top-level run_in_background (outside tool_input) is blocked"
+assert_exit 0 "$ec" "top-level run_in_background=false is ignored (tool_input scope only)"
 
-# 10. legacy Task + run_in_background omitted (foreground) -> block
+# 9b. tool_input の false は top-level の true に優先して block される
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json='{"tool_name":"Agent","run_in_background":true,"tool_input":{"description":"x","run_in_background":false}}'
+ec=$(run_hook "$json" "$stderr")
+assert_exit 2 "$ec" "tool_input run_in_background=false blocks despite top-level true"
+
+# 10. legacy Task + run_in_background omitted -> block。
+#     test 4 (Agent) と対になる契約。「キー欠落」は旧仕様では『既定前景』、現行仕様では
+#     『常時背景』という真逆の意味で、payload だけでは判別できない。現行ハーネスは
+#     Task を emit しないので、Task という名前が届いた時点で run_in_background が
+#     スキーマに存在した世代とみなし、欠落を前景として deny し続ける (旧世代の防護維持)。
 stderr=$(mktemp); TMPFILES+=("$stderr")
 json='{"tool_name":"Task","tool_input":{"description":"x","prompt":"y"}}'
 ec=$(run_hook "$json" "$stderr")
-assert_exit 2 "$ec" "Task foreground is blocked"
+assert_exit 2 "$ec" "Task with no run_in_background key is blocked (legacy default-foreground)"
+assert_stderr_contains "legacy Task ツールでは run_in_background の欠落が既定の前景実行を意味する" "$stderr" \
+  "Task omission is denied by the legacy-semantics branch"
+
+# 10b. legacy Task + run_in_background=false -> block (明示前景は従来どおり拒否)
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json='{"tool_name":"Task","tool_input":{"description":"x","run_in_background":false}}'
+ec=$(run_hook "$json" "$stderr")
+assert_exit 2 "$ec" "Task run_in_background=false is blocked"
 
 # --- Passthrough Cases (non-subagent / exact-match semantics) ---
 
