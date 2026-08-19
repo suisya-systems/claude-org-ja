@@ -42,20 +42,42 @@ import os
 import sys
 
 # Env vars that route peer_notify / the broker CLI at a *live* daemon.
-# Scrubbing all three forces the hermetic no-op path: peer_notify falls
-# back to the renga branch (no ORG_TRANSPORT=broker) which then
-# short-circuits because RENGA_SOCKET is gone too.
 LIVE_TRANSPORT_ENV = ("ORG_BROKER_STATE_DIR", "ORG_TRANSPORT", "RENGA_SOCKET")
+
+# Transport the scrub *pins* rather than unsets. See below for why an
+# unset ORG_TRANSPORT is no longer a safe hermetic state.
+HERMETIC_TRANSPORT = "renga"
 
 
 def scrub_live_transport_env() -> None:
-    """Remove live broker/renga transport env vars from ``os.environ``.
+    """Force the hermetic no-op transport state in ``os.environ``.
+
+    ``ORG_BROKER_STATE_DIR`` and ``RENGA_SOCKET`` are removed, and
+    ``ORG_TRANSPORT`` is **pinned to ``renga``** rather than removed.
+    The result is the same hermetic no-op as before: ``peer_notify``
+    takes the renga branch and short-circuits immediately because
+    ``RENGA_SOCKET`` is gone.
+
+    Why pin instead of unset (Issue #941). This guard used to rely on
+    "no ``ORG_TRANSPORT=broker``" meaning renga, which was true while
+    ``peer_notify`` did a raw ``== "broker"`` env check. It now resolves
+    through ``tools.transport.resolve()``, where an **unset**
+    ``ORG_TRANSPORT`` falls through to ``DEFAULT_TRANSPORT`` — flipped to
+    ``broker`` in runtime 0.1.28 (Epic #586). Merely popping the var
+    would therefore route tests to the *broker* branch, and with
+    ``ORG_BROKER_STATE_DIR`` also popped the broker CLI would fall back
+    to the default ``.state/broker`` — i.e. the live daemon. Popping all
+    three would turn this guard into the leak it exists to prevent.
+    Pinning the value keeps the intent (hermetic no-op) expressed as a
+    fact about the env rather than as an assumption about a default that
+    has since changed.
 
     Idempotent and process-wide: children spawned afterwards with an
     inherited environment start clean too.
     """
     for name in LIVE_TRANSPORT_ENV:
         os.environ.pop(name, None)
+    os.environ["ORG_TRANSPORT"] = HERMETIC_TRANSPORT
 
 
 def running_under_test() -> bool:

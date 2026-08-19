@@ -47,8 +47,18 @@ done
 
 # Already detached, or the caller asked for foreground: run pr_watch.py in
 # place and let its exit code propagate.
+# `-u` is load-bearing, not cosmetic (Issue #941). The detach path below
+# runs this with stdout redirected into a log file (and callers often add
+# a `| tee`), so stdout is a pipe/file rather than a tty and CPython
+# switches to 4 KiB block buffering. A watcher that emits a few short
+# progress lines per poll then blocks on `gh` fills that buffer only after
+# hours, so `.state/pr-watch-<PR>.log` stays 0 bytes while the watcher is
+# perfectly healthy. That is what produced the 2026-08-19 misdiagnosis: an
+# empty log was read as "wedged" and a working watcher was killed 15
+# minutes after it had already detected CI green. Unbuffered output makes
+# the log a truthful liveness signal.
 if [[ -n "${PR_WATCH_DETACHED:-}" || "$no_detach" == 1 ]]; then
-  exec python3 "$SCRIPT_DIR/pr_watch.py" ${forward_args[@]+"${forward_args[@]}"}
+  exec python3 -u "$SCRIPT_DIR/pr_watch.py" ${forward_args[@]+"${forward_args[@]}"}
 fi
 
 # --- Detach path: self re-exec in a new, SIGHUP-immune session. ---

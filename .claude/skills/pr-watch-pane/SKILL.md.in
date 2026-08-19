@@ -43,7 +43,7 @@ context リセットと無関係）に監視が継続し、人間が tmux ペイ
 
 > **peer push は best-effort**: `pr_watch.py` は CI 確定・マージ時に窓口へ `CI_COMPLETED` /
 > `PR_MERGED` の peer message を送ろうとするが、これは `tools/peer_notify.py` 経由の
-> best-effort（broker send CLI 不在 / `ORG_TRANSPORT`・`RENGA_SOCKET` 未設定の pane では
+> best-effort（broker send CLI 不在 / 解決先 transport が未構成の pane では
 > no-op）。daemon が非既定 state dir（herdr dogfood 等）で動く環境では、pane env に
 > `ORG_BROKER_STATE_DIR` が無いと broker send が既定 `.state/broker` を掴んで push が欠落する
 > （欠落しても canonical の events DB 行には影響しない）。**待つべき正路は上記 events DB 行と
@@ -141,9 +141,15 @@ context リセットと無関係）に監視が継続し、人間が tmux ペイ
      `tools/peer_notify.py` が `ORG_TRANSPORT` 未設定で silent no-op に落ちる（PR #73 障害の
      直接原因: broker queue に `CI_COMPLETED` が 1 件も入らず窓口が idle のまま気付かなかった）。
      `cwd` が cwd trap を吸収するのと同じ理屈で、この env 捕捉が **env trap** を吸収する。
-     `ORG_TRANSPORT` が空 / 未設定（renga 運用既定 or 無設定）なら Step 3 で `export
-     ORG_TRANSPORT` を**省く**（未設定のまま → `peer_notify` が renga にフォールバック ＝
-     renga opt-in 経路を壊さない）。`ORG_BROKER_STATE_DIR` も set のときだけ前置する。
+     `ORG_TRANSPORT` が空 / 未設定なら Step 3 で `export ORG_TRANSPORT` を**省く**。
+     これは**窓口ペインの解決結果をそのまま鏡写しにする**ための省略である（Refs #941）:
+     `peer_notify` は `tools/transport.py: resolve()` で分岐するので、未設定を渡された
+     watcher ペインは窓口ペインと同じく `DEFAULT_TRANSPORT`（= `broker`）へ解決する。
+     **かつての「未設定のまま → renga にフォールバック」という理由付けは失効している** —
+     未設定は今や renga ではなく broker を意味する。renga を使いたい場合は
+     `ORG_TRANSPORT=renga` が窓口ペインで**明示**されているはずで、その値はこの前置注入で
+     そのまま複製されるため、opt-in 経路は引き続き壊れない。`ORG_BROKER_STATE_DIR` も
+     set のときだけ前置する。
 
 ## Step 2: 冪等チェック（同一 PR の二重監視を防ぐ）
 
@@ -208,11 +214,14 @@ context リセットと無関係）に監視が継続し、人間が tmux ペイ
   silent no-op** になる（events テーブルへの `ci_completed` 書き込みは成功するのに窓口へ届かない
   ＝ まさに PR #73 の障害）。`PATH` 注入は broker 経路が shell out する `claude-org-runtime
   broker send` CLI（venv 内）を pane の PATH で解決可能にするため。
-  - **条件付き前置（renga opt-in を壊さない）**: `ORG_TRANSPORT` が空 / 未設定なら
-    `export ORG_TRANSPORT=...` を**丸ごと省く**（未設定のまま渡す ＝ `peer_notify` が renga に
-    フォールバック）。`ORG_BROKER_STATE_DIR` も set のときだけ前置する。空値を `''` で明示
-    export すると broker 経路が既定 state dir を掴む誤動作を招くため、**空なら export 文自体を
-    書かない**。
+  - **条件付き前置（窓口ペインの解決を鏡写しにする）**: `ORG_TRANSPORT` が空 / 未設定なら
+    `export ORG_TRANSPORT=...` を**丸ごと省く**。未設定を渡された watcher ペインは窓口ペインと
+    同じ `resolve()` を通って同じ transport（既定は `broker`）に着地するので、省略は
+    「窓口と同じ解決結果を継がせる」ことを意味する（Refs #941。以前ここには「未設定のまま渡す
+    ＝ renga にフォールバック」と書かれていたが、`peer_notify` が raw env 判定をやめた now では
+    未設定は broker に解決するため、その理由付けは失効している）。`ORG_BROKER_STATE_DIR` も
+    set のときだけ前置する。空値を `''` で明示 export すると broker 経路が既定 state dir を
+    掴む誤動作を招くため、**空なら export 文自体を書かない**。
   - **多層防御の位置づけ**: この env 注入は **path A（低遅延 push）の修理**であって単独の保証では
     ない。仮に注入漏れ / push 失敗が起きても、(B) ディスパッチャーの `event_deliveries` outbox
     relay が `ci_completed` 等の canonical event を直接 scan して窓口へ確実に relay するため
@@ -494,10 +503,12 @@ context リセットと無関係）に監視が継続し、人間が tmux ペイ
        > 「自己回復が発火せず人手待ち」（不便・可逆）で済むが、推定して外すと
        > 「別 org のペインを不可逆に close」になる。安全側は前者しかない。
 
-       Step 1 が `printenv` の結果で
-       `export ORG_TRANSPORT` を省くのは [`tools/peer_notify.py`](../../../tools/peer_notify.py)
-       が raw env で分岐する helper だから（`ORG_TRANSPORT == "broker"` のときだけ broker 経路、
-       それ以外は未設定を含めて renga 経路）で、判定基準の異なる別論点である
+       Step 1 が `printenv` の結果で `export ORG_TRANSPORT` を省くのは、
+       [`tools/peer_notify.py`](../../../tools/peer_notify.py) に窓口ペインと同じ解決を
+       継がせるため（同 helper は Refs #941 で raw env 判定をやめ `resolve()` 経由になった）で、
+       判定基準の異なる別論点である。**この carve-out の MUST NOT は影響を受けない** —
+       上の禁止は「`resolve()` の結果から Group B の駆動系を推定するな」であって、
+       `peer_notify` がどう分岐するかとは独立である
      - **確定できないときは carve-out を取らない**（fail-safe）: `ORG_TRANSPORT` に未知値が
        入っていて解決が `ValueError` になる等で「いま何が駆動しているか」を確定できない場合は、
        条件 (1) を**不成立**として扱い、下の「broker 以外」と同じくユーザーに報告して指示を仰ぐ

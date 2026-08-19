@@ -15,6 +15,7 @@ live broker daemon or an installed runtime.
 """
 from __future__ import annotations
 
+import builtins
 import io
 import json
 import os
@@ -365,27 +366,91 @@ class NotifyPeerBrokerTests(unittest.TestCase):
 
 
 class NotifyPeerDispatchTests(unittest.TestCase):
-    """ORG_TRANSPORT routing: only ``broker`` takes the broker branch."""
+    """Transport routing via ``tools.transport.resolve()`` (Issue #941).
 
-    def _assert_renga_path(self, transport_env: dict) -> None:
-        """With a non-broker transport the broker CLI is never called and
-        the renga branch runs (and no-ops False when RENGA_SOCKET unset)."""
+    The dispatch used to be a raw ``ORG_TRANSPORT == "broker"`` check, so
+    an *unset* value meant renga. It now goes through the project
+    resolver, where unset falls through to ``DEFAULT_TRANSPORT`` —
+    ``broker`` since runtime 0.1.28. These tests pin the new contract and
+    the never-raise fallbacks that guard it.
+    """
+
+    def _env_without_transport(self, transport_env: dict) -> dict:
         env = {k: v for k, v in os.environ.items()
                if k not in ("RENGA_SOCKET", "ORG_TRANSPORT")}
         env.update(transport_env)
-        with mock.patch.dict(os.environ, env, clear=True), \
+        return env
+
+    def _assert_renga_path(self, transport_env: dict) -> None:
+        """The broker CLI is never called and the renga branch runs
+        (no-ops False because RENGA_SOCKET is unset)."""
+        with mock.patch.dict(os.environ, self._env_without_transport(
+                transport_env), clear=True), \
                 mock.patch.object(peer_notify.subprocess, "run") as run:
             self.assertFalse(peer_notify.notify_peer("secretary", "hi"))
         run.assert_not_called()
 
-    def test_unset_transport_uses_renga(self) -> None:
-        self._assert_renga_path({})
+    def _assert_broker_path(self, transport_env: dict) -> None:
+        """The broker CLI is invoked and the renga Popen path is not."""
+        with mock.patch.dict(os.environ, self._env_without_transport(
+                transport_env), clear=True), \
+                mock.patch.object(peer_notify.subprocess, "run",
+                                  return_value=_FakeCompleted(0)) as run, \
+                mock.patch.object(peer_notify.subprocess, "Popen") as popen:
+            self.assertTrue(peer_notify.notify_peer("secretary", "hi"))
+        run.assert_called_once()
+        popen.assert_not_called()
+
+    def test_unset_transport_uses_broker_default(self) -> None:
+        """Regression for the Issue #941 trap.
+
+        A pane running on the default transport without an explicit
+        export must reach broker, not renga. Under the old raw-env check
+        this took the renga branch and the push silently went nowhere.
+        """
+        self._assert_broker_path({})
+
+    def test_explicit_broker_uses_broker(self) -> None:
+        self._assert_broker_path({"ORG_TRANSPORT": "broker"})
 
     def test_renga_transport_uses_renga(self) -> None:
+        """renga stays reachable as an explicit opt-in."""
         self._assert_renga_path({"ORG_TRANSPORT": "renga"})
 
     def test_unknown_transport_falls_back_to_renga(self) -> None:
+        """resolve() raises on an unknown flag; the helper must not.
+
+        The never-raise contract is the reason the raw-env fallback is
+        retained, so a typo'd ORG_TRANSPORT degrades exactly as before.
+        """
         self._assert_renga_path({"ORG_TRANSPORT": "something-else"})
+
+    def test_resolver_import_failure_falls_back_to_raw_env(self) -> None:
+        """With tools.transport unimportable (no runtime installed), the
+        helper keeps working on the historical raw-env dispatch."""
+        real_import = builtins.__import__
+
+        def boom(name, *a, **kw):
+            if name == "tools.transport":
+                raise ImportError("claude_org_runtime not installed")
+            return real_import(name, *a, **kw)
+
+        with mock.patch.object(builtins, "__import__", side_effect=boom):
+            with mock.patch.dict(os.environ, {"ORG_TRANSPORT": "broker"},
+                                 clear=False):
+                self.assertEqual(peer_notify._resolve_transport(), "broker")
+            env = {k: v for k, v in os.environ.items()
+                   if k != "ORG_TRANSPORT"}
+            with mock.patch.dict(os.environ, env, clear=True):
+                # Unset + no resolver -> historical behaviour (renga).
+                self.assertEqual(peer_notify._resolve_transport(), "renga")
+
+    def test_never_raises_on_resolver_error(self) -> None:
+        """Any resolver explosion maps to the fallback, never propagates."""
+        with mock.patch.dict(os.environ,
+                             {"ORG_TRANSPORT": "not-a-transport"},
+                             clear=False):
+            self.assertEqual(peer_notify._resolve_transport(), "renga")
 
 
 if __name__ == "__main__":

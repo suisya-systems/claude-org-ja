@@ -4,15 +4,17 @@ Issue #326 / #590. ``mcp__{renga-peers,org-broker}__send_message`` is
 only reachable from inside a Claude Code session — a CLI helper like
 ``tools/pr_watch.py`` cannot call MCP tools directly. ``notify_peer``
 bridges a Python CLI back into the peer-message channel and is
-**transport-neutral**: it picks the path from ``ORG_TRANSPORT``.
+**transport-neutral**: it picks the path from the resolved transport
+(:func:`tools.transport.resolve` — explicit > ``ORG_TRANSPORT`` env >
+``DEFAULT_TRANSPORT``), the same SoT every other ja consumer reads.
 
-* ``ORG_TRANSPORT`` unset / anything but ``broker`` → renga path. The
-  renga binary ships an ``mcp-peer`` subcommand that runs the same MCP
-  server over stdio, so spawning it as a subprocess and driving a
-  one-shot JSON-RPC handshake is the simplest reliable bridge. When
-  ``RENGA_SOCKET`` is unset (plain shell, CI, etc.) this is a silent
-  no-op so the caller keeps working in non-renga environments.
-* ``ORG_TRANSPORT=broker`` → broker path. Shells out to the frozen
+* ``renga`` → renga path. The renga binary ships an ``mcp-peer``
+  subcommand that runs the same MCP server over stdio, so spawning it as
+  a subprocess and driving a one-shot JSON-RPC handshake is the simplest
+  reliable bridge. When ``RENGA_SOCKET`` is unset (plain shell, CI, etc.)
+  this is a silent no-op so the caller keeps working in non-renga
+  environments.
+* ``broker`` → broker path. Shells out to the frozen
   ``claude-org-runtime broker send --to <id> --message <text>`` CLI and
   treats ``returncode == 0`` as delivered. Until that CLI ships
   (claude-org-runtime #93) the subprocess raises ``FileNotFoundError``,
@@ -36,6 +38,11 @@ Failure handling notes:
   ``docs/contracts/backend-interface-contract.md`` §2.1 / Issue #242).
   This helper inspects the result text and rejects that shape so a
   silent backend failure isn't reported as confirmed delivery.
+* The resolver import and call are both wrapped: this module keeps a
+  never-raise contract, so a missing ``claude_org_runtime`` install
+  (``tools.transport`` imports it at load time) or an unparseable
+  ``ORG_TRANSPORT`` value falls back to the historical raw-env check
+  rather than propagating. See :func:`_resolve_transport`.
 """
 from __future__ import annotations
 
@@ -52,6 +59,10 @@ _RUNTIME_BIN = "claude-org-runtime"
 _HANDSHAKE_TIMEOUT_SEC = 5.0
 _DROPPED_PREFIX = "(message dropped"
 
+# Transport flag literals (mirror ``claude_org_runtime.transport.TRANSPORTS``).
+_RENGA = "renga"
+_BROKER = "broker"
+
 
 def notify_peer(
     to_id: str,
@@ -62,25 +73,78 @@ def notify_peer(
 ) -> bool:
     """Send a peer message on the active transport. Best-effort.
 
-    Dispatches on ``ORG_TRANSPORT``: ``broker`` shells out to the
-    ``claude-org-runtime broker send`` CLI; anything else (including
-    unset) uses the renga ``mcp-peer`` JSON-RPC path. Returns ``True``
-    only on confirmed delivery and ``False`` for every other outcome
-    (transport not configured, binary missing, subprocess crash,
-    protocol error, timeout, non-zero exit, backend-unreachable shim).
-    Never raises. The signature and ``bool`` contract are identical
-    across transports.
+    Dispatches on :func:`_resolve_transport` (the ``tools.transport``
+    SoT, with a raw-env fallback): ``broker`` shells out to the
+    ``claude-org-runtime broker send`` CLI, ``renga`` uses the
+    ``mcp-peer`` JSON-RPC path. Returns ``True`` only on confirmed
+    delivery and ``False`` for every other outcome (transport not
+    configured, binary missing, subprocess crash, protocol error,
+    timeout, non-zero exit, backend-unreachable shim). Never raises.
+    The signature and ``bool`` contract are identical across transports.
     """
-    # Deliberately a raw env check, NOT tools.transport.resolve(): this
-    # module is stdlib-only and best-effort. transport.resolve() imports
-    # claude_org_runtime at load time (coupling this CLI bridge to the
-    # runtime install) and raises ValueError on unknown/empty values,
-    # which would violate the never-raise contract. The dispatch is
-    # binary anyway — broker vs. "everything else falls back to renga" —
-    # so the SoT resolver buys nothing here. (Issue #590.)
-    if os.environ.get("ORG_TRANSPORT") == "broker":
+    if _resolve_transport() == _BROKER:
         return _notify_peer_broker(to_id, message, timeout=timeout)
     return _notify_peer_renga(to_id, message, timeout=timeout, renga_bin=renga_bin)
+
+
+def _resolve_transport() -> str:
+    """Return the active transport flag (``renga`` / ``broker``).
+
+    Reads the project SoT resolver (:func:`tools.transport.resolve`,
+    which re-exports ``claude_org_runtime.transport.resolve_transport``)
+    so this CLI bridge routes exactly like every other ja consumer:
+    explicit > ``ORG_TRANSPORT`` env > ``DEFAULT_TRANSPORT``.
+
+    Why this matters (Issue #941). The historical raw-env check treated
+    "``ORG_TRANSPORT`` is not literally ``broker``" as renga. Since
+    runtime 0.1.28 (Epic #586) flipped ``DEFAULT_TRANSPORT`` to
+    ``broker``, a pane that runs on the default transport *without* an
+    explicit ``ORG_TRANSPORT`` export is really on broker — but this
+    helper routed it to renga, i.e. to a transport the org does not use
+    for peer messaging.
+
+    The observed failure is the CI-green push for PR
+    suisya-systems/interlock#36. ``events`` id=4233 (``notify_failed``)
+    records the pane env as ``{"ORG_TRANSPORT": false, "RENGA_SOCKET":
+    true, "ORG_BROKER_STATE_DIR": false}`` and the attempted transport as
+    ``"renga"``. Because ``RENGA_SOCKET`` was set, the renga branch did
+    not short-circuit — it drove a real ``renga mcp-peer`` handshake that
+    failed — so the push was not merely mis-labelled, it was aimed at the
+    wrong transport altogether. (Note: Issue #941's body reports this
+    payload as ``transport: "broker"``; the row itself says ``"renga"``.
+    The conclusion is unchanged — the dispatch disagreed with the
+    resolved transport — but the direction of the disagreement is the
+    opposite of the one written up.)
+
+    Under the resolver, the same pane (``ORG_TRANSPORT`` unset) resolves
+    to ``broker`` and the push goes to the broker CLI, which is where the
+    org's peer messages actually live.
+
+    **The never-raise contract still holds.** ``tools.transport``
+    imports ``claude_org_runtime`` at module load, and ``resolve()``
+    raises ``ValueError`` on an unknown flag. Both are caught here and
+    fall back to the historical raw-env behaviour, so an environment
+    without the runtime installed, or with a typo'd ``ORG_TRANSPORT``,
+    degrades exactly the way it did before rather than propagating an
+    exception into a best-effort notification path.
+    """
+    try:
+        from tools.transport import resolve
+    except Exception:  # noqa: BLE001 — runtime not installed / not importable
+        return _raw_env_transport()
+    try:
+        return resolve()
+    except Exception:  # noqa: BLE001 — unknown ORG_TRANSPORT value
+        return _raw_env_transport()
+
+
+def _raw_env_transport() -> str:
+    """Historical raw-env dispatch, kept as the never-raise fallback.
+
+    Only reachable when the SoT resolver is unavailable or rejects the
+    configured value; see :func:`_resolve_transport`.
+    """
+    return _BROKER if os.environ.get("ORG_TRANSPORT") == _BROKER else _RENGA
 
 
 def _notify_peer_broker(

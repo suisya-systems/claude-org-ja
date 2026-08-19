@@ -46,7 +46,7 @@ balanced split の判定 (target / direction の選択、MIN_PANE / secretary �
 - CLI (運用上の標準呼び出し): `claude-org-runtime dispatcher delegate-plan --task-json ... --panes-json ... --state-dir ... --transport {broker|renga} [--max-concurrent-workers N] [--template-repo ...] [--locale-json ...]`。`--transport` は `ORG_TRANSPORT` 解決値を明示で渡す（runtime は panes snapshot から transport を推定しない、runtime 0.1.31 / #104）。broker 面では `--max-concurrent-workers N`（既定 8 / `unlimited` opt-in）が capacity を gate する。`.dispatcher/CLAUDE.md` の delegate-plan helper 節が一次手順。**この CLI 例は現行 ja の運用形であって helper の完全なフラグ集合ではない**: runtime 0.1.39 は `--peers-json` / `--overflow-to-new-tab` / `--server-capability` / `--tab` も受け取るが、ja はいずれも渡していない（実配線は未着手）。フラグの網羅は `claude-org-runtime dispatcher delegate-plan --help` を参照
 - ライブラリ: `claude_org_runtime.dispatcher.runner` モジュールの `build_plan()` (action plan 全体: `spawn` / `after_spawn` / `escalate` / `state_writes` / `status`) と、その内部で呼ばれる `choose_split()` (target / direction 選択) / `rect_adjacent()` / `_ROLE_PRIORITY` / `MIN_PANE_*` / `SECRETARY_MIN_*` 定数
 
-dispatcher が helper を経由しない degraded mode に入った場合、判定再現は `claude_org_runtime.dispatcher.runner` モジュール (インストール先は `python -c "import claude_org_runtime.dispatcher.runner; print(claude_org_runtime.dispatcher.runner.__file__)"` で解決可能) を一次参照する。
+dispatcher が helper を経由しない degraded mode に入った場合、判定再現は `claude_org_runtime.dispatcher.runner` モジュール (インストール先は `python3 -c "import claude_org_runtime.dispatcher.runner; print(claude_org_runtime.dispatcher.runner.__file__)"` で解決可能) を一次参照する。
 
 #### 3-1c. 候補が空だった場合
 
@@ -339,7 +339,7 @@ worker brief に **ultracode 使用許可**があるタスクでは、kickoff �
 2. **DB 経由で run と Active Work Items を登録する**（`.state/org-state.md` 直接編集は禁止。`StateWriter.transaction()` 経由、post-commit hook が再生成）:
 
    ```bash
-   python -c "
+   python3 -c "
    from pathlib import Path
    from tools.state_db import connect
    from tools.state_db.writer import StateWriter

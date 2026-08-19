@@ -34,6 +34,28 @@ Usage (driven from the dispatcher monitoring loop; see
     python -m tools.relay_scan --recipient secretary \
         --mark-failed --source-event-id <id> --error "<reason>"
 
+    # 3. machine-verify that step 1 is actually being run (Issue #941):
+    python -m tools.relay_scan --recipient secretary --audit
+
+Why ``--audit`` exists
+----------------------
+The relay is only a zero-miss guarantee while the dispatcher actually
+runs it. Between 2026-07-30 and 2026-08-19 it did not: the runbook spelled
+the command ``python ...`` and the host has only ``python3``, so every
+cycle died on ``command not found`` and produced no output, no ledger row,
+and no error anyone read. 134 terminal events accumulated undelivered and
+the gap was found only because a human eventually queried the ledger by
+hand.
+
+The structural problem is that a *silent no-op is indistinguishable from
+a clean scan*: both leave nothing behind. ``--list`` writes ledger rows
+only when something is pending, so "no rows" legitimately means "nothing
+to relay" — it cannot also be made to mean "the scan ran". ``--audit``
+closes that by giving the scan an unconditional trace (a heartbeat
+written on every ``--list``, whether or not anything was pending) and a
+one-command staleness check over it. A relay that stops running now
+reports itself within one ``--stale-min`` window instead of after 20 days.
+
 All CLI output strings use ASCII only so ``--help`` never crashes a
 cp932 console (project Windows constraint).
 """
@@ -178,9 +200,184 @@ def compose_message(kind: str, payload: dict) -> str:
     return f"{kind.upper()}: {pr_tag} [relay]"
 
 
+# ---------------------------------------------------------------------
+# Execution-trace heartbeat (Issue #941)
+# ---------------------------------------------------------------------
+#
+# Written on every --list, unconditionally. This is deliberately NOT an
+# ``events`` row: the journal is an append-only record of things that
+# happened to the org, and a /loop 3m cadence would add ~480 rows a day
+# of pure liveness noise (the whole table held ~4.3k rows after months).
+# A heartbeat only ever needs its latest value, so last-write-wins JSON
+# next to the other dispatcher-local state files is the right shape.
+_HEARTBEAT_FILENAME = "relay-scan-heartbeat.json"
+
+# Default staleness bound for --audit. The dispatcher loop is /loop 3m,
+# so 15 minutes is five missed cycles: long enough that a slow cycle or a
+# transient never trips it, short enough that a dead relay surfaces the
+# same working day rather than three weeks later.
+DEFAULT_STALE_MIN = 15.0
+
+
+def _heartbeat_path(db_path) -> Path:
+    """Location of the heartbeat file (beside state.db, under dispatcher/)."""
+    return Path(db_path).parent / "dispatcher" / _HEARTBEAT_FILENAME
+
+
+def _now_iso(conn) -> str:
+    """Current UTC instant in the same format as ``events.occurred_at``."""
+    row = conn.execute(
+        "SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now') AS now"
+    ).fetchone()
+    return row["now"]
+
+
+def _read_heartbeat(db_path) -> dict:
+    """Return the heartbeat map, or ``{}`` if absent / unreadable.
+
+    An unreadable heartbeat is reported as "never scanned" rather than as
+    an error: the audit's job is to notice a missing trace, and a corrupt
+    file is a missing trace.
+    """
+    try:
+        with open(_heartbeat_path(db_path), encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except Exception:  # noqa: BLE001 — absent, unreadable, or malformed
+        return {}
+
+
+def write_heartbeat(db_path, *, recipient: str, surfaced: int,
+                    scanned_at: str) -> bool:
+    """Record that a scan ran. Best-effort; returns success.
+
+    Keyed by recipient so scans for different recipients do not overwrite
+    each other's trace. Failure to write is swallowed: the relay itself
+    must never fail because its telemetry could not be persisted. The
+    consequence of a swallowed failure is that ``--audit`` reports stale,
+    which is the fail-loud direction.
+
+    ``surfaced`` is how many events that scan returned, which is NOT the
+    backlog size when ``--limit`` is in play. The authoritative backlog
+    number is ``pending_now``, which ``--audit`` recomputes unlimited;
+    this field is only a breadcrumb about the scan itself.
+    """
+    path = _heartbeat_path(db_path)
+    data = _read_heartbeat(db_path)
+    data[recipient] = {"last_scan_at": scanned_at, "surfaced": surfaced}
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".json.tmp")
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, ensure_ascii=False, indent=2, sort_keys=True)
+        tmp.replace(path)
+        return True
+    except Exception:  # noqa: BLE001 — read-only FS, permissions, etc.
+        return False
+
+
+def cmd_audit(writer: StateWriter, conn, db_path, *, recipient: str,
+              kinds: tuple, since: Optional[str],
+              stale_min: float) -> tuple:
+    """Report whether the relay scan is actually running. Returns (dict, exit).
+
+    Exit codes mirror ``tools/spawn_gate.py audit``, the dispatcher's
+    other cycle-start self-check, so both read the same way from the
+    runbook: 0 = healthy, 10 = finding to act on, 2 = tool error.
+
+    ``pending_now`` is reported alongside the heartbeat because the two
+    answer different questions and the incident needed both: the
+    heartbeat says whether the scan is running, ``pending_now`` says how
+    much is stuck behind it. A stale heartbeat with a large backlog is
+    the exact signature of the 2026-08-19 outage.
+
+    **A stale heartbeat alone is not a finding.** The monitoring loop is
+    *designed* to stop: Step 7 halts it once no worker panes remain and
+    the relay set is empty. After an idle evening the first ``--audit``
+    of the next session necessarily sees an hours-old heartbeat, and
+    reporting that as an outage would fire a false ``RELAY_SCAN_STALE``
+    on essentially every org start — which is how a monitor teaches its
+    reader to ignore it. So exit 10 requires **both** a missing/stale
+    trace **and** an actual undelivered backlog (``pending_now > 0``):
+    that pair means events are piling up while nothing is draining them,
+    which is the failure itself rather than a proxy for it. A broken
+    relay with an empty queue is inert by construction — and stops being
+    inert the moment a terminal event lands, at which point the very
+    next audit fires. The 2026-08-19 outage had 132+ pending, so this
+    gate does not weaken the detection it was built for.
+
+    ``status`` stays descriptive (``fresh`` / ``stale`` /
+    ``never_scanned``) for diagnosis; ``finding`` is the actionable bit
+    the runbook branches on.
+    """
+    pending_now = len(writer.pending_deliveries(
+        recipient=recipient, kinds=list(kinds), since=since, limit=None))
+    now = _now_iso(conn)
+    entry = _read_heartbeat(db_path).get(recipient)
+    if not isinstance(entry, dict):
+        # A structurally wrong entry (e.g. {"secretary": "corrupt"}) is
+        # corruption, not a trace. Coerce rather than raise so --audit
+        # keeps its 0/10/2 exit contract exactly when the heartbeat is
+        # malformed -- the moment the runbook most needs a usable answer.
+        entry = {}
+    last = entry.get("last_scan_at")
+    if not isinstance(last, str):
+        last = None
+
+    out = {
+        "recipient": recipient,
+        "checked_at": now,
+        "last_scan_at": last,
+        "stale_min": stale_min,
+        "pending_now": pending_now,
+    }
+    if not last:
+        out["status"] = "never_scanned"
+        out["age_min"] = None
+        return out, _verdict(out)
+
+    age_min = _age_minutes(conn, last)
+    out["age_min"] = age_min
+    if age_min is None:
+        # Unparseable timestamp: treat as no usable trace (fail-safe).
+        out["status"] = "never_scanned"
+        return out, _verdict(out)
+    out["status"] = "stale" if age_min > stale_min else "fresh"
+    return out, _verdict(out)
+
+
+def _verdict(out: dict) -> int:
+    """Set ``out["finding"]`` and return the exit code.
+
+    A finding needs a broken trace AND a real backlog behind it; see
+    :func:`cmd_audit` for why a stale heartbeat alone is expected during
+    the monitoring loop's designed downtime.
+    """
+    out["finding"] = out["status"] != "fresh" and out["pending_now"] > 0
+    return 10 if out["finding"] else 0
+
+
+def _age_minutes(conn, iso_ts: str) -> Optional[float]:
+    """Minutes between ``iso_ts`` and now, or None if it does not parse.
+
+    Computed in SQLite so the arithmetic matches the format the rest of
+    this tool writes and reads, without introducing a Python clock.
+    """
+    try:
+        row = conn.execute(
+            "SELECT (julianday('now') - julianday(?)) * 1440.0 AS age",
+            (iso_ts,),
+        ).fetchone()
+    except Exception:  # noqa: BLE001
+        return None
+    if row is None or row["age"] is None:
+        return None
+    return round(float(row["age"]), 2)
+
+
 def cmd_list(writer: StateWriter, conn, *, recipient: str,
              kinds: tuple[str, ...], since: Optional[str],
-             limit: Optional[int]) -> list[dict]:
+             limit: Optional[int], db_path=None) -> list[dict]:
     """List undelivered terminal events and record a relay attempt each.
 
     Records ``begin_delivery_attempt`` for every surfaced event so the
@@ -188,9 +385,17 @@ def cmd_list(writer: StateWriter, conn, *, recipient: str,
     an attempt is durable even if the dispatcher dies before sending.
     The matching ``mark-delivered`` (only after a confirmed send) is what
     makes delivery terminal — this ordering is what yields at-least-once.
+
+    Also stamps the execution-trace heartbeat (Issue #941) when
+    ``db_path`` is supplied. The stamp is unconditional — a scan that
+    found nothing is still a scan that ran, and distinguishing those two
+    from "the command never executed" is the entire point.
     """
     rows = writer.pending_deliveries(
         recipient=recipient, kinds=list(kinds), since=since, limit=limit)
+    if db_path is not None:
+        write_heartbeat(db_path, recipient=recipient, surfaced=len(rows),
+                        scanned_at=_now_iso(conn))
     out: list[dict] = []
     for row in rows:
         payload = _payload(row)
@@ -241,6 +446,13 @@ def _main(argv: Optional[list[str]] = None) -> int:
                         help="mark --source-event-id delivered to --recipient")
     action.add_argument("--mark-failed", action="store_true",
                         help="record a retryable delivery failure")
+    action.add_argument("--audit", action="store_true",
+                        help="check that --list is actually being run: "
+                             "exit 0 fresh / 10 stale or never scanned / "
+                             "2 error. Prints a JSON report.")
+    p.add_argument("--stale-min", type=float, default=DEFAULT_STALE_MIN,
+                   help=f"minutes before a scan counts as stale for "
+                        f"--audit (default: {DEFAULT_STALE_MIN:g})")
     p.add_argument("--source-event-id", type=int, default=None,
                    help="events.id for --mark-delivered / --mark-failed")
     p.add_argument("--error", default="",
@@ -258,6 +470,13 @@ def _main(argv: Optional[list[str]] = None) -> int:
         # set, not an error (the dispatcher should proceed quietly).
         if args.list:
             print("[]")
+        if args.audit:
+            # A checkout with no state DB has no relay to run, so a
+            # missing heartbeat is not a finding. Exit 0 so a plain
+            # clone / CI does not report a false outage.
+            print(json.dumps({"status": "no_db", "recipient": args.recipient,
+                              "db": str(db_path)}, ensure_ascii=False,
+                             indent=2))
         return 0
 
     kinds = (tuple(k.strip() for k in args.kinds.split(",") if k.strip())
@@ -278,9 +497,30 @@ def _main(argv: Optional[list[str]] = None) -> int:
             since = _iso_since(args.since_hours)
         if args.list:
             items = cmd_list(writer, conn, recipient=args.recipient,
-                             kinds=kinds, since=since, limit=args.limit)
+                             kinds=kinds, since=since, limit=args.limit,
+                             db_path=db_path)
             print(json.dumps(items, ensure_ascii=False, indent=2))
             return 0
+        if args.audit:
+            # The runbook branches on a 0/10/2 contract, so an unexpected
+            # failure (corrupt DB, missing tables, schema older than the
+            # ledger) must arrive as exit 2 "tool error" -- not as an
+            # uncaught traceback and exit 1, which the dispatcher has no
+            # branch for. A monitor whose own failure mode is unhandled
+            # is the thing this tool exists to stop.
+            try:
+                report, code = cmd_audit(
+                    writer, conn, db_path, recipient=args.recipient,
+                    kinds=kinds, since=since, stale_min=args.stale_min)
+                conn.commit()
+            except Exception as exc:  # noqa: BLE001 -- contract boundary
+                print(json.dumps(
+                    {"status": "error", "recipient": args.recipient,
+                     "error": f"{type(exc).__name__}: {exc}"},
+                    ensure_ascii=False, indent=2))
+                return 2
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return code
         if args.mark_delivered:
             writer.mark_delivered(source_event_id=args.source_event_id,
                                   recipient=args.recipient)
