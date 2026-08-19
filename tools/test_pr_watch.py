@@ -3745,5 +3745,79 @@ class ConflictWithTerminalChecksTests(unittest.TestCase):
         conflict.probe.assert_not_called()
 
 
+class ConflictAnnounceWordingTests(unittest.TestCase):
+    """Issue #946 (Codex review, P2): the two conflict shapes need
+    different operator advice.
+
+    "conflict のため CI が発火しません（監視は継続します）" is simply false
+    when the probe fires after a terminal verdict — CI already reported
+    and, without --merge-watch, the watcher exits right after.
+    """
+
+    def setUp(self) -> None:
+        _assert_peer_isolation()
+
+    def _probe(self, **kwargs) -> str:
+        watch = pr_watch._ConflictWatch(
+            pr=248, repo="octo/repo", db_path=Path("unused"))
+        with mock.patch.object(pr_watch, "_record_event"), \
+             mock.patch.object(pr_watch, "_notify_or_record",
+                               return_value=True) as notify, \
+             mock.patch.object(
+                 pr_watch, "_fetch_mergeable",
+                 return_value={"mergeable": "CONFLICTING",
+                               "mergeStateStatus": "DIRTY",
+                               "headRefOid": "a" * 40}):
+            watch.probe(**kwargs)
+        return notify.call_args[0][0]
+
+    def test_ci_pending_wording(self) -> None:
+        msg = self._probe()
+        self.assertTrue(msg.startswith("PR_CONFLICT: PR #248 "))
+        self.assertIn("CI が発火しません", msg)
+        self.assertIn("監視は継続します", msg)
+
+    def test_ci_settled_wording(self) -> None:
+        msg = self._probe(ci_settled=True)
+        self.assertTrue(msg.startswith("PR_CONFLICT: PR #248 "))
+        self.assertIn("CI 判定は出ています", msg)
+        self.assertNotIn("CI が発火しません", msg)
+        self.assertNotIn("監視は継続します", msg)
+
+    def test_payload_records_which_shape(self) -> None:
+        for ci_settled in (False, True):
+            with self.subTest(ci_settled=ci_settled), TempDir() as tmp:
+                db = tmp / ".state" / "state.db"
+                watch = pr_watch._ConflictWatch(
+                    pr=248, repo="octo/repo", db_path=db)
+                with mock.patch.object(pr_watch, "_notify_peer",
+                                       return_value=True), \
+                     mock.patch.object(
+                         pr_watch, "_fetch_mergeable",
+                         return_value={"mergeable": "CONFLICTING",
+                                       "headRefOid": "a" * 40}):
+                    watch.probe(ci_settled=ci_settled)
+                rows = _read_events(db, "pr_conflict_detected")
+                self.assertEqual(rows[0]["ci_settled"], ci_settled)
+
+    def test_zero_check_poll_sites_use_the_pending_wording(self) -> None:
+        # The self-poll loop must not pass ci_settled through by accident.
+        watch = pr_watch._ConflictWatch(
+            pr=248, repo="octo/repo", db_path=Path("unused"))
+        with mock.patch.object(pr_watch, "_record_event"), \
+             mock.patch.object(pr_watch, "_notify_or_record",
+                               return_value=True) as notify, \
+             mock.patch.object(
+                 pr_watch, "_fetch_mergeable",
+                 return_value={"mergeable": "CONFLICTING",
+                               "headRefOid": "a" * 40}), \
+             mock.patch.object(pr_watch, "_fetch_checks",
+                               side_effect=[[], [{"name": "ci",
+                                                  "bucket": "pass"}]]), \
+             mock.patch.object(pr_watch.time, "sleep", return_value=None):
+            pr_watch._self_poll_watch(248, "octo/repo", 30, conflict=watch)
+        self.assertIn("CI が発火しません", notify.call_args[0][0])
+
+
 if __name__ == "__main__":
     unittest.main()

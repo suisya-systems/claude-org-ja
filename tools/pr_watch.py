@@ -469,8 +469,16 @@ class _ConflictWatch:
         """Copy of the announced-head ledger (tests / diagnostics)."""
         return set(self._announced)
 
-    def probe(self) -> bool:
+    def probe(self, *, ci_settled: bool = False) -> bool:
         """Probe mergeability once; announce a newly-seen conflicting head.
+
+        ``ci_settled`` says which of the two conflict shapes the caller is
+        looking at, because the operator-facing advice differs and a
+        one-size message is wrong for one of them (Codex review, P2):
+        ``False`` (the zero-check poll sites) means CI never fired and the
+        watch continues; ``True`` (the verdict-time probe) means a CI
+        verdict already exists and the conflict blocks the *merge*, not
+        the run.
 
         Returns ``True`` iff the PR is *confirmed* conflicting right now.
         ``UNKNOWN`` / ``MERGEABLE`` / an unreadable probe all return
@@ -498,10 +506,12 @@ class _ConflictWatch:
             # itself is broken (unwritable DB, dead transport) we want one
             # failed attempt per head, not one per poll forever.
             self._announced.add(head)
-            self._announce(head, view.get("mergeStateStatus"))
+            self._announce(head, view.get("mergeStateStatus"),
+                           ci_settled=ci_settled)
         return True
 
-    def _announce(self, head: str, merge_state_status: object) -> None:
+    def _announce(self, head: str, merge_state_status: object, *,
+                  ci_settled: bool) -> None:
         """Record the canonical event, then push the peer message."""
         state = (merge_state_status
                  if isinstance(merge_state_status, str) and merge_state_status
@@ -520,6 +530,7 @@ class _ConflictWatch:
                     "head": head,
                     "mergeable": MERGEABLE_CONFLICTING,
                     "merge_state_status": state,
+                    "ci_settled": ci_settled,
                 },
             )
         except Exception:  # noqa: BLE001
@@ -527,12 +538,21 @@ class _ConflictWatch:
                 f"pr_watch: PR #{self._pr} conflict detected but the "
                 "pr_conflict_detected event could not be recorded\n"
             )
+        if ci_settled:
+            advice = ("CI 判定は出ていますが head が conflict のため "
+                      "このままではマージできません。rebase / conflict 解消の"
+                      "上で再 push してください")
+            log_advice = ("CI already reported, but the head cannot be "
+                          "merged until the conflict is resolved")
+        else:
+            advice = ("conflict のため CI が発火しません。rebase / conflict "
+                      "解消の上で再 push してください（監視は継続します）")
+            log_advice = ("CI cannot start until the conflict is resolved "
+                          "- continuing to watch")
         try:
             _notify_or_record(
                 f"PR_CONFLICT: PR #{self._pr} (head={head}, "
-                f"mergeStateStatus={state}, repo={self._repo}) - conflict "
-                "のため CI が発火しません。rebase / conflict 解消の上で "
-                "再 push してください（監視は継続します）",
+                f"mergeStateStatus={state}, repo={self._repo}) - {advice}",
                 db_path=self._db_path,
                 failed_kind="pr_conflict_detected",
                 pr=self._pr,
@@ -541,8 +561,7 @@ class _ConflictWatch:
             pass
         sys.stdout.write(
             f"pr_watch: PR #{self._pr} head={head} is CONFLICTING "
-            f"(mergeStateStatus={state}); CI cannot start until the "
-            "conflict is resolved - continuing to watch\n"
+            f"(mergeStateStatus={state}); {log_advice}\n"
         )
 
 
@@ -1694,7 +1713,7 @@ def _run_ci_watch_phase(
         # of walking into a merge that GitHub will refuse. Report-only:
         # the verdict, its event, and its message are untouched.
         if conflict is not None:
-            conflict.probe()
+            conflict.probe(ci_settled=True)
 
         head_after = _fetch_head_oid(pr, repo)
         if (head_before is not None and head_after is not None

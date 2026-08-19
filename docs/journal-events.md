@@ -182,7 +182,7 @@ dedupe_key=<sha256>`); direct DB INSERTs are forbidden per
 |------------------------|-----------------------------------------------------------|-----------|------------|--------------|
 | `ci_completed`         | `pr`, `repo`, `status`, `duration_sec`, `head`, `fail_count`?, `pending_count`?, `total_checks`?, `retry_recommended`?, `retry_after_sec`?, `probe_attempts`? | secretary | secretary  | E4           |
 | `pr_watch_pane_started`| `pr`, `repo`, `pane_id`                                   | secretary | secretary  | —            |
-| `pr_conflict_detected` | `pr`, `repo`, `head`, `mergeable`, `merge_state_status`    | secretary | secretary  | —            |
+| `pr_conflict_detected` | `pr`, `repo`, `head`, `mergeable`, `merge_state_status`, `ci_settled` | secretary | secretary  | —            |
 
 `status` ∈ `{passed, failed, incomplete, indeterminate, canceled}`.
 `head` (Issue #636)
@@ -235,12 +235,21 @@ which every check-arrival probe reads as "CI has not started yet". That
 is what left kura PR #248 silent on 2026-08-19 until a human noticed.
 `head` is the short sha the conflict was observed on (or `"unknown"`
 when `headRefOid` was unreadable), `mergeable` is always `CONFLICTING`,
-and `merge_state_status` carries GitHub's `mergeStateStatus` (typically
-`DIRTY`) for triage. A `PR_CONFLICT: PR #<n> (head=<sha>, ...)` peer
-message is pushed alongside it on the same best-effort
-`_notify_or_record` path as the other pr-watch signals, so a dropped
-push still surfaces as `notify_failed` with
-`failed_kind: "pr_conflict_detected"`.
+`merge_state_status` carries GitHub's `mergeStateStatus` (typically
+`DIRTY`) for triage, and `ci_settled` says whether a CI verdict already
+existed when the conflict was seen (`false`: CI never fired and the
+watch continues; `true`: CI already reported and the conflict blocks the
+merge, not the run) — the `PR_CONFLICT` message carries the matching
+advice.
+
+A `PR_CONFLICT: PR #<n> (head=<sha>, ...)` peer message is pushed
+alongside the row on the same best-effort `_notify_or_record` path as
+the other pr-watch signals, so a dropped push surfaces as `notify_failed`
+with `failed_kind: "pr_conflict_detected"`. Unlike the other pr-watch
+signals the kind is ALSO in `tools/relay_scan.py`'s `TERMINAL_KINDS`
+despite being non-terminal: a pane with no transport configured at all
+records no `notify_failed` by design, which would otherwise leave this
+row as the only trace of the conflict with nothing to relay it.
 
 The event is **not terminal**: a conflict is cleared by a re-push, and
 the new head's CI is exactly what the watcher should go on to observe,

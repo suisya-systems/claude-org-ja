@@ -51,6 +51,22 @@ class TestComposeMessage(unittest.TestCase):
             "PR_WATCH_ABORTED",
             relay_scan.compose_message("pr_watch_aborted",
                                        {"pr": 5, "error": "boom"}))
+        # Issue #946: relayed so a pane with NO transport configured
+        # (which records no notify_failed by design) still surfaces the
+        # conflict; the wording follows the two conflict shapes.
+        self.assertEqual(
+            relay_scan.compose_message(
+                "pr_conflict_detected",
+                {"pr": 248, "head": "abc1234", "merge_state_status": "DIRTY"}),
+            "PR_CONFLICT: PR #248 (head=abc1234, mergeStateStatus=DIRTY) - "
+            "conflict のため CI が発火しません [relay]")
+        self.assertIn(
+            "CI 判定は出ています",
+            relay_scan.compose_message(
+                "pr_conflict_detected",
+                {"pr": 248, "head": "abc1234", "merge_state_status": "DIRTY",
+                 "ci_settled": True}))
+        self.assertIn("pr_conflict_detected", relay_scan.TERMINAL_KINDS)
         self.assertIn(
             "NOTIFY_FAILED",
             relay_scan.compose_message(
