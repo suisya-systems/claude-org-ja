@@ -333,6 +333,42 @@ class TestExecutionTraceAudit(unittest.TestCase):
         finally:
             td.cleanup()
 
+    def test_structurally_invalid_entry_reads_as_never_scanned(self):
+        """Valid JSON but a non-object entry must not break the contract.
+
+        `--audit` promises 0/10/2; an AttributeError escaping as exit 1
+        would break the runbook's branch table precisely when the
+        heartbeat is corrupt.
+        """
+        td, db = _db_with_events([
+            ("ci_completed", {"pr": 1, "status": "passed", "head": "a"}),
+        ])
+        try:
+            self._run(db, "--list")
+            hb = relay_scan._heartbeat_path(db)
+            hb.write_text(json.dumps({"secretary": "corrupt"}),
+                          encoding="utf-8")
+            rc, out = self._run(db, "--audit")
+            self.assertEqual(rc, 10)
+            self.assertEqual(json.loads(out)["status"], "never_scanned")
+        finally:
+            td.cleanup()
+
+    def test_non_string_timestamp_reads_as_never_scanned(self):
+        td, db = _db_with_events([
+            ("ci_completed", {"pr": 1, "status": "passed", "head": "a"}),
+        ])
+        try:
+            self._run(db, "--list")
+            hb = relay_scan._heartbeat_path(db)
+            hb.write_text(json.dumps({"secretary": {"last_scan_at": 12345}}),
+                          encoding="utf-8")
+            rc, out = self._run(db, "--audit")
+            self.assertEqual(rc, 10)
+            self.assertEqual(json.loads(out)["status"], "never_scanned")
+        finally:
+            td.cleanup()
+
     def test_heartbeat_is_per_recipient(self):
         td, db = _db_with_events([
             ("ci_completed", {"pr": 1, "status": "passed", "head": "a"}),

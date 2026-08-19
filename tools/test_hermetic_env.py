@@ -70,6 +70,23 @@ class ScrubUnitTests(unittest.TestCase):
             self.assertEqual(peer_notify._resolve_transport(), "renga")
             self.assertNotIn("RENGA_SOCKET", os.environ)
 
+    def test_both_guard_arms_leave_the_same_transport(self) -> None:
+        """The ambient env must be the no-op transport under EITHER runner.
+
+        There are two arms -- the package scrub in ``tools/__init__``
+        (unittest / direct execution) and the autouse fixture in
+        ``tools/conftest.py`` (pytest) -- and they must agree. They
+        diverged in Issue #941: the fixture deleted ORG_TRANSPORT while
+        the package scrub pinned it, and a deleted value now resolves to
+        broker, so the pytest arm silently reopened the leak. This
+        assertion runs under whichever runner is active and fails if
+        either arm stops pinning.
+        """
+        self.assertEqual(os.environ.get("ORG_TRANSPORT"),
+                         _hermetic_env.HERMETIC_TRANSPORT)
+        self.assertNotIn("RENGA_SOCKET", os.environ)
+        self.assertNotIn("ORG_BROKER_STATE_DIR", os.environ)
+
     def test_scrub_is_idempotent_when_unset(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=False):
             for name in _hermetic_env.LIVE_TRANSPORT_ENV:
@@ -144,13 +161,24 @@ class LiveDaemonHermeticIntegrationTests(unittest.TestCase):
         import shutil
         shutil.rmtree(self.tmp, ignore_errors=True)
 
+    # Env markers that make ``running_under_test()`` fire. The negative
+    # control must NOT carry them: its premise is a *production*
+    # invocation, and pytest exports PYTEST_CURRENT_TEST into every
+    # child it spawns. Since Issue #941 ``peer_notify`` imports
+    # ``tools.transport``, which runs ``tools/__init__`` and therefore
+    # the guard -- so an inherited pytest marker would scrub the child
+    # and the "control leaks" premise would silently stop holding.
+    _TEST_RUNNER_MARKERS = ("PYTEST_CURRENT_TEST", "PYTEST_VERSION")
+
     def _live_env(self) -> dict:
-        return {
-            **os.environ,
+        env = {k: v for k, v in os.environ.items()
+               if k not in self._TEST_RUNNER_MARKERS}
+        env.update({
             "PATH": f"{self.bin}:{os.environ.get('PATH', '')}",
             "ORG_TRANSPORT": "broker",
             "ORG_BROKER_STATE_DIR": str(self.state_dir),
-        }
+        })
+        return env
 
     def _queue_lines(self) -> list:
         if not self.queue.exists():

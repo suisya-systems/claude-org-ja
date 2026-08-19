@@ -294,8 +294,16 @@ def cmd_audit(writer: StateWriter, conn, db_path, *, recipient: str,
     pending_now = len(writer.pending_deliveries(
         recipient=recipient, kinds=list(kinds), since=since, limit=None))
     now = _now_iso(conn)
-    entry = _read_heartbeat(db_path).get(recipient) or {}
+    entry = _read_heartbeat(db_path).get(recipient)
+    if not isinstance(entry, dict):
+        # A structurally wrong entry (e.g. {"secretary": "corrupt"}) is
+        # corruption, not a trace. Coerce rather than raise so --audit
+        # keeps its 0/10/2 exit contract exactly when the heartbeat is
+        # malformed -- the moment the runbook most needs a usable answer.
+        entry = {}
     last = entry.get("last_scan_at")
+    if not isinstance(last, str):
+        last = None
 
     out = {
         "recipient": recipient,

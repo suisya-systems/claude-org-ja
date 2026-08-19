@@ -21,19 +21,29 @@ from __future__ import annotations
 
 import pytest
 
-from tools._hermetic_env import LIVE_TRANSPORT_ENV
+from tools._hermetic_env import HERMETIC_TRANSPORT, LIVE_TRANSPORT_ENV
 
 
 @pytest.fixture(autouse=True)
 def _scrub_live_transport_env(monkeypatch):
     """Disable peer-emit fall-through (both transports) for the test.
 
-    ``peer_notify.notify_peer`` short-circuits to a no-op when
-    ``ORG_TRANSPORT`` is not ``broker`` and ``RENGA_SOCKET`` is unset;
-    scrubbing ``ORG_BROKER_STATE_DIR`` additionally keeps a stray
-    ``--state-dir`` from pointing the broker CLI at a live daemon. Using
-    ``monkeypatch`` restores any real values after the test.
+    ``peer_notify.notify_peer`` short-circuits to a no-op on the renga
+    branch when ``RENGA_SOCKET`` is unset; scrubbing
+    ``ORG_BROKER_STATE_DIR`` additionally keeps a stray ``--state-dir``
+    from pointing the broker CLI at a live daemon. Using ``monkeypatch``
+    restores any real values after the test.
+
+    ``ORG_TRANSPORT`` is deleted and then **re-pinned** to
+    ``HERMETIC_TRANSPORT``, exactly as the package-level scrub does
+    (Issue #941). Deleting it alone is no longer safe: ``notify_peer``
+    resolves an unset value through ``tools.transport.resolve()``, which
+    returns ``DEFAULT_TRANSPORT`` — ``broker`` — so an unmocked emit
+    would shell out to the broker CLI against the default state dir.
+    This fixture and ``tools/_hermetic_env.scrub_live_transport_env``
+    are the two arms of one guard and must leave the same env behind.
     """
     for name in LIVE_TRANSPORT_ENV:
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("ORG_TRANSPORT", HERMETIC_TRANSPORT)
     yield
