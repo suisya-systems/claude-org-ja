@@ -182,6 +182,7 @@ dedupe_key=<sha256>`); direct DB INSERTs are forbidden per
 |------------------------|-----------------------------------------------------------|-----------|------------|--------------|
 | `ci_completed`         | `pr`, `repo`, `status`, `duration_sec`, `head`, `fail_count`?, `pending_count`?, `total_checks`?, `retry_recommended`?, `retry_after_sec`?, `probe_attempts`? | secretary | secretary  | E4           |
 | `pr_watch_pane_started`| `pr`, `repo`, `pane_id`                                   | secretary | secretary  | —            |
+| `pr_conflict_detected` | `pr`, `repo`, `head`, `mergeable`, `merge_state_status`, `ci_settled` | secretary | secretary  | —            |
 
 `status` ∈ `{passed, failed, incomplete, indeterminate, canceled}`.
 `head` (Issue #636)
@@ -224,6 +225,72 @@ Issue #685 additive payload keys (base keys above are unchanged):
 The probe is retried with exponential backoff (initial 5s, doubling to
 a 30s cap) inside `tools/pr_watch.py`, so a transient gh failure
 resolves to a definitive `passed`/`failed` before the budget is spent.
+
+`pr_conflict_detected` (Issue #946) is written by `tools/pr_watch.py`
+when its ci-watch poll observes `gh pr view --json mergeable` reporting
+`CONFLICTING` for the PR's current head. A conflicting head cannot be
+merged into base, so GitHub never builds the merge ref and **no
+`pull_request` workflow fires at all** — the PR sits at zero checks,
+which every check-arrival probe reads as "CI has not started yet". That
+is what left kura PR #248 silent on 2026-08-19 until a human noticed.
+`head` is the short sha the conflict was observed on (or `"unknown"`
+when `headRefOid` was unreadable), `mergeable` is always `CONFLICTING`,
+`merge_state_status` carries GitHub's `mergeStateStatus` (typically
+`DIRTY`) for triage, and `ci_settled` says whether a CI verdict already
+existed when the conflict was seen (`false`: CI never fired and the
+watch continues; `true`: CI already reported and the conflict blocks the
+merge, not the run) — the `PR_CONFLICT` message carries the matching
+advice.
+
+A `PR_CONFLICT: PR #<n> (head=<sha>, ...)` peer message is pushed
+alongside the row on the same best-effort `_notify_or_record` path as
+the other pr-watch signals, so a dropped push surfaces as `notify_failed`
+with `failed_kind: "pr_conflict_detected"`. Unlike the other pr-watch
+signals the kind is ALSO in `tools/relay_scan.py`'s `TERMINAL_KINDS`
+despite being non-terminal: a pane with no transport configured at all
+records no `notify_failed` by design, which would otherwise leave this
+row as the only trace of the conflict with nothing to relay it.
+
+The event is **not terminal**: a conflict is cleared by a re-push, and
+the new head's CI is exactly what the watcher should go on to observe,
+so `tools/pr_watch.py` keeps polling and emits the usual `ci_completed`
+for the head that resolves it. It is emitted **at most once per head** —
+a conflict persists across every poll until someone pushes, and the head
+moving is precisely the event that makes it worth re-announcing.
+`mergeable: UNKNOWN` (GitHub computes mergeability asynchronously, so a
+freshly pushed head reports it for a few seconds) and an unreadable
+probe are both silent: neither records an event nor pushes a message.
+
+The probe runs at three points in a ci-watch round, because a conflict
+reaches the watcher in three different shapes:
+
+1. **Zero visible checks** (the kura #248 shape). A confirmed conflict
+   here means the missing checks are explained rather than racing, so
+   the self-poll loop keeps polling instead of handing off to the
+   bounded resolver — which would otherwise spend its budget recording
+   a misleading `incomplete`.
+2. **During the resolver's retry budget.** Mergeability is computed
+   asynchronously, so a freshly pushed conflicting head often reads
+   `UNKNOWN` at the moment of the handoff and settles to `CONFLICTING`
+   seconds later. The resolver keeps probing and bails out the moment it
+   is confirmed, returning control to the self-poll loop.
+3. **At verdict time, even on a green verdict.** A terminal check
+   verdict does not imply the PR is mergeable: CI can finish green and
+   the base branch then move underneath it, leaving `CONFLICTING` with a
+   full set of passed checks. The probe there is report-only — the
+   `ci_completed` event, its status, and the `CI_COMPLETED` message are
+   unchanged, and `PR_CONFLICT` simply rides alongside so the secretary
+   does not walk into a merge GitHub will refuse. It runs only against a
+   head the verdict actually describes (after the phase's head-stability
+   check, and pinned to that head), so a branch advancing mid-probe can
+   never spend the new head's one-shot announcement on a claim about the
+   old head. Because this can be the watcher's LAST observation (without
+   `--merge-watch` it exits straight after), an `UNKNOWN` answer here is
+   re-probed a couple of times; `MERGEABLE` and an unreadable answer
+   return at once, so a healthy watch pays nothing.
+
+Only a *confirmed* `CONFLICTING` changes the watcher's control flow, so
+neither an unreadable probe nor a gh outage can wedge the watch.
 
 `pr_watch_pane_started` is a best-effort audit row written by the
 `/pr-watch-pane` skill (secretary) when it spawns a CI/merge-watch pane

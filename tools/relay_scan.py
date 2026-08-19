@@ -3,7 +3,9 @@
 
 CI-watch zero-miss (Refs #653 #658). ``events`` is the source of truth
 for terminal signals (ci_completed / pr_merged / merge timeout / no-run /
-head-unconfirmed / watcher abort / notify_failed). ``pr_watch`` writes
+head-unconfirmed / watcher abort / notify_failed) plus the one
+non-terminal signal that needs the same guarantee, ``pr_conflict_detected``
+(Issue #946). ``pr_watch`` writes
 those rows locally; the low-latency peer push from the pr-watch pane is
 best-effort and CAN silently no-op (the observed PR #73 failure: the pane
 had no ORG_TRANSPORT/broker env, so the push never reached the queue and
@@ -90,6 +92,17 @@ TERMINAL_KINDS = (
     "pr_merged_head_unconfirmed",
     "pr_watch_aborted",
     "notify_failed",
+    # Issue #946. The only non-terminal kind here, and deliberately so:
+    # a conflicting head means GitHub cannot build the merge ref, so no
+    # workflow fires and the PR sits at zero checks until a human
+    # rebases. It needs the same zero-miss guarantee as the terminal
+    # signals, and the `notify_failed` backstop does NOT cover it — a
+    # pane with no transport configured at all (the PR #73 env-injection
+    # failure) records no `notify_failed` by design, which would leave
+    # this canonical row as the only trace of the conflict and nothing
+    # to relay it. Delivery is still once-only: the ledger dedups by
+    # event id, and pr_watch emits at most one row per head.
+    "pr_conflict_detected",
 )
 
 # Default recipient for relays.
@@ -184,6 +197,15 @@ def compose_message(kind: str, payload: dict) -> str:
         return (
             f"PR_MERGED_HEAD_UNCONFIRMED: {pr_tag} (head={head}, "
             f"last CI-confirmed head={baseline}) [relay]"
+        )
+    if kind == "pr_conflict_detected":
+        state = payload.get("merge_state_status") or "unknown"
+        advice = ("CI 判定は出ていますが head が conflict のためマージ不可"
+                  if payload.get("ci_settled")
+                  else "conflict のため CI が発火しません")
+        return (
+            f"PR_CONFLICT: {pr_tag} (head={head}, mergeStateStatus={state})"
+            f" - {advice} [relay]"
         )
     if kind == "pr_watch_aborted":
         err = payload.get("error", "unknown error")

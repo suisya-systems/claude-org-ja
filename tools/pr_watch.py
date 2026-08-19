@@ -378,6 +378,240 @@ def _fetch_head_oid(pr: int, repo: str) -> "str | None":
     return oid if isinstance(oid, str) and oid else None
 
 
+# Issue #946: `gh pr view --json mergeable` values we act on. GitHub
+# computes mergeability asynchronously, so a freshly pushed head reports
+# ``UNKNOWN`` for a few seconds before settling into ``MERGEABLE`` /
+# ``CONFLICTING``. Only ``CONFLICTING`` is actionable; ``UNKNOWN`` is
+# explicitly kept silent so the watcher never cries conflict at a PR
+# GitHub simply has not finished evaluating.
+MERGEABLE_CONFLICTING = "CONFLICTING"
+MERGEABLE_UNKNOWN = "UNKNOWN"
+
+# Verdict-time re-probes while GitHub still answers UNKNOWN, and the wait
+# between them. Small on purpose: mergeability is normally long settled
+# by the time CI finishes, so this is a narrow race-closer, not a poll
+# loop — and it costs a healthy (MERGEABLE) watch nothing, since only
+# UNKNOWN retries at all.
+CONFLICT_SETTLED_UNKNOWN_RETRIES = 2
+CONFLICT_SETTLED_UNKNOWN_DELAY_SEC = 5.0
+
+
+def _fetch_mergeable(pr: int, repo: str) -> "dict | None":
+    """Return the PR's mergeability view, or ``None`` when unreadable.
+
+    Issue #946. Shape (all keys best-effort, any may be missing)::
+
+        {"mergeable": "CONFLICTING"|"MERGEABLE"|"UNKNOWN",
+         "mergeStateStatus": "DIRTY"|"BLOCKED"|...,
+         "headRefOid": "<full sha>"}
+
+    ``headRefOid`` rides along in the SAME probe as ``mergeable`` on
+    purpose: the conflict verdict and the head it describes must come
+    from one atomic read, or a force-push between two separate probes
+    would let us tag a conflict onto the wrong head (and so mis-key the
+    one-notification-per-head ledger).
+
+    Best-effort like :func:`_fetch_head_oid`: any gh / parse failure
+    degrades to ``None`` (read downstream as "mergeability unknown →
+    stay silent"), so a flaky probe never aborts the watch nor fakes a
+    conflict.
+    """
+    try:
+        result = subprocess.run(
+            ["gh", "pr", "view", str(pr), "--repo", repo,
+             "--json", "mergeable,mergeStateStatus,headRefOid"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",  # gh emits UTF-8; locale decode (cp932) corrupts/crashes (#537)
+            check=False,
+            timeout=GH_TIMEOUT_SEC,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    try:
+        # ``ValueError`` covers json.JSONDecodeError; ``TypeError`` covers a
+        # non-string stdout (e.g. a Mock in tests that don't stub this call).
+        data = json.loads(result.stdout or "")
+    except (TypeError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+class _ConflictWatch:
+    """Detect a conflicting PR head during ci-watch (Issue #946).
+
+    The gap this closes (kura PR #248, 2026-08-19): when a PR's head goes
+    ``mergeable=CONFLICTING`` GitHub cannot build the merge ref, so **no
+    ``pull_request`` workflow fires at all** and the PR sits at zero
+    checks. Every CI probe pr_watch owns waits for checks to *arrive*, so
+    that state was indistinguishable from "CI hasn't started yet" and the
+    watcher stayed silent until its budget ran out. A human noticed first.
+
+    This object is the missing signal. It is deliberately *not* a
+    terminal condition: a conflict is resolved by a re-push, and the new
+    head's CI is exactly what the watcher should go on to observe — so
+    :meth:`probe` only reports, and the caller keeps watching.
+
+    One notification per head (the ledger below): a conflict persists
+    across every poll until someone pushes, and re-announcing it each
+    tick would bury the secretary. The head is the natural dedup key
+    because a re-push is precisely the event that makes the conflict
+    worth re-announcing.
+    """
+
+    def __init__(self, *, pr: int, repo: str, db_path: Path) -> None:
+        self._pr = pr
+        self._repo = repo
+        self._db_path = Path(db_path)
+        # Heads already announced. Short shas, plus the literal
+        # ``"unknown"`` for a conflict observed while headRefOid was
+        # unreadable (still deduped, so an unreadable head cannot spam).
+        self._announced: "set[str]" = set()
+        # Result of the most recent :meth:`probe`. Lets a caller that did
+        # not make the probe itself (the resolver handoff in
+        # :func:`_run_ci_watch_phase`) react to a conflict another poll
+        # site just confirmed, without spending a second gh call.
+        self.last_conflicting = False
+
+    @property
+    def announced_heads(self) -> "set[str]":
+        """Copy of the announced-head ledger (tests / diagnostics)."""
+        return set(self._announced)
+
+    def probe(self, *, ci_settled: bool = False,
+              expect_head: "str | None" = None,
+              unknown_retries: int = 0,
+              unknown_delay: float = 5.0) -> bool:
+        """Probe mergeability once; announce a newly-seen conflicting head.
+
+        ``ci_settled`` says which of the two conflict shapes the caller is
+        looking at, because the operator-facing advice differs and a
+        one-size message is wrong for one of them (Codex review, P2):
+        ``False`` (the zero-check poll sites) means CI never fired and the
+        watch continues; ``True`` (the verdict-time probe) means a CI
+        verdict already exists and the conflict blocks the *merge*, not
+        the run.
+
+        ``expect_head`` (Codex review, P2) pins the observation to the
+        head the caller reasoned about. A branch that advances between
+        the caller's head read and this probe would otherwise let a
+        ``ci_settled=True`` announcement land on the NEW head — burning
+        that head's one-shot dedup slot on a claim about the old head's
+        verdict, so the new head's real conflict could never be
+        announced. On a mismatch we report nothing and consume nothing;
+        the caller's own head-change handling restarts the phase and the
+        next probe observes the new head cleanly.
+
+        ``unknown_retries`` re-probes while GitHub answers ``UNKNOWN``
+        (mergeability is computed asynchronously). Used by the
+        verdict-time probe, whose caller may exit immediately afterwards
+        and so has no later poll to settle on — the zero-check sites need
+        none, they are already looping. Only ``UNKNOWN`` retries: a
+        ``MERGEABLE`` answer (the overwhelmingly common green path) and
+        an unreadable probe both return at once, so this adds no latency
+        to a healthy watch.
+
+        Returns ``True`` iff the PR is *confirmed* conflicting right now.
+        ``UNKNOWN`` / ``MERGEABLE`` / an unreadable probe all return
+        ``False`` — the caller uses the return value to decide whether to
+        keep watching a zero-check PR, and only a confirmed conflict may
+        extend that watch (an unreadable probe must not be able to wedge
+        the loop).
+
+        Never raises: conflict detection is an additive diagnostic and
+        must not be able to abort a watch that works today.
+        """
+        attempts_left = max(0, unknown_retries) + 1
+        while True:
+            try:
+                view = _fetch_mergeable(self._pr, self._repo)
+            except Exception:  # noqa: BLE001 — additive probe, never fatal
+                view = None
+            mergeable = (view.get("mergeable")
+                         if isinstance(view, dict) else None)
+            state = (mergeable.strip().upper()
+                     if isinstance(mergeable, str) else None)
+            attempts_left -= 1
+            if state != MERGEABLE_UNKNOWN or attempts_left <= 0:
+                break
+            time.sleep(unknown_delay)
+
+        if state != MERGEABLE_CONFLICTING:
+            self.last_conflicting = False
+            return False
+        full_head = view.get("headRefOid")
+        if (expect_head is not None and isinstance(full_head, str)
+                and full_head and full_head != expect_head):
+            # The branch moved out from under the caller's reasoning;
+            # attributing this conflict would mis-key the ledger.
+            self.last_conflicting = False
+            return False
+        self.last_conflicting = True
+        head = _short_head(full_head) or "unknown"
+        if head not in self._announced:
+            # Marked BEFORE announcing, not after: if the announce path
+            # itself is broken (unwritable DB, dead transport) we want one
+            # failed attempt per head, not one per poll forever.
+            self._announced.add(head)
+            self._announce(head, view.get("mergeStateStatus"),
+                           ci_settled=ci_settled)
+        return True
+
+    def _announce(self, head: str, merge_state_status: object, *,
+                  ci_settled: bool) -> None:
+        """Record the canonical event, then push the peer message."""
+        state = (merge_state_status
+                 if isinstance(merge_state_status, str) and merge_state_status
+                 else "unknown")
+        # Refs #653 #658 order: canonical DB event FIRST, so this signal is
+        # never peer-only. A dropped push then still surfaces via the
+        # dispatcher's outbox relay (the `notify_failed` row
+        # `_notify_or_record` writes below names `pr_conflict_detected`).
+        try:
+            _record_event(
+                db_path=self._db_path,
+                kind="pr_conflict_detected",
+                payload={
+                    "pr": self._pr,
+                    "repo": self._repo,
+                    "head": head,
+                    "mergeable": MERGEABLE_CONFLICTING,
+                    "merge_state_status": state,
+                    "ci_settled": ci_settled,
+                },
+            )
+        except Exception:  # noqa: BLE001
+            sys.stderr.write(
+                f"pr_watch: PR #{self._pr} conflict detected but the "
+                "pr_conflict_detected event could not be recorded\n"
+            )
+        if ci_settled:
+            advice = ("CI 判定は出ていますが head が conflict のため "
+                      "このままではマージできません。rebase / conflict 解消の"
+                      "上で再 push してください")
+            log_advice = ("CI already reported, but the head cannot be "
+                          "merged until the conflict is resolved")
+        else:
+            advice = ("conflict のため CI が発火しません。rebase / conflict "
+                      "解消の上で再 push してください（監視は継続します）")
+            log_advice = ("CI cannot start until the conflict is resolved "
+                          "- continuing to watch")
+        try:
+            _notify_or_record(
+                f"PR_CONFLICT: PR #{self._pr} (head={head}, "
+                f"mergeStateStatus={state}, repo={self._repo}) - {advice}",
+                db_path=self._db_path,
+                failed_kind="pr_conflict_detected",
+                pr=self._pr,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        sys.stdout.write(
+            f"pr_watch: PR #{self._pr} head={head} is CONFLICTING "
+            f"(mergeStateStatus={state}); {log_advice}\n"
+        )
+
+
 def _record_ci_completed(*, db_path: Path, pr: int, repo: str,
                          status: str, duration: int,
                          head: "str | None" = None,
@@ -871,6 +1105,7 @@ def _resolve_final_status(
     retry_interval_sec: "float | None" = None,
     backoff_factor: "float | None" = None,
     max_interval_sec: "float | None" = None,
+    conflict: "_ConflictWatch | None" = None,
 ) -> dict:
     """Drive `_fetch_checks` until a final CI verdict is observed.
 
@@ -976,6 +1211,19 @@ def _resolve_final_status(
         # Either probe was unparseable (checks is None) or the verdict
         # is `incomplete`. Initialise the budget on the first observed
         # need to wait, then back off and try again.
+        #
+        # Issue #946: keep probing mergeability across the budget too.
+        # GitHub computes mergeability asynchronously, so a freshly
+        # pushed conflicting head commonly reads `UNKNOWN` on the single
+        # probe `_self_poll_watch` made before handing off here. Without
+        # this the conflict would settle DURING the budget and still go
+        # unreported, and the watch would end on a misleading
+        # `incomplete` — the exact silence Issue #946 exists to break.
+        # Bail out as soon as it is confirmed: the caller reads
+        # ``conflict.last_conflicting`` and returns to the self-poll
+        # loop, which keeps watching for the re-push.
+        if conflict is not None and conflict.probe():
+            break
         _set_deadline_once()
         if time.monotonic() >= deadline:
             break
@@ -1009,7 +1257,9 @@ def _resolve_final_status(
     }
 
 
-def _self_poll_watch(pr: int, repo: str, interval: int) -> "dict | None":
+def _self_poll_watch(pr: int, repo: str, interval: int, *,
+                     conflict: "_ConflictWatch | None" = None,
+                     ) -> "dict | None":
     """Replace the blocking ``gh pr checks --watch`` subprocess (Issue #695).
 
     ``gh``'s own ``--watch`` loop does not treat the ``skipping`` bucket
@@ -1050,6 +1300,20 @@ def _self_poll_watch(pr: int, repo: str, interval: int) -> "dict | None":
       #413 / #685) reconciles it, exactly as it did for the
       post-``--watch`` race it was originally built for.
 
+      Issue #946 carves one exception out of that handoff: when
+      ``conflict`` is supplied and its probe *confirms* the head is
+      ``mergeable=CONFLICTING``, zero visible checks is not a race at
+      all — GitHub cannot build the merge ref, so no ``pull_request``
+      workflow will ever fire for this head and handing off to a bounded
+      resolver just spends the budget to record a misleading
+      ``incomplete``. Instead the conflict is announced once (see
+      :class:`_ConflictWatch`) and this loop keeps polling at
+      ``interval`` cadence, so the CI of the head that eventually
+      resolves the conflict is still observed. Only a *confirmed*
+      conflict extends the loop: ``UNKNOWN`` (GitHub still computing)
+      and an unreadable probe both fall through to the unchanged
+      handoff, so neither can wedge the watch.
+
     Returns a verdict dict shaped like :func:`_resolve_final_status`'s
     return value (``status`` / ``fail_count`` / ``pending_count`` /
     ``total_checks`` / ``probe_attempts``) once a decided verdict is
@@ -1086,6 +1350,14 @@ def _self_poll_watch(pr: int, repo: str, interval: int) -> "dict | None":
             # checks is None (unparseable probe) or [] (no check rows
             # visible yet) -- inconclusive; the bounded resolver is
             # better suited to this than unbounded polling here.
+            #
+            # Issue #946: unless the head is confirmed CONFLICTING, in
+            # which case zero checks is the *explanation*, not a race —
+            # keep watching for the re-push that will unblock CI rather
+            # than burning the resolver budget on an `incomplete`.
+            if conflict is not None and conflict.probe():
+                time.sleep(interval)
+                continue
             return None
         time.sleep(interval)
 
@@ -1328,6 +1600,7 @@ def _pr_exists(pr: int, repo: str) -> bool:
 
 def _run_ci_watch_phase(
     *, pr: int, repo: str, interval: int, db_path: Path,
+    conflict: "_ConflictWatch | None" = None,
 ) -> "tuple[str, int, str | None]":
     """Run one ci-watch round and record/emit its verdict (Issue #636).
 
@@ -1410,7 +1683,10 @@ def _run_ci_watch_phase(
         # Issue #719: skipped entirely when the startup evaluation above
         # already produced a terminal verdict (CI was done before spawn).
         while verdict is None:
-            verdict = _self_poll_watch(pr, repo, interval)
+            # Issue #946: `conflict` lets the self-poll loop tell a
+            # zero-check race apart from a zero-check *conflict*.
+            verdict = _self_poll_watch(pr, repo, interval,
+                                       conflict=conflict)
             if verdict is not None:
                 break
             # Issue #695 round 3 (Codex review, P2): use the wider
@@ -1422,11 +1698,21 @@ def _run_ci_watch_phase(
             verdict = _resolve_final_status(
                 pr, repo, exit_code=8,
                 budget_sec=CI_WATCH_EMPTY_RACE_BUDGET_SEC,
+                conflict=conflict,
             )
             if verdict["pending_count"]:
                 # Real, still-pending checks exist -- not an empty-race
                 # artifact, and not fully decided even if a sibling
                 # check already failed. Resume unbounded polling.
+                verdict = None
+                continue
+            if conflict is not None and conflict.last_conflicting:
+                # Issue #946: mergeability settled to CONFLICTING during
+                # the resolver budget (it read UNKNOWN when the self-poll
+                # loop handed off). The zero-check state is explained, not
+                # undecided — recording this `incomplete` would be the
+                # misleading verdict, so go back to the self-poll loop and
+                # keep watching for the re-push that unblocks CI.
                 verdict = None
                 continue
             break
@@ -1484,6 +1770,31 @@ def _run_ci_watch_phase(
         # Anchor on the pre-watch head; fall back to the post-resolution
         # read only if the pre-watch probe failed.
         head_oid = head_before if head_before is not None else head_after
+
+        # Issue #946 (Codex review, P1): a terminal check verdict does
+        # NOT imply the PR is mergeable. CI can finish green and the base
+        # branch then move underneath it, leaving `mergeable=CONFLICTING`
+        # with a full set of passed checks — a shape neither the
+        # zero-check branch of `_self_poll_watch` nor the resolver
+        # handoff above can ever see. Probe here so the secretary gets
+        # `PR_CONFLICT` alongside the green `CI_COMPLETED` instead of
+        # walking into a merge that GitHub will refuse. Report-only: the
+        # verdict, its event, and its message are untouched.
+        #
+        # Placed AFTER the head-stability check (Codex review, P2) so it
+        # can only ever run against a head this verdict actually
+        # describes; `expect_head` closes the remaining window between
+        # that check and this probe. `unknown_retries` covers the other
+        # side of the same race: without --merge-watch this is the LAST
+        # observation the watcher makes, so a mergeability that is still
+        # being computed has no later poll to settle on.
+        if conflict is not None:
+            conflict.probe(
+                ci_settled=True,
+                expect_head=head_oid,
+                unknown_retries=CONFLICT_SETTLED_UNKNOWN_RETRIES,
+                unknown_delay=CONFLICT_SETTLED_UNKNOWN_DELAY_SEC,
+            )
     head_short = _short_head(head_oid)
 
     # Issue #413: duration is measured from the start of the watch to
@@ -1696,10 +2007,17 @@ def _watch_loop(*, pr: int, repo: str, interval: int,
                 merge_watch: bool) -> int:
     """The ci-watch → merge-watch loop, extracted so :func:`main` can wrap
     it with pr_watch_aborted recording (Refs #653 #658)."""
+    # Issue #946: owned by the loop, not by a single ci-watch round, so
+    # the "one announcement per head" ledger survives the head_changed
+    # restarts below — a head that already announced its conflict must
+    # not re-announce it just because the phase was re-entered.
+    conflict = _ConflictWatch(pr=pr, repo=repo, db_path=JOURNAL_PATH)
+
     while True:
         status, exit_code, head_oid = _run_ci_watch_phase(
             pr=pr, repo=repo, interval=interval,
             db_path=JOURNAL_PATH,
+            conflict=conflict,
         )
 
         if status == "head_changed":
