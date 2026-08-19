@@ -74,7 +74,7 @@
 
 **責務**: 窓口（Secretary）は人間との唯一の接点として、対話・判断、タスク分解、ワーカー報告の受信と伝達、`.state/` と `registry/` の管理、`/org-retro` を担う。実作業は原則すべてワーカーへ委譲する（[`CLAUDE.md`](../../CLAUDE.md):3, :52, :68）。運用責務は `org-delegate`（作業委託）/ `org-escalation`（人間エスカレーション）/ `org-pull-request`（push・PR・CI 監視・マージ後クローズ）の 3 スキルに分割されている（同 :53-56）。
 
-**タスクルーティングは 2 レーン制**。工数 S 以下・単一ファイル級・判断仰ぎなし・日またぎなしを全て満たす極小タスクのみ、窓口が Agent tool（`isolation="worktree"`、`run_in_background=true` 必須）で直処理してよい（[`CLAUDE.md`](../../CLAUDE.md):71-88）。この `run_in_background=true` はハーネス強制で、PreToolUse フック [`.hooks/block-foreground-subagent.sh`](../../.hooks/block-foreground-subagent.sh) が違反を exit 2 で deny する。
+**タスクルーティングは 2 レーン制**。工数 S 以下・単一ファイル級・判断仰ぎなし・日またぎなしを全て満たす極小タスクのみ、窓口が Agent tool（`isolation="worktree"`、背景実行必須）で直処理してよい（[`CLAUDE.md`](../../CLAUDE.md):71-88）。背景実行は現行ハーネスでは常時保証される（`Agent` の入力スキーマから `run_in_background` が廃止された。Issue #942）。PreToolUse フック [`.hooks/block-foreground-subagent.sh`](../../.hooks/block-foreground-subagent.sh) は `run_in_background` が存在しかつ `true` でない呼び出しを exit 2 で deny する旧ハーネス互換の防波堤として残る。
 
 **スキルの一部は生成物**。23 スキルのうち 12 件は `SKILL.md.in` から [`tools/gen_skill_prose.py`](../../tools/gen_skill_prose.py) が transport トークンを render して生成する。ja 側のシームは [`tools/transport.py`](../../tools/transport.py)、SoT は `claude_org_runtime.transport`。
 

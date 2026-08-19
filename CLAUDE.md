@@ -81,7 +81,7 @@ PR マージ → post-merge cleanup が終わったら、ユーザーの催促�
 満たす場合、窓口は worker を派遣せず `Agent` tool（`isolation="worktree"`）で直処理してよい。**1 つでも満たさない／判断境界が読めない場合は迷わず従来のワーカーレーン**（[`/org-delegate`](./.claude/skills/org-delegate/SKILL.md)）に倒す。
 
 **軽量レーンの必須条件（省略不可）:**
-- `run_in_background=true` で起動する。**同期実行は禁止**（窓口の人間接点・ワーカー ack の即時性をブロックするため）。この `run_in_background=true` 必須は PreToolUse フック [`.hooks/block-foreground-subagent.sh`](./.hooks/block-foreground-subagent.sh) でハーネス強制される（窓口・ワーカー一律。前景 subagent は呼び出し元をブロックし差し込み即応を止めるため、`run_in_background` が厳密 `true` でない Agent 呼び出しを exit 2 で deny する）
+- **背景（非同期）で起動する。同期実行は禁止**（窓口の人間接点・ワーカー ack の即時性をブロックするため）。現行ハーネスでは `Agent` の入力スキーマから `run_in_background` が廃止され subagent は常時背景実行になったため（2026-08-19 実測: `tool_input` は `description` / `prompt` / `subagent_type` のみ、明示指定しても `additionalProperties:false` で除去される。Issue #942）、呼び出し側で指定するパラメータは無い。PreToolUse フック [`.hooks/block-foreground-subagent.sh`](./.hooks/block-foreground-subagent.sh) は窓口・ワーカー一律で、`run_in_background` が**存在しかつ厳密 `true` でない** Agent 呼び出しのみを exit 2 で deny する（旧ハーネス互換の防波堤。キー欠落は常時背景として許可）
 - Codex レビューを in-loop で回し、Blocker/Major ゼロまで修正する（ワーカーレーンの検証深度 full と同等のゲート）
 - push・PR・merge の人間ゲートは従来どおり維持する（subagent が自動で push / PR / merge してはならない）
 
