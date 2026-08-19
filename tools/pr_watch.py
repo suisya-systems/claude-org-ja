@@ -199,6 +199,18 @@ JOURNAL_PATH = resolve_state_db_path()
 _PEER_NOTIFY_TARGET = "secretary"
 
 
+# Wall-clock cap on every `gh` subprocess (Issue #941, P3).
+#
+# Without it a hung `gh` blocks the watcher forever with no diagnostic:
+# the poll loop simply stops, which from the outside is indistinguishable
+# from a healthy watcher between polls -- the same ambiguity that got a
+# working watcher killed on 2026-08-19. A bounded call turns "hung
+# forever" into a normal per-call failure that each site already knows
+# how to degrade. Generous enough that a slow-but-live API call is never
+# cut short; the polling loop retries on the next tick regardless.
+GH_TIMEOUT_SEC = 120
+
+
 def _notify_peer(message: str, to_id: str = _PEER_NOTIFY_TARGET) -> bool:
     """Best-effort peer-message dispatch. Never raises.
 
@@ -219,15 +231,44 @@ def _notify_peer(message: str, to_id: str = _PEER_NOTIFY_TARGET) -> bool:
 def _configured_transport() -> "str | None":
     """Return the configured transport name, or None if none is set.
 
-    ``broker`` when ``ORG_TRANSPORT=broker`` (raw env, matching
-    ``tools/peer_notify.notify_peer``'s dispatch), ``renga`` when
-    ``RENGA_SOCKET`` is set, else None. Used to decide whether a failed
-    peer push is a genuine delivery failure worth recording (fail-loud)
-    versus an expected no-op in a plain shell / CI where no transport is
-    configured by design.
+    Used to decide whether a failed peer push is a genuine delivery
+    failure worth recording (fail-loud) versus an expected no-op in a
+    plain shell / CI where no transport is configured by design.
+
+    Two things must both hold, and they used to be conflated (Issue
+    #941):
+
+    1. **The name must match the branch ``notify_peer`` actually took.**
+       This now asks ``tools.peer_notify`` for the resolved transport
+       instead of re-deriving it from raw env, so the label recorded in
+       ``notify_failed`` can no longer disagree with the transport the
+       push was aimed at. The old copy said ``renga`` whenever
+       ``RENGA_SOCKET`` was set, which is exactly what ``events`` id=4233
+       recorded for the interlock#36 CI-green push even though the org
+       resolves to ``broker``.
+    2. **"Configured" must still mean configured.** Because
+       ``DEFAULT_TRANSPORT`` is ``broker``, the resolver returns a
+       transport unconditionally — so resolution alone cannot answer
+       "is a transport set up here?". Each branch is therefore checked
+       for the precondition that makes it functional: ``renga`` needs
+       ``RENGA_SOCKET`` (without it ``notify_peer`` short-circuits),
+       ``broker`` needs either an explicit ``ORG_TRANSPORT`` selection or
+       the ``claude-org-runtime`` CLI on PATH (without either, the push
+       is the documented graceful no-op). A plain shell / CI checkout has
+       none of these and still yields ``None``, so the suite does not
+       start recording ``notify_failed`` for pushes that were never
+       expected to land.
     """
-    if os.environ.get("ORG_TRANSPORT") == "broker":
-        return "broker"
+    try:
+        from tools.peer_notify import _resolve_transport
+    except Exception:  # noqa: BLE001 — mirror notify_peer's never-raise import
+        resolved = "broker" if os.environ.get("ORG_TRANSPORT") == "broker" else "renga"
+    else:
+        resolved = _resolve_transport()
+    if resolved == "broker":
+        if os.environ.get("ORG_TRANSPORT") or shutil.which("claude-org-runtime"):
+            return "broker"
+        return None
     if os.environ.get("RENGA_SOCKET"):
         return "renga"
     return None
@@ -321,8 +362,9 @@ def _fetch_head_oid(pr: int, repo: str) -> "str | None":
             text=True,
             encoding="utf-8",  # gh emits UTF-8; locale decode (cp932) corrupts/crashes (#537)
             check=False,
+            timeout=GH_TIMEOUT_SEC,
         )
-    except OSError:
+    except (OSError, subprocess.TimeoutExpired):
         return None
     try:
         # ``ValueError`` covers json.JSONDecodeError; ``TypeError`` covers a
@@ -405,7 +447,15 @@ def _resolve_repo() -> str:
             text=True,
             encoding="utf-8",  # gh emits UTF-8; locale decode (cp932) corrupts/crashes (#537)
             check=True,
+            timeout=GH_TIMEOUT_SEC,
         )
+    except subprocess.TimeoutExpired:
+        sys.stderr.write(
+            "tools/pr_watch.py: error: `gh repo view` timed out after "
+            f"{GH_TIMEOUT_SEC}s while auto-detecting the repo; pass "
+            "--repo OWNER/REPO to skip detection\n"
+        )
+        sys.exit(2)
     except subprocess.CalledProcessError as exc:
         sys.stderr.write(
             "tools/pr_watch.py: error: failed to auto-detect repo via "
@@ -628,8 +678,9 @@ def _fetch_checks(pr: int, repo: str) -> "list[dict] | None":
             text=True,
             encoding="utf-8",  # gh emits UTF-8; locale decode (cp932) corrupts/crashes (#537)
             check=False,
+            timeout=GH_TIMEOUT_SEC,
         )
-    except FileNotFoundError:
+    except (FileNotFoundError, subprocess.TimeoutExpired):
         return None
     try:
         data = json.loads(result.stdout or "")
@@ -744,8 +795,9 @@ def _fetch_status_rollup(pr: int, repo: str) -> "list[dict] | None":
             text=True,
             encoding="utf-8",  # gh emits UTF-8; locale decode (cp932) corrupts/crashes (#537)
             check=False,
+            timeout=GH_TIMEOUT_SEC,
         )
-    except OSError:
+    except (OSError, subprocess.TimeoutExpired):
         return None
     try:
         # ``ValueError`` covers json.JSONDecodeError; ``TypeError`` covers a
@@ -1255,7 +1307,20 @@ def _pr_exists(pr: int, repo: str) -> bool:
             text=True,
             encoding="utf-8",  # gh emits UTF-8; locale decode (cp932) corrupts/crashes (#537)
             check=True,
+            timeout=GH_TIMEOUT_SEC,
         )
+    except subprocess.TimeoutExpired:
+        # Deliberately NOT `return False`: a timeout means "could not
+        # tell", and reporting it as "PR not found" would send the
+        # operator hunting a nonexistent typo. Fail loudly with the real
+        # reason instead (observation-vs-fact, same principle as the
+        # dispatcher runbook's (P4)).
+        sys.stderr.write(
+            f"tools/pr_watch.py: error: `gh pr view` timed out after "
+            f"{GH_TIMEOUT_SEC}s checking PR #{pr} in {repo}; could not "
+            "confirm the PR exists\n"
+        )
+        sys.exit(2)
     except subprocess.CalledProcessError:
         return False
     return True

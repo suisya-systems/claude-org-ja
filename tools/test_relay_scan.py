@@ -233,3 +233,136 @@ class TestRelayScanCli(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestExecutionTraceAudit(unittest.TestCase):
+    """--audit: detect that the relay scan itself stopped running (#941).
+
+    The outage this guards against ran 20 days undetected because a
+    silent no-op and a clean scan leave the same evidence (nothing). The
+    heartbeat is what separates them, so these tests pin both directions:
+    a scan that ran is `fresh`, and no scan at all is `never_scanned`
+    even when the ledger looks perfectly healthy.
+    """
+
+    def _run(self, db, *args):
+        import io
+        import contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = relay_scan._main(["--db", str(db), *args])
+        return rc, buf.getvalue()
+
+    def test_audit_before_any_scan_is_never_scanned(self):
+        td, db = _db_with_events([
+            ("ci_completed", {"pr": 1, "status": "passed", "head": "a"}),
+        ])
+        try:
+            rc, out = self._run(db, "--audit")
+            report = json.loads(out)
+            self.assertEqual(rc, 10)
+            self.assertEqual(report["status"], "never_scanned")
+            self.assertIsNone(report["last_scan_at"])
+            # The backlog is reported alongside, which is the number that
+            # made the real outage legible once someone finally looked.
+            self.assertEqual(report["pending_now"], 1)
+        finally:
+            td.cleanup()
+
+    def test_audit_after_list_is_fresh(self):
+        td, db = _db_with_events([
+            ("ci_completed", {"pr": 1, "status": "passed", "head": "a"}),
+        ])
+        try:
+            self._run(db, "--list")
+            rc, out = self._run(db, "--audit")
+            report = json.loads(out)
+            self.assertEqual(rc, 0)
+            self.assertEqual(report["status"], "fresh")
+            self.assertIsNotNone(report["last_scan_at"])
+        finally:
+            td.cleanup()
+
+    def test_empty_scan_still_stamps_the_heartbeat(self):
+        """The crux: a scan with nothing pending must still prove it ran.
+
+        This is the case the ledger cannot record -- no pending events
+        means no ledger rows -- so without the heartbeat it is
+        indistinguishable from the command never executing.
+        """
+        td, db = _db_with_events([("worker_reported", {"pr": 1})])
+        try:
+            rc, out = self._run(db, "--list")
+            self.assertEqual(json.loads(out), [])
+            rc, out = self._run(db, "--audit")
+            self.assertEqual(rc, 0)
+            self.assertEqual(json.loads(out)["status"], "fresh")
+        finally:
+            td.cleanup()
+
+    def test_stale_when_heartbeat_is_older_than_threshold(self):
+        td, db = _db_with_events([
+            ("ci_completed", {"pr": 1, "status": "passed", "head": "a"}),
+        ])
+        try:
+            self._run(db, "--list")
+            hb = relay_scan._heartbeat_path(db)
+            data = json.loads(hb.read_text(encoding="utf-8"))
+            data["secretary"]["last_scan_at"] = "2026-07-30T20:02:13.418Z"
+            hb.write_text(json.dumps(data), encoding="utf-8")
+            rc, out = self._run(db, "--audit")
+            report = json.loads(out)
+            self.assertEqual(rc, 10)
+            self.assertEqual(report["status"], "stale")
+            self.assertGreater(report["age_min"], 15)
+        finally:
+            td.cleanup()
+
+    def test_corrupt_heartbeat_reads_as_never_scanned(self):
+        """A trace we cannot read is a trace we do not have (fail-loud)."""
+        td, db = _db_with_events([
+            ("ci_completed", {"pr": 1, "status": "passed", "head": "a"}),
+        ])
+        try:
+            self._run(db, "--list")
+            hb = relay_scan._heartbeat_path(db)
+            hb.write_text("{not json", encoding="utf-8")
+            rc, out = self._run(db, "--audit")
+            self.assertEqual(rc, 10)
+            self.assertEqual(json.loads(out)["status"], "never_scanned")
+        finally:
+            td.cleanup()
+
+    def test_heartbeat_is_per_recipient(self):
+        td, db = _db_with_events([
+            ("ci_completed", {"pr": 1, "status": "passed", "head": "a"}),
+        ])
+        try:
+            self._run(db, "--recipient", "secretary", "--list")
+            rc, out = self._run(db, "--recipient", "secretary", "--audit")
+            self.assertEqual(json.loads(out)["status"], "fresh")
+            rc, out = self._run(db, "--recipient", "other", "--audit")
+            self.assertEqual(rc, 10)
+            self.assertEqual(json.loads(out)["status"], "never_scanned")
+        finally:
+            td.cleanup()
+
+    def test_audit_without_db_is_not_a_finding(self):
+        """A plain checkout has no relay to run; do not cry outage."""
+        with tempfile.TemporaryDirectory() as tmp:
+            rc, out = self._run(Path(tmp) / "absent.db", "--audit")
+            self.assertEqual(rc, 0)
+            self.assertEqual(json.loads(out)["status"], "no_db")
+
+    def test_limit_does_not_distort_the_reported_backlog(self):
+        """`surfaced` is per-scan; `pending_now` is the real backlog."""
+        td, db = _db_with_events([
+            ("ci_completed", {"pr": i, "status": "passed", "head": "a"})
+            for i in range(5)
+        ])
+        try:
+            self._run(db, "--list", "--limit", "2")
+            rc, out = self._run(db, "--audit")
+            self.assertEqual(json.loads(out)["pending_now"], 5)
+        finally:
+            td.cleanup()

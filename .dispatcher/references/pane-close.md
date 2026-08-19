@@ -27,7 +27,7 @@ CLI は **1 attempt あたり 1 回起動する単発判定**（Issue #285、Cla
 ```bash
 # ディスパッチャー cwd は .dispatcher/ なので 1 段上がリポジトリルート。
 # 記録が無い / ファイルが読めない場合は空文字になる（= 下の分岐でゲートを回す側に倒れる）。
-completion_reported_at=$(python -c 'import json;d=json.load(open("../.state/dispatcher/worker-idle-state.json"));print((d.get("worker-<task_id>") or {}).get("completion_reported_at") or "")' 2>/dev/null)
+completion_reported_at=$(python3 -c 'import json;d=json.load(open("../.state/dispatcher/worker-idle-state.json"));print((d.get("worker-<task_id>") or {}).get("completion_reported_at") or "")' 2>/dev/null)
 run_status=$(sqlite3 ../.state/state.db "SELECT status FROM runs WHERE task_id = '<task_id>'" 2>/dev/null)
 ```
 
@@ -43,7 +43,7 @@ run_status=$(sqlite3 ../.state/state.db "SELECT status FROM runs WHERE task_id =
 
 ```bash
 # ディスパッチャー cwd は .dispatcher/ なので 1 段上がリポジトリルート。
-python ../tools/dispatcher_retro_gate.py --task-id <task_id> --print-initial-prompt
+python3 ../tools/dispatcher_retro_gate.py --task-id <task_id> --print-initial-prompt
 # stdout: <task_id> の完了報告は届いていますか？
 ```
 
@@ -59,7 +59,7 @@ mcp__renga-peers__send_message(to_id="secretary", message="<上記 stdout>")
 2. CLI を起動して stdin に渡す:
 
    ```bash
-   echo '<json>' | python ../tools/dispatcher_retro_gate.py \
+   echo '<json>' | python3 ../tools/dispatcher_retro_gate.py \
        --task-id <task_id> --attempt <n> --max-attempts 10
    ```
 

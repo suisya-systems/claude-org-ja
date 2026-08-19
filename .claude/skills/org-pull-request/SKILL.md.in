@@ -76,7 +76,7 @@ allowed-tools:
 
 ### CI 完了検知の正路: events テーブルが canonical、ディスパッチャー relay が一次配送、events DB poll は最終フォールバック（Issue #653 / Refs #658）
 
-CI 完了の **canonical 信号は events テーブルの `ci_completed` 行**（`payload_json` に対象 PR が一致し、`head` が push した SHA と一致、`status='passed'|'failed'`）であって、上の 2b-i 受信モデルで触れた `CI_COMPLETED` peer **直** push（`<channel source="renga-peers">` の in-band push / broker channel sidecar の `notifications/claude/channel` 注入）ではない。直 push は **best-effort 補助（path A）**で、`tools/peer_notify.py: notify_peer` は raw env 判定の helper のため `ORG_TRANSPORT` 無設定（運用既定）かつ `RENGA_SOCKET` 不在の plain shell / broker daemon 未起動 / channel sidecar unhealthy 等で **silent no-op** になる経路がある（SKILL 冒頭の輸送層注記と同じ事情。PR #73 で実際に窓口が CI green を取りこぼした）。
+CI 完了の **canonical 信号は events テーブルの `ci_completed` 行**（`payload_json` に対象 PR が一致し、`head` が push した SHA と一致、`status='passed'|'failed'`）であって、上の 2b-i 受信モデルで触れた `CI_COMPLETED` peer **直** push（`<channel source="renga-peers">` の in-band push / broker channel sidecar の `notifications/claude/channel` 注入）ではない。直 push は **best-effort 補助（path A）**で、`tools/peer_notify.py: notify_peer` は解決先 transport が未構成のとき（broker send CLI 不在 / renga opt-in なのに `RENGA_SOCKET` 不在の plain shell / broker daemon 未起動 / channel sidecar unhealthy 等）に **silent no-op** になる経路がある（SKILL 冒頭の輸送層注記と同じ事情。PR #73 で実際に窓口が CI green を取りこぼした）。なお同 helper は Refs #941 で raw env 判定をやめ [`tools/transport.py`](../../../tools/transport.py) の `resolve()` 経由になった（`ORG_TRANSPORT` 無設定を renga と読んで**実際の解決先と食い違う** push を撃つ経路が、interlock#36 の CI green 取りこぼしの一因だったため）。
 
 **見逃しゼロの主保証はディスパッチャー relay（path B、Refs #658）**: ディスパッチャーが `/loop 3m` 監視サイクル（[`.dispatcher/references/worker-monitoring.md`](../../../.dispatcher/references/worker-monitoring.md) Step 5.25）で `events` を `event_deliveries` 配送台帳と突き合わせ、未配送の `ci_completed` を broker token 経由で窓口へ `[relay]` 付き `send_message` する。通常運用では窓口はこの relay 到着で次へ進めばよく、events テーブルを能動 poll する必要はない。**events DB の直接 poll は relay も直 push も成立しない場合（broker daemon 未起動の plain shell / CI 等）の最終フォールバック**として下記手順で残す（どの層でも canonical event は同一なので判定材料 `head` + `status` は一致する）。push が来たことだけを ground truth にすると no-op 経路で CI green を取りこぼすため、直 push は早期通知としてのみ扱い、確定は必ず events 行（relay 受信 or 直接 poll）で行う。
 
@@ -183,8 +183,10 @@ close は低遅延経路として温存し、二重掃除にならないよう `
       close を撃ち、別 org の同名 watcher を不可逆に閉じうる**（判定規則と根拠の SoT は
       [`/pr-watch-pane`](../pr-watch-pane/SKILL.md) Step 5 の (b)）。確定できなければ不成立
       （§「CI 完了検知の正路」が触れる
-      [`tools/peer_notify.py`](../../../tools/peer_notify.py) の raw env 判定は、helper 側の
-      分岐仕様であって backend の同定規則ではない）。**確定できないときは carve-out を取らない**
+      [`tools/peer_notify.py`](../../../tools/peer_notify.py) の分岐は、helper 側の
+      仕様であって backend の同定規則ではない。同 helper は Refs #941 で `resolve()` 経由に
+      揃えられたが、**それはこの MUST NOT を緩めない** — helper が `resolve()` を使うことと、
+      Group B の駆動系を `resolve()` から推定してよいこととは別問題である）。**確定できないときは carve-out を取らない**
       （fail-safe。未知値で解決が `ValueError` になる等で「いま何が駆動しているか」を確定
       できない場合は条件 (1) を**不成立**として扱い、下記の報告に倒す）
     - **(2) 再 spawn が `[name_in_use]` / `[name_taken]` で弾かれている** — stale binding の症状。

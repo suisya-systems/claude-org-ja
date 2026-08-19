@@ -855,7 +855,7 @@ bash ../tools/journal_append.sh anomaly_observed source={面} worker=worker-{tas
    ```bash
    # ディスパッチャー cwd は .dispatcher/。helper は repo root 起点で
    # .state/pending_decisions.json を解決するため相対パスは不要。
-   python ../tools/pending_decisions.py list --older-than-min 15
+   python3 ../tools/pending_decisions.py list --older-than-min 15
    ```
 
    - 出力 0 行 → register 経由の (a)(1) relay gap は **なし**。ただし (a)(2) は register では捕捉できないため、proxy 経路 ((a)〜(f)) は **必ず続行する** (skip しない)
@@ -892,7 +892,7 @@ bash ../tools/journal_append.sh anomaly_observed source={面} worker=worker-{tas
    ```bash
    # ディスパッチャー cwd は .dispatcher/。helper は repo root 起点で
    # .state/pending_decisions.json を解決するため相対パスは不要。
-   python ../tools/pending_decisions.py list --user-replied-older-than-min 15
+   python3 ../tools/pending_decisions.py list --user-replied-older-than-min 15
    ```
 
    - 出力 0 行 → register 経由の (a)(2) relay gap は **なし**
@@ -1182,13 +1182,29 @@ bash ../tools/journal_append.sh anomaly_observed source={面} worker=worker-{tas
 
    **実行手順** (dispatcher cwd は `.dispatcher/` なので `../tools/`):
 
+   0. **本ステップが実際に走っているかを機械検証する (Refs #941)**。サイクル冒頭の `spawn_gate.py audit` と同じ位置・同じ exit 規約で 1 回叩く:
+
+      ```bash
+      python3 ../tools/relay_scan.py --recipient secretary --audit
+      ```
+
+      stdout は単一 JSON (`{status, recipient, checked_at, last_scan_at, age_min, stale_min, pending_now}`)。exit code で分岐する:
+
+      - **exit 0** — `status` は `fresh` (直近 `stale_min` 分以内に scan 実績あり) か `no_db` (state DB 不在 = relay 対象が構造的に存在しない)。何もせず 1. へ進む
+      - **exit 10** — `status` は `stale` (scan が `stale_min` 分以上止まっている) か `never_scanned` (一度も走った記録が無い / heartbeat が壊れている)。**窓口へ `RELAY_SCAN_STALE: status=<status> last_scan_at=<ts> pending_now=<n>` を送る**。原因は概ね本ステップ自体が実行されていないことなので、報告後も 1. は通常どおり実行する (報告と復旧を同じサイクルで行う)
+      - **exit 2** — ツールエラー。stdout / stderr を添えて窓口へ通知する
+
+      `--list` は実行のたびに `.state/dispatcher/relay-scan-heartbeat.json` へ実行痕跡 (heartbeat) を無条件で残す。**「配送対象が無かった scan」と「そもそも走らなかった scan」は台帳の行だけでは区別できない** (どちらも `event_deliveries` に何も足さない) ため、この heartbeat が唯一の弁別子になる。閾値は既定 15 分 = `/loop 3m` の 5 サイクル分で、`--stale-min` で変更できる。
+
    1. 未配送の終端イベントを列挙する (各行に relay 試行を記帳する):
 
       ```bash
-      python ../tools/relay_scan.py --recipient secretary --list
+      python3 ../tools/relay_scan.py --recipient secretary --list
       ```
 
       出力は JSON 配列。各要素は `{source_event_id, kind, occurred_at, attempt, message, payload}`。空配列 (`[]`) なら本ステップは何もせず終了。DB 不在時も `[]` (エラーにしない)。
+
+      **`[]` と「出力が無い」を同一視しない (Refs #941)**: 判定は **exit code 0 かつ stdout が JSON としてパースできること**の両方で行う。exit != 0 / stdout が空 / JSON でない場合は「配送対象なし」ではなく **ツールが走っていない**（`command not found`・import エラー・DB 破損等）ので、**本ステップを完了扱いにせず窓口へ `RELAY_SCAN_BROKEN: <exit code> <stderr 1 行>` を送る**。2026-07-30 〜 2026-08-19 の 20 日間、runbook の綴りが `python`（この環境には `python3` しか無い）だったため毎サイクル `command not found` で stdout が空になり、それが `[]` と区別されずに「配送対象なし」と読まれ続けた。終端イベント 134 件がその間に滞留している。
 
    2. 各要素について、`message` フィールドをそのまま窓口へ送る:
 
@@ -1201,7 +1217,7 @@ bash ../tools/journal_append.sh anomaly_observed source={面} worker=worker-{tas
    3. **send_message が成功したら**、その配送を台帳に確定する (以後 relay されない):
 
       ```bash
-      python ../tools/relay_scan.py --recipient secretary --mark-delivered --source-event-id <source_event_id>
+      python3 ../tools/relay_scan.py --recipient secretary --mark-delivered --source-event-id <source_event_id>
       ```
 
       送信が `[pane_not_found]` 等で失敗した場合は `--mark-failed --source-event-id <id> --error "<code>"` を記帳する (台帳上は `failed` = 再試行可能。次サイクルで再 surface される)。
@@ -1211,6 +1227,7 @@ bash ../tools/journal_append.sh anomaly_observed source={面} worker=worker-{tas
    - **この台帳 dedup は Step 4/5/5.1/5.2 の 30 秒 anomaly 通知 dedup とは別レイヤー**: 前者は「配送成功済みイベントの再配送防止」、後者は「同一異常の再通知抑制」で目的が異なる。両者を混同しない。
    - **worker 不在でも実行する**: PR merge 後などで worker pane が既に閉じていても `ci_completed` 等の配送漏れをカバーする必要があるため、本ステップは pane 存在に依らず走る (下記 Step 7 の reduced-mode 例外リストに含める)。
    - **escalation は対象外**: `worker_escalation` は Step 5.1 の SECRETARY_RELAY_GAP 経路が relay owner なので本 relay set から除外する (二重 relay 防止)。`notify_failed` は含める (push 失敗そのものが窓口に伝えるべき配送ギャップ = fail-loud end-to-end)。
+   - **実行痕跡は台帳と別に持つ (Refs #941)**: `event_deliveries` の行は「配送対象があった scan」しか証拠しないので、relay の**不実行**は台帳からは検出できない。`--list` が無条件に書く heartbeat と `--audit` の staleness 判定がその検出面であり、`--audit` を毎サイクル叩かなければ本ステップは再び 20 日間黙って止まりうる。heartbeat の書き込み失敗は握り潰される (relay 本体を telemetry の失敗で止めないため) が、その場合 `--audit` は `stale` 側に倒れる = fail-loud 方向である。
    - **scan floor は「配送台帳エポック」**（`event_deliveries` 台帳が生成された瞬間 = schema version 3 migration の適用時刻）を既定にする（`relay_scan.py` は `--since-hours` 省略時にこのエポックを floor にする）。エポックは **pre-ledger history（台帳導入前の過去イベント）を除外**（初回デプロイの一斉 relay flood を防ぐ anti-flood 境界）しつつ、**エポック以降のイベントは配送されるまで age に依らず eligible** に保つ。これは wall-clock の移動窓（`now - N h`）と違い、ディスパッチャーが数週間停止しても post-ledger の終端イベントを取りこぼさない（wall-clock 窓だと停止が窓長を超えると一度も試行していないイベントが窓外に落ちて見逃す — Codex P2）。手動 backfill が要る特殊時のみ `--since-hours 0`（unbounded、pre-ledger history も relay）を明示する。
 
 <a id="step-5-3"></a>
@@ -1303,7 +1320,7 @@ bash ../tools/journal_append.sh anomaly_observed source={面} worker=worker-{tas
 
 7. ワーカーペインがない場合は `poll_events` / `check_messages` / `inspect_pane` をすべてスキップし、監視ループを停止する。**ただし次のいずれかが存在する間は停止しない**:
    - `.state/dispatcher/curate-inflight.json` が存在する間: Step 1 (`poll_events`) / Step 2 (`check_messages`) / Step 5.3 だけを継続し (worker 向けの Step 3〜5.2 は対象が無いので skip)、inflight 解消 (Step 5.3 (a)/(b)/(c) のいずれか) 後のサイクルで停止する
-   - **未配送の終端イベントが残っている間 (Refs #653 #658)**: `python ../tools/relay_scan.py --recipient secretary --list` が非空を返す間は Step 5.25 だけを継続する。PR merge 後に worker pane が閉じても `ci_completed` 等の配送漏れをカバーするため、pane 不在でも relay を走らせる。空配列 (`[]`) を返したサイクルで (curate-inflight も無ければ) 停止する
+   - **未配送の終端イベントが残っている間 (Refs #653 #658)**: `python3 ../tools/relay_scan.py --recipient secretary --list` が非空を返す間は Step 5.25 だけを継続する。PR merge 後に worker pane が閉じても `ci_completed` 等の配送漏れをカバーするため、pane 不在でも relay を走らせる。空配列 (`[]`) を返したサイクルで (curate-inflight も無ければ) 停止する
    - **unknown / indeterminate として保持している worker が居る間 ((3-a-4))**: `list_panes` に列挙されないだけで退役が**確定していない** worker は監視対象・active のままなので、**「ワーカーペインがない」に数えない**。当該 worker については Step 4 / Step 5 / Step 5.2 を skip するが、Step 1 / Step 2 / Step 3 / Step 5.1 は通常どおり回し、次サイクルで (3-a-2) を再評価する。停止できるのは、その worker が (3-a-2) の 1 行目 / 4 行目で**終了確定した**か、窓口が `.state/workers/worker-*.md` を終端状態へ遷移させたサイクル以降
    - **`placement == "background_tab"` の worker が居る間 ((3-a-5))**: `list_panes` に出ないのは配置上の定数なので、同じく **「ワーカーペインがない」に数えない**。こちらは Step 4 / Step 5 / Step 5.2 も `bound_pane_id` 宛で**通常どおり回す** (skip しない)。停止できるのは、attribution 済みの `pane_exited` で**終了確定した**か、窓口が `.state/workers/worker-*.md` を終端状態へ遷移させたサイクル以降
 

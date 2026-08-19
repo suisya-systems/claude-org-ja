@@ -2396,24 +2396,130 @@ def _read_events_of_kind(db_path: Path, kind: str) -> "list[dict]":
             for r in rows]
 
 
+class GhTimeoutTests(unittest.TestCase):
+    """Every gh call is wall-clock bounded (Issue #941, P3).
+
+    A hung gh used to stall the watcher indefinitely with no output,
+    which is externally identical to a healthy watcher waiting between
+    polls -- the ambiguity that led to a working watcher being killed.
+    """
+
+    class _Completed:
+        def __init__(self, rc=0, stdout="{}", stderr=""):
+            self.returncode = rc
+            self.stdout = stdout
+            self.stderr = stderr
+
+    def _timeout(self, *a, **kw):
+        raise subprocess.TimeoutExpired(cmd="gh",
+                                        timeout=pr_watch.GH_TIMEOUT_SEC)
+
+    def test_all_gh_calls_pass_a_timeout(self) -> None:
+        """No gh invocation may be unbounded."""
+        seen = []
+
+        def record(cmd, *a, **kw):
+            if cmd and cmd[0] == "gh":
+                seen.append((tuple(cmd), kw.get("timeout")))
+            return self._Completed(1, stdout="{}")
+
+        with mock.patch.object(pr_watch.subprocess, "run", side_effect=record):
+            pr_watch._fetch_head_oid(1, "o/r")
+            pr_watch._fetch_status_rollup(1, "o/r")
+            pr_watch._pr_exists(1, "o/r")
+        self.assertTrue(seen, "expected gh invocations")
+        for cmd, timeout in seen:
+            self.assertEqual(timeout, pr_watch.GH_TIMEOUT_SEC,
+                             f"unbounded gh call: {cmd}")
+
+    def test_head_oid_degrades_to_none_on_timeout(self) -> None:
+        with mock.patch.object(pr_watch.subprocess, "run",
+                               side_effect=self._timeout):
+            self.assertIsNone(pr_watch._fetch_head_oid(1, "o/r"))
+
+    def test_status_rollup_degrades_to_none_on_timeout(self) -> None:
+        with mock.patch.object(pr_watch.subprocess, "run",
+                               side_effect=self._timeout):
+            self.assertIsNone(pr_watch._fetch_status_rollup(1, "o/r"))
+
+    def test_fetch_checks_degrades_to_none_on_timeout(self) -> None:
+        with mock.patch.object(pr_watch, "_CHECKS_JSON_SUPPORTED", None), \
+                mock.patch.object(pr_watch.subprocess, "run",
+                                  side_effect=self._timeout):
+            self.assertIsNone(pr_watch._fetch_checks(1, "o/r"))
+
+    def test_pr_exists_timeout_is_not_reported_as_missing(self) -> None:
+        """A timeout means 'could not tell', never 'PR not found'.
+
+        Returning False would send the operator chasing a typo that does
+        not exist; exiting non-zero with the real reason is the honest
+        failure.
+        """
+        with mock.patch.object(pr_watch.subprocess, "run",
+                               side_effect=self._timeout):
+            with self.assertRaises(SystemExit) as cm:
+                pr_watch._pr_exists(7, "o/r")
+        self.assertEqual(cm.exception.code, 2)
+
+
 class TransportDetectionTests(unittest.TestCase):
-    """_configured_transport: raw-env dispatch matching peer_notify."""
+    """_configured_transport: must name the branch peer_notify takes.
+
+    Rewritten for Issue #941. The old expectations encoded the raw-env
+    dispatch (RENGA_SOCKET set => "renga" regardless of what the resolver
+    said), which is exactly the disagreement that let a broker-resolved
+    pane record a push as renga.
+    """
 
     def test_broker_when_org_transport_broker(self) -> None:
         with mock.patch.dict(os.environ, {"ORG_TRANSPORT": "broker"},
                              clear=True):
             self.assertEqual(pr_watch._configured_transport(), "broker")
 
-    def test_renga_when_socket_set(self) -> None:
-        with mock.patch.dict(os.environ, {"RENGA_SOCKET": "/tmp/s"},
+    def test_renga_when_explicitly_selected_with_socket(self) -> None:
+        """renga requires an explicit opt-in now, plus its socket."""
+        with mock.patch.dict(os.environ, {"ORG_TRANSPORT": "renga",
+                                          "RENGA_SOCKET": "/tmp/s"},
                              clear=True):
             self.assertEqual(pr_watch._configured_transport(), "renga")
 
-    def test_none_when_unset(self) -> None:
-        env = {k: v for k, v in os.environ.items()
-               if k not in ("ORG_TRANSPORT", "RENGA_SOCKET")}
-        with mock.patch.dict(os.environ, env, clear=True):
+    def test_none_when_renga_selected_without_socket(self) -> None:
+        """Without RENGA_SOCKET the renga branch short-circuits, so the
+        push was never going to land -- not a delivery gap."""
+        with mock.patch.dict(os.environ, {"ORG_TRANSPORT": "renga"},
+                             clear=True):
             self.assertIsNone(pr_watch._configured_transport())
+
+    def test_socket_only_pane_reports_broker_not_renga(self) -> None:
+        """Regression for the interlock#36 mislabel.
+
+        A pane with RENGA_SOCKET but no ORG_TRANSPORT resolves to broker
+        (DEFAULT_TRANSPORT), so a failed push there is a broker failure.
+        ``events`` id=4233 recorded that same pane as ``renga``.
+        """
+        with TempDir() as tmp:
+            fake_bin = Path(tmp) / "bin"
+            fake_bin.mkdir()
+            cli = fake_bin / "claude-org-runtime"
+            cli.write_text("#!/bin/sh\nexit 0\n")
+            cli.chmod(0o755)
+            with mock.patch.dict(os.environ, {"RENGA_SOCKET": "/tmp/s",
+                                              "PATH": str(fake_bin)},
+                                 clear=True):
+                self.assertEqual(pr_watch._configured_transport(), "broker")
+
+    def test_none_when_nothing_configured(self) -> None:
+        """Plain shell / CI: no transport env and no broker CLI on PATH.
+
+        PATH is pinned to an empty dir so the premise holds on a
+        developer box that happens to have the runtime installed.
+        """
+        with TempDir() as tmp:
+            empty = Path(tmp) / "empty"
+            empty.mkdir()
+            with mock.patch.dict(os.environ, {"PATH": str(empty)},
+                                 clear=True):
+                self.assertIsNone(pr_watch._configured_transport())
 
 
 class FailLoudNotifyTests(unittest.TestCase):
@@ -2446,11 +2552,16 @@ class FailLoudNotifyTests(unittest.TestCase):
             self.assertIn("env_present", rows[0])
 
     def test_no_record_when_no_transport(self) -> None:
-        env = {k: v for k, v in os.environ.items()
-               if k not in ("ORG_TRANSPORT", "RENGA_SOCKET")}
+        # PATH is pinned to an empty dir so "no transport configured" is
+        # actually true here: with DEFAULT_TRANSPORT == "broker", a box
+        # with claude-org-runtime installed DOES have a usable broker
+        # path, and recording the gap there is correct (Issue #941).
         with TempDir() as tmp:
             db = self._db(tmp)
-            with mock.patch.dict(os.environ, env, clear=True), \
+            empty = Path(tmp) / "empty-path"
+            empty.mkdir()
+            with mock.patch.dict(os.environ, {"PATH": str(empty)},
+                                 clear=True), \
                  mock.patch.object(pr_watch, "_notify_peer",
                                    return_value=False):
                 ok = pr_watch._notify_or_record(

@@ -42,9 +42,33 @@ class ScrubUnitTests(unittest.TestCase):
         }, clear=False):
             _hermetic_env.scrub_live_transport_env()
             self.assertNotIn("ORG_BROKER_STATE_DIR", os.environ)
-            self.assertNotIn("ORG_TRANSPORT", os.environ)
             self.assertNotIn("RENGA_SOCKET", os.environ)
+            # ORG_TRANSPORT is PINNED, not removed (Issue #941): peer_notify
+            # resolves an unset value to DEFAULT_TRANSPORT == "broker", so
+            # popping it would route tests at the live broker daemon.
+            self.assertEqual(
+                os.environ.get("ORG_TRANSPORT"),
+                _hermetic_env.HERMETIC_TRANSPORT)
             self.assertEqual(os.environ.get("UNRELATED_KEEP"), "keep")
+
+    def test_scrub_pins_a_transport_that_resolves_to_the_noop_branch(self) -> None:
+        """The pinned value must be one peer_notify treats as renga.
+
+        This is the property the hermetic guarantee rests on: with
+        RENGA_SOCKET scrubbed, the renga branch short-circuits and no
+        send is attempted. Asserting it through the real resolver keeps
+        the guard honest if DEFAULT_TRANSPORT or the flag set changes
+        again.
+        """
+        import peer_notify
+        with mock.patch.dict(os.environ, {
+            "ORG_BROKER_STATE_DIR": "/live/.state/broker",
+            "ORG_TRANSPORT": "broker",
+            "RENGA_SOCKET": "/tmp/renga.sock",
+        }, clear=False):
+            _hermetic_env.scrub_live_transport_env()
+            self.assertEqual(peer_notify._resolve_transport(), "renga")
+            self.assertNotIn("RENGA_SOCKET", os.environ)
 
     def test_scrub_is_idempotent_when_unset(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=False):
