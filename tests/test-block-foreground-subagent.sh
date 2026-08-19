@@ -4,8 +4,9 @@
 #
 # 確認観点 (Issue #942 でハーネス仕様変更に追随):
 #   - Agent + run_in_background 欠落              -> allow (現行ハーネス = 常時背景)
-#   - Agent + run_in_background=true (boolean)   -> allow (旧ハーネス互換)
-#   - Agent + false / 非 boolean true            -> block (exit 2, 前景ないし不明指定)
+#   - Task  + run_in_background 欠落              -> block (旧仕様の既定前景を維持)
+#   - Agent/Task + run_in_background=true         -> allow (旧ハーネス互換)
+#   - Agent/Task + false / 非 boolean true        -> block (exit 2, 前景ないし不明指定)
 #   - Agent + tool_input 欠落                     -> block (fail-closed)
 #   - top-level run_in_background (tool_input 外) -> 無視 (.tool_input.* のみ参照)
 #   - legacy Task の前景 / 背景                    -> block / allow
@@ -131,11 +132,17 @@ json='{"tool_name":"Agent","run_in_background":true,"tool_input":{"description":
 ec=$(run_hook "$json" "$stderr")
 assert_exit 2 "$ec" "tool_input run_in_background=false blocks despite top-level true"
 
-# 10. legacy Task + run_in_background omitted -> allow (test 4 と同じ理由)
+# 10. legacy Task + run_in_background omitted -> block。
+#     test 4 (Agent) と対になる契約。「キー欠落」は旧仕様では『既定前景』、現行仕様では
+#     『常時背景』という真逆の意味で、payload だけでは判別できない。現行ハーネスは
+#     Task を emit しないので、Task という名前が届いた時点で run_in_background が
+#     スキーマに存在した世代とみなし、欠落を前景として deny し続ける (旧世代の防護維持)。
 stderr=$(mktemp); TMPFILES+=("$stderr")
 json='{"tool_name":"Task","tool_input":{"description":"x","prompt":"y"}}'
 ec=$(run_hook "$json" "$stderr")
-assert_exit 0 "$ec" "Task with no run_in_background key is allowed"
+assert_exit 2 "$ec" "Task with no run_in_background key is blocked (legacy default-foreground)"
+assert_stderr_contains "legacy Task ツールでは run_in_background の欠落が既定の前景実行を意味する" "$stderr" \
+  "Task omission is denied by the legacy-semantics branch"
 
 # 10b. legacy Task + run_in_background=false -> block (明示前景は従来どおり拒否)
 stderr=$(mktemp); TMPFILES+=("$stderr")
