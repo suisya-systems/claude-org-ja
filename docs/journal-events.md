@@ -280,7 +280,14 @@ reaches the watcher in three different shapes:
    full set of passed checks. The probe there is report-only — the
    `ci_completed` event, its status, and the `CI_COMPLETED` message are
    unchanged, and `PR_CONFLICT` simply rides alongside so the secretary
-   does not walk into a merge GitHub will refuse.
+   does not walk into a merge GitHub will refuse. It runs only against a
+   head the verdict actually describes (after the phase's head-stability
+   check, and pinned to that head), so a branch advancing mid-probe can
+   never spend the new head's one-shot announcement on a claim about the
+   old head. Because this can be the watcher's LAST observation (without
+   `--merge-watch` it exits straight after), an `UNKNOWN` answer here is
+   re-probed a couple of times; `MERGEABLE` and an unreadable answer
+   return at once, so a healthy watch pays nothing.
 
 Only a *confirmed* `CONFLICTING` changes the watcher's control flow, so
 neither an unreadable probe nor a gh outage can wedge the watch.

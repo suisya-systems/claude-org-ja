@@ -3819,5 +3819,196 @@ class ConflictAnnounceWordingTests(unittest.TestCase):
         self.assertIn("CI が発火しません", notify.call_args[0][0])
 
 
+class ConflictHeadAttributionTests(unittest.TestCase):
+    """Issue #946 (Codex review, P2): never attribute a conflict to a head
+    the caller was not reasoning about.
+
+    A branch that advances between the caller's head read and the probe
+    would otherwise let a `ci_settled=True` announcement land on the NEW
+    head — burning that head's one-shot dedup slot on a claim about the
+    OLD head's verdict, so the new head's real conflict (with no checks
+    at all) could never be announced.
+    """
+
+    def setUp(self) -> None:
+        _assert_peer_isolation()
+
+    def test_head_mismatch_announces_nothing(self) -> None:
+        watch = pr_watch._ConflictWatch(
+            pr=248, repo="octo/repo", db_path=Path("unused"))
+        with mock.patch.object(pr_watch, "_record_event") as rec, \
+             mock.patch.object(pr_watch, "_notify_or_record") as notify, \
+             mock.patch.object(
+                 pr_watch, "_fetch_mergeable",
+                 return_value={"mergeable": "CONFLICTING",
+                               "headRefOid": "b" * 40}):
+            self.assertFalse(watch.probe(ci_settled=True,
+                                         expect_head="a" * 40))
+        rec.assert_not_called()
+        notify.assert_not_called()
+        self.assertFalse(watch.last_conflicting)
+        # Crucially the ledger is untouched, so the new head can still
+        # announce its own conflict on the next round.
+        self.assertEqual(watch.announced_heads, set())
+
+    def test_matching_head_announces(self) -> None:
+        watch = pr_watch._ConflictWatch(
+            pr=248, repo="octo/repo", db_path=Path("unused"))
+        with mock.patch.object(pr_watch, "_record_event") as rec, \
+             mock.patch.object(pr_watch, "_notify_or_record",
+                               return_value=True), \
+             mock.patch.object(
+                 pr_watch, "_fetch_mergeable",
+                 return_value={"mergeable": "CONFLICTING",
+                               "headRefOid": "a" * 40}):
+            self.assertTrue(watch.probe(ci_settled=True,
+                                        expect_head="a" * 40))
+        self.assertEqual(rec.call_count, 1)
+        self.assertEqual(watch.announced_heads, {"aaaaaaa"})
+
+    def test_unreadable_probe_head_does_not_block_the_announce(self) -> None:
+        # A missing headRefOid cannot be compared; report it under the
+        # "unknown" key rather than dropping the conflict entirely.
+        watch = pr_watch._ConflictWatch(
+            pr=248, repo="octo/repo", db_path=Path("unused"))
+        with mock.patch.object(pr_watch, "_record_event") as rec, \
+             mock.patch.object(pr_watch, "_notify_or_record",
+                               return_value=True), \
+             mock.patch.object(pr_watch, "_fetch_mergeable",
+                               return_value={"mergeable": "CONFLICTING"}):
+            self.assertTrue(watch.probe(ci_settled=True,
+                                        expect_head="a" * 40))
+        self.assertEqual(rec.call_args.kwargs["payload"]["head"], "unknown")
+
+    def test_verdict_time_probe_runs_only_on_a_stable_head(self) -> None:
+        # head_before != head_after -> the phase restarts; probing here
+        # would attribute the verdict to a head it does not describe.
+        conflict = mock.Mock()
+        with TempDir() as tmp:
+            db = tmp / ".state" / "state.db"
+            with mock.patch.object(pr_watch, "_fetch_head_oid",
+                                   side_effect=["a" * 40, "b" * 40]), \
+                 mock.patch.object(pr_watch, "_evaluate_startup_state",
+                                   return_value={"status": "passed",
+                                                 "fail_count": 0,
+                                                 "pending_count": 0,
+                                                 "total_checks": 1,
+                                                 "probe_attempts": 1}), \
+                 mock.patch.object(pr_watch, "_record_ci_completed") as rec, \
+                 mock.patch.object(pr_watch, "_notify_peer",
+                                   return_value=True), \
+                 mock.patch.object(pr_watch.time, "monotonic",
+                                   side_effect=[0.0, 1.0]):
+                status, _, _ = pr_watch._run_ci_watch_phase(
+                    pr=248, repo="octo/repo", interval=30, db_path=db,
+                    conflict=conflict)
+        self.assertEqual(status, "head_changed")
+        conflict.probe.assert_not_called()
+        rec.assert_not_called()
+
+    def test_verdict_time_probe_pins_the_verdict_head(self) -> None:
+        conflict = mock.Mock()
+        conflict.probe.return_value = False
+        with TempDir() as tmp:
+            db = tmp / ".state" / "state.db"
+            with mock.patch.object(pr_watch, "_fetch_head_oid",
+                                   return_value="a" * 40), \
+                 mock.patch.object(pr_watch, "_evaluate_startup_state",
+                                   return_value={"status": "passed",
+                                                 "fail_count": 0,
+                                                 "pending_count": 0,
+                                                 "total_checks": 1,
+                                                 "probe_attempts": 1}), \
+                 mock.patch.object(pr_watch, "_record_ci_completed"), \
+                 mock.patch.object(pr_watch, "_notify_peer",
+                                   return_value=True), \
+                 mock.patch.object(pr_watch.time, "monotonic",
+                                   side_effect=[0.0, 1.0]):
+                pr_watch._run_ci_watch_phase(
+                    pr=248, repo="octo/repo", interval=30, db_path=db,
+                    conflict=conflict)
+        kwargs = conflict.probe.call_args.kwargs
+        self.assertTrue(kwargs["ci_settled"])
+        self.assertEqual(kwargs["expect_head"], "a" * 40)
+        self.assertGreater(kwargs["unknown_retries"], 0)
+
+
+class ConflictUnknownRetryTests(unittest.TestCase):
+    """Issue #946 (Codex review, P2): the verdict-time probe may be the
+    LAST observation the watcher makes (no --merge-watch), so a
+    mergeability still being computed has no later poll to settle on."""
+
+    def setUp(self) -> None:
+        _assert_peer_isolation()
+
+    def test_unknown_then_conflicting_is_announced(self) -> None:
+        watch = pr_watch._ConflictWatch(
+            pr=248, repo="octo/repo", db_path=Path("unused"))
+        views = [
+            {"mergeable": "UNKNOWN"},
+            {"mergeable": "UNKNOWN"},
+            {"mergeable": "CONFLICTING", "headRefOid": "a" * 40},
+        ]
+        with mock.patch.object(pr_watch, "_record_event") as rec, \
+             mock.patch.object(pr_watch, "_notify_or_record",
+                               return_value=True), \
+             mock.patch.object(pr_watch, "_fetch_mergeable",
+                               side_effect=views), \
+             mock.patch.object(pr_watch.time, "sleep",
+                               return_value=None) as sleep_mock:
+            self.assertTrue(watch.probe(ci_settled=True, unknown_retries=2,
+                                        unknown_delay=5.0))
+        self.assertEqual(rec.call_count, 1)
+        self.assertEqual(sleep_mock.call_count, 2)
+        sleep_mock.assert_called_with(5.0)
+
+    def test_still_unknown_after_the_budget_stays_silent(self) -> None:
+        watch = pr_watch._ConflictWatch(
+            pr=248, repo="octo/repo", db_path=Path("unused"))
+        with mock.patch.object(pr_watch, "_record_event") as rec, \
+             mock.patch.object(pr_watch, "_notify_or_record") as notify, \
+             mock.patch.object(pr_watch, "_fetch_mergeable",
+                               return_value={"mergeable": "UNKNOWN"}), \
+             mock.patch.object(pr_watch.time, "sleep", return_value=None):
+            self.assertFalse(watch.probe(ci_settled=True, unknown_retries=2))
+        rec.assert_not_called()
+        notify.assert_not_called()
+
+    def test_mergeable_costs_a_healthy_watch_nothing(self) -> None:
+        # The overwhelmingly common green path: one probe, no sleeping.
+        watch = pr_watch._ConflictWatch(
+            pr=248, repo="octo/repo", db_path=Path("unused"))
+        with mock.patch.object(pr_watch, "_fetch_mergeable",
+                               return_value={"mergeable": "MERGEABLE"}) as f, \
+             mock.patch.object(pr_watch.time, "sleep") as sleep_mock:
+            self.assertFalse(watch.probe(ci_settled=True, unknown_retries=2))
+        self.assertEqual(f.call_count, 1)
+        sleep_mock.assert_not_called()
+
+    def test_unreadable_probe_does_not_retry(self) -> None:
+        # "Cannot read" is not "not yet decided"; retrying a broken gh
+        # would only add latency to the terminal path.
+        watch = pr_watch._ConflictWatch(
+            pr=248, repo="octo/repo", db_path=Path("unused"))
+        with mock.patch.object(pr_watch, "_fetch_mergeable",
+                               return_value=None) as f, \
+             mock.patch.object(pr_watch.time, "sleep") as sleep_mock:
+            self.assertFalse(watch.probe(ci_settled=True, unknown_retries=2))
+        self.assertEqual(f.call_count, 1)
+        sleep_mock.assert_not_called()
+
+    def test_zero_check_sites_do_not_retry(self) -> None:
+        # They are already looping at interval cadence; a retry here
+        # would just slow the loop down.
+        watch = pr_watch._ConflictWatch(
+            pr=248, repo="octo/repo", db_path=Path("unused"))
+        with mock.patch.object(pr_watch, "_fetch_mergeable",
+                               return_value={"mergeable": "UNKNOWN"}) as f, \
+             mock.patch.object(pr_watch.time, "sleep") as sleep_mock:
+            self.assertFalse(watch.probe())
+        self.assertEqual(f.call_count, 1)
+        sleep_mock.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
