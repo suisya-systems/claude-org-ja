@@ -2,13 +2,19 @@
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-from tools import relay_scan
-from tools.state_db import apply_schema, connect
-from tools.state_db.writer import StateWriter
+# Make ``tools.*`` importable when this file is executed directly
+# (``python3 tools/test_relay_scan.py``) and not only via a discovery
+# runner, so the __main__ block at the bottom is actually usable.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from tools import relay_scan  # noqa: E402
+from tools.state_db import apply_schema, connect  # noqa: E402
+from tools.state_db.writer import StateWriter  # noqa: E402
 
 
 def _db_with_events(events):
@@ -231,8 +237,6 @@ class TestRelayScanCli(unittest.TestCase):
             td.cleanup()
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 class TestExecutionTraceAudit(unittest.TestCase):
@@ -314,6 +318,7 @@ class TestExecutionTraceAudit(unittest.TestCase):
             report = json.loads(out)
             self.assertEqual(rc, 10)
             self.assertEqual(report["status"], "stale")
+            self.assertTrue(report["finding"])
             self.assertGreater(report["age_min"], 15)
         finally:
             td.cleanup()
@@ -383,6 +388,55 @@ class TestExecutionTraceAudit(unittest.TestCase):
         finally:
             td.cleanup()
 
+    def test_stale_with_empty_backlog_is_not_a_finding(self):
+        """The monitoring loop is designed to stop when idle.
+
+        Step 7 halts it once no worker panes remain and the relay set is
+        empty, so the first audit of the next session legitimately sees
+        an old heartbeat. Reporting that would fire RELAY_SCAN_STALE on
+        nearly every org start and train the reader to ignore it.
+        """
+        td, db = _db_with_events([("worker_reported", {"pr": 1})])
+        try:
+            self._run(db, "--list")
+            hb = relay_scan._heartbeat_path(db)
+            data = json.loads(hb.read_text(encoding="utf-8"))
+            data["secretary"]["last_scan_at"] = "2026-07-30T20:02:13.418Z"
+            hb.write_text(json.dumps(data), encoding="utf-8")
+            rc, out = self._run(db, "--audit")
+            report = json.loads(out)
+            self.assertEqual(report["status"], "stale")
+            self.assertFalse(report["finding"])
+            self.assertEqual(rc, 0)
+        finally:
+            td.cleanup()
+
+    def test_stale_with_backlog_is_a_finding(self):
+        """The real outage signature: nothing draining, events piling up."""
+        td, db = _db_with_events([
+            ("ci_completed", {"pr": 1, "status": "passed", "head": "a"}),
+        ])
+        try:
+            rc, out = self._run(db, "--audit")
+            report = json.loads(out)
+            self.assertEqual(report["status"], "never_scanned")
+            self.assertTrue(report["finding"])
+            self.assertEqual(rc, 10)
+        finally:
+            td.cleanup()
+
+    def test_never_scanned_on_a_quiet_org_is_not_a_finding(self):
+        """Freshly deployed tool, nothing pending -> no day-one alarm."""
+        td, db = _db_with_events([("worker_reported", {"pr": 1})])
+        try:
+            rc, out = self._run(db, "--audit")
+            report = json.loads(out)
+            self.assertEqual(report["status"], "never_scanned")
+            self.assertFalse(report["finding"])
+            self.assertEqual(rc, 0)
+        finally:
+            td.cleanup()
+
     def test_audit_without_db_is_not_a_finding(self):
         """A plain checkout has no relay to run; do not cry outage."""
         with tempfile.TemporaryDirectory() as tmp:
@@ -402,3 +456,7 @@ class TestExecutionTraceAudit(unittest.TestCase):
             self.assertEqual(json.loads(out)["pending_now"], 5)
         finally:
             td.cleanup()
+
+
+if __name__ == "__main__":
+    unittest.main()

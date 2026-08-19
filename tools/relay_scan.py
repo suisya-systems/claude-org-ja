@@ -290,6 +290,25 @@ def cmd_audit(writer: StateWriter, conn, db_path, *, recipient: str,
     heartbeat says whether the scan is running, ``pending_now`` says how
     much is stuck behind it. A stale heartbeat with a large backlog is
     the exact signature of the 2026-08-19 outage.
+
+    **A stale heartbeat alone is not a finding.** The monitoring loop is
+    *designed* to stop: Step 7 halts it once no worker panes remain and
+    the relay set is empty. After an idle evening the first ``--audit``
+    of the next session necessarily sees an hours-old heartbeat, and
+    reporting that as an outage would fire a false ``RELAY_SCAN_STALE``
+    on essentially every org start — which is how a monitor teaches its
+    reader to ignore it. So exit 10 requires **both** a missing/stale
+    trace **and** an actual undelivered backlog (``pending_now > 0``):
+    that pair means events are piling up while nothing is draining them,
+    which is the failure itself rather than a proxy for it. A broken
+    relay with an empty queue is inert by construction — and stops being
+    inert the moment a terminal event lands, at which point the very
+    next audit fires. The 2026-08-19 outage had 132+ pending, so this
+    gate does not weaken the detection it was built for.
+
+    ``status`` stays descriptive (``fresh`` / ``stale`` /
+    ``never_scanned``) for diagnosis; ``finding`` is the actionable bit
+    the runbook branches on.
     """
     pending_now = len(writer.pending_deliveries(
         recipient=recipient, kinds=list(kinds), since=since, limit=None))
@@ -315,16 +334,27 @@ def cmd_audit(writer: StateWriter, conn, db_path, *, recipient: str,
     if not last:
         out["status"] = "never_scanned"
         out["age_min"] = None
-        return out, 10
+        return out, _verdict(out)
 
     age_min = _age_minutes(conn, last)
     out["age_min"] = age_min
     if age_min is None:
         # Unparseable timestamp: treat as no usable trace (fail-safe).
         out["status"] = "never_scanned"
-        return out, 10
+        return out, _verdict(out)
     out["status"] = "stale" if age_min > stale_min else "fresh"
-    return out, (10 if out["status"] == "stale" else 0)
+    return out, _verdict(out)
+
+
+def _verdict(out: dict) -> int:
+    """Set ``out["finding"]`` and return the exit code.
+
+    A finding needs a broken trace AND a real backlog behind it; see
+    :func:`cmd_audit` for why a stale heartbeat alone is expected during
+    the monitoring loop's designed downtime.
+    """
+    out["finding"] = out["status"] != "fresh" and out["pending_now"] > 0
+    return 10 if out["finding"] else 0
 
 
 def _age_minutes(conn, iso_ts: str) -> Optional[float]:

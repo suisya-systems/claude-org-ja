@@ -1184,11 +1184,13 @@ bash ../tools/journal_append.sh anomaly_observed source={面} worker=worker-{tas
       python3 ../tools/relay_scan.py --recipient secretary --audit
       ```
 
-      stdout は単一 JSON (`{status, recipient, checked_at, last_scan_at, age_min, stale_min, pending_now}`)。exit code で分岐する:
+      stdout は単一 JSON (`{status, finding, recipient, checked_at, last_scan_at, age_min, stale_min, pending_now}`)。exit code で分岐する:
 
-      - **exit 0** — `status` は `fresh` (直近 `stale_min` 分以内に scan 実績あり) か `no_db` (state DB 不在 = relay 対象が構造的に存在しない)。何もせず 1. へ進む
-      - **exit 10** — `status` は `stale` (scan が `stale_min` 分以上止まっている) か `never_scanned` (一度も走った記録が無い / heartbeat が壊れている)。**窓口へ `RELAY_SCAN_STALE: status=<status> last_scan_at=<ts> pending_now=<n>` を送る**。原因は概ね本ステップ自体が実行されていないことなので、報告後も 1. は通常どおり実行する (報告と復旧を同じサイクルで行う)
+      - **exit 0** — 対処不要。`status` は `fresh` / `no_db` のほか、**`stale` / `never_scanned` でも backlog が空 (`pending_now == 0`) ならここに落ちる**。何もせず 1. へ進む
+      - **exit 10** (`finding: true`) — trace が欠けており **かつ** 未配送 backlog が実在する (`pending_now > 0`)。**窓口へ `RELAY_SCAN_STALE: status=<status> last_scan_at=<ts> pending_now=<n>` を送る**。原因は概ね本ステップ自体が実行されていないことなので、報告後も 1. は通常どおり実行する (報告と復旧を同じサイクルで行う)
       - **exit 2** — ツールエラー。stdout / stderr を添えて窓口へ通知する
+
+      **なぜ「heartbeat が古い」だけでは報告しないか**: 監視ループは Step 7 で*意図的に*停止する (worker ペイン無し + relay 空)。夜間を挟めば翌セッション最初の `--audit` は必ず数時間前の heartbeat を見るので、それを異常として上げると org 起動のたびに偽 `RELAY_SCAN_STALE` が出て、**読み手が本 alert を無視するように学習してしまう**。報告条件を「trace 欠落 **かつ** backlog 実在」に絞ると、それは「配送すべきものが溜まっているのに何も掃けていない」= 障害そのものを指す。backlog が空のまま relay が壊れていても実害は無く、終端イベントが 1 件でも入った次のサイクルで即 fire する。2026-08-19 の実障害は 132 件超が滞留していたため、この絞り込みで検出力は落ちない。
 
       `--list` は実行のたびに `.state/dispatcher/relay-scan-heartbeat.json` へ実行痕跡 (heartbeat) を無条件で残す。**「配送対象が無かった scan」と「そもそも走らなかった scan」は台帳の行だけでは区別できない** (どちらも `event_deliveries` に何も足さない) ため、この heartbeat が唯一の弁別子になる。閾値は既定 15 分 = `/loop 3m` の 5 サイクル分で、`--stale-min` で変更できる。
 
