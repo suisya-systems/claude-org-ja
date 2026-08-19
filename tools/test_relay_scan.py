@@ -437,6 +437,24 @@ class TestExecutionTraceAudit(unittest.TestCase):
         finally:
             td.cleanup()
 
+    def test_audit_reports_db_errors_as_exit_2(self):
+        """A corrupt/incompatible DB must hit the documented error path.
+
+        The runbook only branches on 0/10/2; an uncaught traceback with
+        exit 1 has no handler, which is the failure mode this whole tool
+        exists to eliminate.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "state.db"
+            # A file that exists but is not a usable schema.
+            conn = connect(db)
+            conn.execute("CREATE TABLE unrelated (x INTEGER)")
+            conn.commit()
+            conn.close()
+            rc, out = self._run(db, "--audit")
+            self.assertEqual(rc, 2)
+            self.assertEqual(json.loads(out)["status"], "error")
+
     def test_audit_without_db_is_not_a_finding(self):
         """A plain checkout has no relay to run; do not cry outage."""
         with tempfile.TemporaryDirectory() as tmp:

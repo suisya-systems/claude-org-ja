@@ -502,10 +502,23 @@ def _main(argv: Optional[list[str]] = None) -> int:
             print(json.dumps(items, ensure_ascii=False, indent=2))
             return 0
         if args.audit:
-            report, code = cmd_audit(writer, conn, db_path,
-                                     recipient=args.recipient, kinds=kinds,
-                                     since=since, stale_min=args.stale_min)
-            conn.commit()
+            # The runbook branches on a 0/10/2 contract, so an unexpected
+            # failure (corrupt DB, missing tables, schema older than the
+            # ledger) must arrive as exit 2 "tool error" -- not as an
+            # uncaught traceback and exit 1, which the dispatcher has no
+            # branch for. A monitor whose own failure mode is unhandled
+            # is the thing this tool exists to stop.
+            try:
+                report, code = cmd_audit(
+                    writer, conn, db_path, recipient=args.recipient,
+                    kinds=kinds, since=since, stale_min=args.stale_min)
+                conn.commit()
+            except Exception as exc:  # noqa: BLE001 -- contract boundary
+                print(json.dumps(
+                    {"status": "error", "recipient": args.recipient,
+                     "error": f"{type(exc).__name__}: {exc}"},
+                    ensure_ascii=False, indent=2))
+                return 2
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return code
         if args.mark_delivered:
