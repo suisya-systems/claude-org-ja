@@ -2047,6 +2047,14 @@ class HeadPollLoopbackTests(unittest.TestCase):
             def fake_run(cmd, *args, **kwargs):
                 if cmd[:3] == ["gh", "pr", "view"] and "--json" in cmd:
                     jval = cmd[cmd.index("--json") + 1]
+                    if jval.startswith("mergeable"):
+                        # Issue #946 conflict probe. These fixtures all watch
+                        # clean PRs, so it answers MERGEABLE and must not
+                        # consume an entry of the sequences below.
+                        return mock.Mock(
+                            returncode=0,
+                            stdout=json.dumps({"mergeable": "MERGEABLE"}),
+                            stderr="")
                     if jval == "number":
                         return mock.Mock(returncode=0, stdout="{}", stderr="")
                     if jval == "headRefOid":
@@ -2133,6 +2141,14 @@ class HeadPollLoopbackTests(unittest.TestCase):
         def fake_run(cmd, *args, **kwargs):
             if cmd[:3] == ["gh", "pr", "view"] and "--json" in cmd:
                 jval = cmd[cmd.index("--json") + 1]
+                if jval.startswith("mergeable"):
+                    # Issue #946 conflict probe. These fixtures all watch
+                    # clean PRs, so it answers MERGEABLE and must not
+                    # consume an entry of the sequences below.
+                    return mock.Mock(
+                        returncode=0,
+                        stdout=json.dumps({"mergeable": "MERGEABLE"}),
+                        stderr="")
                 if jval == "number":
                     return mock.Mock(returncode=0, stdout="{}", stderr="")
                 if jval == "headRefOid":
@@ -2239,6 +2255,14 @@ class HeadPollLoopbackTests(unittest.TestCase):
             def fake_run(cmd, *args, **kwargs):
                 if cmd[:3] == ["gh", "pr", "view"] and "--json" in cmd:
                     jval = cmd[cmd.index("--json") + 1]
+                    if jval.startswith("mergeable"):
+                        # Issue #946 conflict probe. These fixtures all watch
+                        # clean PRs, so it answers MERGEABLE and must not
+                        # consume an entry of the sequences below.
+                        return mock.Mock(
+                            returncode=0,
+                            stdout=json.dumps({"mergeable": "MERGEABLE"}),
+                            stderr="")
                     if jval == "number":
                         return mock.Mock(returncode=0, stdout="{}", stderr="")
                     if jval == "headRefOid":
@@ -2332,6 +2356,14 @@ class HeadPollLoopbackTests(unittest.TestCase):
         def fake_run(cmd, *args, **kwargs):
             if cmd[:3] == ["gh", "pr", "view"] and "--json" in cmd:
                 jval = cmd[cmd.index("--json") + 1]
+                if jval.startswith("mergeable"):
+                    # Issue #946 conflict probe. These fixtures all watch
+                    # clean PRs, so it answers MERGEABLE and must not
+                    # consume an entry of the sequences below.
+                    return mock.Mock(
+                        returncode=0,
+                        stdout=json.dumps({"mergeable": "MERGEABLE"}),
+                        stderr="")
                 if jval == "number":
                     return mock.Mock(returncode=0, stdout="{}", stderr="")
                 if jval == "headRefOid":
@@ -2727,6 +2759,14 @@ class StartupStateEvalTests(unittest.TestCase):
         def fake_run(cmd, *args, **kwargs):
             if cmd[:3] == ["gh", "pr", "view"] and "--json" in cmd:
                 jval = cmd[cmd.index("--json") + 1]
+                if jval.startswith("mergeable"):
+                    # Issue #946 conflict probe. These fixtures all watch
+                    # clean PRs, so it answers MERGEABLE and must not
+                    # consume an entry of the sequences below.
+                    return mock.Mock(
+                        returncode=0,
+                        stdout=json.dumps({"mergeable": "MERGEABLE"}),
+                        stderr="")
                 if jval == "number":
                     return mock.Mock(returncode=0, stdout="{}", stderr="")
                 if jval == "headRefOid":
@@ -2952,6 +2992,14 @@ class ChecksJsonFallbackTests(unittest.TestCase):
                 )
             if cmd[:3] == ["gh", "pr", "view"] and "--json" in cmd:
                 jval = cmd[cmd.index("--json") + 1]
+                if jval.startswith("mergeable"):
+                    # Issue #946 conflict probe. These fixtures all watch
+                    # clean PRs, so it answers MERGEABLE and must not
+                    # consume an entry of the sequences below.
+                    return mock.Mock(
+                        returncode=0,
+                        stdout=json.dumps({"mergeable": "MERGEABLE"}),
+                        stderr="")
                 if jval in ("number", "headRefOid"):
                     return mock.Mock(returncode=0, stdout="{}", stderr="")
                 if jval == "statusCheckRollup":
@@ -3480,6 +3528,221 @@ class ConflictEndToEndTests(unittest.TestCase):
                 watch.probe()
         self.assertEqual(rec.call_count, 1)
         self.assertEqual(watch.announced_heads, {"ccccccc"})
+
+
+class ConflictSettlingDuringBudgetTests(unittest.TestCase):
+    """Issue #946 (Codex review, P1): mergeability settles asynchronously.
+
+    A freshly pushed conflicting head commonly reads ``UNKNOWN`` on the
+    single probe the self-poll loop makes before handing off to the
+    bounded resolver. If the resolver never probed again, the conflict
+    would settle inside its budget and STILL go unreported — the watch
+    ending on a misleading ``incomplete``, which is exactly the silence
+    Issue #946 exists to break.
+    """
+
+    def setUp(self) -> None:
+        _assert_peer_isolation()
+
+    def test_resolver_probes_across_the_budget(self) -> None:
+        conflict = mock.Mock()
+        conflict.probe.side_effect = [False, False, True]
+        with mock.patch.object(pr_watch, "_fetch_checks", return_value=[]), \
+             mock.patch.object(pr_watch.time, "sleep",
+                               return_value=None) as sleep_mock, \
+             mock.patch.object(pr_watch.time, "monotonic",
+                               side_effect=[0.0] + [1.0] * 20):
+            verdict = pr_watch._resolve_final_status(
+                248, "octo/repo", exit_code=8, budget_sec=300,
+                conflict=conflict)
+        # Bailed out on the confirmed conflict rather than spending the
+        # rest of the budget.
+        self.assertEqual(conflict.probe.call_count, 3)
+        self.assertEqual(sleep_mock.call_count, 2)
+        self.assertEqual(verdict["status"], "incomplete")
+
+    def test_resolver_without_conflict_watch_is_unchanged(self) -> None:
+        with mock.patch.object(pr_watch, "_fetch_checks", return_value=[]), \
+             mock.patch.object(pr_watch.time, "sleep", return_value=None), \
+             mock.patch.object(pr_watch.time, "monotonic",
+                               side_effect=[0.0, 0.0, 999.0]):
+            verdict = pr_watch._resolve_final_status(
+                248, "octo/repo", exit_code=8, budget_sec=300)
+        self.assertEqual(verdict["status"], "incomplete")
+
+    def test_phase_returns_to_self_poll_instead_of_incomplete(self) -> None:
+        # UNKNOWN at handoff -> CONFLICTING during the budget: the phase
+        # must NOT record `incomplete`; it goes back to the self-poll
+        # loop, which keeps watching for the re-push.
+        conflict = mock.Mock()
+        conflict.probe.return_value = True
+        conflict.last_conflicting = True
+        resolver_verdict = {
+            "status": "incomplete", "fail_count": 0, "pending_count": 0,
+            "total_checks": 0, "probe_attempts": 3,
+        }
+        poll_results = [None, {"status": "passed", "fail_count": 0,
+                               "pending_count": 0, "total_checks": 1,
+                               "probe_attempts": 1}]
+        with TempDir() as tmp:
+            db = tmp / ".state" / "state.db"
+            with mock.patch.object(pr_watch, "_fetch_head_oid",
+                                   return_value="a" * 40), \
+                 mock.patch.object(pr_watch, "_evaluate_startup_state",
+                                   return_value=None), \
+                 mock.patch.object(pr_watch, "_self_poll_watch",
+                                   side_effect=poll_results) as poll, \
+                 mock.patch.object(pr_watch, "_resolve_final_status",
+                                   return_value=resolver_verdict) as resolve, \
+                 mock.patch.object(pr_watch, "_record_ci_completed") as rec, \
+                 mock.patch.object(pr_watch, "_notify_peer",
+                                   return_value=True), \
+                 mock.patch.object(pr_watch.time, "monotonic",
+                                   side_effect=[0.0, 4.0]):
+                status, exit_code, _ = pr_watch._run_ci_watch_phase(
+                    pr=248, repo="octo/repo", interval=30, db_path=db,
+                    conflict=conflict)
+        self.assertEqual(status, "passed")
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(poll.call_count, 2)
+        self.assertEqual(resolve.call_count, 1)
+        self.assertEqual(rec.call_args.kwargs["status"], "passed")
+
+    def test_conflict_watch_tracks_last_probe_result(self) -> None:
+        watch = pr_watch._ConflictWatch(
+            pr=1, repo="octo/repo", db_path=Path("unused"))
+        self.assertFalse(watch.last_conflicting)
+        with mock.patch.object(pr_watch, "_record_event"), \
+             mock.patch.object(pr_watch, "_notify_or_record",
+                               return_value=True):
+            with mock.patch.object(
+                pr_watch, "_fetch_mergeable",
+                return_value={"mergeable": "UNKNOWN"},
+            ):
+                watch.probe()
+            self.assertFalse(watch.last_conflicting)
+            with mock.patch.object(
+                pr_watch, "_fetch_mergeable",
+                return_value={"mergeable": "CONFLICTING",
+                              "headRefOid": "d" * 40},
+            ):
+                watch.probe()
+            self.assertTrue(watch.last_conflicting)
+            # Cleared again once the re-push resolves it.
+            with mock.patch.object(
+                pr_watch, "_fetch_mergeable",
+                return_value={"mergeable": "MERGEABLE"},
+            ):
+                watch.probe()
+            self.assertFalse(watch.last_conflicting)
+
+    def test_probe_failure_clears_last_conflicting(self) -> None:
+        # An unreadable probe must not leave a stale True behind — that
+        # would let a gh outage wedge the watch in the conflict branch.
+        watch = pr_watch._ConflictWatch(
+            pr=1, repo="octo/repo", db_path=Path("unused"))
+        with mock.patch.object(pr_watch, "_record_event"), \
+             mock.patch.object(pr_watch, "_notify_or_record",
+                               return_value=True), \
+             mock.patch.object(
+                 pr_watch, "_fetch_mergeable",
+                 return_value={"mergeable": "CONFLICTING",
+                               "headRefOid": "e" * 40}):
+            watch.probe()
+        self.assertTrue(watch.last_conflicting)
+        with mock.patch.object(pr_watch, "_fetch_mergeable",
+                               side_effect=RuntimeError("gh down")):
+            self.assertFalse(watch.probe())
+        self.assertFalse(watch.last_conflicting)
+
+
+class ConflictWithTerminalChecksTests(unittest.TestCase):
+    """Issue #946 (Codex review, P1): green CI does not imply mergeable.
+
+    CI can finish green and the base branch then move underneath it,
+    leaving `mergeable=CONFLICTING` with a full set of passed checks — a
+    shape neither the zero-check branch nor the resolver handoff can
+    see. Without a probe at verdict time the secretary is handed a clean
+    `CI_COMPLETED: passed` and walks into a merge GitHub will refuse.
+    """
+
+    def setUp(self) -> None:
+        _assert_peer_isolation()
+
+    def test_passed_verdict_still_announces_the_conflict(self) -> None:
+        conflicting_view = {"mergeable": "CONFLICTING",
+                            "mergeStateStatus": "DIRTY",
+                            "headRefOid": "a" * 40}
+
+        def fake_run(cmd, *args, **kwargs):
+            joined = ",".join(cmd)
+            if "view" in cmd and "mergeable" in joined:
+                return mock.Mock(returncode=0,
+                                 stdout=json.dumps(conflicting_view),
+                                 stderr="")
+            if "view" in cmd and "headRefOid" in joined:
+                return mock.Mock(
+                    returncode=0,
+                    stdout=json.dumps({"headRefOid": "a" * 40}), stderr="")
+            if "view" in cmd and "--json" in cmd and "number" in cmd:
+                return mock.Mock(returncode=0, stdout="{}", stderr="")
+            if "checks" in cmd and "--json" in cmd:
+                payload = [{"name": "ci", "state": "COMPLETED",
+                            "bucket": "pass"}]
+                return mock.Mock(returncode=0, stdout=json.dumps(payload),
+                                 stderr="")
+            return mock.Mock(returncode=0, stdout="{}", stderr="")
+
+        with TempDir() as tmp:
+            journal = tmp / ".state" / "state.db"
+            with mock.patch.object(pr_watch, "JOURNAL_PATH", journal), \
+                 mock.patch.object(pr_watch, "_notify_peer",
+                                   return_value=True) as notify, \
+                 mock.patch.object(pr_watch.shutil, "which",
+                                   return_value="/usr/bin/gh"), \
+                 mock.patch.object(pr_watch.subprocess, "run",
+                                   side_effect=fake_run), \
+                 mock.patch.object(pr_watch.time, "sleep",
+                                   return_value=None), \
+                 mock.patch.object(pr_watch.time, "monotonic",
+                                   side_effect=[0.0, 3.0]):
+                rc = pr_watch.main([
+                    "--pr", "248", "--repo", "octo/repo", "--interval", "30",
+                ])
+            # The CI verdict itself is untouched — this is additive.
+            self.assertEqual(rc, 0)
+            rec = _read_ci_event(journal)
+            self.assertEqual(rec["status"], "passed")
+            conflicts = _read_events(journal, "pr_conflict_detected")
+            self.assertEqual(len(conflicts), 1)
+            self.assertEqual(conflicts[0]["head"], "aaaaaaa")
+            prefixes = [c[0][0].split(":")[0] for c in notify.call_args_list]
+            self.assertEqual(sorted(prefixes),
+                             ["CI_COMPLETED", "PR_CONFLICT"])
+
+    def test_canceled_verdict_skips_the_probe(self) -> None:
+        # Cancellation aborts the watch; a second subprocess there would
+        # only surface an ugly traceback on the user's next Ctrl-C.
+        conflict = mock.Mock()
+        with TempDir() as tmp:
+            db = tmp / ".state" / "state.db"
+            with mock.patch.object(pr_watch, "_fetch_head_oid",
+                                   return_value=None), \
+                 mock.patch.object(pr_watch, "_evaluate_startup_state",
+                                   return_value=None), \
+                 mock.patch.object(pr_watch, "_self_poll_watch",
+                                   side_effect=KeyboardInterrupt), \
+                 mock.patch.object(pr_watch, "_record_ci_completed"), \
+                 mock.patch.object(pr_watch, "_notify_peer",
+                                   return_value=True), \
+                 mock.patch.object(pr_watch.time, "monotonic",
+                                   side_effect=[0.0, 1.0]):
+                status, exit_code, _ = pr_watch._run_ci_watch_phase(
+                    pr=248, repo="octo/repo", interval=30, db_path=db,
+                    conflict=conflict)
+        self.assertEqual(status, "canceled")
+        self.assertEqual(exit_code, 2)
+        conflict.probe.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -458,6 +458,11 @@ class _ConflictWatch:
         # ``"unknown"`` for a conflict observed while headRefOid was
         # unreadable (still deduped, so an unreadable head cannot spam).
         self._announced: "set[str]" = set()
+        # Result of the most recent :meth:`probe`. Lets a caller that did
+        # not make the probe itself (the resolver handoff in
+        # :func:`_run_ci_watch_phase`) react to a conflict another poll
+        # site just confirmed, without spending a second gh call.
+        self.last_conflicting = False
 
     @property
     def announced_heads(self) -> "set[str]":
@@ -480,13 +485,13 @@ class _ConflictWatch:
         try:
             view = _fetch_mergeable(self._pr, self._repo)
         except Exception:  # noqa: BLE001 — additive probe, never fatal
-            return False
-        if not isinstance(view, dict):
-            return False
-        mergeable = view.get("mergeable")
+            view = None
+        mergeable = view.get("mergeable") if isinstance(view, dict) else None
         if (not isinstance(mergeable, str)
                 or mergeable.strip().upper() != MERGEABLE_CONFLICTING):
+            self.last_conflicting = False
             return False
+        self.last_conflicting = True
         head = _short_head(view.get("headRefOid")) or "unknown"
         if head not in self._announced:
             # Marked BEFORE announcing, not after: if the announce path
@@ -1034,6 +1039,7 @@ def _resolve_final_status(
     retry_interval_sec: "float | None" = None,
     backoff_factor: "float | None" = None,
     max_interval_sec: "float | None" = None,
+    conflict: "_ConflictWatch | None" = None,
 ) -> dict:
     """Drive `_fetch_checks` until a final CI verdict is observed.
 
@@ -1139,6 +1145,19 @@ def _resolve_final_status(
         # Either probe was unparseable (checks is None) or the verdict
         # is `incomplete`. Initialise the budget on the first observed
         # need to wait, then back off and try again.
+        #
+        # Issue #946: keep probing mergeability across the budget too.
+        # GitHub computes mergeability asynchronously, so a freshly
+        # pushed conflicting head commonly reads `UNKNOWN` on the single
+        # probe `_self_poll_watch` made before handing off here. Without
+        # this the conflict would settle DURING the budget and still go
+        # unreported, and the watch would end on a misleading
+        # `incomplete` — the exact silence Issue #946 exists to break.
+        # Bail out as soon as it is confirmed: the caller reads
+        # ``conflict.last_conflicting`` and returns to the self-poll
+        # loop, which keeps watching for the re-push.
+        if conflict is not None and conflict.probe():
+            break
         _set_deadline_once()
         if time.monotonic() >= deadline:
             break
@@ -1613,11 +1632,21 @@ def _run_ci_watch_phase(
             verdict = _resolve_final_status(
                 pr, repo, exit_code=8,
                 budget_sec=CI_WATCH_EMPTY_RACE_BUDGET_SEC,
+                conflict=conflict,
             )
             if verdict["pending_count"]:
                 # Real, still-pending checks exist -- not an empty-race
                 # artifact, and not fully decided even if a sibling
                 # check already failed. Resume unbounded polling.
+                verdict = None
+                continue
+            if conflict is not None and conflict.last_conflicting:
+                # Issue #946: mergeability settled to CONFLICTING during
+                # the resolver budget (it read UNKNOWN when the self-poll
+                # loop handed off). The zero-check state is explained, not
+                # undecided — recording this `incomplete` would be the
+                # misleading verdict, so go back to the self-poll loop and
+                # keep watching for the re-push that unblocks CI.
                 verdict = None
                 continue
             break
@@ -1655,6 +1684,18 @@ def _run_ci_watch_phase(
         pending_count = verdict["pending_count"]
         total_checks = verdict["total_checks"]
         probe_attempts = verdict["probe_attempts"]
+        # Issue #946 (Codex review, P1): a terminal check verdict does
+        # NOT imply the PR is mergeable. CI can finish green and the base
+        # branch then move underneath it, leaving `mergeable=CONFLICTING`
+        # with a full set of passed checks — a shape neither the
+        # zero-check branch of `_self_poll_watch` nor the resolver
+        # handoff above can ever see. Probe once here so the secretary
+        # gets `PR_CONFLICT` alongside the green `CI_COMPLETED` instead
+        # of walking into a merge that GitHub will refuse. Report-only:
+        # the verdict, its event, and its message are untouched.
+        if conflict is not None:
+            conflict.probe()
+
         head_after = _fetch_head_oid(pr, repo)
         if (head_before is not None and head_after is not None
                 and head_before != head_after):

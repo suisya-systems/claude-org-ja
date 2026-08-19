@@ -252,6 +252,30 @@ moving is precisely the event that makes it worth re-announcing.
 freshly pushed head reports it for a few seconds) and an unreadable
 probe are both silent: neither records an event nor pushes a message.
 
+The probe runs at three points in a ci-watch round, because a conflict
+reaches the watcher in three different shapes:
+
+1. **Zero visible checks** (the kura #248 shape). A confirmed conflict
+   here means the missing checks are explained rather than racing, so
+   the self-poll loop keeps polling instead of handing off to the
+   bounded resolver — which would otherwise spend its budget recording
+   a misleading `incomplete`.
+2. **During the resolver's retry budget.** Mergeability is computed
+   asynchronously, so a freshly pushed conflicting head often reads
+   `UNKNOWN` at the moment of the handoff and settles to `CONFLICTING`
+   seconds later. The resolver keeps probing and bails out the moment it
+   is confirmed, returning control to the self-poll loop.
+3. **At verdict time, even on a green verdict.** A terminal check
+   verdict does not imply the PR is mergeable: CI can finish green and
+   the base branch then move underneath it, leaving `CONFLICTING` with a
+   full set of passed checks. The probe there is report-only — the
+   `ci_completed` event, its status, and the `CI_COMPLETED` message are
+   unchanged, and `PR_CONFLICT` simply rides alongside so the secretary
+   does not walk into a merge GitHub will refuse.
+
+Only a *confirmed* `CONFLICTING` changes the watcher's control flow, so
+neither an unreadable probe nor a gh outage can wedge the watch.
+
 `pr_watch_pane_started` is a best-effort audit row written by the
 `/pr-watch-pane` skill (secretary) when it spawns a CI/merge-watch pane
 (`name="pr-watch-<PR>"`, `role="watcher"`) running `tools/pr-watch.sh`.
