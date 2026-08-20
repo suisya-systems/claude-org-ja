@@ -92,7 +92,12 @@ fi
 #     (gh pr checks --help で実確認済み)。
 #   単発の `gh pr checks <n>` (ループなし) はどれにも該当せず許可される
 #   (false positive を作らない)。
-if printf '%s' "$COMMAND" | grep -qE 'gh[[:space:]]+pr[[:space:]]+checks'; then
+# `gh pr checks` の検出は `pr` と `checks` の間の親コマンドフラグ
+# (`gh pr --repo owner/repo checks` / `gh pr -R owner/repo checks` 等) を許容する:
+# 「`-` 始まりのフラグ + 任意でその引数トークン (非 `-` 始まり)」の繰り返しだけを
+# 挟めるようにし、`gh pr view ... checks` のような別サブコマンドは挟めない。
+GH_PR_CHECKS_RE='gh[[:space:]]+pr([[:space:]]+-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?)*[[:space:]]+checks([[:space:]]|$)'
+if printf '%s' "$COMMAND" | grep -qE "$GH_PR_CHECKS_RE"; then
   if [[ "$TOOL_NAME" == "Monitor" ]]; then
     deny_with_reason "Monitor tool による gh pr checks の CI 監視は禁止です。セッション寿命依存の監視は /clear やセッション終了で黙死します。"
   fi
@@ -102,11 +107,18 @@ if printf '%s' "$COMMAND" | grep -qE 'gh[[:space:]]+pr[[:space:]]+checks'; then
 fi
 
 # --- 判定 2: tools/pr-watch.* の直接起動 ---
-# コマンド位置 (行頭 / ; & | ( ` $( の直後)、または既知のラッパー
-# (nohup / setsid / exec / env / command / time / bash / sh / zsh / pwsh /
-# powershell / python / python3 / uv run) を介した起動のみを対象にする。
-# `grep foo tools/pr-watch.sh` のような引数位置での出現は起動でないので許可。
-PR_WATCH_LAUNCH_RE='(^|[;&|(`]|\$\()[[:space:]]*((nohup|setsid|exec|env|command|time)[[:space:]]+)*((bash|sh|zsh|pwsh|powershell(\.exe)?|python3?|uv[[:space:]]+run)[[:space:]]+)?[^[:space:]]*(pr-watch\.(sh|ps1)|pr_watch\.py)([[:space:]]|$|["'"'"'])'
+# コマンド位置 (行頭 / ; & | ( ` $( の直後) から pr-watch ファイルまでの間に
+# 挟めるトークンを「起動の前置」に限定して検出する:
+#   - 既知のラッパー / インタプリタ (nohup / setsid / exec / env / command / time /
+#     bash / sh / zsh / dash / ksh / pwsh / powershell / python[3.x] / py / uv / run)。
+#     絶対パス前置 (/usr/bin/bash 等) も許容。
+#   - それらのフラグ (-3 / -u / -c 等の `-` 始まりトークン)
+#   - 環境変数代入 (VAR=value)
+# `grep foo tools/pr-watch.sh` のような読み取りは、先頭トークン grep が上記の
+# いずれでもないため起動とみなされず許可される (false positive を作らない)。
+PR_WATCH_WRAPPER='([^[:space:]]*/)?(nohup|setsid|exec|env|command|time|bash|sh|zsh|dash|ksh|pwsh|powershell(\.exe)?|python[0-9.]*|py|uv|run)'
+PR_WATCH_PREFIX_TOKEN="(${PR_WATCH_WRAPPER}|-[^[:space:]]*|[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*)"
+PR_WATCH_LAUNCH_RE='(^|[;&|(`]|\$\()[[:space:]]*('"$PR_WATCH_PREFIX_TOKEN"'[[:space:]]+)*[^[:space:]]*(pr-watch\.(sh|ps1)|pr_watch\.py)([[:space:]]|$|["'"'"'])'
 if printf '%s' "$COMMAND" | grep -qE "$PR_WATCH_LAUNCH_RE"; then
   deny_with_reason "tools/pr-watch.* の直接起動は禁止です (${TOOL_NAME} tool)。Claude Code の背景タスクは spawn したシェルのみ追跡し、監視本体が孤児化します。緊急経路はユーザー自身の ! 手動実行のみです。"
 fi

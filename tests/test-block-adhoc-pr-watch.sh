@@ -108,6 +108,44 @@ json=$(make_payload "Monitor" './tools/pr-watch.sh 51')
 ec=$(run_hook "$json" "$stderr")
 assert_exit 2 "$ec" "Monitor: ./tools/pr-watch.sh launch is blocked"
 
+# --- Block Cases (Codex round 1 指摘: gh 親コマンドフラグ / インタプリタ形の取りこぼし) ---
+
+# 7b. Bash + while + gh pr --repo owner/repo checks (pr と checks の間にフラグ) -> block
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" 'while true; do gh pr --repo owner/repo checks 51; sleep 30; done')
+ec=$(run_hook "$json" "$stderr")
+assert_exit 2 "$ec" "Bash: while + gh pr --repo owner/repo checks is blocked"
+
+# 7c. Monitor + gh pr -R owner/repo checks -> block
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Monitor" 'gh pr -R owner/repo checks 51 --json name,bucket')
+ec=$(run_hook "$json" "$stderr")
+assert_exit 2 "$ec" "Monitor: gh pr -R owner/repo checks is blocked"
+
+# 7d. Bash + py -3 tools/pr_watch.py (Windows launcher 形) -> block
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" 'py -3 tools/pr_watch.py --pr 51')
+ec=$(run_hook "$json" "$stderr")
+assert_exit 2 "$ec" "Bash: py -3 tools/pr_watch.py launch is blocked"
+
+# 7e. Bash + 絶対パスのインタプリタ -> block
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" '/usr/bin/bash tools/pr-watch.sh 51')
+ec=$(run_hook "$json" "$stderr")
+assert_exit 2 "$ec" "Bash: /usr/bin/bash tools/pr-watch.sh launch is blocked"
+
+# 7f. Bash + 環境変数代入前置 -> block
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" 'env ORG_TRANSPORT=broker bash tools/pr-watch.sh 51')
+ec=$(run_hook "$json" "$stderr")
+assert_exit 2 "$ec" "Bash: env VAR=... bash tools/pr-watch.sh launch is blocked"
+
+# 7g. Bash + python3 -u tools/pr_watch.py (インタプリタフラグ付き) -> block
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" 'python3 -u tools/pr_watch.py --pr 51')
+ec=$(run_hook "$json" "$stderr")
+assert_exit 2 "$ec" "Bash: python3 -u tools/pr_watch.py launch is blocked"
+
 # --- Allow Cases ---
 
 # 8. Bash + 単発 gh pr checks (ループなし) -> allow
@@ -151,6 +189,12 @@ stderr=$(mktemp); TMPFILES+=("$stderr")
 json='{"tool_name":"Monitor","tool_input":{"ws":{"url":"wss://example.com/stream"},"description":"x"}}'
 ec=$(run_hook "$json" "$stderr")
 assert_exit 0 "$ec" "Monitor ws source without command is allowed"
+
+# 14b. Bash + gh pr view (checks でない別サブコマンド + 文中の checks 語) -> allow
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" 'while true; do gh pr view 51 --json title; echo checks done; sleep 5; done')
+ec=$(run_hook "$json" "$stderr")
+assert_exit 0 "$ec" "Bash: gh pr view loop with unrelated 'checks' word is allowed"
 
 # --- Fail-closed Cases ---
 
