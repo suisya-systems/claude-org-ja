@@ -248,6 +248,36 @@ json=$(make_payload "Bash" '. tools/pr-watch.sh 51')
 ec=$(run_hook "$json" "$stderr")
 assert_exit 2 "$ec" "Bash: POSIX dot-source of tools/pr-watch.sh is blocked"
 
+# --- Block Cases (Codex round 6 指摘: 密着リダイレクト / 引用付き代入 / Windows パス) ---
+
+# 7ae. Bash + ファイル名直後の密着リダイレクト -> block
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" 'bash tools/pr-watch.sh>/tmp/watch.log 51 &')
+ec=$(run_hook "$json" "$stderr")
+assert_exit 2 "$ec" "Bash: pr-watch.sh launch with attached redirection is blocked"
+
+# 7af. Bash + 空白入り引用値の環境変数代入前置 -> block
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" "NOTE='CI watch' bash tools/pr-watch.sh 51")
+ec=$(run_hook "$json" "$stderr")
+assert_exit 2 "$ec" "Bash: quoted env assignment prefix launch is blocked"
+
+# 7ag. Bash + Windows パス区切りの pr-watch.ps1 -> block
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" "pwsh '.\\tools\\pr-watch.ps1' 51")
+ec=$(run_hook "$json" "$stderr")
+assert_exit 2 "$ec" "Bash: pwsh with backslash-separated pr-watch.ps1 path is blocked"
+
+# --- Allow Cases (Codex round 6 指摘: heredoc 本文はデータ) ---
+
+# 7ah. Bash + heredoc 本文に polling ループのテキストを書くドキュメント生成 -> allow
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" "cat > doc.md <<'EOF'
+while true; do gh pr checks 51; sleep 30; done
+EOF")
+ec=$(run_hook "$json" "$stderr")
+assert_exit 0 "$ec" "Bash: heredoc body containing polling-loop text is allowed (data, not code)"
+
 # --- Allow Cases (Codex round 5 指摘: 引用内の区切り文字はデータ) ---
 
 # 7ad. Bash + 引用文字列の中に `; bash tools/pr-watch.sh` を含む echo -> allow

@@ -93,6 +93,29 @@ fi
 #   単発の `gh pr checks <n>` (ループなし) はどれにも該当せず許可される
 #   (false positive を作らない)。
 # --- command 文字列の正規化 (判定 1 / 2 共通の前処理) ---
+# (0) heredoc の本文を落とす。`cat > doc.md <<'EOF' ... EOF` の本文は shell にとって
+#     データであり、本文中に polling ループのテキストが書かれていても実行されない。
+#     本文行を残すと (2) の改行境界化でコマンド扱いになり false positive になる。
+#     heredoc 開始 (`<<` / `<<-` + 任意で引用された delimiter) を見つけたら、
+#     delimiter 単独行まで本文行を捨てる (1 行 1 heredoc の簡易対応)。
+COMMAND=$(printf '%s\n' "$COMMAND" | awk '
+  BEGIN { inhd = 0; delim = "" }
+  {
+    if (inhd) {
+      line = $0
+      sub(/^[[:space:]]*/, "", line)
+      if (line == delim) inhd = 0
+      next
+    }
+    print
+    if (match($0, /<<-?[[:space:]]*["'"'"']?[A-Za-z_][A-Za-z0-9_]*/)) {
+      d = substr($0, RSTART, RLENGTH)
+      sub(/^<<-?[[:space:]]*["'"'"']?/, "", d)
+      delim = d
+      inhd = 1
+    }
+  }
+')
 # (1) バックスラッシュ継続行 (`\` + 改行) は空白に潰す。シェルはこれを 1 つの
 #     コマンドとして実行するため、改行をコマンド境界にすると `gh pr \<NL> checks`
 #     の分割で検出を素通りする。
@@ -187,7 +210,9 @@ fi
 # これにより起動判定と読み取り例外が別コマンドへ越境しない
 # (`cat tools/pr-watch.sh && bash tools/pr-watch.sh` の後半は読み取り例外に隠れず
 # deny され、`cat x; bash tools/pr-watch.sh` も後半区間だけで起動と判定される)。
-PR_WATCH_ASSIGN='[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*'
+# 環境変数代入は引用された値 (`NOTE='CI watch'` のような空白入り) も 1 トークン
+# として許容する。
+PR_WATCH_ASSIGN='[A-Za-z_][A-Za-z0-9_]*=('"'"'[^'"'"']*'"'"'|"[^"]*"|[^[:space:]]*)'
 # POSIX の dot-source (`. tools/pr-watch.sh`) も source と同じ実行なので `\.` を
 # 単独トークンとしてラッパーに含める。
 PR_WATCH_WRAPPER='(([^[:space:]]*/)?(nohup|setsid|exec|env|command|time|timeout|stdbuf|source|sudo|doas|xargs|bash|sh|zsh|dash|ksh|pwsh|powershell(\.exe)?|python[0-9.]*|py|uv|run)|\.)'
@@ -195,7 +220,10 @@ PR_WATCH_WRAPPER='(([^[:space:]]*/)?(nohup|setsid|exec|env|command|time|timeout|
 # の package 区切り) か引用符で終わる場合のみ許容し、`tools/test_pr_watch.py` の
 # ような別名 (前置が `_` 等で終わる) を拾わない。リポジトリ実在の
 # tools/test_pr_watch.py (watcher の unit test) を deny しないための制約。
-PR_WATCH_FILE='(["'"'"']?|[^[:space:]]*[/.'"'"'"])(pr-watch\.(sh|ps1)|pr_watch(\.py)?)([[:space:]]|$|["'"'"'])'
+# 前置は `/` `\` (Windows パス) `.` (python module 区切り) 引用符で終わる場合のみ。
+# 終端は空白 / 行末 / 引用符 / リダイレクト (`>` `<`) を認める
+# (`bash tools/pr-watch.sh>/tmp/log` のような密着リダイレクトも起動)。
+PR_WATCH_FILE='(["'"'"']?|[^[:space:]]*[/.\'"'"'"])(pr-watch\.(sh|ps1)|pr_watch(\.py)?)([[:space:]<>]|$|["'"'"'])'
 # 区間内の起動形: 区間先頭から、予約語 (if/then/elif/else/do/while/until) →
 # 環境変数代入 → ラッパー / インタプリタ (+ その引数トークン任意) の順に前置を
 # 許し、pr-watch ファイルへ到達するもの。先頭トークンがラッパー一覧に無い語
