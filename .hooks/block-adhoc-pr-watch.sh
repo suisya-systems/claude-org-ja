@@ -118,8 +118,10 @@ COMMAND=$(printf '%s\n' "$COMMAND" | awk '
       sub(/^<<-?[[:space:]]*["'"'"']?/, "", d)
       delim = d
       inhd = 1
-      # heredoc の届き先がシェルインタプリタ (bash <<EOF 等) なら本文はコード: 残す
-      drop = (match($0, /(^|[;&|(`[:space:]])([^[:space:]]*\/)?(bash|sh|zsh|dash|ksh|eval)([[:space:]][^<]*)?<</) == 0)
+      # heredoc の届き先がシェルインタプリタなら本文はコード: 残す。
+      # 前置形 (bash <<EOF) と pipe 消費形 (cat <<EOF | bash) の両方を見る。
+      drop = (match($0, /(^|[;&|(`[:space:]])([^[:space:]]*\/)?(bash|sh|zsh|dash|ksh|eval)([[:space:]][^<]*)?<</) == 0 \
+              && match($0, /\|[[:space:]]*([^[:space:]]*\/)?(bash|sh|zsh|dash|ksh)([[:space:]]|$)/) == 0)
     }
   }
 ')
@@ -197,6 +199,8 @@ if printf '%s' "$COMMAND" | grep -qE "$GH_PR_CHECKS_RE"; then
   #     開始 1 / 閉じ 1 で釣り合うので許可。兄弟ループが後続しても影響しない。
   #   - ネスト (`while ...; do for ...; done; gh pr checks; done`) は開始 2 / 閉じ 1
   #     で未閉スコープ内と判定される。
+  # ループ開始語の直後は空白のほか `;` (改行由来: `until\n gh ...`) と `(`
+  # (算術 for: `for((;;))`) も境界として認める。
   GH_IN_LOOP=$(printf '%s' "$COMMAND" | awk -v ghre="$GH_PR_CHECKS_PREFIX" '
     {
       s = $0
@@ -204,7 +208,7 @@ if printf '%s' "$COMMAND" | grep -qE "$GH_PR_CHECKS_RE"; then
       while (match(substr(s, off + 1), ghre) > 0) {
         pos = off + RSTART
         prefix = substr(s, 1, pos - 1)
-        t = prefix; opens  = gsub(/(^|[;&|({[:space:]])(while|until|for|select)[[:space:]]/, " ", t)
+        t = prefix; opens  = gsub(/(^|[;&|({[:space:]])(while|until|for|select)([[:space:](;]|$)/, " ", t)
         t = prefix; closes = gsub(/(^|[;&|([:space:]])done([;&|)[:space:]]|$)/, " ", t)
         if (opens > closes) { print "in_loop"; exit }
         off = pos
@@ -212,6 +216,14 @@ if printf '%s' "$COMMAND" | grep -qE "$GH_PR_CHECKS_RE"; then
     }')
   if [[ "$GH_IN_LOOP" == "in_loop" ]]; then
     deny_with_reason "gh pr checks の polling ループによる ad-hoc CI 監視は禁止です (${TOOL_NAME} tool)。セッション寿命依存の監視は /clear やセッション終了で黙死します。"
+  fi
+  # 関数間接呼び出しの保守的 deny: `poll() { gh pr checks 51; }; while true; do poll; done`
+  # のように関数へ包むと、gh の出現位置自体はループ外になり上の計数を逃れる。
+  # 関数呼び出しの追跡は静的にはできないため、「関数定義 + ループ構文 + gh pr checks」
+  # が 1 つの command に同居する形は反復とみなして保守的に deny する。
+  if printf '%s' "$COMMAND" | grep -qE '[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\(\)' \
+    && printf '%s' "$COMMAND" | grep -qE '(^|[;&|({[:space:]])(while|until|for|select)([[:space:](;]|$)'; then
+    deny_with_reason "関数定義とループ構文を伴う gh pr checks は、関数経由の polling とみなして保守的に拒否します (${TOOL_NAME} tool)。単発確認は関数・ループに包まず gh pr checks <PR> を直接 1 回だけ実行してください。"
   fi
   # watch コマンド (path 付き /usr/bin/watch も対象) は done を使わないため別判定:
   # 同一コマンド区間内 (; & | を跨がない) で watch の引数に gh pr checks が
@@ -265,11 +277,22 @@ PR_WATCH_READER_SEG_RE='(^|[[:space:]])(grep|egrep|fgrep|rg|ag|cat|bat|head|tail
 # バイトコンパイル (`python3 -m py_compile`) はファイルを実行しないため許可する。
 # `-n` は `-nv` のような結合フラグ形も対象。
 PR_WATCH_NOEXEC_SEG_RE='(^|[[:space:]/])((bash|sh|zsh|dash|ksh)[[:space:]]+-[A-Za-z]*n[A-Za-z]*[[:space:]]|python[0-9.]*[[:space:]]+-m[[:space:]]+py_compile[[:space:]])'
+# 読み取り例外の無効化: 読み取り語と pr-watch ファイルの間にシェルインタプリタ名が
+# 挟まる場合 (`sudo -u git bash tools/pr-watch.sh` — `git` はユーザー名であって
+# 読み取りコマンドではない) は、実効コマンドが shell = 起動なので例外を適用しない。
+PR_WATCH_READER_VOID_RE='(^|[[:space:]])(grep|egrep|fgrep|rg|ag|cat|bat|head|tail|sed|awk|less|more|wc|diff|cmp|stat|file|md5sum|sha[0-9]*sum|cksum|shellcheck|shfmt|cut|sort|uniq|hexdump|xxd|strings|nl|od|ls|realpath|readlink|basename|dirname|du|touch|chmod|cp|mv|ln|git)[[:space:]]+([^[:space:]]+[[:space:]]+)*([^[:space:]]*/)?(bash|sh|zsh|dash|ksh|pwsh|powershell(\.exe)?|python[0-9.]*|py)[[:space:]].*(pr-watch\.(sh|ps1)|pr_watch(\.py)?)'
 while IFS= read -r SEGMENT; do
   [[ -z "${SEGMENT//[[:space:]]/}" ]] && continue
   if printf '%s' "$SEGMENT" | grep -qE "$PR_WATCH_LAUNCH_SEG_RE"; then
-    if ! printf '%s' "$SEGMENT" | grep -qE "$PR_WATCH_READER_SEG_RE" \
-      && ! printf '%s' "$SEGMENT" | grep -qE "$PR_WATCH_NOEXEC_SEG_RE"; then
+    READER_EXEMPT=0
+    if printf '%s' "$SEGMENT" | grep -qE "$PR_WATCH_READER_SEG_RE" \
+      && ! printf '%s' "$SEGMENT" | grep -qE "$PR_WATCH_READER_VOID_RE"; then
+      READER_EXEMPT=1
+    fi
+    if printf '%s' "$SEGMENT" | grep -qE "$PR_WATCH_NOEXEC_SEG_RE"; then
+      READER_EXEMPT=1
+    fi
+    if [[ "$READER_EXEMPT" -eq 0 ]]; then
       deny_with_reason "tools/pr-watch.* の直接起動は禁止です (${TOOL_NAME} tool)。Claude Code の背景タスクは spawn したシェルのみ追跡し、監視本体が孤児化します。緊急経路はユーザー自身の ! 手動実行のみです。"
     fi
   fi

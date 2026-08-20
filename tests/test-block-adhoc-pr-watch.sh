@@ -290,6 +290,36 @@ json=$(make_payload "Bash" "bash -c 'gh pr checks 51 --watch'")
 ec=$(run_hook "$json" "$stderr")
 assert_exit 2 "$ec" "Bash: bash -c quoted gh pr checks --watch is blocked"
 
+# --- Block Cases (Codex round 8 指摘: 関数間接 / 改行区切り予約語 / pipe heredoc / sudo -u) ---
+
+# 7ao. Bash + 関数に包んだ gh pr checks をループから呼ぶ -> block (保守的)
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" 'poll_ci() { gh pr checks 51; }; while true; do poll_ci; sleep 30; done')
+ec=$(run_hook "$json" "$stderr")
+assert_exit 2 "$ec" "Bash: function-wrapped gh pr checks called from loop is blocked"
+
+# 7ap. Bash + 予約語が独立行のループ -> block
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" 'until
+gh pr checks 51 | grep -q pass
+do sleep 30; done')
+ec=$(run_hook "$json" "$stderr")
+assert_exit 2 "$ec" "Bash: loop with reserved word on its own line is blocked"
+
+# 7aq. Bash + cat heredoc を bash に pipe (本文はコード) -> block
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" "cat <<'EOF' | bash
+while true; do gh pr checks 51; sleep 30; done
+EOF")
+ec=$(run_hook "$json" "$stderr")
+assert_exit 2 "$ec" "Bash: heredoc piped to bash (executable body) is blocked"
+
+# 7ar. Bash + sudo -u git (reader 語がユーザー名) 経由の起動 -> block
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" 'sudo -u git bash tools/pr-watch.sh 51')
+ec=$(run_hook "$json" "$stderr")
+assert_exit 2 "$ec" "Bash: sudo -u git bash tools/pr-watch.sh is blocked (git is a username, not a reader)"
+
 # --- Allow Cases (Codex round 7 指摘: 兄弟ループ / 非実行インタプリタモード) ---
 
 # 7al. Bash + 兄弟ループに挟まれた単発 gh pr checks -> allow
