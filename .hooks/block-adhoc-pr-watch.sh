@@ -92,11 +92,22 @@ fi
 #     (gh pr checks --help で実確認済み)。
 #   単発の `gh pr checks <n>` (ループなし) はどれにも該当せず許可される
 #   (false positive を作らない)。
-# `gh pr checks` の検出は `pr` と `checks` の間の親コマンドフラグ
-# (`gh pr --repo owner/repo checks` / `gh pr -R owner/repo checks` 等) を許容する:
+# 複数行 command は改行を `;` に潰してから判定する。grep は行単位で評価するため、
+# そのままだと `while true; do\n  gh pr checks 51\n  sleep 30\ndone` のような
+# 複数行ループで loop 構文と gh 呼び出しが別行に割れて検出を素通りする。
+# 改行はシェルのコマンド境界なので `;` への置換は意味を保つ (空白への置換だと
+# 「行頭 = コマンド位置」の情報が落ちて判定 2 の anchor を取りこぼす)。
+COMMAND=$(printf '%s' "$COMMAND" | tr '\n\r' ';;')
+
+# `gh pr checks` の検出はフラグの挿入位置 2 箇所を許容する:
+#   - `gh` と `pr` の間の global フラグ (`gh -R owner/repo pr checks` 等)
+#   - `pr` と `checks` の間の親コマンドフラグ (`gh pr --repo owner/repo checks` 等)
 # 「`-` 始まりのフラグ + 任意でその引数トークン (非 `-` 始まり)」の繰り返しだけを
 # 挟めるようにし、`gh pr view ... checks` のような別サブコマンドは挟めない。
-GH_PR_CHECKS_RE='gh[[:space:]]+pr([[:space:]]+-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?)*[[:space:]]+checks([[:space:]]|$)'
+# フラグ / 引数トークンにコマンド区切り文字 (; & | 括弧) を含めない
+# (`gh --version; pr checks ...` のような別コマンドへの越境 FP を防ぐ)。
+GH_FLAG_TOKENS='([[:space:]]+-[^[:space:];&|()]+([[:space:]]+[^-[:space:];&|()][^[:space:];&|()]*)?)*'
+GH_PR_CHECKS_RE='gh'"$GH_FLAG_TOKENS"'[[:space:]]+pr'"$GH_FLAG_TOKENS"'[[:space:]]+checks([[:space:]]|$)'
 if printf '%s' "$COMMAND" | grep -qE "$GH_PR_CHECKS_RE"; then
   if [[ "$TOOL_NAME" == "Monitor" ]]; then
     deny_with_reason "Monitor tool による gh pr checks の CI 監視は禁止です。セッション寿命依存の監視は /clear やセッション終了で黙死します。"
@@ -124,11 +135,19 @@ fi
 # 一覧に無いため起動とみなされず許可される (false positive を作らない)。
 # python の module 実行 (`python3 -m tools.pr_watch`) も拾うため、ファイル名は
 # 拡張子なしの pr_watch も対象にする。
+# コマンド位置の anchor は、記号境界 (行頭 ; & | ( ` { $( ) に加えてシェルの
+# 予約語境界 (then / do / else / elif) も含める。`if ...; then bash tools/pr-watch.sh; fi`
+# や `while ...; do bash tools/pr-watch.sh; done` の起動を素通りさせないため。
+PR_WATCH_ANCHOR='((^|[;&|(`{]|\$\()[[:space:]]*|(^|[[:space:]])(then|do|else|elif)[[:space:]]+)'
 PR_WATCH_ASSIGN='[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*'
 PR_WATCH_WRAPPER='([^[:space:]]*/)?(nohup|setsid|exec|env|command|time|timeout|stdbuf|source|sudo|doas|xargs|bash|sh|zsh|dash|ksh|pwsh|powershell(\.exe)?|python[0-9.]*|py|uv|run)'
 PR_WATCH_MIDDLE_TOKEN='[^[:space:];&|()`]+'
-PR_WATCH_FILE='[^[:space:]]*(pr-watch\.(sh|ps1)|pr_watch(\.py)?)([[:space:]]|$|["'"'"'])'
-PR_WATCH_LAUNCH_RE='(^|[;&|(`]|\$\()[[:space:]]*('"$PR_WATCH_ASSIGN"'[[:space:]]+)*('"$PR_WATCH_WRAPPER"'[[:space:]]+('"$PR_WATCH_MIDDLE_TOKEN"'[[:space:]]+)*)?'"$PR_WATCH_FILE"
+# ファイル名は basename 完全一致で照合する: 前置は `/` (パス) か `.` (python module
+# の package 区切り / 引用符) で終わる場合のみ許容し、`tools/test_pr_watch.py` の
+# ような別名 (前置が `_` 等で終わる) を拾わない。リポジトリ実在の
+# tools/test_pr_watch.py (watcher の unit test) を deny しないための制約。
+PR_WATCH_FILE='(["'"'"']?|[^[:space:]]*[/.'"'"'"])(pr-watch\.(sh|ps1)|pr_watch(\.py)?)([[:space:]]|$|["'"'"'])'
+PR_WATCH_LAUNCH_RE="$PR_WATCH_ANCHOR"'('"$PR_WATCH_ASSIGN"'[[:space:]]+)*('"$PR_WATCH_WRAPPER"'[[:space:]]+('"$PR_WATCH_MIDDLE_TOKEN"'[[:space:]]+)*)?'"$PR_WATCH_FILE"
 if printf '%s' "$COMMAND" | grep -qE "$PR_WATCH_LAUNCH_RE"; then
   deny_with_reason "tools/pr-watch.* の直接起動は禁止です (${TOOL_NAME} tool)。Claude Code の背景タスクは spawn したシェルのみ追跡し、監視本体が孤児化します。緊急経路はユーザー自身の ! 手動実行のみです。"
 fi

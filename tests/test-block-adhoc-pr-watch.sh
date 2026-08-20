@@ -172,7 +172,54 @@ json=$(make_payload "Bash" 'python3 -m tools.pr_watch --pr 51')
 ec=$(run_hook "$json" "$stderr")
 assert_exit 2 "$ec" "Bash: python3 -m tools.pr_watch module launch is blocked"
 
+# --- Block Cases (Codex round 3 指摘: 複数行 / 予約語境界 / gh global フラグ) ---
+
+# 7m. Bash + 複数行の while ループ (loop 構文と gh が別行) -> block
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" 'while true; do
+  gh pr checks 51
+  sleep 30
+done')
+ec=$(run_hook "$json" "$stderr")
+assert_exit 2 "$ec" "Bash: multiline while + gh pr checks polling loop is blocked"
+
+# 7n. Bash + if/then 内の pr-watch.sh 起動 -> block
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" 'if true; then bash tools/pr-watch.sh 51; fi')
+ec=$(run_hook "$json" "$stderr")
+assert_exit 2 "$ec" "Bash: pr-watch.sh launch after 'then' is blocked"
+
+# 7o. Bash + while/do 内の pr-watch.sh 起動 -> block
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" 'while true; do bash tools/pr-watch.sh 51; done')
+ec=$(run_hook "$json" "$stderr")
+assert_exit 2 "$ec" "Bash: pr-watch.sh launch after 'do' is blocked"
+
+# 7p. Bash + gh global フラグ (-R) が pr の前に来る形 + --watch -> block
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" 'gh -R owner/repo pr checks 51 --watch')
+ec=$(run_hook "$json" "$stderr")
+assert_exit 2 "$ec" "Bash: gh -R owner/repo pr checks --watch is blocked"
+
+# 7q. Monitor + gh -R owner/repo pr checks -> block
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Monitor" 'gh -R owner/repo pr checks 51')
+ec=$(run_hook "$json" "$stderr")
+assert_exit 2 "$ec" "Monitor: gh -R owner/repo pr checks is blocked"
+
 # --- Allow Cases ---
+
+# 7r. Bash + watcher の unit test 実行 (tools/test_pr_watch.py) -> allow
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" 'python3 tools/test_pr_watch.py')
+ec=$(run_hook "$json" "$stderr")
+assert_exit 0 "$ec" "Bash: python3 tools/test_pr_watch.py (unit test) is allowed"
+
+# 7s. Bash + unittest module 形の unit test -> allow
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" 'python3 -m unittest tools.test_pr_watch')
+ec=$(run_hook "$json" "$stderr")
+assert_exit 0 "$ec" "Bash: python3 -m unittest tools.test_pr_watch is allowed"
 
 # 7l. Bash + 単発 gh pr checks の結果を while read で加工 (gh は 1 回実行) -> allow
 stderr=$(mktemp); TMPFILES+=("$stderr")
