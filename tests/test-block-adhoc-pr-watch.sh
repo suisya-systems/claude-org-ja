@@ -452,6 +452,40 @@ json=$(make_payload "Bash" 'while true; do gh pr view 51 --json title; echo chec
 ec=$(run_hook "$json" "$stderr")
 assert_exit 0 "$ec" "Bash: gh pr view loop with unrelated 'checks' word is allowed"
 
+# --- Block Cases (Codex round 9 指摘: 二重引用内 cmdsubst / eval / watch 引用引数) ---
+
+# 7as. Bash + 二重引用内のコマンド置換での起動 -> block
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" 'echo "$(bash tools/pr-watch.sh 51)"')
+ec=$(run_hook "$json" "$stderr")
+assert_exit 2 "$ec" "Bash: launch inside double-quoted command substitution is blocked"
+
+# 7at. Bash + eval の引用スクリプトでの起動 -> block
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" "eval 'bash tools/pr-watch.sh 51'")
+ec=$(run_hook "$json" "$stderr")
+assert_exit 2 "$ec" "Bash: eval-quoted launch of pr-watch.sh is blocked"
+
+# 7au. Bash + watch の引用引数の gh pr checks -> block
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" "watch -n 30 'gh pr checks 51'")
+ec=$(run_hook "$json" "$stderr")
+assert_exit 2 "$ec" "Bash: watch with quoted gh pr checks argument is blocked"
+
+# --- Allow Cases (Codex round 9 指摘: grep パターンの bash / 単一引用データ) ---
+
+# 7av. Bash + grep のパターン引数がたまたま bash である読み取り -> allow
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" 'env LC_ALL=C grep -n bash tools/pr-watch.sh')
+ec=$(run_hook "$json" "$stderr")
+assert_exit 0 "$ec" "Bash: grep with pattern 'bash' reading pr-watch.sh is allowed"
+
+# 7aw. Bash + 単一引用データに polling ループのテキストを含む printf -> allow
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" "printf '%s\\n' 'docs: while true; do gh pr checks 51; done'")
+ec=$(run_hook "$json" "$stderr")
+assert_exit 0 "$ec" "Bash: single-quoted polling-loop text passed to printf is allowed (data)"
+
 # --- Fail-closed Cases ---
 
 # 15. 空 stdin -> block
