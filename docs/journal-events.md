@@ -323,6 +323,13 @@ that pane.
 4. Use the helper to write:
    - bash: `bash tools/journal_append.sh <event> k=v k2=v2`
    - python: `py -3 tools/journal_append.py <event> k=v --json '{"nested": {...}}'`
+5. If the dispatcher relay must deliver the event to the secretary (a
+   terminal signal, or any kind that needs the same zero-miss
+   guarantee), register the kind in `TERMINAL_KINDS` in
+   `tools/relay_scan.py`. Kinds missing from that tuple are never
+   relayed — the relay scan skips them and the row sits in state.db as
+   the only trace (Issue #946: `pr_conflict_detected` needed exactly
+   this registration to reach the secretary).
 
 Do **not** hand-craft direct DB inserts (`sqlite3 .state/state.db
 "INSERT INTO events ..."`) or the legacy `printf '%s\n' '{...}' >>
