@@ -98,13 +98,18 @@ fi
 #     本文行を残すと (2) の改行境界化でコマンド扱いになり false positive になる。
 #     heredoc 開始 (`<<` / `<<-` + 任意で引用された delimiter) を見つけたら、
 #     delimiter 単独行まで本文行を捨てる (1 行 1 heredoc の簡易対応)。
+#     ただし heredoc がシェルインタプリタ (bash / sh 等) の stdin になっている場合、
+#     本文はデータでなく実行されるコードなので落とさず残す (残した本文は (2) 以降で
+#     コードとして走査される)。
 COMMAND=$(printf '%s\n' "$COMMAND" | awk '
-  BEGIN { inhd = 0; delim = "" }
+  BEGIN { inhd = 0; drop = 0; delim = "" }
   {
     if (inhd) {
       line = $0
       sub(/^[[:space:]]*/, "", line)
-      if (line == delim) inhd = 0
+      if (line == delim) { inhd = 0; next }
+      if (drop) next
+      print
       next
     }
     print
@@ -113,6 +118,8 @@ COMMAND=$(printf '%s\n' "$COMMAND" | awk '
       sub(/^<<-?[[:space:]]*["'"'"']?/, "", d)
       delim = d
       inhd = 1
+      # heredoc の届き先がシェルインタプリタ (bash <<EOF 等) なら本文はコード: 残す
+      drop = (match($0, /(^|[;&|(`[:space:]])([^[:space:]]*\/)?(bash|sh|zsh|dash|ksh|eval)([[:space:]][^<]*)?<</) == 0)
     }
   }
 ')
@@ -124,6 +131,15 @@ COMMAND=${COMMAND//$'\\\n'/ }
 #     gh 呼び出しが別行に割れると検出を素通りする。改行はシェルのコマンド境界なので
 #     `;` への置換は意味を保つ (空白だと「行頭 = コマンド位置」の情報が落ちる)。
 COMMAND=$(printf '%s' "$COMMAND" | tr '\n\r' ';;')
+# (2.5) シェルインタプリタへ渡す引用済みスクリプト (`bash -c '...'` / `eval '...'`)
+#     は引用符を外す。この引用内はデータでなく実行されるコードであり、(3) で区切り
+#     文字を潰すと `bash -c 'while ...; do gh pr checks ...; done'` が素通りする。
+#     `-c` は `-lc` のような結合フラグ形も対象。
+COMMAND=$(printf '%s' "$COMMAND" | sed -E \
+  -e "s/(([^[:space:]\/]*\/)*)?(bash|sh|zsh|dash|ksh)(([[:space:]]+-[^[:space:]]+)*)[[:space:]]+-[A-Za-z]*c[[:space:]]+'([^']*)'/\3 -c \6/g" \
+  -e 's/(([^[:space:]\/]*\/)*)?(bash|sh|zsh|dash|ksh)(([[:space:]]+-[^[:space:]]+)*)[[:space:]]+-[A-Za-z]*c[[:space:]]+"([^"]*)"/\3 -c \6/g' \
+  -e "s/(^|[;&|({[:space:]])eval[[:space:]]+'([^']*)'/\1eval \2/g" \
+  -e 's/(^|[;&|({[:space:]])eval[[:space:]]+"([^"]*)"/\1eval \2/g')
 # (3) 引用符の中のコマンド区切り文字 (; & | 括弧 ` ) を空白に潰す。引用内は shell
 #     にとってデータであり、`echo 'x; bash tools/pr-watch.sh 51'` の `;` を境界扱い
 #     すると echo のデータが起動に見える false positive になる。引用符自体と
@@ -171,19 +187,30 @@ if printf '%s' "$COMMAND" | grep -qE "$GH_PR_CHECKS_RE"; then
   if printf '%s' "$COMMAND" | grep -qE "$GH_CHECKS_WATCH_RE"; then
     deny_with_reason "gh pr checks --watch による ad-hoc CI 監視は禁止です (${TOOL_NAME} tool)。セッション寿命依存の監視は /clear やセッション終了で黙死します。"
   fi
-  # ループ判定は「ループ構文 (while/until/for) が gh pr checks より前にあり、かつ
-  # gh pr checks の後にループを閉じる word `done` が続く」(= 呼び出しがループ本体の
-  # 中にある) 場合のみ deny する。ループ本体内の呼び出しは必ず後方の done より前に
-  # あるため、ネスト (`while ...; do for ...; done; gh pr checks; done`) でも外側
-  # ループの done が後方条件を満たして検出される。
+  # ループ判定は「gh pr checks の呼び出し位置が未閉のループスコープ内にある」場合のみ
+  # deny する。各出現位置について、その手前のテキストでループ開始語
+  # (while/until/for/select) と閉じ語 (done) を数え、開始が閉じより多ければその
+  # 呼び出しはループの条件部または本体にあり反復される。
   #   - `gh pr checks ... | while read ...; do ...; done` (単発結果のループ加工) は
-  #     loop 構文が gh より後ろなので許可 (gh は 1 回しか走らない)。
+  #     手前にループ開始が無いので許可 (gh は 1 回しか走らない)。
   #   - `for f in a b; do ...; done; gh pr checks 51` (閉じたループの後の単発) は
-  #     gh の後ろに done が無いので許可。
-  GH_LOOP_BEFORE_RE='(^|[;&|({[:space:]])(while|until|for)[[:space:]].*'"$GH_PR_CHECKS_RE"
-  GH_DONE_AFTER_RE="$GH_PR_CHECKS_PREFIX"'([[:space:];&|)]).*[;[:space:]]done([;[:space:]]|$)'
-  if printf '%s' "$COMMAND" | grep -qE "$GH_LOOP_BEFORE_RE" \
-    && printf '%s' "$COMMAND" | grep -qE "$GH_DONE_AFTER_RE"; then
+  #     開始 1 / 閉じ 1 で釣り合うので許可。兄弟ループが後続しても影響しない。
+  #   - ネスト (`while ...; do for ...; done; gh pr checks; done`) は開始 2 / 閉じ 1
+  #     で未閉スコープ内と判定される。
+  GH_IN_LOOP=$(printf '%s' "$COMMAND" | awk -v ghre="$GH_PR_CHECKS_PREFIX" '
+    {
+      s = $0
+      off = 0
+      while (match(substr(s, off + 1), ghre) > 0) {
+        pos = off + RSTART
+        prefix = substr(s, 1, pos - 1)
+        t = prefix; opens  = gsub(/(^|[;&|({[:space:]])(while|until|for|select)[[:space:]]/, " ", t)
+        t = prefix; closes = gsub(/(^|[;&|([:space:]])done([;&|)[:space:]]|$)/, " ", t)
+        if (opens > closes) { print "in_loop"; exit }
+        off = pos
+      }
+    }')
+  if [[ "$GH_IN_LOOP" == "in_loop" ]]; then
     deny_with_reason "gh pr checks の polling ループによる ad-hoc CI 監視は禁止です (${TOOL_NAME} tool)。セッション寿命依存の監視は /clear やセッション終了で黙死します。"
   fi
   # watch コマンド (path 付き /usr/bin/watch も対象) は done を使わないため別判定:
@@ -234,10 +261,15 @@ PR_WATCH_LAUNCH_SEG_RE='^[[:space:]]*((if|then|elif|else|do|while|until)[[:space
 # のような「ラッパー越しの読み取り」も LAUNCH_SEG_RE に一致してしまう。同一区間内で
 # 既知の読み取りコマンドが pr-watch ファイルより前に現れる場合は読み取りとみなす。
 PR_WATCH_READER_SEG_RE='(^|[[:space:]])(grep|egrep|fgrep|rg|ag|cat|bat|head|tail|sed|awk|less|more|wc|diff|cmp|stat|file|md5sum|sha[0-9]*sum|cksum|shellcheck|shfmt|cut|sort|uniq|hexdump|xxd|strings|nl|od|ls|realpath|readlink|basename|dirname|du|touch|chmod|cp|mv|ln|git)[[:space:]].*(pr-watch\.(sh|ps1)|pr_watch(\.py)?)'
+# 実行しないインタプリタモードの例外: 構文チェック (`bash -n` / `sh -n`) や
+# バイトコンパイル (`python3 -m py_compile`) はファイルを実行しないため許可する。
+# `-n` は `-nv` のような結合フラグ形も対象。
+PR_WATCH_NOEXEC_SEG_RE='(^|[[:space:]/])((bash|sh|zsh|dash|ksh)[[:space:]]+-[A-Za-z]*n[A-Za-z]*[[:space:]]|python[0-9.]*[[:space:]]+-m[[:space:]]+py_compile[[:space:]])'
 while IFS= read -r SEGMENT; do
   [[ -z "${SEGMENT//[[:space:]]/}" ]] && continue
   if printf '%s' "$SEGMENT" | grep -qE "$PR_WATCH_LAUNCH_SEG_RE"; then
-    if ! printf '%s' "$SEGMENT" | grep -qE "$PR_WATCH_READER_SEG_RE"; then
+    if ! printf '%s' "$SEGMENT" | grep -qE "$PR_WATCH_READER_SEG_RE" \
+      && ! printf '%s' "$SEGMENT" | grep -qE "$PR_WATCH_NOEXEC_SEG_RE"; then
       deny_with_reason "tools/pr-watch.* の直接起動は禁止です (${TOOL_NAME} tool)。Claude Code の背景タスクは spawn したシェルのみ追跡し、監視本体が孤児化します。緊急経路はユーザー自身の ! 手動実行のみです。"
     fi
   fi

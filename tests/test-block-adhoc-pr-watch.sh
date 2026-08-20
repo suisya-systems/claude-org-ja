@@ -268,6 +268,48 @@ json=$(make_payload "Bash" "pwsh '.\\tools\\pr-watch.ps1' 51")
 ec=$(run_hook "$json" "$stderr")
 assert_exit 2 "$ec" "Bash: pwsh with backslash-separated pr-watch.ps1 path is blocked"
 
+# --- Block Cases (Codex round 7 指摘: interpreter heredoc / bash -c 引用スクリプト) ---
+
+# 7ai. Bash + シェルへの heredoc stdin (本文はコード) -> block
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" "bash <<'EOF'
+while true; do gh pr checks 51; sleep 30; done
+EOF")
+ec=$(run_hook "$json" "$stderr")
+assert_exit 2 "$ec" "Bash: heredoc piped into bash (executable body) is blocked"
+
+# 7aj. Bash + bash -c の引用スクリプト内の polling ループ -> block
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" "bash -c 'while true; do gh pr checks 51; sleep 30; done'")
+ec=$(run_hook "$json" "$stderr")
+assert_exit 2 "$ec" "Bash: bash -c quoted polling loop is blocked"
+
+# 7ak. Bash + bash -c の引用スクリプト内の --watch -> block
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" "bash -c 'gh pr checks 51 --watch'")
+ec=$(run_hook "$json" "$stderr")
+assert_exit 2 "$ec" "Bash: bash -c quoted gh pr checks --watch is blocked"
+
+# --- Allow Cases (Codex round 7 指摘: 兄弟ループ / 非実行インタプリタモード) ---
+
+# 7al. Bash + 兄弟ループに挟まれた単発 gh pr checks -> allow
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" 'for x in a; do :; done; gh pr checks 51; for y in b; do :; done')
+ec=$(run_hook "$json" "$stderr")
+assert_exit 0 "$ec" "Bash: one-shot gh pr checks between sibling loops is allowed"
+
+# 7am. Bash + bash -n の構文チェック -> allow
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" 'bash -n tools/pr-watch.sh')
+ec=$(run_hook "$json" "$stderr")
+assert_exit 0 "$ec" "Bash: bash -n syntax check of pr-watch.sh is allowed"
+
+# 7an. Bash + py_compile のバイトコンパイル -> allow
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" 'python3 -m py_compile tools/pr_watch.py')
+ec=$(run_hook "$json" "$stderr")
+assert_exit 0 "$ec" "Bash: python3 -m py_compile of pr_watch.py is allowed"
+
 # --- Allow Cases (Codex round 6 指摘: heredoc 本文はデータ) ---
 
 # 7ah. Bash + heredoc 本文に polling ループのテキストを書くドキュメント生成 -> allow
