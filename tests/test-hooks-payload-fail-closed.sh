@@ -51,7 +51,11 @@ PARSE_MARKER="JSON object として解析できませんでした"
 # 検査対象外。ファイル名と理由を 1 行ずつ明示する。
 # - fixture-always-block.sh: hook 配線の手動確認用 fixture であり常時 exit 2。
 #   stdin を /tmp/hook-test.log へ追記する副作用があるためテストからは呼ばない。
-EXEMPT=("fixture-always-block.sh")
+# - block-adhoc-pr-watch.sh: enforcement ゲートではなく best-effort の安全網
+#   (一次規律は .claude/rules/pr-ci-watch.md)。false positive を避けるため
+#   判定不能な payload は意図的に許可側 (fail-open) に倒す設計。
+#   専用テスト tests/test-block-adhoc-pr-watch.sh 側で挙動を検査する。
+EXEMPT=("fixture-always-block.sh" "block-adhoc-pr-watch.sh")
 
 PASS=0; FAIL=0; TEST_NUM=0
 
