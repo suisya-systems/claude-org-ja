@@ -92,12 +92,39 @@ fi
 #     (gh pr checks --help で実確認済み)。
 #   単発の `gh pr checks <n>` (ループなし) はどれにも該当せず許可される
 #   (false positive を作らない)。
-# 複数行 command は改行を `;` に潰してから判定する。grep は行単位で評価するため、
-# そのままだと `while true; do\n  gh pr checks 51\n  sleep 30\ndone` のような
-# 複数行ループで loop 構文と gh 呼び出しが別行に割れて検出を素通りする。
-# 改行はシェルのコマンド境界なので `;` への置換は意味を保つ (空白への置換だと
-# 「行頭 = コマンド位置」の情報が落ちて判定 2 の anchor を取りこぼす)。
+# --- command 文字列の正規化 (判定 1 / 2 共通の前処理) ---
+# (1) バックスラッシュ継続行 (`\` + 改行) は空白に潰す。シェルはこれを 1 つの
+#     コマンドとして実行するため、改行をコマンド境界にすると `gh pr \<NL> checks`
+#     の分割で検出を素通りする。
+COMMAND=${COMMAND//$'\\\n'/ }
+# (2) 残る改行を `;` に潰す。grep は行単位で評価するため、複数行ループで loop 構文と
+#     gh 呼び出しが別行に割れると検出を素通りする。改行はシェルのコマンド境界なので
+#     `;` への置換は意味を保つ (空白だと「行頭 = コマンド位置」の情報が落ちる)。
 COMMAND=$(printf '%s' "$COMMAND" | tr '\n\r' ';;')
+# (3) 引用符の中のコマンド区切り文字 (; & | 括弧 ` ) を空白に潰す。引用内は shell
+#     にとってデータであり、`echo 'x; bash tools/pr-watch.sh 51'` の `;` を境界扱い
+#     すると echo のデータが起動に見える false positive になる。引用符自体と
+#     その他の文字は保持する (bash -c '...' 内の起動は引き続き検出できる)。
+COMMAND=$(printf '%s' "$COMMAND" | awk '{
+  out = ""; sq = 0; dq = 0
+  n = length($0)
+  for (i = 1; i <= n; i++) {
+    c = substr($0, i, 1)
+    if (sq) {
+      if (c == "\x27") sq = 0
+      else if (index(";&|(){}`", c)) c = " "
+    } else if (dq) {
+      if (c == "\\") { out = out c; i++; c = (i <= n) ? substr($0, i, 1) : ""; out = out c; continue }
+      if (c == "\"") dq = 0
+      else if (index(";&|(){}`", c)) c = " "
+    } else {
+      if (c == "\x27") sq = 1
+      else if (c == "\"") dq = 1
+    }
+    out = out c
+  }
+  print out
+}')
 
 # `gh pr checks` の検出はフラグの挿入位置 2 箇所を許容する:
 #   - `gh` と `pr` の間の global フラグ (`gh -R owner/repo pr checks` 等)
@@ -121,17 +148,27 @@ if printf '%s' "$COMMAND" | grep -qE "$GH_PR_CHECKS_RE"; then
   if printf '%s' "$COMMAND" | grep -qE "$GH_CHECKS_WATCH_RE"; then
     deny_with_reason "gh pr checks --watch による ad-hoc CI 監視は禁止です (${TOOL_NAME} tool)。セッション寿命依存の監視は /clear やセッション終了で黙死します。"
   fi
-  # ループ判定は「ループ構文が gh pr checks より前にあり、かつその間に loop を閉じる
-  # `done` が無い」(= 呼び出しがループ本体に入って反復される) 場合のみ deny する。
-  #   - `gh pr checks ... | while read ...` (単発結果のループ加工) は gh が 1 回しか
-  #     走らないので許可。
-  #   - `for f in a b; do echo "$f"; done; gh pr checks 51` (閉じたループの後の単発)
-  #     も許可: word `done` の境界で command を分割し、同一区間内で loop 構文 →
-  #     gh pr checks の順に並ぶ場合だけを反復とみなす。
-  # watch コマンドは path 付き (/usr/bin/watch) も対象。
-  GH_LOOP_BEFORE_RE='(^|[;&|({[:space:]])(while|until|for|([^[:space:]]*/)?watch)[[:space:]].*'"$GH_PR_CHECKS_RE"
-  if printf '%s' "$COMMAND" | sed -E 's/(^|[;[:space:]])done([;[:space:]]|$)/\1\n\2/g' | grep -qE "$GH_LOOP_BEFORE_RE"; then
+  # ループ判定は「ループ構文 (while/until/for) が gh pr checks より前にあり、かつ
+  # gh pr checks の後にループを閉じる word `done` が続く」(= 呼び出しがループ本体の
+  # 中にある) 場合のみ deny する。ループ本体内の呼び出しは必ず後方の done より前に
+  # あるため、ネスト (`while ...; do for ...; done; gh pr checks; done`) でも外側
+  # ループの done が後方条件を満たして検出される。
+  #   - `gh pr checks ... | while read ...; do ...; done` (単発結果のループ加工) は
+  #     loop 構文が gh より後ろなので許可 (gh は 1 回しか走らない)。
+  #   - `for f in a b; do ...; done; gh pr checks 51` (閉じたループの後の単発) は
+  #     gh の後ろに done が無いので許可。
+  GH_LOOP_BEFORE_RE='(^|[;&|({[:space:]])(while|until|for)[[:space:]].*'"$GH_PR_CHECKS_RE"
+  GH_DONE_AFTER_RE="$GH_PR_CHECKS_PREFIX"'([[:space:];&|)]).*[;[:space:]]done([;[:space:]]|$)'
+  if printf '%s' "$COMMAND" | grep -qE "$GH_LOOP_BEFORE_RE" \
+    && printf '%s' "$COMMAND" | grep -qE "$GH_DONE_AFTER_RE"; then
     deny_with_reason "gh pr checks の polling ループによる ad-hoc CI 監視は禁止です (${TOOL_NAME} tool)。セッション寿命依存の監視は /clear やセッション終了で黙死します。"
+  fi
+  # watch コマンド (path 付き /usr/bin/watch も対象) は done を使わないため別判定:
+  # 同一コマンド区間内 (; & | を跨がない) で watch の引数に gh pr checks が
+  # 現れる場合を deny する。
+  GH_WATCH_CMD_RE='(^|[;&|({[:space:]])([^[:space:]]*/)?watch[[:space:]][^;&|]*'"$GH_PR_CHECKS_PREFIX"
+  if printf '%s' "$COMMAND" | grep -qE "$GH_WATCH_CMD_RE"; then
+    deny_with_reason "watch コマンドによる gh pr checks の ad-hoc CI 監視は禁止です (${TOOL_NAME} tool)。セッション寿命依存の監視は /clear やセッション終了で黙死します。"
   fi
 fi
 
@@ -151,7 +188,9 @@ fi
 # (`cat tools/pr-watch.sh && bash tools/pr-watch.sh` の後半は読み取り例外に隠れず
 # deny され、`cat x; bash tools/pr-watch.sh` も後半区間だけで起動と判定される)。
 PR_WATCH_ASSIGN='[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*'
-PR_WATCH_WRAPPER='([^[:space:]]*/)?(nohup|setsid|exec|env|command|time|timeout|stdbuf|source|sudo|doas|xargs|bash|sh|zsh|dash|ksh|pwsh|powershell(\.exe)?|python[0-9.]*|py|uv|run)'
+# POSIX の dot-source (`. tools/pr-watch.sh`) も source と同じ実行なので `\.` を
+# 単独トークンとしてラッパーに含める。
+PR_WATCH_WRAPPER='(([^[:space:]]*/)?(nohup|setsid|exec|env|command|time|timeout|stdbuf|source|sudo|doas|xargs|bash|sh|zsh|dash|ksh|pwsh|powershell(\.exe)?|python[0-9.]*|py|uv|run)|\.)'
 # ファイル名は basename 完全一致で照合する: 前置は `/` (パス) か `.` (python module
 # の package 区切り) か引用符で終わる場合のみ許容し、`tools/test_pr_watch.py` の
 # ような別名 (前置が `_` 等で終わる) を拾わない。リポジトリ実在の

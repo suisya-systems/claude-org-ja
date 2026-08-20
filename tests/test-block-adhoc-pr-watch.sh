@@ -227,6 +227,35 @@ json=$(make_payload "Bash" 'cat tools/pr-watch.sh && bash tools/pr-watch.sh 51')
 ec=$(run_hook "$json" "$stderr")
 assert_exit 2 "$ec" "Bash: cat then launch compound is still blocked (reader exemption does not leak)"
 
+# --- Block Cases (Codex round 5 指摘: ネストループ / 継続行 / dot-source) ---
+
+# 7aa. Bash + ネストしたループ (内側 done の後に gh pr checks、外側 done で反復) -> block
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" 'while true; do for x in a; do :; done; gh pr checks 51; sleep 30; done')
+ec=$(run_hook "$json" "$stderr")
+assert_exit 2 "$ec" "Bash: nested loop with gh pr checks after inner done is blocked"
+
+# 7ab. Bash + バックスラッシュ継続行入りの polling ループ -> block
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" 'while true; do gh pr \
+checks 51; sleep 30; done')
+ec=$(run_hook "$json" "$stderr")
+assert_exit 2 "$ec" "Bash: polling loop with backslash-newline continuation is blocked"
+
+# 7ac. Bash + POSIX dot-source での pr-watch.sh 実行 -> block
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" '. tools/pr-watch.sh 51')
+ec=$(run_hook "$json" "$stderr")
+assert_exit 2 "$ec" "Bash: POSIX dot-source of tools/pr-watch.sh is blocked"
+
+# --- Allow Cases (Codex round 5 指摘: 引用内の区切り文字はデータ) ---
+
+# 7ad. Bash + 引用文字列の中に `; bash tools/pr-watch.sh` を含む echo -> allow
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" "echo 'x; bash tools/pr-watch.sh 51'")
+ec=$(run_hook "$json" "$stderr")
+assert_exit 0 "$ec" "Bash: quoted separator inside echo data is not treated as a launch"
+
 # --- Allow Cases (Codex round 4 指摘: 閉じたループ後の単発 / 無関係 --watch / ラッパー越し読み取り) ---
 
 # 7w. Bash + 閉じたループの後の単発 gh pr checks -> allow
