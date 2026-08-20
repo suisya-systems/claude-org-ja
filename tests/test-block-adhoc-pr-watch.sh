@@ -146,7 +146,39 @@ json=$(make_payload "Bash" 'python3 -u tools/pr_watch.py --pr 51')
 ec=$(run_hook "$json" "$stderr")
 assert_exit 2 "$ec" "Bash: python3 -u tools/pr_watch.py launch is blocked"
 
+# --- Block Cases (Codex round 2 指摘: path 付き watch / 未網羅ラッパー / module 実行) ---
+
+# 7h. Bash + /usr/bin/watch -n 30 gh pr checks -> block
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" '/usr/bin/watch -n 30 gh pr checks 51')
+ec=$(run_hook "$json" "$stderr")
+assert_exit 2 "$ec" "Bash: path-qualified /usr/bin/watch + gh pr checks is blocked"
+
+# 7i. Bash + timeout ラッパー経由の pr-watch.sh -> block
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" 'timeout 1h bash tools/pr-watch.sh 51')
+ec=$(run_hook "$json" "$stderr")
+assert_exit 2 "$ec" "Bash: timeout 1h bash tools/pr-watch.sh launch is blocked"
+
+# 7j. Bash + source での取り込み実行 -> block
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" 'source tools/pr-watch.sh 51')
+ec=$(run_hook "$json" "$stderr")
+assert_exit 2 "$ec" "Bash: source tools/pr-watch.sh is blocked"
+
+# 7k. Bash + python module 実行 (python3 -m tools.pr_watch) -> block
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" 'python3 -m tools.pr_watch --pr 51')
+ec=$(run_hook "$json" "$stderr")
+assert_exit 2 "$ec" "Bash: python3 -m tools.pr_watch module launch is blocked"
+
 # --- Allow Cases ---
+
+# 7l. Bash + 単発 gh pr checks の結果を while read で加工 (gh は 1 回実行) -> allow
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" 'gh pr checks 51 --json name,bucket | while read -r row; do echo "$row"; done')
+ec=$(run_hook "$json" "$stderr")
+assert_exit 0 "$ec" "Bash: one-shot gh pr checks piped into while-read processing is allowed"
 
 # 8. Bash + 単発 gh pr checks (ループなし) -> allow
 stderr=$(mktemp); TMPFILES+=("$stderr")

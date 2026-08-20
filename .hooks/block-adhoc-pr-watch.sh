@@ -101,24 +101,34 @@ if printf '%s' "$COMMAND" | grep -qE "$GH_PR_CHECKS_RE"; then
   if [[ "$TOOL_NAME" == "Monitor" ]]; then
     deny_with_reason "Monitor tool による gh pr checks の CI 監視は禁止です。セッション寿命依存の監視は /clear やセッション終了で黙死します。"
   fi
-  if printf '%s' "$COMMAND" | grep -qE '(^|[;&|({[:space:]])(while|until|for|watch)([[:space:]]|$)|[[:space:]]--watch([[:space:]=]|$)'; then
+  # ループ判定は「ループ構文が gh pr checks より前にある」(= 呼び出しがループ本体に
+  # 入って反復される) 場合のみ deny する。`gh pr checks ... | while read ...` のように
+  # 単発実行の結果をループで加工するだけの形は gh が 1 回しか走らないので許可する
+  # (単発例外の false positive を作らない)。watch は path 付き (/usr/bin/watch) も対象。
+  GH_LOOP_BEFORE_RE='(^|[;&|({[:space:]])(while|until|for|([^[:space:]]*/)?watch)[[:space:]].*'"$GH_PR_CHECKS_RE"
+  if printf '%s' "$COMMAND" | grep -qE "$GH_LOOP_BEFORE_RE|[[:space:]]--watch([[:space:]=]|$)"; then
     deny_with_reason "gh pr checks の polling ループ / --watch による ad-hoc CI 監視は禁止です (${TOOL_NAME} tool)。セッション寿命依存の監視は /clear やセッション終了で黙死します。"
   fi
 fi
 
 # --- 判定 2: tools/pr-watch.* の直接起動 ---
-# コマンド位置 (行頭 / ; & | ( ` $( の直後) から pr-watch ファイルまでの間に
-# 挟めるトークンを「起動の前置」に限定して検出する:
-#   - 既知のラッパー / インタプリタ (nohup / setsid / exec / env / command / time /
-#     bash / sh / zsh / dash / ksh / pwsh / powershell / python[3.x] / py / uv / run)。
-#     絶対パス前置 (/usr/bin/bash 等) も許容。
-#   - それらのフラグ (-3 / -u / -c 等の `-` 始まりトークン)
-#   - 環境変数代入 (VAR=value)
-# `grep foo tools/pr-watch.sh` のような読み取りは、先頭トークン grep が上記の
-# いずれでもないため起動とみなされず許可される (false positive を作らない)。
-PR_WATCH_WRAPPER='([^[:space:]]*/)?(nohup|setsid|exec|env|command|time|bash|sh|zsh|dash|ksh|pwsh|powershell(\.exe)?|python[0-9.]*|py|uv|run)'
-PR_WATCH_PREFIX_TOKEN="(${PR_WATCH_WRAPPER}|-[^[:space:]]*|[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*)"
-PR_WATCH_LAUNCH_RE='(^|[;&|(`]|\$\()[[:space:]]*('"$PR_WATCH_PREFIX_TOKEN"'[[:space:]]+)*[^[:space:]]*(pr-watch\.(sh|ps1)|pr_watch\.py)([[:space:]]|$|["'"'"'])'
+# コマンド位置 (行頭 / ; & | ( ` $( の直後) を起点に、次の 3 形を起動とみなす:
+#   a. 環境変数代入 (VAR=value) の連なりの直後に pr-watch ファイル
+#   b. 既知のラッパー / インタプリタが先頭トークンで、その後 (フラグ・引数を挟んで)
+#      pr-watch ファイル。ラッパーは絶対パス前置 (/usr/bin/bash 等) も許容し、
+#      timeout / source / stdbuf / sudo / xargs / py ランチャー / uv 等を含む。
+#      ラッパー確定後の中間トークンは任意 (timeout の `1h` 等) だが、コマンド区切り
+#      文字 (; & | ( )) を含むトークンは跨げない (別コマンドへの越境 FP を防ぐ)。
+#   c. pr-watch ファイルがコマンド位置に直接 (./tools/pr-watch.sh 51 等)
+# `grep foo tools/pr-watch.sh` のような読み取りは、先頭トークン grep がラッパー
+# 一覧に無いため起動とみなされず許可される (false positive を作らない)。
+# python の module 実行 (`python3 -m tools.pr_watch`) も拾うため、ファイル名は
+# 拡張子なしの pr_watch も対象にする。
+PR_WATCH_ASSIGN='[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*'
+PR_WATCH_WRAPPER='([^[:space:]]*/)?(nohup|setsid|exec|env|command|time|timeout|stdbuf|source|sudo|doas|xargs|bash|sh|zsh|dash|ksh|pwsh|powershell(\.exe)?|python[0-9.]*|py|uv|run)'
+PR_WATCH_MIDDLE_TOKEN='[^[:space:];&|()`]+'
+PR_WATCH_FILE='[^[:space:]]*(pr-watch\.(sh|ps1)|pr_watch(\.py)?)([[:space:]]|$|["'"'"'])'
+PR_WATCH_LAUNCH_RE='(^|[;&|(`]|\$\()[[:space:]]*('"$PR_WATCH_ASSIGN"'[[:space:]]+)*('"$PR_WATCH_WRAPPER"'[[:space:]]+('"$PR_WATCH_MIDDLE_TOKEN"'[[:space:]]+)*)?'"$PR_WATCH_FILE"
 if printf '%s' "$COMMAND" | grep -qE "$PR_WATCH_LAUNCH_RE"; then
   deny_with_reason "tools/pr-watch.* の直接起動は禁止です (${TOOL_NAME} tool)。Claude Code の背景タスクは spawn したシェルのみ追跡し、監視本体が孤児化します。緊急経路はユーザー自身の ! 手動実行のみです。"
 fi
