@@ -82,6 +82,15 @@
             "command": "bash \"${CLAUDE_PROJECT_DIR}/.hooks/block-foreground-subagent.sh\""
           }
         ]
+      },
+      {
+        "matcher": "Bash|Monitor",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PROJECT_DIR}/.hooks/block-adhoc-pr-watch.sh\""
+          }
+        ]
       }
     ]
   },

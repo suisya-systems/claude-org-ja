@@ -1,0 +1,174 @@
+#!/usr/bin/env bash
+# Tests for block-adhoc-pr-watch.sh
+# Validates: exit code (0=allow/passthrough, 2=block) and stderr messages.
+#
+# 確認観点 (2026-08-20 の PR #51 実害への機械ガード):
+#   - Monitor + gh pr checks (ループの有無問わず)   -> block (Monitor は定義上「監視」)
+#   - Bash + while/until/for + gh pr checks         -> block (polling ループ)
+#   - Bash + gh pr checks --watch                   -> block (張り付き監視)
+#   - Bash/Monitor + tools/pr-watch.* の直接起動     -> block (孤児化する ad-hoc 監視)
+#   - Bash + 単発 gh pr checks <n>                  -> allow (状態確認は監視でない)
+#   - Bash + gh pr checks | grep -w (=--web でない) -> allow (-w を watch と誤認しない)
+#   - Bash + grep/cat の引数に pr-watch.sh          -> allow (読み取りは起動でない)
+#   - 非対象ツール / command 欠落 (Monitor ws)       -> passthrough
+#   - 不正 JSON / 空 stdin                          -> block (fail-closed)
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+HOOK="$REPO_ROOT/.hooks/block-adhoc-pr-watch.sh"
+
+PASS=0; FAIL=0; TEST_NUM=0
+TMPFILES=()
+cleanup() { rm -f "${TMPFILES[@]}"; }
+trap cleanup EXIT
+
+assert_exit() {
+  local expected="$1" actual="$2" desc="$3"
+  ((TEST_NUM++))
+  if [[ "$actual" -eq "$expected" ]]; then
+    echo "ok $TEST_NUM - $desc"
+    ((PASS++))
+  else
+    echo "not ok $TEST_NUM - $desc (expected exit $expected, got $actual)"
+    ((FAIL++))
+  fi
+}
+
+assert_stderr_contains() {
+  local pattern="$1" file="$2" desc="$3"
+  ((TEST_NUM++))
+  if grep -qF "$pattern" "$file" 2>/dev/null; then
+    echo "ok $TEST_NUM - $desc"
+    ((PASS++))
+  else
+    echo "not ok $TEST_NUM - $desc (stderr did not contain '$pattern')"
+    ((FAIL++))
+  fi
+}
+
+run_hook() {
+  local json="$1" stderr_file="$2"
+  local exit_code=0
+  printf '%s' "$json" | bash "$HOOK" 2>"$stderr_file" || exit_code=$?
+  echo "$exit_code"
+}
+
+# jq で command を安全に JSON エンコードして payload を作る (ループ構文等の
+# クォート事故を避ける)
+make_payload() {
+  local tool="$1" cmd="$2"
+  jq -cn --arg tool "$tool" --arg cmd "$cmd" '{tool_name: $tool, tool_input: {command: $cmd}}'
+}
+
+# --- Block Cases ---
+
+# 1. Monitor + while + gh pr checks polling ループ (実害と同形) -> block
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Monitor" 'while true; do gh pr checks 51 --json name,bucket; sleep 30; done')
+ec=$(run_hook "$json" "$stderr")
+assert_exit 2 "$ec" "Monitor: while + gh pr checks polling loop is blocked"
+assert_stderr_contains "/pr-watch-pane" "$stderr" "deny stderr names the canonical path /pr-watch-pane"
+assert_stderr_contains "人間に報告して指示を仰いでください" "$stderr" "deny stderr instructs to consult the human"
+
+# 2. Monitor + gh pr checks (ループなしでも Monitor は監視) -> block
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Monitor" 'gh pr checks 51 --json name,bucket')
+ec=$(run_hook "$json" "$stderr")
+assert_exit 2 "$ec" "Monitor: gh pr checks without loop is still blocked (Monitor is watching by definition)"
+
+# 3. Bash + until ループ + gh pr checks -> block
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" 'until gh pr checks 51 | grep -q pass; do sleep 60; done')
+ec=$(run_hook "$json" "$stderr")
+assert_exit 2 "$ec" "Bash: until + gh pr checks polling loop is blocked"
+
+# 4. Bash + gh pr checks --watch -> block
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" 'gh pr checks 51 --watch')
+ec=$(run_hook "$json" "$stderr")
+assert_exit 2 "$ec" "Bash: gh pr checks --watch is blocked"
+
+# 5. Bash + tools/pr-watch.sh 直接起動 -> block
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" 'setsid bash tools/pr-watch.sh 51 < /dev/null > /dev/null 2>&1 &')
+ec=$(run_hook "$json" "$stderr")
+assert_exit 2 "$ec" "Bash: setsid bash tools/pr-watch.sh direct launch is blocked"
+assert_stderr_contains "tools/pr-watch.* の直接起動は禁止" "$stderr" "deny stderr names the pr-watch direct-launch ban"
+
+# 6. Bash + 絶対パスの pr_watch.py 起動 -> block
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" 'python3 /home/user/repo/tools/pr_watch.py --pr 51')
+ec=$(run_hook "$json" "$stderr")
+assert_exit 2 "$ec" "Bash: python3 .../tools/pr_watch.py launch is blocked"
+
+# 7. Monitor + pr-watch.sh 起動 -> block
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Monitor" './tools/pr-watch.sh 51')
+ec=$(run_hook "$json" "$stderr")
+assert_exit 2 "$ec" "Monitor: ./tools/pr-watch.sh launch is blocked"
+
+# --- Allow Cases ---
+
+# 8. Bash + 単発 gh pr checks (ループなし) -> allow
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" 'gh pr checks 51')
+ec=$(run_hook "$json" "$stderr")
+assert_exit 0 "$ec" "Bash: one-shot gh pr checks is allowed"
+
+# 9. Bash + 単発 gh pr checks --repo 付き + jq 加工 -> allow
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" 'gh pr checks 51 --repo owner/repo --json name,bucket | jq -r ".[].bucket"')
+ec=$(run_hook "$json" "$stderr")
+assert_exit 0 "$ec" "Bash: one-shot gh pr checks with --repo/--json pipeline is allowed"
+
+# 10. Bash + grep -w (=word-regexp) は --watch でない -> allow
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" 'gh pr checks 51 | grep -w pass')
+ec=$(run_hook "$json" "$stderr")
+assert_exit 0 "$ec" "Bash: gh pr checks piped to grep -w is allowed (-w is not --watch)"
+
+# 11. Bash + pr-watch.sh を引数位置で読むだけ (grep) -> allow
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" 'grep -n ci_completed tools/pr-watch.sh')
+ec=$(run_hook "$json" "$stderr")
+assert_exit 0 "$ec" "Bash: reading tools/pr-watch.sh as a grep argument is allowed"
+
+# 12. Bash + gh pr checks を含まない while ループ -> allow
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" 'while read -r line; do echo "$line"; done < input.txt')
+ec=$(run_hook "$json" "$stderr")
+assert_exit 0 "$ec" "Bash: unrelated while loop without gh pr checks is allowed"
+
+# 13. 非対象ツール (Edit) は passthrough -> allow
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json='{"tool_name":"Edit","tool_input":{"file_path":"/tmp/x","old_string":"while gh pr checks","new_string":"y"}}'
+ec=$(run_hook "$json" "$stderr")
+assert_exit 0 "$ec" "non-target tool (Edit) passes through"
+
+# 14. Monitor + ws source (command 欠落) -> allow
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json='{"tool_name":"Monitor","tool_input":{"ws":{"url":"wss://example.com/stream"},"description":"x"}}'
+ec=$(run_hook "$json" "$stderr")
+assert_exit 0 "$ec" "Monitor ws source without command is allowed"
+
+# --- Fail-closed Cases ---
+
+# 15. 空 stdin -> block
+stderr=$(mktemp); TMPFILES+=("$stderr")
+ec=$(run_hook "" "$stderr")
+assert_exit 2 "$ec" "empty stdin is blocked (fail-closed)"
+
+# 16. 不正 JSON -> block
+stderr=$(mktemp); TMPFILES+=("$stderr")
+ec=$(run_hook 'not json {' "$stderr")
+assert_exit 2 "$ec" "invalid JSON is blocked (fail-closed)"
+
+# 17. tool_input が object でない -> block
+stderr=$(mktemp); TMPFILES+=("$stderr")
+ec=$(run_hook '{"tool_name":"Bash","tool_input":"gh pr checks"}' "$stderr")
+assert_exit 2 "$ec" "non-object tool_input is blocked (fail-closed)"
+
+# --- Summary ---
+echo "# $PASS passed, $FAIL failed out of $TEST_NUM tests"
+[[ $FAIL -eq 0 ]]
