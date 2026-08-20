@@ -510,6 +510,26 @@ json=$(make_payload "Bash" 'while read -r x; do echo gh pr checks 51; done')
 ec=$(run_hook "$json" "$stderr")
 assert_exit 0 "$ec" "Bash: echo of gh pr checks text inside loop is allowed (argument position)"
 
+# --- Cases (Codex round 11 指摘: subshell 終端 / watch のコマンド位置 / 非実行コマンド引数) ---
+
+# 7ba. Bash + subshell 内の gh pr checks --watch -> block
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" '(gh pr checks 51 --watch)')
+ec=$(run_hook "$json" "$stderr")
+assert_exit 2 "$ec" "Bash: (gh pr checks --watch) in subshell is blocked"
+
+# 7bb. Bash + echo の引数に watch gh pr checks のテキスト -> allow
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" 'echo watch gh pr checks 51')
+ec=$(run_hook "$json" "$stderr")
+assert_exit 0 "$ec" "Bash: echo of 'watch gh pr checks' text is allowed (argument position)"
+
+# 7bc. Bash + env printf の引数に pr-watch.sh のパス -> allow
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" "env printf '%s\\n' tools/pr-watch.sh")
+ec=$(run_hook "$json" "$stderr")
+assert_exit 0 "$ec" "Bash: env printf with pr-watch.sh path argument is allowed"
+
 # --- Fail-closed Cases ---
 
 # 15. 空 stdin -> block

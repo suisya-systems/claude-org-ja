@@ -214,7 +214,7 @@ GH_PR_CHECKS_CMD='((^|[;&|({])[[:space:]]*|(^|[[:space:]])(if|then|elif|else|do|
 # --watch は「同一の gh pr checks 呼び出しに付いたフラグ」だけを対象にする:
 # checks の後、コマンド区切り文字を跨がずに --watch トークンへ到達する場合のみ。
 # `gh pr checks 51; other-tool --watch x` のような別コマンドの --watch は拾わない。
-GH_CHECKS_WATCH_RE="$GH_PR_CHECKS_CMD"'([[:space:]]+[^[:space:];&|()]+)*[[:space:]]+--watch([[:space:];&|=]|$)'
+GH_CHECKS_WATCH_RE="$GH_PR_CHECKS_CMD"'([[:space:]]+[^[:space:];&|()]+)*[[:space:]]+--watch([[:space:];&|=)]|$)'
 if printf '%s' "$COMMAND_POLL" | grep -qE "$GH_PR_CHECKS_RE"; then
   if [[ "$TOOL_NAME" == "Monitor" ]] && printf '%s' "$COMMAND_POLL" | grep -qE "$GH_PR_CHECKS_CMD"; then
     deny_with_reason "Monitor tool による gh pr checks の CI 監視は禁止です。セッション寿命依存の監視は /clear やセッション終了で黙死します。"
@@ -268,7 +268,7 @@ if printf '%s' "$COMMAND_POLL" | grep -qE "$GH_PR_CHECKS_RE"; then
   # watch コマンド (path 付き /usr/bin/watch も対象) は done を使わないため別判定:
   # 同一コマンド区間内 (; & | を跨がない) で watch の引数に gh pr checks が
   # 現れる場合を deny する。
-  GH_WATCH_CMD_RE='(^|[;&|({[:space:]])([^[:space:]]*/)?watch[[:space:]][^;&|]*'"$GH_PR_CHECKS_PREFIX"
+  GH_WATCH_CMD_RE='((^|[;&|({])[[:space:]]*|(^|[[:space:]])(if|then|elif|else|do|while|until)[[:space:]]+)([^[:space:]]*/)?watch[[:space:]][^;&|]*'"$GH_PR_CHECKS_PREFIX"
   if printf '%s' "$COMMAND_POLL" | grep -qE "$GH_WATCH_CMD_RE"; then
     deny_with_reason "watch コマンドによる gh pr checks の ad-hoc CI 監視は禁止です (${TOOL_NAME} tool)。セッション寿命依存の監視は /clear やセッション終了で黙死します。"
   fi
@@ -314,7 +314,7 @@ PR_WATCH_LAUNCH_SEG_RE='^[[:space:]]*((if|then|elif|else|do|while|until)[[:space
 # `env LC_ALL=C grep -n x tools/pr-watch.sh` / `timeout 1s cat tools/pr-watch.sh`
 # のような「ラッパー越しの読み取り」も LAUNCH_SEG_RE に一致してしまう。同一区間内で
 # 既知の読み取りコマンドが pr-watch ファイルより前に現れる場合は読み取りとみなす。
-PR_WATCH_READER_SEG_RE='(^|[[:space:]])(grep|egrep|fgrep|rg|ag|cat|bat|head|tail|sed|awk|less|more|wc|diff|cmp|stat|file|md5sum|sha[0-9]*sum|cksum|shellcheck|shfmt|cut|sort|uniq|hexdump|xxd|strings|nl|od|ls|realpath|readlink|basename|dirname|du|touch|chmod|cp|mv|ln|git)[[:space:]].*(pr-watch\.(sh|ps1)|pr_watch(\.py)?)'
+PR_WATCH_READER_SEG_RE='(^|[[:space:]])(grep|egrep|fgrep|rg|ag|cat|bat|head|tail|sed|awk|less|more|wc|diff|cmp|stat|file|md5sum|sha[0-9]*sum|cksum|shellcheck|shfmt|cut|sort|uniq|hexdump|xxd|strings|nl|od|ls|realpath|readlink|basename|dirname|du|touch|chmod|cp|mv|ln|git|printf|echo)[[:space:]].*(pr-watch\.(sh|ps1)|pr_watch(\.py)?)'
 # 実行しないインタプリタモードの例外: 構文チェック (`bash -n` / `sh -n`) や
 # バイトコンパイル (`python3 -m py_compile`) はファイルを実行しないため許可する。
 # `-n` は `-nv` のような結合フラグ形も対象。
