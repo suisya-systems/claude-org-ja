@@ -107,49 +107,73 @@ COMMAND=$(printf '%s' "$COMMAND" | tr '\n\r' ';;')
 # フラグ / 引数トークンにコマンド区切り文字 (; & | 括弧) を含めない
 # (`gh --version; pr checks ...` のような別コマンドへの越境 FP を防ぐ)。
 GH_FLAG_TOKENS='([[:space:]]+-[^[:space:];&|()]+([[:space:]]+[^-[:space:];&|()][^[:space:];&|()]*)?)*'
-GH_PR_CHECKS_RE='gh'"$GH_FLAG_TOKENS"'[[:space:]]+pr'"$GH_FLAG_TOKENS"'[[:space:]]+checks([[:space:]]|$)'
+GH_PR_CHECKS_PREFIX='gh'"$GH_FLAG_TOKENS"'[[:space:]]+pr'"$GH_FLAG_TOKENS"'[[:space:]]+checks'
+GH_PR_CHECKS_RE="$GH_PR_CHECKS_PREFIX"'([[:space:];&|)]|$)'
+# --watch は「同一の gh pr checks 呼び出しに付いたフラグ」だけを対象にする:
+# checks の後、コマンド区切り文字を跨がずに --watch トークンへ到達する場合のみ。
+# `gh pr checks 51; other-tool --watch x` のような別コマンドの --watch は拾わない。
+GH_CHECKS_WATCH_RE="$GH_PR_CHECKS_PREFIX"'([[:space:]]+[^[:space:];&|()]+)*[[:space:]]+--watch([[:space:];&|=]|$)'
 if printf '%s' "$COMMAND" | grep -qE "$GH_PR_CHECKS_RE"; then
   if [[ "$TOOL_NAME" == "Monitor" ]]; then
     deny_with_reason "Monitor tool による gh pr checks の CI 監視は禁止です。セッション寿命依存の監視は /clear やセッション終了で黙死します。"
   fi
-  # ループ判定は「ループ構文が gh pr checks より前にある」(= 呼び出しがループ本体に
-  # 入って反復される) 場合のみ deny する。`gh pr checks ... | while read ...` のように
-  # 単発実行の結果をループで加工するだけの形は gh が 1 回しか走らないので許可する
-  # (単発例外の false positive を作らない)。watch は path 付き (/usr/bin/watch) も対象。
+  # 同一呼び出しの --watch フラグ (張り付き監視)。
+  if printf '%s' "$COMMAND" | grep -qE "$GH_CHECKS_WATCH_RE"; then
+    deny_with_reason "gh pr checks --watch による ad-hoc CI 監視は禁止です (${TOOL_NAME} tool)。セッション寿命依存の監視は /clear やセッション終了で黙死します。"
+  fi
+  # ループ判定は「ループ構文が gh pr checks より前にあり、かつその間に loop を閉じる
+  # `done` が無い」(= 呼び出しがループ本体に入って反復される) 場合のみ deny する。
+  #   - `gh pr checks ... | while read ...` (単発結果のループ加工) は gh が 1 回しか
+  #     走らないので許可。
+  #   - `for f in a b; do echo "$f"; done; gh pr checks 51` (閉じたループの後の単発)
+  #     も許可: word `done` の境界で command を分割し、同一区間内で loop 構文 →
+  #     gh pr checks の順に並ぶ場合だけを反復とみなす。
+  # watch コマンドは path 付き (/usr/bin/watch) も対象。
   GH_LOOP_BEFORE_RE='(^|[;&|({[:space:]])(while|until|for|([^[:space:]]*/)?watch)[[:space:]].*'"$GH_PR_CHECKS_RE"
-  if printf '%s' "$COMMAND" | grep -qE "$GH_LOOP_BEFORE_RE|[[:space:]]--watch([[:space:]=]|$)"; then
-    deny_with_reason "gh pr checks の polling ループ / --watch による ad-hoc CI 監視は禁止です (${TOOL_NAME} tool)。セッション寿命依存の監視は /clear やセッション終了で黙死します。"
+  if printf '%s' "$COMMAND" | sed -E 's/(^|[;[:space:]])done([;[:space:]]|$)/\1\n\2/g' | grep -qE "$GH_LOOP_BEFORE_RE"; then
+    deny_with_reason "gh pr checks の polling ループによる ad-hoc CI 監視は禁止です (${TOOL_NAME} tool)。セッション寿命依存の監視は /clear やセッション終了で黙死します。"
   fi
 fi
 
 # --- 判定 2: tools/pr-watch.* の直接起動 ---
-# コマンド位置 (行頭 / ; & | ( ` $( の直後) を起点に、次の 3 形を起動とみなす:
+# 次の 3 形を起動とみなす:
 #   a. 環境変数代入 (VAR=value) の連なりの直後に pr-watch ファイル
 #   b. 既知のラッパー / インタプリタが先頭トークンで、その後 (フラグ・引数を挟んで)
 #      pr-watch ファイル。ラッパーは絶対パス前置 (/usr/bin/bash 等) も許容し、
 #      timeout / source / stdbuf / sudo / xargs / py ランチャー / uv 等を含む。
-#      ラッパー確定後の中間トークンは任意 (timeout の `1h` 等) だが、コマンド区切り
-#      文字 (; & | ( )) を含むトークンは跨げない (別コマンドへの越境 FP を防ぐ)。
 #   c. pr-watch ファイルがコマンド位置に直接 (./tools/pr-watch.sh 51 等)
 # `grep foo tools/pr-watch.sh` のような読み取りは、先頭トークン grep がラッパー
 # 一覧に無いため起動とみなされず許可される (false positive を作らない)。
 # python の module 実行 (`python3 -m tools.pr_watch`) も拾うため、ファイル名は
 # 拡張子なしの pr_watch も対象にする。
-# コマンド位置の anchor は、記号境界 (行頭 ; & | ( ` { $( ) に加えてシェルの
-# 予約語境界 (then / do / else / elif) も含める。`if ...; then bash tools/pr-watch.sh; fi`
-# や `while ...; do bash tools/pr-watch.sh; done` の起動を素通りさせないため。
-PR_WATCH_ANCHOR='((^|[;&|(`{]|\$\()[[:space:]]*|(^|[[:space:]])(then|do|else|elif)[[:space:]]+)'
+# 判定はコマンド区切り文字 (; & | ( ) ` { }) で区間に分割し、区間単位で行う。
+# これにより起動判定と読み取り例外が別コマンドへ越境しない
+# (`cat tools/pr-watch.sh && bash tools/pr-watch.sh` の後半は読み取り例外に隠れず
+# deny され、`cat x; bash tools/pr-watch.sh` も後半区間だけで起動と判定される)。
 PR_WATCH_ASSIGN='[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*'
 PR_WATCH_WRAPPER='([^[:space:]]*/)?(nohup|setsid|exec|env|command|time|timeout|stdbuf|source|sudo|doas|xargs|bash|sh|zsh|dash|ksh|pwsh|powershell(\.exe)?|python[0-9.]*|py|uv|run)'
-PR_WATCH_MIDDLE_TOKEN='[^[:space:];&|()`]+'
 # ファイル名は basename 完全一致で照合する: 前置は `/` (パス) か `.` (python module
-# の package 区切り / 引用符) で終わる場合のみ許容し、`tools/test_pr_watch.py` の
+# の package 区切り) か引用符で終わる場合のみ許容し、`tools/test_pr_watch.py` の
 # ような別名 (前置が `_` 等で終わる) を拾わない。リポジトリ実在の
 # tools/test_pr_watch.py (watcher の unit test) を deny しないための制約。
 PR_WATCH_FILE='(["'"'"']?|[^[:space:]]*[/.'"'"'"])(pr-watch\.(sh|ps1)|pr_watch(\.py)?)([[:space:]]|$|["'"'"'])'
-PR_WATCH_LAUNCH_RE="$PR_WATCH_ANCHOR"'('"$PR_WATCH_ASSIGN"'[[:space:]]+)*('"$PR_WATCH_WRAPPER"'[[:space:]]+('"$PR_WATCH_MIDDLE_TOKEN"'[[:space:]]+)*)?'"$PR_WATCH_FILE"
-if printf '%s' "$COMMAND" | grep -qE "$PR_WATCH_LAUNCH_RE"; then
-  deny_with_reason "tools/pr-watch.* の直接起動は禁止です (${TOOL_NAME} tool)。Claude Code の背景タスクは spawn したシェルのみ追跡し、監視本体が孤児化します。緊急経路はユーザー自身の ! 手動実行のみです。"
-fi
+# 区間内の起動形: 区間先頭から、予約語 (if/then/elif/else/do/while/until) →
+# 環境変数代入 → ラッパー / インタプリタ (+ その引数トークン任意) の順に前置を
+# 許し、pr-watch ファイルへ到達するもの。先頭トークンがラッパー一覧に無い語
+# (grep / sed 等) の場合は前置が成立せず起動とみなされない。
+PR_WATCH_LAUNCH_SEG_RE='^[[:space:]]*((if|then|elif|else|do|while|until)[[:space:]]+)*('"$PR_WATCH_ASSIGN"'[[:space:]]+)*('"$PR_WATCH_WRAPPER"'[[:space:]]+([^[:space:]]+[[:space:]]+)*)?'"$PR_WATCH_FILE"
+# 読み取り専用コマンドの例外: ラッパーの中間トークンは任意の語を許すため、
+# `env LC_ALL=C grep -n x tools/pr-watch.sh` / `timeout 1s cat tools/pr-watch.sh`
+# のような「ラッパー越しの読み取り」も LAUNCH_SEG_RE に一致してしまう。同一区間内で
+# 既知の読み取りコマンドが pr-watch ファイルより前に現れる場合は読み取りとみなす。
+PR_WATCH_READER_SEG_RE='(^|[[:space:]])(grep|egrep|fgrep|rg|ag|cat|bat|head|tail|sed|awk|less|more|wc|diff|cmp|stat|file|md5sum|sha[0-9]*sum|cksum|shellcheck|shfmt|cut|sort|uniq|hexdump|xxd|strings|nl|od|ls|realpath|readlink|basename|dirname|du|touch|chmod|cp|mv|ln|git)[[:space:]].*(pr-watch\.(sh|ps1)|pr_watch(\.py)?)'
+while IFS= read -r SEGMENT; do
+  [[ -z "${SEGMENT//[[:space:]]/}" ]] && continue
+  if printf '%s' "$SEGMENT" | grep -qE "$PR_WATCH_LAUNCH_SEG_RE"; then
+    if ! printf '%s' "$SEGMENT" | grep -qE "$PR_WATCH_READER_SEG_RE"; then
+      deny_with_reason "tools/pr-watch.* の直接起動は禁止です (${TOOL_NAME} tool)。Claude Code の背景タスクは spawn したシェルのみ追跡し、監視本体が孤児化します。緊急経路はユーザー自身の ! 手動実行のみです。"
+    fi
+  fi
+done < <(printf '%s\n' "$COMMAND" | tr ';&|(){}`' '\n')
 
 exit 0

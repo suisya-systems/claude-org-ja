@@ -207,6 +207,52 @@ json=$(make_payload "Monitor" 'gh -R owner/repo pr checks 51')
 ec=$(run_hook "$json" "$stderr")
 assert_exit 2 "$ec" "Monitor: gh -R owner/repo pr checks is blocked"
 
+# --- Block Cases (Codex round 4 指摘: 条件位置 / case 腕 / 読み取り例外の越境) ---
+
+# 7t. Bash + if 条件位置での pr-watch.sh 起動 -> block
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" 'if bash tools/pr-watch.sh 51; then echo ok; fi')
+ec=$(run_hook "$json" "$stderr")
+assert_exit 2 "$ec" "Bash: pr-watch.sh launch as if-condition is blocked"
+
+# 7u. Bash + case 腕 (`)` の直後) での pr-watch.sh 起動 -> block
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" 'case $x in y) bash tools/pr-watch.sh 51;; esac')
+ec=$(run_hook "$json" "$stderr")
+assert_exit 2 "$ec" "Bash: pr-watch.sh launch in case arm is blocked"
+
+# 7v. Bash + 読み取りと起動の複合 (読み取り例外が起動区間へ越境しない) -> block
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" 'cat tools/pr-watch.sh && bash tools/pr-watch.sh 51')
+ec=$(run_hook "$json" "$stderr")
+assert_exit 2 "$ec" "Bash: cat then launch compound is still blocked (reader exemption does not leak)"
+
+# --- Allow Cases (Codex round 4 指摘: 閉じたループ後の単発 / 無関係 --watch / ラッパー越し読み取り) ---
+
+# 7w. Bash + 閉じたループの後の単発 gh pr checks -> allow
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" 'for f in a b; do echo "$f"; done; gh pr checks 51')
+ec=$(run_hook "$json" "$stderr")
+assert_exit 0 "$ec" "Bash: one-shot gh pr checks after a closed loop is allowed"
+
+# 7x. Bash + 単発 gh pr checks の後に別コマンドの --watch -> allow
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" 'gh pr checks 51; other-tool --watch x')
+ec=$(run_hook "$json" "$stderr")
+assert_exit 0 "$ec" "Bash: unrelated other-tool --watch after one-shot gh pr checks is allowed"
+
+# 7y. Bash + env 越しの grep 読み取り -> allow
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" 'env LC_ALL=C grep -n ci_completed tools/pr-watch.sh')
+ec=$(run_hook "$json" "$stderr")
+assert_exit 0 "$ec" "Bash: env-wrapped grep read of pr-watch.sh is allowed"
+
+# 7z. Bash + timeout 越しの cat 読み取り -> allow
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" 'timeout 1s cat tools/pr-watch.sh')
+ec=$(run_hook "$json" "$stderr")
+assert_exit 0 "$ec" "Bash: timeout-wrapped cat read of pr-watch.sh is allowed"
+
 # --- Allow Cases ---
 
 # 7r. Bash + watcher の unit test 実行 (tools/test_pr_watch.py) -> allow
