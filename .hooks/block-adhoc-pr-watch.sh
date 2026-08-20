@@ -120,8 +120,9 @@ COMMAND=$(printf '%s\n' "$COMMAND" | awk '
       inhd = 1
       # heredoc の届き先がシェルインタプリタなら本文はコード: 残す。
       # 前置形 (bash <<EOF) と pipe 消費形 (cat <<EOF | bash) の両方を見る。
+      # pipe 消費形はラッパー越し (cat <<EOF | env bash 等) も認める。
       drop = (match($0, /(^|[;&|(`[:space:]])([^[:space:]]*\/)?(bash|sh|zsh|dash|ksh|eval)([[:space:]][^<]*)?<</) == 0 \
-              && match($0, /\|[[:space:]]*([^[:space:]]*\/)?(bash|sh|zsh|dash|ksh)([[:space:]]|$)/) == 0)
+              && match($0, /\|[[:space:]]*(([^[:space:]]*\/)?(env|nohup|setsid|command|time|timeout|stdbuf|sudo|doas|xargs)[[:space:]]+([^|;&]*[[:space:]])?)?([^[:space:]]*\/)?(bash|sh|zsh|dash|ksh)([[:space:]]|$)/) == 0)
     }
   }
 ')
@@ -138,10 +139,10 @@ COMMAND=$(printf '%s' "$COMMAND" | tr '\n\r' ';;')
 #     文字を潰すと `bash -c 'while ...; do gh pr checks ...; done'` が素通りする。
 #     `-c` は `-lc` のような結合フラグ形も対象。
 COMMAND=$(printf '%s' "$COMMAND" | sed -E \
-  -e "s/(([^[:space:]\/]*\/)*)?(bash|sh|zsh|dash|ksh)(([[:space:]]+-[^[:space:]]+)*)[[:space:]]+-[A-Za-z]*c[[:space:]]+'([^']*)'/\3 -c \6/g" \
-  -e 's/(([^[:space:]\/]*\/)*)?(bash|sh|zsh|dash|ksh)(([[:space:]]+-[^[:space:]]+)*)[[:space:]]+-[A-Za-z]*c[[:space:]]+"([^"]*)"/\3 -c \6/g' \
-  -e "s/(^|[;&|({[:space:]])eval[[:space:]]+'([^']*)'/\1eval \2/g" \
-  -e 's/(^|[;&|({[:space:]])eval[[:space:]]+"([^"]*)"/\1eval \2/g' \
+  -e "s/(([^[:space:]\/]*\/)*)?(bash|sh|zsh|dash|ksh)(([[:space:]]+-[^[:space:]]+)*)[[:space:]]+-[A-Za-z]*c[[:space:]]+'([^']*)'/\3 -c ;\6/g" \
+  -e 's/(([^[:space:]\/]*\/)*)?(bash|sh|zsh|dash|ksh)(([[:space:]]+-[^[:space:]]+)*)[[:space:]]+-[A-Za-z]*c[[:space:]]+"([^"]*)"/\3 -c ;\6/g' \
+  -e "s/(^|[;&|({[:space:]])eval[[:space:]]+'([^']*)'/\1eval ;\2/g" \
+  -e 's/(^|[;&|({[:space:]])eval[[:space:]]+"([^"]*)"/\1eval ;\2/g' \
   -e "s/(^|[;&|({[:space:]])(([^[:space:]\/]*\/)*)?watch((([[:space:]]+-[^[:space:]]+)([[:space:]]+[^-[:space:]][^[:space:]]*)?)*)[[:space:]]+'([^']*)'/\1watch\4 \8/g" \
   -e 's/(^|[;&|({[:space:]])(([^[:space:]\/]*\/)*)?watch((([[:space:]]+-[^[:space:]]+)([[:space:]]+[^-[:space:]][^[:space:]]*)?)*)[[:space:]]+"([^"]*)"/\1watch\4 \8/g')
 # (3) 引用符の中のコマンド区切り文字 (; & | 括弧 ` ) を空白に潰す。引用内は shell
@@ -205,12 +206,17 @@ COMMAND_POLL=$(printf '%s' "$COMMAND" | awk '{
 GH_FLAG_TOKENS='([[:space:]]+-[^[:space:];&|()]+([[:space:]]+[^-[:space:];&|()][^[:space:];&|()]*)?)*'
 GH_PR_CHECKS_PREFIX='gh'"$GH_FLAG_TOKENS"'[[:space:]]+pr'"$GH_FLAG_TOKENS"'[[:space:]]+checks'
 GH_PR_CHECKS_RE="$GH_PR_CHECKS_PREFIX"'([[:space:];&|)]|$)'
+# コマンド位置の gh: 区切り記号 / 予約語境界の直後 (環境変数代入・パス前置は許容)。
+# `echo gh pr checks 51` のような引数テキスト (gh が別コマンドの引数) を polling と
+# 誤認しないための左境界。watch の引数位置 (`watch -n 30 gh pr checks`) は
+# GH_WATCH_CMD_RE 側で別途照合するのでここには含めない。
+GH_PR_CHECKS_CMD='((^|[;&|({])[[:space:]]*|(^|[[:space:]])(if|then|elif|else|do|while|until)[[:space:]]+)([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:]]*/)?'"$GH_PR_CHECKS_PREFIX"
 # --watch は「同一の gh pr checks 呼び出しに付いたフラグ」だけを対象にする:
 # checks の後、コマンド区切り文字を跨がずに --watch トークンへ到達する場合のみ。
 # `gh pr checks 51; other-tool --watch x` のような別コマンドの --watch は拾わない。
-GH_CHECKS_WATCH_RE="$GH_PR_CHECKS_PREFIX"'([[:space:]]+[^[:space:];&|()]+)*[[:space:]]+--watch([[:space:];&|=]|$)'
+GH_CHECKS_WATCH_RE="$GH_PR_CHECKS_CMD"'([[:space:]]+[^[:space:];&|()]+)*[[:space:]]+--watch([[:space:];&|=]|$)'
 if printf '%s' "$COMMAND_POLL" | grep -qE "$GH_PR_CHECKS_RE"; then
-  if [[ "$TOOL_NAME" == "Monitor" ]]; then
+  if [[ "$TOOL_NAME" == "Monitor" ]] && printf '%s' "$COMMAND_POLL" | grep -qE "$GH_PR_CHECKS_CMD"; then
     deny_with_reason "Monitor tool による gh pr checks の CI 監視は禁止です。セッション寿命依存の監視は /clear やセッション終了で黙死します。"
   fi
   # 同一呼び出しの --watch フラグ (張り付き監視)。
@@ -229,12 +235,18 @@ if printf '%s' "$COMMAND_POLL" | grep -qE "$GH_PR_CHECKS_RE"; then
   #     で未閉スコープ内と判定される。
   # ループ開始語の直後は空白のほか `;` (改行由来: `until\n gh ...`) と `(`
   # (算術 for: `for((;;))`) も境界として認める。
-  GH_IN_LOOP=$(printf '%s' "$COMMAND_POLL" | awk -v ghre="$GH_PR_CHECKS_PREFIX" '
+  # awk には CMD 形 (境界込み) と PREFIX 形 (gh 本体) の両方を渡す。CMD 形の一致は
+  # 予約語境界 (until 等) を一致範囲に含むため、そのまま prefix を切るとループ開始語
+  # が prefix から消えて計数を誤る。CMD 一致範囲の中で PREFIX の開始位置を取り直し、
+  # その手前までを prefix とする。
+  GH_IN_LOOP=$(printf '%s' "$COMMAND_POLL" | awk -v ghre="$GH_PR_CHECKS_CMD" -v ghpre="$GH_PR_CHECKS_PREFIX" '
     {
       s = $0
       off = 0
       while (match(substr(s, off + 1), ghre) > 0) {
         pos = off + RSTART
+        rest = substr(s, pos)
+        if (match(rest, ghpre) > 0) pos = pos + RSTART - 1
         prefix = substr(s, 1, pos - 1)
         t = prefix; opens  = gsub(/(^|[;&|({[:space:]])(while|until|for|select)([[:space:](;]|$)/, " ", t)
         t = prefix; closes = gsub(/(^|[;&|([:space:]])done([;&|)[:space:]]|$)/, " ", t)
@@ -290,7 +302,9 @@ PR_WATCH_WRAPPER='(([^[:space:]]*/)?(nohup|setsid|exec|env|command|eval|time|tim
 # 前置は `/` `\` (Windows パス) `.` (python module 区切り) 引用符で終わる場合のみ。
 # 終端は空白 / 行末 / 引用符 / リダイレクト (`>` `<`) を認める
 # (`bash tools/pr-watch.sh>/tmp/log` のような密着リダイレクトも起動)。
-PR_WATCH_FILE='(["'"'"']?|[^[:space:]]*[/.\'"'"'"])(pr-watch\.(sh|ps1)|pr_watch(\.py)?)([[:space:]<>]|$|["'"'"'])'
+# 前置に `=` を含めない: `SCRIPT=tools/pr-watch.sh` のような変数代入の値は
+# 実行されないデータであり、起動として誤検出しない。
+PR_WATCH_FILE='(["'"'"']?|[^[:space:]=]*[/.\'"'"'"])(pr-watch\.(sh|ps1)|pr_watch(\.py)?)([[:space:]<>]|$|["'"'"'])'
 # 区間内の起動形: 区間先頭から、予約語 (if/then/elif/else/do/while/until) →
 # 環境変数代入 → ラッパー / インタプリタ (+ その引数トークン任意) の順に前置を
 # 許し、pr-watch ファイルへ到達するもの。先頭トークンがラッパー一覧に無い語

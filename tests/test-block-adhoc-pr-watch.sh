@@ -486,6 +486,30 @@ json=$(make_payload "Bash" "printf '%s\\n' 'docs: while true; do gh pr checks 51
 ec=$(run_hook "$json" "$stderr")
 assert_exit 0 "$ec" "Bash: single-quoted polling-loop text passed to printf is allowed (data)"
 
+# --- Block Cases (Codex round 10 指摘: ラッパー越し pipe heredoc) ---
+
+# 7ax. Bash + heredoc を env bash に pipe (本文はコード) -> block
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" "cat <<'EOF' | env bash
+while true; do gh pr checks 51; sleep 30; done
+EOF")
+ec=$(run_hook "$json" "$stderr")
+assert_exit 2 "$ec" "Bash: heredoc piped to env bash (executable body) is blocked"
+
+# --- Allow Cases (Codex round 10 指摘: 代入値 / 引数テキストの gh) ---
+
+# 7ay. Bash + 変数代入の値が pr-watch.sh (実行しない) -> allow
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" 'SCRIPT=tools/pr-watch.sh echo assigned')
+ec=$(run_hook "$json" "$stderr")
+assert_exit 0 "$ec" "Bash: assignment value tools/pr-watch.sh without execution is allowed"
+
+# 7az. Bash + ループ内で echo の引数に gh pr checks のテキスト -> allow
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json=$(make_payload "Bash" 'while read -r x; do echo gh pr checks 51; done')
+ec=$(run_hook "$json" "$stderr")
+assert_exit 0 "$ec" "Bash: echo of gh pr checks text inside loop is allowed (argument position)"
+
 # --- Fail-closed Cases ---
 
 # 15. 空 stdin -> block
