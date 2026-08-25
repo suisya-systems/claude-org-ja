@@ -203,6 +203,14 @@ _REMEDY = {
         "既に submit されていれば再送は承認の二重送信になり、"
         "入力欄に draft が残っていればそれを消してから送り直す。"
     ),
+    "submit_unverified": (
+        "Enter は送信できたが、その後の入力欄確認 (inspect) が失敗したため "
+        "submit されたかを確認できない。**再送する前に必ず worker ペインを "
+        "inspect すること** — 既に submit されていれば再送は二重送信になり、"
+        "入力欄に draft が残っていればそれを消してから送り直す。"
+        "なお記帳 (self_edit_approval_sent) はしていないので、"
+        "submit 済みだった場合は audit に穴として出る。"
+    ),
     "backend_failed": (
         "打鍵バックエンドの呼び出しが失敗した。stderr を見て、"
         "renga なら RENGA_SOCKET とペイン名、broker なら tmux socket "
@@ -747,9 +755,20 @@ def cmd_send(args) -> int:
         # composer, or one holding something else, both mean the draft
         # left the input box; the text still sitting there is precisely
         # the silent failure this tool exists to stop.
-        submitted, after = _poll_composer(
-            backend, args.lines, lambda c: c is None or wanted not in _norm(c),
-            args.verify_timeout, args.poll_interval)
+        #
+        # A backend failure *here* is not "not delivered": the Enter write
+        # already returned, so the message may well be submitted and only
+        # the confirmation is missing. Reporting that as a plain failure
+        # would invite the retry that duplicates the approval.
+        try:
+            submitted, after = _poll_composer(
+                backend, args.lines,
+                lambda c: c is None or wanted not in _norm(c),
+                args.verify_timeout, args.poll_interval)
+        except BackendFailure as exc:
+            return _fail(task_id, "submit_unverified",
+                         {**common, "error": str(exc),
+                          "approval_delivered": "unknown"})
         if not submitted:
             return _fail(task_id, "not_submitted",
                          {**common, "observed_composer": after})
@@ -790,17 +809,35 @@ def cmd_send(args) -> int:
 
 
 def _precheck_db(db_override: "str | None") -> None:
-    """Resolve and schema-check state.db before any keystroke is sent."""
+    """Resolve and schema-check state.db before any keystroke is sent.
+
+    Uses ``verify_state_db_schema`` rather than ``verify_or_exit``: the
+    latter reports by writing to stderr and calling ``sys.exit``, which
+    would leave ``send`` emitting no JSON object at all and break the
+    machine-readable contract this tool's callers branch on. Every
+    failure here is turned into an ``ApprovalError`` (status=error /
+    exit 2) instead — and it happens before any keystroke, so an
+    unusable DB never produces a delivered-but-unrecorded approval.
+    """
     from tools.state_db import connect
-    from tools.state_db.discover import resolve_state_db_path, verify_or_exit
+    from tools.state_db.discover import (
+        StateDbSchemaError,
+        resolve_state_db_path,
+        verify_state_db_schema,
+    )
 
     try:
         db_path = Path(resolve_state_db_path(db_override))
     except Exception as exc:  # noqa: BLE001
         raise ApprovalError(f"could not resolve state.db path: {exc}") from exc
-    conn = connect(db_path)
     try:
-        verify_or_exit(db_path, conn=conn, prog="tools/self_edit_approval.py")
+        conn = connect(db_path)
+    except Exception as exc:  # noqa: BLE001 — missing file, locked, corrupt
+        raise ApprovalError(f"could not open state.db at {db_path}: {exc}") from exc
+    try:
+        verify_state_db_schema(db_path, conn=conn)
+    except StateDbSchemaError as exc:
+        raise ApprovalError(f"state.db schema check failed: {exc}") from exc
     finally:
         conn.close()
 

@@ -307,6 +307,44 @@ class SendTests(unittest.TestCase):
         self.assertIn("inspect", out["remedy"][0])
         self.assertEqual(self._events(), [])
 
+    def test_verification_failure_after_enter_reports_unknown(self):
+        # Enter succeeded; only the confirming inspect broke. The message
+        # may already be submitted, so this must not read as "not
+        # delivered" - that is the report that invites a duplicate.
+        landed = _screen(self._approval())
+        empty = [_fence(), {"row": 2, "text": "❯"}, _fence()]
+        b = FakeBackend([empty, landed, empty])
+        real_inspect = b.inspect
+        state = {"n": 0}
+
+        def flaky(lines):
+            state["n"] += 1
+            if state["n"] > 2:          # after the Enter write
+                raise sea.BackendFailure("inspect died")
+            return real_inspect(lines)
+
+        b.inspect = flaky
+        self._install(b)
+        code, out = _run(self._argv())
+        self.assertEqual(code, sea.EXIT_FIRE)
+        self.assertEqual(out["failures"], ["submit_unverified"])
+        self.assertEqual(out["approval_delivered"], "unknown")
+        self.assertIn("inspect", out["remedy"][0])
+        self.assertEqual(self._events(), [])
+
+    def test_unusable_db_is_refused_in_json_before_sending(self):
+        # The contract is "one JSON object on stdout, branch on exit
+        # code". A bad DB must not exit with bare stderr, and must be
+        # caught before any keystroke.
+        backend = FakeBackend([[]])
+        self._install(backend)
+        bad = Path(self.tmp.name) / "nope" / "state.db"
+        code, out = _run(["--db-path", str(bad), "send", "--task", TASK,
+                          "--file", "f"])
+        self.assertEqual(code, sea.EXIT_ERROR)
+        self.assertEqual(out["status"], "error")
+        self.assertEqual(backend.calls, [])
+
     def test_no_files_is_refused(self):
         code, out = _run(["--db-path", str(self.db), "send", "--task", TASK])
         self.assertEqual(code, sea.EXIT_ERROR)
