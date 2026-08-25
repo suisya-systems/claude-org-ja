@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import sqlite3
 import sys
 import tempfile
@@ -195,7 +196,7 @@ class SendTests(unittest.TestCase):
         self.addCleanup(lambda: setattr(sea, "make_backend", self._real))
 
     def _install(self, backend):
-        sea.make_backend = lambda args, transport: backend
+        sea.make_backend = lambda args, transport, **kw: backend
 
     def _argv(self, *extra):
         return ["--db-path", str(self.db), "send", "--task", TASK,
@@ -288,6 +289,28 @@ class SendTests(unittest.TestCase):
         self.assertEqual(out["status"], "dry_run")
         self.assertEqual(backend.calls, [])
         self.assertEqual(self._events(), [])
+
+    def test_recording_failure_still_reports_delivery(self):
+        # The approval WAS submitted; only the journal write failed. That
+        # must not surface as a bare crash: `audit` would report a gap
+        # that is not real, and an operator who saw nothing might re-send.
+        # SystemExit specifically, because verify_or_exit reports a bad
+        # schema by calling sys.exit.
+        empty = [_fence(), {"row": 2, "text": "❯"}, _fence()]
+        self._install(FakeBackend([empty, _screen(self._approval()), empty]))
+        real = sea._append_event
+
+        def boom(payload, db):
+            raise SystemExit(2)
+
+        sea._append_event = boom
+        try:
+            code, out = _run(self._argv())
+        finally:
+            sea._append_event = real
+        self.assertEqual(code, sea.EXIT_ERROR)
+        self.assertTrue(out["approval_delivered"])
+        self.assertIn("recorded", out)
 
     def test_default_target_is_worker_task(self):
         empty = [_fence(), {"row": 2, "text": "❯"}, _fence()]
@@ -440,6 +463,81 @@ class AuditTests(unittest.TestCase):
         self.assertFalse(sea._is_self_edit_dir(OTHER_DIR, ROOT))
         # A sibling whose path merely shares the prefix is not inside it.
         self.assertFalse(sea._is_self_edit_dir(ROOT + "-mirror/x", ROOT))
+
+
+# ---------------------------------------------------------------------------
+# Codex round 1 regressions
+# ---------------------------------------------------------------------------
+
+class TransportResolutionTests(unittest.TestCase):
+    """An unknown transport must not quietly select a multiplexer.
+
+    Unlike ``peer_notify`` (where a dropped notification is decoration on
+    top of a canonical row), the value here picks which terminal receives
+    the keystrokes, so "not exactly broker" must not mean renga.
+    """
+
+    def test_unknown_explicit_transport_is_a_configuration_error(self):
+        with self.assertRaises(sea.ApprovalError):
+            sea._resolve_transport("rengaa")
+
+    def test_unknown_env_transport_is_a_configuration_error(self):
+        real = os.environ.get("ORG_TRANSPORT")
+        os.environ["ORG_TRANSPORT"] = "nonsense"
+        try:
+            with self.assertRaises(sea.ApprovalError):
+                sea._resolve_transport(None)
+        finally:
+            if real is None:
+                os.environ.pop("ORG_TRANSPORT", None)
+            else:
+                os.environ["ORG_TRANSPORT"] = real
+
+    def test_known_values_resolve(self):
+        self.assertEqual(sea._resolve_transport("renga"), "renga")
+        self.assertEqual(sea._resolve_transport("broker"), "broker")
+
+
+class BrokerTargetTests(unittest.TestCase):
+    """tmux cannot resolve the logical worker name, so refuse the default.
+
+    Broker panes are detached tmux sessions named
+    ``claude-org-broker-{pid}-{seq}``; the logical name lives only in
+    broker's own registry, which a CLI cannot reach. Passing it to
+    ``tmux -t`` can only fail, so the refusal must land before anything
+    is typed.
+    """
+
+    def _args(self, *extra):
+        return sea.build_parser().parse_args(
+            ["send", "--task", "t", "--file", "f", *extra])
+
+    def test_defaulted_target_is_refused_on_tmux(self):
+        args = self._args()
+        args.target = "worker-t"
+        with self.assertRaises(sea.ApprovalError) as ctx:
+            sea.make_backend(args, "broker", target_defaulted=True)
+        self.assertIn("list_panes", str(ctx.exception))
+
+    def test_explicit_tmux_target_is_accepted(self):
+        args = self._args("--target", "%3")
+        b = sea.make_backend(args, "broker", target_defaulted=False)
+        self.assertIsInstance(b, sea.TmuxBackend)
+        self.assertEqual(b.target, "%3")
+
+    def test_renga_default_target_is_fine(self):
+        args = self._args()
+        args.target = "worker-t"
+        self.assertIsInstance(
+            sea.make_backend(args, "renga", target_defaulted=True),
+            sea.RengaBackend)
+
+    def test_send_refuses_before_touching_the_pane(self):
+        code, out = _run(["send", "--task", "t", "--file", "f",
+                          "--backend", "broker"])
+        self.assertEqual(code, sea.EXIT_ERROR)
+        self.assertEqual(out["status"], "error")
+        self.assertIn("tmux", out["error"])
 
 
 if __name__ == "__main__":

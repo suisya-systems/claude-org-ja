@@ -83,7 +83,12 @@ check):
   capture-pane``, since broker panes are detached tmux sessions
   (``.claude/skills/org-attach/SKILL.md``) and
   ``claude-org-runtime broker`` exposes only ``serve`` / ``send`` — it
-  has no keystroke subcommand.
+  has no keystroke subcommand. On this backend the pane must be named
+  explicitly (``--target %N``): the logical ``worker-{task_id}`` lives
+  only in broker's own registry, reachable through
+  ``mcp__org-broker__list_panes`` (an MCP tool, so not callable from a
+  CLI), and tmux has nothing to match it against. The default is
+  refused up front rather than failing after the fact.
 
 **Verification status**: the renga path was exercised against a live
 pane while this was written (text write lands in the composer; the
@@ -448,30 +453,71 @@ class BackendFailure(Exception):
 
 
 def _resolve_transport(explicit: "str | None") -> str:
-    """Shared resolver first; raw env only if the runtime import fails.
+    """Shared resolver first; a literal only if the runtime import fails.
 
     ``tools.transport`` re-exports runtime's ``DEFAULT_TRANSPORT``, which
     Epic #586 flipped renga -> broker, so hard-coding a default here
     would aim the keystrokes at the wrong multiplexer in the default
     configuration — the same defect ``tools/peer_notify.py`` carried
     until Refs #941.
+
+    An **unknown** value is a configuration error, not something to fall
+    back from. ``peer_notify`` may degrade quietly because a dropped
+    notification is decoration on top of a canonical row; here the value
+    picks which multiplexer receives the keystrokes, so quietly treating
+    "not exactly ``broker``" as renga would type an approval into the
+    wrong terminal and then record the invalid value as evidence.
     """
-    if explicit:
-        return explicit
     try:
         from tools.transport import resolve as _resolve
+    except Exception:  # noqa: BLE001 — runtime not installed / not importable
+        value = explicit or os.environ.get("ORG_TRANSPORT") or _RENGA
+        if value not in (_RENGA, _BROKER):
+            raise ApprovalError(
+                f"unknown transport {value!r} (expected {_RENGA} or {_BROKER})"
+            )
+        return value
+    try:
+        return str(_resolve(explicit))
+    except ValueError as exc:
+        raise ApprovalError(f"unknown transport: {exc}") from exc
 
-        return str(_resolve())
-    except Exception:  # noqa: BLE001 — runtime not installed / unknown value
-        return os.environ.get("ORG_TRANSPORT") or _RENGA
 
+def make_backend(args, transport: str, target_defaulted: bool = False):
+    """Build the keystroke backend, refusing an unaddressable tmux target.
 
-def make_backend(args, transport: str):
+    On renga a pane *name* is a first-class selector, so the
+    ``worker-{task_id}`` default addresses the worker directly.
+
+    On broker it does not. Broker panes are detached tmux sessions named
+    ``claude-org-broker-{pid}-{seq}``, and the logical worker name exists
+    only in broker's own pane registry — reachable through
+    ``mcp__org-broker__list_panes``, which is an MCP tool and therefore
+    not callable from a CLI. tmux itself carries nothing to match the
+    logical name against, so handing ``worker-{task_id}`` to ``tmux -t``
+    can only fail. Refusing here turns that into an actionable
+    configuration error *before* anything is typed, instead of a
+    ``backend_failed`` after the fact.
+
+    Deliberately **not** auto-resolved from a recorded ``pane_id``: this
+    backend could not be exercised against a live broker pane, and a
+    wrong guess here types an approval into someone else's terminal.
+    Refusing is the safe direction; the secretary already has
+    ``list_panes`` open at this point in the flow.
+    """
     if args.backend and args.backend != "auto":
         chosen = args.backend
     else:
         chosen = _BROKER if transport == _BROKER else _RENGA
     if chosen == _BROKER:
+        if target_defaulted:
+            raise ApprovalError(
+                f"broker (tmux) backend needs an explicit tmux target: "
+                f"{args.target!r} is the logical worker name, which tmux "
+                f"cannot resolve. Read the worker's pane id (%N) from "
+                f"mcp__org-broker__list_panes and pass it as "
+                f"--target %N (or force the renga backend with --backend renga)."
+            )
         return TmuxBackend(args.target, args.call_timeout, socket=args.tmux_socket)
     return RengaBackend(args.target, args.pane_id, args.call_timeout)
 
@@ -530,11 +576,12 @@ def cmd_send(args) -> int:
         if "\n" in f or "\r" in f:
             raise ApprovalError(f"--file must not contain a newline: {f!r}")
 
-    if not args.target:
+    target_defaulted = not args.target
+    if target_defaulted:
         args.target = f"worker-{task_id}"
 
     transport = _resolve_transport(args.transport)
-    backend = make_backend(args, transport)
+    backend = make_backend(args, transport, target_defaulted=target_defaulted)
     text = build_approval_text(task_id, files)
     wanted = _norm(text)
 
@@ -555,6 +602,12 @@ def cmd_send(args) -> int:
              "note": "何も送信していない。--dry-run を外すと送信する。"},
             ensure_ascii=False, indent=2))
         return EXIT_OK
+
+    # Fail on an unusable state.db *before* typing anything. Discovering
+    # it only at the append leaves the approval delivered but unrecorded,
+    # which is the one outcome with no clean recovery: `audit` reports a
+    # gap that is not real, and a re-run would submit a second approval.
+    _precheck_db(args.db_path)
 
     try:
         # Stage 0 — refuse to append onto an existing draft. Writing the
@@ -604,9 +657,11 @@ def cmd_send(args) -> int:
     }
     try:
         _append_event(payload, args.db_path)
-    except SystemExit:
-        raise
-    except Exception as exc:  # noqa: BLE001
+    except BaseException as exc:  # noqa: BLE001
+        # `SystemExit` included on purpose: `verify_or_exit` reports a bad
+        # schema by calling `sys.exit`, and letting that propagate here
+        # would drop the "delivered but unrecorded" report on the floor —
+        # the operator would see a bare exit and might re-send.
         # The approval *was* delivered; only the record failed. Say both,
         # and do not exit 0 — a missing row is what `audit` reports.
         print(json.dumps(
@@ -622,6 +677,22 @@ def cmd_send(args) -> int:
          "recorded": payload, "limitations": _LIMITATIONS},
         ensure_ascii=False, indent=2))
     return EXIT_OK
+
+
+def _precheck_db(db_override: "str | None") -> None:
+    """Resolve and schema-check state.db before any keystroke is sent."""
+    from tools.state_db import connect
+    from tools.state_db.discover import resolve_state_db_path, verify_or_exit
+
+    try:
+        db_path = Path(resolve_state_db_path(db_override))
+    except Exception as exc:  # noqa: BLE001
+        raise ApprovalError(f"could not resolve state.db path: {exc}") from exc
+    conn = connect(db_path)
+    try:
+        verify_or_exit(db_path, conn=conn, prog="tools/self_edit_approval.py")
+    finally:
+        conn.close()
 
 
 def _append_event(payload: dict, db_override: "str | None") -> None:
