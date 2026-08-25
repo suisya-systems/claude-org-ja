@@ -108,6 +108,20 @@ class TestComposeMessage(unittest.TestCase):
             relay_scan.compose_message(
                 "pr_merged_head_unconfirmed",
                 {"pr": 5, "head": "h", "baseline_head": "base"}))
+        # The watcher writes the literal "unknown" when it cannot resolve a
+        # merged head (tools/pr_watch.py `head_tag = merged_head or "unknown"`), so a
+        # truthiness test alone would let that through with a plain tail.
+        self.assertEqual(
+            relay_scan.compose_message("pr_merged_no_run", {"pr": 7, "head": "unknown"}),
+            "PR_MERGED_NO_RUN: PR #7 (head=<missing>) [head-unverifiable] [relay]")
+        self.assertIn(
+            "head-unverifiable",
+            relay_scan.compose_message("pr_merged", {"pr": 7, "head": "  "}))
+        self.assertIn(
+            "last CI-confirmed head=<missing>) [head-unverifiable] [relay]",
+            relay_scan.compose_message(
+                "pr_merged_head_unconfirmed",
+                {"pr": 7, "head": "h", "baseline_head": "unknown"}))
 
 
 class TestRelayScanCli(unittest.TestCase):

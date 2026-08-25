@@ -181,6 +181,30 @@ HEAD_MISSING = "<missing>"
 RELAY_TAIL = "[relay]"
 UNVERIFIABLE_RELAY_TAIL = "[head-unverifiable] [relay]"
 
+# Values that are present in the payload but carry no comparable SHA. The
+# watcher itself writes the literal "unknown" when it cannot resolve a
+# merged head (``tools/pr_watch.py``: ``head_tag = merged_head or "unknown"``
+# on the pr_merged_no_run / pr_merged_head_unconfirmed path, and the same
+# placeholder on pr_conflict_detected), so a truthiness test alone would
+# let those through with a plain tail and land them back in the
+# silent-mismatch branch this marker exists to avoid.
+HEAD_PLACEHOLDERS = frozenset({"unknown", "none", "null", "-"})
+
+
+def _gate_head(value: object) -> tuple:
+    """Return ``(rendered, verifiable)`` for a head-ish payload field.
+
+    ``verifiable`` is False when the field is absent, empty, or one of the
+    known placeholders -- i.e. whenever the secretary's freshness gate has
+    nothing it can legitimately compare against.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return HEAD_MISSING, False
+    text = value.strip()
+    if text.lower() in HEAD_PLACEHOLDERS:
+        return HEAD_MISSING, False
+    return text, True
+
 
 def compose_message(kind: str, payload: dict) -> str:
     """Build the relay text for a terminal event.
@@ -191,8 +215,9 @@ def compose_message(kind: str, payload: dict) -> str:
     a direct push in the transcript. Unknown kinds degrade to a generic
     line rather than raising, so a new terminal kind is never dropped.
 
-    When the event carries no head to match the watcher against, the head
-    field renders as ``<missing>`` and the line gains a leading
+    When the event carries no head to match the watcher against -- absent,
+    empty, or a placeholder such as the watcher's own literal ``"unknown"``
+    -- the head field renders as ``<missing>`` and the line gains a leading
     ``[head-unverifiable]`` marker ahead of ``[relay]`` (Issue #954).
     """
     pr = payload.get("pr")
@@ -208,9 +233,8 @@ def compose_message(kind: str, payload: dict) -> str:
     # cannot be compared at all" is distinguishable from "the heads
     # differ" without changing the CI_COMPLETED / PR_MERGED message shape
     # the secretary skill parses.
-    raw_head = payload.get("head")
-    head = raw_head or HEAD_MISSING
-    tail = RELAY_TAIL if raw_head else UNVERIFIABLE_RELAY_TAIL
+    head, head_ok = _gate_head(payload.get("head"))
+    tail = RELAY_TAIL if head_ok else UNVERIFIABLE_RELAY_TAIL
     if kind == "ci_completed":
         status = payload.get("status", "unknown")
         return f"CI_COMPLETED: {pr_tag} (status={status}, head={head}) {tail}"
@@ -224,9 +248,8 @@ def compose_message(kind: str, payload: dict) -> str:
         # For this kind the gate compares the *baseline* (last CI-confirmed)
         # head, not `head` -- so that is the field whose absence makes the
         # event unmatchable.
-        raw_baseline = payload.get("baseline_head")
-        baseline = raw_baseline or HEAD_MISSING
-        baseline_tail = RELAY_TAIL if raw_baseline else UNVERIFIABLE_RELAY_TAIL
+        baseline, baseline_ok = _gate_head(payload.get("baseline_head"))
+        baseline_tail = RELAY_TAIL if baseline_ok else UNVERIFIABLE_RELAY_TAIL
         return (
             f"PR_MERGED_HEAD_UNCONFIRMED: {pr_tag} (head={head}, "
             f"last CI-confirmed head={baseline}) {baseline_tail}"
