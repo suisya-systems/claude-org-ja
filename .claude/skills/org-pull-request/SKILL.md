@@ -151,6 +151,19 @@ close は低遅延経路として温存し、二重掃除にならないよう `
       ため、代わりに `last CI-confirmed head`（baseline）フィールドを監視 head として突き合わせる
       （`head` で判定すると必ず不一致になり、誤って superseded 扱いで cleanup を skip し、人間確認 gate
       中ずっと herdr でゾンビが残る — この取り違えを避ける）。
+    - **本文に `[head-unverifiable]` が付いている場合は superseded 扱いにしない（Issue #954）**:
+      relay が監視 head を取り出せなかったイベントは `head=<missing>` + 末尾 `[head-unverifiable]` で
+      届く（[`tools/relay_scan.py`](../../../tools/relay_scan.py) の `UNVERIFIABLE_RELAY_TAIL`）。これは
+      「head が違う」ではなく「**照合できない**」なので、不一致と同じ枝（黙って close skip）に流すと
+      watcher が残留する。**照合不能は不一致とは別枝**として次の順で処理する:
+      1. `events` テーブルから当該 PR の canonical 行を引き直して監視 head を復元し（§「CI 完了検知の
+         正路」の SQL。`pr_merged` なら `tools/run_complete_on_merge.py` が起票した `head` 付きの行が
+         正本）、その head で改めて gate を通す。復元できたらそのまま判定を続ける。
+      2. **復元できない場合は黙って skip せず人間に報告する**（「PR #<n> の終端イベントが head を
+         持たず watcher の照合ができない。watcher ペイン `pr-watch-<PR>` が残っている可能性がある」）。
+         窓口判断で close するときは identity（spawn 時に控えた pane_id）で束縛する。
+      なお `[head-unverifiable]` が付いた `PR_MERGED` は、窓口が `journal_append.sh pr_merged` を手打ち
+      して events が 2 行になった痕跡でもある（2b-ii の手打ち禁止を参照）。
     監視 head が一致しない古い / 重複イベントだけ superseded とみなし close しない（＝再起動済みの新
     watcher を殺さない）。一致すれば下記で close。追跡が既に消えている（該当 instance を掃除済み）なら no-op。
   - **識別子束縛 close**: 一致したら、**まず照合に使う `mcp__org-broker__list_panes` の列挙を自タブのものと
@@ -319,8 +332,9 @@ pr-watch から `PR_MERGED_HEAD_UNCONFIRMED: PR #<n> (head=<merged_short>, last 
     `journal_append.sh pr_merged` を打つ必要はない（打つと events が 1 マージにつき 2 行になり、relay が
     **二重配送**され、2 本目は helper の payload を持たない＝`head` が無いため
     `PR_MERGED: PR #<n> (head=<missing>) [head-unverifiable] [relay]` として届く。前掲 freshness gate は
-    監視 head を照合できず watcher ペインの close を**黙って skip** するので、herdr / wezterm backend で
-    watcher がゾンビ残留する — Issue #751 の再発経路。**打たないこと**）
+    この 2 本目の監視 head を照合できず、`[head-unverifiable]` 枝での events 引き直し / 人間報告に
+    毎回落ちる（マーカー導入前は不一致と同じ枝に落ちて **黙って close skip** され、herdr / wezterm
+    backend で watcher がゾンビ残留していた — Issue #751 の再発経路）。**打たないこと**）
 - ディスパッチャーにペインクローズを依頼（**worker Claude ペイン**）:
   `CLOSE_PANE: {pane_id} のペインを閉じてください。`
 - **CI 監視の watcher ペイン (`pr-watch-<PR>`) を窓口が掃除する（Issue #751）**: worker ペインとは
