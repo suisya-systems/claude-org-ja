@@ -276,6 +276,37 @@ class SendTests(unittest.TestCase):
         self.assertEqual(out["failures"], ["backend_failed"])
         self.assertEqual(self._events(), [])
 
+    def test_backend_timeout_is_a_gate_failure_not_exit_2(self):
+        empty = [_fence(), {"row": 2, "text": "❯"}, _fence()]
+        b = FakeBackend([empty])
+
+        def boom(text):
+            raise sea.BackendFailure("timed out", timed_out=True)
+
+        b.send_text = boom
+        self._install(b)
+        code, out = _run(self._argv())
+        self.assertEqual(code, sea.EXIT_FIRE)
+        self.assertEqual(out["failures"], ["backend_failed"])
+
+    def test_enter_timeout_reports_unknown_delivery(self):
+        # A timeout on the Enter write may or may not have reached the
+        # PTY. Claiming either way is wrong; a blind retry duplicates.
+        empty = [_fence(), {"row": 2, "text": "❯"}, _fence()]
+        b = FakeBackend([empty, _screen(self._approval()), empty])
+
+        def boom():
+            raise sea.BackendFailure("timed out", timed_out=True)
+
+        b.send_enter = boom
+        self._install(b)
+        code, out = _run(self._argv())
+        self.assertEqual(code, sea.EXIT_FIRE)
+        self.assertEqual(out["failures"], ["enter_ambiguous"])
+        self.assertEqual(out["approval_delivered"], "unknown")
+        self.assertIn("inspect", out["remedy"][0])
+        self.assertEqual(self._events(), [])
+
     def test_no_files_is_refused(self):
         code, out = _run(["--db-path", str(self.db), "send", "--task", TASK])
         self.assertEqual(code, sea.EXIT_ERROR)
@@ -379,12 +410,19 @@ class BackendTests(unittest.TestCase):
         args = sea.build_parser().parse_args(
             ["send", "--task", "t", "--file", "f"])
         self.assertIsInstance(sea.make_backend(args, "renga"), sea.RengaBackend)
-        self.assertIsInstance(sea.make_backend(args, "broker"), sea.TmuxBackend)
+        # The broker side is adapter-gated, not an unconditional tmux;
+        # see BrokerAdapterTests.
 
     def test_explicit_backend_overrides_transport(self):
         args = sea.build_parser().parse_args(
             ["send", "--task", "t", "--file", "f", "--backend", "renga"])
         self.assertIsInstance(sea.make_backend(args, "broker"), sea.RengaBackend)
+
+    def test_broker_alias_still_selects_tmux(self):
+        args = sea.build_parser().parse_args(
+            ["send", "--task", "t", "--file", "f", "--target", "%3",
+             "--backend", "broker"])
+        self.assertIsInstance(sea.make_backend(args, "renga"), sea.TmuxBackend)
 
 
 # ---------------------------------------------------------------------------
@@ -513,14 +551,14 @@ class BrokerTargetTests(unittest.TestCase):
             ["send", "--task", "t", "--file", "f", *extra])
 
     def test_defaulted_target_is_refused_on_tmux(self):
-        args = self._args()
+        args = self._args("--backend", "tmux")
         args.target = "worker-t"
         with self.assertRaises(sea.ApprovalError) as ctx:
             sea.make_backend(args, "broker", target_defaulted=True)
         self.assertIn("list_panes", str(ctx.exception))
 
     def test_explicit_tmux_target_is_accepted(self):
-        args = self._args("--target", "%3")
+        args = self._args("--target", "%3", "--backend", "tmux")
         b = sea.make_backend(args, "broker", target_defaulted=False)
         self.assertIsInstance(b, sea.TmuxBackend)
         self.assertEqual(b.target, "%3")
@@ -534,10 +572,83 @@ class BrokerTargetTests(unittest.TestCase):
 
     def test_send_refuses_before_touching_the_pane(self):
         code, out = _run(["send", "--task", "t", "--file", "f",
-                          "--backend", "broker"])
+                          "--backend", "tmux"])
         self.assertEqual(code, sea.EXIT_ERROR)
         self.assertEqual(out["status"], "error")
         self.assertIn("tmux", out["error"])
+
+    def test_socket_defaults_from_org_broker_socket(self):
+        # A deployment that moved the socket (docker/entrypoint.sh,
+        # tools/org-dispatcher-view.sh) must not need an extra flag.
+        args = self._args("--target", "%3", "--backend", "tmux")
+        real = os.environ.get("ORG_BROKER_SOCKET")
+        os.environ["ORG_BROKER_SOCKET"] = "moved-socket"
+        try:
+            b = sea.make_backend(args, "broker")
+        finally:
+            if real is None:
+                os.environ.pop("ORG_BROKER_SOCKET", None)
+            else:
+                os.environ["ORG_BROKER_SOCKET"] = real
+        self.assertEqual(b.socket, "moved-socket")
+
+    def test_explicit_flag_beats_env_socket(self):
+        args = self._args("--target", "%3", "--backend", "tmux",
+                          "--tmux-socket", "explicit")
+        self.assertEqual(sea.make_backend(args, "broker").socket, "explicit")
+
+
+class BrokerAdapterTests(unittest.TestCase):
+    """broker is a transport, not a terminal.
+
+    The daemon drives tmux / wezterm / herdr; only tmux has a CLI
+    keystroke path. Auto-selection must read the daemon's *resolved*
+    adapter from daemon.json and refuse anything else rather than
+    driving tmux against a deployment that has no tmux panes.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def _sidecar(self, backend):
+        Path(self.tmp.name, "daemon.json").write_text(
+            json.dumps({"pid": 1, "backend": backend}), encoding="utf-8")
+
+    def _args(self):
+        a = sea.build_parser().parse_args(
+            ["send", "--task", "t", "--file", "f", "--target", "%3",
+             "--broker-state-dir", self.tmp.name])
+        return a
+
+    def test_tmux_adapter_is_accepted(self):
+        self._sidecar("tmux")
+        self.assertIsInstance(
+            sea.make_backend(self._args(), "broker"), sea.TmuxBackend)
+
+    def test_wezterm_adapter_is_refused(self):
+        self._sidecar("wezterm")
+        with self.assertRaises(sea.ApprovalError) as ctx:
+            sea.make_backend(self._args(), "broker")
+        self.assertIn("wezterm", str(ctx.exception))
+
+    def test_herdr_adapter_is_refused(self):
+        self._sidecar("herdr")
+        with self.assertRaises(sea.ApprovalError) as ctx:
+            sea.make_backend(self._args(), "broker")
+        self.assertIn("herdr", str(ctx.exception))
+
+    def test_undeterminable_adapter_is_refused_not_assumed(self):
+        # No daemon.json: "could not determine" must not become "tmux".
+        with self.assertRaises(sea.ApprovalError) as ctx:
+            sea.make_backend(self._args(), "broker")
+        self.assertIn("daemon.json", str(ctx.exception))
+
+    def test_explicit_backend_skips_detection(self):
+        args = sea.build_parser().parse_args(
+            ["send", "--task", "t", "--file", "f", "--target", "%3",
+             "--backend", "tmux", "--broker-state-dir", self.tmp.name])
+        self.assertIsInstance(sea.make_backend(args, "broker"), sea.TmuxBackend)
 
 
 if __name__ == "__main__":

@@ -197,6 +197,12 @@ _REMEDY = {
         "入力欄に残った draft を消してから再実行する。"
         "**承認は届いていない。届いたものとして扱わないこと。**"
     ),
+    "enter_ambiguous": (
+        "Enter 送信がタイムアウトした。打鍵が PTY に届いたかどうかが確定しない。"
+        "**再送する前に必ず worker ペインを inspect すること** — "
+        "既に submit されていれば再送は承認の二重送信になり、"
+        "入力欄に draft が残っていればそれを消してから送り直す。"
+    ),
     "backend_failed": (
         "打鍵バックエンドの呼び出しが失敗した。stderr を見て、"
         "renga なら RENGA_SOCKET とペイン名、broker なら tmux socket "
@@ -314,12 +320,24 @@ def extract_composer(lines: "list[dict]") -> "str | None":
 # ---------------------------------------------------------------------------
 
 def _run(cmd: "list[str]", timeout: float) -> subprocess.CompletedProcess:
+    """Run a backend call, mapping every failure to :class:`BackendFailure`.
+
+    Deliberately **not** ``ApprovalError``: these happen mid-handshake, so
+    they must reach ``cmd_send``'s gate-failure path (exit 10, with the
+    stage that failed and the delivery status) rather than surfacing as a
+    generic exit 2 that says nothing about whether the approval landed.
+    """
     try:
         return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     except FileNotFoundError as exc:
-        raise ApprovalError(f"backend binary not found: {cmd[0]} ({exc})") from exc
+        raise BackendFailure(f"backend binary not found: {cmd[0]} ({exc})") from exc
     except subprocess.TimeoutExpired as exc:
-        raise ApprovalError(f"backend call timed out: {' '.join(cmd)}") from exc
+        # The subprocess may have written some or all of its bytes before
+        # the timeout, so the caller has to treat this as *unknown*, not
+        # as "nothing happened".
+        raise BackendFailure(
+            f"backend call timed out: {' '.join(cmd)}", timed_out=True
+        ) from exc
 
 
 class RengaBackend:
@@ -449,7 +467,17 @@ class TmuxBackend:
 
 
 class BackendFailure(Exception):
-    """A backend call failed; maps to the ``backend_failed`` gate failure."""
+    """A backend call failed; maps to a gate failure, never to a crash.
+
+    ``timed_out`` matters because a timeout is the one failure whose
+    effect is unknown: the write may already have reached the PTY. On the
+    Enter write that is the difference between "not delivered, safe to
+    retry" and "possibly delivered, re-sending would duplicate it".
+    """
+
+    def __init__(self, message: str, *, timed_out: bool = False):
+        super().__init__(message)
+        self.timed_out = timed_out
 
 
 def _resolve_transport(explicit: "str | None") -> str:
@@ -483,6 +511,52 @@ def _resolve_transport(explicit: "str | None") -> str:
         raise ApprovalError(f"unknown transport: {exc}") from exc
 
 
+def _broker_state_dir(override: "str | None") -> str:
+    """Where the broker daemon publishes ``daemon.json``.
+
+    ``ORG_BROKER_STATE_DIR`` is injected into pane envs when the daemon
+    runs on a non-default state dir (paired contract, runtime #122 — the
+    same variable ``tools/peer_notify.py`` forwards to ``broker send``).
+    """
+    if override:
+        return override
+    from_env = os.environ.get("ORG_BROKER_STATE_DIR")
+    if from_env:
+        return from_env
+    from tools.state_db.discover import resolve_state_db_path
+
+    return str(Path(resolve_state_db_path(None)).resolve().parent / "broker")
+
+
+def _broker_adapter(state_dir_override: "str | None") -> "str | None":
+    """The broker daemon's **resolved** terminal adapter, or ``None``.
+
+    ``broker`` is a transport, not a terminal: the daemon drives one of
+    several terminal adapters (``tmux`` / ``wezterm`` per
+    ``docs/contracts/backend-interface-contract.md`` Surface 8, plus
+    herdr). Only the tmux one has a CLI keystroke path, so the adapter
+    has to be known before typing anything.
+
+    The daemon publishes it in ``<state_dir>/daemon.json``
+    (``claude_org_runtime.broker.sidecar.write_sidecar`` records the
+    resolved value, not the requested one, exactly so readers can match
+    on it). ``None`` means "could not determine" — no daemon file, no
+    runtime install, or a malformed record.
+    """
+    try:
+        from claude_org_runtime.broker.sidecar import read_sidecar
+    except Exception:  # noqa: BLE001 — runtime not installed
+        return None
+    try:
+        data = read_sidecar(_broker_state_dir(state_dir_override))
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(data, dict):
+        return None
+    adapter = data.get("backend")
+    return adapter if isinstance(adapter, str) and adapter else None
+
+
 def make_backend(args, transport: str, target_defaulted: bool = False):
     """Build the keystroke backend, refusing an unaddressable tmux target.
 
@@ -505,11 +579,35 @@ def make_backend(args, transport: str, target_defaulted: bool = False):
     Refusing is the safe direction; the secretary already has
     ``list_panes`` open at this point in the flow.
     """
-    if args.backend and args.backend != "auto":
-        chosen = args.backend
+    explicit = bool(args.backend) and args.backend != "auto"
+    if explicit:
+        # `broker` is kept as an alias for `tmux`: naming the transport
+        # here used to be the only way to ask for the tmux driver.
+        chosen = _RENGA if args.backend == _RENGA else "tmux"
     else:
-        chosen = _BROKER if transport == _BROKER else _RENGA
-    if chosen == _BROKER:
+        chosen = "tmux" if transport == _BROKER else _RENGA
+
+    if chosen == "tmux":
+        if not explicit:
+            # Auto-selection must confirm the adapter rather than assume
+            # it: a wezterm/herdr deployment has no pane on the tmux
+            # socket at all, so driving tmux there would fail obscurely
+            # (or, worse, hit an unrelated tmux server).
+            adapter = _broker_adapter(args.broker_state_dir)
+            if adapter is None:
+                raise ApprovalError(
+                    "broker daemon の terminal adapter を daemon.json から確認できない "
+                    f"(state dir: {_broker_state_dir(args.broker_state_dir)})。"
+                    "daemon が起動しているか確認するか、tmux であると分かっているなら "
+                    "--backend tmux を明示する。"
+                )
+            if adapter != "tmux":
+                raise ApprovalError(
+                    f"broker の terminal adapter は {adapter!r} で、CLI から打鍵する経路が無い "
+                    "(本ツールが駆動できるのは renga CLI と tmux のみ)。"
+                    "この構成では承認ハンドシェイクを手順書 §5 の手動 3 段で行い、"
+                    "**Enter を単独で送ったこと**を inspect で必ず確認すること。"
+                )
         if target_defaulted:
             raise ApprovalError(
                 f"broker (tmux) backend needs an explicit tmux target: "
@@ -518,7 +616,9 @@ def make_backend(args, transport: str, target_defaulted: bool = False):
                 f"mcp__org-broker__list_panes and pass it as "
                 f"--target %N (or force the renga backend with --backend renga)."
             )
-        return TmuxBackend(args.target, args.call_timeout, socket=args.tmux_socket)
+        socket = (args.tmux_socket or os.environ.get("ORG_BROKER_SOCKET")
+                  or _TMUX_SOCKET)
+        return TmuxBackend(args.target, args.call_timeout, socket=socket)
     return RengaBackend(args.target, args.pane_id, args.call_timeout)
 
 
@@ -631,7 +731,17 @@ def cmd_send(args) -> int:
                          {**common, "observed_composer": observed})
 
         # Stage 3 — Enter on its own.
-        backend.send_enter()
+        try:
+            backend.send_enter()
+        except BackendFailure as exc:
+            if not exc.timed_out:
+                raise
+            # The write may have reached the PTY before the timeout, so
+            # neither "delivered" nor "not delivered" can be claimed. Say
+            # so: a blind retry here is what duplicates an approval.
+            return _fail(task_id, "enter_ambiguous",
+                         {**common, "error": str(exc),
+                          "approval_delivered": "unknown"})
 
         # Stage 4 — verify the composer no longer holds it. An empty
         # composer, or one holding something else, both mean the draft
@@ -913,16 +1023,27 @@ def build_parser() -> argparse.ArgumentParser:
                       help="Numeric renga pane id; use instead of --target when "
                            "the name would resolve in the wrong tab.")
     send.add_argument("--backend", default="auto",
-                      choices=("auto", "renga", "broker"),
+                      choices=("auto", "renga", "tmux", "broker"),
                       help="Keystroke backend. auto (default) follows the "
-                           "resolved transport: renga -> renga CLI, "
-                           "broker -> tmux.")
+                           "resolved transport: renga -> renga CLI; broker -> "
+                           "tmux, but only after confirming from daemon.json "
+                           "that the daemon's terminal adapter really is tmux. "
+                           "tmux (alias: broker) skips that check and drives "
+                           "tmux directly.")
     send.add_argument("--transport", default=None,
                       help="Transport to resolve/record. Defaults to the shared "
                            "resolver (tools.transport.resolve: explicit > "
                            "$ORG_TRANSPORT > DEFAULT_TRANSPORT), not a literal.")
-    send.add_argument("--tmux-socket", default=_TMUX_SOCKET,
-                      help=f"tmux -L socket for the broker backend (default {_TMUX_SOCKET}).")
+    send.add_argument("--tmux-socket", default=None,
+                      help="tmux -L socket for the broker backend. Defaults to "
+                           f"$ORG_BROKER_SOCKET, then {_TMUX_SOCKET} - the same "
+                           "resolution tools/org-dispatcher-view.sh uses, so a "
+                           "deployment that moved the socket does not need an "
+                           "extra flag here.")
+    send.add_argument("--broker-state-dir", default=None,
+                      help="Broker state dir holding daemon.json, used to read "
+                           "the daemon's terminal adapter. Defaults to "
+                           "$ORG_BROKER_STATE_DIR, then <repo>/.state/broker.")
     send.add_argument("--lines", type=int, default=24,
                       help="Screen rows to inspect when reading the composer.")
     send.add_argument("--verify-timeout", type=float, default=10.0,

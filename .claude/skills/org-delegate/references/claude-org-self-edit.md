@@ -120,9 +120,10 @@ deadlock（worker が届かない承認を待ち続ける）と空打ち Enter�
      --file {対象ファイル 1} \
      --file {対象ファイル 2}
    # 対象ペインは既定で worker-{task_id}。別タブ等で名前解決が怪しいときだけ --pane-id <数値 id> を渡す。
+   # broker 実走時のみ --target %N が必須（下記）。
    # 送信前に文面だけ確認したいときは --dry-run。
    ```
-   承認文の必須 3 要素 — **対象ファイルの列挙** / **task_id** / **「窓口経由のユーザー承認」の明記** — は**ツールが組み立てる**ので、窓口が文面を書き起こすことはない（`--file` が 0 個なら exit 2 で拒否される。列挙の無い承認は何も承認していないため）。輸送層は `tools/transport.py` の `resolve()` で解決され、`renga` なら renga CLI、`broker` なら tmux 打鍵に自動で切り替わる（`broker` の場合のみ **`--target %N` の明示が要る**: 論理名 `worker-{task_id}` は broker 自身のペイン台帳にしか無く tmux 側に照合材料が無いため、`list_panes` で読んだ pane id を渡す。明示が無ければ**打鍵前に** exit 2 で止まる）。
+   承認文の必須 3 要素 — **対象ファイルの列挙** / **task_id** / **「窓口経由のユーザー承認」の明記** — は**ツールが組み立てる**ので、窓口が文面を書き起こすことはない（`--file` が 0 個なら exit 2 で拒否される。列挙の無い承認は何も承認していないため）。輸送層は `tools/transport.py` の `resolve()` で解決され、`renga` なら renga CLI、`broker` なら tmux 打鍵に自動で切り替わる（`broker` の場合のみ **`--target %N` の明示が要る**: 論理名 `worker-{task_id}` は broker 自身のペイン台帳にしか無く tmux 側に照合材料が無いため、`list_panes` で読んだ pane id を渡す。明示が無ければ**打鍵前に** exit 2 で止まる）。なお **broker は transport であって端末ではない** — daemon が駆動する terminal adapter が `tmux` のときだけ CLI 打鍵経路があるので、ツールは `daemon.json` の `backend` を読んで確認し、`wezterm` / `herdr` や判定不能なら**打鍵せず** exit 2 で止まる（その構成では本節の手動 3 段に戻り、**Enter を単独で送ったことを inspect で必ず確認する**）。tmux socket は `$ORG_BROKER_SOCKET` を既定で読む。
 
    ツールは内部で **text 送信 → 着弾確認 → Enter 単独送信 → submit 確認**を順に行い、**どの段でも検証できなければ exit 10 で停止する**（`failures[]` に失敗した段、`remedy[]` に戻り先が出る）。成功時のみ `self_edit_approval_sent` を 1 行記帳するので、承認を送らずに派遣したケースは後から `python3 tools/self_edit_approval.py audit` で検出できる。
 
