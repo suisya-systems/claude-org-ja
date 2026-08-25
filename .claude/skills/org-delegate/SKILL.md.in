@@ -288,7 +288,7 @@ dogfood 対象判定 / 窓口責務 (A) 実装起票時の `registry/dogfood_pen
 )
 ```
 
-**`.claude/` 編集タスクの send_keys 事前承認（root `.claude/**` self-edit のみ）**: 委譲対象に claude-org root の `.claude/**` が含まれる場合（`.dispatcher/` / `.curator/`、worker dir 生成物の `.claude/settings.local.json` は対象外）、窓口は上記挨拶の送信に**続けて** `{{FQ}}send_keys` で承認文（対象ファイル列挙 + task_id + 「窓口経由のユーザー承認」の明記）を worker ペインへ入力しておく。worker 側は編集前にこの承認入力の存在を確認し、無ければ編集せず窓口に要求する（ハンドシェイク固定で deadlock / 空打ちを防止）。スコープ境界・背景（2 層ガード）・承認文テンプレート・worker brief 必須文言は [`.claude/skills/org-delegate/references/claude-org-self-edit.md`](references/claude-org-self-edit.md) §5 を一次参照。
+**`.claude/` 編集タスクの send_keys 事前承認（root `.claude/**` self-edit のみ）**: 委譲対象に claude-org root の `.claude/**` が含まれる場合（`.dispatcher/` / `.curator/`、worker dir 生成物の `.claude/settings.local.json` は対象外）、窓口は上記挨拶の送信に**続けて** `python3 tools/self_edit_approval.py send --task {task_id} --file <対象ファイル>...` を **1 回**実行する（承認文の text 送信 → 着弾確認 → Enter 単独送信 → submit 確認を内部で順に行い、どの段でも検証できなければ exit 10 で停止し、成功時のみ `self_edit_approval_sent` を記帳する）。承認文の必須 3 要素（対象ファイル列挙 + task_id + 「窓口経由のユーザー承認」の明記）はツールが組み立てる。**`{{FQ}}send_keys` を手で 3 段打たない** — 最後の Enter を落とすと承認文が入力欄に draft として滞留し、見た目は着弾と区別がつかないまま worker が待機し続ける（Issue #956）。worker 側は編集前にこの承認入力の存在を確認し、無ければ編集せず窓口に要求する（ハンドシェイク固定で deadlock / 空打ちを防止）。承認を送らずに派遣したケースは `python3 tools/self_edit_approval.py audit` で事後検出できる。スコープ境界・背景（2 層ガード）・承認文テンプレート・worker brief 必須文言は [`.claude/skills/org-delegate/references/claude-org-self-edit.md`](references/claude-org-self-edit.md) §5 を一次参照。
 
 ### ワーカーからのメッセージ受信時
 

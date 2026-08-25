@@ -107,30 +107,30 @@ claude-org 自己編集タスクで Pattern B（worktree）を採る場合、wor
 
 `.claude/` 配下への書き込みは通常 2 層でガードされる: `block-org-structure.sh` hook は Edit / Write に限り通すが、auto-mode 分類器が「ユーザー承認の無い `.claude/` 編集」をブロックする。**ただし self-edit ワーカー（`claude-org-self-edit` role）ではこの hook ガードが存在しない**: `block-org-structure.sh` は role 定義で drop され、残る `check-worker-boundary.sh` は WORKER_DIR（Pattern B の live-repo worktree。`references/**` を含む）内を一律許可し、生成された `settings.local.json` も `.claude/**` への Edit / Write に allow / deny / ask を一切持たない。したがって self-edit ワーカーにとって**本ハンドシェイク（分類器を通す send_keys 承認）が `.claude/**` 編集の唯一のゲート**であり、上記スコープ境界の線引き精度がそのままゲート網羅性になる（`references/**` の取りこぼしが無ゲート編集を許した直接原因）。分類器の承認は **send_keys による端末入力（worker の会話に user message として届く形）でのみ通る**。peer message（`send_message`）は user 入力にならないため承認として機能しない。
 
-> **輸送層 両系（`ORG_TRANSPORT`: 既定 `renga` / opt-in `broker`）**: 本ハンドシェイクの `send_keys` は **既定 `renga`**（`ORG_TRANSPORT` 無設定）で `mcp__renga-peers__send_keys`。`ORG_TRANSPORT=broker`（opt-in・切戻し可）では **`mcp__renga-peers__send_keys` → `mcp__org-broker__send_keys`** に機械置換される（raw キー入力 = 端末への承認文入力という性質・引数形は同一なので、承認文が user message として届き分類器を通る論理は両系で不変）。なお spawn 時の初回承認プロンプト自体は、broker では Claude Code の **folder-trust プロンプト + channel sidecar の dev-channel 承認（「Load development channel?」、spawn-flow 3-3b 再導入）の 2 段**になる（renga は dev-channel のみ。push 一次採用に伴う加算であり置換ではない。設計 transport-lab `docs/design/broker-native-roles.md` §9.5）が、それは本節の「`.claude/` 編集の事前承認」とは別レイヤー（spawn 儀式の差。pane-layout / spawn-flow 側）。詳細は [`docs/contracts/backend-interface-contract.md`](../../../../docs/contracts/backend-interface-contract.md) Surface 8（ratified 2026-06-14。push 一次への additive 改訂 S3 が ratified 済み（2026-06-15）・既存 ratified 本文不変更）と [`.claude/skills/org-delegate/references/renga-error-codes.md`](renga-error-codes.md) の broker 節を参照。既定 renga の手順は不変（broker は加算）。（**既定の二フレーム注記（Refs #604）**: ここでの「既定 `renga`」は**運用既定**（broker 実走 dogfood が Epic #6 Issue G まで未活性）の意。別に**コード既定**として `tools/transport.py: DEFAULT_TRANSPORT` が runtime 0.1.28 (Epic #586) で `broker` にフリップ済みで、ja 生成器・`transport.resolve()` はこのコードフレームで render するため生成面は「既定 `broker`」と表示する — 両フレームは指す対象（運用経路 vs コード定数）が異なり矛盾しない。総説は root `CLAUDE.md`「輸送層（transport）両系」節。）
+> **輸送層 両系（`ORG_TRANSPORT`: 既定 `renga` / opt-in `broker`）**: **輸送層の切り替えは [`tools/self_edit_approval.py`](../../../../tools/self_edit_approval.py) が `tools/transport.py` の `resolve()` 経由で自動的に行う**（`renga` なら renga CLI 打鍵、`broker` なら broker ペインの実体である detached tmux session への `tmux send-keys` 打鍵）ので、窓口が transport を見て呼び分ける必要はない。以下はその内側で何が起きているかの説明である。本ハンドシェイクの `send_keys` は **既定 `renga`**（`ORG_TRANSPORT` 無設定）で `mcp__renga-peers__send_keys`。`ORG_TRANSPORT=broker`（opt-in・切戻し可）では **`mcp__renga-peers__send_keys` → `mcp__org-broker__send_keys`** に機械置換される（raw キー入力 = 端末への承認文入力という性質・引数形は同一なので、承認文が user message として届き分類器を通る論理は両系で不変）。なお spawn 時の初回承認プロンプト自体は、broker では Claude Code の **folder-trust プロンプト + channel sidecar の dev-channel 承認（「Load development channel?」、spawn-flow 3-3b 再導入）の 2 段**になる（renga は dev-channel のみ。push 一次採用に伴う加算であり置換ではない。設計 transport-lab `docs/design/broker-native-roles.md` §9.5）が、それは本節の「`.claude/` 編集の事前承認」とは別レイヤー（spawn 儀式の差。pane-layout / spawn-flow 側）。詳細は [`docs/contracts/backend-interface-contract.md`](../../../../docs/contracts/backend-interface-contract.md) Surface 8（ratified 2026-06-14。push 一次への additive 改訂 S3 が ratified 済み（2026-06-15）・既存 ratified 本文不変更）と [`.claude/skills/org-delegate/references/renga-error-codes.md`](renga-error-codes.md) の broker 節を参照。既定 renga の手順は不変（broker は加算）。（**既定の二フレーム注記（Refs #604）**: ここでの「既定 `renga`」は**運用既定**（broker 実走 dogfood が Epic #6 Issue G まで未活性）の意。別に**コード既定**として `tools/transport.py: DEFAULT_TRANSPORT` が runtime 0.1.28 (Epic #586) で `broker` にフリップ済みで、ja 生成器・`transport.resolve()` はこのコードフレームで render するため生成面は「既定 `broker`」と表示する — 両フレームは指す対象（運用経路 vs コード定数）が異なり矛盾しない。総説は root `CLAUDE.md`「輸送層（transport）両系」節。）
 
 ### ハンドシェイク（固定手順）
 
 deadlock（worker が届かない承認を待ち続ける）と空打ち Enter（承認文の無い送信）を防ぐため、以下に固定する:
 
-1. **窓口**: ディスパッチャーから `DELEGATE_COMPLETE` を受信したら、SKILL.md Step 5 の挨拶送信に**続けて**、承認文を send_keys で worker ペインへ入力しておく。打鍵は **text と Enter を別呼び出しに分ける 2 段**で行う（打鍵注入手順の共有 SoT は [`.dispatcher/references/spawn-flow.md`](../../../../.dispatcher/references/spawn-flow.md) 3-5a 手順 2。org-start の /loop 再点火と同じ規律）:
+1. **窓口**: ディスパッチャーから `DELEGATE_COMPLETE` を受信したら、SKILL.md Step 5 の挨拶送信に**続けて**、承認ハンドシェイクを [`tools/self_edit_approval.py`](../../../../tools/self_edit_approval.py) の `send` で 1 コマンド実行する。**手で 3 段の tool call を打たない**（理由は直後の「なぜ 1 コマンドなのか」）:
+   ```bash
+   python3 tools/self_edit_approval.py send \
+     --task {task_id} \
+     --file {対象ファイル 1} \
+     --file {対象ファイル 2}
+   # 対象ペインは既定で worker-{task_id}。別タブ等で名前解決が怪しいときだけ --pane-id <数値 id> を渡す。
+   # 送信前に文面だけ確認したいときは --dry-run。
    ```
-   # (1) 承認文の text のみを送る（enter を付けない）:
-   mcp__renga-peers__send_keys(
-     target="worker-{task_id}",
-     text="承認します: 本タスク ({task_id}) における {対象ファイルの列挙} の編集を承認します。これは窓口経由のユーザー承認です。"
-   )
-   # (2) inspect_pane で承認文が worker の入力欄（❯ 行）に乗ったことを確認する:
-   mcp__renga-peers__inspect_pane(target="worker-{task_id}", lines=10)
-   # (3) 確認できたら、Enter を単独の別呼び出しで送る:
-   mcp__renga-peers__send_keys(target="worker-{task_id}", enter=true)
-   ```
-   承認文の必須 3 要素: **対象ファイルの列挙** / **task_id** / **「窓口経由のユーザー承認」の明記**。
+   承認文の必須 3 要素 — **対象ファイルの列挙** / **task_id** / **「窓口経由のユーザー承認」の明記** — は**ツールが組み立てる**ので、窓口が文面を書き起こすことはない（`--file` が 0 個なら exit 2 で拒否される。列挙の無い承認は何も承認していないため）。輸送層は `tools/transport.py` の `resolve()` で解決され、`renga` なら renga CLI、`broker` なら tmux 打鍵に自動で切り替わる。
 
-   > **失敗モード 2 つ（必読）**:
+   ツールは内部で **text 送信 → 着弾確認 → Enter 単独送信 → submit 確認**を順に行い、**どの段でも検証できなければ exit 10 で停止する**（`failures[]` に失敗した段、`remedy[]` に戻り先が出る）。成功時のみ `self_edit_approval_sent` を 1 行記帳するので、承認を送らずに派遣したケースは後から `python3 tools/self_edit_approval.py audit` で検出できる。
+
+   > **なぜ 1 コマンドなのか（この分割は消してはならない）**:
    >
-   > - **text と `enter=true` を同一呼び出しに載せると submit されない**: text が貼り付け扱いになり末尾 Enter が貼り付けに吸収されるため、承認文は worker 入力欄に**未送信 draft として滞留**する（2026-07-31 実害: task ja-registry-template-001 で承認が届かず worker が待機停止）。必ず上記のとおり text 送信と Enter を別呼び出しに分ける。
-   > - **実行中ペインへの Escape はターン中断になる**: draft 滞留からの復旧などで打鍵し直す前に、必ず `inspect_pane` で worker が **idle** であることを確認する。busy（ターン実行中）のペインへ Escape を送ると走行中のターンを中断させてしまう。
+   > - **text と `enter=true` を同一呼び出しに載せると submit されない**: text が貼り付け扱いになり末尾 Enter が貼り付けに吸収されるため、承認文は worker 入力欄に**未送信 draft として滞留**する。したがって text 送信と Enter は**必ず別呼び出しに分ける**必要がある — この分割自体は依然として必須で、ツールは内部でこれを行っている（renga CLI でも同じ: `renga send <TEXT> --enter` は data と `\r` を無遅延で連続 write するため同じ罠を踏む。`renga/src/app/codex_peer.rs:196-203`）。**「1 回で送ればいい」に戻さないこと。**
+   > - **分割した手順を人間が手で踏むと、最後の Enter を落としたときに無言で失敗する**: 承認文が入力欄に見えているので `inspect_pane` の見た目は「届いている」、worker は user message を受け取っていないので待機し、窓口からは作業中と区別がつかず、`.state/` に痕跡も残らない。2026-07-31（task `ja-registry-template-001`）と 2026-08-25（task `pr-merged-double-entry-fix`）の 2 回発生し、いずれも人間の指摘で発覚した。**分割は必要だが、その分割を人間の規律で守らせるのが誤り**だったので、分割はツールの内部に閉じ込め、各段の失敗を exit 非 0 で顕在化させる（Issue #956）。
+   > - **実行中ペインへの Escape はターン中断になる**: draft 滞留（`prior_draft` / `not_submitted` で停止した場合）からの復旧で入力欄を消す前に、必ず `inspect_pane` で worker が **idle** であることを確認する。busy（ターン実行中）のペインへ Escape を送ると走行中のターンを中断させてしまう。なお **Enter 自体は busy でも積まれる**ので、承認送信のために idle を待つ必要はない（待つと承認が遅れて worker が止まる）。
 2. **worker brief**: root `.claude/**`（深さ不問。`.claude/skills/**/references/**` の brief 規範 prose を含む）を対象に含む委譲の brief（`CLAUDE.local.md` / 指示メッセージ）には次の趣旨を必ず書く:
    > 本タスクは `.claude/` 編集を含む。**編集前に、承認入力（対象ファイル列挙 + task_id + 「窓口経由のユーザー承認」）が会話に user message として存在することを確認**せよ。存在しなければ編集を開始せず、`send_message(to_id="secretary")` で窓口に承認入力を要求して待機せよ。
 3. **worker**: 上記の確認が取れてから編集を開始する。承認文に列挙されていないファイルへの `.claude/` 編集が必要になった場合はスコープ拡張として扱い、[`.claude/skills/org-escalation/SKILL.md`](../../org-escalation/SKILL.md) 経由でエスカレーションする。
