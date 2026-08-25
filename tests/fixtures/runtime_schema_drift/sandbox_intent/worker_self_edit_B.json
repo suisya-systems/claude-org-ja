@@ -91,6 +91,10 @@
         "/home/u/co/.git/refs/heads/feat/self-edit",
         "/home/u/co/.git/packed-refs"
       ],
+      "allowRead": [
+        ".env.example",
+        ".env.*.example"
+      ],
       "denyRead": [
         "/home/u/co/.worktrees/T123/.env",
         "/home/u/co/.worktrees/T123/.env.*",

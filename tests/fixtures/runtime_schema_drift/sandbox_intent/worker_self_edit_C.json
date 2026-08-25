@@ -67,6 +67,10 @@
     "enabled": true,
     "filesystem": {
       "additionalDirectories": [],
+      "allowRead": [
+        ".env.example",
+        ".env.*.example"
+      ],
       "denyRead": [
         "/home/u/co/.env",
         "/home/u/co/.env.*",

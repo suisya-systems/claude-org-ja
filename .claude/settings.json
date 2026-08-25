@@ -98,6 +98,10 @@
     "enabled": true,
     "failIfUnavailable": false,
     "filesystem": {
+      "allowRead": [
+        ".env.example",
+        ".env.*.example"
+      ],
       "denyRead": [
         ".env",
         ".env.*",

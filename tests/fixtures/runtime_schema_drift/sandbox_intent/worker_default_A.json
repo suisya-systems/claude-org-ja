@@ -73,6 +73,10 @@
       "additionalDirectories": [
         "/home/u/co/knowledge/raw"
       ],
+      "allowRead": [
+        ".env.example",
+        ".env.*.example"
+      ],
       "denyRead": [
         "/home/u/workers/proj/.env",
         "/home/u/workers/proj/.env.*",

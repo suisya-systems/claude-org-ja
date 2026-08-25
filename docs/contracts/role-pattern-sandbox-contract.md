@@ -159,6 +159,41 @@ enumerate:
   tools write to disk) but Phase 0 keeps them out of the row tables to avoid
   duplicating the role-contract `permissions.allow` enumeration.
 
+### 1.5 `.env` template carve-out (Layer 3 only)
+
+Every `denyRead` cell in this contract that reads `.env.*` is to be read with
+one exception, uniform across all roles and all patterns:
+
+> Layer 3 `allowRead`: `.env.example`, `.env.*.example` — committed template
+> files are re-opened inside the `.env.*` denied region.
+
+The `.env.*` glob matches committed `.env.example` / `.env.live.example`
+templates, which carry no secrets. Denying them produced real friction (a
+2026-08-25 worker report of `test_local_env` failing on `.env.example` with
+`PermissionError` inside the sandbox), and friction of that kind is one of the
+measured drivers of `dangerouslyDisableSandbox` bypasses (`claude-org-ja#959`:
+59% of worker `Bash` calls ran with the sandbox off). The carve-out is
+expressed with Claude Code's [`sandbox.filesystem.allowRead`](https://code.claude.com/docs/en/sandboxing)
+key ("re-allow specific paths within a denied region"; "When read rules
+overlap, the more specific path wins"), because `denyRead` has no negation
+syntax — a `!.env.example` entry was verified on Claude Code 2.1.245 to leave
+the file denied.
+
+Two properties of the carve-out matter for this contract:
+
+- **Layer 3 only.** The Layer 2 mirrors (`permissions.deny` `Read(.env.*)` and
+  the `layer2Fallback` strings in [`tools/org_extension_schema.json`](../../tools/org_extension_schema.json))
+  stay broad. Layer 2 resolves deny over allow — verified on 2.1.245: a
+  `permissions.allow` `Read(.env.example)` does not lift a `Read(.env.*)`
+  deny — so narrowing Layer 2 would mean enumerating secret filenames, which
+  cannot be made exhaustive. The `Read` tool therefore still refuses
+  templates; `Bash`, which is where the reported friction occurs and which
+  Layer 2 does not gate on paths at all, now succeeds under the sandbox.
+- **Symlinks do not widen it.** A `.env.evil.example` symlink pointing at
+  `.env` stays denied (verified on 2.1.245): the sandbox refuses to restore an
+  `allowRead` entry whose symlink escapes the expected location, so a
+  template-shaped name cannot be used to smuggle a secret out.
+
 ---
 
 ## 2. Pattern reference (recap)
