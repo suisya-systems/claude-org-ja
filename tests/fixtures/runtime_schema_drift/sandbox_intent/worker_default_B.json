@@ -98,11 +98,15 @@
       ],
       "allowRead": [
         ".env.example",
-        ".env.*.example"
+        ".env.*.example",
+        "**/.env.example",
+        "**/.env.*.example"
       ],
       "denyRead": [
         "/home/u/workers/proj/.worktrees/T123/.env",
+        "/home/u/workers/proj/.worktrees/T123/**/.env",
         "/home/u/workers/proj/.worktrees/T123/.env.*",
+        "/home/u/workers/proj/.worktrees/T123/**/.env.*",
         "/home/u/workers/proj/.worktrees/T123/**/credentials*",
         "/home/u/workers/proj/.worktrees/T123/**/*.pem"
       ],

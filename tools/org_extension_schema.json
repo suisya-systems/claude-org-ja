@@ -27,7 +27,7 @@
     "block-dispatcher-out-of-scope.sh"
   ],
   "$comment_roles_sandbox": "Phase 1 schema surface: each entry under `roles.<role>` may also include an optional `sandbox` object using the same shape and structured-anchor entry form documented under `worker_roles.$comment_sandbox` / `worker_roles.$comment_sandbox_anchor`. This lets secretary / dispatcher / curator declare Layer 3 sandbox intent alongside the existing Layer 2 `required_allow` / `required_deny` audit constraints. Roles without `sandbox` are treated as sandbox-disabled (backward compatible). Phase 1 PR3 (Refs claude-org-ja#378 #376) lands concrete bodies for `roles.secretary` / `roles.dispatcher` / `roles.curator`; each role's per-`sandbox` `$comment_sandbox` field documents the contract sections it is driven from and which prescriptions are deferred (e.g. curator knowledge/raw move-only is operation-semantic and not mechanizable here). `worker_roles.*` concrete bodies are NOT landed in PR3 — they need a `sandbox_by_pattern` schema decision (deferred to PR4). See `docs/contracts/role-pattern-sandbox-contract.md` for the contract that all bodies must satisfy.",
-  "$comment_sandbox_allow_read": "Refs claude-org-ja#959 (friction 1): every `sandbox.filesystem` body in this schema carries `allowRead: [\".env.example\", \".env.*.example\"]` alongside the credential `denyRead` set. WHY: the `.env.*` deny glob also matches committed template files (`.env.example`, `.env.live.example`), which hold no secrets. The 2026-08-25 kura report (`test_local_env` failing on `.env.example` with PermissionError inside the sandbox) is a direct instance, and such friction is one of the documented reasons workers reach for `dangerouslyDisableSandbox` (#959 measured 59% of worker Bash calls bypassing the sandbox). Claude Code has no negation syntax inside `denyRead` — a `!.env.example` entry was verified on a real 2.1.245 session to leave the file denied — so the carve-out is expressed with the documented `filesystem.allowRead` key (https://code.claude.com/docs/en/sandboxing: \"re-allow specific paths within a denied region using `sandbox.filesystem.allowRead`\" / \"When read rules overlap, the more specific path wins\"). Verified on Claude Code 2.1.245 (Linux/WSL2 bwrap) with this exact pair: `.env` / `.env.local` / `.env.production` / `.env.development.local` / `.env.staging` stay denied, `.env.example` / `.env.live.example` / `.env.production.example` become readable, and a `.env.evil.example` symlink pointing at `.env` stays DENIED (the sandbox refuses to restore an allowRead entry whose symlink escapes the expected location), so the carve-out cannot be abused to smuggle a secret through a template-shaped name. SHAPE: `allowRead` entries are plain relative strings, NOT the structured-anchor form used by `denyRead` / `denyWrite` — the runtime generator normalizes only those two layer keys and forwards any other `filesystem` key verbatim, so a structured object here would land in the rendered settings.local.json as an object Claude Code cannot parse. A relative sandbox path resolves against the project root for project settings (https://code.claude.com/docs/en/sandboxing), which for a rendered worker file is worker_dir — the same anchor the neighbouring `denyRead` entries declare explicitly. NO Layer-2 counterpart: the `layer2Fallback` strings and the `permissions.deny` mirrors keep the broad `Read(.env.*)` form, because Layer 2 resolves deny-over-allow (verified on 2.1.245: `Read(.env.*)` in `permissions.deny` blocks the Read tool on `.env.example` even with a matching `permissions.allow` entry). Narrowing Layer 2 would require enumerating secret filenames, which cannot be made exhaustive, so the mirror deliberately stays on the safe side: the Read tool still refuses templates, while Bash — the path the reported friction actually takes — is governed by Layer 3 and now succeeds.",
+  "$comment_sandbox_allow_read": "Refs claude-org-ja#959 (friction 1) and #961 (recursion): every `sandbox.filesystem` body in this schema carries `allowRead: [\".env.example\", \".env.*.example\", \"**/.env.example\", \"**/.env.*.example\"]` alongside the credential `denyRead` set, whose `.env` entries are likewise paired as `.env` + `**/.env` and `.env.*` + `**/.env.*`. WHY: the `.env.*` deny glob also matches committed template files (`.env.example`, `.env.live.example`), which hold no secrets. The 2026-08-25 kura report (`test_local_env` failing on `.env.example` with PermissionError inside the sandbox) is a direct instance, and such friction is one of the documented reasons workers reach for `dangerouslyDisableSandbox` (#959 measured 59% of worker Bash calls bypassing the sandbox). Claude Code has no negation syntax inside `denyRead` — a `!.env.example` entry was verified on a real 2.1.245 session to leave the file denied — so the carve-out is expressed with the documented `filesystem.allowRead` key (https://code.claude.com/docs/en/sandboxing: \"re-allow specific paths within a denied region using `sandbox.filesystem.allowRead`\" / \"When read rules overlap, the more specific path wins\"). Verified on Claude Code 2.1.245 (Linux/WSL2 bwrap) with this exact pair: `.env` / `.env.local` / `.env.production` / `.env.development.local` / `.env.staging` stay denied, `.env.example` / `.env.live.example` / `.env.production.example` become readable, and a `.env.evil.example` symlink pointing at `.env` stays DENIED (the sandbox refuses to restore an allowRead entry whose symlink escapes the expected location), so the carve-out cannot be abused to smuggle a secret through a template-shaped name. SHAPE: `allowRead` entries are plain relative strings, NOT the structured-anchor form used by `denyRead` / `denyWrite` — the runtime generator normalizes only those two layer keys and forwards any other `filesystem` key verbatim, so a structured object here would land in the rendered settings.local.json as an object Claude Code cannot parse. A relative sandbox path resolves against the project root for project settings (https://code.claude.com/docs/en/sandboxing), which for a rendered worker file is worker_dir — the same anchor the neighbouring `denyRead` entries declare explicitly. NO Layer-2 counterpart: the `layer2Fallback` strings and the `permissions.deny` mirrors keep the broad `Read(.env.*)` form, because Layer 2 resolves deny-over-allow (verified on 2.1.245: `Read(.env.*)` in `permissions.deny` blocks the Read tool on `.env.example` even with a matching `permissions.allow` entry). Narrowing Layer 2 would require enumerating secret filenames, which cannot be made exhaustive, so the mirror deliberately stays on the safe side: the Read tool still refuses templates, while Bash — the path the reported friction actually takes — is governed by Layer 3 and now succeeds. RECURSION (#961): a bare `.env` / `.env.*` glob matches ONLY the project root, so before this pairing every `.env` in a SUBDIRECTORY was readable inside the sandbox \u2014 measured on Claude Code 2.1.245 (Linux/WSL2 bwrap): `sub/.env`, `sub/.env.local` and `sub/deep/.env` all read fine, while the neighbouring `**/credentials*` / `**/*.pem` entries denied `sub/credentials.json` / `sub/key.pem`. The difference was purely the `**/` prefix. The real-world consequence was cross-task secret exposure: a Pattern A worker (worker_dir = the project directory) could read `.worktrees/<other-task>/.env.live` for every sibling worktree \u2014 verified on the live kura tree, where 6 sibling `.env.live` files were readable before the fix and all denied after. Pattern B workers were unaffected because their own `.env.live` sits at worker_dir root. THE DENY AND ALLOW HALVES ARE INSEPARABLE: adding `**/.env.*` WITHOUT the matching `**/.env.*.example` allow re-breaks templates one level down \u2014 measured on the same build, `sub/.env.example` / `sub/.env.live.example` flipped to DENIED, reproducing the #959 friction 1 that #960 had just fixed. Never land one half alone. The root-anchored entries are RETAINED alongside the recursive ones rather than replaced, so the #960 root behaviour is preserved by construction and does not depend on whether `**/` matches zero path segments in this glob implementation. Symlinks do not widen the carve-out: `sub/.env.evil.example` pointing at `../.env` stayed DENIED on the same build. LAYER 2 UNDER #961 (KNOWN GAP, NOT FIXED HERE): \"broad\" in the paragraph above meant \"not narrowed to exclude templates\" \u2014 it did NOT mean recursive. The `permissions.deny` mirrors in `worker_roles.{default,claude-org-self-edit,doc-audit}.permissions.deny` carry the SAME root-only `Read(.env)` / `Read(.env.*)` asymmetry against their own recursive `Read(**/credentials*)` / `Read(**/*.pem)` neighbours, so nested secrets stay reachable via the `Read` tool whenever Layer 3 is not in force \u2014 sandbox unavailable (`failIfUnavailable: false` falls open) or the entry suppressed by a WSL realpath escape \u2014 which is exactly the case Layer 2 exists to cover. This was deliberately NOT changed in #961: `permissions.deny` is owned by the schema BUNDLED with claude-org-runtime, and `check_runtime_schema_drift.py` strips only the ja-only `sandbox` bodies before its byte comparison, so editing these arrays in ja alone fails the byte drift check. Closing it requires a coordinated claude-org-runtime release plus a re-pin in pyproject.toml / requirements.txt, tracked as follow-up work rather than smuggled in here. The Layer-3 recursion above is what actually closes the reported exposure; this mirror is the fall-open backstop. DISPATCHER ANCHOR GAP (residual, pre-existing): `roles.dispatcher` anchors its `.env` denies at `claude_org_path` while its project root (and therefore the resolution base for the plain-string `allowRead` entries) is worker_dir = `<claude_org_path>/.dispatcher`. The carve-out consequently applies only to templates at or below `.dispatcher/`, while the deny reaches the whole org repo; a `<claude_org_path>/<subdir>/.env.example` would be denied with no way to re-allow it. This is NOT introduced here \u2014 #960's root-level carve-out was already inert for this role for the same reason \u2014 but #961 widens the denied region it fails to cover from the repo root to every depth. It cannot be expressed today: `allowRead` has no structured-anchor form and is forwarded verbatim (a `{claude_org_path}` placeholder would land literally, and `settings show` does not even surface the key). The practical impact on this repo is currently nil \u2014 it tracks no `.env.example` files at all \u2014 and org-role settings are hand-maintained rather than generated, so this body is inspection surface. Fixing it properly needs runtime support for anchored `allowRead` entries.",
   "roles": {
     "repo_shared": {
       "description": "Repo-shared settings (.claude/settings.json) — tracked in git; hosts repo-wide safety hooks (block-no-verify, block-dangerous-git).",
@@ -167,7 +167,7 @@
         "enabled": true,
         "filesystem": {
           "additionalDirectories": [],
-          "allowRead": [".env.example", ".env.*.example"],
+          "allowRead": [".env.example", ".env.*.example", "**/.env.example", "**/.env.*.example"],
           "denyRead": [
             {
               "anchor": "worker_dir",
@@ -177,9 +177,21 @@
             },
             {
               "anchor": "worker_dir",
+              "path": "**/.env",
+              "suppressOnSymlinkEscape": true,
+              "layer2Fallback": "Read(**/.env)"
+            },
+            {
+              "anchor": "worker_dir",
               "path": ".env.*",
               "suppressOnSymlinkEscape": true,
               "layer2Fallback": "Read(.env.*)"
+            },
+            {
+              "anchor": "worker_dir",
+              "path": "**/.env.*",
+              "suppressOnSymlinkEscape": true,
+              "layer2Fallback": "Read(**/.env.*)"
             },
             {
               "anchor": "worker_dir",
@@ -266,7 +278,7 @@
           "additionalDirectories": [
             "{claude_org_path}"
           ],
-          "allowRead": [".env.example", ".env.*.example"],
+          "allowRead": [".env.example", ".env.*.example", "**/.env.example", "**/.env.*.example"],
           "denyRead": [
             {
               "anchor": "home",
@@ -300,7 +312,17 @@
             },
             {
               "anchor": "claude_org_path",
+              "path": "**/.env",
+              "suppressOnSymlinkEscape": true
+            },
+            {
+              "anchor": "claude_org_path",
               "path": ".env.*",
+              "suppressOnSymlinkEscape": true
+            },
+            {
+              "anchor": "claude_org_path",
+              "path": "**/.env.*",
               "suppressOnSymlinkEscape": true
             }
           ],
@@ -362,7 +384,7 @@
           "additionalDirectories": [
             "{claude_org_path}/knowledge"
           ],
-          "allowRead": [".env.example", ".env.*.example"],
+          "allowRead": [".env.example", ".env.*.example", "**/.env.example", "**/.env.*.example"],
           "denyRead": [
             {
               "anchor": "worker_dir",
@@ -372,9 +394,21 @@
             },
             {
               "anchor": "worker_dir",
+              "path": "**/.env",
+              "suppressOnSymlinkEscape": true,
+              "layer2Fallback": "Read(**/.env)"
+            },
+            {
+              "anchor": "worker_dir",
               "path": ".env.*",
               "suppressOnSymlinkEscape": true,
               "layer2Fallback": "Read(.env.*)"
+            },
+            {
+              "anchor": "worker_dir",
+              "path": "**/.env.*",
+              "suppressOnSymlinkEscape": true,
+              "layer2Fallback": "Read(**/.env.*)"
             },
             {
               "anchor": "worker_dir",
@@ -545,10 +579,12 @@
             "additionalDirectories": [
               "{claude_org_path}/knowledge/raw"
             ],
-            "allowRead": [".env.example", ".env.*.example"],
+            "allowRead": [".env.example", ".env.*.example", "**/.env.example", "**/.env.*.example"],
             "denyRead": [
               {"anchor": "worker_dir", "path": ".env", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env)"},
+              {"anchor": "worker_dir", "path": "**/.env", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/.env)"},
               {"anchor": "worker_dir", "path": ".env.*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env.*)"},
+              {"anchor": "worker_dir", "path": "**/.env.*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/.env.*)"},
               {"anchor": "worker_dir", "path": "**/credentials*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/credentials*)"},
               {"anchor": "worker_dir", "path": "**/*.pem", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/*.pem)"},
               {"anchor": "home", "path": ".config/gh/hosts.yml", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.config/gh/hosts.yml)"},
@@ -568,10 +604,12 @@
               "{base_clone}/.git/packed-refs",
               "{claude_org_path}/knowledge/raw"
             ],
-            "allowRead": [".env.example", ".env.*.example"],
+            "allowRead": [".env.example", ".env.*.example", "**/.env.example", "**/.env.*.example"],
             "denyRead": [
               {"anchor": "worker_dir", "path": ".env", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env)"},
+              {"anchor": "worker_dir", "path": "**/.env", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/.env)"},
               {"anchor": "worker_dir", "path": ".env.*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env.*)"},
+              {"anchor": "worker_dir", "path": "**/.env.*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/.env.*)"},
               {"anchor": "worker_dir", "path": "**/credentials*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/credentials*)"},
               {"anchor": "worker_dir", "path": "**/*.pem", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/*.pem)"},
               {"anchor": "home", "path": ".config/gh/hosts.yml", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.config/gh/hosts.yml)"},
@@ -587,10 +625,12 @@
             "additionalDirectories": [
               "{claude_org_path}/knowledge/raw"
             ],
-            "allowRead": [".env.example", ".env.*.example"],
+            "allowRead": [".env.example", ".env.*.example", "**/.env.example", "**/.env.*.example"],
             "denyRead": [
               {"anchor": "worker_dir", "path": ".env", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env)"},
+              {"anchor": "worker_dir", "path": "**/.env", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/.env)"},
               {"anchor": "worker_dir", "path": ".env.*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env.*)"},
+              {"anchor": "worker_dir", "path": "**/.env.*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/.env.*)"},
               {"anchor": "worker_dir", "path": "**/credentials*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/credentials*)"},
               {"anchor": "worker_dir", "path": "**/*.pem", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/*.pem)"},
               {"anchor": "home", "path": ".config/gh/hosts.yml", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.config/gh/hosts.yml)"},
@@ -742,10 +782,12 @@
               "{base_clone}/.git/refs/heads/{branch_ref}",
               "{base_clone}/.git/packed-refs"
             ],
-            "allowRead": [".env.example", ".env.*.example"],
+            "allowRead": [".env.example", ".env.*.example", "**/.env.example", "**/.env.*.example"],
             "denyRead": [
               {"anchor": "worker_dir", "path": ".env", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env)"},
+              {"anchor": "worker_dir", "path": "**/.env", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/.env)"},
               {"anchor": "worker_dir", "path": ".env.*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env.*)"},
+              {"anchor": "worker_dir", "path": "**/.env.*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/.env.*)"},
               {"anchor": "worker_dir", "path": "**/credentials*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/credentials*)"},
               {"anchor": "worker_dir", "path": "**/*.pem", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/*.pem)"},
               {"anchor": "home", "path": ".config/gh/hosts.yml", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.config/gh/hosts.yml)"},
@@ -759,10 +801,12 @@
           "enabled": true,
           "filesystem": {
             "additionalDirectories": [],
-            "allowRead": [".env.example", ".env.*.example"],
+            "allowRead": [".env.example", ".env.*.example", "**/.env.example", "**/.env.*.example"],
             "denyRead": [
               {"anchor": "worker_dir", "path": ".env", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env)"},
+              {"anchor": "worker_dir", "path": "**/.env", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/.env)"},
               {"anchor": "worker_dir", "path": ".env.*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env.*)"},
+              {"anchor": "worker_dir", "path": "**/.env.*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/.env.*)"},
               {"anchor": "worker_dir", "path": "**/credentials*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/credentials*)"},
               {"anchor": "worker_dir", "path": "**/*.pem", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/*.pem)"},
               {"anchor": "home", "path": ".config/gh/hosts.yml", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.config/gh/hosts.yml)"},
@@ -903,10 +947,12 @@
             "additionalDirectories": [
               "{worker_dir}/.claude/plans"
             ],
-            "allowRead": [".env.example", ".env.*.example"],
+            "allowRead": [".env.example", ".env.*.example", "**/.env.example", "**/.env.*.example"],
             "denyRead": [
               {"anchor": "worker_dir", "path": ".env", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env)"},
+              {"anchor": "worker_dir", "path": "**/.env", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/.env)"},
               {"anchor": "worker_dir", "path": ".env.*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env.*)"},
+              {"anchor": "worker_dir", "path": "**/.env.*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/.env.*)"},
               {"anchor": "worker_dir", "path": "**/credentials*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/credentials*)"},
               {"anchor": "worker_dir", "path": "**/*.pem", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/*.pem)"},
               {"anchor": "home", "path": ".config/gh/hosts.yml", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.config/gh/hosts.yml)"},
@@ -929,10 +975,12 @@
               "{base_clone}/.git/refs/heads/{branch_ref}",
               "{base_clone}/.git/packed-refs"
             ],
-            "allowRead": [".env.example", ".env.*.example"],
+            "allowRead": [".env.example", ".env.*.example", "**/.env.example", "**/.env.*.example"],
             "denyRead": [
               {"anchor": "worker_dir", "path": ".env", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env)"},
+              {"anchor": "worker_dir", "path": "**/.env", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/.env)"},
               {"anchor": "worker_dir", "path": ".env.*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env.*)"},
+              {"anchor": "worker_dir", "path": "**/.env.*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/.env.*)"},
               {"anchor": "worker_dir", "path": "**/credentials*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/credentials*)"},
               {"anchor": "worker_dir", "path": "**/*.pem", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/*.pem)"},
               {"anchor": "home", "path": ".config/gh/hosts.yml", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.config/gh/hosts.yml)"},
@@ -955,10 +1003,12 @@
             "additionalDirectories": [
               "{worker_dir}/.claude/plans"
             ],
-            "allowRead": [".env.example", ".env.*.example"],
+            "allowRead": [".env.example", ".env.*.example", "**/.env.example", "**/.env.*.example"],
             "denyRead": [
               {"anchor": "worker_dir", "path": ".env", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env)"},
+              {"anchor": "worker_dir", "path": "**/.env", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/.env)"},
               {"anchor": "worker_dir", "path": ".env.*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(.env.*)"},
+              {"anchor": "worker_dir", "path": "**/.env.*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/.env.*)"},
               {"anchor": "worker_dir", "path": "**/credentials*", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/credentials*)"},
               {"anchor": "worker_dir", "path": "**/*.pem", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(**/*.pem)"},
               {"anchor": "home", "path": ".config/gh/hosts.yml", "suppressOnSymlinkEscape": true, "layer2Fallback": "Read(~/.config/gh/hosts.yml)"},

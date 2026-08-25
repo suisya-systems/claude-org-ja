@@ -107,6 +107,48 @@
 
 ### Fixed
 
+- sandbox の `.env` deny が **project root 直下にしか効かず**、サブディレクトリの秘密ファイルが
+  読めていた問題を、deny / allow 両方の再帰化で解消 (#961)。
+  [`tools/org_extension_schema.json`](tools/org_extension_schema.json) の全 11 個の
+  `sandbox.filesystem` body (`roles.{secretary,dispatcher,curator}` +
+  `worker_roles.{default,claude-org-self-edit,doc-audit}` の各 pattern) と
+  [`.claude/settings.json`](.claude/settings.json) で、`denyRead` に `**/.env` / `**/.env.*` を、
+  `allowRead` に `**/.env.example` / `**/.env.*.example` を追加した
+  (`layer2Fallback` を持つエントリには `Read(**/.env)` / `Read(**/.env.*)` も追随。
+  bypassPermissions で Layer 2 が no-op になる dispatcher は #960 同様 `layer2Fallback` を持たない)。
+  素の `.env` / `.env.*` グロブは project root にしか束縛されず、**`**/` 前置の有無だけ**が
+  同じ `denyRead` 内の `**/credentials*` / `**/*.pem` との差だった。
+  **実害はタスク横断の秘密漏れ**である: Pattern A の worker (worker_dir = プロジェクトディレクトリ) からは
+  兄弟 worktree が worker_dir の 1 階層下に見えるため、**並走中の別タスクの**
+  `.worktrees/<別タスク>/.env.live` が読めていた (Pattern B は worker_dir 自体が worktree root なので非該当)。
+  実機の kura ツリーで、修正前は兄弟 worktree の `.env.live` 6 件が読め、修正後は全件 deny になることを確認した
+  (中身は読み出していない)。
+  **deny と allow の再帰化は不可分**で、同じ変更で入れる必要がある: 再帰 deny だけを入れると
+  Claude Code 2.1.245 実機で `sub/.env.example` / `sub/.env.live.example` が deny に転び、
+  #960 が直した #959 摩擦 1 がサブディレクトリで再発する。
+  root 直下のエントリは**置換ではなく併記**で残しており (`.env` と `**/.env` の両方)、
+  `**/` が 0 階層にマッチするか否かに依存せず #960 の root 挙動が保たれる。
+  **残存ギャップ (Layer 2)**: `permissions.deny` も同じ非対称を抱えている (root 限定の `Read(.env)` /
+  `Read(.env.*)` の隣に再帰的な `Read(**/credentials*)` が並ぶ) ため、Layer 3 が効かない場合
+  (sandbox 不在で `failIfUnavailable: false` により fall-open / WSL の realpath escape による suppression) は
+  `Read` ツール経由でサブディレクトリの秘密に届く。本 PR では**あえて触っていない**:
+  `permissions.deny` は claude-org-runtime にバンドルされた schema 側の所有物で、
+  `tools/check_runtime_schema_drift.py` の byte 比較は ja 固有の `sandbox` body しか除外しないため、
+  ja 単独で編集すると drift check が fail する。解消には runtime のリリースと再 pin が要る (follow-up)。
+  今回の実害を塞いでいるのは Layer 3 側であり、Layer 2 は fall-open 時の backstop。
+  **残存ギャップ (dispatcher)**: `roles.dispatcher` は `.env` deny を `claude_org_path` に、
+  `allowRead` (アンカー指定不可の素の相対文字列) を project root = `<claude_org_path>/.dispatcher` に
+  解決するため、carve-out が `.dispatcher/` 配下にしか効かない。#960 の root carve-out も同じ理由で
+  この role には元から効いておらず、本変更は carve-out が届かない deny 領域を root から全深度へ広げる。
+  現状の実害は無い (このリポジトリは `.env.example` を 1 件も追跡していない) が、
+  根治には runtime 側で `allowRead` のアンカー指定サポートが要る。
+  実機検証 (Claude Code 2.1.245, Linux/WSL2 bwrap): `sub/.env` / `sub/.env.local` / `sub/deep/.env` は deny、
+  `sub/.env.example` / `sub/.env.live.example` は読める、`../.env` を指す `sub/.env.evil.example` symlink は deny、
+  root 直下の挙動は #960 から不変。generator が実際に render した Pattern A worker の
+  `settings.local.json` (絶対 path の `denyRead` + 相対 `allowRead`) でも同結果。
+  不変条件は
+  [`docs/contracts/role-pattern-sandbox-contract.md`](docs/contracts/role-pattern-sandbox-contract.md) §1.5 に追記した。
+
 - sandbox の `.env.*` deny がコミット済みテンプレート `.env.example` まで巻き込んでいた問題を、
   Layer 3 の `allowRead` carve-out で解消 (#959 摩擦 1)。
   [`tools/org_extension_schema.json`](tools/org_extension_schema.json) の全 11 個の

@@ -71,13 +71,17 @@
       ],
       "allowRead": [
         ".env.example",
-        ".env.*.example"
+        ".env.*.example",
+        "**/.env.example",
+        "**/.env.*.example"
       ],
       "denyRead": [
         "/home/u/co/**/credentials*",
         "/home/u/co/**/*.pem",
         "/home/u/co/.env",
-        "/home/u/co/.env.*"
+        "/home/u/co/**/.env",
+        "/home/u/co/.env.*",
+        "/home/u/co/**/.env.*"
       ],
       "denyWrite": [
         "/home/u/co/tools",

@@ -100,11 +100,15 @@
     "filesystem": {
       "allowRead": [
         ".env.example",
-        ".env.*.example"
+        ".env.*.example",
+        "**/.env.example",
+        "**/.env.*.example"
       ],
       "denyRead": [
         ".env",
         ".env.*",
+        "**/.env",
+        "**/.env.*",
         "**/credentials*",
         "**/*.pem"
       ]
