@@ -158,11 +158,15 @@
       ],
       "allowRead": [
         ".env.example",
-        ".env.*.example"
+        ".env.*.example",
+        "**/.env.example",
+        "**/.env.*.example"
       ],
       "denyRead": [
         "/home/u/co/.curator/.env",
+        "/home/u/co/.curator/**/.env",
         "/home/u/co/.curator/.env.*",
+        "/home/u/co/.curator/**/.env.*",
         "/home/u/co/.curator/**/credentials*",
         "/home/u/co/.curator/**/*.pem"
       ],

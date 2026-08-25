@@ -164,8 +164,12 @@ enumerate:
 Every `denyRead` cell in this contract that reads `.env.*` is to be read with
 one exception, uniform across all roles and all patterns:
 
-> Layer 3 `allowRead`: `.env.example`, `.env.*.example` — committed template
-> files are re-opened inside the `.env.*` denied region.
+> Layer 3 `allowRead`: `.env.example`, `.env.*.example`, `**/.env.example`,
+> `**/.env.*.example` — committed template files are re-opened inside the
+> `.env` denied region, at the project root and at every depth below it.
+
+Every `.env` `denyRead` cell is likewise to be read as a **pair**, root-anchored
+plus recursive: `.env` + `**/.env`, and `.env.*` + `**/.env.*`.
 
 The `.env.*` glob matches committed `.env.example` / `.env.live.example`
 templates, which carry no secrets. Denying them produced real friction (a
@@ -193,6 +197,54 @@ Two properties of the carve-out matter for this contract:
   `.env` stays denied (verified on 2.1.245): the sandbox refuses to restore an
   `allowRead` entry whose symlink escapes the expected location, so a
   template-shaped name cannot be used to smuggle a secret out.
+- **Both halves are recursive, or neither.** `claude-org-ja#961`: a bare
+  `.env` / `.env.*` glob binds only at the project root, so a `.env` one
+  directory down stayed readable while the neighbouring `**/credentials*` /
+  `**/*.pem` entries — identical but for the `**/` prefix — denied
+  recursively. The invariant is therefore that the deny pair and the
+  `allowRead` carve-out are widened **together, in the same change**: adding
+  `**/.env.*` alone was measured on 2.1.245 to flip `sub/.env.example` and
+  `sub/.env.live.example` to denied, reproducing one level down exactly the
+  §1.5 friction this section exists to prevent. A change that lands one half
+  without the other violates this contract.
+- **Recursive entries are added, not substituted.** The root-anchored `.env` /
+  `.env.*` entries stay in every body alongside `**/.env` / `**/.env.*`. This
+  keeps root behaviour independent of whether `**/` matches zero path segments
+  in the sandbox's glob implementation, which this contract does not pin down.
+- **Why it matters across patterns.** With the root-only form, a Pattern A
+  worker (worker_dir = the project directory) could read
+  `.worktrees/<other-task>/.env` — the secrets of a *concurrently running*
+  task — because sibling worktrees live one level below worker_dir. Pattern B
+  workers were never exposed to their own secret this way, since their
+  worker_dir *is* the worktree root. Verified on a live tree: 6 sibling
+  `.env.live` files readable before the fix, all denied after.
+- **Residual gap — the Layer 2 mirrors are still root-only.** §1.5's "the
+  Layer 2 mirrors stay broad" means *not narrowed to exclude templates*; it
+  never meant *recursive*. The `permissions.deny` arrays carry the same
+  asymmetry this section is about (root-only `Read(.env)` / `Read(.env.*)`
+  beside recursive `Read(**/credentials*)`), so nested secrets remain
+  reachable through the `Read` tool whenever Layer 3 is *not* in force —
+  sandbox unavailable under `failIfUnavailable: false`, or the entry
+  suppressed by a WSL realpath escape — which is precisely the fall-back
+  case the mirror exists for. It is deliberately unchanged here:
+  `permissions.deny` is owned by the schema bundled with
+  `claude-org-runtime`, and [`tools/check_runtime_schema_drift.py`](../../tools/check_runtime_schema_drift.py)
+  strips only ja's own `sandbox` bodies before comparing bytes, so editing
+  these arrays in ja alone fails the drift check. Closing it needs a
+  coordinated runtime release plus a re-pin. Layer 3 is what closes the
+  reported exposure; this is the backstop that has yet to follow.
+- **Residual gap — the dispatcher's anchors do not match.** `roles.dispatcher`
+  anchors its `.env` denies at `claude_org_path`, but its project root (the
+  resolution base for the plain-string `allowRead` entries) is
+  `<claude_org_path>/.dispatcher`. The carve-out therefore covers only
+  templates at or below `.dispatcher/`, while the deny spans the whole org
+  repo. This predates the recursion work — the §1.5 root carve-out was
+  already inert for this role — but recursion widens the uncovered region
+  from the repo root to every depth. It is not expressible today:
+  `allowRead` has no structured-anchor form and is forwarded verbatim. The
+  invariant above ("both halves, or neither") is therefore satisfied for
+  every role whose allow and deny share an anchor, and knowingly waived for
+  this one; closing it needs runtime support for anchored `allowRead`.
 
 ---
 
