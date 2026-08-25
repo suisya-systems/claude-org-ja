@@ -143,9 +143,16 @@ close は低遅延経路として温存し、二重掃除にならないよう `
       ため、代わりに `last CI-confirmed head`（baseline）フィールドを監視 head として突き合わせる
       （`head` で判定すると必ず不一致になり、誤って superseded 扱いで cleanup を skip し、人間確認 gate
       中ずっと herdr でゾンビが残る — この取り違えを避ける）。
-    - **本文に `[head-unverifiable]` が付いている場合は superseded 扱いにしない（Issue #954）**:
-      relay が監視 head を取り出せなかったイベントは `head=<missing>` + 末尾 `[head-unverifiable]` で
-      届く（[`tools/relay_scan.py`](../../../tools/relay_scan.py) の `UNVERIFIABLE_RELAY_TAIL`）。これは
+    - **監視 head が「照合不能」のときは superseded 扱いにしない（Issue #954）**: 次のいずれかに当たる
+      イベントは監視 head を持っていない:
+      - **relay 経由 (B)**: `head=<missing>` + 末尾 `[head-unverifiable]`
+        （[`tools/relay_scan.py`](../../../tools/relay_scan.py) の `UNVERIFIABLE_RELAY_TAIL`）。
+      - **直 push 経由 (A)**: **マーカーは付かない**（marker を足すのは relay の compose のみ）。watcher は
+        merged head を解決できないとき placeholder をそのまま本文に載せるため
+        （[`tools/pr_watch.py`](../../../tools/pr_watch.py) の `head_tag = merged_head or "unknown"`。例
+        `PR_MERGED_NO_RUN: PR #<n> (head=unknown)`）、**本文の head が `unknown` / `<missing>` / 空**なら
+        marker の有無に依らず照合不能として扱う。
+      これは
       「head が違う」ではなく「**照合できない**」なので、不一致と同じ枝（黙って close skip）に流すと
       watcher が残留する。**照合不能は不一致とは別枝**として次の順で処理する:
       1. `events` テーブルから当該 PR の canonical 行を引き直して監視 head を復元し（§「CI 完了検知の
