@@ -156,6 +156,10 @@
       "additionalDirectories": [
         "/home/u/co/knowledge"
       ],
+      "allowRead": [
+        ".env.example",
+        ".env.*.example"
+      ],
       "denyRead": [
         "/home/u/co/.curator/.env",
         "/home/u/co/.curator/.env.*",

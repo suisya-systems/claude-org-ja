@@ -107,6 +107,27 @@
 
 ### Fixed
 
+- sandbox の `.env.*` deny がコミット済みテンプレート `.env.example` まで巻き込んでいた問題を、
+  Layer 3 の `allowRead` carve-out で解消 (#959 摩擦 1)。
+  [`tools/org_extension_schema.json`](tools/org_extension_schema.json) の全 11 個の
+  `sandbox.filesystem` body (`roles.{secretary,dispatcher,curator}` +
+  `worker_roles.{default,claude-org-self-edit,doc-audit}` の各 pattern) と
+  [`.claude/settings.json`](.claude/settings.json) に
+  `allowRead: [".env.example", ".env.*.example"]` を追加した。
+  `denyRead` は否定パターンを持たない (Claude Code 2.1.245 実機で `!.env.example` は deny のまま) ため、
+  公式の [`sandbox.filesystem.allowRead`](https://code.claude.com/docs/en/sandboxing)
+  (「re-allow specific paths within a denied region」/「When read rules overlap, the more specific path wins」)
+  を使っている。同 2.1.245 の実機検証で `.env` / `.env.local` / `.env.production` /
+  `.env.development.local` / `.env.staging` は deny のまま・`.env.example` /
+  `.env.live.example` / `.env.production.example` が読め・`.env` を指す `.env.evil.example`
+  symlink は deny のままであることを確認した (generator が実際に render した
+  worker `settings.local.json` — 絶対 path の `denyRead` と相対 `allowRead` の組み合わせ — でも同結果)。
+  Layer 2 (`permissions.deny` の `Read(.env.*)` と `layer2Fallback` 文字列) は**広いまま据え置き**である:
+  Layer 2 は deny が allow に優先し (同実機で確認)、narrow 化には秘密ファイル名の列挙が要って網羅できないため。
+  報告された摩擦 (pytest が `.env.example` を読む) は Bash 経由 = Layer 3 の事象なので、これで解消する。
+  背景と不変条件は
+  [`docs/contracts/role-pattern-sandbox-contract.md`](docs/contracts/role-pattern-sandbox-contract.md) §1.5 に新設した。
+
 - ディスパッチャーの監視判定が「観測不能」を「対象の異常」と解釈して誤検知を出していた問題を、
   3 箇所の個別修正ではなく 1 つの原則として根治 (#869)。
   [`.dispatcher/references/worker-monitoring.md`](.dispatcher/references/worker-monitoring.md) の

@@ -73,6 +73,10 @@
       "additionalDirectories": [
         "/home/u/workers/T123/.claude/plans"
       ],
+      "allowRead": [
+        ".env.example",
+        ".env.*.example"
+      ],
       "denyRead": [
         "/home/u/workers/T123/.env",
         "/home/u/workers/T123/.env.*",

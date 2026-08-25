@@ -96,6 +96,10 @@
         "/home/u/workers/proj/.git/refs/heads/feat/audit",
         "/home/u/workers/proj/.git/packed-refs"
       ],
+      "allowRead": [
+        ".env.example",
+        ".env.*.example"
+      ],
       "denyRead": [
         "/home/u/workers/proj/.worktrees/T123/.env",
         "/home/u/workers/proj/.worktrees/T123/.env.*",

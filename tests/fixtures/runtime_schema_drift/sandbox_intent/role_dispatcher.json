@@ -69,6 +69,10 @@
       "additionalDirectories": [
         "/home/u/co"
       ],
+      "allowRead": [
+        ".env.example",
+        ".env.*.example"
+      ],
       "denyRead": [
         "/home/u/co/**/credentials*",
         "/home/u/co/**/*.pem",
