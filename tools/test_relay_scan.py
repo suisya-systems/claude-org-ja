@@ -82,6 +82,33 @@ class TestComposeMessage(unittest.TestCase):
         msg = relay_scan.compose_message("ci_completed", {})
         self.assertIn("PR #?", msg)
 
+    def test_missing_head_is_marked_unverifiable(self):
+        # Issue #954: a headless terminal event (the secretary's hand-written
+        # pr_merged row carries no head) used to render `head=unknown`, which
+        # the freshness gate could only read as "mismatched" -- so it silently
+        # skipped the watcher close and left a zombie pane. The gap must be
+        # rendered as not-comparable, without breaking the message shape the
+        # secretary skill parses.
+        msg = relay_scan.compose_message("pr_merged", {"pr": 256})
+        self.assertEqual(
+            msg, "PR_MERGED: PR #256 (head=<missing>) [head-unverifiable] [relay]")
+        self.assertNotIn("unknown", msg)
+        # A head that IS present keeps the plain tail.
+        self.assertNotIn(
+            "head-unverifiable",
+            relay_scan.compose_message("pr_merged", {"pr": 256, "head": "abc1234"}))
+        # For pr_merged_head_unconfirmed the gate compares the baseline, so
+        # that is the field whose absence marks the event unverifiable.
+        self.assertIn(
+            "last CI-confirmed head=<missing>) [head-unverifiable] [relay]",
+            relay_scan.compose_message(
+                "pr_merged_head_unconfirmed", {"pr": 5, "head": "h"}))
+        self.assertNotIn(
+            "head-unverifiable",
+            relay_scan.compose_message(
+                "pr_merged_head_unconfirmed",
+                {"pr": 5, "head": "h", "baseline_head": "base"}))
+
 
 class TestRelayScanCli(unittest.TestCase):
     def _run(self, db, *args):

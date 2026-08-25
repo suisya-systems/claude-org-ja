@@ -61,11 +61,12 @@ allowed-tools:
   これは `gh pr view <PR> --json url,headRefName,title` を 1 度引いて、`StateWriter.set_run_pr` 経由で `runs.pr_url` と `runs.branch` を上書きする。再呼び出しは idempotent（同じ値の上書き、events への追記なし）。これを行わないと後段の `tools/run_complete_on_merge.py` が `runs.pr_url` を引けず `no_run`（exit 3）で落ち、`-MergeWatch` の自動完了が失敗する
   - **クロスリポジトリでも `--repo` は不要（Issue #828）**: `--repo` 省略時は `runs.project_id` → プロジェクト → GitHub URL（[`registry/projects.md`](../../../registry/projects.md) の パス列、次に `projects.origin_url`）で書き込み先リポジトリを決定的に解決する。解決できない場合は ja へ黙って落ちず **exit 2 で停止**する（`--repo OWNER/REPO` 明示は従来どおり最優先）。旧挙動は `--repo` 省略で `gh repo view`＝窓口の cwd＝ja を見ていたため、**ja に同番号の PR があるとその branch / commit が別リポジトリの run 行へ silent に書き込まれた**（2026-08-06 に renga PR #302 が ja PR #302 の情報で汚染された実害）
   - 実行すると 1 行目に `set_run_pr_open: repo=<owner/repo> (source=<registry|db_origin_url|home_repo|explicit>) PR #<N>: <PR タイトル>` が出る。**この行のリポジトリと PR タイトルが意図した書き込み先か目視で確認してから次へ進む**
-- DB の events テーブルにイベント追記 (push / PR open など、`bash tools/journal_append.sh ...`)
+- DB の events テーブルにイベント追記 — **手打ちの対象は helper が書かないイベントに限る**。この段階では `fix_pushed`（push）/ `pr_opened`（PR 作成）の 2 つ（`bash tools/journal_append.sh ...`）。`delegate_sent` や `pr_merged` のように **helper が同一トランザクションで記録するイベントを窓口が手で打ってはならない**（打つと events が 2 行になる）。どのイベントを誰が書くかの SoT は [`docs/journal-events.md`](../../../docs/journal-events.md) の Writer / Emitted by 列
 - PR 番号が確定したら [`/pr-watch-pane <PR>`](../pr-watch-pane/SKILL.md) で CI を監視する（クロスリポジトリは `--repo OWNER/REPO` 付き）。broker tmux セッションの専用ペインで `tools/pr-watch.sh` が ja-root cwd・sandbox 外で回り、完了時に `ci_completed` が自動で events に記録される。CI 完了 / merge / timeout で watcher ペインは tmux backend では自己 close し（herdr / wezterm backend では自己 close が効かず残留するため、監視終端で窓口がイベント駆動 close する — 後掲「監視終端で watcher ペイン ... を窓口がイベント駆動 close する」節と Issue #751）、いずれも窓口セッションを同期占有しない（review feedback loop 2c や手動 close 2b-ii に進める）。**`tools/pr-watch.*` を Claude Code の Bash 背景起動で直接叩かない**: 背景タスクは spawn したシェルのみ追跡し、自己デタッチした監視本体は孤児化して `/clear` / セッション終了で黙死するため（公式仕様。旧経路で実際にマージ監視が黙死した）。専用ペイン経路がこの孤児化を回避する
 - **CI 完了 / merge 検出 / 24h タイムアウトの受信は多層 (CI-watch zero-miss, Refs #653 #658)**。終端信号 (`CI_COMPLETED` / `PR_MERGED` / `PR_MERGE_WATCH_TIMEOUT` / `PR_MERGED_NO_RUN` / `PR_MERGED_HEAD_UNCONFIRMED` / `PR_WATCH_ABORTED`) はいずれも **`events` テーブルの canonical event を正本**とし、その配送を次の順で受ける（peer-only の終端信号は廃止済み — 必ず canonical event が先行する）:
   - **(B) ディスパッチャー relay = 見逃しゼロの主保証（一次受信経路）**: ディスパッチャーが `/loop 3m` 監視サイクルの relay scan ステップ（[`.dispatcher/references/worker-monitoring.md`](../../../.dispatcher/references/worker-monitoring.md) Step 5.25）で、未配送の終端イベントを `event_deliveries` 配送台帳と突き合わせて scan し、broker token 経由で窓口へ `mcp__org-broker__send_message` relay する。窓口はこの relay メッセージ（本文末尾 `[relay]` で直 push と区別可能。例 `CI_COMPLETED: PR #<n> (status=passed, head=<sha>) [relay]`）の到着で次のステップへ進める。**pr-watch ペインの直 push（下記 A）が env 欠如で silent no-op しても、この relay は events を直接読むため確実に届く**（PR #73 障害の根治: 汎用 spawn ペインで broker queue に `CI_COMPLETED` が 1 件も入らず窓口 idle だった終端をこの層が塞ぐ）。at-least-once（台帳 idempotency key で重複抑止・二重受信は冪等に扱う）。
   - **(A) pr-watch からの直 push = 低遅延の補助**: `ORG_TRANSPORT=broker` の pane では pr-watch が CI 確定の瞬間に `CI_COMPLETED` 等を **broker channel sidecar の push** で送る（各ペイン同居の channel sidecar `server:org-broker-channel` が `notifications/claude/channel` で窓口 idle セッションへ注入。runtime push-first 0.1.24+、channel source は `org-broker`）。届けば relay を待たず先に進めてよいが、これは **best-effort**（`tools/peer_notify.py` は raw env 判定のため env 欠如 / broker daemon 未起動 / sidecar unhealthy で無言に落ちる経路がある）。push 失効時は窓口がターン冒頭で能動的に `mcp__org-broker__check_messages` で pull する（§9.6）。push が失敗した場合、pr-watch は `notify_failed` イベントを fail-loud で記録し、それ自体も (B) の relay 対象になる（silent no-op の全廃）。
+  - **(A) と (B) は独立層なので、両方健全な通常運転では同じ終端信号が 2 通届くのが既定であり異常ではない**（Issue #954）: 配送台帳 `event_deliveries` が記録するのは **(B) relay 側だけ**で、(A) の直 push は台帳を一切触らない（[`tools/pr_watch.py`](../../../tools/pr_watch.py) は push 成功で即 return する）。したがって **直 push が成功しても relay は抑止されない**。これは冗長性の設計どおりで、実際 2026-07-30〜08-19 は relay 層が死んで (A) だけ、その直後は (A) が失敗して (B) だけ、という「片方だけが生きている」期間が繰り返し起きている。**2 通目を障害と読み替えて片方を止めない**こと（1 通目で先へ進み、2 通目は冪等に無視してよい）。ただし **同じ PR で `PR_MERGED` が 2 通届き、片方が `[head-unverifiable]`（`head=<missing>`）である場合は別問題**で、これは窓口が `journal_append.sh pr_merged` を手打ちして events が 2 行になった痕跡である（2b-ii の手打ち禁止を参照）。
   - **(フォールバック) events テーブルの直接 poll**: broker daemon 未起動の plain shell / CI 等で relay も push も成立しない場合は、従来どおり窓口が events テーブルを直接引く（下記「CI 完了検知の正路」節）。canonical event はどの層でも同一なので、どこで受けても判定材料（`head` + `status`）は一致する。
   - **各終端信号の分岐（受信層に依らず不変）**: `CI_COMPLETED` 受信 → ユーザーに merge 承認を仰ぐ → ユーザー承認 → `PR_MERGED` 受信で 2b-ii の post-merge cleanup へ。`PR_MERGED_NO_RUN` は merge は観測したが対応 run 行が見つからなかった失敗系（`tools/run_complete_on_merge.py` の `no_run` 終端）で、post-merge cleanup には進めず人間判断で対処する。**`PR_MERGED_HEAD_UNCONFIRMED` も同様に post-merge cleanup には進めず人間確認 gate に倒す**（push と merge が pr-watch の poll 間に同時に滑り込み CI 未確認 head でマージされた終端 — loopback 不能のため fail-closed exit 9 で通知される。本文形は `PR_MERGED_HEAD_UNCONFIRMED: PR #<n> (head=<merged_short>, last CI-confirmed head=<baseline_short>)`。窓口の対処手順・人間提示文・journal kind / severity は下記「PR_MERGED_HEAD_UNCONFIRMED 受信時」節を参照）。`PR_WATCH_ABORTED` は watcher が想定外例外で異常終了した終端で、人間に監視断を知らせ手動 poll / 再起動を促す。
   - **`ORG_TRANSPORT=renga`（opt-in）の場合**: (A) の直 push は `<channel source="renga-peers"> CI_COMPLETED: PR #<n> ...` の in-band push になり、(B) のディスパッチャー relay は `mcp__renga-peers__send_message` 経由になる（relay 層は transport を問わず成立する）。メッセージ本文の semantics・分岐（`PR_MERGED_HEAD_UNCONFIRMED` の人間 gate 含む）は broker と同一。RENGA_SOCKET 未設定の plain shell / CI では直 push は silent noop となり、(B) relay か events テーブル poll にフォールバックする
@@ -290,7 +291,7 @@ pr-watch から `PR_MERGED_HEAD_UNCONFIRMED: PR #<n> (head=<merged_short>, last 
       w.update_run_status('<task_id>', 'in_use')
   "
   ```
-- DB の events テーブルにイベント追記 (`bash tools/journal_append.sh ...`)（`tools/journal_append.py` が DB ルーティング済み）
+- DB の events テーブルにイベント追記 — この再指示段階で窓口が手で打つのは `delegate_resume` / `delegate_resume_r2`（再指示の記録）と、修正の再 push 後の `fix_pushed`（`bash tools/journal_append.sh ...`、`tools/journal_append.py` が DB ルーティング済み）。helper が書くイベント（`delegate_sent` / `pr_merged`）は打たない — Writer / Emitted by の SoT は [`docs/journal-events.md`](../../../docs/journal-events.md)
 - JSON snapshot は StateWriter post-commit hook が自動再生成 (Issue #284)
 - （ペインが生きているのでワーカーはそのまま作業続行）
 - **新ワーカーを再 spawn しない** (T6 contract): Issue / diff / 判断境界が失われるため。ワーカーが応答不能になった場合のみ窓口が判断する
@@ -309,7 +310,17 @@ pr-watch から `PR_MERGED_HEAD_UNCONFIRMED: PR #<n> (head=<merged_short>, last 
 - 該当 run を **COMPLETED** に DB 更新（後述の `update_run_status('<task_id>', 'completed')` ブロックで実施）。markdown 直接編集はしない
 - ワーカーの状態ファイルを最終更新（最後の Progress Log 追記など）
 - **ワーカー状態ファイル (`.state/workers/worker-{task_id}.md`) は StateWriter が `update_run_status('<task_id>', 'completed')` の post-commit で自動的に `.state/workers/archive/` へ移動する** (Issue #284。`archive/` 不在時は lazy 作成、再呼び出しは idempotent。dashboard はこのディレクトリ内のファイルを live ワーカーとして扱わない (Issue #264)。journal / retro が履歴参照する可能性に備えて削除はしない)
-- DB の events テーブルにイベント追記 (`bash tools/journal_append.sh ...`)
+- DB の events テーブルにイベント追記 — このクローズ段階で窓口が手で打つのは `issue_closed`（`Closes #N` が効かない
+  リポジトリでの paired issue クローズ等）/ `prs_merged`（複数 PR をまとめた集計行）といった**窓口自身の後片付け**に限る
+  （`bash tools/journal_append.sh ...`）。`worktree_removed` / `pane_closed` はディスパッチャーが書く
+  （Writer / Emitted by の SoT は [`docs/journal-events.md`](../../../docs/journal-events.md)）
+  - **`pr_merged` は窓口が手で打たない（Issue #954）**: `pr_merged` は下記 `tools/run_complete_on_merge.py` が
+    `pr_state='merged'` / `commit` / `completed_at` と**同一トランザクションで**記録するので、窓口が手で
+    `journal_append.sh pr_merged` を打つ必要はない（打つと events が 1 マージにつき 2 行になり、relay が
+    **二重配送**され、2 本目は helper の payload を持たない＝`head` が無いため
+    `PR_MERGED: PR #<n> (head=<missing>) [head-unverifiable] [relay]` として届く。前掲 freshness gate は
+    監視 head を照合できず watcher ペインの close を**黙って skip** するので、herdr / wezterm backend で
+    watcher がゾンビ残留する — Issue #751 の再発経路。**打たないこと**）
 - ディスパッチャーにペインクローズを依頼（**worker Claude ペイン**）:
   `CLOSE_PANE: {pane_id} のペインを閉じてください。`
 - **CI 監視の watcher ペイン (`pr-watch-<PR>`) を窓口が掃除する（Issue #751）**: worker ペインとは
@@ -330,7 +341,7 @@ pr-watch から `PR_MERGED_HEAD_UNCONFIRMED: PR #<n> (head=<merged_short>, last 
   ```bash
   python tools/run_complete_on_merge.py --pr <PR> --task-id <task_id>
   ```
-  これは `gh pr view <PR> --json url,state,mergedAt,mergeCommit,headRefName,title` を一度引いて、PR が merged なら `StateWriter.transaction()` 経由で `pr_state='merged'` / `commit_short` / `pr_url` / `completed_at` を更新し、`pr_merged` イベント (payload: `task` / `pattern` / `auto_completed`) を 1 行追記する。再呼び出しは idempotent（二重イベントを書かない）。task_id は `runs.pr_url` / `runs.branch`（active な runs 限定）から自動解決されるので省略もできる。
+  これは `gh pr view <PR> --json url,state,mergedAt,mergeCommit,headRefName,title` を一度引いて、PR が merged なら `StateWriter.transaction()` 経由で `pr_state='merged'` / `commit_short` / `pr_url` / `completed_at` を更新し、`pr_merged` イベント (payload: `task` / `pr` / `repo` / `pr_url` / `merge_commit` / `head` / `merged_at` / `pattern` / `auto_completed`) を 1 行追記する。再呼び出しは idempotent（二重イベントを書かない）。**この冪等性は helper 自身の再実行に対する性質であって、窓口の手打ちには効かない**: helper は自分が書いた行しか見ないので、窓口が別途 `journal_append.sh pr_merged` を打てばそれは重複検出されず 2 行目として残り、独立に relay される（上記の手打ち禁止はこのためにある。Issue #954）。task_id は `runs.pr_url` / `runs.branch`（active な runs 限定）から自動解決されるので省略もできる。
   - **`--task-id` を付けて呼ぶこと（Issue #828）**: `--task-id` があれば `--repo` 省略時のリポジトリを run → プロジェクト → GitHub URL で決定的に解決し、解決できなければ exit 2 で停止する。`--task-id` も `--repo` も無い場合だけは「task を PR から逆引きする」経路なので従来どおり `gh repo view`（＝窓口の cwd＝ja）が既定になり、**クロスリポジトリの PR に対して ja の同番号 PR を読む旧来の事故経路が残る**。set_run_pr_open と同じく 1 行目に `run_complete_on_merge: repo=... (source=...) PR #<N>: <PR タイトル>` が出るので書き込み先を目視確認する
   - **helper は runs.status を触らない**: dispatcher 側 pane close / worker_closed / worker-state final update が必要 (delegation-lifecycle-contract §T5)。helper は merge 事実のみ記録し、status flip と worker_dir 削除は窓口が下記の StateWriter で行う
   - **CLI 終了コード**: `merged` / `already` / `not_yet` は exit 0、`no_run`（runs に該当行なし）は exit 3 で失敗扱いになる。手動運用時は exit code を確認

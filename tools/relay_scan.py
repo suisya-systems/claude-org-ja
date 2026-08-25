@@ -171,6 +171,17 @@ def _payload(row) -> dict:
         return {}
 
 
+# Rendered in place of a head the event does not carry, together with
+# ``UNVERIFIABLE_RELAY_TAIL``. Issue #954: filling the gap with "unknown"
+# produced a value that merely *mismatched* the watcher head, which the
+# secretary's freshness gate is required to treat as a superseded event
+# (skip the close) -- so a headless event silently disabled the watcher
+# cleanup instead of reporting that it could not be matched at all.
+HEAD_MISSING = "<missing>"
+RELAY_TAIL = "[relay]"
+UNVERIFIABLE_RELAY_TAIL = "[head-unverifiable] [relay]"
+
+
 def compose_message(kind: str, payload: dict) -> str:
     """Build the relay text for a terminal event.
 
@@ -179,24 +190,46 @@ def compose_message(kind: str, payload: dict) -> str:
     trailing ``[relay]`` marker so a relayed copy is distinguishable from
     a direct push in the transcript. Unknown kinds degrade to a generic
     line rather than raising, so a new terminal kind is never dropped.
+
+    When the event carries no head to match the watcher against, the head
+    field renders as ``<missing>`` and the line gains a leading
+    ``[head-unverifiable]`` marker ahead of ``[relay]`` (Issue #954).
     """
     pr = payload.get("pr")
     pr_tag = f"PR #{pr}" if pr is not None else "PR #?"
-    head = payload.get("head") or "unknown"
+    # Issue #954: a missing head used to be filled in with "unknown".
+    # The secretary's freshness gate matches the relayed head against the
+    # head its live watcher instance is tracking (see the "freshness gate"
+    # bullet in .claude/skills/org-pull-request/SKILL.md), so "unknown" is
+    # structurally guaranteed to mismatch and the gate then silently
+    # skipped the cleanup close, leaving a zombie watcher pane on the
+    # herdr / wezterm backends (the Issue #751 re-entry path). Render an
+    # explicit sentinel plus a trailing marker instead, so "this head
+    # cannot be compared at all" is distinguishable from "the heads
+    # differ" without changing the CI_COMPLETED / PR_MERGED message shape
+    # the secretary skill parses.
+    raw_head = payload.get("head")
+    head = raw_head or HEAD_MISSING
+    tail = RELAY_TAIL if raw_head else UNVERIFIABLE_RELAY_TAIL
     if kind == "ci_completed":
         status = payload.get("status", "unknown")
-        return f"CI_COMPLETED: {pr_tag} (status={status}, head={head}) [relay]"
+        return f"CI_COMPLETED: {pr_tag} (status={status}, head={head}) {tail}"
     if kind == "pr_merged":
-        return f"PR_MERGED: {pr_tag} (head={head}) [relay]"
+        return f"PR_MERGED: {pr_tag} (head={head}) {tail}"
     if kind == "pr_merge_watch_timeout":
-        return f"PR_MERGE_WATCH_TIMEOUT: {pr_tag} (head={head}) [relay]"
+        return f"PR_MERGE_WATCH_TIMEOUT: {pr_tag} (head={head}) {tail}"
     if kind == "pr_merged_no_run":
-        return f"PR_MERGED_NO_RUN: {pr_tag} (head={head}) [relay]"
+        return f"PR_MERGED_NO_RUN: {pr_tag} (head={head}) {tail}"
     if kind == "pr_merged_head_unconfirmed":
-        baseline = payload.get("baseline_head") or "unknown"
+        # For this kind the gate compares the *baseline* (last CI-confirmed)
+        # head, not `head` -- so that is the field whose absence makes the
+        # event unmatchable.
+        raw_baseline = payload.get("baseline_head")
+        baseline = raw_baseline or HEAD_MISSING
+        baseline_tail = RELAY_TAIL if raw_baseline else UNVERIFIABLE_RELAY_TAIL
         return (
             f"PR_MERGED_HEAD_UNCONFIRMED: {pr_tag} (head={head}, "
-            f"last CI-confirmed head={baseline}) [relay]"
+            f"last CI-confirmed head={baseline}) {baseline_tail}"
         )
     if kind == "pr_conflict_detected":
         state = payload.get("merge_state_status") or "unknown"
@@ -205,7 +238,7 @@ def compose_message(kind: str, payload: dict) -> str:
                   else "conflict のため CI が発火しません")
         return (
             f"PR_CONFLICT: {pr_tag} (head={head}, mergeStateStatus={state})"
-            f" - {advice} [relay]"
+            f" - {advice} {tail}"
         )
     if kind == "pr_watch_aborted":
         err = payload.get("error", "unknown error")

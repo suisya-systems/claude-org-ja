@@ -127,9 +127,20 @@ addition to its writer / payload shape:
 | `fix_pushed`    | `task`, `branch`, `commit`              | secretary | secretary  | —            |
 | `pr_opened`     | `task`, `pr`, `url`                     | secretary | secretary  | —            |
 | `prs_opened`    | `count`, `prs[]`                        | secretary | secretary  | —            |
-| `pr_merged`     | `pr`, `task`                            | secretary | secretary  | —            |
+| `pr_merged`     | `task`, `pr`, `repo`, `pr_url`, `merge_commit`, `head`, `merged_at`, `pattern`, `auto_completed` | run_complete_on_merge | `run_complete_on_merge.py` | —            |
 | `prs_merged`    | `count`, `prs[]`                        | secretary | secretary  | —            |
 | `prs_pushed`    | `count`, `branches[]`                   | secretary | secretary  | —            |
+
+`pr_merged` is written by `tools/run_complete_on_merge.py` in the **same transaction** as
+`pr_state='merged'` / `commit` / `completed_at` (see the `append_event` call at
+[`tools/run_complete_on_merge.py`](../tools/run_complete_on_merge.py) `kind="pr_merged"`), not by a
+hand-typed `journal_append.sh`. **A hand-written `pr_merged` is deprecated**: the helper already
+appends the row, so typing one adds a *second* events row for the same merge. Both rows are relayed
+independently by [`tools/relay_scan.py`](../tools/relay_scan.py) (the outbox ledger keys on
+`source_event_id`, so two rows are two deliveries), and the hand-written one carries no `head` —
+which the secretary's watcher-cleanup freshness gate cannot match, so the watcher pane is left
+running (Issue #954 / the Issue #751 re-entry path). The helper's idempotency covers **re-running
+the helper**; it does not deduplicate a row a human appended separately.
 
 ### History / phase markers
 
