@@ -52,6 +52,13 @@
 #     直接 API を叩く経路を塞ぐため。`gh auth status` は allow。
 #   - `gh extension install` / `exec` は任意コード実行経路なので deny
 #     （`gh extension list` / `search` / `browse` は allow）。
+#   - **静的解析の原理的な限界**: シェルの語形成は本フックが再現できる範囲より
+#     広い（可変長のクォート連結・エスケープ・パス経由の再スペル・実行時に
+#     解決される alias 等）。Codex レビュー 3 round でリダイレクト密着形 /
+#     短縮フラグクラスタ / 引用符分断の実行ファイル名などを順次塞いだが、
+#     「意図的な回避を完全に防ぐ」ことは静的解析では達成できない。本フックは
+#     多層防御の 1 枚（うっかり実行と素直な迂回を止める壁）であり、最終的な
+#     安全弁は資格情報側の deny と人間ゲートである。
 #   - curl / wget で api.github.com を直接叩く経路は本フックの対象外
 #     （gh 経由の書き込みを塞ぐのが Refs #429 のスコープ）。資格情報側の
 #     deny と対で人間ゲートを守る設計。
@@ -298,7 +305,7 @@ gpg-key ssh-key codespace preview browse status co help completion version "
       }
     }
     # gh api の HTTP メソッド解析。start は "api" トークンの位置。
-    function classify_api(start,    k, t, method, hasbody, hasinput, graphql, m, fieldval, opaquebody, ei, nospace) {
+    function classify_api(start,    k, t, method, hasbody, hasinput, graphql, m, fieldval, opaquebody, ei, nospace, cluster, cval, fpos) {
       method = ""; hasbody = 0; hasinput = 0; graphql = 0; opaquebody = 0
       for (k = start + 1; k <= NF; k++) {
         t = $k
@@ -327,6 +334,34 @@ gpg-key ssh-key codespace preview browse status co help completion version "
         if (t ~ /^-[fF]./) {
           hasbody = 1
           if (t ~ /=[@$]/) opaquebody = 1
+          continue
+        }
+        # pflag は値を取らない短縮フラグと値を取る短縮フラグを 1 トークンに
+        # まとめられる（`-iXPOST` = `-i -X POST`、`-iFtitle=x` = `-i -F title=x`）。
+        # 上の完全一致 / 密着形の分岐はこの形を取りこぼすので、クラスタ内に
+        # X / f / F が現れたら残りを値として解釈する。
+        if (t ~ /^-[A-Za-z]/ && t !~ /^--/) {
+          cluster = substr(t, 2)
+          if (index(cluster, "X") > 0) {
+            cval = substr(cluster, index(cluster, "X") + 1)
+            if (cval == "") {
+              method = (k < NF) ? $(k + 1) : "__missing__"
+              k++
+            } else {
+              method = cval
+            }
+          }
+          fpos = index(cluster, "f")
+          if (fpos == 0) fpos = index(cluster, "F")
+          if (fpos > 0) {
+            hasbody = 1
+            cval = substr(cluster, fpos + 1)
+            if (cval == "") {
+              cval = (k < NF) ? $(k + 1) : ""
+              k++
+            }
+            if (cval ~ /=[@$]/) opaquebody = 1
+          }
           continue
         }
       }
@@ -388,6 +423,7 @@ done < <(printf '%s\n' "${GH_SEGMENTS[@]}" | collect_assignments)
 
 for segment in "${GH_SEGMENTS[@]}"; do
   [[ -z "$segment" ]] && continue
+  gh_verdicts=""
 
   # 既知の VAR=value を展開（`sub=merge; gh pr "$sub" 1` 対策）
   if [[ ${#GH_ASSIGNMENTS[@]} -gt 0 ]]; then
@@ -399,14 +435,23 @@ for segment in "${GH_SEGMENTS[@]}"; do
   # コマンド置換 $(...) / `...` の本体も検査対象に含める
   gh_flat=$(printf '%s' "$gh_expanded" | flatten_substitutions)
 
-  # `gh` トークンが無いセグメントは早期に抜ける（awk 起動コストの節約）。
-  # 大小文字を無視する（-i）: awk 側の判定は tolower() 済みなので、case-insensitive
-  # なファイルシステム（Windows / macOS）で通る `GH pr merge` を pre-filter で
-  # 落としてしまわないようにする。
-  echo "$gh_flat" | grep -qiE '(^|[[:space:]])[^[:space:]]*gh(\.exe)?([[:space:]]|$)' || continue
+  # 引用符を「削除」した版も併せて検査する。flatten_substitutions は引用符を
+  # 空白へ潰すため、シェルが 1 語として連結する `g"h" pr create` /
+  # `/usr/bin/g"h" pr merge 1` が `g h ...` に割れて実行ファイル名の検知を
+  # すり抜ける。削除版ではシェルと同じ連結結果（`gh pr create`）になる。
+  gh_joined=$(printf '%s' "$gh_expanded" | tr -d '\042\047' | flatten_substitutions)
 
-  gh_verdicts=$(printf '%s' "$gh_flat" | classify_gh_invocations)
-  if [[ -n "$gh_verdicts" ]]; then
+  for gh_variant in "$gh_flat" "$gh_joined"; do
+    # `gh` トークンが無いセグメントは早期に抜ける（awk 起動コストの節約）。
+    # 大小文字を無視する（-i）: awk 側の判定は tolower() 済みなので、case-insensitive
+    # なファイルシステム（Windows / macOS）で通る `GH pr merge` を pre-filter で
+    # 落としてしまわないようにする。
+    echo "$gh_variant" | grep -qiE '(^|[[:space:]])[^[:space:]]*gh(\.exe)?([[:space:]]|$)' || continue
+    gh_verdicts=$(printf '%s' "$gh_variant" | classify_gh_invocations)
+    [[ -n "$gh_verdicts" ]] && break
+  done
+
+  if [[ -n "${gh_verdicts:-}" ]]; then
     gh_detail=$(printf '%s' "$gh_verdicts" | sed 's/^DENY|//' | tr '\n' ' ')
     deny_with_reason "gh 経由の GitHub 書き込み操作は Worker から直接実行できません（検知: ${gh_detail%% }）。PR 作成 / merge / comment / review / release / workflow 実行などは人間の承認後に窓口が実施します。読み取り系（gh pr view / list / diff / checks、gh run view / list、gh api の GET 等）は許可されています。読み取りのつもりで拒否された場合は、判定できない形（未知のサブコマンド / 変数経由の指定）になっていないか確認し、必要なら窓口に相談してください。"
   fi

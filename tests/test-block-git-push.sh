@@ -322,6 +322,17 @@ assert_gh 2 'gh api -X POST /repos/o/r/issues -H "X-Foo: graphql"' 'header 値�
 # Codex round 2 (P1): 隣接クォート連結で分断された mutation も検知する
 assert_gh 2 'gh api graphql -f query="muta""tion{x}"' '隣接クォート連結の mutation も検知'
 
+# Codex round 3 (P1): pflag の短縮フラグクラスタも解釈する
+assert_gh 2 'gh api -iXPOST /repos/o/r/issues' 'クラスタ -iXPOST の POST を検知'
+assert_gh 2 'gh api -iFtitle=x /repos/o/r/issues' 'クラスタ -iFtitle=x の暗黙 POST を検知'
+assert_gh 2 'gh api -iX DELETE /repos/o/r/issues/1' 'クラスタ -iX + 別トークン値も検知'
+assert_gh 2 'gh api graphql -iFquery=@q.graphql' 'クラスタ内の @file body も検知'
+
+# Codex round 3 (P1): 引用符で分断された実行ファイル名も検知する
+assert_gh 2 'g"h" pr create -t x' '引用符で分断された gh も検知'
+assert_gh 2 '/usr/bin/g"h" pr merge 1' 'パス付きで引用符分断された gh も検知'
+assert_gh 2 "g'h' pr merge 1" 'シングルクォートで分断された gh も検知'
+
 echo "# --- gh read-only operations: allow cases (回帰の要) ---"
 
 # pr / issue の読み取り
@@ -396,6 +407,11 @@ assert_gh 0 'ls -la'
 assert_gh 0 'git status'
 assert_gh 0 'bash tools/gh-helper.sh' 'gh を接尾辞に含むファイル名は gh 起動ではない'
 assert_gh 0 'echo through the night' 'gh を含む単語（through）は誤検知しない'
+
+# 短縮フラグクラスタでも読み取りは通る
+assert_gh 0 'gh api -i /repos/o/r/pulls/1' 'クラスタでない -i 付き GET は allow'
+assert_gh 0 'gh api -iX GET /repos/o/r/issues' 'クラスタ -iX + GET は allow'
+assert_gh 0 'gh api -q .head.sha repos/o/r/pulls/1' '-q 付き GET は allow'
 
 # --- Summary ---
 echo "# $PASS passed, $FAIL failed out of $TEST_NUM tests"
