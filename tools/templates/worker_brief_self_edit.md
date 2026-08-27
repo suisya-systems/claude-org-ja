@@ -60,8 +60,44 @@ ${references_knowledge_block}
 検証深度 full。`codex` available なら commit 後、`codex exec review`（review surface）で差分セルフレビュー（直打ち長文プロンプト形は廃止。中小 diff で約 2 倍速・安全側パリティ同等）:
 ```bash
 # --base はこのブランチのベース upstream（${task_base_ref}）。ローカルの追跡なしブランチは古いと別タスク差分を巻き込むため remote-tracking ref を使う。参照前に git fetch origin を 1 回（fetch 不能でも review は継続）。前景実行して出力を読んでから次へ進む。
-codex exec review --base ${task_base_ref} -m gpt-5.6-sol -c model_reasoning_effort=medium < /dev/null
+
+# CODEX_HOME は「書き込み可能かつ一時ディレクトリでない」場所へ退避する（理由は直下）。
+# 上書き前に既存の（認証済みの）codex home を控えてリンク元にする。
+# （既定値つきパラメータ展開は brief 生成時のプレースホルダ検査に触れるため、同義の brace なし形で書く）
+CODEX_SRC="$CODEX_HOME"
+[ -n "$CODEX_SRC" ] || CODEX_SRC="$HOME/.codex"
+export CODEX_HOME="$PWD/.codex-home"
+# codex は session DB / cache / バイナリを CODEX_HOME に書く。作成前に worker ローカルの
+# exclude に登録し、`git add -A` 等での誤 staging を防ぐ（.git/info/exclude は commit されない）。
+grep -qxF '.codex-home/' "$(git rev-parse --git-path info/exclude)" 2>/dev/null \
+  || echo '.codex-home/' >> "$(git rev-parse --git-path info/exclude)"
+mkdir -p "$CODEX_HOME"
+ln -sf "$CODEX_SRC/auth.json"   "$CODEX_HOME/auth.json"
+ln -sf "$CODEX_SRC/config.toml" "$CODEX_HOME/config.toml"
+
+# ログ名は worker ごとに分ける（$TMPDIR は並走 worker で共有。固定名だと別 worker の
+# "succeeded in" を自分の成立根拠に取り違える）。basename だけでは別リポジトリの同名
+# worktree で衝突しうるので、フルパス由来の識別子を付ける。
+CODEX_REVIEW_LOG="$TMPDIR/codex-review-$(basename "$PWD")-$(printf %s "$PWD" | cksum | cut -d" " -f1).log"
+
+# pipefail が無いとパイプの終了コードは tee のものになり codex 側の失敗が隠れる。
+set -o pipefail
+codex exec review --base ${task_base_ref} -m gpt-5.6-sol -c model_reasoning_effort=medium -c sandbox_mode='"read-only"' < /dev/null 2>&1 | tee "$CODEX_REVIEW_LOG"
+codex_status=$?
+set +o pipefail
+echo "codex exit status: $codex_status"
 ```
+
+**`CODEX_HOME` 退避は必須（外すと下記「空の合格」を踏む）**: 既定の `~/.codex` はサンドボックスで書込不可 → codex が実行ヘルパーを配置できない → **コマンドを 1 つも実行できず `git diff` を一度も読まずにレビューを終える**。退避先は **書き込み可能** かつ **一時ディレクトリ配下でない** の 2 条件を両方満たすこと。**`$TMPDIR` 配下は不可**（codex が temp dir 配下へのヘルパー配置を明示的に拒否する）—「一時ファイルは `$TMPDIR` へ」の一般則に対する明示的な例外で、ここで `$TMPDIR` を使うと正直なエラーが「空の合格」に化けてかえって危険。`$PWD/.codex-home` は両条件を満たす。`.codex-home` は **commit しないこと**（`git status` で確認）。`-c sandbox_mode='"read-only"'` は codex 内側サンドボックスを**締める**設定で外側には触れない（緩める方向へ変えて回避しないこと。真因は緩さ不足ではなく `CODEX_HOME` の配置）。
+
+**「空の合格」の検出（available かつエラー表示も無いのに未成立のケース）**: 上記設定を外すと codex は diff を読まないまま**「指摘なし」と読める文面で正常終了**する。**終了コードは成立判定に使えず（空の合格でも exit 0）**、**但し書きの有無も使えない**（環境により但し書きが消え `No actionable findings were identified` だけになる）。よって**「エラーが出ていない」（否定的証拠）ではなく「コマンドが実際に実行された」（肯定的証拠）で判定する**。review 後に必ず実行し、**中身を読む前に**判定すること:
+```bash
+grep -cE '^ *succeeded in [0-9]+(ms|s|m)' "$CODEX_REVIEW_LOG"   # 成功実行数: 1 以上が必要
+grep -cE '^ *failed in [0-9]+(ms|s|m)' "$CODEX_REVIEW_LOG"      # 失敗実行数: 0 が必要
+```
+- **行頭アンカー（`^ *`）と実行時間（`[0-9]+(ms|s|m)`）を必ず両方付ける**。ログには diff 本文も codex の実行出力もそのまま載るため素の文字列 grep は自分自身にマッチする（実測: 素の grep は diff 側の記述に / 行頭アンカーだけでも ` failed in TUI` の断片にマッチ）。本物の記録は必ず実行時間を伴う
+- **ゲート成立** = 成功数 **1 以上** かつ 失敗数 **0** かつ `codex_status` **0**。このときだけ「codex clean」と報告してよい。exit 0 は十分条件ではない（空の合格でも 0）が、**非 0 は失格条件として使える**ため必要条件に併用する
+- **未成立なら「codex clean」と報告しない**。まず `CODEX_HOME` を見直して再実行（`$TMPDIR` 配下を疑う）。それでも成立しなければ **「Codex ゲート未成立（diff 未読の空の合格、HEAD=`<sha>`）」と明示**し、上記 2 数値を添えて窓口の判断を仰ぐ
 - **前景実行する**（背景化 `&` はゲート素通り事故を招く）。Blocker/Major 修正、**round 既定上限 3**（brief の実装ガイダンスで別値指定があればそちら優先）
 - **上限到達で自走継続せず**、残指摘 + 自己評価（設計問題化か収束途中か）を窓口に報告して停止。**同一指摘が 3 round 消えない場合は上限前でも即設計問題として報告**（別問題が各 1 round で順に解消する健全な収束とは区別）
 - Minor/Nit 残置可

@@ -112,3 +112,6 @@ err.log
 
 # Dispatcher pane snapshot scratch (machine-local)
 .dispatcher/panes-snapshot-tmp.json
+
+# codex セルフレビュー用の worker ローカル CODEX_HOME（成果物ではない）
+.codex-home/
