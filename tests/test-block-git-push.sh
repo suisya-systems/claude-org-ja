@@ -297,7 +297,7 @@ assert_gh 2 'gh pr `printf merge` 1' 'subcommand がコマンド置換（判定�
 # リテラル文字列中の gh はコマンド起動ではないので巻き込まない
 assert_gh 0 'git commit -m "gh の書き込みを塞ぐ"' '日本語コミットメッセージ中の gh は誤検知しない'
 assert_gh 0 'echo "see gh https://cli.github.com/manual"' 'URL を伴う散文中の gh は誤検知しない'
-assert_gh 0 'ls tools/gh 2>/dev/null' 'パス末尾が gh でも後続が subcommand 形でなければ allow'
+assert_gh 0 'ls tools/gh' 'パス末尾が gh でも後続に subcommand が無ければ allow'
 
 # Codex round 1 (P1): alias 名は [a-z-]+ に限らない。語形トークンは未知でも deny。
 assert_gh 2 'gh foo_bar 123' 'アンダースコア入りの未知 group（alias 経由）も deny'
@@ -309,6 +309,18 @@ assert_gh 2 'gh issue foo_bar 42' 'アンダースコア入りの未知 subcomma
 assert_gh 2 'gh api graphql -F query=@q.graphql' 'graphql の body が @file（読めない）'
 assert_gh 2 'gh api graphql -f query=@-' 'graphql の body が標準入力（読めない）'
 assert_gh 2 'gh api graphql -f query=$QUERY' 'graphql の body が未展開の変数（読めない）'
+
+# Codex round 2 (P1): リダイレクトが語に密着した形も検知する
+assert_gh 2 'gh pr create>/dev/null' 'リダイレクトが subcommand に密着した形も検知'
+assert_gh 2 'gh pr>out merge 1' 'リダイレクトが group に密着した形も検知'
+assert_gh 2 'gh pr merge 1 2>&1' 'リダイレクトを伴う書き込みも検知'
+
+# Codex round 2 (P1): graphql 判定は endpoint 位置のみで行う
+assert_gh 2 'gh api -X DELETE /repos/o/r/issues/1 --template graphql' 'option 値の graphql で REST 書き込みが素通りしない'
+assert_gh 2 'gh api -X POST /repos/o/r/issues -H "X-Foo: graphql"' 'header 値の graphql でも素通りしない'
+
+# Codex round 2 (P1): 隣接クォート連結で分断された mutation も検知する
+assert_gh 2 'gh api graphql -f query="muta""tion{x}"' '隣接クォート連結の mutation も検知'
 
 echo "# --- gh read-only operations: allow cases (回帰の要) ---"
 

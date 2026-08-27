@@ -243,6 +243,12 @@ gpg-key ssh-key codespace preview browse status co help completion version "
       return 0
     }
     {
+      # シェルのリダイレクト演算子は空白なしで語に密着できる
+      # （`gh pr create>/dev/null` / `gh pr>out merge 1`）。シェルは実行前に
+      # これを取り除くので、字面のままだと「コマンド語ではない」と誤判定して
+      # 素通りする。判定前に演算子を空白へ正規化してトークンを割り直す
+      # （$0 への代入で NF / $n が再計算される）。
+      gsub(/[<>]/, " ")
       for (i = 1; i <= NF; i++) {
         ghname = tolower($i)
         # Windows は gh.exe。実行形式のスペリング差で deny が外れないようにする。
@@ -292,7 +298,7 @@ gpg-key ssh-key codespace preview browse status co help completion version "
       }
     }
     # gh api の HTTP メソッド解析。start は "api" トークンの位置。
-    function classify_api(start,    k, t, method, hasbody, hasinput, graphql, m, fieldval, opaquebody) {
+    function classify_api(start,    k, t, method, hasbody, hasinput, graphql, m, fieldval, opaquebody, ei, nospace) {
       method = ""; hasbody = 0; hasinput = 0; graphql = 0; opaquebody = 0
       for (k = start + 1; k <= NF; k++) {
         t = $k
@@ -323,8 +329,14 @@ gpg-key ssh-key codespace preview browse status co help completion version "
           if (t ~ /=[@$]/) opaquebody = 1
           continue
         }
-        if (tolower(t) == "graphql") graphql = 1
       }
+
+      # GraphQL かどうかは endpoint 引数だけで決める。全トークンを見ると
+      # `gh api -X DELETE /repos/o/r/issues/1 --template graphql` のように
+      # option の値に graphql が現れる REST 書き込みが GraphQL 扱いになり、
+      # メソッド判定を素通りする。
+      ei = next_word(start + 1)
+      if (ei > 0 && tolower($ei) == "graphql") graphql = 1
 
       # 静的に読めないメソッド指定（変数が残っている / 値が欠落）は安全側で deny
       if (method == "__missing__" || method ~ /\$/) {
@@ -338,7 +350,14 @@ gpg-key ssh-key codespace preview browse status co help completion version "
         # mutation が隠れていても見えないので、まとめて deny に倒す（fail closed）。
         if (hasinput == 1) { print "DENY|api:graphql-input-undecidable"; return }
         if (opaquebody == 1) { print "DENY|api:graphql-body-undecidable"; return }
-        if (index($0, "mutation") > 0) { print "DENY|api:graphql-mutation"; return }
+        # `-f query="muta""tion{x}"` のように隣接クォートで連結された形は、
+        # flatten_substitutions が引用符を空白へ潰すため字面が分断される。
+        # 空白を除去した版でも判定して取りこぼしを塞ぐ（安全側）。
+        nospace = tolower($0)
+        gsub(/[[:space:]]/, "", nospace)
+        if (index(tolower($0), "mutation") > 0 || index(nospace, "mutation") > 0) {
+          print "DENY|api:graphql-mutation"; return
+        }
         return
       }
 
