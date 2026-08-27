@@ -168,11 +168,47 @@ Get-Command codex -ErrorAction SilentlyContinue
 - `available` の場合: 以下のコマンドを**前景実行**する（`--base` にはこのブランチのベース（通常 `origin/main`）を渡す。**ローカル `main` ではなく remote-tracking の `origin/main`** を使うのは、共有 clone のローカル `main` が古いと別タスク差分を巻き込む誤レビューになるため。参照前に `git fetch origin` を 1 回（着手時 pull 済みでも review 直前に最新化。fetch 不能でも review は継続）。stdin は `< /dev/null` で明示クローズ。背景化 `&` + ログ redirect は完了を待たず指摘を読まずに完了報告してゲートを素通りする事故を招くため避ける）
 
 ```bash
-codex exec review --base origin/main -m gpt-5.6-sol -c model_reasoning_effort=medium < /dev/null
+# CODEX_HOME は「書き込み可能かつ一時ディレクトリでない」場所を指すこと（理由は直下の注記）。
+export CODEX_HOME="$PWD/.codex-home"
+mkdir -p "$CODEX_HOME"
+ln -sf ~/.codex/auth.json   "$CODEX_HOME/auth.json"
+ln -sf ~/.codex/config.toml "$CODEX_HOME/config.toml"
+
+codex exec review --base origin/main -m gpt-5.6-sol -c model_reasoning_effort=medium \
+  -c sandbox_mode='"read-only"' < /dev/null 2>&1 | tee "$TMPDIR/codex-review.log"
 ```
+
+**`CODEX_HOME` を退避する理由と、退避先の条件（重要。ここを外すと後述の「空の合格」を踏む）**: 既定の `CODEX_HOME`（`~/.codex`）はワーカーのサンドボックスで書き込み不可なため、codex は自分の実行ヘルパー（`codex-linux-sandbox`）を配置できない。ヘルパーが無いと codex は**コマンドを 1 つも実行できず、`git diff` を一度も読まないままレビューを終える**。
+
+退避先は次の 2 条件を**両方**満たすこと:
+- **書き込み可能**であること
+- **一時ディレクトリ配下でない**こと — codex は `codex_home` が temp dir 配下だとヘルパー配置を拒否する（`Refusing to create helper binaries under temporary dir "..."`）
+
+**したがって `CODEX_HOME` は `$TMPDIR` 配下に置いてはならない。** 上記「書き込み可能範囲と、書き込みを拒否されたときの対処」節の「一時ファイルは `$TMPDIR` 配下へ」という一般則に対する**明示的な例外**である。`$TMPDIR` を指定すると、症状が「正直なエラー」ではなく「空の合格」（下記）に化けるため、一般則をそのまま適用するより危険になる。ワーカー作業ディレクトリ配下（上例の `$PWD/.codex-home`）は両条件を満たす。`.codex-home` は成果物ではないので **commit しないこと**（`git add -u` と新規ファイルの明示 add を使っていれば混入しない。混入していないことを `git status` で確認する）。
+
+`-c sandbox_mode='"read-only"'` は **codex 自身の内側サンドボックスを read-only に締める**設定であり、ワーカーを包む外側の Claude Code サンドボックスには一切触れない。**緩める方向の設定ではない**（明示するのは、実行環境の `config.toml` に依存せず常に同じ条件で回すため）。**`sandbox_mode` を `danger-full-access` 等の緩める方向へ変えて回避を試みてはならない** — 安全分類器に拒否されるうえ、そもそも真因は「緩さが足りないこと」ではなく上記の `CODEX_HOME` の配置である。
 
 - review surface は内蔵レビュープロンプトで Blocker/Major 相当（P1/P2 等）を返す。**前景で出力を読んでから次に進む**（応答が長く来ない稀なケースのみ中断して skip 可）。**large diff（100 行超目安）では effort を上げない**（high-effort review は大 diff でスケールせず直打ちより遅くなる）。
 - review surface は危険側 Major（false positive で gate 誤通過する系）は守るが、benign な safe-side Major（過剰 polling 方向の false negative）や ReDoS 級の付加バグを取りこぼしうる。設計に近い変更で深掘りが要る場合は窓口に design review 併用を相談する。詳細・実測根拠の SoT は [`knowledge/curated/codex.md`](../../../../knowledge/curated/codex.md)。
+
+**「空の合格」を検出する（`available` かつエラー表示も無いのにゲートが未成立のケース）**: 上記の `CODEX_HOME` 設定を外した状態で回すと、codex は `git diff` を一度も実行しないまま **「指摘なし」と読める文面を返して正常終了する**。これは最も危険な失敗モードで、**出力の文面を読むだけでは正常な合格と区別できない**。実測で確認された性質は次のとおり:
+
+- **終了コードは判定に使えない** — 空の合格でも **exit 0** を返す
+- **出力の但し書きも判定に使えない** — 「sandbox が起動できなかったので確度が低い」旨の但し書きが付くことはあるが、**環境によっては但し書きが消え、`No actionable findings were identified` という素の合格文だけになる**。文面の有無に依存した判定をしてはならない
+
+したがって、**「エラーが出ていないこと」（否定的証拠）ではなく「コマンドが実際に実行されたこと」（肯定的証拠）で判定する**。上記コマンドは出力を `$TMPDIR/codex-review.log` に保存しているので、review 後に必ず次を実行し、**両方の条件を満たすことを確認してから**指摘の中身を読むこと:
+
+```bash
+# 肯定的証拠: 実際に実行されて成功したコマンドが 1 つ以上あること
+grep -cE '^ *succeeded in ' "$TMPDIR/codex-review.log"
+# 否定的証拠: ヘルパー起動に失敗した形跡が 1 つも無いこと
+grep -c 'exec_command failed' "$TMPDIR/codex-review.log"
+```
+
+- **ゲート成立**: 1 つ目が **1 以上** かつ 2 つ目が **0**。このときだけ「codex clean」と報告してよい
+- **ゲート未成立（空の合格）**: 1 つ目が **0**、または 2 つ目が **1 以上**。出力がどれだけ合格に読めても**ゲートは回っていない**
+
+**空の合格を「ゲート通過」として報告してはならない。** 検出したらまず上記の `CODEX_HOME` 設定を見直して再実行する（`$TMPDIR` 配下を指していないか、を最初に疑う）。それでもゲートが成立しない場合は、「codex clean」と報告せず、**「Codex ゲート未成立（diff 未読の空の合格、HEAD=`<sha>`）」と明示して完了報告し、窓口の判断を仰ぐ**。判定に使った上記 2 つの数値も報告に添えること。ゲートが回らないこと自体は報告すれば済むが、回っていないゲートを回ったことにすると検証深度 `full` が実質無検査になる。
 
 **安全機構に掛かって review 処理が進められない場合（`available` だが safety block）**: diff 内容（セキュリティ検証タスク等）がモデルの安全分類器に掛かり、`codex exec review` の処理自体を完了できないことがある。**この skip は上記「`unavailable` の skip」とは意味が異なる** — codex は available なのにゲートが**未成立**の状態であり、「codex clean」ではない。安全機構を回避する言い換え・プロンプト改変は**しない**（モデル安全機構に掛かる処理は回避せずスキップして報告するのが原則）。正式なリカバリは以下:
 - **正式リカバリ = 新規セッション化（continuation spawn）**: 同一 worktree・同一ブランチで、既に積んだ commit を引き継いだ新しい worker セッションを起こし、そのクリーンな context で `codex exec review` を再実行する（窓口にセッション再起動を依頼する）。完了報告には引き継いだ **HEAD SHA** を明記し、どの commit に対して review が成立したかを追跡可能にする
