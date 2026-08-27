@@ -174,8 +174,17 @@ mkdir -p "$CODEX_HOME"
 ln -sf ~/.codex/auth.json   "$CODEX_HOME/auth.json"
 ln -sf ~/.codex/config.toml "$CODEX_HOME/config.toml"
 
+# ログは worker ごとに分ける（$TMPDIR は並走 worker で共有されるため、固定名だと
+# 別 worker の "succeeded in" を自分の成立根拠に取り違える）。
+CODEX_REVIEW_LOG="$TMPDIR/codex-review-$(basename "$PWD").log"
+
+# pipefail が無いとパイプの終了コードは tee のものになり、codex 側の失敗が隠れる。
+set -o pipefail
 codex exec review --base origin/main -m gpt-5.6-sol -c model_reasoning_effort=medium \
-  -c sandbox_mode='"read-only"' < /dev/null 2>&1 | tee "$TMPDIR/codex-review.log"
+  -c sandbox_mode='"read-only"' < /dev/null 2>&1 | tee "$CODEX_REVIEW_LOG"
+codex_status=$?
+set +o pipefail
+echo "codex exit status: $codex_status"
 ```
 
 **`CODEX_HOME` を退避する理由と、退避先の条件（重要。ここを外すと後述の「空の合格」を踏む）**: 既定の `CODEX_HOME`（`~/.codex`）はワーカーのサンドボックスで書き込み不可なため、codex は自分の実行ヘルパー（`codex-linux-sandbox`）を配置できない。ヘルパーが無いと codex は**コマンドを 1 つも実行できず、`git diff` を一度も読まないままレビューを終える**。
@@ -196,17 +205,21 @@ codex exec review --base origin/main -m gpt-5.6-sol -c model_reasoning_effort=me
 - **終了コードは判定に使えない** — 空の合格でも **exit 0** を返す
 - **出力の但し書きも判定に使えない** — 「sandbox が起動できなかったので確度が低い」旨の但し書きが付くことはあるが、**環境によっては但し書きが消え、`No actionable findings were identified` という素の合格文だけになる**。文面の有無に依存した判定をしてはならない
 
-したがって、**「エラーが出ていないこと」（否定的証拠）ではなく「コマンドが実際に実行されたこと」（肯定的証拠）で判定する**。上記コマンドは出力を `$TMPDIR/codex-review.log` に保存しているので、review 後に必ず次を実行し、**両方の条件を満たすことを確認してから**指摘の中身を読むこと:
+したがって、**「エラーが出ていないこと」（否定的証拠）ではなく「コマンドが実際に実行されたこと」（肯定的証拠）で判定する**。上記コマンドは出力を `$CODEX_REVIEW_LOG` に保存しているので、review 後に必ず次を実行し、**両方の条件を満たすことを確認してから**指摘の中身を読むこと:
 
 ```bash
 # 肯定的証拠: 実際に実行されて成功したコマンドが 1 つ以上あること
-grep -cE '^ *succeeded in ' "$TMPDIR/codex-review.log"
-# 否定的証拠: ヘルパー起動に失敗した形跡が 1 つも無いこと
-grep -c 'exec_command failed' "$TMPDIR/codex-review.log"
+grep -cE '^ *succeeded in ' "$CODEX_REVIEW_LOG"
+# 否定的証拠: 実行に失敗したコマンドが 1 つも無いこと
+grep -cE '^ *failed in ' "$CODEX_REVIEW_LOG"
 ```
 
-- **ゲート成立**: 1 つ目が **1 以上** かつ 2 つ目が **0**。このときだけ「codex clean」と報告してよい
-- **ゲート未成立（空の合格）**: 1 つ目が **0**、または 2 つ目が **1 以上**。出力がどれだけ合格に読めても**ゲートは回っていない**
+**この 2 つは必ず行頭アンカー（`^ *`）付きで数えること。** ログには**レビュー対象の diff 本文がそのまま載る**ため、`exec_command failed` や `Refusing to create helper` のような素の文字列 grep は、**diff 側にその文字列が出てくるだけで自分自身にマッチする**（本節を含む差分をレビューすると実際に起きる）。codex 実行ログの行は `succeeded in` / `failed in` が行頭側に来る形なので、アンカーすればこの自己マッチを踏まない。
+
+- **ゲート成立**: 1 つ目が **1 以上** かつ 2 つ目が **0**、**かつ `codex_status` が 0**。このときだけ「codex clean」と報告してよい
+- **ゲート未成立（空の合格）**: 1 つ目が **0**、または 2 つ目が **1 以上**、または `codex_status` が非 0。出力がどれだけ合格に読めても**ゲートは回っていない**
+
+**終了コードの扱い（上の「判定に使えない」との関係）**: exit 0 は成立の**十分条件ではない**（空の合格でも 0 になる）。一方で**非 0 は失格条件として使える** — codex が 1 コマンド実行後に API / 認証 / 安全機構で異常終了した場合、マーカー数だけ見ると成立条件を満たしてしまうため、`codex_status` を追加の必要条件として併用する。
 
 **空の合格を「ゲート通過」として報告してはならない。** 検出したらまず上記の `CODEX_HOME` 設定を見直して再実行する（`$TMPDIR` 配下を指していないか、を最初に疑う）。それでもゲートが成立しない場合は、「codex clean」と報告せず、**「Codex ゲート未成立（diff 未読の空の合格、HEAD=`<sha>`）」と明示して完了報告し、窓口の判断を仰ぐ**。判定に使った上記 2 つの数値も報告に添えること。ゲートが回らないこと自体は報告すれば済むが、回っていないゲートを回ったことにすると検証深度 `full` が実質無検査になる。
 
