@@ -169,10 +169,14 @@ Get-Command codex -ErrorAction SilentlyContinue
 
 ```bash
 # CODEX_HOME は「書き込み可能かつ一時ディレクトリでない」場所を指すこと（理由は直下の注記）。
+# 上書きする前に、既存の（認証済みの）codex home を控えてリンク元にする。
+# 既定以外の CODEX_HOME で認証している環境で ~/.codex 決め打ちにすると、
+# リンクが dangling になるか無関係な資格情報を指してしまうため。
+CODEX_SRC="${CODEX_HOME:-$HOME/.codex}"
 export CODEX_HOME="$PWD/.codex-home"
 mkdir -p "$CODEX_HOME"
-ln -sf ~/.codex/auth.json   "$CODEX_HOME/auth.json"
-ln -sf ~/.codex/config.toml "$CODEX_HOME/config.toml"
+ln -sf "$CODEX_SRC/auth.json"   "$CODEX_HOME/auth.json"
+ln -sf "$CODEX_SRC/config.toml" "$CODEX_HOME/config.toml"
 
 # ログは worker ごとに分ける（$TMPDIR は並走 worker で共有されるため、固定名だと
 # 別 worker の "succeeded in" を自分の成立根拠に取り違える）。
@@ -209,12 +213,17 @@ echo "codex exit status: $codex_status"
 
 ```bash
 # 肯定的証拠: 実際に実行されて成功したコマンドが 1 つ以上あること
-grep -cE '^ *succeeded in ' "$CODEX_REVIEW_LOG"
+grep -cE '^ *succeeded in [0-9]+(ms|s|m)' "$CODEX_REVIEW_LOG"
 # 否定的証拠: 実行に失敗したコマンドが 1 つも無いこと
-grep -cE '^ *failed in ' "$CODEX_REVIEW_LOG"
+grep -cE '^ *failed in [0-9]+(ms|s|m)' "$CODEX_REVIEW_LOG"
 ```
 
-**この 2 つは必ず行頭アンカー（`^ *`）付きで数えること。** ログには**レビュー対象の diff 本文がそのまま載る**ため、`exec_command failed` や `Refusing to create helper` のような素の文字列 grep は、**diff 側にその文字列が出てくるだけで自分自身にマッチする**（本節を含む差分をレビューすると実際に起きる）。codex 実行ログの行は `succeeded in` / `failed in` が行頭側に来る形なので、アンカーすればこの自己マッチを踏まない。
+**この 2 つは必ず行頭アンカー（`^ *`）と実行時間（`[0-9]+(ms|s|m)`）の両方を付けて数えること。** ログには**レビュー対象の diff 本文**も**codex が実行したコマンドの出力**もそのまま載るため、素の文字列 grep は自分自身にマッチする。実測で 2 種類の自己マッチを確認している:
+
+- `exec_command failed` / `Refusing to create helper` のような素の文字列 grep は、**本節を含む差分をレビューすると diff 側の記述にマッチする**（行頭アンカーで回避できる）
+- 行頭アンカーだけでは足りない: codex がバイナリを読んだ出力に ` failed in TUI` のような**文字列断片**が現れ、`^ *failed in ` にマッチしてしまう（実測で偽陽性 2 件）
+
+codex 実行ログの本物の記録は必ず `succeeded in 0ms:` のように**実行時間を伴う**ので、時間まで含めてアンカーすれば両方の自己マッチを踏まない。
 
 - **ゲート成立**: 1 つ目が **1 以上** かつ 2 つ目が **0**、**かつ `codex_status` が 0**。このときだけ「codex clean」と報告してよい
 - **ゲート未成立（空の合格）**: 1 つ目が **0**、または 2 つ目が **1 以上**、または `codex_status` が非 0。出力がどれだけ合格に読めても**ゲートは回っていない**
