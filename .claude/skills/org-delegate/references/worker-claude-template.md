@@ -65,13 +65,18 @@ org-delegate の Step 1.5 でワーカー専用ディレクトリ（`{workers_di
 
 サンドボックスは**書き込み先をホワイトリストで制限する**。読み取りの可否とは別の軸であり、書き込み拒否を読み取り拒否と取り違えないこと。
 
-### 書き込みが許可される場所
-- 環境変数 `$TMPDIR` が指すディレクトリ（どのロールでも書ける）
-- `{worker_dir}` 配下（あなたの作業ディレクトリ）。**ただし read-only な監査ロールは除く** — 下記参照
+### 書き込みが許可される場所（通常のロール）
+- `{worker_dir}` 配下（あなたの作業ディレクトリ）
+- 環境変数 `$TMPDIR` が指すディレクトリ
 
 一時ファイル・ダウンロード成果物（CI ログ等）・中間生成物は、リポジトリに残したくないものも含めて **`$TMPDIR` 配下に置く**。リポジトリに残す成果物は `{worker_dir}` 配下に置く。
 
-**監査ロール（`org-delegate --mode audit` で選ばれる `doc-audit`）の例外**: このロールは書き込み面が「無し」と規定されており、`{worker_dir}` 配下への書き込みは `denyWrite {anchor: worker_dir, path: '**'}` により syscall レベルで拒否される（Edit / Write ツールだけでなく、bash のリダイレクト・`tee`・`sed -i` も含めて全て塞がれる）。カーブアウトは Plan モードの `{worker_dir}/.claude/plans/**` と `~/.claude/plans/**` のみ。規定は [`docs/contracts/role-pattern-sandbox-contract.md`](../../../../docs/contracts/role-pattern-sandbox-contract.md) §4.6.2、実体は [`tools/org_extension_schema.json`](../../../../tools/org_extension_schema.json) の `worker_roles.doc-audit`。**このロールでは `{worker_dir}` 配下に書こうとせず、作業ファイルは `$TMPDIR` 配下に置き、成果は報告本文で返すこと**（`$TMPDIR` は監査ロールでも書ける）。
+### 監査ロールは書き込み先が「無し」（重要な例外）
+`org-delegate --mode audit` で選ばれる `doc-audit` ロールは read-only であり、**規定上の書き込み面は「無し」**。`{worker_dir}` 配下だけでなく **`/tmp` / `$TMPDIR` / `~/` を含む全ての場所**が拒否対象で、カーブアウトは Plan モードの `{worker_dir}/.claude/plans/**` と `~/.claude/plans/**` のみ（[`docs/contracts/role-pattern-sandbox-contract.md`](../../../../docs/contracts/role-pattern-sandbox-contract.md) §4.6.2）。
+
+**このロールでは、どこにも作業ファイルを作らないこと。成果は報告本文で返す。** 上記の「一時ファイルは `$TMPDIR` へ」は通常ロール向けの指示であって、監査ロールには適用されない。
+
+現時点の実装は `{worker_dir}/**` の `denyWrite` までしか出しておらず（[`tools/org_extension_schema.json`](../../../../tools/org_extension_schema.json) の `worker_roles.doc-audit`）、`/tmp` 系の deny は未実装の既知の穴である（同 §4.6.2「doc-audit's read-only hard guarantee is NOT in force today」）。**書けてしまうことは、書いてよいことを意味しない。** 穴を使って書いた時点で監査ロールの不変条件を破っている。
 
 ### 書き込みが拒否される場所（例）
 - HOME 直下（`~/`）
