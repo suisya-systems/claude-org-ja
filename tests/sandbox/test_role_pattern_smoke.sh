@@ -286,10 +286,38 @@ assert_jq_true \
 # Even when Layer 3 is suppressed (case E on WSL) or fall-open (no bwrap),
 # Read-tool credential access stays blocked at Layer 2. role-pattern-
 # sandbox-contract §4.1.2 / §1.3.
-for entry in 'Read(.env)' 'Read(.env.*)' 'Read(**/credentials*)' 'Read(**/*.pem)' 'Read(~/.config/gh/hosts.yml)' 'Read(~/.aws/*)' 'Read(~/.ssh/*)'; do
+for entry in 'Read(.env)' 'Read(.env.*)' 'Read(**/credentials*)' 'Read(**/*.pem)' 'Read(~/.aws/*)' 'Read(~/.ssh/*)'; do
   assert_jq_true \
     "worker_roles.default.permissions.deny includes $entry" \
     "any(.worker_roles.default.permissions.deny[]; . == \"$entry\")"
+done
+
+# 3.d-bis gh credentials carve-out (Refs #429). `~/.config/gh/hosts.yml` is
+# deliberately absent from BOTH Layer 2 (permissions.deny) and Layer 3
+# (sandbox_by_pattern.*.filesystem.denyRead) on every worker role. Denying it
+# broke `gh` for workers, who then asked to disable the sandbox WHOLESALE --
+# trading every other protection away for one credential read (one such loop
+# ended in a safety-classifier session lockout, 2026-08-27). Layer 2 is not
+# just a tool-level guard: Claude Code folds permissions.deny Read() rules into
+# the bwrap deny set, so the path gets bind-mounted to /dev/null and every
+# process in the sandbox sees a character device. These assertions pin the
+# carve-out so a future credential sweep cannot silently re-add it. Rationale
+# lives in worker_roles.$comment_gh_credentials_carveout.
+for role in default claude-org-self-edit doc-audit; do
+  assert_jq_true \
+    "worker_roles.$role.permissions.deny OMITS Read(~/.config/gh/hosts.yml) (#429 carve-out)" \
+    "all(.worker_roles[\"$role\"].permissions.deny[]; . != \"Read(~/.config/gh/hosts.yml)\")"
+  assert_jq_true \
+    "worker_roles.$role Layer 3 denyRead OMITS .config/gh/hosts.yml (#429 carve-out)" \
+    "[.worker_roles[\"$role\"].sandbox_by_pattern[]?.filesystem.denyRead[]? | select(type == \"object\") | .path] | all(.[]; . != \".config/gh/hosts.yml\")"
+done
+
+# The carve-out is gh-only: ~/.ssh and ~/.aws stay denied at Layer 3 on every
+# worker role / pattern. Guards against an over-broad future edit.
+for role in default claude-org-self-edit doc-audit; do
+  assert_jq_true \
+    "worker_roles.$role Layer 3 denyRead still covers .ssh/** and .aws/** in every pattern" \
+    "[.worker_roles[\"$role\"].sandbox_by_pattern[]? | [.filesystem.denyRead[]? | select(type == \"object\") | .path]] | all(.[]; (index(\".ssh/**\") != null) and (index(\".aws/**\") != null))"
 done
 
 # 3.e Phase 2 hook attach (PR #420): worker_roles.default.hooks.PreToolUse
