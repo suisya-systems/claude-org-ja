@@ -299,6 +299,17 @@ assert_gh 0 'git commit -m "gh の書き込みを塞ぐ"' '日本語コミット
 assert_gh 0 'echo "see gh https://cli.github.com/manual"' 'URL を伴う散文中の gh は誤検知しない'
 assert_gh 0 'ls tools/gh 2>/dev/null' 'パス末尾が gh でも後続が subcommand 形でなければ allow'
 
+# Codex round 1 (P1): alias 名は [a-z-]+ に限らない。語形トークンは未知でも deny。
+assert_gh 2 'gh foo_bar 123' 'アンダースコア入りの未知 group（alias 経由）も deny'
+assert_gh 2 'gh pr.merge 1' 'ドット入りの未知 group も deny'
+assert_gh 2 'gh 123 1' '数字始まりの未知 group も deny'
+assert_gh 2 'gh issue foo_bar 42' 'アンダースコア入りの未知 subcommand も deny'
+
+# Codex round 1 (P1): graphql の本文を静的に読めない形は deny
+assert_gh 2 'gh api graphql -F query=@q.graphql' 'graphql の body が @file（読めない）'
+assert_gh 2 'gh api graphql -f query=@-' 'graphql の body が標準入力（読めない）'
+assert_gh 2 'gh api graphql -f query=$QUERY' 'graphql の body が未展開の変数（読めない）'
+
 echo "# --- gh read-only operations: allow cases (回帰の要) ---"
 
 # pr / issue の読み取り

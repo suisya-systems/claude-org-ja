@@ -221,7 +221,12 @@ gpg-key ssh-key codespace preview browse status co help completion version "
     #          も、実在する gh の group 名は全て cmd 形なので検知漏れにはならない。
     function word_kind(t) {
       if (index(t, "$") > 0 || index(t, "`") > 0) return "var"
-      if (tolower(t) ~ /^[a-z][a-z0-9-]*$/) return "cmd"
+      # gh の alias 名は `[a-z-]+` に限らない（アンダースコア / 数字 / ドットを
+      # 含む名前も gh alias set で登録でき、`gh <alias>` として実行できる）。
+      # そのため cmd 判定は「ASCII の語形トークン」まで広げ、未知なら deny に
+      # 倒す。狭い `^[a-z][a-z0-9-]*$` にすると `gh foo_bar 123`（alias 経由の
+      # pr merge）が other 扱いで素通りする。
+      if (t ~ /^[A-Za-z0-9_][A-Za-z0-9_.-]*$/) return "cmd"
       return "other"
     }
     # idx 以降で最初の非 option トークンの位置を返す（無ければ 0）
@@ -287,8 +292,8 @@ gpg-key ssh-key codespace preview browse status co help completion version "
       }
     }
     # gh api の HTTP メソッド解析。start は "api" トークンの位置。
-    function classify_api(start,    k, t, method, hasbody, hasinput, graphql, m) {
-      method = ""; hasbody = 0; hasinput = 0; graphql = 0
+    function classify_api(start,    k, t, method, hasbody, hasinput, graphql, m, fieldval, opaquebody) {
+      method = ""; hasbody = 0; hasinput = 0; graphql = 0; opaquebody = 0
       for (k = start + 1; k <= NF; k++) {
         t = $k
         if (t == "-X" || t == "--method") {
@@ -302,10 +307,22 @@ gpg-key ssh-key codespace preview browse status co help completion version "
         if (t == "--input") { hasinput = 1; hasbody = 1; k++; continue }
         if (t ~ /^--input=/) { hasinput = 1; hasbody = 1; continue }
         if (t == "-f" || t == "--raw-field" || t == "-F" || t == "--field") {
-          hasbody = 1; k++; continue
+          hasbody = 1
+          if (k < NF) fieldval = $(k + 1); else fieldval = ""
+          if (fieldval ~ /=[@$]/) opaquebody = 1
+          k++
+          continue
         }
-        if (t ~ /^(--raw-field|--field)=/) { hasbody = 1; continue }
-        if (t ~ /^-[fF]./) { hasbody = 1; continue }
+        if (t ~ /^(--raw-field|--field)=/) {
+          hasbody = 1
+          if (t ~ /=[^=]*=[@$]/) opaquebody = 1
+          continue
+        }
+        if (t ~ /^-[fF]./) {
+          hasbody = 1
+          if (t ~ /=[@$]/) opaquebody = 1
+          continue
+        }
         if (tolower(t) == "graphql") graphql = 1
       }
 
@@ -317,7 +334,10 @@ gpg-key ssh-key codespace preview browse status co help completion version "
 
       if (graphql == 1) {
         # GraphQL は read クエリでも POST 形になるため、メソッドではなく本文で判定。
+        # 本文を静的に読めない形（--input file / -f query=@file / -f query=$VAR）は
+        # mutation が隠れていても見えないので、まとめて deny に倒す（fail closed）。
         if (hasinput == 1) { print "DENY|api:graphql-input-undecidable"; return }
+        if (opaquebody == 1) { print "DENY|api:graphql-body-undecidable"; return }
         if (index($0, "mutation") > 0) { print "DENY|api:graphql-mutation"; return }
         return
       }
