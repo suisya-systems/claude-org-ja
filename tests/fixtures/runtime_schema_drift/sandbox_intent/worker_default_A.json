@@ -1,5 +1,5 @@
 {
-  "description": "worker_roles.default × Pattern A (independent project clone). Worker_dir = `<workers_dir>/<project_slug>/`, no base_clone supplied (Pattern A is supposed to be self-contained). additionalDirectories adds the knowledge/raw carve-out at {claude_org_path}/knowledge/raw (full-mode only by convention; Layer 4 hook permits raw notes). Home-anchored credential entries (~/.config/gh/hosts.yml / ~/.aws/** / ~/.ssh/**) escape read_roots and are suppressed; worker_dir-anchored credential entries resolve under read_roots and are kept. Pins per docs/contracts/role-pattern-sandbox-contract.md §4.1.",
+  "description": "worker_roles.default × Pattern A (independent project clone). Worker_dir = `<workers_dir>/<project_slug>/`, no base_clone supplied (Pattern A is supposed to be self-contained). additionalDirectories adds the knowledge/raw carve-out at {claude_org_path}/knowledge/raw (full-mode only by convention; Layer 4 hook permits raw notes). Home-anchored credential entries (~/.aws/** / ~/.ssh/**) escape read_roots and are suppressed (~/.config/gh/hosts.yml is NOT among them — it is carved out of every worker role at both layers per worker_roles.$comment_gh_credentials_carveout, Refs #429); worker_dir-anchored credential entries resolve under read_roots and are kept. Pins per docs/contracts/role-pattern-sandbox-contract.md §4.1.",
   "inputs": {
     "role": "default",
     "role_kind": "worker",
@@ -19,21 +19,6 @@
       "/home/u/co/knowledge/raw"
     ],
     "suppressions": [
-      {
-        "layer": "sandbox.filesystem.denyRead",
-        "entry": {
-          "anchor": "home",
-          "path": ".config/gh/hosts.yml",
-          "suppressOnSymlinkEscape": true,
-          "layer2Fallback": "Read(~/.config/gh/hosts.yml)"
-        },
-        "reason": "realpath escapes sandbox read roots",
-        "realpath": "/H/.config/gh/hosts.yml",
-        "sandbox_read_roots": [
-          "/home/u/workers/proj",
-          "/home/u/co/knowledge/raw"
-        ]
-      },
       {
         "layer": "sandbox.filesystem.denyRead",
         "entry": {

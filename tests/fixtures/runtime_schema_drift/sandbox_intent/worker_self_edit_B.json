@@ -29,24 +29,6 @@
         "layer": "sandbox.filesystem.denyRead",
         "entry": {
           "anchor": "home",
-          "path": ".config/gh/hosts.yml",
-          "suppressOnSymlinkEscape": true,
-          "layer2Fallback": "Read(~/.config/gh/hosts.yml)"
-        },
-        "reason": "realpath escapes sandbox read roots",
-        "realpath": "/H/.config/gh/hosts.yml",
-        "sandbox_read_roots": [
-          "/home/u/co/.worktrees/T123",
-          "/home/u/co/.git/worktrees/T123",
-          "/home/u/co/.git/objects",
-          "/home/u/co/.git/refs/heads/feat/self-edit",
-          "/home/u/co/.git/packed-refs"
-        ]
-      },
-      {
-        "layer": "sandbox.filesystem.denyRead",
-        "entry": {
-          "anchor": "home",
           "path": ".aws/**",
           "suppressOnSymlinkEscape": true,
           "layer2Fallback": "Read(~/.aws/*)"

@@ -549,9 +549,29 @@ project repo; worker has its own `.git/` directory.
     [`.claude/skills/org-delegate/references/worker-claude-template.md`](../../.claude/skills/org-delegate/references/worker-claude-template.md)).
   - The task's referenced specs / Issue body (out-of-band).
 - **Denied (prescriptive)**:
-  - `Read(.env)`, `Read(.env.*)`, `Read(**/credentials*)`, `Read(**/*.pem)`,
-    `Read(~/.config/gh/hosts.yml)` — Layer 2 enforced
-    (`worker_roles.default.permissions.deny`).
+  - `Read(.env)`, `Read(.env.*)`, `Read(**/credentials*)`, `Read(**/*.pem)`
+    — Layer 2 enforced (`worker_roles.default.permissions.deny`).
+  - `Read(~/.config/gh/hosts.yml)` — **NO LONGER DENIED for worker roles**
+    (Refs [#429](https://github.com/suisya-systems/claude-org-ja/issues/429)).
+    Removed from `worker_roles.{default,claude-org-self-edit,doc-audit}` at
+    **both** Layer 2 (`permissions.deny`) and Layer 3
+    (`sandbox_by_pattern.*.filesystem.denyRead`). Denying it made `gh`
+    unusable for workers, who responded by requesting a **wholesale** sandbox
+    disable — trading away every other protection to recover one credential
+    read; one such loop ended in a safety-classifier session lockout
+    (2026-08-27). Note the mechanism this depended on: Layer 2 is not merely a
+    tool-level guard — Claude Code folds `permissions.deny` `Read(...)` rules
+    into the bwrap deny set, so the path is bind-mounted to `/dev/null` and
+    *every* process in the sandbox sees a character device, not just the Read
+    tool. The org roles (§3.1.1) keep their gh deny. Accepted residual risk: a
+    worker that can authenticate `gh` reaches GitHub write APIs
+    (`gh pr create` / `gh pr merge` / `gh api -X POST`), which
+    [`.hooks/block-git-push.sh`](../../.hooks/block-git-push.sh) does not
+    cover — its regex matches `git ... push` only. Rationale of record lives
+    in `worker_roles.$comment_gh_credentials_carveout`; the carve-out is
+    pinned against silent re-add by
+    [`tests/sandbox/test_role_pattern_smoke.sh`](../../tests/sandbox/test_role_pattern_smoke.sh)
+    §3.d-bis.
   - `~/.aws/**`, `~/.ssh/**` — handcraft profile-tightened only; **not in
     the runtime-emitted default**. Phase 1 candidate. See §1.3 caveat.
 
@@ -939,7 +959,9 @@ candidates:
 - `<worker_dir>/**` (the worktree).
 - `<claude_org_path>/**` (read of the live repo is needed for cross-
   reference; the worker's working tree shares structure with it).
-- Standard credential denies (§3.1.1), with §1.3 adaptive rules.
+- Standard credential denies (§3.1.1), with §1.3 adaptive rules — **except
+  `~/.config/gh/hosts.yml`**, which is carved out for all worker roles per
+  §4.1.1 (Refs #429). `~/.ssh/**` and `~/.aws/**` are unaffected.
 
 #### 4.4.3 Write surface
 
@@ -1247,7 +1269,8 @@ Phase 1 must encode the conditional in schema, not as absolute denies.
 | `denyWrite: ~/.aws/**` | (no Layer 2 equivalent for write — this is the layered defense) | same | same |
 | `denyWrite: ~/.ssh/**` | (no Layer 2 equivalent for write) | same | same |
 | `denyWrite: ~/.claude/**` | n/a | always emitted (no symlink escape observed) | n/a |
-| `denyRead: .env`, `**/credentials*`, `**/*.pem`, `~/.config/gh/hosts.yml` | `Read(...)` mirrors | always emitted (these paths are usually in cwd, not in `/mnt/c/...`) | Phase 0 leaves these as unconditional. |
+| `denyRead: .env`, `**/credentials*`, `**/*.pem` | `Read(...)` mirrors | always emitted (these paths are usually in cwd, not in `/mnt/c/...`) | Phase 0 leaves these as unconditional. |
+| `denyRead: ~/.config/gh/hosts.yml` | ~~`Read(~/.config/gh/hosts.yml)`~~ | **org roles only** — removed from all worker roles at both layers | **Superseded for worker roles by Refs #429** (see §4.1.1). The Phase 0 record above is retained as history; it no longer describes the worker surface. |
 
 The "always-emit Layer 2 fallback" column is the key invariant: even when
 Layer 3 is adaptively suppressed, the Layer 2 `Read()` deny survives so that
