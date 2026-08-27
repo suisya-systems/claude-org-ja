@@ -1,6 +1,62 @@
 #!/usr/bin/env bash
-# PreToolUse Hook: Worker からの git push をブロックする
+# PreToolUse Hook: Worker からの git push / gh 経由の GitHub 書き込みをブロックする
 # 方式: exit 2 + stderr メッセージ でブロック
+#
+# ブロック対象:
+#   1. git push（従来から。オプション介在形 / eval / bash -c 経由を含む）
+#   2. gh CLI の GitHub 書き込みサブコマンド（Refs #429）
+#
+# ---------------------------------------------------------------------------
+# gh 検知の方針: read-only allowlist（default-deny）
+# ---------------------------------------------------------------------------
+# gh のサブコマンドは版ごとに増える。「書き込みだけを列挙して deny」する
+# blocklist 方式だと、新しい書き込みサブコマンドが追加された瞬間に穴が開く
+# （検知漏れ = fail open）。そこで「read-only と確認済みの (group, subcommand)
+# だけを allow し、それ以外の gh 呼び出しは deny する」default-deny 方式を採る。
+# 未知 / 新規 / 静的に判定できない形は自動的に deny 側へ倒れる（fail closed）。
+#
+# allowlist は gh 2.74.0 (2025-05-29) の `gh <group> --help` 出力を実機で
+# 列挙して分類した（下の READ_KEYS / READ_GROUPS）。調査業務で日常的に使う
+# 読み取り系（gh pr view / list / diff / checks、gh run view / list / watch /
+# download、gh issue view、gh release view / download、gh search *、
+# gh api の GET 等）は全て allow に含めてある。塞ぎすぎは「正当な作業が
+# 塞がれた結果、より危険な回避策に飛びつく」形の事故を誘発するため、
+# 読み取り面は意図的に広く取っている。
+#
+# gh api はサブコマンドではなく HTTP メソッドで読み書きが決まるため個別に
+# 解析する:
+#   - `-X` / `--method` の明示値が GET / HEAD → allow、それ以外 → deny
+#   - メソッド明示が無く `-f` / `--raw-field` / `-F` / `--field` / `--input`
+#     がある → gh は自動的に POST になる（`gh api --help` に明記）ため deny
+#   - メソッド明示も body パラメータも無い → GET → allow
+#   - `gh api graphql` は read クエリでも POST 形になるので一律 deny にはせず、
+#     `mutation` の字面を含む / `--input` で body が外部ファイル（静的に読めない）
+#     の場合のみ deny する
+#
+# ---------------------------------------------------------------------------
+# 既知の制限（多層防御の最後の壁であって、意図的な回避の防止ではない）
+# ---------------------------------------------------------------------------
+#   - `gh` の字面を含むリテラル文字列も deny になる。
+#     例: `git commit -m "後で gh pr create する"` / `grep -rn "gh pr merge" docs/`
+#     （`echo 'git push'` が既に deny されるのと同じ性質）。文字列検索は
+#     `gh` トークンを外す（例: `grep -rn "pr merge"`）と通る。
+#   - **gh alias 経由の残存ギャップ**: `gh config` に事前登録済みの alias
+#     （`gh alias set pm 'pr merge'` 済みの環境での `gh pm 123`）は、コマンド
+#     文字列に `pr merge` の痕跡が無いため静的解析では解決できない。ただし
+#     alias を登録する側（`gh alias set` / `gh alias import` / `gh alias delete`）
+#     は allowlist に無いので deny される（`gh alias list` のみ allow）。また
+#     未知の group 名（`gh pm`）は default-deny 側に落ちるため、実質的には
+#     alias 経由も塞がる。block-dangerous-git.sh の git alias ギャップと違い、
+#     こちらは default-deny のおかげで塞がっている。
+#   - `gh auth token` は allowlist に無い（deny）。トークンを取り出して curl 等で
+#     直接 API を叩く経路を塞ぐため。`gh auth status` は allow。
+#   - `gh extension install` / `exec` は任意コード実行経路なので deny
+#     （`gh extension list` / `search` / `browse` は allow）。
+#   - curl / wget で api.github.com を直接叩く経路は本フックの対象外
+#     （gh 経由の書き込みを塞ぐのが Refs #429 のスコープ）。資格情報側の
+#     deny と対で人間ゲートを守る設計。
+#   - `$(...)` / `` `...` `` のサブシェル境界、バックスラッシュエスケープは
+#     segment-split.sh の制限に従う。
 
 set -euo pipefail
 
@@ -17,6 +73,12 @@ deny_with_reason() {
 # jq チェック (fail closed)
 if ! command -v jq &>/dev/null; then
   echo "ブロック: jq がインストールされていません。セキュリティ Hook の実行に必要です。" >&2
+  exit 2
+fi
+
+# awk チェック (fail closed)。gh 判定は awk のトークン走査に依存する。
+if ! command -v awk &>/dev/null; then
+  echo "ブロック: awk がインストールされていません。セキュリティ Hook の実行に必要です。" >&2
   exit 2
 fi
 
@@ -60,7 +122,9 @@ if [[ -z "$COMMAND" ]]; then
   exit 0
 fi
 
-# git push パターン検知
+# ---------------------------------------------------------------------------
+# 1. git push 検知（既存挙動。変更しないこと）
+# ---------------------------------------------------------------------------
 # `git push` と、サブコマンド前にオプションが挿入された形を捕捉する。
 # 例: git push, git  push, echo | git push, git -C /path push
 # 一方で `git config push.default` のような別サブコマンドは誤検知しない。
@@ -79,5 +143,234 @@ while IFS= read -r body; do
     deny_with_reason "git push は Worker から直接実行できません（eval/bash -c 経由も検知）。完了報告で窓口に依頼してください。"
   fi
 done < <(printf '%s\n' "$COMMAND" | unwrap_eval_and_bashc)
+
+# ---------------------------------------------------------------------------
+# 2. gh 経由の GitHub 書き込み検知（Refs #429）
+# ---------------------------------------------------------------------------
+# セグメント内の各 `gh` 呼び出しについて group / subcommand を決め、read-only
+# allowlist に載っていなければ 1 行 `DENY|<detail>` を出力する。allow の場合は
+# 何も出力しない（呼び出し側は出力行の有無だけを見る）。
+#
+# 走査規則（block-dangerous-git.sh の extract_stash_subcommands と同じ考え方）:
+#   - `gh` / `gh.exe` / パス付き（/usr/bin/gh, C:\bin\gh.exe）を実行トークンとして拾う。
+#   - `-` 始まりは option。値を取る既知 option（--repo / -R / --hostname 等）は
+#     続く値トークンも読み飛ばす。未知 option は値を読み飛ばさないので、値が
+#     group 位置に来て「未知 group」= deny に倒れる（安全側）。
+#   - group / subcommand が未知なら deny。group だけで subcommand が無い形
+#     （`gh pr`）は help 出力なので allow。
+classify_gh_invocations() {
+  awk '
+    BEGIN {
+      # 全体が read-only の group（サブコマンドを問わず allow）
+      READ_GROUPS = " search browse status org attestation help completion version "
+      # group:subcommand 単位の read-only allowlist（gh 2.74.0 の全 subcommand を分類）
+      READ_KEYS = " \
+pr:list pr:status pr:checks pr:diff pr:view pr:checkout \
+issue:list issue:status issue:view \
+repo:list repo:view repo:clone repo:set-default \
+release:list release:view release:download \
+run:list run:view run:watch run:download \
+workflow:list workflow:view \
+gist:list gist:view gist:clone \
+project:list project:view project:field-list project:item-list \
+cache:list \
+label:list \
+secret:list \
+variable:list variable:get \
+ruleset:check ruleset:list ruleset:view \
+alias:list \
+auth:status \
+config:get config:list \
+extension:list extension:search extension:browse \
+gpg-key:list \
+ssh-key:list \
+codespace:list codespace:view codespace:logs \
+"
+      # 3 階層目まで見る group:subcommand（残りは group:subcommand で判定）
+      NESTED = " repo:deploy-key repo:autolink repo:gitignore repo:license "
+      READ_KEYS3 = " \
+repo:deploy-key:list \
+repo:autolink:list repo:autolink:view \
+repo:gitignore:list repo:gitignore:view \
+repo:license:list repo:license:view \
+"
+      # 既知 group（ここに無い group は未知として deny）
+      GROUPS = " pr issue repo release run workflow gist org project cache label \
+secret variable ruleset search alias api auth attestation config extension \
+gpg-key ssh-key codespace preview browse status co help completion version "
+    }
+    # 値を取る option（続く 1 トークンを読み飛ばす）
+    function takes_value(t) {
+      return (t == "-R" || t == "--repo" || t == "--hostname" \
+              || t == "-H" || t == "--header" || t == "-X" || t == "--method" \
+              || t == "-f" || t == "--raw-field" || t == "-F" || t == "--field" \
+              || t == "-q" || t == "--jq" || t == "-t" || t == "--template" \
+              || t == "--json" || t == "--input" || t == "--cache" \
+              || t == "-L" || t == "--limit" || t == "-b" || t == "--body" \
+              || t == "-T" || t == "--title")
+    }
+    function in_list(list, key) { return index(list, " " key " ") > 0 }
+    # トークンの「種別」を返す。
+    #   cmd  : サブコマンド名の字面（^[a-z][a-z0-9-]*$）。allowlist 判定にかける。
+    #   var  : 変数 / コマンド置換が残っており静的に読めない → deny（fail closed）。
+    #   other: コマンド名になりえない字面（日本語・パス・記号・数字始まり等）。
+    #          gh の group / subcommand は全て cmd 形なので、other は「コマンド
+    #          ではなくリテラル文字列中の gh」とみなして読み飛ばす。これが無いと
+    #          `git commit -m "gh の書き込みを塞ぐ"` のような日常操作まで deny に
+    #          なる（flatten_substitutions が引用符を空白へ潰すため）。読み飛ばして
+    #          も、実在する gh の group 名は全て cmd 形なので検知漏れにはならない。
+    function word_kind(t) {
+      if (index(t, "$") > 0 || index(t, "`") > 0) return "var"
+      if (tolower(t) ~ /^[a-z][a-z0-9-]*$/) return "cmd"
+      return "other"
+    }
+    # idx 以降で最初の非 option トークンの位置を返す（無ければ 0）
+    function next_word(idx,    j) {
+      j = idx
+      while (j <= NF) {
+        if (substr($j, 1, 1) == "-") {
+          if (takes_value($j)) j++
+          j++
+          continue
+        }
+        return j
+      }
+      return 0
+    }
+    {
+      for (i = 1; i <= NF; i++) {
+        ghname = tolower($i)
+        # Windows は gh.exe。実行形式のスペリング差で deny が外れないようにする。
+        if (ghname != "gh" && ghname != "gh.exe" && ghname !~ /[\/\\]gh(\.exe)?$/) continue
+
+        gi = next_word(i + 1)
+        # フラグのみ（gh --version / gh --help）または gh 単独 → 書き込み不能
+        if (gi == 0) continue
+        kind = word_kind($gi)
+        if (kind == "var") { print "DENY|group-undecidable:" $gi; continue }
+        if (kind == "other") continue   # リテラル文字列中の gh
+        group = tolower($gi)
+
+        if (!in_list(GROUPS, group)) { print "DENY|unknown-group:" group; continue }
+        if (in_list(READ_GROUPS, group)) continue
+        # `gh co` は `gh pr checkout` の組み込み alias（ローカル checkout のみ）
+        if (group == "co") continue
+
+        if (group == "api") {
+          classify_api(gi)
+          continue
+        }
+
+        si = next_word(gi + 1)
+        # `gh pr` のように subcommand が無い形は help 出力 → allow
+        if (si == 0) continue
+        kind = word_kind($si)
+        if (kind == "var") { print "DENY|subcommand-undecidable:" group ":" $si; continue }
+        if (kind == "other") continue   # subcommand 名になりえない字面
+        scmd = tolower($si)
+        key = group ":" scmd
+
+        if (in_list(NESTED, key)) {
+          ti = next_word(si + 1)
+          if (ti == 0) continue   # `gh repo deploy-key` 単独 = help
+          kind = word_kind($ti)
+          if (kind == "var") { print "DENY|subcommand-undecidable:" key ":" $ti; continue }
+          if (kind == "other") continue
+          key3 = key ":" tolower($ti)
+          if (in_list(READ_KEYS3, key3)) continue
+          print "DENY|" key3
+          continue
+        }
+
+        if (in_list(READ_KEYS, key)) continue
+        print "DENY|" key
+      }
+    }
+    # gh api の HTTP メソッド解析。start は "api" トークンの位置。
+    function classify_api(start,    k, t, method, hasbody, hasinput, graphql, m) {
+      method = ""; hasbody = 0; hasinput = 0; graphql = 0
+      for (k = start + 1; k <= NF; k++) {
+        t = $k
+        if (t == "-X" || t == "--method") {
+          method = (k < NF) ? $(k + 1) : "__missing__"
+          k++
+          continue
+        }
+        if (t ~ /^--method=/) { method = substr(t, 10); continue }
+        # pflag の短縮形は値を密着させられる（-XPOST）
+        if (t ~ /^-X./)       { method = substr(t, 3);  continue }
+        if (t == "--input") { hasinput = 1; hasbody = 1; k++; continue }
+        if (t ~ /^--input=/) { hasinput = 1; hasbody = 1; continue }
+        if (t == "-f" || t == "--raw-field" || t == "-F" || t == "--field") {
+          hasbody = 1; k++; continue
+        }
+        if (t ~ /^(--raw-field|--field)=/) { hasbody = 1; continue }
+        if (t ~ /^-[fF]./) { hasbody = 1; continue }
+        if (tolower(t) == "graphql") graphql = 1
+      }
+
+      # 静的に読めないメソッド指定（変数が残っている / 値が欠落）は安全側で deny
+      if (method == "__missing__" || method ~ /\$/) {
+        print "DENY|api:method-undecidable"
+        return
+      }
+
+      if (graphql == 1) {
+        # GraphQL は read クエリでも POST 形になるため、メソッドではなく本文で判定。
+        if (hasinput == 1) { print "DENY|api:graphql-input-undecidable"; return }
+        if (index($0, "mutation") > 0) { print "DENY|api:graphql-mutation"; return }
+        return
+      }
+
+      m = toupper(method)
+      if (m == "") m = (hasbody == 1) ? "POST" : "GET"
+      if (m == "GET" || m == "HEAD") return
+      print "DENY|api:" m
+    }
+  '
+}
+
+# 全セグメントを 1 度収集してから既知の代入を抽出し、各セグメントで展開する。
+GH_SEGMENTS=()
+while IFS= read -r seg; do
+  GH_SEGMENTS+=("$seg")
+done < <(printf '%s' "$COMMAND" | split_segments)
+
+# eval / bash -c / sh -c の引数文字列を追加の検査対象セグメントとして取り出す
+# （Phase 2a, Issue #79 と同じ回避耐性層）。
+while IFS= read -r unwrapped; do
+  [[ -n "$unwrapped" ]] && GH_SEGMENTS+=("$unwrapped")
+done < <(printf '%s\n' "${GH_SEGMENTS[@]}" | unwrap_eval_and_bashc)
+
+GH_ASSIGNMENTS=()
+while IFS= read -r assign; do
+  [[ -n "$assign" ]] && GH_ASSIGNMENTS+=("$assign")
+done < <(printf '%s\n' "${GH_SEGMENTS[@]}" | collect_assignments)
+
+for segment in "${GH_SEGMENTS[@]}"; do
+  [[ -z "$segment" ]] && continue
+
+  # 既知の VAR=value を展開（`sub=merge; gh pr "$sub" 1` 対策）
+  if [[ ${#GH_ASSIGNMENTS[@]} -gt 0 ]]; then
+    gh_expanded=$(printf '%s' "$segment" | expand_known_vars "${GH_ASSIGNMENTS[@]}")
+  else
+    gh_expanded="$segment"
+  fi
+
+  # コマンド置換 $(...) / `...` の本体も検査対象に含める
+  gh_flat=$(printf '%s' "$gh_expanded" | flatten_substitutions)
+
+  # `gh` トークンが無いセグメントは早期に抜ける（awk 起動コストの節約）。
+  # 大小文字を無視する（-i）: awk 側の判定は tolower() 済みなので、case-insensitive
+  # なファイルシステム（Windows / macOS）で通る `GH pr merge` を pre-filter で
+  # 落としてしまわないようにする。
+  echo "$gh_flat" | grep -qiE '(^|[[:space:]])[^[:space:]]*gh(\.exe)?([[:space:]]|$)' || continue
+
+  gh_verdicts=$(printf '%s' "$gh_flat" | classify_gh_invocations)
+  if [[ -n "$gh_verdicts" ]]; then
+    gh_detail=$(printf '%s' "$gh_verdicts" | sed 's/^DENY|//' | tr '\n' ' ')
+    deny_with_reason "gh 経由の GitHub 書き込み操作は Worker から直接実行できません（検知: ${gh_detail%% }）。PR 作成 / merge / comment / review / release / workflow 実行などは人間の承認後に窓口が実施します。読み取り系（gh pr view / list / diff / checks、gh run view / list、gh api の GET 等）は許可されています。読み取りのつもりで拒否された場合は、判定できない形（未知のサブコマンド / 変数経由の指定）になっていないか確認し、必要なら窓口に相談してください。"
+  fi
+done
 
 exit 0
