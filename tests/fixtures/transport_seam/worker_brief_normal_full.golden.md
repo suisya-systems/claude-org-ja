@@ -55,6 +55,11 @@
 CODEX_SRC="$CODEX_HOME"
 [ -n "$CODEX_SRC" ] || CODEX_SRC="$HOME/.codex"
 export CODEX_HOME="$PWD/.codex-home"
+# codex は session DB / cache / バイナリを CODEX_HOME に書く。作成前に worker ローカルの
+# exclude へ登録し、`git add -A` 等で誤って staging されないようにする（.git/info/exclude は
+# commit されないので、対象リポジトリの追跡下 .gitignore を書き換えずに済む）。
+grep -qxF '.codex-home/' "$(git rev-parse --git-path info/exclude)" 2>/dev/null \
+  || echo '.codex-home/' >> "$(git rev-parse --git-path info/exclude)"
 mkdir -p "$CODEX_HOME"
 ln -sf "$CODEX_SRC/auth.json"   "$CODEX_HOME/auth.json"
 ln -sf "$CODEX_SRC/config.toml" "$CODEX_HOME/config.toml"
