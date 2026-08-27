@@ -72,13 +72,13 @@ ln -sf "$CODEX_SRC/auth.json"   "$CODEX_HOME/auth.json"
 ln -sf "$CODEX_SRC/config.toml" "$CODEX_HOME/config.toml"
 
 # ログ名は worker ごとに分ける（$TMPDIR は並走 worker で共有。固定名だと別 worker の
-# "succeeded in" を自分の成立根拠に取り違える）。
-CODEX_REVIEW_LOG="$TMPDIR/codex-review-$(basename "$PWD").log"
+# "succeeded in" を自分の成立根拠に取り違える）。basename だけでは別リポジトリの同名
+# worktree で衝突しうるので、フルパス由来の識別子を付ける。
+CODEX_REVIEW_LOG="$TMPDIR/codex-review-$(basename "$PWD")-$(printf %s "$PWD" | cksum | cut -d" " -f1).log"
 
 # pipefail が無いとパイプの終了コードは tee のものになり codex 側の失敗が隠れる。
 set -o pipefail
-codex exec review --base ${task_base_ref} -m gpt-5.6-sol -c model_reasoning_effort=medium \
-  -c sandbox_mode='"read-only"' < /dev/null 2>&1 | tee "$CODEX_REVIEW_LOG"
+codex exec review --base ${task_base_ref} -m gpt-5.6-sol -c model_reasoning_effort=medium -c sandbox_mode='"read-only"' < /dev/null 2>&1 | tee "$CODEX_REVIEW_LOG"
 codex_status=$?
 set +o pipefail
 echo "codex exit status: $codex_status"

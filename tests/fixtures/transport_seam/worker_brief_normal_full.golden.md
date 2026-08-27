@@ -46,8 +46,63 @@
 
 ```bash
 # --base はこのブランチのベース upstream（origin/main）。ローカルの追跡なしブランチは古いと別タスク差分を巻き込むため remote-tracking ref を使う。参照前に git fetch origin を 1 回（fetch 不能でも review は継続）。前景実行して出力（Blocker/Major 相当）を読んでから次へ進む。
-codex exec review --base origin/main -m gpt-5.6-sol -c model_reasoning_effort=medium < /dev/null
+
+# CODEX_HOME は「書き込み可能かつ一時ディレクトリでない」場所を指すこと（理由は直下の注記）。
+# 上書きする前に、既存の（認証済みの）codex home を控えてリンク元にする。既定以外の
+# CODEX_HOME で認証している環境で ~/.codex 決め打ちにすると、リンクが dangling になるか
+# 無関係な資格情報を指してしまうため。
+# （既定値つきパラメータ展開は brief 生成時のプレースホルダ検査に触れるため、同義の brace なし形で書く）
+CODEX_SRC="$CODEX_HOME"
+[ -n "$CODEX_SRC" ] || CODEX_SRC="$HOME/.codex"
+export CODEX_HOME="$PWD/.codex-home"
+mkdir -p "$CODEX_HOME"
+ln -sf "$CODEX_SRC/auth.json"   "$CODEX_HOME/auth.json"
+ln -sf "$CODEX_SRC/config.toml" "$CODEX_HOME/config.toml"
+
+# ログは worker ごとに分ける（$TMPDIR は並走 worker で共有されるため、固定名だと別 worker の
+# "succeeded in" を自分の成立根拠に取り違える）。basename だけでは別リポジトリの同名 worktree
+# で衝突しうるので、作業ディレクトリのフルパスから導出した識別子を付ける。
+CODEX_REVIEW_LOG="$TMPDIR/codex-review-$(basename "$PWD")-$(printf %s "$PWD" | cksum | cut -d" " -f1).log"
+
+# pipefail が無いとパイプの終了コードは tee のものになり、codex 側の失敗が隠れる。
+set -o pipefail
+codex exec review --base origin/main -m gpt-5.6-sol -c model_reasoning_effort=medium -c sandbox_mode='"read-only"' < /dev/null 2>&1 | tee "$CODEX_REVIEW_LOG"
+codex_status=$?
+set +o pipefail
+echo "codex exit status: $codex_status"
 ```
+
+**`CODEX_HOME` を退避する理由と、退避先の 2 条件（ここを外すと下記「空の合格」を踏む）**: 既定の `CODEX_HOME`（`~/.codex`）はワーカーのサンドボックスで書き込み不可なため、codex は自分の実行ヘルパー（`codex-linux-sandbox`）を配置できない。ヘルパーが無いと codex は**コマンドを 1 つも実行できず、`git diff` を一度も読まないままレビューを終える**。退避先は次の 2 条件を**両方**満たすこと:
+
+- **書き込み可能**であること
+- **一時ディレクトリ配下でない**こと — codex は `codex_home` が temp dir 配下だとヘルパー配置を拒否する（`Refusing to create helper binaries under temporary dir "..."`）
+
+**したがって `CODEX_HOME` を `$TMPDIR` 配下に置いてはならない。**「一時ファイルは `$TMPDIR` へ」という一般則に対する**明示的な例外**である（`$TMPDIR` を指定すると症状が「正直なエラー」ではなく「空の合格」に化けるため、一般則をそのまま適用するより危険になる）。ワーカー作業ディレクトリ配下（上例の `$PWD/.codex-home`）は両条件を満たす。`.codex-home` は成果物ではないので **commit しないこと**（`git status` で混入していないことを確認する）。
+
+`-c sandbox_mode='"read-only"'` は **codex 自身の内側サンドボックスを read-only に締める**設定で、ワーカーを包む外側のサンドボックスには一切触れない。**緩める方向の設定ではない**（実行環境の `config.toml` に依存せず常に同じ条件で回すために明示する）。**`sandbox_mode` を `danger-full-access` 等の緩める方向へ変えて回避を試みてはならない** — 真因は「緩さが足りないこと」ではなく上記の `CODEX_HOME` の配置である。
+
+**「空の合格」を検出する（`available` かつエラー表示も無いのにゲートが未成立のケース）**: 上記の `CODEX_HOME` 設定を外して回すと、codex は `git diff` を一度も実行しないまま**「指摘なし」と読める文面を返して正常終了する**。**出力の文面を読むだけでは正常な合格と区別できない**、最も危険な失敗モードである:
+
+- **終了コードは成立判定に使えない** — 空の合格でも **exit 0** を返す
+- **出力の但し書きも判定に使えない** — 「sandbox が起動できなかったので確度が低い」旨の但し書きが付くことはあるが、**環境によっては但し書きが消え `No actionable findings were identified` という素の合格文だけになる**
+
+したがって **「エラーが出ていないこと」（否定的証拠）ではなく「コマンドが実際に実行されたこと」（肯定的証拠）で判定する**。review 後に必ず次を実行し、**条件を満たすことを確認してから**指摘の中身を読むこと:
+
+```bash
+# 肯定的証拠: 実際に実行されて成功したコマンドが 1 つ以上あること
+grep -cE '^ *succeeded in [0-9]+(ms|s|m)' "$CODEX_REVIEW_LOG"
+# 否定的証拠: 実行に失敗したコマンドが 1 つも無いこと
+grep -cE '^ *failed in [0-9]+(ms|s|m)' "$CODEX_REVIEW_LOG"
+```
+
+**この 2 つは必ず行頭アンカー（`^ *`）と実行時間（`[0-9]+(ms|s|m)`）の両方を付けて数えること。** ログには**レビュー対象の diff 本文**も**codex が実行したコマンドの出力**もそのまま載るため、素の文字列 grep は自分自身にマッチする（実測で 2 種類の自己マッチを確認: 素の `exec_command failed` 等は diff 側の記述にマッチする / 行頭アンカーだけでも ` failed in TUI` のような文字列断片が `^ *failed in ` にマッチする）。本物の実行記録は必ず `succeeded in 0ms:` のように**実行時間を伴う**ので、時間まで含めてアンカーすれば両方の自己マッチを踏まない。
+
+- **ゲート成立**: 1 つ目が **1 以上** かつ 2 つ目が **0**、**かつ `codex_status` が 0**。このときだけ「codex clean」と報告してよい
+- **ゲート未成立（空の合格）**: 1 つ目が **0**、または 2 つ目が **1 以上**、または `codex_status` が非 0。出力がどれだけ合格に読めても**ゲートは回っていない**
+
+**終了コードの扱い（上の「判定に使えない」との関係）**: exit 0 は成立の**十分条件ではない**（空の合格でも 0）。一方で**非 0 は失格条件として使える** — codex が 1 コマンド実行後に API / 認証 / 安全機構で異常終了した場合、マーカー数だけでは成立条件を満たしてしまうため、`codex_status` を追加の必要条件として併用する。
+
+**空の合格を「ゲート通過」として報告してはならない。** 検出したらまず `CODEX_HOME` 設定を見直して再実行する（`$TMPDIR` 配下を指していないかを最初に疑う）。それでも成立しない場合は「codex clean」と報告せず、**「Codex ゲート未成立（diff 未読の空の合格、HEAD=`<sha>`）」と明示して完了報告し、窓口の判断を仰ぐ**。判定に使った上記 2 つの数値も報告に添えること。ゲートが回らないこと自体は報告すれば済むが、回っていないゲートを回ったことにすると検証深度 `full` が実質無検査になる。
 
 - **前景実行する**（背景化 `&` + ログ redirect は、完了を待たず指摘を読まずに完了報告してゲートを素通りする事故を招く）。応答が長く来ない稀なケースのみ中断して skip 可。
 - Blocker / Major は修正コミットを積み再レビュー。**round は既定上限 3**（この brief の実装ガイダンスで別値の明示指定があればそちらが優先）
