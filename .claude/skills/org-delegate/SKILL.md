@@ -85,13 +85,21 @@ allowed-tools:
 
 この節は routing 判定だけを担う。軽量レーンを選んだら委譲前チェックリスト〜Step 5 には進まず、窓口本体の文脈で `Agent` 直処理に移る。重量レーンを選んだ場合のみ、以下を続ける。
 
-**重量レーンの brief 強化（ultracode）:** 重量レーンのうち **M 級以上 / 設計判断を含む / 多ファイル変更** のタスクでは、ワーカーに ultracode（multi-agent workflow）の使用を許可してよい（推奨）。窓口は `gen_delegate_payload.py` の `--impl-guidance "<text>"` で brief に許可を明記する（例: `--impl-guidance "本タスクは多ファイル・設計判断を含むため ultracode の使用を許可する。ultracode は実装と Codex 前のセルフレビュー収束に使い、最終の Codex ゲートは従来どおり維持する"`）。この文言は worker brief（既定 `CLAUDE.md`、claude-org 自己編集タスクは `CLAUDE.local.md`）の「実装ガイダンス」にレンダリングされ、**dispatcher はここを読んで武装要否を判定する**（[`.dispatcher/references/spawn-flow.md`](../../../.dispatcher/references/spawn-flow.md) 3-5a）。
+**重量レーンの brief 強化（ultracode）:** ultracode（multi-agent workflow）の許可は工数ラベル (S/M/L) では判定しない（工数は人間労働の代理指標で、AI ワーカーにとっての難しさとズレる）。重量レーンのうち以下の**いずれか**を満たすタスクでは、ワーカーに ultracode の使用を許可してよい（推奨）:
+
+1. **実装中に設計判断が残る**: 事前 design review で固定しきれない決定（実測しないと決められない契約・未知の移植先制約など）が実装フェーズに持ち越される
+2. **敵対的検証の価値が高い**: 「テストが緑でも守っていない」型の欠陥が出やすい性質（ガード・封印・契約 battery 等の enforcement 実装）
+3. **所有排他で切れる並列構造**: 独立サブタスクに分割でき、ファイル所有を排他にした並列レーンで実時間短縮が出る規模
+
+量が多いだけの機械的タスク（設計固定済みの移植・定型変換）は、L 級でも非武装を既定とする。背景には週間 rate limit の資源管理もある（構造が正当化しない増幅を既定にしない）。
+
+許可する場合、窓口は `gen_delegate_payload.py` の `--impl-guidance "<text>"` で brief に許可を明記する（例: `--impl-guidance "本タスクは実装中に設計判断が残るため ultracode の使用を許可する。ultracode は実装と Codex 前のセルフレビュー収束に使い、最終の Codex ゲートは従来どおり維持する"` — 理由は上記 3 基準のうち該当するものを書く）。この文言は worker brief（既定 `CLAUDE.md`、claude-org 自己編集タスクは `CLAUDE.local.md`）の「実装ガイダンス」にレンダリングされ、**dispatcher はここを読んで武装要否を判定する**（[`.dispatcher/references/spawn-flow.md`](../../../.dispatcher/references/spawn-flow.md) 3-5a）。
 
 **強い権限の事前許可文言を workflow の agent プロンプトに書かせない（重要）:** ultracode を許可しても、`dangerouslyDisableSandbox` / `--dangerously-skip-permissions` 等の**強い権限を事前に許可する文言**を workflow の `agent()` プロンプト本文に書き込ませない（窓口の `--impl-guidance` にもそうした事前許可文言を載せない）。安全分類器が該当 agent 呼び出しを **silent block** し、workflow が原因不明のまま停滞する事故になる。どうしても強い権限が要る段がある場合は、その agent の**成否を明示確認**（戻り値 / 失敗検知でブロックを検出）し、**block 時のリカバリ手段**（当該段を通常権限で再実行する / worker 本体で手動実行する等）を workflow に組み込むよう brief で促す。同一制約を [`.dispatcher/references/spawn-flow.md`](../../../.dispatcher/references/spawn-flow.md) 3-5a にも同じ意味で置く（片方だけだと kickoff 導線から危険例が再発する）。
 
 **ただし brief 文言は「許可の宣言」であって「opt-in 武装」ではない（Issue #554）。** ultracode は worker セッションの **user turn 入力**に `ultracode` トークンが現れて初めて武装される。brief ファイル（worker 行動規範＝既定 `CLAUDE.md` / 自己編集は `CLAUDE.local.md` としてロードされる context）・`send_message` 本文・`check_messages` 経由の指示本文のいずれに keyword があっても武装しないことが実走で確定している。**武装の発動条件は、dispatcher が kickoff を「使用中 transport の `send_keys`」による user turn として打鍵し、その本文に standalone `ultracode` トークンを含めること**（SoT: [`.dispatcher/references/spawn-flow.md`](../../../.dispatcher/references/spawn-flow.md) 3-5a）。つまり**窓口の brief 許可は必要条件、dispatcher の send_keys kickoff が発動条件**である。
 
-`gen_delegate_payload.py` の専用フラグ化はスコープ外（許可は `--impl-guidance` の brief 文言、武装は dispatcher の send_keys が担う分担で足りる）。**位置づけ**: ultracode は実装と Codex 前のセルフレビュー収束に使う**前段**であって、最終 Codex ゲート（別モデルによる独立レビュー、Blocker / Major ゼロ）の置き換えではない。軽量レーンや単一ファイルの小タスクでは ultracode を許可しない。
+`gen_delegate_payload.py` の専用フラグ化はスコープ外（許可は `--impl-guidance` の brief 文言、武装は dispatcher の send_keys が担う分担で足りる）。**位置づけ**: ultracode は実装と Codex 前のセルフレビュー収束に使う**前段**であって、最終 Codex ゲート（別モデルによる独立レビュー、Blocker / Major ゼロ）の置き換えではない。軽量レーン（subagent 直処理）では ultracode を許可しない。重量レーンでも上記 3 基準をいずれも満たさないタスクは許可しない（サイズの大小ではなく判断密度・検証性質・並列構造で判定する）。
 
 **段別モデル指定（推奨）**: ultracode workflow を許可するタスクでは、workflow の段ごとにモデルを使い分けるよう brief で促してよい。機械的なファンアウト段（定型置換・多数ファイルへの同一変換・単純収集など判断を伴わない並列作業）は `agent(..., {model: 'sonnet'})` で Sonnet 5 に振ってコスト・速度を最適化し、判断・検証・統合の段（レビュー・設計判断・adversarial verify・synthesis）はセッションモデル（既定 opus）を継承させて品質を確保する。粒度は Workflow tool の `agent()` opts.model で制御する（段別注記は [`.dispatcher/references/spawn-flow.md`](../../../.dispatcher/references/spawn-flow.md) 3-5a と一致させる）。
 
