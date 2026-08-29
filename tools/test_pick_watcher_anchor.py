@@ -13,6 +13,15 @@ on individual predicates:
   the same layout under broker keeps the anchors, since broker panes are
   independent sessions with no rect ceiling;
 * the floor mirror must equal the runtime's constants.
+
+**The pane sizes in these fixtures are observed examples, not spec
+values.** 397x53 / 24 wide are what the 2026-08-30 incident happened to
+measure; 280x43 and 80x24 stand in for a laptop and a small terminal.
+Terminal geometry is per-environment, so nothing in ``pick()`` keys on a
+particular size -- the only absolute numbers in the tool are the runtime
+floor mirror (pinned by ``TestFloorDrift``) and prose in its docstring.
+A fixture size may be changed freely as long as its relation to the
+floors is preserved.
 """
 
 from __future__ import annotations
@@ -54,6 +63,15 @@ INCIDENT_LAYOUT = [
 HEALTHY_LAYOUT = [
     pane("%1", "secretary", "secretary", 0, 0, 280, 43),
     pane("%2", "dispatcher", "dispatcher", 0, 44, 280, 43),
+]
+
+# A small terminal (80x24 class), tiled the usual way. Nothing here is
+# splittable *comfortably*, which is the point: the tool should degrade
+# through its tiers rather than jump to "no capacity".
+SMALL_TERMINAL_LAYOUT = [
+    pane("%1", "secretary", "secretary", 0, 0, 80, 12),
+    pane("%2", "dispatcher", "dispatcher", 0, 12, 40, 12),
+    pane("%3", "worker-a", "worker", 40, 12, 40, 12),
 ]
 
 # Everything is at or under the floors: no anchor can be halved at all.
@@ -153,12 +171,33 @@ class TestDirection(unittest.TestCase):
     """
 
     def test_wide_secretary_splits_vertically(self):
+        # 397x53 is the size the incident was measured at, not a spec value.
         layout = [pane("%1", "secretary", "secretary", 0, 0, 397, 53)]
         result = pwa.build_result(pwa.parse_panes(layout))
         first = result["candidates"][0]
         self.assertEqual(first["target"], "secretary")
         self.assertEqual(first["direction"], "vertical")
         self.assertEqual((first["new_w"], first["new_h"]), (198, 53))
+
+    def test_direction_rule_holds_across_terminal_sizes(self):
+        # Sizes are examples spanning small / medium / large; the assertion
+        # is the *rule* (halve the longer side -> the roomier child), not a
+        # per-size constant. Watcher role keeps SECRETARY_MIN out of it.
+        cases = [
+            (40, 10, "vertical"),    # small, wide
+            (24, 40, "horizontal"),  # small, tall
+            (160, 48, "vertical"),   # medium, wide
+            (60, 120, "horizontal"), # medium, tall
+            (397, 53, "vertical"),   # the 2026-08-30 measurement
+            (200, 300, "horizontal"),
+        ]
+        for w, h, expected in cases:
+            with self.subTest(size=f"{w}x{h}"):
+                layout = [pane("%1", "pr-watch-900", "watcher", 0, 0, w, h)]
+                result = pwa.build_result(pwa.parse_panes(layout))
+                self.assertEqual(
+                    result["candidates"][0]["direction"], expected
+                )
 
     def test_tall_narrow_pane_splits_horizontally(self):
         # 200 wide halves to 100 (still >= MIN_PANE_WIDTH) with metric 100,
@@ -199,6 +238,53 @@ class TestDirection(unittest.TestCase):
                         )
                     )
                     self.assertEqual(ours, theirs, f"{role} {w}x{h}")
+
+
+class TestSmallTerminalDegradation(unittest.TestCase):
+    """Degrade through the tiers on a small terminal, then report zero.
+
+    The failure this guards against is the mirror image of the incident:
+    concluding "no capacity" while something is still splittable, and
+    conversely offering a candidate when nothing is.
+    """
+
+    def test_small_terminal_still_offers_the_narrow_dispatcher(self):
+        # secretary 80x12 fails SECRETARY_MIN in both directions; the
+        # 40x12 dispatcher halves to 20x12, clearing MIN_PANE but sitting
+        # under DISPATCHER_MIN_WIDTH -- so it is offered, demoted.
+        result = pwa.build_result(pwa.parse_panes(SMALL_TERMINAL_LAYOUT), "renga")
+        self.assertFalse(result["capacity_exhausted"])
+        self.assertEqual(names(result), ["dispatcher"])
+        self.assertEqual(result["candidates"][0]["tier"], "dispatcher-narrow")
+        secretary_reason = next(
+            r["reason"] for r in result["rejected"] if r["target"] == "secretary"
+        )
+        self.assertIn("secretary floor", secretary_reason)
+
+    def test_one_notch_smaller_yields_zero_candidates(self):
+        # One notch tighter: 19 wide halves to 9 (< MIN_PANE_WIDTH 20) and
+        # 8 tall halves to 4 (< MIN_PANE_HEIGHT 5), so neither direction
+        # fits for any anchor and the secretary still fails its own floor.
+        layout = [
+            pane("%1", "secretary", "secretary", 0, 0, 80, 8),
+            pane("%2", "dispatcher", "dispatcher", 0, 8, 19, 8),
+            pane("%3", "pr-watch-900", "watcher", 19, 8, 19, 8),
+        ]
+        result = pwa.build_result(pwa.parse_panes(layout), "renga")
+        self.assertTrue(result["capacity_exhausted"])
+        self.assertEqual(result["candidates"], [])
+
+    def test_zero_candidates_exits_two_for_the_skill_to_report(self):
+        layout = [
+            pane("%1", "secretary", "secretary", 0, 0, 80, 8),
+            pane("%2", "dispatcher", "dispatcher", 0, 8, 19, 8),
+        ]
+        buf = io.StringIO()
+        with mock.patch.object(sys, "stdin", io.StringIO(json.dumps(layout))):
+            with redirect_stdout(buf):
+                rc = pwa.main(["--transport", "renga"])
+        self.assertEqual(rc, 2)
+        self.assertTrue(json.loads(buf.getvalue())["capacity_exhausted"])
 
 
 class TestSecretaryFloor(unittest.TestCase):
