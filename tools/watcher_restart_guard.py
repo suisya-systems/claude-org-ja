@@ -91,8 +91,14 @@ The asymmetry is deliberate and load-bearing:
   watcher -- it cannot prove that *this* PR is being watched. It is
   reported as ``ignored_unknown_repo`` so the exclusion is visible rather
   than silent.
-* **Terminal evidence accepts a missing repo.** A row that may have ended
-  monitoring is counted even when under-specified.
+* **Terminal evidence accepts a missing repo as evidence, but never as a
+  conclusion.** A row that may have ended monitoring is counted even when
+  under-specified -- dropping it would let a finished watch read as
+  ``live``. It cannot, however, produce a non-tripping verdict: a repo-less
+  ``pr_merged`` or legacy ``ci_completed`` belonging to a same-numbered PR
+  in another repository would otherwise certify this one as accounted for.
+  Such a terminal yields ``ended_inconclusive`` instead. 45 of the live
+  DB's ``pr_merged`` rows carry no repo, so this is a real row shape.
 
 Both directions therefore fail toward "warn the operator", never toward
 "silently OK", which is the only safe bias for a guard whose false negative
@@ -125,13 +131,18 @@ row. Anchoring the terminal window on the watcher alone would find nothing
 after it and answer ``live`` forever for a watch that is already over --
 the guard's own failure mode, reintroduced one level down.
 
-So when that window is empty, terminals since the baseline push are
-reconsidered, and one is attributed to the newest watcher unless an
-*earlier* watcher could own it. That exception matters: push -> watcher ->
-``indeterminate`` -> restart is the documented response to an inconclusive
-verdict, and the restarted watcher genuinely is live. The output flags the
-attribution with ``terminal_precedes_watcher_row`` so the inference is
-visible rather than assumed.
+So watches and terminals are paired greedily in time order (see
+:func:`_terminal_of`): each watcher, oldest first, claims the earliest
+still-unclaimed terminal at or after its own start, and a terminal left
+unclaimed after the baseline push is attributed to the newest watcher. The
+greediness is what keeps this honest in both directions -- an earlier
+watcher only disowns a terminal it has not already consumed -- so
+``push -> watcher -> indeterminate -> restart`` (the documented response to
+an inconclusive verdict) reads as ``live``, while
+``watcher1 -> failed -> push -> watcher2's terminal -> watcher2's launch
+row`` reads as ended. The output flags the attribution with
+``terminal_precedes_watcher_row`` so the inference is visible rather than
+assumed.
 
 Ordering compares ``(occurred_at, events.id)``. The schema's default
 timestamp has millisecond resolution, and a push followed immediately by a
@@ -472,9 +483,71 @@ def _terminal_summary(row: EventRow) -> dict:
         "kind": row.kind,
         "occurred_at": row.occurred_at,
         "head": row.payload.get("head"),
-        "status": row.payload.get("status"),
+        # The NORMALISED status, so the evidence cannot contradict the
+        # verdict: legacy rows keep it under ``result``, and echoing the raw
+        # ``status`` key would print null next to a verdict derived from a
+        # value that was plainly there.
+        "status": _ci_status(row.payload),
+        "repo": row.payload.get("repo"),
         "event_id": row.event_id,
     }
+
+
+def _terminal_of(
+    newest_watcher: EventRow,
+    watchers: "list[EventRow]",
+    terminals: "list[EventRow]",
+    baseline: Optional[EventRow],
+) -> Optional[EventRow]:
+    """The terminal event that ended ``newest_watcher``, if any.
+
+    Watches and their terminals are paired greedily in time order: each
+    watcher, oldest first, claims the earliest still-unclaimed terminal at
+    or after its own start. A watcher with no claim is still running.
+
+    The pairing exists because a watch can END BEFORE ITS LAUNCH IS
+    RECORDED: the skill spawns the pane, verifies it, and only then appends
+    ``pr_watch_pane_started``, so a watch that finds CI already red can emit
+    ``ci_completed`` and exit while the operator is still verifying. Its
+    terminal then sorts before its own launch row. A rule that only looks
+    *after* the newest launch row finds nothing and answers ``live``
+    forever for a watch that is already over -- the guard's own failure
+    mode, one level down.
+
+    So a terminal left unclaimed after the pairing, and newer than the last
+    push, is attributed to the newest watcher. Greedy pairing is what keeps
+    that from misfiring in both directions: an earlier watcher only disowns
+    a terminal it has not already consumed, so
+    ``watcher1 -> failed -> push -> watcher2's terminal -> watcher2's launch
+    row`` correctly reports watcher2 as ended (watcher1's claim was spent on
+    its own verdict), while ``push -> watcher1 -> indeterminate -> restart``
+    -- the documented response to an inconclusive verdict -- correctly
+    reports the restart as live.
+    """
+    ordered_watchers = sorted(watchers, key=_sort_key)
+    ordered_terminals = sorted(terminals, key=_sort_key)
+    claimed: dict = {}
+    used: set = set()
+    for w in ordered_watchers:
+        for t in ordered_terminals:
+            if t.event_id in used:
+                continue
+            if _sort_key(t) >= _sort_key(w):
+                claimed[w.event_id] = t
+                used.add(t.event_id)
+                break
+
+    own = claimed.get(newest_watcher.event_id)
+    if own is not None:
+        return own
+
+    unclaimed = [
+        t
+        for t in ordered_terminals
+        if t.event_id not in used
+        and (baseline is None or _sort_key(t) > _sort_key(baseline))
+    ]
+    return unclaimed[-1] if unclaimed else None
 
 
 def evaluate(
@@ -530,13 +603,28 @@ def evaluate(
             continue
         watchers.append(e)
 
-    terminals = [
-        e
-        for e in events
-        if e.kind in TERMINAL_KINDS
-        and canonical_pr(e.payload.get("pr")) == pr_key
-        and canonical_repo(e.payload.get("repo")) in (None, repo_key)
-    ]
+    # Terminal evidence splits by whether it can be attributed to THIS repo.
+    # A repo-less row is still admitted -- it may well be the end of this
+    # watch, and dropping it would let a finished watch read as live -- but
+    # it may never produce a non-tripping verdict: with PR numbers colliding
+    # across repos, a repo-less `pr_merged` or a legacy `ci_completed` from
+    # another repository would otherwise certify this one as accounted for.
+    # 45 of the live DB's `pr_merged` rows carry no repo, so this is a real
+    # row shape, not a hypothetical one.
+    terminals: list[EventRow] = []
+    unattributable_terminals: list[EventRow] = []
+    for e in events:
+        if e.kind not in TERMINAL_KINDS:
+            continue
+        if canonical_pr(e.payload.get("pr")) != pr_key:
+            continue
+        row_repo = canonical_repo(e.payload.get("repo"))
+        if row_repo is None:
+            unattributable_terminals.append(e)
+            terminals.append(e)
+        elif row_repo == repo_key:
+            terminals.append(e)
+    unattributable_ids = {e.event_id for e in unattributable_terminals}
 
     base = Verdict(
         verdict="",
@@ -574,38 +662,27 @@ def evaluate(
             "pane proves nothing, the watch it belongs to predates the push",
         )
 
-    after = [e for e in terminals if _sort_key(e) >= _sort_key(newest_watcher)]
-    if not after:
-        # A watch can END BEFORE ITS LAUNCH IS RECORDED. The skill spawns the
-        # pane, inspects it, and only then appends ``pr_watch_pane_started``
-        # -- so a watch that finds CI already red can emit ``ci_completed``
-        # and exit while the operator is still on the verification step. The
-        # terminal then sorts BEFORE the watcher row, this window is empty,
-        # and a purely watcher-anchored rule answers ``live`` forever for a
-        # watch that is already over: the guard's own failure mode.
-        #
-        # Such a terminal is only attributable to the newest watcher when no
-        # EARLIER watcher could own it. If one could, the newest watcher is a
-        # genuine restart after that verdict (the documented response to an
-        # ``indeterminate``), and it really is live.
-        earlier = [w for w in watchers if _sort_key(w) < _sort_key(newest_watcher)]
-        after = [
-            e
-            for e in terminals
-            if (baseline is None or _sort_key(e) > _sort_key(baseline))
-            and not any(_sort_key(w) < _sort_key(e) for w in earlier)
-        ]
-        if after:
-            base.terminal_precedes_watcher_row = True
-    if not after:
+    terminal = _terminal_of(newest_watcher, watchers, terminals, baseline)
+    if terminal is None:
         return finish(
             "live",
-            "a watcher started after the last push and no terminal event has "
-            "arrived since",
+            "a watcher started after the last push and no terminal event is "
+            "attributable to it",
         )
-
-    terminal = max(after, key=_sort_key)
+    if _sort_key(terminal) < _sort_key(newest_watcher):
+        base.terminal_precedes_watcher_row = True
     base.terminal = _terminal_summary(terminal)
+
+    if terminal.event_id in unattributable_ids:
+        # Admitted as evidence that the watch may be over, but it names no
+        # repo, so it cannot certify THIS PR's monitoring as accounted for.
+        return finish(
+            "ended_inconclusive",
+            f"a {terminal.kind} for PR #{pr_key} is attributable to this "
+            "watcher but carries no repo, so it cannot be confirmed to be "
+            f"this PR's ({base.repo}); PR numbers collide across repos, so "
+            "treating it as a conclusion would be a guess",
+        )
 
     if terminal.kind in MERGE_TERMINAL_KINDS:
         return finish(

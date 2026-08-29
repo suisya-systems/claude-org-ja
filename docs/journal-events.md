@@ -386,12 +386,21 @@ spawn し、起動確認を済ませてから `pr_watch_pane_started` を書く�
 既に red の場合 watch は確認ステップの最中に `ci_completed` を出して終了し、
 terminal イベントが自分の起動行より**前**に並ぶ。watcher の時刻だけを起点に
 すると「起動行より後の terminal は無い ＝ live」と永久に答えることになる（ガード
-自身が同じ誤りを一段下で再現する）ため、この窓が空のときは baseline 以降の
-terminal を再検討し、**より前の watcher が所有者になりえない場合に限り**最新
-watcher のものとみなす。所有者候補が居る場合（push → watcher → `indeterminate`
-→ 再起動、という `indeterminate` への正規の対応手順）は再起動側が本当に生きて
-いるので `live` のまま。この推測が働いたときは出力の
-`terminal_precedes_watcher_row` で可視化される。
+自身が同じ誤りを一段下で再現する）。そこで watcher と terminal を時系列で
+**貪欲にペアリング**する: 古い watcher から順に「自分の起動時刻以降で、まだ
+誰にも取られていない最初の terminal」を 1 つ取り、baseline 以降で最後まで
+取られなかった terminal を最新 watcher に帰属させる。貪欲であることが両方向の
+誤りを同時に防ぐ — 前の watcher が terminal を「所有」できるのは**まだ消費して
+いない場合だけ**なので、`push → watcher → indeterminate → 再起動`（`indeterminate`
+への正規の対応手順）は `live` のまま、`watcher1 → failed → push →
+watcher2 の terminal → watcher2 の起動行`は「watcher2 は終了済み」と正しく読む。
+この帰属が働いたときは出力の `terminal_precedes_watcher_row` で可視化される。
+
+なお terminal 側の repo 欠落行は「watch が終わった証拠」としては採用するが
+**結論（非 trip の verdict）には使えない**（PR 番号は repo 間で衝突するので、
+別 repo の同番号 PR の `pr_merged` / legacy `ci_completed` がこちらを
+「監視済み」と証明してしまう）。この場合は `ended_inconclusive` になる。
+live DB の `pr_merged` 363 行中 45 行が repo を持たないため、実在する行形である。
 
 baseline の sha は `fix_pushed` payload の `commit` / `head` / `sha` の
 順で読む（catalog 上の名は `commit` だが、実際の emitter が書くのは

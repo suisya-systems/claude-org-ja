@@ -343,11 +343,40 @@ class TestNormalisation(DbCase):
         self.assertEqual(len(v.ignored_unknown_repo), 1)
         self.assertEqual(v.watcher_count, 0)
 
-    def test_terminal_without_repo_is_counted(self) -> None:
+    def test_terminal_without_repo_ends_the_watch_but_cannot_certify_it(self) -> None:
+        """Admitted as evidence the watch is over; refused as a clean bill.
+
+        Both halves matter. Dropping the row would leave a finished watch
+        reading as ``live``; accepting it as a conclusion would let a
+        same-numbered PR in another repository certify this one -- and 45
+        live ``pr_merged`` rows carry no repo, so that row shape is real.
+        """
         self.push(self.TASK, "abcdef1234", _ts(10))
         self.watcher(73, _ts(20))
         self.ci(73, "passed", "abcdef1", _ts(60), repo=None)
         v = guard.evaluate(self.conn, 73, REPO, task_id=self.TASK)
+        self.assertEqual((v.verdict, v.exit_code), ("ended_inconclusive", 3))
+        self.assertEqual(v.terminal["kind"], "ci_completed")
+        self.assertIsNone(v.terminal["repo"])
+
+    def test_a_repo_matched_terminal_still_certifies(self) -> None:
+        self.push(self.TASK, "abcdef1234", _ts(10))
+        self.watcher(73, _ts(20))
+        self.ci(73, "passed", "abcdef1", _ts(60))
+        v = guard.evaluate(self.conn, 73, REPO, task_id=self.TASK)
+        self.assertEqual((v.verdict, v.exit_code), ("completed", 0))
+
+    def test_legacy_result_key_is_echoed_in_the_evidence(self) -> None:
+        self.push(self.TASK, "abcdef1234", _ts(10))
+        self.watcher(73, _ts(20))
+        self.add_event(
+            "ci_completed",
+            {"pr": 73, "repo": REPO, "head": "abcdef1", "result": "passed"},
+            _ts(60),
+        )
+        v = guard.evaluate(self.conn, 73, REPO, task_id=self.TASK)
+        # The evidence must not print null next to a verdict derived from it.
+        self.assertEqual(v.terminal["status"], "passed")
         self.assertEqual(v.verdict, "completed")
 
     def test_same_millisecond_ordering_is_resolved_by_event_id(self) -> None:
@@ -737,6 +766,33 @@ class TestWatchEndingBeforeItsLaunchRow(DbCase):
         self.assertEqual((v.verdict, v.exit_code), ("live", 0))
         self.assertFalse(v.terminal_precedes_watcher_row)
         self.assertEqual(v.watcher["pane_id"], "%2")
+
+    def test_a_spent_earlier_watcher_cannot_disown_the_new_terminal(self) -> None:
+        """An earlier watcher only disowns a terminal it has not consumed.
+
+        watcher1 -> failed -> push -> watcher2's terminal -> watcher2's
+        launch row. A rule that treats *any* earlier launch as a possible
+        owner hands watcher2's terminal to watcher1 -- whose own verdict
+        already came and went -- and reports the stopped watcher2 as live.
+        """
+        self.watcher(73, _ts(0), pane_id="%1")
+        self.ci(73, "failed", "aaaaaaa", _ts(10))
+        self.push(self.TASK, "bbbbbbbbbbbb", _ts(20))
+        self.ci(73, "failed", "bbbbbbb", _ts(30))     # watcher2's verdict
+        self.watcher(73, _ts(40), pane_id="%2")       # watcher2's launch row
+        v = guard.evaluate(self.conn, 73, REPO, task_id=self.TASK)
+        self.assertEqual((v.verdict, v.exit_code), ("completed", 0))
+        self.assertTrue(v.terminal_precedes_watcher_row)
+        self.assertEqual(v.terminal["head"], "bbbbbbb")
+
+    def test_the_same_shape_trips_when_the_new_verdict_is_inconclusive(self) -> None:
+        self.watcher(73, _ts(0), pane_id="%1")
+        self.ci(73, "failed", "aaaaaaa", _ts(10))
+        self.push(self.TASK, "bbbbbbbbbbbb", _ts(20))
+        self.ci(73, "incomplete", "bbbbbbb", _ts(30))
+        self.watcher(73, _ts(40), pane_id="%2")
+        v = guard.evaluate(self.conn, 73, REPO, task_id=self.TASK)
+        self.assertEqual((v.verdict, v.exit_code), ("ended_inconclusive", 3))
 
     def test_a_terminal_from_before_the_push_is_not_reattributed(self) -> None:
         self.push(self.TASK, "aaaaaaaaaaaa", _ts(0))
