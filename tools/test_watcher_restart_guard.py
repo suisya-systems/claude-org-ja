@@ -278,12 +278,29 @@ class TestVerdicts(DbCase):
         v = guard.evaluate(self.conn, None, REPO, task_id=self.TASK)
         self.assertEqual((v.verdict, v.exit_code), ("unresolved", 2))
 
-    def test_terminal_before_the_watcher_does_not_end_it(self) -> None:
-        # A verdict from the PREVIOUS watch must not be read as ending the
-        # current one; otherwise a restart would report `completed`.
+    def test_terminal_before_the_watcher_needs_an_earlier_watcher_to_disown(self) -> None:
+        """Who owns a terminal that precedes the only watcher row?
+
+        With NO earlier ``pr_watch_pane_started`` on record there was no
+        previous watch to attribute it to (the launch row is mandatory), so
+        it belongs to this watcher, whose row simply landed late -- and the
+        watch is over. Reading it as "someone else's old verdict, we are
+        still live" is the race that lets a finished watch look alive.
+        """
         self.push(self.TASK, "c2c2c2c", _ts(10))
         self.ci(73, "failed", "c1c1c1c", _ts(20))
         self.watcher(73, _ts(30))
+        v = guard.evaluate(self.conn, 73, REPO, task_id=self.TASK)
+        self.assertEqual((v.verdict, v.exit_code), ("ended_stale_head", 3))
+        self.assertTrue(v.terminal_precedes_watcher_row)
+
+    def test_an_earlier_watcher_disowns_it_and_the_restart_is_live(self) -> None:
+        # Same events, plus the previous watch's launch row: now the
+        # terminal has an owner and the newest watcher is a real restart.
+        self.push(self.TASK, "c2c2c2c", _ts(10))
+        self.watcher(73, _ts(15), pane_id="%1")
+        self.ci(73, "failed", "c1c1c1c", _ts(20))
+        self.watcher(73, _ts(30), pane_id="%2")
         v = guard.evaluate(self.conn, 73, REPO, task_id=self.TASK)
         self.assertEqual(v.verdict, "live")
         self.assertIsNone(v.terminal)
@@ -392,6 +409,25 @@ class TestResolution(DbCase):
 
 
 class TestAudit(DbCase):
+    def test_unreadable_pr_url_does_not_exit_0(self) -> None:
+        """An open PR that could not be CHECKED is not a clean bill.
+
+        `unresolved` is not a tripping verdict, so a plain "any tripped?"
+        exit rule reports the whole audit healthy while that PR was never
+        examined -- exactly the silent miss this tool removes.
+        """
+        self.add_run("t", pr_url="not-a-pr-url")
+        code, out, _err = self._run(["audit"])
+        self.assertEqual(code, guard.EXIT_UNRESOLVED)
+        self.assertIn("unresolved", out)
+
+    def test_a_trip_outranks_an_unresolved_run(self) -> None:
+        self.add_run("bad-url", pr_url="not-a-pr-url")
+        self.add_run("t", pr_url=f"https://github.com/{REPO}/pull/73")
+        self.push("t", "c1", _ts(10))
+        self.watcher(73, _ts(5))
+        self.assertEqual(self._run(["audit"])[0], guard.EXIT_TRIPPED)
+
     def test_exits_3_when_any_run_trips(self) -> None:
         self.add_run("t", pr_url=f"https://github.com/{REPO}/pull/73")
         self.push("t", "c1", _ts(10))
@@ -658,6 +694,58 @@ class TestSchemaAssumptions(DbCase):
         self.add_event_raw("ci_completed", '"nope"', _ts(30))
         v = guard.evaluate(self.conn, 73, REPO)
         self.assertEqual(v.verdict, "missing")
+
+
+class TestWatchEndingBeforeItsLaunchRow(DbCase):
+    """The launch row is appended AFTER the pane is spawned and verified.
+
+    A watch that finds CI already red can finish in that gap, so its
+    terminal event sorts before its own ``pr_watch_pane_started``. A
+    watcher-anchored window finds nothing after the launch row and would
+    answer ``live`` forever for a watch that is already over.
+    """
+
+    TASK = "t"
+
+    def test_terminal_recorded_before_the_launch_row_still_counts(self) -> None:
+        self.push(self.TASK, "bbbbbbbbbbbb", _ts(10))
+        self.ci(73, "failed", "bbbbbbb", _ts(20))     # watch finished first
+        self.watcher(73, _ts(30))                     # launch row lands late
+        v = guard.evaluate(self.conn, 73, REPO, task_id=self.TASK)
+        self.assertEqual((v.verdict, v.exit_code), ("completed", 0))
+        self.assertTrue(v.terminal_precedes_watcher_row)
+        self.assertEqual(v.terminal["kind"], "ci_completed")
+
+    def test_the_same_race_trips_when_the_watch_gave_no_verdict(self) -> None:
+        self.push(self.TASK, "bbbbbbbbbbbb", _ts(10))
+        self.ci(73, "indeterminate", "bbbbbbb", _ts(20))
+        self.watcher(73, _ts(30))
+        v = guard.evaluate(self.conn, 73, REPO, task_id=self.TASK)
+        self.assertEqual((v.verdict, v.exit_code), ("ended_inconclusive", 3))
+
+    def test_a_restart_after_a_verdict_is_still_live(self) -> None:
+        """The documented response to ``indeterminate`` must not false-alarm.
+
+        Here an EARLIER watcher owns the terminal, so the newest one is a
+        genuine restart rather than a late launch row.
+        """
+        self.push(self.TASK, "bbbbbbbbbbbb", _ts(10))
+        self.watcher(73, _ts(20), pane_id="%1")
+        self.ci(73, "indeterminate", "bbbbbbb", _ts(30))
+        self.watcher(73, _ts(40), pane_id="%2")
+        v = guard.evaluate(self.conn, 73, REPO, task_id=self.TASK)
+        self.assertEqual((v.verdict, v.exit_code), ("live", 0))
+        self.assertFalse(v.terminal_precedes_watcher_row)
+        self.assertEqual(v.watcher["pane_id"], "%2")
+
+    def test_a_terminal_from_before_the_push_is_not_reattributed(self) -> None:
+        self.push(self.TASK, "aaaaaaaaaaaa", _ts(0))
+        self.ci(73, "failed", "aaaaaaa", _ts(10))
+        self.push(self.TASK, "bbbbbbbbbbbb", _ts(20))
+        self.watcher(73, _ts(30))
+        v = guard.evaluate(self.conn, 73, REPO, task_id=self.TASK)
+        self.assertEqual((v.verdict, v.exit_code), ("live", 0))
+        self.assertFalse(v.terminal_precedes_watcher_row)
 
 
 class TestEmittedPayloadShapes(DbCase):

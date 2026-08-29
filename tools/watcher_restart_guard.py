@@ -115,6 +115,24 @@ degrades to ``completed`` with the missing evidence visible in the output.
 :data:`BASELINE_SHA_KEYS` is why the documented key and the emitted key are
 both read.
 
+## A watch can end before its launch is recorded
+
+The skill spawns the watcher pane, verifies it, and only then appends
+``pr_watch_pane_started``. A watch that finds CI already red can therefore
+emit ``ci_completed`` and exit while the operator is still on the
+verification step, leaving the terminal event sorted *before* the launch
+row. Anchoring the terminal window on the watcher alone would find nothing
+after it and answer ``live`` forever for a watch that is already over --
+the guard's own failure mode, reintroduced one level down.
+
+So when that window is empty, terminals since the baseline push are
+reconsidered, and one is attributed to the newest watcher unless an
+*earlier* watcher could own it. That exception matters: push -> watcher ->
+``indeterminate`` -> restart is the documented response to an inconclusive
+verdict, and the restarted watcher genuinely is live. The output flags the
+attribution with ``terminal_precedes_watcher_row`` so the inference is
+visible rather than assumed.
+
 Ordering compares ``(occurred_at, events.id)``. The schema's default
 timestamp has millisecond resolution, and a push followed immediately by a
 watcher restart really does land in the same millisecond, so the
@@ -141,9 +159,11 @@ visible instead of being passed off as a clean bill.
     python3 tools/watcher_restart_guard.py audit
 
 Exit codes: 0 = monitoring accounted for (``live`` / ``completed``, and for
-``audit`` no run tripped), 3 = a tripping verdict (``stale`` / ``missing``
-/ ``ended_stale_head`` / ``ended_inconclusive``), 2 = the PR could not be
-resolved, 1 = usage / DB / schema error.
+``audit`` every run checked and none tripped), 3 = a tripping verdict
+(``stale`` / ``missing`` / ``ended_stale_head`` / ``ended_inconclusive``),
+2 = the PR could not be resolved -- for ``audit`` that means an open PR
+went **unchecked**, which is a failure to answer and never a clean bill --
+1 = usage / DB / schema error.
 """
 
 from __future__ import annotations
@@ -415,6 +435,9 @@ class Verdict:
     terminal: Optional[dict] = None
     watcher_count: int = 0
     ignored_unknown_repo: list = field(default_factory=list)
+    # True when the terminal event was attributed to a watcher whose launch
+    # row landed after it -- a watch that ended before it was recorded.
+    terminal_precedes_watcher_row: bool = False
     reason: str = ""
     remediation: Optional[str] = None
 
@@ -552,6 +575,28 @@ def evaluate(
         )
 
     after = [e for e in terminals if _sort_key(e) >= _sort_key(newest_watcher)]
+    if not after:
+        # A watch can END BEFORE ITS LAUNCH IS RECORDED. The skill spawns the
+        # pane, inspects it, and only then appends ``pr_watch_pane_started``
+        # -- so a watch that finds CI already red can emit ``ci_completed``
+        # and exit while the operator is still on the verification step. The
+        # terminal then sorts BEFORE the watcher row, this window is empty,
+        # and a purely watcher-anchored rule answers ``live`` forever for a
+        # watch that is already over: the guard's own failure mode.
+        #
+        # Such a terminal is only attributable to the newest watcher when no
+        # EARLIER watcher could own it. If one could, the newest watcher is a
+        # genuine restart after that verdict (the documented response to an
+        # ``indeterminate``), and it really is live.
+        earlier = [w for w in watchers if _sort_key(w) < _sort_key(newest_watcher)]
+        after = [
+            e
+            for e in terminals
+            if (baseline is None or _sort_key(e) > _sort_key(baseline))
+            and not any(_sort_key(w) < _sort_key(e) for w in earlier)
+        ]
+        if after:
+            base.terminal_precedes_watcher_row = True
     if not after:
         return finish(
             "live",
@@ -961,7 +1006,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help="check every run with an open PR.",
         description=(
             "Check every run holding a non-terminal PR. Exit 3 if any run "
-            "trips, 0 otherwise."
+            "trips, 2 if none trip but a run's pr_url could not be read (that "
+            "PR went unchecked), 0 otherwise."
         ),
     )
     aud.add_argument(
@@ -1027,7 +1073,14 @@ def main(argv: Optional[list] = None) -> int:
                 )
             else:
                 print(render_audit(results))
-            return EXIT_TRIPPED if any(v.tripped for v in results) else EXIT_OK
+            if any(v.tripped for v in results):
+                return EXIT_TRIPPED
+            # An `unresolved` run was NOT checked -- its pr_url could not be
+            # read. Returning 0 would report an unexamined open PR as
+            # healthy, which is the silent-miss this tool exists to remove.
+            if any(v.verdict == "unresolved" for v in results):
+                return EXIT_UNRESOLVED
+            return EXIT_OK
 
         pr = args.pr
         repo = args.repo

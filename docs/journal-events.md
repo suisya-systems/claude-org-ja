@@ -381,6 +381,18 @@ pane が存在するか」では**ない**（herdr / renga transport では監�
   誤報が出て、「読み飛ばす習慣」というインシデントの原因そのものを再生産
   するため。
 
+**watch はその起動が記録される前に終わりうる**: `/pr-watch-pane` はペインを
+spawn し、起動確認を済ませてから `pr_watch_pane_started` を書くため、CI が
+既に red の場合 watch は確認ステップの最中に `ci_completed` を出して終了し、
+terminal イベントが自分の起動行より**前**に並ぶ。watcher の時刻だけを起点に
+すると「起動行より後の terminal は無い ＝ live」と永久に答えることになる（ガード
+自身が同じ誤りを一段下で再現する）ため、この窓が空のときは baseline 以降の
+terminal を再検討し、**より前の watcher が所有者になりえない場合に限り**最新
+watcher のものとみなす。所有者候補が居る場合（push → watcher → `indeterminate`
+→ 再起動、という `indeterminate` への正規の対応手順）は再起動側が本当に生きて
+いるので `live` のまま。この推測が働いたときは出力の
+`terminal_precedes_watcher_row` で可視化される。
+
 baseline の sha は `fix_pushed` payload の `commit` / `head` / `sha` の
 順で読む（catalog 上の名は `commit` だが、実際の emitter が書くのは
 `head` である点は下記 `fix_pushed` 行の注記を参照）。詳細な非対称マッチ
@@ -408,8 +420,10 @@ task から PR が特定できない）、`1`=usage / DB / schema エラー。**
 逆引きして `fix_pushed` baseline を復元する（復元しないと `--pr` 形式は
 baseline を一切読まず、`stale` 分岐に到達できないまま exit 0 を返す ＝
 インシデントそのものを見逃す）。`audit` サブコマンドは `pr_state` が非
-terminal な run を全件評価し、1 件でも trip した verdict があれば exit 3
-を返す。
+terminal な run を全件評価し、1 件でも trip した verdict があれば exit 3、
+trip は無いが `pr_url` を読めず**評価できなかった** run がある場合は exit 2
+を返す（評価できなかった open PR を exit 0 に混ぜると「全件確認済み」と読めて
+しまい、本ツールが消そうとしている silent miss そのものになる）。
 
 ### Session lifecycle
 
