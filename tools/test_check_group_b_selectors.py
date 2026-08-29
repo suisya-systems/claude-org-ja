@@ -28,6 +28,7 @@ bare name). It must:
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import tempfile
@@ -437,6 +438,49 @@ class ExclusionTest(TmpRootTestCase):
     def test_git_directory_is_not_walked(self) -> None:
         _write(self.root, ".git/hooks/note.md", 'close_pane(target="curator")\n')
         self.assertEqual(self.scan().violations, [])
+
+    def test_nested_worktree_is_not_walked(self) -> None:
+        # worktree の .git は gitdir ポインタ *ファイル*、ディレクトリ名は任意。
+        _write(self.root, ".worktrees/ja-848/.git", "gitdir: /elsewhere\n")
+        _write(
+            self.root,
+            ".worktrees/ja-848/docs/procedure.md",
+            'close_pane(target="curator")\n',
+        )
+        self.assertEqual(self.scan().violations, [])
+
+    def test_nested_clone_is_not_walked(self) -> None:
+        # clone の .git は *ディレクトリ*。こちらも同じく降りない。
+        (self.root / "vendor" / "dep" / ".git").mkdir(parents=True)
+        _write(
+            self.root,
+            "vendor/dep/docs/procedure.md",
+            'close_pane(target="curator")\n',
+        )
+        self.assertEqual(self.scan().violations, [])
+
+    @unittest.skipIf(os.name == "nt", "POSIX permission bits only")
+    @unittest.skipIf(
+        getattr(os, "geteuid", lambda: -1)() == 0,
+        "root bypasses permission bits",
+    )
+    def test_unreadable_directory_does_not_abort_the_scan(self) -> None:
+        # 読めないディレクトリは判定不能。walk 側の既存挙動（黙って飛ばす）に
+        # 委ね、marker の probe が例外で走査全体を落とさないこと。
+        _write(self.root, "docs/procedure.md", 'close_pane(target=3)\n')
+        blocked = self.root / "blocked"
+        blocked.mkdir()
+        blocked.chmod(0o000)
+        self.addCleanup(blocked.chmod, 0o755)
+        self.assertEqual(self.scan().violations, [])
+
+    def test_scan_root_with_a_git_marker_is_still_walked(self) -> None:
+        # 走査ルート自身は「別チェックアウト」ではない（枝刈りの対象外）。
+        (self.root / ".git").mkdir()
+        _write(self.root, "docs/procedure.md", 'close_pane(target="curator")\n')
+        self.assertEqual(
+            [f.path for f in self.scan().violations], ["docs/procedure.md"]
+        )
 
 
 class AllowlistTest(TmpRootTestCase):

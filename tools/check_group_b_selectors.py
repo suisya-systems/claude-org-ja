@@ -68,6 +68,9 @@ allowlist エントリがどの違反にも一致しなくなった場合（pros
 * ``tmp/`` — 作業スクラッチ
 * ``*.local.md`` — operator 私物の machine-local ドキュメント（``.gitignore``
   の ``.local.md`` 規約。ワーカー brief ``CLAUDE.local.md`` を含む）
+* ネストした別チェックアウト（走査ルート以外で直下に ``.git`` を持つ
+  ディレクトリ = worktree / clone）— このリポジトリの正準手順ではない。
+  ディレクトリ名は任意なので名前ではなく構造で判定する
 
 ## 終了コード
 
@@ -90,6 +93,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 #: 検査対象の拡張子（長い方を先に判定する）。
 SCAN_SUFFIXES = (".md.in", ".md")
+
+#: 別チェックアウトのルートを指す印（worktree ではファイル、clone ではディレクトリ）。
+CHECKOUT_MARKER = ".git"
 
 #: どの階層でも降りないディレクトリ名。
 SKIP_DIR_NAMES = frozenset(
@@ -400,10 +406,29 @@ def _scan_suffix(name: str) -> str | None:
     return None
 
 
+def _is_nested_checkout(path: Path) -> bool:
+    """``path`` 自身が別チェックアウトのルートか（直下に ``.git`` を持つか）。
+
+    判定できないとき（読めないディレクトリ等）は ``False`` を返し、枝刈りは
+    ``os.walk`` 側の既存挙動に委ねる（降りられない枝は walk が黙って飛ばす）。
+    """
+    try:
+        return (path / CHECKOUT_MARKER).exists()
+    except OSError:
+        return False
+
+
 def iter_scan_files(root: Path) -> Iterator[Path]:
     """検査対象のファイルを列挙する（canonical source 側だけ）。"""
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIR_NAMES)
+        # 別チェックアウト（worktree / clone）はこのリポジトリの正準手順ではない。
+        # ディレクトリ名は任意なので、``.git`` の有無で構造的に判定する。
+        dirnames[:] = sorted(
+            d
+            for d in dirnames
+            if d not in SKIP_DIR_NAMES
+            and not _is_nested_checkout(Path(dirpath) / d)
+        )
         here = Path(dirpath)
         for name in sorted(filenames):
             if _scan_suffix(name) is None:
