@@ -97,6 +97,13 @@ allowed-tools:
 
 **段別モデル指定（推奨）**: ultracode workflow を許可するタスクでは、workflow の段ごとにモデルを使い分けるよう brief で促してよい。機械的なファンアウト段（定型置換・多数ファイルへの同一変換・単純収集など判断を伴わない並列作業）は `agent(..., {model: 'sonnet'})` で Sonnet 5 に振ってコスト・速度を最適化し、判断・検証・統合の段（レビュー・設計判断・adversarial verify・synthesis）はセッションモデル（既定 opus）を継承させて品質を確保する。粒度は Workflow tool の `agent()` opts.model で制御する（段別注記は [`.dispatcher/references/spawn-flow.md`](../../../.dispatcher/references/spawn-flow.md) 3-5a と一致させる）。
 
+**重量レーンのワーカーモデル選定（oracle 強度で判定）**: ワーカーの spawn model は既定 `opus`。ただし **oracle が強いタスク**は、窓口が明示指定して **Sonnet 5 メイン**（`model="sonnet"`）を選んでよい（推奨）。ultracode 許可と同じく、判定は工数ラベル (S/M/L) ではなく **oracle 強度と判断密度**で行う:
+
+- **Sonnet 5 メイン可**: 次を**両方**満たす帯 —(a) 機械検証可能な正解が実装の外に固定されている（fixture 駆動の期待値・テストスイートの assertion・DB の行など）、(b) 設計判断が brief で事前固定済みで、実装中に決め直す判断が残らない。誤りを oracle が機械的に捕捉するため、実装中の判断密度が低い。
+- **opus 維持**: (a)(b) のどちらかを欠くもの。機構の再導出が要る（retarget 型）/ 契約設計を含む / 実測しないと決められない決定が実装中に残る帯が該当する。
+
+既定を外すときは、`send_plan.json` の DELEGATE 本文に `モデル: sonnet` の 1 行を足してからディスパッチャーへ送る（`tools/gen_delegate_payload.py` に model 用のフラグは無く、生成された本文にこの行は出ない）。ディスパッチャーはこの行が無ければ `opus` で spawn する（spawn 側の SoT は [`.dispatcher/references/spawn-flow.md`](../../../.dispatcher/references/spawn-flow.md) 3-2）。
+
 ## 委譲前チェックリスト（窓口が実行）
 
 タスク分解に入る前に、依頼内容を以下の観点で確認する。該当する場合はユーザーに聞き返す。

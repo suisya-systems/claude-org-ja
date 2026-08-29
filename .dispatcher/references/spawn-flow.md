@@ -101,11 +101,16 @@ mcp__renga-peers__spawn_claude_pane(
   name="worker-{task_id}",                # 後続操作で参照する安定名。英字含む前提
   cwd="{workers_dir}/{task_id}",          # 絶対パス推奨。相対は caller pane の cwd 基点
   permission_mode="auto",
-  model="opus"                            # 既定 opus（品質優先）。Sonnet 5 は軽量・機械的タスクに限り窓口指定で許可
+  model="opus"                            # 既定 opus（品質優先）。oracle が強い帯は窓口の明示指定で Sonnet 5 メイン可
 )
 ```
 
-- **既定は `model="opus"`（品質優先）。Sonnet 5 は軽量・機械的タスクに限り、窓口が明示指定したときだけ許可する。** かつては「permission_mode `auto` の safety classifier が Opus でのみ安定動作し、sonnet では誤判定を多発して承認フローが崩れる」ため sonnet 禁止としていたが、これは更新する。auto mode の分類器はワーカーのセッションモデルとは独立した専用モデル（Sonnet 4.6）で動作し、承認判定はワーカーが opus か sonnet かに依存しない（公式: https://www.anthropic.com/engineering/claude-code-auto-mode。2026-07-05 の canary 実測でも Sonnet 5 ワーカーで分類器由来のブロックは 0 件だった）。それでも**既定を opus に据える**のは品質最優先の方針で、実装・デバッグ・設計判断を伴う通常タスクではベンチで Opus 4.8 が優位なため。定型置換・単純な文字列修正のような軽量・機械的タスクに限り、窓口が明示指定すれば Sonnet 5 ワーカーを許可する。ディスパッチャーだけは `bypassPermissions` 固定で分類器を経由しないため、従来どおりコスト最適化として sonnet 運用（この判断はワーカーには自動適用しない）
+- **既定は `model="opus"`（品質優先）。ただし oracle が強いタスクは、窓口が明示指定したときに限り `model="sonnet"`（Sonnet 5 メイン）を選んでよい。** 判定軸は工数ラベル (S/M/L) ではなく**タスクの oracle 強度と判断密度**で、これは ultracode 許可基準と同じ思想である。
+  - **Sonnet 5 メインを選んでよい帯**: 次の 2 条件を**両方**満たすこと。(a) 機械検証可能な正解が実装の外に固定されている（fixture 駆動の期待値・テストスイートの assertion・DB の行など）、(b) 設計判断が brief で事前固定済みで、実装中に決め直す判断が残らない。この帯は誤りを oracle が機械的に捕捉し、実装中の判断密度が低い。
+  - **opus を維持する帯**: (a)(b) のどちらかを欠くもの。機構の再導出が要る（retarget 型）/ 契約設計を含む / 実測しないと決められない決定が実装中に残る帯が該当し、既定の品質優先を崩さない。
+  - **指定の受け取り方**: 窓口は既定を外すときだけ DELEGATE 本文に `モデル: sonnet` の 1 行を載せる。ディスパッチャーはこの行があるときに限り `model="sonnet"` で spawn し、**行が無ければ `model="opus"`** で spawn する（`モデル:` 行は `tools/gen_delegate_payload.py` の生成物には含まれず、窓口が手で足す逸脱指定である）。`sonnet` 以外の値は自己解釈せず窓口へ差し戻す。
+  - モデル選択は承認フローの安全性とは独立である。permission_mode `auto` の safety classifier はワーカーのセッションモデルとは別の専用モデルで動作し、承認判定はワーカーが opus か sonnet かに依存しない（公式: https://www.anthropic.com/engineering/claude-code-auto-mode）。したがってモデル選定は品質判断だけで行う。
+  - ディスパッチャーだけは `bypassPermissions` 固定で分類器を経由しないため、従来どおりコスト最適化として sonnet 運用（この判断はワーカーには自動適用しない）
 - ペイン配置ルールは [`.claude/skills/org-delegate/references/pane-layout.md`](../../.claude/skills/org-delegate/references/pane-layout.md) を参照
 - **同一タブ内 spawn を既定にする理由は「pane 制御が別タブへ届かないから」ではなく、「列挙 (`list_panes`) が別タブを映さないから」**（結論＝同一タブ配置は契約 T-§4.2 の「Retained from ratified §4.2」で retained だが、その**理由は 2026-08-09 改稿で差し替わっている**: 旧来の「pane 制御はどの capability 組み合わせでも one tab wide」は誤りで、契約自身が T-§sup correction 4 として撤回している）。根拠は renga の版数ではなく **capability を確立できたか**で読む（各トークンは独立判定 = 契約 T-§cap の independence rule）。**到達性 (reachability) と配置 (placement) は別軸で、「届くこと」は別タブ配置の licence にならない (MUST NOT)**（契約 T-§4.2-place「Numeric-id reachability does not discharge the placement rule」）:
   - `caller_scope`（Group A: `list_panes` / `focus_pane` / `inspect_pane` / `send_keys` / 各 `spawn_*` の `target`）と `caller_scope_close_identity`（Group B: `close_pane` / `set_pane_identity`）は**個別に判定するトークンで、一方から他方を導出しない**。そして**どちらの群も、scope は capability の組み合わせではなく selector 種別で割れる**（契約 T-§4.2 の Group-A / Group-B bullet）:
