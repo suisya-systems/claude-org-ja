@@ -521,10 +521,16 @@ renga 0.18.0+ では `mcp__renga-peers__spawn_claude_pane` が役割別の構造
 
 ### ワーカー（org-delegate の Step 3 で使用）
 
-**既定は `model="opus"`（品質優先）。Sonnet 5 は軽量・機械的タスクに限り、窓口が明示指定したときだけ許可する。**
-理由: かつては「ワーカーの既定 permission_mode `auto` の safety classifier が Opus でのみ安定動作し、sonnet では誤判定を多発して承認フローが崩れる」ため sonnet 禁止としていたが、これは更新する。auto mode の分類器はワーカーのセッションモデルとは独立した専用モデル（Sonnet 4.6）で動作し、承認判定はワーカーが opus か sonnet かに依存しない（公式: https://www.anthropic.com/engineering/claude-code-auto-mode。2026-07-05 の canary 実測でも Sonnet 5 ワーカーで分類器由来のブロックは 0 件だった）。それでも**既定を opus に据える**のは品質最優先の方針で、実装・デバッグ・設計判断を伴う通常タスクではベンチで Opus 4.8 が優位なため。定型置換・単純な文字列修正のような軽量・機械的タスクに限り、窓口が明示指定すれば Sonnet 5 ワーカーを許可する。ディスパッチャーだけは `bypassPermissions` 固定なので分類器を経由せず、コスト最適化として sonnet 運用（この判断はワーカーには自動適用しない）。
+**既定は `model="opus"`（品質優先）。ただし oracle が強いタスクは、窓口が明示指定したときに限り `model="sonnet"`（Sonnet 5 メイン）を選んでよい。**
+判定軸は工数ラベル (S/M/L) ではなくタスクの **oracle 強度と判断密度**（ultracode 許可基準と同じ思想）:
+- **Sonnet 5 メイン可**: 次を**両方**満たす帯 —(a) 機械検証可能な正解が実装の外に固定されている（fixture 駆動の期待値・テストスイートの assertion・DB の行など）、(b) 設計判断が brief で事前固定済みで実装中に決め直す判断が残らない。
+- **opus 維持**: (a)(b) のどちらかを欠くもの（機構の再導出が要る retarget 型 / 契約設計を含む / 実測しないと決められない決定が実装中に残る帯）。
+
+窓口の指定は DELEGATE 本文の `モデル: sonnet` 行で伝わり、この行が無ければディスパッチャーは `opus` で spawn する（[`.dispatcher/references/spawn-flow.md`](../../../.dispatcher/references/spawn-flow.md) 3-2）。
+
+モデル選択は承認フローの安全性とは独立である。auto モードの分類器はワーカーのセッションモデルとは別の専用モデルで動作し、承認判定はワーカーが opus か sonnet かに依存しない（公式: https://www.anthropic.com/engineering/claude-code-auto-mode）。ディスパッチャーだけは `bypassPermissions` 固定なので分類器を経由せず、コスト最適化として sonnet 運用（この判断はワーカーには自動適用しない）。
 
 通常:
 - `cwd="{workers_dir}/{task_id}"`（絶対パス推奨）
 - `permission_mode=auto`
-- `model="opus"`（既定。軽量・機械的タスクで窓口が明示指定した場合のみ Sonnet 5）
+- `model="opus"`（既定。oracle が強いタスクで窓口が明示指定した場合のみ `"sonnet"`）
