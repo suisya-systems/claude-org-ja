@@ -437,7 +437,9 @@ _BRIEFING_PAYLOAD_FIELDS: dict[str, tuple[str, ...]] = {
     "design_approved":         ("task", "pr"),
     "drift_reaudit":           ("task", "reason"),
     # PR / push
-    "fix_pushed":              ("task", "branch", "commit"),
+    # Emitters write the sha as ``head``; ``commit`` is the name the event
+    # catalog used to document and is kept so an older row still renders.
+    "fix_pushed":              ("task", "branch", "head", "commit"),
     "pr_opened":               ("task", "pr"),
     "prs_opened":              ("count",),
     "pr_merged":               ("pr", "task"),

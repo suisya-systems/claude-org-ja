@@ -19,6 +19,19 @@ Failure handling: any exception from the DB write path propagates to
 the caller as exit-code 1 with a stderr message. There is no
 file-append fallback in M4 — silently shadowing failures with a legacy
 jsonl write would let writes diverge from the SoT.
+
+Watcher-restart post-check (Refs #978): after a ``fix_pushed`` row is
+committed, this wrapper asks
+:func:`tools.watcher_restart_guard.post_push_check` whether the pushed
+PR has a CI watcher that started *after* this push, and prints the
+answer on stderr. The check lives here because the secretary is
+contractually required to emit ``fix_pushed`` on every push, so the
+nudge cannot be skipped by forgetting to run a separate tool — which is
+exactly how the incident happened. It is strictly advisory: the whole
+post-check is wrapped in ``try/except Exception`` and never changes this
+wrapper's exit code, because a guard that breaks the journal writer is
+worse than the bug it prevents. ``$ORG_WATCHER_GUARD=off`` (also ``0`` /
+``false``) and the hidden ``--no-watcher-guard`` flag suppress it.
 """
 
 from __future__ import annotations
@@ -48,7 +61,31 @@ def _parse_kv(pair: str) -> "tuple[str, str]":
     return key, val
 
 
-def _db_append(db_path: Path, event: str, payload: dict) -> None:
+def _run_watcher_guard(conn, payload: dict) -> None:
+    """Advisory Refs #978 post-check; never raises, never changes exit code.
+
+    Called only for a committed ``fix_pushed`` row. Every failure mode --
+    a missing module, an unreadable run, a broken stderr -- is swallowed:
+    the event is already durably recorded and losing a reminder must not
+    cost the caller the write.
+    """
+    try:
+        from tools.watcher_restart_guard import guard_disabled, post_push_check
+
+        if guard_disabled():
+            return
+        post_push_check(conn, payload)
+    except Exception:  # noqa: BLE001 - advisory only, see the docstring
+        pass
+
+
+def _db_append(
+    db_path: Path,
+    event: str,
+    payload: dict,
+    *,
+    watcher_guard: bool = True,
+) -> None:
     """M4 canonical path: DB write only (no jsonl side-output)."""
     from tools.state_db import apply_schema, connect
     from tools.state_db.discover import verify_or_exit
@@ -69,6 +106,10 @@ def _db_append(db_path: Path, event: str, payload: dict) -> None:
             actor = payload["actor"]
         writer.append_event(kind=event, actor=actor, payload=payload)
         writer.commit()
+        if watcher_guard and event == "fix_pushed":
+            # After the commit, on the same connection the write used, so
+            # the guard sees the row it is reacting to.
+            _run_watcher_guard(conn, payload if isinstance(payload, dict) else {})
     finally:
         conn.close()
 
@@ -100,6 +141,11 @@ def main(argv: "list[str] | None" = None) -> int:
         ),
     )
     parser.add_argument("--path", default=None, help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--no-watcher-guard",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     args = parser.parse_args(argv)
 
     if args.path is not None:
@@ -131,7 +177,12 @@ def main(argv: "list[str] | None" = None) -> int:
     )
 
     try:
-        _db_append(db_path, args.event, payload)
+        _db_append(
+            db_path,
+            args.event,
+            payload,
+            watcher_guard=not args.no_watcher_guard,
+        )
         return 0
     except SystemExit:
         # verify_or_exit -> sys.exit on schema mismatch — let it through

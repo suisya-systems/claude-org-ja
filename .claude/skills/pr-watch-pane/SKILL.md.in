@@ -487,6 +487,23 @@ secretary を張り先に使うのはユーザー承認済み（2026-08-30）で
 
    Windows native では `py -3 tools/journal_append.py pr_watch_pane_started pr=<PR> repo=<OWNER/REPO> pane_id=<N>`。
 
+   **この行は監査ログではなく、watcher 生存判定の一次証拠である（Refs #978）**: 記録を落とすと
+   [`tools/watcher_restart_guard.py`](../../../tools/watcher_restart_guard.py) は「watcher なし」
+   （`missing`）と判定する（画面にペインが見えていてもである — ペインの存在は監視の生存を意味
+   しない、が同ガードの前提）。best-effort とは「失敗しても spawn 自体は巻き戻さない」の意味
+   であって、省略してよいという意味ではない。
+
+   記録したら、それが判定に反映されたことをその場で確認する:
+
+   ```bash
+   python3 tools/watcher_restart_guard.py check --task <task_id>
+   ```
+
+   exit 0（`live`）なら「最後の push より後に開始された watcher がある」ことが events の時系列
+   から機械的に確認できた状態。exit 3 が返る場合は 1. の記録が入っていないか、この watcher が
+   最後の push より前に起動している（＝立て直しが必要）。cross-repo で task が引けない場合は
+   `check --pr <PR> --repo <OWNER/REPO>` でもよい（run 行から baseline を逆引きする）。
+
 2. ユーザーに報告する:
 
    ```

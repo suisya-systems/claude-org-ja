@@ -151,12 +151,21 @@ secretary, and the secretary is the actor that writes this one.
 
 | Event           | Typical fields                          | Writer    | Emitted by | Required for |
 |-----------------|-----------------------------------------|-----------|------------|--------------|
-| `fix_pushed`    | `task`, `branch`, `commit`              | secretary | secretary  | —            |
+| `fix_pushed`    | `task`, `branch`, `head` (別名 `commit` / `sha`) | secretary | secretary  | —            |
 | `pr_opened`     | `task`, `pr`, `url`                     | secretary | secretary  | —            |
 | `prs_opened`    | `count`, `prs[]`                        | secretary | secretary  | —            |
 | `pr_merged`     | `task`, `pr`, `repo`, `pr_url`, `merge_commit`, `head`, `merged_at`, `pattern`, `auto_completed` | run_complete_on_merge | `run_complete_on_merge.py` | —            |
 | `prs_merged`    | `count`, `prs[]`                        | secretary | secretary  | —            |
 | `prs_pushed`    | `count`, `branches[]`                   | secretary | secretary  | —            |
+
+`fix_pushed` の sha フィールドは、この catalog が長らく `commit` と書いて
+いた一方で、**実際の emitter は一貫して `head` を書いてきた**（本リポジトリ
+の live DB では 69 行中 `head` が 47 行、`commit` は 0 行、残り 22 行は
+sha を自由記述の `note` にしか持たない）。ここは表を実態側に合わせてある。
+読み手（現状 [`tools/watcher_restart_guard.py`](../tools/watcher_restart_guard.py)）は
+`commit` / `head` / `sha` の順に読むこと — 文書上の名前だけを読むと、その
+比較は本番では常に空振りする dead code になる。新規に書く側は `head` を
+使うのが望ましいが、既存 3 名のいずれも受理される。
 
 `pr_merged` is written by `tools/run_complete_on_merge.py` in the **same transaction** as
 `pr_state='merged'` / `commit` / `completed_at` (see the `append_event` call at
@@ -335,7 +344,72 @@ neither an unreadable probe nor a gh outage can wedge the watch.
 (`name="pr-watch-<PR>"`, `role="watcher"`) running `tools/pr-watch.sh`.
 It records that the watcher pane was launched; the actual CI verdict
 still arrives later as `ci_completed` from `tools/pr_watch.py` inside
-that pane.
+that pane. **This row used to be best-effort audit only** — nothing
+read it back. [`tools/watcher_restart_guard.py`](../tools/watcher_restart_guard.py)
+(Refs #978) makes it load-bearing: omitting the row, or a broker
+transport that fails to record it, makes the guard report `missing`
+even when a watcher pane genuinely exists on screen.
+
+`fix_pushed`、`pr_watch_pane_started`、および上記の terminal 系イベント
+（`ci_completed` / `pr_merged` / `pr_merged_no_run` /
+`pr_merged_head_unconfirmed` / `pr_merge_watch_timeout` /
+`pr_watch_aborted`）は、単体の監査ログとしてだけでなく、
+`tools/watcher_restart_guard.py` によって `events` テーブルの時系列順に
+読まれ、「最後の push より後に開始された watcher があるか」という
+1 つの predicate へ合成される。判定基準は「`pr-watch-<N>` という名前の
+pane が存在するか」では**ない**（herdr / renga transport では監視終了
+後も pane が自己 close せず、終わった watch と生きている watch が外見
+上区別できない — 2026-08-29 のインシデントはまさにこの誤判定で発生
+した）。判定基準は常に「baseline push（対象 task の最新 `fix_pushed`）
+より後の `(occurred_at, id)` を持つ `pr_watch_pane_started` があるか」
+であり、それ以降に terminal イベントが来ている場合は続けて「その watch
+は**答えを出して**終わったのか、単に**止まった**のか」を見る。
+
+- `ci_completed` の `status` が `passed` / `failed` のときだけ「CI が答え
+  を出した」と扱う。`incomplete`（checks が pending のまま retry budget
+  切れ）/ `indeterminate`（probe を一度も読めなかった。この行は
+  `retry_recommended` を伴う ＝ watcher 自身が再起動を要求している）/
+  `canceled` / `status` 未記録、および `pr_watch_aborted` /
+  `pr_merge_watch_timeout` は**答えのない終端**であり、現 head は無監視
+  なので `ended_inconclusive` で trip する。live DB の `ci_completed` の
+  約 7% がこの経路で終わっており、机上の分岐ではない。
+- `head` は**降格材料であって必須条件ではない**。答えが出た watch につい
+  て、baseline の sha と terminal の `head` が**両方読めて食い違うとき
+  だけ** `ended_stale_head`（前 push 向けの判定＝現 head は無監視）に降格
+  する。どちらかが欠けている場合は比較不能として `completed` に倒し、
+  欠落は出力に残す。sha が読めないことを trip 条件にすると健全な watch で
+  誤報が出て、「読み飛ばす習慣」というインシデントの原因そのものを再生産
+  するため。
+
+baseline の sha は `fix_pushed` payload の `commit` / `head` / `sha` の
+順で読む（catalog 上の名は `commit` だが、実際の emitter が書くのは
+`head` である点は下記 `fix_pushed` 行の注記を参照）。詳細な非対称マッチ
+ング規則（repo 欠落行の扱いが `pr_watch_pane_started` 側と terminal 側
+で逆になる理由を含む）はツール本体の module docstring が一次情報源で
+ある。
+
+`tools/journal_append.py` は `fix_pushed` の DB commit 成功後、同じ
+コネクション上でこの predicate を非致命的な post-check として実行し、
+`stderr` に結果を出す（`journal_append` 自身の exit code は変えない
+— 例外は握りつぶす）。push 直後は定義上まだ watcher が再起動されて
+いないため、判定は `stale` / `missing` になるのが通常であり、これは
+異常ではなく「次に必ずやるべき動作（`/pr-watch-pane` の再起動）」の
+リマインドとして出力される。`$ORG_WATCHER_GUARD=off`（`0` / `false`
+も可、大小文字無視）または非公開 CLI フラグ `--no-watcher-guard` で
+抑止できる（既定は有効）。
+
+`tools/watcher_restart_guard.py check --pr <N> --repo <owner/name>` /
+`check --task <task_id>` は同じ predicate を単発 CLI として提供し、
+exit code は `0`=`live`/`completed`（監視は説明がつく）、`3`=`stale`/
+`missing`/`ended_stale_head`/`ended_inconclusive`（watcher の再起動が
+必要 — 2026-08-29 のインシデントは `stale`）、`2`=`unresolved`（対象
+task から PR が特定できない）、`1`=usage / DB / schema エラー。**両形式は
+同じ baseline を見る**: `--pr` 形式は当該 PR を持つ run 行から task_id を
+逆引きして `fix_pushed` baseline を復元する（復元しないと `--pr` 形式は
+baseline を一切読まず、`stale` 分岐に到達できないまま exit 0 を返す ＝
+インシデントそのものを見逃す）。`audit` サブコマンドは `pr_state` が非
+terminal な run を全件評価し、1 件でも trip した verdict があれば exit 3
+を返す。
 
 ### Session lifecycle
 

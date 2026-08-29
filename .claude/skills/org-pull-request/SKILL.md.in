@@ -286,6 +286,28 @@ pr-watch から `PR_MERGED_HEAD_UNCONFIRMED: PR #<n> (head=<merged_short>, last 
   `[pane_not_found]`（自己クローズ済みで正常、skip してよい）。修正後の再 push では新たに
   [`/pr-watch-pane <PR>`](../pr-watch-pane/SKILL.md) を起動し直し、その新しい pane_id / head を
   追跡し直す（旧イベントの重複配送は head 不一致で superseded 判定になり新 watcher を誤 close しない）。
+- **再 push したら watcher が「その push より後に」起動されているかを機械確認する（Refs #978）**:
+  修正の再 push は「worker の報告 → 窓口の push」と別ターンに分かれるため、watcher の立て直しが
+  窓口の記憶頼みになり、実際に落ちた（2026-08-30、PR #73 で 2 回目の再 push 以降 誰も CI を見て
+  いない状態が続き、ユーザーの指摘で発覚）。**`list_panes` に `pr-watch-<PR>` が居ることを根拠に
+  してはならない**: herdr / renga では監視終了後もペインが自己 close せず、死んだ watch と生きて
+  いる watch が外見上区別できない（これが同インシデントの誤判定そのもの）。判定は events の
+  時系列で行う:
+  ```bash
+  python3 tools/watcher_restart_guard.py check --task <task_id>
+  ```
+  exit 0 なら「最後の push より後に開始された watcher がある」。**exit 3 なら watcher が現 head を
+  見ていない**ので [`/pr-watch-pane <PR>`](../pr-watch-pane/SKILL.md) を起動し直してから次へ進む
+  （`stale`＝前 push の watcher しか居ない / `missing`＝一度も起動されていない /
+  `ended_inconclusive`＝watch が CI の答えを出さずに終了した（`incomplete` / `indeterminate` /
+  timeout。`indeterminate` は watcher 自身が再起動を要求している） / `ended_stale_head`＝出た判定が
+  前 head のもの）。exit 2 は task から PR を特定できない状態なので、先に `tools/set_run_pr_open.py`
+  で `runs.pr_url` を back-fill する。**exit 3 のまま「CI 走行中」とユーザーに報告しない** —
+  それが同インシデントで起きたことである。
+  なお `bash tools/journal_append.sh fix_pushed ...` を打った時点で同じ判定が stderr に出る
+  （post-check。push 直後は watcher 再起動前なので exit 3 相当が出るのが正常で、これは異常通知では
+  なく「次にやること」の提示）。判定ロジックの一次情報源は
+  [`docs/journal-events.md`](../../../docs/journal-events.md) と当該ツールの module docstring。
 - **再指示の前に dispatcher の監視フラグを解除する（Issue #658、T6 監視再開契約）**: worker が完了報告済み（完了時に §2a で secretary が dispatcher へ `WORKER_COMPLETION_NOTED` を送り `completion_reported_at` が立っている）の場合、追指示を送る**前に** dispatcher へ `WORKER_REOPENED` を **best-effort・非 blocking** で送り、`completion_reported_at` を `null` に clear させる。再指示は secretary→worker 直送で dispatcher が経路上に居ないため、この明示解除が dispatcher の PANE_OUTPUT_WITHOUT_PEER_MSG 検知（[`.dispatcher/references/worker-monitoring.md`](../../../.dispatcher/references/worker-monitoring.md) Step 5.2）の **fast-path 解除**になる。dispatcher 応答は待たない（dispatcher は `/loop 3m` の通常 `check_messages` で反映）。解除が無いと sticky skip のまま、awaiting_review→in_progress のレビュー修正中に発生する本物の silent dead-lock を見逃す。**`WORKER_REOPENED` が取りこぼされても、この直後の `run.status='in_use'` 遷移（下記、StateWriter が決定的に書く）が reliable backstop として働き、dispatcher が `runs.status == 'in_use'` を観測して監視を self-heal で再開する**（best-effort な解除通知だけに依存せず危険側に倒れない、Issue #658 P2）。本文に task_id と reopened_at（ISO-8601 UTC）を含める:
   ```
   {{FQ}}send_message(to_id="dispatcher", message="WORKER_REOPENED: worker-<task_id> (task_id=<task_id>, reopened_at=<ISO-8601 UTC>)")
