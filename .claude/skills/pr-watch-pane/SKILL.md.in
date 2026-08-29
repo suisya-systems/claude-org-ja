@@ -18,6 +18,8 @@ allowed-tools:
   - Bash(gh repo view:*)
   - Bash(bash tools/journal_append.sh:*)
   - Bash(py -3 tools/journal_append.py:*)
+  - Bash(python3 tools/pick_watcher_anchor.py:*)
+  - Bash(py -3 tools/pick_watcher_anchor.py:*)
   - mcp__renga-peers__list_panes
   - mcp__renga-peers__spawn_pane
   - mcp__renga-peers__set_pane_identity
@@ -165,12 +167,60 @@ context リセットと無関係）に監視が継続し、人間が tmux ペイ
 
 ## Step 3: 監視ペインの spawn
 
-`{{FQ}}spawn_pane` で CLI watcher ペインを起動する（`<...>` は Step 1 / 引数で確定した値に置換）:
+### Step 3-0: 張り先（アンカー）を幾何で決める（Refs #335）
+
+spawn の前に、**どのペインを split 起点にするか**を決定的ツールで求める。target は
+固定しない（旧版の `target="dispatcher"` 固定が 2026-08-30 の実害を生んだ経緯は下記
+「なぜ固定アンカーをやめたか」を参照）。
+
+1. `{{FQ}}list_panes` を呼び、返却された `panes` 配列（`id` / `name` / `role` /
+   `x` / `y` / `width` / `height`）をそのまま JSON として控える。
+2. その JSON を `tools/pick_watcher_anchor.py` に stdin で流し、候補リストを得る
+   （既定入力が stdin なので中間ファイルを作らない。ファイル経由なら `--panes-json <path>`）:
+
+   ```bash
+   python3 tools/pick_watcher_anchor.py --format text <<'PANES'
+   {"panes": [ ... list_panes の返却をそのまま貼る ... ]}
+   PANES
+   ```
+
+   （Windows は `py -3 tools/pick_watcher_anchor.py ...`。POSIX 側は `python` エイリアスが
+   無い環境があるため `python3` で呼ぶ。transport は `ORG_TRANSPORT` から自動解決される
+   ので通常は指定不要。明示するなら `--transport {broker|renga}`。）
+3. 出力の `candidates` が **rank 1 から順に試す張り先**。各候補は `target`（pane name）と
+   `direction`（`vertical` / `horizontal`）を持つので、**両方をそのまま次の
+   `spawn_pane` 引数に使う**（direction も候補ごとに変わる。`vertical` 固定ではない）。
+   direction は「両方向を評価し、親側に残る子が大きい方を採る」規則（runtime の
+   `_split_options` と同一。同値性は unit test で固定）。**窓口が direction を自分で
+   決めない**: 2026-08-30 に 397x53 の secretary へ `horizontal` で張って窓口ペインを
+   397x13 まで潰した実害があり、幅広の rect では `vertical` が選ばれる。
+4. `candidates` が空（exit code 2 / `capacity_exhausted: true`）のときだけ、**このタブに
+   watcher を置く余地が本当に無い**。spawn を試みず、`rejected` の各行（どのペインが
+   どの床値でどう落ちたか）を添えて人間に報告し、指示を仰ぐ。
+
+出力の `pane_cap_reached` は**助言であって判定ではない**: 「このタブのペイン数が renga の
+per-tab 上限（`RENGA_MAX_PANES` = 16）に達している」という事実で、renga ではこれ以降の
+spawn が幾何によらず拒否される。既定の broker には per-tab 上限が無い（各ペインが独立
+セッション）ので、`capacity_exhausted` はこの値では動かない。`[split_refused]` が続いた
+ときの人間報告に添える材料として使う。
+
+ツールが守る床値（`MIN_PANE` 20x5 / `SECRETARY_MIN` 120x30 / `DISPATCHER_MIN_WIDTH` 80）は
+`claude_org_runtime.dispatcher.runner` の定数を **import して** 使う（skill 側にも
+ツール側にも値を写経しない）。優先度は **dispatcher →（既存 watcher ペイン。dispatcher
+隣接を先）→ secretary**、dispatcher が自身の comfort 幅を割っている場合だけ最後尾へ降格。
+secretary を張り先に使うのはユーザー承認済み（2026-08-30）で、`SECRETARY_MIN_*` を
+満たす split のみ候補になる。既存 watcher には attention watcher（`role="attention"`）も
+含む。worker / curator ペインは候補に入れない（稼働中の作業ビューポートを watcher が
+食わないため）。
+
+### Step 3-1: spawn
+
+`{{FQ}}spawn_pane` で CLI watcher ペインを起動する（`<...>` は Step 1 / 3-0 / 引数で確定した値に置換）:
 
 ```
 {{FQ}}spawn_pane(
-  target="dispatcher",
-  direction="vertical",
+  target="<Step 3-0 の候補 target>",
+  direction="<Step 3-0 の候補 direction>",
   role="watcher",
   name="pr-watch-<PR>",
   cwd="<JA_ROOT 絶対パス>",
@@ -229,9 +279,15 @@ context リセットと無関係）に監視が継続し、人間が tmux ペイ
     さらに push が失敗した場合は `pr_watch` が `notify_failed` イベントを fail-loud で記録する
     （silent no-op の全廃）。
 
-- `target="dispatcher"`: 同一タブ scope の安定アンカー（attention watcher と同じく
-  dispatcher を split 起点にする）。broker では各ペインが detached 独立セッションだが、
-  addressing scope（同一タブ MUST、contract Surface 4.2）を満たすため既存ペインを起点に取る。
+- `target` / `direction`: **Step 3-0 のツールが返した候補**をそのまま使う。broker では
+  各ペインが detached 独立セッションだが、addressing scope（同一タブ MUST、contract
+  Surface 4.2）を満たすため既存ペインを起点に取る点は不変。
+  - **なぜ固定アンカーをやめたか（Refs #335）**: 旧版は `target="dispatcher"` 固定だった。
+    2026-08-30、幅 24 まで細った dispatcher に張ろうとして `[split_refused]` になり、
+    397x53 の secretary ペインが丸ごと空いているのに窓口が「タブ満杯」と誤読して worker
+    派遣を待機させる実害が出た。`[split_refused]` は**その target を割れないという局所の
+    事実**であって、タブ全体の容量を語らない。よって張り先は毎回 `list_panes` の幾何から
+    決定的に選び直す（renga 側のコード分離は suisya-systems/renga#335）。
 - `role="watcher"`: list_panes で監視ペインを識別する表示ラベル（attention watcher の
   `role="attention"` と同じく canonical 4 role 以外のラベル。broker では token の auth tier
   は spawn 時に固定で、role ラベルは tier を変えない — Surface 8）。
@@ -292,11 +348,22 @@ context リセットと無関係）に監視が継続し、人間が tmux ペイ
 **spawn 失敗時の分岐**（MCP 結果テキストの `[<code>]` で判定。詳細は
 [`.claude/skills/org-delegate/references/renga-error-codes.md`](../org-delegate/references/renga-error-codes.md)）:
 
-- `[split_refused]`（broker free-pane なし / MIN_PANE 割れ）→「監視ペインを作る空きが
-  ありません（ターミナルが狭い / pane 上限）。ターミナルを広げるか不要ペインを閉じてから
-  再実行してください」と報告して中断。
-- `[pane_not_found]`（`target="dispatcher"` 不在）→「dispatcher ペインが見つかりません。
-  `/org-start` を先に実行してください」と報告して中断。
+- `[split_refused]` → **候補リストを rank 順に 1 段ずつ降りて再試行する（各候補は 1 回だけ）**。**このコードは「その target を
+  今の幾何では割れない」というターゲット局所の失敗を含む**（free-pane 不足だけでなく、
+  細ったアンカー 1 枚の MIN_PANE 割れでも返る）。**1 件の拒否からタブ満杯と結論しない —
+  容量判断は Step 3-0 の幾何計算（`list_panes` × 床値）だけが行う**:
+  1. Step 3-0 の `candidates` から**次の rank** を取り、その `target` / `direction` で
+     Step 3-1 の spawn を **1 回だけ**再試行する。
+  2. 再試行も `[split_refused]` なら、さらに次の rank へ進む（`candidates` の末尾まで）。
+     レイアウトが動いた疑いがあるときは Step 3-0 を 1 度だけ引き直してよい。
+  3. **`candidates` を使い切ったときだけ**「監視ペインを作る空きがありません（ターミナルが
+     狭い / pane 上限）。ターミナルを広げるか不要ペインを閉じてから再実行してください」と
+     報告して中断する。報告には試した target 一覧と Step 3-0 の `rejected` 行（どの床値で
+     落ちたか）を添える。
+- `[pane_not_found]`（候補 target が既に消えている）→ レイアウトが spawn 前後で動いた
+  race。Step 3-0（`list_panes` → ツール）を **1 度だけ**引き直して最新の rank 1 で再試行する。
+  引き直しても候補が空 / 同じく `[pane_not_found]` なら、`/org-start` 未実行を含む想定外
+  として状況を人間に報告して中断。
 - `[name_in_use]` / `[name_taken]` → **live pane と stale 登録簿を切り分ける**（前 watcher の
   self-close で tmux ペインは消えたが broker 登録簿に name binding が残る「二層の不整合」を
   自己回復する）:
