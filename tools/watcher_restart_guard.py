@@ -144,6 +144,23 @@ row`` reads as ended. The output flags the attribution with
 ``terminal_precedes_watcher_row`` so the inference is visible rather than
 assumed.
 
+### Known boundary: terminals carry no pane identity
+
+One ``pr_watch`` invocation can emit more than one terminal-kind row --
+with ``--merge-watch`` it emits ``ci_completed`` and later ``pr_merged`` or
+``pr_merge_watch_timeout`` -- and none of those rows names the pane that
+wrote it. So when an old pane is still resident while a replacement has
+been launched, a late row from the old pane is indistinguishable from the
+new watcher's own, and the guard reads the newer watch as ended.
+
+That is a false alarm, and it is accepted rather than fixed: distinguishing
+the two would require a pane id in the terminal payload, which no writer
+records today. It also fails in the safe direction -- one extra
+``/pr-watch-pane`` restart, never a silently unwatched PR -- which is the
+bias every other rule here is chosen for. Closing it properly means adding
+pane identity to the terminal events, at which point the attribution can
+become exact instead of positional.
+
 Ordering compares ``(occurred_at, events.id)``. The schema's default
 timestamp has millisecond resolution, and a push followed immediately by a
 watcher restart really does land in the same millisecond, so the

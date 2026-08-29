@@ -402,6 +402,15 @@ watcher2 の terminal → watcher2 の起動行`は「watcher2 は終了済み�
 「監視済み」と証明してしまう）。この場合は `ended_inconclusive` になる。
 live DB の `pr_merged` 363 行中 45 行が repo を持たないため、実在する行形である。
 
+**既知の限界**: terminal 系イベントは**どのペインが書いたか**を持たない
+（`--merge-watch` では 1 回の `pr_watch` が `ci_completed` と後続の
+`pr_merged` / `pr_merge_watch_timeout` を書くので、1 watcher : 1 terminal
+でもない）。このため旧ペインが残ったまま新 watcher を立てた状況では、旧ペイン
+発の遅れて来た行と新 watcher 自身の行を区別できず、新しい watch を「終了した」
+と読む。これは誤検知（余分な `/pr-watch-pane` 再起動が 1 回増えるだけで、
+無監視の PR を見逃す方向には倒れない）として受け入れている。厳密化するには
+terminal イベント側に pane 識別子を載せる必要があり、それは本ツールの範囲外。
+
 baseline の sha は `fix_pushed` payload の `commit` / `head` / `sha` の
 順で読む（catalog 上の名は `commit` だが、実際の emitter が書くのは
 `head` である点は下記 `fix_pushed` 行の注記を参照）。詳細な非対称マッチ
