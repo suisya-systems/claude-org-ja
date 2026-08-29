@@ -1200,6 +1200,8 @@ bash ../tools/journal_append.sh anomaly_observed source={面} worker=worker-{tas
       python3 ../tools/relay_scan.py --recipient secretary --list
       ```
 
+      **0. の exit code に関わらず毎サイクル実行する**（0. の exit 0 は「是正措置は不要」の意であって、本ステップを省いてよいという意味ではない）。
+
       出力は JSON 配列。各要素は `{source_event_id, kind, occurred_at, attempt, message, payload}`。空配列 (`[]`) なら本ステップは何もせず終了。DB 不在時も `[]` (エラーにしない)。
 
       **`[]` と「出力が無い」を同一視しない (Refs #941)**: 判定は **exit code 0 かつ stdout が JSON としてパースできること**の両方で行う。exit != 0 / stdout が空 / JSON でない場合は「配送対象なし」ではなく **ツールが走っていない**（`command not found`・import エラー・DB 破損等）ので、**本ステップを完了扱いにせず窓口へ `RELAY_SCAN_BROKEN: <exit code> <stderr 1 行>` を送る**。2026-07-30 〜 2026-08-19 の 20 日間、runbook の綴りが `python`（この環境には `python3` しか無い）だったため毎サイクル `command not found` で stdout が空になり、それが `[]` と区別されずに「配送対象なし」と読まれ続けた。終端イベント 134 件がその間に滞留している。
