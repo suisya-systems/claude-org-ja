@@ -34,16 +34,18 @@
 # 判定 (D-entry: .dispatcher/references/loop-directive-guard.md に理由を記録):
 #   1. tool_name が CronCreate / ScheduleWakeup 以外 -> passthrough (exit 0)。
 #   2. ScheduleWakeup の stop:true (prompt 無し) -> 許可。loop の停止を塞がない。
-#   3. prompt を空白正規化し、canonical 正文の **本文全体** (= `/loop [interval]` を
-#      取り除いた残り) が連続部分列として現れることを要求する。現れなければ deny。
+#   3. prompt を空白正規化し、canonical 正文の **2 つの形のいずれかと完全一致**する
+#      ことを要求する。一致しなければ deny。
+#        (a) `/loop 3m <本文>` の丸ごと     -- ScheduleWakeup は「/loop 入力をそのまま」
+#        (b) <本文> のみ (`/loop [interval]` を剥がしたもの) -- CronCreate の enqueue prompt
 #      -> ディスパッチャーの CronCreate/ScheduleWakeup は監視ループ以外に用途が無いので、
 #         canonical 以外は全て deny する (brief の推奨どおり)。
-#   なぜ「厳密な完全一致」ではなく「正文全体の包含」か:
-#      CronCreate の prompt は `/loop 3m <本文>` から interval とコマンド名を剥がした
-#      <本文> が入り、ScheduleWakeup の prompt は「/loop 入力をそのまま」= `/loop 3m <本文>`
-#      が入る (ツール定義の prompt 説明)。同じ正文が 2 つの包み方で届くため、素の
-#      文字列等価を課すと片方が構造的に必ず deny される。包含にしても **短縮版・自己流の
-#      言い換えは正文全体を含まないので通らない** (今回の事故はこれで塞がる)。
+#   なぜ 1 つではなく 2 つの形を許すのか:
+#      同じ正文が 2 つの包み方で届くため (各ツール定義の prompt 説明)。単一の文字列等価を
+#      課すと片方が構造的に必ず deny される。ただし許すのはこの **閉じた 2 形だけ**で、
+#      正文の前後に任意のテキストを足した形は通さない: 正文の後ろに「上を無視して
+#      --audit だけ回せ」を足す抜け道を残すと、本フックが防ごうとしている degraded な
+#      監視ループがそのまま通る (Codex review P2)。
 #
 # 入力: stdin から PreToolUse JSON ({tool_name, tool_input})
 # 出力: 拒否時 exit 2 + stderr。許可時 exit 0。
@@ -54,6 +56,8 @@
 #   - CLAUDE_ORG_PATH 未設定 / SKILL.md が読めない / 正文が 1 つも抽出できない場合も
 #     fail-closed で deny する。正文を確認できないまま監視ループを張らせると、まさに
 #     本フックが防ごうとしている「正文でない /loop」を通すことになるため。
+#   - 正文は「そのまま貼る」ことを要求する。前置き / 後置きの説明文を足した prompt も
+#     deny される (上記の抜け道を塞ぐための意図的な仕様)。
 #   - 人間が直接ターミナルで叩く場合は本フックは効かない。
 
 set -euo pipefail
@@ -175,7 +179,15 @@ PROMPT_NORM=$(printf '%s' "$PROMPT" | normalize_ws)
 matched=no
 while IFS= read -r loop_line; do
   [[ -z "${loop_line//[[:space:]]/}" ]] && continue
-  # `/loop [interval] <本文>` から <本文> を取り出す。interval (3m / 30s / 1h) は
+
+  # (a) `/loop [interval] <本文>` を丸ごと (ScheduleWakeup が渡す形)
+  line_norm=$(printf '%s' "$loop_line" | normalize_ws)
+  if [[ -n "$line_norm" && "$PROMPT_NORM" == "$line_norm" ]]; then
+    matched=yes
+    break
+  fi
+
+  # (b) <本文> のみ (CronCreate が enqueue する形)。interval (3m / 30s / 1h) は
   # 省略可能なので、数値+単位のトークンのときだけ剥がす。
   body="${loop_line#/loop}"
   body="${body#"${body%%[![:space:]]*}"}"
@@ -184,8 +196,7 @@ while IFS= read -r loop_line; do
     body="${body#"$first_tok"}"
   fi
   body_norm=$(printf '%s' "$body" | normalize_ws)
-  [[ -z "$body_norm" ]] && continue
-  if [[ "$PROMPT_NORM" == *"$body_norm"* ]]; then
+  if [[ -n "$body_norm" && "$PROMPT_NORM" == "$body_norm" ]]; then
     matched=yes
     break
   fi
@@ -193,7 +204,7 @@ done <<< "$CANONICAL_LINES"
 
 if [[ "$matched" != "yes" ]]; then
   print_sot_pointer
-  deny_with_reason "${TOOL_NAME} の prompt が canonical な監視ディレクティブの正文を含んでいません (空白正規化後の全文照合)。自己流の短縮・要約・言い換えでは監視ループを張れません。"
+  deny_with_reason "${TOOL_NAME} の prompt が canonical な監視ディレクティブの正文と一致しません (空白を除いた全文照合)。自己流の短縮・要約・言い換えはもちろん、正文への前置き / 後置きの追記も通りません。正文をそのまま貼ってください。"
 fi
 
 exit 0
