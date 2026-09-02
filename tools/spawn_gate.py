@@ -122,8 +122,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sqlite3
 import sys
+import tempfile
 from pathlib import Path
 
 # Make `tools.state_db.*` importable when invoked directly (no prior
@@ -374,6 +376,273 @@ def _append_verified_event(payload: dict, db_override: "str | None") -> None:
         conn.close()
 
 
+#: Marker the Progress Log bullet carries; a bullet in the `## Progress Log`
+#: section holding it is the idempotency key for the side effect below.
+DISPATCHED_MARK = "派遣完了"
+
+
+def _workers_dir_for(db_path: Path) -> Path:
+    """`.state/workers/` sits beside `state.db` (`.state/state.db`)."""
+    return db_path.parent / "workers"
+
+
+def _utc_now_iso() -> str:
+    """Same shape as `events.occurred_at` (`%Y-%m-%dT%H:%M:%fZ`)."""
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
+#: Level-2 markdown heading (CommonMark allows up to 3 leading spaces).
+#: The one detector used for header end, section start and section end,
+#: so the three never disagree about where a section is.
+_H2_RE = re.compile(r"^\s{0,3}##\s+(?P<title>.*?)\s*#*\s*$")
+#: `Status: planned` with the value isolated; only the value is rewritten
+#: so indentation / capitalisation / trailing whitespace stay intact.
+_STATUS_PLANNED_RE = re.compile(
+    r"^(?P<lead>\s*status\s*:\s*)planned(?P<tail>\s*)$", re.IGNORECASE
+)
+
+
+#: Fenced code block delimiter (``` or ~~~, up to 3 leading spaces).
+_FENCE_RE = re.compile(r"^\s{0,3}(?P<run>`{3,}|~{3,})(?P<rest>.*)$")
+
+
+def _fenced_lines(lines: "list[str]") -> "list[bool]":
+    """Per-line flag: inside (or delimiting) a fenced code block.
+
+    CommonMark closing rule: same character, a run at least as long as the
+    opener, nothing but whitespace after it. So a ```` fence is not closed
+    by ```, and ```py (an info string) cannot close anything.
+    """
+    flags: "list[bool]" = []
+    fence: "str | None" = None  # the opening run, e.g. "````"
+    for ln in lines:
+        fm = _FENCE_RE.match(ln)
+        if fm:
+            run, rest = fm.group("run"), fm.group("rest")
+            if fence is None:
+                fence = run
+                flags.append(True)
+                continue
+            if (
+                run[0] == fence[0]
+                and len(run) >= len(fence)
+                and rest.strip() == ""
+            ):
+                fence = None
+                flags.append(True)
+                continue
+        flags.append(fence is not None)
+    return flags
+
+
+def _h2_titles(lines: "list[str]") -> "list[str | None]":
+    """Per-line lowercase H2 title, or None. Lines inside a fenced code
+    block are never headings, so a ``## `` quoted in an example cannot
+    end the header or a section."""
+    titles: "list[str | None]" = []
+    for ln, fenced in zip(lines, _fenced_lines(lines)):
+        m = None if fenced else _H2_RE.match(ln)
+        titles.append(m.group("title").strip().lower() if m else None)
+    return titles
+
+
+def _has_dispatch_bullet(lines: "list[str]", start: int, end: int) -> bool:
+    """A real bullet carrying the marker in ``lines[start:end]``; fenced
+    example text does not count."""
+    fenced = _fenced_lines(lines)
+    return any(
+        not fenced[i]
+        and lines[i].lstrip().startswith("- ")
+        and DISPATCHED_MARK in lines[i]
+        for i in range(start, end)
+    )
+
+
+def _replace_file_atomically(path: Path, data: bytes) -> None:
+    """Same-directory temp file + ``os.replace`` so a failed write leaves
+    the original record intact rather than truncated."""
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        # mkstemp creates 0600; keep the record's own mode across the swap.
+        os.chmod(tmp, path.stat().st_mode & 0o7777)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _rewrite_worker_md(
+    text: str, pane_id: int, started_at: str
+) -> "tuple[str, list[str]]":
+    """Pure edit of one worker record; returns (new_text, changes).
+
+    ``changes`` is empty when nothing needed doing (then ``new_text`` is
+    ``text`` unchanged). See :func:`_record_dispatch_in_worker_md` for
+    what is written and why.
+    """
+    newline = "\r\n" if "\r\n" in text else "\n"
+    lines = text.replace("\r\n", "\n").split("\n")
+    trailing_newline = text.endswith("\n")
+    if trailing_newline:
+        lines.pop()  # split() leaves an empty tail after the final newline
+    changes: "list[str]" = []
+
+    # Header = everything before the first `## ` section. Only lines there
+    # count as fields, so a `Pane ID:` quoted inside prose is not mistaken
+    # for the header field.
+    titles = _h2_titles(lines)
+    header_end = next(
+        (i for i, t in enumerate(titles) if t is not None), len(lines)
+    )
+    header = lines[:header_end]
+
+    def _has_field(name: str) -> bool:
+        return any(
+            ln.lstrip().lower().startswith(name.lower() + ":") for ln in header
+        )
+
+    def _anchor() -> int:
+        """After `Pane Name:` (its natural neighbour); else before
+        `Status:` (the spawn-flow template order); else after the last
+        `Key: value` header line; else right after the title line."""
+        for i, ln in enumerate(header):
+            if ln.lstrip().lower().startswith("pane name:"):
+                return i + 1
+        for i, ln in enumerate(header):
+            if ln.lstrip().lower().startswith("status:"):
+                return i
+        last_field = -1
+        for i, ln in enumerate(header):
+            stripped = ln.lstrip()
+            if stripped and stripped[0].isalpha() and ":" in stripped:
+                last_field = i
+        return last_field + 1 if last_field >= 0 else min(1, len(header))
+
+    insert_at = _anchor()
+    if not _has_field("Pane ID"):
+        header.insert(insert_at, f"Pane ID: {pane_id}")
+        insert_at += 1
+        changes.append("pane_id")
+    if not _has_field("Started"):
+        header.insert(insert_at, f"Started: {started_at}")
+        changes.append("started")
+    lines[:header_end] = header
+    titles = _h2_titles(lines)  # indices shifted by the header inserts
+
+    # Status: first `status:` line top-to-bottom, exactly how the runtime
+    # reads it (state-schema-contract §7). planned -> active only, and
+    # only the value is rewritten.
+    for i, ln in enumerate(lines):
+        if ln.strip().lower().startswith("status:"):
+            m = _STATUS_PLANNED_RE.match(ln)
+            if m:
+                lines[i] = f"{m.group('lead')}active{m.group('tail')}"
+                changes.append("status")
+            break
+
+    log_start = next(
+        (i for i, t in enumerate(titles) if t == "progress log"), None
+    )
+    bullet = f"- [{started_at}] {DISPATCHED_MARK}、作業開始（pane id={pane_id}）"
+    if log_start is None:
+        if lines and lines[-1] != "":
+            lines.append("")
+        lines.extend(["## Progress Log", bullet])
+        changes.append("progress_log")
+    else:
+        # Section ends at the next `## ` heading or EOF. The bullet goes
+        # after the last non-blank line so the blank separator before the
+        # following section survives.
+        section_end = next(
+            (
+                i
+                for i in range(log_start + 1, len(lines))
+                if titles[i] is not None
+            ),
+            len(lines),
+        )
+        if not _has_dispatch_bullet(lines, log_start + 1, section_end):
+            insert = section_end
+            while insert > log_start + 1 and lines[insert - 1] == "":
+                insert -= 1
+            lines.insert(insert, bullet)
+            changes.append("progress_log")
+
+    if not changes:
+        return text, changes
+    return newline.join(lines) + (newline if trailing_newline else ""), changes
+
+
+#: Read-modify-replace attempts before giving up on a record that keeps
+#: changing underneath us (the secretary also appends to Progress Log).
+_WORKER_MD_ATTEMPTS = 3
+
+
+def _record_dispatch_in_worker_md(
+    workers_dir: Path, task_id: str, pane_id: int, started_at: str
+) -> dict:
+    """Write spawn-flow Step 4 items (b)/(c) into the worker record.
+
+    A side effect of ``verify``, not a gate check. The dispatcher used to
+    do this by hand right after ``spawn_claude_pane`` and, on 2026-09-03,
+    flipped ``Status`` only — leaving five live workers rendered as
+    "pane not yet spawned" on the dashboard (which reads ``Pane ID:`` /
+    ``Started:`` / the last Progress Log bullet from this file). Since the
+    dispatcher cannot produce ``DELEGATE_COMPLETE`` without running
+    ``verify``, doing the writes here makes them unforgettable.
+
+    Idempotent per item: existing ``Pane ID:`` / ``Started:`` headers are
+    kept as they are, the progress bullet is added only when the
+    ``## Progress Log`` section has no bullet carrying ``派遣完了``, and
+    ``Status`` moves ``planned`` -> ``active`` only (value-only rewrite of
+    the line the runtime reads, state-schema-contract §7). Nothing else in
+    the file is touched: line endings and the presence/absence of a
+    trailing newline are preserved, ``## `` inside fenced code is not a
+    heading, and the file is replaced atomically only if its bytes are
+    still what was read (retried a few times; a record that keeps moving
+    is reported as ``status: error`` rather than clobbered). A missing
+    file is reported (``status: missing``), never raised: a bookkeeping
+    side effect must not withhold the gate result.
+    """
+    path = workers_dir / f"worker-{task_id}.md"
+    result: "dict[str, object]" = {"path": str(path), "changes": []}
+    if not path.is_file():
+        result["status"] = "missing"
+        return result
+
+    for _ in range(_WORKER_MD_ATTEMPTS):
+        # Bytes, not read_text(): universal-newline decoding would hide CRLF.
+        before = path.read_bytes()
+        new_text, changes = _rewrite_worker_md(
+            before.decode("utf-8"), pane_id, started_at
+        )
+        if not changes:
+            result["status"] = "unchanged"
+            return result
+        # Lost-update guard: another writer (secretary Progress Log append)
+        # may have landed between the read and now. Re-read and redo the
+        # edit on the fresh content instead of overwriting it.
+        if path.read_bytes() != before:
+            continue
+        _replace_file_atomically(path, new_text.encode("utf-8"))
+        result["status"] = "updated"
+        result["changes"] = changes
+        return result
+
+    result["status"] = "error"
+    result["error"] = (
+        f"record changed concurrently {_WORKER_MD_ATTEMPTS} times; not written"
+    )
+    return result
+
+
 def _delegate_complete_body(
     task_id: str, worker: str, pane_id: int, peer_id: "int | None", evidence: str
 ) -> str:
@@ -547,6 +816,34 @@ def cmd_verify(args) -> int:
     else:
         status = "already_verified"
 
+    # Spawn-flow Step 4 (b)/(c) as a side effect of the gate the dispatcher
+    # cannot skip. Runs on the re-verify path too (idempotent), so a record
+    # the helper wrote late still gets its fields. Never alters the exit
+    # code or the event above: a failed write is reported on stderr and in
+    # the JSON, and the gate result stands.
+    try:
+        worker_record = _record_dispatch_in_worker_md(
+            _workers_dir_for(db_path),
+            task_id,
+            pane_id,
+            spawned_at or _utc_now_iso(),
+        )
+    except Exception as exc:  # noqa: BLE001 - bookkeeping must not fail the gate
+        worker_record = {
+            "path": str(_workers_dir_for(db_path) / f"worker-{task_id}.md"),
+            "status": "error",
+            "error": str(exc),
+            "changes": [],
+        }
+    if worker_record["status"] in ("missing", "error"):
+        detail = worker_record.get("error", "file not found")
+        print(
+            f"spawn_gate: worker record not updated ({detail}): "
+            f"{worker_record['path']} — dispatcher must write Pane ID / "
+            "Started / 派遣完了 by hand (spawn-flow Step 4)",
+            file=sys.stderr,
+        )
+
     print(
         json.dumps(
             {
@@ -554,6 +851,7 @@ def cmd_verify(args) -> int:
                 "task": task_id,
                 "worker": worker,
                 "recorded": payload,
+                "worker_record": worker_record,
                 "checks": checks,
                 "limitations": _ATTESTED_ONLY,
                 "delegate_complete": _delegate_complete_body(

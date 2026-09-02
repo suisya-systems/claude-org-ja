@@ -23,7 +23,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -32,7 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import spawn_gate  # noqa: E402
 
 WORKER_DIR = "/tmp/org/workers/login-fix"
-#: Seeded spawn time for VerifyTests. Must be in the past relative to the
+#: Seeded spawn time for the `verify` fixture. Must be in the past relative to the
 #: real clock, because `verify` compares the verification it writes (stamped
 #: `now` by SQLite) against the latest `worker_spawned`.
 _PAST = "2000-01-01T00:00:00.000Z"
@@ -90,14 +90,21 @@ def _seed_event(db: Path, kind: str, payload: dict, occurred_at: str) -> None:
         conn.close()
 
 
-def _run(argv: "list[str]") -> "tuple[int, dict]":
+def _run(
+    argv: "list[str]", stderr: "io.StringIO | None" = None
+) -> "tuple[int, dict]":
+    """Run `main`, parse its stdout JSON. stderr is captured into `stderr`
+    when given, otherwise swallowed (the worker-record side effect prints
+    one line there whenever no `.state/workers/` record exists)."""
     buf = io.StringIO()
-    with redirect_stdout(buf):
+    with redirect_stdout(buf), redirect_stderr(stderr or io.StringIO()):
         code = spawn_gate.main(argv)
     return code, json.loads(buf.getvalue())
 
 
-class VerifyTests(unittest.TestCase):
+class _VerifyFixture(unittest.TestCase):
+    """Seeded state.db + `verify` argv shared by the `verify` test classes."""
+
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.db = Path(self._tmp.name) / "state.db"
@@ -129,6 +136,8 @@ class VerifyTests(unittest.TestCase):
             argv += [key, val]
         return argv
 
+
+class VerifyTests(_VerifyFixture):
     def test_happy_path_records_event_and_emits_report(self) -> None:
         code, out = _run(self._argv())
         self.assertEqual(code, spawn_gate.EXIT_OK)
@@ -339,6 +348,385 @@ class VerifyTests(unittest.TestCase):
         finally:
             conn.close()
         self.assertEqual(count, 1)
+
+
+#: What the delegate-plan helper leaves in `.state/workers/` before spawn
+#: (mirrors a real record: no Pane ID / Started, Status planned, and the
+#: runner's "pane not yet spawned" bullet that the dashboard surfaces).
+_PLANNED_MD = (
+    f"# Worker: worker-{TASK}\n"
+    f"Task: {TASK}\n"
+    f"Directory: {WORKER_DIR}\n"
+    f"Pane Name: worker-{TASK}\n"
+    "Status: planned\n"
+    "\n"
+    "## Assignment\n"
+    "Fix the login form.\n"
+    "\n"
+    "## Progress Log\n"
+    "- [planned by dispatcher_runner] pane not yet spawned\n"
+    "\n"
+    "## Notes\n"
+    "Status: keep this literal; it is prose, not the header field.\n"
+)
+
+
+class WorkerRecordSideEffectTests(_VerifyFixture):
+    """spawn-flow Step 4 (b)/(c) are written by `verify`, not by hand.
+
+    Observed 2026-09-03: the dispatcher flipped `Status` only, so the
+    dashboard showed every live worker as "pane not yet spawned". The
+    gate is the one step a dispatch cannot skip, so the record is written
+    there. The exit-code / event contract of `verify` must not move.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.workers = self.db.parent / "workers"
+        self.workers.mkdir()
+        self.md = self.workers / f"worker-{TASK}.md"
+
+    def _lines(self) -> "list[str]":
+        return self.md.read_text(encoding="utf-8").split("\n")
+
+    def test_planned_record_becomes_active_with_pane_and_started(self) -> None:
+        self.md.write_text(_PLANNED_MD, encoding="utf-8")
+        code, out = _run(self._argv())
+        self.assertEqual(code, spawn_gate.EXIT_OK)
+        self.assertEqual(out["status"], "verified")
+        self.assertEqual(out["worker_record"]["status"], "updated")
+        self.assertEqual(
+            out["worker_record"]["changes"],
+            ["pane_id", "started", "status", "progress_log"],
+        )
+
+        lines = self._lines()
+        # Header fields land right after `Pane Name:`; Started comes from
+        # the seeded `worker_spawned.occurred_at`, not the wall clock.
+        i = lines.index(f"Pane Name: worker-{TASK}")
+        self.assertEqual(lines[i + 1], "Pane ID: 5")
+        self.assertEqual(lines[i + 2], f"Started: {_PAST}")
+        self.assertEqual(lines[i + 3], "Status: active")
+        # The bullet is appended inside `## Progress Log`, before `## Notes`.
+        log = lines.index("## Progress Log")
+        notes = lines.index("## Notes")
+        self.assertEqual(
+            lines[log + 1 : notes],
+            [
+                "- [planned by dispatcher_runner] pane not yet spawned",
+                f"- [{_PAST}] 派遣完了、作業開始（pane id=5）",
+                "",
+            ],
+        )
+        # The prose `Status:` under `## Notes` is not the header field.
+        self.assertEqual(
+            lines[notes + 1],
+            "Status: keep this literal; it is prose, not the header field.",
+        )
+        # Nothing else moved.
+        self.assertEqual(lines[0], f"# Worker: worker-{TASK}")
+        self.assertIn("Fix the login form.", lines)
+        self.assertEqual(lines[-1], "")
+
+    def test_second_verify_is_idempotent(self) -> None:
+        self.md.write_text(_PLANNED_MD, encoding="utf-8")
+        _run(self._argv())
+        first = self.md.read_text(encoding="utf-8")
+        code, out = _run(self._argv())
+        self.assertEqual(code, spawn_gate.EXIT_OK)
+        self.assertEqual(out["status"], "already_verified")
+        self.assertEqual(out["worker_record"]["status"], "unchanged")
+        self.assertEqual(out["worker_record"]["changes"], [])
+        self.assertEqual(self.md.read_text(encoding="utf-8"), first)
+        self.assertEqual(first.count("派遣完了"), 1)
+        self.assertEqual(first.count("Pane ID:"), 1)
+
+    def test_existing_fields_are_kept_not_overwritten(self) -> None:
+        text = _PLANNED_MD.replace(
+            "Status: planned\n",
+            "Pane ID: 77\nStarted: 1999-12-31T23:59:59.000Z\nStatus: active\n",
+        ).replace(
+            "- [planned by dispatcher_runner] pane not yet spawned\n",
+            "- [1999-12-31T23:59:59.000Z] 派遣完了、作業開始\n",
+        )
+        self.md.write_text(text, encoding="utf-8")
+        code, out = _run(self._argv())
+        self.assertEqual(code, spawn_gate.EXIT_OK)
+        self.assertEqual(out["worker_record"]["status"], "unchanged")
+        self.assertEqual(self.md.read_text(encoding="utf-8"), text)
+
+    def test_crlf_and_missing_trailing_newline_are_preserved(self) -> None:
+        text = _PLANNED_MD.replace("\n", "\r\n").rstrip("\r\n")
+        self.md.write_bytes(text.encode("utf-8"))
+        code, out = _run(self._argv())
+        self.assertEqual(code, spawn_gate.EXIT_OK)
+        self.assertEqual(out["worker_record"]["status"], "updated")
+        raw = self.md.read_bytes().decode("utf-8")
+        self.assertNotIn("\n", raw.replace("\r\n", ""))  # only CRLF endings
+        self.assertFalse(raw.endswith("\n"))
+        self.assertIn("\r\nPane ID: 5\r\nStarted: ", raw)
+        self.assertIn("派遣完了", raw)
+
+    def test_marker_in_prose_does_not_suppress_the_bullet(self) -> None:
+        """Idempotency is keyed on a bullet inside `## Progress Log`, not
+        on the phrase appearing anywhere in the file."""
+        text = _PLANNED_MD.replace(
+            "Fix the login form.", "Fix the login form. 派遣完了後に着手。"
+        )
+        self.md.write_text(text, encoding="utf-8")
+        _, out = _run(self._argv())
+        self.assertIn("progress_log", out["worker_record"]["changes"])
+        lines = self._lines()
+        log = lines.index("## Progress Log")
+        self.assertIn("派遣完了、作業開始", lines[log + 2])
+
+    def test_lookalike_and_indented_headings(self) -> None:
+        """`## Progress Logger` is not the section; an indented `## ` still
+        ends the header and the section."""
+        text = (
+            f"# Worker: worker-{TASK}\n"
+            "Status: planned\n"
+            "\n"
+            "## Progress Logger\n"
+            "Pane ID: not-a-header\n"
+            "\n"
+            "  ## Progress Log\n"
+            "- [x] first\n"
+            "\n"
+            "  ## Notes\n"
+            "n\n"
+        )
+        self.md.write_text(text, encoding="utf-8")
+        code, _ = _run(self._argv())
+        self.assertEqual(code, spawn_gate.EXIT_OK)
+        self.assertEqual(
+            self._lines(),
+            [
+                f"# Worker: worker-{TASK}",
+                "Pane ID: 5",
+                f"Started: {_PAST}",
+                "Status: active",
+                "",
+                "## Progress Logger",
+                "Pane ID: not-a-header",
+                "",
+                "  ## Progress Log",
+                "- [x] first",
+                f"- [{_PAST}] 派遣完了、作業開始（pane id=5）",
+                "",
+                "  ## Notes",
+                "n",
+                "",
+            ],
+        )
+
+    def test_indented_existing_headers_count_as_present(self) -> None:
+        text = _PLANNED_MD.replace(
+            "Status: planned\n",
+            "  Pane ID: 77\n  Started: 1999-12-31T23:59:59.000Z\nStatus: planned\n",
+        )
+        self.md.write_text(text, encoding="utf-8")
+        _, out = _run(self._argv())
+        self.assertEqual(out["worker_record"]["changes"], ["status", "progress_log"])
+        raw = self.md.read_text(encoding="utf-8")
+        self.assertEqual(raw.count("Pane ID:"), 1)
+        self.assertEqual(raw.count("Started:"), 1)
+
+    def test_file_mode_survives_the_atomic_replace(self) -> None:
+        self.md.write_text(_PLANNED_MD, encoding="utf-8")
+        self.md.chmod(0o664)
+        _run(self._argv())
+        self.assertEqual(self.md.stat().st_mode & 0o777, 0o664)
+
+    def test_fenced_headings_do_not_end_the_section(self) -> None:
+        """A `## ` quoted inside a code fence is not a heading, so the
+        bullet lands after the fence, not inside it."""
+        text = _PLANNED_MD.replace(
+            "- [planned by dispatcher_runner] pane not yet spawned\n",
+            "- [planned by dispatcher_runner] pane not yet spawned\n"
+            "  ```markdown\n"
+            "  ## Notes\n"
+            "  - 派遣完了 (example, not a bullet)\n"
+            "  ```\n",
+        )
+        self.md.write_text(text, encoding="utf-8")
+        _, out = _run(self._argv())
+        self.assertIn("progress_log", out["worker_record"]["changes"])
+        lines = self._lines()
+        fence_close = lines.index("  ```")
+        self.assertIn("派遣完了、作業開始", lines[fence_close + 1])
+        self.assertEqual(lines[fence_close + 2], "")
+        self.assertEqual(lines[fence_close + 3], "## Notes")
+        # And a second run sees that bullet, not the fenced example.
+        _, out = _run(self._argv())
+        self.assertEqual(out["worker_record"]["status"], "unchanged")
+
+    def test_fence_closing_follows_commonmark_lengths(self) -> None:
+        """A ```` fence is not closed by ``` (nor by ```py), so everything
+        up to the real closer stays fenced."""
+        text = _PLANNED_MD.replace(
+            "- [planned by dispatcher_runner] pane not yet spawned\n",
+            "- [planned by dispatcher_runner] pane not yet spawned\n"
+            "````\n"
+            "```\n"
+            "```md\n"
+            "## Notes\n"
+            "- 派遣完了 (still fenced)\n"
+            "````\n",
+        )
+        self.md.write_text(text, encoding="utf-8")
+        _, out = _run(self._argv())
+        self.assertIn("progress_log", out["worker_record"]["changes"])
+        lines = self._lines()
+        closer = len(lines) - 1 - lines[::-1].index("````")
+        self.assertIn("派遣完了、作業開始", lines[closer + 1])
+        self.assertEqual(lines[closer + 3], "## Notes")
+
+    def test_concurrent_append_is_not_lost(self) -> None:
+        """A write that lands between read and replace is re-applied on
+        top of the fresh content instead of being overwritten."""
+        self.md.write_text(_PLANNED_MD, encoding="utf-8")
+        original = spawn_gate._rewrite_worker_md
+        calls = {"n": 0}
+
+        def racing(text, pane_id, started_at):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                # Secretary appends while we hold the stale copy.
+                with self.md.open("a", encoding="utf-8") as fh:
+                    fh.write("- [x] secretary note\n")
+            return original(text, pane_id, started_at)
+
+        spawn_gate._rewrite_worker_md = racing
+        try:
+            code, out = _run(self._argv())
+        finally:
+            spawn_gate._rewrite_worker_md = original
+        self.assertEqual(code, spawn_gate.EXIT_OK)
+        self.assertEqual(out["worker_record"]["status"], "updated")
+        self.assertEqual(calls["n"], 2)
+        raw = self.md.read_text(encoding="utf-8")
+        self.assertIn("- [x] secretary note", raw)
+        self.assertEqual(raw.count("派遣完了"), 1)
+
+    def test_record_that_keeps_moving_is_reported_not_clobbered(self) -> None:
+        self.md.write_text(_PLANNED_MD, encoding="utf-8")
+        original = spawn_gate._rewrite_worker_md
+        calls = {"n": 0}
+
+        def always_racing(text, pane_id, started_at):
+            calls["n"] += 1
+            with self.md.open("a", encoding="utf-8") as fh:
+                fh.write(f"- [x] note {calls['n']}\n")
+            return original(text, pane_id, started_at)
+
+        spawn_gate._rewrite_worker_md = always_racing
+        try:
+            err = io.StringIO()
+            code, out = _run(self._argv(), stderr=err)
+        finally:
+            spawn_gate._rewrite_worker_md = original
+        self.assertEqual(code, spawn_gate.EXIT_OK)
+        self.assertEqual(out["worker_record"]["status"], "error")
+        self.assertIn("concurrently", err.getvalue())
+        raw = self.md.read_text(encoding="utf-8")
+        self.assertNotIn("派遣完了", raw)
+        self.assertEqual(raw.count("- [x] note"), spawn_gate._WORKER_MD_ATTEMPTS)
+
+    def test_status_flip_rewrites_only_the_value(self) -> None:
+        text = _PLANNED_MD.replace("Status: planned\n", "  STATUS:  planned  \n")
+        self.md.write_text(text, encoding="utf-8")
+        _run(self._argv())
+        self.assertIn("  STATUS:  active  ", self._lines())
+
+    def test_failed_write_keeps_the_original_record(self) -> None:
+        """Atomic replace: a write that dies mid-way must not truncate."""
+        self.md.write_text(_PLANNED_MD, encoding="utf-8")
+        original = spawn_gate._replace_file_atomically
+
+        def boom(path, data):
+            raise OSError("disk full")
+
+        spawn_gate._replace_file_atomically = boom
+        try:
+            err = io.StringIO()
+            code, out = _run(self._argv(), stderr=err)
+        finally:
+            spawn_gate._replace_file_atomically = original
+        self.assertEqual(code, spawn_gate.EXIT_OK)
+        self.assertEqual(out["worker_record"]["status"], "error")
+        self.assertEqual(self.md.read_text(encoding="utf-8"), _PLANNED_MD)
+        # No temp file left behind beside the record.
+        self.assertEqual(sorted(p.name for p in self.workers.iterdir()), [self.md.name])
+
+    def test_missing_record_does_not_fail_the_gate(self) -> None:
+        err = io.StringIO()
+        code, out = _run(self._argv(), stderr=err)
+        self.assertEqual(code, spawn_gate.EXIT_OK)
+        self.assertEqual(out["status"], "verified")
+        self.assertIn("DELEGATE_COMPLETE", out["delegate_complete"])
+        self.assertEqual(out["worker_record"]["status"], "missing")
+        stderr_lines = [ln for ln in err.getvalue().splitlines() if ln]
+        self.assertEqual(len(stderr_lines), 1)
+        self.assertIn(str(self.md), stderr_lines[0])
+        # The event was still recorded: the side effect is downstream of it.
+        conn = sqlite3.connect(self.db)
+        try:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM events WHERE kind = ?",
+                (spawn_gate.VERIFIED_EVENT,),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(count, 1)
+
+    def test_write_error_does_not_fail_the_gate(self) -> None:
+        self.md.write_text(_PLANNED_MD, encoding="utf-8")
+        original = spawn_gate._record_dispatch_in_worker_md
+
+        def boom(*_a, **_k):
+            raise OSError("disk full")
+
+        spawn_gate._record_dispatch_in_worker_md = boom
+        try:
+            err = io.StringIO()
+            code, out = _run(self._argv(), stderr=err)
+        finally:
+            spawn_gate._record_dispatch_in_worker_md = original
+        self.assertEqual(code, spawn_gate.EXIT_OK)
+        self.assertEqual(out["worker_record"]["status"], "error")
+        self.assertIn("disk full", err.getvalue())
+
+    def test_gate_failure_leaves_the_record_untouched(self) -> None:
+        """No event, no side effect: the md must not claim a dispatch that
+        the gate refused to certify."""
+        self.md.write_text(_PLANNED_MD, encoding="utf-8")
+        code, out = _run(self._argv(**{"--peer-cwd": "/tmp/org/workers/other"}))
+        self.assertEqual(code, spawn_gate.EXIT_FIRE)
+        self.assertNotIn("worker_record", out)
+        self.assertEqual(self.md.read_text(encoding="utf-8"), _PLANNED_MD)
+
+    def test_record_without_progress_log_gets_one(self) -> None:
+        self.md.write_text(
+            f"# Worker: worker-{TASK}\nTask: {TASK}\nStatus: planned\n",
+            encoding="utf-8",
+        )
+        code, _ = _run(self._argv())
+        self.assertEqual(code, spawn_gate.EXIT_OK)
+        self.assertEqual(
+            self._lines(),
+            [
+                f"# Worker: worker-{TASK}",
+                f"Task: {TASK}",
+                "Pane ID: 5",
+                f"Started: {_PAST}",
+                "Status: active",
+                "",
+                "## Progress Log",
+                f"- [{_PAST}] 派遣完了、作業開始（pane id=5）",
+                "",
+            ],
+        )
 
 
 class AuditTests(unittest.TestCase):
