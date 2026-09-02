@@ -155,7 +155,9 @@ class TestWorkersPanelEligibility(unittest.TestCase):
     Before this gate, ``_parse_workers`` globbed ``.state/workers/*.md``
     and rendered every hit as a live worker, so finished / abandoned /
     suspended runs kept pulsing on the dashboard long after their pane
-    was gone.
+    was gone. The admitting predicate is the Set F §3.3 user-visible
+    projection (``in_use`` / ``review``): a review run's pane is still
+    open awaiting human approval, so it stays on the panel (Issue #264).
     """
 
     def setUp(self) -> None:
@@ -206,7 +208,7 @@ class TestWorkersPanelEligibility(unittest.TestCase):
         finally:
             conn.close()
 
-    def test_only_in_use_runs_render_as_workers(self):
+    def test_only_user_visible_runs_render_as_workers(self):
         self._seed_runs()
         for task_id in (
             "w-running", "w-review", "w-queued", "w-done",
@@ -215,10 +217,14 @@ class TestWorkersPanelEligibility(unittest.TestCase):
             self._write_worker_md(task_id)
 
         state = self.server.build_state()
-        self.assertEqual([w["id"] for w in state["workers"]], ["w-running"])
-        # Detail still comes from the md file for the admitted id.
-        self.assertEqual(state["workers"][0]["task"], "w-running")
-        self.assertEqual(state["workers"][0]["lastProgress"], "working")
+        by_id = {w["id"]: w for w in state["workers"]}
+        # in_use and review are admitted; queued / terminal / suspended and
+        # an md file with no DB row at all are not.
+        self.assertEqual(sorted(by_id), ["w-review", "w-running"])
+        # Detail still comes from the md file for the admitted ids.
+        self.assertEqual(by_id["w-running"]["task"], "w-running")
+        self.assertEqual(by_id["w-running"]["lastProgress"], "working")
+        self.assertEqual(by_id["w-review"]["task"], "w-review")
 
     def test_db_missing_renders_no_workers(self):
         """Fail-safe: no DB must not fall back to "every md file"."""

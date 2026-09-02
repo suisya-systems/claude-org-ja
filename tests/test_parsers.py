@@ -22,6 +22,8 @@ from dashboard.server import (
     _parse_knowledge,
     build_state,
 )
+from tools.state_db import connect
+from tools.state_db.importer import import_full_rebuild
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
@@ -99,15 +101,84 @@ class TestParseWorkers(unittest.TestCase):
 
 
 class TestBuildStateLiveWorkers(unittest.TestCase):
-    """The live-worker panel is gated by the DB, not by md-file presence.
+    """Issue #264 regression, re-gated on the DB.
 
-    This supersedes the earlier Issue #264 rule that treated "file sits
-    directly under .state/workers/" as the liveness predicate: archival
-    lags behind the run's real phase, so completed / abandoned /
-    suspended runs kept rendering as active workers. Eligibility is now
-    ``runs.status = 'in_use'``; the directory scoping from #264 (archive/
-    is never live) remains in force on top of it.
+    Two predicates must both hold for a worker card: the run is in the
+    Set F §3.3 user-visible projection (in_use / review) AND its md file
+    still sits directly under .state/workers/. Workers in REVIEW stay
+    visible — the pane is still open, awaiting human approval — while an
+    md moved to archive/ disappears. The DB gate is the addition: md
+    presence alone used to be the whole predicate, so completed /
+    abandoned / suspended runs kept rendering as active.
     """
+
+    def _seed(self, base, statuses):
+        """Import a minimal org into base/.state/state.db and set statuses."""
+        (base / "registry").mkdir(exist_ok=True)
+        (base / "registry" / "projects.md").write_text(
+            "| 通称 | プロジェクト名 | パス | 説明 | 例 |\n"
+            "|---|---|---|---|---|\n"
+            "| demo | demo-project | https://example.invalid/d | demo | x |\n",
+            encoding="utf-8",
+        )
+        (base / ".state" / "org-state.md").write_text(
+            "# Org State\n\nStatus: ACTIVE\nCurrent Objective: t\n",
+            encoding="utf-8",
+        )
+        db_path = base / ".state" / "state.db"
+        import_full_rebuild(db_path, base)
+        conn = connect(db_path)
+        try:
+            pid = conn.execute("SELECT id FROM projects LIMIT 1").fetchone()[0]
+            for task_id, status in statuses.items():
+                conn.execute(
+                    "INSERT INTO runs (task_id, project_id, pattern, title, "
+                    "status) VALUES (?, ?, 'A', ?, ?)",
+                    (task_id, pid, task_id, status),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+        return db_path
+
+    def test_review_workers_stay_visible_and_archived_disappear(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            (base / ".state" / "workers" / "archive").mkdir(parents=True)
+            (base / ".state" / "workers" / "worker-active.md").write_text(
+                "Task: active-task\nPane ID: pane-1\nStarted: now\n",
+                encoding="utf-8",
+            )
+            (base / ".state" / "workers" / "worker-review.md").write_text(
+                "Task: review-task\nPane ID: pane-2\nStarted: now\n",
+                encoding="utf-8",
+            )
+            (base / ".state" / "workers" / "worker-old.md").write_text(
+                "Task: done-task\nPane ID: pane-4\nStarted: now\n",
+                encoding="utf-8",
+            )
+            (base / ".state" / "workers" / "archive" / "worker-arch.md").write_text(
+                "Task: archived-task\nPane ID: pane-3\nStarted: ages ago\n",
+                encoding="utf-8",
+            )
+            db_path = self._seed(base, {
+                "active": "in_use",
+                "review": "review",
+                # Still in_use in the DB, but its md lives in archive/ —
+                # the #264 directory rule keeps it off the panel.
+                "arch": "in_use",
+                # md sits in the live directory, but the run is finished —
+                # the DB gate keeps it off the panel.
+                "old": "completed",
+            })
+
+            with patch("dashboard.server.BASE_DIR", base), \
+                    patch("dashboard.server.STATE_DB_PATH", db_path):
+                state = build_state()
+
+            tasks = sorted(w["task"] for w in state["workers"])
+            self.assertEqual(tasks, ["active-task", "review-task"])
 
     def test_no_db_yields_no_workers(self):
         """Fail-safe: without state.db the panel is empty, not "everything"."""

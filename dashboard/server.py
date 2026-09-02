@@ -84,10 +84,11 @@ def _parse_workers(workers_dir, eligible_task_ids):
     """Build worker cards for the *live* workers only.
 
     ``eligible_task_ids`` is the display-eligibility set computed from the
-    DB (``runs.status = 'in_use'``); it is a required argument so no caller
-    can accidentally fall back to "every md file under .state/workers/",
-    which is what made the panel report dozens of finished workers as
-    active. The md files never grant eligibility of their own.
+    DB (``runs.status IN ('in_use', 'review')``). It is a required argument
+    so no caller can accidentally fall back to "every md file under
+    .state/workers/", which is what made the panel report dozens of
+    finished workers as active; md files never grant eligibility of their
+    own.
 
     A card is emitted for the *intersection* of that set with the md files
     sitting directly under ``workers_dir`` (a run whose file has been
@@ -401,7 +402,9 @@ def build_state():
     projects = _parse_projects(projects_text)
 
     # The workers panel renders the intersection of two liveness signals:
-    # the DB phase (runs.status = 'in_use') and an md file sitting directly
+    # the DB phase (the Set F §3.3 user-visible projection — in_use /
+    # review; a review pane is still open awaiting human approval, so it
+    # stays on the panel per Issue #264) and an md file sitting directly
     # under .state/workers/ (archival means the worker is closed —
     # Issue #264). The DB is the admitting predicate: md presence alone is
     # NOT evidence of a live worker, because archival lags and completed /
