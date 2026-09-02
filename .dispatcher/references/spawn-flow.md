@@ -339,6 +339,8 @@ worker brief に **ultracode 使用許可**があるタスクでは、kickoff �
    - [{time}] 派遣完了、作業開始
    ```
 
+   > **本項の `Status: active` flip / `Pane ID:` / `Started:` / Progress Log「派遣完了」行は、[`tools/spawn_gate.py`](../../tools/spawn_gate.py) `verify` が成功時（`worker_spawn_verified` 記帳と同じ流れ）に副作用として書く。** dispatcher は手で書かず、`verify` 出力の `worker_record.status`（`updated` / `unchanged` が正常）を確認するだけでよい。`missing` / `error`（stderr に 1 行出る。gate の exit code は変わらない）のときだけ、上記を手で補う。
+
    > **`Status:` 行は省略不可**（Refs #835）。runtime はこの行を overflow 予約台帳として機械的に読む（`_seed_status`、`claude_org_runtime/dispatcher/runner.py:1265-1286`）。行が無いと `None` が返り、`count_unbound_reservations` が mtime クロック（`WORKER_BIND_WINDOW_SECONDS = 45`、`runner.py:305`）へ**黙って**フォールバックするため、この Step 4 で既に active になった worker が最長 45 秒 pending 予約として枠を占有し、直後の overflow spawn が `split_capacity_exceeded` で不当に拒否されうる（`runner.py:1253-1260` / `runner.py:2796-2832`）。書式契約（bullet 前置き `- Status:` は**パースされない**等）は [`docs/contracts/state-schema-contract.md`](../../docs/contracts/state-schema-contract.md) §7、回帰検出は [`tests/test_worker_seed_status_contract.py`](../../tests/test_worker_seed_status_contract.py)。
 
 2. **DB 経由で run と Active Work Items を登録する**（`.state/org-state.md` 直接編集は禁止。`StateWriter.transaction()` 経由、post-commit hook が再生成）:
