@@ -149,6 +149,37 @@ def list_reserved_runs(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     return _rows_to_dicts(rows)
 
 
+def list_live_worker_task_ids(conn: sqlite3.Connection) -> list[str]:
+    """Return task_ids of runs whose worker pane is live (Set F §3.3).
+
+    Predicate: ``runs.status IN USER_VISIBLE_STATUSES`` (``in_use`` /
+    ``review``) — the same user-visible projection Active Work Items uses.
+    ``review`` belongs here per Issue #264: the pane is still open awaiting
+    human approval, which is precisely the state an operator needs to see
+    on the panel. ``queued`` has no pane yet, and terminal / ``suspended``
+    rows are not running at all, so both stay out.
+
+    Note the deliberate split of responsibilities: this query is the
+    *admitting* predicate for a worker card, while ``.state/workers/*.md``
+    supplies the card's detail (task / pane / progress). The dashboard
+    intersects this set with the md files still sitting directly under
+    ``.state/workers/`` (archival is its own closed signal), but an md file
+    never admits a worker on its own — that is what kept dozens of finished
+    runs rendering as live.
+    """
+    placeholders = ", ".join("?" for _ in USER_VISIBLE_STATUSES)
+    rows = conn.execute(
+        f"""
+        SELECT r.task_id AS task_id
+        FROM runs r
+        WHERE r.status IN ({placeholders})
+        ORDER BY r.dispatched_at DESC, r.id DESC
+        """,
+        USER_VISIBLE_STATUSES,
+    ).fetchall()
+    return [r["task_id"] for r in rows if r["task_id"]]
+
+
 def list_runs_with_dirs(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     """Return every run that has a worker_dir attached, regardless of status.
 
@@ -740,6 +771,7 @@ __all__ = [
     "BRIEFING_EVENT_KINDS_NOISE",
     "list_active_runs",
     "list_reserved_runs",
+    "list_live_worker_task_ids",
     "list_runs_with_dirs",
     "get_run_by_task_id",
     "list_worker_dirs",

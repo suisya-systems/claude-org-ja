@@ -12,7 +12,9 @@ Run:  python -m unittest tests.test_state_db_fallback
 """
 from __future__ import annotations
 
+import contextlib
 import importlib
+import io
 import json
 import sys
 import tempfile
@@ -145,6 +147,146 @@ class TestServerDbRead(unittest.TestCase):
         # Terminal rows are filtered out of both surfaces (§3.4).
         self.assertNotIn("t-done", work_ids)
         self.assertNotIn("t-done", reserved_ids)
+
+
+class TestWorkersPanelEligibility(unittest.TestCase):
+    """The workers panel must be gated by the DB, not by md-file presence.
+
+    Before this gate, ``_parse_workers`` globbed ``.state/workers/*.md``
+    and rendered every hit as a live worker, so finished / abandoned /
+    suspended runs kept pulsing on the dashboard long after their pane
+    was gone. The admitting predicate is the Set F §3.3 user-visible
+    projection (``in_use`` / ``review``): a review run's pane is still
+    open awaiting human approval, so it stays on the panel (Issue #264).
+    """
+
+    def setUp(self) -> None:
+        self._td = tempfile.TemporaryDirectory()
+        self.addCleanup(self._td.cleanup)
+        self.root = Path(self._td.name)
+        self.state_dir = self.root / ".state"
+        self.registry_dir = self.root / "registry"
+        _seed_state_dir(self.state_dir, self.registry_dir)
+        self.db_path = self.state_dir / "state.db"
+        self.workers_dir = self.state_dir / "workers"
+        self.workers_dir.mkdir(parents=True, exist_ok=True)
+
+        if "dashboard.server" in sys.modules:
+            del sys.modules["dashboard.server"]
+        import dashboard.server as server  # noqa: E402
+        self.server = server
+        server.BASE_DIR = self.root
+        server.STATE_DB_PATH = self.db_path
+
+    def _write_worker_md(self, task_id: str) -> None:
+        (self.workers_dir / f"worker-{task_id}.md").write_text(
+            f"Task: {task_id}\nPane ID: worker-{task_id}\n"
+            "Started: 2026-05-04T00:00:00Z\n\n"
+            "## Progress Log\n- [2026-05-04T00:01:00Z] working\n",
+            encoding="utf-8",
+        )
+
+    def _seed_runs(self) -> None:
+        import_full_rebuild(self.db_path, self.root)
+        conn = connect(self.db_path)
+        try:
+            pid = conn.execute("SELECT id FROM projects LIMIT 1").fetchone()[0]
+            for task_id, status in (
+                ("w-running", "in_use"),
+                ("w-review", "review"),
+                ("w-queued", "queued"),
+                ("w-done", "completed"),
+                ("w-abandoned", "abandoned"),
+                ("w-suspended", "suspended"),
+            ):
+                conn.execute(
+                    "INSERT INTO runs (task_id, project_id, pattern, title, "
+                    "status) VALUES (?, ?, 'A', ?, ?)",
+                    (task_id, pid, task_id, status),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_only_user_visible_runs_render_as_workers(self):
+        self._seed_runs()
+        for task_id in (
+            "w-running", "w-review", "w-queued", "w-done",
+            "w-abandoned", "w-suspended", "w-no-db-row",
+        ):
+            self._write_worker_md(task_id)
+
+        state = self.server.build_state()
+        by_id = {w["id"]: w for w in state["workers"]}
+        # in_use and review are admitted; queued / terminal / suspended and
+        # an md file with no DB row at all are not.
+        self.assertEqual(sorted(by_id), ["w-review", "w-running"])
+        # Detail still comes from the md file for the admitted ids.
+        self.assertEqual(by_id["w-running"]["task"], "w-running")
+        self.assertEqual(by_id["w-running"]["lastProgress"], "working")
+        self.assertEqual(by_id["w-review"]["task"], "w-review")
+
+    def test_db_missing_renders_no_workers(self):
+        """Fail-safe: no DB must not fall back to "every md file"."""
+        self._write_worker_md("w-orphan")
+        self.assertFalse(self.db_path.exists())
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            state = self.server.build_state()
+        self.assertEqual(state["workers"], [])
+        # The degradation must be diagnosable, not silent.
+        self.assertIn("rendering 0 workers", err.getvalue())
+
+    def test_db_query_failure_renders_no_workers(self):
+        """A DB that exists but cannot be queried also fails safe.
+
+        Asserted on ``_live_worker_task_ids`` rather than ``build_state``
+        because the surrounding org-state read path deliberately raises on
+        an unreadable DB (M4); only the workers panel degrades quietly, and
+        it must degrade to empty, never to "every md file on disk".
+        """
+        self._seed_runs()
+        self._write_worker_md("w-running")
+        self.db_path.write_bytes(b"not a sqlite database")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            eligible = self.server._live_worker_task_ids()
+        self.assertEqual(eligible, set())
+        self.assertIn("rendering 0 workers", err.getvalue())
+        self.assertEqual(
+            self.server._parse_workers(self.workers_dir, eligible), []
+        )
+
+    def test_unparsable_md_degrades_only_that_card(self):
+        """A corrupt md must not blank the panel, nor hide a running worker.
+
+        The DB already admitted the id, so the card stays; only its
+        md-sourced detail is dropped.
+        """
+        self._seed_runs()
+        conn = connect(self.db_path)
+        try:
+            pid = conn.execute("SELECT id FROM projects LIMIT 1").fetchone()[0]
+            conn.execute(
+                "INSERT INTO runs (task_id, project_id, pattern, title, "
+                "status) VALUES ('w-broken', ?, 'A', 'w-broken', 'in_use')",
+                (pid,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        self._write_worker_md("w-running")
+        # Invalid UTF-8 → read_text raises → per-file skip.
+        (self.workers_dir / "worker-w-broken.md").write_bytes(b"Task: \xff\xfe")
+
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            state = self.server.build_state()
+        by_id = {w["id"]: w for w in state["workers"]}
+        self.assertEqual(sorted(by_id), ["w-broken", "w-running"])
+        self.assertEqual(by_id["w-running"]["task"], "w-running")
+        self.assertIsNone(by_id["w-broken"]["task"])
+        self.assertIn("worker-w-broken.md", err.getvalue())
 
 
 class TestConverterDbOnly(unittest.TestCase):

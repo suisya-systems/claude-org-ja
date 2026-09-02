@@ -88,6 +88,12 @@ function renderWorkers(workers) {
   const countEl = document.getElementById("worker-count");
   if (countEl) countEl.textContent = workers.length;
 
+  // Always drop the previous tick first: an early return on an empty list
+  // used to leave the interval from the last non-empty render running,
+  // ticking against DOM nodes that no longer exist.
+  clearInterval(window._tick);
+  window._tick = null;
+
   if (workers.length === 0) {
     list.innerHTML = '<p class="empty-state">No active workers</p>';
     list.style.background = "var(--surface)";
@@ -98,7 +104,6 @@ function renderWorkers(workers) {
   list.innerHTML = workers.map(workerCard).join("");
 
   // Tick elapsed counters
-  clearInterval(window._tick);
   window._tick = setInterval(() => {
     workers.forEach((w) => {
       const el = document.getElementById("el-" + w.id);

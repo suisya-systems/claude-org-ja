@@ -39,6 +39,7 @@ from tools.registry_parser import parse_projects_text as _parse_projects_shared
 from tools.state_db import connect as _db_connect
 from tools.state_db.queries import (
     get_org_state_summary as _db_org_state_summary,
+    list_live_worker_task_ids as _db_live_worker_task_ids,
     list_recent_events as _db_recent_events,
 )
 
@@ -79,12 +80,46 @@ def _parse_projects(text):
     ]
 
 
-def _parse_workers(workers_dir):
+def _parse_workers(workers_dir, eligible_task_ids):
+    """Build worker cards for the *live* workers only.
+
+    ``eligible_task_ids`` is the display-eligibility set computed from the
+    DB (``runs.status IN ('in_use', 'review')``). It is a required argument
+    so no caller can accidentally fall back to "every md file under
+    .state/workers/", which is what made the panel report dozens of
+    finished workers as active; md files never grant eligibility of their
+    own.
+
+    A card is emitted for the *intersection* of that set with the md files
+    sitting directly under ``workers_dir`` (a run whose file has been
+    archived is no longer live — Issue #264). Within that intersection the
+    md is a detail source only: if it cannot be parsed the card is still
+    emitted, with null details, so a corrupt file degrades one card instead
+    of hiding a running worker.
+    """
+    eligible = set(eligible_task_ids)
+    if not eligible:
+        return []
+
     workers = []
     try:
-        for md_file in sorted(Path(workers_dir).glob("worker-*.md")):
-            text = _read(md_file)
-            worker_id = md_file.stem.replace("worker-", "")
+        md_files = sorted(Path(workers_dir).glob("worker-*.md"))
+    except OSError as exc:
+        print(
+            f"[dashboard] workers: cannot list {workers_dir}: {exc}",
+            file=sys.stderr,
+        )
+        return []
+
+    for md_file in md_files:
+        worker_id = md_file.stem[len("worker-"):]
+        if worker_id not in eligible:
+            continue
+        try:
+            # Read directly (not via _read, which swallows errors and
+            # returns "") so an unreadable / undecodable file reaches the
+            # per-file handler below instead of rendering a blank card.
+            text = md_file.read_text(encoding="utf-8").replace("\r\n", "\n")
             task = None
             pane_id = None
             started = None
@@ -127,8 +162,26 @@ def _parse_workers(workers_dir):
                 "lastProgress": last_progress["message"] if last_progress else None,
                 "lastProgressTs": last_progress["ts"] if last_progress else None,
             })
-    except Exception:
-        pass
+        except Exception as exc:
+            # Per-file containment: one corrupt md must not blank the whole
+            # panel (the previous blanket try/except turned a single parse
+            # error into "0 workers", indistinguishable from an idle org).
+            # The DB says this worker is running, so the card stays — only
+            # its md-sourced detail is dropped.
+            print(
+                f"[dashboard] workers: unparsable {md_file.name}: {exc}; "
+                "rendering card without detail",
+                file=sys.stderr,
+            )
+            workers.append({
+                "id": worker_id,
+                "shortId": worker_id[:8],
+                "task": None,
+                "paneId": None,
+                "started": None,
+                "lastProgress": None,
+                "lastProgressTs": None,
+            })
     return workers
 
 
@@ -275,6 +328,44 @@ def _load_state_from_db():
     )
 
 
+def _live_worker_task_ids():
+    """Return the DB-side display-eligibility set for the workers panel.
+
+    Never raises: on a missing DB, or if the eligibility query itself
+    fails, it returns an empty set and logs the reason, so the panel
+    degrades to "no live workers" rather than to "show everything on
+    disk".
+
+    Scope note: this only covers the workers panel. If the DB file exists
+    but is corrupt, ``_load_state_from_db`` raises first and the whole
+    ``/api/state`` response fails — that is the deliberate M4 (Issue #267)
+    "DB is required" behaviour, and this helper does not soften it. The
+    guard here is defense-in-depth for the cases the M4 path survives (a
+    transient lock, a schema the org-state queries tolerate but this one
+    does not).
+    """
+    if not STATE_DB_PATH.exists():
+        print(
+            "[dashboard] workers: state.db not found at "
+            f"{STATE_DB_PATH}; rendering 0 workers",
+            file=sys.stderr,
+        )
+        return set()
+    try:
+        conn = _db_connect(STATE_DB_PATH)
+        try:
+            return set(_db_live_worker_task_ids(conn))
+        finally:
+            conn.close()
+    except Exception as exc:
+        print(
+            "[dashboard] workers: live-worker query failed "
+            f"({exc.__class__.__name__}: {exc}); rendering 0 workers",
+            file=sys.stderr,
+        )
+        return set()
+
+
 def build_state():
     state_dir = BASE_DIR / ".state"
 
@@ -310,9 +401,22 @@ def build_state():
     projects_text = _read(BASE_DIR / "registry" / "projects.md")
     projects = _parse_projects(projects_text)
 
-    # Source of truth for "live worker" is presence directly under .state/workers/;
-    # closing a worker moves its md file to .state/workers/archive/ (org-delegate Step 5).
-    workers = _parse_workers(state_dir / "workers")
+    # The workers panel renders the intersection of two liveness signals:
+    # the DB phase (the Set F §3.3 user-visible projection — in_use /
+    # review; a review pane is still open awaiting human approval, so it
+    # stays on the panel per Issue #264) and an md file sitting directly
+    # under .state/workers/ (archival means the worker is closed —
+    # Issue #264). The DB is the admitting predicate: md presence alone is
+    # NOT evidence of a live worker, because archival lags and completed /
+    # abandoned / suspended runs keep their file in place. Within the
+    # intersection the md contributes card detail only.
+    #
+    # Fail-safe: if the DB is missing or the eligibility query fails we
+    # render zero workers and log why. Falling back to "every md file"
+    # would silently reinstate the bug this guards against. (A corrupt DB
+    # file never reaches here — the M4 org-state read above raises first,
+    # by design.)
+    workers = _parse_workers(state_dir / "workers", _live_worker_task_ids())
 
     knowledge = _parse_knowledge(BASE_DIR / "knowledge" / "curated")
 
