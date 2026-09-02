@@ -160,6 +160,73 @@ _JA_ONLY_LAYER2_CREDENTIAL_DENIES = frozenset(
 )
 
 
+# ja-only PreToolUse hook scripts that the byte check strips from
+# ``required_hook_scripts`` and from every ``roles[*].required_hooks``
+# entry on BOTH sides before comparison. Same rationale as
+# ``_JA_ONLY_LAYER2_CREDENTIAL_DENIES`` above: these are claude-org-ja
+# org policy, not runtime template defaults, so they intentionally do
+# not ship in the ``claude-org-runtime`` bundled schema and the byte
+# check would otherwise flag them as drift on every commit.
+#
+# ``check-loop-directive.sh`` pins the dispatcher's ``/loop`` monitoring
+# directive to the canonical text in
+# ``.claude/skills/dispatcher-resume/SKILL.md`` (2026-09-02 incident:
+# a self-authored short form dropped the relay delivery steps). Both the
+# hook and the skill it reads are ja-specific artefacts with no runtime
+# counterpart. Registering it in the schema is what makes
+# ``tools/check_role_configs.py --include-local`` report a missing hook
+# as drift at /org-start Block C4; stripping it here keeps that
+# registration from breaking the ja↔runtime *surface* contract, which is
+# the only thing the byte check is meant to police.
+#
+# Add a new name here ONLY for a hook that is genuinely ja-only. A hook
+# that should also ship in the runtime template belongs in a paired
+# runtime release instead.
+_JA_ONLY_HOOK_SCRIPTS = frozenset({"check-loop-directive.sh"})
+
+
+def _strip_ja_only_hooks(schema: object) -> object:
+    """Drop ja-only hook scripts from the required-hook surface.
+
+    Removes every ``_JA_ONLY_HOOK_SCRIPTS`` name from top-level
+    ``required_hook_scripts`` and every ``roles[*].required_hooks``
+    entry whose ``command_contains`` names one. Applied to BOTH sides,
+    so a future runtime that does ship one of these names still
+    compares equal rather than flipping the check into a false pass in
+    only one direction.
+    """
+    if not isinstance(schema, dict):
+        return schema
+    out: dict[str, Any] = dict(schema)
+    scripts = out.get("required_hook_scripts")
+    if isinstance(scripts, list):
+        out["required_hook_scripts"] = [
+            s for s in scripts if s not in _JA_ONLY_HOOK_SCRIPTS
+        ]
+    roles = out.get("roles")
+    if isinstance(roles, dict):
+        new_roles: dict[str, Any] = {}
+        for role_name, role_def in roles.items():
+            if not isinstance(role_def, dict) or not isinstance(
+                role_def.get("required_hooks"), list
+            ):
+                new_roles[role_name] = role_def
+                continue
+            new_roles[role_name] = {
+                **role_def,
+                "required_hooks": [
+                    hook
+                    for hook in role_def["required_hooks"]
+                    if not (
+                        isinstance(hook, dict)
+                        and hook.get("command_contains") in _JA_ONLY_HOOK_SCRIPTS
+                    )
+                ],
+            }
+        out["roles"] = new_roles
+    return out
+
+
 def _strip_ja_only_sandbox_bodies(schema: object) -> object:
     """Drop ja-only ``sandbox`` / ``sandbox_by_pattern`` bodies and ja-only
     Layer 2 credential mirror entries from each role / worker_role.
@@ -493,8 +560,10 @@ def _check_byte_drift(installed_str: str) -> int:
     bundled = json.loads(bundled_path.read_text(encoding="utf-8"))
     ja = json.loads(JA_SCHEMA.read_text(encoding="utf-8"))
 
-    bundled_norm = _normalise(_strip_ja_only_sandbox_bodies(bundled))
-    ja_norm = _normalise(_strip_ja_only_sandbox_bodies(ja))
+    bundled_norm = _normalise(
+        _strip_ja_only_hooks(_strip_ja_only_sandbox_bodies(bundled))
+    )
+    ja_norm = _normalise(_strip_ja_only_hooks(_strip_ja_only_sandbox_bodies(ja)))
     if bundled_norm == ja_norm:
         print(
             f"check_runtime_schema_drift: OK (claude-org-runtime "
