@@ -114,6 +114,15 @@ if [[ "$TOOL_NAME" == "ScheduleWakeup" ]]; then
   fi
 fi
 
+# prompt が文字列であることを先に確定させる。`jq -r` は object / array を
+# JSON としてシリアライズして返すため、型検査を挟まないと
+# {"prompt":{"directive":"<正文>"}} のような構造化 payload が「正文を含む文字列」に
+# 化けて allow に落ちる (Codex review P2)。欠落 / null は "" に畳んで下の空判定へ流す。
+if ! printf '%s\n' "$INPUT" | jq -e '(.tool_input.prompt // "") | type == "string"' >/dev/null 2>&1; then
+  print_sot_pointer
+  deny_with_reason "${TOOL_NAME} の prompt が文字列ではありません。安全側 (fail-closed) で拒否します。"
+fi
+
 PROMPT=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.prompt // empty')
 if [[ -z "${PROMPT//[[:space:]]/}" ]]; then
   print_sot_pointer

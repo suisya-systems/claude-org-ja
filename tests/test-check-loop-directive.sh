@@ -12,6 +12,7 @@
 #   - 監視ループ以外の CronCreate (無関係な定期実行)            -> block (D- entry)
 #   - ScheduleWakeup(stop:true)                             -> allow (loop 停止を塞がない)
 #   - 非対象ツール (Bash / Agent / 近接名 CronCreated)         -> passthrough
+#   - prompt が非文字列 (object / array / number)             -> block (fail-closed)
 #   - CLAUDE_ORG_PATH 未設定 / SoT が読めない / 正文が無い      -> block (fail-closed)
 #
 # 判定方針の正本は .dispatcher/references/loop-directive-guard.md。
@@ -195,6 +196,22 @@ assert_exit 2 "$ec" "CronCreate without a prompt is blocked"
 stderr=$(mktemp); TMPFILES+=("$stderr")
 ec=$(run_hook '{"tool_name":"ScheduleWakeup","tool_input":{"stop":false,"prompt":"   "}}' "$stderr")
 assert_exit 2 "$ec" "ScheduleWakeup(stop:false) with a blank prompt is blocked"
+
+# --- fail-closed: prompt が文字列でない (Codex review P2) ---
+
+# 構造化 prompt: jq -r が object をシリアライズするため、型検査が無いと
+# 「正文を含む文字列」に化けて allow に落ちる
+stderr=$(mktemp); TMPFILES+=("$stderr")
+ec=$(run_hook "$(jq -n --arg p "$CANONICAL_BODY" '{tool_name:"CronCreate",tool_input:{cron:"*/3 * * * *",prompt:{directive:$p}}}')" "$stderr")
+assert_exit 2 "$ec" "object-shaped prompt containing the canonical body is blocked"
+
+stderr=$(mktemp); TMPFILES+=("$stderr")
+ec=$(run_hook "$(jq -n --arg p "$CANONICAL_BODY" '{tool_name:"CronCreate",tool_input:{cron:"*/3 * * * *",prompt:[$p]}}')" "$stderr")
+assert_exit 2 "$ec" "array-shaped prompt containing the canonical body is blocked"
+
+stderr=$(mktemp); TMPFILES+=("$stderr")
+ec=$(run_hook '{"tool_name":"CronCreate","tool_input":{"cron":"*/3 * * * *","prompt":42}}' "$stderr")
+assert_exit 2 "$ec" "numeric prompt is blocked"
 
 # --- fail-closed: SoT が解決できない ---
 
