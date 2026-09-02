@@ -34,16 +34,24 @@
 # 判定 (D-entry: .dispatcher/references/loop-directive-guard.md に理由を記録):
 #   1. tool_name が CronCreate / ScheduleWakeup 以外 -> passthrough (exit 0)。
 #   2. ScheduleWakeup の stop:true (prompt 無し) -> 許可。loop の停止を塞がない。
-#   3. prompt を空白正規化し、canonical 正文の **2 つの形のいずれかと完全一致**する
-#      ことを要求する。一致しなければ deny。
-#        (a) `/loop 3m <本文>` の丸ごと     -- ScheduleWakeup は「/loop 入力をそのまま」
-#        (b) <本文> のみ (`/loop [interval]` を剥がしたもの) -- CronCreate の enqueue prompt
+#   3. prompt を空白正規化し、canonical 正文の許容形と **完全一致**することを要求する。
+#      一致しなければ deny。許容形はツールごとに違う:
+#        - CronCreate    : <本文> のみ (`/loop [interval]` を剥がしたもの)。
+#                          **`/loop ...` のコマンド行ごとは許さない**。cron の prompt は
+#                          発火のたびにそのまま投入される入力なので、slash command を置くと
+#                          発火のたびに /loop 自身が再投入され、2026-06-19 の自己再帰
+#                          incident が復活する (SKILL.md の INVARIANT(loop-prompt) が
+#                          禁じている形そのもの)。
+#        - ScheduleWakeup: `/loop 3m <本文>` の丸ごと、または <本文> のみ。ツール定義が
+#                          「/loop 入力をそのまま渡す」と言うので丸ごとが正だが、cron の
+#                          ような再投入の連鎖を持たないため本文だけの形も許して誤 deny を
+#                          避ける。
 #      -> ディスパッチャーの CronCreate/ScheduleWakeup は監視ループ以外に用途が無いので、
 #         canonical 以外は全て deny する (brief の推奨どおり)。
-#   なぜ 1 つではなく 2 つの形を許すのか:
-#      同じ正文が 2 つの包み方で届くため (各ツール定義の prompt 説明)。単一の文字列等価を
-#      課すと片方が構造的に必ず deny される。ただし許すのはこの **閉じた 2 形だけ**で、
-#      正文の前後に任意のテキストを足した形は通さない: 正文の後ろに「上を無視して
+#   なぜ 1 つの形に固定しないのか:
+#      同じ正文がツールごとに違う包み方で届くため (各ツール定義の prompt 説明)。単一の
+#      文字列等価を課すと片方が構造的に必ず deny される。ただし許すのはこの **閉じた形
+#      だけ**で、正文の前後に任意のテキストを足した形は通さない: 正文の後ろに「上を無視して
 #      --audit だけ回せ」を足す抜け道を残すと、本フックが防ごうとしている degraded な
 #      監視ループがそのまま通る (Codex review P2)。
 #
@@ -149,8 +157,8 @@ fi
 # 「1 個のスペースに畳む」ではなく除去にするのは、正文本文が日本語で語間に空白を
 # 持たないため: 端末幅やツールの整形で本文が折り返されると、元は空白が無かった位置に
 # 改行が入り、畳み方式では「空白差だけ」の正文が deny される (実測)。除去なら折り返し
-# 位置に依存せず一致する。副作用として "a b" と "ab" が同一視されるが、正文全体の
-# 包含判定において短縮版を通す方向には働かない。
+# 位置に依存せず一致する。副作用として "a b" と "ab" が同一視されるが、正文全体との
+# 完全一致判定において短縮版を通す方向には働かない。
 # LC_ALL=C でバイト単位に固定する (UTF-8 の多バイト文字は [:space:] に該当しないので
 # 日本語本文は壊れない)。
 normalize_ws() {
@@ -180,11 +188,16 @@ matched=no
 while IFS= read -r loop_line; do
   [[ -z "${loop_line//[[:space:]]/}" ]] && continue
 
-  # (a) `/loop [interval] <本文>` を丸ごと (ScheduleWakeup が渡す形)
-  line_norm=$(printf '%s' "$loop_line" | normalize_ws)
-  if [[ -n "$line_norm" && "$PROMPT_NORM" == "$line_norm" ]]; then
-    matched=yes
-    break
+  # (a) `/loop [interval] <本文>` を丸ごと。
+  # ScheduleWakeup 限定で許す。CronCreate では許さない: cron の prompt は発火のたびに
+  # そのまま投入される入力なので、slash command を置くと /loop 自身が毎回再投入され
+  # 自己再帰する (2026-06-19 incident / SKILL.md の INVARIANT(loop-prompt))。
+  if [[ "$TOOL_NAME" == "ScheduleWakeup" ]]; then
+    line_norm=$(printf '%s' "$loop_line" | normalize_ws)
+    if [[ -n "$line_norm" && "$PROMPT_NORM" == "$line_norm" ]]; then
+      matched=yes
+      break
+    fi
   fi
 
   # (b) <本文> のみ (CronCreate が enqueue する形)。interval (3m / 30s / 1h) は
@@ -204,7 +217,7 @@ done <<< "$CANONICAL_LINES"
 
 if [[ "$matched" != "yes" ]]; then
   print_sot_pointer
-  deny_with_reason "${TOOL_NAME} の prompt が canonical な監視ディレクティブの正文と一致しません (空白を除いた全文照合)。自己流の短縮・要約・言い換えはもちろん、正文への前置き / 後置きの追記も通りません。正文をそのまま貼ってください。"
+  deny_with_reason "${TOOL_NAME} の prompt が canonical な監視ディレクティブの正文と一致しません (空白を除いた全文照合)。自己流の短縮・要約・言い換えはもちろん、正文への前置き / 後置きの追記も通りません。CronCreate では /loop のコマンド行ごと渡すのも不可で、interval を剥がした本文だけを渡してください (cron の prompt に slash command を置くと発火のたびに /loop 自身が再投入され自己再帰します)。"
 fi
 
 exit 0

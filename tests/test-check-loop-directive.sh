@@ -5,6 +5,7 @@
 # 確認観点:
 #   - canonical 正文そのまま (CronCreate)                    -> allow
 #   - canonical 正文 + /loop 3m 前置き (ScheduleWakeup)       -> allow
+#   - canonical 正文 + /loop 3m 前置き (CronCreate)          -> block (自己再帰ガード)
 #   - 空白差だけ (折り返し / インデント)                        -> allow
 #   - 正文への前置き / 後置き (矛盾する追記を含む)              -> block
 #   - 短縮版 (relay scan --audit だけ等)                      -> block + stderr に SoT
@@ -123,6 +124,18 @@ assert_exit 0 "$ec" "canonical directive via CronCreate is allowed"
 stderr=$(mktemp); TMPFILES+=("$stderr")
 ec=$(run_hook "$(wake_payload "$CANONICAL_LINE")" "$stderr")
 assert_exit 0 "$ec" "canonical directive with /loop prefix via ScheduleWakeup is allowed"
+
+# CronCreate に `/loop ...` のコマンド行ごと渡すのは不可 (発火のたびに /loop が
+# 再投入され自己再帰する。2026-06-19 incident / INVARIANT(loop-prompt))
+stderr=$(mktemp); TMPFILES+=("$stderr")
+ec=$(run_hook "$(cron_payload "$CANONICAL_LINE")" "$stderr")
+assert_exit 2 "$ec" "CronCreate with the whole /loop command line is blocked (recursion guard)"
+assert_stderr_contains "自己再帰" "$stderr" "CronCreate slash-command deny explains the recursion"
+
+# ScheduleWakeup は本文だけの形も許す (cron のような再投入の連鎖が無いため)
+stderr=$(mktemp); TMPFILES+=("$stderr")
+ec=$(run_hook "$(wake_payload "$CANONICAL_BODY")" "$stderr")
+assert_exit 0 "$ec" "ScheduleWakeup with the body-only form is allowed"
 
 # 3. 空白差だけ: 句点ごとに折り返し + インデントを入れる
 REFLOWED=$(printf '%s' "$CANONICAL_BODY" | sed 's/。/。\n    /g')
