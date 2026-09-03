@@ -295,7 +295,7 @@ worker brief に **ultracode 使用許可**があるタスクでは、kickoff �
 2. **send_keys は 2 段で打つ**（text と Enter を別呼び出しに分ける。同時送は draft 残りになりやすい — 既存の承認ハンドシェイク規律と同型）。`ultracode` は **語境界付きの単独トークン**として置く（行頭に単独で置くのを推奨。`ultracode-arming-fix` のような **slug 内 substring では武装しなかった**＝実走確認済。harness の検出方式の内部仕様には依存せず「語境界付き単独トークンなら武装／slug 内 substring なら非武装」という実走事実で運用する）。`send_keys` は **1 行**（埋め込み改行を入れない。生 `\n` は Claude Code 入力欄で途中 submit になる）:
    ```
    send_keys(target="worker-{task_id}",
-     text="ultracode で本タスクに着手してください。詳細は worker brief の通り。まず pwd で作業ディレクトリを確認。",
+     text="ultracode で本タスクに着手してください。詳細は worker brief の通り。まず pwd で作業ディレクトリを確認。workflow の agent() 内の grep/find 等は cd せず絶対パスで。",
      enter=false)
    # inspect_pane で text が入力欄に乗ったことを確認後、別呼び出しで Enter:
    send_keys(target="worker-{task_id}", enter=true)
@@ -308,6 +308,8 @@ worker brief に **ultracode 使用許可**があるタスクでは、kickoff �
 
 5. **強い権限の事前許可文言を workflow の agent プロンプトに書かせない（重要）**: ultracode を許可しても、`dangerouslyDisableSandbox` / `--dangerously-skip-permissions` 等の**強い権限を事前に許可する文言**を workflow の `agent()` プロンプト本文に書き込ませない（kickoff / brief でもそう促す）。安全分類器が該当 agent 呼び出しを **silent block** し、workflow が原因不明のまま停滞する事故になる。どうしても強い権限が要る段がある場合は、その agent の**成否を明示確認**（戻り値 / 失敗検知でブロックを検出）し、**block 時のリカバリ手段**（当該段を通常権限で再実行 / worker 本体で手動実行等）を workflow に組み込むよう促す。これは worker brief（[`.claude/skills/org-delegate/SKILL.md`](../../.claude/skills/org-delegate/SKILL.md) の「重量レーンの brief 強化（ultracode）」）と**同じ意味の制約**であり、両所に置くことで kickoff 導線から危険例が再発しないようにする。
    - **既存の args[] 規約とは別レイヤ**: 3-2 / 上記 `[invalid-params]` の「`spawn_claude_pane` の `args[]` に `--permission-mode` / `--dangerously-load-development-channels` 等の flag を入れない」は **pane 起動 CLI 引数**の話。本項は **worker が書く workflow script の `agent()` プロンプト本文**に強権限の事前許可文言を書かない話で、対象レイヤが異なる（混同しない）。
+
+6. **workflow の `agent()` プロンプト内の Bash は絶対パスで書かせる**: `cd <dir>; <相対パス>` や worktree root での `grep -r ... .` は auto-mode 分類器が対象を静的に解決できず、worker の `Read(.env)` deny 規則と組み合わさって毎回人間承認プロンプトに落ちる（2026-09-04 continuo-110-lease-renewal で 1 タスク 6 回の手動承認）。規約本体は worker brief の「Bash コマンドのパス指定（絶対パス必須）」節（[`.claude/skills/org-delegate/references/worker-claude-template.md`](../../.claude/skills/org-delegate/references/worker-claude-template.md)、実体は `tools/templates/worker_brief_*.md`）にあり、kickoff の send_keys 行でも「grep 等は絶対パスで」と一言添えて思い出させる。
 
 > **検証状況メモ**: 「send_keys の単独 `ultracode` トークンで武装」「armed turn の応答全体（多数 tool 呼び出し）にわたり武装継続」は本タスクで broker 実走確認済。手順 1 の「send_message をリファレンス配信し worker が send_keys turn で着手する」待ち合わせは、上記実走事実から導いた by-design の推奨手順（race を構造的に避ける）。最もシンプルな保険は **ultracode タスクで actionable な send_message kickoff を送らず、send_keys を唯一の着手トリガにする**こと（worker brief = 既定 `CLAUDE.md` / self-edit は `CLAUDE.local.md` が brief 全文を持つため成立する）。
 
