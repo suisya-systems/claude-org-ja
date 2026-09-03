@@ -19,6 +19,11 @@
 - 日本語ファイル: `encoding="utf-8"` 明示
 - CLI 出力文字列（argparse `help=` / `print()`）は ASCII の `-` を使う（em-dash 等 cp932 非対応文字は cp932 コンソールでの `--help` を `UnicodeEncodeError` でクラッシュさせる。pytest の `redirect_stdout` では検出できず実端末でのみ落ちる）。実装後 `--help` を実端末で 1 回スモーク
 
+### Bash のパス指定（絶対パス必須。ultracode の `agent()` プロンプト内も同じ）
+- grep / find / sed / テスト対象は**常に `${worker_dir}/...` の絶対パス**。`cd <dir>; <相対パス>` と root での `grep -r ... .` は使わない。ultracode の各 `agent()` プロンプト内の Bash 指示にも同じ規約を適用（subagent のコマンドは worker 本体の permissions で判定される）
+- 理由: auto-mode 分類器は `cd` 後の相対パスを解決できず、`Read(.env)` 等の deny 規則（`tools/org_extension_schema.json` の `layer2Fallback`）と組み合わさって毎回人間承認に落ちる（2026-09-04 continuo-110-lease-renewal で 1 タスク 6 回）。deny 規則は緩めず書き方で回避する
+- NG: `cd ${worker_dir}; grep -n "renewLease" test/lap/root.test.ts` / `grep -rln "lease" . --include=*.json` → OK: `grep -n "renewLease" ${worker_dir}/test/lap/root.test.ts` / `grep -rln "lease" ${worker_dir}/test --include=*.json`
+
 ## プロジェクト
 - ${project_name}: ${project_description}
 

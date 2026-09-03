@@ -20,6 +20,20 @@
 - 日本語を含むファイルを扱う場合は `encoding="utf-8"` を明示すること
 - CLI / 標準出力を持つツールを実装する場合、CLI へ出力される文字列（argparse の `help=` / `print()` など）には ASCII の `-` を使い、em-dash（`—` U+2014）等 cp932 で encode できない文字を含めないこと。含めると cp932 コンソールでの `--help` 実行時に `UnicodeEncodeError` でクラッシュする（pytest は `redirect_stdout` で UTF-8 キャプチャするため検出できず、実端末でのみ落ちる）。実装後は `--help` を実端末で 1 回スモークすること
 
+### Bash コマンドのパス指定（絶対パス必須。ultracode の `agent()` プロンプト内も同じ）
+- grep / find / sed / テスト実行などの対象は、**常に `/tmp/workers/demo-task/...` の絶対パスで書く**。`cd <dir>; <相対パスのコマンド>` の形と、ワークツリー root での `grep -r ... .` は使わない
+- ultracode（Workflow tool）で書く**各 `agent()` プロンプト内の Bash 指示にも同じ規約を適用する**（subagent が発行するコマンドは worker 本体の permissions で判定される）
+- 理由: Claude Code の auto-mode 分類器は `cd` 後の相対パスを静的に解決できない。worker の permissions には `Read(.env)` 等の deny 規則（[`tools/org_extension_schema.json`](/home/user/work/claude-org/tools/org_extension_schema.json) の `layer2Fallback`）が入っているため、対象を解決できない検索は「deny 対象を含むかもしれない」として毎回人間承認プロンプトに落ちる。2026-09-04 の continuo-110-lease-renewal では workflow subagent がこの形の grep を繰り返し、1 タスクで 6 回の手動承認が必要になった。対処は deny 規則の緩和ではなく書き方の統一である
+
+```bash
+# NG: cd 後の相対パス / root での再帰 grep（分類器が対象を判定できず承認待ちになる）
+cd /tmp/workers/demo-task; grep -n "renewLease" test/lap/root.test.ts
+grep -rln "lease" . --include=*.json
+# OK: 絶対パスで対象を明示する
+grep -n "renewLease" /tmp/workers/demo-task/test/lap/root.test.ts
+grep -rln "lease" /tmp/workers/demo-task/test --include=*.json
+```
+
 ## プロジェクト情報
 - プロジェクト名: claude-org-ja
 - 説明: テスト用説明
