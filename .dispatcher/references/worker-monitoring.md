@@ -1182,35 +1182,29 @@ bash ../tools/journal_append.sh anomaly_observed source={面} worker=worker-{tas
 
    **実行手順** (dispatcher cwd は `.dispatcher/` なので `../tools/`):
 
-   0. **本ステップが実際に走っているかを機械検証する (Refs #941)**。サイクル冒頭の `spawn_gate.py audit` と同じ位置・同じ exit 規約で 1 回叩く:
+   1. **サイクル冒頭に `--cycle` を 1 本叩く (Refs #941 #955 #971)**。self-check (audit) と scan (list) を 1 起動に畳んだ形で、**本ステップで必須のコマンドはこれ 1 本だけ**である:
 
       ```bash
-      python3 ../tools/relay_scan.py --recipient secretary --audit
+      python3 ../tools/relay_scan.py --recipient secretary --cycle
       ```
 
-      stdout は単一 JSON (`{status, finding, recipient, checked_at, last_scan_at, age_min, stale_min, pending_now}`)。exit code で分岐する:
+      stdout は単一 JSON `{"audit": {status, finding, recipient, checked_at, last_scan_at, halted_at, halted, halt_consumed, age_min, stale_min, pending_now}, "items": [...]}`。`items` は未配送終端イベントの配列で、各要素は `{source_event_id, kind, occurred_at, attempt, message, payload}` (`[]` なら relay 対象なし。DB 不在時も `[]` でエラーにしない)。exit code は audit の契約をそのまま踏襲する:
 
-      - **exit 0** — 対処不要。`status` は `fresh` / `no_db` のほか、**`stale` / `never_scanned` でも backlog が空 (`pending_now == 0`) ならここに落ちる**。何もせず 1. へ進む
-      - **exit 10** (`finding: true`) — trace が欠けており **かつ** 未配送 backlog が実在する (`pending_now > 0`)。**窓口へ `RELAY_SCAN_STALE: status=<status> last_scan_at=<ts> pending_now=<n>` を送る**。原因は概ね本ステップ自体が実行されていないことなので、報告後も 1. は通常どおり実行する (報告と復旧を同じサイクルで行う)
+      - **exit 0** — 是正措置は不要。`status` は `fresh` / `no_db` のほか、**`stale` / `never_scanned` でも backlog が空 (`pending_now == 0`) か Step 7 の意図的停止が記帳されている (`halted: true`) ならここに落ちる**
+      - **exit 10** (`finding: true`) — trace が欠けており **かつ** 未配送 backlog が実在する (`pending_now > 0`)。**窓口へ `RELAY_SCAN_STALE: status=<status> last_scan_at=<ts> pending_now=<n>` を送る**。原因は概ね本ステップ自体が実行されていないことなので、報告した上で **`items` の relay (下の 2. 以降) は通常どおり続行する** (報告と復旧を同じサイクルで行う)
       - **exit 2** — ツールエラー。stdout / stderr を添えて窓口へ通知する
 
-      **なぜ「heartbeat が古い」だけでは報告しないか**: 監視ループは Step 7 で*意図的に*停止する (worker ペイン無し + relay 空)。夜間を挟めば翌セッション最初の `--audit` は必ず数時間前の heartbeat を見るので、それを異常として上げると org 起動のたびに偽 `RELAY_SCAN_STALE` が出て、**読み手が本 alert を無視するように学習してしまう**。報告条件を「trace 欠落 **かつ** backlog 実在」に絞ると、それは「配送すべきものが溜まっているのに何も掃けていない」= 障害そのものを指す。backlog が空のまま relay が壊れていても実害は無く、終端イベントが 1 件でも入った次のサイクルで即 fire する。2026-08-19 の実障害は 132 件超が滞留していたため、この絞り込みで検出力は落ちない。
+      **なぜ 2 本を 1 本に畳んだか (Issue #955 / #971)**: 旧手順はサイクル冒頭に `--audit` と `--list` の 2 本を要求していたが、実測の監視サイクルが叩く shell コマンドはおおむね 1 回で、しかも 2 本は自己参照になっていた — **`--audit` は読み取り専用で scan を起こさず、`--list` は「audit が stale と言ったとき」にしか叩かれない**。canonical な `/loop 3m` 正文 ([`.hooks/check-loop-directive.sh`](../../.hooks/check-loop-directive.sh) で固定) で武装した 2026-09-03 でも scan は 44.5 分止まり、未配送 2 件が滞留した。prose の遵守問題ではなく構造の問題なので、**叩くべきコマンド数そのものを 1 本に減らす**ことで解いてある (サイクルを回した = scan が走った)。`--audit` / `--list` 単体も後方互換で残るが、runbook の正路は `--cycle` である。
 
-      `--list` は実行のたびに `.state/dispatcher/relay-scan-heartbeat.json` へ実行痕跡 (heartbeat) を無条件で残す。**「配送対象が無かった scan」と「そもそも走らなかった scan」は台帳の行だけでは区別できない** (どちらも `event_deliveries` に何も足さない) ため、この heartbeat が唯一の弁別子になる。閾値は既定 15 分 = `/loop 3m` の 5 サイクル分で、`--stale-min` で変更できる。
+      **audit を先に評価する順序が本質**: scan は heartbeat を書くので、逆順にすると audit は永久に `fresh` を返し検出力が消える。`--cycle` はこの順序をツール側に固定してある (prose の順序遵守に依存しない)。
 
-   1. 未配送の終端イベントを列挙する (各行に relay 試行を記帳する):
+      **なぜ「heartbeat が古い」だけでは報告しないか**: 監視ループは Step 7 で*意図的に*停止する (worker ペイン無し + relay 空)。夜間を挟めば翌セッション最初の audit は必ず数時間前の heartbeat を見るので、それを異常として上げると org 起動のたびに偽 `RELAY_SCAN_STALE` が出て、**読み手が本 alert を無視するように学習してしまう**。報告条件を「trace 欠落 **かつ** backlog 実在」に絞ると、それは「配送すべきものが溜まっているのに何も掃けていない」= 障害そのものを指す。backlog が空のまま relay が壊れていても実害は無く、終端イベントが 1 件でも入った次のサイクルで即 fire する。2026-08-19 の実障害は 132 件超が滞留していたため、この絞り込みで検出力は落ちない。**backlog が空でない停止**は Step 7 の `--mark-halted` 記帳 (`halted: true`) が抑止し、その抑止は**それを使った audit 自身が消す**ので 1 回きりである (scan が続かなくても消える)。
 
-      ```bash
-      python3 ../tools/relay_scan.py --recipient secretary --list
-      ```
+      **`[]` と「出力が無い」を同一視しない (Refs #941)**: 判定は **exit code が 0 / 10 / 2 のいずれかであり、かつ stdout が JSON としてパースできること**の両方で行う。それ以外の exit (127 等) / stdout が空 / JSON でない場合は「配送対象なし」ではなく **ツールが走っていない**（`command not found`・import エラー・DB 破損等）ので、**本ステップを完了扱いにせず窓口へ `RELAY_SCAN_BROKEN: <exit code> <stderr 1 行>` を送る**。2026-07-30 〜 2026-08-19 の 20 日間、runbook の綴りが `python`（この環境には `python3` しか無い）だったため毎サイクル `command not found` で stdout が空になり、それが `[]` と区別されずに「配送対象なし」と読まれ続けた。終端イベント 134 件がその間に滞留している。
 
-      **0. の exit code に関わらず毎サイクル実行する**（0. の exit 0 は「是正措置は不要」の意であって、本ステップを省いてよいという意味ではない）。
+      scan は実行のたび `.state/dispatcher/relay-scan-heartbeat.json` へ実行痕跡 (heartbeat) を無条件で残す。**「配送対象が無かった scan」と「そもそも走らなかった scan」は台帳の行だけでは区別できない** (どちらも `event_deliveries` に何も足さない) ため、この heartbeat が唯一の弁別子になる。閾値は既定 15 分 = `/loop 3m` の 5 サイクル分で、`--stale-min` で変更できる。
 
-      出力は JSON 配列。各要素は `{source_event_id, kind, occurred_at, attempt, message, payload}`。空配列 (`[]`) なら本ステップは何もせず終了。DB 不在時も `[]` (エラーにしない)。
-
-      **`[]` と「出力が無い」を同一視しない (Refs #941)**: 判定は **exit code 0 かつ stdout が JSON としてパースできること**の両方で行う。exit != 0 / stdout が空 / JSON でない場合は「配送対象なし」ではなく **ツールが走っていない**（`command not found`・import エラー・DB 破損等）ので、**本ステップを完了扱いにせず窓口へ `RELAY_SCAN_BROKEN: <exit code> <stderr 1 行>` を送る**。2026-07-30 〜 2026-08-19 の 20 日間、runbook の綴りが `python`（この環境には `python3` しか無い）だったため毎サイクル `command not found` で stdout が空になり、それが `[]` と区別されずに「配送対象なし」と読まれ続けた。終端イベント 134 件がその間に滞留している。
-
-   2. 各要素について、`message` フィールドをそのまま窓口へ送る:
+   2. `items` の各要素について、`message` フィールドをそのまま窓口へ送る:
 
       ```
       mcp__org-broker__send_message(to_id="secretary", message="<各要素の message>")
@@ -1231,7 +1225,9 @@ bash ../tools/journal_append.sh anomaly_observed source={面} worker=worker-{tas
    - **この台帳 dedup は Step 4/5/5.1/5.2 の 30 秒 anomaly 通知 dedup とは別レイヤー**: 前者は「配送成功済みイベントの再配送防止」、後者は「同一異常の再通知抑制」で目的が異なる。両者を混同しない。
    - **worker 不在でも実行する**: PR merge 後などで worker pane が既に閉じていても `ci_completed` 等の配送漏れをカバーする必要があるため、本ステップは pane 存在に依らず走る (下記 Step 7 の reduced-mode 例外リストに含める)。
    - **escalation は対象外**: `worker_escalation` は Step 5.1 の SECRETARY_RELAY_GAP 経路が relay owner なので本 relay set から除外する (二重 relay 防止)。`notify_failed` は含める (push 失敗そのものが窓口に伝えるべき配送ギャップ = fail-loud end-to-end)。
-   - **実行痕跡は台帳と別に持つ (Refs #941)**: `event_deliveries` の行は「配送対象があった scan」しか証拠しないので、relay の**不実行**は台帳からは検出できない。`--list` が無条件に書く heartbeat と `--audit` の staleness 判定がその検出面であり、`--audit` を毎サイクル叩かなければ本ステップは再び 20 日間黙って止まりうる。heartbeat の書き込み失敗は握り潰される (relay 本体を telemetry の失敗で止めないため) が、その場合 `--audit` は `stale` 側に倒れる = fail-loud 方向である。
+   - **実行痕跡は台帳と別に持つ (Refs #941)**: `event_deliveries` の行は「配送対象があった scan」しか証拠しないので、relay の**不実行**は台帳からは検出できない。scan が無条件に書く heartbeat と audit の staleness 判定がその検出面である。heartbeat の書き込み失敗は握り潰される (relay 本体を telemetry の失敗で止めないため) が、その場合 audit は `stale` 側に倒れる = fail-loud 方向である。
+   - **検出面と scan を同じ 1 コマンドに束ねる (Issue #955 / #971)**: 検出面 (`--audit`) を scan (`--list`) と別コマンドにしている限り、監視サイクルが 1 本しか叩かなければ**どちらが落ちても静かに止まる**。`--cycle` は両者を 1 起動に束ね、しかも audit → scan の順序をツール側で固定する。**この束ねを再び 2 本に割ってはならない** (2026-09-03 の 44.5 分停止はその形で起きた)。
+   - **意図的停止と cadence 不履行を区別する (Issue #955)**: Step 7 の停止時に `--mark-halted` が heartbeat へ `halted_at` を書き、次サイクルの audit はその停止に起因する trace 欠落を finding にしない。マーカーは**それを使った audit 自身が消す** (加えて次の scan も entry ごと置き換える) ので**抑止は再開直後の 1 回きり**であり、**消せなかったときは抑止も与えない** (`halt_consumed: false`。抑止だけ効いて `halted_at` が残ると以後の finding が永久に黙るため、telemetry が壊れたホストでは偽 alert 1 回に倒す)。記帳せずに死んだループ (= 本当の不履行) は従来どおり finding になる。抑止するのは `finding` だけで `status` は `stale` のまま残す (診断は正直なまま)。
    - **scan floor は「配送台帳エポック」**（`event_deliveries` 台帳が生成された瞬間 = schema version 3 migration の適用時刻）を既定にする（`relay_scan.py` は `--since-hours` 省略時にこのエポックを floor にする）。エポックは **pre-ledger history（台帳導入前の過去イベント）を除外**（初回デプロイの一斉 relay flood を防ぐ anti-flood 境界）しつつ、**エポック以降のイベントは配送されるまで age に依らず eligible** に保つ。これは wall-clock の移動窓（`now - N h`）と違い、ディスパッチャーが数週間停止しても post-ledger の終端イベントを取りこぼさない（wall-clock 窓だと停止が窓長を超えると一度も試行していないイベントが窓外に落ちて見逃す — Codex P2）。手動 backfill が要る特殊時のみ `--since-hours 0`（unbounded、pre-ledger history も relay）を明示する。
 
 <a id="step-5-3"></a>
@@ -1324,9 +1320,19 @@ bash ../tools/journal_append.sh anomaly_observed source={面} worker=worker-{tas
 
 7. ワーカーペインがない場合は `poll_events` / `check_messages` / `inspect_pane` をすべてスキップし、監視ループを停止する。**ただし次のいずれかが存在する間は停止しない**:
    - `.state/dispatcher/curate-inflight.json` が存在する間: Step 1 (`poll_events`) / Step 2 (`check_messages`) / Step 5.3 だけを継続し (worker 向けの Step 3〜5.2 は対象が無いので skip)、inflight 解消 (Step 5.3 (a)/(b)/(c) のいずれか) 後のサイクルで停止する
-   - **未配送の終端イベントが残っている間 (Refs #653 #658)**: `python3 ../tools/relay_scan.py --recipient secretary --list` が非空を返す間は Step 5.25 だけを継続する。PR merge 後に worker pane が閉じても `ci_completed` 等の配送漏れをカバーするため、pane 不在でも relay を走らせる。空配列 (`[]`) を返したサイクルで (curate-inflight も無ければ) 停止する
+   - **未配送の終端イベントが残っている間 (Refs #653 #658)**: `python3 ../tools/relay_scan.py --recipient secretary --cycle` の `items` が非空である間は Step 5.25 だけを継続する。PR merge 後に worker pane が閉じても `ci_completed` 等の配送漏れをカバーするため、pane 不在でも relay を走らせる。`items` が空配列 (`[]`) だったサイクルで (curate-inflight も無ければ) 停止する
    - **unknown / indeterminate として保持している worker が居る間 ((3-a-4))**: `list_panes` に列挙されないだけで退役が**確定していない** worker は監視対象・active のままなので、**「ワーカーペインがない」に数えない**。当該 worker については Step 4 / Step 5 / Step 5.2 を skip するが、Step 1 / Step 2 / Step 3 / Step 5.1 は通常どおり回し、次サイクルで (3-a-2) を再評価する。停止できるのは、その worker が (3-a-2) の 1 行目 / 4 行目で**終了確定した**か、窓口が `.state/workers/worker-*.md` を終端状態へ遷移させたサイクル以降
    - **`placement == "background_tab"` の worker が居る間 ((3-a-5))**: `list_panes` に出ないのは配置上の定数なので、同じく **「ワーカーペインがない」に数えない**。こちらは Step 4 / Step 5 / Step 5.2 も `bound_pane_id` 宛で**通常どおり回す** (skip しない)。停止できるのは、attribution 済みの `pane_exited` で**終了確定した**か、窓口が `.state/workers/worker-*.md` を終端状態へ遷移させたサイクル以降
+
+   **停止する前に、意図的停止であることを記帳する (Issue #955)**:
+
+   ```bash
+   python3 ../tools/relay_scan.py --recipient secretary --mark-halted
+   ```
+
+   Step 7 の停止は設計どおりの停止なので、これを記帳せずに止まると「停止中に終端イベントが 1 件でも入った」翌セッションの初回 audit がそれを `RELAY_SCAN_STALE` として報告する — **異常が無いのに鳴る alert は、読み手が無視することを学習する**。記帳は heartbeat に `halted_at` を書くだけで `last_scan_at` は書き換えない (trace は正直なまま)。抑止されるのは再開直後 1 回の audit だけで、**その抑止を使った audit 自身がマーカーを消す**ため以後は通常判定に戻る。記帳せずに死んだループは従来どおり finding になるので、検出力は落ちない。
+
+   **exit で分岐する**: **exit 10 = 記帳を拒否** — 未配送の終端イベントが残っている (最後の `--cycle` とこの記帳の間に終端イベントが入った競合)。**停止せず Step 5.25 を続行する** (Step 7 の停止条件「relay 空」をツール側で再確認している)。**exit 2 = 記帳に失敗** — 記帳が唯一の副作用なので握り潰さない (握り潰すと「記帳できたつもりで停止 → 翌セッションで偽 alert」になる)。停止前に窓口へ `RELAY_SCAN_HALT_UNRECORDED: <stderr 1 行>` を送る。exit 0 のときだけ記帳済みとして停止してよい。
 
 監視対象のペイン名は `.state/workers/worker-{peer_id}.md` の Pane Name (`worker-{task_id}`) から取得する。
 

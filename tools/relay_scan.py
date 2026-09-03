@@ -24,7 +24,12 @@ duplicate the secretary handles idempotently (at-least-once).
 Usage (driven from the dispatcher monitoring loop; see
 ``.dispatcher/references/worker-monitoring.md``):
 
-    # 1. list undelivered terminal events (records a relay attempt each):
+    # 1. ONE command per monitoring cycle: self-check + scan together.
+    #    Prints {"audit": {...}, "items": [...]}; exit code is the audit
+    #    contract (0 healthy / 10 finding / 2 tool error).
+    python -m tools.relay_scan --recipient secretary --cycle
+
+    # 1'. the same two halves, still available separately (compat):
     python -m tools.relay_scan --recipient secretary --list
 
     # 2. for each item, dispatcher sends the `message` via send_message,
@@ -38,6 +43,25 @@ Usage (driven from the dispatcher monitoring loop; see
 
     # 3. machine-verify that step 1 is actually being run (Issue #941):
     python -m tools.relay_scan --recipient secretary --audit
+
+    # 4. when the loop stops on purpose (Step 7), record that it did, so
+    #    the first audit after resume does not report the gap as an outage:
+    python -m tools.relay_scan --recipient secretary --mark-halted
+
+Why ``--cycle`` exists
+----------------------
+``--audit`` and ``--list`` were two commands the runbook asked the
+dispatcher to run every cycle, and it ran neither reliably: an observed
+monitoring cycle issues roughly one shell command, and the two were
+mutually self-referential -- ``--audit`` is read-only and never causes a
+scan, while ``--list`` was reached only "when the audit says stale". On
+2026-09-03 the loop was armed with the canonical ``/loop 3m`` directive
+and the scan still stopped for 44.5 minutes with two undelivered events
+behind it (Issues #955 / #971). That is a structural defect, not a prose
+compliance one: the fix is to make the mandatory cycle-start command
+exactly one, so running the cycle at all runs the scan. ``--cycle`` runs
+the audit **first** (the heartbeat must be read before ``--list`` stamps
+it) and then always runs the scan, whatever the audit said.
 
 Why ``--audit`` exists
 ----------------------
@@ -340,9 +364,68 @@ def write_heartbeat(db_path, *, recipient: str, surfaced: int,
     number is ``pending_now``, which ``--audit`` recomputes unlimited;
     this field is only a breadcrumb about the scan itself.
     """
-    path = _heartbeat_path(db_path)
     data = _read_heartbeat(db_path)
+    # Whole-entry replacement, deliberately: it drops any ``halted_at``
+    # left by a previous Step 7 stop. A scan that ran ends the halt.
+    # (The audit that spends the exemption also clears it, so the
+    # one-shot property does not depend on a scan following -- see
+    # clear_halted.)
     data[recipient] = {"last_scan_at": scanned_at, "surfaced": surfaced}
+    return _write_heartbeat_file(db_path, data)
+
+
+def write_halted(db_path, *, recipient: str, halted_at: str) -> bool:
+    """Record that the monitoring loop stopped on purpose (Issue #955).
+
+    Step 7 of the dispatcher runbook halts the loop once no worker panes
+    remain and the relay set is empty. Without a marker, that designed
+    stop is indistinguishable from the loop having died: the next
+    session's first ``--audit`` sees an hours-old heartbeat, and if any
+    terminal event landed while the org was down it reports
+    ``RELAY_SCAN_STALE`` on essentially every org start -- an alarm that
+    fires when nothing is wrong is an alarm its reader learns to ignore.
+
+    The marker preserves ``last_scan_at`` (the trace itself stays
+    truthful) and only adds ``halted_at``. It suppresses exactly one
+    audit, from both ends: the audit that uses it consumes it
+    (:func:`clear_halted`) and a completed scan replaces the whole entry
+    anyway, so the cycle after resume is judged normally again. A loop
+    that dies *without* being marked halted is unaffected -- that is
+    still the outage this tool exists to catch.
+    """
+    data = _read_heartbeat(db_path)
+    entry = data.get(recipient)
+    if not isinstance(entry, dict):
+        entry = {}
+    entry["halted_at"] = halted_at
+    data[recipient] = entry
+    return _write_heartbeat_file(db_path, data)
+
+
+def clear_halted(db_path, *, recipient: str) -> bool:
+    """Drop the halt marker, leaving the scan trace intact.
+
+    Called by the audit that spends the exemption (Codex P1). Clearing it
+    on the *next scan* alone was not enough to make the exemption
+    one-shot: a caller that keeps running the compat ``--audit`` without
+    ever completing a ``--list`` -- which is exactly the audit-only
+    failure this monitor exists to catch -- would have kept the marker,
+    and with it a permanent suppression of the stale-with-backlog
+    finding. Consuming it where it is used bounds the exemption to one
+    audit no matter which command path is in play.
+    """
+    data = _read_heartbeat(db_path)
+    entry = data.get(recipient)
+    if not isinstance(entry, dict) or "halted_at" not in entry:
+        return True
+    entry.pop("halted_at", None)
+    data[recipient] = entry
+    return _write_heartbeat_file(db_path, data)
+
+
+def _write_heartbeat_file(db_path, data: dict) -> bool:
+    """Atomically persist the heartbeat map. Best-effort; returns success."""
+    path = _heartbeat_path(db_path)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".json.tmp")
@@ -401,37 +484,73 @@ def cmd_audit(writer: StateWriter, conn, db_path, *, recipient: str,
     last = entry.get("last_scan_at")
     if not isinstance(last, str):
         last = None
+    halted_at = entry.get("halted_at")
+    if not isinstance(halted_at, str):
+        halted_at = None
 
     out = {
         "recipient": recipient,
         "checked_at": now,
         "last_scan_at": last,
+        "halted_at": halted_at,
+        # A halt marker only excuses the gap it opened, so it must post-date
+        # the last scan. Both timestamps come from the same
+        # ``strftime('%Y-%m-%dT%H:%M:%fZ')`` writer, so the lexicographic
+        # compare is a chronological one. (A --list always replaces the whole
+        # entry and drops halted_at, so the ordered case is the only one that
+        # occurs normally; the guard covers a hand-edited/corrupt file.)
+        "halted": bool(halted_at and (last is None or halted_at >= last)),
         "stale_min": stale_min,
         "pending_now": pending_now,
     }
     if not last:
         out["status"] = "never_scanned"
         out["age_min"] = None
-        return out, _verdict(out)
+        return out, _verdict(out, db_path)
 
     age_min = _age_minutes(conn, last)
     out["age_min"] = age_min
     if age_min is None:
         # Unparseable timestamp: treat as no usable trace (fail-safe).
         out["status"] = "never_scanned"
-        return out, _verdict(out)
+        return out, _verdict(out, db_path)
     out["status"] = "stale" if age_min > stale_min else "fresh"
-    return out, _verdict(out)
+    return out, _verdict(out, db_path)
 
 
-def _verdict(out: dict) -> int:
+def _verdict(out: dict, db_path) -> int:
     """Set ``out["finding"]`` and return the exit code.
 
     A finding needs a broken trace AND a real backlog behind it; see
     :func:`cmd_audit` for why a stale heartbeat alone is expected during
     the monitoring loop's designed downtime.
+
+    A trace marked halted (Issue #955) is excused as well: Step 7 stopped
+    the loop on purpose, so events that landed during the stop are not
+    evidence that anything is broken -- the resume cycle drains them.
+    Only the intentional stop is excused; a loop that simply died is
+    still a finding.
+
+    The exemption is spent here: the marker is cleared as soon as an
+    audit relies on it, so the *next* audit is judged normally whether or
+    not a scan followed (see :func:`clear_halted`). **An exemption that
+    cannot be spent is not granted**: if that write fails (read-only FS,
+    full disk, a failed ``replace()``), suppressing the finding anyway
+    would leave ``halted_at`` on disk forever and silence every later
+    stale-with-backlog finding. So a failed consume falls back to the
+    normal verdict -- at worst one false ``RELAY_SCAN_STALE`` on a host
+    whose telemetry is already broken, which is the same fail-loud
+    direction a failed heartbeat write takes. ``halt_consumed`` records
+    which way it went.
     """
-    out["finding"] = out["status"] != "fresh" and out["pending_now"] > 0
+    halted = bool(out.get("halted"))
+    if halted:
+        consumed = clear_halted(db_path, recipient=out["recipient"])
+        out["halt_consumed"] = consumed
+        halted = consumed
+    out["finding"] = (out["status"] != "fresh"
+                      and out["pending_now"] > 0
+                      and not halted)
     return 10 if out["finding"] else 0
 
 
@@ -492,6 +611,56 @@ def cmd_list(writer: StateWriter, conn, *, recipient: str,
     return out
 
 
+def _safe_audit(writer: StateWriter, conn, db_path, *, recipient: str,
+                kinds: tuple, since: Optional[str],
+                stale_min: float) -> tuple:
+    """``cmd_audit`` with the 0/10/2 contract enforced at the boundary.
+
+    The runbook only branches on 0/10/2, so an unexpected failure (corrupt
+    DB, missing tables, a schema older than the ledger) must arrive as
+    exit 2 "tool error" -- not as an uncaught traceback and exit 1, which
+    the dispatcher has no branch for. A monitor whose own failure mode is
+    unhandled is the thing this tool exists to stop.
+    """
+    try:
+        result = cmd_audit(writer, conn, db_path, recipient=recipient,
+                           kinds=kinds, since=since, stale_min=stale_min)
+        conn.commit()
+        return result
+    except Exception as exc:  # noqa: BLE001 -- contract boundary
+        return ({"status": "error", "recipient": recipient,
+                 "error": f"{type(exc).__name__}: {exc}"}, 2)
+
+
+def cmd_cycle(writer: StateWriter, conn, db_path, *, recipient: str,
+              kinds: tuple, since: Optional[str], limit: Optional[int],
+              stale_min: float) -> tuple:
+    """One monitoring cycle: self-check then scan. Returns (dict, exit).
+
+    Order is load-bearing: the audit reads the heartbeat that ``cmd_list``
+    is about to stamp, so auditing second would report ``fresh`` forever
+    and destroy the detection ``--audit`` exists for.
+
+    The scan runs regardless of the audit verdict -- exit 10 means "report
+    this", never "skip the scan"; the usual cause of a finding is the scan
+    not running, so reporting and recovery belong in the same cycle. A
+    failure of the scan half is reported as exit 2 with the audit half
+    still rendered, since the audit result is exactly what diagnoses it.
+    """
+    report, code = _safe_audit(writer, conn, db_path, recipient=recipient,
+                               kinds=kinds, since=since, stale_min=stale_min)
+    out = {"audit": report, "items": []}
+    try:
+        out["items"] = cmd_list(writer, conn, recipient=recipient,
+                                kinds=kinds, since=since, limit=limit,
+                                db_path=db_path)
+    except Exception as exc:  # noqa: BLE001 -- contract boundary
+        out["items"] = None
+        out["error"] = f"list: {type(exc).__name__}: {exc}"
+        return out, 2
+    return out, code
+
+
 def _main(argv: Optional[list[str]] = None) -> int:
     p = argparse.ArgumentParser(
         prog="python -m tools.relay_scan",
@@ -517,6 +686,12 @@ def _main(argv: Optional[list[str]] = None) -> int:
     p.add_argument("--limit", type=int, default=None,
                    help="cap the number of events returned by --list")
     action = p.add_mutually_exclusive_group(required=True)
+    action.add_argument("--cycle", action="store_true",
+                        help="one monitoring cycle: audit then list, in "
+                             "one invocation. Prints a single JSON object "
+                             "{audit, items}; exit code follows --audit "
+                             "(0 / 10 / 2). The scan runs whatever the "
+                             "audit says.")
     action.add_argument("--list", action="store_true",
                         help="list undelivered terminal events as JSON "
                              "(records a relay attempt for each)")
@@ -528,6 +703,11 @@ def _main(argv: Optional[list[str]] = None) -> int:
                         help="check that --list is actually being run: "
                              "exit 0 fresh / 10 stale or never scanned / "
                              "2 error. Prints a JSON report.")
+    action.add_argument("--mark-halted", action="store_true",
+                        help="record that the monitoring loop stopped on "
+                             "purpose (runbook Step 7), so the first audit "
+                             "after resume does not report the gap as an "
+                             "outage. Cleared by the next scan.")
     p.add_argument("--stale-min", type=float, default=DEFAULT_STALE_MIN,
                    help=f"minutes before a scan counts as stale for "
                         f"--audit (default: {DEFAULT_STALE_MIN:g})")
@@ -548,13 +728,20 @@ def _main(argv: Optional[list[str]] = None) -> int:
         # set, not an error (the dispatcher should proceed quietly).
         if args.list:
             print("[]")
+        # A checkout with no state DB has no relay to run, so a missing
+        # heartbeat is not a finding. Exit 0 so a plain clone / CI does
+        # not report a false outage.
+        no_db = {"status": "no_db", "recipient": args.recipient,
+                 "db": str(db_path)}
         if args.audit:
-            # A checkout with no state DB has no relay to run, so a
-            # missing heartbeat is not a finding. Exit 0 so a plain
-            # clone / CI does not report a false outage.
-            print(json.dumps({"status": "no_db", "recipient": args.recipient,
-                              "db": str(db_path)}, ensure_ascii=False,
-                             indent=2))
+            print(json.dumps(no_db, ensure_ascii=False, indent=2))
+        if args.cycle:
+            print(json.dumps({"audit": no_db, "items": []},
+                             ensure_ascii=False, indent=2))
+        if args.mark_halted:
+            # Nothing to halt and nowhere to write it; stay quiet and
+            # successful so an org with no DB yet is not a failure path.
+            print(f"halted: no state db at {db_path} (nothing recorded)")
         return 0
 
     kinds = (tuple(k.strip() for k in args.kinds.split(",") if k.strip())
@@ -579,26 +766,60 @@ def _main(argv: Optional[list[str]] = None) -> int:
                              db_path=db_path)
             print(json.dumps(items, ensure_ascii=False, indent=2))
             return 0
-        if args.audit:
-            # The runbook branches on a 0/10/2 contract, so an unexpected
-            # failure (corrupt DB, missing tables, schema older than the
-            # ledger) must arrive as exit 2 "tool error" -- not as an
-            # uncaught traceback and exit 1, which the dispatcher has no
-            # branch for. A monitor whose own failure mode is unhandled
-            # is the thing this tool exists to stop.
-            try:
-                report, code = cmd_audit(
-                    writer, conn, db_path, recipient=args.recipient,
-                    kinds=kinds, since=since, stale_min=args.stale_min)
-                conn.commit()
-            except Exception as exc:  # noqa: BLE001 -- contract boundary
-                print(json.dumps(
-                    {"status": "error", "recipient": args.recipient,
-                     "error": f"{type(exc).__name__}: {exc}"},
-                    ensure_ascii=False, indent=2))
-                return 2
+        if args.cycle:
+            report, code = cmd_cycle(
+                writer, conn, db_path, recipient=args.recipient,
+                kinds=kinds, since=since, limit=args.limit,
+                stale_min=args.stale_min)
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return code
+        if args.audit:
+            report, code = _safe_audit(
+                writer, conn, db_path, recipient=args.recipient,
+                kinds=kinds, since=since, stale_min=args.stale_min)
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return code
+        if args.mark_halted:
+            # Re-check the backlog at the moment of the halt, not at the
+            # moment of the last scan (Codex round 3 P2). A terminal event
+            # landing between the final --cycle and this call would
+            # otherwise be recorded as "nothing to relay, stopping on
+            # purpose", and the marker would then excuse the very audit
+            # that should have surfaced it. Step 7's own precondition is
+            # "relay set empty", so refusing here just enforces it in the
+            # tool instead of trusting the runbook to re-read it.
+            try:
+                pending_now = len(writer.pending_deliveries(
+                    recipient=args.recipient, kinds=list(kinds),
+                    since=since, limit=None))
+            except Exception as exc:  # noqa: BLE001 -- contract boundary
+                # Same 0/10/2 discipline as the audit path: a corrupt or
+                # partially migrated DB must not leave Step 7 with a
+                # traceback and exit 1, which the runbook has no branch
+                # for (Codex round 4).
+                print(f"error: halt precheck failed for {args.recipient}: "
+                      f"{type(exc).__name__}: {exc}", file=sys.stderr)
+                return 2
+            if pending_now:
+                print(f"halt refused: {pending_now} undelivered event(s) "
+                      f"for {args.recipient}; keep the loop running and "
+                      f"relay them first")
+                return 10
+            halted_at = _now_iso(conn)
+            ok = write_halted(db_path, recipient=args.recipient,
+                              halted_at=halted_at)
+            if not ok:
+                # The marker IS the whole command; a swallowed failure
+                # would let Step 7 stop believing the halt was recorded
+                # and hand the next session the false RELAY_SCAN_STALE
+                # this flag exists to prevent. Fail loud on the 0/10/2
+                # contract instead (Codex P2).
+                print(f"error: could not record the halt for "
+                      f"{args.recipient} at {_heartbeat_path(db_path)}",
+                      file=sys.stderr)
+                return 2
+            print(f"halted: {args.recipient} at {halted_at}")
+            return 0
         if args.mark_delivered:
             writer.mark_delivered(source_event_id=args.source_event_id,
                                   recipient=args.recipient)
