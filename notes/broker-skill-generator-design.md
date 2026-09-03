@@ -88,7 +88,9 @@ SoT を作るのではなく既存 seam を延伸する（§論点 6）。
 > 得られる」= rollback byte 安定性**を意味する（§0.3 の恒等核と同じ）。
 >
 > **rollback の運用（§3.3）**: 既定 broker からの切戻しは `ORG_TRANSPORT=renga` + **再生成**（org-setup が
-> generator を renga で再走）で、frontmatter・settings・本文すべてが byte 安定な renga 面に戻る。これは settings.
+> generator を **`--transport renga` 明示**で再走。generator は `--transport` 未指定時に `ORG_TRANSPORT` env を
+> 見ず `DEFAULT_TRANSPORT` 面で render するため、env flip だけでは render 面は変わらない — 2026-09-04 に worker
+> pane の継承 env で committed 面が renga に引きずられ偽 diff を出した事故を受けた固定）で、frontmatter・settings・本文すべてが byte 安定な renga 面に戻る。これは settings.
 > local.json が既に取っている per-transport 再生成モデルと**完全に同型**で、新たな運用負担を足さない（promotion-plan
 > §5.6 の「コード変更なし」は満たす — 再生成はコード変更ではなく機械的な regen ステップ）。
 >
@@ -289,7 +291,7 @@ literal 面が renga→broker に替わるだけ。よって:
   renga 運用時も読解可能（renga ユーザーは併記の機械置換指示で読み替え）。
 - **frontmatter `allowed-tools` は本文と同じ broker 面で render**（renga ツールは broker 面に出さない、§0.4）。
   これにより broker 既定でツール認可が本文と一致し、renga 面の auth 迂回も生じない。
-- **rollback は再生成**: `ORG_TRANSPORT=renga` に倒すと org-setup が generator を renga で再走し、frontmatter・
+- **rollback は再生成**: `ORG_TRANSPORT=renga` に倒すと org-setup が generator を `--transport renga` 明示で再走し、frontmatter・
   settings・本文すべてが byte 安定な renga 面に戻る（settings.local.json と同型の per-transport 再生成。renga 恒等
   基底で byte 安定）。git-committed 面は broker 1 枚、rollback 時の renga 面は再生成で得る（transient）。
 
@@ -299,7 +301,7 @@ literal 面が renga→broker に替わるだけ。よって:
 > できない）。選べるのは 2 モデル:
 >
 > - **モデル 1（per-transport + 再生成。本設計の推奨）**: frontmatter も settings.local.json も broker 単一面。
->   切戻しは `ORG_TRANSPORT=renga` + **org-setup 再生成**。auth クリーン（迂回なし）。**この再生成は settings.
+>   切戻しは `ORG_TRANSPORT=renga` + **org-setup 再生成**（generator へは `--transport renga` を明示して渡す）。auth クリーン（迂回なし）。**この再生成は settings.
 >   local.json が既に取っている per-transport 生成と同型**で新規負担を足さない。promotion-plan §5.6 の「コード変更
 >   なし」は満たす（再生成 ≠ コード変更）が、§5.6 の「**再生成なし**」の語感は「env flip + org-setup 再生成」へ
 >   読み替える必要がある。

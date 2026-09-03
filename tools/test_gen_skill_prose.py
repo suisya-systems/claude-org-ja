@@ -707,5 +707,112 @@ class RootTokenCliWiringTest(unittest.TestCase):
             self.assertEqual(rc_check, 0)
 
 
+class RenderTransportResolutionTest(unittest.TestCase):
+    """--transport 未指定時は ORG_TRANSPORT env を見ず DEFAULT_TRANSPORT で render する。
+
+    worker pane が継承する ``ORG_TRANSPORT=renga`` の下で flag なし実行すると、
+    manifest 全体が renga 面で render され無関係な生成 SKILL.md に偽 diff が出た
+    (2026-09-04 実測)。committed 生成物は常に DEFAULT_TRANSPORT 面 (設計 §3.2)
+    なので、generator の解決順は explicit > 既定 (env は無視 + stderr 明示) に固定する。
+    """
+
+    _SRC = (
+        "---\nname: t\nallowed-tools:\n  - Read\n---\n\n"
+        "# t\n\n本文 {{FQ}}send_message\n"
+    )
+
+    def _write_fixture(self, base: Path) -> tuple[Path, Path]:
+        (base / "SKILL.md.in").write_text(self._SRC, encoding="utf-8")
+        manifest = base / "manifest.json"
+        manifest.write_text(
+            json.dumps(
+                {
+                    "entries": [
+                        {
+                            "source": "SKILL.md.in",
+                            "output": "SKILL.md",
+                            "mode": "template",
+                            "allowlist": "none",
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        return manifest, base / "SKILL.md"
+
+    def _run_cli(self, *args, env_transport):
+        import os
+
+        env = dict(os.environ)
+        env.pop("ORG_TRANSPORT", None)
+        if env_transport is not None:
+            env["ORG_TRANSPORT"] = env_transport
+        return subprocess.run(
+            [sys.executable, str(_CLI), *args],
+            cwd=str(_REPO_ROOT),
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+    def test_env_renga_without_flag_renders_default_transport(self):
+        import tempfile
+
+        self.assertEqual(_DEFAULT, "broker", "test assumes the code default is broker")
+        with tempfile.TemporaryDirectory() as d:
+            manifest, out = self._write_fixture(Path(d))
+            proc = self._run_cli("--manifest", str(manifest), env_transport="renga")
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            rendered = out.read_text(encoding="utf-8")
+            self.assertIn("mcp__org-broker__send_message", rendered)
+            self.assertNotIn("mcp__renga-peers__", rendered)
+            # (c) env を無視したことが stderr に 1 行で見える (silent ignore にしない)。
+            note_lines = [ln for ln in proc.stderr.splitlines() if "ORG_TRANSPORT" in ln]
+            self.assertEqual(len(note_lines), 1, proc.stderr)
+            self.assertIn("'renga'", note_lines[0])
+            self.assertIn("ignored", note_lines[0])
+            self.assertIn(f"rendering transport '{_DEFAULT}'", note_lines[0])
+
+    def test_explicit_transport_renga_renders_renga(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            manifest, out = self._write_fixture(Path(d))
+            # env が broker を指していても explicit --transport renga が勝つ。
+            proc = self._run_cli(
+                "--manifest", str(manifest), "--transport", "renga", env_transport="broker"
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            rendered = out.read_text(encoding="utf-8")
+            self.assertIn("mcp__renga-peers__send_message", rendered)
+            self.assertNotIn("mcp__org-broker__", rendered)
+            # explicit 指定時は env を無視した旨の note を出さない。
+            self.assertNotIn("ORG_TRANSPORT", proc.stderr)
+
+    def test_no_env_no_flag_is_silent(self):
+        import io
+
+        err = io.StringIO()
+        flag = g._resolve_render_transport(None, env={}, err=err)
+        self.assertEqual(flag, _DEFAULT)
+        self.assertEqual(err.getvalue(), "")
+
+    def test_helper_ignores_env_and_notes_it(self):
+        import io
+
+        err = io.StringIO()
+        flag = g._resolve_render_transport(None, env={"ORG_TRANSPORT": "renga"}, err=err)
+        self.assertEqual(flag, _DEFAULT)
+        self.assertEqual(err.getvalue().count("\n"), 1)
+        self.assertIn("ORG_TRANSPORT='renga'", err.getvalue())
+        # explicit は env より優先し、note も出さない。
+        err = io.StringIO()
+        self.assertEqual(
+            g._resolve_render_transport("renga", env={"ORG_TRANSPORT": "broker"}, err=err), "renga"
+        )
+        self.assertEqual(err.getvalue(), "")
+
+
 if __name__ == "__main__":
     unittest.main()

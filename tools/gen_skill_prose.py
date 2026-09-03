@@ -88,7 +88,16 @@ per-skill 認可の過剰拡大)。
   (``surface("renga").tools_for_role(role)``) で **明示展開** -> per-tool リネーム
   + descriptor 検証にかけ、broker 側は「source 集合の像」の明示リストとして出力。
 - renga 面 (TEMPLATE_TRANSPORT) は **恒等** (source をそのまま返す)。
-  ``ORG_TRANSPORT=renga`` 再生成が byte 等価になる rollback byte 安定の根拠 (§3.2)。
+  ``--transport renga`` 再生成が byte 等価になる rollback byte 安定の根拠 (§3.2)。
+
+## render transport の解決順 (generator 固有)
+
+``--transport`` 明示 > ``DEFAULT_TRANSPORT``。**``ORG_TRANSPORT`` env は見ない**
+(``transport.resolve`` の explicit > env > 既定 とは意図的に異なる)。committed 生成物は
+常に ``DEFAULT_TRANSPORT`` 面 (§3.2) で、pane が継承する運用 env に render 面が
+引きずられると無関係な生成 SKILL.md に偽 diff が出る (2026-09-04 実測)。rollback
+再生成 (設計 §3.3) は ``--transport renga`` を明示して呼ぶ。env が設定されていて
+無視したときは stderr に 1 行明示する。
 
 ``permissions.md`` (org-setup) のみ機構が異なり ``rewrite_allow_entries``
 (role-tier 置換) を使う (``identity-anchor`` モード, §4.2(2))。
@@ -835,7 +844,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--transport",
         choices=list(transport.TRANSPORTS),
         default=None,
-        help="render transport flag (default: resolve via ORG_TRANSPORT / DEFAULT_TRANSPORT).",
+        help=(
+            "render transport flag (default: DEFAULT_TRANSPORT; ORG_TRANSPORT in the "
+            "environment is NOT consulted -- committed outputs are always on the "
+            "DEFAULT_TRANSPORT face)."
+        ),
     )
     p.add_argument(
         "--fragments-dir",
@@ -856,6 +869,38 @@ def _build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _resolve_render_transport(
+    explicit: Optional[str],
+    *,
+    env: Optional[Mapping[str, str]] = None,
+    err=None,
+) -> str:
+    """render transport を決める (generator 専用の解決順)。
+
+    ``transport.resolve`` の解決順 (explicit > ``ORG_TRANSPORT`` env > 既定) と
+    **意図的に異なり**、``ORG_TRANSPORT`` env は見ない: explicit > 既定
+    ``DEFAULT_TRANSPORT``。committed な生成物は常に ``DEFAULT_TRANSPORT`` 面
+    (設計 §3.2) なので、ペインが継承する運用 env (worker pane の
+    ``ORG_TRANSPORT=renga`` 等) に render 面が引きずられると、無関係な生成
+    SKILL.md に renga 面の偽 diff が大量に出る。env を無視するときは silent に
+    せず stderr へ 1 行で明示する (``--transport`` 明示時は出さない)。
+    """
+    if err is None:
+        err = sys.stderr
+    if explicit is not None:
+        return transport.resolve(explicit, env=env)
+    flag = transport.DEFAULT_TRANSPORT
+    environ = os.environ if env is None else env
+    env_value = environ.get("ORG_TRANSPORT")
+    if env_value is not None:
+        print(
+            f"gen_skill_prose: ORG_TRANSPORT={env_value!r} in environment ignored "
+            f"(--transport not given); rendering transport {flag!r} (DEFAULT_TRANSPORT).",
+            file=err,
+        )
+    return flag
+
+
 def main(argv: Optional[list] = None) -> int:
     args = _build_parser().parse_args(argv)
 
@@ -863,7 +908,7 @@ def main(argv: Optional[list] = None) -> int:
         print(json.dumps(load_manifest_schema(), indent=2, ensure_ascii=False))
         return 0
 
-    flag = transport.resolve(args.transport)
+    flag = _resolve_render_transport(args.transport)
     fragments_dir = args.fragments_dir or (Path(__file__).resolve().parent / "skill_src" / "fragments")
 
     if not args.manifest:
