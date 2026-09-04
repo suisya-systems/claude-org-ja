@@ -9,6 +9,23 @@ description: >
   (ja 側ミラー: org_extension_schema)・attention.example.json テンプレ等が
   変わるリリースで発動する。
   CI cascade を予測・予防し、ja-side の red を回避することを目的とする。
+effort: medium
+allowed-tools:
+  - Read
+  - Bash(python tools/gen_delegate_payload.py:*)
+  - Bash(python3 tools/gen_delegate_payload.py:*)
+  - Bash(py -3 tools/gen_delegate_payload.py:*)
+  - Bash(bash tools/journal_append.sh:*)
+  - Bash(py -3 tools/journal_append.py:*)
+  - Bash(git log:*)
+  - Bash(git pull --ff-only:*)
+  - Bash(gh run watch:*)
+  - Bash(gh run view:*)
+  - Bash(gh run list:*)
+  - Bash(gh run rerun:*)
+  - Bash(gh issue create:*)
+  - mcp__org-broker__send_message
+  - mcp__org-broker__check_messages
 ---
 
 # runtime-release-with-paired-ja-sync: runtime リリース＋ja-side 同期ワークフロー

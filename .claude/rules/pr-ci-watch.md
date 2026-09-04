@@ -1,3 +1,7 @@
+---
+description: PR の CI 監視を /pr-watch-pane に限定し、Bash / Monitor による代替監視を禁じる全体規律（全ファイル適用）
+---
+
 # PR の CI 監視は /pr-watch-pane のみ
 
 - PR の CI チェック / 監視の正規経路は `/pr-watch-pane <PR>` だけ（canonical 記録は events テーブルの `ci_completed` 行）。
