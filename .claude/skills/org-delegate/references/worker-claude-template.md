@@ -50,6 +50,29 @@ grep -n "renewLease" {worker_dir}/test/lap/root.test.ts
 grep -rln "lease" {worker_dir}/test --include=*.json
 ```
 
+### 着手前 preflight（sandbox 書き込み境界・非対話 alias・hook 拒否）
+着手前に以下を 1 回読み、該当する準備を済ませてから作業に入ること。同型の失敗が 2026-08-31 / 2026-09-05 / 2026-09-06 に独立した複数タスクで再発しており、いずれもエラー文面が原因を指していない（ネットワーク障害・権限エラー・ハングに見える）
+- **作業ファイルを置ける場所は `{worker_dir}` 配下と `$TMPDIR` だけ**（git が内部で触る Pattern B の `.git` メタデータ（worktree admin / objects / 当該 branch ref / packed-refs）は別枠で、作業ファイルの置き場ではない。`default` ロールはこれに `knowledge/raw/` の振り返り記録が加わる。監査ロール `doc-audit` は書き込み面が無く、`.worker-scratch` を含めどこにもファイルを作らず成果は報告本文で返す）。作業メモ・中間生成物はハーネスの scratchpad（`/tmp/claude-<uid>/.../scratchpad`）に置かない。Write / Edit ツールで `{worker_dir}` 外に書くと [`.hooks/check-worker-boundary.sh`](../../../../.hooks/check-worker-boundary.sh)（許可パスは `{worker_dir}` 内 / `~/.claude/plans/` / `knowledge/raw/` の 3 つ。113-136 行）が deny する。Bash が作る一時ファイルは `$TMPDIR` へ、Write / Edit で作る作業メモは `{worker_dir}/.worker-scratch/` へ置く（下記コマンド）。`.worker-scratch/` は commit に含めないこと（staging は `git add -u` と明示 `git add <path>` のみ。`git add -A` / `git add .` を使わない）
+- **`/tmp/claude-<uid>` は並走中のワーカー間で共有される**。`foo.bak` のような一般名のバックアップは別ワーカーのものと衝突しうる。バックアップは `.worker-scratch/` に置くか名前に task_id を入れ、復元前に中身を照合する（同名ファイルの存在は、それが**自分の**バックアップである証拠にならない）
+- **npm は cache 読みは通り、cache 書きだけ落ちる**。`~/.npm/_cacache` が read-only なので、warm cache から reify するだけの `npm ci` は成功し、`npm pack` / `npm install` / 未インストールのツールへの `npx <tool>`、および内部で `npm pack` を呼ぶ検査（publint / attw / package check）だけが `EROFS ... path ~/.npm/_cacache/tmp/...` で落ちる。文面は `Invalid response body while trying to fetch` とネットワーク障害の顔をしている。対処は sandbox 解除ではなく cache の移動（`npm_config_cache` 環境変数またはコマンド単位の `--cache <dir>`。cache の場所は tarball / lockfile の内容に影響しない）。着手時にリポジトリが指定する install 行（例: `npm ci --ignore-scripts`）を 1 回打ち、ツールは `npx <tool>` でなく `npm run <script>` で呼ぶ
+- **`cp` / `mv` / `rm` は `-i` alias 化されている前提で書く**。既存ファイルへの上書きは画面に出ない確認プロンプトで tool timeout まで無言停止する（退避側は成功し、復元側だけ止まる）。上書きは `command cp -f`（`\cp` / `/bin/cp` でも可）か `cat backup > dest` を既定にする。`rm -rf` / `rm -r` は permissions.deny でブロックされる（ワークツリー破壊防止。Node 等で再帰削除を迂回しない）ので、掃除が要るときは新しい名前のディレクトリを掘る
+- **git 側の退避／復元コマンドは使えない**。`git stash` 変更系（禁止事項 4）に加え、パス指定の `git checkout -- <path>` と `git restore --source=<ref>`（`--staged` 単独の index-only を除く）も [`.hooks/block-dangerous-git.sh`](../../../../.hooks/block-dangerous-git.sh) が deny する（484-487 行 / 491-505 行）。mutation testing 等で一時的に壊して戻す手順は **`cp` バックアップ（書き戻しは `command cp -f` / `cat >`）か一時 commit の 2 択**。復元後は `git diff` で戻ったことを確認してから次の変異を入れる（復元が無音で効かず変異が二重に入ったまま RED を観測した事故あり）
+- **`read-only file system` / `Permission denied` が出ても `dangerouslyDisableSandbox` を反復要求しない**（安全分類器のセッションロックアウトで作業不能になる）。出力先を上記の書ける場所へ変えて再試行する。`sh: <tool>: Permission denied` は `node_modules/.bin/<tool>` が存在しないだけのことが多い（`ls {worker_dir}/node_modules/.bin/<tool>` で実体を確認）
+
+```bash
+# スクラッチはワーカーディレクトリ内。exclude 登録は best effort（自前 clone の Pattern A では通る。
+# linked worktree の Pattern B では共通 .git/info/exclude を指し sandbox 外で失敗するが、上記のとおり
+# .worker-scratch/ を git add しなければ commit に混入しないので、失敗しても先へ進んでよい）
+mkdir -p {worker_dir}/.worker-scratch
+EXCLUDE="$(git -C {worker_dir} rev-parse --path-format=absolute --git-path info/exclude)"
+grep -qxF '.worker-scratch/' "$EXCLUDE" 2>/dev/null || echo '.worker-scratch/' >> "$EXCLUDE" || true
+# npm の cache をワーカーディレクトリ内（または $TMPDIR）へ向けてから install / pack する
+export npm_config_cache={worker_dir}/.worker-scratch/npm-cache
+npm ci --ignore-scripts
+PKG_DIR={worker_dir}/packages/example   # pack 対象のフォルダは positional 引数で渡す
+npm pack "$PKG_DIR" --pack-destination {worker_dir}/.worker-scratch
+```
+
 ## プロジェクト情報
 - プロジェクト名: {project_name}
 - 説明: {project_description}
