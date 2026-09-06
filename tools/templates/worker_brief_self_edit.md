@@ -93,7 +93,7 @@ CODEX_REVIEW_LOG="$TMPDIR/codex-review-$(basename "$PWD")-$(printf %s "$PWD" | c
 
 # pipefail が無いとパイプの終了コードは tee のものになり codex 側の失敗が隠れる。
 set -o pipefail
-codex exec review --base ${task_base_ref} -m gpt-5.6-sol -c model_reasoning_effort=medium -c sandbox_mode='"read-only"' < /dev/null 2>&1 | tee "$CODEX_REVIEW_LOG"
+codex exec review --base ${task_base_ref} -m gpt-6-astra -c model_reasoning_effort=medium -c sandbox_mode='"read-only"' < /dev/null 2>&1 | tee "$CODEX_REVIEW_LOG"
 codex_status=$?
 set +o pipefail
 echo "codex exit status: $codex_status"
@@ -113,7 +113,7 @@ grep -cE '^ *failed in [0-9]+(ms|s|m)' "$CODEX_REVIEW_LOG"      # 失敗実行�
 - **上限到達で自走継続せず**、残指摘 + 自己評価（設計問題化か収束途中か）を窓口に報告して停止。**同一指摘が 3 round 消えない場合は上限前でも即設計問題として報告**（別問題が各 1 round で順に解消する健全な収束とは区別）
 - Minor/Nit 残置可
 - **large diff では effort を上げない**（high-effort review は大 diff でスケールしない）。review surface は危険側 Major は守るが benign safe-side false-negative / ReDoS 級を取りこぼしうる（詳細: claude-org リポジトリの `knowledge/curated/codex.md`）
-- `codex:rescue` skill 禁止、`codex exec review` / `codex exec` 系直打ちのみ。ChatGPT アカウントで通るモデル名は限られ、素の `gpt-5.6` / `gpt-5.6-codex` / `gpt-5.5-codex` は 400・API キー surface も不可（現行世代の `-m gpt-5.6-sol` 明示）
+- `codex:rescue` skill 禁止、`codex exec review` / `codex exec` 系直打ちのみ。ChatGPT アカウントで通るモデル名は限られ、素の `gpt-6` / `gpt-6-codex` / `gpt-6-sol` は 400・API キー surface も不可（現行世代の `-m gpt-6-astra` 明示）。codex-cli は **0.153.4 以上**が必要（0.147.0 は `The 'gpt-6-astra' model requires a newer version of Codex.` で 400。このメッセージが出たらモデル名を探し直さず `npm i -g @openai/codex@latest` で更新する）
 
 **完了報告に人間向け理解サマリを必須化（full）**: 窓口がコードを精読せず、そのままユーザーへの承認提示に使えるよう、完了報告に以下 3 点を必ず含める:
 1. **最重要の変更点（N 個）**: 効果の大きい順に N 個（目安 3〜5 個、各 1〜2 行、diff を開かず要旨が掴める粒度）

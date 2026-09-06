@@ -13,7 +13,7 @@ codex CLI（セルフレビュー / デザインレビュー用）の標準方�
 # 別タスク差分を巻き込む誤レビューになるため remote-tracking の origin/main を使い、参照前に
 # git fetch origin を 1 回（fetch 不能でも review は継続）。review surface は高速なので前景実行し、
 # 出力（Blocker/Major 相当）を見てから次に進む。stdin は < /dev/null で閉じる（背景化時の stdin 待ちハング回避）。
-codex exec review --base origin/main -m gpt-5.6-sol -c model_reasoning_effort=medium < /dev/null
+codex exec review --base origin/main -m gpt-6-astra -c model_reasoning_effort=medium < /dev/null
 ```
 
 - **前景実行を既定にする**: 背景化（`&`）+ ログ redirect は、worker が完了を待たず・指摘を読まずに完了報告してゲートを素通りする事故を招く。fast な review surface は前景で待てば自然にゲートが効く。コピペするコマンドにシェルのリダイレクト記号を含む `<main>` / `<N>` 等のプレースホルダを残さない（`< main` 等と誤解釈され落ちる）。背景化+ログ監視が要るのは下記の重い `codex exec` プロンプト（デザインレビュー等、長時間ハングしうる）に限る。
@@ -25,24 +25,31 @@ codex exec review --base origin/main -m gpt-5.6-sol -c model_reasoning_effort=me
 
 下記注記 1 / 2 の速度・カバレッジの数値は **gpt-5.5 世代で取得した実測値**（出典の方式ベンチマーク時点の計測条件）。方式間の相対比較として引き続き有効だが、現行の指定モデル（注記 3）で取り直した値ではない。
 
+**未再測定の範囲（世代跨ぎ、citation-or-abstain）**: 注記 1 / 2 の数値は `gpt-5.5` 世代で 1 回取得したきりで、その後の指定先変更（`gpt-5.5` → `gpt-5.6-sol` → `gpt-6-astra`）のいずれでも再取得していない。したがって **`gpt-6-astra` について「約 2 倍速」「大 diff で high-effort がスケールしない」「review surface が safe-side Major / ReDoS 級を取りこぼす」が成り立つという実測の裏付けは無い**。注記 1 / 2 は「方式（review surface vs 重い多観点 exec）の性質として gpt-5.5 世代で観測された挙動」として読み、現行モデルでの再現性は未検証として扱うこと。運用ガード（大 diff で effort を上げない / 深掘りには重い exec を併用する）は安全側の既定として維持するが、それは再測定の代わりではない。
+
 1. **約2倍速は「中小 diff × low/medium effort」限定**。**high-effort review は大 diff（例 100 行超）でスケールせず**、`codex exec` 直打ちより遅くなる（実測: 127 行 diff で high≈138s vs exec-heavy≈87s）。large diff では effort を上げない。
 2. **review surface は危険側 Major（false positive で gate 誤通過する系）は守れるが、benign な safe-side Major（過剰 polling 方向の false negative）や ReDoS 級の付加バグを取りこぼしうる**。実測では、ある guard の `か` clause 全域拒否による false-negative と可変長 lookahead の二乗時間 ReDoS を 3/3 で拾えたのは**重い多観点 `codex exec` プロンプトのみ**で、review surface は low/high とも取りこぼした。深掘りが要る局面（後述のデザインレビュー、設計に近い変更）では重い多観点 exec を併用する。
-3. **model は `-m` で明示する**（ChatGPT アカウントで通るモデル名が限られるため）。現行世代の実行可能名は **`gpt-5.6-sol`**（`~/.codex/config.toml` の既定値でもある）。**通る名前は「世代番号を上げれば通る」ものではなく、サフィックス込みで個別に決まる** — 素の `gpt-5.6` も `gpt-5.6-codex` も 400 で弾かれる。したがって世代交代時は、置換前に実際に 1 回叩いて実行可能な名前を確認すること（下表の取り直し）。API キー surface は `OPENAI_API_KEY` 不在（`codex login status` は ChatGPT ログイン）で実行不能。reasoning effort は `minimal` が 400（`unsupported_value`。許容値は `none` / `low` / `medium` / `high` / `xhigh`）。以上より **`-m gpt-5.6-sol -c model_reasoning_effort=medium`** を明示する。
+3. **model は `-m` で明示する**（ChatGPT アカウントで通るモデル名が限られるため）。現行世代の実行可能名は **`gpt-6-astra`**（`~/.codex/config.toml` の既定値でもある）。**通る名前は「世代番号を上げれば通る」ものでも「サフィックスを引き継げば通る」ものでもなく、名前ごとに個別に決まる** — 世代番号だけ上げた素の `gpt-6` も、前世代で通っていた `-sol` サフィックスを引き継いだ `gpt-6-sol` も 400 で弾かれる（下表）。したがって世代交代時は、置換前に実際に 1 回叩いて実行可能な名前を確認すること（下表の取り直し）。API キー surface は `OPENAI_API_KEY` 不在（`codex login status` は ChatGPT ログイン）で実行不能。reasoning effort は `minimal` が 400（`unsupported_value`。許容値は `none` / `low` / `medium` / `high` / `xhigh`）。以上より **`-m gpt-6-astra -c model_reasoning_effort=medium`** を明示する。
 
-   実測（2026-07-27 / codex-cli 0.144.4 / ChatGPT アカウント。`codex exec --skip-git-repo-check -s read-only -m <model> -c model_reasoning_effort=medium` で 1 回ずつ確認）:
+   実測（2026-09-06 / codex-cli 0.153.4 / ChatGPT アカウント。`codex exec --skip-git-repo-check -s read-only -m <model> -c model_reasoning_effort=medium` で 1 回ずつ確認。本表は本タスクで取り直したもので、前回表（2026-07-27 / 0.144.4）は置き換え済み）:
 
    | モデル名 | 結果 |
    |---|---|
-   | `gpt-5.6-sol` | 実行可（現行世代の指定先） |
-   | `gpt-5.6` | 400 `The 'gpt-5.6' model is not supported when using Codex with a ChatGPT account.` |
-   | `gpt-5.6-codex` | 400（同上メッセージの `gpt-5.6-codex` 版） |
-   | `gpt-5.5` | 実行可（一世代前。まだ通るが指定先ではない） |
-   | `gpt-5.5-codex` | 400（同上メッセージの `gpt-5.5-codex` 版） |
+   | `gpt-6-astra` | 実行可（現行世代の指定先） |
+   | `gpt-6` | 400 `The 'gpt-6' model is not supported when using Codex with a ChatGPT account.` |
+   | `gpt-6-codex` | 400（同上メッセージの `gpt-6-codex` 版） |
+   | `gpt-6-sol` | 400（同上メッセージの `gpt-6-sol` 版）。**前世代の指定先 `gpt-5.6-sol` のサフィックスを世代番号だけ上げても通らないことの実測** |
+   | `gpt-5.6-sol` | 実行可（一世代前。まだ通るが指定先ではない） |
+   | `gpt-5.5` | 実行可（二世代前。まだ通るが指定先ではない） |
+
+   なお 0.153.4 では、400 になる 3 名（`gpt-6` / `gpt-6-codex` / `gpt-6-sol`）に限り実行前に `warning: Model metadata for <name> not found. Defaulting to fallback metadata; ...` が出た。**`gpt-6-astra` / `gpt-5.6-sol` / `gpt-5.5` ではこの warning は出ていない**（本実測のログで確認）。この warning はモデル名の可否判定そのものではなく「CLI 同梱のモデルメタデータに無い名前」を示すシグナルであり、判定は 400 の有無で行うこと。
+
+   **codex-cli の最低バージョン要件: `gpt-6-astra` には `codex-cli >= 0.153.4` が必要**。0.147.0 では同じ呼び出しが 400 `invalid_request_error` `The 'gpt-6-astra' model requires a newer version of Codex.` で拒否され、0.153.4 で通ることを確認している（0.147.0 側の実測は 2026-09-06 にホストで取得した窓口の計測。本タスクのワーカー側では 0.153.4 のみ再現している）。**0.147.0 と 0.153.4 の間のどのバージョンで通り始めるかは未検証**なので、要件は「0.153.4 以上で確認済み・0.147.0 では不可」と読むこと。これはモデル名とは独立した失敗軸で、エラーメッセージも「名前が不正」ではなく「Codex が古い」と明示的に異なる。**`... requires a newer version of Codex.` を見たら `npm i -g @openai/codex@latest` で更新してから再実行する**（モデル名の探し直しに走らない）。`codex --version` で確認できる。
 4. **`codex:rescue` skill は引き続き禁止**（過去に 18 分超ハングの実害。`codex exec` 系直打ちに切り替えると正常動作）。
 
 ### デザインレビュー（実装前）は review surface ではなく exec プロンプト形を維持
 
-デザインレビュー（`apply` 前の事前設計レビュー）は **diff が存在しない**ため `codex exec review --base` は使えない。設計内容 + 対象ファイル + 契約参照を渡す **`codex exec` のプロンプト形を維持**する。上記注記 2 のとおり、重い多観点プロンプトは subtle / 設計レベルの Blocker を拾う breadth に優れ、デザインレビューはまさにその breadth が要る用途であるため、ここでは exec プロンプト形が適切。model/effort（`-m gpt-5.6-sol -c model_reasoning_effort=medium`）と下記ハングガード・`codex:rescue` 禁止は同様に適用する。詳細トリガーと手順は [`.claude/skills/org-delegate/references/codex-design-review.md`](../../.claude/skills/org-delegate/references/codex-design-review.md) を参照。
+デザインレビュー（`apply` 前の事前設計レビュー）は **diff が存在しない**ため `codex exec review --base` は使えない。設計内容 + 対象ファイル + 契約参照を渡す **`codex exec` のプロンプト形を維持**する。上記注記 2 のとおり、重い多観点プロンプトは subtle / 設計レベルの Blocker を拾う breadth に優れ、デザインレビューはまさにその breadth が要る用途であるため、ここでは exec プロンプト形が適切。model/effort（`-m gpt-6-astra -c model_reasoning_effort=medium`）と下記ハングガード・`codex:rescue` 禁止は同様に適用する。詳細トリガーと手順は [`.claude/skills/org-delegate/references/codex-design-review.md`](../../.claude/skills/org-delegate/references/codex-design-review.md) を参照。
 
 ## ゲートの「空の合格」— サンドボックス下で codex が diff を一度も読まない失敗モード
 
