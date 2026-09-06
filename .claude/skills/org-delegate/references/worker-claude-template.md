@@ -221,7 +221,7 @@ CODEX_REVIEW_LOG="$TMPDIR/codex-review-$(basename "$PWD").log"
 
 # pipefail が無いとパイプの終了コードは tee のものになり、codex 側の失敗が隠れる。
 set -o pipefail
-codex exec review --base origin/main -m gpt-5.6-sol -c model_reasoning_effort=medium \
+codex exec review --base origin/main -m gpt-6-astra -c model_reasoning_effort=medium \
   -c sandbox_mode='"read-only"' < /dev/null 2>&1 | tee "$CODEX_REVIEW_LOG"
 codex_status=$?
 set +o pipefail
@@ -295,7 +295,7 @@ done: {commit SHA 短縮形} {変更ファイル名}
 - 振り返り記録（`knowledge/raw/`）も minimal では **不要**（trivial fix に再利用可能な学びはない前提）。非自明な発見があれば `full` と同じ手順で 1 件作ってよい
 
 ### 禁止事項（両モード共通・codex を使う場合）
-`codex:rescue` スキルは使用しないこと（過去に 18 分超ハングした実害あり。`codex exec review` / `codex exec` 系の直打ちは正常動作する）。ChatGPT アカウントで実行できるモデル名は限られる（現行世代は `gpt-5.6-sol`。素の `gpt-5.6` / `gpt-5.6-codex` / `gpt-5.5-codex` はいずれも 400、API キー surface も実行不可）ため `-m gpt-5.6-sol` を明示する。codex 未導入環境ではこの注記は無関係。
+`codex:rescue` スキルは使用しないこと（過去に 18 分超ハングした実害あり。`codex exec review` / `codex exec` 系の直打ちは正常動作する）。ChatGPT アカウントで実行できるモデル名は限られる（現行世代は `gpt-6-astra`。素の `gpt-6` / `gpt-6-codex` / `gpt-6-sol` はいずれも 400、API キー surface も実行不可）ため `-m gpt-6-astra` を明示する。codex-cli は **0.153.4 以上**が必要（0.147.0 は `The 'gpt-6-astra' model requires a newer version of Codex.` で 400。このメッセージが出たらモデル名を探し直さず `npm i -g @openai/codex@latest` で更新する）。codex 未導入環境ではこの注記は無関係。
 
 ## 作業完了時（必須・検証深度 `full` のみ）
 
