@@ -83,7 +83,7 @@
     {
       "source": "../../.claude/skills/org-delegate/SKILL.md.in",
       "output": "../../.claude/skills/org-delegate/SKILL.md",
-      "mode": "template+fragment",
+      "mode": "template",
       "allowlist": "per-entry-rename"
     },
     {
@@ -97,6 +97,24 @@
       "output": "../../.claude/skills/pr-watch-pane/SKILL.md",
       "mode": "template",
       "allowlist": "per-entry-rename"
+    },
+    {
+      "source": "../../.claude/skills/pr-watch-pane/references/transport-duality.md.in",
+      "output": "../../.claude/skills/pr-watch-pane/references/transport-duality.md",
+      "mode": "template",
+      "allowlist": "none"
+    },
+    {
+      "source": "../../.claude/skills/org-pull-request/references/transport-duality.md.in",
+      "output": "../../.claude/skills/org-pull-request/references/transport-duality.md",
+      "mode": "template+fragment",
+      "allowlist": "none"
+    },
+    {
+      "source": "../../.claude/skills/org-delegate/references/transport-duality.md.in",
+      "output": "../../.claude/skills/org-delegate/references/transport-duality.md",
+      "mode": "template+fragment",
+      "allowlist": "none"
     }
   ],
   "exclude": []

@@ -1,0 +1,5 @@
+# org-pull-request — 輸送層（transport）両系の読み替え
+
+[`.claude/skills/org-pull-request/SKILL.md`](../SKILL.md) 冒頭から移設した参照。手順本文が輸送層の分岐（受信モデル / spawn 儀式 / エラー分岐）に入ったときだけ読めばよい。両系の読み替え規則・「既定」の二フレーム関係・契約の批准経緯は以下が SoT。
+
+{{> org-pull-request-transport }}

@@ -41,13 +41,7 @@ allowed-tools:
 
 > **state-db cutover (M4, Issue #267 / #284)**: 構造化セクションの write は **必ず `StateWriter.transaction()` 経由**で行う。post-commit hook が `.state/org-state.md` / `.state/org-state.json` を DB から自動再生成し、`update_run_status('<task_id>', 'completed')` 呼び出しは `.state/workers/worker-<task_id>.md` を `.state/workers/archive/` へ自動 move する。markdown 直接編集は drift_check が検出する。events は DB の `events` テーブルが SoT (`tools/journal_append.sh` / `.py` は DB ルーティング済み)。DB 不在時は `python -m tools.state_db.importer --db .state/state.db --rebuild --no-strict` で構築する。
 
-> **輸送層（transport）両系 — 既定 `broker` / opt-in `renga`**: 本スキルの `mcp__org-broker__*` 呼び出しは **既定 `broker`**（`ORG_TRANSPORT` 無設定）で書いてあり、そのまま従えばよい（既定挙動）。`ORG_TRANSPORT=renga`（opt-in・切戻し可）では MCP サーバー名が `renga-peers` になり、ツールの **完全修飾名が `mcp__org-broker__*` → `mcp__renga-peers__*`** に機械置換される（引数形・セマンティクスは同一なので手順の論理は変わらない）。輸送依存で手順が変わる点だけ renga 併記する:
->
-> - **受信モデル（push 一次 = `claude/channel` / pull フォールバック）**: 既定 broker は worker からの進捗 / 完了 / 判断仰ぎが **push 一次**で届く（runtime push-first 0.1.24+、transport-lab `docs/design/broker-native-roles.md` §9）: 各ペイン同居の **channel sidecar**（`server:org-broker-channel`）が broker キューを ~1 秒間隔で claim→push し、`notifications/claude/channel` で本文を idle セッションへ注入する（「受けたら即応答」契機が生まれる）。**pull はフォールバック層**: sidecar 不在 / unhealthy（heartbeat timeout で `delivery_mode=PULL`）/ channel 非対応ペイン / claude.ai login 不在時は、各役割が自身の cadence で能動的に `check_messages`（`mcp__org-broker__check_messages`）する（§9.6 読み替え表の役割別 cadence。ナッジが出れば契機になりうるが idle を起こさないため能動 poll が受信の正路。**既存の「ナッジを見たら `check_messages`」prose は撤回せず**この fallback cadence として読む）。Step 5 の「ワーカーからのメッセージ受信時」は push 一次では channel 注入で起き、フォールバック時は窓口のターン冒頭の能動 `check_messages` で受ける（ack の `send_message` 等の手順は同型）。`ORG_TRANSPORT=renga`（opt-in）では、worker 報告が `<channel source="renga-peers" …>` として in-band で push される。契約面: Surface 8 で push 一次が **ratified 済み**（2026-06-15、S3。pull は fallback として retain・renga 不変）。
-> - **spawn 儀式（folder-trust 承認 + dev-channel sidecar 承認の 2 段）**: ワーカー起動はディスパッチャー専属（[`.dispatcher/references/spawn-flow.md`](../../../.dispatcher/references/spawn-flow.md)）だが、既定 broker では `--mcp-config <broker>` 注入（daemon・全ツール + agent token）と Claude Code の **folder-trust プロンプト**機械承認（`send_keys(enter=true)`）**に加えて**、push 一次のため channel sidecar を `--dangerously-load-development-channels server:org-broker-channel` で load し、dev-channel 承認プロンプト（spawn-flow 3-3b）を `send_keys(enter=true)` で機械承認する（broker-native-roles.md §9.5）。これは ratified §5/§8.5 の folder-trust フローへの **加算であり置換ではない**（※ `docs/design/renga-decoupling.md` §4.6「dev-channel prompt は存在しない」/ contract §5.1・§8.5 の dev-channel→`--mcp-config` 置換記述は、push 一次採用で channel sidecar 分の dev-channel load が additive に復活する＝S3 で 2026-06-15 に ratified・contract で amend 済み）。root `.claude/**` self-edit の `send_keys` 事前承認（下記 Step 5）も `mcp__org-broker__send_keys` で同じ手順を踏む。`ORG_TRANSPORT=renga`（opt-in）では `--dangerously-load-development-channels server:renga-peers` を注入し「Load development channel?」を Enter 承認する 1 段。
-> - **エラー分岐（既定 = broker 拡張コード込み）**: shared codes に加え既定 broker は `[token_invalid]` / `[session_invalid]` / `[tool_not_authorized]` / `[no_backend]`（= adapter_unavailable）/ `[nudge_failed]` / `[peer_not_found]` / `[name_taken]` を返しうる（未知コードは default-branch で escalate）。一覧は [`.claude/skills/org-delegate/references/renga-error-codes.md`](references/renga-error-codes.md) の broker 節を参照。`ORG_TRANSPORT=renga` 時は broker 固有コードは発生しない。
->
-> `new_tab` / `focus_pane` は broker surface に**無い**（意図的除外。本フローは元々使わない）。契約面の正本は [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) Surface 8（broker auth & delivery、ratified 2026-06-14。push 一次への additive 改訂 S3 が ratified 済み（2026-06-15、「Ratified amendment」節）・既存 ratified 本文不変更）、設計 SoT は transport-lab `docs/design/broker-native-roles.md` §9（push 一次再設計）/ `docs/design/ja-migration-plan.md` §5.2(ii)・§8。broker 実走（dogfood）は Epic #6 Issue G スコープで本スキルの既定経路ではない。
+> **輸送層（transport）両系**: 本スキルのツール参照は `mcp__org-broker__*`（`org-broker`）で書いてあり、active transport が既定面ならそのまま従えばよい（引数形・セマンティクスは両系同一で、手順の論理は変わらない）。輸送層で手順が変わるのは **受信モデル / spawn 儀式 / エラー分岐** の 3 点だけで、opt-in 側の輸送層は削除せず切戻しの安全装置として常時有効。両系の読み替え規則・契約の批准経緯・broker 固有エラーコードの一覧は [`.claude/skills/org-delegate/references/transport-duality.md`](references/transport-duality.md) を参照（上記 3 分岐に入るまで読む必要はない。コード一覧は [`.claude/skills/org-delegate/references/renga-error-codes.md`](references/renga-error-codes.md)）。
 
 ## 窓口とディスパッチャーの役割分担
 
@@ -121,8 +115,8 @@ allowed-tools:
 
 - 曖昧な用語がある場合: 「○○は△△のことですか？」とユーザーに確認してから進める
 - OS別タスクの場合: ペイロード生成時に、OS固有の前提条件をワーカーへの指示に含める
-  - **Windows worker + CLI / 標準出力を持つツール実装の場合**: CLI へ出力される文字列（argparse `help=` / `print()`）は ASCII の `-` を使い em-dash 等 cp932 非対応文字を避けること、`--help` を実端末で 1 回スモークすること、の 2 点を `--impl-guidance` 等で brief に載せる（rendered brief の Windows 注意事項にも常時記載済みだが、CLI ツール委譲時は窓口が明示的に意識する）。背景: cp932 コンソールが em-dash(U+2014) を encode できず `--help` がクラッシュする型が 2 回発火（ja#537 / runtime#63）。pytest は `redirect_stdout` で UTF-8 キャプチャするため通り、実端末でのみ落ちる
-- **pin 管理された内部パッケージ（`claude-org-runtime` 等）のバグ疑いを委譲する前に**: 当日の [`/org-start`](../org-start/SKILL.md) Block C2 の runtime drift check が clean（exit 0）だったかを確認する。drift 検出（exit 1）や「PyPI 未確認」（exit 2 = sandbox 内実行等で PyPI に届かず）だった場合は、既に upstream で修正済みのバグを古い venv で踏んでいる可能性があるので、まず venv upgrade + pin 窓 bump で最新化し、それでも再現するかを確認してから委譲する（既修正バグへの phantom dispatch を防ぐ）。pin ラグはセッション定数なので確認は org-start 時 1 回で足り、委譲ごとの再チェックは不要（背景: 2026-07-08 #119）
+  - **Windows worker + CLI / 標準出力を持つツール実装の場合**: CLI へ出力される文字列（argparse `help=` / `print()`）は ASCII の `-` を使い em-dash 等 cp932 非対応文字を避けること、`--help` を実端末で 1 回スモークすること、の 2 点を `--impl-guidance` 等で brief に載せる（rendered brief の Windows 注意事項にも常時記載済みだが、CLI ツール委譲時は窓口が明示的に意識する）。発火 2 例の背景は [`.claude/skills/org-delegate/references/rationale.md`](references/rationale.md) §1
+- **pin 管理された内部パッケージ（`claude-org-runtime` 等）のバグ疑いを委譲する前に**: 当日の [`/org-start`](../org-start/SKILL.md) Block C2 の runtime drift check が clean（exit 0）だったかを確認する。drift 検出（exit 1）や「PyPI 未確認」（exit 2 = sandbox 内実行等で PyPI に届かず）だった場合は、既に upstream で修正済みのバグを古い venv で踏んでいる可能性があるので、まず venv upgrade + pin 窓 bump で最新化し、それでも再現するかを確認してから委譲する（既修正バグへの phantom dispatch を防ぐ）。pin ラグはセッション定数なので確認は org-start 時 1 回で足り、委譲ごとの再チェックは不要（背景は [`.claude/skills/org-delegate/references/rationale.md`](references/rationale.md) §2）
 
 ### incorporation / sync 系タスクの初手チェックリスト
 
@@ -133,7 +127,7 @@ allowed-tools:
 | ソースと destination の乖離 | `git log <source>..<destination>` / `git log <destination>..<source>` で双方向に確認 | 双方向に diverge があれば cp 禁止、selective merge を採用 |
 | destination 側の追加修正 | destination ブランチで Codex review fix / Blocker fix が積まれていないか | 積まれている場合は cp で機械的に上書きしないこと（cherry-pick or hunk 単位の apply） |
 
-背景: cp で destination の修正を機械的に巻き戻す事故が過去に発生（destination 側の credential 露出対策 Blocker fix を revert 寸前まで進んだ）。ワーカーへの brief で「初手 cp 禁止 / 取り込み戦略を明示」を要求する。
+背景の事故は [`.claude/skills/org-delegate/references/rationale.md`](references/rationale.md) §3。ワーカーへの brief で「初手 cp 禁止 / 取り込み戦略を明示」を要求する。
 
 ### 並列委譲で同一ファイルを編集するケースの brief 事前文言
 
@@ -146,7 +140,7 @@ allowed-tools:
 - **窓口の続報は merge 順序の決定だけでは送らない**。先行 PR が merge され base upstream に反映されたことを確認してから後続 worker に送る（順序決定直後に送ると、先行変更を含まない upstream へ rebase してしまい conflict 防止が成立しない）
 - **rebase 先と適用範囲の読み替え**は [`.claude/skills/org-delegate/references/worker-claude-template.md`](references/worker-claude-template.md) の「完了報告前の rebase」規定に従う（`full` 限定・PR ベースが `origin/main` 以外なら実際の base upstream に読み替え）
 
-事後の追指示（peer message での追送）でも救えるが（2026-07-22 の ja#747 / ja#748 並列編集の実例）、brief 段階で入れておけば窓口→worker の 1 往復が減り、integration point conflict を事前に防げる。完了報告前に base upstream へ rebase してから報告する既存運用と組み合わせると、窓口の残作業は merge 順序の決定と続報通知だけに縮退する。
+事後の追指示でも救えるが、brief 段階で入れておけば窓口→worker の 1 往復が減り、integration point conflict を事前に防げる（実例と効果は [`.claude/skills/org-delegate/references/rationale.md`](references/rationale.md) §4）。
 
 ## Step 0: プロジェクト名前解決（窓口が実行）
 
@@ -297,7 +291,7 @@ dogfood 対象判定 / 窓口責務 (A) 実装起票時の `registry/dogfood_pen
 2. **worker のスコープ拡張提案は escalation 経由**: 窓口は一次承認せず [`/org-escalation`](../org-escalation/SKILL.md) を発動する
 3. **窓口は worker 作業を代行しない**: ファイル編集・commit・テスト等を窓口側 worktree で手を出さず、追加依頼として worker に戻すか別 worker を派遣する
 
-違反事例: 2026-05-21 voice-v2-independent ペインへの別件混入投入（スコープ外作業を同 worker に追送し、本来別 worker を立てるべき別件を 1 worker に集約してしまった）。本節の guard / CI 実装は別 Issue。
+違反事例と guard / CI 実装の扱いは [`.claude/skills/org-delegate/references/rationale.md`](references/rationale.md) §5。
 
 ### DELEGATE_COMPLETE 受信時
 
@@ -309,7 +303,7 @@ mcp__org-broker__send_message(
 )
 ```
 
-**`.claude/` 編集タスクの send_keys 事前承認（root `.claude/**` self-edit のみ）**: 委譲対象に claude-org root の `.claude/**` が含まれる場合（`.dispatcher/` / `.curator/`、worker dir 生成物の `.claude/settings.local.json` は対象外）、窓口は上記挨拶の送信に**続けて** `python3 tools/self_edit_approval.py send --task {task_id} --file <対象ファイル>...` を **1 回**実行する（**broker 実走時のみ** `--target %N` を足す: 論理名 `worker-{task_id}` は tmux から引けないので `list_panes` で読んだ pane id を渡す。足りなければ**打鍵前に** exit 2 で止まるので、承認が届いたと誤解することは無い）（承認文の text 送信 → 着弾確認 → Enter 単独送信 → submit 確認を内部で順に行い、どの段でも検証できなければ exit 10 で停止し、成功時のみ `self_edit_approval_sent` を記帳する）。承認文の必須 3 要素（対象ファイル列挙 + task_id + 「窓口経由のユーザー承認」の明記）はツールが組み立てる。**`mcp__org-broker__send_keys` を手で 3 段打たない** — 最後の Enter を落とすと承認文が入力欄に draft として滞留し、見た目は着弾と区別がつかないまま worker が待機し続ける（Issue #956）。worker 側は編集前にこの承認入力の存在を確認し、無ければ編集せず窓口に要求する（ハンドシェイク固定で deadlock / 空打ちを防止）。承認を送らずに派遣したケースは `python3 tools/self_edit_approval.py audit` で事後検出できる。スコープ境界・背景（2 層ガード）・承認文テンプレート・worker brief 必須文言は [`.claude/skills/org-delegate/references/claude-org-self-edit.md`](references/claude-org-self-edit.md) §5 を一次参照。
+**`.claude/` 編集タスクの send_keys 事前承認（root `.claude/**` self-edit のみ）**: 委譲対象に claude-org root の `.claude/**` が含まれる場合（`.dispatcher/` / `.curator/`、worker dir 生成物の `.claude/settings.local.json` は対象外）、窓口は上記挨拶の送信に**続けて** `python3 tools/self_edit_approval.py send --task {task_id} --file <対象ファイル>...` を **1 回**実行する（**broker 実走時のみ** `--target %N` を足す: 論理名 `worker-{task_id}` は tmux から引けないので `list_panes` で読んだ pane id を渡す。足りなければ**打鍵前に** exit 2 で止まるので、承認が届いたと誤解することは無い）（承認文の text 送信 → 着弾確認 → Enter 単独送信 → submit 確認を内部で順に行い、どの段でも検証できなければ exit 10 で停止し、成功時のみ `self_edit_approval_sent` を記帳する）。承認文の必須 3 要素（対象ファイル列挙 + task_id + 「窓口経由のユーザー承認」の明記）はツールが組み立てる。**`mcp__org-broker__send_keys` を手で 3 段打たない**（Enter 落としで承認文が draft 滞留し worker が待機し続ける。Issue #956。詳細は [`.claude/skills/org-delegate/references/rationale.md`](references/rationale.md) §7）。worker 側は編集前にこの承認入力の存在を確認し、無ければ編集せず窓口に要求する（ハンドシェイク固定で deadlock / 空打ちを防止）。承認を送らずに派遣したケースは `python3 tools/self_edit_approval.py audit` で事後検出できる。スコープ境界・背景（2 層ガード）・承認文テンプレート・worker brief 必須文言は [`.claude/skills/org-delegate/references/claude-org-self-edit.md`](references/claude-org-self-edit.md) §5 を一次参照。
 
 ### ワーカーからのメッセージ受信時
 
@@ -341,7 +335,7 @@ worker → Secretary peer message
   ```bash
   bash tools/journal_append.sh worker_reported worker=worker-{task_id} task={task_id} summary="<要約>"
   ```
-  payload key は event catalog（[`docs/journal-events.md`](../../../docs/journal-events.md) の `worker_reported` 行: `worker`, `task`, `summary`）に合わせる。kind は `worker_reported` に統一（`worker_progress` 等の別名を使わない）。dispatcher の PANE_OUTPUT_WITHOUT_PEER_MSG 判定（[`.dispatcher/references/worker-monitoring.md`](../../../.dispatcher/references/worker-monitoring.md) Step 5.2）は events テーブルの `worker_reported` 痕跡を SQL で参照するため、中間ハンドオフ報告の記帳漏れは「peer message は届いているのに events に痕跡が無い」状態を作り、正常稼働中の worker を silent dead-lock と誤検知する false positive の直接原因になる（2026-07-08 kura conveyor で実例）
+  payload key は event catalog（[`docs/journal-events.md`](../../../docs/journal-events.md) の `worker_reported` 行: `worker`, `task`, `summary`）に合わせる。kind は `worker_reported` に統一（`worker_progress` 等の別名を使わない）。**記帳漏れは正常稼働中の worker を silent dead-lock と誤検知させる**（dispatcher の PANE_OUTPUT_WITHOUT_PEER_MSG 判定は events テーブルの `worker_reported` 痕跡を SQL で参照するため。[`.dispatcher/references/worker-monitoring.md`](../../../.dispatcher/references/worker-monitoring.md) Step 5.2、実例は [`.claude/skills/org-delegate/references/rationale.md`](references/rationale.md) §6）
 
 #### 2a. 完了報告
 

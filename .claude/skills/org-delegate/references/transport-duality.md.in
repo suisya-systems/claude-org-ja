@@ -1,0 +1,5 @@
+# org-delegate — 輸送層（transport）両系の読み替え
+
+[`.claude/skills/org-delegate/SKILL.md`](../SKILL.md) 冒頭から移設した参照。手順本文が輸送層の分岐（受信モデル / spawn 儀式 / エラー分岐）に入ったときだけ読めばよい。両系の読み替え規則・契約の批准経緯・broker 固有エラーコードの由来は以下が SoT（コード一覧そのものは [`.claude/skills/org-delegate/references/renga-error-codes.md`](renga-error-codes.md)）。
+
+{{> org-delegate-transport }}
