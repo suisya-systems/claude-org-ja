@@ -57,7 +57,7 @@ allowed-tools:
   python tools/set_run_pr_open.py --task-id <task_id> --pr <PR>
   ```
   これは `gh pr view <PR> --json url,headRefName,title` を 1 度引いて、`StateWriter.set_run_pr` 経由で `runs.pr_url` と `runs.branch` を上書きする。再呼び出しは idempotent（同じ値の上書き、events への追記なし）。これを行わないと後段の `tools/run_complete_on_merge.py` が `runs.pr_url` を引けず `no_run`（exit 3）で落ち、`-MergeWatch` の自動完了が失敗する
-  - **クロスリポジトリでも `--repo` は不要（Issue #828）**: `--repo` 省略時は `runs.project_id` → プロジェクト → GitHub URL（[`registry/projects.md`](../../../registry/projects.md) の パス列、次に `projects.origin_url`）で書き込み先リポジトリを決定的に解決する。解決できない場合は ja へ黙って落ちず **exit 2 で停止**する（`--repo OWNER/REPO` 明示は従来どおり最優先）。旧挙動は `--repo` 省略で `gh repo view`＝窓口の cwd＝ja を見ていたため、**ja に同番号の PR があるとその branch / commit が別リポジトリの run 行へ silent に書き込まれた**（2026-08-06 に renga PR #302 が ja PR #302 の情報で汚染された実害）
+  - **クロスリポジトリでも `--repo` は不要（Issue #828）**: `--repo` 省略時は `runs.project_id` → プロジェクト → GitHub URL（[`registry/projects.md`](../../../registry/projects.md) の パス列、次に `projects.origin_url`）で書き込み先リポジトリを決定的に解決する。解決できない場合は ja へ黙って落ちず **exit 2 で停止**する（`--repo OWNER/REPO` 明示は従来どおり最優先）。旧挙動で起きた cross-repo 汚染の経緯は [`.claude/skills/org-pull-request/references/rationale.md`](references/rationale.md) §1
   - 実行すると 1 行目に `set_run_pr_open: repo=<owner/repo> (source=<registry|db_origin_url|home_repo|explicit>) PR #<N>: <PR タイトル>` が出る。**この行のリポジトリと PR タイトルが意図した書き込み先か目視で確認してから次へ進む**
 - DB の events テーブルにイベント追記 — **手打ちの対象は helper が書かないイベントに限る**。この段階では `fix_pushed`（push）/ `pr_opened`（PR 作成）の 2 つ（`bash tools/journal_append.sh ...`）。`delegate_sent` や `pr_merged` のように **helper が同一トランザクションで記録するイベントを窓口が手で打ってはならない**（打つと events が 2 行になる）。どのイベントを誰が書くかの SoT は [`docs/journal-events.md`](../../../docs/journal-events.md) の Writer / Emitted by 列
 - PR 番号が確定したら [`/pr-watch-pane <PR>`](../pr-watch-pane/SKILL.md) で CI を監視する（クロスリポジトリは `--repo OWNER/REPO` 付き）。broker tmux セッションの専用ペインで `tools/pr-watch.sh` が ja-root cwd・sandbox 外で回り、完了時に `ci_completed` が自動で events に記録される。CI 完了 / merge / timeout で watcher ペインは tmux backend では自己 close し（herdr / wezterm backend では自己 close が効かず残留するため、監視終端で窓口がイベント駆動 close する — 後掲「監視終端で watcher ペイン ... を窓口がイベント駆動 close する」節と Issue #751）、いずれも窓口セッションを同期占有しない（review feedback loop 2c や手動 close 2b-ii に進める）。**`tools/pr-watch.*` を Claude Code の Bash 背景起動で直接叩かない**: 背景タスクは spawn したシェルのみ追跡し、自己デタッチした監視本体は孤児化して `/clear` / セッション終了で黙死するため（公式仕様。旧経路で実際にマージ監視が黙死した）。専用ペイン経路がこの孤児化を回避する
@@ -82,7 +82,7 @@ allowed-tools:
 
 ### CI 完了検知の正路: events テーブルが canonical、ディスパッチャー relay が一次配送、events DB poll は最終フォールバック（Issue #653 / Refs #658）
 
-CI 完了の **canonical 信号は events テーブルの `ci_completed` 行**（`payload_json` に対象 PR が一致し、`head` が push した SHA と一致、`status='passed'|'failed'`）であって、上の 2b-i 受信モデルで触れた `CI_COMPLETED` peer **直** push（`<channel source="renga-peers">` の in-band push / broker channel sidecar の `notifications/claude/channel` 注入）ではない。直 push は **best-effort 補助（path A）**で、`tools/peer_notify.py: notify_peer` は解決先 transport が未構成のとき（broker send CLI 不在 / renga opt-in なのに `RENGA_SOCKET` 不在の plain shell / broker daemon 未起動 / channel sidecar unhealthy 等）に **silent no-op** になる経路がある（SKILL 冒頭の輸送層注記と同じ事情。PR #73 で実際に窓口が CI green を取りこぼした）。なお同 helper は Refs #941 で raw env 判定をやめ [`tools/transport.py`](../../../tools/transport.py) の `resolve()` 経由になった（`ORG_TRANSPORT` 無設定を renga と読んで**実際の解決先と食い違う** push を撃つ経路が、interlock#36 の CI green 取りこぼしの一因だったため）。
+CI 完了の **canonical 信号は events テーブルの `ci_completed` 行**（`payload_json` に対象 PR が一致し、`head` が push した SHA と一致、`status='passed'|'failed'`）であって、上の 2b-i 受信モデルで触れた `CI_COMPLETED` peer **直** push（`<channel source="renga-peers">` の in-band push / broker channel sidecar の `notifications/claude/channel` 注入）ではない。直 push は **best-effort 補助（path A）**で、`tools/peer_notify.py: notify_peer` は解決先 transport が未構成のとき（broker send CLI 不在 / renga opt-in なのに `RENGA_SOCKET` 不在の plain shell / broker daemon 未起動 / channel sidecar unhealthy 等）に **silent no-op** になる経路がある（SKILL 冒頭の輸送層注記と同じ事情）。実害と helper が `resolve()` 経由になった経緯は [`.claude/skills/org-pull-request/references/rationale.md`](references/rationale.md) §2。
 
 **見逃しゼロの主保証はディスパッチャー relay（path B、Refs #658）**: ディスパッチャーが `/loop 3m` 監視サイクル（[`.dispatcher/references/worker-monitoring.md`](../../../.dispatcher/references/worker-monitoring.md) Step 5.25）で `events` を `event_deliveries` 配送台帳と突き合わせ、未配送の `ci_completed` を broker token 経由で窓口へ `[relay]` 付き `send_message` する。通常運用では窓口はこの relay 到着で次へ進めばよく、events テーブルを能動 poll する必要はない。**events DB の直接 poll は relay も直 push も成立しない場合（broker daemon 未起動の plain shell / CI 等）の最終フォールバック**として下記手順で残す（どの層でも canonical event は同一なので判定材料 `head` + `status` は一致する）。push が来たことだけを ground truth にすると no-op 経路で CI green を取りこぼすため、直 push は早期通知としてのみ扱い、確定は必ず events 行（relay 受信 or 直接 poll）で行う。
 
@@ -117,9 +117,9 @@ CI 完了の **canonical 信号は events テーブルの `ci_completed` 行**�
 [`/pr-watch-pane`](../pr-watch-pane/SKILL.md) が spawn する watcher ペイン (`name="pr-watch-<PR>"`)
 は、監視本体 (`tools/pr-watch.sh`) 終了時に末尾の `tmux kill-pane` で**自己 close** する。ただし
 この自己 close は **tmux backend でだけ効く低遅延経路**であり、broker が **herdr / wezterm backend**
-で動く環境では `tmux kill-pane` が no-op になって **watcher ペインがゾンビとして残留する**（実測:
-2026-07-22 に PR #154 / #749 / #750 の watcher 3 枚が herdr backend で残留した。backend 依存の
-詳細は [`/pr-watch-pane`](../pr-watch-pane/SKILL.md) の「前提」節）。
+で動く環境では `tmux kill-pane` が no-op になって **watcher ペインがゾンビとして残留する**（backend 依存の
+詳細は [`/pr-watch-pane`](../pr-watch-pane/SKILL.md) の「前提」節、残留の実測は
+[`.claude/skills/org-pull-request/references/rationale.md`](references/rationale.md) §3）。
 
 このため、**監視の各終端で窓口がイベント駆動で watcher ペインを掃除する**のを正路とする（tmux 自己
 close は低遅延経路として温存し、二重掃除にならないよう `[pane_not_found]` を正常応答として扱う）:
@@ -179,8 +179,8 @@ close は低遅延経路として温存し、二重掃除にならないよう `
     §8.1 / §8.10）/ **(ii) `caller_scope` を確立できている**（契約 T-§cap。
     `caller_scope_close_identity` から導出しない）。**控えた pane_id が手元にあることは免除に
     ならない** — 数値であることは MUST の**片方**にすぎず、未確立の列挙では下の identity 照合の
-    **結果そのもの**を信用できないためで（pre-capability の renga では `list_panes` が
-    **フォーカス中**のタブに解決し、`pr-watch-<PR>` は 2 org 並走で構造的に衝突する）、確立は
+    **結果そのもの**を信用できないためで（機序は
+    [`.claude/skills/org-pull-request/references/rationale.md`](references/rationale.md) §7）、確立は
     照合の前段に置く。**どちらも成立しないなら close を撃たず**（相対セレクタへもフォールバック
     しない）、watcher ペインが残る旨をユーザー報告に含めて手動掃除に委ね、追跡はクリアしない
     （次の終端イベント / 手動掃除で判定をやり直せるようにするため）。確立できたら、控えた
@@ -198,8 +198,7 @@ close は低遅延経路として温存し、二重掃除にならないよう `
       single-tab モデル内で解決する**（＝ `org-broker`）— そのモデル内で name も解決されるため
       誤タブ hazard が構造的に生じない（契約
       [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md)
-      §8.1 / §8.10。T-§4.2 の carve-out も条件を "the backend resolves Group B in a single-tab
-      model" と **backend の性質**で書いており、env 変数の綴りでは書いていない）。
+      §8.1 / §8.10）。
       **判定は積極的な証拠でのみ行う（MUST）**: いま Group B を撃つのに使っている MCP ツールの
       **完全修飾名が `mcp__org-broker__*` であること**。
       **`DEFAULT_TRANSPORT` から推定してはならない（MUST NOT）** — `ORG_TRANSPORT` 無設定は
@@ -207,17 +206,15 @@ close は低遅延経路として温存し、二重掃除にならないよう `
       [`tools/transport.py`](../../../tools/transport.py) の `resolve()` は無設定を
       コード既定 `broker` に解決するので、推定すると **renga が駆動している環境で裸 name の
       close を撃ち、別 org の同名 watcher を不可逆に閉じうる**（判定規則と根拠の SoT は
-      [`/pr-watch-pane`](../pr-watch-pane/SKILL.md) Step 5 の (b)）。確定できなければ不成立
-      （§「CI 完了検知の正路」が触れる
-      [`tools/peer_notify.py`](../../../tools/peer_notify.py) の分岐は、helper 側の
-      仕様であって backend の同定規則ではない。同 helper は Refs #941 で `resolve()` 経由に
-      揃えられたが、**それはこの MUST NOT を緩めない** — helper が `resolve()` を使うことと、
-      Group B の駆動系を `resolve()` から推定してよいこととは別問題である）。**確定できないときは carve-out を取らない**
+      [`/pr-watch-pane`](../pr-watch-pane/SKILL.md) Step 5 の (b)、由来は
+      [`.claude/skills/org-pull-request/references/rationale.md`](references/rationale.md) §7）。
+      **確定できないときは carve-out を取らない**
       （fail-safe。未知値で解決が `ValueError` になる等で「いま何が駆動しているか」を確定
       できない場合は条件 (1) を**不成立**として扱い、下記の報告に倒す）
     - **(2) 再 spawn が `[name_in_use]` / `[name_taken]` で弾かれている** — stale binding の症状。
-      契約 T-§4.2 の carve-out は 3 条件を "MUST gate it on all three conditions together" と
-      normative に固定しているので、**harness 側でこの条件を別の証拠に差し替えない**。post-merge
+      **harness 側でこの条件を別の証拠に差し替えない**（契約 T-§4.2 が 3 条件を normative に
+      固定していることの詳細は
+      [`.claude/skills/org-pull-request/references/rationale.md`](references/rationale.md) §7）。post-merge
       cleanup は watcher を掃除するだけで**再 spawn しない**ため、この経路が自前でこの観測を
       作ることはない。同一 name の再 spawn が弾かれた観測が手元にある場合
       （[`/pr-watch-pane`](../pr-watch-pane/SKILL.md) Step 3 の分岐で現に観測した場合）に限り
@@ -231,12 +228,10 @@ close は低遅延経路として温存し、二重掃除にならないよう `
       判定した終端イベントや追跡を既に消してある場合は撃たない（別 instance の binding を pop しうる）
 
     **broker 以外に解決する場合（`ORG_TRANSPORT=renga` の opt-in など）では裸 name に
-    フォールバックしない**: 「live pane が無いので
-    誤 close の余地が無い」という前提は `list_panes`（＝ユーザー可視タブ）からしか立てられず、
-    pre-capability renga の legacy 解決は active タブを先に引き、miss したら他タブを index 順に
-    フォールスルーして先勝ちするため、別タブに同名の live pane が居れば前提は偽で close がそのペインに
-    当たる（`close_pane` は不可逆でエラーも出ない）。この経路では close せず、stale binding を検出した旨を
-    ユーザーに報告する。この allowlist が契約
+    フォールバックしない**（「live pane が無いので誤 close の余地が無い」という前提が renga の
+    legacy 解決では偽になりうるため。機序は
+    [`.claude/skills/org-pull-request/references/rationale.md`](references/rationale.md) §7）。この経路では
+    close せず、stale binding を検出した旨をユーザーに報告する。この allowlist が契約
     [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md)
     T-§4.2 の Group B 台帳が stale-binding 行に求める「使った mechanism」であり、3 条件と根拠の SoT は
     [`/pr-watch-pane`](../pr-watch-pane/SKILL.md) Step 5 の (b)。
@@ -294,10 +289,11 @@ pr-watch から `PR_MERGED_HEAD_UNCONFIRMED: PR #<n> (head=<merged_short>, last 
   追跡し直す（旧イベントの重複配送は head 不一致で superseded 判定になり新 watcher を誤 close しない）。
 - **再 push したら watcher が「その push より後に」起動されているかを機械確認する（Refs #978）**:
   修正の再 push は「worker の報告 → 窓口の push」と別ターンに分かれるため、watcher の立て直しが
-  窓口の記憶頼みになり、実際に落ちた（2026-08-30、PR #73 で 2 回目の再 push 以降 誰も CI を見て
-  いない状態が続き、ユーザーの指摘で発覚）。**`list_panes` に `pr-watch-<PR>` が居ることを根拠に
+  窓口の記憶頼みになりやすい（実際に落ちたインシデントは
+  [`.claude/skills/org-pull-request/references/rationale.md`](references/rationale.md) §5）。
+  **`list_panes` に `pr-watch-<PR>` が居ることを根拠に
   してはならない**: herdr / renga では監視終了後もペインが自己 close せず、死んだ watch と生きて
-  いる watch が外見上区別できない（これが同インシデントの誤判定そのもの）。判定は events の
+  いる watch が外見上区別できない。判定は events の
   時系列で行う:
   ```bash
   python3 tools/watcher_restart_guard.py check --task <task_id>
@@ -308,8 +304,7 @@ pr-watch から `PR_MERGED_HEAD_UNCONFIRMED: PR #<n> (head=<merged_short>, last 
   `ended_inconclusive`＝watch が CI の答えを出さずに終了した（`incomplete` / `indeterminate` /
   timeout。`indeterminate` は watcher 自身が再起動を要求している） / `ended_stale_head`＝出た判定が
   前 head のもの）。exit 2 は task から PR を特定できない状態なので、先に `tools/set_run_pr_open.py`
-  で `runs.pr_url` を back-fill する。**exit 3 のまま「CI 走行中」とユーザーに報告しない** —
-  それが同インシデントで起きたことである。
+  で `runs.pr_url` を back-fill する。**exit 3 のまま「CI 走行中」とユーザーに報告しない**。
   なお `bash tools/journal_append.sh fix_pushed ...` を打った時点で同じ判定が stderr に出る
   （post-check。push 直後は watcher 再起動前なので exit 3 相当が出るのが正常で、これは異常通知では
   なく「次にやること」の提示）。判定ロジックの一次情報源は
@@ -356,12 +351,9 @@ pr-watch から `PR_MERGED_HEAD_UNCONFIRMED: PR #<n> (head=<merged_short>, last 
   （Writer / Emitted by の SoT は [`docs/journal-events.md`](../../../docs/journal-events.md)）
   - **`pr_merged` は窓口が手で打たない（Issue #954）**: `pr_merged` は下記 `tools/run_complete_on_merge.py` が
     `pr_state='merged'` / `commit` / `completed_at` と**同一トランザクションで**記録するので、窓口が手で
-    `journal_append.sh pr_merged` を打つ必要はない（打つと events が 1 マージにつき 2 行になり、relay が
-    **二重配送**され、2 本目は helper の payload を持たない＝`head` が無いため
-    `PR_MERGED: PR #<n> (head=<missing>) [head-unverifiable] [relay]` として届く。前掲 freshness gate は
-    この 2 本目の監視 head を照合できず、`[head-unverifiable]` 枝での events 引き直し / 人間報告に
-    毎回落ちる（マーカー導入前は不一致と同じ枝に落ちて **黙って close skip** され、herdr / wezterm
-    backend で watcher がゾンビ残留していた — Issue #751 の再発経路）。**打たないこと**）
+    `journal_append.sh pr_merged` を打つ必要はない。**打つと events が 1 マージにつき 2 行になり、relay が
+    二重配送されて freshness gate が照合不能枝に落ちるため、打たないこと**（二重配送の中身と
+    再発経路は [`.claude/skills/org-pull-request/references/rationale.md`](references/rationale.md) §4）
 - ディスパッチャーにペインクローズを依頼（**worker Claude ペイン**）:
   `CLOSE_PANE: {pane_id} のペインを閉じてください。`
 - **CI 監視の watcher ペイン (`pr-watch-<PR>`) を窓口が掃除する（Issue #751）**: worker ペインとは
@@ -373,17 +365,17 @@ pr-watch から `PR_MERGED_HEAD_UNCONFIRMED: PR #<n> (head=<merged_short>, last 
 - **ディレクトリパターンに応じた後処理**（同タイミングで実施）:
   - パターン A（プロジェクトディレクトリ）: ディレクトリは保持する（次タスクで再利用）
   - パターン B（worktree）: `git -C {workers_dir}/{project_slug}/ worktree remove --force .worktrees/{task_id}` を実行。ブランチは残す（マージ済みでもブランチ削除はしない、PR 履歴用）
-    - **`--force` は意図的（Issue #491）**: `gen_delegate_payload.py` の apply が `send_plan.json` を worker_dir 直下に残し、`worktree remove` は untracked file がある worktree を常に refuse するため、`--force` を付けないとクローズ段階で必ず失敗する。`send_plan.json` の close phase 自動削除は別 Issue（本スキルでは `--force` 例示で吸収）
+    - **`--force` は意図的（Issue #491）**: worker_dir 直下に残る `send_plan.json` のため、`--force` を付けないとクローズ段階で必ず失敗する（理由の詳細は [`.claude/skills/org-pull-request/references/rationale.md`](references/rationale.md) §6）
     - **self-edit (`pattern_variant='live_repo_worktree'`) の場合**: worktree base が `{claude_org_path}` なので `git -C {claude_org_path} worktree remove --force .worktrees/{task_id}` を実行する（Issue #289）。`--force` の理由は通常パターン B と同じ。ブランチは同様に残す
   - パターン C（エフェメラル, `pattern_variant='ephemeral'`）: ディレクトリは保持する（容量が問題になった場合のみ手動削除を検討）
-  - **パターン C（`gitignored_repo_root`, claude-org 自己編集）の特例 cleanup（Issue #478）**: `worker_dir` が claude-org-ja repo root 自身なので、worktree remove も dir 削除も効かず、`{claude_org_root}/CLAUDE.local.md`（ワーカー指示ブリーフ）が残留する。残ると次回 `/org-start` で Secretary が「窓口かつワーカー」という矛盾 role identity を読み込む。**close 時に `tools/run_complete_on_merge.py` の `cleanup_pattern_c_local_md()` を呼んでブリーフを削除する**（下記 StateWriter ブロックに同梱）。判定は `runs.pattern == 'C'` AND `worker_dir == claude_org_root` で行われ、ephemeral C / パターン A・B では no-op。`events` に `pattern_c_cleanup`（payload: `task` / `removed_path` / `mode`）が 1 行残る。idempotent（ファイル不在なら `mode=skip`）。**Issue #486**: 下記ブロックの `remove_worker_dir()` が `worker_dirs` 行を DELETE すると `runs.worker_dir_id` が `ON DELETE SET NULL` になり join 経由の `worker_dir` 解決が NULL 化して cleanup が no-op になるため、`worker_dir_abs=` に削除した abs パスを明示で渡して順序非依存にする。PR 起点のクローズで `tools/run_complete_on_merge.py --pr <PR>` を呼ぶ場合は merge 記録時に自動で同 cleanup が走るが、gitignored タスクは PR を生まないことが多いので、下記 StateWriter ブロックでの明示呼び出しが本筋の経路。`.claude/settings.local.json` は worker 由来 / Secretary 由来の切り分けが要るためスコープ外（別 Issue）
+  - **パターン C（`gitignored_repo_root`, claude-org 自己編集）の特例 cleanup（Issue #478）**: `worker_dir` が claude-org-ja repo root 自身なので、worktree remove も dir 削除も効かず、`{claude_org_root}/CLAUDE.local.md`（ワーカー指示ブリーフ）が残留する。**close 時に `tools/run_complete_on_merge.py` の `cleanup_pattern_c_local_md()` を呼んでブリーフを削除する**（下記 StateWriter ブロックに同梱）。判定は `runs.pattern == 'C'` AND `worker_dir == claude_org_root` で行われ、ephemeral C / パターン A・B では no-op。`events` に `pattern_c_cleanup`（payload: `task` / `removed_path` / `mode`）が 1 行残る。idempotent（ファイル不在なら `mode=skip`）。**`worker_dir_abs=` に削除した abs パスを明示で渡す（Issue #486。順序非依存にするため。残留が問題になる理由と NULL 化の機序は [`.claude/skills/org-pull-request/references/rationale.md`](references/rationale.md) §6）**。PR 起点のクローズで `tools/run_complete_on_merge.py --pr <PR>` を呼ぶ場合は merge 記録時に自動で同 cleanup が走るが、gitignored タスクは PR を生まないことが多いので、下記 StateWriter ブロックでの明示呼び出しが本筋の経路。`.claude/settings.local.json` は worker 由来 / Secretary 由来の切り分けが要るためスコープ外（別 Issue）
 - **dogfood 対象 PR の paired issue クローズ時（Issue #338）**: 実装 PR のマージと paired follow-up issue のクローズはライフサイクルが独立しうるため、本スキル側では「実装 PR マージで `consumed → closed` をする」という保証はしない。`consumed → closed` の終端遷移は窓口の register hygiene 責務として [`.claude/skills/org-delegate/SKILL.md`](../org-delegate/SKILL.md) Step 1.8 §consumed → closed 観察タイミング（register 書き込み時 + `/org-resume` 起動時に `gh issue view` で paired issue 状態確認）で回収する。本スキルが PR マージ時にたまたま該当行を観察した場合のみ、ついでに hygiene 手順を呼ぶ
 - **PR 起点のクローズの場合は `tools/run_complete_on_merge.py` を呼ぶ** (Issue #317。`pr-watch --merge-watch` の merge-watch ループが自動で起動するので通常は手動実行不要だが、merge-watch を skip した場合や手動でマージを観測した場合のみ明示的に呼ぶ):
   ```bash
   python tools/run_complete_on_merge.py --pr <PR> --task-id <task_id>
   ```
-  これは `gh pr view <PR> --json url,state,mergedAt,mergeCommit,headRefName,title` を一度引いて、PR が merged なら `StateWriter.transaction()` 経由で `pr_state='merged'` / `commit_short` / `pr_url` / `completed_at` を更新し、`pr_merged` イベント (payload: `task` / `pr` / `repo` / `pr_url` / `merge_commit` / `head` / `merged_at` / `pattern` / `auto_completed`) を 1 行追記する。再呼び出しは idempotent（二重イベントを書かない）。**この冪等性は helper 自身の再実行に対する性質であって、窓口の手打ちには効かない**: helper は自分が書いた行しか見ないので、窓口が別途 `journal_append.sh pr_merged` を打てばそれは重複検出されず 2 行目として残り、独立に relay される（上記の手打ち禁止はこのためにある。Issue #954）。task_id は `runs.pr_url` / `runs.branch`（active な runs 限定）から自動解決されるので省略もできる。
-  - **`--task-id` を付けて呼ぶこと（Issue #828）**: `--task-id` があれば `--repo` 省略時のリポジトリを run → プロジェクト → GitHub URL で決定的に解決し、解決できなければ exit 2 で停止する。`--task-id` も `--repo` も無い場合だけは「task を PR から逆引きする」経路なので従来どおり `gh repo view`（＝窓口の cwd＝ja）が既定になり、**クロスリポジトリの PR に対して ja の同番号 PR を読む旧来の事故経路が残る**。set_run_pr_open と同じく 1 行目に `run_complete_on_merge: repo=... (source=...) PR #<N>: <PR タイトル>` が出るので書き込み先を目視確認する
+  これは `gh pr view <PR> --json url,state,mergedAt,mergeCommit,headRefName,title` を一度引いて、PR が merged なら `StateWriter.transaction()` 経由で `pr_state='merged'` / `commit_short` / `pr_url` / `completed_at` を更新し、`pr_merged` イベント (payload: `task` / `pr` / `repo` / `pr_url` / `merge_commit` / `head` / `merged_at` / `pattern` / `auto_completed`) を 1 行追記する。再呼び出しは idempotent（二重イベントを書かない）。**この冪等性は helper 自身の再実行に対する性質であって、窓口の手打ちには効かない**（機序は [`.claude/skills/org-pull-request/references/rationale.md`](references/rationale.md) §4。上記の手打ち禁止はこのためにある）。task_id は `runs.pr_url` / `runs.branch`（active な runs 限定）から自動解決されるので省略もできる。
+  - **`--task-id` を付けて呼ぶこと（Issue #828）**: `--task-id` があれば `--repo` 省略時のリポジトリを run → プロジェクト → GitHub URL で決定的に解決し、解決できなければ exit 2 で停止する。**`--task-id` も `--repo` も無い場合だけは旧来の事故経路（ja の同番号 PR を読む）が残る**（[`.claude/skills/org-pull-request/references/rationale.md`](references/rationale.md) §1）。set_run_pr_open と同じく 1 行目に `run_complete_on_merge: repo=... (source=...) PR #<N>: <PR タイトル>` が出るので書き込み先を目視確認する
   - **helper は runs.status を触らない**: dispatcher 側 pane close / worker_closed / worker-state final update が必要 (delegation-lifecycle-contract §T5)。helper は merge 事実のみ記録し、status flip と worker_dir 削除は窓口が下記の StateWriter で行う
   - **CLI 終了コード**: `merged` / `already` / `not_yet` は exit 0、`no_run`（runs に該当行なし）は exit 3 で失敗扱いになる。手動運用時は exit code を確認
 - **パターン B / C のレジストリエントリ削除と最終 close は別途 StateWriter を呼ぶ**（markdown 直接編集禁止。run_complete_on_merge が `pr_state='merged'` と `completed_at` を既に書いているので、ここでは status flip と worker_dir 削除のみ行う）:
