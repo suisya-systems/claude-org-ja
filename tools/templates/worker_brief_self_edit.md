@@ -68,6 +68,8 @@ ${references_knowledge_block}
 
 <!--BEGIN:codex_full-->
 ## Codex セルフレビュー
+通常検証の green 判定は「passed が N 件」ではなく **passed / skipped の内訳が CI と一致するか**で行う。条件付き skip されるテスト（環境変数・OS 依存の `skipIf` 等）はその条件を満たしてから回し、完了報告に skip 件数と理由を書く（例: 「824 passed | 2 skipped、skip は〜」）。
+
 検証深度 full。`codex` available なら commit 後、`codex exec review`（review surface）で差分セルフレビュー（直打ち長文プロンプト形は廃止。中小 diff で約 2 倍速・安全側パリティ同等）:
 ```bash
 # --base はこのブランチのベース upstream（${task_base_ref}）。ローカルの追跡なしブランチは古いと別タスク差分を巻き込むため remote-tracking ref を使う。参照前に git fetch origin を 1 回（fetch 不能でも review は継続）。前景実行して出力を読んでから次へ進む。

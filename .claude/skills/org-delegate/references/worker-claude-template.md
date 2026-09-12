@@ -187,6 +187,8 @@ probe / 検証 / fuzzing 系タスク（sandbox 探索・hook 動作確認・フ
 
 **`full` の前提（codex の有無に関わらず必ず実施）:**
 - 既存テストスイート / lint / type-check 等、リポジトリで定義された通常検証を実行し、green を確認してから完了報告する
+- green 判定は「passed が N 件」ではなく、**passed / skipped の内訳が CI と一致するか**で行う。環境変数・OS 依存などで条件付き skip されるテスト（`skipIf` 等）は、その条件を満たしてから回す
+- 完了報告に skip 件数と理由を書く（例: 「824 passed | 2 skipped、skip は〜」）
 - 通常の完了報告フォーマット（成果物説明・残作業・PR 草案 / 振り返り記録）に従う
 
 **追加ゲートとしての Codex セルフレビュー（任意。codex CLI がインストールされていれば実行）:**
