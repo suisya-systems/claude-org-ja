@@ -38,10 +38,6 @@ helper の冪等性は helper 自身の再実行に対する性質であって�
 
 Pattern C gitignored_repo_root の残留 `CLAUDE.local.md` が問題なのは、残ると次回 `/org-start` で Secretary が「窓口かつワーカー」という矛盾 role identity を読み込むためである（Issue #478）。
 
-## 7. pre-capability renga の legacy 解決が作る誤 close hazard（監視終端 close 節）
+## 7. 裸 name close の 3 条件をめぐる hazard と契約由来（監視終端 close 節）
 
-pre-capability の renga では `list_panes` が**フォーカス中**のタブに解決し、`pr-watch-<PR>` は 2 org 並走で構造的に衝突する。
-
-裸 name の場合はさらに、renga の legacy 解決は active タブを先に引き、miss したら他タブを index 順にフォールスルーして先勝ちするため、「live pane が無いので誤 close の余地が無い」という前提は `list_panes`（＝ユーザー可視タブ）からしか立てられず、別タブに同名の live pane が居れば前提は偽で close がそのペインに当たる（`close_pane` は不可逆でエラーも出ない）。
-
-`DEFAULT_TRANSPORT` から Group B の駆動系を推定してはならない理由（無設定が運用既定 renga でもありうること・`resolve()` がコード既定 broker に解決すること・失敗方向の非対称性）と、契約 T-§4.2 の carve-out が 3 条件を "MUST gate it on all three conditions together" と normative に固定していることの詳細は [`.claude/skills/pr-watch-pane/references/rationale.md`](../../pr-watch-pane/references/rationale.md) §6 が SoT。`tools/peer_notify.py` が Refs #941 で `resolve()` 経由に揃えられたことは、この MUST NOT を緩めない（helper が `resolve()` を使うことと、Group B の駆動系を `resolve()` から推定してよいこととは別問題）。
+**この論点の SoT は [`.claude/skills/pr-watch-pane/references/rationale.md`](../../pr-watch-pane/references/rationale.md) §6 / §7**（pre-capability renga の legacy 解決が作る誤 close hazard、`DEFAULT_TRANSPORT` から Group B の駆動系を推定してはならない理由、契約 T-§4.2 の carve-out が 3 条件を "MUST gate it on all three conditions together" と normative に固定していること、`tools/peer_notify.py` が Refs #941 で `resolve()` 経由になってもこの MUST NOT は緩まないこと）。本スキル側は条件の箇条書きと [`.claude/skills/pr-watch-pane/SKILL.md`](../../pr-watch-pane/SKILL.md) Step 5 (b) への参照だけを持ち、解説を二重に持たない（安全規律が 2 箇所に全文で存在すると片方だけが直る drift の温床になるため）。

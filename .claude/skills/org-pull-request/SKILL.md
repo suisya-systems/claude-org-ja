@@ -114,129 +114,60 @@ CI 完了の **canonical 信号は events テーブルの `ci_completed` 行**�
 
 ### 監視終端で watcher ペイン (`pr-watch-<PR>`) を窓口がイベント駆動 close する（herdr ゾンビ残留の根治, Issue #751）
 
-[`/pr-watch-pane`](../pr-watch-pane/SKILL.md) が spawn する watcher ペイン (`name="pr-watch-<PR>"`)
-は、監視本体 (`tools/pr-watch.sh`) 終了時に末尾の `tmux kill-pane` で**自己 close** する。ただし
-この自己 close は **tmux backend でだけ効く低遅延経路**であり、broker が **herdr / wezterm backend**
-で動く環境では `tmux kill-pane` が no-op になって **watcher ペインがゾンビとして残留する**（backend 依存の
-詳細は [`/pr-watch-pane`](../pr-watch-pane/SKILL.md) の「前提」節、残留の実測は
-[`.claude/skills/org-pull-request/references/rationale.md`](references/rationale.md) §3）。
+[`/pr-watch-pane`](../pr-watch-pane/SKILL.md) が spawn する watcher ペイン (`name="pr-watch-<PR>"`) の
+自己 close は **tmux backend でだけ効く低遅延経路**で、herdr / wezterm backend と opt-in renga では
+no-op になり **watcher ペインがゾンビとして残留する**（backend 依存の詳細は
+[`/pr-watch-pane`](../pr-watch-pane/SKILL.md) の「前提」節、残留の実測は
+[`.claude/skills/org-pull-request/references/rationale.md`](references/rationale.md) §3）。このため
+**監視の各終端で窓口がイベント駆動で掃除する**のを正路とする（tmux 自己 close は低遅延経路として温存し、
+二重掃除にならないよう `[pane_not_found]` を正常応答として扱う）:
 
-このため、**監視の各終端で窓口がイベント駆動で watcher ペインを掃除する**のを正路とする（tmux 自己
-close は低遅延経路として温存し、二重掃除にならないよう `[pane_not_found]` を正常応答として扱う）:
-
-- **終端トリガ（いずれか）と掃除タイミング**: どの終端でも watcher 本体 (`tools/pr-watch.sh`) は
-  **その終端イベントの発信時点で既に exit 済み**なので、**ペイン掃除は終端イベント受領で即時**行う
-  （run.status の遷移 gate や人間確認 gate とは独立。掃除を後段まで遅らせると herdr backend で
-  ゾンビが待機中ずっと残る）。終端: `PR_MERGED`（→ 掃除後 2b-ii post-merge cleanup）/
+- **いつ入るか（終端トリガ）**: `PR_MERGED`（→ 掃除後 2b-ii post-merge cleanup）/
   `PR_MERGE_WATCH_TIMEOUT`（→ 下記受信時に即掃除）/ CI 失敗確定（→ 2c フィードバックループ入口で即掃除）/
   `PR_MERGED_HEAD_UNCONFIRMED` や `PR_MERGED_NO_RUN`（→ **人間確認を待たず即掃除**し、run 完了判断だけ
-  人間確認 gate に残す）。
-- **掃除対象は spawn 時に控えた watcher instance に束縛する（`name` で再導出しない）**: 終端イベント
-  (`PR_MERGED` / CI 失敗確定 等) は本文に **PR 番号と head SHA** を載せるが **pane_id は載せない**。
-  一方 watcher は同一 PR でも再起動のたびに **新しい pane_id** を持つ（CI 失敗 → 再 push で新
-  `pr-watch-<PR>` を spawn 等）。ここで cleanup 時に `name="pr-watch-<PR>"` で live pane を **再導出**
-  すると、遅延 / 重複配送された**古い**終端イベントが**再起動済みの新 watcher**を解決し、その数値
-  pane_id を close しても **replacement monitor を誤 close** してしまう（name→id に変えても同じ罠）。
-  これを避けるため、窓口は **`/pr-watch-pane` 起動時に控えた pane_id（Step 3 の "Spawned pane id=N"）と
-  監視対象 head を watcher instance の identity として保持し、cleanup はその identity に束縛する**:
-  - **freshness gate（誤 close の根治）**: 終端イベントが指す **watcher の監視 head**（＝その watcher が
-    CI 追跡していた push SHA）が**現在追跡中の watcher instance の監視 head と一致する**ことを確認する。
-    **監視 head を取り出すフィールドはイベント種別で異なる**ので注意する:
-    - CI 完了系 (`ci_completed` / `CI_COMPLETED`) / `PR_MERGE_WATCH_TIMEOUT` / `PR_MERGED` /
-      `PR_MERGED_NO_RUN`: 本文の `head`（events DB の `head` 一致判定と同じ ground truth。
-      §「CI 完了検知の正路」参照）。
-    - **`PR_MERGED_HEAD_UNCONFIRMED`: 本文の `head` は新たにマージされた SHA で監視 head とは異なる**
-      ため、代わりに `last CI-confirmed head`（baseline）フィールドを監視 head として突き合わせる
-      （`head` で判定すると必ず不一致になり、誤って superseded 扱いで cleanup を skip し、人間確認 gate
-      中ずっと herdr でゾンビが残る — この取り違えを避ける）。
-    - **監視 head が「照合不能」のときは superseded 扱いにしない（Issue #954）**: 次のいずれかに当たる
-      イベントは監視 head を持っていない:
-      - **relay 経由 (B)**: `head=<missing>` + 末尾 `[head-unverifiable]`
-        （[`tools/relay_scan.py`](../../../tools/relay_scan.py) の `UNVERIFIABLE_RELAY_TAIL`）。
-      - **直 push 経由 (A)**: **マーカーは付かない**（marker を足すのは relay の compose のみ）。watcher は
-        merged head を解決できないとき placeholder をそのまま本文に載せるため
-        （[`tools/pr_watch.py`](../../../tools/pr_watch.py) の `head_tag = merged_head or "unknown"`。例
-        `PR_MERGED_NO_RUN: PR #<n> (head=unknown)`）、**本文の head が `unknown` / `<missing>` / 空**なら
-        marker の有無に依らず照合不能として扱う。
-      これは
-      「head が違う」ではなく「**照合できない**」なので、不一致と同じ枝（黙って close skip）に流すと
-      watcher が残留する。**照合不能は不一致とは別枝**として次の順で処理する:
-      1. `events` テーブルから当該 PR の canonical 行を引き直して監視 head を復元し（§「CI 完了検知の
-         正路」の SQL。`pr_merged` なら `tools/run_complete_on_merge.py` が起票した `head` 付きの行が
-         正本）、その head で改めて gate を通す。復元できたらそのまま判定を続ける。
-      2. **復元できない場合は黙って skip せず人間に報告する**（「PR #<n> の終端イベントが head を
-         持たず watcher の照合ができない。watcher ペイン `pr-watch-<PR>` が残っている可能性がある」）。
-         窓口判断で close するときは identity（spawn 時に控えた pane_id）で束縛する。
-      なお `[head-unverifiable]` が付いた `PR_MERGED` は、窓口が `journal_append.sh pr_merged` を手打ち
-      して events が 2 行になった痕跡でもある（2b-ii の手打ち禁止を参照）。
-    監視 head が一致しない古い / 重複イベントだけ superseded とみなし close しない（＝再起動済みの新
-    watcher を殺さない）。一致すれば下記で close。追跡が既に消えている（該当 instance を掃除済み）なら no-op。
-  - **識別子束縛 close**: 一致したら、**まず照合に使う `mcp__org-broker__list_panes` の列挙を自タブのものと
-    確立する**（契約
-    [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md)
-    T-§4.2「Fail-safe consequence for Group B」）。確立手段は 2 つだけで、いずれか 1 つが成立すれば
-    よい: **(i) backend が Group B を自身の単一タブモデル内で解決する**（`org-broker`。契約
-    §8.1 / §8.10）/ **(ii) `caller_scope` を確立できている**（契約 T-§cap。
-    `caller_scope_close_identity` から導出しない）。**控えた pane_id が手元にあることは免除に
-    ならない** — 数値であることは MUST の**片方**にすぎず、未確立の列挙では下の identity 照合の
-    **結果そのもの**を信用できないためで（機序は
-    [`.claude/skills/org-pull-request/references/rationale.md`](references/rationale.md) §7）、確立は
-    照合の前段に置く。**どちらも成立しないなら close を撃たず**（相対セレクタへもフォールバック
-    しない）、watcher ペインが残る旨をユーザー報告に含めて手動掃除に委ね、追跡はクリアしない
-    （次の終端イベント / 手動掃除で判定をやり直せるようにするため）。確立できたら、控えた
-    **数値 pane_id** を `mcp__org-broker__list_panes` で
-    `name="pr-watch-<PR>"` かつ `role="watcher"` を **なお指しているか identity 照合**し（pane_id
-    recycle 対策。別ペインに再割当てされていれば close しない）、合致したら
-    `mcp__org-broker__close_pane(target=<控えた pane_id>)` で閉じて追跡をクリアする。`[pane_not_found]` /
-    `[pane_vanished]` は tmux backend で既に self-close 済み / herdr でも掃除済みの正常応答で skip。
-  - **stale 登録簿 binding のみ name 指定（transport 条件付き allowlist）**: 控えた pane_id が既に消え、
-    数値 id を `mcp__org-broker__list_panes` から取り直せない stale binding のときだけ、裸 name の
-    `mcp__org-broker__close_pane(target="pr-watch-<PR>")` で登録簿を pop する。列挙にペインが出ない以上、上の
-    識別子束縛 close が使う「list_panes で照合した数値 pane_id」が原理的に取れないための例外で、
-    **以下 3 条件がすべて成立するときだけ許可される**:
-    - **(1) いま Group B を駆動している backend が `close_pane` / `set_pane_identity` を自身の
-      single-tab モデル内で解決する**（＝ `org-broker`）— そのモデル内で name も解決されるため
-      誤タブ hazard が構造的に生じない（契約
-      [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md)
-      §8.1 / §8.10）。
-      **判定は積極的な証拠でのみ行う（MUST）**: いま Group B を撃つのに使っている MCP ツールの
-      **完全修飾名が `mcp__org-broker__*` であること**。
-      **`DEFAULT_TRANSPORT` から推定してはならない（MUST NOT）** — `ORG_TRANSPORT` 無設定は
-      **運用既定 renga の構成でもありうる**のに
-      [`tools/transport.py`](../../../tools/transport.py) の `resolve()` は無設定を
-      コード既定 `broker` に解決するので、推定すると **renga が駆動している環境で裸 name の
-      close を撃ち、別 org の同名 watcher を不可逆に閉じうる**（判定規則と根拠の SoT は
-      [`/pr-watch-pane`](../pr-watch-pane/SKILL.md) Step 5 の (b)、由来は
-      [`.claude/skills/org-pull-request/references/rationale.md`](references/rationale.md) §7）。
-      **確定できないときは carve-out を取らない**
-      （fail-safe。未知値で解決が `ValueError` になる等で「いま何が駆動しているか」を確定
-      できない場合は条件 (1) を**不成立**として扱い、下記の報告に倒す）
-    - **(2) 再 spawn が `[name_in_use]` / `[name_taken]` で弾かれている** — stale binding の症状。
-      **harness 側でこの条件を別の証拠に差し替えない**（契約 T-§4.2 が 3 条件を normative に
-      固定していることの詳細は
-      [`.claude/skills/org-pull-request/references/rationale.md`](references/rationale.md) §7）。post-merge
-      cleanup は watcher を掃除するだけで**再 spawn しない**ため、この経路が自前でこの観測を
-      作ることはない。同一 name の再 spawn が弾かれた観測が手元にある場合
-      （[`/pr-watch-pane`](../pr-watch-pane/SKILL.md) Step 3 の分岐で現に観測した場合）に限り
-      成立し、**観測が無ければ条件 (2) は不成立**として carve-out を取らない（＝ close せず
-      下記の報告に倒す）。「この経路では観測できないから別の証拠でよい」とは読まない —
-      **観測できないなら条件不成立**、が契約に忠実な扱いである
-    - **(3) その name が `mcp__org-broker__list_panes` に現れない** — live pane 不在（＝列挙から数値 pane_id を取れない）
-    - **契約の 3 条件に加えた harness 側の追加要件**（狭めるだけで、3 条件を置き換えない）: 上の
-      識別子束縛 close が「控えた pane_id のレコードなし」または `[pane_not_found]` で終わっており、
-      かつ freshness gate を通っていま追跡中の watcher instance に束縛されていること。superseded と
-      判定した終端イベントや追跡を既に消してある場合は撃たない（別 instance の binding を pop しうる）
-
-    **broker 以外に解決する場合（`ORG_TRANSPORT=renga` の opt-in など）では裸 name に
-    フォールバックしない**（「live pane が無いので誤 close の余地が無い」という前提が renga の
-    legacy 解決では偽になりうるため。機序は
-    [`.claude/skills/org-pull-request/references/rationale.md`](references/rationale.md) §7）。この経路では
-    close せず、stale binding を検出した旨をユーザーに報告する。この allowlist が契約
-    [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md)
-    T-§4.2 の Group B 台帳が stale-binding 行に求める「使った mechanism」であり、3 条件と根拠の SoT は
-    [`/pr-watch-pane`](../pr-watch-pane/SKILL.md) Step 5 の (b)。
-  - `close_pane` は transport 抽象上 **tmux / herdr 両対応**。ケース分岐の SoT は
-    [`/pr-watch-pane`](../pr-watch-pane/SKILL.md) Step 5。
+  人間確認 gate に残す）。**掃除は終端イベント受領で即時**行う（run.status の遷移 gate や人間確認 gate
+  とは独立。遅らせる影響は
+  [`.claude/skills/org-pull-request/references/watcher-cleanup.md`](references/watcher-cleanup.md)）。
+- **掃除対象は spawn 時に控えた watcher instance に束縛する（`name` で再導出しない）— freshness gate**:
+  終端イベントの監視 head が**いま追跡中の instance の監視 head と一致するときだけ** close する
+  （`PR_MERGED_HEAD_UNCONFIRMED` だけは `head` ではなく `last CI-confirmed head` を突き合わせ、head が
+  `unknown` / `<missing>` / 空の「照合不能」は superseded 扱いにせず別枝で処理する）。**イベント種別ごとの
+  head フィールド・照合不能の処理手順・`name` 再導出が誤 close を生む機序は
+  [`.claude/skills/org-pull-request/references/watcher-cleanup.md`](references/watcher-cleanup.md) が SoT**
+  （[`/pr-watch-pane`](../pr-watch-pane/SKILL.md) Step 5 が「束縛の SoT」として指す先）。
+- **識別子束縛 close**: freshness gate を通ったら、**まず照合に使う `mcp__org-broker__list_panes` の列挙を自タブの
+  ものと確立する**（契約
+  [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md)
+  T-§4.2「Fail-safe consequence for Group B」。**(i) backend が Group B を自身の単一タブモデル内で解決
+  する**（`org-broker`。契約 §8.1 / §8.10）/ **(ii) `caller_scope` を確立できている**（契約 T-§cap）の
+  いずれか 1 つで足りる。**控えた pane_id が手元にあることは免除にならない**）。**どちらも成立しないなら
+  close を撃たず**（相対セレクタへもフォールバックしない）、watcher ペインが残る旨をユーザー報告に含めて
+  手動掃除に委ね、追跡はクリアしない（次の終端イベント / 手動掃除で判定をやり直せるようにするため）。
+  確立できたら控えた **数値 pane_id** を `mcp__org-broker__list_panes` で `name="pr-watch-<PR>"` かつ
+  `role="watcher"` を**なお指しているか identity 照合**し（pane_id recycle 対策。別ペインに再割当てされて
+  いれば close しない）、合致したら `mcp__org-broker__close_pane(target=<控えた pane_id>)` で閉じて追跡をクリアする。
+  `[pane_not_found]` / `[pane_vanished]` は既に self-close / 掃除済みの正常応答で skip。
+- **stale 登録簿 binding のみ裸 name 指定（transport 条件付き allowlist）**: 控えた pane_id が既に消え、
+  数値 id を `mcp__org-broker__list_panes` から取り直せない stale binding のときだけ、裸 name の
+  `mcp__org-broker__close_pane(target="pr-watch-<PR>")` で登録簿を pop する。**以下 3 条件がすべて成立するときだけ
+  許可される**（条件の説明・導出・誤 close hazard と **3 条件の根拠の SoT** は
+  [`/pr-watch-pane`](../pr-watch-pane/SKILL.md) Step 5 の (b)）:
+  - **(1) いま Group B を駆動している backend が `close_pane` / `set_pane_identity` を自身の single-tab
+    モデル内で解決する**（＝ `org-broker`）。**判定は積極的な証拠でのみ行う（MUST）** ＝ いま Group B を
+    撃つのに使っている MCP ツールの**完全修飾名が `mcp__org-broker__*` であること**。
+    **`DEFAULT_TRANSPORT` から推定してはならない（MUST NOT）**。**確定できないときは carve-out を
+    取らない**（fail-safe。条件 (1) を不成立として扱い下記の報告に倒す）
+  - **(2) 再 spawn が `[name_in_use]` / `[name_taken]` で弾かれている** — stale binding の症状。
+    **harness 側でこの条件を別の証拠に差し替えない**。post-merge cleanup は watcher を掃除するだけで
+    **再 spawn しない**ので、[`/pr-watch-pane`](../pr-watch-pane/SKILL.md) Step 3 の分岐で現に観測した
+    場合に限り成立し、**観測が無ければ条件 (2) は不成立**として carve-out を取らない
+  - **(3) その name が `mcp__org-broker__list_panes` に現れない** — live pane 不在（＝列挙から数値 pane_id を取れない）
+  - **契約の 3 条件に加えた harness 側の追加要件**（狭めるだけで、3 条件を置き換えない）: 上の識別子束縛
+    close が「控えた pane_id のレコードなし」または `[pane_not_found]` で終わっており、かつ freshness
+    gate を通っていま追跡中の watcher instance に束縛されていること。superseded と判定した終端イベントや
+    追跡を既に消してある場合は撃たない（別 instance の binding を pop しうる）
+  - **broker 以外に解決する場合（`ORG_TRANSPORT=renga` の opt-in など）では裸 name にフォールバック
+    しない**。close せず、stale binding を検出した旨をユーザーに報告する
 - **worker ペインの `CLOSE_PANE` とは別操作**: 2b-ii の worker Claude ペイン close はディスパッチャー宛
   `CLOSE_PANE: {pane_id}` で依頼するが、watcher ペインは窓口が spawn した CLI ペインなので窓口が
   `close_pane` で直接掃除する（窓口が `spawn_pane` の ops tier を持つ。契約 Surface 8）。

@@ -523,7 +523,8 @@ mcp__org-broker__spawn_pane(
    終端イベントの head が追跡中 instance と一致するときだけ close する」freshness gate を必ず併用する**
    （終端イベントが遅延 / 重複配送されて同一 PR の watcher が既に再起動済みの場合、`name` で live pane を
    再導出すると新 watcher を解決してその数値 pane_id を close しても replacement monitor を誤 close する。
-   束縛の SoT は [`.claude/skills/org-pull-request/SKILL.md`](../org-pull-request/SKILL.md) の該当節）。
+   束縛と freshness gate の SoT は
+   [`.claude/skills/org-pull-request/references/watcher-cleanup.md`](../org-pull-request/references/watcher-cleanup.md)）。
    人間が現ペインを手動 close する (a)/(b) は現 instance が対象で自明なので freshness gate は不要:
 
    - **(a) tmux ペインが live のまま残った / 監視を途中で止めたい**: **まず照合に使う
