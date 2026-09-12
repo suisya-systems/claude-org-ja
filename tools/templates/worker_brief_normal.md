@@ -106,6 +106,8 @@ ${references_knowledge_block}
 
 `full` の前提（codex の有無に関わらず必ず実施）: 既存テストスイート / lint / type-check 等、リポジトリで定義された通常検証を実行し、green を確認してから完了報告する。
 
+green 判定は「passed が N 件」ではなく **passed / skipped の内訳が CI と一致するか**で行う。条件付き skip されるテスト（環境変数・OS 依存の `skipIf` 等）はその条件を満たしてから回し、完了報告に skip 件数と理由を書く（例: 「824 passed | 2 skipped、skip は〜」）。
+
 追加ゲート: commit 完了後・完了報告前に **`codex` CLI が available なら** `codex exec review`（review surface）で差分セルフレビューを実行する（`codex exec` 直打ちの長文プロンプト形は廃止。review surface は中小 diff で約 2 倍速・安全側 Blocker/Major のパリティは同等）。未導入環境では skip して通常の完了報告に進む。
 
 ```bash
