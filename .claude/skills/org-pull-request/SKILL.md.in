@@ -44,7 +44,7 @@ allowed-tools:
 
 > **ack ≠ user 承認**: 本スキルが発動した時点で ack は既に発行済み（`.claude/skills/org-delegate/SKILL.md` Step 5 step 1 / [`.claude/skills/org-delegate/references/ack-template.md`](../org-delegate/references/ack-template.md)）。push / `gh pr create` / `/pr-watch-pane` はユーザー承認後にのみ発行する。
 
-{{> org-pull-request-transport }}
+> **輸送層（transport）両系**: 本スキルのツール参照は `{{FQ}}*`（`{{SERVER}}`）で書いてあり、active transport が既定面ならそのまま従えばよい。輸送層で手順が変わるのは **受信モデル / spawn 儀式 / エラー分岐** の 3 点だけ。うち本スキルで実際に効くのは受信モデル 1 点で、**`CI_COMPLETED` / `PR_MERGED` の判定は輸送層に依らず events テーブルの canonical 行が正本**（直 push は best-effort 補助。分岐の本体は下記 2b-i の受信モデルと「CI 完了検知の正路」節）。両系の読み替え規則・「既定」の二フレーム注記・契約の批准経緯・broker 拡張エラーコードは [`.claude/skills/org-pull-request/references/transport-duality.md`](references/transport-duality.md) を参照（上記 3 分岐に入るまで読む必要はない）。
 
 ## 2b-i. PR 作成段階（即時実行）
 

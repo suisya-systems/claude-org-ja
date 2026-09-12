@@ -41,7 +41,7 @@ allowed-tools:
 
 > **state-db cutover (M4, Issue #267 / #284)**: 構造化セクションの write は **必ず `StateWriter.transaction()` 経由**で行う。post-commit hook が `.state/org-state.md` / `.state/org-state.json` を DB から自動再生成し、`update_run_status('<task_id>', 'completed')` 呼び出しは `.state/workers/worker-<task_id>.md` を `.state/workers/archive/` へ自動 move する。markdown 直接編集は drift_check が検出する。events は DB の `events` テーブルが SoT (`tools/journal_append.sh` / `.py` は DB ルーティング済み)。DB 不在時は `python -m tools.state_db.importer --db .state/state.db --rebuild --no-strict` で構築する。
 
-{{> org-delegate-transport }}
+> **輸送層（transport）両系**: 本スキルのツール参照は `{{FQ}}*`（`{{SERVER}}`）で書いてあり、active transport が既定面ならそのまま従えばよい（引数形・セマンティクスは両系同一で、手順の論理は変わらない）。輸送層で手順が変わるのは **受信モデル / spawn 儀式 / エラー分岐** の 3 点だけで、opt-in 側の輸送層は削除せず切戻しの安全装置として常時有効。両系の読み替え規則・契約の批准経緯・broker 固有エラーコードの一覧は [`.claude/skills/org-delegate/references/transport-duality.md`](references/transport-duality.md) を参照（上記 3 分岐に入るまで読む必要はない。コード一覧は [`.claude/skills/org-delegate/references/renga-error-codes.md`](references/renga-error-codes.md)）。
 
 ## 窓口とディスパッチャーの役割分担
 

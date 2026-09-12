@@ -52,15 +52,21 @@ context リセットと無関係）に監視が継続し、人間が tmux ペイ
 > 可視ペイン**であり、push の到達を merge gate の
 > 前提にしない（org-pull-request の CI/merge gate は events DB を一次ソースにする）。
 
-{{> dual-system-header-long }}
+> **輸送層（transport）両系**: 本文のツール参照は `{{FQ}}*`（`{{SERVER}}`）で書いてあり、
+> active transport が既定面ならそのまま従えばよい。輸送層で手順が変わるのは **受信モデル /
+> spawn 儀式 / エラー分岐** の 3 点だけで、opt-in 側の輸送層は削除せず切戻しの安全装置として
+> 常時有効。両系の読み替え規則・契約の批准経緯・broker 固有エラーコードの一覧は
+> [`.claude/skills/pr-watch-pane/references/transport-duality.md`](references/transport-duality.md)
+> を参照（上記 3 分岐に入るまで読む必要はない）。
 
 > **本 skill の spawn 対象は「汎用 CLI ペイン」**: 起動するのは `tools/pr-watch.sh`
 > という shell コマンドであり、Claude セッション（`spawn_claude_pane`）ではなく
-> **汎用 `{{FQ}}spawn_pane`** を使う。したがって上記ヘッダの **spawn 儀式（broker:
+> **汎用 `{{FQ}}spawn_pane`** を使う。したがって輸送層の **spawn 儀式（broker:
 > folder-trust + channel sidecar の 2 段承認 / renga: dev-channel の 1 段承認）は本
 > skill では一切発生しない**（`--mcp-config` / `--dangerously-load-development-channels`
 > の注入が無く、承認プロンプトが出ない）。attention watcher と同じ CLI ペイン扱いである
-> （共有ヘッダ末尾の「attention watcher は ... 2 段承認の対象外」注記と同義）。両系で
+> （[`.claude/skills/pr-watch-pane/references/transport-duality.md`](references/transport-duality.md)
+> 末尾の「attention watcher は ... 2 段承認の対象外」注記と同義）。両系で
 > 切り替わるのは **ツール完全修飾名だけ**:
 >
 > - 既定 broker: `mcp__org-broker__spawn_pane`（`list_panes` / `set_pane_identity` /

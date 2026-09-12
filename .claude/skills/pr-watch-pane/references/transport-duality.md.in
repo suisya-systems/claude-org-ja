@@ -1,0 +1,5 @@
+# pr-watch-pane — 輸送層（transport）両系の読み替え
+
+[`.claude/skills/pr-watch-pane/SKILL.md`](../SKILL.md) 冒頭から移設した参照。手順本文が輸送層の分岐（受信モデル / spawn 儀式 / エラー分岐）に入ったときだけ読めばよい。両系の読み替え規則・契約の批准経緯・broker 固有エラーコードの由来は以下が SoT。
+
+{{> dual-system-header-long }}
