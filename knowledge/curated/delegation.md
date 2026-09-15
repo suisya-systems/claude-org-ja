@@ -118,3 +118,57 @@ dispatcher が緊急で clone する場合の手順（org 固有ファイルの�
 本筋は secretary 側の `gen_delegate_payload.py apply` 段階で clone まで完了させる設計。dispatcher の `.git` 存在チェックは早期検出のセーフティネットという位置づけ。
 
 出典: `2026-05-09-delegation-pattern-a-external-repo-clone-check.md`
+
+## private repo / gh 不可のワーカーには Issue 本文をファイル写しで渡し、段階分割では後段の全フィールドを設計段階で固定する
+
+`cc-usage-insights`（private repo）への 3 段階委譲（設計 → Lv1-2 実装 → Lv3-5 実装）で、ワーカーは sandbox 内で `gh` を使えず（`~/.config/gh/hosts.yml` が読めない）、Issue 本文を直接読めなかった。段階 1 では窓口が peer message で要点を手書き転記したが、段階 3 では `gh issue view --json` の出力をワーカーディレクトリ直下のファイルに書き出し `--knowledge` で brief に載せる方式に変えた。**手書き転記は要約になり取りこぼす。ファイル写しなら原文が残り、ワーカーが実測との食い違いを追記できる**（実際、段階 3 で訂正が 5 点付いた）。
+
+- private repo または sandbox で `gh` が使えないプロジェクトへの委譲では、Issue 本文と関連コメントを `gh issue view --json` で写したファイルをワーカーディレクトリに置き、`--knowledge <worker_dir>/<file>` で brief から参照させる（apply 後にファイルを書けばよく、パスは apply 前に確定できる）。
+- 「先にキーを置き、後段で値を埋める」型の段階分割（今回は #14 の受け皿ブロック）では、設計段階のタスクに「後段が必要とする全フィールドの確定」を明示的に含める。フィールド集合が設計文書に無いと後段で判断仰ぎが発生する（実際に発生し窓口が Issue 本文と設計要求から合成して回答した）。schema 版上げの是非も同様に設計段階の決定事項として brief に書く（これも判断仰ぎになった）。判断仰ぎ 2 回はいずれも 15〜30 分の停止を生んだ — 設計段階で固定していれば brief の 1 行で済んだ。
+
+出典: `2026-09-07-delegation-private-repo-issue-context-and-schema-freeze.md`（cc-usage-insights 3 段階委譲）
+
+## 設計タスクの「観測対象 0 件で判定不能」は abstain で終わらせず、ユーザーに標本作成を依頼する
+
+`cc-usage-insights` PR #20 の設計タスクで、ワーカーが「Cowork のスケジュールタスクが RemoteTrigger 一覧に載るか」をアカウントに対象が 0 件のため判定できず fail-closed（未確認）で締めようとした。ユーザーが「必要な分タスクを作って検証すべき」と指摘し、ユーザーが Cowork でタスクを作成 → ワーカーをペイン保持のまま待機させ、作成後・手動実行後の 2 回にわたり再測を追送 → 未確認 2 件が実測で解消し、副次的な発見（`last_fired_at` 欠落 → `list_runs` 必須。[`cowork.md`](./cowork.md) 参照）も得た。全て同一 worker・同一ブランチの追加 commit で完結（1 worker 1 scope 内）。
+
+- **「観測対象が 0 件で判定不能」は abstain で終わらせず、ユーザーに標本作成を依頼する選択肢を窓口が出す**。設計文書に fail-closed と書くより、実測 1 回のほうが後段 Issue の品質に効く（今回は重複排除の懸念が消え、逆に別の欠陥が見つかった）。
+- **ワーカーはペイン保持で待機させ、ユーザー操作の完了連絡ごとに再測を追送する**のが最短。再派遣すると feasibility の文脈（観測 K 番号の連番・DESIGN 節構成）を失う。
+- **設計を成果物とするタスクでは、派遣前の Codex design review pre-gate は意味を持たない**ので省き、ワーカーの in-loop Codex を設計差分に対して回す（今回は Blocker/Major ゼロを 4 commit で維持できた）。
+- **調査 subagent の推定は次工程で誤りが出ることがある**: feasibility ノートの推定（「scheduled-tasks.json は台帳と推定」）が実測で否定された。推定は「推定」と明記させ、設計ワーカーには「ノートの推定は検証対象」と伝えたほうがよい。
+
+出典: `2026-09-08-delegation-design-task-with-user-in-loop-measurement.md`（cc-usage-insights cc-ax-v3-design）
+
+## ベルトコンベア（org-conveyor）初の長走: 10 Issue / 10 PR を通した学び
+
+cc-usage-insights AX v3（設計 PR → 実装 5 段 → 追加 4 件）を、ユーザーの durable な merge 承認のもとで窓口が push/PR/merge まで自走した。ユーザー睡眠中も並行して PR を進めた。
+
+- **merge 事前承認 + 並列 2 本**で 1 PR あたり 30-40 分。ボトルネックは Codex round と実データ検証で、CI（25 秒）と窓口処理ではない。
+- **Codex round 上限到達時の運用**: 最終修正が未レビューで残る形が過半数の PR で発生した。「差分限定の追加 1 round を 1 回だけ」を毎回窓口判断で許可した。契約の round 上限は「最終差分 +1 round」を既定に含めるべき（契約テンプレート改善候補）。
+- **実データ受け入れ条件を brief に書くと、ワーカーが外部要因の壁を正確に報告する**（構造差・cursor 無視・Artifact 凍結等）。「null でないこと」の条件が満たせない理由が毎回一段深い欠陥を露わにした。免除判断は窓口が原因ごとに行い、Issue を切って次の候補に回す流れが回った。
+- **並列 worker が同じ repo の worktree で走ると `.git/config.lock`（0 バイト RO）が残留し、`git worktree add` / upstream 設定が失敗する。** 複数回発生。git プロセス不在を確認して `command rm -f` で除去する（`rm` は alias -i で無言停止するので `command rm -f` 必須）。
+- **窓口の force push は権限ゲートで拒否される。** rebase 後の PR 更新は別ブランチ名で通常 push → 新 PR → 旧 PR を supersede で閉じる、で対応する。
+- **窓口の指示ミス**: ワーカーに force-with-lease push を許可してしまった（ワーカーは push 権限を持たない運用）。brief の「push/PR は行わない」を追指示でも崩さないよう即訂正した。
+- **triage（work-discovery）が毎 worker close で同一のスコープ外候補を返す**のは想定どおりだが繰り返し回数が多くなる。契約 exclude に一致する候補は dispatcher 側で抑止できるとノイズが減る（改善候補）。
+- **plugin cache の版ずれ**はユーザー環境で旧手順が黙って走る。skill 冒頭の版ゲートで根治したが、「plugin 開発中は cache を更新する」手順を org-pull-request の post-merge に組み込む余地がある。
+- 付随観測: renga transport で pr-watch の直 push（path A）が全 PR で `NOTIFY_FAILED`、relay（path B）のみで届いた。冗長性の片側喪失が常態化していた（[[incident-response]] の「多層冗長化は片方だけが動くと気付かれない」と同型。原因調査は未着手・ユーザー判断待ち）。
+
+出典: `2026-09-08-delegation-conveyor-belt-cc-ax-v3.md`（cc-ax-v3-belt）
+
+## 死んだワーカーの再派遣は「なぜ死んだか」を見てからにする
+
+同じ 2 ワーカーを同日 3 回再派遣し、3 回とも同じ `node --test` の OOM で WSL ごと落ちた。前任の窓口は「セッション落ち」としか記録せず原因調査をしなかった。4 回目で worker transcript の末尾（`Exit code 137`）と `dmesg` の OOM 行を見て初めて原因（テスト側の Buffer diff 暴走）に辿り着いた。
+
+run が abrupt に終わって再派遣するときは、再派遣の前に (a) worker transcript 最後の tool_use と result、(b) `journalctl -k | grep -i "out of memory"` を必ず見る。**同じ死に方が 2 回続いたら再派遣せず調査を先にする**。再派遣 brief には「テストは `ulimit -v`; `timeout` の安全帯付き」を入れる。
+
+## 「LLM 判定を決定的規則で置き換える」指示は、旧判定との差分報告を必須にする
+
+窓口が Issue に「allowlist 語が本文に無ければ record/notify=absent と決定的に確定」と書いた。ワーカーは指示どおり実装し、旧 LLM 判定で external だった 3 本が absent に反転、Lv4 が true→false になった。ワーカー自身は「後退」と報告し、窓口が事実確認を追送して初めて「旧判定が過大で、3 本は内部配線（窓口宛 renga 通知）だった」と分かった。
+
+判定機構を差し替える brief には「旧結果と新結果で verdict が変わった件を列挙し、本文の根拠付きで訂正か後退かを判定して報告」を受け入れ条件に入れる。**ワーカーの一次報告の「後退」を鵜呑みにせず、対象の正体を確認してから人間に上げる**（今回はそれで判断が「NOTIFY 追加」→「NEUTRAL 明記」に変わった）。
+
+## 「現時点での分析」は対象期間を確認してから派遣する
+
+「現時点での分析」を当月（9 月途中）と読んだが、ユーザー意図は 8 月（直近の確定月）だった。派遣後に訂正追送で済んだが、intake の月は brief 確定前に 1 行聞くか、直近確定月を既定にする。
+
+出典: `2026-09-08-delegation-respawn-without-diagnosis-and-deterministic-rule-overreach.md`（cc-usage-insights #42/#43/#47, 8 月実走）

@@ -117,3 +117,50 @@ codex の本物の実行記録は必ず `succeeded in 0ms:` のように**実行
 - 方式ベンチマーク（review surface 採用根拠・上記注記の実測値）: `2026-06-16-codex-review-method-benchmark.md`
 - exec 長文プロンプトハング: `2026-05-10-codex-exec-hang-on-long-japanese-prompt.md`
 - stdin 待ちハング根因: `2026-06-16-codex-exec-stdin-hang.md`
+
+## codex-cli が古くて指定モデルが 400 を返すとき、`npm i -g` はワーカーの sandbox では通らない
+
+検証深度 `full` のゲートで `codex exec review -m gpt-6-astra` が `The 'gpt-6-astra' model requires a newer version of Codex.`（400）で落ちたとき、指示どおり `npm i -g @openai/codex@latest` を打つと `Volta error: Could not create temporary directory in /home/<user>/.volta/tmp/image/packages` になる。`codex` が volta 管理の shim（`~/.volta/bin/codex`）なので global install は `~/.volta` へ書こうとするが、ワーカーの sandbox の書き込み許可はワーカーディレクトリと `$TMPDIR` だけであり、**global install は原理的に通らない**（`npm_config_cache` を逃がしても直らない。cache の問題ではない）。
+
+対処はワーカーディレクトリ内へのローカル導入:
+
+```bash
+cd <worker-dir>
+export npm_config_cache=$PWD/.worker-scratch/npm-cache
+npm i --prefix "$PWD/.worker-scratch/codex" @openai/codex@latest --no-audit --no-fund
+./.worker-scratch/codex/node_modules/.bin/codex --version
+./.worker-scratch/codex/node_modules/.bin/codex exec review --base origin/main -m gpt-6-astra ...
+```
+
+- `.worker-scratch/` は commit しない。`CODEX_HOME` は従来どおり `$PWD/.codex-home`（一時ディレクトリ配下不可、上記「ゲートの空の合格」節と同じ制約）で、ローカル導入でも変わらず必要。
+- ゲート判定（`succeeded in` マーカー方式）はローカル導入した codex でもそのまま機能する。0.144.5 系での 400 は exit 1 で返るため、このケースは「空の合格」には化けない。
+
+**一般化**: 「global に入れ直す」系の復旧手順はワーカーの sandbox では成立しないことがある。volta / asdf / nvm のような shim 管理下のツールはとくにそう。ツールの版が要件を満たさないと分かったら、まず「ワーカーディレクトリ内にローカル導入して絶対パスで叩けないか」（`--prefix` を持つ npm パッケージなら可能）を試す。
+
+出典: `2026-09-07-codex-cli-local-install.md`（cc-usage-insights ccui-ax-level-design）
+
+## SKILL.md 埋め込みスクリプトは Codex 指摘が集中する最弱面 — テストが 1 行も通らない
+
+`cc-usage-insights` Issue #14/#15 段階 3 で、検証深度 `full` の Codex ゲート 3 round すべてで指摘が出て、**そのほぼ全部が `skills/*/SKILL.md` に埋め込まれた `node -e` スクリプトの中**だった（事前の自前 7 観点セルフレビューでも反証を生き延びた 3 件中 2 件が同じ場所）。一方 `src/` 側は 648 件のテストが緑でレビューでも実質的な指摘なし。
+
+**なぜここだけ壊れるか**:
+1. **テストが 1 行も実行しない**。テストは自前で JSON を組み立てて CLI に渡すため、SKILL.md のスクリプトが同じ JSON を作れるかは検証対象外になる。
+2. **失敗が「エラー」ではなく「もっともらしい数値」になる**。実例のほとんどは例外も非ゼロ終了も出さず `status: complete` として 0 を公開する。null に縮退させる設計を `src/` 側でどれだけ丁寧に作っても、壊れた値がファイルに書かれる前に生まれるため下流の検証では捕まえられない。
+3. **入力を書くのがモデルである**。「1 要素の配列をスカラで書く」「バージョン文字列をコマンド出力のまま貼る」は LLM の定番の書き崩しで、スクリプトはまさにそれを止めるために存在するのに自分の受け取る値の型を検査していない箇所が残りやすい。
+
+実例（3 round 分）: 配列必須のキーをスカラで受けると `for...of` が文字列を1文字ずつ舐めて誤った allowlist ヒットを生む／版文字列を自由記入させ `claude --version` の実出力をそのまま入れると CLI が exit 5 でレポート 0 枚／`hasOwnProperty` ガードがキー省略には効かず素通り／決定論層の除外規則が LLM 判定層のルーブリックに書かれておらず除外が無効化される／別 skill のスクリプトを射影して流用すると必須キーが欠落し多バッチ経路が全件弾かれる。
+
+**対策**:
+- SKILL.md に `node -e` を書いたら、**その本文を抽出して実際に走らせる**。正常系だけでなく「型を書き崩した入力」（スカラ / キー省略 / 別 skill から流用した形）を最低 3 本通す。抽出先の拡張子は `.cjs` にする（`package.json` が `"type":"module"` だと `.js` は ESM 扱いになり `require is not defined` で落ちる）。
+- **「別の skill のスクリプトを読み替えて使え」と指示しない**。射影しているキーが違えば黙って壊れる。短くてもその skill 専用のものを書き下ろす。
+- **決定論の層で設けた除外規則は、LLM 判定層のルーブリックにも明文で書く**。片方だけだと肯定ラベルが出た瞬間に除外が無効になる。その一文が消えないことをテストで固定する（コードでは検査できない場合がある）。
+
+出典: `2026-09-07-skill-md-embedded-scripts-are-untested-surface.md`（cc-usage-insights ccui-ax-level-impl-lv345）
+
+## codex review は 1 round に 1 個ずつ別の欠陥を出してくる形で収束することがある
+
+round1: P1 1件 + P2 6件 → round2: P2 1件 → round3: P2 1件。round 2 と 3 はどちらもパス正規化の別々のエッジケース（相対パスを cwd で解決していない / `.` `..` を畳んでいない）。**同一指摘の再燃は 0 件**だったので、これは設計問題ではなく健全な収束。同じ箇所が再燃するのとは区別して報告する。
+
+なお codex は read-only sandbox のため `node --test` を実行できず「The test suite could not run because the read-only sandbox prevents temporary-file creation」と毎回書いてくる。これは指摘ではないので混同しない。
+
+出典: `2026-09-11-ultracode-recon-and-transcript-fields.md`（cc-usage-insights cc-ax-collector-v1）
