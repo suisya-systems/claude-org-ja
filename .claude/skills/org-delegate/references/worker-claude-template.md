@@ -56,6 +56,7 @@ grep -rln "lease" {worker_dir}/test --include=*.json
 - **`/tmp/claude-<uid>` は並走中のワーカー間で共有される**。`foo.bak` のような一般名のバックアップは別ワーカーのものと衝突しうる。バックアップは `.worker-scratch/` に置くか名前に task_id を入れ、復元前に中身を照合する（同名ファイルの存在は、それが**自分の**バックアップである証拠にならない）
 - **npm は cache 読みは通り、cache 書きだけ落ちる**。`~/.npm/_cacache` が read-only なので、warm cache から reify するだけの `npm ci` は成功し、`npm pack` / `npm install` / 未インストールのツールへの `npx <tool>`、および内部で `npm pack` を呼ぶ検査（publint / attw / package check）だけが `EROFS ... path ~/.npm/_cacache/tmp/...` で落ちる。文面は `Invalid response body while trying to fetch` とネットワーク障害の顔をしている。対処は sandbox 解除ではなく cache の移動（`npm_config_cache` 環境変数またはコマンド単位の `--cache <dir>`。cache の場所は tarball / lockfile の内容に影響しない）。着手時にリポジトリが指定する install 行（例: `npm ci --ignore-scripts`）を 1 回打ち、ツールは `npx <tool>` でなく `npm run <script>` で呼ぶ。**変更対象が文書だけのタスクでもこの install は省かない**（検証でリポジトリのテスト・lint を回す以上、依存は要る）
 - **linked worktree に `node_modules` が無いまま検証を回すと、ツールが親 clone の `node_modules` を解決して書き込み不可エラーで落ちる**。worktree 内に `node_modules` が無いと Node のモジュール解決が親ディレクトリを遡って親 clone の依存を拾い、vitest 等がそこへ一時ファイル（例: `node_modules/.vite-temp/`）を書こうとして `EROFS` / `read-only file system` になる（2026-09-13、文書だけの変更タスクで install を省いて発生）。対処は sandbox 解除や `TMPDIR` 指定ではなく、worktree 内で上記の install 行を打つこと
+- **uv / pip のキャッシュは `{worker_dir}` 配下に置かず `$TMPDIR` 配下に置く**（`export UV_CACHE_DIR="$TMPDIR/uv-cache"`、pip も同様に `PIP_CACHE_DIR`）。`{worker_dir}` 内に置くのは venv だけ。ワーカーディレクトリ内にキャッシュを置くと、展開された wheel 内の `credentials.py` / `cacert.pem` 等が Claude Code sandbox の read-deny に自動で巻き込まれ、bwrap がマウントできず以後の Bash がコマンド内容に関係なく全滅する（`bwrap: Can't mkdir parents for .../uv-cache/wheels-v5/.../credentials.py`。2026-09-14 gpt-image25-mcp-oauth、2026-09-15 creative-factory Drive 保存タスクで発生）。空ファイルを置いても直らず、復旧はサンドボックス外でキャッシュを `{worker_dir}` 外へ `mv` するしかないので、着手時に環境変数で予防する（詳細は `{claude_org_path}/knowledge/curated/security-hardening.md` の「uv のキャッシュをワーカーディレクトリ内に置くと Bash サンドボックスが起動しなくなる」節）
 - **`cp` / `mv` / `rm` は `-i` alias 化されている前提で書く**。既存ファイルへの上書きは画面に出ない確認プロンプトで tool timeout まで無言停止する（退避側は成功し、復元側だけ止まる）。上書きは `command cp -f`（`\cp` / `/bin/cp` でも可）か `cat backup > dest` を既定にする。`rm -rf` / `rm -r` は permissions.deny でブロックされる（ワークツリー破壊防止。Node 等で再帰削除を迂回しない）ので、掃除が要るときは新しい名前のディレクトリを掘る
 - **git 側の退避／復元コマンドは使えない**。`git stash` 変更系（禁止事項 4）に加え、パス指定の `git checkout -- <path>` と `git restore --source=<ref>`（`--staged` 単独の index-only を除く）も [`.hooks/block-dangerous-git.sh`](../../../../.hooks/block-dangerous-git.sh) が deny する（484-487 行 / 491-505 行）。mutation testing 等で一時的に壊して戻す手順は **`cp` バックアップ（書き戻しは `command cp -f` / `cat >`）か一時 commit の 2 択**。復元後は `git diff` で戻ったことを確認してから次の変異を入れる（復元が無音で効かず変異が二重に入ったまま RED を観測した事故あり）
 - **`read-only file system` / `Permission denied` が出ても `dangerouslyDisableSandbox` を反復要求しない**（安全分類器のセッションロックアウトで作業不能になる）。出力先を上記の書ける場所へ変えて再試行する。`sh: <tool>: Permission denied` は `node_modules/.bin/<tool>` が存在しないだけのことが多い（`ls {worker_dir}/node_modules/.bin/<tool>` で実体を確認）
@@ -69,6 +70,9 @@ EXCLUDE="$(git -C {worker_dir} rev-parse --path-format=absolute --git-path info/
 grep -qxF '.worker-scratch/' "$EXCLUDE" 2>/dev/null || echo '.worker-scratch/' >> "$EXCLUDE" || true
 # npm の cache をワーカーディレクトリ内（または $TMPDIR）へ向けてから install / pack する
 export npm_config_cache={worker_dir}/.worker-scratch/npm-cache
+# uv / pip の cache は $TMPDIR へ（{worker_dir} 内に置くと sandbox の read-deny に巻き込まれ Bash が全滅する。上記参照）
+export UV_CACHE_DIR="$TMPDIR/uv-cache"
+export PIP_CACHE_DIR="$TMPDIR/pip-cache"
 npm ci --ignore-scripts
 PKG_DIR={worker_dir}/packages/example   # pack 対象のフォルダは positional 引数で渡す
 npm pack "$PKG_DIR" --pack-destination {worker_dir}/.worker-scratch
