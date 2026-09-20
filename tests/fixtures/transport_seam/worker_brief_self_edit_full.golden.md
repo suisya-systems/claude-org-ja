@@ -89,7 +89,7 @@ grep -cE '^ *failed in [0-9]+(ms|s|m)' "$CODEX_REVIEW_LOG"      # 失敗実行�
 - **ゲート成立** = 成功数 **1 以上** かつ 失敗数 **0** かつ `codex_status` **0**。このときだけ「codex clean」と報告してよい。exit 0 は十分条件ではない（空の合格でも 0）が、**非 0 は失格条件として使える**ため必要条件に併用する
 - **未成立なら「codex clean」と報告しない**。まず `CODEX_HOME` を見直して再実行（`$TMPDIR` 配下を疑う）。それでも成立しなければ **「Codex ゲート未成立（diff 未読の空の合格、HEAD=`<sha>`）」と明示**し、上記 2 数値を添えて窓口の判断を仰ぐ
 - **前景実行する**（背景化 `&` はゲート素通り事故を招く）。Blocker/Major 修正、**round 既定上限 3**（brief の実装ガイダンスで別値指定があればそちら優先）
-- **上限到達で自走継続せず**、残指摘 + 自己評価（設計問題化か収束途中か）を窓口に報告して停止。**同一指摘が 3 round 消えない場合は上限前でも即設計問題として報告**（別問題が各 1 round で順に解消する健全な収束とは区別）
+- **上限到達で自走継続せず**、残指摘 + 自己評価（設計問題化か収束途中か）を窓口に報告して停止。**同一指摘が 3 round 消えない場合は上限前でも即設計問題として報告**（別問題が各 1 round で順に解消する健全な収束とは区別）。**前 round の修正を巻き戻す向きの指摘が出たら、毎 round 別指摘でも飽和のサイン** — 潰し続けず範囲を切って既知の限界として明示し、報告に綱引きの方向を書く
 - Minor/Nit 残置可
 - **large diff では effort を上げない**（high-effort review は大 diff でスケールしない）。review surface は危険側 Major は守るが benign safe-side false-negative / ReDoS 級を取りこぼしうる（詳細: claude-org リポジトリの `knowledge/curated/codex.md`）
 - `codex:rescue` skill 禁止、`codex exec review` / `codex exec` 系直打ちのみ。ChatGPT アカウントで通るモデル名は限られ、素の `gpt-6` / `gpt-6-codex` / `gpt-6-sol` は 400・API キー surface も不可（現行世代の `-m gpt-6-astra` 明示）。codex-cli は **0.153.4 以上**が必要（0.147.0 は `The 'gpt-6-astra' model requires a newer version of Codex.` で 400。このメッセージが出たらモデル名を探し直さず `npm i -g @openai/codex@latest` で更新する）
