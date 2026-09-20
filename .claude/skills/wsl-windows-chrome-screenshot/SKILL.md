@@ -123,8 +123,11 @@ npm --prefix "$W/.worker-scratch/base" run build
 ループで撮り分けられる。`cd` は使わず `npm --prefix` で回す。
 
 **「後」側もコピーしてポートを変える**こと。tracked ファイルを `sed -i` で書き換えると
-`git diff` に混ざる。混ぜてしまったら `git show HEAD:<path> > <path>` で戻し、
-`git status --short` が空であることを確認する。
+`git diff` に混ざる。やむを得ず直接書き換えるなら、**書き換える前に
+`cp <path> .worker-scratch/<name>.bak` を取り、戻すときは `command cp -f`**
+（`git show HEAD:<path> > <path>` は commit 前のタスク変更ごと巻き戻す。
+ワーカーは `git checkout -- <path>` / `git restore --source=` を hook で deny されている）。
+戻したあと `git diff -- <path>` が撮影前の状態と一致することを確認する。
 
 ポートは `scripts/page-preview.mjs` が 7334 決め打ち。削除済み worktree のプレビューが
 生き残って掴んでいることがあるので、**他ワーカーのプロセスは撃たず、複製してポートを
