@@ -91,6 +91,15 @@
             "command": "bash \"${CLAUDE_PROJECT_DIR}/.hooks/block-adhoc-pr-watch.sh\""
           }
         ]
+      },
+      {
+        "matcher": "mcp__.*__close_pane",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PROJECT_DIR}/.hooks/block-relative-close-pane.sh\""
+          }
+        ]
       }
     ]
   },
