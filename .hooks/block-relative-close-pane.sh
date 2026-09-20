@@ -35,7 +35,8 @@
 #
 # 何を許すか:
 #   - 数値 pane id: `3` / `"3"` / `"%3"` (renga / broker いずれの表記も)
-#   - DD-2 stale-binding carve-out: `pr-watch-<PR>` 宛の裸 name。
+#   - DD-2 stale-binding carve-out: **`mcp__org-broker__close_pane` 宛のときだけ**
+#     `pr-watch-<PR>` 形の裸 name。
 #     登録簿に name binding だけが stale に残り `list_panes` に出ないため
 #     **列挙から数値 pane id を取り直せない**経路で、契約 T-§4.2 が
 #     transport 条件付きで認めている唯一の裸 name 経路
@@ -132,8 +133,17 @@ case "$TARGET_TYPE" in
       exit 0
     fi
     # DD-2 stale-binding carve-out (pr-watch ペインの後片付けのみ)。
+    # 契約 T-§4.2 はこの carve-out に「Group B を実際に駆動している backend が
+    # org-broker であることの**積極的証拠**」を要求し、解決済み既定からの推論を
+    # MUST NOT としている。ハーネス上のその証拠は「これから呼ぶ完全修飾名が
+    # mcp__org-broker__* であること」なので、TOOL_NAME で判定する。
+    # renga は Group B を単一タブモデルで解決しないため、裸 name は別組織の
+    # 同名 watcher へ先勝ちでフォールスルーしうる (carve-out 自体が事故になる)。
     if [[ "$TARGET" =~ ^pr-watch-.+$ ]]; then
-      exit 0
+      if [[ "$TOOL_NAME" == mcp__org-broker__* ]]; then
+        exit 0
+      fi
+      deny_with_reason "close_pane (${TOOL_NAME}) の target=\"${TARGET}\" は DD-2 stale-binding carve-out の形ですが、この carve-out は Group B を単一タブモデルで解決する backend (org-broker) でのみ成立します。完全修飾名が mcp__org-broker__* でない呼び出しでは、裸の name が別組織の同名ペインへフォールスルーしうるため拒否します。${CONTRACT_NOTE}"
     fi
     if [[ "$TARGET" == "focused" ]]; then
       deny_with_reason "close_pane (${TOOL_NAME}) の target=\"focused\" は禁止です。'focused' は caller 自身ではなく「そのタブで人間がいま見ているペイン」に解決するため、窓口ペインを不可逆に閉じます (Issue #1018 の実事故)。${CONTRACT_NOTE}"

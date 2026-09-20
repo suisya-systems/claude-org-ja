@@ -50,12 +50,17 @@ Issue #1018 が「実装時に決める」としていた論点。**ja の `.hoo
 許可するのは 2 形のみ:
 
 - **数値 pane id**: `3` / `"3"` / `"%3"`
-- **DD-2 stale-binding carve-out**: `pr-watch-` で始まる裸の name。登録簿に name binding だけが
+- **DD-2 stale-binding carve-out**: `mcp__org-broker__close_pane` 宛のときだけ、
+  `pr-watch-` で始まる裸の name。登録簿に name binding だけが
   stale に残り `list_panes` に出ないため列挙から数値 id を取り直せない経路で、契約が
   transport 条件付きで認めている唯一の裸 name 経路（3 条件の SoT は
   [`.claude/skills/pr-watch-pane/SKILL.md`](../../.claude/skills/pr-watch-pane/SKILL.md) Step 5 (b)、
-  静的側の対応は `check_group_b_selectors.py` の `ALLOWLIST`）。3 条件の成立は payload から
-  機械判定できないので、フックは name の形だけを見て通し、条件の遵守は手順とレビューが受け持つ。
+  静的側の対応は `check_group_b_selectors.py` の `ALLOWLIST`）。3 条件のうち **backend 条件だけは
+  payload から機械判定できる**: 契約は「Group B を駆動している backend が org-broker であることの
+  積極的証拠」を要求し、解決済み既定からの推論を MUST NOT とする。ハーネス上のその証拠が
+  「これから呼ぶ完全修飾名が `mcp__org-broker__*` であること」なので、フックはそこで判定する。
+  残る 2 条件（再 spawn が `[name_taken]` / その name が `list_panes` に出ない）は payload に
+  現れないので、遵守は手順とレビューが受け持つ。
 
 それ以外（`target` 省略 / `null` / `"focused"` / `"secretary"` / `"dispatcher"` /
 `"worker-{task_id}"` 等）は exit 2 で deny する。

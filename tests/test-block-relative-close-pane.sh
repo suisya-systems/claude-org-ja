@@ -117,8 +117,15 @@ assert_exit 2 "$ec" "array target is blocked (fail-closed)"
 
 # pr-watch carve-out を名乗るだけの別名は通さない。
 stderr=$(mktemp); TMPFILES+=("$stderr")
-ec=$(run_hook "$(payload_with_target "$RENGA" '"pr-watch"')" "$stderr")
+ec=$(run_hook "$(payload_with_target "$BROKER" '"pr-watch"')" "$stderr")
 assert_exit 2 "$ec" "target=\"pr-watch\" without a PR suffix is blocked"
+
+# carve-out は Group B を単一タブモデルで解決する backend でのみ成立する
+# (契約 T-§4.2: 積極的証拠 = 完全修飾名が mcp__org-broker__*)。
+stderr=$(mktemp); TMPFILES+=("$stderr")
+ec=$(run_hook "$(payload_with_target "$RENGA" '"pr-watch-51"')" "$stderr")
+assert_exit 2 "$ec" "carve-out does not apply on renga (bare name would fall through to another org)"
+assert_stderr_contains "mcp__org-broker__" "$stderr" "renga carve-out deny stderr names the required backend"
 
 # --- Allow: 正規経路 ---
 
