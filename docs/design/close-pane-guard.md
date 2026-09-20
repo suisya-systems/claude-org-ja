@@ -21,7 +21,7 @@ T-§4.2 "Fail-safe consequence for Group B" は、Group B（`close_pane` / `set_
 | Layer | 何を止めるか | 実体 | 状態 |
 |---|---|---|---|
 | A | ワーカーが `close_pane` を**呼ぶこと自体** | role schema の `permissions.deny`（[`tools/org_extension_schema.json`](../../tools/org_extension_schema.json) の `worker_roles[*]`） | 未着手（runtime とのペア変更。下記） |
-| B | **全ロール**の相対セレクタ指定 | PreToolUse フック [`.hooks/block-relative-close-pane.sh`](../../.hooks/block-relative-close-pane.sh) | 実装済み |
+| B | 相対セレクタ指定 | PreToolUse フック [`.hooks/block-relative-close-pane.sh`](../../.hooks/block-relative-close-pane.sh) | 窓口 / ディスパッチャー / キュレーターは実装済み。ワーカーは未（後述） |
 | C | 手順ドキュメントへの相対セレクタ**再混入** | 静的チェッカー [`tools/check_group_b_selectors.py`](../../tools/check_group_b_selectors.py) | 既存 |
 
 Layer A だけでは足りない: ディスパッチャーは `bypassPermissions` で動くため
@@ -67,6 +67,30 @@ attention watcher 停止 / pr-watch 後片付けは、いずれも `list_panes` 
 [`.claude/skills/org-attention-stop/SKILL.md`](../../.claude/skills/org-attention-stop/SKILL.md)）。
 窓口ペインは停止経路でも close されず、最後に自分自身で `exit` する。
 
+## フックはどのロールに届くか
+
+Claude Code が読むのは **その session の project dir 配下**の `.claude/settings*.json` であって、
+任意のツリーのものではない。ロールごとに project dir が違う
+（[`tools/org_extension_schema.json`](../../tools/org_extension_schema.json) の
+`roles[*].settings_paths`）ので、フックは配布経路ごとに登録する必要がある。
+
+| ロール | project dir | 配布経路 | 状態 |
+|---|---|---|---|
+| 窓口 | リポジトリルート | [`.claude/settings.json`](../../.claude/settings.json)（repo_shared）を直接継承 | 済 |
+| ディスパッチャー | `.dispatcher/` | `.dispatcher/.claude/settings.local.json`（`/org-setup` が [`.claude/skills/org-setup/references/permissions.md`](../../.claude/skills/org-setup/references/permissions.md) から配布） | 済 |
+| キュレーター | `.curator/` | 同上 | 済 |
+| ワーカー | worker dir | `worker_roles[*].hooks`（`claude-org-runtime settings generate`） | **未（Layer A と同じ runtime ペア変更に乗る）** |
+| ja 自身を編集するワーカー | ja の worktree | リポジトリルートの `.claude/settings.json` を継承 | 済 |
+
+ワーカーが未カバーなのは、今回の事故を起こした当のロールが未カバーであることを意味する。
+`worker_roles[*].hooks` は byte-lock された schema 側にあり、ja 単独で足すと drift CI が
+hard fail するため（下記 Layer A と同じ制約）、両者は同じ runtime ペア変更で揃える。
+
+なお `roles[*].required_hooks` は **最低要件の集合**であって網羅リストではない
+（[`tools/check_role_configs.py`](../../tools/check_role_configs.py) は「required が在るか」だけを見る。
+allow 側の `disallow_allow_regex` に相当する「hook のホワイトリスト」は schema に無い）。
+ディスパッチャー / キュレーターへのフック追加が schema 変更なしに成立するのはこのため。
+
 ## 残余（塞げていないもの）
 
 **窓口ペインを数値 pane_id で撃つ経路はフックでは止まらない。** 窓口の pane_id を記録した
@@ -84,8 +108,16 @@ renga の `RENGA_PANE_ID` に相当する caller pane id を out-of-band で供�
 
 ワーカー settings の生成は ja の `tools/org_extension_schema.json` を `--schema` で
 明示して行われる（[`tools/gen_delegate_payload.py`](../../tools/gen_delegate_payload.py)）ので、
-deny の実効化には ja 側の編集で足りる。**ただしこのファイルは runtime バンドル schema との
+実効化には ja 側の編集で足りる。**ただしこのファイルは runtime バンドル schema との
 byte 一致が CI で要求される**ため、ja 側だけを先に変更すると
 `tools/check_runtime_schema_drift.py` が hard fail する（pin window `>=0.1.42,<0.2` の内側にいる間）。
+
+同じ schema 変更に乗るのは 2 つ:
+
+1. `worker_roles[*].permissions.deny` に `mcp__renga-peers__close_pane` /
+   `mcp__org-broker__close_pane` を足す（Layer A 本体。ペインの破棄はディスパッチャーの
+   責務であり、ワーカーが呼ぶ必要が無い）
+2. `worker_roles[*].hooks.PreToolUse` に本フックを足す（上表の未カバー行。deny を
+   すり抜ける経路が将来出ても Layer B が残るように、二重に掛ける）
 
 したがって順序は: **runtime 側に同じ schema 変更を入れてリリース → ja 側で schema 同期**。

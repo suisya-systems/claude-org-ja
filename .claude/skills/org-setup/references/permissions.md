@@ -301,6 +301,15 @@ python tools/org_setup_prune.py --all                        # secretary / dispa
             "command": "bash \"{claude_org_path}/.hooks/block-no-verify.sh\""
           }
         ]
+      },
+      {
+        "matcher": "mcp__.*__close_pane",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"{claude_org_path}/.hooks/block-relative-close-pane.sh\""
+          }
+        ]
       }
     ]
   },
@@ -319,15 +328,32 @@ python tools/org_setup_prune.py --all                        # secretary / dispa
 - `block-dangerous-git.sh`: 素の `git push --force` / `-f` および protected branch (main / master / develop / release/* / production) への `git push --force-with-lease` をブロック。非保護 branch への `--force-with-lease` は許容（PR rebase / squash 後の安全な再 push 用、Issue #470）。ただし refspec 未指定 / `HEAD` / `@` / wildcard refspec / `--all` / `--mirror` / `--tags` / branch 以外の namespace (`refs/tags/*` / `refs/notes/*` / `refs/replace/*` 等) / `git push origin tag <name>` 形式の宛先が曖昧なケースは安全側で deny。加えて `git reset --hard` / `git branch -D` / `git clean -f` / `git checkout -- .` / `git restore --source` / `git tag -d` / `git update-ref -d` / `git reflog expire --all` 等の破壊的操作も引き続きブロック。さらに `git stash` の変更系（引数なしの bare 形 / `push` / `save` / `pop` / `apply` / `branch` / `drop` / `clear` / `store` / `create`）を allowlist 方式で deny する（調査用の `list` / `show` のみ許可）。`refs/stash` は base clone の共有 git dir に解決されるため、ある worktree の `pop` が別 worktree の退避を復元しうること、および未追跡の非通常ファイル（キャラクタデバイス）があると `-u` 形が途中失敗することが理由。**下記 allow の `Bash(git stash:*)` は意図的に残してある**: PreToolUse hook は `permissions.allow` と独立に評価されるため hook 側の deny が優先し、allow を消しても挙動は変わらない一方、`tools/org_extension_schema.json` は runtime の bundled schema と byte 一致が要求される（[`tools/check_runtime_schema_drift.py`](../../../../tools/check_runtime_schema_drift.py)）ため、削除には runtime 側のペアリリースが要る
 - `block-workers-delete.sh`: workers ディレクトリの再帰削除をブロック（ワーカー成果物の保護）
 - `block-no-verify.sh`: `--no-verify` 系の検証バイパスをブロック
+- `block-relative-close-pane.sh`: `close_pane` の宛先が数値 pane id でないとき（`target` 省略 / `"focused"` / 裸の name）に deny する。裸 name の例外は `pr-watch-<PR>` のみ（DD-2 stale-binding carve-out）。**ディスパッチャーは `bypassPermissions` で動き `permissions.deny` が評価されないため、このフックだけが障壁になる**（Issue #1018 の事故は相対セレクタで窓口ペインが閉じられたもの）。窓口はプロジェクトルート直下の [`.claude/settings.json`](../../../settings.json) から同じフックを継承するので、そちらには重複登録しない。設計と残余は [`docs/design/close-pane-guard.md`](../../../../docs/design/close-pane-guard.md)
 
 ## キュレーター (`<repo>/.curator/.claude/settings.local.json`)
 
-キュレーターは知見整理のみ。追加の Bash 許可は不要。
+キュレーターは知見整理のみ。追加の Bash 許可は不要。`close_pane` ガードだけは全ロール共通で掛ける（キュレーターの project dir は `.curator/` なので、リポジトリルートの `.claude/settings.json` を継承しない）。
 
 ```json
 {
   "permissions": {
     "allow": []
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "mcp__.*__close_pane",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"{claude_org_path}/.hooks/block-relative-close-pane.sh\""
+          }
+        ]
+      }
+    ]
+  },
+  "env": {
+    "CLAUDE_ORG_PATH": "{claude_org_path}"
   }
 }
 ```
