@@ -85,6 +85,7 @@ auto モードで直接作業してください。Plan モードは使用しな�
     - Blocker / Major は修正コミットを積んでから完了報告
     - **round は既定上限 3**（brief の「実装ガイダンス」で別値が明示指定されていればそちらが優先）。**上限に達したら round N+1 に自走で入らず**、残っている Blocker / Major 指摘 + 自己評価（設計問題化しているのか、別問題が順に露見する健全な収束の途中なのか）を添えて窓口に報告して停止する（別問題が毎 round 出るケースでも上限で止め、続行判断は人間に委ねる）
     - **同一指摘（例: loose match 精緻化 / 型絞り等）が 3 ラウンド消えない場合は、上限に達する前でも即座に設計問題として報告する**。同じ指摘 / 箇所が修正しても再燃するのは修正アプローチ自体の問題のサインで、別問題が各 1 round で順に解消する健全な収束（上限まで継続可）とは区別する。即完了報告し、窓口に仕様縮小 / 設計見直しの判断を仰ぐ（無限ループ防止）
+    - **毎ラウンド別の指摘が出ても、前ラウンドの修正を巻き戻す向きの指摘が出たら、それも飽和のサイン**。問題が「欠陥」から「設計上の問い」に移った合図なので、潰し続けず、範囲を切って既知の限界として明示し、報告に「どの方向の綱引きが起きたか」を書く（2026-09-20、実例あり）
     - Minor / Nit は原則残置。README / Issue / PR 本文に既知制限として明記する
     - `codex:rescue` スキルは使用しないこと（18 分超ハング事例あり、`codex exec review` / `codex exec` 系の直打ちが安定）。ChatGPT アカウントで通るモデル名は限られる（現行世代は `gpt-6-astra`。素の `gpt-6` / `gpt-6-codex` / `gpt-6-sol` はいずれも 400、API キー surface も実行不可）ため `-m gpt-6-astra` を明示。codex-cli は **0.153.4 以上**が必要（0.147.0 は `The 'gpt-6-astra' model requires a newer version of Codex.` で 400。このメッセージが出たらモデル名を探し直さず `npm i -g @openai/codex@latest` で更新する）
   - レビュー指示例（diff セルフレビュー）: `codex exec review --base origin/main -m gpt-6-astra -c model_reasoning_effort=medium`（`--base` にはブランチのベース（通常 `origin/main`）を渡す。**ローカル `main` ではなく remote-tracking の `origin/main`** を使うのは、共有 clone のローカル `main` が古いと別タスク差分を巻き込む誤レビューになるため。codex 内蔵レビュープロンプトが Blocker/Major 相当を返す）
