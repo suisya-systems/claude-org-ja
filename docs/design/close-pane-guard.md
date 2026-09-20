@@ -119,5 +119,9 @@ byte 一致が CI で要求される**ため、ja 側だけを先に変更する
    責務であり、ワーカーが呼ぶ必要が無い）
 2. `worker_roles[*].hooks.PreToolUse` に本フックを足す（上表の未カバー行。deny を
    すり抜ける経路が将来出ても Layer B が残るように、二重に掛ける）
+3. `required_hook_scripts` に `block-relative-close-pane.sh` を足す（このリストは
+   [`tools/org_setup_prune.py`](../../tools/org_setup_prune.py) の `_root_as_claude_org_path` が
+   「そのディレクトリが本当に org チェックアウトか」を判定する台帳で、全ロールの settings が
+   指すスクリプトはそこに載っているべき）
 
 したがって順序は: **runtime 側に同じ schema 変更を入れてリリース → ja 側で schema 同期**。

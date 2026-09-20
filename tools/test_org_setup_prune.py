@@ -380,8 +380,19 @@ class OverrideShapeValidationTests(unittest.TestCase):
         self.td = tempfile.TemporaryDirectory()
         self.root = Path(self.td.name)
         (self.root / ".curator" / ".claude").mkdir(parents=True)
+        # The curator template carries a {claude_org_path} placeholder (the
+        # close_pane guard hook, Issue #1018), so the seeded settings file must
+        # supply a value the way a real pruned one does -- via
+        # env.CLAUDE_ORG_PATH, which the template itself emits. Without it
+        # build_target aborts on the unresolved placeholder before the override
+        # shape is ever examined, and these tests would pass for the wrong
+        # reason (every case aborting, including the well-formed one).
         (self.root / ".curator" / ".claude" / "settings.local.json").write_text(
-            json.dumps({"permissions": {"allow": []}}), encoding="utf-8",
+            json.dumps({
+                "permissions": {"allow": []},
+                "env": {"CLAUDE_ORG_PATH": "C:/org"},
+            }),
+            encoding="utf-8",
         )
 
     def tearDown(self) -> None:
