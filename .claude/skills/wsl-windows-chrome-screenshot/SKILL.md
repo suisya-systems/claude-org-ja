@@ -24,6 +24,19 @@ headless で使う（rondo#318 の申し送り、`knowledge/raw/archive/2026-09-
 以下は rondo#314 / #318 / #350 / #351 / #352 で繰り返し踏んだ手順を固定したもの。
 **どの失敗もエラーが原因を指さず、PNG が「撮れてしまう」ことが多い**。
 
+## 0. sandbox を外す撮影の実行は窓口が行う
+
+§1 の `dangerouslyDisableSandbox: true` の呼び出しは、auto mode のワーカーでは分類器に
+`[Safety Bypass Flag]` で拒否される（2026-09-22、2 回。sandbox 内で Chrome を 1 回起動する
+probe も拒否）。同じスクリプトは窓口が流して撮れている。よって役割を分ける。
+
+- **ワーカー**: サーバ起動・撮影・停止を 1 本にまとめた撮影スクリプトを
+  `.worker-scratch/` に用意し、sandbox 内でプレビューが起動する（curl が 200）ことまで確かめ、
+  **そのまま流せる 1 行のコマンド**を窓口への報告に書く。sandbox 解除は自分で要求しない。
+  1 回でも拒否されたら再要求しない（繰り返すとロックアウトされる）。
+- **窓口**: スクリプトを読んでから sandbox 外で 1 回だけ流し、撮れた PNG が Chrome の
+  接続拒否画面（§2）でないことを確かめて、merge gate のページに載せる。
+
 ## 1. サーバ起動と撮影は 1 つの Bash 呼び出しに入れ、その呼び出しだけ sandbox を外す
 
 sandbox は Bash 呼び出しごとに PID / network 名前空間を分けるため、
@@ -64,6 +77,14 @@ tail -5 .worker-scratch/preview.log
 起動するため、**同じコマンド内に殺したいパターン文字列があると `pgrep -f` が
 その zsh 自身を拾って自殺する**。`Exit code 144` だけが返る。`[3]` のブラケット trick も
 同一コマンド内に生の文字列がある限り効かない）。
+
+- **`while read` ループの中で撮るときは Chrome の stdin を `</dev/null` にする**。
+  塞がないと chrome.exe がループの入力を読み尽くし、1 画面目しか撮れない。
+- プレビューを `sh -c` や npm 経由で起こすなら **`exec node ...` で起動し、`$!` を node の
+  pid にする**（間に親シェルが挟まると `kill $SRV` が node に届かず残る）。残ったサーバがあると、
+  次の実行が古いビルドを撮るか `EADDRINUSE` になる。起動前にポートの使用状況を確かめ、
+  止めてよいのは**このタスクで自分が起動し pid を控えたプレビューだけ**。自分のものでない
+  プロセスが使っていたら止めずに、§6 のとおり別のポートを選ぶ。
 
 ## 2. サーバ起動直後の 1 枚目は必ず `ERR_CONNECTION_REFUSED` になる
 
@@ -152,3 +173,4 @@ npm --prefix "$W/.worker-scratch/base" run build
 - `knowledge/raw/archive/2026-09-21-screenshot-server-and-chrome-in-one-bash-call.md`（rondo#351）
 - `knowledge/raw/archive/2026-09-21-wsl-chrome-shots-need-sandbox-off-on-both-legs.md`（rondo#352）
 - `knowledge/raw/archive/2026-09-20-wsl-windows-chrome-file-url-screenshots.md`（rondo#319、`file://` とウィンドウ高さ）
+- `knowledge/raw/archive/2026-09-22-screenshot-skill-blocked-by-auto-mode-classifier.md`（rondo#411-#413、§0）
