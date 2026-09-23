@@ -28,12 +28,14 @@ CLI は **1 attempt あたり 1 回起動する単発判定**（Issue #285、Cla
 # ディスパッチャー cwd は .dispatcher/ なので 1 段上がリポジトリルート。
 # 記録が無い / ファイルが読めない場合は空文字になる（= 下の分岐でゲートを回す側に倒れる）。
 completion_reported_at=$(python3 -c 'import json;d=json.load(open("../.state/dispatcher/worker-idle-state.json"));print((d.get("worker-<task_id>") or {}).get("completion_reported_at") or "")' 2>/dev/null)
-run_status=$(sqlite3 ../.state/state.db "SELECT status FROM runs WHERE task_id = '<task_id>'" 2>/dev/null)
+# sqlite3 CLI は入っていない環境があるので Python 標準の sqlite3 で読む（取れなければ空文字）。
+run_status=$(python3 -c 'import sqlite3,sys;r=sqlite3.connect("file:../.state/state.db?mode=ro",uri=True).execute("SELECT status FROM runs WHERE task_id = ?",(sys.argv[1],)).fetchone();print(r[0] if r else "")' '<task_id>' 2>/dev/null)
 ```
 
-- **値があり、かつ `run_status` が `in_use` **でない**（`review` / `completed`）** → 完了報告は既に secretary に届いており、その記録は現在の lifecycle のものである。**初回送信を発行せず**、本ゲートを acked 相当として通過し（「2. polling ループ」も回さない）retro を続行する。答えが手元にあるのに聞き直すと、窓口の受信箱を同じ 1 事実で埋めることになる（2026-08-08 に同一 task へ 4 回再送した実誤検知、Issue #869）。CLOSE_PANE 時点では merge 済みで `completed` になっているのが典型なので、`review` だけに絞らない
+- **`run_status == 'completed'`（記録の有無を問わない）** → run は merge / 窓口の完了処理を経て閉じており、「完了報告未着」と結論する余地がない。**初回送信を発行せず**、本ゲートを acked 相当として通過し（「2. polling ループ」も回さない）retro を続行する。記録を要件にしないのは、`WORKER_REOPENED` で記録が消えた後の手直し完了で窓口が `WORKER_COMPLETION_NOTED` を再送しない・そもそも送らないケースで、merge 済み task にも毎回問い合わせが飛んでいたため（2026-09-23 に 4 task で発生）
+- **値があり、かつ `run_status == 'review'`** → 完了報告は既に secretary に届いており、その記録は現在の lifecycle のものである。**初回送信を発行せず**、本ゲートを acked 相当として通過し（「2. polling ループ」も回さない）retro を続行する。答えが手元にあるのに聞き直すと、窓口の受信箱を同じ 1 事実で埋めることになる（2026-08-08 に同一 task へ 4 回再送した実誤検知、Issue #869）。
 - **値はあるが `run_status == 'in_use'`** → T6 再指示が landed 済みで、記録は**前回の完了を指す stale な marker** である（`WORKER_REOPENED` の取りこぼし）。skip せず従来どおりゲートを回す。flag の self-heal clear は監視ループ側の責務なので**ここでは触らない**（worker-monitoring.md Step 5.2 (d) reopen-self-heal が担う）
-- **値が無い / record が無い / ファイルが読めない / `run_status` が取れない** → **記録の不在は「未着」の証拠にならない**（`WORKER_COMPLETION_NOTED` は secretary が best-effort・非 blocking で送るので取りこぼしうる）。従来どおり下の「1. 初回送信」から本ゲートを回す。ゲートの存在理由そのものが「dispatcher の受信キューに無い ≠ システム上に無い」だからである（下の「理由」節）
+- **上記以外（`run_status` が `completed` でなく値が無い / record が無い / ファイルが読めない / `run_status` が取れない）** → **記録の不在は「未着」の証拠にならない**（`WORKER_COMPLETION_NOTED` は secretary が best-effort・非 blocking で送るので取りこぼしうる）。従来どおり下の「1. 初回送信」から本ゲートを回す。ゲートの存在理由そのものが「dispatcher の受信キューに無い ≠ システム上に無い」だからである（下の「理由」節）
 
 この skip は初回送信の有無だけを変えるもので、polling ループ・secretary unreachable fallback・exit code 分岐は一切変えない。判定の一般形は [`.dispatcher/references/worker-monitoring.md`](worker-monitoring.md) の「観測の原則」(P1)（観測できないことは起きていないことの証拠にならない）に対応する。
 
@@ -571,10 +573,11 @@ resolver を別コマンドで走らせる必要はない。resolver は read-on
 
 ```bash
 # ディスパッチャー cwd は .dispatcher/ なので 1 段上がリポジトリルート。
+# stdout JSON は 6-2 の同一判定と 6-4 の転送で使うので変数に控える。
 # Windows
-py -3 ../tools/work_discovery_scan.py --trigger worker_close --all-registry-repos
+scan_json=$(py -3 ../tools/work_discovery_scan.py --trigger worker_close --all-registry-repos); scan_exit=$?
 # Mac/Linux
-python3 ../tools/work_discovery_scan.py --trigger worker_close --all-registry-repos
+scan_json=$(python3 ../tools/work_discovery_scan.py --trigger worker_close --all-registry-repos); scan_exit=$?
 ```
 
 - **`REPO_FLAGS=$(… --format flags)` を経由する旧手順は使わない**（Issue #829）。フラグ文字列が複数引数に
@@ -605,7 +608,21 @@ python3 ../tools/work_discovery_scan.py --trigger worker_close --all-registry-re
 
 - **exit 0 (no_candidates)** → 着手可能な候補なし。窓口へは送らない。監査のため scan 実行を journal に
   記帳（6-3）して CLOSE_PANE フロー完了。
-- **exit 10 (candidates_found)** → stdout の JSON を控えて 6-3（記帳）→ 6-4（窓口へ転送）。
+- **exit 10 (candidates_found)** → stdout の JSON を控え、**前回と同じ候補か**を下の helper で判定してから
+  6-3（記帳）→ 6-4（窓口へ転送）。
+
+  ```bash
+  # 候補集合 {owner/repo#N} を、直近の work_discovery_scanned（trigger=worker_close）記帳の
+  # candidate_refs と比べる。stdout: {"candidate_refs": "...", "unchanged": bool}
+  printf '%s' "$scan_json" | python3 ../tools/work_discovery_dedup.py
+  ```
+
+  - **exit 0 (changed)** → 6-3 で `candidate_refs` を記帳し、6-4 で窓口へ転送する。
+  - **exit 3 (unchanged)** → 前回転送した候補と同じ集合。6-3 で `outcome=unchanged` 付きで記帳し、
+    **窓口へは送らない**（6-4 をスキップ）。worker クローズのたびに同じ候補を再送すると、窓口の受信箱が
+    同じ提案で埋まる（2026-09-23 に同一 3 件を 7 回再送）。候補が 1 件でも増減・入れ替われば changed に
+    なり通常どおり転送される。DB が読めない・直近記帳に `candidate_refs` が無い場合も changed 側に倒れる。
+  - **exit 2 (error)** → 判定できないので changed と同じく 6-3 → 6-4 で転送する（抑止しない）。
 - **exit 2 (error)** → 窓口に informational として 1 行のエラー通知を送る（6-4 のエラー形）。scan 失敗で
   worker クローズを止めない（CLOSE_PANE フロー自体は完了扱い。候補ゼロと誤読させず、scan のクラッシュを
   握り潰さないため窓口へ届ける）。repo セット解決の失敗もこの枝に入る（6-1）。
@@ -620,9 +637,15 @@ scan 実行を journal イベントに記帳する（生 JSON を `>>` で直書
 候補件数・推奨 ref・トリガを載せる:
 
 ```bash
-# exit 10 の例。candidate_count / recommendation_ref は scan の stdout JSON から取る。
+# exit 10 の例。candidate_count / recommendation_ref は scan の stdout JSON から、
+# candidate_refs は work_discovery_dedup.py の stdout から取る（次回の同一判定の比較元になるので省略しない）。
 bash ../tools/journal_append.sh work_discovery_scanned \
-    trigger=worker_close candidate_count={JSON.candidate_count} recommendation_ref={owner/repo#N}
+    trigger=worker_close candidate_count={JSON.candidate_count} recommendation_ref={owner/repo#N} \
+    candidate_refs={dedup.candidate_refs}
+# exit 10 で dedup が unchanged（exit 3）だった例。窓口へは送らないが記帳は残す。
+bash ../tools/journal_append.sh work_discovery_scanned \
+    trigger=worker_close candidate_count={JSON.candidate_count} recommendation_ref={owner/repo#N} \
+    candidate_refs={dedup.candidate_refs} outcome=unchanged
 # exit 0 の例（候補ゼロ。recommendation は無いので省略）。
 bash ../tools/journal_append.sh work_discovery_scanned trigger=worker_close candidate_count=0
 # exit 2 の例（失敗。candidate_count / recommendation_ref は組めないので載せず、
@@ -649,7 +672,7 @@ bash ../tools/journal_append.sh work_discovery_scanned \
 
 #### 6-4. 窓口への転送（exit 10）/ エラー通知（exit 2）
 
-**exit 10**: scan の stdout JSON を**そのまま**埋め込んで窓口へ送る（dispatcher 側で再解釈・再計算・
+**exit 10**（dedup が unchanged でないとき）: scan の stdout JSON を**そのまま**埋め込んで窓口へ送る（dispatcher 側で再解釈・再計算・
 再レンダリングしない。人間可読 §5.2 形式へのレンダリングは窓口の責務。Step 5-5 の「JSON をそのまま
 埋め込んで送る」と同方針）:
 
@@ -670,6 +693,6 @@ mcp__renga-peers__send_message(to_id="secretary", message="WORK_DISCOVERY_SCAN_E
 
 - 送信先は **必ず安定名 `to_id="secretary"`**（`.dispatcher/CLAUDE.md`「窓口への返信方法」参照）。
 - dispatcher は窓口へ送って終わりで、人間 / GitHub の人間可視面へは触れない（INV-4）。
-- 送信後（または exit 0 で送信しなかった場合）は CLOSE_PANE フローを完了し、`/loop 3m` 監視ループへ
+- 送信後（または exit 0 / dedup unchanged で送信しなかった場合）は CLOSE_PANE フローを完了し、`/loop 3m` 監視ループへ
   復帰する。triage scan は read-only ツール実行 + 窓口への 1 送信のみで、curate のような完了待ち
   （CURATE_* / inflight 管理）は持たない。
