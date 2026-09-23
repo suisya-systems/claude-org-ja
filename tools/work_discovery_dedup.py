@@ -25,7 +25,10 @@ import sqlite3
 import sys
 from pathlib import Path
 
-_DEFAULT_DB = Path(__file__).resolve().parent.parent / ".state" / "state.db"
+# Same bootstrap as journal_append.py so ``tools.state_db`` imports when run directly.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 
 def candidate_refs(scan: dict) -> str:
@@ -38,8 +41,13 @@ def candidate_refs(scan: dict) -> str:
     return ",".join(sorted(refs))
 
 
-def last_refs(db: Path) -> "str | None":
+def last_refs(db: "Path | None") -> "str | None":
     try:
+        # Resolve like journal_append.py (--db > $STATE_DB_PATH > main checkout)
+        # so we read the DB the record was written to.
+        from tools.state_db.discover import resolve_state_db_path
+
+        db = resolve_state_db_path(db)
         conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
         try:
             row = conn.execute(
@@ -50,14 +58,14 @@ def last_refs(db: Path) -> "str | None":
             ).fetchone()
         finally:
             conn.close()
-    except sqlite3.Error:
+    except (sqlite3.Error, RuntimeError):
         return None
     return row[0] if row else None
 
 
 def main(argv: "list[str] | None" = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--db", type=Path, default=_DEFAULT_DB)
+    ap.add_argument("--db", type=Path, default=None)
     args = ap.parse_args(argv)
     try:
         scan = json.load(sys.stdin)

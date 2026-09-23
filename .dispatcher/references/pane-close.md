@@ -617,12 +617,14 @@ scan_json=$(python3 ../tools/work_discovery_scan.py --trigger worker_close --all
   printf '%s' "$scan_json" | python3 ../tools/work_discovery_dedup.py
   ```
 
-  - **exit 0 (changed)** → 6-3 で `candidate_refs` を記帳し、6-4 で窓口へ転送する。
+  - **exit 0 (changed)** → 6-4 で窓口へ転送し、**送信が成功してから** 6-3 で `candidate_refs` を記帳する
+    （記帳が次回の比較元になるので、先に記帳すると送信失敗時に届いていない候補が以後ずっと unchanged に
+    なる）。送信が失敗したら `candidate_refs` を載せずに記帳する（次回は changed で再送される）。
   - **exit 3 (unchanged)** → 前回転送した候補と同じ集合。6-3 で `outcome=unchanged` 付きで記帳し、
     **窓口へは送らない**（6-4 をスキップ）。worker クローズのたびに同じ候補を再送すると、窓口の受信箱が
     同じ提案で埋まる（2026-09-23 に同一 3 件を 7 回再送）。候補が 1 件でも増減・入れ替われば changed に
     なり通常どおり転送される。DB が読めない・直近記帳に `candidate_refs` が無い場合も changed 側に倒れる。
-  - **exit 2 (error)** → 判定できないので changed と同じく 6-3 → 6-4 で転送する（抑止しない）。
+  - **exit 2 (error)** → 判定できないので changed と同じく 6-4 で転送する（抑止しない）。記帳は changed と同じ順序。
 - **exit 2 (error)** → 窓口に informational として 1 行のエラー通知を送る（6-4 のエラー形）。scan 失敗で
   worker クローズを止めない（CLOSE_PANE フロー自体は完了扱い。候補ゼロと誤読させず、scan のクラッシュを
   握り潰さないため窓口へ届ける）。repo セット解決の失敗もこの枝に入る（6-1）。
@@ -638,7 +640,8 @@ scan 実行を journal イベントに記帳する（生 JSON を `>>` で直書
 
 ```bash
 # exit 10 の例。candidate_count / recommendation_ref は scan の stdout JSON から、
-# candidate_refs は work_discovery_dedup.py の stdout から取る（次回の同一判定の比較元になるので省略しない）。
+# candidate_refs は work_discovery_dedup.py の stdout から取る（次回の同一判定の比較元）。
+# changed のときは 6-4 の送信成功後に記帳する。送信失敗時は candidate_refs を省いて記帳する。
 bash ../tools/journal_append.sh work_discovery_scanned \
     trigger=worker_close candidate_count={JSON.candidate_count} recommendation_ref={owner/repo#N} \
     candidate_refs={dedup.candidate_refs}

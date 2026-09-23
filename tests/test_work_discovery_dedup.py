@@ -90,6 +90,14 @@ class DedupTest(unittest.TestCase):
     def test_unreadable_db_forwards(self):
         self.assertEqual(self.run_main(SCAN, db=Path(self.tmp.name) / "missing.db")[0], 0)
 
+    def test_default_db_follows_state_db_path_env(self):
+        self.record(trigger="worker_close", candidate_refs=REFS)
+        out = io.StringIO()
+        with mock.patch.dict("os.environ", {"STATE_DB_PATH": str(self.db)}), \
+                mock.patch("sys.stdin", io.StringIO(json.dumps(SCAN))), \
+                mock.patch("sys.stdout", out):
+            self.assertEqual(dd.main([]), 3)
+
     def test_bad_json_is_error(self):
         self.assertEqual(self.run_main("not json")[0], 2)
 
