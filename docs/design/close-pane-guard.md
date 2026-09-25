@@ -84,10 +84,10 @@ Claude Code が読むのは **その session の project dir 配下**の `.claud
 | 窓口 | リポジトリルート | [`.claude/settings.json`](../../.claude/settings.json)（repo_shared）を直接継承 | 済 |
 | ディスパッチャー | `.dispatcher/` | `.dispatcher/.claude/settings.local.json`（`/org-setup` が [`.claude/skills/org-setup/references/permissions.md`](../../.claude/skills/org-setup/references/permissions.md) から配布） | 済 |
 | キュレーター | `.curator/` | 同上 | 済 |
-| ワーカー | worker dir | `worker_roles[*].hooks`（`claude-org-runtime settings generate`） | **未（Layer A と同じ runtime ペア変更に乗る）** |
+| ワーカー | worker dir | `worker_roles[*].hooks`（`claude-org-runtime settings generate`） | 済（runtime 0.1.43、suisya-systems/claude-org-runtime#184） |
 | ja 自身を編集するワーカー | ja の worktree | リポジトリルートの `.claude/settings.json` を継承 | 済 |
 
-ワーカーが未カバーなのは、今回の事故を起こした当のロールが未カバーであることを意味する。
+ワーカーが未カバーなのは、今回の事故を起こした当のロールが未カバーであることを意味する（runtime 0.1.43 で解消）。
 `worker_roles[*].hooks` は byte-lock された schema 側にあり、ja 単独で足すと drift CI が
 hard fail するため（下記 Layer A と同じ制約）、両者は同じ runtime ペア変更で揃える。
 
@@ -117,7 +117,7 @@ renga の `RENGA_PANE_ID` に相当する caller pane id を out-of-band で供�
 byte 一致が CI で要求される**ため、ja 側だけを先に変更すると
 `tools/check_runtime_schema_drift.py` が hard fail する（pin window `>=0.1.42,<0.2` の内側にいる間）。
 
-同じ schema 変更に乗るのは 2 つ:
+同じ schema 変更に乗るのは次の 4 つ:
 
 1. `worker_roles[*].permissions.deny` に `mcp__renga-peers__close_pane` /
    `mcp__org-broker__close_pane` を足す（Layer A 本体。ペインの破棄はディスパッチャーの
@@ -128,5 +128,14 @@ byte 一致が CI で要求される**ため、ja 側だけを先に変更する
    [`tools/org_setup_prune.py`](../../tools/org_setup_prune.py) の `_root_as_claude_org_path` が
    「そのディレクトリが本当に org チェックアウトか」を判定する台帳で、全ロールの settings が
    指すスクリプトはそこに載っているべき）
+4. **3 と同時に** `roles.{repo_shared,dispatcher,curator}.required_hooks` へ `block-relative-close-pane.sh`
+   （matcher `mcp__.*__close_pane`）を足す。`required_hook_scripts` の各要素は、どれかの
+   `roles[*].required_hooks[].command_contains` で参照されていなければならない
+   （`core_harness.validator.validate_schema_integrity`。[`tools/check_role_configs.py`](../../tools/check_role_configs.py)
+   が `required hook script ... not referenced by any role` で落とす）。当初の手順は 1〜3 だけで
+   この条件が抜けており、runtime 0.1.43 は 1〜3 を入れて 4 を欠いたままタグが打たれたため、ja は 0.1.43 を
+   飛ばして 4 を足した 0.1.44 に追随した。`worker_roles` は `roles` ではないので、1・2 だけでは参照に数えられない
 
 したがって順序は: **runtime 側に同じ schema 変更を入れてリリース → ja 側で schema 同期**。
+
+状態: 1〜3 は runtime 0.1.43（suisya-systems/claude-org-runtime#184）、4 は 0.1.44 で入り、ja は 0.1.44 への floor 引き上げと同じ変更で `tools/org_extension_schema.json` を同期した。

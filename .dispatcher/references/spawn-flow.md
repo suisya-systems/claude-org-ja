@@ -4,7 +4,7 @@
 
 > **輸送層 両系（`ORG_TRANSPORT`: 既定 `renga` / opt-in `broker`）**: 本ファイルの手順は **既定 `renga`** で書いてあり、`ORG_TRANSPORT` 無設定なら以下すべてそのまま従えばよい（既定挙動は不変）。`ORG_TRANSPORT=broker`（opt-in）では MCP サーバー名が `org-broker` になり、ツールの **完全修飾名が `mcp__renga-peers__*` → `mcp__org-broker__*`** に機械的に置換される（引数形・セマンティクスは同一なので手順の論理は変わらない）。輸送依存で**手順が変わる 3 点**だけ broker 併記する:
 > 1. **受信モデル（push 一次 = `claude/channel` / pull フォールバック）**: renga はワーカー報告が `<channel source="renga-peers" …>` として in-band で push される。broker は **push 一次**に再設計済（runtime push-first 0.1.24+、transport-lab `docs/design/broker-native-roles.md` §9）: 各ペイン同居の **channel sidecar**（`server:org-broker-channel`）が broker キューを ~1 秒間隔で claim→push し `notifications/claude/channel` で本文を idle セッションへ注入する。**pull はフォールバック層**: sidecar 不在 / unhealthy（heartbeat timeout で `delivery_mode=PULL`）/ channel 非対応ペイン / claude.ai login 不在時は、各役割が自身の cadence で能動的に `check_messages` する（§9.6 読み替え表の役割別 cadence: worker=ターン境界 / 完了後 bounded `/loop`・dispatcher=`/loop 3m`・secretary=ターン冒頭。Step 3-5 で送る指示や `worker-monitoring.md` の `check_messages` 受信は broker でも同じツール名で動く。ナッジが出れば契機になりうるが idle を起こさないため能動 poll が受信の正路。既存「ナッジを見たら `check_messages`」prose は**撤回せず**この fallback cadence として読む）。
-> 2. **spawn 儀式（folder-trust 承認 + dev-channel sidecar 承認の再導入）**: renga の `spawn_claude_pane` は `--dangerously-load-development-channels server:renga-peers` を注入し「Load development channel?」プロンプトを Enter 承認する（3-3b）。broker は **`--mcp-config <broker>` を注入**し承認プロンプトが Claude Code の **folder-trust プロンプト**に変わる（`send_keys(enter=true)` で機械承認）**のに加えて**、push 一次のため channel sidecar を `--dangerously-load-development-channels server:org-broker-channel` で load し、dev-channel 承認プロンプト（「Load development channel?」）を `send_keys(enter=true)` で **再導入**機械承認する（**3-3b の dev-channel 承認の再導入**。3-3b 詳細手順を参照）。これは ratified §5/§8.5 の folder-trust フローへの **加算であり置換ではない**（設計 broker-native-roles.md §9.5。※ contract §5.1・§8.5 / `docs/design/renga-decoupling.md` §4.6 の「dev-channel→`--mcp-config` 置換・dev-channel prompt は存在しない」記述は、push 一次採用で channel sidecar 分の dev-channel load が additive に復活する＝S3 で 2026-06-15 に ratified・contract で amend 済み）。
+> 2. **spawn 儀式（folder-trust 承認 + dev-channel sidecar 承認の再導入）**: renga の `spawn_claude_pane` は `--dangerously-load-development-channels server:renga-peers` を注入し「Load development channel?」プロンプトを画面判定で承認する（3-3b）。broker は **`--mcp-config <broker>` を注入**し承認プロンプトが Claude Code の **folder-trust プロンプト**に変わる（画面判定で機械承認）**のに加えて**、push 一次のため channel sidecar を `--dangerously-load-development-channels server:org-broker-channel` で load し、dev-channel 承認プロンプト（「Load development channel?」）を画面判定で **再導入**機械承認する（**3-3b の dev-channel 承認の再導入**。3-3b 詳細手順を参照）。これは ratified §5/§8.5 の folder-trust フローへの **加算であり置換ではない**（設計 broker-native-roles.md §9.5。※ contract §5.1・§8.5 / `docs/design/renga-decoupling.md` §4.6 の「dev-channel→`--mcp-config` 置換・dev-channel prompt は存在しない」記述は、push 一次採用で channel sidecar 分の dev-channel load が additive に復活する＝S3 で 2026-06-15 に ratified・contract で amend 済み）。 **画面判定** = `inspect_pane` → `claude-org-runtime dispatcher spawn-prompt-step` が返した 1 手だけを `send_keys` する反復（runtime 0.1.43+）。盲目 Enter は禁止（folder-trust の初期カーソルは「No, exit」で、Enter 一発はワーカーを終了させる）。手順は 3-3b。
 > 3. **エラー分岐（broker 追加コード）**: renga のエラーコード（`[split_refused]` / `[pane_not_found]` / `[cwd_invalid]` / `[invalid-params]` 等、3-2 のエラーハンドリング参照）に加え、broker は `[token_invalid]` / `[session_invalid]`（token 系）・`[tool_not_authorized]`（auth_role tier gating）・`[no_backend]`（adapter 不在 = adapter_unavailable）・`[nudge_failed]`・`[peer_not_found]` / `[name_taken]` を返しうる。未知コードは renga と同じく default-branch で escalate 経路に流す。
 >
 > なお `new_tab` / `focus_pane` は broker surface に**無い**（意図的除外。本フローは元々使わない）。契約面の正本は [`docs/contracts/backend-interface-contract.md`](../../docs/contracts/backend-interface-contract.md) Surface 8（ratified 2026-06-14。push 一次への additive 改訂 S3 が ratified 済み（2026-06-15）・既存 ratified 本文不変更）、設計 SoT は transport-lab `docs/design/broker-native-roles.md` §9（push 一次再設計）/ `docs/design/ja-migration-plan.md` §5.2(ii) / §3 / §8。broker 実走（dogfood）は Issue G スコープで本ファイルの既定経路ではない。（**既定の二フレーム注記（Refs #604）**: ここでの「既定 `renga`」は**運用既定**（broker 実走 dogfood が Epic #6 Issue G まで未活性）の意。別に**コード既定**として `tools/transport.py: DEFAULT_TRANSPORT` が runtime 0.1.28 (Epic #586) で `broker` にフリップ済みで、ja 生成器・`transport.resolve()` はこのコードフレームで render するため生成面は「既定 `broker`」と表示する — 両フレームは指す対象（運用経路 vs コード定数）が異なり矛盾しない。総説は root `CLAUDE.md`「輸送層（transport）両系」節。）
@@ -128,7 +128,7 @@ mcp__renga-peers__spawn_claude_pane(
 - `cwd` / `permission_mode` / `model` / `args[]` は `spawn_claude_pane` の構造化フィールド。renga が `claude --permission-mode {mode} --dangerously-load-development-channels server:renga-peers ...` を合成する。旧方式（`cd`-プレフィックス付き command 文字列を `spawn_pane` に渡す）は **禁止**
 - **`args[]` は通常空（省略）にする**。`args[]` は Claude Code CLI の実フラグ（例: `--resume`, `--continue`）のみが渡せる。DELEGATE メッセージや worker brief 本文に `--skip-settings` / `--no-foo` のような **flag-like text** が現れても、それは窓口側ツール（`gen_delegate_payload.py` の `--skip-settings` 等）のコンテキスト情報や作業の説明であり、`spawn_claude_pane` の `args[]` に直訳してはならない。直訳すると Claude Code が `error: unknown option '--xxx'` で即時 exit し、ペインが起動直後に閉じる（実例: 2026-05-09 sandbox-probe-iter-b-round-3 で `--skip-settings` を args に渡して pane id=11 が即時退役 — `knowledge/raw/2026-05-09-delegation-skip-settings-wrong-cli-arg.md`）。worker 用 settings 等の準備状態は窓口の `apply` 段階で完了済みなので、ワーカー起動側で追加 flag を載せる必要はない
 - 起動コマンドの仕様は `.claude/skills/org-start/SKILL.md` の「ClaudeCode 起動コマンド（役割別）」セクションを参照
-- `spawn_claude_pane` が内部で `--dangerously-load-development-channels` を付与するため、`Load development channel?` 確認プロンプトが初回表示される。3-3b で `send_keys(enter=true)` による承認が必要
+- `spawn_claude_pane` が内部で `--dangerously-load-development-channels` を付与するため、`Load development channel?` 確認プロンプトが初回表示される（未 trust のディレクトリでは folder-trust プロンプトも）。3-3b の画面判定ループで承認する（盲目 Enter 禁止）
 - **エラーハンドリング**: MCP 結果テキストに `[<code>] <msg>` 形式でエラーが埋まる。主な code:
   - `[split_refused]` (MAX_PANES / too small): [`.claude/skills/org-delegate/references/renga-error-codes.md`](../../.claude/skills/org-delegate/references/renga-error-codes.md) の手順に従いキュレーター → 窓口に escalate
   - `[pane_not_found]`: `$target` に選んだ既存ペインが spawn 発行直前に閉じたレース。同じくエラーコード経路で escalate
@@ -179,8 +179,8 @@ bound_pane_id = res の数値 pane id      # ★ 直後に控える。以降の�
 | 儀式 | 同一タブ経路（不変） | 背景タブ経路 |
 |---|---|---|
 | 3-3 の `pane_started` 照合 | `ev.name == "worker-{task_id}"` | **`ev` の pane 識別子（canonical `ev.id` → alias `ev.pane_id`）が `bound_pane_id` に一致**。`name` は照合に使わない（表示用のみ） |
-| 3-3b の承認 Enter | `send_keys(target="worker-{task_id}", enter=true)` | **`send_keys(target=<bound_pane_id>, enter=true)`** |
-| 3-3b の表示確認 `inspect_pane` | `target="worker-{task_id}"` | **`target=<bound_pane_id>`** |
+| 3-3b の承認キー（判定が返した keys） | `send_keys(target="worker-{task_id}", ...)` | **`send_keys(target=<bound_pane_id>, ...)`** |
+| 3-3b の画面判定用 `inspect_pane` | `target="worker-{task_id}"` | **`target=<bound_pane_id>`** |
 | 3-5a の ultracode kickoff `send_keys`（2 段とも） | `target="worker-{task_id}"` | **`target=<bound_pane_id>`**（text 段・Enter 段の両方） |
 | 3-5 の指示 `send_message` | `to_id="worker-{task_id}"` | **`to_id=<bound_peer_id>`**（3-4b の登録ゲートが確定した数値 peer id。name 宛は自タブにしか解決しない） |
 
@@ -214,21 +214,30 @@ while now < deadline:
 - `name == "worker-{task_id}"` の `pane_started` で break。deadline 超過で未検出なら `list_panes` で pane 存在を再確認
 - **背景タブ経路 (3-2b) では `ev.name` ではなく `ev` の pane 識別子 (canonical `ev.id` → alias `ev.pane_id`) が `bound_pane_id` に一致したときに break する**。deadline 超過時の再確認は **`inspect_pane(target=<bound_pane_id>)` の pane 宛 probe** で行う (背景ペインは `list_panes` に構造的に出ないので `list_panes` は使えない)。**ここで `list_peers` を再確認に使ってはならない** — 3-3b の dev-channel 承認がまだなら peer 登録は原理的に成立しておらず (下記 3-3b「承認しないと … 3-4 の `list_peers` 待ちがタイムアウトし」)、**承認プロンプトで待っている生きたペインを「起動失敗」と誤判定して escalate する**。peer 登録の確認は承認後の 3-4b が owner である。probe が `[pane_not_found]` / `[pane_vanished]` 以外のコードで失敗した場合も起動失敗とは読まず、コードを添えて窓口へ escalate する
 
-### 3-3b. 「Load development channel?」プロンプトを Enter で承認
+### 3-3b. 起動プロンプト（folder-trust / 「Load development channel?」）を画面判定で承認
 
-`spawn_claude_pane` は内部で `--dangerously-load-development-channels server:renga-peers` を付与するため、初回起動で Y/n 確認プロンプトが出る。Enter で承認する:
+`spawn_claude_pane` は内部で `--dangerously-load-development-channels server:renga-peers` を付与するため、起動時に「Load development channel?」確認プロンプトが出る。未 trust のディレクトリ（新しい worktree 等）ではその前に Claude Code の **folder-trust プロンプト**も出る。**どちらも盲目 Enter で承認してはならない**: folder-trust の初期カーソルは「No, exit」で、Enter 一発はワーカーを終了させる（2026-09-25 に実際に起きた。Claude Code の更新で既定が Yes から変わったのに、Enter 一発の手順だけが残っていた）。承認は runtime の判定（`claude-org-runtime dispatcher spawn-prompt-step`、runtime 0.1.43+ / suisya-systems/claude-org-runtime#185）に任せ、ディスパッチャーは返された 1 手だけを打つ。
 
-```
-mcp__renga-peers__send_keys(target="worker-{task_id}", enter=true)
-```
+**helper 経路では `after_spawn[]` の `approve_spawn_prompts` step がこのループそのもの**なので、step の `instructions` に従えばよい（[`.dispatcher/CLAUDE.md`](../CLAUDE.md)「出力の扱い」）。helper を使わない経路（新規タブ経路・背景タブ経路・`plan_version` が 2 未満の旧 helper）では同じループを手で回す:
 
-承認しないと `server:renga-peers` チャネルが有効化されず、3-4 の `list_peers` 待ちがタイムアウトし、3-5 の `send_message` も届かない。Enter は CR (0x0D) として PTY に書き込まれる（byte-identical to renga `append_enter`）。
+1. 開始時刻を ms で控える（`date +%s%3N`）。`previous_screen` = null
+2. `mcp__renga-peers__inspect_pane(target="worker-{task_id}", format="grid")`（`lines` は付けない。背の高いペインでは下端 N 行の外にダイアログが残る）
+3. runner に `spawn-prompt-step --deadline-ms 120000` を付けて呼び、stdin に `{"screen": <2 の結果>, "previous_screen": <previous_screen>, "elapsed_ms": <開始からの経過 ms の整数>}` を 1 つ渡す（`claude-org-runtime dispatcher spawn-prompt-step ...` または `python3 -m claude_org_runtime.dispatcher.runner spawn-prompt-step ...`）
+4. 結果で分岐する:
+   - **exit 0 / `action: "send_keys"`**: 返された `send_keys` オブジェクトを**そのまま** `mcp__renga-peers__send_keys(target="worker-{task_id}", ...)` に渡す（`enter` を自分で足さない。カーソル移動の Down / Up が返ることもある）。`previous_screen` = null にして 1 秒待ち、2 へ
+   - **exit 0 / `action: "wait"`**: `previous_screen` = 今回の inspect 結果にして 1 秒待ち、2 へ（プロンプト未表示・描画途中）
+   - **exit 0 / `action: "done"`**: 承認完了。3-4 へ
+   - **exit 10（escalate）/ exit 2（入力不正）/ その他の非 0 / inspect・send_keys のエラー（`[key_unsupported]` 等）**: **Enter を送らずに中止**し、`SPAWN_PROMPT_UNRESOLVED: worker 'worker-{task_id}' for task '{task_id}' is stuck on a Claude Code startup prompt ...`（helper 経路では step の `escalate.message`）を窓口へ送る。人間がペインを見て判断する
 
-> **この Enter は痕跡を残さない**（PTY への生バイト書き込みで `.state/` に何も書かない）。**「撃ったつもり」を成立させないための ground truth は 3-4 の `list_peers` 登録**であり、その観測値を Step 5 のゲートに渡すまで `DELEGATE_COMPLETE` は出せない。2026-08-18 にここを飛ばしたまま「承認済み」と報告した事故が 2 件続いている（経緯は Step 5 冒頭）。
+判定はキー送信後の 2 回の同一画面で描画の安定を確かめてからしか次の手を返さず、選択肢は位置でなく文言で照合する（folder-trust の選択肢順は Claude Code の版で変わっている）。締切（120 秒）を過ぎると Enter を返さずに escalate する。
 
-**背景タブ経路 (3-2b) では `target=<bound_pane_id>` で撃つ**（`send_keys` も表示確認の `inspect_pane` も。裸の name は caller のタブに解決するので背景ペインに当たらない）。ground truth は 3-4b の登録ゲートで、未登録なら Enter を再送する点は同じ。
+承認しないと `server:renga-peers` チャネルが有効化されず、3-4 の `list_peers` 待ちがタイムアウトし、3-5 の `send_message` も届かない。
 
-> **broker（`ORG_TRANSPORT=broker`）の場合 — push 一次採用で承認は 2 段（folder-trust + dev-channel sidecar の再導入）**: `spawn_claude_pane` は `--mcp-config <broker>`（daemon）を注入し、初回に Claude Code の **folder-trust プロンプト**（「Do you trust the files in this folder?」相当）が出る。これを `mcp__org-broker__send_keys(target="worker-{task_id}", enter=true)` で機械承認する。**加えて push 一次のため**、`spawn_claude_pane` は channel sidecar を `--dangerously-load-development-channels server:org-broker-channel` で load するため、**「Load development channel?」プロンプトが再出現**する（`--mcp-config`-only 設計で一旦消えた 3-3b 承認の **broker 枝での再導入**）。これも `mcp__org-broker__send_keys(target="worker-{task_id}", enter=true)` で機械承認する。両プロンプトの順序は boot タイミング依存なので、`inspect_pane` で各プロンプトの表示を確認しつつ順に Enter 承認する（renga と同じく未表示段階の Enter は no-op になりうるため、3-4 の `list_peers` 登録 poll を ground truth とし、未登録なら再送する）。承認しないと broker token のバインド／channel sidecar の登録が完了せず、`list_peers` 待ち・`send_message`（push 配送）・フォールバックの `check_messages` が成立しない。これは ratified §5/§8.5 の folder-trust フローへの **加算であり置換ではない**（設計 transport-lab `docs/design/broker-native-roles.md` §9.5。S3 で contract §5.1/§8.5 を amend 済み・2026-06-15 ratified）。
+> **この承認は痕跡を残さない**（PTY への生バイト書き込みで `.state/` に何も書かない）。**「撃ったつもり」を成立させないための ground truth は 3-4 の `list_peers` 登録**であり、その観測値を Step 5 のゲートに渡すまで `DELEGATE_COMPLETE` は出せない。2026-08-18 にここを飛ばしたまま「承認済み」と報告した事故が 2 件続いている（経緯は Step 5 冒頭）。
+
+**背景タブ経路 (3-2b) では `target=<bound_pane_id>` で撃つ**（`inspect_pane` も `send_keys` も。裸の name は caller のタブに解決するので背景ペインに当たらない）。ground truth は 3-4b の登録ゲートで、未登録ならこのループを回し直す点は同じ（Enter を盲目で再送しない）。
+
+> **broker（`ORG_TRANSPORT=broker`）の場合 — push 一次採用で承認は 2 段（folder-trust + dev-channel sidecar の再導入）**: `spawn_claude_pane` は `--mcp-config <broker>`（daemon）を注入し、初回に Claude Code の **folder-trust プロンプト**（「Do you trust the files in this folder?」相当）が出る。**加えて push 一次のため**、`spawn_claude_pane` は channel sidecar を `--dangerously-load-development-channels server:org-broker-channel` で load するため、**「Load development channel?」プロンプトが再出現**する（`--mcp-config`-only 設計で一旦消えた 3-3b 承認の **broker 枝での再導入**）。どちらも上と同じループを `mcp__org-broker__inspect_pane` / `mcp__org-broker__send_keys` で回して承認する（判定が 2 つのダイアログを順に扱う。順序は boot タイミング依存）。**WezTerm adapter は Up / Down を送れず `[key_unsupported]` になる**ので、そのときも Enter に倒さず escalate する。linked worktree は main checkout の trust を引き継ぐので、trust 済みリポジトリの worktree では folder-trust が出ない（runtime CHANGELOG 0.1.43 が引く https://code.claude.com/docs/en/permissions#project-allow-rules-and-workspace-trust）。承認しないと broker token のバインド／channel sidecar の登録が完了せず、`list_peers` 待ち・`send_message`（push 配送）・フォールバックの `check_messages` が成立しない。これは ratified §5/§8.5 の folder-trust フローへの **加算であり置換ではない**（設計 transport-lab `docs/design/broker-native-roles.md` §9.5。S3 で contract §5.1/§8.5 を amend 済み・2026-06-15 ratified）。
 
 ### 3-4. `mcp__renga-peers__list_peers` で新ピア出現を待機
 
@@ -244,7 +253,7 @@ pane は live でも Claude がまだ起動中の場合があるため二重確�
 >
 > 1. `list_panes` の pane 生存を確認する（ペインが死んでいれば spawn 失敗として通常の失敗処理へ）。
 > 2. **3-5 の `send_message` 自体を readiness probe として使う**。peer が未登録なら送信は `[pane_not_found]`（broker では `[peer_not_found]`）で失敗するので、**失敗は「まだ登録していない」の証拠として読める**（列挙と違い、この判定は他タブの同名ピアに汚染されない — 送信先は自分が spawn した `target` 名の解決結果であり、失敗コードは送達不成立そのものを表す）。
-> 3. 失敗したら 2 秒間隔で最大 30 秒まで**再送**する（3-4 の元の poll 予算と同じ）。この間 `send_keys(enter=true)` の再送も従来どおり行う。
+> 3. 失敗したら 2 秒間隔で最大 30 秒まで**再送**する（3-4 の元の poll 予算と同じ）。この間、承認が未完了なら 3-3b の画面判定ループを回し直す（Enter を盲目で再送しない）。
 > 4. 30 秒を過ぎても送達できなければ、従来のタイムアウト処理と同じく `list_panes` でペイン状態を再確認し、窓口に escalate する。
 > 5. **送達に成功した時点で 3-5 は消化済みである。3-5 に戻って同じ指示をもう一度送らないこと** — 縮退経路の probe は 3-5 の送信「そのもの」であって、別立ての試し送信ではない。二度送るとワーカーが同一タスクを 2 回受け取って二重実行する。送達成功をもって「起動・登録・指示送信」が同時に確定し、そのまま 3-6 以降（state 書き込み）へ進む。ultracode 武装 kickoff（3-5a）が要るタスクでは、その `send_keys` は送達成功の**後**に 1 回だけ行う。
 >
@@ -433,7 +442,7 @@ worker brief に **ultracode 使用許可**があるタスクでは、kickoff �
 
 ## Step 5: 派遣完了ゲート — `DELEGATE_COMPLETE` は自分で書かない
 
-> **この節の由来（2026-08-18）**: 同日に 2 件連続で、ディスパッチャーが 3-3b の承認 Enter・3-4 の `list_peers` 登録確認・3-5 の指示送信を**実行しないまま**「承認済み・peer 登録確認済み・指示送信済み」と窓口へ報告した（`cert-questions-ingest-20260818` / `interlock-founding-docs-20260818`。どちらも実際にはペインが承認プロンプトで停止し入力欄は空で、窓口が `inspect_pane` で実見して手で復旧した）。
+> **この節の由来（2026-08-18）**: 同日に 2 件連続で、ディスパッチャーが 3-3b の承認・3-4 の `list_peers` 登録確認・3-5 の指示送信を**実行しないまま**「承認済み・peer 登録確認済み・指示送信済み」と窓口へ報告した（`cert-questions-ingest-20260818` / `interlock-founding-docs-20260818`。どちらも実際にはペインが承認プロンプトで停止し入力欄は空で、窓口が `inspect_pane` で実見して手で復旧した）。
 >
 > **手順は当時も正しく書かれていた。** 壊れていたのは検証の側である。3-3b / 3-4 / 3-5 は**どれも痕跡を残さない**（`send_keys` は PTY への生バイト、`list_peers` は読み取り、`send_message` は MCP 呼び出しで、いずれも `.state/` に何も書かない）。Step 3 + Step 4 を通して残る唯一の行は `worker_spawned` 1 件で、これは [`docs/journal-events.md`](../../docs/journal-events.md) の Worker lifecycle 表が "After MCP `spawn_pane`." と定めるとおり**儀式が始まる前**に打たれる。実際、2 件とも state.db に残ったのは `delegate_sent` → `worker_spawned` だけで、正しく派遣した回と**バイト単位で同じ痕跡**だった。つまり儀式を省くほうが実行するより安く、しかも露見しなかった。本 Step はその 2 つを同時に潰す。
 
@@ -455,7 +464,7 @@ python3 ../tools/spawn_gate.py verify \
 ```
 
 - **exit 0** → stdout の `delegate_complete` を `mcp__renga-peers__send_message(to_id="secretary", ...)` でそのまま送る（前置き・後置きを足さない）
-- **exit 10** → **報告しない。** `failures[]` / `remedy[]` が戻るべきステップを名指しするので、3-3b の承認 Enter 再送 → 3-4 の登録 poll へ戻り、通ってから再実行する
+- **exit 10** → **報告しない。** `failures[]` / `remedy[]` が戻るべきステップを名指しするので、3-3b の画面判定ループ → 3-4 の登録 poll へ戻り、通ってから再実行する
 - **exit 2** → 窓口へエラー通知（ゲート自体が壊れている。派遣は止めるが監視ループは継続する）
 
 **`--peer-*` の 3 つは 3-4 の `list_peers` で自分が実際に見たレコードの値を書く。** 期待値・記憶・spawn 引数の再掲で埋めない。`--peer-cwd` は窓口の `gen_delegate_payload.py apply` が T1 で書いた **`delegate_sent` イベントの `dir`** と照合され、食い違えば exit 10 になる。**照合の基準に `runs.worker_dir_id` ではなく `delegate_sent` を使うのは意図的である** — Step 4 項番 2 の `upsert_run(..., worker_dir_abs_path=...)` は `runs.worker_dir_id` を**上書きしうる**（つまりディスパッチャー自身が本ゲートの直前に動かせる値なので、独立照合にならない）のに対し、events テーブルは append-only で書き換えられない。両者が食い違う場合は `worker_dir_divergence` として exit 10 になる（どちらが誤りであれ独立基準が失われているため）。これは 3-4b が背景タブ経路に課しているのと同じ org 束縛の弁別（契約 T-§4.2-id (O2)「id 自身とは独立な観測」）を、同一タブ経路にも最小コストで効かせるものである。
@@ -467,4 +476,4 @@ python3 ../tools/spawn_gate.py verify \
 1. **機械照合できる半分**（`peer_cwd` / `peer_name` / `worker_spawned` の存在 / id が正整数 / `delegate_sent` と `runs` の非乖離）は assert では通せない
 2. **省略が事後に必ず検出される**: ゲートを通ると `worker_spawn_verified` が記帳される。ゲートを通さずに報告すると記帳が無いので、`python3 ../tools/spawn_gate.py audit`（固定の deployment cutoff `--since` 以降の spawn は、何日経っても報告対象から消えない） が `worker_spawned` との差分として検出する（監視ループ 1 サイクルの一部。[`.dispatcher/CLAUDE.md`](../CLAUDE.md)「ワーカーペイン監視」参照）。2026-08-18 の 2 件はまさにこの差分の形で残っている
 
-> **これは v1 の止血であって、儀式そのものの決定論化ではない。** spawn → 承認 Enter → 登録 poll → 指示送信 を LLM の散文再演から外してコードに落とす設計は Interlock (v2) 側の担当で、v1 (claude-org-ja + runtime 0.1 系) へは逆移植しないことが Issue [#740](https://github.com/suisya-systems/claude-org-ja/issues/740) の 2026-08-17 追補で決定済みである（同追補の「移行方式」は "dual-write は行わず run 境界で切り替える / v1 で開始済みの run は v1 で完走させる" と定め、"常駐 Dispatcher AI loop と handover / resume のための大量の prompt prose" を Discard 側に置いている）。本 Step が変えるのは「省略が安くて露見しない」という**誘因と検出可能性**であって、儀式の実行主体ではない。
+> **これは v1 の止血であって、儀式そのものの決定論化ではない。** spawn → 起動プロンプト承認 → 登録 poll → 指示送信 を LLM の散文再演から外してコードに落とす設計は Interlock (v2) 側の担当で、v1 (claude-org-ja + runtime 0.1 系) へは逆移植しないことが Issue [#740](https://github.com/suisya-systems/claude-org-ja/issues/740) の 2026-08-17 追補で決定済みである（同追補の「移行方式」は "dual-write は行わず run 境界で切り替える / v1 で開始済みの run は v1 で完走させる" と定め、"常駐 Dispatcher AI loop と handover / resume のための大量の prompt prose" を Discard 側に置いている）。本 Step が変えるのは「省略が安くて露見しない」という**誘因と検出可能性**であって、儀式の実行主体ではない。

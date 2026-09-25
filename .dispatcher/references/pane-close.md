@@ -437,14 +437,17 @@ mcp__renga-peers__spawn_claude_pane(
 > `curator_peer_id` は **null のまま**が正常系。生存確認は `list_panes`（5-2）のみで行う。
 > DB に書くと常駐前提が復活し、suspend / handover / dashboard の照合が誤る。
 
-#### 5-4. boot 確認（Enter / list_peers poll）
+#### 5-4. boot 確認（起動プロンプト承認 / list_peers poll）
 
 `/org-start` Block D-1〜D-2 の dispatcher 分と同じ手順:
 
-1. `mcp__renga-peers__send_keys(target="curator", enter=true)` で
-   「Load development channel? (Y/n)」プロンプトを承認する
+1. 起動プロンプト（folder-trust / 「Load development channel? (Y/n)」）を
+   [`spawn-flow.md`](spawn-flow.md) 3-3b の画面判定ループで承認する（`target="curator"`。
+   `inspect_pane` → `spawn-prompt-step` が返した 1 手だけを `send_keys`。**盲目 Enter 禁止** —
+   folder-trust の初期カーソルは「No, exit」で、Enter 一発は curator を終了させる。
+   escalate / 入力不正 / ツールエラーなら Enter を送らずに次項の破棄・skip へ進む）
 2. `mcp__renga-peers__list_peers` で `name="curator"` の peer 登録を poll する。
-   未登録なら Enter を再送して再 poll（最大 3 回 retry）。
+   未登録なら 1 の画面判定ループを回し直して再 poll（最大 3 回 retry。Enter を盲目で再送しない）。
    **`list_peers` の直前に
    [`.claude/skills/org-delegate/references/capability-first-drive-operational-gate.md`](../../.claude/skills/org-delegate/references/capability-first-drive-operational-gate.md)
    を Read し、`monitoring-read-only` の分岐を適用する**（同 reference §6 の表 #8）。
@@ -456,7 +459,7 @@ mcp__renga-peers__spawn_claude_pane(
    これを登録確認に代用すると 5-5 の**一度きりの `/org-curate` 指示が
    `[pane_not_found]`（broker では `[peer_not_found]`）で消え**、`curate-inflight.json` が
    timeout まで残る。したがって `list_panes` でペイン生存だけ確認したら 5-5 の
-   `send_message` を送り、失敗したら Enter 再送とあわせて **retry する**（既存の
+   `send_message` を送り、失敗したら 1 の画面判定ループとあわせて **retry する**（既存の
    最大 3 回 retry の予算をそのまま使う）。送達成功をもって boot と登録を同時に確定する。
    **送達に成功した時点で 5-5 は消化済みである。5-5 に戻って `/org-curate` をもう一度
    送らないこと** — 縮退経路の probe は 5-5 の送信「そのもの」であって別立ての試し送信では

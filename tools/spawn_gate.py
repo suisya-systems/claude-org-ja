@@ -4,7 +4,8 @@
 Why this exists
 ---------------
 `.dispatcher/references/spawn-flow.md` already prescribes the correct
-ceremony: 3-3b sends the `Load development channel?` approval Enter,
+ceremony: 3-3b approves the startup prompts (folder-trust / `Load
+development channel?`) by screen inspection via `spawn-prompt-step`,
 3-4 polls `list_peers` until the worker registers, 3-5 sends the
 instruction. **None of those three steps writes anything.** The only
 durable trace of the whole of Step 3 + Step 4 is one `worker_spawned`
@@ -202,8 +203,8 @@ _REMEDY = {
     "pane_id": "--pane-id が正の整数でない。spawn_claude_pane の戻り値を渡す。",
     "peer_id": (
         "--peer-id が正の整数でない。spawn-flow 3-4 の list_peers で実際に "
-        "観測した数値 id を渡す。まだ観測できていないなら 3-3b の承認 Enter を "
-        "再送し、登録されるまで poll を続ける（報告はしない）。"
+        "観測した数値 id を渡す。まだ観測できていないなら 3-3b の画面判定ループを "
+        "回し直し（盲目 Enter は送らない）、登録されるまで poll を続ける（報告はしない）。"
     ),
 }
 
@@ -944,7 +945,7 @@ def cmd_audit(args) -> int:
                     "last_verified_at": verified_at,
                     "note": (
                         f"{SPAWNED_EVENT} に対応する {VERIFIED_EVENT} が無い。"
-                        "spawn 儀式 (承認 Enter / list_peers 登録 / 指示送信) "
+                        "spawn 儀式 (起動プロンプト承認 / list_peers 登録 / 指示送信) "
                         "の実行が確認できていない。ペインを inspect_pane で実見し、"
                         "必要なら spawn-flow 3-3b から復旧する。"
                     ),
@@ -1059,8 +1060,9 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         choices=("sent", "not_shown"),
         help=(
-            "sent = the 3-3b approval Enter was sent; not_shown = no approval "
-            "prompt appeared. Attested by the dispatcher, not machine-checked."
+            "sent = 3-3b sent the approval keys spawn-prompt-step decided; "
+            "not_shown = the loop reached done without any approval prompt. "
+            "Attested by the dispatcher, not machine-checked."
         ),
     )
     verify.add_argument(

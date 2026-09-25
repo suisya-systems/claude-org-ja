@@ -137,7 +137,7 @@ layer 3（静的）は live renga セッションを必要としない。layer 3
 - スキルが認識されない → `.claude/skills/*/SKILL.md` のfrontmatter形式を確認
 - `/org-start` が発動しない → スキル名の競合やdescriptionを確認
 - `mcp__renga-peers__list_panes` で error → `renga mcp install --force` を再実行、`claude mcp list` で登録確認
-- `send_keys(enter=true)` が Enter 注入に失敗 → Dispatcher ペインが「Load development channel?」プロンプトで止まっているか確認、手動で Enter
+- dispatcher が起動プロンプトで止まる → Dispatcher ペインが folder-trust / 「Load development channel?」のどちらで止まっているかを確認し、カーソルが承認側（folder-trust なら「Yes, I trust this folder」/ 旧版の「Yes, proceed」、dev-channel なら「I am using this for local development」）にあることを確かめてから手動で Enter（folder-trust の初期カーソルは「No, exit」なので、確かめずに Enter を押すと終了する。自動手順は `/org-start` Block D-1 の画面判定ループ）
 
 ---
 
@@ -628,7 +628,7 @@ claude-org-ja 本体は Issue #429 Task C（本 addendum と同 PR）で共有 `
 
 ### 11-a'. live capability 確認（`server_info`）
 
-> **allowlist 状況**: `mcp__renga-peers__server_info` は `user_common` / `secretary` の permission allowlist に入っており（[`tools/org_extension_schema.json`](../tools/org_extension_schema.json) の同名 role `required_allow`）、この 2 role では本手順を MCP ツールとして承認プロンプトなしで実行できる。同ファイルは claude-org-runtime の同梱 schema とバイト一致を要求されるため、このエントリは runtime 0.1.41 の同梱 schema 追加に追随したものである（下限 pin は現行 0.1.42 で、これを上回っている）。**allowlist を持たない role（`dispatcher` / `worker` / `curator`）や、プロンプトを伴わない観測経路が要る場面では [`tools/check_renga_compat.py`](../tools/check_renga_compat.py)** を使う。こちらは `renga mcp-peer` を subprocess として起動するため allowlist の影響を受けない。
+> **allowlist 状況**: `mcp__renga-peers__server_info` は `user_common` / `secretary` の permission allowlist に入っており（[`tools/org_extension_schema.json`](../tools/org_extension_schema.json) の同名 role `required_allow`）、この 2 role では本手順を MCP ツールとして承認プロンプトなしで実行できる。同ファイルは claude-org-runtime の同梱 schema とバイト一致を要求されるため、このエントリは runtime 0.1.41 の同梱 schema 追加に追随したものである（下限 pin は現行 0.1.44 で、これを上回っている）。**allowlist を持たない role（`dispatcher` / `worker` / `curator`）や、プロンプトを伴わない観測経路が要る場面では [`tools/check_renga_compat.py`](../tools/check_renga_compat.py)** を使う。こちらは `renga mcp-peer` を subprocess として起動するため allowlist の影響を受けない。
 
 `server_info`（引数なし）を呼び、`structuredContent` を読む:
 1. `status` を最初に読む（判別子）。`connected` / `detached` / `unreachable` の 3 値

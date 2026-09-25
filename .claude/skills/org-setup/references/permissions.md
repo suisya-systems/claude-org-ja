@@ -406,7 +406,19 @@ python tools/org_setup_prune.py --all                        # secretary / dispa
       "Bash(git config --local *)",
       "Bash(git config --worktree *)",
       "Bash(rm -rf *)",
-      "Bash(rm -r *)"
+      "Bash(rm -r *)",
+      "Read(.env)",
+      "Read(.env.*)",
+      "Read(!.env.example)",
+      "Read(!.env.*.example)",
+      "Read(!**/.env.example)",
+      "Read(!**/.env.*.example)",
+      "Read(**/credentials*)",
+      "Read(**/*.pem)",
+      "Read(~/.aws/*)",
+      "Read(~/.ssh/*)",
+      "mcp__renga-peers__close_pane",
+      "mcp__org-broker__close_pane"
     ]
   },
   "hooks": {
@@ -444,6 +456,15 @@ python tools/org_setup_prune.py --all                        # secretary / dispa
             "command": "bash \"{claude_org_path}/.hooks/block-org-structure.sh\""
           }
         ]
+      },
+      {
+        "matcher": "mcp__.*__close_pane",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"{claude_org_path}/.hooks/block-relative-close-pane.sh\""
+          }
+        ]
       }
     ]
   },
@@ -453,6 +474,8 @@ python tools/org_setup_prune.py --all                        # secretary / dispa
   }
 }
 ```
+
+**`.env` テンプレートの除外（runtime 0.1.43+）**: `Read(!.env.example)` など `!` で始まる 4 行は `Read(.env)` / `Read(.env.*)` の**直後**に置く。`!` の deny パターンは同じ settings ファイルで**前に**並ぶルールからだけ一致分を除外する（https://code.claude.com/docs/en/permissions 「Read and Edit」）ので、順序を入れ替えると `.env.example` が再び読めなくなる。4 パターンは `claude_org_runtime.settings.generator.ENV_TEMPLATE_PATTERNS` で、sandbox の `filesystem.allowRead` と同じ集合（[`tools/check_role_configs.py`](../../../../tools/check_role_configs.py) が一致を検査する）。
 
 **注意**: `{claude_org_path}` と `{worker_dir}` は settings.local.json 生成時に解決済みの絶対パスに置換すること。Hook command 内のパスはスペース対策のためクォートされている。
 
