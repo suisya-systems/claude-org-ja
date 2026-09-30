@@ -149,7 +149,11 @@ per-transport 詳細（pr-watch の二フレーム受信注記）は呼び先の
 1. **観測可能性サマリを出力**（反復開始時。「観測可能性」節）。
 2. **triage**: [`/work-discovery`](../work-discovery/SKILL.md) を起動する。conveyor 文脈では
    `tools/work_discovery_scan.py --trigger post_merge --free-panes <空き pane 数>` 相当で候補 JSON を得る
-   （空き枠があると `parallelizable` 候補のランクが上がりベルトを埋めやすい）。候補生成は決定的ツールに委ねる（INV-4）。
+   （空き枠があると同一条項内の `parallelizable` 候補のランクが上がりベルトを埋めやすい）。候補生成は決定的ツールに委ねる（INV-4）。
+   - **候補プールはゴール台帳（`registry/goals/`）の条項に当たった候補だけ**に狭まっている（設計 §12.8）。スコープ述語はこの狭まったプールに対して評価する。
+   - `--repo` 無しの暗黙 scan では goal 段が repo を解決できないので、`gh repo view` で slug を求めて `--repo` を明示する。
+   - **スコープ内の repo が `goal_rank.goal_unset_repos[]` / `goal_rank.goal_errors[]` に出たら「候補が無い」と読まず halt** し、ゴール設定か `--rank-mode legacy`（人間が明示指示したときだけ）での実行かを人間に仰ぐ。
+   - scan が exit 2（判定段の失敗。`goal_rank.judge.status` = `failed` / `cooldown` / `budget_exhausted`、fail-closed）なら候補ゼロと読まず halt し、状態と理由を人間へ伝える。
 3. **scope gate**: 各候補をスコープ契約の述語に照合する。
    - **合致 + 空き pane あり** → 投入対象。合致候補に対する派遣は契約で事前承認済みなので、per-candidate の
      人間確認は **しない**（ここが `/work-discovery` の hard-stop との差分）。
@@ -229,7 +233,7 @@ halt 後の扱いは [`.claude/skills/org-conveyor/references/exit-conditions.md
 - **連続 false-positive 数が閾値到達** → 停止
 - **時間予算超過 / 最大反復数到達** → 停止
 - **worker escalation** → 停止（[`/org-escalation`](../org-escalation/SKILL.md) 経由、INV-3）
-- **scope 縁検知**（非合致候補 / org-delegate チェック項目で人間入力要求 / verify 判定不能）→ 停止（INV-2）
+- **scope 縁検知**（非合致候補 / org-delegate チェック項目で人間入力要求 / verify 判定不能 / スコープ内 repo のゴール未設定・台帳エラー / triage 判定段の exit 2）→ 停止（INV-2）
 
 ## やらないこと（Non-goals）
 
