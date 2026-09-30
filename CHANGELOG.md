@@ -9,6 +9,11 @@
 
 ### Added
 
+- ゴール台帳（`registry/goals/`）を対話で作成・改訂・修復する窓口用スキル `/goal-setup` を追加。
+  README と open Issue からゴール候補を推定して提示し、目指す状態と `unmet if` を質問で固め、
+  書式検証を通してから保存する。検証用に `tools/work_discovery_goals.py validate`（`--file` / `--repo`）を追加した。
+  scan と同じ台帳パーサで読み、`ok` のときだけ exit 0 を返す。`/work-discovery` の「ゴール未設定」
+  「ゴール台帳エラー」案内と `registry/goals/README.md` から新スキルへ誘導する。
 - renga 2.0.0 の capability probe `mcp__renga-peers__server_info` を ja の許可面へ同期 (#854)。
   `tools/org_extension_schema.json` の `user_common` / `secretary` の `required_allow` に
   `set_pane_identity` 直後の位置で追加し (14 → 15 / 12 → 13)、同じエントリを

@@ -321,6 +321,65 @@ class TestPutAside(Base):
             self.assertIn("error", json.loads(buf.getvalue()), argv)
 
 
+class TestValidateCli(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.goals = self.root / "registry" / "goals"
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def run_cli(self, *argv):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = wdg.main(["validate", *argv])
+        self.assertTrue(buf.getvalue().isascii())
+        return rc, json.loads(buf.getvalue())
+
+    def write(self, rel, text):
+        p = self.root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text, encoding="utf-8")
+        return p
+
+    def test_file_ok(self):
+        rc, out = self.run_cli("--file", str(self.write("draft.md", LEDGER)))
+        self.assertEqual((rc, out["status"]), (0, "ok"))
+        self.assertEqual([c["id"] for c in out["clauses"]], ["G1", "G2"])
+
+    def test_file_error_uses_scan_parser(self):
+        bad = LEDGER.replace("- unmet if: CI takes > 10 min", "")
+        rc, out = self.run_cli("--file", str(self.write("draft.md", bad)))
+        self.assertEqual((rc, out["status"]), (1, "error"))
+        self.assertIn("G2", out["error"])
+
+    def test_file_missing(self):
+        rc, out = self.run_cli("--file", str(self.root / "nope.md"))
+        self.assertEqual(rc, 1)
+        self.assertIn("unreadable", out["error"])
+
+    def test_repo_ok_unset_and_default_goals_dir(self):
+        rc, out = self.run_cli("--repo", "a/b", "--claude-org-root", str(self.root))
+        self.assertEqual((rc, out["status"]), (1, "unset"))
+        self.write("registry/goals/a/b.md", LEDGER)
+        rc, out = self.run_cli("--repo", "A/B", "--claude-org-root", str(self.root))
+        self.assertEqual((rc, out["status"], out["repo"]), (0, "ok", "a/b"))
+
+    def test_repo_goals_dir_override(self):
+        self.write("elsewhere/a/b.md", "## G2 x\n- unmet if: y\n")
+        rc, out = self.run_cli("--repo", "a/b", "--goals-dir", str(self.root / "elsewhere"))
+        self.assertEqual((rc, out["status"]), (1, "error"))
+
+    def test_usage_needs_exactly_one_target(self):
+        for argv in (["validate"], ["validate", "--file", "x", "--repo", "a/b"]):
+            buf = io.StringIO()
+            with redirect_stdout(buf), self.assertRaises(SystemExit) as cm:
+                wdg.main(argv)
+            self.assertEqual(cm.exception.code, 2, argv)
+            self.assertIn("error", json.loads(buf.getvalue()), argv)
+
+
 # ----------------------------------------------------------------------
 # Structural check (§12.4 items 1-5)
 # ----------------------------------------------------------------------

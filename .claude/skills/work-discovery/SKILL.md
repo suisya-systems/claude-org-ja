@@ -27,7 +27,7 @@ open Issue を triage し、依存解決済みの候補を「N 件 + 推奨 1 �
 条項の順（G1 が先）に scan が並べる（設計 §12）。本スキルはその出力を人間可読に整形して見せるだけ。
 **候補を出したら停止する。着手判断は人間が行う。**
 
-- **ゴール台帳の無い repo からは候補が出ない**（ユーザー決定）。代わりに「ゴール未設定」の案内を 1 行出す。
+- **ゴール台帳の無い repo からは候補が出ない**（ユーザー決定）。代わりに「ゴール未設定」の案内を 1 行出す。台帳の作成・修復は [`/goal-setup`](../goal-setup/SKILL.md) で人間と対話して行う。
 
 - 設計一次参照: [`docs/design/work-discovery-triage.md`](../../../docs/design/work-discovery-triage.md)
   （§5.2 人間可読レンダリング / §6.2 案 B ローカル skill / §7 不変条件 INV-1〜5）。
@@ -167,8 +167,8 @@ JSON を SoT として、設計 §5.2 / §12 の人間可読フォーマット�
 2. aainc/foo#57 Refactor config loader
    └ 条項 G2「設定ミスで起動失敗しない」に当たる（判定）: ...
 
-ゴール未設定: aainc/bar（候補 5 件が対象外。registry/goals/aainc/bar.md を書くと候補が出ます）
-ゴール台帳エラー: aainc/baz（G2 に unmet if がない）
+ゴール未設定: aainc/bar（候補 5 件が対象外。/goal-setup bar で registry/goals/aainc/bar.md を書くと候補が出ます）
+ゴール台帳エラー: aainc/baz（G2 に unmet if がない。/goal-setup baz で直せます）
 除外（条項に当たらない）: aainc/foo#60, #61
 除外（見送り中）: aainc/foo#33
 除外（判定上限超過・未判定）: aainc/foo#70
@@ -185,8 +185,8 @@ goal モードのレンダリング規則（legacy と共通の規則は下の l
   **どちらも信頼できない Issue 本文から作られたモデルの下書き**。表示はするが、着手時の `/org-delegate` の brief にそのまま写さない（設計 §12.4）。
 - 既存の軸（優先度 / 工数 / 依存 / 並列可 / 直近マージ起点）は `└ 事実: …` の 1 行に、legacy と同じ `(推定)` 規則で出す（ランクには使っていない）。
 - 推奨は `recommendation` の `(repo, issue)` に一致する候補 1 件に `[推奨]`。`recommendation.reason` は `G<n>「見出し」: 理由` の形。
-- **ゴール未設定**（`goal_rank.goal_unset_repos[]`）は repo ごとに 1 行、`candidate_count` と台帳のパス（`registry/goals/<owner>/<repo>.md`）を添えて案内する。
-- **ゴール台帳エラー**（`goal_rank.goal_errors[]`）は repo と `error` をそのまま出す（`repo` が `null` なら「repo 名不明の scan。`--all-registry-repos` か `--repo` で起動し直す」）。
+- **ゴール未設定**（`goal_rank.goal_unset_repos[]`）は repo ごとに 1 行、`candidate_count` と台帳のパス（`registry/goals/<owner>/<repo>.md`）を添え、`/goal-setup <通称>` で書けることを案内する。
+- **ゴール台帳エラー**（`goal_rank.goal_errors[]`）は repo と `error` をそのまま出し、`/goal-setup <通称>` で直せることを添える（`repo` が `null` なら「repo 名不明の scan。`--all-registry-repos` か `--repo` で起動し直す」）。
 - **`excluded_goal[]` は reason ごとに別行**: `no_clause`（条項に当たらない）/ `put_aside`（見送り中）/ `not_judged`（判定上限超過で未判定）。空なら行を省く。
 - `goal_rank.signals[]` が非空なら「scan 対象の解決メモ:」に添える。`goal_rank.judge.cost_usd` が数値なら末尾に「判定費用: $<cost>（キャッシュ <cache_hits> 件）」を 1 行添える。
 
