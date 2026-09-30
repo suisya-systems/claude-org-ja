@@ -13,7 +13,7 @@
 | 2 | **連続 false-positive 数到達** | `false_positive_streak_max`（既定 2） | CI red / Codex Blocker / verify 失敗を追ったが、いずれも変更起因の実欠陥でなかった（flaky / benign）回が連続 |
 | 3 | **時間予算超過 / 最大反復数到達** | `time_budget` / `max_iterations` | ベルト稼働の経過時間 / ループ反復回数が契約の予算を超えた |
 | 4 | **worker escalation** | 即時 | worker から「判断仰ぎ」「承認を仰ぎ」「スコープ拡張」「ブロッカー」「想定外」「runbook 逸脱」が来た |
-| 5 | **scope 縁検知** | 即時 | スコープ述語に非合致 / 判定不能の候補・差分、または org-delegate チェック項目が人間入力を要求、verify 判定不能 |
+| 5 | **scope 縁検知** | 即時 | スコープ述語に非合致 / 判定不能の候補・差分、または org-delegate チェック項目が人間入力を要求、verify 判定不能、スコープ内 repo のゴール未設定・台帳エラー、triage 判定段の exit 2 |
 
 ## 各条件の詳細
 
@@ -50,6 +50,11 @@
   - [`/org-delegate`](../../org-delegate/SKILL.md) の委譲前チェック（曖昧用語 / OS 前提 / incorporation 戦略等）が
     **人間入力を要求**した（conveyor が代わりに埋めない）。
   - verify の applicability classifier が **判定不能**（[`.claude/skills/org-conveyor/references/verify-evidence.md`](verify-evidence.md)）。
+  - スコープ内の repo が scan の `goal_rank.goal_unset_repos[]`（ゴール未設定）/ `goal_rank.goal_errors[]`（台帳エラー）に出た。
+    候補プールはゴール条項に当たったものだけなので、「スコープ内に候補が無い」ではなく「ゴールが無く判定できない」として
+    halt し、ゴール設定か `--rank-mode legacy` での実行かを人間に仰ぐ（設計 §12.8）。
+  - scan が exit 2（fail-closed）で、判定段由来（`goal_rank.judge.status` = `failed` / `cooldown` / `budget_exhausted`）を含む。
+    候補ゼロと言い換えず、状態と理由を添えて halt する。
 - スコープを使い切り、残り候補が外側しか無いなら、それも「これ以上自走できる範囲が無い」= 正常退出として人間へ報告する。
 
 ## halt 時の共通挙動

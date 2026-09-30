@@ -49,6 +49,8 @@
 - include: <述語>        # 例: label:bug AND size:S / #637 の follow-up に限る / PR #635 の review round
 - exclude: <述語>        # 例: label:needs-design / 多ファイル設計判断を含むもの
 - 判定不能候補の扱い: scope 縁として投入しない（halt）
+- 候補プール: ゴール台帳（`registry/goals/`）の条項に当たった候補だけ。上の述語はこの狭まったプールに対して評価する。
+  スコープ内 repo がゴール未設定 / 台帳エラー、または triage が exit 2 なら halt（`references/exit-conditions.md` 5）
 
 ## project context（pre-resolve 済み・org-delegate の Step 0 人間質問を回避するため）
 - project: <registry/projects.md の通称>
