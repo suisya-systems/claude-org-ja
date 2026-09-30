@@ -3,8 +3,9 @@ name: work-discovery
 owner: secretary
 description: >
   open Issue を triage して「次の仕事候補（N 件 + 推奨 1 件）」を窓口が人間へ提示する。
-  決定的ツール tools/work_discovery_scan.py を 1 回実行し、その候補 JSON を
-  設計書 §5.2 の人間可読フォーマットでレンダリングするところで停止する（propose-only）。
+  候補はオペレーターが書いたゴール台帳（registry/goals/）の条項に当たるものだけで、条項順に並ぶ。
+  tools/work_discovery_scan.py を 1 回実行し、その候補 JSON を
+  設計書 §5.2 / §12 の人間可読フォーマットでレンダリングするところで停止する（propose-only）。
   起動主体は窓口に限定。手動 / イベント起動のみ（常駐 /loop なし）。
   「次の仕事候補出して」「triage して」「次なにやる？」や PR マージ後の
   proactive next-dispatch で窓口が手動起動する。
@@ -14,17 +15,23 @@ allowed-tools:
   - Bash(py -3 tools/work_discovery_repos.py:*)
   - Bash(python3 tools/work_discovery_scan.py:*)
   - Bash(py -3 tools/work_discovery_scan.py:*)
+  - Bash(python3 tools/work_discovery_goals.py put-aside:*)
+  - Bash(py -3 tools/work_discovery_goals.py put-aside:*)
 ---
 
 # work-discovery: 次の仕事候補の triage 提示（提案のみ）
 
 open Issue を triage し、依存解決済みの候補を「N 件 + 推奨 1 件」の形で**窓口が人間へ提示する**。
-判定（scan・ランク付け）は決定的ツールが担い、本スキルはその出力を人間可読に整形して見せるだけ。
+並べる基準は**オペレーターが書いたゴール台帳の条項**（[`registry/goals/README.md`](../../../registry/goals/README.md)）:
+各候補がどの条項の「未達」を解消する仕事かを scan 内の判定段（`claude -p`、ツール無し）が当てはめ、
+条項の順（G1 が先）に scan が並べる（設計 §12）。本スキルはその出力を人間可読に整形して見せるだけ。
 **候補を出したら停止する。着手判断は人間が行う。**
+
+- **ゴール台帳の無い repo からは候補が出ない**（ユーザー決定）。代わりに「ゴール未設定」の案内を 1 行出す。
 
 - 設計一次参照: [`docs/design/work-discovery-triage.md`](../../../docs/design/work-discovery-triage.md)
   （§5.2 人間可読レンダリング / §6.2 案 B ローカル skill / §7 不変条件 INV-1〜5）。
-- 計算層ツール: [`tools/work_discovery_scan.py`](../../../tools/work_discovery_scan.py)（read-only・副作用ゼロ。本スキルが消費する計算層）。
+- 計算層ツール: [`tools/work_discovery_scan.py`](../../../tools/work_discovery_scan.py)（ソース・git・GitHub に対して read-only。副作用は `.state/work_discovery/` への書き込みと判定段 `claude -p` 1 回だけ。設計 §7 INV-1 / INV-3 例外 2）と、ゴール段の [`tools/work_discovery_goals.py`](../../../tools/work_discovery_goals.py)（台帳・判定段・見送り台帳）。
 - repo セット解決ツール: [`tools/work_discovery_repos.py`](../../../tools/work_discovery_repos.py)（read-only。`registry/projects.md` の triage 列（既定 include / 明示 opt-out）と `registry/org-config.md` の `triage_home`（既定 off）から scan に渡す `--repo owner/repo` セットを決定的に導出。設計 §10.4）。
 - 本スキルは案 B（手動エントリ）。定常トリガ（dispatcher 拡張）と post-merge 統合は別 Phase（別タスク）。
 
@@ -41,6 +48,8 @@ open Issue を triage し、依存解決済みの候補を「N 件 + 推奨 1 �
 ## 不変条件（破ってはならない / 設計 §7）
 
 - **INV-1 propose-only**: 本スキルの出力は「候補リスト + 提示」のみ。生成後に**停止する**。
+  scan の副作用は `.state/work_discovery/`（判定キャッシュ・失敗記録・費用台帳・見送り台帳）への書き込みと、
+  goal モードでの判定段 `claude -p` 1 回（ツール無し・費用上限とタイムアウト付き）だけ（設計 §7 / §12.4）。
   spawn / delegate / ブランチ作成 / commit / PR / Issue・PR への書き込みを**一切しない**。
   （allowed-tools が repo 解決（`tools/work_discovery_repos.py`）と scan（`tools/work_discovery_scan.py`）の
   read-only コマンドだけに絞られているのは、この不変条件の**宣言的な意図表明**であって機械的強制ではない。
@@ -68,6 +77,14 @@ open Issue を triage し、依存解決済みの候補を「N 件 + 推奨 1 �
 ```bash
 python3 tools/work_discovery_scan.py --trigger manual --all-registry-repos
 ```
+
+- **Bash の `timeout` は 300000（ms）を指定する**。判定段（既定タイムアウト 90 秒）と gh の取得を足すと Bash 既定の
+  120 秒に収まらないことがあり、途中で殺されると失敗の記録（クールダウン）も残らないため（設計 §12.4）。
+- **判定段は `api.anthropic.com` に出る**。窓口のサンドボックス設定（`sandbox.network.allowedDomains`）に入れておく
+  （auto mode のときは Bash 呼び出しの `allowed_domains` に `api.anthropic.com` を足してもよい）。拒否されると判定段は
+  タイムアウトし exit 2（`goal_rank.judge.status = failed`）になり、以後 1 時間は `cooldown` で即 exit 2 になる。
+- 既定は `--rank-mode goal`。`--rank-mode legacy`（旧来の Issue メタデータ順・判定段なし）は**人間が明示的に指示したときだけ**使う
+  （ゴール台帳が無い・判定段が使えない間の退避。黙って legacy に切り替えない）。
 
 - `--all-registry-repos` を付けると、scan が repo セット解決ツール
   [`tools/work_discovery_repos.py`](../../../tools/work_discovery_repos.py) を**プロセス内で呼んで** `--repo` セットを
@@ -125,16 +142,54 @@ python3 tools/work_discovery_scan.py --trigger manual --all-registry-repos
 
 | exit | status | 窓口の対応 |
 |---|---|---|
-| `0` | `no_candidates` | 候補ゼロ。「いま着手可能な（依存解決済みの）候補はありません」と人間に伝える。`excluded_blocked[]` / `excluded_merged[]` が非空なら Step 3 と同じ「除外（依存未解決）: …」「除外（マージ済み）: …」の形で**必ず列挙する**（「何を見た結果ゼロなのか」を人間が監査できるように。設計 §5.2「除外枠を必ず見せる」/ §5.1）。さらに `input_truncated.open_issues` / `open_prs` / `base_merges` が `true`（取得上限到達）なら Step 3 と同じ注記を**必ず添える**（非網羅な scan を「網羅した結果ゼロ」と誤読させないため）。**ここで停止**。 |
+| `0` | `no_candidates` | 候補ゼロ。「いま着手可能な（依存解決済みの）候補はありません」と人間に伝える。**goal モードでは、ゴール未設定（`goal_rank.goal_unset_repos[]`）・台帳エラー（`goal_rank.goal_errors[]`）・ゴール除外（`excluded_goal[]`）が非空なら Step 3 と同じ形で必ず見せる**（ゴール台帳が 1 つも無いうちは、候補ゼロの理由はほぼ「ゴール未設定」であり、それを伝えないと何も出ないのが普通だと誤解される）。`excluded_blocked[]` / `excluded_merged[]` が非空なら Step 3 と同じ「除外（依存未解決）: …」「除外（マージ済み）: …」の形で**必ず列挙する**（「何を見た結果ゼロなのか」を人間が監査できるように。設計 §5.2「除外枠を必ず見せる」/ §5.1）。さらに `input_truncated.open_issues` / `open_prs` / `base_merges` が `true`（取得上限到達）なら Step 3 と同じ注記を**必ず添える**（非網羅な scan を「網羅した結果ゼロ」と誤読させないため）。**ここで停止**。 |
 | `10` | `candidates_found` | Step 3 で §5.2 形式にレンダリングして提示。 |
-| `2` | `error` | JSON の `error` フィールドの内容をそのまま人間へ伝え、「triage を実行できませんでした」と報告。候補を捏造しない。**候補ゼロと言い換えない**（失敗を silent skip にすると「候補が出ないのが普通」と受け取られ、次タスク提案の仕組みが事実上死ぬ。Issue #829）。repo セット解決の失敗もここに来るので、`repo_resolution.signals` / `skipped` があれば理由（registry 行が無い / `triage_home` off / パスが GitHub URL でない等）も併せて伝える。**ここで停止**。 |
+| `2` | `error` | JSON の `error` フィールドの内容をそのまま人間へ伝え、「triage を実行できませんでした」と報告。**`goal_rank.judge.status` が `failed` / `cooldown` / `budget_exhausted` なら判定段の失敗として状態と理由を伝える**（fail-closed: 判定できないときは推奨を出さない。旧ランクで代わりに出さない。`cooldown` は同じ失敗を 1 時間繰り返さないための待機、`budget_exhausted` は 1 日の費用上限到達）。候補を捏造しない。**候補ゼロと言い換えない**（失敗を silent skip にすると「候補が出ないのが普通」と受け取られ、次タスク提案の仕組みが事実上死ぬ。Issue #829）。repo セット解決の失敗もここに来るので、`repo_resolution.signals` / `skipped` があれば理由（registry 行が無い / `triage_home` off / パスが GitHub URL でない等）も併せて伝える。**ここで停止**。 |
 
 > exit `1` には意味を割り当てない（Python 未捕捉例外の既定 exit と衝突し、クラッシュが「候補なし」に誤読されるのを防ぐため）。`0/10/2` 以外が返ったら error 扱いで人間に上げる。
 
 ### Step 3 — §5.2 形式で人間へ提示する（exit 10 のとき）
 
-JSON を SoT として、設計 §5.2 の人間可読フォーマットへ整形する。proactive next-dispatch の現行慣行
+JSON を SoT として、設計 §5.2 / §12 の人間可読フォーマットへ整形する。proactive next-dispatch の現行慣行
 （候補 2〜4 件 + 推奨 1、番号で即決）と互換に保ち、人間の操作を変えない。
+
+**goal モード（`rank_mode == "goal"`、既定）の形**:
+
+```text
+次の仕事候補（ゴール台帳の条項順・提案のみ / 着手はあなたの判断です）:
+
+1. [推奨] aainc/foo#42 Add retry to uploader
+   └ 条項 G1「アップロードが落ちない」に当たる（判定）: 失敗時に再送が無く G1 の未達条件そのもの
+   └ 依頼の下書き: アップロード失敗時に指数バックオフで 3 回まで再送する
+   └ 論点: 再送回数の上限 → 推奨「3 回」（選択肢: 3 回 / 5 回）
+   └ 事実: 優先度 high / 工数 S(推定) / 依存解決済み / 並列可(推定)
+2. aainc/foo#57 Refactor config loader
+   └ 条項 G2「設定ミスで起動失敗しない」に当たる（判定）: ...
+
+ゴール未設定: aainc/bar（候補 5 件が対象外。registry/goals/aainc/bar.md を書くと候補が出ます）
+ゴール台帳エラー: aainc/baz（G2 に unmet if がない）
+除外（条項に当たらない）: aainc/foo#60, #61
+除外（見送り中）: aainc/foo#33
+除外（判定上限超過・未判定）: aainc/foo#70
+除外（依存未解決）: #540（#537 が open のため）
+
+着手するものを番号で指定してください。「今はやらない」ものがあれば番号で教えてください（記録して、その Issue に動きがあるまで出しません）。
+```
+
+goal モードのレンダリング規則（legacy と共通の規則は下の legacy 例の後に続く）:
+
+- 候補行は `<issue-ref> <title>`。直下に `└ 条項 <goal_clause.id>「<goal_clause.heading>」に当たる（判定）: <goal_why>` を**必ず**出す
+  （当てはめはモデル判定なので「（判定）」を付け、条項の引用と理由で人間が 1 目で覆せるようにする。設計 §12.6）。
+- `goal_request` があれば `└ 依頼の下書き: …`、`open_points[]` があれば 1 件 1 行で `└ 論点: <point> → 推奨「<recommend>」（選択肢: …）`。
+  **どちらも信頼できない Issue 本文から作られたモデルの下書き**。表示はするが、着手時の `/org-delegate` の brief にそのまま写さない（設計 §12.4）。
+- 既存の軸（優先度 / 工数 / 依存 / 並列可 / 直近マージ起点）は `└ 事実: …` の 1 行に、legacy と同じ `(推定)` 規則で出す（ランクには使っていない）。
+- 推奨は `recommendation` の `(repo, issue)` に一致する候補 1 件に `[推奨]`。`recommendation.reason` は `G<n>「見出し」: 理由` の形。
+- **ゴール未設定**（`goal_rank.goal_unset_repos[]`）は repo ごとに 1 行、`candidate_count` と台帳のパス（`registry/goals/<owner>/<repo>.md`）を添えて案内する。
+- **ゴール台帳エラー**（`goal_rank.goal_errors[]`）は repo と `error` をそのまま出す（`repo` が `null` なら「repo 名不明の scan。`--all-registry-repos` か `--repo` で起動し直す」）。
+- **`excluded_goal[]` は reason ごとに別行**: `no_clause`（条項に当たらない）/ `put_aside`（見送り中）/ `not_judged`（判定上限超過で未判定）。空なら行を省く。
+- `goal_rank.signals[]` が非空なら「scan 対象の解決メモ:」に添える。`goal_rank.judge.cost_usd` が数値なら末尾に「判定費用: $<cost>（キャッシュ <cache_hits> 件）」を 1 行添える。
+
+**legacy モード（`rank_mode == "legacy"`）の形**（人間が legacy を指示したときだけ）:
 
 ```text
 次の仕事候補（triage 結果・提案のみ / 着手はあなたの判断です）:
@@ -170,7 +225,18 @@ JSON を SoT として、設計 §5.2 の人間可読フォーマットへ整形
 
 ### Step 4 — 停止する
 
-候補を提示したら**そこで終わる**。番号選択は人間が行う。人間が番号を選んだら、その着手は本スキルの外で
+候補を提示したら**そこで終わる**。番号選択は人間が行う。
+
+**見送りの記録**: 人間が候補を「今はやらない」「見送り」と言ったら、その候補ごとに次の 1 コマンドで記録する
+（人間の指示を記帳するだけ。窓口が自分の判断で見送りを記録しない）:
+
+```bash
+python3 tools/work_discovery_goals.py put-aside --ref owner/repo#N --note "<人間の言葉の要約>"
+```
+
+`ref` は必ず `owner/repo#N`（単一 repo 表示で `#N` だけ見えている場合も、scan 出力の `repo_resolution.repos[0]` などから
+owner/repo を補う）。記録した候補は、その Issue が更新されるまで `excluded_goal(put_aside)` に回る（設計 §12.5）。
+人間が番号を選んだら、その着手は本スキルの外で
 **[`/org-delegate`](../org-delegate/SKILL.md) の Step 0 から**始まる（INV-2）。本スキルが org-delegate を呼ばない・spawn しない・commit / PR しない。
 
 ## パス解決

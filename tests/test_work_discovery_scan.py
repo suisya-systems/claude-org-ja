@@ -804,7 +804,7 @@ class TestCliWiring(unittest.TestCase):
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(bundle, f)
             proc = subprocess.run(
-                [sys.executable, str(SCRIPT), "--from-file", name],
+                [sys.executable, str(SCRIPT), "--rank-mode", "legacy", "--from-file", name],
                 capture_output=True,
                 text=True,
                 encoding="utf-8",  # script emits UTF-8; don't decode via cp932 locale (#537)
@@ -836,7 +836,7 @@ class TestCliWiring(unittest.TestCase):
 
     def test_exit_2_on_error(self):
         proc = subprocess.run(
-            [sys.executable, str(SCRIPT), "--from-file", "/no/such/file.json"],
+            [sys.executable, str(SCRIPT), "--rank-mode", "legacy", "--from-file", "/no/such/file.json"],
             capture_output=True,
             text=True,
             encoding="utf-8",  # script emits UTF-8; don't decode via cp932 locale (#537)
@@ -853,7 +853,7 @@ class TestCliWiring(unittest.TestCase):
         # The error branch must carry the same audit fields as a normal
         # result, not a bespoke shape.
         proc = subprocess.run(
-            [sys.executable, str(SCRIPT), "--from-file", "/no/such/file.json"],
+            [sys.executable, str(SCRIPT), "--rank-mode", "legacy", "--from-file", "/no/such/file.json"],
             capture_output=True,
             text=True,
             encoding="utf-8",  # script emits UTF-8; don't decode via cp932 locale (#537)
@@ -878,7 +878,7 @@ class TestCliWiring(unittest.TestCase):
         # A CLI parse error must still print a single JSON object to stdout
         # and exit 2, not bare usage on stderr.
         proc = subprocess.run(
-            [sys.executable, str(SCRIPT), "--top-n", "not-an-int"],
+            [sys.executable, str(SCRIPT), "--rank-mode", "legacy", "--top-n", "not-an-int"],
             capture_output=True,
             text=True,
             encoding="utf-8",  # script emits UTF-8; don't decode via cp932 locale (#537)
@@ -892,7 +892,7 @@ class TestCliWiring(unittest.TestCase):
         # Even an argparse type error raised mid-parse must carry the real
         # --trigger in generated_for (best-effort probe), not "manual".
         proc = subprocess.run(
-            [sys.executable, str(SCRIPT), "--top-n", "nope", "--trigger", "post_merge"],
+            [sys.executable, str(SCRIPT), "--rank-mode", "legacy", "--top-n", "nope", "--trigger", "post_merge"],
             capture_output=True,
             text=True,
             encoding="utf-8",  # script emits UTF-8; don't decode via cp932 locale (#537)
@@ -907,7 +907,7 @@ class TestCliWiring(unittest.TestCase):
         # the JSON envelope to stdout and nothing to stderr (single-channel
         # machine contract, §5.1).
         proc = subprocess.run(
-            [sys.executable, str(SCRIPT), "--trigger"],  # missing value
+            [sys.executable, str(SCRIPT), "--rank-mode", "legacy", "--trigger"],  # missing value
             capture_output=True,
             text=True,
             encoding="utf-8",  # script emits UTF-8; don't decode via cp932 locale (#537)
@@ -938,7 +938,7 @@ class TestCliWiring(unittest.TestCase):
         # no_candidates / exit 0) even with candidates — a contract break.
         # It must be rejected as an argument error (exit 2, JSON envelope).
         proc = subprocess.run(
-            [sys.executable, str(SCRIPT), "--top-n", "0"],
+            [sys.executable, str(SCRIPT), "--rank-mode", "legacy", "--top-n", "0"],
             capture_output=True,
             text=True,
             encoding="utf-8",  # script emits UTF-8; don't decode via cp932 locale (#537)
@@ -950,7 +950,7 @@ class TestCliWiring(unittest.TestCase):
 
     def test_top_n_negative_rejected_as_error(self):
         proc = subprocess.run(
-            [sys.executable, str(SCRIPT), "--top-n=-5"],
+            [sys.executable, str(SCRIPT), "--rank-mode", "legacy", "--top-n=-5"],
             capture_output=True,
             text=True,
             encoding="utf-8",  # script emits UTF-8; don't decode via cp932 locale (#537)
@@ -963,7 +963,7 @@ class TestCliWiring(unittest.TestCase):
         # The error envelope must carry the real --trigger in generated_for,
         # not a hardcoded "manual" (delivery layer reads the context).
         proc = subprocess.run(
-            [sys.executable, str(SCRIPT), "--top-n", "0", "--trigger", "post_merge"],
+            [sys.executable, str(SCRIPT), "--rank-mode", "legacy", "--top-n", "0", "--trigger", "post_merge"],
             capture_output=True,
             text=True,
             encoding="utf-8",  # script emits UTF-8; don't decode via cp932 locale (#537)
@@ -977,7 +977,7 @@ class TestCliWiring(unittest.TestCase):
         # `--recent-merges 0` would request a nonsensical `gh --limit 0` and
         # break the 直近 K 件 contract — must be rejected (exit 2).
         proc = subprocess.run(
-            [sys.executable, str(SCRIPT), "--recent-merges", "0"],
+            [sys.executable, str(SCRIPT), "--rank-mode", "legacy", "--recent-merges", "0"],
             capture_output=True,
             text=True,
             encoding="utf-8",  # script emits UTF-8; don't decode via cp932 locale (#537)
@@ -989,7 +989,7 @@ class TestCliWiring(unittest.TestCase):
 
     def test_recent_merges_negative_rejected_as_error(self):
         proc = subprocess.run(
-            [sys.executable, str(SCRIPT), "--recent-merges=-3"],
+            [sys.executable, str(SCRIPT), "--rank-mode", "legacy", "--recent-merges=-3"],
             capture_output=True,
             text=True,
             encoding="utf-8",  # script emits UTF-8; don't decode via cp932 locale (#537)
@@ -1001,7 +1001,7 @@ class TestCliWiring(unittest.TestCase):
     def test_free_panes_negative_rejected_as_error(self):
         # `--free-panes` is a non-negative count; 0 is valid, negative is not.
         proc = subprocess.run(
-            [sys.executable, str(SCRIPT), "--free-panes=-2"],
+            [sys.executable, str(SCRIPT), "--rank-mode", "legacy", "--free-panes=-2"],
             capture_output=True,
             text=True,
             encoding="utf-8",  # script emits UTF-8; don't decode via cp932 locale (#537)
@@ -1023,7 +1023,7 @@ class TestEffortLearningCliAndWiring(unittest.TestCase):
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(bundle, f)
             return subprocess.run(
-                [sys.executable, str(SCRIPT), "--from-file", name],
+                [sys.executable, str(SCRIPT), "--rank-mode", "legacy", "--from-file", name],
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -1086,7 +1086,7 @@ class TestEffortLearningCliAndWiring(unittest.TestCase):
 
     def test_effort_history_negative_rejected(self):
         proc = subprocess.run(
-            [sys.executable, str(SCRIPT), "--effort-history=-1"],
+            [sys.executable, str(SCRIPT), "--rank-mode", "legacy", "--effort-history=-1"],
             capture_output=True, text=True, encoding="utf-8",
         )
         self.assertEqual(proc.returncode, wds.EXIT_ERROR)
@@ -1098,7 +1098,7 @@ class TestEffortLearningCliAndWiring(unittest.TestCase):
 
         buf = io.StringIO()
         with redirect_stdout(buf):
-            rc = wds.main(argv)
+            rc = wds.main(["--rank-mode", "legacy", "--rank-mode", "legacy", *argv])
         return rc, buf.getvalue()
 
     def test_effort_history_fetch_failure_is_non_fatal(self):
@@ -1245,7 +1245,7 @@ class TestEffortLearningCliAndWiring(unittest.TestCase):
             from contextlib import redirect_stdout
             buf = io.StringIO()
             with redirect_stdout(buf):
-                rc = wds.main(["--effort-history", "0"])
+                rc = wds.main(["--rank-mode", "legacy", "--effort-history", "0"])
         bem.assert_not_called()  # learning skipped entirely
         self.assertEqual(rc, wds.EXIT_CANDIDATES_FOUND)
         self.assertIsNone(json.loads(buf.getvalue())["effort_model"])
@@ -1646,7 +1646,7 @@ class TestBundleValidation(unittest.TestCase):
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(text)
             return subprocess.run(
-                [sys.executable, str(SCRIPT), "--from-file", name],
+                [sys.executable, str(SCRIPT), "--rank-mode", "legacy", "--from-file", name],
                 capture_output=True,
                 text=True,
                 encoding="utf-8",  # script emits UTF-8; don't decode via cp932 locale (#537)
@@ -1959,7 +1959,7 @@ class TestCrossRepoCli(unittest.TestCase):
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(text)
             return subprocess.run(
-                [sys.executable, str(SCRIPT), "--from-file", name],
+                [sys.executable, str(SCRIPT), "--rank-mode", "legacy", "--from-file", name],
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -2081,7 +2081,7 @@ class TestCrossRepoCli(unittest.TestCase):
         with mock.patch.object(wds, "fetch_open_issues", _fake_issues), \
              mock.patch.object(wds, "fetch_open_pr_numbers", lambda r, limit=wds.DEFAULT_OPEN_LIMIT: set()), \
              mock.patch.object(wds, "fetch_recent_merges", lambda r, k: []):
-            rc = wds.main(["--repo", JA, "--repo", RT])
+            rc = wds.main(["--rank-mode", "legacy", "--repo", JA, "--repo", RT])
         self.assertEqual(calls, [JA, RT])
         self.assertEqual(rc, wds.EXIT_NO_CANDIDATES)
 
@@ -2151,7 +2151,7 @@ class TestSingleRepoBackCompat(unittest.TestCase):
             wds, "fetch_recent_merges", lambda r, k: []
         ):
             with redirect_stdout(buf):
-                rc = wds.main(argv)
+                rc = wds.main(["--rank-mode", "legacy", "--rank-mode", "legacy", *argv])
         return rc, json.loads(buf.getvalue())
 
     def test_single_explicit_repo_keys_as_null(self):
@@ -2176,7 +2176,7 @@ class TestSingleRepoBackCompat(unittest.TestCase):
             wds, "fetch_recent_merges", lambda r, k: []
         ):
             with redirect_stdout(buf):
-                wds.main(["--repo", JA])
+                wds.main(["--rank-mode", "legacy", "--repo", JA])
         data = json.loads(buf.getvalue())
         excl = {e["issue"]: e for e in data["excluded_blocked"]}
         self.assertEqual(excl[10]["blocking_refs"], [5])
@@ -2197,7 +2197,7 @@ class TestSingleRepoBackCompat(unittest.TestCase):
 
             buf = io.StringIO()
             with redirect_stdout(buf):
-                wds.main(["--repo", JA, "--repo", JA])
+                wds.main(["--rank-mode", "legacy", "--repo", JA, "--repo", JA])
             data = json.loads(buf.getvalue())
         self.assertEqual(calls, [JA])  # fetched once, not twice
         self.assertEqual(data["candidate_count"], 1)
@@ -2333,7 +2333,7 @@ class TestAllRegistryRepos(unittest.TestCase):
                  lambda r, limit=wds.DEFAULT_OPEN_LIMIT: set()), \
              mock.patch.object(wds, "fetch_recent_merges", lambda r, k: []):
             with redirect_stdout(buf):
-                rc = wds.main(argv)
+                rc = wds.main(["--rank-mode", "legacy", "--rank-mode", "legacy", *argv])
         return rc, json.loads(buf.getvalue()), fetched
 
     def test_registry_repos_are_scanned(self):
@@ -2474,7 +2474,7 @@ class TestAllRegistryRepos(unittest.TestCase):
         # (an empty registry → deterministic exit 2 with no network).
         self._write_registry([])
         cmd = (
-            f'{sys.executable} {SCRIPT} --all-registry-repos '
+            f'{sys.executable} {SCRIPT} --rank-mode legacy --all-registry-repos '
             f'--claude-org-root {self.root} --trigger worker_close'
         )
         seen = {}
@@ -2803,7 +2803,7 @@ class TestBaseBranchCompletionCli(unittest.TestCase):
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(bundle, f)
             proc = subprocess.run(
-                [sys.executable, str(SCRIPT), "--from-file", name,
+                [sys.executable, str(SCRIPT), "--rank-mode", "legacy", "--from-file", name,
                  *extra_argv],
                 capture_output=True,
                 text=True,
@@ -2876,7 +2876,7 @@ class TestBaseBranchCompletionCli(unittest.TestCase):
 
     def test_error_envelope_carries_the_new_keys(self):
         proc = subprocess.run(
-            [sys.executable, str(SCRIPT), "--from-file", "/no/such/file.json"],
+            [sys.executable, str(SCRIPT), "--rank-mode", "legacy", "--from-file", "/no/such/file.json"],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -2971,7 +2971,7 @@ class TestBaseBranchFromRegistry(unittest.TestCase):
              mock.patch.object(wds, "fetch_base_branch_merges", _base), \
              mock.patch.object(wds, "build_effort_model", lambda r, n: None):
             with redirect_stdout(buf):
-                rc = wds.main(argv)
+                rc = wds.main(["--rank-mode", "legacy", "--rank-mode", "legacy", *argv])
         return rc, json.loads(buf.getvalue()), base_calls
 
     def test_explicit_repo_still_gets_the_registry_base_branch(self):
@@ -3084,3 +3084,491 @@ class TestBaseBranchFromRegistry(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ----------------------------------------------------------------------
+# Goal ranking plumbing (design §12, Phase 5). The first two classes drive
+# scan_repos / main with a *fake* goal stage, so they pin the scan side of the
+# contract independently of tools/work_discovery_goals.py. TestGoalModeCli is
+# the end-to-end check against the real goals module with a stub judge.
+# ----------------------------------------------------------------------
+
+
+def _goal_bundle():
+    return {
+        "repos": [
+            {
+                "repo": "OwnerA/Alpha",
+                "issues": [
+                    _issue(1, title="Goal thing", body="does the goal"),
+                    _issue(2, title="misc", body="unrelated"),
+                ],
+            },
+            {"repo": "ownerb/beta", "issues": [_issue(5, title="Goal beta")]},
+        ]
+    }
+
+
+class TestScanReposGoalRanker(unittest.TestCase):
+    def _bundles(self):
+        return [
+            {"repo": "OwnerA/Alpha", "issues": [
+                _issue(1, body="b1", labels=["Bug"]), _issue(2)]},
+            {"repo": None, "real_repo": "OwnerC/Gamma", "issues": [_issue(9)]},
+        ]
+
+    def test_legacy_has_fixed_goal_schema(self):
+        out = wds.scan_repos(self._bundles(), wds.ScanConfig())
+        self.assertEqual(out["rank_mode"], "legacy")
+        self.assertIsNone(out["goal_rank"])
+        self.assertEqual(out["excluded_goal"], [])
+        for cand in out["candidates"]:
+            self.assertIsNone(cand["goal_clause"])
+            self.assertIsNone(cand["goal_why"])
+            self.assertIsNone(cand["goal_request"])
+            self.assertEqual(cand["open_points"], [])
+            self.assertIsNone(cand["goal_judgement_key"])
+            self.assertFalse([k for k in cand if k.startswith("_")])
+
+    def test_goal_ranker_gets_whole_pool_with_internal_fields(self):
+        seen = {}
+
+        def ranker(pool):
+            seen["pool"] = [dict(c) for c in pool]
+            best = pool[0]
+            best["rank"] = 1
+            best["goal_clause"] = {"id": "G1", "heading": "h"}
+            return {
+                "candidates": [best],
+                "truncated_count": 0,
+                "recommendation": {"repo": best["repo"], "issue": 1,
+                                   "reason": "G1「h」: w"},
+                "excluded_goal": [{"repo": None, "issue": 9,
+                                   "reason": "no_clause", "note": "n"}],
+                "goal_rank": {"judge": {"status": "called"}},
+            }
+
+        out = wds.scan_repos(
+            self._bundles(), wds.ScanConfig(top_n=1), goal_ranker=ranker
+        )
+        # No top-N cut before the goal stage (design §12.7 件数).
+        self.assertEqual(len(seen["pool"]), 3)
+        by_issue = {c["issue"]: c for c in seen["pool"]}
+        self.assertEqual(by_issue[1]["_real_repo"], "ownera/alpha")
+        self.assertEqual(by_issue[1]["_body"], "b1")
+        self.assertEqual(by_issue[1]["_labels"], ["bug"])
+        self.assertEqual(by_issue[1]["_updated_at"], "2026-06-01T00:00:00Z")
+        # An implicit (repo None) bundle keys by its resolved slug.
+        self.assertEqual(by_issue[9]["_real_repo"], "ownerc/gamma")
+        self.assertEqual(out["rank_mode"], "goal")
+        self.assertEqual(out["status"], "candidates_found")
+        self.assertEqual(out["candidate_count"], 1)
+        self.assertEqual(out["goal_rank"], {"judge": {"status": "called"}})
+        self.assertEqual(out["excluded_goal"][0]["reason"], "no_clause")
+        cand = out["candidates"][0]
+        self.assertEqual(cand["goal_clause"], {"id": "G1", "heading": "h"})
+        self.assertEqual(cand["open_points"], [])  # defaulted, not dropped
+        self.assertFalse([k for k in cand if k.startswith("_")])
+
+    def test_real_repo_none_when_unknown(self):
+        pools = []
+        wds.scan([_issue(3)], set(), [], wds.ScanConfig())  # legacy untouched
+        wds.scan_repos(
+            [{"repo": None, "issues": [_issue(3)]}], wds.ScanConfig(),
+            goal_ranker=lambda pool: pools.append(pool) or {
+                "candidates": [], "truncated_count": 0,
+                "recommendation": None, "excluded_goal": [], "goal_rank": {}},
+        )
+        self.assertIsNone(pools[0][0]["_real_repo"])
+
+    def test_goal_ranker_error_propagates(self):
+        class Boom(Exception):
+            pass
+
+        def ranker(pool):
+            raise Boom("judge failed")
+
+        with self.assertRaises(Boom):
+            wds.scan_repos(self._bundles(), wds.ScanConfig(), goal_ranker=ranker)
+
+    def test_cap_key_ignores_recency_and_free_panes(self):
+        a = wds.scan([_issue(1, updated="2026-01-01T00:00:00Z")], set(), [],
+                     wds.ScanConfig())["candidates"][0]
+        a.update(_updated_at="2026-09-01T00:00:00Z", _has_milestone=False)
+        b = dict(a, _updated_at="2020-01-01T00:00:00Z")
+        self.assertEqual(wds._cap_key(a), wds._cap_key(b))
+        self.assertNotEqual(wds._sort_key(a, 2), wds._sort_key(b, 2))
+
+
+class _FakeGoalStageError(Exception):
+    def __init__(self, message, goal_rank):
+        super().__init__(message)
+        self.goal_rank = goal_rank
+
+
+class TestMainGoalWiring(unittest.TestCase):
+    """main's goal path against a fake goals module (no lane-A dependency)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.bundle = Path(self.tmp.name) / "b.json"
+        self.bundle.write_text(json.dumps(_goal_bundle()), encoding="utf-8")
+        self.calls = []
+
+    def _fake_module(self, apply_goal_rank):
+        import types
+
+        return types.SimpleNamespace(
+            GoalConfig=lambda **kw: kw,
+            GoalStageError=_FakeGoalStageError,
+            apply_goal_rank=apply_goal_rank,
+        )
+
+    def _main(self, argv, module):
+        import io
+        from contextlib import redirect_stdout
+
+        buf = io.StringIO()
+        with mock.patch.object(wds, "_load_goal_module", return_value=module):
+            with redirect_stdout(buf):
+                rc = wds.main(argv)
+        return rc, json.loads(buf.getvalue())
+
+    def test_goal_is_default_and_config_is_wired(self):
+        def fake(pool, **kw):
+            self.calls.append((pool, kw))
+            cand = pool[0]
+            return {
+                "candidates": [dict(cand, rank=1)],
+                "truncated_count": 0,
+                "recommendation": {"repo": cand["repo"], "issue": cand["issue"],
+                                   "reason": "r"},
+                "excluded_goal": [],
+                "goal_rank": {"judge": {"status": "called"}},
+            }
+
+        root = Path(self.tmp.name) / "org"
+        rc, out = self._main(
+            ["--from-file", str(self.bundle), "--claude-org-root", str(root),
+             "--judge-timeout", "30", "--top-n", "2", "--free-panes", "1"],
+            self._fake_module(fake),
+        )
+        self.assertEqual(rc, wds.EXIT_CANDIDATES_FOUND)
+        self.assertEqual(out["rank_mode"], "goal")
+        self.assertFalse([k for k in out["candidates"][0] if k.startswith("_")])
+        pool, kw = self.calls[0]
+        self.assertEqual(len(pool), 3)
+        cfg = kw["config"]
+        self.assertEqual(cfg["goals_dir"], root.resolve() / "registry" / "goals")
+        self.assertEqual(
+            cfg["state_dir"], root.resolve() / ".state" / "work_discovery"
+        )
+        self.assertEqual(cfg["judge_timeout"], 30.0)
+        self.assertEqual(cfg["top_n"], 2)
+        # Unset knobs are left to the goals module's own defaults.
+        self.assertNotIn("judge_model", cfg)
+        self.assertNotIn("judge_cmd", cfg)
+        # display_repo maps a real slug back to the displayed repo.
+        self.assertEqual(kw["display_repo"]("ownera/alpha"), "OwnerA/Alpha")
+        self.assertEqual(kw["legacy_key"](pool[0]), wds._sort_key(pool[0], 1))
+        self.assertEqual(kw["cap_key"](pool[0]), wds._cap_key(pool[0]))
+
+    def test_goal_stage_error_is_exit_2_with_goal_rank(self):
+        goal_rank = {"judge": {"status": "cooldown"}}
+
+        def fake(pool, **kw):
+            raise _FakeGoalStageError("judge cooldown (environment)", goal_rank)
+
+        rc, out = self._main(
+            ["--from-file", str(self.bundle)], self._fake_module(fake)
+        )
+        self.assertEqual(rc, wds.EXIT_ERROR)
+        self.assertEqual(out["status"], "error")
+        self.assertEqual(out["rank_mode"], "goal")
+        self.assertEqual(out["goal_rank"], goal_rank)
+        self.assertEqual(out["excluded_goal"], [])
+        self.assertEqual(out["candidates"], [])
+        self.assertIn("cooldown", out["error"])
+
+    def test_other_error_in_goal_mode_has_null_goal_rank(self):
+        def fake(pool, **kw):
+            raise RuntimeError("bug")
+
+        rc, out = self._main(
+            ["--from-file", str(self.bundle)], self._fake_module(fake)
+        )
+        self.assertEqual(rc, wds.EXIT_ERROR)
+        self.assertEqual(out["rank_mode"], "goal")
+        self.assertIsNone(out["goal_rank"])
+
+    def test_legacy_never_loads_goal_module(self):
+        import io
+        from contextlib import redirect_stdout
+
+        with mock.patch.object(
+            wds, "_load_goal_module", side_effect=AssertionError("loaded")
+        ):
+            with redirect_stdout(io.StringIO()):
+                rc = wds.main(
+                    ["--rank-mode", "legacy", "--from-file", str(self.bundle)]
+                )
+        self.assertEqual(rc, wds.EXIT_CANDIDATES_FOUND)
+
+    def test_implicit_gh_scan_resolves_real_slug(self):
+        seen = []
+
+        def fake(pool, **kw):
+            seen.extend(pool)
+            return {"candidates": [], "truncated_count": 0,
+                    "recommendation": None, "excluded_goal": [],
+                    "goal_rank": {}}
+
+        import io
+        from contextlib import redirect_stdout
+
+        with mock.patch.object(
+            wds, "_load_goal_module", return_value=self._fake_module(fake)
+        ), mock.patch.object(
+            wds, "fetch_open_issues", return_value=[_issue(4)]
+        ), mock.patch.object(
+            wds, "fetch_open_pr_numbers", return_value=set()
+        ), mock.patch.object(
+            wds, "fetch_recent_merges", return_value=[]
+        ), mock.patch.object(
+            wds, "_resolve_base_branches", return_value=({}, [])
+        ), mock.patch.object(
+            wds, "_run_gh_json", return_value={"nameWithOwner": "Me/Home"}
+        ):
+            with redirect_stdout(io.StringIO()):
+                rc = wds.main(["--effort-history", "0"])
+        self.assertEqual(rc, wds.EXIT_NO_CANDIDATES)
+        self.assertEqual(seen[0]["_real_repo"], "me/home")
+        self.assertIsNone(seen[0]["repo"])  # display stays collapsed
+
+    def test_implicit_slug_failure_leaves_none(self):
+        with mock.patch.object(
+            wds, "_run_gh_json", side_effect=wds.GhError("no auth")
+        ):
+            self.assertIsNone(wds._goal_real_repo(None))
+        self.assertEqual(wds._goal_real_repo("Owner/Repo"), "Owner/Repo")
+
+    def test_judge_arg_validation(self):
+        for argv in (
+            ["--judge-timeout", "0"],
+            ["--judge-timeout", "nan"],
+            ["--judge-max-budget-usd", "0"],
+            ["--judge-daily-budget-usd", "-1"],
+            ["--judge-daily-budget-usd", "inf"],
+            ["--judge-max-candidates", "0"],
+            ["--judge-max-material-bytes", "0"],
+            ["--judge-cmd", " "],
+        ):
+            with self.subTest(argv=argv):
+                rc, out = self._main(
+                    ["--from-file", str(self.bundle), *argv],
+                    self._fake_module(lambda pool, **kw: self.fail("ran")),
+                )
+                self.assertEqual(rc, wds.EXIT_ERROR)
+                self.assertEqual(out["rank_mode"], "goal")
+                self.assertIsNone(out["goal_rank"])
+
+    def test_parse_error_envelope_has_null_rank_mode(self):
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "--rank-mode", "bogus"],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        self.assertEqual(proc.returncode, wds.EXIT_ERROR)
+        out = json.loads(proc.stdout)
+        self.assertIsNone(out["rank_mode"])
+        self.assertIsNone(out["goal_rank"])
+        self.assertEqual(out["excluded_goal"], [])
+
+
+_STUB_JUDGE = r'''#!{python}
+"""Stub for `claude -p`: records argv, answers from the material JSON.
+
+The material JSON is the last line of --system-prompt-file (the format
+work_discovery_goals.JUDGE_INSTRUCTIONS promises the model)."""
+import json, sys
+argv = sys.argv[1:]
+with open({log!r}, "a", encoding="utf-8") as f:
+    f.write(json.dumps(argv) + "\n")
+if {mode!r} == "fail":
+    print("not json")
+    sys.exit(3)
+path = argv[argv.index("--system-prompt-file") + 1]
+material = json.loads(open(path, encoding="utf-8").read().splitlines()[-1])
+judgements = []
+for c in material["candidates"]:
+    hit = "goal" in c["title"].lower()
+    judgements.append({
+        "key": c["key"],
+        "clause": "G1" if hit else None,
+        "why": "why " + c["key"],
+        "request": "request " + c["key"],
+        "open_points": (
+            [{"point": "p", "options": ["A", "B"], "recommend": "A"}]
+            if hit else []
+        ),
+    })
+print(json.dumps({
+    "type": "result", "subtype": "success", "is_error": False,
+    "structured_output": {"judgements": judgements},
+    "total_cost_usd": 0.01,
+}))
+'''
+
+_LEDGER = """# Alpha goals
+
+## G1 Ship the goal feature
+The goal feature is what users wait for.
+- unmet if: the goal feature is not released
+"""
+
+
+@unittest.skipIf(os.name == "nt", "stub judge relies on a POSIX shebang")
+class TestGoalModeCli(unittest.TestCase):
+    """End-to-end goal mode with the real goals module and a stub judge."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        base = Path(self.tmp.name)
+        self.goals = base / "goals"
+        self.state = base / "state"
+        self.log = base / "judge_calls.log"
+        (self.goals / "ownera").mkdir(parents=True)
+        (self.goals / "ownera" / "alpha.md").write_text(_LEDGER, encoding="utf-8")
+        self.bundle = base / "bundle.json"
+        self.bundle.write_text(json.dumps(_goal_bundle()), encoding="utf-8")
+        self.stub = self._write_stub("ok")
+
+    def _write_stub(self, mode):
+        path = Path(self.tmp.name) / f"judge-{mode}"
+        path.write_text(
+            _STUB_JUDGE.replace("{python}", sys.executable)
+            .replace("{log!r}", repr(str(self.log)))
+            .replace("{mode!r}", repr(mode)),
+            encoding="utf-8",
+        )
+        path.chmod(0o755)
+        return path
+
+    def _calls(self):
+        if not self.log.exists():
+            return []
+        return [json.loads(l) for l in self.log.read_text().splitlines()]
+
+    def _run(self, *extra, bundle=None, stub=None):
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "--from-file",
+             str(bundle or self.bundle), "--goals-dir", str(self.goals),
+             "--state-dir", str(self.state), "--judge-cmd",
+             str(stub or self.stub), *extra],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        return proc.returncode, json.loads(proc.stdout)
+
+    def test_clause_hit_ranked_unset_repo_reported(self):
+        rc, out = self._run()
+        self.assertEqual(rc, wds.EXIT_CANDIDATES_FOUND, out.get("error"))
+        self.assertEqual(out["rank_mode"], "goal")
+        self.assertEqual(
+            [(c["repo"], c["issue"], c["rank"]) for c in out["candidates"]],
+            [("OwnerA/Alpha", 1, 1)],
+        )
+        cand = out["candidates"][0]
+        self.assertEqual(
+            cand["goal_clause"], {"id": "G1", "heading": "Ship the goal feature"}
+        )
+        self.assertEqual(cand["goal_why"], "why ownera/alpha#1")
+        self.assertEqual(cand["goal_request"], "request ownera/alpha#1")
+        self.assertEqual(len(cand["open_points"]), 1)
+        self.assertTrue(cand["goal_judgement_key"])
+        self.assertFalse([k for k in cand if k.startswith("_")])
+        self.assertTrue(
+            out["recommendation"]["reason"].startswith(
+                "G1「Ship the goal feature」: "
+            )
+        )
+        self.assertEqual(
+            [(e["repo"], e["issue"], e["reason"]) for e in out["excluded_goal"]],
+            [("OwnerA/Alpha", 2, "no_clause")],
+        )
+        gr = out["goal_rank"]
+        self.assertEqual(
+            gr["goal_unset_repos"], [{"repo": "ownerb/beta", "candidate_count": 1}]
+        )
+        self.assertEqual(gr["goals"][0]["repo"], "ownera/alpha")
+        self.assertEqual(gr["goals"][0]["clause_count"], 1)
+        self.assertEqual(gr["judge"]["status"], "called")
+        self.assertEqual(gr["judge"]["candidates_sent"], 2)
+        # One judge call, isolated as design §12.4 prescribes.
+        calls = self._calls()
+        self.assertEqual(len(calls), 1)
+        argv = calls[0]
+        self.assertEqual(argv[0], "-p")
+        for flag in ("--safe-mode", "--strict-mcp-config",
+                     "--no-session-persistence"):
+            self.assertIn(flag, argv)
+        self.assertEqual(argv[argv.index("--tools") + 1], "")
+        self.assertEqual(argv[argv.index("--model") + 1], "sonnet")
+        self.assertEqual(argv[argv.index("--output-format") + 1], "json")
+
+    def test_second_run_uses_cache(self):
+        _, first = self._run()
+        rc, second = self._run()
+        self.assertEqual(rc, wds.EXIT_CANDIDATES_FOUND)
+        self.assertEqual(len(self._calls()), 1)
+        self.assertEqual(second["goal_rank"]["judge"]["status"], "cache_only")
+        self.assertEqual(second["candidates"], first["candidates"])
+
+    def test_judge_failure_is_fail_closed_then_cooldown(self):
+        fail = self._write_stub("fail")
+        rc, out = self._run(stub=fail)
+        self.assertEqual(rc, wds.EXIT_ERROR)
+        self.assertEqual(out["status"], "error")
+        self.assertEqual(out["rank_mode"], "goal")
+        self.assertEqual(out["candidates"], [])
+        self.assertEqual(out["goal_rank"]["judge"]["status"], "failed")
+        rc, out = self._run(stub=fail)
+        self.assertEqual(rc, wds.EXIT_ERROR)
+        self.assertEqual(out["goal_rank"]["judge"]["status"], "cooldown")
+        self.assertEqual(len(self._calls()), 1)
+
+    def test_no_ledgers_no_candidates_no_judge(self):
+        (self.goals / "ownera" / "alpha.md").unlink()
+        rc, out = self._run()
+        self.assertEqual(rc, wds.EXIT_NO_CANDIDATES)
+        self.assertEqual(out["candidates"], [])
+        self.assertEqual(
+            sorted(r["repo"] for r in out["goal_rank"]["goal_unset_repos"]),
+            ["ownera/alpha", "ownerb/beta"],
+        )
+        self.assertEqual(
+            out["goal_rank"]["judge"]["status"], "skipped_no_material"
+        )
+        self.assertEqual(self._calls(), [])
+
+    def test_single_shape_bundle_is_slug_unknown(self):
+        single = Path(self.tmp.name) / "single.json"
+        single.write_text(
+            json.dumps({"issues": [_issue(1, title="Goal thing")]}),
+            encoding="utf-8",
+        )
+        rc, out = self._run(bundle=single)
+        self.assertEqual(rc, wds.EXIT_NO_CANDIDATES)
+        errors = out["goal_rank"]["goal_errors"]
+        self.assertEqual(len(errors), 1)
+        self.assertIsNone(errors[0]["repo"])
+        self.assertIn("repo slug unknown", errors[0]["error"])
+        self.assertEqual(self._calls(), [])
+
+    def test_legacy_mode_never_calls_judge(self):
+        rc, out = self._run("--rank-mode", "legacy")
+        self.assertEqual(rc, wds.EXIT_CANDIDATES_FOUND)
+        self.assertEqual(out["rank_mode"], "legacy")
+        self.assertIsNone(out["goal_rank"])
+        self.assertEqual(self._calls(), [])
+        self.assertFalse(self.state.exists())
