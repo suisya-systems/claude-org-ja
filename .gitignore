@@ -32,6 +32,13 @@ registry/projects.md
 # they must never be commitable either (the runbook has operators create
 # registry/projects.md.bak before pulling the migration).
 registry/projects.md.bak*
+# Goal ledger: operator-local (work-discovery goal-driven ranking, design §12.3).
+# Goals are set by each operator who runs the org, not shipped by the repo, so
+# every ledger file stays out of history like registry/projects.md. Only the
+# format README and the sample are tracked.
+registry/goals/*
+!registry/goals/README.md
+!registry/goals/example.md
 
 # Dashboard generated data (replaced by live server)
 dashboard/data.json
