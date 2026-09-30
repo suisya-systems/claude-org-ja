@@ -444,6 +444,7 @@ open Issue（既存の計算層: 依存除外・マージ済み除外は不変�
   4. 条項内のそれ以外の行は条項の本文。`#` / `##` の他の見出しが現れたら条項はそこで終わる（以降の行は判定段に渡らない）。
   5. フェンス（```）内の行は読まない。
   6. 条項が 0 個のファイルは `goal_errors`（`no clauses`）。未設定（ファイル無し）とは区別する。
+  7. 条項見出しに似て文法に合わない見出し（`## G1x`・`## G01 x`・`## g2 …`（小文字）・見出しの無い `## G1`）は「他の見出し」として条項を終わらせるのではなく**違反**にする（書いたつもりの条項が黙って消えるのを防ぐ）。`## Goals` のような語は普通の見出し。
 - **ゴール未設定の repo は候補を出さない**（ユーザー決定。rondo D-0097 と同じ）。scan 出力の `goal_rank.goal_unset_repos[]` に repo と「本来なら候補だった件数」を載せ、窓口はゴール設定を促す 1 行を出す。旧ランクで出す縮退はしない（ゴール未設定でも推奨が出続けると、ゴールを書く動機が消え、12.1 の実害が残るため）。手動の退避として `--rank-mode legacy` は残す。
 
 ### 12.4 判定段と構造検査
@@ -494,7 +495,7 @@ stdin = /dev/null、start_new_session=True
 4. `clause` が `null` か、その候補の repo の条項 id に実在する（他 repo の条項・存在しない条項を指さない）。
 5. `open_points[].recommend` が同じ要素の `options` のどれかと一致し、`options` は 1〜4 件。
 
-**失敗時（fail-closed）**: CLI が見つからない・起動できない / タイムアウト / 非 0 終了 / `is_error` / `subtype != success` / 構造検査不合格 / 1 日の費用上限到達のいずれも、候補を出さずに exit 2。`error` に理由、`goal_rank.judge` に状態と費用を載せる。旧ランクに黙って落ちない（ゴールを無視した推奨が「ゴール起点の推奨」の顔で出るのを防ぐ）。
+**失敗時（fail-closed）**: CLI が見つからない・起動できない（一時ディレクトリやプロンプトファイルが作れない場合を含む）/ タイムアウト / 非 0 終了（stdout が成功の返答として読めても失敗）/ `is_error` / `subtype != success` / 構造検査不合格 / 1 日の費用上限到達のいずれも、候補を出さずに exit 2。`error` に理由、`goal_rank.judge` に状態と費用を載せる。旧ランクに黙って落ちない（ゴールを無視した推奨が「ゴール起点の推奨」の顔で出るのを防ぐ）。
 
 **表示上の扱い**: `goal_request`（依頼文の下書き）と `open_points` は信頼できない本文から作られたモデルの下書きとして表示する。`/org-delegate` の brief は Issue と人間の選択から書き、下書きをそのまま写さない。
 
@@ -506,8 +507,8 @@ stdin = /dev/null、start_new_session=True
 - **失敗クールダウン**: 失敗を 2 種に分けて `.state/work_discovery/judge_last_failure.json` に書く。
   - **環境失敗**（CLI 不在・起動失敗・タイムアウト・JSON を読めない非 0 終了＝認証やネットワーク）: digest に関係なく **1 時間**は判定段を起動しない。材料が変わっても環境は直っていないため。
   - **材料失敗**（`is_error`・`subtype != success`・構造検査不合格）: 同じ判定バッチ（送った候補キーの集合の SHA-256）では 1 時間は再実行しない。材料が動けば即再判定する。
-  - どちらも該当中は即 exit 2 で `goal_rank.judge.status = "cooldown"`、`error` にどちらの種類かを書く。判定段を起動する直前に `in_progress` の記録を書き、成功で消す（scan が外から殺されても次回はクールダウンが効く）。時刻は UTC の ISO 8601（`YYYY-MM-DDTHH:MM:SSZ`）で、クールダウンは `0 <= 現在 - 記録 < 3600 秒` の間だけ効く（時計の巻き戻りで負になったら無視）。
-- **1 日の費用上限**: 判定段を呼ぶたびに（成否を問わず）`{at, cost_usd}` を `.state/work_discovery/judge_spend.jsonl` に追記する。呼ぶ前に当日（UTC）の合計 + 1 回の上限が `--judge-daily-budget-usd` を超えるなら呼ばずに exit 2（`judge.status = "budget_exhausted"`）。台帳を読めないときは呼ばない（fail-closed）。
+  - どちらも該当中は即 exit 2 で `goal_rank.judge.status = "cooldown"`、`error` にどちらの種類かを書く。判定段を起動する直前に `in_progress` の記録を書き、成功・失敗のどちらでも上書きする。`in_progress` が残っている（前回の判定段が終わらなかった＝殺された、または別の scan が判定中）なら環境失敗と同じく 1 時間のクールダウンにする（同時実行はまれなので、並走した側が exit 2 になるのは許容する）。時刻は UTC の ISO 8601（`YYYY-MM-DDTHH:MM:SSZ`）で、クールダウンは `0 <= 現在 - 記録 < 3600 秒` の間だけ効く（時計の巻き戻りで負になったら無視）。
+- **1 日の費用上限**: 判定段を呼ぶたびに（成否を問わず）`{at, cost_usd}` を `.state/work_discovery/judge_spend.jsonl` に追記する。費用が分からない呼び出し（タイムアウト・読めない返答・`total_cost_usd` が無い / 有限の非負数でない）は **1 回の上限額**を `"estimated": true` 付きで計上する（0 と数えると、タイムアウトを繰り返す障害で 1 日の上限が効かなくなるため）。台帳の当日行で費用が壊れている行も 1 回の上限額と数える。呼ぶ前に当日（UTC）の合計 + 1 回の上限が `--judge-daily-budget-usd` を超えるなら呼ばずに exit 2（`judge.status = "budget_exhausted"`）。台帳を読めないときは呼ばない（fail-closed）。
 - 書き込みは `.state/work_discovery/` に閉じる（§7 INV-3 例外 2）。キャッシュ・記録が書けなくても判定結果は使い、`goal_rank.signals` に記録する（費用台帳が書けない場合も同じ。上限判定は読めた分で行う）。
 
 ### 12.5 見送り台帳
@@ -541,10 +542,10 @@ python3 tools/work_discovery_goals.py put-aside --ref owner/repo#N --note "<人�
    goal_unset_repos: [{repo, candidate_count}],
    goal_errors: [{repo, path, error}],
    put_aside_count,
-   judge: {status, model, batch_key, candidates_sent, cache_hits, cost_usd, error},
+   judge: {status, model, batch_key, candidates_pending, candidates_sent, cache_hits, cost_usd, error},
    signals: []}
   ```
-  `judge.status` は `called` / `cache_only`（全候補がキャッシュ hit）/ `skipped_no_material`（判定対象ゼロ）/ `failed` / `cooldown` / `budget_exhausted`。`goals[].repo` / `goal_unset_repos[].repo` / `goal_errors[].repo` は常に実 slug（畳まない）。
+  `judge.status` は `called` / `cache_only`（全候補がキャッシュ hit で未判定も無い）/ `capped`（未判定の候補はあったが上限で 1 件も送れなかった。全件 `not_judged`）/ `skipped_no_material`（判定対象ゼロ）/ `failed` / `cooldown` / `budget_exhausted`。`candidates_pending` は判定が必要だった候補数、`candidates_sent` は実際に判定段へ送った候補数（呼ばなかったときは 0。データの持ち出しの監査に使う）。`cost_usd` は有限の数か `null`。repo slug が分からない候補群は `goal_errors` に `repo: null` の 1 件としてまとめる。`goals[].repo` / `goal_unset_repos[].repo` / `goal_errors[].repo` は常に実 slug（畳まない）。
 - `excluded_goal`: `[{repo, issue, reason, note}]`。`reason` は閉じた集合 `no_clause` / `put_aside` / `not_judged`。`repo` の表示は `excluded_blocked` と同じ規則（単一 repo scan では `null`）。error では `[]`。
 - 候補の追加フィールド（goal）: `goal_clause`（`{id, heading}`）、`goal_why`、`goal_request`、`open_points`、`goal_judgement_key`。legacy では `null` / `null` / `null` / `[]` / `null`。
 - `recommendation.reason`（goal）: `G<n>「<見出し>」: <why>`。

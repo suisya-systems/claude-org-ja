@@ -44,7 +44,7 @@
 
 PR マージ → post-merge cleanup が終わったら、ユーザーの催促を待たず窓口側から「次の仕事候補」を能動的に提示する。**候補生成はその場で `gh issue list` を即興で叩くのではなく、[`/work-discovery`](./.claude/skills/work-discovery/SKILL.md) skill（= 決定的ツール `tools/work_discovery_scan.py` の triage 出力）を消費する**。これにより判定基準（依存解決済み / 優先度 / 工数）が明文化され、提示に再現性・網羅性・監査性が付く（即興提示には無かった性質）。設計の一次参照は [`docs/design/work-discovery-triage.md`](./docs/design/work-discovery-triage.md)（§5.2 提示フォーマット / §8 post-merge 統合 / §7 不変条件）。
 
-- **起動主体は窓口**。post-merge の文脈では `/work-discovery` を `post_merge` トリガで走らせる（候補 JSON に `generated_for: "post_merge"` が載る）。post-merge では「直近マージで unblock された / 自然な follow-up」を上位に出す `unblocked_by_recent_merge` 軸が強く効く。空き pane があれば free-pane 数を渡し、`parallelizable` 候補のランクを上げて並列枠を埋める。
+- **起動主体は窓口**。post-merge の文脈では `/work-discovery` を `post_merge` トリガで走らせる（候補 JSON に `generated_for: "post_merge"` が載る）。候補の並びの主キーはオペレーターのゴール台帳（`registry/goals/`、operator-local）の条項順で、台帳の無いプロジェクトからは候補が出ない（設計 §12）。「直近マージで unblock された / 自然な follow-up」（`unblocked_by_recent_merge`）や空き pane 数（`parallelizable`）は同じ条項内の並びにだけ効く。
 - **外形は完全に維持する**: triage 結果を §5.2 形式（候補 N 件 + 推奨 1、推定軸には `(推定)`、除外枠も提示）で**窓口が人間へ提示 → 人間が番号で選択 → 選ばれた候補は [`/org-delegate`](./.claude/skills/org-delegate/SKILL.md) の Step 0 から**通常委譲フローに入る。候補生成の手段が即興から triage に替わるだけで、人間の操作・人間ゲートは変えない。
 - **propose-only**: 候補を出したら停止する。rank 1（推奨）の自動着手・自動 commit・自動 PR はしない（着手判断は人間のみ）。`/work-discovery` 自身が org-delegate を呼んだり spawn することも禁止。
 - マージ後クローズ直後の具体的な提示手順は [`/org-pull-request`](./.claude/skills/org-pull-request/SKILL.md)（2b-ii post-merge cleanup 後の next-dispatch）を参照。

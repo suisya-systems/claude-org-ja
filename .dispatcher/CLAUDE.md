@@ -280,7 +280,9 @@ CLOSE_PANE 処理の Step 6 で、worker クローズ（= pane 枠が空いた�
   `recommendation_ref` / `trigger`）として **delivery 層（dispatcher）が記帳**する。`recommendation_ref` は
   `owner/repo#N` 形に統一（`recommendation.repo` が null なら resolver の `repos[0]` で補完。cross-repo で
   `ja#60` と `runtime#60` を区別可能にするため。旧 `recommendation_issue` は廃止）。計算層ツール
-  自身は state.db に書かない（read-only・副作用ゼロ、設計 §7.1 の層分離）
+  自身は state.db に書かない（設計 §7.1 の層分離。goal モードの scan が書くのは `.state/work_discovery/` の
+  判定キャッシュ等だけで、判定段 `claude -p` を 1 回呼びうる。Bash の `timeout` は 300000 ms、`api.anthropic.com` は
+  サンドボックス設定で許可が要る。pane-close.md Step 6-1）
 - 候補 JSON は窓口へ**そのまま**渡す（人間可読 §5.2 形式へのレンダリングは窓口の責務。dispatcher は
   再解釈・再計算しない）
 - 詳細手順は [`.dispatcher/references/pane-close.md`](references/pane-close.md) Step 6 を参照

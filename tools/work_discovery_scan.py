@@ -71,6 +71,20 @@ Invariants enforced here (design §7):
   再現性契約) and so it works equally as a "startup one-shot scan"
   (design §11-4) without any delivery wiring.
 
+Goal ranking (design §12, Phase 5; ``--rank-mode goal``, the default): the
+§4.3 top-N cut is replaced by ``tools/work_discovery_goals.apply_goal_rank``,
+which keeps only candidates that a model-judged clause of the operator's
+goal ledger (``registry/goals/<owner>/<repo>.md``) covers, and orders them by
+(clause index, §4.3 key). That stage is the one place allowed side effects
+beyond ``gh`` reads (INV-1/INV-3 amendments, design §7): at most one
+``claude -p`` call per scan and writes confined to ``.state/work_discovery/``.
+It is imported lazily and only in goal mode, so ``--rank-mode legacy`` keeps
+this module's original read-only, zero-model contract byte-for-byte (plus
+the fixed-schema keys ``rank_mode`` / ``goal_rank`` / ``excluded_goal`` and
+the null goal fields on each candidate). Every goal-stage failure is
+fail-closed: exit 2 with ``goal_rank`` echoed, never a silent fallback to the
+legacy ranking (a goal-less recommendation must not wear the goal label).
+
 Machine-readable contract (design §5.1), modelled on
 ``tools/check_curate_threshold.py``:
 
@@ -147,6 +161,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import shutil
 import statistics
@@ -1250,8 +1265,15 @@ def build_candidate(
     collapse_repo=None,
     effort_model: dict | None = None,
     base_done_refs: dict[QualRef, dict] | None = None,
+    real_repo: str | None = None,
 ) -> dict | None:
     """Build one candidate dict, or ``None`` if the Issue is blocked.
+
+    ``real_repo`` is the bundle's real ``owner/repo`` when ``home_repo`` is
+    ``None`` only because the scan was implicit (gh current repo) — the goal
+    stage (design §12.2) keys ledgers / judgements / put-asides by the real
+    slug, never by the collapsed display value, so it must be carried even
+    when the display and the ref keying both say ``None``.
 
     Operates on qualified ``(repo, number)`` refs (design §10) so blocking
     resolution and the recent-merge axis are repo-correct across repos —
@@ -1324,6 +1346,8 @@ def build_candidate(
     # title fallback safe (it calls `.strip()` on the title).
     raw_title = issue.get("title")
     title = raw_title if isinstance(raw_title, str) else ""
+    raw_body = issue.get("body")
+    real = real_repo if real_repo else home_repo
 
     return {
         "repo": None if _is_home_disp(home_repo, collapse_repo) else home_repo,
@@ -1339,12 +1363,17 @@ def build_candidate(
         "parallelizable_estimated": True,
         "unblocked_by_recent_merge": unblocked,
         "unblocked_by_recent_merge_estimated": True,
-        # rank filled in by rank_candidates; _updated_at / _has_milestone
-        # are internal tiebreak fields stripped before serialization.
+        # rank filled in by rank_candidates (or the goal ranker). Every
+        # `_`-prefixed key is internal and stripped before serialization:
+        # _updated_at / _has_milestone are §4.3 tiebreak inputs; _real_repo /
+        # _body / _labels are the goal stage's material and keying (§12.4).
         "rank": None,
         "signals": signals,
         "_updated_at": issue.get("updatedAt") or "",
         "_has_milestone": milestone_title(issue) is not None,
+        "_real_repo": real.lower() if isinstance(real, str) and real else None,
+        "_body": raw_body if isinstance(raw_body, str) else "",
+        "_labels": _label_names(issue),
     }
 
 
@@ -1384,6 +1413,17 @@ def _sort_key(cand: dict, free_panes: int | None) -> tuple:
         -prio, -unblocked, -par, -effort_small, -has_ms,
         _neg_str(recency), repo_key, issue_key,
     )
+
+
+def _cap_key(cand: dict) -> tuple:
+    """``_sort_key`` without recency and with ``free_panes`` unknown.
+
+    Chooses which uncached candidates fit the goal judge's caps (design
+    §12.4 「上限を超えた候補」): which Issues get judged must not flip because
+    one of them received a comment or a worker slot freed up, or the
+    per-candidate cache would churn for reasons unrelated to the material."""
+    key = _sort_key(cand, None)
+    return key[:5] + key[6:]
 
 
 def _neg_str(s: str) -> tuple:
@@ -1455,6 +1495,7 @@ def scan_repos(
     input_truncated: dict | None = None,
     collapse_repo=None,
     effort_model: dict | None = None,
+    goal_ranker=None,
 ) -> dict:
     """Cross-repo triage core: produce the candidate JSON dict (design §10).
 
@@ -1492,7 +1533,19 @@ def scan_repos(
     optional learned effort model (``learn_effort_model``, Issue #529) passed to
     each candidate's effort estimate and echoed in the output for audit.
     ``input_truncated`` is OR-aggregated across repos. No I/O here; pure
-    function of its inputs (design §4 再現性契約)."""
+    function of its inputs (design §4 再現性契約).
+
+    ``goal_ranker`` (design §12): ``None`` keeps the §4.3 top-N ranking
+    exactly as before (``rank_mode: "legacy"``). When given, it is called
+    once with the *whole* resolved pool (no top-N cut first — a clause hit at
+    legacy rank 40 must still be eligible) and must return
+    ``apply_goal_rank``'s dict; its candidates / truncated_count /
+    recommendation / excluded_goal / goal_rank replace the legacy ones. The
+    ranker owns every side effect (judge call, ``.state/work_discovery/``);
+    this function stays pure given it. Its ``GoalStageError`` is deliberately
+    not caught here: a fail-closed goal stage must reach ``main`` as exit 2,
+    never degrade into the legacy ranking. Each bundle may carry an optional
+    ``real_repo`` (the resolved slug of an implicit ``repo: None`` scan)."""
     scanned_repos: set = set()
     open_refs_q: set[QualRef] = set()
     # §4.2: keep "closed by a recent merge" and "merely referenced" apart;
@@ -1668,17 +1721,42 @@ def scan_repos(
                 collapse_repo=collapse_repo,
                 effort_model=effort_model,
                 base_done_refs=base_done_refs,
+                real_repo=bundle.get("real_repo"),
             )
             if cand is not None:
                 candidates.append(cand)
 
-    top, truncated = rank_candidates(candidates, config.top_n, config.free_panes)
-    recommendation = make_recommendation(top)
+    if goal_ranker is None:
+        rank_mode = "legacy"
+        top, truncated = rank_candidates(
+            candidates, config.top_n, config.free_panes
+        )
+        recommendation = make_recommendation(top)
+        excluded_goal: list[dict] = []
+        goal_rank = None
+    else:
+        rank_mode = "goal"
+        ranked = goal_ranker(candidates)
+        top = ranked["candidates"]
+        truncated = ranked["truncated_count"]
+        recommendation = ranked["recommendation"]
+        excluded_goal = ranked["excluded_goal"]
+        goal_rank = ranked["goal_rank"]
 
-    # strip internal-only fields before serialization
     for cand in top:
-        cand.pop("_updated_at", None)
-        cand.pop("_has_milestone", None)
+        # Fixed schema (design §12.7): the goal fields exist in both modes, so
+        # the delivery layer reads one candidate shape. setdefault leaves the
+        # goal ranker's values alone.
+        cand.setdefault("goal_clause", None)
+        cand.setdefault("goal_why", None)
+        cand.setdefault("goal_request", None)
+        cand.setdefault("open_points", [])
+        cand.setdefault("goal_judgement_key", None)
+        # Strip *every* internal field, not a fixed list: the goal stage's
+        # material (_body etc.) is untrusted Issue text and must never leak
+        # into the output under a name nobody audits.
+        for key in [k for k in cand if k.startswith("_")]:
+            del cand[key]
 
     # Deterministic order on (repo, issue) — repo string disambiguates a
     # cross-repo issue-number collision; a None issue number sorts last.
@@ -1729,6 +1807,13 @@ def scan_repos(
         # excluded nothing can be told apart from one that never looked.
         "base_branch_scan": base_branch_scan,
         "base_branch_signals": base_signals,
+        # Design §12.7, always present: which ranking produced this output,
+        # the goal stage's audit (ledgers read, unset/broken repos, judge
+        # status and cost; None in legacy), and the candidates it dropped with
+        # a reason (no_clause / put_aside / not_judged; [] in legacy).
+        "rank_mode": rank_mode,
+        "goal_rank": goal_rank,
+        "excluded_goal": excluded_goal,
     }
 
 
@@ -2416,7 +2501,11 @@ def _load_bundle(path: str) -> tuple[list[dict], dict | None]:
 
 
 def _error_payload(
-    trigger: str, message: str, repo_resolution: dict | None = None
+    trigger: str,
+    message: str,
+    repo_resolution: dict | None = None,
+    rank_mode: str | None = None,
+    goal_rank: dict | None = None,
 ) -> dict:
     """The fixed-schema error envelope (design §5.1), used by every error
     path so the delivery layer parses one shape regardless of cause.
@@ -2424,7 +2513,13 @@ def _error_payload(
     ``repo_resolution`` carries whatever the registry resolver produced
     before the failure (Issue #829). It is deliberately reported on the
     error path too: when the failure *is* the resolution, its ``skipped`` /
-    ``signals`` are the only explanation of why no repo could be scanned."""
+    ``signals`` are the only explanation of why no repo could be scanned.
+
+    ``rank_mode`` is ``None`` only when argument parsing itself failed;
+    ``goal_rank`` is non-``None`` only for a goal-stage failure
+    (``GoalStageError``), where its ``judge.status`` (failed / cooldown /
+    budget_exhausted) is what tells the delivery layer a known judge outage
+    from a crash (design §12.7 / §12.8)."""
     return {
         "status": "error",
         "generated_for": trigger,
@@ -2443,8 +2538,27 @@ def _error_payload(
         "base_branch_scan": [],
         "base_branch_signals": [],
         "repo_resolution": repo_resolution,
+        "rank_mode": rank_mode,
+        "goal_rank": goal_rank,
+        "excluded_goal": [],
         "error": message,
     }
+
+
+def _load_goal_module():
+    """Import ``tools.work_discovery_goals`` lazily (design §12).
+
+    Lazy for the same reason as ``_resolve_registry_repos``: only the goal
+    path depends on it, so ``--rank-mode legacy`` runs even from a checkout
+    where the ``tools`` package is not importable — and legacy provably never
+    loads the module that can spawn ``claude``. A factory rather than a
+    top-level import also gives tests one seam to substitute the stage."""
+    root = Path(__file__).resolve().parent.parent
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+    from tools import work_discovery_goals
+
+    return work_discovery_goals
 
 
 def _resolve_registry_repos(claude_org_root=None) -> dict:
@@ -2618,6 +2732,97 @@ def _probe_trigger(argv) -> str:
         return "manual"
 
 
+def _validate_judge_args(args) -> None:
+    """Reject nonsensical judge knobs before anything runs (exit 2).
+
+    Only values the caller actually gave are checked (None = the goals
+    module's default). ``math.isfinite`` because ``float()`` happily parses
+    ``nan`` / ``inf``, and a NaN budget compares False against every cap —
+    i.e. it would silently disable the daily spend limit."""
+    for name, value, floor, inclusive in (
+        ("--judge-timeout", args.judge_timeout, 0, False),
+        ("--judge-max-budget-usd", args.judge_max_budget_usd, 0, False),
+        ("--judge-daily-budget-usd", args.judge_daily_budget_usd, 0, True),
+        ("--judge-max-candidates", args.judge_max_candidates, 1, True),
+        ("--judge-max-material-bytes", args.judge_max_material_bytes, 1, True),
+    ):
+        if value is None:
+            continue
+        if not math.isfinite(value) or (
+            value < floor if inclusive else value <= floor
+        ):
+            op = ">=" if inclusive else ">"
+            raise ValueError(f"{name} must be a finite number {op} {floor}")
+    if args.judge_cmd is not None and not args.judge_cmd.strip():
+        raise ValueError("--judge-cmd must not be empty")
+    if args.judge_model is not None and not args.judge_model.strip():
+        raise ValueError("--judge-model must not be empty")
+
+
+def _goal_real_repo(repo: str | None) -> str | None:
+    """The real slug the goal stage keys by (design §12.2 「repo の同一性」).
+
+    ``_resolve_home_repo`` is pure for a named repo and one read-only
+    ``gh repo view`` for the implicit one. Any failure yields ``None``, which
+    the goal stage reports as ``goal_errors`` (``repo slug unknown``) — a
+    missing slug must be visible, not abort the whole scan."""
+    try:
+        return _resolve_home_repo(repo)
+    except Exception:  # noqa: BLE001 — surfaced downstream as goal_errors
+        return None
+
+
+def _make_goal_ranker(goals, args, config: ScanConfig):
+    """Build the ``goal_ranker`` closure ``scan_repos`` calls (design §12).
+
+    Paths resolve from claude_org_root, not the cwd (§12.3), so the
+    dispatcher launching ``../tools/...`` from ``.dispatcher/`` reads the same
+    ledgers. ``display_repo`` maps a real slug back to however the scan
+    displays that repo (``None`` when collapsed to single-repo form) by
+    reading the pool itself, so it can never disagree with the candidates'
+    own ``repo`` field."""
+    org_root = (
+        Path(args.claude_org_root).resolve()
+        if args.claude_org_root
+        else Path(__file__).resolve().parent.parent
+    )
+    overrides = {
+        "judge_model": args.judge_model,
+        "judge_timeout": args.judge_timeout,
+        "judge_max_budget_usd": args.judge_max_budget_usd,
+        "judge_daily_budget_usd": args.judge_daily_budget_usd,
+        "judge_max_candidates": args.judge_max_candidates,
+        "judge_max_material_bytes": args.judge_max_material_bytes,
+        "judge_cmd": args.judge_cmd,
+    }
+    goal_config = goals.GoalConfig(
+        goals_dir=(
+            Path(args.goals_dir) if args.goals_dir
+            else org_root / "registry" / "goals"
+        ),
+        state_dir=(
+            Path(args.state_dir) if args.state_dir
+            else org_root / ".state" / "work_discovery"
+        ),
+        top_n=config.top_n,
+        **{k: v for k, v in overrides.items() if v is not None},
+    )
+
+    def ranker(pool: list[dict]) -> dict:
+        display = {
+            c["_real_repo"]: c.get("repo") for c in pool if c.get("_real_repo")
+        }
+        return goals.apply_goal_rank(
+            pool,
+            legacy_key=lambda c: _sort_key(c, config.free_panes),
+            cap_key=_cap_key,
+            display_repo=lambda slug: display.get(slug, slug),
+            config=goal_config,
+        )
+
+    return ranker
+
+
 def main(argv=None) -> int:
     parser = _JsonErrorParser(
         trigger=_probe_trigger(argv),
@@ -2636,7 +2841,7 @@ def main(argv=None) -> int:
         "Repeat for cross-repo triage, e.g. `--repo suisya-systems/claude-org-ja "
         "--repo suisya-systems/claude-org-runtime`; candidates from all repos "
         "are ranked into one list and `Blocked by owner/repo#N` is resolved "
-        "across the scanned set (design §10). Mutually exclusive with "
+        "across the scanned set (design section 10). Mutually exclusive with "
         "--all-registry-repos.",
     )
     parser.add_argument(
@@ -2691,7 +2896,7 @@ def main(argv=None) -> int:
         type=int,
         default=DEFAULT_EFFORT_HISTORY,
         help=f"How many recent merged PRs to learn realized effort from "
-        f"(design §10); 0 disables effort learning (static heuristic only). "
+        f"(design section 10); 0 disables effort learning (static heuristic only). "
         f"Default {DEFAULT_EFFORT_HISTORY}.",
     )
     parser.add_argument(
@@ -2714,6 +2919,71 @@ def main(argv=None) -> int:
         "open_pr_numbers, recent_merges}, ...]}; an optional top-level "
         "effort_samples learns the effort model offline (Issue #529).",
     )
+    # Goal ranking (design §12). Judge knobs default to None so the goals
+    # module's own DEFAULT_* constants stay the single source of the values.
+    parser.add_argument(
+        "--rank-mode",
+        choices=("goal", "legacy"),
+        default="goal",
+        help="goal (default): keep only candidates a goal-ledger clause "
+        "covers, judged once per scan by a tool-less `claude -p` and ordered "
+        "by clause (design section 12). legacy: the label/metadata ranking "
+        "of section 4.3; never calls the judge and writes nothing.",
+    )
+    parser.add_argument(
+        "--goals-dir",
+        default=None,
+        help="Goal ledger directory, <owner>/<repo>.md inside "
+        "(default: <claude-org-root>/registry/goals).",
+    )
+    parser.add_argument(
+        "--state-dir",
+        default=None,
+        help="Judge cache / failure record / spend ledger / put-aside ledger "
+        "directory (default: <claude-org-root>/.state/work_discovery).",
+    )
+    parser.add_argument(
+        "--judge-model",
+        default=None,
+        help="Model alias for the judge (default: see "
+        "tools/work_discovery_goals.py).",
+    )
+    parser.add_argument(
+        "--judge-timeout",
+        type=float,
+        default=None,
+        help="Judge wall-clock timeout in seconds (> 0).",
+    )
+    parser.add_argument(
+        "--judge-max-budget-usd",
+        type=float,
+        default=None,
+        help="Per-call cost cap passed to the judge as --max-budget-usd (> 0).",
+    )
+    parser.add_argument(
+        "--judge-daily-budget-usd",
+        type=float,
+        default=None,
+        help="UTC-day total cost cap across judge calls (>= 0).",
+    )
+    parser.add_argument(
+        "--judge-max-candidates",
+        type=int,
+        default=None,
+        help="Max uncached candidates sent to one judge call, all repos "
+        "combined (>= 1); the rest are reported as not_judged.",
+    )
+    parser.add_argument(
+        "--judge-max-material-bytes",
+        type=int,
+        default=None,
+        help="Max UTF-8 bytes of candidate material per judge call (>= 1).",
+    )
+    parser.add_argument(
+        "--judge-cmd",
+        default=None,
+        help="Judge executable (default: claude). Tests point this at a stub.",
+    )
     args = parser.parse_args(argv)
 
     config = ScanConfig(
@@ -2722,6 +2992,10 @@ def main(argv=None) -> int:
     # Kept outside the try so the error envelope can carry whatever the
     # registry resolver produced, including when the resolution itself failed.
     repo_resolution: dict | None = None
+    # The goal module is imported lazily inside the try, so its exception
+    # class is not nameable up front: an empty tuple makes the dedicated
+    # `except` below match nothing until goal mode has loaded it.
+    goal_stage_error: tuple = ()
 
     try:
         # `--top-n 0` (or negative) would silently return an empty `top` even
@@ -2749,6 +3023,7 @@ def main(argv=None) -> int:
         # negative is nonsense.
         if args.base_merges < 0:
             raise ValueError("--base-merges must be >= 0")
+        _validate_judge_args(args)
         # `--all-registry-repos` *is* the repo-set source; combining it with an
         # explicit set (or with an offline bundle that carries its own repos)
         # is ambiguous, and silently letting one win would hide half of what
@@ -2772,6 +3047,11 @@ def main(argv=None) -> int:
         effort_model: dict | None = None
         collapse_repo = None
         base_branch_signals: list[str] = []
+        goal_ranker = None
+        if args.rank_mode == "goal":
+            goals = _load_goal_module()
+            goal_stage_error = (goals.GoalStageError,)
+            goal_ranker = _make_goal_ranker(goals, args, config)
         if args.from_file:
             bundles, effort_model = _load_bundle(args.from_file)
             # `--base-merges 0` is documented as "disables the check", so it
@@ -2857,6 +3137,11 @@ def main(argv=None) -> int:
                 bundles.append(
                     {
                         "repo": repo,
+                        "real_repo": (
+                            _goal_real_repo(repo)
+                            if goal_ranker is not None
+                            else None
+                        ),
                         "issues": issues,
                         "open_pr_numbers": open_pr_numbers,
                         "recent_merges": recent_merges,
@@ -2893,7 +3178,7 @@ def main(argv=None) -> int:
                     )
         result = scan_repos(
             bundles, config, input_truncated, collapse_repo,
-            effort_model=effort_model,
+            effort_model=effort_model, goal_ranker=goal_ranker,
         )
         # Always present (``null`` unless `--all-registry-repos` was used) so
         # the delivery layer reads one shape, and so "which repos did this
@@ -2906,13 +3191,31 @@ def main(argv=None) -> int:
             result["base_branch_signals"] = (
                 base_branch_signals + result["base_branch_signals"]
             )
+    except goal_stage_error as exc:
+        # Fail-closed goal stage (design §12.4): exit 2, never a silent
+        # fallback to the legacy ranking, with the partially filled goal_rank
+        # (judge.status = failed / cooldown / budget_exhausted, cost) kept so
+        # the delivery layer can tell a known judge outage from a crash.
+        print(
+            json.dumps(
+                _error_payload(
+                    config.trigger, str(exc), repo_resolution,
+                    args.rank_mode, exc.goal_rank,
+                ),
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return EXIT_ERROR
     except Exception as exc:  # noqa: BLE001 — report any failure as error/exit 2
         # Keep the fixed schema (design §5.1) so the delivery layer parses
         # the error branch the same way; the audit fields are present (empty)
         # rather than absent, and `error` carries the cause.
         print(
             json.dumps(
-                _error_payload(config.trigger, str(exc), repo_resolution),
+                _error_payload(
+                    config.trigger, str(exc), repo_resolution, args.rank_mode
+                ),
                 ensure_ascii=False,
                 indent=2,
             )

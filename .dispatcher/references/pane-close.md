@@ -561,7 +561,8 @@ worker クローズは pane 枠が空く瞬間であり、設計上「次の仕�
 > - **INV-4 窓口 = 唯一の人間接点**: dispatcher は scan 結果を**窓口（secretary）へ送って終わり**。
 >   人間にも GitHub にも直接到達しない。候補は必ず「dispatcher → 窓口 → 人間」の経路を通る。
 > - **INV-1 propose-only / INV-2 着手判断は人間**: scan は read-only（Issue を読むだけ。spawn / commit /
->   PR を一切しない）。dispatcher は候補を**提案として転送するだけ**で、自分で着手判断・`/org-delegate`
+>   PR を一切しない）。goal モード（既定）で許される副作用は `.state/work_discovery/` への書き込みと、判定段
+>   `claude -p` 1 回（ツール無し・費用上限とタイムアウト付き）だけ（設計 §7 / §12.4）。dispatcher は候補を**提案として転送するだけ**で、自分で着手判断・`/org-delegate`
 >   起動をしない。ランク 1 位（推奨）の自動着手も禁止。
 > - **INV-5 dispatcher は調査しない**: scan は決定的ツール実行であって「調査」ではない。dispatcher は候補の
 >   中身を自前で精査・実装しない。深掘りが要る候補は人間ゲートを通った後の委譲ワーカータスクになる。
@@ -600,6 +601,15 @@ scan_json=$(python3 ../tools/work_discovery_scan.py --trigger worker_close --all
   resolver を `--format json` で二度目に走らせる必要はない。
 - **`repos[0]` を控える（6-3 の ref 用）**: `repo_resolution.repos[0]` が resolver の先頭 repo（= scan 対象が
   1 件のときに `recommendation.repo` が `null` に畳まれる場合の補完値）。`home_repo` ではない。
+- **Bash の `timeout` は 300000（ms）を指定する**（設計 §12.4）。goal モード（既定）の scan は、ゴール台帳のある
+  repo の未判定候補について判定段 `claude -p`（既定タイムアウト 90 秒）を 1 回呼ぶ。Bash 既定の 120 秒では gh の
+  取得と合わせて足りず、scan が失敗の記録を残す前に殺されて exit code が取れなくなる。
+- **判定段は `api.anthropic.com` に出る**。dispatcher は bypassPermissions で動くので Bash 呼び出しごとの
+  `allowed_domains` は効かない。dispatcher のサンドボックス設定（`sandbox.network.allowedDomains`）に入っていないと
+  判定段がタイムアウトして exit 2 になり、以後 1 時間は `goal_rank.judge.status = cooldown` の exit 2 が続く
+  （どちらも 6-2 の error 経路で窓口へ届くので、窓口が人間に設定を仰ぐ）。
+- ゴール台帳（`registry/goals/`）の無い repo は候補を出さない（exit 0 で窓口へは何も送らない）。ゴール未設定の案内は
+  窓口が起動する `/work-discovery` 側で出る（設計 §12.8）。
 - `--trigger worker_close` は出力 JSON の `generated_for` に載る文脈ラベル（監査用、設計 §8）。
 - 空き worker pane 数を把握していれば `--free-panes <n>` を添えてよい（任意。Step 3 で close を保留した場合、
   そのペインは空いていないので数に入れない）。`parallelizable` 候補の
