@@ -1252,6 +1252,21 @@ class RealRepoSmokeTests(unittest.TestCase):
             findings, [], msg="\n".join(f.format() for f in findings)
         )
 
+    def test_env_template_allow_read_matches_runtime(self):
+        # Layer 3 allowRead and the runtime's Layer 2 Read(!...) negations
+        # share ENV_TEMPLATE_PATTERNS; a body that drifts from it is flagged.
+        schema = crc.load_schema(crc.DEFAULT_SCHEMA)
+        self.assertEqual(crc.check_env_template_allow_read(schema), [])
+        fs = schema["worker_roles"]["default"]["sandbox_by_pattern"]["B"][
+            "filesystem"
+        ]
+        fs["allowRead"] = fs["allowRead"][:3]
+        findings = crc.check_env_template_allow_read(schema)
+        self.assertEqual(
+            [f.role for f in findings],
+            ["worker_roles.default.sandbox_by_pattern.B"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
