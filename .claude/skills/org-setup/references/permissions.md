@@ -208,9 +208,16 @@ python tools/org_setup_prune.py --user-common-sandbox  # → "no changes"
         ]
       }
     ]
+  },
+  "sandbox": {
+    "network": {
+      "allowedDomains": ["api.anthropic.com"]
+    }
   }
 }
 ```
+
+**`sandbox.network.allowedDomains`**: `/work-discovery` の判定段（`claude -p`）が `api.anthropic.com` に出るための許可。窓口の sandbox 本体（`enabled` / `filesystem`）はリポジトリ直下の追跡済み [`.claude/settings.json`](../../../settings.json) にあり、ここでは足さない（この local ファイルはサブディレクトリで起動したディスパッチャーにも読まれるため、`enabled` を足すとディスパッチャーにも sandbox が掛かる。https://code.claude.com/docs/en/settings 「Where Claude Code keeps the local file in a git repository」）。`allowedDomains` の配列は各スコープの値が合流する（https://code.claude.com/docs/en/settings-reference `sandbox.network.allowedDomains`）。[`tools/check_role_configs.py`](../../../../tools/check_role_configs.py) が schema（`roles.<role>.sandbox.network.allowedDomains`）との一致を検査する。
 
 **注意**: `{claude_org_path}` は settings.local.json 生成時に解決済みの絶対パスに置換すること。Hook command 内のパスはスペース対策のためクォートされている。相対パス（`bash .hooks/...`）で書くと、cwd が org ルート以外のロール（ディスパッチャーの cwd は `.dispatcher/`）では hook が解決されず、ガードが**エラーも出さずに無効化**する。
 
@@ -315,11 +322,18 @@ python tools/org_setup_prune.py --all                        # secretary / dispa
   },
   "env": {
     "CLAUDE_ORG_PATH": "{claude_org_path}"
+  },
+  "sandbox": {
+    "network": {
+      "allowedDomains": ["api.anthropic.com"]
+    }
   }
 }
 ```
 
 **注意**: `{claude_org_path}` は settings.local.json 生成時に解決済みの絶対パスに置換すること。Hook command 内のパスはスペース対策のためクォートされている。
+
+**`sandbox.network.allowedDomains`**: worker クローズ時の work-discovery scan の判定段（`claude -p`）が `api.anthropic.com` に出るための許可。窓口と同じく `enabled` は足さない。ディスパッチャーの cwd（`.dispatcher/`）には追跡済みの `.claude/settings.json` が無く、窓口の local ファイルにも `enabled` が無いため、現状ディスパッチャーの Bash は sandbox 外で動く（共有ファイルは起動ディレクトリから読む: https://code.claude.com/docs/en/settings 「Where Claude Code keeps the local file in a git repository」）。permission mode は tool call を走らせるかを決め、sandbox は走った Bash の到達先を制限する別の層である（https://code.claude.com/docs/en/sandboxing 「Permission modes」）ため、将来ディスパッチャーの sandbox を有効にしても判定段が止まらないよう先に配っておく。
 
 **hooks の役割分担**:
 - `check-loop-directive.sh`: `/loop` 監視ループの武装 (`CronCreate` / `ScheduleWakeup`) を canonical 正文に固定する。正文の SoT は [`.claude/skills/dispatcher-resume/SKILL.md`](../../dispatcher-resume/SKILL.md) Step 5 の fenced code block（編集 SoT は `SKILL.md.in`）で、フックは実行時にそこから読み出すため正文の写経を持たない。自己流の短縮版は relay 実配送（`--list` → `send_message` → `--mark-delivered`）を落として relay 層を「滞留を報告するだけ」に退化させるため、空白を除いたうえで正文と完全一致しない prompt を deny する（正文への前置き・後置きも通さない。`CronCreate` は interval を剥がした本文のみ、`ScheduleWakeup` は `/loop 3m <本文>` の丸ごとも可）。**ディスパッチャー専用**であり、ワーカーの完了後 bounded `/loop`・キュレーター・窓口の `/loop` 用途を巻き込まないよう他ロールには配らない。判定の理由は [`.dispatcher/references/loop-directive-guard.md`](../../../../.dispatcher/references/loop-directive-guard.md)

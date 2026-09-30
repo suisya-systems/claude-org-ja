@@ -80,8 +80,9 @@ python3 tools/work_discovery_scan.py --trigger manual --all-registry-repos
 
 - **Bash の `timeout` は 300000（ms）を指定する**。判定段（既定タイムアウト 90 秒）と gh の取得を足すと Bash 既定の
   120 秒に収まらないことがあり、途中で殺されると失敗の記録（クールダウン）も残らないため（設計 §12.4）。
-- **判定段は `api.anthropic.com` に出る**。窓口のサンドボックス設定（`sandbox.network.allowedDomains`）に入れておく
-  （auto mode のときは Bash 呼び出しの `allowed_domains` に `api.anthropic.com` を足してもよい）。拒否されると判定段は
+- **判定段は `api.anthropic.com` に出る**。窓口・ディスパッチャーの `sandbox.network.allowedDomains` への許可は
+  `/org-setup`（[`.claude/skills/org-setup/SKILL.md`](../org-setup/SKILL.md)）が役割テンプレートから配る（[`.claude/skills/org-setup/references/permissions.md`](../org-setup/references/permissions.md)。
+  配布漏れは `tools/check_role_configs.py --include-local` が検出する）。拒否されると判定段は
   タイムアウトし exit 2（`goal_rank.judge.status = failed`）になり、以後 1 時間は `cooldown` で即 exit 2 になる。
 - 既定は `--rank-mode goal`。`--rank-mode legacy`（旧来の Issue メタデータ順・判定段なし）は**人間が明示的に指示したときだけ**使う
   （ゴール台帳が無い・判定段が使えない間の退避。黙って legacy に切り替えない）。

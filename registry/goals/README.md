@@ -39,6 +39,6 @@
 
 ## 運用前提と送られるデータ
 
-- 判定段は `claude -p` で `api.anthropic.com` に出る。窓口・dispatcher のサンドボックス設定（`sandbox.network.allowedDomains`）に `api.anthropic.com` を入れておくこと。入っていないと判定段がタイムアウトし、提案は失敗として表示される（1 時間は再試行しない）。
+- 判定段は `claude -p` で `api.anthropic.com` に出る。窓口・dispatcher のサンドボックス設定（`sandbox.network.allowedDomains`）への `api.anthropic.com` の許可は `/org-setup` が役割テンプレート（`.claude/skills/org-setup/references/permissions.md`）から配る。`/org-setup` を走らせていないと判定段がタイムアウトし、提案は失敗として表示される（1 時間は再試行しない）。
 - 台帳を置いた repo についてだけ、候補の Issue のタイトル・要約・本文冒頭 600 文字・ラベルとゴール条項が判定段へ送られる。**台帳を置くことが、その repo の材料を送ることへの同意**になる。台帳の無い repo からは何も送られない。
 - 費用は 1 回 0.50 USD、1 日 2.00 USD が既定の上限。判定結果は候補ごとに `.state/work_discovery/judgements/` に保存され、Issue の中身と条項が変わらない限り再判定しない。

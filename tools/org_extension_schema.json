@@ -232,6 +232,9 @@
             }
           ]
         },
+        "network": {
+          "allowedDomains": ["api.anthropic.com"]
+        },
         "failIfUnavailable": false
       }
     },
@@ -375,6 +378,9 @@
               "suppressOnSymlinkEscape": true
             }
           ]
+        },
+        "network": {
+          "allowedDomains": ["api.anthropic.com"]
         },
         "failIfUnavailable": false
       }

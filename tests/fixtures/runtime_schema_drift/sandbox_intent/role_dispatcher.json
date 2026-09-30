@@ -92,6 +92,9 @@
         "/home/u/co/registry"
       ]
     },
+    "network": {
+      "allowedDomains": ["api.anthropic.com"]
+    },
     "failIfUnavailable": false
   }
 }
