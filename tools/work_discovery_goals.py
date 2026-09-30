@@ -285,10 +285,15 @@ def _ci_entry(directory: Path, name: str) -> tuple[Path | None, Path | None]:
 
     Listing instead of ``exists()`` so a case-insensitive filesystem
     (Windows / macOS) cannot make ``Repo.md`` pass as ``repo.md``.
+
+    Only a *missing* directory means "no ledger". Any other listing failure
+    (permission denied, a regular file where a directory belongs) propagates
+    so ``load_goals`` reports it in ``goal_errors`` instead of telling the
+    operator to write goals that may already exist.
     """
     try:
         entries = list(directory.iterdir())
-    except OSError:
+    except FileNotFoundError:
         return None, None
     exact = next((e for e in entries if e.name == name), None)
     folded = next((e for e in entries if e.name.lower() == name and e.name != name), None)
@@ -305,19 +310,26 @@ def load_goals(goals_dir: Path, slug: str) -> dict:
         out["error"] = f"bad repo slug: {slug!r}"
         return out
     owner, repo = parts
-    owner_exact, owner_folded = _ci_entry(goals_dir, owner)
     fname = f"{repo}.md"
-    if owner_exact is not None:
-        file_exact, file_folded = _ci_entry(owner_exact, fname)
-    else:
-        file_exact, file_folded = None, None
+    try:
+        owner_exact, owner_folded = _ci_entry(goals_dir, owner)
+        if owner_exact is not None:
+            file_exact, file_folded = _ci_entry(owner_exact, fname)
+        else:
+            file_exact, file_folded = None, None
+        found = None
+        if file_exact is None:
+            # Look for a case-only mismatch anywhere under owner dirs that
+            # fold to `owner`, so `Owner/Repo.md` is reported, not "unset".
+            found = file_folded
+            if found is None and owner_folded is not None:
+                e, f = _ci_entry(owner_folded, fname)
+                found = e or f
+    except OSError as exc:
+        out["path"] = str(goals_dir / owner / fname)
+        out["error"] = f"goals dir unreadable: {type(exc).__name__}: {exc}"
+        return out
     if file_exact is None:
-        # Look for a case-only mismatch anywhere under owner dirs that fold
-        # to `owner`, so `Owner/Repo.md` is reported instead of "unset".
-        found = file_folded
-        if found is None and owner_folded is not None:
-            e, f = _ci_entry(owner_folded, fname)
-            found = e or f
         if found is not None:
             out["path"] = str(found)
             out["error"] = f"case mismatch: {found}"

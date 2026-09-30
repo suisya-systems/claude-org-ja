@@ -203,6 +203,24 @@ class TestLoadGoals(Base):
         (self.goals / "acme").mkdir(parents=True)
         self.assertEqual(wdg.load_goals(self.goals, "acme/app")["status"], "unset")
 
+    def test_missing_goals_dir_is_unset(self):
+        r = wdg.load_goals(self.root / "nope", "o/r")
+        self.assertEqual(r["status"], "unset")
+
+    def test_unlistable_goals_dir_is_error_not_unset(self):
+        # A regular file where the goals dir belongs (or a permission error)
+        # must surface as goal_errors, not as "write your goals" (Codex P2).
+        not_a_dir = self.root / "goals-file"
+        not_a_dir.write_text("x", encoding="utf-8")
+        r = wdg.load_goals(not_a_dir, "o/r")
+        self.assertEqual(r["status"], "error")
+        self.assertIn("goals dir unreadable", r["error"])
+        self.write_ledger("o/r")
+        with mock.patch.object(Path, "iterdir", side_effect=PermissionError("denied")):
+            r = wdg.load_goals(self.goals, "o/r")
+        self.assertEqual(r["status"], "error")
+        self.assertIn("PermissionError", r["error"])
+
     def test_case_mismatch_file(self):
         self.write_ledger("acme/App")
         g = wdg.load_goals(self.goals, "acme/app")
