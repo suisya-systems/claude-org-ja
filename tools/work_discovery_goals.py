@@ -1017,6 +1017,24 @@ def _append_spend(state_dir: Path, now: datetime, cost, cap: float, signals: lis
 # ----------------------------------------------------------------------
 
 
+def _validate(args, root: Path) -> int:
+    """Exit 0 only when the scan would read the ledger as ``ok``."""
+    if args.repo is not None:
+        goals_dir = Path(args.goals_dir) if args.goals_dir else root / "registry" / "goals"
+        out = load_goals(goals_dir, args.repo)
+    else:
+        out = {"repo": None, "status": "error", "path": args.file, "clauses": [], "error": None}
+        try:
+            out["clauses"] = parse_ledger(Path(args.file).read_bytes().decode("utf-8"))
+            out["status"] = "ok"
+        except (OSError, UnicodeDecodeError) as exc:
+            out["error"] = f"unreadable: {type(exc).__name__}: {exc}"
+        except LedgerError as exc:
+            out["error"] = str(exc)
+    print(json.dumps(out, ensure_ascii=True))
+    return 0 if out["status"] == "ok" else 1
+
+
 class _JsonErrorParser(argparse.ArgumentParser):
     """Usage errors print ``{"error": ...}`` on stdout and exit 2, so the CLI
     keeps its "stdout is one JSON object" contract (like the scan's parser).
@@ -1035,9 +1053,17 @@ def main(argv=None) -> int:
     pa.add_argument("--note", default="", help="Short summary of the human's words.")
     pa.add_argument("--state-dir", help="Default: <claude-org-root>/.state/work_discovery")
     pa.add_argument("--claude-org-root", help="Default: repository root of this tool.")
+    va = sub.add_parser("validate", help="Check a goal ledger with the scan's own parser.")
+    target = va.add_mutually_exclusive_group(required=True)
+    target.add_argument("--file", help="Ledger file to check (e.g. a draft).")
+    target.add_argument("--repo", help="owner/repo: check registry/goals/<owner>/<repo>.md")
+    va.add_argument("--goals-dir", help="Default: <claude-org-root>/registry/goals")
+    va.add_argument("--claude-org-root", help="Default: repository root of this tool.")
     args = parser.parse_args(argv)
 
     root = Path(args.claude_org_root) if args.claude_org_root else REPO_ROOT
+    if args.cmd == "validate":
+        return _validate(args, root)
     state_dir = Path(args.state_dir) if args.state_dir else root / ".state" / "work_discovery"
     try:
         entry = append_put_aside(state_dir, args.ref, args.note)
