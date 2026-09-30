@@ -63,6 +63,7 @@ Claude Code は**起動ディレクトリの `.claude/` 配下**から設定を�
 不足分を追加する。既存の設定は**絶対に削除しない**。
 `permissions.allow` は配列なので、既存エントリを保持しつつ新規エントリを追加する。
 `env` はオブジェクトなので、既存キーを保持しつつ新規キーを追加する。
+`sandbox.network.allowedDomains`（窓口・ディスパッチャー。`/work-discovery` 判定段の `api.anthropic.com`）も配列として既存を保持して追加する。`sandbox` の他のキー（`enabled` / `filesystem`）はテンプレートに無いので足さない（理由は [`.claude/skills/org-setup/references/permissions.md`](references/permissions.md) 窓口節の `sandbox.network.allowedDomains` の注記）。
 
 ### Step 3.5: operator-local な生成ファイルを配置する（未配置時のみ）
 

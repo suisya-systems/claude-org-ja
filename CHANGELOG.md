@@ -107,6 +107,21 @@
 
 ### Fixed
 
+- `/work-discovery` の判定段（`claude -p`）が使う `api.anthropic.com` への sandbox network 許可を、
+  役割テンプレートから `/org-setup` で配るようにした。これまでは各オペレーターが手で
+  `sandbox.network.allowedDomains` を足す運用前提だった。`tools/org_extension_schema.json` の
+  `roles.secretary` / `roles.dispatcher` の `sandbox` に `network.allowedDomains` を足し、同じ値を
+  `.claude/skills/org-setup/references/permissions.md` の窓口・ディスパッチャーブロックへ
+  `sandbox.network` だけ載せた（`/org-setup` の prune はこのブロックを丸ごと書き出す。
+  runtime の `settings generate --role-kind org` は org 役割の生成を拒否するので、schema の
+  `sandbox` 本体だけでは配られない）。`enabled` / `filesystem` は足していない。サブディレクトリで
+  起動したディスパッチャーもリポジトリ直下の local ファイルを読むため、`enabled` を入れると
+  ディスパッチャーにも sandbox が掛かるからである。`tools/check_role_configs.py` に
+  `check_sandbox_network` を足し、テンプレートと `--include-local` 時の実ファイルが schema の
+  ドメインを含むかを検査する。drift 検査は org 役割の `sandbox` 本体を比較対象から外すので、
+  runtime 側の変更は要らない（`tests/fixtures/runtime_schema_drift/sandbox_intent/role_{secretary,dispatcher}.json`
+  の期待値だけを更新した）。
+
 - sandbox の `.env` deny が **project root 直下にしか効かず**、サブディレクトリの秘密ファイルが
   読めていた問題を、deny / allow 両方の再帰化で解消 (#961)。
   [`tools/org_extension_schema.json`](tools/org_extension_schema.json) の全 11 個の

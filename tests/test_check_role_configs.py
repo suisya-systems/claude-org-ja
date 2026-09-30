@@ -1267,6 +1267,27 @@ class RealRepoSmokeTests(unittest.TestCase):
             ["worker_roles.default.sandbox_by_pattern.B"],
         )
 
+    def test_sandbox_network_allowed_domains_distributed(self):
+        # The work-discovery judgment stage (claude -p) needs api.anthropic.com
+        # on the roles that run the scan; the template must carry it and a
+        # settings file without it is drift.
+        schema = crc.load_schema(crc.DEFAULT_SCHEMA)
+        for role in ("secretary", "dispatcher"):
+            self.assertEqual(
+                schema["roles"][role]["sandbox"]["network"]["allowedDomains"],
+                ["api.anthropic.com"],
+            )
+        role_schema = schema["roles"]["secretary"]
+        ok = {"sandbox": {"network": {"allowedDomains": ["api.anthropic.com", "x.example"]}}}
+        self.assertEqual(crc.check_sandbox_network("p", "secretary", ok, role_schema), [])
+        for bad in ({}, {"sandbox": "on"}, {"sandbox": {"network": {"allowedDomains": "api.anthropic.com"}}}):
+            findings = crc.check_sandbox_network("p", "secretary", bad, role_schema)
+            self.assertEqual([f.severity for f in findings], ["ERROR"], msg=repr(bad))
+        # Roles whose schema declares no network need nothing.
+        self.assertEqual(
+            crc.check_sandbox_network("p", "curator", {}, schema["roles"]["curator"]), []
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

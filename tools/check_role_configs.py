@@ -254,6 +254,33 @@ def _load_override_allow(settings_path: Path) -> set:
     return {x for x in allow if isinstance(x, str)}
 
 
+def _dig(node, *keys):
+    for key in keys:
+        node = node.get(key) if isinstance(node, dict) else None
+    return node
+
+
+def check_sandbox_network(path: str, role_name: str, config, role_schema: dict) -> list:
+    """The role's settings must carry every ``sandbox.network.allowedDomains``
+    entry its schema ``sandbox`` body declares (e.g. ``api.anthropic.com`` for
+    the work-discovery judgment stage). Only the network key is distributed to
+    org roles; ``enabled`` / ``filesystem`` stay in the tracked settings.json."""
+    want = _dig(role_schema, "sandbox", "network", "allowedDomains") or []
+    have = _dig(config, "sandbox", "network", "allowedDomains")
+    have = have if isinstance(have, list) else []
+    missing = [d for d in want if d not in have]
+    if not missing:
+        return []
+    return [
+        Finding(
+            path,
+            role_name,
+            "ERROR",
+            f"sandbox.network.allowedDomains missing {missing!r}; run /org-setup to distribute it",
+        )
+    ]
+
+
 def check_docs(schema: dict, permissions_md: Path) -> list:
     if not Path(permissions_md).is_file():
         return [
@@ -280,6 +307,15 @@ def check_docs(schema: dict, permissions_md: Path) -> list:
                 schema.get("global", {}),
             )
         )
+        if config is not None:
+            findings.extend(
+                check_sandbox_network(
+                    f"permissions.md[{role_schema['docs_section']}]",
+                    role_name,
+                    config,
+                    role_schema,
+                )
+            )
     return findings
 
 
@@ -801,6 +837,9 @@ def check_on_disk(
                     extra_allowed=_load_override_allow(path),
                 )
             )
+            findings.extend(
+                check_sandbox_network(str(path), role_override, config, role_schema)
+            )
             if include_untracked:
                 findings.extend(
                     check_on_disk_hook_paths(
@@ -894,6 +933,9 @@ def check_on_disk(
                     schema.get("global", {}),
                     extra_allowed=_load_override_allow(path),
                 )
+            )
+            findings.extend(
+                check_sandbox_network(str(path), role_name, config, role_schema)
             )
             if include_untracked:
                 findings.extend(
