@@ -123,7 +123,7 @@ dispatcher が緊急で clone する場合の手順（org 固有ファイルの�
 
 `cc-usage-insights`（private repo）への 3 段階委譲（設計 → Lv1-2 実装 → Lv3-5 実装）で、ワーカーは sandbox 内で `gh` を使えず（`~/.config/gh/hosts.yml` が読めない）、Issue 本文を直接読めなかった。段階 1 では窓口が peer message で要点を手書き転記したが、段階 3 では `gh issue view --json` の出力をワーカーディレクトリ直下のファイルに書き出し `--knowledge` で brief に載せる方式に変えた。**手書き転記は要約になり取りこぼす。ファイル写しなら原文が残り、ワーカーが実測との食い違いを追記できる**（実際、段階 3 で訂正が 5 点付いた）。
 
-- private repo または sandbox で `gh` が使えないプロジェクトへの委譲では、Issue 本文と関連コメントを `gh issue view --json` で写したファイルをワーカーディレクトリに置き、`--knowledge <worker_dir>/<file>` で brief から参照させる（apply 後にファイルを書けばよく、パスは apply 前に確定できる）。
+- claude-org-runtime 0.1.46 以降は、spawn 時の `--settings` overlay が `~/.config/gh/hosts.yml` と gh のトークン環境変数を deny するため、**全ワーカーが `gh` を一切使えない**（private repo に限らない。runtime `dispatcher/runner.py` の `WORKER_SANDBOX_SETTINGS`）。ワーカーの判断材料になる Issue 本文や関連コメントは窓口が `gh issue view --json` で写したファイルをワーカーディレクトリに置き、`--knowledge <worker_dir>/<file>` で brief から参照させる（apply 後にファイルを書けばよく、パスは apply 前に確定できる）。作業中に CI ログ・Issue・PR の確認が要ればワーカーは窓口に依頼する。
 - 「先にキーを置き、後段で値を埋める」型の段階分割（今回は #14 の受け皿ブロック）では、設計段階のタスクに「後段が必要とする全フィールドの確定」を明示的に含める。フィールド集合が設計文書に無いと後段で判断仰ぎが発生する（実際に発生し窓口が Issue 本文と設計要求から合成して回答した）。schema 版上げの是非も同様に設計段階の決定事項として brief に書く（これも判断仰ぎになった）。判断仰ぎ 2 回はいずれも 15〜30 分の停止を生んだ — 設計段階で固定していれば brief の 1 行で済んだ。
 
 出典: `2026-09-07-delegation-private-repo-issue-context-and-schema-freeze.md`（cc-usage-insights 3 段階委譲）
