@@ -59,8 +59,8 @@ expect_empty 'non-eval command' 'bash foo.sh'
 expect_empty 'evaluator is substring of identifier' 'evaluator --help'
 expect_empty 'bashrc (bash substring)' 'cat ~/.bashrc'
 
-# 引用符が閉じていない（malformed）ときは取り出さない（FP 回避）
-expect_empty 'unclosed double quote' 'eval "unterminated'
+# 引用符が閉じていない（判定不能）ときは core-harness 0.4.0 以降、行の残りを過剰出力する（fail-closed）
+expect_contains 'unclosed double quote' 'eval "unterminated' 'unterminated'
 
 total=$((pass_count + fail_count))
 echo ""

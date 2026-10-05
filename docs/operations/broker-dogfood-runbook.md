@@ -32,20 +32,20 @@ usage: claude-org-runtime broker [-h] {serve} ...
 
 ### 1.1 isolated venv のセットアップ（D6）
 
-dogfood を本番環境から隔離するため broker org は **isolated venv（WSL/tmux 隔離 clone）** で走らせる。この venv には **`claude-org-runtime>=0.1.22`**（D2-D6 surface を持つ版）と **`core-harness>=0.3.2`** の両方が要る。
+dogfood を本番環境から隔離するため broker org は **isolated venv（WSL/tmux 隔離 clone）** で走らせる。この venv には **`claude-org-runtime>=0.1.22`**（D2-D6 surface を持つ版）と **`core-harness>=0.4.0`** の両方が要る。
 
 - **runtime は 0.1.22 以上が必須**: 本書の D2-D6（`--root-role` / `--root-cwd` / `/admin` RPC / sidecar）は **0.1.22 で入った surface**で、0.1.17-0.1.21 には無い。**ところが ja の現行 pin は `claude-org-runtime>=0.1.17,<0.2`（下限 0.1.17）** なので、`pip install -e .` は 0.1.22 を**保証しない**（下限 0.1.17 が解決されうる）。dogfood では明示的に `pip install 'claude-org-runtime>=0.1.22,<0.2'` で 0.1.22 以上を入れる（または `pip install -U` で最新 0.1.x に上げる）。下限を恒久的に上げる場合は `pyproject.toml` / `requirements.txt` の pin bump を別途行う（本 runbook の scope 外）。
-- **core-harness は runtime 依存ではない**（runtime の `Requires-Dist` は `jsonschema` のみ。runtime は `core_harness` を import しない）。一方 **claude-org-ja 側のツール**（`tools/check_role_configs.py` 等）が `core_harness` を import するため、ja の org 運用には必須。`pip install claude-org-runtime` 単体では入らず隔離 venv で ja ツールが `ImportError` で落ちるので、**ja repo から `pip install -e .`** で `pyproject.toml` / `requirements.txt` の pin **`core-harness>=0.3.2,<0.4`** を解決する（最小構成で runtime だけ入れた場合は `pip install 'core-harness>=0.3.2,<0.4'` を明示的に足す）。
-- pin 根拠: `core-harness` は 0.x なので x-bump（minor）が破壊的変更を含みうる方針で、`>=0.3.2,<0.4` に範囲固定している（`requirements.txt` のコメント / 設計 Q9-Q10）。
+- **core-harness は runtime 依存ではない**（runtime の `Requires-Dist` は `jsonschema` のみ。runtime は `core_harness` を import しない）。一方 **claude-org-ja 側のツール**（`tools/check_role_configs.py` 等）が `core_harness` を import するため、ja の org 運用には必須。`pip install claude-org-runtime` 単体では入らず隔離 venv で ja ツールが `ImportError` で落ちるので、**ja repo から `pip install -e .`** で `pyproject.toml` / `requirements.txt` の pin **`core-harness>=0.4.0,<0.5`** を解決する（最小構成で runtime だけ入れた場合は `pip install 'core-harness>=0.4.0,<0.5'` を明示的に足す）。
+- pin 根拠: `core-harness` は 0.x なので x-bump（minor）が破壊的変更を含みうる方針で、`>=0.4.0,<0.5` に範囲固定している（`requirements.txt` のコメント / 設計 Q9-Q10）。
 
 ```bash
 # isolated venv 例（隔離 clone のルートで）
 python3 -m venv .venv && . .venv/bin/activate
-pip install -e .   # core-harness>=0.3.2 と claude-org-runtime>=0.1.17 を pin どおり解決
+pip install -e .   # core-harness>=0.4.0 と claude-org-runtime>=0.1.17 を pin どおり解決
 # ただし -e . の runtime 下限は 0.1.17。D2-D6 surface には 0.1.22 以上が要るので明示で上書きする:
 pip install 'claude-org-runtime>=0.1.22,<0.2'
 # runtime だけ入れた最小構成なら core-harness も明示追加:
-#   pip install 'core-harness>=0.3.2,<0.4'
+#   pip install 'core-harness>=0.4.0,<0.5'
 # 確認:
 python3 -c "from claude_org_runtime import __about__; print(__about__.__version__)"   # 0.1.22 以上
 ```
