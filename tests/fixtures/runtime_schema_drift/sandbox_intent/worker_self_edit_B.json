@@ -89,6 +89,61 @@
       ],
       "denyWrite": []
     },
-    "failIfUnavailable": false
+    "failIfUnavailable": true,
+    "allowUnsandboxedCommands": false,
+    "network": {
+      "allowedDomains": [
+        "github.com",
+        "api.github.com",
+        "codeload.github.com",
+        "*.githubusercontent.com",
+        "pypi.org",
+        "files.pythonhosted.org",
+        "registry.npmjs.org",
+        "chatgpt.com",
+        "*.chatgpt.com",
+        "developers.openai.com",
+        "api.openai.com",
+        "*.oaiusercontent.com"
+      ]
+    },
+    "credentials": {
+      "envVars": [
+        {
+          "name": "AWS_ACCESS_KEY_ID",
+          "mode": "deny"
+        },
+        {
+          "name": "AWS_SECRET_ACCESS_KEY",
+          "mode": "deny"
+        },
+        {
+          "name": "AWS_SESSION_TOKEN",
+          "mode": "deny"
+        },
+        {
+          "name": "GH_TOKEN",
+          "mode": "deny"
+        },
+        {
+          "name": "GITHUB_TOKEN",
+          "mode": "deny"
+        },
+        {
+          "name": "GH_ENTERPRISE_TOKEN",
+          "mode": "deny"
+        },
+        {
+          "name": "GITHUB_ENTERPRISE_TOKEN",
+          "mode": "deny"
+        }
+      ]
+    },
+    "excludedCommands": [
+      "docker build *",
+      "docker buildx build *",
+      "docker images *",
+      "docker image inspect *"
+    ]
   }
 }

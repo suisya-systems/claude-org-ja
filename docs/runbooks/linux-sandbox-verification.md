@@ -340,14 +340,14 @@ bwrap が起動時に `Can't create file at <path>` / `Can't mount tmpfs on
 
 ### 5.3 `failIfUnavailable` の現状ふるまい
 
-`tools/org_extension_schema.json` は **全 role で `failIfUnavailable=false`**
-を emit する ([`docs/contracts/sandbox-launcher-contract.md`](../contracts/sandbox-launcher-contract.md)
+`tools/org_extension_schema.json` は **org role（secretary / dispatcher / curator）で `failIfUnavailable=false`**、
+**worker role で `true`**（2026-10-05 改訂。`allowUnsandboxedCommands=false` と併用）を emit する ([`docs/contracts/sandbox-launcher-contract.md`](../contracts/sandbox-launcher-contract.md)
 §4.2 表)。
 
 | 環境 | bwrap 状況 | 期待 (prescribed §4.1) | 実際 (今日) |
 |---|---|---|---|
 | Linux native | `bwrap` 存在 + 正常起動 | sandbox enabled、Layer 3 enforced | 同左 |
-| Linux native | `bwrap` 不在 | role ごとに §4.2 表 (dispatcher は fail-closed) | **全 role fall-open** (`failIfUnavailable=false` 一律 emit) |
+| Linux native | `bwrap` 不在 | role ごとに §4.2 表 (dispatcher は fail-closed) | org role は fall-open（`failIfUnavailable=false`）、worker は起動拒否 |
 | WSL2 | `bwrap` 存在 + case E 抑制あり | sandbox enabled、case E entries は Layer 2 で代替 | 同左 |
 | WSL2 | `bwrap` 起動失敗 (case A trigger) | launcher が retry して partial_success or fall-open | retry 未実装。落ちるか fall-open |
 
