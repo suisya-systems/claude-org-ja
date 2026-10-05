@@ -14,6 +14,16 @@
 # MCP ツール (mcp__renga-peers__spawn_pane 等) で行われ、本フックの matcher
 # (Bash|Monitor) を通らないため誤 deny しない。
 #
+# .claude/settings.json では Bash 側にだけ hook の `if`（Bash(*gh pr checks*) /
+# Bash(*tools/pr-watch.*) / Bash(*tools/pr_watch.py*)）を付け、無関係な Bash で
+# 本スクリプトを起動しない。`if` は best-effort（https://code.claude.com/docs/en/hooks
+# "the `if` filter is best-effort"）なので、enforcement フックには付けない。
+# 3 ハンドラの末尾引数（if-gh-pr-checks 等）は同一ハンドラの重複排除で 1 つに
+# 畳まれないための識別子で、本スクリプトは読まない。Monitor は `if` 無しで従来どおり。
+# Claude Code 2.1.243 以上を前提（`$()` / backtick を含む Bash で `if` が誤発火する
+# 修正。CHANGELOG 2.1.243。`if` 自体は 2.1.85 で追加、複合コマンド対応は 2.1.89）。
+# 2.1.89〜2.1.242 では余分に発火するだけで、取りこぼす側には倒れない。
+#
 # 入力: stdin から PreToolUse JSON ({tool_name, tool_input})
 # 出力: 拒否時 exit 2 + stderr。許可時 exit 0。
 

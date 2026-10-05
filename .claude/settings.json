@@ -84,7 +84,27 @@
         ]
       },
       {
-        "matcher": "Bash|Monitor",
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "if": "Bash(*gh pr checks*)",
+            "command": "bash \"${CLAUDE_PROJECT_DIR}/.hooks/block-adhoc-pr-watch.sh\" if-gh-pr-checks"
+          },
+          {
+            "type": "command",
+            "if": "Bash(*tools/pr-watch.*)",
+            "command": "bash \"${CLAUDE_PROJECT_DIR}/.hooks/block-adhoc-pr-watch.sh\" if-pr-watch"
+          },
+          {
+            "type": "command",
+            "if": "Bash(*tools/pr_watch.py*)",
+            "command": "bash \"${CLAUDE_PROJECT_DIR}/.hooks/block-adhoc-pr-watch.sh\" if-pr-watch-py"
+          }
+        ]
+      },
+      {
+        "matcher": "Monitor",
         "hooks": [
           {
             "type": "command",

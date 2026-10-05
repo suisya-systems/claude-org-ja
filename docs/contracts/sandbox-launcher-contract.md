@@ -591,8 +591,11 @@ amendment.
 
 **Current vs. prescribed**: at the time of this contract,
 [`tools/org_extension_schema.json`](../../tools/org_extension_schema.json)
-emits `failIfUnavailable=false` for *every* role (including the
-dispatcher). The Dispatcher row marked **Prescribed (not yet
+emitted `failIfUnavailable=false` for *every* role (including the
+dispatcher). The worker rows were amended on 2026-10-05
+(ja-worker-sandbox-hardening): every `worker_roles.*` body now emits
+`failIfUnavailable=true` together with `allowUnsandboxedCommands=false`
+(see `worker_roles.$comment_sandbox_hardening` in the schema). The Dispatcher row marked **Prescribed (not yet
 implemented)** below is therefore a contract-level target that the
 schema follow-up listed in §6.2 must realize. Until that
 follow-up lands, the dispatcher emits the default `false` and is
@@ -607,9 +610,9 @@ fail the build.
 | Secretary | `false` | Yes | Secretary runs in normal Claude Code permission mode (per-tool prompts); Layer 2 `permissions.deny` and operator judgment cover credentials even without Layer 3. Sandbox absence does not silently broaden the role's surface. |
 | Dispatcher | **`true`** (override) — **Prescribed (not yet implemented)** | **No** | Dispatcher runs with `permission_mode=bypassPermissions` per [`docs/contracts/role-pattern-sandbox-contract.md`](./role-pattern-sandbox-contract.md) §3.2, which makes Layer 2 a no-op. Sandbox absence + bypassPermissions = only Layer 4 hooks remain, and the hook chain has the §3.2.4 Bash-redirect carve-out. Fall-open here would mean credentials are reachable via `Bash(cat ~/.aws/...)`. The contract therefore overrides the default and requires `failIfUnavailable=true` so that the dispatcher refuses to start without bwrap. **Today** the schema emits `false`; the §6.2 schema-update step flips it. |
 | Curator | `false` | Yes | Curator runs at `permission_mode=auto` with a near-empty allow list and a read-mostly task surface (knowledge/curated). Sandbox absence does not enable a new attack surface that Layer 2 + role discipline does not already cover. |
-| Worker `default` | `false` | Yes | Worker has Layer 2 `permissions.deny` for credentials and Layer 4 hooks (`block-org-structure.sh`, `check-worker-boundary.sh`). Sandbox absence keeps Layer 2 + Layer 4 active. |
-| Worker `claude-org-self-edit` | `false` (with operator-warning) | Yes-with-caveat | Self-edit role writes to `<claude_org_path>/.worktrees/<task_id>/`, so the blast radius is broader than a project worker. The default remains `false` for parity, but the runtime SHOULD emit an operator-visible advisory in `$comment` when it detects sandbox-absent + self-edit role; the dispatcher monitoring (§4.3) should treat the resulting fall-open `severity=error` event as a high-attention anomaly. |
-| Worker `doc-audit` | `false` | Yes | doc-audit is read-only by role contract; sandbox absence does not change its writable surface (which is empty). |
+| Worker `default` | **`true`** (amended 2026-10-05) | **No** | The sandbox is the worker's real boundary for Bash (network allowlist, credential env scrub, write surface); Layer 2 `Read(...)` denies and Layer 4 hooks do not cover Bash network egress or env-var secrets. Strict mode (`allowUnsandboxedCommands=false`) would be moot if the whole session could fall open, so the worker refuses to start without a working sandbox. |
+| Worker `claude-org-self-edit` | **`true`** (amended 2026-10-05) | **No** | Same reasoning as Worker `default`; the self-edit role's broader blast radius (`<claude_org_path>/.worktrees/<task_id>/`) makes fall-open strictly worse. |
+| Worker `doc-audit` | **`true`** (amended 2026-10-05) | **No** | doc-audit's empty writable surface is enforced by the sandbox `denyWrite` (Layer 3); fall-open would lift it, so the role refuses to start instead. |
 
 ### 4.3 Operator-visible warning + drift detection
 
