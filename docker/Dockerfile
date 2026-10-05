@@ -109,7 +109,7 @@ RUN groupadd -g "${ORG_GID}" org \
 RUN python3 -m venv /opt/org-venv \
     && /opt/org-venv/bin/pip install --no-cache-dir \
         "claude-org-runtime==${RUNTIME_VERSION}" \
-        "core-harness>=0.3.2,<0.4"
+        "core-harness>=0.4.0,<0.5"
 
 # herdr（設計 §9: 同梱・sha256 検証・self-update 不使用。INSTALL_HERDR=0 で除外可）
 COPY docker/install-herdr.sh /usr/local/bin/install-herdr.sh

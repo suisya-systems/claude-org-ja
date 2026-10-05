@@ -19,7 +19,7 @@
 # Reproducibility note (1.0 migration): consider switching to a commit
 # SHA pin via git+https to guard against tag/release re-targeting.
 # Tracked for the 0.x to 1.0 cutover; PyPI range pin is sufficient for 0.x.
-core-harness>=0.3.2,<0.4
+core-harness>=0.4.0,<0.5
 
 # Phase 4 (Layer 2): claude-org-runtime hosts the dispatcher runner and
 # worker settings generator that used to live under tools/. Published to
