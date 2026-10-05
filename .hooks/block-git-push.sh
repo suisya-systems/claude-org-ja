@@ -22,6 +22,10 @@
 # gh api の GET 等）は全て allow に含めてある。塞ぎすぎは「正当な作業が
 # 塞がれた結果、より危険な回避策に飛びつく」形の事故を誘発するため、
 # 読み取り面は意図的に広く取っている。
+# ただし claude-org-runtime 0.1.46 以降、ワーカーは spawn 時の --settings overlay
+# で ~/.config/gh/hosts.yml と gh の token 環境変数を deny されるため、gh は
+# 読み取りも含め認証できない。本 hook の書き込み deny は 0.1.46 未満の runtime や
+# overlay が効かない起動経路に対する多層防御として残している。
 #
 # gh api はサブコマンドではなく HTTP メソッドで読み書きが決まるため個別に
 # 解析する:
@@ -453,7 +457,7 @@ for segment in "${GH_SEGMENTS[@]}"; do
 
   if [[ -n "${gh_verdicts:-}" ]]; then
     gh_detail=$(printf '%s' "$gh_verdicts" | sed 's/^DENY|//' | tr '\n' ' ')
-    deny_with_reason "gh 経由の GitHub 書き込み操作は Worker から直接実行できません（検知: ${gh_detail%% }）。PR 作成 / merge / comment / review / release / workflow 実行などは人間の承認後に窓口が実施します。読み取り系（gh pr view / list / diff / checks、gh run view / list、gh api の GET 等）は許可されています。読み取りのつもりで拒否された場合は、判定できない形（未知のサブコマンド / 変数経由の指定）になっていないか確認し、必要なら窓口に相談してください。"
+    deny_with_reason "gh 経由の GitHub 書き込み操作は Worker から直接実行できません（検知: ${gh_detail%% }）。PR 作成 / merge / comment / review / release / workflow 実行などは人間の承認後に窓口が実施します。なお claude-org-runtime 0.1.46 以降のワーカーは読み取り系も含め gh を使えません（sandbox が token を遮断するため認証できない）。CI ログ・Issue・PR の確認が必要なら窓口に依頼してください。"
   fi
 done
 
