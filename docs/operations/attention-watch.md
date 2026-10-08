@@ -153,6 +153,7 @@ Issue #25 / PR #27 以前は、WSL / Windows native とも「PowerShell `Write-H
 | `sound` | `"urgent-only"` | `"off"` / `"urgent-only"` / `"all"`。urgent-only は urgent severity の event だけ音 |
 | `cooldown_sec` | `300` | 同じ dedup key に対する再通知の最短間隔（秒） |
 | `poll_interval_sec` | `10` | `watch` の polling 周期 |
+| `event_window_sec` | `3600` | `state.db` の event 行を通知対象とみなす経過秒の上限。これより古い行は `suppressed` 扱いで、`scan --json` には残るが通知しない（初回起動や `.state/attention_notified.json` を消した直後に過去の backlog がまとめて鳴るのを防ぐ）。`occurred_at` が欠落・不正な行は抑止しない。`0` で無効 |
 | `pending_decision_min` | `15` | `pending_decisions.json` の pending を urgent と判定する経過分（4 段 ladder の入り口、§4.1 参照） |
 | `pending_decision_max` | `1440` | urgent 期間の上限（分）。これを超えた pending は normal に降格する（24h） |
 | `pending_decision_drop` | `10080` | normal 通知の終端（分）。これを超えた pending は通知抑止され `--json` 出力にのみ残る（7d） |
