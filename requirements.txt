@@ -26,6 +26,8 @@ core-harness>=0.4.0,<0.5
 # PyPI via Trusted Publisher; pinned to the 0.1.x range. 0.x bumps may be
 # breaking per the runtime's compatibility policy, so widen this pin
 # deliberately when adopting a new minor.
+# Floor bumped to 0.1.47 (auth.openai.com added to the worker sandbox allowedDomains, so Codex login
+# works inside the worker sandbox); the shared schema changed, so RUNTIME_PIN_LOWER_INCLUSIVE is raised to (0, 1, 47).
 # Floor bumped to 0.1.46 (worker spawn passes --settings with sandbox strictAllowlist,
 # allowedDomains and a gh credential deny, so workers cannot use gh at all, runtime#191);
 # pin-only bump, shared schema unchanged so RUNTIME_PIN_LOWER_INCLUSIVE stays (0, 1, 44).
@@ -171,7 +173,7 @@ core-harness>=0.4.0,<0.5
 # (transport surface descriptor claude_org_runtime.transport consumed by
 # tools/transport.py — Epic #6 next-stage D / ja#513) are subsumed by 0.1.28.
 # Keep in sync with pyproject.toml.
-claude-org-runtime>=0.1.46,<0.2
+claude-org-runtime>=0.1.47,<0.2
 
 # tools/gen_worker_brief.py reads TOML config. tomllib is stdlib in 3.11+,
 # but ja still supports 3.10 (CLAUDE.local.md template recommends 3.10).
