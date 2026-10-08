@@ -41,6 +41,7 @@
 - 関連 Issue: ${closes_or_refs}
 - 目的: ${task_description}
 <!--BEGIN:issue_url-->- Issue URL: ${task_issue_url}
+- ワーカーの中では gh が動かない（hosts.yml が読めない設定）。公開リポジトリの Issue は `curl https://api.github.com/repos/<owner>/<repo>/issues/<番号>` で読む。非公開のもの・書き込みは窓口に頼む。
 <!--END:issue_url-->
 <!--BEGIN:implementation-->
 
