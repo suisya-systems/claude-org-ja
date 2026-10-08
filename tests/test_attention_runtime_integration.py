@@ -265,12 +265,23 @@ class AttentionRuntimeIntegrationTests(unittest.TestCase):
                 self._now_epoch - row["age_sec"],
             )
 
-    def _run_scan(self, broker_state_dir: Path | None = None) -> list[dict]:
+    def _run_scan(
+        self, broker_state_dir: Path | None = None, *,
+        event_window: bool = False,
+    ) -> list[dict]:
         argv = [
             "claude-org-runtime", "attention", "scan",
             "--state-dir", str(self.state_dir),
             "--dry-run", "--json",
         ]
+        # The state.db fixture carries fixed timestamps, which the
+        # runtime's ``event_window_sec`` (default 3600) would mark
+        # ``suppressed``. The golden pins the classifier vocabulary, so
+        # the window is off unless a test asks for it explicitly.
+        if not event_window:
+            config = Path(self._tmpdir.name) / "attention.json"
+            config.write_text('{"event_window_sec": 0}', encoding="utf-8")
+            argv += ["--config", str(config)]
         # No --broker-state-dir by default: the unflagged invocation is
         # what /org-attention-start runs when ORG_BROKER_STATE_DIR is
         # unset, so leaving it off here keeps the golden pinned to the
@@ -408,6 +419,18 @@ class AttentionRuntimeIntegrationTests(unittest.TestCase):
         self.assertNotIn(
             "pending:T-future-dated:pending_decision", keys,
         )
+
+    def test_default_event_window_suppresses_old_db_events(self) -> None:
+        # Default ``event_window_sec`` (3600): the fixed-timestamp
+        # state.db rows are listed but marked suppressed, while the
+        # freshened pending row still notifies.
+        events = self._run_scan(event_window=True)
+        self.assertIs(
+            self._find_event(events, key="event:2").get("suppressed"), True,
+        )
+        self.assertFalse(self._find_event(
+            events, key="pending:T-pending-stale:pending_decision",
+        ).get("suppressed", False))
 
     # ------------------------------------------------------------------
     # (4) Drift canary — the runtime must still classify every kind the

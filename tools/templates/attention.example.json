@@ -3,6 +3,7 @@
   "sound": "urgent-only",
   "cooldown_sec": 300,
   "poll_interval_sec": 10,
+  "event_window_sec": 3600,
   "pending_decision_min": 15,
   "pending_decision_max": 1440,
   "pending_decision_drop": 10080,
