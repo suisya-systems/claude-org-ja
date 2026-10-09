@@ -4010,5 +4010,78 @@ class ConflictUnknownRetryTests(unittest.TestCase):
         sleep_mock.assert_not_called()
 
 
+class QueuedWorkflowWithoutChecksTests(unittest.TestCase):
+    """Issue #1044: one workflow completed, another queued with no check
+    runs yet (renga#368: Deploy Docs green, CI waiting on a concurrency
+    group). The check set is "all pass", but `passed` must not be recorded
+    until the queued workflow run for the head has completed."""
+
+    HEAD = "0507827" + "a" * 33
+
+    def setUp(self) -> None:
+        _assert_peer_isolation()
+
+    def test_passed_waits_for_queued_workflow(self) -> None:
+        deploy = {"__typename": "CheckRun", "name": "deploy-docs",
+                  "status": "COMPLETED", "conclusion": "SUCCESS"}
+        runs_seq = [
+            [{"name": "Deploy Docs + LP", "status": "completed"},
+             {"name": "CI", "status": "queued"}],
+            [{"name": "Deploy Docs + LP", "status": "completed"},
+             {"name": "CI", "status": "completed"}],
+        ]
+        runs_calls: list = []
+
+        def fake_run(cmd, *args, **kwargs):
+            if cmd[:2] == ["gh", "api"]:
+                runs_calls.append(cmd[2])
+                runs = runs_seq[min(len(runs_calls), len(runs_seq)) - 1]
+                return mock.Mock(returncode=0, stdout=json.dumps(
+                    {"workflow_runs": runs}), stderr="")
+            if cmd[:3] == ["gh", "pr", "view"]:
+                jval = cmd[cmd.index("--json") + 1]
+                out = {"number": {},
+                       "headRefOid": {"headRefOid": self.HEAD},
+                       "statusCheckRollup": {"statusCheckRollup": [deploy]},
+                       }.get(jval, {"mergeable": "MERGEABLE",
+                                    "headRefOid": self.HEAD})
+                return mock.Mock(returncode=0, stdout=json.dumps(out),
+                                 stderr="")
+            if "checks" in cmd:
+                # By the time we re-poll, CI has created its check runs.
+                payload = [{"bucket": "pass", "name": "deploy-docs"},
+                           {"bucket": "pass", "name": "rustfmt"}]
+                return mock.Mock(returncode=0, stdout=json.dumps(payload),
+                                 stderr="")
+            return mock.Mock(returncode=0)
+
+        with TempDir() as tmp:
+            journal = tmp / ".state" / "state.db"
+            with mock.patch.object(pr_watch, "JOURNAL_PATH", journal), \
+                 mock.patch.object(pr_watch, "_notify_peer", return_value=False), \
+                 mock.patch.object(pr_watch.shutil, "which", return_value="/usr/bin/gh"), \
+                 mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run), \
+                 mock.patch.object(pr_watch.time, "sleep"), \
+                 mock.patch.object(pr_watch.time, "monotonic", return_value=0.0):
+                rc = pr_watch.main(["--pr", "368", "--repo", "octo/renga"])
+            self.assertEqual(rc, 0)
+            self.assertEqual(_count_ci_events(journal), 1)
+            rec = _read_ci_event(journal)
+            self.assertEqual(rec["status"], "passed")
+            # The verdict is the post-queue one (CI's checks included),
+            # not the Deploy-Docs-only startup snapshot.
+            self.assertEqual(rec["total_checks"], 2)
+        self.assertEqual(len(runs_calls), 2)
+        self.assertIn(f"head_sha={self.HEAD}", runs_calls[0])
+
+    def test_unreadable_runs_probe_fails_open(self) -> None:
+        with mock.patch.object(pr_watch.subprocess, "run",
+                               return_value=mock.Mock(returncode=1, stdout="",
+                                                      stderr="boom")):
+            self.assertFalse(
+                pr_watch._head_has_unfinished_runs("octo/repo", self.HEAD))
+        self.assertFalse(pr_watch._head_has_unfinished_runs("octo/repo", None))
+
+
 if __name__ == "__main__":
     unittest.main()
