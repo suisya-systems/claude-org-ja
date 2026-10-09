@@ -4034,10 +4034,11 @@ class QueuedWorkflowWithoutChecksTests(unittest.TestCase):
 
         def fake_run(cmd, *args, **kwargs):
             if cmd[:2] == ["gh", "api"]:
-                runs_calls.append(cmd[2])
+                runs_calls.append(" ".join(cmd))
                 runs = runs_seq[min(len(runs_calls), len(runs_seq)) - 1]
-                return mock.Mock(returncode=0, stdout=json.dumps(
-                    {"workflow_runs": runs}), stderr="")
+                # `--jq .workflow_runs[].status` output: one status per line.
+                return mock.Mock(returncode=0, stdout="".join(
+                    r["status"] + "\n" for r in runs), stderr="")
             if cmd[:3] == ["gh", "pr", "view"]:
                 jval = cmd[cmd.index("--json") + 1]
                 out = {"number": {},
@@ -4073,6 +4074,7 @@ class QueuedWorkflowWithoutChecksTests(unittest.TestCase):
             self.assertEqual(rec["total_checks"], 2)
         self.assertEqual(len(runs_calls), 2)
         self.assertIn(f"head_sha={self.HEAD}", runs_calls[0])
+        self.assertIn("--paginate", runs_calls[0])
 
     def test_head_move_stops_waiting_on_old_head(self) -> None:
         # An old-head run that never finishes must not block the restart

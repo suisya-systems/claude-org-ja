@@ -1052,6 +1052,13 @@ def _fetch_status_rollup(pr: int, repo: str) -> "list[dict] | None":
     return [e for e in rollup if isinstance(e, dict)]
 
 
+# Workflow-run statuses that mean "will still produce checks". Explicit
+# rather than "not completed": ``action_required`` (fork approval) would
+# otherwise hold the verdict until a human acts.
+_UNFINISHED_RUN_STATUSES = frozenset(
+    {"queued", "in_progress", "waiting", "requested", "pending"})
+
+
 def _head_has_unfinished_runs(repo: str, head_oid: "str | None") -> bool:
     """True iff a workflow run for ``head_oid`` is not yet ``completed`` (Issue #1044).
 
@@ -1071,22 +1078,21 @@ def _head_has_unfinished_runs(repo: str, head_oid: "str | None") -> bool:
         return False
     try:
         result = subprocess.run(
-            ["gh", "api",
-             f"repos/{repo}/actions/runs?head_sha={head_oid}&per_page=100"],
+            ["gh", "api", "--paginate",
+             f"repos/{repo}/actions/runs?head_sha={head_oid}&per_page=100",
+             "--jq", ".workflow_runs[].status"],
             capture_output=True,
             text=True,
             encoding="utf-8",  # gh emits UTF-8; locale decode (cp932) corrupts/crashes (#537)
             check=False,
             timeout=GH_TIMEOUT_SEC,
         )
-        runs = json.loads(result.stdout or "").get("workflow_runs")
-    except (OSError, subprocess.TimeoutExpired, TypeError, ValueError,
-            AttributeError):
+    except (OSError, subprocess.TimeoutExpired):
         return False
-    if not isinstance(runs, list):
+    if result.returncode != 0 or not isinstance(result.stdout, str):
         return False
-    return any(isinstance(r, dict) and r.get("status") != "completed"
-               for r in runs)
+    return any(s.strip() in _UNFINISHED_RUN_STATUSES
+               for s in result.stdout.splitlines())
 
 
 def _evaluate_startup_state(pr: int, repo: str) -> "dict | None":
