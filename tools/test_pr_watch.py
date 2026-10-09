@@ -4074,6 +4074,24 @@ class QueuedWorkflowWithoutChecksTests(unittest.TestCase):
         self.assertEqual(len(runs_calls), 2)
         self.assertIn(f"head_sha={self.HEAD}", runs_calls[0])
 
+    def test_head_move_stops_waiting_on_old_head(self) -> None:
+        # An old-head run that never finishes must not block the restart
+        # for a newer head (Codex review).
+        verdict = {"status": "passed", "fail_count": 0, "pending_count": 0,
+                   "total_checks": 1, "probe_attempts": 1}
+        with mock.patch.object(pr_watch, "_evaluate_startup_state",
+                               return_value=verdict), \
+             mock.patch.object(pr_watch, "_head_has_unfinished_runs",
+                               return_value=True), \
+             mock.patch.object(pr_watch, "_fetch_head_oid",
+                               side_effect=["a" * 40, "b" * 40, "b" * 40]), \
+             mock.patch.object(pr_watch.time, "sleep") as sleep_mock:
+            result = pr_watch._run_ci_watch_phase(
+                pr=368, repo="octo/renga", interval=30,
+                db_path=Path("unused"))
+        self.assertEqual(result, ("head_changed", 0, "b" * 40))
+        sleep_mock.assert_not_called()
+
     def test_unreadable_runs_probe_fails_open(self) -> None:
         with mock.patch.object(pr_watch.subprocess, "run",
                                return_value=mock.Mock(returncode=1, stdout="",

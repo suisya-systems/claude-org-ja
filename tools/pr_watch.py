@@ -1729,13 +1729,18 @@ def _run_ci_watch_phase(
                 # Issue #1044: an all-pass check set can still hide a
                 # workflow that is queued without any check run yet. Keep
                 # watching until every workflow run for the head finished.
-                if (verdict["status"] == "passed"
-                        and _head_has_unfinished_runs(
+                if verdict["status"] != "passed" or not (
+                        _head_has_unfinished_runs(
                             repo, head_before or _fetch_head_oid(pr, repo))):
-                    time.sleep(interval)
-                    verdict = None
-                    continue
-                break
+                    break
+                head_now = _fetch_head_oid(pr, repo)
+                if head_before and head_now and head_now != head_before:
+                    # Moved: don't wait on the old head's runs; the
+                    # head-change check below restarts ci-watch.
+                    break
+                time.sleep(interval)
+                verdict = None
+                continue
             # Issue #946: `conflict` lets the self-poll loop tell a
             # zero-check race apart from a zero-check *conflict*.
             verdict = _self_poll_watch(pr, repo, interval,
