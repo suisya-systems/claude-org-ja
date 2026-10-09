@@ -50,6 +50,11 @@ Behavior:
   serves all probes from ``gh pr view --json statusCheckRollup``
   (supported on old gh) normalized through the #719 rollup→bucket
   mapping, so classification is identical to the native probe.
+* Issue #1044: a ``passed`` verdict is only accepted once every workflow
+  run for the head (``gh api repos/OWNER/REPO/actions/runs?head_sha=``)
+  is ``completed`` (:func:`_head_has_unfinished_runs`). A workflow queued
+  behind a concurrency group has no check runs yet, so the check set
+  alone read "all pass" while required CI had not started.
 * Once the self-poll loop observes a decided verdict, or bails out on
   an inconclusive observation (an empty check list / an unparseable
   probe — the Issue #413 freshly-created-PR race), the result is
@@ -1047,6 +1052,49 @@ def _fetch_status_rollup(pr: int, repo: str) -> "list[dict] | None":
     return [e for e in rollup if isinstance(e, dict)]
 
 
+# Workflow-run statuses that mean "will still produce checks". Explicit
+# rather than "not completed": ``action_required`` (fork approval) would
+# otherwise hold the verdict until a human acts.
+_UNFINISHED_RUN_STATUSES = frozenset(
+    {"queued", "in_progress", "waiting", "requested", "pending"})
+
+
+def _head_has_unfinished_runs(repo: str, head_oid: "str | None") -> bool:
+    """True iff a workflow run for ``head_oid`` is not yet ``completed`` (Issue #1044).
+
+    A workflow that is queued (e.g. waiting on a concurrency group behind an
+    older run) has created NO check runs yet, so it is invisible to both
+    ``gh pr checks`` and ``statusCheckRollup``. With one other workflow
+    already green, the check set is "all pass" and the watcher reported
+    ``passed`` while the required CI had not started (renga#368). The
+    workflow-runs API does list the queued run, so a ``passed`` verdict is
+    only accepted once every run for the head is ``completed``.
+
+    Best-effort (fail-open): an unknown head or an unreadable probe returns
+    ``False`` so a gh hiccup can only fall back to the pre-#1044 verdict,
+    never wedge the watch.
+    """
+    if not head_oid:
+        return False
+    try:
+        result = subprocess.run(
+            ["gh", "api", "--paginate",
+             f"repos/{repo}/actions/runs?head_sha={head_oid}&per_page=100",
+             "--jq", ".workflow_runs[].status"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",  # gh emits UTF-8; locale decode (cp932) corrupts/crashes (#537)
+            check=False,
+            timeout=GH_TIMEOUT_SEC,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if result.returncode != 0 or not isinstance(result.stdout, str):
+        return False
+    return any(s.strip() in _UNFINISHED_RUN_STATUSES
+               for s in result.stdout.splitlines())
+
+
 def _evaluate_startup_state(pr: int, repo: str) -> "dict | None":
     """One-shot absolute-state evaluation run before the watch loop (Issue #719).
 
@@ -1682,13 +1730,29 @@ def _run_ci_watch_phase(
         #
         # Issue #719: skipped entirely when the startup evaluation above
         # already produced a terminal verdict (CI was done before spawn).
-        while verdict is None:
+        while True:
+            if verdict is not None:
+                # Issue #1044: an all-pass check set can still hide a
+                # workflow that is queued without any check run yet. Keep
+                # watching until every workflow run for the head finished.
+                if verdict["status"] != "passed" or not (
+                        _head_has_unfinished_runs(
+                            repo, head_before or _fetch_head_oid(pr, repo))):
+                    break
+                head_now = _fetch_head_oid(pr, repo)
+                if head_before and head_now and head_now != head_before:
+                    # Moved: don't wait on the old head's runs; the
+                    # head-change check below restarts ci-watch.
+                    break
+                time.sleep(interval)
+                verdict = None
+                continue
             # Issue #946: `conflict` lets the self-poll loop tell a
             # zero-check race apart from a zero-check *conflict*.
             verdict = _self_poll_watch(pr, repo, interval,
                                        conflict=conflict)
             if verdict is not None:
-                break
+                continue
             # Issue #695 round 3 (Codex review, P2): use the wider
             # CI_WATCH_EMPTY_RACE_BUDGET_SEC here rather than the
             # RETRY_BUDGET_SEC default -- see that constant's docstring
@@ -1715,7 +1779,7 @@ def _run_ci_watch_phase(
                 # keep watching for the re-push that unblocks CI.
                 verdict = None
                 continue
-            break
+            # Decided: loop once more so the #1044 guard above sees it.
     except KeyboardInterrupt:
         canceled = True
 
