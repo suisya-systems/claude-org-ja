@@ -78,7 +78,7 @@
 |---|---|---|
 | H1 | spawn 直後の `send_keys`（Enter）を、spawn-prompt-step の判定記録が無ければ deny | 振り分け役 |
 | H2 | retro gate の ack 記録が無い worker への `close_pane` を deny | 振り分け役 |
-| H3 | `block-relative-close-pane.sh` の matcher に `set_pane_identity` を足す | 窓口・振り分け役 |
+| H3 | `block-relative-close-pane.sh` の matcher に `set_pane_identity` を足す。hook 内部も `close_pane` 以外を素通しする（`.hooks/block-relative-close-pane.sh:102-106`）ので、内部の絞り込みも広げ、target 欠落・相対セレクタの `set_pane_identity` が deny されるテストを足す。broker watcher 名の例外は `close_pane` だけに残す | 窓口・振り分け役 |
 | H5 | `tools/codex_review_gate.sh` を新設し、「空の合格」の判定を機械化 | 作業者 |
 | H6 | Skill matcher で `codex:rescue` を deny | 作業者 |
 | H7 | `block-dangerous-git.sh` に `git add -A` / `git add .` / `git add --all` の deny を足す | 全ロール |
