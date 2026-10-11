@@ -99,6 +99,16 @@ bash ../tools/journal_append.sh anomaly_observed source={面} worker=worker-{tas
 
 各サイクルで以下を順次実行する:
 
+0. **spawn 儀式の未検証検出 (`spawn_gate.py audit`)** — サイクル冒頭で 1 回叩く:
+   ```bash
+   python3 ../tools/spawn_gate.py audit
+   ```
+   - **exit 0** (clean) → 何もしない
+   - **exit 10** → `findings[]` の worker を `mcp__org-broker__inspect_pane` で実見し、承認プロンプトで停止していれば [`.dispatcher/references/spawn-flow.md`](spawn-flow.md) 3-3b から復旧してから Step 5 の派遣完了ゲートを通し直す
+   - **exit 2** → 窓口へエラー通知
+
+   既定の grace window は 5 分 (儀式の途中で誤発火しない)。除外は固定の deployment cutoff `--since` (既定 `GATE_EPOCH` = 2026-08-18) だけで、それ以降の未検証 spawn は何日経っても報告され続ける (rolling window にすると、まだ生きている未検証 worker が一定時間で報告から消えて「異常なし」に見える)。除外した件数は `skipped.{in_grace,before_gate_epoch,terminal_run}` に出るので、「異常なし」と「フィルタが全部食った」を取り違えない。**まだ 1 度も peer message を出していない worker は Step 5.2 の pane_output_without_peer_msg (peer-msg 履歴を要件にする) で拾えないので、本ステップがその唯一の自動検出経路である** (経緯は下記「設計メモ」)
+
 1. **`mcp__org-broker__poll_events` で直近のペイン lifecycle を drain** (タイムアウト付きで 1 回だけ):
    ```
    # (1) cursor の session 束縛を確立する (下記「cursor は backend session に束縛する」)
@@ -287,7 +297,7 @@ bash ../tools/journal_append.sh anomaly_observed source={面} worker=worker-{tas
 
    - **producer は 2 本ある。どちらも「§1-2 が『在』1 件と確定した `list_peers` レコードの数値 `id`」しか書かない**: **`list_panes` の pane id・旧版 fallback の `name` 一致 poll で得た id・縮退中の send-as-probe から推測した値は書かない (MUST NOT)**。誤った陽性履歴は (3-a-2) 4 行目の裏取り (ii) を偽で満たし、`pane_exited` の attribution を別 worker に結び付けて**生きている worker を退役させうる**。**受理条件・三値判定の正本は共有 reference §1-2-c であって本項ではない** (本項が定めるのは控え先と producer の所在だけである)。
      1. **監視サイクル producer**: この監視ループが `list_peers` を引いたサイクル ((3-a-1) の観測不能フォールバック / (3-a-2) の 3 列目評価) に §1-2 が「在」を返したとき。**通常サイクルの Step 3 は `list_peers` を引かない**ので、監視ループだけを回している間に新しく「在」が確定することは無い (呼び出しを増やさない = (P5))。裏取り (ii) はこれで成立する — ペインが消えても peer 登録が残っているサイクル ((3-a-2) の 2 行目) で `same_tab_peer_id` が入り、次サイクルで同じ id が列挙から消えれば 4 行目に落ちる
-     2. **spawn producer (配線済み)**: ワーカー spawn 直後の peer 登録待ちが §1-2-c の「登録待ち型は 在 のときだけゲートを開ける」で受理したとき、受理の根拠になった数値 id を控え、**post-spawn の状態記録**([`.dispatcher/references/spawn-flow.md`](spawn-flow.md) Step 4 の該当項) で既存 record へ merge する。**列挙経路は 2 つあるが書き込み口は 1 つである**: spawn-flow 3-4 を実行手順として通る経路と、runtime delegate-plan helper が機械生成した `after_spawn[]` の `list_peers` 待ち (`.dispatcher/CLAUDE.md`) の両方が、同じ post-spawn 状態記録に合流する。**spawn を放棄する場合の始末も同項が定める** (放棄経路は状態記録に到達しないので陽性履歴はそもそも書かれない。**書いた後の record 削除規則は下記更新規則 (4) だけが持ち、spawn 経路は削除条件を足さない** — 「派遣後にタスクを取り止めた」ことを削除の根拠にすると、生きているペインの record を消して `tracked_pane_id` / `same_tab_peer_id` を失わせ、規則 (4) が名指しで禁じている恒久 indeterminate をこちらから作ることになる)。この producer により「ペインと peer 登録が同じ区間で同時に消えた」ケースでも裏取り (ii) が成立するようになり、(3-a-4) の恒久 indeterminate は狭くなる
+     2. **spawn producer (配線済み)**: ワーカー spawn 直後の peer 登録待ちが §1-2-c の「登録待ち型は 在 のときだけゲートを開ける」で受理したとき、受理の根拠になった数値 id を控え、**post-spawn の状態記録**([`.dispatcher/references/spawn-flow.md`](spawn-flow.md) Step 4 の該当項) で既存 record へ merge する。**列挙経路は 2 つあるが書き込み口は 1 つである**: spawn-flow 3-4 を実行手順として通る経路と、runtime delegate-plan helper が機械生成した `after_spawn[]` の `list_peers` 待ち ([`.dispatcher/references/spawn-flow.md`](spawn-flow.md)「delegate-plan helper」) の両方が、同じ post-spawn 状態記録に合流する。**spawn を放棄する場合の始末も同項が定める** (放棄経路は状態記録に到達しないので陽性履歴はそもそも書かれない。**書いた後の record 削除規則は下記更新規則 (4) だけが持ち、spawn 経路は削除条件を足さない** — 「派遣後にタスクを取り止めた」ことを削除の根拠にすると、生きているペインの record を消して `tracked_pane_id` / `same_tab_peer_id` を失わせ、規則 (4) が名指しで禁じている恒久 indeterminate をこちらから作ることになる)。この producer により「ペインと peer 登録が同じ区間で同時に消えた」ケースでも裏取り (ii) が成立するようになり、(3-a-4) の恒久 indeterminate は狭くなる
    - **陽性履歴が無いまま消失したときの着地は indeterminate で正しい**: (ii) が構造的に成立しないので確定証拠は「同タブの `pane_exited` 観測」だけになり、それも無ければ (3-a-2) の 5 行目に落ちる。これは契約 [`docs/contracts/backend-interface-contract.md`](../../docs/contracts/backend-interface-contract.md) T-§2.1 が要求する安全側 (「MUST record the outcome as **indeterminate** and escalate it; it MUST NOT resolve it as "closed"」) であり、窓口へ上げて人間が判断する経路に載る
    - **既存 record での field 欠損は `null` 扱い**とし migration は不要 (`completion_reported_at` と同じ規約、下記 Step 5 (b) の schema 節)
    - **inspect helper の scope 外・lifecycle 由来**である点も `completion_reported_at` と同じ: `tools/inspect_pane_state.py` の `compute_idle_transition()` は docstring に「``completion_reported_at`` and any unknown keys are preserved verbatim」「Rule 4 (record deletion on pane exit) and rule 6 (lifecycle ``completion_reported_at`` set/clear) are outside the inspect scope and remain caller-applied」と書き、実装も `prev = dict(prev_record)` → `new = dict(prev)` で未知キーをそのまま引き継ぐ。したがって **3 フィールドの導入に helper のコード変更もテスト追加も要らない** (dispatcher が helper record を書いた後に別途適用する。更新規則側の相互参照は Step 5 (b) 更新規則 (7))
@@ -1338,6 +1348,7 @@ bash ../tools/journal_append.sh anomaly_observed source={面} worker=worker-{tas
 
 ### 設計メモ
 
+- **サイクル冒頭で `spawn_gate.py audit` を叩く理由**: 2026-08-18 に 2 件、承認 Enter・登録確認・指示送信のいずれも未実行のまま「完了」と報告され、窓口が `inspect_pane` するまで誰も気付けなかった。当該ワーカーは peer message を 1 度も出していないので、Step 5.2 では構造的に拾えない
 - **観測の原則を個別 patch ではなく判定より前に置いた理由 (Issue #869)**: 2026-08-08 の誤検知 3 種は発火した判定が別々 (pane 消失 / STALL / 完了確認) だったが、根は 1 つで「自分の観測手段が届いていない状態を、対象の異常と解釈した」だった。3 箇所を個別に直すと同じ誤りが**次に増える判定**で再発する。[観測の原則](#observation-principle) を監視ループの手前に置き、各判定がそこを参照する形にすると、新しい判定を足す人が「この観測面は何の証拠になるのか」を (P3) の表で先に決めることになる。表への行追加 (新しい観測面) と判定の追加は独立して行える
 - **精度向上と権限拡大を分けて書く理由 (Issue #869)**: 判定を厳しくする変更は「誤検知が減る」と同時に「異常ではないと切り分けられた」という判断を dispatcher に与えるため、放っておくと「異常ではないので自分で直してよい」へ滑りやすい。(P5) で**申告条件の変更は行動の変更を含まない**ことを否定形で固定してある。実際 2026-08-08 の pane 消失は人間が別タブで開いていた生きたセッションで、dispatcher が観測結果だけを報告して復旧に動かなかったことが事故を防いだ。精度が上がったからといってこの抑制を緩めてはならない
 - **なぜ `poll_events` を `timeout_ms=5000` で回すか**: 3 分のサイクル間隔の中で 5 秒分は long-poll する。5 秒経過で return して残りの時間は check_messages + list_panes + inspect_pane で補完。これにより pane 終了検知の平均遅延が cadence 非依存に 2.5 秒程度になる

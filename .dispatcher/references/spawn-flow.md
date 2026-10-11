@@ -15,6 +15,109 @@
 > `.state/org-state.md` を DB から自動再生成するので、本 reference では markdown 直接編集の
 > 手順を残さない (drift_check が検出する)。events は DB の `events` テーブルが SoT。
 
+## 目次
+
+- delegate-plan helper（いつ使うか / 出力の扱い / 使わないケース）
+- Step 3: ワーカー起動と指示送信
+  - 3-1. balanced split で target / direction を決める（3-1a〜3-1d）
+  - 3-2. ワーカーペインを起動する（3-2b 背景タブ）
+  - 3-3. ペインが起動したことを確認
+  - 3-3b. 起動プロンプトを画面判定で承認
+  - 3-4. `list_peers` で新ピア出現を待機（3-4b 背景タブ）
+  - 3-5. ワーカーに指示を送信（3-5a ultracode 武装）
+  - 3-6. 複数ワーカーの順次起動
+- Step 4: 状態記録（Worker Directory Registry）
+- Step 5: 派遣完了ゲート
+
+## delegate-plan helper（deterministic ops を code に移譲）
+
+`claude-org-runtime dispatcher delegate-plan` は、ワーカー起動の deterministic な部分（balanced split の target/direction 選出、worker pane name 検証、worker instruction file 生成、worker seed state file 生成）を Python 側で行う。ディスパッチャー Claude は action plan JSON を読んで MCP 呼び出しを行うだけにする。
+
+### いつ使うか
+
+DELEGATE メッセージを受信して Step 3 の「3-1 balanced split で target / direction を決める」以降に進む直前で呼ぶ:
+
+```bash
+# ディスパッチャーの cwd は .dispatcher/ なので相対パスはリポジトリルートから
+# 1 段上に解決する（journal_append.sh と同じ規約）。
+# --transport は ORG_TRANSPORT を解決して明示で渡す (runtime 0.1.31 / #104。
+# runtime は panes snapshot から transport を推定しない契約)。broker 面では
+# --max-concurrent-workers で worker capacity を gate する (既定 8 / unlimited opt-in)。
+claude-org-runtime dispatcher delegate-plan \
+  --task-json ../.state/dispatcher/inbox/{task_id}.json \
+  --panes-json {list_panes スナップショットの JSON} \
+  --transport "${ORG_TRANSPORT:-broker}" \
+  --max-concurrent-workers 8 \
+  --locale-json ../tools/ja_locale.json \
+  --template-repo .. \
+  --state-dir ../.state
+```
+
+- **`--transport`（必須・明示）**: dispatcher が `ORG_TRANSPORT` を解決した値（無設定はコード既定 `broker`）をそのまま渡す。runtime は `--panes-json` の snapshot から transport を推定しないため、明示しないと backend-aware な capacity 判定が正しく効かない（runtime 0.1.31 / #104、backend-aware worker capacity）。
+- **`--max-concurrent-workers N`（broker 面で load-bearing）**: broker 面では helper が rect geometry の `choose_split` を**バイパス**し、「アクティブ worker 数 < `N` なら固定 spawn target で spawn / 到達で `split_capacity_exceeded`」を返す。既定 8（`registry/org-config.md` の `max_concurrent_workers` が運用値の導線）、`unlimited` は opt-in。**renga 面で無視されるのは caller タブ内に配置する既定経路のときだけ**（renga は MIN_PANE まで分割し続ける rect ベース balanced split が律速するため）で、`--transport renga` の現行運用では省略しても挙動は変わらない。ただし **`--overflow-to-new-tab` を armed にし、かつ `--server-capability spawn_tab` を宣言すると renga 面でも fleet ceiling が live になる**（runtime 0.1.39 以降。明示 `--tab` が無く、実際に新規タブへ overflow する場合）: rect 上限が消える代わりに `max_concurrent_workers` が唯一の上限になり、`--peers-json` が**必須**になる（欠落は `input_invalid` / exit 1。overflow で置いたワーカーは自分のタブに居て `--panes-json` に二度と現れないため、census 無しでは上限が 0 のままタブを無制限に増やす）。**`spawn_tab` 未宣言だと overflow はそもそも発火せず**（fail closed で caller タブ配置に降格し従来の rect escalate に戻る）、`--peers-json` 欠落も拒否されない。**現行 ja はこれらのフラグを渡していない**（dispatcher の実呼び出し経路に配線されていない。説明文中の言及を除き、実行される呼び出しは存在しない）ので今日は到達しない。詳細は本ファイル 3-1b の輸送層注記。
+
+task JSON の最低フィールド:
+```json
+{
+  "task_id": "login-fix",
+  "worker_dir": "<workers_dir>/login-fix",
+  "permission_mode": "auto",
+  "task_description": "...",
+  "instruction": "..."
+}
+```
+
+`model` は省略可。省略時は helper が `"opus"` をデフォルトとして `spawn` に載せる。既定を外すのは DELEGATE 本文に `モデル: sonnet` 行があるときだけで、その扱いは本ファイル 3-2 に従う。
+
+panes JSON は `mcp__renga-peers__list_panes` の `structuredContent.panes` をそのまま渡す。
+
+### 出力の扱い
+
+helper は以下のいずれかを返す (exit code でも区別可):
+- **exit 0 / `status: "ready_to_spawn"`**: `spawn` フィールドを `mcp__renga-peers__spawn_claude_pane` へそのまま渡す。`after_spawn[]` を順に実行 (poll_events → approve_spawn_prompts → list_peers 待ち → send_message)。`send_message` は `message_file` の内容を読んで本文にする
+  - **`approve_spawn_prompts` は 1 打鍵ではなくループ**。step の `instructions` にそのまま従う: `inspect` の呼び出しを渡されたとおり実行 → helper と同じ runner に `decide_argv`（`spawn-prompt-step`）を付けて `{"screen", "previous_screen", "elapsed_ms"}` を stdin で渡す → **exit 0 の `send_keys` なら返された keys だけを送る**（`enter` を足さない。送った後は `previous_screen` = null）/ `wait` なら `previous_screen` = 今回の inspect 結果にして `poll_interval_ms` 後に再 inspect / `done` なら次の step へ。**exit 10（escalate）・exit 2（入力不正）・その他の非 0・inspect / send_keys のエラー（`[key_unsupported]` 等）は、step の `escalate` メッセージを窓口へ送ってこの派遣を中止する**（Enter は送らない）。**盲目 Enter は禁止**: folder-trust の初期カーソルは「No, exit」で、Enter 一発はワーカーを終了させる（2026-09-25 事故、runtime 0.1.43 / suisya-systems/claude-org-runtime#185）。手動経路の手順は本ファイル 3-3b
+  - **plan に `plan_version` が無い、または 2 未満のとき（runtime 0.1.42 以前の helper）**: `after_spawn[]` には `approve_spawn_prompts` が無く `send_keys(enter)` が入っている。**その `send_keys(enter)` は実行せず**、同じ位置で spawn-flow 3-3b の画面判定ループを手で回す（判定 CLI が無い環境なら承認せずに窓口へ escalate する）。旧 helper の Enter 一発を再生すると同じ事故になる
+  - **`list_peers` 待ちの直前に [`.claude/skills/org-delegate/references/capability-first-drive-operational-gate.md`](../../.claude/skills/org-delegate/references/capability-first-drive-operational-gate.md) を Read し、`monitoring-read-only` の分岐を適用する** (同 reference §6 の表 #7)。**この `list_peers` は helper が機械生成した plan 要素なので、helper 経路に乗ると本ファイル 3-4 を読まずに列挙が走る**。3-4 側だけにゲートを書いても本経路は素通りするため、ゲートの適用はここで行う。縮退時の readiness 判定 (`worker-{task_id}` の name 一致でゲートを開けない / `send_message` 自体を probe にして再送する) は 3-4 の同注記と同一手順なので、そちらを一次参照する
+    - **承認済み路 (capability 形かつ `first_drive` が `recorded`) では、共有 reference §1-2 の三値判定を `worker-{task_id}` に適用し、「在」のときだけ登録ゲートを開けて `send_message` へ進む。あわせてその「在」レコードの数値 `id` を控える**（「不在」「unknown」ではゲートを開けず、helper の `list_peers` 待ちをそのまま続ける。判定手順と評価順の正本は §1-2)。控えた id は**この枝で 2 つの用途に使う**:
+      - **helper が `after_spawn[]` に生成した `send_message` の宛先を、実行前に控えた数値 `id` へ差し替える** (`to_id=<控えた数値 id>`。生成された name 宛のまま実行しない。宛先規則の正本は §1-2-c)。**本文 (`message_file` の内容) は差し替えない。旧版 fallback (現行配備の全 backend) と未承認縮退では helper の生成した name 宛のままで、今日の挙動は変わらない**
+      - **控えの書き込みは下記「MCP 呼び出し後」の状態記録で行う** — 本経路も 3-4 経路も同じ post-spawn 状態記録 (本ファイル Step 4) を必ず通るので、producer の配線は**両経路が合流するその 1 箇所**にある。書いてよい id の限定 (pane id / 旧版 fallback の name 一致 poll / send-as-probe の推測値は書かない) と spawn 放棄時の始末も同 Step 4 が正本
+  - **ultracode 許可タスクの追加ステップ (Issue #554)**: `after_spawn[]` の `send_message` は **reference 配信**として扱い、その後 worker brief (既定 `CLAUDE.md` / 自己編集は `CLAUDE.local.md`) の「実装ガイダンス」に ultracode 許可があるか判定し、**ある場合は本ファイル 3-5a の send_keys 武装 kickoff (standalone `ultracode` トークンの user turn) を追加実行**する。これを落とすと brief に許可があっても worker は未武装のまま着手する (send_message / check_messages 経由の本文では武装しない)。`instruction` 直指定 (AUTO テンプレ非使用) 経路では worker への待機文が body に入らないため、**send_message を省いて send_keys のみを着手トリガにする**か待機文を prepend する (経路差・詳細は spawn-flow 3-5a 手順1)。
+- **exit 2 / `status: "split_capacity_exceeded"`**: `escalate.to_id` / `escalate.message` を**そのまま** `send_message` に渡す（**verbatim 転送**。ja 側で言い換え・要約・翻訳をせず、前置き・後置きも足さない。日本語の見出しを添えたい場合は**別の `send_message` として先に送る**。詳細規律は本ファイル 3-1c）。文面は英語で届き、runtime 0.1.39 以降は**内容の異なる 5 種類**がある — renga 面 4 種（rect 候補ゼロ / タブ上限 `tab_limit_reached` / overflow 時の fleet ceiling 到達 / overflow しても新規タブが `MIN_PANE` 未満で助けにならない）と broker 面 1 種（`max_concurrent_workers` 到達）。ja 側に literal を持つと 1 種の旧形しか表現できないので持たない。該当ワーカー 1 件だけ派遣中止、監視ループは継続
+  - **窓口報告には plan の診断フィールドを添える。ただし「載っているものだけ」を添える**（どのフィールドも `None` になりうるので、存在を仮定してアクセスしない）:
+    - **`plan.layout`**（実測ペイン領域 / 左パネルが食う桁数と回収案内 / 新規タブ見積もり / tabs_seen）— renga 面の `split_capacity_exceeded` 全分岐で載る診断オブジェクト。broker 面では載らない（`layout` は renga 専用）
+    - **`plan.population`**（監査可能な worker census）— `--peers-json` を渡したときだけ載る
+    - **`plan.capacity`** — broker 面では常に載り、キーは `transport` / `max_concurrent_workers` / `active_workers` / `free_worker_slots` の 4 つ。renga 面では **overflow の fleet ceiling 分岐に到達したときだけ**載り、そこでは上記に加えて `reserved_workers` / `reserved_worker_names`（未 bind の予約台帳）が付く — **この 2 キーは renga overflow 専用で broker 面には存在しない**。また **タブ上限 (`tab_limit_reached`) の escalate は `capacity` を組み立てる前に return するので載らない**（このとき `layout` と `population` だけが手元にある）
+- **exit 1 / `status: "input_invalid"`**: `errors[]` を窓口に報告して人間判断を仰ぐ (cwd 不存在、task_id 重複、pane name 衝突など)
+
+helper が実ファイル書き出しを行うもの (ready_to_spawn 時):
+- `.state/workers/worker-{task_id}.md` (Status: planned)
+- `.state/dispatcher/outbox/{task_id}-instruction.md` (send_message の本文)
+
+ディスパッチャーは MCP 呼び出し後に events テーブル（`.state/state.db`）へ `worker_spawned` を追記する（`.state/workers/worker-{task_id}.md` の Status `active` 遷移は Step 5 の `spawn_gate.py verify` が成功時に書く。本ファイル Step 4 項番 1）。**その直後に本ファイル Step 5 の派遣完了ゲート（`python3 ../tools/spawn_gate.py verify ...`）を通し、その stdout の `delegate_complete` をそのまま窓口へ送る**（`DELEGATE_COMPLETE` を自分の文で書かない。ゲートが exit 10 なら報告せず 3-3b / 3-4 へ戻る）。**この 1 行は helper 経路にも等しく効く** — helper の `after_spawn[]` に乗ると spawn-flow 3-4 / Step 5 の散文を読まずに列挙が走るので、ゲートの適用はここで宣言する。**`list_peers` 待ちで「在」を確定して控えた数値 `id` がある場合は、同じ post-spawn 状態記録の中で `../.state/dispatcher/worker-idle-state.json` へ `same_tab_peer_id` / `same_tab_observed_at` を merge する**（helper 経路・spawn-flow 3-4 経路のどちらから来てもここに合流する。書いてよい id の限定と spawn 放棄時の始末を含む手順は本ファイル Step 4 の該当項が正本）。journal 追記は **必ず helper 経由** で行うこと（Bash で生 JSON を `>>` で append しない）:
+
+```bash
+# ディスパッチャーの cwd は .dispatcher/ なので相対パスに注意。
+# helper は自身の位置から repo root を解決し、<repo_root>/.state/state.db の
+# events テーブルへ書く（cwd-relative ではない。jsonl 側は M4 / Issue #267 で
+# 廃止済みで、tools/journal_append.py の docstring が DB を唯一の書き先と定める）。
+bash ../tools/journal_append.sh worker_spawned worker=worker-{task_id} dir={dir} task={task_id}
+
+# 続けて派遣完了ゲート。--peer-* は 3-4 の list_peers で実際に観測した値を渡す
+# （--peer-cwd は窓口が T1 で書いた delegate_sent イベントの dir と照合される）。
+# exit 0 のときだけ stdout の delegate_complete をそのまま窓口へ送る。
+python3 ../tools/spawn_gate.py verify \
+  --task {task_id} --pane-id {pane_id} \
+  --peer-id {list_peers の数値 id} --peer-name {同 name} --peer-cwd {同 cwd} \
+  --approval sent --instruction send_message
+```
+
+helper（`tools/journal_append.sh` / `tools/journal_append.py`）は `tools.state_db.writer.StateWriter` 経由で `.state/state.db` の events テーブルへ書く。event 名と payload key の規約は [`docs/journal-events.md`](../../docs/journal-events.md) を参照。
+
+### 使わないケース
+
+- `choose_split` / balanced split を自分で再実装しようとする必要は **ない**。helper が計算済み。prose の Step 3-1b を再度たどるのは重複になる
+- task JSON が用意できない (窓口が structured な DELEGATE を送っていない) 場合は、helper を介さず従来のプロセスでフォールバックして構わない。helper はあくまで「構造化依頼が来たときのショートカット」
+
 ## Step 3: ワーカー起動と指示送信
 
 ### 3-1. balanced split で target / direction を決める
@@ -57,7 +160,7 @@ dispatcher が helper を経由しない degraded mode に入った場合、判�
    - **文面は英語で届くが、英語のまま転送する**。escalate 文面を日本語化する経路は runtime に無い（`LocaleConfig` のフィールドは `constraints_default` / `report_target_default` / `claude_md_filename_default` / `instruction_template` の 4 つだけで、ja が渡す `tools/ja_locale.json` も同じ 4 キー。escalate 文面は locale の対象外）
    - **日本語の文脈を添えたい場合は、見出しを「別の `send_message`」として先に送る**。`escalate.message` を載せる `send_message` の本文には**前置きも後置きも足さない**（例: 1 通目に `SPLIT_CAPACITY_EXCEEDED: runtime の原文をそのまま転送します`、2 通目に `escalate.message` を単独で）。runtime は **1 文目が結果の prefix であり続けること**を保って診断を append しているので、同じ本文に 1 行足すだけでもこの prefix 性が壊れる。ペイロードに触らない限り日本語の補足は自由
    - この verbatim 規律は本ステップ（rect 候補ゼロ）だけでなく、**helper が `status="split_capacity_exceeded"` で返す全分岐に適用する**。0.1.39 以降 escalate 文面は 5 種類あり内容が異なる（renga 面 4 種: rect 候補ゼロ / タブ上限 `tab_limit_reached` / overflow 時の fleet ceiling 到達 / overflow しても新規タブが `MIN_PANE` 未満で助けにならない。broker 面 1 種: `max_concurrent_workers` 到達）。ja 側に literal を持つとこのうち 1 種の旧形しか表現できない
-2. 併せて **`plan.layout`（診断）を窓口報告に添える**（`.dispatcher/CLAUDE.md`「出力の扱い」参照）。renga 面の `split_capacity_exceeded` では `layout` が実測診断オブジェクトになる
+2. 併せて **`plan.layout`（診断）を窓口報告に添える**（本ファイル「delegate-plan helper」の「出力の扱い」参照）。renga 面の `split_capacity_exceeded` では `layout` が実測診断オブジェクトになる
 3. 3-2 以降（`spawn_pane` / 起動確認 / `list_peers` 待ち / instruction 送信）は **skip** する。該当ワーカー 1 件だけ派遣を中止し、ディスパッチャー本体の監視ループは **継続**させる。`exit` / `return` などでディスパッチャーを落とさないこと
 
 #### 3-1d. 背景タブ配置 — dogfood 指定タスクに限った例外経路
@@ -218,7 +321,7 @@ while now < deadline:
 
 `spawn_claude_pane` は内部で `--dangerously-load-development-channels server:renga-peers` を付与するため、起動時に「Load development channel?」確認プロンプトが出る。未 trust のディレクトリ（新しい worktree 等）ではその前に Claude Code の **folder-trust プロンプト**も出る。**どちらも盲目 Enter で承認してはならない**: folder-trust の初期カーソルは「No, exit」で、Enter 一発はワーカーを終了させる（2026-09-25 に実際に起きた。Claude Code の更新で既定が Yes から変わったのに、Enter 一発の手順だけが残っていた）。承認は runtime の判定（`claude-org-runtime dispatcher spawn-prompt-step`、runtime 0.1.43+ / suisya-systems/claude-org-runtime#185）に任せ、ディスパッチャーは返された 1 手だけを打つ。
 
-**helper 経路では `after_spawn[]` の `approve_spawn_prompts` step がこのループそのもの**なので、step の `instructions` に従えばよい（[`.dispatcher/CLAUDE.md`](../CLAUDE.md)「出力の扱い」）。helper を使わない経路（新規タブ経路・背景タブ経路・`plan_version` が 2 未満の旧 helper）では同じループを手で回す:
+**helper 経路では `after_spawn[]` の `approve_spawn_prompts` step がこのループそのもの**なので、step の `instructions` に従えばよい（本ファイル「delegate-plan helper」の「出力の扱い」）。helper を使わない経路（新規タブ経路・背景タブ経路・`plan_version` が 2 未満の旧 helper）では同じループを手で回す:
 
 1. 開始時刻を ms で控える（`date +%s%3N`）。`previous_screen` = null
 2. `mcp__renga-peers__inspect_pane(target="worker-{task_id}", format="grid")`（`lines` は付けない。背の高いペインでは下端 N 行の外にダイアログが残る）
@@ -330,7 +433,7 @@ worker brief に **ultracode 使用許可**があるタスクでは、kickoff �
 
 ## Step 4: 状態記録
 
-> **delegate-plan helper との分担**: `.dispatcher/CLAUDE.md` の delegate-plan helper が `.state/workers/worker-{task_id}.md` を `Status: planned` で生成し、`worker-instruction.md` も書き出す（ready_to_spawn 時）。本 Step 4 はその後 dispatcher が **MCP 呼び出し成功後に行う** active 遷移 + DB 登録 + events 追記をまとめる。worker file テンプレートを再生成するのではなく、helper 出力に Progress Log を追記して Status を `active` に flip する。
+> **delegate-plan helper との分担**: 本ファイル「delegate-plan helper」の helper が `.state/workers/worker-{task_id}.md` を `Status: planned` で生成し、`worker-instruction.md` も書き出す（ready_to_spawn 時）。本 Step 4 はその後 dispatcher が **MCP 呼び出し成功後に行う** active 遷移 + DB 登録 + events 追記をまとめる。worker file テンプレートを再生成するのではなく、helper 出力に Progress Log を追記して Status を `active` に flip する。
 
 各ワーカーについて:
 
