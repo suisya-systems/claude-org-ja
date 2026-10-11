@@ -95,7 +95,7 @@ npm pack "$PKG_DIR" --pack-destination /tmp/workers/demo-task/.worker-scratch
 ### Codex セルフレビュー
 commit 後、作業ディレクトリで**前景実行**する。この Bash 呼び出しの `allowed_domains` には Codex の接続先（`chatgpt.com` 等）を入れる（無いとエラーを出さずに数百秒止まる）:
 ```bash
-bash /home/user/work/claude-org/tools/codex_review_gate.sh origin/main
+bash "/home/user/work/claude-org/tools/codex_review_gate.sh" origin/main
 ```
 判定は最終行で行う: `CODEX_GATE: passed` のときだけ指摘を読み「codex clean」と報告してよい。`not-established`（diff 未読の「空の合格」を含む）は出力が合格に読めても clean と報告せず、「Codex ゲート未成立（HEAD=`<sha>`）」と最終行の数値を添えて窓口の判断を仰ぐ。`unavailable`（codex 未導入）は skip して完了報告に進む。
 
