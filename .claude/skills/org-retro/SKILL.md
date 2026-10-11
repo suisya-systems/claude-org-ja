@@ -161,7 +161,4 @@ Issue #755）への追記もスキル側で実施される（公開 `knowledge/s
 
 人間に簡潔に報告する:
 - 知見を記録した場合: 「委譲プロセスについて{topic}の学びを記録しました」
-- `skill_recommend` / `candidate_queue` / `curated_only` のいずれの場合も: 報告不要（黙って次に進む）。
-  `skill_recommend` はキュー追記のみで完結し、人間への問い合わせは
-  [`knowledge/skill-candidates.md`](../../../knowledge/skill-candidates.md) 冒頭の運用ルールに従い
-  pending ≥5 のバッチ問い合わせまたは `/skill-audit` 発火時に窓口が行う
+- `skill_recommend` / `candidate_queue` / `curated_only` のいずれの場合も: 報告不要（黙って次に進む）

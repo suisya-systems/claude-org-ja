@@ -3,9 +3,8 @@ name: skill-audit
 owner: curator
 description: >
   skill の棚卸し（廃止候補 / 重複統合 / owner 明記チェック）。
-  状態ベースで発火する: 候補キュー knowledge/skill-candidates.md の pending が 5 件以上、
-  または .claude/skills/ 配下の work-skill 数（org-* を除く）が 20 以上になった場合のみ実行。
-  時間ベースの /loop では起動しない（変化の無い日に raw ログを汚す副作用を避けるため）。
+  skill 候補キュー（knowledge/skill-candidates.md と .local.md の合計）の pending が 5 件以上、
+  または work-skill 数（org-* を除く）が 20 以上のときだけ実行する。「棚卸しして」でも起動。
 effort: medium
 allowed-tools:
   - Read
@@ -56,9 +55,7 @@ work_skill_count=$(find .claude/skills -maxdepth 2 -name SKILL.md \
 - `cand_count >= 5` **または** `work_skill_count >= 20` なら続行
 - どちらも満たさなければ終了（このとき報告は不要）
 
-数値の根拠: N=5 / M=20 をデフォルトとする。実運用で重くなれば PR で調整。
-`org-*` を除外する理由: ノイズ源は `org-delegate` の work-skill 検索であり、
-`org-*` の増減は検索ノイズに直接影響しない。
+閾値と `org-*` 除外の理由は [`references/rationale.md`](references/rationale.md) §1。
 
 > **カウント定義の同期（重要）**: 上記 2 つのカウント定義（pending は
 > `^- \*\*status\*\*: pending` の行一致 **かつコードフェンス外**（行頭 `` ``` `` /
@@ -77,13 +74,9 @@ work_skill_count=$(find .claude/skills -maxdepth 2 -name SKILL.md \
 > の parity テストが drift を検出する — awk が読むファイル一覧が
 > `CANDIDATE_ENTRY_PATHS` と一致することも検査する）。
 
-> **`deferred` は数えない（Issue #753）**: 上の awk は `- **status**: pending` の行形式
-> **完全一致**でカウントするため、`deferred`（人間が提示を受けて見送った候補）は自動的に
-> 除外される。見送り済み候補を `pending` のまま残すと worker クローズのたびに `cand_count >= 5`
-> を再発火させ curator を無駄起動するため、**バッチ問い合わせで人間が見送った候補は
-> `pending` → `deferred` に更新**する（更新自体は Set E §1.4 の owner 定義に従いワーカー委譲経由）。
-> **`deferred` を `pending` に戻さない・再問い合わせしない**（本 Step 1 の閾値にも再登場させない）。
-> 人間が後日あらためて検討したいときのみ新しい日付で別エントリを起こす。
+`deferred`（人間が見送った候補）は awk の完全一致から外れるので数えない。見送られた候補を
+`pending` → `deferred` に更新する手順は [`org-retro`](../org-retro/SKILL.md) Step 4.2 の 4（ワーカー委譲経由）、
+status の定義は [`knowledge/skill-candidates.md`](../../../knowledge/skill-candidates.md)「status の遷移」。
 
 ## Step 2: 廃止候補の洗い出し
 
@@ -109,7 +102,7 @@ audit-checklist.md の 1.1 / 1.2 / 1.3 も同方針で詳細化済み。
 skill ペアを総当たりして以下を確認する:
 
 - description の主題語（動詞・目的語）が重複している
-- triggers（または description 中の発動条件）が重なる
+- description 中のトリガ語（発動条件）が重なる
 - 片方がもう一方の特殊化であり、パラメータ差し替えで兼用できる
 
 重複の疑いがあるペアは「統合候補」としてリストアップする。
@@ -123,8 +116,6 @@ skill ペアを総当たりして以下を確認する:
 - あっても空文字列のもの
 
 これらは「owner 未明記」としてリストアップ。
-本プロジェクトの既存 skill 全てが現時点で owner 未記載である点は想定内で、
-最初の監査実行では一括提案になる見込み。
 
 ## Step 5: 報告
 
@@ -153,15 +144,7 @@ skill ペアを総当たりして以下を確認する:
    ディスパッチャーが worker クローズ時に `tools/check_curate_threshold.py` を実行し、
    `reasons[]` に `skill_candidates_pending` / `work_skill_count` が立つと curator が
    一時起動され、org-curate Step 6 が本スキルを発火する
-2. 窓口が `skill-candidates.md` を見て手動で起動する
+2. 窓口が `knowledge/skill-candidates.local.md`（実エントリ）を見て手動で起動する
 3. 人間が「棚卸しして」と依頼
 
-`/loop` などの時間ベース起動はしない。
-
-## 自動変更を避ける理由
-
-- 廃止の誤判断は `org-delegate` 側で「使える skill が無い」状態を生む（委譲精度の低下）
-- 統合は description・triggers・手順の擦り合わせを要し、機械的にはできない
-- owner 追記は人間確認が最も軽い運用（ここだけ自動化しても効果小）
-
-したがって本スキルは**提案までに留め**、変更は人間承認を経て窓口が手動で行う。
+`/loop` などの時間ベース起動はしない。提案までに留め自動変更しない理由とあわせて [`references/rationale.md`](references/rationale.md) §2。
