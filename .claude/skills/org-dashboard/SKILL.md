@@ -9,7 +9,7 @@ allowed-tools:
   - Bash(cat .state/dashboard.pid)
   - Bash(kill -0 *)
   - Bash(python3 dashboard/server.py *)
-  - Bash(curl -sf -o /dev/null http://localhost:*)
+  - Bash(curl -sf http://localhost:*)
   - Bash(open http://localhost:*)
   - Bash(xdg-open http://localhost:*)
   - Bash(explorer.exe http://localhost:*)
@@ -37,10 +37,10 @@ python3 dashboard/server.py &
 
 ## Step 2: ポートを確かめる
 
-サーバーは 8099 → 8100 → 8101 の順で空いているポートを使う（`dashboard/server.py` の `PORTS`）。応答したポートを URL にする:
+サーバーは 8099 → 8100 → 8101 の順で空いているポートを使う（`dashboard/server.py` の `PORTS`）。別のサービスが 8099 を使っていることがあるので、ページのタイトルでダッシュボードと確かめたポートを URL にする:
 
 ```bash
-for p in 8099 8100 8101; do curl -sf -o /dev/null http://localhost:$p/ && echo $p && break; done
+for p in 8099 8100 8101; do curl -sf http://localhost:$p/ | grep -q 'claude-org — Ops Center' && echo $p && break; done
 ```
 
 どのポートも応答しなければ、起動失敗として人間に報告する。画面は開くのにデータが出ないときは `/api/state` の失敗（state.db の破損等）を疑う。

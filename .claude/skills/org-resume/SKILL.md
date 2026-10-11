@@ -15,6 +15,8 @@ allowed-tools:
   - Bash(bash tools/journal_append.sh:*)
   - Bash(python3 tools/journal_append.py:*)
   - Bash(python3 -m tools.state_db.importer:*)
+  - mcp__renga-peers__list_panes
+  - mcp__org-broker__list_panes
 ---
 
 # org-resume: 組織の再開
@@ -67,14 +69,19 @@ DB の active_runs を SoT として照合し、markdown は表示用補助と�
    - `git log --oneline -5` — 最後のコミットは run の `commit_short` / 状態ファイルと一致するか
    - ブランチは run の `branch` / 状態ファイルの記述と一致するか
 4. `knowledge/raw/` に未整理のファイルがあるか確認
-5. **保留された振り返り（`retro_deferred`）を拾う**。ディスパッチャーは窓口に届かず振り返りを終えられなかったワーカーについて `retro_deferred` を記録し、ペインを閉じずに残す（[`.dispatcher/references/pane-close.md`](../../../.dispatcher/references/pane-close.md)「secretary unreachable 時の fallback」）。前回の `resume` 以降に記録されたものを取り出す:
+5. **保留された振り返り（`retro_deferred`）を拾う**。ディスパッチャーは窓口に届かず振り返りを終えられなかったワーカーについて `retro_deferred` を記録し、ペインを閉じずに残す（[`.dispatcher/references/pane-close.md`](../../../.dispatcher/references/pane-close.md)「secretary unreachable 時の fallback」）。記録を、前回の `resume` より後かどうかの印付きで取り出す:
    ```bash
    python3 -c "from tools.state_db import connect; \
      conn = connect('.state/state.db'); \
      last = conn.execute(\"SELECT COALESCE(MAX(id), 0) FROM events WHERE kind = 'resume'\").fetchone()[0]; \
-     [print(tuple(r)) for r in conn.execute(\"SELECT occurred_at, json_extract(payload_json, '$.worker'), json_extract(payload_json, '$.reason') FROM events WHERE kind = 'retro_deferred' AND id > ? ORDER BY id\", (last,))]"
+     [print(tuple(r)) for r in conn.execute(\"SELECT occurred_at, json_extract(payload_json, '$.worker'), json_extract(payload_json, '$.reason'), id > ? AS since_last_resume FROM events WHERE kind = 'retro_deferred' ORDER BY id\", (last,))]"
    ```
-   該当があれば一覧を人間に示す。再試行は Phase 4-5 で行う。
+   ワーカーごとに、ペイン一覧（`list_panes`）と突き合わせて分ける:
+   - ペインが残っている → 振り返りは未完了（終われば閉じられている）。記録の時期を問わず再試行の対象
+   - ペインが無く、`since_last_resume` が 1 → 前回の再開以降に材料を失った。人間に報告する
+   - ペインが無く、`since_last_resume` が 0 → 前回までに処理済みとして扱う
+
+   対象があれば一覧を人間に示す。再試行は Phase 4-5 で行う。
 6. 差異があれば人間に報告する（例: 「DB ではOAuth run が in_use ですが、ディレクトリが存在しません」）
 
 ## Phase 3: 再開計画の提案
