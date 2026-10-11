@@ -1,6 +1,19 @@
 # pr-watch-pane — 規律の由来（経緯・実測ログ）
 
-[`.claude/skills/pr-watch-pane/SKILL.md`](../SKILL.md) 本文から移設した「なぜこの規律があるか」の記録。規律そのもの（MUST / 禁止 / 条件）は本文に残してあり、ここにあるのはその由来（どの事故で・いつ・どの Issue で決まったか）だけ。**手順を実行するために読む必要はない**。
+[`.claude/skills/pr-watch-pane/SKILL.md`](../SKILL.md) 本文から移設した「なぜこの規律があるか」の記録。規律そのもの（MUST / 禁止 / 条件）は本文に残してあり、ここにあるのはその由来（どの事故で・いつ・どの Issue で決まったか）と理由の説明だけ。**手順を実行するために読む必要はない**。
+
+目次:
+
+1. 自己 close が効かない環境のゾンビ残留
+2. なぜ固定アンカーをやめたか
+3. env 前置注入の由来
+4. `nocorrect true 2>/dev/null || true;` 前置の実証
+5. 全画面 inspect と副作用ベース生存確認の由来
+6. 裸 name close の carve-out が契約から導かれる経緯
+7. pre-capability renga の legacy 解決が作る誤 close hazard
+8. peer push が best-effort である理由
+9. 自己 close の 2 分類（backend 別）
+10. self-close で socket を固定しない理由
 
 ## 1. 自己 close が効かない環境のゾンビ残留（前提 節 / Issue #751 / Issue #911）
 
@@ -34,6 +47,24 @@ correctall による無言停止は 2026-08-06 の PR #824 監視で実発生・
 - **`2>/dev/null`**: bash で無音 + 後続 export 生存、zsh 対話で correctall 抑止に影響なしを実機確認済み。
 - **`|| true`**: errexit 有効 bash で後続実行の生存、zsh 対話で correctall 抑止に影響なしをともに実機確認済み。
 
+3 要素それぞれが省略できない理由（SKILL.md Step 3-1 から移設）:
+
+- **payload を持たない犠牲文として独立させる理由（非 zsh 互換）**: `nocorrect` は zsh 以外の
+  シェルにコマンドとして存在しない。`nocorrect export ...` と payload に直結すると、bash 等が
+  login shell の pane では `nocorrect: command not found` で **export 文ごと失敗**し、transport
+  env 注入（Step 3-1 の env 前置注入）が silent に失われる。単独文
+  `nocorrect true 2>/dev/null || true;` なら zsh では行全体の訂正抑止・bash 等では犠牲文
+  だけが無音で失敗し、`;` 以降の後続は全て実行される。非対話シェル実行（`zsh -c` 等）でも
+  no-op で副作用はない。
+- **`2>/dev/null` は省略不可（Step 4 の誤殺防止）**: 非 zsh シェルでは犠牲文が
+  `nocorrect: command not found` を stderr に出す。この行が画面に残ると Step 4 の
+  negative-signal 判定（`command not found` = 起動失敗）に誤マッチし、**正常起動した
+  watcher を健全なまま close する false positive** になるため、犠牲文の stderr は行内で
+  捨てる。
+- **`|| true` も省略不可（errexit 耐性）**: 非 zsh シェルの rc で `set -e`（errexit）が
+  有効だと、犠牲文の失敗（status 127）でシェルごと終了し **export / mkdir / watcher 本体が
+  一切走らないまま pane が死ぬ**。`|| true` で犠牲文を非致命化する。
+
 ## 5. 全画面 inspect と副作用ベース生存確認の由来（Step 4 / Issue #825）
 
 2026-08-06 の correctall 停止は、末尾 15-40 行だけの読み取りで「画面上部の確認プロンプト + 下部空白」を静かな正常起動と誤読して見逃された。
@@ -55,3 +86,69 @@ correctall による無言停止は 2026-08-06 の PR #824 監視で実発生・
 pre-capability の renga では `list_panes` が**フォーカス中**のタブに解決し、`pr-watch-<PR>` は 2 org 並走で構造的に衝突するので、照合を通っても**別 org の同名 watcher**を閉じうる。
 
 裸 name の場合はさらに悪く、renga の legacy 解決は active タブ（＝ユーザーが見ているタブ）を先に引き、miss したら他タブを index 順にフォールスルーして先勝ちする。したがって「live pane が無いので誤 close の余地が無い」という前提自体が `list_panes`（＝ユーザー可視タブ）からしか立てられず、別タブに同名の live pane が居れば前提は偽で、close はそのペインに当たる（`close_pane` は不可逆でエラーも出ない）。
+
+Step 5 (a) でも自タブ確立が要る理由（SKILL.md Step 5 から移設）:
+
+- **(a) は「live pane が列挙に出るから安全」ではない**: (b) が carve-out を要するのは
+  *列挙から数値 id を取り直せない*ためであって、(a) が数値 id を取れることは MUST の
+  **片方**（相対セレクタでないこと）を満たすにすぎない。もう片方の「その列挙が自タブの
+  ものか」は (a) でも別に確立しなければならず、未確立の列挙では `name` / `role` 照合の
+  **結果そのもの**を信用できない（renga の legacy 解決が作る誤 close hazard の機序は上記）。
+
+## 8. peer push が best-effort である理由（冒頭の注記）
+
+SKILL.md 冒頭の注記から移設した全文:
+
+> **peer push は best-effort**: `pr_watch.py` は CI 確定・マージ時に窓口へ `CI_COMPLETED` /
+> `PR_MERGED` の peer message を送ろうとするが、これは `tools/peer_notify.py` 経由の
+> best-effort（broker send CLI 不在 / 解決先 transport が未構成の pane では
+> no-op）。daemon が非既定 state dir（herdr dogfood 等）で動く環境では、pane env に
+> `ORG_BROKER_STATE_DIR` が無いと broker send が既定 `.state/broker` を掴んで push が欠落する
+> （欠落しても canonical の events DB 行には影響しない）。**待つべき正路は上記 events DB 行と
+> 可視ペイン**であり、push の到達を merge gate の
+> 前提にしない（org-pull-request の CI/merge gate は events DB を一次ソースにする）。
+
+## 9. 自己 close の 2 分類（前提 節）
+
+SKILL.md「前提」節から文言を変えずに移設した全文（Step 5 (a)/(b) の手順はこの分類を前提にする）:
+
+- **自己 close は tmux ペインの低遅延経路であり、watcher ペインの実体が tmux ペインかどうかで
+  効き方が変わる（herdr ゾンビ残留の根治, Issue #751 / renga 残留, Issue #911）**。broker は
+  backend として tmux / herdr / wezterm を取りうる（解決済み backend は `daemon.json` sidecar が
+  持つ。契約は
+  [`docs/contracts/backend-interface-contract.md`](../../../../docs/contracts/backend-interface-contract.md)
+  Surface 8）。**opt-in `renga` のペインは tmux ペインではない**ので、transport の綴りではなく
+  「ペインの実体」で次の 2 分類に読み替える:
+  - **自己 close が効く = broker の tmux backend**: Step 3 末尾の `tmux kill-pane -t "$TMUX_PANE"`
+    が実ペインを即座に消す ＝ **監視終端で watcher ペインが自動 close される低遅延経路**
+    （従来挙動。温存する）。
+  - **自己 close が効かない = broker の herdr / wezterm backend（Windows native broker の別 GUI
+    ウィンドウ・tmux 非経由を含む）、および opt-in `renga`**:
+    watcher ペインは tmux ペインではないため `tmux kill-pane` が **no-op**（`|| true` で握り潰され
+    silent）。self-close が効かず、**監視終了後もペインがゾンビとして残留する**（herdr / renga
+    それぞれの実測ログは §1）。この分類では自己 close に頼れないため、
+    **監視終端で窓口がイベント駆動で watcher ペインを close する経路が正路**になる
+    （[`.claude/skills/org-pull-request/SKILL.md`](../../org-pull-request/SKILL.md) の post-merge
+    cleanup / `PR_MERGE_WATCH_TIMEOUT` / CI 失敗確定の各終端で窓口が発火。掃除手順は SKILL.md Step 5 の
+    (a)/(b) split に従う ＝ live pane は list_panes 確認済みの数値 pane_id で close、stale binding
+    のみ broker 条件付き allowlist で name 指定）。`close_pane` は transport 抽象上 tmux / herdr /
+    renga いずれでも呼べ、broker の tmux backend で既に
+    self-close 済みなら `[pane_not_found]` が返る（自己クローズ済みで正常）。
+    - **renga では窓口 close も無条件には撃てない**: Step 5 (a) の自タブ確立は **(i) backend が
+      Group B を自身の single-tab モデル内で解決する（＝ `org-broker`）/ (ii) `caller_scope` を
+      確立できている**のいずれかを要し（契約 T-§4.2「Fail-safe consequence for Group B」/ T-§cap）、
+      renga では (i) が成立しないため **(ii) を確立できない限り close を撃たず、watcher ペインが
+      残る旨を報告して人手掃除に委ねる**（相対セレクタへはフォールバックしない）。
+
+SKILL.md Step 5-3 冒頭にあった同じ分類の再掲（renga では (a) の自タブ確立が `caller_scope` 依存で、確立できなければ close を撃たず残留を報告する ＝ 無言残留を可視な残留に変えるところまでが本経路の効果）も、上の分類と §1 に吸収した。
+
+## 10. self-close で socket を固定しない理由（Step 3-1）
+
+SKILL.md Step 3-1 から文言を変えずに移設:
+
+- **socket は `$TMUX` 継承をそのまま使う（`-L` で固定しない）**: `tmux` を `-L` 無しで
+  起動すると、ペインが属する tmux server の socket を `$TMUX` から自動解決する。broker では
+  それが `claude-org-broker` socket、非既定 socket 構成では別 socket になるが、いずれも
+  `$TMUX` が正しい server を指すので kill が当たる。ここで `-L claude-org-broker`
+  と固定すると非既定 socket 下で **別 server に当たって self-close が無言で失敗**
+  するため、socket は固定しない（renga では `$TMUX` 自体が無いので、そもそもこの経路に乗らない）。
