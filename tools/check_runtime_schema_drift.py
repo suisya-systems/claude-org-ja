@@ -186,10 +186,20 @@ _JA_ONLY_LAYER2_CREDENTIAL_DENIES = frozenset(
 # are rendered from ja's schema (``tools/gen_delegate_payload.py`` pins
 # ``--schema``), so the hook reaches workers without a runtime release.
 #
+# ``block-close-before-retro.sh`` denies the dispatcher's ``close_pane`` on
+# a worker pane until the retro completion-report gate has passed. It reads
+# ``retro_gate_acked`` (written by ja's ``tools/dispatcher_retro_gate.py``)
+# and the ja state layout, so it has no runtime counterpart. Dispatcher
+# settings are hand-maintained from permissions.md, not runtime-rendered.
+#
 # Add a new name here ONLY for a hook that is genuinely ja-only. A hook
 # that should also ship in the runtime template belongs in a paired
 # runtime release instead.
-_JA_ONLY_HOOK_SCRIPTS = frozenset({"check-loop-directive.sh", "block-codex-rescue.sh"})
+_JA_ONLY_HOOK_SCRIPTS = frozenset({
+    "check-loop-directive.sh",
+    "block-codex-rescue.sh",
+    "block-close-before-retro.sh",
+})
 
 
 def _is_ja_only_hook_command(hook: object) -> bool:
