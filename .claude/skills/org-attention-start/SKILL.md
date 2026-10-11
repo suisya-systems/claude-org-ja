@@ -235,6 +235,6 @@ attention watcher を起動しました（pane id={N}、dispatcher の右側）�
 停止するときは /org-attention-stop を実行してください。
 ```
 
-WSL の Windows 通知センター連携 (`wsl-notify-send.exe`) や OS 別の backend 挙動、トラブル
+WSL / Windows の通知センター連携 (`powershell.exe` の WinRT toast) や OS 別の backend 挙動、トラブル
 シューティングは [`docs/operations/attention-watch.md`](../../../docs/operations/attention-watch.md)
 を参照。

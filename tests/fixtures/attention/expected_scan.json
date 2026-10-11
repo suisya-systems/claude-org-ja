@@ -45,6 +45,18 @@
     "created_at": "2026-05-01T03:00:00Z"
   },
   {
+    "key": "event:7",
+    "kind": "ci_passed",
+    "severity": "urgent",
+    "title": "CI passed",
+    "body": "PR #43 finished with success.",
+    "source": "state.db.events",
+    "task_id": "T-ci-ok",
+    "pr": 43,
+    "status": "success",
+    "created_at": "2026-05-01T03:30:00Z"
+  },
+  {
     "key": "pending:T-pending-stale:pending_decision",
     "kind": "pending_decision",
     "severity": "urgent",

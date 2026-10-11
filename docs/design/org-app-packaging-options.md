@@ -170,7 +170,7 @@ pip インストール済み実体は `claude_org_runtime` 0.1.38。CLI は `dis
 
 #### 2.8.2 attention 通知
 
-attention watcher（`claude-org-runtime attention watch`）は `state.db` と `pending_decisions.json` を監視して `AttentionEvent` に正規化し、severity（urgent / normal）に分類、OS 別 backend（macOS `osascript` / Linux `notify-send` / WSL `wsl-notify-send.exe`、フォールバックは stdout + bell）で desktop notification + 音を出す。dedup / cooldown は `.state/attention_notified.json`、pending_decisions には 4 段 TTL ladder がある（[`docs/design/attention-notification.md`](./attention-notification.md):157-226, :543-591）。
+attention watcher（`claude-org-runtime attention watch`）は `state.db` と `pending_decisions.json` を監視して `AttentionEvent` に正規化し、severity（urgent / normal）に分類、OS 別 backend（macOS `osascript` / Linux `notify-send` / WSL / Windows `powershell.exe` の WinRT toast、フォールバックは stdout + bell）で desktop notification + 音を出す。dedup / cooldown は `.state/attention_notified.json`、pending_decisions には 4 段 TTL ladder がある（[`docs/design/attention-notification.md`](./attention-notification.md):157-226, :543-591）。
 
 **この層は既にターミナル非依存である**。`state.db` と JSON を読むだけの独立プロセスで、Claude Code TUI にも tmux にも依存しない。
 

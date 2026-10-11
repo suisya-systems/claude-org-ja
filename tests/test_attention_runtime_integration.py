@@ -78,6 +78,7 @@ _DISPATCH_ONLY_KEYS = frozenset({
 _EXPECTED_URGENT_KINDS = frozenset({
     "approval_blocked",
     "ci_failed",
+    "ci_passed",
     "pending_decision",
     "user_reply_not_forwarded",
     "duplicate_sidecar",
@@ -343,6 +344,15 @@ class AttentionRuntimeIntegrationTests(unittest.TestCase):
         self.assertEqual(ev["pr"], 42)
         self.assertEqual(ev["status"], "failed")
 
+    def test_ci_completed_success_is_ci_passed_urgent(self) -> None:
+        # runtime 0.1.49 surfaces passed runs as ci_passed (before, the
+        # classifier dropped them).
+        ev = self._find_event(self._run_scan(), key="event:7")
+        self.assertEqual(ev["kind"], "ci_passed")
+        self.assertEqual(ev["severity"], "urgent")
+        self.assertEqual(ev["pr"], 43)
+        self.assertEqual(ev["status"], "success")
+
     def test_pending_decision_is_urgent(self) -> None:
         ev = self._find_event(
             self._run_scan(),
@@ -403,8 +413,6 @@ class AttentionRuntimeIntegrationTests(unittest.TestCase):
         self.assertNotIn("event:1", keys)
         # notify_sent with unrecognized subkind (filtered by classifier)
         self.assertNotIn("event:3", keys)
-        # ci_completed status=success (filtered by classifier)
-        self.assertNotIn("event:7", keys)
         # broker journal row older than duplicate_sidecar_window_sec
         # (300s) — stale incidents must fall silent rather than re-alert
         self.assertNotIn(
