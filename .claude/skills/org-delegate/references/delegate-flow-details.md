@@ -1,6 +1,6 @@
 # org-delegate: detailed flow reference
 
-`gen_delegate_payload.py` (Issue #283) automates Steps 0.7 / 1 / 1.5 / 2 of the
+`gen_delegate_payload.py` automates Steps 0.7 / 1 / 1.5 / 2 of the
 `org-delegate` skill. The compressed steps in `SKILL.md` cover the day-to-day
 path; this document is the long-form explanation Secretary consults when the
 automation hits an edge case or when reviewing why the resolver chose a
@@ -9,9 +9,13 @@ particular Pattern / Role.
 The contract this entire flow conforms to lives in
 `docs/contracts/delegation-lifecycle-contract.md` (Set B). Per that contract,
 this skill's writes are limited to **T1 reservation only**: a `runs.status='queued'`
-row plus the `worker_dirs` registry entry, plus the brief and settings files
-on disk. **Active Work Items remains the dispatcher's T2 responsibility** and is
+row and the T1 `delegate_sent` event (committed in one transaction), plus the
+`worker_dirs` registry entry and the brief and settings files on disk. **Active Work Items remains the dispatcher's T2 responsibility** and is
 not touched here.
+
+Contents: 1. Pattern judgment (Step 0.7 + Step 1) / 1.5 Pre-dispatch verification
+checks / 2. Role detection / 3. DELEGATE body template / 4. When the standard
+path returns unexpected output
 
 ---
 
@@ -188,11 +192,6 @@ Secretary must not self-grant the exception. The standard path's own
 degraded mode (`--skip-settings` for runtime-CLI-less environments) is
 the supported way to keep going without leaving the skill.
 
-The pre-Issue-283 hand-typed procedure has been moved out of the active
-skill to `docs/legacy/hand-typed-delegate-path.md` as a museum copy. That
-document is for archaeological reference only; reaching it during normal
-operation is a protocol violation. Note that the legacy procedure itself
-depends on `claude-org-runtime settings generate`, so it is not a valid
-fallback for runtime-CLI-unavailable scenarios either. Failure modes
-historically introduced by the legacy reach (settings env mismatch,
-drift_check breakage, T1 reservation skipped) are listed there.
+The legacy hand-typed procedure (`docs/legacy/hand-typed-delegate-path.md`)
+is not a fallback, not even without the runtime CLI; see
+[`.claude/skills/org-delegate/references/rationale.md`](rationale.md) §13.

@@ -33,15 +33,11 @@ allowed-tools:
 > Progress Log / events / pending-decisions register の 3 層に同時記録する。
 > どれが欠落してもディスパッチャーの SECRETARY_RELAY_GAP_SUSPECTED 検出
 > ([`../../../.dispatcher/references/worker-monitoring.md` Step 5.1](../../../.dispatcher/references/worker-monitoring.md#step-5-1)) が誤発火 / 見逃しになる。
-
-> **ack template SoT**: 判断仰ぎ ack の最低 3 要素・例文・アンチパターンは
-> [`.claude/skills/org-delegate/references/ack-template.md`](../org-delegate/references/ack-template.md) を一次参照する。本 SKILL は重複コピーを置かず、リンクで委譲する。
-
 ## 正準フロー
 
 1. **最初に worker へ ack を返す**（状態保存・user 伝達より前に発行する）。文面は [`.claude/skills/org-delegate/references/ack-template.md`](../org-delegate/references/ack-template.md) §「判断仰ぎ ack」を一次参照する（本 SKILL は重複コピーを置かない）。
    - **Secretary は一次承認しない**。worker への返答も「受領しました、人間に確認します」のみ
-   - 「ユーザーは選択肢 X を選んだから自動的に含意される」「一気通貫の意図に含まれる」等の自己解釈で承認してはならない（CLAUDE.md `feedback_relay_user_decisions_to_workers` 参照）
+   - 「ユーザーは選択肢 X を選んだから自動的に含意される」「一気通貫の意図に含まれる」等の自己解釈で承認してはならない（この禁止の正本は本スキル。root `CLAUDE.md`「ワーカーからの判断仰ぎは人間にエスカレーションする」節は要約）
    - ack ≠ user 承認: ack は worker dead-lock 解除のための受領確認であり、push/PR 権限を生まない
 
 2. **状態を保存する**（3 層同時、欠落禁止）:
@@ -73,7 +69,7 @@ allowed-tools:
    ```bash
    bash tools/journal_append.sh notify_sent kind=awaiting_user task_id={task_id} gate=escalation_reply_forward note="<decision の短い要約>"
    ```
-   並走 runtime PR の classifier が `secretary_awaiting_user` (default severity `urgent`) として拾う。CLAUDE.md「secretary が user の判断を待っている状態を通知する」節を参照。本 emit は escalated entry の有無に依らず副作用を残さない（journal 1 行追記のみ、register / pending_decisions は触らない）
+   claude-org-runtime の attention classifier が `secretary_awaiting_user` (default severity `urgent`) として拾う。CLAUDE.md「secretary が user の判断を待っている状態を通知する」節を参照。本 emit は escalated entry の有無に依らず副作用を残さない（journal 1 行追記のみ、register / pending_decisions は触らない）
 
 5. **ワーカーに人間判断を転送する** (`to_id="worker-{task_id}"` で `send_message`)。伝達直後に register を `resolved` に更新:
    ```bash
@@ -82,9 +78,8 @@ allowed-tools:
 
 ## 重複保険ポリシー
 
-- Progress Log / journal events / pending-decisions register の 3 層は **重複保険として独立に維持**する
-- register への append / resolve のどちらかが欠落するとディスパッチャー側で SECRETARY_RELAY_GAP_SUSPECTED が誤発火（中継済みなのにアラート）または見逃し（中継忘れを検知できない）になる
-- ブロッカー報告も本スキルで扱う。「3. ブロック報告」と判断仰ぎが重複した場合は本フローを優先する
+- Progress Log / journal events / pending-decisions register の 3 層は **重複保険として独立に維持**する（欠落時の影響は冒頭の「状態保存の必要性」）
+- ブロッカー報告も本スキルで扱う（[`.claude/skills/org-delegate/SKILL.md`](../org-delegate/SKILL.md) Step 5 の「0. 判断仰ぎ・スコープ拡張・ブロッカー」は本スキルへのポインタ）
 
 ## 発動条件外（本スキルで扱わないもの）
 
