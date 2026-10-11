@@ -12,7 +12,7 @@
 | 対象 | 操作 | 備考 |
 |---|---|---|
 | ディスパッチャー | 窓口ペインを水平分割して下半分 | `{{FQ}}spawn_claude_pane(target="focused", direction="horizontal", role="dispatcher", name="dispatcher", cwd=".dispatcher", permission_mode="bypassPermissions", model="sonnet")` (org-start Block A-1) |
-| キュレーター（オンデマンド時のみ） | ディスパッチャーペインを垂直分割して右半分 | `{{FQ}}spawn_claude_pane(target="dispatcher", direction="vertical", role="curator", name="curator", cwd="../.curator", permission_mode="auto")` (pane-close.md Step 5-3。常駐廃止につき org-start からは spawn しない) |
+| キュレーター（オンデマンド時のみ） | ディスパッチャーペインを垂直分割して右半分 | `{{FQ}}spawn_claude_pane(target="dispatcher", direction="vertical", role="curator", name="curator", cwd="../.curator", permission_mode="auto", model="sonnet")` (pane-close.md Step 5-3。常駐廃止につき org-start からは spawn しない) |
 | 各ワーカー | **capacity は backend 依存** (runtime 0.1.31 / #104): broker は `max_concurrent_workers`（既定 8）以内で helper が返す**固定 spawn target**、renga は `list_panes` の rect から target/direction を動的に選ぶ **balanced split**。どちらも同一タブ内に積む | 詳細は下記「ワーカーの balanced split 戦略」セクション。target/direction は helper の action plan がどちらの面でも `spawn` に載せる。`{{FQ}}spawn_claude_pane(target={target}, direction={direction}, role="worker", name="worker-{task_id}", cwd="{workers_dir}/{task_id}", permission_mode="auto")` (org-delegate Step 3) |
 
 {{> pane-layout-spawn-rationale }}
@@ -25,39 +25,22 @@
 
 ### なぜ balanced split が必要か
 
-各 split は対象ペインを 50/50 に分ける。`MIN_PANE_WIDTH = 20` / `MIN_PANE_HEIGHT = 5` の下限を割り込むと `[split_refused]` で拒否される (調査: `<workers_dir>/renga-split-inv/findings.md`)。
-
-固定 target や序数 `k` ベースの lookup table では、dispatcher 幅の累積半減や、ワーカーが途中で閉じた後の再派遣で想定レイアウトと実レイアウトが乖離し、早期に `split_refused` を誘発していた。
+各 split は対象ペインを 50/50 に分ける。`MIN_PANE_WIDTH = 20` / `MIN_PANE_HEIGHT = 5` の下限を割り込むと `[split_refused]` で拒否される (調査: `<workers_dir>/renga-split-inv/findings.md`)。固定 target や序数 `k` ベースの lookup table をやめた経緯は [`docs/design/renga-pane-control-history.md`](../../../../docs/design/renga-pane-control-history.md) §6。
 
 現設計は `{{FQ}}list_panes` が返す各ペインの **rect 情報 (`x / y / width / height`, cell 単位)** を使い、**現状のレイアウトから動的に target と direction を選ぶ**。ワーカー退役順の揺れや途中クローズに強く、固定的な「N 並列上限」は持たず、ターミナルサイズと MIN_PANE 制約が許す限り分割し続け、限界に達したら自動 escalate する（この「固定上限を持たず MIN_PANE まで分割」は **renga 面の、caller タブ内に配置する既定経路の性質**。broker 面は上記の輸送層注記のとおり `max_concurrent_workers` の固定上限を持ち、renga 面でも `--overflow-to-new-tab` を armed にした場合は同じ固定上限が fleet ceiling として効く — 現行 ja はこのフラグを渡していない）。
 
 ### アルゴリズム
 
-balanced split の判定ロジック (target / direction 選択、MIN_PANE 制約、secretary 保険、role priority ソート、rect 隣接判定、`split_capacity_exceeded` 検出) は **`claude-org-runtime` の helper が SoT**。dispatcher は `{{FQ}}list_panes` のスナップショットと task JSON を入力にして以下のいずれかを呼び、返却された action plan (`spawn` / `after_spawn` / `escalate` / `state_writes` / `status`) に従って `spawn_claude_pane` / escalate を実行する:
+balanced split の判定ロジック (target / direction 選択、MIN_PANE 制約、secretary 保険、role priority ソート、rect 隣接判定、`split_capacity_exceeded` 検出) は **`claude-org-runtime` の helper が SoT**。dispatcher が helper を呼んで action plan に従う手順、ライブラリ API と定数の一次参照、候補が空のときの escalate は [`.dispatcher/references/spawn-flow.md`](../../../../.dispatcher/references/spawn-flow.md) 3-1b / 3-1c にある。CLI の形:
 
 - CLI (運用上の標準呼び出し): `claude-org-runtime dispatcher delegate-plan --task-json ... --panes-json ... --state-dir ... --transport {broker|renga} [--max-concurrent-workers N] [--template-repo ...] [--locale-json ...]`。dispatcher は `ORG_TRANSPORT` を解決して `--transport` を明示で渡す（runtime は panes snapshot から transport を推定しない契約、runtime 0.1.31 / #104）。broker 面では `--max-concurrent-workers N`（既定 8。`unlimited` は opt-in）で worker capacity を gate する（renga 面は rect ベース balanced split が律速するため `--max-concurrent-workers` は効かない — ただし `--overflow-to-new-tab` armed かつ `--server-capability spawn_tab` 宣言時のみ fleet ceiling として live になる。上記輸送層注記の例外を参照）。dispatcher 側の手順は `.dispatcher/CLAUDE.md` の delegate-plan helper 節を一次参照
-- ライブラリ: `claude_org_runtime.dispatcher.runner` モジュールの `build_plan(...)` (action plan 全体) と `choose_split(panes)` (target / direction だけ欲しい場合の low-level helper)
 
-定数値 (MIN_PANE_WIDTH / MIN_PANE_HEIGHT / SECRETARY_MIN_WIDTH / SECRETARY_MIN_HEIGHT / role priority マップ) と判定順序、rect 隣接の厳密な定義は **`claude_org_runtime.dispatcher.runner` モジュール本体** (`_ROLE_PRIORITY` / `MIN_PANE_*` / `SECRETARY_MIN_*` / `choose_split()` / `rect_adjacent()`) を一次参照とする。本ドキュメントから定数値の prose を削除したのは、runtime と doc の drift が `[split_refused]` 等の不可解な失敗を生む原因になるため (Issue #307 cleanup)。
-
-候補が空のときは helper が `status="split_capacity_exceeded"` と `escalate.send_message(to_id="secretary", ...)` を返す。dispatcher は `spawn_claude_pane` を発行せず、該当ワーカー 1 件だけ派遣を中止、本体監視ループは継続する (`SKILL.md` Step 3-1c 参照)。
-
-### Verification trace (Issue #307 シナリオ、参考)
-
-`secretary 280×43 / dispatcher 140×43 / curator 140×43` の直後レイアウト (ターミナル ≈ 280×86、org-start で secretary horizontal split → dispatcher vertical split 直後を想定) を入力にした場合の `choose_split` の挙動を手動 trace した参考表。**正準値は runtime SoT**。doc 上の値と runtime の挙動が食い違ったら runtime を信じる。
-
-| spawn | 選出 role | direction | 直感的な根拠 |
-|---|---|---|---|
-| 1st | secretary | vertical | secretary が分割可能サイズを満たすうちは role priority で最優先 |
-| 2nd | curator | vertical | secretary が SECRETARY_MIN_WIDTH ガードで脱落、次点 priority の curator が選ばれる |
-| 3rd | curator | horizontal | role priority が strict primary なので curator が MIN_PANE を割るまで curator 連続 |
-
-curator が MIN_PANE を割って脱落した後は priority 2 の worker 群に流れる。dispatcher を最後に置く設計意図 ({{> pane-layout-viewport-rationale }}) は runner.py の `_ROLE_PRIORITY` コメントを参照。
+dispatcher を最後に置く設計意図 ({{> pane-layout-viewport-rationale }}) は runner.py の `_ROLE_PRIORITY` コメントを参照。
 
 ### Edge cases / 運用時の注意
 
-- **ワーカーが途中で閉じた後の再派遣**: 旧 k-table 方式で問題になった「閉じた slot を詰めるとテーブル前提と乖離」は rect ベースでは発生しない。常に実レイアウトから target を選ぶため、実際のレイアウト tree と判断が一致する
-- **`spawn_claude_pane` エラー**: `[split_refused]` / `[pane_not_found]` が MCP 結果テキストで返る。`references/renga-error-codes.md` の手順でキュレーター → 窓口にエスカレーション (方針は旧設計と同じ)
+- **ワーカーが途中で閉じた後の再派遣**: 常に実レイアウトから target を選ぶため、実際のレイアウト tree と判断が一致する
+- **`spawn_claude_pane` エラー**: `[split_refused]` / `[pane_not_found]` が MCP 結果テキストで返る。`references/renga-error-codes.md` の手順で窓口にエスカレーションする
 - **レース**: `list_panes` 実行から `spawn_claude_pane` 実行までに他ワーカーが増減した場合、target 不整合は `[pane_not_found]` として顕在化する。既存のエラーハンドリング経路で吸収する
 - **target 選出の責務**: 計算はディスパッチャーが `list_panes` の rect ベースで行う。窓口は DELEGATE メッセージに task_id だけを渡せばよく、target は指定しない
 
