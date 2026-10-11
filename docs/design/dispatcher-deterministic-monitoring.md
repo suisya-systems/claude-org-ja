@@ -214,16 +214,16 @@
 
 ### 段階 2: 監視の移管
 
-- やること: `monitoring_owner=watcher` にし、ディスパッチャー Claude の `/loop 3m` を止める。watcher が窓口への通知と終端イベントの配送を始める。incident が開いたときだけ Dispatcher AI を呼ぶ。watcher は完了の受領を `runs.status` から、curate の終了を curator が書く終了イベントから読む。窓口の `WORKER_COMPLETION_NOTED` / `WORKER_REOPENED` と curator の `CURATE_*` の送信は段階 2 の間も残す（戻したときに LLM 側の手順がこれらを消費するため。worker-monitoring.md Step 2 / Step 5.3 (a)）。ディスパッチャー Claude は `monitoring_owner` が `llm` でない間、これらを受けても何もしない。
+- やること: `monitoring_owner=watcher` にし、ディスパッチャー Claude の `/loop 3m` を止める。watcher が窓口への通知と終端イベントの配送を始める。incident が開いたときだけ Dispatcher AI を呼ぶ。watcher は完了の受領を `runs.status` から、curate の終了を curator が書く終了イベントから読む。窓口の `WORKER_COMPLETION_NOTED` / `WORKER_REOPENED` と curator の `CURATE_*` の送信は段階 2 の間も残す（戻したときに LLM 側の手順がこれらを消費するため。worker-monitoring.md Step 2 / Step 5.3 (a)）。ディスパッチャー Claude は `monitoring_owner` が `llm` でない間も、これらを受けたら今の手順どおり `.state/dispatcher/worker-idle-state.json` の `completion_reported_at` と `curate-inflight.json` の `curate_result` を更新する（通知と close はしない）。段階 2 でも curator の spawn と inflight の記録はディスパッチャー Claude が続けるので、戻し先が読む状態はこれで最新に保たれる。
 - `/loop` が担っていた監視以外の役目の新しい持ち主:
-  - push が使えないときにディスパッチャー宛の DELEGATE / CLOSE_PANE を取りに行く役目 → watcher が dispatcher 宛キューの滞留を監視する。既存の `tools/secretary_queue_watcher.py --owner dispatcher` の判定を流用する（`--owner` 引数は同ツールの `--help` にある）。滞留したらディスパッチャーペインへ `check_messages` を促す 1 行を送る。
+  - push が使えないときにディスパッチャー宛の DELEGATE / CLOSE_PANE を取りに行く役目 → watcher が dispatcher 宛キューの滞留を監視する。既存の `tools/secretary_queue_watcher.py --owner dispatcher` の判定を流用する（`--owner` 引数は同ツールの `--help` にある）。ただし同ツールは起動後に積まれた行だけを滞留判定の対象にするので、watcher の起動時と再起動時に、既に積まれている未配送の dispatcher 宛の行も 1 回走査して判定に含める。滞留したらディスパッチャーペインへ `check_messages` を促す 1 行を送る。
   - curate 待ちの管理、終端イベントの配送、判断仰ぎの経過管理、対象ゼロでの停止 → すべて watcher（§2.1）。
 - 受け入れ条件:
   - incident が無い時間帯のディスパッチャー AI の周期ターンが 0（ディスパッチャーセッションの transcript で、受信メッセージにも incident にも紐付かないターンを数える）。
   - fault injection で、watcher・AI 呼び出し・窓口のいずれを途中で kill しても、通知の二重送信や未解決 incident の取りこぼしが起きない。
   - 既知の誤検知 fixture と段階 1 の実績で、検知遅延・見逃し・誤った終了判定が今より悪くない。
   - watcher を kill すると、heartbeat の鮮度切れが attention watcher 経由で人間に届く。
-- 戻し方: `monitoring_owner=llm` に戻して `/loop 3m` を再武装する。窓口と curator の送信は段階 2 の間も残してあるので、戻すのは `monitoring_owner` と `/loop` だけで済む。
+- 戻し方: `monitoring_owner=llm` に戻して `/loop 3m` を再武装する。完了受領と curate の状態は段階 2 の間もディスパッチャー Claude が旧ファイルに反映し続けているので、そのまま使える。画面ハッシュと idle streak は watcher が state.db に持っていて旧ファイルには無いので、戻した直後は 0 から観測し直す。これは今の手順書が状態ファイルを失ったときの挙動と同じである（worker-monitoring.md Step 5 (b)「再起動時の挙動」）。
 
 ### 段階 3: spawn / close の移管（範囲を広げた場合だけ）
 
