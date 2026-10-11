@@ -1,14 +1,10 @@
 ---
 name: org-conveyor
 description: >
-  窓口が人間から「承認スコープの輪郭」を受けて、その内側で triage → worker 派遣 →
-  iteration → verify → push → PR 作成 → CI 監視 を完了駆動で自走し、PR ごとに
-  merge gate で必ず停止するベルトコンベア。/work-discovery + /org-delegate + verify +
-  /org-pull-request + /org-escalation を呼ぶ薄い orchestrator。
-  発動条件: 人間が「この範囲は自走してよい」というスコープ承認を明示し、複数候補を
-  完了駆動で順次流したいとき（例「triage 上位の S 級バグ修正を空き pane 分まで自走、
-  merge は都度わたしが判断」）。起動主体は窓口に限定。スコープ外候補・判断境界・退出条件に
-  触れたら必ず halt する。merge 自動化はしない。
+  人間が承認したスコープの内側で triage → worker 派遣 → verify → push → PR 作成 → CI 監視
+  を完了駆動で自走し、PR ごとに merge gate で停止する窓口用のベルトコンベア。
+  「この範囲は自走してよい」「triage 上位の S 級バグを空き pane 分まで流して」等、
+  人間がスコープ承認を明示して複数候補を順に流したいときに窓口が起動する。
 effort: medium
 allowed-tools:
   - Read
@@ -28,10 +24,6 @@ allowed-tools:
   # union は非アクティブ transport のツールまで認可し per-transport auth モデルを迂回するため不可
   # （設計 SoT: notes/broker-skill-generator-design.md #9。union 却下）。送受信機構はサブスキルへ委譲し、
   # conveyor 自身が直接使うのは free-pane 会計（list_panes）とループ event のドレイン（check_messages）だけ。
-  # ただし `list_panes` の worker 数は caller タブにスコープされるので、renga 面で worker を背景タブへ
-  # 置く配置を配線した deployment では free-pane 会計の一次ソースを `plan.capacity.free_worker_slots` に
-  # 置き換える（下記「cross-tab の free-pane 会計」注記）。この置き換えで allowed-tools は増やさない
-  # ＝ `list_peers` は許可せず、dispatcher / runtime 側の容量会計を消費する形を既定とする。
   - mcp__org-broker__list_panes # free-pane 会計（バックプレッシャー）
   - mcp__org-broker__check_messages # broker pull フォールバック時の semantic event ドレイン
 ---
@@ -40,8 +32,8 @@ allowed-tools:
 
 窓口が人間から **承認スコープの輪郭** を受け取り、それを機械契約として articulate したうえで、
 その内側を `triage → /org-delegate → worker iteration → Codex round → verify（applicable なら必須）→
-push → gh pr create → pr-watch CI 監視 → CI green` まで **完了駆動で自走** し、**PR ごとに
-merge gate で必ず停止** する。人間は「レビュー待ち PR のキュー」を順次 merge するだけになる。
+push → gh pr create → pr-watch CI 監視 → CI green` まで **完了駆動で自走** し、PR ごとに
+merge gate で停止する。人間は「レビュー待ち PR のキュー」を順次 merge するだけになる。
 
 本スキルは **薄い orchestrator** であって、実作業の機構は既存スキルに委譲する。本スキルが固有に持つのは
 **(1) 承認スコープ契約の articulate と gate、(2) 完了駆動ループとバックプレッシャー、(3) 観測可能性、
@@ -53,32 +45,21 @@ merge gate で必ず停止** する。人間は「レビュー待ち PR のキ�
 - PR: [`/org-pull-request`](../org-pull-request/SKILL.md)（push / PR / CI 監視 / レビューループ / マージ後クローズ）
 - 判断仰ぎ: [`/org-escalation`](../org-escalation/SKILL.md)（worker escalation を人間へ）
 
-## 位置づけ（他ループ系との差分）
+他のループ系スキル（`/loop` / `/work-discovery` / `/org-delegate`）との違いは
+[`.claude/skills/org-conveyor/references/rationale.md`](references/rationale.md) にまとめてある。
 
-| skill | 駆動 | 停止条件 | 人間ゲート |
-|---|---|---|---|
-| `/loop` | 時間駆動 | なし（間隔ごとに再実行） | なし |
-| `/work-discovery` | イベント / 手動 | 候補提示で hard stop（propose-only） | 候補ごとに人間が番号選択 |
-| `/org-delegate` | 単発委譲 | escalation 境界で人間に戻る | 派遣ごと / escalation ごと |
-| **`/org-conveyor`** | **完了駆動ループ** | **PR ごとに merge gate で halt / 退出条件** | **起動時のスコープ承認（1 回）+ merge ごと** |
+## 不変条件
 
-`/org-conveyor` は `/work-discovery` の per-candidate 人間選択を、**起動時に 1 回だけ取る「承認スコープ契約」**
-へ畳み込んだものである。スコープ契約の内側では候補を再質問なしで自動投入し、**スコープ外の候補は scope 縁として
-投入せず halt** する。これが propose-only / hard-stop の `/work-discovery` との本質的な差分。
-
-## 不変条件（非交渉 / 破ってはならない）
-
-- **INV-1 merge 承認は人間 gate**: スコープ契約は dispatch〜CI 監視を事前承認できるが、**merge は決して事前承認できない**。
-  CI green に到達したら必ず停止し、PR を人間へ提示して merge を仰ぐ（`feedback-merge-approval` / `feedback-no-overgate-after-decision`
-  の「不可逆点でのみ再承認」）。bare「OK」を merge 承認と解釈しない。
-- **INV-2 scope 境界に触れたら必ず halt**: スコープ契約の述語に合致しない候補・判断・差分が現れたら、自走を止めて
-  [`/org-escalation`](../org-escalation/SKILL.md) 経由で人間に上げる（`feedback-no-stopgap` / 場当たり継続をしない）。
+- **INV-1 merge 承認は人間 gate**: スコープ契約は dispatch〜CI 監視を事前承認できるが、merge は事前承認の対象にしない。
+  CI green に到達したら停止し、PR を人間へ提示して merge を仰ぐ。bare「OK」を merge 承認と解釈しない。
+- **INV-2 scope 境界に触れたら halt**: スコープ契約の述語に合致しない候補・判断・差分が現れたら、自走を止めて
+  [`/org-escalation`](../org-escalation/SKILL.md) 経由で人間に上げる（場当たり継続をしない）。
 - **INV-3 worker からの judgment escalation は人間へ**: worker の「判断仰ぎ」「承認を仰ぎ」「スコープ拡張」「ブロッカー」は
   窓口が一次承認せず [`/org-escalation`](../org-escalation/SKILL.md) で人間へ。conveyor は escalation を自動判断しない。
 - **INV-4 propose-only の継承**: 候補生成は [`/work-discovery`](../work-discovery/SKILL.md)（決定的ツール）に委ね、conveyor は
   その出力をスコープ契約で gate するだけ。候補の中身を自前調査・実装しない。
 - **INV-5 起動主体は窓口のみ**: 委譲済み worker は本スキルを起動しない（「1 worker = 1 task = 1 scope」原則。[`CLAUDE.md`](../../../CLAUDE.md)「役割の境界」）。
-- **INV-6 merge 自動化・escalation 自動判断・`/loop` 置換をしない**（Non-goals 節）。
+- **INV-6 `/loop` の置換ではない**: 時間駆動ではなく完了駆動で、間隔ポーリングをしない。PR キューに上限は設けない（人間の merge が natural gate。Step 2-9）。
 
 ## 輸送層（transport）両系
 
@@ -94,16 +75,9 @@ push / PR）の輸送依存差・二フレーム関係・spawn 儀式・エラ�
 [`CLAUDE.md`](../../../CLAUDE.md)「輸送層（transport）両系」節とフル版注記 [`/org-escalation`](../org-escalation/SKILL.md) 冒頭の
 同名 note を一次参照する（本スキルは重複コピーを置かない）。
 
-**cross-tab の free-pane 会計（renga 面で背景タブ配置を配線した場合にのみ効く条件付き注記）**: renga の `list_panes` は
-**caller のタブにスコープされる**ため、worker を背景タブへ置く配置を配線した deployment では別タブの worker が pane
-スナップショットに現れず、`list_panes` だけの free-pane 会計は**空き容量を過大申告する**。この条件下では窓口 / conveyor の
-手計算（`max_concurrent_workers` − `list_panes` の worker 数）をやめ、runtime の `delegate-plan` が返す
-**`plan.capacity.free_worker_slots` を一次ソース**にする。runtime 側の会計は `count_worker_population`（panes と peers を
-**name で union** し `role == "worker"` に絞る。`peers` 未指定時は panes だけを数え `scope="caller_tab"` に落ちる）に
-**未 bind の予約数**（`count_unbound_reservations`。新規タブへ spawn した直後の worker は自分のタブに居て `list_panes` に
-現れず、まだ peer にも bind していない）を加えた数を上限へ突き合わせるので、`list_peers` で単純に数え直すだけでは bind 待ち
-worker を数え落とす。同じ会計モデルの記述は [`.claude/skills/work-discovery/SKILL.md`](../work-discovery/SKILL.md) の
-`--free-panes` 節にあり、本注記はそれに合わせてある（`--free-panes` へ渡す数もこの `free_worker_slots` をそのまま使う）。
+**cross-tab の free-pane 会計**: renga の `list_panes` は caller のタブにスコープされるので、別タブの worker を数え落として
+空き容量を過大申告しうる。空き枠の数え方（別タブ配置と overflow 配線時の扱いを含む）は
+[`.claude/skills/work-discovery/SKILL.md`](../work-discovery/SKILL.md) の `--free-panes` 節を正本とし、conveyor もそれに従う。
 
 - **実害の限定**: この過大申告が生むのは**誤ランキングと、runtime に拒否される派遣試行まで**。**実際の overspawn に至るのは
   runtime の防止策を迂回する実装をした場合のみ**である（`delegate-plan` は overflow 配線時に `--peers-json` 欠落を
@@ -135,7 +109,7 @@ per-transport 詳細（pr-watch の二フレーム受信注記）は呼び先の
   worker iteration → verify → push → gh pr create → pr-watch CI 監視`。push / PR 作成の「ユーザー明示承認」
   前提（[`/org-pull-request`](../org-pull-request/SKILL.md) 2b-i）は、**この起動時スコープ承認が満たす**
   （bare な per-PR OK ではなく、人間が明示した持続的スコープ承認の記録）。
-- **契約が決して承認しない範囲**: **merge**（INV-1）。merge は常に PR ごとの独立人間ゲート。CI green で halt し提示する。
+- **契約が承認しない範囲**: merge（INV-1）。merge は PR ごとの人間ゲートで、CI green で halt して提示する。
 - スコープ述語は機械的に判定できる形で書く（例: `label:bug AND size:S`、`#637 の follow-up に限る`、
   `PR #635 の review feedback round を ≤6 まで`）。判定不能な候補は scope 縁として扱い投入しない（INV-2）。
 - 並列上限は **起動時の free pane 数**（バックプレッシャー節）。退出予算（Codex round 上限 / 連続 false-positive
@@ -173,7 +147,7 @@ per-transport 詳細（pr-watch の二フレーム受信注記）は呼び先の
    並列 verify のポート衝突は [`.claude/skills/org-conveyor/references/dynamic-ports.md`](references/dynamic-ports.md) の動的ポート割当規律で避ける。
 7. **push / PR / CI 監視**: [`/org-pull-request`](../org-pull-request/SKILL.md) 2b-i を発動する（push → `gh pr create` →
    `pr-watch`）。前提の「ユーザー明示承認」はスコープ契約の事前承認が満たす（Step 1）。`CI_COMPLETED` の到着で次へ。
-8. **CI green → merge gate で HALT**: CI green に達したら **merge せず停止** する。awaiting_user を emit
+8. **CI green → merge gate で halt**: CI green に達したら merge せずに停止する。awaiting_user を emit
    （`gate=ci_green_merge_gate`、[`/org-pull-request`](../org-pull-request/SKILL.md) 2b-i / [`/org-escalation`](../org-escalation/SKILL.md)
    と同じ canonical emit）し、人間向け理解サマリ（full タスク）と PR を提示して merge を仰ぐ（INV-1）。
    conveyor はこの PR についてここで停止する（ベルト全体は停止しない）。
@@ -214,35 +188,6 @@ per-transport 詳細（pr-watch の二フレーム受信注記）は呼び先の
   3. **長時間 verify / CI watch の最中、一定間隔で**（例: 5 分毎）。**ただし前回出力から状態に変化が無ければ抑制する**
      （無変化の定期出力で人間の通知疲労を作らない）。
 - halt（merge gate / 退出条件 / scope 縁）に入るときも、停止直前にこのサマリを出して「いまベルトのどこで止まったか」を残す。
-
-## verify 統合（条件付き必須）
-
-- **applicability classifier**: worker が diff の touch domain（app code / docs / config / fixture）を判定し、
-  **app code に触れている場合のみ `/verify` を必須** とする。**判定不能 = scope 縁扱いで停止**（INV-2）。
-- **エビデンス転記**: 完了報告に再現コマンド + 出力 / スクショパスを含め、PR 本文 `## Test plan` へ自動転記する。
-- **ポート衝突**: worktree 並列 verify で固定ポート前提のアプリ（Next.js / broker サーバー等）が衝突するため、
-  **動的ポート割り当て**（worker / app 側に env で port を受け取らせる規律）で避ける。
-- 詳細は [`.claude/skills/org-conveyor/references/verify-evidence.md`](references/verify-evidence.md) と [`.claude/skills/org-conveyor/references/dynamic-ports.md`](references/dynamic-ports.md) を一次参照。
-
-## 退出条件（機械的）
-
-以下のいずれかに該当したら自走を止め、観測可能性サマリ + 理由を人間へ提示して halt する。詳細・閾値の決め方・
-halt 後の扱いは [`.claude/skills/org-conveyor/references/exit-conditions.md`](references/exit-conditions.md) を一次参照する。
-
-- **Codex round 最大数到達** → 停止
-- **連続 false-positive 数が閾値到達** → 停止
-- **時間予算超過 / 最大反復数到達** → 停止
-- **worker escalation** → 停止（[`/org-escalation`](../org-escalation/SKILL.md) 経由、INV-3）
-- **scope 縁検知**（非合致候補 / org-delegate チェック項目で人間入力要求 / verify 判定不能 / スコープ内 repo のゴール未設定・台帳エラー / triage 判定段の exit 2）→ 停止（INV-2）
-
-## やらないこと（Non-goals）
-
-- **merge 自動化はしない**（INV-1。CI green で必ず人間へ）。
-- **escalation の自動判断はしない**（[`/org-escalation`](../org-escalation/SKILL.md) に委譲、INV-3）。
-- **`/loop` の置換ではない**（時間駆動ではなく完了駆動。間隔ポーリングをしない）。
-- **スコープ外候補の自動投入をしない**（INV-2 / INV-4）。
-- **worker 作業の代行をしない**（ファイル編集 / commit / テストは worker。窓口は司令塔）。
-- **PR キュー上限を設けない**（人間 merge が natural gate）。
 
 ## 起動主体とパス解決
 

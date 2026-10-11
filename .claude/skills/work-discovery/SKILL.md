@@ -33,9 +33,9 @@ open Issue を triage し、依存解決済みの候補を「N 件 + 推奨 1 �
   （§5.2 人間可読レンダリング / §6.2 案 B ローカル skill / §7 不変条件 INV-1〜5）。
 - 計算層ツール: [`tools/work_discovery_scan.py`](../../../tools/work_discovery_scan.py)（ソース・git・GitHub に対して read-only。副作用は `.state/work_discovery/` への書き込みと判定段 `claude -p` 1 回だけ。設計 §7 INV-1 / INV-3 例外 2）と、ゴール段の [`tools/work_discovery_goals.py`](../../../tools/work_discovery_goals.py)（台帳・判定段・見送り台帳）。
 - repo セット解決ツール: [`tools/work_discovery_repos.py`](../../../tools/work_discovery_repos.py)（read-only。`registry/projects.md` の triage 列（既定 include / 明示 opt-out）と `registry/org-config.md` の `triage_home`（既定 off）から scan に渡す `--repo owner/repo` セットを決定的に導出。設計 §10.4）。
-- 本スキルは案 B（手動エントリ）。定常トリガ（dispatcher 拡張）と post-merge 統合は別 Phase（別タスク）。
+- 本スキルは案 B（手動エントリ）。
 
-## 起動主体とトリガ（厳守）
+## 起動主体とトリガ
 
 - **起動できるのは窓口だけ**（設計 §6.2）。委譲済みワーカーは本スキルを起動しない。
   ワーカーが自タスク外の「次の仕事」探索を起動すると「1 worker = 1 task = 1 scope」を崩すため
@@ -43,22 +43,15 @@ open Issue を triage し、依存解決済みの候補を「N 件 + 推奨 1 �
 - **常駐 `/loop` を付けない**（設計 §6.2 留意 1）。手動起動、または PR マージ後の
   proactive next-dispatch のようなイベント起点でのみ走らせる。時間ベースの定常起動は
   変化の無い日に提示を汚すため避ける。
-- 定常トリガ（worker クローズ）は別案（dispatcher 拡張・別 Phase）の責務であって本スキルではない。
+- worker クローズ時の scan はディスパッチャーが行う（[`.dispatcher/references/pane-close.md`](../../../.dispatcher/references/pane-close.md) Step 6、`--trigger worker_close`）。本スキルの責務ではない。
 
-## 不変条件（破ってはならない / 設計 §7）
+## 不変条件（設計 §7）
 
 - **INV-1 propose-only**: 本スキルの出力は「候補リスト + 提示」のみ。生成後に**停止する**。
   scan の副作用は `.state/work_discovery/`（判定キャッシュ・失敗記録・費用台帳・見送り台帳）への書き込みと、
   goal モードでの判定段 `claude -p` 1 回（ツール無し・費用上限とタイムアウト付き）だけ（設計 §7 / §12.4）。
-  spawn / delegate / ブランチ作成 / commit / PR / Issue・PR への書き込みを**一切しない**。
-  （allowed-tools が repo 解決（`tools/work_discovery_repos.py`）と scan（`tools/work_discovery_scan.py`）の
-  read-only コマンドだけに絞られているのは、この不変条件の**宣言的な意図表明**であって機械的強制ではない。
-  `allowed-tools` は列挙したツールを起動ターンに限って事前承認するフィールドで、列挙外のツールを禁じない
-  （列挙外は通常の permission 設定に従い確認プロンプトが出るだけ）。絞り込みの実利は正路の明示と
-  プロンプト削減であり、正路を外れたときに確認という摩擦が立つこと。不変条件を機械的に強制したい場合は
-  `PreToolUse` フック（例: [`.hooks/block-foreground-subagent.sh`](../../../.hooks/block-foreground-subagent.sh)）を
-  別途置く。resolver も scan と同じく read-only で、`git remote get-url` と任意の `gh repo view` 読み取りのみを
-  行い、書き込み・spawn・git 変更をしない。）
+  spawn / delegate / ブランチ作成 / commit / PR / Issue・PR への書き込みをしない
+  （allowed-tools の絞り込みは正路の明示で、機械的な強制ではない）。
 - **INV-2 着手判断は人間ゲート必須**: 候補の選択は人間のみ。選ばれた候補は
   **既存の [`/org-delegate`](../org-delegate/SKILL.md) の Step 0 から**通常委譲フローに入る。
   本スキルが org-delegate を自分で呼ぶことは禁止。推奨（rank 1）の自動着手も禁止。
@@ -92,17 +85,14 @@ python3 tools/work_discovery_scan.py --trigger manual --all-registry-repos
   決定的に導出する（`registry/projects.md` の triage 列（既定 include / 明示 opt-out）と `registry/org-config.md` の
   `triage_home`（既定 off）から。設計 §10.4）。既定状態では registry の GitHub URL 行が全て scan 対象に並ぶ
   （home repo は `triage_home: on` のときだけ先頭に付く）。単一 repo scan になるのは scan 対象が 1 件のときだけ。
-- **resolver を別コマンドで走らせてフラグ文字列を貼る旧手順は使わない**（Issue #829）。フラグ列が複数引数に
-  なるかは呼び出し元シェルの単語分割次第で、zsh は既定 `SH_WORD_SPLIT` off のため未クォート展開を分割せず
-  `--repo a/b --repo c/d` が 1 引数として argparse に届いて失敗する（bash では分割されるので bash だけ見ていると
-  気付けない）。1 コマンド形はシェルを経由しないので zsh / bash / Windows `py -3` で同一に動く。
+- resolver を別コマンドで走らせてフラグ文字列を貼る旧手順は使わない（zsh で 1 引数に潰れる。理由は
+  `tools/work_discovery_scan.py` 冒頭の docstring）。
 - **解決の監査情報は scan 出力の `repo_resolution`** に載る（`repos` / `home_repo` / `triage_home` / `included` /
   `opted_out` / `skipped` / `signals`）。Step 3 の監査提示はここから読む（resolver を二度目に走らせる必要はない）。
   `--all-registry-repos` を付けなかった場合は `null`。
 - **repo セット解決の失敗は scan の exit 2**（Step 2 の error 行）になる。`--repo` 無しの
   gh カレントリポジトリ暗黙 scan へ無言フォールバックしないので、解決失敗が候補ゼロに化けることはない。
   この場合 `error` に理由が、`repo_resolution.signals` / `skipped` に詳細が入る。
-- resolver は read-only（`git remote get-url` と任意の `gh repo view` 読み取りのみ。書き込み・spawn・git 変更なし）。
 - **特定 repo だけを狙って scan したい場合**のみ `--all-registry-repos` の代わりに `--repo owner/repo` を明示する
   （両者は排他。同時指定は exit 2）。既定の起動経路は `--all-registry-repos`。
 - `--trigger` は文脈ラベル。手動起動は `manual`、PR マージ後の proactive next-dispatch から呼ぶ場合は
@@ -137,7 +127,6 @@ python3 tools/work_discovery_scan.py --trigger manual --all-registry-repos
 - 既定の候補上限は `--top-n 3`。scan 対象は `--all-registry-repos` が導出する（cross-repo scan が既定であり、
   登録 URL 行が複数あれば自然に複数 repo の cross-repo triage になる。設計 §10 / §10.4）。
 - ツールは stdout に**単一 JSON オブジェクト**を出し、**exit code で分岐**する（JSON パース成否ではなく exit code を見る）。
-- ツールは read-only（`gh` の読み取りサブコマンドのみ）。本スキルがツール以外の副作用を出してはならない。
 
 ### Step 2 — exit code で分岐する
 
@@ -243,14 +232,5 @@ owner/repo を補う）。記録した候補は、その Issue が更新され�
 ## パス解決
 
 - 本スキル中の `tools/...` / `docs/...` 表記は**リポジトリルート相対**。窓口セッションの CWD は
-  リポジトリルート（`/home/happy_ryo/work/org/claude-org-ja`）なのでそのまま実行できる。別 CWD から呼ぶ場合はルート相対に読み替える。
+  リポジトリルート（`git rev-parse --show-toplevel`）なのでそのまま実行できる。別 CWD から呼ぶ場合はルート相対に読み替える。
 - Windows では `python3` を `py -3` に読み替える（allowed-tools に両形を登録済み）。
-
-## やらないこと（INV まとめ）
-
-- 候補の自動着手・rank 1 の自動委譲（INV-1 / INV-2）。
-- spawn / delegate / ブランチ / commit / PR / Issue・PR 書き込み（INV-1 / INV-3）。
-- GitHub 等への直接提示（窓口の会話を経由する。INV-4）。
-- 候補の中身の自前調査・実装（人間ゲート後の委譲タスク。INV-5）。
-- 常駐 `/loop` での時間起動（設計 §6.2 留意 1）。
-- ワーカーからの起動（起動主体は窓口に限定。設計 §6.2）。
