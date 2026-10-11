@@ -169,7 +169,7 @@ id 台帳の作り方（面ごとの id 取得・pane 制御の 2 グループ (
    - bash / zsh / PowerShell すべて `"..."` 内の改行をそのまま透過するので multi-line でも cross-shell。Windows CMD は heredoc 不可なので `py -3 -c "ts=...; conn=...; w=...; w.begin(); w.update_session(...); w.commit()"` の単行 fallback を使う（その場合 `transaction()` の rollback / regen 自動 swallow は失われるので追加で try/except を書く）
    - 同コマンドが `.state/org-state.md` の Status 行を `SUSPENDED` に切り替える (DB 由来で再生成)
    - free-form な「Resume Instructions の補足説明」「Pending Lead」「学び」等は **`notes/` に保存する** (`notes/README.md` 参照)。markdown 直接編集は drift_check で検出される。`update_session(resume_instructions=...)` は構造化セクションとして DB に書く
-3. 各 Work Item の状態を更新する場合は `upsert_run(task_id=..., status=...)` を `transaction()` 内で呼ぶ
+3. 各 Work Item の状態を更新する場合は `update_run_status(task_id, status)` を `transaction()` 内で呼ぶ
 4. 各ワーカーの `.state/workers/worker-{id}.md` を更新:
    - Current State at Suspend セクションを追加/更新
    - Progress Log に中断時の状態を追記
