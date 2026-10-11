@@ -56,13 +56,13 @@ allowed-tools:
 | ワーカーからの進捗/完了/escalation 報告の受信 | **窓口** |
 | ワーカー完了時のペインクローズ | **ディスパッチャー**（窓口から `CLOSE_PANE` 依頼） |
 
-## レーン選択判定（窓口が実行、Refs #515）
+## レーン選択判定（窓口が実行）
 
-委譲前チェックリストに入る前に、まず **このタスクをどのレーンで回すか** を判定する。タスクルーティングは 2 レーン制で、原則文（CLAUDE.md「実作業は全てワーカーに委譲する」）は維持しつつ、極小タスクに限った軽量レーンを例外に持つ（背景・実証は CLAUDE.md「タスクルーティング 2 レーン制」を SoT 参照）。
+委譲前チェックリストに入る前に、まず **このタスクをどのレーンで回すか** を判定する。タスクルーティングは 2 レーン制で、原則（実作業は全てワーカーに委譲する）は維持しつつ、極小タスクに限った軽量レーンを例外に持つ。**軽量レーンと ultracode 武装の条件は本節が正本**（root `CLAUDE.md` は要約とポインタだけを持つ）。導入時のパイロット実績は [`.claude/skills/org-delegate/references/rationale.md`](references/rationale.md) §8。
 
 | レーン | 発動条件 | 処理経路 |
 |---|---|---|
-| **軽量レーン**（subagent 直処理） | 以下を **全て** 満たす: 推定工数 S 以下 / 単一ファイル級 / 判断仰ぎ想定なし / 日またぎなし | 窓口が**自身のセッションで** `Agent` tool（`isolation="worktree"`, **`run_in_background=true` 必須**）を呼んで直処理。**本 SKILL（org-delegate）の以降の手順には進まない**（本節は routing 判定のみ。subagent 起動は窓口本体の文脈で行うため、本 skill の `allowed-tools` に `Agent` は不要） |
+| **軽量レーン**（subagent 直処理） | 以下を **全て** 満たす: 推定工数 S 以下 / 単一ファイル級 / 判断仰ぎ想定なし / 日またぎなし | 窓口が**自身のセッションで** `Agent` tool（`isolation="worktree"`、背景実行）を呼んで直処理。**本 SKILL（org-delegate）の以降の手順には進まない**（本節は routing 判定のみ。subagent 起動は窓口本体の文脈で行うため、本 skill の `allowed-tools` に `Agent` は不要） |
 | **重量レーン**（ワーカー派遣） | 軽量条件を 1 つでも満たさない、または下記いずれかに該当 | 本 SKILL を Step 0 から回し、ディスパッチャー経由でワーカーを派遣 |
 
 **重量レーンへ必ず倒すケース（軽量条件を一部満たしても優先）:**
@@ -73,7 +73,7 @@ allowed-tools:
 迷ったら重量レーンに倒す（軽量レーンは「明らかに極小」のときだけ）。
 
 **軽量レーンを選んだ場合の必須条件（省略不可）:**
-- `Agent` tool は `run_in_background=true` で起動する。**同期実行は禁止**（窓口の人間接点・ワーカー ack の即時性をブロックするため）
+- `Agent` tool は背景（非同期）で起動する。**同期実行は禁止**（窓口の人間接点・ワーカー ack の即時性をブロックするため）。`Agent` の入力スキーマに `run_in_background` が**無い**ハーネスでは subagent は常に背景で動くので、指定するパラメータは無い。スキーマに**ある**ハーネスでは `run_in_background=true` を渡す。前景になりうる呼び出し（キーがあって厳密 `true` でないもの）は PreToolUse フック [`.hooks/block-foreground-subagent.sh`](../../../.hooks/block-foreground-subagent.sh) が deny する
 - subagent 内で Codex レビューを in-loop で回し、Blocker/Major ゼロまで修正する（検証深度 full と同等のゲート）
 - push・PR・merge の人間ゲートは従来どおり維持する（subagent が自動で push / PR / merge してはならない）
 
@@ -91,7 +91,7 @@ allowed-tools:
 
 **強い権限の事前許可文言を workflow の agent プロンプトに書かせない（重要）:** ultracode を許可しても、`dangerouslyDisableSandbox` / `--dangerously-skip-permissions` 等の**強い権限を事前に許可する文言**を workflow の `agent()` プロンプト本文に書き込ませない（窓口の `--impl-guidance` にもそうした事前許可文言を載せない）。安全分類器が該当 agent 呼び出しを **silent block** し、workflow が原因不明のまま停滞する事故になる。どうしても強い権限が要る段がある場合は、その agent の**成否を明示確認**（戻り値 / 失敗検知でブロックを検出）し、**block 時のリカバリ手段**（当該段を通常権限で再実行する / worker 本体で手動実行する等）を workflow に組み込むよう brief で促す。同一制約を [`.dispatcher/references/spawn-flow.md`](../../../.dispatcher/references/spawn-flow.md) 3-5a にも同じ意味で置く（片方だけだと kickoff 導線から危険例が再発する）。
 
-**ただし brief 文言は「許可の宣言」であって「opt-in 武装」ではない（Issue #554）。** ultracode は worker セッションの **user turn 入力**に `ultracode` トークンが現れて初めて武装される。brief ファイル（worker 行動規範＝既定 `CLAUDE.md` / 自己編集は `CLAUDE.local.md` としてロードされる context）・`send_message` 本文・`check_messages` 経由の指示本文のいずれに keyword があっても武装しないことが実走で確定している。**武装の発動条件は、dispatcher が kickoff を「使用中 transport の `send_keys`」による user turn として打鍵し、その本文に standalone `ultracode` トークンを含めること**（SoT: [`.dispatcher/references/spawn-flow.md`](../../../.dispatcher/references/spawn-flow.md) 3-5a）。つまり**窓口の brief 許可は必要条件、dispatcher の send_keys kickoff が発動条件**である。
+**brief 文言は「許可の宣言」であって武装ではない**: 窓口の brief 許可は必要条件にすぎず、発動条件は dispatcher の `send_keys` kickoff（機構の正本は [`.dispatcher/references/spawn-flow.md`](../../../.dispatcher/references/spawn-flow.md) 3-5a）。
 
 `gen_delegate_payload.py` の専用フラグ化はスコープ外（許可は `--impl-guidance` の brief 文言、武装は dispatcher の send_keys が担う分担で足りる）。**位置づけ**: ultracode は実装と Codex 前のセルフレビュー収束に使う**前段**であって、最終 Codex ゲート（別モデルによる独立レビュー、Blocker / Major ゼロ）の置き換えではない。軽量レーン（subagent 直処理）では ultracode を許可しない。重量レーンでも上記 3 基準をいずれも満たさないタスクは許可しない（サイズの大小ではなく判断密度・検証性質・並列構造で判定する）。
 
@@ -115,7 +115,6 @@ allowed-tools:
 
 - 曖昧な用語がある場合: 「○○は△△のことですか？」とユーザーに確認してから進める
 - OS別タスクの場合: ペイロード生成時に、OS固有の前提条件をワーカーへの指示に含める
-  - **Windows worker + CLI / 標準出力を持つツール実装の場合**: CLI へ出力される文字列（argparse `help=` / `print()`）は ASCII の `-` を使い em-dash 等 cp932 非対応文字を避けること、`--help` を実端末で 1 回スモークすること、の 2 点を `--impl-guidance` 等で brief に載せる（rendered brief の Windows 注意事項にも常時記載済みだが、CLI ツール委譲時は窓口が明示的に意識する）。発火 2 例の背景は [`.claude/skills/org-delegate/references/rationale.md`](references/rationale.md) §1
 - **pin 管理された内部パッケージ（`claude-org-runtime` 等）のバグ疑いを委譲する前に**: 当日の [`/org-start`](../org-start/SKILL.md) Block C2 の runtime drift check が clean（exit 0）だったかを確認する。drift 検出（exit 1）や「PyPI 未確認」（exit 2 = sandbox 内実行等で PyPI に届かず）だった場合は、既に upstream で修正済みのバグを古い venv で踏んでいる可能性があるので、まず venv upgrade + pin 窓 bump で最新化し、それでも再現するかを確認してから委譲する（既修正バグへの phantom dispatch を防ぐ）。pin ラグはセッション定数なので確認は org-start 時 1 回で足り、委譲ごとの再チェックは不要（背景は [`.claude/skills/org-delegate/references/rationale.md`](references/rationale.md) §2）
 
 ### incorporation / sync 系タスクの初手チェックリスト
@@ -138,7 +137,7 @@ allowed-tools:
 運用上の注意 2 点:
 
 - **窓口の続報は merge 順序の決定だけでは送らない**。先行 PR が merge され base upstream に反映されたことを確認してから後続 worker に送る（順序決定直後に送ると、先行変更を含まない upstream へ rebase してしまい conflict 防止が成立しない）
-- **rebase 先と適用範囲の読み替え**は [`.claude/skills/org-delegate/references/worker-claude-template.md`](references/worker-claude-template.md) の「完了報告前の rebase」規定に従う（`full` 限定・PR ベースが `origin/main` 以外なら実際の base upstream に読み替え）
+- **rebase 先と適用範囲**: 完了報告前の rebase は検証深度 `full` のタスクに限る。PR のベースが `origin/main` 以外なら、rebase 先は実際の base upstream（例 `origin/<統合用ブランチ>`）に読み替える。描画される brief テンプレート（`tools/templates/worker_brief_*.md`）にはこの規定が無いので、必要なら上の文言にあわせて `--impl-guidance` に書く
 
 事後の追指示でも救えるが、brief 段階で入れておけば窓口→worker の 1 往復が減り、integration point conflict を事前に防げる（実例と効果は [`.claude/skills/org-delegate/references/rationale.md`](references/rationale.md) §4）。
 
@@ -171,15 +170,13 @@ work-skill の手順をそのままコピーしない。参考情報として提
 
 ## Step 0.6: release-class タスクの pre-fetch（窓口が実行）
 
-以下 4 条件のいずれかに該当する場合のみ、`gen_delegate_payload.py apply` の **前に** 対象プロジェクトの local main を `git fetch origin` + `git pull --ff-only origin main` で更新する:
+以下 3 条件のいずれかに該当する場合のみ、`gen_delegate_payload.py apply` の **前に** 対象プロジェクトの local main を `git fetch origin` + `git pull --ff-only origin main` で更新する:
 
 - task description / commit-prefix / planned branch に `release`, `release/`, `vX.Y.Z` 等のリリース昇格語を含む
 - 対象ファイルに `CHANGELOG.md` 昇格 / `__about__.__version__` / `pyproject.toml` の `version` bump 等を含む
 - task_id に `release` を含む（例: `runtime-0-1-10-release`）
 
-詳細条件・実行コマンド・worker permissions deny の根拠（fetch 漏れ → 着手 5 分以内に worker BLOCKER → 10 分以上ロスの背景）は [`references/release-pre-fetch.md`](references/release-pre-fetch.md) を一次参照。**トリガー見逃しが BLOCKER 直結のため本体に残す 4 条件は省略禁止。**
-
-> **Pattern B との切り分け（Issue #480）**: Pattern B の worktree 作成は apply 自身が `git fetch origin` してから `origin/HEAD` 起点で切るため、worktree の起点鮮度はこの Step 0.6 に依存しない。Step 0.6 が担保するのは Pattern A（worker が local main から `release/*` を切る）の **local main の鮮度** であり、両者は対象が異なる。詳細は [`.claude/skills/org-delegate/references/release-pre-fetch.md`](references/release-pre-fetch.md) の「Issue #480 との関係」節。
+通常タスクでは実行しない。worker は素の `git fetch` はできるが、`git pull`（local main の fast-forward）と `git -C <path> fetch` は deny されている（[`tools/org_extension_schema.json`](../../../tools/org_extension_schema.json) の worker 既定ロールの allow / deny）。そのため local main を進める仕事は窓口に残る。fast-forward できない（non-ff）ときは派遣せず人間に報告する。実行コマンド・Pattern B との切り分けは [`.claude/skills/org-delegate/references/release-pre-fetch.md`](references/release-pre-fetch.md) を一次参照。**トリガー見逃しが BLOCKER 直結のため本体に残す 3 条件は省略禁止。**
 
 ## Step 0.7 / 1 / 1.5 / 2: 1 コマンドで派遣ペイロードを生成（Issue #283）
 
@@ -252,7 +249,7 @@ python tools/gen_delegate_payload.py apply \
 
 標準経路 (`gen_delegate_payload.py apply`) が想定外の出力 (Pattern 誤判定 / resolver エラー / brief 不整合 等) を返した場合、Secretary は **手動で同じ作業を再現してはならない**。resolver のバグとして Issue を切り、当該タスクの delegation は resolver が直るまで pause する。手作業 fallback は skill のスコープ外。CLI 未導入環境では `--skip-settings` フラグに限定する。歴史的な手書き経路の museum copy は `docs/legacy/hand-typed-delegate-path.md` にあるが標準オペレーションでは参照禁止。
 
-## Step 1.7: Codex design review trigger（窓口が実行、Issue #337）
+## Step 1.7: Codex design review trigger（窓口が実行）
 
 `apply` の前に Codex design review を実施するか判定する。以下のいずれかに該当する場合のみ実行:
 
@@ -260,6 +257,7 @@ python tools/gen_delegate_payload.py apply \
 - 新規 module / 新規 tool 導入
 - ファイル変更 ≥ 3 件
 - `docs/contracts/` 配下の契約ドキュメント参照
+- 監視ロール（dispatcher / curator 等）への blocking wait 追加、または org の lifecycle（spawn / close / cadence / 常駐とオンデマンドの切替）の変更。**ファイル変更が 1 件でも発動**する
 
 トリガー判定の詳細表・`codex exec` コマンド・review 要約の `--impl-guidance` / `--knowledge` への組み込み手順は [`references/codex-design-review.md`](references/codex-design-review.md) を一次参照。
 
@@ -279,13 +277,9 @@ dogfood 対象判定 / 窓口責務 (A) 実装起票時の `registry/dogfood_pen
 
 ## Step 5: 進捗管理（窓口が実行）
 
-### ⚠️ cwd 注意: state.db touching tools
+### 窓口 → worker のメッセージング規約（1 worker = 1 task = 1 scope）
 
-`tools/journal_append.sh` / `tools/journal_append.py` / `tools/set_run_pr_open.py` / `python -c "... StateWriter ..."` 等、`state.db` を相対パスで開く tool は ja root 相対前提。worker / worktree cwd から起動すると `no such table: runs` / `no such table: events` でサイレント or クラッシュ失敗し、後段の post-commit hook や snapshot 再生成も走らない。必ず `cd <ja-root>` してから実行すること。Issue #398 で根本対応中。
-
-### 窓口 → worker のメッセージング規約（Issue #475: 1 worker = 1 task = 1 scope）
-
-窓口から既存 worker へ送る全 message は「1 worker = 1 task = 1 scope」の原則に従う。canonical な 3 rule は CLAUDE.md「役割の境界 > worker への追加依頼の境界」を SoT 参照:
+窓口から既存 worker へ送る全 message は「1 worker = 1 task = 1 scope」の原則に従う。3 rule は本節が正本（root `CLAUDE.md`「worker への追加依頼の境界」は要約）:
 
 1. **追加依頼は元タスクのスコープ内に限る**: brief で示した範囲内の補足・修正指示のみ追送する。スコープ外の別件は同 worker に投入せず、Step 0 から本 SKILL を回し直してディスパッチャー経由で別 worker を派遣する
 2. **worker のスコープ拡張提案は escalation 経由**: 窓口は一次承認せず [`/org-escalation`](../org-escalation/SKILL.md) を発動する
@@ -340,7 +334,7 @@ worker → Secretary peer message
 #### 2a. 完了報告
 
 - worker へ ack を返す（[`.claude/skills/org-delegate/references/ack-template.md`](references/ack-template.md) の「完了報告 ack」節。受信直後・dead-lock 防止で他の状態更新より前に）
-- **DB 経由で run を REVIEW に遷移**（markdown 直接編集禁止）:
+- **DB 経由で run を REVIEW に遷移**（markdown 直接編集禁止）。下の `python -c` は `.state/state.db` と `tools` を相対パスで開くので、ja root を cwd にして実行する（`tools/journal_append.sh` 等の tool は repo root を自分で解決するので cwd を問わない）:
   ```bash
   python -c "
   from pathlib import Path
@@ -358,12 +352,12 @@ worker → Secretary peer message
   ```
   対の解除は T6 再指示時の `WORKER_REOPENED`（[`.claude/skills/org-pull-request/SKILL.md`](../org-pull-request/SKILL.md) 2c）。minimal / full どちらの完了報告でも送る（silent dead-lock 抑止は検証深度に依らない）
 - **dogfood pass 完了時の register 更新（Issue #338）**: 完了したタスクが `registry/dogfood_pending.md` の `dogfood_run_task_id` 列に earmark されていた場合、該当行の `status` を `open → consumed` に遷移する。defect は paired follow-up issue (`dogfood_issue` 列) に既に集約されている前提（dogfood pass worker の brief で format 指定済）。protocol 全体は本 SKILL Step 1.8 を SoT
-- **人間向け理解サマリを承認提示の土台にし永続化する（検証深度 `full` 限定）**: full モード完了報告には worker が「人間向け理解サマリ」（(1) 最重要の変更点 N 個、(2) 要確認ファイル / hunk、(3) 設計判断と理由）を含める（スキーマ SoT は [`.claude/skills/org-delegate/references/worker-claude-template.md`](references/worker-claude-template.md)）。窓口は自分でコードを精読せず、このサマリをユーザーへの承認提示の土台にする（必要なら業務言語に整える）。受領したサマリは `.state/workers/worker-{task_id}.md` の Progress Log に `Human Understanding Summary:` 見出し + 直下の fenced code block でそのまま追記する（merge 承認時に再掲する元。full 完了報告が複数回ある場合は最新ブロックを正とする）。PR 作成時は PR 本文にも要約を載せてよい。**full でサマリが欠落していたら通常の review feedback として同ペインの worker に補完を依頼する**（[`.claude/skills/org-pull-request/SKILL.md`](../org-pull-request/SKILL.md) 2c の review-feedback 手順で扱う）。これは手順レイヤの完了報告フォーマット拡張であり、contract（T4 `worker_completed`）の遷移条件は変えない。minimal の 1 行 `done:` 報告にはサマリは付かない
+- **人間向け理解サマリを承認提示の土台にし永続化する（検証深度 `full` 限定）**: full モード完了報告には worker が「人間向け理解サマリ」（(1) 最重要の変更点 N 個、(2) 要確認ファイル / hunk、(3) 設計判断と理由）を含める（スキーマの正本はワーカーに描画される brief テンプレート [`tools/templates/worker_brief_normal.md`](../../../tools/templates/worker_brief_normal.md)、自己編集タスクは [`tools/templates/worker_brief_self_edit.md`](../../../tools/templates/worker_brief_self_edit.md) の「人間向け理解サマリ」節）。窓口は自分でコードを精読せず、このサマリをユーザーへの承認提示の土台にする（必要なら業務言語に整える）。受領したサマリは `.state/workers/worker-{task_id}.md` の Progress Log に `Human Understanding Summary:` 見出し + 直下の fenced code block でそのまま追記する（merge 承認時に再掲する元。full 完了報告が複数回ある場合は最新ブロックを正とする）。PR 作成時は PR 本文にも要約を載せてよい。**full でサマリが欠落していたら通常の review feedback として同ペインの worker に補完を依頼する**（[`.claude/skills/org-pull-request/SKILL.md`](../org-pull-request/SKILL.md) 2c の review-feedback 手順で扱う）。これは手順レイヤの完了報告フォーマット拡張であり、contract（T4 `worker_completed`）の遷移条件は変えない。minimal の 1 行 `done:` 報告にはサマリは付かない
 - **awaiting_user 通知の emit（Issue #28）**: 人間への報告 → 承認待ち停止に入る直前で、attention watcher に「Secretary が user の判断待ちで停止する」ことを知らせる:
   ```bash
   bash tools/journal_append.sh notify_sent kind=awaiting_user task_id=<task_id> gate=worker_completed note="<PR/Issue 等の短い文脈>"
   ```
-  並走 runtime PR の classifier がこの 1 行を `secretary_awaiting_user` (default severity `urgent`) として拾い、画面前にユーザーが居ない場合でもビープで気付ける。CLAUDE.md「secretary が user の判断を待っている状態を通知する」節を参照
+  claude-org-runtime の attention classifier がこの 1 行を `secretary_awaiting_user` (default severity `urgent`) として拾い、画面前にユーザーが居ない場合でもビープで気付ける。CLAUDE.md「secretary が user の判断を待っている状態を通知する」節を参照
 - 結果を人間に報告し、**ペインを閉じず承認待ちで停止**。承認なしで push/PR を発行すると worker / user 双方への protocol 違反
 
 #### 2b / 2c. ユーザー承認後・レビュー指摘・マージ後クローズ

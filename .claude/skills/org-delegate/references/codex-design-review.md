@@ -1,8 +1,8 @@
-# Codex design review trigger（窓口が実行、Issue #337）
+# Codex design review trigger（窓口が実行）
 
 > **一次参照元**: [`.claude/skills/org-delegate/SKILL.md`](../SKILL.md) Step 1.7（トリガー判定の概要のみ）。本ドキュメントはトリガー表・実行コマンド・review 要約の組み込み手順の詳細 SoT。
 
-`preview` 出力の `description` / `--target` 件数 / 参照ドキュメントを見て、以下の **いずれか 1 つ以上** に該当する場合は、`apply` の前に Codex design review を実行する。Curator session #18 retrospective (Issue #283 / session #12) で「事前 Codex design review が 1 ラウンドで Blocker 2 件 + Major 5 件を捕捉」した実績に基づくゲート。
+`preview` 出力の `description` / `--target` 件数 / 参照ドキュメントを見て、以下の **いずれか 1 つ以上** に該当する場合は、`apply` の前に Codex design review を実行する。ゲート導入の実績は [`.claude/skills/org-delegate/references/rationale.md`](rationale.md) §11。
 
 ## トリガー条件
 
@@ -16,7 +16,7 @@
 
 ## 実行手順
 
-デザインレビューは **実装前で diff が存在しない**ため、差分セルフレビューの `codex exec review`（review surface）は適用できない。設計内容・対象ファイル・契約参照を渡す **`codex exec` のプロンプト形を維持**する。方式ベンチマーク（[`knowledge/curated/codex.md`](../../../../knowledge/curated/codex.md)）では、重い多観点 exec プロンプトが subtle / 設計レベルの Blocker を拾う breadth に優れることが実測されており、デザインレビューはまさにその breadth が要る用途であるため、ここでは exec プロンプト形が適切（差分セルフレビューの review surface 切替とは別判断）。
+デザインレビューは実装前で diff が無いので、`codex exec review`（review surface）ではなく `codex exec` のプロンプト形を使う（理由の正本は [`knowledge/curated/codex.md`](../../../../knowledge/curated/codex.md) の「デザインレビュー（実装前）は review surface ではなく exec プロンプト形を維持」節）。
 
 ```bash
 codex exec --skip-git-repo-check -m gpt-6-astra -c model_reasoning_effort=medium \
@@ -27,7 +27,7 @@ codex exec --skip-git-repo-check -m gpt-6-astra -c model_reasoning_effort=medium
   事前設計上の Blocker / Major / Minor / Nit を分類し、各指摘に対象ファイル:行番号と根拠を添えて日本語で簡潔に。"
 ```
 
-`codex:rescue` skill は使わない（CLAUDE.local.md の禁止事項）。`codex exec` 直打ちのみ。ChatGPT アカウントで通るモデル名は限られる（現行世代は `gpt-6-astra`。素の `gpt-6` / `gpt-6-codex` / `gpt-6-sol` はいずれも 400、API キー surface も実行不可）ため `-m gpt-6-astra` を明示する。codex-cli は **0.153.4 以上**が必要（0.147.0 は `The 'gpt-6-astra' model requires a newer version of Codex.` で 400。このメッセージが出たらモデル名を探し直さず `npm i -g @openai/codex@latest` で更新する）。ハングガード（stdin `< /dev/null`・ラウンド別ログ・0 byte 5–10 分で kill）は [`knowledge/curated/codex.md`](../../../../knowledge/curated/codex.md) 参照。
+`codex:rescue` skill は使わない（禁止の正本は [`knowledge/curated/codex.md`](../../../../knowledge/curated/codex.md)）。`codex exec` 直打ちのみ。ChatGPT アカウントで通るモデル名は限られる（現行世代は `gpt-6-astra`。素の `gpt-6` / `gpt-6-codex` / `gpt-6-sol` はいずれも 400、API キー surface も実行不可）ため `-m gpt-6-astra` を明示する。codex-cli は **0.153.4 以上**が必要（0.147.0 は `The 'gpt-6-astra' model requires a newer version of Codex.` で 400。このメッセージが出たらモデル名を探し直さず `npm i -g @openai/codex@latest` で更新する）。ハングガード（stdin `< /dev/null`・ラウンド別ログ・0 byte 5–10 分で kill）は [`knowledge/curated/codex.md`](../../../../knowledge/curated/codex.md) 参照。
 
 ### 監視ロール待ち合わせ設計の追加 3 問
 
@@ -45,7 +45,7 @@ brief に載せる必須文言（ブロッキング待ち禁止・spawn 後即�
 
 > 対象 repo の versioning / compatibility policy（<policy doc パス>）に照らし、この変更がどのリリースライン（patch / minor / major）に落ちるか、または policy 上どのラインにも載らない（frozen surface 違反等でこのままではリリース不可）かの判定と、その根拠となる policy の該当節を必ず含める。
 
-機構レベルの review は互換パスの欠落を指摘しても、semver 帰結（変更がどのリリースラインに載るか）までは踏み込まないことがある。fail-closed 設計を完成させた後に対象 repo の semver policy を精読して初めて破壊的変更（major 行き）と判明し、非破壊化でほぼ全面やり直しになった実例（renga PR #325 / Issue #306）に基づく観点。リリースライン判定は設計フェーズで確定させるべき事項であり、実装後に気付くと doc・テスト名まで含めた巻き戻しがコード本体より大きくなる。
+機構レベルの review は互換パスの欠落を指摘しても、semver 帰結（変更がどのリリースラインに載るか）までは踏み込まないことがある。リリースライン判定は設計フェーズで確定させるべき事項であり、実装後に気付くと doc・テスト名まで含めた巻き戻しがコード本体より大きくなる。実例は [`.claude/skills/org-delegate/references/rationale.md`](rationale.md) §11。
 
 ## review 要約の組み込み
 
@@ -53,7 +53,3 @@ brief に載せる必須文言（ブロッキング待ち禁止・spawn 後即�
 - `apply` 呼び出し時に **`--impl-guidance "<要約本文>"`** を渡す。これにより要約本文が brief の `[implementation].guidance` に展開され、ワーカーが直読できる
 - 補足として `--knowledge tmp/codex-review-{task-id}.md` を追加すると brief の `[references].knowledge` にパスが列挙され、ワーカーが必要に応じて全文を参照できる（`gen_worker_brief.py` はパスを列挙するだけで本文は埋め込まない）。本文を確実にワーカーへ届けるのは `--impl-guidance` 側の責務
 - Blocker / Major が指摘された場合は、ユーザーに上げて方針変更可否を確認してから apply に進む
-
-## helper script
-
-Issue #337 acceptance で optional とされており、本 PR では実装しない。Secretary が手動で上記表を判定する。
