@@ -65,7 +65,7 @@
 | サイクル冒頭の spawn 儀式の未検証検出 | (a) | `tools/spawn_gate.py audit` をそのまま呼ぶ | `tools/spawn_gate.py:876`（`cmd_audit`）。grace window と deployment cutoff は同ファイル `:161`（`GATE_EPOCH`） |
 | Step 5.25 終端イベントの配送（CI 結果など） | (a) | `tools/relay_scan.py --recipient secretary --cycle` → 窓口へ送信 → `--mark-delivered` / `--mark-failed` | `tools/relay_scan.py:635`（`cmd_cycle`）、`:689-706`（引数）。台帳は `tools/state_db/schema.sql:129-141`（`event_deliveries` の `UNIQUE (source_event_id, recipient)`） |
 | 窓口への送信 | (a) | `claude-org-runtime broker send --to secretary --message ...`（公開 CLI。宛先は安定名） | `claude-org-runtime broker send --help`。ja では既に `tools/peer_notify.py:157-161` が使っている |
-| Step 7 停止時の意図的停止の記帳 | (a) | `tools/relay_scan.py --mark-halted`。watcher では「監視対象ゼロで完全アイドルに入る」ときに 1 回書く | `tools/relay_scan.py:706` |
+| Step 7 停止時の意図的停止の記帳 | (a) | `tools/relay_scan.py --mark-halted`。watcher では「ワーカー側の手順を止める」ときに 1 回書く（tick 自体は止めない。下の Step 7 の行） | `tools/relay_scan.py:706` |
 | Step 4 (d) ERROR / spinner 経過の検知 | (a) | `tools/inspect_anomaly_scan.py`（全可視行を走査し、検知ありで exit 3） | `tools/inspect_anomaly_scan.py:346`（`main`）、`:405`（exit 3） |
 | Step 5 (b) 画面変化の判定、spinner による抑止、idle streak の遷移 | (a) | `tools/inspect_pane_state.py` の `extract_pane_state()` / `compute_idle_transition()` を import して呼ぶ | `tools/inspect_pane_state.py:217` / `:266`。抑止上限は `:69`（`SPINNER_ACTIVE_SUPPRESS_CAP_MIN = 90`） |
 | Step 5.1 判断仰ぎの中継漏れ（register 経由） | (a) | `tools/pending_decisions.py list --older-than-min 15` | `tools/pending_decisions.py:299`（`list_pending_older_than`）、`:537`（`list`） |
@@ -73,7 +73,7 @@
 | Step 4 (b) 承認待ちの検知（末尾行の正規表現 6 本と数字選択メニュー） | (b) | 正規表現が本文にしか無い。`tools/inspect_anomaly_scan.py` に足す | `tools/inspect_anomaly_scan.py:27` に「APPROVAL_BLOCKED detection stays in the prose §4(b)」とある |
 | Step 1 `poll_events` の取得と cursor の扱い | (b) | watcher は cursor をメモリに持つ。起動時と再起動時は「今以降」から張り直し、一覧の突き合わせ（Step 3）で取りこぼしを拾う。cursor ファイルとセッション束縛の手順は watcher には持ち込まない | `poll_events` は broker の in-memory ring で、daemon 再起動で失われ、履歴の再生も無い（runtime `broker/server.py:204-206`、`:1733-1766`）。イベントは `pane_started` / `pane_exited` の 2 種だけ |
 | Step 2 `check_messages` によるワーカー自己報告の受信 | (b) | watcher は dispatcher 宛キューを読まない。`check_messages` は読んだ行を即座に配送済みにする破壊的な読み出しで（runtime `broker/store.py:1116-1139`）、ディスパッチャー Claude と奪い合いになる。監視に必要な事実は state.db から読む（次行） | 同左 |
-| Step 2 `WORKER_COMPLETION_NOTED` / `WORKER_REOPENED` による完了フラグの set / clear | (a) | メッセージをやめ、`runs.status`（`review` / `in_use`）を直接読む。今の手順書でもこの値が決定的な backstop になっている | `tools/state_db/schema.sql:75`（`runs.status` の値域）。backstop の記述は worker-monitoring.md Step 5.2 (b)(6) |
+| Step 2 `WORKER_COMPLETION_NOTED` / `WORKER_REOPENED` による完了フラグの set / clear | (a) | watcher はメッセージを使わず、`runs.status`（`review` / `in_use`）を直接読む（送信側は段階 2 の間は残す。§5）。今の手順書でもこの値が決定的な backstop になっている | `tools/state_db/schema.sql:75`（`runs.status` の値域）。backstop の記述は worker-monitoring.md Step 5.2 (b)(6) |
 | Step 3 ペイン一覧の突き合わせ（消失を 2 面で裏取りする） | (b) | 「一覧から消えた」だけでは終了と言わない。`pane_exited` の受信か、2 サイクル連続の消失と別の面の一致で確定させる。この判定をコードにする | 不変条件は worker-monitoring.md「観測の原則」(P2)(P3) |
 | Step 3 (3-a-5) 背景タブに置いたワーカーの生存判定 | 対象外 | 背景タブ配置は renga 面専用（worker-monitoring.md Step 3 (3-a-5)）。watcher は broker だけを扱う（§0 判断 4） | — |
 | Step 4 (e) 通知の順序と 30 秒の重複排除 | (b) | 観測の記録 → 重複判定 → 送信 → 送信成功後に `notify_sent`、の順を 1 関数にまとめる | 記帳先は `events`（`tools/state_db/schema.sql:100-110`）。書き込みは `tools/journal_append.py` |
@@ -83,10 +83,10 @@
 | Step 5 (b-fp)(b-4) 「本当に止まっているか」の確認（Workflow 待ちの親ターン、長い単一ターン） | (c) | incident packet にして Dispatcher AI へ渡す。返答は「正常 / 異常 / 証拠不足」のどれか。証拠不足を許す | 誤検知の型は worker-monitoring.md Step 5 (b-fp) / (b-4) |
 | Step 5.1 (b) 窓口ペインのスナップショット差分による中継漏れの推測 | (b) | 窓口ペインを画面取得して差分を `.state/dispatcher/secretary-output-changes.jsonl` に追記する処理。コードにするか、register だけで足りるかを段階 1 の差分で決める | worker-monitoring.md Step 5.1 (b)（同ファイル 978 行・985 行付近） |
 | Step 5.2 ペインに出力したのに窓口へ送っていない（PANE_OUTPUT_WITHOUT_PEER_MSG） | (b) | 6 条件をコードにする。ワーカーへの促しは「促し handler」1 つに限る副作用とし、窓口への通知は今と同じにする | worker-monitoring.md Step 5.2 (b) |
-| Step 5.3 オンデマンド curator の完了待ちと timeout | (b) | 20 分 / 40 分の判定をコードにする。`CURATE_*` の受信はメッセージをやめ、curator に `journal_append` で終了イベントを 1 行書かせる | 定数は worker-monitoring.md Step 5.3 |
+| Step 5.3 オンデマンド curator の完了待ちと timeout | (b) | 20 分 / 40 分の判定をコードにする。curator には今の `CURATE_*` 送信に加えて `journal_append` で終了イベントを 1 行書かせ、watcher はその行を読む（メッセージは段階 2 の戻し先が使うので残す。§5 段階 2） | 定数は worker-monitoring.md Step 5.3 |
 | Step 5.3 curator ペインの close（id の再利用を照合してから閉じる） | (b) | 判定表 8 行をコードにする。close は dispatcher tier の公開クライアント経由（判断 3） | worker-monitoring.md Step 5.3 の close 判定表 |
 | Step 6 自動で承認・拒否しない | 不変条件 | watcher には承認・拒否の操作を持たせない | — |
-| Step 7 対象ゼロで停止する | (b) | 対象（ワーカー、curate 待ち、未配送の終端イベント、判定保留のワーカー）がすべてゼロなら完全アイドルに入る。broker の lifecycle イベントで起き直す | — |
+| Step 7 対象ゼロで停止する | (b) | ワーカー・curate 待ち・判定保留のワーカーがすべてゼロなら、ペイン操作を伴う手順（画面取得・一覧の突き合わせ）だけを止める。tick は止めず、終端イベントの配送、dispatcher 宛キューの滞留確認、heartbeat の更新は回し続ける。これらは lifecycle イベントを伴わずに発生するので、lifecycle イベントだけを起床条件にすると取りこぼす。今の `/loop` が対象ゼロで止まるのは AI ターンを節約するためで、AI を使わない watcher には止まる理由が無い | — |
 | `/loop` ディレクティブの正文固定フック | 退役 | `/loop` 自体が無くなるので不要（段階 2 以降。renga 面には残す） | `.hooks/check-loop-directive.sh`、`.dispatcher/references/loop-directive-guard.md` |
 | 監視ループのサイクル中に画面取得が省かれる | 構造で解消 | watcher は毎サイクル全ワーカーを取得し、サイクルごとに「ワーカー数・画面取得数」を events に 1 行残す | 2026-09-05 に、サイクル内の画面取得が 30 分以上ゼロのまま「異常なし」と結論し続けた実例がある |
 
@@ -202,7 +202,7 @@
 
 ## 5. 段階移行
 
-各段の戻し方は共通で、`monitoring_owner` を `llm` に戻し、今の `/org-start` 起動後の検証手順で `/loop 3m` を再武装する。watcher は `monitoring_owner` が自分でないと分かれば完全アイドルに入る。
+各段の戻し方は共通で、`monitoring_owner` を `llm` に戻し、今の `/org-start` 起動後の検証手順で `/loop 3m` を再武装する。watcher は `monitoring_owner` が `watcher` でも `shadow` でもないと分かれば、heartbeat の更新以外を止める。
 
 ### 段階 1: shadow 並走
 
@@ -214,16 +214,16 @@
 
 ### 段階 2: 監視の移管
 
-- やること: `monitoring_owner=watcher` にし、ディスパッチャー Claude の `/loop 3m` を止める。watcher が窓口への通知と終端イベントの配送を始める。incident が開いたときだけ Dispatcher AI を呼ぶ。窓口の `WORKER_COMPLETION_NOTED` / `WORKER_REOPENED` の送信と、curator の `CURATE_*` の送信は、state.db の読み書きに置き換える。
+- やること: `monitoring_owner=watcher` にし、ディスパッチャー Claude の `/loop 3m` を止める。watcher が窓口への通知と終端イベントの配送を始める。incident が開いたときだけ Dispatcher AI を呼ぶ。watcher は完了の受領を `runs.status` から、curate の終了を curator が書く終了イベントから読む。窓口の `WORKER_COMPLETION_NOTED` / `WORKER_REOPENED` と curator の `CURATE_*` の送信は段階 2 の間も残す（戻したときに LLM 側の手順がこれらを消費するため。worker-monitoring.md Step 2 / Step 5.3 (a)）。ディスパッチャー Claude は `monitoring_owner` が `llm` でない間、これらを受けても何もしない。
 - `/loop` が担っていた監視以外の役目の新しい持ち主:
   - push が使えないときにディスパッチャー宛の DELEGATE / CLOSE_PANE を取りに行く役目 → watcher が dispatcher 宛キューの滞留を監視する。既存の `tools/secretary_queue_watcher.py --owner dispatcher` の判定を流用する（`--owner` 引数は同ツールの `--help` にある）。滞留したらディスパッチャーペインへ `check_messages` を促す 1 行を送る。
   - curate 待ちの管理、終端イベントの配送、判断仰ぎの経過管理、対象ゼロでの停止 → すべて watcher（§2.1）。
 - 受け入れ条件:
-  - incident が無い時間帯のディスパッチャー AI の周期ターンが 0（ディスパッチャーセッションの transcript で、DELEGATE / CLOSE_PANE / incident に紐付かないターンを数える）。
+  - incident が無い時間帯のディスパッチャー AI の周期ターンが 0（ディスパッチャーセッションの transcript で、受信メッセージにも incident にも紐付かないターンを数える）。
   - fault injection で、watcher・AI 呼び出し・窓口のいずれを途中で kill しても、通知の二重送信や未解決 incident の取りこぼしが起きない。
   - 既知の誤検知 fixture と段階 1 の実績で、検知遅延・見逃し・誤った終了判定が今より悪くない。
   - watcher を kill すると、heartbeat の鮮度切れが attention watcher 経由で人間に届く。
-- 戻し方: `monitoring_owner=llm` に戻して `/loop 3m` を再武装する。窓口と curator の送信を戻す必要は無い。段階 2 の間も、LLM 側の手順書が `runs.status` を backstop として読めるように残しておく。
+- 戻し方: `monitoring_owner=llm` に戻して `/loop 3m` を再武装する。窓口と curator の送信は段階 2 の間も残してあるので、戻すのは `monitoring_owner` と `/loop` だけで済む。
 
 ### 段階 3: spawn / close の移管（範囲を広げた場合だけ）
 
