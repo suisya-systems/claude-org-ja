@@ -27,6 +27,10 @@
 #   - git reflog expire/delete --all/--expire=now   （audit trail 改変）
 #   - git stash の変更系                            （bare / push / save / pop /
 #     apply / branch / drop / clear / store / create。read-only の list / show のみ allow）
+#   - git add -A / --all / . （A を含むバンドル短オプションと ./ も同じ扱い）
+#     （worktree root の未追跡キャラクタデバイスで "can only add regular files"
+#     と失敗し、作業メモや .codex-home/ 等の巻き込み staging も起きる。
+#     代替は git add -u ＋ 新規ファイルの明示 add）
 #
 # 補足:
 #   - git push そのものはワーカーでは block-git-push.sh が先に止める。
@@ -46,9 +50,9 @@
 #     サブコマンド（list / show）のみで、それ以外は未知トークンも含め既定 deny。
 #     `git stash --help` / `-h` も allowlist 外なので deny になるが、ドキュメントは
 #     `git help stash`（サブコマンドが help なので判定対象外）で読めるため実害は無い。
-#   - stash の判定だけは他ブロックの loose match（segment_has_git_subcmd）ではなく
-#     extract_stash_subcommands による「git サブコマンド位置の厳密判定」を使う。
-#     "stash" は commit メッセージ等にリテラル語として現れやすいため。
+#   - stash と add の判定だけは他ブロックの loose match（segment_has_git_subcmd）ではなく
+#     extract_subcommand_args による「git サブコマンド位置の厳密判定」を使う。
+#     "stash" / "add" は commit メッセージ等にリテラル語として現れやすいため。
 #
 # 入力: stdin から PreToolUse JSON
 # 出力: 拒否時 exit 2 + stderr。許可時 exit 0。
@@ -307,12 +311,13 @@ segment_has_git_subcmd() {
   return 1
 }
 
+# 引数 $1 = 対象サブコマンド（stash / add）。
 # セグメント内の各 `git` 呼び出しについて、global option と（引用符除去で複数に
-# 割れた）パス値を読み飛ばしてサブコマンドを決め、それが `stash` のときだけ
-# 「stash の直後トークン」を 1 行出力する。サブサブコマンドが無い bare 形
-# （`git stash` / `git stash -u`）は空行を出力し、呼び出し側で deny 対象にする。
+# 割れた）パス値を読み飛ばしてサブコマンドを決め、それが対象のときだけ
+# 「対象より後ろのトークン列」（空白区切り、行末まで）を 1 行出力する。引数が無い
+# bare 形（`git stash`）は空行を出力し、呼び出し側で判定する。
 #
-# 他ブロックの segment_has_git_subcmd（loose match）を使わないのは、"stash" が
+# 他ブロックの segment_has_git_subcmd（loose match）を使わないのは、"stash" / "add" が
 # commit メッセージ等にリテラル語として現れやすく（例: `git commit -m "stash guard"`）、
 # loose match だと日常操作を巻き込むため。ここだけサブコマンド位置を厳密に取る。
 #
@@ -327,8 +332,8 @@ segment_has_git_subcmd() {
 #     `git -C "my dir" stash pop` のような空白入りパスでも stash に到達できる。
 #   - セグメント内の `git` トークンは全て走査する。flatten_substitutions が
 #     $(...) / `...` 本体を同一行へ連結するので `$(git stash pop)` もここで拾える。
-extract_stash_subcommands() {
-  awk '
+extract_subcommand_args() {
+  awk -v target="$1" '
     BEGIN {
       KNOWN = " add am annotate apply archive bisect blame branch bundle cat-file check-attr check-ignore checkout cherry-pick clean clone column commit commit-tree config count-objects credential describe diff difftool fetch filter-branch filter-repo for-each-ref format-patch fsck gc grep hash-object help init interpret-trailers lfs log ls-files ls-remote ls-tree maintenance merge merge-base mergetool mv name-rev notes p4 patch-id prune pull push range-diff read-tree rebase reflog remote repack replace request-pull reset restore rev-list rev-parse revert rm send-email shortlog show show-branch sparse-checkout status stripspace submodule svn switch symbolic-ref tag update-index update-ref var verify-commit verify-tag whatchanged worktree write-tree "
     }
@@ -340,12 +345,12 @@ extract_stash_subcommands() {
     function is_known(t) { return index(KNOWN, " " t " ") > 0 }
     {
       # インライン alias 定義（`git -c alias.s=stash s pop`）は、alias 本体が
-      # コマンド文字列に載っているので静的に判定できる。alias 値に stash を
-      # 含む形は「stash を別名で叩く」意図なので、サブコマンド位置の走査とは
+      # コマンド文字列に載っているので静的に判定できる。alias 値に対象を
+      # 含む形は「対象を別名で叩く」意図なので、サブコマンド位置の走査とは
       # 別に検出して deny 側へ倒す（走査側は alias 名 s を未知トークンとして
       # 読み飛ばすため、この検出が無いと素通りする）。
       for (i = 1; i <= NF; i++) {
-        if ($i ~ /^alias\.[^=]*=/ && index($i, "stash") > 0) { print "__alias__"; }
+        if ($i ~ /^alias\.[^=]*=/ && index($i, target) > 0) { print "__alias__"; }
       }
       for (i = 1; i <= NF; i++) {
         # Git for Windows は git.exe。ワーカー brief に Windows 環境の節がある
@@ -371,12 +376,14 @@ extract_stash_subcommands() {
             continue
           }
           if ($j !~ /^[a-z][a-z0-9-]*$/) { j++; continue }
-          if ($j == "stash") break
+          if ($j == target) break
           if (is_known($j) && loose == 0) { j = NF + 1; break }
           j++
         }
-        if (j <= NF && $j == "stash") {
-          if (j < NF) print $(j + 1); else print ""
+        if (j <= NF && $j == target) {
+          rest = ""
+          for (k = j + 1; k <= NF; k++) rest = rest (k > j + 1 ? " " : "") $k
+          print rest
         }
       }
     }
@@ -542,8 +549,8 @@ for segment in "${SEGMENTS[@]}"; do
   # allowlist 方式: 調査用の read-only（list / show）だけ通し、それ以外は
   # bare / push / save / pop / apply / branch / drop / clear / store / create も
   # 未知トークンも既定 deny にする。
-  while IFS= read -r stash_sub; do
-    case "$stash_sub" in
+  while IFS= read -r stash_args; do
+    case "${stash_args%% *}" in
       list|show)
         : # 調査用 read-only: worktree も refs/stash も変えない
         ;;
@@ -551,7 +558,22 @@ for segment in "${SEGMENTS[@]}"; do
         deny_with_reason "git stash の変更系（bare stash / push / save / pop / apply / branch / drop / clear / store / create）は禁止です。このリポジトリの worktree root には /dev/null 由来のキャラクタデバイスがあり、git stash -u が途中失敗したまま別の stash を pop して不完全復元になる事故が起きています。代替: 退避は作業ブランチへの一時 commit（git add -u で確定し、戻すときは git reset --soft HEAD~1）、HEAD 時点の内容参照は git show HEAD:<path>、並行作業は別 worktree を使ってください。git diff > <name>.patch は staged / 未追跡ファイルを取りこぼすため単独の退避手段にはなりません。調査用の git stash list / git stash show は許可しています。なお stash を実行していないのにこれが出た場合は、コマンド文字列中のリテラル（commit メッセージ / grep パターン / PR 本文など）が git + stash の並びに一致しています。その場合は文字列から git トークンを外して再実行してください（例: grep -rn \"stash pop\"）。"
         ;;
     esac
-  done < <(printf '%s\n' "$flat" | extract_stash_subcommands)
+  done < <(printf '%s\n' "$flat" | extract_subcommand_args stash)
+
+  # 11) git add -A / --all / .（worktree 全体の staging）
+  # 対象: -A / --all / . / ./ と、A を含むバンドル短オプション（-An 等）。
+  # インライン alias（__alias__）は引数を読めないので安全側で deny する。
+  while IFS= read -r add_args; do
+    # read -a で分割する（for tok in $add_args だと `git add *` が hook の cwd で glob 展開される）
+    read -ra add_toks <<< "$add_args"
+    for tok in ${add_toks[@]+"${add_toks[@]}"}; do
+      case "$tok" in
+        __alias__|-A*|--all|.|./|-[a-zA-Z]*A*)
+          deny_with_reason "git add -A / --all / . は禁止です。worktree root には未追跡のキャラクタデバイスがあり \"can only add regular files\" で失敗するうえ、作業メモや .codex-home/ 等を巻き込んで staging します。代替: 追跡済みの変更は git add -u、新規ファイルはパスを明示して git add <path>。なお add を実行していないのにこれが出た場合は、コマンド文字列中のリテラル（commit メッセージなど）が git + add + -A / . の並びに一致しています。文字列から git トークンを外して再実行してください。"
+          ;;
+      esac
+    done
+  done < <(printf '%s\n' "$flat" | extract_subcommand_args add)
 done
 
 exit 0
