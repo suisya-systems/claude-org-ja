@@ -1,6 +1,6 @@
 # skill-audit — 規律の由来
 
-[`.claude/skills/skill-audit/SKILL.md`](../SKILL.md) と [`audit-checklist.md`](audit-checklist.md) から移した「なぜこの規律があるか」の記録。規律そのものは本文に残してあり、ここにあるのは由来だけ。手順を実行するために読む必要はない。
+[`.claude/skills/skill-audit/SKILL.md`](../SKILL.md) と [`.claude/skills/skill-audit/references/audit-checklist.md`](audit-checklist.md) から移した「なぜこの規律があるか」の記録。規律そのものは本文に残してあり、ここにあるのは由来だけ。手順を実行するために読む必要はない。
 
 ## 1. 発火の閾値と `org-*` の除外（Step 1）
 

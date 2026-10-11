@@ -212,7 +212,7 @@ curation context では空配列でよい。raw ファイル名から日付等�
    `<!-- curated -->` + 改行を prepend して同じパスに Write し直す（= read → prepend → write）。
    マーカー付与は **archive に move した後のファイルに対して**行う。active な `knowledge/raw/` 配下のファイルは絶対に書き換えない。
 
-   シェルで付与しない（`.md.tmp` 経由の上書き `mv` は `mv -i` alias で止まり、`!` は zsh の history expansion で壊れる）。やむを得ずシェルを使うときは `command mv -f` と `chr(33)` でマーカーを組み立てる。理由は [`references/rationale.md`](references/rationale.md) §2。
+   シェルで付与しない（`.md.tmp` 経由の上書き `mv` は `mv -i` alias で止まり、`!` は zsh の history expansion で壊れる）。やむを得ずシェルを使うときは `command mv -f` と `chr(33)` でマーカーを組み立てる。理由は [`.claude/skills/org-curate/references/rationale.md`](references/rationale.md) §2。
 
 ファイルが archive/ に存在すること自体が「curated 済み」のシグナルだが、視覚的連続性のためにマーカーも付与する。`tools/check_curate_threshold.py` の `raw_active` カウントは archive/ を除外するため、move しただけでも次回はカウント対象から外れる。
 

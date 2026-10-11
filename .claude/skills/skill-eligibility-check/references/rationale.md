@@ -4,7 +4,7 @@
 
 ## 1. 判定を 1 つのスキルに集める理由
 
-skill 化の判定基準が org-retro と org-curate の 2 箇所に分散すると必ず乖離するため、このスキルを判定の正本として双方から呼ぶ。知見の統合基準（[`org-curate/references/knowledge-standards.md`](../../org-curate/references/knowledge-standards.md)）には skill 化判定を重複定義しない。
+skill 化の判定基準が org-retro と org-curate の 2 箇所に分散すると必ず乖離するため、このスキルを判定の正本として双方から呼ぶ。知見の統合基準（[`.claude/skills/org-curate/references/knowledge-standards.md`](../../org-curate/references/knowledge-standards.md)）には skill 化判定を重複定義しない。
 
 ## 2. 推奨の閾値を 3 点に置いた理由（Step 2）
 

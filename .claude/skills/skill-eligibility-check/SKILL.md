@@ -18,7 +18,7 @@ allowed-tools:
 作業パターンが新規 work-skill として切り出す価値があるかを 5 シグナルで採点し、
 3 値（skill_recommend / candidate_queue / curated_only）で返す。
 このスキル自体は skill 生成も人間問い合わせもしない — 判定専用。
-org-retro と org-curate の両方がこのスキルを呼ぶ（理由は [`references/rationale.md`](references/rationale.md) §1）。
+org-retro と org-curate の両方がこのスキルを呼ぶ（理由は [`.claude/skills/skill-eligibility-check/references/rationale.md`](references/rationale.md) §1）。
 
 ## 入力契約
 
@@ -66,7 +66,7 @@ output_format: <成果物の再利用可能フォーマット / なければ空>
 | 2 点 | `candidate_queue` | 候補止まり。raw に追記し次回の raw_reappearance を待つ |
 | 1 点以下 | `curated_only` | curated ノートのままで十分 |
 
-閾値の理由は [`references/rationale.md`](references/rationale.md) §2。
+閾値の理由は [`.claude/skills/skill-eligibility-check/references/rationale.md`](references/rationale.md) §2。
 
 ## Step 3: 出力
 
@@ -97,7 +97,7 @@ proposed_skill_name: <pattern_name>    # skill_recommend / candidate_queue の�
 
 書き込み後も呼び出し元には出力 YAML を返す（キュー追記は副作用として完了）。
 このスキルは判定とキュー追記だけを行う。decision ごとの以降の扱いは呼び出し元が決める
-（[`org-retro`](../org-retro/SKILL.md) Step 4.2 / [`org-curate`](../org-curate/SKILL.md) Step 2.5）。
+（[`.claude/skills/org-retro/SKILL.md`](../org-retro/SKILL.md) Step 4.2 / [`.claude/skills/org-curate/SKILL.md`](../org-curate/SKILL.md) Step 2.5）。
 
 ## 重複呼び出しの扱い
 

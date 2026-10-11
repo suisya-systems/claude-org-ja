@@ -90,4 +90,4 @@ description 中のトリガ語（発動条件）を skill 同士で比べる:
 - `skill-c`, `skill-d`, ...
 ```
 
-しきい値（90 日 / 50% / 3 項目中 2 つ）の理由は [`rationale.md`](rationale.md) §3。運用で乖離が見えたら調整し、`knowledge/raw/` に記録する。
+しきい値（90 日 / 50% / 3 項目中 2 つ）の理由は [`.claude/skills/skill-audit/references/rationale.md`](rationale.md) §3。運用で乖離が見えたら調整し、`knowledge/raw/` に記録する。

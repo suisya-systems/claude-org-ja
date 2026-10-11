@@ -55,7 +55,7 @@ work_skill_count=$(find .claude/skills -maxdepth 2 -name SKILL.md \
 - `cand_count >= 5` **または** `work_skill_count >= 20` なら続行
 - どちらも満たさなければ終了（このとき報告は不要）
 
-閾値と `org-*` 除外の理由は [`references/rationale.md`](references/rationale.md) §1。
+閾値と `org-*` 除外の理由は [`.claude/skills/skill-audit/references/rationale.md`](references/rationale.md) §1。
 
 > **カウント定義の同期（重要）**: 上記 2 つのカウント定義（pending は
 > `^- \*\*status\*\*: pending` の行一致 **かつコードフェンス外**（行頭 `` ``` `` /
@@ -75,7 +75,7 @@ work_skill_count=$(find .claude/skills -maxdepth 2 -name SKILL.md \
 > `CANDIDATE_ENTRY_PATHS` と一致することも検査する）。
 
 `deferred`（人間が見送った候補）は awk の完全一致から外れるので数えない。見送られた候補を
-`pending` → `deferred` に更新する手順は [`org-retro`](../org-retro/SKILL.md) Step 4.2 の 4（ワーカー委譲経由）、
+`pending` → `deferred` に更新する手順は [`.claude/skills/org-retro/SKILL.md`](../org-retro/SKILL.md) Step 4.2 の 4（ワーカー委譲経由）、
 status の定義は [`knowledge/skill-candidates.md`](../../../knowledge/skill-candidates.md)「status の遷移」。
 
 ## Step 2: 廃止候補の洗い出し
@@ -147,4 +147,4 @@ skill ペアを総当たりして以下を確認する:
 2. 窓口が `knowledge/skill-candidates.local.md`（実エントリ）を見て手動で起動する
 3. 人間が「棚卸しして」と依頼
 
-`/loop` などの時間ベース起動はしない。提案までに留め自動変更しない理由とあわせて [`references/rationale.md`](references/rationale.md) §2。
+`/loop` などの時間ベース起動はしない。提案までに留め自動変更しない理由とあわせて [`.claude/skills/skill-audit/references/rationale.md`](references/rationale.md) §2。
