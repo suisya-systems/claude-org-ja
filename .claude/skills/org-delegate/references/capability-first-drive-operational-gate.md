@@ -5,19 +5,20 @@
 §1 → §2 → §3 を順に適用する**（承認が揃った経路が**同タブ生存**を判定する評価順と真理値表は
 **§1-2 が正本**）。適用先の一覧は §6。
 
-> **本ファイルが担うのは 3 ゲートのうち operational gate 1 つだけ**。
-> [`docs/contracts/backend-interface-contract.md`](../../../../docs/contracts/backend-interface-contract.md)
-> の T-§ratification は「**Three gates apply, with different subjects, and they MUST NOT be
-> conflated**」と書き、**ratification gate**（主語＝backend contract。契約改定を批准するかの人間判断）/
-> **operational gate**（主語＝harness。capability 広告列挙を初めて観測した時点の停止と人間報告）/
-> **production-activation gate**（主語＝deployment。server × mcp-peer 双方 2.0 系での実機 dogfood と
-> 人間確認）を分けている。同節は「Ratifying the amendment does not discharge this gate, and
-> satisfying it does not ratify the amendment」とも書く。
->
-> **本ファイルは何も批准しないし、何も有効化しない。** 批准可否の判断と実機 dogfood は人間の作業で、
-> どのスキルもこのファイルの手順で代行できない。ファイル名を `capability-first-drive-…` に限定して
-> あるのはそのため（`ratification` / `production-activation` と読み違えられないように）。
-> production-activation gate との関係だけは §4 で扱う（未記録時の縮退規則がここに要るため）。
+## 目次
+
+- [1. 版判定](#1-版判定--列挙-1-回につき-1-度だけ決める) / [1-1. marker を観測したら旧版形として読まない](#1-1-marker-を-1-件でも観測したら旧版形として読み替えてはならないmust) / [1-2. 同タブ生存の三値判定](#1-2-同タブ生存の三値判定と評価順の正本)
+- [2. 記録の照会](#2-記録の照会--既に通したゲートで毎回止めない)
+- [3. 分岐](#3-分岐--呼び出しコンテキストで-2-つに分かれる)（3-A interactive-action / 3-B monitoring-read-only / 3-B-1 登録待ち型 / 3-B-2 送信失敗後の復旧）
+- [4. production-activation gate との関係](#4-production-activation-gate-との関係未記録時の縮退)
+- [5. イベント種別](#5-イベント種別--messaging-ゲートの-3-つを別々の記録で管理する)
+- [6. 適用先](#6-適用先--list_peers-を呼ぶ経路とその分岐)
+
+> **本ファイルが担うのは契約 T-§ratification の 3 ゲート（ratification / operational /
+> production-activation）のうち operational gate だけで、何も批准せず、何も有効化しない。** 批准の判断と
+> 実機 dogfood は人間の作業で、どのスキルもこのファイルの手順で代行できない。production-activation gate
+> との関係は §4 で扱う。3 ゲートの区別とファイル名の理由は
+> [`docs/design/capability-first-drive-gate-maintenance.md`](../../../../docs/design/capability-first-drive-gate-maintenance.md) §1。
 
 > **輸送層（transport）両系**: 本文は tool 名を修飾なしの `list_peers` / `send_message` /
 > `list_panes` で書く。実際に呼ぶときは使用中 transport の完全修飾名に読み替える
@@ -37,23 +38,23 @@
 | `same_tab` / `tab` の**どちらか一方でも**載っているレコードが **1 件でもある** | **capability 形**（2.0 系） | **発動する**（§2 へ） |
 | **全レコード**で `same_tab` と `tab` が **両方欠落** | **旧版 fallback**（非広告 backend） | **発動しない**。従来どおり無停止で進む |
 
-旧版 fallback は現在配備されている全 backend（`org-broker` を含む）が通る経路で、**既存運用は一切
-変わらない**。契約 T-§ratification も「The operational gate is **not** triggered on the
-non-advertising path」と明記している。
+旧版 fallback は capability を広告しない backend（現行では `org-broker`）が通る経路で、本ゲートは
+発動せず既存運用は変わらない（契約 T-§ratification）。renga は 2.0.0 以上が必須
+（[`tools/check_renga_compat.py`](../../../../tools/check_renga_compat.py) の `MIN_REQUIRED_VERSION`）で、
+2.0 系は `cross_tab_peers` を広告し `list_peers` のレコードに `same_tab` / `tab` を載せる
+（[`.claude/skills/org-delegate/references/renga-error-codes.md`](renga-error-codes.md) の「2.0 系の capability と、それが変える前提」）ので、
+renga の列挙は通常上段の capability 形になる。どちらに当たるかは backend 名ではなく、上表の観測で決める。
 
 ### 1-1. marker を 1 件でも観測したら、旧版形として読み替えてはならない（MUST）
 
-契約 T-§cap は marker の検出規則を harness 側の義務として次のように書く。
+契約 T-§cap は harness 側の義務として次の 2 つを定める（条文の引用は
+[`docs/design/capability-first-drive-gate-maintenance.md`](../../../../docs/design/capability-first-drive-gate-maintenance.md) §2）。
 
-- **capability 形の解釈を強制する**: marker は「the presence of **either** field on **any** record
-  of an enumeration is sufficient to detect the capability」であり、「a record carrying `same_tab`
-  or `tab` **proves that enumeration is cross-tab-shaped whatever the query reported**, and reading
-  it as legacy is the exact failure this amendment exists to prevent」。
-- **fail-safe で上書きすることを禁じる**: fail-safe default 節の *Precedence over the marker
-  definition* は「this fail-safe applies only where **no** marker is observed at all. Where at least
-  one of `same_tab` / `tab` is present on at least one record of the enumeration, T-§2.2-fields
-  governs, the capability-advertising path applies, and **the fail-safe MUST NOT be invoked to
-  override it**」と書く。
+- **capability 形の解釈を強制する**: 列挙のどれか 1 件のレコードに `same_tab` / `tab` のどちらかが
+  載っていれば、照会結果が何であれ、その列挙はタブ横断の capability 形である。旧版形として読むことが、
+  まさに契約が防ごうとしている誤りである。
+- **fail-safe で上書きすることを禁じる**: 旧版形へ倒す fail-safe は marker を 1 件も観測しないときにしか
+  使えない。marker が 1 件でもあれば capability 経路が適用され、fail-safe でそれを上書きしてはならない。
 
 したがって、本ゲートが発動した経路で
 
@@ -101,11 +102,9 @@ non-advertising path」と明記している。
    ある**」と定める。未記録の間に控えるのは cross-tab addressing（他タブピアへの送信・他タブ由来 id の
    使用）であって、**同タブへ絞り込む本節の選別そのものではない**。本節の後段はすべて同タブ集合にしか
    作用しない（＝行動を狭める操作である）ので、`first_drive` の承認だけで到達する。
-5. **旧版 fallback**（§1 の下段。現在配備の全 backend — `org-broker` を含む — はここ）→ **従来の
-   `name` 一致のまま**で、本節は適用しない。契約 T-§ratification は「The operational gate is **not**
-   triggered on the non-advertising path」と書き、同節は「A harness whose enumerations are all
-   legacy-shaped — which is every currently deployed backend, `org-broker` included — proceeds exactly
-   as it does today; nothing about existing operation changes」と続ける。
+5. **旧版 fallback**（§1 の下段。非広告 backend — 現行では `org-broker` — はここ。renga 2.0 系は
+   段 3 / 4）→ **従来の `name` 一致のまま**で、本節は適用しない（契約 T-§ratification: 非広告経路では
+   operational gate は発動せず、既存運用は変わらない）。
 
 **この 5 段が評価順の正本である。各 call site にこれと別の順序を書いてはならない（MUST NOT）。**
 
@@ -153,14 +152,6 @@ caller のタブ値だと確定できるとき、欠落レコードの `tab` を
 > ついて「the harness MUST record the outcome as **indeterminate** and escalate it; it MUST NOT resolve
 > it as "closed"」と書く。**unknown を不在に潰すことが契約違反**であり、誤 `WORKER_PANE_EXITED` の
 > 直接の原因になる。unknown は journal に残し、人間（窓口）へ上げる。
-
-> **org-suspend の ‡ との対応（往復して読むための注）**: org-suspend は unknown を「**他タブ扱いに
-> 倒す**」と書く。あちらは broadcast の宛先選定なので、他タブ扱い＝送らない＝**不作為**が安全側になる。
-> **本節は生存判定なので、unknown を「他タブ扱い」に潰すと *不在* に化け、安全側が反転する**。両者は
-> 上位形「unknown では *その unknown を根拠にした作用* を起こさない」で一致しており、帰結だけが経路
-> ごとに違う。**経路ごとの帰結を、もう一方の文面からコピーしないこと。** org-suspend 自身も生存判定の
-> 面では本節と同じ向きに倒しており（Phase 2 / Phase 4 の「消滅済みとして記録せず判定不能のまま残す」
-> `indeterminate`）、矛盾しているのは字面だけである。
 
 #### 1-2-c. 集約 — 名前 N に一致するレコード集合 `S(N)` で決める
 
@@ -217,7 +208,7 @@ address form」、T-§2.2-fields は `same_tab` について「Never used as an 
 #### 1-2-d. 自分自身の identity を名前引きで確定してはならない（MUST NOT）
 
 **適用範囲**: capability 形かつ 1-2-a の段 4 に到達した列挙にのみ適用する。**旧版 fallback では従来
-どおり**（§1 / 段 5。現行配備は全てこちらで、挙動は変わらない）。
+どおり**（§1 / 段 5）。
 
 T-§2.2 は「the §2.2 distinction from `list_panes` (excludes the caller, hides geometry)」を Unchanged
 として維持する。**したがって自分の `name` に一致したレコードが自分である保証は無い**（caller を除外
@@ -258,17 +249,10 @@ T-§2.2 は「the §2.2 distinction from `list_panes` (excludes the caller, hide
 
 #### 1-2-e. call site 側に書く形
 
-§6 の表の規範文と既存の未承認縮退段落は**そのまま残し**、その直後に**適用結果だけ**を 2〜5 行で書く。
-判定条件・評価順・三値の定義を再掲しない（MUST NOT）:
-
-```text
-**capability 形かつ承認済み（§2 の `first_drive` が `recorded`）のときは、共有 reference §1-2 の
-三値判定を <対象名> に適用する。「在」のときだけ <この経路の後段>。「不在」は <経路の既定処理>、
-「unknown」は <作用を起こさずに報告>。**（判定手順と評価順の正本は §1-2。ここに重ねて書かない）
-```
-
+§6 の表の規範文と既存の未承認縮退段落は残し、その直後に**適用結果だけ**を 2〜5 行で書く。
 **書いてはならないもの（MUST NOT）**: 独自の same-tab poll 規範 / 独自の再送予算 / 三値表・版判定条件・
-承認条件の複製 / 未承認のまま 1-2-b へ抜ける記述。
+承認条件の複製 / 未承認のまま 1-2-b へ抜ける記述。文面の雛形は
+[`docs/design/capability-first-drive-gate-maintenance.md`](../../../../docs/design/capability-first-drive-gate-maintenance.md) §4。
 
 ---
 
@@ -295,18 +279,9 @@ python3 ../tools/capability_gate.py --gate first_drive
   logged distinguishably: only the former is evidence about the backend, and only the latter is a
   reason to re-probe」と書く。`undetermined` のときだけ再照会に意味がある。
 - **照会は [`tools/capability_gate.py`](../../../../tools/capability_gate.py) を使う**。インラインの
-  `python3 -c "from tools.state_db import ..."` は使わない。理由は 2 つあり、どちらも黙って壊れる:
-  - **cwd 依存**: ディスパッチャーの cwd は `.dispatcher/` なので、リポジトリ root が `sys.path` に
-    無く `from tools.state_db import …` が `ModuleNotFoundError` になる。ツール側は自身の `__file__`
-    から root を解決するので、どの cwd からでも同じ答えを返す。
-  - **部分一致**: `payload_json LIKE '%capability_first_drive%'` は、**別のイベントの自由記述
-    `note` がゲート名に言及しているだけ**でも一致し、ゲートを恒久的に「通過済み」にしてしまう。
-    ツールは `json_extract(payload_json, '$.kind')` の完全一致で引く。
-- DB のパスはツール側が `resolve_state_db_path()` で解決する（`.state/state.db` 直書きにしない）。
-  記録側の `tools/journal_append.py` と同じ解決なので、`STATE_DB_PATH` で別 DB に向いている環境でも
-  記録した DB と照会する DB がずれない。
-- **直接クエリで引く**（直近 N 件の走査で代用しない）。件数を区切ると、通過記録より後にイベントが
-  N 件積まれた時点で未通過に戻り、一度きりのはずのゲートが再発動する。
+  `python3 -c "from tools.state_db import ..."` や `.state/state.db` の直書き、直近 N 件の走査で
+  代用しない（cwd 依存・部分一致・件数の区切りで黙って壊れる。理由は
+  [`docs/design/capability-first-drive-gate-maintenance.md`](../../../../docs/design/capability-first-drive-gate-maintenance.md) §5）。
 
 ---
 
@@ -445,13 +420,6 @@ spawn / boot 直後に「目的のピアが `list_peers` に現れるまで poll
   （journal + 窓口 escalate、「閉じた」に倒さない）へ倒す。
 - 同タブの `pane_exited` を観測できた場合だけ、従来どおり lifecycle を進めてよい。
 
-> **参照の所在（双方向に繋がっている）**: 規範は本節が持ち、
-> [`.claude/skills/org-delegate/references/renga-error-codes.md`](renga-error-codes.md) の messaging
-> 復旧手順は**その `list_peers` を引き直す step の前に本節へのポインタを置いている**。したがって
-> `[pane_not_found]` を受けてそちら**だけ**を読んだ役割も本節に到達する。復旧手順側が持つのは
-> 「先に §3-B-2 を適用し、その結果を本手順へ渡す」というポインタだけで、判定条件と縮退規則は
-> 本節に一元化してある（二重管理しない）。
-
 > **`capability_first_drive_pending` は承認記録ではない。** 「報告は済ませた」ことだけを表す
 > 重複抑止の印であり、これがあっても capability 経路で行動してよいことにはならない。承認は
 > §3-A の `capability_first_drive`（人間確認つき）だけが与える。
@@ -513,15 +481,9 @@ about pane control」と定めており、**どちらの系統も他方の証拠
 
 ## 6. 適用先 — `list_peers` を呼ぶ経路と、その分岐
 
-各 call site には、`list_peers` 呼び出しの直前に次の規範文を置く。リンクの表示は
-リポジトリ root 形で固定し、target だけを各ファイルからの相対パスにする
-（[`docs/contributing/markdown-conventions.md`](../../../../docs/contributing/markdown-conventions.md)）:
-
-```text
-**list_peers の直前に
-[`.claude/skills/org-delegate/references/capability-first-drive-operational-gate.md`](RELATIVE_PATH)
-を Read し、<分岐名> の分岐を適用する。**
-```
+各 call site は `list_peers` 呼び出しの直前に本ファイルを Read し、下表の「分岐」を適用する
+（call site に置く規範文の雛形は
+[`docs/design/capability-first-drive-gate-maintenance.md`](../../../../docs/design/capability-first-drive-gate-maintenance.md) §4）。
 
 下表の「縮退先」列は **capability 形かつ未承認のときだけ**を規定する。**承認が揃ったあとの判定は、
 `monitoring-read-only` の全経路（表 #2 / #2b / #3 / #4 / #5 / #6 / #7 / #8 / #9）について §1-2 が
@@ -538,8 +500,7 @@ owner なのは `list_panes` / `pane_exited` / `list_peers` という**独立し
 `WORKER_PANE_EXITED` を申告してよいか、および「連続 2 サイクル同じ形が続いた時点で」という
 継続要件（同 (3-a-2)）— だけである。**「#9 には（承認済み路でも）§1-2 が掛からない」と読んではならない。**
 逆に掛かる範囲も広げない: 本責務分割が効くのは capability 形かつ §2 の `first_drive` が `recorded` の
-列挙だけで、旧版 fallback（現行配備の全 backend。§1-2-a 段 5）では従来の `name` 一致のまま今日の挙動は
-変わらない。
+列挙だけで、旧版 fallback（非広告 backend。§1-2-a 段 5）では従来の `name` 一致のまま挙動は変わらない。
 
 **自分自身の identity を名前で引く経路（#2b / #4）には §1-2-d が掛かる**（`list_peers` は caller を
 除外するので、自役割名に一致したレコードは自分ではありえない）。**#9 を含む他の経路には §1-2-b /
@@ -555,45 +516,18 @@ owner なのは `list_panes` / `pane_exited` / `list_peers` という**独立し
 | 4 | [`.claude/skills/dispatcher-resume/SKILL.md`](../../dispatcher-resume/SKILL.md) Step 0 手順 4（自分の `peer_id` 取得） | dispatcher / `.dispatcher/` | monitoring-read-only | 列挙から `peer_id` を採らない。identity は §1-2-d の caller pane id 取得規則（`RENGA_PANE_ID` を起点に `list_panes` で同一 id を照合）で確定し、`peer_id` は未取得のまま進む。**`caller-id 未確定` なら `dispatcher_pane_id` も渡さず**（「未指定 = 保持」で既存値を温存）、identity 未確認を secretary へのブリーフィングに明示して続行判断を仰ぐ |
 | 5 | 同 `already_consumed` 分岐（監視対象が live か） | dispatcher / `.dispatcher/` | monitoring-read-only | 列挙を live 判定に使わない。`list_panes` の `role == "worker"` と `.state/dispatcher/curate-inflight.json` の有無だけで分岐する |
 | 6 | 同 Step 4（ワーカーのペイン生存確認） | dispatcher / `.dispatcher/` | monitoring-read-only | 列挙を不存在の根拠にしない。`list_panes` + events テーブルの報告痕跡で判定し、確定できなければ `WORKER_PANE_EXITED` を送らない |
-| 7 | [`.dispatcher/references/spawn-flow.md`](../../../../.dispatcher/references/spawn-flow.md) 3-4（新ピア出現待機。**delegate-plan helper の `after_spawn[]` 経路も同じ call site** — 入口は下の追加 call site 表を見る） | dispatcher / `.dispatcher/` | monitoring-read-only | 列挙を peer 登録の ground truth にしない（§3-B-1: `worker-{task_id}` は別 org の並走タブに同名で実在しうる）。readiness は §3-B-1 の send-as-probe で判定する（3-5 の指示送信そのものを probe にし再送。送達成功で 3-5 は消化済み＝二度送らない） |
+| 7 | [`.dispatcher/references/spawn-flow.md`](../../../../.dispatcher/references/spawn-flow.md) 3-4（新ピア出現待機。**delegate-plan helper の `after_spawn[]` 経路も同じ call site** — 入口は `.dispatcher/CLAUDE.md` の `after_spawn[]` 要約） | dispatcher / `.dispatcher/` | monitoring-read-only | 列挙を peer 登録の ground truth にしない（§3-B-1: `worker-{task_id}` は別 org の並走タブに同名で実在しうる）。readiness は §3-B-1 の send-as-probe で判定する（3-5 の指示送信そのものを probe にし再送。送達成功で 3-5 は消化済み＝二度送らない） |
 | 8 | [`.dispatcher/references/pane-close.md`](../../../../.dispatcher/references/pane-close.md) 5-4（curator の boot 確認 poll） | dispatcher / `.dispatcher/` | monitoring-read-only | 列挙を登録確認に使わない（§3-B-1）。readiness は §3-B-1 の send-as-probe で判定する（5-5 の `/org-curate` 指示そのものを probe にし既存の 3 回 retry で再送。送達成功で 5-5 は消化済み）。retry を使い切れば従来どおり破棄して curate を skip |
 | 9 | [`.dispatcher/references/worker-monitoring.md`](../../../../.dispatcher/references/worker-monitoring.md) (3-a-1) 観測不能フォールバック / (3-a-2) 裏取り表 | dispatcher / `.dispatcher/` | monitoring-read-only | (3-a-2) の `list_peers` 列は **unknown** として読む（在/不在のどちらとしても数えない）。(3-a-1) の peer 経路フォールバックからも `list_peers` を外し、**events テーブルの報告痕跡のみ**で継続する |
 
 [`.claude/skills/org-down/SKILL.md`](../../org-down/SKILL.md) は `/org-suspend` の全 Phase を実行するので
 #1 / #1b に推移的に到達する。org-down も人間が起動する flow なので分岐は同じ **interactive-action**。
 
-### 上表に行を持たない追加 call site — 配線先の所在
+上表のほかに、次の 3 つも本ゲートの call site である。いずれも規範は配線先のファイル自身が持つ。
 
-棚卸しで見つかった**追加の実行 call site 3 つ**は、上表の行ではなく次の場所に配線してある。
-いずれも実在する経路なので、探すときはここを見る。
+- `.dispatcher/CLAUDE.md` の delegate-plan `after_spawn[]` 要約（表 #7 の別入口）
+- [`.claude/skills/org-delegate/references/renga-error-codes.md`](renga-error-codes.md) の messaging 復旧手順（規範の owner は §3-B-2）
+- [`.claude/skills/org-attach/SKILL.md`](../../org-attach/SKILL.md) の表示ラベル突き合わせ（`monitoring-read-only`）
 
-| 経路 | 規範の所在 / 配線先 |
-|---|---|
-| `.dispatcher/CLAUDE.md` の delegate-plan `after_spawn[]` 要約 | **表 #7 と同じ call site の別入口**。`claude-org-runtime` の delegate-plan helper が `list_peers` 待ちを**機械生成した plan 要素として emit する**ため、helper 経路に乗ったディスパッチャーは [`.dispatcher/references/spawn-flow.md`](../../../../.dispatcher/references/spawn-flow.md) 3-4 を読まずに列挙する。emitter は ja の外にあるので **ja 内の介入点はこの要約**で、同ファイルの `after_spawn[]` 節に §3-B の適用と §1-2 の適用結果（「在」でのみゲートを開け、数値 `id` を控える）を置いてある |
-| [`.claude/skills/org-delegate/references/renga-error-codes.md`](renga-error-codes.md) の messaging 復旧手順 | **規範の owner は §3-B-2**（縮退は復旧手順に伝播する = 引き直した列挙の数値 id で他タブへ再送しない / 消失を死亡確定の根拠にしない）。復旧手順側は `list_peers` を引き直す step の前に §3-B-2 へのポインタだけを持ち、規則を複製しない |
-| [`.claude/skills/org-attach/SKILL.md`](../../org-attach/SKILL.md) の表示ラベル突き合わせ | **分岐は `monitoring-read-only`**。結果は attach コマンドの**ラベル生成にしか使わない**（join key は `list_panes` の pane_id）ので危険度は最も低いが、全タブ列挙では他 org のペインに自 org のラベルを付けて人間に提示しうる。**縮退先**: 列挙を破棄し、pane-id join とラベル（`list_panes` 由来）だけで継続する — 落ちるのは peer 名 / cwd の補足だけで、attach 可否・join・lifecycle 判定には波及させない |
-
-**#7 / #8 の per-site 適用行**: 上表の owner 規定により §1-2 は #7 / #8 にも規範として掛かっており
-（両経路とも呼び出し直前に本ファイルを Read する義務があるので §1-2-c の「登録待ち型は 在 のときだけ
-ゲートを開ける（MUST）」に到達する）、**加えて両ファイルの本文にも承認済み路の適用結果行を置いてある**
-（[`.dispatcher/references/spawn-flow.md`](../../../../.dispatcher/references/spawn-flow.md) 3-4 /
-[`.dispatcher/references/pane-close.md`](../../../../.dispatcher/references/pane-close.md) 5-4）。
-そちら**だけ**を読んだ役割も適用結果に到達する。各 per-site 行が書くのは §1-2-e のとおり
-**適用結果だけ**で、在の件数・評価順・真理値表・再送予算はいずれも本ファイル側にしか無い。
-
-runtime 側（`claude_org_runtime` の delegate-plan helper が `list_peers` 再実行を指示する
-`target_tab_mismatch` / `tab_ambiguous` / `pane_not_found` の復旧文言）は ja リポジトリの外なので、
-本 reference では配線できない。
-
-### 対象外にした `list_peers` の言及
-
-以下は「役割が手順として `list_peers` を実行する箇所」ではないので、本ゲートを配線しない。
-
-| 箇所 | 対象外の理由 |
-|---|---|
-| `.claude/skills/org-setup/references/permissions.md` の `mcp__renga-peers__list_peers` 行、および各スキル frontmatter の `allowed-tools` | 権限宣言であって呼び出しではない。実行時に列挙結果を受け取らないので、捨てるべき結果が存在しない |
-| [`docs/contracts/backend-interface-contract.md`](../../../../docs/contracts/backend-interface-contract.md) / `docs/verification.md` / `docs/overview-technical.md` の言及 | ツールの意味論・適合条件を**記述**する契約文および説明文。手順ではない |
-| [`.claude/skills/org-delegate/references/renga-error-codes.md`](renga-error-codes.md) の Known codes 表・capability 説明・シェル例のコメント | エラーコードの**意味**の記述。実行手順は同ファイルの messaging 復旧 step で、そちらは対象外ではなく **§3-B-2 が owner**（上の「上表に行を持たない追加 call site」表を見る） |
-| `.dispatcher/CLAUDE.md` の「ワーカーは `list_peers` で窓口を自動発見する」 | ワーカー側の事実の記述。ディスパッチャーの手順ではない（ワーカーに `list_peers` を指示する文書はリポジトリ内に存在しない） |
-| `notes/**` / `docs/design/**` の設計メモ・監査メモ、`docs/operations/**` / `docs/sandbox-probe/**` の runbook | 運用手順ではない / 人間オペレーター向けの一回性 runbook であって役割の常設手順ではない（[`docs/contributing/markdown-conventions.md`](../../../../docs/contributing/markdown-conventions.md) の in-scope からも外れる） |
-| `tools/**` の定数・テスト fixture・generator golden | コード上の tool 名定数とテストデータ。実行時に列挙結果を受け取らない |
+配線先の詳細と、配線対象から外した `list_peers` の言及の一覧は保守用の台帳
+[`docs/design/capability-first-drive-gate-maintenance.md`](../../../../docs/design/capability-first-drive-gate-maintenance.md) §7・§8 にある。
