@@ -15,6 +15,7 @@
     "relay_gap_suspected": "normal",
     "silent_worker_output": "normal",
     "ci_failed": "urgent",
+    "ci_passed": "urgent",
     "pending_decision": "urgent",
     "user_reply_not_forwarded": "urgent",
     "pane_silent": "normal",
@@ -35,6 +36,10 @@
     "ci_failed": {
       "title": "CI が失敗しました",
       "body": "PR #{pr} の CI が {status} で完了しました。"
+    },
+    "ci_passed": {
+      "title": "CI が通りました",
+      "body": "PR #{pr} の CI が通りました。マージの判断をお願いします。"
     },
     "pending_decision": {
       "title": "判断待ちがあります",

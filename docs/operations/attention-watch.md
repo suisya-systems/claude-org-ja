@@ -94,54 +94,38 @@ renga タブ内から起動した場合は [`/org-attention-stop`](../../.claude
 
 ## 3. OS 別の notification backend 挙動
 
-runtime は追加 dependency なしで OS の標準コマンドを subprocess 経由で呼び出す（timeout 付き）。利用不可な backend は stdout + terminal bell に fallback し、watcher 自体は落ちない。**現行 runtime (0.1.x) はサウンドを再生する音声ファイル経路は持たず、`sound` 設定が effective なときは OS 通知の直後に terminal bell (`\a`) を鳴らす実装**（Windows / WSL のみ `[console]::beep` で簡易ビープ）。`afplay` / `paplay` / `canberra-gtk-play` 等のサウンド再生コマンドは現状未使用で、将来 enhancement として記載されているのみ。
+runtime は追加 dependency なしで OS の標準コマンドを subprocess 経由で呼び出す（timeout 付き）。利用不可な backend は stdout + terminal bell に fallback し、watcher 自体は落ちない。**現行 runtime (0.1.x) はサウンドを再生する音声ファイル経路は持たず、`sound` 設定が effective なときは OS 通知の直後に terminal bell (`\a`) を鳴らす実装**（Windows / WSL のみ、toast を出した同じ PowerShell プロセスで `[console]::beep` を鳴らす）。`afplay` / `paplay` / `canberra-gtk-play` 等のサウンド再生コマンドは現状未使用で、将来 enhancement として記載されているのみ。
 
 | OS / 環境 | desktop backend | sound backend | 備考 |
 |---|---|---|---|
 | macOS | `osascript -e 'display notification ...'` | terminal bell `\a` | macOS は標準で desktop notification が出る。`sound` が effective なときは通知直後に bell |
 | Linux | `notify-send <title> <body>` | terminal bell `\a` | `notify-send` は `libnotify-bin` パッケージ。GNOME / KDE どちらでも動く。DBus 不在時は `notify-send` が静かに失敗するが watcher は落ちず stdout に fallback |
-| Windows native | PowerShell `Write-Host`（実体は可視 UI を出さない） | PowerShell `[console]::beep`（urgent 時のみ） | **現状 visible な通知サーフェスを持たない。** urgent severity の event は beep のみ可聴で、Windows 通知センターには出ない。BurntToast / WinRT を使った real toast 化は別の follow-up Issue として runtime 側に切り出し済み（PR #27 では未着手） |
-| WSL（`wsl-notify-send.exe` あり、**推奨**） | `wsl-notify-send.exe --category <title> <body>` で Windows 通知センターに real toast | PowerShell `[console]::beep`（urgent 時のみ、別 subprocess） | runtime は WSL 内の `$PATH` に `wsl-notify-send.exe` があれば自動でこの経路を選ぶ。インストール手順は §3.1 を参照。toast 成功時は terminal bell を抑制して二重 beep を防ぐ |
-| WSL（`powershell.exe` のみ、fallback） | PowerShell `Write-Host`（実体は可視 UI を出さない） | PowerShell `[console]::beep`（urgent 時のみ） | `wsl-notify-send.exe` 未導入で `powershell.exe` のみ PATH にあるときの legacy 経路。**可視 UI なし、urgent の beep のみ可聴**。Windows 通知センターに出したい場合は §3.1 のインストール手順を実施する |
+| WSL / Windows native（`windows-toast`） | `powershell.exe` が WinRT toast を出し、Windows 通知センターに表示される | 同じ PowerShell プロセスの `[console]::beep`（`sound` が effective なときのみ） | `powershell.exe` が `PATH` にあれば自動で選ばれる。Windows 側への追加インストールは不要。日本語の title / body も文字化けしない（§3.1）。toast 自体は無音で、toast を出せたときは terminal bell を鳴らさない（二重 beep 防止） |
 | fallback (上記不可 / コンテナ等) | stdout に構造化ログ | terminal bell `\a` | watcher は落ちない |
 
 `--dry-run` 時はどの環境でも OS subprocess を呼ばずに stdout のみ。
 
-WSL の backend 選択は `wsl-notify-send.exe` → `powershell.exe` → stdout の 3 段階優先順位で、PATH 上の有無で自動切替される。runtime config 側で明示的に backend を指名する手段は持たず、環境を整えること（= `wsl-notify-send.exe` を入れる / 入れない）で挙動が決まる設計である。
+WSL / Windows native の backend 選択は `powershell.exe` → stdout の 2 段階で、`PATH` 上の有無で自動切替される。runtime config 側で明示的に backend を指名する手段は持たない。
 
-### 3.1 wsl-notify-send.exe のインストール（WSL 推奨）
+### 3.1 WSL / Windows の toast（`windows-toast`）
 
-WSL から Windows 側の通知センターに real toast を出すには [`stuartleeks/wsl-notify-send`](https://github.com/stuartleeks/wsl-notify-send) を導入する。runtime 側は WSL の `$PATH` に exe があるかで自動選択するため、`.state/attention.json` 等の設定変更は不要。
+WSL では、WSL interop で `powershell.exe` が `PATH` に載っていれば、そのまま Windows 通知センターに toast が出る。`.state/attention.json` 等の設定変更も、Windows 側への追加インストールも不要。
 
-```bash
-mkdir -p ~/.local/bin
-curl -L -o ~/.local/bin/wsl-notify-send.exe \
-  https://github.com/stuartleeks/wsl-notify-send/releases/latest/download/wsl-notify-send.exe
-chmod +x ~/.local/bin/wsl-notify-send.exe
-wsl-notify-send.exe 'test'
-```
+- toast の **タイトル行**（上段）← runtime template の `title`、**本文**（下段）← `body`。`.state/attention.json` の `templates.<kind>.title` / `body` がそのまま 2 行で表示される。
+- 日本語（非 ASCII）の title / body も文字化けしない。PowerShell スクリプトは `-EncodedCommand`（UTF-16LE の base64）で渡り、コマンドラインは ASCII だけになる。
+- 動作確認: `--dry-run` は OS subprocess を呼ばないので toast は出ない。実際の toast を確かめるときは `--dry-run` を外して urgent severity の event を 1 件流す。
+- toast が出ないときは、WSL のシェルで `command -v powershell.exe` が見つかるか（WSL interop が有効か）を確かめる。見つからなければ stdout + bell の fallback になる。
+- 以前の手順で入れた `wsl-notify-send.exe` は runtime 0.1.49 以降使われない。残っていても害はなく、不要なら削除してよい。
 
-- `~/.local/bin` が `$PATH` に入っていない場合は `.bashrc` / `.zshrc` 等で追加する（`export PATH="$HOME/.local/bin:$PATH"`）。
-- 動作確認の `wsl-notify-send.exe 'test'` で Windows 側の通知センターに 'test' が表示されれば成功。
-- 上流（`stuartleeks/wsl-notify-send`）は MIT ライセンスの Go 製。最終リリースは 2021 年で stable だが上流自体は dormant（新規機能の追加予定は無い）。
-- 導入後、`claude-org-runtime attention scan --state-dir .state --config .state/attention.json --dry-run --json` を再実行しても JSON 出力は変わらない（dry-run は OS subprocess を呼ばないため）。実際の toast を確認したい場合は `--dry-run` を外して urgent severity の event を 1 件流す。
+### 3.2 経緯: WSL / Windows の通知 backend
 
-#### title/body の見え方
+- 当初は WSL / Windows native とも「PowerShell `Write-Host` で toast を出す」と説明されていたが、実装は subprocess の captured stdout に書いて捨てるだけで、Windows の通知センターには何も届いていなかった（urgent 時の `[console]::beep` だけが可聴な合図）。
+- runtime PR [suisya-systems/claude-org-runtime#27](https://github.com/suisya-systems/claude-org-runtime/pull/27) で WSL に `wsl-notify-send.exe` 経路を足し、real toast が出るようになった。ただし `wsl-notify-send.exe` は非 ASCII の引数を壊すため、日本語 title の toast は黙って表示されなかった。この回避策として、運用側で urgent kind の通知文面を英語に戻していた時期がある。
+- runtime 0.1.49 で `windows-toast` backend（`powershell.exe` の WinRT toast）に置き換わり、`wsl-notify-send.exe` と `Write-Host` 経路は削除された。日本語の toast がそのまま出るので、英語に戻していた文面は §3.3 の手順で日本語に戻す。
 
-`wsl-notify-send.exe --category <title> <body>` の呼び出しは Windows toast の以下にマップされる:
+### 3.3 英語に戻していた通知文面を日本語に戻す
 
-- 通知の **タイトル行**（上段）← `--category` に渡された runtime template の `title`
-- 通知の **本文**（下段）← positional argument に渡された runtime template の `body`
-
-`--category` は本来「通知カテゴリ」用フラグだが、上流 `wsl-notify-send` の実装はこれをタイトル文字列としてレンダリングするため、claude-org-runtime は title を `--category` に乗せている（PR #27 worker の design judgment、上流 `main.go` のドキュメントに準拠）。`.state/attention.json` の `templates.<kind>.title` / `body` をそのまま toast の 2 行表示として読める。
-
-### 3.2 Why no toast on Windows native / WSL fallback? — history
-
-Issue #25 / PR #27 以前は、WSL / Windows native とも「PowerShell `Write-Host` 経由で toast を出す」と説明されていたが、実装は `Write-Host` を subprocess の captured stdout に書いて捨てるだけで、Windows の通知センターには何も到達していなかった（urgent 時の `[console]::beep` だけが可聴な合図）。
-
-- PR #27（[suisya-systems/claude-org-runtime#27](https://github.com/suisya-systems/claude-org-runtime/pull/27)）で WSL backend を `wsl-notify-send.exe → powershell.exe → stdout` の 3 段階に分割し、上位の `wsl-notify-send.exe` 経路で real toast を出すよう修正した。
-- Windows native backend は同じ defect を抱えたままで、PR #27 では未修正。BurntToast / WinRT 等で real toast 化する作業は runtime 側の別 Issue として切り出されている。
-- 既存ユーザーへの影響: `wsl-notify-send.exe` を入れていない WSL ユーザーは PR #27 以前と同じ legacy 経路（Write-Host + beep）のまま。breaking change は無く、`§3.1` のインストール手順を踏んだユーザーのみ自動的に real toast を受け取る。
+`.state/attention.json` から urgent kind の `templates.<kind>` を消して runtime の英語 default に落としていた場合は、§2.2 の「不足しているキーだけ足す」スクリプトを実行すれば、`tools/templates/attention.example.json` の日本語文面が補われる（既にあるキーには触らない）。その後 watcher を再起動する（§2.2 末尾）。
 
 ## 4. config の主要キー（運用視点）
 
@@ -171,6 +155,7 @@ Issue #25 / PR #27 以前は、WSL / Windows native とも「PowerShell `Write-H
 |---|---|---|---|
 | `approval_blocked` | urgent | action-required | tool approval 等で worker が完全停止。ユーザー以外の経路で解除できない |
 | `ci_failed` | urgent | action-required | CI 失敗。再 push / 修正の判断にユーザーが必要 |
+| `ci_passed` | urgent | action-required | CI green。マージ判断にユーザーが必要。窓口の `ci_green_merge_gate` 通知を取りこぼしても人間に届く最終経路（runtime 0.1.49 以降） |
 | `pending_decision` | urgent | action-required | worker から判断仰ぎ。Secretary は人間に上げる責務（CLAUDE.md 参照） |
 | `user_reply_not_forwarded` | urgent | action-required | ユーザーは返答済みだが worker に未転送。Secretary の運用ギャップ |
 | `pane_crashed` | urgent | action-required | ペインが予期せず終了。再起動判断にユーザーが必要 |
@@ -244,16 +229,16 @@ claude-org-runtime attention watch --state-dir .state --config .state/attention.
 2. event は出るが OS 通知だけ出ない場合は backend が無効と判定された / 可視 UI を持たない backend が選ばれている可能性が高い:
    - **macOS**: 通知センターの設定でターミナル / iTerm への通知が許可されているか
    - **Linux**: `which notify-send`、出なければ `sudo apt install libnotify-bin` 等で導入
-   - **WSL**: `which wsl-notify-send.exe` で導入有無を確認。未導入だと PowerShell `Write-Host` fallback に落ちて Windows 通知センターには出ない（urgent の beep のみ可聴）。§3.1 のインストール手順で `~/.local/bin/wsl-notify-send.exe` を入れる
-   - **Windows native**: 現状 visible な通知サーフェス未実装（§3 表参照）。urgent の beep のみ可聴。real toast は別 follow-up Issue で対応予定
+   - **WSL**: `command -v powershell.exe` で WSL interop 経由の `powershell.exe` が見えるか確認。見えないと stdout + bell の fallback に落ちる（§3.1）
+   - **Windows native**: `powershell.exe` が `PATH` にあるか、Windows の設定で Windows PowerShell からの通知が許可されているか（toast は Windows PowerShell の名義で出る）
 3. stdout に「fallback to terminal bell」相当のログがあれば backend は明示的に落ちている。上記 2 を確認
 
 ### 5.2 音が鳴らない
 
 - `.state/attention.json` の `sound` を確認（`"off"` になっていないか、`"urgent-only"` で対象 event が `urgent` 分類か）
 - 現行 runtime はサウンド再生コマンド (`afplay` / `paplay` 等) を呼ばず、`sound` が effective なときに terminal bell `\a` を鳴らす実装。terminal 設定でベル音が抑制されていないか確認（iTerm / Windows Terminal / GNOME Terminal は visual bell / silent bell のオプションあり）
-- Windows / WSL では `powershell.exe -NoProfile -Command "[console]::beep(...)"` を別 subprocess として呼ぶ（WSL で `wsl-notify-send.exe` 経路が選ばれた場合も beep は同じ PowerShell 経由）。ホスト側のサウンド設定（システム音量 / ステレオミキサーのミュート）を確認
-- WSL の real toast 経路（§3.1）では、toast 成功時に terminal bell が抑制される（PowerShell beep との二重 beep 回避）。toast が出ているのに beep だけ鳴らないと感じる場合は `sound` 設定 / event severity が urgent 分類か / システム音量、の順で確認
+- Windows / WSL では toast を出す PowerShell プロセスが続けて `[console]::beep` を鳴らす（toast 自体は無音）。ホスト側のサウンド設定（システム音量 / ステレオミキサーのミュート）を確認
+- `windows-toast` 経路（§3.1）では、toast 成功時に terminal bell が抑制される（PowerShell beep との二重 beep 回避）。toast が出ているのに beep だけ鳴らないと感じる場合は `sound` 設定 / event severity が urgent 分類か / システム音量、の順で確認
 
 ### 5.3 同じ event が鳴り続ける / 鳴らない
 
