@@ -28,7 +28,8 @@
 #
 # 入力: stdin から PreToolUse JSON ({tool_name, tool_input})
 # 出力: 拒否時 exit 2 + stderr。許可時 exit 0。
-# DB: $STATE_DB_PATH があればそれ、無ければ <このフックの親>/.state/state.db。
+# DB: 書き手 (spawn_gate.py / dispatcher_retro_gate.py) と同じ resolve_state_db_path() で引く
+#     ($STATE_DB_PATH > linked worktree からも main checkout へ解決する discovery)。
 #     worker-idle-state.json は DB と同じディレクトリの dispatcher/ 配下。
 #
 # fail-closed: jq 欠落 / 空 stdin / 不正 JSON / 非 object payload / DB の読み取り失敗は deny する
@@ -66,14 +67,26 @@ esac
 PANE_ID=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.target // empty | tostring | ltrimstr("%")')
 [[ "$PANE_ID" =~ ^[0-9]+$ ]] || exit 0
 
-HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DB="${STATE_DB_PATH:-$HOOK_DIR/../.state/state.db}"
-[[ -f "$DB" ]] || exit 0
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# tools/journal_append.sh と同じ interpreter の選び方 (Windows は py -3 / python)。
+if command -v py >/dev/null 2>&1; then
+  PY="py -3"
+elif command -v python3 >/dev/null 2>&1; then
+  PY="python3"
+else
+  PY="python"
+fi
 
-if ! VERDICT=$(python3 - "$DB" "$PANE_ID" <<'PY' 2>&1
+if ! VERDICT=$($PY - "$REPO_ROOT" "$PANE_ID" <<'PY' 2>&1
 import json, os, sqlite3, sys
 
-db, pane_id = sys.argv[1], int(sys.argv[2])
+sys.path.insert(0, sys.argv[1])
+from tools.state_db.discover import resolve_state_db_path
+
+db, pane_id = str(resolve_state_db_path()), int(sys.argv[2])
+if not os.path.isfile(db):
+    print("allow")
+    sys.exit(0)
 conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
 row = conn.execute(
     "SELECT id, json_extract(payload_json, '$.task') FROM events "
@@ -107,8 +120,9 @@ PY
   deny_with_reason "close_pane の振り返り判定で state.db を読めませんでした (${VERDICT//$'\n'/ })。安全側 (fail-closed) で拒否します。"
 fi
 
-if [[ "$VERDICT" == deny\ * ]]; then
+[[ "$VERDICT" == "allow" ]] && exit 0
+if [[ "$VERDICT" == deny\ * && "$VERDICT" != *$'\n'* ]]; then
   read -r _ TASK STATUS <<<"$VERDICT"
   deny_with_reason "pane ${PANE_ID} は worker-${TASK} のペインで、振り返りの完了報告ゲートを通った記録がありません (retro_gate_acked なし / runs.status=${STATUS})。.dispatcher/references/pane-close.md の「完了報告ゲート」で tools/dispatcher_retro_gate.py を回し、acked になってから閉じてください。secretary unreachable なら閉じずに retro_deferred を記録します。"
 fi
-exit 0
+deny_with_reason "close_pane の振り返り判定が想定外の出力を返しました (${VERDICT//$'\n'/ })。安全側 (fail-closed) で拒否します。"
