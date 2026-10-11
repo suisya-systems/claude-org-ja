@@ -179,18 +179,34 @@ _JA_ONLY_LAYER2_CREDENTIAL_DENIES = frozenset(
 # registration from breaking the ja↔runtime *surface* contract, which is
 # the only thing the byte check is meant to police.
 #
+# ``block-codex-rescue.sh`` denies the ``codex:rescue`` skill for workers
+# (ja's Codex self-review runs only through ``tools/codex_review_gate.sh``).
+# It is wired into ``worker_roles[*].hooks.PreToolUse``, so the strip also
+# drops worker hook commands that name a ja-only script. Worker settings
+# are rendered from ja's schema (``tools/gen_delegate_payload.py`` pins
+# ``--schema``), so the hook reaches workers without a runtime release.
+#
 # Add a new name here ONLY for a hook that is genuinely ja-only. A hook
 # that should also ship in the runtime template belongs in a paired
 # runtime release instead.
-_JA_ONLY_HOOK_SCRIPTS = frozenset({"check-loop-directive.sh"})
+_JA_ONLY_HOOK_SCRIPTS = frozenset({"check-loop-directive.sh", "block-codex-rescue.sh"})
+
+
+def _is_ja_only_hook_command(hook: object) -> bool:
+    command = hook.get("command") if isinstance(hook, dict) else None
+    return isinstance(command, str) and any(
+        f"/.hooks/{name}" in command for name in _JA_ONLY_HOOK_SCRIPTS
+    )
 
 
 def _strip_ja_only_hooks(schema: object) -> object:
     """Drop ja-only hook scripts from the required-hook surface.
 
     Removes every ``_JA_ONLY_HOOK_SCRIPTS`` name from top-level
-    ``required_hook_scripts`` and every ``roles[*].required_hooks``
-    entry whose ``command_contains`` names one. Applied to BOTH sides,
+    ``required_hook_scripts``, every ``roles[*].required_hooks``
+    entry whose ``command_contains`` names one, and every
+    ``worker_roles[*].hooks`` command that runs one (a matcher entry left
+    with no commands is dropped too). Applied to BOTH sides,
     so a future runtime that does ship one of these names still
     compares equal rather than flipping the check into a false pass in
     only one direction.
@@ -224,6 +240,30 @@ def _strip_ja_only_hooks(schema: object) -> object:
                 ],
             }
         out["roles"] = new_roles
+    worker_roles = out.get("worker_roles")
+    if isinstance(worker_roles, dict):
+        new_worker_roles: dict[str, Any] = {}
+        for role_name, role_def in worker_roles.items():
+            hooks = role_def.get("hooks") if isinstance(role_def, dict) else None
+            if not isinstance(hooks, dict):
+                new_worker_roles[role_name] = role_def
+                continue
+            new_hooks: dict[str, Any] = {}
+            for event, entries in hooks.items():
+                if not isinstance(entries, list):
+                    new_hooks[event] = entries
+                    continue
+                kept = []
+                for entry in entries:
+                    if isinstance(entry, dict) and isinstance(entry.get("hooks"), list):
+                        cmds = [h for h in entry["hooks"] if not _is_ja_only_hook_command(h)]
+                        if not cmds:
+                            continue
+                        entry = {**entry, "hooks": cmds}
+                    kept.append(entry)
+                new_hooks[event] = kept
+            new_worker_roles[role_name] = {**role_def, "hooks": new_hooks}
+        out["worker_roles"] = new_worker_roles
     return out
 
 
