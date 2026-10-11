@@ -46,8 +46,11 @@ if [ -n "$exclude" ] && ! grep -qxF '.codex-home/' "$exclude" 2>/dev/null; then
     echo '.codex-home/' >> "$exclude" 2>/dev/null || true
 fi
 mkdir -p "$CODEX_HOME"
-ln -sf "$codex_src/auth.json"   "$CODEX_HOME/auth.json"
-ln -sf "$codex_src/config.toml" "$CODEX_HOME/config.toml"
+# 呼び出し側が既に $PWD/.codex-home を指していたら張り直さない（自己参照リンクになる）。
+if [ "$(cd "$codex_src" 2>/dev/null && pwd -P)" != "$(cd "$CODEX_HOME" && pwd -P)" ]; then
+    ln -sf "$codex_src/auth.json"   "$CODEX_HOME/auth.json"
+    ln -sf "$codex_src/config.toml" "$CODEX_HOME/config.toml"
+fi
 
 # $TMPDIR は並走 worker と共有なので、作業ディレクトリのフルパス由来の名前にする。
 log="${TMPDIR:-/tmp}/codex-review-$(basename "$PWD")-$(printf %s "$PWD" | cksum | cut -d' ' -f1).log"

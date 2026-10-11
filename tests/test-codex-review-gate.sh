@@ -74,6 +74,22 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+# 既に CODEX_HOME=$PWD/.codex-home で呼ばれても、認証リンクを自己参照に張り直さない
+mkdir -p "$WORK/src"
+echo '{}' > "$WORK/src/auth.json"
+command rm -f "$WORK/repo/.codex-home/auth.json"
+ln -s "$WORK/src/auth.json" "$WORK/repo/.codex-home/auth.json"
+(cd "$WORK/repo" && PATH="$WORK/bin:$PATH" TMPDIR="$WORK/tmp" STUB_DIR="$WORK" \
+  STUB_OUT='  succeeded in 1ms:\n' STUB_EXIT=0 CODEX_HOME="$WORK/repo/.codex-home" \
+  bash "$GATE" origin/main >/dev/null 2>&1)
+if [[ "$(readlink "$WORK/repo/.codex-home/auth.json")" == "$WORK/src/auth.json" ]]; then
+  echo "  PASS: 退避済みの CODEX_HOME で呼んでも認証リンクを壊さない"
+  PASS=$((PASS + 1))
+else
+  echo "  FAIL: 認証リンクが張り替えられた: $(readlink "$WORK/repo/.codex-home/auth.json")"
+  FAIL=$((FAIL + 1))
+fi
+
 # codex が無い → unavailable (exit 3)。PATH から stub を外し、本物の codex も見えないようにする
 actual_exit=0
 output=$(cd "$WORK/repo" && PATH="/usr/bin:/bin" bash "$GATE" origin/main 2>&1) || actual_exit=$?
