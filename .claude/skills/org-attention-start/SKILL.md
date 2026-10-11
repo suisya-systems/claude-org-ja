@@ -36,12 +36,8 @@ pane_id を `.state/attention_pane.json` に sidecar として記録する。停
 > dispatcher ペインの cwd は `.dispatcher` なので、spawn_pane では `cwd="."` を明示して
 > Secretary 側の cwd（= repo root）にバインドする。
 >
-> **設計判断 (sidecar)**: pane_id 記録は `.state/state.db` の schema 拡張ではなく
-> sidecar JSON (`.state/attention_pane.json`) を採用する。`.state/dashboard.pid` /
-> `.state/attention_notified.json` と同じ「補助プロセス追跡」パターンに揃え、
-> importer / writer / snapshotter / converter / drift_check への波及を回避するため。
-> attention watcher は OS subprocess であり Claude peer ではないため peer_id は持たず、
-> ダッシュボードへの状況表示も現状不要（人間判断、2026-05-17）。
+> pane_id は `.state/state.db` ではなく sidecar JSON（`.state/attention_pane.json`）に記録する
+> （理由は [`.claude/skills/org-attention-start/references/rationale.md`](references/rationale.md)）。
 
 ## Step 1: 二重起動チェック
 
