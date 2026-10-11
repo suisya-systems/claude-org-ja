@@ -28,7 +28,7 @@
 ### 3-1d: 背景配置の実走の経緯
 元: spawn-flow 3-1d
 
-2026-08-09 の人間批准は、段階 canary の代替として**背景タブ実走そのもの**を事前承認しており、その承認のもとで背景配置は既に複数回行われている（契約 T-§4.2-place-rec が記録する human-taken, pre-authorised deviation）。当時は earmark 台帳（`registry/dogfood_pending.md`）に背景タブ配置の行が複数あり、それぞれ 1 枚ずつ起こされて順に退役した。
+2026-08-09 の人間批准は、段階 canary の代替として**背景タブ実走そのもの**を事前承認しており、その承認のもとで背景配置は既に複数回行われている（契約 T-§4.2-place-rec が記録する human-taken, pre-authorised deviation）。当時は earmark 台帳（dogfood 台帳。その後廃止）に背景タブ配置の行が複数あり、それぞれ 1 枚ずつ起こされて順に退役した。
 
 ### 3-1d: 契約側の対応（条件と R1–R4）
 元: spawn-flow 3-1d

@@ -4164,7 +4164,7 @@ class TestBaseBranchResolution(unittest.TestCase):
 
 class TestBaseBranchReachesTheBrief(unittest.TestCase):
     """Issue #808 / Codex Round 1 Major: the effective base must reach the
-    rendered worker brief, or the worker's `codex exec review --base ...`
+    rendered worker brief, or the worker's Codex gate (`codex_review_gate.sh <base>`)
     would diff a develop-based task against origin/main and treat every
     develop-only commit as part of the task's own change."""
 
@@ -4192,30 +4192,29 @@ class TestBaseBranchReachesTheBrief(unittest.TestCase):
 
     def test_configured_base_ref_lands_in_the_review_command(self):
         out = self._render("origin/develop")
-        self.assertIn(
-            "codex exec review --base origin/develop", out
-        )
-        self.assertNotIn("--base origin/main", out)
+        self.assertIn("codex_review_gate.sh origin/develop", out)
+        self.assertNotIn("codex_review_gate.sh origin/main", out)
 
     def test_default_stays_origin_main(self):
         # Every pre-#808 brief must render byte-identically.
-        self.assertIn("codex exec review --base origin/main", self._render())
+        self.assertIn("codex_review_gate.sh origin/main", self._render())
 
     def test_shell_metacharacters_in_the_ref_are_quoted(self):
         """Codex Round 2 Blocker: git permits `;` / `$( )` in ref names and
         this value lands in a ```bash fence the worker copy-pastes, so a raw
         interpolation would be command execution, not a ref."""
         out = self._render("origin/foo$(id);whoami")
-        self.assertNotIn("--base origin/foo$(id);whoami", out)
+        self.assertNotIn("codex_review_gate.sh origin/foo$(id);whoami", out)
         self.assertIn(
-            "--base " + shlex.quote("origin/foo$(id);whoami"), out
+            "codex_review_gate.sh " + shlex.quote("origin/foo$(id);whoami"), out
         )
         # Round-trips back to the literal ref when the shell parses it.
         line = next(
-            l for l in out.splitlines() if l.startswith("codex exec review")
+            l for l in out.splitlines()
+            if l.startswith("bash ") and "codex_review_gate.sh" in l
         )
-        argv = shlex.split(line.split("<")[0])
-        self.assertEqual(argv[argv.index("--base") + 1], "origin/foo$(id);whoami")
+        argv = shlex.split(line)
+        self.assertEqual(argv[-1], "origin/foo$(id);whoami")
 
     def test_non_string_base_ref_is_rejected(self):
         config = {
@@ -4252,7 +4251,7 @@ class TestBaseBranchReachesTheBrief(unittest.TestCase):
             )
             self.assertEqual(plan.config["task"]["base_ref"], "origin/develop")
             self.assertIn(
-                "codex exec review --base origin/develop", gwb.render(plan.config)
+                "codex_review_gate.sh origin/develop", gwb.render(plan.config)
             )
 
     def test_planner_leaves_base_ref_unset_when_unconfigured(self):

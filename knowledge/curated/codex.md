@@ -99,7 +99,7 @@ codex の本物の実行記録は必ず `succeeded in 0ms:` のように**実行
 
 成立条件（成功数 1 以上 / 失敗数 0 / 終了コード 0）を満たさない場合、出力がどれだけ合格に読めても**ゲートは回っていない**。「Codex ゲート未成立（diff 未読の空の合格、HEAD=`<sha>`）」と明示して判定数値を添えて報告する。これは safety block 時の扱い（ゲート未成立であって clean ではない）と同じ原則で、**「codex 未導入 skip」とは意味が異なる**。ゲートが回らないこと自体は報告すれば済むが、回っていないゲートを回ったことにすると検証深度 `full` が名目だけになる。
 
-実行形（`CODEX_HOME` 退避を含む正規のコマンド列）の SoT は [`.claude/skills/org-delegate/references/worker-claude-template.md`](../../.claude/skills/org-delegate/references/worker-claude-template.md) と `tools/templates/worker_brief_*.md`。本節はその**根拠**（なぜ退避が要るか / なぜ `$TMPDIR` が逆効果か / なぜ終了コードで判定できないか）を残す。
+実行形（`CODEX_HOME` 退避を含む正規のコマンド列）の SoT は [`tools/codex_review_gate.sh`](../../tools/codex_review_gate.sh)（brief `tools/templates/worker_brief_*.md` はその呼び出しと判定だけを書く）。本節はその**根拠**（なぜ退避が要るか / なぜ `$TMPDIR` が逆効果か / なぜ終了コードで判定できないか）を残す。
 
 ## ハングガード（review / exec 両形に共通）
 

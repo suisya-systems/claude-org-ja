@@ -261,14 +261,6 @@ python tools/gen_delegate_payload.py apply \
 
 トリガー判定の詳細表・`codex exec` コマンド・review 要約の `--impl-guidance` / `--knowledge` への組み込み手順は [`references/codex-design-review.md`](references/codex-design-review.md) を一次参照。
 
-## Step 1.8: dogfood follow-up issue protocol（窓口 + org-pull-request 連携、Issue #338）
-
-新規 CLI tool / 新規 runtime / 新規 workflow / 新規 protocol の導入、または既存 tool の break-change 再設計に該当するタスクは **dogfood 対象**。実装 delegation と paired で follow-up issue を作成し、後続の実使用 delegation を dogfood pass として earmark する。
-
-dogfood 対象判定 / 窓口責務 (A) 実装起票時の `registry/dogfood_pending.md` append / (B) dogfood pass earmark の手順 / org-pull-request 連携 / register フォーマット / hygiene チェック (consumed→closed) は [`references/dogfood-protocol.md`](references/dogfood-protocol.md) を一次参照。
-
-状態遷移: `pending → open → consumed → closed`
-
 ## Step 3 / 4: ワーカー起動・指示送信・状態記録（ディスパッチャーが実行）
 
 詳細手順 (3-1 balanced split / 3-1c SPLIT_CAPACITY_EXCEEDED escalate / 3-2 spawn / 3-3 pane_started / 3-3b channel approve / 3-4 list_peers / 3-5 instruction send / 3-6 順次起動 / Step 4 状態記録 / Worker Directory Registry) は **[`.dispatcher/references/spawn-flow.md`](../../../.dispatcher/references/spawn-flow.md)** を一次参照する。窓口は触らない。
@@ -351,7 +343,6 @@ worker → Secretary peer message
   mcp__org-broker__send_message(to_id="dispatcher", message="WORKER_COMPLETION_NOTED: worker-<task_id> (task_id=<task_id>, received_at=<ISO-8601 UTC>)")
   ```
   対の解除は T6 再指示時の `WORKER_REOPENED`（[`.claude/skills/org-pull-request/SKILL.md`](../org-pull-request/SKILL.md) 2c）。minimal / full どちらの完了報告でも送る（silent dead-lock 抑止は検証深度に依らない）
-- **dogfood pass 完了時の register 更新（Issue #338）**: 完了したタスクが `registry/dogfood_pending.md` の `dogfood_run_task_id` 列に earmark されていた場合、該当行の `status` を `open → consumed` に遷移する。defect は paired follow-up issue (`dogfood_issue` 列) に既に集約されている前提（dogfood pass worker の brief で format 指定済）。protocol 全体は本 SKILL Step 1.8 を SoT
 - **人間向け理解サマリを承認提示の土台にし永続化する（検証深度 `full` 限定）**: full モード完了報告には worker が「人間向け理解サマリ」（(1) 最重要の変更点 N 個、(2) 要確認ファイル / hunk、(3) 設計判断と理由）を含める（スキーマの正本はワーカーに描画される brief テンプレート [`tools/templates/worker_brief_normal.md`](../../../tools/templates/worker_brief_normal.md)、自己編集タスクは [`tools/templates/worker_brief_self_edit.md`](../../../tools/templates/worker_brief_self_edit.md) の「人間向け理解サマリ」節）。窓口は自分でコードを精読せず、このサマリをユーザーへの承認提示の土台にする（必要なら業務言語に整える）。受領したサマリは `.state/workers/worker-{task_id}.md` の Progress Log に `Human Understanding Summary:` 見出し + 直下の fenced code block でそのまま追記する（merge 承認時に再掲する元。full 完了報告が複数回ある場合は最新ブロックを正とする）。PR 作成時は PR 本文にも要約を載せてよい。**full でサマリが欠落していたら通常の review feedback として同ペインの worker に補完を依頼する**（[`.claude/skills/org-pull-request/SKILL.md`](../org-pull-request/SKILL.md) 2c の review-feedback 手順で扱う）。これは手順レイヤの完了報告フォーマット拡張であり、contract（T4 `worker_completed`）の遷移条件は変えない。minimal の 1 行 `done:` 報告にはサマリは付かない
 - **awaiting_user 通知の emit（Issue #28）**: 人間への報告 → 承認待ち停止に入る直前で、attention watcher に「Secretary が user の判断待ちで停止する」ことを知らせる:
   ```bash
