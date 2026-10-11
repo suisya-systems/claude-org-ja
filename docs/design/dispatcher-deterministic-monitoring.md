@@ -223,7 +223,7 @@
   - fault injection で、watcher・AI 呼び出し・窓口のいずれを途中で kill しても、通知の二重送信や未解決 incident の取りこぼしが起きない。
   - 既知の誤検知 fixture と段階 1 の実績で、検知遅延・見逃し・誤った終了判定が今より悪くない。
   - watcher を kill すると、heartbeat の鮮度切れが attention watcher 経由で人間に届く。
-- 戻し方: `monitoring_owner=llm` に戻して `/loop 3m` を再武装する。完了受領と curate の状態は段階 2 の間もディスパッチャー Claude が旧ファイルに反映し続けているので、そのまま使える。画面ハッシュと idle streak は watcher が state.db に持っていて旧ファイルには無いので、戻した直後は 0 から観測し直す。これは今の手順書が状態ファイルを失ったときの挙動と同じである（worker-monitoring.md Step 5 (b)「再起動時の挙動」）。
+- 戻し方: `monitoring_owner=llm` に戻して `/loop 3m` を再武装する。完了受領と curate の状態は段階 2 の間もディスパッチャー Claude が旧ファイルに反映し続けているので、そのまま使える。画面ハッシュと idle streak は watcher が state.db に持っていて、旧ファイルに残っているのは段階 2 に入る前の古い値なので、戻すときは旧ファイルの `last_visible_content_hash` / `idle_streak_cycles` / `last_content_change_ts` を消してから `/loop` を再武装し、0 から観測し直す。これは今の手順書が状態ファイルを失ったときの挙動と同じである（worker-monitoring.md Step 5 (b)「再起動時の挙動」）。
 
 ### 段階 3: spawn / close の移管（範囲を広げた場合だけ）
 
