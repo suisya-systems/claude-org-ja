@@ -5,14 +5,13 @@ description: >
   /secretary-handover で書き出した handover ファイルを読み込み、
   窓口を新しいセッションで復帰させる。/clear 直後の最初のターンで使う。
   「窓口を復帰」「resume」「引き継ぎから再開」と言われたときに使う。
-  /org-start ではない（ディスパッチャー・キュレーターは既に生きている前提）。
+  /org-start ではない（ディスパッチャーは既に生きている前提）。
 effort: low
 allowed-tools:
   - Read
   - Bash(echo:*)
-  - Bash(py -3 tools/journal_append.py:*)
+  - Bash(python3 -c:*)
   - Bash(bash tools/journal_append.sh:*)
-  - Bash(py -3 tools/capability_gate.py:*)
   - Bash(python3 tools/capability_gate.py:*)
   - mcp__renga-peers__set_summary
   - mcp__renga-peers__list_panes
@@ -76,7 +75,7 @@ allowed-tools:
 ## Step 2: state.db で現状を再取得する
 
 ```bash
-python -c "
+python3 -c "
 from tools.state_db import connect
 from tools.state_db.queries import get_org_state_summary
 import json
@@ -154,14 +153,14 @@ handover の情報と state.db の現状を統合した上で、以下の構造�
 ## イベント記録
 
 ```bash
-py -3 tools/journal_append.py secretary_resumed \
-    --json '{"handover_age_hours": <数値>}' 2>/dev/null \
-    || echo "(journal_append unavailable; skipping)"
+bash tools/journal_append.sh secretary_resumed handover_age_hours=<数値>
 ```
+
+失敗したら握りつぶさず、ブリーフィングにエラーを 1 行添える。
 
 ## やってはいけないこと
 
-- 新規にディスパッチャー / キュレーターを spawn する（既に生きている）
+- 新規にディスパッチャーを spawn する（既に生きている）。キュレーターも spawn しない（オンデマンド起動はディスパッチャーの役目）
 - ワーカーに勝手に SUSPEND / SHUTDOWN を送る
 - handover の内容と state.db の現状が食い違うときに、勝手にどちらかへ寄せる
   （必ず人間に報告して判断を仰ぐ）

@@ -12,7 +12,7 @@ allowed-tools:
   - Read
   - Write
   - Edit
-  - Bash(py -3 tools/journal_append.py:*)
+  - Bash(python3 -c:*)
   - Bash(bash tools/journal_append.sh:*)
 ---
 
@@ -23,7 +23,7 @@ allowed-tools:
 `/secretary-resume` の流れを案内する。
 
 > **重要な前提**:
-> - ディスパッチャー / キュレーター / ワーカーのペインは生かしたまま残す。
+> - ディスパッチャー / ワーカーのペインは生かしたまま残す（キュレーターは常駐しない）。
 >   `/clear` は窓口の Claude コンテキストだけをリセットするので、state.db と
 >   handover ファイルから復帰できれば組織は途切れない。
 > - state DB (`.state/state.db`) は唯一の SoT。ペイン identity やワーク状態は
@@ -83,8 +83,10 @@ print(out_path)
 既存ファイルがあれば `.state/secretary-handover.prev.md` にバックアップしてから上書きする:
 
 ```bash
-[ -f .state/secretary-handover.md ] && cp .state/secretary-handover.md .state/secretary-handover.prev.md
+[ -f .state/secretary-handover.md ] && command cp -f .state/secretary-handover.md .state/secretary-handover.prev.md
 ```
+
+`command cp -f` にするのは、`cp -i` の alias がある環境で上書き確認のまま止まらないため。
 
 フォーマット（YAML frontmatter + markdown）:
 
@@ -132,10 +134,10 @@ curator_pane: null  # 常駐廃止（オンデマンド化）。null が正常
 ## Step 4: イベントを記録する
 
 ```bash
-py -3 tools/journal_append.py secretary_handover \
-    --json '{"reason": "context_compaction", "active_workers": [...]}' 2>/dev/null \
-    || echo "(journal_append unavailable; skipping)"
+bash tools/journal_append.sh secretary_handover reason=context_compaction
 ```
+
+失敗したら握りつぶさず、エラーを handover 完了報告に 1 行添える。
 
 ## Step 5: ユーザーへ案内する
 
@@ -147,11 +149,11 @@ py -3 tools/journal_append.py secretary_handover \
 新しい窓口セッションが始まったら /secretary-resume を実行すると、
 handover を読み込んで現状把握した状態で再開できます。
 
-ディスパッチャー・キュレーター・ワーカーペインはそのまま稼働を続けるので、
+ディスパッチャー・ワーカーペインはそのまま稼働を続けるので、
 組織は中断されません。
 ```
 
 **窓口がやってはいけないこと**:
 - `/clear` を自分で打とうとしない（Claude Code 側のコマンド、ユーザーが入力する）
-- ディスパッチャーやキュレーターに SHUTDOWN を送らない（/org-suspend ではないので、
+- ディスパッチャーに SHUTDOWN を送らない（/org-suspend ではないので、
   ペインは生かしたまま残す）
