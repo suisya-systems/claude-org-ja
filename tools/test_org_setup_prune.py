@@ -89,6 +89,17 @@ class ExtractTests(unittest.TestCase):
         self.assertEqual(blocks["dispatcher"]["env"]["CLAUDE_ORG_PATH"], "{claude_org_path}")
         self.assertEqual(blocks["curator"]["permissions"]["allow"], [])
 
+    def test_real_dispatcher_template_excludes_root_claude_md(self) -> None:
+        # The dispatcher runs in .dispatcher/, so the secretary's root CLAUDE.md
+        # would load as an ancestor unless claudeMdExcludes drops it.
+        schema = p.load_schema(p.DEFAULT_SCHEMA)
+        blocks = p.extract_role_blocks(
+            p.DEFAULT_PERMISSIONS_MD.read_text(encoding="utf-8"), schema["roles"]
+        )
+        self.assertEqual(
+            blocks["dispatcher"]["claudeMdExcludes"], ["{claude_org_path}/CLAUDE.md"]
+        )
+
 
 class DeepMergeTests(unittest.TestCase):
     def test_dict_overlay_wins(self) -> None:

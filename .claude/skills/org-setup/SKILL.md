@@ -41,7 +41,7 @@ Claude Code は**起動ディレクトリの `.claude/` 配下**から設定を�
 
 ## 各ロールの必要設定
 
-**references/permissions.md** に全ロールのJSON定義がある。以下の手順でこれを参照する。
+正典は [`tools/org_extension_schema.json`](../../../tools/org_extension_schema.json)。[`.claude/skills/org-setup/references/permissions.md`](references/permissions.md) に、その schema を満たす全ロールの JSON テンプレートがある（一致は `tools/check_role_configs.py` が CI で検査する）。以下の手順でこのテンプレートを参照する。
 
 ## 実行手順
 
@@ -104,7 +104,7 @@ py -3 tools/ensure_projects_registry.py       # Windows native
 
 通常の Step 1〜3 は **additive-only**（不足分を追加するだけで既存は削除しない）。
 過去に蓄積した広すぎる allow や旧エントリは残り続けるため、
-`permissions.md` を SOT として `settings.local.json` を**完全に書き換える** prune モードを用意している。
+`permissions.md` のテンプレートで `settings.local.json` を**完全に書き換える** prune モードを用意している。
 
 実行は `tools/org_setup_prune.py` を使う:
 
@@ -147,17 +147,16 @@ prune ツールが読むだけで、書き換えはしない）:
 - `hooks.PreToolUse[]` 等: 等値判定で重複排除した上で append
 - それ以外のスカラー: override が勝つ
 
-`.gitignore` 対象（個人設定のため。`.gitignore:23-25` で `.claude/settings.local.override.json` と
-`.claude/settings.local.json.bak.*` を ignore 済み。`.curator/.claude/` と `.dispatcher/.claude/`
-配下はディレクトリごと ignore のため自動的に対象）。チームで共有したい設定は
-`permissions.md` 側に追加し、schema (`tools/org_extension_schema.json`) も同時に更新する。
+override と `.bak` は `.gitignore` で ignore 済み（個人設定のため。`.curator/.claude/` と
+`.dispatcher/.claude/` 配下はディレクトリごと ignore）。チームで共有したい設定は
+schema (`tools/org_extension_schema.json`) → `permissions.md` の順で追加する。
 
 `tools/check_role_configs.py` は同じ override ファイルを読み、その allow を
 closed-world 検証から除外する（`_load_override_allow`）。よって override に追加した
 個人 allow は CI / `--include-local` で `unknown allow entry` にならない。
-ただし `forbidden_allow_exact`（`Bash(git *)` 等の wide allow）と
-`disallow_allow_regex`（旧 `mcp__claude-peers__*`、現 `renga-peers` 等）は override 側にあっても
-従来通り ERROR となる。安全契約は override で迂回できない。
+ただし schema の `global.forbidden_allow_exact`（`Bash(git *)` 等の wide allow）、
+`global.forbidden_allow_regex`（旧名 `^mcp__claude-peers__`）、`roles.<role>.disallow_allow_regex`
+（`^Bash(*)$` 等）に当たる allow は override 側にあっても ERROR となる。安全契約は override で迂回できない。
 
 #### `{claude_org_path}` の解決（窓口 / dispatcher / worker）
 
@@ -173,9 +172,7 @@ hook が解決されず、ガードが無言で無効化する）。prune ツー
 
 窓口テンプレートには `env.CLAUDE_ORG_PATH` が無いため、初回実行では 2 も 3 も取れず 4 で解決される。
 4 の条件を満たさない（org checkout ではない）場合は `unresolved placeholders` で中断するので、
-誤った `--root` の内容が黙って書き込まれることはない。`.hooks/` ディレクトリの実在だけを条件に
-すると、たまたま同名ディレクトリを持つ無関係なプロジェクトを org root として受理し、
-存在しないスクリプトを指す hook（＝生成時点で死んでいるガード）を書いてしまうため。
+誤った `--root` の内容が黙って書き込まれることはない（4 の条件の理由は [`.claude/skills/org-setup/references/rationale.md`](references/rationale.md)）。
 
 いずれも取れない場合（fresh install など）は `--claude-org-path` を明示する:
 
@@ -189,11 +186,11 @@ python tools/org_setup_prune.py --role dispatcher --claude-org-path "C:/Users/me
 失敗時はこの `.bak` を `mv` で戻せば原状復帰できる。
 不要であれば `--no-backup` で抑止できる。
 
-### Step 6: ユーザー共通の sandbox denyRead 補強（`--user-common-sandbox`、Issue #429 Task B / C）
+### Step 6: ユーザー共通の sandbox denyRead / denyWrite 補強（`--user-common-sandbox`）
 
-> **⚠️ main pull 後の 1 回必須**: 本リポジトリを clone / pull した後に **`python tools/org_setup_prune.py --user-common-sandbox` を 1 回実行する**。Issue #429 Task C で共有 `.claude/settings.json` から個人 path（`~/.config/gh/hosts.yml` および `Read(~/.ssh/*)` / `Read(~/.aws/*)`）を除去したため、未実行だと **個人環境の sandbox denyRead 補強が一時的に弱くなる**。
+> **⚠️ main pull 後の 1 回必須**: 本リポジトリを clone / pull した後に **`python tools/org_setup_prune.py --user-common-sandbox` を 1 回実行する**。共有 `.claude/settings.json` から個人 path を除去したため、未実行だと **個人環境の sandbox denyRead / denyWrite 補強が一時的に弱くなる**。
 
-`--user-common-sandbox` は `~/.claude/settings.json` の `sandbox.filesystem.denyRead` に対してのみ idempotent な union-merge を行う専用モード（他キーは無触）:
+`--user-common-sandbox` は `~/.claude/settings.json` の `sandbox.filesystem.denyRead` と `denyWrite`（`~/.claude/settings.json` 自身）に idempotent な union-merge を行う専用モード（他キーは無触）:
 
 ```bash
 # diff プレビュー
@@ -203,13 +200,13 @@ python tools/org_setup_prune.py --user-common-sandbox --dry-run
 python tools/org_setup_prune.py --user-common-sandbox
 ```
 
-対象ディレクトリ（`~/.ssh` / `~/.aws` / `~/.config/gh` / `~/.kube` / `~/.gnupg` / `~/.docker` / `~/.config/aws-vault`）のうち、**実在し、かつ realpath が HOME を escape しない symlink でない** ものだけが追加される。WSL2 + DriveFS の `~/.aws → /mnt/c/...` のようなケースは自動 skip（bwrap bootstrap 失敗の予防）。
+denyRead の対象ディレクトリ（`~/.ssh` / `~/.aws` / `~/.kube` / `~/.gnupg` / `~/.docker` / `~/.config/aws-vault`）のうち、**実在し、かつ realpath が HOME を escape しない symlink でない** ものだけが追加される。WSL2 + DriveFS の `~/.aws → /mnt/c/...` のようなケースは自動 skip（bwrap bootstrap 失敗の予防）。`~/.config/gh` は対象外で、既存の entry は自動で除去される。
 
-仕様詳細は [`.claude/skills/org-setup/references/permissions.md`](references/permissions.md) の「ユーザー共通の sandbox denyRead 補強」節を参照。
+仕様詳細は [`.claude/skills/org-setup/references/permissions.md`](references/permissions.md) の「ユーザー共通の sandbox denyRead / denyWrite 補強」節を参照。
 
 ## 注意事項
 
 - `settings.local.json` は `.gitignore` に入っている前提（個人設定のため）
 - ユーザーレベルの `~/.claude/settings.json` は既存の設定（plugins 等）を壊さないよう注意する
 - ワーカーの設定はこのスキルでは配置しない（org-delegate が担当）
-- prune の挙動は `tools/org_setup_prune.py` の docstring と `tools/test_org_setup_prune.py` のテストが正典
+- prune の挙動の詳細は `tools/org_setup_prune.py` の docstring と `tools/test_org_setup_prune.py` のテストを参照
