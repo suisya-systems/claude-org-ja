@@ -135,6 +135,7 @@ hook で強制済みの決まりは、文章を 1 行（「hook が deny する�
 
 - 統合用ブランチ: `modernize/prompts-2026-10`。main の 31a5c40 以降の先端から切る。
 - 第 1 段階の PR はすべてこのブランチ宛て（`gh pr create --base modernize/prompts-2026-10`）。main 宛てにしない。
+- 作業者のブランチもこのブランチから切る。PR の宛先を変えるだけでは、作業者の起点は変わらない。起点は `--base-ref` の指定、registry の `base_branch`、`origin/HEAD` の順で決まる（`tools/gen_delegate_payload.py:767`）。第 1 段階の委譲では `gen_delegate_payload.py` に `--base-ref modernize/prompts-2026-10` を渡し、派遣前に出力の `base_ref` が `origin/modernize/prompts-2026-10` になっていることを確かめる。そうしないと、先に取り込んだワークストリームの変更が無い main から作業が始まる。
 - CI は PR に対して走る（`.github/workflows/tests.yml:3-7` の `pull_request` にブランチの絞り込みが無い）。全項目が通れば、窓口は統合用ブランチへ自動で取り込んでよい。取り込む前に `gh pr checks <PR>` で失敗 0 を確かめる。CI 監視は通常どおり `/pr-watch-pane <PR>`。
 - main の変更を統合用ブランチへ取り込む:
   - 方法は **merge**（`git merge origin/main`）。rebase はしない。統合用ブランチには複数の PR が載っており、書き換えると開いている PR が壊れるため。
@@ -303,7 +304,8 @@ W5 の各 hook                 ───────────────> �
 
 - 統合用ブランチを本番とは別の親ディレクトリに clone する（例 `~/work/org-trial/claude-org-ja`）。`registry/org-config.md:28` の `workers_dir: ../workers` は repo からの相対パスなので、作業者の作業場所も `~/work/org-trial/workers` に分かれる。
 - `.state/`（状態の記録）は clone ごとに別になる。`registry/projects.md` とゴール台帳（`registry/goals/`）は追跡外なので、試験に使うプロジェクトの分だけ手で用意する。
-- clone で `/org-setup` を実行して設定を配る。`ORG_TRANSPORT=renga` を明示する。
+- clone で `/org-setup` を実行して設定を配る。
+- 試験側で ja 自身を編集する仕事を委譲するときも `--base-ref modernize/prompts-2026-10` を渡す（2）。clone の `origin/HEAD` は main を指すので、指定しないと試験している変更の無い main から作業者が始まる。`ORG_TRANSPORT=renga` を明示する。
 - 画面: 本番とは別の端末ウィンドウで、clone のディレクトリから `renga --layout ops`（`README.md:63`）を起動する。
 - 起動後、試験側の窓口で `list_peers` を実行し、本番の窓口・振り分け役が見えないことを確かめる。見えたら止める。同時に 2 つの組織が動いて記録が混ざった事故が過去にあるため。
 - renga の分離とは別に、Claude Code 標準のセッション間の宛先一覧（ListAgents）には本番の窓口・振り分け役のセッションが見え、宛先として選べる。誤送信を防ぐ仕組みは無い（2026-10-12 の試行、Claude Code 2.1.296。5-1 の「組織の前提と違っていた点」8）。試験側の役割が標準のセッション間送信を使わないことを確かめ、使った形跡があれば止める。
