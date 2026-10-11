@@ -75,7 +75,7 @@ mcp__renga-peers__send_message(to_id="secretary", message="...")
 > - **pane 列挙 / ペインクローズ** は `mcp__renga-peers__list_panes` / `close_pane`
 > - **raw キー入力** は `mcp__renga-peers__send_keys`（Shift+Tab / Enter / Esc など）
 
-詳細手順（監視ループ 1 サイクル / stall 検出 / secretary relay gap 検出 / 設計メモ / cadence 設定の根拠）は [`.dispatcher/references/worker-monitoring.md`](references/worker-monitoring.md) を参照。
+詳細手順（監視ループ 1 サイクル / stall 検出 / secretary relay gap 検出）は [`.dispatcher/references/worker-monitoring.md`](references/worker-monitoring.md)、設計メモと cadence 設定の根拠は [`.dispatcher/references/rationale.md`](references/rationale.md) を参照。
 
 エントリポイント要約:
 
@@ -86,7 +86,7 @@ mcp__renga-peers__send_message(to_id="secretary", message="...")
 - stall 判定で `worker_escalation` 痕跡を acked に数える前に、escalation resolve (to_worker) 済みの worker は decision register (`.state/pending_decisions.json`) の `latest-resolution` 照会で「判断待ち acked」から外し STALL/ERROR 評価に戻す (Issue #603)。ユーザー返答を secretary が worker へ転送済み (register 最新 decision が `resolved` / `resolution_kind=to_worker`) なら古い `worker_escalation` 行はもう open な判断待ちを表さず、転送後に 529 / stuck で idle な worker を取りこぼすため。詳細は [`.dispatcher/references/worker-monitoring.md` Step 5 (c)(1-bis)](references/worker-monitoring.md)
 - pane_output_without_peer_msg 検出 (Step 5.2) は worker がペインに出力したのに secretary 宛 `send_message` を発行し忘れた **silent dead-lock** を捕捉する。`PANE_OUTPUT_SETTLE_SEC = 60` 秒以上の静止 + `idle_streak_cycles >= PANE_OUTPUT_IDLE_STREAK_MIN = 2` (~6 分の完全静止) + worker が過去に peer-msg 履歴あり + `last_content_change_ts` 起点で見て peer-msg 痕跡なし、で fire し worker への self-healing nudge と secretary への informational を両系統送信する。look-back window は持たず `last_content_change_ts` を WHERE 句に直接埋め込んで「ペイン活動後の peer-msg 有無」を deterministic に評価する。加えて `completion_reported_at != null` (secretary が完了受領時に送る `WORKER_COMPLETION_NOTED` で set、Step 2 で反映) の worker は完了報告済み・review 待ちの正常 idle として本検知のみを skip する (Issue #658 false positive 抑止。ERROR / APPROVAL_BLOCKED / pane exit / STALL は完了後も有効なまま)。解除は lifecycle event のみ (T6 再指示の `WORKER_REOPENED` fast-path clear、または `runs.status == 'in_use'` を観測した self-heal clear = reliable backstop / CLOSE_PANE・pane 消失で record 削除、timeout なし)。skip gate は `completion_reported_at != null` かつ `runs.status == 'review'` の両立を要求し、best-effort な `WORKER_REOPENED` 取りこぼしで危険側に倒れないようにする (Issue #658 P2)。詳細は [`.dispatcher/references/worker-monitoring.md` Step 5.2](references/worker-monitoring.md#step-5-2)
 - ワーカーペインがない場合は監視ループを停止する（`.state/dispatcher/curate-inflight.json` 存在中・未配送の終端イベントが残っている間を除く）。**停止する前に `python3 ../tools/relay_scan.py --recipient secretary --mark-halted` を 1 回叩く**（意図的停止の記帳。これが無いと、停止中に終端イベントが 1 件でも入った翌セッションの初回 audit が設計どおりの停止を `RELAY_SCAN_STALE` として報告し、org 起動のたび鳴る偽 alert になる。マーカーはそれを使った audit 自身が消すので抑止は 1 回きり、記帳せずに死んだループは従来どおり finding になる。未配送イベントが残っていれば記帳を拒否して exit 10 を返す (停止せず relay を続行する)、書き込み失敗は exit 2 で、その場合は停止前に窓口へ `RELAY_SCAN_HALT_UNRECORDED: ...` を送る。詳細は [Step 7](references/worker-monitoring.md)）
-- 監視対象のペイン名は `.state/workers/worker-{peer_id}.md` の Pane Name から取得する
+- 監視対象のペイン名は `.state/workers/worker-{task_id}.md` の Pane Name から取得する
 
 ## handover / resume（context 圧迫時の引き継ぎ）
 
