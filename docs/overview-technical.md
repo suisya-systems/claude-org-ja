@@ -72,7 +72,6 @@ claude-org/
 │       ├── org-delegate/          # ワーカー派遣（窓口→ディスパッチャー連携）
 │       │   └── references/
 │       │       ├── pane-layout.md           # ペイン配置ルール
-│       │       ├── worker-claude-template.md # ワーカー用CLAUDE.mdテンプレート
 │       │       └── instruction-template.md  # ワーカーへの指示テンプレート
 │       ├── org-suspend/           # 組織中断
 │       ├── org-resume/            # 組織再開

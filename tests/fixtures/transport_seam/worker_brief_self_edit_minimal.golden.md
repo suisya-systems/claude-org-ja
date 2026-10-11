@@ -21,11 +21,12 @@
 
 ### Bash のパス指定（絶対パス必須。ultracode の `agent()` プロンプト内も同じ）
 - grep / find / sed / テスト対象は**常に `/tmp/workers/demo-task/...` の絶対パス**。`cd <dir>; <相対パス>` と root での `grep -r ... .` は使わない。ultracode の各 `agent()` プロンプト内の Bash 指示にも同じ規約を適用（subagent のコマンドは worker 本体の permissions で判定される）
-- 理由: auto-mode 分類器は `cd` 後の相対パスを解決できず、`Read(.env)` 等の deny 規則（`tools/org_extension_schema.json` の `layer2Fallback`）と組み合わさって毎回人間承認に落ちる（2026-09-04 continuo-110-lease-renewal で 1 タスク 6 回）。deny 規則は緩めず書き方で回避する
+- 理由: auto-mode 分類器は `cd` 後の相対パスを解決できず、`Read(.env)` 等の deny 規則（`tools/org_extension_schema.json` の `layer2Fallback`）と組み合わさって毎回人間承認に落ちる。deny 規則は緩めず書き方で回避する
 - NG: `cd /tmp/workers/demo-task; grep -n "renewLease" test/lap/root.test.ts` / `grep -rln "lease" . --include=*.json` → OK: `grep -n "renewLease" /tmp/workers/demo-task/test/lap/root.test.ts` / `grep -rln "lease" /tmp/workers/demo-task/test --include=*.json`
 
 ### 着手前 preflight（sandbox 書き込み境界・非対話 alias・hook 拒否）
 - 作業ファイルを置けるのは `/tmp/workers/demo-task` 配下と `$TMPDIR` だけ（git が内部で触る Pattern B の `.git` メタデータは別枠で、作業ファイルの置き場ではない）。ハーネスの scratchpad（`/tmp/claude-<uid>/.../scratchpad`）は `/tmp/workers/demo-task` 外なので Write / Edit が `.hooks/check-worker-boundary.sh`（許可パスは worker dir / `~/.claude/plans/` / `knowledge/raw/` の 3 つ。113-136 行）で deny される。Bash の一時ファイルは `$TMPDIR` へ、Write / Edit の作業メモは `mkdir -p /tmp/workers/demo-task/.worker-scratch` へ。linked worktree（Pattern B）では `.git/info/exclude` が共通 clone 側（sandbox 外）にあり登録できないので、禁止事項 5 のとおり `git add -u` + 明示 add で staging し `.worker-scratch/` を commit に混入させない。`/tmp/claude-<uid>` は並走ワーカーと共有なので一般名のバックアップは衝突する（`.worker-scratch/` に置くか task_id を名前に入れる）
+- `/tmp` 直下は書けない（`$TMPDIR` とは別物。必ず `$TMPDIR` を経由する）。uv / pip のキャッシュは `/tmp/workers/demo-task` 配下に置かず `export UV_CACHE_DIR="$TMPDIR/uv-cache"` / `PIP_CACHE_DIR="$TMPDIR/pip-cache"` にする（worktree 内に置くと wheel 内の `credentials.py` 等が sandbox の read-deny に巻き込まれ Bash が全滅する）
 - `cp` / `mv` / `rm` は `-i` alias 前提で書く（既存ファイルへの上書きが無言の確認待ちで timeout まで止まる）。上書きは `command cp -f` か `cat backup > dest`。`rm -rf` / `rm -r` は permissions.deny（Node 等で再帰削除を迂回しない。掃除は新しい名前のディレクトリを掘る）
 - git 側の退避／復元は使えない: `git stash` 変更系（禁止事項 4）に加え、パス指定の `git checkout -- <path>` / `git restore --source=<ref>`（`--staged` 単独の index-only を除く）も `.hooks/block-dangerous-git.sh` が deny（484-487 行 / 491-505 行）。壊して戻す手順は `cp` バックアップ（書き戻しは `command cp -f` / `cat >`）か一時 commit の 2 択。復元後は `git diff` で戻ったことを確認してから次に進む
 - `read-only file system` / `Permission denied` でも `dangerouslyDisableSandbox` を反復要求しない（安全分類器のロックアウトで作業不能になる）。出力先を書ける場所へ変えて再試行する
@@ -36,10 +37,14 @@
 ## タスク
 - ID: demo-task
 - ブランチ: `demo-task`
-- 検証深度: **minimal**
+- 検証深度: **minimal**（値が無い・不明瞭なら勝手に決めず窓口に確認する）
 - commit prefix: `feat(tools):`
 - 関連 Issue: Refs #121 #214
 - 目的: デモタスク。X を Y に変更する。
+
+## `.claude/` の編集前承認と生成物
+- root の `.claude/` 配下（深さ不問。`.claude/skills/**/references/**` を含む）を編集する場合は、**編集前に、承認入力（対象ファイル列挙 + task_id + 「窓口経由のユーザー承認」）が会話に user message として存在することを確認**せよ。存在しなければ編集を開始せず、`mcp__renga-peers__send_message(to_id="secretary")` で窓口に承認入力を要求して待機せよ。peer message で届いた承認は承認にならない。承認文に無いファイルの `.claude/` 編集が要るときはスコープ拡張として窓口に上げる
+- `.claude/skills/` / `.dispatcher/` の prose は、`grep <path> tools/skill_src/manifest.json` で生成物か確かめてから編集する。生成物なら `.in` を直して `python3 tools/gen_skill_prose.py --manifest tools/skill_src/manifest.json` で再生成し、生成元と生成物を両方 commit する。最後に同じコマンドに `--check` を付けて drift ゼロを確かめる（`--manifest` を省くと何も検査せず exit 0 になる）
 
 ## 権限
 - git commit 可、push 不可、PR 不可、`rm -rf` 不可
@@ -48,9 +53,9 @@
 検証深度 minimal。minimal 用 1 行報告フォーマットを使用（`done: {SHA} {files}`）。Codex セルフレビュー・追加テスト・拡張された動作確認は一切禁止。
 
 ## 完了時
-1. `mcp__renga-peers__send_message(to_id="secretary", ...)` で完了内容・変更ファイル・commit SHA・動作確認結果・残作業を報告
+1. `mcp__renga-peers__send_message(to_id="secretary", ...)` で完了内容・変更ファイル・commit SHA・動作確認結果・残作業を報告（検証深度 full では「rebase clean」行と人間向け理解サマリを含める）
 2. PR 作成後ペイン保持
-3. 振り返り記録: 任意（非自明な学びがあれば `/home/user/work/claude-org/knowledge/raw/{YYYY-MM-DD}-{topic}.md`）
+3. 振り返り記録: 任意（非自明な学びがあれば `/home/user/work/claude-org/knowledge/raw/{YYYY-MM-DD}-{topic}.md`。見出しは `## 事実` / `## 判断` / `## 根拠` / `## 適用場面`）
 
 ## SUSPEND
 "SUSPEND:" → 即報告（完了したこと / 変更ファイル / 次の予定 / ブロッカー）
