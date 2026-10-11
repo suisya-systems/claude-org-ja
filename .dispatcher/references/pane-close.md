@@ -4,6 +4,15 @@
 
 > **輸送層 両系（`ORG_TRANSPORT`: 既定 `renga` / opt-in `broker`）**: 本ファイルの手順は **既定 `renga`** で書いてある（無設定ならそのまま従う。挙動不変）。`ORG_TRANSPORT=broker` では完全修飾名が **`mcp__renga-peers__*` → `mcp__org-broker__*`** に置換される。retro gate の `send_message`（secretary 宛）/ `check_messages`（受信）は broker でも同じツール名で動くが、受信は **ナッジ + `check_messages` の pull** になる（renga の in-band `<channel>` push に対して）。`close_pane` のエラーは renga の `[pane_not_found]` / `[pane_vanished]` に加え broker では `[no_backend]`(adapter 不在) / `[session_invalid]` / `[token_invalid]` も返しうる（未知コードは default-branch）。両系の総説は [`.dispatcher/CLAUDE.md`](../CLAUDE.md) の「輸送層 両系」節、契約面は [`docs/contracts/backend-interface-contract.md`](../../docs/contracts/backend-interface-contract.md) Surface 8（ratified 2026-06-14）。（**既定の二フレーム注記（Refs #604）**: ここでの「既定 `renga`」は**運用既定**（broker 実走 dogfood が Epic #6 Issue G まで未活性）の意。別に**コード既定**として `tools/transport.py: DEFAULT_TRANSPORT` が runtime 0.1.28 (Epic #586) で `broker` にフリップ済みで、ja 生成器・`transport.resolve()` はこのコードフレームで render するため生成面は「既定 `broker`」と表示する — 両フレームは指す対象（運用経路 vs コード定数）が異なり矛盾しない。総説は root `CLAUDE.md`「輸送層（transport）両系」節。）
 
+## 目次
+
+- 1. 振り返り（完了報告ゲート / secretary unreachable 時の fallback / 観点）
+- 2. 知見の記録
+- 3. ペインを閉じる（保留の扱い）
+- 4. 窓口への報告
+- 5. curate 閾値チェックとオンデマンド curator 起動（5-1 閾値チェック〜5-7 完了受領・timeout・クローズ）
+- 6. work-discovery triage scan（6-1 実行 / 6-2 exit code 分岐 / 6-3 journal 記帳 / 6-4 窓口への転送）
+
 ## ペインクローズ（CLOSE_PANE 受信時）
 
 **重要: Step 1〜2 の振り返りが完全に終わるまで、絶対にペインを閉じないこと。**
@@ -77,7 +86,7 @@ mcp__renga-peers__send_message(to_id="secretary", message="<上記 stdout>")
 
 **secretary unreachable 時の fallback**: 上記送信が `[pane_not_found]` 等で失敗する、または 5 分以内に応答が返らない場合は、retro に「未着」と誤った結論を書かない。代わりに以下の手順で **CLOSE_PANE フローを中断** する:
 
-1. journal helper 経由で `retro_deferred` を追記する（生 JSON を `>>` で書かない。helper 契約は `.dispatcher/CLAUDE.md`「delegate-plan helper」節末尾の `tools/journal_append.sh` 説明を参照）:
+1. journal helper 経由で `retro_deferred` を追記する（生 JSON を `>>` で書かない。helper 契約は [`.dispatcher/references/spawn-flow.md`](spawn-flow.md)「delegate-plan helper」節末尾の `tools/journal_append.sh` 説明を参照）:
    ```bash
    bash ../tools/journal_append.sh retro_deferred worker=worker-{task_id} reason=secretary_unreachable
    ```
@@ -151,7 +160,7 @@ mcp__renga-peers__close_pane(target=<照合済みの数値 pane_id>)
 「監視 gap を埋める内部状態ファイル」の一覧を増やすと、handover / resume / `/clear` で保全すべき対象が増える）。
 
 **(a) 記帳**: journal helper 経由で 1 行残す（生 JSON を `>>` で書かない。helper 契約は
-`.dispatcher/CLAUDE.md`「delegate-plan helper」節末尾の `tools/journal_append.sh` 説明を参照）。
+[`.dispatcher/references/spawn-flow.md`](spawn-flow.md)「delegate-plan helper」節末尾の `tools/journal_append.sh` 説明を参照）。
 **新しい event 名は導入せず既存 catalog の `anomaly_observed` を再利用する**（[観測の原則](worker-monitoring.md#observation-principle) (P4)
 「journal は既存 catalog を再利用する」と同方針。`kind` は payload 値なので [`docs/journal-events.md`](../../docs/journal-events.md)
 の event 台帳を増やさない）:
@@ -181,7 +190,7 @@ bash ../tools/journal_append.sh anomaly_observed source=close_pane worker=worker
   窓口復帰時に再送される（本ファイル 1 の「secretary unreachable 時の fallback」が名指ししているのと同じ契機）
 - **ディスパッチャー側で `name` 一致だけを頼りに別 id へ撃ち直さない**: 窓口が送った pane_id が古いのか、
   前のペインが消えた後に同名で別ペインが立ち上がったのかを、この 1 回の列挙からは区別できない
-  （worker pane name の衝突は `delegate-plan` helper が `input_invalid` で弾く（[`.dispatcher/CLAUDE.md`](../CLAUDE.md)
+  （worker pane name の衝突は `delegate-plan` helper が `input_invalid` で弾く（[`.dispatcher/references/spawn-flow.md`](spawn-flow.md)
   「delegate-plan helper」の「出力の扱い」）ので同名が同時に 2 枚並ぶことはなく、
   名前が一致する別 id は「作り直された別ペイン」でありうる — それを閉じると生きているワーカーを落とす）。
   区別が付かない判定を自分で倒さず窓口へ返す（[観測の原則](worker-monitoring.md#observation-principle) (P2)）
@@ -648,7 +657,7 @@ scan_json=$(python3 ../tools/work_discovery_scan.py --trigger worker_close --all
 #### 6-3. 監査ログ（journal 記帳）
 
 scan 実行を journal イベントに記帳する（生 JSON を `>>` で直書きしない。helper 契約は Step 5 系統と同じく
-`.dispatcher/CLAUDE.md`「delegate-plan helper」節末尾の `tools/journal_append.sh` 説明を参照）。payload は
+[`.dispatcher/references/spawn-flow.md`](spawn-flow.md)「delegate-plan helper」節末尾の `tools/journal_append.sh` 説明を参照）。payload は
 候補件数・推奨 ref・トリガを載せる:
 
 ```bash
