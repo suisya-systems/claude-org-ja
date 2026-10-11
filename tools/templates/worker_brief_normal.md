@@ -117,7 +117,7 @@ ${references_knowledge_block}
 ### 完了報告前の rebase
 既存リポジトリで PR を出すタスクでは、完了報告と Codex セルフレビューの前に次を行う（`git init` の新規プロジェクトや upstream remote が無い場合は不要）:
 1. `git fetch origin`（`git fetch origin <branch>` は `FETCH_HEAD` に取るだけで追跡 ref を確実には更新せず、古い ref に対して behind=0 と誤判定しうる）
-2. `git rebase ${task_base_ref}`（merge 運用のリポジトリなら `git merge`）。conflict は自分で解き、解いた後も通常検証が green であることを確かめる
+2. `git rebase ${task_base_ref}`（merge 運用のリポジトリなら `git merge`）。conflict は自分で解く。conflict が無くても rebase 後に通常検証を回し直し、green であることを確かめる
 3. `git rev-list --count HEAD..${task_base_ref}` が `0` であることを確かめ、完了報告に「rebase clean: HEAD=`<sha>` on top of ${task_base_ref} `<sha>`」の 1 行を入れる
 
 ### Codex セルフレビュー

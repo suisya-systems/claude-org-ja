@@ -52,7 +52,7 @@
 ## 検証と Codex セルフレビュー（検証深度 full）
 通常検証（テスト / lint 等）を回して green を確認してから完了報告する。green 判定は「passed が N 件」ではなく **passed / skipped の内訳が CI と一致するか**で行う。条件付き skip されるテスト（環境変数・OS 依存の `skipIf` 等）はその条件を満たしてから回し、完了報告に skip 件数と理由を書く（例: 「824 passed | 2 skipped、skip は〜」）。
 
-完了報告前の rebase: Codex の前に `git fetch origin` → `git rebase origin/main`（conflict は自分で解き、解いた後も通常検証が green であることを確かめる）→ `git rev-list --count HEAD..origin/main` が `0` であることを確かめ、完了報告に「rebase clean: HEAD=`<sha>` on top of origin/main `<sha>`」の 1 行を入れる。
+完了報告前の rebase: Codex の前に `git fetch origin` → `git rebase origin/main`（conflict は自分で解く。conflict が無くても rebase 後に通常検証を回し直す）→ `git rev-list --count HEAD..origin/main` が `0` であることを確かめ、完了報告に「rebase clean: HEAD=`<sha>` on top of origin/main `<sha>`」の 1 行を入れる。
 
 Codex セルフレビュー: commit 後に作業ディレクトリで**前景実行**する。この Bash 呼び出しの `allowed_domains` に Codex の接続先（`chatgpt.com` 等）を入れる（無いとエラーを出さずに数百秒止まる）:
 ```bash
