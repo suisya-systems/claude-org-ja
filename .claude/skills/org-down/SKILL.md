@@ -43,10 +43,8 @@ daemon まで含めて組織を完全に停止する統合終了スキルであ�
 > 止まり、daemon は走らせたまま（`/org-start` で再開する前提の中断）にする。/org-down は
 > **suspend の成功を確認できたときにのみ** daemon 停止へ進む。順序を守るのは、未保存の状態を
 > 残したまま daemon を落とすと復旧経路（`check_messages` での drain 等）ごと失われるため。
->
-> runtime 側の pre-flight 検出（`org down` 前に生存ワーカー / 未 drain キューを警告する機能）は
-> [runtime#142](https://github.com/suisya-systems/claude-org-runtime/issues/142) の担当で、本スキルは
-> 触れない。本スキルは runtime の `org down` を **呼ぶだけ**。
+> 本スキルは runtime の `org down` を **呼ぶだけ**（runtime 側 pre-flight との分担は
+> [`.claude/skills/org-down/references/rationale.md`](references/rationale.md)）。
 
 > **輸送層の前提**: `claude-org-runtime org down` は broker daemon を落とすコマンドで、broker
 > transport（`ORG_TRANSPORT` 無設定＝コード既定 broker、または明示 broker）でのみ意味を持つ。
@@ -91,15 +89,8 @@ daemon まで含めて組織を完全に停止する統合終了スキルであ�
 応答を返さず生死を判定できないまま等）は、**org down に進まず STOP**する。状況を人間に報告し、「状態が保存し切れていない
 / ペインの停止を確認し切れていないため daemon は落とさなかった。原因解消後に /org-down を再実行するか、
 /org-suspend でいったん中断してください」と案内する（生死を判定できなかったピアが残っている場合は、
-Phase 4 手順 7 が列挙したその一覧もそのまま渡す）。
-
-> **判定不能は「継続」ではなく STOP に倒す**: ディスパッチャーの worker 監視
-> （[`.dispatcher/references/worker-monitoring.md`](../../../.dispatcher/references/worker-monitoring.md)）は
-> 観測不能なサイクルでも監視対象を保持して次サイクルで再評価する（人間が居ないので無停止継続が安全側）が、
-> 本スキルの後段は `claude-org-runtime org down` = broker daemon の kill であり向きが逆になる。生死を
-> 判定できないピアを抱えたまま daemon を落とすと、そのピアが走り続けていた場合に止める手段も、生死を
-> 後から確かめる経路（冒頭の責務境界で挙げた `check_messages` での drain 等）も同時に失われる。
-> 判定不能のまま不可逆操作へ進まない側が安全側である。
+Phase 4 手順 7 が列挙したその一覧もそのまま渡す）。判定不能を worker 監視と逆向きに STOP へ倒す
+理由は [`.claude/skills/org-down/references/rationale.md`](references/rationale.md)。
 
 ## Step 2: ダッシュボードの停止（stale-pid-safe）
 
