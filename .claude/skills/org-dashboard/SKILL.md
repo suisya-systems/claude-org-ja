@@ -40,7 +40,7 @@ python3 dashboard/server.py &
 サーバーは 8099 → 8100 → 8101 の順で空いているポートを使う（`dashboard/server.py` の `PORTS`）。別のサービスが 8099 を使っていることがあるので、ページのタイトルでダッシュボードと確かめたポートを URL にする:
 
 ```bash
-for p in 8099 8100 8101; do curl -sf http://localhost:$p/ | grep -q 'claude-org — Ops Center' && echo $p && break; done
+for p in 8099 8100 8101; do curl -sf --max-time 2 http://localhost:$p/ | grep -q 'claude-org — Ops Center' && echo $p && break; done
 ```
 
 どのポートも応答しなければ、起動失敗として人間に報告する。画面は開くのにデータが出ないときは `/api/state` の失敗（state.db の破損等）を疑う。
