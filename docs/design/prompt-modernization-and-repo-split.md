@@ -306,6 +306,8 @@ W5 の各 hook                 ───────────────> �
 - clone で `/org-setup` を実行して設定を配る。`ORG_TRANSPORT=renga` を明示する。
 - 画面: 本番とは別の端末ウィンドウで、clone のディレクトリから `renga --layout ops`（`README.md:63`）を起動する。
 - 起動後、試験側の窓口で `list_peers` を実行し、本番の窓口・振り分け役が見えないことを確かめる。見えたら止める。同時に 2 つの組織が動いて記録が混ざった事故が過去にあるため。
+- renga の分離とは別に、Claude Code 標準のセッション間の宛先一覧（ListAgents）には本番の窓口・振り分け役のセッションが見え、宛先として選べる。誤送信を防ぐ仕組みは無い（2026-10-12 の試行、Claude Code 2.1.296。5-1 の「組織の前提と違っていた点」8）。試験側の役割が標準のセッション間送信を使わないことを確かめ、使った形跡があれば止める。
+- 状態の確認に `claude agents --json` を使う場合は sandbox の外で実行する。sandbox の中からは `[]` が返り、エラーにならない（同 7）。0 件を「誰も動いていない」と読まない。
 
 ### 4-2. 実際の仕事を通す
 
@@ -323,6 +325,7 @@ W5 の各 hook                 ───────────────> �
 | 6 | 振り分け役の監視ループが回り続ける | 振り分け役の画面、events テーブル |
 | 7 | 新しい hook が誤って正規の操作を止めない（H1 は承認手順、H2 は振り返り後の close、H7 は `git add -u`） | 各ペイン |
 | 8 | 振り分け役のコンテキスト消費が減っている | 下記 4-4 |
+| 9 | 試験側から本番の組織への送信が起きていない（renga の peer 送信と、Claude Code 標準のセッション間送信の両方。4-1） | 本番の窓口・振り分け役の受信、試験側のセッション記録 |
 
 ### 4-4. 振り分け役のコンテキスト消費の測り方
 
@@ -339,7 +342,7 @@ W5 の各 hook                 ───────────────> �
 
 合格の基準:
 
-- 4-3 の 1〜7 がすべて満たされる
+- 4-3 の 1〜7 と 9 がすべて満たされる
 - 4-3 の 8 で、振り分け役の消費が本番より減っている。目安は棚卸しの見込み（派遣 1 回で約 11.5% 減、§1-4）以上。数値で判定するのはオーナー
 - 試運転中に出た問題がすべて直っているか、Issue になっている
 
@@ -358,8 +361,75 @@ W5 の各 hook                 ───────────────> �
 | 共通と分岐の境目 | 既存の生成の仕組みが境目にほぼ一致している。共通本文は `.in`（19 本、`tools/skill_src/manifest.json`）、輸送層ごとの差分は `tools/skill_src/fragments/` の 27 本（`*.broker.md` / `*.renga.md` 13 組と中立の 1 本） |
 | Python の道具の置き場所 | `tools/`（state_db など）。runtime（claude-org-runtime）へ寄せるものがあるか。作業者の設定は ja の `tools/org_extension_schema.json` から生成していて（`tools/gen_delegate_payload.py:2008-2011`）、runtime 同梱スキーマと照合している（`tools/check_runtime_schema_drift.py`）。分割後にどちらが正本になるか |
 | 派生リポジトリ | 英語版 `suisya-systems/claude-org` がある（`.github/workflows/notify-en-changes.yml:3-6,23`。main への取り込みごとに翻訳待ちの通知を送る）。通知の秘密情報 `NOTIFY_EN_PAT` が設定済みかと、英語版をどう分割に追随させるかは未確認。ほかの派生があるかも確かめる |
-| どの版を作るか | 棚卸し 付録 B2（輸送層 4 案）。broker＋tmux 版を本番で使うには先に D-1〜D-10 を解く必要がある（付録 B2「broker の実運用でまだ塞がっていない課題」） |
+| どの版を作るか | renga 版、broker＋tmux 版（棚卸し 付録 B2 の輸送層 4 案。broker＋tmux 版を本番で使うには先に D-1〜D-10 を解く必要がある。付録 B2「broker の実運用でまだ塞がっていない課題」）に加え、4 本目の候補として Claude Code の標準機能で動く版（CC ネイティブ版、5-1） |
 | 第 1 段階で直さなかった輸送層の誤り | `org-pull-request/references/transport-duality.md:7`、`org-conveyor/SKILL.md:88-89`（1-1）。「既定」表記の逆転と生成物の `allowed-tools` の偏り（棚卸し §4-A 2・3） |
+
+### 5-1. 4 本目の候補: Claude Code の標準機能で動く版（CC ネイティブ版）
+
+材料は窓口のまとめ（文書調査と、使い捨てリポジトリ dogfood/cc-native-trial での実地試行。本番の組織には触れていない）。実地の観察はすべて 2026-10-12 の試行、Claude Code 2.1.296（`claude --version`）による。
+
+結論: 一括では置き換えない。置き換えの効果が大きいのは次の 3 つ。
+
+1. 輸送層とペイン操作（spawn の承認プロンプトの画面判定、受信の sidecar）
+2. dispatcher が画面を読んで状態を推定している部分
+3. ultracode の起動手順
+
+承認ゲート、state DB / journal、pending_decisions、work discovery、Codex ゲート、pr_watch の終端判定は組織側に残す。
+
+#### 置き換えの判定（要約）
+
+| ja の部品 | 標準機能 | 判定 | 出典と要点 |
+|---|---|---|---|
+| dispatcher の `/loop 3m` | `/loop`、`claude agents --json`、agent view の状態 | 一部 | 「Recurring tasks automatically expire 7 days after creation」（https://code.claude.com/docs/en/scheduled-tasks 194 行目）。マシンを閉じると止まる。状態の読み取りは `claude agents --json` で代替できる見込み（https://code.claude.com/docs/en/agent-view） |
+| worker の spawn と kickoff | `claude --bg "<prompt>"`、agent view | 一部〜可（要確認） | 「Pass `--bg` … to start a session that goes straight to the background」（agent-view 489 行目）。agent view は research preview（同 22 行目） |
+| 完了判定 | `/goal`、Stop フック | 一部 | `/goal` の評価役は transcript だけを見る小さなモデル（https://code.claude.com/docs/en/goal）。worker の中で「通るまで続ける」用途には合うが、dispatcher からの完了確認には合わない |
+| Codex レビューゲート | `/code-review`、GitHub Code Review | 不可（補助としてなら可） | どれも Claude 自身のレビュー。GitHub Code Review は PR を止めず、Team / Enterprise 限定（https://code.claude.com/docs/en/code-review） |
+| PR の CI 監視と自動 merge | routines、Auto-fix、`/loop`、asyncRewake フック | 今は不可寄り | routines は fresh clone 上で動き、ローカルの state DB に触れない（https://code.claude.com/docs/en/routines） |
+| escalation と人の承認 | agent view の「Needs input」、Notification フック | 不可（通知部分だけ一部） | 判断仰ぎの台帳に当たるものが無い |
+| state DB / journal、work discovery、retro / curation | — | 不可 | 対応する標準機能が無い |
+| ultracode | dynamic workflows | 既に標準。起動手順だけ見直し対象 | 「The keyword is an opt-in only in a prompt you type yourself」（https://code.claude.com/docs/en/workflows）。dispatcher の send_keys で打ち込んだ場合がこれに当たるかは未確認 |
+| 輸送層（renga / broker） | cross-session messaging | 一部〜可 | 「When the receiving session is idle, Claude Code starts a new turn with the message」（https://code.claude.com/docs/en/cross-session-messaging 59 行目）。v2.1.224 以上・WSL 2 を含む Linux で設定不要（同 10 行目） |
+
+#### 試行で動いたこと（2026-10-12 の試行、Claude Code 2.1.296）
+
+- 名前で宛先を引いて届く。待機中の相手には約 0.5 秒で届き、新しいターンが始まる。
+- 作業中の相手には、実行中のツールが終わった直後に届く（40 秒の処理中に送り、終了直後に注入。欠落なし）。
+- 3 通を立て続けに送っても順序が保たれる。約 4,300 字の本文が欠けずに届く。
+- `claude agents --json` の状態（working / blocked / idle / stopped）は 2〜4 秒遅れで反映される。権限確認待ちは約 4 秒後に blocked として出る。
+- `claude --bg` は `--model`、`--permission-mode`、`--name`、`--resume` を受け付ける。
+
+#### 組織の前提と違っていた点（2026-10-12 の試行、Claude Code 2.1.296）
+
+1. 送信の「success」は相手の受信箱に入ったという意味で、相手の Claude が読んだという意味ではない。相手が権限確認で止まっている間に届いた分は読まれず、その後に停止→再開すると消えた。送信側には何も通知されなかった。
+2. 受領の返事（ack）は自動では返らない。依頼しなければ受信側は返信しない。
+3. 止まっている相手宛ては保留されない（「not reachable」が返るだけで、再開後にも届かない）。待機中のセッションは約 1 時間で自動停止される（agent-view 822 行目付近）。
+4. 名前は一意でない。同じ名前のセッションを 2 つ作れ、送信時に曖昧として拒否される。送り主の名前は自己申告なので騙れる。送り主の識別子（pid 単位のソケット）と ref は再開のたびに変わる。
+5. 同じ本文を 2 回続けて送ると、2 回目は受信側で捨てられる（送信側には通知が来る）。定型の ack を繰り返すときに注意が要る。
+6. `--resume` すると、同じ ID で続かず複製として起動することがあった（条件は未切り分け）。
+7. sandbox の中から `claude agents --json` を実行すると `[]` が返り、エラーにならない。sandbox 内の監視は「0 件」と誤判断する。
+8. 試験用のセッションから、本番の窓口・振り分け役のセッションが ListAgents で見え、宛先として選べた。誤送信を防ぐ仕組みは無い。
+9. `claude --bg` は信頼していないフォルダでは即座に終了する（一度対話で起動して信頼を承認する必要がある）。worktree はモデルが EnterWorktree で作る。無効化は `worktree.bgIsolation:"none"`（未検証）。
+
+#### 標準機能を配送の足に使う場合の成立条件
+
+組織側に次を残すことが条件になる。
+
+- ack と再送の規則、配送の台帳（送信成功を到達とみなさない。上の 1・2）
+- 宛先名が一意であることの管理（重複を検出したら止める。上の 4）
+- blocked（権限確認待ち）を「配送できない状態」として監視する（上の 1）
+- 約 1 時間の自動停止への対処（ピン留め、または送る前に起こす。上の 3）
+- 監視は sandbox の外で動かす（上の 7）
+
+#### 未確認事項（第 2 段階の検討で試す）
+
+- dispatcher の send_keys で打ち込んだ ultracode がワークフローとして起動するか
+- 待機中の自動停止の実測と、CLI からのピン留め
+- 通常の作業中に stop した場合も、受信箱の未読分が消えるか
+- 複製になる条件（`--permission-mode` の有無、worktree）
+- bypass 権限同士での受信の保留、`crossSessionInbound` 設定
+- notify_when_idle の使い方
+- `worktree.bgIsolation:"none"` の効果
+- CI 監視を標準機能で行う試行は、組織の規則（CI 監視は `/pr-watch-pane` の専用ペインだけ。[`.claude/rules/pr-ci-watch.md`](../../.claude/rules/pr-ci-watch.md)）に当たるので、オーナーの承認なしには行わない
 
 ## 6. リスクと戻し方、未確認事項
 
