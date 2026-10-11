@@ -162,7 +162,7 @@ done < <(printf '%s\n' "$COMMAND" | unwrap_eval_and_bashc)
 # allowlist に載っていなければ 1 行 `DENY|<detail>` を出力する。allow の場合は
 # 何も出力しない（呼び出し側は出力行の有無だけを見る）。
 #
-# 走査規則（block-dangerous-git.sh の extract_stash_subcommands と同じ考え方）:
+# 走査規則（block-dangerous-git.sh の extract_subcommand_args と同じ考え方）:
 #   - `gh` / `gh.exe` / パス付き（/usr/bin/gh, C:\bin\gh.exe）を実行トークンとして拾う。
 #   - `-` 始まりは option。値を取る既知 option（--repo / -R / --hostname 等）は
 #     続く値トークンも読み飛ばす。未知 option は値を読み飛ばさないので、値が
