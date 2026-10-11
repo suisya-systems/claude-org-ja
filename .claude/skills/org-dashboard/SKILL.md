@@ -9,9 +9,10 @@ allowed-tools:
   - Bash(cat .state/dashboard.pid)
   - Bash(kill -0 *)
   - Bash(python3 dashboard/server.py *)
-  - Bash(py -3 dashboard/server.py *)
-  - Bash(open http://localhost:8099)
-  - Bash(start http://localhost:8099)
+  - Bash(curl -sf -o /dev/null http://localhost:*)
+  - Bash(open http://localhost:*)
+  - Bash(xdg-open http://localhost:*)
+  - Bash(explorer.exe http://localhost:*)
 ---
 
 # org-dashboard: ダッシュボードを開く
@@ -31,23 +32,32 @@ cat .state/dashboard.pid 2>/dev/null && kill -0 $(cat .state/dashboard.pid) 2>/d
 ## Step 1.5: サーバー起動（停止中の場合のみ）
 
 ```bash
-python3 dashboard/server.py &   # Mac/Linux
-py -3 dashboard/server.py &     # Windows
+python3 dashboard/server.py &
 ```
 
-起動後、`http://localhost:8099` でアクセス可能になる。
+## Step 2: ポートを確かめる
 
-## Step 2: ブラウザで開く
+サーバーは 8099 → 8100 → 8101 の順で空いているポートを使う（`dashboard/server.py` の `PORTS`）。応答したポートを URL にする:
 
 ```bash
-open http://localhost:8099    # Mac
-start http://localhost:8099   # Windows
+for p in 8099 8100 8101; do curl -sf -o /dev/null http://localhost:$p/ && echo $p && break; done
 ```
 
-ユーザーには「ダッシュボードを開きました → http://localhost:8099」と案内する。
+どのポートも応答しなければ、起動失敗として人間に報告する。画面は開くのにデータが出ないときは `/api/state` の失敗（state.db の破損等）を疑う。
+
+## Step 3: ブラウザで開く
+
+環境に合うコマンドを 1 つ使う（`<port>` は Step 2 の値）:
+
+```bash
+open http://localhost:<port>         # Mac
+xdg-open http://localhost:<port>     # Linux
+explorer.exe http://localhost:<port> # WSL（Windows 側の既定ブラウザで開く）
+```
+
+どれも無い環境では開かずに URL だけを案内する。ユーザーには「ダッシュボードを開きました → http://localhost:<port>」と案内する。
 
 ## 補足
 
-- ダッシュボードはリアルタイムで状態を反映する（.state/ ファイルの変更を自動検知）
-- data.json の手動生成は不要。サーバーが /api/state で同等データを配信する
+- ダッシュボードはリアルタイムで状態を反映する（state.db と workers / knowledge の変更を自動検知）
 - サーバーは org-start で自動起動、org-suspend で自動停止される

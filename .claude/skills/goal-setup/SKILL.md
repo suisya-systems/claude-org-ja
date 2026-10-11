@@ -12,9 +12,7 @@ argument-hint: "[プロジェクト通称 または owner/repo]"
 effort: medium
 allowed-tools:
   - Bash(python3 tools/work_discovery_repos.py:*)
-  - Bash(py -3 tools/work_discovery_repos.py:*)
   - Bash(python3 tools/work_discovery_goals.py validate:*)
-  - Bash(py -3 tools/work_discovery_goals.py validate:*)
   - Bash(gh repo view:*)
   - Bash(gh issue list:*)
 ---
@@ -39,7 +37,7 @@ allowed-tools:
 python3 tools/work_discovery_repos.py --format json
 ```
 
-`included[]` の `nickname` と引数を照らして `repo` を取る（Windows は `py -3`）。
+`included[]` の `nickname` と引数を照らして `repo` を取る。
 
 - 引数が無い、または一致が無い・複数あるときは、`included[]` の通称一覧を示して聞き返す。
 - `opted_out[]`（triage 列で除外）にある通称なら、台帳を書いても候補は出ないことを伝え、先に `registry/projects.md` の triage 列を戻すかを聞く。
