@@ -3,6 +3,16 @@
 > ディスパッチャー向け reference。フック本体は
 > [`.hooks/check-loop-directive.sh`](../../.hooks/check-loop-directive.sh)。
 
+## 目次
+
+- 何を止めるか
+- なぜ機構にしたか
+- D-: 監視ループ以外の CronCreate / ScheduleWakeup も deny する
+- D-: 単一の等価ではなく「閉じた 2 形との完全一致」で照合する
+- D-: 判定不能は fail-closed
+- 配布範囲: ディスパッチャーのみ
+- 正文を変更したいとき
+
 ## 何を止めるか
 
 ディスパッチャーの `CronCreate` / `ScheduleWakeup`（`/loop` の実体）に PreToolUse

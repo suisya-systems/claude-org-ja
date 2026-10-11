@@ -6,12 +6,17 @@
 
 ## 目次
 
-- 1. 振り返り（完了報告ゲート / secretary unreachable 時の fallback / 観点）
-- 2. 知見の記録
-- 3. ペインを閉じる（保留の扱い）
-- 4. 窓口への報告
-- 5. curate 閾値チェックとオンデマンド curator 起動（5-1 閾値チェック〜5-7 完了受領・timeout・クローズ）
-- 6. work-discovery triage scan（6-1 実行 / 6-2 exit code 分岐 / 6-3 journal 記帳 / 6-4 窓口への転送）
+- [1. 振り返り](#1-振り返りorg-retro-相当)
+  - [完了報告ゲート](#完了報告ゲート結論を書く前に必ず実行): [0. 受領記録の確認](#0-受領記録の確認初回送信の前に必ず実行) / [1. 初回送信](#1-初回送信attempt1-の前に-1-度だけ) / [2. polling ループ](#2-polling-ループattempt110合計-5-分上限)
+  - [secretary unreachable 時の fallback](#secretary-unreachable-時の-fallback)
+  - [観点](#観点)
+- [2. 知見の記録](#2-知見の記録該当する場合のみ)
+- [3. ペインを閉じる](#3-ペインを閉じる)（[保留の扱い](#保留close-を見送った場合の扱い)）
+- [4. 窓口への報告](#4-窓口への報告)
+- [5. curate 閾値チェックとオンデマンド curator 起動](#5-curate-閾値チェックとオンデマンド-curator-起動): 5-1 閾値チェック / 5-2 single-flight 確認 / 5-3 spawn / 5-4 boot 確認 / 5-5 起動指示 / 5-6 監視ループへ復帰 / 5-7 監視ループ側の責務
+- [6. work-discovery triage scan](#6-work-discovery-triage-scanworker-クローズ時--pane-枠が空いた契機): 6-1 実行 / 6-2 exit code 分岐 / 6-3 journal 記帳 / 6-4 窓口への転送
+
+経緯と設計理由は [`.dispatcher/references/rationale.md`](rationale.md) に置く。
 
 ## ペインクローズ（CLOSE_PANE 受信時）
 
@@ -21,11 +26,11 @@
 
 ### 1. 振り返り（org-retro 相当）
 
-#### ⚠️ 完了報告ゲート（結論を書く前に必ず実行）
+#### 完了報告ゲート（結論を書く前に必ず実行）
 
 「完了報告未着」「報告が届かなかった」「ワーカーが報告しなかった」等の結論を retro に書く **前に**、必ず `tools/dispatcher_retro_gate.py` を使って secretary の ack を待つこと。
 
-CLI は **1 attempt あたり 1 回起動する単発判定**（Issue #285、Claude Code の Bash tool が一往復であるため、長寿命の双方向プロセスは想定しない）。各 attempt の cadence（30 秒スリープ）はディスパッチャー側が `Bash sleep 30` で挟む。
+CLI は **1 attempt あたり 1 回起動する単発判定**（Claude Code の Bash tool が一往復であるため、長寿命の双方向プロセスは想定しない）。各 attempt の cadence（30 秒スリープ）はディスパッチャー側が `Bash sleep 30` で挟む。
 
 #### 0. 受領記録の確認（初回送信の前に必ず実行）
 
@@ -41,10 +46,10 @@ completion_reported_at=$(python3 -c 'import json;d=json.load(open("../.state/dis
 run_status=$(python3 -c 'import sqlite3,sys;r=sqlite3.connect("file:../.state/state.db?mode=ro",uri=True).execute("SELECT status FROM runs WHERE task_id = ?",(sys.argv[1],)).fetchone();print(r[0] if r else "")' '<task_id>' 2>/dev/null)
 ```
 
-- **`run_status == 'completed'`（記録の有無を問わない）** → run は merge / 窓口の完了処理を経て閉じており、「完了報告未着」と結論する余地がない。**初回送信を発行せず**、本ゲートを acked 相当として通過し（「2. polling ループ」も回さない）retro を続行する。記録を要件にしないのは、`WORKER_REOPENED` で記録が消えた後の手直し完了で窓口が `WORKER_COMPLETION_NOTED` を再送しない・そもそも送らないケースで、merge 済み task にも毎回問い合わせが飛んでいたため（2026-09-23 に 4 task で発生）
-- **値があり、かつ `run_status == 'review'`** → 完了報告は既に secretary に届いており、その記録は現在の lifecycle のものである。**初回送信を発行せず**、本ゲートを acked 相当として通過し（「2. polling ループ」も回さない）retro を続行する。答えが手元にあるのに聞き直すと、窓口の受信箱を同じ 1 事実で埋めることになる（2026-08-08 に同一 task へ 4 回再送した実誤検知、Issue #869）。
+- **`run_status == 'completed'`（記録の有無を問わない）** → run は merge / 窓口の完了処理を経て閉じており、「完了報告未着」と結論する余地がない。**初回送信を発行せず**、本ゲートを acked 相当として通過し（「2. polling ループ」も回さない）retro を続行する。記録を要件にしないのは、`WORKER_REOPENED` で記録が消えた後の手直し完了で窓口が `WORKER_COMPLETION_NOTED` を再送しない・そもそも送らないケースで、merge 済み task にも毎回問い合わせが飛んでいたため
+- **値があり、かつ `run_status == 'review'`** → 完了報告は既に secretary に届いており、その記録は現在の lifecycle のものである。**初回送信を発行せず**、本ゲートを acked 相当として通過し（「2. polling ループ」も回さない）retro を続行する。答えが手元にあるのに聞き直すと、窓口の受信箱を同じ 1 事実で埋めることになる。
 - **値はあるが `run_status == 'in_use'`** → T6 再指示が landed 済みで、記録は**前回の完了を指す stale な marker** である（`WORKER_REOPENED` の取りこぼし）。skip せず従来どおりゲートを回す。flag の self-heal clear は監視ループ側の責務なので**ここでは触らない**（worker-monitoring.md Step 5.2 (d) reopen-self-heal が担う）
-- **上記以外（`run_status` が `completed` でなく値が無い / record が無い / ファイルが読めない / `run_status` が取れない）** → **記録の不在は「未着」の証拠にならない**（`WORKER_COMPLETION_NOTED` は secretary が best-effort・非 blocking で送るので取りこぼしうる）。従来どおり下の「1. 初回送信」から本ゲートを回す。ゲートの存在理由そのものが「dispatcher の受信キューに無い ≠ システム上に無い」だからである（下の「理由」節）
+- **上記以外（`run_status` が `completed` でなく値が無い / record が無い / ファイルが読めない / `run_status` が取れない）** → **記録の不在は「未着」の証拠にならない**（`WORKER_COMPLETION_NOTED` は secretary が best-effort・非 blocking で送るので取りこぼしうる）。従来どおり下の「1. 初回送信」から本ゲートを回す。ゲートの存在理由そのものが「dispatcher の受信キューに無い ≠ システム上に無い」だからである（ワーカーの報告は secretary 直送で、dispatcher のキューに無くても secretary には届いていることがある）
 
 この skip は初回送信の有無だけを変えるもので、polling ループ・secretary unreachable fallback・exit code 分岐は一切変えない。判定の一般形は [`.dispatcher/references/worker-monitoring.md`](worker-monitoring.md) の「観測の原則」(P1)（観測できないことは起きていないことの証拠にならない）に対応する。
 
@@ -82,16 +87,16 @@ mcp__renga-peers__send_message(to_id="secretary", message="<上記 stdout>")
    - `3 / status=replied_no_ack` → secretary は到達したが本文が ack regex に一致せず最終 attempt まで進んだ。`raw` を読んで内容に応じて判断する（「届いていない」旨の確定返信なら retro に未着を確定的に書いてよい。曖昧なら secretary に追問する）。`secretary_unreachable` フローには入らない。
    - `4 / status=polling` → まだ attempt が残っている。`Bash sleep 30` を挟み、`state` フィールドを次回呼び出しに渡して continue する。
 
-**理由**: ワーカーのレポートチャネルは secretary 直送である。dispatcher のメッセージキュー（`check_messages` の戻り）に完了報告が無いことは、「システム上に存在しない」ことを意味しない。secretary 側に既に届いていることがしばしばあり、確認を怠ると「完了報告未着」と誤った結論を retro に残してしまう（実インシデント: `knowledge/raw/2026-05-03-delegation-smoke-completion-report.md`）。
+#### secretary unreachable 時の fallback
 
-**secretary unreachable 時の fallback**: 上記送信が `[pane_not_found]` 等で失敗する、または 5 分以内に応答が返らない場合は、retro に「未着」と誤った結論を書かない。代わりに以下の手順で **CLOSE_PANE フローを中断** する:
+上記送信が `[pane_not_found]` 等で失敗する、または 5 分以内に応答が返らない場合は、retro に「未着」と誤った結論を書かない。代わりに以下の手順で **CLOSE_PANE フローを中断** する:
 
 1. journal helper 経由で `retro_deferred` を追記する（生 JSON を `>>` で書かない。helper 契約は [`.dispatcher/references/spawn-flow.md`](spawn-flow.md)「delegate-plan helper」節末尾の `tools/journal_append.sh` 説明を参照）:
    ```bash
    bash ../tools/journal_append.sh retro_deferred worker=worker-{task_id} reason=secretary_unreachable
    ```
 2. ワーカーペインは **閉じない**（Step 3 の `close_pane` をスキップする）。「振り返りが完全に終わるまで絶対にペインを閉じない」原則（本セクション冒頭）に従い、確認不能な状態でペインを破棄して最終状況の証拠を失わないようにする。
-3. 後続の `/org-resume` または窓口復帰時に、本ワーカーの完了確認と retro 続行を再試行する。それまで CLOSE_PANE は保留扱い。
+3. それまで CLOSE_PANE は保留扱い。再試行は窓口が CLOSE_PANE を再送したときに本フローを最初からやり直す形で行う（Step 3「保留（close を見送った場合）の扱い」(b) と同じ再試行契機）。
 
 #### 観点
 
@@ -101,7 +106,7 @@ mcp__renga-peers__send_message(to_id="secretary", message="<上記 stdout>")
 - **承認待ちブロックが発生したか**: 発生した場合、permission 設定の改善余地はあるか
 
 情報収集:
-- `.state/workers/worker-{peer_id}.md` を読み、進捗ログを確認する
+- `.state/workers/worker-{task_id}.md` を読み、進捗ログを確認する
 - `mcp__renga-peers__send_message` でワーカーに最終状況のサマリーを問い合わせる
 - または `mcp__renga-peers__inspect_pane(target="worker-{task_id}", format="text")` で画面内容を読む
 
@@ -147,7 +152,7 @@ mcp__renga-peers__send_message(to_id="secretary", message="<上記 stdout>")
 mcp__renga-peers__close_pane(target=<照合済みの数値 pane_id>)
 ```
 
-成功時は `"Closed pane id=N."` テキストが返り、renga が `Event::PaneExited` を (exit_event_emitted ガード経由で) 正確に 1 回 emit する。
+成功時は `"Closed pane id=N."` テキストが返る。
 エラー時は結果テキストの `[<code>]` で分岐する (詳細は `.claude/skills/org-delegate/references/renga-error-codes.md`):
 - `[pane_not_found]` / `[pane_vanished]` — 既に閉じた扱いで skip (`WORKER_PANE_EXITED` 経路に回す)
 - `[last_pane]` — 唯一のタブの唯一のペインを閉じようとした。通常のワーカー停止では発生しない (窓口/ディスパッチャー/キュレーターが残っているため) が、suspend 末端で起きた場合は該当ペインを自分自身で `exit` させる (org-suspend 参照)
@@ -186,8 +191,8 @@ bash ../tools/journal_append.sh anomaly_observed source=close_pane worker=worker
   （[`.dispatcher/references/worker-monitoring.md`](worker-monitoring.md) 7）に入った場合は再評価も止まるので、
   そのときの契機は次項の窓口側だけになる
 - **ペインが生きている / 判定が付かない場合** → **窓口が pane_id を取り直して CLOSE_PANE を再送する**のが
-  再試行である（(c) の報告でそれを依頼する）。窓口が `/clear` / session を跨いだ場合は `/org-resume` または
-  窓口復帰時に再送される（本ファイル 1 の「secretary unreachable 時の fallback」が名指ししているのと同じ契機）
+  再試行である（(c) の報告でそれを依頼する）。本ファイル 1 の「secretary unreachable 時の fallback」も
+  同じ契機で再試行する
 - **ディスパッチャー側で `name` 一致だけを頼りに別 id へ撃ち直さない**: 窓口が送った pane_id が古いのか、
   前のペインが消えた後に同名で別ペインが立ち上がったのかを、この 1 回の列挙からは区別できない
   （worker pane name の衝突は `delegate-plan` helper が `input_invalid` で弾く（[`.dispatcher/references/spawn-flow.md`](spawn-flow.md)
@@ -239,12 +244,6 @@ knowledge/raw/ が増える主経路なので、**Step 1〜4 完了後に毎回*
 > 「全ワーカーペインが閉じたら監視ループを停止する」判定よりも**先に** 5-1〜5-6（および続く
 > Step 6 の triage scan）を完走させ、
 > `curate-inflight.json` が存在する間は監視ループを停止しないこと。
->
-> **starvation の既知の限界**: worker close が発生しない期間（手動 raw 追加のみ /
-> skill-candidate のみ増加等）はこのチェックが走らない。補助トリガーは
-> [Issue #501](https://github.com/suisya-systems/claude-org-ja/issues/501)（org-retro 末尾）/
-> [Issue #502](https://github.com/suisya-systems/claude-org-ja/issues/502)（org-start バックストップ）
-> としてバックログ化済み。
 
 #### 5-1. 閾値チェックスクリプトの実行
 
@@ -271,7 +270,6 @@ spawn の**前に必ず** `mcp__renga-peers__list_panes` で既存 curator を�
   へ進む。実行中のサイクルが raw 列挙（org-curate Step 2）を既に通過していた場合、
   今回の増分はそのサイクルでは拾われないが、**取りこぼしではなく遅延**である: 未処理の
   raw / pending はファイルとして残り続け、次回の worker close の閾値チェックで再評価される
-  （worker close が長期間発生しないケースの保険は backlog Issue #501 / #502 の補助トリガー）
 - `name == "curator"` のペインは存在するが **inflight が無い** → 下記の「live curator + inflight
   無し」に従い、**inflight を再取得してから** coalesce する（再 spawn しない点は上と同じ）
 - 存在しない → 5-3 へ
@@ -279,15 +277,9 @@ spawn の**前に必ず** `mcp__renga-peers__list_panes` で既存 curator を�
 worker close が短時間に連続した場合の `name_in_use` 衝突 / 別名重複起動（knowledge/ への
 競合書き込み）をこの規約で防ぐ。
 
-**live curator + inflight 無しを無報告で通さない**: この組み合わせは設計上到達しうる
-（5-3 の spawn は成功したが inflight 書き込み前に dispatcher が `/clear` / crash した経路、
-[`.dispatcher/references/worker-monitoring.md` Step 5.3](worker-monitoring.md#step-5-3-close) の
-close 判定表で close を撃たずに inflight を削除する行（行 3 / 行 4 / 行 6）に落ちたのち、その
-「消失確定」が実際には外れていた経路）。ここで inflight を作らずに coalesce だけすると、
-**以後の worker クローズごとに curate が無報告で抑止され続ける**: 追跡が無いので監視ループ
-Step 5.3 も回収せず、復帰は
-[`.claude/skills/dispatcher-resume/SKILL.md`](../../.claude/skills/dispatcher-resume/SKILL.md)
-Step 5 の inflight 再生成（= 次の handover / resume）を待つしかない。よって:
+**live curator + inflight 無しを無報告で通さない**: この組み合わせは設計上到達しうる（到達経路は
+[`.dispatcher/references/rationale.md`](rationale.md)）。inflight を作らずに coalesce だけすると、
+**以後の worker クローズごとに curate が無報告で抑止され続ける**ので:
 
 1. **inflight を再取得する**（フィールドの正本は 5-3 の JSON。再生成の形は上記
    `/dispatcher-resume` Step 5 と揃える）。`pane_id` は**この生存確認に使った列挙で
@@ -332,7 +324,6 @@ mcp__renga-peers__spawn_claude_pane(
 ```
 
 - `cwd` は caller（dispatcher、cwd=`.dispatcher/`）基準の相対解決なので `../.curator`
-- `model="sonnet"` の理由: auto モードの safety classifier はセッションモデルと独立した専用モデルで動作し、承認判定はセッションモデルに依存しない（公式: https://www.anthropic.com/engineering/claude-code-auto-mode）。キュレーターの知見整理ワークロードは軽量・機械的側に分類できるため Sonnet で十分（ワーカーの既定 opus 方針とは独立の判断）
 - `[name_in_use]` が返った場合は **live pane と stale 登録簿を切り分ける**。このコードだけでは
   「直前に別トリガーが spawn した真のレース」と「ペインは消えたのに登録簿に name binding だけが
   残っている **stale-binding**」を区別できず、後者を無条件 coalesce に倒すと **curator も inflight も
@@ -352,11 +343,6 @@ mcp__renga-peers__spawn_claude_pane(
      の post-merge cleanup の 3 手順だけであり、契約もその 3 つとして記録している）。**stale binding を
      検出したので今回の curate をスキップした旨を窓口へ informational 報告し**（**無報告で捨てない**）、
      Step 6 へ進む。登録簿の掃除が要る場合は人間の判断に委ねる
-  - **これは close 判定表に足す行ではない**: 判定表
-    （[`.dispatcher/references/worker-monitoring.md` Step 5.3](worker-monitoring.md#step-5-3-close)）は
-    「spawn 済み curator を追跡している `curate-inflight.json` をどう畳むか」の規則で、本分岐には
-    **curator ペインも inflight もまだ存在しない**。表の対象外の別状況なので、表の disposition 規則と
-    競合しない
 - その他の `[<code>]` エラーは窓口に informational として報告し、curate をスキップして Step 6 へ進む
 
 **spawn 成功（pane_id 取得）直後、5-4 の boot 確認より前に**、追跡状態を
@@ -410,24 +396,10 @@ mcp__renga-peers__spawn_claude_pane(
 > 「数値 pane_id で撃つ」という契約 T-§4.2 の語の "numeric" は**相対セレクタでない
 > backend-native な id** の意であって、JSON の number 型を指してはいない。
 
-> **`pane_id` は非同期 close の identity 照合の起点**: curator の close は本ハンドラではなく監視ループ
-> [`.dispatcher/references/worker-monitoring.md` Step 5.3](worker-monitoring.md#step-5-3) が別サイクルで
-> 非同期に行うため、spawn 戻り値の数値 id をここに控えないと後続サイクルで失われる。監視ループは close の
-> 直前に、まず照合に使う列挙を**自タブのものと確立**したうえで（Step 3 冒頭の 2 手段）、この `pane_id` を
-> `list_panes` で照合し（`name == "curator"` かつ `role == "curator"` をなお指しているか）、
-> 一致したときだけ `close_pane(target=<pane_id>)` する。相対セレクタ（`target="curator"` のような裸の name）へ
-> フォールバックしない（契約 T-§4.2 Group B。理由は Step 3 冒頭）。照合が外れた（id recycle）場合は
-> curator が既に消えていると現認できるので閉じずに inflight を削除し、**窓口へ informational 報告する**
-> （close を撃たずに追跡を捨てる判断は必ず窓口に見えるようにする）。**その id が列挙に無いだけでは消失を
-> 確定させない** — 単発の列挙は Step 3 (3-a) の裏取りゲートより弱い証拠なので、ゲートで確定するまで
-> inflight を保持して次サイクルで再評価する。`pane_id` を欠く残存ファイルでも列挙に
-> `name == "curator"` かつ `role == "curator"` のレコードが在れば**その数値 `id` で閉じる**。
-> **inflight を保持するのは判定表の 2 行だけ**: 行 1（列挙を自タブと確立できない / 列挙が観測不能 =
-> org のペインが一斉に出ない / 消失の裏取りが確定しない）と行 8（close が `[pane_not_found]` /
-> `[pane_vanished]` **以外**のコードで失敗）は、削除せず保持して
-> 窓口へ上げる（契約 T-§4.2 の "MUST be surfaced, not swallowed"）。この 2 つは hard cap 到達時に
-> 「窓口へ escalate してから削除」で終端する。**「close の可否によらず削除する」無条件削除はしない。**
-> 8 行の判定の正本は上記 Step 5.3 の close 判定表。
+> **`pane_id` は非同期 close の identity 照合の起点**: curator の close は監視ループが別サイクルで
+> 非同期に行うため、spawn 戻り値の id をここに控えないと後続サイクルで失われる。close の可否と inflight の
+> 始末は [`.dispatcher/references/worker-monitoring.md` Step 5.3 の close 判定表](worker-monitoring.md#step-5-3-close)
+> に従う。
 
 > **`curate_result` は「受領済みだが close 未確認」を次サイクルへ持ち越すフィールド**: 初期値は
 > `null`（CLOSE_PANE ハンドラ側はこの `null` を書くだけで、以後この値に触らない）。監視ループ
@@ -451,7 +423,7 @@ mcp__renga-peers__spawn_claude_pane(
 `/org-start` Block D-1〜D-2 の dispatcher 分と同じ手順:
 
 1. 起動プロンプト（folder-trust / 「Load development channel? (Y/n)」）を
-   [`spawn-flow.md`](spawn-flow.md) 3-3b の画面判定ループで承認する（`target="curator"`。
+   [`.dispatcher/references/spawn-flow.md`](spawn-flow.md) 3-3b の画面判定ループで承認する（`target="curator"`。
    `inspect_pane` → `spawn-prompt-step` が返した 1 手だけを `send_keys`。**盲目 Enter 禁止** —
    folder-trust の初期カーソルは「No, exit」で、Enter 一発は curator を終了させる。
    escalate / 入力不正 / ツールエラーなら Enter を送らずに次項の破棄・skip へ進む）
@@ -490,35 +462,9 @@ mcp__renga-peers__spawn_claude_pane(
 3. 3 回 retry しても登録されない場合はペインを破棄し、窓口に informational として報告して curate を
    スキップし、Step 6 へ進む。**close の可否と `curate-inflight.json` の始末は
    [`.dispatcher/references/worker-monitoring.md` Step 5.3](worker-monitoring.md#step-5-3-close) の
-   close 判定表 1 つに委ねる**（この give-up 分岐だけの別ルールを足さない。表の外に分岐を作ると、
-   表が塞いだリークが表の外に開く）。**この分岐は spawn 直後で id が手元にあるので裸 name の
-   `target="curator"` は使わない**（Step 3 冒頭と同じ Group B 規則）: **5-3 の spawn 戻り値で得た
-   数値 pane_id**（= `curate-inflight.json` の `pane_id`）を起点に、close の直前に
-   `mcp__renga-peers__list_panes` でその pane_id が `name == "curator"` かつ `role == "curator"` を
-   なお指していることを identity 照合し、一致したときだけ
-   `mcp__renga-peers__close_pane(target=<spawn 戻り値の pane_id>)` する。**照合に使う列挙は、その前に
-   自タブのものと確立する**（Step 3 冒頭の 2 手段 = 単一タブ backend / `caller_scope`）。
-   **spawn 戻り値が手元にあることは確立の代わりにならない** — その id 自体が自タブ由来でも、
-   照合に使う列挙が自タブと確立できていなければ照合結果を信用できないためで、2 手段のいずれも成立しない
-   なら close を撃たず判定表の行 1 として `curate-inflight.json` を保持し、理由を添えて窓口へ報告する。
-   **spawn 戻り値がその場で手元にある同期経路なので、この分岐では判定表の行 2（identity 照合して
-   数値 close）が主経路になる**が、それ以外の行に落ちたときの始末も表のとおりに行う:
-   - **照合が外れた（id recycle）**（行 3）→ close せず `curate-inflight.json` を削除し、その旨を
-     窓口への informational に含める（その id は既に別ペインを指しており、curator は消失済みと現認できる）
-   - **その id が列挙に無い**（行 4）→ **消失を確定させず `curate-inflight.json` を保持**し、その旨を
-     窓口への informational に含める。行 4 の削除は Step 3 (3-a) の裏取りゲートで消失が確定したときだけで、
-     そのゲートは同区間の `pane_exited` との突き合わせと連続サイクルの一致を要求するので、
-     **窓口の 1 通で起動する本ハンドラでは完走できない**（Step 3 の 4 と同じ理由）。判定は監視ループ
-     Step 5.3 の次サイクルに委ね、保持は同 Step の hard cap 終端規則が終端する
-   - **close が `[pane_not_found]` / `[pane_vanished]` を返した**（行 7）→ 既に閉じた扱いで削除する
-   - 列挙を自タブと確立できない / 列挙が観測不能（行 1）/ close が `[pane_not_found]` / `[pane_vanished]`
-     **以外**のコードで失敗した
-     （行 8。`server_too_old` / `[no_backend]` / `[tool_not_authorized]` 等）→ **`curate-inflight.json` を
-     削除せず保持し**、理由 / エラーコードを添えて窓口へ上げる（契約 T-§4.2 の "MUST be surfaced,
-     not swallowed"）。**live な curator が残ったまま追跡だけ捨てると、5-2 の single-flight 確認が
-     以後の curate をすべて抑止しているのに、その事実を誰も持たない状態になる**。保持した inflight は
-     宙吊りにならない — 監視ループ Step 5.3 の hard cap 終端規則（`CURATE_HARD_CAP_MIN` 到達で
-     窓口へ escalate してから削除）が終端する
+   close 判定表 1 つに委ねる**（この give-up 分岐だけの別ルールを足さない）。spawn 戻り値の pane_id が
+   手元にある同期経路なので判定表の行 2 が主経路になる。ただし行 4（id が列挙に無い）の消失確定は
+   単発の本ハンドラでは完走できないので、inflight を保持して監視ループの次サイクルに委ねる
 
 #### 5-5. 起動指示の送信
 
@@ -545,18 +491,9 @@ mcp__renga-peers__send_message(to_id="curator", message="あなたはキュレ�
 
 #### 5-7. 完了受領・timeout 管理・クローズ（監視ループ側の責務）
 
-CURATE_DONE / CURATE_SKIPPED / CURATE_ERROR の受領、20 分 timeout の観測、
-**列挙を自タブと確立したうえで、inflight に控えた `pane_id` を `list_panes` で identity 照合してからの
-数値 close**（`pane_id` を欠く
-残存ファイルでは列挙から `name == "curator"` かつ `role == "curator"` のレコードを引き、その数値 `id` で
-閉じる。閉じられないのは列挙を自タブと確立できないサイクル・列挙が観測不能なサイクル・消失の裏取りが
-確定しないサイクルと、close が `[pane_not_found]` / `[pane_vanished]`
-**以外**のコードで失敗した場合だけで、そのときは inflight を**保持**して窓口へ上げ、hard cap 到達時に
-escalate してから削除する。5-3 の注記と Step 5.3 の close 判定表を参照）、
-inflight ファイルの削除は、すべて監視ループの
-[`.dispatcher/references/worker-monitoring.md` Step 5.3](worker-monitoring.md#step-5-3) が通常サイクル内で行う。
-本 CLOSE_PANE ハンドラ側に残る作業は無い。state.db への後始末も不要（5-3 の注記どおり
-そもそも書いていない）。
+CURATE_* の受領・timeout 管理・curator の close・inflight の削除は、すべて監視ループの
+[`.dispatcher/references/worker-monitoring.md` Step 5.3](worker-monitoring.md#step-5-3) が行う。
+本 CLOSE_PANE ハンドラ側に残る作業は無い（state.db も 5-3 の注記どおり書いていない）。
 
 ### 6. work-discovery triage scan（worker クローズ時 = pane 枠が空いた契機）
 
@@ -593,12 +530,7 @@ scan_json=$(py -3 ../tools/work_discovery_scan.py --trigger worker_close --all-r
 scan_json=$(python3 ../tools/work_discovery_scan.py --trigger worker_close --all-registry-repos); scan_exit=$?
 ```
 
-- **`REPO_FLAGS=$(… --format flags)` を経由する旧手順は使わない**（Issue #829）。フラグ文字列が複数引数に
-  なるかは**呼び出し元シェルの単語分割**次第で、ペインの login shell である zsh は既定 `SH_WORD_SPLIT` off の
-  ため未クォートの `$REPO_FLAGS` を分割せず、argparse には 1 引数として届いて **worker クローズ時の scan が
-  毎回 exit 2 で失敗していた**（bash では 4 引数に分割されるので bash では気付けない）。zsh 専用の
-  `${=REPO_FLAGS}` も対症療法なので使わない。上の 1 コマンド形はシェルを一切経由しないので zsh / bash /
-  Windows `py -3` で同一に動く。
+- **`REPO_FLAGS=$(… --format flags)` を経由する旧形は使わない**（上の 1 コマンド形だけを使う）。
 - **解決失敗は scan 自身が exit 2 にする**（`--repo` 無し = gh カレントリポジトリの暗黙 scan へ無言
   フォールバックしない）。呼び出し側の `if … then … else` 分岐は不要になった。exit 2 の扱いは 6-2 / 6-3 /
   6-4 の error 経路に一本化されている。
@@ -644,13 +576,13 @@ scan_json=$(python3 ../tools/work_discovery_scan.py --trigger worker_close --all
     なる）。送信が失敗したら `candidate_refs` を載せずに記帳する（次回は changed で再送される）。
   - **exit 3 (unchanged)** → 前回転送した候補と同じ集合。6-3 で `outcome=unchanged` 付きで記帳し、
     **窓口へは送らない**（6-4 をスキップ）。worker クローズのたびに同じ候補を再送すると、窓口の受信箱が
-    同じ提案で埋まる（2026-09-23 に同一 3 件を 7 回再送）。候補が 1 件でも増減・入れ替われば changed に
+    同じ提案で埋まる。候補が 1 件でも増減・入れ替われば changed に
     なり通常どおり転送される。DB が読めない・直近記帳に `candidate_refs` が無い場合も changed 側に倒れる。
   - **exit 2 (error)** → 判定できないので changed と同じく 6-4 で転送する（抑止しない）。記帳は changed と同じ順序。
 - **exit 2 (error)** → 窓口に informational として 1 行のエラー通知を送る（6-4 のエラー形）。scan 失敗で
   worker クローズを止めない（CLOSE_PANE フロー自体は完了扱い。候補ゼロと誤読させず、scan のクラッシュを
   握り潰さないため窓口へ届ける）。repo セット解決の失敗もこの枝に入る（6-1）。
-  **exit 2 を握り潰さない（Issue #829）**: 「候補が出ないのが普通」と受け取られると次タスク提案の仕組みが
+  **exit 2 を握り潰さない**: 「候補が出ないのが普通」と受け取られると次タスク提案の仕組みが
   事実上死ぬ。exit 2 では **6-3 の error 記帳と 6-4 の窓口通知を必ず両方行う**（片方だけで済ませない）。
   エラー本文は stdout JSON の `error` と `repo_resolution`（あれば `signals` / `skipped`）から要約する。
 
@@ -689,11 +621,6 @@ bash ../tools/journal_append.sh work_discovery_scanned \
 > **記帳は delivery 層（dispatcher）の責務**: 計算層ツール `work_discovery_scan.py` 自身は state.db に一切
 > 書かない（read-only・副作用ゼロ、設計 §7.1）。journal への記帳を行うのは候補を配達する dispatcher 側で
 > ある（§7.1 の計算層 / delivery 層の分離）。
->
-> **イベント名の台帳定義は別タスク**: `work_discovery_scanned` の `docs/journal-events.md` への定義追記は
-> 本タスクのスコープ外（実装タスク側、設計 §10 / §7.1）。`tools/journal_append.sh` は event 名を free-form
-> 文字列として受け取り key=value をそのまま記帳する（台帳を参照・検証しない）ので、本手順は台帳定義の
-> 有無に依存しない。
 
 #### 6-4. 窓口への転送（exit 10）/ エラー通知（exit 2）
 
@@ -711,7 +638,7 @@ mcp__renga-peers__send_message(to_id="secretary", message="WORK_DISCOVERY_CANDID
 mcp__renga-peers__send_message(to_id="secretary", message="WORK_DISCOVERY_SCAN_ERROR: worker {task_id} クローズ時の triage scan が失敗しました（exit 2）。候補提示はスキップします。{stdout JSON の error 要約}")
 ```
 
-- **exit 2 の通知は省略しない**（Issue #829）。scan の失敗が窓口に届かないと「候補が出ないのが普通」と
+- **exit 2 の通知は省略しない**。scan の失敗が窓口に届かないと「候補が出ないのが普通」と
   受け取られ、次タスク提案が黙って死ぬ。repo セット解決の失敗なら `repo_resolution.signals` /
   `repo_resolution.skipped` の 1 行要約を添えると窓口が原因（registry 行が無い / `triage_home` off / パスが
   GitHub URL でない等）まで人間へ伝えられる。
