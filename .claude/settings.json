@@ -113,7 +113,7 @@
         ]
       },
       {
-        "matcher": "mcp__.*__close_pane",
+        "matcher": "mcp__.*__(close_pane|set_pane_identity)",
         "hooks": [
           {
             "type": "command",

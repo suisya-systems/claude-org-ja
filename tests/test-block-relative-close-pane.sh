@@ -12,7 +12,8 @@
 #   allow 側 (正規経路を壊さないこと):
 #     - target=3 / "3" / "%3"                   -> allow (数値 pane id)
 #     - target="pr-watch-51"                    -> allow (DD-2 stale-binding carve-out)
-#     - close_pane 以外のツール                 -> passthrough
+#     - Group B (close_pane / set_pane_identity) 以外 -> passthrough
+#   set_pane_identity も同じ deny/allow。pr-watch carve-out は close_pane だけ
 #   fail-closed:
 #     - 壊れた payload は tests/test-hooks-payload-fail-closed.sh が横断で固定するので
 #       ここでは重複させない。ここで見るのは close_pane 固有の target 判定だけ。
@@ -149,15 +150,41 @@ stderr=$(mktemp); TMPFILES+=("$stderr")
 ec=$(run_hook "$(payload_with_target "$BROKER" '"pr-watch-1011-ja"')" "$stderr")
 assert_exit 0 "$ec" "cross-repo watcher name (\"pr-watch-1011-ja\") is allowed"
 
-# --- Passthrough: close_pane 以外 ---
+# --- set_pane_identity: 同じ Group B 規則。carve-out は close_pane だけ ---
+
+SPI_RENGA="mcp__renga-peers__set_pane_identity"
+SPI_BROKER="mcp__org-broker__set_pane_identity"
+
+stderr=$(mktemp); TMPFILES+=("$stderr")
+ec=$(run_hook '{"tool_name":"'"$SPI_RENGA"'","tool_input":{"name":"secretary"}}' "$stderr")
+assert_exit 2 "$ec" "set_pane_identity with omitted target is blocked"
+assert_stderr_contains "set_pane_identity (" "$stderr" "set_pane_identity deny stderr names the operation"
+
+stderr=$(mktemp); TMPFILES+=("$stderr")
+ec=$(run_hook "$(payload_with_target "$SPI_BROKER" '"focused"')" "$stderr")
+assert_exit 2 "$ec" "set_pane_identity(target=\"focused\") is blocked"
+
+stderr=$(mktemp); TMPFILES+=("$stderr")
+ec=$(run_hook "$(payload_with_target "$SPI_RENGA" '"secretary"')" "$stderr")
+assert_exit 2 "$ec" "set_pane_identity(target=\"secretary\") (bare name) is blocked"
+
+stderr=$(mktemp); TMPFILES+=("$stderr")
+ec=$(run_hook "$(payload_with_target "$SPI_BROKER" '"pr-watch-51"')" "$stderr")
+assert_exit 2 "$ec" "pr-watch carve-out does not apply to set_pane_identity, even on broker"
+
+stderr=$(mktemp); TMPFILES+=("$stderr")
+ec=$(run_hook "$(payload_with_target "$SPI_RENGA" '3')" "$stderr")
+assert_exit 0 "$ec" "set_pane_identity with numeric pane id (3) is allowed"
+
+stderr=$(mktemp); TMPFILES+=("$stderr")
+ec=$(run_hook "$(payload_with_target "$SPI_BROKER" '"%3"')" "$stderr")
+assert_exit 0 "$ec" "set_pane_identity with tmux-style pane id (\"%3\") is allowed"
+
+# --- Passthrough: Group B 以外 ---
 
 stderr=$(mktemp); TMPFILES+=("$stderr")
 ec=$(run_hook '{"tool_name":"mcp__renga-peers__send_keys","tool_input":{"target":"focused","text":"hi"}}' "$stderr")
 assert_exit 0 "$ec" "send_keys(target=\"focused\") passes through (Group A, out of scope)"
-
-stderr=$(mktemp); TMPFILES+=("$stderr")
-ec=$(run_hook '{"tool_name":"mcp__renga-peers__set_pane_identity","tool_input":{"target":"focused"}}' "$stderr")
-assert_exit 0 "$ec" "set_pane_identity passes through (not in this hook's scope)"
 
 stderr=$(mktemp); TMPFILES+=("$stderr")
 ec=$(run_hook '{"tool_name":"Bash","tool_input":{"command":"git status"}}' "$stderr")

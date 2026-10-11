@@ -849,6 +849,15 @@
                 "command": "bash \"{claude_org_path}/.hooks/block-relative-close-pane.sh\""
               }
             ]
+          },
+          {
+            "matcher": "Skill",
+            "hooks": [
+              {
+                "type": "command",
+                "command": "bash \"{claude_org_path}/.hooks/block-codex-rescue.sh\""
+              }
+            ]
           }
         ]
       },
@@ -1060,6 +1069,15 @@
                 "command": "bash \"{claude_org_path}/.hooks/block-relative-close-pane.sh\""
               }
             ]
+          },
+          {
+            "matcher": "Skill",
+            "hooks": [
+              {
+                "type": "command",
+                "command": "bash \"{claude_org_path}/.hooks/block-codex-rescue.sh\""
+              }
+            ]
           }
         ]
       },
@@ -1260,6 +1278,15 @@
               {
                 "type": "command",
                 "command": "bash \"{claude_org_path}/.hooks/block-relative-close-pane.sh\""
+              }
+            ]
+          },
+          {
+            "matcher": "Skill",
+            "hooks": [
+              {
+                "type": "command",
+                "command": "bash \"{claude_org_path}/.hooks/block-codex-rescue.sh\""
               }
             ]
           }

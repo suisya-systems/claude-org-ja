@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PreToolUse Hook: close_pane の相対セレクタ (`focused` / 裸の name) をブロックする
+# PreToolUse Hook: Group B (close_pane / set_pane_identity) の相対セレクタ (`focused` / 裸の name) をブロックする
 # 方式: exit 2 + stderr メッセージ でブロック
 #
 # 背景 (Issue #1018):
@@ -50,6 +50,9 @@
 #   - `target="focused"`
 #   - 上記 carve-out 以外の裸 name (`"secretary"` / `"dispatcher"` /
 #     `"curator"` / `"worker-{task_id}"` 等)
+#   - `set_pane_identity` も同じ規則で止める (契約 T-§4.2 は Group B 両方に
+#     数値 pane id を要求する)。既定 `focused` のまま撃つと別ペインを改名する。
+#     carve-out は `close_pane` だけ (改名に stale-binding の後片付け経路は無い)。
 #
 # 既知の制限 (Issue #1018 の求める 3 点目に対する残余):
 #   **窓口ペインを数値 pane_id で撃つ経路は本フックでは止まらない。** 窓口の
@@ -99,32 +102,35 @@ fi
 
 TOOL_NAME=$(printf '%s\n' "$INPUT" | jq -r '.tool_name // empty')
 
-# close_pane 以外は passthrough。完全修飾名は transport で変わる
-# (`mcp__renga-peers__close_pane` / `mcp__org-broker__close_pane`) ので末尾一致で拾う。
-if [[ "$TOOL_NAME" != "close_pane" && "$TOOL_NAME" != *__close_pane ]]; then
-  exit 0
-fi
+# Group B (close_pane / set_pane_identity) 以外は passthrough。完全修飾名は transport で
+# 変わる (`mcp__renga-peers__close_pane` / `mcp__org-broker__set_pane_identity` 等) ので
+# 末尾一致で拾う。OP / HARM は deny 文言と carve-out 判定に使う。
+case "$TOOL_NAME" in
+  close_pane | *__close_pane) OP="close_pane"; HARM="不可逆に閉じ" ;;
+  set_pane_identity | *__set_pane_identity) OP="set_pane_identity"; HARM="別の name / role に書き換え" ;;
+  *) exit 0 ;;
+esac
 
-# ここから先は close_pane 確定。tool_input が object であることを要求する
+# ここから先は Group B 確定。tool_input が object であることを要求する
 # (上のガードは対象外ツールのために null を許容している)。
 if ! printf '%s\n' "$INPUT" | jq -e '(.tool_input | type) == "object"' >/dev/null 2>&1; then
-  deny_with_reason "close_pane (${TOOL_NAME}) の PreToolUse payload に object 形式の tool_input がありませんでした。安全側 (fail-closed) で拒否します。"
+  deny_with_reason "${OP} (${TOOL_NAME}) の PreToolUse payload に object 形式の tool_input がありませんでした。安全側 (fail-closed) で拒否します。"
 fi
 
-CONTRACT_NOTE="契約 docs/contracts/backend-interface-contract.md T-§4.2 'Fail-safe consequence for Group B' は close_pane の宛先を「自タブと確立済みの列挙から採った数値 pane id」に限っています (MUST)。list_panes で name / role を照合し、その数値 pane_id で撃ち直してください。"
+CONTRACT_NOTE="契約 docs/contracts/backend-interface-contract.md T-§4.2 'Fail-safe consequence for Group B' は ${OP} の宛先を「自タブと確立済みの列挙から採った数値 pane id」に限っています (MUST)。list_panes で name / role を照合し、その数値 pane_id で撃ち直してください。"
 
 TARGET_TYPE=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.target | type')
 
 case "$TARGET_TYPE" in
   "null")
-    deny_with_reason "close_pane (${TOOL_NAME}) の target が指定されていません。既定の相対セレクタに解決され、人間が見ているペイン (窓口を含む) を不可逆に閉じうるため拒否します。${CONTRACT_NOTE}"
+    deny_with_reason "${OP} (${TOOL_NAME}) の target が指定されていません。既定の相対セレクタに解決され、人間が見ているペイン (窓口を含む) を${HARM}うるため拒否します。${CONTRACT_NOTE}"
     ;;
   "number")
     # 数値リテラルは整数のみ許す。
     if printf '%s\n' "$INPUT" | jq -e '(.tool_input.target | floor) == .tool_input.target and .tool_input.target >= 0' >/dev/null 2>&1; then
       exit 0
     fi
-    deny_with_reason "close_pane (${TOOL_NAME}) の target が非整数の数値です。${CONTRACT_NOTE}"
+    deny_with_reason "${OP} (${TOOL_NAME}) の target が非整数の数値です。${CONTRACT_NOTE}"
     ;;
   "string")
     TARGET=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.target')
@@ -139,21 +145,22 @@ case "$TARGET_TYPE" in
     # mcp__org-broker__* であること」なので、TOOL_NAME で判定する。
     # renga は Group B を単一タブモデルで解決しないため、裸 name は別組織の
     # 同名 watcher へ先勝ちでフォールスルーしうる (carve-out 自体が事故になる)。
-    if [[ "$TARGET" =~ ^pr-watch-.+$ ]]; then
+    # set_pane_identity には後片付け経路が無いので carve-out は close_pane だけに置く。
+    if [[ "$OP" == "close_pane" && "$TARGET" =~ ^pr-watch-.+$ ]]; then
       if [[ "$TOOL_NAME" == mcp__org-broker__* ]]; then
         exit 0
       fi
-      deny_with_reason "close_pane (${TOOL_NAME}) の target=\"${TARGET}\" は DD-2 stale-binding carve-out の形ですが、この carve-out は Group B を単一タブモデルで解決する backend (org-broker) でのみ成立します。完全修飾名が mcp__org-broker__* でない呼び出しでは、裸の name が別組織の同名ペインへフォールスルーしうるため拒否します。${CONTRACT_NOTE}"
+      deny_with_reason "${OP} (${TOOL_NAME}) の target=\"${TARGET}\" は DD-2 stale-binding carve-out の形ですが、この carve-out は Group B を単一タブモデルで解決する backend (org-broker) でのみ成立します。完全修飾名が mcp__org-broker__* でない呼び出しでは、裸の name が別組織の同名ペインへフォールスルーしうるため拒否します。${CONTRACT_NOTE}"
     fi
     if [[ "$TARGET" == "focused" ]]; then
-      deny_with_reason "close_pane (${TOOL_NAME}) の target=\"focused\" は禁止です。'focused' は caller 自身ではなく「そのタブで人間がいま見ているペイン」に解決するため、窓口ペインを不可逆に閉じます (Issue #1018 の実事故)。${CONTRACT_NOTE}"
+      deny_with_reason "${OP} (${TOOL_NAME}) の target=\"focused\" は禁止です。'focused' は caller 自身ではなく「そのタブで人間がいま見ているペイン」に解決するため、窓口ペインを${HARM}ます (Issue #1018 の実事故は close_pane)。${CONTRACT_NOTE}"
     fi
-    if [[ "$TARGET" == "secretary" ]]; then
-      deny_with_reason "close_pane (${TOOL_NAME}) で窓口ペイン (name=\"secretary\") を閉じることは、どのロールからも禁止です。窓口は人間との唯一の接点であり、停止経路 (/org-suspend / /org-down) でも close_pane では畳まず自分自身で exit します。${CONTRACT_NOTE}"
+    if [[ "$OP" == "close_pane" && "$TARGET" == "secretary" ]]; then
+      deny_with_reason "${OP} (${TOOL_NAME}) で窓口ペイン (name=\"secretary\") を閉じることは、どのロールからも禁止です。窓口は人間との唯一の接点であり、停止経路 (/org-suspend / /org-down) でも close_pane では畳まず自分自身で exit します。${CONTRACT_NOTE}"
     fi
-    deny_with_reason "close_pane (${TOOL_NAME}) の target=\"${TARGET}\" は裸の name (相対セレクタ) です。裸の name は active タブ → 他タブの順に先勝ちでフォールスルーし、別組織の同名ペインや窓口を不可逆に閉じうるため拒否します。${CONTRACT_NOTE}"
+    deny_with_reason "${OP} (${TOOL_NAME}) の target=\"${TARGET}\" は裸の name (相対セレクタ) です。裸の name は active タブ → 他タブの順に先勝ちでフォールスルーし、別組織の同名ペインや窓口を${HARM}うるため拒否します。${CONTRACT_NOTE}"
     ;;
   *)
-    deny_with_reason "close_pane (${TOOL_NAME}) の target が数値でも文字列でもありません (${TARGET_TYPE})。安全側 (fail-closed) で拒否します。${CONTRACT_NOTE}"
+    deny_with_reason "${OP} (${TOOL_NAME}) の target が数値でも文字列でもありません (${TARGET_TYPE})。安全側 (fail-closed) で拒否します。${CONTRACT_NOTE}"
     ;;
 esac
