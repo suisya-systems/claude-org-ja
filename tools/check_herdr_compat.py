@@ -102,11 +102,11 @@ def _local_derive_protocol(v: tuple[int, int, int]) -> Optional[int]:
 
 
 def _runtime_derive_protocol(v: tuple[int, int, int]) -> Optional[int]:
-    """runtime が version->protocol の写像 API を将来公開したら使用する (無ければ None)。
+    """runtime の version->protocol 写像 API を使う (無ければ None)。
 
-    現行 runtime (0.1.37/0.1.38) に該当 API は無い。将来 ``claude_org_runtime.
-    terminal.herdr`` が ``protocol_for_version`` のような callable を持つようになったら、
-    ローカル写像より優先して使う (SoT を runtime 側へ寄せるため)。
+    runtime 0.1.50 以降は ``claude_org_runtime.terminal.herdr.protocol_for_version``
+    を公開しており、ローカル写像より優先して使う (SoT を runtime 側へ寄せるため)。
+    runtime が知らない release には None が返り、ローカル写像へ倒れる。
     """
     try:
         from claude_org_runtime.terminal import herdr as rt_herdr

@@ -62,12 +62,12 @@ ARG ORG_UID=1000
 ARG ORG_GID=1000
 # runtime pin（設計 §7.7: 起動時 upgrade はせず、更新は image rebuild）。
 # 既定値は pyproject.toml の claude-org-runtime floor（下限 pin）と同期させること。
-ARG RUNTIME_VERSION=0.1.46
+ARG RUNTIME_VERSION=0.1.50
 # Claude Code ネイティブインストーラに渡すバージョン（stable | latest | x.y.z）
 ARG CLAUDE_CODE_VERSION=stable
 ARG INSTALL_HERDR=1
 # herdr の pin（sha256 は install-herdr.sh 内に焼き込み。上げるときは両方更新）
-ARG HERDR_VERSION=0.7.4
+ARG HERDR_VERSION=0.9.3
 ARG TARGETARCH
 # image tag / LABEL に刻む repo ref（設計 §7.7）
 ARG REPO_REF=dev
