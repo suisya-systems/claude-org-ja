@@ -70,7 +70,7 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
 
 ### ユーザー共通の sandbox denyRead / denyWrite 補強（`--user-common-sandbox`）
 
-> **⚠️ main pull 後の 1 回必須**: 本リポジトリを clone / pull した後に **`python tools/org_setup_prune.py --user-common-sandbox` を 1 回実行する**。未実行だと共有 `.claude/settings.json` から除去された `~/.ssh` / `~/.aws` 等の sandbox denyRead **および** `~/.claude/settings.json` の sandbox denyWrite が補完されず、**sandbox 防御が一時的に弱くなる**。
+> **初回セットアップで 1 回実行する**: 本リポジトリを clone したら **`python3 tools/org_setup_prune.py --user-common-sandbox`**（Windows native は `py -3`）を 1 回実行する。冪等なので再実行しても害はない。未実行だと、共有 `.claude/settings.json` に置いていない `~/.ssh` / `~/.aws` 等の sandbox denyRead **および** `~/.claude/settings.json` の sandbox denyWrite が補完されず、**sandbox 防御が欠けたままになる**。
 
 `tools/org_setup_prune.py --user-common-sandbox` は `~/.claude/settings.json` の `sandbox.filesystem.denyRead` / `denyWrite` 双方に対し、対象エントリを **idempotent に union-merge** する専用モード。共有 (= リポジトリ) 側の `.claude/settings.json` から個人 path（denyRead 群と denyWrite の `~/.claude/settings.json`）を除去した分の defense-in-depth を、個人環境ごとに復元する。**単一フラグで denyRead + denyWrite の両方を処理する**（`--user-common-sandbox-write` のような別フラグは設けない、UX 簡素化方針）。
 
@@ -242,7 +242,7 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
 
 ディスパッチャーはワーカーペインで claude を起動し、ペイン内容を取得する。
 
-**重要**: ディスパッチャーは Sonnet 制約により `permission_mode=bypassPermissions` で起動するため、`permissions.allow` と `permissions.deny` は **両方とも bypass される**（Claude Code 公式仕様）。実効的な書き込み境界・git 制限は **PreToolUse フックでしか強制できない**。下記 `hooks.PreToolUse` がディスパッチャーの唯一の障壁であり、削除・無効化してはいけない。
+**重要**: ディスパッチャーは `permission_mode=bypassPermissions` で起動する。auto モードの安全分類器が、ワーカー起動に使う `spawn_claude_pane`（子エージェント起動）を止めるため（[`.claude/skills/org-start/SKILL.md`](../../org-start/SKILL.md) の 419 行目）。このため`permissions.allow` と `permissions.deny` は **両方とも bypass される**（Claude Code 公式仕様）。実効的な書き込み境界・git 制限は **PreToolUse フックでしか強制できない**。下記 `hooks.PreToolUse` がディスパッチャーの唯一の障壁であり、削除・無効化してはいけない。
 
 ```json
 {
