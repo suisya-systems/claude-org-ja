@@ -26,6 +26,10 @@ core-harness>=0.4.0,<0.5
 # PyPI via Trusted Publisher; pinned to the 0.1.x range. 0.x bumps may be
 # breaking per the runtime's compatibility policy, so widen this pin
 # deliberately when adopting a new minor.
+# Floor bumped to 0.1.50 (herdr 0.9.x / protocol 22 support and protocol_for_version, herdr 0.7.0-0.7.4
+# dropped; spawn-prompt-step --target decision record; broker token passed by env; worker --settings overlay
+# allows index.crates.io / static.crates.io, mirrored into the ja worker allowedDomains). The byte drift check
+# strips worker sandbox_by_pattern on both sides, so RUNTIME_PIN_LOWER_INCLUSIVE stays (0, 1, 48).
 # Floor bumped to 0.1.49 (WSL / Windows attention toasts go through powershell.exe's WinRT toast, so
 # Japanese titles show; new ci_passed attention kind; worker --settings overlay denies docker push);
 # pin-only bump, shared schema unchanged (only a $comment added) so RUNTIME_PIN_LOWER_INCLUSIVE stays (0, 1, 48).
@@ -178,7 +182,7 @@ core-harness>=0.4.0,<0.5
 # (transport surface descriptor claude_org_runtime.transport consumed by
 # tools/transport.py — Epic #6 next-stage D / ja#513) are subsumed by 0.1.28.
 # Keep in sync with pyproject.toml.
-claude-org-runtime>=0.1.49,<0.2
+claude-org-runtime>=0.1.50,<0.2
 
 # tools/gen_worker_brief.py reads TOML config. tomllib is stdlib in 3.11+,
 # but ja still supports 3.10 (CLAUDE.local.md template recommends 3.10).

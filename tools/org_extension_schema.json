@@ -630,7 +630,7 @@
           "failIfUnavailable": true,
           "allowUnsandboxedCommands": false,
           "network": {
-            "allowedDomains": ["github.com", "api.github.com", "codeload.github.com", "*.githubusercontent.com", "pypi.org", "files.pythonhosted.org", "registry.npmjs.org", "chatgpt.com", "*.chatgpt.com", "developers.openai.com", "api.openai.com", "auth.openai.com", "*.oaiusercontent.com"]
+            "allowedDomains": ["github.com", "api.github.com", "codeload.github.com", "*.githubusercontent.com", "pypi.org", "files.pythonhosted.org", "registry.npmjs.org", "index.crates.io", "static.crates.io", "chatgpt.com", "*.chatgpt.com", "developers.openai.com", "api.openai.com", "auth.openai.com", "*.oaiusercontent.com"]
           },
           "credentials": {
             "envVars": [
@@ -670,7 +670,7 @@
           "failIfUnavailable": true,
           "allowUnsandboxedCommands": false,
           "network": {
-            "allowedDomains": ["github.com", "api.github.com", "codeload.github.com", "*.githubusercontent.com", "pypi.org", "files.pythonhosted.org", "registry.npmjs.org", "chatgpt.com", "*.chatgpt.com", "developers.openai.com", "api.openai.com", "auth.openai.com", "*.oaiusercontent.com"]
+            "allowedDomains": ["github.com", "api.github.com", "codeload.github.com", "*.githubusercontent.com", "pypi.org", "files.pythonhosted.org", "registry.npmjs.org", "index.crates.io", "static.crates.io", "chatgpt.com", "*.chatgpt.com", "developers.openai.com", "api.openai.com", "auth.openai.com", "*.oaiusercontent.com"]
           },
           "credentials": {
             "envVars": [
@@ -706,7 +706,7 @@
           "failIfUnavailable": true,
           "allowUnsandboxedCommands": false,
           "network": {
-            "allowedDomains": ["github.com", "api.github.com", "codeload.github.com", "*.githubusercontent.com", "pypi.org", "files.pythonhosted.org", "registry.npmjs.org", "chatgpt.com", "*.chatgpt.com", "developers.openai.com", "api.openai.com", "auth.openai.com", "*.oaiusercontent.com"]
+            "allowedDomains": ["github.com", "api.github.com", "codeload.github.com", "*.githubusercontent.com", "pypi.org", "files.pythonhosted.org", "registry.npmjs.org", "index.crates.io", "static.crates.io", "chatgpt.com", "*.chatgpt.com", "developers.openai.com", "api.openai.com", "auth.openai.com", "*.oaiusercontent.com"]
           },
           "credentials": {
             "envVars": [
@@ -900,7 +900,7 @@
           "failIfUnavailable": true,
           "allowUnsandboxedCommands": false,
           "network": {
-            "allowedDomains": ["github.com", "api.github.com", "codeload.github.com", "*.githubusercontent.com", "pypi.org", "files.pythonhosted.org", "registry.npmjs.org", "chatgpt.com", "*.chatgpt.com", "developers.openai.com", "api.openai.com", "auth.openai.com", "*.oaiusercontent.com"]
+            "allowedDomains": ["github.com", "api.github.com", "codeload.github.com", "*.githubusercontent.com", "pypi.org", "files.pythonhosted.org", "registry.npmjs.org", "index.crates.io", "static.crates.io", "chatgpt.com", "*.chatgpt.com", "developers.openai.com", "api.openai.com", "auth.openai.com", "*.oaiusercontent.com"]
           },
           "credentials": {
             "envVars": [
@@ -934,7 +934,7 @@
           "failIfUnavailable": true,
           "allowUnsandboxedCommands": false,
           "network": {
-            "allowedDomains": ["github.com", "api.github.com", "codeload.github.com", "*.githubusercontent.com", "pypi.org", "files.pythonhosted.org", "registry.npmjs.org", "chatgpt.com", "*.chatgpt.com", "developers.openai.com", "api.openai.com", "auth.openai.com", "*.oaiusercontent.com"]
+            "allowedDomains": ["github.com", "api.github.com", "codeload.github.com", "*.githubusercontent.com", "pypi.org", "files.pythonhosted.org", "registry.npmjs.org", "index.crates.io", "static.crates.io", "chatgpt.com", "*.chatgpt.com", "developers.openai.com", "api.openai.com", "auth.openai.com", "*.oaiusercontent.com"]
           },
           "credentials": {
             "envVars": [
@@ -1120,7 +1120,7 @@
           "failIfUnavailable": true,
           "allowUnsandboxedCommands": false,
           "network": {
-            "allowedDomains": ["github.com", "api.github.com", "codeload.github.com", "*.githubusercontent.com", "pypi.org", "files.pythonhosted.org", "registry.npmjs.org", "chatgpt.com", "*.chatgpt.com", "developers.openai.com", "api.openai.com", "auth.openai.com", "*.oaiusercontent.com"]
+            "allowedDomains": ["github.com", "api.github.com", "codeload.github.com", "*.githubusercontent.com", "pypi.org", "files.pythonhosted.org", "registry.npmjs.org", "index.crates.io", "static.crates.io", "chatgpt.com", "*.chatgpt.com", "developers.openai.com", "api.openai.com", "auth.openai.com", "*.oaiusercontent.com"]
           },
           "credentials": {
             "envVars": [
@@ -1166,7 +1166,7 @@
           "failIfUnavailable": true,
           "allowUnsandboxedCommands": false,
           "network": {
-            "allowedDomains": ["github.com", "api.github.com", "codeload.github.com", "*.githubusercontent.com", "pypi.org", "files.pythonhosted.org", "registry.npmjs.org", "chatgpt.com", "*.chatgpt.com", "developers.openai.com", "api.openai.com", "auth.openai.com", "*.oaiusercontent.com"]
+            "allowedDomains": ["github.com", "api.github.com", "codeload.github.com", "*.githubusercontent.com", "pypi.org", "files.pythonhosted.org", "registry.npmjs.org", "index.crates.io", "static.crates.io", "chatgpt.com", "*.chatgpt.com", "developers.openai.com", "api.openai.com", "auth.openai.com", "*.oaiusercontent.com"]
           },
           "credentials": {
             "envVars": [
@@ -1204,7 +1204,7 @@
           "failIfUnavailable": true,
           "allowUnsandboxedCommands": false,
           "network": {
-            "allowedDomains": ["github.com", "api.github.com", "codeload.github.com", "*.githubusercontent.com", "pypi.org", "files.pythonhosted.org", "registry.npmjs.org", "chatgpt.com", "*.chatgpt.com", "developers.openai.com", "api.openai.com", "auth.openai.com", "*.oaiusercontent.com"]
+            "allowedDomains": ["github.com", "api.github.com", "codeload.github.com", "*.githubusercontent.com", "pypi.org", "files.pythonhosted.org", "registry.npmjs.org", "index.crates.io", "static.crates.io", "chatgpt.com", "*.chatgpt.com", "developers.openai.com", "api.openai.com", "auth.openai.com", "*.oaiusercontent.com"]
           },
           "credentials": {
             "envVars": [
