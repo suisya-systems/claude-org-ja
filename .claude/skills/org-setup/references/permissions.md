@@ -305,6 +305,15 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
             "command": "bash \"{claude_org_path}/.hooks/block-close-before-retro.sh\""
           }
         ]
+      },
+      {
+        "matcher": "mcp__.*__send_keys",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"{claude_org_path}/.hooks/block-blind-spawn-keys.sh\""
+          }
+        ]
       }
     ]
   },
@@ -333,6 +342,7 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
 - `block-no-verify.sh`: `--no-verify` 系の検証バイパスをブロック
 - `block-relative-close-pane.sh`: `close_pane` / `set_pane_identity` の宛先が数値 pane id でないとき（`target` 省略 / `"focused"` / 裸の name）に deny する。裸 name の例外は `close_pane` の `pr-watch-<PR>` のみ（DD-2 stale-binding carve-out）。**ディスパッチャーは `bypassPermissions` で動き `permissions.deny` が評価されないため、このフックだけが障壁になる**。窓口はプロジェクトルート直下の [`.claude/settings.json`](../../../settings.json) から同じフックを継承するので、そちらには重複登録しない。設計と残余は [`docs/design/close-pane-guard.md`](../../../../docs/design/close-pane-guard.md)
 - `block-close-before-retro.sh`: 振り返りの完了報告ゲートを通っていない worker ペインへの `close_pane` を deny する。数値 pane id を `worker_spawn_verified` で task に引き、`retro_gate_acked`（`tools/dispatcher_retro_gate.py` が acked 時に記録）・`retro_gate_confirmed_missing`（replied_no_ack で未着を確定したとき dispatcher が `tools/journal_append.sh` で記録）・`runs.status` が `completed` / `failed` / `abandoned`・`completion_reported_at` あり かつ `runs.status == 'review'` のどれかがあれば通す（`completed` と最後のものは [`.dispatcher/references/pane-close.md`](../../../../.dispatcher/references/pane-close.md)「0. 受領記録の確認」の ack 相当）。worker 以外のペインと `set_pane_identity` は素通しする。**ディスパッチャー専用**
+- `block-blind-spawn-keys.sh`: キーを含む `send_keys`（`keys` が空でない、または `enter: true`）を、`claude-org-runtime dispatcher spawn-prompt-step --target <宛先>` が書いた判定記録（`<state-dir>/dispatcher/spawn-prompt/<宛先>.json`、runtime 0.1.50+）と照合し、記録が無い・期限切れ（30 秒）・宛先違い・キー不一致なら deny する。`action: "done"` の記録は Enter 単発だけを通す（[`.dispatcher/references/spawn-flow.md`](../../../../.dispatcher/references/spawn-flow.md) 3-5a の kickoff）。通した記録は消す（1 回限り）。`text` だけの送信は判定しない。folder-trust の初期カーソルは「No, exit」で、盲目 Enter はワーカーを終了させるため（3-3b）。**ディスパッチャー専用**（窓口の `/clear` や承認ハンドシェイクは止めない）
 
 ## キュレーター (`<repo>/.curator/.claude/settings.local.json`)
 

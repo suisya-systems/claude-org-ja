@@ -426,7 +426,7 @@ mcp__renga-peers__spawn_claude_pane(
 `/org-start` Block D-1〜D-2 の dispatcher 分と同じ手順:
 
 1. 起動プロンプト（folder-trust / 「Load development channel? (Y/n)」）を
-   [`.dispatcher/references/spawn-flow.md`](spawn-flow.md) 3-3b の画面判定ループで承認する（`target="curator"`。
+   [`.dispatcher/references/spawn-flow.md`](spawn-flow.md) 3-3b の画面判定ループで承認する（`target="curator"`、判定は `--target curator --state-dir ../.state` 付き。
    `inspect_pane` → `spawn-prompt-step` が返した 1 手だけを `send_keys`。**盲目 Enter 禁止** —
    folder-trust の初期カーソルは「No, exit」で、Enter 一発は curator を終了させる。
    escalate / 入力不正 / ツールエラーなら Enter を送らずに次項の破棄・skip へ進む）
