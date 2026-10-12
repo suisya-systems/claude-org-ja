@@ -277,6 +277,8 @@ python tools/gen_delegate_payload.py apply \
 2. **worker のスコープ拡張提案は escalation 経由**: 窓口は一次承認せず [`/org-escalation`](../org-escalation/SKILL.md) を発動する
 3. **窓口は worker 作業を代行しない**: ファイル編集・commit・テスト等を窓口側 worktree で手を出さず、追加依頼として worker に戻すか別 worker を派遣する
 
+**方針を途中で変えたとき**: 計測方法・タスク内の範囲・手順を途中で変えたときは、何が変わったか、brief のどこが無効になったか、そこから完了報告までに何をすればよいかを 1 通のメッセージにまとめて送る（worker は窓口が後から決めたことを知らないので、変更だけを送ると古い brief のまま進んでしまう）。メッセージの内容が brief と食い違うときは、どちらを優先するかをメッセージに明記する。
+
 違反事例と guard / CI 実装の扱いは [`.claude/skills/org-delegate/references/rationale.md`](references/rationale.md) §5。
 
 ### DELEGATE_COMPLETE 受信時
