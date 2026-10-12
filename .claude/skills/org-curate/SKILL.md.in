@@ -51,60 +51,29 @@ knowledge/raw/ に蓄積された生の学びを読み、分類・統合して k
 | `work_skill_count` | work-skill 数（org-* 除外）が 20 件以上 | Step 6（skill-audit 発火） |
 | `legacy_marker_sweep` | raw/ 直下に `<!-- curated -->` 残骸あり | Step 1（移行 sweep。※常に実行） |
 
-### 0-A: 起動文脈の判定（on-demand か明示手動か）— Step 7 の送信義務を決める
+### 0-A: 起動文脈の判定 — Step 7 の送信義務を決める
 
-**この判定は Step 7（完了通知）の送信が必須か任意かを分ける唯一の根拠**である。自己推論で
-「たぶん手動だから省略してよい」と緩めてはならない（curator 孤立 = ペインリークの原因）。
-判定は **「この curator インスタンス自身が dispatcher に spawn / 駆動されたか」** を根拠にする
-（外部ファイルの存在だけで決めない。理由は下記 (i) の注意を参照）。
+Step 7 の送信義務は、このインスタンスが dispatcher（peer name `dispatcher`）から起動指示メッセージを
+受けたかだけで決まる。
 
-**主シグナル（インスタンス固有・決定的。1 つでも該当すれば on-demand 確定）** — この場合 Step 7 の
-`CURATE_DONE` / `CURATE_SKIPPED` / `CURATE_ERROR` を **dispatcher 宛に必ず送る**（結果に関わらず・
-例外なし。手動と再分類してはならない）:
+- **受けた（on-demand）**: 結果に関わらず Step 7 で `to_id="dispatcher"` に `CURATE_*` を送る
+  （不送信は curator ペインのリークになる）。起動指示に reasons の JSON が無く下の項 2 に落ちても同じ。
+- **受けていない（人間が自分のペインで `/org-curate` を打った）**: Step 7 は送らない。
 
-- **(ii)** dispatcher（peer name `dispatcher`）から起動指示メッセージを受信した。これは on-demand
-  起動でのみ起こり、人間の手動 `/org-curate` では起こらない（= 手動との決定的な弁別子）。
-- **(iii)** その起動指示メッセージに `tools/check_curate_threshold.py` の JSON（`reasons[]` /
-  `counts`）が含まれている。
-
-**補助シグナル（dispatcher 側マーカー。単独では on-demand と断定しない）**:
-
-- **(i)** `.state/dispatcher/curate-inflight.json` が存在する（curator ペイン CWD=`.curator/`
-  からは `../.state/dispatcher/curate-inflight.json`）。これは dispatcher が CLOSE_PANE Step 5-3
-  で spawn 直後に書く on-demand 起動のマーカーで、dispatcher は curator の `CURATE_*` を
-  `check_messages` で待ってからペインを閉じる（[`.dispatcher/references/pane-close.md`](../../../.dispatcher/references/pane-close.md) 5-3 /
-  [`.dispatcher/references/worker-monitoring.md` Step 5.3](../../../.dispatcher/references/worker-monitoring.md#step-5-3)）。
-  **このシグナルが on-demand を裏づけるのは、本インスタンスが dispatcher に spawn された curator
-  ペイン（CWD=`.curator/`、ペイン名 `curator`、= 主シグナル (ii)/(iii) も伴う）であるときに限る**。
-  inflight ファイルは特定インスタンスに紐付かないグローバルファイルなので、**人間が別ペイン
-  （secretary / リポジトリルート、CWD≠`.curator/`、dispatcher 起動指示なし）で手動 `/org-curate`
-  した curator は、たまたま並走中の別 on-demand curator の inflight を見ても、それを自分の送信
-  トリガにしてはならない**（誤って `CURATE_*` を送ると dispatcher が実行中の本物の on-demand
-  curator を早閉じ・inflight 削除しうる）。
-
-**明示手動起動**と見なせるのは、**主シグナル (ii)/(iii) のいずれにも該当せず**（= dispatcher の
-起動指示を受けていない）、かつ本インスタンスが dispatcher 起動の curator ペインでもなく、人間が
-secretary 系ペインで直接 `/org-curate` をタイプした起動のときだけ。この場合に限り Step 7 の送信を
-省略してよい（dispatcher にペインクローズ責務が無いため）。**主シグナル (ii)/(iii) を受けていれば、
-inflight の有無に関わらず on-demand 確定で送信必須**。判定に迷う場合（dispatcher 起動の curator
-ペインなのにメッセージ取りこぼしを疑う等）は **on-demand 側に倒して必ず送る**（送信は情報共有
-として無害、不送信だけがペインリークを生む）。
+`.state/dispatcher/curate-inflight.json` は判断材料にしない。並走中の別の on-demand curator の
+マーカーでもあり得て、それを見て送った `CURATE_*` を dispatcher は本物の curator の完了として扱い、
+作業中のペインを閉じうる（[`.dispatcher/references/worker-monitoring.md` Step 5.3](../../../.dispatcher/references/worker-monitoring.md#step-5-3)）。
 
 1. **ディスパッチャー経由のオンデマンド起動**: 起動指示メッセージに
    `tools/check_curate_threshold.py` の JSON（`reasons[]` / `counts`）が含まれている。
    それをそのまま採用する（再計算しない）。
-2. **手動起動（reasons が渡されていない場合）**: 自分でスクリプトを実行して確定する。
+2. **reasons が渡されていない場合**: 自分でスクリプトを実行して確定する。
    curator ペイン（CWD=`.curator/`）からは `py -3 ../tools/check_curate_threshold.py`、
    リポジトリルートからは `py -3 tools/check_curate_threshold.py`（POSIX は `python3`）:
-   - exit 0（below_threshold）→ 実行する作業なし。Step 1 の sweep だけ行い、Step 7 で
-     `CURATE_SKIPPED` を通知して終了する
+   - exit 0（below_threshold）→ 実行する作業なし。Step 1 の sweep だけ行い、Step 7 へ進む
+     （送る場合は `CURATE_SKIPPED`）
    - exit 10（curate_needed）→ stdout JSON の `reasons[]` を採用して続行
-   - exit 2（error）→ Step 7 で `CURATE_ERROR` を通知して終了する
-
-> **注意**: 上記 1（reasons 受領）と 0-A(iii) は「reasons の出所」を述べるだけで、Step 7 の送信義務
-> 判定とは独立である。送信義務は 0-A の**主シグナル (ii)/(iii)**（= dispatcher 起動指示の受領）で決まり、
-> dispatcher に spawn された curator は項 2（reasons 未同梱でスクリプト自走）に落ちても **on-demand
-> のまま**で Step 7 送信は必須。「reasons が渡されていない＝手動＝省略可」と短絡しない。
+   - exit 2（error）→ Step 7 へ進む（送る場合は `CURATE_ERROR`）
 
 ## Step 1: 移行 sweep（旧データの一掃）— 常に実行
 
@@ -260,6 +229,4 @@ CURATE_* を受けた dispatcher はペインを閉じてよい契約なので�
   — 閾値未達（below_threshold）と判明し、sweep 以外何もしなかった場合
 - `CURATE_ERROR: {1 行の要約}` — 途中で続行不能なエラーが発生した場合（部分完了の内容も 1 行に含める）
 
-Step 0-A で明示手動起動と確定した場合も、dispatcher が peer に存在すれば情報共有として送ってよい。
-ただし `curate-inflight.json` があるとき（別の on-demand curator が走っている）は送らない（0-A の (i)）。
 `[pane_not_found]` が返ったときだけ送信を諦める。
