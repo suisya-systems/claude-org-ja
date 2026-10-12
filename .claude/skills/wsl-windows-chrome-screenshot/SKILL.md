@@ -43,7 +43,8 @@ sandbox は Bash 呼び出しごとに PID / network 名前空間を分けるた
 
 ```bash
 CHROME="/mnt/c/Program Files/Google/Chrome/Application/chrome.exe"
-UNC='\\wsl.localhost\Ubuntu-24.04\home\happy_ryo\work\org\workers\<proj>\.worktrees\<task>\.worker-scratch\shots'
+SHOTS="$PWD/.worker-scratch/shots"; mkdir -p "$SHOTS"
+UNC="$(wslpath -w "$SHOTS")"   # Windows の Chrome に渡す \\wsl.localhost\... 形式の保存先
 PORT=7361
 
 shoot() {  # shoot <name> <scheme 0=dark|1=light> <url>
@@ -52,7 +53,6 @@ shoot() {  # shoot <name> <scheme 0=dark|1=light> <url>
     --virtual-time-budget=4000 --screenshot="$UNC\\$1.png" "$3"
 }
 
-mkdir -p .worker-scratch/shots
 node .worker-scratch/preview-$PORT.mjs > .worker-scratch/preview.log 2>&1 &
 SRV=$!
 for i in $(seq 1 20); do curl -fsS -o /dev/null "http://127.0.0.1:$PORT/?lang=en" && break; sleep 1; done

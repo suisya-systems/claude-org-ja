@@ -38,7 +38,7 @@ skill 数増加そのものよりも「検索面のノイズ」が本丸。
 ```bash
 # 候補キュー pending エントリ数（コードフェンス内のテンプレ例文は数えない）。
 # 公開の skill-candidates.md（フォーマット定義のみ・エントリ常に空）と
-# machine-local な skill-candidates.local.md（実エントリ。Issue #755）の
+# machine-local な skill-candidates.local.md（実エントリ）の
 # 2 ファイルを CANDIDATE_ENTRY_PATHS と同順で読む。存在するファイルだけを
 # 位置パラメータ（set -- / "$@"）に積む: これは bash・zsh・sh いずれでも
 # 正しく複数引数へ展開される（未クォートの `$files` は zsh が単語分割せず
@@ -62,7 +62,7 @@ work_skill_count=$(find .claude/skills -maxdepth 2 -name SKILL.md \
 > `~~~` で開閉するブロック内は除外）を **2 ファイル**
 > [`knowledge/skill-candidates.md`](../../../knowledge/skill-candidates.md)（公開・
 > フォーマット定義のみ）+ `knowledge/skill-candidates.local.md`（machine-local な
-> 実エントリ。Issue #755・gitignore 済み）にわたり合算、work-skill は
+> 実エントリ。gitignore 済み）にわたり合算、work-skill は
 > `find .claude/skills -maxdepth 2 -name SKILL.md | grep -v '/org-'`）は、
 > オンデマンド curator の起動判定
 > [`tools/check_curate_threshold.py`](../../../tools/check_curate_threshold.py) と
@@ -138,7 +138,7 @@ skill ペアを総当たりして以下を確認する:
 
 このスキルは自律的に走らない。以下のいずれかで起動する:
 
-1. `org-curate` Step 6 で呼び出される（推奨経路）。オンデマンド化後の流れ:
+1. `org-curate` Step 6 で呼び出される（推奨経路）。
    ディスパッチャーが worker クローズ時に `tools/check_curate_threshold.py` を実行し、
    `reasons[]` に `skill_candidates_pending` / `work_skill_count` が立つと curator が
    一時起動され、org-curate Step 6 が本スキルを発火する

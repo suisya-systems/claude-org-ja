@@ -49,7 +49,7 @@ daemon まで含めて組織を完全に停止する統合終了スキルであ�
 > **輸送層の前提**: `claude-org-runtime org down` は broker daemon を落とすコマンドで、broker
 > transport（`ORG_TRANSPORT` 無設定＝コード既定 broker、または明示 broker）でのみ意味を持つ。
 > renga フォールバック（`ORG_TRANSPORT=renga` で `renga --layout ops` 起動）では daemon の概念が
-> 無いので、Step 3 は skip して「renga では daemon 停止は不要」と案内する。jud断は Step 3 の
+> 無いので、Step 3 は skip して「renga では daemon 停止は不要」と案内する。判断は Step 3 の
 > transport 確認で行う。
 
 ## Step 1: /org-suspend を完走する
@@ -65,28 +65,17 @@ daemon まで含めて組織を完全に停止する統合終了スキルであ�
 **suspend 成功の確認（gate）** — 次を満たしたときのみ Step 2 / Step 3 へ進む:
 
 - `.state/state.db` の `session.status` が `SUSPENDED` になっている（Phase 3 の DB write が成立）
-- **Phase 4 が全対象ペイン（ワーカー / ディスパッチャー / 存在した場合のキュレーター）について停止を
-  「消滅済み」として確定している**。ここで確定と読んでよいのは
-  [`.claude/skills/org-suspend/SKILL.md`](../org-suspend/SKILL.md)
-  Phase 4 が **F-1**（同 Phase 1 手順 1 の「フォーカス前提（F）」）に従って自ら出した結論だけで、
-  **本 gate のために org-down 側で `list_panes` を引き直して判定をやり直さない** — 生存判定の正本は
-  org-suspend 側にあるので、その条件文をここに再掲せず**確定結果を読むだけ**にする（`list_panes` に
-  居ないことを単独で停止の根拠にする単段の読み替えを本スキルに置かない）。Phase 4 が自らの停止確認の
-  ために行う再列挙（同 Phase 4 停止手順 1 の台帳最新化 / Pass 2 の残存確認）は org-suspend 側の手順
-  なので、Step 1 の「全 Phase を順に実行する」どおりそのまま実行する
-- **Phase 4 が「停止できなかった / 判定できなかったピア」を 1 件も残していない**。生死を判定できなかった
-  ピアは、Phase 4 の停止手順が「**残存または判定不能なら**、閉鎖扱いにせず journal に記録して人間に報告
-  する」に従って `pending` に残すので、gate の入口は同 Phase 4 **手順 7** の最終報告になる —
-  **`pending` と `unresolved` が両方空で「組織を中断しました」と言い切れた形だけ**が gate 成立である。
-  「組織を部分的に中断しました（停止しきれていないペインがあります）」の形（停止できなかったワーカー /
-  `role` が判定できず対象外にしたピア / 他タブに見えたが自組織と確認できず対象外にしたピアのいずれかが
-  残る）は **gate 不成立**として扱う
+- [`.claude/skills/org-suspend/SKILL.md`](../org-suspend/SKILL.md) Phase 4 **手順 7** の最終報告が、
+  **`pending` と `unresolved` が両方空で「組織を中断しました」と言い切れた形**になっている。生死の判定は
+  Phase 4 が **F-1**（同 Phase 1 手順 1 の「フォーカス前提（F）」）に従って出した結論だけを読み、
+  本 gate のために org-down 側で `list_panes` を引き直して判定し直さない（Phase 4 自身の再列挙は
+  org-suspend の手順としてそのまま実行する）
 - 最後の窓口ペインが残っているのは gate の妨げにならない（窓口は自分自身を close できない。同 Phase 4
   「最後のペイン (窓口) の扱い」）
 
-**suspend が abort / 失敗した場合、または生死を判定できないピアが 1 件でも `pending` に残った場合**
-（DB が SUSPENDED にならない / Phase 4 が「組織を部分的に中断しました」を出した / ワーカーが SUSPEND
-応答を返さず生死を判定できないまま等）は、**org down に進まず STOP**する。状況を人間に報告し、「状態が保存し切れていない
+**gate 不成立なら org down に進まず STOP** する。suspend が abort / 失敗した、Phase 4 が「組織を部分的に
+中断しました」を出した（停止できなかったワーカー / `role` が判定できず対象外にしたピア / 他タブに見えたが
+自組織と確認できず対象外にしたピアが残る）、生死を判定できないピアが `pending` に残った、のいずれも該当する。状況を人間に報告し、「状態が保存し切れていない
 / ペインの停止を確認し切れていないため daemon は落とさなかった。原因解消後に /org-down を再実行するか、
 /org-suspend でいったん中断してください」と案内する（生死を判定できなかったピアが残っている場合は、
 Phase 4 手順 7 が列挙したその一覧もそのまま渡す）。判定不能を worker 監視と逆向きに STOP へ倒す

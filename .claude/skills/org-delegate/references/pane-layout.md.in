@@ -11,7 +11,7 @@
 
 | 対象 | 操作 | 備考 |
 |---|---|---|
-| ディスパッチャー | 窓口ペインを水平分割して下半分 | `{{FQ}}spawn_claude_pane(target="focused", direction="horizontal", role="dispatcher", name="dispatcher", cwd=".dispatcher", permission_mode="bypassPermissions", model="sonnet")` (org-start Block A-1) |
+| ディスパッチャー | 窓口ペインを水平分割して下半分 | `{{FQ}}spawn_claude_pane(target="focused", direction="horizontal", role="dispatcher", name="dispatcher", cwd=".dispatcher", permission_mode="bypassPermissions", model="sonnet")` (org-start Block A) |
 | キュレーター（オンデマンド時のみ） | ディスパッチャーペインを垂直分割して右半分 | `{{FQ}}spawn_claude_pane(target="dispatcher", direction="vertical", role="curator", name="curator", cwd="../.curator", permission_mode="auto", model="sonnet")` (pane-close.md Step 5-3。常駐廃止につき org-start からは spawn しない) |
 | 各ワーカー | **capacity は backend 依存** (runtime 0.1.31 / #104): broker は `max_concurrent_workers`（既定 8）以内で helper が返す**固定 spawn target**、renga は `list_panes` の rect から target/direction を動的に選ぶ **balanced split**。どちらも同一タブ内に積む | 詳細は下記「ワーカーの balanced split 戦略」セクション。target/direction は helper の action plan がどちらの面でも `spawn` に載せる。`{{FQ}}spawn_claude_pane(target={target}, direction={direction}, role="worker", name="worker-{task_id}", cwd="{workers_dir}/{task_id}", permission_mode="auto")` (org-delegate Step 3) |
 

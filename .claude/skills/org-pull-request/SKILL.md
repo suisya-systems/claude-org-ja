@@ -313,7 +313,7 @@ pr-watch から `PR_MERGED_HEAD_UNCONFIRMED: PR #<n> (head=<merged_short>, last 
   cleanup_pattern_c_local_md(conn, task_id='<task_id>', claude_org_root=Path('.').resolve(), worker_dir_abs=abs_path)
   "
   ```
-  legacy のハンドロール完了スクリプトは `docs/legacy/pr-merge-completion-manual.md` に保管されている。標準経路は上記 `tools/run_complete_on_merge.py` であり、museum copy へ reach するのは Issue を切ってユーザー判断を仰いだ後に限る (PR #315 と同じ pattern)
+  標準経路は上記 `tools/run_complete_on_merge.py`。想定外の出力を返したときは手作業で再現せず、Issue を切ってユーザー判断を仰ぐ
   - パターン A: lifecycle='active' のまま、run.status='completed' で snapshotter が available 相当の表示にする
   - パターン B / C: 物理 dir は別途処理（worktree remove / dir 保持）。レジストリエントリ削除は上記 with ブロック内に `w.remove_worker_dir('<abs>')` を追加
 - JSON snapshot は StateWriter post-commit hook が自動再生成 (Issue #284)

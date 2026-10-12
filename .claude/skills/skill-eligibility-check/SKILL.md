@@ -82,7 +82,7 @@ proposed_skill_name: <pattern_name>    # skill_recommend / candidate_queue の�
 
 ## Step 4: 候補キュー書き込み（skill_recommend の場合のみ）
 
-`knowledge/skill-candidates.local.md`（machine-local な実エントリ用ファイル。Issue #755）に
+`knowledge/skill-candidates.local.md`（machine-local な実エントリ用ファイル）に
 エントリを 1 件追記する。`candidate_queue` / `curated_only` の場合は書き込まない。
 エントリの書式は [`knowledge/skill-candidates.md`](../../../knowledge/skill-candidates.md) の「エントリフォーマット」に従い、
 `status` は `pending`、`呼び出し元` は入力の `context`、`提案 skill 名` は `proposed_skill_name` を入れる。
