@@ -104,11 +104,10 @@ ClaudeCode起動後に最初に実行するスキル。前回の状態復元と�
    - 期待値: `name == "secretary"` かつ `role == "secretary"`
    - **`caller-id 未確定` の場合** — `RENGA_PANE_ID` が未設定 / `list_panes` に同一 id のレコードが
      無い / broker 等そもそも同等の caller-id を入手できない transport: **自己修復（下の自動リカバリ）を
-     実行せず、identity 未確認のまま人間に報告して続行判断を仰ぐ**（勝手に fatal にしない）。`target="focused"`
-     や裸 `name` のような相対セレクタへフォールバックしてはならない（契約 T-§4.2 Group B。誤タブの
-     別ペインを改名する経路になる）。broker の縮退の具体は下の broker 分岐を参照
+     実行せず、identity 未確認のまま人間に報告して続行判断を仰ぐ**（勝手に fatal にしない。相対セレクタは
+     hook が deny する）。broker の縮退の具体は下の broker 分岐を参照
    - **不一致の場合** — `renga --layout ops` 以外の経路で起動された / 旧ops.tomlで起動された既存セッションに attach 等:
-     1. `mcp__renga-peers__set_pane_identity(target="<RENGA_PANE_ID の値>", name="secretary", role="secretary")` を呼んで自動修復（照合済みの数値 pane id で撃つ。`target="focused"` は使わない）
+     1. `mcp__renga-peers__set_pane_identity(target="<RENGA_PANE_ID の値>", name="secretary", role="secretary")` を呼んで自動修復（照合済みの数値 pane id で撃つ）
      2. 成功すれば警告ログを events テーブルに残して続行（`bash tools/journal_append.sh secretary_identity_restored note=auto_recovered`）
      3. 失敗ケースの分岐:
         - `name_in_use`（broker では `name_taken`）エラー: 既存の別ペインが `secretary` を占有している。ユーザーに状況を報告し、「現セッション継続なら全ワーカーに `to_id="{numeric_pane_id}"` で送信させる」「永続修復なら `/org-suspend` → 終了 → `renga --layout ops` で再起動」の選択肢を提示

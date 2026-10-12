@@ -324,9 +324,8 @@ secretary を張り先に使うのはユーザー承認済みで、`SECRETARY_MI
      spawn の戻り値として手元にあることも免除にならない**（未確立の列挙では、直前の `name` /
      `role` 確認の結果そのものを信用できないため）。**どちらも成立しないなら補修を撃たず**、
      identity が未登録のまま監視が走っていること（Step 2 の冪等チェックと Step 5 の cleanup が
-     `name` / `role` で引けなくなること）をユーザーに報告する。`target="focused"` や裸 name の
-     相対セレクタへは**フォールバックしない** — `set_pane_identity` の `target` は既定が
-     `"focused"` なので、人間がフォーカスを移していれば**別ペインを改名する**。
+     `name` / `role` で引けなくなること）をユーザーに報告する。相対セレクタ（`target` 省略 /
+     `"focused"` / 裸 name）は hook が deny する。
    - 本ペインは Claude セッションではなく CLI プロセスなので **Claude peer（peer_id）は
      持たない**。ここでの「peer 登録」= pane registry への name + role=watcher の登録
      （spawn_pane / set_pane_identity が行う）を指す。MCP peer / dev-channel 登録は発生しない。
