@@ -226,7 +226,7 @@ Nit 対応の所在: volume 名 = 用途付き（§6 表）。tini = §5 表段 
 - backend は **daemon 起動時の `--backend` フラグでのみ**切り替わる（env での動的切替機構は runtime に無い）。コンテナでは entrypoint が `ORG_BACKEND`（`tmux` | `herdr`、**既定 `tmux`**）を読んで daemon 起動引数に渡す。切替は「compose の環境変数を変えて `docker compose up -d --force-recreate`」= daemon 立て直しとして運用する（既存 daemon と `--backend` 不一致は runtime が拒否するため、再作成が正路）。
 - **herdr は正式サポート・同梱対象**。false-reap（runtime #114）は runtime 0.1.33 で解消済み、0.1.36 で pane id / venv 継承等の周辺も整備済みであり、「未解消なら experimental」の当初前提は**失効している**（§2-6）。
 - それでも**コンテナ既定を tmux にする根拠**（false-reap ではない）: (a) herdr の headless（TUI クライアント接続なし）運用は startup workspace の生成挙動が TUI 接続時と異なり、コンテナ内 pure headless → 後から `docker exec` で TUI attach という導線の実測が未了（§12 検証項目 H1）。(b) tmux は apt で全アーキ安定供給・org 実走時間が最長。herdr は `ORG_BACKEND=herdr` の 1 変数で opt-in できる。
-- herdr バイナリは build 時に **pin 済み GitHub release URL から取得し、リポジトリ側に焼いた実測 sha256 で検証して**同梱する（[`docker/install-herdr.sh`](../../docker/install-herdr.sh)。既定 pin: v0.7.4、amd64/arm64 両 sha256 実測済み 2026-07-17）。update manifest（https://herdr.dev/latest.json）は実測の結果 `assets["linux-<arch>"]` に URL 文字列を返すのみで checksum を提供しないため、manifest 追従ではなく pin 方式を採る。self-update（`herdr update`）は image 不変性に反するため使わず、更新は pin 更新 + image rebuild で行う（§7.7 と同じ運用）。`INSTALL_HERDR=0` で非同梱ビルドも可能。
+- herdr バイナリは build 時に **pin 済み GitHub release URL から取得し、リポジトリ側に焼いた実測 sha256 で検証して**同梱する（[`docker/install-herdr.sh`](../../docker/install-herdr.sh)。既定 pin: v0.9.3、amd64/arm64 両 sha256 実測済み 2026-10-12）。update manifest（https://herdr.dev/latest.json）は実測の結果 `assets["linux-<arch>"]` に URL 文字列を返すのみで checksum を提供しないため、manifest 追従ではなく pin 方式を採る。self-update（`herdr update`）は image 不変性に反するため使わず、更新は pin 更新 + image rebuild で行う（§7.7 と同じ運用）。`INSTALL_HERDR=0` で非同梱ビルドも可能。
 
 ## 10. 初回起動導線（認証 handbook）
 

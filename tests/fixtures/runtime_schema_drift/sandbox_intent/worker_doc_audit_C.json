@@ -87,6 +87,8 @@
         "pypi.org",
         "files.pythonhosted.org",
         "registry.npmjs.org",
+        "index.crates.io",
+        "static.crates.io",
         "chatgpt.com",
         "*.chatgpt.com",
         "developers.openai.com",
