@@ -4,19 +4,11 @@ owner: "{secretary | dispatcher | curator | worker}"
 description: >
   {何をするかの 1 文と、発動するトリガ語（例: 「Excel のアンケートデータを分析して」）。
   目安 200 字以内。org-delegate がタスク内容とマッチングする際にこの description を参照する。}
-origin:
-  task_id: "{初めてこのパターンが使われたタスクID（例: data-analysis）}"
-  date: "{YYYY-MM-DD}"
 ---
 
 # {skill-name}: {スキルのタイトル}
 
 {このスキルが何を実現するか、1-2文で概要を記述。}
-
-## 背景
-
-{このパターンが生まれた経緯。どんなタスクで初めて使われたか。
-なぜこのアプローチが有効だったか。}
 
 ## 前提条件
 
