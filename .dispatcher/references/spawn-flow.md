@@ -318,12 +318,14 @@ while now < deadline:
 
 1. 開始時刻を ms で控える（`date +%s%3N`）。`previous_screen` = null
 2. `mcp__renga-peers__inspect_pane(target="worker-{task_id}", format="grid")`（`lines` は付けない。背の高いペインでは下端 N 行の外にダイアログが残る）
-3. runner に `spawn-prompt-step --deadline-ms 120000` を付けて呼び、stdin に `{"screen": <2 の結果>, "previous_screen": <previous_screen>, "elapsed_ms": <開始からの経過 ms の整数>}` を 1 つ渡す（`claude-org-runtime dispatcher spawn-prompt-step ...` または `python3 -m claude_org_runtime.dispatcher.runner spawn-prompt-step ...`）
+3. runner に `spawn-prompt-step --deadline-ms 120000 --target worker-{task_id} --task-id {task_id} --state-dir ../.state` を付けて呼び（`--target` は send_keys の宛先と同じ文字列。背景タブ経路では `<bound_pane_id>`）、stdin に `{"screen": <2 の結果>, "previous_screen": <previous_screen>, "elapsed_ms": <開始からの経過 ms の整数>}` を 1 つ渡す（`claude-org-runtime dispatcher spawn-prompt-step ...` または `python3 -m claude_org_runtime.dispatcher.runner spawn-prompt-step ...`）
 4. 結果で分岐する:
    - **exit 0 / `action: "send_keys"`**: 返された `send_keys` オブジェクトを**そのまま** `mcp__renga-peers__send_keys(target="worker-{task_id}", ...)` に渡す（`enter` を自分で足さない。カーソル移動の Down / Up が返ることもある）。`previous_screen` = null にして 1 秒待ち、2 へ
    - **exit 0 / `action: "wait"`**: `previous_screen` = 今回の inspect 結果にして 1 秒待ち、2 へ（プロンプト未表示・描画途中）
    - **exit 0 / `action: "done"`**: 承認完了。3-4 へ
    - **exit 10（escalate）/ exit 2（入力不正）/ その他の非 0 / inspect・send_keys のエラー（`[key_unsupported]` 等）**: **Enter を送らずに中止**し、`SPAWN_PROMPT_UNRESOLVED: worker 'worker-{task_id}' for task '{task_id}' is stuck on a Claude Code startup prompt ...`（helper 経路では step の `escalate.message`）を窓口へ送る。人間がペインを見て判断する
+
+**`--target` を省かない**: 判定は `--target` があるときだけ `../.state/dispatcher/spawn-prompt/<宛先>.json` に記録を残し（runtime 0.1.50+）、ディスパッチャーの PreToolUse フック `.hooks/block-blind-spawn-keys.sh` はキーを含む `send_keys`（`enter: true` か `keys` あり）をこの記録と照合する。記録が無い・30 秒の期限切れ・宛先違い・キー不一致なら deny され、通った記録は 1 回で消える。`text` だけの送信は照合しない。
 
 判定はキー送信後の 2 回の同一画面で描画の安定を確かめてからしか次の手を返さず、選択肢は位置でなく文言で照合する（folder-trust の選択肢順は Claude Code の版で変わっている）。締切（120 秒）を過ぎると Enter を返さずに escalate する。
 
@@ -331,7 +333,7 @@ while now < deadline:
 
 > **この承認は痕跡を残さない**（PTY への生バイト書き込みで `.state/` に何も書かない）。**「撃ったつもり」を成立させないための ground truth は 3-4 の `list_peers` 登録**であり、その観測値を Step 5 のゲートに渡すまで `DELEGATE_COMPLETE` は出せない。
 
-**背景タブ経路 (3-2b) では `target=<bound_pane_id>` で撃つ**（`inspect_pane` も `send_keys` も。裸の name は caller のタブに解決するので背景ペインに当たらない）。ground truth は 3-4b の登録ゲートで、未登録ならこのループを回し直す点は同じ（Enter を盲目で再送しない）。
+**背景タブ経路 (3-2b) では `target=<bound_pane_id>` で撃つ**（`inspect_pane` も `send_keys` も、判定の `--target` も同じ id。裸の name は caller のタブに解決するので背景ペインに当たらない）。ground truth は 3-4b の登録ゲートで、未登録ならこのループを回し直す点は同じ（Enter を盲目で再送しない）。
 
 > **broker（`ORG_TRANSPORT=broker`）の場合 — push 一次採用で承認は 2 段（folder-trust + dev-channel sidecar の再導入）**: `spawn_claude_pane` は `--mcp-config <broker>`（daemon）を注入し、初回に Claude Code の **folder-trust プロンプト**（「Do you trust the files in this folder?」相当）が出る。**加えて push 一次のため**、`spawn_claude_pane` は channel sidecar を `--dangerously-load-development-channels server:org-broker-channel` で load するため、**「Load development channel?」プロンプトが再出現**する（`--mcp-config`-only 設計で一旦消えた 3-3b 承認の **broker 枝での再導入**）。どちらも上と同じループを `mcp__org-broker__inspect_pane` / `mcp__org-broker__send_keys` で回して承認する（判定が 2 つのダイアログを順に扱う。順序は boot タイミング依存）。**WezTerm adapter は Up / Down を送れず `[key_unsupported]` になる**ので、そのときも Enter に倒さず escalate する。linked worktree は main checkout の trust を引き継ぐので、trust 済みリポジトリの worktree では folder-trust が出ない（runtime CHANGELOG 0.1.43 が引く https://code.claude.com/docs/en/permissions#project-allow-rules-and-workspace-trust）。承認しないと broker token のバインド／channel sidecar の登録が完了せず、`list_peers` 待ち・`send_message`（push 配送）・フォールバックの `check_messages` が成立しない。これは ratified §5/§8.5 の folder-trust フローへの **加算であり置換ではない**（設計 transport-lab `docs/design/broker-native-roles.md` §9.5。S3 で contract §5.1/§8.5 を amend 済み・2026-06-15 ratified）。
 
@@ -395,10 +397,13 @@ worker brief に **ultracode 使用許可**があるタスクでは、kickoff �
    send_keys(target="worker-{task_id}",
      text="ultracode で本タスクに着手してください。詳細は worker brief の通り。まず pwd で作業ディレクトリを確認。workflow の agent() 内の grep/find 等は cd せず絶対パスで。",
      enter=false)
-   # inspect_pane で text が入力欄に乗ったことを確認後、別呼び出しで Enter:
+   # inspect_pane で text が入力欄に乗ったことを確認後、その inspect 結果で 3-3b の判定を 1 回回し
+   # （--target worker-{task_id} --task-id {task_id} --state-dir ../.state、previous_screen は null）、
+   # action が done であることを確かめてから別呼び出しで Enter:
    send_keys(target="worker-{task_id}", enter=true)
    ```
-   **背景タブ経路 (3-2b) では 2 段とも `target=<bound_pane_id>` に固定する**（確認用の `inspect_pane` も同じ id）。裸の name は caller のタブに解決するので背景ペインに当たらず、武装用の user turn がそもそも入らない。
+   Enter の前の判定は省けない: `.hooks/block-blind-spawn-keys.sh` は Enter を判定記録で照合し、`done` の記録は Enter 単発を 1 回だけ通す（記録は 30 秒で切れる）。done 以外が返ったら Enter を送らず 3-3b の分岐に従う。
+   **背景タブ経路 (3-2b) では 2 段とも `target=<bound_pane_id>` に固定する**（確認用の `inspect_pane` と判定の `--target` も同じ id）。裸の name は caller のタブに解決するので背景ペインに当たらず、武装用の user turn がそもそも入らない。
 
 3. **位置づけ（worker brief と一致させる）**: ultracode は実装と **Codex 前のセルフレビュー収束**（複数観点の並列レビューで指摘の種を潰し Codex 周回数を減らす）に使う。最終ゲート「Codex Blocker / Major ゼロ（別モデルによる独立レビュー）」は**従来どおり維持**する。ultracode は Codex ゲートの**前段**であって置き換えではない。
 

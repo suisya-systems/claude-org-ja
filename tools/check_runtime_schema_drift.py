@@ -192,6 +192,12 @@ _JA_ONLY_LAYER2_CREDENTIAL_DENIES = frozenset(
 # and the ja state layout, so it has no runtime counterpart. Dispatcher
 # settings are hand-maintained from permissions.md, not runtime-rendered.
 #
+# ``block-blind-spawn-keys.sh`` denies the dispatcher's key-carrying
+# ``send_keys`` unless a ``spawn-prompt-step --target`` decision record
+# authorises exactly those keys. The record format is a runtime contract,
+# but the hook, its single-use consumption and the ja state-dir discovery
+# are ja's; like the close hook it lives only in the dispatcher settings.
+#
 # Add a new name here ONLY for a hook that is genuinely ja-only. A hook
 # that should also ship in the runtime template belongs in a paired
 # runtime release instead.
@@ -199,6 +205,7 @@ _JA_ONLY_HOOK_SCRIPTS = frozenset({
     "check-loop-directive.sh",
     "block-codex-rescue.sh",
     "block-close-before-retro.sh",
+    "block-blind-spawn-keys.sh",
 })
 
 
