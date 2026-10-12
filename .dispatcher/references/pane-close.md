@@ -20,8 +20,7 @@
 
 ## ペインクローズ（CLOSE_PANE 受信時）
 
-**重要: Step 1〜2 の振り返りが完全に終わるまで、絶対にペインを閉じないこと。**
-ペインを閉じるとワーカーの出力が失われ、振り返りに必要な情報が取得できなくなる。
+振り返りの完了報告ゲートを通っていない worker ペインへの close は hook（`.hooks/block-close-before-retro.sh`）が deny する。代わりに Step 1〜2 を終えてから閉じる。
 必ず以下の順序で実行する:
 
 ### 1. 振り返り（org-retro 相当）
@@ -98,7 +97,7 @@ mcp__renga-peers__send_message(to_id="secretary", message="<上記 stdout>")
    ```bash
    bash ../tools/journal_append.sh retro_deferred worker=worker-{task_id} reason=secretary_unreachable
    ```
-2. ワーカーペインは **閉じない**（Step 3 の `close_pane` をスキップする）。「振り返りが完全に終わるまで絶対にペインを閉じない」原則（本セクション冒頭）に従い、確認不能な状態でペインを破棄して最終状況の証拠を失わないようにする。
+2. ワーカーペインは **閉じない**（Step 3 の `close_pane` をスキップする）。振り返り（Step 1〜2）を終えるまで閉じない原則（本セクション冒頭）に従い、確認不能な状態でペインを破棄して最終状況の証拠を失わないようにする。
 3. それまで CLOSE_PANE は保留扱い。再試行は窓口が CLOSE_PANE を再送したときに本フローを最初からやり直す形で行う（Step 3「保留（close を見送った場合）の扱い」(b) と同じ再試行契機）。
 
 #### 観点
@@ -122,7 +121,7 @@ mcp__renga-peers__send_message(to_id="secretary", message="<上記 stdout>")
 
 ### 3. ペインを閉じる
 
-`mcp__renga-peers__close_pane` で明示的にペインを破棄する。**相対セレクタ（`"focused"` / 裸の `name`）では撃たない**: 契約 [`docs/contracts/backend-interface-contract.md`](../../docs/contracts/backend-interface-contract.md) T-§4.2「Fail-safe consequence for Group B」は `close_pane` / `set_pane_identity` を**自タブのものと確認済みの列挙から採った数値 pane_id** でのみ撃つことを求める（裸 name の legacy 解決は active タブで外すと他タブへ index 順にフォールスルーして先勝ちし、別 org の同名ペインを不可逆に閉じうる）。
+`mcp__renga-peers__close_pane` で明示的にペインを破棄する。相対セレクタ（`"focused"` / 裸の `name`）は hook（`.hooks/block-relative-close-pane.sh`）が deny する。代わりに自タブと確立済みの列挙から採った数値 pane_id で撃つ（契約 [`docs/contracts/backend-interface-contract.md`](../../docs/contracts/backend-interface-contract.md) T-§4.2「Fail-safe consequence for Group B」）。
 
 **pane_id の出所**: 窓口からの依頼 `CLOSE_PANE: {pane_id} のペインを閉じてください。` に載っている値をそのまま使う（[`.dispatcher/CLAUDE.md`](../CLAUDE.md)「ペインクローズ（CLOSE_PANE 受信時）」）。pane_id を欠く依頼を受けた場合は `mcp__renga-peers__list_panes` の列挙から `name == "worker-{task_id}"` かつ `role == "worker"` のレコードを引き、その `id` を使う（列挙を自タブのものと確立できたときに限る — 下記の 2 手段）。
 
@@ -427,8 +426,7 @@ mcp__renga-peers__spawn_claude_pane(
 
 1. 起動プロンプト（folder-trust / 「Load development channel? (Y/n)」）を
    [`.dispatcher/references/spawn-flow.md`](spawn-flow.md) 3-3b の画面判定ループで承認する（`target="curator"`、判定は `--target curator --state-dir ../.state` 付き。
-   `inspect_pane` → `spawn-prompt-step` が返した 1 手だけを `send_keys`。**盲目 Enter 禁止** —
-   folder-trust の初期カーソルは「No, exit」で、Enter 一発は curator を終了させる。
+   `inspect_pane` → `spawn-prompt-step` が返した 1 手だけを `send_keys`。判定記録の無い Enter は hook が deny する。
    escalate / 入力不正 / ツールエラーなら Enter を送らずに次項の破棄・skip へ進む）
 2. `mcp__renga-peers__list_peers` で `name="curator"` の peer 登録を poll する。
    未登録なら 1 の画面判定ループを回し直して再 poll（最大 3 回 retry。Enter を盲目で再送しない）。

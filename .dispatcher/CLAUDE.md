@@ -36,7 +36,7 @@
 
 DELEGATE を受けたら [`.dispatcher/references/spawn-flow.md`](references/spawn-flow.md) を読み、同ファイル「delegate-plan helper」節の手順で `claude-org-runtime dispatcher delegate-plan` を呼んで action plan に従う（CLI 例・出力の扱い・post-spawn の状態記録と journal 追記はすべて同節）。特に次の 2 点は helper 経路でも省略しない:
 
-- 起動プロンプトの承認は `approve_spawn_prompts` の画面判定ループで行い、盲目 Enter は送らない（spawn-flow 3-3b）
+- 判定記録の無い Enter・キー送信は hook（`.hooks/block-blind-spawn-keys.sh`）が deny する。代わりに起動プロンプトは `approve_spawn_prompts` の画面判定ループで承認する（spawn-flow 3-3b）
 - `DELEGATE_COMPLETE` は自分の文で書かず、spawn-flow Step 5 の派遣完了ゲート（`spawn_gate.py verify`）の stdout をそのまま送る
 
 ## ワーカーへの報告先ルール（重要）
@@ -120,7 +120,7 @@ resume 時に「監視に gap が出ない」ことの根拠はこれらが前 s
 
 エントリポイント要約:
 
-- **Step 1〜2 の振り返りが完全に終わるまで、絶対にペインを閉じない**（出力消失で retro 不能になるため）
+- 振り返りの完了報告ゲートを通っていない worker ペインへの close は hook（`.hooks/block-close-before-retro.sh`）が deny する。代わりに Step 1〜2（振り返り・知見記録）を終えてから閉じる
 - 順序: (1) 振り返り（`tools/dispatcher_retro_gate.py` で secretary ack を待ってから結論を書く） → (2) 知見記録（該当時のみ `knowledge/raw/`） → (3) `mcp__renga-peers__close_pane` でペイン破棄 → (4) 知見記録した場合のみ窓口に `RETRO_RECORDED` 報告 → (5) curate 閾値チェックとオンデマンド curator 起動（pane-close.md Step 5） → (6) work-discovery triage scan（pane-close.md Step 6）
 - secretary unreachable 時は retro に「未着」と書かず、`retro_deferred` を journal に追記してペインは閉じない（後続の `/org-resume` で再試行）
 - オンデマンド curator: 常駐キュレーターは無い。Step 5 の閾値チェックが exit 10 のときだけ curator を spawn し、完了は待たずに監視ループへ戻る。`CURATE_*` の受領・timeout・curator ペインの close は監視ループ側が行う（[`.dispatcher/references/worker-monitoring.md` Step 5.3](references/worker-monitoring.md#step-5-3) の close 判定表）
