@@ -11,8 +11,8 @@
 1. claude-org 構造を `${worker_dir}` 内に再現しない
 2. claude-org リポジトリ（`${claude_org_path}`）を別途 clone しない（直接編集）
 3. `git push` 不可
-4. `git stash` の変更系不可（hook で deny。引数なし `git stash` / `push` / `save` / `pop` / `apply` / `branch` / `drop` / `clear` / `store` / `create`、**許可リスト方式なので未列挙のサブコマンドも deny**）。キャラクタデバイス等の未追跡ファイルで `git stash -u` が途中失敗し、気づかず別の stash を pop して作業を壊す事故が実際に起きているため。退避は作業ブランチへ一時 commit（`git add -u` して commit、戻すときは `git reset --soft HEAD~1`）。`git diff > <name>.patch` は staged / 未追跡を取りこぼすので単独の退避手段にしないこと。比較は `git show HEAD:<path>`。調査用の `git stash list` / `git stash show` は可。**alias 経由でも実行しないこと**（定義済み alias は hook が静的に解決できず素通りするが事故の中身は同じ）
-5. この repo の worktree root には同じキャラクタデバイスが未追跡で存在するため `git add -A` も `can only add regular files` で失敗する。**staging は `git add -u`（追跡済みの変更）＋ 新規ファイルの明示 add を使うこと**
+4. `git stash` の変更系（`list` / `show` 以外）は hook が deny する。代わりに作業ブランチへ一時 commit で退避する（戻すときは `git reset --soft HEAD~1`）。`git diff > <name>.patch` は staged / 未追跡を取りこぼすので単独の退避手段にしない。比較は `git show HEAD:<path>`。hook が解決できない alias 経由でも実行しない
+5. `git add -A` / `git add .` は hook が deny する。代わりに `git add -u` ＋ 新規ファイルの明示 add で staging する
 
 ### Windows
 - Python は `py -3` または `python`（3.10 推奨。どちらも別の Python 環境を指す場合があるため `--version` で確認し、動作する方を使う）
@@ -25,10 +25,10 @@
 - NG: `cd ${worker_dir}; grep -n "renewLease" test/lap/root.test.ts` / `grep -rln "lease" . --include=*.json` → OK: `grep -n "renewLease" ${worker_dir}/test/lap/root.test.ts` / `grep -rln "lease" ${worker_dir}/test --include=*.json`
 
 ### 着手前 preflight（sandbox 書き込み境界・非対話 alias・hook 拒否）
-- 作業ファイルを置けるのは `${worker_dir}` 配下と `$TMPDIR` だけ（git が内部で触る Pattern B の `.git` メタデータは別枠で、作業ファイルの置き場ではない）。ハーネスの scratchpad（`/tmp/claude-<uid>/.../scratchpad`）は `${worker_dir}` 外なので Write / Edit が `.hooks/check-worker-boundary.sh`（許可パスは worker dir / `~/.claude/plans/` / `knowledge/raw/` の 3 つ。113-136 行）で deny される。Bash の一時ファイルは `$TMPDIR` へ、Write / Edit の作業メモは `mkdir -p ${worker_dir}/.worker-scratch` へ。linked worktree（Pattern B）では `.git/info/exclude` が共通 clone 側（sandbox 外）にあり登録できないので、禁止事項 5 のとおり `git add -u` + 明示 add で staging し `.worker-scratch/` を commit に混入させない。`/tmp/claude-<uid>` は並走ワーカーと共有なので一般名のバックアップは衝突する（`.worker-scratch/` に置くか task_id を名前に入れる）
+- 作業ファイルを置けるのは `${worker_dir}` 配下と `$TMPDIR` だけ（git が内部で触る Pattern B の `.git` メタデータは別枠で、作業ファイルの置き場ではない）。Write / Edit で `${worker_dir}` 外（ハーネスの scratchpad を含む）に書くと hook が deny する。代わりに Bash の一時ファイルは `$TMPDIR` へ、Write / Edit の作業メモは `mkdir -p ${worker_dir}/.worker-scratch` へ。linked worktree（Pattern B）では `.git/info/exclude` が共通 clone 側（sandbox 外）にあり登録できないので、禁止事項 5 のとおり `git add -u` + 明示 add で staging し `.worker-scratch/` を commit に混入させない。`/tmp/claude-<uid>` は並走ワーカーと共有なので一般名のバックアップは衝突する（`.worker-scratch/` に置くか task_id を名前に入れる）
 - `/tmp` 直下は書けない（`$TMPDIR` とは別物。必ず `$TMPDIR` を経由する）。uv / pip のキャッシュは `${worker_dir}` 配下に置かず `export UV_CACHE_DIR="$TMPDIR/uv-cache"` / `PIP_CACHE_DIR="$TMPDIR/pip-cache"` にする（worktree 内に置くと wheel 内の `credentials.py` 等が sandbox の read-deny に巻き込まれ Bash が全滅する）
 - `cp` / `mv` / `rm` は `-i` alias 前提で書く（既存ファイルへの上書きが無言の確認待ちで timeout まで止まる）。上書きは `command cp -f` か `cat backup > dest`。`rm -rf` / `rm -r` は permissions.deny（Node 等で再帰削除を迂回しない。掃除は新しい名前のディレクトリを掘る）
-- git 側の退避／復元は使えない: `git stash` 変更系（禁止事項 4）に加え、パス指定の `git checkout -- <path>` / `git restore --source=<ref>`（`--staged` 単独の index-only を除く）も `.hooks/block-dangerous-git.sh` が deny（484-487 行 / 491-505 行）。壊して戻す手順は `cp` バックアップ（書き戻しは `command cp -f` / `cat >`）か一時 commit の 2 択。復元後は `git diff` で戻ったことを確認してから次に進む
+- パス指定の `git checkout -- <path>` / `git restore --source=<ref>` は hook が deny する（`git stash` 変更系は禁止事項 4）。代わりに壊して戻す手順は `cp` バックアップ（書き戻しは `command cp -f` / `cat >`）か一時 commit の 2 択。復元後は `git diff` で戻ったことを確認してから次に進む
 - `read-only file system` / `Permission denied` でも `dangerouslyDisableSandbox` を反復要求しない（安全分類器のロックアウトで作業不能になる）。出力先を書ける場所へ変えて再試行する
 
 ## プロジェクト
