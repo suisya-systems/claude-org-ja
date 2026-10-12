@@ -141,7 +141,7 @@ mcp__org-broker__list_panes
 >
 > **どちらの帰結でも**、この列挙は表示補助にしか使わないため **attach 可否・join・lifecycle 判定の
 > いずれにも波及させない**（本スキルは read-only であり、縮退が破壊的な後段に繋がる経路を持たない）。
-> **旧版 fallback（現行配備の全 backend）では従来どおりで、今日の挙動は変わらない。**
+> **旧版 fallback（capability を広告しない backend。現行では `org-broker`）ではこの承認判定に入らず、挙動は変わらない。**
 
 ## Step 2: tmux 側の pane_id ↔ session マッピングを取得
 

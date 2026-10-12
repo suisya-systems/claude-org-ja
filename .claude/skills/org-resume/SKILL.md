@@ -27,7 +27,7 @@ allowed-tools:
 > 書き込みは `StateWriter.transaction()` 経由（post-commit hook が `.state/org-state.md` を
 > DB から自動再生成する。markdown の直接編集は禁止で、drift_check が検出する）。
 > free-form な学び / Pending Lead 等は `notes/` 配下に保存する。
-> DB が無い場合は `python3 -m tools.state_db.importer --db .state/state.db --rebuild --no-strict` で構築する。
+> DB が無い場合は `python3 -m tools.state_db.importer --db .state/state.db --root . --rebuild --no-strict` で構築する。
 
 ## Phase 1: 状態読み込みとブリーフィング
 
@@ -50,7 +50,7 @@ allowed-tools:
      `active_inventory_dirs` は `runs.status` から逆引きした worker_dir 集合（state-semantics-contract I7 — `worker_dirs.lifecycle='active'` ではない）。
      必要があれば（極稀ケース）`get_resume_briefing` で raw payload / 完全な resume_instructions を取得できるが、起動時 Phase 1 では使わない。
    - DB が無い → 人間に rebuild を促す:
-     「state.db not found. Run: `python3 -m tools.state_db.importer --db .state/state.db --root . --rebuild`」
+     「state.db not found. Run: `python3 -m tools.state_db.importer --db .state/state.db --root . --rebuild --no-strict`」
 2. 人間に簡潔なサマリーを提示する:
    - 全体の目標 (briefing の `session.objective`)
    - 各作業アイテムの状態 (完了/進行中/保留/ブロック、briefing の `active_runs` / `reserved_runs`)

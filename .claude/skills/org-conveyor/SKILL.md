@@ -63,7 +63,7 @@ merge gate で停止する。人間は「レビュー待ち PR のキュー」�
 
 ## 輸送層（transport）両系
 
-**per-transport 認可（union 不可）**: 本スキルが直接使う transport ツールは free-pane 会計の `list_panes` だけで、
+**per-transport 認可（union 不可）**: 本スキルが直接使う transport ツールは free-pane 会計の `list_panes` と、pull フォールバック時のループ event ドレインの `check_messages` だけで、
 allowed-tools には **その deployment で active な単一 transport の面のみ** を列挙する（broker + renga を union で並べると
 非アクティブ transport のツールまで認可され per-transport auth モデルを迂回するため。設計 SoT:
 notes/broker-skill-generator-design.md #9。union 却下）。本リポジトリの active transport は **`broker`**（コード既定

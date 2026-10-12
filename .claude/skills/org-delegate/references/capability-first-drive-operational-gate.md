@@ -295,7 +295,7 @@ python3 ../tools/capability_gate.py --gate first_drive
 **適用条件（両方満たすときのみ）**: (i) その flow を人間が起動していて画面の前に居る、かつ
 (ii) 列挙結果がこれから**外向きの作用**（broadcast / 送信 / 停止指示 / ペイン破棄）を駆動する。
 
-**現在の該当は [`.claude/skills/org-suspend/SKILL.md`](../../org-suspend/SKILL.md) の Phase 1 / Phase 4 だけ。**
+**現在の該当は [`.claude/skills/org-suspend/SKILL.md`](../../org-suspend/SKILL.md) の Phase 1 / Phase 4 と、[`.claude/skills/org-delegate/SKILL.md`](../SKILL.md) の `--report-target` 確認（§6 表 #10）だけ。**
 
 手順:
 
@@ -502,7 +502,7 @@ owner なのは `list_panes` / `pane_exited` / `list_peers` という**独立し
 逆に掛かる範囲も広げない: 本責務分割が効くのは capability 形かつ §2 の `first_drive` が `recorded` の
 列挙だけで、旧版 fallback（非広告 backend。§1-2-a 段 5）では従来の `name` 一致のまま挙動は変わらない。
 
-**自分自身の identity を名前で引く経路（#2b / #4）には §1-2-d が掛かる**（`list_peers` は caller を
+**自分自身の identity を名前で引く経路（#2b / #4 / #10）には §1-2-d が掛かる**（`list_peers` は caller を
 除外するので、自役割名に一致したレコードは自分ではありえない）。**#9 を含む他の経路には §1-2-b /
 §1-2-c の同タブ選別が掛かる**。
 
@@ -519,6 +519,7 @@ owner なのは `list_panes` / `pane_exited` / `list_peers` という**独立し
 | 7 | [`.dispatcher/references/spawn-flow.md`](../../../../.dispatcher/references/spawn-flow.md) 3-4（新ピア出現待機。**delegate-plan helper の `after_spawn[]` 経路も同じ call site** — 入口は `.dispatcher/CLAUDE.md` の `after_spawn[]` 要約） | dispatcher / `.dispatcher/` | monitoring-read-only | 列挙を peer 登録の ground truth にしない（§3-B-1: `worker-{task_id}` は別 org の並走タブに同名で実在しうる）。readiness は §3-B-1 の send-as-probe で判定する（3-5 の指示送信そのものを probe にし再送。送達成功で 3-5 は消化済み＝二度送らない） |
 | 8 | [`.dispatcher/references/pane-close.md`](../../../../.dispatcher/references/pane-close.md) 5-4（curator の boot 確認 poll） | dispatcher / `.dispatcher/` | monitoring-read-only | 列挙を登録確認に使わない（§3-B-1）。readiness は §3-B-1 の send-as-probe で判定する（5-5 の `/org-curate` 指示そのものを probe にし既存の 3 回 retry で再送。送達成功で 5-5 は消化済み）。retry を使い切れば従来どおり破棄して curate を skip |
 | 9 | [`.dispatcher/references/worker-monitoring.md`](../../../../.dispatcher/references/worker-monitoring.md) (3-a-1) 観測不能フォールバック / (3-a-2) 裏取り表 | dispatcher / `.dispatcher/` | monitoring-read-only | (3-a-2) の `list_peers` 列は **unknown** として読む（在/不在のどちらとしても数えない）。(3-a-1) の peer 経路フォールバックからも `list_peers` を外し、**events テーブルの報告痕跡のみ**で継続する |
+| 10 | [`.claude/skills/org-delegate/SKILL.md`](../SKILL.md) 「よく使うフラグ」の `--placement background_tab` / `--report-target`（窓口自身の数値 pane id の確認） | secretary / root | **interactive-action** | `apply` の前で止まり人間確認（§3-A）。**承認の有無にかかわらず、列挙から窓口自身の id を採らない**（§1-2-d: `list_peers` は caller を除外する）。id は §1-2-d の caller pane id 取得規則で確定し、`caller-id 未確定` なら `--report-target` を渡さず人間に報告して判断を仰ぐ |
 
 [`.claude/skills/org-down/SKILL.md`](../../org-down/SKILL.md) は `/org-suspend` の全 Phase を実行するので
 #1 / #1b に推移的に到達する。org-down も人間が起動する flow なので分岐は同じ **interactive-action**。

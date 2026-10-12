@@ -119,7 +119,7 @@ mcp__renga-peers__spawn_pane(
   `<state-dir>/broker` のみ）。非既定 state dir で broker を動かしている環境でフラグを省くと、
   `duplicate_sidecar` だけが黙って鳴らない（他の kind は `.state/state.db` 経由なので影響を受けない）
 
-- `target="dispatcher"`: org-start Block A-1 で確立した安定名で解決
+- `target="dispatcher"`: org-start Block A の手順 1 で付けた安定名で解決
 - `direction="vertical"`: dispatcher ペイン = 左、attention ペイン = 右
 - `cwd="."`: Secretary の cwd（= repo root）基点で相対 resolve され、`.state/` パスが正しく当たる。
   省略すると dispatcher の cwd (`.dispatcher`) を継承して `.state` が `.dispatcher/.state` に解決され

@@ -121,7 +121,7 @@ skill ペアを総当たりして以下を確認する:
 - 統合候補: {m} ペア ({skill-a} × {skill-b} 一覧)
 - owner 未明記: {k} 件 ({skill-name} 一覧)
 
-発火条件: cand_count={cand_count} / skill_count={skill_count}
+発火条件: cand_count={cand_count} / work_skill_count={work_skill_count}
 詳細: 判定根拠は本メッセージ末尾の一覧を参照。
 
 人間承認後に削除・統合・owner 追記を実施してください。自動変更はしていません。

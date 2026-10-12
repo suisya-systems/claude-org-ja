@@ -13,6 +13,7 @@ allowed-tools:
   - Bash(python -c "from tools.state_db import connect;*)
   - Bash(python3 -c "from tools.state_db import connect;*)
   - Bash(python -m tools.state_db.importer:*)
+  - Bash(python3 -m tools.state_db.importer:*)
   - Bash(python3 tools/secretary_queue_watcher.py:*)
   - Bash(py -3 tools/secretary_queue_watcher.py:*)
   - Bash(rm -f .state/attention_pane.json)
@@ -147,7 +148,7 @@ id 台帳の作り方（面ごとの id 取得・pane 制御の 2 グループ (
 > 学び等は `notes/` 配下に保存する (`notes/README.md` 参照)。
 > `.state/journal.jsonl` は M4 で廃止 (events テーブルが SoT)。
 > DB が古い場合は
-> `python -m tools.state_db.importer --db .state/state.db --rebuild --no-strict`
+> `python3 -m tools.state_db.importer --db .state/state.db --root . --rebuild --no-strict`
 > で再構築する。
 
 1. 既存の `org-state.md` を `org-state.prev.md` にコピー（バックアップ）
