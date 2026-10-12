@@ -14,6 +14,7 @@ allowed-tools:
   - Bash(py -3 tools/journal_append.py:*)
   - Bash(python3 tools/pick_watcher_anchor.py:*)
   - Bash(py -3 tools/pick_watcher_anchor.py:*)
+  - Bash(python3 tools/watcher_restart_guard.py:*)
   - mcp__org-broker__list_panes
   - mcp__org-broker__spawn_pane
   - mcp__org-broker__set_pane_identity
@@ -27,10 +28,9 @@ allowed-tools:
 内の専用ペイン (`name="pr-watch-<PR>"`) で起動する。Bash tool の background 起動は
 session 寿命依存で、CI 監視のような長時間 watcher には不適（公式設計の対象外）。broker
 ペイン spawn を経由することで **sandbox 外・窓口セッション非依存**（`/clear` や窓口の
-context リセットと無関係）に監視が継続し、人間が tmux ペインで直接見えるので可視性も高い
-（feedback-dispatcher-visibility 整合）。
+context リセットと無関係）に監視が継続し、人間が tmux ペインで直接見えるので可視性も高い。
 
-監視結果は二経路で残る（どちらも `pr_watch.py` の既存挙動。本 skill は形を変えない）:
+監視結果は二経路で残る:
 
 - **`.state/state.db` events テーブル** … `ci_completed` / `pr_merge_watch_timeout` の
   canonical event 行（payload 形・`CI_COMPLETED` / `PR_MERGED` / `PR_MERGE_WATCH_TIMEOUT`
@@ -87,8 +87,8 @@ context リセットと無関係）に監視が継続し、人間が tmux ペイ
   窓口がイベント駆動で close する（[`.claude/skills/org-pull-request/SKILL.md`](../org-pull-request/SKILL.md)
   の各終端処理。手順は Step 5 の (a)/(b)）。分類の詳細は
   [`.claude/skills/pr-watch-pane/references/rationale.md`](references/rationale.md) §9。
-- Windows native の手動起動経路（人間が `tools/pr-watch.ps1 <PR>` を `!` 経由で起動）も
-  従来どおり遮断しない（既存経路は不変）。
+- Windows native の手動起動経路（人間が `tools/pr-watch.ps1 <PR>` を `!` 経由で起動）は
+  遮断しない。
 
 ## Step 1: 引数解決と cwd / repo の確定
 
@@ -267,8 +267,7 @@ mcp__org-broker__spawn_pane(
     試みる。CI 確定だけで止めたい場合は呼び出し時に `--merge-watch` を外す（その場合は CI green
     / failed 確定で自己 close を試みる）。いずれも実際に閉じるのは broker の tmux backend のみで、
     herdr / wezterm / renga では窓口のイベント駆動 close が掃除する。
-  - pr-watch.sh の既存メッセージ形・event payload 形は **本 skill では一切変更しない**（不変条件）。
-    既存の手動 `tools/pr-watch.sh` 起動経路（人間の `!` 経由など）も従来どおり動作する。
+  - 人間が `!` 経由で `tools/pr-watch.sh` を手動起動する経路も動作する。
 
 戻り値 `"Spawned pane id=N."` の N を控える。
 

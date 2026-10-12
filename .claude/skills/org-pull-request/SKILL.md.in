@@ -24,9 +24,7 @@ allowed-tools:
   - Bash(py -3 tools/set_run_pr_open.py:*)
   - Bash(python tools/run_complete_on_merge.py:*)
   - Bash(py -3 tools/run_complete_on_merge.py:*)
-  - Bash(bash tools/pr-watch.sh:*)
-  - Bash(pwsh tools/pr-watch.ps1:*)
-  - Bash(powershell tools/pr-watch.ps1:*)
+  - Bash(python3 tools/watcher_restart_guard.py:*)
   - mcp__renga-peers__send_message
   - mcp__renga-peers__check_messages
   - mcp__renga-peers__list_panes
@@ -50,7 +48,7 @@ allowed-tools:
 
 ユーザーが「OK」「確認した」「問題ない」「進めて」等の **明示的承認** を出した直後に発動する:
 
-- 必要に応じて窓口がプッシュ・PR 作成を行う（ワーカーには `git push` / PR 作成権限がない）。PR 本文の言語規約は `feedback_pr_issue_english`（PR / Issue は英語）に従う
+- 必要に応じて窓口がプッシュ・PR 作成を行う（ワーカーには `git push` / PR 作成権限がない）。PR のタイトル・本文は対象リポジトリで使われている言語に合わせる
 - **`gh pr create --base` は派遣時の起点ブランチと同じ設定を読む（Issue #808）**: プロジェクトの既定マージ先は [`registry/projects.md`](../../../registry/projects.md) の `base_branch` 列が SoT。値がある行（例 `develop`）は `gh pr create --base <base_branch>` を既定とし、**空欄 / `-` の行は従来どおり `--base` を付けない**（repo の既定ブランチ宛）。worktree を切った起点と PR のマージ先が食い違うと、develop が先行している分の差分が PR に混入するため、両者は必ず同じ値を使う。当該タスクの実効値は派遣時の DELEGATE 本文の「ベース:」行、または `send_plan.json` の `summary.base_branch` / `summary.base_ref` で確認できる（`--base-ref` で単発上書きされた hotfix もそこに出る）。値の解決順は `--base-ref` > `base_branch` 列 > `origin/HEAD`
 - **PR 番号が確定したら直ちに `tools/set_run_pr_open.py` で `runs.pr_url` / `runs.branch` を back-fill する** (Issue #323):
   ```bash
@@ -79,9 +77,9 @@ CI 完了の **canonical 信号は events テーブルの `ci_completed` 行**�
 
 **見逃しゼロの主保証はディスパッチャー relay（path B、Refs #658）**: ディスパッチャーが `/loop 3m` 監視サイクル（[`.dispatcher/references/worker-monitoring.md`](../../../.dispatcher/references/worker-monitoring.md) Step 5.25）で `events` を `event_deliveries` 配送台帳と突き合わせ、未配送の `ci_completed` を broker token 経由で窓口へ `[relay]` 付き `send_message` する。通常運用では窓口はこの relay 到着で次へ進めばよく、events テーブルを能動 poll する必要はない。**events DB の直接 poll は relay も直 push も成立しない場合（broker daemon 未起動の plain shell / CI 等）の最終フォールバック**として下記手順で残す（どの層でも canonical event は同一なので判定材料 `head` + `status` は一致する）。push が来たことだけを ground truth にすると no-op 経路で CI green を取りこぼすため、直 push は早期通知としてのみ扱い、確定は必ず events 行（relay 受信 or 直接 poll）で行う。
 
-**ground truth の poll 推奨手順**:
+**最終フォールバックの poll 手順**（relay も直 push も届かない環境に限る）:
 
-- `git push origin <branch>` 直後から **~60s 経過した時点で events テーブルを定期 poll する**（推奨 60-90s 間隔。本リポジトリの CI は概ね 60-80s で確定する）。pr-watch pane が生きていれば watcher は push 通知の有無に関わらず `ci_completed` 行を events に書く（`tools/pr-watch.sh` / `tools/pr-watch.ps1` の `ci_completed` 書き出し経路）。
+- push 後、間隔を置いて events テーブルを引く。pr-watch pane が生きていれば watcher は push 通知の有無に関わらず `ci_completed` 行を events に書く（`tools/pr-watch.sh` / `tools/pr-watch.ps1` の `ci_completed` 書き出し経路）。
 - 判定クエリ例（`PR_NUMBER` は窓口が把握している自局の int 値であり、ユーザー入力経路では渡らない。f-string の literal 展開で済ませる）:
   ```python
   from tools.state_db import connect
@@ -94,12 +92,12 @@ CI 完了の **canonical 信号は events テーブルの `ci_completed` 行**�
   #   head が push した SHA と一致し status='passed' なら merge gate 通過 → 上の awaiting_user emit へ
   #   一致しない（前 CI 行）/ status='failed' なら原因を取得して fix → 再 push（2c のループへ）
   ```
-- **push 通知が来た場合の扱い**: 補助的な早期通知として扱い、来た時点で events テーブルを引いて head 一致と status を確認する。push が来ない前提で events DB poll は止めない。peer push と events 行が両者 landed したら、判定は events DB の `head` + `status` を ground truth とする（受信モデル注記の「events テーブルのポーリングが最終フォールバック」と同じ姿勢を一次に倒したもの）。
+- **push 通知が来た場合の扱い**: 早期通知として扱い、来た時点で events テーブルを引いて head 一致と status を確認する。確定は常に events 行の `head` + `status` で行う。
 - `PR_MERGE_WATCH_TIMEOUT` / `PR_MERGED_NO_RUN` / `PR_MERGED_HEAD_UNCONFIRMED` の人間 gate は本節の影響を受けない（これらは merge 観測側 / fail-closed gate であり、events DB poll は CI 完了検知のみ canonical 化する）。merge 観測自体の canonical 検知は従来どおり `pr-watch --merge-watch` の `pr_merged` イベントと `tools/run_complete_on_merge.py` の組み合わせで行う。
 
 ### ⚠️ cwd 注意: pr-watch 起動時
 
-`tools/pr-watch.sh` / `tools/pr-watch.ps1` / `tools/pr_watch.py` は `state.db` を相対パスで開くため、起動時の cwd が ja root でないと CI 完了 event 書き込みでクラッシュし、peer 通知 (`CI_COMPLETED` / `PR_MERGED` 等) が飛ばない。canonical 経路の [`/pr-watch-pane`](../pr-watch-pane/SKILL.md) は ja-root 絶対パスを決定的に解決してペインを spawn するため cwd trap を吸収する（この cwd 解決こそが pane 経路の主目的の一つ）。この注意が効くのは人間が `!` 経由で `tools/pr-watch.sh` を手動起動する緊急フォールバックだけで、その場合は必ず `cd <ja-root> && bash tools/pr-watch.sh <PR> ...` の形にする。Issue #398 で根本対応中（cwd 非依存化）。
+`state.db` とログのパスはスクリプト自身の位置（`tools/..`）を基点に解決されるため cwd に依らない。cwd に依存するのは、相対パス `tools/pr-watch.sh` での起動と、`--repo` 省略時のリポジトリ解決（`gh repo view`）の 2 点だけ。canonical 経路の [`/pr-watch-pane`](../pr-watch-pane/SKILL.md) は ja-root 絶対パスを `cwd` に渡し `--repo` も明示するので、どちらも吸収される。この注意が効くのは人間が `!` 経由で `tools/pr-watch.sh` を手動起動する緊急フォールバックだけで、その場合は `cd <ja-root> && bash tools/pr-watch.sh <PR> --repo <OWNER/REPO> ...` の形にする。
 
 ### 監視終端で watcher ペイン (`pr-watch-<PR>`) を窓口がイベント駆動 close する（herdr ゾンビ残留の根治, Issue #751）
 
@@ -183,7 +181,7 @@ pr-watch から `PR_MERGED_HEAD_UNCONFIRMED: PR #<n> (head=<merged_short>, last 
   ```
   attention watcher classifier はこの emit を `kind=awaiting_user` → `secretary_awaiting_user` subkind として認識し **severity `urgent`（即時ビープ）** として拾う（CLAUDE.md「secretary が user の判断を待っている状態を通知する」節の canonical 形）。`gate` 値が `ci_unconfirmed_head_gate` であることで `worker_completed` / `ci_green_merge_gate` / `escalation_to_user` / `escalation_reply_forward` の他の 4 gate と区別される（CI green 根拠の merge 承認ではなく「マージ済みだが CI 未確認 head」の事後確認 gate）
 - ユーザーが head 確認の結果「進めて良い」と明示判断したら、その時点で 2b-ii の post-merge cleanup へ手動で進む（`tools/run_complete_on_merge.py --pr <PR>` を含む通常の手順。`PR_MERGED` を受領しないまま進めるため、pattern B / C の StateWriter ブロックも窓口側で明示的に走らせる）。ユーザーが「マージを取り消す」「revert する」等の指示を出した場合は通常の `gh pr` 操作で対処し、cleanup は実行しない
-- **既存の `PR_MERGED` / `PR_MERGED_NO_RUN` 経路は本節の影響を受けない**: 通常の clean merge は `PR_MERGED` プレフィックスで届き 2b-ii へ進む。`PR_MERGED_NO_RUN` は run 行未解決の失敗系で従来どおり人間判断（本節は CI 未確認 head の新規プレフィックスのみを追加するもので、既存 2 経路を変更しない）
+- **`PR_MERGED` / `PR_MERGED_NO_RUN` は本節の対象外**: 通常の clean merge は `PR_MERGED` プレフィックスで届き 2b-ii へ進む。`PR_MERGED_NO_RUN` は run 行未解決の失敗系で人間判断
 
 ## 2c. レビュー指摘 / CI 失敗のフィードバックループ
 
