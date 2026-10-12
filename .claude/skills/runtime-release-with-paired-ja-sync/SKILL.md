@@ -64,8 +64,6 @@ attention watcher integration test に必ず波及する。
   (b) `tools/check_runtime_schema_drift.py` — ja の `tools/org_extension_schema.json` と
   runtime 同梱 `role_configs_schema.json` の、ja 固有節を strip した上でのバイト比較
   （CI で実行。installed runtime が pin window 内なら skip されない）。
-  実例: renga capability probe `server_info` の `required_allow` 追加
-  （2026-08-08, runtime Issue #161）で露見
 
 ## Step 1: pre-fetch（リリース worker 派遣前）
 

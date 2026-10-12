@@ -85,7 +85,7 @@ python3 tools/work_discovery_scan.py --trigger manual --all-registry-repos
   決定的に導出する（`registry/projects.md` の triage 列（既定 include / 明示 opt-out）と `registry/org-config.md` の
   `triage_home`（既定 off）から。設計 §10.4）。既定状態では registry の GitHub URL 行が全て scan 対象に並ぶ
   （home repo は `triage_home: on` のときだけ先頭に付く）。単一 repo scan になるのは scan 対象が 1 件のときだけ。
-- resolver を別コマンドで走らせてフラグ文字列を貼る旧手順は使わない（zsh で 1 引数に潰れる。理由は
+- resolver を別コマンドで走らせてフラグ文字列を貼らない（zsh で 1 引数に潰れる。理由は
   `tools/work_discovery_scan.py` 冒頭の docstring）。
 - **解決の監査情報は scan 出力の `repo_resolution`** に載る（`repos` / `home_repo` / `triage_home` / `included` /
   `opted_out` / `skipped` / `signals`）。Step 3 の監査提示はここから読む（resolver を二度目に走らせる必要はない）。
@@ -132,9 +132,9 @@ python3 tools/work_discovery_scan.py --trigger manual --all-registry-repos
 
 | exit | status | 窓口の対応 |
 |---|---|---|
-| `0` | `no_candidates` | 候補ゼロ。「いま着手可能な（依存解決済みの）候補はありません」と人間に伝える。**goal モードでは、ゴール未設定（`goal_rank.goal_unset_repos[]`）・台帳エラー（`goal_rank.goal_errors[]`）・ゴール除外（`excluded_goal[]`）が非空なら Step 3 と同じ形で必ず見せる**（ゴール台帳が 1 つも無いうちは、候補ゼロの理由はほぼ「ゴール未設定」であり、それを伝えないと何も出ないのが普通だと誤解される）。`excluded_blocked[]` / `excluded_merged[]` が非空なら Step 3 と同じ「除外（依存未解決）: …」「除外（マージ済み）: …」の形で**必ず列挙する**（「何を見た結果ゼロなのか」を人間が監査できるように。設計 §5.2「除外枠を必ず見せる」/ §5.1）。さらに `input_truncated.open_issues` / `open_prs` / `base_merges` が `true`（取得上限到達）なら Step 3 と同じ注記を**必ず添える**（非網羅な scan を「網羅した結果ゼロ」と誤読させないため）。**ここで停止**。 |
+| `0` | `no_candidates` | 候補ゼロ。「いま着手可能な（依存解決済みの）候補はありません」と人間に伝える。次の枠は非空なら Step 3 と同じ形で見せる。goal モードのゴール未設定（`goal_rank.goal_unset_repos[]`）・台帳エラー（`goal_rank.goal_errors[]`）・ゴール除外（`excluded_goal[]`）（ゴール台帳が 1 つも無いうちは、候補ゼロの理由はほぼ「ゴール未設定」であり、それを伝えないと何も出ないのが普通だと誤解される）。`excluded_blocked[]` / `excluded_merged[]` の「除外（依存未解決）: …」「除外（マージ済み）: …」（「何を見た結果ゼロなのか」を人間が監査できるように。設計 §5.2 / §5.1）。`input_truncated.open_issues` / `open_prs` / `base_merges` が `true`（取得上限到達）のときの注記（非網羅な scan を「網羅した結果ゼロ」と誤読させないため）。**ここで停止**。 |
 | `10` | `candidates_found` | Step 3 で §5.2 形式にレンダリングして提示。 |
-| `2` | `error` | JSON の `error` フィールドの内容をそのまま人間へ伝え、「triage を実行できませんでした」と報告。**`goal_rank.judge.status` が `failed` / `cooldown` / `budget_exhausted` なら判定段の失敗として状態と理由を伝える**（fail-closed: 判定できないときは推奨を出さない。旧ランクで代わりに出さない。`cooldown` は同じ失敗を 1 時間繰り返さないための待機、`budget_exhausted` は 1 日の費用上限到達）。候補を捏造しない。**候補ゼロと言い換えない**（失敗を silent skip にすると「候補が出ないのが普通」と受け取られ、次タスク提案の仕組みが事実上死ぬ。Issue #829）。repo セット解決の失敗もここに来るので、`repo_resolution.signals` / `skipped` があれば理由（registry 行が無い / `triage_home` off / パスが GitHub URL でない等）も併せて伝える。**ここで停止**。 |
+| `2` | `error` | JSON の `error` フィールドの内容をそのまま人間へ伝え、「triage を実行できませんでした」と報告。**`goal_rank.judge.status` が `failed` / `cooldown` / `budget_exhausted` なら判定段の失敗として状態と理由を伝える**（fail-closed: 判定できないときは推奨を出さない。旧ランクで代わりに出さない。`cooldown` は同じ失敗を 1 時間繰り返さないための待機、`budget_exhausted` は 1 日の費用上限到達）。候補を捏造しない。**候補ゼロと言い換えない**（失敗を silent skip にすると「候補が出ないのが普通」と受け取られ、次タスク提案の仕組みが事実上死ぬ）。repo セット解決の失敗もここに来るので、`repo_resolution.signals` / `skipped` があれば理由（registry 行が無い / `triage_home` off / パスが GitHub URL でない等）も併せて伝える。**ここで停止**。 |
 
 > exit `1` には意味を割り当てない（Python 未捕捉例外の既定 exit と衝突し、クラッシュが「候補なし」に誤読されるのを防ぐため）。`0/10/2` 以外が返ったら error 扱いで人間に上げる。
 
@@ -205,7 +205,7 @@ goal モードのレンダリング規則（legacy と共通の規則は下の l
   - **工数**: `effort_estimated == true`（ヒューリスティック推定）なら `工数 <effort>(推定)`。`false`（`size:S/M/L` 等のラベル由来）なら `(推定)` を付けず `工数 <effort>`。
   - **並列可 / 直近マージ起点**: フラグ `parallelizable` / `unblocked_by_recent_merge` が `true` のときだけ該当トークン（`並列可` / `直近マージ起点`）を出す（`false` なら表記自体を出さない）。これらは対応する `*_estimated` が常に推定（`true`）なので、出すときは常に `(推定)` 付き。直近マージ起点は `recommendation.reason` 内（例:「直近マージ #N の follow-up」）にも自然に現れる。
 - **除外枠を必ず見せる**: `excluded_blocked[]` を「除外（依存未解決）: #<issue>（<note>）」の形で列挙する（監査性 + 全部見たうえで N 件、の安心）。空なら除外行を省く。
-- **マージ済み除外は別行で見せる**（設計 §10.5 / Issue #830）: `excluded_merged[]` を「除外（マージ済み）: #<issue>（<note>）」の形で、**依存未解決の除外行とは別の行**に列挙する。`base_branch=develop` 等の二系統運用リポジトリでは、develop にマージ済みでも GitHub の自動クローズが発火せず Issue が open のまま残るため triage が「未着手」と誤読していた枠で、`note` が閉じた PR 番号と base ブランチを名指しする。**「まだ着手できない」（依存未解決）と「もう終わっている」（マージ済み）は人間の次の一手が真逆**なので混ぜない。空なら行を省く。
+- **マージ済み除外は別行で見せる**（設計 §10.5）: `excluded_merged[]` を「除外（マージ済み）: #<issue>（<note>）」の形で、**依存未解決の除外行とは別の行**に列挙する。`base_branch=develop` 等の二系統運用リポジトリでは、develop にマージ済みでも GitHub の自動クローズが発火せず Issue が open のまま残るため triage が「未着手」と誤読していた枠で、`note` が閉じた PR 番号と base ブランチを名指しする。**「まだ着手できない」（依存未解決）と「もう終わっている」（マージ済み）は人間の次の一手が真逆**なので混ぜない。空なら行を省く。
 - **サイレント truncation をしない**: `truncated_count` が 1 以上なら
   「（他に依存解決済みだが順位外の候補が <truncated_count> 件あります）」の 1 行を添える。
   `input_truncated` の `open_issues` / `open_prs` が `true`（取得上限到達）なら「Issue/PR の取得が上限到達のため候補が網羅的でない可能性があります」も添える。`base_merges` が `true` なら「base ブランチのマージ履歴が上限到達のため、完了済み Issue を取りこぼしている可能性があります」を添える。

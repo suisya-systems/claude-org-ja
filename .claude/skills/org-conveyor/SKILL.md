@@ -184,9 +184,7 @@ per-transport 詳細（pr-watch の二フレーム受信注記）は呼び先の
   - タイトルが長ければ末尾を `…` で省略する（1 行に収める）。
 - **出力タイミング**（skill 契約として明文化）:
   1. **ループ反復開始時**（新規 triage 投入後）。
-  2. **state transition 直後**（worker 派遣 / verify 完了 / CI green / PR merged / pane 解放 等の遷移ごと）。
-  3. **長時間 verify / CI watch の最中、一定間隔で**（例: 5 分毎）。**ただし前回出力から状態に変化が無ければ抑制する**
-     （無変化の定期出力で人間の通知疲労を作らない）。
+  2. **state transition 直後**（worker 派遣 / verify 完了 / CI green / PR merged / pane 解放 等の遷移ごと）。状態が変わらない間は出さない（無変化の定期出力で人間の通知疲労を作らない）。
 - halt（merge gate / 退出条件 / scope 縁）に入るときも、停止直前にこのサマリを出して「いまベルトのどこで止まったか」を残す。
 
 ## 起動主体とパス解決

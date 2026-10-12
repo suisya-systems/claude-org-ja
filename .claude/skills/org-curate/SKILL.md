@@ -35,9 +35,9 @@ knowledge/raw/ に蓄積された生の学びを読み、分類・統合して k
 >
 > 契約面の正本は [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) Surface 8（broker auth & delivery、ratified 2026-06-14）+ 末尾「Ratified amendment (2026-06-15): push-primary delivery」（S3。**broker push 一次が既定の契約**、pull は structural fallback として retain）、設計 SoT は transport-lab `docs/design/broker-native-roles.md` §9（push 一次）/ `docs/design/ja-migration-plan.md` §5・§8。**opt-in `renga` は削除せず常時有効な fallback として維持する**（切戻しの安全装置）。broker 実走（dogfood）は Epic #6 Issue G スコープであり、本ファイルの既定運用経路ではない（**既定の二フレーム注記（Refs #604）**: ここでの「既定 `broker`」は**コード既定**フレーム — `tools/transport.py: DEFAULT_TRANSPORT` が runtime 0.1.28 (Epic #586) で `broker` にフリップ済みで、ja 生成器・`transport.resolve()` はこのコードフレームで render するため生成面はこう表示する。別に**運用既定**フレームがあり、broker 実走 dogfood が Epic #6 Issue G まで未活性のため運用上の既定経路は `renga`。両フレームは指す対象（コード定数 vs 運用経路）が異なり矛盾しない。総説は root [`CLAUDE.md`](../../../CLAUDE.md)「輸送層（transport）両系」節。）
 
-**起動モデル（オンデマンド化）**: 本スキルは 1 回の起動で 1 サイクルだけ実行する（`/loop` 禁止）。
-閾値判定は外部スクリプト [`tools/check_curate_threshold.py`](../../../tools/check_curate_threshold.py) に
-一本化されており、本スキル内部には「raw 5 件未満なら即終了」のようなゲートは**存在しない**。
+**起動モデル**: 本スキルは 1 回の起動で 1 サイクルだけ実行する（`/loop` 禁止）。
+閾値判定は外部スクリプト [`tools/check_curate_threshold.py`](../../../tools/check_curate_threshold.py) が行い、
+本スキル内部では件数による早期終了をしない。
 起動理由 `reasons[]` を受け取り、該当するステップだけを実行する。
 
 **パス解決（重要）**: 本スキル中の `knowledge/...` / `tools/...` 表記は**リポジトリルート相対の
@@ -122,7 +122,7 @@ context: curation
 pattern_name: <推定 skill 名、kebab-case。テーマ名から派生させる>
 summary: <このテーマで何が再利用できるか 1-2 文>
 task_ids: []                    # optional。raw ノートに task_id が無ければ空のままでよい
-raw_files: <同テーマの raw/ パス配列。Step 4 で archive に move する前提のため、ここでは move 後のパス（`knowledge/raw/archive/<entry>.md`）を記録する。`skill-eligibility-check` はこれを machine-local な `knowledge/skill-candidates.local.md`（実エントリ用・Issue #755）に永続化するため、追跡可能な最終パスを渡す>
+raw_files: <同テーマの raw/ パス配列。Step 4 で archive に move する前提のため、ここでは move 後のパス（`knowledge/raw/archive/<entry>.md`）を記録する。`skill-eligibility-check` はこれを machine-local な `knowledge/skill-candidates.local.md`（実エントリ用）に永続化するため、追跡可能な最終パスを渡す>
 steps_outline: <raw 群から抽出した主要手順>
 trigger_description: <このテーマが発動する場面>
 decision_criteria: <テーマ内に現れる判断基準>
@@ -134,7 +134,7 @@ curation context では空配列でよい。raw ファイル名から日付等�
 
 結果の decision によって次の扱いを決める。**いずれの decision でも Step 3 での curated/ 統合は通常どおり実施する**:
 
-- `skill_recommend` → skill 側が machine-local な `knowledge/skill-candidates.local.md`（実エントリ用・Issue #755）に自動追記済み。本ステップでは追加作業なし。
+- `skill_recommend` → skill 側が machine-local な `knowledge/skill-candidates.local.md`（実エントリ用）に自動追記済み。本ステップでは追加作業なし。
   該当 raw ファイルも **Step 3 で curated/ に統合し、Step 4 で `knowledge/raw/archive/` に move したうえでマーカーを付与する**
   （skill 化と curated ノート化は両立。curated ノートは背景知識として残り、
   skill は手順化として別途作成される。両立させないと未整理 raw が滞留して閾値チェックが壊れる）

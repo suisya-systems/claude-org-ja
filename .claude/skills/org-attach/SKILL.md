@@ -6,9 +6,7 @@ description: >
   と `/usr/bin/tmux -L claude-org-broker list-panes -a`（pane_id ↔ session マッピング）を
   pane_id（%N）で突き合わせ、各ペインに role + name(task_id) ラベル付きの attach コマンドを
   生成する（読取専用 `-r` / 書込は `-r` 無し / デタッチは `Ctrl-b d`）。
-  「ワーカーのペインを見たい」「ワーカーのペインに入りたい」「dispatcher の様子を直接見たい」
-  「ペインに入りたい」「あのペインを直接覗きたい」「attach コマンド教えて」
-  「tmux でつなぎたい」「worker の画面に入る」等で発動。
+  特定のペインの画面を直接見たい・入りたい、attach コマンドを知りたいという依頼で発動。
   自分で attach はせず・ペインも一切変更しない（コマンド文字列とペイン一覧表を表示するのみ）。
   作業委譲（org-delegate）・ダッシュボードで状況一覧（org-dashboard）・watcher 停止（org-attention-stop）
   には発動しない。

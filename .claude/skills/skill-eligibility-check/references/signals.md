@@ -72,5 +72,5 @@ skill 化しても再利用が発生しない。
 ## 採点結果の扱い
 
 合計点からの 3 値分岐は `SKILL.md` Step 2 の表に従う。各シグナルの 0/1 は `matched_signals` として呼び出し元に返し、
-候補キューの実エントリファイル `knowledge/skill-candidates.local.md`（machine-local・Issue #755）にも残る。
+候補キューの実エントリファイル `knowledge/skill-candidates.local.md`（machine-local）にも残る。
 これにより後の棚卸し（`skill-audit`）で「どのシグナルが弱かったか」を追跡できる。
