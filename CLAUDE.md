@@ -38,7 +38,7 @@
 **「既定」の二フレーム注記（Refs #604）**: 本節が「既定 `renga`」と書くのは**運用既定**フレーム（broker 実走 dogfood が Epic #6 Issue G まで未活性のため、運用上の既定経路が renga）。これとは別に**コード既定**フレームがあり、`tools/transport.py: DEFAULT_TRANSPORT` は runtime 0.1.28 (Epic #586) で `renga` → `broker` にフリップ済み — ja の生成器・`transport.resolve()` はこのコードフレームで render するため、生成面のスキルは「既定 `broker`」と表示する。両者は指す対象（運用経路 vs コード定数）が異なり矛盾しない（手保守 prose の「既定 renga」＝運用フレーム正 / 生成面の「既定 broker」＝コード定数フレーム正）。**この二フレームの例外は Refs #941 で解消済み**: かつて `tools/peer_notify.py: notify_peer` は `DEFAULT_TRANSPORT` を参照しない raw env 判定（`ORG_TRANSPORT==broker` 明示時のみ broker・無設定時 renga フォールバック）で、pr-watch の peer 通知だけが第三のフレームで動いていた。この食い違いが CI green 通知の取りこぼしを生んだため（無設定ペインは実際には broker に解決するのに、helper は renga へ push していた）、同 helper は `transport.resolve()` 経由に寄せられ、**コード既定フレームに一本化された**。したがって現在 raw env で transport を判定する helper は無い（`notify_peer` 内の raw env 分岐は、runtime 未インストール等で `resolve()` が使えない場合の never-raise フォールバックとしてのみ残る）。詳細は [`.claude/skills/org-pull-request/SKILL.md`](./.claude/skills/org-pull-request/SKILL.md) の輸送層注記。
 
 ## PR 後の CI 監視
-- PR 作成直後に [`/pr-watch-pane <PR>`](./.claude/skills/pr-watch-pane/SKILL.md) を起動する（クロスリポジトリは `--repo OWNER/REPO` 付き）。broker tmux セッション内の専用ペインで `tools/pr-watch.sh` が ja-root cwd・sandbox 外で回り、完了時に events テーブルへ `ci_completed` を 1 行記録する。**Claude Code の Bash 背景起動で `tools/pr-watch.*` を直接叩かない**: Claude Code の背景タスクは spawn したシェルのみ追跡し、自己デタッチした監視本体は孤児化するため（公式仕様）、`/clear` や窓口セッション終了で監視が黙死し得る。手動 `!` 実行はペイン外で人間が張り付く前提の緊急経路のみ。
+- PR 作成直後に [`/pr-watch-pane <PR>`](./.claude/skills/pr-watch-pane/SKILL.md) を起動する（クロスリポジトリは `--repo OWNER/REPO` 付き）。broker tmux セッション内の専用ペインで `tools/pr-watch.sh` が ja-root cwd・sandbox 外で回り、完了時に events テーブルへ `ci_completed` を 1 行記録する。`tools/pr-watch.*` の直接起動と `gh pr checks` の polling ループは hook が deny する（[`.claude/rules/pr-ci-watch.md`](./.claude/rules/pr-ci-watch.md)）。代わりに `/pr-watch-pane` を使い、立てられなければ人間に報告する。
 
 ## PR マージ後の次タスク提案（proactive next-dispatch）
 
@@ -66,26 +66,9 @@ PR マージ → post-merge cleanup が終わったら、ユーザーの催促�
 - 実作業は全てワーカーに委譲する（コード編集、デバッグ、テスト、ビルド、git commit、環境構築等）。ただし下記「タスクルーティング 2 レーン制」の軽量レーン条件を全て満たすタスクに限り、窓口が subagent（Agent tool）で直処理してよい例外を設ける
 - 問題が報告されたら、その切り分け・調査はワーカーに委譲する（下記軽量レーン条件を全て満たす極小調査は subagent 直処理の例外対象）
 
-### タスクルーティング 2 レーン制（Refs #515: 軽量レーン例外）
+### タスクルーティング 2 レーン制
 
-「実作業は全てワーカーに委譲する」原則は維持しつつ、**極小タスクに限った軽量レーン**を例外として設ける。2026-06-12 のパイロット 2 走（#546 / #545）でワーカーレーン同等の Codex ゲート品質を保ったまま、着手→PR が 18 分（ワーカーレーン 40-60 分）に短縮されたことを実証済み・ユーザー承認済みの方針。
-
-**軽量レーン（subagent 直処理）の発動条件 — 以下を全て満たすこと:**
-- 推定工数 S 以下
-- 単一ファイル級
-- 判断仰ぎが発生する想定がない
-- 日またぎしない（その場で完結する）
-
-満たす場合、窓口は worker を派遣せず `Agent` tool（`isolation="worktree"`）で直処理してよい。**1 つでも満たさない／判断境界が読めない場合は迷わず従来のワーカーレーン**（[`/org-delegate`](./.claude/skills/org-delegate/SKILL.md)）に倒す。
-
-**軽量レーンの必須条件（省略不可）:**
-- **背景（非同期）で起動する。同期実行は禁止**（窓口の人間接点・ワーカー ack の即時性をブロックするため）。現行ハーネスでは `Agent` の入力スキーマから `run_in_background` が廃止され subagent は常時背景実行になったため（2026-08-19 実測: `tool_input` は `description` / `prompt` / `subagent_type` のみ、明示指定しても `additionalProperties:false` で除去される。Issue #942）、呼び出し側で指定するパラメータは無い。PreToolUse フック [`.hooks/block-foreground-subagent.sh`](./.hooks/block-foreground-subagent.sh) は窓口・ワーカー一律で、`run_in_background` が**存在しかつ厳密 `true` でない** Agent 呼び出しのみを exit 2 で deny する（旧ハーネス互換の防波堤。キー欠落は常時背景として許可）
-- Codex レビューを in-loop で回し、Blocker/Major ゼロまで修正する（ワーカーレーンの検証深度 full と同等のゲート）
-- push・PR・merge の人間ゲートは従来どおり維持する（subagent が自動で push / PR / merge してはならない）
-
-**重量レーン（ワーカー派遣）が必須のケース:** 判断境界がある・escalation が想定される・日をまたぐ・常駐監視が要るタスクは、軽量条件を一部満たしても必ずワーカーレーンに送る。レーン選択判定の手順は [`/org-delegate`](./.claude/skills/org-delegate/SKILL.md) の「レーン選択判定」を参照。
-
-**重量レーンの ultracode 武装（Issue #554）**: ultracode（multi-agent workflow）の許可は工数ラベル (S/M/L) では判定しない（工数は人間労働の代理指標で、AI ワーカーにとっての難しさとズレる）。以下の**いずれか**を満たす重量タスクに許可してよい（推奨）: (1) **実装中に設計判断が残る**（事前 design review で固定しきれない決定 — 実測しないと決められない契約・未知の移植先制約など — が実装フェーズに持ち越される）、(2) **敵対的検証の価値が高い**（「テストが緑でも守っていない」型の欠陥が出やすい性質 — ガード・封印・契約 battery 等の enforcement 実装）、(3) **所有排他で切れる並列構造**（独立サブタスクに分割でき、ファイル所有を排他にした並列レーンで実時間短縮が出る規模）。量が多いだけの機械的タスク（設計固定済みの移植・定型変換）は L 級でも非武装を既定とする（背景には週間 rate limit の資源管理もある — 構造が正当化しない増幅を既定にしない）。許可する場合も、**brief への許可明記は必要条件にすぎず、発動には dispatcher 側の kickoff 武装が必須**（brief 文言・`send_message`・`check_messages` 経由の指示では武装しない＝実走確定）。ultracode は実装と Codex 前のセルフレビュー収束に使う**前段**で、最終 Codex ゲート（別モデルの独立レビュー）は従来どおり維持する。窓口は `gen_delegate_payload.py --impl-guidance` で許可を brief に明記するところまでを担う。武装の実装詳細は [`/org-delegate`](./.claude/skills/org-delegate/SKILL.md) の「重量レーンの brief 強化（ultracode）」と [`.dispatcher/references/spawn-flow.md`](./.dispatcher/references/spawn-flow.md) 3-5a を参照。
+推定工数 S 以下・単一ファイル級・判断仰ぎ想定なし・日またぎなしを**全て**満たす極小タスクに限り、窓口はワーカーを派遣せず `Agent` tool（`isolation="worktree"`、背景実行）で直処理してよい（軽量レーン。Codex レビューを in-loop で Blocker/Major ゼロまで回し、push・PR・merge の人間ゲートは維持する）。1 つでも満たさない・判断境界が読めないときはワーカーレーンに倒す。発動条件・必須条件・重量レーンの ultracode 武装とモデル選定の正本は [`/org-delegate`](./.claude/skills/org-delegate/SKILL.md) の「レーン選択判定」。
 
 ### worker への追加依頼の境界（Issue #475: 1 worker = 1 task = 1 scope）
 
@@ -109,22 +92,23 @@ retro gate ack は必ず `mcp__renga-peers__send_message(to_id="dispatcher", ...
 
 Secretary が「次の一手はユーザーの返答待ち」で停止する gate では、attention watcher がユーザーに気付かせるための信号を 1 行 emit する。Secretary 側は claude-org-ja の本リポジトリで stop しているため、画面前にユーザーが居ない場合 awaiting_user の状態が長時間放置される。この emit を runtime classifier 側で `secretary_awaiting_user` (default severity `urgent`) にマップすることで、ビープ等で通知される。
 
-### 対象 gate（4 箇所）
+### 対象 gate（5 箇所）
 - **`worker_completed`**: ワーカーから完了報告を受領 → ack + DB の events テーブルへ review transition を追記 → ユーザーへ承認待ちで停止する直前。[`/org-delegate`](./.claude/skills/org-delegate/SKILL.md) Step 5 sub 2a。
 - **`ci_green_merge_gate`**: PR 作成後の CI 監視で `CI_COMPLETED` 受信（CI green）→ ユーザーへ merge 承認を仰ぐ直前。[`/org-pull-request`](./.claude/skills/org-pull-request/SKILL.md) 2b-i。
 - **`escalation_to_user`**: ワーカーからの判断仰ぎを人間に上げ、選択肢を提示してユーザー返答待ちで停止する直前（ask の瞬間）。[`/org-escalation`](./.claude/skills/org-escalation/SKILL.md) Step 3。interactive ではユーザーが数十秒〜数分で返答するため pending_decision aging (15分) は実質発火せず、この ask-time emit が urgent 通知の主経路となる。
 - **`escalation_reply_forward`**: 判断仰ぎを人間に上げ、ユーザー返答を受け取り、ワーカーへ転送する直前。[`/org-escalation`](./.claude/skills/org-escalation/SKILL.md) の `mark-user-replied` → `resolve --kind to_worker` の境界。
+- **`ci_unconfirmed_head_gate`**: pr-watch から `PR_MERGED_HEAD_UNCONFIRMED`（CI 未確認の head でマージされた）を受信 → post-merge cleanup に進まず、ユーザーへ head 確認を仰ぐ直前。[`/org-pull-request`](./.claude/skills/org-pull-request/SKILL.md) の `PR_MERGED_HEAD_UNCONFIRMED` 受信時の節。
 
 ### Canonical emit 形
 ```
 bash tools/journal_append.sh notify_sent kind=awaiting_user task_id=TASK gate=GATE note=SHORT
 ```
 - `task_id`: 対象ワーカー / PR / decision に対応する task_id（escalation_to_user / escalation_reply_forward の場合は decision に紐付く task_id）。
-- `gate`: `worker_completed` / `ci_green_merge_gate` / `escalation_to_user` / `escalation_reply_forward` のいずれか。
+- `gate`: `worker_completed` / `ci_green_merge_gate` / `escalation_to_user` / `escalation_reply_forward` / `ci_unconfirmed_head_gate` のいずれか。
 - `note`: 1 行以下の短い文脈（PR 番号 / Issue 番号 / 要約等）。
 
 ### 通知側の挙動
-並走の runtime PR が attention watcher classifier に `notify_sent` payload の `kind=awaiting_user` を `secretary_awaiting_user` subkind として認識する mapping を追加する。default severity は `urgent`（即時ビープ）。
+runtime の attention watcher classifier は `notify_sent` payload の `kind=awaiting_user` を `secretary_awaiting_user` subkind として認識し、default severity は `urgent`（即時ビープ）。`gate` の値では分岐しない。
 
 ## ワーカーからの判断仰ぎは人間にエスカレーションする
 
