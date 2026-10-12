@@ -84,7 +84,10 @@ mcp__renga-peers__send_message(to_id="secretary", message="<上記 stdout>")
    - `0 / status=acked` → retro を続行する。
    - `1 / status=timeout` → secretary から 1 度も返信が無く打ち切り。下の「secretary unreachable 時の fallback」フローに入る（retro に「未着」と書かない）。
    - `2 / status=error` → CLI スキーマ不整合 / regex compile 失敗。`reason` を確認して呼び出し側を修正する。retro は保留扱い。
-   - `3 / status=replied_no_ack` → secretary は到達したが本文が ack regex に一致せず最終 attempt まで進んだ。`raw` を読んで内容に応じて判断する（「届いていない」旨の確定返信なら retro に未着を確定的に書いてよい。曖昧なら secretary に追問する）。`secretary_unreachable` フローには入らない。
+   - `3 / status=replied_no_ack` → secretary は到達したが本文が ack regex に一致せず最終 attempt まで進んだ。`raw` を読んで内容に応じて判断する（「届いていない」旨の確定返信なら retro に未着を確定的に書いてよい。曖昧なら secretary に追問する）。`secretary_unreachable` フローには入らない。未着を確定したときは、close の前に次の 1 行で記録する（記録が無いと close hook `.hooks/block-close-before-retro.sh` が Step 3 の `close_pane` を止める）:
+     ```bash
+     bash ../tools/journal_append.sh retro_gate_confirmed_missing task=<task_id>
+     ```
    - `4 / status=polling` → まだ attempt が残っている。`Bash sleep 30` を挟み、`state` フィールドを次回呼び出しに渡して continue する。
 
 #### secretary unreachable 時の fallback

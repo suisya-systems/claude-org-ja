@@ -12,11 +12,13 @@
 #      同じ pane_id が複数あれば最新のもの。見つからなければ worker ペインではない
 #      (curator / pr-watch / attention watcher 等) ので通す。
 #   2. その task について、次のどれかがあれば通す:
-#      - `retro_gate_acked` (tools/dispatcher_retro_gate.py が acked 時に記録) が
-#        その `worker_spawn_verified` 以降にある
-#      - `runs.status == 'completed'`
+#      - その `worker_spawn_verified` 以降に次のどちらかがある
+#        - `retro_gate_acked` (tools/dispatcher_retro_gate.py が acked 時に記録)
+#        - `retro_gate_confirmed_missing` (replied_no_ack で窓口が「届いていない」と確定した
+#          ときに dispatcher が journal_append.sh で記録。pane-close.md の exit 3 分岐)
+#      - `runs.status` が `completed` / `failed` / `abandoned` (run が閉じている)
 #      - worker-idle-state.json の `completion_reported_at` があり、かつ `runs.status == 'review'`
-#      後の 2 つは pane-close.md「0. 受領記録の確認」が ack 相当として通す 2 ケース。
+#      `completed` と最後のケースは pane-close.md「0. 受領記録の確認」が ack 相当として通す 2 ケース。
 #   3. どれも無ければ deny。
 #   相対セレクタ (`focused` / 裸の name / target 省略) は block-relative-close-pane.sh が
 #   止めるので、ここでは判定せず通す。
@@ -98,7 +100,8 @@ if not row or not row[1]:
     sys.exit(0)
 verified_id, task = row
 acked = conn.execute(
-    "SELECT 1 FROM events WHERE kind = 'retro_gate_acked' "
+    "SELECT 1 FROM events "
+    "WHERE kind IN ('retro_gate_acked', 'retro_gate_confirmed_missing') "
     "AND json_extract(payload_json, '$.task') = ? AND id > ? LIMIT 1",
     (task, verified_id)).fetchone()
 status = conn.execute(
@@ -111,7 +114,7 @@ try:
         reported = (json.load(f).get(f"worker-{task}") or {}).get("completion_reported_at") or ""
 except (OSError, ValueError, AttributeError):
     pass
-if acked or status == "completed" or (reported and status == "review"):
+if acked or status in ("completed", "failed", "abandoned") or (reported and status == "review"):
     print("allow")
 else:
     print(f"deny {task} {status or '-'}")
@@ -123,6 +126,6 @@ fi
 [[ "$VERDICT" == "allow" ]] && exit 0
 if [[ "$VERDICT" == deny\ * && "$VERDICT" != *$'\n'* ]]; then
   read -r _ TASK STATUS <<<"$VERDICT"
-  deny_with_reason "pane ${PANE_ID} は worker-${TASK} のペインで、振り返りの完了報告ゲートを通った記録がありません (retro_gate_acked なし / runs.status=${STATUS})。.dispatcher/references/pane-close.md の「完了報告ゲート」で tools/dispatcher_retro_gate.py を回し、acked になってから閉じてください。secretary unreachable なら閉じずに retro_deferred を記録します。"
+  deny_with_reason "pane ${PANE_ID} は worker-${TASK} のペインで、振り返りの完了報告ゲートを通った記録がありません (retro_gate_acked / retro_gate_confirmed_missing なし / runs.status=${STATUS})。.dispatcher/references/pane-close.md の「完了報告ゲート」で tools/dispatcher_retro_gate.py を回し、acked (または replied_no_ack で未着を確定し retro_gate_confirmed_missing を記録) になってから閉じてください。secretary unreachable なら閉じずに retro_deferred を記録します。"
 fi
 deny_with_reason "close_pane の振り返り判定が想定外の出力を返しました (${VERDICT//$'\n'/ })。安全側 (fail-closed) で拒否します。"

@@ -13,11 +13,15 @@
 #   allow 側:
 #     - retro_gate_acked が verify 以降にある                     -> allow
 #     - runs.status=completed                                     -> allow (pane-close.md 0. の 1 つ目)
+#     - runs.status=failed / abandoned                            -> allow (run が閉じている)
+#     - retro_gate_confirmed_missing が verify 以降にある         -> allow (replied_no_ack で未着確定)
+#       (verify より前のものは block)
 #     - completion_reported_at あり かつ status=review            -> allow (pane-close.md 0. の 2 つ目)
 #     - verify 記録の無い pane (curator / pr-watch 等)            -> allow
 #     - close_pane 以外 / 相対セレクタ (別フックの担当)           -> passthrough
 #     - state.db が無い                                           -> allow
-#   end-to-end: dispatcher_retro_gate.py の acked が記録した行で close が通る。
+#   end-to-end: dispatcher_retro_gate.py の acked / journal_append.sh の未着確定が記録した行で
+#   close が通る。
 #   壊れた payload は tests/test-hooks-payload-fail-closed.sh が横断で固定する。
 set -uo pipefail
 
@@ -58,6 +62,7 @@ sql() { python3 -c 'import sqlite3,sys;c=sqlite3.connect(sys.argv[1]);c.execute(
 run_row()   { sql "$1" "INSERT INTO runs (task_id, project_id, pattern, title, status) VALUES ('$2', 1, 'B', 't', '$3')"; }
 verified()  { sql "$1" "INSERT INTO events (kind, payload_json) VALUES ('worker_spawn_verified', '{\"task\":\"$2\",\"pane_id\":$3}')"; }
 acked()     { sql "$1" "INSERT INTO events (kind, payload_json) VALUES ('retro_gate_acked', '{\"task\":\"$2\"}')"; }
+missing()   { sql "$1" "INSERT INTO events (kind, payload_json) VALUES ('retro_gate_confirmed_missing', '{\"task\":\"$2\"}')"; }
 reported()  { printf '{"worker-%s":{"completion_reported_at":"2026-10-12T00:00:00Z"}}' "$2" >"$1/dispatcher/worker-idle-state.json"; }
 
 # close <dir> <target-json> [tool] -> exit code
@@ -94,6 +99,16 @@ assert_exit 0 "$(close "$S" 9)" "completion_reported_at with status=review is al
 S="$WORK/s5"; new_state "$S"; run_row "$S" t5 in_use; verified "$S" t5 10; reported "$S" t5
 assert_exit 2 "$(close "$S" 10)" "completion_reported_at with status=in_use (stale marker) is blocked"
 
+for st in failed abandoned; do
+  S="$WORK/s-$st"; new_state "$S"; run_row "$S" "t-$st" "$st"; verified "$S" "t-$st" 12
+  assert_exit 0 "$(close "$S" 12)" "runs.status=$st is allowed without ack"
+done
+
+S="$WORK/s8"; new_state "$S"; run_row "$S" t8 in_use; missing "$S" t8; verified "$S" t8 13
+assert_exit 2 "$(close "$S" 13)" "confirmed_missing older than the current verify is blocked"
+missing "$S" t8
+assert_exit 0 "$(close "$S" 13)" "retro_gate_confirmed_missing after verify is allowed"
+
 assert_exit 0 "$(close "$WORK/missing" 5)" "missing state.db is allowed"
 
 S="$WORK/s6"; mkdir -p "$S"; printf 'not a database' >"$S/state.db"
@@ -105,6 +120,12 @@ assert_exit 2 "$(close "$S" 11)" "e2e: blocked before the retro gate acks"
 printf '{"messages":[{"from_name":"secretary","message":"届いています"}]}' \
   | STATE_DB_PATH="$S/state.db" python3 "$REPO_ROOT/tools/dispatcher_retro_gate.py" --task-id t7 >/dev/null
 assert_exit 0 "$(close "$S" 11)" "e2e: allowed after dispatcher_retro_gate.py acked"
+
+# end-to-end: pane-close.md の exit 3 分岐の 1 行で close が通る。
+S="$WORK/s9"; new_state "$S"; run_row "$S" t9 in_use; verified "$S" t9 14
+assert_exit 2 "$(close "$S" 14)" "e2e: blocked before the missing report is confirmed"
+STATE_DB_PATH="$S/state.db" bash "$REPO_ROOT/tools/journal_append.sh" retro_gate_confirmed_missing task=t9 >/dev/null
+assert_exit 0 "$(close "$S" 14)" "e2e: allowed after journal_append.sh recorded confirmed_missing"
 
 echo "# block-close-before-retro: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]
