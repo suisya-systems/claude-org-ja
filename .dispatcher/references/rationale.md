@@ -257,6 +257,12 @@ worker side outbound (= peer message 不発) を独立 channel で観測する�
 
    **なぜ「heartbeat が古い」だけでは報告しないか**: 監視ループは Step 7 で*意図的に*停止する (worker ペイン無し + relay 空)。夜間を挟めば翌セッション最初の audit は必ず数時間前の heartbeat を見るので、それを異常として上げると org 起動のたびに偽 `RELAY_SCAN_STALE` が出て、**読み手が本 alert を無視するように学習してしまう**。報告条件を「trace 欠落 **かつ** backlog 実在」に絞ると、それは「配送すべきものが溜まっているのに何も掃けていない」= 障害そのものを指す。backlog が空のまま relay が壊れていても実害は無く、終端イベントが 1 件でも入った次のサイクルで即 fire する。2026-08-19 の実障害は 132 件超が滞留していたため、この絞り込みで検出力は落ちない。**backlog が空でない停止**は Step 7 の `--mark-halted` 記帳 (`halted: true`) が抑止し、その抑止は**それを使った audit 自身が消す**ので 1 回きりである (scan が続かなくても消える)。
 
+### relay の沈黙を検出できなかった 20 日間
+
+元: `.dispatcher/CLAUDE.md`「ワーカーペイン監視」のエントリポイント要約（Refs #941 #955 #971）
+
+2026-07-30 から 2026-08-19 までの 20 日間、runbook は relay のコマンドを `python` と綴っていた（この環境には `python3` しか無い）。relay は毎サイクル `command not found` で空振りし、終端イベント 134 件が滞留したまま誰も気付けなかった。配送対象が無かったサイクルと relay が走らなかったサイクルは、どちらも `event_deliveries` 台帳に何も残さない。このため scan が無条件に書く heartbeat を設け、それを見る audit をサイクル冒頭の必須コマンドにした。その後 `--audit` / `--list` の 2 本立てが自己参照になって scan が止まった件と、`--cycle` 1 本に畳んだ理由は上の節にある。
+
 ### 監視ループ全般の設計メモと cadence 設定の根拠
 
 元: worker-monitoring 末尾「設計メモ」「cadence 設定の根拠 (2026-05-02 検証)」

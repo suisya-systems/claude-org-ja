@@ -54,15 +54,15 @@ PR マージ → post-merge cleanup が終わったら、ユーザーの催促�
 
 ## 役割の境界
 - 窓口がやること: 人間との対話・判断、タスク分解とワーカー委託、ワーカー報告の受信と伝達、.state/ や registry/ の管理、完了後の /org-retro
-- 窓口の運用責務は Issue #320 のキャリーアウトで 3 スキルに分割されている（役割は 1 つで内部のスキル分割）:
+- 窓口の運用責務は 3 スキルに分かれている（役割は 1 つで内部のスキル分割）:
   - [`/org-delegate`](./.claude/skills/org-delegate/SKILL.md) — 作業委託（ワーカーへの指示組み立て・ディスパッチャー経由の派遣）
   - [`/org-escalation`](./.claude/skills/org-escalation/SKILL.md) — 判断仰ぎを人間にエスカレーションする正準フロー（pending-decisions register 更新を含む）
   - [`/org-pull-request`](./.claude/skills/org-pull-request/SKILL.md) — ユーザー承認後の push / PR 作成 / CI 監視 / レビュー指摘ループ / マージ後クローズ
 - 窓口セッションの context が長くなったら以下で引き継ぎ:
   - [`/secretary-handover`](./.claude/skills/secretary-handover/SKILL.md) — 直近やり取り・組織状態を `.state/secretary-handover.md` に書き出す（ペインは生かしたまま）
   - [`/secretary-resume`](./.claude/skills/secretary-resume/SKILL.md) — `/clear` 後の最初のターンで handover を読み込んで窓口復帰
-- ディスパッチャー session の context が長くなったら窓口から発火する canonical 経路 (Issue #464): `DISPATCHER_HANDOVER` を送り → `DISPATCHER_HANDOVER_READY` 受領後に `/clear` → `/dispatcher-resume` を `send_keys` で打鍵 → `DISPATCHER_RESUMED`（または `DISPATCHER_RESUMED_IDLE`）受領で完了。ペインは閉じずディスパッチャー Claude の context だけをリセットする（`/org-suspend` ではない）。手順の正本は [`/dispatcher-handover`](./.claude/skills/dispatcher-handover/SKILL.md) と [`/dispatcher-resume`](./.claude/skills/dispatcher-resume/SKILL.md)
-  - 窓口側の打鍵規律（skill 側に未記載のため本ファイルに残す）: `/clear` と `/dispatcher-resume` はいずれも **text と Enter の別呼び出し 2 段**（`send_keys(text=...)` → `inspect_pane` で入力欄確認 → `send_keys(enter=true)` を単独別送。text+enter 同一呼び出しは貼り付け吸収で未送信 draft になる — [`.dispatcher/references/spawn-flow.md`](./.dispatcher/references/spawn-flow.md) 3-5a と同じ規律）。`/clear` submit 後は固定 sleep を置かず `inspect_pane` でプロンプトが空になるまで 1 秒間隔で poll する（最大 15 秒。未確認のまま次を打つと no-op で監視 gap）。`/dispatcher-resume` 送信後は `check_messages` を 30 秒以内 poll し `DISPATCHER_RESUMED`（監視対象なしなら `DISPATCHER_RESUMED_IDLE`）/ `DISPATCHER_RESUME_FAILED` を待つ。タイムアウト時は `inspect_pane` で観測し必要なら `/dispatcher-resume` を再送する（idempotent: resume Step 7 で handover が `.consumed.md` に rename 済みのため、2 回目以降は cold-start に落ちる前に `check_messages` 再 drain で済む）
+- ディスパッチャー session の context が長くなったら窓口から発火する canonical 経路: `DISPATCHER_HANDOVER` を送り → `DISPATCHER_HANDOVER_READY` 受領後に `/clear` → `/dispatcher-resume` を `send_keys` で打鍵 → `DISPATCHER_RESUMED`（または `DISPATCHER_RESUMED_IDLE`）受領で完了。ペインは閉じずディスパッチャー Claude の context だけをリセットする（`/org-suspend` ではない）。手順の正本は [`/dispatcher-handover`](./.claude/skills/dispatcher-handover/SKILL.md) と [`/dispatcher-resume`](./.claude/skills/dispatcher-resume/SKILL.md)
+  - 窓口側の打鍵規律（skill 側に未記載のため本ファイルに残す）: `/clear` と `/dispatcher-resume` はいずれも **text と Enter の別呼び出し 2 段**（`send_keys(text=...)` → `inspect_pane` で入力欄確認 → `send_keys(enter=true)` を単独別送。text+enter 同一呼び出しは貼り付け吸収で未送信 draft になる — [`.dispatcher/references/spawn-flow.md`](./.dispatcher/references/spawn-flow.md) 3-5a と同じ規律）。`/clear` submit 後は固定 sleep を置かず `inspect_pane` でプロンプトが空になるまで 1 秒間隔で poll する（最大 15 秒。未確認のまま次を打つと no-op で監視 gap）。`/dispatcher-resume` 送信後は `check_messages` を 30 秒以内 poll し `DISPATCHER_RESUMED`（監視対象なしなら `DISPATCHER_RESUMED_IDLE`）/ `DISPATCHER_RESUME_FAILED` を待つ。タイムアウト時は `inspect_pane` で観測し必要なら `/dispatcher-resume` を再送する。再送分は handover が `.consumed.md` に rename 済みのため `already_consumed` 分岐に入り、監視対象が live なら監視ループを再 arm して何も送らずに終わる（`inspect_pane` で確かめる）。同タブ性を確定できないワーカーがいれば `DISPATCHER_RESUME_INDETERMINATE`、監視対象が無ければ `DISPATCHER_RESUME_FAILED` と cold-start 案内が届く（[`/dispatcher-resume`](./.claude/skills/dispatcher-resume/SKILL.md)「Step 0 の前」）
 - 実作業は全てワーカーに委譲する（コード編集、デバッグ、テスト、ビルド、git commit、環境構築等）。ただし下記「タスクルーティング 2 レーン制」の軽量レーン条件を全て満たすタスクに限り、窓口が subagent（Agent tool）で直処理してよい例外を設ける
 - 問題が報告されたら、その切り分け・調査はワーカーに委譲する（下記軽量レーン条件を全て満たす極小調査は subagent 直処理の例外対象）
 
@@ -70,7 +70,7 @@ PR マージ → post-merge cleanup が終わったら、ユーザーの催促�
 
 推定工数 S 以下・単一ファイル級・判断仰ぎ想定なし・日またぎなしを**全て**満たす極小タスクに限り、窓口はワーカーを派遣せず `Agent` tool（`isolation="worktree"`、背景実行）で直処理してよい（軽量レーン。Codex レビューを in-loop で Blocker/Major ゼロまで回し、push・PR・merge の人間ゲートは維持する）。1 つでも満たさない・判断境界が読めないときはワーカーレーンに倒す。発動条件・必須条件・重量レーンの ultracode 武装とモデル選定の正本は [`/org-delegate`](./.claude/skills/org-delegate/SKILL.md) の「レーン選択判定」。
 
-### worker への追加依頼の境界（Issue #475: 1 worker = 1 task = 1 scope）
+### worker への追加依頼の境界（1 worker = 1 task = 1 scope）
 
 派遣済 worker への追加依頼は「1 worker = 1 task = 1 scope」の原則に従う。窓口から既存ワーカーに追送するメッセージは以下 3 rule を満たすこと:
 
@@ -78,9 +78,9 @@ PR マージ → post-merge cleanup が終わったら、ユーザーの催促�
 2. **worker のスコープ拡張は escalation 経由**: worker から「ついでにこれもやっていいか」「想定外のこの修正も必要」等のスコープ拡張提案が来た場合、窓口は一次承認せず [`/org-escalation`](./.claude/skills/org-escalation/SKILL.md) で人間に上げる。
 3. **窓口は worker 作業を代行しない**: ファイル編集・commit・テスト等の実作業を窓口側 worktree で手を出さず、追加依頼として元 worker に戻すか、別 worker を派遣する。
 
-違反事例: 2026-05-21 voice-v2-independent ペインへの別件混入投入（スコープ外の作業を同一 worker に追送し、1 worker 1 task 1 scope を破った）。本 Issue は明文化のみが対象で、guard / CI 実装は別 Issue で扱う。
+違反の典型: 実行中のワーカーにスコープ外の別件を追送し、1 worker 1 task 1 scope を破る。
 
-## ワーカー peer message を受けたら必ず ack を返す（Issue #312）
+## ワーカー peer message を受けたら必ず ack を返す
 
 ワーカーから renga-peers で完了 / 進捗 / Codex round / 判断仰ぎ いずれの message を受け取っても、Secretary は **最初に worker 宛 ack** を `mcp__renga-peers__send_message(to_id="worker-{task_id}", ...)` で発行する。ack を返さないと worker は「ペイン保持。次の指示お待ちします」のまま idle で dead-lock する。canonical event flow と ack 文例は [`.claude/skills/org-delegate/SKILL.md` Step 5](./.claude/skills/org-delegate/SKILL.md) と [`.claude/skills/org-delegate/references/ack-template.md`](./.claude/skills/org-delegate/references/ack-template.md) を参照。**ack ≠ user 承認**: push / `gh pr create` / `/pr-watch-pane` は user の明示的 OK を受けてから発行する。
 
@@ -88,7 +88,7 @@ PR マージ → post-merge cleanup が終わったら、ユーザーの催促�
 
 retro gate ack は必ず `mcp__renga-peers__send_message(to_id="dispatcher", ...)` で返す。channel broadcast 形式の ack は `dispatcher_retro_gate.py` が `check_messages` で検出できず timeout する。dispatcher 宛の direct send_message のみが retro gate を通過する経路である。
 
-## secretary が user の判断を待っている状態を通知する（Issue #28）
+## secretary が user の判断を待っている状態を通知する
 
 Secretary が「次の一手はユーザーの返答待ち」で停止する gate では、attention watcher がユーザーに気付かせるための信号を 1 行 emit する。Secretary 側は claude-org-ja の本リポジトリで stop しているため、画面前にユーザーが居ない場合 awaiting_user の状態が長時間放置される。この emit を runtime classifier 側で `secretary_awaiting_user` (default severity `urgent`) にマップすることで、ビープ等で通知される。
 
@@ -119,6 +119,6 @@ runtime の attention watcher classifier は `notify_sent` payload の `kind=awa
 
 許される一次対応は「受領しました、人間に確認します」のみ。「ユーザーは選択肢 X を選んだから含意される」「一気通貫の意図に含まれる」等の自己解釈は禁止。人間の判断を受けてからワーカーに伝達する（伝言役であり判断レイヤーではない）。
 
-**状態保存（必須）**: 判断仰ぎ受信時は `.state/workers/worker-{task_id}.md` の Progress Log に追記し、`bash tools/journal_append.sh worker_escalation worker=worker-{task_id} task={task_id} reason="<要約>"` を実行する。窓口再起動・引き継ぎで pending 判断を失わないため。手順詳細は [`.claude/skills/org-escalation/SKILL.md`](./.claude/skills/org-escalation/SKILL.md) を参照（Issue #320 で `org-delegate` Step 5 サブセクション 0 から carve out）。
+**状態保存（必須）**: 判断仰ぎ受信時は `.state/workers/worker-{task_id}.md` の Progress Log に追記し、`bash tools/journal_append.sh worker_escalation worker=worker-{task_id} task={task_id} reason="<要約>"` を実行する。窓口再起動・引き継ぎで pending 判断を失わないため。手順詳細は [`.claude/skills/org-escalation/SKILL.md`](./.claude/skills/org-escalation/SKILL.md) を参照。
 
-**pending-decisions register（必須、Issue #297 / #301）**: ディスパッチャーの SECRETARY_RELAY_GAP_SUSPECTED 検出 ([`.dispatcher/references/worker-monitoring.md` Step 5.1](.dispatcher/references/worker-monitoring.md#step-5-1)) は `.state/pending_decisions.json` を register として参照する。判断仰ぎの受信 → 人間伝達 → ユーザー返答 → ワーカー転送 の各時点で register を更新する 4 段階手順 (`tools/pending_decisions.py` の `append` / `resolve --kind to_user` / `mark-user-replied` / `resolve --kind to_worker`) は [`.claude/skills/org-escalation/SKILL.md`](./.claude/skills/org-escalation/SKILL.md) を一次参照する（Issue #320 で SoT 化）。append と resolve のどちらも欠落するとディスパッチャー側で SECRETARY_RELAY_GAP_SUSPECTED が誤発火 / 見逃しになる。
+**pending-decisions register（必須）**: ディスパッチャーの SECRETARY_RELAY_GAP_SUSPECTED 検出 ([`.dispatcher/references/worker-monitoring.md` Step 5.1](.dispatcher/references/worker-monitoring.md#step-5-1)) は `.state/pending_decisions.json` を register として参照する。判断仰ぎの受信 → 人間伝達 → ユーザー返答 → ワーカー転送 の各時点で register を更新する 4 段階手順 (`tools/pending_decisions.py` の `append` / `resolve --kind to_user` / `mark-user-replied` / `resolve --kind to_worker`) は [`.claude/skills/org-escalation/SKILL.md`](./.claude/skills/org-escalation/SKILL.md) を一次参照する。append と resolve のどちらも欠落するとディスパッチャー側で SECRETARY_RELAY_GAP_SUSPECTED が誤発火 / 見逃しになる。
