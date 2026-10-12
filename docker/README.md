@@ -80,13 +80,13 @@ socket mount はホスト root 相当の権限付与である。オーバーレ�
 docker buildx build -f docker/Dockerfile \
   --platform linux/amd64,linux/arm64 \
   --build-arg REPO_REF="$(git describe --always)" \
-  -t ghcr.io/suisya-systems/claude-org-ja:$(git describe --always)-r0.1.46 \
+  -t ghcr.io/suisya-systems/claude-org-ja:$(git describe --always)-r0.1.50 \
   --push .
 ```
 
 - image tag 規約は `<repo-ref>-r<runtime-version>`（設計 §7.7）。runtime を更新したいときは**起動時 upgrade ではなく rebuild**。コンテナ内で runtime drift 警告（org-start Block C2）が出たら「新しい tag に pull / rebuild」が正しい対処。
 - 単一アーキだけをビルドするときは `--platform linux/arm64` と `-t …-r<runtime>-arm64`（tag 末尾に arch）にする。マルチアーキ manifest が無いぶん arch は tag が示す（設計 §7.7）。
-- **Raspberry Pi 5 の注意**: 既定カーネルは 16KB page size で、Rust 製バイナリ（herdr、Claude Code 同梱 ripgrep）がクラッシュする既知問題がある。**上表の publish 済み tag `v1.1.0-97-g6603478-r0.1.42-arm64` については実機実測で切替不要と確定済み**（2026-08-14、Pi 5 + kernel `6.18.34+rpt-rpi-2712` / `PAGESIZE` = 16384 で herdr 0.7.4 の TUI 起動と bundled ripgrep 14.1.1 の実検索がいずれも成功。設計 §12 A1）。**この免除は測った版にのみ効く**: [`docker/Dockerfile`](./Dockerfile):67 の `CLAUDE_CODE_VERSION` 既定は可変の `stable` なので、rebuild で Claude Code / herdr が上がったら 16KB 適合は再確認が要る（`readelf -lW` で PT_LOAD の `p_align` が 16384 以上か、または実機で起動を 1 回）。再確認で落ちた場合や、16KB 非対応の Rust バイナリを持ち込んだ場合は、`/boot/firmware/config.txt` に `kernel=kernel8.img` を追記して 4KB カーネルに切り替える（設計 §11）。
+- **Raspberry Pi 5 の注意**: 既定カーネルは 16KB page size で、Rust 製バイナリ（herdr、Claude Code 同梱 ripgrep）がクラッシュする既知問題がある。**上表の publish 済み tag `v1.1.0-97-g6603478-r0.1.42-arm64` については実機実測で切替不要と確定済み**（2026-08-14、Pi 5 + kernel `6.18.34+rpt-rpi-2712` / `PAGESIZE` = 16384 で herdr 0.7.4 の TUI 起動と bundled ripgrep 14.1.1 の実検索がいずれも成功。設計 §12 A1）。**この免除は測った版にのみ効く**: [`docker/Dockerfile`](./Dockerfile):67 の `CLAUDE_CODE_VERSION` 既定は可変の `stable` なので、rebuild で Claude Code / herdr が上がったら 16KB 適合は再確認が要る（`readelf -lW` で PT_LOAD の `p_align` が 16384 以上か、または実機で起動を 1 回）。再確認で落ちた場合や、16KB 非対応の Rust バイナリを持ち込んだ場合は、`/boot/firmware/config.txt` に `kernel=kernel8.img` を追記して 4KB カーネルに切り替える（設計 §11）。**同梱 herdr の pin は 0.9.3 に上がっており（[`docker/install-herdr.sh`](./install-herdr.sh)。runtime 0.1.50 が herdr 0.7.0〜0.7.4 を非対応にしたため）、上記の実機実測は 0.7.4 のものなので 0.9.3 では実機での再確認が必要**（静的検査のみ済み: 0.9.3 の aarch64 バイナリは PT_LOAD の `p_align` が `0x10000`、2026-10-12）。
 
 ## 公開済み image を pull して使う（Raspberry Pi 5 導線）
 
@@ -229,4 +229,4 @@ docker exec claude-org org-shell --sandbox-check
 | Claude Code が `sandbox required but unavailable` で起動しない | `failIfUnavailable: true`（managed settings）が効いている。sandbox 依存が欠けた image を使っている可能性が高い（正規 image には `bubblewrap` が同梱されている）。`docker exec claude-org bwrap --version` で確認 |
 | sandbox が効いている確証がほしい | `docker exec claude-org org-sandbox-canary` を回す（上の「Bash sandbox の実効状態」）。**警告が出ないことは根拠にならない** — bwrap が在るが機能しない構成では Claude Code の起動時チェックが素通りする（設計 §12 S6-d）。canary が `skipped` の場合も合格ではなく未判定 |
 | `docker restart` 後に古い pane が見える | entrypoint の reconcile が `.state/broker` を毎起動で破棄する設計。見えるなら reconcile ログを確認 |
-| Pi 5 で herdr / ripgrep が即死 | **publish 済み tag をそのまま使っているなら page size を先に疑わないこと**（herdr 0.7.4 / bundled ripgrep 14.1.1 は 16KB カーネルでの動作を実測確認済み。設計 §12 A1）。`herdr` が `No such device or address` で panic するのは PTY 不在（`docker exec` に `-it` を付け忘れ）が典型。自前 rebuild で Claude Code / herdr が上がっている場合、または別の Rust バイナリを持ち込んだ場合は 16KB 適合が未検証なので、「unsupported system page size」等で落ちるなら 4KB カーネルへ切替（上記） |
+| Pi 5 で herdr / ripgrep が即死 | **publish 済み tag をそのまま使っているなら page size を先に疑わないこと**（publish 済み tag の herdr 0.7.4 / bundled ripgrep 14.1.1 は 16KB カーネルでの動作を実測確認済み。設計 §12 A1。現行 pin の herdr 0.9.3 は実機未確認）。`herdr` が `No such device or address` で panic するのは PTY 不在（`docker exec` に `-it` を付け忘れ）が典型。自前 rebuild で Claude Code / herdr が上がっている場合、または別の Rust バイナリを持ち込んだ場合は 16KB 適合が未検証なので、「unsupported system page size」等で落ちるなら 4KB カーネルへ切替（上記） |
