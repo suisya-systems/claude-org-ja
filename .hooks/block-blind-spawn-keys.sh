@@ -15,6 +15,8 @@
 # 対象 (ディスパッチャーの send_keys のうち、キーを含むものだけ):
 #   - `keys` が空でない、または `enter` が true の呼び出しを判定する。
 #   - `text` だけの呼び出し (3-5a の kickoff 本文など、文字の入力) は判定せず通す。
+#     ただし text に制御文字 (\r / \n / ESC 等) があれば deny する (renga は text を生バイトで書くので
+#     "\r" は Enter と同じになる)。
 #   ディスパッチャーがキーを送るのは 3-3b の承認 (`{"enter": true}` / `{"keys": ["Down"|"Up"]}`)、
 #   キュレーター起動時の同じ承認 (pane-close.md 5-4)、3-5a kickoff の Enter だけなので、
 #   キーを含む送信はすべて記録で裏付ける。窓口の打鍵 (/clear、承認ハンドシェイク等) は
@@ -31,8 +33,11 @@
 # 既知の制限:
 #   - state dir は state.db と同じディレクトリとみなす (block-close-before-retro.sh と同じ前提)。
 #     `STATE_DB_PATH` で別の場所を指したまま spawn-prompt-step に別の `--state-dir` を渡すと記録が見えず deny になる (安全側)。
+#   - 記録はペインの世代を持たない。done を得たあと Enter を送らずに同じ宛先で spawn し直すと、
+#     30 秒以内なら新しいペインの起動プロンプトに Enter 単発が通る (残りは TTL だけが縛る)。
+#   - 見るのは MCP の send_keys だけ。Bash から `renga send` / `tmux send-keys` で打つ経路は止めない。
 #   - 記録の `target` は送信先の表記と文字列で一致させる必要がある。数値 pane id 宛に送るなら
-#     `--target` にも同じ数値を渡す (spawn-flow.md 3-3b)。
+#     `--target` にも同じ数値を渡す (spawn-flow.md 3-3b)。`focused` は宛先に使えない。
 #
 # 入力: stdin から PreToolUse JSON ({tool_name, tool_input})
 # 出力: 拒否時 exit 2 + stderr。許可時 exit 0。
@@ -82,7 +87,8 @@ if ! VERDICT=$(printf '%s\n' "$INPUT" | $PY -c '
 import json, os, re, sys, time
 
 sys.path.insert(0, sys.argv[1])
-args = json.load(sys.stdin).get("tool_input") or {}
+# Windows の py -3 はパイプの stdin を cp932 で読むので bytes から UTF-8 で読む
+args = json.loads(sys.stdin.buffer.read().decode("utf-8")).get("tool_input") or {}
 
 
 def canon(keys, enter):
@@ -102,14 +108,20 @@ if (not isinstance(keys, list) or not all(isinstance(k, str) for k in keys)
         or not isinstance(enter, bool) or not (text is None or isinstance(text, str))):
     print("deny:send_keys の引数形が想定外です (keys は文字列の配列、enter は真偽値、text は文字列)。")
     sys.exit(0)
+# renga は text を生バイトで PTY に書くので、"\r" や ESC 列は text でもキーになる
+if text and any(ord(c) < 0x20 or ord(c) == 0x7F for c in text):
+    print("deny:text に制御文字 (改行・ESC 等) が含まれています。キーは keys / enter で送ってください。")
+    sys.exit(0)
 call = canon(keys, enter)
 if not call:
     print("allow")  # 文字の入力だけ。起動プロンプトへの応答にならない
     sys.exit(0)
 if isinstance(target, int) and not isinstance(target, bool):
     target = str(target)
-# runtime spawn_prompt._TARGET_RE と同じ。記録のファイル名になれない宛先は照合できない
-if not isinstance(target, str) or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]*", target):
+# runtime spawn_prompt._TARGET_RE と同じ。記録のファイル名になれない宛先は照合できない。
+# focused は呼び出しごとに別のペインを指しうるので照合に使わない
+if (not isinstance(target, str) or target == "focused"
+        or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]*", target)):
     print(f"deny:宛先 {target!r} は判定記録と照合できない形です (worker-<task_id> か数値 pane id で送ってください)。")
     sys.exit(0)
 

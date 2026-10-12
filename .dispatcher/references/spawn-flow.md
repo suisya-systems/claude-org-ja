@@ -325,13 +325,13 @@ while now < deadline:
    - **exit 0 / `action: "done"`**: 承認完了。3-4 へ
    - **exit 10（escalate）/ exit 2（入力不正）/ その他の非 0 / inspect・send_keys のエラー（`[key_unsupported]` 等）**: **Enter を送らずに中止**し、`SPAWN_PROMPT_UNRESOLVED: worker 'worker-{task_id}' for task '{task_id}' is stuck on a Claude Code startup prompt ...`（helper 経路では step の `escalate.message`）を窓口へ送る。人間がペインを見て判断する
 
-**`--target` を省かない**: 判定は `--target` があるときだけ `../.state/dispatcher/spawn-prompt/<宛先>.json` に記録を残し（runtime 0.1.50+）、ディスパッチャーの PreToolUse フック `.hooks/block-blind-spawn-keys.sh` はキーを含む `send_keys`（`enter: true` か `keys` あり）をこの記録と照合する。記録が無い・30 秒の期限切れ・宛先違い・キー不一致なら deny され、通った記録は 1 回で消える。`text` だけの送信は照合しない。
+**`--target` を省かない**: 判定は `--target` があるときだけ `../.state/dispatcher/spawn-prompt/<宛先>.json` に記録を残し（runtime 0.1.50+）、ディスパッチャーの PreToolUse フック `.hooks/block-blind-spawn-keys.sh` はキーを含む `send_keys`（`enter: true` か `keys` あり）をこの記録と照合する。記録が無い・30 秒の期限切れ・宛先違い・キー不一致なら deny され、通った記録は 1 回で消える。`text` だけの送信は照合しない（制御文字入りの `text` は deny）。**このフックの deny は 4 の「send_keys のエラー」に数えない**: キーは送られていないので、締切（120 秒）の内なら 2 に戻り（`previous_screen` = null）判定を取り直す。締切を過ぎたら 4 の中止に従う。
 
 判定はキー送信後の 2 回の同一画面で描画の安定を確かめてからしか次の手を返さず、選択肢は位置でなく文言で照合する（folder-trust の選択肢順は Claude Code の版で変わっている）。締切（120 秒）を過ぎると Enter を返さずに escalate する。
 
 承認しないと `server:renga-peers` チャネルが有効化されず、3-4 の `list_peers` 待ちがタイムアウトし、3-5 の `send_message` も届かない。
 
-> **この承認は痕跡を残さない**（PTY への生バイト書き込みで `.state/` に何も書かない）。**「撃ったつもり」を成立させないための ground truth は 3-4 の `list_peers` 登録**であり、その観測値を Step 5 のゲートに渡すまで `DELEGATE_COMPLETE` は出せない。
+> **この承認は痕跡を残さない**（PTY への生バイト書き込み。判定の記録 `.state/dispatcher/spawn-prompt/<宛先>.json` は 30 秒で切れ 1 回で消える照合用で、承認した証拠にはならない）。**「撃ったつもり」を成立させないための ground truth は 3-4 の `list_peers` 登録**であり、その観測値を Step 5 のゲートに渡すまで `DELEGATE_COMPLETE` は出せない。
 
 **背景タブ経路 (3-2b) では `target=<bound_pane_id>` で撃つ**（`inspect_pane` も `send_keys` も、判定の `--target` も同じ id。裸の name は caller のタブに解決するので背景ペインに当たらない）。ground truth は 3-4b の登録ゲートで、未登録ならこのループを回し直す点は同じ（Enter を盲目で再送しない）。
 
@@ -525,7 +525,7 @@ dashboard 用 `.state/org-state.json` は **StateWriter の post-commit hook が
 
 ## Step 5: 派遣完了ゲート — `DELEGATE_COMPLETE` は自分で書かない
 
-3-3b / 3-4 / 3-5 は**どれも `.state/` に痕跡を残さない**（`send_keys` は PTY への生バイト、`list_peers` は読み取り、`send_message` は MCP 呼び出し）。Step 3 + Step 4 で残るのは儀式の前に打たれる `worker_spawned` 1 件だけなので、儀式を省いた派遣と正しい派遣は痕跡では区別できない。本 Step のゲートは、報告本文をゲート出力に限ることと、ゲート通過を記帳して省略を事後に検出できるようにすることで、この 2 点を塞ぐ（経緯は [`.dispatcher/references/rationale.md`](rationale.md)）。
+3-3b / 3-4 / 3-5 は**どれも `.state/` に痕跡を残さない**（`send_keys` は PTY への生バイト。3-3b の判定記録は 30 秒で切れ 1 回で消える照合用で痕跡にならない、`list_peers` は読み取り、`send_message` は MCP 呼び出し）。Step 3 + Step 4 で残るのは儀式の前に打たれる `worker_spawned` 1 件だけなので、儀式を省いた派遣と正しい派遣は痕跡では区別できない。本 Step のゲートは、報告本文をゲート出力に限ることと、ゲート通過を記帳して省略を事後に検出できるようにすることで、この 2 点を塞ぐ（経緯は [`.dispatcher/references/rationale.md`](rationale.md)）。
 
 **`DELEGATE_COMPLETE` の本文を自分で組み立ててはならない（MUST NOT）。** 下記ゲートを通し、その stdout の `delegate_complete` を**そのまま** `send_message` の本文にする:
 
