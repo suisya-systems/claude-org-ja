@@ -10,9 +10,9 @@ allowed-tools:
   - Read
   - Edit
   - Write
-  - Bash(python tools/org_setup_prune.py:*)
+  - Bash(python3 tools/org_setup_prune.py:*)
   - Bash(py -3 tools/org_setup_prune.py:*)
-  - Bash(python tools/check_role_configs.py:*)
+  - Bash(python3 tools/check_role_configs.py:*)
   - Bash(py -3 tools/check_role_configs.py:*)
   - Bash(py -3 tools/ensure_projects_registry.py:*)
   - Bash(python3 tools/ensure_projects_registry.py:*)
@@ -28,8 +28,8 @@ allowed-tools:
 ## 設定ファイルの配置先とスコープ
 
 Claude Code は**起動ディレクトリの `.claude/` 配下**から設定を読み込む。
-サブディレクトリで起動した場合、親ディレクトリの設定は**読み込まれない**。
-そのため、ロールごとに独立した設定ファイルが必要になる。
+ただしリポジトリ直下の `.claude/settings.local.json` は、サブディレクトリで起動したセッション（ディスパッチャー等）にも読まれる（[`.claude/skills/org-setup/references/permissions.md`](references/permissions.md) 窓口節の `sandbox.network.allowedDomains` の注記）。
+そのため、ロール固有の設定はロールごとの設定ファイルに置き、窓口の local ファイルには他ロールに掛かって困るキーを足さない。
 
 | スコープ | ファイルパス | 対象 |
 |---|---|---|
@@ -107,16 +107,16 @@ py -3 tools/ensure_projects_registry.py       # Windows native
 過去に蓄積した広すぎる allow や旧エントリは残り続けるため、
 `permissions.md` のテンプレートで `settings.local.json` を**完全に書き換える** prune モードを用意している。
 
-実行は `tools/org_setup_prune.py` を使う:
+実行は `tools/org_setup_prune.py` を使う（Windows native は `python3` を `py -3` に読み替える）:
 
 ```bash
 # 差分プレビュー（書き換え無し）
-python tools/org_setup_prune.py --role secretary --dry-run
-python tools/org_setup_prune.py --all --dry-run
+python3 tools/org_setup_prune.py --role secretary --dry-run
+python3 tools/org_setup_prune.py --all --dry-run
 
 # 実行（タイムスタンプ付き .bak を自動生成 → 書き換え）
-python tools/org_setup_prune.py --role secretary
-python tools/org_setup_prune.py --all
+python3 tools/org_setup_prune.py --role secretary
+python3 tools/org_setup_prune.py --all
 ```
 
 対象ロール: `secretary` / `dispatcher` / `curator`。
@@ -178,7 +178,7 @@ hook が解決されず、ガードが無言で無効化する）。prune ツー
 いずれも取れない場合（fresh install など）は `--claude-org-path` を明示する:
 
 ```bash
-python tools/org_setup_prune.py --role dispatcher --claude-org-path "C:/Users/me/work/claude-org"
+python3 tools/org_setup_prune.py --role dispatcher --claude-org-path "C:/Users/me/work/claude-org"
 ```
 
 #### バックアップ
@@ -189,16 +189,16 @@ python tools/org_setup_prune.py --role dispatcher --claude-org-path "C:/Users/me
 
 ### Step 6: ユーザー共通の sandbox denyRead / denyWrite 補強（`--user-common-sandbox`）
 
-> **⚠️ main pull 後の 1 回必須**: 本リポジトリを clone / pull した後に **`python tools/org_setup_prune.py --user-common-sandbox` を 1 回実行する**。共有 `.claude/settings.json` から個人 path を除去したため、未実行だと **個人環境の sandbox denyRead / denyWrite 補強が一時的に弱くなる**。
+> **初回セットアップで 1 回実行する**: 本リポジトリを clone したら **`python3 tools/org_setup_prune.py --user-common-sandbox` を 1 回実行する**（冪等。Windows native は `py -3`）。共有 `.claude/settings.json` には個人 path を置いていないため、未実行だと **個人環境の sandbox denyRead / denyWrite 補強が欠けたままになる**。
 
 `--user-common-sandbox` は `~/.claude/settings.json` の `sandbox.filesystem.denyRead` と `denyWrite`（`~/.claude/settings.json` 自身）に idempotent な union-merge を行う専用モード（他キーは無触）:
 
 ```bash
 # diff プレビュー
-python tools/org_setup_prune.py --user-common-sandbox --dry-run
+python3 tools/org_setup_prune.py --user-common-sandbox --dry-run
 
 # 実行（既存があれば .bak 自動生成、上書き候補がない場合は no-op）
-python tools/org_setup_prune.py --user-common-sandbox
+python3 tools/org_setup_prune.py --user-common-sandbox
 ```
 
 denyRead の対象ディレクトリ（`~/.ssh` / `~/.aws` / `~/.kube` / `~/.gnupg` / `~/.docker` / `~/.config/aws-vault`）のうち、**実在し、かつ realpath が HOME を escape しない symlink でない** ものだけが追加される。WSL2 + DriveFS の `~/.aws → /mnt/c/...` のようなケースは自動 skip（bwrap bootstrap 失敗の予防）。`~/.config/gh` は対象外で、既存の entry は自動で除去される。
