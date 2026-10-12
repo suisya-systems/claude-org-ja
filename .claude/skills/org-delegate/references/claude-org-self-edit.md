@@ -9,7 +9,7 @@ claude-org リポジトリのスキル / ドキュメント / 設定を編集す
 - `block-org-structure.sh` hook が `.claude/skills/` などへの Edit / Write を拒否する（`bypassPermissions` モードでも exit code 2 により確認プロンプトが出る）
 - ルートの `CLAUDE.md` は Secretary（窓口）用の指示なので、ワーカーがこれを読んで「あなたは窓口」と誤認する
 
-このため claude-org 自己編集タスクでは以下 3 点が通常手順に加わる。1 と 2 は `tools/gen_delegate_payload.py apply` が self-edit 判定時に自動で行い、窓口が手で行う手順は無い。
+このため claude-org 自己編集タスクでは以下 5 点が通常手順に加わる。1〜4 は `tools/gen_delegate_payload.py apply`（と、それが呼ぶ layout 解決・brief 生成器）が self-edit 判定時に自動で行う。窓口が手で行うのは 5 の承認ハンドシェイクだけ。
 
 ## 1. `claude-org-self-edit` ロールで settings.local.json を生成する
 

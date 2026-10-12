@@ -172,7 +172,7 @@ goal モードのレンダリング規則（legacy と共通の規則は下の l
   （当てはめはモデル判定なので「（判定）」を付け、条項の引用と理由で人間が 1 目で覆せるようにする。設計 §12.6）。
 - `goal_request` があれば `└ 依頼の下書き: …`、`open_points[]` があれば 1 件 1 行で `└ 論点: <point> → 推奨「<recommend>」（選択肢: …）`。
   **どちらも信頼できない Issue 本文から作られたモデルの下書き**。表示はするが、着手時の `/org-delegate` の brief にそのまま写さない（設計 §12.4）。
-- 既存の軸（優先度 / 工数 / 依存 / 並列可 / 直近マージ起点）は `└ 事実: …` の 1 行に、legacy と同じ `(推定)` 規則で出す（ランクには使っていない）。
+- 既存の軸（優先度 / 工数 / 依存 / 並列可 / 直近マージ起点）は `└ 事実: …` の 1 行に、legacy と同じ `(推定)` 規則で出す（ランクでは同じ条項の中の並び順にだけ使う）。
 - 推奨は `recommendation` の `(repo, issue)` に一致する候補 1 件に `[推奨]`。`recommendation.reason` は `G<n>「見出し」: 理由` の形。
 - **ゴール未設定**（`goal_rank.goal_unset_repos[]`）は repo ごとに 1 行、`candidate_count` と台帳のパス（`registry/goals/<owner>/<repo>.md`）を添え、`/goal-setup <通称>` で書けることを案内する。
 - **ゴール台帳エラー**（`goal_rank.goal_errors[]`）は repo と `error` をそのまま出し、`/goal-setup <通称>` で直せることを添える（`repo` が `null` なら「repo 名不明の scan。`--all-registry-repos` か `--repo` で起動し直す」）。

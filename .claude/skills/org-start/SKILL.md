@@ -11,6 +11,7 @@ allowed-tools:
   - Bash(bash tools/journal_append.sh:*)
   - Bash(py -3 tools/journal_append.py:*)
   - Bash(python -m tools.state_db.importer:*)
+  - Bash(python3 -m tools.state_db.importer:*)
   - Bash(py -3 dashboard/org_state_converter.py:*)
   - Bash(python3 dashboard/org_state_converter.py:*)
   - Bash(py -3 tools/check_runtime_version.py:*)
@@ -54,7 +55,7 @@ ClaudeCode起動後に最初に実行するスキル。前回の状態復元と�
 > `.state/org-state.md` を DB から自動再生成、markdown 直接編集禁止 —
 > drift_check が検出する）。free-form ノート（学び / Pending Lead 等）
 > は `notes/` 配下に保存する。`.state/journal.jsonl` は M4 で廃止。
-> DB が無い場合は `python -m tools.state_db.importer --db .state/state.db --rebuild --no-strict` で構築する。
+> DB が無い場合は `python3 -m tools.state_db.importer --db .state/state.db --root . --rebuild --no-strict` で構築する。
 
 > **輸送層（transport）両系 — 既定 `renga` / opt-in `broker`**: 本スキルの `mcp__renga-peers__*` 呼び出しは **既定 `renga`**（`ORG_TRANSPORT` 無設定）で書いてあり、そのまま従えばよい（既定挙動は不変）。`ORG_TRANSPORT=broker`（opt-in・切戻し可）では MCP サーバー名が `org-broker` になり、ツールの **完全修飾名が `mcp__renga-peers__*` → `mcp__org-broker__*`** に機械置換される（引数形・セマンティクスは同一なので手順の論理は変わらない）。輸送依存で手順が変わる点だけ broker 併記する:
 >
@@ -179,7 +180,7 @@ read 経路は **DB only**（Issue #267 / M4）。Block A の spawn 発火と並
      ```
      `active_runs` / `recent_events` / `run_status_counts` / `session.status` / `session.objective` で前回状態を把握する
    - 存在しない → 初回起動と判断する。Secretary に importer 実行を促す:
-     `python -m tools.state_db.importer --db .state/state.db --root . --rebuild --no-strict`
+     `python3 -m tools.state_db.importer --db .state/state.db --root . --rebuild --no-strict`
 2. session.status を確認する:
    - `SUSPENDED` なら /org-resume の Phase 1〜3（ブリーフィング・照合・再開計画）を実行する。
      Block A の spawn は既に発火済みなのでブリーフィング中に裏で Claude が boot している。
