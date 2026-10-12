@@ -73,7 +73,7 @@ allowed-tools:
 迷ったら重量レーンに倒す（軽量レーンは「明らかに極小」のときだけ）。
 
 **軽量レーンを選んだ場合の必須条件（省略不可）:**
-- `Agent` tool は背景（非同期）で起動する。**同期実行は禁止**（窓口の人間接点・ワーカー ack の即時性をブロックするため）。`Agent` の入力スキーマに `run_in_background` が**無い**ハーネスでは subagent は常に背景で動くので、指定するパラメータは無い。スキーマに**ある**ハーネスでは `run_in_background=true` を渡す。前景になりうる呼び出し（キーがあって厳密 `true` でないもの）は PreToolUse フック [`.hooks/block-foreground-subagent.sh`](../../../.hooks/block-foreground-subagent.sh) が deny する
+- 前景（同期）の `Agent` 起動は hook が deny する。代わりに背景で起動する（入力スキーマに `run_in_background` があるハーネスでだけ `true` を渡す）
 - subagent 内で Codex レビューを in-loop で回し、Blocker/Major ゼロまで修正する（検証深度 full と同等のゲート）
 - push・PR・merge の人間ゲートは従来どおり維持する（subagent が自動で push / PR / merge してはならない）
 
