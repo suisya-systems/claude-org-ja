@@ -6,8 +6,8 @@ description: >
   ディスパッチャーを新しい session で復帰させる。/clear 直後の最初のターンで使う。
   state.db の dispatcher_pane_id / dispatcher_peer_id を atomic に更新し、
   worker monitoring の /loop 3m を再開する。
-  「ディスパッチャー復帰」「resume」「引き継ぎから再開」と secretary から指示された
-  ときに使う。/org-start ではない（ワーカー・窓口・キュレーターは生きている前提）。
+  secretary が /clear の後にディスパッチャーペインへ /dispatcher-resume を打鍵したときに使う。
+  /org-start ではない（ワーカー・窓口は生きている前提。キュレーターは常駐しない）。
 effort: low
 allowed-tools:
   - Read
@@ -35,11 +35,13 @@ allowed-tools:
 対象ワーカー）を復元し、`/loop 3m` の worker monitoring を再開する。
 
 > **前提**:
-> - ワーカー / 窓口 / キュレーターのペインは前 session から生きたまま残っている。
->   新たに spawn しない（/org-start ではない）。
+> - ワーカー / 窓口のペインは前 session から生きたまま残っている。
+>   新たに spawn しない（/org-start ではない）。キュレーターは常駐しない（起動中の
+>   curator が居れば Step 5 で追跡を引き継ぐ）。
 > - 自ペイン（name=`dispatcher`）も生きている。secretary が `send_keys` で
 >   `/clear` → `/dispatcher-resume` を打鍵した直後の状態。pane_id / peer_id は
->   変わっていないはずだが、必ず観測して state.db を **atomic 更新する**。
+>   変わっていないはずだが、必ず観測し、**観測で確定できた値だけ**を state.db に
+>   atomic 更新する（確定できなかった値は書かず既存値を保持する。Step 0 / Step 2）。
 > - state DB (`.state/state.db`) はそのまま使う。
 > - 監視 gap を埋める内部状態ファイル（`.state/dispatcher-event-cursor.txt`（backend
 >   session に束縛された poll_events cursor） /
@@ -194,7 +196,7 @@ allowed-tools:
 
 Step 0 で観測した `pane_id` / `peer_id` を `StateWriter.transaction()` 経由で
 **1 トランザクションで** 書く（post-commit hook が `.state/org-state.md` を再生成
-してくれる）。これが acceptance の「state.db identity が atomic 更新」要件の本体。
+してくれる）。
 
 ```bash
 python3 -c "
@@ -315,8 +317,8 @@ secretary に報告する。**（判定条件・三値の定義・評価順の�
    WezTerm backend は**整数**を返すので、**引用符の有無を型に合わせる** — 文字列を引用符無しで
    書くと JSON が構文非妥当になり、Step 5.3 も次の resume もこのファイルを読めず curator の
    追跡が失われる（正本は同 5-3 の注記）。**`pane_id` を欠いた形で再生成しない** — Step 5.3 (a)/(b) の
-   curator close はこの `pane_id` を identity 照合の起点にするので、欠けると schema 追加前の
-   旧形式ファイルと同じ扱いになり、close が列挙引き直しの fallback 経路に落ちる
+   curator close はこの `pane_id` を identity 照合の起点にするので、欠けると `pane_id` の
+   無いファイルとして扱われ、close が列挙引き直しの fallback 経路に落ちる
    （[`.dispatcher/references/worker-monitoring.md` Step 5.3](../../../.dispatcher/references/worker-monitoring.md)）。
    `list_peers` にのみ `curator` 名があり `{{FQ}}list_panes` の列挙に該当レコードが無い場合は
    **再生成せず** secretary に informational として報告する（数値 pane id を採れないうえ、
