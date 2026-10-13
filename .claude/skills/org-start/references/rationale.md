@@ -57,7 +57,7 @@ Block A の dispatcher spawn の引数の意味と落とし穴:
 
 ## Block C4: role config drift 検出の設計
 
-**なぜ起動時に見る必要があるのか（guard の無言死）**: `settings.local.json` は gitignored なので、CI の [`.github/workflows/tests.yml`](../../../../.github/workflows/tests.yml) が回す `python tools/check_role_configs.py --include-worker-settings .` は `--include-local` を付けておらず、**tracked ファイルしか検証しない**。したがって hook パスのドリフト（`.hooks/*.sh` の rename / 移動で hook command が実在しないパスを指し、guard が発火しないまま無言で無効化される）や必須 allow / deny の欠落、さらには **settings ファイルそのものの不在**（そのロールが hook 層ゼロで動く。`bypassPermissions` のディスパッチャーでは hook が唯一の強制層）は **CI では一切検出されない**。この盲点を塞ぐ唯一の定期的な契機が org-start なので、起動のたびに `--include-local` で 1 回検証する。
+**なぜ起動時に見る必要があるのか（guard の無言死）**: `settings.local.json` は gitignored なので、CI の [`.github/workflows/tests.yml`](../../../../.github/workflows/tests.yml) が回す `tools/check_role_configs.py --include-worker-settings .` は `--include-local` を付けておらず、**tracked ファイルしか検証しない**。したがって hook パスのドリフト（`.hooks/*.sh` の rename / 移動で hook command が実在しないパスを指し、guard が発火しないまま無言で無効化される）や必須 allow / deny の欠落、さらには **settings ファイルそのものの不在**（そのロールが hook 層ゼロで動く。`bypassPermissions` のディスパッチャーでは hook が唯一の強制層）は **CI では一切検出されない**。この盲点を塞ぐ唯一の定期的な契機が org-start なので、起動のたびに `--include-local` で 1 回検証する。
 
 **検出される drift の種類**: (a) schema 宣言済みの settings ファイルが**存在しない**（`settings file not found` — `/org-setup` 未実行 / 配布漏れ）、(b) 必須 allow / deny の欠落、(c) schema 未登録の allow エントリ混入、(d) 必須 hook の欠落、(e) hook command が実在しないパスを指す。個別 drift の対処フローは [`docs/getting-started.md`](../../../../docs/getting-started.md) の該当節にある。
 

@@ -19,12 +19,14 @@ allowed-tools:
   - Bash(gh issue create:*)
   - Bash(gh issue edit:*)
   - Bash(bash tools/journal_append.sh:*)
+  - Bash(python3 tools/journal_append.py:*)
   - Bash(py -3 tools/journal_append.py:*)
-  - Bash(python tools/set_run_pr_open.py:*)
+  - Bash(python3 tools/set_run_pr_open.py:*)
   - Bash(py -3 tools/set_run_pr_open.py:*)
-  - Bash(python tools/run_complete_on_merge.py:*)
+  - Bash(python3 tools/run_complete_on_merge.py:*)
   - Bash(py -3 tools/run_complete_on_merge.py:*)
   - Bash(python3 tools/watcher_restart_guard.py:*)
+  - Bash(py -3 tools/watcher_restart_guard.py:*)
   - mcp__renga-peers__send_message
   - mcp__renga-peers__check_messages
   - mcp__renga-peers__list_panes
@@ -52,7 +54,8 @@ allowed-tools:
 - **`gh pr create --base` は派遣時の起点ブランチと同じ設定を読む（Issue #808）**: プロジェクトの既定マージ先は [`registry/projects.md`](../../../registry/projects.md) の `base_branch` 列が SoT。値がある行（例 `develop`）は `gh pr create --base <base_branch>` を既定とし、**空欄 / `-` の行は従来どおり `--base` を付けない**（repo の既定ブランチ宛）。worktree を切った起点と PR のマージ先が食い違うと、develop が先行している分の差分が PR に混入するため、両者は必ず同じ値を使う。当該タスクの実効値は派遣時の DELEGATE 本文の「ベース:」行、または `send_plan.json` の `summary.base_branch` / `summary.base_ref` で確認できる（`--base-ref` で単発上書きされた hotfix もそこに出る）。値の解決順は `--base-ref` > `base_branch` 列 > `origin/HEAD`
 - **PR 番号が確定したら直ちに `tools/set_run_pr_open.py` で `runs.pr_url` / `runs.branch` を back-fill する** (Issue #323):
   ```bash
-  python tools/set_run_pr_open.py --task-id <task_id> --pr <PR>
+  python3 tools/set_run_pr_open.py --task-id <task_id> --pr <PR>   # Mac/Linux
+  py -3 tools/set_run_pr_open.py --task-id <task_id> --pr <PR>     # Windows native
   ```
   これは `gh pr view <PR> --json url,headRefName,title` を 1 度引いて、`StateWriter.set_run_pr` 経由で `runs.pr_url` と `runs.branch` を上書きする。再呼び出しは idempotent（同じ値の上書き、events への追記なし）。これを行わないと後段の `tools/run_complete_on_merge.py` が `runs.pr_url` を引けず `no_run`（exit 3）で落ち、`-MergeWatch` の自動完了が失敗する
   - **クロスリポジトリでも `--repo` は不要（Issue #828）**: `--repo` 省略時は `runs.project_id` → プロジェクト → GitHub URL（[`registry/projects.md`](../../../registry/projects.md) の パス列、次に `projects.origin_url`）で書き込み先リポジトリを決定的に解決する。解決できない場合は ja へ黙って落ちず **exit 2 で停止**する（`--repo OWNER/REPO` 明示は従来どおり最優先）。旧挙動で起きた cross-repo 汚染の経緯は [`.claude/skills/org-pull-request/references/rationale.md`](references/rationale.md) §1
@@ -205,7 +208,8 @@ pr-watch から `PR_MERGED_HEAD_UNCONFIRMED: PR #<n> (head=<merged_short>, last 
   いる watch が外見上区別できない。判定は events の
   時系列で行う:
   ```bash
-  python3 tools/watcher_restart_guard.py check --task <task_id>
+  python3 tools/watcher_restart_guard.py check --task <task_id>   # Mac/Linux
+  py -3 tools/watcher_restart_guard.py check --task <task_id>     # Windows native
   ```
   exit 0 なら「最後の push より後に開始された watcher がある」。**exit 3 なら watcher が現 head を
   見ていない**ので [`/pr-watch-pane <PR>`](../pr-watch-pane/SKILL.md) を起動し直してから次へ進む
@@ -226,7 +230,17 @@ pr-watch から `PR_MERGED_HEAD_UNCONFIRMED: PR #<n> (head=<merged_short>, last 
 - 追加指示が trivial fix（CI 出力整形 / typo / コメント修正等）なら **検証深度 `minimal`** を明示し、完了報告は `done: {commit SHA 短縮形} {変更ファイル名}` の 1 行だけで返すよう伝える（フォーマットは [`.claude/skills/org-delegate/references/instruction-template.md`](../org-delegate/references/instruction-template.md) / [`tools/templates/worker_brief_normal.md`](../../../tools/templates/worker_brief_normal.md) の minimal 節に従う）
 - **DB 経由で run を IN_PROGRESS に戻す**（`run.status='in_use'`、markdown 直接編集禁止。post-commit hook が `.state/org-state.md` を再生成）:
   ```bash
-  python -c "
+  # Mac/Linux
+  python3 -c "
+  from pathlib import Path
+  from tools.state_db import connect
+  from tools.state_db.writer import StateWriter
+  conn = connect('.state/state.db')
+  with StateWriter(conn, claude_org_root=Path('.')).transaction() as w:
+      w.update_run_status('<task_id>', 'in_use')
+  "
+  # Windows native（Git Bash / PowerShell）
+  py -3 -c "
   from pathlib import Path
   from tools.state_db import connect
   from tools.state_db.writer import StateWriter
@@ -280,7 +294,8 @@ pr-watch から `PR_MERGED_HEAD_UNCONFIRMED: PR #<n> (head=<merged_short>, last 
   - **パターン C（`gitignored_repo_root`, claude-org 自己編集）の特例 cleanup（Issue #478）**: `worker_dir` が claude-org-ja repo root 自身なので、worktree remove も dir 削除も効かず、`{claude_org_root}/CLAUDE.local.md`（ワーカー指示ブリーフ）が残留する。**close 時に `tools/run_complete_on_merge.py` の `cleanup_pattern_c_local_md()` を呼んでブリーフを削除する**（下記 StateWriter ブロックに同梱）。判定は `runs.pattern == 'C'` AND `worker_dir == claude_org_root` で行われ、ephemeral C / パターン A・B では no-op。`events` に `pattern_c_cleanup`（payload: `task` / `removed_path` / `mode`）が 1 行残る。idempotent（ファイル不在なら `mode=skip`）。**`worker_dir_abs=` に削除した abs パスを明示で渡す（Issue #486。順序非依存にするため。残留が問題になる理由と NULL 化の機序は [`.claude/skills/org-pull-request/references/rationale.md`](references/rationale.md) §6）**。PR 起点のクローズで `tools/run_complete_on_merge.py --pr <PR>` を呼ぶ場合は merge 記録時に自動で同 cleanup が走るが、gitignored タスクは PR を生まないことが多いので、下記 StateWriter ブロックでの明示呼び出しが本筋の経路。`.claude/settings.local.json` は worker 由来 / Secretary 由来の切り分けが要るためスコープ外（別 Issue）
 - **PR 起点のクローズの場合は `tools/run_complete_on_merge.py` を呼ぶ** (Issue #317。`pr-watch --merge-watch` の merge-watch ループが自動で起動するので通常は手動実行不要だが、merge-watch を skip した場合や手動でマージを観測した場合のみ明示的に呼ぶ):
   ```bash
-  python tools/run_complete_on_merge.py --pr <PR> --task-id <task_id>
+  python3 tools/run_complete_on_merge.py --pr <PR> --task-id <task_id>   # Mac/Linux
+  py -3 tools/run_complete_on_merge.py --pr <PR> --task-id <task_id>     # Windows native
   ```
   これは `gh pr view <PR> --json url,state,mergedAt,mergeCommit,headRefName,title` を一度引いて、PR が merged なら `StateWriter.transaction()` 経由で `pr_state='merged'` / `commit_short` / `pr_url` / `completed_at` を更新し、`pr_merged` イベント (payload: `task` / `pr` / `repo` / `pr_url` / `merge_commit` / `head` / `merged_at` / `pattern` / `auto_completed`) を 1 行追記する。再呼び出しは idempotent（二重イベントを書かない）。**この冪等性は helper 自身の再実行に対する性質であって、窓口の手打ちには効かない**（機序は [`.claude/skills/org-pull-request/references/rationale.md`](references/rationale.md) §4。上記の手打ち禁止はこのためにある）。task_id は `runs.pr_url` / `runs.branch`（active な runs 限定）から自動解決されるので省略もできる。
   - **`--task-id` を付けて呼ぶこと（Issue #828）**: `--task-id` があれば `--repo` 省略時のリポジトリを run → プロジェクト → GitHub URL で決定的に解決し、解決できなければ exit 2 で停止する。**`--task-id` も `--repo` も無い場合だけは旧来の事故経路（ja の同番号 PR を読む）が残る**（[`.claude/skills/org-pull-request/references/rationale.md`](references/rationale.md) §1）。set_run_pr_open と同じく 1 行目に `run_complete_on_merge: repo=... (source=...) PR #<N>: <PR タイトル>` が出るので書き込み先を目視確認する
@@ -288,7 +303,8 @@ pr-watch から `PR_MERGED_HEAD_UNCONFIRMED: PR #<n> (head=<merged_short>, last 
   - **CLI 終了コード**: `merged` / `already` / `not_yet` は exit 0、`no_run`（runs に該当行なし）は exit 3 で失敗扱いになる。手動運用時は exit code を確認
 - **パターン B / C のレジストリエントリ削除と最終 close は別途 StateWriter を呼ぶ**（markdown 直接編集禁止。run_complete_on_merge が `pr_state='merged'` と `completed_at` を既に書いているので、ここでは status flip と worker_dir 削除のみ行う）:
   ```bash
-  python -c "
+  # Mac/Linux
+  python3 -c "
   from pathlib import Path
   from tools.state_db import connect
   from tools.state_db.writer import StateWriter
@@ -304,6 +320,19 @@ pr-watch から `PR_MERGED_HEAD_UNCONFIRMED: PR #<n> (head=<merged_short>, last 
   # ON DELETE SET NULL になるため、join 経由の検出は NULL 化して no-op になる。
   # worker_dir_abs= に削除した abs_path を明示で渡し、行削除の前後どちらで呼んでも
   # 検出が壊れないようにする（Issue #486）。
+  cleanup_pattern_c_local_md(conn, task_id='<task_id>', claude_org_root=Path('.').resolve(), worker_dir_abs=abs_path)
+  "
+  # Windows native（Git Bash / PowerShell。本体は Mac/Linux 版と同一）
+  py -3 -c "
+  from pathlib import Path
+  from tools.state_db import connect
+  from tools.state_db.writer import StateWriter
+  from tools.run_complete_on_merge import cleanup_pattern_c_local_md
+  conn = connect('.state/state.db')
+  abs_path = '<abs>'  # worker_dir の絶対パス（パターン B / C）
+  with StateWriter(conn).transaction() as w:
+      w.update_run_status('<task_id>', 'completed')  # post-commit hook が worker-{task}.md を archive
+      w.remove_worker_dir(abs_path)  # パターン B / C のみ
   cleanup_pattern_c_local_md(conn, task_id='<task_id>', claude_org_root=Path('.').resolve(), worker_dir_abs=abs_path)
   "
   ```

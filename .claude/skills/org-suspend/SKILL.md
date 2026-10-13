@@ -7,13 +7,14 @@ effort: low
 allowed-tools:
   - Read
   - Bash(bash tools/journal_append.sh:*)
+  - Bash(python3 tools/journal_append.py:*)
   - Bash(py -3 tools/journal_append.py:*)
-  - Bash(py -3 tools/capability_gate.py:*)
   - Bash(python3 tools/capability_gate.py:*)
-  - Bash(python -c "from tools.state_db import connect;*)
+  - Bash(py -3 tools/capability_gate.py:*)
   - Bash(python3 -c "from tools.state_db import connect;*)
-  - Bash(python -m tools.state_db.importer:*)
+  - Bash(py -3 -c "from tools.state_db import connect;*)
   - Bash(python3 -m tools.state_db.importer:*)
+  - Bash(py -3 -m tools.state_db.importer:*)
   - Bash(python3 tools/secretary_queue_watcher.py:*)
   - Bash(py -3 tools/secretary_queue_watcher.py:*)
   - Bash(rm -f .state/attention_pane.json)
@@ -155,7 +156,19 @@ id 台帳の作り方（面ごとの id 取得・pane 制御の 2 グループ (
 2. **DB に Status / Suspended を書く** (`StateWriter.transaction()` 経由。post-commit hook が `.state/org-state.md` を自動再生成、regen 失敗時も DB は確定済みで stderr 警告のみ):
 
    ```bash
-   python -c "
+   # Mac/Linux
+   python3 -c "
+   from datetime import datetime, timezone
+   from pathlib import Path
+   from tools.state_db import connect
+   from tools.state_db.writer import StateWriter
+   ts = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%fZ')
+   conn = connect('.state/state.db')
+   with StateWriter(conn, claude_org_root=Path('.')).transaction() as w:
+       w.update_session(status='SUSPENDED', suspended_at=ts, updated_at=ts)
+   "
+   # Windows native（Git Bash / PowerShell）
+   py -3 -c "
    from datetime import datetime, timezone
    from pathlib import Path
    from tools.state_db import connect
@@ -176,6 +189,11 @@ id 台帳の作り方（面ごとの id 取得・pane 制御の 2 グループ (
    - Progress Log に中断時の状態を追記
 5. suspend イベントを DB に追記 (`tools/journal_append.py` は DB に書く。`ts` は自動付与):
    ```bash
+   # Mac/Linux
+   python3 tools/journal_append.py suspend \
+       reason=user_requested \
+       --json '{"active_workers": ["worker-xxx"], "pending_items": ["blog-redesign"]}'
+   # Windows native（Git Bash。PowerShell では行末の `\` を `` ` `` に替える）
    py -3 tools/journal_append.py suspend \
        reason=user_requested \
        --json '{"active_workers": ["worker-xxx"], "pending_items": ["blog-redesign"]}'
@@ -205,7 +223,7 @@ broker_state_dir を記録している。停止は **pid 単独で kill せず**
 
 **Mac / Linux / WSL**:
 ```bash
-python3 tools/secretary_queue_watcher.py --stop   # Windows で console python を使う場合は py -3 ...
+python3 tools/secretary_queue_watcher.py --stop   # Windows native は py -3 tools/secretary_queue_watcher.py --stop
 ```
 出力の 1 行（`STOP: ...`）で結果を確認する（`SIGTERM を送信し停止` / `stale sidecar を削除` /
 `既に停止済み`）。exit 0 が正常系（停止・stale 掃除・既停止のいずれも 0）。macOS は `ps` フォールバックで

@@ -18,6 +18,7 @@ allowed-tools:
   - Bash(rm:*)
   - Bash(del:*)
   - Bash(bash tools/journal_append.sh:*)
+  - Bash(python3 tools/journal_append.py:*)
   - Bash(py -3 tools/journal_append.py:*)
   - mcp__renga-peers__*
 ---
@@ -221,7 +222,7 @@ journal event を 1 行追記する:
 bash tools/journal_append.sh attention_watch_started pane_id=<N> config=.state/attention.json
 ```
 
-Windows native では `py -3 tools/journal_append.py attention_watch_started pane_id=<N> config=.state/attention.json`。
+`bash` が使えない環境では Mac/Linux は `python3 tools/journal_append.py attention_watch_started pane_id=<N> config=.state/attention.json`、Windows native では `py -3 tools/journal_append.py attention_watch_started pane_id=<N> config=.state/attention.json`。
 
 ## Step 6: 報告
 

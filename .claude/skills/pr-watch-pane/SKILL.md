@@ -11,10 +11,12 @@ allowed-tools:
   - Bash(git rev-parse:*)
   - Bash(gh repo view:*)
   - Bash(bash tools/journal_append.sh:*)
+  - Bash(python3 tools/journal_append.py:*)
   - Bash(py -3 tools/journal_append.py:*)
   - Bash(python3 tools/pick_watcher_anchor.py:*)
   - Bash(py -3 tools/pick_watcher_anchor.py:*)
   - Bash(python3 tools/watcher_restart_guard.py:*)
+  - Bash(py -3 tools/watcher_restart_guard.py:*)
   - mcp__org-broker__list_panes
   - mcp__org-broker__spawn_pane
   - mcp__org-broker__set_pane_identity
@@ -386,7 +388,7 @@ mcp__org-broker__spawn_pane(
    bash tools/journal_append.sh pr_watch_pane_started pr=<PR> repo=<OWNER/REPO> pane_id=<N>
    ```
 
-   Windows native では `py -3 tools/journal_append.py pr_watch_pane_started pr=<PR> repo=<OWNER/REPO> pane_id=<N>`。
+   `bash` が使えない環境では Mac/Linux は `python3 tools/journal_append.py pr_watch_pane_started pr=<PR> repo=<OWNER/REPO> pane_id=<N>`、Windows native では `py -3 tools/journal_append.py pr_watch_pane_started pr=<PR> repo=<OWNER/REPO> pane_id=<N>`。
 
    **この行は監査ログではなく、watcher 生存判定の一次証拠である（Refs #978）**: 記録を落とすと
    [`tools/watcher_restart_guard.py`](../../../tools/watcher_restart_guard.py) は「watcher なし」
@@ -397,7 +399,8 @@ mcp__org-broker__spawn_pane(
    記録したら、それが判定に反映されたことをその場で確認する:
 
    ```bash
-   python3 tools/watcher_restart_guard.py check --task <task_id>
+   python3 tools/watcher_restart_guard.py check --task <task_id>   # Mac/Linux
+   py -3 tools/watcher_restart_guard.py check --task <task_id>     # Windows native
    ```
 
    exit 0（`live`）なら「最後の push より後に開始された watcher がある」ことが events の時系列

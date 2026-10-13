@@ -13,6 +13,7 @@ allowed-tools:
   - Read
   - Write
   - Edit
+  - Bash(python3 ../tools/journal_append.py:*)
   - Bash(py -3 ../tools/journal_append.py:*)
   - Bash(bash ../tools/journal_append.sh:*)
   - Bash(python3 -c:*)

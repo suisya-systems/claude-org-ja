@@ -17,6 +17,7 @@ allowed-tools:
   - Bash(python3 tools/work_discovery_scan.py:*)
   - Bash(py -3 tools/work_discovery_scan.py:*)
   - Bash(bash tools/journal_append.sh:*)
+  - Bash(python3 tools/journal_append.py:*)
   - Bash(py -3 tools/journal_append.py:*)
   - Bash(git diff:*) # verify applicability classifier の touch-domain 裏取り（read-only。worker branch が local に在るとき）
   - Bash(mkdir -p .state/conveyor:*) # Step 1 のスコープ契約書き出し先ディレクトリ確保（fresh checkout 対策）
