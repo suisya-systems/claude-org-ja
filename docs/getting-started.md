@@ -84,7 +84,7 @@ claude-org-runtime org up                                    # broker daemon を
 `claude-org-runtime org up` が broker daemon を確保（健全なら再利用、無ければ起動）し、窓口 (Secretary) ペインを起動する（`--state-dir` 既定 `.state/broker`、`--root-cwd` 既定＝実行ディレクトリ、`--name` 既定 `secretary`）。Windows で console script が PATH に無い場合は等価の `py -3 -m claude_org_runtime.cli org up` を使う。停止は `claude-org-runtime org down`。
 窓口の Claude Code が立ち上がったら、**順に以下を実行する**:
 
-1. `/org-setup` — ロール別 `settings.local.json`（窓口・ディスパッチャー・キュレーター・ワーカー）と必須 hook を配置。**初回のみ必須**。未実行だと broker（renga フォールバック時は renga-peers）MCP / git / gh で大量の許可プロンプトが出る。
+1. `/org-setup` — ロール別 `settings.local.json`（窓口・ディスパッチャー・キュレーター・ワーカー）と必須 hook を配置。**初回のみ必須**。未実行だと broker（renga フォールバック時は renga-peers）MCP / git / gh で大量の許可プロンプトが出る。ただし輸送層（`ORG_TRANSPORT` の broker / renga）を切り替えた後は、配布される messaging MCP の allow が輸送層ごとに異なる（`mcp__org-broker__*` / `mcp__renga-peers__*`）ため、`/org-setup` をやり直す（[`.claude/skills/org-setup/SKILL.md`](../.claude/skills/org-setup/SKILL.md) の「輸送層 両系」注記）。
 2. `/org-start` — 組織を起動。ディスパッチャーが派生する（既定 broker では独立した detached ペイン、renga フォールバックでは同一タブ内 split として。走行中のペインを read-only で覗く attach 導線は [`docs/operations/broker-dogfood-runbook.md`](operations/broker-dogfood-runbook.md) §8 を参照）。キュレーターは知見が溜まったときにオンデマンドで一時起動される。
 
 `/org-setup` は **additive-only**（不足分を追加するだけで既存を消さない）。drift を baseline に戻したい場合は `python tools/org_setup_prune.py --role <role>` を使う（[`.claude/skills/org-setup/references/permissions.md`](../.claude/skills/org-setup/references/permissions.md) のロール別サンプル JSON を SoT として書き戻し、`{claude_org_path}` / `{worker_dir}` プレースホルダを絶対パスへ自動解決する）。サンプル JSON を手でコピーする場合は、**プレースホルダを必ず実環境の絶対パスへ解決すること**（未解決のまま貼ると hook のパスが存在せず、ガードがエラーも出さずに無効化する）。
