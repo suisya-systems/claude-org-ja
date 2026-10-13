@@ -12,10 +12,10 @@ description: >
 effort: medium
 allowed-tools:
   - Read
-  - Bash(python tools/gen_delegate_payload.py:*)
   - Bash(python3 tools/gen_delegate_payload.py:*)
   - Bash(py -3 tools/gen_delegate_payload.py:*)
   - Bash(bash tools/journal_append.sh:*)
+  - Bash(python3 tools/journal_append.py:*)
   - Bash(py -3 tools/journal_append.py:*)
   - Bash(git log:*)
   - Bash(git pull --ff-only:*)

@@ -74,8 +74,8 @@ Step 7 の送信義務は、このインスタンスが dispatcher（peer name `
    `tools/check_curate_threshold.py` の JSON（`reasons[]` / `counts`）が含まれている。
    それをそのまま採用する（再計算しない）。
 2. **reasons が渡されていない場合**: 自分でスクリプトを実行して確定する。
-   curator ペイン（CWD=`.curator/`）からは `py -3 ../tools/check_curate_threshold.py`、
-   リポジトリルートからは `py -3 tools/check_curate_threshold.py`（POSIX は `python3`）:
+   curator ペイン（CWD=`.curator/`）からは `python3 ../tools/check_curate_threshold.py`（Windows は `py -3 ../tools/check_curate_threshold.py`）、
+   リポジトリルートからは `python3 tools/check_curate_threshold.py`（Windows は `py -3 tools/check_curate_threshold.py`）:
    - exit 0（below_threshold）→ 実行する作業なし。Step 1 の sweep だけ行い、Step 7 へ進む
      （送る場合は `CURATE_SKIPPED`）
    - exit 10（curate_needed）→ stdout JSON の `reasons[]` を採用して続行

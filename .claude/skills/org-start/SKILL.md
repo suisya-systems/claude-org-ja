@@ -9,9 +9,10 @@ allowed-tools:
   - Read
   - Bash(echo:*)
   - Bash(bash tools/journal_append.sh:*)
+  - Bash(python3 tools/journal_append.py:*)
   - Bash(py -3 tools/journal_append.py:*)
-  - Bash(python -m tools.state_db.importer:*)
   - Bash(python3 -m tools.state_db.importer:*)
+  - Bash(py -3 -m tools.state_db.importer:*)
   - Bash(py -3 dashboard/org_state_converter.py:*)
   - Bash(python3 dashboard/org_state_converter.py:*)
   - Bash(py -3 tools/check_runtime_version.py:*)
@@ -172,7 +173,12 @@ read 経路は **DB only**。Block A の spawn 発火と並列で実行する（
 1. `.state/state.db` が存在するか確認する
    - 存在 → DB をクエリ:
      ```bash
-     python -c "from tools.state_db import connect; from tools.state_db.queries import get_org_state_summary; import json; \
+     # Mac/Linux
+     python3 -c "from tools.state_db import connect; from tools.state_db.queries import get_org_state_summary; import json; \
+       conn = connect('.state/state.db'); \
+       print(json.dumps(get_org_state_summary(conn), ensure_ascii=False, indent=2, default=str))"
+     # Windows native（Git Bash。PowerShell では行末の `\` を `` ` `` に替える）
+     py -3 -c "from tools.state_db import connect; from tools.state_db.queries import get_org_state_summary; import json; \
        conn = connect('.state/state.db'); \
        print(json.dumps(get_org_state_summary(conn), ensure_ascii=False, indent=2, default=str))"
      ```
@@ -280,6 +286,7 @@ Block A の spawn 成功後、dispatcher ペインで Claude が boot してい�
       ```bash
       claude-org-runtime dispatcher spawn-prompt-step --deadline-ms 120000 < "$TMPDIR/spawn-prompt-step.json"
       # PATH に無ければ: python3 -m claude_org_runtime.dispatcher.runner spawn-prompt-step --deadline-ms 120000
+      #   （Windows native は py -3 -m claude_org_runtime.dispatcher.runner spawn-prompt-step --deadline-ms 120000）
       ```
    4. 結果で分岐する:
       - **exit 0 / `action: "send_keys"`**: 返された `send_keys` オブジェクトを**そのまま** `mcp__renga-peers__send_keys(target="dispatcher", ...)` に渡す（`enter` を自分で足さない）。`previous` = null にして 1 秒待ち 2 へ
@@ -308,7 +315,20 @@ Block A の spawn 成功後、dispatcher ペインで Claude が boot してい�
 4. **Block B の DB 初期化完了を待つ** — 並列実行の合流点。Block B-1 で `.state/state.db` 不在 → `importer --rebuild` が走った場合、schema 構築完了までは `StateWriter.update_session()` が失敗するので、Block D-5 の DB write 前に Block B が完了している必要がある。Block B が SUSPENDED ブリーフィング待ちで未完了なら、ブリーフィング完了 → DB schema 健全性確認 → ここに進む
 5. **DB transaction を 1 回にまとめて identity を記録する** (`StateWriter.transaction()` 経由、markdown 直接編集禁止。post-commit hook が `.state/org-state.md` を再生成)。dispatcher の identity を write し、**curator の identity は常に `StateWriter.CLEAR` で明示クリアする**（オンデマンド化により常駐 curator は存在しない。旧仕様の SUSPENDED 状態から繰り越した stale な `curator_pane_id` / `curator_peer_id` が残ると、ダッシュボードと balanced split target 選出が生きた curator がいる前提で誤判断する。`StateWriter.update_session()` は None 渡しを「未指定 = 保持」と解釈する契約なので、明示クリアが必須）:
    ```bash
-   python -c "
+   # Mac/Linux
+   python3 -c "
+   from pathlib import Path
+   from tools.state_db import connect
+   from tools.state_db.writer import StateWriter
+   conn = connect('.state/state.db')
+   with StateWriter(conn, claude_org_root=Path('.')).transaction() as w:
+       w.update_session(
+           dispatcher_pane_id='<d_pane>', dispatcher_peer_id='<d_peer>',
+           curator_pane_id=StateWriter.CLEAR, curator_peer_id=StateWriter.CLEAR,
+       )
+   "
+   # Windows native（Git Bash / PowerShell。`"..."` 内の改行はそのまま渡る）
+   py -3 -c "
    from pathlib import Path
    from tools.state_db import connect
    from tools.state_db.writer import StateWriter
@@ -323,7 +343,10 @@ Block A の spawn 成功後、dispatcher ペインで Claude が boot してい�
    curator フィールドが null であることは**正常系**であり、suspend / handover / resume / dashboard はこれを前提に動く。
    - **capability gate の縮退中（Block D-2 の列挙を破棄した場合）は `dispatcher_peer_id` に `StateWriter.CLEAR` を渡す**。縮退中は `<d_peer>` を観測できていないので、推測値や他タブ由来の id を書くと以後の routing が壊れた宛先を掴む。**ここで「未指定 = 保持」に倒してはならない**: `/org-start` は dispatcher ペインを**新規 spawn** するので、DB に残っている値は前セッションの死んだペインのものであり、保持は stale の温存になる（生きたペインを引き継ぐ [`.claude/skills/dispatcher-resume/SKILL.md`](../dispatcher-resume/SKILL.md) Step 0 とはここが逆になる。あちらは同じペインが生きているので保持が正しい）。`dispatcher_pane_id` は `list_panes` から確定できるので通常どおり書く。peer_id が null の間、dispatcher への送信は安定名 `to_id="dispatcher"` で行う（root `CLAUDE.md` の既定の宛先指定と同じ）。この状態はユーザー報告に含める。
 6. JSON スナップショットを 1 回だけ再生成する（dashboard 用、state-db cutover とは別経路）:
-   `py -3 dashboard/org_state_converter.py`
+   ```bash
+   python3 dashboard/org_state_converter.py   # Mac/Linux
+   py -3 dashboard/org_state_converter.py     # Windows native
+   ```
 
 ### 失敗モード
 
@@ -383,7 +406,7 @@ dispatcher は初回 DELEGATE 完了報告で「/loop 3m で監視します」�
 ...
 何をしますか？
 
-[runtime drift] claude-org-runtime: installed={installed} latest={latest_in_window} -- `python -m pip install --upgrade 'claude-org-runtime{pin}'` で更新できます
+[runtime drift] claude-org-runtime: installed={installed} latest={latest_in_window} -- `python3 -m pip install --upgrade 'claude-org-runtime{pin}'`（Windows は `py -3 -m pip ...`）で更新できます
 ```
 
 **role config drift 検出時の warning 添付例** (Block C4 exit 1。`{errors}` / `{findings}` は実行時にスクリプトが決定するもので、本ファイルには hard-code しない。Block C2 の行と両方出るときは 1 行ずつ並べる):

@@ -12,7 +12,8 @@ allowed-tools:
   - Read
   - Edit
   - Bash(bash tools/journal_append.sh:*)
-  - Bash(python tools/pending_decisions.py:*)
+  - Bash(python3 tools/pending_decisions.py:*)
+  - Bash(py -3 tools/pending_decisions.py:*)
   - Bash(py -3 tools/pending_decisions.py:*)
   - mcp__org-broker__send_message
 ---
@@ -48,20 +49,23 @@ allowed-tools:
      ```
    - **pending-decisions register に追加** (Issue #297):
      ```bash
-     python tools/pending_decisions.py append --task-id {task_id} --message "<本文要約>"
+     python3 tools/pending_decisions.py append --task-id {task_id} --message "<本文要約>"   # Mac/Linux
+     py -3 tools/pending_decisions.py append --task-id {task_id} --message "<本文要約>"     # Windows native
      ```
      同 task_id の pending entry が既存なら idempotent (no-op)。register はディスパッチャーの SECRETARY_RELAY_GAP_SUSPECTED 検出 ([`../../../.dispatcher/references/worker-monitoring.md` Step 5.1](../../../.dispatcher/references/worker-monitoring.md#step-5-1)) の primary lookup source
 
 3. **人間に伝達する**: 内容と選択肢を整理して提示する。**選択肢を提示した時点（ask の瞬間）** で、register を `escalated` に更新する直前/同時に attention watcher へ awaiting_user を即時 emit する（Issue #28、ask-time ゲート）:
    ```bash
    bash tools/journal_append.sh notify_sent kind=awaiting_user task_id={task_id} gate=escalation_to_user note="<選択肢提示の短い要約>"
-   python tools/pending_decisions.py resolve --task-id {task_id} --kind to_user
+   python3 tools/pending_decisions.py resolve --task-id {task_id} --kind to_user   # Mac/Linux
+   py -3 tools/pending_decisions.py resolve --task-id {task_id} --kind to_user     # Windows native
    ```
    classifier が `secretary_awaiting_user` (default severity `urgent`) として拾い、判断を仰がれた瞬間に即ビープする。interactive ではユーザーが数十秒〜数分で返答するため pending_decision aging (15分) は実質発火せず、この ask-time emit が urgent 通知の主経路となる。Step 4.5 (`escalation_reply_forward`, 転送時) の emit はそのまま別タイミングとして残す（Step 3=ask 時 / 4.5=転送時）。本 emit は journal 1 行追記のみで register / pending_decisions の状態は触らない。
 
 4. **ユーザーから返答を受領した時点** — ワーカーへ転送する **前に** `user_replied_at` marker を register に記録する (Issue #301):
    ```bash
-   python tools/pending_decisions.py mark-user-replied --task-id {task_id}
+   python3 tools/pending_decisions.py mark-user-replied --task-id {task_id}   # Mac/Linux
+   py -3 tools/pending_decisions.py mark-user-replied --task-id {task_id}     # Windows native
    ```
    escalated entry が無ければ no-op、既に設定済みでも idempotent。これにより [`../../../.dispatcher/references/worker-monitoring.md` Step 5.1 (a-2)](../../../.dispatcher/references/worker-monitoring.md#step-5-1) で「ユーザー返答済みなのに Secretary が転送忘れ」を deterministic に検知できる
 
@@ -73,7 +77,8 @@ allowed-tools:
 
 5. **ワーカーに人間判断を転送する** (`to_id="worker-{task_id}"` で `send_message`)。伝達直後に register を `resolved` に更新:
    ```bash
-   python tools/pending_decisions.py resolve --task-id {task_id} --kind to_worker
+   python3 tools/pending_decisions.py resolve --task-id {task_id} --kind to_worker   # Mac/Linux
+   py -3 tools/pending_decisions.py resolve --task-id {task_id} --kind to_worker     # Windows native
    ```
 
 ## 重複保険ポリシー

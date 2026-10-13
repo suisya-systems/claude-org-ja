@@ -12,6 +12,7 @@ allowed-tools:
   - Bash(rm:*)
   - Bash(del:*)
   - Bash(bash tools/journal_append.sh:*)
+  - Bash(python3 tools/journal_append.py:*)
   - Bash(py -3 tools/journal_append.py:*)
   - mcp__org-broker__check_messages
   - mcp__org-broker__close_pane
@@ -141,7 +142,7 @@ bash tools/journal_append.sh attention_watch_stopped pane_id=<N>
 bash tools/journal_append.sh attention_watch_stopped reason=stale_sidecar
 ```
 
-Windows native では `py -3 tools/journal_append.py attention_watch_stopped ...`。
+`bash` が使えない環境では Mac/Linux は `python3 tools/journal_append.py attention_watch_stopped ...`、Windows native では `py -3 tools/journal_append.py attention_watch_stopped ...`。
 
 ## Step 4: 報告
 

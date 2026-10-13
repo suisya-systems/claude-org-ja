@@ -10,8 +10,10 @@ effort: low
 allowed-tools:
   - Read
   - Bash(bash tools/journal_append.sh:*)
+  - Bash(python3 tools/journal_append.py:*)
   - Bash(py -3 tools/journal_append.py:*)
-  - Bash(python -m tools.state_db.importer:*)
+  - Bash(python3 -m tools.state_db.importer:*)
+  - Bash(py -3 -m tools.state_db.importer:*)
   - Bash(python3 tools/secretary_queue_watcher.py:*)
   - Bash(py -3 tools/secretary_queue_watcher.py:*)
   - Bash(python3 tools/stop_dashboard.py:*)
@@ -20,6 +22,7 @@ allowed-tools:
   - Bash(rm -f .state/attention_pane.json)
   - Bash(del .state\attention_pane.json)
   - Bash(claude-org-runtime org down:*)
+  - Bash(python3 -m claude_org_runtime.cli org down:*)
   - Bash(py -3 -m claude_org_runtime.cli org down:*)
   - mcp__org-broker__check_messages
   - mcp__org-broker__close_pane
@@ -98,7 +101,7 @@ identity 照合ロジックは helper（`tools/stop_dashboard.py`）に入って
 
 **Mac / Linux / WSL**:
 ```bash
-python3 tools/stop_dashboard.py   # Windows で console python を使う場合は py -3 ...
+python3 tools/stop_dashboard.py   # Windows native は py -3 tools/stop_dashboard.py
 ```
 標準出力の 1 行（`[stop-dashboard] dashboard (pid=N) stopped` / `... 消滅（stale）...` /
 `... 起動していない ...`）を Step 4 の報告にそのまま転記する（実際に停止したか stale だったかを
@@ -138,6 +141,7 @@ if (Test-Path $pf) {
    終了する。**必ず最後に実行する**）:
    ```bash
    claude-org-runtime org down          # Mac / Linux / WSL
+   python3 -m claude_org_runtime.cli org down # Mac / Linux / WSL で console script が PATH に無い場合
    py -3 -m claude_org_runtime.cli org down   # Windows で console script が PATH に無い場合
    ```
    - 正常終了で broker daemon が停止し、以後 `claude-org-runtime org up` → `/org-start` で再起動する

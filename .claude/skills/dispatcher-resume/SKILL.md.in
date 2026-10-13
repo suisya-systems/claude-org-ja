@@ -12,10 +12,11 @@ effort: low
 allowed-tools:
   - Read
   - Bash(echo:*)
+  - Bash(python3 ../tools/journal_append.py:*)
   - Bash(py -3 ../tools/journal_append.py:*)
   - Bash(bash ../tools/journal_append.sh:*)
-  - Bash(py -3 ../tools/capability_gate.py:*)
   - Bash(python3 ../tools/capability_gate.py:*)
+  - Bash(py -3 ../tools/capability_gate.py:*)
   - Bash(python3 -c:*)
   - Bash(py -3 -c:*)
   - Bash(ls:*)
