@@ -141,7 +141,7 @@ python tools/org_setup_prune.py --all       # ロール別 settings.local.json �
 renga --layout ops                          # renga の窓口（Secretary）ペインを起動（org up の代わり）
 ```
 
-起動後は broker 経路と同じく窓口 Claude Code で（初回のみ）`/org-setup` → `/org-start` を実行する。実行中の broker ペインの respawn・broker daemon の停止・旧 token / queue の破棄まで含む完全な切り戻し 5 条件は [`docs/operations/broker-dogfood-runbook.md`](operations/broker-dogfood-runbook.md) §5、輸送両系の窓口運用差は [`CLAUDE.md`](../CLAUDE.md)「輸送層（transport）両系」を参照。
+起動後は窓口 Claude Code で `/org-setup` → `/org-start` を実行する。輸送層を broker から renga へ切り替えたので、broker で `/org-setup` 済みでも `/org-setup` をやり直す（messaging MCP の allow が `mcp__org-broker__*` から `mcp__renga-peers__*` に変わるため。上記「インストール」節の手順 1 と同じ理由）。実行中の broker ペインの respawn・broker daemon の停止・旧 token / queue の破棄まで含む完全な切り戻し 5 条件は [`docs/operations/broker-dogfood-runbook.md`](operations/broker-dogfood-runbook.md) §5、輸送両系の窓口運用差は [`CLAUDE.md`](../CLAUDE.md)「輸送層（transport）両系」を参照。
 
 ---
 
