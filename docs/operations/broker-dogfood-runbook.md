@@ -174,7 +174,8 @@ broker の内部状態遷移は `claude_org_runtime/broker/` の `server` / `sto
 
 - spawn 時に **per-agent token** を 1 本発行する（`issue_token`、`secrets.token_urlsafe(32)`）。token ↔ `AgentBind`（`agent_id` / `name` / `role` / `auth_role` / `pane_id` / `cwd` / `kind`）。
 - **`role`（表示専用、`set_pane_identity` で可変）と `auth_role`（不変の権限 tier、発行時確定）を分離**している。tier gating は `auth_role` のみで決め、表示 role の自己申告では昇格できない。spawn 子の `auth_role` は呼出元 tier で上限を切る（`capped_auth_role`）。
-- `mcp_config_for(token)` が `--mcp-config` に渡す JSON を生成する（token を static header `Authorization: Bearer <token>` に埋める。env 参照 `${VAR}` は使わない）。
+- `mcp_config_for(token, token_env=...)` が `--mcp-config` に渡す JSON を生成する。runtime 0.1.50 以降、`org up` / `org adopt` と、起動プロセスの env で token を渡せる `spawn_claude_pane`（herdr / tmux / POSIX wezterm）は `token_env=True` で header を `Authorization: Bearer ${ORG_BROKER_TOKEN}` にし、token 本体は起動プロセスの env で渡す。`token_env` を渡さない呼び元（ja の renga 経路など、ペイン単位の env を持たない経路）は従来どおり token を static header に直書きする（runtime `CHANGELOG.md` 0.1.50 の #218 / #222 項、`broker/tokens.py` の `mcp_config_for`）。
+  - Claude Code は `${ORG_BROKER_TOKEN}` を起動時に一度だけ展開し、resume / fork / continue / `/mcp` 再接続では起動時の env を再生しない。このため `<state-dir>/secretary-mcp.json` を `--mcp-config` に渡して手で `claude --resume` すると 401 になる（意図した非 replay）。窓口セッションの再開は `claude-org-runtime org adopt --resume <SESSION_ID>`（直近 session なら `--continue`）で行う（runtime `broker/launcher.py` の `_add_adopt_arguments`）。
 - journal: `token_issued`。
 
 ### 3.2 登録（`server.py` の HTTP handler）
