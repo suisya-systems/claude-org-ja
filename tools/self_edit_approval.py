@@ -887,8 +887,11 @@ def cmd_send(args) -> int:
                        "approval_parts": texts})
         after = None
         for i, text in enumerate(texts, 1):
-            check, result = _send_part(backend, args, text,
-                                       screen if i == 1 else None)
+            try:
+                check, result = _send_part(backend, args, text,
+                                           screen if i == 1 else None)
+            except BackendFailure as exc:
+                check, result = "backend_failed", {"error": str(exc)}
             if check is not None:
                 # Earlier parts did reach the worker; their text tells it
                 # to hold until all parts arrive, so a partial run is safe

@@ -468,6 +468,26 @@ class SplitSendTests(unittest.TestCase):
         self.assertEqual(len(self._texts_sent(backend)), 2)   # part 3 not tried
         self.assertEqual(self._events(), [])
 
+    def test_backend_failure_on_a_later_part_reports_partial(self):
+        p1 = self._parts()[0]
+        e = _narrow()
+        backend = FakeBackend([e, _screen(p1), e, e])
+        real = backend.send_text
+
+        def second_fails(text):
+            real(text)
+            if len(self._texts_sent(backend)) == 2:
+                raise sea.BackendFailure("lost connection")
+
+        backend.send_text = second_fails
+        self._install(backend)
+        code, out = _run(self._argv())
+        self.assertEqual(code, sea.EXIT_FIRE)
+        self.assertEqual(out["failures"], ["backend_failed"])
+        self.assertEqual(out["parts_delivered"], 1)
+        self.assertEqual(out["approval_delivered"], "partial")
+        self.assertEqual(self._events(), [])
+
     def test_queued_hint_is_waited_out_not_a_prior_draft(self):
         p1, p2, p3 = self._parts()
         e, q = _narrow(), _narrow(sea._QUEUED_HINT)
