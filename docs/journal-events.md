@@ -106,7 +106,7 @@ addition to its writer / payload shape:
 | `delegate_sent`      | `task`, `worker`, `dir`                                     | secretary | `gen_delegate_payload.py apply` | T1 |
 | `delegate_resume`    | `task`, `worker`                                            | secretary | secretary  | —            |
 | `delegate_resume_r2` | `task`, `worker`, `round`                                   | secretary | secretary  | —            |
-| `self_edit_approval_sent` | `task`, `pane`, `files`, `verified_at`, `backend`, `transport` | secretary | `tools/self_edit_approval.py send` | — |
+| `self_edit_approval_sent` | `task`, `pane`, `files`, `parts`, `verified_at`, `backend`, `transport` | secretary | `tools/self_edit_approval.py send` | — |
 
 `delegate_sent` is written by `tools/gen_delegate_payload.py apply` in the same transaction as the T1 reservation (`runs.status='queued'`), not by a hand-typed `journal_append` — see [`docs/contracts/delegation-lifecycle-contract.md`](./contracts/delegation-lifecycle-contract.md) §2 T1. It records the commitment to delegate, immediately before the `DELEGATE` message is sent; it is **not** proof of delivery, which is what T2's `worker_spawned` records. It is emitted exactly once per run row: re-applying a still-`queued` delegation updates the reservation without appending a second event.
 
@@ -121,7 +121,10 @@ exactly like a delivered one under `inspect_pane`, while the worker waits
 for a user message it never received (observed 2026-07-31 and 2026-08-25;
 Issue #956). The row is therefore **evidence of submission, not merely of
 sending**, and it is written only on success: a stage that fails exits
-non-zero and records nothing.
+non-zero and records nothing. A long approval is split by the pane width
+into numbered parts (`parts`), each verified the same way; the one row is
+written only after every part landed and was submitted, so a run that
+stops part-way records nothing.
 
 A `delegate_sent` whose worker dir lies inside the claude-org repo — the
 durable trace of the `claude-org-self-edit` role, which is what routes the

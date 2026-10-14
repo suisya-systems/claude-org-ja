@@ -390,6 +390,110 @@ class SendTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# split send (#1119)
+# ---------------------------------------------------------------------------
+
+FILES3 = [".claude/a/SKILL.md", ".claude/b/SKILL.md", "docs/c.md"]
+
+
+def _narrow(prompt_text: str = "") -> "list[dict]":
+    """A 30-column pane: the fence width is what send reads as pane width."""
+    return [{"row": 0, "text": "─" * 30},
+            {"row": 1, "text": "❯ " + prompt_text},
+            {"row": 2, "text": "─" * 30}]
+
+
+class SplitSendTests(unittest.TestCase):
+    setUp = SendTests.setUp
+    _install = SendTests._install
+    _events = SendTests._events
+
+    def _argv(self, *extra):
+        argv = ["--db-path", str(self.db), "send", "--task", TASK,
+                "--verify-timeout", "0", "--poll-interval", "0"]
+        for f in FILES3:
+            argv += ["--file", f]
+        return [*argv, *extra]
+
+    def _parts(self):
+        return [sea.build_approval_text(TASK, [f], i, 3)
+                for i, f in enumerate(FILES3, 1)]
+
+    def _texts_sent(self, backend):
+        return [c[1] for c in backend.calls if c[0] == "text"]
+
+    def test_splitter_keeps_short_approvals_whole(self):
+        self.assertEqual(sea.split_files(TASK, FILES3, 400, 3), [FILES3])
+        self.assertEqual(sea.split_files(TASK, FILES3, 30, 3),
+                         [[f] for f in FILES3])
+
+    def test_every_part_is_a_complete_approval(self):
+        for i, text in enumerate(self._parts(), 1):
+            self.assertIn(TASK, text)
+            self.assertIn("窓口経由のユーザー承認", text)
+            self.assertIn(f"({i}/3)", text)
+            self.assertIn("全 3 回", text)          # hold until all arrive
+            self.assertNotIn("\n", text)
+
+    def test_long_approval_is_split_by_pane_width_and_recorded_once(self):
+        p1, p2, p3 = self._parts()
+        e = _narrow()
+        backend = FakeBackend([e, _screen(p1), e, e, _screen(p2), e,
+                               e, _screen(p3), e])
+        self._install(backend)
+        code, out = _run(self._argv())
+        self.assertEqual(code, sea.EXIT_OK, out)
+        self.assertEqual(out["width"], 30)
+        self.assertEqual(out["parts_total"], 3)
+        self.assertEqual(self._texts_sent(backend), [p1, p2, p3])
+        writes = [c[0] for c in backend.calls if c[0] in ("text", "enter")]
+        self.assertEqual(writes, ["text", "enter"] * 3)
+        rows = self._events()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["files"], FILES3)
+        self.assertEqual(rows[0]["parts"], 3)
+
+    def test_part_that_fails_to_land_records_nothing(self):
+        p1 = self._parts()[0]
+        e = _narrow()
+        # Part 1 lands and submits; part 2 never shows up in the composer.
+        backend = FakeBackend([e, _screen(p1), e, e, e, e])
+        self._install(backend)
+        code, out = _run(self._argv())
+        self.assertEqual(code, sea.EXIT_FIRE)
+        self.assertEqual(out["failures"], ["text_not_landed"])
+        self.assertEqual(out["failed_part"], 2)
+        self.assertEqual(out["parts_delivered"], 1)
+        self.assertEqual(out["approval_delivered"], "partial")
+        self.assertEqual(len(self._texts_sent(backend)), 2)   # part 3 not tried
+        self.assertEqual(self._events(), [])
+
+    def test_queued_hint_is_waited_out_not_a_prior_draft(self):
+        p1, p2, p3 = self._parts()
+        e, q = _narrow(), _narrow(sea._QUEUED_HINT)
+        # Part 1 is queued behind a running turn: the composer shows the
+        # hint (which also proves part 1 left the composer). Part 2 must
+        # wait for it to clear, not fail as prior_draft.
+        backend = FakeBackend([e, _screen(p1), q, q, q, e, _screen(p2), e,
+                               e, _screen(p3), e])
+        self._install(backend)
+        code, out = _run(self._argv())
+        self.assertEqual(code, sea.EXIT_OK, out)
+        self.assertEqual(self._texts_sent(backend), [p1, p2, p3])
+        self.assertEqual(len(self._events()), 1)
+
+    def test_queued_hint_that_never_clears_times_out_unrecorded(self):
+        q = _narrow(sea._QUEUED_HINT)
+        backend = FakeBackend([q])
+        self._install(backend)
+        code, out = _run(self._argv("--queue-wait-timeout", "0"))
+        self.assertEqual(code, sea.EXIT_FIRE)
+        self.assertEqual(out["failures"], ["queued_wait_timeout"])
+        self.assertEqual(self._texts_sent(backend), [])
+        self.assertEqual(self._events(), [])
+
+
+# ---------------------------------------------------------------------------
 # backends
 # ---------------------------------------------------------------------------
 
