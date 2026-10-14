@@ -257,6 +257,8 @@ class SendTests(unittest.TestCase):
         self.assertFalse(out["approval_delivered"])
         self.assertEqual(self._events(), [])
         self.assertIn("届いていない", out["remedy"][0])
+        self.assertTrue(out["draft_left_in_composer"])
+        self.assertIn("Esc", out["cleanup"])
 
     def test_prior_draft_refuses_before_writing(self):
         dirty = _screen("leftover draft text")
@@ -423,8 +425,8 @@ class SplitSendTests(unittest.TestCase):
         return [c[1] for c in backend.calls if c[0] == "text"]
 
     def test_splitter_keeps_short_approvals_whole(self):
-        self.assertEqual(sea.split_files(TASK, FILES3, 400, 3), [FILES3])
-        self.assertEqual(sea.split_files(TASK, FILES3, 30, 3),
+        self.assertEqual(sea.split_files(FILES3, 400, 3), [FILES3])
+        self.assertEqual(sea.split_files(FILES3, 30, 1),
                          [[f] for f in FILES3])
 
     def test_every_part_is_a_complete_approval(self):
@@ -501,6 +503,63 @@ class SplitSendTests(unittest.TestCase):
         self.assertEqual(code, sea.EXIT_OK, out)
         self.assertEqual(self._texts_sent(backend), [p1, p2, p3])
         self.assertEqual(len(self._events()), 1)
+
+    def test_short_pane_showing_only_the_tail_counts_as_landed(self):
+        # 2026-10-14 live run: a 48x11 pane rendered only the last 3
+        # composer rows, so the head of the approval was never on screen.
+        texts = self._parts()
+        e = _narrow()
+        def tail_only(t):
+            return _narrow(sea._norm(t)[-40:])
+        backend = FakeBackend([e, tail_only(texts[0]), e, e,
+                               tail_only(texts[1]), e, e,
+                               tail_only(texts[2]), e])
+        self._install(backend)
+        code, out = _run(self._argv())
+        self.assertEqual(code, sea.EXIT_OK, out)
+        self.assertEqual(len(self._events()), 1)
+
+    def test_visible_tail_left_after_enter_is_not_submitted(self):
+        p1 = self._parts()[0]
+        e, left = _narrow(), _narrow(sea._norm(p1)[-40:])
+        self._install(FakeBackend([e, left, left]))
+        code, out = _run(self._argv())
+        self.assertEqual(code, sea.EXIT_FIRE)
+        self.assertEqual(out["failures"], ["not_submitted"])
+        self.assertTrue(out["draft_left_in_composer"])
+        self.assertEqual(self._events(), [])
+
+    def test_fragment_too_short_to_name_the_part_is_not_landed(self):
+        p1 = self._parts()[0]
+        e, stub = _narrow(), _narrow(sea._norm(p1)[-5:])
+        self._install(FakeBackend([e, stub]))
+        code, out = _run(self._argv())
+        self.assertEqual(code, sea.EXIT_FIRE)
+        self.assertEqual(out["failures"], ["text_not_landed"])
+        self.assertTrue(out["draft_left_in_composer"])
+
+    def test_tail_carries_part_number_and_files(self):
+        for i, (f, text) in enumerate(zip(FILES3, self._parts()), 1):
+            self.assertTrue(text.endswith(sea.approval_tail([f], i, 3)))
+            self.assertIn(f"({i}/3)", sea.approval_tail([f], i, 3))
+
+    def test_live_48x11_pane_tails_fit_the_visible_rows(self):
+        # The 18-file list from the trial run, on the measured pane.
+        files = [f".claude/skills/org-{n}/SKILL.md" for n in range(18)]
+        rows = sea.default_max_rows(11)
+        groups = sea.split_files(files, 48, rows)
+        for i, g in enumerate(groups, 1):
+            tail = sea.approval_tail(g, i, len(groups))
+            self.assertLessEqual(sea._cells(tail), rows * 44)
+
+    def test_height_is_read_from_rows_and_drives_max_rows(self):
+        rows = [{"row": -3, "text": "scrollback"}] + [
+            {"row": i, "text": ""} for i in range(11)]
+        self.assertEqual(sea._pane_height(rows), 11)
+        self.assertEqual(sea.default_max_rows(11), 2)
+        self.assertEqual(sea.default_max_rows(27), 3)
+        self.assertEqual(sea.default_max_rows(3), 1)
+        self.assertEqual(sea.default_max_rows(None), 3)
 
     def test_queued_hint_that_never_clears_times_out_unrecorded(self):
         q = _narrow(sea._QUEUED_HINT)
