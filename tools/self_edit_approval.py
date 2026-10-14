@@ -57,8 +57,12 @@ What is actually verified vs. merely observed
 
 * The approval text is present in the worker's composer after the text
   write — read back from a fresh ``inspect`` of the pane, not from the
-  write's own exit code.
-* The approval text is *gone from the composer* after the Enter write.
+  write's own exit code. A short pane renders only the composer's last
+  rows, so what is checked is that the visible part is the end of the
+  text and covers the part number and file list, which the text puts
+  last for exactly this reason.
+* The approval text is *gone from the composer* after the Enter write
+  (not even a trailing fragment of it remains).
   That is what separates a submitted message from a resident draft, and
   it is the exact discrimination the manual procedure could not make.
 
@@ -67,7 +71,16 @@ message. No process on this host can observe another agent's turn. A
 submitted message can still be queued behind a running turn — which is
 fine and expected (an Enter into a busy pane is queued, not lost), and
 is why this tool deliberately does **not** wait for the pane to be idle
-before sending.
+before sending. The one wait is for Claude Code's queued-messages hint
+in the composer (typically the previous part of a split approval queued
+behind a running turn): that is not a draft, and the next part goes in
+only after it clears.
+
+Long approvals are split by the pane width into numbered parts, each a
+self-contained approval that tells the worker to hold until all parts
+arrived; each part is verified on its own, and the single
+``self_edit_approval_sent`` row is written only after every part landed
+and was submitted.
 
 Backends
 --------
@@ -176,6 +189,11 @@ _TMUX_SOCKET = "claude-org-broker"
 _FENCE_CHARS = set("─━-")
 #: Prompt markers that open the composer row.
 _PROMPT_MARKERS = ("❯", ">")
+#: Placeholder Claude Code shows in an empty composer while a submitted
+#: message is queued behind a running turn. Not a draft.
+_QUEUED_HINT = "Press up to edit queued messages"
+#: Width assumed when the composer fence cannot be read (and for dry-run).
+_DEFAULT_WIDTH = 80
 
 _REMEDY = {
     "prior_draft": (
@@ -211,6 +229,12 @@ _REMEDY = {
         "なお記帳 (self_edit_approval_sent) はしていないので、"
         "submit 済みだった場合は audit に穴として出る。"
     ),
+    "queued_wait_timeout": (
+        "入力欄にキュー表示 (Press up to edit queued messages) が出たまま "
+        "--queue-wait-timeout 内に消えなかった。worker が長いターンを実行中。"
+        "記帳はしていない。先に届いた回の承認文は「全回が届くまで編集しない」と"
+        "書いてあるので、worker の手が空いてから最初から再実行してよい。"
+    ),
     "backend_failed": (
         "打鍵バックエンドの呼び出しが失敗した。stderr を見て、"
         "renga なら RENGA_SOCKET とペイン名、broker なら tmux socket "
@@ -225,7 +249,8 @@ _LIMITATIONS = (
     "(b) Enter 後に入力欄から消えた = submit されたこと の 2 点。"
     "worker がそのターンを実際に処理したかは観測できない "
     "(busy ペインへの Enter はキューされるのが正常で、"
-    "そのため本ツールは idle 待ちをしない)。"
+    "そのため本ツールは idle 待ちをしない。待つのは入力欄のキュー表示が消えるまでだけ)。"
+    "分割送信では全回の着弾と submit を確認してから 1 回だけ記帳する。"
 )
 
 
@@ -237,24 +262,92 @@ class ApprovalError(Exception):
 # Approval text
 # ---------------------------------------------------------------------------
 
-def build_approval_text(task_id: str, files: "list[str]") -> str:
+def approval_tail(files: "list[str]", part: int = 1, total: int = 1) -> str:
+    """The distinguishing end of an approval: part marker + file list.
+
+    Placed **last** in the text on purpose. A short pane renders only the
+    composer's last few rows (2026-10-14: 48x11 pane, 3 rows visible), so
+    the landing check can only ever see the tail. With the files at the
+    end, the visible tail still says which part and which files landed;
+    with the common wording at the end, every part would look the same.
+    """
+    marker = f"({part}/{total})" if total > 1 else ""
+    return f"承認します{marker}: {' / '.join(files)}"
+
+
+def build_approval_text(task_id: str, files: "list[str]",
+                        part: int = 1, total: int = 1) -> str:
     """Assemble the approval message. Never composed by the caller.
 
-    The wording tracks the template in
-    ``claude-org-self-edit.md`` §5 and carries all three mandatory
-    elements: the file enumeration, the ``task_id``, and the explicit
+    Carries the three mandatory elements of ``claude-org-self-edit.md``
+    §5: the file enumeration, the ``task_id``, and the explicit
     statement that this is a user approval relayed by the secretary.
 
     Deliberately a **single line**: a literal newline in the payload is
     a mid-string submit in the Claude Code composer (the same trap
     ``.dispatcher/references/spawn-flow.md`` 3-5a warns about for
     ultracode kickoffs), which would submit a truncated approval.
+
+    When split (``total > 1``) every part is a self-contained approval
+    for its own files, numbered ``part/total``, and tells the worker to
+    hold until all parts arrived: a worker that started editing on part
+    1 while part 2 never landed is the 2026-10-12 fix-8 incident.
     """
-    joined = " / ".join(files)
+    hold = (f"全 {total} 回の承認が届くまでどのファイルも編集しないこと。"
+            if total > 1 else "")
     return (
-        f"承認します: 本タスク ({task_id}) における {joined} の編集を承認します。"
-        "これは窓口経由のユーザー承認です。"
+        f"これは窓口経由のユーザー承認です。{hold}"
+        f"本タスク ({task_id}) における次のファイルの編集を"
+        + approval_tail(files, part, total)
     )
+
+
+def _cells(text: str) -> int:
+    """Terminal cells ``text`` occupies (East Asian wide/fullwidth = 2)."""
+    return sum(2 if unicodedata.east_asian_width(ch) in "WF" else 1 for ch in text)
+
+
+def default_max_rows(height: "int | None") -> int:
+    """Composer rows an approval tail may use, from the pane height.
+
+    Claude Code shrinks the visible composer with the pane: 3 rows were
+    visible in an 11-row pane. A quarter of the height, capped at 3, keeps
+    the tail inside that window with a margin.
+    """
+    # ponytail: height//4 is fitted to one observation (11 rows -> 3
+    # visible); pass --max-rows if a pane size proves it wrong.
+    if not height:
+        return 3
+    return max(1, min(3, height // 4))
+
+
+def split_files(files: "list[str]", width: int,
+                max_rows: int) -> "list[list[str]]":
+    """Group ``files`` so each part's tail wraps to at most ``max_rows``.
+
+    Only the tail is budgeted: the landing check reads the visible end of
+    the composer, so that is what must fit on screen (see
+    :func:`approval_tail`). Greedy by file, never inside a path: a single
+    file whose tail is still too long goes alone and the landing check
+    judges it.
+    """
+    # The prompt marker and wrap indent take ~2 cells; word-wrap wastes
+    # a few more, hence the margin of 4.
+    budget = max_rows * max(width - 4, 10)
+    if _cells(approval_tail(files)) <= budget:
+        return [list(files)]
+    n = len(files)  # upper bound for the part counter's digits
+    groups: "list[list[str]]" = []
+    cur: "list[str]" = []
+    for f in files:
+        cand = cur + [f]
+        if cur and _cells(approval_tail(cand, n, n)) > budget:
+            groups.append(cur)
+            cur = [f]
+        else:
+            cur = cand
+    groups.append(cur)
+    return groups
 
 
 # ---------------------------------------------------------------------------
@@ -281,6 +374,28 @@ def _is_fence(text: str) -> bool:
     # A fence is a long run of box-drawing rule characters. The length
     # floor keeps a stray "-" in prose from being read as a fence.
     return len(stripped) >= 8 and set(stripped) <= _FENCE_CHARS
+
+
+def _pane_width(lines: "list[dict]") -> "int | None":
+    """Pane width read off the composer fences, which span the full row.
+
+    Read from the screen rather than a backend geometry call so renga and
+    tmux share one path; ``None`` when no fence is on screen.
+    """
+    widths = [len((r.get("text") or "").strip()) for r in lines
+              if _is_fence(r.get("text") or "")]
+    return max(widths) if widths else None
+
+
+def _pane_height(lines: "list[dict]") -> "int | None":
+    """Visible pane height: rows are indexed from the screen top (renga
+    marks scrollback with negative indices), so the last index + 1."""
+    rows = [r.get("row") for r in lines if isinstance(r.get("row"), int)]
+    return max(rows) + 1 if rows and max(rows) >= 0 else None
+
+
+def _is_queued_hint(composer: "str | None") -> bool:
+    return composer is not None and _norm(_QUEUED_HINT) in _norm(composer)
 
 
 def extract_composer(lines: "list[dict]") -> "str | None":
@@ -666,6 +781,129 @@ def _fail(task_id: str, check: str, extra: dict) -> int:
     return EXIT_FIRE
 
 
+def _shows(composer: "str | None", text: str, tail: str) -> bool:
+    """Whether the composer visibly holds ``text``.
+
+    A short pane renders only the composer's last rows, so the visible
+    part is a **suffix** of what was typed, not the whole of it. It
+    counts as ``text`` when it is a suffix that still covers ``tail``
+    (the part marker + files), which is what tells one part from another.
+    The pre-send check already proved the composer empty, so anything
+    ending in our tail is our write.
+    """
+    seen = _norm(composer or "")
+    return bool(seen) and _norm(text).endswith(seen) and len(seen) >= len(_norm(tail))
+
+
+def _holds_any_of(composer: "str | None", text: str) -> bool:
+    """Whether any visible fragment of ``text`` is still in the composer.
+
+    The submit check's mirror of :func:`_shows`: even a few trailing
+    characters left behind mean the draft was not submitted.
+    """
+    seen = _norm(composer or "")
+    return bool(seen) and _norm(text).endswith(seen)
+
+
+#: Checks after which whatever sits in the composer is a draft the
+#: worker would otherwise submit on its next Enter.
+_DRAFT_CHECKS = ("prior_draft", "text_not_landed", "not_submitted")
+
+
+def _draft_cleanup(check: str, result: dict) -> dict:
+    """Say whether a draft was left behind and how to clear it.
+
+    The tool does not clear it itself: Esc is the way to empty the
+    composer, and Esc into a busy pane interrupts the running turn —
+    whether the worker is mid-turn is not something this tool can read
+    reliably from the screen.
+    """
+    if check not in _DRAFT_CHECKS:
+        return {}
+    observed = result.get("observed_composer")
+    left = bool(_norm(observed or "")) and not _is_queued_hint(observed)
+    out = {"draft_left_in_composer": left}
+    if left:
+        out["cleanup"] = (
+            "worker の入力欄に下書きが残っている。worker が idle "
+            "(ターン実行中でない) ことを inspect で確かめてから Esc で消し、"
+            "空になったのを確認して再実行する。busy 中の Esc はターン中断になるので送らない。"
+        )
+    return out
+
+
+def _send_part(backend, args, text: str, tail: str,
+               first_screen: "list[dict] | None"):
+    """One verified handshake. Returns ``(None, composer_after)`` on
+    success, ``(check, extra)`` on a stage that did not verify.
+
+    ``first_screen`` reuses the inspect the caller already made to read
+    the pane size, so part 1 does not race a second redraw.
+    """
+    # Stage 0 — wait out a queued-messages hint, then refuse to append
+    # onto an existing draft. The hint is Claude Code's placeholder while
+    # an earlier submit (typically the previous part) sits queued behind
+    # a running turn: it is not a draft, so it must not read as
+    # prior_draft, but typing over it is not what the owner asked for
+    # either — wait until the queue drains.
+    pre = extract_composer(first_screen if first_screen is not None
+                           else backend.inspect(args.lines))
+    if _is_queued_hint(pre):
+        drained, pre = _poll_composer(
+            backend, args.lines, lambda c: not _is_queued_hint(c),
+            args.queue_wait_timeout, args.poll_interval)
+        if not drained:
+            return "queued_wait_timeout", {"observed_composer": pre}
+    # Writing after a resident draft concatenates the two, and the result
+    # is submitted as one message whose mandatory elements no longer
+    # parse as an approval.
+    if pre is not None and _norm(pre):
+        return "prior_draft", {"observed_composer": pre}
+
+    # Stage 1 — write the text. No Enter: see RengaBackend docstring.
+    backend.send_text(text)
+
+    # Stage 2 — verify it actually landed in the composer.
+    landed, observed = _poll_composer(
+        backend, args.lines, lambda c: _shows(c, text, tail),
+        args.verify_timeout, args.poll_interval)
+    if not landed:
+        return "text_not_landed", {"observed_composer": observed}
+
+    # Stage 3 — Enter on its own.
+    try:
+        backend.send_enter()
+    except BackendFailure as exc:
+        if not exc.timed_out:
+            raise
+        # The write may have reached the PTY before the timeout, so
+        # neither "delivered" nor "not delivered" can be claimed. Say
+        # so: a blind retry here is what duplicates an approval.
+        return "enter_ambiguous", {"error": str(exc),
+                                   "approval_delivered": "unknown"}
+
+    # Stage 4 — verify the composer no longer holds it. An empty
+    # composer, the queued hint, or one holding something else all mean
+    # the draft left the input box; the text still sitting there is
+    # precisely the silent failure this tool exists to stop.
+    #
+    # A backend failure *here* is not "not delivered": the Enter write
+    # already returned, so the message may well be submitted and only
+    # the confirmation is missing. Reporting that as a plain failure
+    # would invite the retry that duplicates the approval.
+    try:
+        submitted, after = _poll_composer(
+            backend, args.lines,
+            lambda c: not _holds_any_of(c, text),
+            args.verify_timeout, args.poll_interval)
+    except BackendFailure as exc:
+        return "submit_unverified", {"error": str(exc),
+                                     "approval_delivered": "unknown"}
+    if not submitted:
+        return "not_submitted", {"observed_composer": after}
+    return None, after
+
+
 def cmd_send(args) -> int:
     task_id = args.task.strip()
     if not task_id:
@@ -690,8 +928,6 @@ def cmd_send(args) -> int:
 
     transport = _resolve_transport(args.transport)
     backend = make_backend(args, transport, target_defaulted=target_defaulted)
-    text = build_approval_text(task_id, files)
-    wanted = _norm(text)
 
     common = {
         "task": task_id,
@@ -701,13 +937,27 @@ def cmd_send(args) -> int:
         "backend": backend.name,
         "transport": transport,
         "target": backend.describe(),
-        "approval_text": text,
     }
 
+    def _parts(width, height):
+        rows = args.max_rows or default_max_rows(height)
+        groups = split_files(files, width, rows)
+        n = len(groups)
+        return rows, [(build_approval_text(task_id, g, i, n),
+                       approval_tail(g, i, n))
+                      for i, g in enumerate(groups, 1)]
+
     if args.dry_run:
+        # No inspect here, so the width is --width or the fallback; the
+        # real send may split differently on a narrower pane.
+        width = args.width or _DEFAULT_WIDTH
+        rows, parts = _parts(width, None)
         print(json.dumps(
-            {"status": "dry_run", **common,
-             "note": "何も送信していない。--dry-run を外すと送信する。"},
+            {"status": "dry_run", **common, "width": width, "max_rows": rows,
+             "approval_parts": [t for t, _ in parts],
+             "note": "何も送信していない。--dry-run を外すと送信する。"
+                     "分割は --width (未指定なら既定幅) による見込みで、"
+                     "実送信ではペインの実幅で分割し直す。"},
             ensure_ascii=False, indent=2))
         return EXIT_OK
 
@@ -718,60 +968,29 @@ def cmd_send(args) -> int:
     _precheck_db(args.db_path)
 
     try:
-        # Stage 0 — refuse to append onto an existing draft. Writing the
-        # approval after a resident draft concatenates the two, and the
-        # result is submitted as one message whose mandatory elements no
-        # longer parse as an approval.
-        pre = extract_composer(backend.inspect(args.lines))
-        if pre is not None and _norm(pre):
-            return _fail(task_id, "prior_draft",
-                         {**common, "observed_composer": pre})
-
-        # Stage 1 — write the text. No Enter: see RengaBackend docstring.
-        backend.send_text(text)
-
-        # Stage 2 — verify it actually landed in the composer.
-        landed, observed = _poll_composer(
-            backend, args.lines, lambda c: c is not None and wanted in _norm(c),
-            args.verify_timeout, args.poll_interval)
-        if not landed:
-            return _fail(task_id, "text_not_landed",
-                         {**common, "observed_composer": observed})
-
-        # Stage 3 — Enter on its own.
-        try:
-            backend.send_enter()
-        except BackendFailure as exc:
-            if not exc.timed_out:
-                raise
-            # The write may have reached the PTY before the timeout, so
-            # neither "delivered" nor "not delivered" can be claimed. Say
-            # so: a blind retry here is what duplicates an approval.
-            return _fail(task_id, "enter_ambiguous",
-                         {**common, "error": str(exc),
-                          "approval_delivered": "unknown"})
-
-        # Stage 4 — verify the composer no longer holds it. An empty
-        # composer, or one holding something else, both mean the draft
-        # left the input box; the text still sitting there is precisely
-        # the silent failure this tool exists to stop.
-        #
-        # A backend failure *here* is not "not delivered": the Enter write
-        # already returned, so the message may well be submitted and only
-        # the confirmation is missing. Reporting that as a plain failure
-        # would invite the retry that duplicates the approval.
-        try:
-            submitted, after = _poll_composer(
-                backend, args.lines,
-                lambda c: c is None or wanted not in _norm(c),
-                args.verify_timeout, args.poll_interval)
-        except BackendFailure as exc:
-            return _fail(task_id, "submit_unverified",
-                         {**common, "error": str(exc),
-                          "approval_delivered": "unknown"})
-        if not submitted:
-            return _fail(task_id, "not_submitted",
-                         {**common, "observed_composer": after})
+        screen = backend.inspect(args.lines)
+        width = args.width or _pane_width(screen) or _DEFAULT_WIDTH
+        height = _pane_height(screen)
+        rows, parts = _parts(width, height)
+        texts = [t for t, _ in parts]
+        common.update({"width": width, "height": height, "max_rows": rows,
+                       "parts_total": len(texts), "approval_parts": texts})
+        after = None
+        for i, (text, tail) in enumerate(parts, 1):
+            try:
+                check, result = _send_part(backend, args, text, tail,
+                                           screen if i == 1 else None)
+            except BackendFailure as exc:
+                check, result = "backend_failed", {"error": str(exc)}
+            if check is not None:
+                # Earlier parts did reach the worker; their text tells it
+                # to hold until all parts arrive, so a partial run is safe
+                # to re-run from the start. Nothing is recorded.
+                return _fail(task_id, check, {
+                    **common, "failed_part": i, "parts_delivered": i - 1,
+                    "approval_delivered": "partial" if i > 1 else False,
+                    **result, **_draft_cleanup(check, result)})
+            after = result
     except BackendFailure as exc:
         return _fail(task_id, "backend_failed", {**common, "error": str(exc)})
 
@@ -780,6 +999,7 @@ def cmd_send(args) -> int:
         "task": task_id,
         "pane": args.target,
         "files": files,
+        "parts": len(texts),
         "verified_at": verified_at,
         "backend": backend.name,
         "transport": transport,
@@ -1045,7 +1265,8 @@ def build_parser() -> argparse.ArgumentParser:
     send = sub.add_parser(
         "send",
         help=("Send the approval to a worker pane (text -> verify landed -> "
-              "Enter -> verify submitted) and record self_edit_approval_sent."),
+              "Enter -> verify submitted, per part when split by pane width) "
+              "and record self_edit_approval_sent once every part landed."),
     )
     send.add_argument("--task", required=True, help="task_id")
     send.add_argument(
@@ -1087,6 +1308,19 @@ def build_parser() -> argparse.ArgumentParser:
                       help="Seconds to keep re-inspecting for each verification.")
     send.add_argument("--poll-interval", type=float, default=0.5,
                       help="Seconds between verification inspects.")
+    send.add_argument("--width", type=int, default=None,
+                      help="Pane width in columns used to split a long approval. "
+                           "Defaults to the width read off the composer fence "
+                           f"(fallback {_DEFAULT_WIDTH}).")
+    send.add_argument("--max-rows", type=int, default=None,
+                      help="Most composer rows the end of one approval part "
+                           "(part number + files) may wrap to; longer lists "
+                           "are split by file into numbered parts, each "
+                           "verified separately. Defaults to a quarter of the "
+                           "pane height, between 1 and 3.")
+    send.add_argument("--queue-wait-timeout", type=float, default=600.0,
+                      help="Seconds to wait for a queued-messages hint in the "
+                           "composer to clear before sending a part.")
     send.add_argument("--call-timeout", type=float, default=15.0,
                       help="Seconds before a single backend call is abandoned.")
     send.add_argument("--dry-run", action="store_true",
