@@ -196,8 +196,12 @@ join できた各ペインについて、role + name(task_id) ラベル付きで
   → `/usr/bin/tmux -L claude-org-broker attach -r -t <session>`
   - `-r` = read-only attach。覗くだけで誤入力でペインを壊さない
 - **今の tmux を分割して並べる（外側が tmux = `$TMUX` 設定ありのとき）**: 各ペインについて
-  `/usr/bin/tmux split-window -h "TMUX= /usr/bin/tmux -L claude-org-broker attach -t <session>"`
-  を出し、最後に `/usr/bin/tmux select-layout tiled` を 1 行添える（分割を重ねても均等に並ぶ）
+  `/usr/bin/tmux split-window -d -h "TMUX= /usr/bin/tmux -L claude-org-broker attach -t <session>" \; select-layout tiled`
+  を 1 行ずつ出す
+  - `-d`: 新しいペインへフォーカスを移さない。無いと 1 行目の実行後に入力先が attach 先（dispatcher / worker）
+    に移り、次の行がそちらへ打ち込まれる
+  - `\; select-layout tiled`: 分割のたびに均等配置へ戻す。最後に 1 回だけだと、`-h` 分割を重ねる途中で
+    幅が尽きて `no space for new pane` で後続の分割が失敗する
   - 外側の `/usr/bin/tmux split-window` は `-L` を付けず、`$TMUX` が指す**人間自身の tmux** を分割する。
     内側の `TMUX=` は「tmux の中から tmux を起動する」入れ子拒否
     （`sessions should be nested with care, unset $TMUX to force`）を外すためのもの
@@ -263,9 +267,8 @@ logical pane 除外 → `%N` を持つ dispatcher / worker のみ join → 生�
   読取専用 : /usr/bin/tmux -L claude-org-broker attach -r -t claude-org-broker-1912-17
 
 ■ 今の tmux を分割して並べる（自分の tmux の中から。broker に attach 中の端末では使わない）
-  /usr/bin/tmux split-window -h "TMUX= /usr/bin/tmux -L claude-org-broker attach -t claude-org-broker-1912-14"
-  /usr/bin/tmux split-window -h "TMUX= /usr/bin/tmux -L claude-org-broker attach -t claude-org-broker-1912-17"
-  /usr/bin/tmux select-layout tiled
+  /usr/bin/tmux split-window -d -h "TMUX= /usr/bin/tmux -L claude-org-broker attach -t claude-org-broker-1912-14" \; select-layout tiled
+  /usr/bin/tmux split-window -d -h "TMUX= /usr/bin/tmux -L claude-org-broker attach -t claude-org-broker-1912-17" \; select-layout tiled
   （読取専用で並べるなら内側の attach に -r を付ける）
 
 (logical pane / attach 対象外)
