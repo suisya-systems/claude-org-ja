@@ -378,6 +378,45 @@ def list_escalated_user_replied_older_than(
     return out
 
 
+def list_stale(
+    min_age_minutes: int,
+    store_path: Path = DEFAULT_PATH,
+    now: Optional[datetime] = None,
+) -> list[PendingDecision]:
+    """Unresolved entries (``pending`` or ``escalated``) received ``min_age_minutes`` or more ago.
+
+    Issue #1155. Read-only inventory for ``/org-start`` Block B: lists
+    decisions that may have been left half-way because a register update
+    failed. Deliberately independent of ``_OPEN_STATUSES`` /
+    :func:`list_pending_older_than` so the dispatcher's relay-gap alarm
+    keeps excluding ``escalated`` (a slow human reply is normal there).
+    A hit is "needs a look", not proof of a missed relay: callers must
+    not auto-resolve or re-send the decision.
+
+    Age is measured from ``received_at`` (``resolved_at`` is also set by
+    ``to_user`` so it is not a "done" marker). Unparseable
+    ``received_at`` is surfaced, same loud-failure stance as
+    :func:`list_pending_older_than`.
+    """
+    if now is None:
+        now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(minutes=min_age_minutes)
+    out: list[PendingDecision] = []
+    for entry in _load(store_path):
+        if entry.status == "resolved":
+            continue
+        try:
+            received = datetime.strptime(
+                entry.received_at, "%Y-%m-%dT%H:%M:%SZ"
+            ).replace(tzinfo=timezone.utc)
+        except ValueError:
+            out.append(entry)
+            continue
+        if received <= cutoff:
+            out.append(entry)
+    return out
+
+
 def latest_for_task(
     task_id: str,
     store_path: Path = DEFAULT_PATH,
@@ -477,6 +516,19 @@ def _cmd_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_stale(args: argparse.Namespace) -> int:
+    store_path = Path(args.store) if args.store else DEFAULT_PATH
+    try:
+        entries = list_stale(args.min_age_min, store_path=store_path)
+    except ValueError as exc:
+        # Unreadable register must not look like "nothing stale".
+        print(json.dumps({"status": "unreadable", "error": str(exc)}, ensure_ascii=False))
+        return 2
+    for entry in entries:
+        _print_entry(entry)
+    return 0
+
+
 def _cmd_mark_user_replied(args: argparse.Namespace) -> int:
     store_path = Path(args.store) if args.store else DEFAULT_PATH
     entry = mark_user_replied(args.task_id, store_path=store_path)
@@ -551,6 +603,16 @@ def main(argv: Optional[list[str]] = None) -> int:
         ),
     )
     p_list.set_defaults(func=_cmd_list)
+
+    p_stale = sub.add_parser(
+        "stale",
+        help=(
+            "read-only: unresolved (pending/escalated) entries received N+ "
+            "minutes ago (Issue #1155, /org-start inventory)"
+        ),
+    )
+    p_stale.add_argument("--min-age-min", type=int, required=True)
+    p_stale.set_defaults(func=_cmd_stale)
 
     p_mark = sub.add_parser(
         "mark-user-replied",

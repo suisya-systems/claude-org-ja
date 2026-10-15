@@ -721,5 +721,80 @@ class LatestForTaskAndStaleTraceTests(unittest.TestCase):
             pd.escalation_trace_is_stale("t1", store_path=self.store)
 
 
+class ListStaleTests(unittest.TestCase):
+    """Issue #1155: read-only stale inventory for /org-start Block B."""
+
+    NOW = datetime(2026, 5, 5, 12, 0, 0, tzinfo=timezone.utc)
+
+    def setUp(self) -> None:
+        import tempfile
+
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self.store = Path(self._tmpdir.name) / "pending_decisions.json"
+
+    def _seed(self, entries: list[dict]) -> None:
+        self.store.write_text(json.dumps(entries), encoding="utf-8")
+
+    def _ids(self, threshold: int = 60) -> list[str]:
+        return [
+            e.task_id
+            for e in pd.list_stale(threshold, store_path=self.store, now=self.NOW)
+        ]
+
+    def test_boundary_resolved_and_escalated(self) -> None:
+        self._seed(
+            [
+                # exactly at threshold -> included
+                {"task_id": "edge", "received_at": "2026-05-05T11:00:00Z",
+                 "raw_message": "m", "status": "pending"},
+                # one second short -> excluded
+                {"task_id": "young", "received_at": "2026-05-05T11:00:01Z",
+                 "raw_message": "m", "status": "pending"},
+                # escalated counts (unlike relay-gap list), resolved_at ignored
+                {"task_id": "esc", "received_at": "2026-05-05T09:00:00Z",
+                 "raw_message": "m", "status": "escalated",
+                 "resolved_at": "2026-05-05T11:59:00Z",
+                 "resolution_kind": "to_user"},
+                # resolved is terminal -> excluded
+                {"task_id": "done", "received_at": "2026-05-05T09:00:00Z",
+                 "raw_message": "m", "status": "resolved",
+                 "resolved_at": "2026-05-05T09:10:00Z",
+                 "resolution_kind": "to_worker"},
+                # unparseable received_at -> surfaced
+                {"task_id": "bad", "received_at": "yesterday",
+                 "raw_message": "m", "status": "pending"},
+            ]
+        )
+        self.assertEqual(self._ids(), ["edge", "esc", "bad"])
+        # relay-gap alarm path is unchanged: escalated still excluded there
+        self.assertNotIn(
+            "esc",
+            [e.task_id for e in pd.list_pending_older_than(
+                60, store_path=self.store, now=self.NOW)],
+        )
+
+    def test_read_only(self) -> None:
+        self._seed([{"task_id": "t", "received_at": "2026-05-05T09:00:00Z",
+                     "raw_message": "m", "status": "pending"}])
+        before = self.store.read_bytes()
+        self._ids()
+        self.assertEqual(self.store.read_bytes(), before)
+
+    def test_missing_store_is_empty(self) -> None:
+        self.assertEqual(self._ids(), [])
+
+    def test_cli_reports_unreadable_with_nonzero_exit(self) -> None:
+        import io
+        from contextlib import redirect_stdout
+
+        self.store.write_text("not json{", encoding="utf-8")
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = pd.main(["--store", str(self.store), "stale", "--min-age-min", "60"])
+        self.assertEqual(rc, 2)
+        self.assertEqual(json.loads(buf.getvalue())["status"], "unreadable")
+
+
 if __name__ == "__main__":
     unittest.main()
