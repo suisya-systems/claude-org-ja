@@ -102,6 +102,18 @@ class StopDashboardTests(unittest.TestCase):
             sleeper.terminate()
             sleeper.wait()
 
+    def test_windows_liveness_never_uses_os_kill(self) -> None:
+        # On Windows os.kill(pid, 0) is TerminateProcess: probing a recycled pid
+        # would stop an unrelated process (#1147). The liveness check must route
+        # to the side-effect-free Win32 query instead.
+        from tools import secretary_queue_watcher as sqw
+
+        with mock.patch.object(sqw.os, "name", "nt"), \
+                mock.patch.object(sqw.os, "kill", side_effect=AssertionError("os.kill on Windows")), \
+                mock.patch.object(sqw, "_win_pid_alive", return_value=True) as win:
+            self.assertTrue(sd.pid_alive(4242))
+        win.assert_called_once_with(4242)
+
 
 if __name__ == "__main__":
     unittest.main()
