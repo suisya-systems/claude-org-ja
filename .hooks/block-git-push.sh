@@ -145,12 +145,15 @@ if [[ -z "$COMMAND" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 1. git push 検知（既存挙動。変更しないこと）
+# 1. git push 検知（deny を緩める変更はしないこと）
 # ---------------------------------------------------------------------------
 # `git push` と、サブコマンド前にオプションが挿入された形を捕捉する。
 # 例: git push, git  push, echo | git push, git -C /path push
 # 一方で `git config push.default` のような別サブコマンドは誤検知しない。
-PUSH_RE='(^|[|&;[:space:]])git([[:space:]]+(-[^[:space:]]+([[:space:]]+[^|&;[:space:]]+)?)?)*[[:space:]]+push([[:space:]]|$)'
+# 前後の境界には空白に加え、語へ密着できるシェル記号も含める（#1140）:
+# 前は ( と `（`$(git push)` / `<(git push)` / `(git push)` / `` `git push` ``）、
+# 後ろは ; & | ) ` < >（`git push; echo` / `git push|cat` / `git push>log`）。
+PUSH_RE='(^|[|&;[:space:](`])git([[:space:]]+(-[^[:space:]]+([[:space:]]+[^|&;[:space:]]+)?)?)*[[:space:]]+push([[:space:];&|)`<>]|$)'
 
 if echo "$COMMAND" | grep -qE "$PUSH_RE"; then
   deny_with_reason "git push は Worker から直接実行できません。完了報告で窓口に依頼してください。窓口が push/PR を実施します。"
@@ -270,7 +273,10 @@ gpg-key ssh-key codespace preview browse status co help completion version "
       # これを取り除くので、字面のままだと「コマンド語ではない」と誤判定して
       # 素通りする。判定前に演算子を空白へ正規化してトークンを割り直す
       # （$0 への代入で NF / $n が再計算される）。
-      gsub(/[<>]/, " ")
+      # 括弧も同様に語へ密着できる。プロセス置換 `<(gh pr merge 1)` /
+      # `>(gh ...)` やサブシェル `(gh ...)` の内側は独立したコマンドとして
+      # 実行されるので、括弧を空白へ割って gh を実行トークンとして拾う（#1140）。
+      gsub(/[<>()]/, " ")
       for (i = 1; i <= NF; i++) {
         ghname = tolower($i)
         # Windows は gh.exe。実行形式のスペリング差で deny が外れないようにする。
@@ -555,6 +561,15 @@ while IFS= read -r unwrapped; do
   [[ -n "$unwrapped" ]] && GH_SEGMENTS+=("$unwrapped")
 done < <(printf '%s\n' "${GH_SEGMENTS[@]}" | unwrap_eval_and_bashc)
 
+# git alias 定義（Issue #1140）。`git -c alias.x='!cmd' x` の ! alias は値を
+# シェルで実行する。値の中の gh / git push は引用・エスケープ・変数で自由に
+# 書き換えられ静的には読み切れないので、値を判定せず ! alias の定義自体を
+# deny する。同じ理由で値が push を含む alias、値が環境変数側にあって読めない
+# --config-env / GIT_CONFIG_KEY_<n> による alias 定義も deny する。
+# `git config alias.x '!cmd'` の永続定義も同じ字面で拾う（後の `git x` は
+# 静的に解決できないため、定義の時点で止める）。
+GIT_ALIAS_RE='alias\.[^[:space:]=]+[=[:space:]]+(!|[^[:space:]]*push)|--config-env[=[:space:]]+alias\.|GIT_CONFIG_KEY_[0-9]+=alias\.'
+
 GH_ASSIGNMENTS=()
 while IFS= read -r assign; do
   [[ -n "$assign" ]] && GH_ASSIGNMENTS+=("$assign")
@@ -579,6 +594,12 @@ for segment in "${GH_SEGMENTS[@]}"; do
   # `/usr/bin/g"h" pr merge 1` が `g h ...` に割れて実行ファイル名の検知を
   # すり抜ける。削除版ではシェルと同じ連結結果（`gh pr create`）になる。
   gh_joined=$(printf '%s' "$gh_expanded" | tr -d '\042\047' | flatten_substitutions)
+
+  # alias 定義は引用符に加えバックスラッシュも外して判定する（`alias\.x` 対策）。
+  # git の設定キーは section 名の大小文字を区別しないので -i で見る。
+  if printf '%s\n' "$gh_joined" | tr -d '\\' | grep -qiE "$GIT_ALIAS_RE"; then
+    deny_with_reason "git の alias 定義（! で始まるシェル実行 alias / push を含む alias / --config-env・GIT_CONFIG_KEY_<n> による alias）は Worker から実行できません。alias の中身は静的に判定できないため、gh や git push の迂回経路として一律に止めています。alias を使わず正式なコマンド名で実行してください。"
+  fi
 
   for gh_variant in "$gh_flat" "$gh_joined"; do
     # `gh` トークンが無いセグメントは早期に抜ける（awk 起動コストの節約）。
