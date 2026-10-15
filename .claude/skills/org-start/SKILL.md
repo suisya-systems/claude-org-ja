@@ -15,6 +15,10 @@ allowed-tools:
   - Bash(py -3 -m tools.state_db.importer:*)
   - Bash(py -3 dashboard/org_state_converter.py:*)
   - Bash(python3 dashboard/org_state_converter.py:*)
+  - Bash(py -3 dashboard/server.py:*)
+  - Bash(python3 dashboard/server.py:*)
+  - Bash(py -3 tools/stop_dashboard.py:*)
+  - Bash(python3 tools/stop_dashboard.py:*)
   - Bash(py -3 tools/check_runtime_version.py:*)
   - Bash(python3 tools/check_runtime_version.py:*)
   - Bash(py -3 tools/ensure_projects_registry.py:*)
@@ -196,19 +200,23 @@ read 経路は **DB only**。Block A の spawn 発火と並列で実行する（
 
 Block A の spawn 発火と並列。ダッシュボード server は別プロセス（Python HTTP server）で Claude pane と独立。
 
-1. ダッシュボードサーバーが起動しているか確認する:
-   ```bash
-   cat .state/dashboard.pid 2>/dev/null && kill -0 $(cat .state/dashboard.pid) 2>/dev/null && echo "running" || echo "stopped"
-   ```
-2. 停止中であれば起動する:
-   ```bash
-   python3 dashboard/server.py &   # Mac/Linux
-   py -3 dashboard/server.py &     # Windows
-   ```
-3. ユーザーに案内する:
-   「ダッシュボードを起動しました → http://localhost:8099」
+サーバーは 8099 → 8100 → 8101 のうち空いているポートを使う（同じホストの別の組織が 8099 を使っていることがある）。案内する URL は必ず `--status` の出力から取り、8099 を決め打ちしない。
 
-> **sandbox 注記（false negative 回避）**: Claude Code の Bash sandbox はネットワーク / プロセス namespace が隔離されているため、本 Block の常駐起動・疎通確認を sandbox 内で行うと誤判定する。ホスト側で server が port 8099 を正常に listen していても、sandbox 内では `curl` が `000` を返し、`ss` に port が見えず、`pgrep` / `kill -0` はホストのプロセスを観測できない（「起動失敗」と誤判定して再起動ループに陥る）。また sandbox 内の `nohup ... &` で起動したプロセスはコマンド終了時に残らず常駐しない。**server の起動（手順 2）と疎通確認（手順 1 や `curl` / `ss` / `pgrep` / `kill -0` 等）は sandbox 外で実行する**（Claude Code の Bash tool なら `dangerouslyDisableSandbox: true` を付ける、または `run_in_background` によるホスト実行を使う）。
+1. ダッシュボードサーバーが起動しているか確認する（Windows は `python3` を `py -3` に読み替える。以下同じ）:
+   ```bash
+   python3 dashboard/server.py --status
+   ```
+   `--status` は bind 後にサーバーが書く `.state/dashboard.json`（実際のポートと pid）を読み、そのポートで応答しているのがこの clone のサーバーかを HTTP で確かめる。終了コード `0` なら標準出力が URL なので手順 3 へ。`1`（停止中）なら手順 2 へ。`3`（ポート記録を持たない旧版サーバーがこの組織で稼働中）なら `python3 tools/stop_dashboard.py` で止めてから手順 2 へ（止められなければ「ダッシュボードの再起動が必要」と報告して本 Block を終える）。`2`（記録が壊れている / 記録のポートで別のプロセスが応答している）なら標準エラーの理由を添えて報告し、URL は案内しない。
+2. 起動し、最大 15 秒まで起動を待って確かめる:
+   ```bash
+   python3 dashboard/server.py &
+   python3 dashboard/server.py --status --wait 15
+   ```
+   `0` 以外なら「ダッシュボードを起動できませんでした（<標準エラーの理由>）」と報告し、URL は案内しない（候補ポートが全部使用中、ポート記録が書けない等）。
+3. ユーザーに案内する（`<url>` は `--status` の標準出力）:
+   「ダッシュボードを起動しました → <url>」
+
+> **sandbox 注記（false negative 回避）**: Claude Code の Bash sandbox はネットワーク / プロセス namespace が隔離されているため、本 Block の常駐起動・疎通確認を sandbox 内で行うと誤判定する。ホスト側で server が正常に listen していても、sandbox 内では `curl` が `000` を返し、`ss` に port が見えず、`pgrep` / `kill -0` はホストのプロセスを観測できない（「起動失敗」と誤判定して再起動ループに陥る）。また sandbox 内の `nohup ... &` で起動したプロセスはコマンド終了時に残らず常駐しない。**server の起動（手順 2）と疎通確認（手順 1・2 の `--status`、`tools/stop_dashboard.py` や `curl` / `ss` / `pgrep` / `kill -0` 等）は sandbox 外で実行する**（Claude Code の Bash tool なら `dangerouslyDisableSandbox: true` を付ける、または `run_in_background` によるホスト実行を使う）。
 
 ### Block C2: claude-org-runtime バージョン drift 検出
 

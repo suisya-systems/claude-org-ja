@@ -412,14 +412,14 @@ head -1 knowledge/raw/archive/*.md  # <!-- curated --> マーカー確認
 2. `/org-dashboard` が発動するのを確認
 
 **期待結果**:
-- `dashboard/server.py` が起動し `http://localhost:8099` でサーバーが立ち上がる
-- ブラウザで `http://localhost:8099` が開かれる
+- `dashboard/server.py` が起動し、`python3 dashboard/server.py --status` が `http://localhost:<port>` を出力する（通常は 8099。同じホストで別の組織が動いていれば 8100 / 8101）
+- ブラウザでその URL が開かれる
 - プロジェクト一覧、作業状況、アクティビティ、知見が表示される
 - `/api/state` のレスポンスが実際の状態と一致する
 
 **失敗パターンと対処**:
 - サーバーが起動しない → `dashboard/server.py` のエラー出力を確認
-- ブラウザでデータが表示されない → `http://localhost:8099` が応答しているか `curl` で確認
+- ブラウザでデータが表示されない → `python3 dashboard/server.py --status` の終了コードと理由を確認
 - データが更新されない → SSEの接続状態（`/api/events`）を確認
 
 ---

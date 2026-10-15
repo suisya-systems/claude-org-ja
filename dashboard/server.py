@@ -4,7 +4,13 @@ Python standard library only — no pip install required.
 
 Usage: python3 dashboard/server.py   (Mac/Linux)
        py -3 dashboard/server.py      (Windows)
-       Then open http://localhost:8099
+       Then open the URL printed by ``python3 dashboard/server.py --status``.
+
+The port is the first free one of ``PORTS`` (another org on the same host
+may hold 8099). After a successful bind the server publishes the port it
+actually bound to ``.state/dashboard.json`` (atomic rename) and removes it on
+exit; ``--status`` reads that record and confirms over HTTP that the process
+answering is this clone's server before printing the URL (Issue #1135).
 
 M4 (Issue #267): the dashboard reads exclusively from
 ``.state/state.db``. There is no markdown / JSON fallback — fresh
@@ -16,15 +22,18 @@ clones must run::
 once before ``server.py`` will return useful data.
 """
 
+import argparse
 import http.server
 import json
 import os
 import queue
 import re
+import signal
 import socketserver
 import sys
 import threading
 import time
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -37,6 +46,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 from tools.registry_parser import parse_projects_text as _parse_projects_shared
 from tools.state_db import connect as _db_connect
+from tools.secretary_queue_watcher import live_cmdline, pid_alive
 from tools.state_db.queries import (
     get_org_state_summary as _db_org_state_summary,
     list_live_worker_task_ids as _db_live_worker_task_ids,
@@ -52,6 +62,8 @@ POLL_INTERVAL = 1.5  # seconds
 BASE_DIR = Path(__file__).parent.parent  # claude-org repo root
 DASHBOARD_DIR = Path(__file__).parent
 PID_FILE = BASE_DIR / ".state" / "dashboard.pid"
+RECORD_FILE = BASE_DIR / ".state" / "dashboard.json"
+ORG_ROOT = str(BASE_DIR.resolve())
 STATE_DB_PATH = BASE_DIR / ".state" / "state.db"
 
 # ---------------------------------------------------------------------------
@@ -502,6 +514,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         if path == "/api/state":
             self._serve_json(build_state())
+        elif path == "/api/identity":
+            self._serve_json({"org_root": ORG_ROOT, "pid": os.getpid()})
         elif path == "/api/events":
             self._serve_sse()
         elif path == "/" or path == "/index.html":
@@ -575,20 +589,96 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 class ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
+    # On Windows SO_REUSEADDR lets a second socket bind a port that is already
+    # listening, so a second org would silently share 8099 instead of falling
+    # through to 8100.
+    allow_reuse_address = os.name != "nt"
+
+
+# ---------------------------------------------------------------------------
+# Port record + --status
+# ---------------------------------------------------------------------------
+
+def _write_atomic(path, text):
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)  # same-dir rename: readers never see a partial file
+
+
+def _remove_if_ours(path, read_pid):
+    """Delete ``path`` only while it still names this process."""
+    try:
+        if read_pid(path.read_text(encoding="utf-8")) == os.getpid():
+            path.unlink()
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
+
+
+def _record_pid(text):
+    return json.loads(text).get("pid")
+
+
+def check_status():
+    """Return (exit_code, message). 0 = running here (message is the URL).
+
+    1 = stopped (no record / record's pid is gone), 2 = record broken or the
+    server on the recorded port is not this clone's, 3 = legacy server with no
+    port record (restart needed). Never guesses a port.
+    """
+    try:
+        rec = json.loads(RECORD_FILE.read_text(encoding="utf-8"))
+        pid, port = int(rec["pid"]), int(rec["port"])
+    except FileNotFoundError:
+        try:
+            old = int(PID_FILE.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            return 1, "stopped"
+        cmd = live_cmdline(old) if pid_alive(old) else None
+        if cmd and any("dashboard/server.py" in c.replace("\\", "/") for c in cmd):
+            return 3, (f"legacy dashboard (pid={old}) has no port record; "
+                       "restart it: python3 tools/stop_dashboard.py, then start again")
+        return 1, "stopped"
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        return 2, f"port record {RECORD_FILE} is unreadable ({exc})"
+    if not pid_alive(pid):
+        return 1, "stopped (stale port record)"
+    try:
+        with urllib.request.urlopen(
+            f"http://localhost:{port}/api/identity", timeout=2
+        ) as resp:
+            ident = json.loads(resp.read().decode("utf-8"))
+    except (OSError, ValueError) as exc:
+        return 2, f"pid={pid} is alive but port {port} does not answer ({exc})"
+    if not isinstance(ident, dict) or ident.get("org_root") != ORG_ROOT \
+            or ident.get("pid") != pid:
+        return 2, f"port {port} is served by another process, not this org's dashboard"
+    return 0, f"http://localhost:{port}"
+
+
+def run_status(wait):
+    deadline = time.monotonic() + wait
+    while True:
+        code, msg = check_status()
+        if code == 0 or time.monotonic() >= deadline:
+            break
+        time.sleep(0.5)
+    print(msg, file=sys.stdout if code == 0 else sys.stderr)
+    return code
 
 
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
-def main():
-    # Write PID file
-    PID_FILE.parent.mkdir(parents=True, exist_ok=True)
-    PID_FILE.write_text(str(os.getpid()))
-
-    # Start file watcher
-    t = threading.Thread(target=_watcher_thread, daemon=True)
-    t.start()
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="claude-org dashboard server")
+    parser.add_argument("--status", action="store_true",
+                        help="print this org's dashboard URL (exit 0) or why not (exit 1/2/3)")
+    parser.add_argument("--wait", type=float, default=0, metavar="SEC",
+                        help="with --status: keep checking up to SEC seconds for startup")
+    args = parser.parse_args(argv)
+    if args.status:
+        sys.exit(run_status(args.wait))
 
     # Try ports
     server = None
@@ -605,6 +695,28 @@ def main():
         print(f"ERROR: Could not bind to any of {PORTS}", file=sys.stderr)
         sys.exit(1)
 
+    # Publish only after a successful bind; without a record the org cannot
+    # find this server, so refuse to run rather than serve unannounced.
+    try:
+        RECORD_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _write_atomic(RECORD_FILE, json.dumps({
+            "pid": os.getpid(), "port": port, "org_root": ORG_ROOT,
+            "started_at": datetime.now(timezone.utc).isoformat(),
+        }))
+        _write_atomic(PID_FILE, str(os.getpid()))
+    except OSError as exc:
+        print(f"ERROR: could not write {RECORD_FILE} ({exc})", file=sys.stderr)
+        server.server_close()
+        _remove_if_ours(RECORD_FILE, _record_pid)
+        sys.exit(1)
+
+    def _on_sigterm(signum, frame):
+        raise SystemExit(0)
+    signal.signal(signal.SIGTERM, _on_sigterm)
+
+    t = threading.Thread(target=_watcher_thread, daemon=True)
+    t.start()
+
     print(f"Dashboard: http://localhost:{port}")
     print("Press Ctrl+C to stop.")
     try:
@@ -612,7 +724,8 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
-        PID_FILE.unlink(missing_ok=True)
+        _remove_if_ours(RECORD_FILE, _record_pid)
+        _remove_if_ours(PID_FILE, lambda t: int(t.strip()))
         print("\nServer stopped.")
 
 
