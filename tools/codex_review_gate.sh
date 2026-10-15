@@ -37,7 +37,10 @@ if [ "$#" -ne 1 ]; then
 fi
 base_ref="$1"
 
-dirty="$(git status --porcelain --untracked-files=no 2>/dev/null)"
+if ! dirty="$(git status --porcelain --untracked-files=no)"; then
+    echo "CODEX_GATE: not-established (git status failed; cannot rule out rebase residue)"
+    exit 1
+fi
 if [ -n "$dirty" ]; then
     printf '%s\n' "$dirty"
     echo "CODEX_GATE: dirty-worktree (tracked changes above; likely rebase residue on sandbox-protected paths; HEAD=$(git rev-parse --short HEAD 2>/dev/null))"

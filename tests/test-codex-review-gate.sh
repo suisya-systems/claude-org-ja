@@ -122,6 +122,19 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+# git status が失敗したら clean とみなさず not-established (fail closed)
+mkdir -p "$WORK/nogit"
+actual_exit=0
+output=$(cd "$WORK/nogit" && GIT_CEILING_DIRECTORIES="$WORK" PATH="$WORK/bin:$PATH" TMPDIR="$WORK/tmp" \
+  STUB_DIR="$WORK" STUB_OUT='  succeeded in 1ms:\n' STUB_EXIT=0 bash "$GATE" origin/main 2>&1) || actual_exit=$?
+if [[ "$actual_exit" -eq 1 && "$(printf '%s\n' "$output" | tail -1)" == *"CODEX_GATE: not-established (git status failed"* ]]; then
+  echo "  PASS: git status 失敗 → not-established"
+  PASS=$((PASS + 1))
+else
+  echo "  FAIL: git status 失敗時の結果 (exit $actual_exit: $(printf '%s\n' "$output" | tail -1))"
+  FAIL=$((FAIL + 1))
+fi
+
 actual_exit=0
 bash "$GATE" >/dev/null 2>&1 || actual_exit=$?
 if [[ "$actual_exit" -eq 2 ]]; then
