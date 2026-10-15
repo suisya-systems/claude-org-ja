@@ -33,7 +33,7 @@ python3 dashboard/server.py --status
 
 - `0` → 標準出力の URL を使って Step 3 へ
 - `1`（停止中。記録が無い / 記録の pid が消えている）→ Step 2 へ
-- `3`（ポート記録を持たない旧版サーバーがこの組織で稼働中）→ `python3 tools/stop_dashboard.py` で止めて（cmdline を照合してから止める）から Step 2 へ。停止できなかったら、再起動が必要な旨を人間に報告して終える
+- `3`（ポート記録を持たない旧版サーバーがこの組織で稼働中）→ 止めてから Step 2 へ。Mac/Linux は `python3 tools/stop_dashboard.py`（cmdline を照合してから止める）、Windows native は [`.claude/skills/org-down/SKILL.md`](../org-down/SKILL.md) Step 2 の PowerShell 手順（`Get-CimInstance` で CommandLine を照合してから `Stop-Process`）を使う。Windows native では `py -3 tools/stop_dashboard.py` を使わない（内部の `os.kill(pid, 0)` が Windows ではプロセスを終了させるため、照合前に無関係なプロセスを止めうる）。停止できなかったら、再起動が必要な旨を人間に報告して終える
 - `2`（記録が壊れている / 記録のポートで別のプロセスが応答している / 応答しない）→ 標準エラーの理由を添えて人間に報告して終える。URL は案内しない
 
 ## Step 2: サーバー起動と起動待ち

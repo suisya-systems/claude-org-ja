@@ -17,7 +17,6 @@ allowed-tools:
   - Bash(python3 dashboard/org_state_converter.py:*)
   - Bash(py -3 dashboard/server.py:*)
   - Bash(python3 dashboard/server.py:*)
-  - Bash(py -3 tools/stop_dashboard.py:*)
   - Bash(python3 tools/stop_dashboard.py:*)
   - Bash(py -3 tools/check_runtime_version.py:*)
   - Bash(python3 tools/check_runtime_version.py:*)
@@ -206,7 +205,7 @@ Block A の spawn 発火と並列。ダッシュボード server は別プロセ
    ```bash
    python3 dashboard/server.py --status
    ```
-   `--status` は bind 後にサーバーが書く `.state/dashboard.json`（実際のポートと pid）を読み、そのポートで応答しているのがこの clone のサーバーかを HTTP で確かめる。終了コード `0` なら標準出力が URL なので手順 3 へ。`1`（停止中）なら手順 2 へ。`3`（ポート記録を持たない旧版サーバーがこの組織で稼働中）なら `python3 tools/stop_dashboard.py` で止めてから手順 2 へ（止められなければ「ダッシュボードの再起動が必要」と報告して本 Block を終える）。`2`（記録が壊れている / 記録のポートで別のプロセスが応答している）なら標準エラーの理由を添えて報告し、URL は案内しない。
+   `--status` は bind 後にサーバーが書く `.state/dashboard.json`（実際のポートと pid）を読み、そのポートで応答しているのがこの clone のサーバーかを HTTP で確かめる。終了コード `0` なら標準出力が URL なので手順 3 へ。`1`（停止中）なら手順 2 へ。`3`（ポート記録を持たない旧版サーバーがこの組織で稼働中）なら Mac/Linux は `python3 tools/stop_dashboard.py`、Windows native は [`.claude/skills/org-down/SKILL.md`](../org-down/SKILL.md) Step 2 の PowerShell 手順（`Get-CimInstance` で CommandLine を照合してから `Stop-Process`）で止めてから手順 2 へ。Windows native では `py -3 tools/stop_dashboard.py` を使わない（内部の `os.kill(pid, 0)` が Windows ではプロセスを終了させるため、照合前に無関係なプロセスを止めうる）。止められなければ「ダッシュボードの再起動が必要」と報告して本 Block を終える。`2`（記録が壊れている / 記録のポートで別のプロセスが応答している）なら標準エラーの理由を添えて報告し、URL は案内しない。
 2. 起動し、最大 15 秒まで起動を待って確かめる:
    ```bash
    python3 dashboard/server.py &
