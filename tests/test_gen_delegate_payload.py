@@ -4181,6 +4181,49 @@ class TestBaseBranchResolution(unittest.TestCase):
         body = self._plan().delegate_body
         self.assertNotIn("ベース:", body)
 
+    # -- Issue #1152: integration_branch hint ------------------------------
+    def _set_integration_branch(self, value: str) -> None:
+        cfg = self.sb.claude_org_root / "registry" / "org-config.md"
+        cfg.write_text(
+            cfg.read_text(encoding="utf-8")
+            + f"## Integration Branch\nintegration_branch: {value}\n",
+            encoding="utf-8",
+        )
+
+    def _integration_warnings(self, plan):
+        return [w for w in plan.warnings if "integration_branch" in w]
+
+    def test_integration_branch_warns_when_dispatch_falls_to_origin_head(self):
+        self._set_integration_branch("modernize/x")
+        plan = self._plan()
+        # Warn only: the cut point stays origin/HEAD (#808 precedence intact).
+        self.assertIsNone(plan.base_branch)
+        self.assertEqual(plan.base_branch_source, "origin_head")
+        [w] = self._integration_warnings(plan)
+        self.assertIn("--base-ref modernize/x", w)
+        self.assertEqual(plan.blocking_warnings, [])
+
+    def test_integration_branch_silent_when_base_is_explicit(self):
+        self._set_integration_branch("modernize/x")
+        self.assertEqual(
+            self._integration_warnings(self._plan(base_ref_override="main")), []
+        )
+        self._write_registry("develop")
+        self.assertEqual(self._integration_warnings(self._plan()), [])
+
+    def test_integration_branch_unset_or_indented_is_ignored(self):
+        for value in ("-", ""):
+            with self.subTest(value=value):
+                self._set_integration_branch(value)
+                self.assertEqual(self._integration_warnings(self._plan()), [])
+        cfg = self.sb.claude_org_root / "registry" / "org-config.md"
+        cfg.write_text(
+            cfg.read_text(encoding="utf-8")
+            + "- `integration_branch: modernize/x` (prose)\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(self._integration_warnings(self._plan()), [])
+
     # -- apply: the worktree is actually cut from the configured branch ----
     def test_apply_cuts_worktree_from_configured_base_branch(self):
         self._write_registry("develop")

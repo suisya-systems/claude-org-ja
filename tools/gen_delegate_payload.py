@@ -63,6 +63,12 @@ _PERMISSION_MODE_RE = re.compile(
     r"^\s*default_permission_mode\s*:\s*(\S+)\s*$", re.MULTILINE
 )
 
+# Issue #1152: column 0 only (like ``triage_home``) so prose quoting the key
+# is never read as the setting.
+_INTEGRATION_BRANCH_RE = re.compile(
+    r"^integration_branch[ \t]*:[ \t]*(\S*)[ \t]*$", re.MULTILINE
+)
+
 _PATTERN_LABELS = {
     "A": "A: プロジェクトディレクトリ",
     "B": "B: worktree",
@@ -299,6 +305,20 @@ def parse_permission_mode(claude_org_root: Path) -> str:
     text = cfg.read_text(encoding="utf-8")
     m = _PERMISSION_MODE_RE.search(text)
     return m.group(1) if m else "auto"
+
+
+def parse_integration_branch(claude_org_root: Path) -> Optional[str]:
+    """Return the in-flight integration branch from ``registry/org-config.md``.
+
+    Issue #1152. Only a hint for :func:`build_delegate_plan`'s preview
+    warning — it never changes the cut point, so the #808 precedence
+    (--base-ref > registry base_branch > origin/HEAD) is untouched.
+    """
+    cfg = claude_org_root / "registry" / "org-config.md"
+    if not cfg.exists():
+        return None
+    m = _INTEGRATION_BRANCH_RE.search(cfg.read_text(encoding="utf-8"))
+    return normalize_base_branch(m.group(1)) if m else None
 
 
 def _pattern_label(layout: rwl.WorkerLayout) -> str:
@@ -984,6 +1004,18 @@ def build_delegate_plan(
         pattern=layout.pattern,
         base_repo=base_repo,
     )
+    # Issue #1152: an integration branch is in flight but this dispatch fell
+    # through to origin/HEAD — the exact slip of #1139. Warn, don't redirect:
+    # main-bound tasks still legitimately run during an integration effort.
+    integration_branch = parse_integration_branch(Path(claude_org_root))
+    if integration_branch is not None and base_branch is None:
+        warnings.append(
+            f"registry/org-config.md の integration_branch: {integration_branch} "
+            "が設定されているが、このタスクは origin/HEAD から切られる。"
+            f"統合用ブランチ宛てなら --base-ref {integration_branch} を付けて"
+            "再生成すること（main 宛てで正しいなら --base-ref で既定ブランチを"
+            "明示すれば警告は出ない）"
+        )
 
     return DelegatePlan(
         task_id=task_id,
