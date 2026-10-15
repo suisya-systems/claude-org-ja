@@ -10,6 +10,12 @@
 #   1  CODEX_GATE: not-established  未成立（空の合格を含む）。出力が合格に読めても「codex clean」と報告しない
 #   2  使い方の誤り
 #   3  CODEX_GATE: unavailable      codex CLI が無い。セルフレビューは skip してよい
+#   4  CODEX_GATE: dirty-worktree   追跡ファイルに未コミット差分がある。codex は回さない
+#
+# dirty-worktree: commit 後に回す前提なので、追跡ファイルの差分は rebase 残差とみなす。
+# sandbox が書込みを拒否するパス（.claude/skills 等）は rebase が成功表示でも旧内容の
+# まま残り、そのまま回すと codex が古い差分までレビューする（Issue #1151）。
+# 未追跡は見ない（sandbox が置く空のマウント点が未追跡として出るため）。
 #
 # 「空の合格」: CODEX_HOME が書けないと codex は実行ヘルパーを置けず、コマンドを
 # 1 つも実行しないまま「指摘なし」と読める文面で exit 0 する。但し書きも出ないこと
@@ -30,6 +36,16 @@ if [ "$#" -ne 1 ]; then
     exit 2
 fi
 base_ref="$1"
+
+if ! dirty="$(git status --porcelain --untracked-files=no)"; then
+    echo "CODEX_GATE: not-established (git status failed; cannot rule out rebase residue)"
+    exit 1
+fi
+if [ -n "$dirty" ]; then
+    printf '%s\n' "$dirty"
+    echo "CODEX_GATE: dirty-worktree (tracked changes above; likely rebase residue on sandbox-protected paths; HEAD=$(git rev-parse --short HEAD 2>/dev/null))"
+    exit 4
+fi
 
 if ! command -v codex >/dev/null 2>&1; then
     echo "CODEX_GATE: unavailable (codex CLI not found; skip self-review)"

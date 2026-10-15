@@ -46,6 +46,16 @@ allowed-tools:
 
 > **輸送層（transport）両系**: 本スキルのツール参照は `mcp__org-broker__*`（`org-broker`）で書いてあり、active transport が既定面ならそのまま従えばよい。輸送層で手順が変わるのは **受信モデル / spawn 儀式 / エラー分岐** の 3 点だけ。うち本スキルで実際に効くのは受信モデル 1 点で、**`CI_COMPLETED` / `PR_MERGED` の判定は輸送層に依らず events テーブルの canonical 行が正本**（直 push は best-effort 補助。分岐の本体は下記 2b-i の受信モデルと「CI 完了検知の正路」節）。両系の読み替え規則・「既定」の二フレーム注記・契約の批准経緯・broker 拡張エラーコードは [`.claude/skills/org-pull-request/references/transport-duality.md`](references/transport-duality.md) を参照（上記 3 分岐に入るまで読む必要はない）。
 
+## 2a-r. ワーカーから「rebase 残差あり」/ `CODEX_GATE: dirty-worktree` の報告を受けたとき（承認前、Issue #1151）
+
+ワーカーの sandbox は `.claude/skills` 等への書込みを拒否するため、統合用ブランチへの rebase が `Read-only file system` で止まるか、成功表示でも該当ファイルが旧内容のまま作業ツリーに残る。後者のまま検証や Codex を回すと古い差分まで対象になる（`tools/codex_review_gate.sh` は追跡ファイルの差分を見ると `CODEX_GATE: dirty-worktree` で止まる）。ワーカーに update-ref / reset で回避させず、ack の後に窓口が自分の Bash（ワーカー sandbox の外）で直す。ワーカーは commit 済みの前提なので、追跡ファイルの差分は残差だけである。
+
+1. `git -C <worker_dir> status` で状態を見る
+2. **rebase 途中で止まっている**（`rebase in progress`）: `git -C <worker_dir> rebase --abort` → `git -C <worker_dir> rebase <base_ref>`（`<base_ref>` は `send_plan.json` の `summary.base_ref`）。conflict が出たら `git -C <worker_dir> rebase --abort` で戻し、[`.claude/skills/org-escalation/SKILL.md`](../org-escalation/SKILL.md) の手順で人間に上げる（窓口は conflict を解かない）
+3. **rebase は完了し差分が残っている**: `git -C <worker_dir> diff --stat HEAD` で残差パスを確かめる。sandbox が書込みを拒否するパス（`.claude/skills` / `.claude/hooks` / `.claude/settings.json` 等）以外が含まれていたらワーカーの未コミット作業かもしれないので、戻さず [`.claude/skills/org-escalation/SKILL.md`](../org-escalation/SKILL.md) の手順で人間に上げる。保護パスだけなら `git -C <worker_dir> restore --staged --worktree -- <パス...>` で HEAD の内容に戻す（`--source` 指定と `checkout -- <path>` は hook が deny する）
+4. `git -C <worker_dir> status --porcelain --untracked-files=no` が空になったことを確かめ、ワーカーに「rebase 残差を窓口で解消した。`git status` が空であることを確かめ、通常検証と Codex ゲートを回し直して完了報告して」と送る
+5. 窓口の Bash でも `Read-only file system` 等で書けないときは、sandbox を外さず人間に報告して指示を仰ぐ
+
 ## 2b-i. PR 作成段階（即時実行）
 
 ユーザーが「OK」「確認した」「問題ない」「進めて」等の **明示的承認** を出した直後に発動する:
