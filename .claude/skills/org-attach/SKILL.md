@@ -5,9 +5,10 @@ description: >
   ための **コマンドを出力するだけ** の read-only スキル。`mcp__org-broker__list_panes`（論理ペイン）
   と `/usr/bin/tmux -L claude-org-broker list-panes -a`（pane_id ↔ session マッピング）を
   pane_id（%N）で突き合わせ、各ペインに role + name(task_id) ラベル付きの attach コマンドを
-  生成する（読取専用 `-r` / 書込は `-r` 無し / デタッチは `Ctrl-b d`）。
-  特定のペインの画面を直接見たい・入りたい、attach コマンドを知りたいという依頼で発動。
-  自分で attach はせず・ペインも一切変更しない（コマンド文字列とペイン一覧表を表示するのみ）。
+  生成する（既定は読取書込 = `-r` 無し / 読取専用 `-r` はオプション / デタッチは `Ctrl-b d`）。
+  外側が tmux のときに今の tmux を分割してワーカー（と dispatcher）を並べる `split-window` コマンドも出す。
+  特定のペインの画面を直接見たい・入りたい・並べて見たい、attach コマンドを知りたいという依頼で発動。
+  自分で attach / split はせず・ペインも一切変更しない（コマンド文字列とペイン一覧表を表示するのみ）。
   作業委譲（org-delegate）・ダッシュボードで状況一覧（org-dashboard）・watcher 停止（org-attention-stop）
   には発動しない。
 effort: low
@@ -190,12 +191,34 @@ join に回さず別枠で報告する（下記）。`id` が `%N` のレコー�
 
 join できた各ペインについて、role + name(task_id) ラベル付きで次を出力する:
 
-- **読取専用 attach（既定・安全）**: `/usr/bin/tmux -L claude-org-broker attach -r -t <session>`
-  - `-r` = read-only attach。覗くだけで誤入力でペインを壊さない。**まずこちらを案内する**
-- **読取書込 attach（自分で打ちたい時のみ）**: 同じコマンドから **`-r` を外す**
-  → `/usr/bin/tmux -L claude-org-broker attach -t <session>`
+- **読取書込 attach（既定）**: `/usr/bin/tmux -L claude-org-broker attach -t <session>`
+- **読取専用 attach（オプション）**: 同じコマンドに **`-r` を付ける**
+  → `/usr/bin/tmux -L claude-org-broker attach -r -t <session>`
+  - `-r` = read-only attach。覗くだけで誤入力でペインを壊さない
+- **今の tmux を分割して並べる（外側が tmux = `$TMUX` 設定ありのとき）**: 各ペインについて
+  `/usr/bin/tmux split-window -d -h "TMUX= /usr/bin/tmux -L claude-org-broker attach -t <session>" \; select-layout tiled`
+  を 1 行ずつ出す
+  - `-d`: 新しいペインへフォーカスを移さない。無いと 1 行目の実行後に入力先が attach 先（dispatcher / worker）
+    に移り、次の行がそちらへ打ち込まれる
+  - `\; select-layout tiled`: 分割のたびに均等配置へ戻す。最後に 1 回だけだと、`-h` 分割を重ねる途中で
+    幅が尽きて `no space for new pane` で後続の分割が失敗する
+  - 外側の `/usr/bin/tmux split-window` は `-L` を付けず、`$TMUX` が指す**人間自身の tmux** を分割する。
+    内側の `TMUX=` は「tmux の中から tmux を起動する」入れ子拒否
+    （`sessions should be nested with care, unset $TMUX to force`）を外すためのもの
+  - 外側の tmux が broker socket（`claude-org-broker` の session に attach 中の端末）だと、組織の
+    session 自体を分割してしまう。broker に attach していない自分の tmux から実行する
+  - 読取専用で並べたいときは内側の `attach` に `-r` を付ける
+  - 分割ペインの中でデタッチすると内側の attach が終わり、その分割ペインも閉じる（組織のペインは生き続ける）
 - **デタッチ**: attach 中に `Ctrl-b d` を押すと、ペインを動かしたまま自分だけ抜ける
   （ペインは生き続ける ― close ではない）
+- **別セッションへの切替**（tmux 3.2a の既定キー。`man tmux` の DEFAULT KEY BINDINGS / attach-session `-r`）:
+  - 読取書込 attach: `Ctrl-b s`（セッション一覧から選ぶ `choose-tree`）
+  - 読取専用 `-r` attach: `Ctrl-b (` / `Ctrl-b )`（前 / 次のセッション）、`Ctrl-b L`（直前のセッション）。
+    read-only クライアントで効くのは detach-client / switch-client に bind したキーだけなので、
+    `Ctrl-b s`（`choose-tree`）は効かない
+- **入れ子（分割ペインの中）**: 外側の tmux も既定 prefix `Ctrl-b` だと外側が先に受け取るため、内側へは
+  **prefix を 2 回**押す（`Ctrl-b Ctrl-b d` でデタッチ、`Ctrl-b Ctrl-b (` で切替。既定の `Ctrl-b Ctrl-b` は
+  `send-prefix`）
   - **`Ctrl-b` は tmux prefix の既定値**: prefix を変更している場合は設定した prefix に読み替える。
     さらに、**attach する端末が renga の場合はこの打鍵が届かない** — renga の org サイドバーは既定で
     有効なあいだ `Ctrl+B`（tmux prefix `Ctrl-b` と同じ物理入力）を消費して PTY へ渡さないため、
@@ -236,20 +259,27 @@ logical pane 除外 → `%N` を持つ dispatcher / worker のみ join → 生�
 ※ これらを自分のターミナルに貼って入る
 
 ■ dispatcher (dispatcher)          session=claude-org-broker-1912-14
-  読取専用 : /usr/bin/tmux -L claude-org-broker attach -r -t claude-org-broker-1912-14
   読取書込 : /usr/bin/tmux -L claude-org-broker attach    -t claude-org-broker-1912-14
+  読取専用 : /usr/bin/tmux -L claude-org-broker attach -r -t claude-org-broker-1912-14
 
 ■ worker (worker-feat-org-attach-skill)   session=claude-org-broker-1912-17
-  読取専用 : /usr/bin/tmux -L claude-org-broker attach -r -t claude-org-broker-1912-17
   読取書込 : /usr/bin/tmux -L claude-org-broker attach    -t claude-org-broker-1912-17
+  読取専用 : /usr/bin/tmux -L claude-org-broker attach -r -t claude-org-broker-1912-17
+
+■ 今の tmux を分割して並べる（自分の tmux の中から。broker に attach 中の端末では使わない）
+  /usr/bin/tmux split-window -d -h "TMUX= /usr/bin/tmux -L claude-org-broker attach -t claude-org-broker-1912-14" \; select-layout tiled
+  /usr/bin/tmux split-window -d -h "TMUX= /usr/bin/tmux -L claude-org-broker attach -t claude-org-broker-1912-17" \; select-layout tiled
+  （読取専用で並べるなら内側の attach に -r を付ける）
 
 (logical pane / attach 対象外)
 - secretary (secretary): 窓口は logical pane（pane_id 無し・broker socket 非出現）。
   org を起動した人間の手元 terminal でそのまま見えるので attach 不要。
 
-- まず読取専用（-r）で入るのを推奨。自分で打ちたい時だけ -r を外す。
+- 既定は読取書込。覗くだけなら -r を付ける（誤入力でペインを壊さない）。
 - 抜けるとき: Ctrl-b d（デタッチ。ペインは動いたまま自分だけ抜ける）。
-- 別セッションへ切替: Ctrl-b s（attach 中にセッション一覧から選ぶ。現状は per-session attach）。
+- 別セッションへ切替: 読取書込なら Ctrl-b s（一覧から選ぶ）。-r 付きでは Ctrl-b s は効かないので
+  Ctrl-b ( / Ctrl-b )（前 / 次）、Ctrl-b L（直前）を使う。
+- 分割ペイン（入れ子）の中では prefix を 2 回押す（例: Ctrl-b Ctrl-b d でデタッチ）。
 - 上記 Ctrl-b は tmux prefix の既定値。変更していれば設定した prefix に読み替える。
   renga の画面から attach する場合は、org サイドバー（既定で有効）が Ctrl+B（tmux prefix Ctrl-b と
   同じ物理入力）を消費して PTY へ渡さないため上の打鍵が届かない（detach できず抜けられなくなる）。
@@ -269,7 +299,7 @@ unmatched があった場合の追記例:
 
 ## やらないこと（read-only 不変条件）
 
-- 自分で `attach` しない（コマンド**文字列**を出すだけ）
+- 自分で `attach` / `split-window` しない（コマンド**文字列**を出すだけ）
 - ペインを spawn / close / rename / send_keys / send_message しない
 - `.state/` / registry / tmux のいずれも変更しない
 - 書込み・spawn・送信系の broker / tmux ツールは `allowed-tools` に含めない
