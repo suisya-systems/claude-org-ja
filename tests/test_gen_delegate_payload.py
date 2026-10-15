@@ -22,6 +22,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 from typing import Optional
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -2374,6 +2375,93 @@ class TestFetchBaseOrigin(unittest.TestCase):
             gdp._fetch_base_origin(self.repo)
         self.assertIn("git fetch origin", str(cm.exception))
         self.assertIn("480", str(cm.exception))
+
+
+class TestStaleConfigLock(unittest.TestCase):
+    """Issue #1145: the Claude Code sandbox leaves an empty
+    ``.git/config.lock`` on the host; host-side config writes must clear it
+    (only when empty and no git runs) and retry once."""
+
+    def setUp(self) -> None:
+        try:
+            subprocess.run(["git", "--version"], capture_output=True, check=True)
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            self.skipTest("git not available")
+        self._td = tempfile.TemporaryDirectory()
+        td = Path(self._td.name)
+        env = ["-c", "user.name=t", "-c", "user.email=t@example.com"]
+        upstream = td / "upstream"
+        subprocess.run(["git", "init", "-q", "-b", "main", str(upstream)], check=True)
+        subprocess.run(
+            ["git", "-C", str(upstream), *env, "commit", "-q", "--allow-empty", "-m", "i"],
+            check=True,
+        )
+        self.repo = td / "repo"
+        subprocess.run(["git", "clone", "-q", str(upstream), str(self.repo)], check=True)
+        self.lock = self.repo / ".git" / "config.lock"
+        self.lock.touch()
+        # Real pgrep would see unrelated git processes on the host; pin it.
+        real_run = subprocess.run
+        self.pgrep_rc = 1
+
+        def fake_run(cmd, *a, **kw):
+            if cmd[0] == "pgrep":
+                return subprocess.CompletedProcess(cmd, self.pgrep_rc, b"", b"")
+            return real_run(cmd, *a, **kw)
+
+        patcher = mock.patch.object(gdp.subprocess, "run", side_effect=fake_run)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def _config_cmd(self):
+        return ["git", "-C", str(self.repo), "config", "foo.bar", "1"]
+
+    def test_removes_empty_lock_and_writes(self):
+        proc = gdp._run_config_writing_git(self.repo, self._config_cmd())
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertFalse(self.lock.exists())
+
+    def test_keeps_non_empty_lock(self):
+        self.lock.write_text("x", encoding="utf-8")
+        proc = gdp._run_config_writing_git(self.repo, self._config_cmd())
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertTrue(self.lock.exists())
+
+    def test_keeps_lock_while_git_runs(self):
+        self.pgrep_rc = 0
+        proc = gdp._run_config_writing_git(self.repo, self._config_cmd())
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertTrue(self.lock.exists())
+
+    def test_retries_once_when_lock_survives_preclear(self):
+        """Lock recreated between the pre-clear and the git run: clear again
+        and retry once."""
+        real_clear = gdp._clear_stale_config_lock
+        calls = []
+
+        def clear(repo):
+            calls.append(repo)
+            return False if len(calls) == 1 else real_clear(repo)
+
+        with mock.patch.object(gdp, "_clear_stale_config_lock", side_effect=clear):
+            proc = gdp._run_config_writing_git(self.repo, self._config_cmd())
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertFalse(self.lock.exists())
+
+    def test_worktree_add_lands_after_preclear(self):
+        """``worktree add -b`` off origin/* writes tracking config; the
+        pre-clear lets it land (it is not retried: not idempotent)."""
+        worker = Path(self._td.name) / "wt"
+        cmd = ["git", "-C", str(self.repo), "worktree", "add", "-b", "feat",
+               str(worker), "origin/main"]
+        proc = gdp._run_config_writing_git(self.repo, cmd, retry=False)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertTrue((worker / ".git").exists())
+        self.assertTrue((worker / ".git").exists())
 
 
 class TestPatternBWorktreeFetchesStaleOrigin(unittest.TestCase):
