@@ -23,6 +23,7 @@
 - grep / find / sed / テスト対象は**常に `/tmp/workers/demo-task/...` の絶対パス**。`cd <dir>; <相対パス>` と root での `grep -r ... .` は使わない。ultracode の各 `agent()` プロンプト内の Bash 指示にも同じ規約を適用（subagent のコマンドは worker 本体の permissions で判定される）
 - 理由: auto-mode 分類器は `cd` 後の相対パスを解決できず、`Read(.env)` 等の deny 規則（`tools/org_extension_schema.json` の `layer2Fallback`）と組み合わさって毎回人間承認に落ちる。deny 規則は緩めず書き方で回避する
 - NG: `cd /tmp/workers/demo-task; grep -n "renewLease" test/lap/root.test.ts` / `grep -rln "lease" . --include=*.json` → OK: `grep -n "renewLease" /tmp/workers/demo-task/test/lap/root.test.ts` / `grep -rln "lease" /tmp/workers/demo-task/test --include=*.json`
+- git は例外: worktree の cwd で `git add` / `git commit` と単独で打つ（`git -C <path>` や変数代入で場所を前置しない）。許可ルール `Bash(git commit:*)` は先頭一致で、前置付きは当たらず `Reason: [...]` の付かない拒否になる
 
 ### 着手前 preflight（sandbox 書き込み境界・非対話 alias・hook 拒否）
 - 作業ファイルを置けるのは `/tmp/workers/demo-task` 配下と `$TMPDIR` だけ（git が内部で触る Pattern B の `.git` メタデータは別枠で、作業ファイルの置き場ではない）。Write / Edit で `/tmp/workers/demo-task` 外（ハーネスの scratchpad を含む）に書くと hook が deny する。代わりに Bash の一時ファイルは `$TMPDIR` へ、Write / Edit の作業メモは `mkdir -p /tmp/workers/demo-task/.worker-scratch` へ。linked worktree（Pattern B）では `.git/info/exclude` が共通 clone 側（sandbox 外）にあり登録できないので、禁止事項 5 のとおり `git add -u` + 明示 add で staging し `.worker-scratch/` を commit に混入させない。`/tmp/claude-<uid>` は並走ワーカーと共有なので一般名のバックアップは衝突する（`.worker-scratch/` に置くか task_id を名前に入れる）
