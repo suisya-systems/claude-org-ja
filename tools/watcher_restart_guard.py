@@ -1113,19 +1113,14 @@ def _build_parser() -> argparse.ArgumentParser:
 def _open_conn(db_path_arg: Optional[str]) -> "tuple[sqlite3.Connection, Path]":
     from tools.state_db import connect
     from tools.state_db.discover import (
-        StateDbSchemaError,
         resolve_state_db_path,
         verify_state_db_schema,
     )
 
     db_path = resolve_state_db_path(Path(db_path_arg) if db_path_arg else None)
-    conn = connect(db_path)
-    try:
-        verify_state_db_schema(db_path, conn=conn)
-    except StateDbSchemaError:
-        conn.close()
-        raise
-    return conn, db_path
+    # Verify first: connect() would create a missing file (Issue #1154).
+    verify_state_db_schema(db_path)
+    return connect(db_path), db_path
 
 
 def main(argv: Optional[list] = None) -> int:

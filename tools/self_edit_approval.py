@@ -1050,16 +1050,17 @@ def _precheck_db(db_override: "str | None") -> None:
         db_path = Path(resolve_state_db_path(db_override))
     except Exception as exc:  # noqa: BLE001
         raise ApprovalError(f"could not resolve state.db path: {exc}") from exc
+    # Verify before connect(): connect() creates a missing file, leaving an
+    # empty schema-less state.db that /org-start then mistakes for a real
+    # one (Issue #1154).
     try:
-        conn = connect(db_path)
-    except Exception as exc:  # noqa: BLE001 — missing file, locked, corrupt
-        raise ApprovalError(f"could not open state.db at {db_path}: {exc}") from exc
-    try:
-        verify_state_db_schema(db_path, conn=conn)
+        verify_state_db_schema(db_path)
     except StateDbSchemaError as exc:
         raise ApprovalError(f"state.db schema check failed: {exc}") from exc
-    finally:
-        conn.close()
+    try:
+        connect(db_path).close()
+    except Exception as exc:  # noqa: BLE001 — locked, unreadable
+        raise ApprovalError(f"could not open state.db at {db_path}: {exc}") from exc
 
 
 def _append_event(payload: dict, db_override: "str | None") -> None:
@@ -1068,9 +1069,10 @@ def _append_event(payload: dict, db_override: "str | None") -> None:
     from tools.state_db.writer import StateWriter
 
     db_path = Path(resolve_state_db_path(db_override))
+    # Verify first: connect() would create a missing file (Issue #1154).
+    verify_or_exit(db_path, prog="tools/self_edit_approval.py")
     conn = connect(db_path)
     try:
-        verify_or_exit(db_path, conn=conn, prog="tools/self_edit_approval.py")
         writer = StateWriter(conn)
         writer.append_event(kind=APPROVAL_EVENT, actor="secretary", payload=payload)
         writer.commit()
