@@ -53,3 +53,13 @@ work-discovery の cross-repo triage で home repo（claude-org-ja 自身）を 
 **注意**: 散文中に `triage_home: on` のような文字列を**行頭から**書かないこと（パーサが拾う）。箇条書き（`- ...`）やバッククォート内は列 0 でないので安全。
 
 解決の実装は [`tools/work_discovery_repos.py`](../tools/work_discovery_repos.py)、設計は [`docs/design/work-discovery-triage.md`](../docs/design/work-discovery-triage.md) §10.4 を参照。
+
+## Integration Branch
+integration_branch: -
+
+作業中の統合用ブランチ（複数タスクの PR を `main` ではなく一時的に集約するブランチ）を書いておく欄。`-` / 空は未設定。
+
+- 設定中に `--base-ref` も projects.md の `base_branch` 列も無いまま派遣しようとすると、`tools/gen_delegate_payload.py preview` が「統合用ブランチ宛てなら `--base-ref <branch>` を付けて再生成」という warning を出す（Issue #1152）。
+- **警告を出すだけで、起点ブランチは変えない**。優先順位 `--base-ref` > projects.md `base_branch` 列 > `origin/HEAD` はそのまま。`main` 宛てで正しいタスクは `--base-ref main` を明示すれば警告は出ない。
+- 統合作業が終わったら `-` に戻す。
+- 設定行は**行頭（列 0）から `integration_branch:` で始める**こと（`triage_home` と同じく列 0 固定で読む）。
