@@ -24,6 +24,7 @@
 - grep / find / sed / テスト実行などの対象は、**常に `/tmp/workers/demo-task/...` の絶対パスで書く**。`cd <dir>; <相対パスのコマンド>` の形と、ワークツリー root での `grep -r ... .` は使わない
 - ultracode（Workflow tool）で書く**各 `agent()` プロンプト内の Bash 指示にも同じ規約を適用する**（subagent が発行するコマンドは worker 本体の permissions で判定される）
 - 理由: Claude Code の auto-mode 分類器は `cd` 後の相対パスを静的に解決できない。worker の permissions には `Read(.env)` 等の deny 規則（[`tools/org_extension_schema.json`](/home/user/work/claude-org/tools/org_extension_schema.json) の `layer2Fallback`）が入っているため、対象を解決できない検索は「deny 対象を含むかもしれない」として毎回人間承認プロンプトに落ちる。対処は deny 規則の緩和ではなく書き方の統一である
+- **git だけは例外で、worktree の cwd で `git add` / `git commit` と単独で打つ**（`git -C <path> commit ...` や `R=<path>; git -C $R ...` のように場所を前置しない）。worker の許可ルール `Bash(git commit:*)` は先頭一致なので、先頭が `git -C` や変数代入のコマンドには当たらず、`Reason: [...]` の付かない拒否になる。許可ルールを `git -C` 形に広げて対処しない（任意の場所への commit を許すことになる）
 
 ```bash
 # NG: cd 後の相対パス / root での再帰 grep（分類器が対象を判定できず承認待ちになる）

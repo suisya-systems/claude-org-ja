@@ -64,6 +64,16 @@ git commit -F commit_msg.txt
 
 出典: `2026-05-09-delegation-hook-commit-message-false-positive.md`
 
+## 理由（`Reason: [...]`）の付かない拒否は、許可ルールの先頭一致外を疑う
+
+ワーカーが `R=<worktree>; git -C $R add -u && git -C $R commit ...` の形で commit しようとして、3 回とも `Permission to use Bash with command ... has been denied.` で拒否された（#1145）。同じ worktree の cwd で `git add -u` / `git commit -m ...` を単独で打つと通った。worker の許可ルール `Bash(git commit:*)`（`tools/org_extension_schema.json` の `worker` ロール）は先頭一致なので、先頭が変数代入や `git -C <path>` のコマンドには当たらない。
+
+見分け方: auto-mode 分類器による拒否には `Reason: [...]` が付くが、許可ルールに当たらなかった拒否には付かない。理由の無い拒否を見たら、まずコマンドの先頭が許可ルールの前方一致から外れていないか（変数代入・`git -C`・`cd ... &&` 等の前置）を疑う。理由が文面に無いため、今回は作業記録の突き合わせまで原因が特定できなかった。
+
+対処: コマンドを許可ルールの形に合わせる（git は worktree の cwd で単独に打つ）。許可ルールを `git -C * commit` 等に広げる対処は採らない（任意の場所への commit を許すことになり、deny 一覧の方針と逆行する）。worker brief テンプレートの「Bash のパス指定」節に同じ注意がある。
+
+出典: Issue #1150（Refs #1145）
+
 ## iteration A B1-1 委譲プロセスで露呈した 4 つの落とし穴
 
 Issue #376 sandbox-probe iteration A B1-1 を 3 ワーカー連で進めて出た、再現性のある delegation 設計上の罠。
