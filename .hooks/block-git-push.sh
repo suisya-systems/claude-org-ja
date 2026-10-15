@@ -395,9 +395,11 @@ gpg-key ssh-key codespace preview browse status co help completion version "
       # option の値に graphql が現れる REST 書き込みが GraphQL 扱いになり、
       # メソッド判定を素通りする。
       ei = next_word(start + 1)
-      if (ei > 0 && tolower(bare($ei)) == "graphql") graphql = 1
-      # `<(gh api x -X GET)` の閉じ括弧はシェルの境界でありメソッド値ではない。
-      method = bare(method)
+      if (ei > 0 && tolower($ei) == "graphql") graphql = 1
+      # メソッド値の閉じ括弧（`<(gh api x -X GET)` の `GET)`）は剥がさない。
+      # 走査はセグメント全体に及ぶので、同じ行の別のプロセス置換にある
+      # `-X GET)` が本物の `-X POST` を上書きして allow に化けるため（#1140）。
+      # 括弧内の読み取りは安全側で deny になる。
 
       # 静的に読めないメソッド指定（変数が残っている / 値が欠落）は安全側で deny
       if (method == "__missing__" || method ~ /\$/) {
