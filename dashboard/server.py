@@ -624,7 +624,11 @@ def check_status():
     1 = stopped (no record / record's pid is gone), 2 = record broken or the
     server on the recorded port is not this clone's, 3 = legacy server with no
     port record (restart needed). Never guesses a port.
+
+    os.kill(pid, 0) is TerminateProcess on Windows, so there the pid is never
+    probed: the HTTP identity check alone decides, and no answer = stopped.
     """
+    posix = os.name != "nt"
     try:
         rec = json.loads(RECORD_FILE.read_text(encoding="utf-8"))
         pid, port = int(rec["pid"]), int(rec["port"])
@@ -633,14 +637,14 @@ def check_status():
             old = int(PID_FILE.read_text(encoding="utf-8").strip())
         except (OSError, ValueError):
             return 1, "stopped"
-        cmd = live_cmdline(old) if pid_alive(old) else None
+        cmd = live_cmdline(old) if posix and pid_alive(old) else None
         if cmd and any("dashboard/server.py" in c.replace("\\", "/") for c in cmd):
             return 3, (f"legacy dashboard (pid={old}) has no port record; "
                        "restart it: python3 tools/stop_dashboard.py, then start again")
         return 1, "stopped"
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
         return 2, f"port record {RECORD_FILE} is unreadable ({exc})"
-    if not pid_alive(pid):
+    if posix and not pid_alive(pid):
         return 1, "stopped (stale port record)"
     try:
         with urllib.request.urlopen(
@@ -648,6 +652,8 @@ def check_status():
         ) as resp:
             ident = json.loads(resp.read().decode("utf-8"))
     except (OSError, ValueError) as exc:
+        if not posix:
+            return 1, f"stopped (port {port} does not answer: {exc})"
         return 2, f"pid={pid} is alive but port {port} does not answer ({exc})"
     if not isinstance(ident, dict) or ident.get("org_root") != ORG_ROOT \
             or ident.get("pid") != pid:

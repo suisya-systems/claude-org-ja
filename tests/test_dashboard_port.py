@@ -17,11 +17,13 @@ import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest import mock
 
 REPO = Path(__file__).resolve().parent.parent
 SERVER = REPO / "dashboard" / "server.py"
 sys.path.insert(0, str(REPO))
 
+from dashboard import server  # noqa: E402
 from dashboard.server import PORTS  # noqa: E402
 
 
@@ -135,6 +137,22 @@ class DashboardPortTests(unittest.TestCase):
         code, msg = self._status(a)
         self.assertEqual(code, 3, msg)
         self.assertIn("restart", msg)
+
+
+class WindowsStatusTests(unittest.TestCase):
+    def test_never_probes_pid_on_windows(self) -> None:
+        # os.kill(pid, 0) terminates the process on Windows.
+        with TemporaryDirectory() as td:
+            rec = Path(td) / "dashboard.json"
+            with socket.socket() as s:
+                s.bind(("localhost", 0))
+                port = s.getsockname()[1]  # closed again: nothing answers
+            rec.write_text(json.dumps({"pid": os.getpid(), "port": port}))
+            with mock.patch.object(server, "RECORD_FILE", rec), \
+                    mock.patch.object(server, "pid_alive", side_effect=AssertionError), \
+                    mock.patch.object(server.os, "name", "nt"):
+                code, _ = server.check_status()
+        self.assertEqual(code, 1)
 
 
 if __name__ == "__main__":
