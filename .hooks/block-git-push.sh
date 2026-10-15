@@ -46,7 +46,8 @@
 #         `git commit -m "$(cat <<'EOF'` の cat。区切りが未クォートなら本文に
 #         $ ` \ が無いときだけ。
 #       * クォート内リテラル: grep / egrep / fgrep / rg（--pre 無し）/ git commit
-#         のセグメントで、'...' と置換・エスケープを含まない "..."。
+#         のセグメント（heredoc / here-string を含まないもの）で、'...' と
+#         置換・エスケープを含まない "..."。
 #     python heredoc 本文が subprocess 等で gh を呼ぶ形はこれで素通りする
 #     （python -c の文字列と同じく、静的解析の対象外として受け入れる）。
 #     上記以外のリテラル（`echo "gh pr merge 1"` 等）は従来どおり deny。
@@ -489,8 +490,12 @@ strip_data_literals() {
       split(s, w, /[ \t\n]+/)
       data = (w[1] == "grep" || w[1] == "egrep" || w[1] == "fgrep" || w[1] == "rg" \
               || (w[1] == "git" && w[2] == "commit"))
-      # rg --pre は検索前に任意コマンドを実行する。
-      if (w[1] == "rg" && s ~ /(^|[ \t\n])--pre/) data = 0
+      # rg --pre は検索前に任意コマンドを実行する（"--pre" のようにクォート
+      # されていても効くので、字面があれば外さない）。
+      if (w[1] == "rg" && index(s, "--pre")) data = 0
+      # heredoc / here-string の本文は引数ではない（書き出して実行されうる）。
+      # 本文の除外は mask_data_heredocs の規則だけに任せる。
+      if (index(s, "<<")) data = 0
       if (!data) { printf "%s", buf; exit }
       out = ""; n = length(s); i = 1
       while (i <= n) {
