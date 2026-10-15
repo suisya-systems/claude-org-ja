@@ -31,6 +31,7 @@
 - `cp` / `mv` / `rm` は `-i` alias 前提で書く（既存ファイルへの上書きが無言の確認待ちで timeout まで止まる）。上書きは `command cp -f` か `cat backup > dest`。`rm -rf` / `rm -r` は permissions.deny（Node 等で再帰削除を迂回しない。掃除は新しい名前のディレクトリを掘る）
 - パス指定の `git checkout -- <path>` / `git restore --source=<ref>` は hook が deny する（`git stash` 変更系は禁止事項 4）。代わりに壊して戻す手順は `cp` バックアップ（書き戻しは `command cp -f` / `cat >`）か一時 commit の 2 択。復元後は `git diff` で戻ったことを確認してから次に進む
 - `read-only file system` / `Permission denied` でも `dangerouslyDisableSandbox` を反復要求しない（安全分類器のロックアウトで作業不能になる）。出力先を書ける場所へ変えて再試行する
+- 内容に関係なく Bash が全拒否され始めたら（安全分類器の締め出し）、言い換え・再試行を重ねない。`mcp__renga-peers__send_message(to_id="secretary")` で「締め出し」と報告して待つ（窓口が `/clear` → 再開指示で復帰させる。進捗は commit と git log で引き継ぐ）。ガード・hook 実装タスクでは deny 対象の字面（コマンド文字列そのもの）を会話に大量展開せず、file:line やテスト名で参照する
 
 ## プロジェクト
 - claude-org-ja: テスト用説明
