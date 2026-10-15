@@ -103,6 +103,25 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+# 追跡ファイルの未コミット差分（rebase 残差）→ codex を呼ばず dirty-worktree (exit 4)。
+# 未追跡ファイル（sandbox のマウント点等）は見ない
+mkdir -p "$WORK/repo/.claude/skills"
+echo new > "$WORK/repo/.claude/skills/SKILL.md"
+git -C "$WORK/repo" add .claude/skills/SKILL.md
+git -C "$WORK/repo" -c user.name=t -c user.email=t@t commit -qm init
+echo untracked > "$WORK/repo/untracked.txt"
+run_gate "未追跡ファイルだけなら dirty にしない" '  succeeded in 1ms:\n' 0 0 passed
+echo old > "$WORK/repo/.claude/skills/SKILL.md"
+command rm -f "$WORK/codex_home"
+run_gate "追跡ファイルに残差 → dirty-worktree" '  succeeded in 1ms:\n' 0 4 dirty-worktree
+if [[ ! -e "$WORK/codex_home" ]]; then
+  echo "  PASS: dirty-worktree では codex を呼ばない"
+  PASS=$((PASS + 1))
+else
+  echo "  FAIL: dirty-worktree なのに codex が呼ばれた"
+  FAIL=$((FAIL + 1))
+fi
+
 actual_exit=0
 bash "$GATE" >/dev/null 2>&1 || actual_exit=$?
 if [[ "$actual_exit" -eq 2 ]]; then

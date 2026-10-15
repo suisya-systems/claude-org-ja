@@ -120,14 +120,15 @@ ${references_knowledge_block}
 既存リポジトリで PR を出すタスクでは、完了報告と Codex セルフレビューの前に次を行う（`git init` の新規プロジェクトや upstream remote が無い場合は不要）:
 1. `git fetch origin`（`git fetch origin <branch>` は `FETCH_HEAD` に取るだけで追跡 ref を確実には更新せず、古い ref に対して behind=0 と誤判定しうる）
 2. `git rebase ${task_base_ref}`（merge 運用のリポジトリなら `git merge`）。conflict は自分で解く。conflict が無くても rebase 後に通常検証を回し直し、green であることを確かめる
-3. `git rev-list --count HEAD..${task_base_ref}` が `0` であることを確かめ、完了報告に「rebase clean: HEAD=`<sha>` on top of ${task_base_ref} `<sha>`」の 1 行を入れる
+3. `git rev-list --count HEAD..${task_base_ref}` が `0` で、かつ `git status --porcelain --untracked-files=no` が空であることを確かめ、完了報告に「rebase clean: HEAD=`<sha>` on top of ${task_base_ref} `<sha>`」の 1 行を入れる
+4. 後者が空でない、または rebase が `Read-only file system` で止まったときは rebase 残差（sandbox が `.claude/skills` 等への書込みを拒否し、rebase が成功表示でも旧内容が残る）なので、update-ref / reset / checkout 等で自分で戻そうとせず、rebase clean と報告せずに、表示されたパスを添えて「rebase 残差あり（HEAD=`<sha>`）」と窓口に報告して待つ（窓口が sandbox 外で戻す）
 
 ### Codex セルフレビュー
 commit 後、作業ディレクトリで**前景実行**する。この Bash 呼び出しの `allowed_domains` には Codex の接続先（`chatgpt.com` 等）を入れる（無いとエラーを出さずに数百秒止まる）:
 ```bash
 bash "${claude_org_path}/tools/codex_review_gate.sh" ${task_base_ref}
 ```
-判定は最終行で行う: `CODEX_GATE: passed` のときだけ指摘を読み「codex clean」と報告してよい。`not-established`（diff 未読の「空の合格」を含む）は出力が合格に読めても clean と報告せず、「Codex ゲート未成立（HEAD=`<sha>`）」と最終行の数値を添えて窓口の判断を仰ぐ。`unavailable`（codex 未導入）は skip して完了報告に進む。
+判定は最終行で行う: `CODEX_GATE: passed` のときだけ指摘を読み「codex clean」と報告してよい。`not-established`（diff 未読の「空の合格」を含む）は出力が合格に読めても clean と報告せず、「Codex ゲート未成立（HEAD=`<sha>`）」と最終行の数値を添えて窓口の判断を仰ぐ。`unavailable`（codex 未導入）は skip して完了報告に進む。`dirty-worktree`（追跡ファイルに未コミット差分）は上の rebase 残差と同じ扱いにする。
 
 - 安全機構に掛かって review が完了しないときは、言い換えやプロンプト改変で回避しない。窓口に新しいセッションでの再実行を頼み、それでも通らなければ「Codex ゲート未成立（safety block、HEAD=`<sha>`）」と報告する
 - Blocker / Major は修正コミットを積み再レビュー。**round は既定上限 3**（この brief の実装ガイダンスで別値の明示指定があればそちらが優先）。上限に達したら自走で続けず、残指摘と自己評価（設計問題化しているのか、別問題が順に露見する健全な収束の途中なのか）を窓口に報告して止まる

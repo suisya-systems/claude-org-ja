@@ -78,13 +78,13 @@ ${references_knowledge_block}
 ## 検証と Codex セルフレビュー（検証深度 full）
 通常検証（テスト / lint 等）を回して green を確認してから完了報告する。green 判定は「passed が N 件」ではなく **passed / skipped の内訳が CI と一致するか**で行う。条件付き skip されるテスト（環境変数・OS 依存の `skipIf` 等）はその条件を満たしてから回し、完了報告に skip 件数と理由を書く（例: 「824 passed | 2 skipped、skip は〜」）。
 
-完了報告前の rebase: Codex の前に `git fetch origin` → `git rebase ${task_base_ref}`（conflict は自分で解く。conflict が無くても rebase 後に通常検証を回し直す）→ `git rev-list --count HEAD..${task_base_ref}` が `0` であることを確かめ、完了報告に「rebase clean: HEAD=`<sha>` on top of ${task_base_ref} `<sha>`」の 1 行を入れる。
+完了報告前の rebase: Codex の前に `git fetch origin` → `git rebase ${task_base_ref}`（conflict は自分で解く。conflict が無くても rebase 後に通常検証を回し直す）→ `git rev-list --count HEAD..${task_base_ref}` が `0` で、かつ `git status --porcelain --untracked-files=no` が空であることを確かめ、完了報告に「rebase clean: HEAD=`<sha>` on top of ${task_base_ref} `<sha>`」の 1 行を入れる。後者が空でない、または rebase が `Read-only file system` で止まったときは rebase 残差（sandbox が `.claude/skills` 等への書込みを拒否し、rebase が成功表示でも旧内容が残る）なので、update-ref / reset / checkout 等で自分で戻そうとせず、rebase clean と報告せずに、表示されたパスを添えて「rebase 残差あり（HEAD=`<sha>`）」と窓口に報告して待つ（窓口が sandbox 外で戻す）。
 
 Codex セルフレビュー: commit 後に作業ディレクトリで**前景実行**する。この Bash 呼び出しの `allowed_domains` に Codex の接続先（`chatgpt.com` 等）を入れる（無いとエラーを出さずに数百秒止まる）:
 ```bash
 bash "${claude_org_path}/tools/codex_review_gate.sh" ${task_base_ref}
 ```
-- 判定は最終行: `CODEX_GATE: passed` のときだけ指摘を読み「codex clean」と報告してよい。`not-established`（diff 未読の「空の合格」を含む）は clean と報告せず「Codex ゲート未成立（HEAD=`<sha>`）」と最終行の数値を添えて窓口の判断を仰ぐ。`unavailable` は skip して完了報告へ
+- 判定は最終行: `CODEX_GATE: passed` のときだけ指摘を読み「codex clean」と報告してよい。`not-established`（diff 未読の「空の合格」を含む）は clean と報告せず「Codex ゲート未成立（HEAD=`<sha>`）」と最終行の数値を添えて窓口の判断を仰ぐ。`unavailable` は skip して完了報告へ。`dirty-worktree` は上の rebase 残差と同じ扱い
 - 安全機構に掛かって review が完了しないときは言い換えで回避しない。窓口に新しいセッションでの再実行を頼み、それでも通らなければ「Codex ゲート未成立（safety block、HEAD=`<sha>`）」と報告する
 - Blocker/Major 修正、**round 既定上限 3**（brief の実装ガイダンスで別値指定があればそちら優先）。上限到達で自走継続せず、残指摘 + 自己評価（設計問題化か収束途中か）を窓口に報告して停止。同一指摘が 3 round 消えない / 前 round の修正を巻き戻す向きの指摘が出たときは上限前でも設計問題として報告（後者は綱引きの方向を書く）
 - Minor/Nit 残置可。レビューを別ワーカーに委譲しない。large diff では effort を上げない（根拠: claude-org リポジトリの `knowledge/curated/codex.md`）
