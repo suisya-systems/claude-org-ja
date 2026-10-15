@@ -173,8 +173,13 @@ ClaudeCode起動後に最初に実行するスキル。前回の状態復元と�
 
 read 経路は **DB only**（例外は手順 3 の pending-decisions register だけ）。Block A の spawn 発火と並列で実行する（Block A は MCP 経由でペイン作成を依頼するだけで Claude の boot は別プロセスのため、ここで CPU / I/O を競合しない）。
 
-1. `.state/state.db` が存在するか確認する
-   - 存在 → DB をクエリ:
+1. `.state/state.db` が存在するか確認し、存在すれば中身にテーブルがあるかも確かめる（Issue #1154: ファイルはあるがテーブルが 1 つも無い空の DB がありうる）:
+   ```bash
+   # Windows native は python3 を py -3 に読み替える
+   python3 -c "import sqlite3,sys; t={r[0] for r in sqlite3.connect('.state/state.db').execute(\"SELECT name FROM sqlite_master WHERE type='table'\")}; sys.exit(0 if {'runs','events'}<=t else 3 if not t else 4)"
+   ```
+   ファイルが無いときは実行しない（`sqlite3.connect` が空ファイルを作ってしまう）。終了コードで分岐する:
+   - `0`（テーブルあり）→ DB をクエリ:
      ```bash
      # Mac/Linux
      python3 -c "from tools.state_db import connect; from tools.state_db.queries import get_org_state_summary; import json; \
@@ -186,8 +191,9 @@ read 経路は **DB only**（例外は手順 3 の pending-decisions register �
        print(json.dumps(get_org_state_summary(conn), ensure_ascii=False, indent=2, default=str))"
      ```
      `active_runs` / `recent_events` / `run_status_counts` / `session.status` / `session.objective` で前回状態を把握する
-   - 存在しない → 初回起動と判断する。Secretary に importer 実行を促す:
+   - ファイルが存在しない、または `3`（テーブルが 1 つも無い空の DB）→ 初回起動と判断する。Secretary に importer 実行を促す:
      `python3 -m tools.state_db.importer --db .state/state.db --root . --rebuild --no-strict`
+   - `4`（テーブルはあるが `runs` / `events` が欠けている）やそれ以外の失敗（壊れたファイル等）→ importer を回さない（`--rebuild` は全テーブルを消すので、残っている記録を失う）。エラー内容を添えて「state.db が不完全で前回状態を読めない」と人間に報告し、扱いを確認する
 2. session.status を確認する:
    - `SUSPENDED` なら /org-resume の Phase 1〜3（ブリーフィング・照合・再開計画）を実行する。
      Block A の spawn は既に発火済みなのでブリーフィング中に裏で Claude が boot している。

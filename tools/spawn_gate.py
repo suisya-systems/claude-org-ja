@@ -365,9 +365,10 @@ def _append_verified_event(payload: dict, db_override: "str | None") -> None:
     from tools.state_db.writer import StateWriter
 
     db_path = Path(resolve_state_db_path(db_override))
+    # Verify first: connect() would create a missing file (Issue #1154).
+    verify_or_exit(db_path, prog="tools/spawn_gate.py")
     conn = connect(db_path)
     try:
-        verify_or_exit(db_path, conn=conn, prog="tools/spawn_gate.py")
         writer = StateWriter(conn)
         writer.append_event(
             kind=VERIFIED_EVENT, actor="dispatcher", payload=payload

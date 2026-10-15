@@ -469,6 +469,9 @@ def _count_active_runs(db_path: Path) -> int:
     silent-pass shape masked real DB problems with a green preflight.
     """
     import sqlite3
+    if not Path(db_path).exists():
+        # sqlite3.connect would create an empty DB here (Issue #1154).
+        return 0
     try:
         conn = sqlite3.connect(str(db_path))
     except (sqlite3.Error, OSError) as e:
