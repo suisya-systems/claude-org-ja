@@ -89,6 +89,8 @@ allowed-tools:
 
 量が多いだけの機械的タスク（設計固定済みの移植・定型変換）は、L 級でも非武装を既定とする。背景には週間 rate limit の資源管理もある（構造が正当化しない増幅を既定にしない）。
 
+**ガード・hook 実装タスクは ultracode を許可しない（分類器の締め出し対策、Issue #1153）:** 上記基準 2 に当たっても、deny 規則・hook・封印など**禁止対象のコマンド字面を会話に多く持ち込むタスク**（例: push / 再帰削除を止める hook の修正）では ultracode を許可しない。auto-mode の安全分類器が会話内容に反応して Workflow 起動を拒否し、以降は無関係な Bash まで全拒否される事例が出ている（#1133 のワーカー）。brief の `--impl-guidance` には、禁止対象の字面を会話に大量展開せず file:line・テスト名で参照するよう 1 行添える。締め出されたワーカー（Bash が内容に関係なく全拒否される）は、言い換えでの再試行をさせず、窓口がワーカーペインに `/clear` を打鍵（text と Enter の別送）してから再開指示（`CLAUDE.local.md` / `CLAUDE.md` を読み直し、`git log` で進捗を確かめて続行）を送って復帰させる。
+
 許可する場合、窓口は `gen_delegate_payload.py` の `--impl-guidance "<text>"` で brief に許可を明記する（例: `--impl-guidance "本タスクは実装中に設計判断が残るため ultracode の使用を許可する。ultracode は実装と Codex 前のセルフレビュー収束に使い、最終の Codex ゲートは従来どおり維持する"` — 理由は上記 3 基準のうち該当するものを書く）。この文言は worker brief（既定 `CLAUDE.md`、claude-org 自己編集タスクは `CLAUDE.local.md`）の「実装ガイダンス」にレンダリングされ、**dispatcher はここを読んで武装要否を判定する**（[`.dispatcher/references/spawn-flow.md`](../../../.dispatcher/references/spawn-flow.md) 3-5a）。
 
 **強い権限の事前許可文言を workflow の agent プロンプトに書かせない（重要）:** ultracode を許可しても、`dangerouslyDisableSandbox` / `--dangerously-skip-permissions` 等の**強い権限を事前に許可する文言**を workflow の `agent()` プロンプト本文に書き込ませない（窓口の `--impl-guidance` にもそうした事前許可文言を載せない）。安全分類器が該当 agent 呼び出しを **silent block** し、workflow が原因不明のまま停滞する事故になる。どうしても強い権限が要る段がある場合は、その agent の**成否を明示確認**（戻り値 / 失敗検知でブロックを検出）し、**block 時のリカバリ手段**（当該段を通常権限で再実行する / worker 本体で手動実行する等）を workflow に組み込むよう brief で促す。
