@@ -637,7 +637,11 @@ def check_status():
             old = int(PID_FILE.read_text(encoding="utf-8").strip())
         except (OSError, ValueError):
             return 1, "stopped"
-        cmd = live_cmdline(old) if posix and pid_alive(old) else None
+        if not posix:
+            # argv is unverifiable here; a leftover pid file means "maybe running".
+            return 3, (f"legacy dashboard pid file (pid={old}) has no port record; "
+                       "stop it with the org-down PowerShell procedure, then start again")
+        cmd = live_cmdline(old) if pid_alive(old) else None
         if cmd and any("dashboard/server.py" in c.replace("\\", "/") for c in cmd):
             return 3, (f"legacy dashboard (pid={old}) has no port record; "
                        "restart it: python3 tools/stop_dashboard.py, then start again")

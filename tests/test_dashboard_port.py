@@ -154,6 +154,17 @@ class WindowsStatusTests(unittest.TestCase):
                 code, _ = server.check_status()
         self.assertEqual(code, 1)
 
+    def test_legacy_pid_file_on_windows_is_not_stopped(self) -> None:
+        with TemporaryDirectory() as td:
+            pf = Path(td) / "dashboard.pid"
+            pf.write_text("12345")
+            with mock.patch.object(server, "RECORD_FILE", Path(td) / "dashboard.json"), \
+                    mock.patch.object(server, "PID_FILE", pf), \
+                    mock.patch.object(server, "pid_alive", side_effect=AssertionError), \
+                    mock.patch.object(server.os, "name", "nt"):
+                code, _ = server.check_status()
+        self.assertEqual(code, 3)
+
 
 if __name__ == "__main__":
     unittest.main()
