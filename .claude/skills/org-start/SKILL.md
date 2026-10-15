@@ -171,7 +171,7 @@ ClaudeCode起動後に最初に実行するスキル。前回の状態復元と�
 
 ### Block B: 前回の状態確認
 
-read 経路は **DB only**。Block A の spawn 発火と並列で実行する（Block A は MCP 経由でペイン作成を依頼するだけで Claude の boot は別プロセスのため、ここで CPU / I/O を競合しない）。
+read 経路は **DB only**（例外は手順 3 の pending-decisions register だけ）。Block A の spawn 発火と並列で実行する（Block A は MCP 経由でペイン作成を依頼するだけで Claude の boot は別プロセスのため、ここで CPU / I/O を競合しない）。
 
 1. `.state/state.db` が存在するか確認する
    - 存在 → DB をクエリ:
@@ -194,6 +194,15 @@ read 経路は **DB only**。Block A の spawn 発火と並列で実行する（
      ブリーフィング完了後、Block D の合流で dispatcher が ready になるのを待ち、org-resume の Phase 4（ワーカー再派遣）を人間の承認に基づいて実行する
    - `ACTIVE` なら、前回のセッションが突然終了した可能性がある。
      各ワーカーディレクトリの git 状態を確認し、現状を報告する
+3. **滞留中の判断仰ぎを棚卸しする**（Issue #1155）。read 経路「DB only」の唯一の例外として、pending-decisions register（JSON ファイル `.state/pending_decisions.json`）を読み取り専用で読む:
+   ```bash
+   python3 tools/pending_decisions.py stale --min-age-min 60   # Mac/Linux
+   py -3 tools/pending_decisions.py stale --min-age-min 60     # Windows native
+   ```
+   - 受信（`received_at`）から 60 分以上経ち、まだ `resolved` になっていない項目（`pending` / `escalated`）が 1 行 1 件で出る。出たらブリーフィングに「要確認の判断仰ぎ」として task_id・状態・受信日時・要約を並べる
+   - 一覧は **要確認** であって転送漏れの断定ではない（転送済みで記帳だけ失敗した項目や、人間がまだ考えている項目も含む）。ここから自動 resolve・判断の再送・ワーカーへの再連絡はしない。扱いは人間に確認してから決める
+   - 出力が `{"status": "unreadable", ...}`（exit 2）のときは「該当なし」と書かず「判断仰ぎ register を確認できない」とエラー内容つきで報告し、起動は続ける
+   - 役割分担: この棚卸しは **再起動時の 1 回だけ**。稼働中の中継漏れはディスパッチャーの SECRETARY_RELAY_GAP_SUSPECTED 監視（[`.dispatcher/references/worker-monitoring.md` Step 5.1](../../../.dispatcher/references/worker-monitoring.md#step-5-1)）が受け持つ。起動後に生じた滞留をこの一覧が何分以内に見つけるかは保証しない（次回起動まで見つからないこともある）
 
 ### Block C: ダッシュボードサーバー起動
 

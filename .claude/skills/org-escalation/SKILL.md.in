@@ -75,6 +75,24 @@ allowed-tools:
    py -3 tools/pending_decisions.py resolve --task-id {task_id} --kind to_worker     # Windows native
    ```
 
+## register 更新が失敗したとき（Issue #1155）
+
+Step 2〜5 の register 操作（`append` / `resolve --kind to_user` / `mark-user-replied` / `resolve --kind to_worker`）は、**終了コードではなく出力された状態で成否を判断する**。CLI は `no_pending` / `no_escalated` でも exit 0 を返すため。期待する出力は次のとおり:
+
+| 操作 | 期待する出力 |
+|---|---|
+| `append` | `"status": "pending"` の entry |
+| `resolve --kind to_user` | `"status": "escalated"` の entry |
+| `mark-user-replied` | `user_replied_at` が入った entry |
+| `resolve --kind to_worker` | `"status": "resolved"` の entry |
+
+期待どおりでなかった（エラー終了・`no_pending` / `no_escalated`・出力なし）ときは、次の順で扱う:
+
+0. **`append` の失敗**は 1・2 の確認を使わず、待機なしで `append` だけを 1 回再試行する。同じ task に `pending` entry が既にあれば `append` はそれを返すだけで二重登録しないので、再試行しても安全。出力された entry の `received_at` を以後の識別に使い、再試行も失敗したら 3 に進む。以下の 1・2 は `append` 以外の操作に当てる
+1. `python3 tools/pending_decisions.py stale --min-age-min 0`（Windows native は `py -3`。未 resolved の entry を全件出す読み取り専用コマンド）で、**対象の entry**（task_id と、`append` が出力した `received_at` の組で特定する）の現在の状態を見る。task 単位の `latest-resolution` は使わない（同じ task に未 resolved の判断が複数あると、操作が触った entry とは別の entry を見てしまう）。対象 entry が既に期待する状態（`resolve --kind to_worker` なら一覧から消えていること）なら成功として扱い、そのまま進む。`stale` が `{"status": "unreadable", ...}`（exit 2）を返したときは一覧に無いことを成功とみなさず、再試行もせず 3 に進む
+2. 期待する状態でなければ、**失敗したその register 操作だけ**を待機なしで 1 回だけ再試行し、1 と同じ方法で対象 entry が期待する状態になったか確かめる。同じ task に対象より古い未 resolved の entry があるとき（`resolve` / `mark-user-replied` は最も古い entry を進めるので、再試行が別の判断を進めてしまう）は、再試行せず 3 に進む。フロー全体（ワーカーへの転送・人間への伝達）はやり直さない。転送済みの人間判断を二重に送ることになるため
+3. 再試行も失敗したら、task_id・失敗した操作・ワーカー / 人間への転送が済んでいるか・エラー内容を人間に報告する。報告後は他の案件の処理を止めずに続ける。残った不整合は次回 `/org-start` の滞留一覧（[`.claude/skills/org-start/SKILL.md`](../org-start/SKILL.md) Block B 手順 3）にも「要確認」として出る
+
 ## 重複保険ポリシー
 
 - Progress Log / journal events / pending-decisions register の 3 層は **重複保険として独立に維持**する（欠落時の影響は冒頭の「状態保存の必要性」）
