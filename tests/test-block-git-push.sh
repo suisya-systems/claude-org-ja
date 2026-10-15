@@ -413,6 +413,51 @@ assert_gh 0 'gh api -i /repos/o/r/pulls/1' 'クラスタでない -i 付き GET 
 assert_gh 0 'gh api -iX GET /repos/o/r/issues' 'クラスタ -iX + GET は allow'
 assert_gh 0 'gh api -q .head.sha repos/o/r/pulls/1' '-q 付き GET は allow'
 
+echo "# --- データとして渡る本文中の gh 字面 (Issue #1133) ---"
+
+# Issue #1133 の 3 例: コマンドでない本文の gh で deny しない
+assert_gh 0 $'git commit -m "$(cat <<\'EOF\'\nfix: x\n\n後で gh pr create する\nEOF\n)"' '#1133: commit message heredoc 内の gh pr create'
+assert_gh 0 $'python3 - <<\'EOF\'\nprint("gh auth login")\nEOF' '#1133: python heredoc の文字列リテラル中の gh auth login'
+assert_gh 0 'grep -e "gh auth" -e journalctl file.log' '#1133: grep パターン中の gh auth'
+# 同種の形
+assert_gh 0 $'git add -u && git commit -m "$(cat <<\'EOF\'\nx\n\ngh pr merge 1\nEOF\n)" && git log -1' 'commit heredoc の前後に連結があっても本文は外す'
+assert_gh 0 $'git commit -F - <<\'EOF\'\ngh pr merge 1\nEOF' 'git commit -F - の heredoc 本文'
+assert_gh 0 $'python3 - <<EOF\nprint("gh pr create")\nEOF' '未クォート区切りでも展開が無い本文は外す'
+assert_gh 0 'git commit -m "後で gh pr create する"' 'commit -m のクォート内 gh'
+assert_gh 0 $'git commit -m "line1\n\ngh pr create は窓口"' '複数行 commit -m のクォート内 gh'
+assert_gh 0 'grep -rn "gh pr merge" docs/' 'grep パターン中の gh pr merge'
+assert_gh 0 "rg -n 'gh pr (create|merge)' .hooks" 'rg パターン中の gh'
+
+# 実行されうる文脈は従来どおり deny（fail closed）
+assert_gh 2 'git commit -m "$(gh pr create)"' 'commit -m 内のコマンド置換は deny'
+assert_gh 2 'git commit -m "x" $(gh pr merge 1)' 'commit 引数のコマンド置換は deny'
+assert_gh 2 "git commit -m 'x' \`gh pr merge 1\`" 'commit 引数のバッククォートは deny'
+assert_gh 2 'grep "gh pr merge" f && gh pr merge 1' 'grep の後に連結した実行は deny'
+assert_gh 2 "rg --pre 'gh pr merge' x" 'rg --pre はコマンド実行なので deny'
+assert_gh 2 "bash -c \"grep 'x' f; gh pr merge 1\"" 'bash -c 内の実行は deny'
+assert_gh 2 'eval "gh pr merge 1"' 'eval 内は deny'
+assert_gh 2 "grep 'x' f | xargs gh pr close" 'xargs 経由は deny'
+assert_gh 2 "GIT_EDITOR='gh pr merge 1' git commit" '代入前置の git commit はリテラルを外さない'
+assert_gh 2 'echo "gh pr merge 1"' 'データ用コマンド以外のリテラルは従来どおり deny'
+assert_gh 2 $'bash <<\'EOF\'\ngh pr merge 1\nEOF' 'bash への heredoc は deny'
+assert_gh 2 $'cat <<\'EOF\' | bash\ngh pr merge 1\nEOF' 'cat heredoc を bash へ流す形は deny'
+assert_gh 2 $'python3 - <<\'EOF\' | bash\ngh pr merge 1\nEOF' 'python heredoc の出力を bash へ流す形は deny'
+assert_gh 2 $'python3 - <<EOF\n$(gh pr merge 1)\nEOF' '未クォート区切り本文のコマンド置換は deny'
+assert_gh 2 $'python3 - <<\'EOF\'\nx\nEOF\ngh pr merge 1' 'heredoc の後ろの実コマンドは deny'
+assert_gh 2 $'git commit -m "$(cat <<\'EOF\'\nx\nEOF\n) $(gh pr merge 1)"' 'commit heredoc と同じ引数内の置換は deny'
+assert_gh 2 $'git commit -m "$(cat <<\'EOF\'\nx\nEOF\n)"; gh pr merge 1' 'commit heredoc の後の実コマンドは deny'
+assert_gh 2 $'alias python3=bash\npython3 - <<\'EOF\'\ngh pr merge 1\nEOF' 'alias で受け手を差し替える形は外さない'
+assert_gh 2 $'alias cat=bash\ngit commit -m "$(cat <<\'EOF\'\ngh pr merge 1\nEOF\n)"' 'alias cat で置換を実行に変える形は外さない'
+assert_gh 2 $'PATH=/tmp/x\npython3 - <<\'EOF\'\ngh pr merge 1\nEOF' 'PATH 変更後の heredoc は外さない'
+assert_gh 2 $'echo "\npython3 - <<\'EOF\'\n"; gh pr merge 1; echo "\nEOF\n"' 'クォート内に偽の heredoc 開始行がある形は外さない'
+
+# deny メッセージが本文字面の可能性と回避策を示すこと
+stderr=$(mktemp); TMPFILES+=("$stderr")
+ec=$(run_hook "$(json_for 'echo "gh pr merge 1"')" "$stderr")
+assert_exit 2 "$ec" 'deny メッセージ確認用'
+assert_stderr_contains 'コマンドではない本文' "$stderr" 'deny メッセージが本文字面の可能性を示す'
+assert_stderr_contains 'git commit -F <file>' "$stderr" 'deny メッセージが回避策を示す'
+
 # --- Summary ---
 echo "# $PASS passed, $FAIL failed out of $TEST_NUM tests"
 [[ $FAIL -eq 0 ]]
