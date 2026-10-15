@@ -39,6 +39,28 @@ Claude Code は**起動ディレクトリの `.claude/` 配下**から設定を�
 | キュレーター | `<repo>/.curator/.claude/settings.local.json` | `.curator/` で起動したキュレーター |
 | ワーカー | ワーカーディレクトリの `.claude/settings.local.json` | org-delegate が動的に作成 |
 
+### sandbox 内からは書けない書き先（窓口・ユーザー共通）
+
+Claude Code の Bash sandbox は、書き込みを許した範囲の中でも作業ディレクトリとその親の `.claude` 設定ファイル、および `~/.claude` 配下の大半への書き込みを拒否し、例外指定もできない（https://code.claude.com/docs/en/sandboxing 「Protected paths」）。リポジトリルートで動く窓口から見ると、上表のうち次の 2 つがこれに当たる:
+
+- 窓口の `<repo>/.claude/settings.local.json`（`tools/org_setup_prune.py` の `role_settings_path` が secretary に返すパス）
+- ユーザー共通の `~/.claude/settings.json`（Step 6 の `--user-common-sandbox` の書き先）
+
+ディスパッチャー・キュレーター用（`.dispatcher/` / `.curator/` 配下）は窓口の作業ディレクトリより下なので sandbox 内から書ける。読むだけの `--dry-run` も sandbox 内でよい。
+
+この 2 つに書くコマンド（Step 5 の `--role secretary` / `--all`、Step 6 の `--user-common-sandbox`。いずれも `--dry-run` なし）は、次の 2 段で実行する:
+
+1. **最初から sandbox 外で実行する**: Bash tool に `dangerouslyDisableSandbox: true` を付けて実行する。sandbox 内で一度失敗させてから付け直す必要はない
+2. **それが拒否されたら人に頼む**: 承認が拒否された、または `dangerouslyDisableSandbox` が効かず（`allowUnsandboxedCommands: false` の環境では無視される: 同ページ「Turn off the retry with strict sandbox mode」）`Read-only file system` / `Permission denied` で失敗した場合は、`dangerouslyDisableSandbox` を再要求せず（繰り返すと安全分類器のロックアウトで作業不能になる）、ユーザーに次の文言でプロンプトへの入力を頼む:
+
+   ```
+   窓口用の許可設定ファイルは安全機構の都合で私からは書き込めません。
+   お手数ですが、プロンプト欄に次の 1 行を入力して実行してください（先頭の ! まで含めて）:
+   ! python3 tools/org_setup_prune.py --role secretary
+   ```
+
+   コマンド行は実際に止まったものに差し替える（`--all` / `--user-common-sandbox` 等。Windows native は `py -3`）。`!` 付きの行はユーザーのシェルで sandbox を通らずに実行され、出力が会話に入る。その出力で成否を確認してから Step 4 の報告に進む
+
 ## 各ロールの必要設定
 
 正典は [`tools/org_extension_schema.json`](../../../tools/org_extension_schema.json)。[`.claude/skills/org-setup/references/permissions.md`](references/permissions.md) に、その schema を満たす全ロールの JSON テンプレートがある（一致は `tools/check_role_configs.py` が CI で検査する）。以下の手順でこのテンプレートを参照する。
@@ -120,6 +142,8 @@ python3 tools/org_setup_prune.py --all
 ```
 
 対象ロール: `secretary` / `dispatcher` / `curator`。
+`--role secretary` と `--all`（`--dry-run` なし）は窓口用ファイルに書くので、
+「[sandbox 内からは書けない書き先](#sandbox-内からは書けない書き先窓口ユーザー共通)」の 2 段で実行する。
 （`user_common` は `~/.claude/settings.json` で他プラグインと同居するため対象外。
 ワーカーは org-delegate が動的生成するため対象外。）
 
@@ -200,6 +224,9 @@ python3 tools/org_setup_prune.py --user-common-sandbox --dry-run
 # 実行（既存があれば .bak 自動生成、上書き候補がない場合は no-op）
 python3 tools/org_setup_prune.py --user-common-sandbox
 ```
+
+書き先の `~/.claude/settings.json` は sandbox 内から書けないため、実行（`--dry-run` なし）は
+「[sandbox 内からは書けない書き先](#sandbox-内からは書けない書き先窓口ユーザー共通)」の 2 段で行う。
 
 denyRead の対象ディレクトリ（`~/.ssh` / `~/.aws` / `~/.kube` / `~/.gnupg` / `~/.docker` / `~/.config/aws-vault`）のうち、**実在し、かつ realpath が HOME を escape しない symlink でない** ものだけが追加される。WSL2 + DriveFS の `~/.aws → /mnt/c/...` のようなケースは自動 skip（bwrap bootstrap 失敗の予防）。`~/.config/gh` は対象外で、既存の entry は自動で除去される。
 
