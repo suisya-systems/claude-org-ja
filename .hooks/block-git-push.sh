@@ -145,12 +145,15 @@ if [[ -z "$COMMAND" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 1. git push 検知（既存挙動。変更しないこと）
+# 1. git push 検知（deny を緩める変更はしないこと）
 # ---------------------------------------------------------------------------
 # `git push` と、サブコマンド前にオプションが挿入された形を捕捉する。
 # 例: git push, git  push, echo | git push, git -C /path push
 # 一方で `git config push.default` のような別サブコマンドは誤検知しない。
-PUSH_RE='(^|[|&;[:space:]])git([[:space:]]+(-[^[:space:]]+([[:space:]]+[^|&;[:space:]]+)?)?)*[[:space:]]+push([[:space:]]|$)'
+# 前後の境界には空白に加え、語へ密着できるシェル記号も含める（#1140）:
+# 前は ( と `（`$(git push)` / `<(git push)` / `(git push)` / `` `git push` ``）、
+# 後ろは ; & | ) ` < >（`git push; echo` / `git push|cat` / `git push>log`）。
+PUSH_RE='(^|[|&;[:space:](`])git([[:space:]]+(-[^[:space:]]+([[:space:]]+[^|&;[:space:]]+)?)?)*[[:space:]]+push([[:space:];&|)`<>]|$)'
 
 if echo "$COMMAND" | grep -qE "$PUSH_RE"; then
   deny_with_reason "git push は Worker から直接実行できません。完了報告で窓口に依頼してください。窓口が push/PR を実施します。"
@@ -232,6 +235,12 @@ gpg-key ssh-key codespace preview browse status co help completion version "
               || t == "-T" || t == "--title")
     }
     function in_list(list, key) { return index(list, " " key " ") > 0 }
+    # 語の先頭の ( と末尾の ) を剥がす。プロセス置換 `<(gh pr merge 1)` /
+    # `>(gh ...)` やサブシェル `(gh ...)` の内側は独立したコマンドとして実行
+    # されるので、`(gh` を実行トークン、`merge)` を subcommand として読む（#1140）。
+    # $0 の括弧を空白へ割ると `-f "title=(-XGET)"` の値の中身が独立した
+    # option に見えて gh api のメソッド判定を誤らせるため、語単位で扱う。
+    function bare(t) { gsub(/^\(+|\)+$/, "", t); return t }
     # トークンの「種別」を返す。
     #   cmd  : サブコマンド名の字面（^[a-z][a-z0-9-]*$）。allowlist 判定にかける。
     #   var  : 変数 / コマンド置換が残っており静的に読めない → deny（fail closed）。
@@ -272,17 +281,17 @@ gpg-key ssh-key codespace preview browse status co help completion version "
       # （$0 への代入で NF / $n が再計算される）。
       gsub(/[<>]/, " ")
       for (i = 1; i <= NF; i++) {
-        ghname = tolower($i)
+        ghname = tolower(bare($i))
         # Windows は gh.exe。実行形式のスペリング差で deny が外れないようにする。
         if (ghname != "gh" && ghname != "gh.exe" && ghname !~ /[\/\\]gh(\.exe)?$/) continue
 
         gi = next_word(i + 1)
         # フラグのみ（gh --version / gh --help）または gh 単独 → 書き込み不能
         if (gi == 0) continue
-        kind = word_kind($gi)
+        kind = word_kind(bare($gi))
         if (kind == "var") { print "DENY|group-undecidable:" $gi; continue }
         if (kind == "other") continue   # リテラル文字列中の gh
-        group = tolower($gi)
+        group = tolower(bare($gi))
 
         if (!in_list(GROUPS, group)) { print "DENY|unknown-group:" group; continue }
         if (in_list(READ_GROUPS, group)) continue
@@ -297,19 +306,19 @@ gpg-key ssh-key codespace preview browse status co help completion version "
         si = next_word(gi + 1)
         # `gh pr` のように subcommand が無い形は help 出力 → allow
         if (si == 0) continue
-        kind = word_kind($si)
+        kind = word_kind(bare($si))
         if (kind == "var") { print "DENY|subcommand-undecidable:" group ":" $si; continue }
         if (kind == "other") continue   # subcommand 名になりえない字面
-        scmd = tolower($si)
+        scmd = tolower(bare($si))
         key = group ":" scmd
 
         if (in_list(NESTED, key)) {
           ti = next_word(si + 1)
           if (ti == 0) continue   # `gh repo deploy-key` 単独 = help
-          kind = word_kind($ti)
+          kind = word_kind(bare($ti))
           if (kind == "var") { print "DENY|subcommand-undecidable:" key ":" $ti; continue }
           if (kind == "other") continue
-          key3 = key ":" tolower($ti)
+          key3 = key ":" tolower(bare($ti))
           if (in_list(READ_KEYS3, key3)) continue
           print "DENY|" key3
           continue
@@ -387,6 +396,10 @@ gpg-key ssh-key codespace preview browse status co help completion version "
       # メソッド判定を素通りする。
       ei = next_word(start + 1)
       if (ei > 0 && tolower($ei) == "graphql") graphql = 1
+      # メソッド値の閉じ括弧（`<(gh api x -X GET)` の `GET)`）は剥がさない。
+      # 走査はセグメント全体に及ぶので、同じ行の別のプロセス置換にある
+      # `-X GET)` が本物の `-X POST` を上書きして allow に化けるため（#1140）。
+      # 括弧内の読み取りは安全側で deny になる。
 
       # 静的に読めないメソッド指定（変数が残っている / 値が欠落）は安全側で deny
       if (method == "__missing__" || method ~ /\$/) {
@@ -555,6 +568,15 @@ while IFS= read -r unwrapped; do
   [[ -n "$unwrapped" ]] && GH_SEGMENTS+=("$unwrapped")
 done < <(printf '%s\n' "${GH_SEGMENTS[@]}" | unwrap_eval_and_bashc)
 
+# git alias 定義（Issue #1140）。`git -c alias.x='!cmd' x` の ! alias は値を
+# シェルで実行する。値の中の gh / git push は引用・エスケープ・変数で自由に
+# 書き換えられ静的には読み切れないので、値を判定せず ! alias の定義自体を
+# deny する。同じ理由で値が push を含む alias、値が環境変数側にあって読めない
+# --config-env / GIT_CONFIG_KEY_<n> による alias 定義も deny する。
+# `git config alias.x '!cmd'` の永続定義も同じ字面で拾う（後の `git x` は
+# 静的に解決できないため、定義の時点で止める）。
+GIT_ALIAS_RE='alias\.[^[:space:]=]+[=[:space:]]+(!|[^[:space:]]*push)|--config-env[=[:space:]]+alias\.|GIT_CONFIG_KEY_[0-9]+=alias\.'
+
 GH_ASSIGNMENTS=()
 while IFS= read -r assign; do
   [[ -n "$assign" ]] && GH_ASSIGNMENTS+=("$assign")
@@ -579,6 +601,12 @@ for segment in "${GH_SEGMENTS[@]}"; do
   # `/usr/bin/g"h" pr merge 1` が `g h ...` に割れて実行ファイル名の検知を
   # すり抜ける。削除版ではシェルと同じ連結結果（`gh pr create`）になる。
   gh_joined=$(printf '%s' "$gh_expanded" | tr -d '\042\047' | flatten_substitutions)
+
+  # alias 定義は引用符に加えバックスラッシュも外して判定する（`alias\.x` 対策）。
+  # git の設定キーは section 名の大小文字を区別しないので -i で見る。
+  if printf '%s\n' "$gh_joined" | tr -d '\\' | grep -qiE "$GIT_ALIAS_RE"; then
+    deny_with_reason "git の alias 定義（! で始まるシェル実行 alias / push を含む alias / --config-env・GIT_CONFIG_KEY_<n> による alias）は Worker から実行できません。alias の中身は静的に判定できないため、gh や git push の迂回経路として一律に止めています。alias を使わず正式なコマンド名で実行してください。"
+  fi
 
   for gh_variant in "$gh_flat" "$gh_joined"; do
     # `gh` トークンが無いセグメントは早期に抜ける（awk 起動コストの節約）。
