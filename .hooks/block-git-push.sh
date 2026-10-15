@@ -235,6 +235,12 @@ gpg-key ssh-key codespace preview browse status co help completion version "
               || t == "-T" || t == "--title")
     }
     function in_list(list, key) { return index(list, " " key " ") > 0 }
+    # 語の先頭の ( と末尾の ) を剥がす。プロセス置換 `<(gh pr merge 1)` /
+    # `>(gh ...)` やサブシェル `(gh ...)` の内側は独立したコマンドとして実行
+    # されるので、`(gh` を実行トークン、`merge)` を subcommand として読む（#1140）。
+    # $0 の括弧を空白へ割ると `-f "title=(-XGET)"` の値の中身が独立した
+    # option に見えて gh api のメソッド判定を誤らせるため、語単位で扱う。
+    function bare(t) { gsub(/^\(+|\)+$/, "", t); return t }
     # トークンの「種別」を返す。
     #   cmd  : サブコマンド名の字面（^[a-z][a-z0-9-]*$）。allowlist 判定にかける。
     #   var  : 変数 / コマンド置換が残っており静的に読めない → deny（fail closed）。
@@ -273,22 +279,19 @@ gpg-key ssh-key codespace preview browse status co help completion version "
       # これを取り除くので、字面のままだと「コマンド語ではない」と誤判定して
       # 素通りする。判定前に演算子を空白へ正規化してトークンを割り直す
       # （$0 への代入で NF / $n が再計算される）。
-      # 括弧も同様に語へ密着できる。プロセス置換 `<(gh pr merge 1)` /
-      # `>(gh ...)` やサブシェル `(gh ...)` の内側は独立したコマンドとして
-      # 実行されるので、括弧を空白へ割って gh を実行トークンとして拾う（#1140）。
-      gsub(/[<>()]/, " ")
+      gsub(/[<>]/, " ")
       for (i = 1; i <= NF; i++) {
-        ghname = tolower($i)
+        ghname = tolower(bare($i))
         # Windows は gh.exe。実行形式のスペリング差で deny が外れないようにする。
         if (ghname != "gh" && ghname != "gh.exe" && ghname !~ /[\/\\]gh(\.exe)?$/) continue
 
         gi = next_word(i + 1)
         # フラグのみ（gh --version / gh --help）または gh 単独 → 書き込み不能
         if (gi == 0) continue
-        kind = word_kind($gi)
+        kind = word_kind(bare($gi))
         if (kind == "var") { print "DENY|group-undecidable:" $gi; continue }
         if (kind == "other") continue   # リテラル文字列中の gh
-        group = tolower($gi)
+        group = tolower(bare($gi))
 
         if (!in_list(GROUPS, group)) { print "DENY|unknown-group:" group; continue }
         if (in_list(READ_GROUPS, group)) continue
@@ -303,19 +306,19 @@ gpg-key ssh-key codespace preview browse status co help completion version "
         si = next_word(gi + 1)
         # `gh pr` のように subcommand が無い形は help 出力 → allow
         if (si == 0) continue
-        kind = word_kind($si)
+        kind = word_kind(bare($si))
         if (kind == "var") { print "DENY|subcommand-undecidable:" group ":" $si; continue }
         if (kind == "other") continue   # subcommand 名になりえない字面
-        scmd = tolower($si)
+        scmd = tolower(bare($si))
         key = group ":" scmd
 
         if (in_list(NESTED, key)) {
           ti = next_word(si + 1)
           if (ti == 0) continue   # `gh repo deploy-key` 単独 = help
-          kind = word_kind($ti)
+          kind = word_kind(bare($ti))
           if (kind == "var") { print "DENY|subcommand-undecidable:" key ":" $ti; continue }
           if (kind == "other") continue
-          key3 = key ":" tolower($ti)
+          key3 = key ":" tolower(bare($ti))
           if (in_list(READ_KEYS3, key3)) continue
           print "DENY|" key3
           continue
