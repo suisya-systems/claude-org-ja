@@ -40,10 +40,21 @@
 # ---------------------------------------------------------------------------
 # 既知の制限（多層防御の最後の壁であって、意図的な回避の防止ではない）
 # ---------------------------------------------------------------------------
-#   - `gh` の字面を含むリテラル文字列も deny になる。
-#     例: `git commit -m "後で gh pr create する"` / `grep -rn "gh pr merge" docs/`
-#     （`echo 'git push'` が既に deny されるのと同じ性質）。文字列検索は
-#     `gh` トークンを外す（例: `grep -rn "pr merge"`）と通る。
+#   - **データとして渡る本文の gh 字面**（Issue #1133）: 次の形だけは本文を
+#     gh 判定から外す（下の mask_data_heredocs / strip_data_literals）。
+#       * heredoc 本文: 受け手が python / python3 / py -3 / git commit、または
+#         `git commit -m "$(cat <<'EOF'` の cat。区切りが未クォートなら本文に
+#         $ ` \ が無いときだけ。
+#       * クォート内リテラル: grep / egrep / fgrep / rg（--pre 無し）/ git commit
+#         のセグメント（heredoc / here-string を含まないもの）で、'...' と
+#         置換・エスケープを含まない "..."。
+#     python heredoc 本文が subprocess 等で gh を呼ぶ形はこれで素通りする
+#     （python -c の文字列と同じく、静的解析の対象外として受け入れる）。
+#     上記以外のリテラル（`echo "gh pr merge 1"` 等）は従来どおり deny。
+#     置換・エスケープ・閉じないクォート・構文が閉じない入力・alias / 関数定義 /
+#     PATH 変更を含むコマンドでは一切外さない（fail closed）。止まった場合は
+#     本文をファイルに書いて `git commit -F <file>` 等で渡すと通る。
+#     git push の検知（1.）にはこの除外を適用しない。
 #   - **gh alias 経由の残存ギャップ**: `gh config` に事前登録済みの alias
 #     （`gh alias set pm 'pr merge'` 済みの環境での `gh pm 123`）は、コマンド
 #     文字列に `pr merge` の痕跡が無いため静的解析では解決できない。ただし
@@ -408,11 +419,135 @@ gpg-key ssh-key codespace preview browse status co help completion version "
   '
 }
 
+# ---------------------------------------------------------------------------
+# データとして渡るだけの本文を gh 判定から外す（Issue #1133）
+# ---------------------------------------------------------------------------
+# 対象は「明らかにデータ」と静的に言い切れる 2 形だけ。それ以外・判定に
+# 迷う形は一切外さず、従来どおり判定対象に残す（fail closed）。
+#   (a) heredoc 本文: 受け手が python / git commit（-F - 用）、または
+#       `git commit -m "$(cat <<'EOF'` の cat である本文行を空行に置き換える。
+#   (b) クォート内リテラル: grep 系 / git commit のセグメントで、'...' と
+#       置換を含まない "..." の中身を消す。
+# どちらも、alias / 関数定義 / PATH 変更などで受け手の実体を差し替えうる
+# 語がコマンド全体に 1 つでもあれば行わない（DATA_GUARD_RE）。
+
+# heredoc 本文マスク。読めない行が出たら以降はそのまま出力する（安全側）。
+mask_data_heredocs() {
+  awk '
+    function safe(s) { return s ~ /^[A-Za-z0-9_.\/=:@%+,~ \t&|;-]*$/ }
+    { L[++n] = $0 }
+    END {
+      W = "[A-Za-z0-9_.\\/=:@%+,~-]+"
+      PRE = "^([A-Za-z0-9_.\\/=:@%+,~ \\t-]*(&&|\\|\\||;|\\|))*[ \\t]*"
+      DELIM = "<<-?[ \\t]*(\047[A-Za-z0-9_]+\047|\"[A-Za-z0-9_]+\"|[A-Za-z0-9_]+)[ \\t]*$"
+      CONSUMER = "((python|python3|python3\\.[0-9]+|py[ \\t]+-3)|git[ \\t]+commit)([ \\t]+" W ")*[ \\t]*"
+      SUBST = "git[ \\t]+commit([ \\t]+" W ")*[ \\t]+(-[A-Za-z]*m[ \\t]*|--message(=|[ \\t]+))\"\\$\\(cat[ \\t]*"
+      ok = 1; i = 1
+      while (i <= n) {
+        line = L[i]
+        if (!ok) { out[i] = line; i++; continue }
+        insubst = (line ~ (PRE SUBST DELIM))
+        if (insubst || line ~ (PRE CONSUMER DELIM)) {
+          match(line, /<<-?[ \t]*['\''"]?[A-Za-z0-9_]+['\''"]?[ \t]*$/)
+          d = substr(line, RSTART + 2, RLENGTH - 2)
+          strip = (substr(d, 1, 1) == "-"); if (strip) d = substr(d, 2)
+          gsub(/[ \t]/, "", d)
+          quoted = (d ~ /^['\''"]/); gsub(/['\''"]/, "", d)
+          for (k = i + 1; k <= n; k++) {
+            cmp = L[k]; if (strip) sub(/^\t+/, "", cmp)
+            if (cmp == d) break
+            # 未クォート区切りの本文は展開される。$ ` \ を含めば外さない。
+            if (!quoted && L[k] ~ /[$`\\]/) { k = n + 1; break }
+          }
+          if (k > n) { ok = 0; out[i] = line; i++; continue }
+          out[i] = line
+          for (j = i + 1; j < k; j++) out[j] = ""
+          out[k] = L[k]
+          i = k + 1
+          # $( を閉じる行が素直な形でなければ以降は外さない。
+          if (insubst) {
+            if (i <= n && L[i] ~ /^[ \t]*\)"/ && safe(substr(L[i], index(L[i], ")\"") + 2))) { out[i] = L[i]; i++ }
+            else ok = 0
+          }
+          continue
+        }
+        if (!safe(line)) ok = 0
+        out[i] = line; i++
+      }
+      for (i = 1; i <= n; i++) printf "%s%s", out[i], (i < n ? "\n" : "")
+    }
+  '
+}
+
+# 1 セグメント（複数行可）のクォート内リテラルを消す。データ用コマンドで
+# なければ、または読めない構文（エスケープ / 置換 / 閉じないクォート）が
+# あればそのまま返す。
+strip_data_literals() {
+  awk '
+    { buf = (NR == 1) ? $0 : buf "\n" $0 }
+    END {
+      s = buf; sub(/^[ \t\n]+/, "", s)
+      split(s, w, /[ \t\n]+/)
+      data = (w[1] == "grep" || w[1] == "egrep" || w[1] == "fgrep" || w[1] == "rg" \
+              || (w[1] == "git" && w[2] == "commit"))
+      # rg --pre は検索前に任意コマンドを実行する（"--pre" のようにクォート
+      # されていても効くので、字面があれば外さない）。
+      if (w[1] == "rg" && index(s, "--pre")) data = 0
+      # heredoc / here-string の本文は引数ではない（書き出して実行されうる）。
+      # 本文の除外は mask_data_heredocs の規則だけに任せる。
+      if (index(s, "<<")) data = 0
+      if (!data) { printf "%s", buf; exit }
+      out = ""; n = length(s); i = 1
+      while (i <= n) {
+        c = substr(s, i, 1); nc = substr(s, i + 1, 1)
+        if (c == "\\" || c == "`") { printf "%s", buf; exit }
+        if (c == "$" && (nc == "(" || nc == "\047" || nc == "\"")) { printf "%s", buf; exit }
+        if ((c == "<" || c == ">") && nc == "(") { printf "%s", buf; exit }
+        if (c == "\047" || c == "\"") {
+          j = index(substr(s, i + 1), c)
+          if (j == 0) { printf "%s", buf; exit }
+          body = substr(s, i + 1, j - 1)
+          if (c == "\"" && (index(body, "$(") || index(body, "`") || index(body, "\\"))) { printf "%s", buf; exit }
+          out = out c c; i += j + 1; continue
+        }
+        out = out c; i++
+      }
+      printf "%s", out
+    }
+  '
+}
+
+# 受け手の実体を差し替えうる語。1 つでもあればデータ除外を行わない。
+DATA_GUARD_RE='(^|[^A-Za-z0-9_-])(alias|enable|hash|function|shopt|PATH=|BASH_ENV|ENV=)|\(\)'
+
+GH_COMMAND="$COMMAND"
+GH_DATA_OK=0
+GH_RS=$'\036'
+if [[ "$COMMAND" != *"$GH_RS"* ]] && ! printf '%s' "$COMMAND" | grep -qE "$DATA_GUARD_RE" \
+   && printf '%s' "$COMMAND" | CORE_HARNESS_STRICT_PARSE=1 split_segments >/dev/null 2>&1; then
+  gh_masked=$(printf '%s' "$COMMAND" | mask_data_heredocs) || gh_masked="$COMMAND"
+  # マスク後も同じく構文が閉じていることを確かめてから採用する。
+  if printf '%s' "$gh_masked" | CORE_HARNESS_STRICT_PARSE=1 split_segments >/dev/null 2>&1; then
+    GH_COMMAND="$gh_masked"
+    GH_DATA_OK=1
+  fi
+fi
+
 # 全セグメントを 1 度収集してから既知の代入を抽出し、各セグメントで展開する。
+# セグメントは複数行にまたがりうるので RS 区切りで受け、リテラル除去の後に
+# 従来どおり行単位へ割る。
 GH_SEGMENTS=()
-while IFS= read -r seg; do
-  GH_SEGMENTS+=("$seg")
-done < <(printf '%s' "$COMMAND" | split_segments)
+while IFS= read -r -d "$GH_RS" seg; do
+  if [[ $GH_DATA_OK -eq 1 ]]; then
+    # awk が失敗したら元のセグメントを使う（中身を落として素通りさせない）。
+    if gh_stripped=$(printf '%s' "$seg" | strip_data_literals); then
+      seg="$gh_stripped"
+    fi
+  fi
+  while IFS= read -r line; do
+    GH_SEGMENTS+=("$line")
+  done <<< "$seg"
+done < <(printf '%s' "$GH_COMMAND" | __CORE_HARNESS_SPLIT_ORS="$GH_RS" split_segments)
 
 # eval / bash -c / sh -c の引数文字列を追加の検査対象セグメントとして取り出す
 # （Phase 2a, Issue #79 と同じ回避耐性層）。
@@ -457,7 +592,7 @@ for segment in "${GH_SEGMENTS[@]}"; do
 
   if [[ -n "${gh_verdicts:-}" ]]; then
     gh_detail=$(printf '%s' "$gh_verdicts" | sed 's/^DENY|//' | tr '\n' ' ')
-    deny_with_reason "gh 経由の GitHub 書き込み操作は Worker から直接実行できません（検知: ${gh_detail%% }）。PR 作成 / merge / comment / review / release / workflow 実行などは人間の承認後に窓口が実施します。なお claude-org-runtime 0.1.46 以降のワーカーは読み取り系も含め gh を使えません（sandbox が token を遮断するため認証できない）。CI ログ・Issue・PR の確認が必要なら窓口に依頼してください。"
+    deny_with_reason "gh 経由の GitHub 書き込み操作は Worker から直接実行できません（検知: ${gh_detail%% }）。PR 作成 / merge / comment / review / release / workflow 実行などは人間の承認後に窓口が実施します。なお claude-org-runtime 0.1.46 以降のワーカーは読み取り系も含め gh を使えません（sandbox が token を遮断するため認証できない）。CI ログ・Issue・PR の確認が必要なら窓口に依頼してください。gh を実行するつもりが無い場合は、コマンドではない本文（commit message・heredoc 本文・echo / python の文字列等）に含まれる gh の字面で止まった可能性があります。本文は Write ツールでファイルに書いて \`git commit -F <file>\` 等で渡すか、本文から gh の語を外してください（grep の検索語や python heredoc・git commit の本文は対象外として扱われますが、置換・エスケープを含む形は安全側で判定対象に残ります）。"
   fi
 done
 
