@@ -196,12 +196,16 @@ join できた各ペインについて、role + name(task_id) ラベル付きで
   → `/usr/bin/tmux -L claude-org-broker attach -r -t <session>`
   - `-r` = read-only attach。覗くだけで誤入力でペインを壊さない
 - **今の tmux を分割して並べる（外側が tmux = `$TMUX` 設定ありのとき）**: 各ペインについて
-  `/usr/bin/tmux split-window -d -h "TMUX= /usr/bin/tmux -L claude-org-broker attach -t <session>" \; select-layout tiled`
-  を 1 行ずつ出す
+  `/usr/bin/tmux split-window -d -h "TMUX= /usr/bin/tmux -L claude-org-broker attach -t <session>" \; select-layout even-horizontal`
+  を 1 行ずつ出す（既定は左右並べ）。続けて、並べる枚数が多いとき用に末尾を `\; select-layout tiled`
+  に替えた版も併記する
   - `-d`: 新しいペインへフォーカスを移さない。無いと 1 行目の実行後に入力先が attach 先（dispatcher / worker）
     に移り、次の行がそちらへ打ち込まれる
-  - `\; select-layout tiled`: 分割のたびに均等配置へ戻す。最後に 1 回だけだと、`-h` 分割を重ねる途中で
-    幅が尽きて `no space for new pane` で後続の分割が失敗する
+  - `\; select-layout even-horizontal`: 分割のたびに左右均等幅へ並べ直す。横長画面で 2 枚なら左右に並ぶ
+    （`tiled` だと上下に重なる）。最後に 1 回だけだと、`-h` 分割を重ねる途中で幅が尽きて
+    `no space for new pane` で後続の分割が失敗するので、分割ごとに並べ直す形は崩さない
+  - `\; select-layout tiled`（併記版）: 自分のペインを含めた合計が 4 枚以上になるなど、左右並べでは 1 枚の
+    幅が足りないときに使う。格子状に並べるので幅切れしにくい
   - 外側の `/usr/bin/tmux split-window` は `-L` を付けず、`$TMUX` が指す**人間自身の tmux** を分割する。
     内側の `TMUX=` は「tmux の中から tmux を起動する」入れ子拒否
     （`sessions should be nested with care, unset $TMUX to force`）を外すためのもの
@@ -267,9 +271,12 @@ logical pane 除外 → `%N` を持つ dispatcher / worker のみ join → 生�
   読取専用 : /usr/bin/tmux -L claude-org-broker attach -r -t claude-org-broker-1912-17
 
 ■ 今の tmux を分割して並べる（自分の tmux の中から。broker に attach 中の端末では使わない）
+  /usr/bin/tmux split-window -d -h "TMUX= /usr/bin/tmux -L claude-org-broker attach -t claude-org-broker-1912-14" \; select-layout even-horizontal
+  /usr/bin/tmux split-window -d -h "TMUX= /usr/bin/tmux -L claude-org-broker attach -t claude-org-broker-1912-17" \; select-layout even-horizontal
+  （読取専用で並べるなら内側の attach に -r を付ける）
+  自分のペインを含めて 4 枚以上になり幅が足りないときは、格子状に並べる tiled 版を使う:
   /usr/bin/tmux split-window -d -h "TMUX= /usr/bin/tmux -L claude-org-broker attach -t claude-org-broker-1912-14" \; select-layout tiled
   /usr/bin/tmux split-window -d -h "TMUX= /usr/bin/tmux -L claude-org-broker attach -t claude-org-broker-1912-17" \; select-layout tiled
-  （読取専用で並べるなら内側の attach に -r を付ける）
 
 (logical pane / attach 対象外)
 - secretary (secretary): 窓口は logical pane（pane_id 無し・broker socket 非出現）。
