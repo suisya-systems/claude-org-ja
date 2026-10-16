@@ -132,6 +132,8 @@ python3 tools/codex_round_cap.py set --task-id <task_id> --allowed <N|unlimited>
 ```
 現在値は `python3 tools/codex_round_cap.py status --task-id <task_id>` で確かめられる。許可回数を書けるのは窓口だけで、ワーカーからは書けない（`.state/` はワーカーのサンドボックス外）。
 
+**ワーカーに設計レビューを頼むとき**: ワーカーは `codex` を直接実行できないので、brief で着手前の設計レビューを求める場合も、ワーカーは `bash "$CLAUDE_ORG_PATH/tools/codex_review_gate.sh" --design <file>` だけで回す（設計を書いたファイルのパスを渡す）。設計レビューは差分レビューとは別枠で数え、タスクごとに 1 回固定（`set` では変わらない）。差分レビューの許可回数（既定 3）は減らない。2 回目の設計レビューは `CODEX_ROUND_DENIED`（`mode=design`）で拒否される。
+
 ## 委譲前チェックリスト（窓口が実行）
 
 タスク分解に入る前に、依頼内容を以下の観点で確認する。該当する場合はユーザーに聞き返す。
@@ -414,7 +416,7 @@ worker → Secretary peer message
 
 ### ディスパッチャーから CODEX_ROUND_DENIED を受けたとき
 
-ワーカーが Codex レビューの許可回数（既定 3、窓口が `tools/codex_round_cap.py set` で変えた値があればそれ）を使い切った後に、4 回目のレビューゲートを呼ぶと、PreToolUse フック（`.hooks/block-codex-over-cap.sh`）が拒否して events テーブルに `codex_round_denied` を書く。ディスパッチャーはこれを見回りで拾い、`CODEX_ROUND_DENIED: worker-<task_id> (task_id=<task_id>, used=<n>, allowed=<m>) [relay]` を窓口へ中継する（[`.dispatcher/references/worker-monitoring.md`](../../../.dispatcher/references/worker-monitoring.md) Step 5.25）。ワーカー自身も拒否を受けて残指摘と自己評価を報告して停止する。**次の手を決めるのは窓口で、ディスパッチャーもワーカーも決めない**。同じ拒否について中継とワーカー報告の両方、または `[relay]` の重複が届いても、1 件として扱う（2 回目以降は状態を変えない）。
+ワーカーが Codex レビューの許可回数（既定 3、窓口が `tools/codex_round_cap.py set` で変えた値があればそれ）を使い切った後に、4 回目のレビューゲートを呼ぶと、PreToolUse フック（`.hooks/block-codex-over-cap.sh`）が拒否して events テーブルに `codex_round_denied` を書く。ディスパッチャーはこれを見回りで拾い、`CODEX_ROUND_DENIED: worker-<task_id> (task_id=<task_id>, used=<n>, allowed=<m>) [relay]` を窓口へ中継する（[`.dispatcher/references/worker-monitoring.md`](../../../.dispatcher/references/worker-monitoring.md) Step 5.25）。ワーカー自身も拒否を受けて残指摘と自己評価を報告して停止する。2 回目の設計レビュー（`--design`）が拒否されたときは中継が `CODEX_ROUND_DENIED: worker-<task_id> (task_id=<task_id>, mode=design, used=<n>, allowed=1) [relay]` になる。設計レビューは 1 回固定で `set` では増えないので、この場合は下記 (a)〜(c) ではなく、ワーカーに実装を続けさせるか、設計の再確認が要るなら人間に上げる。**次の手を決めるのは窓口で、ディスパッチャーもワーカーも決めない**。同じ拒否について中継とワーカー報告の両方、または `[relay]` の重複が届いても、1 件として扱う（2 回目以降は状態を変えない）。
 
 1. ワーカーへ ack を返す（[`.claude/skills/org-delegate/references/ack-template.md`](references/ack-template.md) の「Codex 往復上限での停止 ack」節）。ワーカーの報告がまだ届いていなければ、ack で残指摘と自己評価の報告を求める
 2. `.state/workers/worker-{task_id}.md` の Progress Log に拒否（used / allowed）と残指摘の要旨を追記する。現在値は `python3 tools/codex_round_cap.py status --task-id <task_id>` で確かめる

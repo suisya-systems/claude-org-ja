@@ -306,6 +306,11 @@ def compose_message(kind: str, payload: dict) -> str:
         )
     if kind == "codex_round_denied":
         task = payload.get("task", "?")
+        if payload.get("mode") == "design":
+            return (
+                f"CODEX_ROUND_DENIED: worker-{task} (task_id={task}, "
+                f"mode=design, used={payload.get('used', '?')}, allowed=1) [relay]"
+            )
         return (
             f"CODEX_ROUND_DENIED: worker-{task} (task_id={task}, "
             f"used={payload.get('used', '?')}, "

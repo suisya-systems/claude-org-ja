@@ -80,6 +80,18 @@ class TestComposeMessage(unittest.TestCase):
                 "codex_round_denied", {"task": "t1", "used": 3, "allowed": 3}),
             "CODEX_ROUND_DENIED: worker-t1 (task_id=t1, used=3, allowed=3) [relay]")
 
+    def test_codex_round_denied_design_mode(self):
+        self.assertEqual(
+            relay_scan.compose_message(
+                "codex_round_denied",
+                {"task": "t1", "mode": "design", "used": 1, "allowed": 1}),
+            "CODEX_ROUND_DENIED: worker-t1 (task_id=t1, mode=design, used=1, allowed=1) [relay]")
+        self.assertEqual(
+            relay_scan.compose_message(
+                "codex_round_denied",
+                {"task": "t1", "mode": "diff", "used": 3, "allowed": 3}),
+            "CODEX_ROUND_DENIED: worker-t1 (task_id=t1, used=3, allowed=3) [relay]")
+
     def test_unknown_kind_degrades_not_raises(self):
         msg = relay_scan.compose_message("brand_new_kind", {"pr": 9})
         self.assertIn("BRAND_NEW_KIND", msg)

@@ -112,6 +112,32 @@ class ClassifyTest(unittest.TestCase):
             with self.subTest(cmd=cmd):
                 self.assertEqual(verdict(cmd), "gate")
 
+    def test_canonical_design(self):
+        for cmd in [
+            "bash /org/tools/codex_review_gate.sh --design design.md",
+            'bash "$CLAUDE_ORG_PATH/tools/codex_review_gate.sh" --design .worker-scratch/design.md',
+            "bash /org/tools/codex_review_gate.sh --design /abs/path/d-1.md",
+        ]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "design")
+
+    def test_non_canonical_design_denied(self):
+        for cmd in [
+            "bash /org/tools/codex_review_gate.sh --design",
+            "bash /org/tools/codex_review_gate.sh --design a.md extra",
+            "bash /org/tools/codex_review_gate.sh --design 'a;b.md'",
+            "bash /org/tools/codex_review_gate.sh --design 'a b.md'",
+            'bash /org/tools/codex_review_gate.sh --design "$(rm x)"',
+            "bash /org/tools/codex_review_gate.sh --design '$HOME/x.md'",
+            "bash /org/tools/codex_review_gate.sh --design -x",
+            "bash /org/tools/codex_review_gate.sh --design a.md; true",
+            "true && bash /org/tools/codex_review_gate.sh --design a.md",
+            "bash /org/tools/codex_review_gate.sh --designx a.md",
+            "bash tools/codex_review_gate.sh --design a.md",
+        ]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), "deny")
+
     def test_non_canonical_gate_denied(self):
         for cmd in [
             "bash tools/codex_review_gate.sh base",
@@ -205,13 +231,48 @@ class StateTest(unittest.TestCase):
         out = _hook(self.org, "/w/one", self.gate)
         self.assertTrue(out.startswith("DENY: CODEX_ROUND_DENIED"), out)
         self.assertEqual(self._cli("status", "--task-id", "t1"),
-                         {"task": "t1", "used": 3, "allowed": 3, "denied": 1})
+                         {"task": "t1", "used": 3, "allowed": 3, "denied": 1,
+                          "design_used": 0})
         st = self._cli("set", "--task-id", "t1", "--allowed", "4", "--reason", "human ok")
         self.assertEqual(st["allowed"], 4)
         self.assertEqual(_hook(self.org, "/w/one", self.gate), "ALLOW")
         self.assertTrue(_hook(self.org, "/w/one", self.gate).startswith("DENY"))
         self._cli("set", "--task-id", "t1", "--allowed", "unlimited", "--reason", "x")
         self.assertEqual(_hook(self.org, "/w/one", self.gate), "ALLOW")
+
+    def test_design_counted_separately(self):
+        design = f"bash {self.org}/tools/codex_review_gate.sh --design d.md"
+        self.assertEqual(_hook(self.org, "/w/one", design), "ALLOW")
+        for _ in range(3):
+            self.assertEqual(_hook(self.org, "/w/one", self.gate), "ALLOW")
+        self.assertTrue(_hook(self.org, "/w/one", self.gate).startswith("DENY"))
+        out = _hook(self.org, "/w/one", design)
+        self.assertTrue(out.startswith("DENY: CODEX_ROUND_DENIED"), out)
+        self.assertIn("mode=design", out)
+        st = self._cli("status", "--task-id", "t1")
+        self.assertEqual((st["used"], st["design_used"], st["denied"]), (3, 1, 2))
+        conn = connect(self.db)
+        modes = [r[0] for r in conn.execute(
+            "SELECT json_extract(payload_json, '$.mode') FROM events "
+            "WHERE kind = 'codex_round_denied' ORDER BY id")]
+        conn.close()
+        self.assertEqual(modes, ["diff", "design"])
+
+    def test_diff_exhaustion_does_not_block_design(self):
+        self._cli("set", "--task-id", "t1", "--allowed", "0", "--reason", "x")
+        self.assertTrue(_hook(self.org, "/w/one", self.gate).startswith("DENY"))
+        design = f"bash {self.org}/tools/codex_review_gate.sh --design d.md"
+        self.assertEqual(_hook(self.org, "/w/one", design), "ALLOW")
+
+    def test_legacy_rows_without_mode_count_as_diff(self):
+        conn = connect(self.db)
+        w = StateWriter(conn)
+        for _ in range(3):
+            w.append_event(kind="codex_round_started", payload={"task": "t1", "round": 1})
+        w.commit()
+        conn.close()
+        self.assertTrue(_hook(self.org, "/w/one", self.gate).startswith("DENY"))
+        self.assertEqual(self._cli("status", "--task-id", "t1")["design_used"], 0)
 
     def test_set_rejects_bad_allowed(self):
         with self.assertRaises(SystemExit):

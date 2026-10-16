@@ -190,8 +190,8 @@ the helper**; it does not deduplicate a row a human appended separately.
 
 | Event                     | Typical fields                                   | Writer    | Emitted by | Required for |
 |---------------------------|--------------------------------------------------|-----------|------------|--------------|
-| `codex_round_started`     | `task`, `round`, `allowed`, `worker_dir`         | `codex-round-cap-hook` | `tools/codex_round_cap.py hook` | — (round count = number of rows per `task`) |
-| `codex_round_denied`      | `task`, `used`, `allowed`, `worker_dir`          | `codex-round-cap-hook` | `tools/codex_round_cap.py hook` | — (relayed to the secretary) |
+| `codex_round_started`     | `task`, `mode`, `round`, `allowed`, `worker_dir` | `codex-round-cap-hook` | `tools/codex_round_cap.py hook` | — (round count = number of rows per `task`) |
+| `codex_round_denied`      | `task`, `mode`, `used`, `allowed`, `worker_dir`  | `codex-round-cap-hook` | `tools/codex_round_cap.py hook` | — (relayed to the secretary) |
 | `codex_round_cap_changed` | `task`, `allowed` (int or `"unlimited"`), `previous`, `reason` | secretary | `tools/codex_round_cap.py set` | — |
 | `worker_model_set`        | `task`, `model` (`sonnet` / `opus`), `reason`    | dispatcher / secretary | dispatcher (spawn-flow Step 4), secretary (promotion) | — |
 
@@ -202,6 +202,13 @@ Each permitted gate call appends one `codex_round_started` in the same transacti
 that counts the earlier ones; once `used` reaches `allowed` the call is refused and
 `codex_round_denied` is appended instead. The task is resolved from the newest
 `delegate_sent` whose `dir` matches the worker's `WORKER_DIR`.
+
+`mode` is `diff` for `bash "<claude_org_path>/tools/codex_review_gate.sh" <base-ref>`
+and `design` for `... --design <file>`; a row without `mode` counts as `diff`. The two
+are counted separately: `round` / `used` count rows of the same mode, diff rounds are
+checked against `allowed`, and design is fixed at `allowed: 1` per task (not changed by
+`set`), so a design review neither consumes nor is blocked by the diff allowance.
+`codex_round_cap.py status` reports `used` (diff) and `design_used`.
 
 A round is consumed when the hook authorises the gate call (PreToolUse), before the
 gate runs. A call that then exits early (`CODEX_GATE: dirty-worktree` or
@@ -218,7 +225,8 @@ at delegate time.
 
 `codex_round_denied` is in `tools/relay_scan.py`'s `TERMINAL_KINDS`, so the
 dispatcher relays it to the secretary as
-`CODEX_ROUND_DENIED: worker-<task> (task_id=<task>, used=<n>, allowed=<m>) [relay]`.
+`CODEX_ROUND_DENIED: worker-<task> (task_id=<task>, used=<n>, allowed=<m>) [relay]`
+(`mode=design` denials render as `(task_id=<task>, mode=design, used=<n>, allowed=1)`).
 The dispatcher only relays; whether to promote the worker to Opus, ask the human,
 or stop is the secretary's decision.
 

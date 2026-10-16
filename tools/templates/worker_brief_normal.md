@@ -133,6 +133,7 @@ bash "${claude_org_path}/tools/codex_review_gate.sh" ${task_base_ref}
 - 安全機構に掛かって review が完了しないときは、言い換えやプロンプト改変で回避しない。窓口に新しいセッションでの再実行を頼み、それでも通らなければ「Codex ゲート未成立（safety block、HEAD=`<sha>`）」と報告する
 - Blocker / Major は修正コミットを積み再レビュー。**round の上限はフックが強制する**（既定 3。増やせるのは窓口だけ。この brief の実装ガイダンスに別値があれば窓口が派遣時に設定済み）。上限を超えたゲート呼び出しは `CODEX_ROUND_DENIED` で拒否されるので、codex を再実行せず、残指摘と自己評価（設計問題化しているのか、別問題が順に露見する健全な収束の途中なのか）を窓口に報告して止まる
 - `codex` の直接実行（`codex exec` / `codex review` 等）はフックが拒否する。Codex は上のゲートからだけ呼ぶ
+- 設計レビューを頼まれたときは `bash "${claude_org_path}/tools/codex_review_gate.sh" --design <設計ファイル>` で回す（差分レビューとは別枠でタスクごとに 1 回だけ。差分の上限は減らない。2 回目は `CODEX_ROUND_DENIED` で拒否される）
 - 同一指摘が 3 round 消えないとき、または前 round の修正を巻き戻す向きの指摘が出たときは、上限前でも設計問題として報告する（後者は綱引きの方向を書く）
 - Minor / Nit は原則残置し PR 本文に既知制限として明記する。レビューを別ワーカーに委譲しない
 - large diff では effort を上げない。review surface の取りこぼし傾向と実測根拠は claude-org リポジトリの `knowledge/curated/codex.md`

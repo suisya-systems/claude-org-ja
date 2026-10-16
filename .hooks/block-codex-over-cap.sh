@@ -15,11 +15,13 @@
 #     (grep / cat / echo / git / which / `command -v` / `npm i` 等) 以外 deny。
 #     `bash -c` 等の文字列は入れ子で再判定し、標準入力やヒアドキュメントで
 #     `codex` を含むテキストをシェルに流す形と `$(codex ...)` も deny
-#   - Codex ゲートは `bash "$CLAUDE_ORG_PATH/tools/codex_review_gate.sh" <base-ref>`
+#   - Codex ゲートは `bash "$CLAUDE_ORG_PATH/tools/codex_review_gate.sh" <base-ref>`（差分）と
+#     `... --design <file>`（設計。パスは空白・シェル記号を含まない 1 語）の
 #     単独の形だけ通す。それ以外の形 (ワーカー側のコピー・相対パス・他コマンドとの連結) は deny
 #   - 正規のゲート呼び出しは 1 回ごとに `codex_round_started` を記録して通す。
 #     許可回数 (既定 3、窓口が `tools/codex_round_cap.py set` で変更) を超えたら
-#     `codex_round_denied` を記録して deny (CODEX_ROUND_DENIED)
+#     `codex_round_denied` を記録して deny (CODEX_ROUND_DENIED)。設計レビューは別枠で
+#     タスクごとに 1 回固定 (payload の mode=design)。差分の許可回数を消費も参照もしない
 #
 # 既知の限界: 変数展開・グロブ・ブレース展開・$'...'・別ファイルに書いたスクリプト・
 #   他言語で組み立てた文字列・許可リストのコマンドの実行機能 (git alias 等) 経由の

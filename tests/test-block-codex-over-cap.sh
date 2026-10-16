@@ -110,7 +110,7 @@ check 0 "unlimited allows round 5" "$GATE"
 check 0 "unlimited allows round 6" "$GATE"
 assert_eq "$(count_kind codex_round_cap_changed)" "2" "2 codex_round_cap_changed rows"
 STATUS=$("$PY" "$CAP" status --task-id t1 --db-path "$ORG/.state/state.db")
-assert_eq "$STATUS" '{"task": "t1", "used": 6, "allowed": "unlimited", "denied": 2}' "status reports used/allowed/denied"
+assert_eq "$STATUS" '{"task": "t1", "used": 6, "allowed": "unlimited", "denied": 2, "design_used": 0}' "status reports used/allowed/denied/design_used"
 "$PY" "$CAP" set --task-id t1 --allowed 0 --reason test --db-path "$ORG/.state/state.db" >/dev/null
 
 # --- codex の直接実行 ---
@@ -221,6 +221,56 @@ check_mcp 0 spawn_pane command "ls"
 check_mcp 0 send_keys text "hello"
 check_mcp 0 spawn_claude_pane command "codex"
 assert_eq "$(count_kind codex_round_started)" "$STARTED" "MCP calls consume no round"
+
+# --- 設計レビュー (--design): 差分とは別枠でタスクごとに 1 回 ---
+add_task() {  # add_task <worker_dir> <task>
+  PYTHONPATH="$REPO_ROOT" "$PY" - "$ORG/.state/state.db" "$@" <<'PYEOF'
+import sys
+from tools.state_db import connect
+from tools.state_db.writer import StateWriter
+conn = connect(sys.argv[1])
+w = StateWriter(conn)
+w.append_event(kind="delegate_sent", actor="secretary", payload={"task": sys.argv[3], "dir": sys.argv[2]})
+w.commit()
+conn.close()
+PYEOF
+}
+count_design_denied() {
+  PYTHONPATH="$REPO_ROOT" "$PY" - "$ORG/.state/state.db" "$1" <<'PYEOF'
+import sqlite3, sys
+c = sqlite3.connect(sys.argv[1])
+print(c.execute("SELECT COUNT(*) FROM events WHERE kind = 'codex_round_denied' "
+                "AND json_extract(payload_json, '$.task') = ? "
+                "AND json_extract(payload_json, '$.mode') = 'design'", (sys.argv[2],)).fetchone()[0])
+PYEOF
+}
+W2="$TMP/workers/w2"; W3="$TMP/workers/w3"
+mkdir -p "$W2" "$W3"
+add_task "$W2" t2
+add_task "$W3" t3
+DESIGN="bash $CANON --design design.md"
+check 0 "t2: design review allowed once" "$DESIGN" WORKER_DIR="$W2"
+check 0 "t2: diff round 1 allowed after design" "$GATE" WORKER_DIR="$W2"
+check 0 "t2: diff round 2 allowed" "$GATE" WORKER_DIR="$W2"
+check 0 "t2: diff round 3 allowed (design consumed no diff round)" "$GATE" WORKER_DIR="$W2"
+check 2 "t2: diff round 4 denied" "$GATE" WORKER_DIR="$W2"
+check 2 "t2: second design review denied" 'bash "$CLAUDE_ORG_PATH/tools/codex_review_gate.sh" --design docs/design.md' WORKER_DIR="$W2"
+assert_err_contains "mode=design" "second design stderr carries mode=design"
+assert_eq "$(count_design_denied t2)" "1" "t2: 1 codex_round_denied row with mode=design"
+STATUS=$("$PY" "$CAP" status --task-id t2 --db-path "$ORG/.state/state.db")
+assert_eq "$STATUS" '{"task": "t2", "used": 3, "allowed": 3, "denied": 2, "design_used": 1}' "t2 status counts diff and design separately"
+for _ in 1 2 3; do run "$GATE" WORKER_DIR="$W3" >/dev/null; done
+check 2 "t3: diff exhausted" "$GATE" WORKER_DIR="$W3"
+check 0 "t3: diff exhaustion does not block the design review" "$DESIGN" WORKER_DIR="$W3"
+for cmd in \
+  "bash $CANON --design design.md extra" \
+  "bash $CANON --design 'a;b.md'" \
+  'bash '"$CANON"' --design "$(touch x).md"' \
+  "bash $CANON --design design.md; true" \
+  "bash $CANON --design -x" \
+  "bash $CANON --design"; do
+  check 2 "non-canonical design form denied: $cmd" "$cmd" WORKER_DIR="$W2"
+done
 
 # --- 判定器の異常 (無出力 exit 1 / 不正出力) は deny ---
 for stub in 'import sys; sys.exit(1)' 'print("garbage")'; do

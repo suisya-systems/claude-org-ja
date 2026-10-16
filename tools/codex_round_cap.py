@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Per-task Codex review round cap, enforced outside the worker.
 
-The worker's only permitted Codex entry is ``bash
-"$CLAUDE_ORG_PATH/tools/codex_review_gate.sh" <base-ref>``. The PreToolUse
+The worker's only permitted Codex entries are ``bash
+"$CLAUDE_ORG_PATH/tools/codex_review_gate.sh" <base-ref>`` (diff review) and
+``bash "$CLAUDE_ORG_PATH/tools/codex_review_gate.sh" --design <file>``
+(design review). The PreToolUse
 hook ``.hooks/block-codex-over-cap.sh`` runs ``hook`` here (outside the
 worker's sandbox) for every Bash command (and MCP ``spawn_pane`` /
 ``new_tab`` command, ``send_keys`` text) that mentions ``codex`` once
@@ -25,6 +27,9 @@ quotes and backslashes are removed. Classification is default-deny:
 * a canonical gate call consumes one round. Rounds are counted from
   ``codex_round_started`` events for the task; past the allowance a
   ``codex_round_denied`` event is written and the call is refused.
+  Events carry ``mode`` (``diff`` / ``design``; a row without it is
+  ``diff``). Diff and design are counted separately: design is fixed at
+  1 per task and never consumes or is blocked by the diff allowance.
 
 The allowance defaults to 3 and only the secretary changes it, with
 ``set`` (``codex_round_cap_changed`` events). The worker cannot write the
@@ -67,16 +72,18 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 DEFAULT_ALLOWED = 3
+DESIGN_ALLOWED = 1
 UNLIMITED = "unlimited"
 GATE_NAME = "codex_review_gate.sh"
 HOOK_ACTOR = "codex-round-cap-hook"
 
 GATE_FORM = 'bash "$CLAUDE_ORG_PATH/tools/codex_review_gate.sh" <base-ref>'
+DESIGN_FORM = 'bash "$CLAUDE_ORG_PATH/tools/codex_review_gate.sh" --design <file>'
 MSG_DIRECT = (
     "codex の直接実行は禁止。" + GATE_FORM + " を使う"
 )
 MSG_GATE_FORM = (
-    "Codex ゲートは単独のコマンドとして " + GATE_FORM
+    "Codex ゲートは単独のコマンドとして " + GATE_FORM + " または " + DESIGN_FORM
     + " の形でだけ呼べます (ワーカー側のコピーや相対パス・他コマンドとの連結は不可)"
 )
 
@@ -100,6 +107,7 @@ _KEYWORDS = {"!", "{", "}", "if", "then", "else", "elif", "do", "while",
              "until", "fi", "done"}
 _ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 _BASE_REF_RE = re.compile(r"^[A-Za-z0-9._/@^~+-]+$")
+_DESIGN_PATH_RE = re.compile(r"^[A-Za-z0-9._/@+][A-Za-z0-9._/@+-]*$")
 _HEREDOC_RE = re.compile(r"<<(-?)[ \t]*(\\?)(['\"]?)([^\s;&|<>()'\"]+)\3")
 _SUBST_RE = re.compile(r"[$<>]\(|`")
 _OPS = ";&|()<>\n"
@@ -323,10 +331,10 @@ def _expand_org_path(word: str, org_path: str) -> str:
 
 
 def classify(command: str, canonical_gate: str, org_path: str = "") -> "tuple[str, str]":
-    """Return ``("allow"|"deny"|"gate", message)`` for one Bash command.
+    """Return ``("allow"|"deny"|"gate"|"design", message)`` for one Bash command.
 
-    ``gate`` means the command is exactly one canonical gate call and must
-    now be counted. ``deny`` is returned for anything unparsable that
+    ``gate`` / ``design`` means the command is exactly one canonical diff /
+    design gate call and must now be counted. ``deny`` is returned for anything unparsable that
     mentions codex (fail-closed).
     """
     try:
@@ -343,12 +351,14 @@ def classify(command: str, canonical_gate: str, org_path: str = "") -> "tuple[st
     words = simple[0] if len(simple) == 1 else []
     if (
         findings == ["gate"]
-        and len(words) == 3
+        and len(words) in (3, 4)
         and words[0] == "bash"
         and _norm(_expand_org_path(words[1], org_path)) == _norm(canonical_gate)
-        and _BASE_REF_RE.match(words[2])
     ):
-        return "gate", ""
+        if len(words) == 3 and _BASE_REF_RE.match(words[2]) and words[2][0] != "-":
+            return "gate", ""
+        if len(words) == 4 and words[2] == "--design" and _DESIGN_PATH_RE.match(words[3]):
+            return "design", ""
     return "deny", MSG_GATE_FORM
 
 
@@ -376,12 +386,15 @@ def _open_existing(db_path: Path, busy_ms: int = 10000):
     return conn, writer
 
 
-def _count(conn, kind: str, task: str) -> int:
-    row = conn.execute(
-        "SELECT COUNT(*) FROM events WHERE kind = ? "
-        "AND json_extract(payload_json, '$.task') = ?",
-        (kind, task),
-    ).fetchone()
+def _count(conn, kind: str, task: str, mode: "str | None" = None) -> int:
+    """Count ``kind`` rows for the task; ``mode`` filters (a row without one is diff)."""
+    sql = ("SELECT COUNT(*) FROM events WHERE kind = ? "
+           "AND json_extract(payload_json, '$.task') = ?")
+    args: list = [kind, task]
+    if mode is not None:
+        sql += " AND COALESCE(json_extract(payload_json, '$.mode'), 'diff') = ?"
+        args.append(mode)
+    row = conn.execute(sql, args).fetchone()
     return int(row[0])
 
 
@@ -415,15 +428,16 @@ def _task_for_worker_dir(conn, worker_dir: str):
 def _status(conn, task: str) -> dict:
     return {
         "task": task,
-        "used": _count(conn, "codex_round_started", task),
+        "used": _count(conn, "codex_round_started", task, "diff"),
         "allowed": _allowed(conn, task),
         "denied": _count(conn, "codex_round_denied", task),
+        "design_used": _count(conn, "codex_round_started", task, "design"),
     }
 
 
-def consume_round(db_path: Path, worker_dir: str,
-                  busy_ms: int = 10000) -> "tuple[bool, str]":
-    """Count one canonical gate call. Returns (allowed, message)."""
+def consume_round(db_path: Path, worker_dir: str, busy_ms: int = 10000,
+                  mode: str = "diff") -> "tuple[bool, str]":
+    """Count one canonical gate call (``mode`` diff / design). Returns (allowed, message)."""
     conn, writer = _open_existing(db_path, busy_ms)
     try:
         task = _task_for_worker_dir(conn, worker_dir)
@@ -434,9 +448,10 @@ def consume_round(db_path: Path, worker_dir: str,
             )
         conn.execute("BEGIN IMMEDIATE")
         try:
-            used = _count(conn, "codex_round_started", task)
-            allowed = _allowed(conn, task)
-            payload = {"task": task, "allowed": allowed, "worker_dir": _norm(worker_dir)}
+            used = _count(conn, "codex_round_started", task, mode)
+            allowed = DESIGN_ALLOWED if mode == "design" else _allowed(conn, task)
+            payload = {"task": task, "mode": mode, "allowed": allowed,
+                       "worker_dir": _norm(worker_dir)}
             if allowed == UNLIMITED or used < allowed:
                 writer.append_event(
                     kind="codex_round_started", actor=HOOK_ACTOR,
@@ -453,6 +468,12 @@ def consume_round(db_path: Path, worker_dir: str,
             raise
         if ok:
             return True, ""
+        if mode == "design":
+            return False, (
+                f"CODEX_ROUND_DENIED: Codex 設計レビューはタスクごとに 1 回で、既に使っています "
+                f"(mode=design, used={used}, allowed=1)。設計レビューを再実行せず、実装を続けるか"
+                "窓口へ報告してください。"
+            )
         return False, (
             f"CODEX_ROUND_DENIED: Codex レビューの許可回数 (allowed={allowed}) を"
             f"使い切りました (used={used})。codex を再実行せず、残指摘と自己評価を"
@@ -486,7 +507,8 @@ def run_hook(stdin_text: str, env) -> str:
         if tool != "Bash":
             return f"DENY: {MSG_GATE_FORM}"  # rounds are counted for Bash only
         db_path = Path(org_path) / ".state" / "state.db"
-        ok, msg = consume_round(db_path, worker_dir)
+        ok, msg = consume_round(db_path, worker_dir,
+                                mode="design" if verdict == "design" else "diff")
         return "ALLOW" if ok else f"DENY: {msg}"
     except Exception as exc:  # noqa: BLE001 - fail closed
         return f"DENY: codex round cap の判定に失敗しました ({type(exc).__name__}: {exc})"
@@ -521,7 +543,7 @@ def main(argv=None) -> int:
     p_set.add_argument("--allowed", required=True, type=_parse_allowed)
     p_set.add_argument("--reason", required=True)
     p_set.add_argument("--db-path", default=None)
-    p_status = sub.add_parser("status", help="show used / allowed / denied")
+    p_status = sub.add_parser("status", help="show used / allowed / denied / design_used")
     p_status.add_argument("--task-id", required=True)
     p_status.add_argument("--db-path", default=None)
     args = parser.parse_args(argv)

@@ -88,6 +88,7 @@ bash "${claude_org_path}/tools/codex_review_gate.sh" ${task_base_ref}
 - 安全機構に掛かって review が完了しないときは言い換えで回避しない。窓口に新しいセッションでの再実行を頼み、それでも通らなければ「Codex ゲート未成立（safety block、HEAD=`<sha>`）」と報告する
 - Blocker/Major 修正。**round 上限はフックが強制**（既定 3、増やせるのは窓口だけ。実装ガイダンスの別値は窓口が派遣時に設定済み）。超過したゲート呼び出しは `CODEX_ROUND_DENIED` で拒否されるので、codex を再実行せず残指摘 + 自己評価（設計問題化か収束途中か）を窓口に報告して停止。同一指摘が 3 round 消えない / 前 round の修正を巻き戻す向きの指摘が出たときは上限前でも設計問題として報告（後者は綱引きの方向を書く）
 - `codex` の直接実行（`codex exec` / `codex review` 等）はフックが拒否する。Codex は上のゲートからだけ呼ぶ
+- 設計レビューを頼まれたときは `bash "${claude_org_path}/tools/codex_review_gate.sh" --design <設計ファイル>` で回す（差分レビューとは別枠でタスクごとに 1 回だけ。差分の上限は減らない。2 回目は `CODEX_ROUND_DENIED` で拒否される）
 - Minor/Nit 残置可。レビューを別ワーカーに委譲しない。large diff では effort を上げない（根拠: claude-org リポジトリの `knowledge/curated/codex.md`）
 - `The 'gpt-6-astra' model requires a newer version of Codex.` が出たら `npm i -g @openai/codex@latest` で更新する
 
