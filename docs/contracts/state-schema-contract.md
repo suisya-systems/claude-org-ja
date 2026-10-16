@@ -81,10 +81,10 @@ The harness's persistent state surface comprises the files listed below. Each en
 
 - **Path**: `.state/dispatcher/inbox/{task_id}.json` (runtime-created; the `dispatcher/` directory is not committed in-tree).
 - **Format**: JSON.
-- **Schema**: Task spec consumed by `claude-org-runtime dispatcher delegate-plan`. Fields include `task_id`, `worker_dir`, `pattern`, `project`, `permission_mode`, `validation_depth`, `instruction` (or instruction reference). The authoritative schema is the one declared by the `claude-org-runtime` `delegate-plan` helper.
-- **Owner**: secretary (writes per `/org-delegate` Step 1.5 / before sending `DELEGATE`).
+- **Schema**: Task spec consumed by `claude-org-runtime dispatcher delegate-plan`. Fields include `task_id`, `worker_dir`, `pattern`, `project`, `permission_mode`, `model`, `validation_depth`, `instruction` (or instruction reference). The authoritative schema is the one declared by the `claude-org-runtime` `delegate-plan` helper. `model` (`"sonnet"` | `"opus"`) is **required** by this contract even though the helper accepts its absence: the helper then defaults to `"opus"`, which would silently break the `sonnet` worker default. Its value follows `.dispatcher/references/spawn-flow.md` 3-2 (`"sonnet"` unless the DELEGATE body carries a `モデル: opus` line), and `.hooks/check-worker-spawn-model.sh` denies an `opus` worker spawn unless this field says `"opus"`.
+- **Owner**: dispatcher (writes it on receiving `DELEGATE`, before calling `delegate-plan`, per `.dispatcher/references/spawn-flow.md`).
 - **Readers**: dispatcher (consumed by `delegate-plan` helper at T2).
-- **Update cadence**: one-shot per delegation; written before T1, consumed at T2.
+- **Update cadence**: one-shot per delegation; written and consumed within T2 (the dispatcher writes it on receiving `DELEGATE`, then `delegate-plan` reads it).
 - **Lifecycle**: RETAIN AS AUDIT TRAIL. Inbox JSON files are kept on disk after dispatcher consumption; deletion is not contracted. This makes the Set B §2 T8 `SPLIT_CAPACITY_EXCEEDED` retry behavior fall out naturally (the file is already on disk for re-attempt). Storage cost is negligible.
 
 ### 1.6 `.state/dispatcher/outbox/{task_id}-instruction.md`

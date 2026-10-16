@@ -22,6 +22,7 @@ git -C "$WORK/repo" init -q
 cat > "$WORK/bin/codex" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$CODEX_HOME" > "$STUB_DIR/codex_home"
+printf '%s\n' "$@" > "$STUB_DIR/codex_args"
 printf '%b' "$STUB_OUT"
 exit "$STUB_EXIT"
 EOF
@@ -121,6 +122,65 @@ else
   echo "  FAIL: dirty-worktree なのに codex が呼ばれた"
   FAIL=$((FAIL + 1))
 fi
+
+# --- 設計モード (--design <file>) ---
+# ここでは直前のテストで追跡ファイルに残差がある (dirty)。設計モードは dirty を見ない
+echo "# design" > "$WORK/repo/design.md"
+run_design() {  # run_design <desc> <out> <stub_exit> <expected_exit> <expected_word> [file]
+  local description="$1" out="$2" stub_exit="$3" expected_exit="$4" expected_word="$5" file="${6:-design.md}"
+  local actual_exit=0 output
+  output=$(cd "$WORK/repo" && PATH="$WORK/bin:$PATH" TMPDIR="$WORK/tmp" STUB_DIR="$WORK" \
+    STUB_OUT="$out" STUB_EXIT="$stub_exit" bash "$GATE" --design "$file" 2>&1) || actual_exit=$?
+  if [[ "$actual_exit" -eq "$expected_exit" ]] && printf '%s\n' "$output" | tail -1 | grep -q "$expected_word"; then
+    echo "  PASS: $description"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: $description (expected exit $expected_exit / $expected_word, got $actual_exit: $(printf '%s\n' "$output" | tail -1))"
+    FAIL=$((FAIL + 1))
+  fi
+}
+run_design "設計モード: 成功実行あり → passed (dirty でも回す)" \
+  '  succeeded in 4ms:\nBlocker: none\n' 0 0 "CODEX_GATE: passed"
+if grep -qxF exec "$WORK/codex_args" && ! grep -qxF review "$WORK/codex_args" \
+   && grep -qxF model_reasoning_effort=high "$WORK/codex_args" \
+   && grep -q 'design document at design.md' "$WORK/codex_args"; then
+  echo "  PASS: 設計モードは codex exec (effort high) に設計ファイルのパス入りの指示を渡す"
+  PASS=$((PASS + 1))
+else
+  echo "  FAIL: 設計モードの codex 引数: $(tr '\n' ' ' < "$WORK/codex_args")"
+  FAIL=$((FAIL + 1))
+fi
+if ls "$WORK/tmp"/codex-review-*-design.log >/dev/null 2>&1; then
+  echo "  PASS: 設計モードは別名のログ (-design.log) に書く"
+  PASS=$((PASS + 1))
+else
+  echo "  FAIL: 設計モードのログが無い: $(ls "$WORK/tmp")"
+  FAIL=$((FAIL + 1))
+fi
+run_design "設計モード: 空の合格 → not-established" \
+  'No actionable findings were identified\n' 0 1 "CODEX_GATE: not-established"
+command rm -f "$WORK/codex_home"
+run_design "設計モード: 設計ファイルが無い → usage (exit 2)" \
+  '  succeeded in 1ms:\n' 0 2 "usage" missing.md
+if [[ ! -e "$WORK/codex_home" ]]; then
+  echo "  PASS: 設計ファイルが無いときは codex を呼ばない"
+  PASS=$((PASS + 1))
+else
+  echo "  FAIL: 設計ファイルが無いのに codex が呼ばれた"
+  FAIL=$((FAIL + 1))
+fi
+for args in "--design" "--design a b" "base extra"; do
+  actual_exit=0
+  # shellcheck disable=SC2086
+  (cd "$WORK/repo" && bash "$GATE" $args >/dev/null 2>&1) || actual_exit=$?
+  if [[ "$actual_exit" -eq 2 ]]; then
+    echo "  PASS: 引数 '$args' → usage (exit 2)"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: 引数 '$args' の exit が $actual_exit"
+    FAIL=$((FAIL + 1))
+  fi
+done
 
 # git status が失敗したら clean とみなさず not-established (fail closed)
 mkdir -p "$WORK/nogit"

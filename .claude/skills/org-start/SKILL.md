@@ -468,20 +468,22 @@ renga 0.18.0+ では `mcp__renga-peers__spawn_claude_pane` が役割別の構造
 - `permission_mode=auto`
 - `model="sonnet"`
 
-理由: auto モードの safety classifier はセッションモデルと独立した専用モデルで動作し、承認判定はセッションモデルに依存しない（公式: https://www.anthropic.com/engineering/claude-code-auto-mode）。キュレーターの知見整理ワークロードは軽量・機械的側に分類できるため Sonnet で十分（ワーカーの既定 opus 方針とは独立の判断）。
+理由: auto モードの safety classifier はセッションモデルと独立した専用モデルで動作し、承認判定はセッションモデルに依存しない（公式: https://www.anthropic.com/engineering/claude-code-auto-mode）。キュレーターの知見整理ワークロードは軽量・機械的側に分類できるため Sonnet で十分（ワーカーのモデル方針とは独立の判断）。
 
 ### ワーカー（org-delegate の Step 3 で使用）
 
-**既定は `model="opus"`（品質優先）。ただし oracle が強いタスクは、窓口が明示指定したときに限り `model="sonnet"`（Sonnet メイン）を選んでよい。**
-判定軸は工数ラベル (S/M/L) ではなくタスクの **oracle 強度と判断密度**（ultracode 許可基準と同じ思想）:
-- **Sonnet メイン可**: 次を**両方**満たす帯 —(a) 機械検証可能な正解が実装の外に固定されている（fixture 駆動の期待値・テストスイートの assertion・DB の行など）、(b) 設計判断が brief で事前固定済みで実装中に決め直す判断が残らない。
-- **opus 維持**: (a)(b) のどちらかを欠くもの（機構の再導出が要る retarget 型 / 契約設計を含む / 実測しないと決められない決定が実装中に残る帯）。
+**既定は `model="sonnet"`。窓口が DELEGATE 本文に `モデル: opus` 行を載せたときだけ `model="opus"`。**
+Opus にするかを決めるのは窓口で、条件は次のいずれか:
+- (a) Codex 往復上限での拒否（`CODEX_ROUND_DENIED`）の後に、窓口が Opus へ上げると決めたとき
+- (b) ワーカーが手に余ると申し出たとき
+- (c) 人間が指定したとき
+- (d) ガード・封印・契約などの強制機構を実装するタスク
 
-窓口の指定は DELEGATE 本文の `モデル: sonnet` 行で伝わり、この行が無ければディスパッチャーは `opus` で spawn する（[`.dispatcher/references/spawn-flow.md`](../../../.dispatcher/references/spawn-flow.md) 3-2）。
+(c)(d) は派遣時に `モデル: opus` 行で伝え、(a)(b) は spawn 後に窓口が同じペインで昇格させる（手順は [`.claude/skills/org-delegate/SKILL.md`](../org-delegate/SKILL.md) のモデル選定節）。ディスパッチャーは `モデル: opus` 行が無ければ `sonnet` で spawn し、inbox task JSON の `"model"` を必ず明示する（runtime helper は欠落時に opus を既定にするため。[`.dispatcher/references/spawn-flow.md`](../../../.dispatcher/references/spawn-flow.md) 3-2）。
 
 モデル選択は承認フローの安全性とは独立である。auto モードの分類器はワーカーのセッションモデルとは別の専用モデルで動作し、承認判定はワーカーが opus か sonnet かに依存しない（公式: https://www.anthropic.com/engineering/claude-code-auto-mode）。ディスパッチャーだけは `bypassPermissions` 固定なので分類器を経由せず、コスト最適化として sonnet 運用（この判断はワーカーには自動適用しない）。
 
 通常:
 - `cwd="{workers_dir}/{task_id}"`（絶対パス推奨）
 - `permission_mode=auto`
-- `model="opus"`（既定。oracle が強いタスクで窓口が明示指定した場合のみ `"sonnet"`）
+- `model="sonnet"`（既定。DELEGATE 本文に `モデル: opus` 行があるときだけ `"opus"`）

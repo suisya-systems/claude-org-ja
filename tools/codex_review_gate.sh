@@ -2,13 +2,21 @@
 # Codex セルフレビューを 1 回回し、「空の合格」を機械的に判定するゲート。
 #
 # 使い方（ワーカーの作業ディレクトリで前景実行する）:
-#   bash tools/codex_review_gate.sh <base-ref>
+#   bash tools/codex_review_gate.sh <base-ref>          差分レビュー（codex exec review）
+#   bash tools/codex_review_gate.sh --design <file>     設計レビュー（codex exec。設計ファイルを
+#                                                       リポジトリと突き合わせて検証させる）
 #   例: bash tools/codex_review_gate.sh origin/main
+#
+# 回数はワーカーの外のフック（.hooks/block-codex-over-cap.sh）が数える。差分レビューは
+# 既定 3 回（窓口だけが変更できる）、設計レビューはそれとは別枠でタスクごとに 1 回固定。
+#
+# 設計モードは dirty-worktree 判定をしない（設計は実装前や実装途中に回すため）。
+# 「空の合格」の判定と最終行の形は差分モードと同じで、ログ名だけ別にする。
 #
 # 終了コードと最終行:
 #   0  CODEX_GATE: passed           成功実行 1 以上・失敗実行 0・codex の exit 0。指摘の中身を読んでよい
 #   1  CODEX_GATE: not-established  未成立（空の合格を含む）。出力が合格に読めても「codex clean」と報告しない
-#   2  使い方の誤り
+#   2  使い方の誤り（設計モードで設計ファイルが無い・読めないときも）
 #   3  CODEX_GATE: unavailable      codex CLI が無い。セルフレビューは skip してよい
 #   4  CODEX_GATE: dirty-worktree   追跡ファイルに未コミット差分がある。codex は回さない
 #
@@ -31,20 +39,34 @@
 
 set -uo pipefail
 
-if [ "$#" -ne 1 ]; then
-    printf 'usage: %s <base-ref>\n' "$0" >&2
+usage() {
+    printf 'usage: %s <base-ref> | --design <design-file>\n' "$0" >&2
     exit 2
+}
+mode=diff
+if [ "$#" -eq 2 ] && [ "$1" = "--design" ]; then
+    mode=design
+    design_file="$2"
+    if [ ! -f "$design_file" ] || [ ! -r "$design_file" ]; then
+        printf 'design file not found or unreadable: %s\n' "$design_file" >&2
+        usage
+    fi
+elif [ "$#" -eq 1 ] && [ "$1" != "--design" ]; then
+    base_ref="$1"
+else
+    usage
 fi
-base_ref="$1"
 
-if ! dirty="$(git status --porcelain --untracked-files=no)"; then
-    echo "CODEX_GATE: not-established (git status failed; cannot rule out rebase residue)"
-    exit 1
-fi
-if [ -n "$dirty" ]; then
-    printf '%s\n' "$dirty"
-    echo "CODEX_GATE: dirty-worktree (tracked changes above; likely rebase residue on sandbox-protected paths; HEAD=$(git rev-parse --short HEAD 2>/dev/null))"
-    exit 4
+if [ "$mode" = diff ]; then
+    if ! dirty="$(git status --porcelain --untracked-files=no)"; then
+        echo "CODEX_GATE: not-established (git status failed; cannot rule out rebase residue)"
+        exit 1
+    fi
+    if [ -n "$dirty" ]; then
+        printf '%s\n' "$dirty"
+        echo "CODEX_GATE: dirty-worktree (tracked changes above; likely rebase residue on sandbox-protected paths; HEAD=$(git rev-parse --short HEAD 2>/dev/null))"
+        exit 4
+    fi
 fi
 
 if ! command -v codex >/dev/null 2>&1; then
@@ -71,12 +93,22 @@ if [ -n "$src_abs" ] && [ "$src_abs" != "$(cd "$CODEX_HOME" && pwd -P)" ]; then
 fi
 
 # $TMPDIR は並走 worker と共有なので、作業ディレクトリのフルパス由来の名前にする。
-log="${TMPDIR:-/tmp}/codex-review-$(basename "$PWD")-$(printf %s "$PWD" | cksum | cut -d' ' -f1).log"
+log="${TMPDIR:-/tmp}/codex-review-$(basename "$PWD")-$(printf %s "$PWD" | cksum | cut -d' ' -f1)"
 
-codex exec review --base "$base_ref" -m gpt-6-astra \
-    -c model_reasoning_effort=medium -c sandbox_mode='"read-only"' \
-    < /dev/null 2>&1 | tee "$log"
-codex_status=$?
+if [ "$mode" = design ]; then
+    log="$log-design.log"
+    prompt="Read the design document at $design_file and verify it against this repository: check that every file, function, flag, hook, path and behaviour it relies on actually exists and works as the design assumes, and that the design achieves its stated goal without gaps. List findings as Blocker / Major / Minor, each with the evidence (file:line) and a concrete fix."
+    codex exec -m gpt-6-astra \
+        -c model_reasoning_effort=high -c sandbox_mode='"read-only"' \
+        "$prompt" < /dev/null 2>&1 | tee "$log"
+    codex_status=$?
+else
+    log="$log.log"
+    codex exec review --base "$base_ref" -m gpt-6-astra \
+        -c model_reasoning_effort=medium -c sandbox_mode='"read-only"' \
+        < /dev/null 2>&1 | tee "$log"
+    codex_status=$?
+fi
 
 succeeded=$(grep -cE '^ *succeeded in [0-9]+(ms|s|m)' "$log")
 failed=$(grep -cE '^ *failed in [0-9]+(ms|s|m)' "$log")

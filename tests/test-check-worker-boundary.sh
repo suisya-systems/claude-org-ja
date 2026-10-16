@@ -154,6 +154,31 @@ ec=$(run_hook "$json" "$stderr")
 assert_exit 2 "$ec" "knowledge/curated/ is blocked"
 assert_stderr_contains "許可パス外" "$stderr" "knowledge/curated stderr mentions 許可パス外"
 
+# 13-16. Codex 往復上限の記録と強制フックはワーカーから書けない
+#   (state.db / .state の許可回数記録は許可パス外、ワーカー自身の settings は明示 deny)
+for target in "$CLAUDE_ORG_PATH/.state/state.db" "$CLAUDE_ORG_PATH/.state/x.json"; do
+  for tool in Write Edit; do
+    stderr=$(mktemp); TMPFILES+=("$stderr")
+    json='{"tool_name":"'"$tool"'","tool_input":{"file_path":"'"$target"'"}}'
+    ec=$(run_hook "$json" "$stderr")
+    assert_exit 2 "$ec" "$tool to $target is blocked"
+  done
+done
+for target in "$WORKER_DIR/.claude/settings.local.json" "$WORKER_DIR/.claude/settings.json" "$WORKER_DIR/sub/../.claude/settings.local.json"; do
+  for tool in Write Edit; do
+    stderr=$(mktemp); TMPFILES+=("$stderr")
+    json='{"tool_name":"'"$tool"'","tool_input":{"file_path":"'"$target"'"}}'
+    ec=$(run_hook "$json" "$stderr")
+    assert_exit 2 "$ec" "$tool to worker settings $target is blocked"
+    assert_stderr_contains "ワーカー settings" "$stderr" "worker settings deny names the reason ($tool $target)"
+  done
+done
+# 17. 同じ .claude/ 配下でも settings 以外は従来どおり許可
+stderr=$(mktemp); TMPFILES+=("$stderr")
+json='{"tool_name":"Write","tool_input":{"file_path":"'"$WORKER_DIR"'/.claude/notes.md"}}'
+ec=$(run_hook "$json" "$stderr")
+assert_exit 0 "$ec" "other file under WORKER_DIR/.claude is allowed"
+
 # --- Summary ---
 echo "# $PASS passed, $FAIL failed out of $TEST_NUM tests"
 [[ $FAIL -eq 0 ]]

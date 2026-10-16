@@ -59,7 +59,7 @@
 
 ## 並列・予算（退出条件 / バックプレッシャー）
 - max_parallel: <起動時 free pane 数>          # references/exit-conditions.md
-- codex_round_max: <既定 3>
+- codex_round_max: <既定 3>                    # 3 以外は派遣時に tools/codex_round_cap.py set で設定（exit-conditions.md §1）
 - false_positive_streak_max: <既定 2>
 - time_budget: <例: 2h>  /  max_iterations: <例: 10>
 - PR キュー上限: なし（人間 merge が natural gate）

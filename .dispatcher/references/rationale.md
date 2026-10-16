@@ -45,6 +45,8 @@
 
   - モデル選択は承認フローの安全性とは独立である。permission_mode `auto` の safety classifier はワーカーのセッションモデルとは別の専用モデルで動作し、承認判定はワーカーが opus か sonnet かに依存しない（公式: https://www.anthropic.com/engineering/claude-code-auto-mode）。したがってモデル選定は品質判断だけで行う。
   - ディスパッチャーだけは `bypassPermissions` 固定で分類器を経由しないため、従来どおりコスト最適化として sonnet 運用（この判断はワーカーには自動適用しない）
+  - ワーカーの既定を sonnet にしているのは、Codex レビューの往復上限をワーカーの外（PreToolUse フック `.hooks/block-codex-over-cap.sh` と `tools/codex_round_cap.py`。許可回数は窓口側 `.state/state.db` の events から読む）で機械的に強制できるようになったためである。Sonnet ワーカーが収束しないまま往復を重ねても上限で止まり、`codex_round_denied` が窓口へ中継されるので、Opus へ上げるか人間に上げるかを窓口がその時点で決められる。最初から Opus にするのは窓口が DELEGATE 本文に `モデル: opus` 行を載せたときだけ（人間の指定、またはガード・封印・契約などの強制機構を実装するタスク）。
+  - inbox task JSON に `"model"` を必ず書かせるのは、claude-org-runtime の helper が `model` 欠落時に opus を既定にするためである。書き漏らしが黙って opus spawn になる経路を、`.hooks/check-worker-spawn-model.sh` が spawn 時に塞ぐ
 
 ### 3-2: args[] 誤用の実例
 元: spawn-flow 3-2
@@ -335,7 +337,7 @@ worker close が発生しない期間（手動 raw 追加のみ / skill-candidat
 
 元: pane-close 5-3（curator ペインの spawn）
 
-auto モードの safety classifier はセッションモデルと独立した専用モデルで動作し、承認判定はセッションモデルに依存しない（公式: https://www.anthropic.com/engineering/claude-code-auto-mode）。キュレーターの知見整理ワークロードは軽量・機械的側に分類できるため Sonnet で十分（ワーカーの既定 opus 方針とは独立の判断）。
+auto モードの safety classifier はセッションモデルと独立した専用モデルで動作し、承認判定はセッションモデルに依存しない（公式: https://www.anthropic.com/engineering/claude-code-auto-mode）。キュレーターの知見整理ワークロードは軽量・機械的側に分類できるため Sonnet で十分（ワーカーのモデル方針とは独立の判断）。
 
 ### `[name_in_use]` の stale-binding 分岐は close 判定表の行ではない
 

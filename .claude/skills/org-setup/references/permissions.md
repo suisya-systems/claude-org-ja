@@ -314,6 +314,15 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
             "command": "bash \"{claude_org_path}/.hooks/block-blind-spawn-keys.sh\""
           }
         ]
+      },
+      {
+        "matcher": "mcp__.*__spawn_claude_pane",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"{claude_org_path}/.hooks/check-worker-spawn-model.sh\""
+          }
+        ]
       }
     ]
   },
@@ -343,6 +352,7 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
 - `block-relative-close-pane.sh`: `close_pane` / `set_pane_identity` の宛先が数値 pane id でないとき（`target` 省略 / `"focused"` / 裸の name）に deny する。裸 name の例外は `close_pane` の `pr-watch-<PR>` のみ（DD-2 stale-binding carve-out）。**ディスパッチャーは `bypassPermissions` で動き `permissions.deny` が評価されないため、このフックだけが障壁になる**。窓口はプロジェクトルート直下の [`.claude/settings.json`](../../../settings.json) から同じフックを継承するので、そちらには重複登録しない。設計と残余は [`docs/design/close-pane-guard.md`](../../../../docs/design/close-pane-guard.md)
 - `block-close-before-retro.sh`: 振り返りの完了報告ゲートを通っていない worker ペインへの `close_pane` を deny する。数値 pane id を `worker_spawn_verified` で task に引き、`retro_gate_acked`（`tools/dispatcher_retro_gate.py` が acked 時に記録）・`retro_gate_confirmed_missing`（replied_no_ack で未着を確定したとき dispatcher が `tools/journal_append.sh` で記録）・`runs.status` が `completed` / `failed` / `abandoned`・`completion_reported_at` あり かつ `runs.status == 'review'` のどれかがあれば通す（`completed` と最後のものは [`.dispatcher/references/pane-close.md`](../../../../.dispatcher/references/pane-close.md)「0. 受領記録の確認」の ack 相当）。worker 以外のペインと `set_pane_identity` は素通しする。**ディスパッチャー専用**
 - `block-blind-spawn-keys.sh`: キーを含む `send_keys`（`keys` が空でない、または `enter: true`）を、`claude-org-runtime dispatcher spawn-prompt-step --target <宛先>` が書いた判定記録（`<state-dir>/dispatcher/spawn-prompt/<宛先>.json`、runtime 0.1.50+）と照合し、記録が無い・期限切れ（30 秒）・宛先違い・キー不一致なら deny する。`action: "done"` の記録は Enter 単発だけを通す（[`.dispatcher/references/spawn-flow.md`](../../../../.dispatcher/references/spawn-flow.md) 3-5a の kickoff）。通した記録は消す（1 回限り）。`text` だけの送信は判定しない。folder-trust の初期カーソルは「No, exit」で、盲目 Enter はワーカーを終了させるため（3-3b）。**ディスパッチャー専用**（窓口の `/clear` や承認ハンドシェイクは止めない）
+- `check-worker-spawn-model.sh`: `role: "worker"` の `spawn_claude_pane` で `model` が `"sonnet"` か `"opus"` と明示されていなければ deny する（ワーカーの既定は sonnet。runtime helper は `model` 省略時に opus を既定にするため、省略を通さない）。`"opus"` は、ペイン名から `worker-` を外した task_id の `.state/dispatcher/inbox/<task_id>.json` に `"model": "opus"` があるとき（DELEGATE 本文に `モデル: opus` 行があったとき）だけ通す。worker 以外の role は素通しする。**ディスパッチャー専用**
 
 ## キュレーター (`<repo>/.curator/.claude/settings.local.json`)
 
@@ -454,6 +464,10 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
         "hooks": [
           {
             "type": "command",
+            "command": "bash \"{claude_org_path}/.hooks/block-codex-over-cap.sh\""
+          },
+          {
+            "type": "command",
             "command": "bash \"{claude_org_path}/.hooks/block-git-push.sh\""
           },
           {
@@ -478,6 +492,15 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
             "command": "bash \"{claude_org_path}/.hooks/block-relative-close-pane.sh\""
           }
         ]
+      },
+      {
+        "matcher": "mcp__.*__(spawn_pane|spawn_codex_pane|spawn_claude_pane|send_keys|new_tab)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"{claude_org_path}/.hooks/block-codex-over-cap.sh\""
+          }
+        ]
       }
     ]
   },
@@ -491,5 +514,9 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
 **`.env` テンプレートの除外（runtime 0.1.43+）**: `Read(!.env.example)` など `!` で始まる 4 行は `Read(.env)` / `Read(.env.*)` の**直後**に置く。`!` の deny パターンは同じ settings ファイルで**前に**並ぶルールからだけ一致分を除外する（https://code.claude.com/docs/en/permissions 「Read and Edit」）ので、順序を入れ替えると `.env.example` が再び読めなくなる。4 パターンは `claude_org_runtime.settings.generator.ENV_TEMPLATE_PATTERNS` で、sandbox の `filesystem.allowRead` と同じ集合（[`tools/check_role_configs.py`](../../../../tools/check_role_configs.py) が一致を検査する）。
 
 **deny と hooks の役割分担**: `deny` は `echo foo && git push` のような埋め込みコマンドはカバーできないため、`block-git-push.sh` / `block-dangerous-git.sh` / `block-no-verify.sh` hook を副次防御として維持する（多層防御の説明は rationale.md）。
+
+**ワーカー専用の hooks**:
+- `block-codex-over-cap.sh`: Codex セルフレビューの往復上限をワーカーの外で強制する（判定本体は [`tools/codex_round_cap.py`](../../../../tools/codex_round_cap.py)）。引用符とバックスラッシュを除いて `codex` を含む Bash コマンドだけを見る。判定は既定 deny で、単純コマンドのどこかに `codex` / `codex.js` / `@openai/codex` の語があれば、引数を実行しない読み取り系コマンド（`grep` / `cat` / `echo` / `git` / `which` / `command -v` / `npm i` 等の許可リスト）以外は deny する。空白を含む引数（`bash -c` / `su -c` / `env -S` / `python -c` の文字列）は入れ子のコマンドとして再判定し、標準入力・ヒアドキュメント・`-c`・`eval` / `xargs` でテキストを実行するシェルに `codex` を含むテキストが渡る形と、`codex` を含む `$(...)` / バッククォートも deny する。MCP の `spawn_codex_pane` は常に deny、`spawn_pane` / `new_tab` の `command` と `send_keys` の `text` は Bash と同じ判定にかける（Codex ゲートは Bash からだけ通す）。Codex ゲートは `bash "$CLAUDE_ORG_PATH/tools/codex_review_gate.sh" <base-ref>`（差分レビュー）と `bash "$CLAUDE_ORG_PATH/tools/codex_review_gate.sh" --design <file>`（設計レビュー。パスは空白やシェル記号を含まない 1 語）の単独の形だけ通す。正規のゲート呼び出しは 1 回ごとに events へ `codex_round_started` を記録し、タスクの許可回数（既定 3）を超えたら `codex_round_denied` を記録して `CODEX_ROUND_DENIED` で deny する。設計レビューは別枠でタスクごとに 1 回固定（payload の `mode=design`）で、差分の許可回数を消費も参照もしない。task はワーカーの `WORKER_DIR` と一致する最新の `delegate_sent` から引き、許可回数を変えられるのは窓口の `python3 tools/codex_round_cap.py set --task-id <id> --allowed <N|unlimited> --reason <理由>` だけ。フックは sandbox の外で動き、ワーカーから読み取り専用の ja root `.state/state.db` に書く。`$STATE_DB_PATH` は見ない。DB が無い・task を引けない・判定が異常終了したときは deny する（fail-closed）。変数展開・グロブ・ブレース展開・`$'...'`・別ファイルのスクリプト・他言語で組み立てた文字列・許可リストのコマンドの実行機能（`git` の alias / pager、`sed` の `e`）・`send_keys` の `keys` 1 文字ずつの送信を経由した `codex` 実行はコマンド文字列から判別できない（既知の限界）
+- `check-worker-boundary.sh` は Worker ディレクトリ内でも `.claude/settings.json` / `.claude/settings.local.json` への Edit/Write を deny する。強制フックと env がここに載るため、変更は窓口へのエスカレーション経由にする
 
 **worker git guardrails**: 上の JSON は `check_role_configs.py` が照合する監査下限で、実際の生成元 `worker_roles.default` の deny はこれより広い。生成元は素の `git fetch:*` を allow したうえで、`git -C * fetch` / `git -C * pull`、`git remote add|set-url|remove|rm`、`git reflog expire|delete` と、それぞれの `git -C *` 形を deny する。設計は [`docs/contracts/worker-git-guardrails-design.md`](../../../../docs/contracts/worker-git-guardrails-design.md)（§4.6 network、§5.2.4 template deny、§6 worktree）。

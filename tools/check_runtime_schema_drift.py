@@ -198,6 +198,19 @@ _JA_ONLY_LAYER2_CREDENTIAL_DENIES = frozenset(
 # but the hook, its single-use consumption and the ja state-dir discovery
 # are ja's; like the close hook it lives only in the dispatcher settings.
 #
+# ``block-codex-over-cap.sh`` enforces the per-task Codex review round cap
+# for workers: it counts canonical ``tools/codex_review_gate.sh`` calls in
+# ja's ``events`` table (``tools/codex_round_cap.py``), refuses the call
+# past the allowance the secretary set, and blocks direct ``codex``
+# invocations. Like ``block-codex-rescue.sh`` it is wired into
+# ``worker_roles[*].hooks.PreToolUse`` and depends on ja's state layout.
+#
+# ``check-worker-spawn-model.sh`` denies a dispatcher ``spawn_claude_pane``
+# for a worker unless ``model`` is explicit, and allows ``opus`` only when
+# the dispatcher inbox task JSON says so (the runtime helper would
+# otherwise default a worker to opus). It reads ja's dispatcher inbox
+# layout and lives only in the hand-maintained dispatcher settings.
+#
 # Add a new name here ONLY for a hook that is genuinely ja-only. A hook
 # that should also ship in the runtime template belongs in a paired
 # runtime release instead.
@@ -206,6 +219,8 @@ _JA_ONLY_HOOK_SCRIPTS = frozenset({
     "block-codex-rescue.sh",
     "block-close-before-retro.sh",
     "block-blind-spawn-keys.sh",
+    "block-codex-over-cap.sh",
+    "check-worker-spawn-model.sh",
 })
 
 

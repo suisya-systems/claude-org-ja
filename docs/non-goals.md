@@ -19,7 +19,7 @@ claude-org-ja は**運用規律フレームワーク**であり、Claude Code �
 | 窓口（Secretary） | `auto` | Opus | 許可エントリを絞った `settings.local.json` + PreToolUse フックで防御 |
 | ディスパッチャー（Dispatcher） | `bypassPermissions` | Sonnet | **例外**。理由は下記 |
 | キュレーター（Curator） | `auto` | Sonnet | 最小許可（読み取り中心 + ナレッジ整理に必要な書き込みのみ）。知見整理は軽量・機械的ワークロードのため Sonnet で十分 |
-| ワーカー（Worker） | `auto` | Opus | 許可エントリの絞り込み + ロール別フック + タスクごとの作業ディレクトリ境界 |
+| ワーカー（Worker） | `auto` | Sonnet（窓口が昇格・指定したときだけ Opus） | 許可エントリの絞り込み + ロール別フック + タスクごとの作業ディレクトリ境界 |
 
 ディスパッチャーだけが `bypassPermissions` 固定の理由は、`auto` モードの安全分類器が「子エージェント起動」（`spawn_claude_pane` によるワーカー派遣）を "Create Unsafe Agents" と判定してブロックし、`auto` ではワーカー派遣が成立しないためです。分類器はセッションモデルと独立した専用モデルで動作する（https://www.anthropic.com/engineering/claude-code-auto-mode）ため、これはモデル選択（Sonnet 運用）とは独立の制約であり、分類器の挙動を都合よく回避しているわけではなく、ディスパッチャーの職務（子エージェント起動）と `auto` が構造的に両立しないことによる唯一の選択です。
 
