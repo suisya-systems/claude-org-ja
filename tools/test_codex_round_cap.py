@@ -3,11 +3,11 @@ from __future__ import annotations
 
 import io
 import json
-import multiprocessing
+import sqlite3
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -65,6 +65,39 @@ class ClassifyTest(unittest.TestCase):
             "! codex exec",
             "2>/dev/null codex exec",
             "> out codex exec",
+            # bypass forms found in self-review
+            "bash -s base < /org/tools/codex_review_gate.sh",
+            "bash /dev/stdin base < /org/tools/codex_review_gate.sh",
+            "cat /org/tools/codex_review_gate.sh | bash -s base",
+            "echo codex exec | bash",
+            "echo codex exec | bash 2>/dev/null",
+            "echo codex exec | xargs sh -c",
+            'bash <<< "codex exec"',
+            "cat <<EOF | bash\ncodex exec\nEOF",
+            "source <(echo codex exec)",
+            "command -p codex exec",
+            "time -p codex exec",
+            "function f { codex exec; }; f",
+            "coproc codex exec",
+            'env -S"codex exec"',
+            "setsid codex exec",
+            "strace -f codex exec",
+            'su -c "codex exec"',
+            'script -qc "codex exec" /dev/null',
+            'watch "codex exec"',
+            "find . -exec codex exec \\;",
+            "npm exec -- codex exec",
+            "node /x/@openai/codex/bin/codex.js exec",
+            'co""dex exec',
+            "c\\odex exec",
+            "c\\\nodex exec",
+            "ls # it's a comment\ncodex exec",
+            'bash -c "$(echo codex exec)"',
+            "$(echo codex) exec",
+            'echo "\'" `codex exec` "\'"',
+            "echo '<<X'\ncodex exec\nX",
+            "python3 -c \"import os; os.system('codex exec')\"",
+            "X=codex; $X exec",
         ]:
             with self.subTest(cmd=cmd):
                 self.assertEqual(verdict(cmd), "deny")
@@ -112,6 +145,16 @@ class ClassifyTest(unittest.TestCase):
             "ls",
             "echo 'a\nb codex'",
             "cat .codex-home/config.toml",
+            "git commit -F - <<'EOF'\nblock `codex exec`\nEOF",
+            "git commit -m 'block `codex exec`'",
+            'grep -n "codex" README.md # it\'s fine',
+            "npm i -g @openai/codex@latest",
+            "which codex",
+            "command -v codex",
+            "python3 -m pytest -q tools/test_codex_round_cap.py",
+            "bash tests/test-codex-review-gate.sh",
+            "cat tools/codex_review_gate.sh",
+            "git log --grep codex",
         ]:
             with self.subTest(cmd=cmd):
                 self.assertEqual(verdict(cmd), "allow")
@@ -133,14 +176,10 @@ def _make_org(td: str, worker_dir: str = "/w/one", task: str = "t1") -> Path:
     return db
 
 
-def _hook(org: str, worker_dir: str, command: str) -> str:
-    payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": command}})
+def _hook(org: str, worker_dir: str, command: str, tool: str = "Bash",
+          field: str = "command") -> str:
+    payload = json.dumps({"tool_name": tool, "tool_input": {field: command}})
     return cap.run_hook(payload, {"WORKER_DIR": worker_dir, "CLAUDE_ORG_PATH": org})
-
-
-def _consume(args):
-    db, wdir = args
-    return cap.consume_round(Path(db), wdir)[0]
 
 
 class StateTest(unittest.TestCase):
@@ -202,14 +241,38 @@ class StateTest(unittest.TestCase):
         self.assertEqual(self._cli("status", "--task-id", "t2")["used"], 1)
         self.assertEqual(self._cli("status", "--task-id", "t1")["used"], 0)
 
-    def test_concurrent_consumers_at_allowance_one(self):
-        self._cli("set", "--task-id", "t1", "--allowed", "1", "--reason", "x")
-        ctx = multiprocessing.get_context("spawn")
-        with ctx.Pool(4) as pool:
-            results = pool.map(_consume, [(str(self.db), "/w/one")] * 4)
-        self.assertEqual(results.count(True), 1, results)
-        st = self._cli("status", "--task-id", "t1")
-        self.assertEqual((st["used"], st["denied"]), (1, 3))
+    def test_locked_db_never_allows(self):
+        other = sqlite3.connect(str(self.db), isolation_level=None)
+        try:
+            other.execute("BEGIN IMMEDIATE")
+            with self.assertRaises(sqlite3.OperationalError):
+                cap.consume_round(self.db, "/w/one", busy_ms=50)
+        finally:
+            other.execute("ROLLBACK")
+            other.close()
+        self.assertEqual(self._cli("status", "--task-id", "t1")["used"], 0)
+
+    def test_set_refuses_unknown_task(self):
+        err = io.StringIO()
+        with redirect_stderr(err):
+            rc = cap.main(["set", "--task-id", "typo", "--allowed", "4",
+                           "--reason", "x", "--db-path", str(self.db)])
+        self.assertEqual(rc, 1)
+        self.assertIn("no delegate_sent", err.getvalue())
+        self.assertEqual(self._cli("status", "--task-id", "typo")["allowed"], 3)
+
+    def test_mcp_tools(self):
+        p = "mcp__renga-peers__"
+        self.assertTrue(_hook(self.org, "/w/one", "", p + "spawn_codex_pane").startswith("DENY"))
+        self.assertTrue(_hook(self.org, "/w/one", "codex exec", p + "spawn_pane").startswith("DENY"))
+        self.assertTrue(_hook(self.org, "/w/one", "codex exec", p + "new_tab").startswith("DENY"))
+        self.assertTrue(_hook(self.org, "/w/one", "codex exec", p + "send_keys", "text")
+                        .startswith("DENY"))
+        self.assertTrue(_hook(self.org, "/w/one", self.gate, p + "send_keys", "text")
+                        .startswith("DENY"))
+        self.assertEqual(_hook(self.org, "/w/one", "ls", p + "spawn_pane"), "ALLOW")
+        self.assertEqual(_hook(self.org, "/w/one", "hello", p + "send_keys", "text"), "ALLOW")
+        self.assertEqual(self._cli("status", "--task-id", "t1")["used"], 0)
 
 
 if __name__ == "__main__":

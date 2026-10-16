@@ -492,6 +492,15 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
             "command": "bash \"{claude_org_path}/.hooks/block-relative-close-pane.sh\""
           }
         ]
+      },
+      {
+        "matcher": "mcp__.*__(spawn_pane|spawn_codex_pane|spawn_claude_pane|send_keys|new_tab)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"{claude_org_path}/.hooks/block-codex-over-cap.sh\""
+          }
+        ]
       }
     ]
   },
@@ -507,7 +516,7 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
 **deny と hooks の役割分担**: `deny` は `echo foo && git push` のような埋め込みコマンドはカバーできないため、`block-git-push.sh` / `block-dangerous-git.sh` / `block-no-verify.sh` hook を副次防御として維持する（多層防御の説明は rationale.md）。
 
 **ワーカー専用の hooks**:
-- `block-codex-over-cap.sh`: Codex セルフレビューの往復上限をワーカーの外で強制する（判定本体は [`tools/codex_round_cap.py`](../../../../tools/codex_round_cap.py)）。`codex` を含む Bash コマンドだけを見て、`codex` の直接実行（`npx @openai/codex` / `bash -c` / `$(...)` 経由を含む）を deny し、Codex ゲートは `bash "$CLAUDE_ORG_PATH/tools/codex_review_gate.sh" <base-ref>` 単独の形だけ通す。正規のゲート呼び出しは 1 回ごとに events へ `codex_round_started` を記録し、タスクの許可回数（既定 3）を超えたら `codex_round_denied` を記録して `CODEX_ROUND_DENIED` で deny する。task はワーカーの `WORKER_DIR` と一致する最新の `delegate_sent` から引き、許可回数を変えられるのは窓口の `python3 tools/codex_round_cap.py set --task-id <id> --allowed <N|unlimited> --reason <理由>` だけ。フックは sandbox の外で動き、ワーカーから読み取り専用の ja root `.state/state.db` に書く。`$STATE_DB_PATH` は見ない。DB が無い・task を引けない・判定が異常終了したときは deny する（fail-closed）。変数展開・別ファイルのスクリプト・他言語のプロセス起動を経由した `codex` 実行はコマンド文字列から判別できない（既知の限界）
+- `block-codex-over-cap.sh`: Codex セルフレビューの往復上限をワーカーの外で強制する（判定本体は [`tools/codex_round_cap.py`](../../../../tools/codex_round_cap.py)）。引用符とバックスラッシュを除いて `codex` を含む Bash コマンドだけを見る。判定は既定 deny で、単純コマンドのどこかに `codex` / `codex.js` / `@openai/codex` の語があれば、引数を実行しない読み取り系コマンド（`grep` / `cat` / `echo` / `git` / `which` / `command -v` / `npm i` 等の許可リスト）以外は deny する。空白を含む引数（`bash -c` / `su -c` / `env -S` / `python -c` の文字列）は入れ子のコマンドとして再判定し、標準入力・ヒアドキュメント・`-c`・`eval` / `xargs` でテキストを実行するシェルに `codex` を含むテキストが渡る形と、`codex` を含む `$(...)` / バッククォートも deny する。MCP の `spawn_codex_pane` は常に deny、`spawn_pane` / `new_tab` の `command` と `send_keys` の `text` は Bash と同じ判定にかける（Codex ゲートは Bash からだけ通す）。Codex ゲートは `bash "$CLAUDE_ORG_PATH/tools/codex_review_gate.sh" <base-ref>` 単独の形だけ通す。正規のゲート呼び出しは 1 回ごとに events へ `codex_round_started` を記録し、タスクの許可回数（既定 3）を超えたら `codex_round_denied` を記録して `CODEX_ROUND_DENIED` で deny する。task はワーカーの `WORKER_DIR` と一致する最新の `delegate_sent` から引き、許可回数を変えられるのは窓口の `python3 tools/codex_round_cap.py set --task-id <id> --allowed <N|unlimited> --reason <理由>` だけ。フックは sandbox の外で動き、ワーカーから読み取り専用の ja root `.state/state.db` に書く。`$STATE_DB_PATH` は見ない。DB が無い・task を引けない・判定が異常終了したときは deny する（fail-closed）。変数展開・グロブ・ブレース展開・`$'...'`・別ファイルのスクリプト・他言語で組み立てた文字列・許可リストのコマンドの実行機能（`git` の alias / pager、`sed` の `e`）・`send_keys` の `keys` 1 文字ずつの送信を経由した `codex` 実行はコマンド文字列から判別できない（既知の限界）
 - `check-worker-boundary.sh` は Worker ディレクトリ内でも `.claude/settings.json` / `.claude/settings.local.json` への Edit/Write を deny する。強制フックと env がここに載るため、変更は窓口へのエスカレーション経由にする
 
 **worker git guardrails**: 上の JSON は `check_role_configs.py` が照合する監査下限で、実際の生成元 `worker_roles.default` の deny はこれより広い。生成元は素の `git fetch:*` を allow したうえで、`git -C * fetch` / `git -C * pull`、`git remote add|set-url|remove|rm`、`git reflog expire|delete` と、それぞれの `git -C *` 形を deny する。設計は [`docs/contracts/worker-git-guardrails-design.md`](../../../../docs/contracts/worker-git-guardrails-design.md)（§4.6 network、§5.2.4 template deny、§6 worktree）。

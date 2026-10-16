@@ -4,9 +4,23 @@
 The worker's only permitted Codex entry is ``bash
 "$CLAUDE_ORG_PATH/tools/codex_review_gate.sh" <base-ref>``. The PreToolUse
 hook ``.hooks/block-codex-over-cap.sh`` runs ``hook`` here (outside the
-worker's sandbox) for every Bash command that mentions ``codex``:
+worker's sandbox) for every Bash command (and MCP ``spawn_pane`` /
+``new_tab`` command, ``send_keys`` text) that mentions ``codex`` once
+quotes and backslashes are removed. Classification is default-deny:
 
-* a direct ``codex`` invocation is refused;
+* in every simple command (after dequoting), a word whose basename is
+  ``codex`` / ``codex.js`` or that contains ``@openai/codex`` is refused
+  unless the program is in a small allowlist of programs that do not run
+  their arguments (``grep``, ``cat``, ``echo``, ``git``, ``which``,
+  ``command -v``, ``npm i`` ...). Words containing whitespace are
+  classified again as commands (``bash -c``, ``su -c``, ``env -S``,
+  ``python -c``, ``watch``, ``eval``);
+* a shell / ``eval`` / ``xargs`` that runs text other than a named script
+  file (stdin, pipe, heredoc, here-string, ``-c``, ``-s``, ``/dev/stdin``,
+  ``<(...)``) is refused when the command text mentions ``codex``, as is a
+  ``$(...)`` / backtick / ``<(...)`` body that mentions it (single-quoted
+  text and quoted-delimiter heredoc bodies do not expand and are ignored);
+* MCP ``spawn_codex_pane`` is always refused;
 * a gate call that is not exactly the canonical form is refused;
 * a canonical gate call consumes one round. Rounds are counted from
   ``codex_round_started`` events for the task; past the allowance a
@@ -22,6 +36,15 @@ Subcommands::
     codex_round_cap.py hook < payload.json        # prints ALLOW / DENY: <msg>
     codex_round_cap.py set --task-id X --allowed N|unlimited --reason TEXT
     codex_round_cap.py status --task-id X
+
+``set`` refuses a task id with no ``delegate_sent`` event (a typo would
+otherwise raise nothing).
+
+Known limits (the command text cannot show them): codex reached through a
+variable, glob, brace expansion, ``$'...'``, a script written to a file,
+a string built in another language, an allowlisted program's own exec
+feature (``git`` alias / pager, ``sed`` ``e``), or ``send_keys`` ``keys``
+sent one key at a time.
 
 ``STATE_DB_PATH`` is deliberately ignored: the hook inherits the worker's
 environment, and a worker-controlled DB path would let it count rounds in
@@ -61,55 +84,126 @@ MSG_GATE_FORM = (
 # Command classification
 # ---------------------------------------------------------------------------
 
-_SHELLS = {"bash", "sh", "zsh", "dash", "source", "."}
-_SUBSHELL_CODEX_RE = re.compile(r"(\$\(|`)\s*([^\s)`]*/)?codex(\s|\)|`|$)")
-_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
-_BASE_REF_RE = re.compile(r"^[A-Za-z0-9._/@^~+-]+$")
-# Words that only introduce the real command of a simple command.
+# Programs that never execute their arguments: a codex word there is data.
+_SAFE_PROGS = {
+    "grep", "egrep", "fgrep", "rg", "ag", "cat", "less", "more", "head",
+    "tail", "wc", "ls", "stat", "file", "echo", "printf", "sort", "uniq",
+    "cut", "tr", "diff", "cmp", "jq", "test", "[", "true", "false", "which",
+    "type", "sed", "git",
+}
+# Workers are told to run `npm i -g @openai/codex@latest`.
+_NPM_SAFE = {"install", "i", "ls", "view", "outdated"}
+# Programs that can run text that is not a script file named on the line.
+_RUNNERS = {"bash", "sh", "zsh", "dash", "ksh", "source", ".", "eval", "xargs"}
+_SHELL_OPT_ARGS = {"-o", "+o", "-O", "+O", "--rcfile", "--init-file"}
 _KEYWORDS = {"!", "{", "}", "if", "then", "else", "elif", "do", "while",
              "until", "fi", "done"}
-_PLAIN_WRAPPERS = {"exec", "command", "builtin", "nohup", "time"}
-# Option words of a wrapper that take a separate argument.
-_OPT_ARGS = {
-    "env": {"-u", "--unset", "-C", "--chdir"},
-    "timeout": {"-s", "--signal", "-k", "--kill-after"},
-    "stdbuf": {"-i", "-o", "-e", "--input", "--output", "--error"},
-    "xargs": {"-I", "-n", "-P", "-d", "-E", "-L", "-s", "-a",
-              "--max-args", "--max-procs", "--delimiter", "--arg-file"},
-    "nice": {"-n", "--adjustment"},
-    "sudo": {"-u", "-g", "-h", "-p", "-C", "-D", "-U", "-r", "-t"},
-    "npx": {"-p", "--package"},
-}
-_RECURSE_OPTS = {
-    "env": {"-S", "--split-string"},
-    "npx": {"-c", "--call"},
-}
-_DLX = {"pnpx", "bunx"}
+_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_BASE_REF_RE = re.compile(r"^[A-Za-z0-9._/@^~+-]+$")
+_HEREDOC_RE = re.compile(r"<<(-?)[ \t]*(\\?)(['\"]?)([^\s;&|<>()'\"]+)\3")
+_SUBST_RE = re.compile(r"[$<>]\(|`")
+_OPS = ";&|()<>\n"
 
 
-class Finding:
-    """One classified simple command that matters to the cap."""
-
-    def __init__(self, kind, *, program=None, script=None, args=None,
-                 plain=False):
-        self.kind = kind  # "direct" | "gate"
-        self.program = program
-        self.script = script
-        self.args = args or []
-        # True when the gate was the program word itself, with no
-        # assignment / wrapper / keyword in front of it.
-        self.plain = plain
+def _mentions_codex(text: str) -> bool:
+    return "codex" in text.translate(str.maketrans("", "", "\"'\\\n"))
 
 
-def _split_simple_commands(command: str) -> "list[list[str]]":
-    lex = shlex.shlex(command, posix=True, punctuation_chars=";&|()<>\n")
+def _scan(text: str) -> "tuple[str, str]":
+    """Return ``(code, live)`` for one shell text.
+
+    ``code`` drops comments and every heredoc body, keeping quotes: it is
+    what the lexer reads. ``live`` additionally drops single-quoted
+    segments and the bodies of quoted-delimiter heredocs: the text where
+    ``$(...)`` / backticks still expand.
+    """
+    code: list[str] = []
+    live: list[str] = []
+    pending: list[tuple[str, bool, bool]] = []  # (delimiter, strip tabs, quoted)
+    i, n, dq = 0, len(text), False
+    while i < n:
+        c = text[i]
+        if c == "\\" and i + 1 < n:
+            code.append(text[i:i + 2])
+            live.append(text[i:i + 2])
+            i += 2
+            continue
+        if dq:
+            dq = c != '"'
+        elif c == '"':
+            dq = True
+        elif c == "'":
+            j = text.find("'", i + 1)
+            j = n - 1 if j < 0 else j  # unbalanced: the lexer fails closed
+            code.append(text[i:j + 1])
+            i = j + 1
+            continue
+        elif c == "#" and (i == 0 or text[i - 1] in " \t" + _OPS):
+            j = text.find("\n", i)
+            i = n if j < 0 else j
+            continue
+        elif (text.startswith("<<", i) and not text.startswith("<<<", i)
+              and (i == 0 or text[i - 1] != "<")):
+            m = _HEREDOC_RE.match(text, i)
+            if m:
+                pending.append((m.group(4), m.group(1) == "-",
+                                bool(m.group(2) or m.group(3))))
+                code.append(m.group())
+                live.append(m.group())
+                i = m.end()
+                continue
+        elif c == "\n" and pending:
+            code.append(c)
+            live.append(c)
+            i += 1
+            for delim, tabs, quoted in pending:
+                while i < n:
+                    j = text.find("\n", i)
+                    j = n if j < 0 else j
+                    line, i = text[i:j], j + 1
+                    if (line.lstrip("\t") if tabs else line) == delim:
+                        break
+                    if not quoted:
+                        live.append(line + "\n")
+            pending = []
+            continue
+        code.append(c)
+        live.append(c)
+        i += 1
+    return "".join(code), "".join(live)
+
+
+def _substitutions(text: str) -> "list[str]":
+    """Bodies of ``$(...)`` / ``<(...)`` / ``>(...)`` / backtick substitutions."""
+    bodies: list[str] = []
+    i = 0
+    while (m := _SUBST_RE.search(text, i)):
+        s = m.end()
+        if m.group() == "`":
+            e = text.find("`", s)
+            e = len(text) if e < 0 else e
+            i = e + 1
+        else:
+            depth, e = 1, s
+            while e < len(text):
+                depth += (text[e] == "(") - (text[e] == ")")
+                if depth == 0:
+                    break
+                e += 1
+            i = s  # nested substitutions are scanned too
+        bodies.append(text[s:e])
+    return bodies
+
+
+def _split_simple_commands(code: str) -> "list[list[str]]":
+    lex = shlex.shlex(code, posix=True, punctuation_chars=_OPS)
     lex.whitespace = " \t\r"
     lex.whitespace_split = True
-    lex.commenters = ""
+    lex.commenters = ""  # comments are already gone (_scan); shlex would eat the newline
     simple: list[list[str]] = []
     current: list[str] = []
     for tok in lex:
-        if tok and all(c in ";&|()<>\n" for c in tok):
+        if tok and all(c in _OPS for c in tok):
             if ("<" in tok or ">" in tok) and not any(c in tok for c in "();|\n"):
                 current.append(tok)  # redirection operator, stays in place
                 continue
@@ -127,106 +221,94 @@ def _is_redirect(tok: str) -> bool:
     return bool(tok) and all(c in "<>&" for c in tok) and ("<" in tok or ">" in tok)
 
 
-def _skip_opts(words: "list[str]", i: int, prog: str) -> "tuple[int, list[str]]":
-    """Skip option words of wrapper ``prog``; collect strings to recurse into."""
-    takes = _OPT_ARGS.get(prog, set())
-    recurse = _RECURSE_OPTS.get(prog, set())
-    nested: list[str] = []
-    while i < len(words) and words[i].startswith("-") and words[i] != "-":
-        w = words[i]
-        if w == "--":
-            return i + 1, nested
-        if w in recurse:
-            if i + 1 < len(words):
-                nested.append(words[i + 1])
-            i += 2
-            continue
-        i += 2 if w in takes else 1
-    return i, nested
-
-
-def _classify_words(words: "list[str]", depth: int) -> "list[Finding]":
-    findings: list[Finding] = []
+def _without_redirects(words: "list[str]") -> "list[str]":
+    out: list[str] = []
     i = 0
-    plain = True
+    while i < len(words):
+        if _is_redirect(words[i]):
+            i += 2
+        elif words[i].isdigit() and i + 1 < len(words) and _is_redirect(words[i + 1]):
+            i += 1
+        else:
+            out.append(words[i])
+            i += 1
+    return out
+
+
+def _runs_text(words: "list[str]") -> bool:
+    """True when a shell / eval / xargs here runs text that is not a script file."""
+    words = _without_redirects(words)
+    k = next((i for i, w in enumerate(words)
+              if os.path.basename(w) in _RUNNERS), None)
+    if k is None:
+        return False
+    if os.path.basename(words[k]) in ("eval", "xargs"):
+        return True
+    i = k + 1
     while i < len(words):
         w = words[i]
-        base = os.path.basename(w)
-        if _is_redirect(w) or (
-                w.isdigit() and i + 1 < len(words) and _is_redirect(words[i + 1])):
-            i += 2 if _is_redirect(w) else 1
-            plain = False
-            continue
-        if _ASSIGN_RE.match(w) or w in _KEYWORDS or base in _PLAIN_WRAPPERS:
+        if w == "--":
             i += 1
-            plain = False
-            if base == "exec":
-                # exec -a NAME / -c / -l
-                while i < len(words) and words[i].startswith("-"):
-                    i += 2 if words[i] == "-a" else 1
+            break
+        if w in _SHELL_OPT_ARGS:
+            i += 2
             continue
-        if base == "eval":
-            findings += classify_text(" ".join(words[i + 1:]), depth + 1)
-            return findings
-        if base in _OPT_ARGS or base in _DLX:
-            plain = False
-            i, nested = _skip_opts(words, i + 1, base)
-            for text in nested:
-                findings += classify_text(text, depth + 1)
-            if base == "env":
-                while i < len(words) and _ASSIGN_RE.match(words[i]):
-                    i += 1
-            elif base == "timeout":
-                i += 1  # duration
-            continue
-        if base in {"pnpm", "yarn"} and i + 1 < len(words) and words[i + 1] == "dlx":
-            plain = False
-            i, nested = _skip_opts(words, i + 2, "npx")
-            for text in nested:
-                findings += classify_text(text, depth + 1)
+        if w[:1] in "-+" and w != "-":
+            if not w.startswith("--") and ("c" in w[1:] or "s" in w[1:]):
+                return True
+            i += 1
             continue
         break
     if i >= len(words):
-        return findings
-    prog = words[i]
-    rest = words[i + 1:]
-    base = os.path.basename(prog)
-    if base == "codex" or prog.startswith("@openai/codex"):
-        findings.append(Finding("direct", program=prog))
-        return findings
-    if base == GATE_NAME:
-        findings.append(Finding("gate", program=prog, script=prog, args=rest))
-        return findings
-    if base in _SHELLS:
-        j = 0
-        while j < len(rest) and rest[j].startswith("-") and rest[j] not in ("-", "--"):
-            flag = rest[j]
-            if not flag.startswith("--") and "c" in flag[1:]:
-                if j + 1 < len(rest):
-                    findings += classify_text(rest[j + 1], depth + 1)
-                # The -c string is itself a (nested) command; anything after it
-                # is $0/$@ for it, never a script path.
-                findings.append(Finding("nested", program=prog))
-                return findings
-            j += 2 if flag in ("-o", "+o", "-O", "+O") else 1
-        if j < len(rest) and rest[j] == "--":
-            j += 1
-        if j < len(rest) and os.path.basename(rest[j]) == GATE_NAME:
-            findings.append(Finding("gate", program=prog, script=rest[j],
-                                    args=rest[j + 1:],
-                                    plain=plain and prog == "bash" and j == 0))
-    return findings
+        return True  # reads commands from stdin (pipe / redirect / heredoc)
+    op = words[i]
+    return op in ("-", "/dev/stdin") or op.startswith(("/dev/fd/", "/proc/"))
 
 
-def classify_text(command: str, depth: int = 0) -> "list[Finding]":
+def _variants(word: str) -> "list[str]":
+    """The word plus the value of an attached option (``-Sx`` / ``--opt=x`` / ``N=x``)."""
+    out = [word]
+    if word.startswith("-") and not word.startswith("--"):
+        out.append(word[2:])
+    if "=" in word:
+        out.append(word.split("=", 1)[1])
+    return out
+
+
+def _classify_words(words: "list[str]", text: str, depth: int) -> "list[str]":
+    k = 0
+    while k < len(words) and (_ASSIGN_RE.match(words[k]) or words[k] in _KEYWORDS):
+        k += 1
+    prog = words[k] if k < len(words) else ""
+    nxt = words[k + 1] if k + 1 < len(words) else ""
+    if (prog in _SAFE_PROGS or (prog == "command" and nxt in ("-v", "-V"))
+            or (prog == "npm" and nxt in _NPM_SAFE)):
+        return []
+    found: list[str] = []
+    for word in words:
+        for v in _variants(word):
+            base = os.path.basename(v)
+            if base in ("codex", "codex.js") or "@openai/codex" in v:
+                found.append("direct")
+            elif base == GATE_NAME:
+                found.append("gate")
+            if any(c.isspace() for c in v):
+                found += classify_text(v, depth + 1)
+    if _runs_text(words) and _mentions_codex(text):
+        found.append("direct")
+    return found
+
+
+def classify_text(command: str, depth: int = 0) -> "list[str]":
+    """Return findings (``"direct"`` / ``"gate"``) for one shell text."""
     if depth > 8:
         raise ValueError("command nesting too deep")
-    findings: list[Finding] = []
-    if ("$(" in command or "`" in command) and _SUBSHELL_CODEX_RE.search(command):
-        findings.append(Finding("direct", program="codex"))
-    for words in _split_simple_commands(command):
-        findings += _classify_words(words, depth)
-    return findings
+    command = command.replace("\\\n", "")
+    code, live = _scan(command)
+    found = ["direct" for body in _substitutions(live) if _mentions_codex(body)]
+    for words in _split_simple_commands(code):
+        found += _classify_words(words, command, depth)
+    return found
 
 
 def _norm(path: str) -> str:
@@ -249,25 +331,22 @@ def classify(command: str, canonical_gate: str, org_path: str = "") -> "tuple[st
     """
     try:
         findings = classify_text(command)
-        n_simple = len(_split_simple_commands(command))
+        simple = _split_simple_commands(_scan(command.replace("\\\n", ""))[0])
     except ValueError as exc:
-        if "codex" in command:
+        if _mentions_codex(command):
             return "deny", f"コマンドを解析できません ({exc})。{MSG_DIRECT}"
         return "allow", ""
-    if any(f.kind == "direct" for f in findings):
+    if "direct" in findings:
         return "deny", MSG_DIRECT
-    gates = [f for f in findings if f.kind == "gate"]
-    if not gates:
+    if not findings:
         return "allow", ""
-    g = gates[0]
+    words = simple[0] if len(simple) == 1 else []
     if (
-        len(findings) == 1
-        and n_simple == 1
-        and g.plain
-        and g.program == "bash"
-        and _norm(_expand_org_path(g.script, org_path)) == _norm(canonical_gate)
-        and len(g.args) == 1
-        and _BASE_REF_RE.match(g.args[0])
+        findings == ["gate"]
+        and len(words) == 3
+        and words[0] == "bash"
+        and _norm(_expand_org_path(words[1], org_path)) == _norm(canonical_gate)
+        and _BASE_REF_RE.match(words[2])
     ):
         return "gate", ""
     return "deny", MSG_GATE_FORM
@@ -278,7 +357,7 @@ def classify(command: str, canonical_gate: str, org_path: str = "") -> "tuple[st
 # ---------------------------------------------------------------------------
 
 
-def _open_existing(db_path: Path):
+def _open_existing(db_path: Path, busy_ms: int = 10000):
     """Open an existing state.db and wrap it in a StateWriter. Never creates."""
     from tools.state_db import connect
     from tools.state_db.discover import verify_state_db_schema
@@ -290,7 +369,7 @@ def _open_existing(db_path: Path):
     try:
         verify_state_db_schema(db_path, conn=conn)
         writer = StateWriter(conn)
-        conn.execute("PRAGMA busy_timeout = 10000")
+        conn.execute(f"PRAGMA busy_timeout = {int(busy_ms)}")
     except BaseException:
         conn.close()
         raise
@@ -342,9 +421,10 @@ def _status(conn, task: str) -> dict:
     }
 
 
-def consume_round(db_path: Path, worker_dir: str) -> "tuple[bool, str]":
+def consume_round(db_path: Path, worker_dir: str,
+                  busy_ms: int = 10000) -> "tuple[bool, str]":
     """Count one canonical gate call. Returns (allowed, message)."""
-    conn, writer = _open_existing(db_path)
+    conn, writer = _open_existing(db_path, busy_ms)
     try:
         task = _task_for_worker_dir(conn, worker_dir)
         if task is None:
@@ -386,7 +466,11 @@ def run_hook(stdin_text: str, env) -> str:
     """Return the hook's first output line (``ALLOW`` / ``DENY: ...``)."""
     try:
         payload = json.loads(stdin_text)
-        command = (payload.get("tool_input") or {}).get("command")
+        tool = str(payload.get("tool_name") or "")
+        if tool.endswith("__spawn_codex_pane"):
+            return "DENY: ワーカーは Codex ペインを起動できません。" + MSG_DIRECT
+        field = "text" if tool.endswith("__send_keys") else "command"
+        command = (payload.get("tool_input") or {}).get(field)
         if not isinstance(command, str):
             return "ALLOW"
         worker_dir = env.get("WORKER_DIR") or ""
@@ -399,6 +483,8 @@ def run_hook(stdin_text: str, env) -> str:
             return "ALLOW"
         if verdict == "deny":
             return f"DENY: {msg}"
+        if tool != "Bash":
+            return f"DENY: {MSG_GATE_FORM}"  # rounds are counted for Bash only
         db_path = Path(org_path) / ".state" / "state.db"
         ok, msg = consume_round(db_path, worker_dir)
         return "ALLOW" if ok else f"DENY: {msg}"
@@ -452,6 +538,15 @@ def main(argv=None) -> int:
         return 1
     try:
         if args.cmd == "set":
+            if conn.execute(
+                "SELECT 1 FROM events WHERE kind = 'delegate_sent' "
+                "AND json_extract(payload_json, '$.task') = ? LIMIT 1",
+                (args.task_id,),
+            ).fetchone() is None:
+                sys.stderr.write(
+                    f"tools/codex_round_cap.py: error: no delegate_sent event for "
+                    f"task {args.task_id!r} (typo?)\n")
+                return 1
             previous = _allowed(conn, args.task_id)
             writer.append_event(
                 kind="codex_round_cap_changed", actor="secretary",

@@ -873,6 +873,15 @@
             ]
           },
           {
+            "matcher": "mcp__.*__(spawn_pane|spawn_codex_pane|spawn_claude_pane|send_keys|new_tab)",
+            "hooks": [
+              {
+                "type": "command",
+                "command": "bash \"{claude_org_path}/.hooks/block-codex-over-cap.sh\""
+              }
+            ]
+          },
+          {
             "matcher": "Skill",
             "hooks": [
               {
@@ -1097,6 +1106,15 @@
             ]
           },
           {
+            "matcher": "mcp__.*__(spawn_pane|spawn_codex_pane|spawn_claude_pane|send_keys|new_tab)",
+            "hooks": [
+              {
+                "type": "command",
+                "command": "bash \"{claude_org_path}/.hooks/block-codex-over-cap.sh\""
+              }
+            ]
+          },
+          {
             "matcher": "Skill",
             "hooks": [
               {
@@ -1308,6 +1326,15 @@
               {
                 "type": "command",
                 "command": "bash \"{claude_org_path}/.hooks/block-relative-close-pane.sh\""
+              }
+            ]
+          },
+          {
+            "matcher": "mcp__.*__(spawn_pane|spawn_codex_pane|spawn_claude_pane|send_keys|new_tab)",
+            "hooks": [
+              {
+                "type": "command",
+                "command": "bash \"{claude_org_path}/.hooks/block-codex-over-cap.sh\""
               }
             ]
           },

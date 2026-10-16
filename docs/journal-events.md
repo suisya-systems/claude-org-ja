@@ -203,6 +203,13 @@ that counts the earlier ones; once `used` reaches `allowed` the call is refused 
 `codex_round_denied` is appended instead. The task is resolved from the newest
 `delegate_sent` whose `dir` matches the worker's `WORKER_DIR`.
 
+A round is consumed when the hook authorises the gate call (PreToolUse), before the
+gate runs. A call that then exits early (`CODEX_GATE: dirty-worktree` or
+`CODEX_GATE: unavailable`) still counts, so before raising the allowance after a
+`codex_round_denied` the secretary checks why the earlier rounds ended. Workers
+also cannot reach Codex through a separate pane: `spawn_codex_pane` is denied for
+workers.
+
 `allowed` defaults to 3. Only the secretary raises it, with
 `python3 tools/codex_round_cap.py set --task-id <id> --allowed <N|unlimited> --reason <text>`;
 the newest `codex_round_cap_changed` for the task wins. A brief that names a

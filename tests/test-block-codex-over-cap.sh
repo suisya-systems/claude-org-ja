@@ -152,5 +152,87 @@ check 2 "missing CLAUDE_ORG_PATH denied" "$GATE" CLAUDE_ORG_PATH=
 ec=0; printf '%s' '{"tool_name":"Read","tool_input":{"file_path":"codex"}}' | bash "$HOOK" >/dev/null 2>&1 || ec=$?
 ((TEST_NUM++)); if [[ $ec -eq 0 ]]; then echo "ok $TEST_NUM - non-Bash tool passes through"; ((PASS++)); else echo "not ok $TEST_NUM - non-Bash tool passes through"; ((FAIL++)); fi
 
+# --- 迂回形 (すべて deny、往復は数えない) ---
+"$PY" "$CAP" set --task-id t1 --allowed unlimited --reason test --db-path "$ORG/.state/state.db" >/dev/null
+STARTED=$(count_kind codex_round_started)
+BYPASS=(
+  "bash -s base < $CANON"
+  "bash /dev/stdin base < $CANON"
+  "cat $CANON | bash -s base"
+  "echo codex exec | bash"
+  'bash <<< "codex exec"'
+  "source <(echo codex exec)"
+  "command -p codex exec"
+  "time -p codex exec"
+  "function f { codex exec; }; f"
+  "coproc codex exec"
+  'env -S"codex exec"'
+  "setsid codex exec"
+  "strace -f codex exec"
+  'su -c "codex exec"'
+  'script -qc "codex exec" /dev/null'
+  'find . -exec codex exec \;'
+  "npm exec -- codex exec"
+  "node /x/@openai/codex/bin/codex.js exec"
+  'co""dex exec'
+  'c\odex exec'
+  $'c\\\nodex exec'
+  $'ls # it\'s a comment\ncodex exec'
+)
+for cmd in "${BYPASS[@]}"; do
+  check 2 "bypass denied: $cmd" "$cmd"
+done
+assert_eq "$(count_kind codex_round_started)" "$STARTED" "bypass forms consume no round"
+
+# --- codex を含むが実行しないコマンド (must allow) ---
+ALLOWED=(
+  $'git commit -F - <<\'EOF\'\nblock `codex exec`\nEOF'
+  "git commit -m 'block \`codex exec\`'"
+  "grep -n \"codex\" README.md # it's fine"
+  "npm i -g @openai/codex@latest"
+  "which codex"
+  "python3 -m pytest -q tools/test_codex_round_cap.py"
+  "bash tests/test-codex-review-gate.sh"
+  "cat tools/codex_review_gate.sh"
+  "git log --grep codex"
+)
+for cmd in "${ALLOWED[@]}"; do
+  check 0 "allowed: $cmd" "$cmd"
+done
+
+# --- MCP のペイン操作 ---
+run_mcp() {  # run_mcp <tool> <field> <value> -> exit code
+  local ec=0
+  jq -cn --arg t "mcp__renga-peers__$1" --arg f "$2" --arg v "$3" '{tool_name:$t,tool_input:{($f):$v}}' \
+    | env WORKER_DIR="$WORKER" CLAUDE_ORG_PATH="$ORG" bash "$HOOK" >/dev/null 2>"$LAST_ERR" || ec=$?
+  echo "$ec"
+}
+check_mcp() {  # check_mcp <expected> <tool> <field> <value>
+  local ec; ec=$(run_mcp "$2" "$3" "$4"); ((TEST_NUM++))
+  if [[ "$ec" -eq "$1" ]]; then echo "ok $TEST_NUM - $2 $3='$4' -> $1"; ((PASS++))
+  else echo "not ok $TEST_NUM - $2 $3='$4' (expected $1, got $ec)"; ((FAIL++)); fi
+}
+check_mcp 2 spawn_codex_pane command ""
+check_mcp 2 spawn_pane command "codex exec"
+check_mcp 2 new_tab command "codex exec"
+check_mcp 2 send_keys text "codex exec"
+check_mcp 2 send_keys text "$GATE"
+check_mcp 0 spawn_pane command "ls"
+check_mcp 0 send_keys text "hello"
+check_mcp 0 spawn_claude_pane command "codex"
+assert_eq "$(count_kind codex_round_started)" "$STARTED" "MCP calls consume no round"
+
+# --- 判定器の異常 (無出力 exit 1 / 不正出力) は deny ---
+for stub in 'import sys; sys.exit(1)' 'print("garbage")'; do
+  FC="$TMP/fc-$((TEST_NUM))"
+  mkdir -p "$FC/.hooks" "$FC/tools"
+  cp "$HOOK" "$FC/.hooks/"
+  printf '%s\n' "$stub" > "$FC/tools/codex_round_cap.py"
+  ec=0
+  jq -cn --arg c "$GATE" '{tool_name:"Bash",tool_input:{command:$c}}' \
+    | env WORKER_DIR="$WORKER" CLAUDE_ORG_PATH="$ORG" bash "$FC/.hooks/block-codex-over-cap.sh" >/dev/null 2>&1 || ec=$?
+  assert_eq "$ec" "2" "classifier stub '$stub' fails closed"
+done
+
 echo "# $PASS passed, $FAIL failed out of $TEST_NUM tests"
 [[ $FAIL -eq 0 ]]

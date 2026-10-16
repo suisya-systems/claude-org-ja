@@ -8,17 +8,22 @@
 #   サンドボックスの外で動くので、ワーカーからは読み取り専用の ja root
 #   `.state/state.db` に events を書ける。
 #
-# 判定 (`tools/codex_round_cap.py hook` に委譲。Bash コマンドに `codex` を含むときだけ):
-#   - codex の直接実行 (`codex exec` / `npx @openai/codex` / `bash -c "codex ..."` /
-#     `$(codex ...)` 等) は deny
+# 対象: Bash の command、MCP の spawn_pane / new_tab の command、send_keys の text。
+#   MCP の spawn_codex_pane は常に deny (ワーカーは Codex ペインを起動しない)。
+# 判定 (`tools/codex_round_cap.py hook` に委譲。引用符等を除いて `codex` を含むときだけ):
+#   - 既定 deny: `codex` 語を含む単純コマンドは、引数を実行しない読み取り系
+#     (grep / cat / echo / git / which / `command -v` / `npm i` 等) 以外 deny。
+#     `bash -c` 等の文字列は入れ子で再判定し、標準入力やヒアドキュメントで
+#     `codex` を含むテキストをシェルに流す形と `$(codex ...)` も deny
 #   - Codex ゲートは `bash "$CLAUDE_ORG_PATH/tools/codex_review_gate.sh" <base-ref>`
 #     単独の形だけ通す。それ以外の形 (ワーカー側のコピー・相対パス・他コマンドとの連結) は deny
 #   - 正規のゲート呼び出しは 1 回ごとに `codex_round_started` を記録して通す。
 #     許可回数 (既定 3、窓口が `tools/codex_round_cap.py set` で変更) を超えたら
 #     `codex_round_denied` を記録して deny (CODEX_ROUND_DENIED)
 #
-# 既知の限界: 変数展開・別ファイルに書いたスクリプト・他言語のプロセス起動
-#   (python の subprocess 等) 経由の codex 実行はコマンド文字列から判別できない。
+# 既知の限界: 変数展開・グロブ・ブレース展開・$'...'・別ファイルに書いたスクリプト・
+#   他言語で組み立てた文字列・許可リストのコマンドの実行機能 (git alias 等) 経由の
+#   codex 実行はコマンド文字列から判別できない (tools/codex_round_cap.py の docstring)。
 #
 # 範囲: ワーカー (`tools/org_extension_schema.json` の worker_roles から配る)。ja 専用
 #   (`tools/check_runtime_schema_drift.py` の `_JA_ONLY_HOOK_SCRIPTS`)。
@@ -52,11 +57,19 @@ if ! printf '%s\n' "$INPUT" | jq -e -s 'length == 1 and (.[0] | type) == "object
 fi
 
 TOOL_NAME=$(printf '%s\n' "$INPUT" | jq -r '.tool_name // empty')
-[[ "$TOOL_NAME" == "Bash" ]] || exit 0
+case "$TOOL_NAME" in
+  Bash|mcp__*__spawn_pane|mcp__*__new_tab) FIELD=command ;;
+  mcp__*__send_keys) FIELD=text ;;
+  mcp__*__spawn_codex_pane)
+    deny_with_reason "ワーカーは Codex ペインを起動できません。Codex レビューは bash \"\$CLAUDE_ORG_PATH/tools/codex_review_gate.sh\" <base-ref> だけで回してください。" ;;
+  *) exit 0 ;;
+esac
 
-COMMAND=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.command // empty | tostring')
-# 速い経路: `codex` を含まないコマンドは python を起動せずに通す。
-[[ "$COMMAND" == *codex* ]] || exit 0
+COMMAND=$(printf '%s\n' "$INPUT" | jq -r --arg f "$FIELD" '.tool_input[$f] // empty | tostring')
+# 速い経路: 引用符・バックスラッシュ・改行を除いて `codex` を含まないコマンドは python を起動せずに通す
+# (`co""dex` / `c\odex` / 行継続で分けた形も python 側の判定に回す)。
+STRIPPED=$(printf '%s' "$COMMAND" | tr -d "\"'\\\\\n")
+[[ "$STRIPPED" == *codex* ]] || exit 0
 
 if [[ -z "${WORKER_DIR:-}" || -z "${CLAUDE_ORG_PATH:-}" ]]; then
   deny_with_reason "WORKER_DIR または CLAUDE_ORG_PATH が設定されていません。"

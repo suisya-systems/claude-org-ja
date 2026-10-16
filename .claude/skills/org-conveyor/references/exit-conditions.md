@@ -9,7 +9,7 @@
 
 | # | 条件 | 既定閾値 | 何を見るか |
 |---|---|---|---|
-| 1 | **Codex round 最大数到達** | `codex_round_max`（既定 3） | ある PR の Codex セルフレビュー fix が上限ラウンドに達しても Blocker/Major が収束しない |
+| 1 | **Codex round 最大数到達** | `codex_round_max`（既定 3） | ある PR のワーカーが許可回数を使い切り、ゲートが `CODEX_ROUND_DENIED` で拒否した |
 | 2 | **連続 false-positive 数到達** | `false_positive_streak_max`（既定 2） | CI red / Codex Blocker / verify 失敗を追ったが、いずれも変更起因の実欠陥でなかった（flaky / benign）回が連続 |
 | 3 | **時間予算超過 / 最大反復数到達** | `time_budget` / `max_iterations` | ベルト稼働の経過時間 / ループ反復回数が契約の予算を超えた |
 | 4 | **worker escalation** | 即時 | worker から「判断仰ぎ」「承認を仰ぎ」「スコープ拡張」「ブロッカー」「想定外」「runbook 逸脱」が来た |
@@ -19,10 +19,14 @@
 
 ### 1. Codex round 最大数到達
 
-- worker の Codex セルフレビューは Blocker/Major ゼロまで回すが上限 3 ラウンド（[`/org-delegate`](../../org-delegate/SKILL.md)
-  「ワーカー監視と介入判定」: Codex 4 ラウンド目以降は介入トリガー）。conveyor はこれを **ベルト退出条件としても扱う**:
-  ある PR が上限ラウンドで収束しないなら、その候補はベルトから外し人間へ上げる（残りの候補のベルトは続けてよい）。
-- 「収束しない」を機械的に: 同一 PR で Codex round が `codex_round_max` 回を超えても Blocker/Major が残る。
+- worker の Codex セルフレビューは Blocker/Major ゼロまで回すが、回数はワーカーの外で数えられる: 許可回数（既定 3）を
+  超えるゲート呼び出しは PreToolUse フックが拒否し、ディスパッチャーが `CODEX_ROUND_DENIED` を窓口へ中継する
+  （[`/org-delegate`](../../org-delegate/SKILL.md)「ディスパッチャーから CODEX_ROUND_DENIED を受けたとき」）。conveyor は
+  **この受信をベルト退出の契機として扱う**: その候補はベルトから外し人間へ上げる（残りの候補のベルトは続けてよい）。
+  Opus 昇格で続けるかどうかも人間に諮る（conveyor は自走で許可回数を増やさない）。
+- `codex_round_max` が 3 以外の契約では、フックは events に記録された許可回数しか見ないので、派遣直後（`delegate_sent`
+  記帳後）に窓口が `python3 tools/codex_round_cap.py set --task-id <task_id> --allowed <codex_round_max> --reason "conveyor scope contract"`
+  を実行する。実行しなければ既定 3 で拒否される。
 
 ### 2. 連続 false-positive 数到達
 
