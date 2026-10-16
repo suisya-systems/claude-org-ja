@@ -64,12 +64,13 @@ task JSON の最低フィールド:
   "task_id": "login-fix",
   "worker_dir": "<workers_dir>/login-fix",
   "permission_mode": "auto",
+  "model": "sonnet",
   "task_description": "...",
   "instruction": "..."
 }
 ```
 
-`model` は省略可。省略時は helper が `"opus"` をデフォルトとして `spawn` に載せる。既定を外すのは DELEGATE 本文に `モデル: sonnet` 行があるときだけで、その扱いは本ファイル 3-2 に従う。
+`model` は**必須**で、ディスパッチャーは毎回 `"sonnet"` か `"opus"` を明示して書く。省略すると helper（claude-org-runtime の `DEFAULT_WORKER_MODEL`）が `"opus"` を `spawn` に載せてしまい、ワーカー既定 sonnet が黙って崩れる（worker の spawn は `.hooks/check-worker-spawn-model.sh` が inbox task JSON と照合し、`"opus"` の記載が無い opus spawn を拒否する）。値の決め方は本ファイル 3-2 に従う（既定 `"sonnet"`、DELEGATE 本文に `モデル: opus` 行があるときだけ `"opus"`）。
 
 panes JSON は `mcp__renga-peers__list_panes` の `structuredContent.panes` をそのまま渡す。
 
@@ -102,6 +103,10 @@ helper が実ファイル書き出しを行うもの (ready_to_spawn 時):
 # events テーブルへ書く（cwd-relative ではない。jsonl 側は M4 / Issue #267 で
 # 廃止済みで、tools/journal_append.py の docstring が DB を唯一の書き先と定める）。
 bash ../tools/journal_append.sh worker_spawned worker=worker-{task_id} dir={dir} task={task_id}
+
+# 試行期間の記録: spawn に使ったモデルと、その理由（既定か DELEGATE の `モデル:` 行か）。
+# state.db に model 列は無いので events に残す（本ファイル Step 4-3）。
+bash ../tools/journal_append.sh worker_model_set task={task_id} model={sonnet|opus} reason={default|delegate_line}
 
 # 続けて派遣完了ゲート。--peer-* は 3-4 の list_peers で実際に観測した値を渡す
 # （--peer-cwd は窓口が T1 で書いた delegate_sent イベントの dir と照合される）。
@@ -199,14 +204,14 @@ mcp__renga-peers__spawn_claude_pane(
   name="worker-{task_id}",                # 後続操作で参照する安定名。英字含む前提
   cwd="{workers_dir}/{task_id}",          # 絶対パス推奨。相対は caller pane の cwd 基点
   permission_mode="auto",
-  model="opus"                            # 既定 opus（品質優先）。oracle が強い帯は窓口の明示指定で Sonnet 5 メイン可
+  model="sonnet"                          # 既定 sonnet。DELEGATE 本文に `モデル: opus` 行があるときだけ "opus"
 )
 ```
 
-- **既定は `model="opus"`（品質優先）。ただし oracle が強いタスクは、窓口が明示指定したときに限り `model="sonnet"`（Sonnet 5 メイン）を選んでよい。** 判定軸は工数ラベル (S/M/L) ではなく**タスクの oracle 強度と判断密度**で、これは ultracode 許可基準と同じ思想である。
-  - **Sonnet 5 メインを選んでよい帯**: 次の 2 条件を**両方**満たすこと。(a) 機械検証可能な正解が実装の外に固定されている（fixture 駆動の期待値・テストスイートの assertion・DB の行など）、(b) 設計判断が brief で事前固定済みで、実装中に決め直す判断が残らない。この帯は誤りを oracle が機械的に捕捉し、実装中の判断密度が低い。
-  - **opus を維持する帯**: (a)(b) のどちらかを欠くもの。機構の再導出が要る（retarget 型）/ 契約設計を含む / 実測しないと決められない決定が実装中に残る帯が該当し、既定の品質優先を崩さない。
-  - **指定の受け取り方**: 窓口は既定を外すときだけ DELEGATE 本文に `モデル: sonnet` の 1 行を載せる。ディスパッチャーはこの行があるときに限り `model="sonnet"` で spawn し、**行が無ければ `model="opus"`** で spawn する（`モデル:` 行は `tools/gen_delegate_payload.py` の生成物には含まれず、窓口が手で足す逸脱指定である）。`sonnet` 以外の値は自己解釈せず窓口へ差し戻す。
+- **既定は `model="sonnet"`。DELEGATE 本文に `モデル: opus` 行があるときだけ `model="opus"` で spawn する。** Opus にするかどうかを決めるのは窓口で、ディスパッチャーはこの行を読み取るだけである（自分で opus を選ばない）。
+  - **指定の受け取り方**: `モデル: opus` 行があれば `model="opus"`、**行が無ければ `model="sonnet"`**。`モデル:` 行は `tools/gen_delegate_payload.py` の生成物には含まれず、窓口が手で足す指定である。`opus` 以外の値（`sonnet` を含む）は自己解釈せず窓口へ差し戻す。
+  - **inbox task JSON の `"model"` を必ず書く**: helper 経路でも手動経路でも、spawn の前に `.state/dispatcher/inbox/{task_id}.json` へ `"model": "sonnet"` か `"model": "opus"` を明示する（本ファイル「delegate-plan helper」の task JSON 節）。runtime helper は `model` 欠落時に `"opus"` を既定にするため、書き漏らすと sonnet 既定が崩れる。`.hooks/check-worker-spawn-model.sh` が worker spawn の `model` を検査し、`sonnet` / `opus` 以外と、inbox task JSON に `"model": "opus"` が無い opus spawn を拒否する。
+  - **窓口が Opus を指定する条件**（参考。判断の正本は [`.claude/skills/org-delegate/SKILL.md`](../../.claude/skills/org-delegate/SKILL.md) のモデル選定節）: (a) Codex 往復上限で拒否された後に窓口が昇格を決めたとき、(b) ワーカーが手に余ると申し出たとき、(c) 人間が指定したとき、(d) ガード・封印・契約などの強制機構を実装するタスク。(a)(b) は spawn 後の昇格で、ディスパッチャーは関与しない（窓口が同じペインで `/model` ピッカーから Opus を「このセッションだけ」で選ぶ）。
 - ペイン配置ルールは [`.claude/skills/org-delegate/references/pane-layout.md`](../../.claude/skills/org-delegate/references/pane-layout.md) を参照
 - **同一タブ内 spawn を既定にする理由は「pane 制御が別タブへ届かないから」ではなく、「列挙 (`list_panes`) が別タブを映さないから」**（結論＝同一タブ配置は契約 T-§4.2 の「Retained from ratified §4.2」で retained だが、その**理由は 2026-08-09 改稿で差し替わっている**: 旧来の「pane 制御はどの capability 組み合わせでも one tab wide」は誤りで、契約自身が T-§sup correction 4 として撤回している）。根拠は renga の版数ではなく **capability を確立できたか**で読む（各トークンは独立判定 = 契約 T-§cap の independence rule）。**到達性 (reachability) と配置 (placement) は別軸で、「届くこと」は別タブ配置の licence にならない (MUST NOT)**（契約 T-§4.2-place「Numeric-id reachability does not discharge the placement rule」）:
   - `caller_scope`（Group A: `list_panes` / `focus_pane` / `inspect_pane` / `send_keys` / 各 `spawn_*` の `target`）と `caller_scope_close_identity`（Group B: `close_pane` / `set_pane_identity`）は**個別に判定するトークンで、一方から他方を導出しない**。そして**どちらの群も、scope は capability の組み合わせではなく selector 種別で割れる**（契約 T-§4.2 の Group-A / Group-B bullet）:
@@ -248,7 +253,7 @@ res = mcp__renga-peers__spawn_claude_pane(
   name="worker-{task_id}",
   cwd="{workers_dir}/{task_id}",
   permission_mode="auto",
-  model="opus"
+  model="sonnet"                               # 3-2 と同じ規則（`モデル: opus` 行があるときだけ "opus"）
 )
 bound_pane_id = res の数値 pane id      # ★ 直後に控える。以降の儀式は全てこの id 宛
 
@@ -407,7 +412,7 @@ worker brief に **ultracode 使用許可**があるタスクでは、kickoff �
 
 3. **位置づけ（worker brief と一致させる）**: ultracode は実装と **Codex 前のセルフレビュー収束**（複数観点の並列レビューで指摘の種を潰し Codex 周回数を減らす）に使う。最終ゲート「Codex Blocker / Major ゼロ（別モデルによる独立レビュー）」は**従来どおり維持**する。ultracode は Codex ゲートの**前段**であって置き換えではない。
 
-4. **段別モデル指定を促す（推奨）**: ultracode workflow は段ごとにモデルを使い分けられる。機械的なファンアウト段（定型置換・多数ファイルへの同一変換・単純収集など判断を伴わない並列作業）は `agent(..., {model: 'sonnet'})` で Sonnet 5 に振ってコスト・速度を最適化し、判断・検証・統合の段（レビュー・設計判断・adversarial verify・synthesis）はセッションモデル（既定 opus）を継承させて品質を確保する。worker brief（[`.claude/skills/org-delegate/SKILL.md`](../../.claude/skills/org-delegate/SKILL.md) の「重量レーンの brief 強化（ultracode）」）と同じ段別方針を kickoff / brief で促す。粒度は Workflow tool の `agent()` opts.model で制御する。
+4. **段別モデル指定を促す（推奨）**: ultracode workflow は段ごとにモデルを使い分けられる。機械的なファンアウト段（定型置換・多数ファイルへの同一変換・単純収集など判断を伴わない並列作業）は `agent(..., {model: 'sonnet'})` で Sonnet 5 に振ってコスト・速度を最適化し、判断・検証・統合の段（レビュー・設計判断・adversarial verify・synthesis）はセッションモデル（ワーカーのセッションモデル。既定 sonnet、窓口指定時は opus）を継承させて品質を確保する。worker brief（[`.claude/skills/org-delegate/SKILL.md`](../../.claude/skills/org-delegate/SKILL.md) の「重量レーンの brief 強化（ultracode）」）と同じ段別方針を kickoff / brief で促す。粒度は Workflow tool の `agent()` opts.model で制御する。
 
 5. **強い権限の事前許可文言を workflow の agent プロンプトに書かせない（重要）**: ultracode を許可しても、`dangerouslyDisableSandbox` / `--dangerously-skip-permissions` 等の**強い権限を事前に許可する文言**を workflow の `agent()` プロンプト本文に書き込ませない（kickoff / brief でもそう促す）。安全分類器が該当 agent 呼び出しを **silent block** し、workflow が原因不明のまま停滞する事故になる。どうしても強い権限が要る段がある場合は、その agent の**成否を明示確認**（戻り値 / 失敗検知でブロックを検出）し、**block 時のリカバリ手段**（当該段を通常権限で再実行 / worker 本体で手動実行等）を workflow に組み込むよう促す。これは worker brief（[`.claude/skills/org-delegate/SKILL.md`](../../.claude/skills/org-delegate/SKILL.md) の「重量レーンの brief 強化（ultracode）」）と**同じ意味の制約**であり、両所に置くことで kickoff 導線から危険例が再発しないようにする。
    - **既存の args[] 規約とは別レイヤ**: 3-2 / 上記 `[invalid-params]` の「`spawn_claude_pane` の `args[]` に `--permission-mode` / `--dangerously-load-development-channels` 等の flag を入れない」は **pane 起動 CLI 引数**の話。本項は **worker が書く workflow script の `agent()` プロンプト本文**に強権限の事前許可文言を書かない話で、対象レイヤが異なる（混同しない）。
@@ -475,13 +480,18 @@ with StateWriter(conn, claude_org_root=Path('..')).transaction() as w:
 - `pattern` は A / B / C のいずれか
 - 生成される `.state/org-state.md` の Worker Directory Registry セクションの定義（列と値の範囲・書き手）は [`docs/contracts/state-schema-contract.md`](../../docs/contracts/state-schema-contract.md) §1 が正本
 
-### 4-3. events テーブルに `worker_spawned` を追記する
+### 4-3. events テーブルに `worker_spawned` と `worker_model_set` を追記する
 
 helper 経由で書く（`ts` は自動付与。Bash で生 JSON を `>>` で append しないこと）。helper 経路では本ファイル「delegate-plan helper」節で同じ追記を済ませているので、2 回書かない:
 
 ```bash
 bash ../tools/journal_append.sh worker_spawned worker=worker-{task_id} dir=<dir> task={task_id}
+# spawn に使ったモデルの記録（state.db に model 列は無いので events に残す）。
+# reason は model="sonnet" なら default、DELEGATE の `モデル: opus` 行で opus にしたなら delegate_line。
+bash ../tools/journal_append.sh worker_model_set task={task_id} model={sonnet|opus} reason={default|delegate_line}
 ```
+
+`worker_model_set` は Sonnet 既定の試行期間に、タスクごとの使用モデル・昇格の有無と理由を後から集計するための記録である。spawn 後に窓口が Opus へ昇格させたときは、窓口が `reason=promotion:<cause>` で同じ kind を追記する（ディスパッチャーは書かない）。Codex 往復回数は `codex_round_started` から数える。
 
 event 名と payload key の規約は [`docs/journal-events.md`](../../docs/journal-events.md) を参照。
 

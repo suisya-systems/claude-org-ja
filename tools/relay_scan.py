@@ -127,6 +127,12 @@ TERMINAL_KINDS = (
     # to relay it. Delivery is still once-only: the ledger dedups by
     # event id, and pr_watch emits at most one row per head.
     "pr_conflict_detected",
+    # Written by .hooks/block-codex-over-cap.sh (tools/codex_round_cap.py)
+    # when a worker's Codex review gate call is refused at the round cap.
+    # The secretary decides what happens next (Opus promotion / human /
+    # stop); the dispatcher only relays it, so it needs the same
+    # zero-miss outbox path as the pr-watch signals.
+    "codex_round_denied",
 )
 
 # Default recipient for relays.
@@ -297,6 +303,13 @@ def compose_message(kind: str, payload: dict) -> str:
             f"NOTIFY_FAILED: push of {orig} for {pr_tag} to "
             f"{payload.get('target', 'secretary')} failed "
             f"(transport={transport}) [relay]"
+        )
+    if kind == "codex_round_denied":
+        task = payload.get("task", "?")
+        return (
+            f"CODEX_ROUND_DENIED: worker-{task} (task_id={task}, "
+            f"used={payload.get('used', '?')}, "
+            f"allowed={payload.get('allowed', '?')}) [relay]"
         )
     # Unknown terminal kind: relay a generic, non-lossy line.
     return f"{kind.upper()}: {pr_tag} [relay]"

@@ -73,6 +73,13 @@ class TestComposeMessage(unittest.TestCase):
                 "notify_failed",
                 {"pr": 5, "failed_kind": "ci_completed", "transport": "broker"}))
 
+    def test_codex_round_denied_is_relayed(self):
+        self.assertIn("codex_round_denied", relay_scan.TERMINAL_KINDS)
+        self.assertEqual(
+            relay_scan.compose_message(
+                "codex_round_denied", {"task": "t1", "used": 3, "allowed": 3}),
+            "CODEX_ROUND_DENIED: worker-t1 (task_id=t1, used=3, allowed=3) [relay]")
+
     def test_unknown_kind_degrades_not_raises(self):
         msg = relay_scan.compose_message("brand_new_kind", {"pr": 9})
         self.assertIn("BRAND_NEW_KIND", msg)

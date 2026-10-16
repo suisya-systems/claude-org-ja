@@ -43,7 +43,18 @@ worker の brief は完了・PR 作成後もペインを保持し、窓口の明
 ```
 {{FQ}}send_message(
   to_id="worker-{task_id}",
-  message="Codex round 受領しました。Blocker/Major があれば修正コミット → 次 round へ。3 round 上限まで進めて OK。残りが Minor/Nit のみなら最終完了報告に切り替えてください。ペイン保持で。"
+  message="Codex round 受領しました。Blocker/Major があれば修正コミット → 次 round へ。許可回数（既定 3。超えるとゲートが CODEX_ROUND_DENIED で拒否します）まで進めて OK。残りが Minor/Nit のみなら最終完了報告に切り替えてください。ペイン保持で。"
+)
+```
+
+### Codex 往復上限での停止 ack
+
+ゲートが `CODEX_ROUND_DENIED` で拒否した後（ディスパッチャーの中継またはワーカーの報告のどちらで知っても同じ。重複は 1 件として扱う）に返す。続けるかどうかは窓口が決めるので、ワーカーには待機させる:
+
+```
+{{FQ}}send_message(
+  to_id="worker-{task_id}",
+  message="Codex 往復上限での停止を受領しました。codex は再実行せず、残指摘と自己評価（収束途中か設計の問題か）をまだ送っていなければ送ってください。続けるかどうかは窓口で決めて連絡します。ペイン保持で待機してください。"
 )
 ```
 

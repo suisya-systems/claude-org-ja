@@ -99,14 +99,38 @@ allowed-tools:
 
 `gen_delegate_payload.py` の専用フラグ化はスコープ外（許可は `--impl-guidance` の brief 文言、武装は dispatcher の send_keys が担う分担で足りる）。**位置づけ**: ultracode は実装と Codex 前のセルフレビュー収束に使う**前段**であって、最終 Codex ゲート（別モデルによる独立レビュー、Blocker / Major ゼロ）の置き換えではない。軽量レーン（subagent 直処理）では ultracode を許可しない。重量レーンでも上記 3 基準をいずれも満たさないタスクは許可しない（サイズの大小ではなく判断密度・検証性質・並列構造で判定する）。
 
-**段別モデル指定（推奨）**: ultracode workflow を許可するタスクでは、workflow の段ごとにモデルを使い分けるよう brief で促してよい。機械的なファンアウト段（定型置換・多数ファイルへの同一変換・単純収集など判断を伴わない並列作業）は `agent(..., {model: 'sonnet'})` で Sonnet に振ってコスト・速度を最適化し、判断・検証・統合の段（レビュー・設計判断・adversarial verify・synthesis）はセッションモデル（既定 opus）を継承させて品質を確保する。粒度は Workflow tool の `agent()` opts.model で制御する（段別注記は [`.dispatcher/references/spawn-flow.md`](../../../.dispatcher/references/spawn-flow.md) 3-5a と一致させる）。
+**段別モデル指定（推奨）**: ultracode workflow を許可するタスクでは、workflow の段ごとにモデルを使い分けるよう brief で促してよい。機械的なファンアウト段（定型置換・多数ファイルへの同一変換・単純収集など判断を伴わない並列作業）は `agent(..., {model: 'sonnet'})` で Sonnet に振ってコスト・速度を最適化し、判断・検証・統合の段（レビュー・設計判断・adversarial verify・synthesis）はセッションモデル（ワーカーのセッションモデル。既定 sonnet、`モデル: opus` 指定時は opus）を継承させて品質を確保する。粒度は Workflow tool の `agent()` opts.model で制御する（段別注記は [`.dispatcher/references/spawn-flow.md`](../../../.dispatcher/references/spawn-flow.md) 3-5a と一致させる）。
 
-**重量レーンのワーカーモデル選定（oracle 強度で判定）**: ワーカーの spawn model は既定 `opus`。ただし **oracle が強いタスク**は、窓口が明示指定して **Sonnet メイン**（`model="sonnet"`）を選んでよい（推奨）。ultracode 許可と同じく、判定は工数ラベル (S/M/L) ではなく **oracle 強度と判断密度**で行う:
+**重量レーンのワーカーモデル選定（既定 sonnet）**: ワーカーの spawn model は既定 `sonnet`。Codex レビューの往復上限はワーカーの外（PreToolUse フックと `tools/codex_round_cap.py`）で強制されるので、Sonnet が収束しなくても上限で止まり、窓口がその時点で上げ方を決められる。Opus にするかを決めるのは**窓口だけ**で（ディスパッチャーもワーカーも決めない）、条件は次のいずれか:
 
-- **Sonnet メイン可**: 次を**両方**満たす帯 —(a) 機械検証可能な正解が実装の外に固定されている（fixture 駆動の期待値・テストスイートの assertion・DB の行など）、(b) 設計判断が brief で事前固定済みで、実装中に決め直す判断が残らない。誤りを oracle が機械的に捕捉するため、実装中の判断密度が低い。
-- **opus 維持**: (a)(b) のどちらかを欠くもの。機構の再導出が要る（retarget 型）/ 契約設計を含む / 実測しないと決められない決定が実装中に残る帯が該当する。
+- (a) Codex 往復上限での拒否（`CODEX_ROUND_DENIED`）の後に、窓口が Opus へ上げると決めたとき（下記「ディスパッチャーから CODEX_ROUND_DENIED を受けたとき」）
+- (b) ワーカーが手に余ると申し出たとき（モデルの昇格だけなら窓口が決める。申し出にスコープ拡張や方針変更が含まれるときは、その部分を [`/org-escalation`](../org-escalation/SKILL.md) で人間に上げる）
+- (c) 人間が指定したとき
+- (d) ガード・封印・契約などの強制機構を実装するタスク（「テストが緑でも守っていない」型の欠陥が出やすい）
 
-既定を外すときは、`send_plan.json` の DELEGATE 本文に `モデル: sonnet` の 1 行を足してからディスパッチャーへ送る（`tools/gen_delegate_payload.py` に model 用のフラグは無く、生成された本文にこの行は出ない）。ディスパッチャーはこの行が無ければ `opus` で spawn する（spawn 側の SoT は [`.dispatcher/references/spawn-flow.md`](../../../.dispatcher/references/spawn-flow.md) 3-2）。
+(c)(d) は派遣時に決まるので、`send_plan.json` の DELEGATE 本文に `モデル: opus` の 1 行を足してからディスパッチャーへ送る（`tools/gen_delegate_payload.py` に model 用のフラグは無く、生成された本文にこの行は出ない）。ディスパッチャーはこの行が無ければ `sonnet` で spawn し、`opus` 以外の値は窓口へ差し戻す（spawn 側の SoT は [`.dispatcher/references/spawn-flow.md`](../../../.dispatcher/references/spawn-flow.md) 3-2）。
+
+**spawn 後の Opus 昇格（(a)(b)）**: ワーカーペインは閉じず、窓口が同じペインでモデルを切り替える（作り直さない。会話の文脈はそのまま残る）。手順は実走で確かめたもので、盲目 Enter は使わない:
+
+1. `mcp__org-broker__send_keys(target="worker-{task_id}", text="/model")`（引数なし）→ `mcp__org-broker__inspect_pane` で入力欄に載ったことを確認 → `mcp__org-broker__send_keys(target="worker-{task_id}", enter=true)` を単独で別送（text と Enter の同一呼び出しは貼り付け吸収で未送信 draft になる）
+2. 「Select model」のピッカーが出る（下端に `Enter to set as default · s to use this session only · Esc to cancel`）。カーソルは現在のモデルの行から始まる。行の並びはモデル一覧次第なので、キーを決め打ちの回数で送らず、↑↓ を送るたびに `mcp__org-broker__inspect_pane` で確かめて、カーソル（`❯`）が Opus の行に来たら止める
+3. `mcp__org-broker__send_keys(target="worker-{task_id}", text="s")` を送る（**Enter ではない**。Enter は人間のユーザー既定モデルまで書き換える）
+4. 「Switch model?」の確認ダイアログ（次の応答が遅くなる・履歴を読み直す旨の説明と、`1. Yes, switch to Opus …` / `2. No, go back` の選択肢）が出る。`mcp__org-broker__inspect_pane` でカーソルが `Yes` にあることを確かめてから `mcp__org-broker__send_keys(target="worker-{task_id}", enter=true)` を送る
+5. `mcp__org-broker__inspect_pane` で「Set model to Opus … for this session only」の表示と、ヘッダのモデル表示が Sonnet から Opus に変わったことを確かめる
+
+切り替わったら記録を残し、ワーカーへ続行を指示する:
+```bash
+bash tools/journal_append.sh worker_model_set task=<task_id> model=opus reason=promotion:<cap_denied|worker_request|human|enforcement>
+```
+`/model opus` の直打ちやピッカーでの Enter は使わない。どちらもそのセッションだけでなく、人間のユーザー既定モデル（`~/.claude/settings.json` の `model`）まで書き換え、人間が手で起動するセッションや model を明示せずに起動される窓口に波及する。`s`（このセッションだけ）なら既定は変わらない（実走で `settings.json` の mtime と値が不変であることを確認済み）。ピッカー・ダイアログ・画面が上記と違うときは `Esc` で抜けて即興で続けない。切り替わりを確認できないときだけ、ワーカーを作り直す（ペインを閉じて `モデル: opus` 行付きで派遣し直す）。作り直しは作業中の文脈を失うので、人間に諮ってから行う。
+
+**試行期間の記録**: タスクごとの使用モデル・昇格の有無と理由・Codex 往復回数は events に残る（state DB に model 列は無い）。spawn 時のモデルはディスパッチャーが `worker_model_set`（`reason=default|delegate_line`）を、昇格は窓口が上記の `worker_model_set`（`reason=promotion:<cause>`）を書き、往復回数は `codex_round_started` の行数で数える。
+
+**Codex 往復上限の既定外指定は派遣時に CLI で設定する**: 上限（既定 3）はフックが events から読むので、brief の `--impl-guidance` に別の上限（例: 「Codex 往復の上限は 5 ラウンド」）を書いても、それだけでは効かない。既定外の上限を指示するタスクでは、窓口が apply の直後（`delegate_sent` 記帳後）に ja root で設定する:
+```bash
+python3 tools/codex_round_cap.py set --task-id <task_id> --allowed <N|unlimited> --reason "<brief で指定した理由>"
+```
+現在値は `python3 tools/codex_round_cap.py status --task-id <task_id>` で確かめられる。許可回数を書けるのは窓口だけで、ワーカーからは書けない（`.state/` はワーカーのサンドボックス外）。
 
 ## 委譲前チェックリスト（窓口が実行）
 
@@ -388,13 +412,30 @@ worker → Secretary peer message
 
 - **再指示時の監視フラグ解除（Issue #658）**: 完了報告済み（§2a で dispatcher へ `WORKER_COMPLETION_NOTED` 送信済み）の worker に、review feedback / CI 失敗の追指示を送るときは、追指示の**前に** dispatcher へ `WORKER_REOPENED: worker-<task_id> (task_id=<task_id>, reopened_at=<ISO-8601 UTC>)` を best-effort・非 blocking で送り、`completion_reported_at` を clear させる。再指示は secretary→worker 直送で dispatcher が経路上に居ないため、この明示解除が無いと dispatcher の PANE_OUTPUT_WITHOUT_PEER_MSG 検知が sticky skip のままレビュー修正中の本物の silent dead-lock を見逃す。操作 SoT は [`.claude/skills/org-pull-request/SKILL.md`](../org-pull-request/SKILL.md) 2c
 
+### ディスパッチャーから CODEX_ROUND_DENIED を受けたとき
+
+ワーカーが Codex レビューの許可回数（既定 3、窓口が `tools/codex_round_cap.py set` で変えた値があればそれ）を使い切った後に、4 回目のレビューゲートを呼ぶと、PreToolUse フック（`.hooks/block-codex-over-cap.sh`）が拒否して events テーブルに `codex_round_denied` を書く。ディスパッチャーはこれを見回りで拾い、`CODEX_ROUND_DENIED: worker-<task_id> (task_id=<task_id>, used=<n>, allowed=<m>) [relay]` を窓口へ中継する（[`.dispatcher/references/worker-monitoring.md`](../../../.dispatcher/references/worker-monitoring.md) Step 5.25）。ワーカー自身も拒否を受けて残指摘と自己評価を報告して停止する。**次の手を決めるのは窓口で、ディスパッチャーもワーカーも決めない**。同じ拒否について中継とワーカー報告の両方、または `[relay]` の重複が届いても、1 件として扱う（2 回目以降は状態を変えない）。
+
+1. ワーカーへ ack を返す（[`.claude/skills/org-delegate/references/ack-template.md`](references/ack-template.md) の「Codex 往復上限での停止 ack」節）。ワーカーの報告がまだ届いていなければ、ack で残指摘と自己評価の報告を求める
+2. `.state/workers/worker-{task_id}.md` の Progress Log に拒否（used / allowed）と残指摘の要旨を追記する。現在値は `python3 tools/codex_round_cap.py status --task-id <task_id>` で確かめる
+3. 窓口が次のどれかを選ぶ:
+   - **(a) Opus へ上げて続ける**: 上記「spawn 後の Opus 昇格」の手順で同じペインを Opus に切り替え（`worker_model_set ... reason=promotion:cap_denied` を記録）、許可回数を増やしてからワーカーへ続行を指示する:
+     ```bash
+     python3 tools/codex_round_cap.py set --task-id <task_id> --allowed <N> --reason "Opus へ昇格して続行"
+     ```
+     `--allowed` は通算の許可回数（使用済みを含む）なので、`used` より大きい値にする
+   - **(b) 人間に上げる**: [`/org-escalation`](../org-escalation/SKILL.md) の流れで残指摘とワーカーの自己評価を提示し、判断を仰ぐ。人間が許可回数の追加を承認したら (a) と同じ `set` を実行してからワーカーへ伝える
+   - **(c) 止めて残指摘のまま提示する**: 残りが Minor / Nit 中心、または指摘が収束せず設計の問題と見える場合は、追加のレビューをさせず、完了報告（2a）と同じ扱いで残指摘付きのまま人間へ提示する
+
+許可回数を増やせるのは窓口だけで、ワーカーからは書けない（許可回数は窓口側 `.state/state.db` の events にあり、ワーカーのサンドボックスと境界フックの外）。ワーカーが自分で上限を回避しようとした（`codex` の直接実行・ゲートの別経路呼び出し）跡を見つけたら、それも人間に報告する。
+
 ### ワーカー監視と介入判定（窓口が実行）
 
 派遣後、ワーカーが深掘り・過剰検証ループに入っていないか定期的に確認する。**介入トリガー**（いずれか 1 つ以上該当したら `mcp__org-broker__inspect_pane` で状況確認）:
 
 - 同一タスクで 30 分超経過、かつ同じフェーズ（実装 / レビュー / 検証）に 3 回目以降入っている
 - 1 時間以上進捗報告なしで静穏（入力待ちでもなく、progress ログも出ない）
-- (codex を使っている場合) Codex セルフレビューが 4 ラウンド目以降に入っている
+- (codex を使っている場合) Codex セルフレビューが許可回数の最後のラウンドに入っても収束の気配がない（許可回数を超える 4 ラウンド目以降はフックが拒否し、`CODEX_ROUND_DENIED` が中継されるので、そちらは上記「ディスパッチャーから CODEX_ROUND_DENIED を受けたとき」で扱う）
 
 **介入手順**: `inspect_pane` で画面確認 → 深掘りと判断したら `send_keys(target="worker-{task_id}", keys=["Escape"])` で中断 → `send_message` で tight な修正指示を送る (例「検証深度 minimal に切り替え。Codex レビュー・追加テスト禁止。`done: {commit SHA} {ファイル名}` の 1 行だけ返してください」)。
 
