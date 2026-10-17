@@ -28,6 +28,9 @@ jobs:
         # pointer for tooling that still references it.
         run: pip install -e .
 
+      - name: Install pytest (tools/test_acceptance_gate.py runs the gate, which runs pytest)
+        run: pip install pytest
+
       - name: Run Python tests
         run: python -m unittest discover -s tests -v
 
