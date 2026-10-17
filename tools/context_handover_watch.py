@@ -494,6 +494,8 @@ class Watcher:
         cleared_at = parse_iso(op.get("cleared_at")) or 0
         if self.org.monitored():
             def one_loop_running() -> bool:
+                if not self.org.monitored():
+                    return True  # the last worker finished meanwhile: idle is correct
                 rec = self.org.record()
                 scan = self.org.last_scan()
                 crons = [c for c in rec.get("session_crons") or [] if is_monitoring_cron(c)]

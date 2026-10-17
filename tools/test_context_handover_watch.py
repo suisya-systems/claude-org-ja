@@ -274,6 +274,15 @@ class TestWatcher(unittest.TestCase):
         self.assertEqual(self.op()["reason"], "monitoring_loop_not_single: crons=2")
         self.assertIn("/dispatcher-resume", self.notes[0])
 
+    def test_worker_finishing_during_verification_is_not_a_failure(self):
+        orig = self.sim.on_submit
+        self.sim.on_submit = lambda t: (orig(t), t.startswith("/dispatcher-resume")
+                                        and self.sim.rec(session_crons=[]))
+        answers = iter([True, True])  # monitored when verification starts, idle after
+        self.org.monitored = lambda: next(answers, False)
+        self.assertTrue(self.w.tick().startswith("ran:done"))
+        self.assertEqual(self.notes, [])
+
     def test_idle_dispatcher_needs_no_loop(self):
         conn = connect(self.org.db_path)
         conn.execute("UPDATE runs SET status = 'completed'")
