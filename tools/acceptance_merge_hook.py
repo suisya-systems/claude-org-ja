@@ -49,6 +49,7 @@ class Deny(Exception):
 
 def parse(command: str) -> dict | None:
     """None when the command does not merge a PR; the merge's arguments otherwise."""
+    command = command.replace("\\\n", "")  # bash joins continued lines before reading words
     if re.search(r"pulls/[^/\s]+/merge\b", command):
         raise Deny("merging through the API skips the acceptance gate; use gh pr merge")
     try:

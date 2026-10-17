@@ -35,6 +35,10 @@ class ParseTest(unittest.TestCase):
                 with self.assertRaises(hook.Deny):
                     hook.parse(cmd)
 
+    def test_line_continuations_are_joined(self):
+        self.assertEqual(hook.parse("gh pr \\\n  merge 7 --squash")["sel"], "7")
+        self.assertEqual(hook.parse("gh pr mer\\\nge 7")["sel"], "7")
+
     def test_api_merge_denied(self):
         with self.assertRaisesRegex(hook.Deny, "API"):
             hook.parse("gh api -X PUT repos/o/r/pulls/3/merge")
@@ -118,6 +122,11 @@ class HookTest(unittest.TestCase):
                       + gh.read_text().split("\n", 1)[1])
         self.assertEqual(self.run_hook("gh pr merge 7", cwd=other)[0], 0)
         self.assertEqual(self.run_hook("gh pr merge 7")[0], 2)
+
+    def test_continued_merge_line_is_gated(self):
+        self.open_pr(("test" + TRAILER, {"tests/test_calc.py": TEST}), ("fix", {"calc.py": FIXED}),
+                     ("weaken", {"tests/test_calc.py": "def test_add():\n    pass\n"}))
+        self.assertEqual(self.run_hook("gh pr \\\n  merge 7 --squash")[0], 2)
 
     def test_gh_failure_denied(self):
         (self.bin / "gh").write_text("#!/bin/sh\necho 'no auth' >&2\nexit 1\n")
