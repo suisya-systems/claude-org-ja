@@ -192,8 +192,13 @@ def materialize(repo: Path, entries: dict[str, tuple[str, str]], root: Path) -> 
         proc.wait()
 
 
-def run_pytest(root: Path, files: list[str], timeout: int) -> dict[str, str]:
-    """test id -> passed / skipped / failed / error, from the junit report."""
+def run_pytest(root: Path, files: list[str], timeout: int) -> tuple[int, dict[str, str]]:
+    """Exit code and test id -> passed / skipped / failed / error, from the junit report.
+
+    Both are needed: the report tells an assertion failure from a fixture error,
+    the exit code tells a finished run from an interrupted one (``pytest.exit``,
+    internal error), whose report only holds the tests that ran.
+    """
     junit = root.with_suffix(".xml")
     cmd = [
         sys.executable, "-m", "pytest", "-p", "no:cacheprovider",
@@ -215,15 +220,17 @@ def run_pytest(root: Path, files: list[str], timeout: int) -> dict[str, str]:
         tid = f"{tc.get('file')}::{tc.get('classname')}::{tc.get('name')}"
         # A test can appear twice (call failure + teardown error); keep the worst.
         outcomes[tid] = max(outcomes.get(tid, "passed"), outcome, key=RANK.index)
-    return outcomes
+    return res.returncode, outcomes
 
 
-def evaluate(repo: Path, base: str, head: str, timeout: int) -> dict:
+def evaluate(repo: Path, base: str, head: str, timeout: int, info: dict) -> None:
+    """Fill ``info`` with the verdict; raises Reject after recording what it found."""
     found = find_manifest(repo, base, head)
     if found is None:
-        return {"result": "no-manifest", "reason": f"no commit in base..head has an {TRAILER} trailer"}
+        info.update(result="no-manifest", reason=f"no commit in base..head has an {TRAILER} trailer")
+        return
     msha, manifest = found
-    info = {"manifest_commit": msha, "paths": manifest}
+    info.update(manifest_commit=msha, paths=manifest)
     pm = check_protected(repo, msha, head, manifest)
     declared = [p for p in pm if not is_infra(p)]
     js = [p for p in declared if any(fnmatch.fnmatch(PurePosixPath(p).name, g) for g in JS_TEST_GLOBS)]
@@ -239,25 +246,25 @@ def evaluate(repo: Path, base: str, head: str, timeout: int) -> dict:
     base_entries.update(pm)
     with tempfile.TemporaryDirectory(prefix="acceptance-gate-") as tmp:
         materialize(repo, base_entries, Path(tmp) / "base")
-        on_base = run_pytest(Path(tmp) / "base", files, timeout)
+        rc, on_base = run_pytest(Path(tmp) / "base", files, timeout)
         failed = {t for t, o in on_base.items() if o == "failed" and t.split("::")[0] in files}
-        if not failed:
+        if rc != 1 or not failed:
             summary = sorted(set(on_base.values())) or ["no tests"]
             raise Reject(
-                f"the test does not fail on base (outcomes: {summary}); an assertion failure is"
+                f"the test does not fail on base (rc={rc}, outcomes: {summary}); a completed run"
+                " with an assertion failure is"
                 " required - collection / fixture errors do not count (import new symbols"
                 " inside the test function)"
             )
         materialize(repo, tree(repo, head), Path(tmp) / "head")
-        on_head = run_pytest(Path(tmp) / "head", files, timeout)
+        rc, on_head = run_pytest(Path(tmp) / "head", files, timeout)
     bad = sorted(t for t, o in on_head.items() if o != "passed")
-    if bad or not on_head:
-        raise Reject(f"the test does not pass on head: {bad or 'no tests collected'}")
+    if rc != 0 or bad or not on_head:
+        raise Reject(f"the test does not pass on head (rc={rc}): {bad or 'no tests collected'}")
     missing = sorted(failed - on_head.keys())
     if missing:
         raise Reject(f"tests that failed on base were not run on head: {missing}")
     info.update(result="passed", reason=f"{len(failed)} test(s) fail on base and pass on head")
-    return info
 
 
 def record(db_path: str | None, payload: dict) -> None:
@@ -292,7 +299,7 @@ def main(argv: list[str] | None = None) -> int:
         base = git(repo, "rev-parse", "--verify", args.base + "^{commit}").strip()
         head = git(repo, "rev-parse", "--verify", args.head + "^{commit}").strip()
         info = {"base": base, "head": head}
-        info.update(evaluate(repo, base, head, args.timeout))
+        evaluate(repo, base, head, args.timeout, info)
     except Reject as exc:
         info.update(result="rejected", reason=str(exc))
     except subprocess.CalledProcessError as exc:

@@ -196,6 +196,18 @@ class GateTest(unittest.TestCase):
         self.repo.commit("feat", {"calc.py": BUGGY + "\n\ndef sub(a, b):\n    return a - b\n"})
         self.assert_verdict("rejected", "does not fail on base")
 
+    def test_interrupted_head_run_rejected(self):
+        # pytest.exit(returncode=1) after a real failure: the report looks like a
+        # failing run but the suite never finished.
+        test = TEST + "\n\ndef test_stop():\n    import pytest\n    pytest.exit('stop', returncode=1)\n"
+        self.land(test=test)
+        self.assert_verdict("rejected", "does not pass on head (rc=1)")
+
+    def test_interrupted_base_run_rejected(self):
+        test = TEST + "\n\ndef test_stop():\n    import pytest\n    pytest.exit('stop', returncode=0)\n"
+        self.land(test=test)
+        self.assert_verdict("rejected", "does not fail on base (rc=0")
+
     # --- (c) head must pass -----------------------------------------------
     def test_head_still_failing_rejected(self):
         self.repo.commit("t" + TRAILER, {"tests/test_calc.py": TEST})
@@ -225,6 +237,18 @@ class GateTest(unittest.TestCase):
         payload = json.loads(row[0])
         self.assertEqual((payload["result"], payload["pr"], payload["task"]), ("passed", "12", "t1"))
         self.assertEqual(payload["paths"], ["tests/test_calc.py"])
+
+    def test_rejected_event_keeps_manifest(self):
+        self.land()
+        self.repo.commit("weaken", {"tests/test_calc.py": "def test_add():\n    pass\n"})
+        db = Path(self._tmp.name) / "state.db"
+        conn = connect(db)
+        apply_schema(conn)
+        conn.close()
+        self.assertEqual(self.run_gate("--db-path", str(db))[0], 1)
+        payload = json.loads(sqlite3.connect(db).execute(
+            "SELECT payload_json FROM events WHERE kind = 'acceptance_gate'").fetchone()[0])
+        self.assertEqual((payload["result"], payload["paths"]), ("rejected", ["tests/test_calc.py"]))
 
     def test_record_failure_keeps_verdict(self):
         self.land()
