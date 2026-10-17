@@ -168,6 +168,11 @@
           "command_contains": "block-workers-delete.sh"
         },
         {
+          "event": "PreToolUse",
+          "matcher_contains": "Bash",
+          "command_contains": "gate-acceptance-before-merge.sh"
+        },
+        {
           "event": "UserPromptSubmit",
           "command_contains": "check-dispatcher-loop.sh"
         }

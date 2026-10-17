@@ -240,14 +240,19 @@ from `codex_round_started`.
 
 | Event             | Typical fields                                                                 | Writer    | Emitted by | Required for |
 |-------------------|--------------------------------------------------------------------------------|-----------|------------|--------------|
-| `acceptance_gate` | `result` (`passed` / `rejected` / `no_manifest`), `reason`, `repo`, `base`, `head`, `manifest_commit`, `paths[]`, `pr`, `task` | `tools/acceptance_gate.py` | secretary (pre-merge hook) | — |
+| `acceptance_gate` | `result` (`passed` / `rejected` / `no_manifest`), `reason`, `repo`, `base`, `head`, `manifest_commit`, `manifest_digest`, `paths[]`, `pr`, `task` | `tools/acceptance_gate.py` | secretary (pre-merge hook `.hooks/gate-acceptance-before-merge.sh`) | — |
 
 `tools/acceptance_gate.py` writes one row per run. The gate passes only when the
 protected tree entries at head equal those at the commit that declared the test
 (`Acceptance-Test: <path>` trailers), the test fails on base and it passes on head.
 `manifest_commit` / `paths` are absent when no manifest was found or the run was
-rejected before reading it. The row is a measurement record, not the verdict:
-a failed write only warns on stderr and the exit code stays the gate's verdict.
+rejected before reading it. Without `--pr` the row is a measurement record, not
+the verdict: a failed write only warns on stderr and the exit code stays the
+gate's verdict. With `--pr` (the pre-merge hook passes `OWNER/REPO#N`) the row
+is also the pin: the first row of that PR carrying a `manifest_digest` (a hash
+of the declared test files' paths, modes and blobs) is compared with every
+later run, a changed or vanished manifest is rejected, and a failed write
+rejects.
 
 ### History / phase markers
 

@@ -27,7 +27,21 @@ the test commit cannot make base fail and head pass on its own. Trees are
 materialised from raw git objects (not ``git archive``, which honours
 export attributes). Outcomes come from pytest's junit report, not the exit
 code: base needs an assertion failure in a declared test (collection or
-fixture errors do not count), head needs every collected test to pass.
+fixture errors do not count), head needs every collected test to pass. A run
+cut short by ``pytest.exit`` (at collection, in a test or in a teardown) is
+rejected whatever exit code it asked for: a plugin loaded from outside the
+materialised tree records the interruption.
+
+The PR's code runs under bubblewrap (``sandbox``): no network, no HOME, no
+environment, and none of this repo (state.db). Without ``bwrap`` (Windows,
+macOS) the gate rejects. A test that needs the network fails here.
+
+Pin (with ``--pr``): the first run that sees a manifest records a digest of
+the declared test files (path, mode, blob) and paths. A later run for the same
+PR whose digest differs, or that finds no manifest at all, is rejected: the
+test commit was rewritten (force push) after the gate first saw it. A rebase
+keeps the digest. With ``--pr`` the event is the pin, so a failed write
+rejects instead of only warning.
 
 Output: a reason line, then ``ACCEPTANCE_GATE: passed|rejected|no-manifest``
 as the last line. Exit 0 / 1 / 3. One ``acceptance_gate`` event is written
@@ -38,7 +52,10 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import hashlib
+import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -59,6 +76,13 @@ WORKFLOWS = ".github/workflows/"
 JS_TEST_GLOBS = ("*.test.*", "*.spec.*")
 RANK = ["passed", "skipped", "failed", "error"]
 EXIT = {"passed": 0, "rejected": 1, "no-manifest": 3}
+GUARD_PLUGIN = """import os
+
+
+def pytest_keyboard_interrupt(excinfo):
+    with open(os.environ["ACCEPTANCE_GATE_INTERRUPTED"], "w") as f:
+        f.write(repr(excinfo.value))
+"""
 
 
 class Reject(Exception):
@@ -192,6 +216,38 @@ def materialize(repo: Path, entries: dict[str, tuple[str, str]], root: Path) -> 
         proc.wait()
 
 
+HIDDEN = {str(_REPO_ROOT), str(_REPO_ROOT / "tools")}
+
+
+def visible_sys_path() -> list[str]:
+    return [p for p in dict.fromkeys(os.path.abspath(p) for p in sys.path if p)
+            if os.path.isdir(p) and p not in HIDDEN]
+
+
+def sandbox(root: Path, out: Path, plugin_dir: Path) -> list[str]:
+    """bwrap prefix: PR code runs with no network, no HOME, no state.db, no env.
+
+    Only the system dirs and this interpreter's own dirs are visible (read-only);
+    the materialised tree and the run's output dir are the only writable paths.
+    The gate's own repo (state.db, tools/) is never bound.
+    """
+    bwrap = shutil.which("bwrap")
+    if not bwrap:
+        raise Reject("bubblewrap (bwrap) is required to run the PR's tests in isolation;"
+                     " not found, so the gate cannot run here - merge by hand after review")
+    ro = ["/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/etc",
+          sys.prefix, sys.base_prefix, os.path.dirname(os.path.realpath(sys.executable)),
+          *visible_sys_path()]
+    cmd = [bwrap, "--unshare-all", "--die-with-parent", "--new-session", "--clearenv",
+           "--setenv", "PATH", "/usr/bin:/bin", "--setenv", "HOME", "/tmp",
+           "--setenv", "LANG", "C.UTF-8", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp"]
+    for d in dict.fromkeys(os.path.abspath(d) for d in ro):
+        if d not in HIDDEN and os.path.exists(d):
+            cmd += ["--ro-bind", d, d]
+    return cmd + ["--bind", str(root), str(root), "--bind", str(out), str(out),
+                  "--ro-bind", str(plugin_dir), str(plugin_dir), "--chdir", str(root)]
+
+
 def run_pytest(root: Path, files: list[str], timeout: int) -> tuple[int, dict[str, str]]:
     """Exit code and test id -> passed / skipped / failed / error, from the junit report.
 
@@ -199,9 +255,18 @@ def run_pytest(root: Path, files: list[str], timeout: int) -> tuple[int, dict[st
     the exit code tells a finished run from an interrupted one (``pytest.exit``,
     internal error), whose report only holds the tests that ran.
     """
-    junit = root.with_suffix(".xml")
+    out = root.parent / f"{root.name}-out"
+    plugin_dir = root.parent / "guard-plugin"
+    out.mkdir()
+    plugin_dir.mkdir(exist_ok=True)
+    (plugin_dir / "acceptance_gate_guard.py").write_text(GUARD_PLUGIN, encoding="utf-8")
+    junit, marker = out / "junit.xml", out / "interrupted"
     cmd = [
-        sys.executable, "-m", "pytest", "-p", "no:cacheprovider",
+        *sandbox(root, out, plugin_dir),
+        "--setenv", "ACCEPTANCE_GATE_INTERRUPTED", str(marker),
+        # HOME is hidden, so user site-packages come back only through PYTHONPATH.
+        "--setenv", "PYTHONPATH", os.pathsep.join([str(plugin_dir), *visible_sys_path()]),
+        sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "-p", "acceptance_gate_guard",
         "-o", "junit_family=xunit1", f"--junitxml={junit}", f"--rootdir={root}",
         *files,
     ]
@@ -209,6 +274,9 @@ def run_pytest(root: Path, files: list[str], timeout: int) -> tuple[int, dict[st
         res = subprocess.run(cmd, cwd=root, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         raise Reject(f"pytest timed out after {timeout}s in {root.name}")
+    if marker.exists():
+        raise Reject(f"pytest was interrupted in {root.name} (rc={res.returncode}): "
+                     f"{marker.read_text(encoding='utf-8')[:200]}")
     if not junit.exists():
         tail = (res.stdout + res.stderr).strip().splitlines()[-5:]
         raise Reject(f"pytest produced no report in {root.name} (rc={res.returncode}): {tail}")
@@ -223,14 +291,56 @@ def run_pytest(root: Path, files: list[str], timeout: int) -> tuple[int, dict[st
     return res.returncode, outcomes
 
 
-def evaluate(repo: Path, base: str, head: str, timeout: int, info: dict) -> None:
+def manifest_digest(repo: Path, msha: str, manifest: list[str]) -> str:
+    """sha256 of the declared paths and their (mode, blob) in the manifest commit."""
+    entries = sorted((p, *e) for p, e in tree(repo, msha).items()
+                     if any(p == m or p.startswith(m + "/") for m in manifest))
+    return hashlib.sha256(json.dumps([sorted(manifest), entries]).encode()).hexdigest()
+
+
+def first_pin(db_path: str | None, pr: str) -> dict | None:
+    """The first earlier event for this PR that saw a manifest, or None."""
+    import sqlite3
+    from tools.state_db.discover import resolve_state_db_path
+
+    path = resolve_state_db_path(Path(db_path) if db_path else None)
+    if not path.exists():
+        return None
+    try:
+        conn = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
+        try:
+            row = conn.execute(
+                "SELECT payload_json FROM events WHERE kind = 'acceptance_gate'"
+                " AND json_extract(payload_json, '$.pr') = ?"
+                " AND json_extract(payload_json, '$.manifest_digest') IS NOT NULL"
+                " ORDER BY id LIMIT 1", (pr,)).fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        raise Reject(f"cannot read the pin from {path}: {exc}")
+    return json.loads(row[0]) if row else None
+
+
+def evaluate(repo: Path, base: str, head: str, timeout: int, info: dict,
+             pin: dict | None = None) -> None:
     """Fill ``info`` with the verdict; raises Reject after recording what it found."""
     found = find_manifest(repo, base, head)
     if found is None:
+        if pin:
+            raise Reject(
+                f"no commit declares {TRAILER} any more, but this PR had one "
+                f"({pin.get('manifest_commit', '?')[:12]}) when the gate first saw it:"
+                " the test commit was removed - ask the human")
         info.update(result="no-manifest", reason=f"no commit in base..head has an {TRAILER} trailer")
         return
     msha, manifest = found
-    info.update(manifest_commit=msha, paths=manifest)
+    info.update(manifest_commit=msha, paths=manifest,
+                manifest_digest=manifest_digest(repo, msha, manifest))
+    if pin and pin["manifest_digest"] != info["manifest_digest"]:
+        raise Reject(
+            f"the test commit was rewritten since the gate first saw it "
+            f"({pin.get('manifest_commit', '?')[:12]} -> {msha[:12]}, paths "
+            f"{pin.get('paths')} -> {manifest}) - ask the human")
     pm = check_protected(repo, msha, head, manifest)
     declared = [p for p in pm if not is_infra(p)]
     js = [p for p in declared if any(fnmatch.fnmatch(PurePosixPath(p).name, g) for g in JS_TEST_GLOBS)]
@@ -267,15 +377,17 @@ def evaluate(repo: Path, base: str, head: str, timeout: int, info: dict) -> None
     info.update(result="passed", reason=f"{len(failed)} test(s) fail on base and pass on head")
 
 
-def record(db_path: str | None, payload: dict) -> None:
+def record(db_path: str | None, payload: dict) -> bool:
     try:
         from tools.journal_append import _db_append
         from tools.state_db.discover import resolve_state_db_path
 
         path = resolve_state_db_path(Path(db_path) if db_path else None)
         _db_append(path, "acceptance_gate", payload, watcher_guard=False)
-    except (Exception, SystemExit) as exc:  # noqa: BLE001 - measurement only
+        return True
+    except (Exception, SystemExit) as exc:  # noqa: BLE001 - the caller decides
         sys.stderr.write(f"acceptance_gate: event not recorded ({type(exc).__name__}: {exc})\n")
+        return False
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -286,7 +398,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--base", required=True, help="base ref (merge target)")
     ap.add_argument("--head", required=True, help="head ref (PR head)")
     ap.add_argument("--repo", default=".", help="repository path (default: cwd)")
-    ap.add_argument("--pr", help="PR number, recorded in the event")
+    ap.add_argument("--pr", help="PR key (e.g. OWNER/REPO#N): recorded, and pins the test commit")
     ap.add_argument("--task", help="task id, recorded in the event")
     ap.add_argument("--timeout", type=int, default=600, help="seconds per pytest run")
     ap.add_argument("--db-path", help="state.db override (default: discovery)")
@@ -299,7 +411,8 @@ def main(argv: list[str] | None = None) -> int:
         base = git(repo, "rev-parse", "--verify", args.base + "^{commit}").strip()
         head = git(repo, "rev-parse", "--verify", args.head + "^{commit}").strip()
         info = {"base": base, "head": head}
-        evaluate(repo, base, head, args.timeout, info)
+        pin = first_pin(args.db_path, args.pr) if args.pr and not args.no_record else None
+        evaluate(repo, base, head, args.timeout, info, pin)
     except Reject as exc:
         info.update(result="rejected", reason=str(exc))
     except subprocess.CalledProcessError as exc:
@@ -314,7 +427,8 @@ def main(argv: list[str] | None = None) -> int:
         for k in ("pr", "task"):
             if getattr(args, k):
                 payload[k] = getattr(args, k)
-        record(args.db_path, payload)
+        if not record(args.db_path, payload) and args.pr and info["result"] != "rejected":
+            info.update(result="rejected", reason="the event (this PR's pin) could not be recorded")
     print(info["reason"])
     print(f"ACCEPTANCE_GATE: {info['result']}")
     return EXIT[info["result"]]
