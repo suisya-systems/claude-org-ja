@@ -205,6 +205,16 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
           }
         ]
       }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"{claude_org_path}/.hooks/check-dispatcher-loop.sh\""
+          }
+        ]
+      }
     ]
   },
   "sandbox": {
@@ -227,7 +237,7 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
 
 **並び順**: (1) MCP ツール、(2) git、(3) gh、(4) python/dashboard、(5) renga bootstrap、(6) その他（sleep / codex / curl / PowerShell）。新規エントリ追加時はこの並び順を維持する。
 
-**hooks の説明**: `block-workers-delete.sh` は workers ディレクトリへの再帰的削除（`rm -r`/`rm -rf`/`rm --recursive`）をブロックする。個別ファイルの `rm` は許可する。`renga` コマンドは除外する（ワーカー起動時の偽陽性防止）。
+**hooks の説明**: `block-workers-delete.sh` は workers ディレクトリへの再帰的削除（`rm -r`/`rm -rf`/`rm --recursive`）をブロックする。個別ファイルの `rm` は許可する。`renga` コマンドは除外する（ワーカー起動時の偽陽性防止）。`check-dispatcher-loop.sh` は窓口のターンごとに [`tools/dispatcher_loop_watch.py`](../../../../tools/dispatcher_loop_watch.py) を呼び、稼働中ワーカーがいるのにディスパッチャーの見回り（`relay_scan.py --cycle` の heartbeat）が 9 分を超えて止まっていれば `DISPATCHER_LOOP_UNARMED: ...` を 1 行だけ窓口の文脈に出す（同じ状態では 1 回きり）。ブロックはせず、判定できないときは何も出さない。
 
 **書いてはいけないもの**:
 - wide allow (`Bash(git *)`, `Bash(git push *)`, `Bash(git fetch *)`, `Bash(git branch *)`, `Bash(git pull *)`, `Bash(gh:*)`, `Bash(gh *)`)

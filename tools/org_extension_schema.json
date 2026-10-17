@@ -166,6 +166,10 @@
           "event": "PreToolUse",
           "matcher_contains": "Bash",
           "command_contains": "block-workers-delete.sh"
+        },
+        {
+          "event": "UserPromptSubmit",
+          "command_contains": "check-dispatcher-loop.sh"
         }
       ],
       "disallow_allow_regex": [
