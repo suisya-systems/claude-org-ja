@@ -223,6 +223,7 @@ _JA_ONLY_HOOK_SCRIPTS = frozenset({
     "check-worker-spawn-model.sh",
     "check-dispatcher-loop.sh",
     "gate-acceptance-before-merge.sh",
+    "context-record.sh",
 })
 
 

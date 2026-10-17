@@ -16,6 +16,8 @@ allowed-tools:
   - Bash(py -3 -m tools.state_db.importer:*)
   - Bash(python3 tools/secretary_queue_watcher.py:*)
   - Bash(py -3 tools/secretary_queue_watcher.py:*)
+  - Bash(python3 tools/context_handover_watch.py:*)
+  - Bash(py -3 tools/context_handover_watch.py:*)
   - Bash(python3 tools/stop_dashboard.py:*)
   - Bash(py -3 tools/stop_dashboard.py:*)
   - Bash(echo:*)
@@ -42,7 +44,7 @@ daemon まで含めて組織を完全に停止する統合終了スキルであ�
 
 > **責務境界（最重要）**: `claude-org-runtime org down`（broker daemon 停止）を呼ぶのは
 > **本スキルだけ**である。[`/org-suspend`](../org-suspend/SKILL.md) は「状態保存 + ja 管理下の補助
-> プロセス（dashboard / secretary_queue_watcher / attention watcher）とペインの停止」までで
+> プロセス（dashboard / secretary_queue_watcher / context-handover watcher / attention watcher）とペインの停止」までで
 > 止まり、daemon は走らせたまま（`/org-start` で再開する前提の中断）にする。/org-down は
 > **suspend の成功を確認できたときにのみ** daemon 停止へ進む。順序を守るのは、未保存の状態を
 > 残したまま daemon を落とすと復旧経路（`check_messages` での drain 等）ごと失われるため。
@@ -59,7 +61,7 @@ daemon まで含めて組織を完全に停止する統合終了スキルであ�
 
 [`/org-suspend`](../org-suspend/SKILL.md) の全 Phase を順に実行する（Phase 1 状態収集 → Phase 2
 未応答スクレイプ → Phase 3 状態書き込み → **Phase 3.6 secretary_queue_watcher 停止** →
-**Phase 3.7 attention watcher 停止**（ペイン teardown 前）→ Phase 4 全ペイン停止）。
+**Phase 3.65 context-handover watcher 停止** → **Phase 3.7 attention watcher 停止**（ペイン teardown 前）→ Phase 4 全ペイン停止）。
 
 **ただし Phase 3.5 の dashboard blind kill は本スキル Step 2 の stale-pid-safe 停止に差し替える**
 （org down 直前の完全停止では、pid recycle された stale な `dashboard.pid` を無検証 kill すると
@@ -161,7 +163,7 @@ if (Test-Path $pf) {
 組織を完全に停止します。
 - 状態保存: 完了（.state/state.db = SUSPENDED）
 - dashboard: {Step 2 の出力（stopped / stale）}
-- 停止済み: secretary_queue_watcher / attention watcher / 全ワーカー・ディスパッチャーペイン
+- 停止済み: secretary_queue_watcher / context-handover watcher / attention watcher / 全ワーカー・ディスパッチャーペイン
 - これから broker daemon を停止します（claude-org-runtime org down）。
 再開するときは `claude-org-runtime org up` → `/org-start` を実行してください。
 ```
@@ -170,7 +172,7 @@ if (Test-Path $pf) {
 ```
 組織を中断しました（renga フォールバックのため broker daemon 停止は不要です）。
 - 状態保存: 完了（.state/state.db = SUSPENDED）
-- 停止済み: dashboard / attention watcher / 全ワーカー・ディスパッチャーペイン
+- 停止済み: dashboard / context-handover watcher / attention watcher / 全ワーカー・ディスパッチャーペイン
   （secretary_queue_watcher は broker 専用のため renga では非該当）
 再開するときは `renga --layout ops` → `/org-start` を実行してください。
 ```

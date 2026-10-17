@@ -121,7 +121,7 @@ DB の active_runs を SoT として照合し、markdown は表示用補助と�
    python3 dashboard/org_state_converter.py
    ```
 
-5. ディスパッチャーの起動は /org-start が担当するため、ここでは行わない（キュレーターは常駐せず、ディスパッチャーが CLOSE_PANE の閾値超過時にオンデマンド起動する）。ディスパッチャーが ready になったら、Phase 2-5 で拾った `retro_deferred` のワーカーごとに、人間の承認を得て再試行する:
+5. ディスパッチャーの起動は /org-start が担当するため、ここでは行わない（キュレーターは常駐せず、ディスパッチャーが CLOSE_PANE の閾値超過時にオンデマンド起動する）。文脈の自動引き継ぎ watcher も `/org-suspend` で止まっているが、起動し直すのは同じく /org-start の Block E で、ここでは行わない。ディスパッチャーが ready になったら、Phase 2-5 で拾った `retro_deferred` のワーカーごとに、人間の承認を得て再試行する:
    - ペインが残っている → ディスパッチャーへ `CLOSE_PANE: {pane_id}` を再送する。ディスパッチャーは振り返りから CLOSE_PANE フローをやり直す
    - ペインが無い（suspend で閉じた等）→ 振り返りの材料が失われている旨を人間に報告し、`.state/workers/worker-{task_id}.md` だけで振り返るか見送るかを聞く
 6. resume イベントを DB に追記する（`ts` は自動付与）:

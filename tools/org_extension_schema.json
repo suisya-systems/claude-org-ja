@@ -311,6 +311,22 @@
           "event": "PreToolUse",
           "matcher_contains": "spawn_claude_pane",
           "command_contains": "check-worker-spawn-model.sh"
+        },
+        {
+          "event": "SessionStart",
+          "command_contains": "context-record.sh"
+        },
+        {
+          "event": "UserPromptSubmit",
+          "command_contains": "context-record.sh"
+        },
+        {
+          "event": "Stop",
+          "command_contains": "context-record.sh"
+        },
+        {
+          "event": "PreCompact",
+          "command_contains": "context-record.sh"
         }
       ],
       "disallow_allow_regex": [

@@ -7,6 +7,7 @@ description: >
   state.db の dispatcher_pane_id / dispatcher_peer_id を atomic に更新し、
   worker monitoring の /loop 3m を再開する。
   secretary が /clear の後にディスパッチャーペインへ /dispatcher-resume を打鍵したときに使う。
+  context-handover watcher が `/dispatcher-resume auto op=<OP>` を打鍵したときも使う。
   /org-start ではない（ワーカー・窓口は生きている前提。キュレーターは常駐しない）。
 effort: low
 allowed-tools:
@@ -21,6 +22,8 @@ allowed-tools:
   - Bash(py -3 -c:*)
   - Bash(ls:*)
   - Bash(mv:*)
+  - CronList
+  - CronDelete
   - mcp__renga-peers__set_summary
   - mcp__renga-peers__list_panes
   - mcp__renga-peers__set_pane_identity
@@ -51,6 +54,22 @@ allowed-tools:
 >   前 session から残っている。新規作成・初期化・削除しない（既存値からそのまま継続。
 >   消すと前 session からの監視連続性が壊れる）。
 > - handover ファイルが存在しないか古すぎる場合は、`/org-start` を案内して停止する。
+> - `/clear` は `/loop` の予約を消さない。前 session の監視ループの予約は `/clear` の後も
+>   残っており、同じ指示文で `/loop` をもう一度打つと予約が 2 本になる。監視ループを張る前に
+>   必ず `CronList` で確かめる（Step 5。経緯は
+>   [`.claude/skills/dispatcher-resume/references/rationale.md`](references/rationale.md) §4）。
+
+## 自動引き継ぎ（`auto op=<OP>` 付きで呼ばれたとき）
+
+context-handover watcher（[`tools/context_handover_watch.py`](../../../tools/context_handover_watch.py)）が
+`/dispatcher-handover auto op=<OP>` → `/clear` → `/dispatcher-resume auto op=<OP>` を打鍵する。
+手順は通常の resume と同じで、違いは次の 3 つだけ:
+
+- 完了の event（末尾「イベント記録」）に `op=<OP>` を付ける。watcher はこの行で復帰の完了を判定する。
+  Step 0 の前の `already_consumed` に落ちた場合（watcher の再送など）も、(i) と unknown の
+  分岐の終わりに同じ形の行を `note=already_consumed` で 1 行書く。初期化はやり直さない。
+- Step 6 の後に、`/clear` の前後に届いて会話から消えた入力を処理する（Step 6.5）。
+- 窓口への `DISPATCHER_RESUMED` / `DISPATCHER_RESUMED_IDLE` は通常どおり送る。
 
 {{> dual-system-header-short }}
 
@@ -92,8 +111,8 @@ allowed-tools:
      `curate-inflight.json` の有無だけで分岐する（停止しない・待ち時間 0 分）。
      **承認済み（同 reference §2 の `first_drive` が `recorded`）のときは §1-2 の三値判定を通し、
      「在」と出たワーカーだけを live として数える**。**「unknown」は live に数えないが、(ii) にも
-     倒さない**。**終端処理は (i) と同じ**（早期 exit + Step 5 の monitoring ディレクティブで
-     `/loop` を再 arm し、残存予約を空のまま放置しない）とし、secretary には
+     倒さない**。**終端処理は (i) と同じ**（早期 exit + 監視ループの予約を `CronList` で確かめて
+     1 本にする）とし、secretary には
      `DISPATCHER_RESUME_INDETERMINATE: 監視対象の同タブ性を確定できず（unknown N 件）。
      live 判定を保留して監視ループのみ再開しました。` を送って判断を仰ぐ。
      **unknown のワーカーは監視対象・active のまま残す**（`.state/workers/worker-*.md` を
@@ -103,12 +122,14 @@ allowed-tools:
      **どの分岐にも落ちないまま skill を終えない**（一度きりの skill が loop に再発火され続ける）。
    - **(i) 監視対象が live = stale 再発火 / 重複起動**: 組織は健全で cold-start 不要。
      `DISPATCHER_RESUME_FAILED` を **送らず**（誤った `/org-start` 案内を出さない）、
-     Step 1 以降に進まず早期 exit する。**残存予約を空のまま放置しない**: 監視 `/loop` が
-     `/dispatcher-resume` を反復対象に握っている兆候があれば、Step 5 の monitoring 専用
-     ディレクティブ（INVARIANT(loop-prompt) 準拠の `/loop 3m ...`）で loop を明示的に再 arm
-     して予約を上書きする（重複起動はしない＝単一 loop に収束）。既に monitoring ディレクティブ
-     で回っていれば当該サイクルは **no-op heartbeat**（何も出力しない）。どちらの分岐でも予約を
-     skill 自身に握らせたまま放置しない。再発火の事実だけ journal に残す:
+     Step 1 以降に進まず早期 exit する。**監視ループの予約を 1 本にしてから終える**:
+     `CronList` で予約を一覧し、`/dispatcher-resume` を反復対象に握っている予約があれば
+     `CronDelete` で消す。そのうえで Step 5 の 2 と同じ手順で監視ループの予約を数え、
+     0 本なら Step 5 の monitoring 専用ディレクティブ（INVARIANT(loop-prompt) 準拠の
+     `/loop 3m ...`）で張り、2 本以上なら 1 本を残して `CronDelete` で消す（`/loop` を打っても
+     既存の予約は上書きされず、2 本目として足される）。既に monitoring ディレクティブで
+     回っていれば当該サイクルは **no-op heartbeat**（何も出力しない）。再発火の事実だけ
+     journal に残す:
      ```bash
      bash ../tools/journal_append.sh anomaly_observed \
          source=dispatcher_resume worker=dispatcher kind=stale_loop_refire confidence=n/a \
@@ -329,9 +350,17 @@ secretary に報告する。**（判定条件・三値の定義・評価順の�
 2. **`/loop 3m` 再開条件**: handover の `active_worker_count > 0`、state.db の
    active worker dirs が非空、**または `curate-inflight.json` が存在する**
    （1 の再生成分を含む。オンデマンド curate の完了監視が引き継ぎ対象。
-   `.dispatcher/references/worker-monitoring.md` Step 5.3）のいずれかを満たせば
-   下記の monitoring 専用ディレクティブを渡して `/loop 3m` で worker monitoring を
-   再開する（**prompt を省略しない**）。この再開は「/loop で監視を再開します」と
+   `.dispatcher/references/worker-monitoring.md` Step 5.3）のいずれかを満たせば、
+   まず `CronList` で監視ループの予約（prompt に `worker-monitoring.md` と
+   「監視ループ 1 サイクル」を含むもの）を数える:
+   - **1 本**: 前 session の予約が `/clear` を越えて残っている。それが監視を続けるので
+     `/loop` を張らない
+   - **2 本以上**: 1 本を残して `CronDelete` で消す（重複した監視ループは同じサイクルを
+     二重に回す）
+   - **0 本**: 下記の monitoring 専用ディレクティブを渡して `/loop 3m` で worker monitoring を
+     再開する（**prompt を省略しない**）
+
+   0 本のときの再開は「/loop で監視を再開します」と
    **宣言するだけでは武装されない** — 宣言はターン終了と同時に失効するため、必ず
    本ターン内で `/loop` を実 invoke すること（窓口側も `inspect_pane` で実行痕跡を
    裏取りし、無ければ `send_keys` で再点火する運用である）:
@@ -369,7 +398,8 @@ INVARIANT(loop-prompt): `/loop` の prompt 引数に skill 自身（`/dispatcher
 
 監視対象が 0 件（active worker dir も 0、active_runs も 0、`curate-inflight.json` も
 無し、かつ 1 の評価後なので `list_panes` に curator ペインも不在）の場合のみ `/loop` を
-始動せず、idle 状態を secretary に通知して待機する:
+始動せず、idle 状態を secretary に通知して待機する（前 session の予約が残っていても消さない。
+次のサイクルが監視対象なしを見て、worker-monitoring Step 7 の手順で自分で止まる）:
 
 ```
 DISPATCHER_RESUMED_IDLE: 監視対象なしで resume 完了。DELEGATE 待機。
@@ -385,11 +415,28 @@ DISPATCHER_RESUMED: ディスパッチャー復帰完了。
 - 監視対象ワーカー: <task_id list>
 - pending decisions: <count>
 - handover との差分: <あれば 1 行、無ければ「なし」>
-- 監視ループ: /loop 3m 再開 (or idle)
+- 監視ループ: /loop 3m 再開 (or 残っていた予約を継続 / idle)
 ```
 
 - Step 0 が `caller-id 未確定` に落ちていた場合は `pane=<未確定: caller pane id を同定できない>` と
   書き、`(state.db 更新済)` は付けない（前値保持のままであることを secretary に伝える）
+
+## Step 6.5（自動引き継ぎのときだけ）: `/clear` の前後に届いた入力を処理する
+
+`auto op=<OP>` で呼ばれ、`../.state/context/dispatcher-late-input-<OP>.md` があるときだけ行う。
+このファイルは watcher が旧会話記録から抜き出したもので、引き継ぎを始める直前から `/clear` の後
+までに届いた入力（チャネルのメッセージ・`/loop` の反復・人の入力）が届いた順に並んでいる。
+
+1. Read で読み、各入力をいま届いたものとして処理する（ワーカーやキュレーターからの報告なら
+   通常どおり ack・転送する）。handover ファイルに処理済みと書かれている入力は飛ばしてよい
+   （拾い直しは欠落より重複を許す側に倒してあるので、同じ入力が両方に載ることがある）。
+   `/loop` の反復は処理しない（監視ループの次のサイクルが同じことをする）。
+2. 読み終えたら rename する（同じ op のファイルを 2 回処理しない）:
+   ```bash
+   mv ../.state/context/dispatcher-late-input-<OP>.md ../.state/context/dispatcher-late-input-<OP>.consumed.md
+   ```
+
+ファイルが無ければ何もしない（拾い直す入力が無かった）。別の op のファイルは読まない。
 
 ## Step 7: handover ファイルを consumed 状態に切り替える
 
@@ -414,6 +461,11 @@ bash ../tools/journal_append.sh dispatcher_resumed \
     pane_id=<observed_pane_id> peer_id=<observed_peer_id> \
     active_workers=<count> note=resumed_from_handover
 ```
+
+自動引き継ぎ（`auto op=<OP>`）のときは同じ行に `op=<OP>` と `loop=<armed|kept|idle>`
+（Step 5 で `/loop` を張った / 残っていた予約を使った / 監視対象なし）を足す。watcher はこの行で
+復帰の完了を判定し、`loop` の値で監視ループの確認をするかを決める。`already_consumed` に
+落ちた再送では `note=already_consumed` で同じ形の行を書く。
 
 ## やってはいけないこと
 
