@@ -30,7 +30,8 @@ class ParseTest(unittest.TestCase):
     def test_merge_must_stand_alone(self):
         for cmd in ("gh pr merge 3 && git pull", "git pull; gh pr merge 3", "gh pr merge 3 | cat",
                     'bash -c "gh pr merge 3"', "gh pr merge $PR", "gh pr merge `cat n`",
-                    "env X=1 gh pr merge 3", "gh pr merge 3 4", 'gh pr merge "3'):
+                    "env X=1 gh pr merge 3", "gh pr merge 3 4", 'gh pr merge "3',
+                    "gh pr merge 7 --squash\n--disable-auto", "git pull\ngh pr merge 3"):
             with self.subTest(cmd=cmd):
                 with self.assertRaises(hook.Deny):
                     hook.parse(cmd)
@@ -127,6 +128,12 @@ class HookTest(unittest.TestCase):
         self.open_pr(("test" + TRAILER, {"tests/test_calc.py": TEST}), ("fix", {"calc.py": FIXED}),
                      ("weaken", {"tests/test_calc.py": "def test_add():\n    pass\n"}))
         self.assertEqual(self.run_hook("gh pr \\\n  merge 7 --squash")[0], 2)
+
+    def test_newline_split_merge_is_denied(self):
+        self.open_pr(("fix", {"calc.py": FIXED}))
+        rc, err = self.run_hook("gh pr merge 7 --squash\n--disable-auto")
+        self.assertEqual(rc, 2)
+        self.assertIn("on one line", err)
 
     def test_gh_failure_denied(self):
         (self.bin / "gh").write_text("#!/bin/sh\necho 'no auth' >&2\nexit 1\n")

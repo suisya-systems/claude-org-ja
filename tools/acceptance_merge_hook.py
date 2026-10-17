@@ -40,7 +40,7 @@ VALUE_FLAGS = {"-b", "--body", "-F", "--body-file", "-A", "--author-email",
                "--match-head-commit", "-t", "--subject", "-R", "--repo"}
 GATE_EXIT = {"passed": 0, "rejected": 1, "no-manifest": 3}
 STANDALONE = ("run the merge as a lone command: gh pr merge [<number>] [flags]"
-              " (no &&, ;, |, $(...), variables or bash -c), so the acceptance gate can read it")
+              " on one line (no &&, ;, |, newlines, $(...), variables or bash -c), so the acceptance gate can read it")
 
 
 class Deny(Exception):
@@ -62,7 +62,10 @@ def parse(command: str) -> dict | None:
     nested = any(re.search(r"\bgh\b[\s\S]*\bpr\s+merge\b", t) for t in toks if " " in t or "\n" in t)
     if not hits and not nested:
         return None
+    # A newline left after joining continuations separates commands (a quoted
+    # multi-line --body is refused too: use --body-file).
     if (nested or hits != [1] or toks[0] != "gh" or "$" in command or "`" in command
+            or "\n" in command
             or any(set(t) <= set("();<>|&") for t in toks)):
         raise Deny(STANDALONE)
     args = {"sel": None, "repo": None, "auto": False, "disable_auto": False}
