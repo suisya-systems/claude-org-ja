@@ -105,6 +105,17 @@ class TestCheck(unittest.TestCase):
         self._run("t2", "in_use", 20)  # never scanned again: same key "never"
         self.assertIsNotNone(watch.report_once(self.db))
 
+    def test_new_workers_unseen_between_prompts_are_a_new_state(self):
+        self._run("t1", "in_use", 20)
+        self.assertIsNotNone(watch.report_once(self.db))
+        # t1 finishes and t2 is dispatched with no report_once() in between
+        conn = connect(self.db)
+        conn.execute("UPDATE runs SET status = 'completed'")
+        conn.commit()
+        conn.close()
+        self._run("t2", "in_use", 20)
+        self.assertIsNotNone(watch.report_once(self.db))
+
     def test_hook_never_blocks(self):
         hook = REPO_ROOT / ".hooks" / "check-dispatcher-loop.sh"
         self._run("t1", "in_use", 20)

@@ -56,8 +56,13 @@ def _last_scan(db_path: Path):
     return last if isinstance(last, str) else None
 
 
-def check(db_path: Path, stale_min: float = DEFAULT_STALE_MIN):
-    """Return the warning line, or None when there is nothing to report."""
+def _finding(db_path: Path, stale_min: float):
+    """Return ``(line, key)`` for a finding, else None.
+
+    ``key`` names the unarmed state for :func:`report_once`: the last scan
+    plus the live task ids, so a new set of workers is a new state even if
+    no prompt saw the previous one clear.
+    """
     if not db_path.is_file():
         return None
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
@@ -79,7 +84,7 @@ def check(db_path: Path, stale_min: float = DEFAULT_STALE_MIN):
     if age is None or age <= stale_min:
         return None
     tasks = ", ".join(t for t, _ in live)
-    return (
+    line = (
         f"DISPATCHER_LOOP_UNARMED: live workers {len(live)} ({tasks}), "
         f"dispatcher monitoring cycle (relay_scan --cycle) silent for "
         f"{age:.0f} min (last_scan_at={last or 'never'}, "
@@ -88,6 +93,13 @@ def check(db_path: Path, stale_min: float = DEFAULT_STALE_MIN):
         f"canonical directive (org-start 「起動後の裏取り」 / "
         f"dispatcher-resume Step 5)."
     )
+    return line, f"{last or 'never'}|{','.join(sorted(t for t, _ in live))}"
+
+
+def check(db_path: Path, stale_min: float = DEFAULT_STALE_MIN):
+    """Return the warning line, or None when there is nothing to report."""
+    found = _finding(db_path, stale_min)
+    return found[0] if found else None
 
 
 def _warned_path(db_path: Path) -> Path:
@@ -96,12 +108,12 @@ def _warned_path(db_path: Path) -> Path:
 
 def report_once(db_path: Path, stale_min: float = DEFAULT_STALE_MIN):
     """:func:`check`, minus a repeat of the state already reported."""
-    line = check(db_path, stale_min)
+    found = _finding(db_path, stale_min)
     marker = _warned_path(db_path)
-    if line is None:
+    if found is None:
         marker.unlink(missing_ok=True)
         return None
-    key = _last_scan(db_path) or "never"
+    line, key = found
     try:
         if json.loads(marker.read_text(encoding="utf-8")).get("key") == key:
             return None
