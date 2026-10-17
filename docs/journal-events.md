@@ -236,6 +236,19 @@ dispatcher spawns, and `promotion:<cap_denied|worker_request|human|enforcement>`
 when the secretary promotes a running worker. Codex round counts per task come
 from `codex_round_started`.
 
+### Acceptance gate
+
+| Event             | Typical fields                                                                 | Writer    | Emitted by | Required for |
+|-------------------|--------------------------------------------------------------------------------|-----------|------------|--------------|
+| `acceptance_gate` | `result` (`passed` / `rejected` / `no_manifest`), `reason`, `repo`, `base`, `head`, `manifest_commit`, `paths[]`, `pr`, `task` | `tools/acceptance_gate.py` | secretary (pre-merge hook) | — |
+
+`tools/acceptance_gate.py` writes one row per run. The gate passes only when the
+protected tree entries at head equal those at the commit that declared the test
+(`Acceptance-Test: <path>` trailers), the test fails on base and it passes on head.
+`manifest_commit` / `paths` are absent when no manifest was found or the run was
+rejected before reading it. The row is a measurement record, not the verdict:
+a failed write only warns on stderr and the exit code stays the gate's verdict.
+
 ### History / phase markers
 
 | Event                          | Typical fields                          | Writer    | Emitted by | Required for |
