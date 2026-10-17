@@ -13,6 +13,7 @@ allowed-tools:
   - Read
   - Write
   - Edit
+  - Bash(python3 ../tools/journal_append.py:*)
   - Bash(py -3 ../tools/journal_append.py:*)
   - Bash(bash ../tools/journal_append.sh:*)
   - Bash(python3 -c:*)
@@ -79,32 +80,10 @@ secretary に「ack を受けたら send_keys で /clear → /dispatcher-resume 
 ## Step 2: state.db から構造化情報を取得する
 
 handover に参考情報として埋め込む。書き出し先は sandbox で write 可能な `$TMPDIR`
-（未設定なら `/tmp` フォールバック）に置く:
+（未設定なら `/tmp` フォールバック）に置く。ディスパッチャーの cwd は `.dispatcher/` なので
+相対パスは 1 階層上に解決する:
 
 ```bash
-python3 -c "
-from tools.state_db import connect
-from tools.state_db.queries import get_org_state_summary
-import json, os
-conn = connect('.state/state.db')
-out_path = os.path.join(os.environ.get('TMPDIR', '/tmp'), 'dispatcher-handover-state.json')
-with open(out_path, 'w') as f:
-    json.dump(get_org_state_summary(conn), f, ensure_ascii=False, indent=2, default=str)
-print(out_path)
-"
-```
-
-ここから以下を取り出す:
-- `session.dispatcher_pane_id` / `session.dispatcher_peer_id`（現在の identity）
-- `active_runs[]`（進行中タスク）
-- `active_worker_dirs[]`（生きているワーカーディレクトリ）
-- 直近の `recent_events` のうち `worker_spawned` / `worker_reported` / `worker_escalation`
-  上位 5 件程度
-
-ディスパッチャーの cwd は `.dispatcher/` なので相対パスは 1 階層上に解決する:
-
-```bash
-# .dispatcher/ から実行する場合
 python3 -c "
 import sys, os
 sys.path.insert(0, os.path.abspath('..'))
@@ -118,6 +97,13 @@ with open(out_path, 'w') as f:
 print(out_path)
 "
 ```
+
+ここから以下を取り出す:
+- `session.dispatcher_pane_id` / `session.dispatcher_peer_id`（現在の identity）
+- `active_runs[]`（進行中タスク）
+- `active_worker_dirs[]`（生きているワーカーディレクトリ）
+- 直近の `recent_events` のうち `worker_spawned` / `worker_reported` / `worker_escalation`
+  上位 5 件程度
 
 ## Step 3: handover ファイルを書き出す
 
@@ -213,6 +199,4 @@ ack が secretary から戻った後、本 skill は完了。次に何もしな�
 **ディスパッチャーがやってはいけないこと**:
 - `/clear` を自分で打とうとしない（外部から send_keys で受ける側）
 - ワーカーやキュレーターに SHUTDOWN を送らない（pane は生かしたまま）
-- `.state/dispatcher-event-cursor.txt` / `worker-idle-state.json` /
-  `curate-inflight.json` / `pending_decisions.json` を編集 / 削除しない（resume 時の連続性が壊れる）
 - `/loop 3m` を自分で停止しない（resume 後に再開する設計だが、現サイクルは継続）

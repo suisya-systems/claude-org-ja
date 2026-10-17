@@ -72,7 +72,6 @@ claude-org/
 │       ├── org-delegate/          # ワーカー派遣（窓口→ディスパッチャー連携）
 │       │   └── references/
 │       │       ├── pane-layout.md           # ペイン配置ルール
-│       │       ├── worker-claude-template.md # ワーカー用CLAUDE.mdテンプレート
 │       │       └── instruction-template.md  # ワーカーへの指示テンプレート
 │       ├── org-suspend/           # 組織中断
 │       ├── org-resume/            # 組織再開
@@ -210,4 +209,4 @@ Curator (org-curate) → knowledge/curated/ に整理・統合
 ### ダッシュボードのカスタマイズ
 
 - `dashboard/index.html`, `style.css`, `app.js` を直接編集する
-- `org-dashboard` スキルは `server.py` を起動し `http://localhost:8099` をブラウザで開く。データは `/api/state`（REST）と `/api/events`（SSE）で配信される
+- `org-dashboard` スキルは `server.py` を起動し、`python3 dashboard/server.py --status` が返す URL（8099 → 8100 → 8101 のうち実際に bind したポート。`.state/dashboard.json` に記録される）をブラウザで開く。データは `/api/state`（REST）と `/api/events`（SSE）で配信される

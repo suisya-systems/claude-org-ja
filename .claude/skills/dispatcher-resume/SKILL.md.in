@@ -6,16 +6,17 @@ description: >
   ディスパッチャーを新しい session で復帰させる。/clear 直後の最初のターンで使う。
   state.db の dispatcher_pane_id / dispatcher_peer_id を atomic に更新し、
   worker monitoring の /loop 3m を再開する。
-  「ディスパッチャー復帰」「resume」「引き継ぎから再開」と secretary から指示された
-  ときに使う。/org-start ではない（ワーカー・窓口・キュレーターは生きている前提）。
+  secretary が /clear の後にディスパッチャーペインへ /dispatcher-resume を打鍵したときに使う。
+  /org-start ではない（ワーカー・窓口は生きている前提。キュレーターは常駐しない）。
 effort: low
 allowed-tools:
   - Read
   - Bash(echo:*)
+  - Bash(python3 ../tools/journal_append.py:*)
   - Bash(py -3 ../tools/journal_append.py:*)
   - Bash(bash ../tools/journal_append.sh:*)
-  - Bash(py -3 ../tools/capability_gate.py:*)
   - Bash(python3 ../tools/capability_gate.py:*)
+  - Bash(py -3 ../tools/capability_gate.py:*)
   - Bash(python3 -c:*)
   - Bash(py -3 -c:*)
   - Bash(ls:*)
@@ -35,17 +36,20 @@ allowed-tools:
 対象ワーカー）を復元し、`/loop 3m` の worker monitoring を再開する。
 
 > **前提**:
-> - ワーカー / 窓口 / キュレーターのペインは前 session から生きたまま残っている。
->   新たに spawn しない（/org-start ではない）。
+> - ワーカー / 窓口のペインは前 session から生きたまま残っている。
+>   新たに spawn しない（/org-start ではない）。キュレーターは常駐しない（起動中の
+>   curator が居れば Step 5 で追跡を引き継ぐ）。
 > - 自ペイン（name=`dispatcher`）も生きている。secretary が `send_keys` で
 >   `/clear` → `/dispatcher-resume` を打鍵した直後の状態。pane_id / peer_id は
->   変わっていないはずだが、必ず観測して state.db を **atomic 更新する**。
+>   変わっていないはずだが、必ず観測し、**観測で確定できた値だけ**を state.db に
+>   atomic 更新する（確定できなかった値は書かず既存値を保持する。Step 0 / Step 2）。
 > - state DB (`.state/state.db`) はそのまま使う。
 > - 監視 gap を埋める内部状態ファイル（`.state/dispatcher-event-cursor.txt`（backend
 >   session に束縛された poll_events cursor） /
 >   `.state/dispatcher/worker-idle-state.json` / `.state/dispatcher/curate-inflight.json`（存在時） /
 >   `.state/pending_decisions.json`）は
->   前 session から残っている。新規作成・初期化しない（既存値からそのまま継続）。
+>   前 session から残っている。新規作成・初期化・削除しない（既存値からそのまま継続。
+>   消すと前 session からの監視連続性が壊れる）。
 > - handover ファイルが存在しないか古すぎる場合は、`/org-start` を案内して停止する。
 
 {{> dual-system-header-short }}
@@ -53,15 +57,13 @@ allowed-tools:
 ## Step 0 の前: 残存 loop 予約 / stale 再発火ガード（重複起動の早期遮断）
 
 `/dispatcher-resume` は **handover を 1 回だけ消費する one-shot** である（Step 7 で
-`.state/dispatcher-handover.md` を `.consumed.md` に rename する）。だが Step 5 で起動する
-`/loop 3m` の予約が、過去のバグや手動操作で `/dispatcher-resume` 自身を反復対象に握って
-いると、監視サイクルのたびに本 skill が再発火する。この **stale 再発火 / 重複起動** を
-Step 0 に入る前に遮断する（恒久対策の経緯は
-[`knowledge/raw/2026-06-19-dispatcher-resume-loop-recursion.md`](../../../knowledge/raw/2026-06-19-dispatcher-resume-loop-recursion.md)）。
+`.state/dispatcher-handover.md` を `.consumed.md` に rename する）。`/loop 3m` の予約が
+`/dispatcher-resume` 自身を反復対象に握っていると監視サイクルのたびに本 skill が再発火するので、
+この **stale 再発火 / 重複起動** を Step 0 に入る前に遮断する（経緯と各分岐の理由は
+[`.claude/skills/dispatcher-resume/references/rationale.md`](references/rationale.md)）。
 
 1. live / consumed の handover 状態を **存在ベース**で判定する（`now` との時刻比較に
-   依存しない。cold-start vs resume の分岐が live `.md` のみを対象とする
-   `.dispatcher/CLAUDE.md` の規約と揃える）:
+   依存しない）:
    ```bash
    python3 -c "
    import os
@@ -78,8 +80,8 @@ Step 0 に入る前に遮断する（恒久対策の経緯は
 2. **`already_consumed`（live `.md` なし・`.consumed.md` あり）**: live handover が無い
    resume 起動だが `.consumed.md` が残っている。これは「(i) 直前に成功した resume の残存
    loop 予約による再発火 / 重複起動（組織は健全・監視ループ稼働中）」か「(ii) 組織が止まって
-   いて本来 cold-start が要る状況での誤起動」のいずれか。**存在判定だけで no-op に倒すと (ii)
-   の cold-start 案内を恒久的に隠す**ので、監視対象が実際に live かを観測して分岐する:
+   いて本来 cold-start が要る状況での誤起動」のいずれかなので、存在判定だけで no-op に倒さず、
+   監視対象が実際に live かを観測して分岐する:
    - `{{FQ}}list_panes` / `{{FQ}}list_peers` で **監視対象が live か**を確認する: active な
      worker ペイン（`role == "worker"`）が 1 つ以上ある、または
      `.state/dispatcher/curate-inflight.json` が存在する（= 監視ループが回っているべき状態）。
@@ -89,10 +91,8 @@ Step 0 に入る前に遮断する（恒久対策の経緯は
      かつ未承認なら列挙を live 判定に使わず破棄し、`list_panes` の `role == "worker"` と
      `curate-inflight.json` の有無だけで分岐する（停止しない・待ち時間 0 分）。
      **承認済み（同 reference §2 の `first_drive` が `recorded`）のときは §1-2 の三値判定を通し、
-     「在」と出たワーカーだけを live として数える** — 他タブの別 org のワーカーを live と誤認すると
-     (ii) の cold-start 経路が抑止される。**「unknown」は live に数えないが、(ii) にも倒さない**:
-     判定不能を「監視対象なし」と読み替えると誤った `/org-start` 案内で健全な組織を壊しうる
-     （不可逆側）。**終端処理は (i) と同じ**（早期 exit + Step 5 の monitoring ディレクティブで
+     「在」と出たワーカーだけを live として数える**。**「unknown」は live に数えないが、(ii) にも
+     倒さない**。**終端処理は (i) と同じ**（早期 exit + Step 5 の monitoring ディレクティブで
      `/loop` を再 arm し、残存予約を空のまま放置しない）とし、secretary には
      `DISPATCHER_RESUME_INDETERMINATE: 監視対象の同タブ性を確定できず（unknown N 件）。
      live 判定を保留して監視ループのみ再開しました。` を送って判断を仰ぐ。
@@ -197,7 +197,7 @@ Step 0 に入る前に遮断する（恒久対策の経緯は
 
 Step 0 で観測した `pane_id` / `peer_id` を `StateWriter.transaction()` 経由で
 **1 トランザクションで** 書く（post-commit hook が `.state/org-state.md` を再生成
-してくれる）。これが acceptance の「state.db identity が atomic 更新」要件の本体。
+してくれる）。
 
 ```bash
 python3 -c "
@@ -318,8 +318,8 @@ secretary に報告する。**（判定条件・三値の定義・評価順の�
    WezTerm backend は**整数**を返すので、**引用符の有無を型に合わせる** — 文字列を引用符無しで
    書くと JSON が構文非妥当になり、Step 5.3 も次の resume もこのファイルを読めず curator の
    追跡が失われる（正本は同 5-3 の注記）。**`pane_id` を欠いた形で再生成しない** — Step 5.3 (a)/(b) の
-   curator close はこの `pane_id` を identity 照合の起点にするので、欠けると schema 追加前の
-   旧形式ファイルと同じ扱いになり、close が列挙引き直しの fallback 経路に落ちる
+   curator close はこの `pane_id` を identity 照合の起点にするので、欠けると `pane_id` の
+   無いファイルとして扱われ、close が列挙引き直しの fallback 経路に落ちる
    （[`.dispatcher/references/worker-monitoring.md` Step 5.3](../../../.dispatcher/references/worker-monitoring.md)）。
    `list_peers` にのみ `curator` 名があり `{{FQ}}list_panes` の列挙に該当レコードが無い場合は
    **再生成せず** secretary に informational として報告する（数値 pane id を採れないうえ、
@@ -340,8 +340,7 @@ secretary に報告する。**（判定条件・三値の定義・評価順の�
 INVARIANT(loop-prompt): `/loop` の prompt 引数に skill 自身（`/dispatcher-resume`）や
 他のスラッシュコマンドを渡さない。skill 実行ターン内で prompt を省略して `/loop` を
 起動すると、反復対象としてアクティブな slash command が捕捉され、本 skill が 3 分ごとに
-自己再帰する（2026-06-19 incident。詳細は
-knowledge/raw/2026-06-19-dispatcher-resume-loop-recursion.md）。必ず monitoring 専用の
+自己再帰する（経緯は references/rationale.md）。必ず monitoring 専用の
 自然文ディレクティブを明示的に渡すこと。tests/test_dispatcher_resume_loop_invariant.py が
 この不変条件を pin する。
 -->
@@ -397,7 +396,7 @@ DISPATCHER_RESUMED: ディスパッチャー復帰完了。
 resume が成功したら、`.state/dispatcher-handover.md` を `.state/dispatcher-handover.consumed.md` に **rename する**。これにより:
 
 - `.dispatcher/CLAUDE.md` 起動時の自動分岐（handover ファイルが直近 7 日以内に存在すれば resume）が「次の `/org-start` cold-start 時にも誤って resume に分岐する」事故を防ぐ
-- 直近 1 件のみ参照用に `.consumed.md` 形式で残る（次の `/dispatcher-handover` が新たに `.md` を書いた時点で `.prev.md` バックアップに置き換わる、または上書きされる）
+- 直近 1 件のみ参照用に `.consumed.md` 形式で残る（次の `/dispatcher-handover` は live の `.md` だけを `.prev.md` に退避し `.consumed.md` には触らないので、次の resume の mv で上書きされるまで残る）
 
 ```bash
 mv ../.state/dispatcher-handover.md ../.state/dispatcher-handover.consumed.md
@@ -420,8 +419,6 @@ bash ../tools/journal_append.sh dispatcher_resumed \
 
 - 新規にディスパッチャー / キュレーターを spawn する（既に生きている）
 - ワーカーに勝手に SUSPEND / SHUTDOWN を送る
-- `.state/dispatcher-event-cursor.txt` / `worker-idle-state.json` /
-  `curate-inflight.json` / `pending_decisions.json` を初期化 / 削除する（前 session からの監視連続性が壊れる）
 - handover の内容と state.db の現状が食い違うときに、勝手にどちらかへ寄せる
   （必ず secretary に報告して判断を仰ぐ）
 - atomic 更新を分割して書く（必ず `StateWriter.transaction()` 1 ブロックで完結させる）

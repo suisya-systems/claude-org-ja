@@ -4,20 +4,22 @@ description: >
   組織を起動する。前回の状態を読み込んでブリーフィングし、
   ディスパッチャーペインを起動する。ClaudeCode起動直後に1回実行する。
   「起動して」「スタート」「始めて」等でも発動。
-  キュレーターは起動しない（worker クローズ時の閾値チェックによるオンデマンド起動に移行済み）。
 effort: low
 allowed-tools:
   - Read
   - Bash(echo:*)
   - Bash(bash tools/journal_append.sh:*)
+  - Bash(python3 tools/journal_append.py:*)
   - Bash(py -3 tools/journal_append.py:*)
-  - Bash(python -m tools.state_db.importer:*)
+  - Bash(python3 -m tools.state_db.importer:*)
+  - Bash(py -3 -m tools.state_db.importer:*)
   - Bash(py -3 dashboard/org_state_converter.py:*)
   - Bash(python3 dashboard/org_state_converter.py:*)
+  - Bash(py -3 dashboard/server.py:*)
+  - Bash(python3 dashboard/server.py:*)
+  - Bash(python3 tools/stop_dashboard.py:*)
   - Bash(py -3 tools/check_runtime_version.py:*)
   - Bash(python3 tools/check_runtime_version.py:*)
-  - Bash(py -3 tools/check_herdr_compat.py:*)
-  - Bash(python3 tools/check_herdr_compat.py:*)
   - Bash(py -3 tools/ensure_projects_registry.py:*)
   - Bash(python3 tools/ensure_projects_registry.py:*)
   - Bash(py -3 tools/secretary_queue_watcher.py:*)
@@ -34,15 +36,10 @@ allowed-tools:
 
 ClaudeCode起動後に最初に実行するスキル。前回の状態復元とディスパッチャー起動を行う。
 
-> **キュレーターは起動しない（オンデマンド化）**: 常駐キュレーター（spawn + `/loop 30m
-> /org-curate`）は廃止された。キュレーターはディスパッチャーが worker ペインクローズ時に
-> `tools/check_curate_threshold.py` の閾値超過を検出したときだけ一時起動される
+> **キュレーターは起動しない**: worker クローズ時の閾値チェックでディスパッチャーがオンデマンド起動する
 > （[`.dispatcher/references/pane-close.md`](../../../.dispatcher/references/pane-close.md) Step 5）。
-> org-start では `curator_pane_id` / `curator_peer_id` を `StateWriter.CLEAR` で明示クリアする
-> （Block D-5）。**curator 不在（null）が正常系**である。
-> worker close が発生しない期間の閾値チェック飢餓ケースへの補助トリガー（org-start
-> バックストップ）は [Issue #502](https://github.com/suisya-systems/claude-org-ja/issues/502)
-> でバックログ化されている。
+> org-start では curator の identity を `StateWriter.CLEAR` で明示クリアする（Block D-5）。
+> **curator 不在（null）が正常系**である。設計メモ・経緯は [`.claude/skills/org-start/references/rationale.md`](references/rationale.md)。
 
 > **前提**: この Claude は `renga --layout ops` で起動された窓口ペイン内で動作している。
 > `RENGA_SOCKET` / `RENGA_PANE_ID` 環境変数が継承されているので、`mcp__renga-peers__*` MCP
@@ -51,40 +48,18 @@ ClaudeCode起動後に最初に実行するスキル。前回の状態復元と�
 > `check_messages` / `inspect_pane` / `poll_events` / `send_keys` /
 > `set_pane_identity`）でペイン操作・ピア通信・画面スクレイプ・lifecycle
 > event 購読・raw キー入力まですべてカバーできる（renga 0.18.0+ で導入された構造。**現行 org の renga transport サポート下限は 2.0.0**）。
-> ただし**この 14 種はタブ scope が一様ではない**ので、主分類 3 つ + 例外で読む（各 capability
-> トークンは独立判定 = 契約 T-§cap の independence rule。分類の正本は
-> [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) T-§cap / T-§4.2）:
+> ただし**この 14 種はタブ scope が一様ではない**（pane 制御 / Group B / messaging / 例外）。分類の正本は
+> [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) T-§cap / T-§4.2、要約は [`.claude/skills/org-start/references/rationale.md`](references/rationale.md)。
 >
-> - **Group A（`caller_scope`）= pane 制御**: `spawn_pane` / `spawn_claude_pane` / `focus_pane` /
->   `list_panes` / `inspect_pane` / `send_keys`。この capability を確立できた経路では **caller のタブ内**
->   （フォーカス非依存）に解決され、`list_panes` は caller のタブのみを返す（契約 T-§cap の Group A は
->   `spawn_codex_pane` を含む 7 種。ここでは org の 14 種に現れる 6 種を挙げている）
-> - **Group B（`caller_scope_close_identity`）= 別ゲート**: `close_pane` / `set_pane_identity`。
->   `caller_scope` からは**導出してはならない**（`close_pane` は不可逆なので特に混同しない）
-> - **messaging（`cross_tab_peers`）= タブ横断**: `send_message` / `list_peers`。`list_peers` は全タブ列挙、
->   `send_message` は**数値 id 宛ならタブ横断**・**stable name は送信側タブ内でのみ**解決する。契約 T-§4.2 は
->   messaging 到達性から pane 制御到達性を推論することを **MUST** で禁じている
-> - **上記 3 分類に入らない 4 種（例外）**: `new_tab` は Group A ではなく独立 capability **`spawn_tab`**
->   側（tab 生成 / tab 指定 spawn）。`poll_events` は pane 制御でも messaging でもなく **lifecycle surface**
->   で、そのタブ scope は契約 T-§3.1 が別に固定する。`set_summary` / `check_messages` は自ペイン / 自キューに
->   対する操作であって、**タブ横断 addressing の話ではない**
->
-> 誤読時の分岐手順（`pane_not_found` の pane 制御文脈 / messaging 文脈）は
-> [`.claude/skills/org-delegate/references/renga-error-codes.md`](../../../.claude/skills/org-delegate/references/renga-error-codes.md) を参照。
-> ここでの 14 種は **org が運用で行使する surface** であって、プリフライトの必須集合とは別の数である:
-> [`tools/check_renga_compat.py`](../../../tools/check_renga_compat.py) は capability probe 用の `server_info` を加えた
-> **15 種**を必須（subset 判定、余剰ツールは正常）として検査する。`server_info` は probe 専用で、
-> `.claude/settings.json` の allowlist には意図的に未追加である（理由は [`docs/design/renga-decoupling.md`](../../../docs/design/renga-decoupling.md) を参照）。
->
-> **state DB 前提 (Issue #267 / M4)**: `.state/state.db` が唯一の SoT。
-> read 経路は DB のみ (markdown fallback は M4 で撤去)、構造化セクション
+> **state DB 前提**: `.state/state.db` が唯一の SoT。
+> read 経路は DB のみ、構造化セクション
 > (Status / Dispatcher / Curator / Worker Directory Registry /
 > Active Work Items / Resume Instructions) の write 経路は
 > `StateWriter.transaction()` 経由（post-commit hook が
 > `.state/org-state.md` を DB から自動再生成、markdown 直接編集禁止 —
 > drift_check が検出する）。free-form ノート（学び / Pending Lead 等）
-> は `notes/` 配下に保存する。`.state/journal.jsonl` は M4 で廃止。
-> DB が無い場合は `python -m tools.state_db.importer --db .state/state.db --rebuild --no-strict` で構築する。
+> は `notes/` 配下に保存する。
+> DB が無い場合は `python3 -m tools.state_db.importer --db .state/state.db --root . --rebuild --no-strict` で構築する。
 
 > **輸送層（transport）両系 — 既定 `renga` / opt-in `broker`**: 本スキルの `mcp__renga-peers__*` 呼び出しは **既定 `renga`**（`ORG_TRANSPORT` 無設定）で書いてあり、そのまま従えばよい（既定挙動は不変）。`ORG_TRANSPORT=broker`（opt-in・切戻し可）では MCP サーバー名が `org-broker` になり、ツールの **完全修飾名が `mcp__renga-peers__*` → `mcp__org-broker__*`** に機械置換される（引数形・セマンティクスは同一なので手順の論理は変わらない）。輸送依存で手順が変わる点だけ broker 併記する:
 >
@@ -134,11 +109,10 @@ ClaudeCode起動後に最初に実行するスキル。前回の状態復元と�
    - 期待値: `name == "secretary"` かつ `role == "secretary"`
    - **`caller-id 未確定` の場合** — `RENGA_PANE_ID` が未設定 / `list_panes` に同一 id のレコードが
      無い / broker 等そもそも同等の caller-id を入手できない transport: **自己修復（下の自動リカバリ）を
-     実行せず、identity 未確認のまま人間に報告して続行判断を仰ぐ**（勝手に fatal にしない）。`target="focused"`
-     や裸 `name` のような相対セレクタへフォールバックしてはならない（契約 T-§4.2 Group B。誤タブの
-     別ペインを改名する経路になる）。broker の縮退の具体は下の broker 分岐を参照
+     実行せず、identity 未確認のまま人間に報告して続行判断を仰ぐ**（勝手に fatal にしない。相対セレクタは
+     hook が deny する）。broker の縮退の具体は下の broker 分岐を参照
    - **不一致の場合** — `renga --layout ops` 以外の経路で起動された / 旧ops.tomlで起動された既存セッションに attach 等:
-     1. `mcp__renga-peers__set_pane_identity(target="<RENGA_PANE_ID の値>", name="secretary", role="secretary")` を呼んで自動修復（照合済みの数値 pane id で撃つ。`target="focused"` は使わない）
+     1. `mcp__renga-peers__set_pane_identity(target="<RENGA_PANE_ID の値>", name="secretary", role="secretary")` を呼んで自動修復（照合済みの数値 pane id で撃つ）
      2. 成功すれば警告ログを events テーブルに残して続行（`bash tools/journal_append.sh secretary_identity_restored note=auto_recovered`）
      3. 失敗ケースの分岐:
         - `name_in_use`（broker では `name_taken`）エラー: 既存の別ペインが `secretary` を占有している。ユーザーに状況を報告し、「現セッション継続なら全ワーカーに `to_id="{numeric_pane_id}"` で送信させる」「永続修復なら `/org-suspend` → 終了 → `renga --layout ops` で再起動」の選択肢を提示
@@ -168,37 +142,11 @@ ClaudeCode起動後に最初に実行するスキル。前回の状態復元と�
      ワーカー派遣前に解消が必要）
    - 既存 checkout の移行手順は [`docs/operations/registry-projects-migration.md`](../../../docs/operations/registry-projects-migration.md) を参照
 5. `registry/org-config.md` の `workers_dir` を読み、ワーカーディレクトリの存在を確認する。
-   存在するディレクトリがあれば一覧をユーザーに報告する（削除は絶対にしない）。
-   **禁止事項**: ワーカーディレクトリは過去の作業成果や再利用可能なプロジェクトを含むため、
-   org-start 時に削除してはならない。org-delegate のディレクトリ保持ポリシーに従うこと。
-
-## Step 0.5: herdr backend 互換性 preflight (broker+herdr のみ・spawn 前 fatal gate、Issue #748)
-
-> **位置の不変条件 (Block C2 と混同しない)**: 本ゲートは **Step 0 の 6 サブステップがすべて完了した後、かつ Block A の dispatcher `spawn_claude_pane` を発火する前**に、**同期実行する fatal gate** である。Block C2（runtime drift）は Block A spawn と並列に回る warning で「未確認でも org-start は継続」する責務だが、本ゲートは真逆で、**exit 1/2 なら Block A の spawn を発火せずに停止**する。目的は herdr の self-update による無言の窓外昇格（daemon が runtime の対応 protocol 窓を超えて昇格）を dispatcher spawn 前に fail loud で検出し、protocol 不一致による `agent.start` の wedge（Issue #151 の主症状。原因が「daemon 停止」と誤診断される）を未然に止めることにある。C2 と並列 warning にすると事故を再導入するので、必ず spawn の**前**で同期ブロックする。
-
-`ORG_TRANSPORT` の値だけでは発動判定にならない（renga/broker のフレーム差があり、broker でも backend は herdr とは限らない）。ゲートは `$ORG_BROKER_STATE_DIR`（未設定時 `.state/broker`）の `daemon.json` sidecar に runtime が書く**解決済み backend** を読み、`backend == "herdr"` のとき**だけ**発動する。非 broker（sidecar 不在）や非 herdr backend（tmux / wezterm / null）は skip（exit 0）で即通過する。
-
-> **ホスト実行必須（sandbox 内は誤判定）**: `herdr --version` / herdr socket ping / daemon sidecar はホスト実体（PATH / プロセス namespace / Unix domain socket）に依存する。Claude Code の Bash sandbox 内で実行すると PATH・namespace 差で false negative/positive が出る。Block C2 と同様、**`dangerouslyDisableSandbox: true` を付けてホスト実行する**。
-
-1. 互換性 preflight を **ホスト実行**する（Claude Code の Bash tool では `dangerouslyDisableSandbox: true` を付ける）:
-   ```bash
-   py -3 tools/check_herdr_compat.py       # Windows
-   python3 tools/check_herdr_compat.py     # Mac/Linux
-   ```
-2. **exit code で分岐**する（C2 の drift warning とは exit 契約を混ぜない）:
-   - **exit 0**（compatible または skip）: 互換確認済み、または非 broker / 非 herdr backend で非該当。**そのまま Step 1〜3 の並列起動へ進む**。
-   - **exit 1**（incompatible fatal）: 解決した herdr wire protocol が runtime の `SUPPORTED_PROTOCOLS` の窓外。**Block A の spawn を発火せず停止**し、stdout の診断ブロック（installed herdr / derived protocol / daemon ping protocol / runtime supported / daemon backend / state_dir / remediation）を**そのままユーザーに提示**する。remediation は「runtime を上げる」か「herdr を下げる」の 2 択。ユーザーがどちらかで不一致を解消してから /org-start を再実行してもらう。
-   - **exit 2**（unverified fatal）: backend は herdr だが protocol を確定できない（socket ping 不通 かつ `herdr --version` も取得不可 / runtime import 不能等）。未確認を warning 継続にすると事故を再導入するので、**exit 1 と同様に spawn を発火せず停止**し、診断（多くは sandbox 内実行が原因）をユーザーに提示する。`dangerouslyDisableSandbox: true` でのホスト再実行を促す。
-
-> 設計メモ:
-> - **判定レイヤ（権威度順）**: (1) **socket ping（一次・権威的）** — daemon の herdr socket へ `ping` を 1 往復し、daemon が**実際に話している** protocol 番号を得る（runtime adapter も同じ ping で確定する）。(2) **`herdr --version` + ローカル写像（fallback）** — socket 不通時の代替。PATH binary の version から protocol をローカル写像（`0.7.0-0.7.1→14 / 0.7.2-0.7.4→16 / 0.7.5〜→17`）で導く。ただし PATH 上の `herdr` binary が daemon の接続先と同一とは限らず、version 系列内の protocol bump も検出できない限界があるため、fallback を使った旨は **stderr に明示**される。
-> - **対応窓の SoT は runtime**: 対応 protocol の窓は ja 側に hard-code せず、`claude_org_runtime.terminal.herdr.SUPPORTED_PROTOCOLS` を import して突き合わせる（compat API が将来 runtime に追加されればそれを優先、無ければ本 fallback）。runtime のリリースごとに窓が広がっても ja 側の記述は陳腐化しない。
-> - **stdout は診断ブロック / JSON 専用**、限界注記・診断は **stderr**（`--json` で機械可読出力も出せる）。exit code が唯一の分岐キー。
-> - スクリプト本体: [`tools/check_herdr_compat.py`](../../../tools/check_herdr_compat.py)
+   存在するディレクトリがあれば一覧をユーザーに報告する。過去の作業成果や再利用可能なプロジェクトを含むため削除はせず、org-delegate のディレクトリ保持ポリシーに従う。
 
 ## Step 1〜3: 並列起動フェーズ
 
-> **Issue #410 / Stage B**: Step 0 (transport 判定 / set_summary / MCP 疎通 / identity 検証 / projects レジストリ配置 / workers_dir 確認の 6 サブステップすべて) が完了し、**Step 0.5 の herdr 互換性 preflight が exit 0（compatible / skip）で通過した後**に dispatcher の `spawn_claude_pane` を発火し、Claude 起動待ち (〜30〜60s) と並列に Block B (前回状態の DB 読み込み) / Block C (ダッシュボード server 起動) を進める。serial 実行時の wall-clock 〜3 分を ~35s まで短縮する目的。**Step 0.5 が exit 1/2 の場合は Block A を発火しない**（spawn wedge 防止のための同期 fatal gate）。
+> **起動順**: Step 0 (transport 判定 / set_summary / MCP 疎通 / identity 検証 / projects レジストリ配置 / workers_dir 確認の 6 サブステップすべて) が完了した後に dispatcher の `spawn_claude_pane` を発火し、Claude 起動待ち (〜30〜60s) と並列に Block B (前回状態の DB 読み込み) / Block C (ダッシュボード server 起動) を進める（短縮効果は [`.claude/skills/org-start/references/rationale.md`](references/rationale.md)）。
 >
 > **実行モデル**: Secretary が以下の 3 ブロック (A/B/C) を発火し、最後に block D で合流する。block A は I/O bound（renga MCP の応答は数百 ms、その後は別プロセスである Claude の boot を待つだけ）なので B/C と wall-clock を完全に overlap できる。
 
@@ -218,53 +166,77 @@ ClaudeCode起動後に最初に実行するスキル。前回の状態復元と�
      model="sonnet"
    )
    ```
-   返り値の `"Spawned pane id=N."` から dispatcher の `pane_id` を控える。引数の意味と落とし穴は本ファイル末尾「### 補足: spawn_claude_pane 引数の詳細」を参照。
+   返り値の `"Spawned pane id=N."` から dispatcher の `pane_id` を控える。引数の意味と落とし穴は [`.claude/skills/org-start/references/rationale.md`](references/rationale.md)「spawn_claude_pane 引数の詳細」を参照。
 2. **ここで spawn 結果のみブロックする**（Claude の boot 完了は待たない）。spawn が `[<code>] <msg>` で失敗していた場合は本ファイル末尾「### 失敗モード」へ。spawn が成功（pane_id 取得）なら、Block B / C と並列に進む。
 
 ### Block B: 前回の状態確認
 
-read 経路は **DB only**（Issue #267 / M4）。Block A の spawn 発火と並列で実行する（Block A は MCP 経由でペイン作成を依頼するだけで Claude の boot は別プロセスのため、ここで CPU / I/O を競合しない）。
+read 経路は **DB only**（例外は手順 3 の pending-decisions register だけ）。Block A の spawn 発火と並列で実行する（Block A は MCP 経由でペイン作成を依頼するだけで Claude の boot は別プロセスのため、ここで CPU / I/O を競合しない）。
 
-1. `.state/state.db` が存在するか確認する
-   - 存在 → DB をクエリ:
+1. `.state/state.db` が存在するか確認し、存在すれば中身にテーブルがあるかも確かめる（Issue #1154: ファイルはあるがテーブルが 1 つも無い空の DB がありうる）:
+   ```bash
+   # Windows native は python3 を py -3 に読み替える
+   python3 -c "import sqlite3,sys; t={r[0] for r in sqlite3.connect('.state/state.db').execute(\"SELECT name FROM sqlite_master WHERE type='table'\")}; sys.exit(0 if {'runs','events'}<=t else 3 if not t else 4)"
+   ```
+   ファイルが無いときは実行しない（`sqlite3.connect` が空ファイルを作ってしまう）。終了コードで分岐する:
+   - `0`（テーブルあり）→ DB をクエリ:
      ```bash
-     python -c "from tools.state_db import connect; from tools.state_db.queries import get_org_state_summary; import json; \
+     # Mac/Linux
+     python3 -c "from tools.state_db import connect; from tools.state_db.queries import get_org_state_summary; import json; \
+       conn = connect('.state/state.db'); \
+       print(json.dumps(get_org_state_summary(conn), ensure_ascii=False, indent=2, default=str))"
+     # Windows native（Git Bash。PowerShell では行末の `\` を `` ` `` に替える）
+     py -3 -c "from tools.state_db import connect; from tools.state_db.queries import get_org_state_summary; import json; \
        conn = connect('.state/state.db'); \
        print(json.dumps(get_org_state_summary(conn), ensure_ascii=False, indent=2, default=str))"
      ```
      `active_runs` / `recent_events` / `run_status_counts` / `session.status` / `session.objective` で前回状態を把握する
-   - 存在しない → 初回起動と判断する。Secretary に importer 実行を促す:
-     `python -m tools.state_db.importer --db .state/state.db --root . --rebuild --no-strict`
+   - ファイルが存在しない、または `3`（テーブルが 1 つも無い空の DB）→ 初回起動と判断する。Secretary に importer 実行を促す:
+     `python3 -m tools.state_db.importer --db .state/state.db --root . --rebuild --no-strict`
+   - `4`（テーブルはあるが `runs` / `events` が欠けている）やそれ以外の失敗（壊れたファイル等）→ importer を回さない（`--rebuild` は全テーブルを消すので、残っている記録を失う）。エラー内容を添えて「state.db が不完全で前回状態を読めない」と人間に報告し、扱いを確認する
 2. session.status を確認する:
    - `SUSPENDED` なら /org-resume の Phase 1〜3（ブリーフィング・照合・再開計画）を実行する。
      Block A の spawn は既に発火済みなのでブリーフィング中に裏で Claude が boot している。
      ブリーフィング完了後、Block D の合流で dispatcher が ready になるのを待ち、org-resume の Phase 4（ワーカー再派遣）を人間の承認に基づいて実行する
    - `ACTIVE` なら、前回のセッションが突然終了した可能性がある。
      各ワーカーディレクトリの git 状態を確認し、現状を報告する
+3. **滞留中の判断仰ぎを棚卸しする**（Issue #1155）。read 経路「DB only」の唯一の例外として、pending-decisions register（JSON ファイル `.state/pending_decisions.json`）を読み取り専用で読む:
+   ```bash
+   python3 tools/pending_decisions.py stale --min-age-min 60   # Mac/Linux
+   py -3 tools/pending_decisions.py stale --min-age-min 60     # Windows native
+   ```
+   - 受信（`received_at`）から 60 分以上経ち、まだ `resolved` になっていない項目（`pending` / `escalated`）が 1 行 1 件で出る。出たらブリーフィングに「要確認の判断仰ぎ」として task_id・状態・受信日時・要約を並べる
+   - 一覧は **要確認** であって転送漏れの断定ではない（転送済みで記帳だけ失敗した項目や、人間がまだ考えている項目も含む）。ここから自動 resolve・判断の再送・ワーカーへの再連絡はしない。扱いは人間に確認してから決める
+   - 出力が `{"status": "unreadable", ...}`（exit 2）のときは「該当なし」と書かず「判断仰ぎ register を確認できない」とエラー内容つきで報告し、起動は続ける
+   - 役割分担: この棚卸しは **再起動時の 1 回だけ**。稼働中の中継漏れはディスパッチャーの SECRETARY_RELAY_GAP_SUSPECTED 監視（[`.dispatcher/references/worker-monitoring.md` Step 5.1](../../../.dispatcher/references/worker-monitoring.md#step-5-1)）が受け持つ。起動後に生じた滞留をこの一覧が何分以内に見つけるかは保証しない（次回起動まで見つからないこともある）
 
 ### Block C: ダッシュボードサーバー起動
 
 Block A の spawn 発火と並列。ダッシュボード server は別プロセス（Python HTTP server）で Claude pane と独立。
 
-1. ダッシュボードサーバーが起動しているか確認する:
-   ```bash
-   cat .state/dashboard.pid 2>/dev/null && kill -0 $(cat .state/dashboard.pid) 2>/dev/null && echo "running" || echo "stopped"
-   ```
-2. 停止中であれば起動する:
-   ```bash
-   python3 dashboard/server.py &   # Mac/Linux
-   py -3 dashboard/server.py &     # Windows
-   ```
-3. ユーザーに案内する:
-   「ダッシュボードを起動しました → http://localhost:8099」
+サーバーは 8099 → 8100 → 8101 のうち空いているポートを使う（同じホストの別の組織が 8099 を使っていることがある）。案内する URL は必ず `--status` の出力から取り、8099 を決め打ちしない。
 
-> **sandbox 注記（false negative 回避）**: Claude Code の Bash sandbox はネットワーク / プロセス namespace が隔離されているため、本 Block の常駐起動・疎通確認を sandbox 内で行うと誤判定する。ホスト側で server が port 8099 を正常に listen していても、sandbox 内では `curl` が `000` を返し、`ss` に port が見えず、`pgrep` / `kill -0` はホストのプロセスを観測できない（「起動失敗」と誤判定して再起動ループに陥る）。また sandbox 内の `nohup ... &` で起動したプロセスはコマンド終了時に残らず常駐しない。**server の起動（手順 2）と疎通確認（手順 1 や `curl` / `ss` / `pgrep` / `kill -0` 等）は sandbox 外で実行する**（Claude Code の Bash tool なら `dangerouslyDisableSandbox: true` を付ける、または `run_in_background` によるホスト実行を使う）。
+1. ダッシュボードサーバーが起動しているか確認する（Windows は `python3` を `py -3` に読み替える。以下同じ）:
+   ```bash
+   python3 dashboard/server.py --status
+   ```
+   `--status` は bind 後にサーバーが書く `.state/dashboard.json`（実際のポートと pid）を読み、そのポートで応答しているのがこの clone のサーバーかを HTTP で確かめる。終了コード `0` なら標準出力が URL なので手順 3 へ。`1`（停止中）なら手順 2 へ。`3`（ポート記録を持たない旧版サーバーがこの組織で稼働中）なら Mac/Linux は `python3 tools/stop_dashboard.py`、Windows native は [`.claude/skills/org-down/SKILL.md`](../org-down/SKILL.md) Step 2 の PowerShell 手順（`Get-CimInstance` で CommandLine を照合してから `Stop-Process`）で止めてから手順 2 へ。Windows native では `py -3 tools/stop_dashboard.py` を使わない（内部の `os.kill(pid, 0)` が Windows ではプロセスを終了させるため、照合前に無関係なプロセスを止めうる）。止められなければ「ダッシュボードの再起動が必要」と報告して本 Block を終える。`2`（記録が壊れている / 記録のポートで別のプロセスが応答している）なら標準エラーの理由を添えて報告し、URL は案内しない。
+2. 起動し、最大 15 秒まで起動を待って確かめる:
+   ```bash
+   python3 dashboard/server.py &
+   python3 dashboard/server.py --status --wait 15
+   ```
+   `0` 以外なら「ダッシュボードを起動できませんでした（<標準エラーの理由>）」と報告し、URL は案内しない（候補ポートが全部使用中、ポート記録が書けない等）。
+3. ユーザーに案内する（`<url>` は `--status` の標準出力）:
+   「ダッシュボードを起動しました → <url>」
 
-### Block C2: claude-org-runtime バージョン drift 検出 (Issue #472)
+> **sandbox 注記（false negative 回避）**: Claude Code の Bash sandbox はネットワーク / プロセス namespace が隔離されているため、本 Block の常駐起動・疎通確認を sandbox 内で行うと誤判定する。ホスト側で server が正常に listen していても、sandbox 内では `curl` が `000` を返し、`ss` に port が見えず、`pgrep` / `kill -0` はホストのプロセスを観測できない（「起動失敗」と誤判定して再起動ループに陥る）。また sandbox 内の `nohup ... &` で起動したプロセスはコマンド終了時に残らず常駐しない。**server の起動（手順 2）と疎通確認（手順 1・2 の `--status`、`tools/stop_dashboard.py` や `curl` / `ss` / `pgrep` / `kill -0` 等）は sandbox 外で実行する**（Claude Code の Bash tool なら `dangerouslyDisableSandbox: true` を付ける、または `run_in_background` によるホスト実行を使う）。
+
+### Block C2: claude-org-runtime バージョン drift 検出
 
 Block A の spawn 発火と並列。`claude-org-runtime` の installed バージョンと PyPI の latest を比較し、drift があれば Step 4 の起動完了報告に 1 行 warning を添える。auto-upgrade は行わず通知のみ。**バージョン番号は本ファイルにも script にも hard-code せず、すべて importlib.metadata と PyPI JSON API の動的取得値のみを使う**（runtime のリリースごとに記述が陳腐化することを避けるため）。
 
-> **sandbox 内では PyPI に届かない → ホスト実行する（#119 の真因）**: このチェックを Claude Code の Bash sandbox 内で実行するとネットワーク隔離で PyPI に到達できない。旧実装はこの到達不能を **silent skip（何も出さず exit 0）** していたため、pin ラグ（venv が古いまま）を「最新」と誤読し、既修正バグを worker に委譲する phantom dispatch を招いた（2026-07-08 #119: runtime 0.1.36 で既修正のバグを 0.1.34 venv で踏んだ）。根治として (1) スクリプトは到達不能を **exit 2 + stderr 診断**で顕在化し、(2) 本 Block は **`dangerouslyDisableSandbox: true` を付けてホスト実行する**（sandbox 内でしか回せない場合は exit 2 =「PyPI 未確認」となり、ネットワーク到達可能なホストで再実行するまで drift 未検証と扱う）。
+> **sandbox 内では PyPI に届かない → ホスト実行する**: sandbox 内でしか回せない場合は exit 2 =「PyPI 未確認」となり、ネットワーク到達可能なホストで再実行するまで drift 未検証と扱う（経緯と設計メモは [`.claude/skills/org-start/references/rationale.md`](references/rationale.md)）。
 
 1. drift チェックを **ホスト実行**する（Claude Code の Bash tool では `dangerouslyDisableSandbox: true` を付ける）:
    ```bash
@@ -278,17 +250,6 @@ Block A の spawn 発火と並列。`claude-org-runtime` の installed バージ
    - **exit 3**（未インストール）: この Python から runtime を import できない（別 venv / 未インストール）。stderr に note。Step 4 報告に「runtime 未インストール（要確認）」を出す。
 
 > **interpreter の併記（バージョン報告は測った Python に相対）**: 本 Block が報告する installed は「このコマンドを実行した Python が解決したバージョン」であって、ホストの状態ではない。ホストには runtime が複数入りうる（プロジェクトの `.venv` とシステム `python3` が別バージョンで同居し、CLI shim `claude-org-runtime` の shebang はそのどちらか片方に束ねられる）。そのため drift 行を interpreter 抜きで転記すると「更新が遅れている」と読めてしまうが、実際には「もう片方を測った」だけということが起こる。script は **毎回・全 outcome で** stderr の 1 行目に `[runtime drift-check] 測定 interpreter: <sys.executable> (installed=<version>)` を出すので、**Step 4 報告で installed / 未インストールに言及するときは必ずこの Python パスを併記する**（例:「system python3 で測って installed=X」）。上の実行例が `python3` / `py -3` である以上、測っているのは既定でシステム側であって ja の `.venv` ではない点に注意する。
-
-> 設計メモ:
-> - latest 取得は PyPI JSON API (`https://pypi.org/pypi/claude-org-runtime/json`) を urllib.request で叩く (timeout 8s)。`pip index versions` は experimental で stderr に warning を吐くため採用しない
-> - **pin window**: ja の `pyproject.toml` の `claude-org-runtime` 依存制約を regex で動的に読み取り、PyPI releases からその制約を満たす最新のみを latest として比較する（`packaging.SpecifierSet` 利用）。上位 major / minor が出ても窓外 upgrade を促さない。`packaging` 未インストール環境は **exit 2（未確認・stderr 診断）** に落ちる — 旧実装の silent skip は廃止した
-> - **local install 検出 (Issue #747)**: installed が `file://` パス / VCS チェックアウト / editable から入っている場合、その version はリリース版と対応する保証がない（ローカルビルドは任意の version を名乗れる）。PEP 610 `direct_url.json`（`importlib.metadata.Distribution.read_text` で読む。dist-info の直接 glob ではない）で判定し、該当時は PyPI 到達前に **exit 2 + stderr 診断（`local install -- PyPI 照合不能`）** に落とす。`file://` install を「最新・drift なし」と誤報告した事故の根治。https アーカイブ等の非ローカル direct URL は通常の PyPI 照合に委ねる
-> - yanked release / prerelease は候補から除外する（pip が通常選ばないバージョンを latest にしないため）
-> - 「drift = 古い」も「drift = preview 入り (installed > latest の release channel ずれ)」も同じく **exit 1** の 1 行で通知する。auto-upgrade はせず、対応はユーザー判断に委ねる
-> - **stdout は drift 行のみ**（Step 4 へ verbatim 転記できる）。offline / 未確認 / 未インストールの診断、および `測定 interpreter` の provenance 行はすべて **stderr** に出す（spliceable な stdout を汚さない）
-> - **interpreter provenance**: `測定 interpreter` 行は outcome に依らず毎回 stderr の先頭に出る（exit 0 も含む）。up to date も drift と同じく「測った Python に相対な判定」なので、片方だけ silent にすると同じ取り違えが exit 0 側で起きるため。判定そのものには影響しない開示専用の 1 行で、exit code 契約は不変
-> - 警告コマンドには `pyproject.toml` から読み取った pin 制約をそのまま埋め込むので、ユーザーが貼り付けても窓外への upgrade にはならない
-> - スクリプト本体: [`tools/check_runtime_version.py`](../../../tools/check_runtime_version.py)
 
 ### Block C3: secretary 滞留 watcher の常駐（broker のみ）
 
@@ -320,13 +281,9 @@ broker transport では過去に「secretary 宛メッセージが claimed/deliv
 >
 > 1 回限りの動作確認は `claude-org-runtime attention scan --state-dir .state --config .state/attention.json --dry-run --json`（`--config` を外すと runtime 中立の英語 default が出るので、ja テンプレートの導通確認には必ず付ける）。OS 別 backend 挙動・トラブルシューティング・別ターミナルからの素 CLI 起動手順は [`docs/operations/attention-watch.md`](../../../docs/operations/attention-watch.md) を参照。
 
-### Block C4: role config drift 検出 (Issue #818)
+### Block C4: role config drift 検出
 
-Block A の spawn 発火と並列。各ロールの `settings.local.json` を schema に対して検証し、drift があれば Step 4 の起動完了報告に 1 行 warning を添える。自動修復は行わず通知のみ（修復は `/org-setup`）。Block C2 と同列の **非 fatal な warning ブロック**であり、drift を検出しても org-start は止めない（Step 0.5 の fatal gate とは責務が違う）。
-
-> **なぜ起動時に見る必要があるのか（guard の無言死）**: `settings.local.json` は gitignored なので、CI の [`.github/workflows/tests.yml`](../../../.github/workflows/tests.yml) が回す `python tools/check_role_configs.py --include-worker-settings .` は `--include-local` を付けておらず、**tracked ファイルしか検証しない**。したがって hook パスのドリフト（`.hooks/*.sh` の rename / 移動で hook command が実在しないパスを指し、guard が発火しないまま無言で無効化される）や必須 allow / deny の欠落、さらには **settings ファイルそのものの不在**（そのロールが hook 層ゼロで動く。`bypassPermissions` のディスパッチャーでは hook が唯一の強制層）は **CI では一切検出されない**。この盲点を塞ぐ唯一の定期的な契機が org-start なので、起動のたびに `--include-local` で 1 回検証する。
-
-> **検出される drift の種類**: (a) schema 宣言済みの settings ファイルが**存在しない**（`settings file not found` — `/org-setup` 未実行 / 配布漏れ）、(b) 必須 allow / deny の欠落、(c) schema 未登録の allow エントリ混入、(d) 必須 hook の欠落、(e) hook command が実在しないパスを指す。個別 drift の対処フローは [`docs/getting-started.md`](../../../docs/getting-started.md) の該当節にある。
+Block A の spawn 発火と並列。各ロールの `settings.local.json` を schema に対して検証し、drift があれば Step 4 の起動完了報告に 1 行 warning を添える。自動修復は行わず通知のみ（修復は `/org-setup`）。Block C2 と同列の **非 fatal な warning ブロック**であり、drift を検出しても org-start は止めない。CI は `--include-local` を付けず gitignored の `settings.local.json` を検証しないので、起動時のこの検証が唯一の定期的な契機になる（理由と drift の種類は [`.claude/skills/org-start/references/rationale.md`](references/rationale.md)）。
 
 1. drift チェックを実行する:
    ```bash
@@ -336,27 +293,22 @@ Block A の spawn 発火と並列。各ロールの `settings.local.json` を sc
 2. **exit code で分岐**する（stdout **最終行**が転記用の 1 行、診断は stderr）:
    - **exit 0**（clean）: schema と一致。**warning 行なし**。
    - **exit 1**（drift）: stdout 最終行の `[role config drift] ...` 1 行を **そのまま Step 4 起動完了報告の末尾に warning として転記する**。個別の `[ERROR] <path> :: <role> :: <理由>` 行は同じ stdout の上部に出ているので、ユーザーが詳細を求めたらそこから提示する（起動報告に全件は貼らない。実測で数十行になりうる）。
-   - **exit 2**（検証不能）: checker 自体が完走できなかった（schema 不在 / JSON 構文エラー / `core_harness` 解決失敗等）。stderr に traceback と `role_configs: 検証不能 -- ...` 診断が出る。**silent にせず**「role config: 検証不能（guard 未検証・要確認）」の 1 行を報告に添える。drift の有無は **未測定**であって clean ではない、という区別が本 exit code の存在意義である。
+   - **exit 2**（検証不能）: checker 自体が完走できなかった（schema 不在 / JSON 構文エラー / `core_harness` 解決失敗等）。stderr に traceback と `role_configs: 検証不能 -- ...` 診断が出る。**silent にせず**「role config: 検証不能（guard 未検証・要確認）」の 1 行を報告に添える。drift の有無は **未測定**であって clean ではない、という区別が本 exit code の存在意義である。読み取りが sandbox の deny に掛かって exit 2 に落ちた場合は、`dangerouslyDisableSandbox: true` でホスト再実行する。
 
 > **必ず窓口の cwd（ja live repo root）で実行する**: `--root` の既定はスクリプト位置から導出される repo root なので、worktree 内から叩くとその worktree の `.claude/settings.local.json`（= ワーカー用の設定）を **secretary の schema で**検証してしまい、数十件の false positive になる。ロール別に個別検証したい場合は当該 worktree で `--role worker` を付ける（`--role` は `--include-local` の意味を含む）。
-
-> 設計メモ:
-> - **stdout は転記用の 1 行と `[ERROR]` 明細のみ**（spliceable に保つ）。件数サマリ `role_configs: N error(s)` と exit 2 の traceback / 診断はすべて **stderr** に出す。stdout への出力は cp932 / `PYTHONIOENCODING=ascii` 等の非 UTF-8 コンソールでも落ちないよう ASCII 置換フォールバックを通す（転記用の 1 行が `UnicodeEncodeError` で消えると drift を検出したのに warning が付かない、という最悪形になるため）
-> - **exit 1 と exit 2 を分けている理由**: 分けないと「checker が壊れて動かなかった」が「drift を検出した」と同じ signal になり、逆に traceback を素通りさせると壊れた guard が clean と読まれる。#818 が塞ぎたい失敗モードそのものなので、契約として [`tests/test_check_role_configs.py`](../../../tests/test_check_role_configs.py) の `ExitCodeContractTests` で lock している
-> - ネットワークに触れないので Block C2 と違い sandbox 内実行でも判定自体は正しい。ただし読み取りが sandbox の deny に掛かる環境では exit 2 に落ちうるので、その場合は `dangerouslyDisableSandbox: true` でホスト再実行する
-> - スクリプト本体: [`tools/check_role_configs.py`](../../../tools/check_role_configs.py)。drift の修復は [`/org-setup`](../org-setup/SKILL.md)（additive-only なので既存設定を壊さない）、個別の drift 種別ごとの対処は [`docs/getting-started.md`](../../../docs/getting-started.md) の該当節を参照
 
 ### Block D: dispatcher の合流 (起動プロンプト承認 / list_peers poll / 挨拶 / DB write / snapshot)
 
 Block A の spawn 成功後、dispatcher ペインで Claude が boot している。
 
-1. **起動プロンプトを画面判定で承認する（盲目 Enter 禁止）** — Claude Code の起動時プロンプト（folder-trust「Do you trust the files in this folder?」相当 / 「Load development channel?」）を、画面を見て 1 手ずつ承認する。**folder-trust の初期カーソルは「No, exit」なので、表示を確かめずに送った Enter はそのまま dispatcher を終了させる**（2026-09-25 にワーカーで実際に起きた。runtime 0.1.43 / suisya-systems/claude-org-runtime#185）。判定は runtime の `spawn-prompt-step` に任せ、窓口は返された手だけを打つ:
+1. **起動プロンプトを画面判定で承認する（盲目 Enter 禁止）** — Claude Code の起動時プロンプト（folder-trust「Do you trust the files in this folder?」相当 / 「Load development channel?」）を、画面を見て 1 手ずつ承認する。**folder-trust の初期カーソルは「No, exit」なので、表示を確かめずに送った Enter はそのまま dispatcher を終了させる**。判定は runtime の `spawn-prompt-step` に任せ、窓口は返された手だけを打つ:
    1. 開始時刻を ms で控える（`date +%s%3N`）。`previous` = null
    2. `mcp__renga-peers__inspect_pane(target="dispatcher", format="grid")` を呼ぶ（`lines` は付けない。背の高いペインでは下端 N 行の外にダイアログが残る）
    3. 判定を 1 回呼ぶ。stdin には JSON オブジェクト `{"screen": <2 の結果>, "previous_screen": <前回の inspect 結果か null>, "elapsed_ms": <開始からの経過 ms の整数>}` を 1 つ渡す（画面テキストはシェルの引用へ直に埋め込まず、JSON 文字列としてエンコードしてファイル経由で渡す）:
       ```bash
       claude-org-runtime dispatcher spawn-prompt-step --deadline-ms 120000 < "$TMPDIR/spawn-prompt-step.json"
       # PATH に無ければ: python3 -m claude_org_runtime.dispatcher.runner spawn-prompt-step --deadline-ms 120000
+      #   （Windows native は py -3 -m claude_org_runtime.dispatcher.runner spawn-prompt-step --deadline-ms 120000）
       ```
    4. 結果で分岐する:
       - **exit 0 / `action: "send_keys"`**: 返された `send_keys` オブジェクトを**そのまま** `mcp__renga-peers__send_keys(target="dispatcher", ...)` に渡す（`enter` を自分で足さない）。`previous` = null にして 1 秒待ち 2 へ
@@ -385,7 +337,20 @@ Block A の spawn 成功後、dispatcher ペインで Claude が boot してい�
 4. **Block B の DB 初期化完了を待つ** — 並列実行の合流点。Block B-1 で `.state/state.db` 不在 → `importer --rebuild` が走った場合、schema 構築完了までは `StateWriter.update_session()` が失敗するので、Block D-5 の DB write 前に Block B が完了している必要がある。Block B が SUSPENDED ブリーフィング待ちで未完了なら、ブリーフィング完了 → DB schema 健全性確認 → ここに進む
 5. **DB transaction を 1 回にまとめて identity を記録する** (`StateWriter.transaction()` 経由、markdown 直接編集禁止。post-commit hook が `.state/org-state.md` を再生成)。dispatcher の identity を write し、**curator の identity は常に `StateWriter.CLEAR` で明示クリアする**（オンデマンド化により常駐 curator は存在しない。旧仕様の SUSPENDED 状態から繰り越した stale な `curator_pane_id` / `curator_peer_id` が残ると、ダッシュボードと balanced split target 選出が生きた curator がいる前提で誤判断する。`StateWriter.update_session()` は None 渡しを「未指定 = 保持」と解釈する契約なので、明示クリアが必須）:
    ```bash
-   python -c "
+   # Mac/Linux
+   python3 -c "
+   from pathlib import Path
+   from tools.state_db import connect
+   from tools.state_db.writer import StateWriter
+   conn = connect('.state/state.db')
+   with StateWriter(conn, claude_org_root=Path('.')).transaction() as w:
+       w.update_session(
+           dispatcher_pane_id='<d_pane>', dispatcher_peer_id='<d_peer>',
+           curator_pane_id=StateWriter.CLEAR, curator_peer_id=StateWriter.CLEAR,
+       )
+   "
+   # Windows native（Git Bash / PowerShell。`"..."` 内の改行はそのまま渡る）
+   py -3 -c "
    from pathlib import Path
    from tools.state_db import connect
    from tools.state_db.writer import StateWriter
@@ -400,20 +365,10 @@ Block A の spawn 成功後、dispatcher ペインで Claude が boot してい�
    curator フィールドが null であることは**正常系**であり、suspend / handover / resume / dashboard はこれを前提に動く。
    - **capability gate の縮退中（Block D-2 の列挙を破棄した場合）は `dispatcher_peer_id` に `StateWriter.CLEAR` を渡す**。縮退中は `<d_peer>` を観測できていないので、推測値や他タブ由来の id を書くと以後の routing が壊れた宛先を掴む。**ここで「未指定 = 保持」に倒してはならない**: `/org-start` は dispatcher ペインを**新規 spawn** するので、DB に残っている値は前セッションの死んだペインのものであり、保持は stale の温存になる（生きたペインを引き継ぐ [`.claude/skills/dispatcher-resume/SKILL.md`](../dispatcher-resume/SKILL.md) Step 0 とはここが逆になる。あちらは同じペインが生きているので保持が正しい）。`dispatcher_pane_id` は `list_panes` から確定できるので通常どおり書く。peer_id が null の間、dispatcher への送信は安定名 `to_id="dispatcher"` で行う（root `CLAUDE.md` の既定の宛先指定と同じ）。この状態はユーザー報告に含める。
 6. JSON スナップショットを 1 回だけ再生成する（dashboard 用、state-db cutover とは別経路）:
-   `py -3 dashboard/org_state_converter.py`
-
-### 補足: spawn_claude_pane 引数の詳細
-
-spawn の引数の意味と落とし穴:
-
-- `target`: 分割対象のペイン。dispatcher は `target="focused"`（窓口ペインを分割）
-- `direction`: `"horizontal"` = 上下分割（既存ペイン=上 / 新ペイン=下）、`"vertical"` = 左右分割（既存ペイン=左 / 新ペイン=右）
-- `role`: `mcp__renga-peers__list_panes` で役割識別できるラベル
-- `name`: 後続の `send_message(to_id="dispatcher", ...)` 等で参照する安定名。**renga-peers は全桁数字の name を id として解釈するので、英字を含む名前を必ず付ける**
-- `cwd`: caller ペイン（= 窓口）の cwd を基点に相対解決される。`cd X && claude ...` を `command` に埋める旧方式は禁止（auto-upgrade が発動せず channel push が失われる落とし穴）
-- `permission_mode` / `model`: renga が `claude --permission-mode {mode} --model {model} --dangerously-load-development-channels server:renga-peers` を合成して実行する
-- 戻り値: `"Spawned pane id=N."` テキスト。エラーは `[<code>] <msg>` 形式（例: `[split_refused]` / `[pane_not_found]` / `[cwd_invalid]`）。code 一覧と分岐は `.claude/skills/org-delegate/references/renga-error-codes.md` を参照
-- `.dispatcher/CLAUDE.md` / `.curator/CLAUDE.md` にそれぞれのロール用の指示が入っている（Secretary の CLAUDE.md とは別）
+   ```bash
+   python3 dashboard/org_state_converter.py   # Mac/Linux
+   py -3 dashboard/org_state_converter.py     # Windows native
+   ```
 
 ### 失敗モード
 
@@ -430,15 +385,6 @@ Block A の spawn 段階で分類する:
 
 curator の spawn / boot 失敗モードは org-start には存在しない（spawn しないため）。オンデマンド起動時の失敗ハンドリングは [`.dispatcher/references/pane-close.md`](../../../.dispatcher/references/pane-close.md) Step 5-3 / 5-4 を参照。
 
-### Stage A / Stage B の wall-clock 効果
-
-| stage | 変更内容 | wall-clock |
-|---|---|---|
-| 改修前 | 状態復元 → ダッシュボード起動 → dispatcher 起動 (spawn+Enter+poll+greet+DB+snapshot) → curator 起動 (同様) を serial | 〜180s |
-| Stage A 後 | dispatcher / curator 起動を 1 つの並列 block にまとめ、両 spawn / Enter / poll / greet / DB write / snapshot を一括化 | 〜90s |
-| Stage A+B 後 | 上に加え、Step 0 完了直後に Block A の spawn を発火、Block B (state 復元) / Block C (dashboard 起動) と並列に Claude の boot wait を overlap | 〜35s |
-| curator オンデマンド化後 | 起動対象は dispatcher のみ（curator の spawn / Enter / poll / greet が消滅） | さらに短縮 |
-
 ### 起動後の裏取り: dispatcher の /loop 監視宣言は実 invoke を打鍵で確認する
 
 dispatcher は初回 DELEGATE 完了報告で「/loop 3m で監視します」と宣言したまま実 invoke せず idle に落ちることがある（宣言はターン終了と同時に失効し、次の契機がなければ実行されない）。窓口は初回 DELEGATE 完了報告や監視宣言を信用せず、使用中 transport の `inspect_pane(target="dispatcher")` で /loop の実行痕跡（loop 予約 / 監視サイクル出力）を確認し、無ければ `send_keys` で `/loop 3m <監視ディレクティブ>` を user turn として打鍵し再点火する。打鍵は text と Enter を**別呼び出し**に分ける 2 段（`send_keys(target="dispatcher", text="/loop 3m ...")` → `inspect_pane` で入力欄に乗ったことを確認 → `send_keys(target="dispatcher", enter=true)`。text+enter 同時送は draft 残りで未武装が再発しやすい。[`.dispatcher/references/spawn-flow.md`](../../../.dispatcher/references/spawn-flow.md) 3-5a と同じ手順）で行う（いずれも Step 0 で判定した transport の完全修飾名で呼ぶ。監視ディレクティブは placeholder のまま打鍵せず、[`.claude/skills/dispatcher-resume/SKILL.md`](../dispatcher-resume/SKILL.md) Step 5 のコードブロック正文をそのまま使う。手順詳細は [`.dispatcher/references/worker-monitoring.md`](../../../.dispatcher/references/worker-monitoring.md)）。`send_message` / `check_messages` 経由の指示では武装しない — 打鍵による user turn 注入が確実な武装手段である（ultracode 武装と同型の構造）。
@@ -447,9 +393,7 @@ dispatcher は初回 DELEGATE 完了報告で「/loop 3m で監視します」�
 
 人間に簡潔に報告する。起動するのはディスパッチャーのみ（キュレーターはオンデマンド）。
 
-**Block C2 の runtime drift 出力の扱い**: Block C2 は **exit code** で結果を返す（stdout は drift 行専用、診断は stderr）。**exit 1**（drift）なら stdout の `[runtime drift] ...` 1 行を、下記いずれのテンプレートでも **末尾に空行を 1 つ挟んだ上でそのまま転記する**。**exit 0**（PyPI 到達確認済・drift 無し）は warning 行を付けない。**exit 2**（PyPI 未確認 = オフライン / sandbox 内 / 応答異常 / pin 窓外 / `packaging` 欠如、**または installed が local install（`file://` / VCS / editable）で PyPI 照合不能**）は **silent にせず** 「runtime drift: PyPI 未確認（要ホスト再実行）」の 1 行を報告に添える（#119 の silent 誤読を防ぐため）。**ただし stderr 診断が `local install -- PyPI 照合不能` を示す場合はホスト再実行では解消しない**ので「runtime: local install のため PyPI 照合不能（要 PyPI 由来インストールで再確認）」と読み替えて添える（#747: `file://` install が「最新・drift なし」と誤報告された事故の根治）。**exit 3**（runtime 未インストール）は「runtime 未インストール（要確認）」を添える。sandbox 内実行だと exit 2 になりやすいので Block C2 は `dangerouslyDisableSandbox: true` でホスト実行すること。
-
-**Block C4 の role config drift 出力の扱い**: Block C4 も **exit code** で結果を返す（stdout 最終行が転記用、診断は stderr）。**exit 1**（drift）なら stdout 最終行の `[role config drift] ...` 1 行を、下記いずれのテンプレートでも **末尾に空行を 1 つ挟んだ上でそのまま転記する**（Block C2 の warning 行と両方出る場合は 1 行ずつ並べる）。**exit 0**（clean）は warning 行を付けない。**exit 2**（検証不能 = checker 自体が完走できなかった）は **silent にせず**「role config: 検証不能（guard 未検証・要確認）」の 1 行を添える — drift 無しではなく **未測定**なので、clean と読ませてはならない。個別の `[ERROR]` 明細は起動報告には貼らず、ユーザーが詳細を求めたときに stdout 上部から提示する。
+**Block C2 / C4 の warning 行の置き方**: 各 Block の exit code の項で決まった行（drift 行・「PyPI 未確認」・「検証不能」等）を、下記いずれのテンプレートでも **末尾に空行を 1 つ挟んだ上でそのまま転記する**。両方出る場合は 1 行ずつ並べる。exit 0 は何も付けない。
 
 > **Sidebar: dispatcher の自己修復ビュー起動案内（broker フレーム時のみ、optional）**
 >
@@ -484,7 +428,7 @@ dispatcher は初回 DELEGATE 完了報告で「/loop 3m で監視します」�
 ...
 何をしますか？
 
-[runtime drift] claude-org-runtime: installed={installed} latest={latest_in_window} -- `python -m pip install --upgrade 'claude-org-runtime{pin}'` で更新できます
+[runtime drift] claude-org-runtime: installed={installed} latest={latest_in_window} -- `python3 -m pip install --upgrade 'claude-org-runtime{pin}'`（Windows は `py -3 -m pip ...`）で更新できます
 ```
 
 **role config drift 検出時の warning 添付例** (Block C4 exit 1。`{errors}` / `{findings}` は実行時にスクリプトが決定するもので、本ファイルには hard-code しない。Block C2 の行と両方出るときは 1 行ずつ並べる):
@@ -524,20 +468,22 @@ renga 0.18.0+ では `mcp__renga-peers__spawn_claude_pane` が役割別の構造
 - `permission_mode=auto`
 - `model="sonnet"`
 
-理由: auto モードの safety classifier はセッションモデルと独立した専用モデルで動作し、承認判定はセッションモデルに依存しない（公式: https://www.anthropic.com/engineering/claude-code-auto-mode）。キュレーターの知見整理ワークロードは軽量・機械的側に分類できるため Sonnet で十分（ワーカーの既定 opus 方針とは独立の判断）。
+理由: auto モードの safety classifier はセッションモデルと独立した専用モデルで動作し、承認判定はセッションモデルに依存しない（公式: https://www.anthropic.com/engineering/claude-code-auto-mode）。キュレーターの知見整理ワークロードは軽量・機械的側に分類できるため Sonnet で十分（ワーカーのモデル方針とは独立の判断）。
 
 ### ワーカー（org-delegate の Step 3 で使用）
 
-**既定は `model="opus"`（品質優先）。ただし oracle が強いタスクは、窓口が明示指定したときに限り `model="sonnet"`（Sonnet 5 メイン）を選んでよい。**
-判定軸は工数ラベル (S/M/L) ではなくタスクの **oracle 強度と判断密度**（ultracode 許可基準と同じ思想）:
-- **Sonnet 5 メイン可**: 次を**両方**満たす帯 —(a) 機械検証可能な正解が実装の外に固定されている（fixture 駆動の期待値・テストスイートの assertion・DB の行など）、(b) 設計判断が brief で事前固定済みで実装中に決め直す判断が残らない。
-- **opus 維持**: (a)(b) のどちらかを欠くもの（機構の再導出が要る retarget 型 / 契約設計を含む / 実測しないと決められない決定が実装中に残る帯）。
+**既定は `model="sonnet"`。窓口が DELEGATE 本文に `モデル: opus` 行を載せたときだけ `model="opus"`。**
+Opus にするかを決めるのは窓口で、条件は次のいずれか:
+- (a) Codex 往復上限での拒否（`CODEX_ROUND_DENIED`）の後に、窓口が Opus へ上げると決めたとき
+- (b) ワーカーが手に余ると申し出たとき
+- (c) 人間が指定したとき
+- (d) ガード・封印・契約などの強制機構を実装するタスク
 
-窓口の指定は DELEGATE 本文の `モデル: sonnet` 行で伝わり、この行が無ければディスパッチャーは `opus` で spawn する（[`.dispatcher/references/spawn-flow.md`](../../../.dispatcher/references/spawn-flow.md) 3-2）。
+(c)(d) は派遣時に `モデル: opus` 行で伝え、(a)(b) は spawn 後に窓口が同じペインで昇格させる（手順は [`.claude/skills/org-delegate/SKILL.md`](../org-delegate/SKILL.md) のモデル選定節）。ディスパッチャーは `モデル: opus` 行が無ければ `sonnet` で spawn し、inbox task JSON の `"model"` を必ず明示する（runtime helper は欠落時に opus を既定にするため。[`.dispatcher/references/spawn-flow.md`](../../../.dispatcher/references/spawn-flow.md) 3-2）。
 
 モデル選択は承認フローの安全性とは独立である。auto モードの分類器はワーカーのセッションモデルとは別の専用モデルで動作し、承認判定はワーカーが opus か sonnet かに依存しない（公式: https://www.anthropic.com/engineering/claude-code-auto-mode）。ディスパッチャーだけは `bypassPermissions` 固定なので分類器を経由せず、コスト最適化として sonnet 運用（この判断はワーカーには自動適用しない）。
 
 通常:
 - `cwd="{workers_dir}/{task_id}"`（絶対パス推奨）
 - `permission_mode=auto`
-- `model="opus"`（既定。oracle が強いタスクで窓口が明示指定した場合のみ `"sonnet"`）
+- `model="sonnet"`（既定。DELEGATE 本文に `モデル: opus` 行があるときだけ `"opus"`）

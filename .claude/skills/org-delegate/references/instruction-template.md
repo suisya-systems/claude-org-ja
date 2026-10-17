@@ -1,7 +1,7 @@
 # ワーカーへの指示テンプレート
 
 org-broker の send_message（`to_id="worker-{task_id}"`）で送信する、タスク固有の指示。
-権限・報告先・SUSPEND対応・知見記録の指示は worker-claude-template.md（CLAUDE.md経由）に一元化されているため、ここでは繰り返さない。
+権限・報告先・SUSPEND対応・知見記録・Codex セルフレビューの手順は worker brief（生成元 `tools/templates/worker_brief_normal.md` / `worker_brief_self_edit.md`。CLAUDE.md / CLAUDE.local.md として配置）に一元化されているため、ここでは繰り返さない。
 
 > **輸送層（transport）両系 — 既定 `broker` / opt-in `renga`**: 本ファイル（および各スキル）の peer message・pane 操作は `mcp__org-broker__*` で書いてあり、**`ORG_TRANSPORT` 無設定＝既定 `broker`** ではそのまま従えばよい。`ORG_TRANSPORT=renga`（opt-in、切戻し可）では MCP サーバー名が `renga-peers` になり、**完全修飾名が `mcp__org-broker__*` → `mcp__renga-peers__*`** に機械置換される（引数形・セマンティクスは同一なので操作の論理は変わらない）。輸送依存で手順が変わる差は次の 3 点:
 >
@@ -17,94 +17,44 @@ worker brief（worker の行動規範ファイル＝既定 `CLAUDE.md`、claude-
 
 - brief に ultracode 許可があるなら、**この peer message では本作業を始めず**、dispatcher の `ultracode` send_keys kickoff turn に応答して本作業を開始する（その応答全体が武装されるため）。peer message の指示はリファレンス。許可が無ければ通常どおりこの指示で着手してよい。
 - 武装の詳細・dispatcher 手順の SoT は [`.dispatcher/references/spawn-flow.md`](../../../../.dispatcher/references/spawn-flow.md) の **3-5a**。許可文言を本テンプレに転記する必要はない（SoT は worker brief の implementation 指示）。
-- ultracode の位置づけ（実装と Codex 前セルフレビュー収束に使う前段。最終 Codex ゲートは維持）は下記テンプレ「検証深度: full」節に条件付きで載せ、worker に届くようにしている。
+- ultracode の位置づけ（実装と Codex 前セルフレビュー収束に使う前段。最終 Codex ゲートは維持）は下記テンプレ「検証深度」節の full 項に条件付きで載せ、worker に届くようにしている。
 
 ## テンプレート
 
-```
-以下のタスクを遂行してください。詳細な行動規範は CLAUDE.md に記載されています。
+テンプレート本体は末尾の「自動展開テンプレート」節のコードフェンス 1 本だけである。helper が変数を展開する経路（`instruction_vars`）でも、`instruction` を直接指定する経路でも、この形に従う（直接指定のときは `{...}` を手で埋める）。
 
-## タスク
-{タスクの目的と期待する成果物を具体的に記述}
+### `{dir_setup}` の文例（ディレクトリパターン別）
 
-## プロジェクトの準備
-重要: あなたの作業ディレクトリは CLAUDE.md に記載された絶対パスです。
-まず `pwd` を実行し、CLAUDE.md の作業ディレクトリと一致することを確認してください。
-全てのファイル作成はこのディレクトリ内に限定。`..` への移動や claude-org 構造の再現は禁止です。
-{ディレクトリパターンに応じて以下のいずれかを指示}
+窓口が resolve したパターンに応じて、以下のいずれかを `{dir_setup}` に入れる。
 
-### パターン A（プロジェクトディレクトリ・初回）の場合:
+#### パターン A（プロジェクトディレクトリ・初回）の場合:
 作業ディレクトリは窓口（secretary）が spawn 前に準備済みです（clone / `git init` 等は窓口側で完了している）。
 起動時の最初のアクション: `pwd` を実行し、CLAUDE.md に記載された想定ディレクトリと一致していることを確認してください。
 ワーカー側で `git clone` / `git init` を実行しないこと。claude-org の構造を真似たディレクトリ（.claude/, .state/ 等）を作らないこと。
 {必要に応じて clone 元 URL / ローカルパス / 新規プロジェクトかどうか等の情報のみ記載}
 
-### パターン A（プロジェクトディレクトリ・再利用）の場合:
+#### パターン A（プロジェクトディレクトリ・再利用）の場合:
 このディレクトリは以前のタスクで使用されたプロジェクトディレクトリです。既存のファイルとgit履歴が残っています。
 clone は不要です。{引き継ぎ事項があれば記載}
 
-### パターン B（worktree）の場合:
+#### パターン B（worktree）の場合:
 このディレクトリは git worktree として準備済みです。ブランチ `{branch_name}` にチェックアウトされています。
 clone は不要です。そのまま作業を開始してください。
 
-### パターン C（エフェメラル）の場合:
+#### パターン C（エフェメラル）の場合:
 作業ディレクトリは窓口（secretary）が spawn 前に準備済みです（clone / `git init` 等は窓口側で完了している）。
 起動時の最初のアクション: `pwd` を実行し、CLAUDE.md に記載された想定ディレクトリと一致していることを確認してください。
 ワーカー側で `git clone` / `git init` を実行しないこと。claude-org の構造を真似たディレクトリ（.claude/, .state/ 等）を作らないこと。
 {必要に応じて clone 元 URL / ローカルパス / 新規プロジェクトかどうか等の情報のみ記載}
 
-## ブランチ戦略
-{ブランチ名の指定、またはmainで直接作業等}
+### 検証深度の選び方（窓口向け）
 
-## 作業の進め方
-auto モードで直接作業してください。Plan モードは使用しないこと。
-**ultracode 許可タスクのみ**（worker brief の「実装ガイダンス」に ultracode 使用許可がある場合）: **この peer message では本作業を始めない**。本作業は dispatcher が打鍵する `ultracode` send_keys kickoff（user turn）に応答して開始すること（その turn でのみ multi-agent workflow / Workflow tool が武装される。peer message / `check_messages` 経由の本文では武装しない）。許可が無ければこの指示でそのまま着手してよい。
-
-## 制約
-{使用言語、フレームワーク、テスト要件等があれば記載}
-
-## 検証深度: {full | minimal}
-この行はテンプレートから**削除せず必ず送信する**。窓口は 2 値のどちらか 1 つだけを埋める。
-既定は `full`。trivial fix のときのみ `minimal` を窓口側で選択して埋めること。
-
-- **full**（新機能実装 / 修正 / リファクタ / テスト追加 / hook・skill・設定編集など、コードまたは挙動の変更を伴うもの）
-  - **Knowledge 層プライバシー（`knowledge/raw/` への記録時、full モードのみ該当）**: `knowledge/raw/` および `knowledge/curated/` は公開 OSS リポジトリにコミットされる。operator の固有名・社内システム識別子・顧客データ・シークレット・社内 URL などの operator-private な内容を、これらディレクトリに書き込んではならない。当該情報を含む学びがあった場合は記録せず、窓口（secretary）にエスカレーションすること。
-  - **codex の有無に関わらず必須**: 既存テストスイート / lint / type-check 等のリポジトリ通常検証を green まで実行し、通常の完了報告フォーマット（成果物説明・残作業・PR 草案・振り返り記録・**人間向け理解サマリ**）で報告
-  - **人間向け理解サマリ（`full` 限定・必須）**: 窓口がコードを精読せずに「何を承認しようとしているか」を把握し、そのままユーザーへの承認提示に使えるよう、完了報告に以下 3 点を必ず含める。これは `awaiting_review` (REVIEW) 遷移を起こす full モード完了報告（`worker_completed`）の一部であり、contract の不変条件（[`docs/contracts/delegation-lifecycle-contract.md`](../../../../docs/contracts/delegation-lifecycle-contract.md) T4 / T5）は変えず、報告フォーマットだけを拡張するもの:
-    1. **最重要の変更点（N 個）**: このタスクで実際に変えたことを効果の大きい順に N 個（目安 3〜5 個）。1 項目 1〜2 行で、diff を開かなくても要旨が掴めるように書く
-    2. **要確認ファイル / hunk**: 人間が承認前に必ず目を通すべきファイル（と該当する関数 / hunk）。「全部見て」ではなく「ここだけは見てほしい」に絞る
-    3. **設計判断と理由**: 採用した設計上の選択と、なぜそれを選んだか。却下した代替案があれば 1 行添える
-    - minimal モードではこのサマリは不要（trivial fix に負荷をかけない。下記 minimal の 1 行 `done:` 報告のまま）
-  - **ultracode（許可があるタスクのみ）**: brief に ultracode 使用許可があり、kickoff の user turn で武装されている場合、実装と **Codex 前のセルフレビュー収束**に ultracode（multi-agent workflow / Workflow tool）を使ってよい（複数観点の並列レビューで指摘の種を潰し、Codex の周回数を減らす）。最終ゲート（下記 Codex Blocker / Major ゼロ）は **ultracode の有無に関わらず従来どおり維持**する。ultracode は Codex ゲートの**前段**であって置き換えではない。武装されていなければ ultracode は使わない（武装は本文ではなく dispatcher の `send_keys` user turn が担う。[`.dispatcher/references/spawn-flow.md`](../../../../.dispatcher/references/spawn-flow.md) 3-5a 参照）
-  - **追加ゲート（任意）**: commit 完了後に `codex` CLI が available なら **`codex exec review`（review surface）**で Codex 差分セルフレビューを実行する（`codex exec` 直打ちの長文プロンプト形は廃止。review surface は中小 diff で約 2 倍速く、安全側 Blocker/Major のパリティは同等）
-    - 確認コマンド: `command -v codex`（Bash/zsh）/ `Get-Command codex -ErrorAction SilentlyContinue`（PowerShell）
-    - codex 未導入環境ではセルフレビューを skip し、上記の通常検証だけで完了報告に進む（以下のラウンド規律は適用されない）
-    - **安全機構に掛かって review 処理が進められない場合（`available` だが safety block）は別扱い**: diff 内容がモデル安全分類器に掛かり `codex exec review` を完了できないときの skip は「codex 未導入 skip」とは**意味が異なる** — ゲート**未成立**であって「codex clean」ではない（回避の言い換え・プロンプト改変はしない）。正式リカバリは**新規セッション化**（同一 worktree・commit を引き継いだ continuation spawn で review 再実行し、完了報告に引き継いだ HEAD SHA を明記。窓口にセッション再起動を依頼）。リカバリ不能時は「codex clean」と**報告せず**「ゲート未成立（safety block、HEAD=`<sha>`）」と明示して窓口の判断を仰ぐ
-  - **「空の合格」（`available` かつエラー表示も無いのにゲート未成立）も別扱い**: ワーカーのサンドボックス下では `CODEX_HOME`（既定 `~/.codex`）が書き込み不可で codex が実行ヘルパーを配置できず、**`git diff` を一度も読まないまま「指摘なし」と読める文面を返して exit 0 で終了する**ことがある。**終了コードでも出力の文面でも判定できない**（空の合格でも exit 0、確度が低い旨の但し書きは環境により消える）ため、**「コマンドが実際に実行された」という肯定的証拠でのみ判定する**: 実行ログ中の `^ *succeeded in [0-9]+(ms|s|m)` が 1 以上 かつ `^ *failed in [0-9]+(ms|s|m)` が 0 かつ終了コードが 0 のときだけ「codex clean」が成立する（行頭アンカーと実行時間を両方要求しないと、ログに載る diff 本文やバイナリ出力の断片に自己マッチする）。**未成立を「codex clean」と報告させない** — safety block と同じく「ゲート未成立（diff 未読の空の合格、HEAD=`<sha>`）」と明示させ、判定に使った 2 つの数値を完了報告に添えさせる。ワーカーが実行する `CODEX_HOME` 退避を含む正規のコマンド列は [`.claude/skills/org-delegate/references/worker-claude-template.md`](worker-claude-template.md)（CLAUDE.md 経由でワーカーに届く）と `tools/templates/worker_brief_*.md` に一元化されているためここでは繰り返さない。**退避先は「書き込み可能」かつ「一時ディレクトリ配下でない」の 2 条件が必要で、`$TMPDIR` 配下は codex 側が拒否するため逆効果**（正直なエラーが空の合格に化ける）。真因・実測根拠の SoT は [`knowledge/curated/codex.md`](../../../../knowledge/curated/codex.md)
-  - **以下は codex を実行した場合のみ適用**:
-    - Blocker / Major は修正コミットを積んでから完了報告
-    - **round は既定上限 3**（brief の「実装ガイダンス」で別値が明示指定されていればそちらが優先）。**上限に達したら round N+1 に自走で入らず**、残っている Blocker / Major 指摘 + 自己評価（設計問題化しているのか、別問題が順に露見する健全な収束の途中なのか）を添えて窓口に報告して停止する（別問題が毎 round 出るケースでも上限で止め、続行判断は人間に委ねる）
-    - **同一指摘（例: loose match 精緻化 / 型絞り等）が 3 ラウンド消えない場合は、上限に達する前でも即座に設計問題として報告する**。同じ指摘 / 箇所が修正しても再燃するのは修正アプローチ自体の問題のサインで、別問題が各 1 round で順に解消する健全な収束（上限まで継続可）とは区別する。即完了報告し、窓口に仕様縮小 / 設計見直しの判断を仰ぐ（無限ループ防止）
-    - **毎ラウンド別の指摘が出ても、前ラウンドの修正を巻き戻す向きの指摘が出たら、それも飽和のサイン**。問題が「欠陥」から「設計上の問い」に移った合図なので、潰し続けず、範囲を切って既知の限界として明示し、報告に「どの方向の綱引きが起きたか」を書く（2026-09-20、実例あり）
-    - Minor / Nit は原則残置。README / Issue / PR 本文に既知制限として明記する
-    - `codex:rescue` スキルは使用しないこと（18 分超ハング事例あり、`codex exec review` / `codex exec` 系の直打ちが安定）。ChatGPT アカウントで通るモデル名は限られる（現行世代は `gpt-6-astra`。素の `gpt-6` / `gpt-6-codex` / `gpt-6-sol` はいずれも 400、API キー surface も実行不可）ため `-m gpt-6-astra` を明示。codex-cli は **0.153.4 以上**が必要（0.147.0 は `The 'gpt-6-astra' model requires a newer version of Codex.` で 400。このメッセージが出たらモデル名を探し直さず `npm i -g @openai/codex@latest` で更新する）
-  - レビュー指示例（diff セルフレビュー）: `codex exec review --base origin/main -m gpt-6-astra -c model_reasoning_effort=medium`（`--base` にはブランチのベース（通常 `origin/main`）を渡す。**ローカル `main` ではなく remote-tracking の `origin/main`** を使うのは、共有 clone のローカル `main` が古いと別タスク差分を巻き込む誤レビューになるため。codex 内蔵レビュープロンプトが Blocker/Major 相当を返す）
-  - **正規実行形（diff セルフレビュー = review surface）**: `codex exec review --base origin/main -m gpt-6-astra -c model_reasoning_effort=medium < /dev/null` — **前景実行**して出力（Blocker/Major 相当）を読んでから次に進む。stdin は `< /dev/null` で閉じる。背景化 `&` + ログ redirect は完了を待たず・指摘を読まずに完了報告してゲートを素通りする事故を招くため避ける（fast な review surface は前景で待てば自然にゲートが効く）。コピペするコマンドにリダイレクト記号を含む `<main>` / `<N>` 等のプレースホルダを残さない（`< main` と誤解釈され落ちる）。**`origin/main` 参照前に `git fetch origin` を 1 回**（着手時 pull 済みでも review 直前に remote-tracking ref を最新化。fetch 不能でも review 自体は継続）。
-    - **large diff（100 行超目安）では effort を上げない**（high-effort review は大 diff でスケールせず直打ちより遅くなる実測あり）。review surface は危険側 Major は守るが benign な safe-side false-negative / ReDoS 級を取りこぼしうる（深掘りが要る変更は design review 併用を窓口に相談）
-    - **重い `codex exec` プロンプト（デザインレビュー等、長時間ハングしうる）を背景実行する場合**（`knowledge/curated/codex.md` のハングガード参照）: `mkdir -p tmp` で出力先を保証し `> tmp/codex-review-round1.log 2>&1 < /dev/null &` でラウンド別ログに直書き（`| tail` パイプ禁止）。完了検知はマーカーでなく**プロセス終了**で待つ（例: `until ! tasklist | grep -qi codex; do sleep 10; done`）。Windows PowerShell 制約言語モードの `rejected: blocked by policy` 多発は別手段フォールバックで完走するため**レビュー失敗と誤判定しない**。判定サマリだけで done にせず、ログ末尾（`tail -c 8000`）で**残留リスク自己申告**を確認し未実行分を手動再実行してから「codex clean」と報告する
-
-- **minimal**（trivial fix: CI 出力整形 / typo / コメント修正 / 既存テスト形式合わせ等、指示で変更箇所が 1 ファイル数行に限定されるもの）
-  - 指示された fix を反映 → `git add` → `git commit` 直行
-  - Codex セルフレビュー・追加テスト実行・差分確認を超えた動作検証は**一切禁止**
-  - 完了報告は窓口（`secretary`）に送信する 1 行:
-    - `done: {commit SHA 短縮形} {変更ファイル名}`（例: `done: be8f497 tests/test-block-pretooluse-hooks.sh`）
-    - SHA は `git rev-parse --short HEAD`、ファイル名は単独ファイルなら 1 つ、複数なら空白区切り
-    - これ以外の情報（成果物説明・PR 草案・残論点等）は不要。push / PR 起票は窓口側で実施する
-  - 振り返り記録（`knowledge/raw/`）は minimal では**不要**（trivial fix に再利用可能な学びはない前提）。非自明な発見があれば `full` と同様 1 件作ってよい
-
-**選択は窓口の責任**。ワーカーは指示に書かれた値（`full` or `minimal`）にそのまま従い、自分で切り替え判断をしないこと。派遣時にこの行自体が送信されなかった・または値が不明瞭だった場合はワーカーから窓口に確認すること（勝手に `full` にフォールバックしない）。
-```
-
+- `## 検証深度:` の行はテンプレートから削除せず必ず送る。値は `full` か `minimal` のどちらか 1 つ。既定は `full`
+  - **full**: 新機能実装 / 修正 / リファクタ / テスト追加 / hook・skill・設定編集など、コードまたは挙動の変更を伴うもの
+  - **minimal**: trivial fix（CI 出力整形 / typo / コメント修正 / 既存テスト形式合わせ等、変更箇所が 1 ファイル数行に限定されるもの）
+- **選択は窓口の責任**。ワーカーは指示の値に従い、自分で切り替えない（テンプレート本文の「検証深度」節にも書いてある）
+- 人間向け理解サマリは `awaiting_review` (REVIEW) 遷移を起こす full 完了報告（`worker_completed`）の一部で、contract の不変条件（[`docs/contracts/delegation-lifecycle-contract.md`](../../../../docs/contracts/delegation-lifecycle-contract.md) T4 / T5）は変えず報告フォーマットだけを拡張するもの
+- full ワーカーに minimal で追指示するときも、完了報告の書式はテンプレート本文の minimal 項（`done:` の 1 行）に従わせる
 ## cross-cutting operational change の場合の consistency grep target list
 
 運用モード・共通設定・命名規約のような **cross-cutting な変更**（1 ファイルに閉じず、複数のロール / skill / 設定 / ドキュメントを横断する変更）を委譲するときは、ワーカー指示の「制約」または「タスク」セクションに、整合性確認のための grep スコープを明示する。スコープを書かないと、ワーカーは目に付いたファイルだけ直して、別ロール側 / docs 側の同名参照を取りこぼす（rename / mode 変更で起きやすい）。
@@ -165,7 +115,7 @@ cross-cutting と判定したら、**最低限以下を grep スコープとし�
 
 ## doc-audit role 専用: write 成果物の chunk 転送方式
 
-doc-audit role では Edit / Write / MultiEdit / NotebookEdit が deny され、Bash heredoc も deny-circumvention safeguard でブロックされる。AUDIT.md 等の成果物書き出しが必要なタスクでは、ワーカーが本文を抱えてブロックする事故が再現性高く発生する（実例: 2026-05-03 readme-drift-audit, 26 findings × 7 repos）。
+doc-audit role では Edit / Write / MultiEdit / NotebookEdit が deny され、Bash heredoc も deny-circumvention safeguard でブロックされる。AUDIT.md 等の成果物書き出しが必要なタスクでは、ワーカーが本文を抱えてブロックする事故が再現性高く発生する。
 
 doc-audit role + write 成果物がある委譲では、以下の文言を「制約」セクションに **必ず追加** する:
 
@@ -180,7 +130,7 @@ doc-audit role + write 成果物がある委譲では、以下の文言を「制
 
 ## 自動展開テンプレート (helper-rendered)
 
-`claude-org-runtime dispatcher delegate-plan --locale-json <path-to-ja_locale.json>` は task JSON に `instruction_vars` が含まれる場合、以下の strict テンプレートを変数展開してワーカー指示として書き出す（日本語の挨拶文や `(なし)` などの defaults はリポジトリルート直下の `tools/ja_locale.json` で上書きする。ディスパッチャーは `cwd=".dispatcher/"` で動くため、実際の呼び出しでは `--locale-json ../tools/ja_locale.json --template-repo ..` のように 1 段上を指す。詳細は `.dispatcher/CLAUDE.md` のコマンド例参照）。`instruction` フィールドが直接指定されている場合はそちらが優先され、本テンプレートは使われない（backward-compat）。**この直指定経路では上記「作業の進め方」節の ultracode 待機文も自動では入らない**ため、ultracode 許可タスクを直指定 instruction で派遣する場合は、dispatcher が待機文を body に prepend するか、reference の send_message を送らず send_keys のみを着手トリガにすること（[`.dispatcher/references/spawn-flow.md`](../../../../.dispatcher/references/spawn-flow.md) 3-5a 手順1）。
+`claude-org-runtime dispatcher delegate-plan --locale-json <path-to-ja_locale.json>` は task JSON に `instruction_vars` が含まれる場合、以下の strict テンプレートを変数展開してワーカー指示として書き出す（日本語の挨拶文や `(なし)` などの defaults はリポジトリルート直下の `tools/ja_locale.json` で上書きする。ディスパッチャーは `cwd=".dispatcher/"` で動くため、実際の呼び出しでは `--locale-json ../tools/ja_locale.json --template-repo ..` のように 1 段上を指す。詳細は `.dispatcher/CLAUDE.md` のコマンド例参照）。`instruction` フィールドが直接指定されている場合はそちらが優先され、本テンプレートは使われない（backward-compat）。**この直指定経路では下記テンプレートの「作業の進め方」節の ultracode 待機文も自動では入らない**ため、ultracode 許可タスクを直指定 instruction で派遣する場合は、dispatcher が待機文を body に prepend するか、reference の send_message を送らず send_keys のみを着手トリガにすること（[`.dispatcher/references/spawn-flow.md`](../../../../.dispatcher/references/spawn-flow.md) 3-5a 手順1）。
 
 変数一覧 (helper 側で参照):
 
@@ -219,8 +169,9 @@ auto モードで直接作業してください。Plan モードは使用しな�
 {constraints}
 
 ## 検証深度: {verification_depth}
-- full: 既存テストスイート / lint / type-check 等の通常検証を green まで実行し、commit 完了後に codex CLI が available なら **`codex exec review --base origin/main -m gpt-6-astra -c model_reasoning_effort=medium`（review surface）**で差分セルフレビュー（直打ち長文プロンプト形は廃止。中小 diff で約2倍速・安全側パリティ同等 — この速度・カバレッジ値は `gpt-5.5` 世代の実測で現行の指定モデルでは再測定していない。large diff では effort を上げない）。Blocker / Major は修正コミットを積んでから完了報告。**Codex round は既定上限 3**（brief の実装ガイダンスで別値指定があればそちら優先）: 上限到達時は round N+1 に自走で入らず、残指摘 + 自己評価（設計問題化か収束途中か）を添えて窓口に報告して停止（別問題が毎 round 出ても上限で止め、続行判断は人間）。同一指摘が 3 ラウンド消えない場合は上限前でも即設計問題として報告（別問題が各 1 round で順に解消する健全な収束とは区別）。Minor / Nit は残置（既知制限として明記）。**codex が available だが安全機構に掛かって review 処理を進められない skip は「codex 未導入 skip」と別扱い**（ゲート未成立であって codex clean ではない。回避の言い換えはしない）: 正式リカバリ = 新規セッション化（同一 worktree・commit を引き継いだ continuation spawn で review 再実行、完了報告に引き継いだ HEAD SHA を明記）、リカバリ不能なら「codex clean」と報告せず「ゲート未成立（safety block、HEAD=`<sha>`）」と明示。**同様に「空の合格」（`CODEX_HOME` 不備で codex が diff を一度も読まないまま exit 0 で「指摘なし」を返す失敗モード）もゲート未成立**: 終了コード・出力文面では判定できないため、実行ログの `^ *succeeded in [0-9]+(ms|s|m)` が 1 以上 かつ `^ *failed in [0-9]+(ms|s|m)` が 0 かつ終了コード 0 という肯定的証拠でのみ「codex clean」を認め、**完了報告にこの 2 つの実数を添えさせる**（実行形は worker-claude-template.md / `tools/templates/worker_brief_*.md`、真因は `knowledge/curated/codex.md`）。**ultracode（許可があるタスクのみ）**: kickoff で武装されていれば、実装と Codex 前のセルフレビュー収束に ultracode を使ってよい（最終の Codex ゲート（Blocker / Major ゼロ）は従来どおり維持。ultracode は前段であって置き換えではない）。武装されていなければ使わない。**完了報告には人間向け理解サマリを必ず含める**: (1) 最重要の変更点を効果順に N 個（目安 3〜5 個、各 1〜2 行）、(2) 人間が承認前に必ず目を通すべきファイル / hunk、(3) 設計判断とその理由（却下した代替案があれば 1 行）。窓口がコードを精読せずユーザーへの承認提示に使える土台にするため。**Knowledge 層プライバシー（`knowledge/raw/` 記録時、full モードのみ）**: `knowledge/raw/` および `knowledge/curated/` は公開 OSS リポジトリにコミットされる。operator の固有名・社内システム識別子・顧客データ・シークレット・社内 URL などの operator-private な内容を書き込んではならない。当該情報を含む学びは記録せず窓口（secretary）にエスカレーションすること。
-- minimal: trivial fix のみ。Codex セルフレビュー・追加検証は禁止。完了報告は 1 行 (`done: <SHA> <files>`) で窓口に送信。
+値は窓口が決める。自分で切り替えず、値が不明瞭なら窓口に確認する（勝手に full にしない）。
+- full: 既存テストスイート / lint / type-check 等の通常検証を green まで実行する。commit 後の Codex セルフレビューは {claude_md_filename} の Codex 節に従う（「空の合格」の判定は `tools/codex_review_gate.sh` が行う）。**codex が available だが安全機構に掛かって review 処理を進められない skip は「codex 未導入 skip」と別扱い**（ゲート未成立であって codex clean ではない。回避の言い換えはしない）: 正式リカバリ = 新規セッション化（同一 worktree・commit を引き継いだ continuation spawn で review 再実行、完了報告に引き継いだ HEAD SHA を明記）、リカバリ不能なら「codex clean」と報告せず「ゲート未成立（safety block、HEAD=`<sha>`）」と明示。完了報告は通常フォーマット（成果物説明・残作業・PR 草案・振り返り記録）で送る。**ultracode（許可があるタスクのみ）**: kickoff で武装されていれば、実装と Codex 前のセルフレビュー収束に ultracode を使ってよい（最終の Codex ゲート（Blocker / Major ゼロ）は従来どおり維持。ultracode は前段であって置き換えではない）。武装されていなければ使わない。**完了報告には人間向け理解サマリを必ず含める**: (1) 最重要の変更点を効果順に N 個（目安 3〜5 個、各 1〜2 行）、(2) 人間が承認前に必ず目を通すべきファイル / hunk、(3) 設計判断とその理由（却下した代替案があれば 1 行）。窓口がコードを精読せずユーザーへの承認提示に使える土台にするため。**Knowledge 層プライバシー（`knowledge/raw/` 記録時、full モードのみ）**: `knowledge/raw/` および `knowledge/curated/` は公開 OSS リポジトリにコミットされる。operator の固有名・社内システム識別子・顧客データ・シークレット・社内 URL などの operator-private な内容を書き込んではならない。当該情報を含む学びは記録せず窓口（secretary）にエスカレーションすること。
+- minimal: trivial fix のみ。Codex セルフレビュー・追加検証は禁止。完了報告は 1 行 (`done: <SHA> <files>`) で窓口に送信（SHA は `git rev-parse --short HEAD`、複数ファイルは空白区切り。成果物説明・PR 草案・振り返り記録は不要）。
 
 ## 報告先
 完了・進捗・ブロックは org-broker で `to_id="{report_target}"` に送信。push / PR 作成は窓口側で実施。

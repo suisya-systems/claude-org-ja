@@ -10,13 +10,20 @@ is exercised end-to-end.
 from __future__ import annotations
 
 import json
+import os
+import sqlite3
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / "tools" / "dispatcher_retro_gate.py"
+
+# acked appends retro_gate_acked; keep every run off the real .state/state.db.
+_TMP = tempfile.TemporaryDirectory()
+DB = Path(_TMP.name) / "state.db"
 
 
 def _run(stdin_payload: dict | None, *, attempt: int = 1, max_attempts: int = 10,
@@ -36,7 +43,18 @@ def _run(stdin_payload: dict | None, *, attempt: int = 1, max_attempts: int = 10
     return subprocess.run(
         args, input=stdin_text, capture_output=True, text=True,
         timeout=15, encoding="utf-8",
+        env={**os.environ, "STATE_DB_PATH": str(DB)},
     )
+
+
+def _acked_tasks() -> list[str]:
+    if not DB.exists():
+        return []
+    with sqlite3.connect(DB) as conn:
+        rows = conn.execute(
+            "SELECT json_extract(payload_json, '$.task') FROM events "
+            "WHERE kind = 'retro_gate_acked'").fetchall()
+    return [r[0] for r in rows]
 
 
 def _final(proc: subprocess.CompletedProcess) -> dict:
@@ -410,6 +428,20 @@ class DispatcherRetroGateTests(unittest.TestCase):
                 self.assertEqual(_final(proc)["status"], "acked")
 
     # --- --print-initial-prompt mode -----------------------------------
+
+    def test_acked_records_event_for_close_hook(self) -> None:
+        proc = _run({"messages": [{"from_name": "secretary",
+                                   "message": "届いています"}]},
+                    task_id="record-ack-task")
+        self.assertEqual(proc.returncode, 0)
+        self.assertTrue(_final(proc)["recorded"])
+        self.assertIn("record-ack-task", _acked_tasks())
+
+    def test_non_ack_records_nothing(self) -> None:
+        proc = _run({"messages": []}, attempt=10, max_attempts=10,
+                    task_id="no-ack-task")
+        self.assertEqual(proc.returncode, 1)
+        self.assertNotIn("no-ack-task", _acked_tasks())
 
     def test_print_initial_prompt(self) -> None:
         proc = subprocess.run(

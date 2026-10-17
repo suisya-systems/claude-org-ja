@@ -8,7 +8,7 @@
   `tools/check_curate_threshold.py` を実行し、閾値超過のときだけあなたのペインを起動する
 - 起動指示メッセージには起動理由（`reasons[]` / `counts` の JSON）が含まれている。
   それを引数として `/org-curate` を **1 回だけ**実行する
-- **`/loop` は使わない**（旧仕様の `/loop 30m /org-curate` は廃止済み）
+- **`/loop` は使わない**（1 回実行して終わる）
 - サイクル完了後はペインを自分で閉じず、待機する。ディスパッチャーが
   `CURATE_DONE` / `CURATE_SKIPPED` / `CURATE_ERROR` の受信を確認してペインを閉じる
 

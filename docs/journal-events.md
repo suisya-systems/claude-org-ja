@@ -46,6 +46,7 @@ caller passes it through, but the **column-level reserved keys are
 | Dispatcher (cwd=.dispatcher/) | `bash ../tools/journal_append.sh <event> ...` (Step D shim)        |
 | Secretary skills (cwd=repo root) | `bash tools/journal_append.sh <event> ...` or `py -3 tools/journal_append.py` for typed payload |
 | `org-start` identity recovery | `bash tools/journal_append.sh secretary_identity_restored ...`     |
+| Codex round-cap hook (`.hooks/block-codex-over-cap.sh` → `tools/codex_round_cap.py hook`) | Writes `codex_round_started` / `codex_round_denied` on the worker's behalf. The hook runs outside the worker's Bash sandbox, so it can write `state.db` that the worker itself cannot |
 
 The wrappers resolve their location via `${BASH_SOURCE[0]}` /
 `__file__` and write into the `events` table of
@@ -56,7 +57,9 @@ where the caller runs). Pre-M4 these wrappers wrote to
 remnant is migration-only.
 
 Workers do **not** write the journal directly; they report via
-`send_message` and the dispatcher / secretary persists the event.
+`send_message` and the dispatcher / secretary persists the event. The
+Codex round-cap hook is the one writer that acts on a worker's tool call,
+and it is a PreToolUse hook outside the worker's control, not the worker.
 
 ## Per-event annotations (Set A Q3 / Set B Q2)
 
@@ -97,6 +100,8 @@ addition to its writer / payload shape:
 | `worker_review`          | `worker`, `task`, `outcome`                                 | secretary    | secretary  | —            | Review verdict on a worker's report. Visible at §1 awaiting_review row but not on T4's mandatory-Journal line. |
 | `worker_report_forwarded`| `worker`, `task`, `recipient`                               | secretary    | secretary  | —            | Forwarded to human / other. |
 | `worktree_removed`       | `path`, `task`                                              | dispatcher   | dispatcher | T5 (Pattern B) | Worktree cleanup. |
+| `retro_gate_acked`       | `task`                                                      | dispatcher   | `tools/dispatcher_retro_gate.py` | — | Appended when the retro completion-report gate returns `acked`. `.hooks/block-close-before-retro.sh` reads it (only rows after the task's latest `worker_spawn_verified`) to let the dispatcher's `close_pane` through; the other pass cases are `retro_gate_confirmed_missing`, `runs.status` in `completed` / `failed` / `abandoned`, and `completion_reported_at` with `runs.status == 'review'` (`.dispatcher/references/pane-close.md`). |
+| `retro_gate_confirmed_missing` | `task` | dispatcher | dispatcher (`tools/journal_append.sh`) | — | Appended when the retro gate ends `replied_no_ack` and the secretary's reply confirms the completion report never arrived (`.dispatcher/references/pane-close.md`, exit 3 branch). `.hooks/block-close-before-retro.sh` treats it like `retro_gate_acked` (only rows after the task's latest `worker_spawn_verified`). |
 | `retro_deferred`         | `worker`, `reason`                                          | dispatcher   | dispatcher | —            | Retro Steps 1–2 could not be completed before `close_pane` (e.g., secretary unreachable within 5 minutes); pane close skipped. Listed at Set B §1 aborted row as a visible journal event, but no §2 transition's mandatory-Journal line cites it. |
 
 ### Delegate flow
@@ -180,6 +185,56 @@ independently by [`tools/relay_scan.py`](../tools/relay_scan.py) (the outbox led
 which the secretary's watcher-cleanup freshness gate cannot match, so the watcher pane is left
 running (Issue #954 / the Issue #751 re-entry path). The helper's idempotency covers **re-running
 the helper**; it does not deduplicate a row a human appended separately.
+
+### Codex review gate / worker model
+
+| Event                     | Typical fields                                   | Writer    | Emitted by | Required for |
+|---------------------------|--------------------------------------------------|-----------|------------|--------------|
+| `codex_round_started`     | `task`, `mode`, `round`, `allowed`, `worker_dir` | `codex-round-cap-hook` | `tools/codex_round_cap.py hook` | — (round count = number of rows per `task`) |
+| `codex_round_denied`      | `task`, `mode`, `used`, `allowed`, `worker_dir`  | `codex-round-cap-hook` | `tools/codex_round_cap.py hook` | — (relayed to the secretary) |
+| `codex_round_cap_changed` | `task`, `allowed` (int or `"unlimited"`), `previous`, `reason` | secretary | `tools/codex_round_cap.py set` | — |
+| `worker_model_set`        | `task`, `model` (`sonnet` / `opus`), `reason`    | dispatcher / secretary | dispatcher (spawn-flow Step 4), secretary (promotion) | — |
+
+The Codex round cap is enforced outside the worker. `.hooks/block-codex-over-cap.sh`
+sees every worker Bash call that mentions `codex`: a direct `codex` invocation is
+refused, and the only permitted entry is `bash "<claude_org_path>/tools/codex_review_gate.sh" <base-ref>`.
+Each permitted gate call appends one `codex_round_started` in the same transaction
+that counts the earlier ones; once `used` reaches `allowed` the call is refused and
+`codex_round_denied` is appended instead. The task is resolved from the newest
+`delegate_sent` whose `dir` matches the worker's `WORKER_DIR`.
+
+`mode` is `diff` for `bash "<claude_org_path>/tools/codex_review_gate.sh" <base-ref>`
+and `design` for `... --design <file>`; a row without `mode` counts as `diff`. The two
+are counted separately: `round` / `used` count rows of the same mode, diff rounds are
+checked against `allowed`, and design is fixed at `allowed: 1` per task (not changed by
+`set`), so a design review neither consumes nor is blocked by the diff allowance.
+`codex_round_cap.py status` reports `used` (diff) and `design_used`.
+
+A round is consumed when the hook authorises the gate call (PreToolUse), before the
+gate runs. A call that then exits early (`CODEX_GATE: dirty-worktree` or
+`CODEX_GATE: unavailable`) still counts, so before raising the allowance after a
+`codex_round_denied` the secretary checks why the earlier rounds ended. Workers
+also cannot reach Codex through a separate pane: `spawn_codex_pane` is denied for
+workers.
+
+`allowed` defaults to 3. Only the secretary raises it, with
+`python3 tools/codex_round_cap.py set --task-id <id> --allowed <N|unlimited> --reason <text>`;
+the newest `codex_round_cap_changed` for the task wins. A brief that names a
+different cap does not change enforcement by itself — the secretary runs `set`
+at delegate time.
+
+`codex_round_denied` is in `tools/relay_scan.py`'s `TERMINAL_KINDS`, so the
+dispatcher relays it to the secretary as
+`CODEX_ROUND_DENIED: worker-<task> (task_id=<task>, used=<n>, allowed=<m>) [relay]`
+(`mode=design` denials render as `(task_id=<task>, mode=design, used=<n>, allowed=1)`).
+The dispatcher only relays; whether to promote the worker to Opus, ask the human,
+or stop is the secretary's decision.
+
+`worker_model_set` is the trial record of which model each worker ran on (the
+state DB has no model column). `reason` is `default` or `delegate_line` when the
+dispatcher spawns, and `promotion:<cap_denied|worker_request|human|enforcement>`
+when the secretary promotes a running worker. Codex round counts per task come
+from `codex_round_started`.
 
 ### History / phase markers
 

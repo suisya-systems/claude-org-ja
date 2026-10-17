@@ -19,14 +19,14 @@ allowed-tools:
   - Bash(gh issue create:*)
   - Bash(gh issue edit:*)
   - Bash(bash tools/journal_append.sh:*)
+  - Bash(python3 tools/journal_append.py:*)
   - Bash(py -3 tools/journal_append.py:*)
-  - Bash(python tools/set_run_pr_open.py:*)
+  - Bash(python3 tools/set_run_pr_open.py:*)
   - Bash(py -3 tools/set_run_pr_open.py:*)
-  - Bash(python tools/run_complete_on_merge.py:*)
+  - Bash(python3 tools/run_complete_on_merge.py:*)
   - Bash(py -3 tools/run_complete_on_merge.py:*)
-  - Bash(bash tools/pr-watch.sh:*)
-  - Bash(pwsh tools/pr-watch.ps1:*)
-  - Bash(powershell tools/pr-watch.ps1:*)
+  - Bash(python3 tools/watcher_restart_guard.py:*)
+  - Bash(py -3 tools/watcher_restart_guard.py:*)
   - mcp__org-broker__send_message
   - mcp__org-broker__check_messages
   - mcp__org-broker__list_panes
@@ -46,21 +46,32 @@ allowed-tools:
 
 > **輸送層（transport）両系**: 本スキルのツール参照は `mcp__org-broker__*`（`org-broker`）で書いてあり、active transport が既定面ならそのまま従えばよい。輸送層で手順が変わるのは **受信モデル / spawn 儀式 / エラー分岐** の 3 点だけ。うち本スキルで実際に効くのは受信モデル 1 点で、**`CI_COMPLETED` / `PR_MERGED` の判定は輸送層に依らず events テーブルの canonical 行が正本**（直 push は best-effort 補助。分岐の本体は下記 2b-i の受信モデルと「CI 完了検知の正路」節）。両系の読み替え規則・「既定」の二フレーム注記・契約の批准経緯・broker 拡張エラーコードは [`.claude/skills/org-pull-request/references/transport-duality.md`](references/transport-duality.md) を参照（上記 3 分岐に入るまで読む必要はない）。
 
+## 2a-r. ワーカーから「rebase 残差あり」/ `CODEX_GATE: dirty-worktree` の報告を受けたとき（承認前、Issue #1151）
+
+ワーカーの sandbox は `.claude/skills` 等への書込みを拒否するため、統合用ブランチへの rebase が `Read-only file system` で止まるか、成功表示でも該当ファイルが旧内容のまま作業ツリーに残る。後者のまま検証や Codex を回すと古い差分まで対象になる（`tools/codex_review_gate.sh` は追跡ファイルの差分を見ると `CODEX_GATE: dirty-worktree` で止まる）。ワーカーに update-ref / reset で回避させず、ack の後に窓口が自分の Bash（ワーカー sandbox の外）で直す。ワーカーは commit 済みの前提なので、追跡ファイルの差分は残差だけである。
+
+1. `git -C <worker_dir> status` で状態を見る
+2. **rebase 途中で止まっている**（`rebase in progress`）: `git -C <worker_dir> rebase --abort` → `git -C <worker_dir> rebase <base_ref>`（`<base_ref>` は `send_plan.json` の `summary.base_ref`）。conflict が出たら `git -C <worker_dir> rebase --abort` で戻し、[`.claude/skills/org-escalation/SKILL.md`](../org-escalation/SKILL.md) の手順で人間に上げる（窓口は conflict を解かない）
+3. **rebase は完了し差分が残っている**: `git -C <worker_dir> diff --stat HEAD` で残差パスを確かめる。sandbox が書込みを拒否するパス（`.claude/skills` / `.claude/hooks` / `.claude/settings.json` 等）以外が含まれていたらワーカーの未コミット作業かもしれないので、戻さず [`.claude/skills/org-escalation/SKILL.md`](../org-escalation/SKILL.md) の手順で人間に上げる。保護パスだけなら `git -C <worker_dir> restore --staged --worktree -- <パス...>` で HEAD の内容に戻す（`--source` 指定と `checkout -- <path>` は hook が deny する）
+4. `git -C <worker_dir> status --porcelain --untracked-files=no` が空になったことを確かめ、ワーカーに「rebase 残差を窓口で解消した。`git status` が空であることを確かめ、通常検証と Codex ゲートを回し直して完了報告して」と送る
+5. 窓口の Bash でも `Read-only file system` 等で書けないときは、sandbox を外さず人間に報告して指示を仰ぐ
+
 ## 2b-i. PR 作成段階（即時実行）
 
 ユーザーが「OK」「確認した」「問題ない」「進めて」等の **明示的承認** を出した直後に発動する:
 
-- 必要に応じて窓口がプッシュ・PR 作成を行う（ワーカーには `git push` / PR 作成権限がない）。PR 本文の言語規約は `feedback_pr_issue_english`（PR / Issue は英語）に従う
+- 必要に応じて窓口がプッシュ・PR 作成を行う（ワーカーには `git push` / PR 作成権限がない）。PR のタイトル・本文は対象リポジトリで使われている言語に合わせる
 - **`gh pr create --base` は派遣時の起点ブランチと同じ設定を読む（Issue #808）**: プロジェクトの既定マージ先は [`registry/projects.md`](../../../registry/projects.md) の `base_branch` 列が SoT。値がある行（例 `develop`）は `gh pr create --base <base_branch>` を既定とし、**空欄 / `-` の行は従来どおり `--base` を付けない**（repo の既定ブランチ宛）。worktree を切った起点と PR のマージ先が食い違うと、develop が先行している分の差分が PR に混入するため、両者は必ず同じ値を使う。当該タスクの実効値は派遣時の DELEGATE 本文の「ベース:」行、または `send_plan.json` の `summary.base_branch` / `summary.base_ref` で確認できる（`--base-ref` で単発上書きされた hotfix もそこに出る）。値の解決順は `--base-ref` > `base_branch` 列 > `origin/HEAD`
 - **PR 番号が確定したら直ちに `tools/set_run_pr_open.py` で `runs.pr_url` / `runs.branch` を back-fill する** (Issue #323):
   ```bash
-  python tools/set_run_pr_open.py --task-id <task_id> --pr <PR>
+  python3 tools/set_run_pr_open.py --task-id <task_id> --pr <PR>   # Mac/Linux
+  py -3 tools/set_run_pr_open.py --task-id <task_id> --pr <PR>     # Windows native
   ```
   これは `gh pr view <PR> --json url,headRefName,title` を 1 度引いて、`StateWriter.set_run_pr` 経由で `runs.pr_url` と `runs.branch` を上書きする。再呼び出しは idempotent（同じ値の上書き、events への追記なし）。これを行わないと後段の `tools/run_complete_on_merge.py` が `runs.pr_url` を引けず `no_run`（exit 3）で落ち、`-MergeWatch` の自動完了が失敗する
   - **クロスリポジトリでも `--repo` は不要（Issue #828）**: `--repo` 省略時は `runs.project_id` → プロジェクト → GitHub URL（[`registry/projects.md`](../../../registry/projects.md) の パス列、次に `projects.origin_url`）で書き込み先リポジトリを決定的に解決する。解決できない場合は ja へ黙って落ちず **exit 2 で停止**する（`--repo OWNER/REPO` 明示は従来どおり最優先）。旧挙動で起きた cross-repo 汚染の経緯は [`.claude/skills/org-pull-request/references/rationale.md`](references/rationale.md) §1
   - 実行すると 1 行目に `set_run_pr_open: repo=<owner/repo> (source=<registry|db_origin_url|home_repo|explicit>) PR #<N>: <PR タイトル>` が出る。**この行のリポジトリと PR タイトルが意図した書き込み先か目視で確認してから次へ進む**
 - DB の events テーブルにイベント追記 — **手打ちの対象は helper が書かないイベントに限る**。この段階では `fix_pushed`（push）/ `pr_opened`（PR 作成）の 2 つ（`bash tools/journal_append.sh ...`）。`delegate_sent` や `pr_merged` のように **helper が同一トランザクションで記録するイベントを窓口が手で打ってはならない**（打つと events が 2 行になる）。どのイベントを誰が書くかの SoT は [`docs/journal-events.md`](../../../docs/journal-events.md) の Writer / Emitted by 列
-- PR 番号が確定したら [`/pr-watch-pane <PR>`](../pr-watch-pane/SKILL.md) で CI を監視する（クロスリポジトリは `--repo OWNER/REPO` 付き）。broker tmux セッションの専用ペインで `tools/pr-watch.sh` が ja-root cwd・sandbox 外で回り、完了時に `ci_completed` が自動で events に記録される。CI 完了 / merge / timeout で watcher ペインは tmux backend では自己 close し（herdr / wezterm backend では自己 close が効かず残留するため、監視終端で窓口がイベント駆動 close する — 後掲「監視終端で watcher ペイン ... を窓口がイベント駆動 close する」節と Issue #751）、いずれも窓口セッションを同期占有しない（review feedback loop 2c や手動 close 2b-ii に進める）。**`tools/pr-watch.*` を Claude Code の Bash 背景起動で直接叩かない**: 背景タスクは spawn したシェルのみ追跡し、自己デタッチした監視本体は孤児化して `/clear` / セッション終了で黙死するため（公式仕様。旧経路で実際にマージ監視が黙死した）。専用ペイン経路がこの孤児化を回避する
+- PR 番号が確定したら [`/pr-watch-pane <PR>`](../pr-watch-pane/SKILL.md) で CI を監視する（クロスリポジトリは `--repo OWNER/REPO` 付き）。broker tmux セッションの専用ペインで `tools/pr-watch.sh` が ja-root cwd・sandbox 外で回り、完了時に `ci_completed` が自動で events に記録される。CI 完了 / merge / timeout で watcher ペインは tmux backend では自己 close し（herdr / wezterm backend では自己 close が効かず残留するため、監視終端で窓口がイベント駆動 close する — 後掲「監視終端で watcher ペイン ... を窓口がイベント駆動 close する」節と Issue #751）、いずれも窓口セッションを同期占有しない（review feedback loop 2c や手動 close 2b-ii に進める）。`tools/pr-watch.*` の直接起動は hook が deny する（[`.claude/rules/pr-ci-watch.md`](../../rules/pr-ci-watch.md)。専用ペインを使う理由は [`.claude/skills/org-pull-request/references/rationale.md`](references/rationale.md) §8）
 - **CI 完了 / merge 検出 / 24h タイムアウトの受信は多層 (CI-watch zero-miss, Refs #653 #658)**。終端信号 (`CI_COMPLETED` / `PR_MERGED` / `PR_MERGE_WATCH_TIMEOUT` / `PR_MERGED_NO_RUN` / `PR_MERGED_HEAD_UNCONFIRMED` / `PR_WATCH_ABORTED`) はいずれも **`events` テーブルの canonical event を正本**とし、その配送を次の順で受ける（peer-only の終端信号は廃止済み — 必ず canonical event が先行する）:
   - **(B) ディスパッチャー relay = 見逃しゼロの主保証（一次受信経路）**: ディスパッチャーが `/loop 3m` 監視サイクルの relay scan ステップ（[`.dispatcher/references/worker-monitoring.md`](../../../.dispatcher/references/worker-monitoring.md) Step 5.25）で、未配送の終端イベントを `event_deliveries` 配送台帳と突き合わせて scan し、broker token 経由で窓口へ `mcp__org-broker__send_message` relay する。窓口はこの relay メッセージ（本文末尾 `[relay]` で直 push と区別可能。例 `CI_COMPLETED: PR #<n> (status=passed, head=<sha>) [relay]`）の到着で次のステップへ進める。**pr-watch ペインの直 push（下記 A）が env 欠如で silent no-op しても、この relay は events を直接読むため確実に届く**（PR #73 障害の根治: 汎用 spawn ペインで broker queue に `CI_COMPLETED` が 1 件も入らず窓口 idle だった終端をこの層が塞ぐ）。at-least-once（台帳 idempotency key で重複抑止・二重受信は冪等に扱う）。
   - **(A) pr-watch からの直 push = 低遅延の補助**: `ORG_TRANSPORT=broker` の pane では pr-watch が CI 確定の瞬間に `CI_COMPLETED` 等を **broker channel sidecar の push** で送る（各ペイン同居の channel sidecar `server:org-broker-channel` が `notifications/claude/channel` で窓口 idle セッションへ注入。runtime push-first 0.1.24+、channel source は `org-broker`）。届けば relay を待たず先に進めてよいが、これは **best-effort**（`tools/peer_notify.py` は raw env 判定のため env 欠如 / broker daemon 未起動 / sidecar unhealthy で無言に落ちる経路がある）。push 失効時は窓口がターン冒頭で能動的に `mcp__org-broker__check_messages` で pull する（§9.6）。push が失敗した場合、pr-watch は `notify_failed` イベントを fail-loud で記録し、それ自体も (B) の relay 対象になる（silent no-op の全廃）。
@@ -73,12 +84,11 @@ allowed-tools:
   bash tools/journal_append.sh notify_sent kind=awaiting_user task_id=<task_id> gate=ci_green_merge_gate note="PR #<PR> CI green, awaiting merge approval"
   ```
   並走 runtime PR の classifier が `secretary_awaiting_user` (default severity `urgent`) として拾う。CLAUDE.md「secretary が user の判断を待っている状態を通知する」節を参照。`PR_MERGE_WATCH_TIMEOUT` 等の失敗系は対象外（awaiting_user ではなく別経路で人間判断）
-- **merge 承認提示でも人間向け理解サマリを再掲する（検証深度 `full` 限定）**: CI green → ユーザーに merge 承認を仰ぐ際、[`.claude/skills/org-delegate/SKILL.md`](../org-delegate/SKILL.md) Step 5 (2a) で `.state/workers/worker-{task_id}.md` Progress Log に `Human Understanding Summary:` 見出し + fenced code block として永続化済みのサマリ（複数回完了時は最新ブロック）を再掲し、ユーザーが diff を開かずに最終 merge 判断を下せるようにする。永続コピーが無い場合（本フォーマット導入前から in-flight の PR 等）は PR 本文 / worker 完了報告メッセージに残るサマリを読む（窓口が diff を精読して再構成することはしない）。スキーマ SoT は [`.claude/skills/org-delegate/references/worker-claude-template.md`](../org-delegate/references/worker-claude-template.md)。minimal タスクには付かない
+- **merge 承認提示でも人間向け理解サマリを再掲する（検証深度 `full` 限定）**: CI green → ユーザーに merge 承認を仰ぐ際、[`.claude/skills/org-delegate/SKILL.md`](../org-delegate/SKILL.md) Step 5 (2a) で `.state/workers/worker-{task_id}.md` Progress Log に `Human Understanding Summary:` 見出し + fenced code block として永続化済みのサマリ（複数回完了時は最新ブロック）を再掲し、ユーザーが diff を開かずに最終 merge 判断を下せるようにする。永続コピーが無い場合（本フォーマット導入前から in-flight の PR 等）は PR 本文 / worker 完了報告メッセージに残るサマリを読む（窓口が diff を精読して再構成することはしない）。スキーマ SoT は brief テンプレート [`tools/templates/worker_brief_normal.md`](../../../tools/templates/worker_brief_normal.md) / [`tools/templates/worker_brief_self_edit.md`](../../../tools/templates/worker_brief_self_edit.md) の「人間向け理解サマリ」節。minimal タスクには付かない
 - **merge を待ち合わせたい時のみ** `-MergeWatch` (PowerShell) / `--merge-watch` (POSIX) を付ける。CI 通過後に `gh pr view --json mergedAt` を 24h ポーリングし、初回の merge で `tools/run_complete_on_merge.py` を呼ぶ (Issue #317)。merge-watch 中も pr-watch プロセスは生きたまま、merge 観測時に `pr_merged` イベントを events に追記してから return する
 - run.status は **REVIEW のまま据え置く**（GitHub 側 PR レビュー指摘が来たら同ペインで対応するため。COMPLETED への遷移は 2b-ii で `update_run_status('<task_id>', 'completed')` を呼ぶ）。markdown 直接編集はしない
 - **ペインはまだ閉じない**: PR 作成直後に `CLOSE_PANE` を送らない。worktree 除去・Worker Directory Registry 更新も 2b-ii まで遅延する
 - PR レビューで指摘が来た場合は 2c のフローで同ワーカーに `send_message` 追指示を送り、同ペインで修正コミットを積ませる（新ワーカー再派遣は避ける — Issue / diff / 判断境界の再構築コストを払うことになる）
-- **dogfood 対象 PR の場合（Issue #338）**: `registry/dogfood_pending.md` で当該 task_id の `status=pending` 行を探し、(a) `impl_pr=#<PR>` を埋め、(b) `gh issue create --title "dogfood follow-up: <surface>" --body-file <rendered template>` で paired follow-up issue を作成（template: [`.claude/skills/org-delegate/references/dogfood-issue-template.md`](../org-delegate/references/dogfood-issue-template.md)）、(c) 作成された issue 番号を `dogfood_issue=#<MMM>` に埋め、`status` を `pending → open` に遷移、(d) PR 本文末に `Paired dogfood issue: #<MMM>` を追記する。protocol 全体は [`.claude/skills/org-delegate/SKILL.md`](../org-delegate/SKILL.md) Step 1.8 を SoT とする
 
 ### CI 完了検知の正路: events テーブルが canonical、ディスパッチャー relay が一次配送、events DB poll は最終フォールバック（Issue #653 / Refs #658）
 
@@ -86,9 +96,9 @@ CI 完了の **canonical 信号は events テーブルの `ci_completed` 行**�
 
 **見逃しゼロの主保証はディスパッチャー relay（path B、Refs #658）**: ディスパッチャーが `/loop 3m` 監視サイクル（[`.dispatcher/references/worker-monitoring.md`](../../../.dispatcher/references/worker-monitoring.md) Step 5.25）で `events` を `event_deliveries` 配送台帳と突き合わせ、未配送の `ci_completed` を broker token 経由で窓口へ `[relay]` 付き `send_message` する。通常運用では窓口はこの relay 到着で次へ進めばよく、events テーブルを能動 poll する必要はない。**events DB の直接 poll は relay も直 push も成立しない場合（broker daemon 未起動の plain shell / CI 等）の最終フォールバック**として下記手順で残す（どの層でも canonical event は同一なので判定材料 `head` + `status` は一致する）。push が来たことだけを ground truth にすると no-op 経路で CI green を取りこぼすため、直 push は早期通知としてのみ扱い、確定は必ず events 行（relay 受信 or 直接 poll）で行う。
 
-**ground truth の poll 推奨手順**:
+**最終フォールバックの poll 手順**（relay も直 push も届かない環境に限る）:
 
-- `git push origin <branch>` 直後から **~60s 経過した時点で events テーブルを定期 poll する**（推奨 60-90s 間隔。本リポジトリの CI は概ね 60-80s で確定する）。pr-watch pane が生きていれば watcher は push 通知の有無に関わらず `ci_completed` 行を events に書く（`tools/pr-watch.sh` / `tools/pr-watch.ps1` の `ci_completed` 書き出し経路）。
+- push 後、間隔を置いて events テーブルを引く。pr-watch pane が生きていれば watcher は push 通知の有無に関わらず `ci_completed` 行を events に書く（`tools/pr-watch.sh` / `tools/pr-watch.ps1` の `ci_completed` 書き出し経路）。
 - 判定クエリ例（`PR_NUMBER` は窓口が把握している自局の int 値であり、ユーザー入力経路では渡らない。f-string の literal 展開で済ませる）:
   ```python
   from tools.state_db import connect
@@ -101,16 +111,12 @@ CI 完了の **canonical 信号は events テーブルの `ci_completed` 行**�
   #   head が push した SHA と一致し status='passed' なら merge gate 通過 → 上の awaiting_user emit へ
   #   一致しない（前 CI 行）/ status='failed' なら原因を取得して fix → 再 push（2c のループへ）
   ```
-- **push 通知が来た場合の扱い**: 補助的な早期通知として扱い、来た時点で events テーブルを引いて head 一致と status を確認する。push が来ない前提で events DB poll は止めない。peer push と events 行が両者 landed したら、判定は events DB の `head` + `status` を ground truth とする（受信モデル注記の「events テーブルのポーリングが最終フォールバック」と同じ姿勢を一次に倒したもの）。
+- **push 通知が来た場合の扱い**: 早期通知として扱い、来た時点で events テーブルを引いて head 一致と status を確認する。確定は常に events 行の `head` + `status` で行う。
 - `PR_MERGE_WATCH_TIMEOUT` / `PR_MERGED_NO_RUN` / `PR_MERGED_HEAD_UNCONFIRMED` の人間 gate は本節の影響を受けない（これらは merge 観測側 / fail-closed gate であり、events DB poll は CI 完了検知のみ canonical 化する）。merge 観測自体の canonical 検知は従来どおり `pr-watch --merge-watch` の `pr_merged` イベントと `tools/run_complete_on_merge.py` の組み合わせで行う。
 
 ### ⚠️ cwd 注意: pr-watch 起動時
 
-`tools/pr-watch.sh` / `tools/pr-watch.ps1` / `tools/pr_watch.py` は `state.db` を相対パスで開くため、起動時の cwd が ja root でないと CI 完了 event 書き込みでクラッシュし、peer 通知 (`CI_COMPLETED` / `PR_MERGED` 等) が飛ばない。canonical 経路の [`/pr-watch-pane`](../pr-watch-pane/SKILL.md) は ja-root 絶対パスを決定的に解決してペインを spawn するため cwd trap を吸収する（この cwd 解決こそが pane 経路の主目的の一つ）。この注意が効くのは人間が `!` 経由で `tools/pr-watch.sh` を手動起動する緊急フォールバックだけで、その場合は必ず `cd <ja-root> && bash tools/pr-watch.sh <PR> ...` の形にする。Issue #398 で根本対応中（cwd 非依存化）。
-
-### ⚠️ 監視は専用ペインで回す（Bash 背景起動を canonical にしない）
-
-窓口が CI 監視を起動する canonical 経路は [`/pr-watch-pane <PR>`](../pr-watch-pane/SKILL.md) であり、Claude Code の Bash tool 背景起動で `tools/pr-watch.*` を直接叩く経路ではない。Claude Code の背景タスクは spawn したシェルのみ追跡し、自己デタッチした監視本体（`nohup ... &` + `disown` を含む）は孤児化するため（公式仕様）、`/clear` / [`/secretary-resume`](../secretary-resume/SKILL.md) 直後の fresh session やセッション終了で監視ごと黙死し、CI 完了 event も peer 通知も一切飛ばなくなる（プロセスが消えていることに気付きづらく、ログファイルだけが空のまま残る）。**Bash ラッパーの完了通知（exit code 付き）は監視本体の完了を意味しない**: ラッパーが返っても孤児化した監視が黙死していることがあるため、完了通知を CI 監視完了のシグナルとして扱わず、確定は必ず events テーブルの `ci_completed` 行で行う。専用ペイン経路は sandbox 外・窓口セッション非依存で回るためこの孤児化を構造的に回避する。
+`state.db` とログのパスはスクリプト自身の位置（`tools/..`）を基点に解決されるため cwd に依らない。cwd に依存するのは、相対パス `tools/pr-watch.sh` での起動と、`--repo` 省略時のリポジトリ解決（`gh repo view`）の 2 点だけ。canonical 経路の [`/pr-watch-pane`](../pr-watch-pane/SKILL.md) は ja-root 絶対パスを `cwd` に渡し `--repo` も明示するので、どちらも吸収される。この注意が効くのは人間が `!` 経由で `tools/pr-watch.sh` を手動起動する緊急フォールバックだけで、その場合は `cd <ja-root> && bash tools/pr-watch.sh <PR> --repo <OWNER/REPO> ...` の形にする。
 
 ### 監視終端で watcher ペイン (`pr-watch-<PR>`) を窓口がイベント駆動 close する（herdr ゾンビ残留の根治, Issue #751）
 
@@ -149,25 +155,16 @@ no-op になり **watcher ペインがゾンビとして残留する**（backend
   `[pane_not_found]` / `[pane_vanished]` は既に self-close / 掃除済みの正常応答で skip。
 - **stale 登録簿 binding のみ裸 name 指定（transport 条件付き allowlist）**: 控えた pane_id が既に消え、
   数値 id を `mcp__org-broker__list_panes` から取り直せない stale binding のときだけ、裸 name の
-  `mcp__org-broker__close_pane(target="pr-watch-<PR>")` で登録簿を pop する。**以下 3 条件がすべて成立するときだけ
-  許可される**（条件の説明・導出・誤 close hazard と **3 条件の根拠の SoT** は
-  [`/pr-watch-pane`](../pr-watch-pane/SKILL.md) Step 5 の (b)）:
-  - **(1) いま Group B を駆動している backend が `close_pane` / `set_pane_identity` を自身の single-tab
-    モデル内で解決する**（＝ `org-broker`）。**判定は積極的な証拠でのみ行う（MUST）** ＝ いま Group B を
-    撃つのに使っている MCP ツールの**完全修飾名が `mcp__org-broker__*` であること**。
-    **`DEFAULT_TRANSPORT` から推定してはならない（MUST NOT）**。**確定できないときは carve-out を
-    取らない**（fail-safe。条件 (1) を不成立として扱い下記の報告に倒す）
-  - **(2) 再 spawn が `[name_in_use]` / `[name_taken]` で弾かれている** — stale binding の症状。
-    **harness 側でこの条件を別の証拠に差し替えない**。post-merge cleanup は watcher を掃除するだけで
-    **再 spawn しない**ので、[`/pr-watch-pane`](../pr-watch-pane/SKILL.md) Step 3 の分岐で現に観測した
-    場合に限り成立し、**観測が無ければ条件 (2) は不成立**として carve-out を取らない
-  - **(3) その name が `mcp__org-broker__list_panes` に現れない** — live pane 不在（＝列挙から数値 pane_id を取れない）
-  - **契約の 3 条件に加えた harness 側の追加要件**（狭めるだけで、3 条件を置き換えない）: 上の識別子束縛
-    close が「控えた pane_id のレコードなし」または `[pane_not_found]` で終わっており、かつ freshness
-    gate を通っていま追跡中の watcher instance に束縛されていること。superseded と判定した終端イベントや
-    追跡を既に消してある場合は撃たない（別 instance の binding を pop しうる）
-  - **broker 以外に解決する場合（`ORG_TRANSPORT=renga` の opt-in など）では裸 name にフォールバック
-    しない**。close せず、stale binding を検出した旨をユーザーに報告する
+  `mcp__org-broker__close_pane(target="pr-watch-<PR>")` で登録簿を pop する。許可されるのは
+  [`/pr-watch-pane`](../pr-watch-pane/SKILL.md) Step 5 の (b) の **3 条件がすべて成立するときだけ**
+  （条件・判定方法・broker 以外での扱い・根拠の正本は同節。条件が揃わなければ close せずユーザーに報告する）。
+  窓口の監視終端 cleanup では次の 2 点を加える（狭めるだけで、3 条件を置き換えない）:
+  - **条件 (2)（再 spawn が `[name_in_use]` / `[name_taken]` で弾かれている）を別の証拠に差し替えない**。
+    post-merge cleanup は watcher を掃除するだけで再 spawn しないので、pr-watch-pane Step 3 の分岐で
+    現に観測した場合に限り成立し、観測が無ければ不成立として裸 name close を撃たない
+  - 上の識別子束縛 close が「控えた pane_id のレコードなし」または `[pane_not_found]` で終わっており、
+    かつ freshness gate を通っていま追跡中の watcher instance に束縛されていること。superseded と判定した
+    終端イベントや、追跡を既に消してある場合は撃たない（別 instance の binding を pop しうる）
 - **worker ペインの `CLOSE_PANE` とは別操作**: 2b-ii の worker Claude ペイン close はディスパッチャー宛
   `CLOSE_PANE: {pane_id}` で依頼するが、watcher ペインは窓口が spawn した CLI ペインなので窓口が
   `close_pane` で直接掃除する（窓口が `spawn_pane` の ops tier を持つ。契約 Surface 8）。
@@ -201,9 +198,9 @@ pr-watch から `PR_MERGED_HEAD_UNCONFIRMED: PR #<n> (head=<merged_short>, last 
   ```bash
   bash tools/journal_append.sh notify_sent kind=awaiting_user task_id=<task_id> gate=ci_unconfirmed_head_gate note="PR #<PR> merged at unconfirmed head <merged_short> (last CI-confirmed <baseline_short>)"
   ```
-  attention watcher classifier はこの emit を `kind=awaiting_user` → `secretary_awaiting_user` subkind として認識し **severity `urgent`（即時ビープ）** として拾う（CLAUDE.md「secretary が user の判断を待っている状態を通知する」節の canonical 形）。`gate` 値が `ci_unconfirmed_head_gate` であることで `worker_completed` / `ci_green_merge_gate` / `escalation_to_user` / `escalation_reply_forward` の既存 4 gate と区別される（CI green 根拠の merge 承認ではなく「マージ済みだが CI 未確認 head」の事後確認 gate）
+  attention watcher classifier はこの emit を `kind=awaiting_user` → `secretary_awaiting_user` subkind として認識し **severity `urgent`（即時ビープ）** として拾う（CLAUDE.md「secretary が user の判断を待っている状態を通知する」節の canonical 形）。`gate` 値が `ci_unconfirmed_head_gate` であることで `worker_completed` / `ci_green_merge_gate` / `escalation_to_user` / `escalation_reply_forward` の他の 4 gate と区別される（CI green 根拠の merge 承認ではなく「マージ済みだが CI 未確認 head」の事後確認 gate）
 - ユーザーが head 確認の結果「進めて良い」と明示判断したら、その時点で 2b-ii の post-merge cleanup へ手動で進む（`tools/run_complete_on_merge.py --pr <PR>` を含む通常の手順。`PR_MERGED` を受領しないまま進めるため、pattern B / C の StateWriter ブロックも窓口側で明示的に走らせる）。ユーザーが「マージを取り消す」「revert する」等の指示を出した場合は通常の `gh pr` 操作で対処し、cleanup は実行しない
-- **既存の `PR_MERGED` / `PR_MERGED_NO_RUN` 経路は本節の影響を受けない**: 通常の clean merge は `PR_MERGED` プレフィックスで届き 2b-ii へ進む。`PR_MERGED_NO_RUN` は run 行未解決の失敗系で従来どおり人間判断（本節は CI 未確認 head の新規プレフィックスのみを追加するもので、既存 2 経路を変更しない）
+- **`PR_MERGED` / `PR_MERGED_NO_RUN` は本節の対象外**: 通常の clean merge は `PR_MERGED` プレフィックスで届き 2b-ii へ進む。`PR_MERGED_NO_RUN` は run 行未解決の失敗系で人間判断
 
 ## 2c. レビュー指摘 / CI 失敗のフィードバックループ
 
@@ -227,7 +224,8 @@ pr-watch から `PR_MERGED_HEAD_UNCONFIRMED: PR #<n> (head=<merged_short>, last 
   いる watch が外見上区別できない。判定は events の
   時系列で行う:
   ```bash
-  python3 tools/watcher_restart_guard.py check --task <task_id>
+  python3 tools/watcher_restart_guard.py check --task <task_id>   # Mac/Linux
+  py -3 tools/watcher_restart_guard.py check --task <task_id>     # Windows native
   ```
   exit 0 なら「最後の push より後に開始された watcher がある」。**exit 3 なら watcher が現 head を
   見ていない**ので [`/pr-watch-pane <PR>`](../pr-watch-pane/SKILL.md) を起動し直してから次へ進む
@@ -245,10 +243,20 @@ pr-watch から `PR_MERGED_HEAD_UNCONFIRMED: PR #<n> (head=<merged_short>, last 
   mcp__org-broker__send_message(to_id="dispatcher", message="WORKER_REOPENED: worker-<task_id> (task_id=<task_id>, reopened_at=<ISO-8601 UTC>)")
   ```
 - ワーカーに org-broker で追加指示を送る (`to_id="worker-{task_id}"`)
-- 追加指示が trivial fix（CI 出力整形 / typo / コメント修正等）なら **検証深度 `minimal`** を明示し、完了報告は `done: {commit SHA 短縮形} {変更ファイル名}` の 1 行だけで返すよう伝える（フォーマットは [`.claude/skills/org-delegate/references/instruction-template.md`](../org-delegate/references/instruction-template.md) / [`.claude/skills/org-delegate/references/worker-claude-template.md`](../org-delegate/references/worker-claude-template.md) に従う）
+- 追加指示が trivial fix（CI 出力整形 / typo / コメント修正等）なら **検証深度 `minimal`** を明示し、完了報告は `done: {commit SHA 短縮形} {変更ファイル名}` の 1 行だけで返すよう伝える（フォーマットは [`.claude/skills/org-delegate/references/instruction-template.md`](../org-delegate/references/instruction-template.md) / [`tools/templates/worker_brief_normal.md`](../../../tools/templates/worker_brief_normal.md) の minimal 節に従う）
 - **DB 経由で run を IN_PROGRESS に戻す**（`run.status='in_use'`、markdown 直接編集禁止。post-commit hook が `.state/org-state.md` を再生成）:
   ```bash
-  python -c "
+  # Mac/Linux
+  python3 -c "
+  from pathlib import Path
+  from tools.state_db import connect
+  from tools.state_db.writer import StateWriter
+  conn = connect('.state/state.db')
+  with StateWriter(conn, claude_org_root=Path('.')).transaction() as w:
+      w.update_run_status('<task_id>', 'in_use')
+  "
+  # Windows native（Git Bash / PowerShell）
+  py -3 -c "
   from pathlib import Path
   from tools.state_db import connect
   from tools.state_db.writer import StateWriter
@@ -300,10 +308,10 @@ pr-watch から `PR_MERGED_HEAD_UNCONFIRMED: PR #<n> (head=<merged_short>, last 
     - **self-edit (`pattern_variant='live_repo_worktree'`) の場合**: worktree base が `{claude_org_path}` なので `git -C {claude_org_path} worktree remove --force .worktrees/{task_id}` を実行する（Issue #289）。`--force` の理由は通常パターン B と同じ。ブランチは同様に残す
   - パターン C（エフェメラル, `pattern_variant='ephemeral'`）: ディレクトリは保持する（容量が問題になった場合のみ手動削除を検討）
   - **パターン C（`gitignored_repo_root`, claude-org 自己編集）の特例 cleanup（Issue #478）**: `worker_dir` が claude-org-ja repo root 自身なので、worktree remove も dir 削除も効かず、`{claude_org_root}/CLAUDE.local.md`（ワーカー指示ブリーフ）が残留する。**close 時に `tools/run_complete_on_merge.py` の `cleanup_pattern_c_local_md()` を呼んでブリーフを削除する**（下記 StateWriter ブロックに同梱）。判定は `runs.pattern == 'C'` AND `worker_dir == claude_org_root` で行われ、ephemeral C / パターン A・B では no-op。`events` に `pattern_c_cleanup`（payload: `task` / `removed_path` / `mode`）が 1 行残る。idempotent（ファイル不在なら `mode=skip`）。**`worker_dir_abs=` に削除した abs パスを明示で渡す（Issue #486。順序非依存にするため。残留が問題になる理由と NULL 化の機序は [`.claude/skills/org-pull-request/references/rationale.md`](references/rationale.md) §6）**。PR 起点のクローズで `tools/run_complete_on_merge.py --pr <PR>` を呼ぶ場合は merge 記録時に自動で同 cleanup が走るが、gitignored タスクは PR を生まないことが多いので、下記 StateWriter ブロックでの明示呼び出しが本筋の経路。`.claude/settings.local.json` は worker 由来 / Secretary 由来の切り分けが要るためスコープ外（別 Issue）
-- **dogfood 対象 PR の paired issue クローズ時（Issue #338）**: 実装 PR のマージと paired follow-up issue のクローズはライフサイクルが独立しうるため、本スキル側では「実装 PR マージで `consumed → closed` をする」という保証はしない。`consumed → closed` の終端遷移は窓口の register hygiene 責務として [`.claude/skills/org-delegate/SKILL.md`](../org-delegate/SKILL.md) Step 1.8 §consumed → closed 観察タイミング（register 書き込み時 + `/org-resume` 起動時に `gh issue view` で paired issue 状態確認）で回収する。本スキルが PR マージ時にたまたま該当行を観察した場合のみ、ついでに hygiene 手順を呼ぶ
 - **PR 起点のクローズの場合は `tools/run_complete_on_merge.py` を呼ぶ** (Issue #317。`pr-watch --merge-watch` の merge-watch ループが自動で起動するので通常は手動実行不要だが、merge-watch を skip した場合や手動でマージを観測した場合のみ明示的に呼ぶ):
   ```bash
-  python tools/run_complete_on_merge.py --pr <PR> --task-id <task_id>
+  python3 tools/run_complete_on_merge.py --pr <PR> --task-id <task_id>   # Mac/Linux
+  py -3 tools/run_complete_on_merge.py --pr <PR> --task-id <task_id>     # Windows native
   ```
   これは `gh pr view <PR> --json url,state,mergedAt,mergeCommit,headRefName,title` を一度引いて、PR が merged なら `StateWriter.transaction()` 経由で `pr_state='merged'` / `commit_short` / `pr_url` / `completed_at` を更新し、`pr_merged` イベント (payload: `task` / `pr` / `repo` / `pr_url` / `merge_commit` / `head` / `merged_at` / `pattern` / `auto_completed`) を 1 行追記する。再呼び出しは idempotent（二重イベントを書かない）。**この冪等性は helper 自身の再実行に対する性質であって、窓口の手打ちには効かない**（機序は [`.claude/skills/org-pull-request/references/rationale.md`](references/rationale.md) §4。上記の手打ち禁止はこのためにある）。task_id は `runs.pr_url` / `runs.branch`（active な runs 限定）から自動解決されるので省略もできる。
   - **`--task-id` を付けて呼ぶこと（Issue #828）**: `--task-id` があれば `--repo` 省略時のリポジトリを run → プロジェクト → GitHub URL で決定的に解決し、解決できなければ exit 2 で停止する。**`--task-id` も `--repo` も無い場合だけは旧来の事故経路（ja の同番号 PR を読む）が残る**（[`.claude/skills/org-pull-request/references/rationale.md`](references/rationale.md) §1）。set_run_pr_open と同じく 1 行目に `run_complete_on_merge: repo=... (source=...) PR #<N>: <PR タイトル>` が出るので書き込み先を目視確認する
@@ -311,7 +319,8 @@ pr-watch から `PR_MERGED_HEAD_UNCONFIRMED: PR #<n> (head=<merged_short>, last 
   - **CLI 終了コード**: `merged` / `already` / `not_yet` は exit 0、`no_run`（runs に該当行なし）は exit 3 で失敗扱いになる。手動運用時は exit code を確認
 - **パターン B / C のレジストリエントリ削除と最終 close は別途 StateWriter を呼ぶ**（markdown 直接編集禁止。run_complete_on_merge が `pr_state='merged'` と `completed_at` を既に書いているので、ここでは status flip と worker_dir 削除のみ行う）:
   ```bash
-  python -c "
+  # Mac/Linux
+  python3 -c "
   from pathlib import Path
   from tools.state_db import connect
   from tools.state_db.writer import StateWriter
@@ -329,8 +338,21 @@ pr-watch から `PR_MERGED_HEAD_UNCONFIRMED: PR #<n> (head=<merged_short>, last 
   # 検出が壊れないようにする（Issue #486）。
   cleanup_pattern_c_local_md(conn, task_id='<task_id>', claude_org_root=Path('.').resolve(), worker_dir_abs=abs_path)
   "
+  # Windows native（Git Bash / PowerShell。本体は Mac/Linux 版と同一）
+  py -3 -c "
+  from pathlib import Path
+  from tools.state_db import connect
+  from tools.state_db.writer import StateWriter
+  from tools.run_complete_on_merge import cleanup_pattern_c_local_md
+  conn = connect('.state/state.db')
+  abs_path = '<abs>'  # worker_dir の絶対パス（パターン B / C）
+  with StateWriter(conn).transaction() as w:
+      w.update_run_status('<task_id>', 'completed')  # post-commit hook が worker-{task}.md を archive
+      w.remove_worker_dir(abs_path)  # パターン B / C のみ
+  cleanup_pattern_c_local_md(conn, task_id='<task_id>', claude_org_root=Path('.').resolve(), worker_dir_abs=abs_path)
+  "
   ```
-  legacy のハンドロール完了スクリプトは `docs/legacy/pr-merge-completion-manual.md` に保管されている。標準経路は上記 `tools/run_complete_on_merge.py` であり、museum copy へ reach するのは Issue を切ってユーザー判断を仰いだ後に限る (PR #315 と同じ pattern)
+  標準経路は上記 `tools/run_complete_on_merge.py`。想定外の出力を返したときは手作業で再現せず、Issue を切ってユーザー判断を仰ぐ
   - パターン A: lifecycle='active' のまま、run.status='completed' で snapshotter が available 相当の表示にする
   - パターン B / C: 物理 dir は別途処理（worktree remove / dir 保持）。レジストリエントリ削除は上記 with ブロック内に `w.remove_worker_dir('<abs>')` を追加
 - JSON snapshot は StateWriter post-commit hook が自動再生成 (Issue #284)

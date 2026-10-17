@@ -11,6 +11,7 @@
 #   - その他の既存破壊的コマンド（reset --hard / branch -D / clean -f /
 #     checkout -- . / restore --source / tag -d / update-ref -d /
 #     reflog expire --all）が引き続き deny されること
+#   - worktree 全体の add（-A / --all / .）→ deny、-u と明示パス → allow
 #   - git stash の変更系（bare / push / save / pop / apply / branch / drop /
 #     clear / store / create / 未知トークン）→ deny、調査用の
 #     read-only（list / show）→ allow（Issue #880）
@@ -511,6 +512,31 @@ run_test "git branch feat/stash-guard (branch 名に stash)" \
 
 run_test "git stashx pop (トークン完全一致でないので allow)" \
   "$(mk_bash_json "git stashx pop")" 0
+
+echo ""
+
+# =====================================================================
+# [git add -A / --all / . は deny、-u と明示パスは allow]
+# =====================================================================
+echo "[git add の worktree 全体 staging]"
+
+for cmd in "git add -A" "git add --all" "git add ." "git add ./" "git add -An" \
+           "git add -v -A" "git add -- ." "git -C /repo add -A" \
+           "git add -u && git add ." "git add src/a.py ." \
+           "git -c alias.a=add a -u" "bash -c 'git add -A'"; do
+  run_test "$cmd (deny)" "$(mk_bash_json "$cmd")" 2
+done
+
+for cmd in "git add -u" "git add src/a.py tests/b.sh" "git add -u && git add new.md" \
+           "git add -p src/a.py" "git add *.md" "git add .hooks/x.sh" \
+           "git commit -m 'add . handling'" \
+           "git status ." "git diff -- ." "git log --all" "echo add -A"; do
+  run_test "$cmd (allow)" "$(mk_bash_json "$cmd")" 0
+done
+
+# 既知の false positive（stash と同じ性質）: メッセージに git + add + -A の並びを書くと deny。
+run_test "git commit -m \"git add -A を禁止\" (既知の false positive: 安全側 deny)" \
+  "$(mk_bash_json 'git commit -m "git add -A を禁止"')" 2
 
 echo ""
 echo "# $PASS passed, $FAIL failed"

@@ -12,10 +12,7 @@ Secretary が worker からの peer message を受け取ったときの ack（ac
 
 ## なぜ ack が必須か
 
-- worker-claude-template は完了 / 進捗報告の末尾に「ペイン保持。次の指示お待ちします」を書くよう指示している
-- Secretary が ack を返さないと worker は「Secretary に届いたか / 次の指示は何か」が判らないまま idle で待ち続ける（dead-lock）
-- session #13 で実際に観測された失敗モード — Secretary は「user に報告した」を「worker への返答」と誤認していた
-- ack ≠ user 承認。ack は dead-lock 解除のための受領確認であり、push/PR 権限を生まない
+worker の brief は完了・PR 作成後もペインを保持し、窓口の明示指示まで待機させる（[`tools/templates/worker_brief_normal.md`](../../../../tools/templates/worker_brief_normal.md) の「作業完了時」）。窓口が ack を返さないと、worker は「届いたか / 次は何か」が判らないまま idle で待ち続ける（dead-lock）。ack は受領確認であって user 承認ではない（[`.claude/skills/org-delegate/SKILL.md`](../SKILL.md) Step 5）。観測された失敗モードは [`.claude/skills/org-delegate/references/rationale.md`](rationale.md) §9。
 
 ## ack の最低内容（必須 3 要素）
 
@@ -34,7 +31,7 @@ mcp__org-broker__send_message(
 )
 ```
 
-進捗に限らず、rebase 報告・確認依頼など完了 (2a) / 判断仰ぎ (0) / plan・prep 引き渡し（専用 kind `plan_delivered` / `prep_delivered` で記帳する既存フロー）以外の中間ハンドオフ報告はすべてこの ack を使う。ack 後は SKILL.md Step 5 (1) に従い、Progress Log 追記に加えて `worker_reported` の journal 追記（`bash tools/journal_append.sh worker_reported worker=worker-{task_id} task={task_id} summary="<要約>"`）を必ず行う（記帳漏れは dispatcher の PANE_OUTPUT_WITHOUT_PEER_MSG 誤検知の原因、Issue #699）。
+進捗に限らず、rebase 報告・確認依頼など完了 (2a) / 判断仰ぎ (0) / plan・prep 引き渡し以外の中間ハンドオフ報告はすべてこの ack を使う。ack 後の記帳（Progress Log と `worker_reported`、省略不可）は [`.claude/skills/org-delegate/SKILL.md`](../SKILL.md) Step 5 (1) に従う。
 
 ### 完了報告 ack（PR 未作成時）
 
@@ -52,7 +49,18 @@ mcp__org-broker__send_message(
 ```
 mcp__org-broker__send_message(
   to_id="worker-{task_id}",
-  message="Codex round 受領しました。Blocker/Major があれば修正コミット → 次 round へ。3 round 上限まで進めて OK。残りが Minor/Nit のみなら最終完了報告に切り替えてください。ペイン保持で。"
+  message="Codex round 受領しました。Blocker/Major があれば修正コミット → 次 round へ。許可回数（既定 3。超えるとゲートが CODEX_ROUND_DENIED で拒否します）まで進めて OK。残りが Minor/Nit のみなら最終完了報告に切り替えてください。ペイン保持で。"
+)
+```
+
+### Codex 往復上限での停止 ack
+
+ゲートが `CODEX_ROUND_DENIED` で拒否した後（ディスパッチャーの中継またはワーカーの報告のどちらで知っても同じ。重複は 1 件として扱う）に返す。続けるかどうかは窓口が決めるので、ワーカーには待機させる:
+
+```
+mcp__org-broker__send_message(
+  to_id="worker-{task_id}",
+  message="Codex 往復上限での停止を受領しました。codex は再実行せず、残指摘と自己評価（収束途中か設計の問題か）をまだ送っていなければ送ってください。続けるかどうかは窓口で決めて連絡します。ペイン保持で待機してください。"
 )
 ```
 
@@ -65,14 +73,8 @@ mcp__org-broker__send_message(
 )
 ```
 
-判断仰ぎの場合は SKILL.md Step 5 の subsection 0 に従い、Progress Log 追記 + `worker_escalation` journal 追記 + `pending_decisions append` も並行して行う。ack はそれらと独立した worker 宛のフィードバック。
+判断仰ぎの場合は [`.claude/skills/org-escalation/SKILL.md`](../../org-escalation/SKILL.md) に従い、Progress Log 追記 + `worker_escalation` journal 追記 + `pending_decisions append` も並行して行う。ack はそれらと独立した worker 宛のフィードバック。
 
 ### ブロック報告 ack
 
 判断仰ぎ ack と同じ文面で OK。ブロック内容によっては「該当タスクは中断、別 worker に振り直すかも」「ペインクローズ予定」と次の予定を明示する。
-
-## アンチパターン
-
-- ❌ ack を省略して run.status 更新と user 報告だけ行う → worker dead-lock
-- ❌ ack の内容に「OK、push します」と書いて user 承認前に push を発行 → user approval gate 違反（SKILL.md Step 5 (2a→2b) gate）
-- ❌ user 承認後の "進めます" 通知を ack の代わりにする → 完了報告から user 承認までのタイムラグの間 worker は idle で待つことになる。ack は受信直後に即発行する

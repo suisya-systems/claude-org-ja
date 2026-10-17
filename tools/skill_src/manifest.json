@@ -115,6 +115,12 @@
       "output": "../../.claude/skills/org-delegate/references/transport-duality.md",
       "mode": "template+fragment",
       "allowlist": "none"
+    },
+    {
+      "source": "../../.claude/skills/org-suspend/references/recipient-ledger.md.in",
+      "output": "../../.claude/skills/org-suspend/references/recipient-ledger.md",
+      "mode": "template",
+      "allowlist": "none"
     }
   ],
   "exclude": []

@@ -12,6 +12,7 @@ allowed-tools:
   - Bash(rm:*)
   - Bash(del:*)
   - Bash(bash tools/journal_append.sh:*)
+  - Bash(python3 tools/journal_append.py:*)
   - Bash(py -3 tools/journal_append.py:*)
   - mcp__renga-peers__*
 ---
@@ -25,12 +26,9 @@ sidecar (`.state/attention_pane.json`) をクリアする。
 
 ## Step 1: ライブペインと sidecar の照合（close 前に identity を確定する）
 
-> **なぜ identity 確認が必要か（Issue #468）**: renga 0.18+ / broker は pane id を
-> lifecycle 跨ぎで **recycle** する。watcher がクラッシュすると、その pane_id が
-> 別ペイン（新規 spawn された worker 等）へ再割当てされることがある。このとき sidecar
-> (`.state/attention_pane.json`) に残った pane_id を**無検証で `close_pane` すると、
-> 無関係なペインを kill する**。よって本 skill は **`list_panes` の name/role で identity を
-> 確認したペインだけを close 対象**とし、sidecar の pane_id を close の直接の根拠にしない。
+> 本 skill は **`list_panes` の name/role で identity を確認したペインだけを close 対象**とし、
+> sidecar の pane_id を close の直接の根拠にしない（pane id の recycle による誤 kill を防ぐため。
+> 事故類型は [`.claude/skills/org-attention-stop/references/rationale.md`](references/rationale.md)）。
 
 > **列挙が自タブのものであることを先に確立する（契約 T-§4.2 の Group B MUST）**: 上の
 > identity 確認は「その id が期待どおりのペインか」しか見ておらず、**その列挙が自分のタブの
@@ -127,7 +125,7 @@ bash tools/journal_append.sh attention_watch_stopped pane_id=<N>
 bash tools/journal_append.sh attention_watch_stopped reason=stale_sidecar
 ```
 
-Windows native では `py -3 tools/journal_append.py attention_watch_stopped ...`。
+`bash` が使えない環境では Mac/Linux は `python3 tools/journal_append.py attention_watch_stopped ...`、Windows native では `py -3 tools/journal_append.py attention_watch_stopped ...`。
 
 ## Step 4: 報告
 

@@ -46,6 +46,12 @@ Exit codes::
     3 = replied_no_ack
     4 = polling (caller should sleep and re-invoke)
 
+On ``acked`` the CLI also appends a ``retro_gate_acked`` event (``task``)
+to ``.state/state.db``. ``.hooks/block-close-before-retro.sh`` reads it to
+let the dispatcher's ``close_pane`` through; without it the close of that
+worker pane is denied. A failed write does not change the verdict: it is
+reported on stderr and as ``"recorded": false``.
+
 The ``--print-initial-prompt`` mode prints the task-templated initial
 question (no stdin needed, no exit code semantics) so the dispatcher
 can pipe it into ``mcp__renga-peers__send_message`` once before the
@@ -59,7 +65,15 @@ import json
 import re
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
+
+# Make `tools.*` importable when invoked directly (cwd = .dispatcher/).
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+ACK_EVENT = "retro_gate_acked"
 
 # Ensure UTF-8 stdio on Windows (default cp932 mangles JP prompts/ack
 # bodies). Reconfigure is best-effort — on streams that don't support
@@ -166,6 +180,21 @@ def _extract_body(msg: dict) -> str:
     return ""
 
 
+def _record_ack(task_id: str) -> bool:
+    """Append ``retro_gate_acked`` for the close hook. Never raises."""
+    try:
+        from tools.journal_append import _db_append
+        from tools.state_db.discover import resolve_state_db_path
+
+        _db_append(resolve_state_db_path(), ACK_EVENT,
+                   {"task": task_id, "actor": "dispatcher"})
+        return True
+    except (Exception, SystemExit) as exc:
+        sys.stderr.write(
+            f"dispatcher_retro_gate: could not record {ACK_EVENT}: {exc}\n")
+        return False
+
+
 def _read_stdin_payload(stdin) -> dict[str, Any]:
     raw = stdin.read()
     if not raw or not raw.strip():
@@ -264,6 +293,7 @@ def run_gate(args: argparse.Namespace, *, stdin=None, stdout=None) -> int:
                 "received_at": _now_iso(),
                 "raw": body,
                 "attempts": args.attempt,
+                "recorded": _record_ack(args.task_id),
             }, stdout)
             return 0
 

@@ -9,7 +9,8 @@ bare pid のみを持つため、recycle された pid を無検証で kill す�
 live argv の取得は Linux/WSL では `/proc/<pid>/cmdline`、macOS/BSD では `ps -p <pid>
 -o args=` フォールバックで行う (照合ロジックは tools/secretary_queue_watcher.py の
 queue-watcher 停止と共通のプリミティブを再利用する)。`/proc` も `ps` も無い環境
-(Windows native) では argv を確認できないため exit 2 を返し、pid file を残す
+(Windows native) では argv を確認できないため exit 2 を返し、pid file を残す。生存確認も
+Windows では os.kill(pid, 0) (= TerminateProcess) を使わず副作用の無い Win32 照会で行う
 (org-down は Windows では PowerShell の Get-CimInstance 手順を使う)。
 
 exit code: 0 = 停止 / 既停止 / stale 掃除 (正常系)、1 = kill 権限不足、

@@ -715,5 +715,43 @@ class SetRunPrOpenCwdTests(unittest.TestCase):
         )
 
 
+class MissingDbNotCreatedTests(unittest.TestCase):
+    """Issue #1154: a missing state.db must stay missing.
+
+    These callers used to ``connect()`` before verifying, and ``connect``
+    creates the file, leaving an empty schema-less state.db behind that
+    /org-start then took for a real one.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.db = Path(self._tmp.name) / ".state" / "state.db"
+        self.db.parent.mkdir()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_callers_do_not_create_missing_db(self):
+        from tools import self_edit_approval, spawn_gate, watcher_restart_guard
+        from tools.state_db.migrate_workers import _count_active_runs
+
+        calls = [
+            (lambda: spawn_gate._append_verified_event({}, str(self.db)),
+             SystemExit),
+            (lambda: self_edit_approval._append_event({}, str(self.db)),
+             SystemExit),
+            (lambda: self_edit_approval._precheck_db(str(self.db)),
+             self_edit_approval.ApprovalError),
+            (lambda: watcher_restart_guard._open_conn(str(self.db)),
+             StateDbSchemaError),
+        ]
+        for call, exc in calls:
+            with self.assertRaises(exc):
+                call()
+            self.assertFalse(self.db.exists())
+        self.assertEqual(_count_active_runs(self.db), 0)
+        self.assertFalse(self.db.exists())
+
+
 if __name__ == "__main__":
     unittest.main()

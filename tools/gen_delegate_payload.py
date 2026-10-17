@@ -63,6 +63,12 @@ _PERMISSION_MODE_RE = re.compile(
     r"^\s*default_permission_mode\s*:\s*(\S+)\s*$", re.MULTILINE
 )
 
+# Issue #1152: column 0 only (like ``triage_home``) so prose quoting the key
+# is never read as the setting.
+_INTEGRATION_BRANCH_RE = re.compile(
+    r"^integration_branch[ \t]*:[ \t]*(\S*)[ \t]*$", re.MULTILINE
+)
+
 _PATTERN_LABELS = {
     "A": "A: プロジェクトディレクトリ",
     "B": "B: worktree",
@@ -299,6 +305,20 @@ def parse_permission_mode(claude_org_root: Path) -> str:
     text = cfg.read_text(encoding="utf-8")
     m = _PERMISSION_MODE_RE.search(text)
     return m.group(1) if m else "auto"
+
+
+def parse_integration_branch(claude_org_root: Path) -> Optional[str]:
+    """Return the in-flight integration branch from ``registry/org-config.md``.
+
+    Issue #1152. Only a hint for :func:`build_delegate_plan`'s preview
+    warning — it never changes the cut point, so the #808 precedence
+    (--base-ref > registry base_branch > origin/HEAD) is untouched.
+    """
+    cfg = claude_org_root / "registry" / "org-config.md"
+    if not cfg.exists():
+        return None
+    m = _INTEGRATION_BRANCH_RE.search(cfg.read_text(encoding="utf-8"))
+    return normalize_base_branch(m.group(1)) if m else None
 
 
 def _pattern_label(layout: rwl.WorkerLayout) -> str:
@@ -984,6 +1004,18 @@ def build_delegate_plan(
         pattern=layout.pattern,
         base_repo=base_repo,
     )
+    # Issue #1152: an integration branch is in flight but this dispatch fell
+    # through to origin/HEAD — the exact slip of #1139. Warn, don't redirect:
+    # main-bound tasks still legitimately run during an integration effort.
+    integration_branch = parse_integration_branch(Path(claude_org_root))
+    if integration_branch is not None and base_branch is None:
+        warnings.append(
+            f"registry/org-config.md の integration_branch: {integration_branch} "
+            "が設定されているが、このタスクは origin/HEAD から切られる。"
+            f"統合用ブランチ宛てなら --base-ref {integration_branch} を付けて"
+            "再生成すること（main 宛てで正しいなら --base-ref で既定ブランチを"
+            "明示すれば警告は出ない）"
+        )
 
     return DelegatePlan(
         task_id=task_id,
@@ -1497,6 +1529,59 @@ def _worktree_branch(worker_dir: Path) -> Optional[str]:
     return name
 
 
+def _clear_stale_config_lock(base_repo: Path) -> bool:
+    """Remove a stale empty ``.git/config.lock`` (Issue #1145). True if removed.
+
+    The Claude Code Bash sandbox read-only-binds ``<common-git-dir>/config.lock``
+    for worktree sessions; when the file does not exist it creates an empty
+    placeholder on the host and leaves it behind, so every host-side config
+    write then fails with "could not lock config file". Only a 0-byte lock with
+    no ``git`` process running is removed — a live git holds that lock. Without
+    ``pgrep`` (e.g. Windows, where the sandbox issue does not occur) nothing is
+    removed.
+    """
+    proc = subprocess.run(
+        ["git", "-C", str(base_repo), "rev-parse", "--path-format=absolute",
+         "--git-common-dir"],
+        capture_output=True,
+    )
+    if proc.returncode != 0:
+        return False
+    lock = Path(proc.stdout.decode("utf-8", errors="replace").strip()) / "config.lock"
+    try:
+        if lock.stat().st_size != 0:
+            return False
+        if subprocess.run(["pgrep", "-x", "git"], capture_output=True).returncode != 1:
+            return False  # a git process is running (0) or pgrep errored (>1)
+        lock.unlink()
+    except OSError:  # no lock, no pgrep, or the unlink lost a race
+        return False
+    return True
+
+
+def _run_config_writing_git(
+    base_repo: Path, cmd: list[str], *, retry: bool = True
+) -> subprocess.CompletedProcess:
+    """Run a git command that writes ``.git/config``, surviving a stale lock.
+
+    Clears a stale sandbox lock up front and, if git still reports the lock
+    (a running sandboxed worker can recreate it between the two), clears it
+    and retries exactly once (Issue #1145). Pass ``retry=False`` for commands
+    that are not idempotent: ``worktree add -b`` creates the branch before it
+    hits the lock, so a rerun would only fail with "already exists".
+    """
+    _clear_stale_config_lock(base_repo)
+    proc = subprocess.run(cmd, capture_output=True)
+    if (
+        retry
+        and proc.returncode != 0
+        and b"could not lock config file" in (proc.stderr or b"")
+        and _clear_stale_config_lock(base_repo)
+    ):
+        proc = subprocess.run(cmd, capture_output=True)
+    return proc
+
+
 # git-config key (under ``branch.<name>.``) where apply records the ref a
 # task branch was cut from, so a later reuse can detect that the configured
 # base changed underneath it (Issue #808 / Codex Round 1 Major). Stored
@@ -1518,10 +1603,10 @@ def _record_worktree_base(base_repo: Path, branch: str, base_ref: str) -> None:
     "cannot verify, proceed" for backwards compatibility with worktrees
     created before Issue #808.
     """
-    subprocess.run(
+    _run_config_writing_git(
+        base_repo,
         ["git", "-C", str(base_repo), "config",
          _branch_base_config_name(branch), base_ref],
-        capture_output=True,
     )
 
 
@@ -1850,7 +1935,9 @@ def _ensure_worktree(plan: DelegatePlan) -> None:
         "git", "-C", str(plan.base_repo),
         "worktree", "add", "-b", branch, str(worker_dir), base_ref,
     ]
-    proc = subprocess.run(cmd, capture_output=True)
+    # ``worktree add -b`` off a remote-tracking ref writes the branch's
+    # upstream into .git/config, so it needs the stale-lock guard too.
+    proc = _run_config_writing_git(plan.base_repo, cmd, retry=False)
     if proc.returncode != 0:
         stderr = (proc.stderr or b"").decode("utf-8", errors="replace").strip()
         raise WorktreeApplyError(

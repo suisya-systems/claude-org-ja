@@ -84,7 +84,7 @@ claude-org-runtime org up                                    # broker daemon を
 `claude-org-runtime org up` が broker daemon を確保（健全なら再利用、無ければ起動）し、窓口 (Secretary) ペインを起動する（`--state-dir` 既定 `.state/broker`、`--root-cwd` 既定＝実行ディレクトリ、`--name` 既定 `secretary`）。Windows で console script が PATH に無い場合は等価の `py -3 -m claude_org_runtime.cli org up` を使う。停止は `claude-org-runtime org down`。
 窓口の Claude Code が立ち上がったら、**順に以下を実行する**:
 
-1. `/org-setup` — ロール別 `settings.local.json`（窓口・ディスパッチャー・キュレーター・ワーカー）と必須 hook を配置。**初回のみ必須**。未実行だと broker（renga フォールバック時は renga-peers）MCP / git / gh で大量の許可プロンプトが出る。
+1. `/org-setup` — ロール別 `settings.local.json`（窓口・ディスパッチャー・キュレーター・ワーカー）と必須 hook を配置。**初回のみ必須**。未実行だと broker（renga フォールバック時は renga-peers）MCP / git / gh で大量の許可プロンプトが出る。ただし輸送層（`ORG_TRANSPORT` の broker / renga）を切り替えた後は、配布される messaging MCP の allow が輸送層ごとに異なる（`mcp__org-broker__*` / `mcp__renga-peers__*`）ため、`/org-setup` をやり直す（[`.claude/skills/org-setup/SKILL.md`](../.claude/skills/org-setup/SKILL.md) の「輸送層 両系」注記）。
 2. `/org-start` — 組織を起動。ディスパッチャーが派生する（既定 broker では独立した detached ペイン、renga フォールバックでは同一タブ内 split として。走行中のペインを read-only で覗く attach 導線は [`docs/operations/broker-dogfood-runbook.md`](operations/broker-dogfood-runbook.md) §8 を参照）。キュレーターは知見が溜まったときにオンデマンドで一時起動される。
 
 `/org-setup` は **additive-only**（不足分を追加するだけで既存を消さない）。drift を baseline に戻したい場合は `python tools/org_setup_prune.py --role <role>` を使う（[`.claude/skills/org-setup/references/permissions.md`](../.claude/skills/org-setup/references/permissions.md) のロール別サンプル JSON を SoT として書き戻し、`{claude_org_path}` / `{worker_dir}` プレースホルダを絶対パスへ自動解決する）。サンプル JSON を手でコピーする場合は、**プレースホルダを必ず実環境の絶対パスへ解決すること**（未解決のまま貼ると hook のパスが存在せず、ガードがエラーも出さずに無効化する）。
@@ -141,7 +141,7 @@ python tools/org_setup_prune.py --all       # ロール別 settings.local.json �
 renga --layout ops                          # renga の窓口（Secretary）ペインを起動（org up の代わり）
 ```
 
-起動後は broker 経路と同じく窓口 Claude Code で（初回のみ）`/org-setup` → `/org-start` を実行する。実行中の broker ペインの respawn・broker daemon の停止・旧 token / queue の破棄まで含む完全な切り戻し 5 条件は [`docs/operations/broker-dogfood-runbook.md`](operations/broker-dogfood-runbook.md) §5、輸送両系の窓口運用差は [`CLAUDE.md`](../CLAUDE.md)「輸送層（transport）両系」を参照。
+起動後は窓口 Claude Code で `/org-setup` → `/org-start` を実行する。輸送層を broker から renga へ切り替えたので、broker で `/org-setup` 済みでも `/org-setup` をやり直す（messaging MCP の allow が `mcp__org-broker__*` から `mcp__renga-peers__*` に変わるため。上記「インストール」節の手順 1 と同じ理由）。実行中の broker ペインの respawn・broker daemon の停止・旧 token / queue の破棄まで含む完全な切り戻し 5 条件は [`docs/operations/broker-dogfood-runbook.md`](operations/broker-dogfood-runbook.md) §5、輸送両系の窓口運用差は [`CLAUDE.md`](../CLAUDE.md)「輸送層（transport）両系」を参照。
 
 ---
 

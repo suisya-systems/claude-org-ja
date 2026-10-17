@@ -1,13 +1,24 @@
 # 各ロールの必要設定
 
-> **Source of truth**: このドキュメントは人間向け説明であり、機械可読な正典は
-> ja の [`tools/org_extension_schema.json`](../../../../tools/org_extension_schema.json)
-> （org-extension allow / hooks）と `core_harness` の framework schema（型定義）を
-> マージしたもの。drift validator `tools/check_role_configs.py` はこの merged schema
-> に対して `settings.local.json` を検証し、乖離があれば CI が fail する。ルール追加や
-> 文面変更は schema → docs の順で反映すること。
+> **正典**: 正典は [`tools/org_extension_schema.json`](../../../../tools/org_extension_schema.json)
+> （org-extension allow / hooks）と `core_harness` の framework schema（型定義）をマージしたもの。
+> 本ファイルの role 別 JSON はその schema を満たすテンプレートで、`/org-setup` と
+> `tools/org_setup_prune.py` が settings ファイルへ書き出す。`tools/check_role_configs.py` が
+> テンプレートと各 `settings.local.json` を schema と照合し、乖離があれば CI が fail する。
+> ルールの追加や変更は schema → 本ファイルの順で反映すること。
 
-org-setup が参照する、ロールごとの permissions allow と環境変数の定義。
+org-setup が参照する、ロールごとの permissions allow と環境変数の定義。設計理由は [`.claude/skills/org-setup/references/rationale.md`](rationale.md)。
+
+## 目次
+
+- ユーザー共通（`~/.claude/settings.json`）
+  - ユーザー共通の sandbox denyRead / denyWrite 補強（`--user-common-sandbox`）
+- 窓口（`<repo>/.claude/settings.local.json`）
+- ディスパッチャー（`<repo>/.dispatcher/.claude/settings.local.json`）
+- キュレーター（`<repo>/.curator/.claude/settings.local.json`）
+- ワーカー（動的生成）
+
+`{claude_org_path}` と `{worker_dir}` は、settings.local.json の生成時に解決済みの絶対パスへ置換する。hook command 内のパスはスペース対策のためクォートしている。相対パス（`bash .hooks/...`）で書くと、cwd が org ルート以外のロール（ディスパッチャーの cwd は `.dispatcher/`）では hook が解決されず、ガードが**エラーも出さずに無効化**する。
 
 ## ユーザー共通 (`~/.claude/settings.json`)
 
@@ -57,11 +68,11 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
 
 **注意**: `renga-peers` MCP ツール 15 種は `renga mcp install` を一度実行して user-scope に MCP サーバーを登録した後に利用可能になる。登録手順は README「インストール」セクションを参照。
 
-### ユーザー共通の sandbox denyRead / denyWrite 補強（`--user-common-sandbox`、Issue #429 Task B + Issue #433）
+### ユーザー共通の sandbox denyRead / denyWrite 補強（`--user-common-sandbox`）
 
-> **⚠️ main pull 後の 1 回必須**: 本リポジトリを clone / pull した後に **`python tools/org_setup_prune.py --user-common-sandbox` を 1 回実行する**。未実行だと共有 `.claude/settings.json` から除去された `~/.ssh` / `~/.aws` 等の sandbox denyRead **および** `~/.claude/settings.json` の sandbox denyWrite が補完されず、**sandbox 防御が一時的に弱くなる**。
+> **初回セットアップで 1 回実行する**: 本リポジトリを clone したら **`python3 tools/org_setup_prune.py --user-common-sandbox`**（Windows native は `py -3`）を 1 回実行する。冪等なので再実行しても害はない。未実行だと、共有 `.claude/settings.json` に置いていない `~/.ssh` / `~/.aws` 等の sandbox denyRead **および** `~/.claude/settings.json` の sandbox denyWrite が補完されず、**sandbox 防御が欠けたままになる**。書き先の `~/.claude/settings.json` は sandbox 内から書けないので、実行は [`.claude/skills/org-setup/SKILL.md`](../SKILL.md#sandbox-内からは書けない書き先窓口ユーザー共通) の「sandbox 内からは書けない書き先」節の 2 段手順で行う。
 
-`tools/org_setup_prune.py --user-common-sandbox` は `~/.claude/settings.json` の `sandbox.filesystem.denyRead` / `denyWrite` 双方に対し、対象エントリを **idempotent に union-merge** する専用モード。共有 (= リポジトリ) 側の `.claude/settings.json` から個人 path を除去（Issue #429 Task C で denyRead 群、Issue #433 で denyWrite の `~/.claude/settings.json`）した分の defense-in-depth を、個人環境ごとに復元する。**単一フラグで denyRead + denyWrite の両方を処理する**（`--user-common-sandbox-write` のような別フラグは設けない、UX 簡素化方針）。
+`tools/org_setup_prune.py --user-common-sandbox` は `~/.claude/settings.json` の `sandbox.filesystem.denyRead` / `denyWrite` 双方に対し、対象エントリを **idempotent に union-merge** する専用モード。共有 (= リポジトリ) 側の `.claude/settings.json` から個人 path（denyRead 群と denyWrite の `~/.claude/settings.json`）を除去した分の defense-in-depth を、個人環境ごとに復元する。**単一フラグで denyRead + denyWrite の両方を処理する**（`--user-common-sandbox-write` のような別フラグは設けない、UX 簡素化方針）。
 
 **denyRead 対象ディレクトリ（候補）**: `~`-prefixed の literal で保存され、ユーザー間で共有されても portable:
 
@@ -89,10 +100,11 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
 
 - `~/.claude/settings.json`
 
-**denyWrite フィルタ規則（denyRead と非対称、Issue #433）**:
+**denyWrite フィルタ規則（denyRead と非対称）**:
 
 - **存在チェック無し**: ファイルが未作成でも entry を merge する。書込防御は **ファイル未作成時点で意味があり**（fresh install では `~/.claude/settings.json` が Claude Code の初回起動時に作成される）、deny を先に置くことで初回作成時から bwrap subprocess の書き込みを構造的に止める。
-- **symlink-escape skip も適用しない**: denyWrite の対象は単一ファイル literal で、bwrap が write 先 path を解釈する際に存在しない path を case A で skip するため bootstrap 失敗の risk が無い。symmetric directory denyWrite (`~/.ssh` 等) は **Issue #433 のスコープ外**として deferred（`ssh-keygen` / `aws configure` 等の正規 write を巻き込む副作用が大きく、明確な threat model も無いため）。
+- **symlink-escape skip も適用しない**: denyWrite の対象は単一ファイル literal で、bwrap が write 先 path を解釈する際に存在しない path を case A で skip するため bootstrap 失敗の risk が無い。
+- directory 単位の denyWrite（`~/.ssh` 等）は配らない（理由は rationale.md）。
 
 **動作（idempotent、denyRead/denyWrite 共通）**:
 
@@ -102,22 +114,9 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
 - **denyRead のみ additive + prune**: 上記の「retire リスト」(`USER_COMMON_SANDBOX_DENYREAD_REMOVE`) に列挙された entry が既存 `denyRead` に残っていれば、毎回の実行で **自動的に除去** する。retire 対象が現行候補リストにも入っている場合は除去せず保持（再追加ループを避けるため）。retire リストに無いユーザー追加 entry は一切 touch しない。denyWrite 側には retire リストを設けていない（現状 retire 対象が無いため）。
 - malformed shape（`sandbox` が object でない、`denyRead` / `denyWrite` が array でない、entry が string でない、等）は **書込前に `ValueError` で abort**。ユーザーデータの黙示的破壊を防ぐ。denyRead 側で先に shape error が出れば denyWrite merge は実行されない（その逆も同様）。
 
-**使用方法**:
+コマンドは [`.claude/skills/org-setup/SKILL.md`](../SKILL.md) Step 6。
 
-```bash
-# diff プレビュー（書き込まない）
-python tools/org_setup_prune.py --user-common-sandbox --dry-run
-
-# 実行（既存があれば .bak 自動生成）
-python tools/org_setup_prune.py --user-common-sandbox
-
-# 既に全候補が入っていれば no-op
-python tools/org_setup_prune.py --user-common-sandbox  # → "no changes"
-```
-
-**前提 1（Issue #429 Task A 調査結論を踏まえた含意）**: Claude Code は `permissions.deny` の `Read(...)` を `sandbox.filesystem.denyRead` に **merge する** ([公式 docs](https://code.claude.com/docs/en/settings))。したがって `permissions.deny Read(~/.aws/*)` を共有 / 個人 settings いずれかに書くと、symlink-escape 環境では bwrap bootstrap 失敗が起きうる。本モードが directory-level deny を採用し symlink-escape を skip するのは、Layer 2 (`Read(...)`) と Layer 3 (`sandbox.filesystem.denyRead`) のどちらに書いても同じ failure を踏むためで、Layer 3 側で realpath ベースに前さばきして root-cause を構造的に避ける設計。
-
-**前提 2（denyWrite の merge セマンティクス、Issue #433 で確認）**: 公式 docs の `sandbox.filesystem.denyWrite` 説明にも「Arrays are merged across all settings scopes. Also merged with paths from `Edit(...)` deny permission rules.」と明記されており、denyRead と同じく Layer 2 (`Edit(...)`) と Layer 3 (`sandbox.filesystem.denyWrite`) が effective set として合流する。本モードが Layer 3 側に直接書く理由は、共有 `.claude/settings.json` の `permissions.deny Edit(~/.claude/settings.json)` 経由でも同じ effective deny を作れるが、共有 settings に書くと repo を pull する全ユーザーの home path に対して deny が適用される副作用（個人ごとの opt-out が不可能）が出るため。個人 settings 側に書くと個人環境ごとに撤回可能で、また「個人の `~/.claude/settings.json` を守る」という意図と保管場所が一致する。
+**`permissions.deny` の `Read(~/.aws/*)` 等も同じ失敗を踏む**: `Read(...)` deny は `sandbox.filesystem.denyRead` に合流するため（https://code.claude.com/docs/en/settings）、symlink-escape 環境では共有 / 個人 settings のどちらに書いても bwrap の bootstrap が失敗しうる。本モードが realpath で前さばきするのはこのため（詳細は rationale.md）。
 
 **詳細**: 実装は `tools/org_setup_prune.py` の `merge_user_common_sandbox_denyread` / `merge_user_common_sandbox_denywrite` / `filter_existing_user_dirs` / `process_user_common_sandbox`（denyRead/denyWrite の merge は共通の `_merge_sandbox_deny` ヘルパー経由）、テストは `tools/test_org_setup_prune.py` の `MergeUserCommonSandboxTests` / `MergeUserCommonSandboxDenywriteTests` / `UserCommonSandboxEndToEndTests` クラス群。
 
@@ -206,6 +205,16 @@ python tools/org_setup_prune.py --user-common-sandbox  # → "no changes"
           }
         ]
       }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"{claude_org_path}/.hooks/check-dispatcher-loop.sh\""
+          }
+        ]
+      }
     ]
   },
   "sandbox": {
@@ -218,21 +227,17 @@ python tools/org_setup_prune.py --user-common-sandbox  # → "no changes"
 
 **`sandbox.network.allowedDomains`**: `/work-discovery` の判定段（`claude -p`）が `api.anthropic.com` に出るための許可。窓口の sandbox 本体（`enabled` / `filesystem`）はリポジトリ直下の追跡済み [`.claude/settings.json`](../../../settings.json) にあり、ここでは足さない（この local ファイルはサブディレクトリで起動したディスパッチャーにも読まれるため、`enabled` を足すとディスパッチャーにも sandbox が掛かる。https://code.claude.com/docs/en/settings 「Where Claude Code keeps the local file in a git repository」）。`allowedDomains` の配列は各スコープの値が合流する（https://code.claude.com/docs/en/settings-reference `sandbox.network.allowedDomains`）。[`tools/check_role_configs.py`](../../../../tools/check_role_configs.py) が schema（`roles.<role>.sandbox.network.allowedDomains`）との一致を検査する。
 
-**注意**: `{claude_org_path}` は settings.local.json 生成時に解決済みの絶対パスに置換すること。Hook command 内のパスはスペース対策のためクォートされている。相対パス（`bash .hooks/...`）で書くと、cwd が org ルート以外のロール（ディスパッチャーの cwd は `.dispatcher/`）では hook が解決されず、ガードが**エラーも出さずに無効化**する。
+**ユーザー共通との重複**: `mcp__renga-peers__*` と renga bootstrap はユーザー共通と重複して列挙する（理由は rationale.md）。
 
-**mcp__renga-peers__\* の重複**: ユーザー共通 settings.json と重複するが、窓口は run 直後に renga-peers MCP を必ず使うため、窓口スコープでも明示的に列挙して source-of-truth として固定する（user settings の drift でも窓口が動くことを保証）。
+**`permissions.deny`**: ワーカー設定ファイル（`workers/<project>/.claude/settings.local.json` および worktree パス `workers/<project>/.worktrees/<task>/.claude/settings.local.json`、加えて live-repo worktree の `.worktrees/<task>/.claude/settings.local.json`）への **Claude の `Edit` ツール経由の直接編集**を窓口に対して禁止する。窓口は通常モード起動（`bypassPermissions` ではない）なので、この `permissions.deny` は静的パターンマッチで常に効く。
 
-**`permissions.deny` (Issue #99 Phase 2 で追加)**: ワーカー設定ファイル（`workers/<project>/.claude/settings.local.json` および worktree パス `workers/<project>/.worktrees/<task>/.claude/settings.local.json`、加えて live-repo worktree の `.worktrees/<task>/.claude/settings.local.json`）への **Claude の `Edit` ツール経由の直接編集**を窓口に対して禁止する。窓口は通常モード起動（`bypassPermissions` ではない）なので、この `permissions.deny` は静的パターンマッチで常に効く。
+**`Write(...)` を併記しない理由**: Claude Code の file permission check は `Edit(path)` のみを評価し、`Write(path)` の deny は実効しない。宣言すると 1 エントリにつき 1 行、起動のたびに `Permission deny rule (.claude/settings.local.json): Write(...) is not matched by file permission checks -- only Edit(path) rules are. Use Edit(...) instead` という警告が出るだけで、防御が死んでいるという誤読を招く。同一 glob の `Edit(...)` が防御を全て担っている。**ここに `Write(...)` を足し戻さないこと。**
 
-**`Write(...)` を併記しない理由**: Claude Code の file permission check は `Edit(path)` のみを評価し、`Write(path)` の deny は実効しない。宣言すると 1 エントリにつき 1 行、起動のたびに `Permission deny rule (.claude/settings.local.json): Write(...) is not matched by file permission checks -- only Edit(path) rules are. Use Edit(...) instead` という警告が出るだけで、防御が死んでいるという誤読を招く。同一 glob の `Edit(...)` が防御を全て担っているため、runtime 0.1.42（suisya-systems/claude-org-runtime#178）と ja の同期で `Write(...)` 3 行を削除した。**ここに `Write(...)` を足し戻さないこと。**
-
-ただしこの deny は Claude のファイル編集ツール（`Edit`）のゲートに限定される。窓口は引き続き `Bash(python:*)` / `Bash(python3:*)` / `PowerShell(Out-File *)` を allow しているため、Bash/PowerShell から `cat > settings.local.json` のように書き出すことは技術的に可能。本 deny は **「窓口が手作業で `Edit` ツールを開いて settings を書き換える」** という主要な誤付与経路を塞ぐためのもので、`claude-org-runtime settings generate` 以外の経路を完全に遮断するものではない。完全な generator-only 化（Bash 側の遮断を含む）は Phase 3 の課題（drift CI 拡張・escape hatch と併走）。
-
-**renga bootstrap の重複**: 同じ理由でユーザー共通と重複するが、窓口が初回レイアウト起動やペイン制御で即時使うため明示列挙。
+この deny は `Edit` ツールだけのゲートで、Bash / PowerShell からの書き出しは塞がない（限界は rationale.md）。
 
 **並び順**: (1) MCP ツール、(2) git、(3) gh、(4) python/dashboard、(5) renga bootstrap、(6) その他（sleep / codex / curl / PowerShell）。新規エントリ追加時はこの並び順を維持する。
 
-**hooks の説明**: `block-workers-delete.sh` は workers ディレクトリへの再帰的削除（`rm -r`/`rm -rf`/`rm --recursive`）をブロックする。個別ファイルの `rm` は許可する。`renga` コマンドは除外する（ワーカー起動時の偽陽性防止）。
+**hooks の説明**: `block-workers-delete.sh` は workers ディレクトリへの再帰的削除（`rm -r`/`rm -rf`/`rm --recursive`）をブロックする。個別ファイルの `rm` は許可する。`renga` コマンドは除外する（ワーカー起動時の偽陽性防止）。`check-dispatcher-loop.sh` は窓口のターンごとに [`tools/dispatcher_loop_watch.py`](../../../../tools/dispatcher_loop_watch.py) を呼び、稼働中ワーカーがいるのにディスパッチャーの見回り（`relay_scan.py --cycle` の heartbeat）が 9 分を超えて止まっていれば `DISPATCHER_LOOP_UNARMED: ...` を 1 行だけ窓口の文脈に出す（同じ状態では 1 回きり）。ブロックはせず、判定できないときは何も出さない。
 
 **書いてはいけないもの**:
 - wide allow (`Bash(git *)`, `Bash(git push *)`, `Bash(git fetch *)`, `Bash(git branch *)`, `Bash(git pull *)`, `Bash(gh:*)`, `Bash(gh *)`)
@@ -241,23 +246,13 @@ python tools/org_setup_prune.py --user-common-sandbox  # → "no changes"
 - 過去の一発コマンド（特定 PR 番号・branch 名・PID を含むコマンド、`gh pr create --repo ... --head feat/xxx ...` 等）
 - user-specific absolute path（`Read(//c/Users/<you>/Documents/work/**)` のような）
 
-これらが蓄積すると drift となる。定期的に `permissions.md` と突き合わせて剪定する。
-
-**剪定（drift 解消）は `--prune` モードで自動化済み**: 上記「書いてはいけないもの」のエントリが `settings.local.json` に蓄積した場合、`tools/org_setup_prune.py` で本ドキュメントの role 別サンプルを SOT として丸ごと書き換えられる。
-
-```bash
-python tools/org_setup_prune.py --role secretary --dry-run   # diff プレビュー
-python tools/org_setup_prune.py --role secretary             # 実行（.bak を自動生成）
-python tools/org_setup_prune.py --all                        # secretary / dispatcher / curator まとめて
-```
-
-**user 拡張の保護**: 個人で追加した allow / env / hook を残すには、各 settings ファイルと**同じディレクトリ**に `settings.local.override.json` を置く。prune 時に deep-merge され、ツールはこの override ファイルを書き換えない。詳細は `.claude/skills/org-setup/SKILL.md` の Step 5 参照。
+これらが蓄積すると drift となる。剪定は `--prune` モード（個人拡張は `settings.local.override.json` で保護）で行う。手順は [`.claude/skills/org-setup/SKILL.md`](../SKILL.md) Step 5。
 
 ## ディスパッチャー (`<repo>/.dispatcher/.claude/settings.local.json`)
 
 ディスパッチャーはワーカーペインで claude を起動し、ペイン内容を取得する。
 
-**重要**: ディスパッチャーは Sonnet 制約により `permission_mode=bypassPermissions` で起動するため、`permissions.allow` と `permissions.deny` は **両方とも bypass される**（Claude Code 公式仕様）。実効的な書き込み境界・git 制限は **PreToolUse フックでしか強制できない**。下記 `hooks.PreToolUse` がディスパッチャーの唯一の障壁であり、削除・無効化してはいけない。
+**重要**: ディスパッチャーは `permission_mode=bypassPermissions` で起動する。auto モードの安全分類器が、ワーカー起動に使う `spawn_claude_pane`（子エージェント起動）を止めるため（[`.claude/skills/org-start/SKILL.md`](../../org-start/SKILL.md) の 419 行目）。このため`permissions.allow` と `permissions.deny` は **両方とも bypass される**（Claude Code 公式仕様）。実効的な書き込み境界・git 制限は **PreToolUse フックでしか強制できない**。下記 `hooks.PreToolUse` がディスパッチャーの唯一の障壁であり、削除・無効化してはいけない。
 
 ```json
 {
@@ -309,16 +304,39 @@ python tools/org_setup_prune.py --all                        # secretary / dispa
         ]
       },
       {
-        "matcher": "mcp__.*__close_pane",
+        "matcher": "mcp__.*__(close_pane|set_pane_identity)",
         "hooks": [
           {
             "type": "command",
             "command": "bash \"{claude_org_path}/.hooks/block-relative-close-pane.sh\""
+          },
+          {
+            "type": "command",
+            "command": "bash \"{claude_org_path}/.hooks/block-close-before-retro.sh\""
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__.*__send_keys",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"{claude_org_path}/.hooks/block-blind-spawn-keys.sh\""
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__.*__spawn_claude_pane",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"{claude_org_path}/.hooks/check-worker-spawn-model.sh\""
           }
         ]
       }
     ]
   },
+  "claudeMdExcludes": ["{claude_org_path}/CLAUDE.md"],
   "env": {
     "CLAUDE_ORG_PATH": "{claude_org_path}"
   },
@@ -330,7 +348,7 @@ python tools/org_setup_prune.py --all                        # secretary / dispa
 }
 ```
 
-**注意**: `{claude_org_path}` は settings.local.json 生成時に解決済みの絶対パスに置換すること。Hook command 内のパスはスペース対策のためクォートされている。
+**`claudeMdExcludes`**: ディスパッチャーの cwd は `.dispatcher/` で、その祖先にある窓口用の root `CLAUDE.md` が起動時に読み込まれる。これを外す（パターンは絶対パスに glob で照合される。https://code.claude.com/docs/en/memory.md 「Exclude specific CLAUDE.md files」）。外れたかは、ディスパッチャーで `/context` を実行し **Memory files** に root `CLAUDE.md` が無いことで確かめる。
 
 **`sandbox.network.allowedDomains`**: worker クローズ時の work-discovery scan の判定段（`claude -p`）が `api.anthropic.com` に出るための許可。窓口と同じく `enabled` は足さない。ディスパッチャーの cwd（`.dispatcher/`）には追跡済みの `.claude/settings.json` が無く、窓口の local ファイルにも `enabled` が無いため、現状ディスパッチャーの Bash は sandbox 外で動く（共有ファイルは起動ディレクトリから読む: https://code.claude.com/docs/en/settings 「Where Claude Code keeps the local file in a git repository」）。permission mode は tool call を走らせるかを決め、sandbox は走った Bash の到達先を制限する別の層である（https://code.claude.com/docs/en/sandboxing 「Permission modes」）ため、将来ディスパッチャーの sandbox を有効にしても判定段が止まらないよう先に配っておく。
 
@@ -341,7 +359,10 @@ python tools/org_setup_prune.py --all                        # secretary / dispa
 - `block-dangerous-git.sh`: 素の `git push --force` / `-f` および protected branch (main / master / develop / release/* / production) への `git push --force-with-lease` をブロック。非保護 branch への `--force-with-lease` は許容（PR rebase / squash 後の安全な再 push 用、Issue #470）。ただし refspec 未指定 / `HEAD` / `@` / wildcard refspec / `--all` / `--mirror` / `--tags` / branch 以外の namespace (`refs/tags/*` / `refs/notes/*` / `refs/replace/*` 等) / `git push origin tag <name>` 形式の宛先が曖昧なケースは安全側で deny。加えて `git reset --hard` / `git branch -D` / `git clean -f` / `git checkout -- .` / `git restore --source` / `git tag -d` / `git update-ref -d` / `git reflog expire --all` 等の破壊的操作も引き続きブロック。さらに `git stash` の変更系（引数なしの bare 形 / `push` / `save` / `pop` / `apply` / `branch` / `drop` / `clear` / `store` / `create`）を allowlist 方式で deny する（調査用の `list` / `show` のみ許可）。`refs/stash` は base clone の共有 git dir に解決されるため、ある worktree の `pop` が別 worktree の退避を復元しうること、および未追跡の非通常ファイル（キャラクタデバイス）があると `-u` 形が途中失敗することが理由。下記 allow には `Bash(git stash:*)` を置かない（runtime の bundled schema と同期して削除済み）
 - `block-workers-delete.sh`: workers ディレクトリの再帰削除をブロック（ワーカー成果物の保護）
 - `block-no-verify.sh`: `--no-verify` 系の検証バイパスをブロック
-- `block-relative-close-pane.sh`: `close_pane` の宛先が数値 pane id でないとき（`target` 省略 / `"focused"` / 裸の name）に deny する。裸 name の例外は `pr-watch-<PR>` のみ（DD-2 stale-binding carve-out）。**ディスパッチャーは `bypassPermissions` で動き `permissions.deny` が評価されないため、このフックだけが障壁になる**（Issue #1018 の事故は相対セレクタで窓口ペインが閉じられたもの）。窓口はプロジェクトルート直下の [`.claude/settings.json`](../../../settings.json) から同じフックを継承するので、そちらには重複登録しない。設計と残余は [`docs/design/close-pane-guard.md`](../../../../docs/design/close-pane-guard.md)
+- `block-relative-close-pane.sh`: `close_pane` / `set_pane_identity` の宛先が数値 pane id でないとき（`target` 省略 / `"focused"` / 裸の name）に deny する。裸 name の例外は `close_pane` の `pr-watch-<PR>` のみ（DD-2 stale-binding carve-out）。**ディスパッチャーは `bypassPermissions` で動き `permissions.deny` が評価されないため、このフックだけが障壁になる**。窓口はプロジェクトルート直下の [`.claude/settings.json`](../../../settings.json) から同じフックを継承するので、そちらには重複登録しない。設計と残余は [`docs/design/close-pane-guard.md`](../../../../docs/design/close-pane-guard.md)
+- `block-close-before-retro.sh`: 振り返りの完了報告ゲートを通っていない worker ペインへの `close_pane` を deny する。数値 pane id を `worker_spawn_verified` で task に引き、`retro_gate_acked`（`tools/dispatcher_retro_gate.py` が acked 時に記録）・`retro_gate_confirmed_missing`（replied_no_ack で未着を確定したとき dispatcher が `tools/journal_append.sh` で記録）・`runs.status` が `completed` / `failed` / `abandoned`・`completion_reported_at` あり かつ `runs.status == 'review'` のどれかがあれば通す（`completed` と最後のものは [`.dispatcher/references/pane-close.md`](../../../../.dispatcher/references/pane-close.md)「0. 受領記録の確認」の ack 相当）。worker 以外のペインと `set_pane_identity` は素通しする。**ディスパッチャー専用**
+- `block-blind-spawn-keys.sh`: キーを含む `send_keys`（`keys` が空でない、または `enter: true`）を、`claude-org-runtime dispatcher spawn-prompt-step --target <宛先>` が書いた判定記録（`<state-dir>/dispatcher/spawn-prompt/<宛先>.json`、runtime 0.1.50+）と照合し、記録が無い・期限切れ（30 秒）・宛先違い・キー不一致なら deny する。`action: "done"` の記録は Enter 単発だけを通す（[`.dispatcher/references/spawn-flow.md`](../../../../.dispatcher/references/spawn-flow.md) 3-5a の kickoff）。通した記録は消す（1 回限り）。`text` だけの送信は判定しない。folder-trust の初期カーソルは「No, exit」で、盲目 Enter はワーカーを終了させるため（3-3b）。**ディスパッチャー専用**（窓口の `/clear` や承認ハンドシェイクは止めない）
+- `check-worker-spawn-model.sh`: `role: "worker"` の `spawn_claude_pane` で `model` が `"sonnet"` か `"opus"` と明示されていなければ deny する（ワーカーの既定は sonnet。runtime helper は `model` 省略時に opus を既定にするため、省略を通さない）。`"opus"` は、ペイン名から `worker-` を外した task_id の `.state/dispatcher/inbox/<task_id>.json` に `"model": "opus"` があるとき（DELEGATE 本文に `モデル: opus` 行があったとき）だけ通す。worker 以外の role は素通しする。**ディスパッチャー専用**
 
 ## キュレーター (`<repo>/.curator/.claude/settings.local.json`)
 
@@ -355,7 +376,7 @@ python tools/org_setup_prune.py --all                        # secretary / dispa
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "mcp__.*__close_pane",
+        "matcher": "mcp__.*__(close_pane|set_pane_identity)",
         "hooks": [
           {
             "type": "command",
@@ -453,6 +474,10 @@ python tools/org_setup_prune.py --all                        # secretary / dispa
         "hooks": [
           {
             "type": "command",
+            "command": "bash \"{claude_org_path}/.hooks/block-codex-over-cap.sh\""
+          },
+          {
+            "type": "command",
             "command": "bash \"{claude_org_path}/.hooks/block-git-push.sh\""
           },
           {
@@ -477,6 +502,15 @@ python tools/org_setup_prune.py --all                        # secretary / dispa
             "command": "bash \"{claude_org_path}/.hooks/block-relative-close-pane.sh\""
           }
         ]
+      },
+      {
+        "matcher": "mcp__.*__(spawn_pane|spawn_codex_pane|spawn_claude_pane|send_keys|new_tab)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"{claude_org_path}/.hooks/block-codex-over-cap.sh\""
+          }
+        ]
       }
     ]
   },
@@ -489,8 +523,10 @@ python tools/org_setup_prune.py --all                        # secretary / dispa
 
 **`.env` テンプレートの除外（runtime 0.1.43+）**: `Read(!.env.example)` など `!` で始まる 4 行は `Read(.env)` / `Read(.env.*)` の**直後**に置く。`!` の deny パターンは同じ settings ファイルで**前に**並ぶルールからだけ一致分を除外する（https://code.claude.com/docs/en/permissions 「Read and Edit」）ので、順序を入れ替えると `.env.example` が再び読めなくなる。4 パターンは `claude_org_runtime.settings.generator.ENV_TEMPLATE_PATTERNS` で、sandbox の `filesystem.allowRead` と同じ集合（[`tools/check_role_configs.py`](../../../../tools/check_role_configs.py) が一致を検査する）。
 
-**注意**: `{claude_org_path}` と `{worker_dir}` は settings.local.json 生成時に解決済みの絶対パスに置換すること。Hook command 内のパスはスペース対策のためクォートされている。
+**deny と hooks の役割分担**: `deny` は `echo foo && git push` のような埋め込みコマンドはカバーできないため、`block-git-push.sh` / `block-dangerous-git.sh` / `block-no-verify.sh` hook を副次防御として維持する（多層防御の説明は rationale.md）。
 
-**deny と hooks の役割分担**: ワーカーは通常モード（`bypassPermissions` ではない）で起動するため、`permissions.deny` は静的パターンマッチで常に効く。外部コマンド（jq, bash）に依存しないので信頼性が高い。一方 hooks はワーカーディレクトリ境界チェック等の動的検証を担う。両者を併用することで多層防御を実現する。`deny` は `echo foo && git push` のような埋め込みコマンドはカバーできないため、`block-git-push.sh` / `block-dangerous-git.sh` / `block-no-verify.sh` hook は副次防御として維持する。なお `bypassPermissions` で起動するロール（ディスパッチャー）では `permissions.deny` は bypass されるので、そちらは hook のみが障壁になる（前述 `重要` 節参照）。
+**ワーカー専用の hooks**:
+- `block-codex-over-cap.sh`: Codex セルフレビューの往復上限をワーカーの外で強制する（判定本体は [`tools/codex_round_cap.py`](../../../../tools/codex_round_cap.py)）。引用符とバックスラッシュを除いて `codex` を含む Bash コマンドだけを見る。判定は既定 deny で、単純コマンドのどこかに `codex` / `codex.js` / `@openai/codex` の語があれば、引数を実行しない読み取り系コマンド（`grep` / `cat` / `echo` / `git` / `which` / `command -v` / `npm i` 等の許可リスト）以外は deny する。空白を含む引数（`bash -c` / `su -c` / `env -S` / `python -c` の文字列）は入れ子のコマンドとして再判定し、標準入力・ヒアドキュメント・`-c`・`eval` / `xargs` でテキストを実行するシェルに `codex` を含むテキストが渡る形と、`codex` を含む `$(...)` / バッククォートも deny する。MCP の `spawn_codex_pane` は常に deny、`spawn_pane` / `new_tab` の `command` と `send_keys` の `text` は Bash と同じ判定にかける（Codex ゲートは Bash からだけ通す）。Codex ゲートは `bash "$CLAUDE_ORG_PATH/tools/codex_review_gate.sh" <base-ref>`（差分レビュー）と `bash "$CLAUDE_ORG_PATH/tools/codex_review_gate.sh" --design <file>`（設計レビュー。パスは空白やシェル記号を含まない 1 語）の単独の形だけ通す。正規のゲート呼び出しは 1 回ごとに events へ `codex_round_started` を記録し、タスクの許可回数（既定 3）を超えたら `codex_round_denied` を記録して `CODEX_ROUND_DENIED` で deny する。設計レビューは別枠でタスクごとに 1 回固定（payload の `mode=design`）で、差分の許可回数を消費も参照もしない。task はワーカーの `WORKER_DIR` と一致する最新の `delegate_sent` から引き、許可回数を変えられるのは窓口の `python3 tools/codex_round_cap.py set --task-id <id> --allowed <N|unlimited> --reason <理由>` だけ。フックは sandbox の外で動き、ワーカーから読み取り専用の ja root `.state/state.db` に書く。`$STATE_DB_PATH` は見ない。DB が無い・task を引けない・判定が異常終了したときは deny する（fail-closed）。変数展開・グロブ・ブレース展開・`$'...'`・別ファイルのスクリプト・他言語で組み立てた文字列・許可リストのコマンドの実行機能（`git` の alias / pager、`sed` の `e`）・`send_keys` の `keys` 1 文字ずつの送信を経由した `codex` 実行はコマンド文字列から判別できない（既知の限界）
+- `check-worker-boundary.sh` は Worker ディレクトリ内でも `.claude/settings.json` / `.claude/settings.local.json` への Edit/Write を deny する。強制フックと env がここに載るため、変更は窓口へのエスカレーション経由にする
 
-**Phase 2 worker git guardrails (Refs #379)**: 上記 `deny` / `hooks` は worker-git-guardrails-design.md §5 / §6 / §11 cheat sheet の即時項目を反映する。`Bash(git worktree*)` deny family は Pattern B 共有 base clone の `.git/worktrees/<other>` への副作用（remove / prune / lock 等）を Layer 2 で全 deny する（§6）。`block-dangerous-git.sh` / `block-no-verify.sh` の attach はワーカー作業ディレクトリが claude-org repo 外の場合に発生していた cwd-tree non-inheritance gap を埋める（§5.1 / §5.2）。`Bash(git fetch / pull / remote / submodule / lfs / gc / filter-branch / replace / update-ref / config --{global,local,worktree} / reflog {expire,delete})` の deny family は §4.6 (N) network deny + §5.2.4 history-rewrite / config write deny を Layer 2 で固定する。
+**worker git guardrails**: 上の JSON は `check_role_configs.py` が照合する監査下限で、実際の生成元 `worker_roles.default` の deny はこれより広い。生成元は素の `git fetch:*` を allow したうえで、`git -C * fetch` / `git -C * pull`、`git remote add|set-url|remove|rm`、`git reflog expire|delete` と、それぞれの `git -C *` 形を deny する。設計は [`docs/contracts/worker-git-guardrails-design.md`](../../../../docs/contracts/worker-git-guardrails-design.md)（§4.6 network、§5.2.4 template deny、§6 worktree）。

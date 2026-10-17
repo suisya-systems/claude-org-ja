@@ -1,11 +1,9 @@
 ---
 name: org-curate
 description: >
-  蓄積された生の学び（knowledge/raw/）を整理・統合する。
-  ディスパッチャーが worker クローズ時の閾値チェック
-  (tools/check_curate_threshold.py) 超過でオンデマンド起動した
-  キュレーターから 1 回だけ呼び出される（常駐 /loop は廃止）。
-  手動で「知見を整理して」と言われたときにも使う。
+  knowledge/raw/ の生の学びを分類・統合して knowledge/curated/ に書き出す。
+  ディスパッチャーが閾値超過で起動したキュレーターから呼ばれるほか、
+  「知見を整理して」と言われたときに使う。
 effort: medium
 allowed-tools:
   - Read
@@ -37,9 +35,9 @@ knowledge/raw/ に蓄積された生の学びを読み、分類・統合して k
 >
 > 契約面の正本は [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) Surface 8（broker auth & delivery、ratified 2026-06-14）+ 末尾「Ratified amendment (2026-06-15): push-primary delivery」（S3。**broker push 一次が既定の契約**、pull は structural fallback として retain）、設計 SoT は transport-lab `docs/design/broker-native-roles.md` §9（push 一次）/ `docs/design/ja-migration-plan.md` §5・§8。**opt-in `renga` は削除せず常時有効な fallback として維持する**（切戻しの安全装置）。broker 実走（dogfood）は Epic #6 Issue G スコープであり、本ファイルの既定運用経路ではない（**既定の二フレーム注記（Refs #604）**: ここでの「既定 `broker`」は**コード既定**フレーム — `tools/transport.py: DEFAULT_TRANSPORT` が runtime 0.1.28 (Epic #586) で `broker` にフリップ済みで、ja 生成器・`transport.resolve()` はこのコードフレームで render するため生成面はこう表示する。別に**運用既定**フレームがあり、broker 実走 dogfood が Epic #6 Issue G まで未活性のため運用上の既定経路は `renga`。両フレームは指す対象（コード定数 vs 運用経路）が異なり矛盾しない。総説は root [`CLAUDE.md`](../../../CLAUDE.md)「輸送層（transport）両系」節。）
 
-**起動モデル（オンデマンド化）**: 本スキルは 1 回の起動で 1 サイクルだけ実行する（`/loop` 禁止）。
-閾値判定は外部スクリプト [`tools/check_curate_threshold.py`](../../../tools/check_curate_threshold.py) に
-一本化されており、本スキル内部には「raw 5 件未満なら即終了」のようなゲートは**存在しない**。
+**起動モデル**: 本スキルは 1 回の起動で 1 サイクルだけ実行する（`/loop` 禁止）。
+閾値判定は外部スクリプト [`tools/check_curate_threshold.py`](../../../tools/check_curate_threshold.py) が行い、
+本スキル内部では件数による早期終了をしない。
 起動理由 `reasons[]` を受け取り、該当するステップだけを実行する。
 
 **パス解決（重要）**: 本スキル中の `knowledge/...` / `tools/...` 表記は**リポジトリルート相対の
@@ -59,60 +57,29 @@ knowledge/raw/ に蓄積された生の学びを読み、分類・統合して k
 | `work_skill_count` | work-skill 数（org-* 除外）が 20 件以上 | Step 6（skill-audit 発火） |
 | `legacy_marker_sweep` | raw/ 直下に `<!-- curated -->` 残骸あり | Step 1（移行 sweep。※常に実行） |
 
-### 0-A: 起動文脈の判定（on-demand か明示手動か）— Step 7 の送信義務を決める
+### 0-A: 起動文脈の判定 — Step 7 の送信義務を決める
 
-**この判定は Step 7（完了通知）の送信が必須か任意かを分ける唯一の根拠**である。自己推論で
-「たぶん手動だから省略してよい」と緩めてはならない（curator 孤立 = ペインリークの原因）。
-判定は **「この curator インスタンス自身が dispatcher に spawn / 駆動されたか」** を根拠にする
-（外部ファイルの存在だけで決めない。理由は下記 (i) の注意を参照）。
+Step 7 の送信義務は、このインスタンスが dispatcher（peer name `dispatcher`）から起動指示メッセージを
+受けたかだけで決まる。
 
-**主シグナル（インスタンス固有・決定的。1 つでも該当すれば on-demand 確定）** — この場合 Step 7 の
-`CURATE_DONE` / `CURATE_SKIPPED` / `CURATE_ERROR` を **dispatcher 宛に必ず送る**（結果に関わらず・
-例外なし。手動と再分類してはならない）:
+- **受けた（on-demand）**: 結果に関わらず Step 7 で `to_id="dispatcher"` に `CURATE_*` を送る
+  （不送信は curator ペインのリークになる）。起動指示に reasons の JSON が無く下の項 2 に落ちても同じ。
+- **受けていない（人間が自分のペインで `/org-curate` を打った）**: Step 7 は送らない。
 
-- **(ii)** dispatcher（peer name `dispatcher`）から起動指示メッセージを受信した。これは on-demand
-  起動でのみ起こり、人間の手動 `/org-curate` では起こらない（= 手動との決定的な弁別子）。
-- **(iii)** その起動指示メッセージに `tools/check_curate_threshold.py` の JSON（`reasons[]` /
-  `counts`）が含まれている。
-
-**補助シグナル（dispatcher 側マーカー。単独では on-demand と断定しない）**:
-
-- **(i)** `.state/dispatcher/curate-inflight.json` が存在する（curator ペイン CWD=`.curator/`
-  からは `../.state/dispatcher/curate-inflight.json`）。これは dispatcher が CLOSE_PANE Step 5-3
-  で spawn 直後に書く on-demand 起動のマーカーで、dispatcher は curator の `CURATE_*` を
-  `check_messages` で待ってからペインを閉じる（[`.dispatcher/references/pane-close.md`](../../../.dispatcher/references/pane-close.md) 5-3 /
-  [`.dispatcher/references/worker-monitoring.md` Step 5.3](../../../.dispatcher/references/worker-monitoring.md#step-5-3)）。
-  **このシグナルが on-demand を裏づけるのは、本インスタンスが dispatcher に spawn された curator
-  ペイン（CWD=`.curator/`、ペイン名 `curator`、= 主シグナル (ii)/(iii) も伴う）であるときに限る**。
-  inflight ファイルは特定インスタンスに紐付かないグローバルファイルなので、**人間が別ペイン
-  （secretary / リポジトリルート、CWD≠`.curator/`、dispatcher 起動指示なし）で手動 `/org-curate`
-  した curator は、たまたま並走中の別 on-demand curator の inflight を見ても、それを自分の送信
-  トリガにしてはならない**（誤って `CURATE_*` を送ると dispatcher が実行中の本物の on-demand
-  curator を早閉じ・inflight 削除しうる。Codex Major 対応）。
-
-**明示手動起動**と見なせるのは、**主シグナル (ii)/(iii) のいずれにも該当せず**（= dispatcher の
-起動指示を受けていない）、かつ本インスタンスが dispatcher 起動の curator ペインでもなく、人間が
-secretary 系ペインで直接 `/org-curate` をタイプした起動のときだけ。この場合に限り Step 7 の送信を
-省略してよい（dispatcher にペインクローズ責務が無いため）。**主シグナル (ii)/(iii) を受けていれば、
-inflight の有無に関わらず on-demand 確定で送信必須**。判定に迷う場合（dispatcher 起動の curator
-ペインなのにメッセージ取りこぼしを疑う等）は **on-demand 側に倒して必ず送る**（送信は情報共有
-として無害、不送信だけがペインリークを生む）。
+`.state/dispatcher/curate-inflight.json` は判断材料にしない。並走中の別の on-demand curator の
+マーカーでもあり得て、それを見て送った `CURATE_*` を dispatcher は本物の curator の完了として扱い、
+作業中のペインを閉じうる（[`.dispatcher/references/worker-monitoring.md` Step 5.3](../../../.dispatcher/references/worker-monitoring.md#step-5-3)）。
 
 1. **ディスパッチャー経由のオンデマンド起動**: 起動指示メッセージに
    `tools/check_curate_threshold.py` の JSON（`reasons[]` / `counts`）が含まれている。
    それをそのまま採用する（再計算しない）。
-2. **手動起動（reasons が渡されていない場合）**: 自分でスクリプトを実行して確定する。
-   curator ペイン（CWD=`.curator/`）からは `py -3 ../tools/check_curate_threshold.py`、
-   リポジトリルートからは `py -3 tools/check_curate_threshold.py`（POSIX は `python3`）:
-   - exit 0（below_threshold）→ 実行する作業なし。Step 1 の sweep だけ行い、Step 7 で
-     `CURATE_SKIPPED` を通知して終了する
+2. **reasons が渡されていない場合**: 自分でスクリプトを実行して確定する。
+   curator ペイン（CWD=`.curator/`）からは `python3 ../tools/check_curate_threshold.py`（Windows は `py -3 ../tools/check_curate_threshold.py`）、
+   リポジトリルートからは `python3 tools/check_curate_threshold.py`（Windows は `py -3 tools/check_curate_threshold.py`）:
+   - exit 0（below_threshold）→ 実行する作業なし。Step 1 の sweep だけ行い、Step 7 へ進む
+     （送る場合は `CURATE_SKIPPED`）
    - exit 10（curate_needed）→ stdout JSON の `reasons[]` を採用して続行
-   - exit 2（error）→ Step 7 で `CURATE_ERROR` を通知して終了する
-
-> **注意**: 上記 1（reasons 受領）と 0-A(iii) は「reasons の出所」を述べるだけで、Step 7 の送信義務
-> 判定とは独立である。送信義務は 0-A の**主シグナル (ii)/(iii)**（= dispatcher 起動指示の受領）で決まり、
-> dispatcher に spawn された curator は項 2（reasons 未同梱でスクリプト自走）に落ちても **on-demand
-> のまま**で Step 7 送信は必須。「reasons が渡されていない＝手動＝省略可」と短絡しない。
+   - exit 2（error）→ Step 7 へ進む（送る場合は `CURATE_ERROR`）
 
 ## Step 1: 移行 sweep（旧データの一掃）— 常に実行
 
@@ -124,10 +91,6 @@ curator を起動する」ことを保証するための起動条件であり、
 2. `knowledge/raw/` 直下のファイルのうち、先頭に `<!-- curated -->` を含むものを
    `knowledge/raw/archive/` に move する。マーカー付与は不要（既に付いている）
 3. このステップは raw ファイルが 0 件でも実行する
-
-> Set A § Role: curator により、curator の書き込み権限は `knowledge/curated/` と
-> `knowledge/raw/archive/`（move 権限）に限定される。`knowledge/raw/` 直下の active entry は
-> immutable。Step 1 の移行 sweep も書き換えではなく move なので、この制約に抵触しない。
 
 **以降の分岐**: `reasons[]` に `raw_threshold` があれば Step 2 へ。無ければ Step 2〜5 を
 スキップして Step 6 の判定に進む。
@@ -159,7 +122,7 @@ context: curation
 pattern_name: <推定 skill 名、kebab-case。テーマ名から派生させる>
 summary: <このテーマで何が再利用できるか 1-2 文>
 task_ids: []                    # optional。raw ノートに task_id が無ければ空のままでよい
-raw_files: <同テーマの raw/ パス配列。Step 4 で archive に move する前提のため、ここでは move 後のパス（`knowledge/raw/archive/<entry>.md`）を記録する。`skill-eligibility-check` はこれを machine-local な `knowledge/skill-candidates.local.md`（実エントリ用・Issue #755）に永続化するため、追跡可能な最終パスを渡す>
+raw_files: <同テーマの raw/ パス配列。Step 4 で archive に move する前提のため、ここでは move 後のパス（`knowledge/raw/archive/<entry>.md`）を記録する。`skill-eligibility-check` はこれを machine-local な `knowledge/skill-candidates.local.md`（実エントリ用）に永続化するため、追跡可能な最終パスを渡す>
 steps_outline: <raw 群から抽出した主要手順>
 trigger_description: <このテーマが発動する場面>
 decision_criteria: <テーマ内に現れる判断基準>
@@ -171,7 +134,7 @@ curation context では空配列でよい。raw ファイル名から日付等�
 
 結果の decision によって次の扱いを決める。**いずれの decision でも Step 3 での curated/ 統合は通常どおり実施する**:
 
-- `skill_recommend` → skill 側が machine-local な `knowledge/skill-candidates.local.md`（実エントリ用・Issue #755）に自動追記済み。本ステップでは追加作業なし。
+- `skill_recommend` → skill 側が machine-local な `knowledge/skill-candidates.local.md`（実エントリ用）に自動追記済み。本ステップでは追加作業なし。
   該当 raw ファイルも **Step 3 で curated/ に統合し、Step 4 で `knowledge/raw/archive/` に move したうえでマーカーを付与する**
   （skill 化と curated ノート化は両立。curated ノートは背景知識として残り、
   skill は手順化として別途作成される。両立させないと未整理 raw が滞留して閾値チェックが壊れる）
@@ -198,7 +161,7 @@ curation context では空配列でよい。raw ファイル名から日付等�
    ...
    ```
 5. 重複する知見はマージする（より具体的・正確な記述を残す）
-6. 矛盾する知見がある場合は、より新しい日付のものを優先し、矛盾を明記する
+6. 矛盾する知見は references/knowledge-standards.md の「マージしない場合」に従う
 
 ## Step 4: archive への move と処理済みマーカー（reason: raw_threshold）
 
@@ -218,21 +181,9 @@ curation context では空配列でよい。raw ファイル名から日付等�
    `<!-- curated -->` + 改行を prepend して同じパスに Write し直す（= read → prepend → write）。
    マーカー付与は **archive に move した後のファイルに対して**行う。active な `knowledge/raw/` 配下のファイルは絶対に書き換えない。
 
-   > **なぜシェルで付与しないか（過去に 17 byte 壊れ `.md.tmp` 残骸が 5 件蓄積した実害の再発防止）**:
-   > 「マーカー＋本文を `<entry>.md.tmp` に書いてから `mv <entry>.md.tmp <entry>.md` で上書き」という
-   > シェル流儀は 2 つの環境要因で壊れる。(1) `mv` が `mv -i` に alias されていると **既存ファイルへの
-   > 上書き `mv` が対話確認を出し、非対話実行（curator は無人で走る）では EOF 拒否される** →
-   > マーカー無しの原本が残り `.tmp` だけが残骸化する。(2) zsh の history expansion がマーカー文字列中の
-   > `!` を解釈し、シェルに直書きすると `<\!-- curated -->` のように `\` が混入する。
-   > **Write ツールでの prepend は `mv` を一切使わず（→(1) 回避）、`!` をシェルに通さない（→(2) 回避）ため、
-   > 両方を同時に断つ。** やむを得ずシェルを使う場合でも、上書き `mv` は `command mv -f` で alias を
-   > 回避し、`!` を含むマーカー文字列はシェルに直書きせず `chr(33)` 等で組み立てること（ただし本スキルの
-   > allowed-tools は `Bash(mv knowledge/raw/*)` 系のみ許可で `command mv -f` は無人実行時に許可プロンプトに
-   > 落ちるため、Write ツール経路を既定とする）。
+   シェルで付与しない（`.md.tmp` 経由の上書き `mv` は `mv -i` alias で止まり、`!` は zsh の history expansion で壊れる）。やむを得ずシェルを使うときは `command mv -f` と `chr(33)` でマーカーを組み立てる。理由は [`.claude/skills/org-curate/references/rationale.md`](references/rationale.md) §2。
 
 ファイルが archive/ に存在すること自体が「curated 済み」のシグナルだが、視覚的連続性のためにマーカーも付与する。`tools/check_curate_threshold.py` の `raw_active` カウントは archive/ を除外するため、move しただけでも次回はカウント対象から外れる。
-
-> 根拠: Set E §1.1 (Q1) ratification と Set A § Role: curator により、curator は `knowledge/raw/` 直下の active entry を mutate してはならない。書き込み権限は `knowledge/curated/` への新規作成・追記と、`knowledge/raw/archive/` への move（および archive 側ファイルの編集）に限定される。
 
 ## Step 5: 改善提案の検討（reason: raw_threshold）
 
@@ -260,13 +211,8 @@ curation context では空配列でよい。raw ファイル名から日付等�
 
 ## Step 7: 完了通知（必ず最後に実行）
 
-**送信義務（最初に確認）**: Step 0-A の判定で **on-demand 文脈（主シグナル (ii) dispatcher からの
-起動指示 / (iii) reasons JSON 同梱 のいずれか、または dispatcher 起動の curator ペインでの (i)
-inflight 裏づけ）に該当するなら、結果に関わらず `CURATE_DONE` / `CURATE_SKIPPED` / `CURATE_ERROR`
-のいずれかを必ず送る**。below_threshold で sweep 以外何もしなかった場合も `CURATE_SKIPPED` を送る
-（「何もしなかったから通知不要」は誤り。dispatcher は `CURATE_*` を `check_messages` で待っており、
-無送信だと timeout までペインが孤立する）。**送信を省略してよいのは Step 0-A で明示手動起動と
-確定したときだけ**。「手動だろうから省略」という自己推論での省略は禁止。
+送信が必須か省略可かは Step 0-A の判定だけで決まる。on-demand なら below_threshold で sweep しか
+しなかった場合も `CURATE_SKIPPED` を送る（dispatcher は `CURATE_*` を `check_messages` で待っている）。
 
 サイクルの結果を**ディスパッチャー宛て direct send** で通知する。これがオンデマンド
 curator のペインクローズのトリガーになるため、**送信先は必ず `to_id="dispatcher"`**
@@ -286,16 +232,7 @@ CURATE_* を受けた dispatcher はペインを閉じてよい契約なので�
 - `CURATE_DONE: reasons={reasons[]} raw {n}件 → curated {m}テーマ統合 / archive {k}件 / sweep {s}件 / skill-audit {発火 or なし}`
   — 1 つ以上のステップを実行して正常完了した場合
 - `CURATE_SKIPPED: below_threshold (counts: raw_active={n}, pending={p}, work_skill={w}, legacy_marker={l})`
-  — 閾値未達（below_threshold）と判明し、sweep 以外何もしなかった場合。**on-demand 文脈ではこの
-  below_threshold edge でも Step 0-A により送信必須**。明示手動起動では送ってもよいが省略可（下記参照）
+  — 閾値未達（below_threshold）と判明し、sweep 以外何もしなかった場合
 - `CURATE_ERROR: {1 行の要約}` — 途中で続行不能なエラーが発生した場合（部分完了の内容も 1 行に含める）
 
-**明示手動起動のみ送信省略可（Step 0-A で確定した場合に限る）**: 人間が secretary 系ペインで
-直接 `/org-curate` をタイプした起動（= Step 0-A の**主シグナル (ii)/(iii) を受けておらず**、かつ
-**本インスタンスが dispatcher 起動の curator ペイン（CWD=`.curator/`・ペイン名 `curator`）でもない**）
-では、dispatcher にペインクローズ責務が無いため送信は任意。**並走中の別 on-demand curator の
-`curate-inflight.json`(i) が存在するだけでは on-demand にならない** — その inflight は本インスタンス
-宛ではないので、手動起動側が `CURATE_*` を送ると本物の on-demand curator を早閉じしうる（送らない）。
-dispatcher が peer に存在し本インスタンスが情報共有として送りたい場合のみ送ってよい（無害）。
-`[pane_not_found]` が返る場合のみ省略する。**on-demand 文脈（主シグナル該当 or dispatcher 起動
-curator ペイン）では本段落の「省略可」は適用されない** — 必ず送る。
+`[pane_not_found]` が返ったときだけ送信を諦める。

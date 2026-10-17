@@ -38,7 +38,7 @@
 **「既定」の二フレーム注記（Refs #604）**: 本節が「既定 `renga`」と書くのは**運用既定**フレーム（broker 実走 dogfood が Epic #6 Issue G まで未活性のため、運用上の既定経路が renga）。これとは別に**コード既定**フレームがあり、`tools/transport.py: DEFAULT_TRANSPORT` は runtime 0.1.28 (Epic #586) で `renga` → `broker` にフリップ済み — ja の生成器・`transport.resolve()` はこのコードフレームで render するため、生成面のスキルは「既定 `broker`」と表示する。両者は指す対象（運用経路 vs コード定数）が異なり矛盾しない（手保守 prose の「既定 renga」＝運用フレーム正 / 生成面の「既定 broker」＝コード定数フレーム正）。**この二フレームの例外は Refs #941 で解消済み**: かつて `tools/peer_notify.py: notify_peer` は `DEFAULT_TRANSPORT` を参照しない raw env 判定（`ORG_TRANSPORT==broker` 明示時のみ broker・無設定時 renga フォールバック）で、pr-watch の peer 通知だけが第三のフレームで動いていた。この食い違いが CI green 通知の取りこぼしを生んだため（無設定ペインは実際には broker に解決するのに、helper は renga へ push していた）、同 helper は `transport.resolve()` 経由に寄せられ、**コード既定フレームに一本化された**。したがって現在 raw env で transport を判定する helper は無い（`notify_peer` 内の raw env 分岐は、runtime 未インストール等で `resolve()` が使えない場合の never-raise フォールバックとしてのみ残る）。詳細は [`.claude/skills/org-pull-request/SKILL.md`](./.claude/skills/org-pull-request/SKILL.md) の輸送層注記。
 
 ## PR 後の CI 監視
-- PR 作成直後に [`/pr-watch-pane <PR>`](./.claude/skills/pr-watch-pane/SKILL.md) を起動する（クロスリポジトリは `--repo OWNER/REPO` 付き）。broker tmux セッション内の専用ペインで `tools/pr-watch.sh` が ja-root cwd・sandbox 外で回り、完了時に events テーブルへ `ci_completed` を 1 行記録する。**Claude Code の Bash 背景起動で `tools/pr-watch.*` を直接叩かない**: Claude Code の背景タスクは spawn したシェルのみ追跡し、自己デタッチした監視本体は孤児化するため（公式仕様）、`/clear` や窓口セッション終了で監視が黙死し得る。手動 `!` 実行はペイン外で人間が張り付く前提の緊急経路のみ。
+- PR 作成直後に [`/pr-watch-pane <PR>`](./.claude/skills/pr-watch-pane/SKILL.md) を起動する（クロスリポジトリは `--repo OWNER/REPO` 付き）。broker tmux セッション内の専用ペインで `tools/pr-watch.sh` が ja-root cwd・sandbox 外で回り、完了時に events テーブルへ `ci_completed` を 1 行記録する。`tools/pr-watch.*` の直接起動と `gh pr checks` の polling ループは hook が deny する（[`.claude/rules/pr-ci-watch.md`](./.claude/rules/pr-ci-watch.md)）。代わりに `/pr-watch-pane` を使い、立てられなければ人間に報告する。
 
 ## PR マージ後の次タスク提案（proactive next-dispatch）
 
@@ -54,40 +54,23 @@ PR マージ → post-merge cleanup が終わったら、ユーザーの催促�
 
 ## 役割の境界
 - 窓口がやること: 人間との対話・判断、タスク分解とワーカー委託、ワーカー報告の受信と伝達、.state/ や registry/ の管理、完了後の /org-retro
-- 窓口の運用責務は Issue #320 のキャリーアウトで 3 スキルに分割されている（役割は 1 つで内部のスキル分割）:
+- 窓口の運用責務は 3 スキルに分かれている（役割は 1 つで内部のスキル分割）:
   - [`/org-delegate`](./.claude/skills/org-delegate/SKILL.md) — 作業委託（ワーカーへの指示組み立て・ディスパッチャー経由の派遣）
   - [`/org-escalation`](./.claude/skills/org-escalation/SKILL.md) — 判断仰ぎを人間にエスカレーションする正準フロー（pending-decisions register 更新を含む）
   - [`/org-pull-request`](./.claude/skills/org-pull-request/SKILL.md) — ユーザー承認後の push / PR 作成 / CI 監視 / レビュー指摘ループ / マージ後クローズ
 - 窓口セッションの context が長くなったら以下で引き継ぎ:
   - [`/secretary-handover`](./.claude/skills/secretary-handover/SKILL.md) — 直近やり取り・組織状態を `.state/secretary-handover.md` に書き出す（ペインは生かしたまま）
   - [`/secretary-resume`](./.claude/skills/secretary-resume/SKILL.md) — `/clear` 後の最初のターンで handover を読み込んで窓口復帰
-- ディスパッチャー session の context が長くなったら窓口から発火する canonical 経路 (Issue #464): `DISPATCHER_HANDOVER` を送り → `DISPATCHER_HANDOVER_READY` 受領後に `/clear` → `/dispatcher-resume` を `send_keys` で打鍵 → `DISPATCHER_RESUMED`（または `DISPATCHER_RESUMED_IDLE`）受領で完了。ペインは閉じずディスパッチャー Claude の context だけをリセットする（`/org-suspend` ではない）。手順の正本は [`/dispatcher-handover`](./.claude/skills/dispatcher-handover/SKILL.md) と [`/dispatcher-resume`](./.claude/skills/dispatcher-resume/SKILL.md)
-  - 窓口側の打鍵規律（skill 側に未記載のため本ファイルに残す）: `/clear` と `/dispatcher-resume` はいずれも **text と Enter の別呼び出し 2 段**（`send_keys(text=...)` → `inspect_pane` で入力欄確認 → `send_keys(enter=true)` を単独別送。text+enter 同一呼び出しは貼り付け吸収で未送信 draft になる — [`.dispatcher/references/spawn-flow.md`](./.dispatcher/references/spawn-flow.md) 3-5a と同じ規律）。`/clear` submit 後は固定 sleep を置かず `inspect_pane` でプロンプトが空になるまで 1 秒間隔で poll する（最大 15 秒。未確認のまま次を打つと no-op で監視 gap）。`/dispatcher-resume` 送信後は `check_messages` を 30 秒以内 poll し `DISPATCHER_RESUMED`（監視対象なしなら `DISPATCHER_RESUMED_IDLE`）/ `DISPATCHER_RESUME_FAILED` を待つ。タイムアウト時は `inspect_pane` で観測し必要なら `/dispatcher-resume` を再送する（idempotent: resume Step 7 で handover が `.consumed.md` に rename 済みのため、2 回目以降は cold-start に落ちる前に `check_messages` 再 drain で済む）
+- ディスパッチャー session の context が長くなったら窓口から発火する canonical 経路: `DISPATCHER_HANDOVER` を送り → `DISPATCHER_HANDOVER_READY` 受領後に `/clear` → `/dispatcher-resume` を `send_keys` で打鍵 → `DISPATCHER_RESUMED`（または `DISPATCHER_RESUMED_IDLE`）受領で完了。ペインは閉じずディスパッチャー Claude の context だけをリセットする（`/org-suspend` ではない）。手順の正本は [`/dispatcher-handover`](./.claude/skills/dispatcher-handover/SKILL.md) と [`/dispatcher-resume`](./.claude/skills/dispatcher-resume/SKILL.md)
+  - 窓口側の打鍵規律（skill 側に未記載のため本ファイルに残す）: `/clear` と `/dispatcher-resume` はいずれも **text と Enter の別呼び出し 2 段**（`send_keys(text=...)` → `inspect_pane` で入力欄確認 → `send_keys(enter=true)` を単独別送。text+enter 同一呼び出しは貼り付け吸収で未送信 draft になる — [`.dispatcher/references/spawn-flow.md`](./.dispatcher/references/spawn-flow.md) 3-5a と同じ規律）。`/clear` submit 後は固定 sleep を置かず `inspect_pane` でプロンプトが空になるまで 1 秒間隔で poll する（最大 15 秒。未確認のまま次を打つと no-op で監視 gap）。`/dispatcher-resume` 送信後は `check_messages` を 30 秒以内 poll し `DISPATCHER_RESUMED`（監視対象なしなら `DISPATCHER_RESUMED_IDLE`）/ `DISPATCHER_RESUME_FAILED` を待つ。タイムアウト時は `inspect_pane` で観測し必要なら `/dispatcher-resume` を再送する。再送分は handover が `.consumed.md` に rename 済みのため `already_consumed` 分岐に入り、監視対象が live なら監視ループを再 arm して何も送らずに終わる（`inspect_pane` で確かめる）。同タブ性を確定できないワーカーがいれば `DISPATCHER_RESUME_INDETERMINATE`、監視対象が無ければ `DISPATCHER_RESUME_FAILED` と cold-start 案内が届く（[`/dispatcher-resume`](./.claude/skills/dispatcher-resume/SKILL.md)「Step 0 の前」）
 - 実作業は全てワーカーに委譲する（コード編集、デバッグ、テスト、ビルド、git commit、環境構築等）。ただし下記「タスクルーティング 2 レーン制」の軽量レーン条件を全て満たすタスクに限り、窓口が subagent（Agent tool）で直処理してよい例外を設ける
 - 問題が報告されたら、その切り分け・調査はワーカーに委譲する（下記軽量レーン条件を全て満たす極小調査は subagent 直処理の例外対象）
 
-### タスクルーティング 2 レーン制（Refs #515: 軽量レーン例外）
+### タスクルーティング 2 レーン制
 
-「実作業は全てワーカーに委譲する」原則は維持しつつ、**極小タスクに限った軽量レーン**を例外として設ける。2026-06-12 のパイロット 2 走（#546 / #545）でワーカーレーン同等の Codex ゲート品質を保ったまま、着手→PR が 18 分（ワーカーレーン 40-60 分）に短縮されたことを実証済み・ユーザー承認済みの方針。
+推定工数 S 以下・単一ファイル級・判断仰ぎ想定なし・日またぎなしを**全て**満たす極小タスクに限り、窓口はワーカーを派遣せず `Agent` tool（`isolation="worktree"`、背景実行）で直処理してよい（軽量レーン。Codex レビューを in-loop で Blocker/Major ゼロまで回し、push・PR・merge の人間ゲートは維持する）。1 つでも満たさない・判断境界が読めないときはワーカーレーンに倒す。発動条件・必須条件・重量レーンの ultracode 武装とモデル選定の正本は [`/org-delegate`](./.claude/skills/org-delegate/SKILL.md) の「レーン選択判定」。
 
-**軽量レーン（subagent 直処理）の発動条件 — 以下を全て満たすこと:**
-- 推定工数 S 以下
-- 単一ファイル級
-- 判断仰ぎが発生する想定がない
-- 日またぎしない（その場で完結する）
-
-満たす場合、窓口は worker を派遣せず `Agent` tool（`isolation="worktree"`）で直処理してよい。**1 つでも満たさない／判断境界が読めない場合は迷わず従来のワーカーレーン**（[`/org-delegate`](./.claude/skills/org-delegate/SKILL.md)）に倒す。
-
-**軽量レーンの必須条件（省略不可）:**
-- **背景（非同期）で起動する。同期実行は禁止**（窓口の人間接点・ワーカー ack の即時性をブロックするため）。現行ハーネスでは `Agent` の入力スキーマから `run_in_background` が廃止され subagent は常時背景実行になったため（2026-08-19 実測: `tool_input` は `description` / `prompt` / `subagent_type` のみ、明示指定しても `additionalProperties:false` で除去される。Issue #942）、呼び出し側で指定するパラメータは無い。PreToolUse フック [`.hooks/block-foreground-subagent.sh`](./.hooks/block-foreground-subagent.sh) は窓口・ワーカー一律で、`run_in_background` が**存在しかつ厳密 `true` でない** Agent 呼び出しのみを exit 2 で deny する（旧ハーネス互換の防波堤。キー欠落は常時背景として許可）
-- Codex レビューを in-loop で回し、Blocker/Major ゼロまで修正する（ワーカーレーンの検証深度 full と同等のゲート）
-- push・PR・merge の人間ゲートは従来どおり維持する（subagent が自動で push / PR / merge してはならない）
-
-**重量レーン（ワーカー派遣）が必須のケース:** 判断境界がある・escalation が想定される・日をまたぐ・常駐監視が要るタスクは、軽量条件を一部満たしても必ずワーカーレーンに送る。レーン選択判定の手順は [`/org-delegate`](./.claude/skills/org-delegate/SKILL.md) の「レーン選択判定」を参照。
-
-**重量レーンの ultracode 武装（Issue #554）**: ultracode（multi-agent workflow）の許可は工数ラベル (S/M/L) では判定しない（工数は人間労働の代理指標で、AI ワーカーにとっての難しさとズレる）。以下の**いずれか**を満たす重量タスクに許可してよい（推奨）: (1) **実装中に設計判断が残る**（事前 design review で固定しきれない決定 — 実測しないと決められない契約・未知の移植先制約など — が実装フェーズに持ち越される）、(2) **敵対的検証の価値が高い**（「テストが緑でも守っていない」型の欠陥が出やすい性質 — ガード・封印・契約 battery 等の enforcement 実装）、(3) **所有排他で切れる並列構造**（独立サブタスクに分割でき、ファイル所有を排他にした並列レーンで実時間短縮が出る規模）。量が多いだけの機械的タスク（設計固定済みの移植・定型変換）は L 級でも非武装を既定とする（背景には週間 rate limit の資源管理もある — 構造が正当化しない増幅を既定にしない）。許可する場合も、**brief への許可明記は必要条件にすぎず、発動には dispatcher 側の kickoff 武装が必須**（brief 文言・`send_message`・`check_messages` 経由の指示では武装しない＝実走確定）。ultracode は実装と Codex 前のセルフレビュー収束に使う**前段**で、最終 Codex ゲート（別モデルの独立レビュー）は従来どおり維持する。窓口は `gen_delegate_payload.py --impl-guidance` で許可を brief に明記するところまでを担う。武装の実装詳細は [`/org-delegate`](./.claude/skills/org-delegate/SKILL.md) の「重量レーンの brief 強化（ultracode）」と [`.dispatcher/references/spawn-flow.md`](./.dispatcher/references/spawn-flow.md) 3-5a を参照。
-
-### worker への追加依頼の境界（Issue #475: 1 worker = 1 task = 1 scope）
+### worker への追加依頼の境界（1 worker = 1 task = 1 scope）
 
 派遣済 worker への追加依頼は「1 worker = 1 task = 1 scope」の原則に従う。窓口から既存ワーカーに追送するメッセージは以下 3 rule を満たすこと:
 
@@ -95,9 +78,9 @@ PR マージ → post-merge cleanup が終わったら、ユーザーの催促�
 2. **worker のスコープ拡張は escalation 経由**: worker から「ついでにこれもやっていいか」「想定外のこの修正も必要」等のスコープ拡張提案が来た場合、窓口は一次承認せず [`/org-escalation`](./.claude/skills/org-escalation/SKILL.md) で人間に上げる。
 3. **窓口は worker 作業を代行しない**: ファイル編集・commit・テスト等の実作業を窓口側 worktree で手を出さず、追加依頼として元 worker に戻すか、別 worker を派遣する。
 
-違反事例: 2026-05-21 voice-v2-independent ペインへの別件混入投入（スコープ外の作業を同一 worker に追送し、1 worker 1 task 1 scope を破った）。本 Issue は明文化のみが対象で、guard / CI 実装は別 Issue で扱う。
+違反の典型: 実行中のワーカーにスコープ外の別件を追送し、1 worker 1 task 1 scope を破る。
 
-## ワーカー peer message を受けたら必ず ack を返す（Issue #312）
+## ワーカー peer message を受けたら必ず ack を返す
 
 ワーカーから renga-peers で完了 / 進捗 / Codex round / 判断仰ぎ いずれの message を受け取っても、Secretary は **最初に worker 宛 ack** を `mcp__renga-peers__send_message(to_id="worker-{task_id}", ...)` で発行する。ack を返さないと worker は「ペイン保持。次の指示お待ちします」のまま idle で dead-lock する。canonical event flow と ack 文例は [`.claude/skills/org-delegate/SKILL.md` Step 5](./.claude/skills/org-delegate/SKILL.md) と [`.claude/skills/org-delegate/references/ack-template.md`](./.claude/skills/org-delegate/references/ack-template.md) を参照。**ack ≠ user 承認**: push / `gh pr create` / `/pr-watch-pane` は user の明示的 OK を受けてから発行する。
 
@@ -105,26 +88,27 @@ PR マージ → post-merge cleanup が終わったら、ユーザーの催促�
 
 retro gate ack は必ず `mcp__renga-peers__send_message(to_id="dispatcher", ...)` で返す。channel broadcast 形式の ack は `dispatcher_retro_gate.py` が `check_messages` で検出できず timeout する。dispatcher 宛の direct send_message のみが retro gate を通過する経路である。
 
-## secretary が user の判断を待っている状態を通知する（Issue #28）
+## secretary が user の判断を待っている状態を通知する
 
 Secretary が「次の一手はユーザーの返答待ち」で停止する gate では、attention watcher がユーザーに気付かせるための信号を 1 行 emit する。Secretary 側は claude-org-ja の本リポジトリで stop しているため、画面前にユーザーが居ない場合 awaiting_user の状態が長時間放置される。この emit を runtime classifier 側で `secretary_awaiting_user` (default severity `urgent`) にマップすることで、ビープ等で通知される。
 
-### 対象 gate（4 箇所）
+### 対象 gate（5 箇所）
 - **`worker_completed`**: ワーカーから完了報告を受領 → ack + DB の events テーブルへ review transition を追記 → ユーザーへ承認待ちで停止する直前。[`/org-delegate`](./.claude/skills/org-delegate/SKILL.md) Step 5 sub 2a。
 - **`ci_green_merge_gate`**: PR 作成後の CI 監視で `CI_COMPLETED` 受信（CI green）→ ユーザーへ merge 承認を仰ぐ直前。[`/org-pull-request`](./.claude/skills/org-pull-request/SKILL.md) 2b-i。
 - **`escalation_to_user`**: ワーカーからの判断仰ぎを人間に上げ、選択肢を提示してユーザー返答待ちで停止する直前（ask の瞬間）。[`/org-escalation`](./.claude/skills/org-escalation/SKILL.md) Step 3。interactive ではユーザーが数十秒〜数分で返答するため pending_decision aging (15分) は実質発火せず、この ask-time emit が urgent 通知の主経路となる。
 - **`escalation_reply_forward`**: 判断仰ぎを人間に上げ、ユーザー返答を受け取り、ワーカーへ転送する直前。[`/org-escalation`](./.claude/skills/org-escalation/SKILL.md) の `mark-user-replied` → `resolve --kind to_worker` の境界。
+- **`ci_unconfirmed_head_gate`**: pr-watch から `PR_MERGED_HEAD_UNCONFIRMED`（CI 未確認の head でマージされた）を受信 → post-merge cleanup に進まず、ユーザーへ head 確認を仰ぐ直前。[`/org-pull-request`](./.claude/skills/org-pull-request/SKILL.md) の `PR_MERGED_HEAD_UNCONFIRMED` 受信時の節。
 
 ### Canonical emit 形
 ```
 bash tools/journal_append.sh notify_sent kind=awaiting_user task_id=TASK gate=GATE note=SHORT
 ```
 - `task_id`: 対象ワーカー / PR / decision に対応する task_id（escalation_to_user / escalation_reply_forward の場合は decision に紐付く task_id）。
-- `gate`: `worker_completed` / `ci_green_merge_gate` / `escalation_to_user` / `escalation_reply_forward` のいずれか。
+- `gate`: `worker_completed` / `ci_green_merge_gate` / `escalation_to_user` / `escalation_reply_forward` / `ci_unconfirmed_head_gate` のいずれか。
 - `note`: 1 行以下の短い文脈（PR 番号 / Issue 番号 / 要約等）。
 
 ### 通知側の挙動
-並走の runtime PR が attention watcher classifier に `notify_sent` payload の `kind=awaiting_user` を `secretary_awaiting_user` subkind として認識する mapping を追加する。default severity は `urgent`（即時ビープ）。
+runtime の attention watcher classifier は `notify_sent` payload の `kind=awaiting_user` を `secretary_awaiting_user` subkind として認識し、default severity は `urgent`（即時ビープ）。`gate` の値では分岐しない。
 
 ## ワーカーからの判断仰ぎは人間にエスカレーションする
 
@@ -135,6 +119,6 @@ bash tools/journal_append.sh notify_sent kind=awaiting_user task_id=TASK gate=GA
 
 許される一次対応は「受領しました、人間に確認します」のみ。「ユーザーは選択肢 X を選んだから含意される」「一気通貫の意図に含まれる」等の自己解釈は禁止。人間の判断を受けてからワーカーに伝達する（伝言役であり判断レイヤーではない）。
 
-**状態保存（必須）**: 判断仰ぎ受信時は `.state/workers/worker-{task_id}.md` の Progress Log に追記し、`bash tools/journal_append.sh worker_escalation worker=worker-{task_id} task={task_id} reason="<要約>"` を実行する。窓口再起動・引き継ぎで pending 判断を失わないため。手順詳細は [`.claude/skills/org-escalation/SKILL.md`](./.claude/skills/org-escalation/SKILL.md) を参照（Issue #320 で `org-delegate` Step 5 サブセクション 0 から carve out）。
+**状態保存（必須）**: 判断仰ぎ受信時は `.state/workers/worker-{task_id}.md` の Progress Log に追記し、`bash tools/journal_append.sh worker_escalation worker=worker-{task_id} task={task_id} reason="<要約>"` を実行する。窓口再起動・引き継ぎで pending 判断を失わないため。手順詳細は [`.claude/skills/org-escalation/SKILL.md`](./.claude/skills/org-escalation/SKILL.md) を参照。
 
-**pending-decisions register（必須、Issue #297 / #301）**: ディスパッチャーの SECRETARY_RELAY_GAP_SUSPECTED 検出 ([`.dispatcher/references/worker-monitoring.md` Step 5.1](.dispatcher/references/worker-monitoring.md#step-5-1)) は `.state/pending_decisions.json` を register として参照する。判断仰ぎの受信 → 人間伝達 → ユーザー返答 → ワーカー転送 の各時点で register を更新する 4 段階手順 (`tools/pending_decisions.py` の `append` / `resolve --kind to_user` / `mark-user-replied` / `resolve --kind to_worker`) は [`.claude/skills/org-escalation/SKILL.md`](./.claude/skills/org-escalation/SKILL.md) を一次参照する（Issue #320 で SoT 化）。append と resolve のどちらも欠落するとディスパッチャー側で SECRETARY_RELAY_GAP_SUSPECTED が誤発火 / 見逃しになる。
+**pending-decisions register（必須）**: ディスパッチャーの SECRETARY_RELAY_GAP_SUSPECTED 検出 ([`.dispatcher/references/worker-monitoring.md` Step 5.1](.dispatcher/references/worker-monitoring.md#step-5-1)) は `.state/pending_decisions.json` を register として参照する。判断仰ぎの受信 → 人間伝達 → ユーザー返答 → ワーカー転送 の各時点で register を更新する 4 段階手順 (`tools/pending_decisions.py` の `append` / `resolve --kind to_user` / `mark-user-replied` / `resolve --kind to_worker`) は [`.claude/skills/org-escalation/SKILL.md`](./.claude/skills/org-escalation/SKILL.md) を一次参照する。append と resolve のどちらも欠落するとディスパッチャー側で SECRETARY_RELAY_GAP_SUSPECTED が誤発火 / 見逃しになる。

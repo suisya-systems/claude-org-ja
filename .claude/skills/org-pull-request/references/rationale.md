@@ -40,4 +40,8 @@ Pattern C gitignored_repo_root の残留 `CLAUDE.local.md` が問題なのは、
 
 ## 7. 裸 name close の 3 条件をめぐる hazard と契約由来（監視終端 close 節）
 
-**この論点の SoT は [`.claude/skills/pr-watch-pane/references/rationale.md`](../../pr-watch-pane/references/rationale.md) §6 / §7**（pre-capability renga の legacy 解決が作る誤 close hazard、`DEFAULT_TRANSPORT` から Group B の駆動系を推定してはならない理由、契約 T-§4.2 の carve-out が 3 条件を "MUST gate it on all three conditions together" と normative に固定していること、`tools/peer_notify.py` が Refs #941 で `resolve()` 経由になってもこの MUST NOT は緩まないこと）。本スキル側は条件の箇条書きと [`.claude/skills/pr-watch-pane/SKILL.md`](../../pr-watch-pane/SKILL.md) Step 5 (b) への参照だけを持ち、解説を二重に持たない（安全規律が 2 箇所に全文で存在すると片方だけが直る drift の温床になるため）。
+**この論点の SoT は [`.claude/skills/pr-watch-pane/references/rationale.md`](../../pr-watch-pane/references/rationale.md) §6 / §7**（pre-capability renga の legacy 解決が作る誤 close hazard、`DEFAULT_TRANSPORT` から Group B の駆動系を推定してはならない理由、契約 T-§4.2 の carve-out が 3 条件を "MUST gate it on all three conditions together" と normative に固定していること、`tools/peer_notify.py` が Refs #941 で `resolve()` 経由になってもこの MUST NOT は緩まないこと）。本スキル側は [`.claude/skills/pr-watch-pane/SKILL.md`](../../pr-watch-pane/SKILL.md) Step 5 (b) への参照と、窓口の監視終端 cleanup に固有の追加要件だけを持ち、3 条件の本文も解説も二重に持たない（安全規律が 2 箇所に全文で存在すると片方だけが直る drift の温床になるため）。
+
+## 8. CI 監視を専用ペインで回す理由（2b-i）
+
+Claude Code の背景タスクは spawn したシェルだけを追跡し、自己デタッチした監視本体（`nohup ... &` + `disown` を含む）は孤児化する（公式仕様）。そのため Bash 背景起動で `tools/pr-watch.*` を叩くと、`/clear` / `/secretary-resume` 直後の新しいセッションやセッション終了で監視ごと黙死し、CI 完了 event も peer 通知も飛ばなくなる（ログファイルだけが空のまま残り、気付きにくい）。Bash ラッパーの完了通知も監視本体の完了を意味しない。旧経路で実際にマージ監視が黙死した。専用ペイン経路は sandbox 外・窓口セッション非依存で回るため、この孤児化を構造的に避ける。直接起動は現在 [`.hooks/block-adhoc-pr-watch.sh`](../../../../.hooks/block-adhoc-pr-watch.sh) が deny する。

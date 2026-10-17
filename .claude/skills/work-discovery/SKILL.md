@@ -33,9 +33,9 @@ open Issue を triage し、依存解決済みの候補を「N 件 + 推奨 1 �
   （§5.2 人間可読レンダリング / §6.2 案 B ローカル skill / §7 不変条件 INV-1〜5）。
 - 計算層ツール: [`tools/work_discovery_scan.py`](../../../tools/work_discovery_scan.py)（ソース・git・GitHub に対して read-only。副作用は `.state/work_discovery/` への書き込みと判定段 `claude -p` 1 回だけ。設計 §7 INV-1 / INV-3 例外 2）と、ゴール段の [`tools/work_discovery_goals.py`](../../../tools/work_discovery_goals.py)（台帳・判定段・見送り台帳）。
 - repo セット解決ツール: [`tools/work_discovery_repos.py`](../../../tools/work_discovery_repos.py)（read-only。`registry/projects.md` の triage 列（既定 include / 明示 opt-out）と `registry/org-config.md` の `triage_home`（既定 off）から scan に渡す `--repo owner/repo` セットを決定的に導出。設計 §10.4）。
-- 本スキルは案 B（手動エントリ）。定常トリガ（dispatcher 拡張）と post-merge 統合は別 Phase（別タスク）。
+- 本スキルは案 B（手動エントリ）。
 
-## 起動主体とトリガ（厳守）
+## 起動主体とトリガ
 
 - **起動できるのは窓口だけ**（設計 §6.2）。委譲済みワーカーは本スキルを起動しない。
   ワーカーが自タスク外の「次の仕事」探索を起動すると「1 worker = 1 task = 1 scope」を崩すため
@@ -43,22 +43,15 @@ open Issue を triage し、依存解決済みの候補を「N 件 + 推奨 1 �
 - **常駐 `/loop` を付けない**（設計 §6.2 留意 1）。手動起動、または PR マージ後の
   proactive next-dispatch のようなイベント起点でのみ走らせる。時間ベースの定常起動は
   変化の無い日に提示を汚すため避ける。
-- 定常トリガ（worker クローズ）は別案（dispatcher 拡張・別 Phase）の責務であって本スキルではない。
+- worker クローズ時の scan はディスパッチャーが行う（[`.dispatcher/references/pane-close.md`](../../../.dispatcher/references/pane-close.md) Step 6、`--trigger worker_close`）。本スキルの責務ではない。
 
-## 不変条件（破ってはならない / 設計 §7）
+## 不変条件（設計 §7）
 
 - **INV-1 propose-only**: 本スキルの出力は「候補リスト + 提示」のみ。生成後に**停止する**。
   scan の副作用は `.state/work_discovery/`（判定キャッシュ・失敗記録・費用台帳・見送り台帳）への書き込みと、
   goal モードでの判定段 `claude -p` 1 回（ツール無し・費用上限とタイムアウト付き）だけ（設計 §7 / §12.4）。
-  spawn / delegate / ブランチ作成 / commit / PR / Issue・PR への書き込みを**一切しない**。
-  （allowed-tools が repo 解決（`tools/work_discovery_repos.py`）と scan（`tools/work_discovery_scan.py`）の
-  read-only コマンドだけに絞られているのは、この不変条件の**宣言的な意図表明**であって機械的強制ではない。
-  `allowed-tools` は列挙したツールを起動ターンに限って事前承認するフィールドで、列挙外のツールを禁じない
-  （列挙外は通常の permission 設定に従い確認プロンプトが出るだけ）。絞り込みの実利は正路の明示と
-  プロンプト削減であり、正路を外れたときに確認という摩擦が立つこと。不変条件を機械的に強制したい場合は
-  `PreToolUse` フック（例: [`.hooks/block-foreground-subagent.sh`](../../../.hooks/block-foreground-subagent.sh)）を
-  別途置く。resolver も scan と同じく read-only で、`git remote get-url` と任意の `gh repo view` 読み取りのみを
-  行い、書き込み・spawn・git 変更をしない。）
+  spawn / delegate / ブランチ作成 / commit / PR / Issue・PR への書き込みをしない
+  （allowed-tools の絞り込みは正路の明示で、機械的な強制ではない）。
 - **INV-2 着手判断は人間ゲート必須**: 候補の選択は人間のみ。選ばれた候補は
   **既存の [`/org-delegate`](../org-delegate/SKILL.md) の Step 0 から**通常委譲フローに入る。
   本スキルが org-delegate を自分で呼ぶことは禁止。推奨（rank 1）の自動着手も禁止。
@@ -92,17 +85,14 @@ python3 tools/work_discovery_scan.py --trigger manual --all-registry-repos
   決定的に導出する（`registry/projects.md` の triage 列（既定 include / 明示 opt-out）と `registry/org-config.md` の
   `triage_home`（既定 off）から。設計 §10.4）。既定状態では registry の GitHub URL 行が全て scan 対象に並ぶ
   （home repo は `triage_home: on` のときだけ先頭に付く）。単一 repo scan になるのは scan 対象が 1 件のときだけ。
-- **resolver を別コマンドで走らせてフラグ文字列を貼る旧手順は使わない**（Issue #829）。フラグ列が複数引数に
-  なるかは呼び出し元シェルの単語分割次第で、zsh は既定 `SH_WORD_SPLIT` off のため未クォート展開を分割せず
-  `--repo a/b --repo c/d` が 1 引数として argparse に届いて失敗する（bash では分割されるので bash だけ見ていると
-  気付けない）。1 コマンド形はシェルを経由しないので zsh / bash / Windows `py -3` で同一に動く。
+- resolver を別コマンドで走らせてフラグ文字列を貼らない（zsh で 1 引数に潰れる。理由は
+  `tools/work_discovery_scan.py` 冒頭の docstring）。
 - **解決の監査情報は scan 出力の `repo_resolution`** に載る（`repos` / `home_repo` / `triage_home` / `included` /
   `opted_out` / `skipped` / `signals`）。Step 3 の監査提示はここから読む（resolver を二度目に走らせる必要はない）。
   `--all-registry-repos` を付けなかった場合は `null`。
 - **repo セット解決の失敗は scan の exit 2**（Step 2 の error 行）になる。`--repo` 無しの
   gh カレントリポジトリ暗黙 scan へ無言フォールバックしないので、解決失敗が候補ゼロに化けることはない。
   この場合 `error` に理由が、`repo_resolution.signals` / `skipped` に詳細が入る。
-- resolver は read-only（`git remote get-url` と任意の `gh repo view` 読み取りのみ。書き込み・spawn・git 変更なし）。
 - **特定 repo だけを狙って scan したい場合**のみ `--all-registry-repos` の代わりに `--repo owner/repo` を明示する
   （両者は排他。同時指定は exit 2）。既定の起動経路は `--all-registry-repos`。
 - `--trigger` は文脈ラベル。手動起動は `manual`、PR マージ後の proactive next-dispatch から呼ぶ場合は
@@ -137,15 +127,14 @@ python3 tools/work_discovery_scan.py --trigger manual --all-registry-repos
 - 既定の候補上限は `--top-n 3`。scan 対象は `--all-registry-repos` が導出する（cross-repo scan が既定であり、
   登録 URL 行が複数あれば自然に複数 repo の cross-repo triage になる。設計 §10 / §10.4）。
 - ツールは stdout に**単一 JSON オブジェクト**を出し、**exit code で分岐**する（JSON パース成否ではなく exit code を見る）。
-- ツールは read-only（`gh` の読み取りサブコマンドのみ）。本スキルがツール以外の副作用を出してはならない。
 
 ### Step 2 — exit code で分岐する
 
 | exit | status | 窓口の対応 |
 |---|---|---|
-| `0` | `no_candidates` | 候補ゼロ。「いま着手可能な（依存解決済みの）候補はありません」と人間に伝える。**goal モードでは、ゴール未設定（`goal_rank.goal_unset_repos[]`）・台帳エラー（`goal_rank.goal_errors[]`）・ゴール除外（`excluded_goal[]`）が非空なら Step 3 と同じ形で必ず見せる**（ゴール台帳が 1 つも無いうちは、候補ゼロの理由はほぼ「ゴール未設定」であり、それを伝えないと何も出ないのが普通だと誤解される）。`excluded_blocked[]` / `excluded_merged[]` が非空なら Step 3 と同じ「除外（依存未解決）: …」「除外（マージ済み）: …」の形で**必ず列挙する**（「何を見た結果ゼロなのか」を人間が監査できるように。設計 §5.2「除外枠を必ず見せる」/ §5.1）。さらに `input_truncated.open_issues` / `open_prs` / `base_merges` が `true`（取得上限到達）なら Step 3 と同じ注記を**必ず添える**（非網羅な scan を「網羅した結果ゼロ」と誤読させないため）。**ここで停止**。 |
+| `0` | `no_candidates` | 候補ゼロ。「いま着手可能な（依存解決済みの）候補はありません」と人間に伝える。次の枠は非空なら Step 3 と同じ形で見せる。goal モードのゴール未設定（`goal_rank.goal_unset_repos[]`）・台帳エラー（`goal_rank.goal_errors[]`）・ゴール除外（`excluded_goal[]`）（ゴール台帳が 1 つも無いうちは、候補ゼロの理由はほぼ「ゴール未設定」であり、それを伝えないと何も出ないのが普通だと誤解される）。`excluded_blocked[]` / `excluded_merged[]` の「除外（依存未解決）: …」「除外（マージ済み）: …」（「何を見た結果ゼロなのか」を人間が監査できるように。設計 §5.2 / §5.1）。`input_truncated.open_issues` / `open_prs` / `base_merges` が `true`（取得上限到達）のときの注記（非網羅な scan を「網羅した結果ゼロ」と誤読させないため）。**ここで停止**。 |
 | `10` | `candidates_found` | Step 3 で §5.2 形式にレンダリングして提示。 |
-| `2` | `error` | JSON の `error` フィールドの内容をそのまま人間へ伝え、「triage を実行できませんでした」と報告。**`goal_rank.judge.status` が `failed` / `cooldown` / `budget_exhausted` なら判定段の失敗として状態と理由を伝える**（fail-closed: 判定できないときは推奨を出さない。旧ランクで代わりに出さない。`cooldown` は同じ失敗を 1 時間繰り返さないための待機、`budget_exhausted` は 1 日の費用上限到達）。候補を捏造しない。**候補ゼロと言い換えない**（失敗を silent skip にすると「候補が出ないのが普通」と受け取られ、次タスク提案の仕組みが事実上死ぬ。Issue #829）。repo セット解決の失敗もここに来るので、`repo_resolution.signals` / `skipped` があれば理由（registry 行が無い / `triage_home` off / パスが GitHub URL でない等）も併せて伝える。**ここで停止**。 |
+| `2` | `error` | JSON の `error` フィールドの内容をそのまま人間へ伝え、「triage を実行できませんでした」と報告。**`goal_rank.judge.status` が `failed` / `cooldown` / `budget_exhausted` なら判定段の失敗として状態と理由を伝える**（fail-closed: 判定できないときは推奨を出さない。旧ランクで代わりに出さない。`cooldown` は同じ失敗を 1 時間繰り返さないための待機、`budget_exhausted` は 1 日の費用上限到達）。候補を捏造しない。**候補ゼロと言い換えない**（失敗を silent skip にすると「候補が出ないのが普通」と受け取られ、次タスク提案の仕組みが事実上死ぬ）。repo セット解決の失敗もここに来るので、`repo_resolution.signals` / `skipped` があれば理由（registry 行が無い / `triage_home` off / パスが GitHub URL でない等）も併せて伝える。**ここで停止**。 |
 
 > exit `1` には意味を割り当てない（Python 未捕捉例外の既定 exit と衝突し、クラッシュが「候補なし」に誤読されるのを防ぐため）。`0/10/2` 以外が返ったら error 扱いで人間に上げる。
 
@@ -183,7 +172,7 @@ goal モードのレンダリング規則（legacy と共通の規則は下の l
   （当てはめはモデル判定なので「（判定）」を付け、条項の引用と理由で人間が 1 目で覆せるようにする。設計 §12.6）。
 - `goal_request` があれば `└ 依頼の下書き: …`、`open_points[]` があれば 1 件 1 行で `└ 論点: <point> → 推奨「<recommend>」（選択肢: …）`。
   **どちらも信頼できない Issue 本文から作られたモデルの下書き**。表示はするが、着手時の `/org-delegate` の brief にそのまま写さない（設計 §12.4）。
-- 既存の軸（優先度 / 工数 / 依存 / 並列可 / 直近マージ起点）は `└ 事実: …` の 1 行に、legacy と同じ `(推定)` 規則で出す（ランクには使っていない）。
+- 既存の軸（優先度 / 工数 / 依存 / 並列可 / 直近マージ起点）は `└ 事実: …` の 1 行に、legacy と同じ `(推定)` 規則で出す（ランクでは同じ条項の中の並び順にだけ使う）。
 - 推奨は `recommendation` の `(repo, issue)` に一致する候補 1 件に `[推奨]`。`recommendation.reason` は `G<n>「見出し」: 理由` の形。
 - **ゴール未設定**（`goal_rank.goal_unset_repos[]`）は repo ごとに 1 行、`candidate_count` と台帳のパス（`registry/goals/<owner>/<repo>.md`）を添え、`/goal-setup <通称>` で書けることを案内する。
 - **ゴール台帳エラー**（`goal_rank.goal_errors[]`）は repo と `error` をそのまま出し、`/goal-setup <通称>` で直せることを添える（`repo` が `null` なら「repo 名不明の scan。`--all-registry-repos` か `--repo` で起動し直す」）。
@@ -216,7 +205,7 @@ goal モードのレンダリング規則（legacy と共通の規則は下の l
   - **工数**: `effort_estimated == true`（ヒューリスティック推定）なら `工数 <effort>(推定)`。`false`（`size:S/M/L` 等のラベル由来）なら `(推定)` を付けず `工数 <effort>`。
   - **並列可 / 直近マージ起点**: フラグ `parallelizable` / `unblocked_by_recent_merge` が `true` のときだけ該当トークン（`並列可` / `直近マージ起点`）を出す（`false` なら表記自体を出さない）。これらは対応する `*_estimated` が常に推定（`true`）なので、出すときは常に `(推定)` 付き。直近マージ起点は `recommendation.reason` 内（例:「直近マージ #N の follow-up」）にも自然に現れる。
 - **除外枠を必ず見せる**: `excluded_blocked[]` を「除外（依存未解決）: #<issue>（<note>）」の形で列挙する（監査性 + 全部見たうえで N 件、の安心）。空なら除外行を省く。
-- **マージ済み除外は別行で見せる**（設計 §10.5 / Issue #830）: `excluded_merged[]` を「除外（マージ済み）: #<issue>（<note>）」の形で、**依存未解決の除外行とは別の行**に列挙する。`base_branch=develop` 等の二系統運用リポジトリでは、develop にマージ済みでも GitHub の自動クローズが発火せず Issue が open のまま残るため triage が「未着手」と誤読していた枠で、`note` が閉じた PR 番号と base ブランチを名指しする。**「まだ着手できない」（依存未解決）と「もう終わっている」（マージ済み）は人間の次の一手が真逆**なので混ぜない。空なら行を省く。
+- **マージ済み除外は別行で見せる**（設計 §10.5）: `excluded_merged[]` を「除外（マージ済み）: #<issue>（<note>）」の形で、**依存未解決の除外行とは別の行**に列挙する。`base_branch=develop` 等の二系統運用リポジトリでは、develop にマージ済みでも GitHub の自動クローズが発火せず Issue が open のまま残るため triage が「未着手」と誤読していた枠で、`note` が閉じた PR 番号と base ブランチを名指しする。**「まだ着手できない」（依存未解決）と「もう終わっている」（マージ済み）は人間の次の一手が真逆**なので混ぜない。空なら行を省く。
 - **サイレント truncation をしない**: `truncated_count` が 1 以上なら
   「（他に依存解決済みだが順位外の候補が <truncated_count> 件あります）」の 1 行を添える。
   `input_truncated` の `open_issues` / `open_prs` が `true`（取得上限到達）なら「Issue/PR の取得が上限到達のため候補が網羅的でない可能性があります」も添える。`base_merges` が `true` なら「base ブランチのマージ履歴が上限到達のため、完了済み Issue を取りこぼしている可能性があります」を添える。
@@ -243,14 +232,5 @@ owner/repo を補う）。記録した候補は、その Issue が更新され�
 ## パス解決
 
 - 本スキル中の `tools/...` / `docs/...` 表記は**リポジトリルート相対**。窓口セッションの CWD は
-  リポジトリルート（`/home/happy_ryo/work/org/claude-org-ja`）なのでそのまま実行できる。別 CWD から呼ぶ場合はルート相対に読み替える。
+  リポジトリルート（`git rev-parse --show-toplevel`）なのでそのまま実行できる。別 CWD から呼ぶ場合はルート相対に読み替える。
 - Windows では `python3` を `py -3` に読み替える（allowed-tools に両形を登録済み）。
-
-## やらないこと（INV まとめ）
-
-- 候補の自動着手・rank 1 の自動委譲（INV-1 / INV-2）。
-- spawn / delegate / ブランチ / commit / PR / Issue・PR 書き込み（INV-1 / INV-3）。
-- GitHub 等への直接提示（窓口の会話を経由する。INV-4）。
-- 候補の中身の自前調査・実装（人間ゲート後の委譲タスク。INV-5）。
-- 常駐 `/loop` での時間起動（設計 §6.2 留意 1）。
-- ワーカーからの起動（起動主体は窓口に限定。設計 §6.2）。

@@ -221,7 +221,14 @@ def remove_pid_file(pid_file: Path, expected_pid: int | None = None) -> None:
 
 
 def _pid_alive(pid: int) -> bool:
-    """signal 0 でプロセスの生存を確認する（POSIX）。"""
+    """signal 0 でプロセスの生存を確認する（POSIX）。
+
+    Windows では os.kill(pid, 0) が TerminateProcess になり、recycle された pid の
+    無関係プロセスを止めてしまうため使わない。OpenProcess + GetExitCodeProcess で
+    副作用なしに判定する。
+    """
+    if os.name == "nt":
+        return _win_pid_alive(pid)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -231,6 +238,24 @@ def _pid_alive(pid: int) -> bool:
     except OSError:
         return False
     return True
+
+
+def _win_pid_alive(pid: int) -> bool:
+    """Windows の副作用なし生存確認（プロセスを開いて終了コードを読むだけ）。"""
+    import ctypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return ctypes.get_last_error() == 5  # ERROR_ACCESS_DENIED = 存在するが別権限
+    try:
+        code = ctypes.c_ulong()
+        if not kernel32.GetExitCodeProcess(ctypes.c_void_p(handle), ctypes.byref(code)):
+            return True  # 読めないなら生存側へ倒す（stale 判定で pid file を消さない）
+        return code.value == 259  # STILL_ACTIVE
+    finally:
+        kernel32.CloseHandle(ctypes.c_void_p(handle))
 
 
 def _proc_cmdline(pid: int) -> list[str] | None:

@@ -12,10 +12,10 @@ description: >
 effort: medium
 allowed-tools:
   - Read
-  - Bash(python tools/gen_delegate_payload.py:*)
   - Bash(python3 tools/gen_delegate_payload.py:*)
   - Bash(py -3 tools/gen_delegate_payload.py:*)
   - Bash(bash tools/journal_append.sh:*)
+  - Bash(python3 tools/journal_append.py:*)
   - Bash(py -3 tools/journal_append.py:*)
   - Bash(git log:*)
   - Bash(git pull --ff-only:*)
@@ -37,27 +37,7 @@ attention watcher integration test に必ず波及する。
 
 > **本 SKILL のスコープ**: 窓口が runtime release 系タスクを受領した際の
 > 委譲設計と paired ja-sync 計画。実 commit / テスト修正はワーカー側であり本 skill ではない。
-
-## なぜこの skill が必要か
-
-`claude-org-runtime` 側で `DEFAULT_NOTIFY` の値や classifier 語彙・`role_configs_schema.json`
-（runtime 同梱 schema。ja 側ミラーが `tools/org_extension_schema.json`）の項目を
-更新してリリースすると、PyPI publish 後に `claude-org-ja` 側の以下が同時に古くなる:
-
-- `tests/test_attention_runtime_integration.py` の expectation
-- `tools/org_extension_schema.json` のバイト一致コピー
-- `.claude/skills/org-setup/references/permissions.md` の projection
-- `tools/templates/attention.example.json` の severity / TTL
-
-過去のリリースサイクルでは「runtime release は無事だったが ja-side CI が翌日に red」になる
-カスケードが観測されており、これを毎回観測してから後追いで直すと、
-
-- Secretary セッションが切れて context を失う
-- ja-side worker に「なぜこの変更が必要か」の経路を再構築させる
-- 修正の paired-ness が暗黙的になり次回も同じカスケードを踏む
-
-の 3 重コストが発生する。本 skill は paired-ness を**リリース起票時に明示化**し、
-同一 Secretary セッション内で land しきる規律を提供する。
+> 本 skill が要る理由（後追い修正の 3 重コスト）と経緯は [`.claude/skills/runtime-release-with-paired-ja-sync/references/rationale.md`](references/rationale.md)。
 
 ## 発動条件
 
@@ -84,25 +64,14 @@ attention watcher integration test に必ず波及する。
   (b) `tools/check_runtime_schema_drift.py` — ja の `tools/org_extension_schema.json` と
   runtime 同梱 `role_configs_schema.json` の、ja 固有節を strip した上でのバイト比較
   （CI で実行。installed runtime が pin window 内なら skip されない）。
-  実例: renga capability probe `server_info` の `required_allow` 追加
-  （2026-08-08, runtime Issue #161）で露見
 
 ## Step 1: pre-fetch（リリース worker 派遣前）
 
 リリース系タスクは workers_dir 側が古い main から派生すると tag 衝突や stale base
-を引き起こすため、ワーカー派遣の直前に必ず以下を窓口が実行する:
-
-```bash
-cd <runtime workers_dir>
-git fetch origin
-git pull --ff-only origin main
-```
-
-`--ff-only` を必ず付ける。non-fast-forward になる場合は誰か別経路で main を動かしている
-合図なので、worker を派遣せず人間に報告する。
-
-> **cross-link**: workers_dir 側の pre-dispatch 整合性は [`.claude/skills/org-delegate/SKILL.md`](../org-delegate/SKILL.md)
-> の派遣前チェックリストと同質の責務であり、本 skill は release-class 限定の上乗せ。
+を引き起こすため、ワーカー派遣の直前に窓口が runtime の workers_dir で pre-fetch を実行する。
+手順（`git pull --ff-only` と、non-ff なら派遣せず人間に報告）は
+[`.claude/skills/org-delegate/SKILL.md`](../org-delegate/SKILL.md) Step 0.6 と
+[`.claude/skills/org-delegate/references/release-pre-fetch.md`](../org-delegate/references/release-pre-fetch.md) が正本。
 
 ## Step 2: リリース worker への impl-guidance
 
@@ -131,17 +100,10 @@ brief で明示しない場合 worker は bump 対象を pyproject 系のみと�
 
 ### tag 前の fail-closed 検証（省略不可）
 
-runtime の release workflow（`.github/workflows/release.yml`）は `on: push: tags: ["v*"]`
-でタグ付き commit を checkout してビルドするだけで、**タグ名と版数の一致も、その commit が
-main の先端かどうかも検証しない**。版数の SoT は `src/claude_org_runtime/__about__.py` の
-`__version__`（`pyproject.toml` が `dynamic = ["version"]` で
-`claude_org_runtime.__about__.__version__` を読む）。fetch だけでは ancestry も内容も
-確かめられないため、検証を挟まずに tag すると次の 2 つが起きうる:
-
-- **版数不一致**（タグ `vX.Y.Z` / `__about__.py` は旧版）: publish が既発行版の再アップロードとして
-  PyPI に弾かれ job は red になるが、**タグ番号は焼かれる**
-- **stale SHA**（版数は合っているが main の先端ではない）: 古い内容のまま publish が
-  **成功**する。PyPI yank はできても版番号は再利用できない＝実質撤回不可
+runtime の release workflow は**タグ名と版数の一致も、その commit が main の先端かどうかも
+検証しない**。版数の SoT は `src/claude_org_runtime/__about__.py` の `__version__`。
+検証を挟まずに tag したときに起きる 2 つの失敗（版数不一致 / stale SHA）は
+[`.claude/skills/runtime-release-with-paired-ja-sync/references/rationale.md`](references/rationale.md) を参照。
 
 以下は **1 ブロックまとめて実行する**。各 gate は目視確認ではなく非ゼロ終了で表現してあり、
 `set -euo pipefail` と合わせて 1 つでも外れれば `git tag` に到達せず止まる（「出力を見て判断する」
@@ -191,14 +153,8 @@ git -C "$WD" push origin "v$VER"
 
 (c) / (e) で `STOP` になった場合は、その場で tag を打ち直さず人間に報告する。「先端に乗り換えて
 発行する」のか「相乗りする別 PR を含めずに切る」のかは人間の判断であり、Secretary が一次判断で
-選んでよい種類の選択ではない。
-
-> **残余レースの扱い**: (e) と `push` の間には原理的に窓が残る（GitHub の tag push には
-> 「main が `$SHA` のままなら通す」という compare-and-swap が無いため、これは手順で閉じられない）。
-> ただし **tag は不変の SHA に対して打つ**ので、この窓で main が進んでも発行される artifact は
-> (c)(d) で検証した内容そのままであり、壊れた版が出ることはない。窓で起こりうるのは
-> 「直後にマージされた別 PR がこの版に入らない」だけで、これは release の通常挙動である。
-> したがって対策は「main を止める」ではなく、**(e) を push の直前に置き、外したらやり直す**で足りる。
+選んでよい種類の選択ではない。(e) と `push` の間に残る窓を手順で閉じない理由は
+[`.claude/skills/runtime-release-with-paired-ja-sync/references/rationale.md`](references/rationale.md) を参照。
 
 push 後は GitHub Actions の release.yml ジョブを `gh run watch` 等で監視する。
 このとき **`--repo` で runtime リポジトリを必ず明示**する
@@ -218,7 +174,7 @@ ja-side 同期 PR を起票する。後回しにしない:
 | classifier vocabulary の追加 / 改名 | attention 系 artifacts の更新 — `tests/fixtures/attention/` の fixture / golden・`tests/test_attention_runtime_integration.py` の expectation・`tools/templates/attention.example.json`（permissions projection は classifier 語彙を持たないため対象外） |
 | attention payload の severity / TTL ladder 変更 | `tools/templates/attention.example.json` の severity / TTL 同期＋`tests/test_attention_runtime_integration.py` の TTL 前提（fixture の経過時間セットアップ・severity 期待）と golden の整合 |
 | runtime の sandbox 評価器（`render_role_with_metadata()` / `SandboxMetadata.to_jsonable()`）の出力形が変わる（schema JSON は不変） | `tests/fixtures/runtime_schema_drift/sandbox_intent/` の `expected_explain` / `expected_rendered_sandbox` golden を新 runtime で再生成＋floor 引き上げ。schema バイトが動かないので byte check は素通りするが、`tests/test_runtime_schema_drift_semantic.py` は pin window を意図的にバイパスして installed runtime に**無条件で hard fail** する（skip-with-warning の逃げ道が無い唯一の drift 次元） |
-| attention event の `title` / `body` 文言・フィールドの追加 / 改名（severity / TTL は不変） | golden `tests/fixtures/attention/expected_scan.json` を再生成（`test_scan_output_matches_golden` は `desktop_dispatched` / `bell_dispatched` / `delivered`（`_DISPATCH_ONLY_KEYS`）を除く**全キーを比較**するため、severity 系のどの行にも当たらない文言変更だけでも fail する）＋`tools/templates/attention.example.json` の `templates` 上書きも同時に見直す。同ファイルは 15 kind ぶんの title / body を独自に持つので、runtime 側の placeholder が改廃されると **golden だけ直して CI green のままテンプレが古くなる**（placeholder の allowlist は `{task_id} {worker} {kind} {status} {pr} {summary}` の 6 種） |
+| attention event の `title` / `body` 文言・フィールドの追加 / 改名（severity / TTL は不変） | golden `tests/fixtures/attention/expected_scan.json` を再生成（`test_scan_output_matches_golden` は `desktop_dispatched` / `bell_dispatched` / `delivered`（`_DISPATCH_ONLY_KEYS`）を除く**全キーを比較**するため、severity 系のどの行にも当たらない文言変更だけでも fail する）＋`tools/templates/attention.example.json` の `templates` 上書きも同時に見直す。同ファイルは kind ごとの title / body を独自に持つので、runtime 側の placeholder が改廃されると **golden だけ直して CI green のままテンプレが古くなる**（placeholder の allowlist は `{task_id} {worker} {kind} {status} {pr} {summary}` の 6 種） |
 | ja が新 runtime 版の挙動・新 required 項目に依存する場合 | runtime version floor を **5 ファイル atomic** に引き上げ: `pyproject.toml` / `requirements.txt` / `docker/Dockerfile`（`ARG RUNTIME_VERSION`）/ `docker/compose.yaml`（`RUNTIME_VERSION` 既定値。Dockerfile の ARG を上書きするためここが古いと旧版が焼かれる）/ `docker/README.md`（マルチアーキビルド例の image tag。tag 規約 `<repo-ref>-r<runtime-version>` の `-r` suffix が唯一ここに書かれている）。共有 schema 面が動く場合は `RUNTIME_PIN_LOWER_INCLUSIVE` も同時に（下記「pin window 定数」） |
 
 paired ja-sync は **複数 worker 並列**で派遣して構わない（むしろ推奨）。
@@ -342,13 +298,11 @@ Secretary 自身のセッションが context 上限に達すると、paired ja-
   overlap ルールにそのまま当たるので **並列分割せず 1 本の PR にまとめる**
   （permissions projection は classifier 語彙を持たないため対象外で、そもそも系統が割れない）。
   新 kind が新しい runtime 経路に依存するなら floor 5 ファイルも同じ PR に入れる。
-  直近の実例は `duplicate_sidecar` の追随で、attention artifacts と floor が 1 commit に
-  収まっている（`git log --oneline -- tests/fixtures/attention/expected_scan.json` で辿れる）
+  attention artifacts と floor 5 ファイルが 1 commit に収まった実例は `duplicate_sidecar` の追随
+  （`git log --oneline -- tests/fixtures/attention/expected_scan.json` で辿れる）
 
 ## 注意点
 
-- v-タグ push は user 明示承認なしで実行しない。release.yml は一度焼くと PyPI 版番号が消費される
-- workers_dir の `git pull --ff-only` で non-fast-forward を踏んだら worker 派遣を中断
 - `tests/test_attention_runtime_integration.py` は paired PR が main に入る前に
   runtime 新版を解決しに行く可能性があるため、ja-side の同期 PR は release.yml 完了直前
   〜直後の数時間でランドさせる時間圧がある
@@ -364,9 +318,3 @@ Secretary 自身のセッションが context 上限に達すると、paired ja-
   運用既定だけが古くなる silent gap になるので、Step 4 でテンプレ行に当たったら CI ではなく
   人間のチェックリストで担保する
 - 本 skill は窓口専属。worker 側 SKILL ではない
-
-## 履歴的背景
-
-本 skill は claude-org-runtime v0.1.11 リリースサイクルで観測されたカスケードを
-ベースに、Issue #25 / #26 / #28 / Backlog #32 / #33 の議論を通じて結晶化した
-ワークフロー。

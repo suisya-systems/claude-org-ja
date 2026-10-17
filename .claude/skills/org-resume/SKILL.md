@@ -9,39 +9,39 @@ allowed-tools:
   - Read
   - Bash(git status)
   - Bash(git log:*)
-  - Bash(py -3 tools/state_migrate.py)
   - Bash(python3 tools/state_migrate.py)
-  - Bash(py -3 tools/journal_append.py:*)
+  - Bash(python3 -c:*)
+  - Bash(python3 dashboard/org_state_converter.py)
   - Bash(bash tools/journal_append.sh:*)
-  - Bash(python -m tools.state_db.importer:*)
+  - Bash(python3 tools/journal_append.py:*)
+  - Bash(python3 -m tools.state_db.importer:*)
+  - mcp__renga-peers__list_panes
+  - mcp__org-broker__list_panes
 ---
 
 # org-resume: 組織の再開
 
 中断された組織の状態を読み込み、人間にブリーフィングし、再開する。
 
-> **state DB 前提 (Issue #267 / M4)**: `.state/state.db` が唯一の SoT。
-> read 経路は DB のみ (markdown fallback は M4 で撤去)、構造化セクションの
-> write 経路は `StateWriter.transaction()` 経由（post-commit hook が
-> `.state/org-state.md` を DB から自動再生成、markdown 直接編集禁止 —
-> drift_check が検出する）。free-form な学び / Pending Lead 等は
-> `notes/` 配下に保存する。`.state/journal.jsonl` は M4 で廃止。
-> DB が無い場合は `python -m tools.state_db.importer --db .state/state.db --rebuild --no-strict` で構築する。
+> **state DB 前提**: `.state/state.db` が唯一の SoT。読み取りは DB のみ。構造化セクションの
+> 書き込みは `StateWriter.transaction()` 経由（post-commit hook が `.state/org-state.md` を
+> DB から自動再生成する。markdown の直接編集は禁止で、drift_check が検出する）。
+> free-form な学び / Pending Lead 等は `notes/` 配下に保存する。
+> DB が無い場合は `python3 -m tools.state_db.importer --db .state/state.db --root . --rebuild --no-strict` で構築する。
 
 ## Phase 1: 状態読み込みとブリーフィング
 
-0. **state schema migration を実行する**（Set C §4.4 契約）。`.state/` 配下の JSON 状態を最新スキーマへ揃えてから読み込みに入る:
+0. **state schema migration を実行する**。`.state/` 配下の JSON 状態を最新スキーマへ揃えてから読み込みに入る:
 
    ```bash
-   py -3 tools/state_migrate.py    # Windows
-   python3 tools/state_migrate.py   # Mac/Linux
+   python3 tools/state_migrate.py
    ```
 
    exit 0 なら続行。exit 1（未対応 version 残存）/ exit 2（migration ループ異常）なら人間に報告して停止する。
-1. **DB から前回状態を取得する**（Phase 1 は軽量 briefing API、Issue #412）:
+1. **DB から前回状態を取得する**（軽量 briefing API）:
    - `.state/state.db` が存在 → DB をクエリ:
      ```bash
-     python -c "from tools.state_db import connect; from tools.state_db.queries import get_resume_briefing_light; import json; \
+     python3 -c "from tools.state_db import connect; from tools.state_db.queries import get_resume_briefing_light; import json; \
        conn = connect('.state/state.db'); \
        print(json.dumps(get_resume_briefing_light(conn), ensure_ascii=False, indent=2, default=str))"
      ```
@@ -50,7 +50,7 @@ allowed-tools:
      `active_inventory_dirs` は `runs.status` から逆引きした worker_dir 集合（state-semantics-contract I7 — `worker_dirs.lifecycle='active'` ではない）。
      必要があれば（極稀ケース）`get_resume_briefing` で raw payload / 完全な resume_instructions を取得できるが、起動時 Phase 1 では使わない。
    - DB が無い → 人間に rebuild を促す:
-     「state.db not found. Run: `python -m tools.state_db.importer --db .state/state.db --root . --rebuild`」
+     「state.db not found. Run: `python3 -m tools.state_db.importer --db .state/state.db --root . --rebuild --no-strict`」
 2. 人間に簡潔なサマリーを提示する:
    - 全体の目標 (briefing の `session.objective`)
    - 各作業アイテムの状態 (完了/進行中/保留/ブロック、briefing の `active_runs` / `reserved_runs`)
@@ -62,14 +62,27 @@ allowed-tools:
 DB の active_runs を SoT として照合し、markdown は表示用補助とする。
 
 1. DB から取得した active_runs（または markdown の Worker Directory Registry）を起点に、各 run の `worker_dir` を確認する
-2. `.state/workers/` 内の各ワーカー状態ファイルも参照する（旧経路）
+2. `.state/workers/` 内の各ワーカー状態ファイルも参照する
 3. 各ワーカーの作業ディレクトリで以下を確認:
    - ディレクトリが存在するか
    - `git status` — 未コミットの変更があるか
    - `git log --oneline -5` — 最後のコミットは run の `commit_short` / 状態ファイルと一致するか
    - ブランチは run の `branch` / 状態ファイルの記述と一致するか
 4. `knowledge/raw/` に未整理のファイルがあるか確認
-5. 差異があれば人間に報告する（例: 「DB ではOAuth run が in_use ですが、ディレクトリが存在しません」）
+5. **保留された振り返り（`retro_deferred`）を拾う**。ディスパッチャーは窓口に届かず振り返りを終えられなかったワーカーについて `retro_deferred` を記録し、ペインを閉じずに残す（[`.dispatcher/references/pane-close.md`](../../../.dispatcher/references/pane-close.md)「secretary unreachable 時の fallback」）。記録を、前回の `resume` より後かどうかの印付きで取り出す:
+   ```bash
+   python3 -c "from tools.state_db import connect; \
+     conn = connect('.state/state.db'); \
+     last = conn.execute(\"SELECT COALESCE(MAX(id), 0) FROM events WHERE kind = 'resume'\").fetchone()[0]; \
+     [print(tuple(r)) for r in conn.execute(\"SELECT occurred_at, json_extract(payload_json, '$.worker'), json_extract(payload_json, '$.reason'), id > ? AS since_last_resume FROM events WHERE kind = 'retro_deferred' ORDER BY id\", (last,))]"
+   ```
+   ワーカーごとに、ペイン一覧（`list_panes`）と突き合わせて分ける:
+   - ペインが残っている → 振り返りは未完了（終われば閉じられている）。記録の時期を問わず再試行の対象
+   - ペインが無く、`since_last_resume` が 1 → 再試行で振り返りを終えて閉じたか、振り返らずに閉じて材料を失ったかを手元の記録では見分けられない。どちらの可能性もあると添えて人間に報告する
+   - ペインが無く、`since_last_resume` が 0 → 前回までに処理済みとして扱う
+
+   対象があれば一覧を人間に示す。再試行は Phase 4-5 で行う。
+6. 差異があれば人間に報告する（例: 「DB ではOAuth run が in_use ですが、ディレクトリが存在しません」）
 
 ## Phase 3: 再開計画の提案
 
@@ -80,7 +93,7 @@ DB の active_runs を SoT として照合し、markdown は表示用補助と�
 - **PENDING**: ブロッカーの状態を確認し、実行可能か判断
 - **BLOCKED**: ブロッカーの解消状況を確認
 
-**重要: 人間の確認を待ってから行動すること。勝手にワーカーを派遣しない。**
+人間の確認を待ってから行動する。再開する作業の選択は人間が決めるので、確認前にワーカーを派遣しない。
 
 ## Phase 4: 組織の再構築
 
@@ -91,7 +104,7 @@ DB の active_runs を SoT として照合し、markdown は表示用補助と�
 3. **DB に Status / Resumed を書く**（`StateWriter.transaction()` 経由。post-commit hook が `.state/org-state.md` の Status 行を `ACTIVE` に更新する。regen 失敗時も DB は確定済みで stderr 警告のみ）:
 
    ```bash
-   python -c "
+   python3 -c "
    from datetime import datetime, timezone
    from pathlib import Path
    from tools.state_db import connect
@@ -105,14 +118,15 @@ DB の active_runs を SoT として照合し、markdown は表示用補助と�
 4. JSON スナップショットを再生成する（dashboard 用。state-db cutover とは別経路）:
 
    ```bash
-   py -3 dashboard/org_state_converter.py    # Windows
-   python3 dashboard/org_state_converter.py   # Mac/Linux
+   python3 dashboard/org_state_converter.py
    ```
 
-5. ディスパッチャー・キュレーターペインの起動は /org-start が担当するため、ここでは行わない
-6. resume イベントを DB に追記 (`tools/journal_append.py` は M4 で DB-only ルーティング。`ts` は自動付与):
+5. ディスパッチャーの起動は /org-start が担当するため、ここでは行わない（キュレーターは常駐せず、ディスパッチャーが CLOSE_PANE の閾値超過時にオンデマンド起動する）。ディスパッチャーが ready になったら、Phase 2-5 で拾った `retro_deferred` のワーカーごとに、人間の承認を得て再試行する:
+   - ペインが残っている → ディスパッチャーへ `CLOSE_PANE: {pane_id}` を再送する。ディスパッチャーは振り返りから CLOSE_PANE フローをやり直す
+   - ペインが無い（suspend で閉じた等）→ 振り返りの材料が失われている旨を人間に報告し、`.state/workers/worker-{task_id}.md` だけで振り返るか見送るかを聞く
+6. resume イベントを DB に追記する（`ts` は自動付与）:
    ```bash
-   py -3 tools/journal_append.py resume \
-       --json '{"resumed_items": ["blog-redesign", "data-analysis"]}'
+   python3 tools/journal_append.py resume \
+       --json '{"restored_workers": ["worker-blog-redesign", "worker-data-analysis"], "note": "<1 行の要約>"}'
    ```
    event 名と payload key の規約は [`docs/journal-events.md`](../../../docs/journal-events.md) を参照。

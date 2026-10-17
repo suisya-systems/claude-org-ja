@@ -10,8 +10,10 @@ effort: low
 allowed-tools:
   - Read
   - Bash(bash tools/journal_append.sh:*)
+  - Bash(python3 tools/journal_append.py:*)
   - Bash(py -3 tools/journal_append.py:*)
-  - Bash(python -m tools.state_db.importer:*)
+  - Bash(python3 -m tools.state_db.importer:*)
+  - Bash(py -3 -m tools.state_db.importer:*)
   - Bash(python3 tools/secretary_queue_watcher.py:*)
   - Bash(py -3 tools/secretary_queue_watcher.py:*)
   - Bash(python3 tools/stop_dashboard.py:*)
@@ -20,6 +22,7 @@ allowed-tools:
   - Bash(rm -f .state/attention_pane.json)
   - Bash(del .state\attention_pane.json)
   - Bash(claude-org-runtime org down:*)
+  - Bash(python3 -m claude_org_runtime.cli org down:*)
   - Bash(py -3 -m claude_org_runtime.cli org down:*)
   - mcp__org-broker__check_messages
   - mcp__org-broker__close_pane
@@ -43,15 +46,13 @@ daemon まで含めて組織を完全に停止する統合終了スキルであ�
 > 止まり、daemon は走らせたまま（`/org-start` で再開する前提の中断）にする。/org-down は
 > **suspend の成功を確認できたときにのみ** daemon 停止へ進む。順序を守るのは、未保存の状態を
 > 残したまま daemon を落とすと復旧経路（`check_messages` での drain 等）ごと失われるため。
->
-> runtime 側の pre-flight 検出（`org down` 前に生存ワーカー / 未 drain キューを警告する機能）は
-> [runtime#142](https://github.com/suisya-systems/claude-org-runtime/issues/142) の担当で、本スキルは
-> 触れない。本スキルは runtime の `org down` を **呼ぶだけ**。
+> 本スキルは runtime の `org down` を **呼ぶだけ**（runtime 側 pre-flight との分担は
+> [`.claude/skills/org-down/references/rationale.md`](references/rationale.md)）。
 
 > **輸送層の前提**: `claude-org-runtime org down` は broker daemon を落とすコマンドで、broker
 > transport（`ORG_TRANSPORT` 無設定＝コード既定 broker、または明示 broker）でのみ意味を持つ。
 > renga フォールバック（`ORG_TRANSPORT=renga` で `renga --layout ops` 起動）では daemon の概念が
-> 無いので、Step 3 は skip して「renga では daemon 停止は不要」と案内する。jud断は Step 3 の
+> 無いので、Step 3 は skip して「renga では daemon 停止は不要」と案内する。判断は Step 3 の
 > transport 確認で行う。
 
 ## Step 1: /org-suspend を完走する
@@ -67,39 +68,21 @@ daemon まで含めて組織を完全に停止する統合終了スキルであ�
 **suspend 成功の確認（gate）** — 次を満たしたときのみ Step 2 / Step 3 へ進む:
 
 - `.state/state.db` の `session.status` が `SUSPENDED` になっている（Phase 3 の DB write が成立）
-- **Phase 4 が全対象ペイン（ワーカー / ディスパッチャー / 存在した場合のキュレーター）について停止を
-  「消滅済み」として確定している**。ここで確定と読んでよいのは
-  [`.claude/skills/org-suspend/SKILL.md`](../org-suspend/SKILL.md)
-  Phase 4 が **F-1**（同 Phase 1 手順 1 の「フォーカス前提（F）」）に従って自ら出した結論だけで、
-  **本 gate のために org-down 側で `list_panes` を引き直して判定をやり直さない** — 生存判定の正本は
-  org-suspend 側にあるので、その条件文をここに再掲せず**確定結果を読むだけ**にする（`list_panes` に
-  居ないことを単独で停止の根拠にする単段の読み替えを本スキルに置かない）。Phase 4 が自らの停止確認の
-  ために行う再列挙（同 Phase 4 停止手順 1 の台帳最新化 / Pass 2 の残存確認）は org-suspend 側の手順
-  なので、Step 1 の「全 Phase を順に実行する」どおりそのまま実行する
-- **Phase 4 が「停止できなかった / 判定できなかったピア」を 1 件も残していない**。生死を判定できなかった
-  ピアは、Phase 4 の停止手順が「**残存または判定不能なら**、閉鎖扱いにせず journal に記録して人間に報告
-  する」に従って `pending` に残すので、gate の入口は同 Phase 4 **手順 7** の最終報告になる —
-  **`pending` と `unresolved` が両方空で「組織を中断しました」と言い切れた形だけ**が gate 成立である。
-  「組織を部分的に中断しました（停止しきれていないペインがあります）」の形（停止できなかったワーカー /
-  `role` が判定できず対象外にしたピア / 他タブに見えたが自組織と確認できず対象外にしたピアのいずれかが
-  残る）は **gate 不成立**として扱う
+- [`.claude/skills/org-suspend/SKILL.md`](../org-suspend/SKILL.md) Phase 4 **手順 7** の最終報告が、
+  **`pending` と `unresolved` が両方空で「組織を中断しました」と言い切れた形**になっている。生死の判定は
+  Phase 4 が **F-1**（同 Phase 1 手順 1 の「フォーカス前提（F）」）に従って出した結論だけを読み、
+  本 gate のために org-down 側で `list_panes` を引き直して判定し直さない（Phase 4 自身の再列挙は
+  org-suspend の手順としてそのまま実行する）
 - 最後の窓口ペインが残っているのは gate の妨げにならない（窓口は自分自身を close できない。同 Phase 4
   「最後のペイン (窓口) の扱い」）
 
-**suspend が abort / 失敗した場合、または生死を判定できないピアが 1 件でも `pending` に残った場合**
-（DB が SUSPENDED にならない / Phase 4 が「組織を部分的に中断しました」を出した / ワーカーが SUSPEND
-応答を返さず生死を判定できないまま等）は、**org down に進まず STOP**する。状況を人間に報告し、「状態が保存し切れていない
+**gate 不成立なら org down に進まず STOP** する。suspend が abort / 失敗した、Phase 4 が「組織を部分的に
+中断しました」を出した（停止できなかったワーカー / `role` が判定できず対象外にしたピア / 他タブに見えたが
+自組織と確認できず対象外にしたピアが残る）、生死を判定できないピアが `pending` に残った、のいずれも該当する。状況を人間に報告し、「状態が保存し切れていない
 / ペインの停止を確認し切れていないため daemon は落とさなかった。原因解消後に /org-down を再実行するか、
 /org-suspend でいったん中断してください」と案内する（生死を判定できなかったピアが残っている場合は、
-Phase 4 手順 7 が列挙したその一覧もそのまま渡す）。
-
-> **判定不能は「継続」ではなく STOP に倒す**: ディスパッチャーの worker 監視
-> （[`.dispatcher/references/worker-monitoring.md`](../../../.dispatcher/references/worker-monitoring.md)）は
-> 観測不能なサイクルでも監視対象を保持して次サイクルで再評価する（人間が居ないので無停止継続が安全側）が、
-> 本スキルの後段は `claude-org-runtime org down` = broker daemon の kill であり向きが逆になる。生死を
-> 判定できないピアを抱えたまま daemon を落とすと、そのピアが走り続けていた場合に止める手段も、生死を
-> 後から確かめる経路（冒頭の責務境界で挙げた `check_messages` での drain 等）も同時に失われる。
-> 判定不能のまま不可逆操作へ進まない側が安全側である。
+Phase 4 手順 7 が列挙したその一覧もそのまま渡す）。判定不能を worker 監視と逆向きに STOP へ倒す
+理由は [`.claude/skills/org-down/references/rationale.md`](references/rationale.md)。
 
 ## Step 2: ダッシュボードの停止（stale-pid-safe）
 
@@ -118,7 +101,7 @@ identity 照合ロジックは helper（`tools/stop_dashboard.py`）に入って
 
 **Mac / Linux / WSL**:
 ```bash
-python3 tools/stop_dashboard.py   # Windows で console python を使う場合は py -3 ...
+python3 tools/stop_dashboard.py   # Windows native は py -3 tools/stop_dashboard.py
 ```
 標準出力の 1 行（`[stop-dashboard] dashboard (pid=N) stopped` / `... 消滅（stale）...` /
 `... 起動していない ...`）を Step 4 の報告にそのまま転記する（実際に停止したか stale だったかを
@@ -158,6 +141,7 @@ if (Test-Path $pf) {
    終了する。**必ず最後に実行する**）:
    ```bash
    claude-org-runtime org down          # Mac / Linux / WSL
+   python3 -m claude_org_runtime.cli org down # Mac / Linux / WSL で console script が PATH に無い場合
    py -3 -m claude_org_runtime.cli org down   # Windows で console script が PATH に無い場合
    ```
    - 正常終了で broker daemon が停止し、以後 `claude-org-runtime org up` → `/org-start` で再起動する

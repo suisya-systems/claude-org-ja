@@ -18,6 +18,7 @@ allowed-tools:
   - Bash(rm:*)
   - Bash(del:*)
   - Bash(bash tools/journal_append.sh:*)
+  - Bash(python3 tools/journal_append.py:*)
   - Bash(py -3 tools/journal_append.py:*)
   - mcp__renga-peers__*
 ---
@@ -36,12 +37,8 @@ pane_id を `.state/attention_pane.json` に sidecar として記録する。停
 > dispatcher ペインの cwd は `.dispatcher` なので、spawn_pane では `cwd="."` を明示して
 > Secretary 側の cwd（= repo root）にバインドする。
 >
-> **設計判断 (sidecar)**: pane_id 記録は `.state/state.db` の schema 拡張ではなく
-> sidecar JSON (`.state/attention_pane.json`) を採用する。`.state/dashboard.pid` /
-> `.state/attention_notified.json` と同じ「補助プロセス追跡」パターンに揃え、
-> importer / writer / snapshotter / converter / drift_check への波及を回避するため。
-> attention watcher は OS subprocess であり Claude peer ではないため peer_id は持たず、
-> ダッシュボードへの状況表示も現状不要（人間判断、2026-05-17）。
+> pane_id は `.state/state.db` ではなく sidecar JSON（`.state/attention_pane.json`）に記録する
+> （理由は [`.claude/skills/org-attention-start/references/rationale.md`](references/rationale.md)）。
 
 ## Step 1: 二重起動チェック
 
@@ -123,7 +120,7 @@ mcp__renga-peers__spawn_pane(
   `<state-dir>/broker` のみ）。非既定 state dir で broker を動かしている環境でフラグを省くと、
   `duplicate_sidecar` だけが黙って鳴らない（他の kind は `.state/state.db` 経由なので影響を受けない）
 
-- `target="dispatcher"`: org-start Block A-1 で確立した安定名で解決
+- `target="dispatcher"`: org-start Block A の手順 1 で付けた安定名で解決
 - `direction="vertical"`: dispatcher ペイン = 左、attention ペイン = 右
 - `cwd="."`: Secretary の cwd（= repo root）基点で相対 resolve され、`.state/` パスが正しく当たる。
   省略すると dispatcher の cwd (`.dispatcher`) を継承して `.state` が `.dispatcher/.state` に解決され
@@ -225,7 +222,7 @@ journal event を 1 行追記する:
 bash tools/journal_append.sh attention_watch_started pane_id=<N> config=.state/attention.json
 ```
 
-Windows native では `py -3 tools/journal_append.py attention_watch_started pane_id=<N> config=.state/attention.json`。
+`bash` が使えない環境では Mac/Linux は `python3 tools/journal_append.py attention_watch_started pane_id=<N> config=.state/attention.json`、Windows native では `py -3 tools/journal_append.py attention_watch_started pane_id=<N> config=.state/attention.json`。
 
 ## Step 6: 報告
 

@@ -5,14 +5,13 @@ description: >
   /secretary-handover で書き出した handover ファイルを読み込み、
   窓口を新しいセッションで復帰させる。/clear 直後の最初のターンで使う。
   「窓口を復帰」「resume」「引き継ぎから再開」と言われたときに使う。
-  /org-start ではない（ディスパッチャー・キュレーターは既に生きている前提）。
+  /org-start ではない（ディスパッチャーは既に生きている前提）。
 effort: low
 allowed-tools:
   - Read
   - Bash(echo:*)
-  - Bash(py -3 tools/journal_append.py:*)
+  - Bash(python3 -c:*)
   - Bash(bash tools/journal_append.sh:*)
-  - Bash(py -3 tools/capability_gate.py:*)
   - Bash(python3 tools/capability_gate.py:*)
   - mcp__org-broker__set_summary
   - mcp__org-broker__list_panes
@@ -82,7 +81,7 @@ allowed-tools:
 ## Step 2: state.db で現状を再取得する
 
 ```bash
-python -c "
+python3 -c "
 from tools.state_db import connect
 from tools.state_db.queries import get_org_state_summary
 import json
@@ -104,13 +103,13 @@ print(json.dumps(get_org_state_summary(conn), ensure_ascii=False, indent=2, defa
 [`.claude/skills/org-delegate/references/capability-first-drive-operational-gate.md`](../org-delegate/references/capability-first-drive-operational-gate.md)
 を Read し、`monitoring-read-only` の分岐を適用する**（同 reference §6 の表 #3）。capability 形かつ
 未承認なら列挙を生存判定に使わず破棄し、`mcp__org-broker__list_panes` と state DB の `active_runs[]` の突き合わせで
-代替して、差分は人間に報告する（停止しない・待ち時間 0 分。勝手に再 spawn しないのは従来どおり）。
+代替して、差分は人間に報告する（停止しない・待ち時間 0 分。この場合も勝手に再 spawn しない）。
 
 **capability 形かつ承認済み（同 reference §2 の `first_drive` が `recorded`）のとき**は、§1-2 の
 三値判定を dispatcher / handover 記載の各ワーカー名に適用し、**「在」（同タブ・一意）だけを現存として
 数える**。他タブに同名のディスパッチャー / ワーカーが見えていても自組織の生存根拠にしない。
 **「不在」は差分として、「unknown」は判定不能として区別して人間に報告する**（unknown を不在に数えない。
-§1-2-b）。差分があっても勝手に再 spawn しないのは従来どおり。
+§1-2-b）。差分があっても勝手に再 spawn しない。
 
 ```
 mcp__org-broker__list_peers
@@ -160,14 +159,14 @@ handover の情報と state.db の現状を統合した上で、以下の構造�
 ## イベント記録
 
 ```bash
-py -3 tools/journal_append.py secretary_resumed \
-    --json '{"handover_age_hours": <数値>}' 2>/dev/null \
-    || echo "(journal_append unavailable; skipping)"
+bash tools/journal_append.sh secretary_resumed handover_age_hours=<数値>
 ```
+
+失敗したら握りつぶさず、ブリーフィングにエラーを 1 行添える。
 
 ## やってはいけないこと
 
-- 新規にディスパッチャー / キュレーターを spawn する（既に生きている）
+- 新規にディスパッチャーを spawn する（既に生きている）。キュレーターも spawn しない（オンデマンド起動はディスパッチャーの役目）
 - ワーカーに勝手に SUSPEND / SHUTDOWN を送る
 - handover の内容と state.db の現状が食い違うときに、勝手にどちらかへ寄せる
   （必ず人間に報告して判断を仰ぐ）

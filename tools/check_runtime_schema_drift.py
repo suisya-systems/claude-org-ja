@@ -179,18 +179,67 @@ _JA_ONLY_LAYER2_CREDENTIAL_DENIES = frozenset(
 # registration from breaking the ja↔runtime *surface* contract, which is
 # the only thing the byte check is meant to police.
 #
+# ``block-codex-rescue.sh`` denies the ``codex:rescue`` skill for workers
+# (ja's Codex self-review runs only through ``tools/codex_review_gate.sh``).
+# It is wired into ``worker_roles[*].hooks.PreToolUse``, so the strip also
+# drops worker hook commands that name a ja-only script. Worker settings
+# are rendered from ja's schema (``tools/gen_delegate_payload.py`` pins
+# ``--schema``), so the hook reaches workers without a runtime release.
+#
+# ``block-close-before-retro.sh`` denies the dispatcher's ``close_pane`` on
+# a worker pane until the retro completion-report gate has passed. It reads
+# ``retro_gate_acked`` (written by ja's ``tools/dispatcher_retro_gate.py``)
+# and the ja state layout, so it has no runtime counterpart. Dispatcher
+# settings are hand-maintained from permissions.md, not runtime-rendered.
+#
+# ``block-blind-spawn-keys.sh`` denies the dispatcher's key-carrying
+# ``send_keys`` unless a ``spawn-prompt-step --target`` decision record
+# authorises exactly those keys. The record format is a runtime contract,
+# but the hook, its single-use consumption and the ja state-dir discovery
+# are ja's; like the close hook it lives only in the dispatcher settings.
+#
+# ``block-codex-over-cap.sh`` enforces the per-task Codex review round cap
+# for workers: it counts canonical ``tools/codex_review_gate.sh`` calls in
+# ja's ``events`` table (``tools/codex_round_cap.py``), refuses the call
+# past the allowance the secretary set, and blocks direct ``codex``
+# invocations. Like ``block-codex-rescue.sh`` it is wired into
+# ``worker_roles[*].hooks.PreToolUse`` and depends on ja's state layout.
+#
+# ``check-worker-spawn-model.sh`` denies a dispatcher ``spawn_claude_pane``
+# for a worker unless ``model`` is explicit, and allows ``opus`` only when
+# the dispatcher inbox task JSON says so (the runtime helper would
+# otherwise default a worker to opus). It reads ja's dispatcher inbox
+# layout and lives only in the hand-maintained dispatcher settings.
+#
 # Add a new name here ONLY for a hook that is genuinely ja-only. A hook
 # that should also ship in the runtime template belongs in a paired
 # runtime release instead.
-_JA_ONLY_HOOK_SCRIPTS = frozenset({"check-loop-directive.sh"})
+_JA_ONLY_HOOK_SCRIPTS = frozenset({
+    "check-loop-directive.sh",
+    "block-codex-rescue.sh",
+    "block-close-before-retro.sh",
+    "block-blind-spawn-keys.sh",
+    "block-codex-over-cap.sh",
+    "check-worker-spawn-model.sh",
+    "check-dispatcher-loop.sh",
+})
+
+
+def _is_ja_only_hook_command(hook: object) -> bool:
+    command = hook.get("command") if isinstance(hook, dict) else None
+    return isinstance(command, str) and any(
+        f"/.hooks/{name}" in command for name in _JA_ONLY_HOOK_SCRIPTS
+    )
 
 
 def _strip_ja_only_hooks(schema: object) -> object:
     """Drop ja-only hook scripts from the required-hook surface.
 
     Removes every ``_JA_ONLY_HOOK_SCRIPTS`` name from top-level
-    ``required_hook_scripts`` and every ``roles[*].required_hooks``
-    entry whose ``command_contains`` names one. Applied to BOTH sides,
+    ``required_hook_scripts``, every ``roles[*].required_hooks``
+    entry whose ``command_contains`` names one, and every
+    ``worker_roles[*].hooks`` command that runs one (a matcher entry left
+    with no commands is dropped too). Applied to BOTH sides,
     so a future runtime that does ship one of these names still
     compares equal rather than flipping the check into a false pass in
     only one direction.
@@ -224,6 +273,30 @@ def _strip_ja_only_hooks(schema: object) -> object:
                 ],
             }
         out["roles"] = new_roles
+    worker_roles = out.get("worker_roles")
+    if isinstance(worker_roles, dict):
+        new_worker_roles: dict[str, Any] = {}
+        for role_name, role_def in worker_roles.items():
+            hooks = role_def.get("hooks") if isinstance(role_def, dict) else None
+            if not isinstance(hooks, dict):
+                new_worker_roles[role_name] = role_def
+                continue
+            new_hooks: dict[str, Any] = {}
+            for event, entries in hooks.items():
+                if not isinstance(entries, list):
+                    new_hooks[event] = entries
+                    continue
+                kept = []
+                for entry in entries:
+                    if isinstance(entry, dict) and isinstance(entry.get("hooks"), list):
+                        cmds = [h for h in entry["hooks"] if not _is_ja_only_hook_command(h)]
+                        if not cmds:
+                            continue
+                        entry = {**entry, "hooks": cmds}
+                    kept.append(entry)
+                new_hooks[event] = kept
+            new_worker_roles[role_name] = {**role_def, "hooks": new_hooks}
+        out["worker_roles"] = new_worker_roles
     return out
 
 

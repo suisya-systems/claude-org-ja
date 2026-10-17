@@ -22,6 +22,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 from typing import Optional
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -2376,6 +2377,93 @@ class TestFetchBaseOrigin(unittest.TestCase):
         self.assertIn("480", str(cm.exception))
 
 
+class TestStaleConfigLock(unittest.TestCase):
+    """Issue #1145: the Claude Code sandbox leaves an empty
+    ``.git/config.lock`` on the host; host-side config writes must clear it
+    (only when empty and no git runs) and retry once."""
+
+    def setUp(self) -> None:
+        try:
+            subprocess.run(["git", "--version"], capture_output=True, check=True)
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            self.skipTest("git not available")
+        self._td = tempfile.TemporaryDirectory()
+        td = Path(self._td.name)
+        env = ["-c", "user.name=t", "-c", "user.email=t@example.com"]
+        upstream = td / "upstream"
+        subprocess.run(["git", "init", "-q", "-b", "main", str(upstream)], check=True)
+        subprocess.run(
+            ["git", "-C", str(upstream), *env, "commit", "-q", "--allow-empty", "-m", "i"],
+            check=True,
+        )
+        self.repo = td / "repo"
+        subprocess.run(["git", "clone", "-q", str(upstream), str(self.repo)], check=True)
+        self.lock = self.repo / ".git" / "config.lock"
+        self.lock.touch()
+        # Real pgrep would see unrelated git processes on the host; pin it.
+        real_run = subprocess.run
+        self.pgrep_rc = 1
+
+        def fake_run(cmd, *a, **kw):
+            if cmd[0] == "pgrep":
+                return subprocess.CompletedProcess(cmd, self.pgrep_rc, b"", b"")
+            return real_run(cmd, *a, **kw)
+
+        patcher = mock.patch.object(gdp.subprocess, "run", side_effect=fake_run)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def _config_cmd(self):
+        return ["git", "-C", str(self.repo), "config", "foo.bar", "1"]
+
+    def test_removes_empty_lock_and_writes(self):
+        proc = gdp._run_config_writing_git(self.repo, self._config_cmd())
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertFalse(self.lock.exists())
+
+    def test_keeps_non_empty_lock(self):
+        self.lock.write_text("x", encoding="utf-8")
+        proc = gdp._run_config_writing_git(self.repo, self._config_cmd())
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertTrue(self.lock.exists())
+
+    def test_keeps_lock_while_git_runs(self):
+        self.pgrep_rc = 0
+        proc = gdp._run_config_writing_git(self.repo, self._config_cmd())
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertTrue(self.lock.exists())
+
+    def test_retries_once_when_lock_survives_preclear(self):
+        """Lock recreated between the pre-clear and the git run: clear again
+        and retry once."""
+        real_clear = gdp._clear_stale_config_lock
+        calls = []
+
+        def clear(repo):
+            calls.append(repo)
+            return False if len(calls) == 1 else real_clear(repo)
+
+        with mock.patch.object(gdp, "_clear_stale_config_lock", side_effect=clear):
+            proc = gdp._run_config_writing_git(self.repo, self._config_cmd())
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertFalse(self.lock.exists())
+
+    def test_worktree_add_lands_after_preclear(self):
+        """``worktree add -b`` off origin/* writes tracking config; the
+        pre-clear lets it land (it is not retried: not idempotent)."""
+        worker = Path(self._td.name) / "wt"
+        cmd = ["git", "-C", str(self.repo), "worktree", "add", "-b", "feat",
+               str(worker), "origin/main"]
+        proc = gdp._run_config_writing_git(self.repo, cmd, retry=False)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertTrue((worker / ".git").exists())
+        self.assertTrue((worker / ".git").exists())
+
+
 class TestPatternBWorktreeFetchesStaleOrigin(unittest.TestCase):
     """Issue #480: apply must ``git fetch origin`` before branching the
     Pattern B worktree, so a base clone that has fallen behind origin still
@@ -4093,6 +4181,49 @@ class TestBaseBranchResolution(unittest.TestCase):
         body = self._plan().delegate_body
         self.assertNotIn("ベース:", body)
 
+    # -- Issue #1152: integration_branch hint ------------------------------
+    def _set_integration_branch(self, value: str) -> None:
+        cfg = self.sb.claude_org_root / "registry" / "org-config.md"
+        cfg.write_text(
+            cfg.read_text(encoding="utf-8")
+            + f"## Integration Branch\nintegration_branch: {value}\n",
+            encoding="utf-8",
+        )
+
+    def _integration_warnings(self, plan):
+        return [w for w in plan.warnings if "integration_branch" in w]
+
+    def test_integration_branch_warns_when_dispatch_falls_to_origin_head(self):
+        self._set_integration_branch("modernize/x")
+        plan = self._plan()
+        # Warn only: the cut point stays origin/HEAD (#808 precedence intact).
+        self.assertIsNone(plan.base_branch)
+        self.assertEqual(plan.base_branch_source, "origin_head")
+        [w] = self._integration_warnings(plan)
+        self.assertIn("--base-ref modernize/x", w)
+        self.assertEqual(plan.blocking_warnings, [])
+
+    def test_integration_branch_silent_when_base_is_explicit(self):
+        self._set_integration_branch("modernize/x")
+        self.assertEqual(
+            self._integration_warnings(self._plan(base_ref_override="main")), []
+        )
+        self._write_registry("develop")
+        self.assertEqual(self._integration_warnings(self._plan()), [])
+
+    def test_integration_branch_unset_or_indented_is_ignored(self):
+        for value in ("-", ""):
+            with self.subTest(value=value):
+                self._set_integration_branch(value)
+                self.assertEqual(self._integration_warnings(self._plan()), [])
+        cfg = self.sb.claude_org_root / "registry" / "org-config.md"
+        cfg.write_text(
+            cfg.read_text(encoding="utf-8")
+            + "- `integration_branch: modernize/x` (prose)\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(self._integration_warnings(self._plan()), [])
+
     # -- apply: the worktree is actually cut from the configured branch ----
     def test_apply_cuts_worktree_from_configured_base_branch(self):
         self._write_registry("develop")
@@ -4164,7 +4295,7 @@ class TestBaseBranchResolution(unittest.TestCase):
 
 class TestBaseBranchReachesTheBrief(unittest.TestCase):
     """Issue #808 / Codex Round 1 Major: the effective base must reach the
-    rendered worker brief, or the worker's `codex exec review --base ...`
+    rendered worker brief, or the worker's Codex gate (`codex_review_gate.sh <base>`)
     would diff a develop-based task against origin/main and treat every
     develop-only commit as part of the task's own change."""
 
@@ -4192,30 +4323,29 @@ class TestBaseBranchReachesTheBrief(unittest.TestCase):
 
     def test_configured_base_ref_lands_in_the_review_command(self):
         out = self._render("origin/develop")
-        self.assertIn(
-            "codex exec review --base origin/develop", out
-        )
-        self.assertNotIn("--base origin/main", out)
+        self.assertIn('codex_review_gate.sh" origin/develop', out)
+        self.assertNotIn('codex_review_gate.sh" origin/main', out)
 
     def test_default_stays_origin_main(self):
         # Every pre-#808 brief must render byte-identically.
-        self.assertIn("codex exec review --base origin/main", self._render())
+        self.assertIn('codex_review_gate.sh" origin/main', self._render())
 
     def test_shell_metacharacters_in_the_ref_are_quoted(self):
         """Codex Round 2 Blocker: git permits `;` / `$( )` in ref names and
         this value lands in a ```bash fence the worker copy-pastes, so a raw
         interpolation would be command execution, not a ref."""
         out = self._render("origin/foo$(id);whoami")
-        self.assertNotIn("--base origin/foo$(id);whoami", out)
+        self.assertNotIn('codex_review_gate.sh" origin/foo$(id);whoami', out)
         self.assertIn(
-            "--base " + shlex.quote("origin/foo$(id);whoami"), out
+            'codex_review_gate.sh" ' + shlex.quote("origin/foo$(id);whoami"), out
         )
         # Round-trips back to the literal ref when the shell parses it.
         line = next(
-            l for l in out.splitlines() if l.startswith("codex exec review")
+            l for l in out.splitlines()
+            if l.startswith("bash ") and "codex_review_gate.sh" in l
         )
-        argv = shlex.split(line.split("<")[0])
-        self.assertEqual(argv[argv.index("--base") + 1], "origin/foo$(id);whoami")
+        argv = shlex.split(line)
+        self.assertEqual(argv[-1], "origin/foo$(id);whoami")
 
     def test_non_string_base_ref_is_rejected(self):
         config = {
@@ -4252,7 +4382,7 @@ class TestBaseBranchReachesTheBrief(unittest.TestCase):
             )
             self.assertEqual(plan.config["task"]["base_ref"], "origin/develop")
             self.assertIn(
-                "codex exec review --base origin/develop", gwb.render(plan.config)
+                'codex_review_gate.sh" origin/develop', gwb.render(plan.config)
             )
 
     def test_planner_leaves_base_ref_unset_when_unconfigured(self):

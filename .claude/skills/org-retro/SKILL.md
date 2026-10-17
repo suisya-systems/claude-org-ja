@@ -96,8 +96,7 @@ output_format: <成果物の構造>
 - `candidate_queue`（2 点）
 - `curated_only`（1 点以下）
 
-`skill_recommend` の場合は machine-local な `knowledge/skill-candidates.local.md`（実エントリ用・
-Issue #755）への追記もスキル側で実施される（公開 `knowledge/skill-candidates.md` は
+`skill_recommend` の場合は machine-local な `knowledge/skill-candidates.local.md`（実エントリ用）への追記もスキル側で実施される（公開 `knowledge/skill-candidates.md` は
 フォーマット定義のみでエントリ常に空）。
 
 ### Step 4.2: decision に応じて分岐
@@ -108,13 +107,13 @@ Issue #755）への追記もスキル側で実施される（公開 `knowledge/s
 人間への即時提案はせず**黙って次に進む**。人間への問い合わせは、候補キューの pending が
 5 件以上（N=5）に達した時点で窓口が行うバッチ問い合わせ、または `/skill-audit` の発火時のみ。
 一次参照は [`knowledge/skill-candidates.md`](../../../knowledge/skill-candidates.md) 冒頭の
-運用ルール（Issue #68 方針）。
+運用ルール。
 
 以下 1〜3 は即時には実行しない。バッチ問い合わせ（または `/skill-audit`）で人間が各候補を
 判断した時点で**窓口が実行する**処理フローとしてここに温存する:
 
 1. 人間が承認した場合:
-   - **skill ファイルの作成・編集は窓口（secretary）が直接行わない**。Set E §2.4 (Q7) の批准に従い、
+   - **skill ファイルの作成・編集は窓口（secretary）が直接行わない**。
      skill-promotion は委譲タスクとして `org-delegate` 経由でワーカーに渡す。
    - 窓口は `org-delegate` を起動し、role `claude-org-self-edit` のワーカータスクを生成する。
      指示には以下を含める:
@@ -122,26 +121,24 @@ Issue #755）への追記もスキル側で実施される（公開 `knowledge/s
      - テンプレート参照: `.claude/skills/org-retro/references/work-skill-template.md`
      - 抽出元（ワーカーの成果物・raw 知見ファイルのパス）と、
        タスク固有の値をプレースホルダーへ置換する旨
-     - skill-promotion 委譲であること（Set A worker write-surface の carve-out 対象）
+     - skill-promotion 委譲であること（ワーカーの書き込み範囲の例外に当たる）
    - ディスパッチャー / 窓口は `.claude/skills/{skill-name}/` および
-     `knowledge/skill-candidates.local.md`（実エントリ用・Issue #755）への
-     直接書き込みを行わない。Set E §1.4 / §2.4 に従い、`.local.md` エントリの status transition
+     `knowledge/skill-candidates.local.md`（実エントリ用）への
+     直接書き込みを行わない。`.local.md` エントリの status transition
      （`approved` への遷移と `決定日` の記入）も同じ委譲ワーカーの責務とし、指示にその旨を含める。
 2. 人間が却下した場合:
    - 理由を `knowledge/raw/` に記録し、次回の判断に活かす
    - `knowledge/skill-candidates.local.md` の status を `rejected` に更新し却下理由を追記する作業も
-     ワーカーへの委譲（`org-delegate`）経由で行う。窓口・ディスパッチャーは直接編集しない
-     （Set E §1.4 の owner 定義に従う）。
+     ワーカーへの委譲（`org-delegate`）経由で行う。窓口・ディスパッチャーは直接編集しない。
 3. 人間が「既存 skill に統合」を選択した場合（terminal status `merged-into-{existing-skill}`）:
    - 統合先となる既存 skill を特定し、`org-delegate` で skill-promotion ワーカーに以下を委譲する:
      既存 `.claude/skills/{existing-skill}/SKILL.md` への取り込み編集、および
      `knowledge/skill-candidates.local.md` 該当エントリの status を `merged-into-{existing-skill}` に
      更新（`統合先` フィールドに既存 skill 名を記入）。
    - 新規 skill ファイルは作成しない。窓口・ディスパッチャーは直接編集しない。
-4. 人間が「今は見送り（保留）」を選択した場合（status `deferred`。Issue #753）:
+4. 人間が「今は見送り（保留）」を選択した場合（status `deferred`）:
    - `knowledge/skill-candidates.local.md` 該当エントリの status を `pending` → `deferred` に更新する
-     作業をワーカーへの委譲（`org-delegate`）経由で行う（窓口・ディスパッチャーは直接編集しない、
-     Set E §1.4 の owner 定義に従う）。
+     作業をワーカーへの委譲（`org-delegate`）経由で行う（窓口・ディスパッチャーは直接編集しない）。
    - `deferred` は terminal ではないが**閾値カウント対象外・再問い合わせ対象外**。以後この候補を
      `pending` に戻さず、バッチ問い合わせ / `/skill-audit` で蒸し返さない（見送り済み候補が
      worker クローズのたびに curator を無駄起動する問題への対策）。人間が後日あらためて検討したい
@@ -161,7 +158,4 @@ Issue #755）への追記もスキル側で実施される（公開 `knowledge/s
 
 人間に簡潔に報告する:
 - 知見を記録した場合: 「委譲プロセスについて{topic}の学びを記録しました」
-- `skill_recommend` / `candidate_queue` / `curated_only` のいずれの場合も: 報告不要（黙って次に進む）。
-  `skill_recommend` はキュー追記のみで完結し、人間への問い合わせは
-  [`knowledge/skill-candidates.md`](../../../knowledge/skill-candidates.md) 冒頭の運用ルールに従い
-  pending ≥5 のバッチ問い合わせまたは `/skill-audit` 発火時に窓口が行う
+- `skill_recommend` / `candidate_queue` / `curated_only` のいずれの場合も: 報告不要（黙って次に進む）

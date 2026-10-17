@@ -110,6 +110,16 @@ CANONICAL_FILE=$(normalize_drive_letter "$(normalize_slashes "$(portable_realpat
 CANONICAL_WORKER=$(normalize_drive_letter "$(normalize_slashes "$(portable_realpath "$WORKER_DIR")")")
 CANONICAL_CLAUDE_ORG=$(normalize_drive_letter "$(normalize_slashes "$(portable_realpath "$CLAUDE_ORG_PATH")")")
 
+# 拒否: ワーカー自身の settings (.claude/settings.json / settings.local.json)。
+# 強制フック (Codex 往復上限の block-codex-over-cap.sh 等) と env (WORKER_DIR /
+# CLAUDE_ORG_PATH) はここに載るので、ワーカーが書き換えると強制を外せてしまう。
+# Worker ディレクトリ内でも許可パス 1 より先に止める。
+case "$CANONICAL_FILE" in
+  "$CANONICAL_WORKER/.claude/settings.json" | "$CANONICAL_WORKER/.claude/settings.local.json")
+    deny_with_reason "$FILE_PATH はワーカー settings です。強制フックが載っているため変更できません。変更が必要なら窓口へエスカレーションしてください。"
+    ;;
+esac
+
 # 許可パス 1: Worker ディレクトリ内
 if [[ "$CANONICAL_FILE" == "$CANONICAL_WORKER/"* ]]; then
   exit 0

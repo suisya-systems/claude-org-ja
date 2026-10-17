@@ -2,33 +2,24 @@
 name: wsl-windows-chrome-screenshot
 owner: worker
 description: >
-  WSL のワーカーから Windows 版 Chrome を headless で叩き、WSL 側に立てたプレビュー
-  サーバの画面を PNG で撮るレシピ。サーバ起動と撮影を 1 つの Bash 呼び出しにまとめ、
-  その呼び出しだけ sandbox を外す・1 枚目は捨て撮り・出力先は UNC でワークツリー、
-  という固定手順と、撮れていないときの症状の弁別（`ss -ltnp` / WSL 側 curl）を含む。
-  「WSL から Windows Chrome で画面を撮る」「rondo の画面のスクリーンショットを撮る」
-  「before/after を撮り比べる」「ライト / ダークを撮り分ける」等で発動。
-  撮影を伴わない UI 実装・テストには発動しない。
-triggers:
-  - WSL のワーカーから Windows Chrome でスクリーンショットを撮る
-  - rondo など WSL 側で立てたプレビューサーバの画面を撮る
-  - 変更の before / after を画で比較する
-  - prefers-color-scheme のライト / ダークを撮り分ける
-  - 撮った PNG が真っ白 / ERR_CONNECTION_REFUSED / 0 バイトになる
+  WSL のワーカーから Windows 版 Chrome を headless で叩き、WSL 側のプレビューサーバの画面を
+  PNG で撮る手順。「WSL から Windows Chrome で画面を撮る」「rondo の画面のスクリーンショットを撮る」
+  「before/after を撮り比べる」「ライト / ダークを撮り分ける」「撮った PNG が真っ白 /
+  ERR_CONNECTION_REFUSED / 0 バイト」等で発動。撮影を伴わない UI 実装・テストには発動しない。
 ---
 
 # WSL から Windows Chrome で画面を撮る
 
 Linux 側の Chrome は共有ライブラリ不足で起動しない環境なので、Windows 版 Chrome を
-headless で使う（rondo#318 の申し送り、`knowledge/raw/archive/2026-09-20-wsl-windows-chrome-file-url-screenshots.md`）。
-以下は rondo#314 / #318 / #350 / #351 / #352 で繰り返し踏んだ手順を固定したもの。
+headless で使う。以下は繰り返し踏んだ手順を固定したもの（経緯と出典は
+[`.claude/skills/wsl-windows-chrome-screenshot/references/rationale.md`](references/rationale.md)）。
 **どの失敗もエラーが原因を指さず、PNG が「撮れてしまう」ことが多い**。
 
 ## 0. sandbox を外す撮影の実行は窓口が行う
 
 §1 の `dangerouslyDisableSandbox: true` の呼び出しは、auto mode のワーカーでは分類器に
-`[Safety Bypass Flag]` で拒否される（2026-09-22、2 回。sandbox 内で Chrome を 1 回起動する
-probe も拒否）。同じスクリプトは窓口が流して撮れている。よって役割を分ける。
+`[Safety Bypass Flag]` で拒否される（sandbox 内で Chrome を 1 回起動する probe も拒否）。
+同じスクリプトは窓口が流して撮れている。よって役割を分ける。
 
 - **ワーカー**: サーバ起動・撮影・停止を 1 本にまとめた撮影スクリプトを
   `.worker-scratch/` に用意し、sandbox 内でプレビューが起動する（curl が 200）ことまで確かめ、
@@ -52,7 +43,8 @@ sandbox は Bash 呼び出しごとに PID / network 名前空間を分けるた
 
 ```bash
 CHROME="/mnt/c/Program Files/Google/Chrome/Application/chrome.exe"
-UNC='\\wsl.localhost\Ubuntu-24.04\home\happy_ryo\work\org\workers\<proj>\.worktrees\<task>\.worker-scratch\shots'
+SHOTS="$PWD/.worker-scratch/shots"; mkdir -p "$SHOTS"
+UNC="$(wslpath -w "$SHOTS")"   # Windows の Chrome に渡す \\wsl.localhost\... 形式の保存先
 PORT=7361
 
 shoot() {  # shoot <name> <scheme 0=dark|1=light> <url>
@@ -61,7 +53,6 @@ shoot() {  # shoot <name> <scheme 0=dark|1=light> <url>
     --virtual-time-budget=4000 --screenshot="$UNC\\$1.png" "$3"
 }
 
-mkdir -p .worker-scratch/shots
 node .worker-scratch/preview-$PORT.mjs > .worker-scratch/preview.log 2>&1 &
 SRV=$!
 for i in $(seq 1 20); do curl -fsS -o /dev/null "http://127.0.0.1:$PORT/?lang=en" && break; sleep 1; done
@@ -164,13 +155,3 @@ npm --prefix "$W/.worker-scratch/base" run build
 - 言語は cookie に残る。英語で並べたいなら `?lang=en` を明示する。
 - SPA のハッシュ遷移（`#narrow/...`）は headless の 1 発撮りでは効かず、トップが撮れる
   （バイト数がトップと完全一致するのが手がかり）。撮れないものは「撮れなかった」と報告に書く。
-
-## 出典
-
-- `knowledge/raw/archive/2026-09-21-wsl-chrome-screenshot-and-pgrep.md`（rondo#314）
-- `knowledge/raw/archive/2026-09-21-windows-chrome-first-shot-refused.md`（rondo#318）
-- `knowledge/raw/archive/2026-09-21-before-after-shots-need-two-builds-and-no-sandbox.md`（rondo#350）
-- `knowledge/raw/archive/2026-09-21-screenshot-server-and-chrome-in-one-bash-call.md`（rondo#351）
-- `knowledge/raw/archive/2026-09-21-wsl-chrome-shots-need-sandbox-off-on-both-legs.md`（rondo#352）
-- `knowledge/raw/archive/2026-09-20-wsl-windows-chrome-file-url-screenshots.md`（rondo#319、`file://` とウィンドウ高さ）
-- `knowledge/raw/archive/2026-09-22-screenshot-skill-blocked-by-auto-mode-classifier.md`（rondo#411-#413、§0）

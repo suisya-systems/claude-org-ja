@@ -18,11 +18,7 @@ allowed-tools:
 作業パターンが新規 work-skill として切り出す価値があるかを 5 シグナルで採点し、
 3 値（skill_recommend / candidate_queue / curated_only）で返す。
 このスキル自体は skill 生成も人間問い合わせもしない — 判定専用。
-
-## なぜ共通スキルか
-
-判定基準が org-retro と org-curate の 2 箇所に分散すると必ず乖離するため。
-このスキルを single source of truth として双方から呼ぶ。
+org-retro と org-curate の両方がこのスキルを呼ぶ（理由は [`.claude/skills/skill-eligibility-check/references/rationale.md`](references/rationale.md) §1）。
 
 ## 入力契約
 
@@ -70,8 +66,7 @@ output_format: <成果物の再利用可能フォーマット / なければ空>
 | 2 点 | `candidate_queue` | 候補止まり。raw に追記し次回の raw_reappearance を待つ |
 | 1 点以下 | `curated_only` | curated ノートのままで十分 |
 
-閾値を 3 点に置いた根拠: org-retro 旧版の「2 つ以上で推奨」よりやや保守的にし、
-候補止まり層を明示的に作ることで、「skill 検索面のノイズ」を予防する。
+閾値の理由は [`.claude/skills/skill-eligibility-check/references/rationale.md`](references/rationale.md) §2。
 
 ## Step 3: 出力
 
@@ -87,8 +82,10 @@ proposed_skill_name: <pattern_name>    # skill_recommend / candidate_queue の�
 
 ## Step 4: 候補キュー書き込み（skill_recommend の場合のみ）
 
-`knowledge/skill-candidates.local.md`（machine-local な実エントリ用ファイル。Issue #755）に
-以下のエントリを追記する。`candidate_queue` / `curated_only` の場合は書き込まない。
+`knowledge/skill-candidates.local.md`（machine-local な実エントリ用ファイル）に
+エントリを 1 件追記する。`candidate_queue` / `curated_only` の場合は書き込まない。
+エントリの書式は [`knowledge/skill-candidates.md`](../../../knowledge/skill-candidates.md) の「エントリフォーマット」に従い、
+`status` は `pending`、`呼び出し元` は入力の `context`、`提案 skill 名` は `proposed_skill_name` を入れる。
 
 > **追記先は必ず `.local.md`（公開ファイルではない）**: 公開の
 > [`knowledge/skill-candidates.md`](../../../knowledge/skill-candidates.md) は
@@ -98,39 +95,9 @@ proposed_skill_name: <pattern_name>    # skill_recommend / candidate_queue の�
 > `.local.md` に入る。`.local.md` が未作成なら見出し `## エントリ一覧` を持つ最小ファイルを新規作成して追記する。
 > 閾値カウント（`tools/check_curate_threshold.py` / `/skill-audit`）は両ファイルを合算して読む。
 
-```markdown
-### {YYYY-MM-DD} {pattern-name}
-- **判定スコア**: {score}/5
-- **該当シグナル**: {matched_signals}
-- **根拠**: {rationale}
-- **関連タスク**: {task_ids、curation 文脈では空 "[]" 可}
-- **関連 raw ファイル**: {raw_files}
-- **呼び出し元**: {context}
-- **提案 skill 名**: {proposed_skill_name}
-- **status**: pending
-- **決定日**: 未定
-- **却下理由**: （status が rejected に遷移したとき記入、それ以外は省略）
-- **統合先**: （status が merged-into-* のとき記入、それ以外は省略）
-```
-
 書き込み後も呼び出し元には出力 YAML を返す（キュー追記は副作用として完了）。
-
-## 呼び出し元の責務
-
-このスキルは判定とキュー追記だけを行う。以降のアクションは呼び出し元の責務:
-
-- **org-retro（post_retro）**:
-  - `skill_recommend` → キュー追記のみ（Step 4 で実施済み）。人間への即時提案はしない。
-    バッチ問い合わせは窓口が pending ≥5 で実施する
-    （一次参照: [`knowledge/skill-candidates.md`](../../../knowledge/skill-candidates.md) 冒頭、Issue #68 方針。`/skill-audit` 発火時も同様）
-  - `candidate_queue` → raw/ に技術的知見のみ記録
-  - `curated_only` → raw/ への記録で十分（報告不要）
-
-- **org-curate（curation）**: decision 値に関わらず通常の Step 3 で curated/ 統合 + Step 4 で `<!-- curated -->` 付与を行う（skill 化と curated ノート化は両立）。
-  - `skill_recommend` → 候補キュー追記のみ（skill 側で自動書き込み済み）。
-    人間への問い合わせは窓口の役目で、キュー閾値 N=5 に達したら窓口が行う
-  - `candidate_queue` → 追加アクションなし（次回の raw_reappearance を待つのはシグナル上の話であり、raw を未整理のまま残すことではない）
-  - `curated_only` → 追加アクションなし
+このスキルは判定とキュー追記だけを行う。decision ごとの以降の扱いは呼び出し元が決める
+（[`.claude/skills/org-retro/SKILL.md`](../org-retro/SKILL.md) Step 4.2 / [`.claude/skills/org-curate/SKILL.md`](../org-curate/SKILL.md) Step 2.5）。
 
 ## 重複呼び出しの扱い
 
