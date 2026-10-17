@@ -55,7 +55,9 @@ PARSE_MARKER="JSON object として解析できませんでした"
 #   (一次規律は .claude/rules/pr-ci-watch.md)。false positive を避けるため
 #   判定不能な payload は意図的に許可側 (fail-open) に倒す設計。
 #   専用テスト tests/test-block-adhoc-pr-watch.sh 側で挙動を検査する。
-EXEMPT=("fixture-always-block.sh" "block-adhoc-pr-watch.sh")
+# - check-dispatcher-loop.sh: UserPromptSubmit の助言フックでブロックしない (常に exit 0)。
+#   窓口の入力を止めないため判定不能は無言で通す。判定本体は tools/test_dispatcher_loop_watch.py。
+EXEMPT=("fixture-always-block.sh" "block-adhoc-pr-watch.sh" "check-dispatcher-loop.sh")
 
 PASS=0; FAIL=0; TEST_NUM=0
 

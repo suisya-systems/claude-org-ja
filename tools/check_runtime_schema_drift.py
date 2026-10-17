@@ -221,6 +221,7 @@ _JA_ONLY_HOOK_SCRIPTS = frozenset({
     "block-blind-spawn-keys.sh",
     "block-codex-over-cap.sh",
     "check-worker-spawn-model.sh",
+    "check-dispatcher-loop.sh",
 })
 
 
