@@ -448,8 +448,9 @@ class Watcher:
     def stage_clearing(self, op: dict) -> None:
         if not self.wait_until(lambda: self.cleared(op), CLEAR_TIMEOUT_SEC):
             raise HandoverFailed("clear_not_observed")
-        cleared_at = self.org.record().get("cleared_at") or now_iso(self.clock())
-        self.save(op, stage="cleared", cleared_at=cleared_at)
+        rec = self.org.record()
+        self.save(op, stage="cleared", new_session_id=rec.get("session_id"),
+                  cleared_at=rec.get("cleared_at") or now_iso(self.clock()))
         self.stage_cleared(op)
 
     def stage_cleared(self, op: dict) -> None:
@@ -540,7 +541,15 @@ class Watcher:
             if self.cleared(op):
                 return "clearing"
             raise HandoverFailed("restart_state_indeterminate")
-        return stage if stage in ("cleared", "resuming", "verifying") else None
+        if stage not in ("cleared", "resuming", "verifying"):
+            return None
+        rec = self.org.record()
+        # A suspend/start in between leaves this file behind with a dead pane id
+        # that may since have been reused: continue only in the same session.
+        if (rec.get("session_id") != op.get("new_session_id")
+                or rec.get("pane") != op.get("pane")):
+            raise HandoverFailed("restart_session_replaced")
+        return stage
 
     def run_op(self, op: dict, stage: str) -> None:
         try:

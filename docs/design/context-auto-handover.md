@@ -49,6 +49,7 @@ Stop フックを付けた Claude Code のペインで確かめた。
 
 - `Stop` の入力に `background_tasks` と `session_crons`（`id` / `schedule` / `recurring` / `prompt`）が入る。
 - **`/clear` は `/loop` の予約を消さない**。`/loop` を張って `/clear` を打つと、新しいセッションの最初の `Stop` の `session_crons` に同じ id の予約が残っていた。同じ指示文で `/loop` をもう一度打つと、予約は上書きされず 2 本になった。§3.4・§6.1 はこれを前提に書き直した。
+- チャネルのメッセージで始まったターンも、`/loop` の予約が発火して始まったターンも、`UserPromptSubmit` が発火する（`prompt` にそれぞれチャネルの本文、予約の指示文が入る）。開いているターンは `UserPromptSubmit` と `Stop` で数えられる。
 - `/clear` では `UserPromptSubmit` は発火しない。`/clear` の行は旧会話記録ではなく新しい会話記録に入る。旧会話記録のファイルは消えずに残る。
 - renga のペインではフックの環境変数に `RENGA_PANE_ID` が入る。tmux はペイン内のプロセスに `TMUX_PANE` を渡し（`man tmux` の pane ID の節）、broker の tmux adapter は spawn 時に足した変数だけを消す（claude-org-runtime `terminal/tmux.py` の `new-session -e` と `set-environment -u` の組み）。broker + tmux のペインでの実測は、作業環境の sandbox が tmux のソケットを塞ぐためできていない。
 - メッセージが会話記録に入る形は §4.4 に書いた。
@@ -168,6 +169,7 @@ broker の「配送済み」はハーネスが通知を受け付けたという�
 
 - 復帰のスキルは `op=OP` が同じなら 2 回目以降は初期化をやり直さず、同じ完了の event を書き直すだけにする。ディスパッチャーの `already_consumed` の分岐は何も送らない作りだったので、`auto op=OP` のときは完了の event を書くように足した（[`.claude/skills/dispatcher-resume/SKILL.md`](../../.claude/skills/dispatcher-resume/SKILL.md)「自動引き継ぎ」節）。
 - watcher は `/clear` を打つ直前に段を `clearing` と書く。再起動したときは、段が `clearing` 以前なら、`.state/context/R.json` の現在の `session_id` を `handover-op.json` の旧 `session_id` と比べる。同じなら `/clear` はまだ効いていないので最初からやり直す。違っていて `source=clear` なら `/clear` は効いているので §4.3 の 6 から続ける（空のセッションで引き継ぎをやり直して、復帰に要る引き継ぎファイルを上書きしないため）。どちらとも判断できなければ失敗として知らせる（人が `/R-resume` を打てば戻れる状態になっている）。
+- `/clear` が効いた後の段（入力の拾い直し・復帰・突き合わせ）から続けるのは、現在の `session_id` とペイン id が `/clear` の直後に記録したものと同じときだけにする。`/org-suspend` → `/org-start` を挟むと `handover-op.json` は残ったままペインが作り直され、記録した古いペイン id が別のペインに使い回されていることがあるため。違えば打たずに失敗として知らせる。
 
 ## 5. 論点 4: 順序
 
@@ -258,3 +260,10 @@ Codex の設計レビュー（`codex_review_gate.sh --design`、1 回）で Bloc
 |---|---|---|
 | P2 | 拾い直した入力のファイルが 1 本だと、次の操作で前の操作の入力を読み直す | 操作 id ごとのファイルにし、読み終えたら rename する（§4.4） |
 | P2 | 監視対象が無いディスパッチャーは監視ループを張らない（`DISPATCHER_RESUMED_IDLE`）ので、heartbeat を無条件に待つと正常な復帰を失敗にする | heartbeat と監視ループ 1 本の確認を、監視対象がいるときに限る（§4.3 の 7・§6.1） |
+
+ディスパッチャー段の実装の差分レビューで次の 2 件が出た。
+
+| 重さ | 指摘 | 扱い |
+|---|---|---|
+| P1 | チャネルのメッセージや予約で始まったターンは `UserPromptSubmit` を伴わず、開いているターンを見落として `/clear` を打ちうる | 実機で確かめ、前提が違った。どちらのターンでも `UserPromptSubmit` は発火する（§2.1 の「実機で確かめたこと」）。記録の形はそのまま |
+| P2 | `/org-suspend` → `/org-start` を挟むと、`/clear` 後の段から続けるときに古いペイン id へ打鍵しうる | 採用。`/clear` 直後の `session_id` とペイン id を記録し、一致するときだけ続ける（§4.5） |

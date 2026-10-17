@@ -19,11 +19,12 @@ otherwise mix the two roles' records.
 
 Turn accounting: ``UserPromptSubmit`` opens a turn (``turn_open =
 turn_closed + 1``) and ``Stop`` closes it (``turn_closed += 1``, then
-``turn_open = turn_closed``). Tying ``turn_open`` to ``turn_closed``
-rather than counting prompts keeps a turn that started without a
-``UserPromptSubmit`` (or a prompt absorbed mid-turn) from leaving the two
-counters apart for good. ``SessionStart`` also closes any turn the
-previous session left open.
+``turn_open = turn_closed``). Turns started by a channel message or by a
+``/loop`` cron fire ``UserPromptSubmit`` too (checked on a live pane,
+design §2.1). Tying ``turn_open`` to ``turn_closed`` rather than counting
+prompts keeps a prompt absorbed mid-turn from leaving the two counters
+apart for good. ``SessionStart`` also closes any turn the previous
+session left open.
 
 Always exits 0 and prints nothing: a recording failure must never block
 the session. The watcher treats a stale or inconsistent record as

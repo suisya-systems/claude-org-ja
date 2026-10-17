@@ -313,6 +313,25 @@ class TestWatcher(unittest.TestCase):
         self.assertEqual(self.sim.enters, ["/dispatcher-resume auto op=OPX"])
         self.assertEqual(self.op()["stage"], "done")
 
+    def _resuming_op(self, **changes):
+        op = {"op": "OPZ", "stage": "resuming", "old_session_id": "s1", "new_session_id": "s2",
+              "pane": {"backend": "renga", "id": "3"}, "snapshot": {}}
+        op.update(changes)
+        self.org.write_json(self.org.op_path, op)
+
+    def test_restart_after_resume_typed_continues_in_same_session(self):
+        self.sim.rec(session_id="s2", source="clear", cleared_at=self.sim.iso())
+        self._resuming_op()
+        self.assertEqual(self.w.tick(), "continued:resuming")
+        self.assertEqual(self.op()["stage"], "done")
+
+    def test_restart_after_suspend_start_does_not_type_into_old_pane(self):
+        self.sim.rec(session_id="s7", source="startup", pane={"backend": "renga", "id": "9"})
+        self._resuming_op()
+        self.assertEqual(self.w.tick(), "failed")
+        self.assertEqual(self.op()["reason"], "restart_session_replaced")
+        self.assertEqual(self.sim.enters, [])
+
     def test_restart_with_unrelated_session_change_fails(self):
         self.sim.rec(session_id="s9", source="startup")
         self.org.write_json(self.org.op_path, {"op": "OPY", "stage": "handover",
