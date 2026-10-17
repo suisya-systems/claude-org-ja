@@ -43,7 +43,7 @@ open Issue を triage し、依存解決済みの候補を「N 件 + 推奨 1 �
 - **常駐 `/loop` を付けない**（設計 §6.2 留意 1）。手動起動、または PR マージ後の
   proactive next-dispatch のようなイベント起点でのみ走らせる。時間ベースの定常起動は
   変化の無い日に提示を汚すため避ける。
-- worker クローズ時の scan はディスパッチャーが行う（[`.dispatcher/references/pane-close.md`](../../../.dispatcher/references/pane-close.md) Step 6、`--trigger worker_close`）。本スキルの責務ではない。
+- worker クローズ時の scan はディスパッチャーが行う（[`.dispatcher/references/pane-close.md`](../../../.dispatcher/references/pane-close.md) Step 6、`--trigger worker_close`）。本スキルの責務ではない。ディスパッチャーが転送する `WORK_DISCOVERY_CANDIDATES` を窓口が人間へ提示するときも、Step 2.5 の目標との突き合わせを通す。
 
 ## 不変条件（設計 §7）
 
@@ -137,6 +137,17 @@ python3 tools/work_discovery_scan.py --trigger manual --all-registry-repos
 | `2` | `error` | JSON の `error` フィールドの内容をそのまま人間へ伝え、「triage を実行できませんでした」と報告。**`goal_rank.judge.status` が `failed` / `cooldown` / `budget_exhausted` なら判定段の失敗として状態と理由を伝える**（fail-closed: 判定できないときは推奨を出さない。旧ランクで代わりに出さない。`cooldown` は同じ失敗を 1 時間繰り返さないための待機、`budget_exhausted` は 1 日の費用上限到達）。候補を捏造しない。**候補ゼロと言い換えない**（失敗を silent skip にすると「候補が出ないのが普通」と受け取られ、次タスク提案の仕組みが事実上死ぬ）。repo セット解決の失敗もここに来るので、`repo_resolution.signals` / `skipped` があれば理由（registry 行が無い / `triage_home` off / パスが GitHub URL でない等）も併せて伝える。**ここで停止**。 |
 
 > exit `1` には意味を割り当てない（Python 未捕捉例外の既定 exit と衝突し、クラッシュが「候補なし」に誤読されるのを防ぐため）。`0/10/2` 以外が返ったら error 扱いで人間に上げる。
+
+### Step 2.5 — セッション目標と突き合わせる（exit 10 のとき、レンダリング前）
+
+scan は全 repo をまとめて条項番号順に並べる（[`tools/work_discovery_goals.py`](../../../tools/work_discovery_goals.py)）ため、目標の repo の候補が他 repo の G1 / G2 の後ろに沈み、上位に出ないことがある。並べ方は変えず、提示の前に次を確認する（設計 §12 の条項順は維持する）。
+
+1. `tools.state_db.queries.get_org_state_summary` の `session.objective` を読む。空・`None` なら何もせず Step 3 へ。
+2. 目標が指すプロジェクト（`registry/projects.md` で通称から repo を特定）の候補が、提示する上位 `--top-n` 件に 1 件も無ければ、そのプロジェクトだけを `--repo owner/repo` 付き（`--all-registry-repos` の代わり）で引き直す。目標側の候補を並べて提示し、全体の上位も残す。
+3. 目標と関係の無い候補には「目標外」と書き添える。
+4. 目標側の仕事が `excluded_goal[]` の `no_clause` で外れていたら、ゴール台帳への条項追加を提案する（[`/goal-setup`](../goal-setup/SKILL.md)）。提案までで、台帳は人間と対話して書く。
+
+提示の骨格・推奨 1 件・propose-only は変わらない。
 
 ### Step 3 — §5.2 形式で人間へ提示する（exit 10 のとき）
 
