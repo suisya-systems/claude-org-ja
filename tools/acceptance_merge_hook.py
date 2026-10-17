@@ -76,10 +76,10 @@ def parse(command: str) -> dict | None:
                 raise Deny(f"{name} needs a value")
             if name in ("-R", "--repo"):
                 args["repo"] = val
-        elif name == "--auto":
-            args["auto"] = True
-        elif name == "--disable-auto":
-            args["disable_auto"] = True
+        elif name in ("--auto", "--disable-auto"):
+            if eq:  # gh reads --disable-auto=false as "merge now"; do not guess
+                raise Deny(f"give {name} without a value")
+            args[name[2:].replace("-", "_")] = True
         elif not t.startswith("-"):
             if args["sel"] is not None:
                 raise Deny(f"more than one PR given ({args['sel']!r}, {t!r})")
@@ -106,7 +106,8 @@ def run(cmd: list[str], cwd: Path, deadline: float, limit: float) -> subprocess.
     return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
 
 
-def decide(command: str, project: Path) -> str:
+def decide(command: str, project: Path, cwd: Path) -> str:
+    """``cwd`` is where the Bash call runs: gh resolves the PR (repo, branch) from it."""
     args = parse(command)
     if args is None or args["disable_auto"]:
         return "ALLOW"
@@ -114,7 +115,7 @@ def decide(command: str, project: Path) -> str:
     view = ["gh", "pr", "view", *([args["sel"]] if args["sel"] else []),
             *(["--repo", args["repo"]] if args["repo"] else []),
             "--json", "number,url,baseRefName,headRefOid"]
-    res = run(view, project, deadline, 60)
+    res = run(view, cwd, deadline, 60)
     if res.returncode != 0:
         raise Deny(f"gh pr view failed: {res.stderr.strip()[-300:]}")
     pr = json.loads(res.stdout)
@@ -154,7 +155,7 @@ def main() -> int:
         if not isinstance(command, str):
             raise TypeError("command is not a string")
         project = Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
-        print(decide(command, project))
+        print(decide(command, project, Path(payload.get("cwd") or project)))
     except Deny as exc:
         print(f"DENY: {exc}")
     except Exception as exc:  # noqa: BLE001 - fail closed on anything unexpected
