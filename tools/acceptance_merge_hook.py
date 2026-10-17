@@ -4,16 +4,22 @@
 Called by ``.hooks/gate-acceptance-before-merge.sh`` with the PreToolUse
 payload on stdin. Prints ``ALLOW`` or ``DENY: <reason>`` as the first line.
 
-A Bash command that merges a PR must be a lone ``gh pr merge [<pr>] [flags]``
-(no chaining, pipes, substitutions or variables), so the PR it merges can be
-read. Merging through ``gh api .../pulls/<n>/merge`` is denied. For a lone
-merge the hook asks gh for the PR, fetches its head and base into the
-project's clone under ``refs/acceptance-gate/``, and runs
+The only merge command allowed is the one form
+
+    gh pr merge <number> --repo <OWNER/REPO> (--squash|--merge|--rebase) [--delete-branch]
+
+as the whole command, so the PR it merges is read exactly. Any other command
+that mentions a merge together with ``gh``, a pull request (``pulls/...``,
+``mergePullRequest``), ``$`` or a backtick is denied: blocking too much is
+accepted, letting a merge past the gate is not. This stops mistakes, not an
+adversary: gh aliases, the GitHub web UI and other sessions stay outside.
+
+For the allowed form the hook asks gh for the PR, fetches its head and base
+into the project's clone under ``refs/acceptance-gate/``, and runs
 ``tools/acceptance_gate.py`` with ``--pr OWNER/REPO#N`` (which also pins the
 test commit):
 
-- passed: allowed, except a deferred merge (``--auto``): GitHub merges later
-  whatever head is then, without this hook.
+- passed: allowed.
 - no-manifest: allowed (pilot policy: recorded by the gate, not enforced).
 - rejected, or any gh / git failure or timeout: denied.
 
@@ -26,7 +32,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import shlex
 import signal
 import subprocess
 import sys
@@ -36,59 +41,26 @@ from pathlib import Path
 GATE = Path(__file__).resolve().parent / "acceptance_gate.py"
 DEADLINE_S = 840  # the hook is registered with timeout 900
 PYTEST_TIMEOUT_S = 300
-VALUE_FLAGS = {"-b", "--body", "-F", "--body-file", "-A", "--author-email",
-               "--match-head-commit", "-t", "--subject", "-R", "--repo"}
 GATE_EXIT = {"passed": 0, "rejected": 1, "no-manifest": 3}
-STANDALONE = ("run the merge as a lone command: gh pr merge [<number>] [flags]"
-              " on one line (no &&, ;, |, newlines, $(...), variables or bash -c), so the acceptance gate can read it")
+MERGE = re.compile(r"gh pr merge ([0-9]+) --repo ([\w.-]+/[\w.-]+) --(?:squash|merge|rebase)(?: --delete-branch)?", re.ASCII)
+SUSPECT = re.compile(r"\bgh\b|pull|[$`]")
+FORM = ("merge with exactly: gh pr merge <number> --repo <OWNER/REPO> --squash|--merge|--rebase"
+        " [--delete-branch], alone on one line, so the acceptance gate can read it")
 
 
 class Deny(Exception):
     pass
 
 
-def parse(command: str) -> dict | None:
-    """None when the command does not merge a PR; the merge's arguments otherwise."""
-    command = command.replace("\\\n", "")  # bash joins continued lines before reading words
-    if re.search(r"pulls/[^/\s]+/merge\b", command):
-        raise Deny("merging through the API skips the acceptance gate; use gh pr merge")
-    try:
-        lex = shlex.shlex(command, posix=True, punctuation_chars=True)
-        lex.whitespace_split = True
-        toks = list(lex)
-    except ValueError:
-        raise Deny("cannot parse the command; " + STANDALONE)
-    hits = [i for i in range(len(toks) - 1) if toks[i:i + 2] == ["pr", "merge"]]
-    nested = any(re.search(r"\bgh\b[\s\S]*\bpr\s+merge\b", t) for t in toks if " " in t or "\n" in t)
-    if not hits and not nested:
-        return None
-    # A newline left after joining continuations separates commands (a quoted
-    # multi-line --body is refused too: use --body-file).
-    if (nested or hits != [1] or toks[0] != "gh" or "$" in command or "`" in command
-            or "\n" in command
-            or any(set(t) <= set("();<>|&") for t in toks)):
-        raise Deny(STANDALONE)
-    args = {"sel": None, "repo": None, "auto": False, "disable_auto": False}
-    it = iter(toks[3:])
-    for t in it:
-        name, eq, val = t.partition("=") if t.startswith("--") else (t, "", "")
-        if not t.startswith("--") and len(t) > 2 and t[:2] in VALUE_FLAGS:
-            name, eq, val = t[:2], "=", t[2:]
-        if name in VALUE_FLAGS:
-            val = val if eq else next(it, None)
-            if val is None:
-                raise Deny(f"{name} needs a value")
-            if name in ("-R", "--repo"):
-                args["repo"] = val
-        elif name in ("--auto", "--disable-auto"):
-            if eq:  # gh reads --disable-auto=false as "merge now"; do not guess
-                raise Deny(f"give {name} without a value")
-            args[name[2:].replace("-", "_")] = True
-        elif not t.startswith("-"):
-            if args["sel"] is not None:
-                raise Deny(f"more than one PR given ({args['sel']!r}, {t!r})")
-            args["sel"] = t
-    return args
+def parse(command: str) -> tuple[str, str] | None:
+    """(number, OWNER/REPO) for the allowed merge form; None for a command that is not a merge."""
+    m = MERGE.fullmatch(command.strip())
+    if m:
+        return m.group(1), m.group(2)
+    plain = re.sub(r"[\"'\\\n]", "", command).lower()  # what the wrapper's fast path looks at
+    if "merge" in plain and SUSPECT.search(plain):
+        raise Deny(FORM)
+    return None
 
 
 def run(cmd: list[str], cwd: Path, deadline: float, limit: float) -> subprocess.CompletedProcess:
@@ -110,16 +82,13 @@ def run(cmd: list[str], cwd: Path, deadline: float, limit: float) -> subprocess.
     return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
 
 
-def decide(command: str, project: Path, cwd: Path) -> str:
-    """``cwd`` is where the Bash call runs: gh resolves the PR (repo, branch) from it."""
+def decide(command: str, project: Path) -> str:
     args = parse(command)
-    if args is None or args["disable_auto"]:
+    if args is None:
         return "ALLOW"
     deadline = time.monotonic() + DEADLINE_S
-    view = ["gh", "pr", "view", *([args["sel"]] if args["sel"] else []),
-            *(["--repo", args["repo"]] if args["repo"] else []),
-            "--json", "number,url,baseRefName,headRefOid"]
-    res = run(view, cwd, deadline, 60)
+    view = ["gh", "pr", "view", args[0], "--repo", args[1], "--json", "number,url,baseRefName,headRefOid"]
+    res = run(view, project, deadline, 60)
     if res.returncode != 0:
         raise Deny(f"gh pr view failed: {res.stderr.strip()[-300:]}")
     pr = json.loads(res.stdout)
@@ -146,9 +115,6 @@ def decide(command: str, project: Path, cwd: Path) -> str:
     reason = " ".join(lines[:-1])
     if verdict == "rejected":
         raise Deny(f"ACCEPTANCE_GATE rejected {slug}#{pr['number']}: {reason}")
-    if verdict == "passed" and args["auto"]:
-        raise Deny("a deferred merge (--auto) of a PR with an acceptance test is merged later"
-                   " without this gate; merge it now without --auto")
     return "ALLOW"
 
 
@@ -159,7 +125,7 @@ def main() -> int:
         if not isinstance(command, str):
             raise TypeError("command is not a string")
         project = Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
-        print(decide(command, project, Path(payload.get("cwd") or project)))
+        print(decide(command, project))
     except Deny as exc:
         print(f"DENY: {exc}")
     except Exception as exc:  # noqa: BLE001 - fail closed on anything unexpected

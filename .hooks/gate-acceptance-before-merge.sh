@@ -3,11 +3,11 @@
 # 方式: exit 2 + stderr メッセージ でブロック
 #
 # 判定は `tools/acceptance_merge_hook.py` に委譲する (docstring が仕様の正本):
-#   - PR をマージする Bash は単独の `gh pr merge [<PR>] [flags]` に限る
-#     (連結・パイプ・置換・変数・bash -c は deny。API 経由のマージも deny)
+#   - 許すマージは `gh pr merge <番号> --repo <OWNER/REPO> (--squash|--merge|--rebase) [--delete-branch]`
+#     がコマンド全体であるときだけ。ほかの書き方で merge と gh / pull / $ / ` を含むものは deny
+#     (止めすぎは許容し、すり抜けを塞ぐ側に倒す)
 #   - その PR の head / base を fetch し `tools/acceptance_gate.py --pr OWNER/REPO#N` を実行。
-#     passed は許可 (ただし --auto の後回しマージは deny)、no-manifest は許可
-#     (パイロット中は記録のみ)、rejected は deny
+#     passed と no-manifest (パイロット中は記録のみ) は許可、rejected は deny
 #   - ゲート側で、head の途中終了 (pytest.exit) と、テストのコミットの作り直し
 #     (初回に見た宣言テストの内容をピン留めし、変わった / 消えたら拒否) も拒否する
 #
@@ -16,8 +16,7 @@
 #   ゲートは pytest を 2 回走らせるので登録時に timeout 900 を付ける。タイムアウトした
 #   フックはブロックしない扱いになるため、python 側は全体を 840 秒で打ち切って deny する。
 #
-# 既知の限界: GitHub の画面・別セッション・gh の alias・変数で組み立てたコマンド・
-#   マージキューによるマージは見えない。ゲートからマージまでの数秒間の push は再検査しない。
+# 既知の限界: GitHub の画面・別セッション・gh の alias・マージキューによるマージは見えない。ゲートからマージまでの数秒間の push は再検査しない。
 #
 # 入力: stdin から PreToolUse JSON ({tool_name, tool_input})
 # 出力: 拒否時 exit 2 + stderr。許可時 exit 0。
@@ -50,9 +49,11 @@ TOOL_NAME=$(printf '%s\n' "$INPUT" | jq -r '.tool_name // empty')
 [[ "$TOOL_NAME" == "Bash" ]] || exit 0
 
 COMMAND=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.command // empty | tostring')
-# 速い経路: 引用符・バックスラッシュ・改行を除いて `merge` を含まないコマンドは python を起動せずに通す。
+# 速い経路: 引用符・バックスラッシュ・改行を除いて `merge` を (大小文字を問わず) 含まないコマンドは python を起動せずに通す。
 STRIPPED=$(printf '%s' "$COMMAND" | tr -d "\"'\\\\\n")
+shopt -s nocasematch
 [[ "$STRIPPED" == *merge* ]] || exit 0
+shopt -u nocasematch
 
 HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # tools/journal_append.sh と同じ interpreter の選び方 (Windows は py -3 / python)。
