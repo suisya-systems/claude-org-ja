@@ -123,10 +123,10 @@
 
 1. 開始時の `turn_closed` を `s0`、旧会話記録の末尾のバイト位置を `p0` として `handover-op.json` に書く。
 2. `/R-handover auto op=OP` を打つ（text → 読み返し → Enter を別送）。`auto` のときスキルは人への案内文（secretary-handover Step 5）と打鍵の依頼（dispatcher-handover Step 5）を出さず、`op=OP` 付きの event を書く。ディスパッチャーは窓口に「自動引き継ぎ中、打鍵は watcher が行う」とだけ送る（窓口が `/clear` を打ちに来ないように）。
-3. 引き継ぎファイルの `created_at` が開始より新しく、`turn_closed == s0 + 1` かつ `turn_open == turn_closed` になるまで待つ（最大 10 分）。このときの旧会話記録の末尾を `p1` とする。
+3. 引き継ぎファイルの `created_at` が開始より新しく、`turn_closed == s0 + 1` かつ `turn_open == turn_closed` になるまで待つ（最大 10 分）。
 4. §6.2 の検査を通す。通らなければ止める。
 5. 打つ直前に、開いているターンが無いことをもう一度確かめてから `/clear` を打つ。完了は入力欄が空になることではなく、`.state/context/R.json` に `source=clear` の `SessionStart` が新しい `session_id` で書かれたことで判定する（最大 15 秒）。
-6. §4.4 で `p1` 以降の旧会話記録を抜き出す。
+6. §4.4 で `p0` 以降の旧会話記録から入力を抜き出す。
 7. `/R-resume auto op=OP` を打つ。完了は `op=OP` 付きの `*_resumed` event で判定する（最大 60 秒）。ディスパッチャーはさらに、監視ループの heartbeat（`last_scan_at`）が `/clear` より後に更新されることを最大 9 分待つ（3 サイクル。`dispatcher_loop_watch.py` の既定と同じ）。
 8. §6.1 の突き合わせをする。
 
@@ -139,7 +139,9 @@
 
 broker の「配送済み」はハーネスが通知を受け付けたという意味で、モデルに見えたことまでは保証しない（[`docs/contracts/backend-interface-contract.md`](../../docs/contracts/backend-interface-contract.md) Surface 8 の配送状態の表と、その下の `DELIVERED` の説明）。配送済みのメッセージは再配送されないので、引き継ぎの書き出しの後・`/clear` の前に届いたメッセージは、キューにも新しい会話にも残らない。
 
-そこで watcher は、`/clear` の完了（§4.3 の 5）を確かめた後に、旧会話記録の `p1` 以降からユーザー側の行（チャネルのメッセージ、`/loop` の反復、人の入力）を抜き出し、`.state/context/R-late-input.md` に書く。`/R-resume auto` はこのファイルを読み、復帰のブリーフィングの後に処理する。引き継ぎ後の入力が無ければファイルは作らない。
+そこで watcher は、`/clear` の完了（§4.3 の 5）を確かめた後に、旧会話記録の `p0`（引き継ぎのターンを始める前）以降からユーザー側の行（チャネルのメッセージ、`/loop` の反復、人の入力）を、自分が打った `/R-handover` と `/clear` を除いて抜き出し、`.state/context/R-late-input.md` に書く。`/R-resume auto` はこのファイルを読み、復帰のブリーフィングの後に処理する。抜き出す入力が無ければファイルは作らない。
+
+- 起点を引き継ぎのターンの後でなく `p0` にするのは、引き継ぎのターンの途中に届いて引き継ぎファイルに入らなかった入力も拾うため。引き継ぎファイルに既に入っている入力も重ねて渡すことになるが、欠落より重複を許す側に倒す。broker の配送も「重複表示は許容、欠落は致命」の方針で作られている（上記 Surface 8 の配送状態の説明）。復帰のスキルは、引き継ぎファイルに処理済みと書かれた入力を飛ばしてよい。
 
 - 旧会話記録は非同期に書かれる（§2.1）ので、`/clear` の完了から 5 秒待ってから読む。それでも書かれていない分は拾えない。
 - 届いたメッセージが会話記録のどの行の形で入るか（チャネルの push・`check_messages` のツール結果）は実装の最初に確かめる。
@@ -147,7 +149,7 @@ broker の「配送済み」はハーネスが通知を受け付けたという�
 ### 4.5 再送と再起動
 
 - 復帰のスキルは `op=OP` が同じなら 2 回目以降は初期化をやり直さず、同じ完了の event を書き直すだけにする。ディスパッチャーの `already_consumed` の分岐は今は何も送らない（[`.claude/skills/dispatcher-resume/SKILL.md`](../../.claude/skills/dispatcher-resume/SKILL.md) 110〜121 行）ので、`auto op=OP` のときは完了の event を書くように足す。
-- watcher が再起動したときは、`handover-op.json` の段で分ける。`/clear` の前なら最初からやり直す。`/clear` の後なら §4.3 の 6 から続ける。続けられなければ失敗として知らせる（人が `/R-resume` を打てば戻れる状態になっている）。
+- watcher は `/clear` を打つ直前に段を `clearing` と書く。再起動したときは、段が `clearing` 以前なら、`.state/context/R.json` の現在の `session_id` を `handover-op.json` の旧 `session_id` と比べる。同じなら `/clear` はまだ効いていないので最初からやり直す。違っていて `source=clear` なら `/clear` は効いているので §4.3 の 6 から続ける（空のセッションで引き継ぎをやり直して、復帰に要る引き継ぎファイルを上書きしないため）。どちらとも判断できなければ失敗として知らせる（人が `/R-resume` を打てば戻れる状態になっている）。
 
 ## 5. 論点 4: 順序
 
@@ -167,7 +169,7 @@ broker の「配送済み」はハーネスが通知を受け付けたという�
 | 稼働中ワーカー | `runs.task_id` と `status`（`queued` / `in_use` / `review`） | state.db |
 | 監視ループ（ディスパッチャー） | 復帰後の最初の `Stop` の `session_crons` のうち監視ループの指示文のもの、と heartbeat | 1 本だけで、heartbeat が `/clear` より後に動いていること。0 本なら止まっている、2 本なら重複。`.consumed.md` の分岐は `/dispatcher-resume` が走ったときにしか効かず、監視ループ自体はこのスキルを呼ばない（[`.claude/skills/dispatcher-resume/SKILL.md`](../../.claude/skills/dispatcher-resume/SKILL.md) 345〜355 行）ので、ここで数える |
 | 窓口の滞留 watcher（broker） | sidecar の pid | 復帰後に生きていること（§3.2） |
-| `/clear` の前後に届いた入力 | 旧会話記録の `p1` 以降の行 | §4.4 |
+| `/clear` の前後に届いた入力 | 旧会話記録の `p0` 以降の入力 | §4.4 |
 | ディスパッチャーの cursor・idle streak・curate 記録 | dispatcher-handover が触らないとするファイル | ファイル |
 
 ### 6.2 引き継ぎファイルの中身の検査（`/clear` の前に 1 回）
@@ -223,3 +225,10 @@ Codex の設計レビュー（`codex_review_gate.sh --design`、1 回）で Bloc
 | 13 | Major | watcher の単一起動・停止・再起動と、失敗を人に届ける経路が無い | 採用。§4.1 の sidecar と §4.3 の知らせ方。窓口の失敗が人に届くのは attention watcher があるときだけなので、それを窓口の自動引き継ぎを有効にする条件にした |
 | 14 | Minor | 生成物のスキルは `.in` が編集対象 | 採用（§1 の末尾） |
 | 15 | Minor | status line を却下した理由に `refreshInterval` が抜けている | 採用。理由を「settings の 1 枠を取り合う」に絞り、代わりの案として残した（§2.2） |
+
+その後、差分の Codex セルフレビュー（`codex_review_gate.sh origin/main`）で次の 2 件が出た。どちらも採用した。
+
+| 重さ | 指摘 | 扱い |
+|---|---|---|
+| P1 | 引き継ぎのターンの途中に届いた入力は、拾い直しの起点（ターンの後）より前にあり、引き継ぎファイルにも入らないことがある | 起点をターンの前（`p0`）にし、重複は許す（§4.4） |
+| P2 | `/clear` を打った後、段を書く前に watcher が落ちると、再起動で空のセッションに引き継ぎをやり直し、引き継ぎファイルを上書きする | `/clear` の直前に `clearing` と書き、再起動時は `session_id` を比べて `/clear` が効いたかを判断する（§4.5） |
