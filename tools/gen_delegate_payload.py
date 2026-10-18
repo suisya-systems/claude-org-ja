@@ -2307,6 +2307,100 @@ def apply_delegate_plan(
 
 
 # ---------------------------------------------------------------------------
+# Assumptions (Issue #1190)
+# ---------------------------------------------------------------------------
+
+# Values that fill the field without saying anything checkable. Compared after
+# strip + lower, so "None" / "N/A" are caught too.
+_PLACEHOLDER_VALUES = frozenset({
+    "", "-", "--", "?", "none", "n/a", "na", "todo", "tbd", "skip",
+    "なし", "無し", "ない", "特になし", "未確認", "不明", "省略", "同上",
+})
+
+# ``path:line`` citations, e.g. ``tools/state_db/queries.py:454``. A path needs
+# an extension so prose such as ``10:30`` is not taken for a citation.
+_FILE_LINE_RE = re.compile(r"(?<![\w./-])(/?[\w.-]+(?:/[\w.-]+)*\.[A-Za-z0-9]+):(\d+)\b")
+
+
+def parse_assumptions(raw: list[str], *, fix: bool) -> list[tuple[str, str, str]]:
+    """Split ``--assumption "<premise>=<how checked>=<result>"`` values.
+
+    The premise must not contain ``=``; the result may. Rejects placeholder
+    fields so the form cannot be satisfied by filling it with "none". A fix
+    dispatch (``--fix``) needs at least one assumption, and at least one of
+    them must cite the producer side as ``path:line`` in its result.
+    """
+    parsed: list[tuple[str, str, str]] = []
+    for value in raw:
+        parts = [s.strip() for s in value.split("=", 2)]
+        if len(parts) != 3:
+            raise SystemExit(
+                f"error: --assumption {value!r}: expected "
+                "'<premise>=<how checked>=<result>'"
+            )
+        for label, field_value in zip(("premise", "how checked", "result"), parts):
+            if field_value.lower() in _PLACEHOLDER_VALUES:
+                raise SystemExit(
+                    f"error: --assumption {value!r}: {label} is empty or a "
+                    f"placeholder ({field_value!r}); write what was checked "
+                    "and what it showed"
+                )
+        parsed.append((parts[0], parts[1], parts[2]))
+    if fix:
+        if not parsed:
+            raise SystemExit(
+                "error: --fix requires at least one --assumption "
+                "'<premise>=<how checked>=<result>'"
+            )
+        if not any(_FILE_LINE_RE.search(r) for _, _, r in parsed):
+            raise SystemExit(
+                "error: --fix requires an --assumption whose result cites the "
+                "producer side as path:line (the code that writes the event / "
+                "calls the function / sets the value the fix relies on)"
+            )
+    return parsed
+
+
+def check_assumption_citations(
+    assumptions: list[tuple[str, str, str]], repo_dir: Optional[Path]
+) -> list[str]:
+    """Return one error per ``path:line`` in a result that does not resolve.
+
+    Relative paths resolve against ``repo_dir`` (the dispatch's base repo).
+    With no checkout to look in yet (e.g. a pending clone) nothing can be
+    checked, so nothing is reported.
+    """
+    if repo_dir is None or not repo_dir.is_dir():
+        return []
+    errors: list[str] = []
+    for _, _, result in assumptions:
+        for m in _FILE_LINE_RE.finditer(result):
+            path, line = Path(m.group(1)), int(m.group(2))
+            target = path if path.is_absolute() else repo_dir / path
+            try:
+                lines = target.read_text(encoding="utf-8", errors="replace").splitlines()
+            except OSError:
+                errors.append(f"{m.group(0)}: no such file under {repo_dir}")
+                continue
+            if not 1 <= line <= len(lines) or not lines[line - 1].strip():
+                errors.append(
+                    f"{m.group(0)}: line {line} is missing or blank "
+                    f"({len(lines)} lines in {target})"
+                )
+    return errors
+
+
+def render_assumptions(assumptions: list[tuple[str, str, str]]) -> str:
+    """Brief text for the 実装ガイダンス section."""
+    if not assumptions:
+        return ""
+    out = ["前提と確かめ方（窓口が派遣前に確かめたもの。作業中に崩れたら窓口へ報告）:"]
+    for premise, how, result in assumptions:
+        out += [f"- 前提: {premise}", f"  - 確かめ方: {how}", f"  - 結果: {result}"]
+    return "\n".join(out)
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -2359,6 +2453,25 @@ def _add_task_args(p: argparse.ArgumentParser) -> None:
     )
     p.add_argument("--impl-target", action="append", default=[])
     p.add_argument("--impl-guidance", default=None)
+    # Issue #1190: premises the dispatch rests on, rendered into the brief.
+    p.add_argument(
+        "--assumption",
+        action="append",
+        default=[],
+        help=(
+            "'<premise>=<how checked>=<result>'; repeatable. Rendered into "
+            "the brief's implementation guidance. path:line in the result is "
+            "checked against the base repo on apply."
+        ),
+    )
+    p.add_argument(
+        "--fix",
+        action="store_true",
+        help=(
+            "Mark this as a bug-fix dispatch: requires at least one "
+            "--assumption whose result cites the producer side as path:line."
+        ),
+    )
     p.add_argument("--knowledge", action="append", default=[])
     p.add_argument("--parallel-notes", default=None)
     # Issue #909: placement / report target. Shared with
@@ -2615,6 +2728,19 @@ def _gather_plan_kwargs(args: argparse.Namespace) -> dict[str, Any]:
     for k, v in cli_overrides.items():
         if v is not None:
             base[k] = v
+    # Issue #1190: validated before anything else so a fix dispatch without
+    # its premises is refused at preview time as well as at apply.
+    assumptions_block = render_assumptions(
+        parse_assumptions(
+            getattr(args, "assumption", None) or [],
+            fix=bool(getattr(args, "fix", False)),
+        )
+    )
+    if assumptions_block:
+        guidance = (base.get("implementation_guidance") or "").strip()
+        base["implementation_guidance"] = (
+            f"{guidance}\n\n{assumptions_block}" if guidance else assumptions_block
+        )
     base.setdefault("mode", "edit")
     base.setdefault("verification_depth", "full")
     base.setdefault("description", "")
@@ -2713,6 +2839,17 @@ def _cmd_apply(args: argparse.Namespace) -> int:
         # no traceback. Raised before ``apply_delegate_plan`` runs, so nothing
         # has been reserved / written when this fires.
         raise SystemExit(f"error: {e}") from None
+    # Issue #1190: a cited producer line has to exist in the repo the worker
+    # is cut from. Checked before ``apply_delegate_plan`` so nothing is written.
+    citation_errors = check_assumption_citations(
+        parse_assumptions(getattr(args, "assumption", None) or [], fix=False),
+        plan.base_repo or Path(plan.layout.worker_dir),
+    )
+    if citation_errors:
+        raise SystemExit(
+            "error: --assumption cites a location that does not exist:\n  "
+            + "\n  ".join(citation_errors)
+        )
     result = apply_delegate_plan(
         plan,
         state_db_path=state_db_path,

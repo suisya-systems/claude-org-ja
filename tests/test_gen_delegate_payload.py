@@ -4725,5 +4725,100 @@ class TestBaseRefCliFlag(unittest.TestCase):
         self.assertIn("must be a string", str(cm.exception))
 
 
+# ---------------------------------------------------------------------------
+# Issue #1190: a fix dispatch states its premises and how they were checked
+# ---------------------------------------------------------------------------
+
+
+class TestIssue1190Assumptions(unittest.TestCase):
+    """``--assumption`` / ``--fix``: the form must not pass when filled with
+    nothing checkable, and a cited producer line must exist on apply."""
+
+    setUp = TestIssue928DelegateSentEvent.setUp
+    tearDown = TestIssue928DelegateSentEvent.tearDown
+    _git = TestIssue928DelegateSentEvent._git
+    _out = TestIssue928DelegateSentEvent._out
+
+    def _main(self, cmd, task_id, *extra):
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        buf = StringIO()
+        with redirect_stdout(buf):
+            rc = gdp.main([
+                cmd,
+                "--task-id", task_id,
+                "--project-slug", "claude-org-ja",
+                "--description", "fix the thing",
+                "--claude-org-root", str(self.sb.claude_org_root),
+                "--state-db-path", str(self.sb.db_path),
+                *(["--skip-settings"] if cmd == "apply" else []),
+                *extra,
+            ])
+        return rc, buf.getvalue()
+
+    def _write_producer(self):
+        path = self.sb.claude_org_root / "tools" / "producer.py"
+        path.parent.mkdir()
+        path.write_text("def emit():\n\n    write('worker_closed')\n", encoding="utf-8")
+
+    def _assert_refused(self, cmd, task_id, *extra, needle):
+        with self.assertRaises(SystemExit) as cm:
+            self._main(cmd, task_id, *extra)
+        self.assertIn(needle, str(cm.exception))
+        self.assertEqual(
+            [r for r in self.sb.list_runs() if r["task_id"] == task_id], []
+        )
+
+    def test_fix_without_assumption_is_refused_on_preview_and_apply(self):
+        for cmd in ("preview", "apply"):
+            self._assert_refused(cmd, "fix-none", "--fix",
+                                 needle="--fix requires at least one")
+
+    def test_placeholder_fields_are_refused(self):
+        for value in ("event exists=なし=queries.py:1",
+                      "event exists=grep=",
+                      "event exists=grep= N/A ",
+                      "=grep=tools/producer.py:3",
+                      "event exists=grep"):
+            self._assert_refused("preview", "fix-placeholder", "--assumption", value,
+                                 needle="--assumption")
+
+    def test_fix_needs_a_path_line_citation(self):
+        self._assert_refused(
+            "apply", "fix-no-cite", "--fix",
+            "--assumption", "the event is written=grep for it=found the reader only",
+            needle="producer side as path:line",
+        )
+
+    def test_apply_refuses_a_citation_that_does_not_exist(self):
+        self._write_producer()
+        for cite, needle in (("tools/missing.py:3", "no such file"),
+                             ("tools/producer.py:99", "line 99 is missing"),
+                             ("tools/producer.py:2", "line 2 is missing or blank")):
+            self._assert_refused(
+                "apply", "fix-bad-cite", "--fix",
+                "--assumption", f"worker_closed is written=grep writer=written at {cite}",
+                needle=needle,
+            )
+
+    def test_apply_renders_assumptions_into_the_guidance(self):
+        self._write_producer()
+        rc, out = self._main(
+            "apply", "fix-ok", "--fix",
+            "--impl-guidance", "keep it small",
+            "--assumption",
+            "worker_closed is written=grep 'worker_closed' tools=a=b at tools/producer.py:3",
+        )
+        self.assertEqual(rc, 0)
+        brief = Path(re.search(r"^brief: (.+)$", out, re.M).group(1))
+        text = brief.read_text(encoding="utf-8")
+        self.assertIn("keep it small\n\n前提と確かめ方", text)
+        self.assertIn("- 前提: worker_closed is written", text)
+        self.assertIn("  - 確かめ方: grep 'worker_closed' tools", text)
+        # The result keeps any further ``=`` it contains.
+        self.assertIn("  - 結果: a=b at tools/producer.py:3", text)
+
+
 if __name__ == "__main__":
     unittest.main()
