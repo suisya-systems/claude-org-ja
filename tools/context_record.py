@@ -44,9 +44,6 @@ if str(REPO_ROOT) not in sys.path:
 
 THRESHOLD_ENV = "CLAUDE_ORG_HANDOVER_THRESHOLD_TOKENS"
 WINDOW_ENV = "CLAUDE_CODE_AUTO_COMPACT_WINDOW"
-# ponytail: assumes a 200K auto-compact window when neither env var is set;
-# set THRESHOLD_ENV in the role settings when the window is larger.
-DEFAULT_WINDOW = 200_000
 THRESHOLD_RATIO = 0.6
 
 
@@ -72,7 +69,8 @@ def pane_from_env(env) -> "dict | None":
     return None
 
 
-def threshold_from_env(env) -> int:
+def threshold_from_env(env) -> "int | None":
+    """Token threshold from the env, or None when neither var is set (no assumed window)."""
     for name, ratio in ((THRESHOLD_ENV, 1.0), (WINDOW_ENV, THRESHOLD_RATIO)):
         try:
             value = int(env.get(name, ""))
@@ -80,7 +78,7 @@ def threshold_from_env(env) -> int:
             continue
         if value > 0:
             return int(value * ratio)
-    return int(DEFAULT_WINDOW * THRESHOLD_RATIO)
+    return None
 
 
 def update(rec: dict, payload: dict, env, now: str) -> dict:
@@ -95,7 +93,11 @@ def update(rec: dict, payload: dict, env, now: str) -> dict:
         rec["source"] = payload.get("source")
         rec["started_at"] = now
         rec["pane"] = pane_from_env(env)
-        rec["threshold_tokens"] = threshold_from_env(env)
+        threshold = threshold_from_env(env)
+        if threshold is None:
+            rec.pop("threshold_tokens", None)
+        else:
+            rec["threshold_tokens"] = threshold
         if payload.get("source") == "clear":
             rec["cleared_at"] = now
         rec["turn_open"] = rec["turn_closed"]
