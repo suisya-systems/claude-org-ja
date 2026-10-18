@@ -2197,6 +2197,7 @@ def apply_delegate_plan(
     skip_settings: bool = False,
     runtime_cmd: str = "claude-org-runtime",
     send_plan_out: Optional[Path] = None,
+    assumptions: Optional[list[tuple[str, str, str]]] = None,
 ) -> ApplyResult:
     """Execute the side effects: write brief / settings / send_plan, then
     commit the T1 reservation + ``delegate_sent`` event.
@@ -2265,6 +2266,17 @@ def apply_delegate_plan(
     # inspected at plan time). May flip brief_out_path / delegate_body to
     # CLAUDE.local.md; a no-op for every non-pending plan.
     plan = _finalize_pending_clone_brief(plan)
+    # Issue #1190: with the clone and worktree in place, check every cited
+    # producer line against the revision the worker actually receives. Runs
+    # before the brief and the DB reservation, so a refusal writes neither.
+    citation_errors = check_assumption_citations(
+        assumptions or [], Path(plan.layout.worker_dir)
+    )
+    if citation_errors:
+        raise AssumptionCitationError(
+            "--assumption cites a location that does not hold:\n  "
+            + "\n  ".join(citation_errors)
+        )
     # Issue #928: all failure-prone generation happens BEFORE the DB
     # transaction. A failure here leaves no reservation and no event to
     # compensate — the same task_id is simply re-appliable.
@@ -2361,32 +2373,55 @@ def parse_assumptions(raw: list[str], *, fix: bool) -> list[tuple[str, str, str]
     return parsed
 
 
-def check_assumption_citations(
-    assumptions: list[tuple[str, str, str]], repo_dir: Optional[Path]
-) -> list[str]:
-    """Return one error per ``path:line`` in a result that does not resolve.
+class AssumptionCitationError(RuntimeError):
+    """A ``path:line`` in an ``--assumption`` result does not hold in the
+    revision the worker receives. Raised before the brief / DB are written."""
 
-    Relative paths resolve against ``repo_dir`` (the dispatch's base repo).
-    With no checkout to look in yet (e.g. a pending clone) nothing can be
-    checked, so nothing is reported.
+
+def check_assumption_citations(
+    assumptions: list[tuple[str, str, str]], checkout: Path
+) -> list[str]:
+    """Return one error per ``path:line`` in a result that does not hold.
+
+    Reads the committed ``HEAD`` of ``checkout`` (the worker's worktree), not
+    its working tree, so the check sees exactly what the worker is cut from:
+    a stale base checkout, another branch or an untracked file cannot make a
+    citation pass or fail. A citation that cannot be checked (no git checkout,
+    a path outside it) is an error too, never silently passed.
     """
-    if repo_dir is None or not repo_dir.is_dir():
+    citations = [m for _, _, r in assumptions for m in _FILE_LINE_RE.finditer(r)]
+    if not citations:
         return []
+    root = subprocess.run(
+        ["git", "-C", str(checkout), "rev-parse", "--show-toplevel"],
+        capture_output=True, text=True,
+    )
+    if root.returncode != 0:
+        return [f"{m.group(0)}: cannot check, {checkout} is not a git checkout"
+                for m in citations]
+    top = Path(root.stdout.strip()).resolve()
     errors: list[str] = []
-    for _, _, result in assumptions:
-        for m in _FILE_LINE_RE.finditer(result):
-            path, line = Path(m.group(1)), int(m.group(2))
-            target = path if path.is_absolute() else repo_dir / path
+    for m in citations:
+        path, line = Path(m.group(1)), int(m.group(2))
+        if path.is_absolute():
             try:
-                lines = target.read_text(encoding="utf-8", errors="replace").splitlines()
-            except OSError:
-                errors.append(f"{m.group(0)}: no such file under {repo_dir}")
+                path = path.resolve().relative_to(top)
+            except ValueError:
+                errors.append(f"{m.group(0)}: outside the worker's checkout {top}")
                 continue
-            if not 1 <= line <= len(lines) or not lines[line - 1].strip():
-                errors.append(
-                    f"{m.group(0)}: line {line} is missing or blank "
-                    f"({len(lines)} lines in {target})"
-                )
+        shown = subprocess.run(
+            ["git", "-C", str(top), "show", f"HEAD:{path.as_posix()}"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+        )
+        if shown.returncode != 0:
+            errors.append(f"{m.group(0)}: no such file at HEAD of {top}")
+            continue
+        lines = shown.stdout.splitlines()
+        if not 1 <= line <= len(lines) or not lines[line - 1].strip():
+            errors.append(
+                f"{m.group(0)}: line {line} is missing or blank "
+                f"({len(lines)} lines at HEAD)"
+            )
     return errors
 
 
@@ -2839,25 +2874,20 @@ def _cmd_apply(args: argparse.Namespace) -> int:
         # no traceback. Raised before ``apply_delegate_plan`` runs, so nothing
         # has been reserved / written when this fires.
         raise SystemExit(f"error: {e}") from None
-    # Issue #1190: a cited producer line has to exist in the repo the worker
-    # is cut from. Checked before ``apply_delegate_plan`` so nothing is written.
-    citation_errors = check_assumption_citations(
-        parse_assumptions(getattr(args, "assumption", None) or [], fix=False),
-        plan.base_repo or Path(plan.layout.worker_dir),
-    )
-    if citation_errors:
-        raise SystemExit(
-            "error: --assumption cites a location that does not exist:\n  "
-            + "\n  ".join(citation_errors)
+    try:
+        result = apply_delegate_plan(
+            plan,
+            state_db_path=state_db_path,
+            claude_org_root=claude_org_root,
+            skip_settings=args.skip_settings,
+            runtime_cmd=args.runtime_cmd,
+            send_plan_out=args.send_plan_out,
+            assumptions=parse_assumptions(
+                getattr(args, "assumption", None) or [], fix=False
+            ),
         )
-    result = apply_delegate_plan(
-        plan,
-        state_db_path=state_db_path,
-        claude_org_root=claude_org_root,
-        skip_settings=args.skip_settings,
-        runtime_cmd=args.runtime_cmd,
-        send_plan_out=args.send_plan_out,
-    )
+    except AssumptionCitationError as e:
+        raise SystemExit(f"error: {e}") from None
     print(f"reserved (queued) task_id={plan.task_id} pattern={plan.layout.pattern}")
     # Issue #808: only announced when a non-default cut point is in play, so
     # the common origin/HEAD dispatch keeps its existing output.

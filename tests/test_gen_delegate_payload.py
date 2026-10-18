@@ -4757,10 +4757,18 @@ class TestIssue1190Assumptions(unittest.TestCase):
             ])
         return rc, buf.getvalue()
 
-    def _write_producer(self):
+    def _write_producer(self, *, commit=True, publish=True):
+        """Seed ``tools/producer.py`` in the base repo; ``commit`` /
+        ``publish`` (advance origin/main) decide what the worker receives."""
         path = self.sb.claude_org_root / "tools" / "producer.py"
         path.parent.mkdir()
         path.write_text("def emit():\n\n    write('worker_closed')\n", encoding="utf-8")
+        if commit:
+            self._git("add", "tools/producer.py")
+            self._git("commit", "-q", "-m", "producer")
+        if publish:
+            self._git("update-ref", "refs/remotes/origin/main",
+                      self._out("rev-parse", "main"))
 
     def _assert_refused(self, cmd, task_id, *extra, needle):
         with self.assertRaises(SystemExit) as cm:
@@ -4818,6 +4826,72 @@ class TestIssue1190Assumptions(unittest.TestCase):
         self.assertIn("  - 確かめ方: grep 'worker_closed' tools", text)
         # The result keeps any further ``=`` it contains.
         self.assertIn("  - 結果: a=b at tools/producer.py:3", text)
+
+    def test_apply_checks_the_revision_the_worker_receives(self):
+        """The base checkout's working tree is not what the worker gets: an
+        uncommitted file, or a commit that is not on the cut point
+        (origin/main), must not make a citation pass."""
+        cite = ("--assumption",
+                "worker_closed is written=grep writer=written at tools/producer.py:3")
+        self._write_producer(commit=False, publish=False)
+        self._assert_refused("apply", "fix-untracked", "--fix", *cite,
+                             needle="no such file at HEAD")
+        self._git("add", "tools/producer.py")
+        self._git("commit", "-q", "-m", "producer")
+        self._assert_refused("apply", "fix-unpublished", "--fix", *cite,
+                             needle="no such file at HEAD")
+        self._git("update-ref", "refs/remotes/origin/main",
+                  self._out("rev-parse", "main"))
+        rc, _ = self._main("apply", "fix-published", "--fix", *cite)
+        self.assertEqual(rc, 0)
+
+    def test_citation_outside_a_git_checkout_is_refused_not_skipped(self):
+        with tempfile.TemporaryDirectory() as td:
+            errors = gdp.check_assumption_citations(
+                [("p", "how", "at tools/producer.py:3")], Path(td)
+            )
+        self.assertEqual(len(errors), 1)
+        self.assertIn("cannot check", errors[0])
+
+
+class TestIssue1190PendingClone(unittest.TestCase):
+    """Issue #1190: a URL-only project's first dispatch has no checkout at
+    plan time. The citation check must still run, after the clone and
+    before the brief / reservation are written."""
+
+    setUp = TestIssue709BaseCloneMaterialization.setUp
+    tearDown = TestIssue709BaseCloneMaterialization.tearDown
+    _git = TestIssue709BaseCloneMaterialization._git
+    _make_bare_remote = TestIssue709BaseCloneMaterialization._make_bare_remote
+    _set_url_registry = TestIssue709BaseCloneMaterialization._set_url_registry
+    _build = TestIssue709BaseCloneMaterialization._build
+
+    def _apply(self, task_id, result):
+        plan = self._build(task_id=task_id)
+        self.assertIsNotNone(plan.pending_clone)
+        return plan, gdp.apply_delegate_plan(
+            plan,
+            state_db_path=self.sb.db_path,
+            claude_org_root=self.sb.claude_org_root,
+            skip_settings=True,
+            assumptions=[("readme says hi", "read it", result)],
+        )
+
+    def test_bad_citation_is_refused_after_the_clone(self):
+        self._set_url_registry("newproj", str(self._make_bare_remote("newproj")))
+        with self.assertRaises(gdp.AssumptionCitationError) as cm:
+            self._apply("np-bad", "at README.md:5")
+        self.assertIn("README.md:5", str(cm.exception))
+        self.assertEqual(
+            [r for r in self.sb.list_runs() if r["task_id"] == "np-bad"], []
+        )
+        worker_dir = self.sb.workers / "newproj" / ".worktrees" / "np-bad"
+        self.assertFalse((worker_dir / "CLAUDE.md").exists())
+
+    def test_good_citation_passes_after_the_clone(self):
+        self._set_url_registry("newproj", str(self._make_bare_remote("newproj")))
+        _, result = self._apply("np-good", "at README.md:1")
+        self.assertTrue(result.brief_path.exists())
 
 
 if __name__ == "__main__":
