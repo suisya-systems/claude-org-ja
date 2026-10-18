@@ -299,6 +299,12 @@ secretary に **報告して** 判断を仰ぐ（勝手に再 spawn / status 変
 
 ## Step 4: ペイン生存確認
 
+handover の `## 監視外の run` に「監視外: <task_id>（ペインなし）」とある task_id も、下の判定
+（`list_peers` / `list_panes`）で引き直す。**ペインが在れば監視対象に戻す**（書き手の判定が
+誤りでも監視から落とさない）。確定して不在なら記録のずれとして Step 6 の briefing に task_id を
+一覧で載せ、`WORKER_PANE_EXITED` は送らず、監視対象にも入れない。確定できなければ監視対象・active
+のまま残す。
+
 `mcp__org-broker__list_peers` を再度呼び、handover に記載のワーカー名が現存するか
 確認する。消えていれば secretary に `WORKER_PANE_EXITED: worker-{task_id} (resume
 時点で不存在)` を通知（reconcile は窓口の責務）。

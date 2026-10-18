@@ -63,6 +63,11 @@ secretary に「ack を受けたら send_keys で /clear → /dispatcher-resume 
    - DELEGATE 受信 → spawn 成否、escalate 経路に乗ったタスクの ID
 2. **進行中のワーカー監視**
    - `.state/workers/worker-*.md` の Status が `active` なペイン名と最新の Progress Log 抜粋
+   - state.db で `in_use` / `review` の run のうち、上の監視対象に入れなかったもの（Step 2 の
+     `active_runs[]` と突き合わせる）は、`{{FQ}}list_panes` で `worker-<task_id>` の有無を確かめ、
+     「監視外」として 1 件ずつ書く（Step 3 の `## 監視外の run`）。state.db に run が残ったまま
+     ペインが閉じた記録のずれがここに出る。watcher は live な run の task_id が本文に全部
+     あることを検査するので、監視外の run も落とさない
 3. **直近 anomaly 観測の要約**
    - 過去 1 サイクル分で `journal_append` した `anomaly_observed` / `notify_sent` のうち
      未解消のもの
@@ -129,6 +134,11 @@ pending_decisions_count: <int>
 ## 監視対象のワーカー
 - worker-<task_id> (<worker_dir>): Status=<active|...>、直近 Progress Log 1 行抜粋
 - ...
+
+## 監視外の run
+- 監視外: <task_id>（ペインなし）  ← `list_panes` に worker-<task_id> が無い。state.db の run だけが残っている
+- 監視外: <task_id>（ペインあり・未監視）  ← ペインはあるが監視対象に入れなかった理由を添える
+（無ければ「なし」と明記する）
 
 ## 直近 anomaly / notify_sent サマリー
 - worker-<task_id>: kind=<approval_blocked|stall_suspected|relay_gap_suspected> ...

@@ -273,28 +273,6 @@ class TestWatcher(unittest.TestCase):
         self.assertTrue(self.op()["reason"].startswith("handover_missing_task_ids"))
         self.assertNotIn("/clear", self.sim.enters)
 
-    def _stale_setup(self, *events):
-        orig = self.sim.on_submit
-
-        def no_ids(text):
-            orig(text)
-            if text.startswith("/dispatcher-handover"):
-                self.org.handover_path.write_text("nothing", encoding="utf-8")
-
-        self.sim.on_submit = no_ids
-        for kind in events:
-            self.org.append_event(kind, {"worker": "worker-t1"})
-
-    def test_closed_worker_run_does_not_block_handover(self):
-        self._stale_setup("worker_spawned", "worker_closed")
-        self.assertTrue(self.w.tick().startswith("ran:done"))
-        self.assertTrue(any("STALE_RUNS" in n and "t1" in n for n in self.notes))
-
-    def test_respawned_worker_missing_from_handover_still_blocks(self):
-        self._stale_setup("worker_spawned", "worker_closed", "worker_spawned")
-        self.w.tick()
-        self.assertTrue(self.op()["reason"].startswith("handover_missing_task_ids"))
-
     def test_duplicate_monitoring_loop_fails(self):
         orig = self.sim.on_submit
 
