@@ -37,6 +37,8 @@
 # python 欠落・異常終了・空出力はすべて deny する
 # (`tests/test-hooks-payload-fail-closed.sh` が payload 側を全 enforcement hook 横断で固定する)。
 
+source "$(dirname "${BASH_SOURCE[0]}")/lib/deny-record.sh"
+
 set -euo pipefail
 
 deny_with_reason() {
@@ -91,7 +93,7 @@ fi
 
 # 判定は stdout の 1 行目だけで読む (stderr の警告で ALLOW が 2 行目にずれて誤 deny しないよう分ける)。
 ERR_FILE=$(mktemp)
-trap 'rm -f "$ERR_FILE"' EXIT
+HOOK_CLEANUP_FILES+=("$ERR_FILE")
 OUT=$(printf '%s\n' "$INPUT" | "${PY[@]}" "$HOOK_DIR/../tools/codex_round_cap.py" hook 2>"$ERR_FILE") || true
 FIRST_LINE=$(printf '%s\n' "$OUT" | head -n 1)
 if [[ "$FIRST_LINE" == "ALLOW" ]]; then

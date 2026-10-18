@@ -24,6 +24,8 @@
 # fail-closed: jq 欠落 / 空 stdin / 不正 JSON / 非 object payload / python 欠落・
 # 異常終了・空出力はすべて deny する (`tests/test-hooks-payload-fail-closed.sh`)。
 
+source "$(dirname "${BASH_SOURCE[0]}")/lib/deny-record.sh"
+
 set -euo pipefail
 
 deny_with_reason() {
@@ -69,7 +71,7 @@ fi
 
 # 判定は stdout の 1 行目だけで読み、python の終了コードも 0 を要求する。
 ERR_FILE=$(mktemp)
-trap 'rm -f "$ERR_FILE"' EXIT
+HOOK_CLEANUP_FILES+=("$ERR_FILE")
 RC=0
 OUT=$(printf '%s\n' "$INPUT" | "${PY[@]}" "$HOOK_DIR/../tools/acceptance_merge_hook.py" 2>"$ERR_FILE") || RC=$?
 FIRST_LINE=$(printf '%s\n' "$OUT" | head -n 1)

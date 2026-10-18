@@ -53,6 +53,8 @@
 #   - 人間が直接 CLI で起動する場合は本フックは効かない。Claude Code の
 #     ツール呼び出し経路でのみ作用する。
 
+source "$(dirname "${BASH_SOURCE[0]}")/lib/deny-record.sh"
+
 set -euo pipefail
 
 # Helper: deny decision を stderr + exit 2 で返す

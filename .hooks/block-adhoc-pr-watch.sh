@@ -27,6 +27,8 @@
 # 入力: stdin から PreToolUse JSON ({tool_name, tool_input})
 # 出力: 拒否時 exit 2 + stderr。許可時 exit 0。
 
+source "$(dirname "${BASH_SOURCE[0]}")/lib/deny-record.sh"
+
 set -uo pipefail
 
 # 判定材料が揃わなければ全て許可側 (best-effort 安全網)

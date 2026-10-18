@@ -80,6 +80,8 @@
 #   - `$(...)` / `` `...` `` のサブシェル境界、バックスラッシュエスケープは
 #     segment-split.sh の制限に従う。
 
+source "$(dirname "${BASH_SOURCE[0]}")/lib/deny-record.sh"
+
 set -euo pipefail
 
 # shellcheck source=lib/segment-split.sh

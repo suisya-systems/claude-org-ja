@@ -45,6 +45,8 @@
 # fail-closed: jq 欠落 / 空 stdin / 不正 JSON / 非 object payload / 想定外の引数形 / 記録の読み取り・削除失敗は deny する
 # (`tests/test-hooks-payload-fail-closed.sh` が payload 側を横断で固定する)。
 
+source "$(dirname "${BASH_SOURCE[0]}")/lib/deny-record.sh"
+
 set -euo pipefail
 
 deny_with_reason() {

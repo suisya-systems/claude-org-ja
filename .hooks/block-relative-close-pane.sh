@@ -72,6 +72,8 @@
 # (`tests/test-hooks-payload-fail-closed.sh` が全 enforcement hook 横断で固定する
 #  不変条件。deny 理由の文言もそこでマーカー照合される)。
 
+source "$(dirname "${BASH_SOURCE[0]}")/lib/deny-record.sh"
+
 set -euo pipefail
 
 deny_with_reason() {
