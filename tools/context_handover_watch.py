@@ -265,6 +265,17 @@ class Org:
     def run_exists(self, task_id: str) -> bool:
         return bool(self._query("SELECT 1 FROM runs WHERE task_id = ?", (task_id,)))
 
+    def closed_workers(self, task_ids) -> "set[str]":
+        """Tasks whose newest pane event says the worker pane was closed (§6.2)."""
+        newest: dict = {}
+        for kind, payload in self._query(
+                "SELECT kind, payload_json FROM events WHERE kind IN "
+                "('worker_spawned', 'worker_closed', 'pane_closed') ORDER BY id"):
+            worker = json.loads(payload).get("worker")
+            if isinstance(worker, str):
+                newest[worker.removeprefix("worker-")] = kind
+        return {t for t in task_ids if newest.get(t, "worker_spawned") != "worker_spawned"}
+
     def resumed_event(self, op: str) -> "dict | None":
         rows = self._query(
             "SELECT payload_json FROM events WHERE kind = 'dispatcher_resumed' "
@@ -454,7 +465,13 @@ class Watcher:
 
         if not self.wait_until(written, HANDOVER_TIMEOUT_SEC):
             raise HandoverFailed("handover_not_written")
-        self.check_handover_file()
+        stale = self.check_handover_file()
+        if stale:
+            # The run row outlived its pane: tell the secretary, do not block the handover.
+            line = (f"DISPATCHER_AUTO_HANDOVER_STALE_RUNS: op={op['op']} "
+                    f"tasks={','.join(stale)} (pane は閉じているが state.db の run が残っている)")
+            print(f"[context-handover] {line} (secretary notified={self.org.notify_secretary(line)})",
+                  flush=True)
         snapshot = {"runs": self.org.runs(("queued",) + LIVE_RUN_STATUSES),
                     "decisions": self.org.decisions()}
         self.save(op, stage="clearing", snapshot=snapshot)
@@ -464,15 +481,22 @@ class Watcher:
         self.type_line(op, "/clear")
         self.stage_clearing(op)
 
-    def check_handover_file(self) -> None:
-        """§6.2: every live worker's task_id must appear in the handover body."""
+    def check_handover_file(self) -> "list[str]":
+        """§6.2: every live worker's task_id must appear in the handover body.
+
+        A run whose pane is already closed is a stale record, not a worker the
+        handover could lose: it is returned (sorted) instead of failing.
+        """
         try:
             body = self.org.handover_path.read_text(encoding="utf-8")
         except OSError:
             raise HandoverFailed("handover_unreadable")
         missing = [t for t in self.org.runs(LIVE_RUN_STATUSES) if t not in body]
-        if missing:
-            raise HandoverFailed(f"handover_missing_task_ids: {','.join(sorted(missing))}")
+        stale = self.org.closed_workers(missing)
+        alive = sorted(set(missing) - stale)
+        if alive:
+            raise HandoverFailed(f"handover_missing_task_ids: {','.join(alive)}")
+        return sorted(stale)
 
     def cleared(self, op: dict) -> bool:
         rec = self.org.record()
