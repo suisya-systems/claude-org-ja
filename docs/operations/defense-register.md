@@ -28,3 +28,4 @@
 | check-worker-boundary | hook | `.hooks/check-worker-boundary.sh` | ワーカーが自分のディレクトリ外を編集する |
 | check-worker-spawn-model | hook | `.hooks/check-worker-spawn-model.sh` | DELEGATE の指定なしにワーカーのモデルを選ぶ |
 | gate-acceptance-before-merge | hook | `.hooks/gate-acceptance-before-merge.sh` | 受け入れテストを通さずに PR をマージする |
+| remind-verify-premise | hook | `.hooks/remind-verify-premise.sh` | ユーザーが述べた前提（数値・設定値・挙動）に確かめずに同意する（通知のみ・止めない） |
