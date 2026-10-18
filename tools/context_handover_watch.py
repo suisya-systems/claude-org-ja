@@ -29,8 +29,13 @@ for 30 minutes (§4.3).
 
 Usage::
 
-    python3 tools/context_handover_watch.py          # resident loop
-    python3 tools/context_handover_watch.py --stop   # stop the running watcher
+    python3 tools/context_handover_watch.py            # resident loop (foreground)
+    python3 tools/context_handover_watch.py --daemon   # detach: no pane, log in .state/
+    python3 tools/context_handover_watch.py --status   # is it alive? (sidecar vs process)
+    python3 tools/context_handover_watch.py --stop     # stop the running watcher
+
+``--daemon`` must run outside the worker sandbox (a sandboxed shell cannot
+leave a process behind, and the watcher needs the renga CLI / tmux socket).
 """
 from __future__ import annotations
 
@@ -217,6 +222,7 @@ class Org:
         self.unset_path = self.context_dir / "handover-threshold-unset.json"
         self.handover_path = state_dir / "dispatcher-handover.md"
         self.pid_path = state_dir / "context_handover_watch.json"
+        self.log_path = state_dir / "context_handover_watch.log"
 
     @classmethod
     def discover(cls) -> "Org":
@@ -648,6 +654,63 @@ def run_stop(org: Org) -> int:
     return 0
 
 
+def watcher_pid(org: Org) -> "int | None":
+    """pid of this org's live watcher per the sidecar, else None."""
+    rec = org.read_json(org.pid_path, {})
+    pid = rec.get("pid")
+    if not isinstance(pid, int) or not _identity(pid):
+        return None
+    if Path(rec.get("cwd") or "").resolve() != Path.cwd().resolve():
+        return None
+    return pid
+
+
+def run_status(org: Org) -> int:
+    pid = watcher_pid(org)
+    if pid is None:
+        stale = " (stale sidecar)" if org.pid_path.exists() else ""
+        print(f"[context-handover] STATUS: not running{stale}.")
+        return 1
+    started = org.read_json(org.pid_path, {}).get("started_at")
+    print(f"[context-handover] STATUS: running pid={pid} since {started} log={org.log_path}")
+    return 0
+
+
+def run_daemon(org: Org) -> int:
+    """Start the resident loop detached from this shell and the pane (no pane needed)."""
+    import subprocess
+
+    # ponytail: POSIX only. Native Windows cannot verify the process identity (live_cmdline
+    # is None), so --stop/--status could not manage a detached watcher; add that first.
+    if os.name != "posix":
+        print("[context-handover] 自動引き継ぎ無効: --daemon は POSIX のみ（Windows native は停止経路が無い）")
+        return EXIT_NOT_STARTED
+    pid = watcher_pid(org)
+    if pid is not None:
+        print(f"[context-handover] already running (pid={pid}); exiting.")
+        return EXIT_NOT_STARTED
+    reason = unsupported_reason()
+    if reason:
+        print(f"[context-handover] 自動引き継ぎ無効: {reason}（対応は renga と broker + tmux のみ）")
+        return EXIT_NOT_STARTED
+    org.log_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(org.log_path, "ab") as log:
+        child = subprocess.Popen([sys.executable, str(Path(__file__).resolve())],
+                                 stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                                 close_fds=True, start_new_session=True)
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        if child.poll() is not None:
+            print(f"[context-handover] DAEMON: exited at start (code={child.returncode}); see {org.log_path}")
+            return child.returncode or 1
+        if org.read_json(org.pid_path, {}).get("pid") == child.pid:
+            print(f"[context-handover] DAEMON: started pid={child.pid} log={org.log_path}")
+            return 0
+        time.sleep(0.2)
+    print(f"[context-handover] DAEMON: pid={child.pid} did not register within 10s; see {org.log_path}")
+    return 1
+
+
 def run_watch(org: Org) -> int:
     rec = org.read_json(org.pid_path, {})
     pid = rec.get("pid")
@@ -685,11 +748,19 @@ def run_watch(org: Org) -> int:
 def main(argv: "list[str] | None" = None) -> int:
     parser = argparse.ArgumentParser(description="Automatic context handover for the dispatcher.")
     parser.add_argument("--stop", action="store_true", help="stop the running watcher")
+    parser.add_argument("--daemon", action="store_true",
+                        help="start the watcher detached (no pane); log goes to .state/")
+    parser.add_argument("--status", action="store_true",
+                        help="report whether the watcher is alive (exit 1 if not)")
     parser.add_argument("--once", action="store_true", help="run one check and exit")
     args = parser.parse_args(argv)
     org = Org.discover()
     if args.stop:
         return run_stop(org)
+    if args.status:
+        return run_status(org)
+    if args.daemon:
+        return run_daemon(org)
     if args.once:
         print(Watcher(org).tick())
         return 0

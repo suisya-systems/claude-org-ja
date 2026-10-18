@@ -369,5 +369,36 @@ class TestWatcher(unittest.TestCase):
         self.assertEqual(self.op()["reason"], "resume_not_observed")
 
 
+class TestStatus(unittest.TestCase):
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        self.addCleanup(self._td.cleanup)
+        self.org = watch.Org(Path(self._td.name))
+        self._orig = watch._identity
+
+    def tearDown(self):
+        watch._identity = self._orig
+
+    def test_status_without_sidecar(self):
+        self.assertEqual(watch.run_status(self.org), 1)
+
+    def test_status_stale_sidecar(self):
+        self.org.write_json(self.org.pid_path, {"pid": 99999999, "cwd": str(Path.cwd())})
+        watch._identity = lambda pid: False
+        self.assertEqual(watch.run_status(self.org), 1)
+
+    def test_status_running_needs_same_cwd(self):
+        watch._identity = lambda pid: True
+        self.org.write_json(self.org.pid_path, {"pid": 42, "cwd": str(Path.cwd())})
+        self.assertEqual(watch.run_status(self.org), 0)
+        self.org.write_json(self.org.pid_path, {"pid": 42, "cwd": "/elsewhere"})
+        self.assertEqual(watch.run_status(self.org), 1)
+
+    def test_daemon_refuses_when_running(self):
+        watch._identity = lambda pid: True
+        self.org.write_json(self.org.pid_path, {"pid": 42, "cwd": str(Path.cwd())})
+        self.assertEqual(watch.run_daemon(self.org), watch.EXIT_NOT_STARTED)
+
+
 if __name__ == "__main__":
     unittest.main()

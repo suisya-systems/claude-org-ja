@@ -249,15 +249,15 @@ org-start Block E が起動した文脈の自動引き継ぎ watcher を、Phase
 止める（引き継ぎの途中でディスパッチャーを閉じると、watcher が失敗として窓口に知らせてしまうため）。
 watcher は起動時に `.state/context_handover_watch.json` へ pid / cwd / cmdline を記録しており、
 `--stop` が cwd と live argv を照合できたときだけ SIGTERM する（照合が外れたら kill せず sidecar だけ消す）。
-watcher のペインは watcher が終わるとシェルごと閉じる。**sandbox 外で**実行する:
+watcher はペインを持たない常駐プロセス（`--daemon`）なので、`--stop` が唯一の停止経路になる。**sandbox 外で**実行する:
 
 ```bash
 python3 tools/context_handover_watch.py --stop   # Windows native は py -3 tools/context_handover_watch.py --stop
 ```
 
 出力の `STOP: ...` 1 行で結果を確認する（`stopped` / `not running` / `not this org's watcher`）。
-argv を照合できない Windows native では kill せず sidecar だけ消えるので、ペインは Phase 4 の
-teardown で閉じる（ペインを閉じればプロセスも終わる）。
+argv を照合できない Windows native では kill せず sidecar だけ消える。プロセスが残っていないかは
+`python3 tools/context_handover_watch.py --status` で確かめる（ペインが無いので Phase 4 の teardown では止まらない）。
 
 ## Phase 3.7: attention watcher の停止（ペイン teardown の前）
 
