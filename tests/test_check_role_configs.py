@@ -1267,6 +1267,47 @@ class RealRepoSmokeTests(unittest.TestCase):
             ["worker_roles.default.sandbox_by_pattern.B"],
         )
 
+    def test_excluded_commands_are_exact(self):
+        # Only the exact rebase / Codex gate commands leave the sandbox;
+        # wildcard, chained, redirected, substituted and cd forms are flagged.
+        from claude_org_runtime.settings.generator import render_role
+
+        schema = crc.load_schema(crc.DEFAULT_SCHEMA)
+        self.assertEqual(crc.check_excluded_commands_exact(schema), [])
+        for role_name, pattern in (("default", "A"), ("claude-org-self-edit", "B")):
+            settings = render_role(
+                schema, role_name, "/w", "/co", pattern=pattern,
+                base_clone="/co", task_id="t", branch_ref="b",
+            )
+            excluded = settings["sandbox"]["excludedCommands"]
+            self.assertIn("git rebase origin/main", excluded)
+            self.assertIn('bash "/co/tools/codex_review_gate.sh" origin/main', excluded)
+            for entry in excluded:
+                if not entry.startswith("docker "):
+                    self.assertIn(f"Bash({entry})", settings["permissions"]["allow"])
+        role = schema["worker_roles"]["default"]
+        body = role["sandbox_by_pattern"]["A"]
+        for bad in (
+            "git rebase *",
+            "git rebase origin/main > log",
+            "git rebase origin/main && git log",
+            "git rebase $(echo origin/main)",
+            "cd x",
+        ):
+            role["permissions"]["allow"].append(f"Bash({bad})")
+            body["excludedCommands"] = [bad]
+            findings = crc.check_excluded_commands_exact(schema)
+            self.assertEqual(
+                [f.role for f in findings],
+                ["worker_roles.default.sandbox_by_pattern.A"],
+                msg=bad,
+            )
+        body["excludedCommands"] = ["git rebase origin/dev"]
+        self.assertIn(
+            "no exact permissions.allow",
+            crc.check_excluded_commands_exact(schema)[0].format(),
+        )
+
     def test_sandbox_network_allowed_domains_distributed(self):
         # The work-discovery judgment stage (claude -p) needs api.anthropic.com
         # on the roles that run the scan; the template must carry it and a

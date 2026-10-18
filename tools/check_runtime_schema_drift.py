@@ -160,6 +160,22 @@ _JA_ONLY_LAYER2_CREDENTIAL_DENIES = frozenset(
 )
 
 
+# ja-only worker ``permissions.allow`` entries, stripped on BOTH sides
+# like the credential mirrors above. Each is the exact allow rule paired
+# with a ja-only ``sandbox_by_pattern.*.excludedCommands`` entry (the
+# sandbox bodies are stripped wholesale), so the two travel together:
+# ``git rebase origin/main`` and ja's own ``tools/codex_review_gate.sh``
+# run outside the worker sandbox. Worker settings render from ja's schema,
+# so no runtime release is needed.
+_JA_ONLY_WORKER_ALLOWS = frozenset(
+    {
+        "Bash(git rebase origin/main)",
+        'Bash(bash "{claude_org_path}/tools/codex_review_gate.sh" origin/main)',
+        "Bash(bash {claude_org_path}/tools/codex_review_gate.sh origin/main)",
+    }
+)
+
+
 # ja-only PreToolUse hook scripts that the byte check strips from
 # ``required_hook_scripts`` and from every ``roles[*].required_hooks``
 # entry on BOTH sides before comparison. Same rationale as
@@ -369,6 +385,21 @@ def _strip_ja_only_sandbox_bodies(schema: object) -> object:
                                 for entry in permissions["deny"]
                                 if entry
                                 not in _JA_ONLY_LAYER2_CREDENTIAL_DENIES
+                            ],
+                        },
+                    }
+                permissions = cleaned.get("permissions")
+                if isinstance(permissions, dict) and isinstance(
+                    permissions.get("allow"), list
+                ):
+                    cleaned = {
+                        **cleaned,
+                        "permissions": {
+                            **permissions,
+                            "allow": [
+                                entry
+                                for entry in permissions["allow"]
+                                if entry not in _JA_ONLY_WORKER_ALLOWS
                             ],
                         },
                     }

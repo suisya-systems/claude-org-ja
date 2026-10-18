@@ -372,6 +372,54 @@ def check_env_template_allow_read(schema: dict) -> list:
     ]
 
 
+# Docker cannot run inside the sandbox at all, so its excludedCommands keep
+# the prefix-wildcard shape of their allow rules. Every other entry takes a
+# command that normally works sandboxed out of it, so it must stay exact.
+_WILDCARD_EXCLUDED_PREFIX = "docker "
+_EXCLUDED_FORBIDDEN_CHARS = frozenset("*;&|<>$`()\n")
+
+
+def check_excluded_commands_exact(schema: dict) -> list:
+    """Non-docker ``sandbox.excludedCommands`` entries must be exact
+    commands -- no wildcard, no chaining / redirect / substitution
+    characters, no ``cd`` -- each mirrored by an exact ``Bash(<entry>)``
+    allow rule on the same role. A pattern with no wildcard matches only
+    that command, so any other argument, chained, or redirected form stays
+    sandboxed (https://code.claude.com/docs/en/settings-reference
+    'sandbox.excludedCommands')."""
+    findings = []
+    for section in ("roles", "worker_roles"):
+        for role_name, role in schema.get(section, {}).items():
+            if not isinstance(role, dict):
+                continue
+            allow = set(_dig(role, "permissions", "allow") or [])
+            bodies = [("sandbox", role.get("sandbox"))] + [
+                (f"sandbox_by_pattern.{p}", b)
+                for p, b in (role.get("sandbox_by_pattern") or {}).items()
+            ]
+            for suffix, body in bodies:
+                if not isinstance(body, dict):
+                    continue
+                for entry in body.get("excludedCommands") or []:
+                    if entry.startswith(_WILDCARD_EXCLUDED_PREFIX):
+                        continue
+                    problem = None
+                    if _EXCLUDED_FORBIDDEN_CHARS & set(entry) or entry.split()[:1] == ["cd"]:
+                        problem = "must be an exact command (no wildcard, chaining, redirect, substitution or cd)"
+                    elif f"Bash({entry})" not in allow:
+                        problem = f"has no exact permissions.allow rule Bash({entry})"
+                    if problem:
+                        findings.append(
+                            Finding(
+                                "org_extension_schema.json",
+                                f"{section}.{role_name}.{suffix}",
+                                "ERROR",
+                                f"sandbox.excludedCommands entry {entry!r} {problem}",
+                            )
+                        )
+    return findings
+
+
 _HOOKS_DIR_MARKER = ".hooks/"
 _SHELL_WORD_BREAKS = frozenset(" \t\r\n;|&<>()")
 _WINDOWS_ABS_RE = re.compile(r"^[A-Za-z]:/")
@@ -959,6 +1007,7 @@ def run(
     findings: list = []
     findings.extend(validate_schema_integrity(schema))
     findings.extend(check_env_template_allow_read(schema))
+    findings.extend(check_excluded_commands_exact(schema))
     findings.extend(check_docs(schema, permissions_md))
     # Anchored at REPO_ROOT (the checkout shipping .hooks/), not ``root``:
     # this validates the SoT templates, which are not root-dependent.
