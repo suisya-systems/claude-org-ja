@@ -214,6 +214,7 @@ class Org:
         self.record_path = self.context_dir / f"{ROLE}.json"
         self.op_path = self.context_dir / "handover-op.json"
         self.backoff_path = self.context_dir / "handover-backoff.json"
+        self.unset_path = self.context_dir / "handover-threshold-unset.json"
         self.handover_path = state_dir / "dispatcher-handover.md"
         self.pid_path = state_dir / "context_handover_watch.json"
 
@@ -374,14 +375,36 @@ class Watcher:
         reason = not_quiet_reason(rec, self.clock())
         if reason:
             return False, reason
+        threshold = int(rec.get("threshold_tokens") or 0)
+        if threshold <= 0:
+            self.warn_threshold_unset(rec)
+            return False, "threshold_unset"
         tokens = last_usage_tokens(Path(rec.get("transcript_path") or ""))
         if tokens is None:
             return False, "usage_unknown"
-        if tokens < int(rec.get("threshold_tokens") or 0) or not rec.get("threshold_tokens"):
+        if tokens < threshold:
             return False, "under_threshold"
         if self.org.runs(("queued",)):
             return False, "dispatch_in_progress"
         return True, f"tokens={tokens}"
+
+    def warn_threshold_unset(self, rec: dict) -> None:
+        """Tell the secretary once per session that no threshold is configured."""
+        sid = rec.get("session_id")
+        seen = self.org.read_json(self.org.unset_path, {})
+        if seen.get(ROLE) == sid:
+            return
+        self.org.write_json(self.org.unset_path, {**seen, ROLE: sid})
+        payload = {"role": ROLE, "reason": "threshold_unset"}
+        try:
+            self.org.append_event("auto_handover_skipped", payload)
+        except Exception as exc:  # noqa: BLE001 — still tell the secretary
+            print(f"[context-handover] event write failed: {exc}", file=sys.stderr)
+        line = ("DISPATCHER_AUTO_HANDOVER_SKIPPED: reason=threshold_unset "
+                "(CLAUDE_ORG_HANDOVER_THRESHOLD_TOKENS も CLAUDE_CODE_AUTO_COMPACT_WINDOW も未設定のため"
+                "自動引き継ぎをしません。ディスパッチャーの settings の env に閾値を設定してください)")
+        delivered = self.org.notify_secretary(line)
+        print(f"[context-handover] {line} (secretary notified={delivered})", flush=True)
 
     def start_op(self) -> dict:
         rec = self.org.record()

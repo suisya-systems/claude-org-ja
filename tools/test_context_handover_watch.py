@@ -47,7 +47,8 @@ class TestRecord(unittest.TestCase):
     def test_threshold_and_role(self):
         self.assertEqual(record.threshold_from_env({record.THRESHOLD_ENV: "5000"}), 5000)
         self.assertEqual(record.threshold_from_env({record.WINDOW_ENV: "1000000"}), 600000)
-        self.assertEqual(record.threshold_from_env({}), 120000)
+        self.assertIsNone(record.threshold_from_env({}))
+        self.assertIsNone(record.threshold_from_env({record.THRESHOLD_ENV: "x"}))
         self.assertEqual(record.role_for("/org/.dispatcher"), "dispatcher")
         self.assertEqual(record.role_for("/org"), "secretary")
 
@@ -231,6 +232,17 @@ class TestWatcher(unittest.TestCase):
         self.sim.rec(threshold_tokens=500, turn_open=6)
         self.assertEqual(self.w.tick(), "turn_open")
         self.assertEqual(self.sim.enters, [])
+
+    def test_threshold_unset_skips_and_tells_secretary_once(self):
+        cur = json.loads(self.org.record_path.read_text())
+        cur.pop("threshold_tokens")
+        self.org.write_json(self.org.record_path, cur)
+        self.assertEqual(self.w.tick(), "threshold_unset")
+        self.assertEqual(self.w.tick(), "threshold_unset")
+        self.assertEqual(self.sim.enters, [])
+        self.assertEqual(len(self.notes), 1)
+        self.assertIn("threshold_unset", self.notes[0])
+        self.assertEqual(len(self.events("auto_handover_skipped")), 1)
 
     def test_composer_not_empty_stops_without_typing(self):
         self.sim.composer = "half-typed"

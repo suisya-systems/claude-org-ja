@@ -384,7 +384,8 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
   "idleCompaction": false,
   "claudeMdExcludes": ["{claude_org_path}/CLAUDE.md"],
   "env": {
-    "CLAUDE_ORG_PATH": "{claude_org_path}"
+    "CLAUDE_ORG_PATH": "{claude_org_path}",
+    "CLAUDE_ORG_HANDOVER_THRESHOLD_TOKENS": "600000"
   },
   "sandbox": {
     "network": {
@@ -413,7 +414,7 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
 
 **`idleCompaction: false`**: idle 中の自動要約が自動引き継ぎより先に走らないようにする（設計 §2.2）。
 
-**引き継ぎの閾値**: 既定は auto-compact window（環境変数 `CLAUDE_CODE_AUTO_COMPACT_WINDOW`）の 60%、window を設定していなければ 120000 トークン。変えるときは上の `env` に `"CLAUDE_ORG_HANDOVER_THRESHOLD_TOKENS": "<トークン数>"` を足す（フックが読んで記録に書き、watcher が使う）。
+**引き継ぎの閾値**: 上の `env` の `CLAUDE_ORG_HANDOVER_THRESHOLD_TOKENS`（トークン数。雛形は 600000 = window 1M の 60%）をフックが読んで記録に書き、watcher が使う。window が 1M でないときはこの値を window の 60% に合わせる。この変数が無ければ `CLAUDE_CODE_AUTO_COMPACT_WINDOW` の 60% を使い、どちらも無ければ閾値を記録せず、watcher は引き継ぎをせずに窓口へ `threshold_unset` を 1 回知らせる（window の大きさは仮定しない）。
 
 ## キュレーター (`<repo>/.curator/.claude/settings.local.json`)
 

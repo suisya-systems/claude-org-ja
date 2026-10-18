@@ -79,7 +79,7 @@ Stop フックを付けた Claude Code のペインで確かめた。
 | `PreCompact` | §2.2 の 1 行 |
 
 - `turn_open` を `UserPromptSubmit` の回数でなく `turn_closed` に結び付けるのは、`UserPromptSubmit` を伴わずに始まったターンや、ターンの途中に吸収された入力で、2 つの数が恒久的にずれないようにするため。開いているターンがあるかどうかだけが要る。
-- 閾値は記録フックが環境変数から決める。`CLAUDE_ORG_HANDOVER_THRESHOLD_TOKENS` があればその値、無ければ `CLAUDE_CODE_AUTO_COMPACT_WINDOW` の 60%、どちらも無ければ 200K の 60%（120K）。役割の settings の `env` に書けばフックに渡る。
+- 閾値は記録フックが環境変数から決める。`CLAUDE_ORG_HANDOVER_THRESHOLD_TOKENS` があればその値、無ければ `CLAUDE_CODE_AUTO_COMPACT_WINDOW` の 60%。どちらも無ければ window の大きさを仮定せず `threshold_tokens` を記録しない（ディスパッチャーの雛形は 600000 = window 1M の 60% を `env` に置く）。閾値が無い記録を見た watcher は引き継ぎをせず、理由 `threshold_unset` を events（`auto_handover_skipped`）に 1 行書き、窓口へ 1 回だけ知らせる（同じセッションでは再通知しない）。役割の settings の `env` に書けばフックに渡る。
 - 実装は [`tools/context_record.py`](../../tools/context_record.py)（フックは [`.hooks/context-record.sh`](../../.hooks/context-record.sh)）。
 
 - 役割はフックの `cwd` で決める（`.dispatcher/` 配下ならディスパッチャー）。リポジトリ直下の `.claude/settings.local.json` はディスパッチャーのセッションにも読まれる（[`.claude/skills/org-setup/SKILL.md`](../../.claude/skills/org-setup/SKILL.md) 30〜32 行）ので、役割で書き分けないと記録が混ざる。
