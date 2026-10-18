@@ -378,11 +378,11 @@ Block D の合流が終わった後に 1 回実行する（Block D-1 の画面�
 
 1. 窓口が **sandbox の外で**（ワーカーや sandbox 内の Bash からは常駐プロセスを残せない）次を実行する。ペインは作らない:
    ```bash
-   <env 前置>python3 tools/context_handover_watch.py --daemon   # Windows native は py -3
+   <env 前置>python3 tools/context_handover_watch.py --daemon
    ```
    - `<env 前置>` は [`.claude/skills/pr-watch-pane/SKILL.md`](../pr-watch-pane/SKILL.md) Step 3-1 の env 前置注入と同じ規則で作る（窓口ペインの `ORG_TRANSPORT` / `ORG_BROKER_STATE_DIR` / `PATH` の実値を `export ...;` で並べ、空の変数は export 文ごと省く）。watcher は transport を解決して打鍵先（renga CLI か tmux）を選び、失敗の通知を `tools/peer_notify.py` で送るので、窓口と同じ値が要る
    - `--daemon` は watcher を窓口のシェルから切り離して起こし、`.state/context_handover_watch.json` に pid が載るのを見届けてから戻る。ログは `.state/context_handover_watch.log` に追記される（稼働中は状態が変わった行だけ）
-   - 出力と終了コードで結果を見る: `DAEMON: started pid=... log=...`（exit 0）→ 稼働中、報告不要 / `自動引き継ぎ無効: ...`（exit 3）→ broker の terminal adapter が tmux でない。起動完了報告に「文脈の自動引き継ぎ: 無効（<理由>）」と 1 行書く / `already running ...`（exit 3）→ 既に動いている（`/org-resume` での再実行など）。何もしない / `DAEMON: exited at start` または `did not register`（exit 1）→ ログを読み、起動完了報告に「文脈の自動引き継ぎ: watcher を起動できず（<理由>）」と 1 行書く。別の方法で代わりに回さない。自動引き継ぎが無いだけで、手動の `DISPATCHER_HANDOVER` 経路は使える
+   - 出力と終了コードで結果を見る: `DAEMON: started pid=... log=...`（exit 0）→ 稼働中、報告不要 / `自動引き継ぎ無効: ...`（exit 3）→ broker の terminal adapter が tmux でない、または Windows native（`--daemon` は POSIX のみ。停止経路が無いため）。起動完了報告に「文脈の自動引き継ぎ: 無効（<理由>）」と 1 行書く / `already running ...`（exit 3）→ 既に動いている（`/org-resume` での再実行など）。何もしない / `DAEMON: exited at start` または `did not register`（exit 1）→ ログを読み、起動完了報告に「文脈の自動引き継ぎ: watcher を起動できず（<理由>）」と 1 行書く。別の方法で代わりに回さない。自動引き継ぎが無いだけで、手動の `DISPATCHER_HANDOVER` 経路は使える
 2. **生存確認**: `python3 tools/context_handover_watch.py --status`。pid ファイルの pid と生きているプロセスの cmdline・cwd を照合し、`STATUS: running pid=...`（exit 0）か `STATUS: not running`（exit 1。残骸の pid ファイルがあれば `stale sidecar` と付く）を返す
 3. **停止経路**: watcher は起動時に `.state/context_handover_watch.json`（pid / cwd / cmdline）を書き、`/org-suspend` Phase 3.65 / `/org-down` が `python3 tools/context_handover_watch.py --stop` で照合して止める。ペインが無いので teardown では閉じず、この `--stop` が唯一の停止経路になる
 4. 引き継ぎに失敗すると watcher は `auto_handover_failed` を events に書き、窓口へ `DISPATCHER_AUTO_HANDOVER_FAILED: op=... stage=... reason=...` を送り、30 分は試さない。受けた窓口は人に伝える（`/clear` 済みの段で止まったときは、ディスパッチャーペインに `/dispatcher-resume` を打てば戻れる）。切り替えの前後で稼働中ワーカーや判断仰ぎが消えていれば `DISPATCHER_AUTO_HANDOVER_LOSS_SUSPECTED: ...` が届くので、これも人に伝える。ディスパッチャーからの `DISPATCHER_AUTO_HANDOVER: 自動引き継ぎ中 ...` は知らせだけで、窓口は打鍵しない。
