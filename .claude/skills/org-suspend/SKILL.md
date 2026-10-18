@@ -17,6 +17,8 @@ allowed-tools:
   - Bash(py -3 -m tools.state_db.importer:*)
   - Bash(python3 tools/secretary_queue_watcher.py:*)
   - Bash(py -3 tools/secretary_queue_watcher.py:*)
+  - Bash(python3 tools/context_handover_watch.py:*)
+  - Bash(py -3 tools/context_handover_watch.py:*)
   - Bash(rm -f .state/attention_pane.json)
   - Bash(del .state\attention_pane.json)
   - mcp__org-broker__check_messages
@@ -257,6 +259,22 @@ if (Test-Path $pf) {
   Remove-Item $pf -ErrorAction SilentlyContinue
 }
 ```
+
+## Phase 3.65: context-handover watcher の停止（ペイン teardown の前）
+
+org-start Block E が起動した文脈の自動引き継ぎ watcher を、Phase 4 のペイン一括 teardown より前に
+止める（引き継ぎの途中でディスパッチャーを閉じると、watcher が失敗として窓口に知らせてしまうため）。
+watcher は起動時に `.state/context_handover_watch.json` へ pid / cwd / cmdline を記録しており、
+`--stop` が cwd と live argv を照合できたときだけ SIGTERM する（照合が外れたら kill せず sidecar だけ消す）。
+watcher のペインは watcher が終わるとシェルごと閉じる。**sandbox 外で**実行する:
+
+```bash
+python3 tools/context_handover_watch.py --stop   # Windows native は py -3 tools/context_handover_watch.py --stop
+```
+
+出力の `STOP: ...` 1 行で結果を確認する（`stopped` / `not running` / `not this org's watcher`）。
+argv を照合できない Windows native では kill せず sidecar だけ消えるので、ペインは Phase 4 の
+teardown で閉じる（ペインを閉じればプロセスも終わる）。
 
 ## Phase 3.7: attention watcher の停止（ペイン teardown の前）
 

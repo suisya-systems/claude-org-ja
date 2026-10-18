@@ -41,7 +41,18 @@
 - 自動要約が始まる量はトークン数の auto-compact window で決まり、`autoCompactWindow`・`/autocompact`・`--autocompact`・`CLAUDE_CODE_AUTO_COMPACT_WINDOW` で変えられる。範囲は 100K〜1M トークン（https://code.claude.com/docs/en/model-config 「Set the auto-compact window」）。
 - idle 中の要約（`idleCompaction`）もあり、設定で止められる（https://code.claude.com/docs/en/settings-reference の `idleCompaction` 行）。これも `PreCompact` の `auto` で発火する（hooks ページ「PreCompact」の matcher 表）。
 - `SessionStart` の `source` は `startup` / `resume` / `clear` / `compact` / `fork` のいずれか（hooks ページ「SessionStart」の matcher 表）。`/clear` が終わったことはここで取れる。
-- 会話記録の各応答行には `message.usage`（`input_tokens` / `cache_creation_input_tokens` / `cache_read_input_tokens` / `output_tokens`）が入っている。手元の会話記録 1 本で見ただけなので、実装の最初に確かめ直す。
+- 会話記録の各応答行には `message.usage`（`input_tokens` / `cache_creation_input_tokens` / `cache_read_input_tokens` / `output_tokens`）が入っている。実装の最初に、ワーカーの会話記録で `type=assistant` の行に同じ欄があることを確かめた。
+
+#### 実機で確かめたこと（実装の最初）
+
+Stop フックを付けた Claude Code のペインで確かめた。
+
+- `Stop` の入力に `background_tasks` と `session_crons`（`id` / `schedule` / `recurring` / `prompt`）が入る。
+- **`/clear` は `/loop` の予約を消さない**。`/loop` を張って `/clear` を打つと、新しいセッションの最初の `Stop` の `session_crons` に同じ id の予約が残っていた。同じ指示文で `/loop` をもう一度打つと、予約は上書きされず 2 本になった。§3.4・§6.1 はこれを前提に書き直した。
+- チャネルのメッセージで始まったターンも、`/loop` の予約が発火して始まったターンも、`UserPromptSubmit` が発火する（`prompt` にそれぞれチャネルの本文、予約の指示文が入る）。開いているターンは `UserPromptSubmit` と `Stop` で数えられる。
+- `/clear` では `UserPromptSubmit` は発火しない。`/clear` の行は旧会話記録ではなく新しい会話記録に入る。旧会話記録のファイルは消えずに残る。
+- renga のペインではフックの環境変数に `RENGA_PANE_ID` が入る。tmux はペイン内のプロセスに `TMUX_PANE` を渡し（`man tmux` の pane ID の節）、broker の tmux adapter は spawn 時に足した変数だけを消す（claude-org-runtime `terminal/tmux.py` の `new-session -e` と `set-environment -u` の組み）。broker + tmux のペインでの実測は、作業環境の sandbox が tmux のソケットを塞ぐためできていない。
+- メッセージが会話記録に入る形は §4.4 に書いた。
 
 ### 2.2 採用: watcher が会話記録から読み直す
 
@@ -62,15 +73,19 @@
 
 | フック | 書く内容 |
 |---|---|
-| `SessionStart` | `session_id`・`transcript_path`・ペイン id（`RENGA_PANE_ID` または tmux の `TMUX_PANE`）・`source`。`source=clear` のときは `cleared_at` も書く |
-| `UserPromptSubmit` | `turn_open += 1`、`prompt_at` |
-| `Stop` | `turn_closed += 1`、`background_tasks`・`session_crons`（Claude Code が Stop に渡す。hooks ページ「Stop input」） |
+| `SessionStart` | `session_id`・`transcript_path`・ペイン id（`RENGA_PANE_ID` または tmux の `TMUX_PANE`）・`source`・閾値。`source=clear` のときは `cleared_at` も書く。前のセッションが開いたまま残したターンは閉じる（`turn_open = turn_closed`） |
+| `UserPromptSubmit` | `turn_open = turn_closed + 1`、`prompt_at` |
+| `Stop` | `turn_closed += 1` の後 `turn_open = turn_closed`、`background_tasks`・`session_crons`（Claude Code が Stop に渡す。hooks ページ「Stop input」） |
 | `PreCompact` | §2.2 の 1 行 |
+
+- `turn_open` を `UserPromptSubmit` の回数でなく `turn_closed` に結び付けるのは、`UserPromptSubmit` を伴わずに始まったターンや、ターンの途中に吸収された入力で、2 つの数が恒久的にずれないようにするため。開いているターンがあるかどうかだけが要る。
+- 閾値は記録フックが環境変数から決める。`CLAUDE_ORG_HANDOVER_THRESHOLD_TOKENS` があればその値、無ければ `CLAUDE_CODE_AUTO_COMPACT_WINDOW` の 60%、どちらも無ければ 200K の 60%（120K）。役割の settings の `env` に書けばフックに渡る。
+- 実装は [`tools/context_record.py`](../../tools/context_record.py)（フックは [`.hooks/context-record.sh`](../../.hooks/context-record.sh)）。
 
 - 役割はフックの `cwd` で決める（`.dispatcher/` 配下ならディスパッチャー）。リポジトリ直下の `.claude/settings.local.json` はディスパッチャーのセッションにも読まれる（[`.claude/skills/org-setup/SKILL.md`](../../.claude/skills/org-setup/SKILL.md) 30〜32 行）ので、役割で書き分けないと記録が混ざる。
 - フックの登録は他のフックと同じく [`tools/org_extension_schema.json`](../../tools/org_extension_schema.json) の `roles.<role>.required_hooks` に足す。
 - watcher は、`session_id` とペイン id が最後の `SessionStart` と一致しない記録、`turn_open != turn_closed` の記録、10 分以上前の `Stop` しか無い記録を「不明」として扱い、切り替えない。フックが失敗して更新が止まった場合も、古い `quiet` が残って切り替わることはない。
-- ペイン id を環境変数から取れるかは実装の最初に確かめる（tmux がペイン内のプロセスに `TMUX_PANE` を渡すこと、broker のペインでも同じであること）。
+- ペイン id を環境変数から取れることは実装の最初に確かめた（§2.1 の「実機で確かめたこと」）。
 
 ### 3.2 共通の条件
 
@@ -87,14 +102,14 @@
 ### 3.4 ディスパッチャーの条件
 
 - `runs.status = 'queued'` の行が無い（派遣の途中ではない。[`tools/state_db/queries.py`](../../tools/state_db/queries.py) 40 行 `ACTIVE_RESERVATION_STATUSES`）。
-- `session_crons` に監視ループが入っているのは平常なので条件にしない。復帰後に 1 本だけになっているかを §6.1 で確かめる。
+- `session_crons` に監視ループが入っているのは平常なので条件にしない。`/clear` は予約を消さないので、監視ループは `/clear` を越えてそのまま残る（§2.1 の「実機で確かめたこと」）。`/dispatcher-resume` は `CronList` で監視ループの予約を数え、0 本のときだけ `/loop 3m` を張り、2 本以上なら 1 本に減らす（[`.claude/skills/dispatcher-resume/SKILL.md`](../../.claude/skills/dispatcher-resume/SKILL.md) Step 5 の 2）。復帰後に 1 本だけになっているかを §6.1 で確かめる。
 - 振り返りゲート（`dispatcher_retro_gate.py`）の ack 待ちは 1 ターンの中で回る（呼び出し形は [`tools/dispatcher_retro_gate.py`](../../tools/dispatcher_retro_gate.py) 冒頭 docstring）ので、開いているターンが無ければ終わっている。
 
 ## 4. 論点 3: 誰が `/clear` を打つか
 
 ### 4.1 採用: 常駐する決定的プロセス（context-handover watcher）
 
-`tools/context_handover_watch.py` を 1 本作り、`/org-start` が専用ペインで起動する（LLM を含まない）。
+[`tools/context_handover_watch.py`](../../tools/context_handover_watch.py) を 1 本作り、`/org-start` が Block D（ディスパッチャーの合流）の後にディスパッチャーペインを分割した専用ペインで起動する（LLM を含まない。[`.claude/skills/org-start/SKILL.md`](../../.claude/skills/org-start/SKILL.md) Block E）。
 
 - 30 秒ごとに `.state/context/*.json` と会話記録を読み、閾値超過かつ §3 の条件を満たす役割があれば §4.3 を回す。同時に回すのは 1 役割だけ。
 - 単一起動と停止は `secretary_queue_watcher.py` と同じく、pid・cmdline を書いた sidecar を `/org-suspend` / `/org-down` が照合して止める。`/org-resume` は起動し直す。
@@ -123,11 +138,11 @@
 
 1. 開始時の `turn_closed` を `s0`、旧会話記録の末尾のバイト位置を `p0` として `handover-op.json` に書く。
 2. `/R-handover auto op=OP` を打つ（text → 読み返し → Enter を別送）。`auto` のときスキルは人への案内文（secretary-handover Step 5）と打鍵の依頼（dispatcher-handover Step 5）を出さず、`op=OP` 付きの event を書く。ディスパッチャーは窓口に「自動引き継ぎ中、打鍵は watcher が行う」とだけ送る（窓口が `/clear` を打ちに来ないように）。
-3. 引き継ぎファイルの `created_at` が開始より新しく、`turn_closed == s0 + 1` かつ `turn_open == turn_closed` になるまで待つ（最大 10 分）。
+3. 引き継ぎファイルの更新時刻が開始より新しく、`turn_closed >= s0 + 1` かつ `turn_open == turn_closed` になるまで待つ（最大 10 分）。`==` でなく `>=` にするのは、引き継ぎのターンの後に監視ループの予約が別のターンを回すことがあるため。そのターンに届いた入力は §4.4 で拾う。
 4. §6.2 の検査を通す。通らなければ止める。
 5. 打つ直前に、開いているターンが無いことをもう一度確かめてから `/clear` を打つ。完了は入力欄が空になることではなく、`.state/context/R.json` に `source=clear` の `SessionStart` が新しい `session_id` で書かれたことで判定する（最大 15 秒）。
 6. §4.4 で `p0` 以降の旧会話記録から入力を抜き出す。
-7. `/R-resume auto op=OP` を打つ。完了は `op=OP` 付きの `*_resumed` event で判定する（最大 60 秒）。ディスパッチャーは、監視対象がいて `/loop 3m` を張り直すべきとき（dispatcher-resume Step 5 の再開条件）に限り、監視ループの heartbeat（`last_scan_at`）が `/clear` より後に更新されることを最大 9 分待つ（3 サイクル。`dispatcher_loop_watch.py` の既定と同じ）。監視対象が無ければ `DISPATCHER_RESUMED_IDLE` 相当の完了で成功とする。
+7. `/R-resume auto op=OP` を打つ。完了は `op=OP` 付きの `*_resumed` event で判定する（最大 60 秒。来なければ 1 回だけ打ち直す）。ディスパッチャーは、監視対象がいる（`runs.status` が `in_use` / `review` の行か `curate-inflight.json` がある）ときに限り、監視ループの heartbeat（`last_scan_at`）が `/clear` より後に更新され、復帰後の `Stop` の `session_crons` に監視ループがちょうど 1 本あることを最大 9 分待つ（3 サイクル。`dispatcher_loop_watch.py` の既定と同じ）。監視ループは `/clear` を越えて残っていることが多く、そのときは復帰のスキルが張り直さないので、待つのは残った予約の次の発火になる。監視対象が無ければ `DISPATCHER_RESUMED_IDLE` 相当の完了で成功とする。
 8. §6.1 の突き合わせをする。
 
 どの段で止まっても `auto_handover_failed`（`OP`・役割・段・理由）を events に書き、その役割は 30 分試さない。知らせる先は次のとおり。events に書くだけでは知らせたことにしない。
@@ -144,12 +159,17 @@ broker の「配送済み」はハーネスが通知を受け付けたという�
 - 起点を引き継ぎのターンの後でなく `p0` にするのは、引き継ぎのターンの途中に届いて引き継ぎファイルに入らなかった入力も拾うため。引き継ぎファイルに既に入っている入力も重ねて渡すことになるが、欠落より重複を許す側に倒す。broker の配送も「重複表示は許容、欠落は致命」の方針で作られている（上記 Surface 8 の配送状態の説明）。復帰のスキルは、引き継ぎファイルに処理済みと書かれた入力を飛ばしてよい。
 
 - 旧会話記録は非同期に書かれる（§2.1）ので、`/clear` の完了から 5 秒待ってから読む。それでも書かれていない分は拾えない。
-- 届いたメッセージが会話記録のどの行の形で入るか（チャネルの push・`check_messages` のツール結果）は実装の最初に確かめる。
+- 届いたメッセージが会話記録に入る形は実装の最初に確かめた。届いた時点で必ず `type=queue-operation`・`operation=enqueue` の行が本文付きで書かれ、そのうえで次のどちらかになる。
+  - そのメッセージでターンが始まったとき: `type=user` の行。チャネルの push は `origin.kind=channel`（`isMeta=true`）、人の入力は `origin.kind=human`。
+  - 動いているターンの途中に届いたとき: `type=user` の行にはならず、`type=attachment`・`attachment.type=queued_command` の行に本文が入る（`enqueue` の後に `operation=remove`・`reason=absorbed_mid_turn` の行が続く）。
+
+  watcher はこの 3 種（`enqueue`・`origin` の付いた `user`・`queued_command`）を全部読み、本文が同じものは 1 つにまとめ、届いた順に並べる。`origin` の無い `user` 行（ツール結果・スキル本文の展開）は入力ではないので読まない。自分が打った `/R-handover auto op=OP` は除く。`/clear` の行は新しい会話記録に入るので、旧会話記録には出てこない。`check_messages` のツール結果は、受け取ったターンの中でモデルが既に読んでいるので拾わない。実装は [`tools/context_handover_watch.py`](../../tools/context_handover_watch.py) の `extract_late_inputs`。
 
 ### 4.5 再送と再起動
 
-- 復帰のスキルは `op=OP` が同じなら 2 回目以降は初期化をやり直さず、同じ完了の event を書き直すだけにする。ディスパッチャーの `already_consumed` の分岐は今は何も送らない（[`.claude/skills/dispatcher-resume/SKILL.md`](../../.claude/skills/dispatcher-resume/SKILL.md) 110〜121 行）ので、`auto op=OP` のときは完了の event を書くように足す。
+- 復帰のスキルは `op=OP` が同じなら 2 回目以降は初期化をやり直さず、同じ完了の event を書き直すだけにする。ディスパッチャーの `already_consumed` の分岐は何も送らない作りだったので、`auto op=OP` のときは完了の event を書くように足した（[`.claude/skills/dispatcher-resume/SKILL.md`](../../.claude/skills/dispatcher-resume/SKILL.md)「自動引き継ぎ」節）。
 - watcher は `/clear` を打つ直前に段を `clearing` と書く。再起動したときは、段が `clearing` 以前なら、`.state/context/R.json` の現在の `session_id` を `handover-op.json` の旧 `session_id` と比べる。同じなら `/clear` はまだ効いていないので最初からやり直す。違っていて `source=clear` なら `/clear` は効いているので §4.3 の 6 から続ける（空のセッションで引き継ぎをやり直して、復帰に要る引き継ぎファイルを上書きしないため）。どちらとも判断できなければ失敗として知らせる（人が `/R-resume` を打てば戻れる状態になっている）。
+- `/clear` が効いた後の段（入力の拾い直し・復帰・突き合わせ）から続けるのは、現在の `session_id` とペイン id が `/clear` の直後に記録したものと同じときだけにする。`/org-suspend` → `/org-start` を挟むと `handover-op.json` は残ったままペインが作り直され、記録した古いペイン id が別のペインに使い回されていることがあるため。違えば打たずに失敗として知らせる。
 
 ## 5. 論点 4: 順序
 
@@ -167,7 +187,7 @@ broker の「配送済み」はハーネスが通知を受け付けたという�
 |---|---|---|
 | 判断仰ぎ | register の `(task_id, received_at)` と段階 | ファイル。窓口は `resolved` 以外があると切り替えない（§3.3） |
 | 稼働中ワーカー | `runs.task_id` と `status`（`queued` / `in_use` / `review`） | state.db |
-| 監視ループ（ディスパッチャー） | 復帰後の最初の `Stop` の `session_crons` のうち監視ループの指示文のもの、と heartbeat | 監視対象がいるときは 1 本だけで、heartbeat が `/clear` より後に動いていること（0 本なら止まっている、2 本なら重複）。監視対象が無いときは 0 本が正常。`.consumed.md` の分岐は `/dispatcher-resume` が走ったときにしか効かず、監視ループ自体はこのスキルを呼ばない（[`.claude/skills/dispatcher-resume/SKILL.md`](../../.claude/skills/dispatcher-resume/SKILL.md) 345〜355 行）ので、ここで数える |
+| 監視ループ（ディスパッチャー） | 復帰後の最初の `Stop` の `session_crons` のうち監視ループの指示文のもの、と heartbeat | 監視対象がいるときは 1 本だけで、heartbeat が `/clear` より後に動いていること（0 本なら止まっている、2 本なら重複）。`/clear` は予約を消さないので、復帰のスキルが `CronList` で数えずに `/loop` を張ると 2 本になる（§3.4）。監視対象が無いときは確かめない（残った予約は次のサイクルで監視対象なしを見て自分で止まる。worker-monitoring Step 7）。`.consumed.md` の分岐は `/dispatcher-resume` が走ったときにしか効かず、監視ループ自体はこのスキルを呼ばないので、ここで数える |
 | 窓口の滞留 watcher（broker） | sidecar の pid | 復帰後に生きていること（§3.2） |
 | `/clear` の前後に届いた入力 | 旧会話記録の `p0` 以降の入力（操作 id ごとのファイル） | §4.4 |
 | ディスパッチャーの cursor・idle streak・curate 記録 | dispatcher-handover が触らないとするファイル | ファイル |
@@ -199,7 +219,7 @@ broker の「配送済み」はハーネスが通知を受け付けたという�
 
 ## 7. 残り（本設計では扱わない）
 
-- 窓口に `/loop` があると切り替えない（§3.3）。`/clear` が予約を消すかを確かめてから、張り直す形にするか決める。
+- 窓口に `/loop` があると切り替えない（§3.3）。`/clear` は予約を消さないと分かった（§2.1 の「実機で確かめたこと」）ので、窓口の自動引き継ぎを作る段で、残った予約をそのまま使う形にして条件から外すかを決める。
 - §4.2 の読み返しと Enter の間の隙間は消せない。
 - broker では窓口の `/secretary-resume` が自分のペイン id を確定できず、人に続行の判断を仰ぐ（[`.claude/skills/secretary-resume/SKILL.md`](../../.claude/skills/secretary-resume/SKILL.md) Step 0 の 2）。§3.1 でフックが環境変数から取ったペイン id を `auto` の復帰で使ってよいかは、契約（[`docs/contracts/backend-interface-contract.md`](../../docs/contracts/backend-interface-contract.md) T-§4.2）の解釈の問題なので、窓口の自動引き継ぎを作る段で決める。決まるまで broker の窓口は自動引き継ぎの対象にしない。
 - 1 ターンの中で閾値から自動要約まで進む場合（§2.2）は引き継ぎが間に合わない。
@@ -240,3 +260,11 @@ Codex の設計レビュー（`codex_review_gate.sh --design`、1 回）で Bloc
 |---|---|---|
 | P2 | 拾い直した入力のファイルが 1 本だと、次の操作で前の操作の入力を読み直す | 操作 id ごとのファイルにし、読み終えたら rename する（§4.4） |
 | P2 | 監視対象が無いディスパッチャーは監視ループを張らない（`DISPATCHER_RESUMED_IDLE`）ので、heartbeat を無条件に待つと正常な復帰を失敗にする | heartbeat と監視ループ 1 本の確認を、監視対象がいるときに限る（§4.3 の 7・§6.1） |
+
+ディスパッチャー段の実装の差分レビューで次の 2 件が出た。
+
+| 重さ | 指摘 | 扱い |
+|---|---|---|
+| P1 | チャネルのメッセージや予約で始まったターンは `UserPromptSubmit` を伴わず、開いているターンを見落として `/clear` を打ちうる | 実機で確かめ、前提が違った。どちらのターンでも `UserPromptSubmit` は発火する（§2.1 の「実機で確かめたこと」）。記録の形はそのまま |
+| P2 | `/org-suspend` → `/org-start` を挟むと、`/clear` 後の段から続けるときに古いペイン id へ打鍵しうる | 採用。`/clear` 直後の `session_id` とペイン id を記録し、一致するときだけ続ける（§4.5） |
+| P2（2 回目） | 突き合わせの 9 分の間に最後のワーカーが終わると、監視ループが正しく止まったのに失敗として知らせる | 採用。待つ間も監視対象の有無を毎回見直し、無くなったら成功とする（§4.3 の 7） |

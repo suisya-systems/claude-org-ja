@@ -57,7 +57,9 @@ PARSE_MARKER="JSON object として解析できませんでした"
 #   専用テスト tests/test-block-adhoc-pr-watch.sh 側で挙動を検査する。
 # - check-dispatcher-loop.sh: UserPromptSubmit の助言フックでブロックしない (常に exit 0)。
 #   窓口の入力を止めないため判定不能は無言で通す。判定本体は tools/test_dispatcher_loop_watch.py。
-EXEMPT=("fixture-always-block.sh" "block-adhoc-pr-watch.sh" "check-dispatcher-loop.sh")
+# - context-record.sh: 文脈の自動引き継ぎ用の記録フックでブロックしない (常に exit 0)。
+#   記録できなくても会話を止めない。判定本体は tools/test_context_handover_watch.py。
+EXEMPT=("fixture-always-block.sh" "block-adhoc-pr-watch.sh" "check-dispatcher-loop.sh" "context-record.sh")
 
 PASS=0; FAIL=0; TEST_NUM=0
 

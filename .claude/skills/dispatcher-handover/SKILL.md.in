@@ -8,6 +8,7 @@ description: >
   流れで新しいディスパッチャー session を開始する準備をする。
   Secretary から DISPATCHER_HANDOVER peer message を受領したとき、または
   ディスパッチャー自身が context が長くなったと判断したときに使う。
+  context-handover watcher が `/dispatcher-handover auto op=<OP>` を打鍵したときも使う。
 effort: low
 allowed-tools:
   - Read
@@ -171,6 +172,19 @@ pending_decisions_count: <int>
 bash ../tools/journal_append.sh dispatcher_handover \
     active_workers=<int> pending_decisions=<int> \
     note=context_compaction
+```
+
+自動引き継ぎ（引数 `auto op=<OP>` 付きで呼ばれたとき）は同じ行に `op=<OP>` を足す。
+
+## Step 5（自動引き継ぎ）: `auto op=<OP>` のとき
+
+`/dispatcher-handover auto op=<OP>` は context-handover watcher
+（[`tools/context_handover_watch.py`](../../../tools/context_handover_watch.py)）が打鍵する。
+このときは下の Step 5 を行わず、secretary へ次の 1 通だけ送って終える（ack は待たない）。
+`/clear` と `/dispatcher-resume auto op=<OP>` は watcher が打つので、窓口に打鍵を頼まない:
+
+```
+DISPATCHER_AUTO_HANDOVER: 自動引き継ぎ中（op=<OP>）。/clear と /dispatcher-resume の打鍵は watcher が行います。窓口からは打鍵しないでください。
 ```
 
 ## Step 5: secretary に通知する
