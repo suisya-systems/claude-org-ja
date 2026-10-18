@@ -329,6 +329,7 @@ class Watcher:
         self.backend_factory = backend_factory
         self.clock = clock
         self.sleep = sleep
+        self._unset_tried: set = set()
 
     # -- small waits -----------------------------------------------------
     def wait_until(self, predicate, timeout: float, interval: float = 1.0) -> bool:
@@ -392,9 +393,11 @@ class Watcher:
         """Tell the secretary once per session that no threshold is configured."""
         sid = rec.get("session_id")
         seen = self.org.read_json(self.org.unset_path, {})
-        if seen.get(ROLE) == sid:
+        if seen.get(ROLE) == sid or sid in self._unset_tried:
             return
-        self.org.write_json(self.org.unset_path, {**seen, ROLE: sid})
+        # One attempt per process; the file marker is written only on delivery,
+        # so a failed notice is retried after a watcher restart.
+        self._unset_tried.add(sid)
         payload = {"role": ROLE, "reason": "threshold_unset"}
         try:
             self.org.append_event("auto_handover_skipped", payload)
@@ -404,6 +407,8 @@ class Watcher:
                 "(CLAUDE_ORG_HANDOVER_THRESHOLD_TOKENS も CLAUDE_CODE_AUTO_COMPACT_WINDOW も未設定のため"
                 "自動引き継ぎをしません。ディスパッチャーの settings の env に閾値を設定してください)")
         delivered = self.org.notify_secretary(line)
+        if delivered:
+            self.org.write_json(self.org.unset_path, {**seen, ROLE: sid})
         print(f"[context-handover] {line} (secretary notified={delivered})", flush=True)
 
     def start_op(self) -> dict:
