@@ -150,7 +150,10 @@
       "docker build *",
       "docker buildx build *",
       "docker images *",
-      "docker image inspect *"
+      "docker image inspect *",
+      "git rebase origin/main",
+      "bash \"/home/u/co/tools/codex_review_gate.sh\" origin/main",
+      "bash /home/u/co/tools/codex_review_gate.sh origin/main"
     ]
   }
 }

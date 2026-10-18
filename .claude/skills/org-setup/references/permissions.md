@@ -586,3 +586,5 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
 - `check-worker-boundary.sh` は Worker ディレクトリ内でも `.claude/settings.json` / `.claude/settings.local.json` への Edit/Write を deny する。強制フックと env がここに載るため、変更は窓口へのエスカレーション経由にする
 
 **worker git guardrails**: 上の JSON は `check_role_configs.py` が照合する監査下限で、実際の生成元 `worker_roles.default` の deny はこれより広い。生成元は素の `git fetch:*` を allow したうえで、`git -C * fetch` / `git -C * pull`、`git remote add|set-url|remove|rm`、`git reflog expire|delete` と、それぞれの `git -C *` 形を deny する。設計は [`docs/contracts/worker-git-guardrails-design.md`](../../../../docs/contracts/worker-git-guardrails-design.md)（§4.6 network、§5.2.4 template deny、§6 worktree）。
+
+**sandbox の外で動くコマンド**: `default` / `claude-org-self-edit` の生成元は、docker の 4 形に加えて `git rebase origin/main` と差分レビューの Codex ゲート `bash "<claude_org_path>/tools/codex_review_gate.sh" origin/main`（パスの引用符あり・なしの 2 形）だけを `sandbox.excludedCommands` に載せ、同じ字面の allow を置く。sandbox 内の rebase は書込みが拒否される `.claude/skills` 等を書き換えられず、旧内容を残すため。どれもワイルドカードの無い完全一致なので、別の引数・`--design` 形・連結・リダイレクト・`cd`・`$(...)` を含む呼び出しは sandbox 内に残る。完全一致であることと allow の対応は `check_role_configs.py` の `check_excluded_commands_exact` が検査する。
