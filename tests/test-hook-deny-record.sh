@@ -12,6 +12,7 @@ SOURCE_LINE='source "$(dirname "${BASH_SOURCE[0]}")/lib/deny-record.sh"'
 NON_DENYING=(
   check-dispatcher-loop.sh # 助言だけ (fail-open)
   context-record.sh        # 記録だけ (fail-open)
+  remind-verify-premise.sh # 助言だけ (fail-open)
 )
 
 PASS=0; FAIL=0; TEST_NUM=0
@@ -19,6 +20,10 @@ ok() { TEST_NUM=$((TEST_NUM + 1)); PASS=$((PASS + 1)); echo "ok $TEST_NUM - $1";
 ng() { TEST_NUM=$((TEST_NUM + 1)); FAIL=$((FAIL + 1)); echo "not ok $TEST_NUM - $1"; }
 
 # --- 検査: 共通の出口を通らない拒否が無いこと -------------------------------------
+# 一覧に残った消えた hook は検査の抜け穴になるので落とす (載っている hook は exit 2 を持たないことも下で見る)。
+for name in "${NON_DENYING[@]}"; do
+  [[ -f "$HOOKS/$name" ]] && ok "non-denying entry $name exists" || ng "non-denying entry $name no longer exists in .hooks/"
+done
 for f in "$HOOKS"/*.sh; do
   name=$(basename "$f")
   first=$(grep -vE '^[[:space:]]*(#|$)' "$f" | head -n 1)
