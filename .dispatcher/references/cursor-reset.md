@@ -1,6 +1,6 @@
 # poll_events cursor の束縛不一致時の手順 (Step 1) — 詳細
 
-[`.dispatcher/references/worker-monitoring.md`](worker-monitoring.md) から分けた本体仕様。Step 1 で、cursor ファイルが存在して中身が空でなく、かつ束縛 (session_key) が現 backend session と一致しなかったサイクルだけ読む（それ以外のサイクルでは読まない）。
+[`.dispatcher/references/worker-monitoring.md`](worker-monitoring.md) から分けた本体仕様。Step 1 で、cursor ファイルが存在して中身が空でなく、かつ束縛 (session_key) が現 backend session と一致しなかったサイクル、または手順 6 の未達 (対応する `notify_sent` の無い `anomaly_observed`) が残っているサイクルだけ読む（それ以外のサイクルでは読まない）。
 
    - **束縛が一致しなかったサイクル = cursor 破棄。黙って捨てない (MUST, fail loud)**。**適用条件は「捨てるべき cursor が実在したこと」**: cursor ファイルが**存在して中身が空でない**サイクルだけが本手順の対象で、**初回（ファイルが無い / 空）は破棄ではなく開始なので報告しない**（従来どおり `since` 省略で始めるだけ）。ファイルが在って JSON として読めないケースは「壊れた cursor を捨てた」なので対象に**含める**（`legacy_format`）:
      **順序は Step 4 (e) の通知シーケンスと同型にする（観測記録 → de-dup 判定 → 送信 → 送信成功時に `notify_sent`）。`notify_sent` を送信前に書いてはならない (MUST NOT)** — cursor は手順 1 で既に張り直されており次サイクルは一致してこの枝に入らないので、送信前に `notify_sent` を書くと送信が失敗した回の報告が**恒久的に失われる**（台帳も成功と読めてしまう）:

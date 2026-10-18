@@ -1,6 +1,6 @@
 # pane_exited イベントの同定と通知 (Step 1) — 詳細
 
-[`.dispatcher/references/worker-monitoring.md`](worker-monitoring.md) から分けた本体仕様。Step 1 の poll_events 結果に `pane_exited` が含まれるサイクルだけ読む（それ以外のサイクルでは読まない）。
+[`.dispatcher/references/worker-monitoring.md`](worker-monitoring.md) から分けた本体仕様。Step 1 の poll_events 結果に `pane_exited` が含まれるサイクル、または保管済みの `pending_exit_event` が残っているサイクルだけ読む（それ以外のサイクルでは読まない）。
 
    - **どの追跡対象のイベントかを同定してから通知する (attribution)**: `pane_exited` の**受信**が終了の確定証拠であること ([`docs/contracts/backend-interface-contract.md`](../../docs/contracts/backend-interface-contract.md) §3.1: close 成功ごと / crash ごとに exactly once) は変わらない。変わるのは**そのイベントがどの追跡対象のものか**の同定方法で、同契約 T-§3.1 は「a harness MUST NOT match a lifecycle event to a tracked pane by `name` alone unless it has independently established that the pane is in the caller's tab」「Matching by name across an all-tab world can retire a live local pane on another tab's exit event」と書く:
      - **第一に控えてある数値 id で照合する**。契約 T-§3.1 は `pane_exited` が **`id`**（「the pane identifier, in the same id space as `list_panes`.`id`」）と、peer を持つペインでは **`peer_id`**（「the peer identifier, in the same id space as `list_peers`.`id`」）を**契約されたフィールド名で**載せると定める。突き合わせ先は 2 つあり、**どちらか一方でも一致すれば同定は確定する**:
