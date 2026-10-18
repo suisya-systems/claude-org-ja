@@ -162,64 +162,15 @@ bash ../tools/journal_append.sh anomaly_observed source={面} worker=worker-{tas
      - `status == "connected"` だが `server.session_id == null`（当該フィールドを返さない版） → `session_key = "pid={server.pid};endpoint={server.endpoint}"` / `session_key_source = "pid_endpoint"`（**近似**。OS は pid を再利用しうるので (3-a-5) 第 1 面と同じ弱点を持つ）
      - `status != "connected"`（`detached` / `unreachable`）/ 呼び出し自体が失敗 → `session_key = null` / `session_key_source = "unbindable"`。**provenance を確立できていないので保存済み cursor を使わず、かつ cursor ファイルを書き換えない (MUST)**。このサイクルは `since` 省略で poll するだけにして、**lifecycle 面が観測不能だったサイクルとして扱う**（(P4) を `source=lifecycle_event` で報告し、次サイクルで再評価する）。**破棄扱いにしない**理由は 2 つある: (i) 束縛を確かめられないだけで前 session の cursor が壊れたとは限らず、上書きすると**確かに有効だった cursor を自分で捨てる**ことになる（`server_info` が引けない状況は多くの場合 backend 自体に届いていない状況で、そのとき `poll_events` も同様に届いていない）; (ii) 上書きすると保存値も `null` になり、**「捨てた側」と「今回」の区別が消えて**下記 de-dup がエピソードを識別できなくなる。したがって cursor の破棄 = fail loud の対象は、**実在の束縛と実在の現束縛が食い違った形**（`session_mismatch` / `transport_mismatch` / `legacy_format`）に限られる
      - **broker 面**（`server_info` が無い） → `session_key = null` / `session_key_source = "transport_has_no_server_info"`。**保存側の `session_key_source` も同じ値だったときに限り、読み側は従来どおり保存済み cursor をそのまま使う**（broker には backend restart を観測する surface が無く、ここで reset に倒すと毎サイクル cursor を捨てて逆に取りこぼしが増える。**保存側が別の source だった場合 = `ORG_TRANSPORT` を跨いで同じファイルを引き継いだ場合は、renga の連番を broker へ渡すことになるので通常どおり破棄する** — 別 backend の cursor は別 session の cursor より安全ではない）。**broker 面ではこの事故は未解決のまま残る** — 解消には broker 側に session 識別子を返す surface が要る（既知の穴として明示的に持つ。`unbindable` と別値にしてあるのは、「surface が無い」と「surface はあるが今引けなかった」を読み側が取り違えないため）
-   - **束縛が一致しなかったサイクル = cursor 破棄。黙って捨てない (MUST, fail loud)**。**適用条件は「捨てるべき cursor が実在したこと」**: cursor ファイルが**存在して中身が空でない**サイクルだけが本手順の対象で、**初回（ファイルが無い / 空）は破棄ではなく開始なので報告しない**（従来どおり `since` 省略で始めるだけ）。ファイルが在って JSON として読めないケースは「壊れた cursor を捨てた」なので対象に**含める**（`legacy_format`）:
-     **順序は Step 4 (e) の通知シーケンスと同型にする（観測記録 → de-dup 判定 → 送信 → 送信成功時に `notify_sent`）。`notify_sent` を送信前に書いてはならない (MUST NOT)** — cursor は手順 1 で既に張り直されており次サイクルは一致してこの枝に入らないので、送信前に `notify_sent` を書くと送信が失敗した回の報告が**恒久的に失われる**（台帳も成功と読めてしまう）:
-     1. `since` を省略して poll し（上記 (2)）、得た `next_since` を現 `session_key` と揃えて保存し直す（次サイクル以降は通常運用に戻る）
-     2. **観測記録** (常に、送信可否に関わらず): journal に `anomaly_observed` を 1 行追記する（**新しい event 名は導入しない**。`kind` は 2026-08-09 の実走が既に使った `stale_event_cursor` を再利用する — 契約 T-§4.2-place-rec (R3) が同名で記録している）。**`session_key` を payload に載せる** — 下記 de-dup キーはこの値で引くので、載せないと 2 回目以降の restart で「同じ `(source, kind)` が既に在る」と読めてしまい、fail loud が恒久的に沈黙する（`payload_json` は自由形の JSON なので追加キーを取れる: [`tools/state_db/schema.sql`](../../tools/state_db/schema.sql) の `events.payload_json`、消費側の unknown-field 許容は [`docs/journal-events.md`](../../docs/journal-events.md)）。確立できなかったサイクルは literal `none` を入れる:
-        ```
-        bash ../tools/journal_append.sh anomaly_observed source=event_cursor kind=stale_event_cursor confidence=n/a session_key='{session_key|none}' discarded_session_key='{saved.session_key|none}' note={reason}
-        ```
-        **`discarded_session_key`（捨てた側の束縛）も載せる (MUST)**: `session_key` だけを de-dup キーにすると、`unbindable` や broker 面のように `session_key = none` が繰り返し現れる形で、**2 回目以降のエピソードが 1 回目の行に吸収されて恒久的に黙る**（`none` はエピソードを識別しない）。捨てた側の値を併記すると、正常復帰を挟んだ次のエピソードは「実在の束縛を捨てた」形になってキーが変わり、必ず 1 回報告される。読めなかった cursor は `none` を入れる
-        **`session_key` の値は必ずクォートする (MUST)**: `pid_endpoint` 形は `pid=...;endpoint=/run/...` のように `;` を含み、素で置換するとそこでコマンドが切れて **pid 部分しか記帳されない**（endpoint 面を失った key は de-dup の識別力が落ち、pid 再利用時に後続の restart を握り潰す）。`server_info.session_id` 形でも同じ規律で書く（値の形に依らずクォートを外さない）
-        `{reason}` は `session_mismatch`（保存値と現 `session_key` が違う） / `transport_mismatch`（`session_key_source` が保存値と違う = 輸送層を跨いだ） / `legacy_format`（JSON として読めない旧形式 = 束縛の無い cursor） のいずれか。**`unbindable` はここに含まれない** — 上記のとおり cursor を書き換えず破棄もしないので、観測不能サイクル ((P4)) として扱う
-     3. **de-dup 判定（送信の前に引く）**: journal に **`event == "notify_sent"`** かつ **`(source=event_cursor, kind=stale_event_cursor, session_key, discarded_session_key)`** 一致の行が既に在れば**送信しない**（手順 2 の `anomaly_observed` は de-dup キーに含めない — Step 4 (e) と同じ規約）。**`(source, kind)` だけで引いてはならない**（2 回目以降の restart が既存行に吸収されて黙る）。**`discarded_session_key` を落としてもならない**（`unbindable` / broker 面で `session_key = none` が繰り返す形が同じ理由で黙る）。**この 4 つ組が「エピソードごとに 1 回」を満たすのは、破棄が `session_mismatch` / `transport_mismatch` / `legacy_format` の 3 形に限られているから**である（`unbindable` は破棄しないので入ってこない）: いずれの形でも捨てる側・今回側の両方が**実在の値**で、次に破棄が起きるのは実際に別の restart / 別の輸送層を跨いだときだけなのでキーが必ず変わる。逆に `unbindable` を破棄扱いにすると両側が `none` に潰れてエピソードを識別できなくなる — これが上記で cursor を書き換えない設計上の理由でもある
-     4. **通知送信** (手順 3 を通過した場合): 窓口へ 1 行送る（`{{FQ}}send_message(to_id="secretary", ...)`）:
-        ```
-        EVENT_CURSOR_RESET: poll_events cursor を破棄し現在時点から再開しました (理由: {reason})。backend 再起動を跨いだ cursor は連番が復元されず、そのまま使うと以後の pane_exited が全て空振りします。破棄した区間に起きたペイン終了は回収不能です (poll_events に historical replay は無い)。同一タブのワーカーは列挙の突き合わせで従来どおり退役を確定できますが、背景タブ配置のワーカーは終了確定手段が pane_exited だけなので indeterminate として上げます。その退役確定は、以前「在」と観測した数値 id が後続の list_peers から消えたこと (契約 T-§2.1 step (3)) を窓口が reconcile する経路にフォールバックします。
-        ```
-     5. **`notify_sent` 記録** (送信成功時のみ):
-        ```
-        bash ../tools/journal_append.sh notify_sent source=event_cursor kind=stale_event_cursor confidence=n/a session_key='{session_key|none}' discarded_session_key='{saved.session_key|none}'
-        ```
-        （2 フィールドとも手順 2 と同じ値・同じクォート規律で書く。片方でも欠けると de-dup の照合対象が壊れる）
-     6. **未達の持ち越し (MUST)**: 送信が失敗した回は手順 5 を書かないので、台帳に **`anomaly_observed` が在るのに対応する `notify_sent` が無い `(session_key, discarded_session_key)`** が残る。**毎サイクル Step 1 の冒頭でこの形を 1 回引き、在れば手順 4→5 だけを再実行する**（手順 1・2 は再実行しない。cursor は既に張り直され、観測記録も既に在る）。この再試行が唯一の持ち越し手段である — cursor 側は既に一致しているので、mismatch 枝は二度と発火しない
-     7. **破棄した区間の `pane_exited` は回収できない**（`poll_events` は初回省略時「今以降」semantics で historical replay を持たない — 契約 §3.1）。**新しい分岐も per-worker の reset マーカーも足さない**（Step 3 の判定は変えない）。何が失われ何が失われないかは worker の配置で違うので、そこだけを正確に押さえる:
-        - **同タブ worker**: 影響は無い。(3-a-2) の退役確定はもともと `pane_exited` に依存しておらず、2 サイクル連続の列挙消失 + 4 行目の裏取りという**独立の証拠**で立つ。cursor 破棄はこの経路を弱めないので、従来どおり dispatcher が `WORKER_PANE_EXITED` を出してよい
-        - **`placement == "background_tab"` の worker**: ここが失われる面である。(3-a-5) は列挙からの消失を **unknown であって不在ではない**と扱うので、終了の確定手段は attribution 済みの `pane_exited` **だけ**であり、破棄区間にそれが落ちた worker は 3 行目が続く形 = **indeterminate** として (3-a-4) に載り、(P4) を `source=lifecycle_event` で報告して**窓口の reconcile 判断**に委ねる（既存の解消経路そのままで、新設ではない）。これが契約 T-§2.1 step (3) の 2 つ目の手段 = 以前「在」と観測した数値 id が後続の `list_peers` から消えたことを窓口が突き合わせる形で、2026-08-09 の実走はこの経路で退役を確定させている（T-§4.2-place-rec (R3) の `secretary_reconcile_T2.1_ii_list_peers_vanish`）。**dispatcher 側で自動退役させる新しい経路は作らない**
-        窓口への通知本文（手順 4）が「退役確定は窓口 reconcile へフォールバックする」と書くのは**この背景 worker の面**を指す
-     8. record に保管済みの `pending_exit_event` ((3-a-5)) は **破棄しない** — 受信済みの確定証拠であって cursor に依存しないため
+   - **束縛が一致しなかったサイクル = cursor 破棄。黙って捨てない (MUST, fail loud)**: cursor ファイルが存在して中身が空でなく、束縛が一致しなかったサイクルだけ [`.dispatcher/references/cursor-reset.md`](cursor-reset.md) を読んで従う (cursor の破棄・張り直し・窓口への `EVENT_CURSOR_RESET` 報告)。初回 (ファイルが無い / 空) と束縛一致のサイクルは読まない
    - `types=["pane_exited", "events_dropped"]` フィルタで heartbeat / pane_started 等を除外。cursor は filter と無関係に advance するので重複 scan なし
    - `result.events[]` を順に処理:
      - `type == "pane_exited"` かつ `role == "worker"` → **直接通知せず、下記の attribution に回す**（同定できたものだけが `WORKER_PANE_EXITED` になる。capability 形の `poll_events` は他タブのペインの終了も流すので、`role == "worker"` だけで通知すると別 org の同名ワーカーの終了で自タブのワーカーを退役させる）
      - `type == "events_dropped"` → journal helper (`../tools/journal_append.sh`) 経由で `.state/state.db` の `events` テーブルに drop 件数を記録（監視が追いついていないシグナル）
      - それ以外（ディスパッチャー/キュレーター/窓口の終了） → 誤ってワーカー終了として扱わない
    - **filter 不一致イベント到着で long-poll 早期終了する仕様**なので、空応答時は次サイクルで再 poll（cursor 保持で重複なし）
-   - **どの追跡対象のイベントかを同定してから通知する (attribution)**: `pane_exited` の**受信**が終了の確定証拠であること ([`docs/contracts/backend-interface-contract.md`](../../docs/contracts/backend-interface-contract.md) §3.1: close 成功ごと / crash ごとに exactly once) は変わらない。変わるのは**そのイベントがどの追跡対象のものか**の同定方法で、同契約 T-§3.1 は「a harness MUST NOT match a lifecycle event to a tracked pane by `name` alone unless it has independently established that the pane is in the caller's tab」「Matching by name across an all-tab world can retire a live local pane on another tab's exit event」と書く:
-     - **第一に控えてある数値 id で照合する**。契約 T-§3.1 は `pane_exited` が **`id`**（「the pane identifier, in the same id space as `list_panes`.`id`」）と、peer を持つペインでは **`peer_id`**（「the peer identifier, in the same id space as `list_peers`.`id`」）を**契約されたフィールド名で**載せると定める。突き合わせ先は 2 つあり、**どちらか一方でも一致すれば同定は確定する**:
-       - イベントの pane 識別子 ↔ Step 3 (3-a-3) で控えた `tracked_pane_id`
-       - **`placement == "background_tab"` の worker では、突き合わせ先を `bound_pane_id` (pane 面) と `bound_peer_id` (peer 面) に読み替える** ((3-a-5))。背景 worker では `tracked_pane_id` が構造的に `null` で、`same_tab_peer_id` は意味が違うので使わない。**背景 worker の未同定イベントは `name` 一致へフォールバックせず、そのまま attribution 未確定として扱う** (全タブ世界で `name` は一意でない — T-§3.1)
-       - **ただし背景 worker の同定は、この Step 1 では確定させない (MUST)**: 束縛した id は **backend session に閉じた識別子**で、daemon restart 後は同じ数値が別の生きたペインに再発行される (契約 T-§4.2-id)。Step 1 は Step 3 の session provenance 照合 ((3-a-5)) より**前**に走るので、ここで id 等値だけを確定証拠として扱うと、**restart 後の無関係なペインの終了イベントで追跡中の worker を退役させる**。したがって背景 worker については、id が一致したイベントを **未同定の `pane_exited` 候補として同じサイクルの Step 3 へ持ち越し**、(3-a-5) の **session provenance (第 1 面) が通ったときに限り**同定を確定する (終了したペインは列挙から消えているのが正常なので、attribution に第 2 面 = identity 再照合は要求しない。同項の「2 面が gate するものは違う」)。
-       - **第 1 面が通らなかったサイクルでは、候補を捨てずに `pending_exit_event` へ書く (MUST)**: `pane_exited` は close / crash ごとに **exactly once** で ([`docs/contracts/backend-interface-contract.md`](../../docs/contracts/backend-interface-contract.md) §3.1)、cursor は本サイクルで既に advance しているので**次サイクルに同じイベントを読み直す手段は無い**。候補を同一サイクル内でしか持ち越さないと、`server_info` が一時的に引けない / `detached` を返したサイクルにたまたま終了イベントが来た worker は、以後どのサイクルでも終了を確定できず (列挙からの消失は意図的に unknown に倒すので)、**恒久的に active のまま滞留する**。そこで当該サイクルでは `pending_exit_event = {pane_id, peer_id, observed_at}` を record に書き、`WORKER_PANE_EXITED` は送らず (P4) の観測不能報告 (`source=session_provenance`) に落とす。次サイクル以降、(3-a-5) の第 1 面が通ったサイクルで **`pending_exit_event` を取り出して attribution を確定する** (新しい観測は要らない — 保管してあるのは既に受信済みの確定証拠そのものである) — これは同タブ worker の「未同定イベントを Step 3 (3-a) へ持ち越す」既存の扱いと同型で、新しい経路ではない
-       - イベントの peer 識別子 ↔ 同 (3-a-3) の `same_tab_peer_id`。**`list_panes` 側が使えないとき (resume 直後 / フォーカスが別タブ) でもこちらは効く** — T-§3.1 が `peer_id` を REQUIRED にしている理由がまさに「`list_panes` が一度も見せていない peer を追跡していることがある」ケースだからである
-       **フィールド名は canonical を先に、次に alias を見る**: ratified §3.1 は per-event のフィールド名を規定していないので、canonical 名を載せない backend もありうる（pane 側 `ev.id` → `ev.pane_id`、peer 側 `ev.peer_id` → `ev.agent_id`）。**alias を先に読んではならない** — 両方載っている場合に backend 固有 / 古い `agent_id` が canonical 値を隠し、終了したピアが pending に残る（手順の一次参照は [`.claude/skills/org-delegate/references/renga-error-codes.md`](../../.claude/skills/org-delegate/references/renga-error-codes.md) の `poll_events` 節）。この照合は**版に依らず適用でき**、T-§3.1 が求める「`name` 単独に依らない同定」を満たす最も厳しい形である。`name` は通知本文の**表示用**にだけ使う
-     - **上の id 照合がどちらも成立しなかったイベント** (控えが無い = Step 3 がまだ一度も当該ペインを列挙しておらず §1-2 の「在」確定も無い / イベントが canonical・alias いずれの識別子も載せていない) は `name` 一致しか取れない。**このとき Step 1 では attribution を決めない** — Step 1 が持つのは `poll_events` の応答だけで、版判定の材料 (`list_peers` の列挙) は Step 3 より後にしか来ないからである。**record の欠損を「旧版だから」と読んではならない**: capability 形の backend でも、初回の陽性観測より前 (spawn 直後 / resume 直後) は同じく欠損する。当該イベントは **未同定の `pane_exited` 候補**として同じサイクルの Step 3 (3-a) へ持ち越し、そこで版が確定してから同定する:
-       - Step 3 (3-a-2) の評価で列挙を引き、それが **旧版 fallback** と判定された (marker の無い列挙。現行配備の全 backend — `org-broker` を含む — はここ、同 reference §1-2-a 段 5) → **従来どおり `name` 一致**で同定し、(3-a-2) の 1 行目 (終了確定) に入れる。同一タブ内の `name` 一意性は契約 §1.8 が保証しているので安全であり、**この経路の挙動は変わらない**
-       - 同じ評価が **capability 形**と判定した → `name` 単独では同定できない (T-§3.1)。ただし**その評価自体が `list_peers` を引いている**ので、**同じサイクルで id 照合をもう一度試す**: (3-a-2) の 3 列目評価で §1-2 が「在」を返していれば (3-a-3) がそのサイクルに `same_tab_peer_id` を控えるので、**その控えたばかりの id で保留中のイベントの peer 識別子と join を引き直す** (canonical → alias の順は上と同じ)。
-         - **一致した → attribution 確定**。控えが「無かった」だけの理由で確定証拠を捨てない。§1-2 が「在」と出ていることは矛盾ではなく登録の遅延なので、(3-a-2) の 1 行目 (終了確定) に入れる (同行の「『在』と出ていても登録の遅延として扱う」)
-         - **不一致だった → そのイベントはこの worker のものではない** (別タブの同名ワーカーの終了)。当該 worker については何も起きなかったものとして扱い、通知も state 変更もしない。観測不能報告も出さない (こちらの観測面は劣化しておらず、判定は付いている)
-         - **引き直す材料が無い** (§1-2 が「不在」/「unknown」を返して `same_tab_peer_id` が控えられない、またはイベントが peer 識別子を載せていない) → **attribution 未確定**。当該イベントを (3-a-2) の `pane_exited` 列に数えず、`WORKER_PANE_EXITED` を送らず (P4) の観測不能報告 (`source=lifecycle_event`) に落として次サイクルで再評価する (下記 (3-a-4))。別タブの同名ペインの終了イベントで、生きている自タブの worker を退役させないため
-       - そもそも Step 3 (3-a) に到達しない (当該ペインが `list_panes` に残っている = 生きている) → 退役の判断自体が不要である。このサイクルで `tracked_pane_id` を控えられるので ((3-a-3))、以後は 1 つ目の id 照合で解決する。**未同定のイベントを根拠に退役させない**
-   - 同定できた `pane_exited` 行の `name` (例: `worker-foo`) を通知本文に載せ、`{{FQ}}send_message` で窓口に **ペインが閉じた** という事実だけを通知する:
-     ```
-     WORKER_PANE_EXITED: {name} (id={id}) のペインが閉じました。リコンサイル要。
-     ```
-     **重要**: これは「ペインが消えた」というライフサイクル事実のみ。タスクの完了判定ではない。
-     `pane_exited` の**受信**は終了の確定証拠なので ([`docs/contracts/backend-interface-contract.md`](../../docs/contracts/backend-interface-contract.md) §3.1: close 成功ごと / crash ごとに exactly once)、**attribution が確定している限り** [観測の原則](#observation-principle) (P2) の裏取りは不要でこのまま通知してよい (確定証拠であることは変わらず、上の attribution は「誰の終了か」だけを決める)。裏取りが要るのは Step 3 の「event が無いのに `list_panes` から消えている」ケース (下記 (3-a))。
-     窓口側は `.state/workers/worker-*.md` を `status=pane_closed` に遷移させ、タスクの完了/未完了は:
-       - 直近の {{SERVER}} メッセージ履歴 (進捗ログ) を確認
-       - `COMPLETED` 報告が届いていれば task 完了扱い
-       - 届いていなければ、未完了終了 (ワーカー事故) として扱い、再派遣 or 放棄をユーザーに確認
-     のプロセスで判定する
+   - **`pane_exited` を受信したサイクルだけ** [`.dispatcher/references/pane-exited-attribution.md`](pane-exited-attribution.md) を読んで従う (どの追跡対象のイベントかの同定 (attribution) と窓口への `WORKER_PANE_EXITED` 通知)。`pane_exited` が無いサイクルは読まない
+
 
 <a id="step-2"></a>
 ### Step 2. `{{FQ}}check_messages` でワーカーからの自己報告を受信
@@ -257,39 +208,8 @@ bash ../tools/journal_append.sh anomaly_observed source={面} worker=worker-{tas
    - pane 上限は 16 なので結果は常に小さく、都度 full scan で問題なし
 
    #### (3-a) 消失の裏取り — `list_panes` の消失を単独根拠にしない ([観測の原則](#observation-principle) (P2) の適用)
-   `list_panes` からペインが消えたことは「呼び出しが解決したタブに見えない」以上を意味しない ((P3))。`WORKER_PANE_EXITED` は「ペインが終了した」という**対象の状態**の申告なので、送る前に独立面で裏を取る。
+   `list_panes` からペインが消えたことは「呼び出しが解決したタブに見えない」以上を意味しない ((P3))。`WORKER_PANE_EXITED` は送る前に独立面で裏を取る。**events 経由で exit を把握していないのに `list_panes` から worker ペインが消えている (または同タブ性を確定できない) サイクルだけ** [`.dispatcher/references/pane-missing-verification.md`](pane-missing-verification.md) を読んで従う ((3-a-1) 列挙の健全性 / (3-a-2) 独立面での突き合わせ / (3-a-4) unknown・indeterminate 時の監視継続)。消失が無いサイクルは読まない。「在」の履歴を控える (3-a-3) は毎サイクル下記に従う
 
-   **(3-a-1) まず「自分の `list_panes` が org のタブを解決できているか」を見る** (同じ応答から読める最初の弁別子):
-   - 応答に org の他メンバー (`secretary` / 他の worker / `curator` / watcher 等) が**残っている** → `list_panes` は org のタブを解決できている。消失は当該ペイン固有の事象なので (3-a-2) へ進む
-   - 応答に **自分以外の org のペインが 1 つも出てこない** (一斉に消えた) → ペインの一斉終了より「自分の `list_panes` が別タブを解決している」ほうが桁違いに起こりやすい (可視範囲は current tab のみ・フォーカス移動で前タブが不可視になりうる、(P3) の contract §1.5 / §4.3)。これは異常ではなく **観測不能**: `WORKER_PANE_EXITED` を送らず、(P4) の `OBSERVATION_UNAVAILABLE` を 1 回報告し、peer 経路 (`{{FQ}}list_peers` + events テーブルの worker→secretary 報告痕跡) にフォールバックして監視を続ける。**`list_peers` の直前に [`.claude/skills/org-delegate/references/capability-first-drive-operational-gate.md`](../../.claude/skills/org-delegate/references/capability-first-drive-operational-gate.md) を Read し、`monitoring-read-only` の分岐を適用する** (同 reference §6 の表 #9)。capability 形かつ未承認なら**このフォールバックから `list_peers` を外し、events テーブルの報告痕跡だけ**で監視を継続する (停止しない・待ち時間 0 分。列挙を生存判定に使うと、別タブの同名ピアを当該ワーカーと取り違える — 予約名 `worker-{task_id}` は別 org の並走タブに同名で実在しうる)。**フォーカスが別タブにある間、pane-addressed 呼び出しが `[pane_not_found]` を返すのは正常であり異常ではない** (contract §4.2)。
-     ただし **このフォールバックが常に成立するとは限らない**: ratified 契約では `send_message` (§2.1) も `list_peers` (§2.2) も current tab スコープで、`org-broker` は cross-tab を持たない (§4.2)。フォーカス移動が原因のときは**観測不能の報告そのものが届かず、`list_peers` も対象を列挙できない**ことがある。その場合でも `.state/` のローカル台帳 (journal / events テーブル) は読み書きできるので、(P4) の journal 記録だけは必ず残し、通知は次サイクル以降に再送する。**自分の送信経路が届かないことを「対象が異常だ」の根拠にしてはならない** — (P1) は観測面だけでなく**自分の報告経路にも適用される**
-
-   **(3-a-2) 当該ペイン固有の消失を、独立面で突き合わせる**:
-
-   **責務分割 (本表が owner なもの / owner でないもの)**: 「対象名 `worker-{task_id}` が**自タブに 在 / 不在 / unknown のどれか**」を決める規範の正本は [`.claude/skills/org-delegate/references/capability-first-drive-operational-gate.md`](../../.claude/skills/org-delegate/references/capability-first-drive-operational-gate.md) §1-2 だけで、本表はその**適用結果**を 3 列目に受け取る。本表が owner なのは「`list_panes` / `pane_exited` / 同タブ生存判定 という**独立した観測面をどう突き合わせるか**」— どの組み合わせなら窓口へ申告してよいか、および 2 サイクル継続要件 — の側だけである。判定条件・評価順・三値の定義を本表に**再掲しない** (同 §1-2-e。call site としての分岐は同 §6 の表 #9)。
-
-   | # | `list_panes` | 同区間の `pane_exited` | 同タブ生存の判定 (capability 形かつ承認済み → §1-2 の適用結果 / 旧版 fallback → 従来どおり `name` 一致) | 判定 |
-   |---|---|---|---|---|
-   | 1 | 消えた | **在り** | 問わず | **終了確定** → `WORKER_PANE_EXITED` を送る (`pane_exited` は exactly-once の確定証拠。「在」と出ていても登録の遅延として扱う) |
-   | 2 | 消えた | 無し | **在** | **観測不能** (面が食い違う) → 送らない。(P4) を 1 回報告し次サイクルで再評価 |
-   | 3 | 消えた | 無し (かつ同区間に `events_dropped` **在り**) | 問わず | **観測不能** (event 面が取りこぼしている) → 送らない。(P4) を 1 回報告し次サイクルで再評価 |
-   | 4 | 消えた | 無し (`events_dropped` も無し) | **不在**。capability 形かつ承認済みのときは、さらに §1-2-c の pane 面裏取り (ii)（以前「在」と観測したレコードの**追跡済み数値 `id`** が後続の `list_peers` から消えた）が取れたときに限る。**旧版 fallback は (ii) を要求せず、不在がそのまま本行に落ちる** | 2 面が一致するので**終了とみなす**。ただし単発サイクルでは断定せず、**連続 2 サイクル同じ形が続いた時点で** `WORKER_PANE_EXITED` を送る |
-   | 5 | 消えた | 無し (`events_dropped` も無し) | (**capability 形かつ承認済みのときだけ現れる**) **不在** だが裏取り (ii) が取れない (陽性の「在」履歴が無い = `same_tab_peer_id` が `null`) | **indeterminate** → 送らない。(P4) を 1 回報告し次サイクルで再評価 (下記 (3-a-4)) |
-   | 6 | 消えた | 無し | (**capability 形のときだけ現れる** — 承認済みなら §1-2 が unknown を返した場合、未承認なら列挙を破棄するので常にこの行) **unknown** | **観測不能** → 送らない。unknown は **在にも不在にも数えない**。(P4) を 1 回報告し次サイクルで再評価 (下記 (3-a-4)) |
-
-   **本表の `pane_exited` 列に「在り」と数えてよいのは、Step 1 の attribution で当該 worker と同定できたイベントだけである**。同定できないイベントは Step 1 の観測不能経路 (`source=lifecycle_event`) に落ちるので、本表では「無し」として扱う — 同定していないイベントを 1 行目に数えると、別タブの同名ペインの終了で自タブの worker を退役させる経路が本表から再び開く (契約 [`docs/contracts/backend-interface-contract.md`](../../docs/contracts/backend-interface-contract.md) T-§3.1「a harness MUST NOT match a lifecycle event to a tracked pane by `name` alone」)。**旧版 fallback では同定は従来どおり `name` 一致**なので、この条件は今日の挙動を変えない。
-
-   4 行目 / 5 行目の「裏取り」は §1-2-c が「不在 → lifecycle 断定へ進むには pane 面の裏取りを別に取る」として (i) 同タブの `pane_exited` 観測 / (ii) 追跡済み数値 `id` の消失 の 2 つを挙げるもの。**(i) は本表の 1 行目そのもの**なので、`pane_exited` 無しの行に残るのは (ii) だけである。どちらも取れなければ indeterminate に倒す (契約 [`docs/contracts/backend-interface-contract.md`](../../docs/contracts/backend-interface-contract.md) T-§2.1: 「If neither is available the harness MUST record the outcome as **indeterminate** and escalate it; it MUST NOT resolve it as "closed"」)。(ii) の突き合わせに使う陽性履歴の保持は (3-a-3)。
-
-   **capability 形かつ未承認のときの 3 列目（`list_peers` 由来の同タブ生存判定）**: (3-a-1) と同じ縮退が本表にも及ぶ。列挙を破棄するので 3 列目は **unknown** として読み、「在」にも「不在」にも数えない。したがって 2 行目（`pane_exited` 無し・在）と 4 行目 / 5 行目（`pane_exited` 無し・不在）はどれも成立せず、**`pane_exited` を観測した 1 行目以外はすべて 6 行目の「観測不能」**に落ちる（送らない・(P4) を 1 回報告し次サイクルで再評価）。これは判定を厳しくするだけで行動を増やさない ((P5)) 側の変化であり、生きているペインを「終了」と誤申告するより安全側。共有 reference §6 の表 #9。
-
-   **capability 形かつ承認済み（§2 の `first_drive` が `recorded`）のとき**: 共有 reference §1-2 の三値判定を `worker-{task_id}` に適用し、その結果を本表の 3 列目に入れる。「在」なら 2 行目（観測不能）、「不在」なら §1-2-c の裏取り (ii) の有無で 4 行目 / 5 行目、「unknown」なら 6 行目。`WORKER_PANE_EXITED` へ進めるのは 1 行目と 4 行目だけで、5 行目 / 6 行目は (3-a-4) の継続動作に落ちる。（判定手順と評価順の正本は §1-2。ここに重ねて書かない）
-
-   **旧版 fallback（marker の無い列挙。現行配備の全 backend — `org-broker` を含む — はここ、共有 reference §1-2-a 段 5）**: §1-2 は適用されない。3 列目は**従来どおり `name` 一致**で「在」／「不在」を読み、**§1-2-c の裏取り (ii) を要求しない**（不在は 4 行目に直接落ちる。5 行目 / 6 行目は capability 形かつ承認済みのときにだけ現れる）。2 サイクル継続要件も (P4) の落とし先も従来のままで、**今日の挙動は変わらない**。
-
-   4 行目で 1 サイクル待つ trade-off: Step 3 はそもそも `poll_events` の取りこぼしを拾う**保険**なので、~3 分の遅延は許容できる。逆に単発サイクルで断定すると、フォーカス移動やタイミング差で生きているペインを「終了」と申告することになる。
-
-   **このゲートは判定を厳しくするだけで、行動を増やさない** ((P5)): 「終了確定」でやることは従来どおり窓口への `WORKER_PANE_EXITED` 転送であり、dispatcher がペインを再 spawn / 再構築することはない。「観測不能」でやることは報告と再評価であって、見えないペインへの介入ではない。
 
    **(3-a-3) 「在」と観測した履歴を控える** — 裏取り (ii) の突き合わせ先を `worker-idle-state.json` に持つ:
 
@@ -316,27 +236,6 @@ bash ../tools/journal_append.sh anomaly_observed source={面} worker=worker-{tas
    - **削除**: Step 5 (b) 更新規則 (4) の record 削除 (Step 1 の `pane_exited` 受信 / (3-a) ゲートで終了確定 / CLOSE_PANE) にそのまま乗り、record ごと 3 フィールドも消える。**`list_panes` から消えたことだけを削除の根拠にしない**のも同規則のまま (ゲートが観測不能に倒したサイクルは record を保持する)
    - **旧版 fallback では `same_tab_peer_id` / `same_tab_observed_at` は書かれない** (§1-2 を通らないので「在」の確定が発生しない)。現行配備の全 backend がこちらで、(3-a-2) は従来どおり 4 行目に落ちるため **今日の挙動は変わらない**。`tracked_pane_id` は `list_panes` 由来なので版に依らず控えてよいが、旧版 fallback の Step 1 attribution は従来どおり `name` 一致で行う
 
-   **(3-a-4) unknown / indeterminate と判定したサイクルで、監視は何を続けるか**:
-
-   (3-a-2) の 5 行目 (indeterminate) と 6 行目 (unknown) は「対象の状態を**判定できなかった**」だけで、監視を降りる合図ではない ((P1))。当該サイクルで dispatcher がやることは次の 4 点に固定する:
-
-   1. **worker を監視対象・active のまま保持する**: `.state/workers/worker-{task_id}.md` を `Status: pane_closed` にしない / `WORKER_PANE_EXITED` を送らない / `worker-idle-state.json` の該当 record を削除しない (Step 5 (b) 更新規則 (4) の「ゲートが『観測不能』に倒したサイクルでは record を**保持したまま**次サイクルへ送る」がそのまま適用される)
-   2. **観測不能を journal + 窓口へ重複抑止付きで報告する**: (P4) の語彙を**そのまま再利用し、新しい event 名も新しい `kind` も導入しない** — journal は `anomaly_observed` / `notify_sent` に `kind=observation_unavailable`、de-dup キーは **`(worker, source, kind=observation_unavailable)`**、解除は同じ `source` の `observation_recovered`、窓口への本文は (P4) の `OBSERVATION_UNAVAILABLE:` 形。`source` には判定に使った面 (例: 同タブ生存判定なら `same_tab_judgement`、Step 1 の attribution 未確定なら `lifecycle_event`) を入れる — キーから `source` を落とすと、先に劣化した面の通知が後から劣化した別の面を覆い隠す ((P4))
-   3. **次の `/loop 3m` サイクルで再評価する**: `poll_events` (Step 1) / peer message (Step 2) / events テーブルと state DB の痕跡 / §1-2 の三値判定を、次サイクルで改めて取り直す。判定は保留であって結論ではない ((P4)「観測不能は『異常なし』ではない」)
-   4. **画面監視の skip は当該 worker の Step 4 / Step 5 / Step 5.2 に限る** (**`placement == "same_tab"` の worker のみ**。背景 worker は `bound_pane_id` で `inspect_pane` が届くので skip しない — (3-a-5) の「画面監視は数値 id 経由で維持する」): ペインが列挙されない以上 `inspect_pane` は取れないので、その worker についてはこの 3 つを skip し、(P4)「観測不能サイクルでは state を進めない」に従って record も更新しない (`idle_streak_cycles` を加算せず、`last_check_ts` / `last_visible_content_hash` / `last_content_change_ts` も書き換えない)。**監視ループ全体・Step 1 / Step 2・Step 5.1 の relay gap scan は止めない** — いずれも当該 worker のペイン可視性に依存しない観測面である
-
-   これは (P5) の側の変化である: unknown / indeterminate を根拠にペインを再 spawn したり `close_pane` したりはしない (同節の禁止がそのまま掛かる)。判定が付かないことは行動を増やす理由にならず、安全側は常に「報告して止まる」。
-
-   **解消の経路 — 6 行目は自然回復するが、5 行目は窓口の reconcile 判断でしか閉じない**: 6 行目 (unknown) は次サイクルで `same_tab` が読めるようになれば解ける一過性の状態である。一方 **5 行目 (indeterminate) は、陽性の「在」履歴を持たないまま pane と peer が同じ区間で消えた形なので自然回復しない** — 裏取り (ii) の突き合わせ先 (`same_tab_peer_id`) を書く機会 ((3-a-3) の 2 producer = spawn 時の受理サイクル / 「ペインは消えたが peer 登録は残っている」監視サイクル) が**どちらも**一度も来ないまま両面が消えた形なので、以後どのサイクルでも得られず、毎サイクル同じ 5 行目に落ち続ける (spawn producer の配線後も、旧版 fallback・縮退中・spawn より後に承認が入った worker ではこの形が残る)。dispatcher 側にこれを閉じる権限は無い ((P5)) ので、**窓口へ渡す通知本文に「reconcile 判断が要る」ことを明記し、判断材料 (陽性履歴が無いこと) を添える**:
-
-   ```
-   {{FQ}}send_message(to_id="secretary", message="
-     OBSERVATION_UNAVAILABLE: worker-{task_id} の同タブ生存を確定できません (追跡済み数値 id の陽性履歴が無く、裏取り (i) 同タブ pane_exited / (ii) 追跡済み id の消失 がどちらも取れない)。
-     ペインの生死は判定していません。監視対象・active のまま保持し毎サイクル再評価しますが、この形は自然回復しないため窓口の reconcile 判断が要ります。
-   ")
-   ```
-
-   (P4) の de-dup は「面ごとに劣化区間あたり 1 回」なので、この通知も 1 回しか出ない。取りこぼしても窓口の再起動 / handover で拾えるよう、**同じ 1 行を `.state/workers/worker-{task_id}.md` の Progress Log にも残す** (Step 2 の通常進捗と同じ追記経路)。窓口が判断して `.state/workers/worker-{task_id}.md` を終端状態へ遷移させれば、[Step 5.3](#step-5-3) の監視ループ停止条件がそのまま効いてループも降りられる。**dispatcher が代わりに終端状態を書くことはしない** (契約 [`docs/contracts/delegation-lifecycle-contract.md`](../../docs/contracts/delegation-lifecycle-contract.md) T7 / E1 の dated additive: unknown / indeterminate では遷移自体が発生しない)。
 
    **(3-a-5) 背景タブに置いた worker の生存判定 — tracked-any-tab (id 束縛)**
 
@@ -379,26 +278,9 @@ bash ../tools/journal_append.sh anomaly_observed source={面} worker=worker-{tas
 
    **新しいプロンプト形が観測されたら、この regex リストに追記**。Claude Code の version 更新で形が変わる可能性があるため、網羅は前提にしない。
 
-   #### (b-fp) 既知の取りこぼしパターンと見分け方 — 数字選択メニュー形式 (2026-07-27 実測)
-   (b) の regex リストは **単一行の y/n 確認**を前提に設計されているため、Claude Code の **数字選択メニュー UI** を取りこぼす (false negative)。破壊的 DB 操作 (`DELETE`) を含む委譲で、ワーカーが実行方法を確認する場面に以下の形が出た:
+   #### (b-fp) / (d-fp) / (e) / (f) 既知パターンと通知シーケンス
+   APPROVAL_BLOCKED / ERROR のパターンに該当した (または該当を疑う) worker が出たサイクルだけ [`.dispatcher/references/anomaly-detail.md`](anomaly-detail.md) を読んで従う ((b-fp) 数字選択メニュー形式の取りこぼし / (d-fp) doc・コードコメント中の status code の誤検知 / (e) 実行シーケンス (journal + de-dup + notify) / (f) 通知フォーマット)。該当が無いサイクルは読まない
 
-   ```
-   DELETE の実行をどう進めますか？（対象: documents 155,612 行 + cascade。バックアップ検証済み・取り消し不可）
-
-   ❯ 1. 自分で実行する（推奨）
-     2. 権限を付与して私が実行
-     3. 中止する
-     4. Type something.
-   ──────────────────────────────────────
-     5. Chat about this
-
-   Enter to select · ↑/↓ to navigate · Esc to cancel
-   ```
-
-   - **なぜ漏れるか**: target line ((a) の「最後の非空行」) は `Enter to select · ↑/↓ to navigate · Esc to cancel` になる。(b) の `^\s*Esc to cancel` は **行頭 anchored** なので、`Esc to cancel` が行**末**に来るこの形には一致しない。`^❯\s*1\.\s*Yes\s*$` も選択肢文言が `Yes` 以外 (上例では `自分で実行する（推奨）`) なので一致しない。結果 `tools/inspect_anomaly_scan.py` は `{"detections": []}` を返し、承認待ちを素通りする
-   - **見分け方**: `❯ N. <選択肢>` の複数行 + 末尾行が `Enter to select · ↑/↓ to navigate · Esc to cancel`。y/n 確認とは別系統の Claude Code インタラクティブ選択 UI で、**破壊的・取り消し不可能な操作の実行方法選択で現れやすい**。見逃すと人間承認が必要な重大な分岐点で dispatcher が気づけない
-   - **当座の運用**: 破壊的操作 (DB 削除、ファイル削除等) を含む委譲では、helper が clean (`detections: []`) を返しても target line を目視確認する。目視で承認待ちと判断したら APPROVAL_BLOCKED 相当として (e) の journal → de-dup → notify 手順にそのまま乗せる。ただし **判定根拠が regex 一致ではなく目視である事実を journal に残す** (`matched=` に該当行、`note=manual_visual` 等)。実測時は `confidence=high` で通知したため、後から journal だけを見ると自動 regex 一致と区別できなくなっていた
-   - **恒久対応案 (未実装)**: (b) の regex リストに `^\s*❯\s*\d+\.` (複数選択肢の先頭行パターン) または `Enter to select · ↑/↓ to navigate · Esc to cancel` の**末尾行 anchored** 形を追加する。次に (b) を更新する機会に併せて検討する
 
    #### (c) cursor 補強による confidence 分岐
    regex に一致した target line について:
@@ -432,52 +314,6 @@ bash ../tools/journal_append.sh anomaly_observed source={面} worker=worker-{tas
 
    **旧形式 spinner-age の false positive 抑止**: `--spinner-state-file` を worker ごとに渡すと、前サイクルと同一の旧形式 spinner 行は凍結サマリとみなして検知を抑止する。state file 欠落 / 破損時は「前サイクル無し」扱いで再発火する。
 
-   #### (d-fp) 既知の誤検知パターンと見分け方 — doc / コードコメント中の status code (2026-07-29 実測)
-   (d) の status-code ゲート (`(?<!#)\b(429|500|502|503|504|529)\b` + 同一行の error 文脈キーワード) は、**その行が「実際に発生したエラーの記録」か「エラーの意味を説明する文書」かを区別できない**。ワーカーが `README.md` のトラブルシューティング表と `.py` のコードコメントに「`temporarily_unavailable` (503) が返る」「retry 可能な 503 になる」と書いた委譲で、**同一サイクル内に 5 回連続の false positive** が出た。該当行はいずれもライブエラーではなく、ワーカーの文書化作業そのものだった。
-
-   - **見分け方 (文体で判別する)**: target 行の前後文脈が「〜が返る」「〜になる」「説明」「表の 1 行」等の**解説・ドキュメント文体**なら false positive の可能性が高い。実際のコマンド出力 (`$ curl ...` の応答、pytest 失敗ログ等) に status code が含まれる場合とは文体が明確に異なる
-   - **繰り返し発火は仕様どおり**: 同じ 503 系の行が複数サイクルにわたって画面内に留まり続ける (scroll で流れる速度が遅いだけ) 場合、毎サイクル再検出されるのは (d) の設計どおりの動作。都度 journal に理由を書いて抑制すればよい
-   - **起きやすい委譲**: API のエラーハンドリングを実装・文書化するタスク。この種の説明文が大量に書かれるため、**同一ワーカーに対して同じ false positive が繰り返し発生しやすい**
-   - **当座の運用**: 発生ごとに `anomaly_observed` へ理由付きで記録し、**通知は送らない** ((e) の step 2 で dispatcher が抑制判断する)。実測時は誤通知として窓口へ一度も送っていない
-   - **恒久対応案 (未実装、別 Issue)**: `tools/inspect_anomaly_scan.py` 側に「diff の追加行 (`+` prefix) やコメント記号 (`#`, `--`, docstring 内) にある status code は除外する」ヒューリスティックを足せば自動的に減らせる。現行の `(?<!#)` は `#529` のような **issue ref に直接隣接する `#` のみ**を除外するもので、`# retry 可能な 503 になる` のような**コメント行**は除外できない
-
-   #### (e) 実行シーケンス (journal + de-dup + notify)
-   以下の順番で厳密に実行する:
-
-   1. **観測記録** (confidence に関わらず常に): `tools/journal_append.py` 経由で追記（`cursor` ネスト object のため Python wrapper を使う。`ts` は helper が自動付与）:
-      ```bash
-      # PowerShell 環境は py -3。
-      python3 ../tools/journal_append.py anomaly_observed \
-          source=inspect worker=worker-{task_id} \
-          kind=approval_blocked confidence=high matched='<該当行>' \
-          --json '{"cursor": {"row": <r>, "col": <c>, "visible": <bool>}}'
-      ```
-   2. **通知するかの判定** — 以下を **すべて** 満たす場合のみ通知に進む:
-      - APPROVAL_BLOCKED なら confidence == high (low-confidence は journal のみで終了)
-      - ERROR は常に通知対象 (cursor 補強なし)
-      - **de-dup チェック**: 直近 30 秒以内の journal に **`event == "notify_sent"`** かつ `(worker, kind)` 一致のエントリが存在しない
-        - `anomaly_observed` エントリは de-dup キーに **含めない** (低 confidence や observation-only record が将来の通知を抑制しないため)
-        - 今サイクルの step (1) で書いた `anomaly_observed` も de-dup 対象にならない
-   3. **通知送信** (step 2 を通過した場合): `{{FQ}}send_message` で窓口に通知 (フォーマットは (f) 参照)
-   4. **notify_sent 記録** (通知送信成功時): `confidence` は kind と source に一致させる (APPROVAL_BLOCKED かつ source=inspect のみ `"high"`、それ以外は `"n/a"`)。helper 経由で append:
-      ```bash
-      # APPROVAL_BLOCKED + source=inspect
-      bash ../tools/journal_append.sh notify_sent source=inspect worker=worker-{task_id} kind=approval_blocked confidence=high
-      # ERROR + source=inspect
-      bash ../tools/journal_append.sh notify_sent source=inspect worker=worker-{task_id} kind=error confidence=n/a
-      # APPROVAL_BLOCKED / ERROR + source=self_report (Step 2 から発行)
-      bash ../tools/journal_append.sh notify_sent source=self_report worker=worker-{task_id} kind=approval_blocked confidence=n/a
-      ```
-   通知失敗時は `notify_sent` を書かない。次サイクルで再検出されれば de-dup が抜けて再通知が試行される (at-least-once)。
-   Journal 書き込み自体が失敗した場合はそのサイクルの通知を断念、次サイクルで再試行。
-
-   #### (f) 通知フォーマット
-   (e) の step 3 に到達した場合のみ、`{{FQ}}send_message` で窓口に通知。既存 `APPROVAL_BLOCKED` / `ERROR_DETECTED` フォーマットに `source=inspect` + `confidence=<high|n/a>` を付与:
-   ```
-   APPROVAL_BLOCKED: worker-{task_id} の承認プロンプトを検出 (source=inspect, confidence=high): {該当行}
-   ERROR_DETECTED: worker-{task_id} にエラーを検出 (source=inspect, confidence=n/a): {該当行}
-   ```
-   ERROR は cursor 補強を使わないため confidence は便宜上 `n/a`。
 
 <a id="step-5"></a>
 ### Step 5. stall 検出 (STALL_SUSPECTED)
@@ -568,167 +404,9 @@ bash ../tools/journal_append.sh anomaly_observed source={面} worker=worker-{tas
      ```
    `idle_streak_cycles` は抑止中も (b) の hash 判定に従って加算し続ける (spinner は hash から除外されるため hash 不変 = idle 加算)。よって cap 到達で抑止が解けた瞬間に streak が既に閾値以上なら即 STALL_SUSPECTED が発火する (抑止は「発火の保留」であって streak の巻き戻しではない)。
 
-   #### (b-2) PR-pending-merge sub-state 判定
-   stall 候補について、(c) の補助シグナル取得に進む **前に** PR-pending-merge sub-state を判定し、(c)(1) で使う lookback window を選択する。これは「worker が完了報告を出した後、Secretary が PR を open し、user が merge 承認するまでの待機」を通常 stall と区別するためのカテゴリ。
+   #### (b-2) 〜 (f) stall 候補の判定と通知
+   Step 5 (b) で **stall 候補** が出たサイクルだけ [`.dispatcher/references/stall-candidate.md`](stall-candidate.md) を読んで従う ((b-2) PR 待ち sub-state 判定 / (b-fp) 既知の誤検知 / (b-4) 発火前の観測面チェック / (c) 補助シグナル取得 / (c)(1-bis) decision-register gate / (d) 分岐 / (e) de-dup / (f) 60 分超過かつ `ci_completed` incomplete)。候補が無いサイクルは読まない
 
-   `.state/state.db` の `events` テーブルを query し、`json_extract(payload_json, '$.task') == "{task_id}"` (= bare task_id、`worker-` prefix を **含まない**。`pr_opened` / `pr_merged` は `docs/journal-events.md` の "PR / push" 表で Writer = secretary、Emitted by = secretary、payload field `task` 値は task_id 本体と定義済) で次 2 件の **存在有無のみ** を取得 (timestamp は判定に使わない):
-   - `kind == "pr_opened"` で同 task_id の行が 1 件以上ある
-   - `kind == "pr_merged"` で同 task_id の行が 1 件以上ある
-
-   **payload key は event 種別ごとに固定する**: `pr_opened` / `pr_merged` は `payload_json` の `$.task` が bare task_id、(c)(1) で使う worker 起点 event (`worker_escalation` / `worker_reported` / `worker_completed` / `plan_delivered` / `prep_delivered`) は `payload_json` の `$.worker` が `worker-{task_id}` 形式。両者を一律の key に揃えると PR-pending 判定か STALL 抑制のどちらかが常に空になる。
-
-   分岐:
-   - `pr_opened` あり かつ `pr_merged` なし → **PR-pending-merge sub-state**。(c)(1) の lookback に `STALL_PR_MERGE_LOOKBACK_MIN = 60` を採用する。`pr_opened` / `pr_merged` は同一 task に対して各 1 件しか記録されない契約 (`tools/run_complete_on_merge.py` 等の helper が idempotent 化) なので、複数行を時系列比較する必要はない (= 「最新の行」を選ぶ必要なし、存在有無で十分)
-   - 上記以外 (PR 未 open、または既に merge 済み) → 通常 sub-state。(c)(1) の lookback は `STALL_SECRETARY_LOOKBACK_MIN = 15` のまま
-
-   ```bash
-   # ディスパッチャーの cwd は .dispatcher/ なので 1 階層上の .state/state.db を読む
-   # (Step 5.2 (c) と同じ SQLite one-liner idiom)。
-   # task_id を bare 値で渡す (worker- prefix 無し。pr_opened / pr_merged の payload key は $.task)。
-   # EXISTS で 0/1 の真偽値を返す (行の有無を CLI 出力の空/非空や NULL に依存させない)。
-   has_pr_opened=$(sqlite3 ../.state/state.db "
-     SELECT EXISTS(SELECT 1 FROM events
-                   WHERE kind = 'pr_opened'
-                     AND json_extract(payload_json, '\$.task') = '{task_id}')
-   ")
-   has_pr_merged=$(sqlite3 ../.state/state.db "
-     SELECT EXISTS(SELECT 1 FROM events
-                   WHERE kind = 'pr_merged'
-                     AND json_extract(payload_json, '\$.task') = '{task_id}')
-   ")
-   if [ "$has_pr_opened" = "1" ] && [ "$has_pr_merged" = "0" ]; then
-     lookback_min=60   # PR-pending-merge
-   else
-     lookback_min=15   # default
-   fi
-   ```
-
-   #### (b-fp) 既知の誤検知パターンと見分け方 — STALL の誤発火 (2026-07-28 実測 2 件)
-   (b) の hash 不変判定 + (b-2) の lookback 選択でも捕まえきれない構造的 false positive が 2 型ある。いずれも **STALL_SUSPECTED が出ても即座に異常と断定せず、下記の見分け方で確認してから窓口へ上げる**。
-
-   **型 1: 長時間バッチジョブの完了待ち (lookback 不足による構造的誤発火)**
-
-   実環境デプロイ委譲で、formatter バッチジョブ (約 41 分) の完了待ち中に画面が 26 分以上静止し、`STALL_SECRETARY_LOOKBACK_MIN = 15` の通常 lookback で STALL_SUSPECTED が発火した。窓口が実環境側 (GCS 出力オブジェクト数の増加推移) を直接確認したところ、バッチは正常に進行中で false positive だった。
-
-   - **なぜ (b-2) に乗らないか**: PR-pending-merge sub-state は `pr_opened` / `pr_merged` という **event ledger 上の痕跡**から待機パターンを検知して lookback を延ばす。一方「実行環境側の長時間バッチ完了待ち」は worker が能動的に待っているだけで **worker→secretary event を一切出さない**ため、同種の判定材料が events テーブルに存在せず既存 sub-state 判定に乗らない
-   - **見分け方**: 対象ワーカーの brief が実環境デプロイ / データ処理ジョブ (formatter 再実行、バッチ ETL、Cloud Run 実行等) を含むか。含む場合は画面静止だけで stuck と断定せず、**実環境側 (実行ログ、出力オブジェクト数等) を直接確認**してから判断する。40 分級のバッチ待ちが本務のワーカーは、15 分 lookback では構造的に誤検知する
-   - **当座の運用**: 窓口の指示で当該ワーカーに限り STALL 通知を抑止し、dispatcher は journal に `stall_suppressed_by_secretary` を記録して次の報告まで通知を止める
-   - **恒久対応案 (未実装)**: ワーカー自身が事前に「X ブロックの完了予定 Y 分」を `worker_reported` 等で申告し、その分 lookback を動的に延長する「**長時間バッチ待ち sub-state**」を (b-2) と同じ仕組みで追加する。実測 1 件のみのため一般化は時期尚早で、**同種の委譲が繰り返された時点で起票を検討する**
-
-   **型 2: ultracode Workflow ステータス行の再描画停止 (観測タイミング由来の誤発火)**
-
-   ultracode 武装ペインの監視で、ペイン下部の Workflow ステータス行 (例: `4/5 agents done · 20m 58s · ↓ 597.4k tokens`) が 3 分間隔の監視サイクルで 2〜3 回連続「不変」に見えたため STALL_SUSPECTED を複数回発火した。窓口が同時刻に直接 `inspect_pane` で確認すると、経過時間・トークン数とも実際には進んでいた (**dispatcher 観測=不変 → 窓口観測=前進、が 3 回連続**)。
-
-   - **なぜ起きるか**: このステータス行は**出力バーストのタイミングでしか再描画されない** UI で、長時間走る単一エージェントの最中は表示自体が固まって見える。dispatcher と secretary の観測タイミングの差 (同一 3 分窓内でも数十秒〜1 分ずれる) で描画更新の直前 / 直後を引くと不変に見える。ultracode 実行中はワーカー本体のターンが「1 個の長時間 dynamic workflow 呼び出しを待っている」状態で、**本体スクロールバックが変化しないのが正常**であり、(b) の「画面が変化しなければ idle」というモデルに反する
-   - **(b-3) の active-spinner suppress ではカバーされない**: Workflow 待機中の親ターンには新形式 spinner が出ない (または出ても親ターン自体は本当に何もしていない) ため、`suppress_stall` 経路に乗らない
-   - **ultracode 武装ペインの報告基準 (2026-07-28 方針変更)**: `Workflow(...)` 呼び出し後 `Waiting for N dynamic workflow to finish` 表示になっているペインでは、**ステータス行の数値 (agents done / 経過時間 / トークン数) による STALL 判定を行わない**。代わりに次の 2 つのみを報告基準とする:
-     1. worker→secretary peer message が **60 分以上**途絶
-     2. ペイン本体が Waiting 表示から離れ、Step 4 の APPROVAL_BLOCKED / ERROR パターンに入った
-   - **非 ultracode ペインは従来どおり**: (b) の 15 分 lookback + content hash 比較による STALL 判定を継続する
-   - **恒久対応案 (未実装)**: 監視ツール側での正式な ultracode sub-state 追加を Issue 化検討中 (窓口起票予定)。2026-07-28 に 3 回連続の false positive を実測済み
-
-   #### (b-4) 発火前の観測面チェック — 報告痕跡の不在だけで STALL を申告しない ([観測の原則](#observation-principle) の適用)
-   `STALL_SUSPECTED` は「worker が異常停止している」という**対象の状態**の申告なので、(P2) により独立した複数面の一致を要求する。チェックは 2 段に分かれ、**評価順は (b-4-i) → (b-2) → (c) → (b-4-ii) → (d)** である (台帳面は (c) の scan を回さないと値が出ないので、(c) より前に判定しない):
-
-   **(b-4-i) (c) に進む前に確認する (画面側 2 点)**:
-
-   1. **画面面**: (b) の `content_hash` が 3 サイクル不変であること — **かつその 3 サイクルとも `inspect_pane` が実際に成功していること**。エラーで画面を観測できなかったサイクルは Step 4 のエラー分岐と (P4) のとおり record を更新しないので streak には積まれない (観測できなかった時間が「静止していた」に化けない)
-   2. **busy の陰性確認**: (b-3) の `suppress_stall == false` であること。新形式 active spinner が生きている間は busy の**陽性証拠**なので発火しない。ただし spinner が**無いこと**は idle の証拠ではない ((P3)) ので、これは独立した 1 面であって画面面 (1) の代替にはならない
-
-   どちらかが欠けたら (c) の補助シグナル取得を回さずに打ち切る (画面が観測不能なら (P4) を報告、busy なら (b-3) の soft-note を残して次サイクルへ)。
-
-   **(b-4-ii) (c) の scan 後、(d) の timeout 分岐に入る直前に確認する (台帳側 1 点)**:
-
-   3. **台帳面**: (c)(1) の worker→secretary 痕跡が lookback 窓内に 0 件であること — **かつ (c)(1) の SQLite query が実際に成功していること**。`.state/state.db` が読めずに 0 行だったなら、それは「痕跡が無い」ではなく観測不能である ((P3): 「痕跡が無い」は「読めなかった」を含意しない)
-
-   **「報告痕跡が無い＝止まっている」ではない**: worker の報告は**ターン境界**で出るため、1 ターンが長い作業 (実装 → セルフレビュー → codex ゲートを 1 ターン内で連続実行) の最中に痕跡が出ないのは正常である。台帳面 1 面だけを見て発火したのが 2026-08-08 の実誤検知 2 件の型で、これは (b-fp) 型 1 / 型 2 と同じ族に属する。画面面が「動いている」または「観測できていない」なら、台帳面が 0 件でも申告しない。
-
-   **観測不能な面が 1 つでもあれば STALL を申告しない**: (b-4-i) の 1 が満たせない (inspect が使えない) 間は台帳面だけで stuck を推測せず、(b-4-ii) の 3 で query が失敗した場合も「痕跡 0 件」として扱わず、いずれも (P4) の `OBSERVATION_UNAVAILABLE` を該当 `source` で 1 回報告して次サイクルへ送る。**この保留は「代わりに自分で対処してよい」ではない** ((P5)) — やることは報告と再評価であって、ペインへの介入ではない。
-
-   **残余ケースと通知の書き方**: 3 面すべてが「活動を観測できない」で一致しても、それは *stuck の確定* ではない — 出力が凍り新形式 spinner も出ないまま正常な長い 1 ターンを回している worker は (b-4) を通過しうる ((b-fp) の型 1 = 長時間バッチ完了待ち / 型 2 = ultracode Workflow 待機がその実例で、**これらは (b-fp) 側の報告基準が優先する**)。したがって STALL_SUSPECTED は「worker が壊れている」という診断ではなく「**どの観測面にも活動が見えない**」という観測の申告として送る: 通知本文には観測した内容 (どの面を・どの窓で見て・何件だったか) を書き、原因の断定や復旧の提案を書かない。窓口が人間に上げる判断材料はこの観測であって、dispatcher の推測ではない ((P5))。
-
-   #### (c) 補助シグナル取得 — 直近の worker→secretary コミュニケーション
-   stall 候補が (b-4-i) の画面側 2 点を通ったら、STALL_SUSPECTED を発火する **前に** 補助シグナルを取得する ((b-4-ii) の台帳面はこの scan 結果で評価する)。lookback は (b-2) で選択した値 (`STALL_SECRETARY_LOOKBACK_MIN = 15` または `STALL_PR_MERGE_LOOKBACK_MIN = 60`) を使う:
-
-   1. **events scan (primary, authoritative)**: `.state/state.db` の `events` テーブルを読み、`occurred_at >= now - lookback_min minutes` ((b-2) で選択した値) でフィルタし、以下のいずれかの event を持つ行が 1 件でもあるか確認する。これらの worker 起点 event は `payload_json` の `$.worker` が `worker-{task_id}` 形式 ((b-2) の `pr_opened` / `pr_merged` が使う `$.task` = bare task_id とは **別 key**):
-      - `kind == "worker_escalation"` かつ `json_extract(payload_json, '$.worker') == "worker-{task_id}"` (judgment request の受信)
-      - `kind == "worker_reported"` かつ `json_extract(payload_json, '$.worker') == "worker-{task_id}"` (mid-task progress の受信)
-      - `kind == "worker_completed"` かつ `json_extract(payload_json, '$.worker') == "worker-{task_id}"` (完了報告の受信、`REVIEW` 待機中の idle 区別用)
-      - `kind == "plan_delivered"` かつ `json_extract(payload_json, '$.worker') == "worker-{task_id}"` (plan 引き渡しの受信)
-      - `kind == "prep_delivered"` かつ `json_extract(payload_json, '$.worker') == "worker-{task_id}"` (prep 引き渡しの受信)
-
-      これらはいずれも worker 起点の `send_message` を secretary が受信した時点で append される ledger なので、worker→secretary コミュニケーションの authoritative な痕跡になる。`worker_reported` / `worker_completed` / `plan_delivered` / `prep_delivered` は `docs/journal-events.md` の **Emitted by = worker** + **Writer = secretary** 行で定義されている。`worker_escalation` は同 catalog 未掲載だが本 `CLAUDE.md` 「ワーカーからの判断仰ぎは人間にエスカレーションする」節および `.claude/skills/org-delegate/SKILL.md` Step 5 で書き込み手順が明文化されている (catalog への追記は curator 領域、本 PR スコープ外)。将来 catalog に **Emitted by = worker** な event が追加された場合は本リストにも追加する (catalog と同期する宣言的リスト)。
-
-      ```bash
-      # ディスパッチャーの cwd は .dispatcher/ なので 1 階層上の .state/state.db を読む
-      # (Step 5.2 (c) と同じ SQLite one-liner idiom)。
-      # 時間窓ベースの抽出 (行数 cap で打ち切らないこと、events が長期間追記され続けても
-      # lookback 窓は occurred_at で正確に区切る)。
-      # 通常時 lookback_min=15、PR-pending-merge sub-state では lookback_min=60 ((b-2) で決定)。
-      # cutoff は shell の date ではなく SQLite の strftime で計算する: occurred_at は
-      # sub-second 精度 ('%Y-%m-%dT%H:%M:%fZ') が正本なので、秒精度 cutoff と文字列比較すると
-      # 境界秒を辞書順で取りこぼす。SQLite 側計算なら精度が揃い、shell 差分 (PowerShell の
-      # date 代替等) も不要になる。
-      sqlite3 ../.state/state.db "
-        SELECT DISTINCT kind FROM events
-        WHERE occurred_at >= strftime('%Y-%m-%dT%H:%M:%fZ','now','-${lookback_min} minutes')
-          AND kind IN ('worker_escalation','worker_reported','worker_completed','plan_delivered','prep_delivered')
-          AND json_extract(payload_json, '\$.worker') = 'worker-{task_id}'
-        ORDER BY kind
-      "
-      # 1 行以上返れば「ヒット」。返却された kind の集合は (c)(1-bis) の gate で
-      # worker_escalation だけを除外する際の入力にもなる。
-      ```
-
-   **(c)(1-bis) decision-register gate**: (c)(1) で `worker_escalation` がヒットした場合に限り、それを acked に数える **前に** pending-decisions register を照会する。journal の `worker_escalation` 行は judgment request 受信時点の痕跡として残り続けるが、その後ユーザー返答が secretary 経由で worker へ転送済み (= 判断待ちが解消済み) でも 15 分窓内に古い行が残っていると acked 抑制が続き、転送後に 529 / stuck で idle な worker を取りこぼす。lifecycle の真値は journal ではなく register が持つので、register を **primary lookup source** として照会する:
-
-      ```bash
-      # ディスパッチャーの cwd は .dispatcher/ なので 1 階層上の tools/ を呼ぶ。
-      # task_id は bare 値で渡す (worker- prefix 無し)。PowerShell 環境は py -3。
-      python3 ../tools/pending_decisions.py latest-resolution --task-id {task_id}
-      ```
-
-      出力は 1 行 JSON。`escalation_trace_is_stale` が `true` (= その task_id の最新 decision が `status == "resolved"` かつ `resolution_kind == "to_worker"`、ユーザー返答後に secretary が `resolve --kind to_worker` で worker へ回答転送済) なら、`worker_escalation` 行はもはや open な判断待ちを表さないので **(c)(1) のヒット集合から `worker_escalation` を除外する**。他 4 event (`worker_reported` / `worker_completed` / `plan_delivered` / `prep_delivered`) はこの gate の影響を受けない (除外対象は `worker_escalation` のみ)。
-
-      register は `.state/pending_decisions.json` (dispatcher cwd から `../.state/pending_decisions.json`)。`worker_escalation` 行が journal に残り続けても、judgment-escalation の lifecycle (pending → escalated → resolved) の authoritative な真値は register が持つ、という SoT 注記である (Step 5.1 (a-0) / (a-2) と同じ register を別軸で照会する)。
-
-      **register-unavailable fallback** (Step 5.1 (a-0) / (a-2) と同じ degraded-mode 規約): CLI が非ゼロ終了する / 出力 JSON が読めない (helper not found / file corrupted で `ValueError`) 場合は、`escalation_trace_is_stale` を取得できないので **gate を適用しない** (= `worker_escalation` を従来どおり acked に数える、fail-safe 側)。これにより register 故障時に判断待ち idle を誤って timeout 経路へ落として false STALL を撃つことはない (代償として、register が壊れている間は #603 の取りこぼし修正が無効化され修正前の挙動に戻る)。観測性のため journal に `anomaly_observed source=stall_check kind=register_unavailable` を残す:
-      ```bash
-      bash ../tools/journal_append.sh anomaly_observed source=stall_check worker=worker-{task_id} kind=register_unavailable confidence=n/a
-      ```
-
-   2. **{{SERVER}} poll_events は使わない**: 現状 `{{FQ}}poll_events` は pane lifecycle event のみを流し `send_message` を流さず、`since` は opaque cursor で過去 15 分を検索できない。events scan を **authoritative source** とする。
-
-   #### (d) 分岐 (acked vs timeout)
-   - **acked の判定** ((c)(1-bis) の gate 込み): acked ⟺ (`worker_reported` / `worker_completed` / `plan_delivered` / `prep_delivered` のいずれかが lookback 窓内) **OR** (`worker_escalation` が lookback 窓内 **AND NOT** `escalation_trace_is_stale`)。`worker_escalation` が窓内でも (c)(1-bis) で `escalation_trace_is_stale == true` と判定された場合は acked に数えず、かつ他 4 event のヒットも無ければ **timeout 経路へ落ち**、(従来は古い `worker_escalation` 痕跡で抑制されていた) STALL_SUSPECTED が正しく発火する。soft-note の `note` 値は既存 (`awaiting_secretary_lookback_15m` / `awaiting_pr_merge_lookback_60m`) を維持する。
-   - **acked** — 上記判定で 1 件以上ヒット: 「Secretary 判断待ち idle」または「PR-pending-merge 待機 idle」とみなし、STALL_SUSPECTED を **発火しない**。Step 4 (e) と同じ `anomaly_observed` ledger に soft-note として記録 (新 event 名は導入せず既存 catalog を再利用)。`note` は (b-2) で選択した sub-state を反映する:
-     ```bash
-     # 通常 sub-state (lookback 15m)
-     bash ../tools/journal_append.sh anomaly_observed source=stall_check worker=worker-{task_id} kind=stall_acked confidence=n/a note=awaiting_secretary_lookback_15m
-     # PR-pending-merge sub-state (lookback 60m)
-     bash ../tools/journal_append.sh anomaly_observed source=stall_check worker=worker-{task_id} kind=stall_acked confidence=n/a note=awaiting_pr_merge_lookback_60m
-     ```
-     以降のサイクルで events エントリが lookback window から外れて 0 件になれば、改めて (c) → (d) を再評価する (持続的 stuck の検出が遅れる代償として、判断待ちの誤発火を避ける trade-off)。
-
-   - **timeout** — 両系統とも痕跡なし、idle 継続: **(b-4-i) の 2 点と (b-4-ii) の 1 点をすべて満たしていることを確認した上で** (1 つでも欠けるなら発火せず (P4) の観測不能に倒す)、従来通り stall として扱い、窓口に通知 (lookback は (b-2) で選択した値、通知文に分単位で埋める)。**ただし (b-3) の active-spinner suppress が有効 (`suppress_stall == true`) の間は本 timeout 通知も保留する** — helper が cap 未到達の increasing spinner を検出している間は正常な長考なので発火せず、`kind=spinner_active_suppress` の soft-note のみ残す。cap 到達で `suppress_stall == false` に転じたサイクルで初めて発火する:
-     ```
-     {{FQ}}send_message(to_id="secretary", message="
-       STALL_SUSPECTED: worker-{task_id} が直近 3 サイクル idle、
-       過去 {lookback_min} 分以内に secretary 向け worker→secretary 送信痕跡
-       (worker_escalation / worker_reported / worker_completed /
-       plan_delivered / prep_delivered) なし。stuck の可能性あり、確認願います。
-     ")
-     ```
-     通知後、Step 4 (e) の de-dup スキーマと整合させて `notify_sent` を journal に追記:
-     ```bash
-     bash ../tools/journal_append.sh notify_sent source=stall_check worker=worker-{task_id} kind=stall_suspected confidence=n/a
-     ```
-
-   #### (e) de-dup
-   Step 4 (e) と同じ 30 秒窓を共有し、直近 30 秒以内に `(worker, kind=stall_suspected)` の `notify_sent` があれば再通知をスキップする。stall は本質的に長時間の状態なので、3 分サイクル毎に再通知するとノイズになる。worker が完了するか acked 経路に入るまで沈黙でよい (at-least-once 担保のため失敗時は次サイクルで再試行される)。
-
-   #### (f) 60 分超過かつ `ci_completed` が `status="incomplete"` のとき
-   PR-pending-merge sub-state の worker が拡張 lookback (60 分) を超過して timeout 経路に入り、かつ events の `ci_completed` payload が `status="incomplete"` のとき、`incomplete` は CI red では **なく判定不能** である (`tools/pr_watch.py` の `gh pr checks --json` クエリが final verdict を取得できないまま retry budget を使い切り、exit-code fallback として記録した値。`status` の値域は event catalog `docs/journal-events.md` を参照)。dispatcher は自分で `gh pr checks` 等を叩いて調査・再試行 **しない** (役割境界: dispatcher は調査しない)。やることは状態の記録 (通常の timeout 経路の soft-note / `notify_sent` に留める) と、secretary への informational 報告 (「`ci_completed` が `status="incomplete"` で CI 判定不能のまま。merge / pane 自動クローズが進んでいない可能性あり」の趣旨) のみ。
 
 <a id="step-5-1"></a>
 ### Step 5.1. secretary relay gap 検出 (SECRETARY_RELAY_GAP_SUSPECTED)
@@ -874,36 +552,9 @@ Step 5 の sibling、worker→secretary→user の relay の **secretary 側中�
    - 制限: secretary が pane 外の I/O (Slack 等) で user に通知した場合はこの proxy では検知できない。実運用上 user は secretary pane を直接見ていることが大半なので許容する trade-off
    - エラー時の挙動 (`[pane_not_found]` 等): secretary pane を観測できていないので、snapshot 更新だけでなく **当該サイクルの relay gap 判定そのものを skip する**。画面差分が取れなかったことを (b)(2) の「secretary→user 痕跡なし」に数えると、**自分の観測不能を secretary の中継漏れとして申告する**ことになる ([観測の原則](#observation-principle) (P1))。journal に `anomaly_observed source=relay_gap_check kind=inspect_error` を残す (kind は既存値を維持する。意味は (P4) の `observation_unavailable` と同じ「観測不能の記録」)
 
-   #### (e) 通知 — out-of-band で user に直接届ける
-   relay gap の本人 (secretary) を経由した通知は **意味がない** (中継停止が原因の事象を、その中継経路で通知することになる)。代替:
+   #### (e) / (f) 通知と de-dup
+   relay gap の疑いが成立し通知するサイクルだけ [`.dispatcher/references/relay-gap-notify.md`](relay-gap-notify.md) を読んで従う ((e) out-of-band で user に直接届ける / (f) de-dup と journal)。疑いが無いサイクルは読まない
 
-   1. **dispatcher pane に "ALERT" として表示する** (採用): user は dispatcher pane を直接見ているか、最低でも端末上で確認可能。dispatcher pane は LLM session なので画面に直接書く API は無いが、dispatcher Claude が応答テキストとして "ALERT: SECRETARY_RELAY_GAP_SUSPECTED ..." を return すれば pane の最終行に表示される (= user の見えるところに残る)
-   2. **secretary には並行で "user に直接通知してください" メッセージを送る** (採用): secretary が機能していれば中継、機能していなければ (1) で user 自身が dispatcher pane を見て認識する。fail-safe として両方の経路を保つ
-      ```
-      {{FQ}}send_message(to_id="secretary", message="
-        SECRETARY_RELAY_GAP_SUSPECTED (請求 user 直接通知): worker-{task_id} が
-        過去 15 分判断仰ぎ / 進捗を上げたが secretary 側 outbound 痕跡なし。
-        user に直接お知らせください。中継が機能していればこのメッセージは
-        通常 relay されるが、機能していない場合は dispatcher pane 末尾にも
-        並行で alert 表示している。
-      ")
-      ```
-
-   (1) と (2) の **両方** を必ず発行する。どちらか一方が届かなくても他方で user が認識できる、という冗長性設計。
-
-   #### (f) de-dup と journal
-   Step 4 (e) / Step 5 (e) と同じスキーマを共有し、同じ `notify_sent` ledger に乗せる:
-
-   - 観測記録 (常時):
-     ```bash
-     bash ../tools/journal_append.sh anomaly_observed source=relay_gap_check worker=worker-{task_id} kind=relay_gap_suspected confidence=n/a
-     ```
-   - 通知判定: 直近 30 秒以内の journal に `event == "notify_sent"` かつ `(worker=worker-{task_id}, kind=relay_gap_suspected)` 一致のエントリがなければ通知に進む
-   - 通知送信成功後 (即ち (e) の (1)+(2) 双方ペイロードを発行した後):
-     ```bash
-     bash ../tools/journal_append.sh notify_sent source=relay_gap_check worker=worker-{task_id} kind=relay_gap_suspected confidence=n/a
-     ```
-   - **再通知 cadence**: dedup window は 30 秒のみ (Step 4 / Step 5 と同じ at-least-once 担保のための短窓)。`/loop 3m` cadence では 30 秒は毎サイクル抜けるため、relay gap が解消するまで **3 分ごとに 1 回 user に再通知が届く**。relay gap は user の視認漏れが致命的な事象なので、stuck 通知のような長窓 suppress は採用しない。状態が変わった (= secretary 側 outbound が現れた、または新規 `T_last_worker_in` で起点更新により候補から外れた) 時点で次サイクルの観測時に (b) を不成立にして自然停止する
 
 <a id="step-5-2"></a>
 ### Step 5.2. PANE_OUTPUT_WITHOUT_PEER_MSG 検出
@@ -932,121 +583,9 @@ Step 5 / 5.1 の sibling、ワーカーがペイン上に応答出力したの�
 
    `idle_streak_cycles` が ≥ 3 になった時点で Step 5 STALL_SUSPECTED 候補にも該当しうるが、Step 5 の (c)→(d) で acked / timeout の独立判定が走るため、PANE_OUTPUT と STALL は disjoint な kind で並行通知される (de-dup は kind 単位、(f) 参照)。
 
-   #### (c) 補助シグナル取得 — worker→secretary 痕跡 (2 段問い合わせ)
-   Step 5 (c)(1) と同じ event 集合 ({`worker_escalation`, `worker_reported`, `worker_completed`, `plan_delivered`, `prep_delivered`}) を 2 つの観点で query する。**look-back window は使わない** (Codex round 1 Blocker 対応): 「`last_content_change_ts` 起点で peer-msg 痕跡を見る」のが正しい sematics で、固定 window だと PR 待ち / レビュー待ちなど正常 idle の worker で痕跡が window から外れて誤発火する。
+   #### (c) 〜 (g) 補助シグナル・分岐・通知
+   (b) の候補条件を満たす worker が出たサイクルだけ [`.dispatcher/references/pane-output-detection.md`](pane-output-detection.md) を読んで従う ((c) 補助シグナル取得 / (d) 分岐 / (e) 通知 / (f) de-dup と journal / (g) 設計メモ)。候補が無いサイクルは読まない
 
-   M4 cutover (`docs/journal-events.md` 参照) で journal は `.state/state.db` の `events` テーブルが SoT になっているため、SQLite で直接 query する:
-
-   **(c)(i) existence check — worker は過去に peer-msg を発行したか** ((b)(4) の評価入力):
-
-   ```bash
-   # ディスパッチャー cwd は .dispatcher/。state.db は repo root の .state/ 下。
-   sqlite3 ../.state/state.db "
-     SELECT COUNT(*) FROM events
-     WHERE kind IN ('worker_escalation','worker_reported','worker_completed','plan_delivered','prep_delivered')
-       AND json_extract(payload_json, '\$.worker') = 'worker-{task_id}'
-   "
-   ```
-
-   返却が `0` なら起動 ack 含めて peer-msg 履歴なし → (b)(4) 不成立で fire 候補から除外。
-
-   **(c)(ii) 直近 peer-msg ts (`last_content_change_ts` 以降に絞り込む)** ((b)(5) の評価入力):
-
-   ```bash
-   sqlite3 ../.state/state.db "
-     SELECT MAX(occurred_at) FROM events
-     WHERE occurred_at >= '${last_content_change_ts}'
-       AND kind IN ('worker_escalation','worker_reported','worker_completed','plan_delivered','prep_delivered')
-       AND json_extract(payload_json, '\$.worker') = 'worker-{task_id}'
-   "
-   ```
-
-   - 返却 `MAX(occurred_at)` が空 (NULL) → ペイン活動後に worker→secretary 痕跡なし → (b)(5) 成立 → fire 候補
-   - 返却が `last_content_change_ts` 以降の ts → 既に peer-msg 発行済 → (b)(5) 不成立 → (d) acked 経路
-
-   `last_content_change_ts` を WHERE 句に直接埋め込むことで「`last_content_change_ts` 以降の event」だけを scan するので、PR レビュー待ち等で 15 分以上前の `worker_completed` だけしかない worker でも、その worker_completed の ts ≥ last_content_change_ts であれば NULL ではない値が返り fire しない (Codex round 1 Blocker)。
-
-   #### (d) 分岐 (completion-review-skip vs reopen-self-heal vs acked vs fire vs no-baseline)
-   - **completion-review-skip** — (b)(6) で `completion_reported_at != null` かつ `runs.status == 'review'` (= worker 完了報告済み・review 待ちの正常 idle): **fire しない**。(c) の SQL query は発行せず soft-note のみ追記して次サイクルへ:
-     ```bash
-     bash ../tools/journal_append.sh anomaly_observed source=pane_output_check worker=worker-{task_id} kind=pane_output_completion_review_skip confidence=n/a note=completion_reported
-     ```
-   - **reopen-self-heal** — (b)(6) で `completion_reported_at != null` かつ `runs.status == 'in_use'` (= T6 再指示が landed したのに flag が残存 = `WORKER_REOPENED` 取りこぼし、P2 対応): `worker-idle-state.json` の該当 record の `completion_reported_at` を `null` に **clear** し、soft-note を追記した上で **通常の (c) 評価へ進む** (skip しない = 監視再開)。これで `WORKER_REOPENED` が落ちてもレビュー修正中の silent dead-lock 監視が確実に再開する:
-     ```bash
-     bash ../tools/journal_append.sh anomaly_observed source=pane_output_check worker=worker-{task_id} kind=pane_output_reopen_self_heal confidence=n/a note=runs_in_use_flag_cleared
-     ```
-   - **acked** — (c)(ii) が `last_content_change_ts` 以降の ts を返す (= ペイン活動後に peer message を発行済): **fire しない**。soft-note を journal に追記して次サイクルへ:
-     ```bash
-     bash ../tools/journal_append.sh anomaly_observed source=pane_output_check worker=worker-{task_id} kind=pane_output_acked confidence=n/a note=peer_msg_after_change
-     ```
-   - **no-baseline** — (c)(i) が `0` (= worker が過去一度も peer-msg を発行していない、起動 ack 未発行含む): **fire しない**。本検知のスコープ外 (起動失敗等の別検知が拾うべき領域) として soft-note のみ:
-     ```bash
-     bash ../tools/journal_append.sh anomaly_observed source=pane_output_check worker=worker-{task_id} kind=pane_output_no_baseline confidence=n/a note=no_prior_peer_msg
-     ```
-   - **fire** — (b)(1)〜(5) を全部満たす ((c)(i) ≥ 1 かつ (c)(ii) NULL): silent dead-lock 候補として (e) 通知 + (f) journal 追記に進む
-
-   #### (e) 通知 — 二段構え (worker への self-healing nudge + secretary への informational)
-   relay gap (Step 5.1 (e)) と同じ「両系統発火」で safety-net を組む。どちらか一方が届かなくても他方で状況が認識される冗長性設計:
-
-   1. **worker への self-healing nudge** (採用): dispatcher が worker pane に直接 nudge を送り、peer message 慣行を促す。承認・拒否の自動代行ではないので `.dispatcher/CLAUDE.md` 「ディスパッチャーが自動で承認・拒否することはしない」に抵触しない (構造の遵守を促すだけで内容判断はしない):
-      ```
-      {{FQ}}send_message(to_id="worker-{task_id}", message="
-        PANE_OUTPUT_WITHOUT_PEER_MSG: 直近のペイン出力 (last_content_change_ts={ts}) 以降に
-        secretary 宛の send_message 痕跡が観測できません。silent dead-lock を防ぐため、直前の応答内容を
-        `{{FQ}}send_message(to_id=\"secretary\", ...)` で secretary に送信してください。
-        既に送信済みの場合は無視して構いません (`last_content_change_ts` 起点での痕跡走査で 0 件のため
-        自動 nudge を発行しています)。
-      ")
-      ```
-   2. **secretary への informational** (採用): silent dead-lock の検知事実と dispatcher の自動 nudge 発行を informational として secretary に届ける。secretary は人間応答待ちのつもりで idle になっているケースが想定されるため、worker が peer message を発行し忘れているシグナルとして受け取り、対応 (待つ / `inspect_pane` で内容を直接確認 / 人間にエスカレ) を判断する:
-      ```
-      {{FQ}}send_message(to_id="secretary", message="
-        PANE_OUTPUT_WITHOUT_PEER_MSG (informational): worker-{task_id} がペインに出力済みですが、
-        last_content_change_ts={ts} 以降に worker→secretary の send_message 痕跡 (worker_escalation /
-        worker_reported / worker_completed / plan_delivered / prep_delivered) が観測できないため、
-        dispatcher が worker に nudge を送信しました。worker からの応答到着を一度待ち、来なければ
-        inspect_pane で確認・問い直しを推奨します。
-      ")
-      ```
-
-   両系統とも送信成功した場合のみ (f) の `notify_sent` を書く。片方失敗時は `notify_sent` を書かず、次サイクルで dedup が抜けて再試行 (at-least-once、Step 4 (e) と同じセマンティクス)。
-
-   #### (f) de-dup と journal
-   Step 4 (e) / Step 5 (e) / Step 5.1 (f) と同じスキーマを共有し、同じ `notify_sent` ledger に乗せる。(d) で fire 経路に入った場合のみ本セクションが走る (acked / no-baseline は (d) で独自 kind の soft-note を書いて終了する。`pane_output_without_peer_msg` kind の `anomaly_observed` を always 書くと acked / no-baseline でも「peer-msg 不発」観測扱いになって retro / debug の信号が汚れるため、Codex round 2 Minor 対応で fire 経路限定にする):
-
-   - 観測記録 (fire 経路のみ):
-     ```bash
-     bash ../tools/journal_append.sh anomaly_observed source=pane_output_check worker=worker-{task_id} kind=pane_output_without_peer_msg confidence=n/a
-     ```
-   - 通知判定: 直近 30 秒以内の events に `kind == "notify_sent"` かつ `payload_json` の `(worker=worker-{task_id}, kind=pane_output_without_peer_msg)` 一致のエントリが無ければ通知に進む
-   - 通知送信成功後 ((e) の (1)+(2) 双方ペイロード発行成功時のみ):
-     ```bash
-     bash ../tools/journal_append.sh notify_sent source=pane_output_check worker=worker-{task_id} kind=pane_output_without_peer_msg confidence=n/a
-     ```
-   - **再通知 cadence**: 30 秒 dedup window のみ (Step 4 / 5 / 5.1 と同じ at-least-once 担保短窓)。`/loop 3m` cadence で 30 秒 window は毎サイクル抜けるため、状態が解消されるまで毎サイクル両系統発火する。worker が nudge を受けて peer message を発行すれば次サイクルで `T_last_worker_to_secretary >= last_content_change_ts` となり (d) acked 経路に切り替わって自然停止する。worker が反応せずペインが完全に静止し続ければ idle_streak が ≥ 3 になった時点で Step 5 STALL_SUSPECTED が並行発火し相補的にカバーする (kind が異なるので de-dup で merge されない)
-
-   #### (g) 設計メモ — Step 4 / 5 / 5.1 との関係
-   - **Step 4 (画面 anomaly)** との関係: PANE_OUTPUT は (b)(3) で「APPROVAL_BLOCKED / ERROR が (e) 通知経路に乗っていない」を要求するので、画面に規定パターンの承認プロンプト / エラーが出ているケースは Step 4 が優先される。Step 4 = 規定パターンの画面 anomaly、PANE_OUTPUT = 規定外の自由出力 anomaly で disjoint な事象
-   - **Step 5 (STALL)** との関係: STALL は idle_streak ≥ 3 サイクル (= ~9 分) が必要。PANE_OUTPUT は idle_streak ≥ 2 (= ~6 分) で発火するため時間的に PANE_OUTPUT が先行する。worker が nudge を無視して停止し続けたら自然に STALL 経路へ移行する (= 二段階の検知層、worker の peer message 不発 → silent dead-lock 検知 → 全停止 → stuck 検知)。kind が `pane_output_without_peer_msg` と `stall_suspected` で異なるので de-dup は独立し、両通知が並行で出ても merge されない
-   - **Step 5.1 (relay gap)** との関係: 5.1 は secretary→user / secretary→worker の中継漏れ (secretary 側 outbound)。PANE_OUTPUT は worker→secretary の outbound (peer message 不発) で、観測対象が逆方向。両者は完全に独立で重なり領域なし
-   - **silent dead-lock の two-sided coverage**: Step 5 = worker stuck (双方向 outbound 不在)、Step 5.1 = secretary outbound 不在、Step 5.2 = worker outbound 不在。これで worker / secretary 両方向の send_message 健全性を監視ループで覆う
-   - **`PANE_OUTPUT_SETTLE_SEC = 60` の根拠**: claude code の応答生成は数秒〜数十秒で完了するのが典型 (短い ack で 5–10 秒、長文回答で 30–90 秒)。60 秒静止すれば「output が一段落した」と判定して妥当。短すぎると thinking 中の一時的 idle で誤発火 (worker が次の output を生成中の谷間)、長すぎると silent dead-lock 検知遅延が増える。`PANE_OUTPUT_IDLE_STREAK_MIN = 2` (= 約 6 分) との AND で実効 settle 時間は ~6 分以上になるため、`PANE_OUTPUT_SETTLE_SEC` は事実上 idle_streak の最低値の補強 (ts ベースの floor、サイクルロジックに glitch があっても絶対時刻として 60 秒を担保) として効く
-   - **`PANE_OUTPUT_IDLE_STREAK_MIN = 2` の根拠 (Codex round 1 Major 対応)**: round 1 で「`idle_streak_cycles >= 1` (~3 分) では worker が長時間コマンドを走らせている途中の谷間出力で誤発火しうる」と指摘された。`/loop 3m` cadence では 1 サイクル = 約 3 分なので、`>= 2` を要求すると **6 分連続で画面に変化が無い** ことを担保する。worker 側で Bash / build / test 等の出力が断続的に流れる作業はこの 6 分静止条件を満たさないため、構造的に nudge 候補から外れる。逆に、長文回答を出して入力待ちに戻った worker は 6 分以上完全静止するため正しく fire する
-   - **`PANE_OUTPUT_LOOKBACK_MIN` を持たない理由 (Codex round 1 Blocker 対応)**: round 1 で「15 分の固定 window で worker→secretary 痕跡を切ると、PR レビュー待ち / 人間判断待ちで pane を開けたまま正常 idle している worker (`worker_completed` が 15 分以上前) を毎サイクル誤発火する」と指摘された。検知意図は「ペイン活動後に peer-msg が無いか」であり、固定 window では表現できない。(c)(ii) で `last_content_change_ts` を WHERE 句に直接埋め込み、その ts 以降に絞り込んで MAX を取ることで「ペイン活動 後 の peer-msg 痕跡」を正確に評価する。これにより 1 時間前に `worker_completed` を出して以後 PR 待ちで idle している worker が、何らかのきっかけ (cron driven screen update など) で `last_content_change_ts` が更新されない限り fire しない
-   - **`last_content_change_ts` を新フィールドにした理由**: `idle_streak_cycles` だけでは「いつから idle か」の絶対時刻が不明 (cycle 数 × cadence の近似値しか出ない)。peer message ts との大小比較は ISO-8601 時刻で deterministic に行うべき。`last_check_ts` は更新時刻を表すが change 時刻ではない (idle 継続中も毎サイクル更新される) ため流用不可
-   - **`last_content_change_ts` の値が「前サイクルの `last_check_ts`」になる理由 (Codex round 3 Major 対応)**: 同サイクル内のステップ順序は Step 2 (check_messages) → Step 4 (inspect_pane) で、worker→secretary の peer-msg は Step 2 の時点で events table に `occurred_at = T_msg` として永続化される。Step 4 の inspect_pane で初めて画面変化を検知して `last_content_change_ts` を更新する場合、現サイクルの inspect 時刻 (`now`) を入れると `T_msg < now` なので (c)(ii) の `WHERE occurred_at >= last_content_change_ts` で正当な peer-msg が cutoff に弾かれ、後続サイクルで Step 5.2 が誤発火する。「前サイクルの `last_check_ts`」(= 直前に画面 idle と確認できていた時刻) を起点にすれば、現サイクル中に届いた peer-msg は必ずその cutoff 以降の `occurred_at` を持つため acked として正しく拾える。前サイクルの `last_check_ts` は最低でも 1 サイクル前 (`/loop 3m` で ~3 分以上前) なので、`PANE_OUTPUT_SETTLE_SEC = 60` の (b)(1) 条件は次サイクル以降も自然に満たされる
-   - **active 継続中に `last_content_change_ts` を据え置く理由**: 出力が複数サイクルに渡って連続している間 (worker が長文回答を流している、build ログが流れている等)、active 期間の START 時刻を保持し続ける必要がある。現サイクル = 0 から再リセットすると、active 期間中に届いた worker→secretary peer-msg (例: 進捗報告) が後続の (c)(ii) cutoff より古くなり、acked と判定されなくなる。active 期間が「1 つの連続イベント」で、その START 時点より後の peer-msg が 1 件でもあれば acked、というセマンティクスを保つ
-   - **新規 worker / 旧 record の初回観測**: Step 5 (b) 更新規則 (5) で `last_content_change_ts = null` 扱いとし (b)(1) を不成立にすることで、worker spawn 直後の表示変化や本 PR 以前から永続化されている record で false positive nudge を出すことを防ぐ。worker は起動時に ack 相当の peer message を最初に送る (CLAUDE.md 「ワーカー peer message を受けたら必ず ack を返す」を worker 側からも遵守する) ことが前提なので、初回 activity 観測 → ts 確定 → 次サイクル以降に peer message との比較が始まる、の流れで正しく機能する
-   - **(b)(4) 事前 peer-msg 履歴要件 (Codex round 1 Major 対応の補助)**: worker が起動 ack を含めて一度も peer-msg を発行していない record は「peer-msg 慣行が確立していない異常」であり、別検知 (起動失敗 / instruction 未受領) のスコープ。silent dead-lock の典型 signature は「peer-msg 慣行のある worker が以後の活動で peer-msg を漏らした」なので、(b)(4) の existence check で対象集合を絞ることで Major で指摘された誤検知層を更に削減する。`pane_output_no_baseline` soft-note のみ追記して (d) で fire しない
-   - **Issue 化なしの起点インシデント**: 2026-05-09 renga-ime-paste-routing タスクで実発生 (issue 化はされていない、本 PR が初の機械検知化)。当時 worker は窓口に「修正完了。次の指示を待ちます」相当の長文回答をペイン上に展開したが send_message 未発行で silent dead-lock 化、人間が `inspect_pane` で発見するまで停滞
-   - **既存 ack 強制** との関係: ack 強制は secretary 側の責務 (= worker 起点 message 受信時に ack を返す、CLAUDE.md 「ワーカー peer message を受けたら必ず ack を返す」)。Step 5.2 は dispatcher 側の機械観測で worker の outbound 不発を補完する (= ack 強制の対偶側面)。両者は補完関係で、人間運用契約 + 機械観測の二重化により silent dead-lock の発生確率を抑える
-   - **`completion_reported_at` gate の動機**: worker が secretary へ完了報告を送り、secretary が ack (worker pane へ send_message) を返した後、その ack echo や worker の「レビュー待ちます」出力で `last_content_change_ts` が更新される。以後 worker は review 待ちで追加 peer-msg を出さないため、(c)(ii) が NULL を返し PANE_OUTPUT_WITHOUT_PEER_MSG が **誤発火**していた (完了報告済み worker の正常 idle を silent dead-lock と誤判定、実運用で 4 回再現)。`WORKER_COMPLETION_NOTED` 受領で `completion_reported_at` を立て、(b)(6) gate で本検知を skip することでこの false positive を断つ
-   - **skip は `pane_output_without_peer_msg` に限定する (Codex Major 対応)**: `completion_reported_at != null` で抑止するのは Step 5.2 の PANE_OUTPUT のみ。**Step 1 の pane exit 検知 / Step 4 の APPROVAL_BLOCKED・ERROR / Step 5 の STALL_SUSPECTED は完了報告後も有効なまま**残す。完了後 pane に出るエラー banner や承認プロンプトは依然として本物の異常であり、監視全体を completion で止めると見落とすため。`completion_reported=true` を「監視まるごと停止」に拡張してはならない
-   - **timeout を持たず lifecycle event で解除する理由 (Codex Major 対応)**: `completion_reported_at` は「完了報告済み・レビュー待ち」の状態印。時間で自然失効させると、レビューが長い正常ケース (数時間の PR レビュー等) で失効後に再び false positive に戻る。解除は lifecycle event のみに固定 — `CLOSE_PANE` / pane 消失で record 削除 (更新規則 (4))、T6 再指示で `WORKER_REOPENED` により `null` clear (Step 2)、新しい完了受領で再セット。この 3 event 以外では消えない
-   - **何が検出不能になるか / 許容根拠 (3 問への回答)**: 完了報告後・レビュー待ち中の worker が pane に追加出力しても PANE_OUTPUT は検出しない。state semantics 上 `review` は「worker 側の作業 in-flight なし」なので、この idle は正常であり許容できる。**ただし T6 再指示 (awaiting_review→in_progress) 後まで skip が残ると、レビュー修正中の本物の silent dead-lock を見逃す**。これを防ぐのが T6 の解除契約 (Blocker) で、再指示は secretary→worker 直送で dispatcher が経路上に居ないため、`WORKER_REOPENED` (fast-path) と `runs.status == 'in_use'` backstop (reliable、上記 P2 対応) の 2 経路で監視を再開させる。この解除が無ければ本 gate 導入は net で監視穴を作るため、解除契約と一体で成立する
-   - **`WORKER_REOPENED` の best-effort 非対称性と `runs.status` backstop (P2 対応)**: `WORKER_COMPLETION_NOTED` (skip を **立てる**) の取りこぼしは監視が過剰に働く安全側に倒れるが、`WORKER_REOPENED` (skip を **解く**) の取りこぼしは監視が止まったまま = 危険側に倒れる (レビュー修正中の本物の silent dead-lock を見逃す)。両者を同じ best-effort one-shot semantics で扱うと解除が信頼できない。そこで解除は 2 経路にする: (1) `WORKER_REOPENED` = fast-path (速報)、(2) DB `runs.status == 'in_use'` = reliable backstop。T6 再指示で secretary は StateWriter 経由で `runs.status` を `review → in_use` に**決定的に**書く (peer message に依らない DB 遷移) ので、(1) が落ちても (b)(6) gate が (2) を観測して flag を self-heal clear し監視を再開する ((d) reopen-self-heal)。これにより「skip を立てる側は best-effort で十分・skip を解く側は決定的 backstop で担保」の非対称設計になり、Blocker の懸念 (解除漏れで監視穴) を構造的に塞ぐ。`runs.status` は既存 schema (`runs` テーブル、`status ∈ {in_use, review, completed}`) をそのまま consume し新規 event を導入しない
-   - **`WORKER_COMPLETION_NOTED` / `WORKER_REOPENED` は完了判定ではなく監視抑止用の受領通知 (Codex Minor 対応)**: 現行契約では worker 完了報告は secretary 宛が正で、dispatcher は自分で完了を判定しない (`docs/contracts/role-contract.md` dispatcher inputs、`delegation-lifecycle-contract.md` T4)。本 peer message はその原則を変えず、dispatcher の監視 loop の false positive を抑止するためだけの受領通知として additive に追加する (contract への追記も additive に留め、既存 ratified 記述は書き換えない)
-   - **secretary は non-blocking で送る (Codex Major 対応)**: secretary は worker ack と状態更新 (REVIEW 遷移) を終えた後、best-effort で `WORKER_COMPLETION_NOTED` を送るだけで dispatcher 応答を待たない。dispatcher は `/loop 3m` の通常 `check_messages` で非同期に反映する。blocking wait にすると T4 の human review 移行に新しい停止点を作るため禁止 (secretary 側手順は `.claude/skills/org-delegate/SKILL.md` Step 5 §2a、再指示は `.claude/skills/org-pull-request/SKILL.md` 2c)
 
 <a id="step-5-25"></a>
 ### Step 5.25. 未配送終端イベントの relay scan (CI-watch zero-miss)
@@ -1106,20 +645,4 @@ Step 5 / 5.1 の sibling、ワーカーがペイン上に応答出力したの�
 <a id="step-7"></a>
 ### Step 7. 監視ループの停止
 
-ワーカーペインがない場合は `poll_events` / `check_messages` / `inspect_pane` をすべてスキップし、監視ループを停止する。**ただし次のいずれかが存在する間は停止しない**:
-   - `.state/dispatcher/curate-inflight.json` が存在する間: Step 1 (`poll_events`) / Step 2 (`check_messages`) / Step 5.3 だけを継続し (worker 向けの Step 3〜5.2 は対象が無いので skip)、inflight 解消 (Step 5.3 (a)/(b)/(c) のいずれか) 後のサイクルで停止する
-   - **未配送の終端イベントが残っている間**: `python3 ../tools/relay_scan.py --recipient secretary --cycle` の `items` が非空である間は Step 5.25 だけを継続する。PR merge 後に worker pane が閉じても `ci_completed` 等の配送漏れをカバーするため、pane 不在でも relay を走らせる。`items` が空配列 (`[]`) だったサイクルで (curate-inflight も無ければ) 停止する
-   - **unknown / indeterminate として保持している worker が居る間 ((3-a-4))**: `list_panes` に列挙されないだけで退役が**確定していない** worker は監視対象・active のままなので、**「ワーカーペインがない」に数えない**。当該 worker については Step 4 / Step 5 / Step 5.2 を skip するが、Step 1 / Step 2 / Step 3 / Step 5.1 は通常どおり回し、次サイクルで (3-a-2) を再評価する。停止できるのは、その worker が (3-a-2) の 1 行目 / 4 行目で**終了確定した**か、窓口が `.state/workers/worker-*.md` を終端状態へ遷移させたサイクル以降
-   - **`placement == "background_tab"` の worker が居る間 ((3-a-5))**: `list_panes` に出ないのは配置上の定数なので、同じく **「ワーカーペインがない」に数えない**。こちらは Step 4 / Step 5 / Step 5.2 も `bound_pane_id` 宛で**通常どおり回す** (skip しない)。停止できるのは、attribution 済みの `pane_exited` で**終了確定した**か、窓口が `.state/workers/worker-*.md` を終端状態へ遷移させたサイクル以降
-
-   **停止する前に、意図的停止であることを記帳する**:
-
-   ```bash
-   python3 ../tools/relay_scan.py --recipient secretary --mark-halted
-   ```
-
-   Step 7 の停止は設計どおりの停止なので、これを記帳せずに止まると「停止中に終端イベントが 1 件でも入った」翌セッションの初回 audit がそれを `RELAY_SCAN_STALE` として報告する — **異常が無いのに鳴る alert は、読み手が無視することを学習する**。記帳は heartbeat に `halted_at` を書くだけで `last_scan_at` は書き換えない (trace は正直なまま)。抑止されるのは再開直後 1 回の audit だけで、**その抑止を使った audit 自身がマーカーを消す**ため以後は通常判定に戻る。記帳せずに死んだループは従来どおり finding になるので、検出力は落ちない。
-
-   **exit で分岐する**: **exit 10 = 記帳を拒否** — 未配送の終端イベントが残っている (最後の `--cycle` とこの記帳の間に終端イベントが入った競合)。**停止せず Step 5.25 を続行する** (Step 7 の停止条件「relay 空」をツール側で再確認している)。**exit 2 = 記帳に失敗** — 記帳が唯一の副作用なので握り潰さない (握り潰すと「記帳できたつもりで停止 → 翌セッションで偽 alert」になる)。停止前に窓口へ `RELAY_SCAN_HALT_UNRECORDED: <stderr 1 行>` を送る。exit 0 のときだけ記帳済みとして停止してよい。
-
-監視対象のペイン名は `.state/workers/worker-{task_id}.md` の Pane Name (`worker-{task_id}`) から取得する。
+本ステップは監視対象のワーカーペインが 0 件のときだけ [`.dispatcher/references/monitoring-stop.md`](monitoring-stop.md) を読んで従う (停止してよい条件・停止前の `--mark-halted` 記帳)。対象がある間は読まない。

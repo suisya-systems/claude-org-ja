@@ -99,6 +99,54 @@
       "allowlist": "none"
     },
     {
+      "source": "../../.dispatcher/references/monitoring-stop.md.in",
+      "output": "../../.dispatcher/references/monitoring-stop.md",
+      "mode": "template",
+      "allowlist": "none"
+    },
+    {
+      "source": "../../.dispatcher/references/pane-output-detection.md.in",
+      "output": "../../.dispatcher/references/pane-output-detection.md",
+      "mode": "template",
+      "allowlist": "none"
+    },
+    {
+      "source": "../../.dispatcher/references/relay-gap-notify.md.in",
+      "output": "../../.dispatcher/references/relay-gap-notify.md",
+      "mode": "template",
+      "allowlist": "none"
+    },
+    {
+      "source": "../../.dispatcher/references/stall-candidate.md.in",
+      "output": "../../.dispatcher/references/stall-candidate.md",
+      "mode": "template",
+      "allowlist": "none"
+    },
+    {
+      "source": "../../.dispatcher/references/anomaly-detail.md.in",
+      "output": "../../.dispatcher/references/anomaly-detail.md",
+      "mode": "template",
+      "allowlist": "none"
+    },
+    {
+      "source": "../../.dispatcher/references/pane-missing-verification.md.in",
+      "output": "../../.dispatcher/references/pane-missing-verification.md",
+      "mode": "template",
+      "allowlist": "none"
+    },
+    {
+      "source": "../../.dispatcher/references/pane-exited-attribution.md.in",
+      "output": "../../.dispatcher/references/pane-exited-attribution.md",
+      "mode": "template",
+      "allowlist": "none"
+    },
+    {
+      "source": "../../.dispatcher/references/cursor-reset.md.in",
+      "output": "../../.dispatcher/references/cursor-reset.md",
+      "mode": "template",
+      "allowlist": "none"
+    },
+    {
       "source": "../../.claude/skills/pr-watch-pane/SKILL.md.in",
       "output": "../../.claude/skills/pr-watch-pane/SKILL.md",
       "mode": "template",

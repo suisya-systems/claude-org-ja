@@ -1,0 +1,60 @@
+# `list_panes` からの消失の裏取り (Step 3 の (3-a-1) / (3-a-2) / (3-a-4)) — 詳細
+
+[`.dispatcher/references/worker-monitoring.md`](worker-monitoring.md) から分けた本体仕様。Step 3 で、events 経由で exit を把握していないのに `list_panes` から worker ペインが消えている (または同タブ性を確定できない) サイクルだけ読む（それ以外のサイクルでは読まない）。
+
+   #### (3-a) 消失の裏取り — `list_panes` の消失を単独根拠にしない ([観測の原則](worker-monitoring.md#observation-principle) (P2) の適用)
+   `list_panes` からペインが消えたことは「呼び出しが解決したタブに見えない」以上を意味しない ((P3))。`WORKER_PANE_EXITED` は「ペインが終了した」という**対象の状態**の申告なので、送る前に独立面で裏を取る。
+
+   **(3-a-1) まず「自分の `list_panes` が org のタブを解決できているか」を見る** (同じ応答から読める最初の弁別子):
+   - 応答に org の他メンバー (`secretary` / 他の worker / `curator` / watcher 等) が**残っている** → `list_panes` は org のタブを解決できている。消失は当該ペイン固有の事象なので (3-a-2) へ進む
+   - 応答に **自分以外の org のペインが 1 つも出てこない** (一斉に消えた) → ペインの一斉終了より「自分の `list_panes` が別タブを解決している」ほうが桁違いに起こりやすい (可視範囲は current tab のみ・フォーカス移動で前タブが不可視になりうる、(P3) の contract §1.5 / §4.3)。これは異常ではなく **観測不能**: `WORKER_PANE_EXITED` を送らず、(P4) の `OBSERVATION_UNAVAILABLE` を 1 回報告し、peer 経路 (`{{FQ}}list_peers` + events テーブルの worker→secretary 報告痕跡) にフォールバックして監視を続ける。**`list_peers` の直前に [`.claude/skills/org-delegate/references/capability-first-drive-operational-gate.md`](../../.claude/skills/org-delegate/references/capability-first-drive-operational-gate.md) を Read し、`monitoring-read-only` の分岐を適用する** (同 reference §6 の表 #9)。capability 形かつ未承認なら**このフォールバックから `list_peers` を外し、events テーブルの報告痕跡だけ**で監視を継続する (停止しない・待ち時間 0 分。列挙を生存判定に使うと、別タブの同名ピアを当該ワーカーと取り違える — 予約名 `worker-{task_id}` は別 org の並走タブに同名で実在しうる)。**フォーカスが別タブにある間、pane-addressed 呼び出しが `[pane_not_found]` を返すのは正常であり異常ではない** (contract §4.2)。
+     ただし **このフォールバックが常に成立するとは限らない**: ratified 契約では `send_message` (§2.1) も `list_peers` (§2.2) も current tab スコープで、`org-broker` は cross-tab を持たない (§4.2)。フォーカス移動が原因のときは**観測不能の報告そのものが届かず、`list_peers` も対象を列挙できない**ことがある。その場合でも `.state/` のローカル台帳 (journal / events テーブル) は読み書きできるので、(P4) の journal 記録だけは必ず残し、通知は次サイクル以降に再送する。**自分の送信経路が届かないことを「対象が異常だ」の根拠にしてはならない** — (P1) は観測面だけでなく**自分の報告経路にも適用される**
+
+   **(3-a-2) 当該ペイン固有の消失を、独立面で突き合わせる**:
+
+   **責務分割 (本表が owner なもの / owner でないもの)**: 「対象名 `worker-{task_id}` が**自タブに 在 / 不在 / unknown のどれか**」を決める規範の正本は [`.claude/skills/org-delegate/references/capability-first-drive-operational-gate.md`](../../.claude/skills/org-delegate/references/capability-first-drive-operational-gate.md) §1-2 だけで、本表はその**適用結果**を 3 列目に受け取る。本表が owner なのは「`list_panes` / `pane_exited` / 同タブ生存判定 という**独立した観測面をどう突き合わせるか**」— どの組み合わせなら窓口へ申告してよいか、および 2 サイクル継続要件 — の側だけである。判定条件・評価順・三値の定義を本表に**再掲しない** (同 §1-2-e。call site としての分岐は同 §6 の表 #9)。
+
+   | # | `list_panes` | 同区間の `pane_exited` | 同タブ生存の判定 (capability 形かつ承認済み → §1-2 の適用結果 / 旧版 fallback → 従来どおり `name` 一致) | 判定 |
+   |---|---|---|---|---|
+   | 1 | 消えた | **在り** | 問わず | **終了確定** → `WORKER_PANE_EXITED` を送る (`pane_exited` は exactly-once の確定証拠。「在」と出ていても登録の遅延として扱う) |
+   | 2 | 消えた | 無し | **在** | **観測不能** (面が食い違う) → 送らない。(P4) を 1 回報告し次サイクルで再評価 |
+   | 3 | 消えた | 無し (かつ同区間に `events_dropped` **在り**) | 問わず | **観測不能** (event 面が取りこぼしている) → 送らない。(P4) を 1 回報告し次サイクルで再評価 |
+   | 4 | 消えた | 無し (`events_dropped` も無し) | **不在**。capability 形かつ承認済みのときは、さらに §1-2-c の pane 面裏取り (ii)（以前「在」と観測したレコードの**追跡済み数値 `id`** が後続の `list_peers` から消えた）が取れたときに限る。**旧版 fallback は (ii) を要求せず、不在がそのまま本行に落ちる** | 2 面が一致するので**終了とみなす**。ただし単発サイクルでは断定せず、**連続 2 サイクル同じ形が続いた時点で** `WORKER_PANE_EXITED` を送る |
+   | 5 | 消えた | 無し (`events_dropped` も無し) | (**capability 形かつ承認済みのときだけ現れる**) **不在** だが裏取り (ii) が取れない (陽性の「在」履歴が無い = `same_tab_peer_id` が `null`) | **indeterminate** → 送らない。(P4) を 1 回報告し次サイクルで再評価 (下記 (3-a-4)) |
+   | 6 | 消えた | 無し | (**capability 形のときだけ現れる** — 承認済みなら §1-2 が unknown を返した場合、未承認なら列挙を破棄するので常にこの行) **unknown** | **観測不能** → 送らない。unknown は **在にも不在にも数えない**。(P4) を 1 回報告し次サイクルで再評価 (下記 (3-a-4)) |
+
+   **本表の `pane_exited` 列に「在り」と数えてよいのは、Step 1 の attribution で当該 worker と同定できたイベントだけである**。同定できないイベントは Step 1 の観測不能経路 (`source=lifecycle_event`) に落ちるので、本表では「無し」として扱う — 同定していないイベントを 1 行目に数えると、別タブの同名ペインの終了で自タブの worker を退役させる経路が本表から再び開く (契約 [`docs/contracts/backend-interface-contract.md`](../../docs/contracts/backend-interface-contract.md) T-§3.1「a harness MUST NOT match a lifecycle event to a tracked pane by `name` alone」)。**旧版 fallback では同定は従来どおり `name` 一致**なので、この条件は今日の挙動を変えない。
+
+   4 行目 / 5 行目の「裏取り」は §1-2-c が「不在 → lifecycle 断定へ進むには pane 面の裏取りを別に取る」として (i) 同タブの `pane_exited` 観測 / (ii) 追跡済み数値 `id` の消失 の 2 つを挙げるもの。**(i) は本表の 1 行目そのもの**なので、`pane_exited` 無しの行に残るのは (ii) だけである。どちらも取れなければ indeterminate に倒す (契約 [`docs/contracts/backend-interface-contract.md`](../../docs/contracts/backend-interface-contract.md) T-§2.1: 「If neither is available the harness MUST record the outcome as **indeterminate** and escalate it; it MUST NOT resolve it as "closed"」)。(ii) の突き合わせに使う陽性履歴の保持は (3-a-3)。
+
+   **capability 形かつ未承認のときの 3 列目（`list_peers` 由来の同タブ生存判定）**: (3-a-1) と同じ縮退が本表にも及ぶ。列挙を破棄するので 3 列目は **unknown** として読み、「在」にも「不在」にも数えない。したがって 2 行目（`pane_exited` 無し・在）と 4 行目 / 5 行目（`pane_exited` 無し・不在）はどれも成立せず、**`pane_exited` を観測した 1 行目以外はすべて 6 行目の「観測不能」**に落ちる（送らない・(P4) を 1 回報告し次サイクルで再評価）。これは判定を厳しくするだけで行動を増やさない ((P5)) 側の変化であり、生きているペインを「終了」と誤申告するより安全側。共有 reference §6 の表 #9。
+
+   **capability 形かつ承認済み（§2 の `first_drive` が `recorded`）のとき**: 共有 reference §1-2 の三値判定を `worker-{task_id}` に適用し、その結果を本表の 3 列目に入れる。「在」なら 2 行目（観測不能）、「不在」なら §1-2-c の裏取り (ii) の有無で 4 行目 / 5 行目、「unknown」なら 6 行目。`WORKER_PANE_EXITED` へ進めるのは 1 行目と 4 行目だけで、5 行目 / 6 行目は (3-a-4) の継続動作に落ちる。（判定手順と評価順の正本は §1-2。ここに重ねて書かない）
+
+   **旧版 fallback（marker の無い列挙。現行配備の全 backend — `org-broker` を含む — はここ、共有 reference §1-2-a 段 5）**: §1-2 は適用されない。3 列目は**従来どおり `name` 一致**で「在」／「不在」を読み、**§1-2-c の裏取り (ii) を要求しない**（不在は 4 行目に直接落ちる。5 行目 / 6 行目は capability 形かつ承認済みのときにだけ現れる）。2 サイクル継続要件も (P4) の落とし先も従来のままで、**今日の挙動は変わらない**。
+
+   4 行目で 1 サイクル待つ trade-off: Step 3 はそもそも `poll_events` の取りこぼしを拾う**保険**なので、~3 分の遅延は許容できる。逆に単発サイクルで断定すると、フォーカス移動やタイミング差で生きているペインを「終了」と申告することになる。
+
+   **このゲートは判定を厳しくするだけで、行動を増やさない** ((P5)): 「終了確定」でやることは従来どおり窓口への `WORKER_PANE_EXITED` 転送であり、dispatcher がペインを再 spawn / 再構築することはない。「観測不能」でやることは報告と再評価であって、見えないペインへの介入ではない。
+
+   **(3-a-4) unknown / indeterminate と判定したサイクルで、監視は何を続けるか**:
+
+   (3-a-2) の 5 行目 (indeterminate) と 6 行目 (unknown) は「対象の状態を**判定できなかった**」だけで、監視を降りる合図ではない ((P1))。当該サイクルで dispatcher がやることは次の 4 点に固定する:
+
+   1. **worker を監視対象・active のまま保持する**: `.state/workers/worker-{task_id}.md` を `Status: pane_closed` にしない / `WORKER_PANE_EXITED` を送らない / `worker-idle-state.json` の該当 record を削除しない (Step 5 (b) 更新規則 (4) の「ゲートが『観測不能』に倒したサイクルでは record を**保持したまま**次サイクルへ送る」がそのまま適用される)
+   2. **観測不能を journal + 窓口へ重複抑止付きで報告する**: (P4) の語彙を**そのまま再利用し、新しい event 名も新しい `kind` も導入しない** — journal は `anomaly_observed` / `notify_sent` に `kind=observation_unavailable`、de-dup キーは **`(worker, source, kind=observation_unavailable)`**、解除は同じ `source` の `observation_recovered`、窓口への本文は (P4) の `OBSERVATION_UNAVAILABLE:` 形。`source` には判定に使った面 (例: 同タブ生存判定なら `same_tab_judgement`、Step 1 の attribution 未確定なら `lifecycle_event`) を入れる — キーから `source` を落とすと、先に劣化した面の通知が後から劣化した別の面を覆い隠す ((P4))
+   3. **次の `/loop 3m` サイクルで再評価する**: `poll_events` (Step 1) / peer message (Step 2) / events テーブルと state DB の痕跡 / §1-2 の三値判定を、次サイクルで改めて取り直す。判定は保留であって結論ではない ((P4)「観測不能は『異常なし』ではない」)
+   4. **画面監視の skip は当該 worker の Step 4 / Step 5 / Step 5.2 に限る** (**`placement == "same_tab"` の worker のみ**。背景 worker は `bound_pane_id` で `inspect_pane` が届くので skip しない — (3-a-5) の「画面監視は数値 id 経由で維持する」): ペインが列挙されない以上 `inspect_pane` は取れないので、その worker についてはこの 3 つを skip し、(P4)「観測不能サイクルでは state を進めない」に従って record も更新しない (`idle_streak_cycles` を加算せず、`last_check_ts` / `last_visible_content_hash` / `last_content_change_ts` も書き換えない)。**監視ループ全体・Step 1 / Step 2・Step 5.1 の relay gap scan は止めない** — いずれも当該 worker のペイン可視性に依存しない観測面である
+
+   これは (P5) の側の変化である: unknown / indeterminate を根拠にペインを再 spawn したり `close_pane` したりはしない (同節の禁止がそのまま掛かる)。判定が付かないことは行動を増やす理由にならず、安全側は常に「報告して止まる」。
+
+   **解消の経路 — 6 行目は自然回復するが、5 行目は窓口の reconcile 判断でしか閉じない**: 6 行目 (unknown) は次サイクルで `same_tab` が読めるようになれば解ける一過性の状態である。一方 **5 行目 (indeterminate) は、陽性の「在」履歴を持たないまま pane と peer が同じ区間で消えた形なので自然回復しない** — 裏取り (ii) の突き合わせ先 (`same_tab_peer_id`) を書く機会 ((3-a-3) の 2 producer = spawn 時の受理サイクル / 「ペインは消えたが peer 登録は残っている」監視サイクル) が**どちらも**一度も来ないまま両面が消えた形なので、以後どのサイクルでも得られず、毎サイクル同じ 5 行目に落ち続ける (spawn producer の配線後も、旧版 fallback・縮退中・spawn より後に承認が入った worker ではこの形が残る)。dispatcher 側にこれを閉じる権限は無い ((P5)) ので、**窓口へ渡す通知本文に「reconcile 判断が要る」ことを明記し、判断材料 (陽性履歴が無いこと) を添える**:
+
+   ```
+   {{FQ}}send_message(to_id="secretary", message="
+     OBSERVATION_UNAVAILABLE: worker-{task_id} の同タブ生存を確定できません (追跡済み数値 id の陽性履歴が無く、裏取り (i) 同タブ pane_exited / (ii) 追跡済み id の消失 がどちらも取れない)。
+     ペインの生死は判定していません。監視対象・active のまま保持し毎サイクル再評価しますが、この形は自然回復しないため窓口の reconcile 判断が要ります。
+   ")
+   ```
+
+   (P4) の de-dup は「面ごとに劣化区間あたり 1 回」なので、この通知も 1 回しか出ない。取りこぼしても窓口の再起動 / handover で拾えるよう、**同じ 1 行を `.state/workers/worker-{task_id}.md` の Progress Log にも残す** (Step 2 の通常進捗と同じ追記経路)。窓口が判断して `.state/workers/worker-{task_id}.md` を終端状態へ遷移させれば、[Step 5.3](worker-monitoring.md#step-5-3) の監視ループ停止条件がそのまま効いてループも降りられる。**dispatcher が代わりに終端状態を書くことはしない** (契約 [`docs/contracts/delegation-lifecycle-contract.md`](../../docs/contracts/delegation-lifecycle-contract.md) T7 / E1 の dated additive: unknown / indeterminate では遷移自体が発生しない)。

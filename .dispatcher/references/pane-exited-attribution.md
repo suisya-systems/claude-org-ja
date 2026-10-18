@@ -1,0 +1,30 @@
+# pane_exited イベントの同定と通知 (Step 1) — 詳細
+
+[`.dispatcher/references/worker-monitoring.md`](worker-monitoring.md) から分けた本体仕様。Step 1 の poll_events 結果に `pane_exited` が含まれるサイクルだけ読む（それ以外のサイクルでは読まない）。
+
+   - **どの追跡対象のイベントかを同定してから通知する (attribution)**: `pane_exited` の**受信**が終了の確定証拠であること ([`docs/contracts/backend-interface-contract.md`](../../docs/contracts/backend-interface-contract.md) §3.1: close 成功ごと / crash ごとに exactly once) は変わらない。変わるのは**そのイベントがどの追跡対象のものか**の同定方法で、同契約 T-§3.1 は「a harness MUST NOT match a lifecycle event to a tracked pane by `name` alone unless it has independently established that the pane is in the caller's tab」「Matching by name across an all-tab world can retire a live local pane on another tab's exit event」と書く:
+     - **第一に控えてある数値 id で照合する**。契約 T-§3.1 は `pane_exited` が **`id`**（「the pane identifier, in the same id space as `list_panes`.`id`」）と、peer を持つペインでは **`peer_id`**（「the peer identifier, in the same id space as `list_peers`.`id`」）を**契約されたフィールド名で**載せると定める。突き合わせ先は 2 つあり、**どちらか一方でも一致すれば同定は確定する**:
+       - イベントの pane 識別子 ↔ Step 3 (3-a-3) で控えた `tracked_pane_id`
+       - **`placement == "background_tab"` の worker では、突き合わせ先を `bound_pane_id` (pane 面) と `bound_peer_id` (peer 面) に読み替える** ((3-a-5))。背景 worker では `tracked_pane_id` が構造的に `null` で、`same_tab_peer_id` は意味が違うので使わない。**背景 worker の未同定イベントは `name` 一致へフォールバックせず、そのまま attribution 未確定として扱う** (全タブ世界で `name` は一意でない — T-§3.1)
+       - **ただし背景 worker の同定は、この Step 1 では確定させない (MUST)**: 束縛した id は **backend session に閉じた識別子**で、daemon restart 後は同じ数値が別の生きたペインに再発行される (契約 T-§4.2-id)。Step 1 は Step 3 の session provenance 照合 ((3-a-5)) より**前**に走るので、ここで id 等値だけを確定証拠として扱うと、**restart 後の無関係なペインの終了イベントで追跡中の worker を退役させる**。したがって背景 worker については、id が一致したイベントを **未同定の `pane_exited` 候補として同じサイクルの Step 3 へ持ち越し**、(3-a-5) の **session provenance (第 1 面) が通ったときに限り**同定を確定する (終了したペインは列挙から消えているのが正常なので、attribution に第 2 面 = identity 再照合は要求しない。同項の「2 面が gate するものは違う」)。
+       - **第 1 面が通らなかったサイクルでは、候補を捨てずに `pending_exit_event` へ書く (MUST)**: `pane_exited` は close / crash ごとに **exactly once** で ([`docs/contracts/backend-interface-contract.md`](../../docs/contracts/backend-interface-contract.md) §3.1)、cursor は本サイクルで既に advance しているので**次サイクルに同じイベントを読み直す手段は無い**。候補を同一サイクル内でしか持ち越さないと、`server_info` が一時的に引けない / `detached` を返したサイクルにたまたま終了イベントが来た worker は、以後どのサイクルでも終了を確定できず (列挙からの消失は意図的に unknown に倒すので)、**恒久的に active のまま滞留する**。そこで当該サイクルでは `pending_exit_event = {pane_id, peer_id, observed_at}` を record に書き、`WORKER_PANE_EXITED` は送らず (P4) の観測不能報告 (`source=session_provenance`) に落とす。次サイクル以降、(3-a-5) の第 1 面が通ったサイクルで **`pending_exit_event` を取り出して attribution を確定する** (新しい観測は要らない — 保管してあるのは既に受信済みの確定証拠そのものである) — これは同タブ worker の「未同定イベントを Step 3 (3-a) へ持ち越す」既存の扱いと同型で、新しい経路ではない
+       - イベントの peer 識別子 ↔ 同 (3-a-3) の `same_tab_peer_id`。**`list_panes` 側が使えないとき (resume 直後 / フォーカスが別タブ) でもこちらは効く** — T-§3.1 が `peer_id` を REQUIRED にしている理由がまさに「`list_panes` が一度も見せていない peer を追跡していることがある」ケースだからである
+       **フィールド名は canonical を先に、次に alias を見る**: ratified §3.1 は per-event のフィールド名を規定していないので、canonical 名を載せない backend もありうる（pane 側 `ev.id` → `ev.pane_id`、peer 側 `ev.peer_id` → `ev.agent_id`）。**alias を先に読んではならない** — 両方載っている場合に backend 固有 / 古い `agent_id` が canonical 値を隠し、終了したピアが pending に残る（手順の一次参照は [`.claude/skills/org-delegate/references/renga-error-codes.md`](../../.claude/skills/org-delegate/references/renga-error-codes.md) の `poll_events` 節）。この照合は**版に依らず適用でき**、T-§3.1 が求める「`name` 単独に依らない同定」を満たす最も厳しい形である。`name` は通知本文の**表示用**にだけ使う
+     - **上の id 照合がどちらも成立しなかったイベント** (控えが無い = Step 3 がまだ一度も当該ペインを列挙しておらず §1-2 の「在」確定も無い / イベントが canonical・alias いずれの識別子も載せていない) は `name` 一致しか取れない。**このとき Step 1 では attribution を決めない** — Step 1 が持つのは `poll_events` の応答だけで、版判定の材料 (`list_peers` の列挙) は Step 3 より後にしか来ないからである。**record の欠損を「旧版だから」と読んではならない**: capability 形の backend でも、初回の陽性観測より前 (spawn 直後 / resume 直後) は同じく欠損する。当該イベントは **未同定の `pane_exited` 候補**として同じサイクルの Step 3 (3-a) へ持ち越し、そこで版が確定してから同定する:
+       - Step 3 (3-a-2) の評価で列挙を引き、それが **旧版 fallback** と判定された (marker の無い列挙。現行配備の全 backend — `org-broker` を含む — はここ、同 reference §1-2-a 段 5) → **従来どおり `name` 一致**で同定し、(3-a-2) の 1 行目 (終了確定) に入れる。同一タブ内の `name` 一意性は契約 §1.8 が保証しているので安全であり、**この経路の挙動は変わらない**
+       - 同じ評価が **capability 形**と判定した → `name` 単独では同定できない (T-§3.1)。ただし**その評価自体が `list_peers` を引いている**ので、**同じサイクルで id 照合をもう一度試す**: (3-a-2) の 3 列目評価で §1-2 が「在」を返していれば (3-a-3) がそのサイクルに `same_tab_peer_id` を控えるので、**その控えたばかりの id で保留中のイベントの peer 識別子と join を引き直す** (canonical → alias の順は上と同じ)。
+         - **一致した → attribution 確定**。控えが「無かった」だけの理由で確定証拠を捨てない。§1-2 が「在」と出ていることは矛盾ではなく登録の遅延なので、(3-a-2) の 1 行目 (終了確定) に入れる (同行の「『在』と出ていても登録の遅延として扱う」)
+         - **不一致だった → そのイベントはこの worker のものではない** (別タブの同名ワーカーの終了)。当該 worker については何も起きなかったものとして扱い、通知も state 変更もしない。観測不能報告も出さない (こちらの観測面は劣化しておらず、判定は付いている)
+         - **引き直す材料が無い** (§1-2 が「不在」/「unknown」を返して `same_tab_peer_id` が控えられない、またはイベントが peer 識別子を載せていない) → **attribution 未確定**。当該イベントを (3-a-2) の `pane_exited` 列に数えず、`WORKER_PANE_EXITED` を送らず (P4) の観測不能報告 (`source=lifecycle_event`) に落として次サイクルで再評価する (下記 (3-a-4))。別タブの同名ペインの終了イベントで、生きている自タブの worker を退役させないため
+       - そもそも Step 3 (3-a) に到達しない (当該ペインが `list_panes` に残っている = 生きている) → 退役の判断自体が不要である。このサイクルで `tracked_pane_id` を控えられるので ((3-a-3))、以後は 1 つ目の id 照合で解決する。**未同定のイベントを根拠に退役させない**
+   - 同定できた `pane_exited` 行の `name` (例: `worker-foo`) を通知本文に載せ、`mcp__org-broker__send_message` で窓口に **ペインが閉じた** という事実だけを通知する:
+     ```
+     WORKER_PANE_EXITED: {name} (id={id}) のペインが閉じました。リコンサイル要。
+     ```
+     **重要**: これは「ペインが消えた」というライフサイクル事実のみ。タスクの完了判定ではない。
+     `pane_exited` の**受信**は終了の確定証拠なので ([`docs/contracts/backend-interface-contract.md`](../../docs/contracts/backend-interface-contract.md) §3.1: close 成功ごと / crash ごとに exactly once)、**attribution が確定している限り** [観測の原則](worker-monitoring.md#observation-principle) (P2) の裏取りは不要でこのまま通知してよい (確定証拠であることは変わらず、上の attribution は「誰の終了か」だけを決める)。裏取りが要るのは Step 3 の「event が無いのに `list_panes` から消えている」ケース (下記 (3-a))。
+     窓口側は `.state/workers/worker-*.md` を `status=pane_closed` に遷移させ、タスクの完了/未完了は:
+       - 直近の org-broker メッセージ履歴 (進捗ログ) を確認
+       - `COMPLETED` 報告が届いていれば task 完了扱い
+       - 届いていなければ、未完了終了 (ワーカー事故) として扱い、再派遣 or 放棄をユーザーに確認
+     のプロセスで判定する
