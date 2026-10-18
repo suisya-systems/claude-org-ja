@@ -175,6 +175,10 @@
         {
           "event": "UserPromptSubmit",
           "command_contains": "check-dispatcher-loop.sh"
+        },
+        {
+          "event": "UserPromptSubmit",
+          "command_contains": "remind-verify-premise.sh"
         }
       ],
       "disallow_allow_regex": [
