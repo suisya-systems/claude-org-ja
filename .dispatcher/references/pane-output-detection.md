@@ -1,6 +1,6 @@
 # PANE_OUTPUT_WITHOUT_PEER_MSG の補助シグナル・分岐・通知 (Step 5.2 の (c) 〜 (g)) — 詳細
 
-[`.dispatcher/references/worker-monitoring.md`](worker-monitoring.md) から分けた本体仕様。Step 5.2 (b) の候補条件 (1)〜(3-bis) を満たす worker が出たサイクルだけ読む（それ以外のサイクルでは読まない）。
+[`.dispatcher/references/worker-monitoring.md`](worker-monitoring.md) から分けた本体仕様。Step 5.2 (b) の条件 (1)〜(3-bis) を満たす worker が出たサイクルだけ読む (条件 (4)(5)(6) はこのファイルで判定する)（それ以外のサイクルでは読まない）。
 
    #### (c) 補助シグナル取得 — worker→secretary 痕跡 (2 段問い合わせ)
    Step 5 (c)(1) と同じ event 集合 ({`worker_escalation`, `worker_reported`, `worker_completed`, `plan_delivered`, `prep_delivered`}) を 2 つの観点で query する。**look-back window は使わない** (Codex round 1 Blocker 対応): 「`last_content_change_ts` 起点で peer-msg 痕跡を見る」のが正しい sematics で、固定 window だと PR 待ち / レビュー待ちなど正常 idle の worker で痕跡が window から外れて誤発火する。

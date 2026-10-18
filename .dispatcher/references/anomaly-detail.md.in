@@ -1,27 +1,6 @@
-# Step 4 の既知パターン (b-fp) / (d-fp) と通知シーケンス (e) / (f) — 詳細
+# Step 4 の誤検知パターン (d-fp) と通知シーケンス (e) / (f) — 詳細
 
-[`.dispatcher/references/worker-monitoring.md`](worker-monitoring.md) から分けた本体仕様。Step 4 で APPROVAL_BLOCKED / ERROR のパターンに該当した (または該当を疑う) worker が出たサイクルだけ読む（それ以外のサイクルでは読まない）。
-
-   #### (b-fp) 既知の取りこぼしパターンと見分け方 — 数字選択メニュー形式 (2026-07-27 実測)
-   (b) の regex リストは **単一行の y/n 確認**を前提に設計されているため、Claude Code の **数字選択メニュー UI** を取りこぼす (false negative)。破壊的 DB 操作 (`DELETE`) を含む委譲で、ワーカーが実行方法を確認する場面に以下の形が出た:
-
-   ```
-   DELETE の実行をどう進めますか？（対象: documents 155,612 行 + cascade。バックアップ検証済み・取り消し不可）
-
-   ❯ 1. 自分で実行する（推奨）
-     2. 権限を付与して私が実行
-     3. 中止する
-     4. Type something.
-   ──────────────────────────────────────
-     5. Chat about this
-
-   Enter to select · ↑/↓ to navigate · Esc to cancel
-   ```
-
-   - **なぜ漏れるか**: target line ((a) の「最後の非空行」) は `Enter to select · ↑/↓ to navigate · Esc to cancel` になる。(b) の `^\s*Esc to cancel` は **行頭 anchored** なので、`Esc to cancel` が行**末**に来るこの形には一致しない。`^❯\s*1\.\s*Yes\s*$` も選択肢文言が `Yes` 以外 (上例では `自分で実行する（推奨）`) なので一致しない。結果 `tools/inspect_anomaly_scan.py` は `{"detections": []}` を返し、承認待ちを素通りする
-   - **見分け方**: `❯ N. <選択肢>` の複数行 + 末尾行が `Enter to select · ↑/↓ to navigate · Esc to cancel`。y/n 確認とは別系統の Claude Code インタラクティブ選択 UI で、**破壊的・取り消し不可能な操作の実行方法選択で現れやすい**。見逃すと人間承認が必要な重大な分岐点で dispatcher が気づけない
-   - **当座の運用**: 破壊的操作 (DB 削除、ファイル削除等) を含む委譲では、helper が clean (`detections: []`) を返しても target line を目視確認する。目視で承認待ちと判断したら APPROVAL_BLOCKED 相当として (e) の journal → de-dup → notify 手順にそのまま乗せる。ただし **判定根拠が regex 一致ではなく目視である事実を journal に残す** (`matched=` に該当行、`note=manual_visual` 等)。実測時は `confidence=high` で通知したため、後から journal だけを見ると自動 regex 一致と区別できなくなっていた
-   - **恒久対応案 (未実装)**: (b) の regex リストに `^\s*❯\s*\d+\.` (複数選択肢の先頭行パターン) または `Enter to select · ↑/↓ to navigate · Esc to cancel` の**末尾行 anchored** 形を追加する。次に (b) を更新する機会に併せて検討する
+[`.dispatcher/references/worker-monitoring.md`](worker-monitoring.md) から分けた本体仕様。Step 4 で APPROVAL_BLOCKED / ERROR のパターンに該当した worker が出たサイクルだけ読む（それ以外のサイクルでは読まない）。
 
    #### (d-fp) 既知の誤検知パターンと見分け方 — doc / コードコメント中の status code (2026-07-29 実測)
    (d) の status-code ゲート (`(?<!#)\b(429|500|502|503|504|529)\b` + 同一行の error 文脈キーワード) は、**その行が「実際に発生したエラーの記録」か「エラーの意味を説明する文書」かを区別できない**。ワーカーが `README.md` のトラブルシューティング表と `.py` のコードコメントに「`temporarily_unavailable` (503) が返る」「retry 可能な 503 になる」と書いた委譲で、**同一サイクル内に 5 回連続の false positive** が出た。該当行はいずれもライブエラーではなく、ワーカーの文書化作業そのものだった。

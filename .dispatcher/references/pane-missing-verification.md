@@ -1,6 +1,6 @@
 # `list_panes` からの消失の裏取り (Step 3 の (3-a-1) / (3-a-2) / (3-a-4)) — 詳細
 
-[`.dispatcher/references/worker-monitoring.md`](worker-monitoring.md) から分けた本体仕様。Step 3 で、events 経由で exit を把握していないのに `list_panes` から worker ペインが消えている (または同タブ性を確定できない) サイクルだけ読む（それ以外のサイクルでは読まない）。
+[`.dispatcher/references/worker-monitoring.md`](worker-monitoring.md) から分けた本体仕様。Step 3 で、events 経由で exit を把握していないのに `list_panes` から worker ペインが消えている サイクルだけ読む（それ以外のサイクルでは読まない）。
 
    #### (3-a) 消失の裏取り — `list_panes` の消失を単独根拠にしない ([観測の原則](worker-monitoring.md#observation-principle) (P2) の適用)
    `list_panes` からペインが消えたことは「呼び出しが解決したタブに見えない」以上を意味しない ((P3))。`WORKER_PANE_EXITED` は「ペインが終了した」という**対象の状態**の申告なので、送る前に独立面で裏を取る。
