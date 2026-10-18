@@ -4725,5 +4725,174 @@ class TestBaseRefCliFlag(unittest.TestCase):
         self.assertIn("must be a string", str(cm.exception))
 
 
+# ---------------------------------------------------------------------------
+# Issue #1190: a fix dispatch states its premises and how they were checked
+# ---------------------------------------------------------------------------
+
+
+class TestIssue1190Assumptions(unittest.TestCase):
+    """``--assumption`` / ``--fix``: the form must not pass when filled with
+    nothing checkable, and a cited producer line must exist on apply."""
+
+    setUp = TestIssue928DelegateSentEvent.setUp
+    tearDown = TestIssue928DelegateSentEvent.tearDown
+    _git = TestIssue928DelegateSentEvent._git
+    _out = TestIssue928DelegateSentEvent._out
+
+    def _main(self, cmd, task_id, *extra):
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        buf = StringIO()
+        with redirect_stdout(buf):
+            rc = gdp.main([
+                cmd,
+                "--task-id", task_id,
+                "--project-slug", "claude-org-ja",
+                "--description", "fix the thing",
+                "--claude-org-root", str(self.sb.claude_org_root),
+                "--state-db-path", str(self.sb.db_path),
+                *(["--skip-settings"] if cmd == "apply" else []),
+                *extra,
+            ])
+        return rc, buf.getvalue()
+
+    def _write_producer(self, *, commit=True, publish=True):
+        """Seed ``tools/producer.py`` in the base repo; ``commit`` /
+        ``publish`` (advance origin/main) decide what the worker receives."""
+        path = self.sb.claude_org_root / "tools" / "producer.py"
+        path.parent.mkdir()
+        path.write_text("def emit():\n\n    write('worker_closed')\n", encoding="utf-8")
+        if commit:
+            self._git("add", "tools/producer.py")
+            self._git("commit", "-q", "-m", "producer")
+        if publish:
+            self._git("update-ref", "refs/remotes/origin/main",
+                      self._out("rev-parse", "main"))
+
+    def _assert_refused(self, cmd, task_id, *extra, needle):
+        with self.assertRaises(SystemExit) as cm:
+            self._main(cmd, task_id, *extra)
+        self.assertIn(needle, str(cm.exception))
+        self.assertEqual(
+            [r for r in self.sb.list_runs() if r["task_id"] == task_id], []
+        )
+
+    def test_fix_without_assumption_is_refused_on_preview_and_apply(self):
+        for cmd in ("preview", "apply"):
+            self._assert_refused(cmd, "fix-none", "--fix",
+                                 needle="--fix requires at least one")
+
+    def test_placeholder_fields_are_refused(self):
+        for value in ("event exists=なし=queries.py:1",
+                      "event exists=grep=",
+                      "event exists=grep= N/A ",
+                      "=grep=tools/producer.py:3",
+                      "event exists=grep"):
+            self._assert_refused("preview", "fix-placeholder", "--assumption", value,
+                                 needle="--assumption")
+
+    def test_fix_needs_a_path_line_citation(self):
+        self._assert_refused(
+            "apply", "fix-no-cite", "--fix",
+            "--assumption", "the event is written=grep for it=found the reader only",
+            needle="producer side as path:line",
+        )
+
+    def test_apply_refuses_a_citation_that_does_not_exist(self):
+        self._write_producer()
+        for cite, needle in (("tools/missing.py:3", "no such file"),
+                             ("tools/producer.py:99", "line 99 is missing"),
+                             ("tools/producer.py:2", "line 2 is missing or blank")):
+            self._assert_refused(
+                "apply", "fix-bad-cite", "--fix",
+                "--assumption", f"worker_closed is written=grep writer=written at {cite}",
+                needle=needle,
+            )
+
+    def test_apply_renders_assumptions_into_the_guidance(self):
+        self._write_producer()
+        rc, out = self._main(
+            "apply", "fix-ok", "--fix",
+            "--impl-guidance", "keep it small",
+            "--assumption",
+            "worker_closed is written=grep 'worker_closed' tools=a=b at tools/producer.py:3",
+        )
+        self.assertEqual(rc, 0)
+        brief = Path(re.search(r"^brief: (.+)$", out, re.M).group(1))
+        text = brief.read_text(encoding="utf-8")
+        self.assertIn("keep it small\n\n前提と確かめ方", text)
+        self.assertIn("- 前提: worker_closed is written", text)
+        self.assertIn("  - 確かめ方: grep 'worker_closed' tools", text)
+        # The result keeps any further ``=`` it contains.
+        self.assertIn("  - 結果: a=b at tools/producer.py:3", text)
+
+    def test_apply_checks_the_revision_the_worker_receives(self):
+        """The base checkout's working tree is not what the worker gets: an
+        uncommitted file, or a commit that is not on the cut point
+        (origin/main), must not make a citation pass."""
+        cite = ("--assumption",
+                "worker_closed is written=grep writer=written at tools/producer.py:3")
+        self._write_producer(commit=False, publish=False)
+        self._assert_refused("apply", "fix-untracked", "--fix", *cite,
+                             needle="no such file at HEAD")
+        self._git("add", "tools/producer.py")
+        self._git("commit", "-q", "-m", "producer")
+        self._assert_refused("apply", "fix-unpublished", "--fix", *cite,
+                             needle="no such file at HEAD")
+        self._git("update-ref", "refs/remotes/origin/main",
+                  self._out("rev-parse", "main"))
+        rc, _ = self._main("apply", "fix-published", "--fix", *cite)
+        self.assertEqual(rc, 0)
+
+    def test_citation_outside_a_git_checkout_is_refused_not_skipped(self):
+        with tempfile.TemporaryDirectory() as td:
+            errors = gdp.check_assumption_citations(
+                [("p", "how", "at tools/producer.py:3")], Path(td)
+            )
+        self.assertEqual(len(errors), 1)
+        self.assertIn("cannot check", errors[0])
+
+
+class TestIssue1190PendingClone(unittest.TestCase):
+    """Issue #1190: a URL-only project's first dispatch has no checkout at
+    plan time. The citation check must still run, after the clone and
+    before the brief / reservation are written."""
+
+    setUp = TestIssue709BaseCloneMaterialization.setUp
+    tearDown = TestIssue709BaseCloneMaterialization.tearDown
+    _git = TestIssue709BaseCloneMaterialization._git
+    _make_bare_remote = TestIssue709BaseCloneMaterialization._make_bare_remote
+    _set_url_registry = TestIssue709BaseCloneMaterialization._set_url_registry
+    _build = TestIssue709BaseCloneMaterialization._build
+
+    def _apply(self, task_id, result):
+        plan = self._build(task_id=task_id)
+        self.assertIsNotNone(plan.pending_clone)
+        return plan, gdp.apply_delegate_plan(
+            plan,
+            state_db_path=self.sb.db_path,
+            claude_org_root=self.sb.claude_org_root,
+            skip_settings=True,
+            assumptions=[("readme says hi", "read it", result)],
+        )
+
+    def test_bad_citation_is_refused_after_the_clone(self):
+        self._set_url_registry("newproj", str(self._make_bare_remote("newproj")))
+        with self.assertRaises(gdp.AssumptionCitationError) as cm:
+            self._apply("np-bad", "at README.md:5")
+        self.assertIn("README.md:5", str(cm.exception))
+        self.assertEqual(
+            [r for r in self.sb.list_runs() if r["task_id"] == "np-bad"], []
+        )
+        worker_dir = self.sb.workers / "newproj" / ".worktrees" / "np-bad"
+        self.assertFalse((worker_dir / "CLAUDE.md").exists())
+
+    def test_good_citation_passes_after_the_clone(self):
+        self._set_url_registry("newproj", str(self._make_bare_remote("newproj")))
+        _, result = self._apply("np-good", "at README.md:1")
+        self.assertTrue(result.brief_path.exists())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -278,6 +278,7 @@ py -3 tools/gen_delegate_payload.py apply \
 - `--commit-prefix "<prefix>"`: 省略時は project_slug の頭部から推論 (例: `claude-org-ja` → `feat(claude):`)
 - `--closes-issue N` / `--refs-issues N1 N2`: 「Closes #N」「Refs #N1 #N2」を brief に埋め込む
 - `--impl-target <path>` / `--impl-guidance "<text>"` / `--knowledge <path>`: optional な `[implementation]` / `[references]` セクション
+- `--fix` / `--assumption "<前提>=<確かめ方>=<結果>"`（何度でも指定可）: 不具合の修正を任せるときは `--fix` を付け、修正が正しいための前提を言葉にして、確かめた手順と結果を添える。`--fix` では 1 つ以上が必須で、修正が頼る仕組み（イベント・関数・設定）を**書いている側**の file:line を結果に入れる（読む側の定義だけでは仕組みの実在を示さない）。例: `--assumption "worker_closed がクローズ時に記録される=grep -rn worker_closed tools/=書く側は tools/<writer>.py:<行>"`。結果・確かめ方が空や「なし」「未確認」は拒否され、結果中の file:line は `apply` 時にベースのリポジトリでファイルと行の実在を確かめ、無ければ何も書かずに止まる。書いた前提は brief の「実装ガイダンス」に描画され、ワーカーは作業中にそれが崩れたら窓口へ報告する
 - `--placement same_tab|background_tab` (default `same_tab`) / `--report-target <id>`: worker を**背景タブに置く派遣**（spawn-flow 3-1d の例外経路）でのみ使う。peer 名は送信者と同じタブ内でしか解決しないため、背景タブの worker は既定の `to_id="secretary"` に届かず完了報告が沈黙で落ちる。`--placement background_tab` は `--report-target` に**窓口ペインの数値 pane id**（`list_peers` で確認）を要求し、brief の報告先と DELEGATE 本文の報告先行を同じ数値 id で生成する。数値でない値・`--report-target` 欠落は `apply` 前に fail loud で止まる。既定の同一タブ派遣ではどちらも渡さない（渡さなければ生成物は従来と 1 バイトも変わらない）。**ディスパッチャーが 3-1d の条件を満たせず同一タブ経路に倒した場合、その brief は流用できない**（背景タブ前提の報告先・報告規律が焼き込まれている）。差し戻しを受けたら `--placement` 無しで `apply` をやり直して brief を再生成する
 - `--skip-settings`: `claude-org-runtime settings generate` をスキップ (CLI 未導入環境向け)
 - `--from-toml <path>`: 既存 `worker_brief.toml` を入力にする。CLI フラグは TOML を上書きする
