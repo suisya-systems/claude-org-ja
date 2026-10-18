@@ -27,7 +27,10 @@ DENY_KIND = "hook_denied"
 DEFENSE_FIELD = "hook"  # payload key holding the hook script name
 
 REPEAT_WINDOW_MIN = 10
+# Read the register next to this script, not from the shared checkout: a worktree
+# may carry a register newer than main's.
 REGISTER = "docs/operations/defense-register.md"
+REGISTER_PATH = Path(__file__).resolve().parent.parent / REGISTER
 SUSPECT_MIN = 2  # suspected over-blocks needed to list a defense as a candidate
 
 
@@ -41,6 +44,10 @@ def load_register(path: Path) -> "list[dict]":
         rows.append({"id": cells[0], "type": cells[1],
                      "path": cells[2].strip("`"), "failure": cells[3]})
     return rows
+
+
+def hook_ids(register: "list[dict]") -> "set[str]":
+    return {r["id"] for r in register if r["type"] == "hook"}
 
 
 def _ts(s: str) -> datetime:
@@ -92,10 +99,9 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
 
     from tools.state_db import connect
-    from tools.state_db.discover import discover_repo_root, resolve_state_db_path
+    from tools.state_db.discover import resolve_state_db_path
 
-    root = discover_repo_root()
-    register = load_register(a.register or root / REGISTER)
+    register = load_register(a.register or REGISTER_PATH)
     db = resolve_state_db_path(a.db)
     if not db.is_file():
         print(f"state.db が見つかりません: {db}", file=sys.stderr)

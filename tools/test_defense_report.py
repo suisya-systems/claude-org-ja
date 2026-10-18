@@ -20,11 +20,25 @@ NOT_DEFENSES = {"context-record", "fixture-always-block"}
 
 class RegisterTest(unittest.TestCase):
     def test_every_hook_is_registered(self):
-        ids = {r["id"] for r in dr.load_register(ROOT / dr.REGISTER)}
+        ids = dr.hook_ids(dr.load_register(dr.REGISTER_PATH))
         hooks = {p.stem for p in (ROOT / ".hooks").glob("*.sh")} - NOT_DEFENSES
         self.assertEqual(sorted(hooks - ids), [],
                          "add the hook to docs/operations/defense-register.md")
         self.assertEqual(sorted(ids - hooks), [], "register lists a hook that is gone")
+
+
+class RegisterPathTest(unittest.TestCase):
+    def test_register_is_read_from_this_checkout_not_the_shared_one(self):
+        self.assertEqual(dr.REGISTER_PATH, ROOT / dr.REGISTER)
+        self.assertTrue(dr.REGISTER_PATH.is_file())
+
+    def test_non_hook_rows_do_not_count_as_missing_hooks(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "r.md"
+            f.write_text("| id | 種別 | パス | 止める失敗 |\n|---|---|---|---|\n"
+                         "| t1 | test | `tests/x.py` | x |\n", encoding="utf-8")
+            rows = dr.load_register(f)
+        self.assertEqual(dr.hook_ids(rows), set())
 
 
 class ReportTest(unittest.TestCase):
