@@ -222,6 +222,7 @@ _JA_ONLY_HOOK_SCRIPTS = frozenset({
     "block-codex-over-cap.sh",
     "check-worker-spawn-model.sh",
     "check-dispatcher-loop.sh",
+    "remind-verify-premise.sh",
     "gate-acceptance-before-merge.sh",
     "context-record.sh",
 })
