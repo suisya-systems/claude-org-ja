@@ -93,6 +93,12 @@
       "allowlist": "none"
     },
     {
+      "source": "../../.dispatcher/references/curate-monitoring.md.in",
+      "output": "../../.dispatcher/references/curate-monitoring.md",
+      "mode": "template",
+      "allowlist": "none"
+    },
+    {
       "source": "../../.claude/skills/pr-watch-pane/SKILL.md.in",
       "output": "../../.claude/skills/pr-watch-pane/SKILL.md",
       "mode": "template",
