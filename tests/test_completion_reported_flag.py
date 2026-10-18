@@ -37,6 +37,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 WORKER_MONITORING_IN = REPO_ROOT / ".dispatcher" / "references" / "worker-monitoring.md.in"
 WORKER_MONITORING_MD = REPO_ROOT / ".dispatcher" / "references" / "worker-monitoring.md"
 ORG_DELEGATE_IN = REPO_ROOT / ".claude" / "skills" / "org-delegate" / "SKILL.md.in"
+# Step 5.2 (c)-(g) lives in its own file; read it together with the main file.
+PANE_OUTPUT_IN = REPO_ROOT / ".dispatcher" / "references" / "pane-output-detection.md.in"
+PANE_OUTPUT_MD = REPO_ROOT / ".dispatcher" / "references" / "pane-output-detection.md"
 ORG_DELEGATE_MD = REPO_ROOT / ".claude" / "skills" / "org-delegate" / "SKILL.md"
 ORG_PR_IN = REPO_ROOT / ".claude" / "skills" / "org-pull-request" / "SKILL.md.in"
 ORG_PR_MD = REPO_ROOT / ".claude" / "skills" / "org-pull-request" / "SKILL.md"
@@ -56,8 +59,8 @@ class WorkerMonitoringContract(unittest.TestCase):
     def _both(self):
         # (source label, text) を .in / .md 双方について返す。
         return (
-            ("worker-monitoring.md.in", _read(WORKER_MONITORING_IN)),
-            ("worker-monitoring.md", _read(WORKER_MONITORING_MD)),
+            ("worker-monitoring.md.in", _read(WORKER_MONITORING_IN) + _read(PANE_OUTPUT_IN)),
+            ("worker-monitoring.md", _read(WORKER_MONITORING_MD) + _read(PANE_OUTPUT_MD)),
         )
 
     def test_schema_example_has_completion_reported_at_null(self):
