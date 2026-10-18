@@ -39,9 +39,9 @@ class ReportTest(unittest.TestCase):
             for did, at in rows:
                 conn.execute(
                     "INSERT INTO events (occurred_at, actor, kind, payload_json) "
-                    "VALUES (?, 'secretary', ?, ?)",
+                    "VALUES (?, 'hook', ?, ?)",
                     (at.strftime("%Y-%m-%dT%H:%M:%SZ"), dr.DENY_KIND,
-                     json.dumps({dr.DEFENSE_FIELD: did})))
+                     json.dumps({dr.DEFENSE_FIELD: did + ".sh"})))
             conn.commit()
             stops = dr.collect(conn, t - timedelta(days=1))
             conn.close()

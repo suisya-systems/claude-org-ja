@@ -6,7 +6,7 @@ stop count per defense, defenses that never stopped, and defenses with
 suspected over-blocking. ``/org-retro`` attaches this output to every retro.
 
 Over-blocking is an approximation: a stop that follows another stop of the same
-defense by the same actor within ``REPEAT_WINDOW_MIN`` minutes is counted as a
+defense within ``REPEAT_WINDOW_MIN`` minutes is counted as a
 suspected rephrase-and-retry. A human decides whether it was a correct
 workaround or a slip-through; the report never removes anything.
 """
@@ -21,12 +21,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-# The events row a stop leaves behind (written by the hook-deny recording in
-# Issue #1194). ponytail: kind/field names are provisional until #1194 lands;
-# change only these three constants.
+# The events row a stop leaves behind (hook-deny recording, Issue #1194):
+# kind hook_denied, payload.hook = script name such as "block-git-push.sh".
 DENY_KIND = "hook_denied"
-DEFENSE_FIELD = "hook"  # payload key holding the register id
-ACTOR_FIELD = "actor"   # events.actor column
+DEFENSE_FIELD = "hook"  # payload key holding the hook script name
 
 REPEAT_WINDOW_MIN = 10
 REGISTER = "docs/operations/defense-register.md"
@@ -50,26 +48,22 @@ def _ts(s: str) -> datetime:
 
 
 def collect(conn, since: datetime) -> "dict[str, list[tuple[str, datetime]]]":
-    """defense id -> [(actor, time)] oldest first."""
+    """defense id -> [time] oldest first (the ``.sh`` suffix is dropped)."""
     out: "dict[str, list]" = {}
-    q = ("SELECT occurred_at, COALESCE(actor, ''), "
-         "json_extract(payload_json, ?) FROM events "
+    q = ("SELECT occurred_at, json_extract(payload_json, ?) FROM events "
          "WHERE kind = ? AND occurred_at >= ? ORDER BY occurred_at")
-    for at, actor, did in conn.execute(
+    for at, did in conn.execute(
             q, (f"$.{DEFENSE_FIELD}", DENY_KIND, since.strftime("%Y-%m-%dT%H:%M:%SZ"))):
         if did:
-            out.setdefault(did, []).append((actor, _ts(at)))
+            out.setdefault(re.sub(r"\.sh$", "", did), []).append(_ts(at))
     return out
 
 
-def suspects(stops: "list[tuple[str, datetime]]") -> int:
-    last: "dict[str, datetime]" = {}
-    n = 0
-    for actor, t in stops:
-        if actor in last and t - last[actor] <= timedelta(minutes=REPEAT_WINDOW_MIN):
-            n += 1
-        last[actor] = t
-    return n
+def suspects(stops: "list[datetime]") -> int:
+    # ponytail: events.actor is always "hook", so who was stopped is unknown;
+    # add a payload key for the session if concurrent sessions skew this.
+    return sum(1 for a, b in zip(stops, stops[1:])
+               if b - a <= timedelta(minutes=REPEAT_WINDOW_MIN))
 
 
 def render(register: "list[dict]", stops: "dict", days: int) -> str:
