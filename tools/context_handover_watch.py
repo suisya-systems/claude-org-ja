@@ -680,6 +680,11 @@ def run_daemon(org: Org) -> int:
     """Start the resident loop detached from this shell and the pane (no pane needed)."""
     import subprocess
 
+    # ponytail: POSIX only. Native Windows cannot verify the process identity (live_cmdline
+    # is None), so --stop/--status could not manage a detached watcher; add that first.
+    if os.name != "posix":
+        print("[context-handover] 自動引き継ぎ無効: --daemon は POSIX のみ（Windows native は停止経路が無い）")
+        return EXIT_NOT_STARTED
     pid = watcher_pid(org)
     if pid is not None:
         print(f"[context-handover] already running (pid={pid}); exiting.")
@@ -689,12 +694,10 @@ def run_daemon(org: Org) -> int:
         print(f"[context-handover] 自動引き継ぎ無効: {reason}（対応は renga と broker + tmux のみ）")
         return EXIT_NOT_STARTED
     org.log_path.parent.mkdir(parents=True, exist_ok=True)
-    detach = ({"start_new_session": True} if os.name == "posix" else
-              {"creationflags": 0x00000008 | 0x00000200})  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
     with open(org.log_path, "ab") as log:
         child = subprocess.Popen([sys.executable, str(Path(__file__).resolve())],
                                  stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
-                                 close_fds=True, **detach)
+                                 close_fds=True, start_new_session=True)
     deadline = time.time() + 10
     while time.time() < deadline:
         if child.poll() is not None:
