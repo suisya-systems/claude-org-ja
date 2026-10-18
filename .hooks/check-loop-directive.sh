@@ -68,6 +68,8 @@
 #     deny される (上記の抜け道を塞ぐための意図的な仕様)。
 #   - 人間が直接ターミナルで叩く場合は本フックは効かない。
 
+source "$(dirname "${BASH_SOURCE[0]}")/lib/deny-record.sh"
+
 set -euo pipefail
 
 CANONICAL_REL=".claude/skills/dispatcher-resume/SKILL.md"

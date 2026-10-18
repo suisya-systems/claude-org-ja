@@ -14,6 +14,8 @@
 # それ以外（tools/, dashboard/, tests/, .claude/skills/, docs/, registry/, ワーカー worktree 等）は
 # すべてブロックする。
 
+source "$(dirname "${BASH_SOURCE[0]}")/lib/deny-record.sh"
+
 set -euo pipefail
 
 deny_with_reason() {

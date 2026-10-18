@@ -44,6 +44,8 @@
 #   - 人間が直接ターミナルで叩く場合は本フックは効かない。Claude Code の
 #     Bash ツール経由でのみ作用する。
 
+source "$(dirname "${BASH_SOURCE[0]}")/lib/deny-record.sh"
+
 set -euo pipefail
 
 # shellcheck source=lib/segment-split.sh

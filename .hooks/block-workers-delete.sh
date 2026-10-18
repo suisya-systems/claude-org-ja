@@ -6,6 +6,8 @@
 # ブロック対象:  rm -rf workers/..., rm -r workers/... 等（再帰削除）
 # 許可:          rm workers/dir/file.txt 等（個別ファイル削除）
 
+source "$(dirname "${BASH_SOURCE[0]}")/lib/deny-record.sh"
+
 set -euo pipefail
 
 deny_with_reason() {

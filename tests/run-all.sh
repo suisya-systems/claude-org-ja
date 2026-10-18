@@ -121,6 +121,14 @@ check_test_collection_coverage
 # ---------------------------------------------------------------------------
 # 実行
 # ---------------------------------------------------------------------------
+# hook の拒否は events に hook_denied を書く (.hooks/lib/deny-record.sh)。テストの拒否で
+# 本物の state.db を汚さないよう、既定の書き先を使い捨ての DB に向ける。
+if [[ -z "${STATE_DB_PATH:-}" ]]; then
+  STATE_DB_DIR=$(mktemp -d)
+  trap 'rm -rf "$STATE_DB_DIR"' EXIT
+  export STATE_DB_PATH="$STATE_DB_DIR/state.db"
+fi
+
 for test_file in ${TEST_FILES[@]+"${TEST_FILES[@]}"}; do
   echo ""
   echo "=== $(basename "$test_file") ==="

@@ -19,6 +19,8 @@
 # fail-closed: jq 欠落 / 空 stdin / 不正 JSON / 非 object payload はすべて deny する
 # (`tests/test-hooks-payload-fail-closed.sh` が全 enforcement hook 横断で固定する)。
 
+source "$(dirname "${BASH_SOURCE[0]}")/lib/deny-record.sh"
+
 set -euo pipefail
 
 deny_with_reason() {

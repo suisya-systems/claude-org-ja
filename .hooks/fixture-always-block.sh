@@ -6,6 +6,8 @@
 # test-*.sh ではなく fixture-*.sh を名乗る（tests/run-all.sh の収集漏れ検出ガードが
 # test に見える命名のファイルを未収集として fail させる）。
 
+source "$(dirname "${BASH_SOURCE[0]}")/lib/deny-record.sh"
+
 echo "[$(date)]  fixture-always-block.sh called" >> /tmp/hook-test.log
 cat >> /tmp/hook-test.log
 echo "" >> /tmp/hook-test.log

@@ -94,6 +94,8 @@
 #     本フックは多層防御の最後の壁であって、意図的な回避の防止ではない
 #     ——本来の対象は「うっかり stash を叩く」事故（Issue #880）である。
 
+source "$(dirname "${BASH_SOURCE[0]}")/lib/deny-record.sh"
+
 set -euo pipefail
 
 # shellcheck source=lib/segment-split.sh

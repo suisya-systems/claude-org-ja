@@ -2,6 +2,8 @@
 # PreToolUse Hook: claude-org の組織構造ディレクトリの再作成をブロックする
 # 方式: exit 2 + stderr メッセージ でブロック
 
+source "$(dirname "${BASH_SOURCE[0]}")/lib/deny-record.sh"
+
 set -euo pipefail
 
 # Helper: deny decision を stderr + exit 2 で返す
