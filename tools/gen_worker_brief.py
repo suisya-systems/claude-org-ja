@@ -31,7 +31,9 @@ _sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
 
 import argparse
 import re
+import json
 import shlex
+import subprocess
 import sys
 from pathlib import Path
 from string import Template
@@ -268,6 +270,75 @@ def _references_knowledge_block(items: list[str]) -> str:
     return "\n".join(f"- `{p}`" for p in items)
 
 
+# Workers have no gh auth / api.github.com access, so the Secretary embeds the
+# bodies of the issues named by --closes-issue / --refs-issues in the brief.
+ISSUE_BODY_MAX_CHARS = 8000
+_GITHUB_REPO_RE = re.compile(
+    r"github\.com(?::\d+)?[:/]([^/:\s]+)/([^/:\s]+?)(?:\.git)?/?$"
+)
+
+
+def _issue_bodies_block(issues: list[dict[str, Any]]) -> str:
+    parts = []
+    for it in issues:
+        parts.append(f"### #{it['number']}: {it.get('title') or '(title unavailable)'}\n")
+        parts.append(
+            f"{it['body']}\n" if it.get("body") is not None
+            else "（本文を取得できなかった。窓口に依頼すること）\n"
+        )
+    return "\n".join(parts)
+
+
+def _issue_repo(url_or_path: Optional[str]) -> Optional[str]:
+    """``owner/repo`` for a github URL, or for a local clone via its origin."""
+    if not url_or_path or url_or_path == "-":
+        return None
+    url = url_or_path
+    if "github.com" not in url and Path(url).is_dir():
+        try:
+            url = subprocess.run(
+                ["git", "-C", url, "remote", "get-url", "origin"],
+                capture_output=True, text=True, encoding="utf-8", timeout=10,
+            ).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            return None
+    m = _GITHUB_REPO_RE.search(url.strip())
+    return f"{m.group(1)}/{m.group(2)}" if m else None
+
+
+def _gh_issue_view(repo: str, number: int) -> dict[str, Any]:
+    r = subprocess.run(
+        ["gh", "issue", "view", str(number), "--repo", repo, "--json", "title,body"],
+        capture_output=True, text=True, encoding="utf-8", timeout=30, check=True,
+    )
+    return json.loads(r.stdout)
+
+
+def fetch_issue_bodies(
+    repo: Optional[str], numbers: list[int]
+) -> list[dict[str, Any]]:
+    """Fetch title/body per issue; a failure yields ``body=None`` + a stderr warning."""
+    out: list[dict[str, Any]] = []
+    for n in numbers:
+        entry: dict[str, Any] = {"number": n, "title": None, "body": None}
+        try:
+            if repo is None:
+                raise RuntimeError("project repo could not be resolved")
+            data = _gh_issue_view(repo, n)
+            body = data.get("body") or ""
+            if len(body) > ISSUE_BODY_MAX_CHARS:
+                body = (
+                    body[:ISSUE_BODY_MAX_CHARS]
+                    + f"\n\n...（{len(body) - ISSUE_BODY_MAX_CHARS} 文字省略。"
+                    "全文は窓口に依頼すること）"
+                )
+            entry.update(title=data.get("title"), body=body)
+        except Exception as e:  # never fail apply over a brief nicety
+            sys.stderr.write(f"warning: could not fetch issue #{n} body: {e}\n")
+        out.append(entry)
+    return out
+
+
 def is_python_src_layout(repo_dir: Path) -> bool:
     """True iff ``repo_dir`` looks like a Python src-layout project root.
 
@@ -327,6 +398,8 @@ def _select_blocks(config: dict[str, Any]) -> dict[str, bool]:
         "parallel": "parallel" in config and bool(config["parallel"].get("notes")),
         "references": "references" in config
         and bool(config["references"].get("knowledge")),
+        "issue_bodies": "references" in config
+        and bool(config["references"].get("issues")),
         "codex_full": depth == "full",
         "codex_minimal": depth == "minimal",
         # Issue #909: cross-tab addressing prose, emitted only for the
@@ -404,6 +477,7 @@ def _build_substitutions(config: dict[str, Any]) -> dict[str, str]:
         "references_knowledge_block": _references_knowledge_block(
             refs.get("knowledge", []) or []
         ),
+        "issue_bodies_block": _issue_bodies_block(refs.get("issues", []) or []),
         "parallel_notes": (parallel.get("notes") or "").strip(),
     }
 
@@ -610,6 +684,15 @@ def build_config_from_task(
         config["implementation"] = impl
     if references_knowledge:
         config["references"] = {"knowledge": list(references_knowledge)}
+    issue_numbers = [closes_issue] if closes_issue is not None else []
+    issue_numbers += [int(n) for n in (refs_issues or []) if n != closes_issue]
+    if issue_numbers:
+        repo = _issue_repo(match.path if match is not None else None)
+        if repo is None and layout.self_edit:
+            repo = _issue_repo(str(Path(claude_org_root).resolve()))
+        config.setdefault("references", {})["issues"] = fetch_issue_bodies(
+            repo, issue_numbers
+        )
     if parallel_notes:
         config["parallel"] = {"notes": parallel_notes}
 
@@ -677,6 +760,8 @@ def _dump_toml(config: dict[str, Any]) -> str:
             continue
         lines.append(f"[{section}]")
         for k, v in body.items():
+            if section == "references" and k == "issues":
+                continue  # fetched bodies are not dumped; --config regeneration omits the section (re-run from-task to refetch)
             lines.append(f"{k} = {_atom(v)}")
         lines.append("")
     return "\n".join(lines)

@@ -95,6 +95,11 @@ ${parallel_notes}
 ## ナレッジ参照
 ${references_knowledge_block}
 <!--END:references-->
+<!--BEGIN:issue_bodies-->
+
+## 関連 Issue 本文（窓口が取得して転記。ワーカーは GitHub を読めない）
+${issue_bodies_block}
+<!--END:issue_bodies-->
 <!--BEGIN:python_src_layout-->
 
 ## Python 検証規約（src-layout）

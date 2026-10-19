@@ -374,6 +374,55 @@ class ClosesOrRefs(unittest.TestCase):
         self.assertIn("（なし）", out)
 
 
+class IssueBodies(unittest.TestCase):
+    """Issue bodies are fetched on the secretary side and embedded verbatim."""
+
+    def _fetch(self, repo, numbers, fake):
+        from unittest import mock
+        err = io.StringIO()
+        with mock.patch.object(gwb, "_gh_issue_view", fake), \
+                contextlib.redirect_stderr(err):
+            return gwb.fetch_issue_bodies(repo, numbers), err.getvalue()
+
+    def test_bodies_rendered_per_issue(self):
+        got, _ = self._fetch(
+            "o/r", [7, 8],
+            lambda repo, n: {"title": f"T{n}", "body": f"body ${{x}} {n}"},
+        )
+        cfg = _base_config(False)
+        cfg["references"] = {"issues": got}
+        out = gwb.render(cfg)
+        self.assertIn("### #7: T7", out)
+        self.assertIn("body ${x} 8", out)
+
+    def test_fetch_failure_warns_and_notes(self):
+        def boom(repo, n):
+            raise OSError("unavailable")
+        got, err = self._fetch("o/r", [7], boom)
+        self.assertIn("warning: could not fetch issue #7", err)
+        cfg = _base_config(False)
+        cfg["references"] = {"issues": got}
+        self.assertIn("本文を取得できなかった", gwb.render(cfg))
+
+    def test_unresolved_repo_skips_fetch(self):
+        def boom(repo, n):
+            raise AssertionError("fetch must not run")
+        got, err = self._fetch(None, [7], boom)
+        self.assertIsNone(got[0]["body"])
+        self.assertIn("warning", err)
+
+    def test_long_body_truncated(self):
+        big = "a" * (gwb.ISSUE_BODY_MAX_CHARS + 5)
+        got, _ = self._fetch("o/r", [1], lambda r, n: {"title": "t", "body": big})
+        self.assertIn("5 文字省略", got[0]["body"])
+
+    def test_issue_repo_from_url(self):
+        self.assertEqual(
+            gwb._issue_repo("https://github.com/Foo/bar.git"), "Foo/bar"
+        )
+        self.assertIsNone(gwb._issue_repo("-"))
+
+
 class RoundTrip217(unittest.TestCase):
     """Reproduce the session #9 #217 brief as a round-trip smoke test."""
 
