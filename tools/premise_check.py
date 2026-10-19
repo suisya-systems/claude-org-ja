@@ -39,8 +39,9 @@ REMINDER = (
 
 
 def has_premise(prompt: str) -> bool:
-    # Peer messages relayed into the session are not the user's premises.
-    if "<channel source=" in prompt:
+    # Peer messages and background task notices injected into the session
+    # are not the user's premises.
+    if "<channel source=" in prompt or "<task-notification>" in prompt:
         return False
     return any(p.search(prompt) for p in (_NUMBER_WITH_UNIT, _SETTING, _CLAIM_WORD))
 

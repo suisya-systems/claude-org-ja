@@ -30,6 +30,8 @@ QUIET = [
     "ありがとう",
     "PR #1193 の続きをやって",
     '<channel source="renga-peers" from_id="3">824 passed、9 分で完了</channel>',
+    "<task-notification>\n<status>completed</status>\n"
+    "<summary>Agent finished: 824 passed in 9 分</summary>\n</task-notification>",
 ]
 
 
