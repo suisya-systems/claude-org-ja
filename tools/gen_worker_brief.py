@@ -761,7 +761,7 @@ def _dump_toml(config: dict[str, Any]) -> str:
         lines.append(f"[{section}]")
         for k, v in body.items():
             if section == "references" and k == "issues":
-                continue  # fetched at plan time, not an input; re-fetched on re-run
+                continue  # fetched bodies are not dumped; --config regeneration omits the section (re-run from-task to refetch)
             lines.append(f"{k} = {_atom(v)}")
         lines.append("")
     return "\n".join(lines)
