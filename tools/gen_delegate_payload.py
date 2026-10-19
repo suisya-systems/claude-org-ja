@@ -511,12 +511,45 @@ def _has_pattern_a_residue(workers_slug_dir: Path) -> bool:
     return False
 
 
+def _stale_base_worker_settings(
+    base_repo: Optional[Path], worker_dir: Path
+) -> list[Path]:
+    """Worker settings files left in ``base_repo/.claude/`` that set
+    ``env.WORKER_DIR``.
+
+    Claude Code also reads the base clone's ``.claude/settings*.json`` for a
+    worktree cut from it, and that file's ``env.WORKER_DIR`` overrides the
+    worktree's own. The Codex round cap then can't map the worker to its task
+    and the boundary hook widens to the whole base clone. Typical source: a
+    Pattern A worker that once ran directly in the base clone.
+    """
+    if base_repo is None:
+        return []
+    try:
+        if Path(base_repo).resolve() == Path(worker_dir).resolve():
+            return []
+    except OSError:
+        pass
+    found: list[Path] = []
+    for name in ("settings.json", "settings.local.json"):
+        path = Path(base_repo) / ".claude" / name
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        env = data.get("env") if isinstance(data, dict) else None
+        if isinstance(env, dict) and "WORKER_DIR" in env:
+            found.append(path)
+    return found
+
+
 def _compute_layout_warnings(
     *,
     project_slug: str,
     workers_dir: Path,
     pattern: str,
     base_repo: Optional[Path],
+    worker_dir: Path,
 ) -> tuple[list[str], list[str]]:
     """Compute ``(warnings, blocking_warnings)`` for the preview surface
     (Issue #489 (d)).
@@ -553,6 +586,16 @@ def _compute_layout_warnings(
     """
     warnings: list[str] = []
     blocking_warnings: list[str] = []
+    for path in _stale_base_worker_settings(base_repo, worker_dir):
+        blocking_warnings.append(
+            f"{path} sets env.WORKER_DIR (worker settings left in the base "
+            "clone, usually by an old Pattern A run). Claude Code reads it for "
+            "the worktree too and it overrides the worktree's WORKER_DIR, so "
+            "the Codex round cap can't find the task and the boundary hook "
+            "allows writes across the whole base clone. Refusing to apply — "
+            "if no worker is running in the base clone, move it aside "
+            f"(mv {path} {path}.stale) and rerun."
+        )
     if pattern == "C":
         return warnings, blocking_warnings
     workers_slug_dir = (Path(workers_dir) / project_slug).resolve()
@@ -1003,6 +1046,7 @@ def build_delegate_plan(
         workers_dir=Path(workers_dir_for_norm),
         pattern=layout.pattern,
         base_repo=base_repo,
+        worker_dir=Path(layout.worker_dir),
     )
     # Issue #1152: an integration branch is in flight but this dispatch fell
     # through to origin/HEAD — the exact slip of #1139. Warn, don't redirect:

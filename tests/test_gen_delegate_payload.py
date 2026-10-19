@@ -2672,6 +2672,37 @@ class TestIssue489PreviewWarnings(unittest.TestCase):
         summary = plan.to_summary_dict()
         self.assertEqual(summary["blocking_warnings"], plan.blocking_warnings)
 
+    def test_base_clone_worker_settings_residue_is_blocking(self):
+        """A base clone whose ``.claude/settings.local.json`` still sets
+        ``env.WORKER_DIR`` (old Pattern A run) overrides the worktree's
+        WORKER_DIR, so preview must refuse. Without the key it proceeds."""
+        base = self.sb.workers / "renga"
+        self._clone(base, "https://github.com/suisya-systems/renga.git")
+        (base / ".claude").mkdir()
+        stale = base / ".claude" / "settings.local.json"
+        stale.write_text(json.dumps({"env": {"WORKER_DIR": str(base)}}),
+                         encoding="utf-8")
+        plan = gdp.build_delegate_plan(
+            task_id="renga-stale-settings",
+            project_slug="renga",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertIsNotNone(plan.base_repo)
+        self.assertTrue(
+            any("env.WORKER_DIR" in w and str(stale) in w
+                for w in plan.blocking_warnings),
+            plan.blocking_warnings,
+        )
+        stale.write_text(json.dumps({"permissions": {}}), encoding="utf-8")
+        plan = gdp.build_delegate_plan(
+            task_id="renga-stale-settings",
+            project_slug="renga",
+            claude_org_root=self.sb.claude_org_root,
+            state_db_path=self.sb.db_path,
+        )
+        self.assertEqual(plan.blocking_warnings, [])
+
     def test_legacy_repo_clone_emits_non_blocking_deprecation_warning(self):
         """``_repo_clone`` legacy fallback resolved → preview ships a
         non-blocking deprecation warning so the deployment can migrate
