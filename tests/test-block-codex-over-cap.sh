@@ -144,6 +144,8 @@ make_db "$TMP/other.db" "$WORKER" t1
 check 2 "STATE_DB_PATH pointing at a fresh DB is ignored" "$GATE" STATE_DB_PATH="$TMP/other.db"
 check 2 "unresolvable task denied" "$GATE" WORKER_DIR="$TMP/workers/unknown"
 assert_err_contains "task を特定できない" "unresolvable task stderr says so"
+check 2 "stale base WORKER_DIR denied" "$GATE" WORKER_DIR="$TMP/workers/unknown" CLAUDE_PROJECT_DIR="$WORKER"
+assert_err_contains "CLAUDE_PROJECT_DIR ($WORKER) と食い違っている" "unresolvable task names the CLAUDE_PROJECT_DIR mismatch"
 mv "$ORG/.state/state.db" "$ORG/.state/state.db.bak"
 check 2 "missing state.db denied" "$GATE"
 [[ -e "$ORG/.state/state.db" ]]; assert_eq "$?" "1" "hook does not create a state.db"

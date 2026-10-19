@@ -436,15 +436,24 @@ def _status(conn, task: str) -> dict:
 
 
 def consume_round(db_path: Path, worker_dir: str, busy_ms: int = 10000,
-                  mode: str = "diff") -> "tuple[bool, str]":
+                  mode: str = "diff", project_dir: str = "") -> "tuple[bool, str]":
     """Count one canonical gate call (``mode`` diff / design). Returns (allowed, message)."""
     conn, writer = _open_existing(db_path, busy_ms)
     try:
         task = _task_for_worker_dir(conn, worker_dir)
         if task is None:
+            hint = ""
+            if project_dir and _norm(project_dir) != _norm(worker_dir):
+                # A stale base-clone .claude/settings.local.json overriding the
+                # worktree's WORKER_DIR is the known cause of this mismatch.
+                hint = (
+                    f" CLAUDE_PROJECT_DIR ({project_dir}) と食い違っている。"
+                    "base clone の .claude/settings*.json に残った env.WORKER_DIR が"
+                    "上書きしている可能性がある。"
+                )
             return False, (
                 f"WORKER_DIR ({worker_dir}) に対応する task を特定できない "
-                "(delegate_sent が無い)。codex を回さず窓口へ報告してください。"
+                f"(delegate_sent が無い)。{hint}codex を回さず窓口へ報告してください。"
             )
         conn.execute("BEGIN IMMEDIATE")
         try:
@@ -508,7 +517,8 @@ def run_hook(stdin_text: str, env) -> str:
             return f"DENY: {MSG_GATE_FORM}"  # rounds are counted for Bash only
         db_path = Path(org_path) / ".state" / "state.db"
         ok, msg = consume_round(db_path, worker_dir,
-                                mode="design" if verdict == "design" else "diff")
+                                mode="design" if verdict == "design" else "diff",
+                                project_dir=env.get("CLAUDE_PROJECT_DIR") or "")
         return "ALLOW" if ok else f"DENY: {msg}"
     except Exception as exc:  # noqa: BLE001 - fail closed
         return f"DENY: codex round cap の判定に失敗しました ({type(exc).__name__}: {exc})"
