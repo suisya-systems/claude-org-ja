@@ -1281,7 +1281,15 @@ class RealRepoSmokeTests(unittest.TestCase):
             )
             excluded = settings["sandbox"]["excludedCommands"]
             self.assertIn("git rebase origin/main", excluded)
-            self.assertIn('bash "/co/tools/codex_review_gate.sh" origin/main', excluded)
+            # Argument-less gate forms only: an argument would let the worker
+            # choose what runs outside the sandbox.
+            self.assertIn('bash "/co/tools/codex_review_gate.sh"', excluded)
+            self.assertIn('bash "/co/tools/codex_review_gate.sh" --design', excluded)
+            self.assertFalse(
+                [e for e in excluded
+                 if "codex_review_gate.sh" in e and not e.endswith(("gate.sh", 'gate.sh"', "--design"))],
+                excluded,
+            )
             for entry in excluded:
                 if not entry.startswith("docker "):
                     self.assertIn(f"Bash({entry})", settings["permissions"]["allow"])

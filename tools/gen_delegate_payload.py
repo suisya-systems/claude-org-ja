@@ -1325,6 +1325,14 @@ def _reserve_in_db(
                         "task": plan.task_id,
                         "worker": f"worker-{plan.task_id}",
                         "dir": str(plan.layout.worker_dir),
+                        # The Codex gate's argument-less form reads its review
+                        # base from here (tools/codex_round_cap.py base-ref):
+                        # the same value the brief's rebase / gate lines use.
+                        "base_ref": (
+                            f"{_ORIGIN_REF_PREFIX}{plan.base_branch}"
+                            if plan.base_branch is not None
+                            else "origin/main"
+                        ),
                     },
                     run_task_id=plan.task_id,
                     project_slug=plan.project_slug,

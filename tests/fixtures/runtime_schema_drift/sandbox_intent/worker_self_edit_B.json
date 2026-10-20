@@ -148,8 +148,10 @@
       "docker images *",
       "docker image inspect *",
       "git rebase origin/main",
-      "bash \"/home/u/co/tools/codex_review_gate.sh\" origin/main",
-      "bash /home/u/co/tools/codex_review_gate.sh origin/main"
+      "bash \"/home/u/co/tools/codex_review_gate.sh\"",
+      "bash /home/u/co/tools/codex_review_gate.sh",
+      "bash \"/home/u/co/tools/codex_review_gate.sh\" --design",
+      "bash /home/u/co/tools/codex_review_gate.sh --design"
     ]
   }
 }

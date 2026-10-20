@@ -108,12 +108,12 @@ addition to its writer / payload shape:
 
 | Event                | Typical fields                                              | Writer    | Emitted by | Required for |
 |----------------------|-------------------------------------------------------------|-----------|------------|--------------|
-| `delegate_sent`      | `task`, `worker`, `dir`                                     | secretary | `gen_delegate_payload.py apply` | T1 |
+| `delegate_sent`      | `task`, `worker`, `dir`, `base_ref`                         | secretary | `gen_delegate_payload.py apply` | T1 |
 | `delegate_resume`    | `task`, `worker`                                            | secretary | secretary  | —            |
 | `delegate_resume_r2` | `task`, `worker`, `round`                                   | secretary | secretary  | —            |
 | `self_edit_approval_sent` | `task`, `pane`, `files`, `parts`, `verified_at`, `backend`, `transport` | secretary | `tools/self_edit_approval.py send` | — |
 
-`delegate_sent` is written by `tools/gen_delegate_payload.py apply` in the same transaction as the T1 reservation (`runs.status='queued'`), not by a hand-typed `journal_append` — see [`docs/contracts/delegation-lifecycle-contract.md`](./contracts/delegation-lifecycle-contract.md) §2 T1. It records the commitment to delegate, immediately before the `DELEGATE` message is sent; it is **not** proof of delivery, which is what T2's `worker_spawned` records. It is emitted exactly once per run row: re-applying a still-`queued` delegation updates the reservation without appending a second event.
+`delegate_sent` is written by `tools/gen_delegate_payload.py apply` in the same transaction as the T1 reservation (`runs.status='queued'`), not by a hand-typed `journal_append` — see [`docs/contracts/delegation-lifecycle-contract.md`](./contracts/delegation-lifecycle-contract.md) §2 T1. It records the commitment to delegate, immediately before the `DELEGATE` message is sent; it is **not** proof of delivery, which is what T2's `worker_spawned` records. `base_ref` is the task's review base (`origin/<base branch>` when `--base-ref` or the registry sets one, else `origin/main`); the argument-less Codex gate reads it through `tools/codex_round_cap.py base-ref`, and a row written before the key existed reads as `origin/main`. It is emitted exactly once per run row: re-applying a still-`queued` delegation updates the reservation without appending a second event.
 
 `self_edit_approval_sent` is written by `tools/self_edit_approval.py send`
 after it has **verified both halves** of the `.claude/**` self-edit approval
@@ -197,14 +197,15 @@ the helper**; it does not deduplicate a row a human appended separately.
 
 The Codex round cap is enforced outside the worker. `.hooks/block-codex-over-cap.sh`
 sees every worker Bash call that mentions `codex`: a direct `codex` invocation is
-refused, and the only permitted entry is `bash "<claude_org_path>/tools/codex_review_gate.sh" <base-ref>`.
+refused, and the only permitted entry is `bash "<claude_org_path>/tools/codex_review_gate.sh" [<base-ref>]`
+(workers use the argument-less form, which reads the base from `delegate_sent`'s `base_ref`).
 Each permitted gate call appends one `codex_round_started` in the same transaction
 that counts the earlier ones; once `used` reaches `allowed` the call is refused and
 `codex_round_denied` is appended instead. The task is resolved from the newest
 `delegate_sent` whose `dir` matches the worker's `WORKER_DIR`.
 
-`mode` is `diff` for `bash "<claude_org_path>/tools/codex_review_gate.sh" <base-ref>`
-and `design` for `... --design <file>`; a row without `mode` counts as `diff`. The two
+`mode` is `diff` for `bash "<claude_org_path>/tools/codex_review_gate.sh" [<base-ref>]`
+and `design` for `... --design [<file>]`; a row without `mode` counts as `diff`. The two
 are counted separately: `round` / `used` count rows of the same mode, diff rounds are
 checked against `allowed`, and design is fixed at `allowed: 1` per task (not changed by
 `set`), so a design review neither consumes nor is blocked by the diff allowance.

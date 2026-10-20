@@ -2,9 +2,11 @@
 """Per-task Codex review round cap, enforced outside the worker.
 
 The worker's only permitted Codex entries are ``bash
-"$CLAUDE_ORG_PATH/tools/codex_review_gate.sh" <base-ref>`` (diff review) and
-``bash "$CLAUDE_ORG_PATH/tools/codex_review_gate.sh" --design <file>``
-(design review). The PreToolUse
+"$CLAUDE_ORG_PATH/tools/codex_review_gate.sh" [<base-ref>]`` (diff review) and
+``bash "$CLAUDE_ORG_PATH/tools/codex_review_gate.sh" --design [<file>]``
+(design review). The argument-less forms are the ones the worker settings
+run outside the sandbox; the gate then takes the base ref from ``base-ref``
+below and the design file from a fixed path. The PreToolUse
 hook ``.hooks/block-codex-over-cap.sh`` runs ``hook`` here (outside the
 worker's sandbox) for every Bash command (and MCP ``spawn_pane`` /
 ``new_tab`` command, ``send_keys`` text) that mentions ``codex`` once
@@ -41,6 +43,13 @@ Subcommands::
     codex_round_cap.py hook < payload.json        # prints ALLOW / DENY: <msg>
     codex_round_cap.py set --task-id X --allowed N|unlimited --reason TEXT
     codex_round_cap.py status --task-id X
+    codex_round_cap.py base-ref --worker-dir DIR   # prints the task's review base
+
+``base-ref`` reads ``base_ref`` from the latest ``delegate_sent`` whose
+``dir`` is DIR and prints ``origin/main`` when there is none (dispatches
+recorded before the key existed). The value comes from the state DB, not
+from anything in the worktree, so a worker cannot point an outside-sandbox
+gate call at a value it wrote.
 
 ``set`` refuses a task id with no ``delegate_sent`` event (a typo would
 otherwise raise nothing).
@@ -77,8 +86,9 @@ UNLIMITED = "unlimited"
 GATE_NAME = "codex_review_gate.sh"
 HOOK_ACTOR = "codex-round-cap-hook"
 
-GATE_FORM = 'bash "$CLAUDE_ORG_PATH/tools/codex_review_gate.sh" <base-ref>'
-DESIGN_FORM = 'bash "$CLAUDE_ORG_PATH/tools/codex_review_gate.sh" --design <file>'
+GATE_FORM = 'bash "$CLAUDE_ORG_PATH/tools/codex_review_gate.sh" [<base-ref>]'
+DESIGN_FORM = 'bash "$CLAUDE_ORG_PATH/tools/codex_review_gate.sh" --design [<file>]'
+DEFAULT_BASE_REF = "origin/main"
 MSG_DIRECT = (
     "codex の直接実行は禁止。" + GATE_FORM + " を使う"
 )
@@ -319,6 +329,10 @@ def classify_text(command: str, depth: int = 0) -> "list[str]":
     return found
 
 
+def is_base_ref(ref: str) -> bool:
+    return bool(_BASE_REF_RE.match(ref)) and ref[0] != "-"
+
+
 def _norm(path: str) -> str:
     return os.path.normpath(path).rstrip(os.sep) or os.sep
 
@@ -351,11 +365,15 @@ def classify(command: str, canonical_gate: str, org_path: str = "") -> "tuple[st
     words = simple[0] if len(simple) == 1 else []
     if (
         findings == ["gate"]
-        and len(words) in (3, 4)
+        and len(words) in (2, 3, 4)
         and words[0] == "bash"
         and _norm(_expand_org_path(words[1], org_path)) == _norm(canonical_gate)
     ):
-        if len(words) == 3 and _BASE_REF_RE.match(words[2]) and words[2][0] != "-":
+        if len(words) == 2:
+            return "gate", ""
+        if len(words) == 3 and words[2] == "--design":
+            return "design", ""
+        if len(words) == 3 and is_base_ref(words[2]):
             return "gate", ""
         if len(words) == 4 and words[2] == "--design" and _DESIGN_PATH_RE.match(words[3]):
             return "design", ""
@@ -423,6 +441,23 @@ def _task_for_worker_dir(conn, worker_dir: str):
         if task and isinstance(d, str) and d.strip() and _norm(d.strip()) == target:
             return str(task)
     return None
+
+
+def base_ref_for_worker_dir(conn, worker_dir: str) -> str:
+    """``base_ref`` of the latest ``delegate_sent`` for ``worker_dir``, else origin/main."""
+    target = _norm(worker_dir)
+    for d, ref in conn.execute(
+        "SELECT json_extract(payload_json, '$.dir'), "
+        "json_extract(payload_json, '$.base_ref') FROM events "
+        "WHERE kind = 'delegate_sent' ORDER BY occurred_at DESC, id DESC"
+    ):
+        if isinstance(d, str) and d.strip() and _norm(d.strip()) == target:
+            if ref is None:
+                return DEFAULT_BASE_REF
+            if not isinstance(ref, str) or not is_base_ref(ref):
+                raise ValueError(f"delegate_sent の base_ref が不正です: {ref!r}")
+            return ref
+    return DEFAULT_BASE_REF
 
 
 def _status(conn, task: str) -> dict:
@@ -556,6 +591,9 @@ def main(argv=None) -> int:
     p_status = sub.add_parser("status", help="show used / allowed / denied / design_used")
     p_status.add_argument("--task-id", required=True)
     p_status.add_argument("--db-path", default=None)
+    p_base = sub.add_parser("base-ref", help="print the review base ref recorded for a worker dir")
+    p_base.add_argument("--worker-dir", required=True)
+    p_base.add_argument("--db-path", default=None)
     args = parser.parse_args(argv)
 
     if args.cmd == "hook":
@@ -569,6 +607,9 @@ def main(argv=None) -> int:
         sys.stderr.write(f"tools/codex_round_cap.py: error: {exc}\n")
         return 1
     try:
+        if args.cmd == "base-ref":
+            print(base_ref_for_worker_dir(conn, args.worker_dir))
+            return 0
         if args.cmd == "set":
             if conn.execute(
                 "SELECT 1 FROM events WHERE kind = 'delegate_sent' "
@@ -588,7 +629,7 @@ def main(argv=None) -> int:
             writer.commit()
         print(json.dumps(_status(conn, args.task_id), ensure_ascii=False))
         return 0
-    except sqlite3.Error as exc:
+    except (sqlite3.Error, ValueError) as exc:
         sys.stderr.write(f"tools/codex_round_cap.py: error: {exc}\n")
         return 1
     finally:

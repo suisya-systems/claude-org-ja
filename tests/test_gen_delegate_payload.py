@@ -17,6 +17,7 @@ import argparse
 import json
 import re
 import shlex
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -3344,7 +3345,7 @@ class TestIssue928DelegateSentEvent(unittest.TestCase):
 
     def test_apply_records_delegate_sent_with_catalog_payload(self):
         """Payload keys are fixed by ``docs/journal-events.md`` (task /
-        worker / dir) and the actor by the contract (secretary)."""
+        worker / dir / base_ref) and the actor by the contract (secretary)."""
         plan = self._plan()
         result = self._apply(plan)
         events = _delegate_sent_events(self.sb.db_path)
@@ -3357,6 +3358,7 @@ class TestIssue928DelegateSentEvent(unittest.TestCase):
                 "task": "evt-task",
                 "worker": "worker-evt-task",
                 "dir": str(plan.layout.worker_dir),
+                "base_ref": "origin/main",
             },
         )
         # Linked to the run row reserved in the same transaction.
@@ -4277,6 +4279,20 @@ class TestBaseBranchResolution(unittest.TestCase):
         ).decode().strip()
         self.assertEqual(head, self.main_sha)
 
+    def test_apply_records_the_configured_base_in_delegate_sent(self):
+        # The Codex gate's argument-less form reads its review base from here.
+        self._write_registry("develop")
+        plan = self._plan(task_id="evt-develop")
+        self._apply(plan)
+        conn = sqlite3.connect(str(self.sb.db_path))
+        try:
+            refs = [r[0] for r in conn.execute(
+                "SELECT json_extract(payload_json, '$.base_ref') FROM events "
+                "WHERE kind = 'delegate_sent'")]
+        finally:
+            conn.close()
+        self.assertEqual(refs, ["origin/develop"])
+
     def test_apply_honours_cli_override_at_the_git_level(self):
         self._write_registry("develop")
         plan = self._plan(task_id="cut-hotfix", base_ref_override="main")
@@ -4352,31 +4368,38 @@ class TestBaseBranchReachesTheBrief(unittest.TestCase):
             config["task"]["base_ref"] = base_ref
         return gwb.render(config)
 
-    def test_configured_base_ref_lands_in_the_review_command(self):
-        out = self._render("origin/develop")
-        self.assertIn('codex_review_gate.sh" origin/develop', out)
-        self.assertNotIn('codex_review_gate.sh" origin/main', out)
-
-    def test_default_stays_origin_main(self):
-        # Every pre-#808 brief must render byte-identically.
-        self.assertIn('codex_review_gate.sh" origin/main', self._render())
-
-    def test_shell_metacharacters_in_the_ref_are_quoted(self):
-        """Codex Round 2 Blocker: git permits `;` / `$( )` in ref names and
-        this value lands in a ```bash fence the worker copy-pastes, so a raw
-        interpolation would be command execution, not a ref."""
-        out = self._render("origin/foo$(id);whoami")
-        self.assertNotIn('codex_review_gate.sh" origin/foo$(id);whoami', out)
-        self.assertIn(
-            'codex_review_gate.sh" ' + shlex.quote("origin/foo$(id);whoami"), out
-        )
-        # Round-trips back to the literal ref when the shell parses it.
-        line = next(
+    def _gate_line(self, out):
+        return next(
             l for l in out.splitlines()
             if l.startswith("bash ") and "codex_review_gate.sh" in l
         )
-        argv = shlex.split(line)
-        self.assertEqual(argv[-1], "origin/foo$(id);whoami")
+
+    def test_configured_base_ref_lands_in_the_rebase_command(self):
+        out = self._render("origin/develop")
+        self.assertIn("git rebase origin/develop", out)
+        self.assertNotIn("git rebase origin/main", out)
+
+    def test_gate_line_takes_no_argument(self):
+        """The gate's argument-less form is the one worker settings run
+        outside the sandbox; it reads the base from delegate_sent, so the
+        brief must not hand it the ref (an argument keeps it sandboxed)."""
+        for ref in (None, "origin/develop"):
+            with self.subTest(ref=ref):
+                argv = shlex.split(self._gate_line(self._render(ref)))
+                self.assertEqual(argv, ["bash", "/tmp/org/tools/codex_review_gate.sh"])
+
+    def test_default_stays_origin_main(self):
+        self.assertIn("git rebase origin/main", self._render())
+
+    def test_shell_metacharacters_in_the_ref_are_quoted(self):
+        """Codex Round 2 Blocker: git permits `;` / `$( )` in ref names and
+        this value lands in commands the worker copy-pastes, so a raw
+        interpolation would be command execution, not a ref."""
+        out = self._render("origin/foo$(id);whoami")
+        self.assertNotIn("git rebase origin/foo$(id);whoami", out)
+        self.assertIn(
+            "git rebase " + shlex.quote("origin/foo$(id);whoami"), out
+        )
 
     def test_non_string_base_ref_is_rejected(self):
         config = {
@@ -4413,7 +4436,7 @@ class TestBaseBranchReachesTheBrief(unittest.TestCase):
             )
             self.assertEqual(plan.config["task"]["base_ref"], "origin/develop")
             self.assertIn(
-                'codex_review_gate.sh" origin/develop', gwb.render(plan.config)
+                "git rebase origin/develop", gwb.render(plan.config)
             )
 
     def test_planner_leaves_base_ref_unset_when_unconfigured(self):

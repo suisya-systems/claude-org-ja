@@ -58,13 +58,14 @@
 
 Codex セルフレビュー: commit 後に作業ディレクトリで**前景実行**する。この Bash 呼び出しの `allowed_domains` に Codex の接続先（`chatgpt.com` 等）を入れる（無いとエラーを出さずに数百秒止まる）:
 ```bash
-bash "/home/user/work/claude-org/tools/codex_review_gate.sh" origin/main
+bash "/home/user/work/claude-org/tools/codex_review_gate.sh"
 ```
+引数は付けない（比較先は派遣時の記録から gate が origin/main を引く。引数付きの形は sandbox 内で走り、codex が diff を読めず `not-established` になる）。
 - 判定は最終行: `CODEX_GATE: passed` のときだけ指摘を読み「codex clean」と報告してよい。`not-established`（diff 未読の「空の合格」を含む）は clean と報告せず「Codex ゲート未成立（HEAD=`<sha>`）」と最終行の数値を添えて窓口の判断を仰ぐ。`unavailable` は skip して完了報告へ。`dirty-worktree` は上の rebase 残差と同じ扱い
 - 安全機構に掛かって review が完了しないときは言い換えで回避しない。窓口に新しいセッションでの再実行を頼み、それでも通らなければ「Codex ゲート未成立（safety block、HEAD=`<sha>`）」と報告する
 - Blocker/Major 修正。**round 上限はフックが強制**（既定 3、増やせるのは窓口だけ。実装ガイダンスの別値は窓口が派遣時に設定済み）。超過したゲート呼び出しは `CODEX_ROUND_DENIED` で拒否されるので、codex を再実行せず残指摘 + 自己評価（設計問題化か収束途中か）を窓口に報告して停止。同一指摘が 3 round 消えない / 前 round の修正を巻き戻す向きの指摘が出たときは上限前でも設計問題として報告（後者は綱引きの方向を書く）
 - `codex` の直接実行（`codex exec` / `codex review` 等）はフックが拒否する。Codex は上のゲートからだけ呼ぶ
-- 設計レビューを頼まれたときは `bash "/home/user/work/claude-org/tools/codex_review_gate.sh" --design <設計ファイル>` で回す（差分レビューとは別枠でタスクごとに 1 回だけ。差分の上限は減らない。2 回目は `CODEX_ROUND_DENIED` で拒否される）
+- 設計レビューを頼まれたときは、設計を `.worker-scratch/design.md` に書き、`bash "/home/user/work/claude-org/tools/codex_review_gate.sh" --design` で回す（ファイル名は付けない。付けた形は sandbox 内で走り不成立になる。差分レビューとは別枠でタスクごとに 1 回だけ。差分の上限は減らない。2 回目は `CODEX_ROUND_DENIED` で拒否される）
 - Minor/Nit 残置可。レビューを別ワーカーに委譲しない。large diff では effort を上げない（根拠: claude-org リポジトリの `knowledge/curated/codex.md`）
 - `The 'gpt-6-astra' model requires a newer version of Codex.` が出たら `npm i -g @openai/codex@latest` で更新する
 
