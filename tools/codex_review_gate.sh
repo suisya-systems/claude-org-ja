@@ -2,10 +2,19 @@
 # Codex セルフレビューを 1 回回し、「空の合格」を機械的に判定するゲート。
 #
 # 使い方（ワーカーの作業ディレクトリで前景実行する）:
-#   bash tools/codex_review_gate.sh <base-ref>          差分レビュー（codex exec review）
-#   bash tools/codex_review_gate.sh --design <file>     設計レビュー（codex exec。設計ファイルを
+#   bash tools/codex_review_gate.sh [<base-ref>]        差分レビュー（codex exec review）
+#   bash tools/codex_review_gate.sh --design [<file>]   設計レビュー（codex exec。設計ファイルを
 #                                                       リポジトリと突き合わせて検証させる）
-#   例: bash tools/codex_review_gate.sh origin/main
+#   例: bash tools/codex_review_gate.sh
+#
+# ワーカーが使うのは引数なしの形だけ。ワーカー設定はこの 2 形（引数なし・--design 単独）を
+# 完全一致で sandbox の外に出している（codex 内の bwrap は sandbox の中では動かない）。
+# 引数で任意の値を渡せる形を外に出すと、ワーカーが選んだ値で sandbox 外実行ができてしまうため:
+#   - <base-ref> 省略時は state.db の delegate_sent（WORKER_DIR に一致する最新行）の base_ref を
+#     tools/codex_round_cap.py base-ref で引く。記録が無い古い派遣は origin/main。state.db は
+#     ワーカーから書けない ja root .state/ にあるので、ワーカーは値を書き換えられない
+#   - <file> 省略時は $PWD/.worker-scratch/design.md を読む（中身はワーカーの文書で、codex に
+#     読ませるだけ。read-only sandbox の codex に渡るのはパスの固定値なので引数の注入は起きない）
 #
 # 回数はワーカーの外のフック（.hooks/block-codex-over-cap.sh）が数える。差分レビューは
 # 既定 3 回（窓口だけが変更できる）、設計レビューはそれとは別枠でタスクごとに 1 回固定。
@@ -40,21 +49,34 @@
 set -uo pipefail
 
 usage() {
-    printf 'usage: %s <base-ref> | --design <design-file>\n' "$0" >&2
+    printf 'usage: %s [<base-ref>] | --design [<design-file>]\n' "$0" >&2
     exit 2
 }
 mode=diff
-if [ "$#" -eq 2 ] && [ "$1" = "--design" ]; then
+base_ref=
+if [ "$#" -ge 1 ] && [ "$#" -le 2 ] && [ "$1" = "--design" ]; then
     mode=design
-    design_file="$2"
+    design_file="${2:-.worker-scratch/design.md}"
     if [ ! -f "$design_file" ] || [ ! -r "$design_file" ]; then
         printf 'design file not found or unreadable: %s\n' "$design_file" >&2
         usage
     fi
-elif [ "$#" -eq 1 ] && [ "$1" != "--design" ]; then
+elif [ "$#" -eq 1 ]; then
     base_ref="$1"
-else
+elif [ "$#" -ne 0 ]; then
     usage
+fi
+
+if [ "$mode" = diff ] && [ -z "$base_ref" ]; then
+    gate_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    py=python3
+    command -v "$py" >/dev/null 2>&1 || py=python
+    if ! base_ref="$("$py" "$gate_dir/codex_round_cap.py" base-ref --worker-dir "${WORKER_DIR:-$PWD}")" \
+        || [ -z "$base_ref" ]; then
+        echo "CODEX_GATE: not-established (cannot resolve the task's base ref from state.db)"
+        exit 1
+    fi
+    echo "codex_review_gate: base ref $base_ref (from delegate_sent)" >&2
 fi
 
 if [ "$mode" = diff ]; then

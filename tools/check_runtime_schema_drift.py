@@ -170,8 +170,10 @@ _JA_ONLY_LAYER2_CREDENTIAL_DENIES = frozenset(
 _JA_ONLY_WORKER_ALLOWS = frozenset(
     {
         "Bash(git rebase origin/main)",
-        'Bash(bash "{claude_org_path}/tools/codex_review_gate.sh" origin/main)',
-        "Bash(bash {claude_org_path}/tools/codex_review_gate.sh origin/main)",
+        'Bash(bash "{claude_org_path}/tools/codex_review_gate.sh")',
+        "Bash(bash {claude_org_path}/tools/codex_review_gate.sh)",
+        'Bash(bash "{claude_org_path}/tools/codex_review_gate.sh" --design)',
+        "Bash(bash {claude_org_path}/tools/codex_review_gate.sh --design)",
     }
 )
 

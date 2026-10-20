@@ -1235,6 +1235,64 @@ def _has_delegate_sent(conn, task_id: str) -> bool:
     ).fetchone() is not None
 
 
+def _review_base_ref(plan: DelegatePlan) -> str:
+    """The review base the brief's rebase line names (``task_base_ref``)."""
+    if plan.base_branch is not None:
+        return f"{_ORIGIN_REF_PREFIX}{plan.base_branch}"
+    return "origin/main"
+
+
+def _assert_review_base_unchanged(conn, plan: DelegatePlan) -> None:
+    """Refuse a re-apply whose review base differs from the recorded one.
+
+    ``delegate_sent`` is exactly-once, so a re-apply cannot rewrite its
+    ``base_ref``; the regenerated brief would then rebase onto one base while
+    the argument-less Codex gate reviews against the other. A row without
+    ``base_ref`` (written before the key existed) is compared as origin/main,
+    the value the gate falls back to for it.
+    """
+    row = conn.execute(
+        "SELECT json_extract(payload_json, '$.base_ref') FROM events "
+        "WHERE kind = ? AND json_extract(payload_json, '$.task') = ? "
+        "ORDER BY occurred_at DESC, id DESC LIMIT 1",
+        (_DELEGATE_SENT_KIND, plan.task_id),
+    ).fetchone()
+    if row is None:
+        return
+    recorded = row[0] if row[0] is not None else "origin/main"
+    wanted = _review_base_ref(plan)
+    if recorded != wanted:
+        raise ReservationIdentityMismatchError(
+            f"apply refused: task_id={plan.task_id!r} is already recorded with "
+            f"review base base_ref: recorded={recorded!r} -> this apply={wanted!r}. "
+            "The Codex gate reads the recorded value, so re-applying would "
+            "leave the brief and the gate on different bases. Use a new task_id."
+        )
+
+
+def _preflight_review_base(state_db_path: Path, plan: DelegatePlan) -> None:
+    """:func:`_assert_review_base_unchanged` before apply writes any file.
+
+    Same split as :func:`_existing_run_reservation`: the transaction repeats
+    the check authoritatively; this copy only keeps a refused re-apply from
+    overwriting the brief / settings / ``send_plan.json`` first.
+    """
+    if not state_db_path.exists():
+        return
+    from tools.state_db import connect
+
+    conn = connect(state_db_path)
+    try:
+        try:
+            if not _has_delegate_sent(conn, plan.task_id):
+                return
+        except Exception:  # noqa: BLE001 — schema-less DB: nothing recorded yet
+            return
+        _assert_review_base_unchanged(conn, plan)
+    finally:
+        conn.close()
+
+
 def _reserve_in_db(
     plan: DelegatePlan,
     *,
@@ -1284,6 +1342,8 @@ def _reserve_in_db(
             # inside the context manager rolls the whole transaction back.
             _assert_reappliable(_fetch_run_reservation(conn, plan.task_id), plan)
             already_sent = _has_delegate_sent(conn, plan.task_id)
+            if already_sent:
+                _assert_review_base_unchanged(conn, plan)
             tx.register_worker_dir(
                 abs_path=plan.layout.worker_dir,
                 layout="flat",
@@ -1325,6 +1385,9 @@ def _reserve_in_db(
                         "task": plan.task_id,
                         "worker": f"worker-{plan.task_id}",
                         "dir": str(plan.layout.worker_dir),
+                        # The Codex gate's argument-less form reads its review
+                        # base from here (tools/codex_round_cap.py base-ref).
+                        "base_ref": _review_base_ref(plan),
                     },
                     run_task_id=plan.task_id,
                     project_slug=plan.project_slug,
@@ -2321,6 +2384,9 @@ def apply_delegate_plan(
             "--assumption cites a location that does not hold:\n  "
             + "\n  ".join(citation_errors)
         )
+    # After the worktree base guard (its refusal names the git-level
+    # mismatch), before the brief / settings / send_plan.json writes.
+    _preflight_review_base(state_db_path, plan)
     # Issue #928: all failure-prone generation happens BEFORE the DB
     # transaction. A failure here leaves no reservation and no event to
     # compensate — the same task_id is simply re-appliable.

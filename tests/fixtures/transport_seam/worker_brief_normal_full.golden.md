@@ -98,14 +98,15 @@ npm pack "$PKG_DIR" --pack-destination /tmp/workers/demo-task/.worker-scratch
 ### Codex セルフレビュー
 commit 後、作業ディレクトリで**前景実行**する。この Bash 呼び出しの `allowed_domains` には Codex の接続先（`chatgpt.com` 等）を入れる（無いとエラーを出さずに数百秒止まる）:
 ```bash
-bash "/home/user/work/claude-org/tools/codex_review_gate.sh" origin/main
+bash "/home/user/work/claude-org/tools/codex_review_gate.sh"
 ```
+引数は付けない（比較先は派遣時の記録から gate が origin/main を引く。引数付きの形は sandbox 内で走り、codex が diff を読めず `not-established` になる）。
 判定は最終行で行う: `CODEX_GATE: passed` のときだけ指摘を読み「codex clean」と報告してよい。`not-established`（diff 未読の「空の合格」を含む）は出力が合格に読めても clean と報告せず、「Codex ゲート未成立（HEAD=`<sha>`）」と最終行の数値を添えて窓口の判断を仰ぐ。`unavailable`（codex 未導入）は skip して完了報告に進む。`dirty-worktree`（追跡ファイルに未コミット差分）は上の rebase 残差と同じ扱いにする。
 
 - 安全機構に掛かって review が完了しないときは、言い換えやプロンプト改変で回避しない。窓口に新しいセッションでの再実行を頼み、それでも通らなければ「Codex ゲート未成立（safety block、HEAD=`<sha>`）」と報告する
 - Blocker / Major は修正コミットを積み再レビュー。**round の上限はフックが強制する**（既定 3。増やせるのは窓口だけ。この brief の実装ガイダンスに別値があれば窓口が派遣時に設定済み）。上限を超えたゲート呼び出しは `CODEX_ROUND_DENIED` で拒否されるので、codex を再実行せず、残指摘と自己評価（設計問題化しているのか、別問題が順に露見する健全な収束の途中なのか）を窓口に報告して止まる
 - `codex` の直接実行（`codex exec` / `codex review` 等）はフックが拒否する。Codex は上のゲートからだけ呼ぶ
-- 設計レビューを頼まれたときは `bash "/home/user/work/claude-org/tools/codex_review_gate.sh" --design <設計ファイル>` で回す（差分レビューとは別枠でタスクごとに 1 回だけ。差分の上限は減らない。2 回目は `CODEX_ROUND_DENIED` で拒否される）
+- 設計レビューを頼まれたときは、設計を `.worker-scratch/design.md` に書き、`bash "/home/user/work/claude-org/tools/codex_review_gate.sh" --design` で回す（ファイル名は付けない。付けた形は sandbox 内で走り不成立になる。差分レビューとは別枠でタスクごとに 1 回だけ。差分の上限は減らない。2 回目は `CODEX_ROUND_DENIED` で拒否される）
 - 同一指摘が 3 round 消えないとき、または前 round の修正を巻き戻す向きの指摘が出たときは、上限前でも設計問題として報告する（後者は綱引きの方向を書く）
 - Minor / Nit は原則残置し PR 本文に既知制限として明記する。レビューを別ワーカーに委譲しない
 - large diff では effort を上げない。review surface の取りこぼし傾向と実測根拠は claude-org リポジトリの `knowledge/curated/codex.md`

@@ -104,6 +104,8 @@ class ClassifyTest(unittest.TestCase):
 
     def test_canonical_gate(self):
         for cmd in [
+            "bash /org/tools/codex_review_gate.sh",
+            'bash "$CLAUDE_ORG_PATH/tools/codex_review_gate.sh"',
             "bash /org/tools/codex_review_gate.sh origin/main",
             'bash "$CLAUDE_ORG_PATH/tools/codex_review_gate.sh" origin/main',
             "bash ${CLAUDE_ORG_PATH}/tools/codex_review_gate.sh HEAD~1",
@@ -114,6 +116,8 @@ class ClassifyTest(unittest.TestCase):
 
     def test_canonical_design(self):
         for cmd in [
+            "bash /org/tools/codex_review_gate.sh --design",
+            'bash "$CLAUDE_ORG_PATH/tools/codex_review_gate.sh" --design',
             "bash /org/tools/codex_review_gate.sh --design design.md",
             'bash "$CLAUDE_ORG_PATH/tools/codex_review_gate.sh" --design .worker-scratch/design.md',
             "bash /org/tools/codex_review_gate.sh --design /abs/path/d-1.md",
@@ -123,7 +127,6 @@ class ClassifyTest(unittest.TestCase):
 
     def test_non_canonical_design_denied(self):
         for cmd in [
-            "bash /org/tools/codex_review_gate.sh --design",
             "bash /org/tools/codex_review_gate.sh --design a.md extra",
             "bash /org/tools/codex_review_gate.sh --design 'a;b.md'",
             "bash /org/tools/codex_review_gate.sh --design 'a b.md'",
@@ -145,7 +148,9 @@ class ClassifyTest(unittest.TestCase):
             "bash /work/tools/codex_review_gate.sh base",
             "sh /org/tools/codex_review_gate.sh base",
             "/org/tools/codex_review_gate.sh base",
-            "bash /org/tools/codex_review_gate.sh",
+            "bash /org/tools/codex_review_gate.sh -x",
+            "X=1 bash /org/tools/codex_review_gate.sh",
+            "bash /org/tools/codex_review_gate.sh; true",
             "bash /org/tools/codex_review_gate.sh a b",
             "bash /org/tools/codex_review_gate.sh base; true",
             "true && bash /org/tools/codex_review_gate.sh base",
@@ -301,6 +306,31 @@ class StateTest(unittest.TestCase):
         self.assertEqual(_hook(self.org, "/w/one", self.gate), "ALLOW")
         self.assertEqual(self._cli("status", "--task-id", "t2")["used"], 1)
         self.assertEqual(self._cli("status", "--task-id", "t1")["used"], 0)
+
+    def test_base_ref_from_delegate_sent(self):
+        def base_ref(worker_dir):
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = cap.main(["base-ref", "--worker-dir", worker_dir, "--db-path", str(self.db)])
+            return rc, buf.getvalue().strip()
+        # no base_ref key (dispatch recorded before it existed) / unknown dir -> origin/main
+        self.assertEqual(base_ref("/w/one"), (0, "origin/main"))
+        self.assertEqual(base_ref("/w/none"), (0, "origin/main"))
+        conn = connect(self.db)
+        w = StateWriter(conn)
+        w.append_event(kind="delegate_sent",
+                       payload={"task": "t3", "dir": "/w/one", "base_ref": "origin/feat/x"})
+        w.append_event(kind="delegate_sent",
+                       payload={"task": "t4", "dir": "/w/bad", "base_ref": "--output=/x"})
+        w.commit()
+        conn.close()
+        self.assertEqual(base_ref("/w/one/"), (0, "origin/feat/x"))
+        err = io.StringIO()
+        with redirect_stderr(err):
+            self.assertEqual(base_ref("/w/bad")[0], 1)
+        missing = Path(self.org) / "nope" / "state.db"
+        self.assertEqual(cap.main(["base-ref", "--worker-dir", "/w/one",
+                                   "--db-path", str(missing)]), 1)
 
     def test_locked_db_never_allows(self):
         other = sqlite3.connect(str(self.db), isolation_level=None)

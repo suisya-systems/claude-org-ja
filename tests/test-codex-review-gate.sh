@@ -169,7 +169,7 @@ else
   echo "  FAIL: 設計ファイルが無いのに codex が呼ばれた"
   FAIL=$((FAIL + 1))
 fi
-for args in "--design" "--design a b" "base extra"; do
+for args in "--design a b" "base extra"; do
   actual_exit=0
   # shellcheck disable=SC2086
   (cd "$WORK/repo" && bash "$GATE" $args >/dev/null 2>&1) || actual_exit=$?
@@ -195,13 +195,70 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+# --- 引数なし（sandbox の外で走る形）: base ref を state.db の delegate_sent から引く ---
+# gate と codex_round_cap.py を偽の org root に置き、その .state/state.db を読ませる
+ORG="$WORK/org"
+mkdir -p "$ORG/tools" "$ORG/.state"
+# codex_round_cap.py は自分の実体パスから org root を決めるので、この 2 つだけ実体で置き、
+# 残り（tools.state_db 等の import 先）はリンクにする
+for f in "$REPO_ROOT"/tools/*; do ln -s "$f" "$ORG/tools/"; done
+command rm -f "$ORG/tools/codex_review_gate.sh" "$ORG/tools/codex_round_cap.py"
+command cp -f "$GATE" "$REPO_ROOT/tools/codex_round_cap.py" "$ORG/tools/"
+mkdir -p "$WORK/clean"
+git -C "$WORK/clean" init -q
+add_delegate_sent() {  # add_delegate_sent <dir> [base_ref]
+  python3 - "$ORG/.state/state.db" "$REPO_ROOT" "$@" <<'PY'
+import os, sys
+sys.path.insert(0, sys.argv[2])
+from tools.state_db import apply_schema, connect
+from tools.state_db.writer import StateWriter
+new = not os.path.exists(sys.argv[1])
+conn = connect(sys.argv[1])
+if new:
+    apply_schema(conn)
+payload = {"task": "t", "dir": sys.argv[3]}
+if len(sys.argv) > 4:
+    payload["base_ref"] = sys.argv[4]
+w = StateWriter(conn); w.append_event(kind="delegate_sent", payload=payload); w.commit()
+PY
+}
+run_noarg() {  # run_noarg <desc> <expected_exit> <expected_word> <expected_base or ->
+  local description="$1" expected_exit="$2" expected_word="$3" expected_base="$4"
+  local actual_exit=0 output
+  command rm -f "$WORK/codex_args"
+  output=$(cd "$WORK/clean" && PATH="$WORK/bin:$PATH" TMPDIR="$WORK/tmp" STUB_DIR="$WORK" \
+    STUB_OUT='  succeeded in 1ms:\n' STUB_EXIT=0 WORKER_DIR="$WORK/clean" \
+    bash "$ORG/tools/codex_review_gate.sh" 2>&1) || actual_exit=$?
+  local got_base="-"
+  [[ -f "$WORK/codex_args" ]] && got_base="$(grep -A1 -xF -- --base "$WORK/codex_args" | tail -1)"
+  if [[ "$actual_exit" -eq "$expected_exit" && "$got_base" == "$expected_base" ]] \
+     && printf '%s\n' "$output" | tail -1 | grep -q "CODEX_GATE: $expected_word"; then
+    echo "  PASS: $description"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: $description (exit $actual_exit, base $got_base: $(printf '%s\n' "$output" | tail -1))"
+    FAIL=$((FAIL + 1))
+  fi
+}
+run_noarg "引数なし・state.db が無い → not-established (codex を呼ばない)" 1 not-established -
+add_delegate_sent "$WORK/clean"
+run_noarg "引数なし・base_ref の無い古い delegate_sent → origin/main" 0 passed origin/main
+add_delegate_sent "$WORK/clean" origin/feat/x
+run_noarg "引数なし・最新の delegate_sent の base_ref を使う" 0 passed origin/feat/x
+add_delegate_sent "$WORK/clean" "-o x"
+run_noarg "引数なし・不正な base_ref → not-established" 1 not-established -
+
+# --design 単独は .worker-scratch/design.md を読む
+mkdir -p "$WORK/repo/.worker-scratch"
+echo "# design" > "$WORK/repo/.worker-scratch/design.md"
 actual_exit=0
-bash "$GATE" >/dev/null 2>&1 || actual_exit=$?
-if [[ "$actual_exit" -eq 2 ]]; then
-  echo "  PASS: 引数なし → usage (exit 2)"
+(cd "$WORK/repo" && PATH="$WORK/bin:$PATH" TMPDIR="$WORK/tmp" STUB_DIR="$WORK" \
+  STUB_OUT='  succeeded in 1ms:\n' STUB_EXIT=0 bash "$GATE" --design >/dev/null 2>&1) || actual_exit=$?
+if [[ "$actual_exit" -eq 0 ]] && grep -q 'design document at .worker-scratch/design.md' "$WORK/codex_args"; then
+  echo "  PASS: --design 単独 → .worker-scratch/design.md を読む"
   PASS=$((PASS + 1))
 else
-  echo "  FAIL: 引数なしの exit が $actual_exit"
+  echo "  FAIL: --design 単独の結果 (exit $actual_exit: $(tr '\n' ' ' < "$WORK/codex_args"))"
   FAIL=$((FAIL + 1))
 fi
 
