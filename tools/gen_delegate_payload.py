@@ -1248,7 +1248,8 @@ def _assert_review_base_unchanged(conn, plan: DelegatePlan) -> None:
     ``delegate_sent`` is exactly-once, so a re-apply cannot rewrite its
     ``base_ref``; the regenerated brief would then rebase onto one base while
     the argument-less Codex gate reviews against the other. A row without
-    ``base_ref`` (written before the key existed) has nothing to disagree with.
+    ``base_ref`` (written before the key existed) is compared as origin/main,
+    the value the gate falls back to for it.
     """
     row = conn.execute(
         "SELECT json_extract(payload_json, '$.base_ref') FROM events "
@@ -1256,9 +1257,11 @@ def _assert_review_base_unchanged(conn, plan: DelegatePlan) -> None:
         "ORDER BY occurred_at DESC, id DESC LIMIT 1",
         (_DELEGATE_SENT_KIND, plan.task_id),
     ).fetchone()
-    recorded = row[0] if row else None
+    if row is None:
+        return
+    recorded = row[0] if row[0] is not None else "origin/main"
     wanted = _review_base_ref(plan)
-    if recorded is not None and recorded != wanted:
+    if recorded != wanted:
         raise ReservationIdentityMismatchError(
             f"apply refused: task_id={plan.task_id!r} is already recorded with "
             f"review base base_ref: recorded={recorded!r} -> this apply={wanted!r}. "

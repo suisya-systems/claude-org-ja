@@ -3466,6 +3466,18 @@ class TestIssue928DelegateSentEvent(unittest.TestCase):
         # Same base re-applies fine.
         gdp._reserve_in_db(self._plan(task_id="rebased"), state_db_path=self.sb.db_path,
                            claude_org_root=self.sb.claude_org_root)
+        # A legacy row without base_ref reads as origin/main at the gate.
+        conn = sqlite3.connect(str(self.sb.db_path))
+        try:
+            conn.execute("UPDATE events SET payload_json = "
+                         "json_remove(payload_json, '$.base_ref') "
+                         "WHERE kind = 'delegate_sent'")
+            conn.commit()
+        finally:
+            conn.close()
+        with self.assertRaises(gdp.ReservationIdentityMismatchError):
+            gdp._reserve_in_db(retry, state_db_path=self.sb.db_path,
+                               claude_org_root=self.sb.claude_org_root)
 
     def test_a_hand_written_delegate_sent_is_not_duplicated(self):
         """Codex Round 1 P2: ``journal_append`` and the legacy-journal
