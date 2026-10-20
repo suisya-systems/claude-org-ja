@@ -1270,6 +1270,29 @@ def _assert_review_base_unchanged(conn, plan: DelegatePlan) -> None:
         )
 
 
+def _preflight_review_base(state_db_path: Path, plan: DelegatePlan) -> None:
+    """:func:`_assert_review_base_unchanged` before apply writes any file.
+
+    Same split as :func:`_existing_run_reservation`: the transaction repeats
+    the check authoritatively; this copy only keeps a refused re-apply from
+    overwriting the brief / settings / ``send_plan.json`` first.
+    """
+    if not state_db_path.exists():
+        return
+    from tools.state_db import connect
+
+    conn = connect(state_db_path)
+    try:
+        try:
+            if not _has_delegate_sent(conn, plan.task_id):
+                return
+        except Exception:  # noqa: BLE001 — schema-less DB: nothing recorded yet
+            return
+        _assert_review_base_unchanged(conn, plan)
+    finally:
+        conn.close()
+
+
 def _reserve_in_db(
     plan: DelegatePlan,
     *,
@@ -2361,6 +2384,9 @@ def apply_delegate_plan(
             "--assumption cites a location that does not hold:\n  "
             + "\n  ".join(citation_errors)
         )
+    # After the worktree base guard (its refusal names the git-level
+    # mismatch), before the brief / settings / send_plan.json writes.
+    _preflight_review_base(state_db_path, plan)
     # Issue #928: all failure-prone generation happens BEFORE the DB
     # transaction. A failure here leaves no reservation and no event to
     # compensate — the same task_id is simply re-appliable.

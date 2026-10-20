@@ -3479,6 +3479,27 @@ class TestIssue928DelegateSentEvent(unittest.TestCase):
             gdp._reserve_in_db(retry, state_db_path=self.sb.db_path,
                                claude_org_root=self.sb.claude_org_root)
 
+    def test_review_base_mismatch_is_refused_before_any_file_write(self):
+        """Codex R3 P2: the transaction-only check left the rejected
+        re-apply's brief / send_plan.json on disk."""
+        import dataclasses
+
+        plan = self._plan(task_id="preflight")
+        self._apply(plan)
+        brief = Path(plan.brief_out_path)
+        before = brief.read_text(encoding="utf-8")
+        brief.write_text("sentinel", encoding="utf-8")
+        from unittest import mock
+
+        retry = dataclasses.replace(self._plan(task_id="preflight"), base_branch="develop")
+        # As for a dispatch with no managed worktree (Pattern C): the git-level
+        # worktree base guard does not run first.
+        with mock.patch.object(gdp, "_ensure_worktree", lambda plan: None), \
+                self.assertRaises(gdp.ReservationIdentityMismatchError):
+            self._apply(retry)
+        self.assertEqual(brief.read_text(encoding="utf-8"), "sentinel")
+        self.assertTrue(before)
+
     def test_a_hand_written_delegate_sent_is_not_duplicated(self):
         """Codex Round 1 P2: ``journal_append`` and the legacy-journal
         importer write ``delegate_sent`` with a payload but no ``run_id``,
