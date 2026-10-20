@@ -3449,6 +3449,24 @@ class TestIssue928DelegateSentEvent(unittest.TestCase):
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0]["payload"]["dir"], str(plan.layout.worker_dir))
 
+    def test_apply_refuses_to_change_the_recorded_review_base(self):
+        """Codex P2: ``delegate_sent`` is exactly-once, so a re-apply with a
+        different base would leave the Codex gate's ``base_ref`` stale."""
+        import dataclasses
+
+        plan = self._plan(task_id="rebased")
+        self._apply(plan)
+        retry = dataclasses.replace(self._plan(task_id="rebased"), base_branch="develop")
+        with self.assertRaises(gdp.ReservationIdentityMismatchError) as cm:
+            gdp._reserve_in_db(retry, state_db_path=self.sb.db_path,
+                               claude_org_root=self.sb.claude_org_root)
+        self.assertIn("origin/develop", str(cm.exception))
+        events = _delegate_sent_events(self.sb.db_path)
+        self.assertEqual([e["payload"]["base_ref"] for e in events], ["origin/main"])
+        # Same base re-applies fine.
+        gdp._reserve_in_db(self._plan(task_id="rebased"), state_db_path=self.sb.db_path,
+                           claude_org_root=self.sb.claude_org_root)
+
     def test_a_hand_written_delegate_sent_is_not_duplicated(self):
         """Codex Round 1 P2: ``journal_append`` and the legacy-journal
         importer write ``delegate_sent`` with a payload but no ``run_id``,
@@ -4690,6 +4708,15 @@ class TestReusedWorktreeBaseGuard(unittest.TestCase):
         self._apply(plan)
         self._git("config", "--unset",
                   f"branch.{plan.layout.planned_branch}.claudeOrgBase")
+        # A pre-#808 dispatch's delegate_sent carries no base_ref either.
+        conn = sqlite3.connect(str(self.sb.db_path))
+        try:
+            conn.execute("UPDATE events SET payload_json = "
+                         "json_remove(payload_json, '$.base_ref') "
+                         "WHERE kind = 'delegate_sent'")
+            conn.commit()
+        finally:
+            conn.close()
         self._apply(self._plan(task_id="norec", base_ref_override="main"))
 
     def test_reuse_refuses_when_the_override_is_dropped(self):
