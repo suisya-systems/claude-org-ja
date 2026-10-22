@@ -56,7 +56,7 @@
 
 完了報告前の rebase: Codex の前に `git fetch origin` → `git rebase origin/main`（conflict は自分で解く。conflict が無くても rebase 後に通常検証を回し直す）→ `git rev-list --count HEAD..origin/main` が `0` で、かつ `git status --porcelain --untracked-files=no` が空であることを確かめ、完了報告に「rebase clean: HEAD=`<sha>` on top of origin/main `<sha>`」の 1 行を入れる。後者が空でない、または rebase が `Read-only file system` で止まったときは rebase 残差（sandbox が `.claude/skills` 等への書込みを拒否し、rebase が成功表示でも旧内容が残る）なので、update-ref / reset / checkout 等で自分で戻そうとせず、rebase clean と報告せずに、表示されたパスを添えて「rebase 残差あり（HEAD=`<sha>`）」と窓口に報告して待つ（窓口が sandbox 外で戻す）。
 
-Codex セルフレビュー: commit 後に作業ディレクトリで**前景実行**する。この Bash 呼び出しの `allowed_domains` に Codex の接続先（`chatgpt.com` 等）を入れる（無いとエラーを出さずに数百秒止まる）:
+Codex セルフレビュー: commit 後に作業ディレクトリで**前景実行**する。`allowed_domains` は付けない（Codex の接続先は設定の `sandbox.network.allowedDomains` に事前許可済みで、ゲート自体も `sandbox.excludedCommands` 登録済み。strict allowlist のセッションでは `allowed_domains` 付きの呼び出しは実行前に拒否される）。下記コマンドを `cd` 前置・パイプ・`tail` 等を付けずそのまま実行する（付けると excludedCommands の一致が崩れ、sandbox 内で走って `not-established` になる）:
 ```bash
 bash "/home/user/work/claude-org/tools/codex_review_gate.sh"
 ```
