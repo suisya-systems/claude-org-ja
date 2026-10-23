@@ -199,6 +199,60 @@ class VerifyTests(_VerifyFixture):
         self.assertEqual(code, spawn_gate.EXIT_OK)
         self.assertEqual(out["recorded"]["placement"], "background_tab")
 
+    def test_background_tab_refuses_the_send_delivery_probe(self) -> None:
+        """3-4b needs a list_peers record; the degraded probe has none."""
+        argv = self._argv(
+            **{"--placement": "background_tab", "--evidence": "send_delivery"}
+        )
+        for flag in ("--peer-id", "--peer-name", "--peer-cwd"):
+            i = argv.index(flag)
+            del argv[i : i + 2]
+        code, out = _run(argv)
+        self.assertEqual(code, spawn_gate.EXIT_FIRE)
+        self.assertIn("bound_pane_id", out["failures"])
+
+    def test_background_tab_refuses_native_handles(self) -> None:
+        """Background placement is renga-only (3-1d); its ids are numeric."""
+        code, out = _run(
+            self._argv(
+                **{
+                    "--placement": "background_tab",
+                    "--pane-id": "w1:p2",
+                    "--peer-id": f"worker-{TASK}",
+                }
+            )
+        )
+        self.assertEqual(code, spawn_gate.EXIT_FIRE)
+        self.assertIn("bound_pane_id", out["failures"])
+
+    def test_broker_native_handles_and_name_peer_id_are_accepted(self) -> None:
+        """broker: list_panes id is the native handle, list_peers id the name."""
+        for pane in ("w21:p2", "%3"):
+            with self.subTest(pane=pane):
+                code, out = _run(
+                    self._argv(**{"--pane-id": pane, "--peer-id": f"worker-{TASK}"})
+                )
+                self.assertEqual(code, spawn_gate.EXIT_OK, out)
+                self.assertEqual(out["recorded"]["pane_id"], pane)
+                self.assertEqual(out["recorded"]["peer_id"], f"worker-{TASK}")
+                self.assertIn(f"id={pane}", out["delegate_complete"])
+
+    def test_malformed_handles_are_refused(self) -> None:
+        for pane in ("w1:p", "w1:p2:p3", "W1:P2", "x1:p2", " w1:p2", "w1:p2\n",
+                     "worker-x", "focused", "%", "0"):
+            with self.subTest(pane=pane):
+                code, out = _run(self._argv(**{"--pane-id": pane}))
+                self.assertEqual(code, spawn_gate.EXIT_FIRE)
+                self.assertIn("pane_id", out["failures"])
+
+    def test_name_peer_id_must_be_this_tasks_worker(self) -> None:
+        """Another worker's name, or a handle, is not this task's peer record."""
+        for peer in ("worker-other", "secretary", "w1:p2", "%3"):
+            with self.subTest(peer=peer):
+                code, out = _run(self._argv(**{"--peer-id": peer}))
+                self.assertEqual(code, spawn_gate.EXIT_FIRE)
+                self.assertIn("peer_id", out["failures"])
+
     def test_same_tab_does_not_impose_id_equality(self) -> None:
         """broker peer ids need not equal pane ids on the default path."""
         code, _ = _run(self._argv(**{"--peer-id": "9"}))

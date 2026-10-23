@@ -310,6 +310,8 @@ class CompliantFormTest(TmpRootTestCase):
             "close_pane(target=3)\n"
             'close_pane(target="7")\n'
             "close_pane(target=%12)\n"
+            'close_pane(target="w21:p2")\n'
+            "set_pane_identity(target=w1:p3)\n"
             "close_pane(target=<pane_id>)\n"
             'close_pane(target="<pane_id>")\n'
             'close_pane(target="<N>")\n'
@@ -322,6 +324,19 @@ class CompliantFormTest(TmpRootTestCase):
         )
         result = self.scan()
         self.assertEqual(result.violations, [])
+
+    def test_malformed_handles_are_violations(self) -> None:
+        # 実行時フックが拒否する形は静的にも違反（引用符の内側の空白を含む）。
+        _write(
+            self.root,
+            "a.md",
+            'close_pane(target="w1:p")\n'
+            'close_pane(target="W1:P2")\n'
+            'close_pane(target=" w1:p2 ")\n'
+            'close_pane(target=" 3 ")\n',
+        )
+        result = self.scan()
+        self.assertEqual(len(result.violations), 4)
 
     def test_placeholder_naming_a_relative_selector_is_a_violation(self) -> None:
         # <...> で括られていても、中身が名前 / focus を指すなら相対セレクタ。

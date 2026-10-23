@@ -11,6 +11,8 @@
 #     - renga / broker いずれの完全修飾名でも   -> block (transport 非依存)
 #   allow 側 (正規経路を壊さないこと):
 #     - target=3 / "3" / "%3"                   -> allow (数値 pane id)
+#     - target="w10:p3"                         -> allow (herdr native handle)
+#     - handle 似の形 ("w1:p" / " w1:p2" / 末尾改行 等) -> block
 #     - target="pr-watch-51"                    -> allow (DD-2 stale-binding carve-out)
 #     - Group B (close_pane / set_pane_identity) 以外 -> passthrough
 #   set_pane_identity も同じ deny/allow。pr-watch carve-out は close_pane だけ
@@ -66,6 +68,7 @@ payload_with_target() {
 
 RENGA="mcp__renga-peers__close_pane"
 BROKER="mcp__org-broker__close_pane"
+SPI_BROKER_EARLY="mcp__org-broker__set_pane_identity"
 
 # --- Deny: 相対セレクタ ---
 
@@ -149,6 +152,22 @@ assert_exit 0 "$ec" "DD-2 stale-binding carve-out (\"pr-watch-51\") is allowed"
 stderr=$(mktemp); TMPFILES+=("$stderr")
 ec=$(run_hook "$(payload_with_target "$BROKER" '"pr-watch-1011-ja"')" "$stderr")
 assert_exit 0 "$ec" "cross-repo watcher name (\"pr-watch-1011-ja\") is allowed"
+
+# --- herdr native handle (broker の list_panes id): 形を閉じた集合で通す ---
+
+stderr=$(mktemp); TMPFILES+=("$stderr")
+ec=$(run_hook "$(payload_with_target "$BROKER" '"w10:p3"')" "$stderr")
+assert_exit 0 "$ec" "herdr handle (\"w10:p3\") is allowed"
+
+stderr=$(mktemp); TMPFILES+=("$stderr")
+ec=$(run_hook "$(payload_with_target "$SPI_BROKER_EARLY" '"w1:p2"')" "$stderr")
+assert_exit 0 "$ec" "set_pane_identity with herdr handle (\"w1:p2\") is allowed"
+
+for bad in '"w1:p"' '"w1:p2:p3"' '"W1:P2"' '"x1:p2"' '" w1:p2"' '"w1:p2 "' '"w1:p2\n"' '"3\n"' '"%3\t"'; do
+  stderr=$(mktemp); TMPFILES+=("$stderr")
+  ec=$(run_hook "$(payload_with_target "$BROKER" "$bad")" "$stderr")
+  assert_exit 2 "$ec" "handle-like but malformed target ($bad) is blocked"
+done
 
 # --- set_pane_identity: 同じ Group B 規則。carve-out は close_pane だけ ---
 

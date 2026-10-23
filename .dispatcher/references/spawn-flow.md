@@ -543,14 +543,14 @@ dashboard 用 `.state/org-state.json` は **StateWriter の post-commit hook が
 # ディスパッチャーの cwd は .dispatcher/ なので 1 段上に解決する
 python3 ../tools/spawn_gate.py verify \
   --task {task_id} \
-  --pane-id <spawn_claude_pane の戻り値の数値 pane id> \
-  --peer-id <3-4 の list_peers で実際に観測した数値 id> \
+  --pane-id <spawn_claude_pane の戻り値の pane id をそのまま (renga は数値、broker は native handle: tmux %3 / herdr w1:p2)> \
+  --peer-id <3-4 の list_peers で実際に観測した id をそのまま (renga は数値、broker は登録名 worker-{task_id})> \
   --peer-name <同じレコードの name> \
   --peer-cwd <同じレコードの cwd> \
   --approval {sent|not_shown} \
   --instruction {send_message|send_keys|both}
   # 背景タブ経路 (3-1d/3-2b) を通った場合のみ --placement background_tab を足す
-  # (--peer-id == --pane-id の完全一致を要求する。3-4b の受理条件と同じ)
+  # (renga 限定。--evidence list_peers で数値の --peer-id == --pane-id の完全一致を要求する。3-4b の受理条件と同じ)
   # 3-4 の縮退経路を通った場合は --evidence send_delivery（--peer-* は渡さない）
 ```
 

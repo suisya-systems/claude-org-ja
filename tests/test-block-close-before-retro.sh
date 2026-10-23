@@ -115,6 +115,19 @@ S="$WORK/s6"; mkdir -p "$S"; printf 'not a database' >"$S/state.db"
 assert_exit 2 "$(close "$S" 5)" "unreadable state.db is blocked (fail-closed)"
 
 # end-to-end: the gate CLI's own record opens the close.
+# broker の native handle は文字列のまま記帳される。INTEGER CAST で 0 に潰すと
+# 照合が外れて ack 無しで閉じられる (設計レビューの Blocker)。
+S="$WORK/s10"; new_state "$S"; run_row "$S" t10 in_use; verified "$S" t10 '"w21:p2"'
+assert_exit 2 "$(close "$S" '"w21:p2"' mcp__org-broker__close_pane)" "herdr handle without ack is blocked"
+assert_exit 0 "$(close "$S" '"w21:p3"' mcp__org-broker__close_pane)" "a different herdr handle is not matched"
+acked "$S" t10
+assert_exit 0 "$(close "$S" '"w21:p2"' mcp__org-broker__close_pane)" "herdr handle after ack is allowed"
+
+S="$WORK/s11"; new_state "$S"; run_row "$S" t11 in_use; verified "$S" t11 '"%4"'
+assert_exit 2 "$(close "$S" '"%4"' mcp__org-broker__close_pane)" "tmux handle stored as \"%4\" without ack is blocked"
+assert_exit 2 "$(close "$S" 4 mcp__org-broker__close_pane)" "numeric 4 also matches a stored \"%4\" (deny side)"
+assert_exit 0 "$(close "$S" 0 mcp__org-broker__close_pane)" "pane 0 does not match a stored handle"
+
 S="$WORK/s7"; new_state "$S"; run_row "$S" t7 in_use; verified "$S" t7 11
 assert_exit 2 "$(close "$S" 11)" "e2e: blocked before the retro gate acks"
 printf '{"messages":[{"from_name":"secretary","message":"届いています"}]}' \

@@ -62,7 +62,12 @@ them):
 * ``--peer-name`` must equal ``worker-{task_id}``.
 * A ``worker_spawned`` event for the task must already exist, so the
   gate cannot run ahead of the spawn it is gating.
-* ``--pane-id`` / ``--peer-id`` must be positive integers.
+* ``--pane-id`` must be a positive integer or a backend native handle
+  (tmux ``%3`` / herdr ``w1:p2``, what broker's ``list_panes`` returns as
+  the id). ``--peer-id`` must be a positive integer (renga) or exactly
+  ``worker-{task_id}`` (broker's ``list_peers`` id is the registered name).
+  ``--placement background_tab`` is renga-only (spawn-flow 3-1d) and keeps
+  the integer ``bound_pane_id`` equality on ``list_peers`` evidence.
 
 **Attested, not verified**: ``--approval`` and ``--instruction``. No
 process on this host can observe a PTY keystroke or an MCP
@@ -182,7 +187,8 @@ _REMEDY = {
         "列挙を実際に見たなら --evidence list_peers を使う。"
     ),
     "bound_pane_id": (
-        "背景タブ経路 (placement=background_tab) では、list_peers の数値 id が "
+        "背景タブ経路 (placement=background_tab、renga 限定) では、--evidence list_peers で "
+        "list_peers の数値 id が "
         "spawn_claude_pane の戻り値 (bound_pane_id) と完全一致することが受理条件 "
         "(spawn-flow 3-4b)。一致しないレコードは別ペイン (並走 org の同名 worker や "
         "退役し損ねた前回分) なので、ゲートを開けずに 3-4b の登録 poll を続ける。"
@@ -200,10 +206,13 @@ _REMEDY = {
         f"{SPAWNED_EVENT} イベントが無い。spawn-flow Step 4 の "
         "journal_append.sh を先に実行する。"
     ),
-    "pane_id": "--pane-id が正の整数でない。spawn_claude_pane の戻り値を渡す。",
+    "pane_id": (
+        "--pane-id が正の整数でも native handle (tmux '%3' / herdr 'w1:p2') でもない。"
+        "spawn_claude_pane の戻り値をそのまま渡す。"
+    ),
     "peer_id": (
-        "--peer-id が正の整数でない。spawn-flow 3-4 の list_peers で実際に "
-        "観測した数値 id を渡す。まだ観測できていないなら 3-3b の画面判定ループを "
+        "--peer-id が正の整数でも worker-{task_id} でもない。spawn-flow 3-4 の "
+        "list_peers で実際に観測した id (renga は数値、broker は登録名) を渡す。まだ観測できていないなら 3-3b の画面判定ループを "
         "回し直し（盲目 Enter は送らない）、登録されるまで poll を続ける（報告はしない）。"
     ),
 }
@@ -351,6 +360,19 @@ def _latest_event_at(
     return None
 
 
+#: Native pane handles a broker backend returns from ``list_panes`` /
+#: ``spawn_claude_pane``. Pane names are ``[A-Za-z0-9_-]`` only (contract
+#: §4.1), so ``%`` / ``:`` keep these out of name resolution. Same set as
+#: ``.hooks/block-relative-close-pane.sh``.
+_PANE_HANDLE_RE = re.compile(r"%[0-9]+|w[0-9]+:p[0-9]+")
+
+
+def _pane_id(value: "str | None") -> "int | str | None":
+    if value is not None and _PANE_HANDLE_RE.fullmatch(value):
+        return value
+    return _positive_int(value)
+
+
 def _positive_int(value: "str | None") -> "int | None":
     try:
         parsed = int(str(value).strip())
@@ -481,7 +503,7 @@ def _replace_file_atomically(path: Path, data: bytes) -> None:
 
 
 def _rewrite_worker_md(
-    text: str, pane_id: int, started_at: str
+    text: str, pane_id: "int | str", started_at: str
 ) -> "tuple[str, list[str]]":
     """Pure edit of one worker record; returns (new_text, changes).
 
@@ -588,7 +610,7 @@ _WORKER_MD_ATTEMPTS = 3
 
 
 def _record_dispatch_in_worker_md(
-    workers_dir: Path, task_id: str, pane_id: int, started_at: str
+    workers_dir: Path, task_id: str, pane_id: "int | str", started_at: str
 ) -> dict:
     """Write spawn-flow Step 4 items (b)/(c) into the worker record.
 
@@ -646,7 +668,11 @@ def _record_dispatch_in_worker_md(
 
 
 def _delegate_complete_body(
-    task_id: str, worker: str, pane_id: int, peer_id: "int | None", evidence: str
+    task_id: str,
+    worker: str,
+    pane_id: "int | str",
+    peer_id: "int | str | None",
+    evidence: str,
 ) -> str:
     """The canonical report body. Assembled here, never by the dispatcher.
 
@@ -679,26 +705,35 @@ def cmd_verify(args) -> int:
         failures: "list[str]" = []
         checks: "dict[str, object]" = {}
 
-        pane_id = _positive_int(args.pane_id)
+        pane_id = _pane_id(args.pane_id)
         if pane_id is None:
             failures.append("pane_id")
 
         peer_id = None
         if args.evidence == "list_peers":
             peer_id = _positive_int(args.peer_id)
+            if peer_id is None and args.peer_id == worker:
+                # broker: list_peers id is the registered name. It is only
+                # evidence here (never a Group-B target); org binding still
+                # comes from the peer_cwd check below.
+                peer_id = worker
             if peer_id is None:
                 failures.append("peer_id")
-            elif (
-                args.placement == "background_tab"
-                and pane_id is not None
-                and peer_id != pane_id
-            ):
-                # spawn-flow 3-4b opens the background gate only on an exact
-                # `bound_pane_id` match. Accepting any positive id here would
-                # let a stale same-name/same-cwd worker's peer record certify
-                # the freshly spawned pane while that pane stays blocked.
-                failures.append("bound_pane_id")
-        elif args.peer_id is not None or args.peer_name or args.peer_cwd:
+        if args.placement == "background_tab" and not (
+            args.evidence == "list_peers"
+            and isinstance(pane_id, int)
+            and isinstance(peer_id, int)
+            and peer_id == pane_id
+        ):
+            # spawn-flow 3-4b opens the background gate only on an exact
+            # `bound_pane_id` match of a list_peers record (renga numeric ids,
+            # 3-1d). Accepting any positive id, a handle, or the degraded
+            # send_delivery probe here would let a stale same-name/same-cwd
+            # worker certify the freshly spawned pane while it stays blocked.
+            failures.append("bound_pane_id")
+        if args.evidence != "list_peers" and (
+            args.peer_id is not None or args.peer_name or args.peer_cwd
+        ):
             # `send_delivery` means the enumeration was discarded, so there
             # is no peer record to quote. Accepting one anyway would let a
             # fabricated record ride in under the weaker mode's name.
@@ -1013,7 +1048,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     verify.add_argument("--task", required=True, help="task_id")
     verify.add_argument(
-        "--pane-id", required=True, help="numeric pane id returned by spawn_claude_pane"
+        "--pane-id",
+        required=True,
+        help=(
+            "pane id returned by spawn_claude_pane: numeric, or a native "
+            "handle (tmux %%3 / herdr w1:p2)"
+        ),
     )
     verify.add_argument(
         "--placement",
@@ -1042,7 +1082,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--peer-id",
         default=None,
         help=(
-            "numeric id of the record actually observed in list_peers (3-4). "
+            "id of the record actually observed in list_peers (3-4): numeric "
+            "on renga, the registered name worker-{task_id} on broker. "
             "Required for --evidence list_peers, forbidden for send_delivery."
         ),
     )
