@@ -63,6 +63,10 @@ kill $SRV
 tail -5 .worker-scratch/preview.log
 ```
 
+**接続を張りっぱなしにするページ（SSE / WebSocket など）では `--virtual-time-budget` を使わない**。
+ネットワークが idle にならず戻ってこないので、外側のタイムアウトに当たって PNG が書かれない。
+代わりに `--timeout=<ms>`（例: `5000`、遅い iframe なら `10000`）を使う。
+
 `&` で起こしたプロセスはその呼び出しの終了で死ぬので後始末も自然に済み、
 `pgrep -f` / `pkill -f` を使わずに済む（Bash ツールは `zsh -c '<コマンド全文>'` で
 起動するため、**同じコマンド内に殺したいパターン文字列があると `pgrep -f` が
