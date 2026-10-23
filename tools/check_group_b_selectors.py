@@ -234,8 +234,9 @@ _TARGET_RE = re.compile(
 #: target= を省いた set_pane_identity が実際に撃つ先（契約が書く既定値）。
 IMPLICIT_TARGET = "focused"
 
-#: 数値 pane id（``%3`` のような tmux 表記も含む）。
-_NUMERIC_RE = re.compile(r"%?\d+")
+#: 列挙から採った pane id: 数値、tmux handle ``%3``、herdr handle ``w1:p2``。
+#: ``.hooks/block-relative-close-pane.sh`` の受理形と揃える。
+_NUMERIC_RE = re.compile(r"%?[0-9]+|w[0-9]+:p[0-9]+")
 
 #: 全体が <...> で括られたプレースホルダ。
 _PLACEHOLDER_RE = re.compile(r"<[^<>]*>")
@@ -301,7 +302,8 @@ class ScanResult:
 def _strip_quotes(raw: str) -> str:
     value = raw.strip()
     if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-        value = value[1:-1].strip()
+        # 引用符の内側は剥がさない（`" 3 "` は実行時フックが拒否する形）。
+        value = value[1:-1]
     return value
 
 

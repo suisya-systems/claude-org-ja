@@ -35,6 +35,7 @@
 #
 # 何を許すか:
 #   - 数値 pane id: `3` / `"3"` / `"%3"` (renga / broker いずれの表記も)
+#   - backend の native handle: herdr の `"w1:p2"` (broker の list_panes が id に返す形)
 #   - DD-2 stale-binding carve-out: **`mcp__org-broker__close_pane` 宛のときだけ**
 #     `pr-watch-<PR>` 形の裸 name。
 #     登録簿に name binding だけが stale に残り `list_panes` に出ないため
@@ -135,11 +136,17 @@ case "$TARGET_TYPE" in
     deny_with_reason "${OP} (${TOOL_NAME}) の target が非整数の数値です。${CONTRACT_NOTE}"
     ;;
   "string")
-    TARGET=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.target')
-    # renga / broker とも pane id は `%3` 形でも書ける。先頭の `%` を剥がして判定する。
-    if [[ "${TARGET#%}" =~ ^[0-9]+$ ]]; then
+    # 列挙から採った pane id の形だけ通す: 数値 `3` / tmux handle `%3` / herdr handle `w1:p2`
+    # (broker の list_panes は backend の native handle を id に返す)。pane name は
+    # `[A-Za-z0-9_-]` しか持てない (契約 §4.1) ので `%` / `:` を含む handle は name 解決に
+    # 落ちえない。判定は jq 側で \A..\z に固定する ($(...) は末尾改行を剥がすので
+    # bash 側で見ると "w1:p2\n" が通ってしまう)。
+    # 形の定義は tools/check_group_b_selectors.py の _NUMERIC_RE /
+    # block-close-before-retro.sh と揃える。
+    if printf '%s\n' "$INPUT" | jq -e '.tool_input.target | test("\\A(%?[0-9]+|w[0-9]+:p[0-9]+)\\z")' >/dev/null 2>&1; then
       exit 0
     fi
+    TARGET=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.target')
     # DD-2 stale-binding carve-out (pr-watch ペインの後片付けのみ)。
     # 契約 T-§4.2 はこの carve-out に「Group B を実際に駆動している backend が
     # org-broker であることの**積極的証拠**」を要求し、解決済み既定からの推論を

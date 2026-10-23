@@ -7,7 +7,7 @@
 #   と定める (閉じると worker の出力が失われ、振り返りができなくなる)。ディスパッチャーは
 #   `bypassPermissions` で動くので、手順を飛ばした close を止める層はフックしか無い。
 #
-# 判定 (数値 pane id 宛の close_pane だけを見る):
+# 判定 (pane id 宛の close_pane だけを見る。数値 / tmux `%3` / herdr `w1:p2`):
 #   1. events の `worker_spawn_verified` (tools/spawn_gate.py verify) で pane_id -> task を引く。
 #      同じ pane_id が複数あれば最新のもの。見つからなければ worker ペインではない
 #      (curator / pr-watch / attention watcher 等) ので通す。
@@ -67,9 +67,10 @@ case "$TOOL_NAME" in
   *) exit 0 ;;
 esac
 
-# 数値 pane id (3 / "3" / "%3") 以外は block-relative-close-pane.sh の担当。
-PANE_ID=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.target // empty | tostring | ltrimstr("%")')
-[[ "$PANE_ID" =~ ^[0-9]+$ ]] || exit 0
+# pane id (3 / "3" / "%3" / "w1:p2") 以外は block-relative-close-pane.sh の担当。
+# 形の判定は jq 側で \A..\z に固定する ($(...) は末尾改行を剥がす)。
+printf '%s\n' "$INPUT" | jq -e '.tool_input.target | tostring | test("\\A(%?[0-9]+|w[0-9]+:p[0-9]+)\\z")' >/dev/null 2>&1 || exit 0
+PANE_ID=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.target | tostring')
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # tools/journal_append.sh と同じ interpreter の選び方 (Windows は py -3 / python)。
@@ -87,7 +88,13 @@ import json, os, sqlite3, sys
 sys.path.insert(0, sys.argv[1])
 from tools.state_db.discover import resolve_state_db_path
 
-db, pane_id = str(resolve_state_db_path()), int(sys.argv[2])
+db, pane_id = str(resolve_state_db_path()), sys.argv[2]
+# spawn_gate.py は数値 id を int、native handle を文字列のまま記帳する。
+# handle を INTEGER に CAST すると "%3" / "w1:p2" が 0 になり照合が外れるので、
+# 値そのもので比べる。数値形は int と "N" / "%N" のどれで記帳されていても当てる
+# (当たる側に広げるのは deny 側に倒れるだけ)。
+digits = pane_id[1:] if pane_id.startswith("%") else pane_id
+keys = [int(digits), digits, "%" + digits] if digits.isdigit() else [pane_id]
 if not os.path.isfile(db):
     print("allow")
     sys.exit(0)
@@ -95,8 +102,8 @@ conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
 row = conn.execute(
     "SELECT id, json_extract(payload_json, '$.task') FROM events "
     "WHERE kind = 'worker_spawn_verified' "
-    "AND CAST(json_extract(payload_json, '$.pane_id') AS INTEGER) = ? "
-    "ORDER BY id DESC LIMIT 1", (pane_id,)).fetchone()
+    f"AND json_extract(payload_json, '$.pane_id') IN ({','.join('?' * len(keys))}) "
+    "ORDER BY id DESC LIMIT 1", keys).fetchone()
 if not row or not row[1]:
     print("allow")
     sys.exit(0)
