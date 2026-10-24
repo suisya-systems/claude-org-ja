@@ -163,7 +163,14 @@ stderr=$(mktemp); TMPFILES+=("$stderr")
 ec=$(run_hook "$(payload_with_target "$SPI_BROKER_EARLY" '"w1:p2"')" "$stderr")
 assert_exit 0 "$ec" "set_pane_identity with herdr handle (\"w1:p2\") is allowed"
 
-for bad in '"w1:p"' '"w1:p2:p3"' '"W1:P2"' '"x1:p2"' '" w1:p2"' '"w1:p2 "' '"w1:p2\n"' '"3\n"' '"%3\t"'; do
+# herdr の pane 番号は 10 枚目から英字 (p9 の次は pA)。workspace 部も英数字を含みうる。
+for good in '"w10:pA"' '"w3:pZ9"' '"w1W:p2"' '"w10:p0"'; do
+  stderr=$(mktemp); TMPFILES+=("$stderr")
+  ec=$(run_hook "$(payload_with_target "$BROKER" "$good")" "$stderr")
+  assert_exit 0 "$ec" "herdr handle with alphanumeric segment ($good) is allowed"
+done
+
+for bad in '"w10:p"' '"w10:pA "' '"w10:p-A"' '"pA"' '"w10:pA\n"' '"w:pA"' '"w1:p"' '"w1:p2:p3"' '"W1:P2"' '"x1:p2"' '" w1:p2"' '"w1:p2 "' '"w1:p2\n"' '"3\n"' '"%3\t"'; do
   stderr=$(mktemp); TMPFILES+=("$stderr")
   ec=$(run_hook "$(payload_with_target "$BROKER" "$bad")" "$stderr")
   assert_exit 2 "$ec" "handle-like but malformed target ($bad) is blocked"
