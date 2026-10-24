@@ -227,7 +227,7 @@ class VerifyTests(_VerifyFixture):
 
     def test_broker_native_handles_and_name_peer_id_are_accepted(self) -> None:
         """broker: list_panes id is the native handle, list_peers id the name."""
-        for pane in ("w21:p2", "%3"):
+        for pane in ("w21:p2", "w10:pA", "w3:pZ9", "w1W:p2", "%3"):
             with self.subTest(pane=pane):
                 code, out = _run(
                     self._argv(**{"--pane-id": pane, "--peer-id": f"worker-{TASK}"})
@@ -238,7 +238,8 @@ class VerifyTests(_VerifyFixture):
                 self.assertIn(f"id={pane}", out["delegate_complete"])
 
     def test_malformed_handles_are_refused(self) -> None:
-        for pane in ("w1:p", "w1:p2:p3", "W1:P2", "x1:p2", " w1:p2", "w1:p2\n",
+        for pane in ("w10:p", "w10:pA ", "w10:p-A", "pA", "w:pA",
+                     "w1:p", "w1:p2:p3", "W1:P2", "x1:p2", " w1:p2", "w1:p2\n",
                      "worker-x", "focused", "%", "0"):
             with self.subTest(pane=pane):
                 code, out = _run(self._argv(**{"--pane-id": pane}))

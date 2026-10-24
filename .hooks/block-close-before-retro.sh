@@ -69,7 +69,7 @@ esac
 
 # pane id (3 / "3" / "%3" / "w1:p2") 以外は block-relative-close-pane.sh の担当。
 # 形の判定は jq 側で \A..\z に固定する ($(...) は末尾改行を剥がす)。
-printf '%s\n' "$INPUT" | jq -e '.tool_input.target | tostring | test("\\A(%?[0-9]+|w[0-9]+:p[0-9]+)\\z")' >/dev/null 2>&1 || exit 0
+printf '%s\n' "$INPUT" | jq -e '.tool_input.target | tostring | test("\\A(%?[0-9]+|w[0-9A-Za-z_]+:p[0-9A-Z]+)\\z")' >/dev/null 2>&1 || exit 0
 PANE_ID=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.target | tostring')
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

@@ -123,6 +123,12 @@ assert_exit 0 "$(close "$S" '"w21:p3"' mcp__org-broker__close_pane)" "a differen
 acked "$S" t10
 assert_exit 0 "$(close "$S" '"w21:p2"' mcp__org-broker__close_pane)" "herdr handle after ack is allowed"
 
+# herdr の pane 番号は 10 枚目から英字 (p9 の次は pA)。
+S="$WORK/s10a"; new_state "$S"; run_row "$S" t10a in_use; verified "$S" t10a '"w10:pA"'
+assert_exit 2 "$(close "$S" '"w10:pA"' mcp__org-broker__close_pane)" "alphanumeric herdr handle without ack is blocked"
+acked "$S" t10a
+assert_exit 0 "$(close "$S" '"w10:pA"' mcp__org-broker__close_pane)" "alphanumeric herdr handle after ack is allowed"
+
 S="$WORK/s11"; new_state "$S"; run_row "$S" t11 in_use; verified "$S" t11 '"%4"'
 assert_exit 2 "$(close "$S" '"%4"' mcp__org-broker__close_pane)" "tmux handle stored as \"%4\" without ack is blocked"
 assert_exit 2 "$(close "$S" 4 mcp__org-broker__close_pane)" "numeric 4 also matches a stored \"%4\" (deny side)"

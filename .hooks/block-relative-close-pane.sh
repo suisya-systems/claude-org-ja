@@ -143,7 +143,7 @@ case "$TARGET_TYPE" in
     # bash 側で見ると "w1:p2\n" が通ってしまう)。
     # 形の定義は tools/check_group_b_selectors.py の _NUMERIC_RE /
     # block-close-before-retro.sh と揃える。
-    if printf '%s\n' "$INPUT" | jq -e '.tool_input.target | test("\\A(%?[0-9]+|w[0-9]+:p[0-9]+)\\z")' >/dev/null 2>&1; then
+    if printf '%s\n' "$INPUT" | jq -e '.tool_input.target | test("\\A(%?[0-9]+|w[0-9A-Za-z_]+:p[0-9A-Z]+)\\z")' >/dev/null 2>&1; then
       exit 0
     fi
     TARGET=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.target')

@@ -364,7 +364,7 @@ def _latest_event_at(
 #: ``spawn_claude_pane``. Pane names are ``[A-Za-z0-9_-]`` only (contract
 #: §4.1), so ``%`` / ``:`` keep these out of name resolution. Same set as
 #: ``.hooks/block-relative-close-pane.sh``.
-_PANE_HANDLE_RE = re.compile(r"%[0-9]+|w[0-9]+:p[0-9]+")
+_PANE_HANDLE_RE = re.compile(r"%[0-9]+|w[0-9A-Za-z_]+:p[0-9A-Z]+")
 
 
 def _pane_id(value: "str | None") -> "int | str | None":

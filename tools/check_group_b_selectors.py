@@ -236,7 +236,7 @@ IMPLICIT_TARGET = "focused"
 
 #: 列挙から採った pane id: 数値、tmux handle ``%3``、herdr handle ``w1:p2``。
 #: ``.hooks/block-relative-close-pane.sh`` の受理形と揃える。
-_NUMERIC_RE = re.compile(r"%?[0-9]+|w[0-9]+:p[0-9]+")
+_NUMERIC_RE = re.compile(r"%?[0-9]+|w[0-9A-Za-z_]+:p[0-9A-Z]+")
 
 #: 全体が <...> で括られたプレースホルダ。
 _PLACEHOLDER_RE = re.compile(r"<[^<>]*>")
