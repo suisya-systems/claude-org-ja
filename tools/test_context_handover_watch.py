@@ -49,8 +49,21 @@ class TestRecord(unittest.TestCase):
         self.assertEqual(record.threshold_from_env({record.WINDOW_ENV: "1000000"}), 600000)
         self.assertIsNone(record.threshold_from_env({}))
         self.assertIsNone(record.threshold_from_env({record.THRESHOLD_ENV: "x"}))
-        self.assertEqual(record.role_for("/org/.dispatcher"), "dispatcher")
-        self.assertEqual(record.role_for("/org"), "secretary")
+        root = Path("/org")
+        self.assertEqual(record.role_for("/org/.dispatcher", root), "dispatcher")
+        self.assertEqual(record.role_for("/org", root), "secretary")
+        # The curator and worker worktrees read the root settings too: not recorded.
+        self.assertIsNone(record.role_for("/org/.curator", root))
+        self.assertIsNone(record.role_for("/org/.worktrees/t1", root))
+        self.assertIsNone(record.role_for("/elsewhere", root))
+
+    def test_idle_prompt_is_recorded_other_notifications_are_not(self):
+        rec = record.update({}, {"hook_event_name": "Notification", "session_id": "s",
+                                 "notification_type": "permission_prompt"}, {}, "T")
+        self.assertNotIn("idle_at", rec)
+        rec = record.update(rec, {"hook_event_name": "Notification", "session_id": "s",
+                                  "notification_type": "idle_prompt"}, {}, "T2")
+        self.assertEqual((rec["idle_at"], rec["idle_session_id"]), ("T2", "s"))
 
 
 def _line(**kw) -> str:
@@ -127,8 +140,8 @@ class FakeBackend:
 class Sim:
     """Plays the dispatcher session and its hooks against a temp org."""
 
-    def __init__(self, tc, org):
-        self.tc, self.org = tc, org
+    def __init__(self, tc, org, role="dispatcher"):
+        self.tc, self.org, self.role = tc, org, role
         self.composer = ""
         self.enters = []
         self.mangle = lambda t: t
@@ -149,27 +162,27 @@ class Sim:
             "%Y-%m-%dT%H:%M:%S.%fZ")
 
     def rec(self, data=None, **changes):
-        cur = json.loads(self.org.record_path.read_text()) if self.org.record_path.exists() else {}
+        cur = json.loads(self.org.record_path(self.role).read_text()) if self.org.record_path(self.role).exists() else {}
         cur.update(data or {})
         cur.update(changes)
-        self.org.write_json(self.org.record_path, cur)
+        self.org.write_json(self.org.record_path(self.role), cur)
         return cur
 
     def on_submit(self, text):
         cur = self.rec()
-        if text.startswith("/dispatcher-handover"):
+        if text.startswith(f"/{self.role}-handover"):
             with open(self.transcript, "a", encoding="utf-8") as fh:
                 fh.write(_line(type="queue-operation", operation="enqueue",
                                content="<channel>late report</channel>") + "\n")
-            self.org.handover_path.write_text("worker-t1 in flight", encoding="utf-8")
+            self.org.handover_path(self.role).write_text("worker-t1 in flight", encoding="utf-8")
             self.rec(turn_closed=cur["turn_closed"] + 1, turn_open=cur["turn_closed"] + 1,
                      stop_at=self.iso())
         elif text == "/clear":
             self.rec(session_id="s2", source="clear", cleared_at=self.iso(),
                      transcript_path=str(self.org.state_dir / "new.jsonl"))
-        elif text.startswith("/dispatcher-resume"):
+        elif text.startswith(f"/{self.role}-resume"):
             op = text.split("op=")[1]
-            self.org.append_event("dispatcher_resumed", {"op": op, "loop": self.resume_loop})
+            self.org.append_event(f"{self.role}_resumed", {"op": op, "loop": self.resume_loop})
             if self.drop_task_on_resume:
                 conn = connect(self.org.db_path)
                 conn.execute("DELETE FROM runs WHERE task_id = ?", (self.drop_task_on_resume,))
@@ -180,7 +193,9 @@ class Sim:
                                        surfaced=0, scanned_at=self.iso(10))
 
 
-class TestWatcher(unittest.TestCase):
+class _WatcherCase(unittest.TestCase):
+    role = "dispatcher"
+
     def setUp(self):
         self._td = tempfile.TemporaryDirectory()
         state = Path(self._td.name)
@@ -194,7 +209,7 @@ class TestWatcher(unittest.TestCase):
         self.org = watch.Org(state)
         self.notes = []
         self.org.notify_secretary = lambda m: self.notes.append(m) or True
-        self.sim = Sim(self, self.org)
+        self.sim = Sim(self, self.org, self.role)
 
         def sleep(sec):
             self.sim.now += sec
@@ -204,6 +219,14 @@ class TestWatcher(unittest.TestCase):
 
     def tearDown(self):
         self._td.cleanup()
+
+    def tick(self):
+        """The watcher's result for this role ("<role>:<why>" in an idle tick)."""
+        out = self.w.tick()
+        for part in out.split():
+            if part.startswith(f"{self.role}:"):
+                return part.split(":", 1)[1]
+        return out
 
     def events(self, kind):
         conn = connect(self.org.db_path)
@@ -216,8 +239,10 @@ class TestWatcher(unittest.TestCase):
     def op(self):
         return json.loads(self.org.op_path.read_text())
 
+
+class TestWatcher(_WatcherCase):
     def test_full_handover(self):
-        self.assertTrue(self.w.tick().startswith("ran:done"))
+        self.assertTrue(self.tick().startswith("ran:done"))
         op = self.op()["op"]
         self.assertEqual(self.sim.enters, [f"/dispatcher-handover auto op={op}", "/clear",
                                            f"/dispatcher-resume auto op={op}"])
@@ -228,17 +253,17 @@ class TestWatcher(unittest.TestCase):
 
     def test_under_threshold_or_busy_does_nothing(self):
         self.sim.rec(threshold_tokens=10_000)
-        self.assertEqual(self.w.tick(), "under_threshold")
+        self.assertEqual(self.tick(), "under_threshold")
         self.sim.rec(threshold_tokens=500, turn_open=6)
-        self.assertEqual(self.w.tick(), "turn_open")
+        self.assertEqual(self.tick(), "turn_open")
         self.assertEqual(self.sim.enters, [])
 
     def test_threshold_unset_skips_and_tells_secretary_once(self):
-        cur = json.loads(self.org.record_path.read_text())
+        cur = json.loads(self.org.record_path(self.role).read_text())
         cur.pop("threshold_tokens")
-        self.org.write_json(self.org.record_path, cur)
-        self.assertEqual(self.w.tick(), "threshold_unset")
-        self.assertEqual(self.w.tick(), "threshold_unset")
+        self.org.write_json(self.org.record_path(self.role), cur)
+        self.assertEqual(self.tick(), "threshold_unset")
+        self.assertEqual(self.tick(), "threshold_unset")
         self.assertEqual(self.sim.enters, [])
         self.assertEqual(len(self.notes), 1)
         self.assertIn("threshold_unset", self.notes[0])
@@ -246,16 +271,16 @@ class TestWatcher(unittest.TestCase):
 
     def test_composer_not_empty_stops_without_typing(self):
         self.sim.composer = "half-typed"
-        self.assertEqual(self.w.tick(), "ran:failed")
+        self.assertEqual(self.tick(), "ran:failed")
         self.assertEqual(self.sim.enters, [])
         self.assertEqual(self.sim.composer, "half-typed")
         self.assertEqual(self.op()["reason"], "composer_not_empty")
         self.assertTrue(self.notes[0].startswith("DISPATCHER_AUTO_HANDOVER_FAILED"))
-        self.assertEqual(self.w.tick(), "backoff")
+        self.assertEqual(self.tick(), "backoff")
 
     def test_readback_mismatch_sends_no_enter_and_erases_nothing(self):
         self.sim.mangle = lambda t: t + "x"
-        self.assertEqual(self.w.tick(), "ran:failed")
+        self.assertEqual(self.tick(), "ran:failed")
         self.assertEqual(self.sim.enters, [])
         self.assertTrue(self.sim.composer.endswith("x"))
         self.assertEqual(self.op()["reason"], "readback_mismatch")
@@ -266,10 +291,10 @@ class TestWatcher(unittest.TestCase):
         def no_ids(text):
             orig(text)
             if text.startswith("/dispatcher-handover"):
-                self.org.handover_path.write_text("nothing", encoding="utf-8")
+                self.org.handover_path(self.role).write_text("nothing", encoding="utf-8")
 
         self.sim.on_submit = no_ids
-        self.w.tick()
+        self.tick()
         self.assertTrue(self.op()["reason"].startswith("handover_missing_task_ids"))
         self.assertNotIn("/clear", self.sim.enters)
 
@@ -282,7 +307,7 @@ class TestWatcher(unittest.TestCase):
                 self.sim.rec(session_crons=[{"prompt": MONITOR_PROMPT}, {"prompt": MONITOR_PROMPT}])
 
         self.sim.on_submit = two_loops
-        self.w.tick()
+        self.tick()
         self.assertEqual(self.op()["reason"], "monitoring_loop_not_single: crons=2")
         self.assertIn("/dispatcher-resume", self.notes[0])
 
@@ -292,7 +317,7 @@ class TestWatcher(unittest.TestCase):
                                         and self.sim.rec(session_crons=[]))
         answers = iter([True, True])  # monitored when verification starts, idle after
         self.org.monitored = lambda: next(answers, False)
-        self.assertTrue(self.w.tick().startswith("ran:done"))
+        self.assertTrue(self.tick().startswith("ran:done"))
         self.assertEqual(self.notes, [])
 
     def test_idle_dispatcher_needs_no_loop(self):
@@ -303,7 +328,7 @@ class TestWatcher(unittest.TestCase):
         self.sim.on_submit = (lambda orig: lambda t: (orig(t), t.startswith("/dispatcher-resume")
                               and self.sim.rec(session_crons=[])))(self.sim.on_submit)
         self.sim.resume_loop = "idle"
-        self.assertTrue(self.w.tick().startswith("ran:done"))
+        self.assertTrue(self.tick().startswith("ran:done"))
 
     def test_loss_is_reported(self):
         self.sim.drop_task_on_resume = "t1"
@@ -314,15 +339,15 @@ class TestWatcher(unittest.TestCase):
         conn.close()
         orig = self.sim.on_submit
         self.sim.on_submit = lambda t: (orig(t), t.startswith("/dispatcher-handover") and
-                                        self.org.handover_path.write_text("t1 t2"))
-        self.w.tick()
+                                        self.org.handover_path(self.role).write_text("t1 t2"))
+        self.tick()
         self.assertEqual(self.events("auto_handover_loss_suspected")[0]["reason"], "t1")
         self.assertTrue(any("LOSS_SUSPECTED" in n for n in self.notes))
 
     def test_restart_before_clear_starts_over(self):
         self.org.write_json(self.org.op_path, {"op": "old", "stage": "clearing",
                                                "old_session_id": "s1", "pane": {"id": "3"}})
-        self.assertTrue(self.w.tick().startswith("ran:done"))
+        self.assertTrue(self.tick().startswith("ran:done"))
         self.assertNotEqual(self.op()["op"], "old")
 
     def test_restart_after_clear_continues_without_redoing_handover(self):
@@ -330,7 +355,7 @@ class TestWatcher(unittest.TestCase):
         self.org.write_json(self.org.op_path, {
             "op": "OPX", "stage": "clearing", "old_session_id": "s1", "pane": {"id": "3"},
             "old_transcript": str(self.sim.transcript), "p0": 0, "snapshot": {}})
-        self.assertEqual(self.w.tick(), "continued:clearing")
+        self.assertEqual(self.tick(), "continued:clearing")
         self.assertEqual(self.sim.enters, ["/dispatcher-resume auto op=OPX"])
         self.assertEqual(self.op()["stage"], "done")
 
@@ -343,13 +368,13 @@ class TestWatcher(unittest.TestCase):
     def test_restart_after_resume_typed_continues_in_same_session(self):
         self.sim.rec(session_id="s2", source="clear", cleared_at=self.sim.iso())
         self._resuming_op()
-        self.assertEqual(self.w.tick(), "continued:resuming")
+        self.assertEqual(self.tick(), "continued:resuming")
         self.assertEqual(self.op()["stage"], "done")
 
     def test_restart_after_suspend_start_does_not_type_into_old_pane(self):
         self.sim.rec(session_id="s7", source="startup", pane={"backend": "renga", "id": "9"})
         self._resuming_op()
-        self.assertEqual(self.w.tick(), "failed")
+        self.assertEqual(self.tick(), "failed")
         self.assertEqual(self.op()["reason"], "restart_session_replaced")
         self.assertEqual(self.sim.enters, [])
 
@@ -357,16 +382,147 @@ class TestWatcher(unittest.TestCase):
         self.sim.rec(session_id="s9", source="startup")
         self.org.write_json(self.org.op_path, {"op": "OPY", "stage": "handover",
                                                "old_session_id": "s1", "pane": {"id": "3"}})
-        self.assertEqual(self.w.tick(), "failed")
+        self.assertEqual(self.tick(), "failed")
         self.assertEqual(self.op()["reason"], "restart_state_indeterminate")
 
     def test_resume_resent_once_then_fails(self):
         orig = self.sim.on_submit
         self.sim.on_submit = lambda t: None if t.startswith("/dispatcher-resume") else orig(t)
-        self.w.tick()
+        self.tick()
         resumes = [e for e in self.sim.enters if e.startswith("/dispatcher-resume")]
         self.assertEqual(len(resumes), 2)
         self.assertEqual(self.op()["reason"], "resume_not_observed")
+
+
+class TestSecretary(_WatcherCase):
+    """§3.3 / §4.2 / §6.1 for the secretary (renga, attention watcher running)."""
+
+    role = "secretary"
+
+    def setUp(self):
+        super().setUp()
+        self.org.transport = lambda: "renga"
+        self.org.write_json(self.org.attention_path, {"pane_id": 9})
+        self.sim.rec(session_crons=[], prompt_at=self.sim.iso(-120), stop_at=self.sim.iso(-60),
+                     idle_at=self.sim.iso(-1), idle_session_id="s1")
+
+    def awaiting(self, task_id, ago, gate="worker_completed"):
+        from tools.state_db.writer import StateWriter
+
+        conn = connect(self.org.db_path)
+        StateWriter(conn).append_event(kind="notify_sent", payload={
+            "kind": "awaiting_user", "task_id": task_id, "gate": gate},
+            occurred_at=self.sim.iso(-ago))
+        conn.commit()
+        conn.close()
+
+    def decision(self, status, **extra):
+        self.org.write_json(self.org.state_dir / "pending_decisions.json", [
+            {"task_id": "t1", "received_at": "2026-10-26T00:00:00Z", "raw_message": "?",
+             "status": status, **extra}])
+
+    def test_full_handover(self):
+        self.assertTrue(self.tick().startswith("ran:done"))
+        op = self.op()["op"]
+        self.assertEqual(self.op()["role"], "secretary")
+        self.assertEqual(self.sim.enters, [f"/secretary-handover auto op={op}", "/clear",
+                                           f"/secretary-resume auto op={op}"])
+        late = self.org.context_dir / f"secretary-late-input-{op}.md"
+        self.assertIn("late report", late.read_text())
+        self.assertEqual(self.events("auto_handover_done")[0]["role"], "secretary")
+        self.assertEqual(self.notes, [])
+
+    def test_disabled_without_attention_watcher_or_on_broker(self):
+        self.org.attention_path.unlink()
+        self.assertEqual(self.tick(), "attention_watcher_absent")
+        self.org.write_json(self.org.attention_path, {"pane_id": 9})
+        self.org.transport = lambda: "broker"
+        self.assertEqual(self.tick(), "secretary_broker_unsupported")
+        self.assertEqual(self.sim.enters, [])
+
+    def test_open_decisions_hold_including_replied_not_forwarded(self):
+        self.decision("pending")
+        self.assertEqual(self.tick(), "pending_decision")
+        self.decision("escalated", user_replied_at="2026-10-26T00:05:00Z")
+        self.assertEqual(self.tick(), "pending_decision")
+        self.decision("resolved", resolution_kind="to_worker")
+        self.assertTrue(self.tick().startswith("ran:done"))
+
+    def test_recent_question_to_a_person_holds_for_30_minutes(self):
+        self.awaiting("t9", ago=60)
+        self.assertEqual(self.tick(), "awaiting_user")
+        self.assertEqual(self.sim.enters, [])
+
+    def test_reply_forward_and_own_failure_lines_are_not_waiting(self):
+        self.awaiting("t1", ago=60, gate="escalation_reply_forward")
+        self.awaiting("auto-handover-x", ago=60, gate="auto_handover_failed")
+        self.assertTrue(self.tick().startswith("ran:done"))
+
+    def test_old_question_must_be_named_in_the_handover(self):
+        self.awaiting("t9", ago=3600)
+        self.assertEqual(watch.must_name(self.org, "secretary", self.sim.now), ["t1", "t9"])
+        self.assertEqual(watch.must_name(self.org, "dispatcher", self.sim.now), ["t1"])
+        self.tick()
+        self.assertEqual(self.op()["reason"], "handover_missing_task_ids: t9")
+        self.assertNotIn("/clear", self.sim.enters)
+
+    def test_not_idle_until_idle_prompt_follows_the_last_stop(self):
+        self.sim.rec(idle_at=self.sim.iso(-90))  # before the last Stop
+        self.assertEqual(self.tick(), "not_idle_prompt")
+        self.sim.rec(idle_at=self.sim.iso(-1), idle_session_id="old")
+        self.assertEqual(self.tick(), "not_idle_prompt")
+        self.assertEqual(self.sim.enters, [])
+
+    def test_crons_hold(self):
+        self.sim.rec(session_crons=[{"prompt": "/loop 5m something"}])
+        self.assertEqual(self.tick(), "session_crons")
+
+    def test_person_typing_stops_and_beeps(self):
+        self.sim.composer = "half-typed by a person"
+        self.assertEqual(self.tick(), "ran:failed")
+        self.assertEqual(self.sim.enters, [])
+        self.assertEqual(self.sim.composer, "half-typed by a person")
+        self.assertTrue(self.notes[0].startswith("SECRETARY_AUTO_HANDOVER_FAILED"))
+        beep = [e for e in self.events("notify_sent") if e.get("gate") == "auto_handover_failed"]
+        self.assertEqual(beep[0]["kind"], "awaiting_user")
+
+    def test_question_asked_during_handover_turn_stops_before_clear(self):
+        orig = self.sim.on_submit
+
+        def asks(text):
+            orig(text)
+            if text.startswith("/secretary-handover"):
+                self.awaiting("t1", ago=0)
+
+        self.sim.on_submit = asks
+        self.tick()
+        self.assertEqual(self.op()["reason"], "not_quiet_before_clear: awaiting_user")
+        self.assertNotIn("/clear", self.sim.enters)
+
+    def test_person_typing_during_handover_turn_is_carried_over(self):
+        orig = self.sim.on_submit
+
+        def human(text):
+            orig(text)
+            if text.startswith("/secretary-handover"):
+                with open(self.sim.transcript, "a", encoding="utf-8") as fh:
+                    fh.write(_line(type="attachment", attachment={
+                        "type": "queued_command", "prompt": "PR 出していいよ"}) + "\n")
+
+        self.sim.on_submit = human
+        self.assertTrue(self.tick().startswith("ran:done"))
+        late = self.org.context_dir / f"secretary-late-input-{self.op()['op']}.md"
+        self.assertIn("PR 出していいよ", late.read_text())
+
+    def test_one_role_at_a_time(self):
+        other = watch.Org(self.org.state_dir)
+        disp = dict(json.loads(self.org.record_path("secretary").read_text()))
+        other.write_json(self.org.record_path("dispatcher"), {**disp, "session_crons": []})
+        self.assertTrue(self.w.tick().startswith("ran:"))
+        handovers = [e for e in self.sim.enters if e.endswith(f"op={self.op()['op']}")
+                     and "-handover" in e]
+        self.assertEqual(len(handovers), 1)
+        self.assertEqual(self.op()["role"], "dispatcher")  # dispatcher first; secretary next tick
 
 
 class TestStatus(unittest.TestCase):

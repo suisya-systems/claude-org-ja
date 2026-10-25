@@ -2,7 +2,8 @@
 """Record a role session's turn boundaries for the context-handover watcher.
 
 Run by the ``SessionStart`` / ``UserPromptSubmit`` / ``Stop`` /
-``PreCompact`` hooks (``.hooks/context-record.sh``) with the hook's JSON
+``PreCompact`` hooks, and for the secretary also ``Notification``
+(``idle_prompt``, design §4.2 1), (``.hooks/context-record.sh``) with the hook's JSON
 on stdin. It keeps one small file per role, ``.state/context/<role>.json``,
 which ``tools/context_handover_watch.py`` reads to decide when the role is
 between turns and where its transcript is
@@ -13,9 +14,11 @@ Claude Code hands hooks no context-usage figure, so this records only
 transcript itself (§2.2).
 
 The role comes from the hook's ``cwd``: a session under ``.dispatcher/``
-is the dispatcher, anything else the secretary. The repo-root settings
-are read by the dispatcher session too, so a hook registered there would
-otherwise mix the two roles' records.
+is the dispatcher, a session at the org root the secretary, and anything
+else (the on-demand curator under ``.curator/``, a worker worktree that
+picks up the root settings) is not recorded. The repo-root settings are
+read by those sessions too, so without this their hooks would overwrite
+the secretary's record and the watcher would type into their pane.
 
 Turn accounting: ``UserPromptSubmit`` opens a turn (``turn_open =
 turn_closed + 1``) and ``Stop`` closes it (``turn_closed += 1``, then
@@ -51,8 +54,14 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
-def role_for(cwd: str) -> str:
-    return "dispatcher" if ".dispatcher" in Path(cwd).parts else "secretary"
+def role_for(cwd: str, root: Path = REPO_ROOT) -> "str | None":
+    try:
+        rel = Path(cwd).resolve().relative_to(root.resolve())
+    except ValueError:
+        return None
+    if rel.parts[:1] == (".dispatcher",):
+        return "dispatcher"
+    return "secretary" if not rel.parts else None
 
 
 def context_dir() -> Path:
@@ -111,6 +120,10 @@ def update(rec: dict, payload: dict, env, now: str) -> dict:
         rec["stop_at"] = now
         rec["background_tasks"] = payload.get("background_tasks") or []
         rec["session_crons"] = payload.get("session_crons") or []
+    elif event == "Notification" and payload.get("notification_type") == "idle_prompt":
+        # About 60 s after a response nobody typed into (§4.2 1).
+        rec["idle_at"] = now
+        rec["idle_session_id"] = payload.get("session_id")
     return rec
 
 
@@ -149,6 +162,8 @@ def main() -> int:
         if not isinstance(payload, dict):
             return 0
         role = role_for(payload.get("cwd") or os.getcwd())
+        if role is None:
+            return 0
         if payload.get("hook_event_name") == "PreCompact":
             record_precompact(role, payload)
             return 0

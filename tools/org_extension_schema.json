@@ -179,6 +179,27 @@
         {
           "event": "UserPromptSubmit",
           "command_contains": "remind-verify-premise.sh"
+        },
+        {
+          "event": "SessionStart",
+          "command_contains": "context-record.sh"
+        },
+        {
+          "event": "UserPromptSubmit",
+          "command_contains": "context-record.sh"
+        },
+        {
+          "event": "Stop",
+          "command_contains": "context-record.sh"
+        },
+        {
+          "event": "PreCompact",
+          "command_contains": "context-record.sh"
+        },
+        {
+          "event": "Notification",
+          "matcher_contains": "idle_prompt",
+          "command_contains": "context-record.sh"
         }
       ],
       "disallow_allow_regex": [
