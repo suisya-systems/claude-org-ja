@@ -166,6 +166,10 @@ def wait_started(db: Path, pr: int, after_id: int,
         time.sleep(CONFIRM_POLL_SEC)
 
 
+class _CleanupFailed(Exception):
+    pass
+
+
 def _spawn_in_watch_tab(pr: int, repo: str, merge_watch: bool, db: Path,
                         base: dict, sec_id: str, every: "list[dict]") -> "str | None":
     """Spawn in the watch tab and confirm the ping. ``None`` on success,
@@ -188,8 +192,13 @@ def _spawn_in_watch_tab(pr: int, repo: str, merge_watch: bool, db: Path,
     if delivered:
         print(f"SPAWN_WATCH: spawned id={new_id} tab={WATCH_TAB} notify_to={sec_id}")
         return None
-    _call("close_pane", {"target": str(new_id)})
-    return "ping not delivered" if delivered is False else "no pr_watch_started event"
+    why = "ping not delivered" if delivered is False else "no pr_watch_started event"
+    ok, text = _call("close_pane", {"target": str(new_id)})
+    if not ok and "pane_not_found" not in text:
+        # A replacement would run next to a watcher we could not stop.
+        raise _CleanupFailed(f"{why}; closing pane {new_id} failed "
+                             f"({text.strip() or 'no reply'})")
+    return why
 
 
 def run(pr: int, repo: str, merge_watch: bool, db: Path) -> int:
@@ -210,12 +219,16 @@ def run(pr: int, repo: str, merge_watch: bool, db: Path) -> int:
         # Another organisation in another tab reuses the same names and tab
         # label; ``cwd`` is what tells its panes apart (L-§1.5).
         every = [p for p in parse_pane_list(text)
-                 if p["same_tab"] or p["cwd"] in (None, str(REPO_ROOT))]
+                 if p["same_tab"] or p["cwd"] == str(REPO_ROOT)]
         running = [p for p in every if p["name"] == name]
         if running:
             print(f"SPAWN_WATCH: already-running id={running[0]['id']}")
             return 0
-        why = _spawn_in_watch_tab(pr, repo, merge_watch, db, base, sec_id, every)
+        try:
+            why = _spawn_in_watch_tab(pr, repo, merge_watch, db, base, sec_id, every)
+        except _CleanupFailed as exc:
+            print(f"SPAWN_WATCH: failed - {exc}; not re-spawning")
+            return 2
         if why is None:
             return 0
     else:

@@ -25,9 +25,10 @@ ALL_TABS = """Panes in every tab (yours first):
   geometry: x=200 y=0 width=80 height=60
 - id=9 name=pr-watch-7 role=watcher [tab 2 "監視"]
   geometry: x=0 y=0 width=200 height=60
+  cwd: REPO
 - id=5 name=worker-x role=worker [tab 1 "workers"]
   geometry: x=0 y=0 width=200 height=60
-"""
+""".replace("REPO", str(swp.REPO_ROOT))
 
 OWN_TAB = """Panes in this tab:
 
@@ -105,11 +106,27 @@ class SpawnWatchPaneTests(unittest.TestCase):
 
     def test_other_orgs_watch_tab_is_ignored(self) -> None:
         fake = FakeRenga(all_tabs=ALL_TABS.replace(
-            '[tab 2 "監視"]\n  geometry: x=0 y=0 width=200 height=60',
-            '[tab 2 "監視"]\n  geometry: x=0 y=0 width=200 height=60\n  cwd: /other-org'))
+            str(swp.REPO_ROOT), "/other-org"))
         self.assertEqual(self._run(fake, True), 0)
         [spawn] = fake.spawns()
         self.assertEqual(spawn["tab"], {"new": {"name": "監視"}})
+
+    def test_failed_cleanup_does_not_spawn_a_second_watcher(self) -> None:
+        fake = FakeRenga()
+        inner = fake.__call__
+
+        def call(tool: str, args: dict) -> "tuple[bool, str]":
+            if tool == "close_pane":
+                fake.calls.append((tool, args))
+                return False, "[ipc_failed] timeout"
+            return inner(tool, args)
+
+        with mock.patch.dict(os.environ, {"RENGA_PANE_ID": "1"}), \
+             mock.patch.object(swp, "_call", call), \
+             mock.patch.object(swp, "_max_event_id", return_value=0), \
+             mock.patch.object(swp, "wait_started", return_value=None):
+            self.assertEqual(swp.run(123, "octo/repo", True, Path("unused.db")), 2)
+        self.assertEqual(len(fake.spawns()), 1)
 
     def test_no_all_tab_list_stays_in_own_tab(self) -> None:
         fake = FakeRenga()
