@@ -222,7 +222,10 @@ def extract_late_inputs(lines: "list[str]", op: str, role: str = DISPATCHER) -> 
         kind = entry.get("type")
         text = None
         if kind == "queue-operation" and entry.get("operation") == "enqueue":
-            text = as_text(entry.get("content"))
+            content = entry.get("content")
+            # A broker channel push enqueues without content and is read from its
+            # user line; for the renga-only secretary an empty enqueue is a person's image.
+            text = as_text(content) if content is not None or role == SECRETARY else None
         elif kind == "attachment":
             att = entry.get("attachment") or {}
             if att.get("type") == "queued_command":
@@ -246,7 +249,8 @@ def extract_late_inputs(lines: "list[str]", op: str, role: str = DISPATCHER) -> 
 # Inputs that machines put into a session. Anything else that reached the
 # secretary during the handover (typed text, a paste, an image) is a person's.
 MACHINE_PREFIXES = ("<channel ", "<channel>", "<task-notification>", "<agent-message",
-                    "<cross-session-message", "[Cross-session")
+                    "<cross-session-message", "[Cross-session",
+                    "Another Claude session sent a message")
 
 
 def person_inputs(lines: "list[str]", op: str) -> "list[str]":
@@ -421,7 +425,7 @@ def make_pane_backend(pane: dict):
 
 def renga_pane_name(pane: dict) -> "str | None":
     """The renga name of the pane, from ``renga inspect`` (``pane.name``); None if unknown."""
-    from tools.self_edit_approval import _run
+    from tools.self_edit_approval import BackendFailure, _run
 
     if pane.get("backend") != "renga":
         return None
@@ -430,8 +434,8 @@ def renga_pane_name(pane: dict) -> "str | None":
         if proc.returncode != 0:
             return None
         name = (json.loads(proc.stdout).get("pane") or {}).get("name")
-    except (OSError, ValueError, KeyError, TypeError, AttributeError):
-        return None
+    except (BackendFailure, OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None  # renga missing or slow: "unknown", never an escaped exception
     return name if isinstance(name, str) else None
 
 
@@ -558,7 +562,8 @@ class Watcher:
         ``dispatcher``): another Claude started at the org root, such as a person's
         own working pane, would otherwise take the record over and get typed into."""
         if not isinstance(pane, dict) or pane.get("backend") != "renga":
-            return None  # tmux ids come from the broker's own spawn; no names to check
+            # tmux ids come from the broker's own spawn; the secretary is renga-only.
+            return "pane_not_renga" if role == SECRETARY else None
         name = self.pane_namer(pane)
         if name is None:
             return "pane_name_unknown"

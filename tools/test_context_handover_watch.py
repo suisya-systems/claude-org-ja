@@ -74,6 +74,16 @@ class TestRecord(unittest.TestCase):
         self.assertTrue(record.foreign(rec, compact, {"RENGA_PANE_ID": "3"}))
         self.assertFalse(record.foreign(rec, {**compact, "session_id": "s1"}, {"RENGA_PANE_ID": "3"}))
 
+    def test_another_pane_takes_the_record_only_when_renga_names_it_for_the_role(self):
+        rec = {"session_id": "s1", "pane": {"backend": "renga", "id": "3"}}
+        start = {"hook_event_name": "SessionStart", "session_id": "s2", "source": "startup"}
+        env = {"RENGA_PANE_ID": "8"}
+        self.assertTrue(record.foreign(rec, start, env, "secretary", lambda e: "my-own-claude"))
+        self.assertFalse(record.foreign(rec, start, env, "secretary", lambda e: "secretary"))
+        clear = {**start, "source": "clear"}
+        self.assertFalse(record.foreign(rec, clear, env, "secretary", lambda e: "secretary"))
+        self.assertTrue(record.foreign(rec, clear, env, "secretary", lambda e: None))
+
     def test_events_from_another_session_are_dropped(self):
         rec = {"session_id": "s1", "pane": {"backend": "renga", "id": "3"},
                "turn_open": 2, "turn_closed": 2}
@@ -124,6 +134,11 @@ class TestPure(unittest.TestCase):
             self.assertEqual(watch.last_usage_tokens(p), 111)
             p.write_text(_line(type="user", message={"content": "x"}), encoding="utf-8")
             self.assertIsNone(watch.last_usage_tokens(p))
+
+    def test_dispatcher_skips_empty_enqueue_of_a_broker_push(self):
+        lines = [_line(type="queue-operation", operation="enqueue"),
+                 _line(type="user", origin={"kind": "channel"}, message={"content": "push body"})]
+        self.assertEqual(watch.extract_late_inputs(lines, "OP", "dispatcher"), ["push body"])
 
     def test_extract_late_inputs_three_forms_dedup_and_own_commands(self):
         ch = '<channel source="renga-peers" from_id="5">done</channel>'
@@ -631,6 +646,44 @@ class TestSecretary(_WatcherCase):
         self.assertEqual(self.tick(), "pane_not_secretary=my-own-claude")
         self.assertEqual(self.sim.enters, [])
         self.assertFalse(self.org.op_path.exists())
+
+    def test_pane_lookup_failure_fails_the_op_with_backoff(self):
+        from tools.self_edit_approval import BackendFailure
+
+        def boom(pane):
+            raise BackendFailure("renga inspect timed out")
+
+        self.w.pane_namer = lambda pane: watch.renga_pane_name(pane)
+        import tools.self_edit_approval as sea
+        orig = sea._run
+        sea._run = lambda *a, **k: boom(None)
+        try:
+            self.assertEqual(self.tick(), "pane_name_unknown")
+            self.w.pane_namer = lambda pane: "secretary"
+            orig_type = self.w.type_line
+            calls = {"n": 0}
+
+            def fail_second(op, text):
+                calls["n"] += 1
+                if calls["n"] == 2:
+                    self.w.pane_namer = lambda pane: watch.renga_pane_name(pane)
+                return orig_type(op, text)
+
+            self.w.type_line = fail_second
+            self.assertEqual(self.tick(), "ran:failed")
+            self.assertEqual(self.op()["reason"], "pane_name_unknown")
+            self.assertIn("secretary", json.loads(self.org.backoff_path.read_text()))
+        finally:
+            sea._run = orig
+
+    def test_secretary_on_a_tmux_pane_is_never_typed_into(self):
+        self.sim.rec(pane={"backend": "tmux", "id": "%5"})
+        self.assertEqual(self.tick(), "pane_not_renga")
+
+    def test_peer_hand_back_is_not_a_person(self):
+        line = _line(type="user", origin={"kind": "peer"}, message={
+            "content": "Another Claude session sent a message:\n<agent-message>x</agent-message>"})
+        self.assertEqual(watch.person_inputs([line], "OP"), [])
 
     def test_person_paste_or_image_during_handover_stops_before_clear(self):
         for entry in (

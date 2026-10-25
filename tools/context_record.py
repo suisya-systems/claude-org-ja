@@ -101,13 +101,35 @@ def threshold_from_env(env) -> "int | None":
     return None
 
 
-def foreign(rec: dict, payload: dict, env) -> bool:
+def renga_pane_name(env) -> "str | None":
+    """The renga name of this hook's pane (``renga inspect`` ``pane.name``), or None."""
+    import subprocess
+
+    try:
+        proc = subprocess.run(["renga", "inspect", "--id", str(int(env["RENGA_PANE_ID"])),
+                               "--lines", "1"], capture_output=True, text=True, timeout=5)
+        name = (json.loads(proc.stdout).get("pane") or {}).get("name")
+    except Exception:  # noqa: BLE001 — unknown is fine, the watcher checks again
+        return None
+    return name if isinstance(name, str) else None
+
+
+def foreign(rec: dict, payload: dict, env, role: "str | None" = None, namer=renga_pane_name) -> bool:
     """The event comes from another session than the one this record follows."""
     if payload.get("hook_event_name") == "SessionStart":
         if payload.get("source") == "compact":  # a compaction keeps the session
             return bool(rec.get("session_id")) and payload.get("session_id") != rec.get("session_id")
-        return (payload.get("source") == "clear" and bool(rec.get("pane"))
-                and pane_from_env(env) != rec.get("pane"))
+        pane = pane_from_env(env)
+        if not rec.get("pane") or pane == rec.get("pane"):
+            return False
+        # A session in another pane takes the record over only if renga names that
+        # pane after the role (another Claude at the org root is not the secretary).
+        # When the name cannot be read, a /clear stays tied to the recorded pane and
+        # a new session is accepted; the watcher checks the name before typing.
+        name = namer(env) if role and pane and pane.get("backend") == "renga" else None
+        if name is not None:
+            return name != role
+        return payload.get("source") == "clear"
     return bool(rec.get("session_id")) and payload.get("session_id") != rec.get("session_id")
 
 
@@ -202,7 +224,7 @@ def main() -> int:
                 rec = {}
         except (OSError, ValueError):
             rec = {}
-        if foreign(rec, payload, os.environ):
+        if foreign(rec, payload, os.environ, role):
             return 0
         write_atomic(path, update(rec, payload, os.environ, now_iso()))
     except Exception:  # noqa: BLE001 — advisory hook, never block the session
