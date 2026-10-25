@@ -510,7 +510,10 @@ class Watcher:
         """§7: renga only. §4.3: a failure must be able to reach an absent person."""
         if self.org.transport() != "renga":
             return "secretary_broker_unsupported"
-        if not self.org.attention_path.exists():
+        # The sidecar outlives a crashed or closed pane: the recorded pane must
+        # still be the one renga names "attention" (/org-attention-start).
+        pane_id = self.org.read_json(self.org.attention_path, {}).get("pane_id")
+        if pane_id in (None, "") or self.pane_namer({"backend": "renga", "id": pane_id}) != "attention":
             return "attention_watcher_absent"
         return None
 

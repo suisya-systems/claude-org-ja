@@ -273,8 +273,10 @@ class _WatcherCase(unittest.TestCase):
             self.sim.now += sec
 
         self.pane_name = self.role
+        self.attention_name = "attention"
         self.w = watch.Watcher(self.org, backend_factory=lambda pane: FakeBackend(self.sim),
-                               pane_namer=lambda pane: self.pane_name,
+                               pane_namer=lambda pane: (self.attention_name if pane["id"] == 9
+                                                        else self.pane_name),
                                clock=lambda: self.sim.now, sleep=sleep)
 
     def tearDown(self):
@@ -496,6 +498,12 @@ class TestSecretary(_WatcherCase):
         self.org.attention_path.unlink()
         self.assertEqual(self.tick(), "attention_watcher_absent")
         self.org.write_json(self.org.attention_path, {"pane_id": 9})
+        self.attention_name = None  # the pane is gone; the sidecar was left behind
+        self.assertEqual(self.tick(), "attention_watcher_absent")
+        self.attention_name = "worker-x"  # the id was reused by another pane
+        self.assertEqual(self.tick(), "attention_watcher_absent")
+        self.attention_name = "attention"
+        self.org.write_json(self.org.attention_path, {"pane_id": 9})
         self.org.transport = lambda: "broker"
         self.assertEqual(self.tick(), "secretary_broker_unsupported")
         self.assertEqual(self.sim.enters, [])
@@ -648,33 +656,34 @@ class TestSecretary(_WatcherCase):
         self.assertFalse(self.org.op_path.exists())
 
     def test_pane_lookup_failure_fails_the_op_with_backoff(self):
+        import tools.self_edit_approval as sea
         from tools.self_edit_approval import BackendFailure
 
-        def boom(pane):
+        broken = {"on": True}
+        self.w.pane_namer = lambda pane: ("attention" if pane["id"] == 9 else
+                                          watch.renga_pane_name(pane) if broken["on"] else "secretary")
+
+        def run(*a, **k):
             raise BackendFailure("renga inspect timed out")
 
-        self.w.pane_namer = lambda pane: watch.renga_pane_name(pane)
-        import tools.self_edit_approval as sea
-        orig = sea._run
-        sea._run = lambda *a, **k: boom(None)
+        orig_run, orig_type = sea._run, self.w.type_line
+        sea._run = run
         try:
-            self.assertEqual(self.tick(), "pane_name_unknown")
-            self.w.pane_namer = lambda pane: "secretary"
-            orig_type = self.w.type_line
+            self.assertEqual(self.tick(), "pane_name_unknown")  # a skip, not an escaped error
+            broken["on"] = False
             calls = {"n": 0}
 
-            def fail_second(op, text):
+            def type_line(op, text):
                 calls["n"] += 1
-                if calls["n"] == 2:
-                    self.w.pane_namer = lambda pane: watch.renga_pane_name(pane)
+                broken["on"] = calls["n"] == 2  # the lookup breaks right before /clear
                 return orig_type(op, text)
 
-            self.w.type_line = fail_second
+            self.w.type_line = type_line
             self.assertEqual(self.tick(), "ran:failed")
             self.assertEqual(self.op()["reason"], "pane_name_unknown")
             self.assertIn("secretary", json.loads(self.org.backoff_path.read_text()))
         finally:
-            sea._run = orig
+            sea._run = orig_run
 
     def test_secretary_on_a_tmux_pane_is_never_typed_into(self):
         self.sim.rec(pane={"backend": "tmux", "id": "%5"})
@@ -747,7 +756,7 @@ class TestSecretary(_WatcherCase):
         disp = dict(json.loads(self.org.record_path("secretary").read_text()))
         other.write_json(self.org.record_path("dispatcher"), {
             **disp, "session_crons": [], "pane": {"backend": "renga", "id": "4"}})
-        self.w.pane_namer = lambda pane: "dispatcher" if pane["id"] == "4" else "secretary"
+        self.w.pane_namer = lambda pane: {"4": "dispatcher", 9: "attention"}.get(pane["id"], "secretary")
         self.assertTrue(self.w.tick().startswith("ran:"))
         handovers = [e for e in self.sim.enters if e.endswith(f"op={self.op()['op']}")
                      and "-handover" in e]

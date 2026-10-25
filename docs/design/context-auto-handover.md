@@ -152,7 +152,7 @@ Stop フックを付けた Claude Code のペインで確かめた。
 どの段で止まっても `auto_handover_failed`（`OP`・役割・段・理由）を events に書き、その役割は 30 分試さない。知らせる先は次のとおり。events に書くだけでは知らせたことにしない。
 
 - ディスパッチャーの失敗: `peer_notify` で窓口に送る。窓口が人に伝える。
-- 窓口の失敗: watcher のログに書き、窓口にも `peer_notify` で送り（`/clear` 済みなら新しいセッションが受ける）、`notify_sent kind=awaiting_user gate=auto_handover_failed` を書く。後者が人に届くのは attention watcher が動いているときだけ（attention watcher は自動起動しない。[`.claude/skills/org-start/SKILL.md`](../../.claude/skills/org-start/SKILL.md) Block C3 の後の Sidebar）。無人で回すときは attention watcher を起動しておくことを、窓口の自動引き継ぎを有効にする条件にする。
+- 窓口の失敗: watcher のログに書き、窓口にも `peer_notify` で送り（`/clear` 済みなら新しいセッションが受ける）、`notify_sent kind=awaiting_user gate=auto_handover_failed` を書く。後者が人に届くのは attention watcher が動いているときだけ（attention watcher は自動起動しない。[`.claude/skills/org-start/SKILL.md`](../../.claude/skills/org-start/SKILL.md) Block C3 の後の Sidebar）。無人で回すときは attention watcher を起動しておくことを、窓口の自動引き継ぎを有効にする条件にする。watcher は `.state/attention_pane.json` の有無でなく、記録されたペインが renga でいまも `attention` という名前で在ることで確かめる（ペインが落ちても sidecar は残るため）。
 
 ### 4.4 `/clear` の前後に届いた入力を拾う
 
