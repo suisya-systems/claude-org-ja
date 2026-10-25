@@ -77,6 +77,12 @@ run "かぶせ物（通常ファイルでない）の位置への新規 → bloc
 run "かぶせ物を祖先に持つパスへの新規 → blocked" "$UP_UNDER_MASK" 1 "REBASE_PREFLIGHT: blocked"
 run "解決できない base → exit 2" no-such-ref 2 "cannot resolve base ref"
 
+# 上流を取り込み済み（base が HEAD の祖先）なら、自分のコミットが書けないパスを変えていても ok
+git -C "$R" switch -q --detach "$UP_RO_FILE"
+run "取り込み済みで自分のコミットだけが書けないパスを変える → ok" base-commit 0 "REBASE_PREFLIGHT: ok"
+run "取り込み済みの上流そのもの → ok" "$UP_RO_FILE" 0 "REBASE_PREFLIGHT: ok"
+git -C "$R" switch -q --detach base-commit
+
 out=$(cd "$R" && bash "$PREFLIGHT" "$UP_RO_DIR" 2>&1)
 if printf '%s\n' "$out" | grep -qx "not writable in sandbox: ro/file"; then
   echo "  PASS: 書けないパスを列挙する"; PASS=$((PASS + 1))

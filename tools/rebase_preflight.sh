@@ -51,6 +51,12 @@ writable_target() {
   [[ -d "$d" && -w "$d" ]]
 }
 
+# 上流がすでに取り込み済みなら rebase は何も書かない（自分のコミットが保護パスを変えていても）
+if git merge-base --is-ancestor "$base" HEAD; then
+  echo "REBASE_PREFLIGHT: ok"
+  exit 0
+fi
+
 blocked=0
 while IFS= read -r -d '' p; do
   if ! writable_target "$p"; then
