@@ -46,9 +46,17 @@ allowed-tools:
 
 > **輸送層（transport）両系**: 本スキルのツール参照は `mcp__org-broker__*`（`org-broker`）で書いてあり、active transport が既定面ならそのまま従えばよい。輸送層で手順が変わるのは **受信モデル / spawn 儀式 / エラー分岐** の 3 点だけ。うち本スキルで実際に効くのは受信モデル 1 点で、**`CI_COMPLETED` / `PR_MERGED` の判定は輸送層に依らず events テーブルの canonical 行が正本**（直 push は best-effort 補助。分岐の本体は下記 2b-i の受信モデルと「CI 完了検知の正路」節）。両系の読み替え規則・「既定」の二フレーム注記・契約の批准経緯・broker 拡張エラーコードは [`.claude/skills/org-pull-request/references/transport-duality.md`](references/transport-duality.md) を参照（上記 3 分岐に入るまで読む必要はない）。
 
+## 2a-p. ワーカーから「sandbox 外での rebase を依頼」の報告を受けたとき（承認前、Issue #1217）
+
+ワーカーは rebase の前に `tools/rebase_preflight.sh <base_ref>` を回し、上流が sandbox で書けないパス（`.claude/skills` 等）を変えている（`REBASE_PREFLIGHT: blocked`）ときは rebase せずにこれを頼んでくる。そのまま rebase させると `could not detach HEAD` で止まり、作業ツリーに上流の中身が残るため。ack の後、窓口が自分の Bash（ワーカー sandbox の外）で次を行う。
+
+1. `git -C <worker_dir> status --porcelain --untracked-files=no` が空であることを確かめる。空でなければワーカーの未コミット作業なので rebase せず、ワーカーに commit してから頼み直すよう送る
+2. `git -C <worker_dir> rebase <base_ref>`（`<base_ref>` は `send_plan.json` の `summary.base_ref`）。conflict が出たら `git -C <worker_dir> rebase --abort` で戻し、[`.claude/skills/org-escalation/SKILL.md`](../org-escalation/SKILL.md) の手順で人間に上げる（窓口は conflict を解かない）
+3. ワーカーに「sandbox 外で rebase した（HEAD=`<sha>`）。`git rev-list --count HEAD..<base_ref>` が 0 で `git status` が空であることを確かめ、通常検証と Codex ゲートを回し直して完了報告して」と送る
+
 ## 2a-r. ワーカーから「rebase 残差あり」/ `CODEX_GATE: dirty-worktree` の報告を受けたとき（承認前、Issue #1151）
 
-ワーカーの sandbox は `.claude/skills` 等への書込みを拒否するため、統合用ブランチへの rebase が `Read-only file system` で止まるか、成功表示でも該当ファイルが旧内容のまま作業ツリーに残る。後者のまま検証や Codex を回すと古い差分まで対象になる（`tools/codex_review_gate.sh` は追跡ファイルの差分を見ると `CODEX_GATE: dirty-worktree` で止まる）。ワーカーに update-ref / reset で回避させず、ack の後に窓口が自分の Bash（ワーカー sandbox の外）で直す。ワーカーは commit 済みの前提なので、追跡ファイルの差分は残差だけである。
+ワーカーの sandbox は `.claude/skills` 等への書込みを拒否するため、統合用ブランチへの rebase が `Read-only file system` / `could not detach HEAD` で止まるか（HEAD は動かず、上流の中身が作業ツリーに残る。2a-p の事前判定を通らずに rebase したときに起きる）、成功表示でも該当ファイルが旧内容のまま作業ツリーに残る。後者のまま検証や Codex を回すと古い差分まで対象になる（`tools/codex_review_gate.sh` は追跡ファイルの差分を見ると `CODEX_GATE: dirty-worktree` で止まる）。ワーカーに update-ref / reset で回避させず、ack の後に窓口が自分の Bash（ワーカー sandbox の外）で直す。ワーカーは commit 済みの前提なので、追跡ファイルの差分は残差だけである。
 
 1. `git -C <worker_dir> status` で状態を見る
 2. **rebase 途中で止まっている**（`rebase in progress`）: `git -C <worker_dir> rebase --abort` → `git -C <worker_dir> rebase <base_ref>`（`<base_ref>` は `send_plan.json` の `summary.base_ref`）。conflict が出たら `git -C <worker_dir> rebase --abort` で戻し、[`.claude/skills/org-escalation/SKILL.md`](../org-escalation/SKILL.md) の手順で人間に上げる（窓口は conflict を解かない）

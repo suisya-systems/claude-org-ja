@@ -123,10 +123,11 @@ ${issue_bodies_block}
 
 ### 完了報告前の rebase
 既存リポジトリで PR を出すタスクでは、完了報告と Codex セルフレビューの前に次を行う（`git init` の新規プロジェクトや upstream remote が無い場合は不要）:
-1. `git fetch origin`（`git fetch origin <branch>` は `FETCH_HEAD` に取るだけで追跡 ref を確実には更新せず、古い ref に対して behind=0 と誤判定しうる）
-2. `git rebase ${task_base_ref}`（merge 運用のリポジトリなら `git merge`）。conflict は自分で解く。conflict が無くても rebase 後に通常検証を回し直し、green であることを確かめる
-3. `git rev-list --count HEAD..${task_base_ref}` が `0` で、かつ `git status --porcelain --untracked-files=no` が空であることを確かめ、完了報告に「rebase clean: HEAD=`<sha>` on top of ${task_base_ref} `<sha>`」の 1 行を入れる
-4. 後者が空でない、または rebase が `Read-only file system` で止まったときは rebase 残差（sandbox が `.claude/skills` 等への書込みを拒否し、rebase が成功表示でも旧内容が残る）なので、update-ref / reset / checkout 等で自分で戻そうとせず、rebase clean と報告せずに、表示されたパスを添えて「rebase 残差あり（HEAD=`<sha>`）」と窓口に報告して待つ（窓口が sandbox 外で戻す）
+1. `git fetch origin`（`git fetch origin <branch>` は `FETCH_HEAD` に取るだけで追跡 ref を確実には更新せず、古い ref に対して behind=0 と誤判定しうる）。`.gitmodules` の `Permission denied` 警告は sandbox のかぶせ物によるもので、fetch は続行するので無視してよい
+2. `bash "${claude_org_path}/tools/rebase_preflight.sh" ${task_base_ref}` を実行する。最終行が `REBASE_PREFLIGHT: blocked` のときは上流が sandbox で書けないパス（`.claude/skills` 等）を変えており、rebase すると `could not detach HEAD` で止まって作業ツリーに上流の中身が残る。rebase せず、列挙されたパスを添えて「sandbox 外での rebase を依頼（HEAD=`<sha>`）」と窓口に報告して待つ（窓口が sandbox 外で rebase する）。`REBASE_PREFLIGHT: ok` なら次へ
+3. `git rebase ${task_base_ref}`（merge 運用のリポジトリなら `git merge`）。conflict は自分で解く。conflict が無くても rebase 後に通常検証を回し直し、green であることを確かめる
+4. `git rev-list --count HEAD..${task_base_ref}` が `0` で、かつ `git status --porcelain --untracked-files=no` が空であることを確かめ、完了報告に「rebase clean: HEAD=`<sha>` on top of ${task_base_ref} `<sha>`」の 1 行を入れる
+5. 後者が空でない、または rebase が `Read-only file system` / `could not detach HEAD` で止まったときは rebase 残差（sandbox が `.claude/skills` 等への書込みを拒否し、rebase が成功表示でも旧内容が残る型と、途中で止まって HEAD は動かず上流の中身が作業ツリーに残る型がある）なので、update-ref / reset / checkout 等で自分で戻そうとせず、rebase clean と報告せずに、表示されたパスを添えて「rebase 残差あり（HEAD=`<sha>`）」と窓口に報告して待つ（窓口が sandbox 外で戻す）
 
 ### Codex セルフレビュー
 commit 後、作業ディレクトリで**前景実行**する。`allowed_domains` は付けない（Codex の接続先は設定の `sandbox.network.allowedDomains` に事前許可済みで、ゲート自体も `sandbox.excludedCommands` 登録済み。strict allowlist のセッションでは `allowed_domains` 付きの呼び出しは実行前に拒否される）。下記コマンドを `cd` 前置・パイプ・`tail` 等を付けずそのまま実行する（付けると excludedCommands の一致が崩れ、sandbox 内で走って `not-established` になる）:
