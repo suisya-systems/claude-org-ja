@@ -453,5 +453,17 @@ class NotifyPeerDispatchTests(unittest.TestCase):
             self.assertEqual(peer_notify._resolve_transport(), "renga")
 
 
+class SecretaryTargetTests(unittest.TestCase):
+    """Issue #1216: ORG_NOTIFY_TO overrides the same-tab name."""
+
+    def test_env_overrides_name(self) -> None:
+        with mock.patch.dict(os.environ, {"ORG_NOTIFY_TO": " 3 "}):
+            self.assertEqual(peer_notify.secretary_target(), "3")
+
+    def test_unset_or_blank_is_secretary(self) -> None:
+        with mock.patch.dict(os.environ, {"ORG_NOTIFY_TO": ""}):
+            self.assertEqual(peer_notify.secretary_target(), "secretary")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -201,7 +201,13 @@ JOURNAL_PATH = resolve_state_db_path()
 # also push a peer message to secretary so it doesn't have to poll the
 # DB. The dispatch is wrapped in a tiny module-level seam so tests can
 # mock it without poking subprocess.Popen of the real renga binary.
-_PEER_NOTIFY_TARGET = "secretary"
+# Issue #1216: the target is read per call from ``ORG_NOTIFY_TO`` (numeric
+# secretary pane id when the watcher lives in another renga tab), falling
+# back to the same-tab name ``secretary``.
+def _peer_notify_target() -> str:
+    from tools.peer_notify import secretary_target
+
+    return secretary_target()
 
 
 # Wall-clock cap on every `gh` subprocess (Issue #941, P3).
@@ -216,7 +222,7 @@ _PEER_NOTIFY_TARGET = "secretary"
 GH_TIMEOUT_SEC = 120
 
 
-def _notify_peer(message: str, to_id: str = _PEER_NOTIFY_TARGET) -> bool:
+def _notify_peer(message: str, to_id: "str | None" = None) -> bool:
     """Best-effort peer-message dispatch. Never raises.
 
     Returns True on confirmed delivery, False otherwise (RENGA_SOCKET
@@ -228,7 +234,7 @@ def _notify_peer(message: str, to_id: str = _PEER_NOTIFY_TARGET) -> bool:
     except Exception:  # noqa: BLE001
         return False
     try:
-        return notify_peer(to_id, message)
+        return notify_peer(to_id or _peer_notify_target(), message)
     except Exception:  # noqa: BLE001
         return False
 
@@ -285,7 +291,7 @@ def _notify_or_record(
     db_path: Path,
     failed_kind: str,
     pr: int,
-    to_id: str = _PEER_NOTIFY_TARGET,
+    to_id: "str | None" = None,
 ) -> bool:
     """Push a terminal peer message, recording a ``notify_failed`` event
     on failure (Refs #653 #658 — silent no-op elimination).
@@ -304,6 +310,7 @@ def _notify_or_record(
 
     Never raises: a fail-loud recording error must not abort the watch.
     """
+    to_id = to_id or _peer_notify_target()
     ok = _notify_peer(message, to_id)
     if ok:
         return True
@@ -2019,6 +2026,15 @@ def main(argv: "list[str] | None" = None) -> int:
             f"tools/pr_watch.py: error: PR #{args.pr} not found in {repo}\n"
         )
         return 2
+
+    # Issue #1216: a watcher parked in another renga tab is addressed to the
+    # secretary by numeric id. Prove that route once at startup so the
+    # spawner can fall back to its own tab when the ping never arrives.
+    if os.environ.get("ORG_NOTIFY_TO", "").strip():
+        ok = _notify_peer(f"PR_WATCH_STARTED: PR #{args.pr} (repo={repo})")
+        sys.stdout.write(f"pr_watch: PR #{args.pr} startup ping "
+                         f"to {_peer_notify_target()} delivered={ok}\n")
+        sys.stdout.flush()
 
     # Issue #636: ci-watch → merge-watch is now a loop, not a one-shot.
     # Each round watches the PR's CI, records the head observed at verdict

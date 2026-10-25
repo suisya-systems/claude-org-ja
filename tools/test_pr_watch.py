@@ -4103,5 +4103,37 @@ class QueuedWorkflowWithoutChecksTests(unittest.TestCase):
         self.assertFalse(pr_watch._head_has_unfinished_runs("octo/repo", None))
 
 
+class NotifyTargetTests(unittest.TestCase):
+    """Issue #1216: a watcher in another renga tab reaches the secretary by
+    the numeric pane id in ``ORG_NOTIFY_TO`` (a name only resolves in the
+    sender's own tab), and proves that route with one startup ping."""
+
+    def _run_main(self, env: dict) -> "list[tuple[str, str]]":
+        sent: "list[tuple[str, str]]" = []
+        with TempDir() as tmp, \
+             mock.patch.dict(os.environ, env), \
+             mock.patch.object(pr_watch, "JOURNAL_PATH", tmp / ".state" / "state.db"), \
+             mock.patch("tools.peer_notify.notify_peer",
+                        side_effect=lambda to, msg: sent.append((to, msg)) or True), \
+             mock.patch.object(pr_watch.shutil, "which", return_value="/usr/bin/gh"), \
+             mock.patch.object(pr_watch.subprocess, "run",
+                               side_effect=_make_fake_run(watch_exit=0)), \
+             mock.patch.object(pr_watch.time, "monotonic", side_effect=[0.0, 7.0]):
+            self.assertEqual(pr_watch.main(["--pr", "1216", "--repo", "octo/repo"]), 0)
+        return sent
+
+    def test_numeric_target_gets_startup_ping_and_ci_completed(self) -> None:
+        sent = self._run_main({"ORG_NOTIFY_TO": "7"})
+        self.assertEqual([to for to, _ in sent], ["7", "7"])
+        self.assertTrue(sent[0][1].startswith("PR_WATCH_STARTED: PR #1216"))
+        self.assertIn("CI_COMPLETED", sent[1][1])
+
+    def test_unset_keeps_same_tab_name_and_no_ping(self) -> None:
+        sent = self._run_main({})
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0][0], "secretary")
+        self.assertIn("CI_COMPLETED", sent[0][1])
+
+
 if __name__ == "__main__":
     unittest.main()

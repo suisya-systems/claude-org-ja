@@ -63,6 +63,18 @@ _DROPPED_PREFIX = "(message dropped"
 _RENGA = "renga"
 _BROKER = "broker"
 
+# Issue #1216: renga resolves a peer *name* only inside the sender's own tab,
+# so a watcher parked in a background tab cannot reach "secretary" by name.
+# The spawner exports the secretary's numeric pane id here (ids reach every
+# tab); unset keeps the same-tab name.
+NOTIFY_TO_ENV = "ORG_NOTIFY_TO"
+_DEFAULT_SECRETARY = "secretary"
+
+
+def secretary_target() -> str:
+    """Return the address CLI watchers use for the secretary."""
+    return os.environ.get(NOTIFY_TO_ENV, "").strip() or _DEFAULT_SECRETARY
+
 
 def notify_peer(
     to_id: str,

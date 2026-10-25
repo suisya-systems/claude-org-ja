@@ -298,9 +298,9 @@ class Org:
             conn.close()
 
     def notify_secretary(self, message: str) -> bool:
-        from tools.peer_notify import notify_peer
+        from tools.peer_notify import notify_peer, secretary_target
 
-        return notify_peer("secretary", message)
+        return notify_peer(secretary_target(), message)
 
 
 def unsupported_reason() -> "str | None":
