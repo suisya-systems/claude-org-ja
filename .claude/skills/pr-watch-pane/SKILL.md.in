@@ -17,6 +17,8 @@ allowed-tools:
   - Bash(py -3 tools/pick_watcher_anchor.py:*)
   - Bash(python3 tools/watcher_restart_guard.py:*)
   - Bash(py -3 tools/watcher_restart_guard.py:*)
+  - Bash(python3 tools/spawn_watch_pane.py:*)
+  - Bash(py -3 tools/spawn_watch_pane.py:*)
   - mcp__renga-peers__list_panes
   - mcp__renga-peers__spawn_pane
   - mcp__renga-peers__set_pane_identity
@@ -118,6 +120,33 @@ context リセットと無関係）に監視が継続し、人間が tmux ペイ
      経緯と、未設定の意味が renga → broker に変わった Refs #941 の経緯は
      [`.claude/skills/pr-watch-pane/references/rationale.md`](references/rationale.md) §3）。
      `ORG_BROKER_STATE_DIR` も set のときだけ前置する。
+
+## Step 1-R: renga ではスクリプトを 1 回打つ
+
+active transport が renga なら、Step 2〜4 を手で行わず次を 1 回打つ（窓口のペインから。
+窓口の数値 pane id を `RENGA_PANE_ID` から取るため）:
+
+```bash
+python3 tools/spawn_watch_pane.py --pr <PR> --repo <OWNER/REPO>
+```
+
+（Windows は `py -3 tools/spawn_watch_pane.py ...`。CI 確定だけで止めるなら `--no-merge-watch`。）
+watcher は窓口のタブを割らずに背景タブ「監視」に立ち、知らせは窓口の数値 id 宛てに届く
+（renga では名前が送り手のタブの中でしか通じないため。契約
+[`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md)
+「auxiliary panes in a background tab」）。最終行 `SPAWN_WATCH: ...` と終了コードで次を決める:
+
+- `0` `spawned id=<N> ...` / `already-running id=<N>` → Step 5 の 1.（journal 記録）と 2.（報告）へ。
+  `<N>` を pane_id として使う。
+- `1` `fell-back id=<N> ... reason=...` → 別のタブからの知らせが届かなかったので、窓口のタブに
+  立て直した。Step 5 へ進み、報告に「別のタブからの通知が届かなかったので、監視を窓口のタブに
+  戻しました（理由: <reason>）」を加える。
+- `2` `failed - ...` → 監視は立っていない。出力をそのまま添えてユーザーに報告し、指示を仰ぐ
+  （代わりの監視に流れない）。
+- `3` `skip - not renga` → broker なので Step 2 以降をそのまま行う。
+
+監視が終わると watcher は自分のペインを数値 id で閉じ、最後の 1 枚ならタブごと閉じる。
+残ったときは Step 5 の (a) で閉じる。
 
 ## Step 2: 冪等チェック（同一 PR の二重監視を防ぐ）
 
@@ -444,6 +473,9 @@ secretary を張り先に使うのはユーザー承認済みで、`SECRETARY_MI
      閉じた扱いで skip）。name 指定ではなく list_panes で identity を確認した数値 pane_id を
      使う（id recycle 時の誤 close を避ける）。live pane が列挙に出ても自タブ確立は省けない
      （理由は [`.claude/skills/pr-watch-pane/references/rationale.md`](references/rationale.md) §7）。
+     **renga で Step 1-R が背景タブに立てた watcher** は自タブの列挙に出ないので、控えた
+     数値 id `<N>` で `mcp__renga-peers__list_panes(tab={"pane_id": <N>})` を引き、`name="pr-watch-<PR>"`
+     / `role="watcher"` を照合してから `mcp__renga-peers__close_pane(target=<N>)` する。
 
    - **(b) stale 登録簿 binding（`list_panes` には出ないのに再 spawn が `[name_taken]`）**:
      self-close で tmux ペインは消えたが broker 登録簿に name binding が残っている状態。

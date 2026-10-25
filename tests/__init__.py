@@ -8,6 +8,6 @@ live daemon, mirroring the gated guard in ``tools/__init__.py``. See
 """
 import os
 
-for _name in ("ORG_BROKER_STATE_DIR", "ORG_TRANSPORT", "RENGA_SOCKET"):
+for _name in ("ORG_BROKER_STATE_DIR", "ORG_NOTIFY_TO", "ORG_TRANSPORT", "RENGA_SOCKET"):
     os.environ.pop(_name, None)
 del _name

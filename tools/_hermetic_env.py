@@ -42,7 +42,7 @@ import os
 import sys
 
 # Env vars that route peer_notify / the broker CLI at a *live* daemon.
-LIVE_TRANSPORT_ENV = ("ORG_BROKER_STATE_DIR", "ORG_TRANSPORT", "RENGA_SOCKET")
+LIVE_TRANSPORT_ENV = ("ORG_BROKER_STATE_DIR", "ORG_NOTIFY_TO", "ORG_TRANSPORT", "RENGA_SOCKET")
 
 # Transport the scrub *pins* rather than unsets. See below for why an
 # unset ORG_TRANSPORT is no longer a safe hermetic state.

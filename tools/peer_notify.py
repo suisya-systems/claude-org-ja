@@ -63,6 +63,18 @@ _DROPPED_PREFIX = "(message dropped"
 _RENGA = "renga"
 _BROKER = "broker"
 
+# Issue #1216: renga resolves a peer *name* only inside the sender's own tab,
+# so a watcher parked in a background tab cannot reach "secretary" by name.
+# The spawner exports the secretary's numeric pane id here (ids reach every
+# tab); unset keeps the same-tab name.
+NOTIFY_TO_ENV = "ORG_NOTIFY_TO"
+_DEFAULT_SECRETARY = "secretary"
+
+
+def secretary_target() -> str:
+    """Return the address CLI watchers use for the secretary."""
+    return os.environ.get(NOTIFY_TO_ENV, "").strip() or _DEFAULT_SECRETARY
+
 
 def notify_peer(
     to_id: str,
@@ -199,10 +211,36 @@ def _notify_peer_renga(
     error, read timeout, ``(message dropped — ...)`` backend-unreachable
     shim. Never raises.
     """
+    ok, text = renga_tool_call(
+        "send_message", {"to_id": to_id, "message": message},
+        timeout=timeout, renga_bin=renga_bin,
+    )
+    # Renga's backend-unreachable shim returns ok-text rather than a
+    # JSON-RPC error (Issue #242). Reject "(message dropped — ..." so
+    # a silent backend failure isn't reported as success.
+    return ok and not text.lstrip().startswith(_DROPPED_PREFIX)
+
+
+def renga_tool_call(
+    name: str,
+    arguments: dict,
+    *,
+    timeout: float = _HANDSHAKE_TIMEOUT_SEC,
+    renga_bin: str = _RENGA_BIN,
+) -> "tuple[bool, str]":
+    """Call one renga-peers MCP tool via ``renga mcp-peer``. Never raises.
+
+    Returns ``(ok, text)``: ``ok`` is False when RENGA_SOCKET is unset, the
+    binary is missing, the handshake fails or times out, or the tool
+    reports ``isError``; ``text`` is the joined result text (the error
+    text, e.g. ``[split_refused] ...``, when the tool itself refused).
+    The caller pane identity comes from the inherited env, exactly as for
+    the agent's own MCP calls.
+    """
     if not os.environ.get("RENGA_SOCKET"):
-        return False
+        return False, ""
     if shutil.which(renga_bin) is None:
-        return False
+        return False, ""
     try:
         proc = subprocess.Popen(
             [renga_bin, "mcp-peer"],
@@ -214,7 +252,7 @@ def _notify_peer_renga(
             env=os.environ.copy(),
         )
     except (OSError, ValueError):
-        return False
+        return False, ""
 
     line_q: "queue.Queue[Optional[str]]" = queue.Queue()
 
@@ -231,9 +269,9 @@ def _notify_peer_renga(
     t = threading.Thread(target=reader, daemon=True)
     t.start()
     try:
-        return _drive_send(proc, line_q, to_id, message, timeout)
+        return _drive_call(proc, line_q, name, arguments, timeout)
     except Exception:  # noqa: BLE001 — best-effort, swallow everything
-        return False
+        return False, ""
     finally:
         _shutdown(proc, timeout)
 
@@ -271,13 +309,13 @@ def _read_response(
             return msg
 
 
-def _drive_send(
+def _drive_call(
     proc: subprocess.Popen,
     line_q: "queue.Queue[Optional[str]]",
-    to_id: str,
-    message: str,
+    name: str,
+    arguments: dict,
     timeout: float,
-) -> bool:
+) -> "tuple[bool, str]":
     def write(req: dict) -> None:
         assert proc.stdin is not None
         proc.stdin.write(json.dumps(req) + "\n")
@@ -293,34 +331,32 @@ def _drive_send(
     })
     init = _read_response(line_q, target_id=1, timeout=timeout)
     if init is None or "result" not in init:
-        return False
+        return False, ""
 
     write({"jsonrpc": "2.0", "method": "notifications/initialized"})
     write({
         "jsonrpc": "2.0", "id": 2, "method": "tools/call",
-        "params": {
-            "name": "send_message",
-            "arguments": {"to_id": to_id, "message": message},
-        },
+        "params": {"name": name, "arguments": arguments},
     })
     resp = _read_response(line_q, target_id=2, timeout=timeout)
     if resp is None:
-        return False
+        return False, ""
 
+    error = resp.get("error")
+    if isinstance(error, dict):
+        # renga reports tool refusals as JSON-RPC errors whose message
+        # carries the code, e.g. "renga refused spawn_pane: [split_refused] ...".
+        message = error.get("message")
+        return False, message if isinstance(message, str) else ""
     result = resp.get("result")
     if not isinstance(result, dict):
-        return False
-    if result.get("isError"):
-        return False
-    # Renga's backend-unreachable shim returns ok-text rather than a
-    # JSON-RPC error (Issue #242). Reject "(message dropped — ..." so
-    # a silent backend failure isn't reported as success.
-    for chunk in result.get("content", []) or []:
-        if isinstance(chunk, dict):
-            text = chunk.get("text") or ""
-            if isinstance(text, str) and text.lstrip().startswith(_DROPPED_PREFIX):
-                return False
-    return True
+        return False, ""
+    text = "".join(
+        chunk.get("text") or ""
+        for chunk in result.get("content", []) or []
+        if isinstance(chunk, dict) and isinstance(chunk.get("text"), str)
+    )
+    return not result.get("isError"), text
 
 
 def _shutdown(proc: subprocess.Popen, timeout: float) -> None:
