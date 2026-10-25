@@ -309,7 +309,7 @@ pr-watch から `PR_MERGED_HEAD_UNCONFIRMED: PR #<n> (head=<merged_short>, last 
   ```
   これは `gh pr view <PR> --json url,state,mergedAt,mergeCommit,headRefName,title` を一度引いて、PR が merged なら `StateWriter.transaction()` 経由で `pr_state='merged'` / `commit_short` / `pr_url` / `completed_at` を更新し、`pr_merged` イベント (payload: `task` / `pr` / `repo` / `pr_url` / `merge_commit` / `head` / `merged_at` / `pattern` / `auto_completed`) を 1 行追記する。再呼び出しは idempotent（二重イベントを書かない）。**この冪等性は helper 自身の再実行に対する性質であって、窓口の手打ちには効かない**（機序は [`.claude/skills/org-pull-request/references/rationale.md`](references/rationale.md) §4。上記の手打ち禁止はこのためにある）。task_id は `runs.pr_url` / `runs.branch`（active な runs 限定）から自動解決されるので省略もできる。
   - **`--task-id` を付けて呼ぶこと（Issue #828）**: `--task-id` があれば `--repo` 省略時のリポジトリを run → プロジェクト → GitHub URL で決定的に解決し、解決できなければ exit 2 で停止する。**`--task-id` も `--repo` も無い場合だけは旧来の事故経路（ja の同番号 PR を読む）が残る**（[`.claude/skills/org-pull-request/references/rationale.md`](references/rationale.md) §1）。set_run_pr_open と同じく 1 行目に `run_complete_on_merge: repo=... (source=...) PR #<N>: <PR タイトル>` が出るので書き込み先を目視確認する
-  - **helper は runs.status を触らない**: dispatcher 側 pane close / worker_closed / worker-state final update が必要 (delegation-lifecycle-contract §T5)。helper は merge 事実のみ記録し、status flip と worker_dir 削除は窓口が下記の StateWriter で行う
+  - **helper は runs.status を触らない**: dispatcher 側 pane close / worker_closed / worker-state final update が必要 (delegation-lifecycle-contract §T5)。helper は merge 事実のみ記録し、status flip と worker_dir 削除は窓口が下記の StateWriter で行う。run が非終端（`review` 等）のまま残っていれば、`merged` / `already` の行の後に `NOT COMPLETED task <id> status=<s>` と次の手順が 1 run 1 行で出る（Issue #1204）
   - **CLI 終了コード**: `merged` / `already` / `not_yet` は exit 0、`no_run`（runs に該当行なし）は exit 3 で失敗扱いになる。手動運用時は exit code を確認
 - **パターン B / C のレジストリエントリ削除と最終 close は別途 StateWriter を呼ぶ**（markdown 直接編集禁止。run_complete_on_merge が `pr_state='merged'` と `completed_at` を既に書いているので、ここでは status flip と worker_dir 削除のみ行う）:
   ```bash
@@ -349,6 +349,7 @@ pr-watch から `PR_MERGED_HEAD_UNCONFIRMED: PR #<n> (head=<merged_short>, last 
   標準経路は上記 `tools/run_complete_on_merge.py`。想定外の出力を返したときは手作業で再現せず、Issue を切ってユーザー判断を仰ぐ
   - パターン A: lifecycle='active' のまま、run.status='completed' で snapshotter が available 相当の表示にする
   - パターン B / C: 物理 dir は別途処理（worktree remove / dir 保持）。レジストリエントリ削除は上記 with ブロック内に `w.remove_worker_dir('<abs>')` を追加
+- **状態の切り替えを確かめる（Issue #1204）**: 上の StateWriter ブロックの後に `python3 tools/run_complete_on_merge.py --check-closed`（Windows native は `py -3`）を打ち、PR がマージ済みなのに `runs.status` が `in_use` / `review` 等のまま残っている run が無いことを確かめる。残っていれば 1 run 1 行で `NOT COMPLETED` と出て exit 1、無ければ `OK - no merged run left open` で exit 0。exit 0 を見るまでクローズを終えたとしない（残すとディスパッチャーの自動引き継ぎが `handover_missing_task_ids` で止まる）
 - JSON snapshot は StateWriter post-commit hook が自動再生成 (Issue #284)
 
 ## 2b-iii. マージ後の次タスク提案（proactive next-dispatch）
