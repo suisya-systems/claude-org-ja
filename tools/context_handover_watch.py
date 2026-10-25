@@ -186,6 +186,20 @@ def command_name(content: str) -> "str | None":
     return content[start + len("<command-name>"):end].strip()
 
 
+NO_TEXT = "[本文が文字でない入力（画像など）。旧会話記録を参照]"
+
+
+def as_text(content) -> "str | None":
+    """An input's text; a block list (image, paste) keeps its text blocks plus a marker."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        texts = [b.get("text") for b in content if isinstance(b, dict) and isinstance(b.get("text"), str)]
+        others = any(not (isinstance(b, dict) and b.get("type") == "text") for b in content)
+        return "\n".join(texts + ([NO_TEXT] if others or not texts else []))
+    return NO_TEXT  # an enqueue without content: something arrived, its body is elsewhere
+
+
 def extract_late_inputs(lines: "list[str]", op: str, role: str = DISPATCHER) -> "list[str]":
     """Inputs that reached the old session from offset p0 on (§4.4).
 
@@ -208,13 +222,13 @@ def extract_late_inputs(lines: "list[str]", op: str, role: str = DISPATCHER) -> 
         kind = entry.get("type")
         text = None
         if kind == "queue-operation" and entry.get("operation") == "enqueue":
-            text = entry.get("content")
+            text = as_text(entry.get("content"))
         elif kind == "attachment":
             att = entry.get("attachment") or {}
             if att.get("type") == "queued_command":
-                text = att.get("prompt")
+                text = as_text(att.get("prompt"))
         elif kind == "user" and entry.get("origin"):
-            text = (entry.get("message") or {}).get("content")
+            text = as_text((entry.get("message") or {}).get("content"))
         if not isinstance(text, str) or not text.strip():
             continue
         name = command_name(text)
@@ -229,9 +243,16 @@ def extract_late_inputs(lines: "list[str]", op: str, role: str = DISPATCHER) -> 
     return out
 
 
+# Inputs that machines put into a session. Anything else that reached the
+# secretary during the handover (typed text, a paste, an image) is a person's.
+MACHINE_PREFIXES = ("<channel ", "<channel>", "<task-notification>", "<agent-message",
+                    "<cross-session-message", "[Cross-session")
+
+
 def person_inputs(lines: "list[str]", op: str) -> "list[str]":
-    """Late inputs to the secretary that a person typed (not a ``<channel>`` push etc.)."""
-    return [t for t in extract_late_inputs(lines, op, SECRETARY) if not t.lstrip().startswith("<")]
+    """Late inputs to the secretary that a person sent (§4.2)."""
+    return [t for t in extract_late_inputs(lines, op, SECRETARY)
+            if not t.lstrip().startswith(MACHINE_PREFIXES)]
 
 
 def render_late_inputs(op: str, inputs: "list[str]") -> str:
@@ -398,6 +419,22 @@ def make_pane_backend(pane: dict):
     return make_backend(args, _resolve_transport(None))
 
 
+def renga_pane_name(pane: dict) -> "str | None":
+    """The renga name of the pane, from ``renga inspect`` (``pane.name``); None if unknown."""
+    from tools.self_edit_approval import _run
+
+    if pane.get("backend") != "renga":
+        return None
+    try:
+        proc = _run(["renga", "inspect", "--id", str(int(pane["id"])), "--lines", "1"], 10.0)
+        if proc.returncode != 0:
+            return None
+        name = (json.loads(proc.stdout).get("pane") or {}).get("name")
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+    return name if isinstance(name, str) else None
+
+
 def must_name(org: Org, role: str, now: float) -> "list[str]":
     """§6.2: task_ids the role's handover file has to mention.
 
@@ -418,9 +455,10 @@ def must_name(org: Org, role: str, now: float) -> "list[str]":
 
 class Watcher:
     def __init__(self, org: Org, *, backend_factory=make_pane_backend,
-                 clock=time.time, sleep=time.sleep):
+                 pane_namer=renga_pane_name, clock=time.time, sleep=time.sleep):
         self.org = org
         self.backend_factory = backend_factory
+        self.pane_namer = pane_namer
         self.clock = clock
         self.sleep = sleep
         self._unset_tried: set = set()
@@ -439,6 +477,9 @@ class Watcher:
         """Type one line and submit it, verifying each half (§4.2 2-3)."""
         from tools.self_edit_approval import BackendFailure, _norm, _poll_composer, extract_composer
 
+        reason = self.identity_reason(op["role"], op["pane"])
+        if reason:
+            raise HandoverFailed(reason)
         try:
             backend = self.backend_factory(op["pane"])
             composer = extract_composer(backend.inspect(INSPECT_LINES))
@@ -506,10 +547,22 @@ class Watcher:
             if rec.get("session_crons"):
                 return False, "session_crons"  # §3.3 / §7: kept until decided otherwise
             reason = (self.secretary_hold() or not_idle_reason(rec)
+                      or self.identity_reason(role, rec.get("pane"))
                       or self.composer_reason(rec.get("pane")))
             if reason:
                 return False, reason
         return True, f"tokens={tokens}"
+
+    def identity_reason(self, role: str, pane) -> "str | None":
+        """On renga the recorded pane must carry the role's name (``secretary`` /
+        ``dispatcher``): another Claude started at the org root, such as a person's
+        own working pane, would otherwise take the record over and get typed into."""
+        if not isinstance(pane, dict) or pane.get("backend") != "renga":
+            return None  # tmux ids come from the broker's own spawn; no names to check
+        name = self.pane_namer(pane)
+        if name is None:
+            return "pane_name_unknown"
+        return None if name == role else f"pane_not_{role}={name}"
 
     def composer_reason(self, pane) -> "str | None":
         """A person typing after idle_prompt is a reason to wait, not a failure (§4.2 2)."""
@@ -612,7 +665,7 @@ class Watcher:
             raise HandoverFailed("handover_unreadable")
         # A task_id that is only the prefix of another named id does not count.
         missing = [t for t in must_name(self.org, role, self.clock())
-                   if not re.search(re.escape(t) + r"(?![\w-])", body)]
+                   if not re.search(r"(?<![A-Za-z0-9_])" + re.escape(t) + r"(?![A-Za-z0-9_-])", body)]
         if missing:
             raise HandoverFailed(f"handover_missing_task_ids: {','.join(missing)}")
 
@@ -653,12 +706,15 @@ class Watcher:
         self.stage_resuming(op)
 
     def resume_taken(self, op: dict) -> bool:
-        """The new session started a turn after /clear (the resume line was received)."""
+        """The new session started the turn of this op's resume line (not a channel turn)."""
         rec = self.org.record(op["role"])
-        c0 = op.get("c0")
-        return (c0 is not None and rec.get("session_id") == op.get("new_session_id")
-                and (rec.get("turn_open") != rec.get("turn_closed")
-                     or rec.get("turn_closed", 0) > c0))
+        return (rec.get("session_id") == op.get("new_session_id")
+                and rec.get("resume_op") == op["op"])
+
+    def resume_turn_closed(self, op: dict) -> bool:
+        rec = self.org.record(op["role"])
+        return (self.resume_taken(op) and rec.get("turn_open") == rec.get("turn_closed")
+                and rec.get("turn_closed", 0) >= rec.get("resume_turn", 0))
 
     def stage_resuming(self, op: dict) -> None:
         role = op["role"]
@@ -673,9 +729,8 @@ class Watcher:
                 self.type_line(op, f"/{role}-resume auto op={op['op']}")
             if self.wait_until(lambda: resumed() or self.resume_taken(op), RESUME_TIMEOUT_SEC):
                 break
-        if not self.wait_until(lambda: resumed() or (
-                self.resume_taken(op) and self.org.record(role).get("turn_open")
-                == self.org.record(role).get("turn_closed")), RESUME_RUNNING_SEC):
+        if not self.wait_until(lambda: resumed() or self.resume_turn_closed(op),
+                               RESUME_RUNNING_SEC):
             raise HandoverFailed("resume_not_observed")
         if not resumed():
             raise HandoverFailed("resume_ended_without_event")
@@ -691,8 +746,13 @@ class Watcher:
         now_decisions = self.org.decisions()
         lost += [f"decision:{d[0]}@{d[1]}" for d in snapshot.get("decisions", [])
                  if d not in now_decisions]
-        if op.get("late_inputs") and self.late_path(op).exists():
-            lost.append(f"late_input_unread:{self.late_path(op).name}")
+        # The skill renames the file before it writes the resumed event; still give
+        # the resume turn its time before calling the file unread.
+        if op.get("late_inputs"):
+            self.wait_until(lambda: not self.late_path(op).exists() or self.resume_turn_closed(op),
+                            RESUME_RUNNING_SEC)
+            if self.late_path(op).exists():
+                lost.append(f"late_input_unread:{self.late_path(op).name}")
         if lost:
             self.report("auto_handover_loss_suspected", op, "verifying", ",".join(lost))
         resumed_at = parse_iso(op.get("resumed_at")) or 0

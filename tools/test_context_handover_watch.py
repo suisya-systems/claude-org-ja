@@ -57,6 +57,23 @@ class TestRecord(unittest.TestCase):
         self.assertIsNone(record.role_for("/org/.worktrees/t1", root))
         self.assertIsNone(record.role_for("/elsewhere", root))
 
+    def test_resume_line_is_remembered_for_the_watcher(self):
+        rec = {"turn_open": 3, "turn_closed": 3}
+        for prompt in ("/secretary-resume auto op=20261026T010203Z",
+                       "<command-name>/secretary-resume</command-name>\n"
+                       "<command-args>auto op=20261026T010203Z</command-args>"):
+            out = record.update(rec, {"hook_event_name": "UserPromptSubmit", "prompt": prompt}, {}, "T")
+            self.assertEqual((out["resume_op"], out["resume_turn"]), ("20261026T010203Z", 4))
+        out = record.update(rec, {"hook_event_name": "UserPromptSubmit",
+                                  "prompt": "<channel>worker done</channel>"}, {}, "T")
+        self.assertNotIn("resume_op", out)
+
+    def test_compaction_from_another_session_is_dropped(self):
+        rec = {"session_id": "s1", "pane": {"backend": "renga", "id": "3"}}
+        compact = {"hook_event_name": "SessionStart", "session_id": "s9", "source": "compact"}
+        self.assertTrue(record.foreign(rec, compact, {"RENGA_PANE_ID": "3"}))
+        self.assertFalse(record.foreign(rec, {**compact, "session_id": "s1"}, {"RENGA_PANE_ID": "3"}))
+
     def test_events_from_another_session_are_dropped(self):
         rec = {"session_id": "s1", "pane": {"backend": "renga", "id": "3"},
                "turn_open": 2, "turn_closed": 2}
@@ -240,7 +257,9 @@ class _WatcherCase(unittest.TestCase):
         def sleep(sec):
             self.sim.now += sec
 
+        self.pane_name = self.role
         self.w = watch.Watcher(self.org, backend_factory=lambda pane: FakeBackend(self.sim),
+                               pane_namer=lambda pane: self.pane_name,
                                clock=lambda: self.sim.now, sleep=sleep)
 
     def tearDown(self):
@@ -569,7 +588,9 @@ class TestSecretary(_WatcherCase):
         def slow(text):
             if text.startswith("/secretary-resume"):
                 cur = self.sim.rec()
-                self.sim.rec(turn_open=cur["turn_closed"] + 1)  # the turn started, still running
+                # the turn started (the hook saw this op's resume line), still running
+                self.sim.rec(turn_open=cur["turn_closed"] + 1, resume_op=text.split("op=")[1],
+                             resume_turn=cur["turn_closed"] + 1)
                 state["resume_at"] = self.sim.now
                 state["text"] = text
             else:
@@ -603,6 +624,58 @@ class TestSecretary(_WatcherCase):
         self.assertTrue(self.tick().startswith("ran:done"))
         self.assertIn("late_input_unread", self.events("auto_handover_loss_suspected")[0]["reason"])
 
+    def test_pane_not_named_secretary_is_never_typed_into(self):
+        self.pane_name = None
+        self.assertEqual(self.tick(), "pane_name_unknown")
+        self.pane_name = "my-own-claude"
+        self.assertEqual(self.tick(), "pane_not_secretary=my-own-claude")
+        self.assertEqual(self.sim.enters, [])
+        self.assertFalse(self.org.op_path.exists())
+
+    def test_person_paste_or_image_during_handover_stops_before_clear(self):
+        for entry in (
+                _line(type="user", origin={"kind": "human"}, message={"content": [
+                    {"type": "image", "source": {}}]}),
+                _line(type="queue-operation", operation="enqueue"),
+                _line(type="user", origin={"kind": "human"},
+                      message={"content": "\n\n<pasted_content id=x>log</pasted_content>"})):
+            with self.subTest(entry=entry):
+                self.assertEqual(watch.person_inputs([entry], "OP"), watch.person_inputs([entry], "OP")[:1])
+                self.assertEqual(len(watch.person_inputs([entry], "OP")), 1)
+        machine = [_line(type="queue-operation", operation="enqueue",
+                         content='<channel source="renga-peers">x</channel>'),
+                   _line(type="queue-operation", operation="enqueue",
+                         content="<task-notification>done</task-notification>")]
+        self.assertEqual(watch.person_inputs(machine, "OP"), [])
+
+    def test_channel_turn_after_clear_is_not_taken_for_the_resume(self):
+        orig = self.sim.on_submit
+
+        def channel_turn(text):
+            orig(text)
+            if text == "/clear":  # a worker report opens a turn before the resume is typed
+                cur = self.sim.rec()
+                self.sim.rec(turn_open=cur["turn_closed"] + 1)
+
+        self.sim.on_submit = channel_turn
+        self.assertTrue(self.tick().startswith("ran:done"))
+        self.assertEqual(len([e for e in self.sim.enters if e.startswith("/secretary-resume")]), 1)
+
+    def test_task_id_mentioned_only_inside_another_word_does_not_count(self):
+        orig = self.sim.on_submit
+        self.sim.on_submit = lambda t: (orig(t), t.startswith("/secretary-handover") and
+                                        self.org.handover_path("secretary").write_text(
+                                            "hot1 worker-t1x"))
+        self.tick()
+        self.assertEqual(self.op()["reason"], "handover_missing_task_ids: t1")
+
+    def test_worker_prefixed_and_japanese_mentions_count(self):
+        orig = self.sim.on_submit
+        self.sim.on_submit = lambda t: (orig(t), t.startswith("/secretary-handover") and
+                                        self.org.handover_path("secretary").write_text(
+                                            "worker-t1を確認中"))
+        self.assertTrue(self.tick().startswith("ran:done"))
+
     def test_task_id_that_is_only_a_prefix_does_not_count(self):
         conn = connect(self.org.db_path)
         conn.execute("INSERT INTO runs (task_id, project_id, pattern, title, status) "
@@ -619,7 +692,9 @@ class TestSecretary(_WatcherCase):
     def test_one_role_at_a_time(self):
         other = watch.Org(self.org.state_dir)
         disp = dict(json.loads(self.org.record_path("secretary").read_text()))
-        other.write_json(self.org.record_path("dispatcher"), {**disp, "session_crons": []})
+        other.write_json(self.org.record_path("dispatcher"), {
+            **disp, "session_crons": [], "pane": {"backend": "renga", "id": "4"}})
+        self.w.pane_namer = lambda pane: "dispatcher" if pane["id"] == "4" else "secretary"
         self.assertTrue(self.w.tick().startswith("ran:"))
         handovers = [e for e in self.sim.enters if e.endswith(f"op={self.op()['op']}")
                      and "-handover" in e]

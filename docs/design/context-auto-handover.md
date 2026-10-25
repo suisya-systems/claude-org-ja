@@ -83,7 +83,7 @@ Stop フックを付けた Claude Code のペインで確かめた。
 - 閾値は記録フックが環境変数から決める。`CLAUDE_ORG_HANDOVER_THRESHOLD_TOKENS` があればその値、無ければ `CLAUDE_CODE_AUTO_COMPACT_WINDOW` の 60%。どちらも無ければ window の大きさを仮定せず `threshold_tokens` を記録しない（ディスパッチャーの雛形は 600000 = window 1M の 60% を `env` に置く）。閾値が無い記録を見た watcher は引き継ぎをせず、理由 `threshold_unset` を events（`auto_handover_skipped`）に 1 行書き、窓口へ 1 回だけ知らせる（同じセッションでは再通知しない）。役割の settings の `env` に書けばフックに渡る。
 - 実装は [`tools/context_record.py`](../../tools/context_record.py)（フックは [`.hooks/context-record.sh`](../../.hooks/context-record.sh)）。
 
-- 役割はフックの `cwd` で決める（`.dispatcher/` 配下ならディスパッチャー、org 直下なら窓口、それ以外は記録しない）。リポジトリ直下の `.claude/settings.local.json` はディスパッチャーのセッションにも読まれる（[`.claude/skills/org-setup/SKILL.md`](../../.claude/skills/org-setup/SKILL.md) 30〜32 行）ので、役割で書き分けないと記録が混ざる。`.curator/` で起動するキュレーターも同じ settings を読むので、org 直下以外を窓口とみなすと、キュレーターの記録で窓口の記録が上書きされ、watcher がキュレーターのペインへ打鍵しうる。同じコマンドのフックが複数の settings にあっても 1 回だけ走る（https://code.claude.com/docs/en/hooks 「Hook handler fields」）。`cwd` はセッションのシェルに付いて動くので、記録のセッションと違う `session_id` の出来事は捨て、`source=clear` の `SessionStart` は記録済みのペインからのものだけ受ける（窓口のシェルが `.dispatcher/` に移っていても、ディスパッチャーの記録を書き換えない）。`idle_prompt` は `UserPromptSubmit` と同時に走りうるので、別ファイル（`<role>.idle.json`）に書く。
+- 役割はフックの `cwd` で決める（`.dispatcher/` 配下ならディスパッチャー、org 直下なら窓口、それ以外は記録しない）。リポジトリ直下の `.claude/settings.local.json` はディスパッチャーのセッションにも読まれる（[`.claude/skills/org-setup/SKILL.md`](../../.claude/skills/org-setup/SKILL.md) 30〜32 行）ので、役割で書き分けないと記録が混ざる。`.curator/` で起動するキュレーターも同じ settings を読むので、org 直下以外を窓口とみなすと、キュレーターの記録で窓口の記録が上書きされ、watcher がキュレーターのペインへ打鍵しうる。同じコマンドのフックが複数の settings にあっても 1 回だけ走る（https://code.claude.com/docs/en/hooks 「Hook handler fields」）。`cwd` はセッションのシェルに付いて動くので、記録のセッションと違う `session_id` の出来事は捨て、`source=clear` の `SessionStart` は記録済みのペインからのものだけ受ける（窓口のシェルが `.dispatcher/` に移っていても、ディスパッチャーの記録を書き換えない）。`idle_prompt` は `UserPromptSubmit` と同時に走りうるので、別ファイル（`<role>.idle.json`）に書く。`source=compact` の `SessionStart` は同じセッションのものだけ受ける。それでも org 直下で起動した別の Claude（人の作業用ペインなど）は記録を奪えるので、renga では watcher が打つ前に毎回 `renga inspect` の `pane.name` が役割名（`secretary` / `dispatcher`）であることを確かめ、違えば打たない。`UserPromptSubmit` の本文が watcher の復帰の行なら、その `op` とターン番号も記録する（§4.5）。
 - フックの登録は他のフックと同じく [`tools/org_extension_schema.json`](../../tools/org_extension_schema.json) の `roles.<role>.required_hooks` に足す。
 - watcher は、`session_id` とペイン id が最後の `SessionStart` と一致しない記録、`turn_open != turn_closed` の記録、10 分以上前の `Stop` しか無い記録を「不明」として扱い、切り替えない。フックが失敗して更新が止まった場合も、古い `quiet` が残って切り替わることはない。
 - ペイン id を環境変数から取れることは実装の最初に確かめた（§2.1 の「実機で確かめたこと」）。
@@ -132,7 +132,7 @@ Stop フックを付けた Claude Code のペインで確かめた。
 
 ディスパッチャーのペインは人が打たない前提なので 2 と 3 だけを使う。
 
-1 は引き継ぎを始めるときだけ見る。始める前に入力欄が空でなければ、失敗にせず次の周期まで待つ（人が戻ってきただけなので知らせない）。`/clear` と復帰の打鍵の前は 2 と 3 だけで、人が入力欄に文字を残していれば打たずに止まる。引き継ぎのターンの間に人が入力を送っていた（旧会話記録の `p0` 以降に `<` で始まらない入力がある）ときも `/clear` を打たずに止まる。人がいま読んでいる返事を消し、その指示を新しいセッションが拾い直してもう一度実行してしまうため。`idle_prompt` は端末の前に人がいないように見えるときだけ出る（hooks ページ Notification の timing の注記）ので、人が画面の前にいる間は窓口は切り替わらない。また `Stop` が 10 分より古い記録は「不明」（§3.1）なので、窓口が切り替わるのは応答の約 1 分後から 10 分後までの間になる。
+1 は引き継ぎを始めるときだけ見る。始める前に入力欄が空でなければ、失敗にせず次の周期まで待つ（人が戻ってきただけなので知らせない）。`/clear` と復帰の打鍵の前は 2 と 3 だけで、人が入力欄に文字を残していれば打たずに止まる。引き継ぎのターンの間に人が入力を送っていた（旧会話記録の `p0` 以降に、チャネル・背景タスク完了などの機械の入力の形でない入力がある。画像や貼り付けも人の入力に数える）ときも `/clear` を打たずに止まる。人がいま読んでいる返事を消し、その指示を新しいセッションが拾い直してもう一度実行してしまうため。`idle_prompt` は端末の前に人がいないように見えるときだけ出る（hooks ページ Notification の timing の注記）ので、人が画面の前にいる間は窓口は切り替わらない。また `Stop` が 10 分より古い記録は「不明」（§3.1）なので、窓口が切り替わるのは応答の約 1 分後から 10 分後までの間になる。
 
 残るもの: 3 の読み返しと Enter の間（数百ミリ秒）に人が打った文字は、自分の文字列と一緒に送られる。打鍵の排他は端末側に無いので、この隙間は消せない。自動引き継ぎは人が離れている時間のためのもので、人が画面の前にいるなら 1 の条件でほぼ外れる。
 
@@ -171,7 +171,7 @@ broker の「配送済み」はハーネスが通知を受け付けたという�
 
 ### 4.5 再送と再起動
 
-- watcher は復帰の行を、新しいセッションがまだターンを始めていないときだけ打ち直す。始まっていれば最大 10 分そのターンを待ち、完了の event が無いまま閉じたら失敗にする（窓口の復帰はブリーフィングが長く、60 秒で打ち直すと動いているペインに 2 本目を積むため）。窓口の復帰のスキルは完了の event をブリーフィングの直後、拾い直した入力の処理より前に書き、拾い直しのファイルは読む前に rename する。`/clear` 済みの段で失敗したときの案内は `/R-resume auto op=OP` にする（`op` が無いと拾い直しのファイルが読まれない）。
+- watcher は復帰の行を、新しいセッションがまだその行でターンを始めていないとき（記録の復帰の `op` が一致しない。チャネルのメッセージで始まったターンは数えない）だけ打ち直す。始まっていれば最大 10 分そのターンを待ち、完了の event が無いまま閉じたら失敗にする（窓口の復帰はブリーフィングが長く、60 秒で打ち直すと動いているペインに 2 本目を積むため）。窓口の復帰のスキルは完了の event をブリーフィングの直後、拾い直した入力の処理より前に書き、拾い直しのファイルは読む前に rename する。`/clear` 済みの段で失敗したときの案内は `/R-resume auto op=OP` にする（`op` が無いと拾い直しのファイルが読まれない）。
 - 復帰のスキルは `op=OP` が同じなら 2 回目以降は初期化をやり直さず、同じ完了の event を書き直すだけにする。ディスパッチャーの `already_consumed` の分岐は何も送らない作りだったので、`auto op=OP` のときは完了の event を書くように足した（[`.claude/skills/dispatcher-resume/SKILL.md`](../../.claude/skills/dispatcher-resume/SKILL.md)「自動引き継ぎ」節）。
 - watcher は `/clear` を打つ直前に段を `clearing` と書く。再起動したときは、段が `clearing` 以前なら、`.state/context/R.json` の現在の `session_id` を `handover-op.json` の旧 `session_id` と比べる。同じなら `/clear` はまだ効いていないので最初からやり直す。違っていて `source=clear` なら `/clear` は効いているので §4.3 の 6 から続ける（空のセッションで引き継ぎをやり直して、復帰に要る引き継ぎファイルを上書きしないため）。どちらとも判断できなければ失敗として知らせる（人が `/R-resume` を打てば戻れる状態になっている）。
 - `/clear` が効いた後の段（入力の拾い直し・復帰・突き合わせ）から続けるのは、現在の `session_id` とペイン id が `/clear` の直後に記録したものと同じときだけにする。`/org-suspend` → `/org-start` を挟むと `handover-op.json` は残ったままペインが作り直され、記録した古いペイン id が別のペインに使い回されていることがあるため。違えば打たずに失敗として知らせる。

@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -56,6 +57,8 @@ if str(REPO_ROOT) not in sys.path:
 THRESHOLD_ENV = "CLAUDE_ORG_HANDOVER_THRESHOLD_TOKENS"
 WINDOW_ENV = "CLAUDE_CODE_AUTO_COMPACT_WINDOW"
 THRESHOLD_RATIO = 0.6
+# The watcher's resume line, typed or expanded into <command-name>/<command-args>.
+RESUME_RE = re.compile(r"/(?:secretary|dispatcher)-resume\b.*?\bop=([A-Za-z0-9_-]+)", re.S)
 
 
 def now_iso() -> str:
@@ -101,6 +104,8 @@ def threshold_from_env(env) -> "int | None":
 def foreign(rec: dict, payload: dict, env) -> bool:
     """The event comes from another session than the one this record follows."""
     if payload.get("hook_event_name") == "SessionStart":
+        if payload.get("source") == "compact":  # a compaction keeps the session
+            return bool(rec.get("session_id")) and payload.get("session_id") != rec.get("session_id")
         return (payload.get("source") == "clear" and bool(rec.get("pane"))
                 and pane_from_env(env) != rec.get("pane"))
     return bool(rec.get("session_id")) and payload.get("session_id") != rec.get("session_id")
@@ -129,6 +134,11 @@ def update(rec: dict, payload: dict, env, now: str) -> dict:
     elif event == "UserPromptSubmit":
         rec["turn_open"] = rec["turn_closed"] + 1
         rec["prompt_at"] = now
+        match = RESUME_RE.search(payload.get("prompt") or "")
+        if match:
+            # Lets the watcher tell its resume turn from a channel turn (§4.5).
+            rec["resume_op"] = match.group(1)
+            rec["resume_turn"] = rec["turn_open"]
     elif event == "Stop":
         rec["turn_closed"] += 1
         rec["turn_open"] = rec["turn_closed"]
