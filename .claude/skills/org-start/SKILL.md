@@ -374,7 +374,13 @@ Block A の spawn 成功後、dispatcher ペインで Claude が boot してい�
 
 ### Block E: 文脈の自動引き継ぎ watcher の常駐
 
-Block D の合流が終わった後に 1 回実行する（Block D-1 の画面判定の最中に走らせない）。ディスパッチャーの文脈が閾値を超え、ターンの区切りで静かなときに、`/dispatcher-handover auto op=<OP>` → `/clear` → `/dispatcher-resume auto op=<OP>` を外から打つ決定的プロセス（LLM を含まない）をペインなしの常駐プロセスとして起動する。設計は [`docs/design/context-auto-handover.md`](../../../docs/design/context-auto-handover.md)、本体は [`tools/context_handover_watch.py`](../../../tools/context_handover_watch.py)。測る材料はディスパッチャーの settings に置いた記録フック（`context-record.sh`、[`.claude/skills/org-setup/references/permissions.md`](../org-setup/references/permissions.md) のディスパッチャー節）が書く `.state/context/dispatcher.json` で、これが無い間 watcher は何もしない。
+Block D の合流が終わった後に 1 回実行する（Block D-1 の画面判定の最中に走らせない）。ディスパッチャーと窓口の文脈が閾値を超え、ターンの区切りで静かなときに、`/<役割>-handover auto op=<OP>` → `/clear` → `/<役割>-resume auto op=<OP>` を外から打つ決定的プロセス（LLM を含まない）をペインなしの常駐プロセスとして起動する。設計は [`docs/design/context-auto-handover.md`](../../../docs/design/context-auto-handover.md)、本体は [`tools/context_handover_watch.py`](../../../tools/context_handover_watch.py)。測る材料は各役割の settings に置いた記録フック（`context-record.sh`、[`.claude/skills/org-setup/references/permissions.md`](../org-setup/references/permissions.md) のディスパッチャー節・窓口節）が書く `.state/context/<役割>.json` で、これが無い間 watcher はその役割に何もしない。
+
+窓口が自動で引き継がれるのは次を全部満たすときだけで、満たさない間は窓口を飛ばしてディスパッチャーだけを見る:
+- transport が renga（broker の窓口は `/secretary-resume` が自分のペイン id を確定できないので対象外）
+- attention watcher が動いている（`.state/attention_pane.json` に記録されたペインが、renga でいまも `attention` という名前で在る。窓口の失敗は `notify_sent kind=awaiting_user` でしか離席中の人に届かないため）
+- 窓口の判断仰ぎの register に `resolved` でないものが無く、人へ承認を仰いでから 30 分経っていて、窓口に `/loop` の予約が無い
+- 応答の約 60 秒後に Claude Code が出す `idle_prompt` がその応答の後に来ている（人が打鍵していない）。打つ直前に入力欄が空であることも確かめ、人の文字が入っていれば打たずに止まる
 
 1. 窓口が **sandbox の外で**（ワーカーや sandbox 内の Bash からは常駐プロセスを残せない）次を実行する。ペインは作らない:
    ```bash
@@ -385,7 +391,7 @@ Block D の合流が終わった後に 1 回実行する（Block D-1 の画面�
    - 出力と終了コードで結果を見る: `DAEMON: started pid=... log=...`（exit 0）→ 稼働中、報告不要 / `自動引き継ぎ無効: ...`（exit 3）→ broker の terminal adapter が tmux でない、または Windows native（`--daemon` は POSIX のみ。停止経路が無いため）。起動完了報告に「文脈の自動引き継ぎ: 無効（<理由>）」と 1 行書く / `already running ...`（exit 3）→ 既に動いている（`/org-resume` での再実行など）。何もしない / `DAEMON: exited at start` または `did not register`（exit 1）→ ログを読み、起動完了報告に「文脈の自動引き継ぎ: watcher を起動できず（<理由>）」と 1 行書く。別の方法で代わりに回さない。自動引き継ぎが無いだけで、手動の `DISPATCHER_HANDOVER` 経路は使える
 2. **生存確認**: `python3 tools/context_handover_watch.py --status`。pid ファイルの pid と生きているプロセスの cmdline・cwd を照合し、`STATUS: running pid=...`（exit 0）か `STATUS: not running`（exit 1。残骸の pid ファイルがあれば `stale sidecar` と付く）を返す
 3. **停止経路**: watcher は起動時に `.state/context_handover_watch.json`（pid / cwd / cmdline）を書き、`/org-suspend` Phase 3.65 / `/org-down` が `python3 tools/context_handover_watch.py --stop` で照合して止める。ペインが無いので teardown では閉じず、この `--stop` が唯一の停止経路になる
-4. 引き継ぎに失敗すると watcher は `auto_handover_failed` を events に書き、窓口へ `DISPATCHER_AUTO_HANDOVER_FAILED: op=... stage=... reason=...` を送り、30 分は試さない。受けた窓口は人に伝える（`/clear` 済みの段で止まったときは、ディスパッチャーペインに `/dispatcher-resume` を打てば戻れる）。切り替えの前後で稼働中ワーカーや判断仰ぎが消えていれば `DISPATCHER_AUTO_HANDOVER_LOSS_SUSPECTED: ...` が届くので、これも人に伝える。ディスパッチャーからの `DISPATCHER_AUTO_HANDOVER: 自動引き継ぎ中 ...` は知らせだけで、窓口は打鍵しない。
+4. 引き継ぎに失敗すると watcher は `auto_handover_failed` を events に書き、窓口へ `DISPATCHER_AUTO_HANDOVER_FAILED: op=... stage=... reason=...`（窓口自身の失敗は `SECRETARY_AUTO_HANDOVER_FAILED: ...`。このときは `notify_sent kind=awaiting_user gate=auto_handover_failed` も書くので attention watcher が鳴る）を送り、その役割は 30 分は試さない。`/clear` 済みの段で止まったときは、そのペインに `/<役割>-resume auto op=<OP>`（FAILED 行の op）を打てば戻れる（`op` を付けないと `/clear` の前後に届いた入力のファイルが読まれない）。受けた窓口は人に伝える。切り替えの前後で稼働中ワーカーや判断仰ぎが消えていれば `DISPATCHER_AUTO_HANDOVER_LOSS_SUSPECTED: ...` が届くので、これも人に伝える。ディスパッチャーからの `DISPATCHER_AUTO_HANDOVER: 自動引き継ぎ中 ...` は知らせだけで、窓口は打鍵しない。
 
 > **sandbox 注記**: `--daemon` は窓口が sandbox の外で実行する（renga CLI / tmux のソケットに届き、常駐プロセスを残せるのは外だけ）。起こされた watcher は窓口のシェルから切り離されているので、窓口を `/clear` しても止まらない。
 

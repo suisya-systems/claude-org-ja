@@ -6,6 +6,7 @@ description: >
   窓口を新しいセッションで復帰させる。/clear 直後の最初のターンで使う。
   「窓口を復帰」「resume」「引き継ぎから再開」と言われたときに使う。
   /org-start ではない（ディスパッチャーは既に生きている前提）。
+  context-handover watcher が `/secretary-resume auto op=<OP>` を打鍵したときも使う。
 effort: low
 allowed-tools:
   - Read
@@ -13,6 +14,7 @@ allowed-tools:
   - Bash(python3 -c:*)
   - Bash(bash tools/journal_append.sh:*)
   - Bash(python3 tools/capability_gate.py:*)
+  - Bash(mv .state/context/secretary-late-input-*)
   - mcp__renga-peers__set_summary
   - mcp__renga-peers__list_panes
   - mcp__renga-peers__set_pane_identity
@@ -34,6 +36,34 @@ allowed-tools:
 > - state DB (`.state/state.db`) はそのまま使う。ペイン identity の再記録も不要。
 > - handover ファイルが存在しないか古すぎる場合は、/org-start もしくは
 >   /org-resume の使用を案内する。
+
+## 自動引き継ぎ（`auto op=<OP>` 付きで呼ばれたとき）
+
+context-handover watcher（[`tools/context_handover_watch.py`](../../../tools/context_handover_watch.py)）が
+`/secretary-handover auto op=<OP>` → `/clear` → `/secretary-resume auto op=<OP>` を打鍵する
+（設計 [`docs/design/context-auto-handover.md`](../../../docs/design/context-auto-handover.md) §4.3）。
+watcher が窓口を自動で引き継ぐのは renga のときだけなので、Step 0 の caller pane id は `RENGA_PANE_ID` で確定できる。
+手順は通常の resume と同じで、違いは次の 3 つだけ:
+
+- **最初に同じ op の復帰が済んでいないか確かめる**（watcher は完了の event が 60 秒以内に見えないと 1 回だけ
+  打ち直す。設計 §4.5）:
+  ```bash
+  python3 -c "
+  import sqlite3, sys
+  c = sqlite3.connect('file:.state/state.db?mode=ro', uri=True)
+  n = c.execute(\"SELECT count(*) FROM events WHERE kind='secretary_resumed' AND json_extract(payload_json,'$.op')=?\", (sys.argv[1],)).fetchone()[0]
+  print('already_resumed' if n else 'first')
+  " <OP>
+  ```
+  `already_resumed` なら Step 0〜5 をやり直さない。ただし `.state/context/secretary-late-input-<OP>.md`
+  （`.consumed.md` でない方）が残っていれば、前の実行が Step 4.5 の前で止まっているので Step 4.5 だけ行う。
+  そのうえで末尾「イベント記録」の行を `note=already_resumed` で 1 行だけ書いて終える。
+- 完了の event（末尾「イベント記録」）を **Step 4 のブリーフィングの直後、Step 4.5 の前**に `op=<OP>` 付きで書く。
+  watcher はこの行で復帰の完了を判定する。Step 4.5 の処理（ワーカーへの ack や判断仰ぎ）は長くなりうるので、
+  その後に書くと watcher が復帰の失敗と取り違える。
+- その後に、`/clear` の前後に届いて会話から消えた入力を処理する（Step 4.5）。
+
+Step 4 のブリーフィングは自動のときも出す（人が画面に戻ったときに読む）。
 
 {{> dual-system-header-short }}
 
@@ -145,6 +175,23 @@ handover の情報と state.db の現状を統合した上で、以下の構造�
 ご指示をお願いします。
 ```
 
+## Step 4.5（自動引き継ぎのときだけ）: `/clear` の前後に届いた入力を処理する
+
+`auto op=<OP>` で呼ばれ、`.state/context/secretary-late-input-<OP>.md` があるときだけ行う。
+このファイルは watcher が旧会話記録から抜き出したもので、引き継ぎを始める直前から `/clear` の後
+までに届いた入力（ワーカー・ディスパッチャーからのチャネルのメッセージ・人の入力）が届いた順に並んでいる。
+
+1. **先に** rename する（再送や 2 回目の実行で同じ op のファイルを 2 回処理しない）:
+   ```bash
+   mv .state/context/secretary-late-input-<OP>.md .state/context/secretary-late-input-<OP>.consumed.md
+   ```
+2. rename 後の `.consumed.md` を Read で読み、各入力をいま届いたものとして処理する（ワーカーからの報告なら
+   通常どおり ack を返し、判断仰ぎなら `/org-escalation` に入る）。handover ファイルに処理済みと書かれている
+   入力は飛ばしてよい（拾い直しは欠落より重複を許す側に倒してあるので、同じ入力が両方に載ることがある）。
+   人が打った入力は通常ここには来ない（watcher は引き継ぎの間に人の入力があると `/clear` を打たずに止まる）。
+
+ファイルが無ければ何もしない（拾い直す入力が無かった）。別の op のファイルは読まない。
+
 ## Step 5: handover ファイルを保持する
 
 - 削除しない（次回トラブル時の参照用に残す）
@@ -155,6 +202,9 @@ handover の情報と state.db の現状を統合した上で、以下の構造�
 ```bash
 bash tools/journal_append.sh secretary_resumed handover_age_hours=<数値>
 ```
+
+自動引き継ぎ（`auto op=<OP>`）のときは同じ行に `op=<OP>` を足し、Step 4 の直後（Step 4.5 の前）に書く。
+同じ op の 2 回目（`already_resumed`）は `op=<OP> note=already_resumed` で同じ形の行を書く。
 
 失敗したら握りつぶさず、ブリーフィングにエラーを 1 行添える。
 
