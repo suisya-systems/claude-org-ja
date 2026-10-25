@@ -57,13 +57,36 @@ class TestRecord(unittest.TestCase):
         self.assertIsNone(record.role_for("/org/.worktrees/t1", root))
         self.assertIsNone(record.role_for("/elsewhere", root))
 
-    def test_idle_prompt_is_recorded_other_notifications_are_not(self):
-        rec = record.update({}, {"hook_event_name": "Notification", "session_id": "s",
-                                 "notification_type": "permission_prompt"}, {}, "T")
-        self.assertNotIn("idle_at", rec)
-        rec = record.update(rec, {"hook_event_name": "Notification", "session_id": "s",
-                                  "notification_type": "idle_prompt"}, {}, "T2")
-        self.assertEqual((rec["idle_at"], rec["idle_session_id"]), ("T2", "s"))
+    def test_events_from_another_session_are_dropped(self):
+        rec = {"session_id": "s1", "pane": {"backend": "renga", "id": "3"},
+               "turn_open": 2, "turn_closed": 2}
+        # A secretary whose shell sits in .dispatcher/ must not touch dispatcher.json.
+        self.assertTrue(record.foreign(rec, {"hook_event_name": "Stop", "session_id": "s9"}, {}))
+        self.assertFalse(record.foreign(rec, {"hook_event_name": "Stop", "session_id": "s1"}, {}))
+        clear = {"hook_event_name": "SessionStart", "session_id": "s2", "source": "clear"}
+        self.assertTrue(record.foreign(rec, clear, {"RENGA_PANE_ID": "8"}))
+        self.assertFalse(record.foreign(rec, clear, {"RENGA_PANE_ID": "3"}))
+        start = {"hook_event_name": "SessionStart", "session_id": "s2", "source": "startup"}
+        self.assertFalse(record.foreign(rec, start, {"RENGA_PANE_ID": "8"}))
+
+    def test_idle_prompt_goes_to_its_own_file(self):
+        import io
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as td:
+            ctx = Path(td)
+            root = str(record.REPO_ROOT)
+            for kind in ("permission_prompt", "idle_prompt"):
+                payload = {"hook_event_name": "Notification", "session_id": "s", "cwd": root,
+                           "notification_type": kind}
+                with mock.patch.object(record, "context_dir", lambda: ctx), \
+                        mock.patch("sys.stdin", io.StringIO(json.dumps(payload))):
+                    record.main()
+                if kind == "permission_prompt":
+                    self.assertFalse((ctx / "secretary.idle.json").exists())
+            idle = json.loads((ctx / "secretary.idle.json").read_text())
+            self.assertEqual(idle["idle_session_id"], "s")
+            self.assertFalse((ctx / "secretary.json").exists())
 
 
 def _line(**kw) -> str:
@@ -183,6 +206,9 @@ class Sim:
         elif text.startswith(f"/{self.role}-resume"):
             op = text.split("op=")[1]
             self.org.append_event(f"{self.role}_resumed", {"op": op, "loop": self.resume_loop})
+            late = self.org.context_dir / f"{self.role}-late-input-{op}.md"
+            if late.exists():
+                late.rename(late.with_name(late.stem + ".consumed.md"))
             if self.drop_task_on_resume:
                 conn = connect(self.org.db_path)
                 conn.execute("DELETE FROM runs WHERE task_id = ?", (self.drop_task_on_resume,))
@@ -246,7 +272,7 @@ class TestWatcher(_WatcherCase):
         op = self.op()["op"]
         self.assertEqual(self.sim.enters, [f"/dispatcher-handover auto op={op}", "/clear",
                                            f"/dispatcher-resume auto op={op}"])
-        late = self.org.context_dir / f"dispatcher-late-input-{op}.md"
+        late = self.org.context_dir / f"dispatcher-late-input-{op}.consumed.md"
         self.assertIn("late report", late.read_text())
         self.assertEqual(len(self.events("auto_handover_done")), 1)
         self.assertEqual(self.notes, [])
@@ -427,7 +453,7 @@ class TestSecretary(_WatcherCase):
         self.assertEqual(self.op()["role"], "secretary")
         self.assertEqual(self.sim.enters, [f"/secretary-handover auto op={op}", "/clear",
                                            f"/secretary-resume auto op={op}"])
-        late = self.org.context_dir / f"secretary-late-input-{op}.md"
+        late = self.org.context_dir / f"secretary-late-input-{op}.consumed.md"
         self.assertIn("late report", late.read_text())
         self.assertEqual(self.events("auto_handover_done")[0]["role"], "secretary")
         self.assertEqual(self.notes, [])
@@ -477,10 +503,25 @@ class TestSecretary(_WatcherCase):
         self.sim.rec(session_crons=[{"prompt": "/loop 5m something"}])
         self.assertEqual(self.tick(), "session_crons")
 
-    def test_person_typing_stops_and_beeps(self):
+    def test_person_typing_before_start_only_waits(self):
         self.sim.composer = "half-typed by a person"
-        self.assertEqual(self.tick(), "ran:failed")
+        self.assertEqual(self.tick(), "composer_not_empty")
         self.assertEqual(self.sim.enters, [])
+        self.assertEqual(self.sim.composer, "half-typed by a person")
+        self.assertEqual(self.notes, [])
+        self.assertFalse(self.org.op_path.exists())
+
+    def test_person_typing_before_clear_stops_and_beeps(self):
+        orig = self.sim.on_submit
+
+        def types(text):
+            orig(text)
+            if text.startswith("/secretary-handover"):
+                self.sim.composer = "half-typed by a person"
+
+        self.sim.on_submit = types
+        self.assertEqual(self.tick(), "ran:failed")
+        self.assertNotIn("/clear", self.sim.enters)
         self.assertEqual(self.sim.composer, "half-typed by a person")
         self.assertTrue(self.notes[0].startswith("SECRETARY_AUTO_HANDOVER_FAILED"))
         beep = [e for e in self.events("notify_sent") if e.get("gate") == "auto_handover_failed"]
@@ -499,7 +540,7 @@ class TestSecretary(_WatcherCase):
         self.assertEqual(self.op()["reason"], "not_quiet_before_clear: awaiting_user")
         self.assertNotIn("/clear", self.sim.enters)
 
-    def test_person_typing_during_handover_turn_is_carried_over(self):
+    def test_person_writing_during_handover_turn_stops_before_clear(self):
         orig = self.sim.on_submit
 
         def human(text):
@@ -510,9 +551,70 @@ class TestSecretary(_WatcherCase):
                         "type": "queued_command", "prompt": "PR 出していいよ"}) + "\n")
 
         self.sim.on_submit = human
+        self.assertEqual(self.tick(), "ran:failed")
+        self.assertEqual(self.op()["reason"], "person_input_during_handover")
+        self.assertNotIn("/clear", self.sim.enters)
+
+    def test_failure_after_clear_names_the_op_in_the_hint(self):
+        orig = self.sim.on_submit
+        self.sim.on_submit = lambda t: None if t.startswith("/secretary-resume") else orig(t)
+        self.tick()
+        op = self.op()["op"]
+        self.assertIn(f"/secretary-resume auto op={op}", self.notes[-1])
+
+    def test_slow_resume_is_waited_for_not_typed_again(self):
+        orig = self.sim.on_submit
+        state = {"resume_at": None}
+
+        def slow(text):
+            if text.startswith("/secretary-resume"):
+                cur = self.sim.rec()
+                self.sim.rec(turn_open=cur["turn_closed"] + 1)  # the turn started, still running
+                state["resume_at"] = self.sim.now
+                state["text"] = text
+            else:
+                orig(text)
+
+        self.sim.on_submit = slow
+        real_sleep = self.w.sleep
+
+        def sleep(sec):
+            real_sleep(sec)
+            if state["resume_at"] and self.sim.now - state["resume_at"] > 200:
+                state["resume_at"] = None
+                orig(state["text"])
+
+        self.w.sleep = sleep
         self.assertTrue(self.tick().startswith("ran:done"))
-        late = self.org.context_dir / f"secretary-late-input-{self.op()['op']}.md"
-        self.assertIn("PR 出していいよ", late.read_text())
+        self.assertEqual(len([e for e in self.sim.enters if e.startswith("/secretary-resume")]), 1)
+
+    def test_unread_late_input_is_reported(self):
+        orig = self.sim.on_submit
+
+        def keeps_late(text):
+            if text.startswith("/secretary-resume"):
+                op = text.split("op=")[1]
+                self.org.append_event("secretary_resumed", {"op": op})
+                self.sim.rec(stop_session_id="s2", stop_at=self.sim.iso(5))
+            else:
+                orig(text)
+
+        self.sim.on_submit = keeps_late
+        self.assertTrue(self.tick().startswith("ran:done"))
+        self.assertIn("late_input_unread", self.events("auto_handover_loss_suspected")[0]["reason"])
+
+    def test_task_id_that_is_only_a_prefix_does_not_count(self):
+        conn = connect(self.org.db_path)
+        conn.execute("INSERT INTO runs (task_id, project_id, pattern, title, status) "
+                     "VALUES ('t1-2', 1, 'B', 't1-2', 'in_use')")
+        conn.execute("UPDATE runs SET task_id = 'fix-ci' WHERE task_id = 't1'")
+        conn.commit()
+        conn.close()
+        orig = self.sim.on_submit
+        self.sim.on_submit = lambda t: (orig(t), t.startswith("/secretary-handover") and
+                                        self.org.handover_path("secretary").write_text("fix-ci-2 t1-2"))
+        self.tick()
+        self.assertEqual(self.op()["reason"], "handover_missing_task_ids: fix-ci")
 
     def test_one_role_at_a_time(self):
         other = watch.Org(self.org.state_dir)

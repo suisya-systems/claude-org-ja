@@ -19,6 +19,14 @@ else (the on-demand curator under ``.curator/``, a worker worktree that
 picks up the root settings) is not recorded. The repo-root settings are
 read by those sessions too, so without this their hooks would overwrite
 the secretary's record and the watcher would type into their pane.
+The cwd follows the session's shell, so a session whose shell moved into
+the other role's directory is held to its own record: an event whose
+``session_id`` is not the role record's session is dropped, and a
+``/clear`` (``SessionStart`` with ``source=clear``) is accepted only from
+the pane already recorded. ``idle_prompt`` goes to its own file
+(``<role>.idle.json``) because the Notification hook can run at the same
+moment as a ``UserPromptSubmit`` and a read-modify-write of the main
+record could undo the turn it opened.
 
 Turn accounting: ``UserPromptSubmit`` opens a turn (``turn_open =
 turn_closed + 1``) and ``Stop`` closes it (``turn_closed += 1``, then
@@ -90,6 +98,14 @@ def threshold_from_env(env) -> "int | None":
     return None
 
 
+def foreign(rec: dict, payload: dict, env) -> bool:
+    """The event comes from another session than the one this record follows."""
+    if payload.get("hook_event_name") == "SessionStart":
+        return (payload.get("source") == "clear" and bool(rec.get("pane"))
+                and pane_from_env(env) != rec.get("pane"))
+    return bool(rec.get("session_id")) and payload.get("session_id") != rec.get("session_id")
+
+
 def update(rec: dict, payload: dict, env, now: str) -> dict:
     """Return the record after applying one hook event (pure)."""
     rec = dict(rec)
@@ -120,10 +136,6 @@ def update(rec: dict, payload: dict, env, now: str) -> dict:
         rec["stop_at"] = now
         rec["background_tasks"] = payload.get("background_tasks") or []
         rec["session_crons"] = payload.get("session_crons") or []
-    elif event == "Notification" and payload.get("notification_type") == "idle_prompt":
-        # About 60 s after a response nobody typed into (§4.2 1).
-        rec["idle_at"] = now
-        rec["idle_session_id"] = payload.get("session_id")
     return rec
 
 
@@ -167,6 +179,12 @@ def main() -> int:
         if payload.get("hook_event_name") == "PreCompact":
             record_precompact(role, payload)
             return 0
+        if payload.get("hook_event_name") == "Notification":
+            if payload.get("notification_type") == "idle_prompt":
+                # About 60 s after a response nobody typed into (§4.2 1).
+                write_atomic(context_dir() / f"{role}.idle.json",
+                             {"idle_at": now_iso(), "idle_session_id": payload.get("session_id")})
+            return 0
         path = context_dir() / f"{role}.json"
         try:
             rec = json.loads(path.read_text(encoding="utf-8"))
@@ -174,6 +192,8 @@ def main() -> int:
                 rec = {}
         except (OSError, ValueError):
             rec = {}
+        if foreign(rec, payload, os.environ):
+            return 0
         write_atomic(path, update(rec, payload, os.environ, now_iso()))
     except Exception:  # noqa: BLE001 — advisory hook, never block the session
         pass

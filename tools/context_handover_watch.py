@@ -52,6 +52,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import signal
 import sys
 import time
@@ -77,7 +78,8 @@ AWAITING_NAME_WINDOW_SEC = 86400
 HANDOVER_TIMEOUT_SEC = 600    # §4.3 step 3
 CLEAR_TIMEOUT_SEC = 15        # §4.3 step 5
 LATE_SETTLE_SEC = 5           # §4.4: the old transcript is written asynchronously
-RESUME_TIMEOUT_SEC = 60       # §4.3 step 7
+RESUME_TIMEOUT_SEC = 60       # §4.3 step 7: the resume was not taken -> type it once more
+RESUME_RUNNING_SEC = 600      # a resume turn that was taken may run this long (secretary briefs)
 HEARTBEAT_TIMEOUT_SEC = 540   # §4.3 step 7: three /loop 3m cycles
 INSPECT_LINES = 40
 TAIL_BYTES = 4 * 1024 * 1024
@@ -227,6 +229,11 @@ def extract_late_inputs(lines: "list[str]", op: str, role: str = DISPATCHER) -> 
     return out
 
 
+def person_inputs(lines: "list[str]", op: str) -> "list[str]":
+    """Late inputs to the secretary that a person typed (not a ``<channel>`` push etc.)."""
+    return [t for t in extract_late_inputs(lines, op, SECRETARY) if not t.lstrip().startswith("<")]
+
+
 def render_late_inputs(op: str, inputs: "list[str]") -> str:
     parts = [f"# /clear の前後に届いた入力（op={op}）\n",
              "context-handover watcher が旧会話記録から抜き出した。届いた順。\n"]
@@ -279,7 +286,10 @@ class Org:
         tmp.replace(path)
 
     def record(self, role: str) -> dict:
-        return self.read_json(self.record_path(role), {})
+        """The role's record, with the ``idle_prompt`` time the hook keeps apart."""
+        rec = self.read_json(self.record_path(role), {})
+        rec.update(self.read_json(self.context_dir / f"{role}.idle.json", {}))
+        return rec
 
     def _query(self, sql: str, params=()) -> list:
         import sqlite3
@@ -495,10 +505,23 @@ class Watcher:
         else:
             if rec.get("session_crons"):
                 return False, "session_crons"  # §3.3 / §7: kept until decided otherwise
-            reason = self.secretary_hold() or not_idle_reason(rec)
+            reason = (self.secretary_hold() or not_idle_reason(rec)
+                      or self.composer_reason(rec.get("pane")))
             if reason:
                 return False, reason
         return True, f"tokens={tokens}"
+
+    def composer_reason(self, pane) -> "str | None":
+        """A person typing after idle_prompt is a reason to wait, not a failure (§4.2 2)."""
+        from tools.self_edit_approval import BackendFailure, _norm, extract_composer
+
+        try:
+            composer = extract_composer(self.backend_factory(pane).inspect(INSPECT_LINES))
+        except BackendFailure:
+            return "composer_unreadable"
+        if composer is None:
+            return "composer_unreadable"
+        return "composer_not_empty" if _norm(composer) else None
 
     def warn_threshold_unset(self, role: str, rec: dict) -> None:
         """Tell the secretary once per session that no threshold is configured."""
@@ -573,6 +596,11 @@ class Watcher:
             reason = self.secretary_hold()
             if reason:
                 raise HandoverFailed(f"not_quiet_before_clear: {reason}")
+            # A person came back and wrote while the handover ran: /clear would wipe
+            # the answer they are reading, and the new session would carry out their
+            # instruction a second time from the late-input file (§4.2, §4.4).
+            if person_inputs(self.read_old(op), op["op"]):
+                raise HandoverFailed("person_input_during_handover")
         self.type_line(op, "/clear")
         self.stage_clearing(op)
 
@@ -582,7 +610,9 @@ class Watcher:
             body = self.org.handover_path(role).read_text(encoding="utf-8")
         except OSError:
             raise HandoverFailed("handover_unreadable")
-        missing = [t for t in must_name(self.org, role, self.clock()) if t not in body]
+        # A task_id that is only the prefix of another named id does not count.
+        missing = [t for t in must_name(self.org, role, self.clock())
+                   if not re.search(re.escape(t) + r"(?![\w-])", body)]
         if missing:
             raise HandoverFailed(f"handover_missing_task_ids: {','.join(missing)}")
 
@@ -591,40 +621,64 @@ class Watcher:
         return (rec.get("source") == "clear" and bool(rec.get("session_id"))
                 and rec.get("session_id") != op["old_session_id"])
 
+    def late_path(self, op: dict) -> Path:
+        return self.org.context_dir / f"{op['role']}-late-input-{op['op']}.md"
+
     def stage_clearing(self, op: dict) -> None:
         if not self.wait_until(lambda: self.cleared(op), CLEAR_TIMEOUT_SEC):
             raise HandoverFailed("clear_not_observed")
         rec = self.org.record(op["role"])
         self.save(op, stage="cleared", new_session_id=rec.get("session_id"),
-                  cleared_at=rec.get("cleared_at") or now_iso(self.clock()))
+                  cleared_at=rec.get("cleared_at") or now_iso(self.clock()),
+                  c0=rec.get("turn_closed", 0))
         self.stage_cleared(op)
+
+    def read_old(self, op: dict) -> "list[str]":
+        """The old transcript from p0 on (§4.4)."""
+        try:
+            with open(op["old_transcript"], "rb") as fh:
+                fh.seek(op["p0"])
+                return fh.read().decode("utf-8", errors="replace").splitlines()
+        except OSError:
+            return []
 
     def stage_cleared(self, op: dict) -> None:
         role = op["role"]
         self.sleep(LATE_SETTLE_SEC)
-        late = self.org.context_dir / f"{role}-late-input-{op['op']}.md"
-        try:
-            with open(op["old_transcript"], "rb") as fh:
-                fh.seek(op["p0"])
-                lines = fh.read().decode("utf-8", errors="replace").splitlines()
-        except OSError:
-            lines = []
-        inputs = extract_late_inputs(lines, op["op"], role)
+        late = self.late_path(op)
+        inputs = extract_late_inputs(self.read_old(op), op["op"], role)
         if inputs and not late.exists() and not late.with_name(late.stem + ".consumed.md").exists():
             late.write_text(render_late_inputs(op["op"], inputs), encoding="utf-8")
         self.save(op, stage="resuming", late_inputs=len(inputs))
         self.stage_resuming(op)
 
+    def resume_taken(self, op: dict) -> bool:
+        """The new session started a turn after /clear (the resume line was received)."""
+        rec = self.org.record(op["role"])
+        c0 = op.get("c0")
+        return (c0 is not None and rec.get("session_id") == op.get("new_session_id")
+                and (rec.get("turn_open") != rec.get("turn_closed")
+                     or rec.get("turn_closed", 0) > c0))
+
     def stage_resuming(self, op: dict) -> None:
         role = op["role"]
-        for _attempt in range(2):  # one re-send; the skill is idempotent per op (§4.5)
-            if self.org.resumed_event(role, op["op"]) is None:
-                self.type_line(op, f"/{role}-resume auto op={op['op']}")
-            if self.wait_until(lambda: self.org.resumed_event(role, op["op"]) is not None,
-                               RESUME_TIMEOUT_SEC):
+        resumed = lambda: self.org.resumed_event(role, op["op"]) is not None  # noqa: E731
+        # Type again only when the first line was never taken (§4.5): a resume turn
+        # that is still running is waited for, so the pane does not get a second
+        # command queued behind it while a person may be reading the briefing.
+        for _attempt in range(2):
+            if resumed():
                 break
-        else:
+            if not self.resume_taken(op):
+                self.type_line(op, f"/{role}-resume auto op={op['op']}")
+            if self.wait_until(lambda: resumed() or self.resume_taken(op), RESUME_TIMEOUT_SEC):
+                break
+        if not self.wait_until(lambda: resumed() or (
+                self.resume_taken(op) and self.org.record(role).get("turn_open")
+                == self.org.record(role).get("turn_closed")), RESUME_RUNNING_SEC):
             raise HandoverFailed("resume_not_observed")
+        if not resumed():
+            raise HandoverFailed("resume_ended_without_event")
         event = self.org.resumed_event(role, op["op"]) or {}
         self.save(op, stage="verifying", resumed_at=now_iso(self.clock()), loop=event.get("loop"))
         self.stage_verifying(op)
@@ -637,6 +691,8 @@ class Watcher:
         now_decisions = self.org.decisions()
         lost += [f"decision:{d[0]}@{d[1]}" for d in snapshot.get("decisions", [])
                  if d not in now_decisions]
+        if op.get("late_inputs") and self.late_path(op).exists():
+            lost.append(f"late_input_unread:{self.late_path(op).name}")
         if lost:
             self.report("auto_handover_loss_suspected", op, "verifying", ",".join(lost))
         resumed_at = parse_iso(op.get("resumed_at")) or 0
@@ -679,7 +735,8 @@ class Watcher:
                 f"{label}_AUTO_HANDOVER_LOSS_SUSPECTED: op={payload['op']} {reason}")
         if kind == "auto_handover_failed" and stage in ("cleared", "resuming", "verifying"):
             where = "ディスパッチャーペイン" if role == DISPATCHER else "窓口ペイン"
-            line += f"（/clear 済み。{where}に /{role}-resume を打てば戻れます）"
+            # With op= the skill reads this op's late-input file and is idempotent per op.
+            line += f"（/clear 済み。{where}に /{role}-resume auto op={payload['op']} を打てば戻れます）"
         delivered = self.org.notify_secretary(line)
         print(f"[context-handover] {line} (secretary notified={delivered})", flush=True)
 
