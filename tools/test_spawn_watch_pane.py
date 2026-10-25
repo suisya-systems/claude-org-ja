@@ -151,6 +151,22 @@ class SpawnWatchPaneTests(unittest.TestCase):
             self.assertEqual(swp.run(123, "octo/repo", True, Path("unused.db")), 2)
         self.assertEqual(len(fake.spawns()), 1)
 
+    def test_unknown_spawn_outcome_is_not_retried(self) -> None:
+        fake = FakeRenga()
+        inner = fake.__call__
+
+        def call(tool: str, args: dict) -> "tuple[bool, str]":
+            if tool == "spawn_pane":
+                fake.calls.append((tool, args))
+                return False, ""  # timed out: the pane may exist
+            return inner(tool, args)
+
+        with mock.patch.dict(os.environ, {"RENGA_PANE_ID": "1"}), \
+             mock.patch.object(swp, "_call", call), \
+             mock.patch.object(swp, "_max_event_id", return_value=0):
+            self.assertEqual(swp.run(123, "octo/repo", True, Path("unused.db")), 2)
+        self.assertEqual(len(fake.spawns()), 1)
+
     def test_no_all_tab_list_stays_in_own_tab(self) -> None:
         fake = FakeRenga()
         inner = fake.__call__

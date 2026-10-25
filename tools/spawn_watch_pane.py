@@ -29,7 +29,8 @@ $RENGA_PANE_ID``); renga closes the tab with its last pane.
 
 Output: one ``SPAWN_WATCH: <status> ...`` line. Exit codes: 0 spawned in
 the watch tab / already running, 1 fell back to the secretary's tab,
-2 could not spawn at all, 3 not renga.
+2 no watcher could be confirmed (nothing spawned, or a spawn / close whose
+outcome is unknown - never followed by another spawn), 3 not renga.
 """
 from __future__ import annotations
 
@@ -57,6 +58,23 @@ _PANE_RE = re.compile(
 )
 _GEOM_RE = re.compile(r"x=(\d+) y=(\d+) width=(\d+) height=(\d+)")
 _SPAWNED_RE = re.compile(r"Spawned pane id=(\d+)")
+# A bracketed renga error code ("[split_refused] ...") is an explicit
+# refusal: nothing was created, so the next candidate may be tried.
+_REFUSED_RE = re.compile(r"\[[a-z_]+\]")
+
+
+class _Unresolved(Exception):
+    """An outcome that a further spawn could duplicate (stop, report)."""
+
+
+def _spawned_id(ok: bool, text: str) -> "int | None":
+    """New pane id, ``None`` on an explicit refusal; raises when unknown."""
+    m = _SPAWNED_RE.search(text)
+    if ok and m:
+        return int(m[1])
+    if not ok and _REFUSED_RE.search(text):
+        return None
+    raise _Unresolved(f"spawn outcome unknown ({text.strip() or 'no reply'})")
 
 
 def parse_pane_list(text: str) -> "list[dict]":
@@ -132,10 +150,9 @@ def _spawn(base: dict, candidates: "list[dict]", cross_tab: bool) -> "int | None
         args = dict(base, target=str(cand["target_id"]), direction=cand["direction"])
         if cross_tab:
             args["tab"] = {"pane_id": int(cand["target_id"])}
-        ok, text = _call("spawn_pane", args)
-        m = _SPAWNED_RE.search(text)
-        if ok and m:
-            return int(m[1])
+        new_id = _spawned_id(*_call("spawn_pane", args))
+        if new_id is not None:
+            return new_id
     return None
 
 
@@ -172,7 +189,7 @@ def wait_started(db: Path, pr: int, after_id: int,
         time.sleep(CONFIRM_POLL_SEC)
 
 
-class _CleanupFailed(Exception):
+class _CleanupFailed(_Unresolved):
     pass
 
 
@@ -189,10 +206,9 @@ def _spawn_in_watch_tab(pr: int, repo: str, merge_watch: bool, db: Path,
     if new_id is None:
         ok, text = _call("spawn_pane", dict(base, command=command,
                                             tab={"new": {"name": WATCH_TAB}}))
-        m = _SPAWNED_RE.search(text)
-        if not (ok and m):
-            return f"spawn in the {WATCH_TAB} tab failed ({text.strip() or 'no reply'})"
-        new_id = int(m[1])
+        new_id = _spawned_id(ok, text)
+        if new_id is None:
+            return f"spawn in the {WATCH_TAB} tab failed ({text.strip()})"
     delivered = wait_started(db, pr, after)
     if delivered:
         print(f"SPAWN_WATCH: spawned id={new_id} tab={WATCH_TAB} notify_to={sec_id}")
@@ -231,7 +247,7 @@ def run(pr: int, repo: str, merge_watch: bool, db: Path) -> int:
             return 0
         try:
             why = _spawn_in_watch_tab(pr, repo, merge_watch, db, base, sec_id, every)
-        except _CleanupFailed as exc:
+        except _Unresolved as exc:
             print(f"SPAWN_WATCH: failed - {exc}; not re-spawning")
             return 2
         if why is None:
@@ -247,8 +263,12 @@ def run(pr: int, repo: str, merge_watch: bool, db: Path) -> int:
     if running:
         print(f"SPAWN_WATCH: already-running id={running[0]['id']}")
         return 0
-    fallback = _spawn(dict(base, command=build_command(pr, repo, merge_watch, None, db)),
-                      _anchors(own), False)
+    try:
+        fallback = _spawn(dict(base, command=build_command(pr, repo, merge_watch, None, db)),
+                          _anchors(own), False)
+    except _Unresolved as exc:
+        print(f"SPAWN_WATCH: failed - {why}; then {exc}; not re-spawning")
+        return 2
     if fallback is None:
         print(f"SPAWN_WATCH: failed - {why}; splitting the secretary tab failed too")
         return 2

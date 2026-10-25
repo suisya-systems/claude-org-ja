@@ -138,6 +138,21 @@ class NotifyPeerTests(unittest.TestCase):
         with mock.patch.object(peer_notify.shutil, "which", return_value=None):
             self.assertFalse(peer_notify.notify_peer("secretary", "x"))
 
+    def test_tool_call_surfaces_jsonrpc_refusal_text(self) -> None:
+        def server(req: dict) -> Optional[dict]:
+            if req.get("method") == "initialize":
+                return _ok_init(req)
+            if req.get("method") == "tools/call":
+                return {"jsonrpc": "2.0", "id": req["id"], "error": {
+                    "code": -32603,
+                    "message": "renga refused spawn_pane: [split_refused] too small"}}
+            return None
+
+        with self._patch_popen(server):
+            ok, text = peer_notify.renga_tool_call("spawn_pane", {}, timeout=2.0)
+        self.assertFalse(ok)
+        self.assertIn("[split_refused]", text)
+
     def test_successful_delivery(self) -> None:
         def server(req: dict) -> Optional[dict]:
             if req.get("method") == "initialize":

@@ -342,6 +342,12 @@ def _drive_call(
     if resp is None:
         return False, ""
 
+    error = resp.get("error")
+    if isinstance(error, dict):
+        # renga reports tool refusals as JSON-RPC errors whose message
+        # carries the code, e.g. "renga refused spawn_pane: [split_refused] ...".
+        message = error.get("message")
+        return False, message if isinstance(message, str) else ""
     result = resp.get("result")
     if not isinstance(result, dict):
         return False, ""
