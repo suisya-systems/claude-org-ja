@@ -2029,11 +2029,20 @@ def main(argv: "list[str] | None" = None) -> int:
 
     # Issue #1216: a watcher parked in another renga tab is addressed to the
     # secretary by numeric id. Prove that route once at startup so the
-    # spawner can fall back to its own tab when the ping never arrives.
+    # spawner (tools/spawn_watch_pane.py) can fall back to its own tab when
+    # the ping does not land. The outcome is recorded as a
+    # ``pr_watch_started`` event, which is what the spawner waits for.
     if os.environ.get("ORG_NOTIFY_TO", "").strip():
+        target = _peer_notify_target()
         ok = _notify_peer(f"PR_WATCH_STARTED: PR #{args.pr} (repo={repo})")
+        try:
+            _record_event(db_path=JOURNAL_PATH, kind="pr_watch_started",
+                          payload={"pr": args.pr, "repo": repo,
+                                   "target": target, "delivered": ok})
+        except Exception:  # noqa: BLE001 — the spawner times out instead
+            pass
         sys.stdout.write(f"pr_watch: PR #{args.pr} startup ping "
-                         f"to {_peer_notify_target()} delivered={ok}\n")
+                         f"to {target} delivered={ok}\n")
         sys.stdout.flush()
 
     # Issue #636: ci-watch → merge-watch is now a loop, not a one-shot.

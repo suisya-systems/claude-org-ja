@@ -4123,8 +4123,16 @@ class NotifyTargetTests(unittest.TestCase):
         return sent
 
     def test_numeric_target_gets_startup_ping_and_ci_completed(self) -> None:
-        sent = self._run_main({"ORG_NOTIFY_TO": "7"})
+        real = pr_watch._record_event
+        kinds: "list[tuple[str, dict]]" = []
+        with mock.patch.object(pr_watch, "_record_event",
+                               side_effect=lambda **kw: kinds.append(
+                                   (kw["kind"], kw["payload"])) or real(**kw)):
+            sent = self._run_main({"ORG_NOTIFY_TO": "7"})
         self.assertEqual([to for to, _ in sent], ["7", "7"])
+        self.assertIn(("pr_watch_started", {"pr": 1216, "repo": "octo/repo",
+                                             "target": "7", "delivered": True}),
+                      kinds)
         self.assertTrue(sent[0][1].startswith("PR_WATCH_STARTED: PR #1216"))
         self.assertIn("CI_COMPLETED", sent[1][1])
 
