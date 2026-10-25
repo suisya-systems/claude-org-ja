@@ -3,14 +3,18 @@
 
 Given a PR number, resolves the merge metadata via ``gh pr view`` and,
 if the PR is merged, runs the canonical ``StateWriter.transaction()``
-to drive the run row to its terminal state:
+to record the merge fact on the run row:
 
-* ``runs.status = 'completed'``
 * ``runs.pr_state = 'merged'``
 * ``runs.pr_url`` and ``runs.commit_short`` / ``runs.commit_full`` set
   from the PR view payload
 * ``runs.completed_at`` set to the PR's ``mergedAt``
 * one ``pr_merged`` event appended to the events table
+
+``runs.status`` is left alone: the secretary flips it to ``completed`` in
+org-pull-request 2b-ii (delegation-lifecycle-contract §T5). Issue #1204:
+the CLI says on stdout when a merged run is still open, and
+``--check-closed`` lists every such run and exits 1.
 
 The helper replaces the inline ``python -c`` block that used to live
 in ``.claude/skills/org-delegate/SKILL.md`` Step 5 2b-ii. The legacy
@@ -296,6 +300,45 @@ def _resolve_task_id(conn, *, pr: int, repo: str, pr_url: str,
     return None
 
 
+def merged_runs_left_open(db_path: Path) -> "list[tuple[str, str]]":
+    """Return ``(task_id, status)`` for runs whose PR is merged but whose
+    ``runs.status`` is still non-terminal (Issue #1204).
+
+    This helper never flips the status (see the comment at
+    RESULT_MERGED_PENDING_CLEANUP), so a merged run stays ``review`` until
+    the secretary finishes the 2b-ii close. Left that way, the dispatcher's
+    auto-handover stops on ``handover_missing_task_ids``. Read-only.
+    """
+    from tools.state_db import connect
+
+    conn = connect(db_path)
+    try:
+        return [
+            (row["task_id"], row["status"]) for row in conn.execute(
+                "SELECT task_id, status FROM runs WHERE pr_state = 'merged' "
+                "AND status NOT IN ('completed','failed','abandoned') "
+                "ORDER BY id",
+            ).fetchall()
+        ]
+    finally:
+        conn.close()
+
+
+def _report_left_open(db_path: Path) -> int:
+    """Print every merged-but-open run and the next step; return the count."""
+    left = merged_runs_left_open(db_path)
+    for task, status in left:
+        sys.stdout.write(
+            f"run_complete_on_merge: NOT COMPLETED task {task} status={status} "
+            "(this tool records the merge only). Next: finish "
+            "org-pull-request 2b-ii (CLOSE_PANE, worktree remove, and its "
+            f"StateWriter block with update_run_status('{task}', "
+            "'completed')), then confirm with: "
+            "python3 tools/run_complete_on_merge.py --check-closed\n"
+        )
+    return len(left)
+
+
 def _short_sha(full: Optional[str]) -> Optional[str]:
     if not full:
         return None
@@ -477,8 +520,12 @@ def main(argv: "list[str] | None" = None) -> int:
             "Mark a run completed when its PR has been merged on GitHub."
         ),
     )
-    parser.add_argument("--pr", type=int, required=True,
-                        help="pull request number")
+    parser.add_argument("--pr", type=int, default=None,
+                        help="pull request number (required unless "
+                             "--check-closed)")
+    parser.add_argument("--check-closed", action="store_true",
+                        help="only list runs whose PR is merged but whose "
+                             "status is not completed; exit 1 if any")
     parser.add_argument("--repo", default=None,
                         help="OWNER/REPO; resolved from the run's project "
                              "when --task-id is given, else auto-detected "
@@ -490,15 +537,24 @@ def main(argv: "list[str] | None" = None) -> int:
                         help=f"path to state.db (default: {DEFAULT_DB_PATH})")
     args = parser.parse_args(argv)
 
-    if args.pr <= 0:
-        parser.error("--pr must be a positive integer")
-
-    _ensure_gh_installed()
-
     db_path = (
         resolve_state_db_path(Path(args.db_path)) if args.db_path
         else resolve_state_db_path()
     )
+
+    if args.check_closed:
+        # Issue #1204: the 2b-ii close check. No gh call, no writes.
+        if _report_left_open(db_path):
+            return 1
+        sys.stdout.write(
+            "run_complete_on_merge: OK - no merged run left open\n"
+        )
+        return 0
+
+    if args.pr is None or args.pr <= 0:
+        parser.error("--pr must be a positive integer")
+
+    _ensure_gh_installed()
 
     # Issue #828: with a task_id in hand the repo is derivable from the run,
     # so derive it instead of reading the cwd repo's PR #N. Without one the
@@ -548,6 +604,11 @@ def main(argv: "list[str] | None" = None) -> int:
         return 2
 
     sys.stdout.write(f"run_complete_on_merge: PR #{args.pr} {result}\n")
+    # Issue #1204: "PR #N already" alone read as "done" while the run sat in
+    # review. Say so on stdout, for this run and any other merged one left
+    # open. Exit stays 0: the merge record itself succeeded.
+    if result in (RESULT_MERGED, RESULT_ALREADY):
+        _report_left_open(db_path)
     # not_yet is not a failure — the caller polls. Codex round-3 Major:
     # no_run IS a failure (PR merged but no run row matched), so the
     # secretary's manual invocation must see a non-zero exit code.

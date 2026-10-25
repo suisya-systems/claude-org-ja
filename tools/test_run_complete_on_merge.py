@@ -348,6 +348,43 @@ class CLITests(unittest.TestCase):
                 ])
             self.assertEqual(rc, 3)
 
+    def _main_stdout(self, argv: list) -> "tuple[int, str]":
+        import io
+        from contextlib import redirect_stdout
+        buf = io.StringIO()
+        with mock.patch.object(
+            run_complete_on_merge.subprocess, "run",
+            side_effect=_fake_subprocess_run(_make_pr_view()),
+        ), mock.patch.object(
+            run_complete_on_merge.shutil, "which", return_value="/usr/bin/gh",
+        ), redirect_stdout(buf):
+            rc = run_complete_on_merge.main(argv)
+        return rc, buf.getvalue()
+
+    def test_cli_flags_merged_run_left_in_review(self) -> None:
+        """Issue #1204: 'PR #N already' alone hid that the run sat in review.
+        The CLI must say so, and --check-closed must fail until the flip."""
+        with TempDB() as db:
+            _seed_run(db)
+            argv = ["--pr", str(PR), "--repo", REPO, "--db-path", str(db)]
+            self._main_stdout(argv)
+            rc, out = self._main_stdout(argv)  # second call -> already
+            self.assertEqual(rc, 0)
+            self.assertIn(f"PR #{PR} already", out)
+            self.assertIn(f"NOT COMPLETED task {TASK_ID} status=review", out)
+
+            rc, out = self._main_stdout(["--check-closed", "--db-path", str(db)])
+            self.assertEqual(rc, 1)
+            self.assertIn(TASK_ID, out)
+
+            conn = connect(db)
+            with StateWriter(conn).transaction() as w:
+                w.update_run_status(TASK_ID, "completed")
+            conn.close()
+            rc, out = self._main_stdout(["--check-closed", "--db-path", str(db)])
+            self.assertEqual(rc, 0)
+            self.assertNotIn("NOT COMPLETED", out)
+
 
 class CleanupPatternCTests(unittest.TestCase):
     """Issue #478: Pattern C gitignored_repo_root CLAUDE.local.md cleanup."""
