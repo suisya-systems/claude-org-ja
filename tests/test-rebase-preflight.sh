@@ -83,6 +83,15 @@ run "取り込み済みで自分のコミットだけが書けないパスを変
 run "取り込み済みの上流そのもの → ok" "$UP_RO_FILE" 0 "REBASE_PREFLIGHT: ok"
 git -C "$R" switch -q --detach base-commit
 
+# 自分のコミットが書けないパスを変えて戻した（端点の差分には出ない）うえで上流が進んでいる
+# → 載せ直しの途中で書くので blocked
+chmod u+w "$R/rofile"
+echo c >> "$R/rofile"; git -C "$R" commit -qam "worker touches rofile"
+git -C "$R" revert --no-edit HEAD >/dev/null
+chmod a-w "$R/rofile"
+run "載せ直す自分のコミットが書けないパスを触る（変更して戻す）→ blocked" "$UP_RW" 1 "REBASE_PREFLIGHT: blocked"
+git -C "$R" switch -q --detach base-commit
+
 out=$(cd "$R" && bash "$PREFLIGHT" "$UP_RO_DIR" 2>&1)
 if printf '%s\n' "$out" | grep -qx "not writable in sandbox: ro/file"; then
   echo "  PASS: 書けないパスを列挙する"; PASS=$((PASS + 1))

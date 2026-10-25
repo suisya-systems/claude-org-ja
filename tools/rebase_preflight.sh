@@ -12,7 +12,8 @@
 # 上流の中身が残る（Issue #1217）。ここで先に見つけて rebase させない。
 #
 # 判定は保護パスのリストを持たず、実際のファイルシステムで行う（Claude Code の版で
-# 保護の範囲が変わっても追従する）。HEAD と <base-ref> の間で変わるパスごとに:
+# 保護の範囲が変わっても追従する）。HEAD と <base-ref> の間で変わるパスと、rebase が
+# 載せ直す自分のコミット（<base-ref>..HEAD）が触るパスのそれぞれについて:
 #   - パスがある: 通常ファイルかシンボリックリンクで、それ自体と親ディレクトリが書ける
 #   - パスが無い: いちばん近い既存の祖先がディレクトリで、書ける
 # を満たさなければ書けないとみなす。かぶせ物の文字デバイスは test -w が真を返すので、
@@ -63,7 +64,8 @@ while IFS= read -r -d '' p; do
     echo "not writable in sandbox: $p"
     blocked=1
   fi
-done < <(git diff --no-renames --name-only -z HEAD "$base" --)
+done < <({ git diff --no-renames --name-only -z HEAD "$base" --
+           git log --no-renames --format= --name-only -z "$base..HEAD" --; } | sort -zu)
 
 if [[ "$blocked" -eq 1 ]]; then
   echo "REBASE_PREFLIGHT: blocked"
