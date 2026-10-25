@@ -7,6 +7,7 @@ description: >
   /clear → /secretary-resume で新しい窓口セッションを開始する準備をする。
   「リフレッシュ」「窓口を引き継ぎたい」「コンテキスト整理」と言われたとき、
   または窓口自身が context が長くなったと判断したときに使う。
+  context-handover watcher が `/secretary-handover auto op=<OP>` を打鍵したときも使う。
 effort: low
 allowed-tools:
   - Read
@@ -14,6 +15,7 @@ allowed-tools:
   - Edit
   - Bash(python3 -c:*)
   - Bash(bash tools/journal_append.sh:*)
+  - Bash(python3 tools/context_handover_watch.py --must-name:*)
 ---
 
 # secretary-handover: 窓口の引き継ぎ
@@ -26,6 +28,11 @@ allowed-tools:
 > - ディスパッチャー / ワーカーのペインは生かしたまま残す（キュレーターは常駐しない）。
 >   `/clear` は窓口の Claude コンテキストだけをリセットするので、state.db と
 >   handover ファイルから復帰できれば組織は途切れない。
+> - 引数 `auto op=<OP>` 付きで呼ばれたときは、context-handover watcher
+>   （[`tools/context_handover_watch.py`](../../../tools/context_handover_watch.py)）が文脈の閾値超過を見て
+>   打鍵している（設計 [`docs/design/context-auto-handover.md`](../../../docs/design/context-auto-handover.md) §4.3）。
+>   手順は同じで、違いは Step 4 の `op=<OP>` と Step 5 だけ。`/clear` と `/secretary-resume auto op=<OP>` は
+>   watcher が打つ。
 > - state DB (`.state/state.db`) は唯一の SoT。ペイン identity やワーク状態は
 >   そちらから引ける。handover はあくまで「会話の温度感」「人間との合意」「進行中の判断」など、
 >   構造化データに収まらない部分を残すために使う。
@@ -76,6 +83,17 @@ print(out_path)
 - `active_worker_dirs[]`（生きているワーカーディレクトリ）
 - 直近の `recent_events` 上位 3〜5 件
 
+続けて、引き継ぎファイルに**必ず書く task_id** を出す:
+
+```bash
+python3 tools/context_handover_watch.py --must-name secretary
+```
+
+1 行に 1 つ task_id が出る。稼働中（`in_use` / `review`）の全ワーカーと、直近 24 時間に人へ承認・判断を
+仰いだ（`notify_sent kind=awaiting_user`）タスクである。出た task_id は全部、Step 3 の「進行中のワーク」か
+「人への承認待ち」に書く。自動引き継ぎでは watcher が `/clear` の前にこれを照合し、1 つでも欠けていれば
+`/clear` を打たずに止まる（設計 §6.2）。何も出なければ書く義務は無い。
+
 ## Step 3: handover ファイルを書き出す
 
 書き出し先: `.state/secretary-handover.md`
@@ -112,6 +130,11 @@ curator_pane: null  # 常駐廃止（オンデマンド化）。null が正常
 - ...
 （無ければ「なし」と明記する。空にしない）
 
+## 人への承認待ち（awaiting_user）
+- <task_id>: <何を仰いだか（マージ承認・完了確認など）> — 未回答 / 回答済み（<返事の要旨>）
+（Step 2 の `--must-name` に出た task_id のうち「進行中のワーク」に書かなかったものはここに書く。
+ 回答済みのものも消さずに「回答済み」と書く。無ければ「なし」）
+
 ## 次のアクション（窓口視点）
 - ...
 
@@ -137,7 +160,18 @@ curator_pane: null  # 常駐廃止（オンデマンド化）。null が正常
 bash tools/journal_append.sh secretary_handover reason=context_compaction
 ```
 
+自動引き継ぎ（引数 `auto op=<OP>` 付きで呼ばれたとき）は同じ行に `op=<OP>` を足す。
+
 失敗したら握りつぶさず、エラーを handover 完了報告に 1 行添える。
+
+## Step 5（自動引き継ぎ）: `auto op=<OP>` のとき
+
+下の Step 5 の案内は出さず、次の 1 行だけ出して終える。`/clear` と `/secretary-resume auto op=<OP>` は
+watcher が打つので、ユーザーに打鍵を頼まない。ディスパッチャーにも知らせない:
+
+```
+窓口の文脈が長くなったので自動で引き継ぎます（op=<OP>）。この後の /clear と /secretary-resume は自動で打たれます。
+```
 
 ## Step 5: ユーザーへ案内する
 
@@ -154,6 +188,6 @@ handover を読み込んで現状把握した状態で再開できます。
 ```
 
 **窓口がやってはいけないこと**:
-- `/clear` を自分で打とうとしない（Claude Code 側のコマンド、ユーザーが入力する）
+- `/clear` を自分で打とうとしない（Claude Code 側のコマンド、ユーザーが入力する。自動引き継ぎでは watcher が打つ）
 - ディスパッチャーに SHUTDOWN を送らない（/org-suspend ではないので、
   ペインは生かしたまま残す）

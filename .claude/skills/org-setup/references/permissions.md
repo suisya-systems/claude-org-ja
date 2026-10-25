@@ -221,10 +221,59 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
           {
             "type": "command",
             "command": "bash \"{claude_org_path}/.hooks/remind-verify-premise.sh\""
+          },
+          {
+            "type": "command",
+            "command": "bash \"{claude_org_path}/.hooks/context-record.sh\""
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"{claude_org_path}/.hooks/context-record.sh\""
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"{claude_org_path}/.hooks/context-record.sh\""
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"{claude_org_path}/.hooks/context-record.sh\""
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "idle_prompt",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"{claude_org_path}/.hooks/context-record.sh\""
           }
         ]
       }
     ]
+  },
+  "idleCompaction": false,
+  "env": {
+    "CLAUDE_ORG_HANDOVER_THRESHOLD_TOKENS": "600000"
   },
   "sandbox": {
     "network": {
@@ -246,7 +295,9 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
 
 **並び順**: (1) MCP ツール、(2) git、(3) gh、(4) python/dashboard、(5) renga bootstrap、(6) その他（sleep / codex / curl / PowerShell）。新規エントリ追加時はこの並び順を維持する。
 
-**hooks の説明**: `block-workers-delete.sh` は workers ディレクトリへの再帰的削除（`rm -r`/`rm -rf`/`rm --recursive`）をブロックする。個別ファイルの `rm` は許可する。`renga` コマンドは除外する（ワーカー起動時の偽陽性防止）。`check-dispatcher-loop.sh` は窓口のターンごとに [`tools/dispatcher_loop_watch.py`](../../../../tools/dispatcher_loop_watch.py) を呼び、稼働中ワーカーがいるのにディスパッチャーの見回り（`relay_scan.py --cycle` の heartbeat）が 9 分を超えて止まっていれば `DISPATCHER_LOOP_UNARMED: ...` を 1 行だけ窓口の文脈に出す（同じ状態では 1 回きり）。ブロックはせず、判定できないときは何も出さない。`remind-verify-premise.sh` はユーザーの文に数値+単位・`key=value` の設定・挙動の主張の語（「はず」「既定」「閾値」等）があるときだけ、[`tools/premise_check.py`](../../../../tools/premise_check.py) が「同意・反論を書く前に 1 回読むか検索して出典を付ける」という `VERIFY_BEFORE_AGREE: ...` を 1 行窓口の文脈に出す。誤って出しても 1 行増えるだけなのでブロックはせず、判定の規則は単純にしてある（出る例・出ない例は [`tools/test_premise_check.py`](../../../../tools/test_premise_check.py) で固定）。`gate-acceptance-before-merge.sh` は窓口の `gh pr merge` の手前で [`tools/acceptance_merge_hook.py`](../../../../tools/acceptance_merge_hook.py) を呼び、その PR の head と base を fetch して受け入れテストのゲート [`tools/acceptance_gate.py`](../../../../tools/acceptance_gate.py) を走らせる。通すマージは `gh pr merge <番号> --repo <OWNER/REPO> --squash|--merge|--rebase [--delete-branch]` の形のコマンド単独だけで、ほかの書き方のマージは拒否する。rejected と判定できないときは拒否し、`Acceptance-Test` の宣言が無い PR は記録だけして通す。ゲートは pytest を bubblewrap の中で 2 回走らせるので `timeout` を 900 秒にしてある（タイムアウトしたフックはブロックしない扱いになるため、python 側は 840 秒で打ち切って拒否する）。`bwrap` の無い環境では、宣言のある PR のマージを拒否する。
+**hooks の説明**: `block-workers-delete.sh` は workers ディレクトリへの再帰的削除（`rm -r`/`rm -rf`/`rm --recursive`）をブロックする。個別ファイルの `rm` は許可する。`renga` コマンドは除外する（ワーカー起動時の偽陽性防止）。`check-dispatcher-loop.sh` は窓口のターンごとに [`tools/dispatcher_loop_watch.py`](../../../../tools/dispatcher_loop_watch.py) を呼び、稼働中ワーカーがいるのにディスパッチャーの見回り（`relay_scan.py --cycle` の heartbeat）が 9 分を超えて止まっていれば `DISPATCHER_LOOP_UNARMED: ...` を 1 行だけ窓口の文脈に出す（同じ状態では 1 回きり）。ブロックはせず、判定できないときは何も出さない。`remind-verify-premise.sh` はユーザーの文に数値+単位・`key=value` の設定・挙動の主張の語（「はず」「既定」「閾値」等）があるときだけ、[`tools/premise_check.py`](../../../../tools/premise_check.py) が「同意・反論を書く前に 1 回読むか検索して出典を付ける」という `VERIFY_BEFORE_AGREE: ...` を 1 行窓口の文脈に出す。誤って出しても 1 行増えるだけなのでブロックはせず、判定の規則は単純にしてある（出る例・出ない例は [`tools/test_premise_check.py`](../../../../tools/test_premise_check.py) で固定）。`gate-acceptance-before-merge.sh` は窓口の `gh pr merge` の手前で [`tools/acceptance_merge_hook.py`](../../../../tools/acceptance_merge_hook.py) を呼び、その PR の head と base を fetch して受け入れテストのゲート [`tools/acceptance_gate.py`](../../../../tools/acceptance_gate.py) を走らせる。通すマージは `gh pr merge <番号> --repo <OWNER/REPO> --squash|--merge|--rebase [--delete-branch]` の形のコマンド単独だけで、ほかの書き方のマージは拒否する。rejected と判定できないときは拒否し、`Acceptance-Test` の宣言が無い PR は記録だけして通す。ゲートは pytest を bubblewrap の中で 2 回走らせるので `timeout` を 900 秒にしてある（タイムアウトしたフックはブロックしない扱いになるため、python 側は 840 秒で打ち切って拒否する）。`bwrap` の無い環境では、宣言のある PR のマージを拒否する。`context-record.sh`（`SessionStart` / `UserPromptSubmit` / `Stop` / `PreCompact` と、窓口だけ `Notification` の `idle_prompt`）は文脈の自動引き継ぎの記録フックで、窓口の会話記録の場所・ペイン id・開いているターンの有無と、応答の約 60 秒後に人が打鍵していないときに出る `idle_prompt` の時刻を `.state/context/secretary.json` に書く（説明はディスパッチャー節の同名フック）。この local ファイルを読むディスパッチャーでも同じフックが走るが、同じコマンドのフックは 1 回だけ実行され（https://code.claude.com/docs/en/hooks 「Hook handler fields」）、役割は cwd で書き分けるので記録は混ざらない。キュレーターなど org 直下と `.dispatcher/` 配下以外の cwd では記録しない。
+
+**`idleCompaction` / `env` の `CLAUDE_ORG_HANDOVER_THRESHOLD_TOKENS`**: 窓口の自動引き継ぎ用で、意味はディスパッチャー節と同じ（閾値はトークン数。雛形は window 1M の 60%）。窓口が自動で引き継がれるのは renga で、attention watcher（`/org-attention-start`）が動いているときだけ（失敗を離席中の人に届ける経路がそれしか無いため。設計 [`docs/design/context-auto-handover.md`](../../../../docs/design/context-auto-handover.md) §4.3・§7）。この 2 つもディスパッチャーに読まれる。ディスパッチャー節と値を揃える（window が役割で違うときは小さい方の 60% にする）。
 
 **書いてはいけないもの**:
 - wide allow (`Bash(git *)`, `Bash(git push *)`, `Bash(git fetch *)`, `Bash(git branch *)`, `Bash(git pull *)`, `Bash(gh:*)`, `Bash(gh *)`)
@@ -414,7 +465,7 @@ org-setup が参照する、ロールごとの permissions allow と環境変数
 - `block-close-before-retro.sh`: 振り返りの完了報告ゲートを通っていない worker ペインへの `close_pane` を deny する。数値 pane id を `worker_spawn_verified` で task に引き、`retro_gate_acked`（`tools/dispatcher_retro_gate.py` が acked 時に記録）・`retro_gate_confirmed_missing`（replied_no_ack で未着を確定したとき dispatcher が `tools/journal_append.sh` で記録）・`runs.status` が `completed` / `failed` / `abandoned`・`completion_reported_at` あり かつ `runs.status == 'review'` のどれかがあれば通す（`completed` と最後のものは [`.dispatcher/references/pane-close.md`](../../../../.dispatcher/references/pane-close.md)「0. 受領記録の確認」の ack 相当）。worker 以外のペインと `set_pane_identity` は素通しする。**ディスパッチャー専用**
 - `block-blind-spawn-keys.sh`: キーを含む `send_keys`（`keys` が空でない、または `enter: true`）を、`claude-org-runtime dispatcher spawn-prompt-step --target <宛先>` が書いた判定記録（`<state-dir>/dispatcher/spawn-prompt/<宛先>.json`、runtime 0.1.50+）と照合し、記録が無い・期限切れ（30 秒）・宛先違い・キー不一致なら deny する。`action: "done"` の記録は Enter 単発だけを通す（[`.dispatcher/references/spawn-flow.md`](../../../../.dispatcher/references/spawn-flow.md) 3-5a の kickoff）。通した記録は消す（1 回限り）。`text` だけの送信は判定しない。folder-trust の初期カーソルは「No, exit」で、盲目 Enter はワーカーを終了させるため（3-3b）。**ディスパッチャー専用**（窓口の `/clear` や承認ハンドシェイクは止めない）
 - `check-worker-spawn-model.sh`: `role: "worker"` の `spawn_claude_pane` で `model` が `"sonnet"` か `"opus"` と明示されていなければ deny する（ワーカーの既定は sonnet。runtime helper は `model` 省略時に opus を既定にするため、省略を通さない）。`"opus"` は、ペイン名から `worker-` を外した task_id の `.state/dispatcher/inbox/<task_id>.json` に `"model": "opus"` があるとき（DELEGATE 本文に `モデル: opus` 行があったとき）だけ通す。worker 以外の role は素通しする。**ディスパッチャー専用**
-- `context-record.sh`（`SessionStart` / `UserPromptSubmit` / `Stop` / `PreCompact`）: 文脈の自動引き継ぎのために、会話記録の場所・ペイン id・開いているターンの有無・`Stop` が受け取る背景タスクと予約の一覧を `.state/context/dispatcher.json` に書く（[`tools/context_record.py`](../../../../tools/context_record.py)）。`PreCompact` では自動要約を止めずに `context_compacted_before_handover` を events に 1 行書く。何も出力せずブロックもしない。閾値の判定と `/dispatcher-handover` → `/clear` → `/dispatcher-resume` の打鍵は、`/org-start` が起動する [`tools/context_handover_watch.py`](../../../../tools/context_handover_watch.py) が外から行う（設計は [`docs/design/context-auto-handover.md`](../../../../docs/design/context-auto-handover.md)）。**ディスパッチャー専用**（窓口の自動引き継ぎは次段）
+- `context-record.sh`（`SessionStart` / `UserPromptSubmit` / `Stop` / `PreCompact`）: 文脈の自動引き継ぎのために、会話記録の場所・ペイン id・開いているターンの有無・`Stop` が受け取る背景タスクと予約の一覧を `.state/context/dispatcher.json`（窓口は `secretary.json`）に書く（[`tools/context_record.py`](../../../../tools/context_record.py)）。`PreCompact` では自動要約を止めずに `context_compacted_before_handover` を events に 1 行書く。何も出力せずブロックもしない。閾値の判定と `/dispatcher-handover` → `/clear` → `/dispatcher-resume` の打鍵は、`/org-start` が起動する [`tools/context_handover_watch.py`](../../../../tools/context_handover_watch.py) が外から行う（設計は [`docs/design/context-auto-handover.md`](../../../../docs/design/context-auto-handover.md)）。窓口にも同じフックを置く（窓口節）。窓口では `/secretary-handover` → `/clear` → `/secretary-resume` を同じ watcher が打つ
 
 **`idleCompaction: false`**: idle 中の自動要約が自動引き継ぎより先に走らないようにする（設計 §2.2）。
 
