@@ -80,8 +80,31 @@ class SpawnWatchPaneTests(unittest.TestCase):
         self.assertEqual(spawn["tab"], {"pane_id": 9})
         self.assertEqual(spawn["target"], "9")
         self.assertIn("export ORG_NOTIFY_TO=1;", spawn["command"])
+        self.assertIn(f"export STATE_DB_PATH={Path('unused.db').resolve()};",
+                      spawn["command"])
         self.assertIn('renga close --id "$RENGA_PANE_ID"', spawn["command"])
         self.assertNotIn("close_pane", [t for t, _ in fake.calls])
+
+    def test_each_candidate_is_split_in_its_own_tab(self) -> None:
+        second = ('- id=12 name=pr-watch-8 role=watcher [tab 3 "監視"]\n'
+                  '  geometry: x=0 y=0 width=200 height=60\n'
+                  f'  cwd: {swp.REPO_ROOT}\n')
+        fake = FakeRenga(all_tabs=ALL_TABS + second)
+        inner = fake.__call__
+
+        def call(tool: str, args: dict) -> "tuple[bool, str]":
+            if tool == "spawn_pane" and args.get("target") == "9":
+                fake.calls.append((tool, args))
+                return False, "[split_refused] target too small"
+            return inner(tool, args)
+
+        with mock.patch.dict(os.environ, {"RENGA_PANE_ID": "1"}), \
+             mock.patch.object(swp, "_call", call), \
+             mock.patch.object(swp, "_max_event_id", return_value=0), \
+             mock.patch.object(swp, "wait_started", return_value=True):
+            self.assertEqual(swp.run(123, "octo/repo", True, Path("unused.db")), 0)
+        tabs = {a["target"]: a["tab"] for a in fake.spawns()}
+        self.assertEqual(tabs, {"9": {"pane_id": 9}, "12": {"pane_id": 12}})
 
     def test_opens_background_tab_when_none_exists(self) -> None:
         fake = FakeRenga(all_tabs=OWN_TAB.replace("this tab", "every tab"))

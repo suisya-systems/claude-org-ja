@@ -83,7 +83,7 @@ def parse_pane_list(text: str) -> "list[dict]":
 
 
 def build_command(pr: int, repo: str, merge_watch: bool,
-                  notify_to: "str | None") -> str:
+                  notify_to: "str | None", db: Path) -> str:
     """The shell line typed into the watcher pane.
 
     Same shape as the ``/pr-watch-pane`` broker command: ``nocorrect`` first
@@ -95,6 +95,9 @@ def build_command(pr: int, repo: str, merge_watch: bool,
         value = os.environ.get(name)
         if value:
             parts.append(f"export {name}={shlex.quote(value)}")
+    # The spawner polls ``db`` for the watcher's startup event, so both
+    # must write the same journal whatever override the caller has.
+    parts.append(f"export STATE_DB_PATH={shlex.quote(str(Path(db).resolve()))}")
     if notify_to:
         parts.append(f"export ORG_NOTIFY_TO={shlex.quote(notify_to)}")
     watch = f"bash tools/pr-watch.sh {pr} --repo {shlex.quote(repo)}"
@@ -120,12 +123,15 @@ def _anchors(panes: "list[dict]") -> "list[dict]":
     return result["candidates"]
 
 
-def _spawn(base: dict, candidates: "list[dict]", tab: "dict | None") -> "int | None":
-    """Try each candidate in rank order; return the new pane id."""
+def _spawn(base: dict, candidates: "list[dict]", cross_tab: bool) -> "int | None":
+    """Try each candidate in rank order; return the new pane id.
+
+    ``cross_tab`` selects each candidate's own tab by its pane id (several
+    tabs can carry the watch label)."""
     for cand in candidates:
         args = dict(base, target=str(cand["target_id"]), direction=cand["direction"])
-        if tab:
-            args["tab"] = tab
+        if cross_tab:
+            args["tab"] = {"pane_id": int(cand["target_id"])}
         ok, text = _call("spawn_pane", args)
         m = _SPAWNED_RE.search(text)
         if ok and m:
@@ -174,13 +180,12 @@ def _spawn_in_watch_tab(pr: int, repo: str, merge_watch: bool, db: Path,
                         base: dict, sec_id: str, every: "list[dict]") -> "str | None":
     """Spawn in the watch tab and confirm the ping. ``None`` on success,
     otherwise why the caller has to fall back (the pane is already closed)."""
-    command = build_command(pr, repo, merge_watch, sec_id)
+    command = build_command(pr, repo, merge_watch, sec_id, db)
     after = _max_event_id(db)
     watch = [p for p in every if p["tab_label"] == WATCH_TAB and not p["same_tab"]]
     new_id = None
     if watch:
-        new_id = _spawn(dict(base, command=command), _anchors(watch),
-                        {"pane_id": watch[0]["id"]})
+        new_id = _spawn(dict(base, command=command), _anchors(watch), True)
     if new_id is None:
         ok, text = _call("spawn_pane", dict(base, command=command,
                                             tab={"new": {"name": WATCH_TAB}}))
@@ -242,8 +247,8 @@ def run(pr: int, repo: str, merge_watch: bool, db: Path) -> int:
     if running:
         print(f"SPAWN_WATCH: already-running id={running[0]['id']}")
         return 0
-    fallback = _spawn(dict(base, command=build_command(pr, repo, merge_watch, None)),
-                      _anchors(own), None)
+    fallback = _spawn(dict(base, command=build_command(pr, repo, merge_watch, None, db)),
+                      _anchors(own), False)
     if fallback is None:
         print(f"SPAWN_WATCH: failed - {why}; splitting the secretary tab failed too")
         return 2
