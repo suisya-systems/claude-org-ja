@@ -954,6 +954,11 @@ def cmd_audit(args) -> int:
         cutoff = _cutoff_iso(args.older_than_min)
         since = (args.since or "").strip() or None
         findings = []
+        # Spawns whose task name matches no delegate_sent and no runs row:
+        # a bookkeeping slip (e.g. 'foo 3' with a pane number glued on), not a
+        # skipped ceremony. Reported apart so they neither fire the exit code
+        # nor stay in the unverified list forever.
+        malformed = []
         skipped = {"in_grace": 0, "before_gate_epoch": 0, "terminal_run": 0}
         for task, spawned_at in sorted(spawned.items(), key=lambda kv: kv[1]):
             verified_at = verified.get(task)
@@ -972,6 +977,11 @@ def cmd_audit(args) -> int:
                 continue
             if task in terminal_tasks:
                 skipped["terminal_run"] += 1
+                continue
+            if not _has_run_row(conn, task) and (
+                _latest_event_at(conn, DELEGATE_SENT_EVENT, task) is None
+            ):
+                malformed.append({"task": task, "spawned_at": spawned_at})
                 continue
             findings.append(
                 {
@@ -1002,6 +1012,8 @@ def cmd_audit(args) -> int:
                 # Surfaced, never silent: a reader must be able to tell
                 # "nothing is wrong" from "the filters ate everything".
                 "skipped": skipped,
+                "malformed_count": len(malformed),
+                "malformed": malformed,
                 "findings": findings,
             },
             ensure_ascii=False,
