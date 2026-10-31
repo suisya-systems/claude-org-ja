@@ -793,6 +793,9 @@ class AuditTests(unittest.TestCase):
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
+    def _delegated(self, task: str = TASK) -> None:
+        _seed_event(self.db, "delegate_sent", {"task": task}, "2026-08-17T00:00:00.000Z")
+
     def _audit(self, *extra: str) -> "tuple[int, dict]":
         # Tests seed fixed timestamps around GATE_EPOCH, so the default cutoff
         # would filter some of them out; disable it unless a case sets it.
@@ -830,6 +833,7 @@ class AuditTests(unittest.TestCase):
         self.assertIsNone(out["findings"][0]["last_verified_at"])
 
     def test_grace_window_suppresses_an_in_flight_ceremony(self) -> None:
+        self._delegated()
         import datetime
 
         now = datetime.datetime.now(datetime.timezone.utc)
@@ -843,6 +847,7 @@ class AuditTests(unittest.TestCase):
         self.assertEqual(self._audit("--older-than-min", "0")[0], spawn_gate.EXIT_FIRE)
 
     def test_redispatch_needs_a_fresh_verification(self) -> None:
+        self._delegated()
         """A stale verification must not cover a later re-spawn."""
         _seed_event(
             self.db, "worker_spawned", {"task": TASK}, "2026-08-18T00:00:00.000Z"
@@ -872,6 +877,7 @@ class AuditTests(unittest.TestCase):
         self.assertEqual(out["skipped"]["before_gate_epoch"], 1)
 
     def test_an_old_unverified_spawn_is_never_forgotten(self) -> None:
+        self._delegated()
         """A rolling window would drop this once it aged past 24h."""
         _seed_event(
             self.db, "worker_spawned", {"task": TASK}, "2026-08-19T00:00:00.000Z"
@@ -895,6 +901,56 @@ class AuditTests(unittest.TestCase):
         code, out = self._audit("--older-than-min", "0")
         self.assertEqual(code, spawn_gate.EXIT_OK)
         self.assertEqual(out["skipped"]["terminal_run"], 1)
+
+    def test_spawn_with_no_delegate_and_no_run_is_malformed(self) -> None:
+        _seed_event(
+            self.db, "worker_spawned", {"task": "foo 3"}, "2026-08-18T00:00:00.000Z"
+        )
+        code, out = self._audit("--older-than-min", "0")
+        self.assertEqual(code, spawn_gate.EXIT_OK)
+        self.assertEqual(out["finding_count"], 0)
+        self.assertEqual(out["malformed_count"], 1)
+        self.assertEqual(out["malformed"][0]["task"], "foo 3")
+
+    def test_malformed_does_not_mask_a_real_finding(self) -> None:
+        self._delegated()
+        _seed_event(
+            self.db, "worker_spawned", {"task": TASK}, "2026-08-18T00:00:00.000Z"
+        )
+        _seed_event(
+            self.db, "worker_spawned", {"task": "foo 3"}, "2026-08-18T00:00:00.000Z"
+        )
+        code, out = self._audit("--older-than-min", "0")
+        self.assertEqual(code, spawn_gate.EXIT_FIRE)
+        self.assertEqual(out["finding_count"], 1)
+        self.assertEqual(out["malformed_count"], 1)
+
+
+class JournalAppendWhitespaceTests(unittest.TestCase):
+    def test_whitespace_in_task_or_worker_is_refused_and_nothing_written(self) -> None:
+        import journal_append
+
+        with tempfile.TemporaryDirectory() as d:
+            db = Path(d) / "state.db"
+            for field in ("task=foo 3", "worker=worker-foo 3"):
+                err = io.StringIO()
+                with redirect_stderr(err):
+                    code = journal_append.main(
+                        ["worker_spawned", field, "--db-path", str(db)]
+                    )
+                self.assertNotEqual(code, 0)
+                self.assertFalse(db.exists())
+
+    def test_clean_names_are_still_written(self) -> None:
+        import journal_append
+
+        with tempfile.TemporaryDirectory() as d:
+            db = Path(d) / "state.db"
+            code = journal_append.main(
+                ["worker_spawned", "task=foo-3", "--db-path", str(db)]
+            )
+            self.assertEqual(code, 0)
+            self.assertTrue(db.exists())
 
 
 if __name__ == "__main__":

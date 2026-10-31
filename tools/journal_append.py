@@ -171,6 +171,18 @@ def main(argv: "list[str] | None" = None) -> int:
             parser.error("--json must encode a JSON object")
         payload.update(extra)
 
+    # task / worker names are identifiers; whitespace means a bookkeeping slip
+    # (e.g. 'foo 3' with a pane number glued on) that spawn_gate audit can
+    # never match. Refuse before touching the DB.
+    for key in ("task", "worker"):
+        val = payload.get(key)
+        if isinstance(val, str) and any(c.isspace() for c in val):
+            sys.stderr.write(
+                f"tools/journal_append.py: {key}={val!r} contains whitespace; "
+                "event NOT recorded.\n"
+            )
+            return 2
+
     from tools.state_db.discover import resolve_state_db_path
     db_path = resolve_state_db_path(
         Path(args.db_path) if args.db_path else None
