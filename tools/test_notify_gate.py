@@ -55,6 +55,8 @@ class CliTest(unittest.TestCase):
             self.assertEqual((rc, r["send"]), (0, False))  # absent
             p.write_text(json.dumps({"w": {"placement": "background_tab"}}), encoding="utf-8")
             self.assertTrue(self._run(["--kind", "event_cursor_reset", "--idle-state", str(p)])[1]["send"])
+            p.write_text("null", encoding="utf-8")
+            self.assertTrue(self._run(["--kind", "event_cursor_reset", "--idle-state", str(p)])[1]["send"])
             p.write_text("{not json", encoding="utf-8")
             r = self._run(["--kind", "event_cursor_reset", "--idle-state", str(p)])[1]
             self.assertEqual((r["send"], r["reason"]), (True, "unreadable_state"))

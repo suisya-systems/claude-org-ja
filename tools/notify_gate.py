@@ -61,7 +61,8 @@ def _load_idle_state(path: Path) -> Any:
     if not path.exists():
         return None
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if data is not None else "unreadable"  # JSON null != absent
     except (OSError, ValueError):
         return "unreadable"  # not a dict -> decide_* answers send
 
