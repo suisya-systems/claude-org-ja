@@ -24,8 +24,8 @@
 | `/org-delegate` 派遣（合致候補・空き pane 内） | ✅ する | per-candidate 人間選択を契約へ畳み込み |
 | worker iteration / verify | ✅ する | スコープ内作業 |
 | **push / `gh pr create` / `pr-watch` CI 監視** | ✅ する | 起動時スコープ承認が [`/org-pull-request`](../../org-pull-request/SKILL.md) 2b-i の「ユーザー明示承認」前提を満たす |
-| **merge（`merge_approval_mode: human`、既定）** | ❌ **承認しない** | 不可逆点。PR ごとの独立人間ゲート（`feedback-merge-approval` / `feedback-no-overgate-after-decision`） |
-| **merge（`merge_approval_mode: acceptance`）** | ✅ 止める線に当たらない PR だけ | 受け入れテストのゲートと CI が完了を確かめる。止める線（[`/org-pull-request`](../../org-pull-request/SKILL.md) 2b-i）に当たれば PR ごとの人間ゲートに戻る。ゲート通過はスコープ承認の代わりにならない |
+| **merge（`merge_approval_mode: human`。キーが無い・不正なときもこちら）** | ❌ **承認しない** | 不可逆点。PR ごとの独立人間ゲート（`feedback-merge-approval` / `feedback-no-overgate-after-decision`） |
+| **merge（`merge_approval_mode: acceptance`。org-config.md の設定値）** | ✅ 止める線に当たらない PR だけ | 受け入れテストのゲートと CI が完了を確かめる。止める線（[`/org-pull-request`](../../org-pull-request/SKILL.md) 2b-i）に当たれば PR ごとの人間ゲートに戻る。ゲート通過はスコープ承認の代わりにならない |
 | スコープ外候補の投入 | ❌ しない | scope 縁 → halt（INV-2 / INV-4） |
 | worker escalation の一次承認 | ❌ しない | [`/org-escalation`](../../org-escalation/SKILL.md) 経由で人間へ（INV-3） |
 

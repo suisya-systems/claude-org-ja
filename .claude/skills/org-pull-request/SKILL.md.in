@@ -87,7 +87,7 @@ allowed-tools:
   ```bash
   python3 tools/merge_approval_mode.py   # Mac/Linux。Windows native は py -3。出力は human か acceptance の 1 行
   ```
-  方式の設定は [`registry/org-config.md`](../../../registry/org-config.md) の「Merge Approval」節（既定 `human`。キー欠落・不正値も `human`）。どちらの方式でも、マージの手前で受け入れテストのゲート（[`.hooks/gate-acceptance-before-merge.sh`](../../../.hooks/gate-acceptance-before-merge.sh)）が動く。方式が変えるのは、窓口が人に仰いで止まるかどうかだけ。**軽量レーン（subagent 直処理）の PR は方式に関わらず `human`** として扱う（[`/org-delegate`](../org-delegate/SKILL.md) の軽量レーン節が人間ゲートを維持するため）。
+  方式の設定は [`registry/org-config.md`](../../../registry/org-config.md) の「Merge Approval」節（設定値は `acceptance`。キーが無い・不正なときは安全側の `human`）。どちらの方式でも、マージの手前で受け入れテストのゲート（[`.hooks/gate-acceptance-before-merge.sh`](../../../.hooks/gate-acceptance-before-merge.sh)）が動く。方式が変えるのは、窓口が人に仰いで止まるかどうかだけ。**軽量レーン（subagent 直処理）の PR は方式に関わらず `human`** として扱う（[`/org-delegate`](../org-delegate/SKILL.md) の軽量レーン節が人間ゲートを維持するため）。
   - **`human`**: 下の awaiting_user を emit し、人間向け理解サマリを再掲してマージの判断を仰ぐ。ユーザーの明示承認を受けてから、下記「マージのコマンド」でマージする。bare「OK」を、PR 作成の承認とマージの承認に兼用しない
   - **`acceptance`**: 次の **止める線** を確かめ、1 つも当たらなければ人に仰がずに「マージのコマンド」でマージし、マージ後に結果（PR・宣言テスト・ゲートの判定）をユーザーへ事後報告する。1 つでも当たれば `human` と同じく awaiting_user を emit し、当たった線を添えて判断を仰ぐ。ゲート通過はスコープ承認の代わりにならない
     1. **受け入れテストの宣言が無い**: `gh pr view <PR> --repo <OWNER/REPO> --json headRefOid,commits` のコミット本文に `Acceptance-Test:` trailer が無い。宣言の無い PR をゲートはパイロット中「記録して通す」（`no-manifest`）が、受け入れテストに合格したわけではないので人に仰ぐ

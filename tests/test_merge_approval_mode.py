@@ -47,9 +47,9 @@ class ReadModeTest(unittest.TestCase):
         self.assertEqual(out.getvalue(), "human\n")
         self.assertIn("invalid value", err.getvalue())
 
-    def test_repo_default_is_human(self):
-        # Shipping default: the checked-in config keeps today's behaviour.
-        self.assertEqual(read_mode(REPO_ROOT), ("human", None))
+    def test_repo_config_is_acceptance(self):
+        # The organisation runs in acceptance mode; a missing key or file falls back to human (CASES).
+        self.assertEqual(read_mode(REPO_ROOT), ("acceptance", None))
 
 
 if __name__ == "__main__":

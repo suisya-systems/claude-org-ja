@@ -4,12 +4,14 @@
 Reads ``merge_approval_mode:`` (column 0) from ``registry/org-config.md`` and
 prints ``human`` or ``acceptance`` as one line:
 
-- human (default): after CI green the secretary asks the human before merging.
-- acceptance: the secretary merges without asking when the acceptance gate and
-  CI pass and no stop line is hit (the skills list the stop lines).
+- human: after CI green the secretary asks the human before merging.
+- acceptance (the value set in this repo's org-config.md): the secretary
+  merges without asking when the acceptance gate and CI pass and no stop line
+  is hit (the skills list the stop lines).
 
-A missing file, a missing key or an invalid value prints ``human``; an invalid
-value also writes one warning to stderr. Exit code is always 0.
+A missing file, a missing key or an invalid value prints ``human``: a config
+that cannot be read must not skip the human. An invalid value also writes one
+warning to stderr. Exit code is always 0.
 """
 
 from __future__ import annotations

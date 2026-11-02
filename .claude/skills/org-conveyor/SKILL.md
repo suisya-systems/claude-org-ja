@@ -56,7 +56,7 @@ merge gate で停止する。人間は「レビュー待ち PR のキュー」�
 ## 不変条件
 
 - **INV-1 merge 承認は `merge_approval_mode` に従う**: 方式は `python3 tools/merge_approval_mode.py` の出力（設定は
-  [`registry/org-config.md`](../../../registry/org-config.md)「Merge Approval」、既定 `human`）。`human` ではスコープ契約は
+  [`registry/org-config.md`](../../../registry/org-config.md)「Merge Approval」。設定値は `acceptance`、キーが無い・不正なときは安全側の `human`）。`human` ではスコープ契約は
   dispatch〜CI 監視を事前承認できるが、merge は事前承認の対象にしない（CI green で停止し、PR を人間へ提示して merge を仰ぐ。
   bare「OK」を merge 承認と解釈しない）。`acceptance` では、スコープ契約の内側で [`/org-pull-request`](../org-pull-request/SKILL.md)
   2b-i の **止める線** に 1 つも当たらない PR に限り、受け入れテストのゲートと CI の通過でマージまで自走する。
