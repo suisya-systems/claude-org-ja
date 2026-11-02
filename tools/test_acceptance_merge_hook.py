@@ -107,7 +107,10 @@ class ParseTest(unittest.TestCase):
                     f"gh -R o/r pr {m} 3 --squash", f"gh.exe pr {m} 7 --repo o/r --squash",
                     f"C:\\Program Files\\GitHub CLI\\gh.exe pr {m} 7", f"/c/tools/gh.exe pr {m} 7",
                     "gh pr mer\\\nge 7 --repo o/r --squash", f"gh pr ${{ACTION:-{m}}} 7 --repo o/r --squash",
-                    f"gh ${{G:-pr}} {m} 7", f"${{GH:-gh}} pr {m} 7"):
+                    f"gh ${{G:-pr}} {m} 7", f"${{GH:-gh}} pr {m} 7",
+                    f'env "$GH" pr {m} 7 --repo o/r --squash', f'command "$GH" pr {m} 7',
+                    f"sudo $GH pr {m} 7", f"$GH $P {m} 7", f"xargs -I{{}} $GH pr {m} {{}}",
+                    f"env GH=1 $GH pr ${{X:-{m}}} 7"):
             with self.subTest(cmd=cmd), self.assertRaises(hook.Deny):
                 hook.parse(cmd)
 

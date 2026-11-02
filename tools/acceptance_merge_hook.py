@@ -19,8 +19,9 @@ separators. ``mergePullRequest``, ``enablePullRequestAutoMerge`` and
 ``pulls/<n>/merge`` are denied anywhere. Otherwise a command containing
 ``merge`` (anywhere, so ``${X:-merge}`` counts too) is denied only if it runs
 ``gh`` with anything but a read / create subcommand (``SAFE_GH``; a ``$`` or
-backtick in the subcommand is not safe), or uses ``eval`` or ``$`` / a
-backtick as the command name. So reads (``gh pr view --json mergedAt``),
+backtick in the subcommand is not safe), has ``merge`` right after ``pr`` or
+after / inside a ``$`` / backtick word (``env "$GH" pr merge``,
+``${X:-merge}``), or uses ``eval`` or ``$`` / a backtick as the command name. So reads (``gh pr view --json mergedAt``),
 PR titles, file names and heredoc text pass,
 while ``gh pr merge`` in any other form, ``gh pr $x``, ``gh api`` and
 ``$g pr merge`` stay denied. This stops mistakes, not an adversary: gh
@@ -71,7 +72,9 @@ STRONG = re.compile(r"mergepullrequest|enablepullrequestautomerge|pulls/[^\s/]+/
 # `$` or a backtick where a command name goes (`$g pr merge`, `$(echo gh) pr merge`), or eval.
 # A bare `(` is left out: it is mostly prose in heredocs, and `( $g pr merge )` is a residual.
 DYNAMIC_COMMAND = re.compile(r"(?:^|[;&|]|\$\(|`)\s*[$`]|\beval\b")
-TOKEN_SPLIT = re.compile(r"[\s,;&|()\[\]{}<>=]+")
+# `merge` as a value inside an expansion (`${X:-merge}`), not part of a path like `$D/before-merge.sh`.
+MERGE_IN_EXPANSION = re.compile(r"(?<![\w.])merge(?![\w.-])", re.ASCII)
+TOKEN_SPLIT =re.compile(r"[\s,;&|()\[\]{}<>=]+")
 SAFE_GH = {"issue": None, "search": None,
            "pr": {"view", "list", "checks", "status", "diff", "create", "comment", "edit", "review"}}
 FORM = ("merge with exactly: gh pr merge <number> --repo <OWNER/REPO> --squash|--merge|--rebase"
@@ -99,6 +102,18 @@ def unsafe_gh(tokens: list[str]) -> bool:
     return False
 
 
+def merge_verb(tokens: list[str]) -> bool:
+    """True if a token reads as the merge subcommand whatever runs it (`env $GH pr merge`,
+    `command $GH pr merge`, `$GH $P merge`, `gh pr ${X:-merge}`)."""
+    for prev, tok in zip([""] + tokens, tokens):
+        dynamic = "$" in tok or "`" in tok
+        if dynamic and MERGE_IN_EXPANSION.search(tok):
+            return True
+        if tok == "merge" and (prev == "pr" or "$" in prev or "`" in prev):
+            return True
+    return False
+
+
 def parse(command: str) -> tuple[str, str, str] | None:
     """(number, OWNER/REPO, head SHA) for the allowed merge form; None for a command that cannot merge."""
     m = MERGE.fullmatch(command.strip())
@@ -110,8 +125,10 @@ def parse(command: str) -> tuple[str, str, str] | None:
     plain = re.sub(r"[\"'\\]", "", command.replace("\\\n", "").replace("\n", ";")).lower()
     if STRONG.search(plain):
         raise Deny(FORM)
-    if "merge" in plain and (unsafe_gh(TOKEN_SPLIT.split(plain)) or DYNAMIC_COMMAND.search(plain)):
-        raise Deny(FORM)
+    if "merge" in plain:
+        tokens = TOKEN_SPLIT.split(plain)
+        if unsafe_gh(tokens) or merge_verb(tokens) or DYNAMIC_COMMAND.search(plain):
+            raise Deny(FORM)
     return None
 
 
