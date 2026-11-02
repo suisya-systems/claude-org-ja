@@ -106,7 +106,8 @@ class ParseTest(unittest.TestCase):
                     f"gh $p {m} 3", f"gh alias set pm 'pr {m}'", f"/usr/bin/gh pr {m} 3",
                     f"gh -R o/r pr {m} 3 --squash", f"gh.exe pr {m} 7 --repo o/r --squash",
                     f"C:\\Program Files\\GitHub CLI\\gh.exe pr {m} 7", f"/c/tools/gh.exe pr {m} 7",
-                    "gh pr mer\\\nge 7 --repo o/r --squash"):
+                    "gh pr mer\\\nge 7 --repo o/r --squash", f"gh pr ${{ACTION:-{m}}} 7 --repo o/r --squash",
+                    f"gh ${{G:-pr}} {m} 7", f"${{GH:-gh}} pr {m} 7"):
             with self.subTest(cmd=cmd), self.assertRaises(hook.Deny):
                 hook.parse(cmd)
 

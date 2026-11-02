@@ -15,14 +15,13 @@ head moved after the hook looked at it.
 Other commands are denied only when they could merge (Issue #1229), judged on
 the command with quotes and backslashes removed and lowercased (so
 ``m'erge'`` and ``bash -c "..."`` stay visible) and newlines read as command
-separators. A command with none of: the word ``merge`` on its own (not part
-of ``mergedAt``, ``merge_approval_mode`` or a file name like
-``acceptance_merge_hook.py``), ``mergePullRequest``,
-``enablePullRequestAutoMerge`` or ``pulls/<n>/merge`` is allowed. The last
-three are denied anywhere. With the word ``merge`` present, the command is
-denied if it runs ``gh`` with anything but a read / create subcommand
-(``SAFE_GH``), or uses ``eval`` or ``$`` / a backtick as the command name.
-So reads (``gh pr view --json mergedAt``), PR titles and file names pass,
+separators. ``mergePullRequest``, ``enablePullRequestAutoMerge`` and
+``pulls/<n>/merge`` are denied anywhere. Otherwise a command containing
+``merge`` (anywhere, so ``${X:-merge}`` counts too) is denied only if it runs
+``gh`` with anything but a read / create subcommand (``SAFE_GH``; a ``$`` or
+backtick in the subcommand is not safe), or uses ``eval`` or ``$`` / a
+backtick as the command name. So reads (``gh pr view --json mergedAt``),
+PR titles, file names and heredoc text pass,
 while ``gh pr merge`` in any other form, ``gh pr $x``, ``gh api`` and
 ``$g pr merge`` stay denied. This stops mistakes, not an adversary: gh
 aliases, the GitHub web UI and other sessions stay outside.
@@ -68,10 +67,10 @@ PYTEST_TIMEOUT_S = 300
 GATE_EXIT = {"passed": 0, "rejected": 1, "no-manifest": 3}
 MERGE = re.compile(r"gh pr merge ([0-9]+) --repo ([\w.-]+/[\w.-]+) --(?:squash|merge|rebase)"
                    r" --match-head-commit ([0-9a-f]{40})(?: --delete-branch)?", re.ASCII)
-WORD = re.compile(r"(?<![\w.-])merge(?![\w.-])", re.ASCII)
 STRONG = re.compile(r"mergepullrequest|enablepullrequestautomerge|pulls/[^\s/]+/merge(?![\w.-])", re.ASCII)
 # `$` or a backtick where a command name goes (`$g pr merge`, `$(echo gh) pr merge`), or eval.
-DYNAMIC_COMMAND = re.compile(r"(?:^|[;&|(]|\$\(|`)\s*[$`]|\beval\b")
+# A bare `(` is left out: it is mostly prose in heredocs, and `( $g pr merge )` is a residual.
+DYNAMIC_COMMAND = re.compile(r"(?:^|[;&|]|\$\(|`)\s*[$`]|\beval\b")
 TOKEN_SPLIT = re.compile(r"[\s,;&|()\[\]{}<>=]+")
 SAFE_GH = {"issue": None, "search": None,
            "pr": {"view", "list", "checks", "status", "diff", "create", "comment", "edit", "review"}}
@@ -111,7 +110,7 @@ def parse(command: str) -> tuple[str, str, str] | None:
     plain = re.sub(r"[\"'\\]", "", command.replace("\\\n", "").replace("\n", ";")).lower()
     if STRONG.search(plain):
         raise Deny(FORM)
-    if WORD.search(plain) and (unsafe_gh(TOKEN_SPLIT.split(plain)) or DYNAMIC_COMMAND.search(plain)):
+    if "merge" in plain and (unsafe_gh(TOKEN_SPLIT.split(plain)) or DYNAMIC_COMMAND.search(plain)):
         raise Deny(FORM)
     return None
 
