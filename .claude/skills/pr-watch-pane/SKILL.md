@@ -62,7 +62,7 @@ context リセットと無関係）に監視が継続し、人間が tmux ペイ
 > 末尾の「attention watcher は ... 2 段承認の対象外」注記と同義）。両系で
 > 切り替わるのは **ツール完全修飾名だけ**:
 >
-> - 既定 broker: `mcp__org-broker__spawn_pane`（`list_panes` / `set_pane_identity` /
+> - コード既定 broker: `mcp__org-broker__spawn_pane`（`list_panes` / `set_pane_identity` /
 >   `inspect_pane` / `close_pane` も同様に `mcp__org-broker__*`）
 > - opt-in renga: `mcp__renga-peers__spawn_pane`（同様に `mcp__renga-peers__*`）
 >

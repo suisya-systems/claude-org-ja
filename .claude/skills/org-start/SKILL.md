@@ -63,7 +63,7 @@ ClaudeCode起動後に最初に実行するスキル。前回の状態復元と�
 > は `notes/` 配下に保存する。
 > DB が無い場合は `python3 -m tools.state_db.importer --db .state/state.db --root . --rebuild --no-strict` で構築する。
 
-> **輸送層（transport）両系 — 既定 `renga` / opt-in `broker`**: 本スキルの `mcp__renga-peers__*` 呼び出しは **既定 `renga`**（`ORG_TRANSPORT` 無設定）で書いてあり、そのまま従えばよい（既定挙動は不変）。`ORG_TRANSPORT=broker`（opt-in・切戻し可）では MCP サーバー名が `org-broker` になり、ツールの **完全修飾名が `mcp__renga-peers__*` → `mcp__org-broker__*`** に機械置換される（引数形・セマンティクスは同一なので手順の論理は変わらない）。輸送依存で手順が変わる点だけ broker 併記する:
+> **輸送層（transport）両系 — 運用既定 `renga` / opt-in `broker`**: 本スキルの `mcp__renga-peers__*` 呼び出しは **運用既定 `renga`**（`ORG_TRANSPORT=renga` で運用する構成。`ORG_TRANSPORT` 無設定の pane は `resolve()` でコード既定 `broker` に解決される）で書いてあり、そのまま従えばよい（運用上の既定挙動は不変）。`ORG_TRANSPORT=broker`（opt-in・切戻し可）では MCP サーバー名が `org-broker` になり、ツールの **完全修飾名が `mcp__renga-peers__*` → `mcp__org-broker__*`** に機械置換される（引数形・セマンティクスは同一なので手順の論理は変わらない）。輸送依存で手順が変わる点だけ broker 併記する:
 >
 > - **受信モデル（push 一次 = `claude/channel` / pull フォールバック）**: renga は dispatcher / worker のメッセージが `<channel source="renga-peers" …>` として in-band で push される。broker は **push 一次**に再設計されている（runtime push-first 0.1.24+、transport-lab `docs/design/broker-native-roles.md` §9）: 各ペイン同居の **channel sidecar**（`server:org-broker-channel`）が broker キューを ~1 秒間隔で claim→push し、`notifications/claude/channel` で本文を idle セッションへ注入する（renga の in-band push と同じ「受けたら即応答」契機）。**pull はフォールバック層**: sidecar 不在 / unhealthy（heartbeat timeout で `delivery_mode=PULL`）/ channel 非対応ペイン / claude.ai login 不在時は、各役割が自身の cadence で能動的に `check_messages`（broker では `mcp__org-broker__check_messages`）する（§9.6 読み替え表の役割別 cadence。ナッジが出れば契機になりうるが idle を起こさないため能動 poll が受信の正路。既存の「ナッジを見たら `check_messages`」prose は**撤回せず**この fallback cadence として読む。ツール名以外の手順は同型）。契約面は Surface 8 で push 一次が **ratified 済み**（2026-06-15、S3。broker pull-only を supersede し pull は fallback として retain・renga 不変）。
 > - **spawn 儀式（folder-trust 承認 + dev-channel sidecar 承認の再導入）**: renga の `spawn_claude_pane` は `--dangerously-load-development-channels server:renga-peers` を注入し「Load development channel?」を画面判定で承認する（Block D-1）。broker は `--mcp-config <broker>` を注入し承認プロンプトが Claude Code の **folder-trust プロンプト**に変わる（画面判定で機械承認）**のに加えて**、push 一次のため channel sidecar を `--dangerously-load-development-channels server:org-broker-channel` で load し dev-channel 承認プロンプト（spawn-flow 3-3b）を画面判定で **再導入**機械承認する（ratified §5/§8.5 の folder-trust フローへの加算であり置換ではない。設計は broker-native-roles.md §9.5）。**画面判定** = `inspect_pane` → `claude-org-runtime dispatcher spawn-prompt-step` が返した 1 手だけを `send_keys` する反復（runtime 0.1.43+）。盲目 Enter は禁止（folder-trust の初期カーソルは「No, exit」で、Enter 一発は起動したセッションを終了させる）。
@@ -71,7 +71,7 @@ ClaudeCode起動後に最初に実行するスキル。前回の状態復元と�
 >
 > `new_tab` / `focus_pane` は broker surface に**無い**（意図的除外。本フローは元々使わない）。契約面の正本は [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) Surface 8（broker auth & delivery、ratified 2026-06-14。push 一次への additive 改訂 S3 が ratified 済み（2026-06-15、「Ratified amendment」節）・既存 ratified 本文不変更）、設計 SoT は transport-lab `docs/design/broker-native-roles.md` §9（push 一次再設計）/ `docs/design/ja-migration-plan.md` §5.2(ii)・§8。broker 実走（dogfood）は Epic #6 Issue G スコープで本スキルの既定経路ではない。
 >
-> （**既定の二フレーム注記（Refs #604）**: ここでの「既定 `renga`」は**運用既定**（broker 実走 dogfood が Epic #6 Issue G まで未活性）の意。別に**コード既定**として `tools/transport.py: DEFAULT_TRANSPORT` が runtime 0.1.28 (Epic #586) で `broker` にフリップ済みで、ja 生成器・`transport.resolve()` はこのコードフレームで render するため生成面は「既定 `broker`」と表示する — 両フレームは指す対象（運用経路 vs コード定数）が異なり矛盾しない。総説は root `CLAUDE.md`「輸送層（transport）両系」節。）
+> （**既定の二フレーム注記（Refs #604）**: ここでの「運用既定 `renga`」は**運用既定**（broker 実走 dogfood が Epic #6 Issue G まで未活性）の意。別に**コード既定**として `tools/transport.py: DEFAULT_TRANSPORT` が runtime 0.1.28 (Epic #586) で `broker` にフリップ済みで、ja 生成器・`transport.resolve()` はこのコードフレームで render するため生成面は「コード既定 `broker`」と表示する — 両フレームは指す対象（運用経路 vs コード定数）が異なり矛盾しない。なお本スキルの Step 0 のシェル断片は `${ORG_TRANSPORT:-renga}` で無設定時に `renga` を返すが、`spawn-flow.md` と `org-down` の断片は `${ORG_TRANSPORT:-broker}` で、断片ごとに既定値が異なる（今回は変えていない）。総説は root `CLAUDE.md`「輸送層（transport）両系」節。）
 
 ## Step 0: 初期化
 
@@ -79,7 +79,7 @@ ClaudeCode起動後に最初に実行するスキル。前回の状態復元と�
    ```bash
    echo "${ORG_TRANSPORT:-renga}"
    ```
-   - `renga`（無設定を含む既定）: 本スキル記載のとおり `mcp__renga-peers__*` をそのまま使う
+   - `renga`（本断片の `${ORG_TRANSPORT:-renga}` が返す無設定時の値を含む）: 本スキル記載のとおり `mcp__renga-peers__*` をそのまま使う
    - `broker`: 以降の手順（Step 0 の残りサブステップ〜Block D・失敗モードを含むすべて）のツールを `mcp__org-broker__*` で呼ぶと**ここで決めてから** MCP 呼び出しに入る（冒頭注記の機械置換）。broker 環境で判定せずに `mcp__renga-peers__*` を先に叩くと「RENGA_PANE_ID not set — Claude Code was not launched by renga」エラーで初めて気づく無駄な往復になる
 1. `mcp__renga-peers__set_summary`（broker では `mcp__org-broker__set_summary`）で自分のサマリーを設定する: 「Secretary: 窓口」
    - ワーカー / ディスパッチャー / キュレーターが `list_peers` で窓口を発見するために必須

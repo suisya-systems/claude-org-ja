@@ -21,7 +21,7 @@ allowed-tools:
   - Bash(py -3 tools/journal_append.py:*)
   - Bash(git diff:*) # verify applicability classifier の touch-domain 裏取り（read-only。worker branch が local に在るとき）
   - Bash(mkdir -p .state/conveyor:*) # Step 1 のスコープ契約書き出し先ディレクトリ確保（fresh checkout 対策）
-  # 直接の transport 面は active transport（コード既定 broker）のみ列挙する。broker + renga の
+  # 直接の transport 面は単一 transport（checked-in はコード既定 broker の面）のみ列挙する。broker + renga の
   # union は非アクティブ transport のツールまで認可し per-transport auth モデルを迂回するため不可
   # （設計 SoT: notes/broker-skill-generator-design.md #9。union 却下）。送受信機構はサブスキルへ委譲し、
   # conveyor 自身が直接使うのは free-pane 会計（list_panes）とループ event のドレイン（check_messages）だけ。
