@@ -1898,6 +1898,13 @@ def _run_ci_watch_phase(
     # `indeterminate` verdict instead carries the retry schedule so the
     # monitoring side can tell "re-invoke pr_watch" from a stalled gate.
     extra: dict = {}
+    # Issue #1228: the full sha, only when the head was read successfully
+    # both before and after CI and did not move — the one case where this
+    # verdict provably belongs to that commit. The secretary's pre-merge
+    # hook (tools/acceptance_merge_hook.py) merges only a head that matches
+    # it exactly; a missing field means "re-run the watcher".
+    if not canceled and head_before is not None and head_before == head_after:
+        extra["head_oid"] = head_before
     if total_checks is not None:
         extra["fail_count"] = fail_count
         extra["pending_count"] = pending_count

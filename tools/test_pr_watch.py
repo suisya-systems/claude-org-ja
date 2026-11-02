@@ -2184,6 +2184,43 @@ class HeadPollLoopbackTests(unittest.TestCase):
             rec = _read_ci_event(db)
             self.assertEqual(rec["head"], "aaaaaaa")
             self.assertEqual(rec["status"], "passed")
+            # Issue #1228: the head was read before and after CI and did not move.
+            self.assertEqual(rec["head_oid"], self.HEAD_A)
+
+    def test_no_full_head_when_the_pre_ci_head_read_failed(self) -> None:
+        """Issue #1228: a failed pre-CI head read leaves only the post-CI head,
+        which a push during CI could have replaced, so no ``head_oid`` is
+        recorded (the pre-merge hook then refuses to merge on this row)."""
+        head_reads = [mock.Mock(returncode=1, stdout="", stderr="boom")]
+
+        def fake_run(cmd, *args, **kwargs):
+            if cmd[:3] == ["gh", "pr", "view"] and "--json" in cmd:
+                jval = cmd[cmd.index("--json") + 1]
+                if jval.startswith("mergeable"):
+                    return mock.Mock(returncode=0, stdout=json.dumps({"mergeable": "MERGEABLE"}), stderr="")
+                if jval == "number":
+                    return mock.Mock(returncode=0, stdout="{}", stderr="")
+                if jval == "headRefOid":
+                    if head_reads:
+                        return head_reads.pop()
+                    return mock.Mock(returncode=0, stdout=json.dumps({"headRefOid": self.HEAD_B}), stderr="")
+            if "checks" in cmd and "--json" in cmd:
+                return mock.Mock(returncode=0, stderr="", stdout=json.dumps(
+                    [{"name": "ci", "state": "COMPLETED", "bucket": "pass"}]))
+            return mock.Mock(returncode=0)
+
+        with TempDir() as tmp:
+            db = tmp / ".state" / "state.db"
+            with mock.patch.object(pr_watch, "JOURNAL_PATH", db), \
+                 mock.patch.object(pr_watch, "_notify_peer", return_value=True), \
+                 mock.patch.object(pr_watch.shutil, "which", return_value="/usr/bin/gh"), \
+                 mock.patch.object(pr_watch.subprocess, "run", side_effect=fake_run), \
+                 mock.patch.object(pr_watch.time, "monotonic", side_effect=[0.0, 5.0]):
+                rc = pr_watch.main(["--pr", "636", "--repo", "octo/repo"])
+            self.assertEqual(rc, 0)
+            rec = _read_ci_event(db)
+            self.assertEqual(rec["head"], "bbbbbbb")
+            self.assertNotIn("head_oid", rec)
 
     def test_merge_at_unconfirmed_head_is_distinct_signal_not_pr_merged(self) -> None:
         """Codex review: if a PR merges at a head different from the last
