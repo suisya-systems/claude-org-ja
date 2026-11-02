@@ -87,7 +87,8 @@ class Deny(Exception):
 def unsafe_gh(tokens: list[str]) -> bool:
     """True if any `gh` in the tokens runs something other than a SAFE_GH subcommand."""
     for i, tok in enumerate(tokens):
-        if tok != "gh" and not tok.endswith("/gh"):
+        # `gh`, `/usr/bin/gh`, `gh.exe`; a Windows `C:\...\gh.exe` lost its backslashes above.
+        if re.split(r"[/:]", tok)[-1] not in ("gh", "gh.exe") and not tok.endswith("gh.exe"):
             continue
         rest = tokens[i + 1:]
         while rest and rest[0].startswith("-"):  # global flags; -R / --repo take a value
@@ -104,9 +105,10 @@ def parse(command: str) -> tuple[str, str, str] | None:
     m = MERGE.fullmatch(command.strip())
     if m:
         return m.group(1), m.group(2), m.group(3)
-    # Line continuations join; other newlines separate commands. Quotes and
-    # backslashes go so `m'erge'` and `bash -c "gh pr merge"` read as written.
-    plain = re.sub(r"[\"'\\]", "", command.replace("\\\n", " ").replace("\n", ";")).lower()
+    # Line continuations vanish (bash joins `mer\<newline>ge` into one word);
+    # other newlines separate commands. Quotes and backslashes go so
+    # `m'erge'` and `bash -c "gh pr merge"` read as written.
+    plain = re.sub(r"[\"'\\]", "", command.replace("\\\n", "").replace("\n", ";")).lower()
     if STRONG.search(plain):
         raise Deny(FORM)
     if WORD.search(plain) and (unsafe_gh(TOKEN_SPLIT.split(plain)) or DYNAMIC_COMMAND.search(plain)):

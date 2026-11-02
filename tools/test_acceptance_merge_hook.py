@@ -104,7 +104,9 @@ class ParseTest(unittest.TestCase):
                     f"$(echo gh) pr {m} 3", f"`echo gh` pr {m} 3", f'c="x {m}"; eval "$c"',
                     f"python3 -c \"import subprocess; subprocess.run(['gh','pr','{m}','3'])\"",
                     f"gh $p {m} 3", f"gh alias set pm 'pr {m}'", f"/usr/bin/gh pr {m} 3",
-                    f"gh -R o/r pr {m} 3 --squash"):
+                    f"gh -R o/r pr {m} 3 --squash", f"gh.exe pr {m} 7 --repo o/r --squash",
+                    f"C:\\Program Files\\GitHub CLI\\gh.exe pr {m} 7", f"/c/tools/gh.exe pr {m} 7",
+                    "gh pr mer\\\nge 7 --repo o/r --squash"):
             with self.subTest(cmd=cmd), self.assertRaises(hook.Deny):
                 hook.parse(cmd)
 
