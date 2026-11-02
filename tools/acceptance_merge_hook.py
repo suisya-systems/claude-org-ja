@@ -90,8 +90,9 @@ def allow_listed(command: str) -> bool:
     lines = command.replace("\\\n", "").strip().split("\n")
     first = lines[0]
     heredoc = HEREDOC.search(first)
-    if heredoc:  # body is data: quoted delimiter, nothing after the closing line
-        if lines[-1].strip() != heredoc.group(2) or len(lines) < 2:
+    if heredoc:  # body is data: quoted delimiter, and the first closing line is the last line
+        ends = [i for i, line in enumerate(lines[1:], 1) if line.strip() == heredoc.group(2)]
+        if not ends or ends[0] != len(lines) - 1:
             return False
         first = first[:heredoc.start()]
     elif len(lines) > 1:
@@ -115,9 +116,10 @@ def allow_listed(command: str) -> bool:
         allowed = SAFE_GH.get(group, ())
         return allowed is None or sub in allowed
     if prog == "sed":
-        script = [a for a in argv[1:] if not a.startswith("-")][:1]
-        return "-n" in argv and not any(a.startswith("-i") for a in argv) and bool(script) \
-            and SED_PRINT.fullmatch(script[0]) is not None
+        # Exactly `sed -n <lines>p <files>`: no other option, so no second -e / -f script.
+        args = argv[1:]
+        return len(args) >= 2 and args[0] == "-n" and SED_PRINT.fullmatch(args[1]) is not None \
+            and not any(a.startswith("-") for a in args[2:])
     return prog in READERS
 
 

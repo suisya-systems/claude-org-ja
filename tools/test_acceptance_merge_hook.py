@@ -86,6 +86,9 @@ class ParseTest(unittest.TestCase):
                     f"grep -n gh /r/acceptance_{m}_hook.py | head", f"gh pr view 3 --json mergedAt; echo $X",
                     f"cat f <(gh pr {m} 3)", f"cat <<EOF\n$(gh pr {m} 3)\nEOF",
                     f"cat <<'EOF'\nx\nEOF\ngh pr {m} 3", f"sed -n '1e gh pr {m} 3' f",
+                    f"cat <<'EOF'\nnotes\nEOF\ngh pr {m} 7 --repo o/r --squash\ncat <<'EOF'\nnotes\nEOF",
+                    f"sed -n -e 1p -e '1e gh pr {m} 7' f", f"sed -n 1p f -e '1e gh pr {m} 7'",
+                    f"sed -n 1p -f s.sed f # gh {m}",
                     f"less '+!gh pr {m} 3' f", f"rg --pre $X {m} f", f"grep x f 2>&1 | gh pr {m} 3",
                     f"gh pr view `echo 3` --json mergedAt", f'codex exec "review $CLAUDE_ORG_PATH/{m}.py"'):
             with self.subTest(cmd=cmd), self.assertRaises(hook.Deny):
