@@ -14,7 +14,7 @@
 | STALL_SUSPECTED / ERROR_DETECTED / APPROVAL_BLOCKED / PANE_OUTPUT_WITHOUT_PEER_MSG | 異常・承認待ち。再通知間隔は #759 | 現状維持（対象外） |
 | SECRETARY_RELAY_GAP_SUSPECTED / RELAY_SCAN_STALE / CURATOR_CLOSE_UNRESOLVED / CURATE_ERROR 転送 | 取りこぼし・失敗報告 | 現状維持（対象外） |
 | relay 項目（CI_COMPLETED / PR_MERGED の [relay] 等） | 見逃しゼロの主保証。直 push と二重でも止めない | 現状維持（対象外） |
-| RETRO_RECORDED | 知見増加の報告。窓口の行動は無いが curate 閾値の情報 | 触らない（要確認事項として報告） |
+| RETRO_RECORDED | 知見増加の報告。窓口の行動は無い（curator 起動はディスパッチャー側の閾値チェックの責務） | **ゲート新設** `retro_recorded`（常に送らない・events に delivery=suppressed reason=info_only） |
 
 ゲートは「届いても窓口がやることの無い通知」のうち、条件が機械的に決まる 2 種だけ。他は条件が人/窓口の判断に依るか失敗報告なので変えない。
 

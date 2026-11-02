@@ -204,7 +204,7 @@ bash ../tools/journal_append.sh anomaly_observed source=close_pane worker=worker
 
 **(c) 後続 Step は保留でも実行する**: 閉じられなかったのはペインだけで、Step 4〜6 はペインの生死に依存しない。
 
-- **Step 4（窓口への報告）** — 知見を記録した場合の `RETRO_RECORDED` は通常どおり送る。**それとは別に、
+- **Step 4（窓口への報告）** — 知見を記録した場合の `RETRO_RECORDED` は下の Step 4 のゲートに従う（通常は送らず events に記録だけ残す）。**それとは別に、
   知見記録の有無に関わらず保留の informational を必ず 1 通送る**（窓口側に新しい合図語彙を要求せず、
   読んで再送を判断できる本文にする）:
 
@@ -221,10 +221,15 @@ bash ../tools/journal_append.sh anomaly_observed source=close_pane worker=worker
 
 ### 4. 窓口への報告
 
-知見を記録した場合のみ、`mcp__renga-peers__send_message` で窓口に報告する:
+知見を記録した場合のみ、まず `python3 ../tools/notify_gate.py --kind retro_recorded` を叩く。窓口がやることの無い情報だけの通知なので `send: false` になり、窓口へは送らない。代わりに events へ記録だけ残す（ツールが失敗した / JSON として読めないときは `send: true` として下の本文を送る）:
+```bash
+bash ../tools/journal_append.sh notify_sent kind=retro_recorded task={task_id} delivery=suppressed reason=info_only
+```
+`send: true` のときだけ `mcp__renga-peers__send_message` で窓口に報告する:
 ```
 RETRO_RECORDED: {task_id} の委譲について {topic} の学びを記録しました。
 ```
+curator を起動するかどうかは通知の有無と無関係に Step 5 の閾値チェックが決める。
 
 Step 3 で close を見送った（保留）場合は、**知見記録の有無に関わらず**保留の informational も送る
 （本文と理由欄は Step 3 の「保留（close を見送った場合）の扱い」(c) を参照）。

@@ -25,7 +25,7 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
-KINDS = ("event_cursor_reset", "curator_vanished")
+KINDS = ("event_cursor_reset", "curator_vanished", "retro_recorded")
 
 
 def decide_event_cursor_reset(idle_state: Any) -> tuple[bool, str]:
@@ -57,6 +57,15 @@ def decide_curator_vanished(curate_result: Optional[str]) -> tuple[bool, str]:
     return True, "no_result_received"
 
 
+def decide_retro_recorded() -> tuple[bool, str]:
+    """RETRO_RECORDED is information only: the secretary has nothing to do.
+
+    Whether to start a curator stays the dispatcher's own check (pane-close
+    Step 5); the knowledge/raw/ file itself is the record.
+    """
+    return False, "info_only"
+
+
 def _load_idle_state(path: Path) -> Any:
     if not path.exists():
         return None
@@ -78,6 +87,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         if not args.idle_state:
             ap.error("--idle-state is required for event_cursor_reset")
         send, reason = decide_event_cursor_reset(_load_idle_state(Path(args.idle_state)))
+    elif args.kind == "retro_recorded":
+        send, reason = decide_retro_recorded()
     else:
         send, reason = decide_curator_vanished(args.curate_result)
     print(json.dumps({"kind": args.kind, "send": send, "reason": reason}))

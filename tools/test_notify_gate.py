@@ -41,6 +41,15 @@ class CuratorTest(unittest.TestCase):
             self.assertTrue(g.decide_curator_vanished(v)[0], v)
 
 
+class RetroTest(unittest.TestCase):
+    def test_never_sends(self):
+        self.assertEqual(g.decide_retro_recorded(), (False, "info_only"))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(g.main(["--kind", "retro_recorded"]), 0)
+        self.assertFalse(json.loads(out.getvalue())["send"])
+
+
 class CliTest(unittest.TestCase):
     def _run(self, argv):
         out = io.StringIO()
