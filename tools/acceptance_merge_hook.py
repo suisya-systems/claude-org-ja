@@ -15,12 +15,13 @@ head moved after the hook looked at it.
 Any other command that mentions a merge is denied when it also has ``gh``,
 a pull request (``pulls/...``, ``mergePullRequest``), ``$`` or a backtick
 (blocking too much is accepted, letting a merge past the gate is not), unless
-it is one allow-listed command on its own (Issue #1229): ``gh`` with a read /
-create subcommand (``SAFE_GH``), a reader such as ``grep`` / ``cat`` /
-``head`` (``READERS``) or ``sed -n <lines>p``, with no ``;`` ``&`` ``|`` ``(`` ``)``, command
-substitution, backtick or process substitution, and a literal program and
-``gh`` subcommand. A ``cat`` / ``tee`` heredoc with a quoted delimiter counts
-as one command (its body is not expanded). So ``gh pr view --json mergedAt``,
+it is one allow-listed command on its own on one line (Issue #1229): ``gh``
+with a read / create subcommand (``SAFE_GH``), a reader such as ``grep`` /
+``cat`` / ``head`` (``READERS``) or ``sed -n <lines>p``, with a literal
+program and ``gh`` subcommand and no newline (so no heredoc), ``#``, ``;``
+``&`` ``|`` ``(`` ``)``, command substitution, backtick or process
+substitution. Multi-line commands are always judged by the broad rule.
+So ``gh pr view --json mergedAt``,
 a PR title with the word merge, and ``grep`` on the hook's own file pass,
 while ``gh.exe``, ``env "$GH" pr merge``, ``gh pr ${X:-merge}`` and chained
 commands stay denied. This stops mistakes, not an adversary: gh aliases, the
@@ -74,7 +75,6 @@ SAFE_GH = {"issue": None, "search": None,
 # No `less` (`+!cmd` runs a shell) or `rg` (`--pre cmd` runs a program).
 READERS = {"grep", "cat", "head", "tail", "wc", "ls", "diff", "tee"}
 SED_PRINT = re.compile(r"[0-9]+(,[0-9$]+)?p|\$p")  # `sed -n 10,20p`; sed scripts can run commands (`e`)
-HEREDOC = re.compile(r"<<-?\s*(['\"])(\w+)\1\s*$")
 FORM = ("merge with exactly: gh pr merge <number> --repo <OWNER/REPO> --squash|--merge|--rebase"
         " --match-head-commit <full head SHA> [--delete-branch], alone on one line,"
         " so the acceptance gate can read it. A PR this form cannot merge (e.g. a repo without CI)"
@@ -87,17 +87,9 @@ class Deny(Exception):
 
 def allow_listed(command: str) -> bool:
     """True for one allow-listed read / create command on its own (see the module docstring)."""
-    lines = command.replace("\\\n", "").strip().split("\n")
-    first = lines[0]
-    heredoc = HEREDOC.search(first)
-    if heredoc:  # body is data: quoted delimiter, and the first closing line is the last line
-        ends = [i for i, line in enumerate(lines[1:], 1) if line.strip() == heredoc.group(2)]
-        if not ends or ends[0] != len(lines) - 1:
-            return False
-        first = first[:heredoc.start()]
-    elif len(lines) > 1:
-        return False
-    if "$(" in first or "`" in first:
+    first = command.strip()
+    # One line only (no heredoc, no continuation) and no `#`: a comment can hide shell syntax.
+    if "\n" in first or "#" in first or "$(" in first or "`" in first:
         return False
     try:
         lex = shlex.shlex(first, posix=True, punctuation_chars=True)

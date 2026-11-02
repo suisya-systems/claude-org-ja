@@ -63,7 +63,8 @@ class ParseTest(unittest.TestCase):
             'codex exec "Review tools/acceptance_merge_hook.py and .hooks/gate-acceptance-before-merge.sh"',
             "grep -n DENY $CLAUDE_ORG_PATH/tools/acceptance_merge_hook.py",
             "head -40 /r/.hooks/gate-acceptance-before-merge.sh",
-            "cat >> .state/workers/worker-x.md <<'EOF'\n- merge_approval_mode: acceptance ($MODE, `gh`)\nEOF",
+            # Multi-line: judged by the broad rule, so it passes while the body has no gh / pull / $ / backtick.
+            "cat >> .state/workers/worker-x.md <<'EOF'\n- merge_approval_mode: acceptance\nEOF",
         ):
             with self.subTest(cmd=cmd):
                 self.assertIsNone(hook.parse(cmd))
@@ -73,8 +74,7 @@ class ParseTest(unittest.TestCase):
                     f'gh pr comment 3 --body "ready to {VERB}"', "gh pr view 3 --json mergeable,autoMergeRequest",
                     "gh -R o/r pr view 3 --json mergedAt", f"gh search prs {VERB} --repo o/r",
                     "gh pr view $PR --repo o/r --json mergedAt", "gh pr checks 3 --repo o/r 2>/dev/null",
-                    "sed -n 10,40p tools/acceptance_merge_hook.py", "tail -n 5 $LOG/pr-merge.log",
-                    f"gh pr create --title {VERB} --body-file - <<'EOF'\nbody with $(gh pr {VERB} 3)\nEOF"):
+                    "sed -n 10,40p tools/acceptance_merge_hook.py", "tail -n 5 $LOG/pr-merge.log"):
             with self.subTest(cmd=cmd):
                 self.assertIsNone(hook.parse(cmd))
 
@@ -87,6 +87,11 @@ class ParseTest(unittest.TestCase):
                     f"cat f <(gh pr {m} 3)", f"cat <<EOF\n$(gh pr {m} 3)\nEOF",
                     f"cat <<'EOF'\nx\nEOF\ngh pr {m} 3", f"sed -n '1e gh pr {m} 3' f",
                     f"cat <<'EOF'\nnotes\nEOF\ngh pr {m} 7 --repo o/r --squash\ncat <<'EOF'\nnotes\nEOF",
+                    # No heredoc exception, no `#`: multi-line and commented commands use the broad rule.
+                    f'cat /dev/null # <<"EOF"\ngh pr {m} 7 --repo o/r --squash\nEOF',
+                    f"gh pr create --title {m} --body-file - <<'EOF'\nbody\nEOF",
+                    f"cat >> f.md <<'EOF'\n{m}_approval_mode: $MODE\nEOF",
+                    f"gh pr view 3 --json mergedAt # note", f"gh pr view 3 \\\n --json mergedAt",
                     f"sed -n -e 1p -e '1e gh pr {m} 7' f", f"sed -n 1p f -e '1e gh pr {m} 7'",
                     f"sed -n 1p -f s.sed f # gh {m}",
                     f"less '+!gh pr {m} 3' f", f"rg --pre $X {m} f", f"grep x f 2>&1 | gh pr {m} 3",
