@@ -1,6 +1,6 @@
 # 機械的退出条件（exit conditions）まとめ
 
-[`/org-conveyor`](../SKILL.md) は完了駆動で自走するが、**5 つの機械的退出条件** のいずれかに該当したら
+[`/org-conveyor`](../SKILL.md) は完了駆動で自走するが、**6 つの機械的退出条件** のいずれかに該当したら
 自走を止めて人間へ戻す。退出は失敗ではなく **安全装置**: 自動判断の射程を超えた状況（churn / 想定外 /
 スコープの縁）を機械的に検出し、ベルトを止めて人間の目を入れる。退出予算はスコープ契約
 （[`.claude/skills/org-conveyor/references/scope-contract.md`](scope-contract.md)）に明記し、引き継ぎ後も読み戻せるようにする。
@@ -14,6 +14,7 @@
 | 3 | **時間予算超過 / 最大反復数到達** | `time_budget` / `max_iterations` | ベルト稼働の経過時間 / ループ反復回数が契約の予算を超えた |
 | 4 | **worker escalation** | 即時 | worker から「判断仰ぎ」「承認を仰ぎ」「スコープ拡張」「ブロッカー」「想定外」「runbook 逸脱」が来た |
 | 5 | **scope 縁検知** | 即時 | スコープ述語に非合致 / 判定不能の候補・差分、または org-delegate チェック項目が人間入力を要求、verify 判定不能、スコープ内 repo のゴール未設定・台帳エラー、triage 判定段の exit 2 |
+| 6 | **マージ前の止める線**（`acceptance` 方式） | 即時（その PR） | 受け入れテストの宣言なし・head 不一致・判断境界・元に戻せない変更・予算超過・テストを書き換えて合格させた疑い・ゲートの拒否（[`/org-pull-request`](../../org-pull-request/SKILL.md) 2b-i） |
 
 ## 各条件の詳細
 
@@ -61,10 +62,20 @@
     候補ゼロと言い換えず、状態と理由を添えて halt する。
 - スコープを使い切り、残り候補が外側しか無いなら、それも「これ以上自走できる範囲が無い」= 正常退出として人間へ報告する。
 
+### 6. マージ前の止める線（`acceptance` 方式）
+
+- `merge_approval_mode` が `acceptance`（かつ契約の承認時の値も `acceptance`）のとき、CI green の PR ごとに
+  [`/org-pull-request`](../../org-pull-request/SKILL.md) 2b-i の止める線を確かめる。一覧はそちらが正本で、
+  受け入れテストの宣言なし・head 不一致・判断境界・元に戻せない変更・予算超過（本表 1〜3）・**テストを書き換えて合格させた疑い**・ゲートの拒否を含む。
+- 当たった PR はマージせず halt し、当たった線を添えて人間へ上げる（その PR の枠は人間判断まで保留。他候補のベルトは続けてよい）。
+- ゲートの拒否を別の書き方・別経路のマージで迂回しない。テストのコミットの作り直しで拒否された PR は、人間の承認を得て新しい PR でやり直す。
+- `human` 方式では全 PR が CI green で人間ゲートに入るので、本条件は使わない。
+
 ## halt 時の共通挙動
 
 - 自走を止め、**観測可能性サマリ（[`.claude/skills/org-conveyor/SKILL.md`](../SKILL.md)「観測可能性」節）+ 退出理由 + 該当 PR/候補** を人間へ提示する。
   「ベルトのどこで何が起きて止まったか」を 1 枚で残す。
-- **退出条件は自動解決しない**（INV-3 / INV-6）。merge / scope 拡張 / escalation の解消はすべて人間ゲート。
+- **退出条件は自動解決しない**（INV-3 / INV-6）。halt した PR の merge・scope 拡張・escalation の解消はすべて人間ゲート
+  （`acceptance` 方式でも、止める線に当たって halt した PR は人間が判断する）。
 - 進行中の他 worker・未 merge の PR キューは halt しても消えない（人間が個別に merge / 対応できる）。
 - 人間がスコープを更新（拡大は再承認、[`.claude/skills/org-conveyor/references/scope-contract.md`](scope-contract.md)）すればベルトを再開できる。

@@ -2,7 +2,7 @@
 name: org-conveyor
 description: >
   人間が承認したスコープの内側で triage → worker 派遣 → verify → push → PR 作成 → CI 監視
-  を完了駆動で自走し、PR ごとに merge gate で停止する窓口用のベルトコンベア。
+  を完了駆動で自走し、PR ごとに merge gate で停止する（acceptance 方式では止める線に当たったときだけ停止する）窓口用のベルトコンベア。
   「この範囲は自走してよい」「triage 上位の S 級バグを空き pane 分まで流して」等、
   人間がスコープ承認を明示して複数候補を順に流したいときに窓口が起動する。
 effort: medium
@@ -19,6 +19,8 @@ allowed-tools:
   - Bash(bash tools/journal_append.sh:*)
   - Bash(python3 tools/journal_append.py:*)
   - Bash(py -3 tools/journal_append.py:*)
+  - Bash(python3 tools/merge_approval_mode.py:*) # INV-1 のマージ承認方式（human / acceptance）を読む
+  - Bash(py -3 tools/merge_approval_mode.py:*)
   - Bash(git diff:*) # verify applicability classifier の touch-domain 裏取り（read-only。worker branch が local に在るとき）
   - Bash(mkdir -p .state/conveyor:*) # Step 1 のスコープ契約書き出し先ディレクトリ確保（fresh checkout 対策）
   # 直接の transport 面は単一 transport（checked-in はコード既定 broker の面）のみ列挙する。broker + renga の
@@ -34,7 +36,9 @@ allowed-tools:
 窓口が人間から **承認スコープの輪郭** を受け取り、それを機械契約として articulate したうえで、
 その内側を `triage → /org-delegate → worker iteration → Codex round → verify（applicable なら必須）→
 push → gh pr create → pr-watch CI 監視 → CI green` まで **完了駆動で自走** し、PR ごとに
-merge gate で停止する。人間は「レビュー待ち PR のキュー」を順次 merge するだけになる。
+merge gate で停止する。人間は「レビュー待ち PR のキュー」を順次 merge するだけになる。マージ承認の方式が `acceptance`
+（[`registry/org-config.md`](../../../registry/org-config.md)「Merge Approval」）なら、止める線に当たらない PR はマージまで進み、
+人間が見るのは止まった PR と結果の一覧になる（INV-1）。
 
 本スキルは **薄い orchestrator** であって、実作業の機構は既存スキルに委譲する。本スキルが固有に持つのは
 **(1) 承認スコープ契約の articulate と gate、(2) 完了駆動ループとバックプレッシャー、(3) 観測可能性、
@@ -51,8 +55,12 @@ merge gate で停止する。人間は「レビュー待ち PR のキュー」�
 
 ## 不変条件
 
-- **INV-1 merge 承認は人間 gate**: スコープ契約は dispatch〜CI 監視を事前承認できるが、merge は事前承認の対象にしない。
-  CI green に到達したら停止し、PR を人間へ提示して merge を仰ぐ。bare「OK」を merge 承認と解釈しない。
+- **INV-1 merge 承認は `merge_approval_mode` に従う**: 方式は `python3 tools/merge_approval_mode.py` の出力（設定は
+  [`registry/org-config.md`](../../../registry/org-config.md)「Merge Approval」。設定値は `acceptance`、キーが無い・不正なときは安全側の `human`）。`human` ではスコープ契約は
+  dispatch〜CI 監視を事前承認できるが、merge は事前承認の対象にしない（CI green で停止し、PR を人間へ提示して merge を仰ぐ。
+  bare「OK」を merge 承認と解釈しない）。`acceptance` では、スコープ契約の内側で [`/org-pull-request`](../org-pull-request/SKILL.md)
+  2b-i の **止める線** に 1 つも当たらない PR に限り、受け入れテストのゲートと CI の通過でマージまで自走する。
+  ゲート通過はスコープ承認の代わりにならず、止める線に当たったら `human` と同じく停止する。
 - **INV-2 scope 境界に触れたら halt**: スコープ契約の述語に合致しない候補・判断・差分が現れたら、自走を止めて
   [`/org-escalation`](../org-escalation/SKILL.md) 経由で人間に上げる（場当たり継続をしない）。
 - **INV-3 worker からの judgment escalation は人間へ**: worker の「判断仰ぎ」「承認を仰ぎ」「スコープ拡張」「ブロッカー」は
@@ -60,7 +68,7 @@ merge gate で停止する。人間は「レビュー待ち PR のキュー」�
 - **INV-4 propose-only の継承**: 候補生成は [`/work-discovery`](../work-discovery/SKILL.md)（決定的ツール）に委ね、conveyor は
   その出力をスコープ契約で gate するだけ。候補の中身を自前調査・実装しない。
 - **INV-5 起動主体は窓口のみ**: 委譲済み worker は本スキルを起動しない（「1 worker = 1 task = 1 scope」原則。[`CLAUDE.md`](../../../CLAUDE.md)「役割の境界」）。
-- **INV-6 `/loop` の置換ではない**: 時間駆動ではなく完了駆動で、間隔ポーリングをしない。PR キューに上限は設けない（人間の merge が natural gate。Step 2-9）。
+- **INV-6 `/loop` の置換ではない**: 時間駆動ではなく完了駆動で、間隔ポーリングをしない。PR キューに上限は設けない（`human` では人間の merge が natural gate、`acceptance` では退出予算が上限。Step 2-9）。
 
 ## 輸送層（transport）両系
 
@@ -111,7 +119,9 @@ per-transport 詳細（pr-watch の二フレーム受信注記）は呼び先の
   worker iteration → verify → push → gh pr create → pr-watch CI 監視`。push / PR 作成の「ユーザー明示承認」
   前提（[`/org-pull-request`](../org-pull-request/SKILL.md) 2b-i）は、**この起動時スコープ承認が満たす**
   （bare な per-PR OK ではなく、人間が明示した持続的スコープ承認の記録）。
-- **契約が承認しない範囲**: merge（INV-1）。merge は PR ごとの人間ゲートで、CI green で halt して提示する。
+- **merge の扱い（INV-1）**: `human` では契約は merge を承認しない（PR ごとの人間ゲートで、CI green で halt して提示する）。
+  `acceptance` では止める線に当たらない PR の merge まで契約が覆う。契約には起動時の `merge_approval_mode` を「承認時の値」として
+  記録し、人間への確認文に含める。稼働中に設定が `human` → `acceptance` へ変わっても、承認時の値が `human` なら再承認まで `human` として扱う（逆向きは即時に従う）。
 - スコープ述語は機械的に判定できる形で書く（例: `label:bug AND size:S`、`#637 の follow-up に限る`、
   `PR #635 の review feedback round を ≤6 まで`）。判定不能な候補は scope 縁として扱い投入しない（INV-2）。
 - 並列上限は **起動時の free pane 数**（バックプレッシャー節）。退出予算（Codex round 上限 / 連続 false-positive
@@ -149,14 +159,17 @@ per-transport 詳細（pr-watch の二フレーム受信注記）は呼び先の
    並列 verify のポート衝突は [`.claude/skills/org-conveyor/references/dynamic-ports.md`](references/dynamic-ports.md) の動的ポート割当規律で避ける。
 7. **push / PR / CI 監視**: [`/org-pull-request`](../org-pull-request/SKILL.md) 2b-i を発動する（push → `gh pr create` →
    `pr-watch`）。前提の「ユーザー明示承認」はスコープ契約の事前承認が満たす（Step 1）。`CI_COMPLETED` の到着で次へ。
-8. **CI green → merge gate で halt**: CI green に達したら merge せずに停止する。awaiting_user を emit
+8. **CI green → merge gate**: [`/org-pull-request`](../org-pull-request/SKILL.md) 2b-i のマージ承認方式の分岐に従う（INV-1。
+   方式は契約の承認時の値で狭める）。`human`、または `acceptance` で止める線に当たったときは merge せずに停止し、awaiting_user を emit
    （`gate=ci_green_merge_gate`、[`/org-pull-request`](../org-pull-request/SKILL.md) 2b-i / [`/org-escalation`](../org-escalation/SKILL.md)
-   と同じ canonical emit）し、人間向け理解サマリ（full タスク）と PR を提示して merge を仰ぐ（INV-1）。
-   conveyor はこの PR についてここで停止する（ベルト全体は停止しない）。
-9. **バックプレッシャー**: 人間が merge し post-merge cleanup（[`/org-pull-request`](../org-pull-request/SKILL.md) 2b-ii）で
+   と同じ canonical emit）して、人間向け理解サマリ（full タスク）・PR・当たった線を提示して merge を仰ぐ。
+   conveyor はこの PR についてここで停止する（ベルト全体は停止しない）。`acceptance` で止める線に当たらなければ、2b-i の
+   「マージのコマンド」でマージし、結果を観測可能性サマリと事後報告に残す。
+9. **バックプレッシャー**: merge され post-merge cleanup（[`/org-pull-request`](../org-pull-request/SKILL.md) 2b-ii）で
    pane が解放されたら、**解放枠に triage の次候補を即時投入**する（2 へ戻る）。**PR キューに上限は設けない**
-   （未 merge PR が N 件溜まっても新規 triage を止めない）。**人間の merge が自然なバックプレッシャー（natural gate）** であり、
-   人間が merge を止めれば pane が解放されずベルトが自然に詰まって停止する。
+   （未 merge PR が N 件溜まっても新規 triage を止めない）。`human` では **人間の merge が自然なバックプレッシャー（natural gate）** であり、
+   人間が merge を止めれば pane が解放されずベルトが自然に詰まって停止する。`acceptance` では merge が自走で進むので、
+   この自然な詰まりは起きない。ベルトの上限は退出予算（`time_budget` / `max_iterations`、[`.claude/skills/org-conveyor/references/exit-conditions.md`](references/exit-conditions.md)）になる。
 10. **state transition 直後に観測可能性サマリを再出力**（「観測可能性」節）。
 11. **退出条件チェック**（[`.claude/skills/org-conveyor/references/exit-conditions.md`](references/exit-conditions.md)）。いずれか該当で halt。
 

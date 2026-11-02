@@ -95,7 +95,7 @@ Secretary が「次の一手はユーザーの返答待ち」で停止する gat
 
 ### 対象 gate（5 箇所）
 - **`worker_completed`**: ワーカーから完了報告を受領 → ack + DB の events テーブルへ review transition を追記 → ユーザーへ承認待ちで停止する直前。[`/org-delegate`](./.claude/skills/org-delegate/SKILL.md) Step 5 sub 2a。
-- **`ci_green_merge_gate`**: PR 作成後の CI 監視で `CI_COMPLETED` 受信（CI green）→ ユーザーへ merge 承認を仰ぐ直前。[`/org-pull-request`](./.claude/skills/org-pull-request/SKILL.md) 2b-i。
+- **`ci_green_merge_gate`**: PR 作成後の CI 監視で `CI_COMPLETED` 受信（CI green）→ ユーザーへ merge 承認を仰ぐ直前。出すのはマージ承認の方式（[`registry/org-config.md`](./registry/org-config.md)「Merge Approval」）が `human` のとき、または `acceptance` で止める線に当たったときだけ（止める線に当たらず窓口がそのままマージするときは出さない）。[`/org-pull-request`](./.claude/skills/org-pull-request/SKILL.md) 2b-i。
 - **`escalation_to_user`**: ワーカーからの判断仰ぎを人間に上げ、選択肢を提示してユーザー返答待ちで停止する直前（ask の瞬間）。[`/org-escalation`](./.claude/skills/org-escalation/SKILL.md) Step 3。interactive ではユーザーが数十秒〜数分で返答するため pending_decision aging (15分) は実質発火せず、この ask-time emit が urgent 通知の主経路となる。
 - **`escalation_reply_forward`**: 判断仰ぎを人間に上げ、ユーザー返答を受け取り、ワーカーへ転送する直前。[`/org-escalation`](./.claude/skills/org-escalation/SKILL.md) の `mark-user-replied` → `resolve --kind to_worker` の境界。
 - **`ci_unconfirmed_head_gate`**: pr-watch から `PR_MERGED_HEAD_UNCONFIRMED`（CI 未確認の head でマージされた）を受信 → post-merge cleanup に進まず、ユーザーへ head 確認を仰ぐ直前。[`/org-pull-request`](./.claude/skills/org-pull-request/SKILL.md) の `PR_MERGED_HEAD_UNCONFIRMED` 受信時の節。

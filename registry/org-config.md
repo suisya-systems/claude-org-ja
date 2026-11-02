@@ -63,3 +63,15 @@ integration_branch: -
 - **警告を出すだけで、起点ブランチは変えない**。優先順位 `--base-ref` > projects.md `base_branch` 列 > `origin/HEAD` はそのまま。`main` 宛てで正しいタスクは `--base-ref main` を明示すれば警告は出ない。
 - 統合作業が終わったら `-` に戻す。
 - 設定行は**行頭（列 0）から `integration_branch:` で始める**こと（`triage_home` と同じく列 0 固定で読む）。
+
+## Merge Approval
+merge_approval_mode: acceptance
+
+CI が通った PR を窓口がマージする前に、人に仰いで止まるかどうかの設定（Issue #1167）。値は `tools/merge_approval_mode.py` が読み、`/org-pull-request` と `/org-conveyor` はその出力で分岐する。この組織の設定値は `acceptance`。
+
+- `human`: CI が通ったら窓口は人にマージの判断を仰いで止まる。キーが無い・値が不正なときも `human` として扱う（不正値は stderr に警告）。読めない設定で人の確認を飛ばさないための安全側の扱い。
+- `acceptance`: 承認済みのスコープの内側では、受け入れテストのゲートと CI が通れば人に仰がずにマージし、結果を事後に報告する。人に上げるのは止める線（受け入れテストの宣言なし・判断境界・元に戻せない変更・予算超過・テストを書き換えて合格させた疑い・ゲートの拒否）に当たったときだけ。止める線の一覧は [`/org-pull-request`](../.claude/skills/org-pull-request/SKILL.md) 2b-i が正本。
+- どちらの方式でも、窓口のマージの手前では受け入れテストのゲート（[`.hooks/gate-acceptance-before-merge.sh`](../.hooks/gate-acceptance-before-merge.sh)）が動く。この設定が変えるのは止まるかどうかだけ。
+- 上書き手段（環境変数・スコープ単位）は無い。この 1 行だけが設定。`/org-conveyor` はスコープ承認時の値を契約に記録し、稼働中に `acceptance` へ広げた変更は再承認まで `human` として扱う。
+- パイロット中の既知の限界: attention watcher の `ci_passed` 通知は方式に関わらず鳴る。窓口がマージ前に head を確かめてから、フックが head を fetch するまでの間の push は検出できない。
+- 設定行は**行頭（列 0）から `merge_approval_mode:` で始める**こと（`triage_home` と同じく列 0 固定で読む）。

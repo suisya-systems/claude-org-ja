@@ -86,7 +86,7 @@ npm pack "$PKG_DIR" --pack-destination /tmp/workers/demo-task/.worker-scratch
 
 ## Codex セルフレビュー手順（検証深度 minimal）
 
-minimal タスクでは Codex セルフレビュー・追加テスト実行・拡張された動作確認は **一切禁止**。指示された fix を反映したら `git add` → `git commit` → 窓口に以下 1 行だけ送信する:
+minimal タスクでは Codex セルフレビュー・追加テスト実行・拡張された動作確認は **一切禁止**（受け入れテストのテストファーストも行わない）。指示された fix を反映したら `git add` → `git commit` → 窓口に以下 1 行だけ送信する:
 
 ```
 done: {commit SHA 短縮形} {変更ファイル名}

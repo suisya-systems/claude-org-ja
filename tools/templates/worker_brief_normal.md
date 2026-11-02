@@ -121,6 +121,17 @@ ${issue_bodies_block}
 
 `full` の前提（codex の有無に関わらず必ず実施）: 既存テストスイート / lint / type-check 等、リポジトリで定義された通常検証を実行し、green を確認してから完了報告する。green 判定は「passed が N 件」ではなく **passed / skipped の内訳が CI と一致するか**で行う。条件付き skip されるテスト（環境変数・OS 依存の `skipIf` 等）はその条件を満たしてから回し、完了報告に skip 件数と理由を書く（例: 「824 passed | 2 skipped、skip は〜」）。
 
+### 受け入れテスト（テストファースト）
+**実装ガイダンスに「受け入れテスト: あり」と書かれたタスクだけ**行う。書かれていないタスク（pytest 以外のリポジトリ、文書だけの変更等を含む）は従来どおりで、宣言しない。宣言の無い PR はパイロット中は窓口のマージ前ゲートが記録して通すだけで、受け入れテストに合格したことにはならない。
+
+1. **1 コミット目は、修正前のコードで失敗するテストだけ**にする。実装を混ぜない。テストが使う補助ファイル（fixture、`conftest.py` 等）もこのコミットで足す
+2. コミットメッセージの末尾に trailer `Acceptance-Test: <リポジトリ相対パス>` を書く（1 行 1 パス、複数行可、ディレクトリも可）。このコミットで変えるファイルは全部、宣言パスかテスト基盤（下記）に入っていなければならない。宣言するコミットは 1 つだけ
+3. 以後、宣言したテストとテスト基盤・CI 設定（`conftest.py`、pytest の設定ファイル、`pyproject.toml`、`setup.cfg`、`tox.ini`、`package.json`、`.github/workflows/`）を変えない。宣言コミットを作り直さない（amend・squash をしない。rebase はしてよい）。変える必要が出たら、変える前に窓口に判断を仰ぐ
+4. ゲートの判定（`tools/acceptance_gate.py`）: 修正前のコードでは宣言テストが **assertion で失敗**していること（collection error・fixture error は失敗と認められない。新しく足すシンボルの import はテスト関数の中に書く）。修正後は宣言テストが全部 pass（skip も不合格）。どちらもネットワーク・HOME 無しの隔離環境で走る
+5. 完了報告に宣言コミットの SHA と宣言パスを書く
+
+minimal の「追加テスト禁止」は minimal タスクにだけ効く。full でこの節の指定があるときは、こちらが優先する。
+
 ### 完了報告前の rebase
 既存リポジトリで PR を出すタスクでは、完了報告と Codex セルフレビューの前に次を行う（`git init` の新規プロジェクトや upstream remote が無い場合は不要）:
 1. `git fetch origin`（`git fetch origin <branch>` は `FETCH_HEAD` に取るだけで追跡 ref を確実には更新せず、古い ref に対して behind=0 と誤判定しうる）。`.gitmodules` の `Permission denied` 警告は sandbox のかぶせ物によるもので、fetch は続行するので無視してよい
@@ -155,7 +166,7 @@ bash "${claude_org_path}/tools/codex_review_gate.sh"
 <!--BEGIN:codex_minimal-->
 ## Codex セルフレビュー手順（検証深度 minimal）
 
-minimal タスクでは Codex セルフレビュー・追加テスト実行・拡張された動作確認は **一切禁止**。指示された fix を反映したら `git add` → `git commit` → 窓口に以下 1 行だけ送信する:
+minimal タスクでは Codex セルフレビュー・追加テスト実行・拡張された動作確認は **一切禁止**（受け入れテストのテストファーストも行わない）。指示された fix を反映したら `git add` → `git commit` → 窓口に以下 1 行だけ送信する:
 
 ```
 done: {commit SHA 短縮形} {変更ファイル名}
