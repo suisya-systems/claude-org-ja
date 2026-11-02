@@ -57,8 +57,8 @@ role + name(task_id) ラベル付きで印字するだけ。コピーした人�
 > DEFAULT_TRANSPORT` が runtime 0.1.28 (Epic #586) で `renga`→`broker` にフリップ済み。broker tool を
 > 使う手保守スキルのうち
 > [`.claude/skills/org-attention-stop/SKILL.md`](../org-attention-stop/SKILL.md) は header を
-> 「既定 `broker` / opt-in `renga`」のコード既定フレームで書く ― 本スキルはこの broker 主軸の先例に倣う。
-> （[`.claude/skills/org-attention-start/SKILL.md`](../org-attention-start/SKILL.md) は逆に「既定 `renga`」
+> 「コード既定 `broker` / opt-in `renga`」のコード既定フレームで書く ― 本スキルはこの broker 主軸の先例に倣う。
+> （[`.claude/skills/org-attention-start/SKILL.md`](../org-attention-start/SKILL.md) は逆に「運用既定 `renga`」
 > の運用既定フレームで書かれており、両者は指す対象が異なるだけで矛盾しない。）総説は root
 > [`CLAUDE.md`](../../../CLAUDE.md)「輸送層（transport）両系」節、契約面は
 > [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md)
