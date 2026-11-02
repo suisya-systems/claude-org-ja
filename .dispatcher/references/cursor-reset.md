@@ -13,11 +13,12 @@
         **`session_key` の値は必ずクォートする (MUST)**: `pid_endpoint` 形は `pid=...;endpoint=/run/...` のように `;` を含み、素で置換するとそこでコマンドが切れて **pid 部分しか記帳されない**（endpoint 面を失った key は de-dup の識別力が落ち、pid 再利用時に後続の restart を握り潰す）。`server_info.session_id` 形でも同じ規律で書く（値の形に依らずクォートを外さない）
         `{reason}` は `session_mismatch`（保存値と現 `session_key` が違う） / `transport_mismatch`（`session_key_source` が保存値と違う = 輸送層を跨いだ） / `legacy_format`（JSON として読めない旧形式 = 束縛の無い cursor） のいずれか。**`unbindable` はここに含まれない** — 上記のとおり cursor を書き換えず破棄もしないので、観測不能サイクル ((P4)) として扱う
      3. **de-dup 判定（送信の前に引く）**: journal に **`event == "notify_sent"`** かつ **`(source=event_cursor, kind=stale_event_cursor, session_key, discarded_session_key)`** 一致の行が既に在れば**送信しない**（手順 2 の `anomaly_observed` は de-dup キーに含めない — Step 4 (e) と同じ規約）。**`(source, kind)` だけで引いてはならない**（2 回目以降の restart が既存行に吸収されて黙る）。**`discarded_session_key` を落としてもならない**（`unbindable` / broker 面で `session_key = none` が繰り返す形が同じ理由で黙る）。**この 4 つ組が「エピソードごとに 1 回」を満たすのは、破棄が `session_mismatch` / `transport_mismatch` / `legacy_format` の 3 形に限られているから**である（`unbindable` は破棄しないので入ってこない）: いずれの形でも捨てる側・今回側の両方が**実在の値**で、次に破棄が起きるのは実際に別の restart / 別の輸送層を跨いだときだけなのでキーが必ず変わる。逆に `unbindable` を破棄扱いにすると両側が `none` に潰れてエピソードを識別できなくなる — これが上記で cursor を書き換えない設計上の理由でもある
-     4. **通知送信** (手順 3 を通過した場合): 窓口へ 1 行送る（`mcp__org-broker__send_message(to_id="secretary", ...)`）:
+     3-bis. **送信ゲート (手順 3 を通過した場合)**: `python3 ../tools/notify_gate.py --kind event_cursor_reset --idle-state ../.state/dispatcher/worker-idle-state.json` を 1 回叩き、stdout の JSON `send` で分岐する。`send: true` → 手順 4 へ。`send: false` (背景タブ配置のワーカーが 1 つも無い = 窓口が reconcile する対象が無い) → **手順 4 を飛ばし**、手順 5 を `delivery=suppressed reason={JSON の reason}` 付きで書いて終わる。ツールが非 0 終了 / JSON として読めない場合は `send: true` として扱う (判定不能は送る)。このゲートは待ちを含まない
+     4. **通知送信** (手順 3-bis で `send: true` だった場合): 窓口へ 1 行送る（`mcp__org-broker__send_message(to_id="secretary", ...)`）:
         ```
         EVENT_CURSOR_RESET: poll_events cursor を破棄し現在時点から再開しました (理由: {reason})。backend 再起動を跨いだ cursor は連番が復元されず、そのまま使うと以後の pane_exited が全て空振りします。破棄した区間に起きたペイン終了は回収不能です (poll_events に historical replay は無い)。同一タブのワーカーは列挙の突き合わせで従来どおり退役を確定できますが、背景タブ配置のワーカーは終了確定手段が pane_exited だけなので indeterminate として上げます。その退役確定は、以前「在」と観測した数値 id が後続の list_peers から消えたこと (契約 T-§2.1 step (3)) を窓口が reconcile する経路にフォールバックします。
         ```
-     5. **`notify_sent` 記録** (送信成功時のみ):
+     5. **`notify_sent` 記録** (送信成功時、または手順 3-bis で送らないと決めたとき。後者は末尾に `delivery=suppressed reason=no_background_worker` を足し、前者は `delivery=sent` を足す。この行が在るので手順 6 の未達判定は「送らなかった」を未達と読まない):
         ```
         bash ../tools/journal_append.sh notify_sent source=event_cursor kind=stale_event_cursor confidence=n/a session_key='{session_key|none}' discarded_session_key='{saved.session_key|none}'
         ```
