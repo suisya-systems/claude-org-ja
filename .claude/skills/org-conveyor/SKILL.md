@@ -67,9 +67,10 @@ merge gate で停止する。人間は「レビュー待ち PR のキュー」�
 **per-transport 認可（union 不可）**: 本スキルが直接使う transport ツールは free-pane 会計の `list_panes` と、pull フォールバック時のループ event ドレインの `check_messages` だけで、
 allowed-tools には **その deployment で active な単一 transport の面のみ** を列挙する（broker + renga を union で並べると
 非アクティブ transport のツールまで認可され per-transport auth モデルを迂回するため。設計 SoT:
-notes/broker-skill-generator-design.md #9。union 却下）。本リポジトリの active transport は **`broker`**（コード既定
-`DEFAULT_TRANSPORT=broker`、`org-broker-channel` 稼働中）なので allowlist は broker 面で render してある。`renga` で運用する
-deployment（opt-in 切戻し）では、この surface を renga 面へ **per-transport 再生成** する（`mcp__org-broker__*` →
+notes/broker-skill-generator-design.md #9。union 却下）。allowlist は **コード既定**フレーム（`tools/transport.py` の
+`DEFAULT_TRANSPORT=broker`）の broker 面で render してある。これは render 面の選択であって、本リポジトリの運用既定は renga
+（root `CLAUDE.md`「輸送層（transport）両系」の二フレーム注記）なので、運用 transport が renga の環境ではこの allowlist は運用と食い違う。`renga` で運用する
+deployment（運用既定・opt-in 切戻し）では、この surface を renga 面へ **per-transport 再生成** する（`mcp__org-broker__*` →
 `mcp__renga-peers__*`、引数形・セマンティクスは同一。settings.local.json の per-transport 生成と同じ境界。フル per-transport
 render が要るなら他の transport 参照スキルと同じく `.md.in` + manifest 化が follow-up 候補）。送受信機構（ack・relay・escalation・
 push / PR）の輸送依存差・二フレーム関係・spawn 儀式・エラー分岐は本スキルが呼ぶ各スキルが per-transport に持つので、総説
