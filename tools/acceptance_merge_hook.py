@@ -12,20 +12,19 @@ as the whole command, so the PR and the head it merges are read exactly
 (Issue #1228). ``--match-head-commit`` makes GitHub refuse the merge if the
 head moved after the hook looked at it.
 
-Other commands are denied only when they could merge (Issue #1229), judged on
-the command with quotes and backslashes removed and lowercased (so
-``m'erge'`` and ``bash -c "..."`` stay visible) and newlines read as command
-separators. ``mergePullRequest``, ``enablePullRequestAutoMerge`` and
-``pulls/<n>/merge`` are denied anywhere. Otherwise a command containing
-``merge`` (anywhere, so ``${X:-merge}`` counts too) is denied only if it runs
-``gh`` with anything but a read / create subcommand (``SAFE_GH``; a ``$`` or
-backtick in the subcommand is not safe), has ``merge`` right after ``pr`` or
-after / inside a ``$`` / backtick word (``env "$GH" pr merge``,
-``${X:-merge}``), or uses ``eval`` or ``$`` / a backtick as the command name. So reads (``gh pr view --json mergedAt``),
-PR titles, file names and heredoc text pass,
-while ``gh pr merge`` in any other form, ``gh pr $x``, ``gh api`` and
-``$g pr merge`` stay denied. This stops mistakes, not an adversary: gh
-aliases, the GitHub web UI and other sessions stay outside.
+Any other command that mentions a merge is denied when it also has ``gh``,
+a pull request (``pulls/...``, ``mergePullRequest``), ``$`` or a backtick
+(blocking too much is accepted, letting a merge past the gate is not), unless
+it is one allow-listed command on its own (Issue #1229): ``gh`` with a read /
+create subcommand (``SAFE_GH``), a reader such as ``grep`` / ``cat`` /
+``head`` (``READERS``) or ``sed -n <lines>p``, with no ``;`` ``&`` ``|`` ``(`` ``)``, command
+substitution, backtick or process substitution, and a literal program and
+``gh`` subcommand. A ``cat`` / ``tee`` heredoc with a quoted delimiter counts
+as one command (its body is not expanded). So ``gh pr view --json mergedAt``,
+a PR title with the word merge, and ``grep`` on the hook's own file pass,
+while ``gh.exe``, ``env "$GH" pr merge``, ``gh pr ${X:-merge}`` and chained
+commands stay denied. This stops mistakes, not an adversary: gh aliases, the
+GitHub web UI and other sessions stay outside.
 
 For the allowed form the hook asks gh for the PR and requires, before
 running the gate:
@@ -52,6 +51,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import signal
 import subprocess
 import sys
@@ -68,50 +68,57 @@ PYTEST_TIMEOUT_S = 300
 GATE_EXIT = {"passed": 0, "rejected": 1, "no-manifest": 3}
 MERGE = re.compile(r"gh pr merge ([0-9]+) --repo ([\w.-]+/[\w.-]+) --(?:squash|merge|rebase)"
                    r" --match-head-commit ([0-9a-f]{40})(?: --delete-branch)?", re.ASCII)
-STRONG = re.compile(r"mergepullrequest|enablepullrequestautomerge|pulls/[^\s/]+/merge(?![\w.-])", re.ASCII)
-# `$` or a backtick where a command name goes (`$g pr merge`, `$(echo gh) pr merge`), or eval.
-# A bare `(` is left out: it is mostly prose in heredocs, and `( $g pr merge )` is a residual.
-DYNAMIC_COMMAND = re.compile(r"(?:^|[;&|]|\$\(|`)\s*[$`]|\beval\b")
-# `merge` as a value inside an expansion (`${X:-merge}`), not part of a path like `$D/before-merge.sh`.
-MERGE_IN_EXPANSION = re.compile(r"(?<![\w.])merge(?![\w.-])", re.ASCII)
-TOKEN_SPLIT =re.compile(r"[\s,;&|()\[\]{}<>=]+")
+SUSPECT = re.compile(r"\bgh\b|gh\.exe|pull|[$`]")  # `C:\...\gh.exe` loses its backslashes
 SAFE_GH = {"issue": None, "search": None,
            "pr": {"view", "list", "checks", "status", "diff", "create", "comment", "edit", "review"}}
+# No `less` (`+!cmd` runs a shell) or `rg` (`--pre cmd` runs a program).
+READERS = {"grep", "cat", "head", "tail", "wc", "ls", "diff", "tee"}
+SED_PRINT = re.compile(r"[0-9]+(,[0-9$]+)?p|\$p")  # `sed -n 10,20p`; sed scripts can run commands (`e`)
+HEREDOC = re.compile(r"<<-?\s*(['\"])(\w+)\1\s*$")
 FORM = ("merge with exactly: gh pr merge <number> --repo <OWNER/REPO> --squash|--merge|--rebase"
         " --match-head-commit <full head SHA> [--delete-branch], alone on one line,"
-        " so the acceptance gate can read it")
+        " so the acceptance gate can read it. A PR this form cannot merge (e.g. a repo without CI)"
+        " is merged by a human in the GitHub web UI")
 
 
 class Deny(Exception):
     pass
 
 
-def unsafe_gh(tokens: list[str]) -> bool:
-    """True if any `gh` in the tokens runs something other than a SAFE_GH subcommand."""
-    for i, tok in enumerate(tokens):
-        # `gh`, `/usr/bin/gh`, `gh.exe`; a Windows `C:\...\gh.exe` lost its backslashes above.
-        if re.split(r"[/:]", tok)[-1] not in ("gh", "gh.exe") and not tok.endswith("gh.exe"):
-            continue
-        rest = tokens[i + 1:]
+def allow_listed(command: str) -> bool:
+    """True for one allow-listed read / create command on its own (see the module docstring)."""
+    lines = command.replace("\\\n", "").strip().split("\n")
+    first = lines[0]
+    heredoc = HEREDOC.search(first)
+    if heredoc:  # body is data: quoted delimiter, nothing after the closing line
+        if lines[-1].strip() != heredoc.group(2) or len(lines) < 2:
+            return False
+        first = first[:heredoc.start()]
+    elif len(lines) > 1:
+        return False
+    if "$(" in first or "`" in first:
+        return False
+    try:
+        lex = shlex.shlex(first, posix=True, punctuation_chars=True)
+        lex.whitespace_split = True
+        argv = list(lex)
+    except ValueError:
+        return False
+    if not argv or any(t and set(t) <= set("();<>|&") and t not in (">", ">>", "<") for t in argv):
+        return False
+    prog = argv[0]
+    if prog == "gh":
+        rest = argv[1:]
         while rest and rest[0].startswith("-"):  # global flags; -R / --repo take a value
-            rest = rest[2:] if rest[0] in ("-r", "--repo") else rest[1:]
+            rest = rest[2:] if rest[0] in ("-R", "--repo") else rest[1:]
         group, sub = (rest + ["", ""])[:2]
         allowed = SAFE_GH.get(group, ())
-        if not (allowed is None or sub in allowed):
-            return True
-    return False
-
-
-def merge_verb(tokens: list[str]) -> bool:
-    """True if a token reads as the merge subcommand whatever runs it (`env $GH pr merge`,
-    `command $GH pr merge`, `$GH $P merge`, `gh pr ${X:-merge}`)."""
-    for prev, tok in zip([""] + tokens, tokens):
-        dynamic = "$" in tok or "`" in tok
-        if dynamic and MERGE_IN_EXPANSION.search(tok):
-            return True
-        if tok == "merge" and (prev == "pr" or "$" in prev or "`" in prev):
-            return True
-    return False
+        return allowed is None or sub in allowed
+    if prog == "sed":
+        script = [a for a in argv[1:] if not a.startswith("-")][:1]
+        return "-n" in argv and not any(a.startswith("-i") for a in argv) and bool(script) \
+            and SED_PRINT.fullmatch(script[0]) is not None
+    return prog in READERS
 
 
 def parse(command: str) -> tuple[str, str, str] | None:
@@ -119,16 +126,10 @@ def parse(command: str) -> tuple[str, str, str] | None:
     m = MERGE.fullmatch(command.strip())
     if m:
         return m.group(1), m.group(2), m.group(3)
-    # Line continuations vanish (bash joins `mer\<newline>ge` into one word);
-    # other newlines separate commands. Quotes and backslashes go so
-    # `m'erge'` and `bash -c "gh pr merge"` read as written.
-    plain = re.sub(r"[\"'\\]", "", command.replace("\\\n", "").replace("\n", ";")).lower()
-    if STRONG.search(plain):
+    # Continuations join words (`mer\<newline>ge`); other newlines stay word breaks so `EOF\ngh` shows `gh`.
+    plain = re.sub(r"[\"'\\]", "", command.replace("\\\n", "").replace("\n", " ")).lower()
+    if "merge" in plain and SUSPECT.search(plain) and not allow_listed(command):
         raise Deny(FORM)
-    if "merge" in plain:
-        tokens = TOKEN_SPLIT.split(plain)
-        if unsafe_gh(tokens) or merge_verb(tokens) or DYNAMIC_COMMAND.search(plain):
-            raise Deny(FORM)
     return None
 
 

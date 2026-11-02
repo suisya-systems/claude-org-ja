@@ -55,25 +55,41 @@ class ParseTest(unittest.TestCase):
                 self.assertIsNone(hook.parse(cmd))
 
     def test_issue_1229_cases_pass(self):
-        """The six commands the hook stopped on 2026-11-03 (Issue #1229)."""
+        """The six commands the hook stopped on 2026-11-03 (Issue #1229), each typed on its own."""
         for cmd in (
             "gh pr view 1227 --repo o/r --json state,mergedAt",
-            f'gh pr create --repo o/r --title "fix the {VERB} gate" --body "$(cat <<\'EOF\'\nbody\nEOF\n)"',
+            f'gh pr create --repo o/r --title "fix the {VERB} gate" --body-file .worker-scratch/body.md',
             "gh pr view 1227 --repo o/r --json mergedAt,body",
-            'codex exec "Review tools/acceptance_merge_hook.py and $CLAUDE_ORG_PATH/.hooks/'
-            'gate-acceptance-before-merge.sh"',
-            "grep -n DENY /r/tools/acceptance_merge_hook.py && head -40 /r/.hooks/gate-acceptance-before-merge.sh",
-            "cat >> .state/workers/worker-x.md <<'EOF'\n- merge_approval_mode: acceptance ($MODE)\nEOF",
+            'codex exec "Review tools/acceptance_merge_hook.py and .hooks/gate-acceptance-before-merge.sh"',
+            "grep -n DENY $CLAUDE_ORG_PATH/tools/acceptance_merge_hook.py",
+            "head -40 /r/.hooks/gate-acceptance-before-merge.sh",
+            "cat >> .state/workers/worker-x.md <<'EOF'\n- merge_approval_mode: acceptance ($MODE, `gh`)\nEOF",
         ):
             with self.subTest(cmd=cmd):
                 self.assertIsNone(hook.parse(cmd))
 
-    def test_more_reads_and_writes_pass(self):
+    def test_more_allow_listed_commands_pass(self):
         for cmd in (f'gh issue create --title "{VERB} queue" --body x', f"gh pr list --search {VERB}",
                     f'gh pr comment 3 --body "ready to {VERB}"', "gh pr view 3 --json mergeable,autoMergeRequest",
-                    f"gh -R o/r pr view 3 --json mergedAt", f"gh search prs {VERB} --repo o/r"):
+                    "gh -R o/r pr view 3 --json mergedAt", f"gh search prs {VERB} --repo o/r",
+                    "gh pr view $PR --repo o/r --json mergedAt", "gh pr checks 3 --repo o/r 2>/dev/null",
+                    "sed -n 10,40p tools/acceptance_merge_hook.py", "tail -n 5 $LOG/pr-merge.log",
+                    f"gh pr create --title {VERB} --body-file - <<'EOF'\nbody with $(gh pr {VERB} 3)\nEOF"):
             with self.subTest(cmd=cmd):
                 self.assertIsNone(hook.parse(cmd))
+
+    def test_not_allow_listed_falls_back_to_the_broad_deny(self):
+        """Issue #1229 option (c): chaining, substitution or an unknown program is denied as before."""
+        m = VERB
+        for cmd in (f'gh pr create --title "{m} gate" --body "$(cat body.md)"',
+                    f"gh pr view 3 --json mergedAt && gh pr {m} 3",
+                    f"grep -n gh /r/acceptance_{m}_hook.py | head", f"gh pr view 3 --json mergedAt; echo $X",
+                    f"cat f <(gh pr {m} 3)", f"cat <<EOF\n$(gh pr {m} 3)\nEOF",
+                    f"cat <<'EOF'\nx\nEOF\ngh pr {m} 3", f"sed -n '1e gh pr {m} 3' f",
+                    f"less '+!gh pr {m} 3' f", f"rg --pre $X {m} f", f"grep x f 2>&1 | gh pr {m} 3",
+                    f"gh pr view `echo 3` --json mergedAt", f'codex exec "review $CLAUDE_ORG_PATH/{m}.py"'):
+            with self.subTest(cmd=cmd), self.assertRaises(hook.Deny):
+                hook.parse(cmd)
 
     def test_the_allowed_form(self):
         for method in ("squash", VERB, "rebase"):
