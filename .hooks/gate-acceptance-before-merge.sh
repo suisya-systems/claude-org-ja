@@ -3,9 +3,12 @@
 # 方式: exit 2 + stderr メッセージ でブロック
 #
 # 判定は `tools/acceptance_merge_hook.py` に委譲する (docstring が仕様の正本):
-#   - 許すマージは `gh pr merge <番号> --repo <OWNER/REPO> (--squash|--merge|--rebase) [--delete-branch]`
-#     がコマンド全体であるときだけ。ほかの書き方で merge と gh / pull / $ / ` を含むものは deny
-#     (止めすぎは許容し、すり抜けを塞ぐ側に倒す)
+#   - 許すマージは `gh pr merge <番号> --repo <OWNER/REPO> (--squash|--merge|--rebase)
+#     --match-head-commit <40 桁の SHA> [--delete-branch]` がコマンド全体であるときだけ。
+#     ほかのコマンドは、マージを実行しうるときだけ deny (gh の読み取り・PR 作成、ファイル名、
+#     mergedAt などの識別子は通す。gh pr merge の別の書き方・gh api・変数や eval 経由は deny)
+#   - 許す形では、PR の head が --match-head-commit と同じで、かつ events の最新の
+#     ci_completed 行が passed で head_oid がその SHA と同じであることを先に確かめる
 #   - その PR の head / base を fetch し `tools/acceptance_gate.py --pr OWNER/REPO#N` を実行。
 #     passed と no-manifest (パイロット中は記録のみ) は許可、rejected は deny
 #   - ゲート側で、head の途中終了 (pytest.exit) と、テストのコミットの作り直し
@@ -16,7 +19,7 @@
 #   ゲートは pytest を 2 回走らせるので登録時に timeout 900 を付ける。タイムアウトした
 #   フックはブロックしない扱いになるため、python 側は全体を 840 秒で打ち切って deny する。
 #
-# 既知の限界: GitHub の画面・別セッション・gh の alias・マージキューによるマージは見えない。ゲートからマージまでの数秒間の push は再検査しない。
+# 既知の限界: GitHub の画面・別セッション・gh の alias・マージキューによるマージは見えない。ゲートからマージまでの間の push は、--match-head-commit により GitHub がマージを拒否する。
 #
 # 入力: stdin から PreToolUse JSON ({tool_name, tool_input})
 # 出力: 拒否時 exit 2 + stderr。許可時 exit 0。
