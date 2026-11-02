@@ -54,6 +54,12 @@
 ## 検証と Codex セルフレビュー（検証深度 full）
 通常検証（テスト / lint 等）を回して green を確認してから完了報告する。green 判定は「passed が N 件」ではなく **passed / skipped の内訳が CI と一致するか**で行う。条件付き skip されるテスト（環境変数・OS 依存の `skipIf` 等）はその条件を満たしてから回し、完了報告に skip 件数と理由を書く（例: 「824 passed | 2 skipped、skip は〜」）。
 
+受け入れテスト（テストファースト）: **実装ガイダンスに「受け入れテスト: あり」と書かれたタスクだけ**行う（無ければ従来どおり宣言しない。宣言の無い PR はゲートが記録して通すだけで、合格ではない）。
+- 1 コミット目は修正前のコードで失敗するテストだけ（実装を混ぜない。fixture・`conftest.py` 等の補助もこのコミットで足す）。末尾に trailer `Acceptance-Test: <リポジトリ相対パス>`（1 行 1 パス、複数行可）。このコミットで変えるファイルは全部宣言パスかテスト基盤に入れる。宣言コミットは 1 つだけ
+- 以後、宣言テストとテスト基盤・CI 設定（`conftest.py`、pytest 設定、`pyproject.toml`、`setup.cfg`、`tox.ini`、`package.json`、`.github/workflows/`）を変えず、宣言コミットを作り直さない（rebase は可）。変える必要が出たら変える前に窓口に判断を仰ぐ
+- 判定: 修正前は宣言テストが assertion で失敗（collection / fixture error は不可。新シンボルの import はテスト関数内）、修正後は全部 pass（skip も不合格）。ネットワーク無しの隔離環境で走る。完了報告に宣言コミットの SHA とパスを書く
+- minimal の「追加テスト禁止」は minimal にだけ効き、full でこの指定があるときはこちらが優先する
+
 完了報告前の rebase: Codex の前に `git fetch origin`（`.gitmodules` の `Permission denied` 警告は無視してよい）→ `bash "/home/user/work/claude-org/tools/rebase_preflight.sh" origin/main`（最終行が `REBASE_PREFLIGHT: blocked` なら上流が sandbox で書けないパスを変えている。rebase せず、列挙されたパスを添えて「sandbox 外での rebase を依頼（HEAD=`<sha>`）」と窓口に報告して待つ）→ `git rebase origin/main`（conflict は自分で解く。conflict が無くても rebase 後に通常検証を回し直す）→ `git rev-list --count HEAD..origin/main` が `0` で、かつ `git status --porcelain --untracked-files=no` が空であることを確かめ、完了報告に「rebase clean: HEAD=`<sha>` on top of origin/main `<sha>`」の 1 行を入れる。後者が空でない、または rebase が `Read-only file system` / `could not detach HEAD` で止まったときは rebase 残差（sandbox が `.claude/skills` 等への書込みを拒否し、rebase が成功表示でも旧内容が残る型と、途中で止まって HEAD は動かず上流の中身が作業ツリーに残る型がある）なので、update-ref / reset / checkout 等で自分で戻そうとせず、rebase clean と報告せずに、表示されたパスを添えて「rebase 残差あり（HEAD=`<sha>`）」と窓口に報告して待つ（窓口が sandbox 外で戻す）。
 
 Codex セルフレビュー: commit 後に作業ディレクトリで**前景実行**する。`allowed_domains` は付けない（Codex の接続先は設定の `sandbox.network.allowedDomains` に事前許可済みで、ゲート自体も `sandbox.excludedCommands` 登録済み。strict allowlist のセッションでは `allowed_domains` 付きの呼び出しは実行前に拒否される）。下記コマンドを `cd` 前置・パイプ・`tail` 等を付けずそのまま実行する（付けると excludedCommands の一致が崩れ、sandbox 内で走って `not-established` になる）:

@@ -52,7 +52,7 @@
 - git commit 可、push 不可、PR 不可、`rm -rf` 不可
 
 ## Codex セルフレビュー
-検証深度 minimal。minimal 用 1 行報告フォーマットを使用（`done: {SHA} {files}`）。Codex セルフレビュー・追加テスト・拡張された動作確認は一切禁止。
+検証深度 minimal。minimal 用 1 行報告フォーマットを使用（`done: {SHA} {files}`）。Codex セルフレビュー・追加テスト（受け入れテストのテストファーストを含む）・拡張された動作確認は一切禁止。
 
 ## 完了時
 1. `mcp__renga-peers__send_message(to_id="secretary", ...)` で完了内容・変更ファイル・commit SHA・動作確認結果・残作業を報告（検証深度 full では「rebase clean」行と人間向け理解サマリを含める）

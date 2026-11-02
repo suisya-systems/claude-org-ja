@@ -24,14 +24,16 @@
 | `/org-delegate` 派遣（合致候補・空き pane 内） | ✅ する | per-candidate 人間選択を契約へ畳み込み |
 | worker iteration / verify | ✅ する | スコープ内作業 |
 | **push / `gh pr create` / `pr-watch` CI 監視** | ✅ する | 起動時スコープ承認が [`/org-pull-request`](../../org-pull-request/SKILL.md) 2b-i の「ユーザー明示承認」前提を満たす |
-| **merge** | ❌ **決して承認しない** | 不可逆点。常に PR ごとの独立人間ゲート（`feedback-merge-approval` / `feedback-no-overgate-after-decision`） |
+| **merge（`merge_approval_mode: human`、既定）** | ❌ **承認しない** | 不可逆点。PR ごとの独立人間ゲート（`feedback-merge-approval` / `feedback-no-overgate-after-decision`） |
+| **merge（`merge_approval_mode: acceptance`）** | ✅ 止める線に当たらない PR だけ | 受け入れテストのゲートと CI が完了を確かめる。止める線（[`/org-pull-request`](../../org-pull-request/SKILL.md) 2b-i）に当たれば PR ごとの人間ゲートに戻る。ゲート通過はスコープ承認の代わりにならない |
 | スコープ外候補の投入 | ❌ しない | scope 縁 → halt（INV-2 / INV-4） |
 | worker escalation の一次承認 | ❌ しない | [`/org-escalation`](../../org-escalation/SKILL.md) 経由で人間へ（INV-3） |
 
 > **push/PR を事前承認できる理由（merge と区別する）**: 人間が「この範囲は自走してよい」と明示した
 > **持続的スコープ承認** が、in-scope な PR 作成までの mechanical pipeline を覆う（`feedback-no-overgate-after-decision`
-> 「ユーザー判断確定後は不可逆点でのみ再承認」）。merge は不可逆点なので **この承認の射程外**に明示的に置き、
-> 都度ゲートする。conveyor は bare な per-PR「OK」を merge 承認に流用しない。
+> 「ユーザー判断確定後は不可逆点でのみ再承認」）。`human` では merge は不可逆点なので **この承認の射程外**に明示的に置き、
+> 都度ゲートする。conveyor は bare な per-PR「OK」を merge 承認に流用しない。`acceptance` では、人間が設定でその方式を選び、
+> 起動時の確認で契約に記録した場合に限り、止める線に当たらない PR の merge まで契約が覆う（判定はエージェントの外のゲートが行う）。
 
 ## テンプレート
 
@@ -62,10 +64,13 @@
 - codex_round_max: <既定 3>                    # 3 以外は派遣時に tools/codex_round_cap.py set で設定（exit-conditions.md §1）
 - false_positive_streak_max: <既定 2>
 - time_budget: <例: 2h>  /  max_iterations: <例: 10>
-- PR キュー上限: なし（人間 merge が natural gate）
+- PR キュー上限: なし（human では人間 merge が natural gate、acceptance では time_budget / max_iterations が上限）
 
-## merge gate（非交渉）
-- merge は事前承認しない。CI green で halt し PR ごとに人間へ提示する。
+## merge gate
+- merge_approval_mode（承認時の値）: <human|acceptance>   # 起動時の `python3 tools/merge_approval_mode.py` の出力
+- human: merge は事前承認しない。CI green で halt し PR ごとに人間へ提示する。
+- acceptance: 止める線（/org-pull-request 2b-i）に当たらない PR だけ merge まで自走し、当たれば halt して人間へ提示する。
+- 稼働中に設定が human → acceptance へ変わっても、承認時の値が human なら再承認まで human として扱う。
 ```
 
 > フィールドは固定キー（`label:` 等の述語はそのまま grep / gh フィルタに渡せる形）で書く。markdown だが
@@ -74,7 +79,9 @@
 ## 人間確認の手順（起動時 1 回）
 
 1. 人間から受けたスコープ承認を上記テンプレートに articulate する。
-2. **人間に読み返して確認を取る**（「この輪郭で自走します。merge は都度あなたが判断します」を含める）。
+2. **人間に読み返して確認を取る**（方式が `human` なら「この輪郭で自走します。merge は都度あなたが判断します」、
+   `acceptance` なら「この輪郭で自走し、受け入れテストのゲートと CI が通り止める線に当たらない PR はマージまで進めます。
+   止める線に当たった PR だけ都度判断を仰ぎます」を含める）。
    確認が取れるまでループを開始しない。
 3. 確認後 `.state/conveyor/scope-contract.md` に書き出し、[`.claude/skills/org-conveyor/SKILL.md`](../SKILL.md) Step 2 のループへ入る。
 
