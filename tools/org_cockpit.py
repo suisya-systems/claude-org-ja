@@ -18,7 +18,6 @@ backends are untouched.
 
 from __future__ import annotations
 
-import fcntl
 import os
 import shlex
 import shutil
@@ -158,7 +157,9 @@ def up(up_args: list[str], *, attach: bool) -> int:
                 print("org_cockpit up: the cockpit needs --backend tmux", file=sys.stderr)
                 return 2
     _, adapter = _transport_and_adapter()
-    if adapter not in (None, "tmux"):  # None = no daemon yet; org up picks the backend
+    # No daemon yet: org up picks the backend, honouring ORG_BACKEND.
+    adapter = adapter or os.environ.get("ORG_BACKEND") or None
+    if adapter not in (None, "tmux"):
         print(f"org_cockpit up: broker daemon backend is {adapter!r}, not tmux", file=sys.stderr)
         return 2
     tmux = shutil.which("tmux")
@@ -171,6 +172,7 @@ def up(up_args: list[str], *, attach: bool) -> int:
         return 1
     lock_path = ROOT / ".state" / "org_cockpit.lock"
     lock_path.parent.mkdir(exist_ok=True)
+    import fcntl  # POSIX only; `open` must still run on Windows
     with open(lock_path, "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)  # serialize inspect + claim
         rows = parse_panes(_tmux(tmux, "list-panes", "-s", "-t", f"={SESSION}",
