@@ -12,7 +12,10 @@ as the whole command, so the PR and the head it merges are read exactly
 (Issue #1228). ``--match-head-commit`` makes GitHub refuse the merge if the
 head moved after the hook looked at it.
 
-Any other command that mentions a merge is denied when it also has ``gh``,
+Any other command with the word merge on its own (``MERGE_WORD``: not inside a
+longer name such as ``run_complete_on_merge.py``, ``merge_approval_mode``,
+``mergedAt`` or ``before-merge.sh``, which cannot be the subcommand; the GraphQL
+``mergePullRequest`` / ``...AutoMerge`` count) is denied when it also has ``gh``,
 a pull request (``pulls/...``, ``mergePullRequest``), ``$`` or a backtick
 (blocking too much is accepted, letting a merge past the gate is not), unless
 it is one allow-listed command on its own on one line (Issue #1229): ``gh``
@@ -73,6 +76,10 @@ PYTEST_TIMEOUT_S = 300
 GATE_EXIT = {"passed": 0, "rejected": 1, "no-manifest": 3}
 MERGE = re.compile(r"gh pr merge ([0-9]+) --repo ([\w.-]+/[\w.-]+) --(?:squash|merge|rebase)"
                    r" --match-head-commit ([0-9a-f]{40})(?: --delete-branch)?", re.ASCII)
+# The word on its own, as the gh subcommand, the REST path or a shell value would have it. Inside a
+# longer name (`run_complete_on_merge.py`, `merge_approval_mode`, `mergedAt`, `before-merge.sh`)
+# it cannot be the subcommand, so those are not judged; the GraphQL mutation names are the exception.
+MERGE_WORD = re.compile(r"(?<![a-z0-9])(?<![a-z0-9][_-])merge(?![_-]?[a-z0-9])|mergepullrequest|automerge")
 SUSPECT = re.compile(r"\bgh\b|gh\.exe|pull|[$`]")  # `C:\...\gh.exe` loses its backslashes
 SAFE_GH = {"issue": None, "search": None,
            "pr": {"view", "list", "checks", "status", "diff", "create", "comment", "edit", "review"}}
@@ -126,7 +133,7 @@ def parse(command: str) -> tuple[str, str, str] | None:
         return m.group(1), m.group(2), m.group(3)
     # Continuations join words (`mer\<newline>ge`); other newlines stay word breaks so `EOF\ngh` shows `gh`.
     plain = re.sub(r"[\"'\\]", "", command.replace("\\\n", "").replace("\n", " ")).lower()
-    if "merge" in plain and SUSPECT.search(plain) and not allow_listed(command):
+    if MERGE_WORD.search(plain) and SUSPECT.search(plain) and not allow_listed(command):
         raise Deny(FORM)
     return None
 

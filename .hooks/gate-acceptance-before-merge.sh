@@ -5,7 +5,8 @@
 # 判定は `tools/acceptance_merge_hook.py` に委譲する (docstring が仕様の正本):
 #   - 許すマージは `gh pr merge <番号> --repo <OWNER/REPO> (--squash|--merge|--rebase)
 #     --match-head-commit <40 桁の SHA> [--delete-branch]` がコマンド全体であるときだけ。
-#     ほかの書き方で merge と gh / pull / $ / ` を含むものは deny (止めすぎは許容し、すり抜けを
+#     ほかの書き方で単独の語の merge と gh / pull / $ / ` を含むものは deny (ファイル名や mergedAt の
+#     ように長い名前の一部の merge は gh のサブコマンドになりえないので見ない。止めすぎは許容し、すり抜けを
 #     塞ぐ側に倒す)。例外は許可リストのコマンドを 1 行で単独で打ったときだけ (gh pr view/list/checks/
 #     create 等、gh issue、grep/cat/head/tail、sed -n <行>p。複数行・ヒアドキュメント・# を含むもの、
 #     ; & | や $( ` <( でつないだものは対象外)

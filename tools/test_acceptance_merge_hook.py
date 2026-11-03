@@ -78,24 +78,32 @@ class ParseTest(unittest.TestCase):
             with self.subTest(cmd=cmd):
                 self.assertIsNone(hook.parse(cmd))
 
+    def test_word_inside_a_longer_name_is_not_judged(self):
+        """A file name or JSON field that contains the word cannot be the subcommand, whatever surrounds it."""
+        m = VERB
+        for cmd in (f"grep -n gh /r/acceptance_{m}_hook.py | head", f"gh pr view 3 --json {m}dAt; echo $X",
+                    f"cat >> f.md <<'EOF'\n{m}_approval_mode: $MODE\nEOF",
+                    f"gh pr view 3 --json {m}dAt # note", f"gh pr view 3 \\\n --json {m}dAt",
+                    f"gh pr view `echo 3` --json {m}dAt", f"git log --{m}s; echo $?",
+                    f"bash .hooks/gate-acceptance-before-{m}.sh < $F"):
+            with self.subTest(cmd=cmd):
+                self.assertIsNone(hook.parse(cmd))
+
     def test_not_allow_listed_falls_back_to_the_broad_deny(self):
         """Issue #1229 option (c): chaining, substitution or an unknown program is denied as before."""
         m = VERB
         for cmd in (f'gh pr create --title "{m} gate" --body "$(cat body.md)"',
                     f"gh pr view 3 --json mergedAt && gh pr {m} 3",
-                    f"grep -n gh /r/acceptance_{m}_hook.py | head", f"gh pr view 3 --json mergedAt; echo $X",
                     f"cat f <(gh pr {m} 3)", f"cat <<EOF\n$(gh pr {m} 3)\nEOF",
                     f"cat <<'EOF'\nx\nEOF\ngh pr {m} 3", f"sed -n '1e gh pr {m} 3' f",
                     f"cat <<'EOF'\nnotes\nEOF\ngh pr {m} 7 --repo o/r --squash\ncat <<'EOF'\nnotes\nEOF",
                     # No heredoc exception, no `#`: multi-line and commented commands use the broad rule.
                     f'cat /dev/null # <<"EOF"\ngh pr {m} 7 --repo o/r --squash\nEOF',
                     f"gh pr create --title {m} --body-file - <<'EOF'\nbody\nEOF",
-                    f"cat >> f.md <<'EOF'\n{m}_approval_mode: $MODE\nEOF",
-                    f"gh pr view 3 --json mergedAt # note", f"gh pr view 3 \\\n --json mergedAt",
                     f"sed -n -e 1p -e '1e gh pr {m} 7' f", f"sed -n 1p f -e '1e gh pr {m} 7'",
                     f"sed -n 1p -f s.sed f # gh {m}",
                     f"less '+!gh pr {m} 3' f", f"rg --pre $X {m} f", f"grep x f 2>&1 | gh pr {m} 3",
-                    f"gh pr view `echo 3` --json mergedAt", f'codex exec "review $CLAUDE_ORG_PATH/{m}.py"'):
+                    f'codex exec "review $CLAUDE_ORG_PATH/{m}.py"'):
             with self.subTest(cmd=cmd), self.assertRaises(hook.Deny):
                 hook.parse(cmd)
 
