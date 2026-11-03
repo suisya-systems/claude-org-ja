@@ -112,7 +112,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     cursor = Path(args.cursor_file)
     raw = cursor.read_text(encoding="utf-8") if cursor.exists() else None
     since, reason, saved_key = judge_binding(raw, args.session_key, args.session_key_source)
-    if reason:  # step 2: observation row, always
+    seen = {_pair(d) for d in _read(db, "anomaly_observed")}
+    this = (args.session_key, saved_key)
+    if reason and this not in seen:  # step 2: observation row, once per episode
         _append(db, "anomaly_observed", {**KEYS, "session_key": args.session_key,
                                          "discarded_session_key": saved_key, "note": reason})
     # steps 3-6: every anomaly pair without a notify_sent is owed a decision.
@@ -120,7 +122,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     done = {_pair(d) for d in _read(db, "notify_sent")}
     owed: dict[tuple[str, str], str] = {}
     for d in _read(db, "anomaly_observed"):
-        if _pair(d) not in done:
+        # only this session's (or the just-discarded) episodes are owed; an old
+        # session's unsent row is stale and a `none` key identifies nothing
+        cur = _pair(d) == (this if reason else None) or (
+            d.get("session_key") == args.session_key != "none")
+        if cur and _pair(d) not in done:
             owed[_pair(d)] = str(d.get("note") or "unknown")
     notices = []
     for pair, why in owed.items():
