@@ -96,6 +96,13 @@ class GateTest(unittest.TestCase):
         self.land()
         self.assert_verdict("passed", "1 test(s) fail on base and pass on head")
 
+    def test_src_layout_imports_the_trees_package(self):
+        self.repo.commit("src layout", {"calc.py": None, "src/calc.py": BUGGY})
+        self.base = self.repo.git("rev-parse", "HEAD")
+        self.repo.commit("test: failing test" + TRAILER, {"tests/test_calc.py": TEST})
+        self.repo.commit("fix", {"src/calc.py": FIXED})
+        self.assert_verdict("passed", "1 test(s) fail on base and pass on head")
+
     def test_change_then_revert_passes(self):
         self.land()
         self.repo.commit("weaken", {"tests/test_calc.py": "def test_add():\n    pass\n"})
