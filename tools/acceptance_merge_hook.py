@@ -16,7 +16,8 @@ Any other command with the word merge on its own (``MERGE_WORD``: not inside a
 longer name such as ``run_complete_on_merge.py``, ``merge_approval_mode``,
 ``mergedAt`` or ``before-merge.sh``, which cannot be the subcommand; the GraphQL
 ``mergePullRequest`` / ``...AutoMerge`` count; with a ``${...}`` string operation
-such as ``${x%_}`` any occurrence counts) is denied when it also has ``gh``,
+such as ``${x%_}`` or a variable whose name contains the word, such as
+``$MERGE_ACTION``, any occurrence counts) is denied when it also has ``gh``,
 a pull request (``pulls/...``, ``mergePullRequest``), ``$`` or a backtick
 (blocking too much is accepted, letting a merge past the gate is not), unless
 it is one allow-listed command on its own on one line (Issue #1229): ``gh``
@@ -135,7 +136,8 @@ def parse(command: str) -> tuple[str, str, str] | None:
     # Continuations join words (`mer\<newline>ge`); other newlines stay word breaks so `EOF\ngh` shows `gh`.
     base = command.replace("\\\n", "").replace("\n", " ").lower()
     plain = re.sub(r"[\"'\\]", "", base)
-    if re.search(r"\$\{[^}]*[#%/:^,]", base):  # `${x%_}` can trim a longer name to the word
+    # `${x%_}` can trim a longer name to the word; `$MERGE_ACTION` may hold it from the environment.
+    if re.search(r"\$\{[^}]*[#%/:^,]|\$\{?\w*merge", base):
         found = "merge" in plain
     else:
         # As the shell reads it: an expansion adds no text of its own, so it is a break
