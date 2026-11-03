@@ -60,9 +60,11 @@ PARSE_MARKER="JSON object として解析できませんでした"
 #   窓口の入力を止めないため判定不能は無言で通す。判定本体は tools/test_dispatcher_loop_watch.py。
 # - context-record.sh: 文脈の自動引き継ぎ用の記録フックでブロックしない (常に exit 0)。
 #   記録できなくても会話を止めない。判定本体は tools/test_context_handover_watch.py。
+# - clear-needs-decision.sh: UserPromptSubmit の記録フックでブロックしない (常に exit 0)。
+#   判定本体は tools/cockpit_state.py、テストは tools/test_cockpit_state.py。
 # - remind-verify-premise.sh: UserPromptSubmit の助言フックでブロックしない (常に exit 0)。
 #   誤って出しても注意が 1 行増えるだけ。判定本体は tools/test_premise_check.py。
-EXEMPT=("fixture-always-block.sh" "block-adhoc-pr-watch.sh" "check-dispatcher-loop.sh" "context-record.sh" "remind-verify-premise.sh")
+EXEMPT=("fixture-always-block.sh" "block-adhoc-pr-watch.sh" "check-dispatcher-loop.sh" "context-record.sh" "remind-verify-premise.sh" "clear-needs-decision.sh")
 
 PASS=0; FAIL=0; TEST_NUM=0
 

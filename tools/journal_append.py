@@ -110,6 +110,14 @@ def _db_append(
             # After the commit, on the same connection the write used, so
             # the guard sees the row it is reacting to.
             _run_watcher_guard(conn, payload if isinstance(payload, dict) else {})
+        if event == "notify_sent":
+            # Advisory: mark the cockpit home tab; never changes the write outcome.
+            try:
+                from tools.cockpit_state import mark_for_event
+
+                mark_for_event(event, payload)
+            except Exception:  # noqa: BLE001
+                pass
     finally:
         conn.close()
 
