@@ -395,6 +395,18 @@ Block D の合流が終わった後に 1 回実行する（Block D-1 の画面�
 
 > **sandbox 注記**: `--daemon` は窓口が sandbox の外で実行する（renga CLI / tmux のソケットに届き、常駐プロセスを残せるのは外だけ）。起こされた watcher は窓口のシェルから切り離されているので、窓口を `/clear` しても止まらない。
 
+### Block F: コックピットを開く（broker のみ）
+
+`ORG_TRANSPORT=broker` のときだけ、Block E の後に 1 回実行する（renga では skip）。コックピットは runtime の `claude-org-runtime org cockpit` が broker の tmux socket 上に作る `org` セッションで、窓口・ディスパッチャー・ワーカーが 1 画面のタブとして並ぶ（tmux backend 専用）。窓口が **sandbox の外で**（tmux のソケットと WSL の `wt.exe` に届くのは外だけ）次を実行する:
+
+```bash
+python3 tools/org_cockpit.py open
+```
+
+- 全エージェントのウィンドウをコックピットへリンクしてから、状況に応じて 1 つだけ行う: 窓口がすでに broker の tmux 内にいれば `org` セッションへ切り替える / WSL で `wt.exe` があれば Windows Terminal の新しいタブでコックピットを開く / それ以外は attach コマンドを 1 行表示する（Step 4 の報告にそのまま転記する）
+- backend が tmux でない（wezterm / herdr）ときは `cockpit: skipped` と出して何もしない
+- **常に exit 0**。失敗しても `cockpit: could not open (...)` と attach コマンドを出すだけで、`/org-start` は止めない。出力が `could not open` なら、その行を Step 4 の報告に添える
+
 ### 失敗モード
 
 Block A の spawn 段階で分類する:
@@ -420,7 +432,9 @@ dispatcher は初回 DELEGATE 完了報告で「/loop 3m で監視します」�
 
 **Block C2 / C4 の warning 行の置き方**: 各 Block の exit code の項で決まった行（drift 行・「PyPI 未確認」・「検証不能」等）を、下記いずれのテンプレートでも **末尾に空行を 1 つ挟んだ上でそのまま転記する**。両方出る場合は 1 行ずつ並べる。exit 0 は何も付けない。
 
-> **Sidebar: dispatcher の自己修復ビュー起動案内（broker フレーム時のみ、optional）**
+> **Sidebar: 組織の見え方（broker フレーム時のみ）**
+>
+> broker(tmux) backend の主経路は Block F のコックピット（窓口・ディスパッチャー・ワーカーが 1 画面のタブ。プレフィックスは `Ctrl-Space`）。窓口自身をコックピットの先頭ウィンドウ（home）で動かすには、次回から `claude-org-runtime org up` の代わりに `python3 tools/org_cockpit.py up` で起動する（中身は同じ `org up` で、MCP・チャンネルの配線は変わらない）。以下の自己修復ビューは、コックピットを使わないときの代替手段として残す。
 >
 > broker(tmux) backend では dispatcher ペインは detached tmux session として独立して存在する。窓口の隣のターミナルでこれを 1 回起動しておくと control plane を常に視界に保てる（restart / auto-compact fork でセッション名が変わっても自己修復で再 attach し直す）:
 >

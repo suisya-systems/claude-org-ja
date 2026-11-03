@@ -46,6 +46,14 @@ claude-org-runtime org up                                # 窓口（Secretary）
 
 窓口が立ち上がったら、初回だけ `/org-setup`（許可設定の配置）→ `/org-start`（組織の起動）の順に実行します。2 回目以降は `claude-org-runtime org up` → `/org-start` だけで再開できます。前提条件・手動手順・困ったときは [`docs/getting-started.md`](docs/getting-started.md) を参照してください。
 
+### tmux のコックピットで起動する場合（Linux / macOS / WSL）
+
+```bash
+python3 tools/org_cockpit.py up
+```
+
+窓口を tmux のコックピット（`org` セッション）の先頭ウィンドウで起動し、そのまま画面に入ります。窓口・ディスパッチャー・ワーカーが 1 画面のタブとして並び、待ちのあるエージェントは 2 行目の「Needs you」に出ます。中身は `claude-org-runtime org up` と同じなので、窓口の MCP・チャンネルの配線は変わりません。tmux のプレフィックスは `Ctrl-Space` です（Claude Code が `Ctrl+B` を使うため）。窓口が終了した後にもう一度実行すると、動いている broker daemon には `org adopt --continue` で前回の会話から戻ります。`org up` で起動した場合も、`/org-start` の最後でコックピットが開きます（WSL では Windows Terminal の新しいタブ、それ以外は attach コマンドを表示）。
+
 ### herdr で起動する場合
 
 ```bash
@@ -115,6 +123,7 @@ renga で窓口を開いた場合も、Claude Code 上で実行する手順は�
 | 起動する | `claude-org-runtime org up` | 窓口（Secretary）の Claude Code を開く |
 | 初回セットアップ | `/org-setup` | ロール別の許可設定とフックを配置する |
 | 組織を開始・再開する | `/org-start` | 前回状態を読み込み、ディスパッチャーを起動する |
+| 組織全体を 1 画面で見る | `python3 tools/org_cockpit.py up`（起動済みなら `claude-org-runtime org cockpit`） | broker/tmux のコックピットで窓口・ディスパッチャー・ワーカーをタブとして並べる |
 | ディスパッチャーを横で見る | `tools/org-dispatcher-view.sh` | broker/tmux のディスパッチャーペインを読み取り専用で表示し続ける |
 | 完全に止める | `claude-org-runtime org down` | broker デーモンまで停止する |
 
@@ -138,7 +147,7 @@ renga で窓口を開いた場合も、Claude Code 上で実行する手順は�
 | 通知監視を使う | `/org-attention-start` / `/org-attention-stop` | 承認待ちや停止を別ペインで監視し、必要に応じて通知音を鳴らす |
 | スキル構成を点検する | `/skill-eligibility-check` / `/skill-audit` | 蓄積した知見からスキル化候補や棚卸しを確認する |
 
-`tools/org-dispatcher-view.sh` と `/org-attach` は broker/tmux 用の読み取り専用の補助ツールです。renga を代替手段として使う場合、組織のペインはすべて同じタブに並ぶため、attach ではなくそのタブを表示して直接見ます（別のタブを表示している間は見えないので、組織のタブに切り替えるか、renga のサイドバーから選びます）。ディスパッチャーを表示し続けたい場合の詳しい手順は [`docs/operations/dispatcher-view.md`](docs/operations/dispatcher-view.md) を参照してください。
+broker/tmux で組織を見る主な方法はコックピットです。`tools/org-dispatcher-view.sh` と `/org-attach` は、コックピットを使わないときの broker/tmux 用の読み取り専用の補助ツールです。renga を代替手段として使う場合、組織のペインはすべて同じタブに並ぶため、attach ではなくそのタブを表示して直接見ます（別のタブを表示している間は見えないので、組織のタブに切り替えるか、renga のサイドバーから選びます）。ディスパッチャーを表示し続けたい場合の詳しい手順は [`docs/operations/dispatcher-view.md`](docs/operations/dispatcher-view.md) を参照してください。
 
 ## もっと知る
 
