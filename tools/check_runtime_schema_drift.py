@@ -244,6 +244,7 @@ _JA_ONLY_HOOK_SCRIPTS = frozenset({
     "gate-acceptance-before-merge.sh",
     "context-record.sh",
     "clear-needs-decision.sh",
+    "mark-needs-decision.sh",
 })
 
 
