@@ -403,7 +403,7 @@ Block D の合流が終わった後に 1 回実行する（Block D-1 の画面�
 python3 tools/org_cockpit.py open
 ```
 
-- 全エージェントのウィンドウをコックピットへリンクしてから、状況に応じて 1 つだけ行う: 窓口がすでに broker の tmux 内にいれば `org` セッションへ切り替える / WSL で `wt.exe` があれば Windows Terminal の新しいタブでコックピットを開く / それ以外は attach コマンドを 1 行表示する（Step 4 の報告にそのまま転記する）
+- 全エージェントのウィンドウを `claude-org-runtime org cockpit --no-attach --attach-only` でコックピットへリンクしてから（何も起動しない。二人目の窓口は立たない）、状況に応じて 1 つだけ行う: 窓口がすでに broker の tmux 内にいれば `org` セッションへ切り替える / WSL で `wt.exe` があれば Windows Terminal の新しいタブでコックピットを開く / それ以外は attach コマンドを 1 行表示する（Step 4 の報告にそのまま転記する）
 - backend が tmux でない（wezterm / herdr）ときは `cockpit: skipped` と出して何もしない
 - **常に exit 0**。失敗しても `cockpit: could not open (...)` と attach コマンドを出すだけで、`/org-start` は止めない。出力が `could not open` なら、その行を Step 4 の報告に添える
 
@@ -434,7 +434,7 @@ dispatcher は初回 DELEGATE 完了報告で「/loop 3m で監視します」�
 
 > **Sidebar: 組織の見え方（broker フレーム時のみ）**
 >
-> broker(tmux) backend の主経路は Block F のコックピット（窓口・ディスパッチャー・ワーカーが 1 画面のタブ。プレフィックスは `Ctrl-Space`）。窓口自身をコックピットの先頭ウィンドウ（home）で動かすには、次回から `claude-org-runtime org up` の代わりに `python3 tools/org_cockpit.py up` で起動する（中身は同じ `org up` で、MCP・チャンネルの配線は変わらない）。以下の自己修復ビューは、コックピットを使わないときの代替手段として残す。
+> broker(tmux) backend の主経路は Block F のコックピット（窓口・ディスパッチャー・ワーカーが 1 画面のタブ。プレフィックスは `Ctrl-Space`）。窓口自身をコックピットの先頭ウィンドウ（home）で動かすには、次回から `claude-org-runtime org up` の代わりに `claude-org-runtime org cockpit` で起動する（起動も再接続もこの 1 コマンド。中身は同じ `org up` で、MCP・チャンネルの配線は変わらない）。以下の自己修復ビューは、コックピットを使わないときの代替手段として残す。
 >
 > broker(tmux) backend では dispatcher ペインは detached tmux session として独立して存在する。窓口の隣のターミナルでこれを 1 回起動しておくと control plane を常に視界に保てる（restart / auto-compact fork でセッション名が変わっても自己修復で再 attach し直す）:
 >

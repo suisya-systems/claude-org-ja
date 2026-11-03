@@ -26,6 +26,7 @@ core-harness>=0.4.0,<0.5
 # PyPI via Trusted Publisher; pinned to the 0.1.x range. 0.x bumps may be
 # breaking per the runtime's compatibility policy, so widen this pin
 # deliberately when adopting a new minor.
+# Floor bumped to 0.1.53 (`org cockpit` starts / recovers the secretary itself and `--attach-only` only attaches, runtime#254; ja drops its own `up` and `open` uses `--attach-only`); pin-only, shared schema unchanged, RUNTIME_PIN_LOWER_INCLUSIVE stays (0, 1, 48).
 # Floor bumped to 0.1.52 (tmux cockpit `org cockpit`, runtime#250; ja runs the secretary in it via tools/org_cockpit.py); pin-only, shared schema unchanged, RUNTIME_PIN_LOWER_INCLUSIVE stays (0, 1, 48).
 # Floor bumped to 0.1.51 (tmux adapter back to one new-session per spawn, runtime#247); pin-only, shared schema unchanged, RUNTIME_PIN_LOWER_INCLUSIVE stays (0, 1, 48).
 # Floor bumped to 0.1.50 (herdr 0.9.x / protocol 22 support and protocol_for_version, herdr 0.7.0-0.7.4
@@ -184,7 +185,7 @@ core-harness>=0.4.0,<0.5
 # (transport surface descriptor claude_org_runtime.transport consumed by
 # tools/transport.py — Epic #6 next-stage D / ja#513) are subsumed by 0.1.28.
 # Keep in sync with pyproject.toml.
-claude-org-runtime>=0.1.52,<0.2
+claude-org-runtime>=0.1.53,<0.2
 
 # tools/gen_worker_brief.py reads TOML config. tomllib is stdlib in 3.11+,
 # but ja still supports 3.10 (CLAUDE.local.md template recommends 3.10).
