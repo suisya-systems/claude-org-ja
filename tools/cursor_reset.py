@@ -122,10 +122,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     done = {_pair(d) for d in _read(db, "notify_sent")}
     owed: dict[tuple[str, str], str] = {}
     for d in _read(db, "anomaly_observed"):
-        # only this session's (or the just-discarded) episodes are owed; an old
-        # session's unsent row is stale and a `none` key identifies nothing
-        cur = _pair(d) == (this if reason else None) or (
-            d.get("session_key") == args.session_key != "none")
+        # only this session's episodes are owed (an old session's unsent row is
+        # stale); a none/none row identifies no episode at all
+        cur = d.get("session_key") == args.session_key and _pair(d) != ("none", "none")
         if cur and _pair(d) not in done:
             owed[_pair(d)] = str(d.get("note") or "unknown")
     notices = []
