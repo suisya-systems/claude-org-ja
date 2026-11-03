@@ -12,7 +12,12 @@ as the whole command, so the PR and the head it merges are read exactly
 (Issue #1228). ``--match-head-commit`` makes GitHub refuse the merge if the
 head moved after the hook looked at it.
 
-Any other command that mentions a merge is denied when it also has ``gh``,
+Any other command with the word merge on its own (``MERGE_WORD``: not inside a
+longer name such as ``run_complete_on_merge.py``, ``merge_approval_mode``,
+``mergedAt`` or ``before-merge.sh``, which cannot be the subcommand; the GraphQL
+``mergePullRequest`` / ``...AutoMerge`` count; with a ``${...}`` string operation
+such as ``${x%_}`` or a variable whose name contains the word, such as
+``$MERGE_ACTION``, any occurrence counts) is denied when it also has ``gh``,
 a pull request (``pulls/...``, ``mergePullRequest``), ``$`` or a backtick
 (blocking too much is accepted, letting a merge past the gate is not), unless
 it is one allow-listed command on its own on one line (Issue #1229): ``gh``
@@ -73,6 +78,10 @@ PYTEST_TIMEOUT_S = 300
 GATE_EXIT = {"passed": 0, "rejected": 1, "no-manifest": 3}
 MERGE = re.compile(r"gh pr merge ([0-9]+) --repo ([\w.-]+/[\w.-]+) --(?:squash|merge|rebase)"
                    r" --match-head-commit ([0-9a-f]{40})(?: --delete-branch)?", re.ASCII)
+# The word on its own, as the gh subcommand, the REST path or a shell value would have it. Inside a
+# longer name (`run_complete_on_merge.py`, `merge_approval_mode`, `mergedAt`, `before-merge.sh`)
+# it cannot be the subcommand, so those are not judged; the GraphQL mutation names are the exception.
+MERGE_WORD = re.compile(r"(?<![a-z0-9])(?<![a-z0-9][_-])merge(?![_-]?[a-z0-9])|mergepullrequest|automerge")
 SUSPECT = re.compile(r"\bgh\b|gh\.exe|pull|[$`]")  # `C:\...\gh.exe` loses its backslashes
 SAFE_GH = {"issue": None, "search": None,
            "pr": {"view", "list", "checks", "status", "diff", "create", "comment", "edit", "review"}}
@@ -125,8 +134,21 @@ def parse(command: str) -> tuple[str, str, str] | None:
     if m:
         return m.group(1), m.group(2), m.group(3)
     # Continuations join words (`mer\<newline>ge`); other newlines stay word breaks so `EOF\ngh` shows `gh`.
-    plain = re.sub(r"[\"'\\]", "", command.replace("\\\n", "").replace("\n", " ")).lower()
-    if "merge" in plain and SUSPECT.search(plain) and not allow_listed(command):
+    base = command.replace("\\\n", "").replace("\n", " ").lower()
+    plain = re.sub(r"[\"'\\]", "", base)
+    # `${x%_}` can trim a longer name to the word; `$MERGE_ACTION` may hold it from the environment.
+    if re.search(r"\$\{[^}]*[#%/:^,]|\$\{?\w*merge", base):
+        found = "merge" in plain
+    else:
+        # As the shell reads it: an expansion adds no text of its own, so it is a break
+        # (`"$P"mer'ge'` runs the word), except the default word in `${A-merge}`; then quote
+        # removal joins (`m'erge'`). A backslash either joins (`m\erge`) or is an escape
+        # (`printf 'merge\n'`), so both readings are checked.
+        s = re.sub(r"\$\{[^}]*\}?", lambda m: re.sub(r"[^a-z0-9_]", " ", m.group()), base)
+        s = re.sub(r"\$(\w+|.?)", " ", s)
+        found = any(MERGE_WORD.search(re.sub(r"[\"']", "", v))
+                    for v in (s.replace("\\", ""), re.sub(r"\\.?", " ", s)))
+    if found and SUSPECT.search(plain) and not allow_listed(command):
         raise Deny(FORM)
     return None
 
