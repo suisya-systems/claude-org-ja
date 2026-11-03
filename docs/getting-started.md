@@ -82,6 +82,8 @@ claude-org-runtime org up                                    # broker daemon を
 ```
 
 `claude-org-runtime org up` が broker daemon を確保（健全なら再利用、無ければ起動）し、窓口 (Secretary) ペインを起動する（`--state-dir` 既定 `.state/broker`、`--root-cwd` 既定＝実行ディレクトリ、`--name` 既定 `secretary`）。Windows で console script が PATH に無い場合は等価の `py -3 -m claude_org_runtime.cli org up` を使う。停止は `claude-org-runtime org down`。
+
+**tmux のコックピットで起動する（Linux / macOS / WSL、tmux backend）**: `claude-org-runtime org up` の代わりに `python3 tools/org_cockpit.py up` を使うと、窓口が broker の tmux socket 上の `org` セッション（runtime の `claude-org-runtime org cockpit` が作るコックピット）の先頭ウィンドウ home で起動し、ディスパッチャー・ワーカーと 1 画面のタブとして並ぶ。窓口を起動するのは同じ `org up` なので MCP・チャンネルの配線は同一。`org up` の引数は `--` の後ろに渡す（例: `python3 tools/org_cockpit.py up -- --model opus`）。窓口が終了した後に再実行すると、broker daemon が動いていれば `org adopt --continue` で前回の会話を引き継いで起動し直す。生きている窓口のペインは決して kill しない。`org up` で直接起動した場合も、`/org-start` の最後（Block F）でコックピットを開く（WSL で `wt.exe` があれば Windows Terminal の新しいタブ、それ以外は attach コマンドを表示）。tmux のプレフィックスは `Ctrl-Space`。
 窓口の Claude Code が立ち上がったら、**順に以下を実行する**:
 
 1. `/org-setup` — ロール別 `settings.local.json`（窓口・ディスパッチャー・キュレーター・ワーカー）と必須 hook を配置。**初回のみ必須**。未実行だと broker（renga フォールバック時は renga-peers）MCP / git / gh で大量の許可プロンプトが出る。ただし輸送層（`ORG_TRANSPORT` の broker / renga）を切り替えた後は、配布される messaging MCP の allow が輸送層ごとに異なる（`mcp__org-broker__*` / `mcp__renga-peers__*`）ため、`/org-setup` をやり直す（[`.claude/skills/org-setup/SKILL.md`](../.claude/skills/org-setup/SKILL.md) の「輸送層 両系」注記）。
