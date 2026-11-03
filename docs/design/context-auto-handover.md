@@ -152,7 +152,7 @@ Stop フックを付けた Claude Code のペインで確かめた。
 どの段で止まっても `auto_handover_failed`（`OP`・役割・段・理由）を events に書き、その役割は 30 分試さない。知らせる先は次のとおり。events に書くだけでは知らせたことにしない。
 
 - ディスパッチャーの失敗: `peer_notify` で窓口に送る。窓口が人に伝える。
-- 窓口の失敗: watcher のログに書き、窓口にも `peer_notify` で送り（`/clear` 済みなら新しいセッションが受ける）、`notify_sent kind=awaiting_user gate=auto_handover_failed` を書く。後者が人に届くのは attention watcher が動いているときだけ（attention watcher は自動起動しない。[`.claude/skills/org-start/SKILL.md`](../../.claude/skills/org-start/SKILL.md) Block C3 の後の Sidebar）。無人で回すときは attention watcher を起動しておくことを、窓口の自動引き継ぎを有効にする条件にする。watcher は `.state/attention_pane.json` の有無でなく、記録されたペインが renga でいまも `attention` という名前で在ることで確かめる（ペインが落ちても sidecar は残るため）。
+- 窓口の失敗: watcher のログに書き、窓口にも `peer_notify` で送り（`/clear` 済みなら新しいセッションが受ける）、`notify_sent kind=awaiting_user gate=auto_handover_failed` を書く。後者が人に届くのは attention watcher が動いているときだけ（attention watcher は自動起動しない。[`.claude/skills/org-start/SKILL.md`](../../.claude/skills/org-start/SKILL.md) Block C3 の後の Sidebar）。無人で回すときは attention watcher を起動しておくことを、窓口の自動引き継ぎを有効にする条件にする。watcher は `.state/attention_pane.json` の有無でなく、記録されたペインが renga でいまも `attention` という名前で在ること（broker では tmux 上に生きていること）で確かめる（ペインが落ちても sidecar は残るため）。
 
 ### 4.4 `/clear` の前後に届いた入力を拾う
 
@@ -230,7 +230,7 @@ broker の「配送済み」はハーネスが通知を受け付けたという�
 
 - 窓口に `/loop` があると切り替えない（§3.3）。窓口の段では条件に残した。窓口の `/loop` は用途が決まっておらず、指示文が会話の文脈を前提にしていると `/clear` の後に意味が変わるため。窓口で `/loop` を常用するようになったら外すかを決め直す。
 - §4.2 の読み返しと Enter の間の隙間は消せない。
-- broker では窓口の `/secretary-resume` が自分のペイン id を確定できず、人に続行の判断を仰ぐ（[`.claude/skills/secretary-resume/SKILL.md`](../../.claude/skills/secretary-resume/SKILL.md) Step 0 の 2）。§3.1 でフックが環境変数から取ったペイン id を `auto` の復帰で使ってよいかは、契約（[`docs/contracts/backend-interface-contract.md`](../../docs/contracts/backend-interface-contract.md) T-§4.2）の解釈の問題なので、窓口の自動引き継ぎを作る段で決める。決まるまで broker の窓口は自動引き継ぎの対象にしない。窓口の段でもこの解釈は決めず、watcher は transport が renga のときだけ窓口を扱う（broker では窓口を飛ばしてディスパッチャーだけを見る）。
+- broker では窓口の `/secretary-resume` が自分のペイン id を確定できず、手動のときは人に続行の判断を仰ぐ（[`.claude/skills/secretary-resume/SKILL.md`](../../.claude/skills/secretary-resume/SKILL.md) Step 0 の 2）。自動引き継ぎでは、watcher が打鍵の前に、記録されたペイン（フックが環境変数 `TMUX_PANE` から取った値）がコックピットの窓口ペイン（runtime の `secretary_pane_id()`、`@org_secretary` の印）と一致することを確かめるので、それを根拠に `auto` の復帰は人に聞かず続ける。窓口ペインを特定できないときは `secretary_pane_unknown`、記録が別のペインのときは `pane_not_secretary_home` で窓口を飛ばす。attention watcher は、broker の tmux ペインに名前が無いので、sidecar のペイン id が tmux 上に生きていることで確かめる（無ければ `attention_watcher_absent`）。
 - 1 ターンの中で閾値から自動要約まで進む場合（§2.2）は引き継ぎが間に合わない。
 - 会話でしか決まっていない合意の写し漏れは機械では検出できない（§6.2）。
 

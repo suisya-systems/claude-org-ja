@@ -377,8 +377,8 @@ Block A の spawn 成功後、dispatcher ペインで Claude が boot してい�
 Block D の合流が終わった後に 1 回実行する（Block D-1 の画面判定の最中に走らせない）。ディスパッチャーと窓口の文脈が閾値を超え、ターンの区切りで静かなときに、`/<役割>-handover auto op=<OP>` → `/clear` → `/<役割>-resume auto op=<OP>` を外から打つ決定的プロセス（LLM を含まない）をペインなしの常駐プロセスとして起動する。設計は [`docs/design/context-auto-handover.md`](../../../docs/design/context-auto-handover.md)、本体は [`tools/context_handover_watch.py`](../../../tools/context_handover_watch.py)。測る材料は各役割の settings に置いた記録フック（`context-record.sh`、[`.claude/skills/org-setup/references/permissions.md`](../org-setup/references/permissions.md) のディスパッチャー節・窓口節）が書く `.state/context/<役割>.json` で、これが無い間 watcher はその役割に何もしない。
 
 窓口が自動で引き継がれるのは次を全部満たすときだけで、満たさない間は窓口を飛ばしてディスパッチャーだけを見る:
-- transport が renga（broker の窓口は `/secretary-resume` が自分のペイン id を確定できないので対象外）
-- attention watcher が動いている（`.state/attention_pane.json` に記録されたペインが、renga でいまも `attention` という名前で在る。窓口の失敗は `notify_sent kind=awaiting_user` でしか離席中の人に届かないため）
+- transport が renga、または broker + tmux でコックピットの窓口ペイン（`@org_secretary`）を特定できる（特定できない間は `secretary_pane_unknown` で対象外。記録されたペインが窓口ペインと違うときも打たない）。broker の `/secretary-resume` は自分のペイン id を確定できないが、auto のときは watcher が窓口ペインとの一致を確認済みなので人に聞かず続ける
+- attention watcher が動いている（`.state/attention_pane.json` に記録されたペインが、renga ならいまも `attention` という名前で在る。broker の tmux ペインに名前は無いので、記録されたペイン id が tmux 上に生きていること。窓口の失敗は `notify_sent kind=awaiting_user` でしか離席中の人に届かないため）
 - 窓口の判断仰ぎの register に `resolved` でないものが無く、人へ承認を仰いでから 30 分経っていて、窓口に `/loop` の予約が無い
 - 応答の約 60 秒後に Claude Code が出す `idle_prompt` がその応答の後に来ている（人が打鍵していない）。打つ直前に入力欄が空であることも確かめ、人の文字が入っていれば打たずに止まる
 

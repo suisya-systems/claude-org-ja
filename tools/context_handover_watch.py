@@ -15,8 +15,9 @@ deterministic process (no LLM) that every 30 s, for each role,
 3. checks that nothing was lost across the switch (§6.1 / §6.2).
 
 Only one role is handed over at a time. Workers are out of scope (§5).
-The secretary is handled on renga only: on broker its ``/secretary-resume``
-cannot confirm its own pane id (§7). Because a person types into the
+The secretary is handled on renga, and on broker + tmux when the cockpit home
+pane (``@org_secretary``) can be named and is the pane the record follows (§7);
+otherwise it is skipped. Because a person types into the
 secretary's pane, the secretary is also handed over only after Claude Code
 reported ``idle_prompt`` for the current turn (the person has not typed for
 about a minute, §4.2 1), and only while an attention watcher is running,
@@ -401,6 +402,23 @@ class Org:
 
         return _resolve_transport(None)
 
+    def secretary_pane_id(self) -> "str | None":
+        """Broker + tmux: the cockpit home pane (``@org_secretary``), or None if it cannot be named."""
+        try:
+            from claude_org_runtime.terminal.tmux import TmuxAdapter
+
+            return TmuxAdapter().secretary_pane_id()
+        except Exception:  # noqa: BLE001 - unknown means "not a target", not a crash
+            return None
+
+    def live_tmux_panes(self) -> "set[str]":
+        try:
+            from claude_org_runtime.terminal.tmux import TmuxAdapter
+
+            return {p["pane_id"] for p in TmuxAdapter().list_panes()}
+        except Exception:  # noqa: BLE001
+            return set()
+
 
 def unsupported_reason() -> "str | None":
     """§4.1: only renga and broker + tmux can be typed into from a CLI."""
@@ -507,13 +525,17 @@ class Watcher:
 
     # -- choosing to start -------------------------------------------------
     def secretary_disabled(self) -> "str | None":
-        """§7: renga only. §4.3: a failure must be able to reach an absent person."""
-        if self.org.transport() != "renga":
-            return "secretary_broker_unsupported"
-        # The sidecar outlives a crashed or closed pane: the recorded pane must
-        # still be the one renga names "attention" (/org-attention-start).
+        """§7: renga, or broker + tmux with the home pane named. §4.3: a failure must be able to reach an absent person."""
+        # The sidecar outlives a crashed or closed pane, so the recorded pane must still be the attention one.
         pane_id = self.org.read_json(self.org.attention_path, {}).get("pane_id")
-        if pane_id in (None, "") or self.pane_namer({"backend": "renga", "id": pane_id}) != "attention":
+        if self.org.transport() == "renga":
+            if pane_id in (None, "") or self.pane_namer({"backend": "renga", "id": pane_id}) != "attention":
+                return "attention_watcher_absent"
+            return None
+        # tmux panes carry no name, so on broker the pane must still exist and the home pane be known.
+        if not self.org.secretary_pane_id():
+            return "secretary_pane_unknown"
+        if pane_id in (None, "") or str(pane_id) not in self.org.live_tmux_panes():
             return "attention_watcher_absent"
         return None
 
@@ -565,8 +587,14 @@ class Watcher:
         ``dispatcher``): another Claude started at the org root, such as a person's
         own working pane, would otherwise take the record over and get typed into."""
         if not isinstance(pane, dict) or pane.get("backend") != "renga":
-            # tmux ids come from the broker's own spawn; the secretary is renga-only.
-            return "pane_not_renga" if role == SECRETARY else None
+            if role != SECRETARY:
+                return None  # tmux ids come from the broker's own spawn
+            if self.org.transport() == "renga":
+                return "pane_not_renga"
+            # Broker: a record taken by another Claude at the org root is not the home pane.
+            if isinstance(pane, dict) and str(pane.get("id")) == self.org.secretary_pane_id():
+                return None
+            return "pane_not_secretary_home"
         name = self.pane_namer(pane)
         if name is None:
             return "pane_name_unknown"
