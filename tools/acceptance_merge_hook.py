@@ -40,7 +40,9 @@ It then fetches the head and base into the project's clone under
 ``--pr OWNER/REPO#N`` (which also pins the test commit):
 
 - passed: allowed.
-- no-manifest: allowed (pilot policy: recorded by the gate, not enforced).
+- no-manifest: allowed when the merge approval mode (``tools/merge_approval_mode.py``,
+  read from the project's ``registry/org-config.md``) is ``human`` (recorded by the
+  gate, not enforced); denied when it is ``acceptance`` (Issue #1236).
 - rejected, or any gh / git / state DB failure or timeout: denied.
 
 Every subprocess shares one deadline below the hook's timeout in settings
@@ -62,6 +64,8 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:  # the wrapper runs this file as a script
     sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.merge_approval_mode import read_mode  # noqa: E402
 
 GATE = Path(__file__).resolve().parent / "acceptance_gate.py"
 DEADLINE_S = 840  # the hook is registered with timeout 900
@@ -207,6 +211,11 @@ def decide(command: str, project: Path) -> str:
     reason = " ".join(lines[:-1])
     if verdict == "rejected":
         raise Deny(f"ACCEPTANCE_GATE rejected {slug}#{pr['number']}: {reason}")
+    if verdict == "no-manifest" and read_mode(project)[0] == "acceptance":
+        raise Deny(f"ACCEPTANCE_GATE no-manifest for {slug}#{pr['number']} under merge_approval_mode"
+                   " acceptance: a PR without a declared acceptance test needs a human. Have a human"
+                   " decide and merge it in the GitHub web UI, or set merge_approval_mode to human"
+                   " in registry/org-config.md")
     return "ALLOW"
 
 
