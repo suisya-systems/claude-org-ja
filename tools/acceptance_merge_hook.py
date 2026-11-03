@@ -133,7 +133,9 @@ def parse(command: str) -> tuple[str, str, str] | None:
         return m.group(1), m.group(2), m.group(3)
     # Continuations join words (`mer\<newline>ge`); other newlines stay word breaks so `EOF\ngh` shows `gh`.
     plain = re.sub(r"[\"'\\]", "", command.replace("\\\n", "").replace("\n", " ")).lower()
-    if MERGE_WORD.search(plain) and SUSPECT.search(plain) and not allow_listed(command):
+    # Inside `${...}` a `-` is an operator (`${A-merge}` defaults to the word), not part of a name.
+    words = re.sub(r"\$\{[^}]*\}?", lambda m: m.group().replace("-", " "), plain)
+    if MERGE_WORD.search(words) and SUSPECT.search(plain) and not allow_listed(command):
         raise Deny(FORM)
     return None
 

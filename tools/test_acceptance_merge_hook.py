@@ -140,6 +140,8 @@ class ParseTest(unittest.TestCase):
                     f"C:\\Program Files\\GitHub CLI\\gh.exe pr {m} 7", f"/c/tools/gh.exe pr {m} 7",
                     "gh pr mer\\\nge 7 --repo o/r --squash", f"gh pr ${{ACTION:-{m}}} 7 --repo o/r --squash",
                     f"gh ${{G:-pr}} {m} 7", f"${{GH:-gh}} pr {m} 7",
+                    f"gh pr ${{ACTION-{m}}} 7 --repo o/r --squash", f"gh pr ${{A-${{B-{m}}}}} 7",
+                    f"gh pr ${{A-{m}",
                     f'env "$GH" pr {m} 7 --repo o/r --squash', f'command "$GH" pr {m} 7',
                     f"sudo $GH pr {m} 7", f"$GH $P {m} 7", f"xargs -I{{}} $GH pr {m} {{}}",
                     f"env GH=1 $GH pr ${{X:-{m}}} 7"):
