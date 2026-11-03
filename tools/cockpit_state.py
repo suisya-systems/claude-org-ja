@@ -7,6 +7,9 @@ is waiting|needs-decision|done under "Needs you", but the broker never writes
 
 * ``mark_for_event``: journal_append calls it after recording a
   ``notify_sent kind=awaiting_user`` row -> home window ``@state=needs-decision``.
+* ``mark_for_tool``: the secretary's PostToolUse(Bash) hook
+  (``.hooks/mark-needs-decision.sh``) calls it. Needed because the secretary runs
+  journal_append in the sandbox, where the call above cannot reach tmux.
 * ``clear_for_prompt``: the secretary's UserPromptSubmit hook
   (``.hooks/clear-needs-decision.sh``) calls it -> the marker is removed, but only
   when it is ``needs-decision`` and only from the home pane itself.
@@ -19,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -66,6 +70,35 @@ def mark_for_event(event, payload, adapter=None, env=None) -> bool:
     return mark_needs_decision(adapter=adapter, env=env)
 
 
+_GATE = re.compile(r"""\bgate=["']?([^\s"']+)""")
+
+
+def mark_for_tool(stdin_text, adapter=None, env=None) -> bool:
+    """PostToolUse(Bash) hook body. The secretary runs journal_append inside the
+    Bash sandbox where tmux is unreachable, so the mark is applied here (hooks run
+    outside it). Marks only for a ``notify_sent kind=awaiting_user`` command, from the home pane."""
+    try:
+        env = os.environ if env is None else env
+        data = json.loads(stdin_text)
+        cmd = data["tool_input"]["command"]
+        if data.get("tool_name") != "Bash" or not isinstance(cmd, str):
+            return False
+        if "journal_append" not in cmd or "notify_sent" not in cmd or not re.search(r"\bkind=awaiting_user\b", cmd):
+            return False
+        gate = _GATE.search(cmd)
+        if gate and gate.group(1) in NOT_WAITING_GATES:
+            return False
+        own = env.get("TMUX_PANE")
+        if not own or not _is_broker(env):
+            return False
+        adapter = adapter or _default_adapter()
+        if adapter.secretary_pane_id() != own:
+            return False
+        return mark_needs_decision(adapter=adapter, env=env)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def clear_for_prompt(stdin_text, adapter=None, env=None) -> bool:
     try:
         env = os.environ if env is None else env
@@ -93,6 +126,8 @@ def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     if argv[:1] == ["clear"]:
         clear_for_prompt(sys.stdin.read())
+    elif argv[:1] == ["mark-tool"]:
+        mark_for_tool(sys.stdin.read())
     elif argv[:1] == ["mark"]:
         mark_needs_decision()
     return 0

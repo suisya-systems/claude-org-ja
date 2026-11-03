@@ -185,6 +185,11 @@
           "command_contains": "clear-needs-decision.sh"
         },
         {
+          "event": "PostToolUse",
+          "matcher_contains": "Bash",
+          "command_contains": "mark-needs-decision.sh"
+        },
+        {
           "event": "SessionStart",
           "command_contains": "context-record.sh"
         },

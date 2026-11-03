@@ -15,7 +15,7 @@ from tools.state_db import apply_schema, connect  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 # .hooks scripts that are not failure-stopping defenses.
-NOT_DEFENSES = {"context-record", "fixture-always-block", "clear-needs-decision"}
+NOT_DEFENSES = {"context-record", "fixture-always-block", "clear-needs-decision", "mark-needs-decision"}
 
 
 class RegisterTest(unittest.TestCase):
