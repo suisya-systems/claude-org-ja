@@ -272,6 +272,14 @@ def render_late_inputs(op: str, inputs: "list[str]") -> str:
 # environment
 # ---------------------------------------------------------------------------
 
+def _tmux_adapter():
+    """The adapter on the socket the keystrokes go to (same rule as ``make_backend``)."""
+    from claude_org_runtime.terminal.tmux import TmuxAdapter
+    from tools.self_edit_approval import _TMUX_SOCKET
+
+    return TmuxAdapter(socket=os.environ.get("ORG_BROKER_SOCKET") or _TMUX_SOCKET)
+
+
 class Org:
     """Paths and state the watcher reads; one place so tests can point it at a tmp dir."""
 
@@ -405,17 +413,13 @@ class Org:
     def secretary_pane_id(self) -> "str | None":
         """Broker + tmux: the cockpit home pane (``@org_secretary``), or None if it cannot be named."""
         try:
-            from claude_org_runtime.terminal.tmux import TmuxAdapter
-
-            return TmuxAdapter().secretary_pane_id()
+            return _tmux_adapter().secretary_pane_id()
         except Exception:  # noqa: BLE001 - unknown means "not a target", not a crash
             return None
 
     def live_tmux_panes(self) -> "set[str]":
         try:
-            from claude_org_runtime.terminal.tmux import TmuxAdapter
-
-            return {p["pane_id"] for p in TmuxAdapter().list_panes()}
+            return {p["pane_id"] for p in _tmux_adapter().list_panes()}
         except Exception:  # noqa: BLE001
             return set()
 
