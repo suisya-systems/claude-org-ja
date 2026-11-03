@@ -2834,13 +2834,16 @@ def _load_task_args_from_toml(path: Path) -> dict[str, Any]:
     }
 
 
+_ACCEPTANCE_YES = "受け入れテスト: あり"
+
+
 def _acceptance_line(test: Optional[str], reason: Optional[str]) -> Optional[str]:
     """Issue #1244: render --acceptance-test as the line the brief keys on."""
     reason = (reason or "").strip()
     if test == "yes":
         if reason:
             raise SystemExit("error: --acceptance-reason goes with --acceptance-test no")
-        return "受け入れテスト: あり"
+        return _ACCEPTANCE_YES
     if test == "no":
         if not reason:
             raise SystemExit(
@@ -2955,9 +2958,17 @@ def _gather_plan_kwargs(args: argparse.Namespace) -> dict[str, Any]:
     )
     if acceptance_line:
         guidance = (base.get("implementation_guidance") or "").strip()
-        base["implementation_guidance"] = (
-            f"{acceptance_line}\n\n{guidance}" if guidance else acceptance_line
-        )
+        # The worker keys test-first on this text, so a "no" next to it
+        # would be contradicted by the guidance itself.
+        if args.acceptance_test == "no" and _ACCEPTANCE_YES in guidance:
+            raise SystemExit(
+                f"error: --acceptance-test no, but the guidance already says "
+                f"{_ACCEPTANCE_YES}; remove it from --impl-guidance / the TOML"
+            )
+        if acceptance_line not in guidance:
+            base["implementation_guidance"] = (
+                f"{acceptance_line}\n\n{guidance}" if guidance else acceptance_line
+            )
         base["acceptance_line"] = acceptance_line
     base.setdefault("mode", "edit")
     base.setdefault("verification_depth", "full")
