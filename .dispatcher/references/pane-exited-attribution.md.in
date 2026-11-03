@@ -17,6 +17,7 @@
          - **不一致だった → そのイベントはこの worker のものではない** (別タブの同名ワーカーの終了)。当該 worker については何も起きなかったものとして扱い、通知も state 変更もしない。観測不能報告も出さない (こちらの観測面は劣化しておらず、判定は付いている)
          - **引き直す材料が無い** (§1-2 が「不在」/「unknown」を返して `same_tab_peer_id` が控えられない、またはイベントが peer 識別子を載せていない) → **attribution 未確定**。当該イベントを (3-a-2) の `pane_exited` 列に数えず、`WORKER_PANE_EXITED` を送らず (P4) の観測不能報告 (`source=lifecycle_event`) に落として次サイクルで再評価する (下記 (3-a-4))。別タブの同名ペインの終了イベントで、生きている自タブの worker を退役させないため
        - そもそも Step 3 (3-a) に到達しない (当該ペインが `list_panes` に残っている = 生きている) → 退役の判断自体が不要である。このサイクルで `tracked_pane_id` を控えられるので ((3-a-3))、以後は 1 つ目の id 照合で解決する。**未同定のイベントを根拠に退役させない**
+   - **自分の `CLOSE_PANE` で閉じたペインの `pane_exited` は通知しない**: [`pane-close.md`](pane-close.md) Step 3 は close 成功の時点で `pane_closed`（`pane_id` / `worker`）を events に記帳し、窓口へ `PANE_CLOSED` を送り、当該 worker の `worker-idle-state.json` の key を削除する。イベントの pane 識別子が、その `pane_closed` 行の `pane_id`（同じ worker）と一致し、かつその行が同じ worker の最新の `worker_spawned` より後に記帳されたものであるときに限り（pane id は backend session 内の識別子で、再起動後の再派遣で同じ数値が再発行されうるため、過去の close を現在のペインに当てない）、**消化済みとして `WORKER_PANE_EXITED` を送らず、観測不能報告にも回さない**。一致しないイベント（控えが無い別の worker など）は上の同定をそのまま通す。ここで握りつぶすのは記帳で特定できる 1 ペインだけ
    - 同定できた `pane_exited` 行の `name` (例: `worker-foo`) を通知本文に載せ、`{{FQ}}send_message` で窓口に **ペインが閉じた** という事実だけを通知する:
      ```
      WORKER_PANE_EXITED: {name} (id={id}) のペインが閉じました。リコンサイル要。
