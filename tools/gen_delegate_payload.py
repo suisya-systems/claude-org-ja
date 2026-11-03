@@ -55,6 +55,7 @@ except ModuleNotFoundError:  # pragma: no cover - 3.10 fallback
     import tomli as tomllib  # type: ignore[no-redef]
 
 from tools import gen_worker_brief as gwb
+from tools import merge_approval_mode as _approval
 from tools import resolve_worker_layout as rwl
 from tools import transport as _transport
 
@@ -250,6 +251,9 @@ class DelegatePlan:
     # Carried so the apply-time failure message can name the input the operator
     # has to fix, and so ``preview`` discloses which precedence tier won.
     base_branch_source: str = "origin_head"
+    # Issue #1244: the rendered --acceptance-test declaration, kept so a
+    # re-rendered DELEGATE body (pending clone) still carries it.
+    acceptance_line: Optional[str] = None
 
     def to_summary_dict(self) -> dict[str, Any]:
         return {
@@ -655,6 +659,7 @@ def _format_delegate_body(
     base_branch_source: str = "origin_head",
     placement: str = gwb.DEFAULT_PLACEMENT,
     report_target: str = gwb.DEFAULT_REPORT_TARGET,
+    acceptance_line: Optional[str] = None,
 ) -> str:
     """Format the DELEGATE message body per org-delegate Step 2 template.
 
@@ -706,6 +711,9 @@ def _format_delegate_body(
         )
     else:
         report_line = "窓口ペイン名: `secretary`（renga layout で登録済み）"
+    # Issue #1244: only present when --acceptance-test was given, so bodies
+    # of dispatches without it stay byte-identical.
+    acceptance_row = f"\n  - {acceptance_line}" if acceptance_line else ""
 
     body = f"""DELEGATE: 以下のワーカーを派遣してください。
 
@@ -716,7 +724,7 @@ def _format_delegate_body(
   - プロジェクト: {_project_label(layout, project_path)}
   - ブランチ (planned): {branch_line}{base_line}
   - Permission Mode: {permission_mode}
-  - 検証深度: {verification_depth}
+  - 検証深度: {verification_depth}{acceptance_row}
   - 指示内容: 詳細は `{brief_full_path}` を参照。要約: {instr_summary or '(none)'}
 
 {report_line}"""
@@ -754,6 +762,7 @@ def build_delegate_plan(
     claude_org_root: Path,
     workers_dir: Optional[Path] = None,
     layout_overrides: Optional[dict[str, Any]] = None,
+    acceptance_line: Optional[str] = None,
 ) -> DelegatePlan:
     """Resolve the layout, assemble the brief config, format the DELEGATE body.
 
@@ -994,6 +1003,7 @@ def build_delegate_plan(
         base_branch_source=base_branch_source,
         placement=effective_placement,
         report_target=effective_report_target,
+        acceptance_line=acceptance_line,
     )
 
     artifacts = [
@@ -1084,6 +1094,7 @@ def build_delegate_plan(
         base_branch_source=base_branch_source,
         placement=effective_placement,
         report_target=effective_report_target,
+        acceptance_line=acceptance_line,
     )
 
 
@@ -1917,6 +1928,7 @@ def _finalize_pending_clone_brief(plan: DelegatePlan) -> DelegatePlan:
         base_branch_source=plan.base_branch_source,
         placement=plan.placement,
         report_target=plan.report_target,
+        acceptance_line=plan.acceptance_line,
     )
     return replace(
         plan,
@@ -2617,6 +2629,18 @@ def _add_task_args(p: argparse.ArgumentParser) -> None:
             "--assumption whose result cites the producer side as path:line."
         ),
     )
+    # Issue #1244: declared per dispatch; required in acceptance mode.
+    p.add_argument(
+        "--acceptance-test",
+        choices=("yes", "no"),
+        default=None,
+        help="Whether the worker writes an acceptance test first (yes / no).",
+    )
+    p.add_argument(
+        "--acceptance-reason",
+        default=None,
+        help="Why there is no acceptance test (required with --acceptance-test no).",
+    )
     p.add_argument("--knowledge", action="append", default=[])
     p.add_argument("--parallel-notes", default=None)
     # Issue #909: placement / report target. Shared with
@@ -2810,6 +2834,48 @@ def _load_task_args_from_toml(path: Path) -> dict[str, Any]:
     }
 
 
+_ACCEPTANCE_YES = "受け入れテスト: あり"
+
+
+def _acceptance_line(test: Optional[str], reason: Optional[str]) -> Optional[str]:
+    """Issue #1244: render --acceptance-test as the line the brief keys on."""
+    reason = (reason or "").strip()
+    if test == "yes":
+        if reason:
+            raise SystemExit("error: --acceptance-reason goes with --acceptance-test no")
+        return _ACCEPTANCE_YES
+    if test == "no":
+        if not reason:
+            raise SystemExit(
+                "error: --acceptance-test no requires --acceptance-reason "
+                '"<why>" (e.g. docs-only change / not a pytest repo)'
+            )
+        return f"受け入れテスト: なし（理由: {reason}）"
+    if reason:
+        raise SystemExit("error: --acceptance-reason goes with --acceptance-test no")
+    return None
+
+
+def _require_acceptance_decl(kwargs: dict[str, Any], claude_org_root: Path) -> None:
+    """Issue #1244: in acceptance mode a PR-bound dispatch must declare.
+
+    minimal / audit dispatches open no PR, so they are exempt. Runs before
+    planning, so a refusal writes nothing.
+    """
+    if kwargs.get("acceptance_line"):
+        return
+    if kwargs.get("mode") == "audit" or kwargs.get("verification_depth") == "minimal":
+        return
+    mode, _ = _approval.read_mode(claude_org_root)
+    if mode != "acceptance":
+        return
+    raise SystemExit(
+        "error: the approval mode is acceptance, so declare the acceptance test: "
+        "--acceptance-test yes (default; the worker writes the test first), or "
+        '--acceptance-test no --acceptance-reason "<why>"'
+    )
+
+
 def _gather_plan_kwargs(args: argparse.Namespace) -> dict[str, Any]:
     """Merge --from-toml defaults with CLI flags (CLI wins).
 
@@ -2886,6 +2952,24 @@ def _gather_plan_kwargs(args: argparse.Namespace) -> dict[str, Any]:
         base["implementation_guidance"] = (
             f"{guidance}\n\n{assumptions_block}" if guidance else assumptions_block
         )
+    acceptance_line = _acceptance_line(
+        getattr(args, "acceptance_test", None),
+        getattr(args, "acceptance_reason", None),
+    )
+    if acceptance_line:
+        guidance = (base.get("implementation_guidance") or "").strip()
+        # The worker keys test-first on this text, so a "no" next to it
+        # would be contradicted by the guidance itself.
+        if args.acceptance_test == "no" and _ACCEPTANCE_YES in guidance:
+            raise SystemExit(
+                f"error: --acceptance-test no, but the guidance already says "
+                f"{_ACCEPTANCE_YES}; remove it from --impl-guidance / the TOML"
+            )
+        if acceptance_line not in guidance:
+            base["implementation_guidance"] = (
+                f"{acceptance_line}\n\n{guidance}" if guidance else acceptance_line
+            )
+        base["acceptance_line"] = acceptance_line
     base.setdefault("mode", "edit")
     base.setdefault("verification_depth", "full")
     base.setdefault("description", "")
@@ -2902,6 +2986,7 @@ def _cmd_preview(args: argparse.Namespace) -> int:
     claude_org_root = _resolve_claude_org_root(args)
     state_db_path = _resolve_state_db_path(args, claude_org_root)
     kwargs = _gather_plan_kwargs(args)
+    _require_acceptance_decl(kwargs, claude_org_root)
     try:
         plan = build_delegate_plan(
             claude_org_root=claude_org_root,
@@ -2973,6 +3058,7 @@ def _cmd_apply(args: argparse.Namespace) -> int:
     claude_org_root = _resolve_claude_org_root(args)
     state_db_path = _resolve_state_db_path(args, claude_org_root)
     kwargs = _gather_plan_kwargs(args)
+    _require_acceptance_decl(kwargs, claude_org_root)
     try:
         plan = build_delegate_plan(
             claude_org_root=claude_org_root,

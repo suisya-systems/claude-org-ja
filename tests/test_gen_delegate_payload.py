@@ -5008,5 +5008,26 @@ class TestIssue1190PendingClone(unittest.TestCase):
         self.assertTrue(result.brief_path.exists())
 
 
+class TestIssue1244GuidanceConflict(unittest.TestCase):
+    """--acceptance-test must not sit next to guidance that says otherwise."""
+
+    def _kwargs(self, *extra):
+        args = gdp._build_parser().parse_args(
+            ["preview", "--task-id", "t", "--project-slug", "p", *extra]
+        )
+        return gdp._gather_plan_kwargs(args)
+
+    def test_no_is_refused_when_guidance_already_says_yes(self):
+        with self.assertRaises(SystemExit) as cm:
+            self._kwargs("--impl-guidance", "受け入れテスト: あり。x",
+                         "--acceptance-test", "no", "--acceptance-reason", "docs")
+        self.assertIn("already says", str(cm.exception))
+
+    def test_yes_is_not_duplicated(self):
+        kw = self._kwargs("--impl-guidance", "受け入れテスト: あり\n\nx",
+                          "--acceptance-test", "yes")
+        self.assertEqual(kw["implementation_guidance"].count("受け入れテスト: あり"), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
