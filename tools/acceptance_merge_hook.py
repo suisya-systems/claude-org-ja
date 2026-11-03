@@ -134,13 +134,18 @@ def parse(command: str) -> tuple[str, str, str] | None:
         return m.group(1), m.group(2), m.group(3)
     # Continuations join words (`mer\<newline>ge`); other newlines stay word breaks so `EOF\ngh` shows `gh`.
     base = command.replace("\\\n", "").replace("\n", " ").lower()
-    plain = re.sub(r"[\"'\\]", "", base)  # `m'erge'`, `m\erge` join
-    spaced = re.sub(r"[\"'\\]", " ", base)  # `"$P"merge`, `printf 'merge\n'` stay apart
-    if re.search(r"\$\{[^}]*[#%/:^,]", plain):  # `${x%_}` can trim a longer name to the word
+    plain = re.sub(r"[\"'\\]", "", base)
+    if re.search(r"\$\{[^}]*[#%/:^,]", base):  # `${x%_}` can trim a longer name to the word
         found = "merge" in plain
-    else:  # braces and operators in `${...}` are breaks: `${A-merge}` defaults to the word
-        found = any(MERGE_WORD.search(re.sub(r"\$\{[^}]*\}?", lambda m: re.sub(r"[^a-z0-9_]", " ", m.group()), s))
-                    for s in (plain, spaced))
+    else:
+        # As the shell reads it: an expansion adds no text of its own, so it is a break
+        # (`"$P"mer'ge'` runs the word), except the default word in `${A-merge}`; then quote
+        # removal joins (`m'erge'`). A backslash either joins (`m\erge`) or is an escape
+        # (`printf 'merge\n'`), so both readings are checked.
+        s = re.sub(r"\$\{[^}]*\}?", lambda m: re.sub(r"[^a-z0-9_]", " ", m.group()), base)
+        s = re.sub(r"\$(\w+|.?)", " ", s)
+        found = any(MERGE_WORD.search(re.sub(r"[\"']", "", v))
+                    for v in (s.replace("\\", ""), re.sub(r"\\.?", " ", s)))
     if found and SUSPECT.search(plain) and not allow_listed(command):
         raise Deny(FORM)
     return None
