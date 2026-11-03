@@ -2,7 +2,7 @@
 
 `tools/org-dispatcher-view.sh` は、窓口（secretary）の隣のペインに置いておくと、broker(tmux) backend で動いている dispatcher のペインを **常に視界に保ち続ける** ための「自己修復する read-only ビューア」である。dispatcher が restart したり auto-compact fork で broker tmux のセッション名が変わっても、本ビューアが自動で再探索・再 attach するため、手動で attach し直す手間が要らなくなる。
 
-> broker(tmux) backend で組織を見る主経路は tmux のコックピット（`python3 tools/org_cockpit.py up`、または起動済みの組織に `claude-org-runtime org cockpit`。窓口・ディスパッチャー・ワーカーが 1 画面のタブとして並ぶ）である。本ビューアは、コックピットを使わずに窓口の隣で dispatcher だけを表示し続けたいときの代替手段として残している。
+> broker(tmux) backend で組織を見る主経路は tmux のコックピット（`claude-org-runtime org cockpit`。起動も再接続もこの 1 コマンド。窓口・ディスパッチャー・ワーカーが 1 画面のタブとして並ぶ）である。本ビューアは、コックピットを使わずに窓口の隣で dispatcher だけを表示し続けたいときの代替手段として残している。
 
 スクリプト本体のヘッダコメント（[`tools/org-dispatcher-view.sh`](../../tools/org-dispatcher-view.sh)）が一次仕様で、本ドキュメントは「窓口の隣に常時表示として置くまでの実運用手順」をまとめる。
 

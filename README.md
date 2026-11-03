@@ -49,10 +49,10 @@ claude-org-runtime org up                                # 窓口（Secretary）
 ### tmux のコックピットで起動する場合（Linux / macOS / WSL）
 
 ```bash
-python3 tools/org_cockpit.py up
+claude-org-runtime org cockpit
 ```
 
-窓口を tmux のコックピット（`org` セッション）の先頭ウィンドウで起動し、そのまま画面に入ります。窓口・ディスパッチャー・ワーカーが 1 画面のタブとして並び、待ちのあるエージェントは 2 行目の「Needs you」に出ます。中身は `claude-org-runtime org up` と同じなので、窓口の MCP・チャンネルの配線は変わりません。tmux のプレフィックスは `Ctrl-Space` です（Claude Code が `Ctrl+B` を使うため）。窓口が終了した後にもう一度実行すると、動いている broker daemon には `org adopt --continue` で前回の会話から戻ります。`org up` で起動した場合も、`/org-start` の最後でコックピットが開きます（WSL では Windows Terminal の新しいタブ、それ以外は attach コマンドを表示）。
+窓口を tmux のコックピット（`org` セッション）の先頭ウィンドウで起動し、そのまま画面に入ります。窓口がいなければ起動し、終了していれば `org adopt --continue` で前回の会話から戻し、動いていればそのまま入ります。起動と再接続は同じこの 1 コマンドです（入るだけで何も起動しないときは `--attach-only`）。窓口・ディスパッチャー・ワーカーが 1 画面のタブとして並び、待ちのあるエージェントは 2 行目の「Needs you」に出ます。窓口の起動は `claude-org-runtime org up` と同じなので、MCP・チャンネルの配線は変わりません。tmux のプレフィックスは `Ctrl-Space` です（Claude Code が `Ctrl+B` を使うため）。`/org-start` の最後でもコックピットが開きます（何も起動しない `--attach-only`）（WSL では Windows Terminal の新しいタブ、それ以外は attach コマンドを表示）。
 
 ### herdr で起動する場合
 
@@ -123,7 +123,7 @@ renga で窓口を開いた場合も、Claude Code 上で実行する手順は�
 | 起動する | `claude-org-runtime org up` | 窓口（Secretary）の Claude Code を開く |
 | 初回セットアップ | `/org-setup` | ロール別の許可設定とフックを配置する |
 | 組織を開始・再開する | `/org-start` | 前回状態を読み込み、ディスパッチャーを起動する |
-| 組織全体を 1 画面で見る | `python3 tools/org_cockpit.py up`（起動済みなら `claude-org-runtime org cockpit`） | broker/tmux のコックピットで窓口・ディスパッチャー・ワーカーをタブとして並べる |
+| 組織全体を 1 画面で見る | `claude-org-runtime org cockpit` | broker/tmux のコックピットで窓口・ディスパッチャー・ワーカーをタブとして並べる |
 | ディスパッチャーを横で見る | `tools/org-dispatcher-view.sh` | broker/tmux のディスパッチャーペインを読み取り専用で表示し続ける |
 | 完全に止める | `claude-org-runtime org down` | broker デーモンまで停止する |
 

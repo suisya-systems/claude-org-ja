@@ -12,7 +12,7 @@
 #   （`claude-org-broker-{pid}-{seq}`）として存在する。dispatcher のペインは
 #   **cwd が dispatcher ディレクトリ（パス basename が `.dispatcher`）** で起動する
 #   一方、worker のペインは cwd が worktree ディレクトリ（`.worktrees/...`）、
-#   secretary は logical pane で broker socket に出現しないか、tools/org_cockpit.py で
+#   secretary は logical pane で broker socket に出現しないか、`claude-org-runtime org cockpit` で
 #   コックピットの home に置いた場合も cwd は ja root である。よって
 #   「pane の path basename が `.dispatcher` のセッション」を選べば、worker や
 #   secretary を誤選択せず dispatcher だけを役割解決できる。
