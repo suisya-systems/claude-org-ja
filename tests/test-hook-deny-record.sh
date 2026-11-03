@@ -14,6 +14,7 @@ NON_DENYING=(
   check-dispatcher-loop.sh # 助言だけ (fail-open)
   context-record.sh        # 記録だけ (fail-open)
   remind-verify-premise.sh # 助言だけ (fail-open)
+  clear-needs-decision.sh  # ホームタブの目印を消すだけ (fail-open)
 )
 
 PASS=0; FAIL=0; TEST_NUM=0
