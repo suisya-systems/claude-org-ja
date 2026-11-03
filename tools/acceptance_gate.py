@@ -265,7 +265,11 @@ def run_pytest(root: Path, files: list[str], timeout: int) -> tuple[int, dict[st
         *sandbox(root, out, plugin_dir),
         "--setenv", "ACCEPTANCE_GATE_INTERRUPTED", str(marker),
         # HOME is hidden, so user site-packages come back only through PYTHONPATH.
-        "--setenv", "PYTHONPATH", os.pathsep.join([str(plugin_dir), *visible_sys_path()]),
+        # The tree's import root (src/ for a src layout) goes first, so the PR's
+        # package wins over a copy installed in this interpreter; bwrap binds root as-is.
+        "--setenv", "PYTHONPATH", os.pathsep.join(
+            [str(plugin_dir), str(root / "src" if (root / "src").is_dir() else root),
+             *visible_sys_path()]),
         sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "-p", "acceptance_gate_guard",
         "-o", "junit_family=xunit1", f"--junitxml={junit}", f"--rootdir={root}",
         *files,
