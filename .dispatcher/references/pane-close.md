@@ -159,6 +159,20 @@ mcp__renga-peers__close_pane(target=<照合済みの数値 pane_id>)
 - `[pane_not_found]` / `[pane_vanished]` — 既に閉じた扱いで skip (`WORKER_PANE_EXITED` 経路に回す)
 - `[last_pane]` — 唯一のタブの唯一のペインを閉じようとした。通常のワーカー停止では発生しない (窓口/ディスパッチャー/キュレーターが残っているため) が、suspend 末端で起きた場合は該当ペインを自分自身で `exit` させる (org-suspend 参照)
 
+#### close 成功時の記帳と完了通知（`"Closed pane id=N."` を受けたときだけ）
+
+自分の `CLOSE_PANE` で閉じたペインは、監視ループの 2 サイクル確認（worker-monitoring 3-a-2）を待たず、close 成功をもってその場で次を順に行う。上の `[pane_not_found]` / `[pane_vanished]` / 保留では行わない（自分の close の成功を観測していないため）。
+
+1. 記帳: `bash ../tools/journal_append.sh pane_closed pane_id={pane_id} worker=worker-{task_id}`（既存 event。[`docs/journal-events.md`](../../docs/journal-events.md) の台帳は増やさない）。これは記録であって `runs.status` の遷移ではない（`completed` への更新は窓口の責務で、PANE_CLOSED 受領後に窓口が行う）
+2. 監視から外す: `.state/dispatcher/worker-idle-state.json` の該当 worker の key を削除する（[`worker-monitoring.md`](worker-monitoring.md) の更新規則 (4) と同じ）。`.state/workers/worker-{task_id}.md` が **live にあれば** `Status: pane_closed` にする。archive 済みで無ければ作り直さず、この手順は飛ばす（ファイルが無いことで 1・3 を止めない）
+3. 窓口へ 1 行送る（知見記録の有無・`RETRO_RECORDED` の抑止とは無関係に**必ず**送る）:
+   ```
+   mcp__renga-peers__send_message(to_id="secretary", message="PANE_CLOSED: worker-{task_id} (pane={pane_id})")
+   ```
+   続けて `bash ../tools/journal_append.sh notify_sent kind=pane_closed task={task_id} delivery=sent` を残す。送信がエラーを返したときは `delivery=failed` で記帳する。通知が届かなくても 1 の `pane_closed` は events に残っているので、窓口は「PANE_CLOSED が無い＝閉じていない」と読まず events で確かめる
+
+この close のあとに届く同じペインの `pane_exited` は、1 の記帳で消化済みとして扱い `WORKER_PANE_EXITED` を送らない（[`pane-exited-attribution.md`](pane-exited-attribution.md)）。
+
 #### 保留（close を見送った場合）の扱い
 
 自タブを確立できずに照合へ進めなかった場合、および上の 3 / 4 で close しなかった CLOSE_PANE は**失敗ではなく保留**である。本フローは窓口からの 1 通で起動する
@@ -230,6 +244,8 @@ bash ../tools/journal_append.sh notify_sent kind=retro_recorded task={task_id} d
 RETRO_RECORDED: {task_id} の委譲について {topic} の学びを記録しました。
 ```
 curator を起動するかどうかは通知の有無と無関係に Step 5 の閾値チェックが決める。
+
+Step 3 で close が成功した場合は、上の `RETRO_RECORDED` の送否とは別に、知見記録の有無に関わらず `PANE_CLOSED: worker-{task_id} (pane={pane_id})` を必ず 1 通送る（本文・記帳は Step 3「close 成功時の記帳と完了通知」）。
 
 Step 3 で close を見送った（保留）場合は、**知見記録の有無に関わらず**保留の informational も送る
 （本文と理由欄は Step 3 の「保留（close を見送った場合）の扱い」(c) を参照）。

@@ -305,7 +305,7 @@ pr-watch から `PR_MERGED_HEAD_UNCONFIRMED: PR #<n> (head=<merged_short>, last 
 - **ワーカー状態ファイル (`.state/workers/worker-{task_id}.md`) は StateWriter が `update_run_status('<task_id>', 'completed')` の post-commit で自動的に `.state/workers/archive/` へ移動する** (Issue #284。`archive/` 不在時は lazy 作成、再呼び出しは idempotent。dashboard はこのディレクトリ内のファイルを live ワーカーとして扱わない (Issue #264)。journal / retro が履歴参照する可能性に備えて削除はしない)
 - DB の events テーブルにイベント追記 — このクローズ段階で窓口が手で打つのは `issue_closed`（`Closes #N` が効かない
   リポジトリでの paired issue クローズ等）/ `prs_merged`（複数 PR をまとめた集計行）といった**窓口自身の後片付け**に限る
-  （`bash tools/journal_append.sh ...`）。`worktree_removed` / `pane_closed` はディスパッチャーが書く
+  （`bash tools/journal_append.sh ...`）。`worktree_removed` / `pane_closed` はディスパッチャーが書く（`pane_closed` は `CLOSE_PANE` の close 成功時点）
   （Writer / Emitted by の SoT は [`docs/journal-events.md`](../../../docs/journal-events.md)）
   - **`pr_merged` は窓口が手で打たない（Issue #954）**: `pr_merged` は下記 `tools/run_complete_on_merge.py` が
     `pr_state='merged'` / `commit` / `completed_at` と**同一トランザクションで**記録するので、窓口が手で
@@ -314,6 +314,7 @@ pr-watch から `PR_MERGED_HEAD_UNCONFIRMED: PR #<n> (head=<merged_short>, last 
     再発経路は [`.claude/skills/org-pull-request/references/rationale.md`](references/rationale.md) §4）
 - ディスパッチャーにペインクローズを依頼（**worker Claude ペイン**）:
   `CLOSE_PANE: {pane_id} のペインを閉じてください。`
+  - **完了通知 `PANE_CLOSED: worker-{task_id} (pane={pane_id})` を待つ**: ディスパッチャーは close 成功の時点で events に `pane_closed` を記帳し、この 1 行を必ず送る（知見記録の有無と無関係）。受けたらペインは閉じ済みなので `CLOSE_PANE` を再送しない。ack は要らず、ユーザーへも実況しない（内部配管）。届かないときも「閉じていない」と決めず、events の `pane_closed` 行か `list_panes` で確かめる。保留（identity を確定できず閉じなかった）の場合は PANE_CLOSED ではなく保留の説明が届く。`pane_closed` は記録であって run の完了ではない。run の COMPLETED 更新は引き続き窓口が行う
 - **CI 監視の watcher ペイン (`pr-watch-<PR>`) を窓口が掃除する（Issue #751）**: worker ペインとは
   別に、`/pr-watch-pane` で spawn した watcher ペインを窓口が掃除する（spawn 時に控えた pane_id + head
   freshness gate に束縛し identity 照合の上で close。`name` 再導出はしない。手順の SoT は前掲「監視終端で
