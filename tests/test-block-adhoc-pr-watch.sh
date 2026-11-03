@@ -11,6 +11,7 @@
 #   - Bash + 無関係コマンド                          -> allow
 #   - 壊れた JSON                                   -> allow (best-effort: 判定不能は許可側)
 set -uo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/isolate-state-db.sh"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"

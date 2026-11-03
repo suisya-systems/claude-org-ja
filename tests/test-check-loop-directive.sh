@@ -19,6 +19,7 @@
 #
 # 判定方針の正本は .dispatcher/references/loop-directive-guard.md。
 set -uo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/isolate-state-db.sh"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"

@@ -15,7 +15,8 @@ module is loaded. See ``tools/_hermetic_env.py`` for the full rationale.
 """
 from __future__ import annotations
 
-from ._hermetic_env import running_under_test, scrub_live_transport_env
+from ._hermetic_env import pin_throwaway_state_db, running_under_test, scrub_live_transport_env
 
 if running_under_test():
     scrub_live_transport_env()
+    pin_throwaway_state_db()
