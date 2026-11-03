@@ -141,7 +141,9 @@ class ParseTest(unittest.TestCase):
                     "gh pr mer\\\nge 7 --repo o/r --squash", f"gh pr ${{ACTION:-{m}}} 7 --repo o/r --squash",
                     f"gh ${{G:-pr}} {m} 7", f"${{GH:-gh}} pr {m} 7",
                     f"gh pr ${{ACTION-{m}}} 7 --repo o/r --squash", f"gh pr ${{A-${{B-{m}}}}} 7",
-                    f"gh pr ${{A-{m}",
+                    f"gh pr ${{A-{m}", f"gh pr $(printf '{m}\\n') 7 --repo o/r --squash",
+                    f'PREFIX=; gh pr "$PREFIX"{m} 7 --squash', f"gh pr ${{P}}{m} 7",
+                    f'gh pr "$(echo)"{m} 7', f"x={m}_; gh pr ${{x%_}} 7", f"x=a-{m}; gh pr ${{x#*-}} 7",
                     f'env "$GH" pr {m} 7 --repo o/r --squash', f'command "$GH" pr {m} 7',
                     f"sudo $GH pr {m} 7", f"$GH $P {m} 7", f"xargs -I{{}} $GH pr {m} {{}}",
                     f"env GH=1 $GH pr ${{X:-{m}}} 7"):

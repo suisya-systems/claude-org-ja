@@ -15,7 +15,8 @@ head moved after the hook looked at it.
 Any other command with the word merge on its own (``MERGE_WORD``: not inside a
 longer name such as ``run_complete_on_merge.py``, ``merge_approval_mode``,
 ``mergedAt`` or ``before-merge.sh``, which cannot be the subcommand; the GraphQL
-``mergePullRequest`` / ``...AutoMerge`` count) is denied when it also has ``gh``,
+``mergePullRequest`` / ``...AutoMerge`` count; with a ``${...}`` string operation
+such as ``${x%_}`` any occurrence counts) is denied when it also has ``gh``,
 a pull request (``pulls/...``, ``mergePullRequest``), ``$`` or a backtick
 (blocking too much is accepted, letting a merge past the gate is not), unless
 it is one allow-listed command on its own on one line (Issue #1229): ``gh``
@@ -132,10 +133,15 @@ def parse(command: str) -> tuple[str, str, str] | None:
     if m:
         return m.group(1), m.group(2), m.group(3)
     # Continuations join words (`mer\<newline>ge`); other newlines stay word breaks so `EOF\ngh` shows `gh`.
-    plain = re.sub(r"[\"'\\]", "", command.replace("\\\n", "").replace("\n", " ")).lower()
-    # Inside `${...}` a `-` is an operator (`${A-merge}` defaults to the word), not part of a name.
-    words = re.sub(r"\$\{[^}]*\}?", lambda m: m.group().replace("-", " "), plain)
-    if MERGE_WORD.search(words) and SUSPECT.search(plain) and not allow_listed(command):
+    base = command.replace("\\\n", "").replace("\n", " ").lower()
+    plain = re.sub(r"[\"'\\]", "", base)  # `m'erge'`, `m\erge` join
+    spaced = re.sub(r"[\"'\\]", " ", base)  # `"$P"merge`, `printf 'merge\n'` stay apart
+    if re.search(r"\$\{[^}]*[#%/:^,]", plain):  # `${x%_}` can trim a longer name to the word
+        found = "merge" in plain
+    else:  # braces and operators in `${...}` are breaks: `${A-merge}` defaults to the word
+        found = any(MERGE_WORD.search(re.sub(r"\$\{[^}]*\}?", lambda m: re.sub(r"[^a-z0-9_]", " ", m.group()), s))
+                    for s in (plain, spaced))
+    if found and SUSPECT.search(plain) and not allow_listed(command):
         raise Deny(FORM)
     return None
 
