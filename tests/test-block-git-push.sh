@@ -2,6 +2,7 @@
 # Tests for block-git-push.sh
 # Validates: exit code (0=allow, 2=block) and stderr messages
 set -uo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/isolate-state-db.sh"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"

@@ -5,6 +5,7 @@
 # 明示的に検証する。
 
 set -u
+source "$(dirname "${BASH_SOURCE[0]}")/lib/isolate-state-db.sh"
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=../.hooks/lib/segment-split.sh

@@ -20,6 +20,7 @@
 #     - 壊れた payload は tests/test-hooks-payload-fail-closed.sh が横断で固定するので
 #       ここでは重複させない。ここで見るのは close_pane 固有の target 判定だけ。
 set -uo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/isolate-state-db.sh"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"

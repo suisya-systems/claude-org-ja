@@ -4,6 +4,7 @@
 #         自前の EXIT trap も stdout の JSON 判定 (permissionDecision 等) も持たない
 #   動作: 拒否で 1 行・許可で 0 行・stderr と終了コードは変わらない・記録失敗でも拒否は変わらない
 set -uo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/isolate-state-db.sh"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 HOOKS="$SCRIPT_DIR/../.hooks"

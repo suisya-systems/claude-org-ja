@@ -80,6 +80,29 @@ def scrub_live_transport_env() -> None:
     os.environ["ORG_TRANSPORT"] = HERMETIC_TRANSPORT
 
 
+def pin_throwaway_state_db() -> None:
+    """Point ``STATE_DB_PATH`` at a throwaway DB unless a test already set one (Issue #1234).
+
+    Without it, a hook a test drives records ``hook_denied`` (``.hooks/lib/deny-record.sh``
+    -> ``journal_append``) into the production ``state.db`` found by discovery. Set
+    process-wide so hooks spawned with an inherited env write to the throwaway DB too.
+    Tests that exercise discovery itself ``delenv`` it explicitly.
+
+    Only the process launched as the test runner pins (argv, not the inherited
+    ``PYTEST_*`` env): a hook's own ``journal_append`` started from a test with
+    ``STATE_DB_PATH`` deliberately removed must still resolve like production.
+    """
+    if not os.environ.get("STATE_DB_PATH") and _launched_as_test_runner():
+        import tempfile
+        os.environ["STATE_DB_PATH"] = os.path.join(tempfile.mkdtemp(), "state.db")
+
+
+def _launched_as_test_runner() -> bool:
+    argv0 = sys.argv[0] if sys.argv else ""
+    return ("unittest" in argv0 or "pytest" in argv0
+            or os.path.basename(argv0).startswith("test"))
+
+
 def running_under_test() -> bool:
     """True iff this interpreter was launched as a test runner.
 
@@ -98,11 +121,7 @@ def running_under_test() -> bool:
     ``check_role_configs.py``, ...) match none of these, so the guard is a
     no-op for them.
     """
-    argv0 = sys.argv[0] if sys.argv else ""
-    if "unittest" in argv0 or "pytest" in argv0:
-        return True
-    base = os.path.basename(argv0)
-    if base.startswith("test"):
+    if _launched_as_test_runner():
         return True
     if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("PYTEST_VERSION"):
         return True

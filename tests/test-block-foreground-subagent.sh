@@ -13,6 +13,7 @@
 #   - 非 subagent ツール / 近接 tool_name          -> passthrough (exact match)
 #   - 不正 JSON / 空 stdin / 非 object payload     -> block (fail-closed)
 set -uo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/isolate-state-db.sh"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"

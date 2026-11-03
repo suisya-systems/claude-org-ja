@@ -7,6 +7,7 @@
 #   - DB 欠落 / task 特定不能は拒否 (fail-closed)、STATE_DB_PATH は無視する
 #   壊れた payload は tests/test-hooks-payload-fail-closed.sh が横断で見る。
 set -uo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/isolate-state-db.sh"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"

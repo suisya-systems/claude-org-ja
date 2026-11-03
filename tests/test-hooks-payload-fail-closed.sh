@@ -39,6 +39,7 @@
 #   なるため、環境変数を与えたうえで「payload ガードが理由で落ちた」ことまで確認しないと
 #   偽 pass になる。
 set -uo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/isolate-state-db.sh"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"

@@ -26,6 +26,7 @@
 #   end-to-end: runtime の spawn-prompt-step --target が書いた記録で Enter が 1 回だけ通る。
 #   壊れた payload は tests/test-hooks-payload-fail-closed.sh が横断で固定する。
 set -uo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/isolate-state-db.sh"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"

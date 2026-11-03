@@ -5,6 +5,7 @@
 #   deny:  worker + opus で inbox 無し・inbox に model 無し・inbox が sonnet・inbox 壊れ /
 #          model 無し・空・その他 / name から task_id を取れない / CLAUDE_ORG_PATH 未設定 / 壊れた payload
 set -uo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/isolate-state-db.sh"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 HOOK="$SCRIPT_DIR/../.hooks/check-worker-spawn-model.sh"

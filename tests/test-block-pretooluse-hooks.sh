@@ -3,6 +3,7 @@
 # Usage: bash tests/test-block-pretooluse-hooks.sh
 
 set -u
+source "$(dirname "${BASH_SOURCE[0]}")/lib/isolate-state-db.sh"
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 NV_HOOK="${REPO_ROOT}/.hooks/block-no-verify.sh"

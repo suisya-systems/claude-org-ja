@@ -3,6 +3,7 @@
 # Validates: Edit/Write file_path is constrained to dispatcher business scope
 #   (.dispatcher/, .state/, knowledge/raw/YYYY-MM-DD-{topic}.md)
 set -uo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/isolate-state-db.sh"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"

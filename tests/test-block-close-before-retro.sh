@@ -24,6 +24,7 @@
 #   close が通る。
 #   壊れた payload は tests/test-hooks-payload-fail-closed.sh が横断で固定する。
 set -uo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/isolate-state-db.sh"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
