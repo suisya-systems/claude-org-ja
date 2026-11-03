@@ -494,7 +494,7 @@ class TestSecretary(_WatcherCase):
         self.assertEqual(self.events("auto_handover_done")[0]["role"], "secretary")
         self.assertEqual(self.notes, [])
 
-    def test_disabled_without_attention_watcher_or_on_broker(self):
+    def test_disabled_without_attention_watcher(self):
         self.org.attention_path.unlink()
         self.assertEqual(self.tick(), "attention_watcher_absent")
         self.org.write_json(self.org.attention_path, {"pane_id": 9})
@@ -504,8 +504,38 @@ class TestSecretary(_WatcherCase):
         self.assertEqual(self.tick(), "attention_watcher_absent")
         self.attention_name = "attention"
         self.org.write_json(self.org.attention_path, {"pane_id": 9})
+        self.assertEqual(self.sim.enters, [])
+
+    # -- broker + tmux: the secretary is a target when its pane can be named ----
+    def broker(self, home="%5", rec_pane="%5", live=("%5", "%9")):
         self.org.transport = lambda: "broker"
-        self.assertEqual(self.tick(), "secretary_broker_unsupported")
+        self.org.secretary_pane_id = lambda: home
+        self.org.live_tmux_panes = lambda: set(live)
+        self.org.write_json(self.org.attention_path, {"pane_id": "%9"})
+        self.sim.rec(pane={"backend": "tmux", "id": rec_pane})
+
+    def test_broker_secretary_is_handed_over_in_its_home_pane(self):
+        self.broker()
+        self.assertTrue(self.tick().startswith("ran:done"))
+        op = self.op()["op"]
+        self.assertEqual(self.sim.enters, [f"/secretary-handover auto op={op}", "/clear",
+                                           f"/secretary-resume auto op={op}"])
+
+    def test_broker_secretary_pane_unknown_is_skipped(self):
+        self.broker(home=None)
+        self.assertEqual(self.tick(), "secretary_pane_unknown")
+        self.assertEqual(self.sim.enters, [])
+
+    def test_broker_record_in_another_pane_is_never_typed_into(self):
+        self.broker(home="%5", rec_pane="%7")  # a person's own Claude at the org root
+        self.assertEqual(self.tick(), "pane_not_secretary_home")
+        self.assertEqual(self.sim.enters, [])
+
+    def test_broker_without_attention_watcher_is_skipped(self):
+        self.broker(live=("%5",))  # sidecar left behind, pane gone
+        self.assertEqual(self.tick(), "attention_watcher_absent")
+        self.org.attention_path.unlink()
+        self.assertEqual(self.tick(), "attention_watcher_absent")
         self.assertEqual(self.sim.enters, [])
 
     def test_open_decisions_hold_including_replied_not_forwarded(self):
@@ -685,7 +715,7 @@ class TestSecretary(_WatcherCase):
         finally:
             sea._run = orig_run
 
-    def test_secretary_on_a_tmux_pane_is_never_typed_into(self):
+    def test_secretary_on_a_tmux_pane_under_renga_is_never_typed_into(self):
         self.sim.rec(pane={"backend": "tmux", "id": "%5"})
         self.assertEqual(self.tick(), "pane_not_renga")
 

@@ -42,7 +42,10 @@ allowed-tools:
 context-handover watcher（[`tools/context_handover_watch.py`](../../../tools/context_handover_watch.py)）が
 `/secretary-handover auto op=<OP>` → `/clear` → `/secretary-resume auto op=<OP>` を打鍵する
 （設計 [`docs/design/context-auto-handover.md`](../../../docs/design/context-auto-handover.md) §4.3）。
-watcher が窓口を自動で引き継ぐのは renga のときだけなので、Step 0 の caller pane id は `RENGA_PANE_ID` で確定できる。
+watcher が窓口を自動で引き継ぐのは renga か、broker + tmux で窓口ペイン（`secretary_pane_id()`）を特定できたときだけ。
+renga では Step 0 の caller pane id は `RENGA_PANE_ID` で確定できる。broker では確定できないが、watcher は打鍵の前に
+記録されたペインが窓口ペインと一致することを確かめ済みなので、Step 0 の `caller-id 未確定` は人に続行を仰がず、
+identity 未確認の自己修復は行わないまま続ける（手動の `/secretary-resume` は従来どおり人に仰ぐ）。
 手順は通常の resume と同じで、違いは次の 3 つだけ:
 
 - **最初に同じ op の復帰が済んでいないか確かめる**（watcher は完了の event が 60 秒以内に見えないと 1 回だけ
