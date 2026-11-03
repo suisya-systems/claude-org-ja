@@ -53,6 +53,8 @@ def judge_binding(raw: Optional[str], key: str, source: str) -> tuple[Optional[i
     """-> (since, reason if the cursor is discarded, saved session_key or 'none')."""
     if raw is None or not raw.strip():
         return None, None, "none"  # first start: nothing to discard
+    if source == "unbindable":
+        return None, None, "none"  # cannot judge: keep the file, poll without since
     try:
         saved = json.loads(raw)
     except ValueError:
@@ -60,8 +62,6 @@ def judge_binding(raw: Optional[str], key: str, source: str) -> tuple[Optional[i
     if not isinstance(saved, dict) or "session_key_source" not in saved:
         return None, "legacy_format", "none"
     saved_key = str(saved.get("session_key") or "none")
-    if source == "unbindable":
-        return None, None, saved_key  # cannot judge: keep the file, poll without since
     if saved["session_key_source"] != source:
         return None, "transport_mismatch", saved_key
     if source != "transport_has_no_server_info" and saved.get("session_key") != key:
@@ -98,9 +98,10 @@ def _read(db: Path, kind: str) -> list[dict[str, Any]]:
         conn.close()
 
 
-def _cmd(pair: tuple[str, str]) -> str:
+def _cmd(pair: tuple[str, str], db_path: Optional[str]) -> str:
+    db = " --db-path '%s'" % db_path if db_path else ""
     return ("python3 ../tools/cursor_reset.py --sent --session-key '%s' "
-            "--discarded-session-key '%s'" % pair)
+            "--discarded-session-key '%s'%s" % (*pair, db))
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
@@ -126,7 +127,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         send, gate_reason = decide_event_cursor_reset(
             _load_idle_state(Path(args.idle_state)) if args.idle_state else "unreadable")
         if send:
-            notices.append({"message": MESSAGE.format(reason=why), "sent_command": _cmd(pair)})
+            notices.append({"message": MESSAGE.format(reason=why), "sent_command": _cmd(pair, args.db_path)})
         else:
             _append(db, "notify_sent", {**KEYS, "session_key": pair[0],
                                         "discarded_session_key": pair[1],
