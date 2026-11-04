@@ -71,6 +71,7 @@ ROLES = (DISPATCHER, SECRETARY)
 SCRIPT_IDENT = "context_handover_watch.py"
 POLL_SEC = 30
 STALE_STOP_SEC = 600          # §3.1: a Stop older than this is "unknown"
+OWN_IDLE_SEC = 60             # §4.2 1: a Stop this old with no prompt after it is quiet
 BACKOFF_SEC = 1800            # §4.3: a failed role is not tried for 30 min
 AWAITING_HOLD_SEC = 1800      # §3.3: no switch within 30 min of asking a person
 # ponytail: §6.2 checks awaiting_user task_ids of the last 24 h only; an older
@@ -163,7 +164,7 @@ def is_resident_task(task) -> bool:
             and str(task.get("description") or "").startswith("live updates for artifact"))
 
 
-def not_quiet_reason(rec: dict, now: float) -> "str | None":
+def not_quiet_reason(rec: dict, now: float, role: str = DISPATCHER) -> "str | None":
     """Why the record does not show a quiet session, or None (§3.1 / §3.2)."""
     if not rec.get("session_id") or rec.get("stop_session_id") != rec.get("session_id"):
         return "no_stop_in_current_session"
@@ -173,21 +174,32 @@ def not_quiet_reason(rec: dict, now: float) -> "str | None":
         return "turn_open"
     stop_at = parse_iso(rec.get("stop_at"))
     # §3.1: an idle_prompt after the Stop shows nobody typed since, so an old Stop is not "unknown".
-    if stop_at is None or (now - stop_at > STALE_STOP_SEC and not_idle_reason(rec)):
+    if stop_at is None or (now - stop_at > STALE_STOP_SEC and not_idle_reason(rec, now, role)):
         return "stop_stale"
     if not all(is_resident_task(t) for t in rec.get("background_tasks") or []):
         return "background_tasks"
     return None
 
 
-def not_idle_reason(rec: dict) -> "str | None":
-    """§4.2 1: ``idle_prompt`` came for this session after its last Stop."""
-    idle_at = parse_iso(rec.get("idle_at"))
-    if (rec.get("idle_session_id") != rec.get("session_id") or idle_at is None
-            or idle_at <= (parse_iso(rec.get("stop_at")) or float("inf"))
-            or idle_at <= (parse_iso(rec.get("prompt_at")) or 0)):
+def not_idle_reason(rec: dict, now: float, role: str = SECRETARY) -> "str | None":
+    """§4.2 1: nobody has typed since the last Stop.
+
+    Quiet when an ``idle_prompt`` came after the Stop, or, without one (Claude
+    Code sends none while background work runs), when the Stop is 60 s old and
+    no prompt followed it (secretary only; the dispatcher keeps the idle_prompt
+    rule). Either way a prompt after the signal ends it.
+    """
+    stop_at = parse_iso(rec.get("stop_at"))
+    prompt_at = parse_iso(rec.get("prompt_at")) or 0
+    if stop_at is None:
         return "not_idle_prompt"
-    return None
+    idle_at = parse_iso(rec.get("idle_at"))
+    if (rec.get("idle_session_id") == rec.get("session_id") and idle_at is not None
+            and idle_at > stop_at and idle_at > prompt_at):
+        return None
+    if role == SECRETARY and prompt_at <= stop_at and now - stop_at >= OWN_IDLE_SEC:
+        return None
+    return "not_idle_prompt"
 
 
 def command_name(content: str) -> "str | None":
@@ -572,7 +584,7 @@ class Watcher:
             if reason:
                 return False, reason
         rec = self.org.record(role)
-        reason = not_quiet_reason(rec, self.clock())
+        reason = not_quiet_reason(rec, self.clock(), role)
         if reason:
             return False, reason
         threshold = int(rec.get("threshold_tokens") or 0)
@@ -590,7 +602,7 @@ class Watcher:
         else:
             if rec.get("session_crons"):
                 return False, "session_crons"  # §3.3 / §7: kept until decided otherwise
-            reason = (self.secretary_hold() or not_idle_reason(rec)
+            reason = (self.secretary_hold() or not_idle_reason(rec, self.clock())
                       or self.identity_reason(role, rec.get("pane"))
                       or self.composer_reason(rec.get("pane")))
             if reason:

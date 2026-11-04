@@ -46,6 +46,13 @@ class TestQuiet(unittest.TestCase):
         self.assertIsNone(self.reason(**late))
         self.assertEqual(self.reason(stop_at=late["stop_at"]), "stop_stale")
 
+    def test_secretary_old_stop_without_prompt_is_not_stale(self):
+        old = {"stop_at": "2026-10-17T23:00:00Z", "prompt_at": "2026-10-17T22:58:00Z"}
+        self.assertIsNone(self.watch.not_quiet_reason({**_base(), **old}, self.now, "secretary"))
+        typed = {"stop_at": old["stop_at"], "prompt_at": "2026-10-17T23:30:00Z"}
+        self.assertEqual(self.watch.not_quiet_reason({**_base(), **typed}, self.now, "secretary"),
+                         "stop_stale")
+
 
 if __name__ == "__main__":
     unittest.main()
