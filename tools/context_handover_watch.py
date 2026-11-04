@@ -153,6 +153,16 @@ def is_monitoring_cron(cron) -> bool:
     return isinstance(prompt, str) and all(m in prompt for m in MONITOR_MARKERS)
 
 
+def is_resident_task(task) -> bool:
+    """§3.2: the two background tasks a secretary always carries, not real work."""
+    if not isinstance(task, dict):
+        return False
+    if "secretary_queue_watcher.py" in str(task.get("command") or ""):
+        return True
+    return (task.get("type") == "monitor"
+            and str(task.get("description") or "").startswith("live updates for artifact"))
+
+
 def not_quiet_reason(rec: dict, now: float) -> "str | None":
     """Why the record does not show a quiet session, or None (§3.1 / §3.2)."""
     if not rec.get("session_id") or rec.get("stop_session_id") != rec.get("session_id"):
@@ -162,9 +172,10 @@ def not_quiet_reason(rec: dict, now: float) -> "str | None":
     if rec.get("turn_open") != rec.get("turn_closed"):
         return "turn_open"
     stop_at = parse_iso(rec.get("stop_at"))
-    if stop_at is None or now - stop_at > STALE_STOP_SEC:
+    # §3.1: an idle_prompt after the Stop shows nobody typed since, so an old Stop is not "unknown".
+    if stop_at is None or (now - stop_at > STALE_STOP_SEC and not_idle_reason(rec)):
         return "stop_stale"
-    if rec.get("background_tasks"):
+    if not all(is_resident_task(t) for t in rec.get("background_tasks") or []):
         return "background_tasks"
     return None
 
