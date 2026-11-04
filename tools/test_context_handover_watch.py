@@ -565,7 +565,8 @@ class TestSecretary(_WatcherCase):
         self.assertNotIn("/clear", self.sim.enters)
 
     def test_not_idle_until_idle_prompt_follows_the_last_stop(self):
-        self.sim.rec(idle_at=self.sim.iso(-90))  # before the last Stop
+        # A Stop under 60 s old: neither the idle_prompt nor the own-idle rule holds.
+        self.sim.rec(stop_at=self.sim.iso(-30), idle_at=self.sim.iso(-90))
         self.assertEqual(self.tick(), "not_idle_prompt")
         self.sim.rec(idle_at=self.sim.iso(-1), idle_session_id="old")
         self.assertEqual(self.tick(), "not_idle_prompt")
