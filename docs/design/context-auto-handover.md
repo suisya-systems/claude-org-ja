@@ -85,13 +85,13 @@ Stop フックを付けた Claude Code のペインで確かめた。
 
 - 役割はフックの `cwd` で決める（`.dispatcher/` 配下ならディスパッチャー、org 直下なら窓口、それ以外は記録しない）。リポジトリ直下の `.claude/settings.local.json` はディスパッチャーのセッションにも読まれる（[`.claude/skills/org-setup/SKILL.md`](../../.claude/skills/org-setup/SKILL.md) 30〜32 行）ので、役割で書き分けないと記録が混ざる。`.curator/` で起動するキュレーターも同じ settings を読むので、org 直下以外を窓口とみなすと、キュレーターの記録で窓口の記録が上書きされ、watcher がキュレーターのペインへ打鍵しうる。同じコマンドのフックが複数の settings にあっても 1 回だけ走る（https://code.claude.com/docs/en/hooks 「Hook handler fields」）。`cwd` はセッションのシェルに付いて動くので、記録のセッションと違う `session_id` の出来事は捨て、`source=clear` の `SessionStart` は記録済みのペインからのものだけ受ける（窓口のシェルが `.dispatcher/` に移っていても、ディスパッチャーの記録を書き換えない）。`idle_prompt` は `UserPromptSubmit` と同時に走りうるので、別ファイル（`<role>.idle.json`）に書く。`source=compact` の `SessionStart` は同じセッションのものだけ受ける。それでも org 直下で起動した別の Claude（人の作業用ペインなど）は記録を奪えるので、renga では watcher が打つ前に毎回 `renga inspect` の `pane.name` が役割名（`secretary` / `dispatcher`）であることを確かめ、違えば打たない。`UserPromptSubmit` の本文が watcher の復帰の行なら、その `op` とターン番号も記録する（§4.5）。
 - フックの登録は他のフックと同じく [`tools/org_extension_schema.json`](../../tools/org_extension_schema.json) の `roles.<role>.required_hooks` に足す。
-- watcher は、`session_id` とペイン id が最後の `SessionStart` と一致しない記録、`turn_open != turn_closed` の記録、10 分以上前の `Stop` しか無い記録を「不明」として扱い、切り替えない。フックが失敗して更新が止まった場合も、古い `quiet` が残って切り替わることはない。
+- watcher は、`session_id` とペイン id が最後の `SessionStart` と一致しない記録、`turn_open != turn_closed` の記録、10 分以上前の `Stop` しか無い記録を「不明」として扱い、切り替えない。ただし、その `Stop` より後に同じセッションの `idle_prompt` が来ている（§4.2 の 1）なら、人が打鍵していないことが確かなので「不明」にしない（§3.3 の 30 分の保留が明けるころには `Stop` が 10 分を超えていて、これが無いと窓口は永久に始まらない）。フックが失敗して更新が止まった場合も、古い `quiet` が残って切り替わることはない。
 - ペイン id を環境変数から取れることは実装の最初に確かめた（§2.1 の「実機で確かめたこと」）。
 
 ### 3.2 共通の条件
 
 - 開いているターンが無い（`turn_open == turn_closed`）。ワーカーへの返事の途中・コマンドの最中は、ここで外れる。
-- `background_tasks` が空。ただし窓口では、broker のときに `/org-start` が背景で常駐させる `secretary_queue_watcher.py`（[`.claude/skills/org-start/SKILL.md`](../../.claude/skills/org-start/SKILL.md) Block C3）が平常時もここに載るので、この 1 本だけはコマンド名で除く。`/clear` の後にこれが生き残るかは Claude Code の資料に書かれていない。`/secretary-resume` に「sidecar `.state/secretary_queue_watcher.json` の pid が生きていなければ起動し直す」手順を足し、生き残るかどうかに依らず 1 本になるようにする。
+- `background_tasks` が空。ただし窓口では、broker のときに `/org-start` が背景で常駐させる `secretary_queue_watcher.py`（[`.claude/skills/org-start/SKILL.md`](../../.claude/skills/org-start/SKILL.md) Block C3）が平常時もここに載るので、この 1 本はコマンド名で除く。もう 1 種、アーティファクトを公開すると Claude Code が自動で張る live updates の monitor（`type` が `monitor`、`description` が `live updates for artifact` で始まる）も常駐なので除く。除くのはこの 2 種だけで、それ以外の背景作業は従来どおり quiet を妨げる。`/clear` の後にこれが生き残るかは Claude Code の資料に書かれていない。`/secretary-resume` に「sidecar `.state/secretary_queue_watcher.json` の pid が生きていなければ起動し直す」手順を足し、生き残るかどうかに依らず 1 本になるようにする。
 - 自動要約・`/clear` の直後で、`usage` の付いた応答がまだ無い場合は「不明」（§2.2）。
 
 ### 3.3 窓口の条件
@@ -132,7 +132,7 @@ Stop フックを付けた Claude Code のペインで確かめた。
 
 ディスパッチャーのペインは人が打たない前提なので 2 と 3 だけを使う。
 
-1 は引き継ぎを始めるときだけ見る。始める前に入力欄が空でなければ、失敗にせず次の周期まで待つ（人が戻ってきただけなので知らせない）。`/clear` と復帰の打鍵の前は 2 と 3 だけで、人が入力欄に文字を残していれば打たずに止まる。引き継ぎのターンの間に人が入力を送っていた（旧会話記録の `p0` 以降に、チャネル・背景タスク完了などの機械の入力の形でない入力がある。画像や貼り付けも人の入力に数える）ときも `/clear` を打たずに止まる。人がいま読んでいる返事を消し、その指示を新しいセッションが拾い直してもう一度実行してしまうため。`idle_prompt` は端末の前に人がいないように見えるときだけ出る（hooks ページ Notification の timing の注記）ので、人が画面の前にいる間は窓口は切り替わらない。また `Stop` が 10 分より古い記録は「不明」（§3.1）なので、窓口が切り替わるのは応答の約 1 分後から 10 分後までの間になる。
+1 は引き継ぎを始めるときだけ見る。始める前に入力欄が空でなければ、失敗にせず次の周期まで待つ（人が戻ってきただけなので知らせない）。`/clear` と復帰の打鍵の前は 2 と 3 だけで、人が入力欄に文字を残していれば打たずに止まる。引き継ぎのターンの間に人が入力を送っていた（旧会話記録の `p0` 以降に、チャネル・背景タスク完了などの機械の入力の形でない入力がある。画像や貼り付けも人の入力に数える）ときも `/clear` を打たずに止まる。人がいま読んでいる返事を消し、その指示を新しいセッションが拾い直してもう一度実行してしまうため。`idle_prompt` は端末の前に人がいないように見えるときだけ出る（hooks ページ Notification の timing の注記）ので、人が画面の前にいる間は窓口は切り替わらない。また `Stop` が 10 分より古い記録は「不明」（§3.1）なので、窓口が切り替わるのは、応答の約 1 分後から 10 分後までの間、または `idle_prompt` が `Stop` より後に来ていればその後になる。
 
 残るもの: 3 の読み返しと Enter の間（数百ミリ秒）に人が打った文字は、自分の文字列と一緒に送られる。打鍵の排他は端末側に無いので、この隙間は消せない。自動引き継ぎは人が離れている時間のためのもので、人が画面の前にいるなら 1 の条件でほぼ外れる。
 
