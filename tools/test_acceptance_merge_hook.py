@@ -217,7 +217,7 @@ class CiHeadTest(unittest.TestCase):
         self.assertTrue(res.stdout.startswith("DENY:"), res.stdout)  # no gh on PATH
 
 
-@unittest.skipUnless(shutil.which("bwrap") and shutil.which("jq"), "needs bwrap and jq")
+@unittest.skipUnless(shutil.which("jq"), "needs jq")
 class HookTest(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -236,18 +236,33 @@ class HookTest(unittest.TestCase):
         self._tmp.cleanup()
 
     def open_pr(self, *commits: tuple[str, dict], ci: bool = True) -> str:
-        """Commit on a branch of origin, publish it as refs/pull/7/head, fake gh for it."""
+        """Commit on a branch of origin, publish it as refs/pull/7/head, fake gh for it.
+
+        CI as the secretary's procedure leaves it: the first commit (the test
+        commit) was pushed alone and its CI failed, then the head passed. The
+        fake gh answers the PR view, the check runs (job "test" fails at the
+        first commit, succeeds at head) and the workflow runs' base.
+        """
         self.origin.git("checkout", "-q", "-B", "feature", self.base)
-        for msg, files in commits:
-            head = self.origin.commit(msg, files)
+        shas = [self.origin.commit(msg, files) for msg, files in commits]
+        head = shas[-1]
         self.origin.git("update-ref", "refs/pull/7/head", head)
         self.origin.git("checkout", "-q", "main")
         view = {"number": 7, "url": f"file://{self.origin.root}/pull/7",
                 "baseRefName": "main", "headRefOid": head}
+        run = {"app": 15368, "name": "test", "completed_at": "2026-11-05T00:00:00Z", "suite": 1}
+        wf = {"wf": 1, "suite": 1, "created": "2026-11-05T00:00:00Z", "bases": [self.base]}
         gh = self.bin / "gh"
-        gh.write_text(f"#!/bin/sh\necho '{json.dumps(view)}'\n")
+        gh.write_text(
+            "#!/bin/sh\ncase \"$*\" in\n"
+            f"  *{head}/check-runs*) echo '{json.dumps(dict(run, conclusion='success'))}' ;;\n"
+            f"  *check-runs*) echo '{json.dumps(dict(run, conclusion='failure'))}' ;;\n"
+            f"  *actions/runs*) echo '{json.dumps(wf)}' ;;\n"
+            f"  *) echo '{json.dumps(view)}' ;;\nesac\n")
         gh.chmod(0o755)
         if ci:
+            slug = "/".join(str(self.origin.root).split("/")[-2:])
+            record_ci(self.db, 7, "failed", shas[0], repo=slug)
             record_ci(self.db, 7, "passed", head)
         return head
 

@@ -245,7 +245,10 @@ from `codex_round_started`.
 
 `tools/acceptance_gate.py` writes one row per run. The gate passes only when the
 protected tree entries at head equal those at the commit that declared the test
-(`Acceptance-Test: <path>` trailers), the test fails on base and it passes on head.
+(`Acceptance-Test: <path>` trailers), that commit is the PR's first commit, a
+`ci_completed` row with `status=failed` and `head_oid` = that commit exists for
+the PR, and the same CI job (GitHub app id + check name + workflow) failed at that commit
+and succeeded at head on one base (Issue #1231: the gate runs no test).
 `manifest_commit` / `paths` are absent when no manifest was found or the run was
 rejected before reading it. Without `--pr` the row is a measurement record, not
 the verdict: a failed write only warns on stderr and the exit code stays the

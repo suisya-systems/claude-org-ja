@@ -14,12 +14,14 @@
 #     ci_completed 行が passed で head_oid がその SHA と同じであることを先に確かめる
 #   - その PR の head / base を fetch し `tools/acceptance_gate.py --pr OWNER/REPO#N` を実行。
 #     passed と no-manifest (パイロット中は記録のみ) は許可、rejected は deny
-#   - ゲート側で、head の途中終了 (pytest.exit) と、テストのコミットの作り直し
-#     (初回に見た宣言テストの内容をピン留めし、変わった / 消えたら拒否) も拒否する
+#   - ゲートはテストを走らせず、git と CI の記録だけで判定する (Issue #1231): テストのコミットが
+#     PR の最初のコミットであること、その head で CI が失敗した記録があること、同じ CI ジョブが
+#     テストのコミットで失敗し head で成功したこと、両方の CI が同じ base で走ったこと。
+#     テストのコミットの作り直し (初回に見た宣言テストの内容をピン留めし、変わった / 消えたら拒否) も拒否する
 #
 # 範囲: 窓口だけ (`tools/org_extension_schema.json` の roles.secretary.required_hooks)。
 #   ja 専用 (`tools/check_runtime_schema_drift.py` の `_JA_ONLY_HOOK_SCRIPTS`)。
-#   ゲートは pytest を 2 回走らせるので登録時に timeout 900 を付ける。タイムアウトした
+#   gh / git を何度か呼ぶので登録時に timeout 900 を付ける。タイムアウトした
 #   フックはブロックしない扱いになるため、python 側は全体を 840 秒で打ち切って deny する。
 #
 # 既知の限界: GitHub の画面・別セッション・gh の alias・マージキューによるマージは見えない。ゲートからマージまでの間の push は、--match-head-commit により GitHub がマージを拒否する。
