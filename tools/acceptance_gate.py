@@ -13,7 +13,10 @@ PR's own repository, so any language works. A PR passes only when all hold:
     alone first and watches CI on it), and
 (c) the same CI job (GitHub app id + check name, latest run) concluded
     ``failure`` at M and ``success`` at head, and the GitHub Actions runs for
-    M and for head were made against one and the same base SHA.
+    M and for head were made against one and the same base SHA. Only jobs of
+    the latest ``pull_request`` workflow run per workflow count (``pr_runs``),
+    so the jobs compared are the ones whose base is checked, and a commit
+    pushed again (the retry after the base moved) replaces its older run.
 
 Head passing as a whole is the merge hook's CI binding (#1228): the latest
 ``ci_completed`` for the PR is ``passed`` at the merged head.
@@ -59,6 +62,7 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import functools
 import hashlib
 import json
 import subprocess
@@ -214,21 +218,43 @@ def gh_lines(path: str, jq: str) -> list:
     return [json.loads(line) for line in res.stdout.splitlines() if line.strip()]
 
 
+@functools.lru_cache(maxsize=None)
+def pr_runs(repo: str, sha: str) -> tuple[tuple[int, tuple[str, ...]], ...]:
+    """(check suite id, base SHAs) of the latest pull_request workflow run per workflow at sha.
+
+    Latest per workflow, so a run superseded by pushing the same commit again
+    (the retry after the base moved) no longer counts.
+    """
+    latest: dict[int, dict] = {}
+    for r in gh_lines(f"repos/{repo}/actions/runs?head_sha={sha}&event=pull_request&per_page=100",
+                      ".workflow_runs[] | {wf: .workflow_id, suite: .check_suite_id,"
+                      " created: .created_at, bases: [.pull_requests[].base.sha]}"):
+        if r["wf"] not in latest or r["created"] > latest[r["wf"]]["created"]:
+            latest[r["wf"]] = r
+    return tuple((r["suite"], tuple(r["bases"])) for r in latest.values())
+
+
 def check_runs(repo: str, sha: str) -> dict[tuple[int, str], str]:
-    """(app id, check name) -> conclusion of the latest completed run of that check at sha."""
+    """(app id, check name) -> conclusion of the latest completed run of that check at sha.
+
+    Only checks of the runs ``pr_runs`` selected, so the jobs compared are the
+    ones whose base ``run_bases`` reports.
+    """
+    suites = {suite for suite, _ in pr_runs(repo, sha)}
     latest: dict[tuple[int, str], tuple[str, str]] = {}
     for r in gh_lines(f"repos/{repo}/commits/{sha}/check-runs?per_page=100",
-                      ".check_runs[] | {app: .app.id, name, conclusion, completed_at}"):
+                      ".check_runs[] | {app: .app.id, name, conclusion, completed_at,"
+                      " suite: .check_suite.id}"):
         key = (r["app"], r["name"])
-        if r["completed_at"] and (key not in latest or r["completed_at"] > latest[key][0]):
+        if r["suite"] in suites and r["completed_at"] and (
+                key not in latest or r["completed_at"] > latest[key][0]):
             latest[key] = (r["completed_at"], r["conclusion"])
     return {k: c for k, (_, c) in latest.items()}
 
 
 def run_bases(repo: str, sha: str) -> set[str]:
-    """Base SHAs the pull_request workflow runs for this head SHA were made against."""
-    return set(gh_lines(f"repos/{repo}/actions/runs?head_sha={sha}&event=pull_request&per_page=100",
-                        ".workflow_runs[].pull_requests[].base.sha"))
+    """Base SHAs the runs ``pr_runs`` selected were made against."""
+    return {b for _, bases in pr_runs(repo, sha) for b in bases}
 
 
 def manifest_digest(repo: Path, msha: str, manifest: list[str]) -> str:

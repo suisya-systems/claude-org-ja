@@ -250,13 +250,14 @@ class HookTest(unittest.TestCase):
         self.origin.git("checkout", "-q", "main")
         view = {"number": 7, "url": f"file://{self.origin.root}/pull/7",
                 "baseRefName": "main", "headRefOid": head}
-        run = {"app": 15368, "name": "test", "completed_at": "2026-11-05T00:00:00Z"}
+        run = {"app": 15368, "name": "test", "completed_at": "2026-11-05T00:00:00Z", "suite": 1}
+        wf = {"wf": 1, "suite": 1, "created": "2026-11-05T00:00:00Z", "bases": [self.base]}
         gh = self.bin / "gh"
         gh.write_text(
             "#!/bin/sh\ncase \"$*\" in\n"
             f"  *{head}/check-runs*) echo '{json.dumps(dict(run, conclusion='success'))}' ;;\n"
             f"  *check-runs*) echo '{json.dumps(dict(run, conclusion='failure'))}' ;;\n"
-            f"  *actions/runs*) echo '\"{self.base}\"' ;;\n"
+            f"  *actions/runs*) echo '{json.dumps(wf)}' ;;\n"
             f"  *) echo '{json.dumps(view)}' ;;\nesac\n")
         gh.chmod(0o755)
         if ci:

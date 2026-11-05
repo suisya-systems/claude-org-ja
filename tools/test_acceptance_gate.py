@@ -270,28 +270,45 @@ class GateTest(unittest.TestCase):
 class GithubReadTest(unittest.TestCase):
     """check_runs / run_bases read gh; gh failing is a Reject (fail closed)."""
 
-    def gh(self, stdout: str = "", rc: int = 0):
-        return mock.patch.object(gate.subprocess, "run", return_value=subprocess.CompletedProcess(
-            [], rc, stdout, "boom"))
+    T1, T2 = "2026-11-05T01:00:00Z", "2026-11-05T02:00:00Z"
 
-    def test_latest_run_per_app_and_name(self):
-        lines = "\n".join(json.dumps(r) for r in (
-            {"app": 1, "name": "test", "conclusion": "failure", "completed_at": "2026-11-05T01:00:00Z"},
-            {"app": 1, "name": "test", "conclusion": "success", "completed_at": "2026-11-05T02:00:00Z"},
-            {"app": 2, "name": "test", "conclusion": "failure", "completed_at": "2026-11-05T03:00:00Z"},
-            {"app": 1, "name": "lint", "conclusion": None, "completed_at": None},
-        ))
-        with self.gh(lines):
+    def setUp(self):
+        gate.pr_runs.cache_clear()
+        self.addCleanup(gate.pr_runs.cache_clear)
+        self.answers = {"check-runs": [], "actions/runs": []}
+
+    def gh(self, rc: int = 0):
+        def fake(cmd, **kw):
+            rows = next(v for k, v in self.answers.items() if k in cmd[3])
+            return subprocess.CompletedProcess(cmd, rc, "\n".join(map(json.dumps, rows)), "boom")
+        return mock.patch.object(gate.subprocess, "run", side_effect=fake)
+
+    def test_latest_run_per_app_and_name_of_the_selected_runs(self):
+        self.answers["actions/runs"] = [{"wf": 1, "suite": 10, "created": self.T1, "bases": ["c" * 40]}]
+        self.answers["check-runs"] = [
+            {"app": 1, "name": "test", "conclusion": "failure", "completed_at": self.T1, "suite": 10},
+            {"app": 1, "name": "test", "conclusion": "success", "completed_at": self.T2, "suite": 10},
+            {"app": 2, "name": "test", "conclusion": "failure", "completed_at": self.T2, "suite": 10},
+            {"app": 1, "name": "lint", "conclusion": None, "completed_at": None, "suite": 10},
+            {"app": 3, "name": "push-ci", "conclusion": "failure", "completed_at": self.T2, "suite": 99},
+        ]
+        with self.gh():
             self.assertEqual(gate.check_runs("o/r", "a" * 40),
                              {(1, "test"): "success", (2, "test"): "failure"})
 
-    def test_bases(self):
-        with self.gh('"%s"\n"%s"\n' % ("c" * 40, "c" * 40)):
-            self.assertEqual(gate.run_bases("o/r", "a" * 40), {"c" * 40})
+    def test_pushing_the_same_commit_again_supersedes_the_old_run(self):
+        """The retry after the base moved: only the latest run per workflow counts."""
+        self.answers["actions/runs"] = [
+            {"wf": 1, "suite": 10, "created": self.T1, "bases": ["c" * 40]},
+            {"wf": 1, "suite": 11, "created": self.T2, "bases": ["d" * 40]},
+        ]
+        with self.gh():
+            self.assertEqual(gate.run_bases("o/r", "a" * 40), {"d" * 40})
 
     def test_gh_failure_rejects(self):
         with self.gh(rc=1), self.assertRaisesRegex(gate.Reject, "cannot read"):
             gate.check_runs("o/r", "a" * 40)
+
 
 if __name__ == "__main__":
     unittest.main()
