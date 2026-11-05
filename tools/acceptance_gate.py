@@ -11,7 +11,7 @@ PR's own repository, so any language works. A PR passes only when all hold:
 (b) before the fix the test failed: state.db has a ``ci_completed`` event for
     this PR with ``status=failed`` and ``head_oid`` = M (the secretary pushes M
     alone first and watches CI on it), and
-(c) the same CI job (GitHub app id + check name, latest run) concluded
+(c) the same CI job (GitHub app id + check name + workflow, latest run) concluded
     ``failure`` at M and ``success`` at head, and the GitHub Actions runs for
     M and for head were made against one and the same base SHA. Only jobs of
     the latest ``pull_request`` workflow run per workflow count (``pr_runs``),
@@ -219,8 +219,8 @@ def gh_lines(path: str, jq: str) -> list:
 
 
 @functools.lru_cache(maxsize=None)
-def pr_runs(repo: str, sha: str) -> tuple[tuple[int, tuple[str, ...]], ...]:
-    """(check suite id, base SHAs) of the latest pull_request workflow run per workflow at sha.
+def pr_runs(repo: str, sha: str) -> tuple[tuple[int, int, tuple[str, ...]], ...]:
+    """(check suite id, workflow id, base SHAs) of the latest pull_request run per workflow at sha.
 
     Latest per workflow, so a run superseded by pushing the same commit again
     (the retry after the base moved) no longer counts. A latest run that names
@@ -233,23 +233,24 @@ def pr_runs(repo: str, sha: str) -> tuple[tuple[int, tuple[str, ...]], ...]:
                       " created: .created_at, bases: [.pull_requests[].base.sha]}"):
         if r["wf"] not in latest or r["created"] > latest[r["wf"]]["created"]:
             latest[r["wf"]] = r
-    return tuple((r["suite"], tuple(r["bases"])) for r in latest.values() if r["bases"])
+    return tuple((r["suite"], r["wf"], tuple(r["bases"])) for r in latest.values() if r["bases"])
 
 
-def check_runs(repo: str, sha: str) -> dict[tuple[int, str], str]:
-    """(app id, check name) -> conclusion of the latest completed run of that check at sha.
+def check_runs(repo: str, sha: str) -> dict[tuple, str]:
+    """(app id, check name, workflow id) -> conclusion of the latest completed run at sha.
 
     Only checks of the runs ``pr_runs`` selected, so the jobs compared are the
-    ones whose base ``run_bases`` reports.
+    ones whose base ``run_bases`` reports. The workflow id keeps two workflows'
+    jobs of the same name apart.
     """
-    suites = {suite for suite, _ in pr_runs(repo, sha)}
-    latest: dict[tuple[int, str], tuple[str, str]] = {}
+    workflow = {suite: wf for suite, wf, _ in pr_runs(repo, sha)}
+    latest: dict[tuple, tuple[str, str]] = {}
     # filter=all: the default (latest) keeps one run per name, and a push run can hide the PR's
     for r in gh_lines(f"repos/{repo}/commits/{sha}/check-runs?filter=all&per_page=100",
                       ".check_runs[] | {app: .app.id, name, conclusion, completed_at,"
                       " suite: .check_suite.id}"):
-        key = (r["app"], r["name"])
-        if r["suite"] in suites and r["completed_at"] and (
+        key = (r["app"], r["name"], workflow.get(r["suite"]))
+        if r["suite"] in workflow and r["completed_at"] and (
                 key not in latest or r["completed_at"] > latest[key][0]):
             latest[key] = (r["completed_at"], r["conclusion"])
     return {k: c for k, (_, c) in latest.items()}
@@ -257,7 +258,7 @@ def check_runs(repo: str, sha: str) -> dict[tuple[int, str], str]:
 
 def run_bases(repo: str, sha: str) -> set[str]:
     """Base SHAs the runs ``pr_runs`` selected were made against."""
-    return {b for _, bases in pr_runs(repo, sha) for b in bases}
+    return {b for _, _, bases in pr_runs(repo, sha) for b in bases}
 
 
 def manifest_digest(repo: Path, msha: str, manifest: list[str]) -> str:
@@ -328,7 +329,7 @@ def evaluate(repo: Path, base: str, head: str, info: dict, pin: dict | None = No
         raise Reject(f"the CI runs at the test commit and at head are not on one known base"
                      f" (different bases or unknown: {sorted(bases_m)} vs {sorted(bases_head)}):"
                      " push the test commit alone again on the current base")
-    jobs = ", ".join(name for _, name in flipped)
+    jobs = ", ".join(str(job[1]) for job in flipped)
     info.update(result="passed", reason=f"CI job(s) {jobs} failed at the test commit"
                 f" {msha[:12]} and succeeded at head, on base {next(iter(bases_m))[:12]}")
 

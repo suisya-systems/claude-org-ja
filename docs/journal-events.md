@@ -247,7 +247,7 @@ from `codex_round_started`.
 protected tree entries at head equal those at the commit that declared the test
 (`Acceptance-Test: <path>` trailers), that commit is the PR's first commit, a
 `ci_completed` row with `status=failed` and `head_oid` = that commit exists for
-the PR, and the same CI job (GitHub app id + check name) failed at that commit
+the PR, and the same CI job (GitHub app id + check name + workflow) failed at that commit
 and succeeded at head on one base (Issue #1231: the gate runs no test).
 `manifest_commit` / `paths` are absent when no manifest was found or the run was
 rejected before reading it. Without `--pr` the row is a measurement record, not
