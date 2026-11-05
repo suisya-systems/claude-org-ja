@@ -71,6 +71,13 @@ allowed-tools:
 ユーザーが「OK」「確認した」「問題ない」「進めて」等の **明示的承認** を出した直後に発動する:
 
 - 必要に応じて窓口がプッシュ・PR 作成を行う（ワーカーには `git push` / PR 作成権限がない）。PR のタイトル・本文は対象リポジトリで使われている言語に合わせる
+- **受け入れテストを宣言した PR は、テストのコミットだけを先に push する（Issue #1231）**: ゲート（[`tools/acceptance_gate.py`](../../../tools/acceptance_gate.py)）はテストを走らせない。「修正前に失敗する」ことは、テストのコミット M（ワーカーの完了報告にある宣言コミットの SHA）だけを head にした CI の失敗で確かめる。ワーカーの完了報告に宣言コミットの SHA があるときは、次の順に進める:
+  1. M だけを push する: `git push origin <M>:refs/heads/<branch>`（M は PR の最初のコミットでなければゲートが拒否する）
+  2. `gh pr create --repo <OWNER/REPO> --head <branch> --base <base> ...` で PR を作る（`--head` を付けないと、gh が手元のブランチ全体を push しようとすることがある）。`gh pr view <PR> --repo <OWNER/REPO> --json headRefOid` が M であることを確かめてから、`/pr-watch-pane <PR>` で CI を待つ
+  3. `CI_COMPLETED` の `status=failed`（head=M）は想定どおりの結果なので、2c の修正指示は出さない。M で CI が通ったら、テストが修正前に落ちていない。ワーカーに差し戻す（このままではゲートが拒否する）
+  4. 残りを push する（`git push origin <branch>`、早送り）。もう一度 `/pr-watch-pane <PR>` で `passed` を待つ。あとは下の「CI green」以降の手順どおり
+  5. PR を rebase・作り直ししたら、既存の PR のまま 1 からやり直す（M の SHA が変わり、古い M の失敗記録は使えない。M を head に戻す push は force になる）。M と head の CI の base が食い違ったとき（間に base が進んだとき）も、ゲートが拒否するので 1 からやり直す
+  - ゲートが保証するのは「宣言テストとテスト基盤を変えないまま、同じ CI ジョブが M で失敗し head で成功した」ことまで。**宣言テストが CI で実際に走ったことは確かめない**（保護パス外の `tests/__init__.py`・ランナーのスクリプト・言語ごとの設定などを変えて、テストを CI の対象から外す抜け穴は検出しない）。このため止める線の 6 で、その種の変更を人が見る
 - **`gh pr create --base` は派遣時の起点ブランチと同じ設定を読む（Issue #808）**: プロジェクトの既定マージ先は [`registry/projects.md`](../../../registry/projects.md) の `base_branch` 列が SoT。値がある行（例 `develop`）は `gh pr create --base <base_branch>` を既定とし、**空欄 / `-` の行は従来どおり `--base` を付けない**（repo の既定ブランチ宛）。worktree を切った起点と PR のマージ先が食い違うと、develop が先行している分の差分が PR に混入するため、両者は必ず同じ値を使う。当該タスクの実効値は派遣時の DELEGATE 本文の「ベース:」行、または `send_plan.json` の `summary.base_branch` / `summary.base_ref` で確認できる（`--base-ref` で単発上書きされた hotfix もそこに出る）。値の解決順は `--base-ref` > `base_branch` 列 > `origin/HEAD`
 - **PR 番号が確定したら直ちに `tools/set_run_pr_open.py` で `runs.pr_url` / `runs.branch` を back-fill する** (Issue #323):
   ```bash
@@ -101,7 +108,7 @@ allowed-tools:
     3. **判断境界**: 未解決の worker escalation / pending decision がある、または承認したスコープ（そのタスクの brief、`/org-conveyor` ならスコープ契約）の外の変更を含む
     4. **元に戻せない変更**: 通常のマージを超える不可逆な操作（リリース・タグ・パッケージ公開、データ移行・削除、外部への公開、force push 等）を含む・伴う
     5. **予算超過**: `/org-conveyor` の退出条件（[`.claude/skills/org-conveyor/references/exit-conditions.md`](../org-conveyor/references/exit-conditions.md)）に当たっている
-    6. **テストを書き換えて合格させた疑い**: 宣言テスト以外の既存テストの削除・skip 化・期待値の緩和が PR に含まれる、またはワーカー報告に宣言テスト・テスト基盤の変更がある
+    6. **テストを書き換えて合格させた疑い**: 宣言テスト以外の既存テストの削除・skip 化・期待値の緩和が PR に含まれる、ワーカー報告に宣言テスト・テスト基盤の変更がある、または宣言テストを CI の対象から外しうる変更（テストの発見・選択に効くファイル。`tests/__init__.py`、テストランナーのスクリプト、CI が呼ぶ Makefile やタスク定義、言語ごとのテスト設定など）が PR に含まれる。ゲートはこの種の変更を検出しない（上の「受け入れテストを宣言した PR は」の項）
     7. **ゲートの拒否**: マージのコマンドがフックに拒否された（下記）
 - **マージのコマンド（フックが許す 1 通りだけ）**: 正本は [`tools/acceptance_merge_hook.py`](../../../tools/acceptance_merge_hook.py) の docstring。`gh pr merge <番号> --repo <OWNER/REPO> --squash --match-head-commit <SHA>`（方式は `--merge` / `--rebase` も可、末尾の `--delete-branch` は任意）を、この順序のまま単独 1 行で打つ。`<SHA>` は `CI_COMPLETED` で CI が通った head の 40 桁の SHA（`gh pr view <PR> --repo <OWNER/REPO> --json headRefOid` で引き、短縮形は不可）。フックは、PR の今の head がこの SHA と同じで、events の最新の `ci_completed` 行が `passed` かつ `head_oid` がこの SHA と同じときだけゲートに進む（CI 確認の後に push された head はここで拒否される。`head_oid` は CI の前後で head が動かなかったときだけ記録されるので、無ければ `/pr-watch-pane` で CI を見直す）。ゲートの後に push が入っても、`--match-head-commit` により GitHub がマージを拒否する。`--auto`、`cd` の前置、引数の並べ替え、変数・コマンド置換は拒否される。フックが拒否したら（head の不一致、ゲートの `rejected`、`acceptance` 方式でのゲートの `no-manifest`、gh / git の失敗、タイムアウト）止まって理由を添えて人に上げる。**別の書き方・GitHub の画面・API など別の経路でマージを通すことは禁止**。テストのコミットの作り直しで拒否された PR は同じ PR では通らないので、人の承認を得て新しいブランチ・新しい PR でテストファーストからやり直す（ゲートのピン留めは最初に宣言を見た時点からで、それより前の作り直しは検出できない）
 - **人に仰いで止まる直前で awaiting_user 通知を emit する（Issue #28）**: 対象は `human` 方式のとき、または `acceptance` 方式で止める線に当たったときだけ（止める線に当たらず自走でマージするときは emit しない）。attention watcher にユーザーが merge 承認待ちで stop していることを知らせる:

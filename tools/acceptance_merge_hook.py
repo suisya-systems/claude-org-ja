@@ -42,7 +42,11 @@ running the gate:
 
 It then fetches the head and base into the project's clone under
 ``refs/acceptance-gate/``, and runs ``tools/acceptance_gate.py`` with
-``--pr OWNER/REPO#N`` (which also pins the test commit):
+``--pr OWNER/REPO#N`` (which also pins the test commit). The gate runs no
+test: it checks git and the CI records (the failed run at the test commit,
+the same job passing at head; Issue #1231). A repo without CI never has a
+passed ``ci_completed``, so its PRs are denied here and a human merges them
+in the GitHub web UI:
 
 - passed: allowed.
 - no-manifest: allowed when the merge approval mode (``tools/merge_approval_mode.py``,
@@ -74,7 +78,6 @@ from tools.merge_approval_mode import read_mode  # noqa: E402
 
 GATE = Path(__file__).resolve().parent / "acceptance_gate.py"
 DEADLINE_S = 840  # the hook is registered with timeout 900
-PYTEST_TIMEOUT_S = 300
 GATE_EXIT = {"passed": 0, "rejected": 1, "no-manifest": 3}
 MERGE = re.compile(r"gh pr merge ([0-9]+) --repo ([\w.-]+/[\w.-]+) --(?:squash|merge|rebase)"
                    r" --match-head-commit ([0-9a-f]{40})(?: --delete-branch)?", re.ASCII)
@@ -209,7 +212,8 @@ def decide(command: str, project: Path) -> str:
     ci_head = ci_passed_head(repo, int(pr["number"]))
     if ci_head != want:
         raise Deny(f"no passed ci_completed for {repo}#{pr['number']} at {want[:12]}"
-                   f" (latest: {(ci_head or 'not passed / no full head')[:12]}); watch CI with /pr-watch-pane first")
+                   f" (latest: {(ci_head or 'not passed / no full head')[:12]}); watch CI with /pr-watch-pane"
+                   " first. A repo without CI has no passed run: a human merges it in the GitHub web UI")
     prefix = pr["url"].rsplit("/pull/", 1)[0]
     slug = "/".join(prefix.split("/")[-2:])
     remote = prefix + ".git" if prefix.startswith("https://") else prefix
@@ -223,8 +227,8 @@ def decide(command: str, project: Path) -> str:
     if head != want:
         raise Deny(f"the PR head moved while fetching ({want[:12]} -> {head[:12]}); retry")
     res = run([sys.executable, str(GATE), "--repo", str(project), "--base", f"{ref}/base",
-               "--head", f"{ref}/head", "--pr", f"{slug}#{pr['number']}",
-               "--timeout", str(PYTEST_TIMEOUT_S)], project, deadline, DEADLINE_S)
+               "--head", f"{ref}/head", "--pr", f"{slug}#{pr['number']}"],
+              project, deadline, DEADLINE_S)
     lines = res.stdout.strip().splitlines()
     verdict = lines[-1].removeprefix("ACCEPTANCE_GATE: ") if lines else ""
     if GATE_EXIT.get(verdict) != res.returncode:

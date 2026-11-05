@@ -1,12 +1,30 @@
 #!/usr/bin/env python3
-"""Acceptance-test gate run just before a PR merge (Issue #1167, L4 pilot).
+"""Acceptance-test gate run just before a PR merge (Issue #1167, #1231).
 
-A PR passes only when all three hold:
+The gate runs no test. It judges from git and from the CI records of the
+PR's own repository, so any language works. A PR passes only when all hold:
 
 (a) the protected tree entries at head equal those at the commit that added
-    the acceptance test (the "manifest commit"),
-(b) the acceptance test fails on the base code, and
-(c) it passes on head.
+    the acceptance test (the "manifest commit" M), and M is the PR's first
+    commit (its parent is the merge base of base and head), so M is the base
+    code plus the test;
+(b) before the fix the test failed: state.db has a ``ci_completed`` event for
+    this PR with ``status=failed`` and ``head_oid`` = M (the secretary pushes M
+    alone first and watches CI on it), and
+(c) the same CI job (GitHub app id + check name, latest run) concluded
+    ``failure`` at M and ``success`` at head, and the GitHub Actions runs for
+    M and for head were made against one and the same base SHA.
+
+Head passing as a whole is the merge hook's CI binding (#1228): the latest
+``ci_completed`` for the PR is ``passed`` at the merged head.
+
+What this does NOT prove (Issue #1231, owner decision 2026-11-05): that the
+declared test itself ran in CI. A change outside the protected paths (a
+``tests/__init__.py``, a runner script, a language-specific config) can drop
+the test from discovery so the job turns green with the bug still there. The
+guarantee is "with the declared test and the test infrastructure unchanged,
+one CI job failed at M and succeeded at head". Test-level evidence from CI
+(JUnit artifacts) is a follow-up.
 
 Manifest: a commit in ``base..head`` declares the test with one or more
 ``Acceptance-Test: <path>`` trailers (a file or a directory). The trailer
@@ -19,22 +37,11 @@ Protected = the manifest paths plus the test infrastructure / CI config
 (``conftest.py``, pytest / vitest config files, ``pyproject.toml``,
 ``package.json``, ``.github/workflows/**``). Everything the manifest commit
 itself changes must be protected, so a helper the test needs cannot be
-slipped in undeclared and edited later.
+slipped in undeclared and edited later. The check compares M with head, so a
+change made and reverted in between passes.
 
-Both runs use the same test side: the base run is the base tree with every
-protected entry replaced by the manifest commit's, so a fixture added in
-the test commit cannot make base fail and head pass on its own. Trees are
-materialised from raw git objects (not ``git archive``, which honours
-export attributes). Outcomes come from pytest's junit report, not the exit
-code: base needs an assertion failure in a declared test (collection or
-fixture errors do not count), head needs every collected test to pass. A run
-cut short by ``pytest.exit`` (at collection, in a test or in a teardown) is
-rejected whatever exit code it asked for: a plugin loaded from outside the
-materialised tree records the interruption.
-
-The PR's code runs under bubblewrap (``sandbox``): no network, no HOME, no
-environment, and none of this repo (state.db). Without ``bwrap`` (Windows,
-macOS) the gate rejects. A test that needs the network fails here.
+A rebase changes M's SHA, so the CI failure recorded at the old M no longer
+counts: push the new M alone again and let CI fail on it.
 
 Pin (with ``--pr``): the first run that sees a manifest records a digest of
 the declared test files (path, mode, blob) and paths. A later run for the same
@@ -54,12 +61,8 @@ import argparse
 import fnmatch
 import hashlib
 import json
-import os
-import shutil
 import subprocess
 import sys
-import tempfile
-import xml.etree.ElementTree as ET
 from pathlib import Path, PurePosixPath
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -73,16 +76,7 @@ INFRA_NAMES = {
 }
 INFRA_GLOBS = ("vitest.config.*", "vitest.workspace.*", "vite.config.*")
 WORKFLOWS = ".github/workflows/"
-JS_TEST_GLOBS = ("*.test.*", "*.spec.*")
-RANK = ["passed", "skipped", "failed", "error"]
 EXIT = {"passed": 0, "rejected": 1, "no-manifest": 3}
-GUARD_PLUGIN = """import os
-
-
-def pytest_keyboard_interrupt(excinfo):
-    with open(os.environ["ACCEPTANCE_GATE_INTERRUPTED"], "w") as f:
-        f.write(repr(excinfo.value))
-"""
 
 
 class Reject(Exception):
@@ -177,122 +171,64 @@ def check_protected(repo: Path, msha: str, head: str, manifest: list[str]):
     return pm
 
 
-def materialize(repo: Path, entries: dict[str, tuple[str, str]], root: Path) -> None:
-    paths = set(entries)
-    for p in paths:
-        parent = PurePosixPath(p).parent
-        while str(parent) != ".":
-            if str(parent) in paths:
-                raise Reject(f"path conflict: {str(parent)!r} is a file but {p!r} needs a directory")
-            parent = parent.parent
-    root.mkdir(parents=True, exist_ok=True)
-    proc = subprocess.Popen(
-        ["git", "-C", str(repo), "cat-file", "--batch"],
-        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-    )
+def check_first(repo: Path, msha: str, base: str, head: str) -> None:
+    """M is the PR's first commit: its parent is the merge base, so M = base code + test."""
+    parent = git(repo, "rev-parse", f"{msha}^").strip()
+    fork = git(repo, "merge-base", base, head).strip()
+    if parent != fork:
+        raise Reject(f"the test commit {msha[:12]} must be the first commit of the PR (its parent"
+                     f" {parent[:12]} is not the merge base {fork[:12]}): put the test commit first")
+
+
+def ci_failed_at(db_path: str | None, repo: str, number: int, sha: str) -> bool:
+    """True when state.db has a failed ci_completed for this PR with head_oid == sha."""
+    import sqlite3
+    from tools.state_db.discover import resolve_state_db_path
+
+    path = resolve_state_db_path(Path(db_path) if db_path else None)
+    if not path.exists():
+        return False
     try:
-        for p, (mode, obj) in sorted(entries.items()):
-            dest = root / p
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            if mode == "160000":
-                dest.mkdir(exist_ok=True)
-                continue
-            proc.stdin.write(obj.encode() + b"\n")
-            proc.stdin.flush()
-            size = int(proc.stdout.readline().split()[2])
-            data = proc.stdout.read(size)
-            proc.stdout.read(1)
-            if mode == "120000":
-                try:
-                    os.symlink(data.decode(), dest)
-                    continue
-                except OSError:
-                    pass  # no symlink privilege (Windows): fall back to a file
-            dest.write_bytes(data)
-            if mode == "100755":
-                dest.chmod(0o755)
-    finally:
-        proc.stdin.close()
-        proc.wait()
+        conn = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
+        try:
+            rows = conn.execute("SELECT payload_json FROM events WHERE kind = 'ci_completed'"
+                                " AND json_extract(payload_json, '$.status') = 'failed'"
+                                " AND json_extract(payload_json, '$.head_oid') = ?", (sha,)).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        raise Reject(f"cannot read the CI records from {path}: {exc}")
+    return any(json.loads(r)["pr"] == number and str(json.loads(r).get("repo", "")).lower()
+               == repo.lower() for (r,) in rows)
 
 
-HIDDEN = {str(_REPO_ROOT), str(_REPO_ROOT / "tools")}
-
-
-def visible_sys_path() -> list[str]:
-    return [p for p in dict.fromkeys(os.path.abspath(p) for p in sys.path if p)
-            if os.path.isdir(p) and p not in HIDDEN]
-
-
-def sandbox(root: Path, out: Path, plugin_dir: Path) -> list[str]:
-    """bwrap prefix: PR code runs with no network, no HOME, no state.db, no env.
-
-    Only the system dirs and this interpreter's own dirs are visible (read-only);
-    the materialised tree and the run's output dir are the only writable paths.
-    The gate's own repo (state.db, tools/) is never bound.
-    """
-    bwrap = shutil.which("bwrap")
-    if not bwrap:
-        raise Reject("bubblewrap (bwrap) is required to run the PR's tests in isolation;"
-                     " not found, so the gate cannot run here - merge by hand after review")
-    ro = ["/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/etc",
-          sys.prefix, sys.base_prefix, os.path.dirname(os.path.realpath(sys.executable)),
-          *visible_sys_path()]
-    cmd = [bwrap, "--unshare-all", "--die-with-parent", "--new-session", "--clearenv",
-           "--setenv", "PATH", "/usr/bin:/bin", "--setenv", "HOME", "/tmp",
-           "--setenv", "LANG", "C.UTF-8", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp"]
-    for d in dict.fromkeys(os.path.abspath(d) for d in ro):
-        if d not in HIDDEN and os.path.exists(d):
-            cmd += ["--ro-bind", d, d]
-    return cmd + ["--bind", str(root), str(root), "--bind", str(out), str(out),
-                  "--ro-bind", str(plugin_dir), str(plugin_dir), "--chdir", str(root)]
-
-
-def run_pytest(root: Path, files: list[str], timeout: int) -> tuple[int, dict[str, str]]:
-    """Exit code and test id -> passed / skipped / failed / error, from the junit report.
-
-    Both are needed: the report tells an assertion failure from a fixture error,
-    the exit code tells a finished run from an interrupted one (``pytest.exit``,
-    internal error), whose report only holds the tests that ran.
-    """
-    out = root.parent / f"{root.name}-out"
-    plugin_dir = root.parent / "guard-plugin"
-    out.mkdir()
-    plugin_dir.mkdir(exist_ok=True)
-    (plugin_dir / "acceptance_gate_guard.py").write_text(GUARD_PLUGIN, encoding="utf-8")
-    junit, marker = out / "junit.xml", out / "interrupted"
-    cmd = [
-        *sandbox(root, out, plugin_dir),
-        "--setenv", "ACCEPTANCE_GATE_INTERRUPTED", str(marker),
-        # HOME is hidden, so user site-packages come back only through PYTHONPATH.
-        # The tree's import root (src/ for a src layout) goes first, so the PR's
-        # package wins over a copy installed in this interpreter; bwrap binds root as-is.
-        "--setenv", "PYTHONPATH", os.pathsep.join(
-            [str(plugin_dir), str(root / "src" if (root / "src").is_dir() else root),
-             *visible_sys_path()]),
-        sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "-p", "acceptance_gate_guard",
-        "-o", "junit_family=xunit1", f"--junitxml={junit}", f"--rootdir={root}",
-        *files,
-    ]
+def gh_lines(path: str, jq: str) -> list:
+    """One JSON value per line of ``gh api --paginate --jq``; Reject when gh fails."""
     try:
-        res = subprocess.run(cmd, cwd=root, capture_output=True, text=True, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        raise Reject(f"pytest timed out after {timeout}s in {root.name}")
-    if marker.exists():
-        raise Reject(f"pytest was interrupted in {root.name} (rc={res.returncode}): "
-                     f"{marker.read_text(encoding='utf-8')[:200]}")
-    if not junit.exists():
-        tail = (res.stdout + res.stderr).strip().splitlines()[-5:]
-        raise Reject(f"pytest produced no report in {root.name} (rc={res.returncode}): {tail}")
-    outcomes: dict[str, str] = {}
-    for tc in ET.parse(junit).iter("testcase"):
-        tags = {c.tag for c in tc}
-        outcome = next((o for t, o in (("error", "error"), ("failure", "failed"),
-                                       ("skipped", "skipped")) if t in tags), "passed")
-        tid = f"{tc.get('file')}::{tc.get('classname')}::{tc.get('name')}"
-        # A test can appear twice (call failure + teardown error); keep the worst.
-        outcomes[tid] = max(outcomes.get(tid, "passed"), outcome, key=RANK.index)
-    return res.returncode, outcomes
+        res = subprocess.run(["gh", "api", "--paginate", path, "--jq", jq],
+                             capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise Reject(f"cannot read {path} from GitHub: {exc}")
+    if res.returncode != 0:
+        raise Reject(f"cannot read {path} from GitHub: {res.stderr.strip()[-200:]}")
+    return [json.loads(line) for line in res.stdout.splitlines() if line.strip()]
+
+
+def check_runs(repo: str, sha: str) -> dict[tuple[int, str], str]:
+    """(app id, check name) -> conclusion of the latest completed run of that check at sha."""
+    latest: dict[tuple[int, str], tuple[str, str]] = {}
+    for r in gh_lines(f"repos/{repo}/commits/{sha}/check-runs?per_page=100",
+                      ".check_runs[] | {app: .app.id, name, conclusion, completed_at}"):
+        key = (r["app"], r["name"])
+        if r["completed_at"] and (key not in latest or r["completed_at"] > latest[key][0]):
+            latest[key] = (r["completed_at"], r["conclusion"])
+    return {k: c for k, (_, c) in latest.items()}
+
+
+def run_bases(repo: str, sha: str) -> set[str]:
+    """Base SHAs the pull_request workflow runs for this head SHA were made against."""
+    return set(gh_lines(f"repos/{repo}/actions/runs?head_sha={sha}&event=pull_request&per_page=100",
+                        ".workflow_runs[].pull_requests[].base.sha"))
 
 
 def manifest_digest(repo: Path, msha: str, manifest: list[str]) -> str:
@@ -325,8 +261,8 @@ def first_pin(db_path: str | None, pr: str) -> dict | None:
     return json.loads(row[0]) if row else None
 
 
-def evaluate(repo: Path, base: str, head: str, timeout: int, info: dict,
-             pin: dict | None = None) -> None:
+def evaluate(repo: Path, base: str, head: str, info: dict, pin: dict | None = None,
+             pr: str | None = None, db_path: str | None = None) -> None:
     """Fill ``info`` with the verdict; raises Reject after recording what it found."""
     found = find_manifest(repo, base, head)
     if found is None:
@@ -345,40 +281,27 @@ def evaluate(repo: Path, base: str, head: str, timeout: int, info: dict,
             f"the test commit was rewritten since the gate first saw it "
             f"({pin.get('manifest_commit', '?')[:12]} -> {msha[:12]}, paths "
             f"{pin.get('paths')} -> {manifest}) - ask the human")
-    pm = check_protected(repo, msha, head, manifest)
-    declared = [p for p in pm if not is_infra(p)]
-    js = [p for p in declared if any(fnmatch.fnmatch(PurePosixPath(p).name, g) for g in JS_TEST_GLOBS)]
-    if js:
-        # ponytail: pytest only for the pilot; add a vitest junit runner when a JS project joins.
-        raise Reject(f"JavaScript tests are not supported by the gate yet: {js}")
-    files = sorted(p for p in declared if fnmatch.fnmatch(PurePosixPath(p).name, "test_*.py")
-                   or fnmatch.fnmatch(PurePosixPath(p).name, "*_test.py"))
-    if not files:
-        raise Reject("the manifest declares no pytest test file (test_*.py / *_test.py)")
-
-    base_entries = {p: e for p, e in tree(repo, base).items() if not is_protected(p, manifest)}
-    base_entries.update(pm)
-    with tempfile.TemporaryDirectory(prefix="acceptance-gate-") as tmp:
-        materialize(repo, base_entries, Path(tmp) / "base")
-        rc, on_base = run_pytest(Path(tmp) / "base", files, timeout)
-        failed = {t for t, o in on_base.items() if o == "failed" and t.split("::")[0] in files}
-        if rc != 1 or not failed:
-            summary = sorted(set(on_base.values())) or ["no tests"]
-            raise Reject(
-                f"the test does not fail on base (rc={rc}, outcomes: {summary}); a completed run"
-                " with an assertion failure is"
-                " required - collection / fixture errors do not count (import new symbols"
-                " inside the test function)"
-            )
-        materialize(repo, tree(repo, head), Path(tmp) / "head")
-        rc, on_head = run_pytest(Path(tmp) / "head", files, timeout)
-    bad = sorted(t for t, o in on_head.items() if o != "passed")
-    if rc != 0 or bad or not on_head:
-        raise Reject(f"the test does not pass on head (rc={rc}): {bad or 'no tests collected'}")
-    missing = sorted(failed - on_head.keys())
-    if missing:
-        raise Reject(f"tests that failed on base were not run on head: {missing}")
-    info.update(result="passed", reason=f"{len(failed)} test(s) fail on base and pass on head")
+    check_protected(repo, msha, head, manifest)
+    check_first(repo, msha, base, head)
+    if not pr or "#" not in pr:
+        raise Reject("the CI evidence is read per PR: pass --pr OWNER/REPO#N")
+    slug, number = pr.rsplit("#", 1)
+    if not ci_failed_at(db_path, slug, int(number), msha):
+        raise Reject(f"no failed CI run recorded at the test commit {msha[:12]}: push the test"
+                     " commit alone first and watch CI on it with /pr-watch-pane")
+    at_m, at_head = check_runs(slug, msha), check_runs(slug, head)
+    flipped = sorted(k for k, c in at_m.items() if c == "failure" and at_head.get(k) == "success")
+    if not flipped:
+        raise Reject(f"no CI job failed at the test commit and succeeded at head (test commit:"
+                     f" {sorted(at_m.items())}, head: {sorted(at_head.items())})")
+    bases_m, bases_head = run_bases(slug, msha), run_bases(slug, head)
+    if len(bases_m) != 1 or bases_m != bases_head:
+        raise Reject(f"the CI runs at the test commit and at head are not on one known base"
+                     f" (different bases or unknown: {sorted(bases_m)} vs {sorted(bases_head)}):"
+                     " push the test commit alone again on the current base")
+    jobs = ", ".join(name for _, name in flipped)
+    info.update(result="passed", reason=f"CI job(s) {jobs} failed at the test commit"
+                f" {msha[:12]} and succeeded at head, on base {next(iter(bases_m))[:12]}")
 
 
 def record(db_path: str | None, payload: dict) -> bool:
@@ -397,14 +320,13 @@ def record(db_path: str | None, payload: dict) -> bool:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         prog="tools/acceptance_gate.py",
-        description="Merge-time acceptance-test gate (base fails, head passes, tests untouched).",
+        description="Merge-time acceptance-test gate from git and CI records (tests untouched, a CI job failed at the test commit and passed at head).",
     )
     ap.add_argument("--base", required=True, help="base ref (merge target)")
     ap.add_argument("--head", required=True, help="head ref (PR head)")
     ap.add_argument("--repo", default=".", help="repository path (default: cwd)")
     ap.add_argument("--pr", help="PR key (e.g. OWNER/REPO#N): recorded, and pins the test commit")
     ap.add_argument("--task", help="task id, recorded in the event")
-    ap.add_argument("--timeout", type=int, default=600, help="seconds per pytest run")
     ap.add_argument("--db-path", help="state.db override (default: discovery)")
     ap.add_argument("--no-record", action="store_true", help="do not write the event")
     args = ap.parse_args(argv)
@@ -416,12 +338,12 @@ def main(argv: list[str] | None = None) -> int:
         head = git(repo, "rev-parse", "--verify", args.head + "^{commit}").strip()
         info = {"base": base, "head": head}
         pin = first_pin(args.db_path, args.pr) if args.pr and not args.no_record else None
-        evaluate(repo, base, head, args.timeout, info, pin)
+        evaluate(repo, base, head, info, pin, args.pr, args.db_path)
     except Reject as exc:
         info.update(result="rejected", reason=str(exc))
     except subprocess.CalledProcessError as exc:
         info.update(result="rejected", reason=f"git failed: {' '.join(exc.cmd[3:])}: {exc.stderr.strip()}")
-    except (OSError, ET.ParseError, ValueError, IndexError) as exc:
+    except (OSError, ValueError, IndexError, KeyError) as exc:
         info.update(result="rejected", reason=f"{type(exc).__name__}: {exc}")
 
     if not args.no_record:
