@@ -292,9 +292,25 @@ class GithubReadTest(unittest.TestCase):
             {"app": 1, "name": "lint", "conclusion": None, "completed_at": None, "suite": 10},
             {"app": 3, "name": "push-ci", "conclusion": "failure", "completed_at": self.T2, "suite": 99},
         ]
-        with self.gh():
+        with self.gh() as run:
             self.assertEqual(gate.check_runs("o/r", "a" * 40),
                              {(1, "test"): "success", (2, "test"): "failure"})
+        # every run, not GitHub's latest-per-name (a push run would hide the PR's)
+        self.assertTrue(any("filter=all" in c.args[0][3] for c in run.call_args_list))
+
+    def test_jobs_of_a_run_without_a_base_are_not_compared(self):
+        """Another workflow's base must not stand in for the run the job came from."""
+        self.answers["actions/runs"] = [
+            {"wf": 1, "suite": 10, "created": self.T1, "bases": []},
+            {"wf": 2, "suite": 20, "created": self.T1, "bases": ["c" * 40]},
+        ]
+        self.answers["check-runs"] = [
+            {"app": 1, "name": "test", "conclusion": "failure", "completed_at": self.T1, "suite": 10},
+            {"app": 1, "name": "lint", "conclusion": "success", "completed_at": self.T1, "suite": 20},
+        ]
+        with self.gh():
+            self.assertEqual(gate.check_runs("o/r", "a" * 40), {(1, "lint"): "success"})
+            self.assertEqual(gate.run_bases("o/r", "a" * 40), {"c" * 40})
 
     def test_pushing_the_same_commit_again_supersedes_the_old_run(self):
         """The retry after the base moved: only the latest run per workflow counts."""

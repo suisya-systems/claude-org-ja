@@ -223,7 +223,9 @@ def pr_runs(repo: str, sha: str) -> tuple[tuple[int, tuple[str, ...]], ...]:
     """(check suite id, base SHAs) of the latest pull_request workflow run per workflow at sha.
 
     Latest per workflow, so a run superseded by pushing the same commit again
-    (the retry after the base moved) no longer counts.
+    (the retry after the base moved) no longer counts. A latest run that names
+    no base is dropped (its jobs are not compared) rather than replaced by an
+    older run or by another workflow's base.
     """
     latest: dict[int, dict] = {}
     for r in gh_lines(f"repos/{repo}/actions/runs?head_sha={sha}&event=pull_request&per_page=100",
@@ -231,7 +233,7 @@ def pr_runs(repo: str, sha: str) -> tuple[tuple[int, tuple[str, ...]], ...]:
                       " created: .created_at, bases: [.pull_requests[].base.sha]}"):
         if r["wf"] not in latest or r["created"] > latest[r["wf"]]["created"]:
             latest[r["wf"]] = r
-    return tuple((r["suite"], tuple(r["bases"])) for r in latest.values())
+    return tuple((r["suite"], tuple(r["bases"])) for r in latest.values() if r["bases"])
 
 
 def check_runs(repo: str, sha: str) -> dict[tuple[int, str], str]:
@@ -242,7 +244,8 @@ def check_runs(repo: str, sha: str) -> dict[tuple[int, str], str]:
     """
     suites = {suite for suite, _ in pr_runs(repo, sha)}
     latest: dict[tuple[int, str], tuple[str, str]] = {}
-    for r in gh_lines(f"repos/{repo}/commits/{sha}/check-runs?per_page=100",
+    # filter=all: the default (latest) keeps one run per name, and a push run can hide the PR's
+    for r in gh_lines(f"repos/{repo}/commits/{sha}/check-runs?filter=all&per_page=100",
                       ".check_runs[] | {app: .app.id, name, conclusion, completed_at,"
                       " suite: .check_suite.id}"):
         key = (r["app"], r["name"])
