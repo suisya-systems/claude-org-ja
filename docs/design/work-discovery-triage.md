@@ -187,6 +187,7 @@ triage を「**計算（どの Issue がどう triage されるか）**」と「
 2. #533 ...（優先度 medium / 工数 M(推定) / 依存解決済み）
 3. #529 ...（優先度 medium / 工数 S / 依存解決済み / 並列可）
 
+条項追加の候補: kura（7 件が条項に当たらない。例: #60, #61, #64）→ /goal-setup kura
 除外（依存未解決）: #540（#537 が open のため）
 除外（マージ済み）: kura#231（#232 が develop にマージ済み・GitHub の自動クローズ未発火）
 
@@ -194,6 +195,7 @@ triage を「**計算（どの Issue がどう triage されるか）**」と「
 ```
 
 - 推奨は先頭に `[推奨]` を付け 1 件だけ。
+- `条項追加の候補` 行は goal モードで `clause_gap[]` が非空のときだけ出す（[§12.7](#127-出力51-への追加)）。ゴール未設定・台帳エラーの行の後、除外行の前。
 - 工数が機械推定なら `(推定)` を必ず付す。
 - 「提案のみ / 着手はあなたの判断」を毎回明示する（INV-1 の運用上の現れ）。
 - 除外枠を必ず見せる（監査性 + 「全部見たうえで N 件」という安心）。依存未解決（`excluded_blocked`）とマージ済み（`excluded_merged`、[§10.5](#105-二系統base_branch運用リポジトリの完了判定)）は**別行**で出す — 前者は「まだ着手できない」、後者は「もう終わっている」で、人間の次の一手が真逆になるため。
@@ -547,6 +549,7 @@ python3 tools/work_discovery_goals.py put-aside --ref owner/repo#N --note "<人�
   ```
   `judge.status` は `called` / `cache_only`（全候補がキャッシュ hit で未判定も無い）/ `capped`（未判定の候補はあったが上限で 1 件も送れなかった。全件 `not_judged`）/ `skipped_no_material`（判定対象ゼロ）/ `failed` / `cooldown` / `budget_exhausted`。`candidates_pending` は判定が必要だった候補数、`candidates_sent` は実際に判定段へ送った候補数（呼ばなかったときは 0。データの持ち出しの監査に使う）。`cost_usd` は有限の数か `null`。repo slug が分からない候補群は `goal_errors` に `repo: null` の 1 件としてまとめる。`goals[].repo` / `goal_unset_repos[].repo` / `goal_errors[].repo` は常に実 slug（畳まない）。
 - `excluded_goal`: `[{repo, issue, reason, note}]`。`reason` は閉じた集合 `no_clause` / `put_aside` / `not_judged`。`repo` の表示は `excluded_blocked` と同じ規則（単一 repo scan では `null`）。error では `[]`。
+- `clause_gap`: `[{repo, count, samples, hints}]`。no_clause 除外が repo ごとに閾値（`--clause-gap-threshold`、既定 5）以上のときだけその repo を 1 件出し、閾値未満・legacy・error では `[]`。`repo` は実 slug（畳まない）、`samples` は Issue 参照を最大 3 件（`owner/repo#N`）、`hints` は判定段の理由（`why`）の重複を除いた先頭最大 3 件（各 80 字まで）。
 - 候補の追加フィールド（goal）: `goal_clause`（`{id, heading}`）、`goal_why`、`goal_request`、`open_points`、`goal_judgement_key`。legacy では `null` / `null` / `null` / `[]` / `null`。
 - `recommendation.reason`（goal）: `G<n>「<見出し>」: <why>`。
 - **件数**: goal では `scan_repos` の `rank_candidates` による top-N 切り詰めをせず、全 resolved 候補を goal 段に渡す（`build_candidate` は内部フィールド `_body`・`_labels`・`_updated_at`・`_real_repo` を持ち、出力前に `_` 始まりは全て除く）。`candidate_count` = 出した候補数。`truncated_count` = 条項に当たったが top-N に入らなかった数だけ（`excluded_goal`・未設定・台帳エラーの候補は数えない）。`rank` は出した候補に 1 から振る。`goal_unset_repos[].candidate_count` はその repo の resolved 候補数（見送り適用前）。
@@ -554,6 +557,8 @@ python3 tools/work_discovery_goals.py put-aside --ref owner/repo#N --note "<人�
 - **exit code は不変**（`0` / `10` / `2`）。goal で候補ゼロなら exit 0（未設定・台帳エラー・`excluded_goal` があっても 0）。窓口 skill はこれらを必ず見せる（12.8）。
 
 **ランクキー**: `(条項の順位（G1=1）, §4.3 の辞書式キー)`。repo をまたぐ場合、各 repo の G1 同士は同順位として扱い、旧キー（ラベル優先度 → 直近マージ → … → repo 名・Issue 番号）で解く。repo 間の優先順位（特定プロジェクトを最優先にしたい等）はゴール台帳の範囲外で、必要になったら org 単位の台帳を足す（本 Phase では入れない）。
+
+**条項追加の候補（`clause_gap`）**: ゴール条項に当たらず外れた Issue が同じ repo に閾値以上溜まるのは、台帳の条項がその repo の仕事を覆えていない兆候である。scan はその事実（どの repo に何件、例となる Issue、判定段が挙げた理由）を出力に載せるだけで、条項を足すかどうか・どう書くかは決めない。条項の追加は人間が [`/goal-setup`](../../.claude/skills/goal-setup/SKILL.md) で行う。`candidates` の並び・`excluded_goal` の内容・exit code は変えず、判定段の呼び出しも増やさない（既に出た `no_clause` の判定を集計するだけ）。領域ごとの常駐リーダーを置かずに「目標そのものを更新する提案」を triage に持たせる最小形である。
 
 ### 12.8 delivery 層への影響
 

@@ -1734,6 +1734,7 @@ def scan_repos(
         recommendation = make_recommendation(top)
         excluded_goal: list[dict] = []
         goal_rank = None
+        clause_gap: list[dict] = []
     else:
         rank_mode = "goal"
         ranked = goal_ranker(candidates)
@@ -1742,6 +1743,7 @@ def scan_repos(
         recommendation = ranked["recommendation"]
         excluded_goal = ranked["excluded_goal"]
         goal_rank = ranked["goal_rank"]
+        clause_gap = ranked.get("clause_gap", [])
 
     for cand in top:
         # Fixed schema (design §12.7): the goal fields exist in both modes, so
@@ -1814,6 +1816,9 @@ def scan_repos(
         "rank_mode": rank_mode,
         "goal_rank": goal_rank,
         "excluded_goal": excluded_goal,
+        # Always present ([] in legacy / below threshold): repos where enough
+        # Issues hit no goal clause to suggest adding one. Propose-only.
+        "clause_gap": clause_gap,
     }
 
 
@@ -2541,6 +2546,7 @@ def _error_payload(
         "rank_mode": rank_mode,
         "goal_rank": goal_rank,
         "excluded_goal": [],
+        "clause_gap": [],
         "error": message,
     }
 
@@ -2745,6 +2751,7 @@ def _validate_judge_args(args) -> None:
         ("--judge-daily-budget-usd", args.judge_daily_budget_usd, 0, True),
         ("--judge-max-candidates", args.judge_max_candidates, 1, True),
         ("--judge-max-material-bytes", args.judge_max_material_bytes, 1, True),
+        ("--clause-gap-threshold", args.clause_gap_threshold, 1, True),
     ):
         if value is None:
             continue
@@ -2794,6 +2801,7 @@ def _make_goal_ranker(goals, args, config: ScanConfig):
         "judge_max_candidates": args.judge_max_candidates,
         "judge_max_material_bytes": args.judge_max_material_bytes,
         "judge_cmd": args.judge_cmd,
+        "clause_gap_threshold": args.clause_gap_threshold,
     }
     goal_config = goals.GoalConfig(
         goals_dir=(
@@ -2978,6 +2986,13 @@ def main(argv=None) -> int:
         type=int,
         default=None,
         help="Max UTF-8 bytes of candidate material per judge call (>= 1).",
+    )
+    parser.add_argument(
+        "--clause-gap-threshold",
+        type=int,
+        default=None,
+        help="Per-repo count of Issues matching no goal clause at/above which "
+        "clause_gap proposes adding a clause (>= 1, default 5).",
     )
     parser.add_argument(
         "--judge-cmd",

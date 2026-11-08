@@ -165,6 +165,8 @@ class GoalConfig:
     judge_max_material_bytes: int = DEFAULT_JUDGE_MAX_MATERIAL_BYTES
     judge_cmd: str = DEFAULT_JUDGE_CMD
     top_n: int = 3
+    # no_clause exclusions per repo at/above which clause_gap proposes a new clause.
+    clause_gap_threshold: int = 5
     # tz-aware UTC clock; None -> datetime.now(timezone.utc). Test seam.
     now: Callable[[], datetime] | None = None
     # runner(argv, cwd, timeout) -> (returncode|None, stdout, timed_out).
@@ -968,12 +970,14 @@ def apply_goal_rank(pool: list[dict], *, legacy_key: Callable[[dict], tuple],
                            "cache_only" if judge["cache_hits"] else "skipped_no_material")
 
     hits: list[tuple[int, dict, dict, str]] = []
+    gap_rows: dict[str, list[tuple]] = {}
     for c in live:
         if id(c) not in judged:
             continue  # not_judged
         j, key = judged[id(c)]
         if j["clause"] is None:
             exclude(c, "no_clause", f"どのゴール条項にも当たらない（モデル判定）: {j['why']}")
+            gap_rows.setdefault(c["_real_repo"], []).append((c.get("issue"), j["why"]))
             continue
         hits.append((int(j["clause"][1:]), c, j, key))
 
@@ -993,8 +997,20 @@ def apply_goal_rank(pool: list[dict], *, legacy_key: Callable[[dict], tuple],
         rec = {"repo": b.get("repo"), "issue": b.get("issue"),
                "reason": f"{b['goal_clause']['id']}「{b['goal_clause']['heading']}」: {b['goal_why']}"}
     excluded.sort(key=lambda e: (e["repo"] or "", _issue_sort(e["issue"])))
+    # Proposal only: repos whose no_clause pile reached the threshold. The human
+    # adds a clause via /goal-setup; nothing here changes ranking or exit codes.
+    clause_gap = []
+    for slug in sorted(gap_rows):
+        rows = sorted(gap_rows[slug], key=lambda t: _issue_sort(t[0]))
+        if len(rows) >= config.clause_gap_threshold:
+            clause_gap.append({
+                "repo": slug, "count": len(rows),
+                "samples": [f"{slug}#{n}" for n, _ in rows[:3]],
+                "hints": list(dict.fromkeys(
+                    w if len(w) <= 80 else w[:79] + "…" for _, w in rows))[:3]})
     return {"candidates": emitted, "truncated_count": len(hits) - len(emitted),
-            "recommendation": rec, "excluded_goal": excluded, "goal_rank": gr}
+            "recommendation": rec, "excluded_goal": excluded, "goal_rank": gr,
+            "clause_gap": clause_gap}
 
 
 def _append_spend(state_dir: Path, now: datetime, cost, cap: float, signals: list) -> None:
