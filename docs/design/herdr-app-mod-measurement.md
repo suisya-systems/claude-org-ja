@@ -10,7 +10,7 @@ herdr-app を claude-org-ja の面（画面）に使えるかを判断する材�
 - 確かめ方: `herdr-app check` で検証し、`herdr-app shot` で実際の描画を PNG に撮って見る。
 - 範囲外: 窓口・ワーカーの画面設計、既定 layout の変更、mod を組織の運用に組み込むこと。
 
-mod 本体は [`experiments/herdr-app-mods/org-agents/`](../../experiments/herdr-app-mods/org-agents/main.js) に置く。
+mod 本体は `experiments/herdr-app-mods/org-agents/`（[`experiments/herdr-app-mods/org-agents/main.js`](../../experiments/herdr-app-mods/org-agents/main.js) と `mod.json`）に置く。
 
 ## 2. 判定基準（実測の前に固定）
 
