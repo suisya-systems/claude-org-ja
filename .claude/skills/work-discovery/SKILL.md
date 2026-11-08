@@ -132,7 +132,7 @@ python3 tools/work_discovery_scan.py --trigger manual --all-registry-repos
 
 | exit | status | 窓口の対応 |
 |---|---|---|
-| `0` | `no_candidates` | 候補ゼロ。「いま着手可能な（依存解決済みの）候補はありません」と人間に伝える。次の枠は非空なら Step 3 と同じ形で見せる。goal モードのゴール未設定（`goal_rank.goal_unset_repos[]`）・台帳エラー（`goal_rank.goal_errors[]`）・ゴール除外（`excluded_goal[]`）（ゴール台帳が 1 つも無いうちは、候補ゼロの理由はほぼ「ゴール未設定」であり、それを伝えないと何も出ないのが普通だと誤解される）。`excluded_blocked[]` / `excluded_merged[]` の「除外（依存未解決）: …」「除外（マージ済み）: …」（「何を見た結果ゼロなのか」を人間が監査できるように。設計 §5.2 / §5.1）。`input_truncated.open_issues` / `open_prs` / `base_merges` が `true`（取得上限到達）のときの注記（非網羅な scan を「網羅した結果ゼロ」と誤読させないため）。**ここで停止**。 |
+| `0` | `no_candidates` | 候補ゼロ。「いま着手可能な（依存解決済みの）候補はありません」と人間に伝える。次の枠は非空なら Step 3 と同じ形で見せる。goal モードのゴール未設定（`goal_rank.goal_unset_repos[]`）・台帳エラー（`goal_rank.goal_errors[]`）・条項追加の候補（`clause_gap[]`）・ゴール除外（`excluded_goal[]`）（ゴール台帳が 1 つも無いうちは、候補ゼロの理由はほぼ「ゴール未設定」であり、それを伝えないと何も出ないのが普通だと誤解される）。`excluded_blocked[]` / `excluded_merged[]` の「除外（依存未解決）: …」「除外（マージ済み）: …」（「何を見た結果ゼロなのか」を人間が監査できるように。設計 §5.2 / §5.1）。`input_truncated.open_issues` / `open_prs` / `base_merges` が `true`（取得上限到達）のときの注記（非網羅な scan を「網羅した結果ゼロ」と誤読させないため）。**ここで停止**。 |
 | `10` | `candidates_found` | Step 3 で §5.2 形式にレンダリングして提示。 |
 | `2` | `error` | JSON の `error` フィールドの内容をそのまま人間へ伝え、「triage を実行できませんでした」と報告。**`goal_rank.judge.status` が `failed` / `cooldown` / `budget_exhausted` なら判定段の失敗として状態と理由を伝える**（fail-closed: 判定できないときは推奨を出さない。旧ランクで代わりに出さない。`cooldown` は同じ失敗を 1 時間繰り返さないための待機、`budget_exhausted` は 1 日の費用上限到達）。候補を捏造しない。**候補ゼロと言い換えない**（失敗を silent skip にすると「候補が出ないのが普通」と受け取られ、次タスク提案の仕組みが事実上死ぬ）。repo セット解決の失敗もここに来るので、`repo_resolution.signals` / `skipped` があれば理由（registry 行が無い / `triage_home` off / パスが GitHub URL でない等）も併せて伝える。**ここで停止**。 |
 
@@ -169,6 +169,7 @@ JSON を SoT として、設計 §5.2 / §12 の人間可読フォーマット�
 
 ゴール未設定: aainc/bar（候補 5 件が対象外。/goal-setup bar で registry/goals/aainc/bar.md を書くと候補が出ます）
 ゴール台帳エラー: aainc/baz（G2 に unmet if がない。/goal-setup baz で直せます）
+条項追加の候補: aainc/foo（7 件が条項に当たらない。例: #60, #61, #64）→ /goal-setup foo
 除外（条項に当たらない）: aainc/foo#60, #61
 除外（見送り中）: aainc/foo#33
 除外（判定上限超過・未判定）: aainc/foo#70
@@ -188,6 +189,7 @@ goal モードのレンダリング規則（legacy と共通の規則は下の l
 - **ゴール未設定**（`goal_rank.goal_unset_repos[]`）は repo ごとに 1 行、`candidate_count` と台帳のパス（`registry/goals/<owner>/<repo>.md`）を添え、`/goal-setup <通称>` で書けることを案内する。
 - **ゴール台帳エラー**（`goal_rank.goal_errors[]`）は repo と `error` をそのまま出し、`/goal-setup <通称>` で直せることを添える（`repo` が `null` なら「repo 名不明の scan。`--all-registry-repos` か `--repo` で起動し直す」）。
 - **`excluded_goal[]` は reason ごとに別行**: `no_clause`（条項に当たらない）/ `put_aside`（見送り中）/ `not_judged`（判定上限超過で未判定）。空なら行を省く。
+- **条項追加の候補**（`clause_gap[]`）は repo ごとに 1 行、`条項追加の候補: <repo>（<count> 件が条項に当たらない。例: <samples の Issue 番号>）→ /goal-setup <通称>`。`samples` は `owner/repo#N` 表記で、候補行と同じ repo 表記に揃えて `#N` に縮めてよい。`hints[]`（判定段の理由）は人間が聞き返したときに添える。空なら行を省く。**提案のみ**: 条項の追加は人間が `/goal-setup` で行い、窓口は台帳を書かない。位置はゴール台帳エラーの行の後、`excluded_goal[]` の除外行の前。
 - `goal_rank.signals[]` が非空なら「scan 対象の解決メモ:」に添える。`goal_rank.judge.cost_usd` が数値なら末尾に「判定費用: $<cost>（キャッシュ <cache_hits> 件）」を 1 行添える。
 
 **legacy モード（`rank_mode == "legacy"`）の形**（人間が legacy を指示したときだけ）:

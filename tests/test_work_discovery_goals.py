@@ -841,6 +841,51 @@ class TestRanking(Base):
         self.assertEqual(r["excluded_goal"][0]["reason"], "no_clause")
         self.assertIn("because", r["excluded_goal"][0]["note"])
 
+    def test_clause_gap_at_threshold(self):
+        self.write_ledger("a/b")
+        pool = [_cand("a/b", n) for n in range(1, 6)] + [_cand("a/b", 9)]
+        r = self.rank(pool, FakeRunner(decide=lambda k: "G1" if k == "a/b#9" else None),
+                      clause_gap_threshold=5)
+        self.assertEqual([c["issue"] for c in r["candidates"]], [9])
+        self.assertEqual(len(r["clause_gap"]), 1)
+        g = r["clause_gap"][0]
+        self.assertEqual((g["repo"], g["count"]), ("a/b", 5))
+        self.assertEqual(g["samples"], ["a/b#1", "a/b#2", "a/b#3"])
+        self.assertEqual(g["hints"], ["because"])
+
+    def test_clause_gap_below_threshold_is_empty(self):
+        self.write_ledger("a/b")
+        r = self.rank([_cand("a/b", n) for n in range(1, 5)],
+                      FakeRunner(decide=lambda k: None), clause_gap_threshold=5)
+        self.assertEqual(r["clause_gap"], [])
+        self.assertEqual(len(r["excluded_goal"]), 4)
+
+    def test_clause_gap_default_threshold_is_five(self):
+        self.write_ledger("a/b")
+        r = self.rank([_cand("a/b", n) for n in range(1, 5)], FakeRunner(decide=lambda k: None))
+        self.assertEqual(r["clause_gap"], [])
+        r = self.rank([_cand("a/b", n) for n in range(1, 6)], FakeRunner(decide=lambda k: None))
+        self.assertEqual(r["clause_gap"][0]["count"], 5)
+
+    def test_clause_gap_caps_hints_and_keeps_real_slug(self):
+        self.write_ledger("a/b")
+        whys = {f"a/b#{n}": f"why{n}" for n in range(1, 8)}
+
+        class R(FakeRunner):
+            def __call__(self, argv, cwd, timeout):
+                mat = _material_from_argv(argv)
+                js = [_j(c["key"], None, why=whys[c["key"]]) for c in mat["candidates"]]
+                return 0, _envelope(js), False
+
+        # display_repo=None collapses the shown repo; clause_gap still names the slug
+        r = self.rank([_cand("a/b", n) for n in range(1, 8)], R(),
+                      display=lambda s: None, clause_gap_threshold=5)
+        g = r["clause_gap"][0]
+        self.assertEqual((g["repo"], g["count"]), ("a/b", 7))
+        self.assertEqual(len(g["samples"]), 3)
+        self.assertEqual(len(g["hints"]), 3)
+        self.assertTrue(all(s.startswith("a/b#") for s in g["samples"]))
+
     def test_two_repos_ranked_by_clause_then_legacy(self):
         self.write_ledger("a/x")
         self.write_ledger("b/y")
