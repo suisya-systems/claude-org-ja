@@ -539,10 +539,12 @@ def extract_blocking_refs(text: str | None, *, is_epic: bool) -> list[int]:
 
 def unparsed_dependency_line(text: str | None) -> str | None:
     """First line (<=120 chars) with a non-negated dependency keyword whose
-    same-line leading run holds no ref, else ``None``.
+    same-line leading run holds no ref *and* whose next non-empty line starts
+    with a ref, else ``None``.
 
     An outside check only: it flags wording the same-line convention (§11-3)
     cannot read (e.g. the `#N` sits on the line below a `Depends on` heading).
+    Prose that merely contains "depends on" is not flagged.
     It never changes what counts as a blocker.
     """
     for m in _BLOCK_KEYWORD_RE.finditer(text or ""):
@@ -552,7 +554,12 @@ def unparsed_dependency_line(text: str | None) -> str | None:
             line_end = len(text)
         if _BLOCK_NEG_RE.search(text[line_start : m.start()]):
             continue
-        if not _QUALIFIED_LEADING_RUN_RE.match(text[m.end() : line_end]):
+        if _QUALIFIED_LEADING_RUN_RE.match(text[m.end() : line_end]):
+            continue
+        # Prose like "X depends on the window size." is not a dependency
+        # statement; only flag when the next non-empty line opens with a ref.
+        nxt = next((ln for ln in text[line_end:].splitlines() if ln.strip()), "")
+        if _QUALIFIED_LEADING_RUN_RE.match(nxt.lstrip()):
             return text[line_start:line_end].strip()[:120]
     return None
 
