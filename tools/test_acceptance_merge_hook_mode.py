@@ -34,7 +34,7 @@ class ModeTest(unittest.TestCase):
         self._env.stop()
         self._tmp.cleanup()
 
-    def decide(self, mode: str | None, verdict: str) -> str:
+    def decide(self, mode: str | None, verdict: str, diff: str = "tools/x.py\n") -> str:
         config = self.root / "registry" / "org-config.md"
         config.unlink(missing_ok=True)
         if mode is not None:
@@ -51,6 +51,8 @@ class ModeTest(unittest.TestCase):
                 return subprocess.CompletedProcess(cmd, 0, "", "")
             if cmd[:2] == ["git", "rev-parse"]:
                 return subprocess.CompletedProcess(cmd, 0, SHA + "\n", "")
+            if cmd[:2] == ["git", "diff"]:
+                return subprocess.CompletedProcess(cmd, 0, diff, "")
             return subprocess.CompletedProcess(cmd, rc, f"reason\nACCEPTANCE_GATE: {verdict}\n", "")
 
         with mock.patch.object(hook, "run", side_effect=fake_run):
@@ -63,6 +65,21 @@ class ModeTest(unittest.TestCase):
         self.assertIn("no-manifest", msg)
         self.assertIn("GitHub", msg)
         self.assertIn("human", msg)
+
+    def outcome(self, mode: str, verdict: str, diff: str) -> str:
+        try:
+            return self.decide(mode, verdict, diff)
+        except hook.Deny as exc:
+            return f"DENY: {exc}"
+
+    def test_acceptance_allows_docs_only_no_manifest(self):
+        self.assertEqual(self.outcome("acceptance", "no-manifest", "README.md\ndocs/a/b.txt\n"), "ALLOW")
+
+    def test_acceptance_denies_mixed_diff_no_manifest(self):
+        self.assertIn("no-manifest", self.outcome("acceptance", "no-manifest", "README.md\ntools/x.py\n"))
+
+    def test_acceptance_denies_empty_diff_no_manifest(self):
+        self.assertIn("no-manifest", self.outcome("acceptance", "no-manifest", ""))
 
     def test_human_allows_no_manifest(self):
         self.assertEqual(self.decide("human", "no-manifest"), "ALLOW")

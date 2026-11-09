@@ -51,7 +51,12 @@ in the GitHub web UI:
 - passed: allowed.
 - no-manifest: allowed when the merge approval mode (``tools/merge_approval_mode.py``,
   read from the project's ``registry/org-config.md``) is ``human`` (recorded by the
-  gate, not enforced); denied when it is ``acceptance`` (Issue #1236).
+  gate, not enforced). When it is ``acceptance`` it is denied (Issue #1236),
+  unless the PR is docs-only: ``git diff --no-renames --name-only base...head``
+  on the fetched refs lists at least one path and every path is a Markdown file
+  (``*.md``) or under ``docs/`` (``docs_only``). An empty diff, a failed diff,
+  any other path (a rename counts its source) or a name git quotes (non-ASCII
+  and other unusual characters) stays denied.
 - rejected, or any gh / git / state DB failure or timeout: denied.
 
 Every subprocess shares one deadline below the hook's timeout in settings
@@ -196,6 +201,11 @@ def run(cmd: list[str], cwd: Path, deadline: float, limit: float) -> subprocess.
     return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
 
 
+def docs_only(path: str) -> bool:
+    """A path the owner pre-approved to go in without an acceptance test."""
+    return path.endswith(".md") or path.startswith("docs/")
+
+
 def decide(command: str, project: Path) -> str:
     args = parse(command)
     if args is None:
@@ -238,6 +248,13 @@ def decide(command: str, project: Path) -> str:
     if verdict == "rejected":
         raise Deny(f"ACCEPTANCE_GATE rejected {slug}#{pr['number']}: {reason}")
     if verdict == "no-manifest" and read_mode(project)[0] == "acceptance":
+        # --no-renames: a rename lists its source too, so code moved into docs/ is not docs-only.
+        # ponytail: git quotes unusual names ("docs/\346..."), which fail docs_only -> denied
+        diff = run(["git", "diff", "--no-renames", "--name-only", f"{ref}/base...{ref}/head"],
+                   project, deadline, 30)
+        paths = diff.stdout.splitlines()
+        if diff.returncode == 0 and paths and all(map(docs_only, paths)):
+            return "ALLOW"
         raise Deny(f"ACCEPTANCE_GATE no-manifest for {slug}#{pr['number']} under merge_approval_mode"
                    " acceptance: a PR without a declared acceptance test needs a human. Have a human"
                    " decide and merge it in the GitHub web UI, or set merge_approval_mode to human"
