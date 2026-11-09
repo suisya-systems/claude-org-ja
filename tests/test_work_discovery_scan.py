@@ -3598,8 +3598,28 @@ class TestDependencyWarnings(unittest.TestCase):
         self.assertEqual(self._warnings("not blocked by the old flow"), [])
 
     def test_line_is_truncated_to_120_chars(self):
-        w = self._warnings("Requires " + "x" * 300)
+        w = self._warnings("Requires " + "x" * 300 + "\n#12")
         self.assertEqual(len(w[0]["line"]), 120)
+
+    def test_prose_depends_on_does_not_warn(self):
+        self.assertEqual(
+            self._warnings(
+                "The row budget depends on the window size.\nSee the notes."
+            ),
+            [],
+        )
+        # keyword line is last in the text: no next line, no warning
+        self.assertEqual(self._warnings("Requires a restart"), [])
+
+    def test_heading_form_warns(self):
+        w = self._warnings("## Depends on\n\n#12\n")
+        self.assertEqual(len(w), 1)
+        self.assertEqual(w[0]["line"], "## Depends on")
+
+    def test_cross_repo_ref_on_next_line_warns(self):
+        w = self._warnings("This depends on\nowner/repo#9 landing first")
+        self.assertEqual(len(w), 1)
+        self.assertEqual(w[0]["line"], "This depends on")
 
     def test_does_not_change_candidates(self):
         result = wds.scan(
