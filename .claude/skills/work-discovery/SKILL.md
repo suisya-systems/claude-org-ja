@@ -132,7 +132,7 @@ python3 tools/work_discovery_scan.py --trigger manual --all-registry-repos
 
 | exit | status | 窓口の対応 |
 |---|---|---|
-| `0` | `no_candidates` | 候補ゼロ。「いま着手可能な（依存解決済みの）候補はありません」と人間に伝える。次の枠は非空なら Step 3 と同じ形で見せる。goal モードのゴール未設定（`goal_rank.goal_unset_repos[]`）・台帳エラー（`goal_rank.goal_errors[]`）・条項追加の候補（`clause_gap[]`）・ゴール除外（`excluded_goal[]`）（ゴール台帳が 1 つも無いうちは、候補ゼロの理由はほぼ「ゴール未設定」であり、それを伝えないと何も出ないのが普通だと誤解される）。`excluded_blocked[]` / `excluded_merged[]` の「除外（依存未解決）: …」「除外（マージ済み）: …」（「何を見た結果ゼロなのか」を人間が監査できるように。設計 §5.2 / §5.1）。`input_truncated.open_issues` / `open_prs` / `base_merges` が `true`（取得上限到達）のときの注記（非網羅な scan を「網羅した結果ゼロ」と誤読させないため）。**ここで停止**。 |
+| `0` | `no_candidates` | 候補ゼロ。「いま着手可能な（依存解決済みの）候補はありません」と人間に伝える。次の枠は非空なら Step 3 と同じ形で見せる。goal モードのゴール未設定（`goal_rank.goal_unset_repos[]`）・台帳エラー（`goal_rank.goal_errors[]`）・条項追加の候補（`clause_gap[]`）・ゴール除外（`excluded_goal[]`）（ゴール台帳が 1 つも無いうちは、候補ゼロの理由はほぼ「ゴール未設定」であり、それを伝えないと何も出ないのが普通だと誤解される）。`dependency_warnings[]` の「依存の記述が解釈できない: …」・`excluded_blocked[]` / `excluded_merged[]` の「除外（依存未解決）: …」「除外（マージ済み）: …」（「何を見た結果ゼロなのか」を人間が監査できるように。設計 §5.2 / §5.1）。`input_truncated.open_issues` / `open_prs` / `base_merges` が `true`（取得上限到達）のときの注記（非網羅な scan を「網羅した結果ゼロ」と誤読させないため）。**ここで停止**。 |
 | `10` | `candidates_found` | Step 3 で §5.2 形式にレンダリングして提示。 |
 | `2` | `error` | JSON の `error` フィールドの内容をそのまま人間へ伝え、「triage を実行できませんでした」と報告。**`goal_rank.judge.status` が `failed` / `cooldown` / `budget_exhausted` なら判定段の失敗として状態と理由を伝える**（fail-closed: 判定できないときは推奨を出さない。旧ランクで代わりに出さない。`cooldown` は同じ失敗を 1 時間繰り返さないための待機、`budget_exhausted` は 1 日の費用上限到達）。候補を捏造しない。**候補ゼロと言い換えない**（失敗を silent skip にすると「候補が出ないのが普通」と受け取られ、次タスク提案の仕組みが事実上死ぬ）。repo セット解決の失敗もここに来るので、`repo_resolution.signals` / `skipped` があれば理由（registry 行が無い / `triage_home` off / パスが GitHub URL でない等）も併せて伝える。**ここで停止**。 |
 
@@ -222,6 +222,7 @@ goal モードのレンダリング規則（legacy と共通の規則は下の l
 - **サイレント truncation をしない**: `truncated_count` が 1 以上なら
   「（他に依存解決済みだが順位外の候補が <truncated_count> 件あります）」の 1 行を添える。
   `input_truncated` の `open_issues` / `open_prs` が `true`（取得上限到達）なら「Issue/PR の取得が上限到達のため候補が網羅的でない可能性があります」も添える。`base_merges` が `true` なら「base ブランチのマージ履歴が上限到達のため、完了済み Issue を取りこぼしている可能性があります」を添える。
+- **解釈できない依存を警告として添える**: `dependency_warnings[]` を 1 件 1 行「依存の記述が解釈できない: <repo>#N（<line>）」で列挙する（`<repo>#N` の修飾は候補行と同じ規則。`line` は本文の該当行の抜粋）。依存の語があるのに同一行に番号が無く（例: 見出しの下の行に番号を書いた）、依存を拾えないまま「依存解決済み」として扱われている Issue を人間が見つけるための警告で、直すなら番号を同じ行に書く。除外行の後、「scan 対象の解決メモ:」の前に置く。空なら行を省く。
 - **base_branch まわりの読み取り異常を添える**: `base_branch_signals[]` が非空なら（registry 不在で完了判定をスキップした / 別ブランチ宛 PR が混じっていた / closing link を無視した等）、「scan 対象の解決メモ:」の並びに 1〜数行で添える。**「除外対象ゼロ」と「そもそも見ていない」を人間が区別できるようにするため**、空でない限り省略しない。
 - **resolver の skip / opt-out / signal を監査のため添える（cross-repo）**: scan 出力の `repo_resolution` の `skipped[]`（scan 対象なのに `パス` が GitHub URL でなく owner/repo を導けず scan 対象から外れた行）や `signals[]`（`triage_home` 由来の org-config 不在 / 不正値、home repo 解決が fallback / 失敗した等）が非空なら、候補提示の末尾に「scan 対象の解決メモ:」として 1〜数行で添える（例「登録行『<通称>』はパスが GitHub URL でないため scan 対象外（skip）」）。**`opted_out[]` が非空なら「opt-out 中の repo」も 1 行添える**（例「opt-out 中: aainc/token-tracking（明示 no）」）。どの repo を意図的に見ていないか・どの repo を見た結果の候補なのかを人間が監査できるようにするため。空なら省略。
 - **毎回必ず**「提案のみ / 着手はあなたの判断です」を出す（INV-1 の運用上の現れ）と、末尾に「番号で指定 → 着手判断後に /org-delegate」を出す。
