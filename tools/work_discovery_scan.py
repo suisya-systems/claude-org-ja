@@ -537,6 +537,26 @@ def extract_blocking_refs(text: str | None, *, is_epic: bool) -> list[int]:
     return sorted(refs)
 
 
+def unparsed_dependency_line(text: str | None) -> str | None:
+    """First line (<=120 chars) with a non-negated dependency keyword whose
+    same-line leading run holds no ref, else ``None``.
+
+    An outside check only: it flags wording the same-line convention (§11-3)
+    cannot read (e.g. the `#N` sits on the line below a `Depends on` heading).
+    It never changes what counts as a blocker.
+    """
+    for m in _BLOCK_KEYWORD_RE.finditer(text or ""):
+        line_start = text.rfind("\n", 0, m.start()) + 1
+        line_end = text.find("\n", m.end())
+        if line_end == -1:
+            line_end = len(text)
+        if _BLOCK_NEG_RE.search(text[line_start : m.start()]):
+            continue
+        if not _QUALIFIED_LEADING_RUN_RE.match(text[m.end() : line_end]):
+            return text[line_start:line_end].strip()[:120]
+    return None
+
+
 def extract_cross_repo_blocking_refs(
     text: str | None, *, is_epic: bool
 ) -> list[tuple[str, int]]:
@@ -1653,6 +1673,7 @@ def scan_repos(
     candidates: list[dict] = []
     excluded_blocked: list[dict] = []
     excluded_merged: list[dict] = []
+    dependency_warnings: list[dict] = []
     # Identity is (repo, number); de-dup so a repo appearing twice (a duplicate
     # bundle in `--from-file`'s `repos[]`, or the same Issue listed twice) never
     # double-counts a candidate / excluded entry (which would corrupt
@@ -1691,6 +1712,19 @@ def scan_repos(
                         }
                     )
                     continue
+            unparsed = unparsed_dependency_line(dependency_text(issue))
+            if unparsed is not None:
+                dependency_warnings.append(
+                    {
+                        "repo": (
+                            None
+                            if _is_home_disp(repo, collapse_repo)
+                            else repo
+                        ),
+                        "issue": number,
+                        "line": unparsed,
+                    }
+                )
             status, open_blocking, _all = _classify_dependency_q(
                 issue, repo, open_refs_q
             )
@@ -1798,6 +1832,8 @@ def scan_repos(
         "candidates": top,
         "recommendation": recommendation,
         "excluded_blocked": excluded_blocked,
+        # Always present: Issues with dependency wording that yielded no ref.
+        "dependency_warnings": dependency_warnings,
         # Issue #830. Always present (``[]`` when nothing was excluded this
         # way, and on every repo without a configured `base_branch`) so the
         # delivery layer reads one shape. Each entry names the merged PR and
@@ -2539,6 +2575,7 @@ def _error_payload(
         "candidates": [],
         "recommendation": None,
         "excluded_blocked": [],
+        "dependency_warnings": [],
         "excluded_merged": [],
         "base_branch_scan": [],
         "base_branch_signals": [],

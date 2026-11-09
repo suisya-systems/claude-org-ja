@@ -3572,3 +3572,38 @@ class TestGoalModeCli(unittest.TestCase):
         self.assertIsNone(out["goal_rank"])
         self.assertEqual(self._calls(), [])
         self.assertFalse(self.state.exists())
+
+
+# ----------------------------------------------------------------------
+# dependency_warnings[]: dependency wording that yielded no ref
+# ----------------------------------------------------------------------
+
+
+class TestDependencyWarnings(unittest.TestCase):
+    def _warnings(self, body):
+        result = wds.scan([_issue(7, body=body)], set(), [], wds.ScanConfig())
+        return result["dependency_warnings"]
+
+    def test_ref_on_next_line_warns_once(self):
+        w = self._warnings("## Depends on\nDepends on\n#12\nmore text")
+        self.assertEqual(len(w), 1)
+        self.assertEqual(w[0]["issue"], 7)
+        self.assertIn("Depends on", w[0]["line"])
+
+    def test_same_line_ref_does_not_warn(self):
+        self.assertEqual(self._warnings("Depends on #12"), [])
+
+    def test_negated_form_does_not_warn(self):
+        self.assertEqual(self._warnings("not blocked by #5"), [])
+        self.assertEqual(self._warnings("not blocked by the old flow"), [])
+
+    def test_line_is_truncated_to_120_chars(self):
+        w = self._warnings("Requires " + "x" * 300)
+        self.assertEqual(len(w[0]["line"]), 120)
+
+    def test_does_not_change_candidates(self):
+        result = wds.scan(
+            [_issue(7, body="Depends on\n#12")], set(), [], wds.ScanConfig()
+        )
+        self.assertEqual(result["candidate_count"], 1)
+        self.assertEqual(result["excluded_blocked"], [])
