@@ -222,7 +222,7 @@ goal モードのレンダリング規則（legacy と共通の規則は下の l
 - **サイレント truncation をしない**: `truncated_count` が 1 以上なら
   「（他に依存解決済みだが順位外の候補が <truncated_count> 件あります）」の 1 行を添える。
   `input_truncated` の `open_issues` / `open_prs` が `true`（取得上限到達）なら「Issue/PR の取得が上限到達のため候補が網羅的でない可能性があります」も添える。`base_merges` が `true` なら「base ブランチのマージ履歴が上限到達のため、完了済み Issue を取りこぼしている可能性があります」を添える。
-- **解釈できない依存を警告として添える**: `dependency_warnings[]` を 1 件 1 行「依存の記述が解釈できない: <repo>#N（<line>）」で列挙する（`<repo>#N` の修飾は候補行と同じ規則。`line` は本文の該当行の抜粋）。依存の語があるのに同一行に番号が無く（例: 見出しの下の行に番号を書いた）、依存を拾えないまま「依存解決済み」として扱われている Issue を人間が見つけるための警告で、直すなら番号を同じ行に書く。除外行の後、「scan 対象の解決メモ:」の前に置く。空なら行を省く。
+- **解釈できない依存を警告として添える**: `dependency_warnings[]` を 1 件 1 行「依存の記述が解釈できない: <repo>#N（<line>）」で列挙する（`<repo>#N` の修飾は候補行と同じ規則。`line` は本文の該当行の抜粋）。依存の語があるのに同一行に番号が無く、かつ次の空でない行が番号（`#N` / `owner/repo#N` / URL）で始まる（例: 見出しの下の行に番号を書いた。地の文の「depends on」だけでは出ない）、依存を拾えないまま「依存解決済み」として扱われている Issue を人間が見つけるための警告で、直すなら番号を同じ行に書く。除外行の後、「scan 対象の解決メモ:」の前に置く。空なら行を省く。
 - **base_branch まわりの読み取り異常を添える**: `base_branch_signals[]` が非空なら（registry 不在で完了判定をスキップした / 別ブランチ宛 PR が混じっていた / closing link を無視した等）、「scan 対象の解決メモ:」の並びに 1〜数行で添える。**「除外対象ゼロ」と「そもそも見ていない」を人間が区別できるようにするため**、空でない限り省略しない。
 - **resolver の skip / opt-out / signal を監査のため添える（cross-repo）**: scan 出力の `repo_resolution` の `skipped[]`（scan 対象なのに `パス` が GitHub URL でなく owner/repo を導けず scan 対象から外れた行）や `signals[]`（`triage_home` 由来の org-config 不在 / 不正値、home repo 解決が fallback / 失敗した等）が非空なら、候補提示の末尾に「scan 対象の解決メモ:」として 1〜数行で添える（例「登録行『<通称>』はパスが GitHub URL でないため scan 対象外（skip）」）。**`opted_out[]` が非空なら「opt-out 中の repo」も 1 行添える**（例「opt-out 中: aainc/token-tracking（明示 no）」）。どの repo を意図的に見ていないか・どの repo を見た結果の候補なのかを人間が監査できるようにするため。空なら省略。
 - **毎回必ず**「提案のみ / 着手はあなたの判断です」を出す（INV-1 の運用上の現れ）と、末尾に「番号で指定 → 着手判断後に /org-delegate」を出す。
