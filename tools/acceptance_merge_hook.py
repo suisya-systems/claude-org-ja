@@ -52,10 +52,11 @@ in the GitHub web UI:
 - no-manifest: allowed when the merge approval mode (``tools/merge_approval_mode.py``,
   read from the project's ``registry/org-config.md``) is ``human`` (recorded by the
   gate, not enforced). When it is ``acceptance`` it is denied (Issue #1236),
-  unless the PR is docs-only: ``git diff --name-only base...head`` on the
-  fetched refs lists at least one path and every path is a Markdown file
-  (``*.md``) or under ``docs/`` (``docs_only``). An empty diff, a failed diff
-  or any other path stays denied.
+  unless the PR is docs-only: ``git diff --no-renames --name-only base...head``
+  on the fetched refs lists at least one path and every path is a Markdown file
+  (``*.md``) or under ``docs/`` (``docs_only``). An empty diff, a failed diff,
+  any other path (a rename counts its source) or a name git quotes (non-ASCII
+  and other unusual characters) stays denied.
 - rejected, or any gh / git / state DB failure or timeout: denied.
 
 Every subprocess shares one deadline below the hook's timeout in settings
@@ -247,8 +248,11 @@ def decide(command: str, project: Path) -> str:
     if verdict == "rejected":
         raise Deny(f"ACCEPTANCE_GATE rejected {slug}#{pr['number']}: {reason}")
     if verdict == "no-manifest" and read_mode(project)[0] == "acceptance":
-        diff = run(["git", "diff", "--name-only", f"{ref}/base...{ref}/head"], project, deadline, 30)
-        paths = diff.stdout.split()
+        # --no-renames: a rename lists its source too, so code moved into docs/ is not docs-only.
+        # ponytail: git quotes unusual names ("docs/\346..."), which fail docs_only -> denied
+        diff = run(["git", "diff", "--no-renames", "--name-only", f"{ref}/base...{ref}/head"],
+                   project, deadline, 30)
+        paths = diff.stdout.splitlines()
         if diff.returncode == 0 and paths and all(map(docs_only, paths)):
             return "ALLOW"
         raise Deny(f"ACCEPTANCE_GATE no-manifest for {slug}#{pr['number']} under merge_approval_mode"
