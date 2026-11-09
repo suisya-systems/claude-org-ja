@@ -103,7 +103,7 @@ allowed-tools:
   方式の設定は [`registry/org-config.md`](../../../registry/org-config.md) の「Merge Approval」節（設定値は `acceptance`。キーが無い・不正なときは安全側の `human`）。どちらの方式でも、マージの手前で受け入れテストのゲート（[`.hooks/gate-acceptance-before-merge.sh`](../../../.hooks/gate-acceptance-before-merge.sh)）が動く。方式が変えるのは、窓口が人に仰いで止まるかどうかだけ。**軽量レーン（subagent 直処理）の PR は方式に関わらず `human`** として扱う（[`/org-delegate`](../org-delegate/SKILL.md) の軽量レーン節が人間ゲートを維持するため）。
   - **`human`**: 下の awaiting_user を emit し、人間向け理解サマリを再掲してマージの判断を仰ぐ。ユーザーの明示承認を受けてから、下記「マージのコマンド」でマージする。bare「OK」を、PR 作成の承認とマージの承認に兼用しない
   - **`acceptance`**: 次の **止める線** を確かめ、1 つも当たらなければ人に仰がずに「マージのコマンド」でマージし、マージ後に結果（PR・宣言テスト・ゲートの判定）をユーザーへ事後報告する。1 つでも当たれば `human` と同じく awaiting_user を emit し、当たった線を添えて判断を仰ぐ。ゲート通過はスコープ承認の代わりにならない
-    1. **受け入れテストの宣言が無い**: 窓口がコミット本文を読んで判断しない。宣言の有無はゲートの判定（`no-manifest`）で決まり、`acceptance` 方式ではフックがマージを拒否する（7 に当たる）。宣言の無い PR は、人が判断して GitHub の画面でマージするか、方式を `human` にする
+    1. **受け入れテストの宣言が無い**: 窓口がコミット本文を読んで判断しない。宣言の有無はゲートの判定（`no-manifest`）で決まり、`acceptance` 方式ではフックがマージを拒否する（7 に当たる）。宣言の無い PR は、人が判断して GitHub の画面でマージするか、方式を `human` にする。例外として、変更したファイルが全部 Markdown（`*.md`）か `docs/` 配下の PR（docs-only）は宣言が無くてもフックが通す（オーナーが事前に承認済み。判定は [`tools/acceptance_merge_hook.py`](../../../tools/acceptance_merge_hook.py) の `docs_only`）。変更が空の PR と、他のファイルを 1 つでも含む PR は従来どおり拒否される
     2. **head が CI で確かめたものと違う**: `gh pr view <PR> --repo <OWNER/REPO> --json headRefOid` の `headRefOid` が `CI_COMPLETED` の head と一致しない（CI 確認後に push があった。CI を待ち直す）
     3. **判断境界**: 未解決の worker escalation / pending decision がある、または承認したスコープ（そのタスクの brief、`/org-conveyor` ならスコープ契約）の外の変更を含む
     4. **元に戻せない変更**: 通常のマージを超える不可逆な操作（リリース・タグ・パッケージ公開、データ移行・削除、外部への公開、force push 等）を含む・伴う
