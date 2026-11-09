@@ -188,7 +188,7 @@ broker の書き込み領域は **`.state/broker/` 専用 subtree に限定**し
 
 | 段階 | 現行（renga、実装済み） | 提案（broker、未実装） |
 |---|---|---|
-| 1. spawn | `spawn_claude_pane(...)` — renga が `--dangerously-load-development-channels server:renga-peers` を合成 | dispatcher が broker の `spawn_agent(...)` を呼ぶ → broker が token を発行し、adapter 経由で pane を spawn。Claude 起動 args に `--mcp-config <broker接続設定>`（+ 必要なら `--strict-mcp-config`）を合成する計画 |
+| 1. spawn | `spawn_claude_pane(...)` — renga が `--dangerously-load-development-channels server:renga-peers` を合成 | dispatcher が broker の `spawn_agent(...)` を呼ぶ → broker が token を発行し、adapter 経由で pane を spawn。Claude 起動 args に `--mcp-config <broker接続設定>`を合成する計画（renga-peers の 14 ツールは `--disallowedTools` で止める。`--strict-mcp-config` は注入しない。runtime #273） |
 | 2. 起動確認 | `poll_events` で `pane_started` を最大 3 秒待つ | 同等（broker の `poll_events` が adapter のイベントを正規化して返す） |
 | 3. チャネル承認 | `send_keys(enter=true)` で「Load development channel?」プロンプトを承認 | **dev-channel prompt は存在しない**（dev-channel flag を使わないため）。`--mcp-config` 注入されたサーバーに対する Claude Code 側の信頼確認プロンプトの有無と機械承認可否は **AC-2（[§7.1](#71-phase-1-スパイク全ペイン-renga-free-起動の実証)）で実測し GO 済**（フォーク）。プロンプトが出る場合は現行同様 `send_keys(enter=true)` で機械承認できることを確認した |
 | 4. 登録待ち | `list_peers` に worker が現れるまで 2 秒間隔リトライ（最大 30 秒） | **正規経路は現行と同型を維持**: worker 側 Claude の MCP クライアントが broker に接続（initialize handshake）した時点で broker が bind 表を「登録済み」に遷移させ、dispatcher は broker の `list_peers`（bind 表ベース）に worker が現れるまで現行 3-4 と同じ poll で待つ計画。補助として broker が `agent_ready` イベントを emit し、`poll_events` 派で待つ latency 改善経路も提供する（optional。正規の待ち方は `list_peers` poll であり、`agent_ready` に依存しない） |
