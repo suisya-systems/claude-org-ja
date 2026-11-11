@@ -33,8 +33,8 @@ Outcome contract:
   interpreter was measured" -- the misread this line exists to prevent.
 * The process exit code distinguishes the outcomes:
 
-    0  EXIT_OK             installed is the pin-window latest (or a
-                           newer preview build); PyPI was reached.
+    0  EXIT_OK             installed is the pin-window latest; PyPI
+                           was reached.
     1  EXIT_DRIFT          installed != latest-in-window; stdout has
                            the ``[runtime drift]`` line.
     2  EXIT_UNVERIFIED     drift could not be verified -- either the
@@ -53,6 +53,20 @@ The script still never auto-upgrades. No version is hard-coded:
 installed comes from ``importlib.metadata``, latest from the PyPI JSON
 API, and the pin spec from a regex over ``pyproject.toml`` at read
 time.
+
+Design notes:
+
+* The PyPI JSON API is used instead of ``pip index versions``, which is
+  experimental and writes a warning to stderr.
+* Only releases inside the ``pyproject.toml`` pin window count as
+  latest, so a newer major / minor outside the window never prompts an
+  out-of-window upgrade. The upgrade command in the drift line embeds
+  that pin spec verbatim, so pasting it stays inside the window.
+* Yanked releases and prereleases are excluded from the candidates,
+  matching what pip would pick by default.
+* Both "installed is older" and "installed is a newer preview than the
+  latest release" are reported as drift (exit 1); the operator decides
+  what to do.
 
 Used by ``.claude/skills/org-start/SKILL.md`` Block C2, which runs this
 outside the sandbox (``dangerouslyDisableSandbox: true``) so exit 2 is

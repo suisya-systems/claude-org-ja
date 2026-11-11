@@ -118,6 +118,12 @@ python tools/generate_worker_settings.py \
 * [x] `tools/check_role_configs.py` が `--include-worker-settings` でワーカー `settings.local.json` を schema 検証（Phase 1）。ただし現状は `<BASE_DIR>/*/.claude/...` のみで、Pattern B worktree 配下は Phase 3 で追加予定
 * [x] README / 内部ドキュメントに 7 メリット / 7 デメリットを明示（本ドキュメント）
 
+## 補足: `/org-setup` の sandbox・settings 生成の理由
+
+* **ディレクトリ単位の denyWrite は配らない**: `~/.ssh` などをディレクトリごと denyWrite にすると、`ssh-keygen` / `aws configure` などの正規の書き込みを巻き込む。副作用が大きいうえ、それで防ぐ明確な脅威モデルも無い。
+* **ユーザー共通の sandbox 補強を個人 settings（Layer 3）に書く理由**: Claude Code は `permissions.deny` の `Read(...)` を `sandbox.filesystem.denyRead` に、`Edit(...)` を `sandbox.filesystem.denyWrite` に merge する（[公式 docs](https://code.claude.com/docs/en/settings)）。Layer 2 と Layer 3 のどちらに書いても effective set は同じなので、symlink-escape 環境での bwrap bootstrap 失敗も両方で起きる。そこで Layer 3 側で realpath ベースに前さばきし、symlink-escape するパスを skip する。共有 `.claude/settings.json` に `Edit(...)` deny として書くと、リポジトリを pull する全員の home に適用されて個人ごとに外せない。個人 settings なら各自が撤回でき、「個人の `~/.claude/settings.json` を守る」という意図と置き場所も一致する。
+* **ワーカー設定への Edit deny の限界**: 窓口の settings にある、ワーカーの `settings.local.json` への deny は `Edit` ツールにしか効かない。窓口は `Bash(python3:*)` などを allow しているので、Bash / PowerShell から書き出すことはできる。この deny が塞ぐのは「窓口が手作業で `Edit` を開いて書き換える」という主な誤付与経路で、generator 以外の経路を完全に遮断するもの（Bash 側の遮断を含む generator-only 化）は今後の課題として残っている。
+
 ## 関連
 
 * 直接の引き金: 2026-04-26 `worker-strategic-memo-v5-update` の権限拡張事象（PreToolUse hook がキャッチ）
