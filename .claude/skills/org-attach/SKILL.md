@@ -42,27 +42,14 @@ role + name(task_id) ラベル付きで印字するだけ。コピーした人�
 > [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md)
 > §4.2 の SINGLE-TAB MUST（本スキルはこれを再掲せず参照する）。したがって**その org のタブを表示している
 > 間は** 1 画面で全ペインが見えるが、別のタブを表示している間は org のペインは視界に入らない。そのときは
-> org のタブへ切り替えるか、renga の org サイドバー（全タブ横断でタブとペインを一覧する cross-tab パネル。
-> renga `src/app/org_sidebar.rs:1-3`）から該当ペインを選ぶ。
+> org のタブへ切り替えるか、renga の org サイドバー（全タブ横断でタブとペインを一覧する cross-tab パネル）から該当ペインを選ぶ。
 > **この適用外は transport が renga の場合に限る**: 外側フレームが renga でも `ORG_TRANSPORT` が broker の
 > 構成では detached tmux session が実在するので本スキルは**適用される**（その場合に必要なのは attach 打鍵の
-> `Ctrl+B` 衝突回避で、手順は
-> [`docs/operations/dispatcher-view.md`](../../../docs/operations/dispatcher-view.md)「外側フレームが renga の
-> 場合」）。本スキルは `ORG_TRANSPORT=renga` のときだけ「broker(tmux) 専用ツールです」と明示して停止する
-> （下記 Step 0）。
->
-> （**既定の二フレーム注記（Refs #604）**: org-attach は本質的に broker/tmux ツールなので header を
-> **broker 主軸**で書く。輸送層全体の既定は二つのフレームで指す対象が異なる ― **運用既定**は renga
-> （broker 実走 dogfood が Epic #6 Issue G まで未活性）だが、**コード既定**は `tools/transport.py:
-> DEFAULT_TRANSPORT` が runtime 0.1.28 (Epic #586) で `renga`→`broker` にフリップ済み。broker tool を
-> 使う手保守スキルのうち
-> [`.claude/skills/org-attention-stop/SKILL.md`](../org-attention-stop/SKILL.md) は header を
-> 「コード既定 `broker` / opt-in `renga`」のコード既定フレームで書く ― 本スキルはこの broker 主軸の先例に倣う。
-> （[`.claude/skills/org-attention-start/SKILL.md`](../org-attention-start/SKILL.md) は逆に「運用既定 `renga`」
-> の運用既定フレームで書かれており、両者は指す対象が異なるだけで矛盾しない。）総説は root
+> `Ctrl+B` 衝突回避で、手順は下記 Step 4 末尾）。本スキルは `ORG_TRANSPORT=renga` のときだけ
+> 「broker(tmux) 専用ツールです」と明示して停止する（下記 Step 0）。総説は root
 > [`CLAUDE.md`](../../../CLAUDE.md)「輸送層（transport）両系」節、契約面は
 > [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md)
-> Surface 8。）
+> Surface 8。
 
 > **権限フレーム**: `list_panes` は broker の **ops-tier ツール**（secretary / dispatcher のみ付与、
 > worker には付与されない）。したがって org-attach は **窓口（Secretary）/ ディスパッチャー面のスキル**で、
@@ -90,7 +77,7 @@ renga transport（`ORG_TRANSPORT=renga`）ならこのスキルは適用外な�
   detached tmux session への attach という概念がそのまま適用されません。組織のペインはすべて同じタブに
   置かれるので、その組織のタブを表示している間はそのまま画面で見られます。別のタブを表示中なら、組織の
   タブへ切り替えるか、renga の org サイドバー（全タブ横断でタブとペインを一覧するパネル）から該当ペインを
-  選んでください。ペイン状況の一覧は [`/org-dashboard`](../org-dashboard/SKILL.md) を使ってください。」
+  選んでください。ペイン状況の一覧は `/org-dashboard` を使ってください。」
 - **それ以外（無設定 / `broker`）** → broker(tmux) フレームとして Step 1 へ進む。
 
 ## Step 1: 論理ペイン一覧を取得（broker）
@@ -115,8 +102,6 @@ mcp__org-broker__list_panes
 > として登録されるだけで、**adapter 実ペインを持たず `id` / pane_id が `null`（`%N` 無し）**。よって
 > broker socket の detached session には**出現せず attach 対象外**である（窓口は org を起動した人間の
 > 手元 terminal でそのまま動くので、そもそも attach 不要）。`id` が `%N` のレコードだけが attach 可能。
-> 一次参照: [`docs/operations/broker-dogfood-runbook.md`](../../../docs/operations/broker-dogfood-runbook.md)
-> §8（attach 導線の正準ガイド・「対象範囲（重要）」節）。
 
 `list_panes` が空 / 取得不可なら「組織ペインが見つかりません。`/org-start` 済みか確認してください」と
 報告して停止する。`list_panes` が `[tool_not_authorized]` を返したら ops-tier 権限が無い
@@ -126,7 +111,7 @@ mcp__org-broker__list_panes
 （join には必須ではない）。
 
 > **`list_peers` の直前に
-> [`.claude/skills/org-delegate/references/capability-first-drive-operational-gate.md`](../org-delegate/references/capability-first-drive-operational-gate.md)
+> `/org-delegate` の `references/capability-first-drive-operational-gate.md`
 > を Read し、`monitoring-read-only` の分岐を適用する。** 全タブ列挙では予約名が別 org のペインと
 > 衝突しうるので、素の名前突き合わせは**他 org のペインに自 org のラベルを付けて人間に提示**しうる。
 >
@@ -227,14 +212,13 @@ join できた各ペインについて、role + name(task_id) ラベル付きで
     さらに、**attach する端末が renga の場合はこの打鍵が届かない** — renga の org サイドバーは既定で
     有効なあいだ `Ctrl+B`（tmux prefix `Ctrl-b` と同じ物理入力）を消費して PTY へ渡さないため、
     detach できず抜けられなくなる。attach する前に
-    [`docs/operations/dispatcher-view.md`](../../../docs/operations/dispatcher-view.md) の
-    「外側フレームが renga の場合」の回避策（renga 設定 `[ui] org_sidebar = "off"`、または tmux prefix
-    の変更）を適用すること。
+    回避策（renga 設定 `[ui] org_sidebar = "off"`、または tmux prefix
+    の変更）を適用すること（`Ctrl+B` でサイドバーを非表示にしても消費は止まらない。詳細手順は
+    `docs/operations/dispatcher-view.md` の「外側フレームが renga の場合」）。
 
 出力末尾に「`tmux` は zsh で alias 化けするため、必ず実体パス `/usr/bin/tmux` を使うこと」と、上記
 `Ctrl-b` の読み替え（tmux prefix の既定値であること・renga の画面から attach する場合は先に
-[`docs/operations/dispatcher-view.md`](../../../docs/operations/dispatcher-view.md)「外側フレームが renga の
-場合」の回避策が要ること）を添える。
+上記の回避策が要ること）を添える。
 
 ## 出力フォーマット（worked example）
 
@@ -290,7 +274,7 @@ logical pane 除外 → `%N` を持つ dispatcher / worker のみ join → 生�
 - 上記 Ctrl-b は tmux prefix の既定値。変更していれば設定した prefix に読み替える。
   renga の画面から attach する場合は、org サイドバー（既定で有効）が Ctrl+B（tmux prefix Ctrl-b と
   同じ物理入力）を消費して PTY へ渡さないため上の打鍵が届かない（detach できず抜けられなくなる）。
-  先に docs/operations/dispatcher-view.md「外側フレームが renga の場合」の回避策
+  先に回避策
   （renga 設定 [ui] org_sidebar = "off"、または tmux prefix の変更）を適用すること。
 - tmux は zsh で alias 化けするため、必ず実体パス /usr/bin/tmux を使うこと。
 ```
@@ -311,5 +295,5 @@ unmatched があった場合の追記例:
 - `.state/` / registry / tmux のいずれも変更しない
 - 書込み・spawn・送信系の broker / tmux ツールは `allowed-tools` に含めない
   （許可は `list_panes` / `list_peers` と read-only な tmux `list-panes` / `list-sessions` のみ）
-- 状況の一覧だけが目的なら [`/org-dashboard`](../org-dashboard/SKILL.md)、作業委譲は
-  [`/org-delegate`](../org-delegate/SKILL.md) を使う（本スキルは attach 用コマンド出力専用）
+- 状況の一覧だけが目的なら `/org-dashboard`、作業委譲は
+  `/org-delegate` を使う（本スキルは attach 用コマンド出力専用）

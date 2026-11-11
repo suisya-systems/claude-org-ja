@@ -2,7 +2,7 @@
 
 > **一次参照元**: [`.claude/skills/org-delegate/SKILL.md`](../SKILL.md) Step 0.6。適用条件（3 条件）の正本は SKILL.md 側で、本ドキュメントは実行コマンドと Pattern ごとの適用範囲を書く。
 
-`release/*` ブランチを切るタスクは、worker が **対象プロジェクトの最新 `main`** から branch することを前提とする。worker は素の `git fetch` はできるが、`git pull`（local main の fast-forward）と `git -C <path> fetch` は deny されている（[`tools/org_extension_schema.json`](../../../../tools/org_extension_schema.json) の `worker_roles.default.permissions` の allow / deny）。local main が古いまま派遣すると、worker は local main を進められず着手直後に BLOCKER を出し、窓口との往復でロスが出る。
+`release/*` ブランチを切るタスクは、worker が **対象プロジェクトの最新 `main`** から branch することを前提とする。worker は素の `git fetch` はできるが、`git pull`（local main の fast-forward）と `git -C <path> fetch` は deny されている（`tools/org_extension_schema.json` の `worker_roles.default.permissions` の allow / deny）。local main が古いまま派遣すると、worker は local main を進められず着手直後に BLOCKER を出し、窓口との往復でロスが出る。
 
 このため **release-class タスクに限り**、`gen_delegate_payload.py preview` / `apply` の前に窓口側で local main を進める:
 
@@ -27,7 +27,3 @@ git pull --ff-only origin main
 - **Pattern A**（worker がベースクローン自体で local `main` から `release/*` を切るケース）は、apply の自動 fetch では **local `main` ブランチ自体**が進まない（更新されるのは remote-tracking ref だけ）。上の窓口側 pre-fetch が必要なのはこのケース。
 
 Pattern B の新規作成で Step 0.6 を重ねて実行しても害は無い（fetch が冪等なだけ）。
-
-## 背景・経緯
-
-[`.claude/skills/org-delegate/references/rationale.md`](rationale.md) §10。

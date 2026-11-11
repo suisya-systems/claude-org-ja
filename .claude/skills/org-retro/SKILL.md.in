@@ -58,7 +58,7 @@ Step 1 で扱った失敗ごとに、次のいずれかを済ませる。**ど�
 3. **検査にできない場合**: できない理由を 1 行書く（これも完了条件の一部）。
 
 検査を足したときは、止める失敗を 1 行にして
-[`docs/operations/defense-register.md`](../../../docs/operations/defense-register.md) の表へ 1 行加える
+`docs/operations/defense-register.md` の表へ 1 行加える
 （一覧への追加も完了条件。hook は一覧に無いとテスト `tools/test_defense_report.py` が落ちる）。
 
 ## Step 3: 記録
@@ -115,7 +115,7 @@ output_format: <成果物の構造>
 キュー追記（`knowledge/skill-candidates.local.md` への追記はスキル側で実施済み）に留め、
 人間への即時提案はせず**黙って次に進む**。人間への問い合わせは、候補キューの pending が
 5 件以上（N=5）に達した時点で窓口が行うバッチ問い合わせ、または `/skill-audit` の発火時のみ。
-一次参照は [`knowledge/skill-candidates.md`](../../../knowledge/skill-candidates.md) 冒頭の
+一次参照は `knowledge/skill-candidates.md` 冒頭の
 運用ルール。
 
 以下 1〜3 は即時には実行しない。バッチ問い合わせ（または `/skill-audit`）で人間が各候補を
@@ -149,8 +149,7 @@ output_format: <成果物の構造>
    - `knowledge/skill-candidates.local.md` 該当エントリの status を `pending` → `deferred` に更新する
      作業をワーカーへの委譲（`org-delegate`）経由で行う（窓口・ディスパッチャーは直接編集しない）。
    - `deferred` は terminal ではないが**閾値カウント対象外・再問い合わせ対象外**。以後この候補を
-     `pending` に戻さず、バッチ問い合わせ / `/skill-audit` で蒸し返さない（見送り済み候補が
-     worker クローズのたびに curator を無駄起動する問題への対策）。人間が後日あらためて検討したい
+     `pending` に戻さず、バッチ問い合わせ / `/skill-audit` で蒸し返さない。人間が後日あらためて検討したい
      ときのみ新しい日付で別エントリを起こす。
 
 #### decision == candidate_queue

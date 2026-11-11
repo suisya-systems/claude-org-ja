@@ -11,8 +11,7 @@ description: >
 # WSL から Windows Chrome で画面を撮る
 
 Linux 側の Chrome は共有ライブラリ不足で起動しない環境なので、Windows 版 Chrome を
-headless で使う。以下は繰り返し踏んだ手順を固定したもの（経緯と出典は
-[`.claude/skills/wsl-windows-chrome-screenshot/references/rationale.md`](references/rationale.md)）。
+headless で使う。以下は繰り返し踏んだ手順を固定したもの。
 **どの失敗もエラーが原因を指さず、PNG が「撮れてしまう」ことが多い**。
 
 ## 0. sandbox を外す撮影の実行は窓口が行う

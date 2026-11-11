@@ -14,7 +14,7 @@
 | 3 | **時間予算超過 / 最大反復数到達** | `time_budget` / `max_iterations` | ベルト稼働の経過時間 / ループ反復回数が契約の予算を超えた |
 | 4 | **worker escalation** | 即時 | worker から「判断仰ぎ」「承認を仰ぎ」「スコープ拡張」「ブロッカー」「想定外」「runbook 逸脱」が来た |
 | 5 | **scope 縁検知** | 即時 | スコープ述語に非合致 / 判定不能の候補・差分、または org-delegate チェック項目が人間入力を要求、verify 判定不能、スコープ内 repo のゴール未設定・台帳エラー、triage 判定段の exit 2 |
-| 6 | **マージ前の止める線**（`acceptance` 方式） | 即時（その PR） | 受け入れテストの宣言なし・head 不一致・判断境界・元に戻せない変更・予算超過・テストを書き換えて合格させた疑い・ゲートの拒否（[`/org-pull-request`](../../org-pull-request/SKILL.md) 2b-i） |
+| 6 | **マージ前の止める線**（`acceptance` 方式） | 即時（その PR） | 受け入れテストの宣言なし・head 不一致・判断境界・元に戻せない変更・予算超過・テストを書き換えて合格させた疑い・ゲートの拒否（`/org-pull-request` 2b-i） |
 
 ## 各条件の詳細
 
@@ -22,7 +22,7 @@
 
 - worker の Codex セルフレビューは Blocker/Major ゼロまで回すが、回数はワーカーの外で数えられる: 許可回数（既定 3）を
   超えるゲート呼び出しは PreToolUse フックが拒否し、ディスパッチャーが `CODEX_ROUND_DENIED` を窓口へ中継する
-  （[`/org-delegate`](../../org-delegate/SKILL.md)「ディスパッチャーから CODEX_ROUND_DENIED を受けたとき」）。conveyor は
+  （`/org-delegate`「ディスパッチャーから CODEX_ROUND_DENIED を受けたとき」）。conveyor は
   **この受信をベルト退出の契機として扱う**: その候補はベルトから外し人間へ上げる（残りの候補のベルトは続けてよい）。
   Opus 昇格で続けるかどうかも人間に諮る（conveyor は自走で許可回数を増やさない）。
 - `codex_round_max` が 3 以外の契約では、フックは events に記録された許可回数しか見ないので、派遣直後（`delegate_sent`
@@ -34,7 +34,7 @@
 - conveyor の自動 gate（CI 解釈 / Codex Blocker / verify 失敗）が **halt 候補シグナルを出したが、追ったら変更起因の
   実欠陥ではなかった**（flaky CI / benign な Codex 指摘 / 環境起因の verify 失敗）回を **false-positive** と数える。
 - 実欠陥を 1 つでも掴んだら連続カウンタはリセット。**連続**して `false_positive_streak_max` 回 false-positive が続いたら、
-  自動 gate のシグナルが信頼できない状態なので halt（誤シグナルで churn し続けない / `feedback-no-stopgap`）。
+  自動 gate のシグナルが信頼できない状態なので halt（誤シグナルで churn し続けない）。
 - カウンタは TaskList のメタや conveyor 制御タスクに紐づけて引き継げる形で持つ（観測可能性節）。
 
 ### 3. 時間予算超過 / 最大反復数到達
@@ -45,19 +45,19 @@
 ### 4. worker escalation
 
 - worker からの judgment escalation / scope 拡張 / ブロッカーは **即 halt** し、conveyor が一次承認せず
-  [`/org-escalation`](../../org-escalation/SKILL.md) の正準フロー（ack → 3 層状態保存 → 人間伝達 → 返答転送）へ渡す（INV-3）。
+  `/org-escalation` の正準フロー（ack → 3 層状態保存 → 人間伝達 → 返答転送）へ渡す（INV-3）。
 - 該当 worker のベルト枠は人間判断が返るまで保留。他候補のベルトは独立に続けてよい。
 
 ### 5. scope 縁検知
 
 - 以下はすべて scope 縁 → halt（INV-2）:
   - triage 候補がスコープ述語に **非合致 / 判定不能**（[`.claude/skills/org-conveyor/references/scope-contract.md`](scope-contract.md)）。
-  - [`/org-delegate`](../../org-delegate/SKILL.md) の委譲前チェック（曖昧用語 / OS 前提 / incorporation 戦略等）が
+  - `/org-delegate` の委譲前チェック（曖昧用語 / OS 前提 / incorporation 戦略等）が
     **人間入力を要求**した（conveyor が代わりに埋めない）。
   - verify の applicability classifier が **判定不能**（[`.claude/skills/org-conveyor/references/verify-evidence.md`](verify-evidence.md)）。
   - スコープ内の repo が scan の `goal_rank.goal_unset_repos[]`（ゴール未設定）/ `goal_rank.goal_errors[]`（台帳エラー）に出た。
     候補プールはゴール条項に当たったものだけなので、「スコープ内に候補が無い」ではなく「ゴールが無く判定できない」として
-    halt し、ゴール設定か `--rank-mode legacy` での実行かを人間に仰ぐ（設計 §12.8）。
+    halt し、ゴール設定か `--rank-mode legacy` での実行かを人間に仰ぐ。
   - scan が exit 2（fail-closed）で、判定段由来（`goal_rank.judge.status` = `failed` / `cooldown` / `budget_exhausted`）を含む。
     候補ゼロと言い換えず、状態と理由を添えて halt する。
 - スコープを使い切り、残り候補が外側しか無いなら、それも「これ以上自走できる範囲が無い」= 正常退出として人間へ報告する。
@@ -65,7 +65,7 @@
 ### 6. マージ前の止める線（`acceptance` 方式）
 
 - `merge_approval_mode` が `acceptance`（かつ契約の承認時の値も `acceptance`）のとき、CI green の PR ごとに
-  [`/org-pull-request`](../../org-pull-request/SKILL.md) 2b-i の止める線を確かめる。一覧はそちらが正本で、
+  `/org-pull-request` 2b-i の止める線を確かめる。一覧はそちらが正本で、
   受け入れテストの宣言なし・head 不一致・判断境界・元に戻せない変更・予算超過（本表 1〜3）・**テストを書き換えて合格させた疑い**・ゲートの拒否を含む。
 - 当たった PR はマージせず halt し、当たった線を添えて人間へ上げる（その PR の枠は人間判断まで保留。他候補のベルトは続けてよい）。
 - ゲートの拒否を別の書き方・別経路のマージで迂回しない。テストのコミットの作り直しで拒否された PR は、人間の承認を得て新しい PR でやり直す。

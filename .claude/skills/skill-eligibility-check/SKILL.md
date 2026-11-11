@@ -18,7 +18,7 @@ allowed-tools:
 作業パターンが新規 work-skill として切り出す価値があるかを 5 シグナルで採点し、
 3 値（skill_recommend / candidate_queue / curated_only）で返す。
 このスキル自体は skill 生成も人間問い合わせもしない — 判定専用。
-org-retro と org-curate の両方がこのスキルを呼ぶ（理由は [`.claude/skills/skill-eligibility-check/references/rationale.md`](references/rationale.md) §1）。
+org-retro と org-curate の両方がこのスキルを呼ぶ（判定基準の正本はこのスキル 1 箇所に置く。知見の統合基準側に skill 化判定を重複定義しない）。
 
 ## 入力契約
 
@@ -66,8 +66,6 @@ output_format: <成果物の再利用可能フォーマット / なければ空>
 | 2 点 | `candidate_queue` | 候補止まり。raw に追記し次回の raw_reappearance を待つ |
 | 1 点以下 | `curated_only` | curated ノートのままで十分 |
 
-閾値の理由は [`.claude/skills/skill-eligibility-check/references/rationale.md`](references/rationale.md) §2。
-
 ## Step 3: 出力
 
 以下の構造を呼び出し元に返す:
@@ -84,11 +82,26 @@ proposed_skill_name: <pattern_name>    # skill_recommend / candidate_queue の�
 
 `knowledge/skill-candidates.local.md`（machine-local な実エントリ用ファイル）に
 エントリを 1 件追記する。`candidate_queue` / `curated_only` の場合は書き込まない。
-エントリの書式は [`knowledge/skill-candidates.md`](../../../knowledge/skill-candidates.md) の「エントリフォーマット」に従い、
+エントリは次の書式（見出しは 3 レベル `### {YYYY-MM-DD} {pattern-name}`）で書く。
 `status` は `pending`、`呼び出し元` は入力の `context`、`提案 skill 名` は `proposed_skill_name` を入れる。
 
+```markdown
+### {YYYY-MM-DD} {pattern-name}
+- **判定スコア**: {score}/5
+- **該当シグナル**: {matched_signals の配列を "[a, b, c]" 形式}
+- **根拠**: {1-2 行}
+- **関連タスク**: {task_ids、curation 文脈では空 "[]" 可}
+- **関連 raw ファイル**: {raw_files のパス列}
+- **呼び出し元**: {post_retro | curation}
+- **提案 skill 名**: {kebab-case 名}
+- **status**: pending
+- **決定日**: 未定
+```
+
+`- **status**: pending` の行形式は厳守する（pending 件数は行形式の完全一致で数えられる。インデント・スペース数・大文字小文字を変えない）。
+
 > **追記先は必ず `.local.md`（公開ファイルではない）**: 公開の
-> [`knowledge/skill-candidates.md`](../../../knowledge/skill-candidates.md) は
+> `knowledge/skill-candidates.md` は
 > **エントリフォーマット定義のみ**を保持し、エントリ一覧は**常に空**に保つ（operator-private な
 > 候補が OSS リポジトリに載らないため。`knowledge/skill-candidates.local.md` は .gitignore 済み）。
 > フォーマット定義・status 語彙・運用ルールは公開ファイル冒頭が一次参照で、実エントリだけが
@@ -97,7 +110,7 @@ proposed_skill_name: <pattern_name>    # skill_recommend / candidate_queue の�
 
 書き込み後も呼び出し元には出力 YAML を返す（キュー追記は副作用として完了）。
 このスキルは判定とキュー追記だけを行う。decision ごとの以降の扱いは呼び出し元が決める
-（[`.claude/skills/org-retro/SKILL.md`](../org-retro/SKILL.md) Step 4.2 / [`.claude/skills/org-curate/SKILL.md`](../org-curate/SKILL.md) Step 2.5）。
+（`/org-retro` Step 4.2 / `/org-curate` Step 2.5）。
 
 ## 重複呼び出しの扱い
 
@@ -108,7 +121,7 @@ status が `approved` / `rejected` / `merged-into-*` になっているエント
 履歴として保持し、新しいエントリを別日付で追加する（過去の却下理由を失わない）。
 
 status が `deferred`（人間が提示を受けて見送った候補）になっているエントリは、Step 4 では
-**再追加も `pending` への差し戻しもしない**（見送りは確定として扱い、同じ候補を蒸し返さない。Issue #753）。
+**再追加も `pending` への差し戻しもしない**（見送りは確定として扱い、同じ候補を蒸し返さない）。
 `deferred` は閾値カウント対象外・再問い合わせ対象外である。人間が明示的に再検討したいときのみ
 新しい日付で別エントリを起こす。
 

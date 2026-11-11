@@ -27,9 +27,9 @@ allowed-tools:
 
 `claude-org-runtime attention watch` を dispatcher ペインの右側に split で常駐起動し、
 pane_id を `.state/attention_pane.json` に sidecar として記録する。停止は
-[`/org-attention-stop`](../org-attention-stop/SKILL.md) を使う。
+`/org-attention-stop` を使う。
 
-> **輸送層 両系（`ORG_TRANSPORT`: 運用既定 `renga` / opt-in `broker`）**: 本スキルの `mcp__renga-peers__*`（`spawn_pane` / `list_panes` / `inspect_pane` / `close_pane`）は **運用既定 `renga`** で書いてあり、`ORG_TRANSPORT=renga` で運用する構成ならそのまま従えばよい（運用上の既定挙動は不変。`ORG_TRANSPORT` 無設定の pane は `resolve()` でコード既定 `broker` に解決される）。`ORG_TRANSPORT=broker`（opt-in・切戻し可）では完全修飾名が **`mcp__renga-peers__*` → `mcp__org-broker__*`** に機械置換される（引数形・セマンティクスは同一なので spawn / 監視操作の論理は変わらない）。attention watcher は Claude ペインではなく `claude-org-runtime` CLI なので **dev-channel / folder-trust の承認は両系とも不要**（spawn 儀式の差は Claude ペイン spawn にのみ効く）。エラーは broker 追加コード（`[no_backend]`（= adapter_unavailable）/ `[token_invalid]` 等、[`.claude/skills/org-delegate/references/renga-error-codes.md`](../org-delegate/references/renga-error-codes.md) の broker 節）が加わる。`new_tab` / `focus_pane` は broker surface に**無い**が本スキルは使わない。契約面は [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) Surface 8（ratified 2026-06-14）、設計 SoT は transport-lab `docs/design/ja-migration-plan.md` §5.2(ii)。運用既定 renga の手順は不変（broker は加算）。（**既定の二フレーム注記（Refs #604）**: ここでの「運用既定 `renga`」は**運用既定**（broker 実走 dogfood が Epic #6 Issue G まで未活性）の意。別に**コード既定**として `tools/transport.py: DEFAULT_TRANSPORT` が runtime 0.1.28 (Epic #586) で `broker` にフリップ済みで、ja 生成器・`transport.resolve()` はこのコードフレームで render するため生成面は「コード既定 `broker`」と表示する — 両フレームは指す対象（運用経路 vs コード定数）が異なり矛盾しない。総説は root `CLAUDE.md`「輸送層（transport）両系」節。）
+> **輸送層 両系（`ORG_TRANSPORT`: 運用既定 `renga` / opt-in `broker`）**: 本スキルの `mcp__renga-peers__*`（`spawn_pane` / `list_panes` / `inspect_pane` / `close_pane`）は **運用既定 `renga`** で書いてあり、`ORG_TRANSPORT=renga` で運用する構成ならそのまま従えばよい（運用上の既定挙動は不変。`ORG_TRANSPORT` 無設定の pane は `resolve()` でコード既定 `broker` に解決される）。`ORG_TRANSPORT=broker`（opt-in・切戻し可）では完全修飾名が **`mcp__renga-peers__*` → `mcp__org-broker__*`** に機械置換される（引数形・セマンティクスは同一なので spawn / 監視操作の論理は変わらない）。attention watcher は Claude ペインではなく `claude-org-runtime` CLI なので **dev-channel / folder-trust の承認は両系とも不要**（spawn 儀式の差は Claude ペイン spawn にのみ効く）。エラーは broker 追加コード（`[no_backend]`（= adapter_unavailable）/ `[token_invalid]` 等。`/org-delegate` の references/renga-error-codes.md の broker 節）が加わる。`new_tab` / `focus_pane` は broker surface に**無い**が本スキルは使わない。契約面は [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) Surface 8。運用既定 renga の手順は不変（broker は加算）。（**既定の二フレーム注記**: ここでの「運用既定 `renga`」は運用経路の意。別に**コード既定**として `tools/transport.py: DEFAULT_TRANSPORT` が `broker` で、ja 生成器・`transport.resolve()` はこのコードフレームで render するため生成面は「コード既定 `broker`」と表示する — 両者は指す対象（運用経路 vs コード定数）が異なり矛盾しない。総説は root [`CLAUDE.md`](../../../CLAUDE.md)「輸送層（transport）両系」節。）
 
 > **前提**: この skill は窓口（Secretary）の cwd（= claude-org-ja リポジトリ root）から呼ばれる。
 > attention watcher 自体は `claude-org-runtime` の console_scripts entrypoint で、`--state-dir .state` /
@@ -37,8 +37,7 @@ pane_id を `.state/attention_pane.json` に sidecar として記録する。停
 > dispatcher ペインの cwd は `.dispatcher` なので、spawn_pane では `cwd="."` を明示して
 > Secretary 側の cwd（= repo root）にバインドする。
 >
-> pane_id は `.state/state.db` ではなく sidecar JSON（`.state/attention_pane.json`）に記録する
-> （理由は [`.claude/skills/org-attention-start/references/rationale.md`](references/rationale.md)）。
+> pane_id は `.state/state.db` ではなく sidecar JSON（`.state/attention_pane.json`）に記録する。
 
 ## Step 1: 二重起動チェック
 
@@ -114,7 +113,7 @@ mcp__renga-peers__spawn_pane(
   `.state/broker` に解決される）
 - `${ORG_BROKER_STATE_DIR:+--broker-state-dir "$ORG_BROKER_STATE_DIR"}` のようなシェル展開を
   `command` 文字列に埋め込まないこと。ペインの login shell が zsh だと既定 `SH_WORD_SPLIT` off で
-  1 引数に潰れ、argparse error で watcher が起動しない（#829 と同型の罠）。値は呼び出し側で解決して
+  1 引数に潰れ、argparse error で watcher が起動しない。値は呼び出し側で解決して
   リテラルに埋める
 - attention watcher は `ORG_BROKER_STATE_DIR` env を自分では読まない（解決順は flag →
   `<state-dir>/broker` のみ）。非既定 state dir で broker を動かしている環境でフラグを省くと、
@@ -141,7 +140,7 @@ mcp__renga-peers__spawn_pane(
 - `[name_in_use]`: Step 1 の二重起動チェックが取りこぼした live pane が直前に再出現した race。
   ユーザーに「attention pane が並走で先に立ち上がりました。`/org-attention-stop` で掃除して
   ください」と報告して abort
-- その他 `[<code>]`: [`renga-error-codes.md`](../org-delegate/references/renga-error-codes.md) を参照
+- その他 `[<code>]`: `/org-delegate` の references/renga-error-codes.md を参照
 
 ## Step 4: 起動 health check（即時クラッシュの negative-signal 検出のみ）
 
@@ -184,7 +183,7 @@ inspect 自体のラウンドトリップ（数百 ms）で shell が即時終�
       [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) T-§4.2
    2. **identity 再確認（pane_id recycle 対策）**: `mcp__renga-peers__list_panes` を呼び、
       spawn 返り値の pane_id が `name="attention"` **または** `role="attention"` を**なお指して
-      いる**ことを確かめる（[`/org-attention-stop`](../org-attention-stop/SKILL.md) が組む
+      いる**ことを確かめる（`/org-attention-stop` が組む
       「確認済み attention ペイン集合」と同じ判定。**spawn 時に渡した name は信用せず、いま
       `list_panes` が返す name/role で判定する**）。その id が別ペインへ再割当て済み（recycled）/
       列挙に現れない（gone）なら **close せず**、死んだペインが残っている旨を 4 の報告に含める
@@ -233,5 +232,4 @@ attention watcher を起動しました（pane id={N}、dispatcher の右側）�
 ```
 
 WSL / Windows の通知センター連携 (`powershell.exe` の WinRT toast) や OS 別の backend 挙動、トラブル
-シューティングは [`docs/operations/attention-watch.md`](../../../docs/operations/attention-watch.md)
-を参照。
+シューティングは `docs/operations/attention-watch.md` を参照。

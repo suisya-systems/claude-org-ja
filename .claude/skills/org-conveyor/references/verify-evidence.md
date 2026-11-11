@@ -17,7 +17,7 @@ worker は完了報告に **diff の touch domain** を、自身の worktree で
 パス分類して `/verify` 必須かを決定的に判定する。worker のブランチが窓口セッションから local に見える場合
 （object store 共有の Pattern B worktree 等）は conveyor 自身も `git diff --name-only <base>..<branch>` を再実行して
 申告と突き合わせる（read-only の裏取り）。local に見えない場合（別 clone・push 前等）は PR 作成後の変更ファイル一覧
-（`gh pr view --json files`、[`/org-pull-request`](../../org-pull-request/SKILL.md) 経由）で突き合わせる。
+（`gh pr view --json files`、`/org-pull-request` 経由）で突き合わせる。
 
 | touch domain | 例 | `/verify` |
 |---|---|---|
@@ -41,7 +41,7 @@ worker は完了報告に **diff の touch domain** を、自身の worktree で
 
 ## エビデンス転記（PR `## Test plan` へ自動転記）
 
-`/verify` を実行した（または不要と判定した）ら、再現可能な証跡を完了報告に含め、[`/org-pull-request`](../../org-pull-request/SKILL.md)
+`/verify` を実行した（または不要と判定した）ら、再現可能な証跡を完了報告に含め、`/org-pull-request`
 2b-i の PR 作成時に PR 本文 `## Test plan` セクションへ **そのまま転記** する。窓口がコードを精読せずに、また将来の
 レビュアーが追試できるように、**再現コマンドと観測結果** を残すのが要件。
 
@@ -77,4 +77,4 @@ docs / config / fixture のみで verify 不要だった場合も、Test plan �
 
 > 転記は **machine transcription**（worker が出した証跡を窓口が整形・貼付する）であって、窓口がエビデンスを
 > 自作・補完することではない。エビデンスが欠落していたら通常の review-feedback として worker に補完を依頼する
-> （[`/org-pull-request`](../../org-pull-request/SKILL.md) 2c）。
+> （`/org-pull-request` 2c）。

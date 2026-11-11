@@ -22,17 +22,17 @@ allowed-tools:
 # work-discovery: 次の仕事候補の triage 提示（提案のみ）
 
 open Issue を triage し、依存解決済みの候補を「N 件 + 推奨 1 件」の形で**窓口が人間へ提示する**。
-並べる基準は**オペレーターが書いたゴール台帳の条項**（[`registry/goals/README.md`](../../../registry/goals/README.md)）:
+並べる基準は**オペレーターが書いたゴール台帳の条項**（`registry/goals/README.md`）:
 各候補がどの条項の「未達」を解消する仕事かを scan 内の判定段（`claude -p`、ツール無し）が当てはめ、
 条項の順（G1 が先）に scan が並べる（設計 §12）。本スキルはその出力を人間可読に整形して見せるだけ。
 **候補を出したら停止する。着手判断は人間が行う。**
 
-- **ゴール台帳の無い repo からは候補が出ない**（ユーザー決定）。代わりに「ゴール未設定」の案内を 1 行出す。台帳の作成・修復は [`/goal-setup`](../goal-setup/SKILL.md) で人間と対話して行う。
+- **ゴール台帳の無い repo からは候補が出ない**（ユーザー決定）。代わりに「ゴール未設定」の案内を 1 行出す。台帳の作成・修復は `/goal-setup` で人間と対話して行う。
 
-- 設計一次参照: [`docs/design/work-discovery-triage.md`](../../../docs/design/work-discovery-triage.md)
+- 設計一次参照: `docs/design/work-discovery-triage.md`
   （§5.2 人間可読レンダリング / §6.2 案 B ローカル skill / §7 不変条件 INV-1〜5）。
-- 計算層ツール: [`tools/work_discovery_scan.py`](../../../tools/work_discovery_scan.py)（ソース・git・GitHub に対して read-only。副作用は `.state/work_discovery/` への書き込みと判定段 `claude -p` 1 回だけ。設計 §7 INV-1 / INV-3 例外 2）と、ゴール段の [`tools/work_discovery_goals.py`](../../../tools/work_discovery_goals.py)（台帳・判定段・見送り台帳）。
-- repo セット解決ツール: [`tools/work_discovery_repos.py`](../../../tools/work_discovery_repos.py)（read-only。`registry/projects.md` の triage 列（既定 include / 明示 opt-out）と `registry/org-config.md` の `triage_home`（既定 off）から scan に渡す `--repo owner/repo` セットを決定的に導出。設計 §10.4）。
+- 計算層ツール: `tools/work_discovery_scan.py`（ソース・git・GitHub に対して read-only。副作用は `.state/work_discovery/` への書き込みと判定段 `claude -p` 1 回だけ。設計 §7 INV-1 / INV-3 例外 2）と、ゴール段の `tools/work_discovery_goals.py`（台帳・判定段・見送り台帳）。
+- repo セット解決ツール: `tools/work_discovery_repos.py`（read-only。`registry/projects.md` の triage 列（既定 include / 明示 opt-out）と `registry/org-config.md` の `triage_home`（既定 off）から scan に渡す `--repo owner/repo` セットを決定的に導出。設計 §10.4）。
 - 本スキルは案 B（手動エントリ）。
 
 ## 起動主体とトリガ
@@ -53,7 +53,7 @@ open Issue を triage し、依存解決済みの候補を「N 件 + 推奨 1 �
   spawn / delegate / ブランチ作成 / commit / PR / Issue・PR への書き込みをしない
   （allowed-tools の絞り込みは正路の明示で、機械的な強制ではない）。
 - **INV-2 着手判断は人間ゲート必須**: 候補の選択は人間のみ。選ばれた候補は
-  **既存の [`/org-delegate`](../org-delegate/SKILL.md) の Step 0 から**通常委譲フローに入る。
+  **既存の `/org-delegate` の Step 0 から**通常委譲フローに入る。
   本スキルが org-delegate を自分で呼ぶことは禁止。推奨（rank 1）の自動着手も禁止。
 - **INV-3 自動 commit / 自動 PR をしない**: ソースツリー・Issue・PR・git（commit / branch / push）を
   一切変更しない。triage 結果をソースに残す運用にする場合も、それは別途人間判断による別タスクであり、本スキルが自動で行わない。
@@ -74,14 +74,14 @@ python3 tools/work_discovery_scan.py --trigger manual --all-registry-repos
 - **Bash の `timeout` は 300000（ms）を指定する**。判定段（既定タイムアウト 90 秒）と gh の取得を足すと Bash 既定の
   120 秒に収まらないことがあり、途中で殺されると失敗の記録（クールダウン）も残らないため（設計 §12.4）。
 - **判定段は `api.anthropic.com` に出る**。窓口・ディスパッチャーの `sandbox.network.allowedDomains` への許可は
-  `/org-setup`（[`.claude/skills/org-setup/SKILL.md`](../org-setup/SKILL.md)）が役割テンプレートから配る（[`.claude/skills/org-setup/references/permissions.md`](../org-setup/references/permissions.md)。
+  `/org-setup` が役割テンプレートから配る（`/org-setup` の references/permissions.md。
   配布漏れは `tools/check_role_configs.py --include-local` が検出する）。拒否されると判定段は
   タイムアウトし exit 2（`goal_rank.judge.status = failed`）になり、以後 1 時間は `cooldown` で即 exit 2 になる。
 - 既定は `--rank-mode goal`。`--rank-mode legacy`（旧来の Issue メタデータ順・判定段なし）は**人間が明示的に指示したときだけ**使う
   （ゴール台帳が無い・判定段が使えない間の退避。黙って legacy に切り替えない）。
 
 - `--all-registry-repos` を付けると、scan が repo セット解決ツール
-  [`tools/work_discovery_repos.py`](../../../tools/work_discovery_repos.py) を**プロセス内で呼んで** `--repo` セットを
+  `tools/work_discovery_repos.py` を**プロセス内で呼んで** `--repo` セットを
   決定的に導出する（`registry/projects.md` の triage 列（既定 include / 明示 opt-out）と `registry/org-config.md` の
   `triage_home`（既定 off）から。設計 §10.4）。既定状態では registry の GitHub URL 行が全て scan 対象に並ぶ
   （home repo は `triage_home: on` のときだけ先頭に付く）。単一 repo scan になるのは scan 対象が 1 件のときだけ。
@@ -99,7 +99,7 @@ python3 tools/work_discovery_scan.py --trigger manual --all-registry-repos
   `--trigger post_merge` を付け、可能なら `--free-panes <空き worker slot 数>` も渡す（空き枠があると
   `parallelizable` 候補のランクが上がる）。
 - `--free-panes` の意味は **空き worker slot 数**（＝ dispatch 可能な空き capacity の単位）であり、物理的な空き
-  ターミナルペイン数ではない（runtime 0.1.31 / #104、backend-aware worker capacity 以降の読み替え）。broker 面
+  ターミナルペイン数ではない。broker 面
   （`ORG_TRANSPORT=broker` / コード既定）では `max_concurrent_workers`（既定 8, `registry/org-config.md`）から
   アクティブ worker 数を引いた残り、renga 面（opt-in）では rect ベース balanced split が受け入れ可能な空き split 枠
   （renga 面の overflow 時の扱いは下記の注記を参照。**現行 ja は当該フラグを渡していない**）。scan の計算ロジックは
@@ -140,12 +140,12 @@ python3 tools/work_discovery_scan.py --trigger manual --all-registry-repos
 
 ### Step 2.5 — セッション目標と突き合わせる（exit 10 のとき、レンダリング前）
 
-scan は全 repo をまとめて条項番号順に並べる（[`tools/work_discovery_goals.py`](../../../tools/work_discovery_goals.py)）ため、目標の repo の候補が他 repo の G1 / G2 の後ろに沈み、上位に出ないことがある。並べ方は変えず、提示の前に次を確認する（設計 §12 の条項順は維持する）。
+scan は全 repo をまとめて条項番号順に並べる（`tools/work_discovery_goals.py`）ため、目標の repo の候補が他 repo の G1 / G2 の後ろに沈み、上位に出ないことがある。並べ方は変えず、提示の前に次を確認する（設計 §12 の条項順は維持する）。
 
 1. `tools.state_db.queries.get_org_state_summary` の `session.objective` を読む。空・`None` なら何もせず Step 3 へ。
 2. 目標が指すプロジェクト（`registry/projects.md` で通称から repo を特定）の候補が、提示する上位 `--top-n` 件に 1 件も無ければ、そのプロジェクトだけを `--repo owner/repo` 付き（`--all-registry-repos` の代わり）で引き直す。目標側の候補を並べて提示し、全体の上位も残す。
 3. 目標と関係の無い候補には「目標外」と書き添える。
-4. 目標側の仕事が `excluded_goal[]` の `no_clause` で外れていたら、ゴール台帳への条項追加を提案する（[`/goal-setup`](../goal-setup/SKILL.md)）。提案までで、台帳は人間と対話して書く。
+4. 目標側の仕事が `excluded_goal[]` の `no_clause` で外れていたら、ゴール台帳への条項追加を提案する（`/goal-setup`）。提案までで、台帳は人間と対話して書く。
 
 提示の骨格・推奨 1 件・propose-only は変わらない。
 
@@ -159,21 +159,21 @@ JSON を SoT として、設計 §5.2 / §12 の人間可読フォーマット�
 ```text
 次の仕事候補（ゴール台帳の条項順・提案のみ / 着手はあなたの判断です）:
 
-1. [推奨] aainc/foo#42 Add retry to uploader
+1. [推奨] <owner>/foo#<N> Add retry to uploader
    └ 条項 G1「アップロードが落ちない」に当たる（判定）: 失敗時に再送が無く G1 の未達条件そのもの
    └ 依頼の下書き: アップロード失敗時に指数バックオフで 3 回まで再送する
    └ 論点: 再送回数の上限 → 推奨「3 回」（選択肢: 3 回 / 5 回）
    └ 事実: 優先度 high / 工数 S(推定) / 依存解決済み / 並列可(推定)
-2. aainc/foo#57 Refactor config loader
+2. <owner>/foo#<N> Refactor config loader
    └ 条項 G2「設定ミスで起動失敗しない」に当たる（判定）: ...
 
-ゴール未設定: aainc/bar（候補 5 件が対象外。/goal-setup bar で registry/goals/aainc/bar.md を書くと候補が出ます）
-ゴール台帳エラー: aainc/baz（G2 に unmet if がない。/goal-setup baz で直せます）
-条項追加の候補: aainc/foo（7 件が条項に当たらない。例: #60, #61, #64）→ /goal-setup foo
-除外（条項に当たらない）: aainc/foo#60, #61
-除外（見送り中）: aainc/foo#33
-除外（判定上限超過・未判定）: aainc/foo#70
-除外（依存未解決）: #540（#537 が open のため）
+ゴール未設定: <owner>/bar（候補 5 件が対象外。/goal-setup bar で registry/goals/<owner>/bar.md を書くと候補が出ます）
+ゴール台帳エラー: <owner>/baz（G2 に unmet if がない。/goal-setup baz で直せます）
+条項追加の候補: <owner>/foo（7 件が条項に当たらない。例: #<N>, #<N>）→ /goal-setup foo
+除外（条項に当たらない）: <owner>/foo#<N>, #<N>
+除外（見送り中）: <owner>/foo#<N>
+除外（判定上限超過・未判定）: <owner>/foo#<N>
+除外（依存未解決）: #<N>（#<M> が open のため）
 
 着手するものを番号で指定してください。「今はやらない」ものがあれば番号で教えてください（記録して、その Issue に動きがあるまで出しません）。
 ```
@@ -197,23 +197,23 @@ goal モードのレンダリング規則（legacy と共通の規則は下の l
 ```text
 次の仕事候補（triage 結果・提案のみ / 着手はあなたの判断です）:
 
-1. [推奨] #531 Add retry to uploader（優先度 high / 工数 S(推定) / 依存解決済み / 並列可(推定) / 直近マージ起点(推定)）
-   └ 直近マージ #528 の follow-up・並列可（空き pane を埋められる）・工数 S(推定)・依存解決済み
-2. #533 Refactor config loader（優先度 medium / 工数 M / 依存解決済み / 並列可(推定)）
+1. [推奨] #<A> Add retry to uploader（優先度 high / 工数 S(推定) / 依存解決済み / 並列可(推定) / 直近マージ起点(推定)）
+   └ 直近マージ #<M> の follow-up・並列可（空き pane を埋められる）・工数 S(推定)・依存解決済み
+2. #<B> Refactor config loader（優先度 medium / 工数 M / 依存解決済み / 並列可(推定)）
 
-除外（依存未解決）: #540（#537 が open のため）
-除外（マージ済み）: aainc/kura-data-aggregator-trial#231（#232 が develop にマージ済み・GitHub の自動クローズ未発火）
+除外（依存未解決）: #<C>（#<D> が open のため）
+除外（マージ済み）: <repo>#<E>（#<F> が develop にマージ済み・GitHub の自動クローズ未発火）
 
 着手するものを番号で指定してください。着手判断後に /org-delegate を回します。
 ```
 
-（上例の #531 は `effort_estimated: true` なので `工数 S(推定)`、#533 は `size:M` ラベル由来で `effort_estimated: false` のため `工数 M`（`(推定)` なし）。`直近マージ起点(推定)` は `unblocked_by_recent_merge == true` の #531 にだけ出ている。）
+（上例の #<A> は `effort_estimated: true` なので `工数 S(推定)`、#<B> は `size:M` ラベル由来で `effort_estimated: false` のため `工数 M`（`(推定)` なし）。`直近マージ起点(推定)` は `unblocked_by_recent_merge == true` の #<A> にだけ出ている。）
 
 レンダリング規則（JSON フィールド → 表示）:
 
 - `candidates[]` を `rank` 昇順に番号付きで並べる。各行の骨格: `<issue-ref> <title>（優先度 <priority> / 工数 <effort>[(推定)] / 依存解決済み[ / 並列可(推定)][ / 直近マージ起点(推定)]）`。`[...]` で囲んだトークンは条件付き（下記）。
-- **`<issue-ref>` の repo 修飾（cross-repo scan、設計 §5.2 / §10.4）**: 候補の `repo` が `null` でない（複数 repo を横断した cross-repo scan = resolver が複数 repo を返した場合、登録 URL 行が複数ある既定状態を含む）なら、`#<issue>` の代わりに `<repo>#<issue>`（例 `aainc/token-tracking#42`）で表示し、出自 repo の曖昧さを無くす。単一 repo scan（`repo: null`）では従来どおり `#<issue>`。除外枠（下記）・推奨も同じ規則で修飾する。同じ規則は `blocking_refs` の表示にも適用される（単一 repo scan で畳まれた repo（= resolver の `repos[0]`）宛の参照は素の `#N`、それ以外は `owner/repo#N`。cross-repo scan では home 宛の参照も `owner/repo#N` になる。設計 §5.1）。
-- **推奨は 1 件だけ**。`recommendation` の `(repo, issue)` の組に一致する候補の先頭に `[推奨]` を付け、直下に `└ <recommendation.reason>` を添える（cross-repo では `issue` 番号だけでは `ja#60` と `runtime#60` が衝突しうるので、`repo` も併せて突き合わせる）。
+- **`<issue-ref>` の repo 修飾（cross-repo scan、設計 §5.2 / §10.4）**: 候補の `repo` が `null` でない（複数 repo を横断した cross-repo scan = resolver が複数 repo を返した場合、登録 URL 行が複数ある既定状態を含む）なら、`#<issue>` の代わりに `<repo>#<issue>`（例 `<owner>/<repo>#<N>`）で表示し、出自 repo の曖昧さを無くす。単一 repo scan（`repo: null`）では従来どおり `#<issue>`。除外枠（下記）・推奨も同じ規則で修飾する。同じ規則は `blocking_refs` の表示にも適用される（単一 repo scan で畳まれた repo（= resolver の `repos[0]`）宛の参照は素の `#N`、それ以外は `owner/repo#N`。cross-repo scan では home 宛の参照も `owner/repo#N` になる。設計 §5.1）。
+- **推奨は 1 件だけ**。`recommendation` の `(repo, issue)` の組に一致する候補の先頭に `[推奨]` を付け、直下に `└ <recommendation.reason>` を添える（cross-repo では `issue` 番号だけでは 別 repo の同番号 Issue が衝突しうるので、`repo` も併せて突き合わせる）。
 - **推定軸には `(推定)` を付す**（「機械が断定した」と人間が誤読して着手判断を機構へ明け渡すこと（設計 §4.4）を防ぐため）。軸ごとにフラグを見て条件付きで付ける:
   - **工数**: `effort_estimated == true`（ヒューリスティック推定）なら `工数 <effort>(推定)`。`false`（`size:S/M/L` 等のラベル由来）なら `(推定)` を付けず `工数 <effort>`。
   - **並列可 / 直近マージ起点**: フラグ `parallelizable` / `unblocked_by_recent_merge` が `true` のときだけ該当トークン（`並列可` / `直近マージ起点`）を出す（`false` なら表記自体を出さない）。これらは対応する `*_estimated` が常に推定（`true`）なので、出すときは常に `(推定)` 付き。直近マージ起点は `recommendation.reason` 内（例:「直近マージ #N の follow-up」）にも自然に現れる。
@@ -241,7 +241,7 @@ python3 tools/work_discovery_goals.py put-aside --ref owner/repo#N --note "<人�
 `ref` は必ず `owner/repo#N`（単一 repo 表示で `#N` だけ見えている場合も、scan 出力の `repo_resolution.repos[0]` などから
 owner/repo を補う）。記録した候補は、その Issue が更新されるまで `excluded_goal(put_aside)` に回る（設計 §12.5）。
 人間が番号を選んだら、その着手は本スキルの外で
-**[`/org-delegate`](../org-delegate/SKILL.md) の Step 0 から**始まる（INV-2）。本スキルが org-delegate を呼ばない・spawn しない・commit / PR しない。
+**`/org-delegate` の Step 0 から**始まる（INV-2）。本スキルが org-delegate を呼ばない・spawn しない・commit / PR しない。
 
 ## パス解決
 

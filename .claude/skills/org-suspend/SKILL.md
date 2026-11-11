@@ -45,12 +45,12 @@ allowed-tools:
 > オンデマンド curate が実行中に suspend が重なった」一時的なケースのみで、その場合だけ
 > Phase 4 の停止対象に含める。
 
-> **責務境界（/org-suspend と [`/org-down`](../org-down/SKILL.md)）**: /org-suspend は
+> **責務境界（/org-suspend と `/org-down`）**: /org-suspend は
 > 「状態保存 + ja 管理下の補助プロセス（dashboard / secretary_queue_watcher / attention
 > watcher）とペインの停止」までを担い、**`claude-org-runtime org down`（broker daemon の停止）は
 > 呼ばない**。suspend 単体は「また `/org-start` で再開する」前提の中断であり、broker daemon は
 > 走らせたままにする（端末を閉じても daemon はすぐ再開できるよう生存する）。daemon ごと完全に
-> 落とすのは [`/org-down`](../org-down/SKILL.md) の責務で、/org-down が suspend の成功を確認した
+> 落とすのは `/org-down` の責務で、/org-down が suspend の成功を確認した
 > 後にのみ `org down` を実行する。
 
 ペイン操作は `mcp__org-broker__*` MCP ツール経由で行う。pane_exited
@@ -63,7 +63,7 @@ allowed-tools:
 > - **spawn 儀式**: コード既定 broker は `--mcp-config <broker>` 注入による Claude Code **folder-trust プロンプト**の画面判定による機械承認に加え、push 一次のため channel sidecar を `--dangerously-load-development-channels server:org-broker-channel` で load し dev-channel 承認プロンプトを画面判定で機械承認する（2 段承認）。`ORG_TRANSPORT=renga` 時は `--dangerously-load-development-channels server:renga-peers` の「Load development channel?」を画面判定で承認する 1 段。 **画面判定** = `inspect_pane` → `claude-org-runtime dispatcher spawn-prompt-step` が返した 1 手だけを `send_keys` する反復（runtime 0.1.43+）。盲目 Enter は禁止（folder-trust の初期カーソルは「No, exit」で、Enter 一発はワーカーを終了させる）。手順は spawn-flow 3-3b。
 > - **エラー分岐**: コード既定 broker は shared codes（`pane_not_found` / `last_pane` / `invalid-params`）に加え broker 固有 `[token_invalid]` / `[session_invalid]` / `[tool_not_authorized]` / `[no_backend]`（= adapter_unavailable）/ `[nudge_failed]` / `[peer_not_found]` / `[name_taken]` を返しうる（未知コードは default-branch で escalate）。`ORG_TRANSPORT=renga` 時は broker 固有コードは発生しない。
 >
-> `new_tab` / `focus_pane` は broker surface に**無い**（意図的除外）。契約面の正本は [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) Surface 8 + push-primary amendment（broker push 一次が **既定の契約**、pull は fallback として retain）。**opt-in `renga` は削除せず常時有効な切戻しの安全装置**として維持する。broker 実走（dogfood）は Epic #6 Issue G スコープで本ファイルの既定運用経路ではない（**二フレーム注記（Refs #604）**: ここの「コード既定 `broker`」は**コード既定**（`tools/transport.py: DEFAULT_TRANSPORT`、生成面はこれで render）。**運用既定**は broker dogfood が Epic #6 Issue G まで未活性のため `renga` で、両者は指す対象が異なり矛盾しない。総説は root [`CLAUDE.md`](../../../CLAUDE.md)。）
+> `new_tab` / `focus_pane` は broker surface に**無い**（意図的除外）。契約面の正本は [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) Surface 8 + push-primary amendment（broker push 一次が **既定の契約**、pull は fallback として retain）。**opt-in `renga` は削除せず常時有効な切戻しの安全装置**として維持する。broker 実走（dogfood）は本ファイルの既定運用経路ではない（**二フレーム注記**: ここの「コード既定 `broker`」は**コード既定**（`tools/transport.py: DEFAULT_TRANSPORT`、生成面はこれで render）。**運用既定**は broker dogfood が未活性のため `renga` で、両者は指す対象が異なり矛盾しない。総説は root [`CLAUDE.md`](../../../CLAUDE.md)。）
 
 ## Phase 1: ワーカー状態収集
 
@@ -101,9 +101,9 @@ id 台帳の作り方（面ごとの id 取得・pane 制御の 2 グループ (
 
 **2.0 系と判定したら、broadcast の前に人間へ報告して確認を取る（operational gate）**: ゲート本文は
 `list_peers` を呼ぶ全経路の共有 reference に切り出してある。**`list_peers` の直前に
-[`.claude/skills/org-delegate/references/capability-first-drive-operational-gate.md`](../org-delegate/references/capability-first-drive-operational-gate.md)
+`/org-delegate` の `references/capability-first-drive-operational-gate.md`
 を Read し、`interactive-action` の分岐を適用する**（`/org-suspend` は人間が起動する flow なので
-人間が画面の前に居り、送信前に停止して確認を取れる。同 reference §6 の表 #1）。
+人間が画面の前に居り、送信前に停止して確認を取れる。同 reference §6 の表の 1 行目）。
 
 ## Phase 2: 未応答ワーカーのスクレイプ
 
@@ -208,7 +208,7 @@ id 台帳の作り方（面ごとの id 取得・pane 制御の 2 グループ (
 kill $(cat .state/dashboard.pid 2>/dev/null) 2>/dev/null || true
 ```
 
-> **注**: blind kill のままにしている理由は [`.claude/skills/org-suspend/references/rationale.md`](references/rationale.md)。
+> **注**: 再開前提の中断なので blind kill のまま簡素に保つ（pid 照合つきの停止は `/org-down` 側）。
 
 ## Phase 3.6: secretary_queue_watcher の停止（broker のみ）
 
@@ -283,7 +283,7 @@ attention watcher は dispatcher ペインの右 split に常駐する CLI ペ�
 recycle され、後続の識別を壊すため）。attention watcher を起動していないセッションでは sidecar も
 live pane も無く、本 Phase は no-op。
 
-停止は [`/org-attention-stop`](../org-attention-stop/SKILL.md) と同じ **identity 照合**を使う
+停止は `/org-attention-stop` と同じ **identity 照合**を使う
 （sidecar の pane_id を無検証で `close_pane` しない。pane_id が別ペインへ再割当てされていると
 無関係なペインを kill する）:
 
@@ -318,7 +318,7 @@ live pane も無く、本 Phase は no-op。
    bash tools/journal_append.sh attention_watch_stopped reason=stale_sidecar # close しなかった場合
    ```
 
-分類別の詳細な挙動と報告文は [`/org-attention-stop`](../org-attention-stop/SKILL.md) を参照（本 Phase は
+分類別の詳細な挙動と報告文は `/org-attention-stop` を参照（本 Phase は
 その要点を suspend フローに埋め込んだもの）。
 
 ## Phase 4: 全ペイン停止
@@ -334,11 +334,11 @@ live pane も無く、本 Phase は no-op。
 
 本フェーズ（および Phase 1 / Phase 2）の送信・ペイン制御すべてに適用する分岐。分岐の**第一軸は
 呼び出し文脈**、**第二軸は同タブ / 他タブ**である（世代では分けない）。正本は
-[`.claude/skills/org-delegate/references/renga-error-codes.md`](../org-delegate/references/renga-error-codes.md)。
+`/org-delegate` の `references/renga-error-codes.md`。
 
 - **messaging 文脈**（`mcp__org-broker__send_message`。**broker では `[peer_not_found]`** が同じ意味で返る）:
   受けても**即「ワーカー閉鎖」と断定しない**。切り分けは
-  [`.claude/skills/org-delegate/references/renga-error-codes.md`](../org-delegate/references/renga-error-codes.md)
+  `/org-delegate` の `references/renga-error-codes.md`
   の「`pane_not_found` の messaging 分岐」の手順 2〜4 に従う（`list_peers` を取り直し、名前では選び直さず
   控えた `peer_id` → `same_tab: true` を確認できた同名レコードの順で 1 件に絞り、**1 回だけ**再送する。
   marker を欠く列挙の同名レコードは 1 件でも採らない。絞れなければ再送せず lifecycle 確認へ進む）。
@@ -360,7 +360,7 @@ live pane も無く、本 Phase は no-op。
     該当ピアは pending に残し、journal に記録して人間に報告する（停止できない残存）
   - 名前宛で受けた場合はこの結論を出さず、`pane_id` に解決し直してから判断する
   - **`close_pane` / `set_pane_identity` はそもそも名前宛・`"focused"` 宛で撃たない**（(G-MUST)。
-    数値でない target は [`.hooks/block-relative-close-pane.sh`](../../../.hooks/block-relative-close-pane.sh) が deny する。
+    数値でない target は `.hooks/block-relative-close-pane.sh` が deny する。
     数値 target の自タブ性・identity は hook が検証しないので、以下の照合で確かめる）。
     この 2 本は Group B なので、`caller_scope` が広告されていても
     `caller_scope_close_identity` が確立していなければ相対セレクタが user 可視タブ / 全タブに
@@ -450,7 +450,7 @@ live pane も無く、本 Phase は no-op。
      ```
      mcp__org-broker__close_pane(target="<照合済みの数値 pane_id>")
      ```
-     でペインを明示破棄する。成功時は `"Closed pane id=N."` テキストが返る。ここは **pane 制御文脈**なので `[pane_not_found]` / `[pane_vanished]` は既に閉じた扱いで skip してよい（[`.claude/skills/org-delegate/references/renga-error-codes.md`](../org-delegate/references/renga-error-codes.md) 参照）。`[last_pane]` はワーカー停止段階では通常発生しない（窓口/ディスパッチャー/キュレーターが残っているため）
+     でペインを明示破棄する。成功時は `"Closed pane id=N."` テキストが返る。ここは **pane 制御文脈**なので `[pane_not_found]` / `[pane_vanished]` は既に閉じた扱いで skip してよい（`/org-delegate` の `references/renga-error-codes.md` 参照）。`[last_pane]` はワーカー停止段階では通常発生しない（窓口/ディスパッチャー/キュレーターが残っているため）
    - **`pane_id` を持たないエントリ（他タブのワーカー、および (G-OWNTAB) 不成立で id を割り当てられ
      なかったエントリ）には `close_pane` を撃たない**。タブ横断の
      pane 制御は原理的に不可で、返る `[pane_not_found]` は閉鎖の証拠にならない（契約 T-§4.2）。
@@ -485,8 +485,7 @@ live pane も無く、本 Phase は no-op。
 
 **最後のペイン (窓口) の扱い**: ディスパッチャー（と存在した場合のキュレーター）を閉じた時点で、
 窓口ペインが窓口タブに残る最後のペインになる。**窓口は自分自身を `mcp__org-broker__close_pane` しない**
-（窓口の終了は人間の `exit` / `/exit` / 端末クローズに委ねる。根拠は
-[`.claude/skills/org-suspend/references/rationale.md`](references/rationale.md)）。何らかの経路で窓口ペインに `close_pane` が飛び
+（窓口の終了は人間の `exit` / `/exit` / 端末クローズに委ねる。窓口は人間との唯一の接点で、自分を閉じると報告を渡す画面が消えるため）。何らかの経路で窓口ペインに `close_pane` が飛び
 `[last_pane]` が返った場合は、**強制再試行せず**そのまま人間の `exit` に委ねる。このコードを
 自己 close の安全網として当てにしてはならない。
 

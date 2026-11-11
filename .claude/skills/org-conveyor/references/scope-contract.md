@@ -6,14 +6,14 @@
 
 ## なぜ機械契約として articulate するのか
 
-「PR #635 round 6 まで自走可」「triage 上位 S 級を空き pane 分だけ自走」のような承認は、口頭では
+「ある PR の review round 6 まで自走可」「triage 上位 S 級を空き pane 分だけ自走」のような承認は、口頭では
 輪郭が曖昧で、conveyor が「どこまでが承認内か」を機械的に判定できない。曖昧なまま回すと、
 スコープ外への踏み込み（自動 merge / 別件混入 / 想定外作業の自己承認）が起きうる。そこで承認の輪郭を
 **機械的に判定できる述語 + 予算** として書き下し、人間に確認を取ってから回す。これにより:
 
 - conveyor は各候補・各 state transition を契約に照合して **投入可否を決定的に判定** できる。
 - スコープの縁（contract の述語に合致しない / 判定不能）が **検出可能** になり、halt 契機が機械化される。
-- 引き継ぎ（[`/secretary-resume`](../../secretary-resume/SKILL.md)）後も契約を読み戻せば同じ判定を再現でき、
+- 引き継ぎ（`/secretary-resume`）後も契約を読み戻せば同じ判定を再現でき、
   ループ状態をメモリに依存させない。
 
 ## 何を事前承認し / 何を絶対に承認しないか（境界・非交渉）
@@ -23,15 +23,14 @@
 | triage 投入（スコープ述語に合致する候補のみ） | ✅ する | 完了駆動ループの入口 |
 | `/org-delegate` 派遣（合致候補・空き pane 内） | ✅ する | per-candidate 人間選択を契約へ畳み込み |
 | worker iteration / verify | ✅ する | スコープ内作業 |
-| **push / `gh pr create` / `pr-watch` CI 監視** | ✅ する | 起動時スコープ承認が [`/org-pull-request`](../../org-pull-request/SKILL.md) 2b-i の「ユーザー明示承認」前提を満たす |
-| **merge（`merge_approval_mode: human`。キーが無い・不正なときもこちら）** | ❌ **承認しない** | 不可逆点。PR ごとの独立人間ゲート（`feedback-merge-approval` / `feedback-no-overgate-after-decision`） |
-| **merge（`merge_approval_mode: acceptance`。org-config.md の設定値）** | ✅ 止める線に当たらない PR だけ | 受け入れテストのゲートと CI が完了を確かめる。止める線（[`/org-pull-request`](../../org-pull-request/SKILL.md) 2b-i）に当たれば PR ごとの人間ゲートに戻る。ゲート通過はスコープ承認の代わりにならない |
+| **push / `gh pr create` / `pr-watch` CI 監視** | ✅ する | 起動時スコープ承認が `/org-pull-request` 2b-i の「ユーザー明示承認」前提を満たす |
+| **merge（`merge_approval_mode: human`。キーが無い・不正なときもこちら）** | ❌ **承認しない** | 不可逆点。PR ごとの独立人間ゲート |
+| **merge（`merge_approval_mode: acceptance`。org-config.md の設定値）** | ✅ 止める線に当たらない PR だけ | 受け入れテストのゲートと CI が完了を確かめる。止める線（`/org-pull-request` 2b-i）に当たれば PR ごとの人間ゲートに戻る。ゲート通過はスコープ承認の代わりにならない |
 | スコープ外候補の投入 | ❌ しない | scope 縁 → halt（INV-2 / INV-4） |
-| worker escalation の一次承認 | ❌ しない | [`/org-escalation`](../../org-escalation/SKILL.md) 経由で人間へ（INV-3） |
+| worker escalation の一次承認 | ❌ しない | `/org-escalation` 経由で人間へ（INV-3） |
 
 > **push/PR を事前承認できる理由（merge と区別する）**: 人間が「この範囲は自走してよい」と明示した
-> **持続的スコープ承認** が、in-scope な PR 作成までの mechanical pipeline を覆う（`feedback-no-overgate-after-decision`
-> 「ユーザー判断確定後は不可逆点でのみ再承認」）。`human` では merge は不可逆点なので **この承認の射程外**に明示的に置き、
+> **持続的スコープ承認** が、in-scope な PR 作成までの mechanical pipeline を覆う（ユーザー判断確定後は不可逆点でのみ再承認する）。`human` では merge は不可逆点なので **この承認の射程外**に明示的に置き、
 > 都度ゲートする。conveyor は bare な per-PR「OK」を merge 承認に流用しない。`acceptance` では、人間が設定でその方式を選び、
 > 起動時の確認で契約に記録した場合に限り、止める線に当たらない PR の merge まで契約が覆う（判定はエージェントの外のゲートが行う）。
 
@@ -48,7 +47,7 @@
 - repo: <OWNER/REPO>                           # 対象リポジトリ（gh カレント解決でも可）
 
 ## scope predicate（機械的に判定できる述語）
-- include: <述語>        # 例: label:bug AND size:S / #637 の follow-up に限る / PR #635 の review round
+- include: <述語>        # 例: label:bug AND size:S / <Issue> の follow-up に限る / <PR> の review round
 - exclude: <述語>        # 例: label:needs-design / 多ファイル設計判断を含むもの
 - 判定不能候補の扱い: scope 縁として投入しない（halt）
 - 候補プール: ゴール台帳（`registry/goals/`）の条項に当たった候補だけ。上の述語はこの狭まったプールに対して評価する。
