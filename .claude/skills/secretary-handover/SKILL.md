@@ -29,8 +29,8 @@ allowed-tools:
 >   `/clear` は窓口の Claude コンテキストだけをリセットするので、state.db と
 >   handover ファイルから復帰できれば組織は途切れない。
 > - 引数 `auto op=<OP>` 付きで呼ばれたときは、context-handover watcher
->   （[`tools/context_handover_watch.py`](../../../tools/context_handover_watch.py)）が文脈の閾値超過を見て
->   打鍵している（設計 [`docs/design/context-auto-handover.md`](../../../docs/design/context-auto-handover.md) §4.3）。
+>   （`tools/context_handover_watch.py`）が文脈の閾値超過を見て
+>   打鍵している。
 >   手順は同じで、違いは Step 4 の `op=<OP>` と Step 5 だけ。`/clear` と `/secretary-resume auto op=<OP>` は
 >   watcher が打つ。
 > - state DB (`.state/state.db`) は唯一の SoT。ペイン identity やワーク状態は
@@ -92,7 +92,7 @@ python3 tools/context_handover_watch.py --must-name secretary
 1 行に 1 つ task_id が出る。稼働中（`in_use` / `review`）の全ワーカーと、直近 24 時間に人へ承認・判断を
 仰いだ（`notify_sent kind=awaiting_user`）タスクである。出た task_id は全部、Step 3 の「進行中のワーク」か
 「人への承認待ち」に書く。自動引き継ぎでは watcher が `/clear` の前にこれを照合し、1 つでも欠けていれば
-`/clear` を打たずに止まる（設計 §6.2）。何も出なければ書く義務は無い。
+`/clear` を打たずに止まる。何も出なければ書く義務は無い。
 
 ## Step 3: handover ファイルを書き出す
 

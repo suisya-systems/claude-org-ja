@@ -56,12 +56,11 @@ allowed-tools:
 > - handover ファイルが存在しないか古すぎる場合は、`/org-start` を案内して停止する。
 > - `/clear` は `/loop` の予約を消さない。前 session の監視ループの予約は `/clear` の後も
 >   残っており、同じ指示文で `/loop` をもう一度打つと予約が 2 本になる。監視ループを張る前に
->   必ず `CronList` で確かめる（Step 5。経緯は
->   [`.claude/skills/dispatcher-resume/references/rationale.md`](references/rationale.md) §4）。
+>   必ず `CronList` で確かめる（Step 5）。
 
 ## 自動引き継ぎ（`auto op=<OP>` 付きで呼ばれたとき）
 
-context-handover watcher（[`tools/context_handover_watch.py`](../../../tools/context_handover_watch.py)）が
+context-handover watcher（`tools/context_handover_watch.py`）が
 `/dispatcher-handover auto op=<OP>` → `/clear` → `/dispatcher-resume auto op=<OP>` を打鍵する。
 手順は通常の resume と同じで、違いは次の 3 つだけ:
 
@@ -77,15 +76,14 @@ context-handover watcher（[`tools/context_handover_watch.py`](../../../tools/co
 > - **spawn 儀式**: コード既定 broker は `--mcp-config <broker>` 注入による Claude Code **folder-trust プロンプト**の画面判定による機械承認に加え、push 一次のため channel sidecar を `--dangerously-load-development-channels server:org-broker-channel` で load し dev-channel 承認プロンプトを画面判定で機械承認する（2 段承認）。`ORG_TRANSPORT=renga` 時は `--dangerously-load-development-channels server:renga-peers` の「Load development channel?」を画面判定で承認する 1 段。 **画面判定** = `inspect_pane` → `claude-org-runtime dispatcher spawn-prompt-step` が返した 1 手だけを `send_keys` する反復（runtime 0.1.43+）。盲目 Enter は禁止（folder-trust の初期カーソルは「No, exit」で、Enter 一発はワーカーを終了させる）。手順は spawn-flow 3-3b。
 > - **エラー分岐**: コード既定 broker は shared codes（`pane_not_found` / `last_pane` / `invalid-params`）に加え broker 固有 `[token_invalid]` / `[session_invalid]` / `[tool_not_authorized]` / `[no_backend]`（= adapter_unavailable）/ `[nudge_failed]` / `[peer_not_found]` / `[name_taken]` を返しうる（未知コードは default-branch で escalate）。`ORG_TRANSPORT=renga` 時は broker 固有コードは発生しない。
 >
-> `new_tab` / `focus_pane` は broker surface に**無い**（意図的除外）。契約面の正本は [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) Surface 8 + push-primary amendment（broker push 一次が **既定の契約**、pull は fallback として retain）。**opt-in `renga` は削除せず常時有効な切戻しの安全装置**として維持する。broker 実走（dogfood）は Epic #6 Issue G スコープで本ファイルの既定運用経路ではない（**二フレーム注記（Refs #604）**: ここの「コード既定 `broker`」は**コード既定**（`tools/transport.py: DEFAULT_TRANSPORT`、生成面はこれで render）。**運用既定**は broker dogfood が Epic #6 Issue G まで未活性のため `renga` で、両者は指す対象が異なり矛盾しない。総説は root [`CLAUDE.md`](../../../CLAUDE.md)。）
+> `new_tab` / `focus_pane` は broker surface に**無い**（意図的除外）。契約面の正本は [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) Surface 8 + push-primary amendment（broker push 一次が **既定の契約**、pull は fallback として retain）。**opt-in `renga` は削除せず常時有効な切戻しの安全装置**として維持する。broker 実走（dogfood）は本ファイルの既定運用経路ではない（**二フレーム注記**: ここの「コード既定 `broker`」は**コード既定**（`tools/transport.py: DEFAULT_TRANSPORT`、生成面はこれで render）。**運用既定**は broker dogfood が未活性のため `renga` で、両者は指す対象が異なり矛盾しない。総説は root [`CLAUDE.md`](../../../CLAUDE.md)。）
 
 ## Step 0 の前: 残存 loop 予約 / stale 再発火ガード（重複起動の早期遮断）
 
 `/dispatcher-resume` は **handover を 1 回だけ消費する one-shot** である（Step 7 で
 `.state/dispatcher-handover.md` を `.consumed.md` に rename する）。`/loop 3m` の予約が
 `/dispatcher-resume` 自身を反復対象に握っていると監視サイクルのたびに本 skill が再発火するので、
-この **stale 再発火 / 重複起動** を Step 0 に入る前に遮断する（経緯と各分岐の理由は
-[`.claude/skills/dispatcher-resume/references/rationale.md`](references/rationale.md)）。
+この **stale 再発火 / 重複起動** を Step 0 に入る前に遮断する。
 
 1. live / consumed の handover 状態を **存在ベース**で判定する（`now` との時刻比較に
    依存しない）:
@@ -111,13 +109,13 @@ context-handover watcher（[`tools/context_handover_watch.py`](../../../tools/co
      worker ペイン（`role == "worker"`）が 1 つ以上ある、または
      `.state/dispatcher/curate-inflight.json` が存在する（= 監視ループが回っているべき状態）。
      **`list_peers` の直前に
-     [`.claude/skills/org-delegate/references/capability-first-drive-operational-gate.md`](../org-delegate/references/capability-first-drive-operational-gate.md)
-     を Read し、`monitoring-read-only` の分岐を適用する**（同 reference §6 の表 #5）。capability 形
+     `/org-delegate` の `references/capability-first-drive-operational-gate.md`
+     を Read し、`monitoring-read-only` の分岐を適用する**（同 reference §6 の表の 5 行目）。capability 形
      かつ未承認なら列挙を live 判定に使わず破棄し、`list_panes` の `role == "worker"` と
      `curate-inflight.json` の有無だけで分岐する（停止しない・待ち時間 0 分）。
      **承認済み（同 reference §2 の `first_drive` が `recorded`）のときは §1-2 の三値判定を通し、
      「在」と出たワーカーだけを live として数える**。**「unknown」は live に数えないが、(ii) にも
-     倒さない**。**終端処理は (i) と同じ**（早期 exit + 監視ループの予約を `CronList` で確かめて
+     倒さない**（判定不能を「監視対象なし」と読むと、誤った `/org-start` 案内で健全な組織を壊しうる）。**終端処理は (i) と同じ**（早期 exit + 監視ループの予約を `CronList` で確かめて
      1 本にする）とし、secretary には
      `DISPATCHER_RESUME_INDETERMINATE: 監視対象の同タブ性を確定できず（unknown N 件）。
      live 判定を保留して監視ループのみ再開しました。` を送って判断を仰ぐ。
@@ -176,8 +174,8 @@ context-handover watcher（[`tools/context_handover_watch.py`](../../../tools/co
      secretary に明示して続行判断を仰ぐ（`target="focused"` や裸 `name` へフォールバックしない）
 4. `mcp__org-broker__list_peers` で `name == "dispatcher"` の `peer_id` を取得。
    **呼び出しの直前に
-   [`.claude/skills/org-delegate/references/capability-first-drive-operational-gate.md`](../org-delegate/references/capability-first-drive-operational-gate.md)
-   を Read し、`monitoring-read-only` の分岐を適用する**（同 reference §6 の表 #4）。capability 形
+   `/org-delegate` の `references/capability-first-drive-operational-gate.md`
+   を Read し、`monitoring-read-only` の分岐を適用する**（同 reference §6 の表の 4 行目）。capability 形
    かつ未承認なら列挙から `peer_id` を採らず破棄し、2 で確定した caller pane id で identity を
    確定して進む（停止しない・待ち時間 0 分）。
    **このとき Step 2 の DB 書き込みでは `dispatcher_peer_id` を渡さない**（`update_session()` は
@@ -210,7 +208,7 @@ context-handover watcher（[`tools/context_handover_watch.py`](../../../tools/co
      /org-start でディスパッチャーを cold start してください。
      ```
 2. フロントマター `created_at` を見て鮮度を判定する。`created_at` は決定的 UTC で書かれている
-   ([`/dispatcher-handover`](../dispatcher-handover/SKILL.md)) ので、**比較用の `now` も決定的 UTC で取得する**
+   (`/dispatcher-handover`) ので、**比較用の `now` も決定的 UTC で取得する**
    （`date -u +%Y-%m-%dT%H:%M:%SZ`、PowerShell 環境は
    `(Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")`）。local(JST)時刻で `now` を
    取ると `now - created_at` が約 9 時間ぶれ、24h / 7d 境界付近で鮮度を誤判定するため:
@@ -310,8 +308,8 @@ handover の `## 監視外の run` に「監視外: <task_id>（ペインなし�
 時点で不存在)` を通知（reconcile は窓口の責務）。
 
 **`list_peers` の直前に
-[`.claude/skills/org-delegate/references/capability-first-drive-operational-gate.md`](../org-delegate/references/capability-first-drive-operational-gate.md)
-を Read し、`monitoring-read-only` の分岐を適用する**（同 reference §6 の表 #6）。capability 形かつ
+`/org-delegate` の `references/capability-first-drive-operational-gate.md`
+を Read し、`monitoring-read-only` の分岐を適用する**（同 reference §6 の表の 6 行目）。capability 形かつ
 未承認なら列挙を不存在の根拠にせず破棄し、`mcp__org-broker__list_panes` と events テーブルの報告痕跡で判定する。
 **確定できなければ `WORKER_PANE_EXITED` を送らない**（縮退中の「列挙に居ない」は死亡の証拠ではなく、
 別 org の同名ピアと取り違えうる。同 reference §3-B-1）。停止しない・待ち時間 0 分。
@@ -381,7 +379,7 @@ secretary に報告する。**（判定条件・三値の定義・評価順の�
 INVARIANT(loop-prompt): `/loop` の prompt 引数に skill 自身（`/dispatcher-resume`）や
 他のスラッシュコマンドを渡さない。skill 実行ターン内で prompt を省略して `/loop` を
 起動すると、反復対象としてアクティブな slash command が捕捉され、本 skill が 3 分ごとに
-自己再帰する（経緯は references/rationale.md）。必ず monitoring 専用の
+自己再帰する。必ず monitoring 専用の
 自然文ディレクティブを明示的に渡すこと。tests/test_dispatcher_resume_loop_invariant.py が
 この不変条件を pin する。
 -->

@@ -30,7 +30,7 @@ knowledge/raw/ に蓄積された生の学びを読み、分類・統合して k
 {{> dual-system-header-long }}
 
 **起動モデル**: 本スキルは 1 回の起動で 1 サイクルだけ実行する（`/loop` 禁止）。
-閾値判定は外部スクリプト [`tools/check_curate_threshold.py`](../../../tools/check_curate_threshold.py) が行い、
+閾値判定は外部スクリプト `tools/check_curate_threshold.py` が行い、
 本スキル内部では件数による早期終了をしない。
 起動理由 `reasons[]` を受け取り、該当するステップだけを実行する。
 
@@ -175,7 +175,7 @@ curation context では空配列でよい。raw ファイル名から日付等�
    `<!-- curated -->` + 改行を prepend して同じパスに Write し直す（= read → prepend → write）。
    マーカー付与は **archive に move した後のファイルに対して**行う。active な `knowledge/raw/` 配下のファイルは絶対に書き換えない。
 
-   シェルで付与しない（`.md.tmp` 経由の上書き `mv` は `mv -i` alias で止まり、`!` は zsh の history expansion で壊れる）。やむを得ずシェルを使うときは `command mv -f` と `chr(33)` でマーカーを組み立てる。理由は [`.claude/skills/org-curate/references/rationale.md`](references/rationale.md) §2。
+   シェルで付与しない（`.md.tmp` 経由の上書き `mv` は `mv -i` alias で止まり、`!` は zsh の history expansion で壊れる）。やむを得ずシェルを使うときは `command mv -f` と `chr(33)` でマーカーを組み立てる。
 
 ファイルが archive/ に存在すること自体が「curated 済み」のシグナルだが、視覚的連続性のためにマーカーも付与する。`tools/check_curate_threshold.py` の `raw_active` カウントは archive/ を除外するため、move しただけでも次回はカウント対象から外れる。
 

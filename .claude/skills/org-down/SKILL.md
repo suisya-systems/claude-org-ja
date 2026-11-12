@@ -43,13 +43,12 @@ allowed-tools:
 daemon まで含めて組織を完全に停止する統合終了スキルである。
 
 > **責務境界（最重要）**: `claude-org-runtime org down`（broker daemon 停止）を呼ぶのは
-> **本スキルだけ**である。[`/org-suspend`](../org-suspend/SKILL.md) は「状態保存 + ja 管理下の補助
+> **本スキルだけ**である。`/org-suspend` は「状態保存 + ja 管理下の補助
 > プロセス（dashboard / secretary_queue_watcher / context-handover watcher / attention watcher）とペインの停止」までで
 > 止まり、daemon は走らせたまま（`/org-start` で再開する前提の中断）にする。/org-down は
 > **suspend の成功を確認できたときにのみ** daemon 停止へ進む。順序を守るのは、未保存の状態を
 > 残したまま daemon を落とすと復旧経路（`check_messages` での drain 等）ごと失われるため。
-> 本スキルは runtime の `org down` を **呼ぶだけ**（runtime 側 pre-flight との分担は
-> [`.claude/skills/org-down/references/rationale.md`](references/rationale.md)）。
+> 本スキルは runtime の `org down` を **呼ぶだけ**（runtime 側の pre-flight 検出には触れない）。
 
 > **輸送層の前提**: `claude-org-runtime org down` は broker daemon を落とすコマンドで、broker
 > transport（`ORG_TRANSPORT` 無設定＝コード既定 broker、または明示 broker）でのみ意味を持つ。
@@ -59,7 +58,7 @@ daemon まで含めて組織を完全に停止する統合終了スキルであ�
 
 ## Step 1: /org-suspend を完走する
 
-[`/org-suspend`](../org-suspend/SKILL.md) の全 Phase を順に実行する（Phase 1 状態収集 → Phase 2
+`/org-suspend` の全 Phase を順に実行する（Phase 1 状態収集 → Phase 2
 未応答スクレイプ → Phase 3 状態書き込み → **Phase 3.6 secretary_queue_watcher 停止** →
 **Phase 3.65 context-handover watcher 停止** → **Phase 3.7 attention watcher 停止**（ペイン teardown 前）→ Phase 4 全ペイン停止）。
 
@@ -70,7 +69,7 @@ daemon まで含めて組織を完全に停止する統合終了スキルであ�
 **suspend 成功の確認（gate）** — 次を満たしたときのみ Step 2 / Step 3 へ進む:
 
 - `.state/state.db` の `session.status` が `SUSPENDED` になっている（Phase 3 の DB write が成立）
-- [`.claude/skills/org-suspend/SKILL.md`](../org-suspend/SKILL.md) Phase 4 **手順 7** の最終報告が、
+- `/org-suspend` の Phase 4 **手順 7** の最終報告が、
   **`pending` と `unresolved` が両方空で「組織を中断しました」と言い切れた形**になっている。生死の判定は
   Phase 4 が **F-1**（同 Phase 1 手順 1 の「フォーカス前提（F）」）に従って出した結論だけを読み、
   本 gate のために org-down 側で `list_panes` を引き直して判定し直さない（Phase 4 自身の再列挙は
@@ -83,8 +82,8 @@ daemon まで含めて組織を完全に停止する統合終了スキルであ�
 自組織と確認できず対象外にしたピアが残る）、生死を判定できないピアが `pending` に残った、のいずれも該当する。状況を人間に報告し、「状態が保存し切れていない
 / ペインの停止を確認し切れていないため daemon は落とさなかった。原因解消後に /org-down を再実行するか、
 /org-suspend でいったん中断してください」と案内する（生死を判定できなかったピアが残っている場合は、
-Phase 4 手順 7 が列挙したその一覧もそのまま渡す）。判定不能を worker 監視と逆向きに STOP へ倒す
-理由は [`.claude/skills/org-down/references/rationale.md`](references/rationale.md)。
+Phase 4 手順 7 が列挙したその一覧もそのまま渡す）。判定不能のまま daemon を落とすと、走り続けているピアを止める手段も生死を
+後から確かめる経路も失われるため、判定不能は継続ではなく STOP に倒す。
 
 ## Step 2: ダッシュボードの停止（stale-pid-safe）
 

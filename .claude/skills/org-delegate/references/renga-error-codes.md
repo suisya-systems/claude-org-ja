@@ -32,8 +32,8 @@ mcp__renga-peers__send_message(to_id="worker-nonexistent", message="hi")
 |---|---|---|
 | `pane_not_found` | 指定した pane 名 / id / Focused が存在しない | **呼び出し文脈で分岐する（1.x / 2.0 共通で同じ手順を使ってよい）**。**pane 制御文脈**（`close_pane` / `inspect_pane` / `focus_pane` / `send_keys` / `list_panes` の target）= そのワーカーは既に閉じた扱い: `.state/workers/worker-*.md` の status を `pane_closed` に遷移、`WORKER_PANE_EXITED` を窓口に通知、リトライしない。**ただし例外が 2 つある**。**(1) 対象が他タブに居ると分かっているピア（`list_peers` が `same_tab: false` を返したピア）** — pane 制御は caller のタブ内に閉じたままなので、生存していても `pane_not_found` が返る。**(2) `caller_scope` を広告しない backend（renga 1.x、および `cross_tab_peers` だけを広告する backend）** — pane 制御は**フォーカス中のタブ**に向くので、フォーカスが別タブへ移っている間は**同タブの生存ペインでも** `pane_not_found` が返る。どちらの例外でも閉鎖と読まず「停止できない残存 / 判定不能」として journal + 窓口 escalate に回す（下記 2.0 節）。閉鎖を確定してよいのは `pane_exited` を観測したか、列挙 / 呼び出しが自分のタブに向いていると確認できるときだけ。**messaging 文脈**（`send_message`。broker では `peer_not_found`）= **即閉鎖扱いにしない**: `list_peers` 再取得 → 得られた**数値 peer id** で 1 回だけ再送 → **数値 id でも失敗したときにだけ** lifecycle 確認（`list_panes` / `poll_events` で消滅を裏取りしてから `pane_closed` 遷移 + `WORKER_PANE_EXITED`）へ落とす。手順の正本は「renga 2.0 系 — 追加コードと意味論の変更」節の messaging 分岐。pane 制御は caller のタブ内に留まるので、オーケストレータが操作するペインは同一タブに置く |
 | `pane_vanished` | resolve 成功後に消えたレース | **pane 制御文脈では `pane_not_found` と同等扱い**（閉じた扱い・リトライしない）。**messaging 文脈でも閉鎖扱いのまま**で、`pane_not_found` の messaging 分岐には**乗せない**: resolve は成功しているので、2.0 で `pane_not_found` に生じた「別タブに生存している peer を名前解決できず取り違える」誤検知クラスに当たらない（= 同等扱いなのは `pane_not_found` の **pane 制御文脈の枝**に対して、と読む）。ハンドラを共通化したい場合に閉鎖確定前の `list_peers` を 1 回挟むのは任意（居れば数値 id で再送、居なければ従来どおり閉鎖確定。呼び出しが 1 回増えるだけで害はない） |
-| `last_pane` | `close_pane` で唯一のタブの唯一のペインを閉じようとした | 通常のワーカー停止では発生しない (窓口/ディスパッチャー/キュレーターが同タブに同居するため)。`org-suspend` 末端で残った最後のペイン (通常は窓口) に対して発生した場合、そのペインは自分自身で `exit` して自然終了させる。強制再試行はしない。`last_pane` が返るのは **「唯一残るタブの唯一のペイン」のときだけ**で、対象が所属タブの最後のペインであっても**他タブが残っていればエラーにならず、タブごと閉じて成功を返す**（根拠の renga 実装行は [`docs/design/renga-pane-control-history.md`](../../../../docs/design/renga-pane-control-history.md) §3）。したがって **`close_pane` の成功は「ペイン 1 枚が消えた」を意味しない — タブ消滅を伴いうる**（呼び出し側は `Ok` しか見えないのでタブ消滅を検知しない）。**他タブが 1 枚でもあれば本コードは発火しないので、複数タブ環境では引き続き安全網として当てにしない**（ユーザーが自分用のタブを 1 枚開いているだけで成立する）。保護が効くのは唯一のタブの唯一のペインに限られる（`org-suspend` の窓口自己 close 禁止は本コードに依存しない構造的根拠で書いてある） |
-| `split_refused` | `spawn_pane` / `spawn_claude_pane` が MAX_PANES / too small で拒否 | ワーカー起動 (`org-delegate` Step 3) で balanced split のいずれかのステップが 16 ペイン上限 / `MIN_PANE_WIDTH` / `MIN_PANE_HEIGHT` で拒否された場合、MCP の拒否結果を添えて窓口に escalate する（spawn 前に helper が候補ゼロで返す `split_capacity_exceeded` とは別。そちらは helper の `escalate` をそのまま送る — [`.dispatcher/references/spawn-flow.md`](../../../../.dispatcher/references/spawn-flow.md) 3-1c）。典型シナリオは (a) 9 並列以上に到達、(b) ターミナル幅が balanced split の要件 (W ≥ 160) を満たさない、(c) ワーカー退役後の再派遣でレイアウト tree が想定と乖離。`new_tab` フォールバックは tab-scoped 制約のため不可 (suisya-systems/renga#71)。**2.0 系**: 同一タブ配置の要求自体は契約 T-§4.2 で retained (pane 制御は caller のタブ内に留まるため、別タブに置いた子は `inspect_pane` / `close_pane` / `list_panes` から見えなくなる)。タブ容量側の対応コードは下記 2.0 節の `tab_limit_reached` |
+| `last_pane` | `close_pane` で唯一のタブの唯一のペインを閉じようとした | 通常のワーカー停止では発生しない (窓口/ディスパッチャー/キュレーターが同タブに同居するため)。`org-suspend` 末端で残った最後のペイン (通常は窓口) に対して発生した場合、そのペインは自分自身で `exit` して自然終了させる。強制再試行はしない。`last_pane` が返るのは **「唯一残るタブの唯一のペイン」のときだけ**で、対象が所属タブの最後のペインであっても**他タブが残っていればエラーにならず、タブごと閉じて成功を返す**。したがって **`close_pane` の成功は「ペイン 1 枚が消えた」を意味しない — タブ消滅を伴いうる**（呼び出し側は `Ok` しか見えないのでタブ消滅を検知しない）。**他タブが 1 枚でもあれば本コードは発火しないので、複数タブ環境では引き続き安全網として当てにしない**（ユーザーが自分用のタブを 1 枚開いているだけで成立する）。保護が効くのは唯一のタブの唯一のペインに限られる（`org-suspend` の窓口自己 close 禁止は本コードに依存しない構造的根拠で書いてある） |
+| `split_refused` | `spawn_pane` / `spawn_claude_pane` が MAX_PANES / too small で拒否 | ワーカー起動 (`org-delegate` Step 3) で balanced split のいずれかのステップが 16 ペイン上限 / `MIN_PANE_WIDTH` / `MIN_PANE_HEIGHT` で拒否された場合、MCP の拒否結果を添えて窓口に escalate する（spawn 前に helper が候補ゼロで返す `split_capacity_exceeded` とは別。そちらは helper の `escalate` をそのまま送る — [`.dispatcher/references/spawn-flow.md`](../../../../.dispatcher/references/spawn-flow.md) 3-1c）。典型シナリオは (a) 9 並列以上に到達、(b) ターミナル幅が balanced split の要件 (W ≥ 160) を満たさない、(c) ワーカー退役後の再派遣でレイアウト tree が想定と乖離。`new_tab` フォールバックは tab-scoped 制約のため不可。**2.0 系**: 同一タブ配置の要求自体は契約 T-§4.2 で retained (pane 制御は caller のタブ内に留まるため、別タブに置いた子は `inspect_pane` / `close_pane` / `list_panes` から見えなくなる)。タブ容量側の対応コードは下記 2.0 節の `tab_limit_reached` |
 | `cwd_invalid` | `spawn_pane` / `spawn_claude_pane` / `new_tab` の `cwd` が存在しないか、ディレクトリでない | renga 0.16.0+ で追加。ペイン作成前に reject されるので half-mutated layout にはならない。Dispatcher 側では窓口に escalate し、ワーカーディレクトリ準備（org-delegate Step 1.5）が完了しているか、相対パスの解決基準（caller pane の cwd）を取り違えていないか確認 |
 | `invalid-params` | `spawn_claude_pane` の `args[]` に conflicting flag を含めた / `send_keys` の `keys[]` に未知のキー名を含めた等、JSON-RPC レベルの input 検証失敗 | `spawn_claude_pane` では `--dangerously-load-development-channels` / `--permission-mode` / `--model` を `args[]` に入れると rejected。構造化フィールド（`permission_mode` / `model`）で渡す。発生したらコード側のバグなので journal 記録 + 窓口 escalate |
 | `name_in_use` | `set_pane_identity` で既存の別ペインが使用中の name を割り当てようとした | `/org-start` Step 0 の secretary 識別修復では、この code を拾ってユーザーに「永続修復には `/org-suspend` → 再起動」を提示する。短期回避は numeric pane id 運用 |
@@ -46,24 +46,22 @@ mcp__renga-peers__send_message(to_id="worker-nonexistent", message="hi")
 
 ## renga 2.0 系 — 追加コードと意味論の変更
 
-> **適用範囲**: 本節は、pane / peer ツールの意味論を作り替えた renga の epic `suisya-systems/renga#287`（2026-08-05 実装）**以降の server** にだけ適用する。renga 側 CHANGELOG は BREAKING 扱いで、**2026-08-07 に 2.0.0 としてリリース済み**（renga `CHANGELOG.md` の `## [2.0.0] — 2026-08-07` 見出し）。本節では 2.0.0 以降を「2.0 系」と呼ぶ。**`server_too_old` を除き、2.0 未満の server に繋がっている間は本節のコードが 1 つも発生しない**。ただし「発生しないから 2.0 未満で運用を続けてよい」という意味では**ない** — 2.0 系の mcp-peer は必須操作をクライアント側で gate するため倒す先の legacy 経路が存在しない（下の `server_too_old` 復旧 clause (b)）。
+> **適用範囲**: 本節は、pane / peer ツールの意味論を作り替えた renga の epic（2026-08-05 実装）**以降の server** にだけ適用する。renga 側 CHANGELOG は BREAKING 扱いで、**2026-08-07 に 2.0.0 としてリリース済み**（renga `CHANGELOG.md` の `## [2.0.0] — 2026-08-07` 見出し）。本節では 2.0.0 以降を「2.0 系」と呼ぶ。**`server_too_old` を除き、2.0 未満の server に繋がっている間は本節のコードが 1 つも発生しない**。ただし「発生しないから 2.0 未満で運用を続けてよい」という意味では**ない** — 2.0 系の mcp-peer は必須操作をクライアント側で gate するため倒す先の legacy 経路が存在しない（下の `server_too_old` 復旧 clause (b)）。
 >
 > **`server_too_old` だけは 1.x 系に繋いでいるときにこそ出る**（発行元が backend ではなく **client 側の capability gate** だからで、2.0 対応クライアントが 1.x server に capability を要求した瞬間に fail closed する）。「本節は 2.0 系専用」と読んで本節ごと読み飛ばすと、**このコードが実際に出る唯一の環境で**非再試行 / escalate の分岐を落とすことになる。
 
 ### 2.0 系の capability と、それが変える前提
 
-| capability | 何が変わるか | 由来 |
-|---|---|---|
-| `caller_scope` | **pane 操作のうち Group A の 7 ツールだけ**（`list_panes` / `spawn_pane` / `spawn_claude_pane` / `spawn_codex_pane` / `focus_pane` / `inspect_pane` / `send_keys`、および §1.1–§1.3 spawn の `target`）の対象が「**フォーカス中のタブ**」から「**caller のペインが属するタブ**」に変わる（フォーカス非依存）。`list_panes` は自タブのみ返す。旧 server へは fail closed。**`close_pane` / `set_pane_identity` は含まれない**（次行の Group B。契約 T-§cap の `caller_scope` 項が "It does **not** extend to `close_pane` or `set_pane_identity`" と明記） | `suisya-systems/renga#288` |
-| `caller_scope_close_identity` | **pane 操作のうち Group B の 2 ツール**（`close_pane` / `set_pane_identity`）で、相対セレクタ（リテラル `"focused"` / 裸の name）が「**ユーザーが見ているタブ**」ではなく「**caller のタブ**」に対して解決されるようになる（数値 pane id は従来どおりタブ横断）。非広告なら `server_too_old` で fail closed。**`caller_scope` から導出してはならない独立トークン** | `suisya-systems/renga#296` |
-| `cross_tab_peers` | peer messaging がタブ横断になる。**名前解決は送信者のタブ内限定**／**数値 peer id 宛はタブ横断可**／`list_peers` は**全タブ列挙**。解決できない宛先は `pane_not_found` を返す（silent 成功をやめた fail loud 化）。`PeerInfo` に optional の `tab` / `tab_name` / `same_tab` が載る | `suisya-systems/renga#289` |
-| `spawn_tab` | `spawn_*` が tagged tab selector で配置先タブを取れる（背景タブ生成を含む）。tab 系エラー 4 種はここで出る。**capability query に使う正式名は `spawn_tab`**（契約 T-§cap）— renga の内部定数 `CAP_SPAWN_TAB` は実装詳細であって広告される識別子ではない。定数名で照会すると備えている backend でも「非対応」と誤判定し、`server_too_old` 経路へ誤って落とす | `suisya-systems/renga#290` |
-
-`#291`（org サイドバー、`Ctrl+B` / `[ui] org_sidebar`）は UI 機能でエラーコード面の影響はない。
+| capability | 何が変わるか |
+|---|---|
+| `caller_scope` | **pane 操作のうち Group A の 7 ツールだけ**（`list_panes` / `spawn_pane` / `spawn_claude_pane` / `spawn_codex_pane` / `focus_pane` / `inspect_pane` / `send_keys`、および §1.1–§1.3 spawn の `target`）の対象が「**フォーカス中のタブ**」から「**caller のペインが属するタブ**」に変わる（フォーカス非依存）。`list_panes` は自タブのみ返す。旧 server へは fail closed。**`close_pane` / `set_pane_identity` は含まれない**（次行の Group B。契約 T-§cap の `caller_scope` 項が "It does **not** extend to `close_pane` or `set_pane_identity`" と明記） |
+| `caller_scope_close_identity` | **pane 操作のうち Group B の 2 ツール**（`close_pane` / `set_pane_identity`）で、相対セレクタ（リテラル `"focused"` / 裸の name）が「**ユーザーが見ているタブ**」ではなく「**caller のタブ**」に対して解決されるようになる（数値 pane id は従来どおりタブ横断）。非広告なら `server_too_old` で fail closed。**`caller_scope` から導出してはならない独立トークン** |
+| `cross_tab_peers` | peer messaging がタブ横断になる。**名前解決は送信者のタブ内限定**／**数値 peer id 宛はタブ横断可**／`list_peers` は**全タブ列挙**。解決できない宛先は `pane_not_found` を返す（silent 成功をやめた fail loud 化）。`PeerInfo` に optional の `tab` / `tab_name` / `same_tab` が載る |
+| `spawn_tab` | `spawn_*` が tagged tab selector で配置先タブを取れる（背景タブ生成を含む）。tab 系エラー 4 種はここで出る。**capability query に使う正式名は `spawn_tab`**（契約 T-§cap）— renga の内部定数 `CAP_SPAWN_TAB` は実装詳細であって広告される識別子ではない。定数名で照会すると備えている backend でも「非対応」と誤判定し、`server_too_old` 経路へ誤って落とす |
 
 #### pane 操作は 1 群ではない — Group A（7 ツール）と Group B（2 ツール）を別々に gate する
 
-pane 操作を「`caller_scope` があれば全部 caller のタブに閉じる」と読むのは**誤り**。上流はこれを 2 群に割り、別のトークンで gate している（分けた理由と renga 側の実装は [`docs/design/renga-pane-control-history.md`](../../../../docs/design/renga-pane-control-history.md) §4）:
+pane 操作を「`caller_scope` があれば全部 caller のタブに閉じる」と読むのは**誤り**。上流はこれを 2 群に割り、別のトークンで gate している:
 
 - **Group A（7 ツール、`caller_scope`）**: `list_panes` / `spawn_pane` / `spawn_claude_pane` / `spawn_codex_pane` / `focus_pane` / `inspect_pane` / `send_keys`
 - **Group B（2 ツール、`caller_scope_close_identity`）**: `close_pane` / `set_pane_identity`
@@ -74,23 +72,21 @@ pane 操作を「`caller_scope` があれば全部 caller のタブに閉じる�
 > - **gate 実装済みクライアント**: 呼び出し自体を `server_too_old` で拒否する。安全側だが**操作は実行されていない**ので、成功と誤記録せず必ず表に出す（`/org-suspend` の「全ペイン停止」報告を偽らせない）。
 > - **gate 以前のクライアント**: `from_pane` を付けずに送るため、server 側は `"focused"` を**ユーザーが見ているタブ**に対して解決し、裸の name は**アクティブタブを最初に探し、そこで見つからなかったときだけ他タブを index 順に走査して最初の一致を採る**（無差別の全タブ検索ではなく、危険なのはこの**フォールスルー**と、優先されるタブが caller ではなく**ユーザーの**タブである点）。前者は人間が入力中のペインを終了させ、後者は**別 org の同名ペイン**（`worker-*` 等の予約名は 2 org 並走で構造的に衝突する）を close / rename しうる。**どちらもエラーを返さない**。
 >
-> **唯一の例外 — stale-binding 復旧（transport 条件付き carve-out、MAY）**: ライブペインは `list_panes` から消えているのに backend の name 束縛だけが残り、再 spawn が `[name_taken]` / `[name_in_use]` で弾かれる状態では、**列挙から採れる数値 pane id が構造的に存在しない**（列挙にそのレコードが無いのだから採りようがない）。この条件に限り裸 name の `close_pane` を **MAY** で許すが、成立には **3 条件が同時に必要**である: (1) backend が Group B を自身の単一タブモデル内で解決する（本ハーネスでは `org-broker`。判定は輸送層の解決規則で行い、環境変数の有無 / 綴りでは判定しない。解決しきれないときは条件**不成立**）、(2) 再 spawn が `[name_taken]` / `[name_in_use]` で拒否された、(3) その name が `list_panes` に**現れない**。**適用先は 3 手順だけ**で、[`.claude/skills/pr-watch-pane/SKILL.md`](../../pr-watch-pane/SKILL.md) の Step 3 の `[name_taken]` 自己復旧分岐と Step 5 の (b)（3 条件のハーネス側 SoT はこちら）、および [`.claude/skills/org-pull-request/SKILL.md`](../../org-pull-request/SKILL.md) の post-merge cleanup である。**他の Group B 呼び出しへ広げてはならない（MUST NOT）**。3 条件のどれかが欠ける経路（pre-capability な renga client を含む）は close せず、stale binding を人間に報告して止まる。**保持していた数値 pane id で撃つのは代替にならない** — `list_panes` で再確認できない id は、その再確認が捕まえるはずの pane id 再利用の穴をそのまま開ける（契約 T-§4.2 の carve-out bullet）。
+> **唯一の例外 — stale-binding 復旧（transport 条件付き carve-out、MAY）**: ライブペインは `list_panes` から消えているのに backend の name 束縛だけが残り、再 spawn が `[name_taken]` / `[name_in_use]` で弾かれる状態では、**列挙から採れる数値 pane id が構造的に存在しない**（列挙にそのレコードが無いのだから採りようがない）。この条件に限り裸 name の `close_pane` を **MAY** で許すが、成立には **3 条件が同時に必要**である: (1) backend が Group B を自身の単一タブモデル内で解決する（本ハーネスでは `org-broker`。判定は輸送層の解決規則で行い、環境変数の有無 / 綴りでは判定しない。解決しきれないときは条件**不成立**）、(2) 再 spawn が `[name_taken]` / `[name_in_use]` で拒否された、(3) その name が `list_panes` に**現れない**。**適用先は 3 手順だけ**で、`/pr-watch-pane` の Step 3 の `[name_taken]` 自己復旧分岐と Step 5 の (b)（3 条件のハーネス側 SoT はこちら）、および `/org-pull-request` の post-merge cleanup である。**他の Group B 呼び出しへ広げてはならない（MUST NOT）**。3 条件のどれかが欠ける経路（pre-capability な renga client を含む）は close せず、stale binding を人間に報告して止まる。**保持していた数値 pane id で撃つのは代替にならない** — `list_panes` で再確認できない id は、その再確認が捕まえるはずの pane id 再利用の穴をそのまま開ける（契約 T-§4.2 の carve-out bullet）。
 >
 > **caller pane id の取得規則 — Group B の自己修復（MUST）**: `set_pane_identity` の `target` は**既定が `"focused"`** で、`"focused"` が指すのは「そのタブでフォーカスされているペイン」であって **caller ではない**。したがって `focused: true` のレコードの数値 id に置き換えても上の MUST は満たされない（人間が最後に選んだ別ペインを、セレクタという痕跡すら残さずに改名するだけになる）。`list_peers` も代替にならない（契約 T-§2.2 が caller を除外し、§4.1 の予約名は組織並走で構造的に衝突するので、自分と同名のレコードは自分である証拠にならない）。自 identity を修復するときは **backend が out-of-band で与える caller pane id** を起点にする — renga ではペイン自身のプロセスが継承する `RENGA_PANE_ID` — そのうえで**同じ id を持つレコードが `list_panes` に在ることを確認してから**呼び出す（id 再利用と列挙不能をここで検出する）。caller id が得られない場合（変数が未設定 / 一致するレコードが無い / 同等物を持たない backend）は**自己修復を実行せず、相対セレクタにも落ちず**、identity 未修復のまま人間に報告して判断を仰ぐ（未修復は回復可能だが、誤った付け替えは回復不能）。
 >
-> 上の MUST が一時 SHOULD だった経緯は [`docs/design/renga-pane-control-history.md`](../../../../docs/design/renga-pane-control-history.md) §5。
->
-> なお `#290` 世代の server は先行 3 トークンを広告しながら未知の `from_pane` を落とすので、「3 トークン揃っているから安全」は成り立たない（`renga/docs/api-surface-v1.0.md`:576-582）。
+> なお `spawn_tab` 世代の server は先行 3 トークンを広告しながら未知の `from_pane` を落とすので、「3 トークン揃っているから安全」は成り立たない（`renga/docs/api-surface-v1.0.md`:576-582）。
 
 ### 2.0 系で追加されたコード
 
 | Code | 導入 | 意味 | 出る操作 | 復旧方針（再試行の可否まで） |
 |---|---|---|---|---|
 | `server_too_old` | 2.0 系クライアント | クライアントが要求した 2.0 capability（`cross_tab_peers` / `caller_scope` / `caller_scope_close_identity` / `spawn_tab`）を接続先 server が備えておらず fail closed した | 当該 capability を要求する全操作 | **非一時障害。自動再試行を禁止する**（同じ server は何度呼んでも古いまま。spin もバックオフも無意味）。**復旧は backend 依存で、「倒して継続」を既定にしてはならない** — 下の clause (a) / (b) を参照。renga では (b)（daemon と mcp-peer の**両方**を 2.0 系へ更新 → 再起動 → `server_info` で再 probe）。journal に記録し窓口に escalate する |
-| `tab_not_found` | 2.0（`suisya-systems/renga#290`） | spawn / tab 指定の selector（tag / id / name）が解決できない | tab 指定つき `spawn_*` / `new_tab` | 呼出側が持っている **tab snapshot が古い**とみなす。**tab 一覧を取り直してから 1 回だけ再試行**する。snapshot を更新しない素の再試行はしない（同じ結果になる）。更新後も解決できなければ selector 側の設定ミスとして窓口に escalate |
-| `tab_ambiguous` | 2.0（`suisya-systems/renga#290`） | tab の**名前**指定が複数のタブに一致した | 同上 | **同じ名前での再試行はしない**（曖昧さは時間で解けない）。tab 一覧から**一意な tab id** を取り、id 指定に切り替えて再試行する（pane の all-digit-is-id 規則と同じ「曖昧なら id」方針） |
-| `tab_limit_reached` | 2.0（`suisya-systems/renga#290`） | タブ数が上限に達して新規タブを作れない | `new_tab` / 背景タブ生成を伴う `spawn_*` | **同一要求の自動再試行を禁止する**（上限は待っても空かない）。**capacity escalation** として窓口に上げ、既存タブへの配置に切り替えるか、ワーカー退役でタブを空けるかは人間判断。pane 側の `split_refused` と同じ扱いの容量エラー |
-| `target_tab_mismatch` | 2.0（`suisya-systems/renga#290`） | 呼出側が指定した対象タブと、実際に解決されたペイン / タブが食い違う | tab 指定を取る操作 | **呼出側のバグとして扱う。再試行しない**（自動復旧させるとタブ跨ぎの誤操作を隠す）。journal に記録して窓口に escalate し、selector を組み立てているコード側を直す |
+| `tab_not_found` | 2.0 | spawn / tab 指定の selector（tag / id / name）が解決できない | tab 指定つき `spawn_*` / `new_tab` | 呼出側が持っている **tab snapshot が古い**とみなす。**tab 一覧を取り直してから 1 回だけ再試行**する。snapshot を更新しない素の再試行はしない（同じ結果になる）。更新後も解決できなければ selector 側の設定ミスとして窓口に escalate |
+| `tab_ambiguous` | 2.0 | tab の**名前**指定が複数のタブに一致した | 同上 | **同じ名前での再試行はしない**（曖昧さは時間で解けない）。tab 一覧から**一意な tab id** を取り、id 指定に切り替えて再試行する（pane の all-digit-is-id 規則と同じ「曖昧なら id」方針） |
+| `tab_limit_reached` | 2.0 | タブ数が上限に達して新規タブを作れない | `new_tab` / 背景タブ生成を伴う `spawn_*` | **同一要求の自動再試行を禁止する**（上限は待っても空かない）。**capacity escalation** として窓口に上げ、既存タブへの配置に切り替えるか、ワーカー退役でタブを空けるかは人間判断。pane 側の `split_refused` と同じ扱いの容量エラー |
+| `target_tab_mismatch` | 2.0 | 呼出側が指定した対象タブと、実際に解決されたペイン / タブが食い違う | tab 指定を取る操作 | **呼出側のバグとして扱う。再試行しない**（自動復旧させるとタブ跨ぎの誤操作を隠す）。journal に記録して窓口に escalate し、selector を組み立てているコード側を直す |
 
 #### `server_too_old` の復旧手順 — clause (a) / (b)
 
@@ -108,7 +104,7 @@ pane 操作を「`caller_scope` があれば全部 caller のタブに閉じる�
 
 ### `pane_not_found` の messaging 分岐（2.0 系で意味論が変わった箇所）
 
-2.0 では **名前解決が送信者のタブ内に限定**された（`cross_tab_peers`、`suisya-systems/renga#289`）。したがって `send_message` の名前宛が `[pane_not_found]` で返っても、**そのワーカーが別タブで生きている**可能性がある。名前が同一タブ内に無いときのエラー化自体は 1.x 系でも起きていた（冒頭 Wire format の例）が、2.0 では解決範囲がタブに固定されたぶん、この誤検知クラスが新たに現実的になった。messaging で受けた `[pane_not_found]` を即 `pane_closed` に落とすと、**生きているワーカーを閉鎖済みと誤記録する**。
+2.0 では **名前解決が送信者のタブ内に限定**された（`cross_tab_peers`）。したがって `send_message` の名前宛が `[pane_not_found]` で返っても、**そのワーカーが別タブで生きている**可能性がある。名前が同一タブ内に無いときのエラー化自体は 1.x 系でも起きていた（冒頭 Wire format の例）が、2.0 では解決範囲がタブに固定されたぶん、この誤検知クラスが新たに現実的になった。messaging で受けた `[pane_not_found]` を即 `pane_closed` に落とすと、**生きているワーカーを閉鎖済みと誤記録する**。
 
 > **手順 2 の `list_peers` を引く前に、先に
 > [`.claude/skills/org-delegate/references/capability-first-drive-operational-gate.md`](capability-first-drive-operational-gate.md)
@@ -195,7 +191,7 @@ broker は `cross_tab_peers` を広告せず、`new_tab` も提供しない（�
 他の renga-peers ツール (`spawn_pane` / `close_pane` / `list_panes` / `focus_pane` / `new_tab` /
 `check_messages` / `set_summary` / `poll_events` / `inspect_pane` / `send_keys`) は `require_connected` で非接続時に JSON-RPC error になる。この 2 つだけは**ハンドリング分岐を `[code]` パターンだけでなく `(no peers` / `(message dropped` 接頭辞**でも見るべき。
 
-> **2.0 系との切り分け**: この ok-text 例外は「renga 本体に**繋がらない**」場合の話で、2.0 系でも変わらない。**繋がっているが宛先が解決できない** `send_message` は別クラスで、`suisya-systems/renga#289` が silent 成功の経路を潰して `[pane_not_found]` を返すようにした（fail loud 化）。したがって 2.0 系では「送ったのに届かない」が黙って成功していた分がエラーとして表に出るので、messaging の case 分岐は `(message dropped` だけでなく `[pane_not_found]` も必ず拾い、後者は「renga 2.0 系 — 追加コードと意味論の変更」節の messaging 分岐に回す。
+> **2.0 系との切り分け**: この ok-text 例外は「renga 本体に**繋がらない**」場合の話で、2.0 系でも変わらない。**繋がっているが宛先が解決できない** `send_message` は別クラスで、`cross_tab_peers` が silent 成功の経路を潰して `[pane_not_found]` を返すようにした（fail loud 化）。したがって 2.0 系では「送ったのに届かない」が黙って成功していた分がエラーとして表に出るので、messaging の case 分岐は `(message dropped` だけでなく `[pane_not_found]` も必ず拾い、後者は「renga 2.0 系 — 追加コードと意味論の変更」節の messaging 分岐に回す。
 
 ## なぜ code か、substring ではなく
 
@@ -234,7 +230,7 @@ mcp__renga-peers__poll_events(
 
 ### `types` フィルタの挙動
 
-`types` filter は cursor を全 type で advance させるので重複 scan なし。ただし **filter 不一致イベント到着で long-poll が early return** し、`events: []` + 進んだ cursor が返る (renga PR #120 参照)。Dispatcher 監視ループでは空応答時に spin せず、`next_since` を保持したまま次のサイクルで再呼び出しする。
+`types` filter は cursor を全 type で advance させるので重複 scan なし。ただし **filter 不一致イベント到着で long-poll が early return** し、`events: []` + 進んだ cursor が返る。Dispatcher 監視ループでは空応答時に spin せず、`next_since` を保持したまま次のサイクルで再呼び出しする。
 
 ### 初回呼び出しのセマンティクス
 

@@ -37,7 +37,7 @@ attention watcher integration test に必ず波及する。
 
 > **本 SKILL のスコープ**: 窓口が runtime release 系タスクを受領した際の
 > 委譲設計と paired ja-sync 計画。実 commit / テスト修正はワーカー側であり本 skill ではない。
-> 本 skill が要る理由（後追い修正の 3 重コスト）と経緯は [`.claude/skills/runtime-release-with-paired-ja-sync/references/rationale.md`](references/rationale.md)。
+> 本 skill が要る理由（後追い修正の 3 重コスト）は [`.claude/skills/runtime-release-with-paired-ja-sync/references/rationale.md`](references/rationale.md)。
 
 ## 発動条件
 
@@ -54,7 +54,7 @@ attention watcher integration test に必ず波及する。
   （`>=X,<0.2`）のため PyPI 公開の瞬間から ja 側の 2 系統のチェックが赤くなる:
   (a) `tools/check_role_configs.py` — permissions projection と tracked settings を schema
   との整合で検証する。CI 配線は `--include-worker-settings`
-  （[`.github/workflows/tests.yml`](../../../.github/workflows/tests.yml)）で、machine-local
+  （`.github/workflows/tests.yml`）で、machine-local
   settings（`~/.claude/settings.json` 等）は CI 対象外。CI green でも local は stale に
   なり得るため、merge 後に `/org-setup` で反映する。なお `--include-local` は schema に
   `settings_paths` が宣言された role の settings.local.json しか見ず（`user_common` は
@@ -70,8 +70,7 @@ attention watcher integration test に必ず波及する。
 リリース系タスクは workers_dir 側が古い main から派生すると tag 衝突や stale base
 を引き起こすため、ワーカー派遣の直前に窓口が runtime の workers_dir で pre-fetch を実行する。
 手順（`git pull --ff-only` と、non-ff なら派遣せず人間に報告）は
-[`.claude/skills/org-delegate/SKILL.md`](../org-delegate/SKILL.md) Step 0.6 と
-[`.claude/skills/org-delegate/references/release-pre-fetch.md`](../org-delegate/references/release-pre-fetch.md) が正本。
+`/org-delegate` の Step 0.6 と同スキルの `references/release-pre-fetch.md` が正本。
 
 ## Step 2: リリース worker への impl-guidance
 
@@ -81,8 +80,7 @@ attention watcher integration test に必ず波及する。
   の更新を「known-required な co-update」として列挙する
 - リリース本体の bump 操作と version リテラルが両方 commit に含まれることを完了条件にする
 
-過去のリリースサイクルでは `test_smoke.py` の version リテラル更新漏れが
-リリース直後の CI red 原因として観測されている（cascade の入口）。
+`test_smoke.py` の version リテラル更新漏れはリリース直後の CI red の入口になる。
 brief で明示しない場合 worker は bump 対象を pyproject 系のみと解釈し、
 テスト側のリテラルを取りこぼす。
 
@@ -259,7 +257,7 @@ gh api / log / diff / source 読解は worker の責務。
 ## Step 6: 同一セッションでの land
 
 Secretary 自身のセッションが context 上限に達すると、paired ja-sync の意図が
-[`.claude/skills/secretary-handover/SKILL.md`](../secretary-handover/SKILL.md) を経ても暗黙化しやすい。
+`/secretary-handover` を経ても暗黙化しやすい。
 本 skill の全 Step は**できる限り同一 Secretary セッション内で完了**させる:
 
 - リリース worker 派遣と並走で ja-sync worker を起票（Step 4）→ リリース PR merge →

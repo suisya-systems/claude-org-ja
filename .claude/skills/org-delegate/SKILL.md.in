@@ -37,11 +37,11 @@ allowed-tools:
 
 > **本 SKILL のスコープ**: 派遣の「初動」(タスク特定 → 派遣ペイロード生成 → ディスパッチャーへの DELEGATE 受け渡し → ワーカー起動後の挨拶 → 進捗・完了報告受信時の ack と REVIEW 遷移) のみ。以下は別スキル / reference に分離している:
 > - **ワーカー起動・指示送信・状態記録の手順** → [`.dispatcher/references/spawn-flow.md`](../../../.dispatcher/references/spawn-flow.md) (ディスパッチャー専属)
-> - **ユーザー承認後の push / PR / CI 監視 / レビュー指摘ループ / マージ後クローズ** → [`.claude/skills/org-pull-request/SKILL.md`](../org-pull-request/SKILL.md)
-> - **ワーカーからの判断仰ぎ / スコープ拡張 / ブロッカーのエスカレーション** → [`.claude/skills/org-escalation/SKILL.md`](../org-escalation/SKILL.md)
+> - **ユーザー承認後の push / PR / CI 監視 / レビュー指摘ループ / マージ後クローズ** → `/org-pull-request`
+> - **ワーカーからの判断仰ぎ / スコープ拡張 / ブロッカーのエスカレーション** → `/org-escalation`
 > - **ack 文面の最低 3 要素・種別ごとの例文** → [`.claude/skills/org-delegate/references/ack-template.md`](references/ack-template.md) (single SoT)
 
-> **state-db cutover (M4, Issue #267 / #284)**: 構造化セクションの write は **必ず `StateWriter.transaction()` 経由**で行う。post-commit hook が `.state/org-state.md` / `.state/org-state.json` を DB から自動再生成し、`update_run_status('<task_id>', 'completed')` 呼び出しは `.state/workers/worker-<task_id>.md` を `.state/workers/archive/` へ自動 move する。markdown 直接編集は drift_check が検出する。events は DB の `events` テーブルが SoT (`tools/journal_append.sh` / `.py` は DB ルーティング済み)。DB 不在時は `python3 -m tools.state_db.importer --db .state/state.db --rebuild --no-strict`（Windows は `py -3 -m ...`） で構築する。
+> **state-db**: 構造化セクションの write は **必ず `StateWriter.transaction()` 経由**で行う。post-commit hook が `.state/org-state.md` / `.state/org-state.json` を DB から自動再生成し、`update_run_status('<task_id>', 'completed')` 呼び出しは `.state/workers/worker-<task_id>.md` を `.state/workers/archive/` へ自動 move する。markdown 直接編集は drift_check が検出する。events は DB の `events` テーブルが SoT (`tools/journal_append.sh` / `.py` は DB ルーティング済み)。DB 不在時は `python3 -m tools.state_db.importer --db .state/state.db --rebuild --no-strict`（Windows は `py -3 -m ...`） で構築する。
 
 > **輸送層（transport）両系**: 本スキルのツール参照は `{{FQ}}*`（`{{SERVER}}`）で書いてあり、active transport が既定面ならそのまま従えばよい（引数形・セマンティクスは両系同一で、手順の論理は変わらない）。輸送層で手順が変わるのは **受信モデル / spawn 儀式 / エラー分岐** の 3 点だけで、opt-in 側の輸送層は削除せず切戻しの安全装置として常時有効。両系の読み替え規則・契約の批准経緯・broker 固有エラーコードの一覧は [`.claude/skills/org-delegate/references/transport-duality.md`](references/transport-duality.md) を参照（上記 3 分岐に入るまで読む必要はない。コード一覧は [`.claude/skills/org-delegate/references/renga-error-codes.md`](references/renga-error-codes.md)）。
 
@@ -60,8 +60,7 @@ allowed-tools:
 
 ## レーン選択判定（窓口が実行）
 
-委譲前チェックリストに入る前に、まず **このタスクをどのレーンで回すか** を判定する。タスクルーティングは 2 レーン制で、原則（実作業は全てワーカーに委譲する）は維持しつつ、極小タスクに限った軽量レーンを例外に持つ。**軽量レーンと ultracode 武装の条件は本節が正本**（root `CLAUDE.md` は要約とポインタだけを持つ）。導入時のパイロット実績は [`.claude/skills/org-delegate/references/rationale.md`](references/rationale.md) §8。
-
+委譲前チェックリストに入る前に、まず **このタスクをどのレーンで回すか** を判定する。タスクルーティングは 2 レーン制で、原則（実作業は全てワーカーに委譲する）は維持しつつ、極小タスクに限った軽量レーンを例外に持つ。**軽量レーンと ultracode 武装の条件は本節が正本**（root `CLAUDE.md` は要約とポインタだけを持つ）。
 | レーン | 発動条件 | 処理経路 |
 |---|---|---|
 | **軽量レーン**（subagent 直処理） | 以下を **全て** 満たす: 推定工数 S 以下 / 単一ファイル級 / 判断仰ぎ想定なし / 日またぎなし | 窓口が**自身のセッションで** `Agent` tool（`isolation="worktree"`、背景実行）を呼んで直処理。**本 SKILL（org-delegate）の以降の手順には進まない**（本節は routing 判定のみ。subagent 起動は窓口本体の文脈で行うため、本 skill の `allowed-tools` に `Agent` は不要） |
@@ -89,7 +88,7 @@ allowed-tools:
 
 量が多いだけの機械的タスク（設計固定済みの移植・定型変換）は、L 級でも非武装を既定とする。背景には週間 rate limit の資源管理もある（構造が正当化しない増幅を既定にしない）。
 
-**ガード・hook 実装タスクは ultracode を許可しない（分類器の締め出し対策、Issue #1153）:** 上記基準 2 に当たっても、deny 規則・hook・封印など**禁止対象のコマンド字面を会話に多く持ち込むタスク**（例: push / 再帰削除を止める hook の修正）では ultracode を許可しない。auto-mode の安全分類器が会話内容に反応して Workflow 起動を拒否し、以降は無関係な Bash まで全拒否される事例が出ている（#1133 のワーカー）。brief の `--impl-guidance` には、禁止対象の字面を会話に大量展開せず file:line・テスト名で参照するよう 1 行添える。締め出されたワーカー（Bash が内容に関係なく全拒否される）は、言い換えでの再試行をさせず、窓口がワーカーペインに `/clear` を打鍵（text と Enter の別送）してから再開指示（`CLAUDE.local.md` / `CLAUDE.md` を読み直し、`git log` で進捗を確かめて続行）を送って復帰させる。
+**ガード・hook 実装タスクは ultracode を許可しない（分類器の締め出し対策）:** 上記基準 2 に当たっても、deny 規則・hook・封印など**禁止対象のコマンド字面を会話に多く持ち込むタスク**（例: push / 再帰削除を止める hook の修正）では ultracode を許可しない。auto-mode の安全分類器が会話内容に反応して Workflow 起動を拒否し、以降は無関係な Bash まで全拒否される事例が出ている。brief の `--impl-guidance` には、禁止対象の字面を会話に大量展開せず file:line・テスト名で参照するよう 1 行添える。締め出されたワーカー（Bash が内容に関係なく全拒否される）は、言い換えでの再試行をさせず、窓口がワーカーペインに `/clear` を打鍵（text と Enter の別送）してから再開指示（`CLAUDE.local.md` / `CLAUDE.md` を読み直し、`git log` で進捗を確かめて続行）を送って復帰させる。
 
 許可する場合、窓口は `gen_delegate_payload.py` の `--impl-guidance "<text>"` で brief に許可を明記する（例: `--impl-guidance "本タスクは実装中に設計判断が残るため ultracode の使用を許可する。ultracode は実装と Codex 前のセルフレビュー収束に使い、最終の Codex ゲートは従来どおり維持する"` — 理由は上記 3 基準のうち該当するものを書く）。この文言は worker brief（既定 `CLAUDE.md`、claude-org 自己編集タスクは `CLAUDE.local.md`）の「実装ガイダンス」にレンダリングされ、**dispatcher はここを読んで武装要否を判定する**（[`.dispatcher/references/spawn-flow.md`](../../../.dispatcher/references/spawn-flow.md) 3-5a）。
 
@@ -104,7 +103,7 @@ allowed-tools:
 **重量レーンのワーカーモデル選定（既定 sonnet）**: ワーカーの spawn model は既定 `sonnet`。Codex レビューの往復上限はワーカーの外（PreToolUse フックと `tools/codex_round_cap.py`）で強制されるので、Sonnet が収束しなくても上限で止まり、窓口がその時点で上げ方を決められる。Opus にするかを決めるのは**窓口だけ**で（ディスパッチャーもワーカーも決めない）、条件は次のいずれか:
 
 - (a) Codex 往復上限での拒否（`CODEX_ROUND_DENIED`）の後に、窓口が Opus へ上げると決めたとき（下記「ディスパッチャーから CODEX_ROUND_DENIED を受けたとき」）
-- (b) ワーカーが手に余ると申し出たとき（モデルの昇格だけなら窓口が決める。申し出にスコープ拡張や方針変更が含まれるときは、その部分を [`/org-escalation`](../org-escalation/SKILL.md) で人間に上げる）
+- (b) ワーカーが手に余ると申し出たとき（モデルの昇格だけなら窓口が決める。申し出にスコープ拡張や方針変更が含まれるときは、その部分を `/org-escalation` で人間に上げる）
 - (c) 人間が指定したとき
 - (d) ガード・封印・契約などの強制機構を実装するタスク（「テストが緑でも守っていない」型の欠陥が出やすい）
 
@@ -145,8 +144,7 @@ python3 tools/codex_round_cap.py set --task-id <task_id> --allowed <N|unlimited>
 
 - 曖昧な用語がある場合: 「○○は△△のことですか？」とユーザーに確認してから進める
 - OS別タスクの場合: ペイロード生成時に、OS固有の前提条件をワーカーへの指示に含める
-- **pin 管理された内部パッケージ（`claude-org-runtime` 等）のバグ疑いを委譲する前に**: 当日の [`/org-start`](../org-start/SKILL.md) Block C2 の runtime drift check が clean（exit 0）だったかを確認する。drift 検出（exit 1）や「PyPI 未確認」（exit 2 = sandbox 内実行等で PyPI に届かず）だった場合は、既に upstream で修正済みのバグを古い venv で踏んでいる可能性があるので、まず venv upgrade + pin 窓 bump で最新化し、それでも再現するかを確認してから委譲する（既修正バグへの phantom dispatch を防ぐ）。pin ラグはセッション定数なので確認は org-start 時 1 回で足り、委譲ごとの再チェックは不要（背景は [`.claude/skills/org-delegate/references/rationale.md`](references/rationale.md) §2）
-
+- **pin 管理された内部パッケージ（`claude-org-runtime` 等）のバグ疑いを委譲する前に**: 当日の `/org-start` Block C2 の runtime drift check が clean（exit 0）だったかを確認する。drift 検出（exit 1）や「PyPI 未確認」（exit 2 = sandbox 内実行等で PyPI に届かず）だった場合は、既に upstream で修正済みのバグを古い venv で踏んでいる可能性があるので、まず venv upgrade + pin 窓 bump で最新化し、それでも再現するかを確認してから委譲する（既修正バグへの phantom dispatch を防ぐ）。pin ラグはセッション定数なので確認は org-start 時 1 回で足り、委譲ごとの再チェックは不要
 ### incorporation / sync 系タスクの初手チェックリスト
 
 ソース（review 結果 / 別ブランチ / 別リポジトリの状態）を destination に取り込む incorporation / sync 系タスクでは、**ソース commit が destination の現状から N コミット以上進んでいる場合、selective merge（cherry-pick / 必要 hunk のみ apply）を初手として検討する**。byte 一致 cp は Codex iterative review fix を機械的に上書きするリスクがある。
@@ -156,7 +154,7 @@ python3 tools/codex_round_cap.py set --task-id <task_id> --allowed <N|unlimited>
 | ソースと destination の乖離 | `git log <source>..<destination>` / `git log <destination>..<source>` で双方向に確認 | 双方向に diverge があれば cp 禁止、selective merge を採用 |
 | destination 側の追加修正 | destination ブランチで Codex review fix / Blocker fix が積まれていないか | 積まれている場合は cp で機械的に上書きしないこと（cherry-pick or hunk 単位の apply） |
 
-背景の事故は [`.claude/skills/org-delegate/references/rationale.md`](references/rationale.md) §3。ワーカーへの brief で「初手 cp 禁止 / 取り込み戦略を明示」を要求する。
+ワーカーへの brief で「初手 cp 禁止 / 取り込み戦略を明示」を要求する。
 
 ### 並列委譲で同一ファイルを編集するケースの brief 事前文言
 
@@ -169,13 +167,13 @@ python3 tools/codex_round_cap.py set --task-id <task_id> --allowed <N|unlimited>
 - **窓口の続報は merge 順序の決定だけでは送らない**。先行 PR が merge され base upstream に反映されたことを確認してから後続 worker に送る（順序決定直後に送ると、先行変更を含まない upstream へ rebase してしまい conflict 防止が成立しない）
 - **rebase 先と適用範囲**: 完了報告前の rebase は検証深度 `full` のタスクに限る。PR のベースが `origin/main` 以外なら、rebase 先は実際の base upstream（例 `origin/<統合用ブランチ>`）に読み替える。描画される brief テンプレート（`tools/templates/worker_brief_*.md`）にはこの規定が無いので、必要なら上の文言にあわせて `--impl-guidance` に書く
 
-事後の追指示でも救えるが、brief 段階で入れておけば窓口→worker の 1 往復が減り、integration point conflict を事前に防げる（実例と効果は [`.claude/skills/org-delegate/references/rationale.md`](references/rationale.md) §4）。
+事後の追指示でも救えるが、brief 段階で入れておけば窓口→worker の 1 往復が減り、integration point conflict を事前に防げる。
 
 ## Step 0: プロジェクト名前解決（窓口が実行）
 
 ユーザーの依頼からプロジェクトを特定する:
 
-1. `registry/projects.md` を読む。**未生成なら `python3 tools/ensure_projects_registry.py`（Windows native は `py -3 ...`）でテンプレートから生成してから読む**（Issue #811 で operator-local な生成ファイルになった。通常は `/org-start` の Step 0 が生成済みなのでこの分岐には入らない。既存ファイルは上書きされないので実行は無害）
+1. `registry/projects.md` を読む。**未生成なら `python3 tools/ensure_projects_registry.py`（Windows native は `py -3 ...`）でテンプレートから生成してから読む**（operator-local な生成ファイル。通常は `/org-start` の Step 0 が生成済みなのでこの分岐には入らない。既存ファイルは上書きされないので実行は無害）
 2. 依頼に含まれるキーワードから該当プロジェクトを特定する（通称・プロジェクト名・説明から照合）
 3. 特定できた場合はそのパスを使う
 4. 特定できない場合は登録済みプロジェクトの通称一覧を提示し、選ばせる
@@ -206,9 +204,9 @@ work-skill の手順をそのままコピーしない。参考情報として提
 - 対象ファイルに `CHANGELOG.md` 昇格 / `__about__.__version__` / `pyproject.toml` の `version` bump 等を含む
 - task_id に `release` を含む（例: `runtime-0-1-10-release`）
 
-通常タスクでは実行しない。worker は素の `git fetch` はできるが、`git pull`（local main の fast-forward）と `git -C <path> fetch` は deny されている（[`tools/org_extension_schema.json`](../../../tools/org_extension_schema.json) の worker 既定ロールの allow / deny）。そのため local main を進める仕事は窓口に残る。fast-forward できない（non-ff）ときは派遣せず人間に報告する。実行コマンド・Pattern B との切り分けは [`.claude/skills/org-delegate/references/release-pre-fetch.md`](references/release-pre-fetch.md) を一次参照。
+通常タスクでは実行しない。worker は素の `git fetch` はできるが、`git pull`（local main の fast-forward）と `git -C <path> fetch` は deny されている（`tools/org_extension_schema.json` の worker 既定ロールの allow / deny）。そのため local main を進める仕事は窓口に残る。fast-forward できない（non-ff）ときは派遣せず人間に報告する。実行コマンド・Pattern B との切り分けは [`.claude/skills/org-delegate/references/release-pre-fetch.md`](references/release-pre-fetch.md) を一次参照。
 
-## Step 0.7 / 1 / 1.5 / 2: 1 コマンドで派遣ペイロードを生成（Issue #283）
+## Step 0.7 / 1 / 1.5 / 2: 1 コマンドで派遣ペイロードを生成
 
 Step 0.7 (gitignore 事前チェック) / Step 1 (Pattern 判定) / Step 1.5 (ワーカーディレクトリ準備 + role 決定 + settings 生成) / Step 2 (DELEGATE 本文組み立て) は **`tools/gen_delegate_payload.py` が一括で行う**。窓口の責務はタスク特定 (Step 0)・work-skill 検索 (Step 0.5)・対象ファイルの抽出・depth 判断のみ。
 
@@ -237,7 +235,7 @@ python3 tools/gen_delegate_payload.py preview \
 
 # 2. apply: CLAUDE.md/CLAUDE.local.md 配置 + claude-org-runtime settings generate 実行
 #    + send_plan.json 出力 を先に済ませ、最後に state.db へ runs.status='queued' 予約と
-#    T1 の delegate_sent イベントを同一トランザクションで記録する (Issue #928)
+#    T1 の delegate_sent イベントを同一トランザクションで記録する
 python3 tools/gen_delegate_payload.py apply \
     --task-id <task-id> --project-slug <slug> \
     --target <path>... --description "<desc>" \
@@ -274,7 +272,7 @@ py -3 tools/gen_delegate_payload.py apply \
 
 - `--mode edit|audit` (default `edit`): claude-org 上の **読み取り専用** 監査タスクは `--mode audit` を明示する
 - `--branch <name>`: planned_branch を上書き。default は `feat/<task-id>` (description に "fix"/"bug"/"修正" を含むと `fix/<task-id>`)
-- `--base-ref <branch>`: worktree の**起点ブランチ**を単発で上書き (Issue #808)。既定は [`registry/projects.md`](../../../registry/projects.md) の `base_branch` 列、それも空欄なら `origin/HEAD`。**優先順位は `--base-ref` > `base_branch` 列 > `origin/HEAD`**。プロジェクトの常態（例 `develop` に feature を溜める）は列に書き、本フラグは hotfix を `main` から切る等の**逸脱時のみ**使う。値はブランチ名（`origin/develop` 表記も可）。`origin` に存在しないブランチを指定した `apply` は既定ブランチへ黙って落ちず fail loud で止まる。解決結果は `preview --json` の `summary.base_branch` / `summary.base_ref` と DELEGATE 本文の「ベース:」行に出る。この値は後続の `gh pr create --base` の既定でもある（[`.claude/skills/org-pull-request/SKILL.md`](../org-pull-request/SKILL.md) 2b-i）ので、起点とマージ先は常に一致する
+- `--base-ref <branch>`: worktree の**起点ブランチ**を単発で上書き。既定は `registry/projects.md` の `base_branch` 列、それも空欄なら `origin/HEAD`。**優先順位は `--base-ref` > `base_branch` 列 > `origin/HEAD`**。プロジェクトの常態（例 `develop` に feature を溜める）は列に書き、本フラグは hotfix を `main` から切る等の**逸脱時のみ**使う。値はブランチ名（`origin/develop` 表記も可）。`origin` に存在しないブランチを指定した `apply` は既定ブランチへ黙って落ちず fail loud で止まる。解決結果は `preview --json` の `summary.base_branch` / `summary.base_ref` と DELEGATE 本文の「ベース:」行に出る。この値は後続の `gh pr create --base` の既定でもある（`/org-pull-request` 2b-i）ので、起点とマージ先は常に一致する
 - `--commit-prefix "<prefix>"`: 省略時は project_slug の頭部から推論 (例: `claude-org-ja` → `feat(claude):`)
 - `--closes-issue N` / `--refs-issues N1 N2`: 「Closes #N」「Refs #N1 #N2」を brief に埋め込む
 - `--impl-target <path>` / `--impl-guidance "<text>"` / `--knowledge <path>`: optional な `[implementation]` / `[references]` セクション
@@ -286,7 +284,7 @@ py -3 tools/gen_delegate_payload.py apply \
 
 ### Pattern / role / branch の判定詳細
 
-判定ロジック (Pattern A vs B vs C / gitignored サブモード / role 表 / planned_branch / DELEGATE 本文の必須行) は [`.claude/skills/org-delegate/references/delegate-flow-details.md`](references/delegate-flow-details.md) 参照。self-edit タスクの特例（Issue #289、`pattern_variant='live_repo_worktree'`）は [`.claude/skills/org-delegate/references/claude-org-self-edit.md`](references/claude-org-self-edit.md) §3 参照。
+判定ロジック (Pattern A vs B vs C / gitignored サブモード / role 表 / planned_branch / DELEGATE 本文の必須行) は [`.claude/skills/org-delegate/references/delegate-flow-details.md`](references/delegate-flow-details.md) 参照。self-edit タスクの特例（`pattern_variant='live_repo_worktree'`）は [`.claude/skills/org-delegate/references/claude-org-self-edit.md`](references/claude-org-self-edit.md) §3 参照。
 
 ### 対象ファイル抽出
 
@@ -321,12 +319,10 @@ py -3 tools/gen_delegate_payload.py apply \
 窓口から既存 worker へ送る全 message は「1 worker = 1 task = 1 scope」の原則に従う。3 rule は本節が正本（root `CLAUDE.md`「worker への追加依頼の境界」は要約）:
 
 1. **追加依頼は元タスクのスコープ内に限る**: brief で示した範囲内の補足・修正指示のみ追送する。スコープ外の別件は同 worker に投入せず、Step 0 から本 SKILL を回し直してディスパッチャー経由で別 worker を派遣する
-2. **worker のスコープ拡張提案は escalation 経由**: 窓口は一次承認せず [`/org-escalation`](../org-escalation/SKILL.md) を発動する
+2. **worker のスコープ拡張提案は escalation 経由**: 窓口は一次承認せず `/org-escalation` を発動する
 3. **窓口は worker 作業を代行しない**: ファイル編集・commit・テスト等を窓口側 worktree で手を出さず、追加依頼として worker に戻すか別 worker を派遣する
 
 **方針を途中で変えたとき**: 計測方法・タスク内の範囲・手順を途中で変えたときは、何が変わったか、brief のどこが無効になったか、そこから完了報告までに何をすればよいかを 1 通のメッセージにまとめて送る（worker は窓口が後から決めたことを知らないので、変更だけを送ると古い brief のまま進んでしまう）。メッセージの内容が brief と食い違うときは、どちらを優先するかをメッセージに明記する。
-
-違反事例と guard / CI 実装の扱いは [`.claude/skills/org-delegate/references/rationale.md`](references/rationale.md) §5。
 
 ### DELEGATE_COMPLETE 受信時
 
@@ -338,7 +334,7 @@ py -3 tools/gen_delegate_payload.py apply \
 )
 ```
 
-**`.claude/` 編集タスクの send_keys 事前承認（root `.claude/**` self-edit のみ）**: 委譲対象に claude-org root の `.claude/**` が含まれる場合（`.dispatcher/` / `.curator/`、worker dir 生成物の `.claude/settings.local.json` は対象外）、窓口は上記挨拶の送信に**続けて** `python3 tools/self_edit_approval.py send --task {task_id} --file <対象ファイル>...` を **1 回**実行する（**broker 実走時のみ** `--target %N` を足す: 論理名 `worker-{task_id}` は tmux から引けないので `list_panes` で読んだ pane id を渡す。足りなければ**打鍵前に** exit 2 で止まるので、承認が届いたと誤解することは無い）（承認文の text 送信 → 着弾確認 → Enter 単独送信 → submit 確認を内部で順に行い、どの段でも検証できなければ exit 10 で停止し、成功時のみ `self_edit_approval_sent` を記帳する）。承認文の必須 3 要素（対象ファイル列挙 + task_id + 「窓口経由のユーザー承認」の明記）はツールが組み立てる。**`{{FQ}}send_keys` を手で 3 段打たない**（Enter 落としで承認文が draft 滞留し worker が待機し続ける。Issue #956。詳細は [`.claude/skills/org-delegate/references/rationale.md`](references/rationale.md) §7）。worker 側は編集前にこの承認入力の存在を確認し、無ければ編集せず窓口に要求する（ハンドシェイク固定で deadlock / 空打ちを防止）。承認を送らずに派遣したケースは `python3 tools/self_edit_approval.py audit` で事後検出できる。スコープ境界・背景（2 層ガード）・承認文テンプレート・worker brief 必須文言は [`.claude/skills/org-delegate/references/claude-org-self-edit.md`](references/claude-org-self-edit.md) §5 を一次参照。
+**`.claude/` 編集タスクの send_keys 事前承認（root `.claude/**` self-edit のみ）**: 委譲対象に claude-org root の `.claude/**` が含まれる場合（`.dispatcher/` / `.curator/`、worker dir 生成物の `.claude/settings.local.json` は対象外）、窓口は上記挨拶の送信に**続けて** `python3 tools/self_edit_approval.py send --task {task_id} --file <対象ファイル>...` を **1 回**実行する（**broker 実走時のみ** `--target %N` を足す: 論理名 `worker-{task_id}` は tmux から引けないので `list_panes` で読んだ pane id を渡す。足りなければ**打鍵前に** exit 2 で止まるので、承認が届いたと誤解することは無い）（承認文の text 送信 → 着弾確認 → Enter 単独送信 → submit 確認を内部で順に行い、どの段でも検証できなければ exit 10 で停止し、成功時のみ `self_edit_approval_sent` を記帳する）。承認文の必須 3 要素（対象ファイル列挙 + task_id + 「窓口経由のユーザー承認」の明記）はツールが組み立てる。**`{{FQ}}send_keys` を手で 3 段打たない**（Enter 落としで承認文が draft 滞留し worker が待機し続ける）。worker 側は編集前にこの承認入力の存在を確認し、無ければ編集せず窓口に要求する（ハンドシェイク固定で deadlock / 空打ちを防止）。承認を送らずに派遣したケースは `python3 tools/self_edit_approval.py audit` で事後検出できる。スコープ境界・背景（2 層ガード）・承認文テンプレート・worker brief 必須文言は [`.claude/skills/org-delegate/references/claude-org-self-edit.md`](references/claude-org-self-edit.md) §5 を一次参照。
 
 ### ワーカーからのメッセージ受信時
 
@@ -350,7 +346,7 @@ worker → Secretary peer message
   2. update Progress Log + DB (run.status / events / pending-decisions register)
   3. report to user           (完了 / escalation / blocker のみ。進捗報告は不要)
   4. wait for user approval before push/PR
-  5. CI watch / next instruction → [`.claude/skills/org-pull-request/SKILL.md`](../org-pull-request/SKILL.md)
+  5. CI watch / next instruction → `/org-pull-request`
 ```
 
 - ack の最低内容と種別ごとの例文は [`.claude/skills/org-delegate/references/ack-template.md`](references/ack-template.md) を参照。**ack ≠ user 承認**: `git push` / `gh pr create` / `/pr-watch-pane` は user の明示的 OK 後にのみ発行
@@ -358,7 +354,7 @@ worker → Secretary peer message
 
 #### 0. 判断仰ぎ・スコープ拡張・ブロッカー（最優先で識別）
 
-→ [`.claude/skills/org-escalation/SKILL.md`](../org-escalation/SKILL.md) を発動する。Secretary は一次承認しない。
+→ `/org-escalation` を発動する。Secretary は一次承認しない。
 
 #### 1. 進捗報告（完了以外の中間ハンドオフ報告すべて — 進捗・rebase 報告・依頼 等）
 
@@ -366,11 +362,11 @@ worker → Secretary peer message
 
 - worker へ ack を返す（[`.claude/skills/org-delegate/references/ack-template.md`](references/ack-template.md) の「進捗報告 ack」節。Progress Log 追記より前）。**進捗報告は user に上げない・承認待ちもしない**
 - `.state/workers/worker-{task_id}.md` の Progress Log に追記
-- **DB の events テーブルへ `worker_reported` を必ず追記する（省略不可、Issue #699）**:
+- **DB の events テーブルへ `worker_reported` を必ず追記する（省略不可）**:
   ```bash
   bash tools/journal_append.sh worker_reported worker=worker-{task_id} task={task_id} summary="<要約>"
   ```
-  payload key は event catalog（[`docs/journal-events.md`](../../../docs/journal-events.md) の `worker_reported` 行: `worker`, `task`, `summary`）に合わせる。kind は `worker_reported` に統一（`worker_progress` 等の別名を使わない）。**記帳漏れは正常稼働中の worker を silent dead-lock と誤検知させる**（dispatcher の PANE_OUTPUT_WITHOUT_PEER_MSG 判定は events テーブルの `worker_reported` 痕跡を SQL で参照するため。[`.dispatcher/references/worker-monitoring.md`](../../../.dispatcher/references/worker-monitoring.md) Step 5.2、実例は [`.claude/skills/org-delegate/references/rationale.md`](references/rationale.md) §6）
+  payload key は event catalog（[`docs/journal-events.md`](../../../docs/journal-events.md) の `worker_reported` 行: `worker`, `task`, `summary`）に合わせる。kind は `worker_reported` に統一（`worker_progress` 等の別名を使わない）。**記帳漏れは正常稼働中の worker を silent dead-lock と誤検知させる**（dispatcher の PANE_OUTPUT_WITHOUT_PEER_MSG 判定は events テーブルの `worker_reported` 痕跡を SQL で参照するため。[`.dispatcher/references/worker-monitoring.md`](../../../.dispatcher/references/worker-monitoring.md) Step 5.2）
 
 #### 2a. 完了報告
 
@@ -397,13 +393,13 @@ worker → Secretary peer message
   "
   ```
 - DB の events テーブルにイベント追記 (`bash tools/journal_append.sh ...`)
-- **dispatcher へ完了受領を通知（監視抑止、Issue #658）**: worker ack と上記状態更新（REVIEW 遷移・events 追記）を終えた後、**best-effort・非 blocking** で dispatcher へ `WORKER_COMPLETION_NOTED` を送る。dispatcher はこれを `/loop 3m` の通常 `check_messages` で受けて `worker-idle-state.json` の `completion_reported_at` に反映し、PANE_OUTPUT_WITHOUT_PEER_MSG 検知（完了報告済み worker の正常な review 待ち idle を silent dead-lock と誤判定する false positive、[`.dispatcher/references/worker-monitoring.md`](../../../.dispatcher/references/worker-monitoring.md) Step 5.2）を抑止する。**これは「完了判定」ではなく「監視抑止用の受領通知」**（完了遷移 T4 は secretary の責務、dispatcher は自分で完了を判定しない）。**dispatcher 応答を待たない**（blocking wait は T4 の human review 移行に新しい停止点を作るため禁止）。本文に task_id と received_at（ISO-8601 UTC）を含める:
+- **dispatcher へ完了受領を通知（監視抑止）**: worker ack と上記状態更新（REVIEW 遷移・events 追記）を終えた後、**best-effort・非 blocking** で dispatcher へ `WORKER_COMPLETION_NOTED` を送る。dispatcher はこれを `/loop 3m` の通常 `check_messages` で受けて `worker-idle-state.json` の `completion_reported_at` に反映し、PANE_OUTPUT_WITHOUT_PEER_MSG 検知（完了報告済み worker の正常な review 待ち idle を silent dead-lock と誤判定する false positive、[`.dispatcher/references/worker-monitoring.md`](../../../.dispatcher/references/worker-monitoring.md) Step 5.2）を抑止する。**これは「完了判定」ではなく「監視抑止用の受領通知」**（完了遷移 T4 は secretary の責務、dispatcher は自分で完了を判定しない）。**dispatcher 応答を待たない**（blocking wait は T4 の human review 移行に新しい停止点を作るため禁止）。本文に task_id と received_at（ISO-8601 UTC）を含める:
   ```
   {{FQ}}send_message(to_id="dispatcher", message="WORKER_COMPLETION_NOTED: worker-<task_id> (task_id=<task_id>, received_at=<ISO-8601 UTC>)")
   ```
-  対の解除は T6 再指示時の `WORKER_REOPENED`（[`.claude/skills/org-pull-request/SKILL.md`](../org-pull-request/SKILL.md) 2c）。minimal / full どちらの完了報告でも送る（silent dead-lock 抑止は検証深度に依らない）
-- **人間向け理解サマリを承認提示の土台にし永続化する（検証深度 `full` 限定）**: full モード完了報告には worker が「人間向け理解サマリ」（(1) 最重要の変更点 N 個、(2) 要確認ファイル / hunk、(3) 設計判断と理由）を含める（スキーマの正本はワーカーに描画される brief テンプレート [`tools/templates/worker_brief_normal.md`](../../../tools/templates/worker_brief_normal.md)、自己編集タスクは [`tools/templates/worker_brief_self_edit.md`](../../../tools/templates/worker_brief_self_edit.md) の「人間向け理解サマリ」節）。窓口は自分でコードを精読せず、このサマリをユーザーへの承認提示の土台にする（必要なら業務言語に整える）。受領したサマリは `.state/workers/worker-{task_id}.md` の Progress Log に `Human Understanding Summary:` 見出し + 直下の fenced code block でそのまま追記する（merge 承認時に再掲する元。full 完了報告が複数回ある場合は最新ブロックを正とする）。PR 作成時は PR 本文にも要約を載せてよい。**full でサマリが欠落していたら通常の review feedback として同ペインの worker に補完を依頼する**（[`.claude/skills/org-pull-request/SKILL.md`](../org-pull-request/SKILL.md) 2c の review-feedback 手順で扱う）。これは手順レイヤの完了報告フォーマット拡張であり、contract（T4 `worker_completed`）の遷移条件は変えない。minimal の 1 行 `done:` 報告にはサマリは付かない
-- **awaiting_user 通知の emit（Issue #28）**: 人間への報告 → 承認待ち停止に入る直前で、attention watcher に「Secretary が user の判断待ちで停止する」ことを知らせる:
+  対の解除は T6 再指示時の `WORKER_REOPENED`（`/org-pull-request` 2c）。minimal / full どちらの完了報告でも送る（silent dead-lock 抑止は検証深度に依らない）
+- **人間向け理解サマリを承認提示の土台にし永続化する（検証深度 `full` 限定）**: full モード完了報告には worker が「人間向け理解サマリ」（(1) 最重要の変更点 N 個、(2) 要確認ファイル / hunk、(3) 設計判断と理由）を含める（スキーマの正本はワーカーに描画される brief テンプレート `tools/templates/worker_brief_normal.md`、自己編集タスクは `tools/templates/worker_brief_self_edit.md` の「人間向け理解サマリ」節）。窓口は自分でコードを精読せず、このサマリをユーザーへの承認提示の土台にする（必要なら業務言語に整える）。受領したサマリは `.state/workers/worker-{task_id}.md` の Progress Log に `Human Understanding Summary:` 見出し + 直下の fenced code block でそのまま追記する（merge 承認時に再掲する元。full 完了報告が複数回ある場合は最新ブロックを正とする）。PR 作成時は PR 本文にも要約を載せてよい。**full でサマリが欠落していたら通常の review feedback として同ペインの worker に補完を依頼する**（`/org-pull-request` 2c の review-feedback 手順で扱う）。これは手順レイヤの完了報告フォーマット拡張であり、contract（T4 `worker_completed`）の遷移条件は変えない。minimal の 1 行 `done:` 報告にはサマリは付かない
+- **awaiting_user 通知の emit**: 人間への報告 → 承認待ち停止に入る直前で、attention watcher に「Secretary が user の判断待ちで停止する」ことを知らせる:
   ```bash
   bash tools/journal_append.sh notify_sent kind=awaiting_user task_id=<task_id> gate=worker_completed note="<PR/Issue 等の短い文脈>"
   ```
@@ -412,9 +408,9 @@ worker → Secretary peer message
 
 #### 2b / 2c. ユーザー承認後・レビュー指摘・マージ後クローズ
 
-→ [`.claude/skills/org-pull-request/SKILL.md`](../org-pull-request/SKILL.md) を発動する。
+→ `/org-pull-request` を発動する。
 
-- **再指示時の監視フラグ解除（Issue #658）**: 完了報告済み（§2a で dispatcher へ `WORKER_COMPLETION_NOTED` 送信済み）の worker に、review feedback / CI 失敗の追指示を送るときは、追指示の**前に** dispatcher へ `WORKER_REOPENED: worker-<task_id> (task_id=<task_id>, reopened_at=<ISO-8601 UTC>)` を best-effort・非 blocking で送り、`completion_reported_at` を clear させる。再指示は secretary→worker 直送で dispatcher が経路上に居ないため、この明示解除が無いと dispatcher の PANE_OUTPUT_WITHOUT_PEER_MSG 検知が sticky skip のままレビュー修正中の本物の silent dead-lock を見逃す。操作 SoT は [`.claude/skills/org-pull-request/SKILL.md`](../org-pull-request/SKILL.md) 2c
+- **再指示時の監視フラグ解除**: 完了報告済み（§2a で dispatcher へ `WORKER_COMPLETION_NOTED` 送信済み）の worker に、review feedback / CI 失敗の追指示を送るときは、追指示の**前に** dispatcher へ `WORKER_REOPENED: worker-<task_id> (task_id=<task_id>, reopened_at=<ISO-8601 UTC>)` を best-effort・非 blocking で送り、`completion_reported_at` を clear させる。再指示は secretary→worker 直送で dispatcher が経路上に居ないため、この明示解除が無いと dispatcher の PANE_OUTPUT_WITHOUT_PEER_MSG 検知が sticky skip のままレビュー修正中の本物の silent dead-lock を見逃す。操作 SoT は `/org-pull-request` 2c
 
 ### ディスパッチャーから CODEX_ROUND_DENIED を受けたとき
 
@@ -428,7 +424,7 @@ worker → Secretary peer message
      python3 tools/codex_round_cap.py set --task-id <task_id> --allowed <N> --reason "Opus へ昇格して続行"
      ```
      `--allowed` は通算の許可回数（使用済みを含む）なので、`used` より大きい値にする
-   - **(b) 人間に上げる**: [`/org-escalation`](../org-escalation/SKILL.md) の流れで残指摘とワーカーの自己評価を提示し、判断を仰ぐ。人間が許可回数の追加を承認したら (a) と同じ `set` を実行してからワーカーへ伝える
+   - **(b) 人間に上げる**: `/org-escalation` の流れで残指摘とワーカーの自己評価を提示し、判断を仰ぐ。人間が許可回数の追加を承認したら (a) と同じ `set` を実行してからワーカーへ伝える
    - **(c) 止めて残指摘のまま提示する**: 残りが Minor / Nit 中心、または指摘が収束せず設計の問題と見える場合は、追加のレビューをさせず、完了報告（2a）と同じ扱いで残指摘付きのまま人間へ提示する
 
 許可回数を増やせるのは窓口だけで、ワーカーからは書けない（許可回数は窓口側 `.state/state.db` の events にあり、ワーカーのサンドボックスと境界フックの外）。ワーカーが自分で上限を回避しようとした（`codex` の直接実行・ゲートの別経路呼び出し）跡を見つけたら、それも人間に報告する。

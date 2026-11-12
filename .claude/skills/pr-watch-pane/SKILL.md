@@ -42,7 +42,8 @@ context リセットと無関係）に監視が継続し、人間が tmux ペイ
 - **`.state/pr-watch-<PR>.log` + tmux スクロールバッファ** … 人間可読の生ログ二段。
 
 > **peer push は best-effort**: 窓口への `CI_COMPLETED` / `PR_MERGED` push は欠落しうる
-> （欠落する条件は [`.claude/skills/pr-watch-pane/references/rationale.md`](references/rationale.md) §8）。
+> （broker send CLI 不在 / 解決先 transport が未構成のペイン / 非既定 state dir で pane env に
+> `ORG_BROKER_STATE_DIR` が無い場合に欠落する。欠落しても events DB 行には影響しない）。
 > **待つべき正路は上記 events DB 行と可視ペイン**であり、push の到達を merge gate の前提にしない。
 
 > **輸送層（transport）両系**: 本文のツール参照は `mcp__org-broker__*`（`org-broker`）で書いてあり、
@@ -82,15 +83,15 @@ context リセットと無関係）に監視が継続し、人間が tmux ペイ
 - **自己 close の実装は「watcher ペインが tmux ペインであること」前提**。Step 3 の `command` は
   `bash` 実行と、自己 close の `tmux kill-pane -t "$TMUX_PANE"`（**自ペインを `$TMUX_PANE` で明示
   指定して** kill。socket は `$TMUX` 継承をそのまま使い `-L` で固定しない ＝ tmux 上に立つ
-  ペインであれば broker の既定 socket / 非既定 socket いずれでも正しい server に当たる。
-  Issue #647 提案 1 の「明示 target 指定」を実装した形）に依存する。**tmux ペインでない環境では
+  ペインであれば broker の既定 socket / 非既定 socket いずれでも正しい server に当たる）に依存する。**tmux ペインでない環境では
   `$TMUX` / `$TMUX_PANE` がそもそも env に無く、`-t ""` へ展開されて `2>/dev/null || true` で
   無言失敗する**（下記の分類を参照）。
 - **自己 close の 2 分類**: 自己 close が効くのは watcher ペインの実体が tmux ペインのとき
   （broker の tmux backend）だけで、それ以外では監視終了後もペインが残る。残る場合は監視終端で
-  窓口がイベント駆動で close する（[`.claude/skills/org-pull-request/SKILL.md`](../org-pull-request/SKILL.md)
-  の各終端処理。手順は Step 5 の (a)/(b)）。分類の詳細は
-  [`.claude/skills/pr-watch-pane/references/rationale.md`](references/rationale.md) §9。
+  窓口がイベント駆動で close する（`/org-pull-request`
+  の各終端処理。手順は Step 5 の (a)/(b)）。tmux ペインでない環境は herdr / wezterm backend
+  と renga。renga では (a) の自タブ確立が `caller_scope` 依存で、確立できなければ close を撃たず
+  残留を報告する。
 - Windows native の手動起動経路（人間が `tools/pr-watch.ps1 <PR>` を `!` 経由で起動）は
   遮断しない。
 
@@ -102,23 +103,24 @@ context リセットと無関係）に監視が継続し、人間が tmux ペイ
    ```bash
    git rev-parse --show-toplevel                          # -> JA_ROOT（絶対パス）
    gh repo view --json nameWithOwner -q .nameWithOwner    # -> OWNER/REPO
-   printenv ORG_TRANSPORT ORG_BROKER_STATE_DIR PATH       # -> transport env（Refs #653 #658）
+   printenv ORG_TRANSPORT ORG_BROKER_STATE_DIR PATH       # -> transport env
    ```
 
    - `gh repo view` が失敗する場合はユーザーに「リポジトリを自動解決できません。
      `--repo OWNER/REPO` を指定してください」と報告して中断。pr-watch.sh 自身も `--repo`
      省略時は auto-resolve するが、ここで明示することで **pane の cwd に依らず repo を固定**
      する（cwd trap が repo 解決にも波及しないようにする）。
-   - **transport env の捕捉（Refs #653 #658 — env trap 吸収）**: `printenv` で窓口
+   - **transport env の捕捉（env trap 吸収）**: `printenv` で窓口
      （secretary）ペインの `ORG_TRANSPORT` / `ORG_BROKER_STATE_DIR` / `PATH` を確定させる。
      `mcp__org-broker__spawn_pane` は **汎用 CLI ペイン**を env 注入なしで立てるため（本 skill 上部の
      注記）、これらを Step 3 の `command` に**前置注入しないと** spawn されたペインの
      `tools/peer_notify.py` が `ORG_TRANSPORT` 未設定で silent no-op に落ちる。
      `cwd` が cwd trap を吸収するのと同じ理屈で、この env 捕捉が **env trap** を吸収する。
      `ORG_TRANSPORT` が空 / 未設定なら Step 3 で `export ORG_TRANSPORT` を**省く**。
-     これは**窓口ペインの解決結果をそのまま鏡写しにする**ための省略である（PR #73 障害の
-     経緯と、未設定の意味が renga → broker に変わった Refs #941 の経緯は
-     [`.claude/skills/pr-watch-pane/references/rationale.md`](references/rationale.md) §3）。
+     これは**窓口ペインの解決結果をそのまま鏡写しにする**ための省略である（未設定を渡された
+     watcher ペインは窓口ペインと同じ解決で同じ transport に着地する。未設定は renga ではなく
+     broker を意味する。renga 運用なら `ORG_TRANSPORT=renga` が窓口ペインで明示されており、
+     その値が複製される）。
      `ORG_BROKER_STATE_DIR` も set のときだけ前置する。
 
 ## Step 1-R: renga ではスクリプトを 1 回打つ
@@ -162,11 +164,11 @@ watcher は窓口のタブを割らずに背景タブ「監視」に立ち、知
 
 ## Step 3: 監視ペインの spawn
 
-### Step 3-0: 張り先（アンカー）を幾何で決める（Refs #335）
+### Step 3-0: 張り先（アンカー）を幾何で決める
 
 spawn の前に、**どのペインを split 起点にするか**を決定的ツールで求める。target は
-固定しない（旧版の `target="dispatcher"` 固定が生んだ実害の経緯は
-[`.claude/skills/pr-watch-pane/references/rationale.md`](references/rationale.md) §2）。
+固定しない（固定アンカーが細ると `[split_refused]` になり、広い別ペインが空いているのに
+タブ満杯と誤読するため）。
 
 1. `mcp__org-broker__list_panes` を呼び、返却された `panes` 配列（`id` / `name` / `role` /
    `x` / `y` / `width` / `height`）をそのまま JSON として控える。
@@ -187,8 +189,7 @@ spawn の前に、**どのペインを split 起点にするか**を決定的ツ
    `spawn_pane` 引数に使う**（direction も候補ごとに変わる。`vertical` 固定ではない）。
    direction は「両方向を評価し、親側に残る子が大きい方を採る」規則（runtime の
    `_split_options` と同一。同値性は unit test で固定）。**窓口が direction を自分で
-   決めない**（実害の経緯は
-   [`.claude/skills/pr-watch-pane/references/rationale.md`](references/rationale.md) §2）。
+   決めない**（幅広のペインを横割りすると窓口ペインを潰すため）。
 4. `candidates` が空（exit code 2 / `capacity_exhausted: true`）のときだけ、**このタブに
    watcher を置く余地が本当に無い**。spawn を試みず、`rejected` の各行（どのペインが
    どの床値でどう落ちたか）を添えて人間に報告し、指示を仰ぐ。
@@ -223,21 +224,23 @@ mcp__org-broker__spawn_pane(
 )
 ```
 
-- **`nocorrect true 2>/dev/null || true;` 前置（Issue #825 — zsh correctall 無言停止の根治。必須・置換禁止）**:
+- **`nocorrect true 2>/dev/null || true;` 前置（zsh correctall 無言停止の防止。必須・置換禁止）**:
   `command` は対話シェルに打鍵される形で実行されるため、pane の login shell が zsh で
   スペル自動訂正（`setopt correctall`）が有効だと、残留 `.state/pr-watch-*.log` に類似した
   新規ログ名が `zsh: correct '...' to '...' [nyae]?` の確認プロンプトを発火させ、
   **パイプライン全体が一度も走らないまま無言停止**する。行頭の `nocorrect` は zsh の
   precommand modifier（reserved word）で、パース前に解釈され**その行全体の全 word のスペル
-  訂正を無効化**する（`;` 連結の後続コマンドにも効く）。実発生ログと実機確認の記録は
-  [`.claude/skills/pr-watch-pane/references/rationale.md`](references/rationale.md) §4。
+  訂正を無効化**する（`;` 連結の後続コマンドにも効く）。
   - payload から独立した犠牲文にすること、`2>/dev/null`（Step 4 の誤殺防止）と `|| true`
-    （errexit 耐性）は**どれも省略不可**（各要素の理由は同 §4）。
+    （errexit 耐性）は**どれも省略不可**。`nocorrect` は zsh 以外にコマンドとして存在しないので、
+    `nocorrect export ...` と直結すると bash 等では export 文ごと失敗する。`2>/dev/null` が無いと
+    `nocorrect: command not found` が画面に残り Step 4 の起動失敗判定に誤マッチして正常な watcher を
+    閉じる。`|| true` が無いと errexit 有効なシェルで犠牲文の失敗により pane ごと終了する。
   - `<...>` placeholder ではない**固定文字列**であり、窓口は値に置換せずそのまま残す。下記の
     条件付き前置で export 文を省いた場合も、`nocorrect true 2>/dev/null || true;` は
     **常に行頭に残す**。
 
-- **env 前置注入（Refs #653 #658 — 必須。PR #73 障害の根治）**: 犠牲文に続く
+- **env 前置注入（必須）**: 犠牲文に続く
   `export ORG_TRANSPORT=...; export ORG_BROKER_STATE_DIR=...; export PATH=...;` は Step 1 で
   `printenv` 捕捉した窓口ペインの実値に置換する。これが無いと汎用 spawn ペインは transport
   env を継承せず、`peer_notify` の broker/renga 経路がどちらも未設定分岐に落ちて **push が
@@ -250,8 +253,9 @@ mcp__org-broker__spawn_pane(
     「窓口と同じ解決結果を継がせる」ことを意味する。`ORG_BROKER_STATE_DIR` も
     set のときだけ前置する。空値を `''` で明示 export すると broker 経路が既定 state dir を
     掴む誤動作を招くため、**空なら export 文自体を書かない**。
-  - この env 注入は低遅延 push の修理で、単独の保証ではない（多層防御の内訳は
-    [`.claude/skills/pr-watch-pane/references/rationale.md`](references/rationale.md) §3）。
+  - この env 注入は低遅延 push の修理で、単独の保証ではない（push が落ちても、ディスパッチャーの
+    `event_deliveries` outbox relay が events の `ci_completed` 等を窓口へ relay し、`pr_watch` は
+    push 失敗を `notify_failed` イベントに記録する）。
 
 - `target` / `direction`: **Step 3-0 のツールが返した候補**をそのまま使う。broker では
   各ペインが detached 独立セッションだが、addressing scope（同一タブ MUST、contract
@@ -261,12 +265,12 @@ mcp__org-broker__spawn_pane(
   は spawn 時に固定で、role ラベルは tier を変えない — Surface 8）。
 - `cwd`: **Step 1 で解決した JA_ROOT 絶対パス**。これにより pane 内の `tools/pr-watch.sh` /
   `.state/pr-watch-<PR>.log` が ja-root 基点で resolve される（cwd trap 吸収）。
-- **`--no-detach` 必須（Issue #650）**: `tools/pr-watch.sh` は Issue #641 対策で既定
+- **`--no-detach` 必須**: `tools/pr-watch.sh` は既定で
   setsid + nohup の自己 detach をするため、`--no-detach` を付けないと spawn 直後に親 bash が
   exit して broker pane が即時掃除され、watcher が孤児化する（pane が無いので `/org-attach` /
   `Ctrl-b s` でも覗けない）。`--no-detach` で前景動作させ、`tee` と末尾 self-close の
   自己終了サイクルを成立させる。`Ctrl-b s` で覗けないときは
-  [`docs/operations/dispatcher-view.md`](../../../docs/operations/dispatcher-view.md) §4 を参照。
+  `docs/operations/dispatcher-view.md` §4 を参照。
 - `command`: pr-watch を前景実行し、stdout/stderr を `.state/pr-watch-<PR>.log` に `tee -a`
   （tmux スクロールバッファにも出る二段）。先頭 `mkdir -p .state` で fresh clone でも tee の
   出力先を確保する。pr-watch 終了後に `tmux kill-pane -t "$TMUX_PANE"`
@@ -277,13 +281,13 @@ mcp__org-broker__spawn_pane(
     `$TMUX_PANE` は窓口が値に置換してはならない。tmux ペインとして spawn された場合に shell へ
     自動露出する自ペイン id（例 `%16`）で、self-close 時に **その pane 自身**を明示 target 解決する。
     旧形 `tmux kill-pane`（target 無指定）は現在ペインを暗黙推定するが、`-t "$TMUX_PANE"` で
-    明示することで曖昧さを排す（Issue #647 提案 1 の「明示 target 指定」）。
-    - **tmux ペインでなければ未設定で無言失敗する（Issue #911）**: renga のペインでは
+    明示することで曖昧さを排す。
+    - **tmux ペインでなければ未設定で無言失敗する**: renga のペインでは
       `printenv TMUX TMUX_PANE` がどちらも未設定を返すため、この行は `tmux kill-pane -t ""` に
       展開され `2>/dev/null || true` で無言失敗する（herdr / wezterm も同様に tmux ペインでない）。
       **この失敗はエラーとして表に出ないので、残留の検知を self-close の成否に依存させない。**
-  - **socket は `$TMUX` 継承をそのまま使う（`-L` で固定しない）**（理由は
-    [`.claude/skills/pr-watch-pane/references/rationale.md`](references/rationale.md) §10）。
+  - **socket は `$TMUX` 継承をそのまま使う（`-L` で固定しない）**（固定すると非既定 socket 下で
+    別 server に当たり self-close が無言で失敗する）。
   - **self-close は（効いた場合も）tmux 層だけを掃除する**: `kill-pane` は broker socket 上の実 tmux ペイン
     を消すので、直後から `list_panes` には現れなくなる。ただし broker daemon の pane 登録簿
     （name binding）は self-close では pop されず **stale に残りうる**（daemon は自 pane の外部
@@ -303,7 +307,7 @@ mcp__org-broker__spawn_pane(
 戻り値 `"Spawned pane id=N."` の N を控える。
 
 **spawn 失敗時の分岐**（MCP 結果テキストの `[<code>]` で判定。詳細は
-[`.claude/skills/org-delegate/references/renga-error-codes.md`](../org-delegate/references/renga-error-codes.md)）:
+`/org-delegate` の references/renga-error-codes.md）:
 
 - `[split_refused]` → **候補リストを rank 順に 1 段ずつ降りて再試行する（各候補は 1 回だけ）**。**このコードは「その target を
   今の幾何では割れない」というターゲット局所の失敗を含む**（free-pane 不足だけでなく、
@@ -361,18 +365,17 @@ mcp__org-broker__spawn_pane(
      （spawn_pane / set_pane_identity が行う）を指す。MCP peer / dev-channel 登録は発生しない。
 2. **即時クラッシュ / 対話プロンプト停止の検出（negative-signal のみ）**:
    `mcp__org-broker__inspect_pane(target=<N>, format="text", lines=<ペイン高さ以上>, include_cursor=true)`
-   で出力を**全画面**読む（Issue #825）。`lines` は `mcp__org-broker__list_panes` の geometry で分かる
+   で出力を**全画面**読む。`lines` は `mcp__org-broker__list_panes` の geometry で分かる
    ペイン高さ以上、高さが取れなければ余裕を取って `lines=200` を指定する。末尾 15-40 行だけの
-   読み取りは、画面**上部**に出た確認プロンプト + 下部空白を「静かな正常起動」と誤読する
-   （見逃した実例は [`.claude/skills/pr-watch-pane/references/rationale.md`](references/rationale.md)
-   §5）。`include_cursor=true` は下記
+   読み取りは、画面**上部**に出た確認プロンプト + 下部空白を「静かな正常起動」と誤読する。
+   `include_cursor=true` は下記
    「行末 `?` + 入力待ち」判定に必要なカーソル位置を返させるため必須（既定 false では
    カーソル情報が返らず、ブロック中のプロンプトと通常出力を区別できない）。
    以下のいずれかを検出した場合のみ「起動失敗」と判定:
    - `command not found` / `is not recognized` / `No such file or directory`
    - `gh: ... not found` 等 gh 不在 / `Traceback (most recent call last)` / `ModuleNotFoundError`
    - 出力末尾に shell prompt（`$ ` / `% ` 末尾露出）= command が即時終了して shell に戻った
-   - **対話プロンプト形跡（Issue #825 で追加）**: `[nyae]?`（zsh correctall の
+   - **対話プロンプト形跡**: `[nyae]?`（zsh correctall の
      `zsh: correct '...' to '...' [nyae]?`）/ `(y/n)` / `[y/N]` のリテラル、または行末が `?` で
      終わる行に `cursor` が乗ったまま（= その行で入力待ち）後続出力が無い。いずれもコマンドが
      **一度も走らないまま**シェル層の確認プロンプトで停止している形跡で、放置すると監視ゼロの
@@ -394,12 +397,11 @@ mcp__org-broker__spawn_pane(
      3. 両方を通ったときだけ `mcp__org-broker__close_pane(target=<N>)` する（`[pane_not_found]` /
         `[pane_vanished]` は直前に消えた扱いで skip）
 
-3. **生存確認は副作用ベースで行う（`pgrep -f` 単独判定の禁止、Issue #825）**: 起動後に
+3. **生存確認は副作用ベースで行う（`pgrep -f` 単独判定の禁止）**: 起動後に
    「監視が本当に走っているか」を確かめるときは、プロセス一覧ではなく**副作用**を見る:
    - **`pgrep -f "pr-watch"` 単独を生存判定に使わない**。spawn されたペインのラッパーシェルの
      argv にはコマンド全文（`pr-watch.sh` を含む）が乗るため、確認プロンプト停止中で
-     パイプラインが一度も走っていなくても**シェル自身にマッチして偽陽性**になる（誤認の実例は
-     [`.claude/skills/pr-watch-pane/references/rationale.md`](references/rationale.md) §5）。
+     パイプラインが一度も走っていなくても**シェル自身にマッチして偽陽性**になる。
    - 一次の副作用は **`.state/pr-watch-<PR>.log` の生成**: Step 3 の `tee -a` はパイプライン
      開始と同時にログファイルを open/生成するため、fresh なログ名なら「ファイルが出来ている」＝
      パイプラインが実際に走った確証になる（プロンプト停止ではコマンド自体が実行されないので
@@ -419,8 +421,8 @@ mcp__org-broker__spawn_pane(
 
    `bash` が使えない環境では Mac/Linux は `python3 tools/journal_append.py pr_watch_pane_started pr=<PR> repo=<OWNER/REPO> pane_id=<N>`、Windows native では `py -3 tools/journal_append.py pr_watch_pane_started pr=<PR> repo=<OWNER/REPO> pane_id=<N>`。
 
-   **この行は監査ログではなく、watcher 生存判定の一次証拠である（Refs #978）**: 記録を落とすと
-   [`tools/watcher_restart_guard.py`](../../../tools/watcher_restart_guard.py) は「watcher なし」
+   **この行は監査ログではなく、watcher 生存判定の一次証拠である**: 記録を落とすと
+   `tools/watcher_restart_guard.py` は「watcher なし」
    （`missing`）と判定する（画面にペインが見えていてもである — ペインの存在は監視の生存を意味
    しない、が同ガードの前提）。best-effort とは「失敗しても spawn 自体は巻き戻さない」の意味
    であって、省略してよいという意味ではない。
@@ -457,7 +459,7 @@ mcp__org-broker__spawn_pane(
    （終端イベントが遅延 / 重複配送されて同一 PR の watcher が既に再起動済みの場合、`name` で live pane を
    再導出すると新 watcher を解決してその数値 pane_id を close しても replacement monitor を誤 close する。
    束縛と freshness gate の SoT は
-   [`.claude/skills/org-pull-request/references/watcher-cleanup.md`](../org-pull-request/references/watcher-cleanup.md)）。
+   `/org-pull-request` の references/watcher-cleanup.md）。
    人間が現ペインを手動 close する (a)/(b) は現 instance が対象で自明なので freshness gate は不要:
 
    - **(a) tmux ペインが live のまま残った / 監視を途中で止めたい**: **まず照合に使う
@@ -472,7 +474,8 @@ mcp__org-broker__spawn_pane(
      `mcp__org-broker__close_pane(target=<N>)` する（`[pane_not_found]` / `[pane_vanished]` は既に
      閉じた扱いで skip）。name 指定ではなく list_panes で identity を確認した数値 pane_id を
      使う（id recycle 時の誤 close を避ける）。live pane が列挙に出ても自タブ確立は省けない
-     （理由は [`.claude/skills/pr-watch-pane/references/rationale.md`](references/rationale.md) §7）。
+     （未確立の列挙では `name` / `role` 照合の結果そのものを信用できず、renga の legacy 解決は
+     別 org の同名 watcher を閉じうる）。
      **renga で Step 1-R が背景タブに立てた watcher** は自タブの列挙に出ないので、控えた
      数値 id `<N>` で `mcp__renga-peers__list_panes(tab={"pane_id": <N>})` を引き、`name="pr-watch-<PR>"`
      / `role="watcher"` を照合してから `mcp__renga-peers__close_pane(target=<N>)` する。
@@ -483,8 +486,7 @@ mcp__org-broker__spawn_pane(
      した数値 pane_id で撃つ」形が原理的に取れない。この一点に限り **transport 条件付きの
      allowlist** として裸 name の `close_pane` を許可する（**本節が 3 条件と根拠の SoT**。契約
      [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md)
-     T-§4.2。契約からこの mechanism が導かれる経緯は
-     [`.claude/skills/pr-watch-pane/references/rationale.md`](references/rationale.md) §6）。
+     T-§4.2）。
      **以下 3 条件がすべて成立するときだけ許可される**:
      - **(1) いま Group B を駆動している backend が `close_pane` / `set_pane_identity` を
        自身の single-tab モデル内で解決する**（＝ `org-broker`）— そのモデル内で name も
@@ -496,11 +498,12 @@ mcp__org-broker__spawn_pane(
 
        > **`DEFAULT_TRANSPORT` から推定してはならない（MUST NOT）**。`ORG_TRANSPORT` 無設定は
        > **運用既定 renga の構成でもありうる**のに
-       > [`tools/transport.py`](../../../tools/transport.py) の `resolve()` は無設定を
+       > `tools/transport.py` の `resolve()` は無設定を
        > コード既定 `broker` に解決するため、推定すると **renga が Group B を駆動している環境で
-       > 裸 name の close を撃ち、別 org の同名 watcher を不可逆に閉じうる**（失敗方向の非対称性・
-       > 二フレームとの関係・Step 1 の `printenv` 省略が別論点である理由は
-       > [`.claude/skills/pr-watch-pane/references/rationale.md`](references/rationale.md) §6）
+       > 裸 name の close を撃ち、別 org の同名 watcher を不可逆に閉じうる**（
+       > Step 1 の `printenv` 省略は `peer_notify` に窓口と同じ解決を継がせるための別論点で、
+       > この禁止には影響しない。証拠を要求して外すと自己回復が発火せず人手待ちで済む（可逆）が、
+       > 推定して外すと不可逆に閉じる）
      - **確定できないときは carve-out を取らない**（fail-safe）: `ORG_TRANSPORT` に未知値が
        入っていて解決が `ValueError` になる等で「いま何が駆動しているか」を確定できない場合は、
        条件 (1) を**不成立**として扱い、下の「broker 以外」と同じくユーザーに報告して指示を仰ぐ
@@ -513,8 +516,8 @@ mcp__org-broker__spawn_pane(
        自己回復するが、手動でも同手順で掃除できる。
      - **broker 以外に解決する場合（`ORG_TRANSPORT=renga` の opt-in など）では裸 name に
        フォールバックしない**（「live pane が無いので誤 close の余地が無い」という前提が renga の
-       legacy 解決では偽になりうるため。機序は
-       [`.claude/skills/pr-watch-pane/references/rationale.md`](references/rationale.md) §7）。
+       legacy 解決では偽になりうるため。renga の legacy 解決は active タブを先に引き、miss なら
+       他タブを index 順に先勝ちで当てる）。
        この経路では close せず、stale binding を検出した旨と `pr-watch-<PR>` の
        再 spawn が弾かれる状態であることをユーザーに報告して指示を仰ぐ。
      - **控えた pane_id での close にも倒さない**: `list_panes` で再確認できない retained id を

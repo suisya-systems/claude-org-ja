@@ -167,7 +167,7 @@ pending_decisions_count: <int>
 - 「過去ログ」ではなく「次の自分への申し送り」として書く。
 - `created_at` は **`date -u +%Y-%m-%dT%H:%M:%SZ`**（PowerShell 環境は
   `(Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")`）の出力をそのまま埋める。
-  local(JST)時刻を手書きして `Z` を付けない（JST-as-Z 禁止）。[`/dispatcher-resume`](../dispatcher-resume/SKILL.md)
+  local(JST)時刻を手書きして `Z` を付けない（JST-as-Z 禁止）。`/dispatcher-resume`
   はこの `created_at` を 7 日鮮度窓（cold-start vs resume 分岐）で `now - created_at` 評価するため、
   未来時刻が混入すると判定がぶれる。dispatcher 状態ファイルの時刻を一律 UTC に揃える方針
   （[`.dispatcher/references/worker-monitoring.md`](../../../.dispatcher/references/worker-monitoring.md) 冒頭の時刻規約）と整合させる。
@@ -189,7 +189,7 @@ bash ../tools/journal_append.sh dispatcher_handover \
 ## Step 5（自動引き継ぎ）: `auto op=<OP>` のとき
 
 `/dispatcher-handover auto op=<OP>` は context-handover watcher
-（[`tools/context_handover_watch.py`](../../../tools/context_handover_watch.py)）が打鍵する。
+（`tools/context_handover_watch.py`）が打鍵する。
 このときは下の Step 5 を行わず、secretary へ次の 1 通だけ送って終える（ack は待たない）。
 `/clear` と `/dispatcher-resume auto op=<OP>` は watcher が打つので、窓口に打鍵を頼まない:
 

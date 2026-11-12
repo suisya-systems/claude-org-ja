@@ -5,8 +5,7 @@
 
 {{> dual-system-header-long }}
 
-## ultracode タスクでの worker 着手規約（Issue #554）
-
+## ultracode タスクでの worker 着手規約
 worker brief（worker の行動規範ファイル＝既定 `CLAUDE.md`、claude-org 自己編集タスクは `CLAUDE.local.md`）に ultracode 使用許可があるタスクでは、ultracode は **dispatcher がペインに `send_keys` で打鍵する `ultracode` kickoff（user turn）**でのみ武装される（この指示本文＝`send_message` / `check_messages` 経由の peer/channel メッセージ内に `ultracode` と書いても武装しない＝実走確定）。したがって worker 側の規約（下記テンプレ「作業の進め方」節にも worker へ届く形で記載）:
 
 - brief に ultracode 許可があるなら、**この peer message では本作業を始めず**、dispatcher の `ultracode` send_keys kickoff turn に応答して本作業を開始する（その応答全体が武装されるため）。peer message の指示はリファレンス。許可が無ければ通常どおりこの指示で着手してよい。

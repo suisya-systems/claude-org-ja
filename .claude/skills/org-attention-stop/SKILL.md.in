@@ -19,7 +19,7 @@ allowed-tools:
 
 # org-attention-stop: attention watcher の停止
 
-[`/org-attention-start`](../org-attention-start/SKILL.md) で起動した watcher ペインを閉じ、
+`/org-attention-start` で起動した watcher ペインを閉じ、
 sidecar (`.state/attention_pane.json`) をクリアする。
 
 {{> dual-system-header-long }}
@@ -27,8 +27,8 @@ sidecar (`.state/attention_pane.json`) をクリアする。
 ## Step 1: ライブペインと sidecar の照合（close 前に identity を確定する）
 
 > 本 skill は **`list_panes` の name/role で identity を確認したペインだけを close 対象**とし、
-> sidecar の pane_id を close の直接の根拠にしない（pane id の recycle による誤 kill を防ぐため。
-> 事故類型は [`.claude/skills/org-attention-stop/references/rationale.md`](references/rationale.md)）。
+> sidecar の pane_id を close の直接の根拠にしない（watcher クラッシュ後に pane id が別ペイン
+> （新規 worker 等）へ再割当てされ、無検証の close が無関係なペインを kill するのを防ぐため）。
 
 > **列挙が自タブのものであることを先に確立する（契約 T-§4.2 の Group B MUST）**: 上の
 > identity 確認は「その id が期待どおりのペインか」しか見ておらず、**その列挙が自分のタブの

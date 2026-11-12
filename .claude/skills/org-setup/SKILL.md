@@ -23,7 +23,7 @@ allowed-tools:
 組織の各ロールが必要とする permissions allow と環境変数を、
 正しいスコープの settings ファイルに配置する。
 
-> **輸送層 両系（`ORG_TRANSPORT`: 運用既定 `renga` / opt-in `broker`）**: 本スキルが配る messaging MCP の allow は **運用既定 `renga`**（`ORG_TRANSPORT=renga` で運用する構成。無設定は `resolve()` でコード既定 `broker` に解決されるが、本スキルの配布物は renga アンカーのまま）で `mcp__renga-peers__*` tier。**`references/permissions.md` は renga アンカー（byte 比較対象）として不変**であり、broker への置換は prose ではなく生成/検証ツール側で行う: `tools/org_setup_prune.py`（per-role allow / `--user-common-allowlist`）と `tools/check_role_configs.py` が `ORG_TRANSPORT=broker` のとき `mcp__renga-peers__*` ブロックを broker messaging tier（`mcp__org-broker__*`）に射影する（runtime の `transport_allowlist` descriptor 駆動、Epic #6 E）。**運用既定 renga は恒等**（生成物 byte 等価・file no-op）なので本スキルの手順・報告文はそのまま使えばよい。設計 SoT は transport-lab `docs/design/ja-migration-plan.md` §5.3、契約面は [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) Surface 8（ratified 2026-06-14）。
+> **輸送層 両系（`ORG_TRANSPORT`: 運用既定 `renga` / opt-in `broker`）**: 本スキルが配る messaging MCP の allow は **運用既定 `renga`**（`ORG_TRANSPORT=renga` で運用する構成。無設定は `resolve()` でコード既定 `broker` に解決されるが、本スキルの配布物は renga アンカーのまま）で `mcp__renga-peers__*` tier。**`references/permissions.md` は renga アンカー（byte 比較対象）として不変**であり、broker への置換は prose ではなく生成/検証ツール側で行う: `tools/org_setup_prune.py`（per-role allow / `--user-common-allowlist`）と `tools/check_role_configs.py` が `ORG_TRANSPORT=broker` のとき `mcp__renga-peers__*` ブロックを broker messaging tier（`mcp__org-broker__*`）に射影する（runtime の `transport_allowlist` descriptor 駆動）。**運用既定 renga は恒等**（生成物 byte 等価・file no-op）なので本スキルの手順・報告文はそのまま使えばよい。設計 SoT は transport-lab `docs/design/ja-migration-plan.md` §5.3、契約面は [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) Surface 8（ratified 2026-06-14）。
 
 ## 設定ファイルの配置先とスコープ
 
@@ -63,7 +63,7 @@ Claude Code の Bash sandbox は、書き込みを許した範囲の中でも作
 
 ## 各ロールの必要設定
 
-正典は [`tools/org_extension_schema.json`](../../../tools/org_extension_schema.json)。[`.claude/skills/org-setup/references/permissions.md`](references/permissions.md) に、その schema を満たす全ロールの JSON テンプレートがある（一致は `tools/check_role_configs.py` が CI で検査する）。以下の手順でこのテンプレートを参照する。
+正典は `tools/org_extension_schema.json`。[`.claude/skills/org-setup/references/permissions.md`](references/permissions.md) に、その schema を満たす全ロールの JSON テンプレートがある（一致は `tools/check_role_configs.py` が CI で検査する）。以下の手順でこのテンプレートを参照する。
 
 ## 実行手順
 
@@ -93,7 +93,7 @@ Claude Code の Bash sandbox は、書き込みを許した範囲の中でも作
 許可設定と同じく、fresh clone 直後に無い operator-local ファイルをここで揃える。
 いずれも**既存があれば上書きしない**（operator の実データが入っているため）。
 
-`registry/projects.md`（プロジェクトレジストリ、Issue #811）— コミットされているのは
+`registry/projects.md`（プロジェクトレジストリ）— コミットされているのは
 テンプレート `registry/projects.example.md` の方で、実体は git 管理外:
 
 ```bash
@@ -104,9 +104,9 @@ py -3 tools/ensure_projects_registry.py       # Windows native
 - 冪等。`created:` なら新規生成、`ok:` なら既存のまま
 - `header drift:` はテンプレートに増えた列が手元ファイルに無い warning（exit 0、非 fatal）。
   表示された列名をユーザーに伝え、手元ファイルの表ヘッダーへの追記を案内する
-- [`/org-start`](../org-start/SKILL.md) の Step 0 でも同じコマンドが走るので、
+- `/org-start` の Step 0 でも同じコマンドが走るので、
   どちらを先に実行しても実体は揃う。既存 checkout の移行手順は
-  [`docs/operations/registry-projects-migration.md`](../../../docs/operations/registry-projects-migration.md)
+  `docs/operations/registry-projects-migration.md`
 
 ### Step 4: 結果を報告する
 
@@ -197,7 +197,7 @@ hook が解決されず、ガードが無言で無効化する）。prune ツー
 
 窓口テンプレートには `env.CLAUDE_ORG_PATH` が無いため、初回実行では 2 も 3 も取れず 4 で解決される。
 4 の条件を満たさない（org checkout ではない）場合は `unresolved placeholders` で中断するので、
-誤った `--root` の内容が黙って書き込まれることはない（4 の条件の理由は [`.claude/skills/org-setup/references/rationale.md`](references/rationale.md)）。
+誤った `--root` の内容が黙って書き込まれることはない（4 は `.hooks/` ディレクトリの実在だけで採ると、無関係なプロジェクトを org root と誤認し、存在しないスクリプトを指す hook を書いてしまうため、`required_hook_scripts` の実在を条件にしている）。
 
 いずれも取れない場合（fresh install など）は `--claude-org-path` を明示する:
 

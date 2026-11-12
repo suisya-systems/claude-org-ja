@@ -19,11 +19,10 @@ allowed-tools:
 
 # goal-setup: ゴール台帳を対話で書く
 
-[`/work-discovery`](../work-discovery/SKILL.md) は、オペレーターが書いたゴール台帳の条項に当たる Issue だけを条項順に提案する。
+`/work-discovery` は、オペレーターが書いたゴール台帳の条項に当たる Issue だけを条項順に提案する。
 **台帳の無いプロジェクトからは候補が出ず、書式が崩れた台帳も候補ゼロになる**。本スキルは、その台帳を人間との対話で作る・直す。
 
-- 書式の正本: [`registry/goals/README.md`](../../../registry/goals/README.md)（例: [`registry/goals/example.md`](../../../registry/goals/example.md)）
-- 設計: [`docs/design/work-discovery-triage.md`](../../../docs/design/work-discovery-triage.md) §12.3
+- 書式の正本: `registry/goals/README.md`（例: `registry/goals/example.md`）
 - 書式検証: `tools/work_discovery_goals.py validate`（scan と同じパーサで読む。ここを通らない台帳は保存しない）
 
 起動主体は窓口。台帳はオペレーターのローカルファイル（git 管理外）なので、commit・PR はしない。
@@ -88,7 +87,7 @@ Issue をそのまま条項にしない。条項は「状態」であり、Issue
    ```
    exit 1 なら `error` を読んで下書きを直し、通るまで繰り返す。通らない台帳は保存しない。
 3. 下書き全文（改訂モードなら変更前との差分も）を人間に見せ、次の点を**明示して**保存してよいか聞く:
-   - この台帳を置くと、その repo の候補 Issue のタイトル・要約・本文冒頭・ラベルとゴール条項が、提案の判定のため `claude -p` 経由で `api.anthropic.com` に送られる。**台帳を置くことがその送信への同意になる**（[`registry/goals/README.md`](../../../registry/goals/README.md)「運用前提と送られるデータ」）。
+   - この台帳を置くと、その repo の候補 Issue のタイトル・要約・本文冒頭・ラベルとゴール条項が、提案の判定のため `claude -p` 経由で `api.anthropic.com` に送られる。**台帳を置くことがその送信への同意になる**（`registry/goals/README.md`「運用前提と送られるデータ」）。
 4. 明示の OK が出たら `registry/goals/<owner>/<repo>.md` に保存し（ディレクトリが無ければ作る）、保存先で再検証する:
    ```bash
    python3 tools/work_discovery_goals.py validate --repo <owner>/<repo>

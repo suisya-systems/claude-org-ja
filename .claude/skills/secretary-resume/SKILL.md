@@ -39,9 +39,8 @@ allowed-tools:
 
 ## 自動引き継ぎ（`auto op=<OP>` 付きで呼ばれたとき）
 
-context-handover watcher（[`tools/context_handover_watch.py`](../../../tools/context_handover_watch.py)）が
-`/secretary-handover auto op=<OP>` → `/clear` → `/secretary-resume auto op=<OP>` を打鍵する
-（設計 [`docs/design/context-auto-handover.md`](../../../docs/design/context-auto-handover.md) §4.3）。
+context-handover watcher（`tools/context_handover_watch.py`）が
+`/secretary-handover auto op=<OP>` → `/clear` → `/secretary-resume auto op=<OP>` を打鍵する。
 watcher が窓口を自動で引き継ぐのは renga か、broker + tmux で窓口ペイン（`secretary_pane_id()`）を特定できたときだけ。
 renga では Step 0 の caller pane id は `RENGA_PANE_ID` で確定できる。broker では確定できないが、watcher は打鍵の前に
 記録されたペインが窓口ペインと一致することを確かめ済みなので、Step 0 の `caller-id 未確定` は人に続行を仰がず、
@@ -49,7 +48,7 @@ identity 未確認の自己修復は行わないまま続ける（手動の `/se
 手順は通常の resume と同じで、違いは次の 3 つだけ:
 
 - **最初に同じ op の復帰が済んでいないか確かめる**（watcher は完了の event が 60 秒以内に見えないと 1 回だけ
-  打ち直す。設計 §4.5）:
+  打ち直す）:
   ```bash
   python3 -c "
   import sqlite3, sys
@@ -74,7 +73,7 @@ Step 4 のブリーフィングは自動のときも出す（人が画面に戻�
 > - **spawn 儀式**: コード既定 broker は `--mcp-config <broker>` 注入による Claude Code **folder-trust プロンプト**の画面判定による機械承認に加え、push 一次のため channel sidecar を `--dangerously-load-development-channels server:org-broker-channel` で load し dev-channel 承認プロンプトを画面判定で機械承認する（2 段承認）。`ORG_TRANSPORT=renga` 時は `--dangerously-load-development-channels server:renga-peers` の「Load development channel?」を画面判定で承認する 1 段。 **画面判定** = `inspect_pane` → `claude-org-runtime dispatcher spawn-prompt-step` が返した 1 手だけを `send_keys` する反復（runtime 0.1.43+）。盲目 Enter は禁止（folder-trust の初期カーソルは「No, exit」で、Enter 一発はワーカーを終了させる）。手順は spawn-flow 3-3b。
 > - **エラー分岐**: コード既定 broker は shared codes（`pane_not_found` / `last_pane` / `invalid-params`）に加え broker 固有 `[token_invalid]` / `[session_invalid]` / `[tool_not_authorized]` / `[no_backend]`（= adapter_unavailable）/ `[nudge_failed]` / `[peer_not_found]` / `[name_taken]` を返しうる（未知コードは default-branch で escalate）。`ORG_TRANSPORT=renga` 時は broker 固有コードは発生しない。
 >
-> `new_tab` / `focus_pane` は broker surface に**無い**（意図的除外）。契約面の正本は [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) Surface 8 + push-primary amendment（broker push 一次が **既定の契約**、pull は fallback として retain）。**opt-in `renga` は削除せず常時有効な切戻しの安全装置**として維持する。broker 実走（dogfood）は Epic #6 Issue G スコープで本ファイルの既定運用経路ではない（**二フレーム注記（Refs #604）**: ここの「コード既定 `broker`」は**コード既定**（`tools/transport.py: DEFAULT_TRANSPORT`、生成面はこれで render）。**運用既定**は broker dogfood が Epic #6 Issue G まで未活性のため `renga` で、両者は指す対象が異なり矛盾しない。総説は root [`CLAUDE.md`](../../../CLAUDE.md)。）
+> `new_tab` / `focus_pane` は broker surface に**無い**（意図的除外）。契約面の正本は [`docs/contracts/backend-interface-contract.md`](../../../docs/contracts/backend-interface-contract.md) Surface 8 + push-primary amendment（broker push 一次が **既定の契約**、pull は fallback として retain）。**opt-in `renga` は削除せず常時有効な切戻しの安全装置**として維持する。broker 実走（dogfood）は本ファイルの既定運用経路ではない（**二フレーム注記**: ここの「コード既定 `broker`」は**コード既定**（`tools/transport.py: DEFAULT_TRANSPORT`、生成面はこれで render）。**運用既定**は broker dogfood が未活性のため `renga` で、両者は指す対象が異なり矛盾しない。総説は root [`CLAUDE.md`](../../../CLAUDE.md)。）
 
 ## Step 0: 自分の identity を確認する
 
@@ -132,9 +131,8 @@ print(json.dumps(get_org_state_summary(conn), ensure_ascii=False, indent=2, defa
 
 ## Step 3: ペイン生存確認
 
-**`list_peers` の直前に
-[`.claude/skills/org-delegate/references/capability-first-drive-operational-gate.md`](../org-delegate/references/capability-first-drive-operational-gate.md)
-を Read し、`monitoring-read-only` の分岐を適用する**（同 reference §6 の表 #3）。capability 形かつ
+**`list_peers` の直前に `/org-delegate` の `references/capability-first-drive-operational-gate.md`
+を Read し、`monitoring-read-only` の分岐を適用する**（同 reference §6 の表 No.3）。capability 形かつ
 未承認なら列挙を生存判定に使わず破棄し、`mcp__org-broker__list_panes` と state DB の `active_runs[]` の突き合わせで
 代替して、差分は人間に報告する（停止しない・待ち時間 0 分。この場合も勝手に再 spawn しない）。
 

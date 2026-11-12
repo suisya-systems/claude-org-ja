@@ -2,7 +2,7 @@
 
 > **一次参照元**: [`.claude/skills/org-delegate/SKILL.md`](../SKILL.md) Step 1.7（トリガー判定の概要のみ）。本ドキュメントはトリガー表・実行コマンド・review 要約の組み込み手順の詳細 SoT。
 
-`preview` 出力の `description` / `--target` 件数 / 参照ドキュメントを見て、以下の **いずれか 1 つ以上** に該当する場合は、`apply` の前に Codex design review を実行する。ゲート導入の実績は [`.claude/skills/org-delegate/references/rationale.md`](rationale.md) §11。
+`preview` 出力の `description` / `--target` 件数 / 参照ドキュメントを見て、以下の **いずれか 1 つ以上** に該当する場合は、`apply` の前に Codex design review を実行する。
 
 ## トリガー条件
 
@@ -16,7 +16,7 @@
 
 ## 実行手順
 
-デザインレビューは実装前で diff が無いので、`codex exec review`（review surface）ではなく `codex exec` のプロンプト形を使う（理由の正本は [`knowledge/curated/codex.md`](../../../../knowledge/curated/codex.md) の「デザインレビュー（実装前）は review surface ではなく exec プロンプト形を維持」節）。
+デザインレビューは実装前で diff が無いので、`codex exec review`（review surface）ではなく `codex exec` のプロンプト形を使う（理由の正本は `knowledge/curated/codex.md` の「デザインレビュー（実装前）は review surface ではなく exec プロンプト形を維持」節）。
 
 ```bash
 codex exec --skip-git-repo-check -m gpt-6-astra -c model_reasoning_effort=medium \
@@ -27,7 +27,7 @@ codex exec --skip-git-repo-check -m gpt-6-astra -c model_reasoning_effort=medium
   事前設計上の Blocker / Major / Minor / Nit を分類し、各指摘に対象ファイル:行番号と根拠を添えて日本語で簡潔に。"
 ```
 
-`codex:rescue` skill は使わない（禁止の正本は [`knowledge/curated/codex.md`](../../../../knowledge/curated/codex.md)）。`codex exec` 直打ちのみ。ChatGPT アカウントで通るモデル名は限られる（現行世代は `gpt-6-astra`。素の `gpt-6` / `gpt-6-codex` / `gpt-6-sol` はいずれも 400、API キー surface も実行不可）ため `-m gpt-6-astra` を明示する。codex-cli は **0.153.4 以上**が必要（0.147.0 は `The 'gpt-6-astra' model requires a newer version of Codex.` で 400。このメッセージが出たらモデル名を探し直さず `npm i -g @openai/codex@latest` で更新する）。ハングガード（stdin `< /dev/null`・ラウンド別ログ・0 byte 5–10 分で kill）は [`knowledge/curated/codex.md`](../../../../knowledge/curated/codex.md) 参照。
+`codex:rescue` skill は使わない（禁止の正本は `knowledge/curated/codex.md`）。`codex exec` 直打ちのみ。ChatGPT アカウントで通るモデル名は限られる（現行世代は `gpt-6-astra`。素の `gpt-6` / `gpt-6-codex` / `gpt-6-sol` はいずれも 400、API キー surface も実行不可）ため `-m gpt-6-astra` を明示する。codex-cli は **0.153.4 以上**が必要（0.147.0 は `The 'gpt-6-astra' model requires a newer version of Codex.` で 400。このメッセージが出たらモデル名を探し直さず `npm i -g @openai/codex@latest` で更新する）。ハングガード（stdin `< /dev/null`・ラウンド別ログ・0 byte 5–10 分で kill）は `knowledge/curated/codex.md` 参照。
 
 ### 監視ロール待ち合わせ設計の追加 3 問
 
@@ -45,7 +45,7 @@ brief に載せる必須文言（ブロッキング待ち禁止・spawn 後即�
 
 > 対象 repo の versioning / compatibility policy（<policy doc パス>）に照らし、この変更がどのリリースライン（patch / minor / major）に落ちるか、または policy 上どのラインにも載らない（frozen surface 違反等でこのままではリリース不可）かの判定と、その根拠となる policy の該当節を必ず含める。
 
-機構レベルの review は互換パスの欠落を指摘しても、semver 帰結（変更がどのリリースラインに載るか）までは踏み込まないことがある。リリースライン判定は設計フェーズで確定させるべき事項であり、実装後に気付くと doc・テスト名まで含めた巻き戻しがコード本体より大きくなる。実例は [`.claude/skills/org-delegate/references/rationale.md`](rationale.md) §11。
+機構レベルの review は互換パスの欠落を指摘しても、semver 帰結（変更がどのリリースラインに載るか）までは踏み込まないことがある。リリースライン判定は設計フェーズで確定させるべき事項であり、実装後に気付くと doc・テスト名まで含めた巻き戻しがコード本体より大きくなる。
 
 ## review 要約の組み込み
 

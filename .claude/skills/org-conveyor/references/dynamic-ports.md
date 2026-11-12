@@ -36,7 +36,7 @@ curl -s "localhost:$PORT/health"     # 検査も同じ PORT を叩く
 
 ## worker brief への載せ方
 
-- 並列 verify を伴う重量レーン委譲では、[`/org-delegate`](../../org-delegate/SKILL.md) の `--impl-guidance` 等で
+- 並列 verify を伴う重量レーン委譲では、`/org-delegate` の `--impl-guidance` 等で
   「固定ポート禁止 / `PORT` env で受け取る / 再現コマンドは env 経由で書く」を brief に明記する。
 - verify policy（スコープ契約）に env 名と確保方式を 1 行で残し、conveyor が複数 worker を投入する前提を固定する。
 

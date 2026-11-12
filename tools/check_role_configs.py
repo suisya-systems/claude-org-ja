@@ -44,6 +44,28 @@ callers can branch on "config drift" versus "the guard never ran"
 -- conflating them is how a broken checker reads as a clean org
 (Issue #818, which wires this into ``/org-start``'s startup preflight).
 
+Why /org-start runs this with ``--include-local``: ``settings.local.json``
+is gitignored and CI runs this checker without ``--include-local``, so CI
+only ever sees tracked files. Hook-path drift (a renamed ``.hooks/*.sh``
+leaves a hook command pointing nowhere, so the guard silently stops
+firing), missing required allow / deny entries, and a missing settings
+file (a role running with no hook layer at all; for the
+``bypassPermissions`` dispatcher hooks are the only enforcement layer)
+are invisible to CI. Startup is the only periodic check that sees them.
+Drift kinds reported: (a) a schema-declared settings file is missing,
+(b) a required allow / deny entry is missing, (c) an allow entry not in
+the schema, (d) a required hook is missing, (e) a hook command points to
+a path that does not exist.
+
+Output contract: stdout carries only the one spliceable summary line and
+the ``[ERROR]`` details; the count summary and every exit-2 diagnostic go
+to stderr. stdout falls back to ASCII replacement on non-UTF-8 consoles
+(cp932, ``PYTHONIOENCODING=ascii``) because losing the summary line to a
+``UnicodeEncodeError`` would hide detected drift. The 1-versus-2 split is
+locked by ``ExitCodeContractTests`` in ``tests/test_check_role_configs.py``.
+The check touches no network, so a sandboxed run still gives a correct
+verdict.
+
 Run ``python tools/check_role_configs.py --help`` for options.
 """
 

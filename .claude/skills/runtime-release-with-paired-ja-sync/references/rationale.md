@@ -1,4 +1,4 @@
-# runtime-release-with-paired-ja-sync の設計理由と経緯
+# runtime-release-with-paired-ja-sync の設計理由
 
 [`.claude/skills/runtime-release-with-paired-ja-sync/SKILL.md`](../SKILL.md) の背景説明。手順と制約は SKILL.md 側にある。
 
@@ -13,8 +13,8 @@
 - `.claude/skills/org-setup/references/permissions.md` の projection
 - `tools/templates/attention.example.json` の severity / TTL
 
-過去のリリースサイクルでは「runtime release は無事だったが ja-side CI が翌日に red」になる
-カスケードが観測されており、これを毎回観測してから後追いで直すと、
+「runtime release は無事だったが ja-side CI が翌日に red」になるカスケードを
+後追いで直すと、
 
 - Secretary セッションが切れて context を失う
 - ja-side worker に「なぜこの変更が必要か」の経路を再構築させる
@@ -45,9 +45,3 @@ main の先端かどうかも検証しない**。版数の SoT は `src/claude_o
 (c)(d) で検証した内容そのままであり、壊れた版が出ることはない。窓で起こりうるのは
 「直後にマージされた別 PR がこの版に入らない」だけで、これは release の通常挙動である。
 したがって対策は「main を止める」ではなく、**(e) を push の直前に置き、外したらやり直す**で足りる。
-
-## 4. 経緯
-
-本 skill は claude-org-runtime v0.1.11 リリースサイクルで観測されたカスケードを
-ベースに、Issue #25 / #26 / #28 / Backlog #32 / #33 の議論を通じて結晶化した
-ワークフロー。

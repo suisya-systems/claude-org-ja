@@ -1,6 +1,6 @@
 # watcher instance 束縛と freshness gate（監視終端 cleanup の詳細）
 
-[`.claude/skills/org-pull-request/SKILL.md`](../SKILL.md) の「監視終端で watcher ペインを窓口がイベント駆動 close する」節から移設した詳細。**本ファイルが「cleanup を watcher instance に束縛する」規則の SoT**（[`.claude/skills/pr-watch-pane/SKILL.md`](../../pr-watch-pane/SKILL.md) Step 5 が「束縛の SoT」として指す先）。裸 name allowlist の 3 条件と根拠の SoT は逆に pr-watch-pane Step 5 (b) 側にある。
+[`.claude/skills/org-pull-request/SKILL.md`](../SKILL.md) の「監視終端で watcher ペインを窓口がイベント駆動 close する」節の詳細。**本ファイルが「cleanup を watcher instance に束縛する」規則の SoT**（`/pr-watch-pane` の Step 5 が「束縛の SoT」として指す先）。裸 name allowlist の 3 条件と根拠の SoT は逆に pr-watch-pane Step 5 (b) 側にある。
 
 ## なぜ `name` で再導出してはならないか
 
@@ -17,12 +17,12 @@
 
 監視 head が一致しない古い / 重複イベントだけ superseded とみなし close しない（＝再起動済みの新 watcher を殺さない）。一致すれば SKILL.md の識別子束縛 close へ進む。追跡が既に消えている（該当 instance を掃除済み）なら no-op。
 
-## 監視 head が「照合不能」のときは superseded 扱いにしない（Issue #954）
+## 監視 head が「照合不能」のときは superseded 扱いにしない
 
 次のいずれかに当たるイベントは監視 head を持っていない:
 
-- **relay 経由 (B)**: `head=<missing>` + 末尾 `[head-unverifiable]`（[`tools/relay_scan.py`](../../../../tools/relay_scan.py) の `UNVERIFIABLE_RELAY_TAIL`）。
-- **直 push 経由 (A)**: **マーカーは付かない**（marker を足すのは relay の compose のみ）。watcher は merged head を解決できないとき placeholder をそのまま本文に載せるため（[`tools/pr_watch.py`](../../../../tools/pr_watch.py) の `head_tag = merged_head or "unknown"`。例 `PR_MERGED_NO_RUN: PR #<n> (head=unknown)`）、**本文の head が `unknown` / `<missing>` / 空**なら marker の有無に依らず照合不能として扱う。
+- **relay 経由 (B)**: `head=<missing>` + 末尾 `[head-unverifiable]`（`tools/relay_scan.py` の `UNVERIFIABLE_RELAY_TAIL`）。
+- **直 push 経由 (A)**: **マーカーは付かない**（marker を足すのは relay の compose のみ）。watcher は merged head を解決できないとき placeholder をそのまま本文に載せるため（`tools/pr_watch.py` の `head_tag = merged_head or "unknown"`。例 `PR_MERGED_NO_RUN: PR #<n> (head=unknown)`）、**本文の head が `unknown` / `<missing>` / 空**なら marker の有無に依らず照合不能として扱う。
 
 これは「head が違う」ではなく「**照合できない**」なので、不一致と同じ枝（黙って close skip）に流すと watcher が残留する。**照合不能は不一致とは別枝**として次の順で処理する:
 
@@ -31,6 +31,6 @@
 
 なお `[head-unverifiable]` が付いた `PR_MERGED` は、窓口が `journal_append.sh pr_merged` を手打ちして events が 2 行になった痕跡でもある（SKILL.md 2b-ii の手打ち禁止を参照）。
 
-## 掃除タイミングを遅らせない理由
+## 掃除タイミングを遅らせない
 
 どの終端でも watcher 本体 (`tools/pr-watch.sh`) は**その終端イベントの発信時点で既に exit 済み**なので、ペイン掃除は終端イベント受領で即時行う（run.status の遷移 gate や人間確認 gate とは独立）。掃除を後段まで遅らせると herdr backend でゾンビが待機中ずっと残る。

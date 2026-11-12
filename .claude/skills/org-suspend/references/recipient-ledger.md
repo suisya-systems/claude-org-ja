@@ -6,11 +6,11 @@
 
 ## 目次
 
-1. [面ごとに id を取る](#1-面ごとに-id-を取る)
-2. [pane 制御の 2 グループ（G）](#2-pane-制御の-2-グループg)
-3. [フォーカス前提（F）](#3-フォーカス前提f)
-4. [台帳の join 規則](#4-台帳の-join-規則)
-5. [宛先選定の真理値表](#5-宛先選定の真理値表)
+- §1 面ごとに id を取る
+- §2 pane 制御の 2 グループ（G）
+- §3 フォーカス前提（F）
+- §4 台帳の join 規則
+- §5 宛先選定の真理値表
 
 ## 1. 面ごとに id を取る
 
@@ -53,18 +53,18 @@ messaging とペイン制御は**別々の面**なので、id もそれぞれの
      > **管轄 capability の異なる 2 群**に分ける。分ける理由は**リリース時期ではなくサーバー世代の
      > スキュー**である（4 トークンは 1 リリースで出ており renga `src/ipc/mod.rs`:123-128 の
      > `SERVER_CAPABILITIES` は 4 定数を並べる。それでもトークンが別なのは、先行 3 トークンを
-     > 広告する `#290` 世代の server が未知の `from_pane` を落として `close` /
+     > 広告する旧世代の server が未知の `from_pane` を落として `close` /
      > `set_pane_identity` を**ユーザーが見ているタブ**に解決し不可逆にペインを閉じるからで、
      > 上流は `caller_scope_close_identity` を "a token of its own" と書いている
      > — renga `docs/api-surface-v1.0.md`:576-582）。契約 T-§cap
      > "Independence" は `caller_scope` から `caller_scope_close_identity` を推論することを
      > MUST NOT としている。**「`caller_scope` があるからあらゆる pane 制御がフォーカス非依存」
      > という推論をしてはならない**:
-     > - **Group A — `caller_scope` 管轄**（suisya-systems/renga#288 の 7 ツール）:
+     > - **Group A — `caller_scope` 管轄**（7 ツール）:
      >   `list_panes` / `spawn_pane` / `spawn_claude_pane` / `spawn_codex_pane` / `focus_pane` /
      >   `inspect_pane` / `send_keys`。この token を広告する backend では相対セレクタ
      >   （リテラル `"focused"` / 裸の `name`）が **caller のタブ**に解決され、フォーカス非依存になる
-     > - **Group B — `caller_scope_close_identity` 管轄**（suisya-systems/renga#296）:
+     > - **Group B — `caller_scope_close_identity` 管轄**:
      >   `close_pane` / `set_pane_identity` の 2 本。**`caller_scope` はこの 2 本を覆わない**。
      >   `caller_scope`（さらに `cross_tab_peers` / `spawn_tab`）を広告する backend であっても、
      >   この token が無ければ `"focused"` は **user が見ているタブ**に解決され、裸の `name` は
@@ -105,7 +105,6 @@ messaging とペイン制御は**別々の面**なので、id もそれぞれの
      >   使い方は正しく、「自タブと確立できた」と**広げる**使い方は license されない。
      >   **2 つのいずれも成立しなければ Group B を撃たず**、pending として人間に報告する
      >   （相対セレクタへフォールバックしない）
-     > - SHOULD だった時期の経緯は [`docs/design/renga-pane-control-history.md`](../../../../docs/design/renga-pane-control-history.md) §5。本スキルが従うのは上の (G-MUST) である
      > - capability gate 実装済みクライアントでは、Group B の呼び出しが token 欠落時に
      >   `[server_too_old]` で **fail-closed** する。これは黙って握り潰さず、未実行として
      >   pending に残し人間へ報告する（契約 T-§6 clause (b)。renga では回復手順は「daemon を
@@ -194,7 +193,7 @@ messaging とペイン制御は**別々の面**なので、id もそれぞれの
 > として `peer_id` / `name` / `cwd` 付きで人間に提示する。`role == "secretary"` で外したものは
 > 窓口自身なので `unresolved` に入れない。他タブの除外ピアは † の他タブ報告に含める。
 
-**版判定は列挙 1 回につき 1 度だけ決める**（正本は [`.claude/skills/org-delegate/references/capability-first-drive-operational-gate.md`](../../org-delegate/references/capability-first-drive-operational-gate.md) §1 / §1-1。全レコードで `same_tab` / `tab` が両方欠落しているときだけ旧版 fallback）。下表の「版判定」列は、こうして決まった版のもとで各レコードがどの行に当たるかを読む。
+**版判定は列挙 1 回につき 1 度だけ決める**（正本は `/org-delegate` の `references/capability-first-drive-operational-gate.md` §1 / §1-1。全レコードで `same_tab` / `tab` が両方欠落しているときだけ旧版 fallback）。下表の「版判定」列は、こうして決まった版のもとで各レコードがどの行に当たるかを読む。
 
 | # | `same_tab` | `tab` | `role` | 版判定 | broadcast | 理由 |
 |---|---|---|---|---|---|---|
