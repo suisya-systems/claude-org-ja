@@ -6,8 +6,11 @@ PR's own repository, so any language works. A PR passes only when all hold:
 
 (a) the protected tree entries at head equal those at the commit that added
     the acceptance test (the "manifest commit" M), and M is the PR's first
-    commit (its parent is the merge base of base and head), so M is the base
-    code plus the test;
+    own commit (its parent is in base and every other commit of base..head
+    comes after M), so M is the base code plus the test. Merging the base
+    after M (Issue #1278: bringing a PR up to date without a force push) keeps
+    this, and a protected path M left alone that head holds as base does
+    counts as a change from the base, not from the PR;
 (b) before the fix the test failed: state.db has a ``ci_completed`` event for
     this PR with ``status=failed`` and ``head_oid`` = M (the secretary pushes M
     alone first and watches CI on it), and
@@ -52,7 +55,8 @@ Protected = the manifest paths plus the test infrastructure / CI config
 ``package.json``, ``.github/workflows/**``). Everything the manifest commit
 itself changes must be protected, so a helper the test needs cannot be
 slipped in undeclared and edited later. The check compares M with head, so a
-change made and reverted in between passes.
+change made and reverted in between passes, and so does a change merged in
+from the base.
 
 A rebase changes M's SHA, so the CI failure recorded at the old M no longer
 counts: push the new M alone again and let CI fail on it.
@@ -158,8 +162,11 @@ def find_manifest(repo: Path, base: str, head: str) -> tuple[str, list[str]] | N
     return sha, clean
 
 
-def check_protected(repo: Path, msha: str, head: str, manifest: list[str]):
-    """Condition (a). Returns the manifest commit's protected entries."""
+def check_protected(repo: Path, msha: str, base: str, head: str, manifest: list[str]):
+    """Condition (a). Returns the manifest commit's protected entries.
+
+    A path the test commit left alone that head holds as the base does is a change
+    that came in from the base (the PR was brought up to date by merging it)."""
     if len(git(repo, "rev-list", "--parents", "-n1", msha).split()) != 2:
         raise Reject(f"manifest commit {msha[:12]} must have exactly one parent")
     mtree = tree(repo, msha)
@@ -178,7 +185,9 @@ def check_protected(repo: Path, msha: str, head: str, manifest: list[str]):
             f"{undeclared}: declare them with {TRAILER} or move them to a later commit"
         )
     ph = {p: e for p, e in tree(repo, head).items() if is_protected(p, manifest)}
-    changed = sorted(p for p in pm.keys() | ph.keys() if pm.get(p) != ph.get(p))
+    pp, pb = tree(repo, f"{msha}^"), tree(repo, base)
+    changed = sorted(p for p in pm.keys() | ph.keys() if pm.get(p) != ph.get(p)
+                     and not (pm.get(p) == pp.get(p) and ph.get(p) == pb.get(p)))
     if changed:
         raise Reject(
             f"protected paths changed after the test commit {msha[:12]}: {changed}"
@@ -188,12 +197,20 @@ def check_protected(repo: Path, msha: str, head: str, manifest: list[str]):
 
 
 def check_first(repo: Path, msha: str, base: str, head: str) -> None:
-    """M is the PR's first commit: its parent is the merge base, so M = base code + test."""
+    """M is the PR's first own commit, so M = base code + test.
+
+    Its parent is in base, and every other commit of base..head descends from M:
+    merging the base after M (bringing the PR up to date without a force push)
+    passes, merging it or any other branch before or beside M does not."""
     parent = git(repo, "rev-parse", f"{msha}^").strip()
-    fork = git(repo, "merge-base", base, head).strip()
-    if parent != fork:
+    own = set(git(repo, "rev-list", f"{base}..{head}").split())
+    after = set(git(repo, "rev-list", "--ancestry-path", f"{msha}..{head}").split())
+    in_base = subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor", parent, base],
+                             capture_output=True).returncode == 0
+    if not in_base or own - after - {msha}:
         raise Reject(f"the test commit {msha[:12]} must be the first commit of the PR (its parent"
-                     f" {parent[:12]} is not the merge base {fork[:12]}): put the test commit first")
+                     f" {parent[:12]} is not in the base, or a commit of the PR does not come after"
+                     " it): put the test commit first; merge only the base, after the test commit")
 
 
 def repo_check(repo: Path, base: str) -> str | None:
@@ -335,7 +352,7 @@ def evaluate(repo: Path, base: str, head: str, info: dict, pin: dict | None = No
             f"the test commit was rewritten since the gate first saw it "
             f"({pin.get('manifest_commit', '?')[:12]} -> {msha[:12]}, paths "
             f"{pin.get('paths')} -> {manifest}) - ask the human")
-    check_protected(repo, msha, head, manifest)
+    check_protected(repo, msha, base, head, manifest)
     check_first(repo, msha, base, head)
     if not pr or "#" not in pr:
         raise Reject("the CI evidence is read per PR: pass --pr OWNER/REPO#N")
