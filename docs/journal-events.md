@@ -251,7 +251,7 @@ the PR, and the same CI job (GitHub app id + check name + workflow) failed at th
 and succeeded at head on one base (Issue #1231: the gate runs no test). Instead
 of the failed row and the flipped job, the repository's own acceptance check
 counts when the base's `.github/acceptance-check` names one check, it
-succeeded at head and the PR left `.github/workflows/` unchanged (Issue #1274);
+succeeded at head and `.github/workflows/` at head equals the base (Issue #1274);
 the `reason` says which evidence was used.
 `manifest_commit` / `paths` are absent when no manifest was found or the run was
 rejected before reading it. Without `--pr` the row is a measurement record, not
