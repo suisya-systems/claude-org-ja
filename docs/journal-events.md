@@ -248,7 +248,10 @@ protected tree entries at head equal those at the commit that declared the test
 (`Acceptance-Test: <path>` trailers), that commit is the PR's first commit, a
 `ci_completed` row with `status=failed` and `head_oid` = that commit exists for
 the PR, and the same CI job (GitHub app id + check name + workflow) failed at that commit
-and succeeded at head on one base (Issue #1231: the gate runs no test).
+and succeeded at head on one base (Issue #1231: the gate runs no test). Instead
+of the failed row and the flipped job, the repository's own acceptance check
+counts when the base's `.github/acceptance-check` names one check and it
+succeeded at head (Issue #1274); the `reason` says which evidence was used.
 `manifest_commit` / `paths` are absent when no manifest was found or the run was
 rejected before reading it. Without `--pr` the row is a measurement record, not
 the verdict: a failed write only warns on stderr and the exit code stays the
