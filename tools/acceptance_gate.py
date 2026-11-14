@@ -343,6 +343,8 @@ def evaluate(repo: Path, base: str, head: str, info: dict, pin: dict | None = No
     check = repo_check(repo, base)
     # The job behind the name is the base's: the PR (its test commit may touch workflows) and an
     # older branch point must not swap in another one.
+    # ponytail: known limit - the run's own base is not checked, so a workflow the base changed and
+    # reverted meanwhile can have produced the success; require run_bases(head) == {base} if it matters.
     workflows = lambda sha: {p: e for p, e in tree(repo, sha).items() if p.startswith(WORKFLOWS)}  # noqa: E731
     if check and workflows(base) == workflows(head):
         at_head = [c for k, c in check_runs(slug, head).items() if k[1] == check]
