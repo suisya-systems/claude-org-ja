@@ -136,6 +136,37 @@ class CiGateTest(unittest.TestCase):
         self.ci(head, {TEST_JOB: "success"}, failed_event=False)
         self.assert_verdict("rejected", "first commit")
 
+    def test_repo_check_not_trusted_when_the_pr_rewrites_its_workflow(self):
+        """The test commit may touch workflows; then the named job proves nothing (Issue #1274)."""
+        self.repo.commit("config", {".github/acceptance-check": "acceptance\n",
+                                    ".github/workflows/ci.yml": "jobs: {acceptance: real}\n"})
+        self.base = self.repo.git("rev-parse", "HEAD")
+        m = self.repo.commit("test" + TRAILER, {"tests/calc.test.js": TEST,
+                                                ".github/workflows/ci.yml": "jobs: {acceptance: true}\n"})
+        head = self.repo.commit("fix", {"calc.js": FIXED})
+        self.ci(head, {(15368, "acceptance"): "success"}, failed_event=False)
+        self.assert_verdict("rejected", "no failed CI run recorded at the test commit")
+        self.assertTrue(m)
+
+    def test_repo_check_not_trusted_from_an_older_branch_point(self):
+        """The base later named the check with a stronger job; the PR still runs the old one."""
+        self.repo.commit("old job", {".github/workflows/ci.yml": "jobs: {acceptance: weak}\n"})
+        fork = self.repo.git("rev-parse", "HEAD")
+        self.repo.git("checkout", "-q", "-b", "newbase")
+        self.base = self.repo.commit("config", {".github/acceptance-check": "acceptance\n",
+                                                ".github/workflows/ci.yml": "jobs: {acceptance: real}\n"})
+        self.repo.git("checkout", "-q", "-b", "pr", fork)
+        _, head = self.land()
+        self.ci(head, {(15368, "acceptance"): "success"}, failed_event=False)
+        self.assert_verdict("rejected", "no failed CI run recorded at the test commit")
+
+    def test_repo_check_name_may_contain_spaces(self):
+        self.repo.commit("config", {".github/acceptance-check": "Acceptance tests\n"})
+        self.base = self.repo.git("rev-parse", "HEAD")
+        _, head = self.land()
+        self.ci(head, {(15368, "Acceptance tests"): "success"}, failed_event=False)
+        self.assert_verdict("passed", "Acceptance tests")
+
     def test_without_pr_there_is_no_ci_evidence(self):
         m, head = self.land()
         self.ci(m, {TEST_JOB: "failure"})

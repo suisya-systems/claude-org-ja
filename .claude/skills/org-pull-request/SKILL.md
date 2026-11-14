@@ -72,6 +72,7 @@ allowed-tools:
 
 - 必要に応じて窓口がプッシュ・PR 作成を行う（ワーカーには `git push` / PR 作成権限がない）。PR のタイトル・本文は対象リポジトリで使われている言語に合わせる
 - **受け入れテストを宣言した PR は、テストのコミットだけを先に push する**: ゲート（`tools/acceptance_gate.py`）はテストを走らせない。「修正前に失敗する」ことは、テストのコミット M（ワーカーの完了報告にある宣言コミットの SHA）だけを head にした CI の失敗で確かめる。ワーカーの完了報告に宣言コミットの SHA があるときは、次の順に進める:
+  - **base に `.github/acceptance-check` があるリポジトリでは、下の 1〜5 は要らない**: そのファイルが名指す CI チェック（例: paddock の `acceptance`）が、PR の中で M では失敗し head では成功することを自分で確かめる。ゲートは、そのチェックが head で成功していれば M での CI 失敗記録を求めない。ブランチをまとめて push して PR を作り、下の「CI green」以降の手順どおりに進める。この扱いになるのは head の `.github/workflows/` が base と同じときだけで、そうでなければ従来どおり M での失敗記録が要る。ゲートが拒否したら止まって人に上げる
   1. M だけを push する: `git push origin <M>:refs/heads/<branch>`（M は PR の最初のコミットでなければゲートが拒否する）
   2. `gh pr create --repo <OWNER/REPO> --head <branch> --base <base> ...` で PR を作る（`--head` を付けないと、gh が手元のブランチ全体を push しようとすることがある）。`gh pr view <PR> --repo <OWNER/REPO> --json headRefOid` が M であることを確かめてから、`/pr-watch-pane <PR>` で CI を待つ
   3. `CI_COMPLETED` の `status=failed`（head=M）は想定どおりの結果なので、2c の修正指示は出さない。M で CI が通ったら、テストが修正前に落ちていない。ワーカーに差し戻す（このままではゲートが拒否する）
