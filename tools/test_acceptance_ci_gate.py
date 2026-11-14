@@ -136,6 +136,25 @@ class CiGateTest(unittest.TestCase):
         self.ci(head, {TEST_JOB: "success"}, failed_event=False)
         self.assert_verdict("rejected", "first commit")
 
+    def test_repo_check_not_trusted_when_the_pr_rewrites_its_workflow(self):
+        """The test commit may touch workflows; then the named job proves nothing (Issue #1274)."""
+        self.repo.commit("config", {".github/acceptance-check": "acceptance\n",
+                                    ".github/workflows/ci.yml": "jobs: {acceptance: real}\n"})
+        self.base = self.repo.git("rev-parse", "HEAD")
+        m = self.repo.commit("test" + TRAILER, {"tests/calc.test.js": TEST,
+                                                ".github/workflows/ci.yml": "jobs: {acceptance: true}\n"})
+        head = self.repo.commit("fix", {"calc.js": FIXED})
+        self.ci(head, {(15368, "acceptance"): "success"}, failed_event=False)
+        self.assert_verdict("rejected", "no failed CI run recorded at the test commit")
+        self.assertTrue(m)
+
+    def test_repo_check_name_may_contain_spaces(self):
+        self.repo.commit("config", {".github/acceptance-check": "Acceptance tests\n"})
+        self.base = self.repo.git("rev-parse", "HEAD")
+        _, head = self.land()
+        self.ci(head, {(15368, "Acceptance tests"): "success"}, failed_event=False)
+        self.assert_verdict("passed", "Acceptance tests")
+
     def test_without_pr_there_is_no_ci_evidence(self):
         m, head = self.land()
         self.ci(m, {TEST_JOB: "failure"})

@@ -24,7 +24,8 @@ base has ``.github/acceptance-check`` naming one check (e.g. paddock's
 and at head inside the PR) and every run of that check at head, among the
 runs ``pr_runs`` selects, concluded ``success``, the PR passes without a red
 run at the test commit. The file is read from the base, so a PR cannot name a
-check of its own choosing. (a), the first-commit rule and the pin still apply;
+check of its own choosing, and ``.github/workflows/`` at head must equal the
+merge base, so a PR cannot rewrite the job behind that name. (a), the first-commit rule and the pin still apply;
 when the named check did not pass, (b) and (c) are required as before.
 
 Head passing as a whole is the merge hook's CI binding (#1228): the latest
@@ -200,7 +201,7 @@ def repo_check(repo: Path, base: str) -> str | None:
         text = git(repo, "show", f"{base}:{REPO_CHECK}")
     except subprocess.CalledProcessError:
         return None
-    names = text.split()
+    names = [line.strip() for line in text.splitlines() if line.strip()]
     if len(names) != 1:
         raise Reject(f"{REPO_CHECK} at base must name exactly one check, found {names}")
     return names[0]
@@ -339,7 +340,9 @@ def evaluate(repo: Path, base: str, head: str, info: dict, pin: dict | None = No
         raise Reject("the CI evidence is read per PR: pass --pr OWNER/REPO#N")
     slug, number = pr.rsplit("#", 1)
     check = repo_check(repo, base)
-    if check:
+    # The PR may not rewrite the job it relies on (the test commit itself may touch workflows).
+    workflows = lambda sha: {p: e for p, e in tree(repo, sha).items() if p.startswith(WORKFLOWS)}  # noqa: E731
+    if check and workflows(f"{msha}^") == workflows(head):
         at_head = [c for k, c in check_runs(slug, head).items() if k[1] == check]
         if at_head and all(c == "success" for c in at_head):
             info.update(result="passed", reason=f"the repository's acceptance check {check!r}"
