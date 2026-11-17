@@ -319,7 +319,7 @@ pr-watch から `PR_MERGED_HEAD_UNCONFIRMED: PR #<n> (head=<merged_short>, last 
     二重配送されて freshness gate が照合不能枝に落ちるため、打たないこと**（2 本目は helper の payload を持たず `head` が無いため
     `[head-unverifiable]` 付きで届く）
 - ディスパッチャーにペインクローズを依頼（**worker Claude ペイン**）:
-  `CLOSE_PANE: {pane_id} のペインを閉じてください。`
+  `CLOSE_PANE: {pane_id} のペインを閉じてください。`（broker では `deliver="user_turn"` で送る。拒否時の手順は `org-delegate/references/dispatcher-send.md`）
   - **完了通知 `PANE_CLOSED: worker-{task_id} (pane={pane_id})` を待つ**: ディスパッチャーは close 成功の時点で events に `pane_closed` を記帳し、この 1 行を必ず送る（知見記録の有無と無関係）。受けたらペインは閉じ済みなので `CLOSE_PANE` を再送しない。ack は要らず、ユーザーへも実況しない（内部配管）。届かないときも「閉じていない」と決めず、events の `pane_closed` 行か `list_panes` で確かめる。保留（identity を確定できず閉じなかった）の場合は PANE_CLOSED ではなく保留の説明が届く。`pane_closed` は記録であって run の完了ではない。run の COMPLETED 更新は引き続き窓口が行う
 - **CI 監視の watcher ペイン (`pr-watch-<PR>`) を窓口が掃除する**: worker ペインとは
   別に、`/pr-watch-pane` で spawn した watcher ペインを窓口が掃除する（spawn 時に控えた pane_id + head
