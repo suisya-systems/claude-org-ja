@@ -286,7 +286,7 @@ class DelegatePayloadTransportNeutral(unittest.TestCase):
         import json
 
         plan = _StubPlan(delegate_body=self._body())
-        with _tmp_send_plan(plan) as raw:
+        with _env_transport("renga"), _tmp_send_plan(plan) as raw:
             payload = json.loads(raw)
         self.assertEqual(set(payload), {"to_id", "message", "summary"})
         self.assertEqual(payload["to_id"], "dispatcher")
@@ -297,15 +297,19 @@ class DelegatePayloadTransportNeutral(unittest.TestCase):
         # send_plan.json の byte 等価 (indent / 末尾改行 / summary を含む)。
         golden = (FIXTURES / "send_plan.golden.json").read_text(encoding="utf-8")
         plan = _StubPlan(delegate_body=self._body())
-        with _env_transport(None):
+        with _env_transport("renga"):
             with _tmp_send_plan(plan) as raw_renga:
                 pass
         with _env_transport("broker"):
             with _tmp_send_plan(plan) as raw_broker:
                 pass
         self.assertEqual(raw_renga, golden)
-        # transport 中立なので broker でも byte 同一。
-        self.assertEqual(raw_broker, golden)
+        # broker は deliver=user_turn だけが加わる (他は golden と同一)。
+        import json
+
+        expected = json.loads(golden)
+        expected["deliver"] = "user_turn"
+        self.assertEqual(json.loads(raw_broker), expected)
 
 
 class DelegateNextStepHintMatchesDescriptor(unittest.TestCase):
@@ -323,8 +327,8 @@ class DelegateNextStepHintMatchesDescriptor(unittest.TestCase):
         with _env_transport(None):
             self.assertEqual(
                 gdp._next_step_hint(),
-                "Next step: copy send_plan.json's `to_id`/`message` into a "
-                "org-broker send_message call.",
+                "Next step: copy send_plan.json's `to_id`/`message`/`deliver` "
+                "(omit `summary`) into a org-broker send_message call.",
             )
 
     def test_hint_explicit_renga_byte_for_byte(self):

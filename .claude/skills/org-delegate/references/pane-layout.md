@@ -67,7 +67,7 @@ dispatcher を最後に置く設計意図 (broker では各ペインが detached
 - **役割ラベル (`role`)**: `secretary` / `dispatcher` / `curator` / `worker` の 4 種
   - `list_panes` の出力で `role` フィールドが取得でき、組織状態の集計や balanced split の target 選出に使える
 - **ワーカー完了時**:
-  1. 窓口がディスパッチャーに `CLOSE_PANE: {pane_id}` を依頼（対象ペインの数値 pane_id を載せる）
+  1. 窓口がディスパッチャーに `CLOSE_PANE: {pane_id}` を依頼（対象ペインの数値 pane_id を載せる。broker では `deliver="user_turn"` で送る。[`dispatcher-send.md`](dispatcher-send.md)）
   2. ディスパッチャーは受け取った pane_id を `mcp__org-broker__list_panes` で照合し、そのレコードが
      `name == "worker-{task_id}"` かつ `role == "worker"` を**なお指している**ことを確かめてから
      `mcp__org-broker__close_pane(target=<照合済みの数値 pane_id>)` でペインを明示破棄する

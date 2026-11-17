@@ -2286,6 +2286,10 @@ def _run_settings_generate(
     return out, None
 
 
+# claude_org_runtime.broker.user_turn.MAX_BODY_BYTES (UTF-8 bytes).
+BROKER_USER_TURN_MAX_BYTES = 4096
+
+
 def _write_send_plan(plan: DelegatePlan, *, out_path: Path) -> Path:
     """Write the transport MCP call manifest Secretary will copy from.
 
@@ -2295,11 +2299,22 @@ def _write_send_plan(plan: DelegatePlan, *, out_path: Path) -> Path:
     §5.2 (i)). Renga is the default, so the emitted JSON is byte-identical
     to the current output.
     """
-    payload = {
+    payload: dict = {
         "to_id": "dispatcher",
         "message": plan.delegate_body,
-        "summary": plan.to_summary_dict(),
     }
+    if _transport.resolve() == "broker":
+        # Claude Code 2.1.325+ tags channel input "not from your user" and the
+        # dispatcher holds a channel DELEGATE; a user turn is acted on.
+        size = len(plan.delegate_body.encode("utf-8"))
+        if size > BROKER_USER_TURN_MAX_BYTES:
+            raise ValueError(
+                f"DELEGATE body is {size} bytes; broker user_turn accepts at "
+                f"most {BROKER_USER_TURN_MAX_BYTES}. Shorten the description / "
+                "acceptance text or guidance."
+            )
+        payload["deliver"] = "user_turn"
+    payload["summary"] = plan.to_summary_dict()
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(
         json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
@@ -3127,8 +3142,11 @@ def _next_step_hint() -> str:
     with the ``mcp__<server>__send_message`` call the Secretary actually
     issues when copying ``send_plan.json``.
     """
+    deliver = (
+        "/`deliver` (omit `summary`)" if _transport.resolve() == "broker" else ""
+    )
     return (
-        "Next step: copy send_plan.json's `to_id`/`message` into a "
+        f"Next step: copy send_plan.json's `to_id`/`message`{deliver} into a "
         f"{_transport.server_name()} send_message call."
     )
 

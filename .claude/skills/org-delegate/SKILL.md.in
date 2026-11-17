@@ -244,6 +244,8 @@ python3 tools/gen_delegate_payload.py apply \
 # 3. apply 出力の send_plan.json を MCP 呼び出しにコピペ
 #    cat <worker_dir>/send_plan.json
 #    → {{FQ}}send_message(to_id="dispatcher", message=<message>)
+#      broker では send_plan.json の deliver ("user_turn") も渡す。拒否時の手順は
+#      references/dispatcher-send.md
 ```
 
 Windows native 版（Git Bash。PowerShell では行末の `\` を `` ` `` に替える。1.5 と 3 は同じ）:
