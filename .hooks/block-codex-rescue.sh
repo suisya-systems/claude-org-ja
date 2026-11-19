@@ -47,6 +47,6 @@ TOOL_NAME=$(printf '%s\n' "$INPUT" | jq -r '.tool_name // empty')
 
 SKILL=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.skill // empty | tostring')
 if [[ "${SKILL#/}" == "codex:rescue" ]]; then
-  deny_with_reason "codex:rescue skill は使えません。Codex セルフレビューは bash tools/codex_review_gate.sh <base> (codex exec review 直打ち) で回してください。"
+  deny_with_reason "codex:rescue skill は使えません。Codex セルフレビューは brief に描画された Codex ゲートのコマンドを、他に何も付けず単独でそのまま実行して回してください。"
 fi
 exit 0

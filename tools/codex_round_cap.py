@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Per-task Codex review round cap, enforced outside the worker.
 
-The worker's only permitted Codex entries are ``bash
-"$CLAUDE_ORG_PATH/tools/codex_review_gate.sh" [<base-ref>]`` (diff review) and
-``bash "$CLAUDE_ORG_PATH/tools/codex_review_gate.sh" --design [<file>]``
-(design review). The argument-less forms are the ones the worker settings
-run outside the sandbox; the gate then takes the base ref from ``base-ref``
+The worker's only permitted Codex entries are the gate commands rendered in
+its brief: the diff review (no arguments, or a base ref) and the design
+review (``--design`` plus an optional file). The worker runs the rendered
+command alone, unchanged. The argument-less forms are the ones the worker
+settings run outside the sandbox; the gate then takes the base ref from ``base-ref``
 below and the design file from a fixed path. The PreToolUse
 hook ``.hooks/block-codex-over-cap.sh`` runs ``hook`` here (outside the
 worker's sandbox) for every Bash command (and MCP ``spawn_pane`` /
@@ -86,15 +86,18 @@ UNLIMITED = "unlimited"
 GATE_NAME = "codex_review_gate.sh"
 HOOK_ACTOR = "codex-round-cap-hook"
 
-GATE_FORM = 'bash "$CLAUDE_ORG_PATH/tools/codex_review_gate.sh" [<base-ref>]'
-DESIGN_FORM = 'bash "$CLAUDE_ORG_PATH/tools/codex_review_gate.sh" --design [<file>]'
+# Display strings point at the brief's rendered command, never at a form with a
+# variable (a variable form is not registered outside the sandbox).
+GATE_FORM = "brief に描画された Codex ゲートのコマンド"
+DESIGN_FORM = GATE_FORM + "に --design を付けた形"
 DEFAULT_BASE_REF = "origin/main"
 MSG_DIRECT = (
-    "codex の直接実行は禁止。" + GATE_FORM + " を使う"
+    "codex の直接実行は禁止。" + GATE_FORM + "を、他に何も付けず単独でそのまま実行する"
 )
 MSG_GATE_FORM = (
-    "Codex ゲートは単独のコマンドとして " + GATE_FORM + " または " + DESIGN_FORM
-    + " の形でだけ呼べます (ワーカー側のコピーや相対パス・他コマンドとの連結は不可)"
+    "Codex ゲートは " + GATE_FORM + "を、他に何も付けず単独でそのまま実行してください "
+    "(設計レビューは " + DESIGN_FORM + "。"
+    "ワーカー側のコピーや相対パス・他コマンドとの連結は不可)"
 )
 
 # ---------------------------------------------------------------------------

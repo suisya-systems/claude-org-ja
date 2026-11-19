@@ -127,7 +127,7 @@ check 2 "codex on a later line denied" $'ls\ncodex exec'
 
 # --- 正規形でないゲート呼び出し (許可回数 0 でも形の判定が先) ---
 check 2 "relative gate path denied" "bash tools/codex_review_gate.sh base"
-assert_err_contains "codex_review_gate.sh" "non-canonical stderr shows the canonical form"
+assert_err_contains "brief に描画された" "non-canonical stderr points at the brief-rendered command"
 check 2 "chained gate denied" "bash $CANON base; true"
 check 2 "worktree copy of the gate denied" "bash $WORKER/tools/codex_review_gate.sh base"
 check 2 "gate with two args denied" "bash $CANON base extra"

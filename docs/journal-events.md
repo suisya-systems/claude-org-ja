@@ -197,15 +197,15 @@ the helper**; it does not deduplicate a row a human appended separately.
 
 The Codex round cap is enforced outside the worker. `.hooks/block-codex-over-cap.sh`
 sees every worker Bash call that mentions `codex`: a direct `codex` invocation is
-refused, and the only permitted entry is `bash "<claude_org_path>/tools/codex_review_gate.sh" [<base-ref>]`
+refused, and the only permitted entry is the gate command rendered in the worker's brief, run alone and unchanged
 (workers use the argument-less form, which reads the base from `delegate_sent`'s `base_ref`).
 Each permitted gate call appends one `codex_round_started` in the same transaction
 that counts the earlier ones; once `used` reaches `allowed` the call is refused and
 `codex_round_denied` is appended instead. The task is resolved from the newest
 `delegate_sent` whose `dir` matches the worker's `WORKER_DIR`.
 
-`mode` is `diff` for `bash "<claude_org_path>/tools/codex_review_gate.sh" [<base-ref>]`
-and `design` for `... --design [<file>]`; a row without `mode` counts as `diff`. The two
+`mode` is `diff` for the rendered gate command (optionally with a base ref)
+and `design` for the same command with `--design [<file>]`; a row without `mode` counts as `diff`. The two
 are counted separately: `round` / `used` count rows of the same mode, diff rounds are
 checked against `allowed`, and design is fixed at `allowed: 1` per task (not changed by
 `set`), so a design review neither consumes nor is blocked by the diff allowance.
