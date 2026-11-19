@@ -131,7 +131,7 @@ python3 tools/codex_round_cap.py set --task-id <task_id> --allowed <N|unlimited>
 ```
 現在値は `python3 tools/codex_round_cap.py status --task-id <task_id>` で確かめられる。許可回数を書けるのは窓口だけで、ワーカーからは書けない（`.state/` はワーカーのサンドボックス外）。
 
-**ワーカーに設計レビューを頼むとき**: ワーカーは `codex` を直接実行できないので、brief で着手前の設計レビューを求める場合も、ワーカーは設計を `.worker-scratch/design.md` に書き、`bash "$CLAUDE_ORG_PATH/tools/codex_review_gate.sh" --design` だけで回す（ファイル名は付けない。付けた形は sandbox 内で走り不成立になる）。設計レビューは差分レビューとは別枠で数え、タスクごとに 1 回固定（`set` では変わらない）。差分レビューの許可回数（既定 3）は減らない。2 回目の設計レビューは `CODEX_ROUND_DENIED`（`mode=design`）で拒否される。
+**ワーカーに設計レビューを頼むとき**: ワーカーは `codex` を直接実行できないので、brief で着手前の設計レビューを求める場合も、ワーカーは設計を `.worker-scratch/design.md` に書き、brief に描画された設計レビューのコマンド（絶対パスで `--design` が付くだけの形）を、他に何も付けず単独でそのまま実行する（ファイル名は付けない。変数入りのパス・`cd` 前置・パイプ付き・ファイル名付きは、sandbox の除外登録と一致せず sandbox 内で走り不成立になる）。設計レビューは差分レビューとは別枠で数え、タスクごとに 1 回固定（`set` では変わらない）。差分レビューの許可回数（既定 3）は減らない。2 回目の設計レビューは `CODEX_ROUND_DENIED`（`mode=design`）で拒否される。
 
 ## 委譲前チェックリスト（窓口が実行）
 
