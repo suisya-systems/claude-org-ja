@@ -8,23 +8,25 @@ Usage::
 The secretary runs this after asking the dispatcher to close the worker pane
 (``CLOSE_PANE``). For each task, in this order, reading recorded state only:
 
-1. PR: a run with ``pr_url`` must be merged. ``runs.pr_state='merged'`` is
-   enough (``pr_watch --merge-watch`` records it); otherwise
-   ``run_complete_on_merge.complete_on_merge`` asks GitHub once and records the
-   merge. Not merged -> blocked (exit 4). A run without ``pr_url`` (a
-   design-only run handed to a build run, an audit, a task the human closed)
-   needs ``--no-pr``; without it -> blocked (exit 4).
-2. Pane: the latest ``worker_spawned`` must be followed by ``pane_closed`` /
+1. Pane: the latest ``worker_spawned`` must be followed by ``pane_closed`` /
    ``worker_closed`` (a parked run's pane was closed when it was parked).
    Still open -> blocked (exit 5), after waiting up to ``--wait-pane``
-   seconds (default 0).
+   seconds (default 0). Checked first, because the PR lookup below may
+   already remove a pattern C brief.
+2. PR: a run with ``pr_url`` must be merged. ``runs.pr_state='merged'`` is
+   enough (``pr_watch --merge-watch`` records it); otherwise
+   ``run_complete_on_merge.complete_on_merge`` asks GitHub once and records the
+   merge. Not merged, or GitHub could not be asked -> blocked (exit 4). A run
+   without ``pr_url`` (a design-only run handed to a build run, an audit, a
+   task the human closed) needs ``--no-pr``; without it -> blocked (exit 4).
 3. Worktree: when the worker dir is a linked git worktree, ``git worktree
    remove --force`` from its main checkout (``--force`` because of the
    untracked ``send_plan.json``). The branch is kept. A project dir (pattern A)
    or an ephemeral dir (pattern C) is kept.
-4. One StateWriter transaction: ``runs.status='completed'`` (archives the
-   worker-state file) and the ``worker_dirs`` row removed; then the pattern C
-   ``CLAUDE.local.md`` cleanup.
+4. The pattern C (``gitignored_repo_root``) ``CLAUDE.local.md`` cleanup, then
+   one StateWriter transaction: ``runs.status='completed'`` (archives the
+   worker-state file) and the ``worker_dirs`` row removed. The cleanup comes
+   first so that a failed cleanup leaves the run open for the next call.
 5. Check: the run is not among ``run_complete_on_merge.merged_runs_left_open``.
 
 Nothing is removed before 1 and 2 pass. A step that fails stops that task
@@ -91,7 +93,7 @@ def _check_pr(db_path: Path, task: str, pr_url: Optional[str], pr_state: Optiona
     try:
         result = complete_on_merge(pr=int(m.group(2)), repo=m.group(1), task_id=task,
                                    db_path=db_path)
-    except (OSError, subprocess.SubprocessError, ValueError, SystemExit) as exc:
+    except (OSError, RuntimeError, subprocess.SubprocessError, ValueError, SystemExit) as exc:
         raise Blocked(4, f"could not ask GitHub whether PR #{m.group(2)} merged: {exc}")
     if result not in (RESULT_MERGED, RESULT_ALREADY):
         raise Blocked(4, f"PR #{m.group(2)} is not merged ({result})")
@@ -138,20 +140,25 @@ def close_one(db_path: Path, task: str, *, no_pr: bool, wait: float) -> tuple[in
         status, pr_url, pr_state, wdir = row[0], row[1], row[2], row[3]
         if status == "completed" and wdir is None:
             return 0, "closed (already)"
-        done = [_check_pr(db_path, task, pr_url, pr_state, no_pr)]
+        # The pane first: the PR lookup below (complete_on_merge) may already
+        # run the pattern C brief cleanup.
         _wait_pane(conn, task, wait)
-        done.append("pane closed")
+        done = ["pane closed", _check_pr(db_path, task, pr_url, pr_state, no_pr)]
         done.append(_remove_worktree(wdir))
+        if wdir:
+            # Before the run is completed, so a failure here is retried by the next call.
+            # The org root is the directory holding .state/state.db.
+            try:
+                cleanup_pattern_c_local_md(conn, task_id=task,
+                                           claude_org_root=db_path.resolve().parent.parent,
+                                           worker_dir_abs=wdir)
+            except OSError as exc:
+                raise Blocked(6, f"pattern C brief cleanup failed: {exc}")
         with StateWriter(conn).transaction() as w:
             w.update_run_status(task, "completed")
             if wdir:
                 w.remove_worker_dir(wdir)
         done.append("run completed")
-        if wdir:
-            # The org root is the directory holding .state/state.db.
-            cleanup_pattern_c_local_md(conn, task_id=task,
-                                       claude_org_root=db_path.resolve().parent.parent,
-                                       worker_dir_abs=wdir)
     except Blocked as exc:
         return exc.code, f"blocked: {exc}"
     finally:
