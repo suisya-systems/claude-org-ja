@@ -73,7 +73,7 @@ allowed-tools:
    ```
    claude-org-runtime の attention classifier が `secretary_awaiting_user` (default severity `urgent`) として拾う。CLAUDE.md「secretary が user の判断を待っている状態を通知する」節を参照。本 emit は escalated entry の有無に依らず副作用を残さない（journal 1 行追記のみ、register / pending_decisions は触らない）
 
-5. **ワーカーに人間判断を転送する** (`to_id="worker-{task_id}"` で `send_message`)。ワーカーのペインを park して閉じていた場合（`review` の run の判断待ち。`python3 tools/belt_slots.py count` の `waiting` で `pane_open: false`）は、send_message の代わりに回答をファイルに書いて `python3 tools/gen_delegate_payload.py revive --task-id {task_id} --reason answer --feedback-file <回答のファイル>` を打ち、出力の `send_plan_path` をディスパッチャーへ送る（`/org-pull-request` 2c の「park した作業への指摘」と同じ）。作業途中の判断仰ぎ（run が `in_use`）はペインを残してあるので従来どおり send_message。伝達直後に register を `resolved` に更新:
+5. **ワーカーに人間判断を転送する** (`to_id="worker-{task_id}"` で `send_message`)。ワーカーのペインを park して閉じていた場合（状態の要約 `tools/state_db/queries.py` `get_org_state_summary` の `parked_runs` に task_id が載っている。Step 4 で `user_replied_at` を入れた後なので、`belt_slots.py count` の待ちの理由では見分けない）は、send_message の代わりに回答をファイルに書いて `python3 tools/gen_delegate_payload.py revive --task-id {task_id} --reason answer --feedback-file <回答のファイル>` を打ち、出力の `send_plan_path` をディスパッチャーへ送る（`/org-pull-request` 2c の「park した作業への指摘」と同じ）。作業途中の判断仰ぎ（run が `in_use`）はペインを残してあるので従来どおり send_message。伝達直後に register を `resolved` に更新:
    ```bash
    python3 tools/pending_decisions.py resolve --task-id {task_id} --kind to_worker   # Mac/Linux
    py -3 tools/pending_decisions.py resolve --task-id {task_id} --kind to_worker     # Windows native
