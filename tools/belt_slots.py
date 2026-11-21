@@ -263,9 +263,16 @@ def _split_ref(ref: str) -> tuple[Optional[str], Optional[int]]:
 
 def design_ready(conn: sqlite3.Connection, scan: dict) -> list[str]:
     """Design-ahead runs waiting on a dependency whose Issue the scan no longer
-    reports as blocked. A repo the scan did not cover is never ready."""
+    reports as blocked. A repo the scan did not cover is never ready, and a
+    failed or truncated scan readies nothing: ``excluded_blocked`` is only
+    complete for a successful scan that fetched every open Issue/PR."""
+    if scan.get("status") == "error" or scan.get("error"):  # failed scan (exit 2)
+        return []
+    if any((scan.get("input_truncated") or {}).values()):
+        return []
     res = scan.get("repo_resolution") or {}
     covered = {r for r in (res.get("repos") or []) if isinstance(r, str)}
+    covered |= {r for r in (scan.get("scanned_repos") or []) if isinstance(r, str)}
     entries = [e for k in ("candidates", "excluded_blocked", "excluded_merged")
                for e in (scan.get(k) or [])]
     covered |= {e["repo"] for e in entries if isinstance(e.get("repo"), str)}

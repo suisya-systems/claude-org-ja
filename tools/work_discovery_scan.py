@@ -1876,6 +1876,18 @@ def scan_repos(
         # Issue 1295. Always present ([] without --design-candidates): blocked
         # Issues that passed the same ranking, each with its blocking_refs.
         "design_candidates": design,
+        # Issue 1295. Always present: the real ``owner/repo`` of every scanned
+        # repo, kept even when the display collapses to ``repo: null``, so a
+        # consumer (``tools/belt_slots.py design-ready``) knows which repos
+        # this scan's ``excluded_blocked`` is complete for. An implicit scan
+        # whose slug was never resolved contributes nothing.
+        "scanned_repos": sorted(
+            {
+                r for r in (
+                    (b.get("repo") or b.get("real_repo")) for b in repo_bundles
+                ) if isinstance(r, str) and r
+            }
+        ),
         "excluded_blocked": excluded_blocked,
         # Always present: Issues with dependency wording that yielded no ref.
         "dependency_warnings": dependency_warnings,
