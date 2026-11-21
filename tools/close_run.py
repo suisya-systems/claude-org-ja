@@ -10,9 +10,10 @@ The secretary runs this after asking the dispatcher to close the worker pane
 
 1. Pane: the latest ``worker_spawned`` must be followed by ``pane_closed`` /
    ``worker_closed`` (a parked run's pane was closed when it was parked).
-   Still open -> blocked (exit 5), after waiting up to ``--wait-pane``
-   seconds (default 0). Checked first, because the PR lookup below may
-   already remove a pattern C brief.
+   Still open, or no ``worker_spawned`` at all (state unknown) -> blocked
+   (exit 5), after waiting up to ``--wait-pane`` seconds (default 0).
+   Checked first, because the PR lookup below may already remove a pattern C
+   brief.
 2. PR: a run with ``pr_url`` must be merged. ``runs.pr_state='merged'`` is
    enough (``pr_watch --merge-watch`` records it); otherwise
    ``run_complete_on_merge.complete_on_merge`` asks GitHub once and records the
@@ -22,11 +23,13 @@ The secretary runs this after asking the dispatcher to close the worker pane
 3. Worktree: when the worker dir is a linked git worktree, ``git worktree
    remove --force`` from its main checkout (``--force`` because of the
    untracked ``send_plan.json``). The branch is kept. A project dir (pattern A)
-   or an ephemeral dir (pattern C) is kept.
+   or an ephemeral dir (pattern C) is kept. A dir that another open run also
+   references is left alone entirely (files, brief and ``worker_dirs`` row).
 4. The pattern C (``gitignored_repo_root``) ``CLAUDE.local.md`` cleanup, then
    one StateWriter transaction: ``runs.status='completed'`` (archives the
-   worker-state file) and the ``worker_dirs`` row removed. The cleanup comes
-   first so that a failed cleanup leaves the run open for the next call.
+   worker-state file) and the ``worker_dirs`` row removed (kept for pattern A,
+   as before). The cleanup comes first so that a failed cleanup leaves the
+   run open for the next call.
 5. Check: the run is not among ``run_complete_on_merge.merged_runs_left_open``.
 
 Nothing is removed before 1 and 2 pass. A step that fails stops that task
@@ -53,7 +56,7 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from tools.belt_slots import _pane  # noqa: E402
+from tools.belt_slots import _events, _pane  # noqa: E402
 from tools.run_complete_on_merge import (  # noqa: E402
     RESULT_ALREADY,
     RESULT_MERGED,
@@ -101,6 +104,10 @@ def _check_pr(db_path: Path, task: str, pr_url: Optional[str], pr_state: Optiona
 
 
 def _wait_pane(conn, task: str, wait: float) -> None:
+    # No worker_spawned means the pane state is unknown, not closed.
+    if not _events(conn, task, ("worker_spawned",)):
+        raise Blocked(5, "no worker_spawned is recorded for this run, so its pane cannot be"
+                         " confirmed closed; check the pane and record pane_closed")
     deadline = time.monotonic() + wait
     while _pane(conn, task)["open"]:
         if time.monotonic() >= deadline:
@@ -131,21 +138,30 @@ def close_one(db_path: Path, task: str, *, no_pr: bool, wait: float) -> tuple[in
     conn = connect(db_path)
     try:
         row = conn.execute(
-            "SELECT r.status, r.pr_url, r.pr_state, w.abs_path FROM runs r "
-            "LEFT JOIN worker_dirs w ON w.id = r.worker_dir_id WHERE r.task_id = ?",
+            "SELECT r.status, r.pr_url, r.pr_state, w.abs_path, r.pattern, r.worker_dir_id "
+            "FROM runs r LEFT JOIN worker_dirs w ON w.id = r.worker_dir_id WHERE r.task_id = ?",
             (task,),
         ).fetchone()
         if row is None:
             return 2, f"blocked: no run {task!r}"
-        status, pr_url, pr_state, wdir = row[0], row[1], row[2], row[3]
+        status, pr_url, pr_state, wdir, pattern, wid = (row[i] for i in range(6))
         if status == "completed" and wdir is None:
             return 0, "closed (already)"
         # The pane first: the PR lookup below (complete_on_merge) may already
         # run the pattern C brief cleanup.
         _wait_pane(conn, task, wait)
         done = ["pane closed", _check_pr(db_path, task, pr_url, pr_state, no_pr)]
-        done.append(_remove_worktree(wdir))
-        if wdir:
+        # A dir another open run still uses (a reused project dir) keeps its
+        # files and its row; so does a pattern A project dir.
+        others = [r[0] for r in conn.execute(
+            "SELECT task_id FROM runs WHERE worker_dir_id = ? AND task_id != ? "
+            "AND status NOT IN ('completed', 'failed', 'abandoned')", (wid, task))] if wid else []
+        drop_row = bool(wdir) and not others and pattern != "A"
+        if others:
+            done.append(f"dir kept (also used by {', '.join(sorted(others))})")
+        else:
+            done.append(_remove_worktree(wdir))
+        if wdir and not others:
             # Before the run is completed, so a failure here is retried by the next call.
             # The org root is the directory holding .state/state.db.
             try:
@@ -156,7 +172,7 @@ def close_one(db_path: Path, task: str, *, no_pr: bool, wait: float) -> tuple[in
                 raise Blocked(6, f"pattern C brief cleanup failed: {exc}")
         with StateWriter(conn).transaction() as w:
             w.update_run_status(task, "completed")
-            if wdir:
+            if drop_row:
                 w.remove_worker_dir(wdir)
         done.append("run completed")
     except Blocked as exc:
