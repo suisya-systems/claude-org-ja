@@ -2804,13 +2804,20 @@ def revive_delegation(
             raise ReviveRefused(f"run {task_id!r} is {status!r}; only a parked review run can be revived")
         if bs._pane(conn, task_id)["open"]:
             raise ReviveRefused(f"worker-{task_id} still has a pane; send feedback to it instead")
+        from tools.state_db.queries import list_parked_runs
+        if task_id not in list_parked_runs(conn):
+            # A review run whose pane vanished without worker_parked (crash,
+            # manual close) is not eligible: that is an anomaly for a human.
+            raise ReviveRefused(f"run {task_id!r} was not parked (no worker_parked after its latest spawn)")
         if worker_dir is None or not worker_dir.is_dir():
             raise ReviveRefused(f"worktree not found for {task_id!r}: {wdir!r}")
         maxp = bs.read_contract(state / "conveyor" / "scope-contract.md")[1] or bs._max_from_config(root)
         if maxp is not None:
-            free = bs.count(conn, max_parallel=maxp,
-                            decisions_path=state / "pending_decisions.json")["free_slots"]
-            if not free:
+            # The target itself may count as busy (e.g. its CI went red after
+            # parking); it is the slot being filled, so leave it out.
+            busy = bs.count(conn, max_parallel=maxp,
+                            decisions_path=state / "pending_decisions.json")["busy"]
+            if len([t for t in busy if t != task_id]) >= maxp:
                 raise ReviveRefused(f"no free slot (max {maxp}); revive when a worker finishes")
         local = worker_dir / "CLAUDE.local.md"
         brief = local if local.exists() else worker_dir / "CLAUDE.md"
@@ -2824,6 +2831,17 @@ def revive_delegation(
         payload = json.loads(original_plan.read_text(encoding="utf-8"))
 
         gen = len(revives) + 1
+        payload["message"] = (
+            f"REVIVE gen {gen}（{REVIVE_REASONS[reason]}）: 待ちでペインを閉じた作業に、同じ作業ツリーで"
+            f"新しいワーカーを立てる。brief（{brief.name}）末尾の「引き継ぎ（revive gen {gen}）」節を先に読むこと。\n\n"
+            + payload.get("message", "")
+        )
+        if (payload.get("deliver") == "user_turn"
+                and len(payload["message"].encode("utf-8")) > BROKER_USER_TURN_MAX_BYTES):
+            raise ReviveRefused(
+                f"revived DELEGATE body exceeds the broker user_turn limit "
+                f"({BROKER_USER_TURN_MAX_BYTES} bytes); shorten the original DELEGATE"
+            )
         seed = state / "workers" / f"worker-{task_id}.md"
         seed_archive = state / "workers" / "archive" / f"worker-{task_id}.gen{gen}.md"
         record = (seed if seed.exists() else seed_archive)
@@ -2838,11 +2856,6 @@ def revive_delegation(
                 gen=gen, task_id=task_id, reason=reason, pr_url=pr_url,
                 previous_record=previous_record, feedback_text=feedback_text,
             ), encoding="utf-8")
-        payload["message"] = (
-            f"REVIVE gen {gen}（{REVIVE_REASONS[reason]}）: 待ちでペインを閉じた作業に、同じ作業ツリーで"
-            f"新しいワーカーを立てる。brief（{brief.name}）末尾の「引き継ぎ（revive gen {gen}）」節を先に読むこと。\n\n"
-            + payload.get("message", "")
-        )
         send_plan.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
         writer = StateWriter(conn, claude_org_root=root)
