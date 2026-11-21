@@ -218,6 +218,7 @@ goal モードのレンダリング規則（legacy と共通の規則は下の l
   - **工数**: `effort_estimated == true`（ヒューリスティック推定）なら `工数 <effort>(推定)`。`false`（`size:S/M/L` 等のラベル由来）なら `(推定)` を付けず `工数 <effort>`。
   - **並列可 / 直近マージ起点**: フラグ `parallelizable` / `unblocked_by_recent_merge` が `true` のときだけ該当トークン（`並列可` / `直近マージ起点`）を出す（`false` なら表記自体を出さない）。これらは対応する `*_estimated` が常に推定（`true`）なので、出すときは常に `(推定)` 付き。直近マージ起点は `recommendation.reason` 内（例:「直近マージ #N の follow-up」）にも自然に現れる。
 - **除外枠を必ず見せる**: `excluded_blocked[]` を「除外（依存未解決）: #<issue>（<note>）」の形で列挙する（監査性 + 全部見たうえで N 件、の安心）。空なら除外行を省く。
+- **設計まで進める候補**（`--design-candidates` を付けたときだけ中身が入る）: `design_candidates[]` を「設計まで（依存待ち）: #<issue>（<blocking_refs> の着地待ち）」の形で別の行に列挙する。通常の候補と同じランク（ゴール判定）を通ったもので、着手ではなく設計までを先に進める対象。空なら行を省く。
 - **マージ済み除外は別行で見せる**（設計 §10.5）: `excluded_merged[]` を「除外（マージ済み）: #<issue>（<note>）」の形で、**依存未解決の除外行とは別の行**に列挙する。`base_branch=develop` 等の二系統運用リポジトリでは、develop にマージ済みでも GitHub の自動クローズが発火せず Issue が open のまま残るため triage が「未着手」と誤読していた枠で、`note` が閉じた PR 番号と base ブランチを名指しする。**「まだ着手できない」（依存未解決）と「もう終わっている」（マージ済み）は人間の次の一手が真逆**なので混ぜない。空なら行を省く。
 - **サイレント truncation をしない**: `truncated_count` が 1 以上なら
   「（他に依存解決済みだが順位外の候補が <truncated_count> 件あります）」の 1 行を添える。

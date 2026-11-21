@@ -38,6 +38,12 @@ def candidate_refs(scan: dict) -> str:
         f"{c.get('repo') or fallback}#{c['issue']}"
         for c in scan.get("candidates") or []
     }
+    # Issue 1295: design candidates count too, marked so that the same Issue
+    # moving from design to a normal candidate still reads as a change.
+    refs |= {
+        f"design:{c.get('repo') or fallback}#{c['issue']}"
+        for c in scan.get("design_candidates") or []
+    }
     return ",".join(sorted(refs))
 
 
