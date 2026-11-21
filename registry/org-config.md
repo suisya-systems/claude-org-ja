@@ -75,3 +75,12 @@ CI が通った PR を窓口がマージする前に、人に仰いで止まる�
 - 上書き手段（環境変数・スコープ単位）は無い。この 1 行だけが設定。`/org-conveyor` はスコープ承認時の値を契約に記録し、稼働中に `acceptance` へ広げた変更は再承認まで `human` として扱う。
 - パイロット中の既知の限界: attention watcher の `ci_passed` 通知は方式に関わらず鳴る。窓口がマージ前に head を確かめてから、フックが head を fetch するまでの間の push は検出できない。
 - 設定行は**行頭（列 0）から `merge_approval_mode:` で始める**こと（`triage_home` と同じく列 0 固定で読む）。
+
+## Presubmit
+home_presubmit: python3 -m unittest discover -s tests; python3 -m unittest discover -s tools -p 'test_*.py'; python3 tools/gen_skill_prose.py --manifest tools/skill_src/manifest.json --check; bash tests/run-all.sh
+
+claude-org-ja 自身の作業（自己編集）を提出する前に、窓口が `python3 tools/presubmit.py run --task <task_id>` で流す確認（Issue 1298）。ほかのプロジェクトは [`registry/projects.example.md`](./projects.example.md) の `presubmit` 列（手元の `registry/projects.md`）に書く。
+
+- `;` で区切った段を、ワーカーの作業ツリーで順に流す。中身は CI（`.github/workflows/tests.yml`）の主な段に合わせてある。
+- 送信は、この確認が passed の head だけ `presubmit.py push` が通す。`-` / 空は未設定で、確認を流さずに送信を止めない。
+- 設定行は**行頭（列 0）から `home_presubmit:` で始める**こと。

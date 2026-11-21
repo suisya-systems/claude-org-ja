@@ -173,6 +173,11 @@
           "command_contains": "gate-acceptance-before-merge.sh"
         },
         {
+          "event": "PreToolUse",
+          "matcher_contains": "Bash",
+          "command_contains": "gate-presubmit-before-push.sh"
+        },
+        {
           "event": "UserPromptSubmit",
           "command_contains": "check-dispatcher-loop.sh"
         },
