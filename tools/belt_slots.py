@@ -10,6 +10,8 @@ A run that is only waiting on a human does not take a slot:
                   the human has not answered (``.state/pending_decisions.json``).
 * ``approval`` -- ``review`` without a PR, after the secretary emitted
                   ``notify_sent kind=awaiting_user gate=worker_completed``.
+* ``parked``   -- a parked run (pane closed, contract §1.6) that is no longer
+                  waiting on a human but has not been revived yet.
 
 Everything else that is ``queued`` / ``in_use`` / ``review`` is busy. A
 waiting ``review`` run whose pane is still open is reported as *parkable*.
@@ -140,7 +142,10 @@ def _classify(conn, task, status, pr_url, decisions) -> tuple[Optional[str], Opt
 
 
 def count(conn: sqlite3.Connection, *, max_parallel: Optional[int], decisions_path: Path) -> dict:
+    from tools.state_db.queries import list_parked_runs
+
     decisions = pd._load(Path(decisions_path))
+    parked = set(list_parked_runs(conn))
     busy, waiting = [], []
     for task, status, pr_url in conn.execute(
         f"SELECT task_id, status, pr_url FROM runs WHERE status IN ({','.join('?' * len(ACTIVE))}) "
@@ -148,6 +153,10 @@ def count(conn: sqlite3.Connection, *, max_parallel: Optional[int], decisions_pa
         ACTIVE,
     ).fetchall():
         reason, _ = _classify(conn, task, status, pr_url, decisions)
+        if reason is None and task in parked:
+            # Parked (pane closed, §1.6) with new work pending (red CI, an
+            # answered decision): nobody is working on it until it is revived.
+            reason = "parked"
         if reason is None:
             busy.append(task)
             continue

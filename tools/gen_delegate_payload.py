@@ -2823,10 +2823,13 @@ def revive_delegation(
         brief = local if local.exists() else worker_dir / "CLAUDE.md"
         if not brief.exists():
             raise ReviveRefused(f"no brief in {worker_dir}")
-        original_plan = worker_dir / "send_plan.gen0.json"
+        # Kept in org state, not in the worker's project (it is not covered
+        # by the worktree's managed .gitignore lines).
+        original_plan = state / "dispatcher" / "revive" / f"{task_id}-send_plan.gen0.json"
         if not original_plan.exists():
             if not send_plan.exists():
                 raise ReviveRefused(f"no send_plan.json in {worker_dir}")
+            original_plan.parent.mkdir(parents=True, exist_ok=True)
             original_plan.write_text(send_plan.read_text(encoding="utf-8"), encoding="utf-8")
         payload = json.loads(original_plan.read_text(encoding="utf-8"))
 
