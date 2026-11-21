@@ -100,8 +100,8 @@ python3 tools/work_discovery_scan.py --trigger manual --all-registry-repos
   `parallelizable` 候補のランクが上がる）。
 - `--free-panes` の意味は **空き worker slot 数**（＝ dispatch 可能な空き capacity の単位）であり、物理的な空き
   ターミナルペイン数ではない。broker 面
-  （`ORG_TRANSPORT=broker` / コード既定）では `max_concurrent_workers`（既定 8, `registry/org-config.md`）から
-  アクティブ worker 数を引いた残り、renga 面（opt-in）では rect ベース balanced split が受け入れ可能な空き split 枠
+  （`ORG_TRANSPORT=broker` / コード既定）では `python3 tools/belt_slots.py count` の `free_slots`（上限はスコープ契約の
+  `max_parallel`、契約が無ければ `max_concurrent_workers`（既定 8, `registry/org-config.md`）。人のマージ承認・判断・完了報告の承認だけを待つ run は数えない）、renga 面（opt-in）では rect ベース balanced split が受け入れ可能な空き split 枠
   （renga 面の overflow 時の扱いは下記の注記を参照。**現行 ja は当該フラグを渡していない**）。scan の計算ロジックは
   この読み替えで変わらない（数を受け取るだけ。`free_panes` は
   `_sort_key` のランキング項に使われるだけで、`tools/work_discovery_scan.py` 自身は `list_panes` / `list_peers` を

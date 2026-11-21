@@ -65,7 +65,7 @@ secretary に「ack を受けたら send_keys で /clear → /dispatcher-resume 
    - `.state/workers/worker-*.md` の Status が `active` なペイン名と最新の Progress Log 抜粋
    - state.db で `in_use` / `review` の run のうち、上の監視対象に入れなかったもの（Step 2 の
      `active_runs[]` と突き合わせる）は、`{{FQ}}list_panes` で `worker-<task_id>` の有無を確かめ、
-     「監視外」として 1 件ずつ書く（Step 3 の `## 監視外の run`）。state.db に run が残ったまま
+     「監視外」として 1 件ずつ書く（Step 3 の `## 監視外の run`。Step 2 の `parked_runs[]`（待ちに入ってペインを閉じた review の run。[`docs/contracts/delegation-lifecycle-contract.md`](../../../docs/contracts/delegation-lifecycle-contract.md) §1.6）はペインが無いのが正常なので、消えたワーカーとして数えない。監視外の run には「park 済み」と添えて書く）。state.db に run が残ったまま
      ペインが閉じた記録のずれがここに出る。watcher は live な run の task_id が本文に全部
      あることを検査するので、監視外の run も落とさない
 3. **直近 anomaly 観測の要約**

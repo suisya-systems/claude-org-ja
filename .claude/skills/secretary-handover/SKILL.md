@@ -79,7 +79,7 @@ print(out_path)
 - `session.curator_pane_id` / `session.curator_peer_id`
   （**null が正常系**。curator はオンデマンド化済みで常駐せず、org-start が
   `StateWriter.CLEAR` で明示クリアする。null を「欠損」扱いしない）
-- `active_runs[]`（進行中タスク）
+- `active_runs[]`（進行中タスク）と `parked_runs[]`（待ちに入ってペインを閉じた run。[`docs/contracts/delegation-lifecycle-contract.md`](../../../docs/contracts/delegation-lifecycle-contract.md) §1.6。handover では「ペインなし・人待ち」と分けて書く）
 - `active_worker_dirs[]`（生きているワーカーディレクトリ）
 - 直近の `recent_events` 上位 3〜5 件
 

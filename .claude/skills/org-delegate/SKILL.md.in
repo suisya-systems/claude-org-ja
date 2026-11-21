@@ -12,6 +12,8 @@ allowed-tools:
   - Write
   - Bash(python3 tools/gen_delegate_payload.py:*)
   - Bash(py -3 tools/gen_delegate_payload.py:*)
+  - Bash(python3 tools/belt_slots.py:*)
+  - Bash(py -3 tools/belt_slots.py:*)
   - Bash(python3 tools/ensure_projects_registry.py:*)
   - Bash(py -3 tools/ensure_projects_registry.py:*)
   - Bash(bash tools/journal_append.sh:*)
@@ -406,7 +408,8 @@ worker → Secretary peer message
   bash tools/journal_append.sh notify_sent kind=awaiting_user task_id=<task_id> gate=worker_completed note="<PR/Issue 等の短い文脈>"
   ```
   claude-org-runtime の attention classifier がこの 1 行を `secretary_awaiting_user` (default severity `urgent`) として拾い、画面前にユーザーが居ない場合でもビープで気付ける。CLAUDE.md「secretary が user の判断を待っている状態を通知する」節を参照
-- 結果を人間に報告し、**ペインを閉じず承認待ちで停止**。承認なしで push/PR を発行すると worker / user 双方への protocol 違反
+- 結果を人間に報告し、承認待ちで停止する。承認なしで push/PR を発行すると worker / user 双方への protocol 違反
+- **承認待ちに入ったらペインを閉じて枠を空ける（park）**: 上の awaiting_user を emit した同じ手番で、`python3 tools/belt_slots.py park --task <task_id>`（Windows native は `py -3`）を打ち、`ok: true` なら出力の `close_pane` の 1 行を `/org-pull-request` 2b-ii の `CLOSE_PANE` と同じ送り方でディスパッチャーへ送る（run は `review` のまま、作業ツリーと worker 状態ファイルは残す。`/org-pull-request` 2b-ii の COMPLETED 化・worktree 除去はしない。[`docs/contracts/delegation-lifecycle-contract.md`](../../../docs/contracts/delegation-lifecycle-contract.md) §1.6）。`ok: false` ならペインを残す（理由は `why`）。承認・修正指示が来たら、修正指示は `/org-pull-request` 2c の「park した作業への指摘」で、承認後の push / PR 作成は窓口が作業ツリーから行う（ワーカーは要らない）
 
 #### 2b / 2c. ユーザー承認後・レビュー指摘・マージ後クローズ
 

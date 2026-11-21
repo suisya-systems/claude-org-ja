@@ -149,7 +149,7 @@ mcp__org-broker__list_peers
 - ディスパッチャーの name が見えること
 - curator は**通常見えないのが正常**（オンデマンド化）。見えている場合は
   オンデマンド curate 実行中なので、そのまま放置してよい（dispatcher が閉じる）
-- handover に記載のワーカーが現存するか（消えていれば後述）
+- handover に記載のワーカーが現存するか（消えていれば後述。state DB の `parked_runs[]`（待ちに入ってペインを閉じた review の run。[`docs/contracts/delegation-lifecycle-contract.md`](../../../docs/contracts/delegation-lifecycle-contract.md) §1.6）はペインが無いのが正常なので、消えたワーカーとして数えない）
 
 **差分があれば人間に報告する**（例:「handover ではワーカー X が進行中とありますが、
 現在のペインリストには見当たりません」）。勝手に再 spawn しない。

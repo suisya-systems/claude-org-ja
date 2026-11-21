@@ -292,7 +292,7 @@ print(json.dumps(get_org_state_summary(conn), ensure_ascii=False, indent=2, defa
 - `active_worker_dirs[]` のワーカーディレクトリ存在
 
 handover には書かれていないが state.db に `active` で残っている worker、または
-handover には書かれているが state.db / list_panes で消えている worker があれば、
+handover には書かれているが state.db / list_panes で消えている worker があれば（`parked_runs[]`（待ちに入ってペインを閉じた review の run。[`docs/contracts/delegation-lifecycle-contract.md`](../../../docs/contracts/delegation-lifecycle-contract.md) §1.6）はペインが無いのが正常なので、消えたワーカーとして数えない）、
 secretary に **報告して** 判断を仰ぐ（勝手に再 spawn / status 変更しない）。
 
 ## Step 4: ペイン生存確認
