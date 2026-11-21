@@ -20,6 +20,9 @@ The secretary runs this after asking the dispatcher to close the worker pane
    merge. Not merged, or GitHub could not be asked -> blocked (exit 4). A run
    without ``pr_url`` (a design-only run handed to a build run, an audit, a
    task the human closed) needs ``--no-pr``; without it -> blocked (exit 4).
+   When the merge is not recorded and another open run uses the same dir,
+   blocked (exit 4) without asking GitHub: ``complete_on_merge`` would also
+   remove a pattern C brief that run reads.
 3. Worktree: when the worker dir is a linked git worktree, ``git worktree
    remove --force`` from its main checkout (``--force`` because of the
    untracked ``send_plan.json``). The branch is kept. A project dir (pattern A)
@@ -150,15 +153,21 @@ def close_one(db_path: Path, task: str, *, no_pr: bool, wait: float) -> tuple[in
         # The pane first: the PR lookup below (complete_on_merge) may already
         # run the pattern C brief cleanup.
         _wait_pane(conn, task, wait)
-        done = ["pane closed", _check_pr(db_path, task, pr_url, pr_state, no_pr)]
         # A dir another open run still uses (a reused project dir) keeps its
-        # files and its row; so does a pattern A project dir.
+        # files, brief and row; a pattern A project dir keeps its files and row.
         others = [r[0] for r in conn.execute(
             "SELECT task_id FROM runs WHERE worker_dir_id = ? AND task_id != ? "
             "AND status NOT IN ('completed', 'failed', 'abandoned')", (wid, task))] if wid else []
+        if others and pr_url and pr_state != "merged":
+            # complete_on_merge would also remove a pattern C brief the other run reads.
+            raise Blocked(4, "the merge is not recorded and the dir is also used by "
+                             f"{', '.join(sorted(others))}; record the merge after that run ends")
+        done = ["pane closed", _check_pr(db_path, task, pr_url, pr_state, no_pr)]
         drop_row = bool(wdir) and not others and pattern != "A"
         if others:
             done.append(f"dir kept (also used by {', '.join(sorted(others))})")
+        elif pattern == "A":
+            done.append("dir kept (pattern A project dir)")
         else:
             done.append(_remove_worktree(wdir))
         if wdir and not others:
