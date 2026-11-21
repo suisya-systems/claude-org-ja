@@ -153,9 +153,11 @@ def count(conn: sqlite3.Connection, *, max_parallel: Optional[int], decisions_pa
         ACTIVE,
     ).fetchall():
         reason, _ = _classify(conn, task, status, pr_url, decisions)
-        if reason is None and task in parked:
-            # Parked (pane closed, §1.6) with new work pending (red CI, an
-            # answered decision): nobody is working on it until it is revived.
+        if reason is None and task in parked and not _pane(conn, task)["open"]:
+            # Parked and the pane is confirmed closed (§1.6), with new work
+            # pending (red CI, an answered decision): nobody is working on it
+            # until it is revived. A park whose CLOSE_PANE failed keeps its
+            # pane and stays busy.
             reason = "parked"
         if reason is None:
             busy.append(task)
