@@ -1819,7 +1819,17 @@ def scan_repos(
         if goal_ranker is None:
             design, _ = rank_candidates(design_pool, config.top_n, None)
         else:
-            design = goal_ranker(design_pool)["candidates"]
+            ranked_design = goal_ranker(design_pool)
+            design = ranked_design["candidates"]
+            # A repo with only blocked Issues surfaces its unset / broken
+            # ledger here; keep those diagnostics so the conveyor still halts.
+            dgr = ranked_design.get("goal_rank")
+            if isinstance(goal_rank, dict) and isinstance(dgr, dict):
+                for key in ("goal_unset_repos", "goal_errors"):
+                    merged = goal_rank.setdefault(key, [])
+                    for item in dgr.get(key) or []:
+                        if item not in merged:
+                            merged.append(item)
 
     for cand in list(top) + list(design):
         # Fixed schema (design §12.7): the goal fields exist in both modes, so

@@ -432,7 +432,21 @@ def main(argv: Optional[list] = None) -> int:
             return 0
         if args.cmd == "design-ready":
             raw = Path(args.scan_file).read_text(encoding="utf-8") if args.scan_file else sys.stdin.read()
-            print(json.dumps({"ready": design_ready(conn, json.loads(raw))}))
+            ready = design_ready(conn, json.loads(raw))
+            from tools.state_db.queries import list_parked_runs
+            parked = set(list_parked_runs(conn))
+            # revive: parked, pane closed -> gen_delegate_payload.py revive
+            # send_to_pane: worker still has its pane -> send the go-ahead there
+            # check: pane gone without a park record -> a human looks
+            out = {"ready": ready, "revive": [], "send_to_pane": [], "check": []}
+            for t in ready:
+                if _pane(conn, t)["open"]:
+                    out["send_to_pane"].append(t)
+                elif t in parked:
+                    out["revive"].append(t)
+                else:
+                    out["check"].append(t)
+            print(json.dumps(out))
             return 0
         if args.cmd == "hold":
             hold(conn, args.reason, minutes=args.minutes)
