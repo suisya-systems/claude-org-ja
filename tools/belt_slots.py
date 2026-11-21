@@ -92,10 +92,13 @@ def _pane(conn, task) -> dict:
     spawned = _last(rows, ("worker_spawned",))
     closed = _last(rows, ("pane_closed", "worker_closed"))
     verified = _last(rows, ("worker_spawn_verified",))
+    # Only the latest spawn's own verification names the pane; an older one
+    # may point at a pane id that has since been reused.
+    current = verified is not None and spawned is not None and verified[0] >= spawned[0]
     return {
         "open": spawned is not None and (closed is None or closed[0] < spawned[0]),
         "dir": spawned[2].get("dir") if spawned else None,
-        "pane_id": verified[2].get("pane_id") if verified else None,
+        "pane_id": verified[2].get("pane_id") if current else None,
     }
 
 
@@ -179,6 +182,8 @@ def park(conn: sqlite3.Connection, task: str, *, decisions_path: Path) -> dict:
     pane = _pane(conn, task)
     if not pane["open"]:
         return {"ok": False, "task": task, "why": "pane already closed"}
+    if not pane["pane_id"]:
+        return {"ok": False, "task": task, "why": "latest spawn has no worker_spawn_verified pane id"}
     wdir = pane["dir"]
     if not wdir or not Path(wdir).is_dir() or _git(wdir, "rev-parse", "HEAD") is None:
         return {"ok": False, "task": task, "why": f"worktree not found: {wdir!r}"}
@@ -192,8 +197,7 @@ def park(conn: sqlite3.Connection, task: str, *, decisions_path: Path) -> dict:
     conn.execute("INSERT INTO events (actor, kind, payload_json) VALUES ('secretary', 'worker_parked', ?)",
                  (json.dumps(payload),))
     conn.commit()
-    return {"ok": True, **payload,
-            "close_pane": f"CLOSE_PANE: {pane['pane_id']} のペインを閉じてください。" if pane["pane_id"] else None}
+    return {"ok": True, **payload, "close_pane": f"CLOSE_PANE: {pane['pane_id']} のペインを閉じてください。"}
 
 
 def hold(conn: sqlite3.Connection, reason: str, *, minutes: int = 60, now: Optional[datetime] = None) -> int:
