@@ -190,6 +190,9 @@ def park(conn: sqlite3.Connection, task: str, *, decisions_path: Path) -> dict:
     if _git(wdir, "status", "--porcelain", "--untracked-files=no") != "":
         return {"ok": False, "task": task, "why": "worktree has uncommitted changes"}
     head = _git(wdir, "rev-parse", "HEAD")
+    if reason == "merge" and not (term and term.get("head")):
+        # evaluate() tolerates a verdict without a head; parking does not.
+        return {"ok": False, "task": task, "why": "CI verdict carries no head to compare with the worktree"}
     if term and term.get("head") and not head_corroborates(head, term["head"]):
         return {"ok": False, "task": task, "why": f"local HEAD {head[:12]} is not the CI-green head {term['head']}"}
     payload = {"task": task, "worker": f"worker-{task}", "reason": reason,
