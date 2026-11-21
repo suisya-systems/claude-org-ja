@@ -136,7 +136,7 @@ per-transport 詳細（pr-watch の二フレーム受信注記）は呼び先の
 
 1. **観測可能性サマリを出力**（反復開始時。「観測可能性」節）。
 2. **triage**: `/work-discovery` を起動する。conveyor 文脈では
-   `tools/work_discovery_scan.py --trigger post_merge --free-panes <空き枠>` 相当で候補 JSON を得る。空き枠は
+   `tools/work_discovery_scan.py --trigger post_merge --free-panes <空き枠> --design-candidates` 相当で候補 JSON を得る。空き枠は
    `python3 tools/belt_slots.py count` の `free_slots`。その出力の `parkable`（待ちだけになったのにペインを持っている作業）が
    空でなければ、**先に 1 件ずつ park する**（`python3 tools/belt_slots.py park --task <task_id>` → 出力の `close_pane` の 1 行を
    `/org-pull-request` 2b-ii と同じ送り方でディスパッチャーへ送る。run は `review` のまま、作業ツリーは残る）
@@ -148,6 +148,8 @@ per-transport 詳細（pr-watch の二フレーム受信注記）は呼び先の
 3. **scope gate**: 各候補をスコープ契約の述語に照合する。
    - **合致 + 空き pane あり** → 投入対象。合致候補に対する派遣は契約で事前承認済みなので、per-candidate の
      人間確認は **しない**（ここが `/work-discovery` の hard-stop との差分）。
+   - **設計まで進める候補**（契約の「依存で着地を待つ後続」が「設計まで」のとき）: scan の `design_candidates[]` のうち述語に合致するものを、空き枠の範囲で設計までの依頼として投入し、`python3 tools/belt_slots.py design-ahead --task <task_id> --issue <OWNER/REPO#N> --blocked-by <blocking_refs>` で記録する（設計を報告した run は待ちの理由 `dependency` になり park できる）。
+   - **依存が着地した設計済みの run**: scan の JSON を `python3 tools/belt_slots.py design-ready` に渡し、返った `ready` の run を `python3 tools/gen_delegate_payload.py revive --task-id <task_id> --reason dependency_landed` で実装に進める（空き枠を使う）。
    - **非合致 / 判定不能** → **投入しない**。ベルトがその候補に触れざるを得ない（= スコープを使い切って外側しか残っていない等）
      状況なら、自走を止め `/org-escalation` で人間に上げて halt する（INV-2）。
 4. **派遣**: 投入対象を空き枠（`free_slots`）まで `/org-delegate` の Step 0 から回す。レーン選択
