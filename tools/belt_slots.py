@@ -12,14 +12,20 @@ A run that is only waiting on a human does not take a slot:
                   ``notify_sent kind=awaiting_user gate=worker_completed``.
 
 Everything else that is ``queued`` / ``in_use`` / ``review`` is busy. A
-waiting ``review`` run whose pane is still open is *parkable*: its pane may
-be closed (``park``) and a worker re-spawned into the same worktree later.
+waiting ``review`` run whose pane is still open is reported as *parkable*.
 Mid-task decisions (``in_use``) are waiting but never parkable.
+
+This tool only counts and checks. Closing a parked pane and re-spawning a
+worker into the same worktree (``gen_delegate_payload.py revive``) are not
+implemented yet, and the lifecycle contract does not allow them yet; both
+arrive together in the follow-up change for Issue 1295. Until then no skill
+calls ``park``, and its output is advisory.
 
 Subcommands (all print one JSON object or one line):
 
   count       busy / waiting / free_slots / parkable
-  park        re-check one run, record ``worker_parked``, name the pane to close
+  park        re-check one run and record ``worker_parked`` (advisory; the
+              caller that closes the pane comes with the revive path)
   hold        record ``belt_hold`` (why free slots are deliberately left empty)
   idle-check  for the dispatcher loop: exit 10 + one line when free slots and
               candidates have both existed for 20+ minutes with no hold
@@ -200,7 +206,7 @@ def park(conn: sqlite3.Connection, task: str, *, decisions_path: Path) -> dict:
     conn.execute("INSERT INTO events (actor, kind, payload_json) VALUES ('secretary', 'worker_parked', ?)",
                  (json.dumps(payload),))
     conn.commit()
-    return {"ok": True, **payload, "close_pane": f"CLOSE_PANE: {pane['pane_id']} のペインを閉じてください。"}
+    return {"ok": True, **payload}
 
 
 def hold(conn: sqlite3.Connection, reason: str, *, minutes: int = 60, now: Optional[datetime] = None) -> int:
@@ -294,7 +300,7 @@ def main(argv: Optional[list] = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     c = sub.add_parser("count")
     c.add_argument("--max", type=int, help="slot limit (default: contract max_parallel, else max_concurrent_workers)")
-    p = sub.add_parser("park")
+    p = sub.add_parser("park", help="check one run and record worker_parked (advisory; no pane is closed)")
     p.add_argument("--task", required=True)
     h = sub.add_parser("hold")
     h.add_argument("--reason", required=True)
