@@ -10,6 +10,9 @@ A run that is only waiting on a human does not take a slot:
                   the human has not answered (``.state/pending_decisions.json``).
 * ``approval`` -- ``review`` without a PR, after the secretary emitted
                   ``notify_sent kind=awaiting_user gate=worker_completed``.
+* ``dependency`` -- ``review`` for a design-ahead run (``design_ahead``
+                  recorded, not yet revived with ``dependency_landed``): the
+                  design is done and the run waits for its blocker to land.
 * ``parked``   -- a parked run (pane closed, contract §1.6) that is no longer
                   waiting on a human but has not been revived yet.
 
@@ -27,6 +30,9 @@ Subcommands (all print one JSON object or one line):
   count       busy / waiting / free_slots / parkable
   park        re-check one run, record ``worker_parked``, return the pane to close
   hold        record ``belt_hold`` (why free slots are deliberately left empty)
+  design-ahead  record that a blocked Issue was taken up to the design stage
+  design-ready  read a scan JSON (stdin) and list design-ahead runs whose
+                Issue is no longer blocked (revive them with dependency_landed)
   idle-check  for the dispatcher loop: exit 10 + one line when free slots and
               candidates have both existed for 20+ minutes with no hold
 """
@@ -121,6 +127,8 @@ def _classify(conn, task, status, pr_url, decisions) -> tuple[Optional[str], Opt
         return "decision", None
     if status != "review":
         return None, None
+    if _design_waiting(conn, task):
+        return "dependency", None
     if pr_url:
         repo, pr = _split_pr_url(pr_url)
         if pr is None:
@@ -216,6 +224,84 @@ def park(conn: sqlite3.Connection, task: str, *, decisions_path: Path) -> dict:
                  (json.dumps(payload),))
     conn.commit()
     return {"ok": True, **payload, "close_pane": f"CLOSE_PANE: {pane['pane_id']} のペインを閉じてください。"}
+
+
+def _design_waiting(conn, task) -> bool:
+    """A design_ahead run not yet revived with ``dependency_landed``."""
+    last_design = last_landed = -1
+    for eid, kind, raw in conn.execute(
+        "SELECT id, kind, payload_json FROM events "
+        "WHERE kind IN ('design_ahead', 'delegate_resume') ORDER BY id"
+    ):
+        try:
+            p = json.loads(raw or "{}")
+        except ValueError:
+            continue
+        if p.get("task") != task:
+            continue
+        if kind == "design_ahead":
+            last_design = eid
+        elif p.get("reason") == "dependency_landed":
+            last_landed = eid
+    return last_design > last_landed
+
+
+def design_ahead(conn: sqlite3.Connection, task: str, *, issue_ref: str,
+                 blocking_refs: list[str]) -> int:
+    """Record that ``task`` takes the blocked Issue ``issue_ref`` up to design."""
+    payload = {"task": task, "issue_ref": issue_ref, "blocking_refs": list(blocking_refs)}
+    cur = conn.execute("INSERT INTO events (actor, kind, payload_json) "
+                       "VALUES ('secretary', 'design_ahead', ?)", (json.dumps(payload),))
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+def _split_ref(ref: str) -> tuple[Optional[str], Optional[int]]:
+    m = re.fullmatch(r"(?:([\w.-]+/[\w.-]+))?#(\d+)", str(ref).strip())
+    return (m.group(1), int(m.group(2))) if m else (None, None)
+
+
+def design_ready(conn: sqlite3.Connection, scan: dict) -> list[str]:
+    """Design-ahead runs waiting on a dependency whose Issue the scan no longer
+    reports as blocked. A repo the scan did not cover is never ready, and a
+    failed or truncated scan readies nothing: ``excluded_blocked`` is only
+    complete for a successful scan that fetched every open Issue/PR."""
+    if scan.get("status") == "error" or scan.get("error"):  # failed scan (exit 2)
+        return []
+    if any((scan.get("input_truncated") or {}).values()):
+        return []
+    res = scan.get("repo_resolution") or {}
+    covered = {r for r in (res.get("repos") or []) if isinstance(r, str)}
+    covered |= {r for r in (scan.get("scanned_repos") or []) if isinstance(r, str)}
+    entries = [e for k in ("candidates", "excluded_blocked", "excluded_merged")
+               for e in (scan.get(k) or [])]
+    covered |= {e["repo"] for e in entries if isinstance(e.get("repo"), str)}
+    sole = next(iter(covered)) if len(covered) == 1 else None
+    blocked = {(e.get("repo") or sole, e.get("issue")) for e in scan.get("excluded_blocked") or []}
+    # Done elsewhere (merged into a base branch) or no longer open: nothing left
+    # to implement, so never revive for implementation.
+    merged = {(e.get("repo") or sole, e.get("issue")) for e in scan.get("excluded_merged") or []}
+    open_refs = scan.get("open_issue_refs")
+    refs: dict[str, str] = {}
+    for (raw,) in conn.execute("SELECT payload_json FROM events WHERE kind = 'design_ahead' ORDER BY id"):
+        try:
+            p = json.loads(raw or "{}")
+        except ValueError:
+            continue
+        if p.get("task") and p.get("issue_ref"):
+            refs[p["task"]] = p["issue_ref"]
+    ready = []
+    for task, ref in refs.items():
+        row = conn.execute("SELECT status FROM runs WHERE task_id = ?", (task,)).fetchone()
+        if row is None or row[0] != "review" or not _design_waiting(conn, task):
+            continue
+        repo, number = _split_ref(ref)
+        repo = repo or sole
+        if open_refs is not None and f"{repo}#{number}" not in open_refs:
+            continue
+        if repo in covered and (repo, number) not in blocked and (repo, number) not in merged:
+            ready.append(task)
+    return sorted(ready)
 
 
 def hold(conn: sqlite3.Connection, reason: str, *, minutes: int = 60, now: Optional[datetime] = None) -> int:
@@ -318,6 +404,12 @@ def main(argv: Optional[list] = None) -> int:
     h = sub.add_parser("hold")
     h.add_argument("--reason", required=True)
     h.add_argument("--minutes", type=int, default=60)
+    d = sub.add_parser("design-ahead", help="record that a blocked Issue is taken up to design")
+    d.add_argument("--task", required=True)
+    d.add_argument("--issue", required=True, help="OWNER/REPO#N of the blocked Issue")
+    d.add_argument("--blocked-by", nargs="+", required=True, help="OWNER/REPO#N of each blocker")
+    r = sub.add_parser("design-ready", help="read a work_discovery_scan JSON on stdin; list runs to revive")
+    r.add_argument("--scan-file", help="scan JSON file (default: stdin)")
     i = sub.add_parser("idle-check")
     i.add_argument("--minutes", type=int, default=IDLE_MINUTES)
     args = ap.parse_args(argv)
@@ -335,6 +427,27 @@ def main(argv: Optional[list] = None) -> int:
             r = park(conn, args.task, decisions_path=decisions)
             print(json.dumps(r, ensure_ascii=False))
             return 0 if r["ok"] else 1
+        if args.cmd == "design-ahead":
+            design_ahead(conn, args.task, issue_ref=args.issue, blocking_refs=args.blocked_by)
+            return 0
+        if args.cmd == "design-ready":
+            raw = Path(args.scan_file).read_text(encoding="utf-8") if args.scan_file else sys.stdin.read()
+            ready = design_ready(conn, json.loads(raw))
+            from tools.state_db.queries import list_parked_runs
+            parked = set(list_parked_runs(conn))
+            # revive: parked, pane closed -> gen_delegate_payload.py revive
+            # send_to_pane: worker still has its pane -> send the go-ahead there
+            # check: pane gone without a park record -> a human looks
+            out = {"ready": ready, "revive": [], "send_to_pane": [], "check": []}
+            for t in ready:
+                if _pane(conn, t)["open"]:
+                    out["send_to_pane"].append(t)
+                elif t in parked:
+                    out["revive"].append(t)
+                else:
+                    out["check"].append(t)
+            print(json.dumps(out))
+            return 0
         if args.cmd == "hold":
             hold(conn, args.reason, minutes=args.minutes)
             return 0
