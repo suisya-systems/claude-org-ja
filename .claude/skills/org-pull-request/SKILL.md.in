@@ -11,8 +11,8 @@ effort: medium
 allowed-tools:
   - Read
   - Bash(git push:*)
-  - Bash(git -C * worktree remove:*)
-  - Bash(git worktree remove:*)
+  - Bash(python3 tools/close_run.py:*)
+  - Bash(py -3 tools/close_run.py:*)
   - Bash(gh pr create:*)
   - Bash(gh pr view:*)
   - Bash(gh pr checks:*)
@@ -316,14 +316,13 @@ pr-watch から `PR_MERGED_HEAD_UNCONFIRMED: PR #<n> (head=<merged_short>, last 
 
 実施内容:
 
-- 該当 run を **COMPLETED** に DB 更新（後述の `update_run_status('<task_id>', 'completed')` ブロックで実施）。markdown 直接編集はしない
 - ワーカーの状態ファイルを最終更新（最後の Progress Log 追記など）
 - **ワーカー状態ファイル (`.state/workers/worker-{task_id}.md`) は StateWriter が `update_run_status('<task_id>', 'completed')` の post-commit で自動的に `.state/workers/archive/` へ移動する** (`archive/` 不在時は lazy 作成、再呼び出しは idempotent。dashboard はこのディレクトリ内のファイルを live ワーカーとして扱わない。journal / retro が履歴参照する可能性に備えて削除はしない)
 - DB の events テーブルにイベント追記 — このクローズ段階で窓口が手で打つのは `issue_closed`（closing keyword が効かない
   リポジトリでの paired issue クローズ等）/ `prs_merged`（複数 PR をまとめた集計行）といった**窓口自身の後片付け**に限る
   （`bash tools/journal_append.sh ...`）。`worktree_removed` / `pane_closed` はディスパッチャーが書く（`pane_closed` は `CLOSE_PANE` の close 成功時点）
   （Writer / Emitted by の SoT は [`docs/journal-events.md`](../../../docs/journal-events.md)）
-  - **`pr_merged` は窓口が手で打たない**: `pr_merged` は下記 `tools/run_complete_on_merge.py` が
+  - **`pr_merged` は窓口が手で打たない**: `pr_merged` は `tools/run_complete_on_merge.py`（merge-watch と `tools/close_run.py` が呼ぶ）が
     `pr_state='merged'` / `commit` / `completed_at` と**同一トランザクションで**記録するので、窓口が手で
     `journal_append.sh pr_merged` を打つ必要はない。**打つと events が 1 マージにつき 2 行になり、relay が
     二重配送されて freshness gate が照合不能枝に落ちるため、打たないこと**（2 本目は helper の payload を持たず `head` が無いため
@@ -337,61 +336,7 @@ pr-watch から `PR_MERGED_HEAD_UNCONFIRMED: PR #<n> (head=<merged_short>, last 
   watcher ペイン (`pr-watch-<PR>`) を窓口がイベント駆動 close する」節）。`close_pane` は transport 抽象上
   tmux / herdr 両対応で、**herdr / wezterm backend では自己 close が効かず残留する**ため post-merge cleanup
   で必須。tmux backend で既に self-close 済みなら `[pane_not_found]`（自己クローズ済みで正常、skip してよい）
-- **ディレクトリパターンに応じた後処理**（同タイミングで実施）:
-  - パターン A（プロジェクトディレクトリ）: ディレクトリは保持する（次タスクで再利用）
-  - パターン B（worktree）: `git -C {workers_dir}/{project_slug}/ worktree remove --force .worktrees/{task_id}` を実行。ブランチは残す（マージ済みでもブランチ削除はしない、PR 履歴用）
-    - **`--force` は意図的**: worker_dir 直下に残る `send_plan.json`（untracked file）のため、`--force` を付けないとクローズ段階で必ず失敗する
-    - **self-edit (`pattern_variant='live_repo_worktree'`) の場合**: worktree base が `{claude_org_path}` なので `git -C {claude_org_path} worktree remove --force .worktrees/{task_id}` を実行する。`--force` の理由は通常パターン B と同じ。ブランチは同様に残す
-  - パターン C（エフェメラル, `pattern_variant='ephemeral'`）: ディレクトリは保持する（容量が問題になった場合のみ手動削除を検討）
-  - **パターン C（`gitignored_repo_root`, claude-org 自己編集）の特例 cleanup**: `worker_dir` が claude-org-ja repo root 自身なので、worktree remove も dir 削除も効かず、`{claude_org_root}/CLAUDE.local.md`（ワーカー指示ブリーフ）が残留する。**close 時に `tools/run_complete_on_merge.py` の `cleanup_pattern_c_local_md()` を呼んでブリーフを削除する**（下記 StateWriter ブロックに同梱）。判定は `runs.pattern == 'C'` AND `worker_dir == claude_org_root` で行われ、ephemeral C / パターン A・B では no-op。`events` に `pattern_c_cleanup`（payload: `task` / `removed_path` / `mode`）が 1 行残る。idempotent（ファイル不在なら `mode=skip`）。**`worker_dir_abs=` に削除した abs パスを明示で渡す（`remove_worker_dir()` が行を削除すると `runs.worker_dir_id` が NULL になり join 経由の検出が no-op になるため、順序非依存にする）**。PR 起点のクローズで `tools/run_complete_on_merge.py --pr <PR>` を呼ぶ場合は merge 記録時に自動で同 cleanup が走るが、gitignored タスクは PR を生まないことが多いので、下記 StateWriter ブロックでの明示呼び出しが本筋の経路
-- **PR 起点のクローズの場合は `tools/run_complete_on_merge.py` を呼ぶ** (`pr-watch --merge-watch` の merge-watch ループが自動で起動するので通常は手動実行不要だが、merge-watch を skip した場合や手動でマージを観測した場合のみ明示的に呼ぶ):
-  ```bash
-  python3 tools/run_complete_on_merge.py --pr <PR> --task-id <task_id>   # Mac/Linux
-  py -3 tools/run_complete_on_merge.py --pr <PR> --task-id <task_id>     # Windows native
-  ```
-  これは `gh pr view <PR> --json url,state,mergedAt,mergeCommit,headRefName,title` を一度引いて、PR が merged なら `StateWriter.transaction()` 経由で `pr_state='merged'` / `commit_short` / `pr_url` / `completed_at` を更新し、`pr_merged` イベント (payload: `task` / `pr` / `repo` / `pr_url` / `merge_commit` / `head` / `merged_at` / `pattern` / `auto_completed`) を 1 行追記する。再呼び出しは idempotent（二重イベントを書かない）。**この冪等性は helper 自身の再実行に対する性質であって、窓口の手打ちには効かない**（helper は自分が書いた行しか見ないので、手打ちした行は重複検出されず 2 行目として残る。上記の手打ち禁止はこのためにある）。task_id は `runs.pr_url` / `runs.branch`（active な runs 限定）から自動解決されるので省略もできる。
-  - **`--task-id` を付けて呼ぶこと**: `--task-id` があれば `--repo` 省略時のリポジトリを run → プロジェクト → GitHub URL で決定的に解決し、解決できなければ exit 2 で停止する。**`--task-id` も `--repo` も無い場合だけは旧来の事故経路（ja の同番号 PR を読む）が残る**。set_run_pr_open と同じく 1 行目に `run_complete_on_merge: repo=... (source=...) PR #<N>: <PR タイトル>` が出るので書き込み先を目視確認する
-  - **helper は runs.status を触らない**: dispatcher 側 pane close / worker_closed / worker-state final update が必要 (delegation-lifecycle-contract §T5)。helper は merge 事実のみ記録し、status flip と worker_dir 削除は窓口が下記の StateWriter で行う。run が非終端（`review` 等）のまま残っていれば、`merged` / `already` の行の後に `NOT COMPLETED task <id> status=<s>` と次の手順が 1 run 1 行で出る
-  - **CLI 終了コード**: `merged` / `already` / `not_yet` は exit 0、`no_run`（runs に該当行なし）は exit 3 で失敗扱いになる。手動運用時は exit code を確認
-- **パターン B / C のレジストリエントリ削除と最終 close は別途 StateWriter を呼ぶ**（markdown 直接編集禁止。run_complete_on_merge が `pr_state='merged'` と `completed_at` を既に書いているので、ここでは status flip と worker_dir 削除のみ行う）:
-  ```bash
-  # Mac/Linux
-  python3 -c "
-  from pathlib import Path
-  from tools.state_db import connect
-  from tools.state_db.writer import StateWriter
-  from tools.run_complete_on_merge import cleanup_pattern_c_local_md
-  conn = connect('.state/state.db')
-  abs_path = '<abs>'  # worker_dir の絶対パス（パターン B / C）
-  with StateWriter(conn).transaction() as w:
-      w.update_run_status('<task_id>', 'completed')  # post-commit hook が worker-{task}.md を archive
-      w.remove_worker_dir(abs_path)  # パターン B / C のみ
-  # Pattern C gitignored_repo_root の CLAUDE.local.md を削除
-  # （runs.pattern=='C' AND worker_dir==root のときのみ実削除。他は no-op）。
-  # remove_worker_dir() が worker_dirs 行を DELETE し runs.worker_dir_id は
-  # ON DELETE SET NULL になるため、join 経由の検出は NULL 化して no-op になる。
-  # worker_dir_abs= に削除した abs_path を明示で渡し、行削除の前後どちらで呼んでも
-  # 検出が壊れないようにする。
-  cleanup_pattern_c_local_md(conn, task_id='<task_id>', claude_org_root=Path('.').resolve(), worker_dir_abs=abs_path)
-  "
-  # Windows native（Git Bash / PowerShell。本体は Mac/Linux 版と同一）
-  py -3 -c "
-  from pathlib import Path
-  from tools.state_db import connect
-  from tools.state_db.writer import StateWriter
-  from tools.run_complete_on_merge import cleanup_pattern_c_local_md
-  conn = connect('.state/state.db')
-  abs_path = '<abs>'  # worker_dir の絶対パス（パターン B / C）
-  with StateWriter(conn).transaction() as w:
-      w.update_run_status('<task_id>', 'completed')  # post-commit hook が worker-{task}.md を archive
-      w.remove_worker_dir(abs_path)  # パターン B / C のみ
-  cleanup_pattern_c_local_md(conn, task_id='<task_id>', claude_org_root=Path('.').resolve(), worker_dir_abs=abs_path)
-  "
-  ```
-  標準経路は上記 `tools/run_complete_on_merge.py`。想定外の出力を返したときは手作業で再現せず、Issue を切ってユーザー判断を仰ぐ
-  - パターン A: lifecycle='active' のまま、run.status='completed' で snapshotter が available 相当の表示にする
-  - パターン B / C: 物理 dir は別途処理（worktree remove / dir 保持）。レジストリエントリ削除は上記 with ブロック内に `w.remove_worker_dir('<abs>')` を追加
-- **状態の切り替えを確かめる**: 上の StateWriter ブロックの後に `python3 tools/run_complete_on_merge.py --check-closed`（Windows native は `py -3`）を打ち、PR がマージ済みなのに `runs.status` が `in_use` / `review` 等のまま残っている run が無いことを確かめる。残っていれば 1 run 1 行で `NOT COMPLETED` と出て exit 1、無ければ `OK - no merged run left open` で exit 0。exit 0 を見るまでクローズを終えたとしない（残すとディスパッチャーの自動引き継ぎが `handover_missing_task_ids` で止まる）
+- **片付けは `python3 tools/close_run.py --task <task_id>` の 1 回**（Windows native は `py -3`）: 上の `PANE_CLOSED` を受けてから打つ（park で閉じたペインは記録済みなのでそのまま打てる）。ツールが PR のマージ（未記録なら `run_complete_on_merge` で 1 回確かめる）とペインが閉じた記録を確かめてから、worktree の削除（ブランチは残す。パターン A のディレクトリとエフェメラルなパターン C は残す）、run の **COMPLETED** と `worker_dirs` 行の削除、パターン C（`gitignored_repo_root`）の `CLAUDE.local.md` の削除、閉じ残しの確認までを順に行う。PR の無い run（設計だけで実装を別の run に渡した、監査だけ、ユーザーがクローズを指示した）は `--no-pr`、複数の run は `--task` を重ねる。最終行が `CLOSE_RUN: <task> closed` でなければ（`blocked: <理由>`）理由に従い、StateWriter や `git worktree remove` を手で打って再現しない。手順の中身はツールの docstring
 - JSON snapshot は StateWriter post-commit hook が自動再生成
 
 ## 2b-iii. マージ後の次タスク提案（proactive next-dispatch）
