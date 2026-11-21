@@ -2697,6 +2697,7 @@ REVIVE_REASONS = {
     "ci_failed": "CI の失敗",
     "conflict": "main との衝突",
     "answer": "人の回答",
+    "dependency_landed": "依存の着地（設計を終えた後続を実装に進める）",
 }
 
 

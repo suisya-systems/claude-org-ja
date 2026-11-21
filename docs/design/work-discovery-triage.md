@@ -379,6 +379,12 @@ triage を「**計算（どの Issue がどう triage されるか）**」と「
 - 完了した ref は **open blocker 集合からも外す**。GitHub 上はまだ open なので、放置すると「完了済みの作業にブロックされている」扱いで依存側が誤除外され続ける。依存側の候補は `signals[]` に「ブロッカー #N は #M（develop マージ）で解決済み」と明示する。
 - **サニティガード**: 「マージより後に作成された Issue」はそのマージでは閉じられ得ないので除外しない（番号再利用・`Closes` の書き間違い対策）。両タイムスタンプが揃わないときはガードを棄権する（順序を捏造しない）。**意図的な非カバレッジ**: 正当なクローズ後に再オープンされた Issue は除外されたままになる — だからこそ黙って落とさず PR 名付きで提示し、人間が覆せる形にしている。
 
+### 10.6 設計まで先に進める候補（`--design-candidates`、Issue 1295）
+
+依存が open の Issue（`excluded_blocked[]` に入るもの）は着手候補にならないが、コンベアはその設計までは先に進めてよい（スコープ契約の「依存で着地を待つ後続: 設計まで」）。`--design-candidates`（`ScanConfig.design_candidates`）を付けると、そうした Issue も通常と同じ候補の形で組み立て（`dependency: "blocked"`、`blocking_refs` に塞いでいる ref）、通常の候補と同じランク（goal モードではゴール判定）に**別の pool として**通し、通ったものを `design_candidates[]` に出す。通常の `candidates[]` / `excluded_blocked[]` は変わらない。欄は常に出る（フラグが無ければ `[]`）。
+
+その後の流れはツールが持つ: 窓口は `tools/belt_slots.py design-ahead --task <id> --issue <OWNER/REPO#N> --blocked-by <ref>...` で記録して設計だけの依頼を出す。設計を報告した run は待ちの理由 `dependency` になり park できる。`tools/belt_slots.py design-ready` が scan の JSON から「もう塞がれていない」run を返し、窓口はそれを `gen_delegate_payload.py revive --reason dependency_landed` で実装に進める。
+
 ## 10'. スコープ外 / 将来課題
 
 - **着手の自動化**: 本設計の対象外（INV-1 / INV-2 で恒久的に禁止）。assessment §5 が言うとおり「人間をループ頂点に残す」のが本組織の確定方針。

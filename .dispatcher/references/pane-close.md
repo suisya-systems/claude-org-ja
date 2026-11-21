@@ -549,12 +549,13 @@ resolver を別コマンドで走らせる必要はない。resolver は read-on
 # ディスパッチャー cwd は .dispatcher/ なので 1 段上がリポジトリルート。
 # stdout JSON は 6-2 の同一判定と 6-4 の転送で使うので変数に控える。
 # Windows
-scan_json=$(py -3 ../tools/work_discovery_scan.py --trigger worker_close --all-registry-repos); scan_exit=$?
+scan_json=$(py -3 ../tools/work_discovery_scan.py --trigger worker_close --all-registry-repos --design-candidates); scan_exit=$?
 # Mac/Linux
-scan_json=$(python3 ../tools/work_discovery_scan.py --trigger worker_close --all-registry-repos); scan_exit=$?
+scan_json=$(python3 ../tools/work_discovery_scan.py --trigger worker_close --all-registry-repos --design-candidates); scan_exit=$?
 ```
 
 - **`REPO_FLAGS=$(… --format flags)` を経由する旧形は使わない**（上の 1 コマンド形だけを使う）。
+- `--design-candidates` は、依存が未解決の Issue のうちゴール判定を通ったものを `design_candidates[]` に出す（窓口のコンベアが設計まで先に進める候補。[`docs/design/work-discovery-triage.md`](../../docs/design/work-discovery-triage.md) §10.6）。窓口へは stdout の JSON をそのまま転送するので、ディスパッチャーはこの欄を読まない。
 - **解決失敗は scan 自身が exit 2 にする**（`--repo` 無し = gh カレントリポジトリの暗黙 scan へ無言
   フォールバックしない）。呼び出し側の `if … then … else` 分岐は不要になった。exit 2 の扱いは 6-2 / 6-3 /
   6-4 の error 経路に一本化されている。

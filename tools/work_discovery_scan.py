@@ -440,6 +440,9 @@ class ScanConfig:
     top_n: int = DEFAULT_TOP_N
     free_panes: int | None = None
     trigger: str = "manual"
+    # Issue 1295: also rank blocked Issues into ``design_candidates`` (work the
+    # conveyor may take up to the design stage while its blocker lands).
+    design_candidates: bool = False
 
 
 # ----------------------------------------------------------------------
@@ -1293,8 +1296,12 @@ def build_candidate(
     effort_model: dict | None = None,
     base_done_refs: dict[QualRef, dict] | None = None,
     real_repo: str | None = None,
+    allow_blocked: bool = False,
 ) -> dict | None:
     """Build one candidate dict, or ``None`` if the Issue is blocked.
+
+    ``allow_blocked`` (Issue 1295) builds the blocked Issue anyway, with
+    ``dependency: "blocked"``, for the ``design_candidates`` pool.
 
     ``real_repo`` is the bundle's real ``owner/repo`` when ``home_repo`` is
     ``None`` only because the scan was implicit (gh current repo) — the goal
@@ -1318,7 +1325,7 @@ def build_candidate(
     status, open_blocking, all_blocking = _classify_dependency_q(
         issue, home_repo, open_refs_q
     )
-    if status == "blocked":
+    if status == "blocked" and not allow_blocked:
         return None
 
     issue_number = issue.get("number")
@@ -1381,7 +1388,7 @@ def build_candidate(
         "issue": issue_number,
         "title": title,
         "summary": extract_summary(issue.get("body"), title),
-        "dependency": "resolved",
+        "dependency": "blocked" if status == "blocked" else "resolved",
         "blocking_refs": [_ref_to_json(r, collapse_repo) for r in all_blocking],
         "priority": priority,
         "effort": effort,
@@ -1678,6 +1685,7 @@ def scan_repos(
     open_refs_q -= set(base_done_refs)
 
     candidates: list[dict] = []
+    design_pool: list[dict] = []
     excluded_blocked: list[dict] = []
     excluded_merged: list[dict] = []
     dependency_warnings: list[dict] = []
@@ -1750,6 +1758,23 @@ def scan_repos(
                         "note": _excluded_note(issue, open_blocking, collapse_repo),
                     }
                 )
+                if config.design_candidates:
+                    dcand = build_candidate(
+                        issue,
+                        home_repo=repo,
+                        open_refs_q=open_refs_q,
+                        recent_merge_pr_refs=recent_merge_pr_refs,
+                        recent_merge_closed_refs=recent_merge_closed_refs,
+                        recent_merge_referenced_refs=recent_merge_referenced_refs,
+                        scanned_repos=scanned_repos,
+                        collapse_repo=collapse_repo,
+                        effort_model=effort_model,
+                        base_done_refs=base_done_refs,
+                        real_repo=bundle.get("real_repo"),
+                        allow_blocked=True,
+                    )
+                    if dcand is not None:
+                        design_pool.append(dcand)
                 continue
             cand = build_candidate(
                 issue,
@@ -1786,7 +1811,17 @@ def scan_repos(
         goal_rank = ranked["goal_rank"]
         clause_gap = ranked.get("clause_gap", [])
 
-    for cand in top:
+    # Issue 1295: the design pool goes through the same ranking (goal clauses
+    # included), so a design candidate is never something the normal pool
+    # would have filtered out.
+    design: list[dict] = []
+    if design_pool:
+        if goal_ranker is None:
+            design, _ = rank_candidates(design_pool, config.top_n, None)
+        else:
+            design = goal_ranker(design_pool)["candidates"]
+
+    for cand in list(top) + list(design):
         # Fixed schema (design §12.7): the goal fields exist in both modes, so
         # the delivery layer reads one candidate shape. setdefault leaves the
         # goal ranker's values alone.
@@ -1838,6 +1873,9 @@ def scan_repos(
         "effort_model": effort_model,
         "candidates": top,
         "recommendation": recommendation,
+        # Issue 1295. Always present ([] without --design-candidates): blocked
+        # Issues that passed the same ranking, each with its blocking_refs.
+        "design_candidates": design,
         "excluded_blocked": excluded_blocked,
         # Always present: Issues with dependency wording that yielded no ref.
         "dependency_warnings": dependency_warnings,
@@ -2921,6 +2959,13 @@ def main(argv=None) -> int:
         help=f"Max candidates to return (default {DEFAULT_TOP_N}).",
     )
     parser.add_argument(
+        "--design-candidates",
+        action="store_true",
+        help="Also rank Issues blocked by an open Issue/PR into "
+        "design_candidates (taken up to the design stage while the blocker "
+        "lands; Issue 1295). Off by default.",
+    )
+    parser.add_argument(
         "--free-panes",
         type=int,
         default=None,
@@ -3046,7 +3091,8 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
 
     config = ScanConfig(
-        top_n=args.top_n, free_panes=args.free_panes, trigger=args.trigger
+        top_n=args.top_n, free_panes=args.free_panes, trigger=args.trigger,
+        design_candidates=args.design_candidates,
     )
     # Kept outside the try so the error envelope can carry whatever the
     # registry resolver produced, including when the resolution itself failed.
