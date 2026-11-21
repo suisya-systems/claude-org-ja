@@ -149,7 +149,7 @@ per-transport 詳細（pr-watch の二フレーム受信注記）は呼び先の
    - **合致 + 空き pane あり** → 投入対象。合致候補に対する派遣は契約で事前承認済みなので、per-candidate の
      人間確認は **しない**（ここが `/work-discovery` の hard-stop との差分）。
    - **設計まで進める候補**（契約の「依存で着地を待つ後続」が「設計まで」のとき）: scan の `design_candidates[]` のうち述語に合致するものを、空き枠の範囲で設計までの依頼として投入し、`python3 tools/belt_slots.py design-ahead --task <task_id> --issue <OWNER/REPO#N> --blocked-by <blocking_refs>` で記録する（設計を報告した run は待ちの理由 `dependency` になり park できる）。
-   - **依存が着地した設計済みの run**: scan の JSON を `python3 tools/belt_slots.py design-ready` に渡し、返った `ready` の run を `python3 tools/gen_delegate_payload.py revive --task-id <task_id> --reason dependency_landed` で実装に進める（空き枠を使う）。
+   - **依存が着地した設計済みの run**: scan の JSON を `python3 tools/belt_slots.py design-ready` に渡し、出力の `revive` の run は `python3 tools/gen_delegate_payload.py revive --task-id <task_id> --reason dependency_landed` で、`send_to_pane` の run はそのペインへ「依存が着地したので設計に沿って実装へ進む」と送って実装に進める。`check` の run（park の記録が無いのにペインが無い）は人に上げる（空き枠を使う）。
    - **非合致 / 判定不能** → **投入しない**。ベルトがその候補に触れざるを得ない（= スコープを使い切って外側しか残っていない等）
      状況なら、自走を止め `/org-escalation` で人間に上げて halt する（INV-2）。
 4. **派遣**: 投入対象を空き枠（`free_slots`）まで `/org-delegate` の Step 0 から回す。レーン選択
