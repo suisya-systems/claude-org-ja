@@ -208,7 +208,7 @@
 - For `full` validation depth: runs the project's standard verification (tests / lint / type-check) to green before reporting completion. If `codex` CLI is available, additionally runs the Codex self-review gate (`tools/codex_review_gate.sh`; the per-task round allowance is enforced outside the worker — see Constraints → Codex discipline).
 - For `minimal` validation depth: applies the requested fix, commits, and returns a single-line `done: {sha} {files}` report — no extra verification, no Codex.
 - Reports completion / progress / blockers / `APPROVAL_BLOCKED` / `ERROR` directly to the secretary (NOT to the dispatcher) via renga-peers.
-- After PR creation, holds the pane open to absorb PR-review feedback in the same pane (avoids the cost of re-spawning a fresh worker that has lost the diff / decision context).
+- After PR creation, holds the pane open to absorb PR-review feedback in the same pane (avoids the cost of re-spawning a fresh worker that has lost the diff / decision context). Exception: once the run only waits on a human, the secretary may park it (delegation-lifecycle-contract §1.6) and the pane is closed; feedback then goes to a new worker in the same worktree via `gen_delegate_payload.py revive`, with a written handover.
 - Records reusable learnings to `knowledge/raw/{YYYY-MM-DD}-{topic}.md` when applicable (`full` only; `minimal` skips this).
 
 ### Inputs

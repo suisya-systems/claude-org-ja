@@ -114,6 +114,34 @@ def list_active_runs(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     return _rows_to_dicts(rows)
 
 
+def list_parked_runs(conn: sqlite3.Connection) -> list[str]:
+    """Task ids of parked runs (delegation-lifecycle-contract §1.6, Issue 1295).
+
+    A run is parked when it is ``review`` and its latest ``worker_parked``
+    event comes after its latest ``worker_spawned`` (insertion order). Such
+    a run has no pane by design, so resume / handover checks must not report
+    it as a vanished worker.
+    """
+    review = {
+        r[0] for r in conn.execute("SELECT task_id FROM runs WHERE status = 'review'")
+    }
+    last: dict[tuple[str, str], int] = {}
+    for eid, kind, raw in conn.execute(
+        "SELECT id, kind, payload_json FROM events "
+        "WHERE kind IN ('worker_spawned', 'worker_parked') ORDER BY id"
+    ):
+        try:
+            task = json.loads(raw or "{}").get("task")
+        except (ValueError, AttributeError):
+            continue
+        if task in review:
+            last[(task, kind)] = eid
+    return sorted(
+        t for t in review
+        if last.get((t, "worker_parked"), -1) > last.get((t, "worker_spawned"), -1)
+    )
+
+
 def list_reserved_runs(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     """Return runs in the active-reservation-only projection (Set F §3.1 \\ §3.3).
 
@@ -331,6 +359,7 @@ def get_org_state_summary(conn: sqlite3.Connection) -> dict[str, Any]:
           "session": {... org_sessions row ...} | None,
           "active_runs": [...],            # Set F §3.3 user-visible (in_use / review)
           "reserved_runs": [...],          # Set F §3.1 \\ §3.3 (queued only)
+          "parked_runs": [task_id, ...],   # review runs whose pane was parked (§1.6)
           "active_worker_dirs": [...],     # lifecycle='active'
           "recent_events": [...],          # 20 newest
           "run_status_counts": {status: count},
@@ -349,6 +378,7 @@ def get_org_state_summary(conn: sqlite3.Connection) -> dict[str, Any]:
         "session": get_session(conn),
         "active_runs": list_active_runs(conn),
         "reserved_runs": list_reserved_runs(conn),
+        "parked_runs": list_parked_runs(conn),
         "active_worker_dirs": list_worker_dirs(conn, lifecycle="active"),
         "recent_events": list_recent_events(conn, limit=20),
         "run_status_counts": _run_status_counts(conn),
@@ -752,6 +782,7 @@ def get_resume_briefing_light(
         "session": format_session_brief(get_session(conn)),
         "active_runs": list_active_runs(conn),
         "reserved_runs": list_reserved_runs(conn),
+        "parked_runs": list_parked_runs(conn),
         "active_inventory_dirs": list_briefing_worker_dirs(conn),
         "recent_events": list_recent_events_for_briefing(conn, limit=5),
         "run_status_counts": _run_status_counts(conn),
