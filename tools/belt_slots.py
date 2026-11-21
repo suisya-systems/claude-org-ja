@@ -265,9 +265,13 @@ def idle_check(conn, *, contract_path: Path, decisions_path: Path, idle_state_pa
         prev = json.loads(idle_state_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         prev = None
-    if prev is None or free < prev.get("free", 0):  # new episode, or a slot was filled
+    # A dispatch (delegate_sent) or a filled slot means the belt is moving:
+    # start a new episode. The slot count alone can stay flat when a worker
+    # finishes and another is dispatched between two checks.
+    sent = conn.execute("SELECT MAX(id) FROM events WHERE kind = 'delegate_sent'").fetchone()[0]
+    if prev is None or free < prev.get("free", 0) or sent != prev.get("last_sent"):
         prev = {"since": _iso(now), "free": free, "notified": False}
-    prev["free"] = free
+    prev["free"], prev["last_sent"] = free, sent
     msg, code = "", 0
     if (not prev["notified"] and not _hold_active(conn, now)
             and now - _parse(prev["since"]) >= timedelta(minutes=minutes)):
