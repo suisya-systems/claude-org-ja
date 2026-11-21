@@ -278,6 +278,10 @@ def design_ready(conn: sqlite3.Connection, scan: dict) -> list[str]:
     covered |= {e["repo"] for e in entries if isinstance(e.get("repo"), str)}
     sole = next(iter(covered)) if len(covered) == 1 else None
     blocked = {(e.get("repo") or sole, e.get("issue")) for e in scan.get("excluded_blocked") or []}
+    # Done elsewhere (merged into a base branch) or no longer open: nothing left
+    # to implement, so never revive for implementation.
+    merged = {(e.get("repo") or sole, e.get("issue")) for e in scan.get("excluded_merged") or []}
+    open_refs = scan.get("open_issue_refs")
     refs: dict[str, str] = {}
     for (raw,) in conn.execute("SELECT payload_json FROM events WHERE kind = 'design_ahead' ORDER BY id"):
         try:
@@ -293,7 +297,9 @@ def design_ready(conn: sqlite3.Connection, scan: dict) -> list[str]:
             continue
         repo, number = _split_ref(ref)
         repo = repo or sole
-        if repo in covered and (repo, number) not in blocked:
+        if open_refs is not None and f"{repo}#{number}" not in open_refs:
+            continue
+        if repo in covered and (repo, number) not in blocked and (repo, number) not in merged:
             ready.append(task)
     return sorted(ready)
 

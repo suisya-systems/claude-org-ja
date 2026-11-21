@@ -1857,7 +1857,9 @@ def scan_repos(
         )
 
     return {
-        "status": "candidates_found" if top else "no_candidates",
+        # A design candidate alone is something to deliver too (Issue 1295):
+        # the dispatcher forwards only exit 10 (candidates_found).
+        "status": "candidates_found" if (top or design) else "no_candidates",
         "generated_for": config.trigger,
         "candidate_count": len(top),
         "truncated_count": truncated,
@@ -1881,6 +1883,18 @@ def scan_repos(
         # consumer (``tools/belt_slots.py design-ready``) knows which repos
         # this scan's ``excluded_blocked`` is complete for. An implicit scan
         # whose slug was never resolved contributes nothing.
+        # Issue 1295. Always present: every open Issue this scan fetched, as
+        # real ``owner/repo#N``, so ``design_ready`` can tell an Issue that is
+        # still open (and now unblocked) from one closed or done elsewhere.
+        "open_issue_refs": sorted(
+            {
+                f"{b.get('repo') or b.get('real_repo')}#{i['number']}"
+                for b in repo_bundles
+                if isinstance(b.get("repo") or b.get("real_repo"), str)
+                for i in (b.get("issues") or [])
+                if _is_int(i.get("number"))
+            }
+        ),
         "scanned_repos": sorted(
             {
                 r for r in (
