@@ -30,10 +30,10 @@ Claude Code は同一ディレクトリの `CLAUDE.md` と `CLAUDE.local.md` の
 
 `CLAUDE.local.md` は **生成して終わりではなく、ワーカー完了時に Secretary が回収する**責務まで含む。回収経路はパターンで分かれる:
 
-- **Pattern B（`live_repo_worktree`）**: ブリーフは worktree 直下（`{claude_org_path}/.worktrees/{task_id}/CLAUDE.local.md`）にあるので、close 時の `git -C {claude_org_path} worktree remove .worktrees/{task_id}` がディレクトリごと回収する。個別削除は不要。
+- **Pattern B（`live_repo_worktree`）**: ブリーフは worktree 直下（`{claude_org_path}/.worktrees/{task_id}/CLAUDE.local.md`）にあるので、close 時の `tools/close_run.py` による worktree の削除がディレクトリごと回収する。個別削除は不要。
 - **Pattern C（`gitignored_repo_root`）**: `worker_dir` が claude-org repo root 自身なので、worktree remove も dir 削除も効かない。`{claude_org_root}/CLAUDE.local.md` を **個別に削除しないと残留**し、次回 `/org-start` で Secretary が「窓口かつワーカー」という矛盾した role identity（冒頭の「あなたは窓口ではなくワーカーである」）を context に読み込む。gitignored なので CI でも検出されない。
 
-Pattern C の個別削除は close phase の責務で、判定条件・呼び出しコード・引数（`worker_dir_abs=` の明示）の正本は `/org-pull-request` 2b-ii の Pattern C 特例 cleanup（実体は `tools/run_complete_on_merge.py` の `cleanup_pattern_c_local_md`）。`.claude/settings.local.json` の自動削除は対象外（worker 由来 / Secretary 由来の切り分けが要るため）。
+Pattern C の個別削除は close phase の責務で、`/org-pull-request` 2b-ii の `tools/close_run.py` が行う（実体は `tools/run_complete_on_merge.py` の `cleanup_pattern_c_local_md`）。`.claude/settings.local.json` の自動削除は対象外（worker 由来 / Secretary 由来の切り分けが要るため）。
 
 ## 3. Pattern B の worktree base は **Secretary の live repo** に置く（live_repo_worktree variant）
 
