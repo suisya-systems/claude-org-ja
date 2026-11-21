@@ -46,12 +46,22 @@
 - approved_at: <YYYY-MM-DD HH:MM>              # スコープ承認を受けた時刻
 - repo: <OWNER/REPO>                           # 対象リポジトリ（gh カレント解決でも可）
 
-## scope predicate（機械的に判定できる述語）
-- include: <述語>        # 例: label:bug AND size:S / <Issue> の follow-up に限る / <PR> の review round
+## scope predicate（機械的に判定できる述語。範囲は条件で書き、Issue 番号の列だけの契約を既定にしない）
+- include: <述語>        # 例: open Issue のうち実機が要らず止める線に当たらないもの / label:bug AND size:S
+- named: <番号>          # 名指しの追加。条件に当たらないが入れたいもの（無ければ空）
 - exclude: <述語>        # 例: label:needs-design / 多ファイル設計判断を含むもの
 - 判定不能候補の扱い: scope 縁として投入しない（halt）
 - 候補プール: ゴール台帳（`registry/goals/`）の条項に当たった候補だけ。上の述語はこの狭まったプールに対して評価する。
   スコープ内 repo がゴール未設定 / 台帳エラー、または triage が exit 2 なら halt（`references/exit-conditions.md` 5）
+
+## 途中で見つかった後続
+- follow_ups: in_scope_if_no_stop_line   # in_scope_if_no_stop_line（既定）| ask。前者は、流している途中で見つかった後続を、止める線に当たらなければ範囲内として流す
+- 起票: 窓口が起票してよい（起票は止める線に含めない）
+- 依存で着地を待つ後続: 設計まで進めてよい   # 設計まで（既定）| 待つ
+
+## 止める線（当たったものだけ伺う）
+- 人が決めるべき判断（挙動・使い勝手・画面の中身を変える選択） / 元に戻せない操作 / 予算 /
+  既存テスト・CI・関門の変更を含む PR の着地 / テストを書き換えて通した疑い / 関門の拒否
 
 ## project context（pre-resolve 済み・org-delegate の Step 0 人間質問を回避するため）
 - project: <registry/projects.md の通称>
@@ -59,11 +69,12 @@
 - verify policy: <app code 変更時 /verify 必須 / docs-only は skip 等。references/verify-evidence.md 準拠>
 
 ## 並列・予算（退出条件 / バックプレッシャー）
-- max_parallel: <起動時 free pane 数>          # references/exit-conditions.md
+- max_parallel: <N>                            # 手を動かしているワーカーの数（tools/belt_slots.py count の busy）。待ちだけの作業は数えない
+- belt_state: running                          # running | halted。halted の間は自走せず、ディスパッチャーの見逃し検知も止まる
 - codex_round_max: <既定 3>                    # 3 以外は派遣時に tools/codex_round_cap.py set で設定（exit-conditions.md §1）
 - false_positive_streak_max: <既定 2>
 - time_budget: <例: 2h>  /  max_iterations: <例: 10>
-- PR キュー上限: なし（human では人間 merge が natural gate、acceptance では time_budget / max_iterations が上限）
+- PR キュー上限: なし（待ちだけの作業は枠に数えない。上限は max_parallel と time_budget / max_iterations）
 
 ## merge gate
 - merge_approval_mode（承認時の値）: <human|acceptance>   # 起動時の `python3 tools/merge_approval_mode.py` の出力
@@ -89,4 +100,6 @@
 - スコープを **広げる**（include 述語の拡張 / 別 label の追加 / 予算の増額）のは **必ず人間の再承認** を経る。
   conveyor が自走中に「ついでにこれも」と契約を自己拡張してはならない（worker のスコープ拡張提案を一次承認しないのと同じ規律。
   [`CLAUDE.md`](../../../../CLAUDE.md)「worker への追加依頼の境界」と整合）。
-- スコープを **狭める / 早期停止** は人間がいつでも指示できる（merge を止めれば pane が解放されずベルトが自然に詰まる）。
+- `follow_ups: in_scope_if_no_stop_line` の契約で、途中で見つかった後続を止める線に当たらない範囲で流すのは自己拡張ではない
+  （人が承認した条件の内側）。既存の契約で `follow_ups` / `belt_state` の欄が無いものは、`follow_ups: ask`・`belt_state: running` と読む。
+- スコープを **狭める / 早期停止** は人間がいつでも指示できる（窓口が `belt_state: halted` に書き換える。merge を止めても、待ちの作業は枠に数えないのでベルトは止まらない）。

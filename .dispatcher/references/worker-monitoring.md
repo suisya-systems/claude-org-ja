@@ -22,6 +22,7 @@
   - [Step 5.2. PANE_OUTPUT_WITHOUT_PEER_MSG 検出](#step-5-2)
   - [Step 5.25. 未配送終端イベントの relay scan](#step-5-25)
   - [Step 5.3. オンデマンド curate の完了監視](#step-5-3)（[close 判定表](#step-5-3-close)）
+  - [Step 5.4. コンベアの空き枠の見逃し検知](#step-5-4)
   - [Step 7. 監視ループの停止](#step-7)
 
 <a id="observation-principle"></a>
@@ -666,6 +667,21 @@ Step 5 / 5.1 の sibling、ワーカーがペイン上に応答出力したの�
 ### Step 5.3. オンデマンド curate の完了監視 (curate-inflight)
 
 `.state/dispatcher/curate-inflight.json` が存在する場合のみ実行する (無ければ skip し、下記ファイルも読まない)。存在するサイクルでは [`.dispatcher/references/curate-monitoring.md`](curate-monitoring.md) を読んで、その手順（完了受領 (a) / timeout・打ち切り (b) / close 判定表）に従う。
+
+<a id="step-5-4"></a>
+### Step 5.4. コンベアの空き枠の見逃し検知 (BELT_IDLE_SUSPECTED)
+
+`../.state/conveyor/scope-contract.md` が存在するサイクルだけ実行する（無ければ skip）。窓口がコンベアの空き枠を埋めないまま止まっていないかを、窓口の外から確かめる（Issue 1295）:
+
+```bash
+python3 ../tools/belt_slots.py idle-check
+```
+
+- **exit 0** → 何もしない（契約が halted / 空き枠なし / 候補なし / hold が有効 / 空きが 20 分未満 / 同じ空き区間で通知済み）。
+- **exit 10** → stdout の 1 行（`BELT_IDLE_SUSPECTED: free=N since=... candidates=M - ...`）を、そのまま `mcp__org-broker__send_message(to_id="secretary", message=...)` で窓口へ送り（channel のまま。`deliver` は付けない）、`bash ../tools/journal_append.sh notify_sent kind=belt_idle_suspected delivery=sent` を記帳する。送信が失敗したら `delivery=failed` で記帳する。
+- **それ以外の exit**（DB が読めない等）→ 窓口へ informational として 1 行のエラーを送る（握り潰さない）。
+
+空き区間の始まり・数え直し（枠が埋まった、`delegate_sent` があった）・hold の期限の判定はツールが持つ（`../.state/dispatcher/belt-idle.json`）。ディスパッチャーは候補が範囲内かどうかを判断しない。次を投入するか、`tools/belt_slots.py hold --reason` で投入しない理由を残すかは窓口が決める。
 
 <a id="step-7"></a>
 ### Step 7. 監視ループの停止

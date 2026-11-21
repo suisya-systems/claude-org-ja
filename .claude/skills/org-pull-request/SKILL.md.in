@@ -21,6 +21,10 @@ allowed-tools:
   - Bash(bash tools/journal_append.sh:*)
   - Bash(python3 tools/journal_append.py:*)
   - Bash(py -3 tools/journal_append.py:*)
+  - Bash(python3 tools/belt_slots.py:*)
+  - Bash(py -3 tools/belt_slots.py:*)
+  - Bash(python3 tools/gen_delegate_payload.py revive:*)
+  - Bash(py -3 tools/gen_delegate_payload.py revive:*)
   - Bash(python3 tools/set_run_pr_open.py:*)
   - Bash(py -3 tools/set_run_pr_open.py:*)
   - Bash(python3 tools/run_complete_on_merge.py:*)
@@ -115,7 +119,8 @@ allowed-tools:
 - **merge を待ち合わせたい時のみ** `-MergeWatch` (PowerShell) / `--merge-watch` (POSIX) を付ける。CI 通過後に `gh pr view --json mergedAt` を 24h ポーリングし、初回の merge で `tools/run_complete_on_merge.py` を呼ぶ。merge-watch 中も pr-watch プロセスは生きたまま、merge 観測時に `pr_merged` イベントを events に追記してから return する
 - run.status は **REVIEW のまま据え置く**（GitHub 側 PR レビュー指摘が来たら同ペインで対応するため。COMPLETED への遷移は 2b-ii で `update_run_status('<task_id>', 'completed')` を呼ぶ）。markdown 直接編集はしない
 - **ペインはまだ閉じない**: PR 作成直後に `CLOSE_PANE` を送らない。worktree 除去・Worker Directory Registry 更新も 2b-ii まで遅延する
-- PR レビューで指摘が来た場合は 2c のフローで同ワーカーに `send_message` 追指示を送り、同ペインで修正コミットを積ませる（新ワーカー再派遣は避ける — Issue / diff / 判断境界の再構築コストを払うことになる）
+- **人のマージ承認だけを待つようになったらペインを閉じて枠を空ける（park）**: CI green で人にマージを仰いで止まる手番の中で、`python3 tools/belt_slots.py park --task <task_id>`（Windows native は `py -3`）を打ち、`ok: true` なら出力の `close_pane` の 1 行を 2b-ii の `CLOSE_PANE` と同じ送り方でディスパッチャーへ送る（run は `review` のまま、作業ツリーと worker 状態ファイルは残す。2b-ii の COMPLETED 化・worktree 除去はしない。[`docs/contracts/delegation-lifecycle-contract.md`](../../../docs/contracts/delegation-lifecycle-contract.md) §1.6）。`ok: false` ならペインを残す（理由は `why`）。待ちだけの作業は枠に数えない（`python3 tools/belt_slots.py count`）ので、空いた枠に次を入れられる
+- PR レビューで指摘が来た場合は 2c のフローで扱う。ペインが生きていれば同ワーカーに `send_message` 追指示を送り、同ペインで修正コミットを積ませる。park 済みなら同じ作業ツリーに新しいワーカーを立てる（2c の「park した作業への指摘」）
 
 ### CI 完了検知の正路: events テーブルが canonical、ディスパッチャー relay が一次配送、events DB poll は最終フォールバック
 
@@ -293,7 +298,12 @@ pr-watch から `PR_MERGED_HEAD_UNCONFIRMED: PR #<n> (head=<merged_short>, last 
 - DB の events テーブルにイベント追記 — この再指示段階で窓口が手で打つのは `delegate_resume` / `delegate_resume_r2`（再指示の記録）と、修正の再 push 後の `fix_pushed`（`bash tools/journal_append.sh ...`、`tools/journal_append.py` が DB ルーティング済み）。helper が書くイベント（`delegate_sent` / `pr_merged`）は打たない — Writer / Emitted by の SoT は [`docs/journal-events.md`](../../../docs/journal-events.md)
 - JSON snapshot は StateWriter post-commit hook が自動再生成
 - （ペインが生きているのでワーカーはそのまま作業続行）
-- **新ワーカーを再 spawn しない** (T6 contract): Issue / diff / 判断境界が失われるため。ワーカーが応答不能になった場合のみ窓口が判断する
+- **ペインが生きているなら新ワーカーを再 spawn しない** (T6 contract): Issue / diff / 判断境界が失われるため。ワーカーが応答不能になった場合のみ窓口が判断する
+- **park した作業への指摘・CI 失敗・main との衝突**（状態の要約 `tools/state_db/queries.py` `get_org_state_summary` の `parked_runs` に載る run。`belt_slots.py count` の `waiting` で `pane_open: false` の run）: 上の `WORKER_REOPENED` / `in_use` 遷移 / 追指示の代わりに、同じ作業ツリーに新しいワーカーを立てる。指摘の本文（GitHub はワーカーが読めないので写す）・CI の失敗の要約をファイルに書き、
+  ```bash
+  python3 tools/gen_delegate_payload.py revive --task-id <task_id> --reason <review|ci_failed|conflict> --feedback-file <本文のファイル>
+  ```
+  を打つ（Windows native は `py -3`）。revive は前のワーカーの記録と指摘を brief 末尾の引き継ぎ節に書き、run を `queued` に戻して `delegate_resume`（`revived`）を記録し、`send_plan_path` を返す。それを `/org-delegate` の apply 後と同じ手順でディスパッチャーへ送る。空き枠が無ければ revive は断るので、枠が空いたら優先して入れる。DELEGATE の送信に失敗したら同じコマンドを打ち直す（同じ send_plan を返す）
 
 ワーカーから新たな完了報告が届いたら、再度 `/org-delegate` の Step 5 (2a) → ユーザー承認 → 本スキル 2b-i の順で進む。
 

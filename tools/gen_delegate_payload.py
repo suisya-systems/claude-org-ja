@@ -2688,6 +2688,208 @@ def _add_task_args(p: argparse.ArgumentParser) -> None:
     )
 
 
+# ---------------------------------------------------------------------------
+# revive (Issue 1295): re-spawn a worker into a parked delegation's worktree
+# ---------------------------------------------------------------------------
+
+REVIVE_REASONS = {
+    "review": "PR のレビュー指摘",
+    "ci_failed": "CI の失敗",
+    "conflict": "main との衝突",
+    "answer": "人の回答",
+}
+
+
+class ReviveRefused(RuntimeError):
+    """``revive`` refused; nothing was changed."""
+
+
+def _handover_marker(gen: int) -> str:
+    return f"## 引き継ぎ（revive gen {gen}）"
+
+
+def _handover_section(*, gen: int, task_id: str, reason: str, pr_url: Optional[str],
+                      previous_record: str, feedback_text: Optional[str]) -> str:
+    fence = "~~~~"
+    return "\n".join([
+        "",
+        _handover_marker(gen),
+        "",
+        f"このワーカーは、前のワーカーが人の返事・マージだけを待つ状態でペインを閉じた作業"
+        f"（task_id: {task_id}）を、同じ作業ツリーで引き継ぐ。上の brief はそのまま有効。"
+        "作業ツリーとブランチには前のワーカーのコミットが残っている。最初に git log と "
+        "git status で前のワーカーの到達点を確かめてから、下の指摘に対応する。",
+        "",
+        f"- 立て直しの理由: {REVIVE_REASONS[reason]}（{reason}）",
+        f"- PR: {pr_url or 'なし（PR 作成前）'}",
+        "- 前のワーカーの記録（完了報告・Progress Log）:",
+        "",
+        fence,
+        previous_record.strip() or "（記録なし）",
+        fence,
+        "",
+        "- 指摘・回答の本文:",
+        "",
+        fence,
+        (feedback_text or "（なし）").strip(),
+        fence,
+        "",
+    ])
+
+
+def _move_aside(src: Path, dest: Path) -> None:
+    if src.exists() and not dest.exists():
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        src.replace(dest)
+
+
+def revive_delegation(
+    task_id: str,
+    *,
+    state_db_path: Path,
+    claude_org_root: Path,
+    reason: str,
+    feedback_text: Optional[str] = None,
+) -> dict[str, Any]:
+    """Bring a parked delegation back with a new worker in the same worktree.
+
+    Accepts only a ``review`` run whose pane is closed (parked, contract
+    §1.6), and only while a conveyor slot is free (``tools/belt_slots.py``).
+    File work runs first and every step is skip-if-done, then one DB
+    transaction puts the run back to ``queued`` and records
+    ``delegate_resume`` (``revived=true``, ``gen``). A ``queued`` run whose
+    latest revive has not been spawned yet is a retry: the existing
+    ``send_plan.json`` is returned unchanged.
+    """
+    from tools import belt_slots as bs
+    from tools.state_db import connect
+    from tools.state_db.writer import StateWriter
+
+    if reason not in REVIVE_REASONS:
+        raise ReviveRefused(f"unknown reason {reason!r}; expected one of {sorted(REVIVE_REASONS)}")
+    root = Path(claude_org_root)
+    state = root / ".state"
+    conn = connect(state_db_path)
+    try:
+        row = conn.execute(
+            "SELECT r.status, r.pr_url, w.abs_path FROM runs r "
+            "LEFT JOIN worker_dirs w ON w.id = r.worker_dir_id WHERE r.task_id = ?",
+            (task_id,),
+        ).fetchone()
+        if row is None:
+            raise ReviveRefused(f"no run for task_id {task_id!r}")
+        status, pr_url, wdir = row[0], row[1], row[2]
+        # Insertion order (events.id), not occurred_at: the resume row is
+        # stamped with the wall clock while spawn rows may carry other times.
+        revives, last_spawn_id = [], None
+        for eid, kind, raw in conn.execute(
+            "SELECT id, kind, payload_json FROM events "
+            "WHERE kind IN ('worker_spawned', 'delegate_resume') ORDER BY id"
+        ).fetchall():
+            p = json.loads(raw or "{}")
+            if task_id not in (p.get("task"), p.get("task_id")):
+                continue
+            if kind == "worker_spawned":
+                last_spawn_id = eid
+            elif p.get("revived"):
+                revives.append((eid, p))
+        worker_dir = Path(wdir) if wdir else None
+        send_plan = worker_dir / "send_plan.json" if worker_dir else None
+
+        if (status == "queued" and revives and send_plan is not None and send_plan.exists()
+                and (last_spawn_id is None or last_spawn_id < revives[-1][0])):
+            return {"task_id": task_id, "gen": int(revives[-1][1].get("gen", len(revives))),
+                    "send_plan_path": str(send_plan), "retry": True}
+        if status != "review":
+            raise ReviveRefused(f"run {task_id!r} is {status!r}; only a parked review run can be revived")
+        if bs._pane(conn, task_id)["open"]:
+            raise ReviveRefused(f"worker-{task_id} still has a pane; send feedback to it instead")
+        from tools.state_db.queries import list_parked_runs
+        if task_id not in list_parked_runs(conn):
+            # A review run whose pane vanished without worker_parked (crash,
+            # manual close) is not eligible: that is an anomaly for a human.
+            raise ReviveRefused(f"run {task_id!r} was not parked (no worker_parked after its latest spawn)")
+        if worker_dir is None or not worker_dir.is_dir():
+            raise ReviveRefused(f"worktree not found for {task_id!r}: {wdir!r}")
+        maxp = bs.read_contract(state / "conveyor" / "scope-contract.md")[1] or bs._max_from_config(root)
+        if maxp is not None:
+            # The target itself may count as busy (e.g. its CI went red after
+            # parking); it is the slot being filled, so leave it out.
+            busy = bs.count(conn, max_parallel=maxp,
+                            decisions_path=state / "pending_decisions.json")["busy"]
+            if len([t for t in busy if t != task_id]) >= maxp:
+                raise ReviveRefused(f"no free slot (max {maxp}); revive when a worker finishes")
+        local = worker_dir / "CLAUDE.local.md"
+        brief = local if local.exists() else worker_dir / "CLAUDE.md"
+        if not brief.exists():
+            raise ReviveRefused(f"no brief in {worker_dir}")
+        # Kept in org state, not in the worker's project (it is not covered
+        # by the worktree's managed .gitignore lines).
+        original_plan = state / "dispatcher" / "revive" / f"{task_id}-send_plan.gen0.json"
+        if not original_plan.exists():
+            if not send_plan.exists():
+                raise ReviveRefused(f"no send_plan.json in {worker_dir}")
+            original_plan.parent.mkdir(parents=True, exist_ok=True)
+            original_plan.write_text(send_plan.read_text(encoding="utf-8"), encoding="utf-8")
+        payload = json.loads(original_plan.read_text(encoding="utf-8"))
+
+        gen = len(revives) + 1
+        payload["message"] = (
+            f"REVIVE gen {gen}（{REVIVE_REASONS[reason]}）: 待ちでペインを閉じた作業に、同じ作業ツリーで"
+            f"新しいワーカーを立てる。brief（{brief.name}）末尾の「引き継ぎ（revive gen {gen}）」節を先に読むこと。\n\n"
+            + payload.get("message", "")
+        )
+        if (payload.get("deliver") == "user_turn"
+                and len(payload["message"].encode("utf-8")) > BROKER_USER_TURN_MAX_BYTES):
+            raise ReviveRefused(
+                f"revived DELEGATE body exceeds the broker user_turn limit "
+                f"({BROKER_USER_TURN_MAX_BYTES} bytes); shorten the original DELEGATE"
+            )
+        seed = state / "workers" / f"worker-{task_id}.md"
+        seed_archive = state / "workers" / "archive" / f"worker-{task_id}.gen{gen}.md"
+        record = (seed if seed.exists() else seed_archive)
+        previous_record = record.read_text(encoding="utf-8") if record.exists() else ""
+        _move_aside(seed, seed_archive)
+        outbox = state / "dispatcher" / "outbox"
+        _move_aside(outbox / f"{task_id}-instruction.md",
+                    outbox / "archive" / f"{task_id}-instruction.gen{gen}.md")
+        text = brief.read_text(encoding="utf-8")
+        if _handover_marker(gen) not in text:
+            brief.write_text(text.rstrip("\n") + "\n" + _handover_section(
+                gen=gen, task_id=task_id, reason=reason, pr_url=pr_url,
+                previous_record=previous_record, feedback_text=feedback_text,
+            ), encoding="utf-8")
+        send_plan.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+        writer = StateWriter(conn, claude_org_root=root)
+        with writer.transaction() as tx:
+            tx.update_run_status(task_id, "queued")
+            tx.append_event(
+                kind="delegate_resume", actor="secretary", run_task_id=task_id,
+                payload={"task": task_id, "worker": f"worker-{task_id}",
+                         "revived": True, "gen": gen, "reason": reason},
+            )
+        return {"task_id": task_id, "gen": gen, "send_plan_path": str(send_plan),
+                "brief_path": str(brief), "retry": False}
+    finally:
+        conn.close()
+
+
+def _cmd_revive(args: argparse.Namespace) -> int:
+    root = _resolve_claude_org_root(args)
+    feedback = args.feedback_file.read_text(encoding="utf-8") if args.feedback_file else None
+    try:
+        out = revive_delegation(
+            args.task_id, state_db_path=_resolve_state_db_path(args, root),
+            claude_org_root=root, reason=args.reason, feedback_text=feedback,
+        )
+    except ReviveRefused as exc:
+        print(f"revive refused: {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(out, ensure_ascii=False))
+    return 0
+
+
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="gen_delegate_payload",
@@ -2722,6 +2924,17 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Override send_plan.json output path (default: alongside the brief).",
     )
+
+    revive_p = sub.add_parser(
+        "revive",
+        help="Re-spawn a worker into a parked review run's worktree (Issue 1295).",
+    )
+    revive_p.add_argument("--task-id", required=True)
+    revive_p.add_argument("--reason", required=True, choices=sorted(REVIVE_REASONS))
+    revive_p.add_argument("--feedback-file", type=Path, default=None,
+                          help="Review comments / CI summary / the human's answer, copied into the handover.")
+    revive_p.add_argument("--claude-org-root", type=Path, default=None)
+    revive_p.add_argument("--state-db-path", type=Path, default=None)
 
     return p
 
@@ -3169,6 +3382,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         return _cmd_preview(args)
     if args.cmd == "apply":
         return _cmd_apply(args)
+    if args.cmd == "revive":
+        return _cmd_revive(args)
     raise SystemExit(f"unknown subcommand: {args.cmd!r}")
 
 

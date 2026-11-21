@@ -21,6 +21,10 @@ allowed-tools:
   - Bash(py -3 tools/journal_append.py:*)
   - Bash(python3 tools/merge_approval_mode.py:*) # INV-1 のマージ承認方式（human / acceptance）を読む
   - Bash(py -3 tools/merge_approval_mode.py:*)
+  - Bash(python3 tools/belt_slots.py:*) # 空き枠の数え方・park・hold（待ちだけの作業は枠に数えない）
+  - Bash(py -3 tools/belt_slots.py:*)
+  - Bash(python3 tools/gen_delegate_payload.py revive:*) # park した作業の立て直し
+  - Bash(py -3 tools/gen_delegate_payload.py revive:*)
   - Bash(git diff:*) # verify applicability classifier の touch-domain 裏取り（read-only。worker branch が local に在るとき）
   - Bash(mkdir -p .state/conveyor:*) # Step 1 のスコープ契約書き出し先ディレクトリ確保（fresh checkout 対策）
   # 直接の transport 面は単一 transport（checked-in はコード既定 broker の面）のみ列挙する。broker + renga の
@@ -68,7 +72,7 @@ merge gate で停止する。人間は「レビュー待ち PR のキュー」�
 - **INV-4 propose-only の継承**: 候補生成は `/work-discovery`（決定的ツール）に委ね、conveyor は
   その出力をスコープ契約で gate するだけ。候補の中身を自前調査・実装しない。
 - **INV-5 起動主体は窓口のみ**: 委譲済み worker は本スキルを起動しない（「1 worker = 1 task = 1 scope」原則。[`CLAUDE.md`](../../../CLAUDE.md)「役割の境界」）。
-- **INV-6 `/loop` の置換ではない**: 時間駆動ではなく完了駆動で、間隔ポーリングをしない。PR キューに上限は設けない（`human` では人間の merge が natural gate、`acceptance` では退出予算が上限。Step 2-9）。
+- **INV-6 `/loop` の置換ではない**: 時間駆動ではなく完了駆動で、間隔ポーリングをしない。PR キューに上限は設けない（人の返事・マージだけを待つ作業は枠に数えないので、ベルトの上限は契約の `max_parallel` と退出予算。Step 2-9）。
 
 ## 輸送層（transport）両系
 
@@ -122,7 +126,7 @@ per-transport 詳細（pr-watch の二フレーム受信注記）は呼び先の
   記録し、人間への確認文に含める。稼働中に設定が `human` → `acceptance` へ変わっても、承認時の値が `human` なら再承認まで `human` として扱う（逆向きは即時に従う）。
 - スコープ述語は機械的に判定できる形で書く（例: `label:bug AND size:S`、`<Issue> の follow-up に限る`、
   `<PR> の review feedback round を ≤6 まで`）。判定不能な候補は scope 縁として扱い投入しない（INV-2）。
-- 並列上限は **起動時の free pane 数**（バックプレッシャー節）。退出予算（Codex round 上限 / 連続 false-positive
+- 並列上限は契約の `max_parallel` で、**手を動かしているワーカーの数**で数える（`python3 tools/belt_slots.py count` の `busy`。人のマージ承認・判断・完了報告の承認だけを待つ作業は数えない）。退出予算（Codex round 上限 / 連続 false-positive
   閾値 / 時間予算 / 最大反復数）も契約に明記する（[`.claude/skills/org-conveyor/references/exit-conditions.md`](references/exit-conditions.md)）。
 
 ## Step 2: 完了駆動ループ本体（ベルトコンベア）
@@ -132,7 +136,10 @@ per-transport 詳細（pr-watch の二フレーム受信注記）は呼び先の
 
 1. **観測可能性サマリを出力**（反復開始時。「観測可能性」節）。
 2. **triage**: `/work-discovery` を起動する。conveyor 文脈では
-   `tools/work_discovery_scan.py --trigger post_merge --free-panes <空き pane 数>` 相当で候補 JSON を得る
+   `tools/work_discovery_scan.py --trigger post_merge --free-panes <空き枠>` 相当で候補 JSON を得る。空き枠は
+   `python3 tools/belt_slots.py count` の `free_slots`。その出力の `parkable`（待ちだけになったのにペインを持っている作業）が
+   空でなければ、**先に 1 件ずつ park する**（`python3 tools/belt_slots.py park --task <task_id>` → 出力の `close_pane` の 1 行を
+   `/org-pull-request` 2b-ii と同じ送り方でディスパッチャーへ送る。run は `review` のまま、作業ツリーは残る）
    （空き枠があると同一条項内の `parallelizable` 候補のランクが上がりベルトを埋めやすい）。候補生成は決定的ツールに委ねる（INV-4）。
    - **候補プールはゴール台帳（`registry/goals/`）の条項に当たった候補だけ**に狭まっている。スコープ述語はこの狭まったプールに対して評価する。
    - `--repo` 無しの暗黙 scan では goal 段が repo を解決できないので、`gh repo view` で slug を求めて `--repo` を明示する。
@@ -143,13 +150,22 @@ per-transport 詳細（pr-watch の二フレーム受信注記）は呼び先の
      人間確認は **しない**（ここが `/work-discovery` の hard-stop との差分）。
    - **非合致 / 判定不能** → **投入しない**。ベルトがその候補に触れざるを得ない（= スコープを使い切って外側しか残っていない等）
      状況なら、自走を止め `/org-escalation` で人間に上げて halt する（INV-2）。
-4. **派遣**: 投入対象を空き pane 数まで `/org-delegate` の Step 0 から回す。レーン選択
+4. **派遣**: 投入対象を空き枠（`free_slots`）まで `/org-delegate` の Step 0 から回す。レーン選択
    （軽量 / 重量）・brief 生成・ディスパッチャー経由派遣は org-delegate に委ねる。project 文脈はスコープ契約に
    pre-resolve 済みとし、org-delegate が **人間入力を要するチェック項目（曖昧用語・OS 前提・incorporation 戦略等）に
    当たったらそれは scope 縁** として halt する（自動で人間質問を埋めない）。
 5. **worker iteration**: worker が走り、受信モデル（push 一次 / pull フォールバック）で報告する。ack・進捗 Progress Log・
    完了 REVIEW 遷移・監視/介入は `/org-delegate` Step 5 に委ねる。判断仰ぎ/ブロッカーは
    `/org-escalation` へ（INV-3）。**本スキルはこれらの機構を再規定しない**。
+   - **人に聞いたら、同じ手番で次を入れる**: 判断仰ぎを人間へ上げた・完了報告の承認待ちに入った手番の中で、ターンを終える前に
+     `python3 tools/belt_slots.py count` を叩き、`parkable` を park し、`free_slots` の分だけ次の候補を 3〜4 で投入する。
+     質問の答えを待つ間に枠を空けたままにしない（作業途中の判断仰ぎ＝run が `in_use` はペインを残すが、枠には数えない）。
+     投入しないなら `python3 tools/belt_slots.py hold --reason "<理由>"` で理由を残す（ディスパッチャーの見回りが
+     空き枠と候補が 20 分続くと `BELT_IDLE_SUSPECTED` で知らせてくる。hold はそれを期限つきで止める）。
+   - **park した作業に指摘・CI 失敗・衝突・人の回答が来たら**: 同じ作業ツリーに新しいワーカーを立てる
+     （`python3 tools/gen_delegate_payload.py revive --task-id <task_id> --reason <review|ci_failed|conflict|answer> --feedback-file <本文>`。
+     出力の `send_plan_path` を `/org-delegate` の apply 後と同じ手順でディスパッチャーへ送る）。空き枠が無ければ revive は断るので、
+     枠が空いたときに優先して入れる。
 6. **verify（条件付き必須）**: worker 完了時、conveyor は [`.claude/skills/org-conveyor/references/verify-evidence.md`](references/verify-evidence.md) の
    applicability classifier を適用する。app code に触れていれば **worker が worktree 内で `/verify`（Claude Code 組込みスキル）
    または同等の app 起動を必須実行**し（実作業は worker に委譲＝conveyor 自身は app を起動しない）、conveyor はその実行有無を gate し、
@@ -161,13 +177,16 @@ per-transport 詳細（pr-watch の二フレーム受信注記）は呼び先の
    方式は契約の承認時の値で狭める）。`human`、または `acceptance` で止める線に当たったときは merge せずに停止し、awaiting_user を emit
    （`gate=ci_green_merge_gate`、`/org-pull-request` 2b-i / `/org-escalation`
    と同じ canonical emit）して、人間向け理解サマリ（full タスク）・PR・当たった線を提示して merge を仰ぐ。
-   conveyor はこの PR についてここで停止する（ベルト全体は停止しない）。`acceptance` で止める線に当たらなければ、2b-i の
+   conveyor はこの PR についてここで停止する（ベルト全体は停止しない）。**同じ手番で** その run を park し
+   （`python3 tools/belt_slots.py park --task <task_id>`。CI が通った head と作業ツリーが一致しないと断るので、そのときはペインを残す）、
+   空いた枠に次の候補を投入してからターンを終える。`acceptance` で止める線に当たらなければ、2b-i の
    「マージのコマンド」でマージし、結果を観測可能性サマリと事後報告に残す。
-9. **バックプレッシャー**: merge され post-merge cleanup（`/org-pull-request` 2b-ii）で
-   pane が解放されたら、**解放枠に triage の次候補を即時投入**する（2 へ戻る）。**PR キューに上限は設けない**
-   （未 merge PR が N 件溜まっても新規 triage を止めない）。`human` では **人間の merge が自然なバックプレッシャー（natural gate）** であり、
-   人間が merge を止めれば pane が解放されずベルトが自然に詰まって停止する。`acceptance` では merge が自走で進むので、
-   この自然な詰まりは起きない。ベルトの上限は退出予算（`time_budget` / `max_iterations`、[`.claude/skills/org-conveyor/references/exit-conditions.md`](references/exit-conditions.md)）になる。
+9. **バックプレッシャー**: 枠が空くのは、ワーカーが待ちに入って park したとき（5・8）と、merge 後の post-merge cleanup
+   （`/org-pull-request` 2b-ii）でペインが解放されたとき。どちらでも **空いた枠に triage の次候補を即時投入**する（2 へ戻る）。
+   **PR キューに上限は設けない**（未 merge PR が N 件溜まっても新規 triage を止めない）。人の返事・merge だけを待つ作業は
+   枠に数えないので、人が merge を止めてもベルトは詰まらない。ベルトの上限は `max_parallel` と退出予算
+   （`time_budget` / `max_iterations`、[`.claude/skills/org-conveyor/references/exit-conditions.md`](references/exit-conditions.md)）。
+   ベルトを止めたいときは、人の指示で窓口がスコープ契約の `belt_state` を `halted` に書き換える。
 10. **state transition 直後に観測可能性サマリを再出力**（「観測可能性」節）。
 11. **退出条件チェック**（[`.claude/skills/org-conveyor/references/exit-conditions.md`](references/exit-conditions.md)）。いずれか該当で halt。
 

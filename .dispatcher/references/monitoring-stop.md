@@ -9,6 +9,8 @@
    - **unknown / indeterminate として保持している worker が居る間 ((3-a-4))**: `list_panes` に列挙されないだけで退役が**確定していない** worker は監視対象・active のままなので、**「ワーカーペインがない」に数えない**。当該 worker については Step 4 / Step 5 / Step 5.2 を skip するが、Step 1 / Step 2 / Step 3 / Step 5.1 は通常どおり回し、次サイクルで (3-a-2) を再評価する。停止できるのは、その worker が (3-a-2) の 1 行目 / 4 行目で**終了確定した**か、窓口が `.state/workers/worker-*.md` を終端状態へ遷移させたサイクル以降
    - **`placement == "background_tab"` の worker が居る間 ((3-a-5))**: `list_panes` に出ないのは配置上の定数なので、同じく **「ワーカーペインがない」に数えない**。こちらは Step 4 / Step 5 / Step 5.2 も `bound_pane_id` 宛で**通常どおり回す** (skip しない)。停止できるのは、attribution 済みの `pane_exited` で**終了確定した**か、窓口が `.state/workers/worker-*.md` を終端状態へ遷移させたサイクル以降
 
+   - **コンベアの契約が `belt_state: running` の間**: `../.state/conveyor/scope-contract.md` が存在し、`belt_state` が `running` である間（欄の無い既存の契約も running と読む）は、各サイクル冒頭の `relay_scan.py --cycle`・Step 1 (`poll_events`)・Step 2 (`check_messages`)・Step 5.25（未配送の終端イベントの relay）と Step 5.4 を継続する（生きたワーカーペインを前提にする Step 3〜5.2 は対象が無いので skip）。park した作業の PR からも CI・マージの終端イベントが届くため、relay を止めない。待ちに入った作業のペインを全部閉じた（park した）直後こそ、窓口が次を入れ忘れていないかを見る必要があるため。`halted` に書き換わるか契約が消えたら停止してよい。
+
    **停止する前に、意図的停止であることを記帳する**:
 
    ```bash

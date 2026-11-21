@@ -10,22 +10,22 @@ A run that is only waiting on a human does not take a slot:
                   the human has not answered (``.state/pending_decisions.json``).
 * ``approval`` -- ``review`` without a PR, after the secretary emitted
                   ``notify_sent kind=awaiting_user gate=worker_completed``.
+* ``parked``   -- a parked run (pane closed, contract §1.6) that is no longer
+                  waiting on a human but has not been revived yet.
 
 Everything else that is ``queued`` / ``in_use`` / ``review`` is busy. A
 waiting ``review`` run whose pane is still open is reported as *parkable*.
 Mid-task decisions (``in_use``) are waiting but never parkable.
 
-This tool only counts and checks. Closing a parked pane and re-spawning a
-worker into the same worktree (``gen_delegate_payload.py revive``) are not
-implemented yet, and the lifecycle contract does not allow them yet; both
-arrive together in the follow-up change for Issue 1295. Until then no skill
-calls ``park``, and its output is advisory.
+Parking (delegation-lifecycle-contract §1.6): ``park`` re-checks one run,
+records ``worker_parked`` and returns the ``CLOSE_PANE`` line the secretary
+sends to the dispatcher. The run stays ``review`` and keeps its worktree;
+feedback later brings it back with ``gen_delegate_payload.py revive``.
 
 Subcommands (all print one JSON object or one line):
 
   count       busy / waiting / free_slots / parkable
-  park        re-check one run and record ``worker_parked`` (advisory; the
-              caller that closes the pane comes with the revive path)
+  park        re-check one run, record ``worker_parked``, return the pane to close
   hold        record ``belt_hold`` (why free slots are deliberately left empty)
   idle-check  for the dispatcher loop: exit 10 + one line when free slots and
               candidates have both existed for 20+ minutes with no hold
@@ -142,7 +142,10 @@ def _classify(conn, task, status, pr_url, decisions) -> tuple[Optional[str], Opt
 
 
 def count(conn: sqlite3.Connection, *, max_parallel: Optional[int], decisions_path: Path) -> dict:
+    from tools.state_db.queries import list_parked_runs
+
     decisions = pd._load(Path(decisions_path))
+    parked = set(list_parked_runs(conn))
     busy, waiting = [], []
     for task, status, pr_url in conn.execute(
         f"SELECT task_id, status, pr_url FROM runs WHERE status IN ({','.join('?' * len(ACTIVE))}) "
@@ -150,6 +153,12 @@ def count(conn: sqlite3.Connection, *, max_parallel: Optional[int], decisions_pa
         ACTIVE,
     ).fetchall():
         reason, _ = _classify(conn, task, status, pr_url, decisions)
+        if reason is None and task in parked and not _pane(conn, task)["open"]:
+            # Parked and the pane is confirmed closed (§1.6), with new work
+            # pending (red CI, an answered decision): nobody is working on it
+            # until it is revived. A park whose CLOSE_PANE failed keeps its
+            # pane and stays busy.
+            reason = "parked"
         if reason is None:
             busy.append(task)
             continue
@@ -206,7 +215,7 @@ def park(conn: sqlite3.Connection, task: str, *, decisions_path: Path) -> dict:
     conn.execute("INSERT INTO events (actor, kind, payload_json) VALUES ('secretary', 'worker_parked', ?)",
                  (json.dumps(payload),))
     conn.commit()
-    return {"ok": True, **payload}
+    return {"ok": True, **payload, "close_pane": f"CLOSE_PANE: {pane['pane_id']} のペインを閉じてください。"}
 
 
 def hold(conn: sqlite3.Connection, reason: str, *, minutes: int = 60, now: Optional[datetime] = None) -> int:
@@ -304,7 +313,7 @@ def main(argv: Optional[list] = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     c = sub.add_parser("count")
     c.add_argument("--max", type=int, help="slot limit (default: contract max_parallel, else max_concurrent_workers)")
-    p = sub.add_parser("park", help="check one run and record worker_parked (advisory; no pane is closed)")
+    p = sub.add_parser("park", help="check one run, record worker_parked and print the CLOSE_PANE line")
     p.add_argument("--task", required=True)
     h = sub.add_parser("hold")
     h.add_argument("--reason", required=True)

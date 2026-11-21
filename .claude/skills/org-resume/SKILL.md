@@ -53,13 +53,13 @@ allowed-tools:
      「state.db not found. Run: `python3 -m tools.state_db.importer --db .state/state.db --root . --rebuild --no-strict`」
 2. 人間に簡潔なサマリーを提示する:
    - 全体の目標 (briefing の `session.objective`)
-   - 各作業アイテムの状態 (完了/進行中/保留/ブロック、briefing の `active_runs` / `reserved_runs`)
+   - 各作業アイテムの状態 (完了/進行中/保留/ブロック、briefing の `active_runs` / `reserved_runs`。`parked_runs` に載る run は「人待ち・ペインなし（指摘が来たら `gen_delegate_payload.py revive` で立て直す）」として出す)
    - 中断時刻 (briefing の `last_suspend_summary.occurred_at`、reason / counts も同 dict)
 3. `notes/` 配下にある自由記述 (学び / Pending Lead / セッションサマリー) を確認する
 
 ## Phase 2: 現実との照合
 
-DB の active_runs を SoT として照合し、markdown は表示用補助とする。
+DB の active_runs を SoT として照合し、markdown は表示用補助とする。`parked_runs` に載る run はペインが無いのが正常なので、ペインの照合から外す。
 
 1. DB から取得した active_runs（または markdown の Worker Directory Registry）を起点に、各 run の `worker_dir` を確認する
 2. `.state/workers/` 内の各ワーカー状態ファイルも参照する

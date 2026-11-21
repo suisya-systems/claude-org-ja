@@ -46,7 +46,7 @@
 
 - worker からの judgment escalation / scope 拡張 / ブロッカーは **即 halt** し、conveyor が一次承認せず
   `/org-escalation` の正準フロー（ack → 3 層状態保存 → 人間伝達 → 返答転送）へ渡す（INV-3）。
-- 該当 worker のベルト枠は人間判断が返るまで保留。他候補のベルトは独立に続けてよい。
+- 該当 worker は枠に数えない（run が `review` ならペインも park して閉じる。作業途中＝`in_use` ならペインは残す）。同じ手番で空いた枠に次の候補を入れる（[`.claude/skills/org-conveyor/SKILL.md`](../SKILL.md) Step 2-5）。人間の回答は、ペインが残っていれば直接、park していれば `revive --reason answer` で渡す。
 
 ### 5. scope 縁検知
 
@@ -67,7 +67,7 @@
 - `merge_approval_mode` が `acceptance`（かつ契約の承認時の値も `acceptance`）のとき、CI green の PR ごとに
   `/org-pull-request` 2b-i の止める線を確かめる。一覧はそちらが正本で、
   受け入れテストの宣言なし・head 不一致・判断境界・元に戻せない変更・予算超過（本表 1〜3）・**テストを書き換えて合格させた疑い**・ゲートの拒否を含む。
-- 当たった PR はマージせず halt し、当たった線を添えて人間へ上げる（その PR の枠は人間判断まで保留。他候補のベルトは続けてよい）。
+- 当たった PR はマージせず halt し、当たった線を添えて人間へ上げる（その PR の run は park して枠を空け、他候補のベルトは続ける）。
 - ゲートの拒否を別の書き方・別経路のマージで迂回しない。テストのコミットの作り直しで拒否された PR は、人間の承認を得て新しい PR でやり直す。
 - `human` 方式では全 PR が CI green で人間ゲートに入るので、本条件は使わない。
 

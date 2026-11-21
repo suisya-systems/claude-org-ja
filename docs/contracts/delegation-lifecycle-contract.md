@@ -52,6 +52,10 @@ The 24–48 hour idle window is a default operator guideline, not a hard contrac
 
 Delegations that do not produce a PR (e.g., investigation-only Pattern C tasks that produce only a report message) follow the same §1.5 close-condition gate. The PR-merged condition is trivially false for such delegations; the user-explicit and 24–48h-idle conditions still apply.
 
+### 1.6 Parking (additive, Issue 1295)
+
+A delegation in `awaiting_review` whose only remaining wait is on a human (merge approval after CI green, an escalated decision, or completion-report approval) MAY have its worker pane closed without entering `complete`. The run stays `review`; the worker directory, branch, and worker state file are kept; the dispatcher records `pane_closed`, and the secretary records `worker_parked`. Parking is decided by `tools/belt_slots.py park`, not by operator judgment.
+
 ---
 
 ## 2. Transitions and triggering events
@@ -98,7 +102,7 @@ Each transition below names: **(a)** the event that triggers it, **(b)** which a
 - **Trigger**: User issues feedback / change request on the completion report or PR (handled per `.claude/skills/org-pull-request/SKILL.md` § 2c), OR secretary intervenes (per `.claude/skills/org-delegate/SKILL.md` ワーカー監視と介入判定) and re-instructs in the same pane.
 - **Actor**: secretary `send_message`s the same `worker-{task_id}` pane with the additional instruction.
 - **State write**: `.state/org-state.md` Active Work Item back to `IN_PROGRESS`; `.state/workers/worker-{task_id}.md` Progress Log appended.
-- **Pane discipline**: New worker MUST NOT be re-spawned for in-scope review feedback (re-spawn is rejected by the contract because Issue/diff/judgment context would be lost).
+- **Pane discipline (amended, Issue 1295)**: If the worker pane is alive, review feedback goes to the same pane as before. If the delegation was parked (§1.6), the secretary re-spawns a worker into the same worker directory via `gen_delegate_payload.py revive`, passing the original brief, the latest completion report, the PR number and head, and the feedback text. This is the only permitted re-spawn for in-scope feedback; it replaces the lost in-pane context with a written handover instead of keeping a pane idle.
 - **Monitoring-suppression release (additive, Issue #658)**: If the worker had reported completion (T4 sent `WORKER_COMPLETION_NOTED`), the secretary MUST send a best-effort, non-blocking `WORKER_REOPENED: worker-{task_id}` to the dispatcher BEFORE the re-instruction (per `.claude/skills/org-pull-request/SKILL.md` § 2c), clearing `completion_reported_at` so the `pane_output_without_peer_msg` detector resumes for the review-fix work. Because the re-instruction is a direct secretary→worker send with the dispatcher off the path, an explicit release is needed to re-arm monitoring. `WORKER_REOPENED` is only best-effort, and unlike `WORKER_COMPLETION_NOTED` a dropped release fails UNSAFE (monitoring stays suppressed through review-fix). The reliable backstop is the deterministic `runs.status` `review → in_use` transition this transition already performs via `StateWriter` (peer-message-independent): the dispatcher's Step 5.2 gate skips only while `completion_reported_at != null` AND `runs.status == 'review'`, and self-heal-clears the flag when it observes `runs.status == 'in_use'` with the flag still set. So `WORKER_REOPENED` is the fast-path and the DB status transition is the fail-safe. The release is lifecycle-event-based (no timeout), matching the CLOSE_PANE / pane-gone record deletion; it does not change the ratified state-write / pane-discipline obligations above.
 
 ### T7 — `* → aborted` (worker pane exits without completion)

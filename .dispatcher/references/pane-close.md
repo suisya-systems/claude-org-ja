@@ -173,6 +173,8 @@ mcp__renga-peers__close_pane(target=<照合済みの数値 pane_id>)
 
 この close のあとに届く同じペインの `pane_exited` は、1 の記帳で消化済みとして扱い `WORKER_PANE_EXITED` を送らない（[`pane-exited-attribution.md`](pane-exited-attribution.md)）。
 
+窓口が待ちに入った作業を閉じる（park、[`docs/contracts/delegation-lifecycle-contract.md`](../../docs/contracts/delegation-lifecycle-contract.md) §1.6）ときの `CLOSE_PANE` も、この手順のまま閉じる。run は `review` のまま、作業ツリーとワーカー状態ファイルも残る（後で窓口が `gen_delegate_payload.py revive` で同じ作業ツリーに新しいワーカーを立てる）。ディスパッチャーはいつもどおり `runs.status` と作業ツリーに触らない。
+
 #### 保留（close を見送った場合）の扱い
 
 自タブを確立できずに照合へ進めなかった場合、および上の 3 / 4 で close しなかった CLOSE_PANE は**失敗ではなく保留**である。本フローは窓口からの 1 通で起動する
