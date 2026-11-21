@@ -53,7 +53,7 @@ def test_plan_open_attach_commands_are_attach_only():
     assert kind == "wt" and argv[-4:] == want[-4:]
 
 
-def test_runtime_floor_is_0_1_58_everywhere():
+def test_runtime_floor_is_consistent_everywhere():
     for rel, needle in (
         ("pyproject.toml", "claude-org-runtime>=0.1.59,<0.2"),
         ("requirements.txt", "claude-org-runtime>=0.1.59,<0.2"),
