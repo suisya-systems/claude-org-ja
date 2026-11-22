@@ -481,8 +481,16 @@ def _simple_commands(code: str, depth: int = 0) -> list[list[str]]:
         # word instead, quotes dropped. A real command still shows up, so this never
         # lets a push through that the full parse would have caught; it only stops the
         # hooks from refusing every such command.
-        return [[w.strip("\"'`") for w in seg.split() if w.strip("\"'`")]
-                for seg in re.split(r"[;&|\n()]", code) if seg.split()]
+        out = [[w.strip("\"'`") for w in seg.split() if w.strip("\"'`")]
+               for seg in re.split(r"[;&|\n()]", code) if seg.split()]
+        # A runner's `-c` text is a command too (`bash -c 'git push ...'`).
+        for words in list(out):
+            head = [w for w in words if not _ASSIGN.match(w)]
+            if head and Path(head[0]).name in _RUNNERS and "-c" in head:
+                nested = head[head.index("-c") + 1:]
+                if nested:
+                    out.append(nested)
+        return out
     if cur:
         out.append(cur)
     if depth < 3:

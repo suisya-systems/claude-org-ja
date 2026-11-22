@@ -86,6 +86,10 @@ def refresh_one(conn, task: str, pr_url: str, wdir: Optional[str], branch: Optio
     except (RuntimeError, ValueError, OSError) as exc:
         return "error", str(exc)
     if not new or new == old:
+        # An earlier refresh may have left the worktree behind (dirty, or a failed fetch).
+        if wdir and branch and subprocess.run(["git", "-C", wdir, "merge-base", "--is-ancestor", old, "HEAD"],
+                                              capture_output=True).returncode != 0:
+            return "up_to_date", f"PR #{pr} at {old[:12]}; worktree={ff_only(wdir, branch)}"
         return "up_to_date", f"PR #{pr} at {old[:12]}"
     with StateWriter(conn).transaction() as w:
         w.append_event(kind="fix_pushed", actor="secretary",

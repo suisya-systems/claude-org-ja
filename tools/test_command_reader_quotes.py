@@ -40,6 +40,8 @@ class PresubmitHookQuotesTests(pre.PresubmitTests):
         wdir = self.worker("q1")
         self.assertEqual(self.hook(HEREDOC, wdir), "ALLOW")
         self.assertTrue(self.hook("echo it's; git push origin feat/q1", self.root).startswith("DENY"))
+        self.assertTrue(self.hook(HEREDOC + f"\nbash -c 'git -C {wdir} push origin HEAD'", self.root)
+                        .startswith("DENY"))
 
 
 @unittest.skipIf(os.name == "nt", "the fixtures are POSIX only")

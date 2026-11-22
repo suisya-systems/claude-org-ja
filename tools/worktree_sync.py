@@ -100,7 +100,9 @@ def new_branch(conn, task: str, branch: str, from_ref: str) -> tuple[int, str]:
     wdir, _ = _run(conn, task)
     if dirty(wdir):
         return 1, "dirty (uncommitted changes to tracked files; nothing done)"
-    git(wdir, "fetch", "-q", "origin")
+    fetch = git(wdir, "fetch", "-q", "origin")
+    if fetch.returncode != 0:
+        return 1, f"error (git fetch origin failed, nothing done: {fetch.stderr.strip()[:200]})"
     before = head(wdir)
     proc = git(wdir, "switch", "-q", "-c", branch, from_ref)
     if proc.returncode != 0:
@@ -115,7 +117,9 @@ def merge(conn, task: str, ref: str) -> tuple[int, str]:
     wdir, _ = _run(conn, task)
     if dirty(wdir):
         return 1, "dirty (uncommitted changes to tracked files; nothing done)"
-    git(wdir, "fetch", "-q", "origin")
+    fetch = git(wdir, "fetch", "-q", "origin")
+    if fetch.returncode != 0:
+        return 1, f"error (git fetch origin failed, nothing done: {fetch.stderr.strip()[:200]})"
     before = head(wdir)
     env = None
     if not git(wdir, "config", "user.name").stdout.strip():
