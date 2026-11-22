@@ -67,7 +67,10 @@ be read (a variable, a command substitution) is refused. Everything else is
 allowed. The words are read with shlex, also inside ``bash -c`` / ``eval``
 strings and ``$(...)`` bodies, after ``VAR=value`` assignments and wrappers
 (``env``, ``command``, ``exec``, ``nohup``, ``time``, ``sudo``, ``nice``,
-``builtin``) in front are dropped; ``cd`` / ``pushd`` move the directory the later
+``builtin``) in front are dropped; the body of a heredoc that is only data
+(``cat <<'EOF' > notes.md``) is dropped before reading, while a heredoc whose
+line runs something (``bash``, ``| sh``, ``python3 -``) is read as commands;
+text that still cannot be parsed is refused; ``cd`` / ``pushd`` move the directory the later
 commands are resolved against; a PR given by number is matched with its
 repository when ``--repo`` or a PR URL names one; what the text cannot show (aliases, a script
 file that pushes) is not seen.
@@ -461,36 +464,54 @@ _RUNNERS = {"bash", "sh", "zsh", "eval", "env", "sudo", "command", "exec", "xarg
 _SUBST = re.compile(r"\$\(([^()]*)\)|`([^`]*)`")
 
 
+_HEREDOC = re.compile(r"<<(-?)[ \t]*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\2")
+# Programs that run what they are given: a heredoc on their line is code, not data.
+_EXECUTES = {"bash", "sh", "zsh", "dash", "ksh", "eval", "source", ".", "xargs", "python", "python3", "py",
+             "node", "perl", "ruby", "env", "sudo", "exec"}
+
+
+def _strip_heredocs(code: str) -> str:
+    """Drop the bodies of heredocs that are only data (``cat <<'EOF' ... EOF``).
+
+    A body is kept when its line runs something (``bash <<EOF``, ``cat <<EOF | sh``,
+    ``python3 - <<EOF``): it is then read as commands like the rest. Bodies are where
+    apostrophes in prose make shlex fail."""
+    lines = code.split("\n")
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        out.append(line)
+        i += 1
+        for m in _HEREDOC.finditer(line):
+            words = {Path(w).name for w in re.split(r"[\s|;&()]+", line) if w}
+            if words & _EXECUTES:
+                continue
+            delim, dash = m.group(3), m.group(1) == "-"
+            while i < len(lines) and (lines[i].strip() if dash else lines[i]) != delim:
+                i += 1
+            if i < len(lines):
+                out.append(lines[i])  # the delimiter line
+                i += 1
+    return "\n".join(out)
+
+
 def _simple_commands(code: str, depth: int = 0) -> list[list[str]]:
+    code = _strip_heredocs(code)
     lex = shlex.shlex(code, posix=True, punctuation_chars=_OPS)
     lex.whitespace = " \t\r"
     lex.whitespace_split = True
     lex.commenters = ""
     out: list[list[str]] = []
     cur: list[str] = []
-    try:
-        for tok in lex:
-            if tok and all(c in _OPS for c in tok):
-                if cur:
-                    out.append(cur)
-                cur = []
-                continue
-            cur.append(tok)
-    except ValueError:
-        # Unbalanced quotes (an apostrophe in a heredoc body, say): read the text word by
-        # word instead, quotes dropped. A real command still shows up, so this never
-        # lets a push through that the full parse would have caught; it only stops the
-        # hooks from refusing every such command.
-        out = [[w.strip("\"'`") for w in seg.split() if w.strip("\"'`")]
-               for seg in re.split(r"[;&|\n()]", code) if seg.split()]
-        # A runner's `-c` text is a command too (`bash -c 'git push ...'`).
-        for words in list(out):
-            head = [w for w in words if not _ASSIGN.match(w)]
-            if head and Path(head[0]).name in _RUNNERS and "-c" in head:
-                nested = head[head.index("-c") + 1:]
-                if nested:
-                    out.append(nested)
-        return out
+    # Text shlex cannot read still raises (the hooks then refuse: fail closed).
+    for tok in lex:
+        if tok and all(c in _OPS for c in tok):
+            if cur:
+                out.append(cur)
+            cur = []
+            continue
+        cur.append(tok)
     if cur:
         out.append(cur)
     if depth < 3:

@@ -46,6 +46,16 @@ class MoreTests(base.RefreshSyncTests):
         self.assertNotEqual(merge.returncode, 0, merge.stdout + merge.stderr)
 
 
+    def test_root_alone_selects_its_database(self):
+        self.pr_task("m", 22)
+        import subprocess
+        proc = subprocess.run([sys.executable, str(base.SYNC), "--root", str(self.root), "--task", "m",
+                               "--new-branch", "feat/m-2", "--from", "origin/main"],
+                              capture_output=True, text=True, env=self.env, timeout=120)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(self.sql("SELECT branch FROM runs WHERE task_id = 'm'")[0][0], "feat/m-2")
+
+
 for _name in [n for n in dir(base.RefreshSyncTests) if n.startswith("test_")]:
     if _name not in MoreTests.__dict__:
         setattr(MoreTests, _name, None)

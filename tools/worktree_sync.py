@@ -139,7 +139,7 @@ def merge(conn, task: str, ref: str) -> tuple[int, str]:
 def main(argv: Optional[list] = None) -> int:
     ap = argparse.ArgumentParser(prog="tools/worktree_sync.py",
                                  description="Cut a new branch or merge a ref in a worker's worktree, outside the sandbox.")
-    ap.add_argument("--root", type=Path, default=_REPO_ROOT, help="org root (default: this checkout)")
+    ap.add_argument("--root", type=Path, help="org root; its .state/state.db is used (default: discovery)")
     ap.add_argument("--db-path", type=Path, help="state.db override (default: discovery)")
     ap.add_argument("--task", required=True)
     g = ap.add_mutually_exclusive_group(required=True)
@@ -147,7 +147,8 @@ def main(argv: Optional[list] = None) -> int:
     g.add_argument("--merge", metavar="REF")
     ap.add_argument("--from", dest="from_ref", default="origin/main", help="start of --new-branch")
     args = ap.parse_args(argv)
-    conn = connect(resolve_state_db_path(args.db_path))
+    db = args.db_path or (args.root / ".state" / "state.db" if args.root else None)
+    conn = connect(resolve_state_db_path(db))
     try:
         if args.new_branch:
             code, line = new_branch(conn, args.task, args.new_branch, args.from_ref)

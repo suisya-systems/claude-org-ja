@@ -2,8 +2,10 @@
 
 ``shlex`` raises on an unbalanced quote (an apostrophe inside a heredoc body is
 enough), and both hooks that read commands with ``tools/presubmit.py``'s
-reader failed closed on it, refusing harmless commands. The reader now falls
-back to reading word by word; a real push or rewrite is still seen.
+reader failed closed on it, refusing harmless commands. The reader now drops
+the bodies of heredocs that are only data before parsing (a heredoc that is
+run, like ``cat <<EOF | bash``, is still read as commands); text it still
+cannot parse is refused as before.
 
 Uses the fixtures of tests/test_presubmit.py and tests/test_test_commit_guard.py,
 loaded by path so the ``tests`` package __init__ does not run here.
@@ -42,6 +44,12 @@ class PresubmitHookQuotesTests(pre.PresubmitTests):
         self.assertTrue(self.hook("echo it's; git push origin feat/q1", self.root).startswith("DENY"))
         self.assertTrue(self.hook(HEREDOC + f"\nbash -c 'git -C {wdir} push origin HEAD'", self.root)
                         .startswith("DENY"))
+        self.assertTrue(self.hook(HEREDOC + "\necho `git push origin feat/q1`", self.root).startswith("DENY"))
+        self.assertTrue(self.hook(HEREDOC + '\ngit pu""sh origin feat/q1', self.root).startswith("DENY"))
+        # A heredoc that is run is read as commands.
+        self.assertTrue(self.hook("cat <<'EOF' | bash\ngit push origin feat/q1\nEOF", self.root)
+                        .startswith("DENY"))
+        self.assertEqual(self.hook("cat <<'EOF' > notes.md\ngit push origin feat/q1\nEOF", self.root), "ALLOW")
 
 
 @unittest.skipIf(os.name == "nt", "the fixtures are POSIX only")

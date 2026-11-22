@@ -104,11 +104,12 @@ def refresh_one(conn, task: str, pr_url: str, wdir: Optional[str], branch: Optio
 def main(argv: Optional[list] = None) -> int:
     ap = argparse.ArgumentParser(prog="tools/refresh_open_prs.py",
                                  description="Update open PRs with their base, record the new heads, sync worktrees.")
-    ap.add_argument("--root", type=Path, default=_REPO_ROOT, help="org root (default: this checkout)")
+    ap.add_argument("--root", type=Path, help="org root; its .state/state.db is used (default: discovery)")
     ap.add_argument("--db-path", type=Path, help="state.db override (default: discovery)")
     ap.add_argument("--task", action="append", help="only these tasks (repeatable; default: every open PR)")
     args = ap.parse_args(argv)
-    conn = connect(resolve_state_db_path(args.db_path))
+    db = args.db_path or (args.root / ".state" / "state.db" if args.root else None)
+    conn = connect(resolve_state_db_path(db))
     counts: dict[str, list[str]] = {}
     try:
         query = ("SELECT r.task_id, r.pr_url, w.abs_path, r.branch FROM runs r "
