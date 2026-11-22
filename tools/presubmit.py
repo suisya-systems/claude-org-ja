@@ -3,7 +3,7 @@
 
 Usage::
 
-    python3 tools/presubmit.py run  --task T
+    python3 tools/presubmit.py run  --task T [--wait SEC] [--again]
     python3 tools/presubmit.py push --task T [--test-commit] [--force]
     python3 tools/presubmit.py pr   --task T (--create [--base B] | --edit N) --title X --body-file F [--closes N ...]
     python3 tools/presubmit.py hook < payload.json      # PreToolUse; prints ALLOW / DENY: <msg>
@@ -24,7 +24,12 @@ event records ``task, head, base, test_commit, steps [{cmd, rc, seconds}],
 result, log``. ``test_commit`` is the branch's commit with an
 ``Acceptance-Test`` trailer, if any. The record names a commit, so ``run``
 refuses (records nothing) when tracked files have uncommitted changes, or when
-HEAD or the tracked files changed while it ran. Last line: ``PRESUBMIT:
+HEAD or the tracked files changed while it ran. One check runs at a time (a
+lock under ``.state/presubmit/``; two at once made a load-sensitive test
+fail): a second ``run`` prints ``presubmit: waiting for the run of <task>``
+and waits up to ``--wait`` seconds (default 3600), then fails. A head that
+already passed with the same steps (``config`` in the record) is not run
+again (``PRESUBMIT: passed (already checked)``) unless ``--again``. Last line: ``PRESUBMIT:
 passed|failed|not-configured``; exit 0 / 1 / 3.
 
 ``push`` -- pushes the worker dir's HEAD (or, with ``--test-commit``, the
@@ -34,7 +39,9 @@ when the latest ``presubmit_checked`` for the task is at that HEAD and
 line then carries a ``WARNING``, and ``presubmit_required: yes`` in
 ``registry/org-config.md`` refuses it instead). ``--force`` replaces the branch
 (after a rebase, or to put the test commit back as head) with
-``--force-with-lease`` on the commit the remote has right now. Last
+``--force-with-lease`` on the commit the remote has right now. A worker dir
+whose branch is not ``runs.branch`` (a task's second PR on a new branch with
+the record still naming the first) is refused. Last
 line ``PRESUBMIT_PUSH: pushed <sha> to <branch>`` or ``PRESUBMIT_PUSH:
 refused: <reason>``; exit 0 / 1.
 
@@ -78,6 +85,11 @@ import sys
 import time
 from pathlib import Path
 from typing import Optional
+
+try:
+    import fcntl
+except ImportError:  # Windows
+    fcntl = None  # ponytail: no run lock on Windows; add msvcrt.locking if checks run there in parallel
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
@@ -190,8 +202,40 @@ def _steps(root: Path, slug: Optional[str], wdir: str) -> list[str]:
     return [s.strip() for s in cell.split(";") if s.strip() and s.strip() != "-"]
 
 
-def cmd_run(root: Path, db_path: Path, task: str) -> int:
+def _lock(root: Path, task: str, wait: float):
+    """One check at a time (two at once made a load-sensitive test fail). Returns the
+    open lock file, or None after ``wait`` seconds."""
+    path = root / ".state" / "presubmit" / "run.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fh = path.open("a+", encoding="utf-8")
+    if fcntl is None:
+        return fh
+    deadline = time.monotonic() + wait
+    told = False
+    while True:
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except BlockingIOError:
+            if not told:
+                fh.seek(0)
+                holder = fh.read().strip() or "another task"
+                print(f"presubmit: waiting for the run of {holder} (up to {int(wait)}s)", flush=True)
+                told = True
+            if time.monotonic() >= deadline:
+                fh.close()
+                return None
+            time.sleep(1)
+    fh.seek(0)
+    fh.truncate()
+    fh.write(f"{task} (since {time.strftime('%Y-%m-%dT%H:%M:%S')})\n")
+    fh.flush()
+    return fh
+
+
+def cmd_run(root: Path, db_path: Path, task: str, wait: float = 3600, again: bool = False) -> int:
     conn = connect(db_path)
+    lock = None
     try:
         run = _run_row(conn, task)
         wdir = run["wdir"]
@@ -207,6 +251,18 @@ def cmd_run(root: Path, db_path: Path, task: str) -> int:
                 test_commit = c
                 break
         steps = _steps(root, run["slug"], wdir)
+        config = ";".join(steps)
+        last = _latest_check(conn, task)
+        if (not again and last and last.get("head") == head and last.get("result") == "passed"
+                and last.get("config") == config):
+            print(f"presubmit: {head[:12]} already passed with the same settings (log {last.get('log')});"
+                  " --again runs it anyway")
+            print("PRESUBMIT: passed (already checked)")
+            return 0
+        lock = _lock(root, task, wait)
+        if lock is None:
+            print(f"PRESUBMIT: failed (another run did not finish within {int(wait)}s)")
+            return 1
         log = root / ".state" / "presubmit" / f"{task}-{head[:12]}.log"
         log.parent.mkdir(parents=True, exist_ok=True)
         done = []
@@ -228,7 +284,7 @@ def cmd_run(root: Path, db_path: Path, task: str) -> int:
         result = ("not_configured" if not steps
                   else "passed" if all(s["rc"] == 0 for s in done) else "failed")
         payload = {"task": task, "head": head, "base": base, "test_commit": test_commit,
-                   "steps": done, "result": result, "log": str(log)}
+                   "steps": done, "result": result, "log": str(log), "config": config}
         with StateWriter(conn).transaction() as w:
             w.append_event(kind="presubmit_checked", actor="secretary", payload=payload,
                            run_task_id=task)
@@ -238,6 +294,8 @@ def cmd_run(root: Path, db_path: Path, task: str) -> int:
         return 1
     finally:
         conn.close()
+        if lock is not None:
+            lock.close()
     print(f"presubmit: log {log}")
     print(f"PRESUBMIT: {result.replace('_', '-')}")
     return {"passed": 0, "failed": 1, "not_configured": 3}[result]
@@ -264,6 +322,12 @@ def cmd_push(root: Path, db_path: Path, task: str, test_commit: bool, force: boo
     try:
         run = _run_row(conn, task)
         head = _git(run["wdir"], "rev-parse", "HEAD")
+        current = subprocess.run(["git", "-C", run["wdir"], "symbolic-ref", "-q", "--short", "HEAD"],
+                                 capture_output=True, text=True).stdout.strip()
+        if current != run["branch"]:
+            # A task's second PR on a new branch, with runs.branch still the first PR's.
+            raise Refused(f"runs.branch is {run['branch']} but the worker dir is on {current or 'a detached HEAD'};"
+                          " fix runs.branch for the new PR first")
         check = _latest_check(conn, task)
         if check is None:
             raise Refused("no presubmit_checked for this task; run `presubmit.py run` first")
@@ -575,6 +639,10 @@ def main(argv: Optional[list] = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("run", help="run the project's pre-submit check in the worker dir")
     p.add_argument("--task", required=True)
+    p.add_argument("--wait", type=float, default=3600,
+                   help="seconds to wait for another run to finish (default 3600)")
+    p.add_argument("--again", action="store_true",
+                   help="run even if this head already passed with the same settings")
     p = sub.add_parser("push", help="push HEAD (or the test commit) once the check passed at HEAD")
     p.add_argument("--task", required=True)
     p.add_argument("--test-commit", action="store_true", help="push only the recorded test commit")
@@ -596,7 +664,7 @@ def main(argv: Optional[list] = None) -> int:
     db_path = resolve_state_db_path(args.db_path)
     root = args.root.resolve()
     if args.cmd == "run":
-        return cmd_run(root, db_path, args.task)
+        return cmd_run(root, db_path, args.task, args.wait, args.again)
     if args.cmd == "push":
         return cmd_push(root, db_path, args.task, args.test_commit, args.force)
     if args.cmd == "pr":

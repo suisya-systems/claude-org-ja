@@ -566,8 +566,9 @@ class StateWriter:
         *,
         pr_url: str,
         branch: Optional[str] = None,
+        pr_state: Optional[str] = None,
     ) -> None:
-        """Back-fill ``runs.pr_url`` (and optionally ``runs.branch``) for a run.
+        """Back-fill ``runs.pr_url`` (and optionally ``runs.branch`` / ``runs.pr_state``) for a run.
 
         Called from the canonical PR-open path (Secretary's
         ``tools/set_run_pr_open.py``) right after ``gh pr create`` returns
@@ -588,6 +589,10 @@ class StateWriter:
         if branch is not None:
             sets.append("branch = ?")
             values.append(branch)
+        if pr_state is not None:
+            # Issue 1298: a task's second PR must not keep the first PR's state.
+            sets.append("pr_state = ?")
+            values.append(pr_state)
         values.append(task_id)
         self.conn.execute(
             f"UPDATE runs SET {', '.join(sets)} WHERE task_id = ?",

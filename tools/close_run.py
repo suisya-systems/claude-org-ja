@@ -15,7 +15,9 @@ The secretary runs this after asking the dispatcher to close the worker pane
    Checked first, because the PR lookup below may already remove a pattern C
    brief.
 2. PR: a run with ``pr_url`` must be merged. ``runs.pr_state='merged'`` is
-   enough (``pr_watch --merge-watch`` records it); otherwise
+   enough (``pr_watch --merge-watch`` records it), unless the task's
+   ``pr_merged`` events name other PRs and not this one (the state was left by
+   an earlier PR of the same task); otherwise
    ``run_complete_on_merge.complete_on_merge`` asks GitHub once and records the
    merge. Not merged, or GitHub could not be asked -> blocked (exit 4). A run
    without ``pr_url`` (a design-only run handed to a build run, an audit, a
@@ -48,6 +50,7 @@ failed. With several tasks the highest code wins.
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import subprocess
 import sys
@@ -85,13 +88,35 @@ def _git(cwd: str, *args: str) -> str:
                           capture_output=True, text=True).stdout.strip()
 
 
-def _check_pr(db_path: Path, task: str, pr_url: Optional[str], pr_state: Optional[str],
+def _merged_is_current(conn, task: str, pr_url: str) -> bool:
+    """Whether ``runs.pr_state='merged'`` can be about this PR.
+
+    False only when the task has ``pr_merged`` events for other PRs and none for
+    this one: the state was left by an earlier PR of the same task (Issue 1298).
+    """
+    want = pr_url.rstrip("/")
+    other = False
+    for (raw,) in conn.execute("SELECT payload_json FROM events WHERE kind = 'pr_merged'"):
+        try:
+            p = json.loads(raw or "{}")
+        except ValueError:
+            continue
+        if not isinstance(p, dict) or p.get("task") != task:
+            continue
+        if str(p.get("pr_url") or "").rstrip("/") == want:
+            return True
+        other = True
+    return not other
+
+
+def _check_pr(conn, db_path: Path, task: str, pr_url: Optional[str], pr_state: Optional[str],
               no_pr: bool) -> str:
     if not pr_url:
         if not no_pr:
             raise Blocked(4, "the run has no PR; pass --no-pr to close it without one")
         return "no PR"
-    if pr_state == "merged":
+    # A task's second PR can carry the first PR's `merged` (Issue 1298): then ask GitHub.
+    if pr_state == "merged" and _merged_is_current(conn, task, pr_url):
         return "PR merged"
     m = _PR_URL.search(pr_url)
     if not m:
@@ -158,11 +183,11 @@ def close_one(db_path: Path, task: str, *, no_pr: bool, wait: float) -> tuple[in
         others = [r[0] for r in conn.execute(
             "SELECT task_id FROM runs WHERE worker_dir_id = ? AND task_id != ? "
             "AND status NOT IN ('completed', 'failed', 'abandoned')", (wid, task))] if wid else []
-        if others and pr_url and pr_state != "merged":
+        if others and pr_url and not (pr_state == "merged" and _merged_is_current(conn, task, pr_url)):
             # complete_on_merge would also remove a pattern C brief the other run reads.
             raise Blocked(4, "the merge is not recorded and the dir is also used by "
                              f"{', '.join(sorted(others))}; record the merge after that run ends")
-        done = ["pane closed", _check_pr(db_path, task, pr_url, pr_state, no_pr)]
+        done = ["pane closed", _check_pr(conn, db_path, task, pr_url, pr_state, no_pr)]
         drop_row = bool(wdir) and not others and pattern != "A"
         if others:
             done.append(f"dir kept (also used by {', '.join(sorted(others))})")
