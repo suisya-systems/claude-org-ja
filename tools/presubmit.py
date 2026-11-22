@@ -67,7 +67,10 @@ be read (a variable, a command substitution) is refused. Everything else is
 allowed. The words are read with shlex, also inside ``bash -c`` / ``eval``
 strings and ``$(...)`` bodies, after ``VAR=value`` assignments and wrappers
 (``env``, ``command``, ``exec``, ``nohup``, ``time``, ``sudo``, ``nice``,
-``builtin``) in front are dropped; ``cd`` / ``pushd`` move the directory the later
+``builtin``) in front are dropped; the body of a heredoc that is only data
+(``cat <<'EOF' > notes.md``) is dropped before reading, while a heredoc whose
+line runs something (``bash``, ``| sh``, ``python3 -``) is read as commands;
+text that still cannot be parsed is refused; ``cd`` / ``pushd`` move the directory the later
 commands are resolved against; a PR given by number is matched with its
 repository when ``--repo`` or a PR URL names one; what the text cannot show (aliases, a script
 file that pushes) is not seen.
@@ -461,13 +464,79 @@ _RUNNERS = {"bash", "sh", "zsh", "eval", "env", "sudo", "command", "exec", "xarg
 _SUBST = re.compile(r"\$\(([^()]*)\)|`([^`]*)`")
 
 
+_HEREDOC = re.compile(r"<<(-?)[ \t]*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\2")
+# Programs that run what they are given: a heredoc on their line is code, not data.
+_EXECUTES = {"bash", "sh", "zsh", "dash", "ksh", "eval", "source", ".", "xargs", "python", "python3", "py",
+             "node", "perl", "ruby", "env", "sudo", "exec"}
+
+
+def _in_shell_text(line: str, pos: int) -> bool:
+    """True if ``pos`` of ``line`` is inside quotes or a comment (so ``<<`` there is not an operator)."""
+    single = double = False
+    i = 0
+    while i < pos:
+        c = line[i]
+        if c == "\\" and not single:
+            i += 2
+            continue
+        if c == "'" and not double:
+            single = not single
+        elif c == '"' and not single:
+            double = not double
+        elif c == "#" and not single and not double and (i == 0 or line[i - 1] in " \t;&|("):
+            return True
+        i += 1
+    return single or double
+
+
+def _strip_heredocs(code: str) -> str:
+    """Drop the bodies of heredocs that are only data (``cat <<'EOF' ... EOF``).
+
+    Only a quoted delimiter (``<<'EOF'`` / ``<<"EOF"``) makes a body plain text: an
+    unquoted one still runs ``$(...)``. A body is also kept when its line runs something (``bash <<EOF``, ``cat <<EOF | sh``,
+    ``python3 - <<EOF``): it is then read as commands like the rest. Bodies are where
+    apostrophes in prose make shlex fail."""
+    lines = code.split("\n")
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        out.append(line)
+        i += 1
+        for m in _HEREDOC.finditer(line):
+            if not m.group(2) or _in_shell_text(line, m.start()):
+                # Unquoted delimiter: the body still expands $(...) and backticks, so it is
+                # read. Inside quotes or a comment, `<<` is not an operator at all.
+                continue
+            # Words as the shell sees them: quotes and backslashes removed ("bash" is bash).
+            plain = re.sub(r"[\"'\\]", "", line)
+            words = {Path(w).name for w in re.split(r"[\s|;&()]+", plain) if w}
+            if words & _EXECUTES:
+                continue
+            # The command word in front of `<<` (after VAR=value): a variable or a
+            # substitution may be any program, so the body might be run.
+            segment = re.split(r"[|;&(]", line[:m.start()])[-1].split()
+            command = next((w for w in segment if not _ASSIGN.match(w)), "")
+            if "$" in command or "`" in command:
+                continue
+            delim, dash = m.group(3), m.group(1) == "-"
+            while i < len(lines) and (lines[i].strip() if dash else lines[i]) != delim:
+                i += 1
+            if i < len(lines):
+                out.append(lines[i])  # the delimiter line
+                i += 1
+    return "\n".join(out)
+
+
 def _simple_commands(code: str, depth: int = 0) -> list[list[str]]:
+    code = _strip_heredocs(code)
     lex = shlex.shlex(code, posix=True, punctuation_chars=_OPS)
     lex.whitespace = " \t\r"
     lex.whitespace_split = True
     lex.commenters = ""
     out: list[list[str]] = []
     cur: list[str] = []
+    # Text shlex cannot read still raises (the hooks then refuse: fail closed).
     for tok in lex:
         if tok and all(c in _OPS for c in tok):
             if cur:
