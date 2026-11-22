@@ -12,13 +12,21 @@ without re-running its tests.
 
 from __future__ import annotations
 
+import importlib.util
 import sys
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_ROOT))
 
-from tests import test_presubmit as base  # noqa: E402  (module, so its tests are not collected here)
+# Loaded by path, not as ``tests.test_presubmit``: importing the ``tests``
+# package runs its __init__, which scrubs the transport env for the whole
+# process and changes what later tools/ tests see. Kept as a module object so
+# its test class is not collected here.
+_spec = importlib.util.spec_from_file_location("_presubmit_fixture", _ROOT / "tests" / "test_presubmit.py")
+base = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(base)
 
 
 class HookPassThroughTests(base.PresubmitTests):
