@@ -243,6 +243,7 @@ _JA_ONLY_HOOK_SCRIPTS = frozenset({
     "remind-verify-premise.sh",
     "gate-acceptance-before-merge.sh",
     "gate-presubmit-before-push.sh",
+    "block-test-commit-rewrite.sh",
     "context-record.sh",
     "clear-needs-decision.sh",
     "mark-needs-decision.sh",

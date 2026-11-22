@@ -401,8 +401,10 @@ def _simple_commands(code: str, depth: int = 0) -> list[list[str]]:
     if depth < 3:
         nested = []
         for words in out:
-            if Path(words[0]).name in _RUNNERS:
-                for w in words[1:]:
+            # Look past VAR=value assignments too (`X=1 bash -c '...'`).
+            head = [w for w in words if not _ASSIGN.match(w)] or words
+            if Path(head[0]).name in _RUNNERS:
+                for w in head[1:]:
                     if " " in w or "\t" in w:
                         nested += _simple_commands(w, depth + 1)
         for m in _SUBST.finditer(code):

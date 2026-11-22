@@ -124,9 +124,9 @@ ${issue_bodies_block}
 ### 受け入れテスト（テストファースト）
 **実装ガイダンスに「受け入れテスト: あり」と書かれたタスクだけ**行う。書かれていないタスク（CI の無いリポジトリ、文書だけの変更等を含む）は従来どおりで、宣言しない。宣言の無い PR は受け入れテストに合格したことにはならない（マージ承認の方式が human なら窓口のマージ前ゲートが記録して通すだけ、acceptance ならフックがマージを止めて人の判断に回す）。
 
-1. **1 コミット目は、修正前のコードで失敗するテストだけ**にする。実装を混ぜない。テストが使う補助ファイル（fixture、`conftest.py` 等）もこのコミットで足す。rebase の後も、このコミットがブランチの最初のコミットである（親が起点ブランチとの分岐点である）ようにする
+1. **1 コミット目は、修正前のコードで失敗するテストだけ**にする。実装を混ぜない。テストが使う補助ファイル（fixture、`conftest.py` 等）もこのコミットで足す。このコミットがブランチの最初のコミットである（親が起点ブランチとの分岐点である）ようにする
 2. コミットメッセージの末尾に trailer `Acceptance-Test: <リポジトリ相対パス>` を書く（1 行 1 パス、複数行可、ディレクトリも可）。このコミットで変えるファイルは全部、宣言パスかテスト基盤（下記）に入っていなければならない。宣言するコミットは 1 つだけ。trailer の行は、コミットメッセージの最後の段落（`Co-Authored-By` と同じ段落）に、空行を挟まずに書く（空行で区切ると git が trailer と認識せず、ゲートは宣言なしと判定する）。書いたら `git log -1 --format='%(trailers)' <テストのコミット>` を実行し、宣言の行が表示されることを確かめる
-3. 以後、宣言したテストとテスト基盤・CI 設定（`conftest.py`、pytest の設定ファイル、`pyproject.toml`、`setup.cfg`、`tox.ini`、`package.json`、`.github/workflows/`）を変えない。宣言コミットを作り直さない（amend・squash をしない。rebase はしてよい）。変える必要が出たら、変える前に窓口に判断を仰ぐ
+3. 以後、宣言したテストとテスト基盤・CI 設定（`conftest.py`、pytest の設定ファイル、`pyproject.toml`、`setup.cfg`、`tox.ini`、`package.json`、`.github/workflows/`）を変えない。宣言コミットを作り直さない（amend・squash・rebase をしない。起点ブランチの取り込みは merge で行う。実装を載せたあとは、宣言コミットを外す git 操作をフック `.hooks/block-test-commit-rewrite.sh` が止める）。変える必要が出たら、変える前に窓口に判断を仰ぐ。実装を載せたあとで宣言テストの誤りに気づいたら、起点ブランチから新しいブランチを切り、直したテストを最初のコミットにして実装を cherry-pick で載せ直す（ブランチの切り替えが sandbox で途中で止まるときは窓口に頼む）
 4. ゲートの判定（`tools/acceptance_gate.py`）: ゲートはテストを走らせず、リポジトリの CI の結果で判定する。窓口がテストのコミットだけを先に push し、その CI が失敗すること、修正後の head で同じ CI ジョブが成功することを確かめる。このため宣言テストは、そのリポジトリの CI が実際に実行する場所・形で書く（CI のテスト対象に入るパス・命名にする）。手元でも、修正前に宣言テストが assertion で失敗し、修正後に全部 pass する（skip も不合格）ことを確かめる。テストの発見・選択に効くファイル（`tests/__init__.py`、テストランナーのスクリプト等）を後のコミットで変えると、窓口がマージの前に止める
 5. 完了報告に宣言コミットの SHA と宣言パスを書く
 
@@ -136,7 +136,7 @@ minimal の「追加テスト禁止」は minimal タスクにだけ効く。ful
 既存リポジトリで PR を出すタスクでは、完了報告と Codex セルフレビューの前に次を行う（`git init` の新規プロジェクトや upstream remote が無い場合は不要）:
 1. `git fetch origin`（`git fetch origin <branch>` は `FETCH_HEAD` に取るだけで追跡 ref を確実には更新せず、古い ref に対して behind=0 と誤判定しうる）。`.gitmodules` の `Permission denied` 警告は sandbox のかぶせ物によるもので、fetch は続行するので無視してよい
 2. `bash "${claude_org_path}/tools/rebase_preflight.sh" ${task_base_ref}` を実行する。最終行が `REBASE_PREFLIGHT: blocked` のときは上流が sandbox で書けないパス（`.claude/skills` 等）を変えており、rebase すると `could not detach HEAD` で止まって作業ツリーに上流の中身が残る。rebase せず、列挙されたパスを添えて「sandbox 外での rebase を依頼（HEAD=`<sha>`）」と窓口に報告して待つ（窓口が sandbox 外で rebase する）。`REBASE_PREFLIGHT: ok` なら次へ
-3. `git rebase ${task_base_ref}`（merge 運用のリポジトリなら `git merge`）。conflict は自分で解く。conflict が無くても rebase 後に通常検証を回し直し、green であることを確かめる
+3. 受け入れテストを宣言したタスクは `git merge ${task_base_ref}`（宣言コミットを作り直さないため。rebase はフックが止める）、宣言していないタスクは `git rebase ${task_base_ref}`（merge 運用のリポジトリなら `git merge`）。conflict は自分で解く。conflict が無くても rebase 後に通常検証を回し直し、green であることを確かめる
 4. `git rev-list --count HEAD..${task_base_ref}` が `0` で、かつ `git status --porcelain --untracked-files=no` が空であることを確かめ、完了報告に「rebase clean: HEAD=`<sha>` on top of ${task_base_ref} `<sha>`」の 1 行を入れる
 5. 後者が空でない、または rebase が `Read-only file system` / `could not detach HEAD` で止まったときは rebase 残差（sandbox が `.claude/skills` 等への書込みを拒否し、rebase が成功表示でも旧内容が残る型と、途中で止まって HEAD は動かず上流の中身が作業ツリーに残る型がある）なので、update-ref / reset / checkout 等で自分で戻そうとせず、rebase clean と報告せずに、表示されたパスを添えて「rebase 残差あり（HEAD=`<sha>`）」と窓口に報告して待つ（窓口が sandbox 外で戻す）
 

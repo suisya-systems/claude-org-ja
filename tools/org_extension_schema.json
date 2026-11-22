@@ -924,6 +924,10 @@
               },
               {
                 "type": "command",
+                "command": "bash \"{claude_org_path}/.hooks/block-test-commit-rewrite.sh\""
+              },
+              {
+                "type": "command",
                 "command": "bash \"{claude_org_path}/.hooks/block-no-verify.sh\""
               },
               {
@@ -1163,6 +1167,10 @@
               {
                 "type": "command",
                 "command": "bash \"{claude_org_path}/.hooks/block-dangerous-git.sh\""
+              },
+              {
+                "type": "command",
+                "command": "bash \"{claude_org_path}/.hooks/block-test-commit-rewrite.sh\""
               },
               {
                 "type": "command",
