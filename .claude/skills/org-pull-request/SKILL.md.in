@@ -12,6 +12,8 @@ allowed-tools:
   - Read
   - Bash(git push:*)
   - Bash(python3 tools/close_run.py:*)
+  - Bash(python3 tools/presubmit.py:*)
+  - Bash(py -3 tools/presubmit.py:*)
   - Bash(py -3 tools/close_run.py:*)
   - Bash(gh pr create:*)
   - Bash(gh pr view:*)
@@ -75,15 +77,16 @@ allowed-tools:
 ユーザーが「OK」「確認した」「問題ない」「進めて」等の **明示的承認** を出した直後に発動する:
 
 - 必要に応じて窓口がプッシュ・PR 作成を行う（ワーカーには `git push` / PR 作成権限がない）。PR のタイトル・本文は対象リポジトリで使われている言語に合わせる
+- **送る前に `python3 tools/presubmit.py run --task <task_id>`**（Windows native は `py -3`）: プロジェクトの提出前の確認（`registry/projects.md` の `presubmit` 列、claude-org-ja 自身は `registry/org-config.md` の `home_presubmit:`）を作業ツリーで流して記録する。送信は `presubmit.py push`、PR の作成と説明の変更は `presubmit.py pr` で行う（生の `git push` / `gh pr create` / `gh pr edit` はフック `.hooks/gate-presubmit-before-push.sh` が止める）。`push` は確認が `passed`（設定が無ければ `not-configured`）の head だけを送り、`pr` は説明文・タイトル・コミットメッセージに `--closes` で挙げていない閉じる語の並び（`close #N` 等。否定文でも GitHub は閉じる）があれば止める。中身とサブコマンドはツールの docstring
 - **受け入れテストを宣言した PR は、テストのコミットだけを先に push する**: ゲート（`tools/acceptance_gate.py`）はテストを走らせない。「修正前に失敗する」ことは、テストのコミット M（ワーカーの完了報告にある宣言コミットの SHA）だけを head にした CI の失敗で確かめる。ワーカーの完了報告に宣言コミットの SHA があるときは、次の順に進める:
   - **base に `.github/acceptance-check` があるリポジトリでは、下の 1〜5 は要らない**: そのファイルが名指す CI チェック（例: paddock の `acceptance`）が、PR の中で M では失敗し head では成功することを自分で確かめる。ゲートは、そのチェックが head で成功していれば M での CI 失敗記録を求めない。ブランチをまとめて push して PR を作り、下の「CI green」以降の手順どおりに進める。この扱いになるのは head の `.github/workflows/` が base と同じときだけで、そうでなければ従来どおり M での失敗記録が要る。ゲートが拒否したら止まって人に上げる
-  1. M だけを push する: `git push origin <M>:refs/heads/<branch>`（M は PR の最初のコミットでなければゲートが拒否する）
-  2. `gh pr create --repo <OWNER/REPO> --head <branch> --base <base> ...` で PR を作る（`--head` を付けないと、gh が手元のブランチ全体を push しようとすることがある）。`gh pr view <PR> --repo <OWNER/REPO> --json headRefOid` が M であることを確かめてから、`/pr-watch-pane <PR>` で CI を待つ
+  1. M だけを push する: `python3 tools/presubmit.py push --task <task_id> --test-commit`（M は確認が記録した宣言テストのコミット。PR の最初のコミットでなければゲートが拒否する）
+  2. `python3 tools/presubmit.py pr --task <task_id> --create --title <タイトル> --body-file <本文のファイル> [--base <base>] [--closes <N>]` で PR を作る（ツールが `--repo` と `--head` を付ける）。`gh pr view <PR> --repo <OWNER/REPO> --json headRefOid` が M であることを確かめてから、`/pr-watch-pane <PR>` で CI を待つ
   3. `CI_COMPLETED` の `status=failed`（head=M）は想定どおりの結果なので、2c の修正指示は出さない。M で CI が通ったら、テストが修正前に落ちていない。ワーカーに差し戻す（このままではゲートが拒否する）
-  4. 残りを push する（`git push origin <branch>`、早送り）。もう一度 `/pr-watch-pane <PR>` で `passed` を待つ。あとは下の「CI green」以降の手順どおり
+  4. 残りを push する（`python3 tools/presubmit.py push --task <task_id>`、早送り）。もう一度 `/pr-watch-pane <PR>` で `passed` を待つ。あとは下の「CI green」以降の手順どおり
   5. PR を rebase・作り直ししたら、既存の PR のまま 1 からやり直す（M の SHA が変わり、古い M の失敗記録は使えない。M を head に戻す push は force になる）。M と head の CI の base が食い違ったとき（間に base が進んだとき）も、ゲートが拒否するので 1 からやり直す
   - ゲートが保証するのは「宣言テストとテスト基盤を変えないまま、同じ CI ジョブが M で失敗し head で成功した」ことまで。**宣言テストが CI で実際に走ったことは確かめない**（保護パス外の `tests/__init__.py`・ランナーのスクリプト・言語ごとの設定などを変えて、テストを CI の対象から外す抜け穴は検出しない）。このため止める線の 6 で、その種の変更を人が見る
-- **`gh pr create --base` は派遣時の起点ブランチと同じ設定を読む**: プロジェクトの既定マージ先は `registry/projects.md` の `base_branch` 列が SoT。値がある行（例 `develop`）は `gh pr create --base <base_branch>` を既定とし、**空欄 / `-` の行は従来どおり `--base` を付けない**（repo の既定ブランチ宛）。worktree を切った起点と PR のマージ先が食い違うと、develop が先行している分の差分が PR に混入するため、両者は必ず同じ値を使う。当該タスクの実効値は派遣時の DELEGATE 本文の「ベース:」行、または `send_plan.json` の `summary.base_branch` / `summary.base_ref` で確認できる（`--base-ref` で単発上書きされた hotfix もそこに出る）。値の解決順は `--base-ref` > `base_branch` 列 > `origin/HEAD`
+- **`gh pr create --base` は派遣時の起点ブランチと同じ設定を読む**: プロジェクトの既定マージ先は `registry/projects.md` の `base_branch` 列が SoT。値がある行（例 `develop`）は `presubmit.py pr --create --base <base_branch>` を既定とし、**空欄 / `-` の行は従来どおり `--base` を付けない**（repo の既定ブランチ宛）。worktree を切った起点と PR のマージ先が食い違うと、develop が先行している分の差分が PR に混入するため、両者は必ず同じ値を使う。当該タスクの実効値は派遣時の DELEGATE 本文の「ベース:」行、または `send_plan.json` の `summary.base_branch` / `summary.base_ref` で確認できる（`--base-ref` で単発上書きされた hotfix もそこに出る）。値の解決順は `--base-ref` > `base_branch` 列 > `origin/HEAD`
 - **PR 番号が確定したら直ちに `tools/set_run_pr_open.py` で `runs.pr_url` / `runs.branch` を back-fill する**:
   ```bash
   python3 tools/set_run_pr_open.py --task-id <task_id> --pr <PR>   # Mac/Linux
