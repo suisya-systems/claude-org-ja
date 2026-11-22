@@ -22,6 +22,7 @@
 | block-no-verify | hook | `.hooks/block-no-verify.sh` | commit / push の検査を迂回するフラグや環境変数を使う |
 | block-org-structure | hook | `.hooks/block-org-structure.sh` | claude-org の組織構造ディレクトリを作業ディレクトリ内に再現する |
 | block-relative-close-pane | hook | `.hooks/block-relative-close-pane.sh` | `focused` や裸の名前で `close_pane` / `set_pane_identity` を指定し別ペインを触る |
+| block-test-commit-rewrite | hook | `.hooks/block-test-commit-rewrite.sh` | ワーカーが宣言テストのコミットを rebase・amend・reset でブランチから外し、CI の失敗の記録を使えなくする |
 | block-workers-delete | hook | `.hooks/block-workers-delete.sh` | workers ディレクトリを再帰削除する |
 | check-dispatcher-loop | hook | `.hooks/check-dispatcher-loop.sh` | ディスパッチャーの監視ループが未武装のまま運転が続く（通知のみ・止めない） |
 | check-loop-directive | hook | `.hooks/check-loop-directive.sh` | 監視ループを canonical 正文でなく自己流の指示で武装する |
