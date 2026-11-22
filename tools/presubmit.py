@@ -28,8 +28,8 @@ HEAD or the tracked files changed while it ran. One check runs at a time (a
 lock under ``.state/presubmit/``; two at once made a load-sensitive test
 fail): a second ``run`` prints ``presubmit: waiting for the run of <task>``
 and waits up to ``--wait`` seconds (default 3600), then fails. A head that
-already passed with the same steps (``config`` in the record) is not run
-again (``PRESUBMIT: passed (already checked)``) unless ``--again``. Last line: ``PRESUBMIT:
+already passed on the same base with the same steps (``base`` / ``config`` in
+the record; also re-read after waiting for the lock) is not run again (``PRESUBMIT: passed (already checked)``) unless ``--again``. Last line: ``PRESUBMIT:
 passed|failed|not-configured``; exit 0 / 1 / 3.
 
 ``push`` -- pushes the worker dir's HEAD (or, with ``--test-commit``, the
@@ -252,17 +252,26 @@ def cmd_run(root: Path, db_path: Path, task: str, wait: float = 3600, again: boo
                 break
         steps = _steps(root, run["slug"], wdir)
         config = ";".join(steps)
-        last = _latest_check(conn, task)
-        if (not again and last and last.get("head") == head and last.get("result") == "passed"
-                and last.get("config") == config):
-            print(f"presubmit: {head[:12]} already passed with the same settings (log {last.get('log')});"
-                  " --again runs it anyway")
+
+        def already() -> bool:
+            last = _latest_check(conn, task)
+            if again or not last or not (last.get("head") == head and last.get("base") == base
+                                         and last.get("result") == "passed"
+                                         and last.get("config") == config):
+                return False
+            print(f"presubmit: {head[:12]} already passed on base {base[:12]} with the same settings"
+                  f" (log {last.get('log')}); --again runs it anyway")
             print("PRESUBMIT: passed (already checked)")
+            return True
+
+        if already():
             return 0
         lock = _lock(root, task, wait)
         if lock is None:
             print(f"PRESUBMIT: failed (another run did not finish within {int(wait)}s)")
             return 1
+        if already():  # the run this one waited for may have checked the same head
+            return 0
         log = root / ".state" / "presubmit" / f"{task}-{head[:12]}.log"
         log.parent.mkdir(parents=True, exist_ok=True)
         done = []
