@@ -94,6 +94,16 @@ class GuardReviewFixesTests(base.TestCommitGuardTests):
         self.assertAllowed(f"git --git-dir={self.wdir}/.git log --oneline -1", cwd=here)
 
 
+    def test_nested_shell_behind_an_assignment(self):
+        self.assertDenied("GIT_SEQUENCE_EDITOR=true bash -c 'git rebase origin/main'")
+        self.assertDenied("env X=1 bash -c 'git rebase origin/main'")
+
+    def test_attached_force_create_names(self):
+        self.assertDenied("git checkout -Bfeat/t origin/main")
+        self.assertDenied("git switch -Cfeat/t origin/main")
+        self.assertAllowed("git checkout -Bother origin/main")
+
+
 for _name in [n for n in dir(base.TestCommitGuardTests) if n.startswith("test_")]:
     setattr(GuardReviewFixesTests, _name, None)
     setattr(GuardFormsTests, _name, None)

@@ -212,6 +212,12 @@ def _check_git(g: Guard, args: list[str], overrides: Optional[dict] = None) -> O
         if kept is not True:
             return _refusal(g, f"git reset to {target}")
         return None
+    if sub in ("checkout", "switch", "branch"):
+        # `-Bname` / `-Cname` / `-Mname`: the branch name is attached to the option.
+        for o in list(opts):
+            if len(o) > 2 and o[0] == "-" and o[1] in "BCM" and o[1] != "-":
+                opts = [x for x in opts if x != o] + [o[:2]]
+                plain = [o[2:]] + plain
     moves = ((sub == "branch" and any(o in ("-f", "--force", "-C", "-M") for o in opts))
              or (sub == "checkout" and "-B" in opts) or (sub == "switch" and any(o in ("-C", "--force-create") for o in opts)))
     if moves or sub == "update-ref":
