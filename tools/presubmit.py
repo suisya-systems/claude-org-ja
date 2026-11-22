@@ -57,7 +57,9 @@ the worker dir, and a ``gh pr edit N`` of the run's PR, so those go through
 ``push`` and ``pr``. A ``git push`` / ``gh pr create|edit`` whose target cannot
 be read (a variable, a command substitution) is refused. Everything else is
 allowed. The words are read with shlex, also inside ``bash -c`` / ``eval``
-strings and ``$(...)`` bodies; ``cd`` / ``pushd`` move the directory the later
+strings and ``$(...)`` bodies, after ``VAR=value`` assignments and wrappers
+(``env``, ``command``, ``exec``, ``nohup``, ``time``, ``sudo``, ``nice``,
+``builtin``) in front are dropped; ``cd`` / ``pushd`` move the directory the later
 commands are resolved against; a PR given by number is matched with its
 repository when ``--repo`` or a PR URL names one; what the text cannot show (aliases, a script
 file that pushes) is not seen.
@@ -324,7 +326,9 @@ def cmd_pr(root: Path, db_path: Path, args) -> int:
         sources = [("title", args.title)]
         sources += [(f"body:{i}", line) for i, line in enumerate(body.splitlines(), 1)]
         base = _resolve_base(wdir, _base_ref(conn, args.task))
-        for c in _own_commits(wdir, base):
+        # Every commit the PR brings, including ones that came in through a merge of
+        # another branch (each can close an Issue when the PR lands).
+        for c in _git(wdir, "rev-list", "HEAD", "--not", base).split():
             for line in _git(wdir, "log", "-1", "--format=%B", c).splitlines():
                 sources.append((f"commit {c[:12]}", line))
         allowed = set(args.closes or [])
@@ -401,6 +405,24 @@ def _simple_commands(code: str, depth: int = 0) -> list[list[str]]:
     return out
 
 
+_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_WRAPPERS = {"env", "command", "exec", "nohup", "time", "sudo", "nice", "builtin"}
+
+
+def _unwrap(words: list[str]) -> list[str]:
+    """Drop ``VAR=value`` assignments and wrapper programs (env, command, ...) in front."""
+    while words:
+        if _ASSIGN.match(words[0]):
+            words = words[1:]
+        elif Path(words[0]).name in _WRAPPERS:
+            words = words[1:]
+            while words and (words[0].startswith("-") or _ASSIGN.match(words[0])):
+                words = words[1:]
+        else:
+            break
+    return words
+
+
 def _real(path: str) -> str:
     return os.path.realpath(path)
 
@@ -435,6 +457,9 @@ def decide(conn, command: str, cwd: str) -> str:
         return next((t for wd, t in dirs.items() if _inside(rd, wd)), None)
 
     for words in _simple_commands(command):
+        words = _unwrap(words)
+        if not words:
+            continue
         name = Path(words[0]).name
         if name in ("cd", "pushd"):
             arg = next((w for w in words[1:] if not w.startswith("-")), None)

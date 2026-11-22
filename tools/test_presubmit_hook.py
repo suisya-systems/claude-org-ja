@@ -70,7 +70,31 @@ class HookPassThroughTests(base.PresubmitTests):
         self.assertEqual(self.hook("gh pr edit 12 --repo other/repo --body-file b.md", self.root), "ALLOW")
 
 
+    def test_prefixed_pushes_are_still_read(self):
+        wdir = self.worker("s5")
+        for command in ("env GIT_TERMINAL_PROMPT=0 git push origin HEAD",
+                        "command git push origin HEAD",
+                        "GIT_TERMINAL_PROMPT=0 git push origin HEAD",
+                        "env -i PATH=/usr/bin git push origin HEAD",
+                        "GH_DEBUG=1 gh pr create --title x --body y"):
+            with self.subTest(command=command):
+                self.assertTrue(self.hook(command, wdir).startswith("DENY"))
+
+
 class ToolFixesTests(base.PresubmitTests):
+    def test_closing_reference_in_a_commit_brought_by_a_merge_is_refused(self):
+        self.fake_gh()
+        wdir = self.worker("u4")
+        self.commit(wdir, "work")
+        self.git(wdir, "checkout", "-q", "-b", "side", "main")
+        self.commit(wdir, "Fixes #8 on the side", "side.txt")
+        self.git(wdir, "checkout", "-q", "feat/u4")
+        self.git(wdir, *base.ID, "merge", "-q", "--no-ff", "--no-edit", "side")
+        proc = self.tool("pr", "--task", "u4", "--create", "--title", "work",
+                         "--body-file", str(self.body("Refs #1\n")))
+        self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("#8", proc.stdout)
+
     def test_run_refuses_uncommitted_tracked_changes(self):
         self.registry("true")
         wdir = self.worker("u1")
