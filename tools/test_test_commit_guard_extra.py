@@ -50,7 +50,35 @@ class GuardFormsTests(base.TestCommitGuardTests):
         self.assertAllowed("git pull --ff-only origin main")
 
 
+class GuardReviewFixesTests(base.TestCommitGuardTests):
+    """Forms from the Codex review of the guard."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.commit(self.wdir, "fix", "fix.txt")
+
+    def test_pull_follows_the_rebase_setting(self):
+        self.assertAllowed("git pull origin main")
+        self.assertDenied("git -c pull.rebase=true pull origin main")
+        self.git(self.wdir, "config", "pull.rebase", "true")
+        self.assertDenied("git pull origin main")
+        self.assertAllowed("git pull --no-rebase origin main")
+
+    def test_reset_with_a_bare_separator_is_a_branch_reset(self):
+        self.assertDenied("git reset --soft origin/main --")
+        self.assertAllowed("git reset origin/main -- fix.txt")
+
+    def test_update_ref_of_head_moves_the_branch(self):
+        self.assertDenied("git update-ref HEAD origin/main")
+
+    def test_two_history_changes_in_one_call(self):
+        self.assertDenied("git reset --soft HEAD~1 && git commit --amend --no-edit")
+        self.assertAllowed("git add -u && git commit -m more")
+        self.assertAllowed("git fetch origin && git merge origin/main")
+
+
 for _name in [n for n in dir(base.TestCommitGuardTests) if n.startswith("test_")]:
+    setattr(GuardReviewFixesTests, _name, None)
     setattr(GuardFormsTests, _name, None)
 
 if __name__ == "__main__":

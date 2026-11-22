@@ -19,15 +19,22 @@ not M (the worker's own commits sit on top: the implementation has started).
 A new SHA for M throws away the CI failure the acceptance gate needs, so while
 M is guarded these are refused:
 
-* ``rebase`` onto an upstream (and ``--onto``) that does not contain M, and
-  ``pull --rebase``; ``--abort`` / ``--quit`` / ``--continue`` / ``--skip``
-  pass;
+* ``rebase`` onto an upstream (and ``--onto``) that does not contain M
+  (``--abort`` / ``--quit`` / ``--continue`` / ``--skip`` pass), and a ``pull``
+  that rebases: ``--rebase``, or ``pull.rebase`` / ``branch.<b>.rebase`` set in
+  the config or by ``-c`` without ``--no-rebase``;
 * ``commit --amend`` while HEAD is M;
 * ``reset`` to a commit that does not contain M (a path reset passes);
 * moving the current branch to a commit without M: ``branch -f`` / ``-C`` /
   ``-M``, ``checkout -B``, ``switch -C``, ``update-ref``;
 * ``filter-branch`` / ``filter-repo`` / ``replace``;
-* any of these whose target is a variable or a substitution.
+* any of these whose target is a variable or a substitution;
+* any of these after an earlier command of the same call that can move HEAD
+  in that repository (the checks read the repository as it is now): run them
+  in separate calls.
+
+``reset <rev> --`` with no path after ``--`` is a branch reset, and
+``update-ref HEAD`` moves the current branch.
 
 Catching up with the base is ``git merge <base>``, which keeps M (the gate
 accepts a base merged after M). Everything else passes, and nothing is
@@ -57,6 +64,10 @@ if str(_REPO_ROOT) not in sys.path:
 
 from tools.presubmit import _real, _simple_commands, _unwrap  # noqa: E402
 from tools.state_db import connect  # noqa: E402
+
+# git subcommands that can move HEAD or the current branch.
+_MOVES_HEAD = {"reset", "rebase", "commit", "checkout", "switch", "pull", "merge", "cherry-pick",
+               "am", "revert", "update-ref", "branch", "stash", "restore"}
 
 MERGE_HINT = ("catch up with the base by `git merge <base>` instead (it keeps the test commit);"
               " ask the secretary if the test commit really has to change")
@@ -135,7 +146,24 @@ def _refusal(g: Guard, what: str) -> str:
             f" the branch (its CI failure record would no longer count); {MERGE_HINT}")
 
 
-def _check_git(g: Guard, args: list[str]) -> Optional[str]:
+def _pull_rebases(g: Guard, opts: list[str], overrides: dict[str, str]) -> bool:
+    """Whether this ``git pull`` rebases: its flags, else -c overrides, else the config."""
+    for o in reversed(opts):
+        if o in ("--no-rebase",) or o == "--rebase=false":
+            return False
+        if o in ("--rebase", "-r") or o.startswith("--rebase="):
+            return True
+    keys = [f"branch.{g.branch}.rebase", "pull.rebase"] if g.branch else ["pull.rebase"]
+    for key in keys:
+        value = overrides.get(key)
+        if value is None:
+            value = _git(g.repo, "config", "--get", key)
+        if value is not None:
+            return value.strip().lower() not in ("false", "no", "off", "0", "")
+    return False
+
+
+def _check_git(g: Guard, args: list[str], overrides: Optional[dict] = None) -> Optional[str]:
     sub, rest = args[0], args[1:]
     opts = [w for w in rest if w.startswith("-")]
     plain = [w for w in rest if not w.startswith("-")]
@@ -158,9 +186,8 @@ def _check_git(g: Guard, args: list[str]) -> Optional[str]:
             return _refusal(g, "this git rebase")
         return None
     if sub == "pull":
-        if any(o in ("--rebase", "-r") or o.startswith("--rebase=") and not o.endswith("=false")
-               for o in opts):
-            return _refusal(g, "git pull --rebase")
+        if _pull_rebases(g, opts, overrides or {}):
+            return _refusal(g, "this git pull (it rebases; pass --no-rebase)")
         return None
     if sub == "commit":
         if "--amend" in opts and _git(g.repo, "rev-parse", "HEAD") == g.m:
@@ -168,7 +195,11 @@ def _check_git(g: Guard, args: list[str]) -> Optional[str]:
         return None
     if sub == "reset":
         if "--" in rest:
-            return None
+            k = rest.index("--")
+            if rest[k + 1:]:
+                return None  # paths after `--`: a path reset, HEAD does not move
+            rest = rest[:k]
+            plain = [w for w in rest if not w.startswith("-")]
         target = next((w for w in plain), None)
         if target is None:
             return None  # resets to HEAD
@@ -191,7 +222,7 @@ def _check_git(g: Guard, args: list[str]) -> Optional[str]:
         if name is None:
             return None
         current = g.branch or ""
-        if name not in (current, f"refs/heads/{current}") and "$" not in name:
+        if name not in (current, f"refs/heads/{current}", "HEAD") and "$" not in name:
             return None
         if g.keeps(target) is not True:
             return _refusal(g, f"moving branch {current} to {target}")
@@ -200,6 +231,7 @@ def _check_git(g: Guard, args: list[str]) -> Optional[str]:
 
 def decide(conn, command: str, cwd: str) -> str:
     guards: dict[str, Guard] = {}
+    moved: set[str] = set()  # repos whose HEAD an earlier command of this call may have moved
     here: Optional[str] = cwd
     for words in _simple_commands(command):
         words = _unwrap(words)
@@ -231,9 +263,15 @@ def decide(conn, command: str, cwd: str) -> str:
                 i += 1
         if i >= len(words):
             continue
+        overrides = {}
+        for j in range(1, i):
+            if words[j] == "-c" and j + 1 < len(words) and "=" in words[j + 1]:
+                key, value = words[j + 1].split("=", 1)
+                overrides[key.lower()] = value
         sub = words[i]
-        if sub not in ("rebase", "pull", "commit", "reset", "branch", "checkout", "switch",
-                       "update-ref", "filter-branch", "filter-repo", "replace"):
+        checked = sub in ("rebase", "pull", "commit", "reset", "branch", "checkout", "switch",
+                          "update-ref", "filter-branch", "filter-repo", "replace")
+        if not checked and sub not in _MOVES_HEAD:
             continue
         if here is None or any("$" in t for t in targets):
             # Cannot tell which repository: guard every worker dir the hook knows of.
@@ -245,9 +283,18 @@ def decide(conn, command: str, cwd: str) -> str:
         g = guards.get(repo) or guards.setdefault(repo, Guard(conn, repo))
         if not g.m:
             continue
-        verdict = _check_git(g, words[i:])
-        if verdict:
-            return verdict
+        if checked:
+            if repo in moved:
+                # The checks read the repository as it is now, not as the earlier
+                # commands of this call will leave it.
+                return (f"DENY: git {sub} follows another command that moves HEAD in the same call,"
+                        f" while the test commit {g.m[:12]} of task {g.task} is guarded; run the"
+                        " commands in separate calls")
+            verdict = _check_git(g, words[i:], overrides)
+            if verdict:
+                return verdict
+        if sub in _MOVES_HEAD:
+            moved.add(repo)
     return "ALLOW"
 
 
