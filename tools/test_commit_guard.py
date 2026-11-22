@@ -222,9 +222,20 @@ def _check_git(g: Guard, args: list[str], overrides: Optional[dict] = None) -> O
              or (sub == "checkout" and "-B" in opts) or (sub == "switch" and any(o in ("-C", "--force-create") for o in opts)))
     if moves or sub == "update-ref":
         if sub == "update-ref":
-            if "-d" in opts or len(plain) < 2:
+            if "--stdin" in opts:
+                return _refusal(g, "git update-ref --stdin (the updates cannot be read)")
+            args_ = []
+            skip = False
+            for w in rest:
+                if skip:
+                    skip = False
+                elif w == "-m":
+                    skip = True  # the reflog message
+                elif not w.startswith("-"):
+                    args_.append(w)
+            if "-d" in opts or len(args_) < 2:
                 return None
-            name, target = plain[0], plain[1]
+            name, target = args_[0], args_[1]
         else:
             name = plain[0] if plain else None
             target = plain[1] if len(plain) > 1 else "HEAD"
@@ -242,7 +253,14 @@ def decide(conn, command: str, cwd: str) -> str:
     guards: dict[str, Guard] = {}
     moved: set[str] = set()  # repos whose HEAD an earlier command of this call may have moved
     here: Optional[str] = cwd
-    for words in _simple_commands(command):
+    commands = _simple_commands(command)
+    # Nested commands (bash -c, eval, $(...)) come after all outer ones in this list, so a
+    # cd anywhere in the call makes every directory unknown (the checks fall back to the
+    # worker dir).
+    if len(commands) > len(_simple_commands(command, 3)) and any(
+            Path(_unwrap(w)[0]).name in ("cd", "pushd") for w in commands if _unwrap(w)):
+        here = None
+    for words in commands:
         env_sel = {w.split("=", 1)[0]: w.split("=", 1)[1] for w in words
                    if w.split("=", 1)[0] in ("GIT_DIR", "GIT_WORK_TREE") and "=" in w}
         words = _unwrap(words)
@@ -251,7 +269,7 @@ def decide(conn, command: str, cwd: str) -> str:
         name = Path(words[0]).name
         if name in ("cd", "pushd"):
             arg = next((w for w in words[1:] if not w.startswith("-")), None)
-            if "(" in command or ")" in command or (arg and "$" in arg):
+            if here is None or "(" in command or ")" in command or (arg and "$" in arg):
                 here = None
             elif arg is None:
                 here = os.path.expanduser("~")

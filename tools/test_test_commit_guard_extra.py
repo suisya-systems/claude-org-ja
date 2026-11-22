@@ -104,6 +104,14 @@ class GuardReviewFixesTests(base.TestCommitGuardTests):
         self.assertAllowed("git checkout -Bother origin/main")
 
 
+    def test_update_ref_with_a_reflog_message(self):
+        self.assertDenied("git update-ref -m cleanup HEAD origin/main")
+        self.assertDenied("git update-ref --stdin")
+
+    def test_nested_shell_then_cd(self):
+        self.assertDenied("bash -c 'git rebase origin/main'; cd /tmp")
+
+
 for _name in [n for n in dir(base.TestCommitGuardTests) if n.startswith("test_")]:
     setattr(GuardReviewFixesTests, _name, None)
     setattr(GuardFormsTests, _name, None)
