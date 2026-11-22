@@ -81,7 +81,34 @@ class HookPassThroughTests(base.PresubmitTests):
                 self.assertTrue(self.hook(command, wdir).startswith("DENY"))
 
 
+    def test_attached_dash_c_and_subshell_cd(self):
+        wdir = self.worker("s6")
+        self.assertTrue(self.hook(f"git -C{wdir} push origin HEAD", self.root).startswith("DENY"))
+        self.assertTrue(self.hook("(cd /tmp); git push origin HEAD", wdir).startswith("DENY"))
+
+
 class ToolFixesTests(base.PresubmitTests):
+    def test_closing_reference_on_the_dispatch_base_counts_for_another_pr_base(self):
+        self.fake_gh()
+        # The task is dispatched from develop, which has a commit main does not.
+        self.git(self.base, "checkout", "-q", "-b", "develop", "main")
+        self.commit(self.base, "Fixes #9 on develop", "dev.txt")
+        self.git(self.base, "push", "-q", "origin", "develop")
+        self.git(self.base, "fetch", "-q", "origin")
+        self.git(self.base, "checkout", "-q", "main")
+        wdir = self.worker("u5")
+        self.sql("UPDATE events SET payload_json = json_set(payload_json, '$.base_ref', 'origin/develop')"
+                 " WHERE kind = 'delegate_sent'")
+        self.git(wdir, "reset", "-q", "--hard", "origin/develop")
+        self.commit(wdir, "work")
+        ok = self.tool("pr", "--task", "u5", "--create", "--title", "work",
+                       "--body-file", str(self.body("Refs #1\n")), "--base", "develop")
+        self.assertEqual(ok.returncode, 0, ok.stdout + ok.stderr)
+        refused = self.tool("pr", "--task", "u5", "--create", "--title", "work",
+                            "--body-file", str(self.body("Refs #1\n")), "--base", "main")
+        self.assertNotEqual(refused.returncode, 0, refused.stdout + refused.stderr)
+        self.assertIn("#9", refused.stdout)
+
     def test_closing_reference_in_a_commit_brought_by_a_merge_is_refused(self):
         self.fake_gh()
         wdir = self.worker("u4")

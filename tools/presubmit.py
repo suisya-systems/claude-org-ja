@@ -41,7 +41,8 @@ refused: <reason>``; exit 0 / 1.
 ``pr`` -- creates (``gh pr create --repo R --head <branch>``) or edits
 (``gh pr edit N --repo R``) the PR with ``--title`` and ``--body-file``, after
 reading every GitHub closing reference in the title, the body and the commit
-messages of ``base..HEAD``: a closing word (close, closes, closed, fix, fixes,
+messages of every commit HEAD has and the base has not (also against
+``--base`` when given, so a PR to another branch is covered): a closing word (close, closes, closed, fix, fixes,
 fixed, resolve, resolves, resolved; any case) followed, after optional ``:``
 and spaces, by ``#N``, ``owner/repo#N`` or an Issue URL. Any reference that is
 not ``#N`` / this repository's N with N given by ``--closes`` stops the call
@@ -327,8 +328,13 @@ def cmd_pr(root: Path, db_path: Path, args) -> int:
         sources += [(f"body:{i}", line) for i, line in enumerate(body.splitlines(), 1)]
         base = _resolve_base(wdir, _base_ref(conn, args.task))
         # Every commit the PR brings, including ones that came in through a merge of
-        # another branch (each can close an Issue when the PR lands).
-        for c in _git(wdir, "rev-list", "HEAD", "--not", base).split():
+        # another branch (each can close an Issue when the PR lands). With --base the
+        # commits not on that branch count too, so a PR to another branch is covered.
+        commits = set(_git(wdir, "rev-list", "HEAD", "--not", base).split())
+        if args.create and args.base:
+            other = _resolve_base(wdir, "origin/" + args.base.removeprefix("origin/"))
+            commits |= set(_git(wdir, "rev-list", "HEAD", "--not", other).split())
+        for c in sorted(commits):
             for line in _git(wdir, "log", "-1", "--format=%B", c).splitlines():
                 sources.append((f"commit {c[:12]}", line))
         allowed = set(args.closes or [])
@@ -463,7 +469,10 @@ def decide(conn, command: str, cwd: str) -> str:
         name = Path(words[0]).name
         if name in ("cd", "pushd"):
             arg = next((w for w in words[1:] if not w.startswith("-")), None)
-            if arg is None:
+            if "(" in command or ")" in command:
+                # The words do not show which cd sits inside a subshell; do not guess.
+                here = None
+            elif arg is None:
                 here = os.path.expanduser("~")
             elif "$" in arg or here is None and not os.path.isabs(os.path.expanduser(arg)):
                 here = None
@@ -476,6 +485,9 @@ def decide(conn, command: str, cwd: str) -> str:
                 if words[i] == "-C" and i + 1 < len(words):
                     targets.append(words[i + 1])
                     i += 2
+                elif words[i].startswith("-C"):
+                    targets.append(words[i][2:])
+                    i += 1
                 elif words[i] in ("-c", "--git-dir", "--work-tree") and i + 1 < len(words):
                     i += 2
                 else:
