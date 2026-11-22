@@ -64,6 +64,7 @@ _FIELD_ALIASES: dict[str, tuple[str, ...]] = {
     "mirror_of": ("mirror_of",),
     "triage": ("triage",),
     "base_branch": ("base_branch", "base branch"),
+    "presubmit": ("presubmit",),
 }
 _ALIAS_TO_FIELD: dict[str, str] = {
     alias.lower(): field
@@ -108,6 +109,10 @@ class Project:
     # in ``tools.gen_delegate_payload.normalize_base_branch``, not here, so
     # the parser stays a dumb SoT.
     base_branch: str = ""
+    # Issue 1298: raw value of the `presubmit` column (header mode only): the
+    # pre-submit check steps, `;`-separated, read by ``tools/presubmit.py``.
+    # Empty means no check is configured.
+    presubmit: str = ""
 
 
 # Per-line classification. ``kind`` values:
@@ -227,6 +232,7 @@ def iter_rows(text: str) -> Iterator[ParsedRow]:
                 mirror_of=_cell_by_field(cells, header_map, "mirror_of"),
                 triage=_cell_by_field(cells, header_map, "triage"),
                 base_branch=_cell_by_field(cells, header_map, "base_branch"),
+                presubmit=_cell_by_field(cells, header_map, "presubmit"),
             )
             yield ParsedRow(line_no, raw_line, "data", project)
             continue

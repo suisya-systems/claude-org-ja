@@ -246,6 +246,7 @@ from `codex_round_started`.
 | Event             | Typical fields                                                                 | Writer    | Emitted by | Required for |
 |-------------------|--------------------------------------------------------------------------------|-----------|------------|--------------|
 | `acceptance_gate` | `result` (`passed` / `rejected` / `no_manifest`), `reason`, `repo`, `base`, `head`, `manifest_commit`, `manifest_digest`, `paths[]`, `pr`, `task` | `tools/acceptance_gate.py` | secretary (pre-merge hook `.hooks/gate-acceptance-before-merge.sh`) | — |
+| `presubmit_checked` | `task`, `head`, `base`, `test_commit`, `steps[]` (`cmd`, `rc`, `seconds`), `result` (`passed` / `failed` / `not_configured`), `log` | `tools/presubmit.py run` | secretary (before `presubmit.py push` / `pr`) | — |
 
 `tools/acceptance_gate.py` writes one row per run. The gate passes only when the
 protected tree entries at head equal those at the commit that declared the test

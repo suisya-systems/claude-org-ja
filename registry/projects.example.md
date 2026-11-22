@@ -56,10 +56,17 @@ claude-org-ja 自身（self-edit）は本レジストリに載せない。`tools
 - 設定したブランチが `origin` に存在しない場合、派遣は apply 時に fail loud で停止する（既定ブランチへ黙って落ちない。Issue #480 の stale-base ガードと同じ立場）。
 - **work-discovery triage の完了判定にも使われる（Issue #830）**: 値を書いた行は、triage scan がそのブランチ宛のマージ済み PR を読み、`Closes #N` で閉じられた Issue を候補から外して `excluded_merged` に理由付きで出す。GitHub の自動クローズは既定ブランチへのマージでしか発火しないため、develop にマージ済みの Issue は open のまま残り、これが無いと完了済みの作業が「次の仕事」の第 1 位に出る。未設定行はこの判定を一切行わない（挙動不変）。
 
+「presubmit」列（Issue 1298）は、ワーカーの完了報告を受けた窓口が提出の前に流す確認を書く欄。空欄 / `-` は未設定:
+
+- 窓口は `python3 tools/presubmit.py run --task <task_id>` を打つ。ツールがこの列を読み、`;` で区切った段を作業ツリーで順に `bash -c` で流し、結果を `presubmit_checked` に記録する。表のセルなので `|` は書けない。`{base}` は派遣時の起点、`{head}` は作業ツリーの HEAD の SHA に置き換わる。
+- 例: `cargo test --locked; python3 -m pytest tests; bash scripts/acceptance-check.sh {base} {head}`
+- 窓口の送信と PR の作成は `presubmit.py push` / `presubmit.py pr` を通る（フック `.hooks/gate-presubmit-before-push.sh` が、通さない形を止める）。未設定の行は確認を流さずに `not-configured` を記録し、送信は止めない。
+- claude-org-ja 自身はこの表に載らないので、[`registry/org-config.md`](./org-config.md) の `home_presubmit:` で設定する。
+
 下の行は列の書き方を示すサンプルである。実際の運用では自分のプロジェクトに置き換えてよい（サンプル行を全て削除しても、パーサーは 0 行の表を有効として扱う）。
 
-| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 | triage | base_branch |
-|---|---|---|---|---|---|---|
-| 時計アプリ | clock-app | - | Webブラウザで動くデジタル時計。「パス」が `-` = clone 元なしの新規プロジェクト | デザイン変更、機能追加 | no | |
-| renga | renga | https://github.com/suisya-systems/renga | Rust 製の Claude Code 用ターミナルマルチプレクサ（TUI）。GitHub URL 行なので triage 既定 include | 機能追加、バグ修正、Issue 対応 | | |
-| 二系統サンプル | sample-two-track | https://github.com/example/sample-two-track | `develop` に feature を溜め `main` へは直接マージしない運用のサンプル行（base_branch 列の記入例） | 機能追加、リリース準備 | no | develop |
+| 通称 | プロジェクト名 | パス | 説明 | よくある作業例 | triage | base_branch | presubmit |
+|---|---|---|---|---|---|---|---|
+| 時計アプリ | clock-app | - | Webブラウザで動くデジタル時計。「パス」が `-` = clone 元なしの新規プロジェクト | デザイン変更、機能追加 | no | | |
+| renga | renga | https://github.com/suisya-systems/renga | Rust 製の Claude Code 用ターミナルマルチプレクサ（TUI）。GitHub URL 行なので triage 既定 include | 機能追加、バグ修正、Issue 対応 | | | |
+| 二系統サンプル | sample-two-track | https://github.com/example/sample-two-track | `develop` に feature を溜め `main` へは直接マージしない運用のサンプル行（base_branch 列の記入例） | 機能追加、リリース準備 | no | develop | |
