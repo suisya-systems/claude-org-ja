@@ -51,6 +51,21 @@ class NoRecordOnFailureTests(base.PresubmitTests):
         self.assertIsNone(self.sql("SELECT pr_url FROM runs WHERE task_id = 'r5'")[0][0])
 
 
+    def test_a_push_still_reminds_to_restart_the_watcher(self):
+        self.registry("true")
+        wdir = self.worker("r6")
+        self.sql("UPDATE runs SET pr_url = 'https://github.com/o/p/pull/40', pr_state = 'open' WHERE task_id = 'r6'")
+        self.sql("INSERT INTO events (occurred_at, actor, kind, payload_json) VALUES "
+                 "('2026-11-22T10:30:00.000Z', 'secretary', 'pr_watch_pane_started', ?)",
+                 (json.dumps({"task": "r6", "pr": 40, "repo": "o/p", "pane_id": "%1"}),))
+        self.commit(wdir, "work")
+        self.tool("run", "--task", "r6")
+        proc = self.tool("push", "--task", "r6")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        # The check ran on the new record (its verdict depends on the clock of the fixture rows).
+        self.assertIn("[watcher-guard] PR #40", proc.stderr)
+
+
 for _name in [n for n in dir(base.PresubmitTests) if n.startswith("test_")]:
     if _name not in NoRecordOnFailureTests.__dict__:
         setattr(NoRecordOnFailureTests, _name, None)

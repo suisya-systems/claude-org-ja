@@ -387,6 +387,10 @@ def cmd_push(root: Path, db_path: Path, task: str, test_commit: bool, force: boo
             payload.update(repo=m.group(1), pr=int(m.group(2)))
         with StateWriter(conn).transaction() as w:
             w.append_event(kind="fix_pushed", actor="secretary", payload=payload, run_task_id=task)
+        # The same advisory watcher-restart reminder a hand-written fix_pushed printed
+        # (tools/journal_append.py); never fails the push.
+        from tools.journal_append import _run_watcher_guard
+        _run_watcher_guard(conn, payload)
     except Refused as exc:
         print(f"PRESUBMIT_PUSH: refused: {exc}")
         return 1
