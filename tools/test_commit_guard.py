@@ -34,7 +34,10 @@ M is guarded these are refused:
   in separate calls.
 
 ``reset <rev> --`` with no path after ``--`` is a branch reset, and
-``update-ref HEAD`` moves the current branch.
+``update-ref HEAD`` moves the current branch. The repository is the worktree
+root of the command's directory (``cd``, ``-C``, ``--work-tree`` /
+``GIT_WORK_TREE``); ``--git-dir`` / ``GIT_DIR`` without a work tree is refused
+for these commands.
 
 Catching up with the base is ``git merge <base>``, which keeps M (the gate
 accepts a base merged after M). Everything else passes, and nothing is
@@ -234,6 +237,8 @@ def decide(conn, command: str, cwd: str) -> str:
     moved: set[str] = set()  # repos whose HEAD an earlier command of this call may have moved
     here: Optional[str] = cwd
     for words in _simple_commands(command):
+        env_sel = {w.split("=", 1)[0]: w.split("=", 1)[1] for w in words
+                   if w.split("=", 1)[0] in ("GIT_DIR", "GIT_WORK_TREE") and "=" in w}
         words = _unwrap(words)
         if not words:
             continue
@@ -257,7 +262,14 @@ def decide(conn, command: str, cwd: str) -> str:
             elif words[i].startswith("-C"):
                 targets.append(words[i][2:])
                 i += 1
-            elif words[i] in ("-c", "--git-dir", "--work-tree") and i + 1 < len(words):
+            elif words[i] in ("--git-dir", "--work-tree") and i + 1 < len(words):
+                env_sel["GIT_DIR" if words[i] == "--git-dir" else "GIT_WORK_TREE"] = words[i + 1]
+                i += 2
+            elif words[i].startswith(("--git-dir=", "--work-tree=")):
+                key, value = words[i].split("=", 1)
+                env_sel["GIT_DIR" if key == "--git-dir" else "GIT_WORK_TREE"] = value
+                i += 1
+            elif words[i] == "-c" and i + 1 < len(words):
                 i += 2
             else:
                 i += 1
@@ -273,13 +285,21 @@ def decide(conn, command: str, cwd: str) -> str:
                           "update-ref", "filter-branch", "filter-repo", "replace")
         if not checked and sub not in _MOVES_HEAD:
             continue
+        if env_sel:
+            tree = env_sel.get("GIT_WORK_TREE")
+            if not tree or "$" in tree:
+                if checked:
+                    return ("DENY: git with --git-dir / GIT_DIR and no readable work tree; the guard"
+                            " cannot tell which branch it changes. Use `git -C <dir>` instead")
+                continue
+            targets = [os.path.join(here or cwd, tree)]
         if here is None or any("$" in t for t in targets):
             # Cannot tell which repository: guard every worker dir the hook knows of.
             base = os.environ.get("WORKER_DIR") or cwd
             repo = os.path.join(base, *targets) if targets and not any("$" in t for t in targets) else base
         else:
             repo = os.path.join(here, *targets) if targets else here
-        repo = _real(repo)
+        repo = _real(_git(_real(repo), "rev-parse", "--show-toplevel") or repo)
         g = guards.get(repo) or guards.setdefault(repo, Guard(conn, repo))
         if not g.m:
             continue
@@ -314,7 +334,8 @@ def main(argv: Optional[list] = None) -> int:
             print("ALLOW")
             return 0
         command = str((payload.get("tool_input") or {}).get("command") or "")
-        if "git" not in command or not db_path.is_file():
+        bare = command.replace('"', "").replace("'", "").replace("\\", "").replace("\n", "")
+        if "git" not in bare or not db_path.is_file():
             print("ALLOW")
             return 0
         conn = connect(db_path)

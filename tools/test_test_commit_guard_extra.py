@@ -77,6 +77,23 @@ class GuardReviewFixesTests(base.TestCommitGuardTests):
         self.assertAllowed("git fetch origin && git merge origin/main")
 
 
+    def test_a_subdirectory_is_the_same_worktree(self):
+        (self.wdir / "sub").mkdir()
+        self.assertDenied("git reset --soft HEAD~1 && cd sub && git commit --amend --no-edit")
+
+    def test_quoted_git_is_still_git(self):
+        self.assertDenied('g"it" rebase origin/main')
+
+    def test_git_dir_and_work_tree_selectors(self):
+        here = self.root
+        self.assertDenied(f"git --git-dir={self.wdir}/.git --work-tree={self.wdir} rebase origin/main", cwd=here)
+        self.assertDenied(f"git --work-tree {self.wdir} --git-dir {self.wdir}/.git reset --hard origin/main",
+                          cwd=here)
+        self.assertDenied(f"GIT_WORK_TREE={self.wdir} GIT_DIR={self.wdir}/.git git rebase origin/main", cwd=here)
+        self.assertDenied(f"git --git-dir={self.wdir}/.git rebase origin/main", cwd=here)
+        self.assertAllowed(f"git --git-dir={self.wdir}/.git log --oneline -1", cwd=here)
+
+
 for _name in [n for n in dir(base.TestCommitGuardTests) if n.startswith("test_")]:
     setattr(GuardReviewFixesTests, _name, None)
     setattr(GuardFormsTests, _name, None)
