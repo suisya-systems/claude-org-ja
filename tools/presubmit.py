@@ -41,7 +41,9 @@ line then carries a ``WARNING``, and ``presubmit_required: yes`` in
 (after a rebase, or to put the test commit back as head) with
 ``--force-with-lease`` on the commit the remote has right now. A worker dir
 whose branch is not ``runs.branch`` (a task's second PR on a new branch with
-the record still naming the first) is refused. Last
+the record still naming the first) is refused. A push that succeeded writes ``fix_pushed`` (task, branch, head = the
+SHA sent, repo / pr when the run has a PR, ``source=presubmit_push``) in the
+same call; nothing else needs to record it. Last
 line ``PRESUBMIT_PUSH: pushed <sha> to <branch>`` or ``PRESUBMIT_PUSH:
 refused: <reason>``; exit 0 / 1.
 
@@ -54,7 +56,10 @@ fixed, resolve, resolves, resolved; any case) followed, after optional ``:``
 and spaces, by ``#N``, ``owner/repo#N`` or an Issue URL. Any reference that is
 not ``#N`` / this repository's N with N given by ``--closes`` stops the call
 before gh runs, with each line shown. Negation is not read, because GitHub
-does not read it. Last line ``PRESUBMIT_PR: created <url>`` /
+does not read it. A PR it created gets its records in the same call:
+``pr_opened`` (task, pr, url, repo, ``source=presubmit_pr``) and the run's
+``pr_url`` / ``pr_state`` / ``branch`` through ``tools/set_run_pr_open.py``
+(nothing to record by hand). Last line ``PRESUBMIT_PR: created <url>`` /
 ``PRESUBMIT_PR: edited #N`` / ``PRESUBMIT_PR: refused: <reason>``; exit 0 / 1.
 
 ``hook`` -- the decision of ``.hooks/gate-presubmit-before-push.sh``. For an
@@ -105,6 +110,7 @@ from tools.state_db.discover import resolve_state_db_path  # noqa: E402
 from tools.state_db.writer import StateWriter  # noqa: E402
 
 OPEN = ("queued", "in_use", "review")
+_PR_URL = re.compile(r"https://github\.com/([^/\s]+/[^/\s]+)/pull/(\d+)")
 _CLOSING = re.compile(
     r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b[ \t]*:?[ \t]*"
     r"(?:(?P<slug>[\w.-]+/[\w.-]+)?#(?P<n>\d+)"
@@ -373,6 +379,14 @@ def cmd_push(root: Path, db_path: Path, task: str, test_commit: bool, force: boo
             remote = _git(run["wdir"], "ls-remote", "origin", ref).split()
             cmd = ["push", f"--force-with-lease={ref}:{remote[0] if remote else ''}", "origin", f"{sha}:{ref}"]
         _git(run["wdir"], *cmd)
+        # The record of the push, written by the push itself: a record typed afterwards
+        # does not see whether the push succeeded (Issue 1298).
+        payload = {"task": task, "branch": run["branch"], "head": sha, "source": "presubmit_push"}
+        m = _PR_URL.search(run.get("pr_url") or "")
+        if m:
+            payload.update(repo=m.group(1), pr=int(m.group(2)))
+        with StateWriter(conn).transaction() as w:
+            w.append_event(kind="fix_pushed", actor="secretary", payload=payload, run_task_id=task)
     except Refused as exc:
         print(f"PRESUBMIT_PUSH: refused: {exc}")
         return 1
@@ -442,6 +456,19 @@ def cmd_pr(root: Path, db_path: Path, args) -> int:
         proc = subprocess.run(gh, capture_output=True, text=True)
         if proc.returncode != 0:
             raise Refused(f"gh failed (rc={proc.returncode}): {proc.stderr.strip()[:500]}")
+        created = None
+        if args.create:
+            created = _PR_URL.search(proc.stdout or "")
+            if not created:
+                print(f"PRESUBMIT_PR: created, but the PR URL could not be read from gh ({proc.stdout.strip()[:200]});"
+                      " record it with tools/set_run_pr_open.py")
+                return 1
+            # The PR's records, written by the call that created it (Issue 1298).
+            with StateWriter(conn).transaction() as w:
+                w.append_event(kind="pr_opened", actor="secretary",
+                               payload={"task": args.task, "pr": int(created.group(2)), "url": created.group(0),
+                                        "repo": created.group(1), "source": "presubmit_pr"},
+                               run_task_id=args.task)
     except Refused as exc:
         print(f"PRESUBMIT_PR: refused: {exc}")
         return 1
@@ -451,7 +478,16 @@ def cmd_pr(root: Path, db_path: Path, args) -> int:
     finally:
         conn.close()
     if args.create:
-        print(f"PRESUBMIT_PR: created {proc.stdout.strip()}")
+        from tools.set_run_pr_open import set_run_pr_open
+        try:
+            # runs.pr_url / pr_state / branch, as tools/set_run_pr_open.py records them.
+            set_run_pr_open(task_id=args.task, pr=int(created.group(2)), repo=created.group(1), db_path=db_path,
+                            pr_view={"url": created.group(0), "headRefName": run["branch"], "state": "OPEN"})
+        except (RuntimeError, OSError, SystemExit) as exc:
+            print(f"PRESUBMIT_PR: created {created.group(0)}, but runs was not updated ({exc});"
+                  " run tools/set_run_pr_open.py")
+            return 1
+        print(f"PRESUBMIT_PR: created {created.group(0)}")
     else:
         print(f"PRESUBMIT_PR: edited #{args.edit}")
     return 0
