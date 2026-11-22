@@ -85,17 +85,40 @@ def refresh_one(conn, task: str, pr_url: str, wdir: Optional[str], branch: Optio
         new = _view(pr, repo).get("headRefOid") or ""
     except (RuntimeError, ValueError, OSError) as exc:
         return "error", str(exc)
+    if new and new == old and _last_push(conn, task) not in (None, new):
+        # An earlier update-branch moved the head but its record was never written
+        # (the head read after it failed): write it now.
+        return _record_push(conn, task, pr, repo, old, new, wdir, branch, before, repaired=True)
     if not new or new == old:
         # An earlier refresh may have left the worktree behind (dirty, or a failed fetch).
         if wdir and branch and subprocess.run(["git", "-C", wdir, "merge-base", "--is-ancestor", old, "HEAD"],
                                               capture_output=True).returncode != 0:
             return "up_to_date", f"PR #{pr} at {old[:12]}; worktree={ff_only(wdir, branch)}"
         return "up_to_date", f"PR #{pr} at {old[:12]}"
+    return _record_push(conn, task, pr, repo, old, new, wdir, branch, before)
+
+
+def _last_push(conn, task: str) -> Optional[str]:
+    head = None
+    for (raw,) in conn.execute("SELECT payload_json FROM events WHERE kind = 'fix_pushed' ORDER BY id"):
+        try:
+            p = json.loads(raw or "{}")
+        except ValueError:
+            continue
+        if isinstance(p, dict) and p.get("task") == task:
+            head = p.get("head") or p.get("commit") or p.get("sha") or head
+    return head
+
+
+def _record_push(conn, task, pr, repo, old, new, wdir, branch, before, repaired=False):
     with StateWriter(conn).transaction() as w:
         w.append_event(kind="fix_pushed", actor="secretary",
                        payload={"task": task, "pr": int(pr), "repo": repo, "head": new,
                                 "source": "refresh_open_prs"}, run_task_id=task)
     worktree = ff_only(wdir, branch or before.get("headRefName") or "") if wdir else "error"
+    if repaired:
+        return "updated", (f"PR #{pr} at {new[:12]} (the record of an earlier update was missing; written now)"
+                           f" watcher=needs_rearm worktree={worktree}")
     # A watcher started before this push is stale by the org's rule (tools/watcher_restart_guard.py:
     # the newest watcher must start after the newest fix_pushed), and none can have started after it.
     return "updated", f"PR #{pr} updated {old[:12]} -> {new[:12]} watcher=needs_rearm worktree={worktree}"

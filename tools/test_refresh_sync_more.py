@@ -46,6 +46,17 @@ class MoreTests(base.RefreshSyncTests):
         self.assertNotEqual(merge.returncode, 0, merge.stdout + merge.stderr)
 
 
+    def test_a_missing_push_record_is_repaired(self):
+        wdir = self.pr_task("n", 23)
+        # An earlier update moved the branch on GitHub, but its record was never written.
+        self.commit(wdir, "moved on GitHub", "n2.txt")
+        self.git(wdir, "push", "-q", "origin", "feat/n")
+        proc = self.run_tool(base.REFRESH, "--task", "n")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        line = self.line(proc, "n")
+        self.assertIn("watcher=needs_rearm", line)
+        self.assertEqual(self.pushed_heads("n")[-1], self.remote_head("feat/n"))
+
     def test_root_alone_selects_its_database(self):
         self.pr_task("m", 22)
         import subprocess

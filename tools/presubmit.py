@@ -470,10 +470,30 @@ _EXECUTES = {"bash", "sh", "zsh", "dash", "ksh", "eval", "source", ".", "xargs",
              "node", "perl", "ruby", "env", "sudo", "exec"}
 
 
+def _in_shell_text(line: str, pos: int) -> bool:
+    """True if ``pos`` of ``line`` is inside quotes or a comment (so ``<<`` there is not an operator)."""
+    single = double = False
+    i = 0
+    while i < pos:
+        c = line[i]
+        if c == "\\" and not single:
+            i += 2
+            continue
+        if c == "'" and not double:
+            single = not single
+        elif c == '"' and not single:
+            double = not double
+        elif c == "#" and not single and not double and (i == 0 or line[i - 1] in " \t;&|("):
+            return True
+        i += 1
+    return single or double
+
+
 def _strip_heredocs(code: str) -> str:
     """Drop the bodies of heredocs that are only data (``cat <<'EOF' ... EOF``).
 
-    A body is kept when its line runs something (``bash <<EOF``, ``cat <<EOF | sh``,
+    Only a quoted delimiter (``<<'EOF'`` / ``<<"EOF"``) makes a body plain text: an
+    unquoted one still runs ``$(...)``. A body is also kept when its line runs something (``bash <<EOF``, ``cat <<EOF | sh``,
     ``python3 - <<EOF``): it is then read as commands like the rest. Bodies are where
     apostrophes in prose make shlex fail."""
     lines = code.split("\n")
@@ -484,6 +504,10 @@ def _strip_heredocs(code: str) -> str:
         out.append(line)
         i += 1
         for m in _HEREDOC.finditer(line):
+            if not m.group(2) or _in_shell_text(line, m.start()):
+                # Unquoted delimiter: the body still expands $(...) and backticks, so it is
+                # read. Inside quotes or a comment, `<<` is not an operator at all.
+                continue
             words = {Path(w).name for w in re.split(r"[\s|;&()]+", line) if w}
             if words & _EXECUTES:
                 continue
