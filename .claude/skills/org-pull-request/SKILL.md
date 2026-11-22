@@ -90,15 +90,7 @@ allowed-tools:
   5. PR を rebase・作り直ししたら、既存の PR のまま 1 からやり直す（M の SHA が変わり、古い M の失敗記録は使えない。M を head に戻す push は force になる）。M と head の CI の base が食い違ったとき（間に base が進んだとき）も、ゲートが拒否するので 1 からやり直す
   - ゲートが保証するのは「宣言テストとテスト基盤を変えないまま、同じ CI ジョブが M で失敗し head で成功した」ことまで。**宣言テストが CI で実際に走ったことは確かめない**（保護パス外の `tests/__init__.py`・ランナーのスクリプト・言語ごとの設定などを変えて、テストを CI の対象から外す抜け穴は検出しない）。このため止める線の 6 で、その種の変更を人が見る
 - **`gh pr create --base` は派遣時の起点ブランチと同じ設定を読む**: プロジェクトの既定マージ先は `registry/projects.md` の `base_branch` 列が SoT。値がある行（例 `develop`）は `presubmit.py pr --create --base <base_branch>` を既定とし、**空欄 / `-` の行は従来どおり `--base` を付けない**（repo の既定ブランチ宛）。worktree を切った起点と PR のマージ先が食い違うと、develop が先行している分の差分が PR に混入するため、両者は必ず同じ値を使う。当該タスクの実効値は派遣時の DELEGATE 本文の「ベース:」行、または `send_plan.json` の `summary.base_branch` / `summary.base_ref` で確認できる（`--base-ref` で単発上書きされた hotfix もそこに出る）。値の解決順は `--base-ref` > `base_branch` 列 > `origin/HEAD`
-- **PR 番号が確定したら直ちに `tools/set_run_pr_open.py` で `runs.pr_url` / `runs.branch` を back-fill する**:
-  ```bash
-  python3 tools/set_run_pr_open.py --task-id <task_id> --pr <PR>   # Mac/Linux
-  py -3 tools/set_run_pr_open.py --task-id <task_id> --pr <PR>     # Windows native
-  ```
-  これは `gh pr view <PR> --json url,headRefName,title` を 1 度引いて、`StateWriter.set_run_pr` 経由で `runs.pr_url` と `runs.branch` を上書きする。再呼び出しは idempotent（同じ値の上書き、events への追記なし）。これを行わないと後段の `tools/run_complete_on_merge.py` が `runs.pr_url` を引けず `no_run`（exit 3）で落ち、`-MergeWatch` の自動完了が失敗する
-  - **クロスリポジトリでも `--repo` は不要**: `--repo` 省略時は `runs.project_id` → プロジェクト → GitHub URL（`registry/projects.md` の パス列、次に `projects.origin_url`）で書き込み先リポジトリを決定的に解決する。解決できない場合は ja へ黙って落ちず **exit 2 で停止**する（`--repo OWNER/REPO` 明示は従来どおり最優先）
-  - 実行すると 1 行目に `set_run_pr_open: repo=<owner/repo> (source=<registry|db_origin_url|home_repo|explicit>) PR #<N>: <PR タイトル>` が出る。**この行のリポジトリと PR タイトルが意図した書き込み先か目視で確認してから次へ進む**
-- DB の events テーブルにイベント追記 — **手打ちの対象は helper が書かないイベントに限る**。この段階では `fix_pushed`（push）/ `pr_opened`（PR 作成）の 2 つ（`bash tools/journal_append.sh ...`）。`delegate_sent` や `pr_merged` のように **helper が同一トランザクションで記録するイベントを窓口が手で打ってはならない**（打つと events が 2 行になる）。どのイベントを誰が書くかの SoT は [`docs/journal-events.md`](../../../docs/journal-events.md) の Writer / Emitted by 列
+- **PR の記録はツールが書く**: `presubmit.py pr --create` は、PR を作れた同じ処理の中で `pr_opened` を書き、`runs.pr_url` / `runs.pr_state` / `runs.branch` を `tools/set_run_pr_open.py` と同じ形で記録する。`presubmit.py push` は、送信に成功したときに、実際に送った SHA で `fix_pushed` を書く。窓口はこの 2 つを手で打たない（手で打った記録は、前の段の成否を見ない）。`presubmit.py` を通さずに作った PR だけ、`python3 tools/set_run_pr_open.py --task-id <task_id> --pr <PR>`（Windows native は `py -3`）で記録する。`delegate_sent` や `pr_merged` のように helper が同一トランザクションで記録するイベントも、窓口は手で打たない（打つと events が 2 行になる）。どのイベントを誰が書くかの SoT は [`docs/journal-events.md`](../../../docs/journal-events.md) の Writer / Emitted by 列
 - PR 番号が確定したら `/pr-watch-pane <PR>` で CI を監視する（クロスリポジトリは `--repo OWNER/REPO` 付き）。broker tmux セッションの専用ペインで `tools/pr-watch.sh` が ja-root cwd・sandbox 外で回り、完了時に `ci_completed` が自動で events に記録される。CI 完了 / merge / timeout で watcher ペインは tmux backend では自己 close し（herdr / wezterm backend では自己 close が効かず残留するため、監視終端で窓口がイベント駆動 close する — 後掲「監視終端で watcher ペイン ... を窓口がイベント駆動 close する」節）、いずれも窓口セッションを同期占有しない（review feedback loop 2c や手動 close 2b-ii に進める）。`tools/pr-watch.*` の直接起動は hook が deny する（`.claude/rules/pr-ci-watch.md`。監視を窓口セッションに依存させないため専用ペインで回す）
 - **CI 完了 / merge 検出 / 24h タイムアウトの受信は多層 (CI-watch zero-miss)**。終端信号 (`CI_COMPLETED` / `PR_MERGED` / `PR_MERGE_WATCH_TIMEOUT` / `PR_MERGED_NO_RUN` / `PR_MERGED_HEAD_UNCONFIRMED` / `PR_WATCH_ABORTED`) はいずれも **`events` テーブルの canonical event を正本**とし、その配送を次の順で受ける（peer-only の終端信号は廃止済み — 必ず canonical event が先行する）:
   - **(B) ディスパッチャー relay = 見逃しゼロの主保証（一次受信経路）**: ディスパッチャーが `/loop 3m` 監視サイクルの relay scan ステップ（[`.dispatcher/references/worker-monitoring.md`](../../../.dispatcher/references/worker-monitoring.md) Step 5.25）で、未配送の終端イベントを `event_deliveries` 配送台帳と突き合わせて scan し、broker token 経由で窓口へ `mcp__org-broker__send_message` relay する。窓口はこの relay メッセージ（本文末尾 `[relay]` で直 push と区別可能。例 `CI_COMPLETED: PR #<n> (status=passed, head=<sha>) [relay]`）の到着で次のステップへ進める。**pr-watch ペインの直 push（下記 A）が env 欠如で silent no-op しても、この relay は events を直接読むため確実に届く**。at-least-once（台帳 idempotency key で重複抑止・二重受信は冪等に扱う）。
@@ -276,9 +268,7 @@ pr-watch から `PR_MERGED_HEAD_UNCONFIRMED: PR #<n> (head=<merged_short>, last 
   timeout。`indeterminate` は watcher 自身が再起動を要求している） / `ended_stale_head`＝出た判定が
   前 head のもの）。exit 2 は task から PR を特定できない状態なので、先に `tools/set_run_pr_open.py`
   で `runs.pr_url` を back-fill する。**exit 3 のまま「CI 走行中」とユーザーに報告しない**。
-  なお `bash tools/journal_append.sh fix_pushed ...` を打った時点で同じ判定が stderr に出る
-  （post-check。push 直後は watcher 再起動前なので exit 3 相当が出るのが正常で、これは異常通知では
-  なく「次にやること」の提示）。判定ロジックの一次情報源は
+  なお push のあとは watcher 再起動前なので、この判定が exit 3 相当になるのが正常で、異常通知ではなく「次にやること」の提示。判定ロジックの一次情報源は
   [`docs/journal-events.md`](../../../docs/journal-events.md) と当該ツールの module docstring。
 - **再指示の前に dispatcher の監視フラグを解除する（T6 監視再開契約）**: worker が完了報告済み（完了時に §2a で secretary が dispatcher へ `WORKER_COMPLETION_NOTED` を送り `completion_reported_at` が立っている）の場合、追指示を送る**前に** dispatcher へ `WORKER_REOPENED` を **best-effort・非 blocking** で送り、`completion_reported_at` を `null` に clear させる。再指示は secretary→worker 直送で dispatcher が経路上に居ないため、この明示解除が dispatcher の PANE_OUTPUT_WITHOUT_PEER_MSG 検知（[`.dispatcher/references/worker-monitoring.md`](../../../.dispatcher/references/worker-monitoring.md) Step 5.2）の **fast-path 解除**になる。dispatcher 応答は待たない（dispatcher は `/loop 3m` の通常 `check_messages` で反映）。解除が無いと sticky skip のまま、awaiting_review→in_progress のレビュー修正中に発生する本物の silent dead-lock を見逃す。**`WORKER_REOPENED` が取りこぼされても、この直後の `run.status='in_use'` 遷移（下記、StateWriter が決定的に書く）が reliable backstop として働き、dispatcher が `runs.status == 'in_use'` を観測して監視を self-heal で再開する**（best-effort な解除通知だけに依存せず危険側に倒れない）。本文に task_id と reopened_at（ISO-8601 UTC）を含める。**送り方は channel のまま**（`deliver` を付けない。ディスパッチャーが `check_messages` で読む返事・記帳なので `user_turn` にすると読まれない。分類は `org-delegate/references/dispatcher-send.md`）:
   ```
@@ -307,7 +297,7 @@ pr-watch から `PR_MERGED_HEAD_UNCONFIRMED: PR #<n> (head=<merged_short>, last 
       w.update_run_status('<task_id>', 'in_use')
   "
   ```
-- DB の events テーブルにイベント追記 — この再指示段階で窓口が手で打つのは `delegate_resume` / `delegate_resume_r2`（再指示の記録）と、修正の再 push 後の `fix_pushed`（`bash tools/journal_append.sh ...`、`tools/journal_append.py` が DB ルーティング済み）。helper が書くイベント（`delegate_sent` / `pr_merged`）は打たない — Writer / Emitted by の SoT は [`docs/journal-events.md`](../../../docs/journal-events.md)
+- DB の events テーブルにイベント追記 — この再指示段階で窓口が手で打つのは `delegate_resume` / `delegate_resume_r2`（再指示の記録）だけ。修正の再 push の `fix_pushed` は `presubmit.py push` が書く。helper が書くイベント（`delegate_sent` / `pr_merged`）は打たない — Writer / Emitted by の SoT は [`docs/journal-events.md`](../../../docs/journal-events.md)
 - JSON snapshot は StateWriter post-commit hook が自動再生成
 - （ペインが生きているのでワーカーはそのまま作業続行）
 - **ペインが生きているなら新ワーカーを再 spawn しない** (T6 contract): Issue / diff / 判断境界が失われるため。ワーカーが応答不能になった場合のみ窓口が判断する
