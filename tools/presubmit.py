@@ -468,13 +468,21 @@ def _simple_commands(code: str, depth: int = 0) -> list[list[str]]:
     lex.commenters = ""
     out: list[list[str]] = []
     cur: list[str] = []
-    for tok in lex:
-        if tok and all(c in _OPS for c in tok):
-            if cur:
-                out.append(cur)
-            cur = []
-            continue
-        cur.append(tok)
+    try:
+        for tok in lex:
+            if tok and all(c in _OPS for c in tok):
+                if cur:
+                    out.append(cur)
+                cur = []
+                continue
+            cur.append(tok)
+    except ValueError:
+        # Unbalanced quotes (an apostrophe in a heredoc body, say): read the text word by
+        # word instead, quotes dropped. A real command still shows up, so this never
+        # lets a push through that the full parse would have caught; it only stops the
+        # hooks from refusing every such command.
+        return [[w.strip("\"'`") for w in seg.split() if w.strip("\"'`")]
+                for seg in re.split(r"[;&|\n()]", code) if seg.split()]
     if cur:
         out.append(cur)
     if depth < 3:

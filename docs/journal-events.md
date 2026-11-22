@@ -97,6 +97,7 @@ addition to its writer / payload shape:
 | `worker_completed`       | `worker`, `task`                                            | secretary    | worker     | T4           | Worker reported done. |
 | `worker_closed`          | `worker`, `pane_id`                                         | dispatcher   | dispatcher | T5, T7       | Pane closed, registry updated. |
 | `worker_parked`          | `task`, `worker`, `reason`, `pane_id`, `head`, `pr_url`     | secretary    | `tools/belt_slots.py park` | — | A waiting `review` run passed the parking checks (`reason` is `merge` / `decision` / `approval`); delegation-lifecycle-contract §1.6. The run stays `review` and keeps its worktree; the pane is closed next through the normal `CLOSE_PANE` (`pane_closed`). `tools/state_db/queries.py` lists such runs as `parked_runs`. |
+| `worktree_synced`        | `task`, `action` (`new_branch` / `merge`), `branch` / `ref`, `from`, `before`, `after` | secretary | `tools/worktree_sync.py` | — | The secretary cut a new branch for the task's next PR (`runs.branch` moved to it, `pr_url` / `pr_state` cleared in the same transaction) or merged a ref into the worktree, outside the sandbox. |
 | `design_ahead`           | `task`, `issue_ref`, `blocking_refs`                        | secretary    | `tools/belt_slots.py design-ahead` | — | A blocked Issue is taken up to the design stage (Issue 1295). After the design is reported the run waits with reason `dependency` until `gen_delegate_payload.py revive --reason dependency_landed`; `belt_slots.py design-ready` lists the runs whose Issue is no longer blocked. |
 | `belt_hold`              | `reason`, `expires_at`                                      | secretary    | `tools/belt_slots.py hold` | — | The secretary deliberately leaves conveyor slots empty; suppresses `belt_slots.py idle-check` until `expires_at`. |
 | `worker_reported`        | `worker`, `task`, `summary`                                 | secretary    | worker     | T3           | Mid-task report received. |
@@ -163,7 +164,7 @@ secretary, and the secretary is the actor that writes this one.
 
 | Event           | Typical fields                          | Writer    | Emitted by | Required for |
 |-----------------|-----------------------------------------|-----------|------------|--------------|
-| `fix_pushed`    | `task`, `branch`, `head` (別名 `commit` / `sha`) | secretary | secretary  | —            |
+| `fix_pushed`    | `task`, `branch`, `head` (別名 `commit` / `sha`) | secretary | secretary（`tools/refresh_open_prs.py` も書く: `pr`, `repo`, `head`, `source=refresh_open_prs`） | —            |
 | `pr_opened`     | `task`, `pr`, `url`                     | secretary | secretary  | —            |
 | `prs_opened`    | `count`, `prs[]`                        | secretary | secretary  | —            |
 | `pr_merged`     | `task`, `pr`, `repo`, `pr_url`, `merge_commit`, `head`, `merged_at`, `pattern`, `auto_completed` | run_complete_on_merge | `run_complete_on_merge.py` | —            |
