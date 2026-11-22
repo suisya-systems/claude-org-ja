@@ -237,21 +237,24 @@ def cmd_run(root: Path, db_path: Path, task: str, wait: float = 3600, again: boo
     conn = connect(db_path)
     lock = None
     try:
-        run = _run_row(conn, task)
-        wdir = run["wdir"]
-        base_ref = _base_ref(conn, task)
-        head = _git(wdir, "rev-parse", "HEAD")
-        if _dirty(wdir):
-            raise Refused("the worker dir has uncommitted changes to tracked files; the check"
-                          " records a commit, so commit or drop them first")
-        base = _resolve_base(wdir, base_ref)
-        test_commit = None
-        for c in _own_commits(wdir, base):
-            if _git(wdir, "log", "-1", "--format=%(trailers:key=Acceptance-Test,valueonly)", c):
-                test_commit = c
-                break
-        steps = _steps(root, run["slug"], wdir)
-        config = ";".join(steps)
+        def inputs():
+            run = _run_row(conn, task)
+            wdir = run["wdir"]
+            base_ref = _base_ref(conn, task)
+            head = _git(wdir, "rev-parse", "HEAD")
+            if _dirty(wdir):
+                raise Refused("the worker dir has uncommitted changes to tracked files; the check"
+                              " records a commit, so commit or drop them first")
+            base = _resolve_base(wdir, base_ref)
+            test_commit = None
+            for c in _own_commits(wdir, base):
+                if _git(wdir, "log", "-1", "--format=%(trailers:key=Acceptance-Test,valueonly)", c):
+                    test_commit = c
+                    break
+            steps = _steps(root, run["slug"], wdir)
+            return wdir, base_ref, head, base, test_commit, steps, ";".join(steps)
+
+        wdir, base_ref, head, base, test_commit, steps, config = inputs()
 
         def already() -> bool:
             last = _latest_check(conn, task)
@@ -270,7 +273,10 @@ def cmd_run(root: Path, db_path: Path, task: str, wait: float = 3600, again: boo
         if lock is None:
             print(f"PRESUBMIT: failed (another run did not finish within {int(wait)}s)")
             return 1
-        if already():  # the run this one waited for may have checked the same head
+        # The wait may have been long: read everything again, then check for a pass the
+        # run this one waited for may have recorded.
+        wdir, base_ref, head, base, test_commit, steps, config = inputs()
+        if already():
             return 0
         log = root / ".state" / "presubmit" / f"{task}-{head[:12]}.log"
         log.parent.mkdir(parents=True, exist_ok=True)
