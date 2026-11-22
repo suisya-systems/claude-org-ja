@@ -83,4 +83,5 @@ claude-org-ja 自身の作業（自己編集）を提出する前に、窓口が
 
 - `;` で区切った段を、ワーカーの作業ツリーで順に流す。中身は CI（`.github/workflows/tests.yml`）の主な段に合わせてある。
 - 送信は、この確認が passed の head だけ `presubmit.py push` が通す。`-` / 空は未設定で、確認を流さずに送信を止めない。
+- 設定の無いプロジェクト（`not-configured`）の送信は、既定では通して送信の行に `WARNING` を出す（登録前の移行のため）。行頭に `presubmit_required: yes` を書くと、設定の無いプロジェクトの送信を拒否する。
 - 設定行は**行頭（列 0）から `home_presubmit:` で始める**こと。

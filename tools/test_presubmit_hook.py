@@ -53,9 +53,66 @@ class HookPassThroughTests(base.PresubmitTests):
         self.assertTrue(self.hook('git -C "$W" push origin HEAD', self.root).startswith("DENY"))
 
 
-# Only the class above runs here; the inherited test_* methods belong to tests/test_presubmit.py.
+    def test_cd_into_the_worker_dir_is_followed(self):
+        wdir = self.worker("s3")
+        self.assertTrue(self.hook(f"cd {wdir} && git push origin HEAD", self.root).startswith("DENY"))
+        self.assertTrue(self.hook(f"cd {wdir}; gh pr create --title x --body y", self.root)
+                        .startswith("DENY"))
+        self.assertTrue(self.hook("cd $W && git push origin HEAD", self.root).startswith("DENY"))
+        self.assertEqual(self.hook(f"cd {self.root} && git push origin main", wdir), "ALLOW")
+
+    def test_pr_edit_matches_the_repository_too(self):
+        self.worker("s4")
+        self.sql("UPDATE runs SET pr_url = 'https://github.com/o/p/pull/12' WHERE task_id = 's4'")
+        self.assertTrue(self.hook("gh pr edit 12 --repo o/p --body-file b.md", self.root).startswith("DENY"))
+        self.assertTrue(self.hook("gh pr edit https://github.com/o/p/pull/12 --body-file b.md", self.root)
+                        .startswith("DENY"))
+        self.assertEqual(self.hook("gh pr edit 12 --repo other/repo --body-file b.md", self.root), "ALLOW")
+
+
+class ToolFixesTests(base.PresubmitTests):
+    def test_run_refuses_uncommitted_tracked_changes(self):
+        self.registry("true")
+        wdir = self.worker("u1")
+        self.commit(wdir, "work")
+        (wdir / "f.txt").write_text("not committed", encoding="utf-8")
+        proc = self.tool("run", "--task", "u1")
+        self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(self.checked("u1"), [])
+
+    def test_force_replaces_the_branch_after_a_rebase(self):
+        self.registry("true")
+        wdir = self.worker("u2")
+        self.commit(wdir, "work")
+        self.tool("run", "--task", "u2")
+        self.assertEqual(self.tool("push", "--task", "u2").returncode, 0)
+        self.git(wdir, *base.ID, "commit", "-q", "--amend", "-m", "work, reworded")
+        new = self.git(wdir, "rev-parse", "HEAD")
+        self.tool("run", "--task", "u2")
+        self.assertNotEqual(self.tool("push", "--task", "u2").returncode, 0)  # not a fast-forward
+        proc = self.tool("push", "--task", "u2", "--force")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(self.remote_head("feat/u2"), new)
+
+    def test_no_setting_warns_and_presubmit_required_refuses(self):
+        wdir = self.worker("u3")
+        self.commit(wdir, "work")
+        self.tool("run", "--task", "u3")
+        ok = self.tool("push", "--task", "u3")
+        self.assertEqual(ok.returncode, 0, ok.stdout + ok.stderr)
+        self.assertIn("WARNING: no pre-submit check", self.last(ok))
+        self.config("\n## Presubmit\npresubmit_required: yes\n")
+        self.commit(wdir, "more")
+        self.tool("run", "--task", "u3")
+        refused = self.tool("push", "--task", "u3")
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("presubmit_required", self.last(refused))
+
+
+# Only the classes above run here; the inherited test_* methods belong to tests/test_presubmit.py.
 for _name in [n for n in dir(base.PresubmitTests) if n.startswith("test_")]:
     setattr(HookPassThroughTests, _name, None)
+    setattr(ToolFixesTests, _name, None)
 
 if __name__ == "__main__":
     unittest.main()

@@ -4,7 +4,7 @@
 Usage::
 
     python3 tools/presubmit.py run  --task T
-    python3 tools/presubmit.py push --task T [--test-commit]
+    python3 tools/presubmit.py push --task T [--test-commit] [--force]
     python3 tools/presubmit.py pr   --task T (--create [--base B] | --edit N) --title X --body-file F [--closes N ...]
     python3 tools/presubmit.py hook < payload.json      # PreToolUse; prints ALLOW / DENY: <msg>
 
@@ -22,13 +22,19 @@ is the run's base (``base_ref`` of its ``delegate_sent``, default
 goes to ``.state/presubmit/<task>-<head12>.log`` and one ``presubmit_checked``
 event records ``task, head, base, test_commit, steps [{cmd, rc, seconds}],
 result, log``. ``test_commit`` is the branch's commit with an
-``Acceptance-Test`` trailer, if any. Last line: ``PRESUBMIT:
+``Acceptance-Test`` trailer, if any. The record names a commit, so ``run``
+refuses (records nothing) when tracked files have uncommitted changes, or when
+HEAD or the tracked files changed while it ran. Last line: ``PRESUBMIT:
 passed|failed|not-configured``; exit 0 / 1 / 3.
 
 ``push`` -- pushes the worker dir's HEAD (or, with ``--test-commit``, the
 recorded test commit alone) to ``origin`` as ``refs/heads/<runs.branch>``, only
 when the latest ``presubmit_checked`` for the task is at that HEAD and
-``passed`` (or ``not_configured``: no check is set for the project). Last
+``passed`` (or ``not_configured``: no check is set for the project; the push
+line then carries a ``WARNING``, and ``presubmit_required: yes`` in
+``registry/org-config.md`` refuses it instead). ``--force`` replaces the branch
+(after a rebase, or to put the test commit back as head) with
+``--force-with-lease`` on the commit the remote has right now. Last
 line ``PRESUBMIT_PUSH: pushed <sha> to <branch>`` or ``PRESUBMIT_PUSH:
 refused: <reason>``; exit 0 / 1.
 
@@ -51,7 +57,9 @@ the worker dir, and a ``gh pr edit N`` of the run's PR, so those go through
 ``push`` and ``pr``. A ``git push`` / ``gh pr create|edit`` whose target cannot
 be read (a variable, a command substitution) is refused. Everything else is
 allowed. The words are read with shlex, also inside ``bash -c`` / ``eval``
-strings and ``$(...)`` bodies; what the text cannot show (aliases, a script
+strings and ``$(...)`` bodies; ``cd`` / ``pushd`` move the directory the later
+commands are resolved against; a PR given by number is matched with its
+repository when ``--repo`` or a PR URL names one; what the text cannot show (aliases, a script
 file that pushes) is not seen.
 """
 
@@ -136,6 +144,19 @@ def _resolve_base(wdir: str, base_ref: str) -> str:
         return _git(wdir, "rev-parse", "--verify", base_ref[len("origin/"):] + "^{commit}")
 
 
+def _dirty(wdir: str) -> bool:
+    return bool(_git(wdir, "status", "--porcelain", "--untracked-files=no"))
+
+
+def _required(root: Path) -> bool:
+    """``presubmit_required: yes`` in registry/org-config.md refuses pushes with no check set."""
+    config = root / "registry" / "org-config.md"
+    if not config.is_file():
+        return False
+    m = re.search(r"^presubmit_required:[ \t]*(\S+)", config.read_text(encoding="utf-8"), re.M)
+    return bool(m) and m.group(1).lower() in ("yes", "true", "on")
+
+
 def _own_commits(wdir: str, base: str) -> list[str]:
     out = _git(wdir, "rev-list", "--reverse", "--first-parent", "HEAD", "--not", base)
     return [c for c in out.split() if c]
@@ -173,6 +194,9 @@ def cmd_run(root: Path, db_path: Path, task: str) -> int:
         wdir = run["wdir"]
         base_ref = _base_ref(conn, task)
         head = _git(wdir, "rev-parse", "HEAD")
+        if _dirty(wdir):
+            raise Refused("the worker dir has uncommitted changes to tracked files; the check"
+                          " records a commit, so commit or drop them first")
         base = _resolve_base(wdir, base_ref)
         test_commit = None
         for c in _own_commits(wdir, base):
@@ -195,6 +219,9 @@ def cmd_run(root: Path, db_path: Path, task: str) -> int:
                 done.append({"cmd": cmd, "rc": rc, "seconds": round(time.monotonic() - start, 1)})
                 fh.write(f"# rc={rc}\n")
                 print(f"presubmit: rc={rc} {cmd}", flush=True)
+        # The record names a commit, so what ran must be exactly that commit.
+        if _git(wdir, "rev-parse", "HEAD") != head or _dirty(wdir):
+            raise Refused("HEAD or the tracked files changed while the check ran; nothing recorded")
         result = ("not_configured" if not steps
                   else "passed" if all(s["rc"] == 0 for s in done) else "failed")
         payload = {"task": task, "head": head, "base": base, "test_commit": test_commit,
@@ -228,8 +255,9 @@ def _latest_check(conn, task: str) -> Optional[dict]:
     return latest
 
 
-def cmd_push(db_path: Path, task: str, test_commit: bool) -> int:
+def cmd_push(root: Path, db_path: Path, task: str, test_commit: bool, force: bool) -> int:
     conn = connect(db_path)
+    warning = ""
     try:
         run = _run_row(conn, task)
         head = _git(run["wdir"], "rev-parse", "HEAD")
@@ -239,14 +267,27 @@ def cmd_push(db_path: Path, task: str, test_commit: bool) -> int:
         if check.get("head") != head:
             raise Refused(f"the check was at {str(check.get('head'))[:12]}, HEAD is now {head[:12]};"
                           " run `presubmit.py run` again")
-        if check.get("result") not in ("passed", "not_configured"):
+        if check.get("result") == "not_configured":
+            if _required(root):
+                raise Refused("no pre-submit check is set for this project and registry/org-config.md"
+                              " has presubmit_required: yes; add the project's presubmit column")
+            warning = (" -- WARNING: no pre-submit check is set for this project (nothing was run);"
+                       " presubmit_required: yes in registry/org-config.md refuses this")
+        elif check.get("result") != "passed":
             raise Refused(f"the check at {head[:12]} is {check.get('result')} (log {check.get('log')})")
         sha = head
         if test_commit:
             sha = check.get("test_commit")
             if not sha:
                 raise Refused("the check found no commit with an Acceptance-Test trailer")
-        _git(run["wdir"], "push", "origin", f"{sha}:refs/heads/{run['branch']}")
+        ref = f"refs/heads/{run['branch']}"
+        cmd = ["push", "origin", f"{sha}:{ref}"]
+        if force:
+            # Replace the branch (after a rebase, or to put the test commit back as head), but
+            # only over the commit that is on the remote right now.
+            remote = _git(run["wdir"], "ls-remote", "origin", ref).split()
+            cmd = ["push", f"--force-with-lease={ref}:{remote[0] if remote else ''}", "origin", f"{sha}:{ref}"]
+        _git(run["wdir"], *cmd)
     except Refused as exc:
         print(f"PRESUBMIT_PUSH: refused: {exc}")
         return 1
@@ -255,7 +296,7 @@ def cmd_push(db_path: Path, task: str, test_commit: bool) -> int:
         return 1
     finally:
         conn.close()
-    print(f"PRESUBMIT_PUSH: pushed {sha[:12]} to {run['branch']}")
+    print(f"PRESUBMIT_PUSH: pushed {sha[:12]} to {run['branch']}{warning}")
     return 0
 
 
@@ -381,18 +422,29 @@ def decide(conn, command: str, cwd: str) -> str:
                 f"WHERE r.status IN ({','.join('?' * len(OPEN))})", OPEN)]
     dirs = {_real(r["wdir"]): r["task"] for r in runs if r["wdir"]}
     branches = {r["branch"]: r["task"] for r in runs if r["branch"]}
-    prs = {m.group(1): r["task"] for r in runs
-           if r["pr_url"] and (m := re.search(r"/pull/(\d+)", r["pr_url"]))}
+    # PR numbers are per repository: key by (owner/repo, number).
+    prs = {(m.group(1).lower(), m.group(2)): r["task"] for r in runs
+           if r["pr_url"] and (m := re.search(r"github\.com/([^/]+/[^/]+)/pull/(\d+)", r["pr_url"]))}
+    here: Optional[str] = cwd  # follows cd / pushd through the command; None = unknown
     via = "use `python3 tools/presubmit.py push|pr --task {t}` (it checks the pre-submit record first)"
 
     def task_of_dir(d: str) -> Optional[str]:
-        if "$" in d:
+        if "$" in d or (here is None and not os.path.isabs(d)):
             return "?"
-        rd = _real(os.path.join(cwd, d))
+        rd = _real(os.path.join(here or "/", d))
         return next((t for wd, t in dirs.items() if _inside(rd, wd)), None)
 
     for words in _simple_commands(command):
         name = Path(words[0]).name
+        if name in ("cd", "pushd"):
+            arg = next((w for w in words[1:] if not w.startswith("-")), None)
+            if arg is None:
+                here = os.path.expanduser("~")
+            elif "$" in arg or here is None and not os.path.isabs(os.path.expanduser(arg)):
+                here = None
+            else:
+                here = os.path.join(here or "/", os.path.expanduser(arg))
+            continue
         if name == "git":
             i, targets = 1, ["."]
             while i < len(words) and words[i].startswith("-"):
@@ -428,13 +480,25 @@ def decide(conn, command: str, cwd: str) -> str:
                     if head is not None:
                         task = "?" if "$" in head else branches.get(head, task)
             else:
-                for w in rest:
-                    if "$" in w and not w.startswith("-"):
+                repo = None
+                for j, w in enumerate(rest):
+                    if w in ("--repo", "-R") and j + 1 < len(rest):
+                        repo = rest[j + 1].lower()
+                    elif w.startswith("--repo="):
+                        repo = w.split("=", 1)[1].lower()
+                for j, w in enumerate(rest):
+                    if w.startswith("-") or (j and rest[j - 1] in ("--repo", "-R")):
+                        continue
+                    if "$" in w:
                         task = task or "?"
                         break
-                    num = re.search(r"(?:^|/pull/)(\d+)$", w)
-                    if num and not w.startswith("-"):
-                        task = prs.get(num.group(1), task)
+                    url = re.search(r"github\.com/([^/]+/[^/]+)/pull/(\d+)$", w)
+                    num = url.group(2) if url else (w if w.isdigit() else None)
+                    if num:
+                        want = url.group(1).lower() if url else repo
+                        hit = next((t for (r, n), t in prs.items()
+                                    if n == num and (want is None or r == want)), None)
+                        task = hit or task
                         break
             if task == "?":
                 return f"DENY: cannot tell which PR this gh pr {words[2]} touches;" \
@@ -475,6 +539,8 @@ def main(argv: Optional[list] = None) -> int:
     p = sub.add_parser("push", help="push HEAD (or the test commit) once the check passed at HEAD")
     p.add_argument("--task", required=True)
     p.add_argument("--test-commit", action="store_true", help="push only the recorded test commit")
+    p.add_argument("--force", action="store_true",
+                   help="replace the branch, leased on the commit the remote has now")
     p = sub.add_parser("pr", help="create or edit the PR after the closing-reference check")
     p.add_argument("--task", required=True)
     g = p.add_mutually_exclusive_group(required=True)
@@ -493,7 +559,7 @@ def main(argv: Optional[list] = None) -> int:
     if args.cmd == "run":
         return cmd_run(root, db_path, args.task)
     if args.cmd == "push":
-        return cmd_push(db_path, args.task, args.test_commit)
+        return cmd_push(root, db_path, args.task, args.test_commit, args.force)
     if args.cmd == "pr":
         return cmd_pr(root, db_path, args)
     return cmd_hook(db_path)
