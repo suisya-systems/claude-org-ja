@@ -15,8 +15,10 @@ This helper is the canonical action Secretary runs right after
 1. shells ``gh pr view <PR> --json url,headRefName`` to get the PR URL
    and head branch (authoritative — what GitHub actually recorded);
 2. opens a ``StateWriter.transaction()`` and calls
-   :meth:`StateWriter.set_run_pr` to update ``runs.pr_url`` (and
-   ``runs.branch`` re-asserted from gh's ``headRefName``).
+   :meth:`StateWriter.set_run_pr` to update ``runs.pr_url``, ``runs.branch``
+   (re-asserted from gh's ``headRefName``) and ``runs.pr_state`` (``open``: the
+   PR was just created; a supplied view's ``state`` / ``isDraft`` wins. Issue
+   1298: a task's second PR must not keep the first PR's ``merged``).
 
 Idempotent: a second invocation rewrites the same values and adds no
 journal entry — back-fill is metadata, not a new lifecycle event.
@@ -139,6 +141,13 @@ def set_run_pr_open(
 
     pr_url = (pr_view.get("url") or "").strip()
     head_ref = pr_view.get("headRefName") or None
+    # Issue 1298: record the PR's state too, so a second PR of the same task does
+    # not keep the first PR's `merged` (close_run would read it as landed). This
+    # runs right after `gh pr create`, so the PR is open unless a supplied view says
+    # otherwise; a wrong `open` only makes close_run ask GitHub.
+    state = str(pr_view.get("state") or "OPEN").upper()
+    pr_state = ("draft" if pr_view.get("isDraft") and state == "OPEN"
+                else {"OPEN": "open", "MERGED": "merged", "CLOSED": "closed"}.get(state, "open"))
     if not pr_url:
         raise RuntimeError(
             f"gh pr view {pr} returned no url field; refusing to write "
@@ -169,7 +178,7 @@ def set_run_pr_open(
             return RESULT_NO_RUN
 
         with StateWriter(conn).transaction() as w:
-            w.set_run_pr(task_id, pr_url=pr_url, branch=head_ref)
+            w.set_run_pr(task_id, pr_url=pr_url, branch=head_ref, pr_state=pr_state)
         return RESULT_OK
     finally:
         conn.close()
