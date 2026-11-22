@@ -12,6 +12,10 @@ allowed-tools:
   - Read
   - Bash(git push:*)
   - Bash(python3 tools/close_run.py:*)
+  - Bash(python3 tools/refresh_open_prs.py:*)
+  - Bash(py -3 tools/refresh_open_prs.py:*)
+  - Bash(python3 tools/worktree_sync.py:*)
+  - Bash(py -3 tools/worktree_sync.py:*)
   - Bash(python3 tools/presubmit.py:*)
   - Bash(py -3 tools/presubmit.py:*)
   - Bash(py -3 tools/close_run.py:*)
@@ -58,9 +62,8 @@ allowed-tools:
 
 ワーカーは rebase の前に `tools/rebase_preflight.sh <base_ref>` を回し、上流が sandbox で書けないパス（`.claude/skills` 等）を変えている（`REBASE_PREFLIGHT: blocked`）ときは rebase せずにこれを頼んでくる。そのまま rebase させると `could not detach HEAD` で止まり、作業ツリーに上流の中身が残るため。ack の後、窓口が自分の Bash（ワーカー sandbox の外）で次を行う。
 
-1. `git -C <worker_dir> status --porcelain --untracked-files=no` が空であることを確かめる。空でなければワーカーの未コミット作業なので rebase せず、ワーカーに commit してから頼み直すよう送る
-2. `git -C <worker_dir> rebase <base_ref>`（`<base_ref>` は `send_plan.json` の `summary.base_ref`）。conflict が出たら `git -C <worker_dir> rebase --abort` で戻し、`/org-escalation` の手順で人間に上げる（窓口は conflict を解かない）
-3. ワーカーに「sandbox 外で rebase した（HEAD=`<sha>`）。`git rev-list --count HEAD..<base_ref>` が 0 で `git status` が空であることを確かめ、通常検証と Codex ゲートを回し直して完了報告して」と送る
+1. `python3 tools/worktree_sync.py --task <task_id> --merge <base_ref>`（Windows native は `py -3`。`<base_ref>` は `send_plan.json` の `summary.base_ref`）。sandbox の外で `git fetch` と `git merge` を行う。未コミットの変更があれば何もせず `dirty` を返すので、ワーカーに commit してから頼み直すよう送る。`conflict` なら merge を戻して衝突したファイルを示すので、`/org-escalation` の手順で人間に上げる（窓口は conflict を解かない）。宣言テストの有無にかかわらず merge で取り込む（宣言テストのコミットを作り直さないため。rebase の道は持たない）
+2. ワーカーに「sandbox 外で取り込んだ（HEAD=`<sha>`）。`git rev-list --count HEAD..<base_ref>` が 0 で `git status` が空であることを確かめ、通常検証と Codex ゲートを回し直して完了報告して」と送る
 
 ## 2a-r. ワーカーから「rebase 残差あり」/ `CODEX_GATE: dirty-worktree` の報告を受けたとき（承認前）
 
@@ -346,6 +349,7 @@ pr-watch から `PR_MERGED_HEAD_UNCONFIRMED: PR #<n> (head=<merged_short>, last 
   tmux / herdr 両対応で、**herdr / wezterm backend では自己 close が効かず残留する**ため post-merge cleanup
   で必須。tmux backend で既に self-close 済みなら `[pane_not_found]`（自己クローズ済みで正常、skip してよい）
 - **片付けは `python3 tools/close_run.py --task <task_id>` の 1 回**（Windows native は `py -3`）: 上の `PANE_CLOSED` を受けてから打つ（park で閉じたペインは記録済みなのでそのまま打てる）。ツールが PR のマージ（未記録なら `run_complete_on_merge` で 1 回確かめる）とペインが閉じた記録を確かめてから、worktree の削除（ブランチは残す。パターン A のディレクトリとエフェメラルなパターン C は残す）、run の **COMPLETED** と `worker_dirs` 行の削除、パターン C（`gitignored_repo_root`）の `CLAUDE.local.md` の削除、閉じ残しの確認までを順に行う。PR の無い run（設計だけで実装を別の run に渡した、監査だけ、ユーザーがクローズを指示した）は `--no-pr`、複数の run は `--task` を重ねる。最終行が `CLOSE_RUN: <task> closed` でなければ（`blocked: <理由>`）理由に従い、StateWriter や `git worktree remove` を手で打って再現しない。手順の中身はツールの docstring
+- **残りの開いている PR を最新にする**: `python3 tools/refresh_open_prs.py`（Windows native は `py -3`）。PR ごとに GitHub でブランチを最新にし、新しい head の `fix_pushed` を記録し、作業ツリーを ff-only で合わせる。`watcher=needs_rearm` の PR は `/pr-watch-pane <PR>` で監視を立て直す。`conflict` の PR はワーカーに base の merge を頼む（park 中なら `gen_delegate_payload.py revive --reason conflict`）。`worktree=dirty` はワーカーの未コミット作業があるので、そのままにしてワーカーに伝える
 - JSON snapshot は StateWriter post-commit hook が自動再生成
 
 ## 2b-iii. マージ後の次タスク提案（proactive next-dispatch）
