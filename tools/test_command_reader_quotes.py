@@ -50,6 +50,9 @@ class PresubmitHookQuotesTests(pre.PresubmitTests):
         self.assertTrue(self.hook("cat <<'EOF' | bash\ngit push origin feat/q1\nEOF", self.root)
                         .startswith("DENY"))
         self.assertEqual(self.hook("cat <<'EOF' > notes.md\ngit push origin feat/q1\nEOF", self.root), "ALLOW")
+        # A quoted runner, or a command that is a variable, may run the body.
+        self.assertTrue(self.hook("\"bash\" <<'EOF'\ngit push origin feat/q1\nEOF", self.root).startswith("DENY"))
+        self.assertTrue(self.hook("$SH <<'EOF'\ngit push origin feat/q1\nEOF", self.root).startswith("DENY"))
         # An unquoted delimiter still runs $(...) in the body.
         self.assertTrue(self.hook("cat <<EOF\n$(git push origin feat/q1)\nEOF", self.root).startswith("DENY"))
         # `<<` inside quotes or a comment is not a heredoc.

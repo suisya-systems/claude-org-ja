@@ -508,8 +508,16 @@ def _strip_heredocs(code: str) -> str:
                 # Unquoted delimiter: the body still expands $(...) and backticks, so it is
                 # read. Inside quotes or a comment, `<<` is not an operator at all.
                 continue
-            words = {Path(w).name for w in re.split(r"[\s|;&()]+", line) if w}
+            # Words as the shell sees them: quotes and backslashes removed ("bash" is bash).
+            plain = re.sub(r"[\"'\\]", "", line)
+            words = {Path(w).name for w in re.split(r"[\s|;&()]+", plain) if w}
             if words & _EXECUTES:
+                continue
+            # The command word in front of `<<` (after VAR=value): a variable or a
+            # substitution may be any program, so the body might be run.
+            segment = re.split(r"[|;&(]", line[:m.start()])[-1].split()
+            command = next((w for w in segment if not _ASSIGN.match(w)), "")
+            if "$" in command or "`" in command:
                 continue
             delim, dash = m.group(3), m.group(1) == "-"
             while i < len(lines) and (lines[i].strip() if dash else lines[i]) != delim:

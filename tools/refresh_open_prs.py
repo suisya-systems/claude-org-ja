@@ -93,7 +93,8 @@ def refresh_one(conn, task: str, pr_url: str, wdir: Optional[str], branch: Optio
         # An earlier refresh may have left the worktree behind (dirty, or a failed fetch).
         if wdir and branch and subprocess.run(["git", "-C", wdir, "merge-base", "--is-ancestor", old, "HEAD"],
                                               capture_output=True).returncode != 0:
-            return "up_to_date", f"PR #{pr} at {old[:12]}; worktree={ff_only(wdir, branch)}"
+            worktree = ff_only(wdir, branch)
+            return ("error" if worktree == "error" else "up_to_date"), f"PR #{pr} at {old[:12]}; worktree={worktree}"
         return "up_to_date", f"PR #{pr} at {old[:12]}"
     return _record_push(conn, task, pr, repo, old, new, wdir, branch, before)
 
@@ -116,12 +117,14 @@ def _record_push(conn, task, pr, repo, old, new, wdir, branch, before, repaired=
                        payload={"task": task, "pr": int(pr), "repo": repo, "head": new,
                                 "source": "refresh_open_prs"}, run_task_id=task)
     worktree = ff_only(wdir, branch or before.get("headRefName") or "") if wdir else "error"
+    # The record and the watcher note stand either way; a failed local sync still fails the call.
+    result = "error" if worktree == "error" else "updated"
     if repaired:
-        return "updated", (f"PR #{pr} at {new[:12]} (the record of an earlier update was missing; written now)"
-                           f" watcher=needs_rearm worktree={worktree}")
+        return result, (f"PR #{pr} at {new[:12]} (the record of an earlier update was missing; written now)"
+                         f" watcher=needs_rearm worktree={worktree}")
     # A watcher started before this push is stale by the org's rule (tools/watcher_restart_guard.py:
     # the newest watcher must start after the newest fix_pushed), and none can have started after it.
-    return "updated", f"PR #{pr} updated {old[:12]} -> {new[:12]} watcher=needs_rearm worktree={worktree}"
+    return result, f"PR #{pr} updated {old[:12]} -> {new[:12]} watcher=needs_rearm worktree={worktree}"
 
 
 def main(argv: Optional[list] = None) -> int:

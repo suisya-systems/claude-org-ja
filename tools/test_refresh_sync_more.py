@@ -57,6 +57,18 @@ class MoreTests(base.RefreshSyncTests):
         self.assertIn("watcher=needs_rearm", line)
         self.assertEqual(self.pushed_heads("n")[-1], self.remote_head("feat/n"))
 
+    def test_a_failed_local_sync_fails_the_call(self):
+        wdir = self.pr_task("o", 24)
+        self.main_moves()
+        # The worktree shares the clone's config: from here its fetch fails (GitHub, faked, still works).
+        self.git(wdir, "remote", "set-url", "origin", str(self.tmp / "gone.git"))
+        proc = self.run_tool(base.REFRESH, "--task", "o")
+        self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        line = self.line(proc, "o")
+        self.assertIn("worktree=error", line)
+        self.assertIn("watcher=needs_rearm", line)
+        self.assertEqual(self.pushed_heads("o")[-1], self.remote_head("feat/o"))  # the record still written
+
     def test_root_alone_selects_its_database(self):
         self.pr_task("m", 22)
         import subprocess
